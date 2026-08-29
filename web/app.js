@@ -6,7 +6,7 @@ import {
   ouvrirLaModaleDePlage
 } from './core.js';
 import { installI18nObserver } from './i18n_observer.js';
-import { S, lireLeStockageDuSite } from './state.js';
+import { S, ecrireDansLeStockageDuSite, lireLeStockageDuSite } from './state.js';
 import { banIp, clearDrillCrumb, clearZoom, evLoad, exploreFrom, exploreTo, qHistGo, renderViz, runQuery, setZoom, stopExplore, updateZoomBadge } from './viz.js';
 import { initDashboards, loadDashboard, loadDashboards, refreshPanels } from './dashboards.js';
 import { initLookups } from './lookups.js';
@@ -654,10 +654,18 @@ if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').cat
   if (btn) btn.onclick = () => {
     const t = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
     document.documentElement.dataset.theme = t;
-    localStorage.setItem('soc-theme', t);
+    // `P4.13-b` — LA PERSISTANCE NE COMMANDE PLUS LA CHAÎNE. Elle est TENTÉE, son résultat est retenu,
+    // et le reste du geste s'exécute quoi qu'il arrive. Nue, cette ligne jetait ICI, après la pose de
+    // l'attribut : le fond basculait, l'icône restait celle de l'ANCIEN thème et les graphes gardaient
+    // l'ancienne couleur (mesuré le 2026-08-30 sous le mode « stockage refusé » du harnais).
+    const retenu = ecrireDansLeStockageDuSite('soc-theme', t);
     paint();
     refresh();          // recolore les graphes SVG (ils lisent les variables CSS au rendu)
     loadDashboard();
+    // ET LE REFUS SE DIT — DERNIER, pour qu'aucun avis ne s'interpose dans la chaîne. Se taire ici
+    // échangerait l'incohérence contre une perte SILENCIEUSE : l'exploitant retrouverait l'ancien thème
+    // au prochain chargement sans jamais savoir pourquoi son choix n'a pas tenu.
+    if (!retenu) toast(LANG === 'en' ? 'Theme applied, but this browser refuses site storage: the choice will not be kept.' : 'Thème appliqué, mais ce navigateur refuse le stockage de site : le choix ne sera pas retenu.', 'info', 5000);
   };
 })();
 
@@ -760,7 +768,22 @@ if ($('#rangepick')) $('#rangepick').onclick = () => ouvrirLaModaleDePlage(cible
 // Explore : même geste, même style, même refus — seule la cible du palier change.
 if ($('#qrangepick')) $('#qrangepick').onclick = () => ouvrirLaModaleDePlage(cibleDeZoom('#qrange'), PORTE_DE_ZOOM, updateQRangeBtn);
 // fuseau horaire d'affichage (stockage UTC) : recharge pour re-rendre tous les temps affichés
-if ($('#tz')) { $('#tz').value = socTZ; $('#tz').onchange = () => { setSocTZ($('#tz').value); localStorage.setItem('soc_tz', socTZ); location.reload(); }; }
+// `P4.13-b` — LE RECHARGEMENT EST LE MOYEN DE LA PERSISTANCE, JAMAIS L'INVERSE. `socTZ` se RELIT du
+// stockage à l'évaluation de `core.js` : recharger sans avoir écrit DÉTRUIRAIT le choix — la liste
+// reviendrait d'elle-même à l'ancien fuseau, sans un mot. On applique donc en mémoire, on re-rend par
+// `refresh()` au lieu de recharger (les temps affichés passent par `fmtTs`, qui lit `socTZ` au rendu),
+// et on DIT que le choix ne survivra pas à un rechargement. Nue, l'écriture jetait entre `setSocTZ` et
+// `location.reload()` : le fuseau était posé en mémoire, RIEN n'était re-rendu, et la liste affichait
+// un fuseau que pas un seul horodatage de la page n'employait.
+if ($('#tz')) {
+  $('#tz').value = socTZ;
+  $('#tz').onchange = () => {
+    setSocTZ($('#tz').value);
+    if (ecrireDansLeStockageDuSite('soc_tz', socTZ)) { location.reload(); return; }
+    refresh();
+    toast(LANG === 'en' ? 'Time zone applied for this session only: this browser refuses site storage, so the choice will not survive a reload.' : 'Fuseau appliqué pour cette session seulement : ce navigateur refuse le stockage de site, le choix ne survivra pas à un rechargement.', 'info', 5000);
+  };
+}
 if ($('#qhelp')) $('#qhelp').onclick = openHelpModal;
 if ($('#fresh-help')) $('#fresh-help').onclick = openFreshnessHelp;
 if ($('#fresh-refresh')) $('#fresh-refresh').onclick = () => renderFreshness(true); // refresh manuel -> barre .tableprog (idem Explore/Dashboards)
@@ -825,8 +848,14 @@ function saveOvDrop(from, to) {
   present.forEach(x => { if (!o.includes(x)) o.push(x); });   // complète avec d'éventuelles nouvelles cartes
   o.splice(o.indexOf(from), 1);
   o.splice(o.indexOf(to), 0, from);
-  localStorage.setItem('soc_ov_order', JSON.stringify(o));   // miroir sync (compat + hors-ligne)
-  prefSet('ovOrder', o);                                     // #62 — persiste côté serveur (cross-device)
+  // `P4.13-b` — CE MIROIR N'EST QU'UN MIROIR, et son refus ne doit RIEN emporter avec lui. Nu, il jetait
+  // AVANT `prefSet` — la persistance serveur, qui est la vraie — et AVANT `applyOvOrder()` : un
+  // glisser-déposer ne réordonnait alors rien et ne gardait rien, sur un poste où tout aurait pu être
+  // gardé. LE REFUS N'EST PAS DIT ICI, et c'est une décision mesurée, pas un silence : il n'y a aucune
+  // perte à annoncer — l'ordre reste tenu par le store self-scoped, inter-postes. Seule la relecture
+  // HORS-LIGNE de cet ordre est perdue, et elle l'est déjà pour tout le reste sur un tel navigateur.
+  ecrireDansLeStockageDuSite('soc_ov_order', JSON.stringify(o));   // miroir sync (compat + hors-ligne)
+  prefSet('ovOrder', o);                                          // #62 — persiste côté serveur (cross-device)
   applyOvOrder();
 }
 function initOverviewLayout() {
@@ -871,7 +900,20 @@ initOverviewLayout();
 })();
 
 installI18nObserver();   // amorçage du lexique sous LANG='en' : marche initiale + observateur des nœuds/attributs ajoutés après coup (i18n_observer.js)
-if ($('#lang')) { $('#lang').value = LANG; $('#lang').onchange = () => { localStorage.setItem('soc_lang', $('#lang').value); location.reload(); }; }
+// `P4.13-b` — SANS STOCKAGE LA LANGUE NE PEUT PAS CHANGER, ET LA LISTE NE DOIT PAS PRÉTENDRE LE CONTRAIRE.
+// `LANG` est lu UNE fois, du stockage, à l'évaluation de `core.js` : aucun chemin en mémoire ne le change,
+// et recharger sans avoir écrit ramènerait la langue d'avant. Le choix est donc REFUSÉ pour de bon — la
+// liste est remise sur la langue RÉELLE, sans quoi elle afficherait « English » au-dessus d'une interface
+// restée française : exactement l'état à moitié basculé que cette clé ferme. Nue, l'écriture jetait avant
+// `location.reload()`, ce qui laissait déjà la liste sur une langue que l'interface n'employait pas.
+if ($('#lang')) {
+  $('#lang').value = LANG;
+  $('#lang').onchange = () => {
+    if (ecrireDansLeStockageDuSite('soc_lang', $('#lang').value)) { location.reload(); return; }
+    $('#lang').value = LANG;
+    toast(LANG === 'en' ? 'Language unchanged: this browser refuses site storage, and the language is read from it at startup.' : 'Langue inchangée : ce navigateur refuse le stockage de site, or la langue y est lue au démarrage.', 'info', 5000);
+  };
+}
 
 // ============ tous les fuseaux IANA (Intl) — favoris en tête, le reste ajouté dynamiquement ============
 (function fillTz() {

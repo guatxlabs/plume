@@ -510,15 +510,11 @@ pub(crate) async fn otlp_traces_post(
     let hk = spool_host_marker(&au);
     let tmp = format!("{}/.otlp-{}-{}.tmp", st.spool, now(), n);
     let dst = format!("{}/otlp-{}-{}{}{}.json", st.spool, now(), n, mk, hk);
-    if std::fs::write(&tmp, body_out.as_bytes()).is_err() {
-        let _ = std::fs::remove_file(&tmp); // ING-4 : pas d'orphelin `.tmp` sur écriture partielle
-        return (StatusCode::INTERNAL_SERVER_ERROR, "spool write failed").into_response();
+    // `S31` (temps 2) — publication DÉPORTÉE + deux barrières. `ExportTraceServiceResponse` n'admet pas
+    // de champ inconnu : le témoin de cette surface est `plume_spool_barriere_*` dans /metrics.
+    match crate::ingest::spool::publier(tmp, dst, body_out.into_bytes(), st.ingest_fsync).await {
+        Err(crate::ingest::spool::EchecSpool::Ecriture) => (StatusCode::INTERNAL_SERVER_ERROR, "spool write failed").into_response(),
+        Err(crate::ingest::spool::EchecSpool::Publication) => (StatusCode::INTERNAL_SERVER_ERROR, "spool publish failed").into_response(),
+        Ok(_) => otlp_ok(0),
     }
-    use std::os::unix::fs::PermissionsExt;
-    let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
-    if std::fs::rename(&tmp, &dst).is_err() {
-        let _ = std::fs::remove_file(&tmp); // ING-4 : pas d'orphelin `.tmp` sur rename échoué
-        return (StatusCode::INTERNAL_SERVER_ERROR, "spool publish failed").into_response();
-    }
-    otlp_ok(0)
 }

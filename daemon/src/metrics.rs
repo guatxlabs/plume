@@ -36,6 +36,23 @@ pub(crate) static PUBSUB_ACKDROP: [AtomicU64; 5] = [
     AtomicU64::new(0),
     AtomicU64::new(0),
 ];
+/// `S31` — LES BARRIÈRES DE DURABILITÉ DU SPOOL, COMPTÉES. Une publication de spool durable prend DEUX
+/// barrières : `fsync` du fichier temporaire AVANT le renommage, `fsync` du répertoire APRÈS. Ces trois
+/// compteurs sont le SEUL témoin d'exploitation des QUATRE surfaces dont le corps de réponse appartient
+/// à un contrat étranger (Splunk HEC, OTLP, Firehose, Pub/Sub) et ne peut donc pas porter de champ
+/// `durable` : sur celles-là, `plume_spool_barriere_echec_total` qui grimpe est la seule façon de voir
+/// qu'un 2xx a cessé d'être adossé à une barrière.
+///
+/// CE QU'ILS NE PROUVENT PAS : la survie à une coupure d'alimentation. Ils comptent des appels rendus
+/// sans erreur par le noyau, pas des octets retrouvés après un redémarrage brutal.
+pub(crate) static SPOOL_BARRIERE_FICHIER_TOTAL: AtomicU64 = AtomicU64::new(0);
+/// Barrières de RÉPERTOIRE prises (rendent durable l'ENTRÉE créée par le renommage).
+pub(crate) static SPOOL_BARRIERE_REPERTOIRE_TOTAL: AtomicU64 = AtomicU64::new(0);
+/// Barrières REFUSÉES par le noyau. Une barrière de FICHIER refusée fait échouer la publication
+/// (l'émetteur garde sa copie). Une barrière de RÉPERTOIRE refusée laisse le lot publié mais NON
+/// durable : la réponse reste un succès (l'échouer ferait réémettre, donc DOUBLER le lot) et ce
+/// compteur est ce qui le dit.
+pub(crate) static SPOOL_BARRIERE_ECHEC_TOTAL: AtomicU64 = AtomicU64::new(0);
 /// Recherches interactives (query/search) servies.
 pub(crate) static SEARCH_TOTAL: AtomicU64 = AtomicU64::new(0);
 /// Ticks du scheduler de règles + horodatage (unix s) du dernier tick — santé « détection ».
@@ -396,6 +413,9 @@ pub(crate) fn gather_json(conn: &Connection, spool: &str, db_path: &str, schema_
     ingest.insert("events_1h".into(), json!(events_1h));
     spool_queue_depth(spool).poser_dans(&mut ingest, "queue_depth");
     ingest.insert("push_zero_map_total".into(), json!(PUSH_ZERO_MAP_TOTAL.load(Ordering::Relaxed)));
+    ingest.insert("spool_barriere_fichier_total".into(), json!(SPOOL_BARRIERE_FICHIER_TOTAL.load(Ordering::Relaxed)));
+    ingest.insert("spool_barriere_repertoire_total".into(), json!(SPOOL_BARRIERE_REPERTOIRE_TOTAL.load(Ordering::Relaxed)));
+    ingest.insert("spool_barriere_echec_total".into(), json!(SPOOL_BARRIERE_ECHEC_TOTAL.load(Ordering::Relaxed)));
     ingest.insert("pubsub_ackdrop_total".into(), json!(pubsub_ackdrop_total));
     ingest.insert("pubsub_ackdrop_par_raison".into(), Value::Object(pubsub_ackdrop_par_raison));
     // S33 — L'IDENTITÉ DE L'HÔTE PORTE SON VERDICT, PAS SA VALEUR. Elle décide quelles actions de
@@ -490,6 +510,13 @@ pub(crate) fn gather_prom(conn: &Connection, spool: &str, db_path: &str, schema_
     g(&mut o, "plume_spool_queue_files", "gauge", "Fichiers en attente dans le spool", "/ingest/queue_depth");
     lisible(&mut o, "plume_spool_queue_lisible", "la profondeur de la file d'ingest", "/ingest/queue_depth_verdict", "/ingest/queue_depth_cause");
     g(&mut o, "plume_push_zero_map_total", "counter", "Batches push acceptés mais mappés à 0 event (misconfig source push)", "/ingest/push_zero_map_total");
+    // `S31` — les barrières de durabilité du spool. Les DEUX premières montent ENSEMBLE (une publication
+    // durable en prend une de chaque) ; un écart entre elles, ou `echec` qui grimpe, signale un 2xx qui
+    // n'est plus adossé à une barrière — le seul signal disponible sur les quatre surfaces à contrat
+    // étranger, dont le corps de réponse ne peut pas porter de champ `durable`.
+    g(&mut o, "plume_spool_barriere_fichier_total", "counter", "Barrières fsync(fichier) prises avant le renommage du spool", "/ingest/spool_barriere_fichier_total");
+    g(&mut o, "plume_spool_barriere_repertoire_total", "counter", "Barrières fsync(répertoire) prises après le renommage du spool", "/ingest/spool_barriere_repertoire_total");
+    g(&mut o, "plume_spool_barriere_echec_total", "counter", "Barrières de durabilité du spool REFUSÉES par le noyau", "/ingest/spool_barriere_echec_total");
     g(&mut o, "plume_search_requests_total", "counter", "Recherches interactives servies", "/search/requests_total");
     // quantiles de latence de recherche (résumé pré-calculé côté serveur).
     let (p50, p95, _) = search_quantiles();

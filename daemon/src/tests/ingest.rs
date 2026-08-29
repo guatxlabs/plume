@@ -1489,3 +1489,45 @@
                  enfin `PLUME_INGEST_MAX_EVENTS` opérant à la hausse — et invaliderait ce survol");
         }
     }
+
+    /// `S31` (temps 2) — LE DRAPEAU DE DURABILITÉ SUR LE FIL VAUT CE QUE LA PUBLICATION A OBTENU.
+    ///
+    /// Le témoin unitaire de `ingest/spool.rs` prouve que les deux barrières sont prises ; celui-ci
+    /// prouve le CÂBLAGE — que le champ `durable` de l'accusé de réception est la valeur RENDUE par la
+    /// publication et non une constante. C'est la faute que ce lot devait rendre impossible : un accusé
+    /// qui promettrait la durabilité aurait l'air corrigé sans l'être.
+    ///
+    /// Les DEUX sens sont exigés sur la MÊME route et le MÊME corps :
+    ///   * barrière ARMÉE (le défaut de production) -> `202 {"queued":true,"durable":true}` ;
+    ///   * barrière DÉSARMÉE (`PLUME_INGEST_FSYNC=0`) -> `202 {"queued":true,"durable":false}`, et le
+    ///     lot est publié quand même (l'ancien chemin, inchangé).
+    /// Un `durable` câblé en dur ferait échouer l'un des deux, quel que soit celui qui est câblé.
+    ///
+    /// MUTATION : remplacer `p.durable` par `true` au site de l'accusé ⇒ la seconde moitié passe au
+    /// ROUGE. Le remplacer par `false` ⇒ la première.
+    ///
+    /// CE QU'IL NE PROUVE PAS : la survie à une coupure d'alimentation — voir le bandeau de
+    /// `ingest/spool.rs`.
+    #[tokio::test]
+    async fn l_accuse_d_ingestion_ne_promet_la_durabilite_que_lorsqu_il_l_a_obtenue() {
+        let corps = json!({ "kind": "events", "events": [] }).to_string();
+        let au = || AuthUser { name: "agent".into(), role: "agent".into(), tenant: "default".into(), is_superadmin: false, method: "bearer".into(), csrf: String::new(), env: None };
+
+        for (arme, attendu) in [(true, true), (false, false)] {
+            let (mut st, spool) = ing_state_with_spool();
+            st.ingest_fsync = arme;
+            let r = crate::ingest::ingest_post(State(st), Extension(au()), corps.clone()).await;
+            assert_eq!(r.status(), StatusCode::ACCEPTED, "barrière armée={arme} : l'accusé reste un 202");
+            let j: Value = serde_json::from_slice(
+                &axum::body::to_bytes(r.into_body(), 64 * 1024).await.unwrap()).unwrap();
+            assert_eq!(j.get("durable").and_then(|v| v.as_bool()), Some(attendu),
+                "barrière armée={arme} : `durable` doit valoir ce que la publication a obtenu — {j}");
+            // Dans les DEUX sens le lot est bien publié : la durabilité ne se paie pas d'une perte.
+            let publies = std::fs::read_dir(spool.racine().chemin()).unwrap()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_name().to_string_lossy().starts_with("ingest-"))
+                .count();
+            assert_eq!(publies, 1, "barrière armée={arme} : le lot est publié sous son nom définitif");
+        }
+    }
+

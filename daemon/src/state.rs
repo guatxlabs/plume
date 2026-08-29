@@ -114,6 +114,14 @@ pub(crate) struct AppState {
     // troncature silencieuse. Le daemon MESURE le disque, il ne pilote PAS l'hôte.
     pub(crate) ingest_min_free_mb: u64,   // PLUME_INGEST_MIN_FREE_MB (0 = garde disque désactivé), défaut 512
     pub(crate) ingest_max_events: usize,  // PLUME_INGEST_MAX_EVENTS (plafond dur events/req), défaut 50000
+    // `S31` — LA DURABILITÉ DES SEPT SURFACES DE SPOOL, ARMÉE PAR DÉFAUT. Armée, une publication prend
+    // deux barrières (`fsync` du fichier avant le renommage, `fsync` du répertoire après) sur le pool
+    // bloquant, et les accusés qui portent un champ `durable` le rendent VRAI. Désarmée
+    // (`PLUME_INGEST_FSYNC=0|false|off`), la suite d'appels redevient celle d'avant `S31` et le champ
+    // `durable` retombe à faux : le levier ne peut pas rendre l'accusé menteur. Il existe parce que la
+    // barrière COÛTE — mesuré 6,65 ms par publication à un seul émetteur séquentiel contre 0,04 ms sans
+    // elle, et 0,79 ms à 16 publications concurrentes (poste Hugo, btrfs, 2026-08-30).
+    pub(crate) ingest_fsync: bool,        // PLUME_INGEST_FSYNC (0/false/off = barrière désarmée), défaut ARMÉE
     // MULTI-TENANT (#2, D2) — DÉFAUT false (mode 0 SMB inchangé). Cf. multi_tenant_enabled().
     // INERTE en #2a-2a : posé mais consommé par /api/me + le gating des handlers en #2a-2b.
     #[allow(dead_code)]

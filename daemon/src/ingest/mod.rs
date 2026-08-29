@@ -1,7 +1,7 @@
 //! Couche d'ingestion (data-plane). Sous-modules extraits de main.rs (refactor split #25 —
 //! byte-identique). `store` = SPI de stockage enfichable.
 //!
-//! CE QUE L'ACCUSÉ DE RÉCEPTION DE CE MODULE ATTESTE — ET CE QU'IL N'ATTESTE PAS (`S31`, temps 1).
+//! CE QUE L'ACCUSÉ DE RÉCEPTION DE CE MODULE ATTESTE — ET CE QU'IL N'ATTESTE PAS (`S31`, temps 2).
 //!
 //! LE CRITÈRE, PARCE QU'UNE LISTE DE NOMS SE PÉRIME. Une surface de RÉCEPTION POUSSÉE est une route de
 //! ce module telle que (1) l'émetteur est EXTERNE et détient la donnée, (2) le démon la PERSISTE pour
@@ -14,41 +14,64 @@
 //! DÉRIVÉES DE CE CRITÈRE ET MESURÉES SUR L'ARBRE LE 2026-08-29 : DIX gestionnaires sur ONZE chemins de
 //! route (`hec_event_post` en sert deux), en DEUX régimes de durabilité, pas un.
 //!
-//!   * SEPT écrivent le SPOOL (`write` -> `set_permissions` -> `rename`) puis répondent :
-//!     `ingest_post`, `ingest_minio_post`, `ingest_journal_post`, `hec_event_post`, `otlp_traces_post`,
-//!     `firehose_ingest_post`, `pubsub_ingest_post`. Le renommage donne l'ATOMICITÉ DU CONTENU et rien
-//!     d'autre : après une coupure d'alimentation, les octets peuvent exister sans que leur entrée de
-//!     répertoire existe, et `ingest_once` parcourt le spool PAR NOM.
-//!   * TROIS écrivent la BASE dans une transaction : `metrics_prom`, `metrics_write`, `loki_push`. La
-//!     fenêtre y est plus étroite — le COMMIT survit à la mort du processus — mais elle existe : les
-//!     bases sont ouvertes en `journal_mode=WAL` + `synchronous=NORMAL`, régime dans lequel un COMMIT
-//!     n'attend aucune barrière d'écriture.
+//!   * SEPT écrivent le SPOOL puis répondent : `ingest_post`, `ingest_minio_post`,
+//!     `ingest_journal_post`, `hec_event_post`, `otlp_traces_post`, `firehose_ingest_post`,
+//!     `pubsub_ingest_post`. **CE RÉGIME EST FERMÉ (temps 2).** Les sept ne partageaient aucune
+//!     fonction — sept copies du même bloc de dix lignes ; ils passent désormais TOUS par
+//!     `spool::publier`, qui prend deux barrières (`fsync` du fichier AVANT le renommage, `fsync` du
+//!     répertoire APRÈS) sur le pool bloquant, avant que l'accusé ne parte. Le pourquoi de chaque
+//!     geste, la mesure qui le paie et ses limites sont dans le bandeau de `ingest/spool.rs`.
+//!   * TROIS écrivent la BASE dans une transaction : `metrics_prom`, `metrics_write`, `loki_push`.
+//!     **CE RÉGIME RESTE OUVERT, ET CE N'EST PAS LE MÊME PROBLÈME.** La fenêtre y est plus étroite — le
+//!     COMMIT survit à la mort du PROCESSUS — mais elle existe : les bases sont ouvertes en
+//!     `journal_mode=WAL` + `synchronous=NORMAL`, régime dans lequel un COMMIT n'attend aucune
+//!     barrière. Trois faits MESURÉS le 2026-08-30 disent pourquoi il ne se ferme pas du même geste :
+//!     (1) le coût est d'un autre ordre — un COMMIT d'une ligne passe de 0,081 ms à 4,154 ms en
+//!     `synchronous=FULL` (×51, btrfs, base WAL) ; (2) le pragma est de CONNEXION, et le writer est
+//!     PARTAGÉ par toutes les écritures du tenant (règles, jetons, audit, rollups) — l'armer au niveau
+//!     de la connexion facturerait cette barrière à des écritures qui n'ont rien demandé ; (3) l'armer
+//!     par TRANSACTION serait possible (le verrou du writer est tenu pendant `with_write`), mais ces
+//!     trois gestionnaires écrivent la base SUR LE FIL DE L'EXÉCUTEUR — y poser 4 ms de barrière
+//!     bloquerait ce fil, exactement ce que le déport du spool a évité. Les rendre durables commence
+//!     donc par DÉPORTER `with_write`, c'est-à-dire un remaniement de tous les chemins d'écriture, pas
+//!     une correction d'ingestion.
 //!
-//! AUCUN `sync_all` N'EST APPELÉ SUR CE CHEMIN, ET CE N'EST PAS UNE CAPACITÉ QUI MANQUE AU DÉPÔT : le
-//! même geste est appelé par `cold_store::writer::fsync_file` / `fsync_dir`, par `crypto` à l'écriture
-//! d'une clé, et par la sauvegarde. C'est le geste absent LÀ OÙ LA PROMESSE EST FAITE.
+//! CE QU'UN 2XX ATTESTE DÉSORMAIS, SURFACE PAR SURFACE.
+//!   * Les SEPT surfaces de spool : le corps est écrit, synchronisé, publié sous son nom définitif, et
+//!     ce nom est lui-même synchronisé — AVANT que l'accusé ne parte. Un expéditeur peut effacer sa
+//!     copie sur ce 2xx. Réserve honnête : ce qui est prouvé est l'APPEL des deux barrières et leur
+//!     succès, pas la survie à une coupure d'alimentation réelle (cf. `ingest/spool.rs`).
+//!   * Les TROIS surfaces de base : le 2xx atteste que la transaction a été VALIDÉE, donc qu'elle
+//!     survit à la mort du processus — pas à celle de la machine.
 //!
-//! DONC : un 2xx rendu ici atteste que le corps a été REÇU et remis au système, pas qu'il SURVIVRAIT à
-//! une coupure d'alimentation. Un expéditeur qui efface sa copie sur cet accusé accepte cette fenêtre —
-//! et il doit pouvoir le savoir sans lire ce fichier.
+//! CE QUI EST ÉCRIT, ET OÙ. QUATRE accusés ont un CORPS qui appartient à plume et portent le champ
+//! `durable`. Il n'est plus une constante : il est la valeur RENDUE par la publication.
+//!   * `/api/ingest`, `/api/ingest/journal`, `/api/ingest/minio` -> `true` (temps 2), et il retombe
+//!     tout seul à `false` si la barrière est désarmée (`PLUME_INGEST_FSYNC=0`) ou refusée par le noyau
+//!     après le renommage. Témoin : `l_accuse_d_ingestion_ne_promet_la_durabilite_que_lorsqu_il_l_a_obtenue`.
+//!   * `/api/metrics/prom` -> reste `false`, parce que son régime, lui, n'est pas fermé. Cette
+//!     asymétrie EST le résultat : le drapeau distingue ce qui est acquis de ce qui ne l'est pas.
+//!   Les SIX autres accusés ont une forme dictée par un contrat ÉTRANGER (Splunk HEC, OTLP, AWS
+//!   Firehose, GCP Pub/Sub, Loki push, Prometheus remote_write) — y ajouter un champ serait modifier le
+//!   protocole d'un tiers, et deux d'entre eux répondent `204` sans aucun corps. Pour les QUATRE
+//!   d'entre elles qui sont des surfaces de spool, le témoin d'exploitation est
+//!   `plume_spool_barriere_fichier_total` / `_repertoire_total` / `_echec_total` dans `/metrics` : un
+//!   2xx qui cesserait d'être adossé à une barrière s'y voit. MESURÉ avant de toucher un corps le
+//!   2026-08-29 : les deux expéditeurs livrés avec le produit décident sur le STATUT seul
+//!   (`collectors/ship.sh` supprime sur `202`, `classify_status` dans `agent/src/ship.rs` acquitte sur
+//!   `200..=299`), et aucun test n'épingle ces corps.
 //!
-//! CE QUI EST ÉCRIT, ET OÙ. Les QUATRE accusés dont le CORPS appartient à plume portent le champ
-//! `durable` (`/api/ingest`, `/api/ingest/journal`, `/api/ingest/minio`, `/api/metrics/prom`) : c'est la
-//! VALEUR qui bascule à `true` le jour où le temps 2 est fait, donc le témoin par mutation du correctif
-//! à venir. Les SIX autres accusés ont une forme dictée par un contrat ÉTRANGER (Splunk HEC, OTLP, AWS
-//! Firehose, GCP Pub/Sub, Loki push, Prometheus remote_write) — y ajouter un champ serait modifier le
-//! protocole d'un tiers, et deux d'entre eux répondent `204` sans aucun corps. Leur limite est écrite
-//! dans `docs/AGENTS-PROTOCOLE.md`, pas dans leur charge utile. MESURÉ avant de toucher un corps le
-//! 2026-08-29 : les deux expéditeurs livrés avec le produit décident sur le STATUT seul
-//! (`collectors/ship.sh` supprime sur `202`, `classify_status` dans `agent/src/ship.rs` acquitte sur
-//! `200..=299`), et aucun test n'épingle ces corps.
-//!
-//! CE N'EST PAS UN CHOIX DÉFINITIF. `S31` reste OUVERTE : le temps 2 déporte l'écriture pour rendre la
-//! promesse vraie. La perte reste un DÉFAUT ; elle est seulement DITE en attendant d'être supprimée.
+//! `S31` RESTE OUVERTE sur son second régime. La perte y reste un DÉFAUT ; elle est DITE — par un
+//! `durable: false` qui, désormais, se distingue d'un `durable: true` voisin.
 use crate::*;
 
 pub(crate) mod store;
 pub(crate) use store::*;
+// `S31` (temps 2) — LE POINT DE PUBLICATION DU SPOOL, PARTAGÉ PAR LES SEPT SURFACES. Extraction PURE des
+// sept copies du même bloc, plus les deux barrières de durabilité et le déport sur le pool bloquant.
+// Pas de ré-export glob : les appelants nomment `spool::publier` — un accusé de réception qui promet
+// la durabilité doit dire d'où la promesse vient.
+pub(crate) mod spool;
 // Tier WARM DuckDB (#15) — FEATURE-GATED, OFF par défaut : absent du build SMB (mode 0 byte-identique,
 // pas de link `duckdb`). Monte la SPI backend-neutre `guatx_core::store::EventStore` (preuve #18 Ph1).
 #[cfg(feature = "duckdb")]
@@ -675,21 +698,13 @@ pub(crate) async fn ingest_journal_post(State(st): State<AppState>, Extension(au
     let hk = spool_host_marker(&au); // M2 : host LIÉ au token agent -> écrase event.host à la relecture (anti-forge)
     let tmp = format!("{}/.jrnl-{}-{}.tmp", st.spool, now(), n);
     let dst = format!("{}/jrnl-{}-{}{}{}.ndjson", st.spool, now(), n, mk, hk);
-    if std::fs::write(&tmp, body.as_bytes()).is_err() {
-        let _ = std::fs::remove_file(&tmp); // ING-4 : pas d'orphelin `.tmp` sur écriture partielle
-        return server_err("écriture spool échouée");
+    // `S31` (temps 2) — publication DÉPORTÉE + deux barrières AVANT le 202. `durable` est DÉRIVÉ de ce
+    // que la publication a obtenu ; le régime et ses limites sont écrits une seule fois, dans le
+    // bandeau de ce module.
+    match crate::ingest::spool::publier(tmp, dst, body.into_bytes(), st.ingest_fsync).await {
+        Err(_) => server_err("écriture spool échouée"),
+        Ok(p) => (StatusCode::ACCEPTED, Json(json!({ "queued": true, "durable": p.durable }))).into_response(),
     }
-    // durcis le spool (0600) avant la publication atomique : umask 022 laissait les fichiers en 0644 (world-readable) -> dataacl.
-    use std::os::unix::fs::PermissionsExt;
-    let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
-    if std::fs::rename(&tmp, &dst).is_err() {
-        let _ = std::fs::remove_file(&tmp); // ING-4 : pas d'orphelin `.tmp` sur rename échoué
-        return server_err("écriture spool échouée");
-    }
-    // `S31` (temps 1) — `durable: false` : cet accusé atteste la RÉCEPTION, pas la DURABILITÉ. Le
-    // renommage ci-dessus est atomique et n'est pas synchronisé ; le régime et sa sortie sont écrits une
-    // seule fois, dans le bandeau de ce module.
-    (StatusCode::ACCEPTED, Json(json!({ "queued": true, "durable": false }))).into_response()
 }
 
 /// ING-4 : âge minimal (s) d'un `.tmp` spool orphelin avant balayage au démarrage. SÛRETÉ : n'efface JAMAIS

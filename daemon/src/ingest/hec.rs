@@ -306,15 +306,10 @@ pub(crate) async fn hec_event_post(State(st): State<AppState>, Extension(au): Ex
     let hk = spool_host_marker(&au); // P5.2-a : jeton LIÉ -> écrase le `host` HEC à la relecture ; relais -> vide
     let tmp = format!("{}/.hec-{}-{}.tmp", st.spool, now(), n);
     let dst = format!("{}/hec-{}-{}{}{}.json", st.spool, now(), n, mk, hk);
-    if std::fs::write(&tmp, body_out.as_bytes()).is_err() {
-        let _ = std::fs::remove_file(&tmp); // ING-4 : pas d'orphelin `.tmp` sur écriture partielle
-        return hec_err(StatusCode::INTERNAL_SERVER_ERROR, 8, "Internal server error");
+    // `S31` (temps 2) — publication DÉPORTÉE + deux barrières. Le corps HEC est le contrat de Splunk :
+    // le témoin de cette surface est `plume_spool_barriere_*` dans /metrics.
+    match crate::ingest::spool::publier(tmp, dst, body_out.into_bytes(), st.ingest_fsync).await {
+        Err(_) => hec_err(StatusCode::INTERNAL_SERVER_ERROR, 8, "Internal server error"),
+        Ok(_) => hec_ok(events.len()),
     }
-    use std::os::unix::fs::PermissionsExt;
-    let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
-    if std::fs::rename(&tmp, &dst).is_err() {
-        let _ = std::fs::remove_file(&tmp); // ING-4 : pas d'orphelin `.tmp` sur rename échoué
-        return hec_err(StatusCode::INTERNAL_SERVER_ERROR, 8, "Internal server error");
-    }
-    hec_ok(events.len())
 }

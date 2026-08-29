@@ -234,20 +234,13 @@ pub(crate) async fn ingest_minio_post(State(st): State<AppState>, Extension(au):
     let hk = spool_host_marker(&au);
     let tmp = format!("{}/.minio-audit-{}-{}.tmp", st.spool, now(), n);
     let dst = format!("{}/minio-audit-{}-{}{}{}.json", st.spool, now(), n, mk, hk);
-    if std::fs::write(&tmp, body_out.as_bytes()).is_err() {
-        let _ = std::fs::remove_file(&tmp); // ING-4 : pas d'orphelin `.tmp` sur écriture partielle
-        return server_err("écriture spool échouée");
+    // `S31` (temps 2) — publication DÉPORTÉE sur le pool bloquant, avec ses deux barrières, PUIS l'accusé.
+    // `durable` est DÉRIVÉ de ce que la publication a obtenu : la barrière désarmée, ou refusée par le
+    // noyau après le renommage, le fait retomber à faux tout seul.
+    match crate::ingest::spool::publier(tmp, dst, body_out.into_bytes(), st.ingest_fsync).await {
+        Err(_) => server_err("écriture spool échouée"),
+        Ok(p) => (StatusCode::ACCEPTED, Json(json!({ "queued": true, "events": events.len(), "durable": p.durable }))).into_response(),
     }
-    // durcis le spool (0600) avant la publication atomique : umask 022 laissait les fichiers en 0644 (world-readable) -> dataacl.
-    use std::os::unix::fs::PermissionsExt;
-    let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
-    if std::fs::rename(&tmp, &dst).is_err() {
-        let _ = std::fs::remove_file(&tmp); // ING-4 : pas d'orphelin `.tmp` sur rename échoué
-        return server_err("écriture spool échouée");
-    }
-    // `S31` (temps 1) — `durable: false` : voir le bandeau de `ingest/mod.rs`. MinIO rejoue sur un
-    // non-2xx ; il n'a aucun moyen de rejouer ce que ce 202 a laissé dans le cache de pages.
-    (StatusCode::ACCEPTED, Json(json!({ "queued": true, "events": events.len(), "durable": false }))).into_response()
 }
 
 /// Ingestion HTTP multi-OS : un agent (Windows/Mac/Linux/distant) pousse le même JSON
@@ -279,21 +272,13 @@ pub(crate) async fn ingest_post(State(st): State<AppState>, Extension(au): Exten
     let hk = spool_host_marker(&au); // M2 : host LIÉ au token agent -> écrase event.host à la relecture (anti-forge)
     let tmp = format!("{}/.ingest-{}-{}.tmp", st.spool, now(), n);
     let dst = format!("{}/ingest-{}-{}{}{}.json", st.spool, now(), n, mk, hk);
-    if std::fs::write(&tmp, body.as_bytes()).is_err() {
-        let _ = std::fs::remove_file(&tmp); // ING-4 : pas d'orphelin `.tmp` sur écriture partielle
-        return server_err("écriture spool échouée");
+    // `S31` (temps 2) — publication DÉPORTÉE + deux barrières AVANT le 202. C'est sur CE code que
+    // `collectors/ship.sh` supprime le fichier de spool de l'agent : le corps est désormais sur le
+    // disque, sous son nom, quand l'agent efface sa copie. `durable` est DÉRIVÉ de la publication.
+    match crate::ingest::spool::publier(tmp, dst, body.into_bytes(), st.ingest_fsync).await {
+        Err(_) => server_err("écriture spool échouée"),
+        Ok(p) => (StatusCode::ACCEPTED, Json(json!({ "queued": true, "durable": p.durable }))).into_response(),
     }
-    // durcis le spool (0600) avant la publication atomique : umask 022 laissait les fichiers en 0644 (world-readable) -> dataacl.
-    use std::os::unix::fs::PermissionsExt;
-    let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
-    if std::fs::rename(&tmp, &dst).is_err() {
-        let _ = std::fs::remove_file(&tmp); // ING-4 : pas d'orphelin `.tmp` sur rename échoué
-        return server_err("écriture spool échouée");
-    }
-    // `S31` (temps 1) — `durable: false` : c'est sur CE code que `collectors/ship.sh` supprime le
-    // fichier de spool de l'agent. Le champ dit ce que l'accusé ne couvre pas ; le bandeau de
-    // `ingest/mod.rs` dit pourquoi et ce qui reste dû.
-    (StatusCode::ACCEPTED, Json(json!({ "queued": true, "durable": false }))).into_response()
 }
 
 /// Jeton sur : alphanum + qq ponctuations sures (email, id maildir, dossier). PAS d'espace,

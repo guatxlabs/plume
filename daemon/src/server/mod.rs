@@ -243,6 +243,7 @@ struct BootConfig {
     session_secret: Vec<u8>,
     ingest_min_free_mb: u64,
     ingest_max_events: usize,
+    ingest_fsync: bool,
     search_limit_default: i64,
     search_limit_max: i64,
     query_sem: Arc<tokio::sync::Semaphore>,
@@ -328,6 +329,11 @@ fn boot_config() -> BootConfig {
     let ingest_min_free_mb: u64 = cfg(&conf, "PLUME_INGEST_MIN_FREE_MB", "512").parse().unwrap_or(512);
     let ingest_max_events: usize = cfg(&conf, "PLUME_INGEST_MAX_EVENTS", &INGEST_MAX_EVENTS_DEFAUT.to_string())
         .parse().unwrap_or(INGEST_MAX_EVENTS_DEFAUT).max(1);
+    // `S31` — DURABILITÉ DU SPOOL, ARMÉE PAR DÉFAUT (la promesse de l'accusé de réception doit être
+    // vraie). Le levier n'existe que pour un exploitant dont le stockage rend la barrière trop chère ;
+    // le désarmer refait retomber le champ `durable` des accusés à faux. Lu par `cfg` (env > fichier >
+    // défaut) et non par `env::var` : les trois modes de déploiement obtiennent le même effet.
+    let ingest_fsync: bool = !matches!(cfg(&conf, "PLUME_INGEST_FSYNC", "1").trim().to_ascii_lowercase().as_str(), "0" | "false" | "off" | "no");
     let search_limit_default: i64 = cfg(&conf, "PLUME_SEARCH_LIMIT", "100").parse().unwrap_or(100).max(1);
     let search_limit_max: i64 = cfg(&conf, "PLUME_SEARCH_MAX", "5000").parse().unwrap_or(5000).max(1);
     // sémaphore de concurrence de l'INTERACTIF (/api/query / /api/search) : au moins 1.
@@ -380,6 +386,7 @@ fn boot_config() -> BootConfig {
         session_secret,
         ingest_min_free_mb,
         ingest_max_events,
+        ingest_fsync,
         search_limit_default,
         search_limit_max,
         query_sem,
@@ -538,7 +545,7 @@ fn open_and_migrate_db(db_path: String, spool: String, conf: HashMap<String, Str
 }
 
 pub(crate) async fn run() {
-    let BootConfig { conf, db_path, spool, addr, user, pass, webdir, host, host_strict, sso_secret, public_demo, metrics_token, sso_group_admin, sso_group_editor, sso_group_superadmin, sso_header_user, sso_header_groups, tls_cert, tls_key, tls_on, lock_threshold, lock_base_s, lock_max_s, rl_ip_max, rl_auth_max, rl_global_max, shell_octets_ip_max, shell_octets_global_max, session_ttl_s, session_secret, ingest_min_free_mb, ingest_max_events, search_limit_default, search_limit_max, query_sem, refresh_sem, bound } = boot_config();
+    let BootConfig { conf, db_path, spool, addr, user, pass, webdir, host, host_strict, sso_secret, public_demo, metrics_token, sso_group_admin, sso_group_editor, sso_group_superadmin, sso_header_user, sso_header_groups, tls_cert, tls_key, tls_on, lock_threshold, lock_base_s, lock_max_s, rl_ip_max, rl_auth_max, rl_global_max, shell_octets_ip_max, shell_octets_global_max, session_ttl_s, session_secret, ingest_min_free_mb, ingest_max_events, ingest_fsync, search_limit_default, search_limit_max, query_sem, refresh_sem, bound } = boot_config();
     let conn = open_and_migrate_db(db_path.clone(), spool.clone(), conf.clone());
     let db = Arc::new(Mutex::new(conn));
     // PLAFOND MÉMOIRE : on RAPPORTE ce que le processus va faire, et on le rappelle (idempotent — l'effet
@@ -819,6 +826,7 @@ pub(crate) async fn run() {
         session_epoch,
         ingest_min_free_mb,
         ingest_max_events,
+        ingest_fsync,
         multi_tenant,
         tenants,
     };

@@ -674,6 +674,46 @@ if (liens.length) {
 //    (`web/state.js`) fait rougir ce témoin, et lui seul.
 // ---------------------------------------------------------------------------------------------
 if (STOCKAGE_REFUSE) {
+  // -------------------------------------------------------------------------------------------
+  // 1quater. UN CHOIX D'INTERFACE VA JUSQU'AU BOUT QUAND L'ÉCRITURE EST REFUSÉE (`P4.13-b`). La
+  //    section 1bis prouve que le graphe se LIE sans stockage ; elle ne dit RIEN de ce qui se passe
+  //    quand l'exploitant CLIQUE. Or les écritures, elles, sont restées nues après `P4.13-a` : au
+  //    basculement de thème, `data-theme` était posé, PUIS `localStorage.setItem` jetait DANS le
+  //    gestionnaire de clic — `paint()`, `refresh()` et `loadDashboard()` n'étaient jamais atteints.
+  //    Le fond basculait, l'icône restait celle de l'ANCIEN thème, les graphes gardaient leur couleur :
+  //    un état INCOHÉRENT, pire qu'une perte, parce qu'il n'y a rien à lire pour le comprendre.
+  //    TROIS exigences, et un CONTRÔLE POSITIF sans lequel elles seraient vraies par vacuité.
+  // -------------------------------------------------------------------------------------------
+  const btnTheme = document.querySelector("#theme");
+  if (!btnTheme) {
+    console.error("::error::(1quater) `#theme` est absent d'index.html : le basculement de thème ne peut pas être exercé, et l'exigence ci-dessous ne mesurerait rien.");
+    process.exit(2);
+  }
+  const iconeAvant = btnTheme.innerHTML;
+  const avisAvant = document.querySelectorAll(".toast").length;
+  let leveTheme = null;
+  try { btnTheme.click(); } catch (e) { leveTheme = `${e && e.name} — ${e && e.message}`; }
+  const themeApres = document.documentElement.dataset.theme;
+  const montreLaLune = /M21 13A9 9/.test(btnTheme.innerHTML);
+  const avis = document.querySelectorAll(".toast").map((t) => t.textContent).slice(avisAvant);
+  if (leveTheme) {
+    console.error(`::error::(1quater) le basculement de thème JETTE quand le navigateur refuse le stockage de site (${leveTheme}) : une ÉCRITURE NUE de \`localStorage\` s'exécute dans le gestionnaire de clic, APRÈS la pose de \`data-theme\` et AVANT la repeinte de l'icône — l'exploitant voit une interface à MOITIÉ basculée, sans un mot. L'écriture doit passer par \`ecrireDansLeStockageDuSite\` (web/state.js), qui REND le refus au lieu de le jeter.`);
+    process.exit(1);
+  }
+  if ((themeApres === "light") !== montreLaLune) {
+    console.error(`::error::(1quater) après le basculement, \`data-theme\` vaut \`${themeApres}\` mais l'icône montre « ${montreLaLune ? "lune" : "soleil"} » : la chaîne du clic n'est pas allée jusqu'à \`paint()\`. L'interface est à moitié basculée.`);
+    process.exit(1);
+  }
+  if (!avis.length) {
+    console.error("::error::(1quater) le thème a bien basculé, mais RIEN n'a été dit à l'exploitant alors que la persistance a été refusée : un refus avalé en silence échange l'état incohérent contre une perte MUETTE — l'exploitant croit son choix retenu et retrouvera l'ancien thème sans jamais savoir pourquoi.");
+    process.exit(1);
+  }
+  if (iconeAvant === btnTheme.innerHTML) {
+    console.error("::error::(1quater) CONTRÔLE POSITIF PERDU : l'icône du thème n'a pas changé DU TOUT — le clic n'a rappelé aucun gestionnaire, et les trois exigences ci-dessus seraient vraies par vacuité.");
+    process.exit(2);
+  }
+  console.log(`[stockage] le basculement de thème va JUSQU'AU BOUT sans stockage de site : \`data-theme\` = ${themeApres}, icône repeinte en accord, et l'exploitant est AVERTI que le choix ne sera pas retenu (« ${avis[0]} »).`);
+
   console.log(`OK — ${modules.length} modules web se lient alors que l'accès au stockage de site JETTE (SecurityError) : l'écran de connexion reste atteignable chez un navigateur qui bloque le stockage.`);
   process.exit(0);
 }
@@ -688,6 +728,11 @@ if (STOCKAGE_REFUSE) {
     console.error(`::error::le graphe de modules NE SE LIE PAS quand le navigateur refuse le stockage de site : une lecture NUE de \`localStorage\` s'exécute à l'évaluation d'un module, donc avant tout \`catch\` applicatif — le visiteur reçoit un écran muet, sans formulaire de connexion et sans message. Sortie du sous-banc :
 ${sortie}`);
     process.exit(1);
+  }
+  if (!/le basculement de thème va JUSQU'AU BOUT sans stockage de site/.test(sortie)) {
+    console.error(`::error::CONTRÔLE POSITIF PERDU : le sous-banc « stockage refusé » n'a pas prononcé le verdict du BASCULEMENT DE THÈME (1quater) — il n'a donc pas exercé le clic. Sortie :
+${sortie}`);
+    process.exit(2);
   }
   if (!/modules web se lient alors que l'accès au stockage de site JETTE/.test(sortie)) {
     console.error(`::error::CONTRÔLE POSITIF PERDU : le sous-banc « stockage refusé » a rendu 0 sans prononcer son verdict — il n'a donc rien mesuré. Sortie :
@@ -6697,16 +6742,133 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   exiger(ariaEcrit53(srcDet53) === 0,
     `(53) \`detection_admin.js\` écrit ${ariaEcrit53(srcDet53)} fois \`aria-expanded\` dans son code : le patron de dépli est revenu à la main, et deux panneaux voisins ne se plient plus par le même geste`);
   // L'INSTRUMENT SE VALIDE SUR CE QUI EN CONTIENT : un compteur qui rend 0 partout ne prouverait rien.
-  const resteAlaMain53 = CORPUS_WEB.filter(([f, src]) => f.endsWith(".js") && f !== "core.js" && ariaEcrit53(src) > 0).map(([f]) => f).sort();
-  exiger(resteAlaMain53.length > 0,
-    "(53-instrument) le compteur de dépli écrit à la main ne trouve AUCUN site dans web/ : il lit le vide, et son zéro sur detection_admin.js ne prouverait rien");
-  // LA BORNE, MESURÉE PLUTÔT QUE TUE (2026-08-29) : le ralliement n'est PAS général. Deux modules
-  // écrivent encore leur dépli à la main. Ce n'est pas une régression, c'est le reste — et il est
-  // borné ici pour qu'on ne puisse pas croire la console entièrement ralliée.
-  exiger(JSON.stringify(resteAlaMain53) === JSON.stringify(["alerts.js", "freshness.js"]),
-    `(53-borne) les modules qui écrivent encore leur dépli à la main ont changé : ${JSON.stringify(resteAlaMain53)} au lieu des deux mesurés le 2026-08-29. Un module de plus est une RÉGRESSION ; un de moins est un reste fermé — mettez cette borne à jour dans ce cas, elle ne se corrige pas toute seule.`);
+  // LE COMPTEUR EST UNE BASCULE, PLUS UNE ÉCRITURE — corrigé le 2026-08-30, et la correction est
+  // double. (1) `aria-expanded` ne DISCRIMINE PAS : il range du même côté la bascule écrite à la main
+  // et la valeur AU REPOS d'un balisage rendu — que `index.html` porte lui aussi sur les deux boutons
+  // ralliés ci-dessus, sans que personne y voie un dépli à la main. Ce qui ne ment pas est l'APPEL qui
+  // bascule. (2) SURTOUT : la borne précédente EXIGEAIT qu'au moins un module porte encore le défaut,
+  // « sinon le motif ne mesure plus rien ». Elle aurait donc rougi LE JOUR OÙ LE RALLIEMENT SERAIT
+  // COMPLET — au moment exact où le travail est fini. Un témoin qui ne peut être vert que tant que le
+  // chantier est ouvert n'est pas une garde, c'est une rançon. L'auto-validation porte désormais sur
+  // des chaînes FABRIQUÉES ici : le compteur se prouve sur elles, et ne dépend plus de l'état du dépôt.
+  const basculeAlaMain53 = (src) => codeDe53(src).reduce((n, l) => n + (l.match(/setAttribute\(\s*["']aria-expanded["']/g) || []).length, 0);
+  exiger(basculeAlaMain53("b.setAttribute('aria-expanded', 'true');") === 1
+      && basculeAlaMain53("  // b.setAttribute('aria-expanded', 'true');") === 0
+      && basculeAlaMain53("<button aria-expanded=\"false\">") === 0,
+    `(53-instrument) le compteur de bascule ne distingue pas une bascule écrite à la main d'un commentaire ni d'une valeur au repos dans du balisage : son compte ne mesure rien`);
+  const resteAlaMain53 = CORPUS_WEB.filter(([f, src]) => f.endsWith(".js") && f !== "core.js" && basculeAlaMain53(src) > 0).map(([f]) => f).sort();
+  exiger(JSON.stringify(resteAlaMain53) === JSON.stringify(["alerts.js"]),
+    `(53-borne) les modules qui BASCULENT encore leur dépli à la main ont changé : ${JSON.stringify(resteAlaMain53)} au lieu du seul mesuré le 2026-08-30. Un module de plus est une régression ; un module de moins est un reste FERMÉ — dans les deux cas, cette borne se remesure et se réécrit, elle n'exige plus que le défaut subsiste.`);
 
   console.log(`[depli-commun] les deux panneaux d'administration de la détection passent par le geste commun : chaque bouton NOMME sa région (\`aria-controls\` = l'identifiant du panneau, que ni la version à la main ni index.html ne posaient), porte la marque d'état du geste, et un clic joué sur le nœud de la page fait bouger ensemble le pli, l'état annoncé et la marque — deux fois, l'état d'origine rendu. \`aria-expanded\` n'est PAS compté comme un gain : il était déjà posé avant le ralliement. CE QUE CE TÉMOIN NE TIENT PAS : le ralliement n'est pas général — ${resteAlaMain53.length} module(s) de web/ écrivent encore leur dépli à la main (${resteAlaMain53.join(", ")}), et cette borne le dit au lieu de le taire ; et rien ici ne prouve qu'une assistance technique RÉELLE lise ces attributs.`);
+}
+
+// ---------------------------------------------------------------------------------------------
+// 54. LES DEUX PLIAGES DE LA FRAÎCHEUR PASSENT PAR LE GESTE COMMUN, ET CE QUI RESTE À LA MAIN EST
+//     NOMMÉ PAR SA FORME (`P11.21-b`, tenu par `P11.8-h`).
+//
+//     CE QUE LE CONSTAT DISAIT, ET CE QUE LA MESURE DU 2026-08-30 EN CORRIGE. Il annonçait HUIT sites
+//     de dépli écrits à la main dans DEUX modules. Le compte de huit est EXACT si l'on compte les
+//     ÉCRITURES d'`aria-expanded` hors commentaire ; il ne l'est pas si l'on compte des MÉCANISMES —
+//     il y en avait TROIS : deux dans `freshness.js` (les groupes par état, les séries métriques) et
+//     UN dans `alerts.js` (les groupes d'alertes). Ce témoin ne mesure donc PAS `aria-expanded` comme
+//     un gain : il était DÉJÀ posé, au repos par le balisage rendu et à chaque bascule par le code
+//     écrit à la main. Le gain mesuré est `aria-controls` — que `disclosure` pose depuis
+//     l'identifiant du panneau et que ni la version à la main ni le balisage ne portaient — plus la
+//     marque d'état `.on`, INERTE à l'écran (aucune règle de la feuille ne vise `.fgrouphd.on` ni
+//     `.fmetrichd.on`) et lisible par le programme seul.
+//
+//     LE TÉMOIN EST PRIS SUR LES NŒUDS QUE `renderFreshness` CONSTRUIT, pas sur un arbre fabriqué :
+//     le câblage n'existe QUE là, et c'est là qu'un ralliement défait se verrait. `fetch` est absent
+//     de ce banc par construction ; il est posé LE TEMPS de ce témoin et rendu ensuite, faute de quoi
+//     le panneau ne serait jamais peint. Le clic est joué deux fois — la bascule se mesure, et l'état
+//     d'origine est rendu au reste du banc.
+//
+//     ET CE QUI N'EST PAS RALLIÉ EST MESURÉ SUR LA BASCULE, PAS SUR L'ÉCRITURE. Compter les écritures
+//     d'`aria-expanded` rangerait du même côté la BASCULE écrite à la main et la valeur AU REPOS d'un
+//     balisage — que `index.html` porte lui aussi sur les deux boutons ralliés par `P11.20-j`, sans
+//     que personne y voie un dépli à la main. Le reste se mesure donc sur `setAttribute`.
+// ---------------------------------------------------------------------------------------------
+{
+  const { renderFreshness } = await import(pathToFileURL(path.join(WEB, "freshness.js")).href);
+  const { S: S54 } = await import(pathToFileURL(path.join(WEB, "state.js")).href);
+  const FEEDS_54 = [
+    { kind: "event", name: "kube-audit", status: "en_retard", age_s: 1500, last_seen: 1000, n_24h: 5000, active_alerts: 0, cadence_declaree: "continue", cadence_interval_s: 120, cadence_capteur: "kube-audit" },
+    { kind: "event", name: "mail", status: "calme", age_s: 3960, last_seen: 1000, n_24h: 96, active_alerts: 0, cadence_declaree: "non_declaree", cadence_interval_s: null, cadence_capteur: null },
+    { kind: "metric", name: "métriques · 1 série", status: "frais", age_s: 20, last_seen: 1000, n_24h: 900, active_alerts: 0, cadence_declaree: "non_declaree", cadence_interval_s: null, cadence_capteur: null, series: [{ name: "cpu", status: "frais", age_s: 20, last_seen: 1000 }] },
+  ];
+  const fetchOrigine54 = globalThis.fetch, plisOrigine54 = S54.freshCollapsed;
+  globalThis.fetch = async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ pipeline_fresh: true, feeds: FEEDS_54 }) });
+  S54.freshCollapsed = new Set(["cat:calme"]);
+  try { await renderFreshness(); } finally { globalThis.fetch = fetchOrigine54; }
+
+  const corps54 = document.querySelector("#freshness-panel .body");
+  exiger(!!corps54 && corps54.isConnected, "(54-instrument) `#freshness-panel .body` n'est pas un nœud RATTACHÉ de la page : ce témoin jugerait un arbre détaché, et son vert ne dirait rien du câblage réel");
+  const entetes54 = corps54 ? corps54.querySelectorAll(".fgrouphd") : [];
+  exiger(entetes54.length >= 2, `(54-instrument) la fraîcheur n'a rendu que ${entetes54.length} groupe(s) d'état : sous deux, ce témoin ne mesure pas un pliage, il mesure un panneau vide`);
+  for (const hd of entetes54) {
+    const env = hd.closest(".fgroup"), panneau = env && env.querySelector(".fgbody"), cat = env ? env.dataset.cat : "?";
+    exiger(!!panneau && panneau.id === "fgbody-" + cat,
+      `(54) le panneau du groupe « ${cat} » ne porte pas l'identifiant dérivé de son état : « ${panneau && panneau.id} » — sans identifiant, le geste commun ne peut NOMMER aucune région`);
+    exiger(hd.getAttribute("aria-controls") === (panneau && panneau.id),
+      `(54) l'en-tête du groupe « ${cat} » ne NOMME pas la région qu'il commande : \`aria-controls\` vaut « ${hd.getAttribute("aria-controls")} » au lieu de « fgbody-${cat} »`);
+    const ouvert54 = !env.classList.contains("collapsed");
+    exiger(hd.classList.contains("on") === ouvert54,
+      `(54) l'en-tête du groupe « ${cat} » ne porte pas la marque d'état du geste commun : groupe ${ouvert54 ? "déplié" : "replié"}, classe « ${hd.className} »`);
+    hd.dispatchEvent({ type: "click" });
+    const apres54 = { pli: !env.classList.contains("collapsed"), aria: hd.getAttribute("aria-expanded"), on: hd.classList.contains("on"), memoire: S54.freshCollapsed.has("cat:" + cat) };
+    exiger(apres54.pli === !ouvert54 && apres54.aria === (ouvert54 ? "false" : "true") && apres54.on === !ouvert54 && apres54.memoire === ouvert54,
+      `(54) un clic sur le groupe « ${cat} » ne fait pas bouger ENSEMBLE le pli, l'état annoncé, la marque et la mémoire : ${JSON.stringify(apres54)}`);
+    hd.dispatchEvent({ type: "click" });
+    exiger(!env.classList.contains("collapsed") === ouvert54 && hd.getAttribute("aria-expanded") === (ouvert54 ? "true" : "false") && hd.classList.contains("on") === ouvert54 && S54.freshCollapsed.has("cat:" + cat) === !ouvert54,
+      `(54) un second clic sur le groupe « ${cat} » ne rend pas l'état d'origine : pli « ${env.className} », bouton « ${hd.className} », mémoire ${JSON.stringify([...S54.freshCollapsed])}`);
+  }
+  const md54 = corps54 ? corps54.querySelector(".fmetrichd") : null;
+  exiger(!!md54, "(54-instrument) l'en-tête des séries métriques n'a pas été rendu : la moitié de ce témoin jugerait le vide");
+  if (md54) {
+    const env = md54.closest(".fmetric"), pan = env && env.querySelector(".fmetricbody"), ouvert = !env.classList.contains("collapsed");
+    exiger(md54.classList.contains("on") === ouvert,
+      `(54) l'en-tête des séries métriques ne porte pas la marque d'état du geste commun : séries ${ouvert ? "dépliées" : "repliées"}, classe « ${md54.className} »`);
+    // CE QUI N'EST PAS GAGNÉ ICI EST TENU COMME TEL, PAS TU : le panneau des séries n'a pas d'identité
+    // dérivable (`rowOf` rendrait un en-tête par flux métrique, ce câblage n'équipe que le PREMIER, et
+    // l'unicité d'un identifiant fixe dépendrait d'une propriété de la charge utile du démon — un seul
+    // flux `kind:"metric"` — que la console ne vérifie jamais). Le jour où cette identité existe, c'est
+    // CE témoin qu'il faut mettre à jour, pas la clé qu'il faut rouvrir en silence.
+    exiger(!pan.id && md54.getAttribute("aria-controls") === null,
+      `(54-borne) le panneau des séries métriques a reçu un identifiant (« ${pan.id} ») : \`aria-controls\` est donc gagnable ici, mettez ce témoin à jour au lieu de laisser sa borne mentir`);
+    exiger(md54.getAttribute("role") === "button" && md54.getAttribute("tabindex") === "0",
+      "(54) l'en-tête des séries métriques n'est plus atteignable au clavier : ce n'est pas un `<button>`, rien ne l'active nativement");
+    md54.dispatchEvent({ type: "click" });
+    exiger(!env.classList.contains("collapsed") === !ouvert && md54.getAttribute("aria-expanded") === (ouvert ? "false" : "true") && md54.classList.contains("on") === !ouvert,
+      `(54) un clic sur les séries métriques ne fait pas bouger ensemble le pli, l'état annoncé et la marque : « ${env.className} » / « ${md54.className} »`);
+    md54.dispatchEvent({ type: "keydown", key: "Enter" });
+    exiger(!env.classList.contains("collapsed") === ouvert && md54.getAttribute("aria-expanded") === (ouvert ? "true" : "false") && md54.classList.contains("on") === ouvert,
+      `(54) la touche Entrée ne rend pas l'état d'origine des séries métriques : cet en-tête n'est PAS un \`<button>\`, aucune activation native ne rattrape un clavier débranché`);
+  }
+  S54.freshCollapsed = plisOrigine54;
+
+  // CE QUI RESTE ÉCRIT À LA MAIN, MESURÉ SUR LA BASCULE.
+  const codeDe54 = (src) => src.split("\n").filter((l) => !l.trim().startsWith("//"));
+  const basculeAlaMain54 = (src) => codeDe54(src).reduce((n, l) => n + (l.match(/setAttribute\(\s*["']aria-expanded["']/g) || []).length, 0);
+  // L'INSTRUMENT SE VALIDE SUR CE QU'IL LIT, JAMAIS SUR CE QUI RESTE À FAIRE. La validation de la
+  // section 53 (« le compteur doit trouver au moins un site ») EXIGE qu'un module de `web/` porte
+  // encore le défaut : elle rougirait le jour où le ralliement serait COMPLET, c'est-à-dire au moment
+  // même où le travail est fini. Celle-ci est faite sur trois chaînes fabriquées, dans les deux sens.
+  exiger(basculeAlaMain54("b.setAttribute('aria-expanded', 'true');") === 1
+      && basculeAlaMain54("  // b.setAttribute('aria-expanded', 'true');") === 0
+      && basculeAlaMain54("<button aria-expanded=\"false\">") === 0,
+    "(54-instrument) le compteur de bascule ne distingue pas une bascule écrite à la main d'un commentaire ni d'une valeur au repos dans du balisage : son compte ne mesure rien");
+  const srcFrais54 = (CORPUS_WEB.find(([f]) => f === "freshness.js") || [])[1] || "";
+  exiger(srcFrais54.length > 0, "(54-instrument) `freshness.js` est introuvable dans le corpus : la mesure de source porte sur le vide");
+  exiger((srcFrais54.match(/disclosure\(/g) || []).length >= 2,
+    "(54) `freshness.js` n'appelle plus le dépli partagé sur ses DEUX pliages : un patron à lui est revenu à côté du geste commun");
+  exiger(basculeAlaMain54(srcFrais54) === 0,
+    `(54) \`freshness.js\` écrit ${basculeAlaMain54(srcFrais54)} bascule(s) \`aria-expanded\` à la main : le patron de dépli est revenu, et deux pliages voisins ne se font plus par le même geste`);
+  const resteAlaMain54 = CORPUS_WEB.filter(([f, src]) => f.endsWith(".js") && f !== "core.js" && basculeAlaMain54(src) > 0).map(([f]) => f).sort();
+  exiger(JSON.stringify(resteAlaMain54) === JSON.stringify(["alerts.js"]),
+    `(54-borne) les modules qui écrivent encore la BASCULE du dépli à la main ont changé : ${JSON.stringify(resteAlaMain54)} au lieu du seul mesuré le 2026-08-30. Un module de plus est une RÉGRESSION ; un de moins est un reste fermé — mettez cette borne à jour dans ce cas, elle ne se corrige pas toute seule.`);
+
+  console.log(`[depli-fraicheur] les DEUX pliages du panneau Fraîcheur passent par le geste commun : chaque en-tête de groupe d'état NOMME sa région (\`aria-controls\` = \`fgbody-<état>\`, dérivé du vocabulaire fermé des états, que ni la version à la main ni le balisage ne posaient), porte la marque d'état du geste, et un clic joué sur les nœuds que \`renderFreshness\` construit fait bouger ensemble le pli, l'état annoncé, la marque et la mémoire du pli — deux fois, l'état d'origine rendu ; l'en-tête des séries métriques, qui n'est PAS un \`<button>\`, garde son clavier porteur et bascule par le même geste. \`aria-expanded\` n'est PAS compté comme un gain : il était déjà posé avant le ralliement. CE QUE CE TÉMOIN NE TIENT PAS : la marque \`.on\` est INERTE à l'écran (aucune règle de la feuille ne la vise sur ces deux en-têtes) ; \`aria-controls\` n'est PAS gagné sur les séries métriques, faute d'identité dérivable, et la borne ci-dessus le dit ; le ralliement n'est pas général — ${resteAlaMain54.length} module(s) écrivent encore la bascule à la main (${resteAlaMain54.join(", ")}) ; et rien ici ne prouve qu'une assistance technique RÉELLE lise ces attributs.`);
 }
 
 // LE VERDICT PORTE SA PROPRE LIMITE (`P11.13-g`). Un vert qui ne dit pas ce sur quoi il ne s'engage pas

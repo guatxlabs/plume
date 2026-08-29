@@ -36,6 +36,37 @@ export function lireLeStockageDuSite(cle) {
   }
 }
 
+// `P4.13-b` — ÉCRIRE PEUT JETER AUSSI, ET UN JET AU MILIEU D'UN GESTE EST PIRE QU'UNE PERTE.
+// `P4.13-a` (ci-dessus) a gardé les LECTURES ; les ÉCRITURES sont restées NUES. MESURÉ le 2026-08-30,
+// sous le mode « stockage refusé » du harnais (`PLUME_HARNAIS_STOCKAGE_REFUSE=1`), en exerçant le
+// basculement de thème : `data-theme` passe de (absent) à `light`, PUIS `localStorage.setItem` jette
+// `SecurityError` DANS le gestionnaire de clic — `paint()`, `refresh()` et `loadDashboard()` ne sont
+// jamais atteints. L'icône reste `sun` (celle du thème SOMBRE) sur une interface passée en CLAIR, et les
+// graphes gardent l'ancienne couleur. LA DIRECTION DE L'ERREUR EST CE QUI COMPTE : le geste ne rend pas
+// MOINS, il rend un état INCOHÉRENT — l'exploitant n'a rien à lire pour le comprendre.
+//
+// POURQUOI UN ÉCRIVAIN PARTAGÉ, ET PAS UN `try` DE PLUS SUR CHAQUE SITE. Le dépôt porte 22 appels
+// d'écriture, dont 15 DÉJÀ gardés — chacun par son propre `try {} catch (e) {}` recopié sur place
+// (mesuré le 2026-08-30 par le critère « appel non enclos lexicalement dans un `try` »). Recopier la
+// forme quatre fois de plus dans `app.js` la porterait à 19 et n'apprendrait toujours RIEN au site
+// appelant : un `catch` vide AVALE le refus, si bien que l'exploitant croirait son choix retenu — on
+// aurait échangé un état incohérent contre une perte MUETTE. Cet écrivain REND donc le fait au lieu de
+// l'absorber (`true` = retenu, `false` = refusé), et c'est cette valeur qui laisse chaque site décider :
+// DIRE la perte quand il y en a une, ou constater qu'il n'y en a pas (un miroir dont le vrai magasin est
+// ailleurs n'a rien à annoncer). Il vit ICI parce que `state.js` est le feuillet du graphe — il n'importe
+// rien : les modules qui lisent déjà le stockage par ce module (`app.js`, `core.js`, `detection_admin.js`)
+// l'atteignent sans introduire de cycle. `null`/`undefined` EFFACE la clé, parce que c'est la forme que
+// les sites d'appel écrivaient déjà à la main (`if (v) setItem(…) else removeItem(…)`).
+export function ecrireDansLeStockageDuSite(cle, valeur) {
+  try {
+    if (valeur === null || valeur === undefined) localStorage.removeItem(cle);
+    else localStorage.setItem(cle, String(valeur));
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
 export const S = {
   // --- auth / tenancy ---
   AUTH: null,

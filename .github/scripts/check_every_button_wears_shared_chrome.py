@@ -96,9 +96,34 @@ def habille_js(lignes, i, var, ctx, cls):
                re.finditer(r"(\w+)\.(?:append|appendChild|prepend|replaceChildren|insertBefore)\([^;]*\b" + var + r"\b", fen))
 
 
+def sans_prose_js(ligne):
+    """La ligne PRIVÉE de son commentaire de fin de ligne — ou vide si elle n'est QUE du commentaire.
+
+    POURQUOI, MESURÉ LE 2026-08-30. Cette garde dépouillait déjà les commentaires de la FEUILLE (`P8.27-b`,
+    en tête) : « on dérive de RÈGLES, pas de prose ». Le même dépouillement manquait du côté JS, où elle
+    cherche les balises. Un commentaire qui explique POURQUOI un contrôle est un bouton natif — donc qui
+    écrit le nom de la balise entre chevrons — était compté comme un site de bouton NU, et la garde
+    accusait une ligne de prose. Même défaut, un côté plus loin : ce qui est dérivé doit l'être du CODE.
+
+    Le dépouillement est délibérément MINIMAL et il le dit : il ne traite que le commentaire de ligne. Un
+    bloc `/* … */` étalé sur plusieurs lignes reste vu comme du code — la convention de ce dépôt est le
+    commentaire de ligne, et un dépouillement plus large risquerait de manger une chaîne contenant `//`
+    (une URL, par exemple), donc de rendre la garde AVEUGLE à de vrais sites. On préfère un angle mort
+    NOMMÉ à un dépouillement qui retire trop.
+    """
+    hors = ligne.find("//")
+    if hors < 0:
+        return ligne
+    avant = ligne[:hors]
+    if avant.count("'") % 2 or avant.count('"') % 2 or avant.count("`") % 2:
+        return ligne  # le `//` est DANS une chaîne : on ne touche à rien
+    return avant
+
+
 def sites_js(nom, texte, ctx, cls, compter):
     lignes, nus, n, pile = texte.split("\n"), [], 0, []
-    for i, l in enumerate(lignes):
+    for i, brute in enumerate(lignes):
+        l = sans_prose_js(brute)
         for m in re.finditer(r"(\w+)\s*=\s*document\.createElement\('button'\)", l):
             v, fen = m.group(1), "\n".join(lignes[i: i + 10])
             if re.search(r"\breturn " + v + r"\b", fen):  # un helper : ses APPELS sont les sites
@@ -149,6 +174,15 @@ def main():
     # (2) Le dépouillement ne rend pas la dérivation aveugle : une vraie règle reste vue, une règle
     # commentée ne l'est pas. Sans ce second témoin, retirer les commentaires pourrait tout retirer.
     prose = "\n/* la regle vit dans d'index.html, sous la forme button{cursor:pointer} */\n"
+    # TÉMOINS DU DÉPOUILLEMENT JS, DANS LES DEUX SENS — posés le 2026-08-30 avec le dépouillement.
+    # Sans le second, retirer la prose pourrait tout retirer et la garde passerait au vert en ne
+    # mesurant plus rien : c'est exactement la faute que le témoin sœur de la feuille prévient.
+    assert sans_prose_js("  // un <button> cité dans un commentaire") == "  ", \
+        "témoin : un commentaire de ligne n'est plus dépouillé — une ligne de PROSE serait comptée comme un site de bouton"
+    assert "<button" in sans_prose_js("  h += `<button class=\"btn\">ok</button>`;"), \
+        "témoin : le dépouillement a mangé du CODE — la garde deviendrait aveugle aux vrais sites"
+    assert "//" in sans_prose_js("  const u = 'https://exemple/x'; // note"), \
+        "témoin : un `//` situé DANS une chaîne a été pris pour un commentaire"
     assert deriver(css + prose) == (ctx, cls), "témoin : un commentaire de style.css fabrique encore un contexte ou une classe"
     assert deriver("/* .commentee{cursor:pointer} */\n.reelle{cursor:pointer}\n")[1] == {".reelle"}, \
         "témoin : le dépouillement des commentaires a rendu la dérivation aveugle aux vraies règles"

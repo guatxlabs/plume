@@ -49,6 +49,7 @@ tripping a cross-module invariant.
 | Path | Purpose | Boundary | Ownable? |
 |------|---------|----------|----------|
 | `ingest/mod.rs`, `ingest/store.rs` | Ingest pipeline + the `EventStore` SPI mount (`SqlcipherStore`) | `POST /api/ingest` → normalize → store | Yes |
+| `ingest/spool.rs` | The single spool publication point shared by all seven push receivers: write → fsync(file) → rename → fsync(dir), deported to the blocking pool | Called by every spool receiver before its ACK; the `durable` field of the ACK is its return value. Disarmed by `PLUME_INGEST_FSYNC=0` | Yes |
 | `ingest/{hec,minio,otlp,pubsub,firehose,obs,federated,endpoint}.rs` | Alternate receivers (Splunk HEC, S3/MinIO, OTLP traces, pub/sub, …) | Each gated by a `PLUME_*` runtime flag (mode 0 when off) — **except `federated.rs`, which is an inert scaffold: no route/handler calls it and no flag gates it** | Yes, per-receiver |
 | `ingest/{duckdb,clickhouse}_store.rs`, `ingest/clickhouse_ha.rs` | Feature-gated alternate backends behind the `EventStore` SPI | `#[cfg(feature=…)]`; absent from default build | Yes (isolated by feature) |
 | `parsers.rs`, `processors.rs`, `datamodels.rs`, `overlays*.rs` | Parse/normalize/enrich; config.d overlays | CIM contract (see `CIM.md`) | Mostly — respect CIM stamping |

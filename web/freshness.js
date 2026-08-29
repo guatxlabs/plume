@@ -13,7 +13,7 @@
 // de le supposer ; la MÉMOIRE d'un choix d'affichage vient de `prefs.js`. Le sens des imports va de
 // freshness vers sources, jamais l'inverse : sources.js ne dépend que de core.js, donc aucun cycle neuf
 // n'est introduit (celui qui existe, app<->freshness, reste le seul, et il est sans danger — cf. plus haut).
-import { $, api, colComparator, esc, fmtTs, ic, LANG } from './core.js';
+import { $, api, colComparator, disclosure, esc, fmtTs, ic, LANG } from './core.js';
 import { S } from './state.js';
 import { setAlertSourceFilter } from './app.js';
 import { ETAT_DE_SOURCE, etatDeSource, rangDEtatDeSource } from './sources.js';
@@ -545,7 +545,13 @@ function renderFreshnessDetail(d) {
     html += `<div class="fgroup${collapsed ? ' collapsed' : ''}" data-cat="${esc(cat)}">` +
       `<button type="button" class="fgrouphd" aria-expanded="${collapsed ? 'false' : 'true'}" title="Plier / déplier ${esc(lbl)}">` +
       `${ic('chevdown')}<span class="fdot ${pastilleDEtat(cat)}"></span><span class="fglbl">${esc(lbl)}</span><span class="fgcount">${arr.length}</span></button>` +
-      `<div class="fgbody">${arr.map(rowOf).join('')}</div></div>`;
+      // `P11.21-b` — LE PANNEAU PORTE UN NOM, ET CE NOM EST DÉRIVÉ, JAMAIS INVENTÉ. `disclosure` ne pose
+      // `aria-controls` que depuis l'identifiant du panneau ; sans lui, le bouton ne NOMME pas la région
+      // qu'il commande. L'identifiant vient de `cat`, qui est déjà la clé de persistance du pli
+      // (`cat:<état>`) et qui appartient au vocabulaire FERMÉ de `FSTATES` — cinq mots, tous
+      // utilisables tels quels, et un groupe par état au plus dans la vue : l'unicité dans le document
+      // est une propriété de la vue, pas un pari.
+      `<div class="fgbody" id="fgbody-${esc(cat)}">${arr.map(rowOf).join('')}</div></div>`;
   }
   html += zoneDesAlertes(countStates(feeds), bloc);
   html += `<div class="flegend"><span class="fdot frais"></span>frais (donnée &lt; 15 min) · <span class="fdot calme"></span>calme (collecte saine, source peu active) · <span class="fdot warn"></span>en retard (cadence déclarée dépassée) · <span class="fdot attente"></span>en attente (déclaré, pas de donnée) · <span class="fdot muet"></span>muet (plus rien n'arrive, toutes sources confondues)` +
@@ -593,17 +599,56 @@ async function renderFreshness(loading) {
   if (!feeds.length) { b.innerHTML = '<div class="muted">aucun feed récent</div>'; return; }
   const html = renderFreshnessDetail(d);
   b.innerHTML = html;
-  // pliage des groupes par catégorie (persisté : 'cat:<type>' présent = replié ; défaut = déplié)
+  // ═══════════════════════════════════════════════════════════════════════════════════════════════
+  // `P11.21-b` — LES DEUX PLIAGES DE CE PANNEAU PASSENT PAR LE DÉPLI PARTAGÉ (`disclosure`, core.js).
+  //
+  // CE QUE LE CONSTAT DISAIT, ET CE QUE LA MESURE DU 2026-08-30 EN CORRIGE. Il annonçait HUIT sites de
+  // dépli écrits à la main, quatre ici. Le compte de huit est EXACT si l'on compte les ÉCRITURES
+  // d'`aria-expanded` hors commentaire (c'est ce que le témoin 53 du harnais compte) ; il ne l'est pas
+  // si l'on compte des MÉCANISMES : ce module en portait DEUX (les groupes par état, les séries
+  // métriques) et `alerts.js` UN — trois en tout, pas huit.
+  //
+  // CE QUI EST GAGNÉ, MESURÉ PLUTÔT QUE SUPPOSÉ, et `aria-expanded` n'en fait pas partie (il était
+  // DÉJÀ posé, au repos par le balisage et à chaque bascule par le code à la main — le compter serait
+  // faire passer pour acquis par le ralliement ce qui l'était avant lui) :
+  //   * `aria-controls` : le bouton NOMME la région qu'il commande. Ni la version à la main ni le
+  //     balisage ne le posaient — le panneau n'avait même pas d'identifiant.
+  //   * LA MARQUE D'ÉTAT `.on` sur le bouton. Relevé sur la feuille le 2026-08-30 : AUCUNE règle ne
+  //     vise `.fgrouphd.on` ni `.fmetrichd.on` — les 17 règles `.on` de la feuille sont TOUTES portées
+  //     par un autre sélecteur (`.sidebar a`, `.subnav .subtab`, `.alertview .agseg`, `.agscope`,
+  //     `.srctoggle` ×2, `.evpager .evnum`, `.plmore` ×2, `#dash-play`, `.paneltools .seg button`,
+  //     `.caserow`, `#dash-edit`, `#view-share`, `.rmp`, `.pv-chip`, `.favstar`). Elle est donc
+  //     INERTE à l'écran : elle ajoute un état lisible par le programme, et rien de visible. Le
+  //     chevron reste le seul signal d'état pour l'œil, et il est peint par la feuille depuis
+  //     `.collapsed` sur l'ENVELOPPE — le ralliement n'y touche pas.
+  //   * UN GAIN QUI N'ÉTAIT PAS DEMANDÉ, ET QUI EST LE PLUS UTILE ICI : l'état annoncé ne se DÉRIVE
+  //     plus de la valeur de retour d'une MUTATION. `wrap.classList.toggle('collapsed')` rend un
+  //     booléen dans un navigateur, mais RIEN dans le simulacre du harnais ESM (mesuré le 2026-08-30 :
+  //     son `classList.toggle` ne retourne pas) — ce pliage-ci n'était donc pas exerçable sur le banc
+  //     du dépôt : un témoin y aurait lu « déplié » quoi qu'il arrive. L'ouverture se LIT maintenant
+  //     de l'enveloppe (`isOpen`), et le même clic se mesure sur le banc comme dans un navigateur.
+  //
+  // POURQUOI `observe: false`. L'état est porté par l'ENVELOPPE `.fgroup`, pas par le panneau : il n'y
+  // a rien à observer sur `.fgbody`. Et cette liste est REPEINTE à chaque rafraîchissement (30 s) —
+  // un observateur par groupe et par rendu s'y accumulerait. C'est la raison même pour laquelle
+  // l'option existe (`collapsibleGroup`, core.js, la prend pour la même raison).
+  //
+  // LE CLAVIER PASSE PAR LE BOUTON NATIF. `.fgrouphd` EST un `<button>` : Entrée et Espace l'activent
+  // sans une ligne de code, comme `#rule-collapse` et `#parser-collapse` ralliés avant lui. Le
+  // `onkeydown` qui doublait le clic est retiré : garder deux chemins d'activation pour un même geste
+  // est exactement le défaut que cette clé ferme. DIFFÉRENCE ASSUMÉE, plutôt que tue : Espace active
+  // désormais au RELÂCHEMENT (comportement natif) et non à l'enfoncement.
+  // ═══════════════════════════════════════════════════════════════════════════════════════════════
+  const memoriserLesPlis = () => { try { localStorage.setItem('soc_fresh_collapsed', JSON.stringify([...S.freshCollapsed])); } catch (e) {} };
   b.querySelectorAll('.fgrouphd').forEach(hd => {
-    const toggle = () => {
-      const wrap = hd.closest('.fgroup'); const cat = wrap.dataset.cat;
-      const nowCollapsed = wrap.classList.toggle('collapsed');
-      hd.setAttribute('aria-expanded', nowCollapsed ? 'false' : 'true');
-      if (nowCollapsed) S.freshCollapsed.add('cat:' + cat); else S.freshCollapsed.delete('cat:' + cat);
-      try { localStorage.setItem('soc_fresh_collapsed', JSON.stringify([...S.freshCollapsed])); } catch (e) {}
-    };
-    hd.onclick = toggle;
-    hd.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } };
+    const wrap = hd.closest('.fgroup'); if (!wrap) return;
+    const corps = wrap.querySelector('.fgbody'); const cat = wrap.dataset.cat;
+    disclosure(hd, corps, {
+      observe: false,
+      isOpen: () => !wrap.classList.contains('collapsed'),
+      open: () => { wrap.classList.remove('collapsed'); S.freshCollapsed.delete('cat:' + cat); memoriserLesPlis(); },
+      close: () => { wrap.classList.add('collapsed'); S.freshCollapsed.add('cat:' + cat); memoriserLesPlis(); },
+    });
   });
   // FIX 2 / P11.3-d — cloche d'une source « chaude » cliquable -> alertes filtrées par CETTE source
   // (#notifications). Le compte « sans flux » pivote de la même façon, sur le JETON que le démon publie
@@ -618,17 +663,32 @@ async function renderFreshness(loading) {
   // ni l'auto-rafraîchissement ni un rechargement ne le perdent — c'est ce que le pliage fait déjà.
   const selOrdre = b.querySelector('select[data-ordre]');
   if (selOrdre) selOrdre.onchange = () => { prefSet(CLE_D_ORDRE, selOrdre.value); renderFreshness(); };
+  // `P11.21-b` (suite) — LES SÉRIES MÉTRIQUES SE PLIENT PAR LE MÊME GESTE, ET DEUX DIFFÉRENCES SONT
+  // GARDÉES PLUTÔT QU'EFFACÉES :
+  //   * CET EN-TÊTE N'EST PAS UN BOUTON. C'est un `div.kv` porteur de `role="button"` et de
+  //     `tabindex="0"` : RIEN ne l'active nativement, et `disclosure` ne pose qu'un `onclick`. Le
+  //     `onkeydown` est donc PORTEUR ici, là où il était un doublon sur `.fgrouphd` — il est conservé,
+  //     et il passe par la poignée rendue plutôt que par une seconde bascule écrite à côté.
+  //   * `aria-controls` N'EST PAS GAGNÉ ICI, ET C'EST DIT PLUTÔT QUE TU. `disclosure` ne pose ce nom
+  //     que depuis l'identifiant du panneau ; `.fmetricbody` n'en a pas, et il n'en reçoit pas. Un
+  //     identifiant fixe serait unique par une propriété de la CHARGE UTILE du démon — un seul flux
+  //     agrégé `kind:"metric"` (`daemon/src/handlers/freshness.rs`, un `mk("metric", …)`) — que cette
+  //     console ne vérifie jamais, alors que `rowOf` en rendrait un par flux métrique et que ce
+  //     câblage n'en équipe QUE LE PREMIER (`querySelector`, au singulier, et une seule clé de
+  //     pliage `metric-open` pour tous). Nommer une région par un identifiant dont l'unicité dépend
+  //     des données d'un autre serait un nom faux le jour où la charge utile change ; le reste est
+  //     porté par cette clé.
   const md = b.querySelector('.fmetrichd');
-  if (md) {
-    const toggle = () => {
-      const wrap = md.closest('.fmetric');
-      const nowOpen = !wrap.classList.toggle('collapsed');   // toggle renvoie true si MAINTENANT collapsed
-      md.setAttribute('aria-expanded', nowOpen ? 'true' : 'false');
-      if (nowOpen) S.freshCollapsed.add('metric-open'); else S.freshCollapsed.delete('metric-open');
-      try { localStorage.setItem('soc_fresh_collapsed', JSON.stringify([...S.freshCollapsed])); } catch (e) {}
-    };
-    md.onclick = toggle;
-    md.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } };
+  const wrapMetrique = md && md.closest('.fmetric');
+  const corpsMetrique = wrapMetrique && wrapMetrique.querySelector('.fmetricbody');
+  if (md && wrapMetrique && corpsMetrique) {
+    const pli = disclosure(md, corpsMetrique, {
+      observe: false,
+      isOpen: () => !wrapMetrique.classList.contains('collapsed'),
+      open: () => { wrapMetrique.classList.remove('collapsed'); S.freshCollapsed.add('metric-open'); memoriserLesPlis(); },
+      close: () => { wrapMetrique.classList.add('collapsed'); S.freshCollapsed.delete('metric-open'); memoriserLesPlis(); },
+    });
+    md.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pli.toggle(); } };
   }
 }
 

@@ -85,7 +85,7 @@ une erreur.** Ce qui est refusé synchroniquement est court :
 
 | Code | Quand |
 |---|---|
-| `202 {"queued":true,"durable":false}` | le corps est du JSON et porte `kind` — sur `durable`, voir §2.5 |
+| `202 {"queued":true,"durable":true}` | le corps est du JSON et porte `kind` — sur `durable`, voir §2.5 |
 | `400` | JSON invalide, ou `kind` absent |
 | `413` | trop d'événements dans un lot, ou corps trop gros — le message **nomme le plafond qui a mordu et le levier qui le change** |
 | `503` + `Retry-After: 60` | plancher d'espace libre franchi (`PLUME_INGEST_MIN_FREE_MB`) |
@@ -157,25 +157,47 @@ Deux régimes, qu'il vaut mieux ne pas confondre :
 
 | Régime | Routes | Ce qu'une coupure peut emporter |
 |---|---|---|
-| **spool** — un fichier écrit puis renommé, jamais synchronisé | `/api/ingest`, `/api/ingest/journal`, `/api/ingest/minio`, `/services/collector[/event]`, `/v1/traces`, `/api/ingest/firehose`, `/api/ingest/pubsub` | le contenu, ou **seulement l'entrée de répertoire** — les octets existent alors, leur nom non, et le spool du central est relu **par nom** |
+| **spool** — un fichier écrit, **synchronisé**, renommé, puis dont le **répertoire** est synchronisé | `/api/ingest`, `/api/ingest/journal`, `/api/ingest/minio`, `/services/collector[/event]`, `/v1/traces`, `/api/ingest/firehose`, `/api/ingest/pubsub` | **rien de ce qui a été acquitté** : les deux barrières sont prises **avant** que l'accusé ne parte |
 | **base** — une transaction validée en `journal_mode=WAL` + `synchronous=NORMAL` | `/api/metrics/prom`, `/api/metrics/write`, `/loki/api/v1/push` | les dernières transactions validées : le `COMMIT` survit à la mort du **processus**, pas à celle de la **machine** |
 
-**Ce que cela change pour un expéditeur.** L'accusé vous autorise à oublier ; il ne promet pas de se
-souvenir à votre place. Si votre source est rejouable — un journal conservé, un flux à filigrane, un
-abonnement qui redélivre — gardez de quoi rejouer une fenêtre : la déduplication du central (§4.4)
-absorbe le rejeu dès que vos événements portent une clé. Si elle ne l'est pas, cette fenêtre est une
-perte que rien ne rattrape.
+**Ce que cela change pour un expéditeur.**
+
+*Sur les sept routes de spool*, l'accusé vous autorise à oublier, et il tient : quand le `2xx` part, le
+corps est sur le disque, sous son nom définitif, les deux barrières prises. L'écriture est **déportée**
+sur un fil bloquant, donc l'attente ne bloque pas le récepteur ; elle se paie en latence, pas en débit
+perdu — le coût d'une barrière est celui de la **barrière**, pas de la taille du lot, et il s'amortit
+dès que plusieurs expéditeurs poussent en parallèle. Un exploitant dont le stockage rend cette barrière
+trop chère peut la désarmer avec `PLUME_INGEST_FSYNC=0` ; le champ `durable` retombe alors à `false` de
+lui-même, et le paragraphe suivant redevient vrai pour lui.
+
+*Sur les trois routes de base*, l'accusé ne couvre toujours que la mort du **processus**. Si votre
+source est rejouable — un journal conservé, un flux à filigrane, un abonnement qui redélivre — gardez
+de quoi rejouer une fenêtre : la déduplication du central (§4.4) absorbe le rejeu dès que vos
+événements portent une clé. Si elle ne l'est pas, cette fenêtre est une perte que rien ne rattrape.
 
 **Où c'est écrit dans la réponse, et où ça ne l'est pas.** Les quatre routes dont le corps appartient à
-plume portent le champ **`durable`** — `/api/ingest`, `/api/ingest/journal`, `/api/ingest/minio` et
-`/api/metrics/prom`. Il vaut `false`, et c'est la valeur qui basculera le jour où le défaut sera
-corrigé. Les six autres accusés ont une forme dictée par un contrat **étranger** (Splunk HEC, OTLP, AWS
-Firehose, GCP Pub/Sub, Loki push, Prometheus `remote_write`), quand ils ont un corps : y ajouter un
-champ modifierait le protocole d'un tiers. Leur limite est donc **ici**, et pas dans leur charge utile.
+plume portent le champ **`durable`**, et ce n'est pas une constante : c'est la valeur que la
+publication a **obtenue**.
 
-> ⚠️ **Ce n'est pas un arbitrage refermé.** La perte reste un **défaut** ; elle est écrite en attendant
-> d'être supprimée. Le correctif — déporter l'écriture, pour que l'accusé cesse d'avoir besoin de cette
-> page — est la clé `S31` de [`ROADMAP.md`](ROADMAP.md), et il reste dû.
+| Route | `durable` | Pourquoi |
+|---|---|---|
+| `/api/ingest`, `/api/ingest/journal`, `/api/ingest/minio` | `true` | les deux barrières sont prises avant l'accusé (`false` si `PLUME_INGEST_FSYNC=0`, ou si le noyau refuse la barrière de répertoire après le renommage — auquel cas le lot est publié mais pas garanti) |
+| `/api/metrics/prom` | `false` | régime **base** : rien n'a changé pour lui |
+
+Les six autres accusés ont une forme dictée par un contrat **étranger** (Splunk HEC, OTLP, AWS
+Firehose, GCP Pub/Sub, Loki push, Prometheus `remote_write`), quand ils ont un corps : y ajouter un
+champ modifierait le protocole d'un tiers. Pour les quatre d'entre eux qui sont des routes de spool, le
+témoin est côté exploitant, dans `/metrics` : `plume_spool_barriere_fichier_total`,
+`plume_spool_barriere_repertoire_total`, `plume_spool_barriere_echec_total`. Les deux premiers montent
+ensemble ; un écart, ou le troisième qui grimpe, dit qu'un `2xx` a cessé d'être adossé à une barrière.
+
+> **Ce qui est prouvé, et ce qui ne l'est pas.** Ce qui est démontré est que les deux barrières sont
+> **demandées au noyau et rendues sans erreur**, dans cet ordre, avant l'accusé. La survie à une
+> coupure d'alimentation réelle ne se démontre pas depuis le processus : au-delà de l'appel, elle
+> dépend du système de fichiers et du matériel.
+
+> ⚠️ **Le régime « base » reste ouvert.** La perte y demeure un **défaut** ; elle est écrite en
+> attendant d'être supprimée. C'est le solde de la clé `S31` de [`ROADMAP.md`](ROADMAP.md).
 
 ---
 

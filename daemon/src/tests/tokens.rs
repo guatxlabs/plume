@@ -1220,6 +1220,7 @@
             session_epoch: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             ingest_min_free_mb: 512,
             ingest_max_events: 50000,
+            ingest_fsync: true, // `S31` : l'état de test est celui de la PRODUCTION — barrière ARMÉE
             multi_tenant,
             tenants,
         }

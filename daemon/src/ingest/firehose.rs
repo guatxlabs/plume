@@ -211,15 +211,12 @@ pub(crate) async fn firehose_ingest_post(
     let mk = spool_tenant_marker_for(&st, &ident.tenant);
     let tmp = format!("{}/.fh-{}-{}.tmp", st.spool, now(), n);
     let dst = format!("{}/fh-{}-{}{}.json", st.spool, now(), n, mk);
-    if std::fs::write(&tmp, body_out.as_bytes()).is_err() {
-        let _ = std::fs::remove_file(&tmp); // ING-4 : pas d'orphelin `.tmp` sur écriture partielle
-        return firehose_err(StatusCode::INTERNAL_SERVER_ERROR, &request_id, "spool write failed");
+    // `S31` (temps 2) — publication DÉPORTÉE sur le pool bloquant, avec ses deux barrières. Le corps de
+    // la réponse Firehose ne peut pas porter de champ `durable` (contrat AWS) : le témoin d'exploitation
+    // de cette surface est `plume_spool_barriere_*` dans /metrics.
+    match crate::ingest::spool::publier(tmp, dst, body_out.into_bytes(), st.ingest_fsync).await {
+        Err(crate::ingest::spool::EchecSpool::Ecriture) => firehose_err(StatusCode::INTERNAL_SERVER_ERROR, &request_id, "spool write failed"),
+        Err(crate::ingest::spool::EchecSpool::Publication) => firehose_err(StatusCode::INTERNAL_SERVER_ERROR, &request_id, "spool publish failed"),
+        Ok(_) => firehose_ok(&request_id),
     }
-    use std::os::unix::fs::PermissionsExt;
-    let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
-    if std::fs::rename(&tmp, &dst).is_err() {
-        let _ = std::fs::remove_file(&tmp); // ING-4 : pas d'orphelin `.tmp` sur rename échoué
-        return firehose_err(StatusCode::INTERNAL_SERVER_ERROR, &request_id, "spool publish failed");
-    }
-    firehose_ok(&request_id)
 }

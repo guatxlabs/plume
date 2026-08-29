@@ -185,15 +185,25 @@ dans le **spool** (atomique, `0600`) → la boucle de fond appelle `ingest_event
 travail DB sur le worker tokio (une rafale ne sature pas le runtime). Pas de host-marker : un
 collector OTel relaie légitimement plusieurs services/hôtes (host autoritatif = attribut resource).
 
-**« Atomique » n'est pas « durable », et le `200` ne couvre que le premier des deux.** L'enveloppe est
-écrite puis renommée, **jamais synchronisée** (mesuré le 2026-08-29 : `grep -rn '\.sync_all()' daemon/src/ingest`
-ne rend rien, alors que la même commande rend six appels sous `cold_store`, `crypto` et `backup`). Après une coupure d'alimentation, ses octets peuvent exister sans que
-leur entrée de répertoire existe, et le spool est relu par nom. L'exporteur OTel, lui, a pris ce `200`
-pour un acquittement et a vidé sa file. Le corps de la réponse ne le dit pas — un décodeur
-protobuf-JSON strict refuse les champs inconnus, donc la limite est écrite ici et dans
-[`AGENTS-PROTOCOLE.md`](AGENTS-PROTOCOLE.md) (§2.5) plutôt que dans un
-`ExportTraceServiceResponse` non conforme. Défaut **ouvert**, clé `S31` de
-[`ROADMAP.md`](ROADMAP.md) : la sortie est de déporter l'écriture, pas d'assumer la perte.
+**« Atomique » n'est pas « durable » — et depuis `S31` (temps 2), le `200` couvre les deux.**
+L'enveloppe est écrite, **synchronisée**, renommée, puis son **répertoire** est synchronisé, le tout
+**avant** que le `200` ne parte. L'exporteur OTel qui vide sa file sur cet accusé ne perd donc plus la
+fenêtre qui existait ici : les octets et leur entrée de répertoire sont l'un et l'autre passés par une
+barrière. L'écriture est **déportée** sur un fil bloquant — la barrière ne bloque aucun worker tokio,
+ce qui reste vrai de tout ce paragraphe.
+
+Le corps de la réponse ne le dit toujours pas, et ne le dira pas : un décodeur protobuf-JSON strict
+refuse les champs inconnus d'un `ExportTraceServiceResponse`. Le témoin est donc dans `/metrics` —
+`plume_spool_barriere_fichier_total` et `plume_spool_barriere_repertoire_total` montent ensemble à
+chaque export accepté, `plume_spool_barriere_echec_total` dit qu'une barrière a été refusée. Un
+exploitant peut désarmer la barrière (`PLUME_INGEST_FSYNC=0`) ; le régime d'avant `S31` revient alors
+tel quel, et les compteurs cessent de monter.
+
+**Ce qui n'est pas prouvé :** la survie à une coupure d'alimentation réelle. Ce qui est démontré est
+que les deux barrières sont demandées au noyau, rendues sans erreur, et dans cet ordre. Le régime de
+la **base** (`/api/metrics/prom`, `/api/metrics/write`, `/loki/api/v1/push`) reste, lui, **ouvert** —
+voir [`AGENTS-PROTOCOLE.md`](AGENTS-PROTOCOLE.md) (§2.5) et la clé `S31` de
+[`ROADMAP.md`](ROADMAP.md).
 
 ---
 

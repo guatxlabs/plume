@@ -272,15 +272,11 @@ pub(crate) async fn pubsub_ingest_post(
     let mk = spool_tenant_marker_for(&st, &ident.tenant);
     let tmp = format!("{}/.ps-{}-{}.tmp", st.spool, now(), n);
     let dst = format!("{}/ps-{}-{}{}.json", st.spool, now(), n, mk);
-    if std::fs::write(&tmp, body_out.as_bytes()).is_err() {
-        let _ = std::fs::remove_file(&tmp); // ING-4 : pas d'orphelin `.tmp` sur écriture partielle
-        return err_json(StatusCode::INTERNAL_SERVER_ERROR, "spool write failed");
+    // `S31` (temps 2) — publication DÉPORTÉE + deux barrières AVANT l'ACK. Pub/Sub ne lit que le statut :
+    // le témoin de cette surface est `plume_spool_barriere_*` dans /metrics.
+    match crate::ingest::spool::publier(tmp, dst, body_out.into_bytes(), st.ingest_fsync).await {
+        Err(crate::ingest::spool::EchecSpool::Ecriture) => err_json(StatusCode::INTERNAL_SERVER_ERROR, "spool write failed"),
+        Err(crate::ingest::spool::EchecSpool::Publication) => err_json(StatusCode::INTERNAL_SERVER_ERROR, "spool publish failed"),
+        Ok(_) => pubsub_ok(),
     }
-    use std::os::unix::fs::PermissionsExt;
-    let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
-    if std::fs::rename(&tmp, &dst).is_err() {
-        let _ = std::fs::remove_file(&tmp); // ING-4 : pas d'orphelin `.tmp` sur rename échoué
-        return err_json(StatusCode::INTERNAL_SERVER_ERROR, "spool publish failed");
-    }
-    pubsub_ok()
 }

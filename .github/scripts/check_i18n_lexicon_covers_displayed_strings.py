@@ -103,22 +103,31 @@ une entrée morte, en inventer une coûte un libellé français servi à un lect
 LE CORPUS EST DÉRIVÉ, ET CHACUNE DE SES EXCLUSIONS EST MOTIVÉE. Tout fichier texte du dépôt, sauf le lexique
 lui-même, les répertoires qui ne livrent rien à un navigateur (`.git`, `target`, `node_modules`, et
 `.github` — sans quoi la garde ressusciterait toute clé qu'elle NOMME dans son propre commentaire), et
-les `*.md`, qui ne sont pas SERVIS : une phrase citée dans un document ne fait pas vivre une clé, et deux
-des orphelines prouvées ci-dessous ne subsistent QUE dans `docs/CONSOLE.md` — dette de documentation, pas
-de lexique. Le corpus porte le source TEL QU'ÉCRIT **et** une copie DÉSÉCHAPPÉE (`qu\\'aucun` -> `qu'aucun`) :
-sans elle, la sonde accuse les DEUX titres que `web/alerts.js` sert dans une interpolation à guillemets
-échappés (« Toutes les alertes sont listées… » et « Seules les alertes qu'aucun cas n'a encore reprises… ») —
-deux accusations FAUSSES, donc deux libellés VIVANTS qu'on aurait retirés du lexique.
+les `*.md`, qui ne sont pas SERVIS : une phrase citée dans un document ne fait pas vivre une clé — et le
+2026-08-29 DEUX des orphelines alors prouvées ne subsistaient QUE dans `docs/`, dette de documentation en
+plus de la dette de lexique, l'une et l'autre payées ce jour-là (le titre servi, « Identité fédérée (SSO) »
+comme « Politiques de notification », était DÉJÀ une clé : l'anglais n'a rien perdu au retrait du doublon).
+Le corpus porte le source TEL QU'ÉCRIT **et**, quand elles en diffèrent, DEUX copies : DÉSÉCHAPPÉE
+(`qu\\'aucun` -> `qu'aucun`) et ENTITÉS RÉSOLUES (`ATT&amp;CK` -> `ATT&CK`). Sans la première, la sonde
+accuse les DEUX titres que `web/alerts.js` sert dans une interpolation à guillemets échappés (« Toutes les
+alertes sont listées… » et « Seules les alertes qu'aucun cas n'a encore reprises… ») ; sans la seconde, elle
+a RÉELLEMENT accusé « (standard ouvert) pour combler les angles morts ATT&CK. » au motif « texte absent du
+dépôt ENTIER » alors que `web/sigmaimport.js:194` l'écrit — trois accusations dont le MOTIF est faux, et
+`web/index.html` porte à lui seul 59 entités (21 `&amp;`, 12 `&rarr;`…) qui attendaient le même sort.
 LES COMMENTAIRES RESTENT DANS LE CORPUS, DÉLIBÉRÉMENT. Un commentaire ne devient jamais un nœud, et les
 retirer élargirait l'accusation (« ← Retour », que `web/app.js` dit lui-même « supprimé » ; « (drillé) » ;
 « voir le détail → »…). La garde préfère TAIRE une orpheline que d'en inventer une : un commentaire qui cite
 encore la phrase EMPÊCHE l'accusation. C'est dit, ce n'est pas corrigé — le biais va vers l'INDÉCIDABLE,
 jamais vers l'accusation.
-CHAQUE MOITIÉ DE CE CHOIX EST CHIFFRÉE À PART, PAR CROISEMENT 2x2 SUR UN SEUL ARBRE (2026-08-29, arbre du
-jour, la clé de `P11.20-e` déjà retirée) : déséchappé + commentaires gardés -> 18 orphelines (ce qui est
-LIVRÉ) · sans déséchappement -> 20 (+2) · commentaires retirés -> 26 (+8) · ni l'un ni l'autre -> 28 (+10).
-Un ÉCART se refait sur n'importe quel arbre, un ABSOLU se périme sous les autres agents : ce sont le +2 et
-le +8 qui sont des propriétés de l'INSTRUMENT, et eux seuls que ce paragraphe a le droit d'affirmer.
+CHAQUE MOITIÉ DE CE CHOIX EST CHIFFRÉE À PART, PAR CROISEMENT SUR UN SEUL ARBRE (2026-08-29, arbre du jour,
+les dix-huit orphelines déjà retirées) : ce qui est LIVRÉ -> 0 orpheline · sans déséchappement -> +2 ·
+commentaires retirés -> +8 · ni l'un ni l'autre -> +10 · sans résolution d'entités -> +0 aujourd'hui, mais
++1 la veille, sur un jeu de clés qui portait encore celle d'`ATT&amp;CK`. Un ÉCART se refait sur n'importe
+quel arbre, un ABSOLU se périme sous les autres agents : ce sont le +2 et le +8 qui sont des propriétés de
+l'INSTRUMENT, et eux seuls que ce paragraphe a le droit d'affirmer — REFAITS À L'IDENTIQUE le 2026-08-29
+sur un arbre et un jeu de clés différents de celui qui les avait produits, ce qui est la seule chose qui
+distingue une propriété d'un relevé. Le +0 des entités, lui, est un ABSOLU du jour : il ne dit pas que la
+copie est inutile, il dit qu'aucune clé SURVIVANTE n'en dépend.
 TROIS VERDICTS, TROIS CANAUX SÉPARÉS. Orpheline PROUVÉE au-dessus de son cliquet = RÉGRESSION (code 1) ;
 compte des INDÉCIDABLES au-dessus du sien = REFUS DE CONCLURE (code 2) — une clé que la sonde ne sait pas
 trancher n'est pas une faute, c'est un aveu, et le confondre avec une faute ferait rougir qui écrit un
@@ -212,6 +221,7 @@ from __future__ import annotations
 
 import collections
 import html.parser
+import html
 import os
 import re
 import sys
@@ -453,30 +463,33 @@ RE_CORPS_DE_MOT = re.compile(r"[0-9A-Za-zÀ-ÖØ-öø-ÿ]")
 # fichier non suivi). Les deux planchers sont dérivés du relevé du 2026-08-29 moins un vingtième, exactement
 # comme MIN_POPULATION : une sonde qui perdrait plus de 5 % de son corpus, ou de ses clés vivantes, refuse de
 # conclure au lieu d'accuser.
-MIN_CORPUS = 30392882        # relevé 2026-08-29 sur l'ARBRE DE CE DÉPÔT (banc : le corpus dérivé que
-                             # cette garde construit elle-même — sources suivies, pas une installation)
+MIN_CORPUS = 32803575        # relevé 2026-08-29 sur l'ARBRE DE CE DÉPÔT (banc : le corpus dérivé que
+                             # cette garde construit elle-même — sources suivies, pas une installation).
+                             # RELEVÉ À NOUVEAU le même jour, 31 992 507 -> 34 530 079, à l'ajout de la copie
+                             # aux ENTITÉS RÉSOLUES : le plancher SUIT le relevé, sinon la propriété qu'il
+                             # affirme (« perdre plus de 5 % du corpus fait refuser de conclure ») devient
+                             # fausse en silence — laissé à l'ancienne valeur, il aurait toléré 12 % de perte.
+                             # Un plancher qu'on oublie de remonter après avoir élargi ce qu'on lit est un
+                             # cliquet qui se desserre tout seul.
 MIN_CLES_VIVANTES = 1507     # relevé 2026-08-29 : 1 586 clés vues comme chaîne affichée dans un puits reconnu
 
-# CLIQUET DES ORPHELINES PROUVÉES — relevé le 2026-08-29 APRÈS le retrait de la clé de `P11.20-e`
-# (« Gouvernance d'accès (style Varonis) : … », `web/i18n.js:527` ; `web/dataaccess.js` n'en servait plus la
-# source, `web/help_registry.js:664`/`:671` en sert une AUTRE). Dix-huit restent, chacune revérifiée à la
-# main par une recherche sur TOUT le dépôt, `docs/` compris :
-#   (standard ouvert) pour combler les angles morts ATT&CK. · Actifs + clos · Cette règle vient d'un overlay
-#   de configuration (config.d) : … · Contenus (l'option SERVIE est « Contenu », `web/index.html`) ·
-#   Dates invalides. · Identité (SSO) (le titre SERVI est « Identité fédérée (SSO) », `web/index.html`) ·
-#   Inerte par nature : … « Rouvrir » le ramène en cours. (`web/cases.js` sert une phrase PLUS LONGUE) ·
-#   Inventaire complet des sources (Données → Sources) · La cadence attendue est celle qu'une sonde du
-#   démon … · Lien copié · Marquer attendue · Marquer inattendue · Revenir à la requête précédente
-#   (drilldown) · Routage & silences · Rétablir le signal « inattendu » sur cette source (persistant,
-#   audité) · Santé par source (frais/calme/en retard/muet) : Données → Fraîcheur · Si elle est légitime :
-#   Actions → « marquer attendue » (persistant, réversible, audité). · destination activée (forward ON).
-# Deux d'entre elles — « Routage & silences » et « Identité (SSO) » — ne subsistent que dans `docs/CONSOLE.md`
-# et `docs/NATIVE-IDP.md`, qui décrivent des libellés de console que la console ne sert plus.
-# CE CLIQUET NE REMONTE PAS : une clé neuve dont rien ne sert le texte rougit (code 1). Il DESCEND à chaque
-# retrait, et ZÉRO est l'état visé — ces dix-huit sont retirables. CE LOT NE LES A PAS RETIRÉES : il ne
-# touche qu'à la clé de `P11.20-e`, et `web/` est en écriture concurrente sous plusieurs agents ; retirer une
-# clé qu'un module en cours de réécriture rendrait vivante ferait rougir le travail d'un autre.
-PLAFOND_ORPHELINES = 18
+# CLIQUET DES ORPHELINES PROUVÉES — À ZÉRO depuis le 2026-08-29 : les DIX-HUIT que le lot précédent avait
+# laissées (il ne touchait qu'à la clé de `P11.20-e`, `web/` étant alors en écriture concurrente) sont
+# retirées, chacune revérifiée À LA MAIN sur les 758 fichiers texte du dépôt — `docs/`, `.github/` et
+# `daemon/src/` compris, ce que la garde n'a PAS le droit de lire — sous SIX normalisations : brute,
+# déséchappée, entités HTML résolues, et les trois mêmes à blancs normalisés. La revérification a payé :
+# elle a réfuté le MOTIF d'une accusation sur dix-huit (voir `corpus_du_depot`) et établi que les dix-sept
+# autres sont des libellés d'une écriture ANTÉRIEURE dont la console sert aujourd'hui une AUTRE — le titre
+# servi étant lui-même déjà une clé dans quatre cas (« Contenu », « Identité fédérée (SSO) »,
+# « Politiques de notification », « Inventaire des sources ») : l'anglais ne perd rien, ce sont des doublons
+# périmés. Deux de ces libellés ne subsistaient que dans `docs/`, qui n'est PAS servi : `docs/CONSOLE.md` a
+# été corrigé dans le même lot ; `docs/NATIVE-IDP.md:15` nomme encore « Identité (SSO) » et reste dû.
+# LA PREUVE QUE LE RETRAIT NE CASSE RIEN EST UN INVARIANT, PAS UNE RELECTURE : le compte des clés VIVANTES
+# est resté à 1 586 de part et d'autre du retrait — une clé vivante retirée l'aurait fait baisser — et le
+# harnais ESM rend 0 avant comme après.
+# CE CLIQUET NE REMONTE PAS : une clé neuve dont rien ne sert le texte rougit (code 1). Le laisser à ZÉRO
+# est l'état visé, et il n'y a plus rien à en descendre.
+PLAFOND_ORPHELINES = 0
 
 # CLIQUET DES INDÉCIDABLES — relevé le 2026-08-29 : 230, dont 198 dont le TEXTE est ailleurs dans le dépôt
 # hors d'un puits reconnu, et 32 qu'un littéral de BORD peut composer. C'est l'AVEU, pas la dette : il dit
@@ -485,6 +498,16 @@ PLAFOND_ORPHELINES = 18
 # critère de puits ne lit pas n'est pas une faute — c'est la raison qui gouverne déjà PLAFOND_HORS_REGARD,
 # appliquée à l'autre sens de la mesure. L'abaisser (élargir le critère de puits, ou retirer une clé morte)
 # est le seul mouvement qui ne se discute pas.
+# LE JEU DE CE CLIQUET A ÉTÉ MESURÉ, PAS SUPPOSÉ (2026-08-29). Il est à ZÉRO : le relevé vaut exactement le
+# plafond, cinq exécutions d'affilée pendant qu'un autre agent écrivait sous `web/` l'ont rendu à 230 sans
+# varier, et le retrait des dix-huit orphelines ne l'a pas fait bouger d'un cran — retirer une ORPHELINE ne
+# touche pas au compte des INDÉCIDABLES, les verdicts étant exclusifs. Ce que « zéro jeu » coûte est écrit
+# ici : la PROCHAINE clé qu'un module posera dans une forme non lue fait REFUSER DE CONCLURE (code 2), et
+# c'est voulu — mais la charge de la mesure retombe alors sur qui écrit le libellé, pas sur qui l'a réglé.
+# ET LA FRAGILITÉ EST AILLEURS QUE DANS LE JEU : sur les 198 indécidables tenues par un TEXTE présent,
+# 79 (40 %) ne tiennent qu'à UN SEUL fichier — 78 sous `web/`, 1 sous `daemon/` — de sorte qu'une seule
+# suppression de libellé les fait basculer ORPHELINES et rougir `PLAFOND_ORPHELINES` à 0. Ce n'est pas un
+# défaut du cliquet, c'est sa raison d'être : un libellé qu'on retire doit emporter sa clé.
 PLAFOND_INDECIDABLES = 230
 
 # LA SEULE SURFACE EXEMPTE : la définition `const HELP = { … }` du registre des sections d'aide, DÉRIVÉE
@@ -1137,9 +1160,19 @@ def cles_du_lexique(src: str) -> set[str]:
 def corpus_du_depot() -> tuple[str, set[str]]:
     """(TEXTE du dépôt qui peut atteindre un nœud rendu, LITTÉRAUX de l'arbre servi).
 
-    Le texte porte chaque source TEL QU'ÉCRIT et, quand elle en diffère, sa copie DÉSÉCHAPPÉE : sans elle,
-    une phrase servie dans une interpolation à guillemets échappés paraît ABSENTE du dépôt et sa clé se fait
-    accuser à tort (mesuré le 2026-08-29 sur `web/alerts.js`, « Toutes les alertes sont listées… »).
+    Le texte porte chaque source TEL QU'ÉCRIT et, quand elles en diffèrent, sa copie DÉSÉCHAPPÉE et sa copie
+    aux ENTITÉS HTML RÉSOLUES : sans la première, une phrase servie dans une interpolation à guillemets
+    échappés paraît ABSENTE du dépôt et sa clé se fait accuser à tort (mesuré le 2026-08-29 sur
+    `web/alerts.js`, « Toutes les alertes sont listées… ») ; sans la seconde, une phrase servie à travers une
+    entité subit le MÊME sort, et c'est le même défaut sous une autre écriture — le navigateur rend `&amp;`
+    comme `&`, si bien que le nœud vaut la clé alors que le source, lu tel quel, ne la contient nulle part.
+    MESURÉ le 2026-08-29 : la clé « (standard ouvert) pour combler les angles morts ATT&CK. » était accusée
+    au motif « texte absent du dépôt ENTIER » alors que `web/sigmaimport.js:194` l'écrit `ATT&amp;CK` — motif
+    FAUX. Et le risque n'est pas anecdotique : `web/index.html` porte 59 entités à lui seul (21 `&amp;`,
+    12 `&rarr;`, 8 `&lt;`, 8 `&gt;`…), les modules de `web/` une douzaine de plus. La clé était morte pour une AUTRE raison
+    (le nœud rendu porte « … Déposez un » en plus, donc la clé n'en est qu'un MORCEAU) et elle est retirée,
+    mais un motif faux qui tombe juste reste un instrument qui ment. Cette copie ne peut que faire passer une
+    clé d'ORPHELINE à INDÉCIDABLE, jamais l'inverse : le biais va toujours vers le refus d'accuser.
     Les LITTÉRAUX, eux, ne viennent que de l'arbre servi et de sources SANS COMMENTAIRES : un littéral cité
     dans un commentaire n'en est pas un, et c'est avec eux seuls qu'on juge si un nœud COMPOSÉ peut valoir la
     clé. Le texte, lui, GARDE les commentaires — voir l'en-tête : le biais va vers l'indécidable."""
@@ -1157,9 +1190,9 @@ def corpus_du_depot() -> tuple[str, set[str]]:
             except (UnicodeDecodeError, OSError, ValueError):
                 continue  # binaire ou illisible : il ne sert aucun libellé
             morceaux.append(src)
-            desechappe = RE_ECHAPPEMENT.sub(r"\1", src)
-            if desechappe != src:
-                morceaux.append(desechappe)
+            for copie in (RE_ECHAPPEMENT.sub(r"\1", src), html.unescape(src)):
+                if copie != src:
+                    morceaux.append(copie)
             if os.path.dirname(chemin) == WEB and f.endswith(".js"):
                 for s, *_ in chaines_js(sans_commentaires_js(src)):
                     litteraux.add(s)
@@ -1784,7 +1817,18 @@ def main(argv: list[str]) -> int:
           f"corpus. (3) Le cliquet des indécidables est un COMPTE NET, pas un ENSEMBLE : une indécidable qui "
           f"en remplace une autre passe sans que rien ne bouge, exactement comme pour le hors-regard "
           f"(`P8.27-g`). (4) Elle ne juge PAS la VALEUR anglaise d'une clé vivante — qu'elle soit juste, ou "
-          f"seulement différente du français, c'est le témoin 13 du harnais ESM qui le tient, pas ceci.")
+          f"seulement différente du français, c'est le témoin 13 du harnais ESM qui le tient, pas ceci. "
+          f"(5) LA PLUS COÛTEUSE, TROUVÉE EN PAYANT `P11.8-g` le 2026-08-29 : une clé qui n'est qu'un MORCEAU "
+          f"d'un nœud rendu est MORTE — `i18nWalk` n'égale que le nœud ENTIER après `trim()` — et cette sonde "
+          f"ne sait pas la voir, puisque son texte EST dans le dépôt : elle la range en INDÉCIDABLE, pour "
+          f"toujours. Le lexique a été bâti en découpant sur les bornes de LITTÉRAUX, pas de nœuds : la modale "
+          f"d'import Sigma rend 20 nœuds texte porteurs de lettres (échantillons de code et zones de saisie "
+          f"exclus), dont 16 ont une clé et 4 n'en ont pas — et le lexique portait EN PLUS une entrée qui "
+          f"n'était AUCUN de ces vingt, « (standard ouvert) pour combler les angles morts ATT&CK. », simple "
+          f"début du nœud « … ATT&CK. Déposez un » que la concaténation assemble. Elle ne pouvait rien "
+          f"traduire ; elle est retirée. La sortie "
+          f"n'est PAS une sonde de plus ici : c'est d'ÉNUMÉRER LES NŒUDS d'un fragment HTML au lieu de ses "
+          f"littéraux, ce que seul un analyseur de balisage fait honnêtement — ce n'est pas fait, c'est dit.")
     if mesure:
         return 0
 

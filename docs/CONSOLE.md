@@ -121,7 +121,7 @@ Sept onglets : de la règle qui détecte à l'action qui répond.
 | `actions` | Actions | viewer+ | la file de riposte : ce qui est proposé, approuvé, appliqué, refusé |
 | `risk` | Risque | viewer+ | score de risque par entité (alerting basé sur le risque) |
 | `detadv` | Avancée | viewer+ lecture · éditeur+ écriture | corrélations de séquence et lignes de base comportementales |
-| `routing` | Routage & silences | viewer+ lecture · éditeur+ écriture | à qui part une notification, et ce qu'on met en sourdine |
+| `routing` | Politiques de notification | viewer+ lecture · éditeur+ écriture | à qui part une notification, et ce qu'on met en sourdine |
 
 Une action n'est **jamais** appliquée sans passer par cette chaîne : proposition, **approbation d'un
 administrateur**, réclamation par l'agent, résultat au journal d'audit. Le détail du canal retour est
@@ -162,7 +162,7 @@ Le plus gros espace : treize onglets, de la source brute jusqu'à la couche sém
 | `settings` | Compte | son propre compte | mot de passe, préférences, et l'inscription d'un second facteur TOTP |
 | `users` | Users | admin | les comptes et leurs rôles |
 | `tokens` | Jetons | **admin** | provisionner un jeton d'agent ou HEC — le secret ne s'affiche **qu'une fois** |
-| `idp` | Identité (SSO) | **admin** | fournisseurs OIDC et LDAP — voir [`NATIVE-IDP.md`](NATIVE-IDP.md) |
+| `idp` | Identité fédérée (SSO) | **admin** | fournisseurs OIDC et LDAP — voir [`NATIVE-IDP.md`](NATIVE-IDP.md) |
 | `fieldfilters` | Field filters | **admin** | masquage par champ ; c'est une configuration qui **contraint** les autres rôles |
 | `tenants` | Tenants | **multi-tenant seulement** | les tenants et les habilitations ; invisible en mono-tenant |
 | `notifiers` | Canaux | admin | où partent les notifications |

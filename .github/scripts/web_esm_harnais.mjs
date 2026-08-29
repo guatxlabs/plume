@@ -6424,6 +6424,245 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   console.log(`[panneau-avoue] UN PANNEAU DIT À L'ÉCRAN CE QU'IL N'A PAS PU VOIR : le badge paraît quand la fenêtre est réellement passée sous l'horizon et SE TAIT autrement (fenêtre au-dessus, réponse sans aveu) ; le REFUS de conclure du démon (portée non dérivable, horizon non mesuré) rend un nœud qui DIT ce refus et aucune date, au lieu de laisser « aucune donnée sur la fenêtre » conclure à sa place ; le plafond top-N d'un panneau opaque atteint enfin l'écran, et seulement là où une note le chiffre ; l'horizon est rendu en DEUX nœuds, ce qui laisse le parcours de traduction remplacer le libellé sans toucher à la date — mesuré sous LANG='en' ; « aucune donnée sur la fenêtre » est CONSERVÉ quand il est vrai et REMPLACÉ quand il est faux, tandis que « chargement (mesure en cours) », qui décrit un ÉTAT DU CALCUL et non une absence, n'est JAMAIS jeté ; la POSITION de la pose est dérivée du source (dans draw() comme dans renderServerPaged(), l'aveu précède le retour anticipé) et la population des corps vides est dérivée de la STRUCTURE (condition sur \`rows\` + geste de rendu), pas de l'orthographe des phrases. CE QUE CE TÉMOIN NE TIENT PAS : il ne rend aucun panneau de bout en bout (la fabrique de carte n'est pas exportée), donc il ne prouve pas que \`result.stats\` arrive intact jusqu'à draw() ; et il MESURE le reste au lieu de le taire — une liste de lignes serveur-paginée interroge \`/api/query\`, surface sans aveu, donc les poses de renderServerPaged y sont inertes tant que ce reste n'est pas fermé.`);
 }
 
+// ---------------------------------------------------------------------------------------------
+// 51. UN REFUS DE LIRE N'EST NI UNE ABSENCE NI UNE PANNE — SUR LES DEUX VUES OÙ IL SE PRÉSENTAIT
+//     COMME L'UNE OU L'AUTRE (`P10.7-d`, tenu par `P11.8-h`).
+//
+//     POURQUOI CE TÉMOIN EXISTE, ET C'EST LE CONSTAT DE `P11.8-h`. Le correctif de `P10.7-d` a été
+//     fermé sur une preuve PAR EXERCICE jouée dans un bac à sable jeté avec la session. MESURÉ le
+//     2026-08-29 : la sortie de ce banc était BYTE-IDENTIQUE avec le code d'avant et celui d'après —
+//     zéro ligne de différence, code de sortie 0 des deux côtés. N'importe qui pouvait défaire le
+//     geste sans qu'une garde rougisse.
+//
+//     LE PIÈGE EST PIRE QU'UNE ABSENCE, ET C'EST LUI QUI EST TENU ICI. Sur l'inventaire de flotte, un
+//     refus servi en 200 (`{hosts: [], error: <cause>}`, corps que forme `portillon::corps_de_refus`)
+//     ne rendait pas « rien » : la bannière d'alarme se déclenchait, parce qu'elle est conditionnée à
+//     `pipeline_fresh`, ABSENT d'un corps de refus. La console AFFIRMAIT donc un incident de collecte
+//     sur une chaîne qui va bien. Un témoin qui se contenterait de vérifier que le mot « refus »
+//     apparaît laisserait revenir exactement cette panne inventée : il faut TROIS issues distinctes
+//     sur la MÊME vue.
+//
+//     RIEN N'EST RECOPIÉ, ET C'EST DÉLIBÉRÉ (le piège a déjà été payé deux fois dans ce fichier). La
+//     phrase d'alarme et la phrase de vide ne sont pas écrites ici : elles sont DÉRIVÉES du rendu des
+//     deux charges qui les produisent, puis cherchées dans le rendu du refus. Une reformulation ne
+//     casse donc pas ce témoin, mais un aplatissement des trois issues sur une seule, si. La cause
+//     injectée est visiblement FABRIQUÉE : citer le démon la ferait vieillir en silence.
+// ---------------------------------------------------------------------------------------------
+{
+  const CAUSE_51 = "CAUSE-DE-REFUS-FABRIQUÉE-PAR-CE-BANC-51 : aucune phrase du démon n'est citée ici";
+
+  // --- (a) L'INVENTAIRE DE FLOTTE : refus, vraie panne, vrai vide, sur la même fonction pure. ---
+  const { renderFleetInventory } = await import(pathToFileURL(path.join(WEB, "fleet.js")).href);
+  const rendreFlotte = (charge) => { const w = new Element("div"); renderFleetInventory(w, charge); return w; };
+  const MAINTENANT_51 = 1800000000;
+  const panne51 = rendreFlotte({ hosts: [], pipeline_fresh: false, now: MAINTENANT_51 });
+  const vide51 = rendreFlotte({ hosts: [], pipeline_fresh: true, now: MAINTENANT_51 });
+  const refus51 = rendreFlotte({ hosts: [], error: CAUSE_51, now: MAINTENANT_51 });
+  // L'INSTRUMENT D'ABORD : sans la branche d'alarme RÉELLEMENT atteinte ici, « le refus ne l'atteint
+  // pas » ne prouverait rien — ce serait un banc qui ne peut pas rougir.
+  const banniere51 = (w) => w.children[0];
+  const derniere51 = (w) => w.children[w.children.length - 1];
+  exiger(panne51.children.length === 2 && !!banniere51(panne51) && banniere51(panne51).classList.contains("bad"),
+    `(51a-instrument) la charge « pipeline non frais » n'atteint pas la branche d'alarme de l'inventaire de flotte (${panne51.children.length} nœud(s), classe « ${banniere51(panne51) ? banniere51(panne51).className : "aucun"} ») : ce témoin ne pourrait pas rougir`);
+  exiger(vide51.children.length === 2 && !!banniere51(vide51) && !banniere51(vide51).classList.contains("bad"),
+    `(51a-instrument) la charge « pipeline frais, parc vide » alarme quand même (classe « ${banniere51(vide51) ? banniere51(vide51).className : "aucun"} ») : les deux charges de référence ne se distinguent plus`);
+  // Le banc ne MEURT pas sur un nœud absent : une exception ici emporterait en silence tous les témoins
+  // qui suivent, ce qui est exactement le défaut que `P11.8-h` ferme (mesuré le 2026-08-29 : la première
+  // version de ce lot est morte sur un `title` nul et le témoin 53 n'a jamais été joué).
+  const texteDe51 = (n) => (n && n.textContent) || "";
+  const PHRASE_D_ALARME_51 = texteDe51(banniere51(panne51));
+  const PHRASE_DE_VIDE_51 = texteDe51(derniere51(vide51));
+  exiger(PHRASE_D_ALARME_51.length > 20 && PHRASE_DE_VIDE_51.length > 20 && PHRASE_D_ALARME_51 !== PHRASE_DE_VIDE_51,
+    `(51a-instrument) les deux phrases de référence ne sont pas dérivables (alarme ${PHRASE_D_ALARME_51.length} car., vide ${PHRASE_DE_VIDE_51.length} car.)`);
+  exiger(texteDe51(derniere51(panne51)) === PHRASE_DE_VIDE_51,
+    "(51a-instrument) la panne et le vrai vide ne partagent plus la même ligne de parc vide : la dérivation ne porte plus sur ce qu'elle croit");
+  // ... ET LE REFUS, ALORS, N'EST NI L'UNE NI L'AUTRE.
+  exiger(refus51.textContent.includes(CAUSE_51),
+    `(51a) un refus de lire l'inventaire de flotte ne rend pas la cause que le démon nomme : « ${refus51.textContent} »`);
+  exiger(!refus51.textContent.includes(PHRASE_D_ALARME_51),
+    `(51a) UN REFUS DE LIRE EST RENDU COMME UNE PANNE D'INGESTION CONSTATÉE : la vue n'a rien lu et affirme un incident sur la chaîne de collecte — un exploitant qui la croit ouvre une intervention sur une chaîne qui va bien. Rendu du refus : « ${refus51.textContent} »`);
+  exiger(!refus51.textContent.includes(PHRASE_DE_VIDE_51),
+    `(51a) un refus de lire l'inventaire de flotte est rendu comme un parc vide : rien n'a été lu, donc rien n'établit qu'aucun hôte ne pousse. Rendu du refus : « ${refus51.textContent} »`);
+  exiger(refus51.children.length === 1,
+    `(51a) le rendu d'un refus porte ${refus51.children.length} nœud(s) au lieu du seul aveu : une ligne d'hôte, une barre d'export ou une bannière posée sur un corps NON LU présente comme un relevé ce qui n'a pas été relevé`);
+  exiger(!panne51.textContent.includes(CAUSE_51) && !vide51.textContent.includes(CAUSE_51),
+    "(51a-instrument) une charge SANS cause rend quand même la cause : la dérivation lit autre chose que ce qu'elle croit");
+  exiger(new Set([refus51.textContent, panne51.textContent, vide51.textContent]).size === 3,
+    "(51a) les trois issues de l'inventaire de flotte (refus, panne, vide) ne rendent pas trois textes distincts");
+
+  // --- (b) LA MATRICE DE COUVERTURE ATT&CK : même triplet, sur la vue où « aucune technique
+  //         détectée » se lit comme un VERDICT de couverture et non comme un vide. ---
+  const { renderCoverage } = await import(pathToFileURL(path.join(WEB, "detection_admin.js")).href);
+  const rendreCouverture = async (corps) => {
+    const hote = new Element("div");
+    const qsOrigine = document.querySelector, fetchOrigine = globalThis.fetch;
+    document.querySelector = (sel) => (sel === "#cov-body" ? hote : qsOrigine(sel));
+    globalThis.fetch = async () => ({ ok: true, status: 200, text: async () => JSON.stringify(corps) });
+    try { await renderCoverage(); } finally { document.querySelector = qsOrigine; globalThis.fetch = fetchOrigine; }
+    return hote;
+  };
+  const refusCov51 = await rendreCouverture({ detections: [], error: CAUSE_51 });
+  const videCov51 = await rendreCouverture({ detections: [] });
+  const pleinCov51 = await rendreCouverture({ detections: [{ mitre: "T1059", count: 2, first_ts: MAINTENANT_51 }] });
+  const PHRASE_D_ABSENCE_51 = videCov51.textContent;
+  exiger(PHRASE_D_ABSENCE_51.length > 20 && pleinCov51.textContent.includes("T1059"),
+    `(51b-instrument) les charges de référence de la couverture ne rendent pas ce qu'elles doivent (vide ${PHRASE_D_ABSENCE_51.length} car., plein « ${pleinCov51.textContent} ») : ce témoin ne pourrait pas rougir`);
+  exiger(refusCov51.textContent.includes(CAUSE_51),
+    `(51b) un refus de lire la couverture ATT&CK ne rend pas la cause que le démon nomme : « ${refusCov51.textContent} »`);
+  exiger(!refusCov51.textContent.includes(PHRASE_D_ABSENCE_51),
+    `(51b) UN REFUS DE LIRE LA COUVERTURE EST RENDU COMME UN VERDICT DE COUVERTURE : sur une matrice purple, cette phrase-là se lit « rien ne nous a touchés » ou « nos règles ne détectent rien », et elle sort d'une lecture qui n'a PAS eu lieu. Rendu du refus : « ${refusCov51.textContent} »`);
+  exiger(new Set([refusCov51.textContent, videCov51.textContent, pleinCov51.textContent]).size === 3,
+    "(51b) les trois issues de la couverture ATT&CK (refus, vide, détections) ne rendent pas trois textes distincts");
+  const badCov51 = refusCov51.children.find((c) => c.classList && c.classList.contains("bad"));
+  exiger(!!badCov51, `(51b) le refus de la couverture n'est pas rendu dans le registre d'un aveu (classes : ${refusCov51.children.map((c) => c.className).join(" | ") || "aucun enfant"})`);
+
+  console.log(`[refus-pas-absence] deux vues, trois issues chacune sur la MÊME fonction : l'inventaire de flotte rend un refus (${refus51.children.length} nœud) qui NOMME sa cause sans jamais reprendre ni la phrase d'alarme d'ingestion (${PHRASE_D_ALARME_51.length} car., dérivée de la charge « pipeline non frais ») ni la phrase de parc vide (${PHRASE_DE_VIDE_51.length} car.), et la matrice de couverture ATT&CK rend un refus distinct de son absence (${PHRASE_D_ABSENCE_51.length} car.) comme de ses détections. Aucune phrase n'est écrite ici : les trois sont DÉRIVÉES du rendu, la cause injectée est fabriquée. CE QUE CE TÉMOIN NE TIENT PAS : il juge le TEXTE d'un arbre, pas ce qu'un moteur de rendu en peint — une phrase d'aveu masquée par la feuille de style lui paraîtrait rendue.`);
+}
+
+// ---------------------------------------------------------------------------------------------
+// 52. UN CONTRÔLE VISIBLE QUI NE PEUT RIEN FAIRE N'EST PAS OFFERT — ET SON RETRAIT SUIT L'ÉCRIVAIN
+//     UNIQUE DE LA PLAGE (`P11.20-f`, tenu par `P11.8-h`).
+//
+//     CE QUE CE TÉMOIN TIENT, ET CE QU'UN TÉMOIN PARESSEUX AURAIT LAISSÉ PASSER. La présence du bouton
+//     qui efface les dates est DÉRIVÉE de ce qu'il aurait à retirer — une plage posée, une date
+//     saisie, une phrase de refus affichée. Vérifier le seul état d'ARRIVÉE ne suffirait pas : le
+//     chemin qu'un correctif mal posé rate est le QUATRIÈME, celui où une AUTRE vue posée sur la même
+//     cible retire la plage. Il ne passe pas par un geste de cette barre-ci, mais par l'écrivain
+//     unique `poserLaPlageSurLaCible` — et sans reflet depuis LUI, le bouton resterait offert sur un
+//     contrôle qui n'a plus rien à retirer, c'est-à-dire exactement le défaut que la clé ferme.
+//
+//     LE SIMULACRE NE PEINT RIEN, ET CE TÉMOIN NE PRÉTEND PAS AUTRE CHOSE. Il juge `hidden` et
+//     `disabled` sur le nœud, pas ce qu'une feuille de style en ferait à l'écran ; c'est d'ailleurs
+//     pourquoi la console retire ce bouton au lieu de le griser (aucune règle `:disabled` ne vise sa
+//     classe), et cette raison-là se garde ailleurs — le témoin 42 lit la feuille.
+//
+//     LA CIBLE ET LA PORTE SONT FABRIQUÉES ICI, jamais empruntées à une vue : deux contrôles posés sur
+//     LA MÊME cible fabriquée reproduisent « deux vues, une fenêtre » sans toucher au journal d'audit
+//     ni au panneau d'accès données, dont les contrôles vivent dans le même registre.
+// ---------------------------------------------------------------------------------------------
+{
+  const { poserLeChoixDeDates, poserLaPlageSurLaCible } = await import(pathToFileURL(path.join(WEB, "core.js")).href);
+  let plage52 = null;
+  const cible52 = { grain: "jour", lire: () => plage52, poser: (p) => { plage52 = p; } };
+  const porte52 = { borneHaute: true, refus: () => "REFUS-FABRIQUÉ-PAR-CE-BANC-52" };
+  const PLAGE_52 = { texteDebut: "2026-01-01", texteFin: "2026-01-02", debut: 1767225600, fin: 1767398399 };
+  const etat = (c) => `hidden=${c.retirer.hidden} disabled=${c.retirer.disabled}`;
+
+  // (a) À L'ARRIVÉE, RIEN N'EST POSÉ : le bouton n'est pas offert.
+  const c52 = poserLeChoixDeDates("temoin-p11-20-f-a", cible52, porte52, () => {});
+  const MOTIF_INERTE_52 = c52.retirer.getAttribute("title");
+  exiger(c52.retirer.hidden === true && c52.retirer.disabled === true,
+    `(52a) à l'ARRIVÉE — aucune plage posée, deux champs vides, aucun refus — le bouton d'effacement est OFFERT alors qu'il n'a rien à retirer : c'est un contrôle visible qui ne peut rien faire, et il est là où l'exploitant le rencontre en premier (${etat(c52)})`);
+
+  // (b) UNE DATE FRAPPÉE : il paraît, et il repart quand la frappe est effacée.
+  c52.debut.value = "2026-01-01";
+  c52.debut.dispatchEvent({ type: "input" });
+  const MOTIF_ACTIF_52 = c52.retirer.getAttribute("title");
+  exiger(c52.retirer.hidden === false && c52.retirer.disabled === false,
+    `(52b) une date vient d'être saisie et le bouton qui l'effacerait n'est pas offert (${etat(c52)})`);
+  c52.debut.value = "";
+  c52.debut.dispatchEvent({ type: "input" });
+  exiger(c52.retirer.hidden === true,
+    `(52b) la date saisie a été effacée et le bouton reste offert : la présence n'est pas DÉRIVÉE de l'état, elle est posée une fois (${etat(c52)})`);
+
+  // (c) UNE PHRASE DE REFUS AFFICHÉE EST AUSSI QUELQUE CHOSE À RETIRER — troisième terme du prédicat,
+  //     celui qu'une garde énumérée oublierait.
+  c52.direLeRefus("REFUS-FABRIQUÉ-PAR-CE-BANC-52");
+  exiger(c52.retirer.hidden === false,
+    `(52c) une phrase de refus est affichée, sans date ni plage, et le bouton qui la retirerait n'est pas offert (${etat(c52)})`);
+  c52.direLeRefus("");
+  exiger(c52.retirer.hidden === true, `(52c) le refus est retiré et le bouton reste offert (${etat(c52)})`);
+
+  // (d) DEUX VUES, UNE FENÊTRE : la plage est posée puis RETIRÉE par l'écrivain unique, sans qu'aucun
+  //     geste ne touche ces barres. C'est le chemin qu'un correctif mal posé manque.
+  const c52b = poserLeChoixDeDates("temoin-p11-20-f-voisine", cible52, porte52, () => {});
+  exiger(c52b.retirer.hidden === true,
+    `(52d-instrument) une barre posée sur une cible SANS plage arrive avec son retrait offert (${etat(c52b)}) : les deux barres ne partent pas du même état`);
+  poserLaPlageSurLaCible(cible52, PLAGE_52);
+  exiger(c52.debut.value === PLAGE_52.texteDebut && c52b.debut.value === PLAGE_52.texteDebut,
+    `(52d-instrument) l'écrivain unique ne reflète pas la plage dans les deux barres (« ${c52.debut.value} » / « ${c52b.debut.value} ») : le chemin mesuré ici n'est pas celui qu'on croit`);
+  exiger(c52.retirer.hidden === false && c52b.retirer.hidden === false,
+    `(52d) une plage vient d'être posée par l'écrivain unique et le bouton qui la retirerait n'est pas offert (${etat(c52)} / ${etat(c52b)})`);
+  poserLaPlageSurLaCible(cible52, null);
+  exiger(cible52.lire() === null && c52.debut.value === "" && c52b.debut.value === "",
+    "(52d-instrument) l'écrivain unique n'a pas retiré la plage : le quatrième chemin n'est pas celui qui est mesuré");
+  exiger(c52.retirer.hidden === true && c52b.retirer.hidden === true,
+    `(52d) L'AUTRE VUE A RETIRÉ LA PLAGE ET LE BOUTON RESTE OFFERT sur un contrôle qui n'a plus rien à retirer : le reflet ne passe pas par l'écrivain unique de la plage, et le remède est complice du défaut qu'il corrige (${etat(c52)} / ${etat(c52b)})`);
+
+  // (e) LE MOTIF EST ÉCRIT DANS LES DEUX CAS, et les deux ne disent pas la même chose. Rien n'est
+  //     recopié : les deux libellés sont DÉRIVÉS des deux états ci-dessus.
+  exiger(!!MOTIF_INERTE_52 && !!MOTIF_ACTIF_52 && MOTIF_INERTE_52 !== MOTIF_ACTIF_52,
+    `(52e) le bouton d'effacement ne dit pas ce qu'il fait dans les DEUX états : inerte « ${MOTIF_INERTE_52} », offert « ${MOTIF_ACTIF_52} »`);
+  // (f) UN SEUL AVIS : `hidden` et `disabled` sortent du même prédicat, sur les quatre états parcourus.
+  exiger(c52.retirer.hidden === c52.retirer.disabled && c52b.retirer.hidden === c52b.retirer.disabled,
+    `(52f) le bouton est retiré et actif, ou offert et inerte : deux avis sur un même état (${etat(c52)} / ${etat(c52b)})`);
+
+  console.log(`[retrait-derive] le bouton qui efface les dates est DÉRIVÉ de ce qu'il aurait à retirer, sur quatre états et deux barres posées sur la MÊME cible : absent à l'arrivée, offert dès qu'une date est frappée puis retiré quand elle est effacée, offert sur une phrase de refus seule, offert quand l'écrivain unique pose la plage et RETIRÉ quand une autre vue la retire — sans qu'aucun geste ne touche la barre. \`hidden\` et \`disabled\` ne se contredisent jamais, et le motif est écrit dans les deux états (${(MOTIF_INERTE_52 || "").length} / ${(MOTIF_ACTIF_52 || "").length} car., dérivés). CE QUE CE TÉMOIN NE TIENT PAS : le simulacre ne peint rien — que le retrait vaille mieux que le grisé tient à une feuille de style que ce témoin ne lit pas, et rien ici ne prouve qu'un exploitant VOIT le bouton disparaître.`);
+}
+
+// ---------------------------------------------------------------------------------------------
+// 53. LES DEUX DERNIERS DÉPLIS ÉCRITS À LA MAIN PASSENT PAR LE GESTE COMMUN (`P11.20-j`, tenu par
+//     `P11.8-h`).
+//
+//     CE QUI EST TENU, ET SEULEMENT CELA. Le constat d'origine a été RÉFUTÉ sur deux points, et ce
+//     témoin ne les rouvre pas : les deux boutons n'en faisaient pas qu'un, et `aria-expanded` était
+//     DÉJÀ posé — au repos par `index.html`, à chaque bascule par le code écrit à la main. Ce témoin
+//     ne mesure donc PAS `aria-expanded` comme un gain : le mesurer ainsi ferait passer pour acquis
+//     par le ralliement ce qui l'était avant lui. Le gain, mesuré, est ailleurs : `aria-controls` —
+//     que `disclosure` pose DEPUIS l'identifiant du panneau et que ni la version à la main ni
+//     `index.html` ne portaient — et la marque d'état `.on`, que le geste commun pose sur le bouton.
+//
+//     LE TÉMOIN EST PRIS SUR LES NŒUDS DE LA PAGE, pas sur un arbre fabriqué : ces deux câblages sont
+//     posés à l'ÉVALUATION du module, sur les identifiants d'`index.html`, et c'est là qu'un
+//     ralliement défait se verrait. Le clic est joué deux fois — la bascule se mesure, et l'état
+//     d'origine est rendu au reste du banc.
+// ---------------------------------------------------------------------------------------------
+{
+  const PANNEAUX_53 = [["#rule-collapse", "rule-list"], ["#parser-collapse", "parser-list"]];
+  for (const [selBouton, idPanneau] of PANNEAUX_53) {
+    const bouton = document.querySelector(selBouton), panneau = document.querySelector("#" + idPanneau);
+    exiger(!!bouton && !!panneau && panneau.id === idPanneau,
+      `(53-instrument) ${selBouton} ou #${idPanneau} n'est pas un nœud de la page : ce témoin jugerait un nœud détaché, et son vert ne dirait rien du câblage réel`);
+    if (!bouton || !panneau || panneau.id !== idPanneau) continue;
+    exiger(bouton.getAttribute("aria-controls") === idPanneau,
+      `(53) ${selBouton} ne NOMME pas la région qu'il commande : \`aria-controls\` vaut « ${bouton.getAttribute("aria-controls")} » au lieu de « ${idPanneau} » — le dépli n'est pas passé par le geste commun, qui seul le pose depuis l'identifiant du panneau`);
+    const ouvertAuRepos = !panneau.hidden;
+    exiger(bouton.classList.contains("on") === ouvertAuRepos,
+      `(53) ${selBouton} ne porte pas la marque d'état du geste commun : panneau ${ouvertAuRepos ? "ouvert" : "replié"}, classe « ${bouton.className} »`);
+    // LA BASCULE, PAR LE CHEMIN RÉEL DU CLIC. Les trois valeurs changent ENSEMBLE ou le ralliement est
+    // partiel — c'est ce que la version à la main ne tenait pas.
+    bouton.dispatchEvent({ type: "click" });
+    const bascule = { hidden: panneau.hidden, aria: bouton.getAttribute("aria-expanded"), on: bouton.classList.contains("on"), controls: bouton.getAttribute("aria-controls") };
+    exiger(bascule.hidden === ouvertAuRepos && bascule.aria === (ouvertAuRepos ? "false" : "true") && bascule.on === !ouvertAuRepos && bascule.controls === idPanneau,
+      `(53) un clic sur ${selBouton} ne fait pas bouger ensemble le pli, l'état annoncé et la marque : ${JSON.stringify(bascule)}`);
+    bouton.dispatchEvent({ type: "click" });
+    exiger(panneau.hidden === !ouvertAuRepos && bouton.classList.contains("on") === ouvertAuRepos && bouton.getAttribute("aria-controls") === idPanneau,
+      `(53) un second clic sur ${selBouton} ne rend pas l'état d'origine : hidden=${panneau.hidden}, classe « ${bouton.className} »`);
+  }
+
+  // LE MODULE N'ÉCRIT PLUS SON PROPRE DÉPLI. Dérivé du source, comme le reste du fichier : un module
+  // qui repose sur le geste commun n'a plus à poser `aria-expanded` lui-même.
+  const srcDet53 = (CORPUS_WEB.find(([f]) => f === "detection_admin.js") || [])[1] || "";
+  const codeDe53 = (src) => src.split("\n").filter((l) => !l.trim().startsWith("//"));
+  const ariaEcrit53 = (src) => codeDe53(src).reduce((n, l) => n + (l.match(/aria-expanded/g) || []).length, 0);
+  exiger(srcDet53.length > 0, "(53-instrument) `detection_admin.js` est introuvable dans le corpus : la mesure de source porte sur le vide");
+  exiger(/\bdisclosure\b/.test(srcDet53) && (srcDet53.match(/disclosure\(/g) || []).length >= 1,
+    "(53) `detection_admin.js` n'appelle plus le dépli partagé : les deux panneaux ont retrouvé un patron à eux");
+  exiger(ariaEcrit53(srcDet53) === 0,
+    `(53) \`detection_admin.js\` écrit ${ariaEcrit53(srcDet53)} fois \`aria-expanded\` dans son code : le patron de dépli est revenu à la main, et deux panneaux voisins ne se plient plus par le même geste`);
+  // L'INSTRUMENT SE VALIDE SUR CE QUI EN CONTIENT : un compteur qui rend 0 partout ne prouverait rien.
+  const resteAlaMain53 = CORPUS_WEB.filter(([f, src]) => f.endsWith(".js") && f !== "core.js" && ariaEcrit53(src) > 0).map(([f]) => f).sort();
+  exiger(resteAlaMain53.length > 0,
+    "(53-instrument) le compteur de dépli écrit à la main ne trouve AUCUN site dans web/ : il lit le vide, et son zéro sur detection_admin.js ne prouverait rien");
+  // LA BORNE, MESURÉE PLUTÔT QUE TUE (2026-08-29) : le ralliement n'est PAS général. Deux modules
+  // écrivent encore leur dépli à la main. Ce n'est pas une régression, c'est le reste — et il est
+  // borné ici pour qu'on ne puisse pas croire la console entièrement ralliée.
+  exiger(JSON.stringify(resteAlaMain53) === JSON.stringify(["alerts.js", "freshness.js"]),
+    `(53-borne) les modules qui écrivent encore leur dépli à la main ont changé : ${JSON.stringify(resteAlaMain53)} au lieu des deux mesurés le 2026-08-29. Un module de plus est une RÉGRESSION ; un de moins est un reste fermé — mettez cette borne à jour dans ce cas, elle ne se corrige pas toute seule.`);
+
+  console.log(`[depli-commun] les deux panneaux d'administration de la détection passent par le geste commun : chaque bouton NOMME sa région (\`aria-controls\` = l'identifiant du panneau, que ni la version à la main ni index.html ne posaient), porte la marque d'état du geste, et un clic joué sur le nœud de la page fait bouger ensemble le pli, l'état annoncé et la marque — deux fois, l'état d'origine rendu. \`aria-expanded\` n'est PAS compté comme un gain : il était déjà posé avant le ralliement. CE QUE CE TÉMOIN NE TIENT PAS : le ralliement n'est pas général — ${resteAlaMain53.length} module(s) de web/ écrivent encore leur dépli à la main (${resteAlaMain53.join(", ")}), et cette borne le dit au lieu de le taire ; et rien ici ne prouve qu'une assistance technique RÉELLE lise ces attributs.`);
+}
+
 // LE VERDICT PORTE SA PROPRE LIMITE (`P11.13-g`). Un vert qui ne dit pas ce sur quoi il ne s'engage pas
 // se lit comme une COUVERTURE — et un rouge n'a pas plus le droit de laisser croire qu'il a tout regardé.
 // La phrase ci-dessous n'est pas écrite : elle est DÉRIVÉE des sondes de la section 0, donc une capacité
@@ -6435,4 +6674,4 @@ if (echecs.length) {
   console.error(`\n${echecs.length} témoin(s) en échec : la surface aplatit un verdict.${CE_QUE_CE_VERDICT_NE_DIT_PAS}`);
   process.exit(1);
 }
-console.log(`OK — ${modules.length} modules web se lient ; le panneau Système rend l'état « NON LISIBLE » avec sa cause sur 5 tuiles, les bilans de boucles et les grandeurs de composant, et la valeur quand le verdict est « lu » (vrai zéro compris) ; un playbook livré et un runbook créé rendent par la même fabrique de ligne, avec le mot de leur état et leur conséquence ; la liste des alertes rend une seule barre d'actions sur tous ses tris, aucune action n'est désactivée au motif d'une facette, et la facette source dit son objet et son étendue ; une technique ATT&CK sans nom se dit, l'éditeur de requête laisse « != » en place sous la frappe, la palette des modèles porte modifier/supprimer/copier, et le badge de troncature nomme le saut de page ; l'inventaire des sources NOMME le déclarant de chaque source — ce dépôt, le démon, le produit, un connecteur, ou l'exploitant avec sa date — dit « personne ne l'a déclarée » là où c'est le cas, et n'offre de déclarer une cadence que là où aucune sonde n'en déclare ; la fraîcheur rend le statut du démon (une périodique dans sa cadence = frais, jamais « dégradé ») et RÉPARTIT les alertes actives entre celles qu'une cloche porte, celles qui ne se rapportent à aucun flux (et qui pivotent vers elles-mêmes) et celles dont l'imputation n'a jamais été enregistrée, sans rien afficher quand aucune alerte n'est active ; une carte d'administration se replie par son bouton sans jamais le griser, un formulaire de création ne rend aucun bouton nu, et la confirmation partagée exige une conséquence nommée, bloque écartée et passe validée ; la sidebar porte deux espaces « Recherche » et « Cas » égaux au modèle de navigation, les alertes sous Cas, l'éditeur seul sous Recherche, chaque section mappée existe, et les deux familles de l'onglet Playbooks sont nommées dans leurs en-têtes et boutons, la durée du ban suivant la valeur servie ; les fabriques de bouton des cas et des producteurs, la barre des alertes et le bloc MFA ne rendent aucun bouton nu ni style en ligne, et chaque bouton d'aide a sa section ; l'aide « Jetons » s'ouvre et dit le secret montré une seule fois, et une clé sans section ouvre un aveu qui la nomme ; le bouton de fermeture des modales d'aide et les titres du guide rendent en anglais par le lexique, jamais par un mot écrit dans le module ; l'amorçage pose l'observateur du lexique sur le corps du document et celui-ci traduit un nœud texte, un élément et un attribut posés après coup ; le panneau d'accès données rend cinq cartes qui DISTINGUENT un refus du démon d'une absence de données — sans réseau elles avouent leur cause au lieu d'affirmer un vide — son sélecteur et ses sept chemins surveillés ; la ligne d'un lookup porte nom, badge, clé, colonnes et bouton habillé, et le collage CSV lit les guillemets et refuse un collage sans données ; une tuile de dashboard rend son titre, ses outils selon le droit, sa largeur, et sa grille avoue l'erreur sans réseau ; l'encart d'identité nomme la méthode d'authentification hors session cookie et l'écran de connexion verrouille le corps du document en coupant l'auto-rafraîchissement ; un onglet interdit, inconnu ou renommé se replie sur la vue d'ensemble sans réécrire le lien profond ; la ligne d'un cas ouvre et REFERME le détail par le dépli partagé, le bouton du détail emprunte le même chemin et repeint la ligne, un cas terminé rend un statut inerte qui NOMME sa raison et sa sortie là où il n'en rendait aucun, un cas en cours ne la porte pas, et un droit manquant se dit autrement qu'un état qui ne bouge plus ; la ligne d'une règle rend DÉJÀ tester, éditer, supprimer et un interrupteur actif pour un administrateur, inerte et motivé pour un lecteur ; et LA recherche de liste, partagée, resserre sur plusieurs mots sans se soucier de la casse ni des accents, cherche une règle par son nom, sa requête et sa technique, rend une liste plate ordonnée par le tri courant qui DIT combien de lignes sur combien elle montre, nomme ce qu'elle a cherché quand elle ne trouve rien, et se vide au retour d'un enregistrement pour que la règle écrite se voie ; enfin une technique ATT&CK est une PORTE — ses règles, ses détections par le pivot qui existait déjà (le module ne fabrique aucune requête) et le geste qui la couvrirait, un angle mort qui se dit et met la création en avant, une sortie impraticable rendue inerte avec son motif, et un lecteur à qui le rôle manquant est nommé ; un filtre choisi de la barre des alertes ne se marque plus par la graisse de son mot — que le gras réservait ailleurs à l'alarme — mais par un liseré que rien d'autre n'emploie, et il DIT son état ; l'espace qui porte les alertes et les cas les annonce tous les deux — aucun espace à plusieurs onglets ne porte plus le nom d'un seul — et son filtre se nomme par ce qu'il MONTRE au lieu d'une relation que l'exploitant ne savait pas lire ; une alerte se cherche par son titre, le jeton de sa regle et sa source imputee, par LE meme champ partage : la recherche se compose avec la portee, le filtre d'affichage et les facettes sans jamais partir au demon, met le groupement de cote le temps de rendre ses resultats, DIT ce qu'elle couvre — les alertes servies, ou la seule page affichee — et retire de la barre l'acquittement qui la depasserait ; la selection rend ce qui est selectionne — le clic d'une ligne de resultats et celui d'un titre d'alerte se retirent devant une selection faite chez eux, et devant elle seule — pendant qu'UN unique geste de copie, seul ecrivain du presse-papier dans web/, accuse le succes et avoue un refus au lieu de le taire ; le detail d'un composant du panneau Systeme n'est plus coupe a une ligne par la feuille de style — l'avertissement d'exercice de restauration se lit jusqu'a sa conclusion et la reference documentaire qu'il porte se copie en un geste, faute d'etre servie par une route.${CE_QUE_CE_VERDICT_NE_DIT_PAS}`);
+console.log(`OK — ${modules.length} modules web se lient ; le panneau Système rend l'état « NON LISIBLE » avec sa cause sur 5 tuiles, les bilans de boucles et les grandeurs de composant, et la valeur quand le verdict est « lu » (vrai zéro compris) ; un playbook livré et un runbook créé rendent par la même fabrique de ligne, avec le mot de leur état et leur conséquence ; la liste des alertes rend une seule barre d'actions sur tous ses tris, aucune action n'est désactivée au motif d'une facette, et la facette source dit son objet et son étendue ; une technique ATT&CK sans nom se dit, l'éditeur de requête laisse « != » en place sous la frappe, la palette des modèles porte modifier/supprimer/copier, et le badge de troncature nomme le saut de page ; l'inventaire des sources NOMME le déclarant de chaque source — ce dépôt, le démon, le produit, un connecteur, ou l'exploitant avec sa date — dit « personne ne l'a déclarée » là où c'est le cas, et n'offre de déclarer une cadence que là où aucune sonde n'en déclare ; la fraîcheur rend le statut du démon (une périodique dans sa cadence = frais, jamais « dégradé ») et RÉPARTIT les alertes actives entre celles qu'une cloche porte, celles qui ne se rapportent à aucun flux (et qui pivotent vers elles-mêmes) et celles dont l'imputation n'a jamais été enregistrée, sans rien afficher quand aucune alerte n'est active ; une carte d'administration se replie par son bouton sans jamais le griser, un formulaire de création ne rend aucun bouton nu, et la confirmation partagée exige une conséquence nommée, bloque écartée et passe validée ; la sidebar porte deux espaces « Recherche » et « Cas » égaux au modèle de navigation, les alertes sous Cas, l'éditeur seul sous Recherche, chaque section mappée existe, et les deux familles de l'onglet Playbooks sont nommées dans leurs en-têtes et boutons, la durée du ban suivant la valeur servie ; les fabriques de bouton des cas et des producteurs, la barre des alertes et le bloc MFA ne rendent aucun bouton nu ni style en ligne, et chaque bouton d'aide a sa section ; l'aide « Jetons » s'ouvre et dit le secret montré une seule fois, et une clé sans section ouvre un aveu qui la nomme ; le bouton de fermeture des modales d'aide et les titres du guide rendent en anglais par le lexique, jamais par un mot écrit dans le module ; l'amorçage pose l'observateur du lexique sur le corps du document et celui-ci traduit un nœud texte, un élément et un attribut posés après coup ; le panneau d'accès données rend cinq cartes qui DISTINGUENT un refus du démon d'une absence de données — sans réseau elles avouent leur cause au lieu d'affirmer un vide — son sélecteur et ses sept chemins surveillés ; la ligne d'un lookup porte nom, badge, clé, colonnes et bouton habillé, et le collage CSV lit les guillemets et refuse un collage sans données ; une tuile de dashboard rend son titre, ses outils selon le droit, sa largeur, et sa grille avoue l'erreur sans réseau ; l'encart d'identité nomme la méthode d'authentification hors session cookie et l'écran de connexion verrouille le corps du document en coupant l'auto-rafraîchissement ; un onglet interdit, inconnu ou renommé se replie sur la vue d'ensemble sans réécrire le lien profond ; la ligne d'un cas ouvre et REFERME le détail par le dépli partagé, le bouton du détail emprunte le même chemin et repeint la ligne, un cas terminé rend un statut inerte qui NOMME sa raison et sa sortie là où il n'en rendait aucun, un cas en cours ne la porte pas, et un droit manquant se dit autrement qu'un état qui ne bouge plus ; la ligne d'une règle rend DÉJÀ tester, éditer, supprimer et un interrupteur actif pour un administrateur, inerte et motivé pour un lecteur ; et LA recherche de liste, partagée, resserre sur plusieurs mots sans se soucier de la casse ni des accents, cherche une règle par son nom, sa requête et sa technique, rend une liste plate ordonnée par le tri courant qui DIT combien de lignes sur combien elle montre, nomme ce qu'elle a cherché quand elle ne trouve rien, et se vide au retour d'un enregistrement pour que la règle écrite se voie ; enfin une technique ATT&CK est une PORTE — ses règles, ses détections par le pivot qui existait déjà (le module ne fabrique aucune requête) et le geste qui la couvrirait, un angle mort qui se dit et met la création en avant, une sortie impraticable rendue inerte avec son motif, et un lecteur à qui le rôle manquant est nommé ; un filtre choisi de la barre des alertes ne se marque plus par la graisse de son mot — que le gras réservait ailleurs à l'alarme — mais par un liseré que rien d'autre n'emploie, et il DIT son état ; l'espace qui porte les alertes et les cas les annonce tous les deux — aucun espace à plusieurs onglets ne porte plus le nom d'un seul — et son filtre se nomme par ce qu'il MONTRE au lieu d'une relation que l'exploitant ne savait pas lire ; une alerte se cherche par son titre, le jeton de sa regle et sa source imputee, par LE meme champ partage : la recherche se compose avec la portee, le filtre d'affichage et les facettes sans jamais partir au demon, met le groupement de cote le temps de rendre ses resultats, DIT ce qu'elle couvre — les alertes servies, ou la seule page affichee — et retire de la barre l'acquittement qui la depasserait ; la selection rend ce qui est selectionne — le clic d'une ligne de resultats et celui d'un titre d'alerte se retirent devant une selection faite chez eux, et devant elle seule — pendant qu'UN unique geste de copie, seul ecrivain du presse-papier dans web/, accuse le succes et avoue un refus au lieu de le taire ; le detail d'un composant du panneau Systeme n'est plus coupe a une ligne par la feuille de style — l'avertissement d'exercice de restauration se lit jusqu'a sa conclusion et la reference documentaire qu'il porte se copie en un geste, faute d'etre servie par une route ; et les trois correctifs que rien ne tenait le sont enfin : un refus de lire l'inventaire de flotte ou la couverture ATT&CK ne se rend NI en panne d'ingestion constatée NI en absence établie — les trois issues sont distinctes sur la même fonction, et les deux phrases qu'un refus ne doit pas reprendre sont dérivées du rendu, jamais recopiées ; le bouton qui efface les dates n'est offert que lorsqu'il a quelque chose à retirer, sur quatre états et jusque sur le retrait fait par une AUTRE vue, qui passe par l'écrivain unique de la plage ; et les deux derniers déplis écrits à la main NOMMENT la région qu'ils commandent, ce qu'aucun d'eux ne faisait, la borne disant combien de modules ne sont pas ralliés.${CE_QUE_CE_VERDICT_NE_DIT_PAS}`);

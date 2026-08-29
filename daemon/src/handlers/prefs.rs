@@ -92,13 +92,27 @@ mod tests {
         assert_eq!(prefs_read(&conn, "carol"), "{}");
     }
 
-    // Un upsert de bob ne peut PAS écraser/altérer la ligne d'alice (clé primaire = user).
+    // PORTÉE D'UNE ÉCRITURE : exactement UNE ligne, et cette ligne REMPLACÉE EN ENTIER.
+    //  - un upsert de bob ne peut PAS écraser/altérer la ligne d'alice (clé primaire = user) ;
+    //  - sur SA propre ligne, l'upsert REMPLACE le blob (`prefs=excluded.prefs`), il ne FUSIONNE pas : une
+    //    clé présente dans l'ancien blob et absente du nouveau est PARTIE. Le stockage est un blob OPAQUE —
+    //    aucune trace par clé, donc aucun moyen de distinguer « supprimée » de « jamais posée » : ici,
+    //    L'ABSENCE EST LA SUPPRESSION, et c'est la SEULE chose qui rende une suppression de préférence
+    //    transmissible d'un poste à l'autre. `web/prefs.js` en dépend pour réconcilier par REMPLACEMENT et
+    //    non par fusion (clé `P11.15-e`) ; le jour où cette écriture fusionnerait, une suppression cesserait
+    //    silencieusement de traverser — et ce témoin rougirait AVANT elle.
     #[test]
     fn write_never_touches_other_users_row() {
         let conn = mem();
         prefs_write(&conn, "alice", r#"{"k":"a"}"#, 1).unwrap();
-        prefs_write(&conn, "bob", r#"{"k":"b"}"#, 2).unwrap();
+        prefs_write(&conn, "bob", r#"{"k":"b","z":1}"#, 2).unwrap();
         prefs_write(&conn, "bob", r#"{"k":"b2"}"#, 3).unwrap();
+        assert_eq!(prefs_read(&conn, "alice"), r#"{"k":"a"}"#);
+        // REMPLACEMENT, pas fusion : `z` a DISPARU du blob de bob, sans rien aspirer chez alice.
+        assert_eq!(prefs_read(&conn, "bob"), r#"{"k":"b2"}"#);
+        // Un blob VIDE est un remplacement comme un autre : retirer la DERNIÈRE préférence est représentable.
+        prefs_write(&conn, "bob", "{}", 4).unwrap();
+        assert_eq!(prefs_read(&conn, "bob"), "{}");
         assert_eq!(prefs_read(&conn, "alice"), r#"{"k":"a"}"#);
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM user_pref", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 2);

@@ -379,6 +379,42 @@ function Get-EventData {
   return $h
 }
 
+# P4.12-a — UNE SEULE FRONTIÈRE D'ADRESSE, POUR TOUS LES SITES DE CE CAPTEUR.
+#
+# CE QUI ÉTAIT FAUX, MESURÉ le 2026-08-29. La frontière n'existait qu'au site d'AUTHENTIFICATION
+# (`$sip -eq '-' -or ...`), et nulle part ailleurs. Le site WFP passait `$d['SourceAddress']` /
+# `$d['DestAddress']` DIRECTEMENT à `Add-Event`, dont le seul test est la véracité PowerShell
+# (`if ($SrcIp)`) — or `'-'`, `'0.0.0.0'` et `'127.0.0.1'` sont tous VRAIS. Conséquences, sur des
+# enregistrements banals :
+#   · une connexion en boucle locale bloquée (5157, `SourceAddress='127.0.0.1'`) fabriquait une
+#     entité `127.0.0.1` PARTAGÉE PAR TOUT LE PARC — le « seau unique » que la colonne d'adresse est
+#     censée défaire ;
+#   · un DHCP DISCOVER bloqué (5152) écrivait `src_ip=0.0.0.0` et `dst_ip=255.255.255.255` sur chaque
+#     poste, à chaque bail.
+# Et l'écart n'est pas seulement interne à ce fichier : `agent/src/source/windows.rs`, le SECOND
+# capteur Windows livré, écarte ces valeurs depuis le MÊME jour où il s'est mis à peupler la colonne —
+# le MÊME enregistrement rendrait donc une entité par un capteur et AUCUNE par l'autre, exactement le
+# défaut que
+# `.github/scripts/check_a_windows_sensor_promotes_the_address_it_carries.py` s'intitule rendre
+# non-écrivable (et sur lequel elle était VERTE : elle ne lisait la frontière QUE sur le chemin
+# d'authentification). La garde lit désormais CHAQUE site de promotion et REFUSE d'en voir un qui ne
+# passe pas par cette fonction.
+#
+# LA BORNE DE CETTE FRONTIÈRE, DITE : elle compare des CHAÎNES. Elle ne REPLIE donc pas
+# `::ffff:203.0.113.7` sur `203.0.113.7` comme le fait l'agent (`valeur_exploitable`, analyse par
+# `IpAddr`) : deux écritures de la même machine restent deux entités ici. Le repli demanderait un
+# analyseur .NET (`[System.Net.IPAddress]`, `IsIPv4MappedToIPv6`) dont l'absence sur une version
+# ancienne du cadriciel LÈVE sous le `Set-StrictMode -Version 2.0` de ce fichier, et aucun `pwsh`
+# n'existe sur le poste où ce lot est écrit pour l'éprouver. L'écart est donc ASSUMÉ, IMPRIMÉ par la
+# garde, et porté par `P4.12-c` — pas caché.
+function Adresse-Exploitable {
+  param([string]$Valeur)
+  $v = "$Valeur".Trim()
+  if (-not $v) { return $null }
+  if ($v -in @('-', '127.0.0.1', '::1', '::ffff:127.0.0.1', '0.0.0.0', '::', '255.255.255.255', '224.0.0.251', 'ff02::1')) { return $null }
+  return $v
+}
+
 # Sévérité par EventID (défaut 1 = info-bas).
 function Sev-For([int]$id) {
   switch ($id) {
@@ -503,7 +539,7 @@ function Collect-Log {
     if ($issue -ne '-') { $fields['action'] = $issue }
     if ($id -eq 4688) { if ($d.ContainsKey('CommandLine') -and $d['CommandLine']) { $cmdlinePresent++ } else { $cmdlineAbsent++ } }
     foreach ($k in $d.Keys) { if ($d[$k] -and -not $fields.ContainsKey($k)) { $fields[$k] = $d[$k] } }
-    $sip = $d['IpAddress']; if ($sip -eq '-' -or $sip -eq '::1' -or $sip -eq '127.0.0.1') { $sip = $null }
+    $sip = Adresse-Exploitable $d['IpAddress']
     $ded = "$Source-$($e.RecordId)"
     Add-Event -Source $Source -Category $Category -Severity $sev -Message $msg -Fields $fields `
               -Ts (To-Epoch $e.TimeCreated) -SrcIp $sip -Dedup $ded
@@ -610,7 +646,7 @@ try {
                  record_id=$e.RecordId }
     Add-Event -Source 'windows-firewall' -Category 'firewall' -Severity (Sev-For ([int]$e.Id)) `
       -Message "pare-feu: connexion bloquée ($($d['Direction'])) $($d['SourceAddress']):$($d['SourcePort']) -> $($d['DestAddress']):$($d['DestPort']) [$($d['Protocol'])]" `
-      -Fields $fields -Ts (To-Epoch $e.TimeCreated) -SrcIp $d['SourceAddress'] -DstIp $d['DestAddress'] `
+      -Fields $fields -Ts (To-Epoch $e.TimeCreated) -SrcIp (Adresse-Exploitable $d['SourceAddress']) -DstIp (Adresse-Exploitable $d['DestAddress']) `
       -Dedup "windows-firewall-$($e.RecordId)"
   }
   Stage-Watermark -Name 'win-firewall' -Value $fwMax

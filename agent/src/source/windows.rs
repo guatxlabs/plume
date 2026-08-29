@@ -113,6 +113,170 @@ fn xml_escape(s: &str) -> String {
 
 // --- mapping Event XML -> Event (PUR, testé sur Linux) -------------------------------------------
 
+// --- P4.12-a — L'ADRESSE QUE WINDOWS RANGE SOUS SON PROPRE NOM ------------------------------------
+//
+// LE DÉFAUT, MESURÉ le 2026-08-29. Windows nomme `IpAddress` l'adresse d'un échec d'ouverture de
+// session, et `extract_event_data` la recopie VERBATIM dans le sac `fields` — c'est le contrat de ce
+// lecteur : il adopte le vocabulaire de l'émetteur au lieu d'en inventer un. Or la colonne
+// `event.src_ip` du central n'est peuplée QUE depuis les noms que le contrat CIM déclare
+// (`config.d/cim/cim.v1.json`, `promoted_fields` : `fields.src_ip` | `fields.rhost`), et `IpAddress`
+// n'en fait pas partie. Cet agent arrivait donc TOUJOURS avec `src_ip` NULLE, et les deux règles
+// LIVRÉES qui détectent PAR ENTITÉ (« Brute-force auth par IP », `stats count by src_ip` ; « RBA :
+// brute-force d'authentification », entité `src_ip`) s'appliquaient à du VIDE.
+// LES DEUX DIRECTIONS ONT ÉTÉ MESURÉES, ET ELLES NE VONT PAS DANS LE MÊME SENS :
+//   · la règle RBA IGNORE une entité vide (`daemon/src/handlers/rba.rs` : `if entity.is_empty() {
+//     continue }`) -> aucun risque n'était attribué : SOUS-détection SILENCIEUSE ;
+//   · la règle scalaire ne l'ignore pas — `GROUP BY src_ip` réunit toutes les lignes nulles dans UN
+//     seau (mesuré sur SQLite : trois NULL -> un groupe de 3) -> le parc entier compte pour UNE
+//     entité : SUR-signalement sur une entité qui n'existe pas.
+// ET CE SEAU UNIQUE RENDAIT UN SERVICE PAR ACCIDENT, qu'il faut savoir avant de lire ce bloc comme un
+// gain net : il agrégeait TOUT le parc, donc la règle tirait sur un password-spray DISTRIBUÉ. MESURÉ
+// (20 adresses x 10 échecs) : AVANT, 1 seau > 15 -> la règle TIRE ; APRÈS, 20 seaux de 10 -> AUCUNE
+// alerte, et la règle de catalogue qui verrait le cas est livrée ÉTEINTE. Voir `P4.12-e`.
+//
+// POURQUOI LE CORRECTIF EST ICI, ET PAS DANS LA PROMOTION DU DÉMON. Élargir la promotion au nom
+// `IpAddress` mettrait un nom de VENDEUR dans le chemin chaud commun à TOUTES les sources — ce que ce
+// dépôt refuse. Le second capteur Windows LIVRÉ le fait déjà à la bonne place :
+// `collectors/windows/plume-collector.ps1` laisse `IpAddress` dans `fields` ET pose l'adresse dans la
+// colonne (`-SrcIp $d['IpAddress']`). Ce bloc rend l'agent conforme à ce précédent, par la voie que le
+// CIM prescrit à un producteur (« un parser/mapping DEVRAIT poser ces clés pour peupler les colonnes »).
+// PRÉCISION AJOUTÉE le 2026-08-29 : ce précédent ne valait QUE pour le site d'authentification de ce
+// capteur — son site pare-feu passait l'adresse SANS frontière, et c'est corrigé du même geste que la
+// reprise ci-dessous.
+//
+// ENRICHISSEMENT SEUL, JAMAIS UNE RÉÉCRITURE. La clé de l'émetteur n'est ni effacée ni renommée :
+// `IpAddress` reste dans `fields` (le vocabulaire Windows reste cherchable), `src_ip` est AJOUTÉE À
+// CÔTÉ. Un enregistrement sans aucun nom d'adresse reconnu sort byte-identique.
+//
+// « L'ÉMETTEUR GAGNE » PORTE SUR UNE VALEUR, PAS SUR UNE PRÉSENCE — CORRIGÉ le 2026-08-29. La
+// première version sautait la promotion dès que la CLÉ existait (`fields.contains_key`). Or
+// `extract_event_data` insère aussi les `<Data Name='…'></Data>` VIDES (son seul test porte sur le
+// NOM), et tout le reste de la chaîne tranche sur la VALEUR : `dfield_put` et
+// `fields_promote_src_dst_url` (daemon/src/parsers.rs) filtrent `!v.is_empty()`. Conséquence mesurée
+// de l'écart : un enregistrement portant `<Data Name='src_ip'></Data>` ET un `IpAddress` valide
+// sortait SANS adresse — le défaut que ce bloc corrige, revenu en silence pour cet enregistrement ;
+// et un `src_ip` valant `-` traversait sans que la frontière lui soit jamais appliquée. La garde
+// porte donc sur la même chose que le reste de la chaîne : une clé déjà posée gagne SI SA VALEUR est
+// une adresse exploitable, sinon la promotion écrit par-dessus une écriture qui n'était l'adresse de
+// personne.
+//
+// LA FRONTIÈRE EST UNE VALEUR, PAS UNE ÉCRITURE — REPRISE DU 2026-08-29, APRÈS RÉFUTATION.
+// La première version de ce bloc comparait des CHAÎNES à trois sentinelles recopiées du capteur
+// PowerShell (`-`, `::1`, `127.0.0.1`). MESURÉ, cette frontière laissait passer la moitié de ce
+// qu'elle prétendait fermer, et sur le vocabulaire même que ce lot ajoutait :
+//   · `::ffff:127.0.0.1` (ouverture de session locale sur une pile double) n'est aucune des trois
+//     chaînes -> une entité de boucle locale PARTAGÉE PAR TOUT LE PARC, c'est-à-dire le seau unique
+//     que ce lot dit défaire, reconstitué sous une autre écriture ;
+//   · `0.0.0.0` / `::` / `255.255.255.255` sont les valeurs NOMINALES d'un DHCP DISCOVER bloqué par
+//     le WFP (5152), un enregistrement que ce lot promeut pour la première fois -> une entité
+//     `0.0.0.0` par bail, sur chaque poste ;
+//   · `::ffff:203.0.113.7` et `203.0.113.7` sont la MÊME machine et faisaient DEUX entités : chaque
+//     seau reste sous son seuil et l'alerte ne part pas — c'est exactement `P4.7-l`, sur une
+//     population que ce lot venait de CRÉER.
+// La frontière tranche donc désormais sur la VALEUR ANALYSÉE (`P4.7-j` : « l'identité d'une adresse
+// est sa valeur, jamais son écriture »), avec la MÊME sémantique d'analyse que le démon
+// (`ssrf_norm_ip`, daemon/src/ledger.rs : `parse::<IpAddr>` puis repli de la forme IPv4-mappée) —
+// l'agent ne peut pas APPELER cette fonction (autre caisse, `pub(crate)` du démon) : c'est une
+// empreinte partagée, et c'est dit ici plutôt que caché.
+//
+// `PAS_UNE_ADRESSE` N'EST PLUS LE MÉCANISME, C'EST LE CORPUS DÉCLARÉ. La liste ci-dessous n'est plus
+// consultée par le code de décision : elle énumère des ÉCRITURES dont un témoin Rust
+// (`aucune_ecriture_du_corpus_ne_devient_une_entite`) exige qu'elles soient toutes refusées par la
+// discipline de valeur. Elle sert de contrat LISIBLE à la garde de CI, qui vérifie que tout ce que le
+// capteur PowerShell écarte est aussi écarté ici (CONTENANCE, pas égalité : la version précédente
+// exigeait l'ÉGALITÉ des deux listes, ce qui INTERDISAIT d'élargir la frontière — la garde défendait
+// le trou qu'elle nommait).
+//
+// CE QUI RESTE ÉCRIT ET NON FERMÉ : le capteur PowerShell, lui, ne REPLIE pas la forme mappée (il
+// compare des chaînes, faute de pouvoir appeler un analyseur sans risque sous `Set-StrictMode`, et
+// aucun `pwsh` n'existe sur le poste où ce lot est écrit pour le valider). Les deux capteurs écartent
+// donc le même corpus, mais l'agent rend en plus une forme CANONIQUE là où le PowerShell rend
+// l'écriture reçue. La garde IMPRIME cet écart au lieu de le taire ; il est porté par `P4.12-c`.
+
+/// Noms Windows d'une adresse SOURCE, dans l'ordre de lecture. `IpAddress` = journal Security
+/// (4625/4624/4771/4768/4769) ; `SourceAddress` = plateforme de filtrage WFP (5152/5157) ; `SourceIp`
+/// = Sysmon ID 3 (connexion réseau).
+///
+/// LE SENS N'EST PAS MESURÉ SUR DEUX DES TROIS VOCABULAIRES, ET C'EST ÉCRIT. Sur Sysmon ID 3 avec
+/// `Initiated=true` (une connexion SORTANTE, le cas majoritaire) et sur le WFP en sortant,
+/// `SourceIp`/`SourceAddress` est la machine OBSERVÉE, pas le pair distant. Ce lecteur ne lit ni
+/// `Initiated` ni `Direction` : la colonne `src_ip` porte alors l'adresse du poste surveillé. C'est
+/// la sémantique CIM (source = origine de la connexion) et c'est le précédent du capteur PowerShell
+/// livré, qui range déjà l'adresse LOCALE en `src_ip` pour `category=network`
+/// (`-SrcIp $_.LocalAddress`) — mais un exploitant qui lit « top src_ip » comme « top attaquants »
+/// se trompera sur cette population. Voir `P4.12-d`.
+const ADRESSE_SOURCE: [&str; 3] = ["IpAddress", "SourceAddress", "SourceIp"];
+/// Noms Windows d'une adresse DESTINATION. `DestAddress` = WFP ; `DestinationIp` = Sysmon ID 3.
+const ADRESSE_DESTINATION: [&str; 2] = ["DestAddress", "DestinationIp"];
+/// CORPUS DÉCLARÉ des écritures qui ne sont l'adresse de PERSONNE — voir le bloc ci-dessus : ce n'est
+/// PAS le mécanisme de refus (c'est `valeur_exploitable`), c'est le contrat que le témoin
+/// `aucune_ecriture_du_corpus_ne_devient_une_entite` éprouve et que la garde de CI compare à celui du
+/// capteur PowerShell. Chaque entrée est là pour une raison MESURÉE : `-` (Windows n'a pas d'adresse),
+/// les TROIS écritures de la boucle locale, les DEUX du « non spécifié » (DHCP DISCOVER), la diffusion,
+/// et DEUX multicasts nominaux (mDNS en v4, tous-nœuds en v6) — les trois dernières familles viennent du
+/// WFP, que ce lot promeut pour la première fois.
+///
+/// CONTRAT, PAS MÉCANISME : exercé par un témoin, LU par la garde de CI. Le jour où le code de décision
+/// le consulterait, la garde comparerait une liste à elle-même — d'où le `allow(dead_code)`, qui est ici
+/// la conséquence VOULUE de la séparation et non une exemption de confort.
+#[allow(dead_code)]
+const PAS_UNE_ADRESSE: [&str; 9] = [
+    "-",
+    "127.0.0.1",
+    "::1",
+    "::ffff:127.0.0.1",
+    "0.0.0.0",
+    "::",
+    "255.255.255.255",
+    "224.0.0.251",
+    "ff02::1",
+];
+
+/// L'ADRESSE, ANALYSÉE — ou rien. Rend la valeur CANONIQUE (forme IPv4-mappée repliée sur son IPv4)
+/// d'une écriture qui peut réellement être une entité, `None` sinon. Trois refus, chacun mesuré :
+///   · ce qui ne s'ANALYSE pas comme une adresse (`-`, un nom NetBIOS, `010.0.0.9` que l'analyseur
+///     standard refuse depuis Rust 1.53 comme le fait déjà `ssrf_norm_ip` côté démon) ;
+///   · la boucle locale et le « non spécifié », sous TOUTES leurs écritures : ce sont les valeurs que
+///     tout le parc partagerait, donc le seau unique ;
+///   · la diffusion et le multicast : personne ne les bannit ni ne les investigue, et le WFP en écrit
+///     à chaque bail DHCP et à chaque annonce mDNS.
+/// Ce que ce refus NE fait pas : jeter l'enregistrement. La ligne part, la colonne reste NULLE, et la
+/// clé de l'émetteur (`IpAddress`…) reste lisible telle quelle.
+fn valeur_exploitable(brut: &str) -> Option<std::net::IpAddr> {
+    use std::net::IpAddr;
+    let v = brut.trim();
+    if v.is_empty() {
+        return None;
+    }
+    // Repli de la forme IPv4-mappée : MÊME sémantique que `ssrf_norm_ip` (daemon/src/ledger.rs).
+    let ip = match v.parse::<IpAddr>().ok()? {
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(IpAddr::V6(v6)),
+        v4 => v4,
+    };
+    let sans_entite = match ip {
+        IpAddr::V4(a) => a.is_loopback() || a.is_unspecified() || a.is_broadcast() || a.is_multicast(),
+        IpAddr::V6(a) => a.is_loopback() || a.is_unspecified() || a.is_multicast(),
+    };
+    if sans_entite {
+        None
+    } else {
+        Some(ip)
+    }
+}
+
+/// Première valeur EXPLOITABLE parmi `noms`, dans l'ordre, rendue sous sa forme CANONIQUE. Un nom
+/// absent est sauté ; une écriture refusée par `valeur_exploitable` est sautée elle aussi, et la
+/// colonne reste NULLE plutôt que de porter une entité que personne ne peut ni bannir ni investiguer.
+fn adresse_lisible(data: &Map<String, Value>, noms: &[&str]) -> Option<String> {
+    for n in noms {
+        let Some(v) = data.get(*n).and_then(|v| v.as_str()) else { continue };
+        if let Some(ip) = valeur_exploitable(v) {
+            return Some(ip.to_string());
+        }
+    }
+    None
+}
+
 /// Niveau Event Log -> sévérité Plume : 1=Critical/2=Error -> 3 ; 3=Warning -> 2 ; sinon (Info/Verbose/0) -> 0.
 fn severity_from_level(level: i64) -> i64 {
     match level {
@@ -384,6 +548,24 @@ pub fn winxml_to_event(xml: &str, host: &str) -> Option<Event> {
     }
 
     let mut fields = data;
+    // P4.12-a — la colonne d'adresse, peuplée par la clé que la promotion du central LIT (cf. le bloc
+    // `ADRESSE_SOURCE` plus haut). Posée AVANT tout le reste, et seulement si l'émetteur n'a pas déjà
+    // posé LUI-MÊME une adresse exploitable sous cette clé : enrichissement, jamais une réécriture.
+    for (cle, noms) in [
+        ("src_ip", &ADRESSE_SOURCE[..]),
+        ("dst_ip", &ADRESSE_DESTINATION[..]),
+    ] {
+        // Une clé posée par l'émetteur GAGNE — si c'est une adresse. Une clé vide ou sentinelle n'est
+        // pas une adresse : elle ne peut pas annuler la promotion (cf. le bloc ci-dessus). Ce que ce
+        // geste NE fait pas : canoniser la valeur de l'émetteur — elle sort telle qu'il l'a écrite,
+        // et cet écart est écrit dans `P4.12-c`.
+        if fields.get(cle).and_then(|v| v.as_str()).and_then(valeur_exploitable).is_some() {
+            continue;
+        }
+        if let Some(v) = adresse_lisible(&fields, noms) {
+            fields.insert(cle.to_string(), Value::String(v));
+        }
+    }
     fields.insert("provider".to_string(), Value::String(provider));
     fields.insert("channel".to_string(), Value::String(channel.clone()));
     fields.insert("event_id".to_string(), Value::from(eid));
@@ -618,6 +800,153 @@ mod tests {
         assert!(e.message.contains("user=administrator"));
         assert!(e.message.contains("src=10.0.0.9"));
     }
+
+    // --- P4.12-a — LA COLONNE D'ADRESSE, ET CE QU'ELLE FAIT EXISTER --------------------------------
+
+    /// LE DÉFAUT LUI-MÊME, JOUÉ. Avant ce lot, `fields` sortait avec `IpAddress` et RIEN d'autre : la
+    /// promotion du central ne lit que `fields.src_ip`/`fields.rhost` (contrat CIM `promoted_fields`),
+    /// donc `event.src_ip` restait NULLE et les deux règles LIVRÉES qui détectent par entité
+    /// s'appliquaient à du vide. Le témoin exige les DEUX moitiés : la clé que la promotion LIT est
+    /// posée, ET la clé de l'émetteur est INTACTE (enrichissement, pas réécriture).
+    #[test]
+    fn l_adresse_d_un_echec_d_authentification_peuple_la_cle_que_la_promotion_lit() {
+        let e = winxml_to_event(XML_4625, "ep01").expect("event");
+        assert_eq!(
+            e.fields["src_ip"], "10.0.0.9",
+            "sans cette clé, `stats count by src_ip` groupe l'échec sous NULL et l'entité n'existe pas"
+        );
+        assert_eq!(
+            e.fields["IpAddress"], "10.0.0.9",
+            "la clé de l'émetteur reste posée : on enrichit À CÔTÉ, on ne renomme pas"
+        );
+    }
+
+    /// LA MÊME PROPRIÉTÉ SUR LES DEUX AUTRES VOCABULAIRES QUE CE LECTEUR TRAVERSE — le pare-feu WFP
+    /// (5152/5157 : `SourceAddress`/`DestAddress`) et Sysmon ID 3 (`SourceIp`/`DestinationIp`).
+    ///
+    /// CE QUE CE TÉMOIN NE PROUVE PAS, ET LE COMMENTAIRE PRÉCÉDENT LE PRÉTENDAIT (corrigé le
+    /// 2026-08-29) : il disait que sans lui « `category=network` et `category=firewall` gardaient la
+    /// même colonne vide ». MESURÉ : `classer` ne liste 5152/5157 dans AUCUN bras du `match channel`
+    /// — ils tombent en `ClasseWin::NonClasse`, donc `category=""` et aucune `action` — et la chaîne
+    /// « firewall » n'est émise NULLE PART par ce fichier : cette catégorie n'existe que chez le
+    /// capteur PowerShell. La moitié WFP de ce correctif peuple donc bien la colonne, sur un
+    /// événement qu'AUCUNE règle livrée n'interroge tant que l'agent ne le classe pas. C'est écrit
+    /// dans `P4.12-d`, pas laissé à croire ici.
+    #[test]
+    fn les_deux_sens_de_l_adresse_sont_promus_sur_les_autres_vocabulaires_windows() {
+        let wfp = r#"<Event><System><Provider Name='Microsoft-Windows-Security-Auditing'/><EventID>5157</EventID><Level>0</Level><Channel>Security</Channel><EventRecordID>11</EventRecordID><TimeCreated SystemTime='2026-06-28T00:00:03Z'/></System><EventData><Data Name='SourceAddress'>198.51.100.7</Data><Data Name='DestAddress'>10.0.0.2</Data></EventData></Event>"#;
+        let e = winxml_to_event(wfp, "h").expect("event");
+        assert_eq!(e.fields["src_ip"], "198.51.100.7");
+        assert_eq!(e.fields["dst_ip"], "10.0.0.2");
+        assert_eq!(e.category, "", "5157 n'est classé par AUCUN bras : la colonne est peuplée, la catégorie non");
+
+        let sysmon = r#"<Event><System><Provider Name='Microsoft-Windows-Sysmon'/><EventID>3</EventID><Level>4</Level><Channel>Microsoft-Windows-Sysmon/Operational</Channel><EventRecordID>12</EventRecordID><TimeCreated SystemTime='2026-06-28T00:00:04Z'/></System><EventData><Data Name='SourceIp'>10.0.0.5</Data><Data Name='DestinationIp'>203.0.113.9</Data></EventData></Event>"#;
+        let e = winxml_to_event(sysmon, "h").expect("event");
+        assert_eq!(e.fields["src_ip"], "10.0.0.5");
+        assert_eq!(e.fields["dst_ip"], "203.0.113.9");
+        assert_eq!(e.category, "network");
+    }
+
+    /// ANTI-VACUITÉ, ET LE CORPUS QUE LA GARDE DE CI COMPARE À CELUI DU CAPTEUR POWERSHELL. Une
+    /// promotion qui poserait la clé À CHAQUE FOIS serait « verte » aux témoins précédents et créerait
+    /// une entité que TOUT le parc partagerait — exactement le seau unique qu'on vient de défaire.
+    ///
+    /// CE TÉMOIN REND `PAS_UNE_ADRESSE` NON DÉCORATIF. La liste n'est plus le mécanisme de refus (la
+    /// décision est prise sur la VALEUR ANALYSÉE) : elle est le CONTRAT lu par
+    /// `.github/scripts/check_a_windows_sensor_promotes_the_address_it_carries.py`. Sans ce témoin, on
+    /// pourrait y écrire n'importe quoi et la garde de CI comparerait deux listes dont l'une ne
+    /// gouvernerait rien.
+    #[test]
+    fn aucune_ecriture_du_corpus_ne_devient_une_entite() {
+        for ecriture in PAS_UNE_ADRESSE.iter().copied().chain(["", "   ", "0:0:0:0:0:0:0:1", "::ffff:0.0.0.0"]) {
+            assert!(
+                valeur_exploitable(ecriture).is_none(),
+                "« {ecriture} » n'est l'adresse de personne : la frontière doit la refuser"
+            );
+            let xml = format!(
+                r#"<Event><System><Provider Name='Microsoft-Windows-Security-Auditing'/><EventID>4625</EventID><Level>0</Level><Channel>Security</Channel><EventRecordID>21</EventRecordID><TimeCreated SystemTime='2026-06-28T00:00:05Z'/></System><EventData><Data Name='TargetUserName'>bob</Data><Data Name='IpAddress'>{ecriture}</Data></EventData></Event>"#
+            );
+            let e = winxml_to_event(&xml, "h").expect("l'enregistrement part quand même");
+            assert!(
+                e.fields.get("src_ip").is_none(),
+                "« {ecriture} » : la colonne doit rester vide"
+            );
+            assert_eq!(e.category, "auth", "l'événement reste collecté et classé");
+        }
+    }
+
+    /// L'IDENTITÉ D'UNE ADRESSE EST SA VALEUR, JAMAIS SON ÉCRITURE (`P4.7-j`/`P4.7-l`), ET CE TÉMOIN
+    /// FERME LE TROU QUE LA PREMIÈRE VERSION DE CE LOT OUVRAIT. Une frontière par comparaison de
+    /// chaînes laissait `::ffff:203.0.113.7` et `203.0.113.7` faire DEUX entités pour la MÊME machine
+    /// (chaque seau sous son seuil -> l'alerte ne part pas), et laissait `::ffff:127.0.0.1` devenir une
+    /// entité de boucle locale partagée par tout le parc. Les deux sens de la colonne sont éprouvés.
+    #[test]
+    fn deux_ecritures_de_la_meme_adresse_rendent_la_meme_entite() {
+        let un_4625 = |ecriture: &str| {
+            let xml = format!(
+                r#"<Event><System><Provider Name='Microsoft-Windows-Security-Auditing'/><EventID>4625</EventID><Level>0</Level><Channel>Security</Channel><EventRecordID>41</EventRecordID><TimeCreated SystemTime='2026-06-28T00:00:07Z'/></System><EventData><Data Name='IpAddress'>{ecriture}</Data></EventData></Event>"#
+            );
+            winxml_to_event(&xml, "h").expect("event").fields.get("src_ip").and_then(|v| v.as_str()).map(str::to_string)
+        };
+        assert_eq!(un_4625("203.0.113.7"), Some("203.0.113.7".to_string()));
+        assert_eq!(
+            un_4625("::ffff:203.0.113.7"),
+            Some("203.0.113.7".to_string()),
+            "la forme mappée est la MÊME machine : deux entités = deux seaux sous le seuil (`P4.7-l`)"
+        );
+        assert_eq!(un_4625("::FFFF:203.0.113.7"), Some("203.0.113.7".to_string()), "et la casse ne fait pas une seconde entité");
+        assert_eq!(un_4625("2001:DB8::1"), Some("2001:db8::1".to_string()), "une v6 vraie reste une v6, sous sa forme canonique");
+
+        // Le sens destination passe par la MÊME frontière (le WFP écrit `255.255.255.255` et `ff02::1`
+        // à chaque bail DHCP et à chaque annonce mDNS).
+        let wfp = r#"<Event><System><Provider Name='Microsoft-Windows-Security-Auditing'/><EventID>5152</EventID><Level>0</Level><Channel>Security</Channel><EventRecordID>42</EventRecordID><TimeCreated SystemTime='2026-06-28T00:00:08Z'/></System><EventData><Data Name='SourceAddress'>0.0.0.0</Data><Data Name='DestAddress'>255.255.255.255</Data></EventData></Event>"#;
+        let e = winxml_to_event(wfp, "h").expect("event");
+        assert!(e.fields.get("src_ip").is_none(), "un DHCP DISCOVER ne fabrique pas une entité `0.0.0.0` par poste");
+        assert!(e.fields.get("dst_ip").is_none(), "ni une entité de diffusion partagée par tout le parc");
+    }
+
+    /// LA LIGNE DE L'ÉMETTEUR NE SE RÉÉCRIT PAS — MAIS « L'ÉMETTEUR GAGNE » PORTE SUR UNE VALEUR, PAS
+    /// SUR UNE PRÉSENCE. Si l'enregistrement porte déjà une ADRESSE sous la clé canonique, c'est SA
+    /// valeur qui tient. S'il porte la clé VIDE ou une écriture qui n'est l'adresse de personne, elle
+    /// ne peut pas annuler la promotion : `extract_event_data` insère les `<Data Name='…'></Data>`
+    /// vides (son seul test porte sur le NOM), et tout l'aval — `dfield_put`,
+    /// `fields_promote_src_dst_url` — tranche sur la VALEUR. Les trois cas sont éprouvés ensemble
+    /// parce que c'est leur COMPOSITION qui était fausse.
+    #[test]
+    fn une_cle_deja_posee_par_l_emetteur_gagne_sur_la_promotion() {
+        let avec = |pose: &str| {
+            let xml = format!(
+                r#"<Event><System><Provider Name='Microsoft-Windows-Security-Auditing'/><EventID>4625</EventID><Level>0</Level><Channel>Security</Channel><EventRecordID>31</EventRecordID><TimeCreated SystemTime='2026-06-28T00:00:06Z'/></System><EventData><Data Name='src_ip'>{pose}</Data><Data Name='IpAddress'>10.0.0.9</Data></EventData></Event>"#
+            );
+            let e = winxml_to_event(&xml, "h").expect("event");
+            assert_eq!(e.fields["IpAddress"], "10.0.0.9", "la clé de l'émetteur reste lisible telle quelle");
+            e.fields["src_ip"].as_str().unwrap_or_default().to_string()
+        };
+        assert_eq!(avec("192.0.2.1"), "192.0.2.1", "une ADRESSE posée par l'émetteur tient");
+        assert_eq!(
+            avec(""),
+            "10.0.0.9",
+            "une clé VIDE n'est pas une adresse : sans ça, `fields_promote_src_dst_url` filtre le vide et la colonne restait NULLE alors que l'adresse était là"
+        );
+        assert_eq!(
+            avec("-"),
+            "10.0.0.9",
+            "une sentinelle posée sous la clé canonique traversait la frontière sans que la frontière lui soit appliquée"
+        );
+    }
+
+    /// LE MODE 0 DE CE LECTEUR : un enregistrement SANS aucun nom d'adresse reconnu ne gagne AUCUNE
+    /// clé — il sort byte-identique à ce qu'il était avant ce lot. Sans ce témoin, une promotion qui
+    /// écrirait `src_ip: ""` passerait inaperçue : elle ne peuplerait aucune colonne (le démon filtre
+    /// la chaîne vide) mais elle changerait les octets stockés de TOUT le parc Windows, et elle
+    /// bloquerait la promotion d'un dparser client sous la même clé (`P4.12-f`).
+    #[test]
+    fn un_enregistrement_sans_adresse_ne_gagne_aucune_cle() {
+        let e = winxml_to_event(XML_SYSMON_DNS, "ep01").expect("event");
+        assert!(e.fields.get("src_ip").is_none());
+        assert!(e.fields.get("dst_ip").is_none());
+    }
+
 
     #[test]
     fn maps_sysmon_dns_to_dns_category() {

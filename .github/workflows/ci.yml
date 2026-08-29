@@ -1194,6 +1194,32 @@ jobs:
       - name: Le collecteur Windows ne peut ni mentir ni oublier (AST PowerShell)
         run: python3 .github/scripts/check_windows_collector_is_honest.py
 
+      # MÊME CAPTEUR, DÉFAUT VOISIN, ET IL SE LIT DANS L'ÉCART ENTRE LES DEUX ÉMETTEURS LIVRÉS.
+      # MESURÉ le 2026-08-29 (`P4.12-a`) : Windows nomme `IpAddress` l'adresse d'un échec d'ouverture
+      # de session, et les deux lecteurs d'Event Log recopient ce nom VERBATIM dans `fields`. La
+      # colonne `event.src_ip`, elle, n'est peuplée que depuis les noms que `promoted_fields` du CIM
+      # déclare — `IpAddress` n'en fait pas partie. Le capteur PowerShell faisait la jonction depuis le
+      # 2026-08-02 (`-SrcIp $d['IpAddress']`) ; `agent/src/source/windows.rs` ne l'a JAMAIS faite. Le
+      # même enregistrement 4625 rendait donc une entité par un capteur et AUCUNE par l'autre, et les
+      # deux règles livrées qui détectent par entité (« Brute-force auth par IP » ; « RBA :
+      # brute-force d'authentification ») donnaient un verdict qui dépendait du capteur installé.
+      #
+      # LE TITRE DE CETTE ÉTAPE A ÉTÉ CORRIGÉ LE 2026-08-29, PARCE QU'IL SUR-PROMETTAIT. Il annonçait
+      # « la MÊME colonne pour le MÊME enregistrement » ; la garde ne mesurait alors que l'ÉGALITÉ de
+      # deux listes de sentinelles, dérivées côté PowerShell du seul chemin d'AUTHENTIFICATION — et le
+      # site WFP du même fichier ne portait AUCUNE frontière. Elle était donc VERTE sur exactement la
+      # divergence qu'elle nommait (un 5157 en boucle locale : `src_ip=127.0.0.1` d'un côté, rien de
+      # l'autre), et son ÉGALITÉ interdisait par surcroît d'élargir la frontière — elle défendait le
+      # trou. Elle mesure désormais CHAQUE site de promotion (un site en lecture directe est un ÉCHEC
+      # nommé), exige une CONTENANCE et non une égalité, IMPRIME le surplus de l'agent, et lit les
+      # deux fichiers SANS leurs lignes de commentaire (une propriété de code ne s'écrit pas en prose).
+      # Elle n'énumère toujours aucun nom d'adresse, lit les clés admises dans le contrat CIM, REFUSE
+      # de conclure sur un ensemble vide ou sur un corpus qu'aucun témoin n'éprouve, et porte ses
+      # témoins positifs ET négatifs. Ce qu'elle NE tient PAS est écrit dans son en-tête et porté par
+      # `P4.12-c` : elle compare des frontières, pas des formes canoniques.
+      - name: Aucun capteur Windows livré ne laisse passer une adresse que l'autre écarte (P4.12-a)
+        run: python3 .github/scripts/check_a_windows_sensor_promotes_the_address_it_carries.py
+
       # MÊME FAMILLE, AUTRE CAUSE : ici le capteur n'est pas muet, il ANNONCE une couverture que son
       # propre bac à sable lui retire. MESURÉ le 2026-08-20 (systemd 261, sonde différentielle à une
       # seule variable, `collectors/integrity.sh` exécuté TEL QUEL) : sous le `ProtectHome=true` que

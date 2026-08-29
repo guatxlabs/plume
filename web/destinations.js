@@ -9,7 +9,7 @@
 // secret). SÉCU UI : rendu textContent (anti-XSS) ; l'auth (jeton HEC / en-tête webhook) est un CREDENTIAL
 // -> champ password, JAMAIS réaffiché, ré-envoyé UNIQUEMENT s'il est re-saisi (vide = conservé côté serveur).
 // La VRAIE garde reste serveur (403 hors admin + route_min_role Admin) ; ceci est la défense en profondeur.
-import { $, api, apiSend, confirmModal, fetchInto, fmtTs, humanAge, ic, muted, pagedList, toast, withBusy } from './core.js';
+import { $, api, apiSend, confirmModal, confirmWithConsequence, fetchInto, fmtTs, humanAge, ic, muted, pagedList, toast, withBusy } from './core.js';
 import { enabledSwitch } from './producer_ui.js';
 import { uiIsAdmin } from './multitenant.js';
 
@@ -92,8 +92,26 @@ function destinationRow(d) {
   return row;
 }
 
-// DRY-RUN/flush : POST /api/destinations/{id}/flush -> {ok,forwarded,watermark,last_error} (jamais la réponse du sink).
+// `P11.13-c` — CONSÉQUENCE DU FLUSH, DÉRIVÉE DE LA DESTINATION, ET DITE DANS LES DEUX SENS.
+// Le flush n'est pas un dry-run : il rejoue le chemin de production `forward_one_destination`, donc les
+// events SORTENT vraiment. La phrase est construite à partir du filtre, du lot max et de l'endpoint de CETTE
+// destination — jamais un texte générique — et elle borne ce qu'un REFUS obtient : refuser n'envoie rien
+// maintenant, mais n'arrête pas le forward périodique d'une destination active, qui enverra le même lot au
+// prochain tick. Promettre l'inverse serait promettre une protection que ce bouton n'a pas.
+function consequenceDuFlush(d) {
+  const f = d.filter || {};
+  const sel = [f.category && 'cat=' + f.category, f.source && 'src=' + f.source,
+    f.env_id && 'env=' + f.env_id, f.min_severity && 'sev>=' + f.min_severity].filter(Boolean).join(' ');
+  const cible = d.endpoint || DEST_TYPES[d.type] || d.type || '(endpoint vide)';
+  return 'jusqu\'à ' + (d.batch_max || 500) + ' event(s) ' + (sel ? 'retenus par le filtre (' + sel + ')' : 'de TOUT le flux')
+    + ' quittent plume MAINTENANT vers ' + cible + ', bruts et non masqués (feed machine). Ce qui est parti ne se '
+    + 'rappelle pas ; en cas de succès le watermark avance et ce lot ne sera plus jamais renvoyé. Refuser '
+    + 'n\'envoie rien maintenant et n\'arrête PAS le forward périodique de cette destination active.';
+}
+
+// flush : POST /api/destinations/{id}/flush -> {ok,forwarded,watermark,last_error} (jamais la réponse du sink).
 async function flushDestination(d) {
+  if (!await confirmWithConsequence('Forwarder maintenant « ' + (d.name || d.id) + ' » ?', consequenceDuFlush(d))) return;
   let j;
   try { j = await apiSend('/destinations/' + d.id + '/flush', 'POST'); }
   catch (e) { toast('flush : ' + ((e && e.message) || e), 'bad'); return; }

@@ -11,10 +11,15 @@ import { runQ, tableEl, truncationBadge } from './viz.js';
 // qui la porte. La raison du sens est écrite en tête du bloc `P11.18-c` de `web/audit.js`.
 import { CIBLE_DE_PLAGE, plageActive, poserLaPlage } from './audit.js';
 
-// --- DLP / gouvernance d'accès (style Varonis) — onglet LECTURE SEULE (Phase 1) -------------------
+// --- DLP / gouvernance d'accès aux données — onglet LECTURE SEULE (Phase 1) -----------------------
 // "Qui touche quoi", intégrité (FIM) et droits (ACL/RBAC). Chaque panneau s'appuie sur une requête
 // EXISTANTE (runQ -> /api/query, scan toute la fenêtre), AUCUN nouvel endpoint, AUCUNE mutation hôte.
 // Ce n'est PAS du DLP de contenu : c'est de la gouvernance d'accès en lecture seule.
+// `P11.20-e` — le nom d'un éditeur tiers a quitté la ligne de titre ci-dessus. Il n'y était pas SERVI,
+// donc il pesait moins que celui du bandeau retiré plus bas ; mais il ne portait rien qu'une
+// catégorie, et les trois lignes qui précèdent disent déjà CE QUE la vue fait. Ce que le nom d'un
+// concurrent apprend à un lecteur, une phrase qui décrit le geste l'apprend aussi — sans dater au
+// prochain rachat, et sans se lire comme une revendication de parité que rien ici ne mesure.
 const DATA_PANELS = [
   { id: 'whoami', title: 'Qui touche quoi (accès données)', queries: [{ soql: 'search source=dataaccess | stats count by path,user | sort -count | head 30' }] },
   { id: 'tamper', title: 'Fichiers sensibles / tamper', queries: [{ soql: 'search source=auditd severity>=4 | sort -ts | head 30' }] },
@@ -87,11 +92,26 @@ const PORTE_DE_LA_PREVENTION_DES_FUITES = {
 //     30 lignes contre 30 sur les panneaux de liste, et 60 contre 15 sur le panneau agrégé. Le
 //     sur-ensemble rend toujours au moins autant.
 // Ce que la fenêtre large rend de DIFFÉRENT, c'est un REFUS — nommé, et actionnable :
-//   * 422 « refus de rendre un nombre FAUX … » quand la valeur porterait sur un historique froid
-//     tronqué (`daemon/src/cold_store/exactness.rs`) — le cas que ces cinq requêtes déclenchent,
-//     puisqu'elles portent toutes un `| sort`, donc un classement sur l'ENSEMBLE ;
-//   * 400 « requête interrompue (budget N s dépassé) » (`daemon/src/query_exec.rs`).
+//   * en 422, le refus de dériver une valeur d'un historique froid TRONQUÉ : le message est construit
+//     par `TruncatedAggregate::message` (`daemon/src/cold_store/exactness.rs`) et rendu par
+//     `refuse_truncated_aggregate` (`daemon/src/handlers/query.rs`) — le cas que ces cinq requêtes
+//     déclenchent, puisqu'elles portent toutes un `| sort`, donc un classement sur l'ENSEMBLE ;
+//   * en 400, la requête INTERROMPUE parce que son budget de lecture est dépassé : message formé dans
+//     `run_query_ex` (`daemon/src/query_exec.rs`), rendu par `bad_req` (`daemon/src/main.rs`).
 // Le démon dit donc la vérité dans les deux fenêtres ; la contradiction naissait ICI, à l'affichage.
+//
+// `P11.21-a` — CES DEUX REFUS SONT NOMMÉS PAR LEUR SITE, PLUS CITÉS MOT POUR MOT. Un commentaire ne
+// peut pas être DÉRIVÉ de la phrase qu'il cite : la citation vieillit en silence, et RIEN ne le dit,
+// puisque le rendu ci-dessous n'est pas couplé au texte du refus — il affiche le champ `error` quelle
+// qu'en soit la forme. MESURÉ le 2026-08-29 en cherchant chaque phrase dans `daemon/src` : la
+// première avait DÉRIVÉ (le refus servi parle d'un « résultat », le commentaire écrivait « nombre »),
+// la seconde était encore EXACTE. C'est cette seconde qui tranche : le défaut n'est pas qu'une
+// citation soit fausse, c'est qu'elle soit ÉCRITE — l'exacte d'aujourd'hui est la fausse de demain.
+// CE QUE LE REMÈDE NE FAIT PAS : nommer une fonction ne rend rien vérifiable par une machine — un nom
+// mort dans un commentaire JS ne casse aucune compilation, pas plus qu'une phrase morte. Ce qu'il
+// change est le TAUX : renommer une fonction Rust est un geste que le compilateur impose et qu'un
+// relecteur voit passer, tandis que reformuler un message servi est une ligne que personne ne
+// recoupe. Le seul remède qui MESURERAIT reste à écrire, et il est consigné sous cette clé.
 //
 // LA RÈGLE : un composant qui ne sait pas conclure REFUSE en le disant. Il ne rend pas un vide, parce
 // qu'un vide se lit comme un fait — et un fait faux coûte plus cher qu'un refus.
@@ -147,11 +167,35 @@ function daRenduDeReponse(j, win, soql) {
 async function renderDataAccess() {
   const host = $('#da-body'); if (!host) return;
   host.replaceChildren();
-  const intro = document.createElement('p'); intro.className = 'muted'; intro.style.margin = '0 0 12px';
-  intro.textContent = "Gouvernance d'accès (style Varonis) : qui touche quoi, intégrité et droits. Lecture seule — pas de DLP de contenu, aucune action depuis cet onglet.";
-  // BATCH 2 (B6) : le ? d'aide est désormais dans l'en-tête visible (index.html, .panelhead > h2 > .ihelp.vhelp)
-  // au lieu d'être collé dans ce paragraphe d'intro. Handler .vhelp toujours délégué.
-  host.appendChild(intro);
+  // `P11.20-e` — LE BANDEAU D'INTRODUCTION A ÉTÉ RETIRÉ, ET IL NE MANQUE RIEN À L'ÉCRAN.
+  //
+  // CE QU'IL DISAIT. Un `<p>` posé en tête de `#da-body`, à CHAQUE visite : la gouvernance d'accès, ce
+  // que la vue montre (qui touche quoi, intégrité, droits), sa lecture seule, l'absence de DLP de
+  // contenu, l'absence d'action depuis l'onglet — et, pour se décrire, le nom d'un produit d'un autre
+  // éditeur.
+  //
+  // POURQUOI LE RETIRER NE PERD RIEN, MESURÉ ET NON SUPPOSÉ. La section d'aide de cette vue
+  // (`web/help_registry.js`, clé `dataaccess`, dans les DEUX langues servies) reprend les SEPT
+  // affirmations du bandeau — gouvernance d'accès, qui touche quoi, intégrité, droits, lecture seule,
+  // pas de DLP de contenu, aucune action ici — et y ajoute une puce par panneau, dont une qui ne
+  // figurait nulle part dans le bandeau (les fichiers sensibles / tamper). Le bandeau était donc un
+  // sous-ensemble STRICT de l'aide, et son déclencheur est visible sans le chercher :
+  // le `?` vit dans l'en-tête de la vue (`index.html`, `.panelhead > h2 > .ihelp.vhelp`), depuis qu'il a
+  // cessé d'être collé dans ce paragraphe. Ce qui explique une vue vit dans son aide ; un bandeau
+  // permanent, lui, prend de la place à chaque visite pour redire ce qu'un clic donne.
+  //
+  // LA DIRECTION DE L'ERREUR QUE CE GESTE PEUT PRODUIRE : il rend MOINS. L'exploitant qui n'ouvre
+  // jamais l'aide ne lira plus « lecture seule, aucune action depuis cet onglet ». Ce que la vue en
+  // dit alors d'elle-même est ce qu'elle MONTRE — cinq cartes sans un seul bouton d'action et la note
+  // de périmètre qui ferme sur « Édition depuis l'UI = Phase 2 » —, ce qui est plus faible qu'une
+  // phrase. C'est le prix assumé ; le rendre nul demanderait que l'aide soit ouverte par défaut, ce
+  // qui recréerait le bandeau.
+  //
+  // CE QUE CE GESTE NE FERME PAS. La règle d'indépendance vis-à-vis des fournisseurs porte sur le
+  // produit ENTIER, et ce fichier n'en tient qu'une part. Le nom de l'éditeur tiers reste SERVI par la
+  // section d'aide de cette même vue, dans les deux langues ; et la phrase retirée garde son entrée
+  // dans le lexique fr->en (`web/i18n.js`), désormais MORTE — aucune garde ne voit une clé de lexique
+  // sans texte à traduire, seulement l'inverse. Ces deux restes sont hors de ce fichier.
   // D12 — indicateur de fenêtre VISIBLE + sélecteur (24 h / 7 j / tout) câblant fromOverride.
   const bar = document.createElement('div'); bar.className = 'da-winbar';
   const plage = plageActive();

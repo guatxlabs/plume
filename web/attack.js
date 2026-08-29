@@ -341,9 +341,17 @@ function renderLegend(tactics) {
 //
 // CE QUI EST DÉRIVÉ, ET CE QUI EST AVOUÉ. Dérivé de ce que le démon rend : les trois sorties dégradées portent
 // `tactics: []`, une réponse d'une AUTRE forme (pas de liste de tactiques du tout) n'en vient donc pas — les
-// deux cas reçoivent deux phrases distinctes, et la seconde n'impute rien au démon. Avoué : LAQUELLE des trois
-// sorties dégradées, car elles rendent le même corps `{tactics:[], totals:{}}` ; les séparer demande un
-// marqueur côté démon, hors de ce module. La surface le DIT plutôt que de choisir une cause.
+// deux cas reçoivent deux phrases distinctes, et la seconde n'impute rien au démon.
+//
+// `P10.7-d` — « LES SÉPARER DEMANDE UN MARQUEUR CÔTÉ DÉMON » A CESSÉ D'ÊTRE VRAI, MESURÉ LE 2026-08-29.
+// Ce module écrivait que les trois sorties rendent le même corps et qu'aucune ne se nomme. Le marqueur
+// EXISTE depuis `P10.7-c` : la sortie du sémaphore fermé passe par `handlers/portillon.rs` et pose sa cause
+// sous `error`, dans un corps 200 — donc `api()` ne jette pas et le champ arrivait ici SANS ÊTRE LU. Les
+// deux autres sorties (`read_with_watchdog` sur échec de connexion, tâche de lecture tombée) rendent
+// toujours `{tactics:[], totals:{}}` NU : c'est `P10.7-e`, et ce module ne peut pas les séparer. La phrase
+// servie dit donc maintenant CE QUE LE DÉMON A DIT quand il l'a dit, et n'avoue son ignorance que là où
+// elle est réelle — sur un corps muet, dont il ne peut savoir s'il vient des deux autres sorties ou d'un
+// démon antérieur à cet aveu. C'est un RÉTRÉCISSEMENT de ce que la surface affirme.
 //
 // CE QUI RESTE OUVERT ET QUE CETTE SURFACE NE PEUT PAS VOIR (`P11.6-e`) : la lecture interrompue par le chien
 // de garde rend une matrice ENTIÈREMENT DESSINÉE à couverture sous-comptée. C'est le même défaut — un résultat
@@ -352,12 +360,28 @@ function renderLegend(tactics) {
 //
 // Rend null quand la réponse porte des tactiques (rien à dire), sinon la phrase qui convient, dans la langue.
 function refusDeMatrice(d) {
+  // `P10.7-d` — LA CAUSE SERVIE PASSE AVANT LA FORME, ET ELLE EST RENDUE TELLE QUELLE. Depuis
+  // `P10.7-c` le démon écrit sa cause sous `error` DANS UN CORPS 200 : `api()` ne jette pas, et une
+  // surface qui ne lit que la forme repeint l'aveu en déduction. Le test est SÉPARÉ de celui du vide —
+  // c'est la propriété que tient `check_a_refusal_is_not_rendered_as_an_absence.py`.
+  // DIRECTION DE L'ERREUR, ÉCRITE : la cause l'emporte sur des tactiques éventuellement servies à côté.
+  // Un corps qui porterait les deux est un résultat INCOMPLET ; le rendre en table le présenterait comme
+  // complet (rendre PLUS que ce qui est su), et c'est le sens que cette surface refuse. Elle rend donc
+  // MOINS : le refus, jamais la matrice. Aucun corps du démon ne porte les deux aujourd'hui.
+  const cause = (d && d.error != null) ? String(d.error).trim() : '';
+  if (cause) {
+    return LANG === 'en'
+      ? 'ATT&CK coverage NOT COMPUTED: the daemon DECLINED the read and NAMES the cause — "' + cause
+        + '" No technique was read, so this is NOT an absence of coverage and nothing here is declared uncovered.'
+      : 'couverture ATT&CK NON CALCULÉE : le démon a REFUSÉ la lecture et en NOMME la cause — « ' + cause
+        + ' » Aucune technique n\'a été lue : ce n\'est PAS une absence de couverture, et rien ici n\'est déclaré non couvert.';
+  }
   const tactics = (d && Array.isArray(d.tactics)) ? d.tactics : null;
   if (tactics && tactics.length) return null;
   if (tactics) {
     return LANG === 'en'
-      ? "ATT&CK coverage NOT COMPUTED: the response carries no tactic, which a computed matrix never does — it carries one per catalogue tactic even when no rule covers anything. The daemon therefore declined or failed the read, through one of its three degraded exits: query semaphore closed (shutdown under way), read database unreachable, or the read task died. WHICH of the three, this surface cannot say — they return the same body, and telling them apart needs a marker on the daemon side. This is NOT an absence of coverage; try again."
-      : "couverture ATT&CK NON CALCULÉE : la réponse ne porte aucune tactique, ce qu'une matrice calculée ne fait jamais — elle en porte une par tactique du catalogue, même quand aucune règle ne couvre rien. Le démon a donc refusé ou manqué la lecture, par l'une de ses trois sorties dégradées : sémaphore de requête fermé (arrêt en cours), base de lecture injoignable, ou tâche de lecture tombée. LAQUELLE des trois, cette surface ne peut pas le dire — elles rendent le même corps, et les séparer demande un marqueur côté démon. Ce n'est PAS une absence de couverture ; réessayer.";
+      ? "ATT&CK coverage NOT COMPUTED: the response carries no tactic, which a computed matrix never does — it carries one per catalogue tactic even when no rule covers anything. The daemon therefore declined or failed the read, through one of its three degraded exits: query semaphore closed (shutdown under way), read database unreachable, or the read task died. WHICH of the three, this surface cannot say: the daemon named NO cause in this body. One of the three — the closed semaphore — now names itself when it plays; a silent body therefore comes from the two others, or from a daemon older than that admission, and this surface does not choose between them. This is NOT an absence of coverage; try again."
+      : "couverture ATT&CK NON CALCULÉE : la réponse ne porte aucune tactique, ce qu'une matrice calculée ne fait jamais — elle en porte une par tactique du catalogue, même quand aucune règle ne couvre rien. Le démon a donc refusé ou manqué la lecture, par l'une de ses trois sorties dégradées : sémaphore de requête fermé (arrêt en cours), base de lecture injoignable, ou tâche de lecture tombée. LAQUELLE des trois, cette surface ne peut pas le dire : le démon n'a nommé AUCUNE cause dans ce corps. L'une des trois — le sémaphore fermé — se nomme désormais elle-même quand elle joue ; un corps muet vient donc des deux autres, ou d'un démon antérieur à cet aveu, et cette surface ne tranche pas entre les deux. Ce n'est PAS une absence de couverture ; réessayer.";
   }
   return LANG === 'en'
     ? "ATT&CK coverage UNREADABLE: the response does not even carry a tactic list, which this route always serves — including when it declines. This surface therefore cannot say whether the daemon refused the read or the response was altered on the way, and it does not guess. This is NOT an absence of coverage; try again."

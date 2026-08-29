@@ -13,9 +13,11 @@ CE QU'EST UNE « CHAÎNE AFFICHÉE » — LE CRITÈRE, ÉCRIT
 -----------------------------------------------------
 Une chaîne est AFFICHÉE si le code la pose dans un puits de rendu, c'est-à-dire :
   (1) une affectation `.textContent = `, `.innerText = `, `.title = `, `.placeholder = ` ;
-  (2) une clé d'objet `label:`, `title:`, `placeholder:`, `okText:`, `hint:`, `text:` ;
-  (3) un appel `createTextNode(`, `muted(`, `toast(`, `showErr(`, `confirmModal(`, `append(`,
-      `prepend(`, `emptyRow(`, ou `setAttribute(` dont le PREMIER argument est un attribut affiché
+  (2) une clé d'objet `label:`, `title:`, `placeholder:`, `okText:`, `cancelText:`, `message:`,
+      `emptyText:`, `hint:`, `text:` ;
+  (3) un appel `createTextNode(`, `muted(`, `toast(`, `showErr(`, `confirmModal(`,
+      `confirmWithConsequence(`, `append(`, `prepend(`, `emptyRow(`, ou `setAttribute(` dont le PREMIER
+      argument est un attribut affiché
       (`title`, `placeholder`, `aria-label`, `label`) ;
   (4) le TEXTE entre balises et les attributs `title`/`placeholder`/`aria-label` d'un littéral
       HTML (chaîne contenant une balise, posée en `innerHTML` ou construite en gabarit) ;
@@ -272,17 +274,38 @@ PLAFOND_DE_TROUS = {
 # L'abaisser est le sens attendu (déplacer un libellé vers un puits reconnu, ou apprendre la forme à la
 # garde). Le relever exige une raison écrite ici, à côté du chiffre.
 PLAFOND_HORS_REGARD = {
-    "admin_users.js": 16, "ai.js": 1, "alerting.js": 2, "alerts.js": 20, "app.js": 22, "attack.js": 6,
-    "audit.js": 1, "cases.js": 70, "composer_depuis_lexistant.js": 7, "connectors.js": 27,
-    "copie_et_selection.js": 3, "core.js": 29, "dashboards.js": 22, "dataaccess.js": 11, "datamodels.js": 6,
-    "destinations.js": 37, "detadv.js": 14, "detection_admin.js": 28, "fieldfilters.js": 21, "fleet.js": 9,
-    "freshness.js": 10, "help.js": 30, "i18n_observer.js": 0, "idp.js": 29, "index.html": 0,
-    "index_policies.js": 16, "keys.js": 5, "knowledge.js": 11, "login.js": 6, "lookups.js": 9,
-    "multitenant.js": 7, "navigation.js": 2, "prefs.js": 0, "processors.js": 10, "producer_ui.js": 7,
-    "recherche_de_liste.js": 1, "retention.js": 17, "risk.js": 6, "runbooks.js": 20, "savedqueries.js": 2,
-    "sigmaimport.js": 12, "soql_complete.js": 16, "sources.js": 7, "state.js": 0, "suppressions.js": 21,
+    "admin_users.js": 14, "ai.js": 1, "alerting.js": 2, "alerts.js": 20, "app.js": 22, "attack.js": 6,
+    "audit.js": 0, "cases.js": 68, "composer_depuis_lexistant.js": 6, "connectors.js": 26,
+    "copie_et_selection.js": 3, "core.js": 29, "dashboards.js": 22, "dataaccess.js": 11, "datamodels.js": 1,
+    "destinations.js": 37, "detadv.js": 10, "detection_admin.js": 28, "fieldfilters.js": 21, "fleet.js": 7,
+    "freshness.js": 10, "help.js": 30, "i18n_observer.js": 0, "idp.js": 25, "index.html": 0,
+    "index_policies.js": 16, "keys.js": 5, "knowledge.js": 7, "login.js": 6, "lookups.js": 9,
+    "multitenant.js": 6, "navigation.js": 2, "prefs.js": 0, "processors.js": 10, "producer_ui.js": 7,
+    "recherche_de_liste.js": 1, "retention.js": 16, "risk.js": 5, "runbooks.js": 20, "savedqueries.js": 2,
+    "sigmaimport.js": 12, "soql_complete.js": 16, "sources.js": 5, "state.js": 0, "suppressions.js": 16,
     "system.js": 33, "threatintel.js": 6, "viz.js": 21,
 }
+# QUINZE BAISSES, 2026-08-29 (`P11.8-c`) — la garde a APPRIS DEUX FORMES, elle n'a pas cessé de regarder :
+# la clé d'objet `emptyText:`/`message:`/`cancelText:` (fabriques de `core.js`, chemin lu dans la fabrique)
+# et le premier argument de `confirmWithConsequence(` (qui devient le `title` d'une modale, donc un `<h3>`).
+#   admin_users 16->14 · audit 1->0 · cases 70->68 · composer_depuis_lexistant 7->6 · connectors 27->26 ·
+#   datamodels 6->1 · detadv 14->10 · fleet 9->7 · idp 29->25 · knowledge 11->7 · multitenant 7->6 ·
+#   retention 17->16 · risk 6->5 · sources 7->5 · suppressions 21->16.
+# CHAQUE PLAFOND DESCEND DU DELTA DE LA RÈGLE, PAS JUSQU'AU RELEVÉ DU JOUR, et la raison est celle que ce
+# fichier écrit déjà plus haut : un ÉCART est une propriété de l'INSTRUMENT et se refait sur n'importe quel
+# arbre, un ABSOLU est une propriété de l'ARBRE et se périme sous les autres agents. Le delta est mesuré sur
+# un arbre GELÉ (copie de `web/` prise à un instant, les deux instruments joués dessus) : population +36,
+# hors-regard -36, 31 chaînes qui entrent comme des TROUS. `risk.js` garde donc son cran de jeu (6->5, relevé
+# 4) plutôt que de tomber au ras : sa descente au relevé avait déjà été annulée une fois pour écriture
+# concurrente, et rien n'a changé de ce côté.
+# TRENTE ET UNE ENTRÉES DE LEXIQUE SUIVENT CES BAISSES, sur DOUZE modules qu'aucun autre lot ne touche.
+# Ce ne sont pas des chaînes neuves : ce sont des textes d'état vide, des titres de modale et des messages
+# de confirmation qui s'affichaient en français sous `LANG='en'` depuis leur écriture, sous un plafond de
+# trous de ZÉRO que rien ne faisait rougir — la démonstration exacte de `P11.8-c` sur douze modules d'un coup.
+# CE QUE CES BAISSES NE FONT PAS : elles ne ferment pas le JEU préexistant de `alerts.js`, `destinations.js`,
+# `fieldfilters.js` et `risk.js`. Deux de ces quatre modules sont en écriture concurrente à l'heure de ce
+# relevé (`git status` les donne modifiés, et `alerts.js` porte déjà un trou qui n'appartient pas à ce lot) :
+# poser leur cliquet au ras rendrait la CI rouge sur le travail d'un autre sans qu'aucun libellé n'ait empiré.
 # UNE BAISSE ET UNE HAUSSE, 2026-08-26 (`P11.13-f`), toutes deux dues au MÊME changement de règle — la
 # reconnaissance d'un texte affiché ne dépend plus du niveau de parenthèses, elle repose sur ce qui atteint
 # l'écran (voir « CE QUI SE COLLE À UN LITTÉRAL DANS LE NŒUD RENDU »).
@@ -401,7 +424,8 @@ RE_CHOIX_PAR_LANG = re.compile(r"\bLANG\b[^;]*\?")
 RE_CLE_FR_EN = re.compile(r"[{,]\s*(fr|en)\s*:\s*$")
 
 SINKS_AFFECTATION = ("textContent", "innerText", "title", "placeholder", "ariaLabel")
-SINKS_APPEL = ("createTextNode", "muted", "toast", "showErr", "confirmModal", "append", "prepend", "emptyRow")
+SINKS_APPEL = ("createTextNode", "muted", "toast", "showErr", "confirmModal", "confirmWithConsequence",
+               "append", "prepend", "emptyRow")
 ATTRS_HTML = ("title", "placeholder", "aria-label", "label")
 
 
@@ -422,11 +446,40 @@ def _propriete(attribut: str) -> str:
 # (`web/cases.js` 4, `web/dashboards.js` 3, `web/runbooks.js` 1) — toutes posées par
 # `Object.assign(document.createElement(…), { textContent: … })`, toutes invisibles à un plafond de zéro.
 # C'est EXACTEMENT le défaut de `P11.8-c` : un module affichait du français non traduit en tenant zéro.
-# CE QUI RESTE ÉNUMÉRÉ, ET POURQUOI : ces trois clés ne nomment AUCUNE propriété du document ; ce sont des
-# conventions d'appel des fabriques de la console (`confirmModal({okText})`, champs à `hint`, `text`).
-# Aucune dérivation ne peut les trouver — seul un suivi de flux jusqu'à l'écriture le pourrait, et c'est
-# l'étape suivante, pas celle-ci. Elles sont donc écrites, avec cette raison.
-CLES_APPLICATIVES = ("okText", "hint", "text")
+# CE QUI RESTE ÉNUMÉRÉ, ET POURQUOI : ces clés ne nomment AUCUNE propriété du document ; ce sont des
+# conventions d'appel des fabriques de `web/core.js`. Chacune est écrite avec le CHEMIN, LU DANS LA FABRIQUE,
+# par lequel sa valeur atteint un nœud texte entier — pas au motif que son nom sonne comme un libellé :
+#   `emptyText`  -> `muted(opts.emptyText || …)` (`pagedList`), et `muted(t)` rend
+#                   `Object.assign(div, { className: 'muted', textContent: t })` : le nœud vaut ce texte SEUL.
+#   `message`    -> `modal()` : `<p class="modal-msg">${esc(opts.message)}</p>` — nœud entier.
+#   `cancelText` -> `modal()` : `<button class="m-cancel">${esc(opts.cancelText || 'Annuler')}</button>`.
+#   `okText`     -> `modal()` : le bouton jumeau du précédent. `hint`, `text` : champs des fabriques de saisie.
+# LA LISTE ÉCRITE A DIVERGÉ UNE DEUXIÈME FOIS, ET SUR LA MÊME LIGNE DE `core.js` QUE LA PREMIÈRE. Le
+# 2026-08-26, `textContent` manquait ici et huit chaînes françaises s'affichaient dans l'autre langue.
+# Le 2026-08-29 : `okText` y était, `cancelText` — son jumeau, écrit dans le MÊME `html +=` de `modal()` —
+# n'y était pas, ni `message`, ni `emptyText`, qui pesait à lui seul le PREMIER poste de l'aveu (22
+# occurrences, clé d'objet la plus portante de `web/`). Une liste tenue à la main diverge de la fabrique
+# qu'elle est censée décrire : c'est mesuré deux fois, à trois jours d'écart.
+# LA DÉRIVATION PAR SUIVI DE FLUX — l'étape que l'ancienne rédaction annonçait ici comme « l'étape
+# suivante » — EST RÉFUTÉE COMME ROUTE, ET C'EST MESURÉ (`P11.8-c`, 2026-08-29). Trois variantes jouées sur
+# `web/` : (R1) une lecture de propriété `X.k` posée EXACTEMENT là où un littéral serait un puits, en
+# réutilisant `_est_puits` -> 137 clés ; (R2) une lecture n'importe où dans l'appel d'un puits ou dans le
+# membre droit d'une affectation de puits -> 262 clés ; (R3) une interpolation en position de texte HTML,
+# restreinte aux expressions qui ne valent QUE cette lecture -> 48 clés. Les trois font entrer `value`,
+# `name`, `id`, `type` — que `NON_PUITS_CONNUS` déclare, à côté, n'afficher JAMAIS de texte —, plus
+# `length`, `join`, `slice`, `stringify`. LA CAUSE N'EST PAS UN RÉGLAGE : la console affiche les CHAMPS DE
+# SES DONNÉES par les mêmes puits que ses libellés (`el.textContent = r.name`), donc un flux qui remonte
+# d'un puits ne sépare pas une convention d'appel d'un nom de colonne. Direction de l'erreur : rendre TROP —
+# `{ name: 'admin' }` deviendrait une chaîne affichée, exigerait une clé, et cette clé serait MORTE.
+# Ce qui trancherait vraiment est de suivre le flux depuis le SITE D'APPEL jusqu'au paramètre de la
+# fabrique ; ce n'est pas fait, et ce n'est plus annoncé comme prochain pas sans son coût.
+# UNE CLÉ ÉCARTÉE, ET LA MESURE QUI L'ÉCARTE : `consequence` (`<p class="modal-consequence">`) a été
+# essayée et RETIRÉE. Ses neuf littéraux de `web/` sont tous des concaténations — donc zéro chaîne révélée —
+# et, par la règle du ternaire (qui cherche un puits dans la TÊTE de l'expression, pas dans la clé
+# immédiate), elle faisait entrer `summary: cond ? 'défaut' : …` de `web/runbooks.js` : un FAUX trou, sur
+# un texte que `producer_ui.js` pose dans un `<code class="rulecond">` — c'est-à-dire dans la balise même
+# que `TAGS_HORS_POPULATION` met hors population. Un gain nul contre une clé morte : la clé n'entre pas.
+CLES_APPLICATIVES = ("okText", "cancelText", "hint", "text", "message", "emptyText")
 SINKS_CLE = tuple(sorted(set(SINKS_AFFECTATION) | {_propriete(a) for a in ATTRS_HTML} | set(CLES_APPLICATIVES)))
 # Le texte d'un échantillon de code (`<code>`, `<kbd>`, `<pre>`, `<samp>`) est montré tel quel dans les deux
 # langues : hors population, comme le contenu d'un `<script>`.
@@ -1010,7 +1063,9 @@ const paires = [{ t: 'x', fr: 'Paire française <nom>', en: 'English pair <name>
 const lit = `"${String(v).replace(/"/g, '')}"`; u.textContent = 'Affiché dix-sept';
 host.appendChild(Object.assign(document.createElement('div'), { className: 'muted', textContent: 'Affiché dix-huit' }));
 w.appendChild(Object.assign(document.createElement('i'), { 'aria-label': 'Affiché dix-neuf' }));
-const dur = { emptyText: 'Sous une clé que le document ne connaît pas' };
+const dur = { storeKey: 'Sous une clé que le document ne connaît pas' };
+const fab = { emptyText: 'Affiché vingt', message: 'Affiché vingt et un', cancelText: 'Affiché vingt-deux' };
+confirmWithConsequence('Affiché vingt-trois', 'xx');
 z1.innerHTML = '<span class="mtl">' + (cond ? 'Noeud entre balises' : 'z') + '</span>';
 z2.textContent = (cond ? 'Fragment colle a droite' : 'z') + ' suite du texte';
 """
@@ -1033,8 +1088,16 @@ x.textContent = 'Hors registre';
 # son NÉGATIF : même forme, mais ce qui se colle est du TEXTE — le nœud vaut plus que le littéral, une clé
 # pour lui serait morte. L'ancienne règle voyait le premier comme un fragment et le second comme affiché :
 # elle lisait les parenthèses, pas l'écran.
+# « Affiché vingt » à « Affiché vingt-trois » sont les TÉMOINS DES CLÉS DE FABRIQUE (`P11.8-c`,
+# 2026-08-29) : la valeur ne rejoint le document ni par une affectation ni par une propriété du document,
+# mais par la CONVENTION D'APPEL d'une fabrique de `core.js` — `emptyText:` que `muted()` pose en
+# `textContent`, `message:` et `cancelText:` que `modal()` pose en nœuds texte, et le premier argument de
+# `confirmWithConsequence(` qui devient le `title` de cette modale. Sans ces quatre témoins, retirer une clé
+# de `CLES_APPLICATIVES` — ce qui est arrivé DEUX FOIS par simple divergence avec `core.js` — repasserait
+# sans bruit, et le module retomberait au vert en n'affichant plus rien de traduit.
 ATTENDUS_STATIQUES = {"aucun runbook", "nom et champ requis", "Affiché dix-sept",
                       "Affiché dix-huit", "Affiché dix-neuf", "Noeud entre balises",
+                      "Affiché vingt", "Affiché vingt et un", "Affiché vingt-deux", "Affiché vingt-trois",
                       "Affiché un", "Affiché deux", "Affiché trois", "Affiché quatre", "Affiché cinq",
                       "Affiché six", "Affiché sept", "Affiché huit", "Affiché neuf", "Affiché dix",
                       "Affiché onze", "Affiché douze", "Affiché treize", "Affiché quatorze", "Affiché quinze",
@@ -1046,6 +1109,12 @@ ATTENDUS_DYNAMIQUES = 5
 # « Sous une clé que le document ne connaît pas » est le TÉMOIN NÉGATIF de la clé-propriété : la règle est
 # DÉRIVÉE des propriétés d'affichage, elle ne dit donc pas oui à n'importe quelle clé. Sans lui, remplacer la
 # dérivation par « toute clé d'objet est un puits » passerait sans bruit et compterait des données.
+# SA CLÉ D'EXEMPLE A CHANGÉ, ET C'EST UN DÉFAUT MESURÉ, PAS UN GOÛT (`P11.8-c`, 2026-08-29). Elle était
+# `emptyText:` — or `web/core.js` rend TOUT `opts.emptyText` par `muted()`, donc en `textContent` : le
+# témoin qui gardait la prudence de la règle AFFIRMAIT une chose fausse du code qu'il juge, et cette
+# affirmation a tenu la clé la plus portante de `web/` hors du regard pendant qu'elle l'attestait
+# indécidable. Le choix se porte sur `storeKey:`, dont `identiteDeLaListe()` fait une identité de rangement
+# jamais rendue : un témoin négatif doit citer une clé dont on peut PROUVER qu'elle n'affiche rien.
 INTERDITS = {"Sous une clé que le document ne connaît pas",
              "src_ip", "/api/v1/alerts", "count", "sort -count",
              "Fragment de ternaire", "Fragment HTML de bord :", "Fragment colle a droite",
@@ -1402,7 +1471,23 @@ def main(argv: list[str]) -> int:
               f"est le seul mouvement qui ne se discute pas.")
     else:
         print("JEU DU CLIQUET : aucun plafond au-dessus de son relevé du jour — chaque cliquet est au ras de sa "
-              "mesure, et le moindre libellé neuf posé dans une forme non lue rougit.")
+              "mesure. La phrase qui suivait ici (« le moindre libellé neuf posé dans une forme non lue rougit ») "
+              "est RÉFUTÉE et retirée : voir la ligne suivante, un cliquet au ras ne dit pas cela.")
+    # CE QUE LE CLIQUET NE VOIT PAS, MÊME AU RAS (`P8.27-g`). La colonne gardée est un COMPTE NET, pas un
+    # ENSEMBLE : elle refuse une HAUSSE. Descendre un plafond au relevé — le remède que la clé proposait —
+    # ferme la hausse nette et RIEN D'AUTRE. Le publier est le minimum qu'une garde doive à qui la lit :
+    # elle rend vert sur un chemin qu'elle ne regarde pas, et le taire serait pire que ne pas garder.
+    au_ras = sorted(m for m, r in resultats.items()
+                    if m in plafonds_hr and plafonds_hr[m] == len(r["hors_regard"]))
+    print(f"CE QUE LE CLIQUET NE VOIT PAS, MÊME AU RAS : il garde un COMPTE NET, pas un ENSEMBLE de textes. "
+          f"Sur les {len(au_ras)} module(s) dont le plafond de hors-regard est EXACTEMENT à son relevé, un "
+          f"libellé neuf posé dans une forme non lue passe VERT dès qu'il en REMPLACE un autre — le compte ne "
+          f"bouge pas. Mesuré par MUTATION le 2026-08-29 sur `web/cases.js`, plafond au ras de son relevé et aucun "
+          f"jeu (70/70 avec l'instrument d'alors, refait 68/68 avec celui-ci) : substituer un hors-regard par "
+          f"un libellé français jamais écrit et absent du lexique rend le code 0 et zéro erreur ; le MÊME "
+          f"libellé ajouté sans retrait rend le code 1. Abaisser les plafonds ne ferme "
+          f"donc pas ce chemin-là ; seule une garde portant sur l'ENSEMBLE des textes le fermerait, et elle "
+          f"rougirait sur toute réécriture de libellé. C'est DIT, ce n'est pas corrigé (`P8.27-g`).")
     if mesure:
         return 0
 

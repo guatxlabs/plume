@@ -61,6 +61,20 @@ import { clicQuiRespecteLaSelection } from './copie_et_selection.js';
 // n'a pas la requête qui a compté ; elle refuse d'en inventer une ; et elle AVOUE la seconde impasse au lieu
 // de la combler — rien de ce qui est servi ne déclare sur quoi l'alerte est FONDÉE. C'est un rétrécissement
 // de ce que la console affirme, jamais un élargissement.
+// `P11.20-t` — ET CETTE PHRASE-LÀ NOMMAIT ENCORE UN CHAMP QUE LA FONCTION NE LISAIT PAS. Elle affirmait
+// « aucune fenêtre d'évaluation servie » alors que le SEUL test posé porte sur `search_link.query` :
+// `window_s` est servi à côté, et n'était consulté nulle part. Une phrase co-extensive par accident n'est
+// pas une phrase dérivée — elle devient fausse le jour où le démon change, et rien ici ne le verrait.
+// CE QUE LA MESURE DU 2026-08-29 RÉFUTE DANS LE CONSTAT DE CETTE CLÉ. Le cas qu'il décrit — « la fenêtre EST
+// servie mais le lien est ABSENT » — n'est PAS producible par ce démon : dans `alerts_query_page`
+// (`daemon/src/handlers/alerts.rs`) `search_link` vaut `window_s.map(…)`, donc lien absent ⟹ fenêtre absente.
+// Le second cas RÉELLEMENT atteignable est plus étroit : la fenêtre est servie, le lien AUSSI, et c'est sa
+// `query` qui est vide — ce qui suppose une alerte de règle dont la requête recopiée à la levée est vide.
+// La phrase servie n'était donc pas fausse « la plupart du temps » (la question ouverte de la clé) ; elle
+// était INDÉRIVÉE. Les deux branches ci-dessous lisent chacune ce qu'elles nomment, et rien d'autre.
+// CE QUE CELA NE TIENT PAS : la seconde branche n'est pas atteinte par le démon d'aujourd'hui, elle garde
+// une frontière plutôt qu'elle ne décrit un cas vu en service ; et aucune des deux ne dit COMBIEN d'alertes
+// y tombent — cela se compte sur une base, jamais dans un module.
 // CE QUI RESTE OUVERT SOUS `P11.14-h`, ET QUE CE MODULE NE PEUT PAS FERMER : que le fondement soit ÉCRIT à
 // la levée, là où le démon sait ce qu'il fait, puis servi. Tant qu'il ne l'est pas, la troisième branche
 // reste un refus honnête et non le pivot que le constat décrit.
@@ -69,6 +83,7 @@ import { clicQuiRespecteLaSelection } from './copie_et_selection.js';
 const PIVOT_MOTS = {
   exact: { fr: 'Cliquer → voir les événements déclencheurs', en: 'Click → see the triggering events' },
   adresse: { fr: "Cliquer → chercher cette adresse (src_ip) dans les événements ; l'alerte ne porte pas la requête exacte d'une règle.", en: 'Click → search this address (src_ip) in the events; this alert carries no exact rule query.' },
+  aucun_sans_requete: { fr: "Aucun pivot exact : le démon a bien servi une fenêtre d'évaluation pour cette alerte, mais le lien de recherche qui l'accompagne ne porte AUCUNE requête — la console n'a donc pas la requête qui l'a comptée. Elle refuse d'en fabriquer une — chercher son libellé rendrait un vide qui ne prouverait rien. Elle ne peut pas davantage renvoyer vers ce qui FONDE l'alerte : rien de ce qui est servi ne le déclare, et la console ne le devinera pas.", en: 'No exact pivot: the daemon did serve an evaluation window for this alert, but the search link that comes with it carries NO query, so the console does not have the query that counted it. It refuses to make one up — searching its wording would return an emptiness that proves nothing. Nor can it point to what the alert is FOUNDED on: nothing that is served declares it, and the console will not guess.' },
   aucun: { fr: "Aucun pivot exact : le démon n'a servi AUCUNE fenêtre d'évaluation pour cette alerte, la console n'a donc pas la requête qui l'a comptée. Elle refuse d'en fabriquer une — chercher son libellé rendrait un vide qui ne prouverait rien. Elle ne peut pas davantage renvoyer vers ce qui FONDE l'alerte : rien de ce qui est servi ne le déclare, et la console ne le devinera pas.", en: 'No exact pivot: the daemon served NO evaluation window for this alert, so the console does not have the query that counted it. It refuses to make one up — searching its wording would return an emptiness that proves nothing. Nor can it point to what the alert is FOUNDED on: nothing that is served declares it, and the console will not guess.' },
 };
 const motDuPivot = (mode) => (LANG === 'en' ? PIVOT_MOTS[mode].en : PIVOT_MOTS[mode].fr);
@@ -87,7 +102,12 @@ function pivotDUneAlerte(a) {
       survol: motDuPivot('adresse'),
     };
   }
-  return { mode: 'aucun', query: '', from: null, to: null, survol: motDuPivot('aucun') };
+  // `P11.20-t` — LE REFUS NOMME CE QU'IL A LU. Deux impasses distinctes mènent ici, et la fenêtre
+  // d'évaluation est le seul champ qui les sépare : servie, l'alerte a bien une ligne de règle et c'est le
+  // lien qui ne porte pas de requête ; absente, le démon n'a joint aucune règle. Le MODE reste le même —
+  // le pivot est refusé dans les deux cas, et l'inertie de la ligne ne dépend pas de la cause.
+  const fenetreServie = a.window_s != null;
+  return { mode: 'aucun', query: '', from: null, to: null, survol: motDuPivot(fenetreServie ? 'aucun_sans_requete' : 'aucun') };
 }
 // Rend true si le pivot a EU LIEU, false s'il a été refusé — l'appelant n'a pas à redériver la réponse.
 function alertDrill(a) {
@@ -694,6 +714,40 @@ const RECHERCHE_SANS_RESULTAT = {
 };
 const clefDeCouverture = (m) => (m.scopeAll ? 'page' : 'servies');
 
+// `P10.7-d` — UN REFUS DU DÉMON ARRIVE EN 200, ET IL DOIT ÊTRE LU.
+//
+// CE QUI ÉCHAPPAIT À CE MODULE, MESURÉ LE 2026-08-29 EN EXERÇANT `renderAlerts` SUR UN CORPS FABRIQUÉ.
+// `api()` (core.js) ne jette que sur `!r.ok`, sur un corps vide ou sur un corps non-JSON. Depuis
+// `P10.7-c`, le portillon de concurrence CLOS rend un corps 200 qui garde la forme attendue
+// (`{"alerts":[]}`, `{"groups":[],"group":…}`) et y AJOUTE sa cause sous `error`. Ce module ne lisait
+// `error` nulle part : il en tirait `resp.alerts || []`, donc une liste vide, et la vue rendait
+// « 0 alerte(s) … Aucune alerte active pas encore dans un cas ». Une lecture NON EXÉCUTÉE se lisait comme
+// une absence ÉTABLIE — c'est-à-dire comme un fait, et le seul fait dont un analyste tire une conclusion.
+//
+// LE TEST EST SÉPARÉ DE CELUI DU VIDE, et ce n'est pas un style : les fondre est exactement ce que
+// `check_a_refusal_is_not_rendered_as_an_absence.py` rend non-écrivable dans `web/`. Cette garde ne
+// pouvait pas voir le défaut d'ici — elle juge les conditions qui TESTENT un échec, et ce module n'en
+// portait aucune sur ces routes. Une condition absente n'est pas une condition fautive.
+//
+// LA CAUSE EST RENDUE TELLE QUELLE. Elle est écrite UNE seule fois, dans le démon
+// (`daemon/src/handlers/portillon.rs`) ; la recopier ici en ferait un second porteur qui vieillirait sans
+// le dire. Ce module n'ajoute que ce que le démon ne peut pas savoir : QUELLE vue a été demandée.
+//
+// DIRECTION DE L'ERREUR : le refus l'emporte sur les lignes éventuellement servies à côté. Un corps
+// portant les deux serait un résultat INCOMPLET ; le rendre en table le présenterait comme complet
+// (rendre PLUS que ce qui est su). Cette surface rend donc MOINS. Aucun corps du démon ne porte les deux.
+function causeDuRefusServi(r) {
+  return (r && r.error != null) ? String(r.error).trim() : '';
+}
+// La phrase du refus : bilingue par construction, et la cause du démon collée telle quelle.
+function motDuRefusServi(quoi, cause) {
+  return LANG === 'en'
+    ? quoi + ' NOT READ: the daemon declined and names the cause — "' + cause
+      + '" This is NOT an absence: nothing was read, so nothing here is established.'
+    : quoi + " NON LUES : le démon a refusé et en nomme la cause — « " + cause
+      + " » Ce n'est PAS une absence : rien n'a été lu, donc rien ici n'est établi.";
+}
+
 async function renderAlerts(loading) {
   wireAlertsTitle();
   const m = alertListModel();
@@ -717,8 +771,12 @@ async function renderAlerts(loading) {
   const b = $('#alerts .body'); if (!b) return;
   if (loading) { let prog = b.querySelector(':scope > .tableprog'); if (!prog) { prog = document.createElement('div'); prog.className='tableprog'; b.insertBefore(prog, b.firstChild); } prog.hidden=false; b.classList.add('reloading'); }
   let alerts, alertTotal;
-  try { const resp = await api(url); alerts = resp.alerts || []; alertTotal = resp.total; } catch (e) { b.classList.remove('reloading'); b.innerHTML = '<div class="bad">alertes indisponibles : ' + esc(e.message) + '</div>'; return; }
+  let refusServi = '';
+  try { const resp = await api(url); refusServi = causeDuRefusServi(resp); alerts = resp.alerts || []; alertTotal = resp.total; } catch (e) { b.classList.remove('reloading'); b.innerHTML = '<div class="bad">alertes indisponibles : ' + esc(e.message) + '</div>'; return; }
   b.classList.remove('reloading');
+  // `P10.7-d` — LE REFUS, AVANT TOUTE LECTURE DE LA FORME. Il ne passe pas par `alertesChargees` : une
+  // frappe de recherche redessine le dernier lot SERVI, et un lot qui n'existe pas ne se redessine pas.
+  if (refusServi) { b.innerHTML = '<div class="bad">' + esc(motDuRefusServi(LANG === 'en' ? 'Alerts' : 'Alertes', refusServi)) + '</div>'; return; }
   // P11.1-f — LE LOT SERVI EST MÉMORISÉ, et le dessin en est séparé : une frappe REDESSINE, elle ne
   // recharge pas. Sans cette scission, chercher coûterait une requête HTTP par caractère pour un travail
   // qui est une comparaison de chaînes sur des lignes déjà en mémoire.
@@ -808,9 +866,17 @@ async function renderAlertGroups(loading) {
             + '&limit=' + ALERT_GROUP_PS + '&offset=' + (S.alertGroupPage * ALERT_GROUP_PS);
   if (loading) { let prog = b.querySelector(':scope > .tableprog'); if (!prog) { prog = document.createElement('div'); prog.className='tableprog'; b.insertBefore(prog, b.firstChild); } prog.hidden=false; b.classList.add('reloading'); }
   let groups, total;
-  try { const r = await api(url); groups = r.groups || []; total = r.total; }
+  let refusServi = '';
+  try { const r = await api(url); refusServi = causeDuRefusServi(r); groups = r.groups || []; total = r.total; }
   catch (e) { b.classList.remove('reloading'); b.innerHTML = alertActionBarHtml(m, { count: 0, countLabel: 'groupes indisponibles' }) + '<div class="bad">groupes indisponibles : ' + esc(e.message) + '</div>'; wireAlertActionBar(b, { count: 0 }, m); return; }
   b.classList.remove('reloading');
+  // `P10.7-d` — même geste que la vue plate : le refus est rendu là où l'échec l'était déjà, et la barre
+  // d'actions y reste inerte (aucun compte n'a été lu, donc aucun geste de masse n'a de portée connue).
+  if (refusServi) {
+    b.innerHTML = alertActionBarHtml(m, { count: 0, countLabel: LANG === 'en' ? 'groups NOT READ' : 'groupes NON LUS' })
+      + '<div class="bad">' + esc(motDuRefusServi(LANG === 'en' ? 'Alert groups' : "Groupes d'alertes", refusServi)) + '</div>';
+    wireAlertActionBar(b, { count: 0 }, m); return;
+  }
   const axisLabel = { rule: 'règle', host: 'hôte', mitre: 'technique' }[m.view] || m.view;
   const count = typeof total === 'number' ? total : groups.length;
   const portee = porteeEnMots(m);
@@ -897,8 +963,13 @@ async function loadGroupOccurrences(body, g, opage) {
             + '&gval=' + encodeURIComponent(g.gkey || '') + '&limit=' + ALERT_OCC_PS + '&offset=' + (opage * ALERT_OCC_PS);
   body.innerHTML = '<div class="tableprog"></div>';
   let occ, total;
-  try { const r = await api(url); occ = r.alerts || []; total = r.total; }
+  let refusServi = '';
+  try { const r = await api(url); refusServi = causeDuRefusServi(r); occ = r.alerts || []; total = r.total; }
   catch (e) { body.innerHTML = '<div class="bad">occurrences indisponibles : ' + esc(e.message) + '</div>'; return; }
+  // `P10.7-d` — `body.dataset.loaded` N'EST PAS POSÉ SUR UN REFUS, et c'est la moitié qui compte : ce
+  // drapeau dit « ce groupe porte ses occurrences ». Le poser sur un refus figerait l'aveu, et le dépli
+  // suivant ne redemanderait rien.
+  if (refusServi) { body.innerHTML = '<div class="bad">' + esc(motDuRefusServi(LANG === 'en' ? 'Occurrences' : 'Occurrences', refusServi)) + '</div>'; return; }
   body.dataset.loaded = '1';
   body.dataset.opage = String(opage); // ui-regression : mémorise la page pour la restaurer après un rebuild (auto-refresh)
   body.innerHTML = occ.map((a, i) => alertRowHtml(a, i)).join('') || '<div class="muted">aucune occurrence</div>';

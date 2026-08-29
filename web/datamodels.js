@@ -13,7 +13,7 @@
 //   GET    /api/datasets  |  POST /api/datasets  (editor+)  |  POST /api/datasets/{id}/run  (viewer+)
 //   DELETE /api/datasets/{id}                                            (editor+)
 // SÉCU UI : tout en textContent/esc (anti-XSS). Mutations via apiSend (jeton CSRF auto).
-import { $, api, apiSend, fetchInto, muted, pagedList, toast, modal, confirmModal, managedBadge, gateDeleteBtn } from './core.js';
+import { $, api, apiSend, fetchInto, LANG, muted, pagedList, toast, modal, confirmModal, managedBadge, gateDeleteBtn } from './core.js';
 
 // État module : cache du GET /api/datamodels + sélection courante (modèle -> objet).
 let DM = { models: [], objects: [], fields: [], field_types: [], stat_funcs: [], filter_ops: [] };
@@ -248,8 +248,29 @@ async function pivotSave() {
 }
 
 // Rend un résultat {columns:[], rows:[[…]], stats} en table paginée (colonnes dynamiques).
+//
+// `P10.7-d` — UN REFUS DU DÉMON ARRIVE EN 200, ET IL DOIT ÊTRE LU. `/api/pivot/run` et
+// `/api/datasets/{id}/run` partagent `run_generated_soql` (`daemon/src/handlers/datamodels.rs`), qui rend
+// depuis `P10.7-c` un corps 200 gardant sa forme (`{"columns":[],"rows":[]}`) et portant la cause sous
+// `error` quand le portillon de concurrence est CLOS. `apiSend()` (core.js) ne jette que sur `!r.ok` : ce
+// module recevait donc la cause et l'ignorait, puis peignait « aucune colonne (résultat vide). » — une
+// lecture NON EXÉCUTÉE rendue comme un résultat vide, c'est-à-dire comme un fait.
+// UN SEUL SITE POUR DEUX APPELANTS : `pivotRun` et `runDataset` passent tous deux par ici ; poser le test
+// dans chacun en ferait deux, qui divergeraient. Le test est SÉPARÉ de celui du vide
+// (`check_a_refusal_is_not_rendered_as_an_absence.py`), et la cause est rendue TELLE QUELLE — elle est
+// écrite une seule fois, dans le démon.
+// DIRECTION DE L'ERREUR : le refus l'emporte sur des colonnes éventuellement servies à côté. Les rendre
+// présenterait un résultat incomplet comme complet ; cette surface rend MOINS, jamais plus.
 function renderResults(host, d) {
   if (!host) return;
+  const refus = (d && d.error != null) ? String(d.error).trim() : '';
+  if (refus) {
+    host.replaceChildren(Object.assign(document.createElement('div'), {
+      className: 'bad',
+      textContent: (LANG === 'en' ? 'Result NOT COMPUTED — ' : 'Résultat NON CALCULÉ — ') + refus,
+    }));
+    return;
+  }
   const cols = (d && Array.isArray(d.columns)) ? d.columns : [];
   const raw = (d && Array.isArray(d.rows)) ? d.rows : [];
   const rows = raw.map(arr => { const o = {}; cols.forEach((c, i) => { o[c] = arr[i]; }); return o; });
@@ -346,4 +367,6 @@ function wireOnce() {
 
 function loadDataModels() { wireOnce(); reload(); loadDatasets(); }
 
-export { loadDataModels };
+// `renderResults` est exporté pour être EXERCÉ sans navigateur : c'est le point unique où un refus du
+// démon et un résultat vide se séparent, et une propriété qu'on ne peut que LIRE n'est pas une preuve.
+export { loadDataModels, renderResults };

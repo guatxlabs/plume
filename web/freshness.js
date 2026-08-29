@@ -191,15 +191,66 @@ async function renderIntegrations() {
   // P11.10-a — LA PART DÉCLARÉE EST DITE. Un compte qui rétrécit sans dire pourquoi se lit comme une
   // amélioration ; « aucun muet » là où des machines muettes ont simplement été déclarées telles serait
   // faux. La phrase porte donc le compte hors-alerte quand il existe, et rien quand il n'existe pas.
+  //
+  // ═══════════════════════════════════════════════════════════════════════════════════════════════
+  // `P11.20-k` — LE NOMBRE D'HÔTES ET LA LISTE D'HÔTES NE COMPTENT PAS LA MÊME POPULATION, ET LA
+  // DIFFÉRENCE SE LIT MAINTENANT SUR L'ÉCRAN.
+  //
+  // CE QUI A ÉTÉ MESURÉ DANS LE DÉMON, ET QUI NE SE DEVINAIT PAS D'ICI. Les deux lectures de cette
+  // colonne partent de la MÊME table et de la MÊME requête (`host_rollup`, `WHERE host<>'' GROUP BY
+  // host`) — et n'ont pourtant pas la même population. `host_inventory_simple`
+  // (`daemon/src/handlers/fleet.rs`) rend TOUTES les machines, c'est la liste rendue ci-dessous.
+  // `flotte_muette` (`daemon/src/sonde_de_flotte.rs`) parcourt les mêmes lignes mais SAUTE celles
+  // qu'un exploitant a déclarées retirées du parc, AVANT d'incrémenter `attendus` — parce qu'un
+  // dénominateur qui compte des machines dont quelqu'un a dit qu'elles n'en font plus partie ne veut
+  // plus rien dire. Le total est donc toujours INFÉRIEUR OU ÉGAL au nombre de lignes listées, et
+  // l'écart entre les deux est exactement le nombre de machines déclarées retirées.
+  //
+  // CE QUE LE PANNEAU EN DISAIT, ET LA DIRECTION DE L'ERREUR. Il écrivait « N hôte(s) inventoriés »
+  // au-dessus de la liste : le mot promettait la liste, le nombre en comptait MOINS, et rien ne
+  // rattachait l'un à l'autre. L'erreur allait donc dans le sens où le lecteur cherche une machine
+  // qui manquerait — alors que rien ne manque, et que la seule chose absente était la phrase.
+  //
+  // LES TROIS NOMBRES DE LA FLOTTE SE PARTAGENT LEUR TOTAL PAR CONSTRUCTION : la sonde compte une
+  // machine attendue, puis la range dans exactement l'une des trois issues — elle signale, elle est
+  // muette, elle est muette au silence déclaré. C'est une répartition, et ce module a déjà la
+  // fabrique qui rend une répartition lisible (`P11.16-b`) ; ce bloc était le seul de la surface à
+  // poser ses nombres à côté d'elle, avec un « + » qui promettait une addition sans jamais dire à
+  // quel total. `qui signalent` est DÉRIVÉ des trois autres, jamais servi : s'il devenait négatif, la
+  // répartition aurait cessé d'en être une, et il est rendu tel quel plutôt que ramené à zéro — un
+  // zéro fabriqué dirait que tout va bien là où la lecture ne se recompose plus.
+  // ═══════════════════════════════════════════════════════════════════════════════════════════════
   const fl = d.flotte;
-  const declares = fl && fl.muets_declares_attendus
-    ? ` <span class="muted fldeclares">(+ ${fl.muets_declares_attendus} muet(s) au silence déclaré attendu, hors alerte)</span>`
-    : '';
+  const listees = (d.hosts || []).length;
+  const rangeeDeFlotte = (f) => {
+    const attendus = Number(f.attendus) || 0, muets = Number(f.muets) || 0, tus = Number(f.muets_declares_attendus) || 0;
+    const minutes = Math.round((Number(f.seuil_s) || 0) / 60);
+    return `<div class="capsum">` + rangeeDeChiffres([
+      { famille: 'total', valeur: attendus, libelle: LANG === 'en' ? 'host(s) in the expected estate' : 'hôte(s) au parc attendu',
+        titre: LANG === 'en' ? 'Machines seen at least once and NOT declared withdrawn from the estate. The total is shared by the three terms joined by « + ».' : 'Machines vues au moins une fois et NON déclarées retirées du parc. Le total se partage entre les trois termes reliés par « + ».' },
+      { famille: 'part', valeur: attendus - muets - tus, libelle: LANG === 'en' ? 'signalling' : 'qui signalent',
+        titre: LANG === 'en' ? 'A signal arrived recently enough for this machine not to be counted mute.' : 'Un signal est arrivé assez récemment pour que la machine ne soit pas comptée muette.' },
+      { famille: 'part', valeur: muets, dot: 'muet', libelle: LANG === 'en' ? 'mute' : 'muet(s)',
+        titre: (LANG === 'en' ? 'No signal at all for more than ' : 'Aucun signal depuis plus de ') + minutes + (LANG === 'en' ? ' min, and nobody declared that silence: to investigate.' : ' min, et personne n\'a déclaré ce silence : à investiguer.') },
+      { famille: 'part', valeur: tus, libelle: LANG === 'en' ? 'at declared silence' : 'au silence déclaré',
+        titre: LANG === 'en' ? 'Mute too, but someone declared that silence expected: counted apart, and out of the alert.' : 'Muettes elles aussi, mais quelqu\'un a déclaré ce silence attendu : comptées à part, et hors alerte.' },
+    ]) + `</div>`;
+  };
+  // LE RATTACHEMENT DE LA LISTE À SON TOTAL — DÉRIVÉ des deux nombres, jamais supposé. L'écart n'est
+  // pas tu quand il vaut zéro : un rattachement qui disparaît à zéro ne se distingue plus d'un
+  // rattachement qui n'a jamais été écrit, et c'est exactement le défaut qu'on ferme ici.
+  const rattachementDeLaListe = (f) => {
+    const ecart = listees - (Number(f.attendus) || 0);
+    const phrase = ecart === 0
+      ? (LANG === 'en' ? `the ${listees} machine(s) listed below are exactly that total` : `les ${listees} machine(s) listée(s) ci-dessous sont exactement ce total`)
+      : ecart > 0
+        ? (LANG === 'en' ? `${listees} machine(s) listed below, ${ecart} more than that total: a machine DECLARED withdrawn from the estate stays listed and leaves the denominator` : `${listees} machine(s) listée(s) ci-dessous, ${ecart} de plus que ce total : une machine DÉCLARÉE retirée du parc reste listée et sort du dénominateur`)
+        : (LANG === 'en' ? `${listees} machine(s) listed below, fewer than that total: the two readings do not agree — they are taken one after the other` : `${listees} machine(s) listée(s) ci-dessous, moins que ce total : les deux lectures ne s'accordent pas — elles sont prises l'une après l'autre`);
+    return `<div class="muted flrattache" style="font-size:11px">${esc(phrase)}</div>`;
+  };
   const flotteLigne = fl === undefined ? ''
     : fl === null ? '<div class="kv"><span class="muted">hôtes muets : inventaire illisible (aucun verdict rendu)</span></div>'
-    : fl.muets > 0
-      ? `<div class="kv"><span class="fdot muet"></span><span><b>${fl.muets}</b> hôte(s) muet(s) sur ${fl.attendus} — aucun signal depuis plus de ${Math.round(fl.seuil_s / 60)} min${declares}</span></div>`
-      : `<div class="kv"><span class="muted">${fl.attendus} hôte(s) inventoriés, aucun muet non déclaré${declares}</span></div>`;
+    : rangeeDeFlotte(fl) + rattachementDeLaListe(fl);
   // caption : sépare EXPLICITEMENT les 2 axes (couverture de sondes vs endpoints) et renvoie la SANTÉ à Fraîcheur.
   const cap = `<div class="muted intplug" style="font-size:11px">Capteurs = <b>couverture</b> (types de sondes déclarés ; un capteur mort est signalé <b>muet</b> ici) · Hôtes = <b>endpoints</b> (où les agents poussent). La santé fine par source (frais/calme/en retard/muet) vit dans Fraîcheur — « en retard » y désigne la même observation que « muet » ici, au même seuil.</div>`;
   // lien de découverte -> la Flotte (inventaire détaillé des hôtes : statut/enrôlement/dernier signal, paginé + export).

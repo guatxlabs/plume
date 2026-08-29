@@ -38,6 +38,37 @@ fonction nommée -> apiSend`). Un appel placé dans une fonction qui ne confirme
 confirme en amont est un défaut. Une route sensible SANS appelant web n'est pas un défaut (machine-to-
 machine, contrôle par API) : elle est listée, et le jour où un appelant apparaît il est tenu.
 
+LES ENVELOPPES PARTAGÉES SONT SUIVIES, ET ELLES SONT DÉRIVÉES (`P11.13-h` (a))
+------------------------------------------------------------------------------
+Un appel ne se lit pas toujours chez celui qui l'émet : `web/core.js` expose des fonctions qui reçoivent
+le CHEMIN EN ARGUMENT et le passent à `apiSend`, et la console édite et supprime règles, parseurs,
+playbooks et lookups par elles. Le motif d'appel ne cherchait que `apiSend(`/`fetch(` : MESURÉ le
+2026-08-29, quatre routes DESTRUCTRICES de ces quatre familles étaient déclarées « sans appelant web »,
+c'est-à-dire contrôlées par l'interface de programmation seule, alors que la console les atteint — et,
+vérifié une à une, les confirme toutes. La garde ne disait pas « non confirmée » : elle disait « la
+console ne va pas là », ce qui est faux, et c'est la forme la plus dangereuse de l'erreur parce qu'elle
+se lit comme une garantie. Ces enveloppes sont DÉRIVÉES (`enveloppes_de_core`) par la relation « un
+paramètre part comme chemin d'`apiSend` », jamais énumérées par leur nom ; sans elles la garde refuse de
+conclure, parce qu'une dérivation muette reclasserait ces routes en silence. Le suivi n'a rien desserré :
+64 -> 68 confirmées, 29 -> 25 sans appelant web, et AUCUN cliquet n'a bougé.
+
+CE QUE LA GARDE LAISSE TOMBER EST AVOUÉ ET COMPTÉ (`P11.13-h` (b))
+------------------------------------------------------------------
+Les sorties de la boucle des appelants passaient au suivant sans rien inscrire : la garde ne publiait ni
+combien d'appels elle avait laissés de côté, ni lesquels. Un instrument qui abandonne sans le dire rend
+un verdict amputé sous la forme d'un vert — la route qu'un appel abandonné atteint peut rester « sans
+appelant web ». Tout abandon est désormais INSCRIT, COMPTÉ et tenu par un plancher (`PLAFOND_ABANDONS`)
+qui ne se relève pas. Deux formes : un chemin porté par une VARIABLE (indérivable au site d'appel), et un
+chemin écrit en TERNAIRE — la forme ordinaire d'un enregistrement, « créer ou mettre à jour selon qu'un
+identifiant est en cours d'édition ». Les deux branches d'un ternaire sont dérivables et désignent deux
+routes réelles ; elles sont NOMMÉES dans l'aveu pour que la dette soit payable, mais elles ne sont pas
+APPRÉCIÉES : mesuré le 2026-08-29, les apprécier ferait passer le cliquet des asymétries de 12 à 20,
+c'est-à-dire ferait loger huit dettes de surface dans le cliquet même qui doit les attraper. L'ordre
+juste est écrit dans `P11.13-h` (c) et il vaut au-delà de cette garde : payer la dette D'ABORD, resserrer
+ENSUITE, le cliquet ne bougeant JAMAIS vers le haut. Ne pas les apprécier n'ôte rien : le motif que
+l'ancienne dérivation recollait bout à bout (`/api/rules//rules`) n'existe dans aucune table, et le
+verdict est IDENTIQUE avec et sans lui — vérifié état par état.
+
 LA GARDE SE LIT DANS LES DEUX SENS (`P11.13-b`)
 -----------------------------------------------
 Les trois familles ci-dessus disent ce qui est sensible ; elles ne disaient rien de ce qu'elles RATENT.
@@ -64,18 +95,26 @@ pas. D'où un SECOND SENS de lecture, et une famille de plus :
                           CLIQUET (`PLAFOND_ASYMETRIE`) : une route auditée appelée sans confirmation de
                           plus fait rougir. C'est ce cliquet qui attrape « la suivante ».
 
-CE QUE « CONFIRMÉE » VAUT AU JUSTE — limite mesurée, valable dans les DEUX sens
+CE QUE « CONFIRMÉE » VAUT AU JUSTE — limite MESURÉE À CHAQUE EXÉCUTION, valable dans les DEUX sens
 La remontée d'appelants répond à « UN appelant confirme-t-il ? », pas à « TOUS les chemins
-confirment-ils ? » : un existentiel, là où la propriété visée est universelle. Mesuré le 2026-08-24 :
-sur 144 appels mutants, 6 (dans 3 modules) sont déclarés confirmés par une chaîne de NOMS qui traverse
-un CÂBLAGE (`x.onclick = f`) — l'installateur d'un gestionnaire n'est pas son appelant, et le geste
-confirmé qu'on atteint ainsi est celui d'un voisin, pas d'un ancêtre. Resserrer la remontée à ce
-critère rendrait ces 6 non confirmés, mais produirait aussi une FAUSSE accusation : le motif
-`/api/connectors/*` d'un appel destiné à `/api/connectors/{id}` recouvre `/api/connectors/push-source`,
-que la console n'appelle pas là. Les deux imprécisions se compensent en l'état — ce n'est pas une
-garantie, et les deux se corrigent ensemble ou pas du tout. Le second sens de lecture LIT LE MÊME
-signal que le premier, délibérément : deux lectures divergentes de « confirmée » vaudraient moins
-qu'une seule lecture dont la limite est écrite.
+confirment-ils ? » : un existentiel, là où la propriété visée est universelle. Cette limite était écrite
+ici avec un chiffre relevé un jour donné, que plus rien ne suivait. Elle est maintenant DÉRIVÉE : chaque
+appel confirmé retient l'ORIGINE de sa confirmation — `propre` (écrite dans la fonction qui envoie),
+`ancetre` (une portée qui la CONTIENT), `appelant` (une portée qui la NOMME). Seule la troisième est
+faible : la portée qui confirme peut appartenir à un geste VOISIN. Le compte des `appelant` est PUBLIÉ
+et tenu par un plancher (`PLAFOND_CONFIRME_PAR_APPELANT`) qui ne se relève pas. C'est un COMPTE, pas un
+resserrement : aucune de ces routes n'est accusée, et la garde ne rend ni plus ni moins de « confirmée »
+qu'avant ce compte.
+MESURÉ le 2026-08-29 sur `web/destinations.js`, et c'est la forme la plus nette : une SEULE fonction du
+module portait une confirmation, celle qui SUPPRIME — et pourtant les trois appels mutants du module
+étaient déclarés confirmés, dont le déclencheur de SORTIE DE DONNÉES vers un puits externe, qui n'en
+avait aucune. Le lien n'est même pas une portée ancêtre : les trois fonctions appellent la même fonction
+de RAFRAÎCHISSEMENT, ce qui suffit à faire de celle qui supprime un « appelant » des deux autres.
+Resserrer produirait toujours une FAUSSE accusation — le motif `/api/connectors/*` d'un appel destiné à
+`/api/connectors/{id}` recouvre `/api/connectors/push-source`, que la console n'appelle pas là — et les
+deux imprécisions se corrigent ensemble ou pas du tout. Le second sens de lecture LIT LE MÊME signal que
+le premier, délibérément : deux lectures divergentes de « confirmée » vaudraient moins qu'une seule
+lecture dont la limite est écrite — et, désormais, comptée.
 
 Ce que la garde ne fait PAS : traiter la seule confirmation de la console comme une déclaration de
 sensibilité. Une confirmation est un choix d'ergonomie (un formulaire dont on relit le contenu) ; le
@@ -90,9 +129,24 @@ appelant confirmé par sa fonction APPELANTE (doit passer), un appel en commenta
 Pour le second sens : une route auditée et confirmée partout est un ANGLE MORT tant que la famille
 `DÉCLARE` ne la reprend pas, et cesse de l'être une fois reprise ; une route auditée appelée SANS
 confirmation est une ASYMÉTRIE ; une route auditée sans appelant web et une route confirmée que le démon
-n'audite pas ne sont NI l'un NI l'autre. Puis des planchers sur l'arbre réel : un nombre minimal de
-routes sensibles, une route témoin trouvée sensible ET confirmée (`/api/users/{id}`, le changement de
-rôle), sans quoi la garde refuse de conclure.
+n'audite pas ne sont NI l'un NI l'autre. Pour les enveloppes : deux à dériver et deux LEURRES (une
+fonction au chemin littéral, une qui n'envoie rien) ; puis une route que la console ne DÉTRUIT qu'au
+travers d'une enveloppe, exigée « sans appelant web » quand on ne les suit pas et « confirmée » quand on
+les suit — les deux sens, sans quoi le témoin ne mesure rien. Pour le ternaire : positif (deux branches
+lues séparément) ET négatif (`?.`, `??` et un ternaire imbriqué dans une parenthèse ne se scindent pas),
+plus l'exigence qu'aucune branche ne produise de site apparié. Pour les abandons : les deux formes sont
+avouées, et une DÉCLARATION du même nom qu'une enveloppe n'est pas comptée comme un site — sans quoi le
+compte serait gonflé d'un aveu faux. Pour les origines : `propre`, `ancetre` et `appelant` doivent se
+distinguer. Puis des planchers sur l'arbre réel : un nombre minimal de routes sensibles, une route témoin
+trouvée sensible ET confirmée (`/api/users/{id}`, le changement de rôle), sans quoi la garde refuse de
+conclure.
+
+LES TROIS PLANCHERS SE RE-MESURENT EN UNE EXÉCUTION
+---------------------------------------------------
+`PLAFOND_ABANDONS` et `PLAFOND_CONFIRME_PAR_APPELANT` portent des nombres relevés sur l'arbre. Quand la
+garde en trouve MOINS elle le dit et invite à descendre le plancher ; quand elle en trouve PLUS elle
+rougit et imprime le compte. Aucun des deux ne se relève : les faire monter ferait de la place au lieu
+d'en reprendre.
 """
 import os
 import re
@@ -111,6 +165,19 @@ ROUTE_TEMOIN = ("POST", "/api/users/{id}")
 # appelants ne confirment pas. 12 mesurées le 2026-08-24 ; ce nombre ne se relève pas sans raison écrite ici —
 # une route auditée appelée sans confirmation de plus est exactement le défaut que la garde doit attraper.
 PLAFOND_ASYMETRIE = 12
+# PLANCHER DES ABANDONS (`P11.13-h` (b)) : appels mutants que la dérivation ne sait pas apparier (chemin
+# porté par une variable, méthode indéterminée). Chacun est un trou : la route qu'il atteint peut rester
+# « sans appelant web », et ce silence se lit comme une garantie. Il ne se relève JAMAIS.
+PLAFOND_ABANDONS = 11
+# PLANCHER DES « CONFIRMÉE PAR APPELANT » (`P11.13-b`) : appels dont la confirmation n'est ni dans leur
+# propre portée ni dans une portée qui les CONTIENT, mais dans une portée qui les NOMME. Cette forme est la
+# plus faible : la portée qui confirme peut appartenir à un geste VOISIN — mesuré sur `web/destinations.js`,
+# le déclencheur de sortie de données et l'interrupteur d'activation empruntaient tous deux la confirmation
+# du bouton qui SUPPRIME, seule fonction du module à en porter une. Compté, jamais accusé ; ne se relève pas.
+PLAFOND_CONFIRME_PAR_APPELANT = 30
+# PLANCHER DES SITES OBTENUS PAR UNE ENVELOPPE (`P11.13-h` (a)) : atteste que le suivi des enveloppes est
+# BRANCHÉ sur le verdict, pas seulement validé en témoin. Mesuré sur l'arbre ; il ne descend pas.
+PLANCHER_SITES_PAR_ENVELOPPE = 4
 
 # LE DÉPOUILLEMENT ET L'AVEUGLEMENT DES LITTÉRAUX SONT IMPORTÉS, PLUS RECOPIÉS (`P11.8-f`). « Même
 # dépouillement que les gardes voisines » était vrai du texte et faux du RÉSULTAT : quatre copies, quatre
@@ -297,6 +364,46 @@ def argument_chemin(src, i):
     return [a.strip() for a in args]
 
 
+def scinder_ternaire(arg):
+    """Découpe une expression au niveau SUPÉRIEUR sur `cond ? a : b` et rend ses branches (sinon `[arg]`).
+
+    `P11.13-h` (b) — LA FORME ORDINAIRE D'UN ENREGISTREMENT EST UN TERNAIRE : créer ou mettre à jour selon
+    qu'un identifiant est en cours d'édition (`S.editingRule ? '/rules/' + S.editingRule : '/rules'`).
+    MESURÉ : `motif_de_chemin` recollait les deux branches bout à bout (`/api/rules//rules`) et rendait un
+    motif qui n'existe dans AUCUNE table de routes — l'appel n'était donc apparié à rien, en silence. Les
+    deux branches atteignent deux routes RÉELLES et différentes ; elles sont rendues séparément.
+    Les parenthèses, crochets et littéraux sont traversés pour que seul le `?` de tête compte, et `?.`
+    comme `??` ne sont pas des ternaires."""
+    depth, i, q, c = 0, 0, None, None
+    while i < len(arg):
+        ch = arg[i]
+        if ch in "\"'`":
+            k = i + 1
+            while k < len(arg) and arg[k] != ch:
+                k += 2 if arg[k] == "\\" else 1
+            i = k + 1
+            continue
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif depth == 0 and ch == "?":
+            # `?.` et `??` portent un `?` qui n'ouvre AUCUN ternaire : il faut les ENJAMBER, pas seulement
+            # refuser d'y poser `q` — sinon le second `?` de `??` était pris pour le ternaire, et la
+            # première branche commençait un caractère trop loin. Mesuré par mutation le 2026-08-29.
+            if arg[i:i + 2] in ("?.", "??"):
+                i += 2
+                continue
+            if q is None:
+                q = i
+        elif depth == 0 and ch == ":" and q is not None and c is None:
+            c = i
+        i += 1
+    if q is None or c is None:
+        return [arg]
+    return [arg[q + 1:c].strip(), arg[c + 1:].strip()]
+
+
 def motif_de_chemin(arg):
     """Transforme l'expression JS du chemin en motif : littéraux gardés, expressions -> un segment joker."""
     parts = re.findall(r"""'([^']*)'|"([^"]*)"|`([^`]*)`""", arg)
@@ -401,60 +508,152 @@ def fonction_englobante(scopes, pos):
     return meilleur
 
 
-def appelants_web(sources_js, confirmations, aveux=None):
-    """[(fichier, ligne, méthode, motif, confirmé, fonction)] pour chaque apiSend/fetch mutant.
+DECLARATION = re.compile(r'\bfunction\s+$')
+SIGNATURE_JS = re.compile(r'(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(([^()]*)\)\s*\{')
+
+
+def enveloppes_de_core(core_src):
+    """`P11.13-h` (a) — LES ENVELOPPES PARTAGÉES SONT DÉRIVÉES, JAMAIS ÉNUMÉRÉES.
+
+    Le motif d'appel ne cherchait que `apiSend(`/`fetch(` dans le module qui les appelle. Or la console
+    édite et supprime règles, parseurs, playbooks et lookups par des fonctions de `web/core.js` qui
+    prennent le CHEMIN EN ARGUMENT et le passent à `apiSend` : chez l'appelant, le chemin ne se lit plus
+    dans un `apiSend`. MESURÉ le 2026-08-29 : quatre routes DESTRUCTRICES de ces quatre familles étaient
+    déclarées « sans appelant web » — c'est-à-dire contrôlées par l'interface de programmation seule —
+    alors que la console les atteint. La garde ne disait pas « non confirmée », elle disait « la console
+    ne va pas là », ce qui est faux et se lit comme une garantie.
+
+    Une enveloppe est ici une fonction de `core.js` dont un PARAMÈTRE est passé tel quel comme premier
+    argument à `apiSend` : c'est cette relation qui est cherchée dans le code, pas un nom. Rend
+    {nom: (indice du paramètre chemin, méthode, ligne de l'appel interne)}."""
+    code = sans_commentaires_js(core_src)
+    aveugle = aveugler_litteraux_js(code)
+    env = {}
+    for m in SIGNATURE_JS.finditer(aveugle):
+        nom, params = m.group(1), m.group(2)
+        noms = [p.split("=")[0].strip() for p in params.split(",") if p.strip()]
+        i = code.find("{", m.end() - 1)
+        if i < 0:
+            continue
+        depth, j = 0, i
+        while j < len(code):
+            if code[j] == "{":
+                depth += 1
+            elif code[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        corps = code[i:j + 1]
+        for a in re.finditer(r'\bapiSend\(', corps):
+            args = argument_chemin(corps, a.end() - 1)
+            if args and args[0] in noms:
+                env[nom] = (noms.index(args[0]), methode_de("apiSend", args),
+                            code[:i + a.start()].count("\n") + 1)
+                break
+    return env
+
+
+def appelants_web(sources_js, confirmations, aveux=None, enveloppes=None, abandons=None, compteurs=None):
+    """[(fichier, ligne, méthode, motif, confirmé, fonction, origine)] pour chaque appel mutant.
+    `origine` dit COMMENT la confirmation a été obtenue : `propre` (écrite dans la fonction qui appelle),
+    `ancetre` (une portée qui la CONTIENT), `appelant` (une portée qui la nomme) ou `` (non confirmée).
+
     `aveux` (facultatif) recueille les pertes de synchronisation du lecteur, PAR FICHIER : un appelant
-    perdu dans une région avalée passerait autrement pour un appelant absent, donc pour un vert."""
+    perdu dans une région avalée passerait autrement pour un appelant absent, donc pour un vert.
+    `enveloppes` (facultatif) : les fonctions de `core.js` qui reçoivent le chemin en argument ; leurs
+    sites d'appel comptent comme des appels mutants, au chemin qu'ils leur passent.
+    `abandons` (facultatif) : `P11.13-h` (b) — tout appel mutant que la dérivation LAISSE DE CÔTÉ y est
+    inscrit. Les deux sorties de cette boucle passaient au suivant sans rien dire ; un instrument qui
+    abandonne sans l'avouer rend un verdict amputé sous la forme d'un vert."""
     out = []
+    enveloppes = enveloppes or {}
     conf_re = re.compile(r"\b(?:" + "|".join(map(re.escape, confirmations)) + r")\(") if confirmations else None
+    appel_re = re.compile(r'\b(apiSend|fetch|' + "|".join(map(re.escape, sorted(enveloppes))) + r')\('
+                          if enveloppes else APPEL.pattern)
+    # L'apiSend INTERNE d'une enveloppe n'est pas un abandon : son chemin est résolu à chaque site d'appel.
+    lignes_internes = {l for _, _, l in enveloppes.values()}
     for chemin, texte in sources_js:
         journal = []
         code = sans_commentaires_js(texte, journal)
+        base = os.path.basename(chemin)
         if journal and aveux is not None:
-            aveux[os.path.basename(chemin)] = [f"ligne {texte.count(chr(10), 0, o) + 1} : {m}" for m, o in journal]
+            aveux[base] = [f"ligne {texte.count(chr(10), 0, o) + 1} : {m}" for m, o in journal]
         scopes = scopes_js(code)
-        nommes = {}
-        for nom, i, j in scopes:
-            if nom:
-                nommes.setdefault(nom, (i, j))
-        for m in APPEL.finditer(code):
-            args = argument_chemin(code, m.end() - 1)
-            if not args:
-                continue
-            methode = methode_de(m.group(1), args)
-            if methode in ("GET", "?"):
-                continue
-            motif = motif_de_chemin(args[0])
-            if not motif:
-                continue
+        for m in appel_re.finditer(code):
+            nom_appel = m.group(1)
             ligne = code[:m.start()].count("\n") + 1
+            # une DÉCLARATION (`function apiSend(path, …)`) n'est pas un appel : son paramètre nu passerait
+            # pour un chemin indérivable, et gonflerait le compte des abandons d'un aveu faux.
+            if DECLARATION.search(code[max(0, m.start() - 24):m.start()]):
+                continue
+            if base == "core.js" and nom_appel == "apiSend" and ligne in lignes_internes:
+                continue
+            args = argument_chemin(code, m.end() - 1)
+            if nom_appel in enveloppes:
+                idx, methode, _ = enveloppes[nom_appel]
+                brut = args[idx] if len(args) > idx else None
+            else:
+                brut = args[0] if args else None
+                methode = methode_de(nom_appel, args) if args else "?"
+            if brut is None:
+                if abandons is not None:
+                    abandons.append((base, ligne, "argument de chemin illisible", nom_appel))
+                continue
+            if methode == "GET":
+                continue
+            if methode == "?":
+                if abandons is not None:
+                    abandons.append((base, ligne, "méthode indéterminée", brut[:48]))
+                continue
+            # `P11.13-h` (b) — LE TERNAIRE EST AVOUÉ, PAS APPRÉCIÉ. Les deux branches sont DÉRIVABLES et
+            # désignent deux routes réelles ; les apprécier révélerait huit dettes de surface que le cliquet
+            # des asymétries devrait loger (mesuré le 2026-08-29 : 12 -> 20). L'ordre juste est de payer
+            # d'abord, resserrer ensuite, sans que le cliquet monte : l'appel est donc laissé de côté — mais
+            # il est INSCRIT, COMPTÉ, et les routes qu'il atteint sont NOMMÉES pour que la dette soit
+            # payable. Ne pas les recoller bout à bout n'ôte rien : le motif recollé (`/api/rules//rules`)
+            # n'existe dans aucune table, et l'avoir mesuré ici ne change AUCUN état de route.
+            branches = scinder_ternaire(brut)
+            if len(branches) > 1:
+                if abandons is not None:
+                    vues = [x for x in (motif_de_chemin(b) for b in branches) if x]
+                    abandons.append((base, ligne, "chemin en ternaire — non apprécié",
+                                     " ou ".join(vues) if vues else brut[:48]))
+                continue
+            motif = motif_de_chemin(brut)
+            if not motif:
+                if abandons is not None:
+                    abandons.append((base, ligne, "motif de chemin indérivable", brut[:48]))
+                continue
             env = fonction_englobante(scopes, m.start())
-            confirme, nom_fn = False, (env[0] or "<anonyme>") if env else "<module>"
+            origine, nom_fn = "", (env[0] or "<anonyme>") if env else "<module>"
             if conf_re and env:
-                # le scope englobant confirme, ou un scope qui l'appelle (par son nom) à <= 3 niveaux
-                vus, front = set(), [env]
+                # le scope englobant confirme, ou une portée qui le CONTIENT, ou une portée qui l'appelle
+                # par son nom, à <= 3 niveaux. Le CHEMIN emprunté est retenu : `P11.13-b` mesure que le
+                # dernier n'est pas sûr, et le compte de ce qu'il accorde est publié plus bas.
+                vus, front = set(), [(env, "propre")]
                 for _ in range(4):
                     suivant = []
-                    for sc in front:
+                    for sc, bord in front:
                         cle = (sc[1], sc[2])
                         if cle in vus:
                             continue
                         vus.add(cle)
                         if conf_re.search(code[sc[1]:sc[2] + 1]):
-                            confirme = True; break
-                        # un scope englobant (la flèche est dans une fonction nommée qui confirme avant)
+                            origine = bord; break
                         parent = fonction_englobante([x for x in scopes if x[1] < sc[1] and x[2] >= sc[2]], sc[1])
                         if parent:
-                            suivant.append(parent)
-                        # les scopes qui appellent ce scope par son nom
+                            suivant.append((parent, "appelant" if bord == "appelant" else "ancetre"))
                         if sc[0]:
                             for x in scopes:
                                 if (x[1], x[2]) not in vus and re.search(r"\b" + re.escape(sc[0]) + r"\b", code[x[1]:x[2] + 1]) and not (x[1] <= sc[1] and x[2] >= sc[2]):
-                                    suivant.append(x)
-                    if confirme:
+                                    suivant.append((x, "appelant"))
+                    if origine:
                         break
                     front = suivant
-            out.append((os.path.relpath(chemin, RACINE), ligne, methode, motif, confirme, nom_fn))
+            if compteurs is not None and nom_appel in enveloppes:
+                compteurs["sites_par_enveloppe"] = compteurs.get("sites_par_enveloppe", 0) + 1
+            out.append((os.path.relpath(chemin, RACINE), ligne, methode, motif, bool(origine), nom_fn, origine))
     return out
 
 
@@ -557,7 +756,8 @@ def valider_instrument():
              '  .route("/api/purge/apply", post(purge_apply_route))\n'
              '  .route("/api/declarations", post(declaration_upsert))\n'
              '  .route("/api/notes", post(note_create))\n'
-             '  .route("/api/silences", post(silence_create)) }\n'
+             '  .route("/api/silences", post(silence_create))\n'
+             '  .route("/api/widgets/{id}", delete(widget_delete)) }\n'
              'pub(crate) fn is_readonly_post(path: &str) -> bool {\n    matches!(path, "/api/query" | "/api/search")\n}\n'
              'pub(crate) async fn thing_create(Json(b): Json<Value>) -> Response { conn.execute("INSERT INTO thing(name) VALUES(?1)", params![n]); audit_config_change(&conn, "config.thing.create", "d", 2, "m", "f"); ok() }\n'
              'pub(crate) async fn thing_update() -> Response { ok() }\n'
@@ -575,6 +775,8 @@ def valider_instrument():
              'pub(crate) async fn declaration_upsert(Json(b): Json<Value>) -> Response { conn.execute("INSERT INTO declaration(name) VALUES(?1)", params![n]); audit_config_change(&conn, "config.declaration", "d", 2, "m", "f"); ok() }\n'
              'pub(crate) async fn silence_create(Json(b): Json<Value>) -> Response { conn.execute("INSERT INTO silence(m) VALUES(?1)", params![m]); audit_source_change(&conn, "s", "config.silence", "d", 3, "m", "f"); ok() }\n'
              'pub(crate) async fn note_create(Json(b): Json<Value>) -> Response { conn.execute("INSERT INTO note(t) VALUES(?1)", params![t]); ok() }\n'
+             # `P11.13-h` (a) — la route que la console n'atteint QUE par une enveloppe partagée.
+             'pub(crate) async fn widget_delete() -> Response { conn.execute("DELETE FROM widget WHERE id=?1", params![id]); ok() }\n'
              '// .route("/api/commentee", delete(commentee))\n'
              'fn route_min_role(path: &str, mutating: bool) -> MinRole {\n'
              '  if path == "/api/mode" { return if mutating { MinRole::Admin } else { MinRole::Read }; }\n'
@@ -583,7 +785,7 @@ def valider_instrument():
     routes, handlers, readonly, armement, derr = deriver_routes(rust)
     sensibles, cerr = classer(routes, handlers, readonly, armement)
     attendu = {("DELETE", "/api/things/{id}"), ("POST", "/api/users/{id}"), ("POST", "/api/mode"),
-               ("POST", "/api/rules/{id}/enabled"), ("POST", "/api/purge/apply")}
+               ("POST", "/api/rules/{id}/enabled"), ("POST", "/api/purge/apply"), ("DELETE", "/api/widgets/{id}")}
     if derr or cerr:
         errs.append(f"témoin de DÉRIVATION : erreurs inattendues {derr + cerr}")
     if set(sensibles) != attendu:
@@ -602,10 +804,46 @@ def valider_instrument():
         errs.append("témoin de GABARIT (négatif) en échec : `:id` s'apparie encore alors que le routeur (axum 0.8) "
                     "ne l'accepte plus — il paniquerait à la construction. Deux syntaxes reconnues, aucune preuve "
                     "de celle que la table porte vraiment.")
-    core = ("export { a, confirmModal, b, confirmWithConsequence, modal };\n")
+    core = ("export { a, confirmModal, b, confirmWithConsequence, modal };\n"
+            # `P11.13-h` (a) — DEUX ENVELOPPES à dériver, une POST et une DELETE, plus deux LEURRES : une
+            # fonction qui appelle `apiSend` sur un chemin LITTÉRAL (ce n'est pas une enveloppe : son chemin
+            # se lit chez elle) et une qui ne l'appelle pas du tout.
+            "async function contentSubmit(path, body, resSel) { const j = await apiSend(path, 'POST', body); return !!j; }\n"
+            "async function contentDelete(path, label) { const j = await apiSend(path, 'DELETE'); return !!j; }\n"
+            "async function pingLeurre() { return apiSend('/ping', 'POST'); }\n"
+            "function formMsg(sel, msg) { return sel + msg; }\n")
     confs = confirmations_de_core(core)
     if confs != ["confirmModal", "confirmWithConsequence"]:
         errs.append(f"témoin des CONFIRMATIONS : {confs} au lieu des deux exports `confirm*`")
+    env = enveloppes_de_core(core)
+    if {n: (i, m) for n, (i, m, _) in env.items()} != {"contentSubmit": (0, "POST"), "contentDelete": (0, "DELETE")}:
+        errs.append(f"témoin des ENVELOPPES en échec : {sorted(env)} — une enveloppe est une fonction dont un "
+                    "PARAMÈTRE part comme chemin d'`apiSend` ; une fonction au chemin littéral et une fonction "
+                    "qui n'envoie rien n'en sont pas, et le rang du paramètre comme la méthode doivent être lus.")
+    # TÉMOINS DU TERNAIRE (`P11.13-h` (b)) — positif ET négatif. Sans le négatif, un découpage qui scinde
+    # AUSSI `?.` ou `??` passerait pour correct et amputerait des chemins ordinaires.
+    # Les trois expressions portent un `?` qui n'ouvre PAS le ternaire (`?.`, `??`) AVANT celui qui l'ouvre :
+    # c'est le seul cas où l'enjambement est chargé. Un témoin qui n'assurerait que « ça se scinde en deux »
+    # passerait dans les deux sens — mesuré : il passait, et cachait un `??` mal enjambé. On exige donc les
+    # BRANCHES, pas leur nombre.
+    for expr, branches_attendues in [("e ? '/rules/' + e : '/rules'", ["'/rules/' + e", "'/rules'"]),
+                                     ("o?.id ? '/rules/' + o.id : '/rules'", ["'/rules/' + o.id", "'/rules'"]),
+                                     ("a ?? b ? '/rules/' + a : '/rules'", ["'/rules/' + a", "'/rules'"])]:
+        obtenues = scinder_ternaire(expr)
+        if obtenues != branches_attendues:
+            errs.append(f"témoin de TERNAIRE (découpage) en échec sur `{expr}` : {obtenues} au lieu de "
+                        f"{branches_attendues}. Le témoin porte sur le TEXTE des branches, pas sur les motifs "
+                        "qu'on en tire : mesuré le 2026-08-29, un `??` enjambé de travers décale la première "
+                        "branche d'un caractère et le joker de `motif_de_chemin` ravale le décalage — deux "
+                        "découpages différents rendaient le MÊME motif, et le témoin ne mesurait rien.")
+        if [motif_de_chemin(b) for b in obtenues] != ["/api/rules/*", "/api/rules"]:
+            errs.append(f"témoin de TERNAIRE (motifs) en échec sur `{expr}` : les deux branches ne rendent plus "
+                        "deux routes réelles. Recollées, elles rendent `/api/rules//rules`, qui n'existe dans "
+                        "aucune table, et l'appel disparaît du compte sans un mot.")
+    for nonternaire in ["o?.id + '/b'", "a ?? '/b'", "'/a/' + (x ? 1 : 2) + '/b'"]:
+        if len(scinder_ternaire(nonternaire)) != 1:
+            errs.append(f"témoin de TERNAIRE (négatif) en échec : `{nonternaire}` a été scindé — un `?.`, un `??` "
+                        "ou un ternaire IMBRIQUÉ dans une parenthèse ne sont pas un chemin à deux branches.")
     js = [("v.js",
            "async function delThing(t) { if (!await confirmWithConsequence('x', 'y')) return; await apiSend('/things/' + t.id, 'DELETE'); }\n"
            "async function saveRole(u) { await apiSend('/users/' + u.id, 'POST', { role: r }); }\n"
@@ -618,13 +856,58 @@ def valider_instrument():
            "// async function fantome() { await apiSend('/purge/apply', 'POST', {}); }\n"
            "async function saveDeclaration() { if (!await confirmWithConsequence('x', 'y')) return; await apiSend('/declarations', 'POST', { name }); }\n"
            "async function saveNote() { if (!await confirmModal('?')) return; await apiSend('/notes', 'POST', { t }); }\n"
-           "async function saveSilence() { await apiSend('/silences', 'POST', { m }); }\n")]
-    appels = appelants_web(js, confs)
+           "async function saveSilence() { await apiSend('/silences', 'POST', { m }); }\n"
+           # `P11.13-h` (a) — une route que la console n'atteint QUE par une enveloppe partagée.
+           "async function delWidget(w) { if (!await confirmModal('?')) return; if (await contentDelete('/widgets/' + w.id, 'widget')) recharger(); }\n"
+           # `P11.13-h` (b) — les deux formes d'abandon, qui doivent être AVOUÉES et non silencieuses.
+           "async function saveVar() { const u = '/things'; await apiSend(u, 'POST', {}); }\n"
+           "async function saveGizmo(g) { await contentSubmit(g.id ? '/gizmos/' + g.id : '/gizmos', {}, '#r'); }\n"
+           # une DÉCLARATION du même nom qu'une enveloppe n'est pas un site d'appel.
+           "function contentSubmit(cheminDeclare, body, res) { return 1; }\n"
+           # `P11.13-b` — les trois origines de « confirmée » doivent se distinguer.
+           "async function delAncetre(x) { if (!await confirmModal('?')) return; [1].forEach(() => { apiSend('/gadgets/' + x, 'DELETE'); }); }\n")]
+    abandons_temoins = []
+    appels = appelants_web(js, confs, None, env, abandons_temoins)
+    # ORIGINES : `propre` (dans la fonction qui envoie), `ancetre` (une portée qui la contient), `appelant`
+    # (une portée qui la NOMME — la forme faible, celle qui peut appartenir à un geste voisin).
+    origines = {(a[3], a[6]) for a in appels}
+    for motif, attendue in [("/api/things/*", "propre"), ("/api/gadgets/*", "ancetre"), ("/api/mode", "appelant")]:
+        if (motif, attendue) not in origines:
+            errs.append(f"témoin d'ORIGINE en échec : l'appel vers `{motif}` devait tenir sa confirmation par "
+                        f"`{attendue}` — obtenu {sorted(o for o in origines if o[0] == motif)}. Sans cette "
+                        "distinction, le compte publié des « confirmée par appelant » ne mesure plus la forme "
+                        "faible : une portée qui NOMME l'appelant peut porter la confirmation d'un geste VOISIN.")
+    vus_abandons = {(a[2], a[3]) for a in abandons_temoins}
+    if ("motif de chemin indérivable", "u") not in vus_abandons:
+        errs.append(f"témoin d'ABANDON (chemin en variable) en échec : {sorted(vus_abandons)} — un appel dont le "
+                    "chemin est porté par une variable doit être AVOUÉ, pas passé au suivant en silence.")
+    if ("chemin en ternaire — non apprécié", "/api/gizmos/* ou /api/gizmos") not in vus_abandons:
+        errs.append(f"témoin d'ABANDON (ternaire) en échec : {sorted(vus_abandons)} — un chemin ternaire doit être "
+                    "avoué et ses DEUX routes nommées, pour que la dette soit payable.")
+    if any(a[3] == "cheminDeclare" for a in abandons_temoins):
+        errs.append("témoin de DÉCLARATION en échec : `function contentSubmit(cheminDeclare, …)` a été compté comme "
+                    "un site d'appel — le compte des abandons serait gonflé d'un aveu faux.")
+    if any(a[3].startswith("/api/gizmos") for a in appels):
+        errs.append("témoin de NON-APPRÉCIATION en échec : une branche de ternaire a produit un site apparié. Le "
+                    "resserrement ne se livre qu'APRÈS le paiement des dettes qu'il révèle (`P11.13-h` (c)).")
+    # MUTATION QUI PROUVE LE SENS DES ENVELOPPES : sans elles, la route de widget n'est atteinte par personne
+    # et la garde la déclare « sans appelant web » — c'est-à-dire contrôlée par l'interface de programmation
+    # seule, alors que la console la supprime. C'est la forme la plus dangereuse de l'erreur : elle se lit
+    # comme une garantie. Avec elles, la même route est CONFIRMÉE. Les deux sens sont exigés ici.
+    TEMOIN_ENVELOPPE = ("DELETE", "/api/widgets/{id}")
+    sans_env = verdict(sensibles, appelants_web(js, confs))
+    if TEMOIN_ENVELOPPE not in {(s[0], s[1]) for s in sans_env[2]}:
+        errs.append("témoin d'ENVELOPPE (négatif) en échec : sans le suivi des enveloppes, une route atteinte par "
+                    "la SEULE enveloppe devrait rester « sans appelant web » — le témoin ne mesure donc rien.")
     defauts, couverts, sans = verdict(sensibles, appels)
     if ("DELETE", "/api/things/{id}") not in couverts:
         errs.append("témoin POSITIF en échec : un DELETE confirmé dans sa fonction n'est pas reconnu couvert")
     if ("POST", "/api/mode") not in couverts:
         errs.append("témoin d'APPELANT en échec : une confirmation portée par la fonction appelante n'est pas reconnue")
+    if TEMOIN_ENVELOPPE not in couverts:
+        errs.append("témoin d'ENVELOPPE (positif) en échec : une route DÉTRUITE par la console au travers d'une "
+                    "enveloppe partagée n'est pas vue atteinte — la garde dirait « sans appelant web », c'est-à-dire "
+                    "« la console ne va pas là », ce qui est faux et se lit comme une garantie.")
     mauvais = {(d[0], d[1]) for d in defauts}
     if ("POST", "/api/users/{id}") not in mauvais or ("POST", "/api/rules/{id}/enabled") not in mauvais:
         errs.append(f"témoin NÉGATIF en échec : un changement de rôle ou une activation SANS confirmation doit rougir (défauts : {sorted(mauvais)})")
@@ -689,7 +972,15 @@ def main():
         return 2
 
     with open(os.path.join(WEB, "core.js"), encoding="utf-8") as fh:
-        confs = confirmations_de_core(fh.read())
+        core_src = fh.read()
+    confs = confirmations_de_core(core_src)
+    enveloppes = enveloppes_de_core(core_src)
+    if not enveloppes:
+        print("::error::aucune enveloppe partagée dérivée de web/core.js (une fonction qui reçoit le chemin en "
+              "argument et le passe à `apiSend`) : soit core.js a changé de forme, soit la dérivation ne la voit "
+              "plus — et la garde reclasserait en silence des routes atteintes par la console en « sans appelant "
+              "web ». Elle refuse de conclure.")
+        return 2
     if not confs:
         print("::error::aucune fonction `confirm*` exportée par web/core.js : il n'existe pas de confirmation partagée.")
         return 2
@@ -698,10 +989,37 @@ def main():
         if nom.endswith(".js") and nom != "sw.js":
             with open(os.path.join(WEB, nom), encoding="utf-8", errors="replace") as fh:
                 sources_js.append((os.path.join(WEB, nom), fh.read()))
-    aveux = {}
-    appels = appelants_web(sources_js, confs, aveux)
+    aveux, abandons, compteurs = {}, [], {}
+    appels = appelants_web(sources_js, confs, aveux, enveloppes, abandons, compteurs)
     if aveux and refuser_sur_aveu("routes sensibles", aveux):
         return 2
+
+    # LE CÂBLAGE ENTRE LE MÉCANISME ET LE VERDICT EST TENU, PAS SEULEMENT LE MÉCANISME. Mesuré par mutation
+    # le 2026-08-29 : débrancher les enveloppes ICI laissait les témoins passer (ils les reçoivent en propre)
+    # et la garde rendre un VERT, quatre routes destructrices redevenant « sans appelant web ». Un mécanisme
+    # validé qu'on n'a pas branché ne garde rien : c'est le compte des sites RÉELLEMENT obtenus par une
+    # enveloppe qui l'atteste, et il ne descend pas.
+    if compteurs.get("sites_par_enveloppe", 0) < PLANCHER_SITES_PAR_ENVELOPPE:
+        print(f"::error::{compteurs.get('sites_par_enveloppe', 0)} site(s) d'appel obtenu(s) par une enveloppe "
+              f"partagée, plancher {PLANCHER_SITES_PAR_ENVELOPPE} : soit la console a cessé de passer par elles, "
+              "soit le suivi des enveloppes n'est plus branché sur le verdict — et des routes que la console "
+              "atteint seraient déclarées « sans appelant web », ce qui se lit comme une garantie.")
+        return 2
+
+    # `P11.13-h` (b) — CE QUE LA GARDE A LAISSÉ TOMBER EST DIT AVANT TOUT VERDICT, ET IL EST TENU PAR UN
+    # PLANCHER. Un appel dont le chemin n'est pas dérivable n'est pas apparié : la route qu'il atteint peut
+    # rester « sans appelant web », et ce silence-là se lit comme une garantie. Le plancher ne monte JAMAIS.
+    print(f"enveloppes partagées dérivées de core.js : {', '.join(f'{n}(#{i}, {m})' for n, (i, m, _) in sorted(enveloppes.items()))}")
+    print(f"appels mutants laissés de côté par la dérivation : {len(abandons)} (plancher {PLAFOND_ABANDONS})")
+    for f, ligne, motif, extrait in abandons:
+        print(f"  abandon   {f}:{ligne} — {motif} : `{extrait}`")
+    if len(abandons) > PLAFOND_ABANDONS:
+        print(f"::error::{len(abandons)} appel(s) mutant(s) abandonné(s) par la dérivation, plancher {PLAFOND_ABANDONS} : "
+              "un appel de plus que la garde ne sait pas lire. Elle rendrait un verdict amputé sous la forme d'un vert — "
+              "écris le chemin de façon dérivable, ou apprends-le à la dérivation ; ce plancher ne se relève pas.")
+        return 1
+    if len(abandons) < PLAFOND_ABANDONS:
+        print(f"note : le plancher des abandons peut descendre à {len(abandons)} (`PLAFOND_ABANDONS`).")
 
     # SECOND SENS (`P11.13-b`) : partir des surfaces et revenir au critère, AVANT de rendre le verdict habituel.
     signaux = signaux_des_surfaces(routes, handlers, readonly, appels)
@@ -727,7 +1045,7 @@ def main():
         etat = "confirmée" if (verbe, path) in couverts else ("SANS CONFIRMATION" if (verbe, path) in {(d[0], d[1]) for d in defauts} else "sans appelant web")
         print(f"  {verbe:6} {path:44} {etat:18} {'; '.join(familles)}")
     for verbe, path, familles, sites in defauts:
-        for f, ligne, _m, motif, _c, fn in sites:
+        for f, ligne, _m, motif, _c, fn, _o in sites:
             print(f"::error::{f}:{ligne} — `{fn}` appelle {verbe} {path} ({'; '.join(familles)}) sans passer par une "
                   f"confirmation partagée ({', '.join(confs)}) : l'utilisateur ne voit pas la conséquence avant d'agir.")
     if defauts:
@@ -743,6 +1061,27 @@ def main():
               f"leurs appelants confirment, plafond {PLAFOND_ASYMETRIE} : une de plus que le cliquet. Faites passer "
               "l'appelant par une confirmation partagée — ce cliquet ne se relève pas sans raison écrite dans la garde.")
         return 1
+    # `P11.13-b` — CE QUE « CONFIRMÉE » VAUT AU JUSTE CESSE D'ÊTRE UNE PHRASE ET DEVIENT UN COMPTE TENU.
+    # La limite était ÉCRITE dans l'en-tête avec un chiffre relevé un jour donné, que plus rien ne suivait.
+    # Elle est maintenant DÉRIVÉE à chaque exécution et bornée par un plancher qui ne monte pas : un appel de
+    # plus déclaré confirmé par une portée qui le NOMME (et non par la sienne ni par une portée qui le
+    # CONTIENT) fait rougir. C'est un compte, pas un resserrement : aucune de ces routes n'est accusée ici,
+    # et la garde ne rend ni plus ni moins de « confirmée » qu'avant ce compte. Le resserrement, lui, ne
+    # peut être livré qu'APRÈS le paiement des dettes qu'il révèle (`P11.13-h` (c)).
+    par_appelant = sorted({(a[0], a[1], a[5]) for a in appels if a[6] == "appelant"})
+    print(f"\nconfirmations accordées par une portée qui NOMME l'appelant (ni la sienne, ni une portée qui la "
+          f"contient) : {len(par_appelant)} appel(s), plancher {PLAFOND_CONFIRME_PAR_APPELANT} — la portée qui "
+          "confirme peut appartenir à un geste VOISIN, et cette forme de « confirmée » n'est pas une preuve.")
+    for f, ligne, fn in par_appelant:
+        print(f"  par-appelant  {f}:{ligne} dans `{fn}`")
+    if len(par_appelant) > PLAFOND_CONFIRME_PAR_APPELANT:
+        print(f"::error::{len(par_appelant)} appel(s) mutant(s) tiennent leur « confirmée » d'une portée qui les "
+              f"NOMME, plancher {PLAFOND_CONFIRME_PAR_APPELANT} : un de plus. Écris la confirmation dans la fonction "
+              "qui envoie, ou dans une portée qui la contient — ce plancher ne se relève pas.")
+        return 1
+    if len(par_appelant) < PLAFOND_CONFIRME_PAR_APPELANT:
+        print(f"note : le plancher des « confirmée par appelant » peut descendre à {len(par_appelant)} "
+              "(`PLAFOND_CONFIRME_PAR_APPELANT`).")
     if len(asymetries) < PLAFOND_ASYMETRIE:
         print(f"note : le cliquet peut descendre à {len(asymetries)} (`PLAFOND_ASYMETRIE`).")
     print(f"\nOK — {len(couverts)} route(s) sensible(s) confirmée(s) par la surface, {len(sans)} sans appelant web "

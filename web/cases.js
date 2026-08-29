@@ -190,6 +190,23 @@ function caseRow(c) {
   return row;
 }
 
+// `P10.7-d` — UN REFUS DU DÉMON ARRIVE EN 200, ET IL DOIT ÊTRE LU.
+//
+// Depuis `P10.7-c`, trois routes de ce panneau peuvent rendre un corps 200 qui garde sa FORME et y ajoute
+// la cause sous `error` : `/api/cases` (liste), `/api/cases/queues` et `/api/cases/metrics`, quand le
+// portillon de concurrence est CLOS (`daemon/src/handlers/portillon.rs`). `api()` (core.js) ne jette que
+// sur `!r.ok` : ce module recevait donc `{"cases":[],"total":0,error:…}` et en tirait « aucun case », et
+// `{queues:[]}` / `{}` faisaient simplement DISPARAÎTRE le bandeau de charge. Dans les deux cas une lecture
+// NON EXÉCUTÉE se lisait comme une absence établie.
+//
+// LE TEST EST SÉPARÉ DE CELUI DU VIDE (`check_a_refusal_is_not_rendered_as_an_absence.py`), et la cause
+// n'est PAS recopiée ici : elle est écrite une seule fois, dans le démon.
+// DIRECTION DE L'ERREUR : le refus l'emporte sur des lignes éventuellement servies à côté — rendre la table
+// présenterait un résultat incomplet comme complet. Cette surface rend MOINS, jamais plus.
+function causeDuRefusServi(r) {
+  return (r && r.error != null) ? String(r.error).trim() : '';
+}
+
 async function loadCases() {
   const wrap = $('#cases-list'); if (!wrap) return;
   const nb = $('#case-new'); if (nb) nb.style.display = canEditCases() ? '' : 'none';   // + Case : editor/admin
@@ -206,6 +223,11 @@ async function loadCases() {
       let url = '/cases' + base + (base ? '&' : '?') + 'limit=' + limit + '&offset=' + offset;
       if (sortSel) url += '&sort=' + encodeURIComponent(sortSel);
       const j = await api(url);   // erreur -> pagedList/loadServer affiche « erreur : … »
+      // `P10.7-d` — LE REFUS EMPRUNTE LE CHEMIN D'ÉCHEC DÉJÀ EN PLACE. `loadServer` rend « erreur : … » sur
+      // un rejet et `emptyText` (« aucun case ») sur zéro ligne : ce sont DEUX issues distinctes, et jeter
+      // ici est ce qui met le refus dans la bonne. Rien de neuf n'est peint.
+      const refus = causeDuRefusServi(j);
+      if (refus) throw new Error(refus);
       return { rows: caseSortRows(j.cases || []), total: j.total };
     },
   });
@@ -509,10 +531,18 @@ function fmtDur(s) {
 // n'affiche rien. Lecture seule (viewer+). Les chips de file filtrent la liste sur l'assignee (per-assignee queue).
 async function loadCaseOpsSummary() {
   const host = $('#caseops-summary'); if (!host) return;
-  let queues = [], metrics = {};
-  try { ({ queues } = await api('/cases/queues')); } catch (e) {}
-  try { metrics = await api('/cases/metrics'); } catch (e) {}
+  let queues = [], metrics = {}, refus = '';
+  try { const r = await api('/cases/queues'); refus = causeDuRefusServi(r); queues = r.queues || []; } catch (e) {}
+  try { metrics = await api('/cases/metrics'); refus = refus || causeDuRefusServi(metrics); } catch (e) {}
   host.replaceChildren();
+  // `P10.7-d` — LE BANDEAU DISPARAISSAIT SUR UN REFUS, exactement comme il disparaît en mode 0 (aucun cas).
+  // Un panneau qui s'efface ne dit rien, et « rien » se lit ici comme « aucune charge » : c'est une absence
+  // rendue à la place d'un refus. Le refus est maintenant DIT, avec la cause du démon telle quelle ; le mode
+  // 0, lui, continue de ne rien afficher — il n'y a pas de refus à rapporter, et le test est SÉPARÉ.
+  if (refus) {
+    host.appendChild(Object.assign(document.createElement('div'), { className: 'bad', textContent: 'Charge et SLA NON LUS — ' + refus }));
+    return;
+  }
   const o = metrics.overall || {};
   if (!(queues && queues.length) && !(o.open_now || o.resolved)) return; // rien à montrer
   const kpi = (label, val, title) => {
@@ -583,8 +613,13 @@ async function renderCaseLinks(box, c) {
 // #39 — FUSION (soft) : fusionne le case courant DANS une cible choisie (le courant est clos + rattaché ;
 // timeline combinée dans la cible ; réversible). editor+.
 async function mergeCasePrompt(id) {
-  let cases = [];
-  try { ({ cases } = await api('/cases?limit=200')); } catch (e) {}
+  let cases = [], refus = '';
+  try { const j = await api('/cases?limit=200'); refus = causeDuRefusServi(j); cases = j.cases; } catch (e) {}
+  // `P10.7-d` — LA DÉCONSTRUCTION JETAIT L'AVEU. `({ cases } = await api(…))` ne garde que la clé attendue :
+  // la cause servie à côté disparaissait, `cases` valait `undefined`, et le sélecteur annonçait « Aucune
+  // autre case cible » — une absence AFFIRMÉE sur une lecture qui n'a pas eu lieu. La réponse entière est
+  // désormais tenue, et le refus est dit AVANT le compte.
+  if (refus) { toast('Cases NON LUS — ' + refus, 'bad', 8000); return; }
   const opts = (cases || []).filter(c => c.id !== id).map(c => ({ value: String(c.id), label: '#' + c.id + ' · ' + c.title }));
   if (!opts.length) { toast('Aucune autre case cible', 'bad'); return; }
   const r = await modal({ title: 'Fusionner le case #' + id, okText: 'Fusionner', fields: [
@@ -599,8 +634,9 @@ async function mergeCasePrompt(id) {
 
 // #39 — LIEN (association non destructive) entre le case courant et un autre. editor+.
 async function linkCasePrompt(id) {
-  let cases = [];
-  try { ({ cases } = await api('/cases?limit=200')); } catch (e) {}
+  let cases = [], refus = '';
+  try { const j = await api('/cases?limit=200'); refus = causeDuRefusServi(j); cases = j.cases; } catch (e) {}
+  if (refus) { toast('Cases NON LUS — ' + refus, 'bad', 8000); return; }   // `P10.7-d`, cf. mergeCasePrompt
   const opts = (cases || []).filter(c => c.id !== id).map(c => ({ value: String(c.id), label: '#' + c.id + ' · ' + c.title }));
   if (!opts.length) { toast('Aucune autre case à lier', 'bad'); return; }
   const r = await modal({ title: 'Lier le case #' + id, okText: 'Lier', fields: [
@@ -643,8 +679,12 @@ async function createCase() {
 // ajoute un element (alerte/event) a un case existant OU nouveau. ref facultative (event depuis l'Explore =
 // sans id -> item 'event' libre ; alerte -> ref='alert:ID').
 async function addToCase(kind, body, ref) {
-  let cases = [];
-  try { ({ cases } = await api('/cases')); } catch (e) {}
+  let cases = [], refus = '';
+  try { const j = await api('/cases'); refus = causeDuRefusServi(j); cases = j.cases; } catch (e) {}
+  // `P10.7-d` — C'EST ICI QUE L'ABSENCE FABRIQUÉE COÛTAIT LE PLUS CHER. Sur un refus, `cases` valait
+  // `undefined` : le sélecteur n'offrait plus que « + Nouveau case », et l'analyste créait un DOUBLON du cas
+  // qui existait déjà — un refus de lecture se soldait par une ÉCRITURE fausse. Le geste est refusé, et dit.
+  if (refus) { toast('Cases NON LUS — ' + refus + " Aucun cas n'est proposé : rien n'a été lu, et créer ici ferait un doublon.", 'bad', 9000); return; }
   const active = (cases || []).filter(c => !CASE_TERMINAL.has(c.status));   // le daemon écrit 'new' (plus 'open' legacy)
   const opts = [{ value: 'new', label: '+ Nouveau case' }, ...active.map(c => ({ value: String(c.id), label: '#' + c.id + ' · ' + c.title }))];
   const r = await modal({ title: 'Ajouter à un case', okText: 'Ajouter', fields: [
@@ -848,4 +888,6 @@ async function prepareResponse(c, s) {
 
 // caseBtn : rendu pur, jugé par le harnais ESM (P11.4-b). caseRow / renderCaseDetail : rendus purs eux
 // aussi, jugés par le témoin 21 (P11.11-a) — dépli d'une ligne et raison d'un état inerte.
-export { addToCase, canEditCases, caseBtn, caseRow, createCase, loadCases, openCase, renderCaseDetail };
+// `loadCaseOpsSummary` est exporté pour la même raison que `renderResults` de datamodels.js : le refus
+// du démon sur les deux routes du bandeau ne se prouve qu'en le RENDANT.
+export { addToCase, canEditCases, caseBtn, caseRow, createCase, loadCaseOpsSummary, loadCases, openCase, renderCaseDetail };

@@ -11,7 +11,7 @@
 // classes de bouton. Les étapes d'un runbook LIVRÉ se lisent (« Étapes ») sans passer par l'éditeur, qui
 // reste réservé aux custom. L'éditeur utilise `.ruleform/.rf-row/.rf-actions` comme le formulaire des
 // playbooks : aucun style en ligne, aucune classe sans règle CSS.
-import { $, api, apiSend, confirmModal, modal, muted, toast, socIsAdmin, gateDeleteBtn, ic } from './core.js';
+import { $, api, apiSend, confirmModal, disclosure, LANG, modal, muted, pagedList, toast, socIsAdmin, gateDeleteBtn, ic } from './core.js';
 import { producerRow, rowButton, announceCreated, takePendingNote, destinationNote } from './producer_ui.js';
 
 const RB_PHASES = ['triage', 'investigation', 'containment', 'eradication', 'recovery'];
@@ -39,8 +39,35 @@ async function loadRunbooks() {
   try { ({ runbooks } = await api('/runbooks')); } catch (e) { wrap.replaceChildren(muted('runbooks indisponibles')); return; }
   wrap.replaceChildren();
   const note = takePendingNote('runbooks'); if (note) wrap.appendChild(note); // P11.1-e : où arrive ce qui vient d'être créé
-  if (!runbooks.length) { wrap.appendChild(muted('aucun runbook')); return; }
-  runbooks.forEach(r => wrap.appendChild(rbRow(r)));
+  // ═══════════════════════════════════════════════════════════════════════════════════════════════
+  // `P11.20-j` — CETTE LISTE PASSE PAR LA FABRIQUE PARTAGÉE, ELLE NE SE CONSTRUIT PLUS À LA MAIN.
+  //
+  // CE QUI A ÉTÉ MESURÉ. La ligne d'un runbook passait DÉJÀ par la fabrique de ligne (`P11.2-a`,
+  // `producer_ui.js`) ; la LISTE, elle, était empilée ici, à la main. Conséquence directe et
+  // mesurable : ce panneau n'avait ni recherche ni pagination, quand huit autres surfaces de la
+  // console les ont reçues sans une ligne de câblage parce qu'elles passent par `pagedList`. L'écart
+  // ne se comptait donc pas en mécanisme manquant — le geste EXISTE — mais en surface non câblée.
+  //
+  // LA PORTÉE DE LA RECHERCHE EST CELLE DE LA ROUTE, ET ELLE EST DÉCLARÉE EN CONNAISSANCE DE CAUSE.
+  // `recherche: true` (et non `{ fenetre: true }`) affirme que la liste est tenue ici EN ENTIER :
+  // mesuré le 2026-08-29 sur `daemon/src/handlers/incidents.rs`, `runbooks_admin_list` sert
+  // `SELECT … FROM runbook ORDER BY managed DESC, id` — sans LIMIT, sans OFFSET, sans filtre. Se
+  // tromper ici ferait rendre « aucun résultat » pour un runbook qui EXISTE, l'erreur qui va dans le
+  // sens dangereux sur une console de sécurité (`P11.18-m`).
+  //
+  // CE QUE LE TEXTE CHERCHÉ COUVRE, ET CE QU'IL NE COUVRE PAS : la fabrique dérive le texte d'une
+  // ligne de CE QUI EST AFFICHÉ dessus — le nom, le badge d'origine, le mot de l'état et sa
+  // conséquence, la clé de correspondance, le nombre d'étapes. La DESCRIPTION d'un runbook n'est pas
+  // rendue sur la ligne (elle vit dans l'infobulle de sa clé) : elle ne se cherche donc pas, et
+  // c'est la règle de la fabrique, pas un oubli — ce qui se cherche est ce qu'on a sous les yeux.
+  // ═══════════════════════════════════════════════════════════════════════════════════════════════
+  const hoteDeLaListe = document.createElement('div');
+  wrap.appendChild(hoteDeLaListe);
+  pagedList(hoteDeLaListe, {
+    mode: 'client', pageSize: 50, rows: runbooks, renderRow: rbRow,
+    emptyText: LANG === 'en' ? 'no runbook' : 'aucun runbook',
+    storeKey: 'soc_runbooks', recherche: true,
+  });
 }
 
 // Origine d'un runbook dans la convention PARTAGÉE des badges (0 builtin / 1 overlay / 2 perso) : la table
@@ -66,9 +93,10 @@ function runbookRowModel(r) {
 }
 function rbRow(r) {
   const row = producerRow(runbookRowModel(r));
-  const meta = row.metaEl;
   // Étapes : lecture seule, pour TOUS (un livré n'ouvrait aucune vue de ses étapes — « ni les étapes »).
-  row.appendChild(rowButton('Étapes', { title: 'Voir les étapes phasées (lecture seule)', onClick: () => toggleSteps(row, r.id, meta) }));
+  const btnEtapes = rowButton('Étapes', { title: 'Voir les étapes phasées (lecture seule)' });
+  row.appendChild(btnEtapes);
+  poserLeDepliDesEtapes(btnEtapes, row, r.id);
   // clone (managé OU custom -> copie custom éditable).
   row.appendChild(rowButton('Cloner', { title: 'Copie custom éditable', onClick: async () => {
     const m = await modal({ title: 'Cloner le runbook', okText: 'Cloner', fields: [{ name: 'name', label: 'Nom de la copie', value: r.name + ' (copie)' }] });
@@ -89,13 +117,45 @@ function rbRow(r) {
   return row;
 }
 
-// Vue LECTURE SEULE des étapes d'un runbook (livré ou custom), dépliée sous sa ligne. Second clic : replie.
-async function toggleSteps(row, id, meta) {
-  if (row.stepsEl) { row.stepsEl.remove(); row.stepsEl = null; return; }
-  let data;
-  try { data = await api('/runbooks/' + id); } catch (e) { meta.textContent = 'étapes indisponibles'; return; }
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+// `P11.20-j` — LE DÉPLI DES ÉTAPES EST CELUI DE TOUTE LA CONSOLE, PLUS UN SECOND ÉCRIT ICI.
+//
+// CE QUI A ÉTÉ MESURÉ. Ce bouton pliait et dépliait déjà — le geste n'était pas absent. Mais il le
+// faisait par un état posé sur la ligne (`row.stepsEl`) et un aller-retour écrit ici, à côté de
+// `disclosure` (`core.js`, `P11.4-a`), qui est le dépli des formulaires, des cellules trop longues et
+// des groupes de la fabrique de listes. Deux mécanismes pour un même geste, et le prix se lisait sur
+// l'écran : le bouton ne portait NI `aria-expanded` NI la marque d'état que tous les autres dépliants
+// de la console portent. Un exploitant qui plie ne voyait donc rien changer sur le bouton, et un
+// lecteur d'écran n'apprenait pas qu'il commande un panneau.
+//
+// LE PANNEAU N'EST PAS POSÉ D'AVANCE, ET C'EST DÉLIBÉRÉ. `disclosure` accepte un panneau détaché :
+// `isOpen` est la PRÉSENCE de la boîte dans la ligne, `open` l'y met et la remplit, `close` l'en
+// retire. Une boîte vide posée en permanence changerait la forme de la ligne — or cette forme est
+// tenue ÉGALE à celle d'un playbook par un témoin du banc (`P11.2-a`), et c'est une propriété qu'on
+// ne casse pas pour économiser trois lignes. `observe: false` pour la même raison qu'un groupe
+// repliable : l'état est porté par la PRÉSENCE de la boîte, pas par un attribut à surveiller, et une
+// liste repeinte à chaque chargement ajouterait sinon un observateur par ligne.
+//
+// UNE LECTURE QUI ÉCHOUE NE MANGE PLUS UN NOMBRE VRAI. L'aveu « étapes indisponibles » était écrit
+// PAR-DESSUS le compte d'étapes de la ligne, qui disparaissait alors définitivement — un refus rendu
+// comme l'effacement d'une donnée juste. Il est désormais rendu DANS la boîte, là où l'on attendait
+// les étapes, et le compte reste sous les yeux.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+function poserLeDepliDesEtapes(btn, row, id) {
   const box = document.createElement('div'); box.className = 'rb-steps';
   box.style.cssText = 'flex-basis:100%;padding:4px 0 4px 28px';
+  disclosure(btn, box, {
+    observe: false,
+    isOpen: () => !!box.parentNode,
+    open: () => { row.appendChild(box); remplirLesEtapes(box, id); },
+    close: () => { box.remove(); },
+  });
+}
+// Vue LECTURE SEULE des étapes d'un runbook (livré ou custom), rendue dans la boîte dépliée sous sa ligne.
+async function remplirLesEtapes(box, id) {
+  box.replaceChildren();
+  let data;
+  try { data = await api('/runbooks/' + id); } catch (e) { box.appendChild(muted('étapes indisponibles')); return; }
   if (data.description) box.appendChild(muted(data.description));
   let lastPhase = null;
   (data.step_list || []).forEach(s => {
@@ -108,7 +168,6 @@ async function toggleSteps(row, id, meta) {
     box.appendChild(line);
   });
   if (!(data.step_list || []).length) box.appendChild(muted('aucune étape'));
-  row.appendChild(box); row.stepsEl = box;
 }
 
 // Éditeur INLINE (création si id=null, édition sinon). Gabarits d'étapes phasées ajoutables/supprimables.

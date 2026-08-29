@@ -1027,6 +1027,52 @@ const I18N_EN = {
   // « auto off » est déjà de l'anglais, et « OBSERVE » est le mot que la langue anglaise emploie pour ce
   // mode — c'est le pendant court d'« Observation », le terme que les infobulles voisines rendent déjà.
   "auto off": "auto off", "OBSERVE": "OBSERVE",
+  // P11.8-c — TRENTE ET UNE entrées que le critère de puits ÉLARGI a rendues visibles le 2026-08-29, sur
+  // DOUZE modules dont aucun n'était touché par un lot. Elles ne sont pas neuves : ce sont des textes
+  // d'état vide, des titres de modale et des messages de confirmation qui s'affichaient EN FRANÇAIS sous
+  // `LANG='en'` depuis leur écriture, pendant que leur module tenait un plafond de trous de ZÉRO — le
+  // défaut que `P11.8-c` décrit, sur douze modules d'un coup. Ce que la garde a appris : la valeur posée
+  // sous une CLÉ DE FABRIQUE de `core.js` (`emptyText:` que `muted()` pose en `textContent`, `message:` et
+  // `cancelText:` que `modal()` pose en nœuds texte) et le premier argument de `confirmWithConsequence(`,
+  // qui devient le `title` de cette modale, donc son `<h3>`.
+  // CHAQUE CLÉ EST LE NŒUD TEXTE ENTIER, et ce n'est pas une lecture, c'est un TÉMOIN JOUÉ : le vrai
+  // `i18nWalk` de ce fichier, chargé sous `LANG='en'` avec un shim DOM minimal, rend « aucune source » ->
+  // « no source » (POSITIF), « aucune entrée d'audit » -> « no audit entry » (apostrophe), le même nœud
+  // entouré de blancs -> traduit (le `trim()` de la comparaison), la MÊME clé quand elle n'est qu'un
+  // FRAGMENT du nœud (« 12 lignes · aucune source restante ici ») -> INCHANGÉE (NÉGATIF), et sans la clé
+  // -> inchangée (contrôle). Une clé qui ne serait qu'un morceau du nœud serait une entrée MORTE : un vert
+  // sans traduction, le piège déjà nommé plus haut pour les fragments de concaténation.
+  "Nouveau jeton": "New token",
+  "aucun jeton — clique « + Nouveau jeton » pour provisionner un agent ou un forwarder HEC.": "no token — click “+ New token” to provision an agent or a HEC forwarder.",
+  "aucune entrée d'audit": "no audit entry",
+  "aucun champ déclaré — sans champ, le Pivot ne peut ni découper ni agréger (fail-closed). Ajoutez au moins un champ.": "no field declared — without a field, Pivot can neither split nor aggregate (fail-closed). Add at least one field.",
+  "aucun dataset — construisez un Pivot puis « Enregistrer comme dataset » pour le réutiliser.": "no dataset — build a Pivot then “Save as dataset” to reuse it.",
+  "aucun modèle — créez un modèle sémantique (ex. « Authentication ») puis ses objets et champs pour piloter le Pivot sans écrire de GXQL.": "no model — create a semantic model (e.g. “Authentication”) then its objects and fields to drive Pivot without writing GXQL.",
+  "aucun objet — ajoutez un objet (contrainte GXQL optionnelle, ex. action=failure) ; ses champs alimenteront le Pivot.": "no object — add an object (optional GXQL constraint, e.g. action=failure); its fields will feed Pivot.",
+  "aucune ligne sur la fenêtre choisie.": "no row over the chosen window.",
+  "aucune anomalie au dernier bucket clos (les valeurs restent dans la baseline).": "no anomaly in the last closed bucket (values stay inside the baseline).",
+  "aucune baseline définie — crée une métrique par entité (ex. « volume auth par hôte ») pour détecter les déviations (z-score).": "no baseline defined — create a per-entity metric (e.g. “auth volume per host”) to detect deviations (z-score).",
+  "aucune corrélation définie — crée une séquence (ex. « échec auth ×N puis succès même IP ») pour lever des finding-groups.": "no correlation defined — create a sequence (e.g. “auth failure ×N then success from the same IP”) to raise finding groups.",
+  "aucune entité ne complète la séquence (rien à lever).": "no entity completes the sequence (nothing to raise).",
+  "Ce que vous déclarez décide si le silence de cette machine LÈVE une alerte. Rien d'autre n'est touché : ni la collecte, ni les règles, ni la rétention — la machine reste listée et ses signaux continuent d'être reçus.": "What you declare decides whether this machine's silence RAISES an alert. Nothing else is touched: neither collection, nor rules, nor retention — the machine stays listed and its signals keep coming in.",
+  "aucun hôte": "no host",
+  "Désactiver la double authentification": "Disable two-factor authentication",
+  "Entre un code TOTP courant, ou un code de secours, pour confirmer la désactivation.": "Enter a current TOTP code, or a backup code, to confirm the deactivation.",
+  "ce fournisseur sera ACTIF : les comptes de son annuaire pourront ouvrir une session sur plume, avec le rôle que leur groupe leur donne.": "this provider will be ACTIVE: the accounts of its directory will be able to open a session on plume, with the role their group gives them.",
+  "ce fournisseur sera enregistré INACTIF : personne ne pourra ouvrir de session par lui tant qu'il n'est pas activé depuis la liste.": "this provider will be saved INACTIVE: nobody will be able to open a session through it until it is enabled from the list.",
+  "aucun alias — mappez un nom canonique (ex. client_ip) vers un champ source (ex. src_ip) pour l’harmoniser dans toute recherche.": "no alias — map a canonical name (e.g. client_ip) onto a source field (e.g. src_ip) to harmonise it across every search.",
+  "aucun champ calculé — définissez un champ dérivé (ex. sev_up = upper(severity)) réutilisable partout.": "no calculated field — define a derived field (e.g. sev_up = upper(severity)) reusable everywhere.",
+  "aucun event type — nommez une classe d’événements (ex. web_attack = source=web severity=HIGH) pour la réutiliser comme eventtype=web_attack.": "no event type — name a class of events (e.g. web_attack = source=web severity=HIGH) to reuse it as eventtype=web_attack.",
+  "aucun tag — étiquetez des événements (ex. tag « pci » sur category=payment) pour les rechercher par tag.": "no tag — label events (e.g. tag “pci” on category=payment) to search them by tag.",
+  "Enregistrer la rétention": "Save retention",
+  "aucune contribution enregistrée pour cette entité.": "no contribution recorded for this entity.",
+  "La cadence attendue sert au STATUT affiché (ici et dans Fraîcheur). Elle ne crée aucune alerte : le dead-man's-switch reste celui des sondes du démon.": "The expected cadence drives the STATUS shown (here and in Freshness). It raises no alert: the dead man's switch remains the one of the daemon probes.",
+  "aucune source": "no source",
+  "Appliquer l'exclusion d'affichage": "Apply the display exclusion",
+  "Créer un silence d'alertes": "Create an alert silence",
+  "Exclusion d'AFFICHAGE uniquement — de-bruite les panneaux « menace externe ». N'affecte JAMAIS la collecte, la détection (règles) ni le never-ban (HOST). Action auditée (sev 3).": "DISPLAY exclusion only — de-noises the “external threat” panels. NEVER affects collection, detection (rules) or the never-ban (HOST). Audited action (sev 3).",
+  "aucun silence — « + Silence » pour muter temporairement les notifications d'une règle, d'un hôte ou d'une source.": "no silence — “+ Silence” to temporarily mute the notifications of a rule, a host or a source.",
+  "aucune exclusion": "no exclusion",
 };
 // Attributs AFFICHÉS que le dictionnaire traduit : infobulle, texte d'attente, nom accessible, et le libellé
 // d'un groupe d'options (`<optgroup label>`). Un attribut `value` n'est jamais touché (c'est une donnée).

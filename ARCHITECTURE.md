@@ -293,7 +293,9 @@ Trois cibles, **même binaire** (mode-aware) :
 - **Docker** : `docker-compose.yml` — contexte de build = **la racine de ce dépôt** (`context: .`) ;
   `guatx-core` est résolu par une **git‑dep publique** (`guatxlabs/core`, tag épinglé dans
   `daemon/Cargo.toml`), aucun crate sibling
-  requis. `hashpw` → `.env` (`PLUME_PASS_HASH`) → `docker compose up -d --build`. `PLUME_DEMO=1` peuple
+  requis. `docker compose build soc` → `hashpw` → `.env` (`PLUME_PASS_HASH`, **entre apostrophes
+  simples** : Compose interpole les `$` d'un `.env`, cf. `README.md` §A et `.env.example`) →
+  `docker compose up -d --build`. `PLUME_DEMO=1` peuple
   des données de démo. Le compose active les **ops natives** (backup 6 h + auto‑vacuum quotidien).
   **Aucune image n'est publiée** : ce mode compile depuis les sources (stage `rust:1-bookworm`).
 - **Hôte nu (systemd)** : `bootstrap.sh` (central) installe le binaire + `plume-daemon.service`
@@ -395,14 +397,17 @@ Trois cibles, **même binaire** (mode-aware) :
 
 ## 11. Budget ressources
 
-| Cible | RAM |
-|---|---|
-| k3s / conteneur (profil de référence « SMB », SQLCipher) | **de l'ordre de trois cents Mio de RSS mesurés** · requests 256Mi-768Mi selon la charge / **limit 2Gi** |
-| Hôte nu (systemd) | même binaire, même budget : `MemoryMax=2G` / `MemoryHigh=1800M` (cf. `systemd/plume-daemon.service`). **256 Mo et 200 Mo OOM-aient le daemon au boot** — ne descendez pas sous ~512 Mo. |
+| Cible | RAM | Échange |
+|---|---|---|
+| k3s (profil de référence « SMB », SQLCipher) | **de l'ordre de trois cents Mio de RSS mesurés** · requests 256Mi-768Mi selon la charge / **limit 2Gi** | désactivé par l'orchestrateur |
+| Conteneur (`docker-compose.yml`) | `mem_limit` — **même chiffre, 2 Gio**, réglable par `PLUME_MEM_LIMIT` ; `/tmp` borné (`PLUME_TMP_SIZE`) parce qu'un tmpfs est de la RAM comptée au même cgroup | `memswap_limit` **égal** à `mem_limit` → zéro octet |
+| Hôte nu (systemd) | même binaire, même budget : `MemoryMax=2G` / `MemoryHigh=1800M` (cf. `systemd/plume-daemon.service`). **256 Mo et 200 Mo OOM-aient le daemon au boot** — ne descendez pas sous ~512 Mo. | **non borné** : aucune unité livrée ne pose `MemorySwapMax=`, donc `MemoryMax=` y borne le RÉSIDENT et pas le total |
 
 Le profil de référence est **mesuré à quelques centaines de Mio de RSS** sur une installation réelle
 (**près de dix millions d'événements en base, 2 vCPU, plafond mémoire 2 Gio, masquage de champs inactif**), et le plafond
-de 2 Gio est **appliqué à l'exécution** (`limits.memory: 2Gi` en k3s, `MemoryMax=2G` en systemd) — mais
+de 2 Gio est **appliqué à l'exécution** dans les **trois** modes (`limits.memory: 2Gi` en k3s,
+`mem_limit` + `memswap_limit` en conteneur, `MemoryMax=2G` en systemd — le conteneur ne le posait pas,
+`P4.14-a`) — mais **le même chiffre n'y est pas la même borne** (colonne « Échange » ci-dessus), et
 **aucun job de CI ne vérifie ce plafond** : c'est une mesure et une borne d'exécution, pas une garantie
 re-prouvée à chaque commit. La consommation dépend surtout de la **concurrence de requêtes**, pas de la
 taille de la base ; mesurez votre propre empreinte et **définissez vos propres seuils**. Leviers disponibles :

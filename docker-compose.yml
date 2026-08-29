@@ -1,5 +1,52 @@
-# Plume central en container. Génère d'abord le hash :
-#   docker compose run --rm soc hashpw 'tonmotdepasse'   -> copie le hash dans .env (PLUME_PASS_HASH=...)
+# Plume central en container. TROIS GESTES, DANS CET ORDRE — le premier n'est pas facultatif :
+#   docker compose build soc
+#   docker compose run --rm -T soc hashpw 'tonmotdepasse' | grep -a '^[$]argon2id[$]' | sed "s/.*/PLUME_PASS_HASH='&'/" >> .env
+#   tail -n 1 .env       # DOIT afficher PLUME_PASS_HASH='$argon2id$…' ; sinon RIEN n'a été écrit
+# À la main, la ligne de `.env` doit ressembler EXACTEMENT à ceci, APOSTROPHES COMPRISES :
+#   PLUME_PASS_HASH='$argon2id$v=19$m=19456,t=2,p=1$<sel>$<empreinte>'
+#
+# POURQUOI CONSTRUIRE D'ABORD, ET POURQUOI FILTRER. AUCUNE IMAGE N'EST PUBLIÉE (cf. plus bas) : sur un
+# clone neuf, `run` CONSTRUIT, et BuildKit écrit son journal sur la SORTIE STANDARD — donc dans le tube,
+# donc dans `.env`. Mesuré au banc le 2026-08-29 : une cinquantaine de lignes parasites, dont une qui
+# recopie une ligne de `Dockerfile` portant des apostrophes ; `.env` devient alors ILLISIBLE et compose
+# refuse TOUTES ses sous-commandes, `down` compris — l'exploitant ne peut même plus nettoyer. `build`
+# d'abord laisse ce journal à l'écran, où il se lit. Le filtre `grep` est la seconde ceinture, et il est
+# DÉRIVÉ de la forme de ce qu'on veut : un hash argon2id commence par `$argon2id$`, une ligne de journal
+# jamais (BuildKit préfixe chacune des siennes par `#<n>`). Construction ÉCHOUÉE : le filtre ne laisse
+# RIEN passer, `.env` reste intact et le mode SETUP s'arme — bruyant, plutôt qu'un hash silencieusement
+# faux. `tail -n 1` NE SUFFIT PAS : sur une construction échouée la dernière ligne est un séparateur
+# BuildKit, qui deviendrait le hash.
+#
+# POURQUOI LES APOSTROPHES, ET POURQUOI DES GUILLEMETS NE SUFFISENT PAS (`P4.15-a`). Un hash argon2id
+# porte CINQ `$`, et compose les lit dans `.env` comme des ouvertures de VARIABLE : `$argon2id`, `$v`,
+# `$m`, puis le sel et l'empreinte quand ils commencent par une lettre. Chacun est remplacé par la
+# chaîne vide (compose l'annonce en « … variable is not set », un avertissement qu'on lit rarement) et
+# ce qui atteint le conteneur n'est plus le hash. La forme NUE et la forme entre GUILLEMETS DOUBLES
+# donnent le MÊME résultat amputé — seules les APOSTROPHES SIMPLES, qui coupent l'interpolation, ou des
+# `$` DOUBLÉS, passent la valeur intacte.
+#
+# LA RÈGLE VAUT POUR TOUTE VALEUR DE `.env`, ET LA PLUS COÛTEUSE N'EST PAS LE HASH : c'est `PLUME_DB_KEY`.
+# Mesuré au banc le 2026-08-29 contre CE fichier : la phrase de passe `Correct$Horse$Battery9` écrite
+# nue atteint le conteneur comme `Correct` (7 octets sur 22), et `$secret$phrase` l'atteint VIDE. Or
+# vide vaut « aucune clé » : sur une base NEUVE le démon ENGENDRE alors la sienne, la base naît sous une
+# clé que personne n'a choisie, et la phrase mise à l'abri n'ouvre rien. Un hash amputé se répare en
+# réécrivant `.env` ; une base née sous une autre clé, non. TOUTE valeur portant un `$` s'écrit entre
+# APOSTROPHES SIMPLES.
+#
+# LE `-T`, DIT EXACTEMENT. Il n'est pas là pour retirer un retour chariot que la commande ci-dessus
+# produirait : mesuré au banc le 2026-08-29 sur Compose 5.5.0, l'allocation d'un terminal suit la
+# SORTIE — un tube n'en alloue pas, et la valeur se termine par un saut de ligne seul, avec ou sans
+# `-T`. Quand un terminal EST alloué (sortie à l'écran), la ligne se termine bien par un retour chariot,
+# qui entrerait dans la valeur si elle était capturée autrement. `-T` rend donc l'absence de terminal
+# EXPLICITE au lieu de la faire dépendre d'une détection qui n'est pas un contrat.
+#
+# CE QUI ARRIVE N'EST PAS UNE VALEUR VIDE, ET C'EST PIRE. Mesuré sur des hash produits par `hashpw`
+# lui-même : la valeur reçue est PARTIELLE — jamais vide, jamais intacte, et sa longueur varie avec le
+# sel. Donc le MODE SETUP décrit plus bas ne s'arme PAS : il exige une valeur VIDE. Le démon démarre
+# avec un hash qui ne peut vérifier aucun mot de passe, et personne n'entre — ni par mot de passe, ni
+# par l'assistant, sans une bannière ni une ligne rouge. Ce n'est donc pas « une installation initiale
+# ouverte » : c'est un verrouillage muet, et le seul remède est de réécrire `.env` avec les apostrophes.
+#
 # puis :  docker compose up -d   ->  http://soc.localhost:7000
 #
 # Lancer DEPUIS la racine de ce dépôt :
@@ -132,12 +179,84 @@ services:
       # 0/absent = DÉSACTIVÉ. 86400 = une passe/jour. INOPÉRANT (warn honnête, jamais de VACUUM plein
       # bloquant) si la base n'est pas en `auto_vacuum=INCREMENTAL` — vérifiez avec `plume-daemon db-stats`.
       PLUME_AUTOVACUUM_INTERVAL: "${PLUME_AUTOVACUUM_INTERVAL:-86400}"
+    # --- BUDGET RESSOURCES — `P4.14-a` : LE PLAFOND EST POSÉ ICI, PAS SEULEMENT ANNONCÉ ------------
+    # Le démon DIT lui-même, au démarrage, si quelque chose d'extérieur le borne. Sans les lignes
+    # ci-dessous il imprime « AVERTISSEMENT [couverture=sans-limite] … le budget de 2 Gio du produit
+    # n'est alors qu'une intention. Le poser : MemoryMax= (unité systemd), --memory (conteneur),
+    # limits.memory (orchestrateur) » ; avec elles, « [couverture=protege] ». Le produit nommait déjà
+    # le geste manquant pour ce mode-ci ; ces lignes ne font que l'exécuter. Son plafond INTERNE ne
+    # borne que SQLite — rien n'arrêtait le processus avant la RAM de l'hôte.
+    #
+    # CE QUE CETTE BANNIÈRE ATTESTE, ET CE QU'ELLE N'ATTESTE PAS. Elle confronte le budget SQLite au
+    # SEUL `memory.max` ; `memory.swap.max` n'est lu par aucun chemin du démon. Un conteneur lancé
+    # avec `--memory=2g` SANS borne d'échange affiche donc `couverture=protege` alors qu'il peut
+    # occuper 2 Gio de mémoire PLUS 2 Gio d'échange — mesuré au banc le 2026-08-29 : `--memory=2g`
+    # seul laisse `memory.swap.max` à 2 Gio. La bascule `sans-limite` -> `protege` prouve `mem_limit`,
+    # PAS la borne d'échange. Celle-ci se lit directement, et c'est la seule preuve qui la couvre :
+    #   docker compose exec soc cat /sys/fs/cgroup/memory.swap.max     # DOIT rendre 0
+    #
+    # LES QUATRE BORNES SE RÈGLENT PAR `.env`, comme les vingt autres leviers de ce fichier. Écrites
+    # en dur, elles obligeraient qui a besoin d'autre chose à éditer un fichier SUIVI, donc à entrer
+    # en conflit au prochain `git pull` : un durcissement ne se paie pas en fourche locale.
+    #
+    # LE MÊME CHIFFRE DANS LES TROIS MODES ; LA BORNE EFFECTIVE, ELLE, DIFFÈRE — et c'est dit ligne
+    # par ligne ci-dessous plutôt qu'affirmé ici :
+    #   systemd/plume-daemon.service -> MemoryMax=2G   ·   deploy/k3s.yaml -> limits.memory 2Gi
+    # La précondition que l'unité système appelle « indispensable pour tenir MemoryMax=2G »
+    # (MALLOC_ARENA_MAX=2) est déjà satisfaite ici : elle est baquée dans le Dockerfile.
+    #
+    # ADOPTER CE PLAFOND SUR UN DÉPLOIEMENT DÉJÀ EN SERVICE SE MESURE D'ABORD. L'échange est à zéro
+    # (ligne suivante) : c'est donc la part ANONYME du processus — celle qu'aucune récupération ne
+    # rend — qui doit tenir sous ce nombre, et le cache de pages n'aura plus un octet à céder. Elle
+    # se relève AVANT, sur le déploiement concerné :
+    #   docker compose exec soc sh -c 'grep "^anon " /sys/fs/cgroup/memory.stat'
+    # Ce relevé est un POINT, pas une crête : la part anonyme varie de plusieurs centaines de Mio au
+    # fil des requêtes et des cycles de sauvegarde, donc relevez-la PLUSIEURS FOIS, sous charge.
+    # Si elle approche le plafond, posez `PLUME_MEM_LIMIT` plus haut dans `.env`. Le dépassement
+    # n'est pas une lenteur : c'est un OOM-kill, que `restart: unless-stopped` transforme en BOUCLE,
+    # et il se lit à `docker inspect -f '{{.State.OOMKilled}}' <conteneur>`.
+    mem_limit: ${PLUME_MEM_LIMIT:-2g}
+    # UN PLAFOND SANS BORNE D'ÉCHANGE NE BORNE RIEN : `mem_limit` seul laisse le noyau déverser en
+    # swap, et le processus dépasse le budget sans jamais être arrêté. `memswap_limit` compte mémoire
+    # + échange ENSEMBLE ; posé ÉGAL à `mem_limit`, il ne laisse aucun octet d'échange. C'est le seul
+    # des trois modes où cette ligne doit être écrite : l'orchestrateur désactive le swap du conteneur
+    # de lui-même. (Aucune unité systemd du dépôt ne pose de `MemorySwapMax=` — hors périmètre ici :
+    # sous systemd, `MemoryMax=2G` borne donc le RÉSIDENT, pas le total.)
+    # RÉSERVE DÉCLARÉE, NON MESURÉE ICI : sur un hôte dont le noyau ne comptabilise pas l'échange
+    # (cgroup v1 sans `swapaccount=1`), Docker abandonne cette borne avec un simple avertissement et
+    # n'applique que la borne mémoire. La lecture de `memory.swap.max` ci-dessus est ce qui distingue
+    # les deux cas — d'où le fait qu'elle soit écrite plutôt que supposée.
+    memswap_limit: ${PLUME_MEM_LIMIT:-2g}
+    # Processeur : ALIGNÉ SUR L'ORCHESTRATEUR (`limits.cpu: "1"`), et NON sur l'unité système, qui pose
+    # `CPUQuota=80%`. L'écart est délibéré : les 80 % y viennent avec `Nice=5` et une classe d'E/S —
+    # une posture de POLITESSE envers un hôte partagé que la composition ne sait pas exprimer. N'en
+    # importer que le chiffre inventerait une troisième posture ; ce mode-ci est un conteneur, comme
+    # l'orchestrateur, et hérite donc de sa borne.
+    cpus: ${PLUME_CPUS:-1.0}
+    # Processus : reprend `TasksMax=512` de l'unité système (l'orchestrateur, lui, n'en pose aucun).
+    pids_limit: ${PLUME_PIDS_LIMIT:-512}
+    # NON POSÉS, ET C'EST DIT PLUTÔT QUE TU : `MemoryHigh=1800M` (unité système) est une pression
+    # SOUPLE dont la composition n'a pas d'équivalent, et `requests:` (orchestrateur) est un plancher
+    # d'ORDONNANCEMENT qui n'a pas de sens hors cluster. Ni l'un ni l'autre ne borne quoi que ce soit :
+    # les transposer ici ferait diverger les modes au lieu de les aligner.
     volumes:
       - soc-data:/data
     restart: unless-stopped
     read_only: true
     tmpfs:
-      - /tmp
+      # `/tmp` EST DE LA RAM COMPTÉE AU MÊME CGROUP : sans taille, il contourne les trois bornes
+      # ci-dessus par un simple fichier. Un tmpfs sans taille prend pour plafond la moitié de la RAM
+      # de l'HÔTE, et depuis que l'échange est à zéro ses pages ne se récupèrent plus. Mesuré au banc
+      # le 2026-08-29, dans un cgroup de 256 Mio : 400 Mio écrits dans un `/tmp` sans taille font
+      # TUER l'écrivain (SIGKILL) ; le même geste sur un `/tmp` borné rend « No space left on
+      # device » et laisse le processus vivant. Le produit tenait déjà ce raisonnement pour lui-même
+      # — daemon/src/sqlite_plafond.rs dit d'un `/tmp` hérité qu'il est « de la RAM comptée au MÊME
+      # cgroup : le plafond y serait une ILLUSION » — et c'est pourquoi il pose ses temporaires
+      # SQLite dans `sqltmp` À CÔTÉ de la base, sur le volume. En orchestrateur ce `/tmp` est un
+      # `emptyDir: {}`, donc sur DISQUE et jamais compté dans `limits.memory` : cette taille est ce
+      # qui rapproche les deux modes. Le seul écrivain de production dans `/tmp` est le corps d'un
+      # mail de notification (daemon/src/handlers/notifiers.rs), effacé par un garde de portée.
+      - /tmp:size=${PLUME_TMP_SIZE:-64m}
     security_opt:
       - no-new-privileges:true
 volumes:

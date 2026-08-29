@@ -131,10 +131,75 @@ Le mot de passe admin n'est **jamais** stocké en clair : vous fournissez son **
 Depuis la racine de ce dépôt (le contexte de build est le dépôt lui‑même ; `guatx-core` est résolu
 via une git‑dep publique, aucun crate sibling requis) :
 ```sh
-docker compose run --rm soc hashpw 'my-password'     # -> copy the printed $argon2id$...
-cp .env.example .env                                 # paste PLUME_PASS_HASH=...
+cp .env.example .env
+docker compose build soc                             # 1er coup : long (compile le daemon), réseau requis
+# le hash s'écrit dans .env ENTRE APOSTROPHES SIMPLES — la ligne ci-dessous s'en charge :
+docker compose run --rm -T soc hashpw 'my-password' | grep -a '^[$]argon2id[$]' | sed "s/.*/PLUME_PASS_HASH='&'/" >> .env
+tail -n 1 .env                                       # DOIT afficher PLUME_PASS_HASH='$argon2id$…'
 docker compose up -d --build                         # -> http://soc.localhost:7000
 ```
+
+> ### ⚠️ Le hash se colle **entre apostrophes simples**, et la construction se fait **à part**
+> **Construisez d'abord.** Aucune image n'est publiée : sur un clone neuf, `run` **construit**, et
+> BuildKit écrit son journal sur la **sortie standard** — donc dans le tube, donc dans `.env`.
+> *Mesuré au banc le 2026‑08‑29 :* une cinquantaine de lignes parasites, dont une qui recopie une
+> ligne du `Dockerfile` portant des apostrophes ; `.env` devient **illisible** et Compose refuse
+> alors **toutes** ses sous‑commandes, `down` compris — on ne peut même plus nettoyer. `build`
+> d'abord laisse ce journal à l'écran, où il se lit.
+>
+> **Le `grep` est la seconde ceinture**, et sa forme est dérivée de ce qu'on veut : un hash argon2id
+> commence par `$argon2id$`, une ligne de journal jamais (BuildKit préfixe les siennes par `#<n>`).
+> Si la construction échoue, **rien** ne passe le filtre : `.env` reste intact et le **mode SETUP**
+> s'arme — bruyant, plutôt qu'un hash silencieusement faux. *`tail -n 1` ne suffirait pas :* sur une
+> construction échouée, la dernière ligne est un séparateur BuildKit, qui deviendrait le hash.
+>
+> **La ligne ajoutée gagne.** Elle arrive **après** la ligne `PLUME_PASS_HASH=` vide héritée de
+> `.env.example`, et dans un `.env` **c'est la dernière écrite qui gagne** *(mesuré)*. Si vous
+> préférez copier‑coller à la main, **remplacez** cette ligne vide — ou écrivez la vôtre **plus
+> bas** — et donnez‑lui **exactement** cette forme, apostrophes comprises :
+> ```
+> PLUME_PASS_HASH='$argon2id$v=19$m=19456,t=2,p=1$<sel>$<empreinte>'
+> ```
+> **Pourquoi.** Un hash argon2id porte **cinq `$`**, et Compose les lit dans `.env` comme des
+> ouvertures de **variable** : `$argon2id`, `$v`, `$m`, puis le sel et l'empreinte quand ils
+> commencent par une lettre. Chacun est remplacé par une chaîne vide — Compose l'annonce en
+> `… variable is not set`, un avertissement qu'on lit rarement — et **ce qui atteint le conteneur
+> n'est plus le hash**. La forme **nue** et la forme entre **guillemets doubles** donnent le *même*
+> résultat amputé ; seules les **apostrophes simples** (qui coupent l'interpolation) ou des `$`
+> **doublés** passent la valeur intacte.
+>
+> **La règle vaut pour toute valeur de `.env`**, et la plus coûteuse n'est pas le hash : c'est
+> **`PLUME_DB_KEY`**. *Mesuré au banc le 2026‑08‑29 :* une passphrase `Correct$Horse$Battery9`
+> écrite nue atteint le conteneur comme `Correct`, et `$secret$phrase` l'atteint **vide** — donc
+> « aucune clé », donc une base neuve qui **naît sous une clé engendrée** que personne n'a choisie,
+> pendant que la passphrase mise à l'abri n'ouvre rien. Un hash amputé se répare ; cela, non.
+>
+> **Le `-T`, dit exactement.** *Mesuré au banc le 2026‑08‑29 sur Compose 5.5.0 :* l'allocation d'un
+> terminal suit la **sortie** — un tube n'en alloue pas, et la valeur se termine par un saut de
+> ligne seul, avec ou sans `-T`. Quand un terminal **est** alloué (sortie à l'écran), la ligne se
+> termine bien par un **retour chariot**, qui entrerait dans la valeur si elle était capturée
+> autrement. `-T` rend donc cette absence **explicite** au lieu de la faire dépendre d'une détection
+> qui n'est pas un contrat.
+>
+> **Ce qui arrive alors n'est pas une valeur vide — c'est pire.** *Mesuré le 2026‑08‑29 sur des hash
+> produits par `hashpw` lui‑même :* la valeur reçue est **partielle**, jamais vide, jamais intacte, et
+> sa longueur varie avec le sel. Le **mode SETUP** n'est donc **pas** armé (il exige une valeur *vide*) :
+> le daemon démarre avec un hash qui ne peut vérifier aucun mot de passe et **personne n'entre** — ni
+> par mot de passe, ni par l'assistant, sans bannière ni ligne rouge. Ce n'est pas une installation
+> ouverte, c'est un **verrouillage muet** ; le remède est de réécrire `.env` avec les apostrophes.
+> *Ce piège est propre à Compose : en k3s le hash va dans un `Secret`, que `kubectl` n'interpole pas.*
+
+> ### ⚠️ Le conteneur est **borné** — et l'adoption du plafond se mesure avant
+> Le `docker-compose.yml` pose désormais les quatre bornes du mode conteneur (mémoire,
+> mémoire+échange, processeur, processus) plus la **taille du `/tmp`** — un tmpfs sans taille est de
+> la RAM comptée au même cgroup, donc un contournement des trois premières. Les cinq se règlent par
+> `.env` (`PLUME_MEM_LIMIT`, `PLUME_CPUS`, `PLUME_PIDS_LIMIT`, `PLUME_TMP_SIZE`) : personne n'a à
+> éditer un fichier suivi pour changer un chiffre. **Sur un déploiement déjà en service**, relevez
+> d'abord, plusieurs fois et sous charge, la part que rien ne récupère quand l'échange est à zéro —
+> `docker compose exec soc sh -c 'grep "^anon " /sys/fs/cgroup/memory.stat'` — et montez
+> `PLUME_MEM_LIMIT` si elle approche le plafond : le dépassement n'est pas une lenteur, c'est un
+> OOM‑kill que `restart: unless-stopped` transforme en boucle.
+
 Le `docker-compose.yml` livré **arme** les ops natives du binaire : planificateur de sauvegarde
 toutes les 6 h vers `/data/backups` (rétention des 24 plus récents) + **auto‑vacuum quotidien**, sans
 sidecar ni cron hôte. Réglez‑les — ou coupez‑les avec `PLUME_BACKUP_INTERVAL=0` — via `.env`.

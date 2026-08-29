@@ -21,10 +21,20 @@ _r="$(git rev-parse --show-toplevel)"
 # compteur a changé, donc presque jamais dans cet état-là. Il ne se déclenche pas du tout sur un
 # commit de ROADMAP ou de manifeste : celui-là ne paie rien.
 #
-# UNE SEULE CONSTRUCTION À LA FOIS : le script sonde le verrou d'artefacts et REFUSE (code 3) si une
-# construction tourne déjà, plutôt que d'en mettre une seconde en file — auquel cas cargo attendait
-# sans limite, et sans un mot, sa ligne d'attente étant jetée avec stderr. Pour attendre au lieu de
-# refuser : `.github/scripts/compter-les-tests.sh --attendre`, puis committer.
+# UNE SEULE CONSTRUCTION À LA FOIS, ET RIEN PENDANT UNE SUITE : le script sonde le répertoire
+# d'artefacts et REFUSE (code 3) si une construction tourne déjà, plutôt que d'en mettre une seconde
+# en file — auquel cas cargo attendait sans limite, et sans un mot, sa ligne d'attente étant jetée
+# avec stderr. Depuis `P8.27-h` il refuse AUSSI si une SUITE DE TESTS tourne : le verrou d'artefacts
+# ne dit rien de celle-là (MESURÉ : il est libre pendant toute son exécution), et compiler pendant
+# qu'elle tourne fausse les témoins qui mesurent une crête mémoire.
+#
+# POUR ATTENDRE AU LIEU DE REFUSER : `COMPTER_ATTENDRE=1 git commit …`. LA LIGNE QUI FIGURAIT ICI
+# DISAIT « --attendre », ET C'ÉTAIT UN GESTE QUI N'EXISTAIT PAS (mesuré le 2026-08-29) : git ne
+# passe AUCUN argument à un crochet de pré-commit, et ce fichier appelle le script par `exec` sans
+# `"$@"`. Lancer le script à part avec `--attendre` ne referme pas la boucle non plus, puisque le
+# crochet re-sonde et re-refuse si l'occupation dure. C'est la famille de défaut « phrase vraie qui
+# laisse croire le contraire » que `P8.9-e` a fermée sur ce même fichier — rejouée sur les deux
+# lignes que le lot précédent avait retouchées pour cette raison.
 #
 # INSTALLATION (une fois par clone, non versionnable autrement — git n'installe jamais de hook seul) :
 #     git config core.hooksPath .githooks
@@ -75,5 +85,8 @@ fi
 
 echo "[pre-commit] démon ou compteur touché -> vérification du compte de tests."
 echo "[pre-commit] ATTENTION : ce contrôle CONSTRUIT (aucun test n'est exécuté, mais le harnais est"
-echo "[pre-commit] compilé pour être énuméré). Il refuse si une construction tourne déjà."
+echo "[pre-commit] compilé pour être énuméré). Il refuse si une construction OU une suite de tests"
+echo "[pre-commit] tourne déjà — un refus dit lequel, et le geste qu'il faut."
+echo "[pre-commit] Pour attendre au lieu de refuser :  COMPTER_ATTENDRE=1 git commit …"
+echo "[pre-commit] Pour ne pas contrôler du tout      :  git commit --no-verify"
 exec "$racine/.github/scripts/compter-les-tests.sh"

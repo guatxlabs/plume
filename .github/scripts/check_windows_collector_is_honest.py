@@ -91,6 +91,17 @@ MUTE_ERRORACTIONS = {"silentlycontinue", "ignore"}
 MIN_FILES = 1     # plancher : si la découverte casse, cette garde ne vérifierait RIEN.
 MIN_CATCHES = 8   # idem : un AST vide passerait joyeusement au vert (mesuré : 14 le 2026-08-02).
 
+# CODES DE SORTIE : 0 conforme · 1 une PROPRIÉTÉ est violée · 2 l'instrument REFUSE DE CONCLURE.
+# CORRIGÉ LE 2026-08-29 (`P8.27-h`). Cette garde DISAIT « elle REFUSE DE CONCLURE » et sortait en
+# 1, c'est-à-dire par le canal d'une propriété violée : le défaut même que `P7.19-b` a fermé pour
+# le banc, ici sur son propre chemin. MESURÉ : 29 des 43 gardes de ce dépôt emploient déjà le
+# code 2 pour un instrument indisponible, et un balayage du dépôt le 2026-08-29 n'a trouvé QUE
+# CE FICHIER où la formule est suivie d'une sortie en 1 — le chiffre « cinq gardes » qui
+# circulait est FAUX, il comptait des occurrences en commentaire ou sur des chemins qui sortent
+# bien en 2. Rien ne change pour l'intégration : le pas de `ci.yml` échoue sur tout code non nul,
+# et l'intention écrite là-bas (« s'il manquait, la garde ÉCHOUE au lieu de passer ») est tenue.
+CODE_INSTRUMENT = 2
+
 
 def ast_of(path: str) -> dict:
     pwsh = shutil.which("pwsh") or shutil.which("powershell")
@@ -100,14 +111,15 @@ def ast_of(path: str) -> dict:
             "PowerShell, donc elle REFUSE DE CONCLURE (elle ne passe pas au vert). Installer "
             "PowerShell 7 (fourni par l'image ubuntu-24.04 des runners GitHub)."
         )
-        sys.exit(1)
+        sys.exit(CODE_INSTRUMENT)
     p = subprocess.run(
         [pwsh, "-NoProfile", "-NonInteractive", "-File", str(AST_DUMPER), "-Path", path],
         capture_output=True, text=True,
     )
     if p.returncode != 0 or not p.stdout.strip():
-        print(f"::error::{path}: extraction AST impossible (rc={p.returncode}) : {p.stderr.strip()[:400]}")
-        sys.exit(1)
+        print(f"::error::{path}: extraction AST impossible (rc={p.returncode}) : "
+              f"{p.stderr.strip()[:400]} — la garde REFUSE DE CONCLURE.")
+        sys.exit(CODE_INSTRUMENT)
     return json.loads(p.stdout)
 
 

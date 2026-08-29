@@ -65,27 +65,51 @@
 # fenêtre. Si une construction s'y glisse, cargo attend — et cette fois la ligne d'attente est
 # rendue au lieu d'être avalée. La sonde réduit la fenêtre, elle ne l'annule pas.
 #
+# ET RIEN PENDANT UNE SUITE (`P8.27-h`, 2026-08-29). Le verrou d'artefacts ne dit RIEN d'une suite
+# en cours : MESURÉ sur une suite complète, vingt-deux relevés à dix secondes d'intervalle, il est
+# LIBRE du premier au dernier. Compiler pendant qu'une suite tourne lui dispute les cœurs et la
+# mémoire, et fait échouer les témoins qui mesurent une crête — le test refuse alors de conclure,
+# ce qui est son bon comportement et un rouge illisible pour qui l'a provoqué. La sonde porte donc
+# maintenant TROIS signaux — construction, suite en cours, et un JETON de travail lourd que ce
+# script PREND pour rendre sa propre construction visible aux autres outils du dépôt — et ce script
+# refuse sur les trois.
+#
 # SOURCE UNIQUE : les deux attentes sont LUES dans `.github/workflows/ci.yml`. Les recopier ici
 # aurait recréé exactement le défaut que `ci.yml` a fermé en n'écrivant `EXPECTED_TESTS` qu'une fois.
 #
 # Usage :
 #   .github/scripts/compter-les-tests.sh              # les deux suites
 #   .github/scripts/compter-les-tests.sh --defaut     # la suite par défaut seule (le cas rapide)
-#   .github/scripts/compter-les-tests.sh --attendre   # attendre une construction en cours au lieu
+#   .github/scripts/compter-les-tests.sh --attendre   # attendre que la machine se libère au lieu
 #                                                     # de refuser (plafond : COMPTER_ATTENTE_MAX,
 #                                                     # 900 s par défaut)
+#   COMPTER_ATTENDRE=1 git commit …                   # LA MÊME CHOSE DEPUIS LE CROCHET. Git ne
+#                                                     # passe AUCUN argument à un pre-commit : sans
+#                                                     # cette porte, le crochet annonçait un
+#                                                     # « --attendre » qu'aucun geste `git commit`
+#                                                     # ne pouvait fournir (mesuré le 2026-08-29).
 # Codes de sortie :
 #   0  aucun écart          1  dérive du compte
 #   2  rien n'a été mesuré (format inattendu, cargo en échec)
-#   3  rien n'a été mesuré : une construction était déjà en cours
+#   3  rien n'a été mesuré : une construction, une suite de tests, ou un autre travail lourd de ce
+#      dépôt était déjà en cours
 set -euo pipefail
 
-racine="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# `pwd -P` : la sonde compare ce chemin à ce que rend `/proc/<pid>/exe`, qui est PHYSIQUE. Un
+# chemin logique (dépôt atteint par un lien symbolique) rendait la sonde muette — mesuré.
+racine="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 ci="$racine/.github/workflows/ci.yml"
 [ -f "$ci" ] || { echo "compter-les-tests : $ci introuvable" >&2; exit 2; }
 
 les_deux_suites=1
+# LA PORTE D'ENVIRONNEMENT EXISTE PARCE QUE LE CROCHET NE PEUT PAS PASSER D'ARGUMENT. Git n'en
+# passe aucun à un `pre-commit`, et le crochet appelle ce script par `exec` sans `"$@"` : la ligne
+# « « --attendre » attend à la place » qu'il imprimait ne désignait donc AUCUN geste faisable
+# depuis `git commit`. Mesuré le 2026-08-29. Une variable d'environnement, elle, traverse.
 attendre=0
+# Un `if`, pas une liste `&&` : sous `set -e`, « [ … ] && x=1 » dont le test est FAUX fait sortir
+# le shell — le script mourrait silencieusement chaque fois que la porte n'est PAS ouverte.
+if [ "${COMPTER_ATTENDRE:-0}" = 1 ]; then attendre=1; fi
 for arg in "$@"; do
     case "$arg" in
         --defaut)   les_deux_suites=0 ;;
@@ -104,81 +128,81 @@ attendu_cold="$(sed -n 's/^ *EXPECTED_COLD_TESTS: *"\([0-9]\+\)".*/\1/p' "$ci" |
 [ -n "$attendu_defaut" ] || { echo "compter-les-tests : EXPECTED_TESTS introuvable dans $ci — le format a changé, ce script mentirait" >&2; exit 2; }
 [ -n "$attendu_cold" ]   || { echo "compter-les-tests : EXPECTED_COLD_TESTS introuvable dans $ci — le format a changé, ce script mentirait" >&2; exit 2; }
 
-# --- LA SONDE DE CONSTRUCTION CONCURRENTE -------------------------------------------------------
-# DÉRIVÉE, PAS ÉNUMÉRÉE : cargo pose un `.cargo-lock` dans le répertoire d'artefacts de CHAQUE
-# profil qu'il a déjà construit. On lit ceux qui EXISTENT, sans en créer aucun — sonder un verrou
-# absent le ferait naître, et un profil jamais construit ne porte par définition aucune
-# construction en cours.
-cible="${CARGO_TARGET_DIR:-$racine/daemon/target}"
+# --- LA SONDE : « LA MACHINE EST-ELLE DÉJÀ PRISE ? » SOURCÉE, PAS RECOPIÉE ---------------------
+# ELLE VIVAIT ICI ; ELLE VIT MAINTENANT À CÔTÉ, ET C'EST LA MÊME. Le corps de la sonde de verrou —
+# la dérivation des `.cargo-lock` existants, le test de prise, et son épreuve dans les deux sens —
+# a été DÉPLACÉ tel quel dans `sonde-construction-ou-suite-en-cours.sh` : mêmes octets, empreinte
+# vérifiée. Il n'en reste AUCUNE copie ici. Deux définitions de la même question finissent par
+# diverger, et c'est le défaut que ce dépôt trouve tous les jours.
+#
+# ET ELLE A GAGNÉ UN SECOND SIGNAL, QUI CONCERNE CE SCRIPT AUTANT QUE L'AUTRE APPELANT : une SUITE
+# DE TESTS en cours. Le verrou d'artefacts ne le dit pas — MESURÉ, il est LIBRE pendant TOUTE
+# l'exécution d'une suite, cargo ne le tenant que pendant qu'il CONSTRUIT. Or construire pendant
+# qu'une suite tourne lui dispute les cœurs et la mémoire, et fait échouer les témoins qui mesurent
+# une crête : c'est le même appauvrissement que celui qui a fondé `P8.27-h`, vu par l'autre bout.
+# Ce script REFUSE donc désormais aussi dans ce cas-là, avec le même « --attendre » pour l'autre
+# choix.
+#
+# LA DÉPENDANCE EST VÉRIFIÉE AVANT D'ÊTRE SOURCÉE, ET SON ABSENCE SORT EN 2 — CORRIGÉ LE
+# 2026-08-29. Sous `set -e`, un `source` introuvable rend le code du shell, soit **1** : dans la
+# table ci-dessus, « dérive du compte ». C'était une accusation FAUSSE là où il fallait dire « rien
+# n'a été mesuré », et c'est exactement la distinction que ce lot a été écrit pour établir. Le cas
+# n'est pas théorique : ce dépôt commite par fichiers nommés (`git commit -o`), et un commit qui
+# emporte ce script sans la sonde produit un arbre où CHAQUE commit du démon est bloqué par un
+# message bash brut.
+sonde="$racine/.github/scripts/sonde-construction-ou-suite-en-cours.sh"
+if [ ! -r "$sonde" ]; then
+    echo "compter-les-tests : la sonde « $sonde » est INTROUVABLE ou illisible — RIEN N'A ÉTÉ MESURÉ." >&2
+    exit 2
+fi
+source "$sonde"
 
-verrous_existants() {
-    [ -d "$cible" ] || return 0
-    find "$cible" -maxdepth 3 -name .cargo-lock -type f 2>/dev/null
-}
+# Un signal qui ne s'éprouve pas est DÉSARMÉ et son absence est DITE ; on continue quand même, comme
+# avant — ce script n'est pas une frontière, c'est une boucle de retour.
+sonde_eprouver "compter-les-tests" || true
 
-verrou_tenu() { ! flock -n "$1" -c true 9>&- 2>/dev/null; }
-
-# VALIDATION DE L'INSTRUMENT, DANS LES DEUX SENS, À CHAQUE EXÉCUTION. Une sonde qui rendrait
-# toujours « libre » laisserait passer exactement ce qu'elle prétend arrêter, et son silence se
-# lirait comme une garantie. On la met donc à l'épreuve sur un verrou jetable : libre, elle doit
-# dire libre ; tenu, elle doit dire tenu.
-epreuve_de_la_sonde() {
-    local t
-    t="$(mktemp "${TMPDIR:-/tmp}/compter-les-tests.sonde.XXXXXX")" || { echo "mktemp a échoué"; return 1; }
-    if verrou_tenu "$t"; then rm -f "$t"; echo "témoin NÉGATIF : un verrou LIBRE est vu tenu"; return 1; fi
-    exec 9>"$t"
-    if ! flock -n 9 2>/dev/null; then exec 9>&-; rm -f "$t"; echo "témoin POSITIF : le verrou jetable n'a pas pu être pris"; return 1; fi
-    if ! verrou_tenu "$t"; then exec 9>&-; rm -f "$t"; echo "témoin POSITIF : un verrou TENU est vu libre"; return 1; fi
-    exec 9>&-
-    rm -f "$t"
-    return 0
-}
-
-sonde_utilisable=0
-if ! command -v flock >/dev/null 2>&1; then
-    echo "compter-les-tests : AVEU — « flock » est absent, la présence d'une construction concurrente" >&2
-    echo "                    N'A PAS ÉTÉ VÉRIFIÉE. Ce script va construire ; si une construction" >&2
-    echo "                    tourne déjà, cargo attendra sans limite." >&2
-elif faute="$(epreuve_de_la_sonde)"; then
-    sonde_utilisable=1
-else
-    echo "compter-les-tests : AVEU — la sonde de verrou est INVALIDE ($faute), la présence d'une" >&2
-    echo "                    construction concurrente N'A PAS ÉTÉ VÉRIFIÉE." >&2
+# L'AVEU DIT AUSSI SA CONSÉQUENCE, ET C'EST L'APPELANT QUI LA CONNAÎT. `HEAD` disait, quand `flock`
+# manquait : « Ce script va construire ; si une construction tourne déjà, cargo attendra sans
+# limite. » Le déplacement de la sonde avait PERDU cette troisième ligne — celle qui disait ce qui
+# allait ARRIVER à l'opérateur —, et le rapport de pose affirmait le contraire. Elle est rétablie
+# ici, où elle est vraie, et elle couvre désormais les DEUX causes de désarmement, pas seulement
+# l'absence de `flock`.
+if [ "$sonde_construction_utilisable" -eq 0 ]; then
+    echo "                    Ce script va construire ; si une construction tourne déjà, cargo" >&2
+    echo "                    attendra sans limite." >&2
+fi
+if [ "$sonde_execution_utilisable" -eq 0 ]; then
+    echo "                    Ce script va construire ; si une suite tourne déjà, il lui disputera" >&2
+    echo "                    les cœurs et la mémoire, et faussera ses témoins de crête." >&2
 fi
 
-if [ "$sonde_utilisable" -eq 1 ]; then
-    occupe=""
-    while IFS= read -r v; do
-        [ -n "$v" ] || continue
-        if verrou_tenu "$v"; then occupe="$v"; break; fi
-    done < <(verrous_existants)
+rc_sonde=0
+sonde_refuser_ou_attendre "compter-les-tests" "$attendre" "${COMPTER_ATTENTE_MAX:-900}" \
+    "Ce script CONSTRUIT ; en lancer une seconde mettrait les deux en" \
+    "file sur le même répertoire d'artefacts. RIEN N'A ÉTÉ MESURÉ." \
+    "Relancer après, ou « --attendre », ou « git commit --no-verify »." \
+    -- \
+    "Ce script CONSTRUIT ; compiler pendant une suite lui dispute les cœurs" \
+    "et la mémoire, et fausse les témoins de crête. RIEN N'A ÉTÉ MESURÉ." \
+    "Relancer après, ou « --attendre », ou « git commit --no-verify »." || rc_sonde=$?
+[ "$rc_sonde" -eq 0 ] || exit "$rc_sonde"
 
-    if [ -n "$occupe" ]; then
-        if [ "$attendre" -eq 0 ]; then
-            echo "compter-les-tests : REFUS — une construction tient déjà « $occupe »." >&2
-            echo "                    Ce script CONSTRUIT ; en lancer une seconde mettrait les deux en" >&2
-            echo "                    file sur le même répertoire d'artefacts. RIEN N'A ÉTÉ MESURÉ." >&2
-            echo "                    Relancer après, ou « --attendre », ou « git commit --no-verify »." >&2
-            exit 3
-        fi
-        plafond="${COMPTER_ATTENTE_MAX:-900}"
-        debut=$(date +%s)
-        tour=0
-        echo "compter-les-tests : une construction tient « $occupe » — attente (plafond ${plafond} s)."
-        while verrou_tenu "$occupe"; do
-            sleep 5
-            tour=$(( tour + 1 ))
-            ecoule=$(( $(date +%s) - debut ))
-            if [ "$ecoule" -ge "$plafond" ]; then
-                echo "compter-les-tests : ${ecoule} s d'attente, plafond atteint — RIEN N'A ÉTÉ MESURÉ." >&2
-                exit 3
-            fi
-            # Une attente muette se lit comme un blocage : on donne signe de vie toutes les ~30 s.
-            if [ $(( tour % 6 )) -eq 0 ]; then echo "compter-les-tests : toujours en attente depuis ${ecoule} s…"; fi
-        done
-        echo "compter-les-tests : verrou libéré après $(( $(date +%s) - debut )) s."
-    fi
-fi
+# LE JETON DE TRAVAIL LOURD, PRIS AVANT DE CONSTRUIRE. Il rend cette construction VISIBLE à la
+# batterie de gardes (qui ne construit pas et n'exécutait donc aucun signal), et il referme la
+# fenêtre entre la question et le geste pour les outils de ce dépôt qui le prennent. Un échec de
+# prise n'est pas un incident : c'est quelqu'un qui s'est glissé dans cette fenêtre.
+rc_jeton=0
+sonde_jeton_prendre "compter-les-tests" || rc_jeton=$?
+case "$rc_jeton" in
+    0) : ;;
+    1) echo "compter-les-tests : REFUS — un autre travail lourd de ce dépôt a pris le jeton entre la" >&2
+       echo "                    question et le geste ($(head -1 "$sonde_jeton" 2>/dev/null || true))." >&2
+       echo "                    RIEN N'A ÉTÉ MESURÉ." >&2
+       exit 3 ;;
+    *) echo "compter-les-tests : AVEU — le jeton de travail lourd n'a pas pu être OUVERT" >&2
+       echo "                    (« $sonde_jeton ») : cette construction reste INVISIBLE aux autres outils." >&2 ;;
+esac
+
 
 # --- LE COMPTE ----------------------------------------------------------------------------------
 # `cargo test -- --list` CONSTRUIT le harnais puis imprime une ligne « <chemin::du::test>: test »

@@ -158,3 +158,46 @@ précisément le corpus dont une garde a besoin. Supprimez vos miroirs quand vou
 aveugle à un fichier neuf tant qu'il n'est pas ajouté. Son vert est alors un artefact : faites
 `git add -N` sur vos fichiers neufs *avant* de jouer la batterie, sinon vous validez un arbre que
 l'intégration ne verra pas comme vous.
+
+## 7. La machine n'est jamais à soi non plus
+
+**Jouez la batterie par `.github/scripts/jouer-la-batterie-de-gardes.sh`, jamais par une boucle à
+vous.** Le lanceur pose une question avant de prendre la machine — une construction cargo ou une
+suite de tests est-elle en cours ? — et REFUSE en disant ce qu'il attend, avec `--attendre` pour
+attendre à la place. Il joue ensuite les gardes **en série**, une à la fois, et repose la question
+avant chacune.
+
+Ce n'est pas une préférence de style, c'est `P8.27-h` : une quarantaine de scripts lancés en même
+temps affament les témoins qui mesurent une crête mémoire, et ces témoins REFUSENT alors de
+conclure — un rouge parfaitement illisible pour qui vient de le provoquer. La règle « rien de lourd
+pendant une suite » était écrite en toutes lettres la veille de la dernière occurrence : écrire une
+règle ne l'applique pas.
+
+Ses codes de sortie distinguent ce que la lecture confond : `1` une propriété violée, `2` une garde
+qui n'a **rien mesuré** (instrument invalide, interpréteur absent), `3` rien mesuré du tout parce
+que la machine était prise **ou n'a pas pu être consultée**. Un refus d'instrument n'est pas une
+propriété violée. **Le critère est le code de sortie que chaque garde déclare**, jamais le texte de
+son journal : seize gardes emploient la formule « REFUSE DE CONCLURE », et l'une au moins l'écrit
+dans son message d'ACCUSATION — s'en servir pour classer blanchissait une propriété violée en
+« rien mesuré ». Quand le code accuse et que le texte refuse, le lanceur compte ROUGE et **nomme la
+contradiction** au lieu de trancher en silence.
+
+**Ce que la sonde voit, et ce qu'elle ne voit pas.** Elle regarde les répertoires d'artefacts des
+**quatre** crates (dérivés de leurs `Cargo.toml`, pas d'une liste), elle canonicalise tout chemin
+avant de le comparer à `/proc`, et elle exclut les processus **arrêtés** — qui ne consomment rien.
+Elle ne voit PAS les processus d'un autre utilisateur (mesuré sur ce poste : 302 des 433
+exécutables sont illisibles), ni ceux d'un autre espace de noms PID ; son verdict dit donc « que je
+puisse voir », et non « aucune ».
+
+**Un outil lourd de ce dépôt prend le jeton** (`sonde_jeton_prendre`) : c'est ce qui rend la
+batterie visible à `compter-les-tests.sh` et interdit deux batteries à la fois. Deux clones
+distincts ont deux jetons distincts.
+
+Depuis un `git commit`, le crochet ne peut recevoir **aucun** argument : pour attendre au lieu de
+refuser, c'est `COMPTER_ATTENDRE=1 git commit …` ; pour ne pas contrôler du tout, `--no-verify`.
+
+Le lanceur n'est câblé dans **aucun** flux d'intégration, et ne doit pas l'être : là-bas chaque
+garde est un pas nommé, ce qui vaut mieux, et les travaux y sont isolés.
+
+**Ce n'est toujours pas une frontière**, et `--forcer` existe. Une règle écrite ne s'applique pas ;
+un mécanisme par lequel on passe par défaut, si.

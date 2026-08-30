@@ -383,6 +383,17 @@ mod file_de_riposte_bornee_tests {
     }
 
     /// Une fenêtre de récence, au sens de la propriété écrite ci-dessus.
+    ///
+    /// SON CLIQUET EST À ZÉRO, ET CE ZÉRO NE VEUT PAS DIRE « IL N'EN RESTE PLUS » — mesuré le
+    /// 2026-08-30. Ce prédicat écarte délibérément `where`, `distinct`, les agrégats et les bornes
+    /// bâties par assemblage de texte, et il exige un tri. Sa PROPRIÉTÉ est donc STRICTEMENT PLUS
+    /// ÉTROITE que la classe de défaut « une liste bornée ne dit pas s'il y en avait davantage » :
+    /// VINGT sites sur QUINZE routes portent cette classe, et cette garde est VERTE sur les vingt.
+    /// Elle n'est pas cassée ; elle mesure autre chose. Mais un zéro se LIT comme une couverture,
+    /// et c'est ce qui rend la confusion coûteuse — un lecteur en conclut que la famille est fermée.
+    /// La classe entière est ouverte sous `P11.22-f`, avec la forme commune qui la tiendrait ; tant
+    /// qu'elle n'est pas écrite, ce zéro dit « aucune FENÊTRE DE RÉCENCE muette », jamais « aucune
+    /// liste bornée muette ».
     fn est_une_fenetre_de_recence(sql: &str) -> bool {
         if !contient_mot(sql, "select") || !contient_mot(sql, "from") {
             return false;

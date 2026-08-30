@@ -657,36 +657,151 @@ pub(crate) async fn sla_policies_list(State(st): State<AppState>, Extension(au):
     Json(res)
 }
 
+/// PLAFOND du recalcul d'échéances déclenché par un upsert de politique. La lecture en demande UNE DE
+/// PLUS : c'est cette ligne excédentaire — jamais recalculée — qui sépare « exactement le plafond, tout
+/// est fait » de « il en restait, et des cases gardent leur ANCIENNE échéance ».
+pub(crate) const SLA_RECOMPUTE_CAP: i64 = 5000;
+
+/// CE QU'UN RECALCUL D'ÉCHÉANCES A RÉELLEMENT FAIT, et ce qu'il n'a PAS fait.
+///
+/// `manque` porte la raison, et RIEN D'AUTRE NE LA PORTE : un `recalcules` de 0 ne distingue pas
+/// « aucun case actif à cette priorité » (rien à faire, donc tout est fait) de « la liste des cases n'a
+/// pas pu être lue » (rien n'a été fait, et personne ne le sait). C'est exactement l'écart qui rendait la
+/// route menteuse : elle répondait « fait » dans les deux cas.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct RecalculDesEcheances {
+    pub(crate) recalcules: i64,
+    /// `None` = tout ce qu'il fallait recalculer l'a été. `Some(raison)` = non, et voici pourquoi.
+    pub(crate) manque: Option<String>,
+}
+
+impl RecalculDesEcheances {
+    pub(crate) fn complet(&self) -> bool {
+        self.manque.is_none()
+    }
+}
+
+/// Recalcule les échéances des cases ACTIFS d'une priorité, au plafond de production.
+pub(crate) fn sla_recalcule_la_priorite(conn: &Connection, priority: i64) -> RecalculDesEcheances {
+    sla_recalcule_la_priorite_bornee(conn, priority, SLA_RECOMPUTE_CAP)
+}
+
+/// LE RECALCUL, ET SON AVEU. Fonction PURE sur `&Connection` (aucun `AppState`) -> les DEUX façons de ne
+/// pas tout faire sont jouables en test, ce qui n'était pas le cas tant qu'elles vivaient dans le handler :
+///   · la liste ne se LIT pas (table absente, base illisible, verrou) -> ZÉRO échéance recalculée ;
+///   · elle se lit mais DÉPASSE `plafond` -> les cases au-delà gardent leur ancienne échéance.
+///
+/// Le `plafond` est un paramètre pour que le témoin joue la borne sur trois lignes au lieu de cinq mille :
+/// la propriété testée est « la borne mord et le dit », pas la valeur 5000.
+pub(crate) fn sla_recalcule_la_priorite_bornee(conn: &Connection, priority: i64, plafond: i64) -> RecalculDesEcheances {
+    let lecture: rusqlite::Result<Vec<i64>> = conn
+        .prepare(
+            "SELECT id FROM incident WHERE priority=?1 AND merged_into IS NULL \
+               AND status NOT IN ('resolved','closed','contained') ORDER BY id LIMIT ?2",
+        )
+        .and_then(|mut s| s.query_map(params![priority, plafond.max(0) + 1], |r| r.get(0)).map(|x| x.flatten().collect()));
+    let ids = match lecture {
+        Ok(v) => v,
+        // L'ANCIEN `unwrap_or_default()` EST ICI, ET C'EST TOUT CE QU'IL DISAIT : une liste vide. La
+        // boucle ne tournait pas, la route répondait « fait », et la politique n'était appliquée à AUCUN
+        // case existant — seuls les cases créés ENSUITE l'auraient portée.
+        Err(e) => {
+            return RecalculDesEcheances {
+                recalcules: 0,
+                manque: Some(format!("liste des cases ILLISIBLE ({e}) — AUCUNE échéance recalculée")),
+            }
+        }
+    };
+    let depasse = ids.len() as i64 > plafond;
+    let mut recalcules = 0i64;
+    for cid in ids.into_iter().take(plafond.max(0) as usize) {
+        sla_apply_policy(conn, cid);
+        recalcules += 1;
+    }
+    RecalculDesEcheances {
+        recalcules,
+        manque: depasse.then(|| {
+            format!("plafond de {plafond} case(s) atteint — les cases de priorité {priority} au-delà gardent leur ANCIENNE échéance")
+        }),
+    }
+}
+
+/// LA RÉPONSE DE L'UPSERT, ET SON SILENCE. Le chemin NOMINAL — politique écrite, toutes les échéances
+/// recalculées — rend `204 SANS CORPS`, exactement comme avant : un aveu inconditionnel ne vaudrait rien,
+/// et une route qui se justifie à chaque appel n'apprend rien à personne. Elle ne PARLE que quand « fait »
+/// serait faux, et les deux façons de l'être n'ont pas le même code :
+///   · la politique n'a PAS été écrite -> `500` : l'exploitant ne doit pas croire l'avoir posée ;
+///   · elle l'a été mais le recalcul est INCOMPLET -> `200` + le corps qui dit ce qui manque. Pas un
+///     `5xx` (qui ferait croire que la politique elle-même a échoué), pas un `204` (qui dirait « tout
+///     est fait »). La politique EST posée ; ce sont les échéances des cases EXISTANTS qui ne le sont pas.
+/// DEUX CHAMPS RETIRÉS LE 2026-08-31, ET LA RAISON EST CELLE QU'UNE GARDE DE CE DÉPÔT ÉCRIT
+/// ELLE-MÊME : « s'il ne sert à personne, il n'avait pas à être écrit ». `policy_saved` était
+/// ENTIÈREMENT déterminé par le code de statut (500 -> faux, 200 et 204 -> vrai), et AUCUN module
+/// de la console ne le lisait — la console n'appelle même pas cette route. `recompute_complete`
+/// était pire : TOUJOURS faux quand il était présent, donc constant, donc porteur d'aucune
+/// information. Les deux ont été retirés plutôt que « branchés » sur un lecteur de façade : armer
+/// un remède que personne n'attend aurait satisfait la garde EN LUI MENTANT. Les témoins n'y
+/// perdent rien — ils assèrent le STATUT à chaque site, ce qu'un client lit vraiment, et
+/// l'assertion sur le booléen répétait la ligne juste au-dessus.
+pub(crate) fn reponse_de_l_upsert_sla(ecriture: Result<(), String>, recalcul: &RecalculDesEcheances) -> Response {
+    match ecriture {
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "recomputed": 0,
+                "reason": format!("politique NON enregistrée ({e}) — rien n'a été appliqué"),
+            })),
+        )
+            .into_response(),
+        Ok(()) => match &recalcul.manque {
+            None => StatusCode::NO_CONTENT.into_response(),
+            Some(raison) => (
+                StatusCode::OK,
+                Json(json!({
+                    "recomputed": recalcul.recalcules,
+                    "reason": raison,
+                })),
+            )
+                .into_response(),
+        },
+    }
+}
+
 /// POST /api/sla-policies {name,priority,ack_target_s,resolve_target_s,enabled?} — upsert par priorité. editor+.
 /// Ledgerisé. Recompute les dues des cases ACTIFS de cette priorité (borné). priority hors 1..4 -> 400.
-pub(crate) async fn sla_policy_upsert(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> StatusCode {
+///
+/// `204` = politique posée ET toutes les échéances recalculées. `200` + corps = politique posée, recalcul
+/// INCOMPLET (cf. `reponse_de_l_upsert_sla`). `500` = rien n'a été posé.
+pub(crate) async fn sla_policy_upsert(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
     let priority = b.get("priority").and_then(|v| v.as_i64()).unwrap_or(0);
     if !(1..=4).contains(&priority) {
-        return StatusCode::BAD_REQUEST;
+        return StatusCode::BAD_REQUEST.into_response();
     }
     let name = b.get("name").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
     let ack_s = b.get("ack_target_s").and_then(|v| v.as_i64()).unwrap_or(0).max(0);
     let res_s = b.get("resolve_target_s").and_then(|v| v.as_i64()).unwrap_or(0).max(0);
     let enabled = b.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true) as i64;
     if ack_s == 0 || res_s == 0 {
-        return StatusCode::BAD_REQUEST;
+        return StatusCode::BAD_REQUEST.into_response();
     }
     with_write(&st, &au, |conn| {
         let t = now();
-        let _ = conn.execute(
+        match conn.execute(
             "INSERT INTO sla_policy(name,priority,ack_target_s,resolve_target_s,enabled,created,created_by,updated) \
              VALUES(?1,?2,?3,?4,?5,?6,?7,?6) \
              ON CONFLICT(priority) DO UPDATE SET name=?1,ack_target_s=?3,resolve_target_s=?4,enabled=?5,updated=?6",
             params![name, priority, ack_s, res_s, enabled, t, au.name],
-        );
-        ledger_append(&conn, "sla_policy.upsert", &format!("P{priority} ack={ack_s}s resolve={res_s}s by {}", au.name));
-        // recompute borné : cases ACTIFS de cette priorité non fusionnés (human-scale).
-        let ids: Vec<i64> = conn.prepare("SELECT id FROM incident WHERE priority=?1 AND merged_into IS NULL AND status NOT IN ('resolved','closed','contained') LIMIT 5000")
-            .and_then(|mut s| s.query_map(params![priority], |r| r.get(0)).map(|x| x.flatten().collect())).unwrap_or_default();
-        for cid in ids {
-            sla_apply_policy(&conn, cid);
+        ) {
+            // Le journal d'INTÉGRITÉ ne consigne que ce qui a EU LIEU : une écriture qui a échoué n'y
+            // entre pas. L'ancien `let _ =` la ledgerisait quand même — le journal aurait porté une
+            // politique que la base ne portait pas.
+            Err(e) => reponse_de_l_upsert_sla(Err(e.to_string()), &RecalculDesEcheances::default()),
+            Ok(_) => {
+                ledger_append(&conn, "sla_policy.upsert", &format!("P{priority} ack={ack_s}s resolve={res_s}s by {}", au.name));
+                let recalcul = sla_recalcule_la_priorite(&conn, priority);
+                reponse_de_l_upsert_sla(Ok(()), &recalcul)
+            }
         }
-        StatusCode::NO_CONTENT
     })
 }
 

@@ -7728,7 +7728,14 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
 
   // — instrument : LA POPULATION QUI DÉBORDE EST CELLE DU DÉMON, PAS UNE HYPOTHÈSE DU BANC.
   const srcMeta59 = readFileSync(path.join(RACINE, "daemon", "src", "handlers", "soql_meta.rs"), "utf8");
-  const PLAFOND_DEMON59 = Number((srcMeta59.match(/DISTINCT source FROM event_rollup[^"]*LIMIT (\d+)/) || [, 0])[1]);
+  // LA BORNE SE LIT DANS LA CONSTANTE NOMMÉE, PLUS DANS LE TEXTE DE LA REQUÊTE — corrigé le
+  // 2026-08-31 après que ce témoin eut REFUSÉ DE CONCLURE, à raison. Le démon demandait
+  // littéralement une borne écrite dans la requête ; il demande désormais UNE LIGNE DE PLUS que
+  // la constante, pour que l'EXISTENCE de la ligne excédentaire — jamais servie — fonde son aveu.
+  // Le nombre a donc quitté la requête pour une constante nommée. Ce témoin s'est TU au lieu de
+  // verdir sur une lecture devenue vide : c'est exactement ce qu'on lui demandait, et c'est
+  // pourquoi on met à jour son ANCRAGE plutôt que d'assouplir son EXIGENCE.
+  const PLAFOND_DEMON59 = Number((srcMeta59.match(/SOQL_SOURCES_MAX:\s*usize\s*=\s*(\d+)/) || [, 0])[1]);
   exiger(PLAFOND_DEMON59 > BORNE59,
     `(59-instrument) le démon sert au plus ${PLAFOND_DEMON59} valeur(s) de source et la console en affiche ${BORNE59} : la branche d'aveu est INATTEIGNABLE, et rester vert dirait qu'elle est tenue`);
 

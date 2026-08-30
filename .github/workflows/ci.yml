@@ -713,7 +713,7 @@ env:
   #     ~6,5 ms par arithmétique en release), soit 63 × un 401 et 92,7 Mo/s au banc pour une seule IP.
   #   · CHAQUE RÉPONSE PUBLIQUE EST FACTURABLE (`content-length` présent ET égal au fichier) : sans
   #     cela, la borne ci-dessus aurait un trou muet.
-  EXPECTED_TESTS: "1453"
+  EXPECTED_TESTS: "1465"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -1131,7 +1131,7 @@ jobs:
           # derrière un `cfg(feature)`, et c'est l'ÉCART INCHANGÉ entre les deux profils (243 avant
           # comme après) qui l'établit, pas une lecture des sources. La dérivation complète et la
           # répartition sont écrites auprès d'`EXPECTED_TESTS`, une seule fois.
-          EXPECTED_COLD_TESTS: "1698"
+          EXPECTED_COLD_TESTS: "1710"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail
@@ -1380,6 +1380,36 @@ jobs:
       # FABRIQUÉS DANS LA GARDE et non lus du dépôt, cliquet à zéro, et refus de conclure (code 2) si le
       # corpus ne porte AUCUNE écriture — contrôle positif contre le vert par vacuité.
       - { name: "Aucune écriture au stockage du site n'est nue dans web/ (P4.13-b)", run: python3 .github/scripts/check_no_naked_site_storage_write.py }
+
+      # `P11.21-k` — UN AVEU SE PROUVE LÀ OÙ IL SE VOIT, PAS LÀ OÙ IL EST ÉCRIT. Le harnais ESM
+      # juge le RANG d'un nœud dans le document ; sa propre section 0 PUBLIE qu'il ne tient NI la
+      # mise en page NI le style calculé, et écrit la conséquence : « un masquage, une troncature
+      # ou une couleur imposés par la feuille de style sont invisibles ici […] la preuve passe
+      # alors par un vrai moteur de rendu ». Une règle qui masquerait l'aveu de matrice ATT&CK
+      # partiellement lue, le rendrait transparent ou l'INVERSERAIT le laissait donc VERT.
+      # UN SUBSTITUT STATIQUE EST REFUSÉ, ET LA RAISON EST DANS CE DÉPÔT : `web/index.html` porte
+      # `html:not(.app-ready) main { visibility: hidden; }`, une règle INLINE qui masque toute la
+      # surface depuis un ANCÊTRE sans jamais nommer l'aveu — aucune grammaire de sélecteur ne
+      # relie ces deux faits. Cette garde ne lit AUCUNE propriété CSS : elle sert la VRAIE page et
+      # la VRAIE feuille sur une origine HTTP locale (donc polices et chemins absolus de
+      # production), y peint un balisage DÉRIVÉ de `web/attack.js` — ordre des nœuds LU dans la
+      # source comprise — et demande au moteur ce qui est PEINT.
+      # L'INSTRUMENT SE VALIDE AVANT TOUT VERDICT, ET DANS LES DEUX SENS : 10 mutations injectées
+      # doivent TOUTES rougir, sinon la garde REFUSE (code 2) sans rien conclure. Deux passent par
+      # un ANCÊTRE en `@media` + `:has()` — dont une par `display`, qui ne s'HÉRITE PAS, de sorte
+      # que seule la marche vers les ancêtres peut la voir (elle nomme `section#attack-panel`) — et
+      # une inverse l'ordre PEINT (`column-reverse`) à rang de document INCHANGÉ : c'est la preuve
+      # que ce banc mesure autre chose que le harnais ESM. Deux autres peignent l'aveu SANS ENCRE
+      # (`color:transparent`, puis encre égale au fond) — que ni `display`, ni `visibility`, ni
+      # `opacity`, ni la géométrie ne voient.
+      # CE QU'ELLE NE TIENT PAS : un seul gabarit de fenêtre (1600x1400) ; aucun test de
+      # RECOUVREMENT (un nœud peint par-dessus, un `clip-path`, une encre seulement PÂLE passent) ;
+      # et les aveux jumeaux de `web/alerts.js`, qui restent à couvrir.
+      # LE MOTEUR EST LÀ, MESURÉ LE 2026-08-30 : zéro installation, `--dump-dom` d'un Chrome sans
+      # tête suffit ; l'image `ubuntu-24.04` — sur laquelle TOUS les jobs d'ici tournent, épinglée —
+      # publie Google Chrome installé PAR DÉFAUT. 11 rendus, ~12 s au total. Le refus de conclure
+      # n'est donc pas un bruit permanent : c'est le canal du jour où le moteur quitterait l'image.
+      - { name: "Un aveu est PEINT là où il est lu — moteur de rendu, ni masqué ni transparent ni inversé, au-dessus de la première cellule, marque non rognée (P11.21-k)", run: python3 .github/scripts/check_an_admission_is_painted_where_it_is_read.py }
 
       # `P11.18-w` — L'ENVIRONNEMENT DU PROCESSUS EST **UNE** RESSOURCE, ET ELLE N'A QU'UN VERROU.
       # `cfg()` résout toute clé dans l'ordre `env > conf > défaut` : un test qui pose une variable ne règle

@@ -146,38 +146,84 @@ fn docs_object(table: &[(&str, &str)]) -> Value {
     Value::Object(table.iter().map(|(k, v)| ((*k).to_string(), json!(v))).collect())
 }
 
-/// SWR cache des `source` connues, keyé par db_path (comme FRESHNESS_CACHE). Valeur = (calculé, liste).
+/// BORNE de l'inventaire des `source` servi à la complétion.
+///
+/// LA BORNE N'EST PAS LE DÉFAUT — LE SILENCE L'ÉTAIT. Une liste de cinq cents noms a EXACTEMENT la même
+/// forme dans les deux cas où l'exploitant a besoin de les distinguer : une base qui porte cinq cents
+/// sources (la liste EST l'inventaire) et une base qui en porte trois mille (la liste en cache deux mille
+/// cinq cents). Le compte servi ne les sépare pas, donc rien dans la réponse ne les séparait.
+pub(crate) const SOQL_SOURCES_MAX: usize = 500;
+
+/// Les `source` connues ET l'aveu de la borne, indissociables : c'est la raison d'être du type. Rendre la
+/// liste seule, c'est reproduire le défaut au premier appelant qui oublie de demander l'aveu à côté.
+#[derive(Clone, Default, Debug, PartialEq)]
+pub(crate) struct SourcesConnues {
+    /// Au plus `SOQL_SOURCES_MAX` noms, ordre alphabétique (celui du `ORDER BY` de la lecture).
+    pub(crate) valeurs: Vec<String>,
+    /// Vrai SEULEMENT si une valeur EXISTAIT au-delà de la borne — MESURÉ par la ligne excédentaire, pas
+    /// déduit de `valeurs.len() == SOQL_SOURCES_MAX` (une base qui porte pile la borne n'est PAS écourtée,
+    /// et le lui faire dire serait un aveu inconditionnel, donc sans valeur).
+    ///
+    /// UNE LECTURE QUI ÉCHOUE REND `false`, ET C'EST DÉLIBÉRÉ : elle n'a rien vu, donc elle ne sait pas
+    /// qu'il en existait davantage. Prétendre « écourté » y serait un second mensonge par-dessus le
+    /// premier. Ce que le type NE tient pas est donc nommé ici : il distingue « bornée » de « complète »,
+    /// jamais « vide » de « illisible ».
+    pub(crate) ecourtee: bool,
+}
+
+/// SWR cache des `source` connues, keyé par db_path (comme FRESHNESS_CACHE). Valeur = (calculé, mesure).
 /// TTL long : l'inventaire des sources change lentement ; la lecture est de toute façon BORNÉE (rollup).
-fn known_sources_cache() -> &'static Mutex<HashMap<String, (Instant, Vec<String>)>> {
-    static C: std::sync::OnceLock<Mutex<HashMap<String, (Instant, Vec<String>)>>> = std::sync::OnceLock::new();
+/// L'aveu est mis en cache AVEC la liste — sinon la première réponse dirait la vérité et les suivantes non.
+fn known_sources_cache() -> &'static Mutex<HashMap<String, (Instant, SourcesConnues)>> {
+    static C: std::sync::OnceLock<Mutex<HashMap<String, (Instant, SourcesConnues)>>> = std::sync::OnceLock::new();
     C.get_or_init(|| Mutex::new(HashMap::new()))
 }
 const KNOWN_SOURCES_TTL: Duration = Duration::from_secs(120);
 
 /// Valeurs `source` CONNUES, depuis la table DÉRIVÉE `event_rollup` (pré-agrégée, petite) — JAMAIS un
 /// scan de `event` (respecte « jamais scanner event par requête »). Fonction PURE testable : si le rollup
-/// est illisible/absent, renvoie vide (jamais un repli qui scannerait `event`). Bornée à 500 entrées.
-pub(crate) fn soql_known_sources(conn: &Connection) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    if let Ok(mut s) = conn.prepare("SELECT DISTINCT source FROM event_rollup WHERE source<>'' ORDER BY source LIMIT 500") {
-        if let Ok(rows) = s.query_map([], |r| r.get::<_, String>(0)) {
-            for src in rows.flatten() {
-                out.push(src);
-            }
+/// est illisible/absent, renvoie vide (jamais un repli qui scannerait `event`).
+///
+/// LE GESTE : on demande `SOQL_SOURCES_MAX + 1` lignes, on en sert `SOQL_SOURCES_MAX`, et l'EXISTENCE de
+/// la ligne excédentaire — jamais servie — est ce qui autorise à dire « il y en avait davantage ». C'est
+/// le même geste que le total borné de la page du journal (`PAGINATION_COUNT_CAP` -> `total_capped`) :
+/// une ligne de plus lue, un booléen de plus rendu, aucun comptage complet.
+pub(crate) fn soql_known_sources_bornees(conn: &Connection) -> SourcesConnues {
+    let mut out = SourcesConnues::default();
+    let Ok(mut s) = conn.prepare("SELECT DISTINCT source FROM event_rollup WHERE source<>'' ORDER BY source LIMIT ?1") else {
+        return out;
+    };
+    let Ok(rows) = s.query_map(params![SOQL_SOURCES_MAX as i64 + 1], |r| r.get::<_, String>(0)) else {
+        return out;
+    };
+    for src in rows.flatten() {
+        if out.valeurs.len() >= SOQL_SOURCES_MAX {
+            out.ecourtee = true; // la ligne EXCÉDENTAIRE : elle PROUVE le reste, elle n'est pas servie.
+            break;
         }
+        out.valeurs.push(src);
     }
     out
 }
 
+/// La LISTE seule, pour les deux lecteurs internes qui n'ont pas de réponse HTTP où porter l'aveu :
+/// `sigma::delta_de_couverture_d_un_import` et `detection_aveugle::lire_la_couverture_des_regles_activees`.
+/// Tous deux ÉCRIVENT déjà le sens de leur erreur (cf. le bloc « ce que cette lecture ne tient pas » de
+/// `detection_aveugle` : une source hors borne fait SOUS-compter la couverture, jamais sur-compter) — ce
+/// n'est donc pas un silence, c'est une borne assumée et documentée à l'endroit où elle mord.
+pub(crate) fn soql_known_sources(conn: &Connection) -> Vec<String> {
+    soql_known_sources_bornees(conn).valeurs
+}
+
 /// `source` connues avec cache SWR borné (lecture rollup ~ms via read_with_watchdog). Ne bloque jamais
 /// longtemps : la requête est sur la petite table rollup. Le cache évite de la refaire à chaque frappe.
-fn cached_known_sources(db_path: &str) -> Vec<String> {
+fn cached_known_sources(db_path: &str) -> SourcesConnues {
     if let Some((t, v)) = known_sources_cache().lock().get(db_path) {
         if t.elapsed() < KNOWN_SOURCES_TTL {
             return v.clone();
         }
     }
-    let sources = read_with_watchdog(db_path, Vec::new(), |conn| soql_known_sources(conn));
+    let sources = read_with_watchdog(db_path, SourcesConnues::default(), soql_known_sources_bornees);
     known_sources_cache()
         .lock()
         .insert(db_path.to_string(), (Instant::now(), sources.clone()));
@@ -189,7 +235,13 @@ fn cached_known_sources(db_path: &str) -> Vec<String> {
 /// (category/severity/action = enums fermés ; source = rollup distinct caché). Read-only, viewer+.
 pub(crate) async fn soql_schema(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
     let db_path = req_db_path(&st, &au);
-    let sources = cached_known_sources(db_path.as_str());
+    Json(soql_schema_json(cached_known_sources(db_path.as_str())))
+}
+
+/// LE CORPS DE `/api/soql/schema`, fonction PURE — aucun `AppState`, aucune base, aucun cache (même
+/// idiome que `ledger_page`). La FORME de la réponse est donc testable sans monter d'état : c'est la
+/// seule façon de PROUVER que l'aveu de troncature atteint le client, et pas seulement la mesure.
+pub(crate) fn soql_schema_json(sources: SourcesConnues) -> Value {
     // Niveaux de sévérité : enum statique 0..4 (miroir du SEV front ['info','low','medium','high','critical']).
     let severities: Vec<Value> = [
         (0, "info"), (1, "low"), (2, "medium"), (3, "high"), (4, "critical"),
@@ -197,7 +249,7 @@ pub(crate) async fn soql_schema(State(st): State<AppState>, Extension(au): Exten
     .iter()
     .map(|(n, label)| json!({ "value": n, "label": label }))
     .collect();
-    Json(json!({
+    json!({
         "base_keywords": SOQL_BASE_KEYWORDS,
         "commands": SOQL_PIPE_COMMANDS,
         "stats_functions": SOQL_STATS_FUNCTIONS,
@@ -217,7 +269,13 @@ pub(crate) async fn soql_schema(State(st): State<AppState>, Extension(au): Exten
             "severity": severities,
             // Valeurs BORNÉES depuis le rollup (jamais un scan `event`) — noms de source déjà exposés
             // dans l'inventaire Sources (cohérent, non sensible).
-            "source": sources,
+            "source": sources.valeurs,
+            // `P11.22-e` — L'AVEU DE LA BORNE. Vrai SEULEMENT si une source EXISTAIT au-delà de
+            // `SOQL_SOURCES_MAX` (mesuré par la ligne excédentaire, cf. `soql_known_sources_bornees`).
+            // Sans lui, `source` a exactement la même forme quand la liste EST l'inventaire et quand
+            // elle en cache le gros : la console avoue son propre écourtement, elle ne pouvait pas
+            // avouer celui-ci. Même nommage que le `total_capped` de la page du journal.
+            "source_capped": sources.ecourtee,
         },
         // v130 DOC INLINE : description d'UNE LIGNE par item de vocabulaire (statique, curée). Le client
         // peuple le slot d'aide de la complétion. Coverage garanti par `soql_docs_cover_all_vocab`.
@@ -231,7 +289,7 @@ pub(crate) async fn soql_schema(State(st): State<AppState>, Extension(au): Exten
             "fields": docs_object(DOC_FIELDS),
         },
         "cim_version": CIM_VERSION,
-    }))
+    })
 }
 
 /// POST /api/soql/validate — VALIDATION « compile-as-you-type » : compile le GXQL fourni via le compilateur

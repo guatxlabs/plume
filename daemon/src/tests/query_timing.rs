@@ -128,11 +128,23 @@
         let held = m.clone();
         // Le TIERS : la boucle de rollups du vrai daemon (`server/boucles_de_fond.rs`) tient ce même
         // verrou pendant tout un tick, toutes les 120 s.
+        // LA REMISE DU VERROU EST DÉTERMINISTE, PLUS UNE COURSE — corrigé le 2026-08-31 après un
+        // ÉCHEC DU PORTILLON DE DÉPLOIEMENT que ce poste ne reproduisait pas. La forme d'origine
+        // faisait dormir le fil principal 5 ms « pour laisser le tiers prendre le verrou » : sur une
+        // machine chargée, le tiers n'est pas ordonnancé dans cette fenêtre, le fil principal prend
+        // le verrou EN PREMIER, n'attend rien, et l'assertion tombe. Le témoin mesurait donc
+        // l'ORDONNANCEUR autant que le code. Le tiers SIGNALE désormais qu'il détient le verrou, et
+        // le fil principal ne tente sa prise qu'après ce signal : la propriété tenue est la même,
+        // mais sa violation vient du code et non de la charge de la machine.
+        let (prevenu, attendre_le_tiers) = std::sync::mpsc::channel::<()>();
         let squatter = std::thread::spawn(move || {
             let _g = held.lock();
+            prevenu.send(()).expect("le fil principal attend ce signal");
             std::thread::sleep(Duration::from_millis(40));
         });
-        std::thread::sleep(Duration::from_millis(5)); // laisser le tiers prendre le verrou
+        attendre_le_tiers
+            .recv_timeout(Duration::from_secs(10))
+            .expect("INSTRUMENT : le tiers n'a jamais annoncé tenir le verrou — le témoin ne mesurerait rien");
         let clock = QueryClock::start();
         {
             let _c = clock.db().lock(&m); // attend le tiers

@@ -673,7 +673,7 @@ def render_concurrency(W, conc):
         W("EST le taux de change entre concurrence et mémoire.")
         W("")
         W("**Il est réglable sans recompiler** : `PLUME_QUERY_CONCURRENCY` est lu dans la")
-        W("configuration au démarrage (`daemon/src/server.rs:254`, défaut 3) et le daemon publie la")
+        W("configuration au démarrage (`daemon/src/server/mod.rs`, défaut 3) et le daemon publie la")
         W("valeur qu'il applique sur `/api/system/diag` — c'est de là que ce banc la lit, plutôt que")
         W("de la supposer. En revanche il est lu **une seule fois, au boot** : le changer demande un")
         W("redémarrage, et un redémarrage a son propre coût (voir la mise au repos plus haut).")

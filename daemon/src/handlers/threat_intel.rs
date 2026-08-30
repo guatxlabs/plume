@@ -169,6 +169,33 @@ pub(crate) fn ioc_index() -> &'static parking_lot::RwLock<HashMap<String, Box<dy
     IOC_INDEX.get_or_init(|| parking_lot::RwLock::new(HashMap::new()))
 }
 
+/// L'ISSUE DU DERNIER RECHARGEMENT DU CACHE IOC, par db_path (MT-KEY, comme `IOC_SET`/`IOC_INDEX` —
+/// une base tenant ne peut pas hériter du verdict d'une autre).
+///
+/// LE DÉFAUT QUE CET ÉTAT FERME (`P10.7-k`). `ioc_cache_reload` construisait sa table par
+/// `if let Ok(..) = prepare` / `if let Ok(..) = query_map` / `rows.flatten()`, puis l'INSTALLAIT
+/// inconditionnellement. Une lecture ratée produisait donc un ensemble VIDE, et cet ensemble vide
+/// REMPLAÇAIT ATOMIQUEMENT le cache vivant : `ti_lookup` prend son fast-path `set.is_empty() -> None`
+/// et le match-on-ingest devient un no-op. Aucune route ne ment, aucun corps n'est servi, aucune garde
+/// de texte ne peut l'exprimer — et la détection par indicateurs est ÉTEINTE jusqu'au prochain
+/// rechargement réussi. Un `.flatten()` interrompu était pire encore : un ensemble PLUS PETIT que la
+/// table, donc MOINS de détection, sans même un ensemble vide pour le trahir.
+///
+/// LE REMÈDE EST CELUI DE `S32`, PAS UN NOUVEAU VOCABULAIRE : la lecture rend une `Mesure`. `Lue(n)` =
+/// la table a été lue ENTIÈREMENT et le cache porte `n` indicateurs actifs. `Illisible` = la lecture a
+/// échoué, le cache VIVANT a été CONSERVÉ, et la cause est une clé de l'ensemble fermé. Perdre la mise
+/// à jour est un moindre mal que perdre la détection ; le taire était le vrai défaut.
+pub(crate) static IOC_RELOAD: std::sync::OnceLock<parking_lot::RwLock<HashMap<String, crate::mesure_environnement::Mesure<u64>>>> =
+    std::sync::OnceLock::new();
+pub(crate) fn ioc_reload_etat() -> &'static parking_lot::RwLock<HashMap<String, crate::mesure_environnement::Mesure<u64>>> {
+    IOC_RELOAD.get_or_init(|| parking_lot::RwLock::new(HashMap::new()))
+}
+/// CE QUE LE DERNIER RECHARGEMENT DE CE db_path A VALU. `None` = aucun rechargement n'a encore eu lieu
+/// (démarrage) — que la surface distingue d'un `Lue(0)`, lequel est un VRAI zéro d'indicateurs actifs.
+pub(crate) fn ioc_reload_dernier(db_path: &str) -> Option<crate::mesure_environnement::Mesure<u64>> {
+    ioc_reload_etat().read().get(db_path).cloned()
+}
+
 /// Seuil d'auto-bascule vers le bloom : N IOC actifs > ce seuil (défaut 50000). Sous ce seuil, le
 /// HashSet exact suffit et évite tout faux positif.
 fn ioc_bloom_min() -> usize {
@@ -189,42 +216,99 @@ fn build_ioc_index(pairs: &[(String, String)]) -> Box<dyn IocIndex> {
     idx
 }
 
-/// Recharge le set d'IOC ACTIFS (non expirés) de CE db_path depuis la table `ioc` (sous le lock writer
-/// côté appelant, ex. rollup loop). Les IOC expirés (expires<=now) sont EXCLUS -> expiry/rétention
-/// servie à la lecture (aucune purge de ligne requise). Table absente (pré-v79) -> set vide (no-op).
-pub(crate) fn ioc_cache_reload(conn: &Connection, db_path: &str) {
-    let now_ts = now();
-    let mut map: HashMap<String, IocMeta> = HashMap::new();
-    if let Ok(mut st) = conn.prepare(
+/// LES IOC ACTIFS DE LA TABLE, ENTIÈREMENT OU PAS DU TOUT. Les IOC expirés (expires<=now) sont EXCLUS
+/// -> expiry/rétention servie à la lecture (aucune purge de ligne requise).
+///
+/// UN PARCOURS INTERROMPU N'EST PAS UN PARCOURS COMPLET — même doctrine que `profondeur_file_depuis`
+/// (`S32`) et pour la même raison, mais avec un enjeu plus dur : ici le compte partiel n'est pas une
+/// série creuse, c'est de la DÉTECTION EN MOINS. `.flatten()` sautait la ligne indécodable et rendait
+/// un ensemble plus petit que la table ; l'appelant l'installait comme s'il était la table. Une erreur
+/// de ligne interrompt donc la lecture et remonte, plutôt que de rétrécir le jeu en silence.
+fn lire_iocs_actifs(conn: &Connection, now_ts: i64) -> rusqlite::Result<HashMap<String, IocMeta>> {
+    let mut st = conn.prepare(
         "SELECT type,value,source,confidence,severity FROM ioc WHERE expires IS NULL OR expires > ?1",
-    ) {
-        if let Ok(rows) = st.query_map(params![now_ts], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, i64>(3)?,
-                r.get::<_, i64>(4)?,
-            ))
-        }) {
-            for (kind, value, source, confidence, severity) in rows.flatten() {
-                // La `value` est déjà normalisée à l'insertion ; on la garde telle quelle comme CLÉ.
-                map.insert(value, IocMeta { kind, source, confidence, severity });
+    )?;
+    let rows = st.query_map(params![now_ts], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, i64>(3)?,
+            r.get::<_, i64>(4)?,
+        ))
+    })?;
+    let mut map: HashMap<String, IocMeta> = HashMap::new();
+    for ligne in rows {
+        let (kind, value, source, confidence, severity) = ligne?;
+        // La `value` est déjà normalisée à l'insertion ; on la garde telle quelle comme CLÉ.
+        map.insert(value, IocMeta { kind, source, confidence, severity });
+    }
+    Ok(map)
+}
+
+/// Recharge le set d'IOC ACTIFS de CE db_path depuis la table `ioc` (sous le lock writer côté appelant,
+/// ex. rollup loop, ~120 s, plus après chaque mutation admin).
+///
+/// `P10.7-k` — ON NE REMPLACE PAS UN ÉTAT VIVANT PAR UN ÉTAT VIDE. La publication n'a lieu QUE si la
+/// table a été lue ENTIÈREMENT. Si la lecture échoue, le cache précédent est CONSERVÉ tel quel : la
+/// correspondance continue sur le jeu d'indicateurs de la dernière lecture réussie, et c'est la MISE À
+/// JOUR qui est perdue, pas la DÉTECTION. Le rechargement ne renonce pas non plus : il est retenté au
+/// tick suivant, exactement comme avant.
+///
+/// ET IL LE DIT — le silence était l'autre moitié du défaut. L'issue est publiée dans `IOC_RELOAD`
+/// (servie par `/api/threat-intel/coverage`, la route qui existe déjà pour l'état de ce magasin) ; le
+/// journal ne porte que les BASCULES, parce qu'un aveu répété à chaque tick de rollup se lirait comme
+/// du bruit et non comme un événement. Table absente (base pas encore migrée) : c'est `forme_inconnue`,
+/// la même clé que `run_due_rules` rend pour une table manquante — il n'y a alors rien à conserver et
+/// rien n'est installé, donc `ti_lookup` retombe sur son fast-path exactement comme avant.
+pub(crate) fn ioc_cache_reload(conn: &Connection, db_path: &str) {
+    use crate::mesure_environnement::{Mesure, VERDICT_ILLISIBLE};
+    let avant = ioc_reload_etat().read().get(db_path).map(Mesure::verdict);
+    let bilan = match lire_iocs_actifs(conn, now()) {
+        Ok(map) => {
+            let actifs = map.len() as u64;
+            // (#30) Reconstruit l'index d'appartenance depuis LE MÊME jeu d'IOC (paires (kind, value)).
+            // Sélection bloom/HashSet selon volume+env. Fait AVANT la publication du set : les deux
+            // structures sont écrites sous des locks distincts non imbriqués (ordre reload : set puis
+            // index ; lecture ti_lookup : set puis index) -> aucun interblocage possible.
+            let pairs: Vec<(String, String)> = map.iter().map(|(v, m)| (m.kind.clone(), v.clone())).collect();
+            let idx = build_ioc_index(&pairs);
+            { let mut w = ioc_set().write();
+                w.insert(db_path.to_string(), map); // MT-KEY : set de CE db_path (remplacement atomique)
+            }
+            { let mut wi = ioc_index().write();
+                wi.insert(db_path.to_string(), idx); // MT-KEY : index de CE db_path (remplacement atomique)
+            }
+            Mesure::Lue(actifs)
+        }
+        Err(e) => {
+            // LE GESTE : rien n'est écrit. Le set et l'index de CE db_path restent ceux de la dernière
+            // lecture entière. Le compte conservé part dans l'aveu — sans lui, un exploitant ne sait pas
+            // si la détection tourne encore ni sur combien d'indicateurs.
+            let conserves = ioc_set().read().get(db_path).map_or(0, |m| m.len());
+            Mesure::Illisible {
+                cause: crate::bilan_de_tick::cause_sql(&e),
+                detail: format!(
+                    "rechargement du cache IOC de `{db_path}` : la table `ioc` n'a pas pu être lue entièrement \
+                     ({e}) — {conserves} indicateur(s) de la dernière lecture réussie CONSERVÉ(S), la \
+                     correspondance continue sur ce jeu et la mise à jour est perdue ; installer un ensemble \
+                     vide aurait ÉTEINT la correspondance sans qu'aucun corps servi ne le dise"
+                ),
             }
         }
+    };
+    // LA BASCULE, PAS L'ÉTAT : le chemin nominal reste MUET (aucune ligne de journal sur un `Lue`), et un
+    // aveu qui se répète 720 fois par jour cesse d'être lu.
+    match (&bilan, avant) {
+        (Mesure::Illisible { detail, .. }, precedent) if precedent != Some(VERDICT_ILLISIBLE) => {
+            eprintln!("[ti] WARN {detail}");
+        }
+        (Mesure::Lue(n), Some(VERDICT_ILLISIBLE)) => {
+            eprintln!("[ti] rechargement du cache IOC RÉTABLI pour `{db_path}` : {n} indicateur(s) actif(s)");
+        }
+        _ => {}
     }
-    // (#30) Reconstruit l'index d'appartenance depuis LE MÊME jeu d'IOC (paires (kind, value)). Sélection
-    // bloom/HashSet selon volume+env. Fait AVANT la publication du set : les deux structures sont écrites
-    // sous des locks distincts non imbriqués (ordre reload : set puis index ; lecture ti_lookup : set puis
-    // index) -> aucun interblocage possible.
-    let pairs: Vec<(String, String)> = map.iter().map(|(v, m)| (m.kind.clone(), v.clone())).collect();
-    let idx = build_ioc_index(&pairs);
-    { let mut w = ioc_set().write();
-        w.insert(db_path.to_string(), map); // MT-KEY : set de CE db_path (remplacement atomique)
-    }
-    { let mut wi = ioc_index().write();
-        wi.insert(db_path.to_string(), idx); // MT-KEY : index de CE db_path (remplacement atomique)
-    }
+    ioc_reload_etat().write().insert(db_path.to_string(), bilan);
 }
 
 /// Clé de lookup canonique d'une valeur candidate d'event (miroir LÉGER de normalize_ioc : toutes ses
@@ -647,6 +731,7 @@ pub(crate) async fn stix_import(State(st): State<AppState>, Extension(au): Exten
 /// chemin GXQL (`search ti_match=1 | timechart count`) — l'enrichissement écrit `ti_match` dans fields,
 /// donc déjà requêtable/graphable via Explore sans scan dédié ici.
 pub(crate) async fn ti_coverage(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
+    let db_path = req_db_path(&st, &au);
     crate::req_conn!(st, au, conn);
     let now_ts = now();
     let total: i64 = conn.query_row("SELECT COUNT(*) FROM ioc", [], |r| r.get(0)).unwrap_or(0);
@@ -665,7 +750,7 @@ pub(crate) async fn ti_coverage(State(st): State<AppState>, Extension(au): Exten
                 .map(|rows| rows.flatten().collect())
         })
         .unwrap_or_default();
-    Json(json!({
+    let mut sortie = json!({
         "total": total,
         "active": active,
         "expired": total - active,
@@ -673,5 +758,17 @@ pub(crate) async fn ti_coverage(State(st): State<AppState>, Extension(au): Exten
         "by_source": by_source,
         // indice pour l'UI : les hits IOC dans le temps se requêtent en GXQL (aucun scan serveur ici).
         "hits_query": "search ti_match=1 | timechart count",
-    }))
+    });
+    // `P10.7-k` — CE QUE LE MAGASIN CONTIENT N'EST PAS CE AVEC QUOI ON DÉTECTE. `active` compte les
+    // lignes de la TABLE ; la correspondance à l'ingest, elle, ne lit QUE le cache mémoire. Les deux
+    // divergent dès qu'un rechargement échoue, et c'est précisément l'état où ce panneau annonçait
+    // « N indicateurs actifs » pendant que la détection tournait sur un jeu plus ancien — ou, avant ce
+    // lot, sur rien du tout. `cache_actifs` est donc publié À CÔTÉ de `active`, sous la convention de
+    // `S32` : la valeur n'apparaît QUE si elle a été lue, et le verdict/la cause disent le reste.
+    // Aucun rechargement encore (démarrage) -> AUCUNE clé posée : l'absence se lit « pas encore »,
+    // jamais « zéro indicateur ».
+    if let (Some(m), Some(o)) = (ioc_reload_dernier(&db_path), sortie.as_object_mut()) {
+        m.poser_dans(o, "cache_actifs");
+    }
+    Json(sortie)
 }

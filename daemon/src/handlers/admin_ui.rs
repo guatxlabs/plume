@@ -693,6 +693,52 @@ pub(crate) fn suppression_fields_allowlist(f: &Value) -> Value {
     Value::Object(out)
 }
 
+/// COMBIEN D'HÔTES DISTINCTS ONT AUTO-REPORTÉ CHAQUE SOURCE — LU OU AVOUÉ, jamais remplacé par
+/// « 1 hôte ». C'est le DÉNOMINATEUR que `suppressions_get` affiche à côté de chaque auto-report de
+/// collecteur, et dont le commentaire du site d'émission dit qu'il est ce qui compte vraiment (le
+/// drapeau `contested`, lui, est le cas NORMAL d'un parc). Une table vide et une requête qui a échoué
+/// donnaient toutes deux « 1 hôte sur 1, non contesté » : deux faits opposés confondus dans la valeur
+/// la plus calme.
+///
+/// UN PARCOURS INTERROMPU N'EST PAS UN PARCOURS COMPLET (`S32`) : `.flatten()` faisait disparaître une
+/// source du dénombrement, et cette source retombait sur le même « 1 » par défaut. Une erreur de ligne
+/// interrompt donc la lecture et devient l'aveu.
+pub(crate) fn hotes_par_source(
+    conn: &Connection,
+    depuis: i64,
+) -> crate::mesure_environnement::Mesure<std::collections::HashMap<String, i64>> {
+    use crate::mesure_environnement::Mesure;
+    let illisible = |e: &rusqlite::Error, quoi: &str| Mesure::Illisible {
+        cause: crate::bilan_de_tick::cause_sql(e),
+        detail: format!(
+            "hôtes distincts par source (auto-reports de collecteurs, 14 j) : {quoi} ({e}) — le \
+             dénominateur n'est PAS connu ; le publier à 1 dirait « une seule machine revendique cette \
+             source », ce qui est exactement l'affirmation qu'on ne peut pas faire ici"
+        ),
+    };
+    let mut s = match conn.prepare(
+        "SELECT source, COUNT(DISTINCT host) FROM event \
+         WHERE category='config' AND origin<>'daemon' AND ts > ?1 GROUP BY source",
+    ) {
+        Ok(s) => s,
+        Err(e) => return illisible(&e, "énoncé non préparable"),
+    };
+    let rows = match s.query_map(params![depuis], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))) {
+        Ok(r) => r,
+        Err(e) => return illisible(&e, "dénombrement non exécutable"),
+    };
+    let mut par_source: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    for ligne in rows {
+        match ligne {
+            Ok((src, n)) => {
+                par_source.insert(src, n);
+            }
+            Err(e) => return illisible(&e, "parcours interrompu"),
+        }
+    }
+    Mesure::Lue(par_source)
+}
+
 /// GET /api/suppressions — PANNEAU read-only agrégeant TOUTES les suppressions/whitelists/filtres, quel que
 /// soit leur périmètre : (1) registre DAEMON A1..A9 (lu live) ; (2) filtres des COLLECTEURS hôte, auto-reportés
 /// via un event `category='config'` par source (B/C) ; (3) état FIREWALL (snapshot kind=firewall). Chaque
@@ -718,15 +764,7 @@ pub(crate) async fn suppressions_get(State(st): State<AppState>, Extension(au): 
     // (fenêtre 14 j). >1 = un hôte usurpe une source qui appartient à un autre (ex: collecteur mail légitime +
     // hôte compromis prétendant source='mail') -> l'entrée est marquée `contested` : le conflit d'hôtes DEVIENT
     // VISIBLE, le panneau ne peut plus être empoisonné en silence. Bornée par source (cardinalité collecteurs).
-    let mut host_counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
-    if let Ok(mut s) = conn.prepare(
-        "SELECT source, COUNT(DISTINCT host) FROM event \
-         WHERE category='config' AND origin<>'daemon' AND ts > ?1 GROUP BY source",
-    ) {
-        if let Ok(rows) = s.query_map(params![now() - 14 * 86400], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))) {
-            for (src, n) in rows.flatten() { host_counts.insert(src, n); }
-        }
-    }
+    let host_counts = hotes_par_source(&conn, now() - 14 * 86400);
     let mut collectors: Vec<Value> = Vec::new();
     if let Ok(mut s) = conn.prepare(
         "SELECT e.source, e.ts, e.host, e.fields, e.message, e.origin FROM event e \
@@ -759,22 +797,39 @@ pub(crate) async fn suppressions_get(State(st): State<AppState>, Extension(au): 
                 // suspicion ferait chercher une attaque là où il n'y a qu'une flotte. Ce qui compte est le
                 // DÉNOMINATEUR (`hosts_total`), pas le drapeau.
                 let attested = origin == "agent";
-                let contested = host_counts.get(&src).copied().unwrap_or(1) > 1;
                 let age_s = (now() - ts).max(0);
-                collectors.push(json!({
+                let mut entree = json!({
                     "source": src, "ts": ts, "host": host, "message": msg,
                     "type": etype, "fields": f, "editable": false,
-                    "attested": attested, "contested": contested, "age_s": age_s,
-                    // LE DÉNOMINATEUR, pas seulement le drapeau. `contested` seul répond « oui/non » à
-                    // une question que l'exploitant ne se pose pas ; ce qu'il lui faut est « la ligne
-                    // affichée est celle d'UN hôte sur N ». Sans ce nombre, un parc de 50 machines
-                    // rendait UNE ligne qui se lisait comme l'état du parc — exactement la faute
-                    // mesurée et corrigée pour le pare-feu vingt lignes plus bas (« 1 hôte rendu pour
-                    // 50 »). Le drapeau restait vrai, mais un booléen ne dit pas l'ampleur.
-                    "hosts_total": host_counts.get(&src).copied().unwrap_or(1),
+                    "attested": attested, "age_s": age_s,
                     "provenance": if attested { "agent (host lié au token)" } else { "auto-déclaré (non attesté)" },
                     "guarantee": "collecte/règles NON modifiées",
-                }));
+                });
+                // LE DÉNOMINATEUR, pas seulement le drapeau. `contested` seul répond « oui/non » à
+                // une question que l'exploitant ne se pose pas ; ce qu'il lui faut est « la ligne
+                // affichée est celle d'UN hôte sur N ». Sans ce nombre, un parc de 50 machines
+                // rendait UNE ligne qui se lisait comme l'état du parc — exactement la faute
+                // mesurée et corrigée pour le pare-feu vingt lignes plus bas (« 1 hôte rendu pour
+                // 50 »). Le drapeau restait vrai, mais un booléen ne dit pas l'ampleur.
+                //
+                // `P10.7-k` — ET IL N'EST PLUS INVENTÉ. Le `unwrap_or(1)` était appliqué à une table
+                // qui pouvait être vide POUR DEUX RAISONS OPPOSÉES : aucun hôte n'a auto-reporté cette
+                // source, ou la requête de dénombrement a échoué. Dans le second cas CHAQUE source
+                // repartait à « 1 hôte, non contesté » — la valeur la plus rassurante, et la faute
+                // exacte que les vingt lignes ci-dessus disent avoir corrigée pour le pare-feu. Un
+                // dénombrement qu'on n'a pas su prendre n'est donc plus publié comme un nombre : la
+                // valeur DISPARAÎT et le verdict prend sa place (`S32`).
+                if let Some(o) = entree.as_object_mut() {
+                    match host_counts.valeur() {
+                        Some(par_source) => {
+                            let n = par_source.get(&src).copied().unwrap_or(1);
+                            o.insert("contested".into(), json!(n > 1));
+                            o.insert("hosts_total".into(), json!(n));
+                        }
+                        None => host_counts.poser_verdict_dans(o, "hosts_total"),
+                    }
+                }
+                collectors.push(entree);
             }
         }
     }

@@ -49,4 +49,4 @@ contribue au risk-based alerting). Aucune config supplémentaire nécessaire.
 | `pagination.kind` | `none` \| `offset` \| `page` \| `cursor` (avec `cursor_path`) \| `link_header` (avec fallback `next_path`). Params : `param`, `size`, `size_param`, `start`. |
 | `watermark` | Incrémental : `field_path` (dans chaque record), `param` (envoyé au serveur), `format` (`epoch`\|`iso8601`), `template` (`{value}`), `lookback_days` (cold-start). |
 
-Voir aussi le code : `daemon/src/handlers/connectors.rs` (`HttpPullCfg`, `poll_http_pull`).
+Voir aussi le code : `daemon/src/handlers/connectors/httppull.rs` (`HttpPullCfg`, `poll_http_pull`).

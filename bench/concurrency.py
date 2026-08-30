@@ -5,7 +5,7 @@ POURQUOI CE FICHIER EXISTE
   `measure.py` tire UNE requête à la fois. `sem_wait_ms` y est donc nul par construction, et
   docs/BENCHMARK.md le dit lui-même : « la concurrence n'est pas mesurée ». Or la condition d'usage
   d'une équipe, c'est cinq ou six analystes qui lancent de très grosses requêtes EN MÊME TEMPS. Et
-  le sémaphore de l'interactif (`PLUME_QUERY_CONCURRENCY`, défaut 3, `daemon/src/server.rs:254`) a
+  le sémaphore de l'interactif (`PLUME_QUERY_CONCURRENCY`, défaut 3, `daemon/src/server/mod.rs`) a
   été BAISSÉ de 8 à 3 comme LEVIER DE RAM : la concurrence s'échange directement contre le budget de
   2 Gio, et personne n'avait mesuré le taux de change.
 
@@ -197,7 +197,7 @@ def wait_quiescent(cli, spec, win, need=3, timeout_s=420, period_s=5.0):
     """MESURER UN DAEMON QUI VIENT DE DÉMARRER, C'EST MESURER SON DÉMARRAGE.
 
     Au boot, plume lance un `ANALYZE` complet EN ARRIÈRE-PLAN qui prend le lock writer (~3 min sur
-    cette base, `daemon/src/server.rs`), et la boucle de rollups tourne. Le chemin interactif ne
+    cette base, `daemon/src/server/mod.rs`), et la boucle de rollups tourne. Le chemin interactif ne
     prend plus ce verrou (la lecture de couverture est passée au pool de lecture le 2026-08-01), mais
     ces travaux consomment le disque et le CPU du même processus : mesurer tout de suite, c'est
     mesurer le démarrage. La sonde reste donc, et elle reste utile même quand le verrou a disparu.
@@ -499,7 +499,7 @@ def daemon_query_concurrency(admin_cli):
     dont l'étiquette de configuration serait un simple paramètre de ligne de commande ne prouverait
     rien : c'est exactement la raison pour laquelle `run.sh` refuse déjà de mesurer une configuration
     dont l'étiquette ment. Valeur absente = variable non posée = DÉFAUT DU PRODUIT (3,
-    `daemon/src/server.rs:254`), et la provenance est publiée avec le chiffre."""
+    `daemon/src/server/mod.rs`), et la provenance est publiée avec le chiffre."""
     st, body = admin_cli.call("/api/system/diag")
     if st != 200 or not isinstance(body, dict):
         return None, f"/api/system/diag a répondu {st}"

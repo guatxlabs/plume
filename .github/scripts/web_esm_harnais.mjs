@@ -7530,7 +7530,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
 //     atteignable (elle est posée en coordonnées de PAGE, et c'est la raison pour laquelle la borne du
 //     56 la déclare SAINE), sa queue défile, mais la SÉLECTION n'y allait pas.
 //
-//     MESURÉ le 2026-08-30, avant tout correctif : `filterItems` borne l'affichage à 40 suggestions ;
+//     MESURÉ le 2026-08-30, avant tout correctif : la borne d'affichage valait alors 40 suggestions — elle vaut le double depuis `P11.22-d`, et c'est le témoin 59 qui la tient ;
 //     `.soql-ac` plafonne à 280 px, où tiennent 4 lignes portant leur doc sur deux lignes et 8 sans doc ;
 //     `render()` reconstruit son contenu — le document borne alors le défilement à zéro — et il est
 //     rappelé par CHAQUE flèche, pas seulement par chaque frappe ; et AUCUN geste de mise en vue
@@ -7712,7 +7712,145 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
 
   delete Element.prototype.offsetHeight; delete Element.prototype.offsetTop; delete Element.prototype.clientHeight;
 
-  console.log(`[suggestion-active-en-vue] la complétion rend ${rendues58} suggestions dans une boîte où ${TIENNENT58} tiennent (plafond ${plafond58}px LU dans la feuille servie) : ${CIBLE58} flèches vers le bas laissent la ligne surlignée DANS le champ, alignée sur le seul bord qu'elle a franchi ; tant qu'elle reste visible le module n'écrit PAS UNE FOIS le défilement ; remonter d'un cran au travers d'une reconstruction ne déplace rien ; et une frappe qui remet la sélection en tête ramène le champ de vue avec elle. L'instrument est validé dans les deux sens : géométrie retirée, ZÉRO écriture — le nombre lu plus haut est donc bien MESURÉ et non inventé. CE QUE CE TÉMOIN NE TIENT PAS : la géométrie est FABRIQUÉE (la section 0 déclare que le simulacre ne tient pas la mise en page), donc il juge le code qui la consomme et jamais l'encre peinte ni la hauteur réelle d'une ligne ; il ne dit rien de la POSITION de la boîte, tenue par le témoin 56 ; il ne rejoue ni molette, ni glissement de barre, ni redimensionnement ; et la borne de quarante suggestions est hors de son objet.`);
+  console.log(`[suggestion-active-en-vue] la complétion rend ${rendues58} suggestions dans une boîte où ${TIENNENT58} tiennent (plafond ${plafond58}px LU dans la feuille servie) : ${CIBLE58} flèches vers le bas laissent la ligne surlignée DANS le champ, alignée sur le seul bord qu'elle a franchi ; tant qu'elle reste visible le module n'écrit PAS UNE FOIS le défilement ; remonter d'un cran au travers d'une reconstruction ne déplace rien ; et une frappe qui remet la sélection en tête ramène le champ de vue avec elle. L'instrument est validé dans les deux sens : géométrie retirée, ZÉRO écriture — le nombre lu plus haut est donc bien MESURÉ et non inventé. CE QUE CE TÉMOIN NE TIENT PAS : la géométrie est FABRIQUÉE (la section 0 déclare que le simulacre ne tient pas la mise en page), donc il juge le code qui la consomme et jamais l'encre peinte ni la hauteur réelle d'une ligne ; il ne dit rien de la POSITION de la boîte, tenue par le témoin 56 ; il ne rejoue ni molette, ni glissement de barre, ni redimensionnement ; et la borne d'affichage et son aveu d'écourtement sont hors de son objet — c'est le témoin 59 qui les tient.`);
+}
+
+{
+  const mod59 = await import(pathToFileURL(path.join(WEB, "soql_complete.js")).href);
+  const { primeCompletionMeta, initSoqlComplete, BORNE_DE_SUGGESTIONS_AFFICHEES: BORNE59,
+          suggestionsRetenuesEtLeurCompte: retenues59, motDeLaListeEcourtee: mot59 } = mod59;
+
+  exiger(typeof retenues59 === "function" && typeof mot59 === "function" && Number.isFinite(BORNE59),
+    "(59-instrument) la décision de bornage, son mot ou sa borne ont disparu de soql_complete.js : ce témoin n'a plus d'objet, mettez-le à jour au lieu de le laisser vert");
+  const MOT59 = mot59();
+  exiger(typeof MOT59 === "string" && MOT59.length > 20,
+    `(59-instrument) le mot de l'aveu n'est pas dérivable du module (« ${MOT59} »)`);
+
+  // — instrument : LA POPULATION QUI DÉBORDE EST CELLE DU DÉMON, PAS UNE HYPOTHÈSE DU BANC.
+  const srcMeta59 = readFileSync(path.join(RACINE, "daemon", "src", "handlers", "soql_meta.rs"), "utf8");
+  const PLAFOND_DEMON59 = Number((srcMeta59.match(/DISTINCT source FROM event_rollup[^"]*LIMIT (\d+)/) || [, 0])[1]);
+  exiger(PLAFOND_DEMON59 > BORNE59,
+    `(59-instrument) le démon sert au plus ${PLAFOND_DEMON59} valeur(s) de source et la console en affiche ${BORNE59} : la branche d'aveu est INATTEIGNABLE, et rester vert dirait qu'elle est tenue`);
+
+  const NB59 = PLAFOND_DEMON59;
+  const sources59 = Array.from({ length: NB59 }, (_, i) => `src-${String(i).padStart(4, "0")}`);
+  primeCompletionMeta({
+    base_keywords: ["search"], commands: ["where"], stats_functions: ["count"], eval_functions: ["if"],
+    operators: ["=", "!="], keywords: ["by"],
+    fields: { core: ["source", "host"], extended: [] },
+    values: { source: sources59 }, docs: {},
+  }, []);
+
+  class Editeur59 extends Element {
+    constructor() { super("textarea"); this.selectionStart = 0; this.selectionEnd = 0; this._ec = {}; }
+    addEventListener(t, f) { (this._ec[t] = this._ec[t] || []).push(f); }
+    dispatchEvent(ev) { (this._ec[ev.type] || []).forEach((f) => f(ev)); return true; }
+    setSelectionRange(a, b) { this.selectionStart = a; this.selectionEnd = b; }
+  }
+  const ed59 = new Editeur59();
+  const parId59 = document.getElementById;
+  document.getElementById = (id) => (id === "sql" ? ed59 : new Element("div"));
+  initSoqlComplete();
+  document.getElementById = parId59;
+  exiger(ed59.dataset.acWired === "1", "(59-instrument) l'éditeur fabriqué n'a pas été câblé : rien de ce qui suit ne mesurerait le module");
+
+  const frapper59 = (t) => { ed59.value = t; ed59.setSelectionRange(t.length, t.length); ed59.dispatchEvent({ type: "input" }); };
+  const fleche59 = (key) => ed59.dispatchEvent({ type: "keydown", key, ctrlKey: false, metaKey: false, preventDefault() {} });
+  const pause59 = () => new Promise((r) => setTimeout(r, 0));
+  frapper59("search source=");
+  await pause59();
+  const boite59 = document.body.children.find((c) => c.classList.contains("soql-ac"));
+  exiger(!!boite59 && !boite59.hidden, "(59-instrument) la boîte de complétion n'a pas été rendue : le témoin n'a rien à mesurer");
+  const suggestions59 = (n) => n.children.filter((c) => c._classes.has("soql-ac-item"));
+
+  // — jambe (59a), LE CHEMIN TRONQUÉ AVOUE, ET IL DIT LES DEUX NOMBRES.
+  const tete59 = boite59.children[0];
+  exiger(suggestions59(boite59).length === BORNE59,
+    `(59a-instrument) la boîte rend ${suggestions59(boite59).length} suggestion(s) pour une borne de ${BORNE59} : la troncature n'est pas celle que ce témoin croit mesurer`);
+  exiger(tete59 && !tete59._classes.has("soql-ac-item") && String(tete59.textContent).includes(MOT59),
+    `(59a) UNE LISTE ÉCOURTÉE NE DIT PAS QU'ELLE L'EST : le démon sert ${NB59} valeurs de source, la console en rend ${BORNE59}, et ${NB59 - BORNE59} disparaissent sans un mot. L'exploitant qui n'y trouve pas sa source en conclut qu'elle n'existe pas — aucune erreur, aucun signe. Tête rendue : « ${tete59 && tete59.textContent} »`);
+  exiger(tete59 && String(tete59.textContent).includes(String(BORNE59)) && String(tete59.textContent).includes(String(NB59)),
+    `(59a) l'aveu ne porte pas LES DEUX nombres (${BORNE59} affichées sur ${NB59} correspondantes) : « écourtée » sans l'ampleur ne dit pas s'il manque trois entrées ou quatre cent vingt. Rendu : « ${tete59 && tete59.textContent} »`);
+  exiger(tete59 === boite59.children[0],
+    "(59a) l'aveu n'est pas en TÊTE : la boîte s'ouvre défilée à zéro et n'en montre que quelques lignes — en pied d'une liste écourtée il ne serait jamais lu, et un avertissement qu'on ne lit pas ne vaut pas mieux que le silence");
+
+  // — jambe (59b), TÉMOIN NÉGATIF : une liste ENTIÈRE se tait. Une liste qui avoue toujours n'avoue rien.
+  frapper59("search ");
+  await pause59();
+  exiger(suggestions59(boite59).length > 0 && suggestions59(boite59).length < BORNE59,
+    `(59b-instrument) le contexte témoin ne rend pas une liste ENTIÈRE (${suggestions59(boite59).length} pour une borne de ${BORNE59}) : la jambe négative ne mesurerait rien`);
+  exiger(!String(boite59.textContent).includes(MOT59) && boite59.children.every((c) => c._classes.has("soql-ac-item")),
+    `(59b) LE CHEMIN NOMINAL AVOUE : une liste ENTIÈRE porte le mot d'écourtement. Un aveu inconditionnel crie, et ce qui crie ne se lit pas — donc n'avertit pas. Rendu : « ${boite59.textContent} »`);
+
+  // — jambe (59c), LE LEVIER QUI RESSERRE : préciser la saisie FERME l'aveu. C'est ce qui rend
+  //   l'avertissement actionnable — il ne dit pas seulement « il manque », il dit quoi faire.
+  frapper59(`search source=${sources59[7]}`);
+  await pause59();
+  exiger(suggestions59(boite59).length === 1 || suggestions59(boite59).length < BORNE59,
+    `(59c-instrument) une saisie longue ne resserre pas la liste (${suggestions59(boite59).length} suggestion(s)) : le levier que l'aveu recommande n'existerait pas`);
+  exiger(!String(boite59.textContent).includes(MOT59),
+    `(59c) L'AVEU SURVIT À SON MOTIF : la saisie a resserré la liste sous la borne et le mot d'écourtement est encore là. Un avertissement qui ne s'éteint pas cesse d'être lu. Rendu : « ${boite59.textContent} »`);
+
+  // — jambe (59d), L'AVEU N'EST PAS UNE SUGGESTION, ET IL NE DÉCALE PAS LA SÉLECTION.
+  //   CE QUE LE TÉMOIN 58 NE PEUT PAS VOIR : sa liste n'est jamais écourtée, donc sa boîte n'a pas de
+  //   tête, et le rang dans `children` y coïncide avec le rang dans les suggestions. Ici il ne coïncide
+  //   plus : un module qui lirait la ligne active par sa position dans la boîte surlignerait la voisine.
+  //   LA GÉOMÉTRIE EST POSÉE ICI, comme le fait le témoin 58 : sans elle la mise en vue ne s'exécute
+  //   PAS (elle refuse de conclure sur un vide), et cette jambe serait VERTE PAR CONSTRUCTION — mesuré
+  //   le 2026-08-30, la mutation qui lit la ligne par sa position dans la boîte est passée sans un mot.
+  const TETE59 = 24, LIGNE59 = 61, VUE59 = 270;
+  const hauteur59 = function () { return this._classes.has("soql-ac-item") ? LIGNE59 : this._classes.has("soql-ac-desc") ? TETE59 : 0; };
+  const poser59 = (nom, lire) => Object.defineProperty(Element.prototype, nom, { configurable: true, get: lire });
+  poser59("offsetHeight", hauteur59);
+  poser59("offsetTop", function () {
+    const p = this.parentNode; if (!p) return 0;
+    return p.children.slice(0, p.children.indexOf(this)).reduce((n, f) => n + hauteur59.call(f), 0);
+  });
+  poser59("clientHeight", function () { return this._classes.has("soql-ac") ? VUE59 : 0; });
+  frapper59("search source=");
+  await pause59();
+  let defilement59 = 0, ecritures59 = 0;
+  const htmlOrigine59 = Object.getOwnPropertyDescriptor(Element.prototype, "innerHTML");
+  Object.defineProperty(boite59, "scrollTop", { configurable: true, get: () => defilement59, set: (v) => { defilement59 = v; ecritures59++; } });
+  Object.defineProperty(boite59, "innerHTML", { configurable: true, get() { return htmlOrigine59.get.call(this); },
+    set(v) { htmlOrigine59.set.call(this, v); defilement59 = 0; } });   // le DOCUMENT, pas le module
+  const CIBLE59 = 8;
+  frapper59("search source=");
+  await pause59();
+  defilement59 = 0; ecritures59 = 0;
+  for (let i = 0; i < CIBLE59; i++) fleche59("ArrowDown");
+  const rangSuggestion59 = suggestions59(boite59).findIndex((r) => r._classes.has("active"));
+  exiger(rangSuggestion59 === CIBLE59,
+    `(59d-instrument) après ${CIBLE59} flèches la suggestion surlignée est la n°${rangSuggestion59} : la navigation ne fait plus ce que cette jambe croit mesurer`);
+  exiger(ecritures59 > 0,
+    `(59d-instrument) le module n'a pas écrit une seule fois le défilement sur ${CIBLE59} flèches dans une liste ÉCOURTÉE : la géométrie posée ici n'est pas consommée, et ce qui suit lirait un nombre inventé`);
+  const hautActive59 = TETE59 + CIBLE59 * LIGNE59, basActive59 = hautActive59 + LIGNE59;
+  exiger(hautActive59 >= defilement59 && basActive59 <= defilement59 + VUE59,
+    `(59d) L'AVEU DÉCALE LA MISE EN VUE D'UN CRAN : la suggestion active n°${rangSuggestion59} occupe ${hautActive59}..${basActive59}px pendant que la boîte montre ${defilement59}..${defilement59 + VUE59}px. L'aveu occupe le rang 0 de la boîte, donc tout ce qui désigne une ligne par sa POSITION DANS LA BOÎTE vise la voisine — et le témoin 58 ne peut pas le voir, sa liste n'étant jamais écourtée`);
+  delete Element.prototype.offsetHeight; delete Element.prototype.offsetTop; delete Element.prototype.clientHeight;
+  fleche59("Enter");
+  await pause59();
+  exiger(!String(ed59.value).includes(MOT59) && String(ed59.value).includes("src-"),
+    `(59d) L'AVEU S'EST INSÉRÉ DANS LA REQUÊTE : ce n'est pas une suggestion, il ne s'accepte pas. Barre rendue : « ${ed59.value} »`);
+
+  // — la décision NUE, dans les deux sens. `correspondances === visibles.length` est le cas NOMINAL.
+  const items59 = Array.from({ length: 10 }, (_, i) => ({ label: `alpha_${i}`, insert: `alpha_${i}` }));
+  const nu59 = retenues59(items59, "", 4);
+  exiger(nu59.visibles.length === 4 && nu59.correspondances === 10,
+    `(59e) sur une saisie VIDE la décision ne rend pas le compte des correspondances (${nu59.visibles.length}/${nu59.correspondances}) : sans lui rien n'autorise l'aveu`);
+  const nu59b = retenues59(items59, "alpha_3", 4);
+  exiger(nu59b.visibles.length === 1 && nu59b.correspondances === 1,
+    `(59e) la décision compte des correspondances qu'elle n'a pas (${nu59b.visibles.length}/${nu59b.correspondances}) : l'aveu se poserait sur une liste ENTIÈRE`);
+  const nu59c = retenues59(items59, "alpha", 4);
+  exiger(nu59c.visibles.length === 4 && nu59c.correspondances === 10,
+    `(59e) une saisie qui filtre sans descendre sous la borne ne rend pas le compte AVANT la borne (${nu59c.visibles.length}/${nu59c.correspondances}) : c'est précisément le cas mesuré le 2026-08-30 — « source=src-1 » -> 100 correspondent, la borne en montre une partie`);
+  const larges59 = Array.from({ length: BORNE59 * 2 }, (_, i) => ({ label: `beta_${i}`, insert: `beta_${i}` }));
+  exiger(retenues59(null, "x", 4).correspondances === 0 && retenues59(undefined, "", 4).visibles.length === 0,
+    "(59e) la décision JETTE sur des entrées absentes : la complétion se désactive proprement partout ailleurs dans ce module, elle ne doit pas mourir ici");
+  exiger(retenues59(larges59, "", 0).visibles.length === BORNE59 && retenues59(larges59, "", NaN).visibles.length === BORNE59,
+    `(59e) une borne dégénérée ne se replie pas sur celle du module (${retenues59(larges59, "", 0).visibles.length} au lieu de ${BORNE59}) : un appelant fautif rendrait la liste ENTIÈRE dans une boîte où quatre lignes tiennent`);
+
+  console.log(`[liste-ecourtee-le-dit] le démon sert jusqu'à ${NB59} valeurs de source (LIMIT LU dans daemon/src/handlers/soql_meta.rs) et la console en affiche ${BORNE59} : la tête de la boîte porte alors les DEUX nombres et le mot d'écourtement ; une liste ENTIÈRE n'en porte AUCUN (témoin négatif) ; préciser la saisie ÉTEINT l'aveu, ce qui rend l'avertissement actionnable ; et l'aveu n'est ni une suggestion (l'accepter n'insère rien) ni un décalage de la sélection (${CIBLE59} flèches surlignent bien la ${CIBLE59 + 1}e suggestion, chose que le témoin 58 ne peut pas voir puisque sa liste n'est jamais écourtée). CE QUE CE TÉMOIN NE TIENT PAS : il juge le TEXTE d'un arbre, jamais l'encre peinte ni la POSITION visuelle de l'aveu ; il ne dit rien de son annonce par un lecteur d'écran à l'intérieur d'un « role=listbox » ; il ne tient pas la VALEUR de la borne — la plus grande liste FERMÉE du vocabulaire (« CIM_CATEGORIES ») vit dans le cœur, hors de ce dépôt, donc « la borne ne mord jamais sur un énuméré clos » est MESURÉ le 2026-08-30 et NON gardé ; et il ne voit pas la SECONDE troncature, en amont : le démon lui-même s'arrête à ${NB59} sources et ne dit pas s'il y en avait davantage.`);
 }
 
 // LE VERDICT PORTE SA PROPRE LIMITE (`P11.13-g`). Un vert qui ne dit pas ce sur quoi il ne s'engage pas

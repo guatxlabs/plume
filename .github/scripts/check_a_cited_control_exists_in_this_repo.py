@@ -31,8 +31,16 @@ posé à zéro est un cliquet qu'on peut tenir. Les 45 restants ne sont PAS oubl
 dans le rapport de la clé `P7.20-i`, et ils sont d'une autre nature (fichiers EXTERNES au dépôt —
 `eve.json` de Suricata, `nginx.service`, le dépôt frère `core/src/…` —, chemins d'exemple dans le
 dépôt de configuration du lecteur, artefacts engendrés, et deux renvois RÉELLEMENT PÉRIMÉS vers des
-modules Rust depuis découpés en répertoires : `daemon/src/server.rs` et
-`daemon/src/handlers/connectors.rs`).
+modules Rust depuis découpés en répertoires — l'un dans un document et un script de banc, l'autre
+dans une notice de connecteurs).
+
+CES DEUX-LÀ NE SONT PAS NOMMÉS ICI, ET C'EST DÉLIBÉRÉ. Les écrire entre accents graves les ferait
+compter comme des citations vivantes : ce fichier est hors de son propre corpus aujourd'hui, mais la
+règle vaut quand même — ON DÉCRIT LE SITE, ON NE RECOPIE PAS LE NOM. Le piège s'est rejoué trois fois
+dans ce dépôt le 2026-08-30, dont une fois sur l'édition de l'auteur de cette garde même. La clé qui les tient les décrit
+de la même façon, par leur SITE et leur devenir — un module de serveur et un module de connecteurs,
+tous deux découpés en répertoires depuis. Qui veut les retrouver joue cette garde sur un arbre
+antérieur : c'est elle qui les nomme, et elle seule, à l'instant où elle accuse.
 
 LA RÉSOLUTION N'EST PAS L'APPARTENANCE NUE, ET C'EST DÉLIBÉRÉ. La prose de ce dépôt cite un contrôle
 par son nom seul (`ship.sh`), relativement au fichier qui le cite (`../agent/CI.md`), ou par un

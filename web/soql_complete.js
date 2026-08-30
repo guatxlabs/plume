@@ -7,7 +7,7 @@
 //
 // UX IDE : dropdown contextuel piloté par la position du curseur, ↑/↓ pour naviguer, Tab/Entrée pour
 // accepter, Échap pour fermer, re-déclenchement à la frappe, matching fuzzy/préfixe sur le jeton courant.
-import { api, apiSend } from './core.js';
+import { api, apiSend, LANG } from './core.js';
 import { fetchSaved, saveCurrent, saveAsTemplate, editSaved, deleteSaved, loadIntoBar } from './savedqueries.js';
 
 let SCHEMA = null;      // { base_keywords, commands, stats_functions, eval_functions, operators, keywords, fields:{core,extended}, values:{category,action,severity,source}, docs:{commands,stats_functions,eval_functions,base_keywords,keywords,operators,fields} }
@@ -177,21 +177,69 @@ function analyze(text, pos) {
   }
 }
 
-// Matching fuzzy/préfixe : préfixe d'abord, puis sous-chaîne. Insensible à la casse. Borne l'affichage.
-function filterItems(items, partial) {
+// ── `P11.22-d` — LA LISTE DIT QUAND ELLE EST ÉCOURTÉE, ET NE DIT RIEN QUAND ELLE EST ENTIÈRE ──────
+// MESURÉ le 2026-08-30 sur les vingt contextes que `analyze` sait produire, chaque compte étant DÉRIVÉ
+// des consts du cœur et non supposé : dix-sept servent de 5 à 28 entrées et la borne n'y mord PAS. Elle
+// mord sur `source`, et sur lui seul — le démon sert jusqu'à 500 valeurs distinctes (`SELECT DISTINCT
+// source … LIMIT 500`, daemon/src/handlers/soql_meta.rs) quand la boîte n'en rendait que 40 : 460
+// disparaissaient sans un mot. Aucune erreur, aucun signe, aucun moyen de soupçonner qu'il manque
+// quelque chose — l'exploitant qui n'y trouve pas sa source en conclut qu'elle n'existe pas.
+//
+// UNE AFFIRMATION A ÉTÉ RÉFUTÉE AVANT D'ÉCRIRE CE CODE, ET ELLE DÉCIDAIT DU GESTE : « la troncature ne
+// mord que sur une saisie VIDE » est FAUX. La complétion filtre bel et bien sur ce qui est tapé (mesuré :
+// `source=src-12` -> 10 correspondances sur 500, liste ENTIÈRE), mais un préfixe partagé — et les noms de
+// source en ont tous un — laisse largement plus que la borne : `source=src-1` -> 100 correspondent,
+// 40 rendues, 60 PERDUES. La borne mord donc AUSSI sur une saisie qui filtre déjà.
+//
+// D'OÙ UN GESTE DOUBLE, DONT LA MOITIÉ PORTANTE EST LA PREMIÈRE.
+//  (1) DIRE. Le levier qui resserre EXISTE et il fonctionne ; il ne manquait que de savoir qu'il faut
+//      s'en servir. L'aveu le dit — et il ne le dit QUE quand la liste est écourtée : une liste qui
+//      avouerait à chaque frappe crierait, et ce qui crie ne se lit pas, donc n'avertit pas.
+//  (2) LA BORNE. Elle valait 40, et la plus grande liste FERMÉE que le démon serve en vaut exactement 40
+//      (`CIM_CATEGORIES` — mesuré le 2026-08-30 : 40 servies, 40 rendues, 0 perdue). Le plafond était
+//      POSÉ SUR le bord d'un énuméré clos : la 41e catégorie aurait été écourtée. Il est porté au DOUBLE
+//      de cette plus grande liste fermée, pour ne plus mordre que sur la seule population OUVERTE —
+//      `source` —, la seule que l'exploitant puisse effectivement resserrer en tapant.
+export const BORNE_DE_SUGGESTIONS_AFFICHEES = 80;
+
+// Bilingue PAR CONSTRUCTION — choix par `LANG`, la forme qu'emploie déjà `core.js`. Cette forme sort de
+// la population de la garde de lexique : les deux cliquets de ce module (trous 0, hors-regard 16) sont
+// IDENTIQUES des deux côtés du correctif, RELEVÉS le 2026-08-30 plutôt que supposés.
+const MOT_DE_LISTE_ECOURTEE = LANG === 'en'
+  ? 'list shortened — type more to reach the rest'
+  : 'liste écourtée — précisez la saisie pour atteindre le reste';
+const JOINT_DU_COMPTE_ECOURTE = LANG === 'en' ? ' of ' : ' sur ';
+
+// Le mot que porte l'aveu, LISIBLE par un témoin sans qu'il ait à le recopier : une garde qui recopie la
+// phrase qu'elle juge se dément elle-même le jour où le libellé change.
+export function motDeLaListeEcourtee() { return MOT_DE_LISTE_ECOURTEE; }
+
+// DÉCISION PURE, SANS DOM, POUR QU'UN TÉMOIN LA LISE AU LIEU DE LA DEVINER. Matching fuzzy/préfixe :
+// préfixe d'abord, puis sous-chaîne, insensible à la casse. Rend les suggestions à AFFICHER **et** le
+// nombre de celles qui CORRESPONDENT à la saisie : leur différence est la seule chose qui autorise
+// l'aveu, et quand elle est nulle la liste est ENTIÈRE et se tait.
+export function suggestionsRetenuesEtLeurCompte(items, partial, borne) {
+  const liste = Array.isArray(items) ? items : [];
+  const b = (Number.isFinite(borne) && borne > 0) ? borne : BORNE_DE_SUGGESTIONS_AFFICHEES;
   const q = (partial || '').toLowerCase();
-  if (!q) return items.slice(0, 40);
+  if (!q) return { visibles: liste.slice(0, b), correspondances: liste.length };
   const pre = [], sub = [];
-  for (const it of items) {
-    const l = it.label.toLowerCase();
+  for (const it of liste) {
+    const l = String((it && it.label) || '').toLowerCase();
     if (l.startsWith(q)) pre.push(it);
     else if (l.includes(q)) sub.push(it);
   }
-  return pre.concat(sub).slice(0, 40);
+  const retenues = pre.concat(sub);
+  return { visibles: retenues.slice(0, b), correspondances: retenues.length };
 }
 
 // ── Widget dropdown ────────────────────────────────────────────────────────────────────────────────
 let box = null, active = -1, curItems = [], curReplaceLen = 0, curAddSpace = false, ta = null;
+// `P11.22-d` — combien d'items CORRESPONDAIENT à la saisie AVANT la borne, et les lignes de SUGGESTION
+// dans l'ordre de `curItems`. Cette seconde liste n'est pas un confort : l'aveu est le PREMIER enfant de
+// la boîte, si bien que `box.children[active]` ne désigne plus la ligne active. Le lien index -> ligne
+// devient EXPLICITE au lieu de reposer sur une coïncidence de position.
+let curCorrespondances = 0, lignesRendues = [];
 
 function ensureBox() {
   if (box) return box;
@@ -203,7 +251,7 @@ function ensureBox() {
   return box;
 }
 
-function hide() { if (box) { box.hidden = true; box.innerHTML = ''; } active = -1; curItems = []; }
+function hide() { if (box) { box.hidden = true; box.innerHTML = ''; } active = -1; curItems = []; curCorrespondances = 0; lignesRendues = []; }
 
 function positionBox() {
   const r = ta.getBoundingClientRect();
@@ -213,7 +261,7 @@ function positionBox() {
 }
 
 // ── `P11.22-c` — LA SÉLECTION SUIT LE DÉFILEMENT, ET ELLE NE BOUGE QUE QUAND ELLE EN SORT ─────────
-// MESURÉ le 2026-08-30 : `filterItems` borne l'affichage à 40 suggestions ; la boîte `.soql-ac` plafonne
+// MESURÉ le 2026-08-30 : la borne d'affichage valait alors 40 suggestions ; la boîte `.soql-ac` plafonne
 // à 280 px, où tiennent 4 lignes portant leur doc sur deux lignes et 8 lignes sans doc. `render()`
 // RECONSTRUIT son contenu — `innerHTML = ''` fait disparaître la hauteur, et le document borne alors le
 // défilement à zéro — et il est rappelé par CHAQUE flèche, pas seulement par chaque frappe. Aucune mise
@@ -248,7 +296,7 @@ export function defilementQuiGardeLaSuggestionEnVue(vue, ligne) {
 // une ligne qui était déjà visible. Une seule écriture, et aucune quand rien ne doit bouger.
 function garderLaSuggestionActiveEnVue(defilementAvant) {
   if (!box || box.hidden) return;
-  const ligne = box.children[active];
+  const ligne = lignesRendues[active];   // `P11.22-d` — PAS `box.children[active]` : l'aveu occupe le rang 0
   const cible = ligne ? defilementQuiGardeLaSuggestionEnVue(
     { defilement: defilementAvant, hauteurVisible: box.clientHeight },
     { haut: ligne.offsetTop, hauteur: ligne.offsetHeight }) : null;
@@ -260,6 +308,25 @@ function render() {
   ensureBox();
   const defilementAvant = box.scrollTop;   // `P11.22-c` — relevé AVANT le vidage, qui le remet à zéro
   box.innerHTML = '';
+  lignesRendues = [];
+  // `P11.22-d` — L'AVEU EST EN TÊTE, ET C'EST MESURÉ, PAS UN GOÛT. La boîte s'ouvre défilée à zéro avec
+  // la première suggestion active : la tête est le seul endroit que l'exploitant regarde à coup sûr. En
+  // PIED d'une liste écourtée — jusqu'à quatre-vingts lignes dans une boîte où quatre à huit tiennent —
+  // il ne serait jamais lu, et un avertissement qu'on ne lit pas ne vaut pas mieux que le silence.
+  // ET IL EST CONDITIONNEL : rien du tout quand la liste est ENTIÈRE, sans quoi il crierait à chaque
+  // frappe et cesserait d'avertir. Il défile ensuite avec le contenu — c'est voulu : il a dit ce qu'il
+  // avait à dire au moment où la liste s'ouvre, et n'a pas à occuper une ligne sur quatre indéfiniment.
+  if (curCorrespondances > curItems.length) {
+    const aveu = document.createElement('div');
+    aveu.className = 'soql-ac-desc';
+    aveu.style.padding = '4px 9px';
+    aveu.textContent = curItems.length + JOINT_DU_COMPTE_ECOURTE + curCorrespondances + ' · ' + MOT_DE_LISTE_ECOURTEE;
+    aveu.title = aveu.textContent;
+    // Ce n'est PAS une suggestion : elle ne s'accepte pas, et son clic ne doit pas sortir l'éditeur du
+    // focus — sans quoi l'aveu FERMERAIT la liste qu'il commente.
+    aveu.addEventListener('mousedown', (e) => { e.preventDefault(); });
+    box.appendChild(aveu);
+  }
   curItems.forEach((it, i) => {
     const row = document.createElement('div');
     row.className = 'soql-ac-item' + (i === active ? ' active' : '');
@@ -274,6 +341,7 @@ function render() {
     if (desc) { const dd = document.createElement('div'); dd.className = 'soql-ac-desc'; dd.textContent = desc; row.appendChild(dd); row.title = desc; }
     row.addEventListener('mousedown', (e) => { e.preventDefault(); accept(i); });
     box.appendChild(row);
+    lignesRendues.push(row);   // `P11.22-d` — le rang dans `curItems`, pas le rang dans la boîte
   });
   positionBox();
   box.hidden = curItems.length === 0;
@@ -304,11 +372,12 @@ function trigger() {
   const ctx = analyze(ta.value, pos);
   if (!ctx || !ctx.items || !ctx.items.length) return hide();
   const partialForMatch = ctx._p != null ? ctx._p : ta.value.slice(pos - ctx.replaceLen, pos);
-  const items = filterItems(ctx.items, partialForMatch);
-  if (!items.length) return hide();
+  const { visibles, correspondances } = suggestionsRetenuesEtLeurCompte(ctx.items, partialForMatch, BORNE_DE_SUGGESTIONS_AFFICHEES);
+  if (!visibles.length) return hide();
   // Évite un dropdown à 1 item déjà tapé en entier (bruit).
-  if (items.length === 1 && items[0].label.toLowerCase() === (partialForMatch || '').toLowerCase()) return hide();
-  curItems = items; curReplaceLen = ctx.replaceLen; curAddSpace = !!ctx.addSpace; active = 0;
+  if (visibles.length === 1 && visibles[0].label.toLowerCase() === (partialForMatch || '').toLowerCase()) return hide();
+  curItems = visibles; curCorrespondances = correspondances;
+  curReplaceLen = ctx.replaceLen; curAddSpace = !!ctx.addSpace; active = 0;
   render();
 }
 

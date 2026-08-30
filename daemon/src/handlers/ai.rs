@@ -71,22 +71,81 @@ macro_rules! ai_gate {
 
 /// Politique de redaction ACTIVE : lue depuis `meta['ai_redaction_policy']`, sinon défaut v1 (core).
 /// Conservatrice : la version est estampillée dans chaque entrée de ledger `ai.call`.
-fn active_redaction_policy(conn: &rusqlite::Connection) -> guatx_core::ai::RedactionPolicy {
+///
+/// `P10.7-k` — ET D'OÙ ELLE VIENT, PARCE QUE LE DÉFAUT ET LA VÔTRE NE SE DISTINGUAIENT PAS. Le
+/// `if let Ok(..)` sur la lecture PUIS le `if let Ok(..)` sur le décodage retombaient l'un comme
+/// l'autre sur la politique par défaut, sans rien changer à ce qui était RENDU. `GET
+/// /api/ai/redaction-policy` servait donc « version 1, telle denylist » avec la même forme et le même
+/// aplomb dans TROIS situations distinctes : aucune politique stockée (le défaut EST la politique
+/// active — l'écran dit vrai), une politique stockée mais indécodable, et une lecture de `meta` en
+/// échec. Dans les deux dernières, l'administrateur lit le DÉFAUT en croyant lire LA SIENNE.
+///
+/// CE QUE ÇA COÛTE VRAIMENT, ET C'EST PLUS QU'UN ÉCRAN. `ai_redaction_policy_put` remplit `deny_substr`
+/// avec la liste par DÉFAUT quand le corps l'omet. Un aller-retour console — lire l'écran, changer la
+/// version, renvoyer — ÉCRASE donc la politique stockée par le défaut, sans que rien n'ait jamais dit
+/// que l'écran ne la montrait pas. Et le repli n'est conservateur que d'un côté : `pii_allow` par
+/// défaut est VIDE (donc plus de rédaction, jamais moins), mais un `deny_substr` que l'administrateur
+/// avait ÉLARGI (« email », « patient ») revient à la liste du cœur, et ces noms de champ rentrent de
+/// nouveau dans le schéma envoyé au modèle.
+///
+/// LE REMÈDE NE CHANGE NI LA POLITIQUE RENDUE NI SON APPLICATION : il rend, à côté d'elle, la `Mesure`
+/// de sa PROVENANCE — `Lue(version)` quand ce qui est servi est bien ce qui est stocké (ou le défaut
+/// assumé faute de ligne), `Illisible` quand une politique existe et n'a pas pu être lue ou comprise.
+/// Le chemin d'application garde son repli conservateur ; il n'est plus MUET.
+pub(crate) fn active_redaction_policy(
+    conn: &rusqlite::Connection,
+) -> (guatx_core::ai::RedactionPolicy, crate::mesure_environnement::Mesure<i64>) {
+    use crate::mesure_environnement::{Mesure, CAUSE_FORME_INCONNUE};
     let mut p = guatx_core::ai::default_redaction_policy();
-    if let Ok(raw) = conn.query_row("SELECT value FROM meta WHERE key='ai_redaction_policy'", [], |r| r.get::<_, String>(0)) {
-        if let Ok(v) = serde_json::from_str::<Value>(&raw) {
-            if let Some(ver) = v.get("version").and_then(|x| x.as_i64()) {
-                p.version = ver;
-            }
-            if let Some(extra) = v.get("deny_substr").and_then(|x| x.as_array()) {
-                p.deny_substr = extra.iter().filter_map(|x| x.as_str()).map(|s| s.to_ascii_lowercase()).collect();
-            }
-            if let Some(allow) = v.get("pii_allow").and_then(|x| x.as_array()) {
-                p.pii_allow = allow.iter().filter_map(|x| x.as_str()).map(|s| s.to_string()).collect();
-            }
+    let raw = match conn.query_row("SELECT value FROM meta WHERE key='ai_redaction_policy'", [], |r| r.get::<_, String>(0)) {
+        Ok(raw) => raw,
+        // AUCUNE LIGNE N'EST UN VRAI FAIT : rien n'est stocké, le défaut EST la politique active, et
+        // l'écran qui le montre dit la vérité. C'est le seul des trois cas qui méritait le silence.
+        Err(rusqlite::Error::QueryReturnedNoRows) => {
+            let v = p.version;
+            return (p, Mesure::Lue(v));
         }
+        Err(e) => {
+            let detail = format!(
+                "meta['ai_redaction_policy'] : la politique stockée n'a pas pu être lue ({e}) — le défaut \
+                 v{} est appliqué ET affiché ; ce qui est à l'écran n'est donc PAS ce qui est stocké, et \
+                 le renvoyer par PUT écraserait la politique en place",
+                p.version
+            );
+            return (p, Mesure::Illisible { cause: crate::bilan_de_tick::cause_sql(&e), detail });
+        }
+    };
+    let v = match serde_json::from_str::<Value>(&raw) {
+        Ok(v) => v,
+        Err(e) => {
+            let detail = format!(
+                "meta['ai_redaction_policy'] : une politique EST stockée mais ne se décode pas ({e}) — le \
+                 défaut v{} est appliqué ET affiché ; ce qui est à l'écran n'est donc PAS ce qui est \
+                 stocké, et le renvoyer par PUT écraserait la politique en place",
+                p.version
+            );
+            return (p, Mesure::Illisible { cause: CAUSE_FORME_INCONNUE, detail });
+        }
+    };
+    // La ligne est là et se décode : la FUSION est celle d'avant, à la lettre (champ absent -> valeur du
+    // cœur conservée). Seule la VERSION décide du verdict, parce qu'elle est ce que le ledger estampe.
+    let Some(ver) = v.get("version").and_then(|x| x.as_i64()) else {
+        let detail = format!(
+            "meta['ai_redaction_policy'] : la politique stockée se décode mais ne porte aucune version \
+             entière — le défaut v{} est affiché à sa place ; une politique sans version ne peut pas être \
+             estampée au ledger `ai.call`, et l'écran ne montre pas ce qui est stocké",
+            p.version
+        );
+        return (p, Mesure::Illisible { cause: CAUSE_FORME_INCONNUE, detail });
+    };
+    p.version = ver;
+    if let Some(extra) = v.get("deny_substr").and_then(|x| x.as_array()) {
+        p.deny_substr = extra.iter().filter_map(|x| x.as_str()).map(|s| s.to_ascii_lowercase()).collect();
     }
-    p
+    if let Some(allow) = v.get("pii_allow").and_then(|x| x.as_array()) {
+        p.pii_allow = allow.iter().filter_map(|x| x.as_str()).map(|s| s.to_string()).collect();
+    }
+    (p, Mesure::Lue(ver))
 }
 
 pub(crate) async fn ai_redaction_policy_get(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Response {
@@ -95,8 +154,17 @@ pub(crate) async fn ai_redaction_policy_get(State(st): State<AppState>, Extensio
         return forbidden("réservé admin");
     }
     let conn = st.db.lock();
-    let p = active_redaction_policy(&conn);
-    Json(json!({ "version": p.version, "deny_substr": p.deny_substr, "pii_allow": p.pii_allow })).into_response()
+    let (p, provenance) = active_redaction_policy(&conn);
+    let mut sortie = json!({ "version": p.version, "deny_substr": p.deny_substr, "pii_allow": p.pii_allow });
+    // `P10.7-k` — L'ÉCRAN DIT D'OÙ VIENNENT CES TROIS CHAMPS. Sous la convention de `S32` : sur le
+    // chemin nominal, `stockee_verdict` vaut `lu` et `stockee_cause` vaut `aucune` — aucun détail, rien
+    // d'alarmant, la réponse porte la politique réellement stockée. Sur une lecture ou un décodage en
+    // échec, le verdict bascule et `stockee_detail` nomme ce qui est servi à la place, parce qu'un
+    // administrateur qui renvoie cet écran par PUT écraserait sa propre politique.
+    if let Some(o) = sortie.as_object_mut() {
+        provenance.poser_verdict_dans(o, "stockee");
+    }
+    Json(sortie).into_response()
 }
 
 pub(crate) async fn ai_redaction_policy_put(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
@@ -480,7 +548,11 @@ pub(crate) async fn ai_nl2soql(State(st): State<AppState>, Extension(au): Extens
     // Schéma RÉDIGÉ = champs CIM cœur + champs chauds, filtrés par la politique active.
     let policy = {
         let conn = st.db.lock();
-        active_redaction_policy(&conn)
+        // Le chemin d'APPLICATION garde son repli conservateur : il applique la politique rendue, quelle
+        // que soit sa provenance. C'est délibéré — refuser de rédiger parce que la politique stockée est
+        // illisible reviendrait à ne rien rédiger du tout, ou à faire échouer la requête de l'analyste.
+        // L'aveu, lui, est servi par `ai_redaction_policy_get`, là où un humain décide.
+        active_redaction_policy(&conn).0
     };
     let mut raw_fields: Vec<String> = guatx_core::cim::CIM_CORE_FIELDS.iter().map(|s| s.to_string()).collect();
     raw_fields.extend(guatx_core::soql::HOT_FIELDS.iter().map(|s| s.to_string()));

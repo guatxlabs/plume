@@ -66,7 +66,12 @@ handler prend des extracteurs et ne s'écrit dans aucune expression de défaut.
 
 LA POPULATION EST DÉCOUVERTE, JAMAIS ÉNUMÉRÉE
 ----------------------------------------------
-Tout appel, dans `daemon/src/handlers/` (texte DÉPOUILLÉ DE SES COMMENTAIRES), à l'une des trois voies.
+Tout appel, dans `daemon/src/handlers/` (texte DÉPOUILLÉ DE SES COMMENTAIRES), à l'une des QUATRE voies —
+les trois de lecture ci-dessus, plus la voie d'ÉCRITURE `with_write` entrée le 2026-08-30 (`P10.7-l`),
+qui n'est pas une voie de lecture mais porte la MÊME fermeture en troisième position, donc la MÊME
+région. Les jambes A et Q n'y ont rien à juger (pas de valeur par défaut — le deuxième argument est
+`&au` —, pas de `Result`), et la jambe B n'y accuse que si un CORPS est servi ; c'est mesuré, pas
+commode, et le détail est au cliquet B.
 Une route neuve est couverte sans être nommée ici. MAIS UNE VOIE OMISE, ELLE, NE L'EST PAS : `read_with`
 a manqué à cette liste jusqu'au 2026-08-30, et ses douze appels sur cinq fichiers n'étaient jugés par
 AUCUNE jambe. C'est la leçon la plus chère de cette garde — une jambe étendue sur une population amputée
@@ -92,9 +97,23 @@ pas par cette voie, et l'extension prototypée y multiplie UNE lecture avalée p
 forme dérivable existe (`with_write`, même signature à trois arguments), elle est mesurée, et elle n'est
 pas livrée tant que ses dix accusations n'ont pas été classées une par une.
 
+CE QUE `P10.7-l` A FAIT LE 2026-08-30 : IL A CLASSÉ LES DIX, PUIS N'EN A GARDÉ QUE CINQ. C'est le cœur
+du lot, plus que l'élargissement lui-même. Les dix accusations que `with_write` apportait ne sont PAS
+dix défauts : CINQ servent un corps (`legal_holds_list` sert `{"ok":true,"holds":[]}` = « aucune
+conservation légale », `mode_get` sert `{"mode":"observe"}` = « les playbooks ne sont pas armés »,
+`ledger_sinks_list`, `case_get_json` pour sa timeline tronquée, `setting_days` pour la rétention dite
+« effective ») ; TROIS sont FAIL-CLOSED — une lecture ratée y rend `false`, le gestionnaire rend 404, et
+l'absence y est donc un REFUS, ce que cette garde RÉCLAME déjà ; DEUX ne servent aucun corps (un
+recompute SLA sauté, un maillon de journal d'intégrité au `prev_hash` vide), et ce sont de vrais défauts
+qu'AUCUNE jambe de ce fichier ne sait formuler, faute d'un corps où poser `error`. Le tri est DÉRIVABLE,
+pas énuméré : sur la voie d'écriture, la jambe B n'ouvre la région que si le gestionnaire englobant rend
+une réponse PORTEUSE DE CORPS (`RETOUR_REPONSE`) — le critère de la jambe A, déjà écrit ici — et il
+sépare EXACTEMENT les cinq des cinq. Un cliquet posé AVANT ce tri aurait rejoué l'accusation à tort que
+ce dépôt a refusée deux fois le même jour, et il aurait posé cinq rouges qu'aucun geste ne referme.
+
 L'INSTRUMENT SE VALIDE AVANT DE RENDRE UN VERDICT, DANS LES DEUX SENS
 ----------------------------------------------------------------------
-QUINZE mutants fabriqués, joués à chaque exécution : un corps par défaut nu DOIT accuser, le même avec un
+DIX-NEUF mutants fabriqués, joués à chaque exécution : un corps par défaut nu DOIT accuser, le même avec un
 aveu NE DOIT PAS ; une lecture de ligne avalée DOIT accuser, la même sous une branche qui avoue NE DOIT
 PAS ; une exécution de requête dont la cause est jetée DOIT accuser, son branchement NE DOIT PAS ; et le
 commentaire qui NOMME la fonction ne doit JAMAIS être compté. Le septième est le cœur : un défaut qui
@@ -154,8 +173,22 @@ ETIQUETTE = "lecture-non-faite"
 VOIE_GARDEE = "read_with_watchdog"
 VOIE_SIMPLE = "read_with"
 VOIES_LECTURE = (VOIE_GARDEE, VOIE_SIMPLE)
+# LA VOIE D'ÉCRITURE, ENTRÉE LE 2026-08-30 (`P10.7-l`) — ET ELLE N'EST PAS UNE VOIE DE LECTURE.
+# `with_write(st, au, f)` (`daemon/src/query_exec.rs:341`) prend le mutex écrivain du tenant et passe
+# `&Connection` à la fermeture : MÊME signature à trois arguments, fermeture en TROISIÈME position,
+# donc `corps_de_la_closure` s'y applique MOT POUR MOT. Elle n'a NI valeur par défaut (son deuxième
+# argument est `&au`, pas un corps de repli) NI `Result` : les jambes A et Q n'y ont RIEN à juger, et
+# un témoin fabriqué le prouve dans les deux sens (`temoins 16` et `20`). C'est `P10.7-j` qui l'avait
+# DÉSIGNÉE en refusant `req_conn!` — non pour la taille de celle-ci, mais pour son GRAIN : la région
+# de `req_conn!` va jusqu'à la fin du gestionnaire, si bien qu'UNE lecture avalée y comptait HUIT
+# accusations contre huit gestionnaires. Ici la région est la fermeture, exactement comme pour
+# `read_with*`.
+VOIE_ECRITURE = "with_write"
+# Les voies dont le TROISIÈME argument est une région de fermeture. La jambe B les juge toutes ; les
+# jambes A et Q n'en jugent qu'une (`VOIE_GARDEE`).
+VOIES_FERMETURE = VOIES_LECTURE + (VOIE_ECRITURE,)
 VOIES_REQUETE = ("run_query_ex", "run_query")
-APPEL = re.compile(r"\b(read_with_watchdog|read_with|run_query_ex|run_query)\s*\(")
+APPEL = re.compile(r"\b(read_with_watchdog|read_with|with_write|run_query_ex|run_query)\s*\(")
 
 # Une fonction dont la sortie EST une réponse : ce qu'elle calcule s'écoule vers son corps servi.
 RETOUR_REPONSE = re.compile(r"->\s*(?:Response\b|Json\s*<|impl\s+IntoResponse\b|\(\s*StatusCode\b)")
@@ -176,15 +209,17 @@ STATUT_ECHEC = re.compile(r"\bStatusCode::|\+=\s*1\b|\breturn\s+Err\s*\(|\bErr\s
 # valeur-là EST un statut d'échec, pas une valeur rassurante.
 MARQUE_ECHEC = re.compile(r"\bok\s*:\s*false\b")
 
-# --- PLANCHERS DE NON-DÉGÉNÉRESCENCE (relevé du 2026-08-30, APRÈS l'entrée de `read_with`) --------
-# Arbre du jour : 56 sites (33 lectures + 23 requêtes) sur 23 fichiers de `daemon/src/handlers/`
-# — c'était 44 sur 20 tant que `read_with` n'était pas de la famille. Les planchers gardent la
-# proportion que l'auteur avait choisie (~68 % des sites, ~60 % des fichiers) : ils constatent une
-# LECTURE cassée, ils ne réclament pas un volume de code.
+# --- PLANCHERS DE NON-DÉGÉNÉRESCENCE (relevé du 2026-08-30, APRÈS l'entrée de `with_write`) ------
+# Arbre du jour : 75 sites (33 lectures + 19 écritures + 23 requêtes) sur 26 fichiers de
+# `daemon/src/handlers/` — c'était 56 sur 23 tant que `with_write` n'était pas de la famille, et 44
+# sur 20 avant `read_with`. Les planchers gardent la proportion que l'auteur avait choisie
+# (68 % des sites : 0,68 × 75 = 51 ; ~60 % des fichiers : 0,60 × 26 = 15,6, arrondi VERS LE BAS à 15
+# — un plancher trop haut refuserait de conclure sur un arbre sain, ce qui est le défaut inverse) :
+# ils constatent une LECTURE cassée, ils ne réclament pas un volume de code.
 # SOUS ces planchers, c'est la LECTURE qui est cassée, pas le démon qui aurait cessé d'appeler : la
 # garde refuse de conclure (code 2) au lieu de rendre vert en étant aveugle.
-PLANCHER_SITES = 38
-PLANCHER_FICHIERS = 14
+PLANCHER_SITES = 51
+PLANCHER_FICHIERS = 15
 
 # --- CLIQUETS (relevé du 2026-08-30) — ILS NE MONTENT JAMAIS -------------------------------------
 # Chacun vaut le compte d'accusations DU JOUR. Descendre est une NOTE imprimée, pas un échec ; le
@@ -215,7 +250,7 @@ PLAFOND_DEFAUT_NU = 16          # jambe A : défauts servis sans aveu — INCHAN
 # laquelle le site cité en preuve de `P10.7-g` — `handlers/dashboards.rs` — n'apparaissait nulle part :
 # la forme y était, sous une voie que la garde ne nommait pas. Une jambe étendue sur une population
 # amputée reste aveugle, et c'est la leçon que ce cliquet porte désormais.
-PLAFOND_CLOSURE_SOURDE = 23     # jambe B : closures qui avalent une lecture de lignes sans aveu
+PLAFOND_CLOSURE_SOURDE = 28     # jambe B : closures qui avalent une lecture de lignes sans aveu
 #
 # ┌─ LA HAUSSE DE 17 À 22 N'EST PAS UNE RÉGRESSION : C'EST UN ÉLARGISSEMENT DU REGARD. ────────────┐
 # │ AUCUNE ligne de `daemon/` n'a changé entre les deux relevés du 2026-08-30 — l'arbre est celui   │
@@ -292,6 +327,90 @@ PLAFOND_CLOSURE_SOURDE = 23     # jambe B : closures qui avalent une lecture de 
 #      Le plus court est de lui faire rendre un `Option`/`Result` et de poser la coupe dans le corps de
 #      `compliance_posture`, qui construit DÉJÀ une réponse et sait déjà y écrire une cause. -> 22.
 # Il reste LOCAL, jouable aujourd'hui, et il ne demande pas de toucher à cette garde.
+#
+# ┌─ LA HAUSSE DE 23 À 28 N'EST PAS UNE RÉGRESSION : C'EST UN ÉLARGISSEMENT DU REGARD. ────────────┐
+# │ AUCUNE ligne de `daemon/` n'a changé (`P10.7-l`, 2026-08-30 ; mesures prises sur un point FIXE,│
+# │ `git worktree --detach HEAD` = e7c16e7, parce qu'un autre lot écrivait dans `threat_intel.rs`, │
+# │ `admin_ui.rs` et `ai.rs` pendant ce relevé). C'est la garde qui s'est mise à juger la RÉGION    │
+# │ d'une QUATRIÈME voie, celle de l'ÉCRITURE (`with_write`). Les VINGT-TROIS accusations anciennes │
+# │ sont TOUTES encore là — vérifié par différence des deux journaux, dans les DEUX sens, sur la    │
+# │ ligne ENTIÈRE (site ET cause) : zéro accusation disparue, zéro cause imprimée perdue, et les    │
+# │ jambes A (16) et Q (3) sont inchangées au site près. Les CINQ neuves sont nommées ci-dessous.   │
+# └────────────────────────────────────────────────────────────────────────────────────────────────┘
+# CE QUE LE COMPTE NE DISAIT PAS, ET C'EST LE CŒUR DE CE LOT. `P10.7-j` avait mesuré `with_write` —
+# 19 sites sur 6 fichiers, 10 accusés par la jambe B — et REFUSÉ de la livrer tant que ces dix
+# n'étaient pas CLASSÉES une par une, parce qu'un compte ne dit pas lesquelles sont des défauts et
+# que poser un cliquet avant le tri rejouerait l'accusation à tort refusée deux fois le même jour.
+# Les dix ont été relues sur l'arbre le 2026-08-30. ELLES NE SONT PAS TOUTES DES DÉFAUTS : CINQ
+# servent un CORPS, TROIS sont FAIL-CLOSED (l'absence y est un REFUS, exactement ce que la garde
+# réclame) et DEUX ne servent aucun corps du tout. La garde n'en accuse donc que CINQ, et le tri est
+# DÉRIVABLE, pas énuméré : sur la voie d'écriture, la jambe B ne juge la région que si la fonction
+# englobante rend une RÉPONSE PORTEUSE DE CORPS (`RETOUR_REPONSE` — `Response`, `Json<…>`,
+# `impl IntoResponse`), jamais un `-> StatusCode` nu. Le critère existait DÉJÀ dans ce fichier (c'est
+# celui de la jambe A) et il sépare EXACTEMENT les cinq des cinq — vérifié site par site.
+#
+# ET UNE PRÉCISION SUR UN COMPTE ÉCRIT HIER. `P10.7-j` annonçait « ZÉRO chevauchement avec une région
+# déjà jugée » : c'est vrai de ce qui compte — aucun site `with_write` ne vit à l'intérieur d'une
+# fermeture `read_with*` (vérifié sur les indices de texte), et AUCUNE région FAUTIVE n'est partagée,
+# donc aucune accusation n'est comptée deux fois. Mais c'est faux au pied de la lettre : TROIS noms de
+# région sont ouverts des DEUX côtés (`get`, `is_empty`, `now` — des auxiliaires résolus par nom, qui
+# n'avalent aucune lecture et n'accusent donc rien). Le compte juste est : zéro chevauchement FAUTIF,
+# trois régions innocentes communes (mesuré le 2026-08-30 sur e7c16e7).
+#
+# LES CINQ ACCUSÉES — elles servent un CORPS, et le corps est rassurant :
+#   · `governance.rs:30` -> `legal_holds_list` : `{"ok": true, "holds": []}` = « aucune conservation
+#     légale en cours ». LA PLUS GRAVE des cinq : c'est le corps sur lequel un admin décide qu'une
+#     purge est permise, et il affirme `ok: true` à côté ;
+#   · `engagement.rs:852` -> `mode_get` : `unwrap_or_else(|_| "observe")` sert `{"mode": "observe"}`
+#     — la console lit « les playbooks ne sont PAS armés » alors que le mode stocké peut être
+#     `active` (exécution réelle ban/kill/stop). La valeur de repli est la plus rassurante des deux ;
+#   · `governance.rs:186` -> `ledger_sinks_list` : `{"ok": true, "sinks": []}` = « aucun export du
+#     journal d'intégrité n'est configuré » ;
+#   · `cases.rs:489` -> `case_get_json` : le site est accusé pour SA lecture de TIMELINE
+#     (`query_map(..).ok()?.flatten()`), qui sert une timeline TRONQUÉE sous un 200. ATTENTION à la
+#     phrase imprimée : elle compte TROIS lectures, mais les deux autres (`query_row(..).ok()?` et
+#     `prepare(..).ok()?`) rendent `None`, donc un 404 — elles sont FAIL-CLOSED. Le compte de
+#     lectures d'une phrase n'est pas un compte de défauts, et c'est vrai partout dans ce journal ;
+#   · `admin_ui.rs:20` -> `setting_days` : les valeurs de rétention servies comme « EFFECTIVES
+#     courantes » retombent sur l'env/la conf quand la table `setting` n'a pas été lue. LA MOINS
+#     GRAVE — le repli est le résolveur DOCUMENTÉ — mais `.ok()` confond « aucune ligne » (fait
+#     légitime) et « pas lu » (fait inventé), et c'est cette confusion-là que la garde nomme.
+#
+# LES TROIS ACQUITTÉES PARCE QUE FAIL-CLOSED — l'absence y est un REFUS, pas une valeur rassurante :
+#   · `caseops.rs:598` -> `case_merge` : les deux `query_row(..).ok()` alimentent
+#     `let (Some(..), Some(..)) = .. else { return false }`, et `case_merge_handler` rend alors
+#     `StatusCode::NOT_FOUND`. Une lecture ratée REFUSE la fusion ; elle n'en invente pas une ;
+#   · `caseops.rs:605` -> `case_unmerge` : même forme, même 404 ;
+#   · `cases.rs:522` -> `case_apply_update` : même forme, même 404 (le patch n'est pas appliqué).
+#   Les accuser reviendrait à réclamer un aveu là où le refus EST déjà écrit — et sur une route qui
+#   rend un `StatusCode` nu, il n'existe aucun corps où poser la clé `error` : le rouge serait
+#   INFERMABLE. C'est le rouge que ce dépôt refuse de poser.
+#
+# LES DEUX ACQUITTÉES PARCE QU'AUCUN CORPS N'EST SERVI — et ce sont de VRAIS défauts, nommés ici et
+# NON corrigés par ce lot, comme `ioc_cache_reload` (`threat_intel.rs`) avant elles :
+#   · `caseops.rs:674` -> `sla_policy_upsert` : trois régions fautives. La liste d'ids à recalculer
+#     (`prepare(..).and_then(..).unwrap_or_default()`) rend un vecteur VIDE quand la lecture échoue :
+#     le recompute SLA est silencieusement sauté et la route rend 204 « fait ». `sla_apply_policy`
+#     rend `()` sur une lecture ratée (échéance non reposée). `ledger_append` lit le hash précédent
+#     en `unwrap_or_default()` : une lecture ratée écrit un maillon dont le `prev_hash` est VIDE,
+#     donc une CHAÎNE D'INTÉGRITÉ rompue sans que rien ne le dise ;
+#   · `caseops.rs:698` -> `sla_policy_delete` : le même `ledger_append`.
+#   Aucune de ces trois régions n'a de corps servi où poser `error` ; le geste est ailleurs (rendre
+#   un `Result`, ou ne pas écrire un maillon dont le précédent n'a pas été lu). La jambe B ne sait
+#   pas le formuler, et un cliquet qui les compterait serait un rouge qu'aucun aveu ne referme.
+#
+# PLAN DE DESCENTE — un geste LOCAL par accusation, jouable aujourd'hui, aucun ne touche cette garde,
+# et les cinq closures construisent DÉJÀ un objet JSON : la coupe s'y écrit sans changer de type.
+#   7. `legal_holds_list` : sur `Err(_)` de `prepare` / `unwrap_or_default` du parcours, poser
+#      `"error": "liste des conservations NON LUE"` (et retirer `ok: true`). -> 27.
+#   8. `mode_get` : distinguer `Err(QueryReturnedNoRows)` (aucun mode posé -> `observe` est un FAIT)
+#      de `Err(_)` (poser `error`, ne pas affirmer `observe`). -> 26.
+#   9. `ledger_sinks_list` : même geste que 7 sur `sinks`. -> 25.
+#  10. `case_get_json` : solder le parcours de la timeline (`collect::<Result<Vec<_>>>()`) ou poser
+#      `"error": "timeline possiblement TRONQUÉE"` dans le `json!` qu'il construit déjà. -> 24.
+#  11. `setting_days` : distinguer `QueryReturnedNoRows` (le résolveur descend d'un cran : c'est un
+#      fait) d'une vraie erreur de lecture, et laisser `retention_settings_get` poser la coupe dans
+#      l'objet qu'il construit. -> 23.
 PLAFOND_CAUSE_JETEE = 3         # jambe Q : bras d'erreur jetés
 
 
@@ -878,6 +997,35 @@ def corps_de_la_closure(code, tranches, fin, defs):
 # ================================================================================================
 # L'INSTRUMENT SE VALIDE — SEPT MUTANTS, DANS LES DEUX SENS
 # ================================================================================================
+# --- LES SOURCES FABRIQUÉES DE LA VOIE D'ÉCRITURE (`P10.7-l`) ------------------------------------
+# Elles sont FABRIQUÉES ICI, jamais prises sur l'arbre : adosser un témoin à `legal_holds_list` ou à
+# `case_merge` en ferait une RANÇON — il rougirait le jour où le site est réparé, et aucun geste ne
+# pourrait le refermer. Les quatre partagent MOT POUR MOT la même lecture ; ce qui change est le TYPE
+# DE RETOUR du gestionnaire (16 contre 17), la présence de l'aveu (16 contre 18), puis l'avalement
+# lui-même (16 contre 19).
+ECRITURE_SOURDE_CORPS = (
+    'pub(crate) async fn w16(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {\n'
+    '    with_write(&st, &au, |conn| {\n'
+    '        let n: i64 = conn.query_row("SELECT COUNT(*) FROM t", [], |r| r.get(0)).unwrap_or(0);\n'
+    '        Json(json!({ "ok": true, "n": n }))\n    })\n}\n')
+ECRITURE_SOURDE_STATUT = (
+    'pub(crate) async fn w17(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> StatusCode {\n'
+    '    with_write(&st, &au, |conn| {\n'
+    '        let n: i64 = conn.query_row("SELECT COUNT(*) FROM t", [], |r| r.get(0)).unwrap_or(0);\n'
+    '        if n > 0 { StatusCode::NO_CONTENT } else { StatusCode::NOT_FOUND }\n    })\n}\n')
+ECRITURE_QUI_AVOUE = (
+    'pub(crate) async fn w18(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {\n'
+    '    with_write(&st, &au, |conn| {\n'
+    '        let n: i64 = conn.query_row("SELECT COUNT(*) FROM t", [], |r| r.get(0)).unwrap_or(0);\n'
+    '        Json(json!({ "n": n, "error": "compte NON ÉTABLI : la lecture n a pas abouti" }))\n    })\n}\n')
+# La fermeture PROPRE : elle prouve que la jambe A ne lit JAMAIS le deuxième argument de `with_write`
+# (`&au`, qui n'avoue évidemment pas), et que la seule présence d'un site d'écriture n'accuse rien.
+ECRITURE_PROPRE = (
+    'pub(crate) async fn w19(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Response {\n'
+    '    with_write(&st, &au, |conn| {\n'
+    '        let n: i64 = conn.query_row("SELECT COUNT(*) FROM t", [], |r| r.get(0))?;\n'
+    '        Json(json!({ "n": n })).into_response()\n    })\n}\n')
+
 MUTANTS = [
     # (nom, source Rust, jambe attendue en accusation ou None)
     ("1. un corps par défaut NU",
@@ -997,12 +1145,28 @@ MUTANTS = [
      '        // }\n'
      '        let n: i64 = conn.query_row("SELECT COUNT(*) FROM t", [], |r| r.get(0))?;\n'
      '        json!({ "n": n })\n    });\n    Json(v)\n}\n', None),
+    # --- LES TROIS SUIVANTS TIENNENT LA VOIE D'ÉCRITURE (`P10.7-l`). Le 16 et le 17 sont une PAIRE
+    # DISCRIMINANTE : la fermeture est le MÊME texte, seul le TYPE DE RETOUR du gestionnaire change, et
+    # le verdict doit s'inverser. Sans le 17, la garde accuserait les trois sites FAIL-CLOSED de l'arbre
+    # (une lecture ratée y rend `false` -> 404) et les deux qui ne servent AUCUN corps — cinq rouges
+    # qu'aucun aveu ne pourrait refermer, puisqu'un `-> StatusCode` n'a pas de corps où poser `error`.
+    ("16. LA VOIE D'ÉCRITURE : une fermeture qui AVALE, sous un gestionnaire qui sert un CORPS",
+     ECRITURE_SOURDE_CORPS, "B"),
+    ("17. LA MÊME fermeture, sous un gestionnaire qui rend un `StatusCode` NU : aucun corps servi",
+     ECRITURE_SOURDE_STATUT, None),
+    ("18. LA MÊME fermeture servant un corps, mais qui AVOUE", ECRITURE_QUI_AVOUE, None),
+    ("19. UNE ÉCRITURE dont la fermeture ne cache RIEN : le deuxième argument est `&au`, pas un défaut",
+     ECRITURE_PROPRE, None),
 ]
 
+# La dernière ligne est du COMMENTAIRE Rust, et l'arbre en porte une du même genre
+# (`daemon/src/handlers/admin_ui.rs`) : mesuré le 2026-08-30, les handlers portent 20 occurrences du
+# mot `with_write` pour 19 sites — la vingtième est cette mention-là.
 COMMENTAIRE_QUI_NOMME = (
     "// read_with_watchdog = pool read-only + interruption anti-scan-trop-long\n"
     "/* run_query(&db, &sql) y vivait avant P10.7-e */\n"
     "//! la closure passe par read_with_watchdog(&db, json!({}), |conn| lit(conn))\n"
+    "// la mutation passe par with_write(&st, &au, |conn| ecrit(conn)) depuis le refactor T1\n"
 )
 
 
@@ -1038,7 +1202,7 @@ def analyser(chemin, texte, defs, constructeurs, aveux):
             continue
         nom_fn, sig, pdeb, pfin = englobantes[0]
         sites.append((ou, voie, nom_fn))
-        if voie in VOIES_LECTURE:
+        if voie in VOIES_FERMETURE:
             if len(tranches) < 3:
                 aveux.append(f"{ou} — `{voie}` lu avec {len(tranches)} argument(s) au lieu de 3")
                 continue
@@ -1058,6 +1222,11 @@ def analyser(chemin, texte, defs, constructeurs, aveux):
             # c'est un lot à part. La jambe B, elle, n'a pas ce problème : elle juge la CLOSURE, qui
             # est le même code sur les deux voies — les cinq accusations qu'elle gagne sur `read_with`
             # ont été relues une à une le 2026-08-30, et les cinq sont vraies.
+            # SUR LA VOIE D'ÉCRITURE, LE DEUXIÈME ARGUMENT N'EST PAS UN DÉFAUT — c'est `&au`, l'identité
+            # de l'appelant. La jambe A ne doit JAMAIS le lire : elle accuserait « le défaut `&au` n'avoue
+            # pas », une phrase qui ne veut rien dire. Le `voie == VOIE_GARDEE` ci-dessous le garantit
+            # déjà ; le témoin 20 le tient dans le temps, parce qu'une extension future de la jambe A est
+            # exactement ce qui rouvrirait ce trou.
             defaut = code[tranches[1][0]:tranches[1][1]].strip()
             if voie == VOIE_GARDEE and RETOUR_REPONSE.search(sig) and not porte_un_aveu(defaut, constructeurs):
                 accusations.append(("A", ou, nom_fn,
@@ -1071,6 +1240,22 @@ def analyser(chemin, texte, defs, constructeurs, aveux):
             # forme sans branche dans la closure masquait le `ok().flatten()` de `pipeline_is_fresh`,
             # nommé la veille. Le site restait accusé, donc aucun code de sortie ne l'aurait dit —
             # c'est exactement la perte silencieuse que ce dépôt refuse.
+            #
+            # SUR LA VOIE D'ÉCRITURE, ET LÀ SEULEMENT, LA JAMBE B EXIGE UN CORPS SERVI. La règle de ce
+            # fichier est qu'une lecture non faite ne soit pas servie comme un FAIT ; encore faut-il
+            # qu'un fait soit SERVI. Sur `read_with*`, la valeur de la fermeture EST le corps rendu (le
+            # deuxième argument est lui-même un corps de repli) : la question ne se pose pas. Sur
+            # `with_write`, elle se pose, et la mesure du 2026-08-30 y répond : des DIX sites accusés
+            # sans ce contrôle, CINQ servent un corps, TROIS sont FAIL-CLOSED (une lecture ratée y rend
+            # `false` -> `StatusCode::NOT_FOUND` : l'absence est un REFUS, ce que la garde réclame
+            # DÉJÀ) et DEUX ne servent aucun corps (un recompute sauté, un maillon de journal au
+            # `prev_hash` vide) — de vrais défauts, mais dont l'aveu n'a nulle part où s'écrire, donc un
+            # rouge qu'aucun geste ne refermerait. Le critère est celui de la jambe A, DÉJÀ écrit ici,
+            # et il sépare EXACTEMENT les cinq des cinq. CE QU'IL NE TIENT PAS est déclaré plus bas :
+            # un `-> StatusCode` qui rend 204 alors qu'une lecture n'a pas eu lieu (`sla_policy_upsert`)
+            # lui échappe. Il SOUS-accuse ; il n'accuse jamais à tort.
+            if voie == VOIE_ECRITURE and not RETOUR_REPONSE.search(sig):
+                continue
             fautives = []
             for nom_corps, corps in corps_de_la_closure(code, tranches, fin, defs):
                 av = lectures_avalees(corps)
@@ -1232,8 +1417,9 @@ def valider_instrument(defs, constructeurs):
     # jamais lue. CHACUN A ÉTÉ ÉPROUVÉ PAR MUTATION le 2026-08-30, et la phrase dit ce qui a été
     # MESURÉ, pas ce qui serait joli : débrancher la résolution du chemin nu rend le PREMIER rouge (et
     # avec lui le témoin de prédicat) ; chercher l'aveu dans le texte de la fermeture au lieu de la
-    # RÉGION RÉSOLUE rend le DEUXIÈME rouge — et il est le SEUL des dix-neuf témoins à tuer cette
-    # mutation-là, les autres ne jugeant que des régions `<closure>` ; faire INVENTER un corps à un nom
+    # RÉGION RÉSOLUE rend le DEUXIÈME rouge — et il est le SEUL témoin de tout ce fichier à tuer
+    # cette mutation-là, les autres ne jugeant que des régions `<closure>` (RE-MESURÉ le 2026-08-30 après
+    # l'entrée de la voie d'écriture : aucun des témoins neufs ne la tue) ; faire INVENTER un corps à un nom
     # inconnu rend le TROISIÈME rouge.
     defs_fab["fermeture_nue_sourde"] = [("/fabrique.rs", 1,
         '{ let mut o = Vec::new(); if let Ok(mut s) = conn.prepare("SELECT a FROM t") '
@@ -1281,6 +1467,31 @@ def valider_instrument(defs, constructeurs):
     if [n for n, _c in corps_de_la_closure(faux_lam, tr_l, fin_l, defs_fab)][0] != "<closure>":
         errs.append("témoin du CHEMIN NU (négatif, au niveau du prédicat) : une fermeture `|conn| …` "
                     "ordinaire est prise pour un chemin nu — la résolution déborde de sa forme")
+    # LA VOIE D'ÉCRITURE, À SON PROPRE NIVEAU (`P10.7-l`). Les mutants 16 à 19 pourraient passer pour
+    # une raison ÉTRANGÈRE — le PIRE cas étant que le site ne soit pas DÉCOUVERT du tout : le 17, le 18
+    # et le 19 seraient alors verts pour la mauvaise raison, et la garde n'accuserait plus rien sur
+    # cette voie sans qu'aucun compte ne bouge. Ces trois témoins-ci le tiennent, et ils ont été
+    # ÉPROUVÉS PAR MUTATION le 2026-08-30 : retirer `with_write` de `APPEL` rend le PREMIER rouge ;
+    # retirer le contrôle `RETOUR_REPONSE` de la jambe B rend le DEUXIÈME rouge ; étendre la jambe A à
+    # la voie d'écriture rend le TROISIÈME rouge.
+    for nom, src in (("qui avale", ECRITURE_SOURDE_CORPS), ("à statut nu", ECRITURE_SOURDE_STATUT),
+                     ("qui avoue", ECRITURE_QUI_AVOUE), ("propre", ECRITURE_PROPRE)):
+        s_ec, _a = analyser("/ecriture.rs", src, defs, constructeurs, [])
+        if len(s_ec) != 1 or s_ec[0][1] != VOIE_ECRITURE:
+            errs.append(f"témoin de la POPULATION d'ÉCRITURE ({nom}) : {len(s_ec)} site(s) au lieu de 1 "
+                        "— `with_write` n'est plus DÉCOUVERT, et les témoins qui l'innocentent sont "
+                        "verts pour la mauvaise raison")
+    _s, acc_st = analyser("/ecriture_statut.rs", ECRITURE_SOURDE_STATUT, defs, constructeurs, [])
+    if acc_st:
+        errs.append(f"témoin du CORPS SERVI (négatif) : {len(acc_st)} accusation(s) sur une fermeture "
+                    "d'écriture dont le gestionnaire rend un `StatusCode` NU — la garde réclame un aveu "
+                    "là où aucun corps n'est servi, et le rouge serait INFERMABLE")
+    _s, acc_ec = analyser("/ecriture_corps.rs", ECRITURE_SOURDE_CORPS, defs, constructeurs, [])
+    jambes_ec = {j for j, *_ in acc_ec}
+    if jambes_ec != {"B"}:
+        errs.append(f"témoin de l'ASYMÉTRIE des jambes : jambes {sorted(jambes_ec)} au lieu de ['B'] sur "
+                    "un site d'écriture — le deuxième argument de `with_write` est `&au`, pas un défaut, "
+                    "et la jambe A n'a RIEN à y juger (elle accuserait « le défaut `&au` n'avoue pas »)")
     # L'aveu se reconnaît, et son absence aussi.
     if not porte_un_aveu('json!({ "rows": [], "error": "x" })', constructeurs):
         errs.append("témoin d'AVEU : la clé `error` n'est plus reconnue")
@@ -1323,15 +1534,22 @@ def ce_qui_n_est_pas_tenu(non_classes=0):
           "par `req_conn!` : `system_diag` écrit le prologue À LA MAIN (`req_db(&st, &au)` puis `.lock()`) "
           "et `suppressions_get` prend DÉLIBÉRÉMENT `st.db` (la base PLATEFORME, c'est documenté au-dessus "
           "de la fonction). SIX des 23 seulement sont atteignables depuis un `req_conn!` "
-          "(`index_policies.rs:27/30/89/90`, `threat_intel.rs:198/201`). Citer en preuve un site hors de la "
+          "(les quatre sites de `index_policies.rs`, `ioc_cache_reload` (`threat_intel.rs`)). Citer en preuve un site hors de la "
           "voie qu'on accuse est la faute que ce dépôt paie le plus cher — et la voie qui manquait "
           "VRAIMENT pour deux de ces sites n'était pas une voie du tout : c'était la RÉGION d'un site "
           "déjà découvert, comblée par ce lot.\n"
-          "  * LA VOIE D'ÉCRITURE N'EST PAS UNE VOIE, C'EN EST QUATRE, et nommer `req_conn!` seule "
-          "laisserait les trois autres exactement aussi invisibles (mesuré le 2026-08-30 sur "
-          "`daemon/src/handlers/`) : `req_conn!` 180 emplois sur 32 fichiers, le MÊME prologue écrit à la "
-          "main `req_db(..)` + `.lock()` 18 sur 10, `st.db(.clone()).lock()` 37 sur 5, et `with_write` 19 "
-          "sur 6 — 254 sites contre les 56 de la population. Aucun des quatre n'est jugé.\n"
+          "  * LA VOIE D'ÉCRITURE N'EST PAS UNE VOIE, C'EN EST QUATRE, et une seule est jugée "
+          "(mesuré le 2026-08-30 sur `daemon/src/handlers/`) : `req_conn!` 180 emplois sur 32 fichiers, "
+          "le MÊME prologue écrit à la main `req_db(..)` + `.lock()` 18 sur 10, `st.db(.clone()).lock()` "
+          "37 sur 5 — 235 sites qu'AUCUNE jambe ne juge. La quatrième, `with_write` (19 sites sur 6 "
+          "fichiers), est entrée dans la population le 2026-08-30 (`P10.7-l`) et la jambe B y juge la "
+          "RÉGION DE LA FERMETURE, comme sur `read_with*`. Les trois autres restent hors champ pour la "
+          "raison MESURÉE que `P10.7-j` a écrite : leur région va jusqu'à la fin du gestionnaire, et une "
+          "seule lecture avalée y compte autant de fois qu'il y a de gestionnaires.\n"
+          "  * `with_write` HORS de `daemon/src/handlers/` : 2 sites sur 1 fichier "
+          "(`daemon/src/ingest/obs.rs`, mesuré le 2026-08-30) ne sont PAS jugés. La population de cette "
+          "garde est le répertoire des handlers, et l'ingest n'y est pas — ce n'est pas un oubli, c'est "
+          "la borne du fichier, mais un corps servi peut naître ailleurs qu'ici.\n"
           "  * `req_conn!` N'EST PAS ENTRÉE DANS LA POPULATION, ET C'EST UNE MESURE, PAS UN OUBLI. "
           "L'extension a été PROTOTYPÉE le 2026-08-30 (région = de la macro à la fin de la fonction "
           "englobante, la portée du garde de verrou, PLUS un niveau d'appel — la règle de "
@@ -1344,25 +1562,35 @@ def ce_qui_n_est_pas_tenu(non_classes=0):
           "quatre ; `processors_reload` et `field_filters_reload` trois chacun. Un cliquet qui bouge de "
           "huit pour un seul geste local ne nomme plus de site — c'est la hausse qui n'apprend rien, celle "
           "que le témoin du DOUBLE COMPTE refuse déjà au niveau de l'unité.\n"
-          "  * LA FORME QU'IL FAUDRAIT, SI ON VEUT LA SURFACE D'ÉCRITURE, EST `with_write` "
-          "(`daemon/src/query_exec.rs:341`), PAS `req_conn!` : même signature à TROIS arguments avec la "
-          "fermeture en TROISIÈME position, donc `corps_de_la_closure` s'y applique MOT POUR MOT ; ni "
-          "valeur par défaut ni `Result`, donc les jambes A et Q n'y ont rien à juger — exactement "
-          "l'asymétrie qu'on annonçait pour `req_conn!`, mais sur une forme que la machinerie lit DÉJÀ. "
-          "MESURÉ le 2026-08-30 : 19 sites sur 6 fichiers, 10 accusés par la jambe B, 9 ne portant aucune "
-          "lecture avalée, ZÉRO chevauchement avec une région déjà jugée. Elle n'est PAS livrée ici parce "
-          "que ses dix accusations n'ont pas été classées une par une, et la règle de ce fichier est que "
-          "le COMPTE ne dit pas lesquelles sont des défauts.\n"
+          "  * SUR LA VOIE D'ÉCRITURE, LA JAMBE B N'ACCUSE QUE SI UN CORPS EST SERVI, et ce critère "
+          "SOUS-ACCUSE. Des 10 sites que la jambe accusait sans lui (mesuré le 2026-08-30, `P10.7-l`), 5 "
+          "servent un corps et sont accusés ; 3 sont FAIL-CLOSED (`case_merge`, `case_unmerge`, "
+          "`case_apply_update` : une lecture ratée y rend `false` -> 404) et sont ACQUITTÉS à raison ; 2 "
+          "ne servent AUCUN corps et sont acquittés faute de pouvoir formuler l'aveu — ce sont pourtant "
+          "de VRAIS défauts, nommés ici et NON corrigés : `caseops.rs:674` (`sla_policy_upsert` rend 204 "
+          "« fait » alors que la liste d'ids à recalculer peut être VIDE faute d'avoir été lue, et "
+          "`sla_apply_policy` renonce en silence) et `caseops.rs:674/698` (`ledger_append` lit le hash "
+          "précédent en `unwrap_or_default()` : une lecture ratée écrit un maillon au `prev_hash` VIDE, "
+          "donc une CHAÎNE D'INTÉGRITÉ rompue que rien ne signale). Un gestionnaire qui rend un "
+          "`StatusCode` NU n'a aucun corps où poser `error` : l'accuser poserait un rouge qu'aucun geste "
+          "ne referme, et c'est ce que ce dépôt refuse. Le jour où le vocabulaire d'aveu dépassera la "
+          "clé `error` (le même manque que pour le défaut de `read_with`), ces deux-là redeviendront "
+          "formulables.\n"
+          "  * `case_get_json` (`cases.rs:489`) EST accusé, mais sa phrase compte TROIS lectures quand "
+          "UNE SEULE sert un corps : le parcours de la timeline (`query_map(..).ok()?.flatten()`) rend "
+          "une liste TRONQUÉE sous un 200, tandis que les deux autres (`query_row`/`prepare` en "
+          "`.ok()?`) rendent `None`, donc un 404 — elles sont FAIL-CLOSED. Le compte de lectures d'une "
+          "phrase n'est PAS un compte de défauts, ici comme partout ailleurs dans ce journal.\n"
           "  * CE QUE LE COMPTE NE DISAIT PAS — les 23 formes que ce fichier déclarait hors région jugée, "
           "classées une par une le 2026-08-30, et elles ne sont PAS toutes des défauts. DEUX d'entre "
           "elles (`compliance.rs:193/196`) sont ENTRÉES dans le champ avec le comblement du chemin nu "
           "ci-dessus : il en reste VINGT ET UNE hors de toute région jugée, sur 7 fichiers. QUINZE des "
           "23 servent un CORPS : "
-          "`admin_ui.rs:722/726` (le compte d'hôtes qui marque une entrée `contested` — une lecture ratée "
+          "le dénombrement d'hôtes par source (`admin_ui.rs`) (le compte d'hôtes qui marque une entrée `contested` — une lecture ratée "
           "efface le signal ANTI-EMPOISONNEMENT sans rien dire, la plus grave des 23), "
           "`admin_ui.rs:731/737`, `ai.rs:76` (servi tel quel par `ai_redaction_policy_get` : l'admin lit "
           "la politique PAR DÉFAUT en croyant lire celle qui est stockée ; côté application le repli est "
-          "conservateur), `index_policies.rs:27/30/89/90`, et les SIX de "
+          "conservateur), les quatre sites de `index_policies.rs`, et les SIX de "
           "`system.rs` (bundle de support : `recent_events: []`, `heartbeat_alerts: []` — le signal de "
           "capteur muet lu comme PROPRE — et `unclassified_by_source: []` qui contredit alors le compte "
           "`events_without_category` servi dans le MÊME corps). DEUX sont un calcul interne dont "
@@ -1370,10 +1598,16 @@ def ce_qui_n_est_pas_tenu(non_classes=0):
           "a été purgée par la rétention, la ref BRUTE reste affichée, et deux tests le fixent). DEUX "
           "sont FAIL-CLOSED, et l'absence y est un REFUS, pas un fait rassurant : `datamodels.rs:262/263` "
           "(une allowlist vide fait REJETER tout champ du Pivot -> 400). DEUX ne sont NI l'un NI l'autre, "
-          "et ce sont celles qu'aucune jambe de cette garde ne saurait formuler : `threat_intel.rs:198/201` "
-          "(`ioc_cache_reload` — une lecture ratée REMPLACE ATOMIQUEMENT le cache de match IOC par un set "
-          "VIDE ; aucune route ne ment, la DÉTECTION s'éteint, et il n'existe aucun corps servi où poser "
-          "`error`. Le geste est de ne PAS remplacer le cache après une lecture ratée). Et les DEUX "
+          "et ce sont celles qu'aucune jambe de cette garde ne saurait formuler : `ioc_cache_reload` (`threat_intel.rs`) "
+          "remplaçait ATOMIQUEMENT le cache de correspondance par un set VIDE ; aucune route ne mentait, "
+          "la DÉTECTION s'éteignait, et il n'existait aucun corps servi où poser `error`. CE SITE EST FERMÉ "
+          "DEPUIS LE 2026-08-30 (`P10.7-k`) : la lecture est désormais ENTIÈRE OU NULLE, l'état vivant est "
+          "préservé, et l'aveu passe par une route de couverture qui existait déjà. LE CONSTAT DE FORME RESTE "
+          "VRAI, ET C'EST POURQUOI IL EST GARDÉ ICI : cette garde n'aurait PAS su l'exiger, et deux défauts de "
+          "la MÊME espèce restent ouverts ailleurs — un maillon de journal d'intégrité écrit avec un hachage "
+          "précédent VIDE, et un recalcul d'échéances SAUTÉ pendant qu'une route rend « fait ». Tant que le "
+          "vocabulaire d'aveu se limite à une clé de CORPS, cette famille échappe par sa FORME, jamais par sa "
+          "portée. Et les DEUX "
           "entrées du jour (`compliance.rs:193/196`) servent un CORPS : c'est la seule des 23 dont la "
           "voie était DÉJÀ dans la population, et elle échappait par sa RÉGION, pas par sa voie. Ces "
           "classements sont dans `daemon/`, ils sont NOMMÉS ici et ne sont pas corrigés par ce lot ; "
@@ -1411,7 +1645,7 @@ def ce_qui_n_est_pas_tenu(non_classes=0):
 def main():
     src_demon = list(sources(DEMON))
     ancre = next((t for c, t in src_demon if c.endswith(os.path.join("daemon", "src", "query_exec.rs"))), "")
-    manquantes = [v for v in VOIES_LECTURE + VOIES_REQUETE if f"fn {v}" not in ancre]
+    manquantes = [v for v in VOIES_FERMETURE + VOIES_REQUETE if f"fn {v}" not in ancre]
     if manquantes:
         print(f"::error::les voies {manquantes} ne sont plus DÉFINIES dans daemon/src/query_exec.rs : "
               "la population de cette garde n'a plus d'ancrage.")
@@ -1447,16 +1681,18 @@ def main():
         return 2
 
     gardes = [s for s in sites if s[1] in VOIES_LECTURE]
-    requetes = [s for s in sites if s[1] not in VOIES_LECTURE]
+    ecritures = [s for s in sites if s[1] == VOIE_ECRITURE]
+    requetes = [s for s in sites if s[1] in VOIES_REQUETE]
     if len(sites) < PLANCHER_SITES or len(fichiers) < PLANCHER_FICHIERS:
         print(f"::error::{len(sites)} site(s) découvert(s) sur {len(fichiers)} fichier(s), planchers "
               f"{PLANCHER_SITES}/{PLANCHER_FICHIERS} : la DÉCOUVERTE est cassée, pas le démon. La garde "
               "REFUSE DE CONCLURE plutôt que de rendre vert en étant aveugle.")
         ce_qui_n_est_pas_tenu()
         return 2
-    if not gardes or not requetes:
-        print(f"::error::une des deux voies n'est plus appelée nulle part ({len(gardes)} gardée(s), "
-              f"{len(requetes)} requête(s)) : la lecture ne voit plus qu'une moitié de la famille.")
+    if not gardes or not ecritures or not requetes:
+        print(f"::error::une des trois familles n'est plus appelée nulle part ({len(gardes)} lecture(s), "
+              f"{len(ecritures)} écriture(s), {len(requetes)} requête(s)) : la lecture ne voit plus "
+              "qu'une part de la famille.")
         ce_qui_n_est_pas_tenu()
         return 2
 
@@ -1486,9 +1722,9 @@ def main():
     na, nb, nq = (len(a_par_jambe.get(j, [])) for j in ("A", "B", "Q"))
     nc = len(a_par_jambe.get("?", []))
     print(f"\n[{ETIQUETTE}] POPULATION DÉCOUVERTE le jour de l'exécution : {len(sites)} site(s) sur "
-          f"{len(fichiers)} fichier(s) de daemon/src/handlers — {len(gardes)} lecture(s) gardée(s), "
-          f"{len(requetes)} exécution(s) de requête. Commentaires DÉPOUILLÉS : une occurrence citée en "
-          "commentaire n'est jamais un site.")
+          f"{len(fichiers)} fichier(s) de daemon/src/handlers — {len(gardes)} lecture(s) (gardée ou "
+          f"simple), {len(ecritures)} écriture(s) `with_write`, {len(requetes)} exécution(s) de requête. "
+          "Commentaires DÉPOUILLÉS : une occurrence citée en commentaire n'est jamais un site.")
     print(f"[{ETIQUETTE}] ACCUSATIONS : jambe A (défaut nu) {na}/{PLAFOND_DEFAUT_NU} · jambe B "
           f"(closure sourde) {nb}/{PLAFOND_CLOSURE_SOURDE} · jambe Q (cause jetée) "
           f"{nq}/{PLAFOND_CAUSE_JETEE} · non classés {nc}.")

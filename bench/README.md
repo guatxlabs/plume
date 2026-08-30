@@ -149,7 +149,7 @@ Un jeu figé une fois pour toutes finit par sortir de la rétention du daemon : 
 bord de rétention rattrape la queue du jeu, et la purge SUPPRIME des événements **pendant** la
 campagne. Ce n'est pas théorique — mesuré le 2026-08-01 : 1 440 007 -> 1 436 516 événements en une
 demi-heure, avec à la clef un verdict de justesse FAUX imputé à la concurrence alors qu'il venait de
-l'horloge. Et la purge n'attend pas : `spawn_retention_loop` (`daemon/src/server.rs`) passe une
+l'horloge. Et la purge n'attend pas : `spawn_retention_loop` (`daemon/src/server/boucles_de_fond.rs`) passe une
 première fois **60 s après le démarrage**, puis toutes les heures.
 
 `run.sh` REFUSE désormais de démarrer quand la marge est négative, et l'annonce quand elle ne l'est

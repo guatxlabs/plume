@@ -93,8 +93,20 @@ et immuables : aucun re-wrap, aucun clair.
    `cold_seal` dans la base restaurée ; un jour scellé dont le fichier Parquet est absent est un trou
    silencieux, pas une erreur de boot.
 4. **Le binaire doit porter la feature.** Un `plume-daemon` construit sans `--features cold_tier` ignore
-   `/data/cold` et déclare quand même les variables `PLUME_COLD_*` — c'est le défaut P4.5-b, resté trois
-   jours en production. Contrôle : la garde de capacités de `bootstrap/plume-deploy.sh`.
+   `/data/cold` et déclare quand même les variables `PLUME_COLD_*` — c'est le défaut `P4.5-a`, resté trois
+   jours en production. **Contrôle, et c'est le binaire lui-même qui répond** — à jouer AVANT de déposer
+   les fichiers-jour, faute de quoi ils seraient ignorés en silence :
+   ```sh
+   plume-daemon --help | grep cold-backup-plan     # hôte ; en conteneur : docker run --rm <image> --help | grep …
+   # ligne d'aide normale        -> la feature est là
+   # ligne portant INDISPONIBLE  -> bâti sans --features cold_tier
+   ```
+   L'image livrée est bâtie `ldap,cold_tier` (`ARG PLUME_FEATURES`, `Dockerfile`) ; **la recette hôte, elle,
+   compile nu** — un central installé par `bootstrap.sh` n'a donc pas le tier froid par défaut, et
+   `bootstrap.sh` le **mesure** en fin d'installation (verdict `>> Capacités optionnelles`), en refusant de
+   conclure plutôt qu'en annonçant une capacité non prouvée. *Ce dépôt ne livre **aucune** garde côté
+   déploiement qui comparerait les features du binaire à ce que le manifeste déclare : la vérification
+   ci-dessus est un **geste**, et l'incohérence binaire/manifeste de `P4.5-a` reste possible.*
 5. **Ce que le restore-test quotidien prouve, et ce qu'il ne prouve pas.** Il vérifie structurellement le
    **dernier backup chaud** et refuse de conclure s'il est plus vieux que 3× la cadence observée. Il
    **compte** les fichiers-jour froids de l'escrow et les nomme, mais **ne les vérifie pas** : quand il y

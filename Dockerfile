@@ -46,9 +46,20 @@ ENV CARGO_BUILD_JOBS=2
 # sans toucher au fichier —
 #   docker build --build-arg PLUME_FEATURES=ldap .
 #   docker build --build-arg PLUME_FEATURES=ldap,cold_tier,ai .
-# La garde de capacités du déploiement (tools/plume-capacites.sh) REFUSE ensuite tout binaire dont
-# les features ne couvrent pas ce que le manifeste déclare : le paramètre est libre, l'incohérence
-# entre le build et le déploiement ne l'est pas.
+# CE QUE CE DÉPÔT DONNE POUR VÉRIFIER CE QU'UNE IMAGE PORTE — MESURÉ le 2026-08-30, `P7.20-g`. Ce bloc
+# renvoyait ici à une garde de capacités CÔTÉ DÉPLOIEMENT, comparant les features du binaire à ce que le
+# manifeste déclare. ELLE N'EXISTE DANS AUCUN CHEMIN DE CET ARBRE, et le répertoire qui la porterait est
+# absent : personne d'extérieur ne pouvait la jouer. CE QUI EXISTE, ET QUE N'IMPORTE QUI PEUT JOUER : le
+# BINAIRE se déclare lui-même. `cold-backup-plan` est listée par `--help` dans les DEUX builds, et celui
+# qui n'a pas la feature écrit LUI-MÊME « INDISPONIBLE » sur cette ligne (daemon/src/main.rs,
+# `SUBCOMMANDS_COLD`) — `--help` n'ouvre aucune base et sort tout de suite :
+#   docker run --rm <image> --help | grep cold-backup-plan
+# Pour `ldap`, la preuve est la route : sans la feature, `POST /api/auth/ldap` répond 501
+# (daemon/src/idp/ldap.rs). En mode hôte, `bootstrap.sh` joue ce constat tout seul en fin d'installation
+# (verdict `>> Capacités optionnelles`) et REFUSE DE CONCLURE si l'aide ne porte aucune des deux formes.
+# CE QUE ÇA NE TIENT PAS : ce constat dit ce que le BINAIRE porte, il ne le compare à AUCUN manifeste de
+# déploiement — un manifeste qui déclare PLUME_COLD_* sur une image bâtie sans `cold_tier` reste possible.
+# C'est exactement `P4.5-a`, et la vérification reste un GESTE, pas une garde.
 #
 # UNE SEULE DÉCLARATION, ET PAS DE REDÉCLARATION NUE. Les deux `RUN` vivent dans le MÊME étage : cet
 # `ARG` leur suffit. MESURÉ le 2026-08-08 (docker 29.6.2 / buildx 0.36.0) plutôt que supposé —

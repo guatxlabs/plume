@@ -223,9 +223,20 @@ sidecar ni cron hôte. Réglez‑les — ou coupez‑les avec `PLUME_BACKUP_INTE
 
 ### B. Hôte nu (systemd) — mode de première classe, sans Docker
 ```sh
-cd daemon && cargo build --release && cd ..          # single-file binary (Rust stable requis)
+cd daemon && cargo build --release && cd ..          # binaire unique (Rust stable) — build NU : cf. juste dessous
 sudo bash bootstrap.sh                               # central: daemon + units, :7000 (idempotent)
 ```
+**Ce que cette ligne de compilation ne prend pas.** `cargo build --release` **sans `--features`** est le
+défaut assumé du mode hôte, et il laisse de côté les **deux** capacités optionnelles que l'image
+conteneur, elle, compile (`ARG PLUME_FEATURES=ldap,cold_tier`, cf. [`Dockerfile`](Dockerfile)) :
+le **tier froid colonnaire** (`cold_tier`) — sans lui `PLUME_COLD_TIER` est **sans effet** et des
+fichiers‑jour Parquet écrits par un autre binaire lui sont **invisibles** — et le **bind LDAP/AD natif**
+(`ldap`) — sans lui `POST /api/auth/ldap` répond **501**. Les prendre :
+`cargo build --release --features cold_tier,ldap`. Les deux formes sont légitimes ; ce que le binaire
+**réellement posé** porte n'est pas à deviner — `bootstrap.sh` l'**interroge** en fin de course et
+l'imprime (verdict `>> Capacités optionnelles`), et **refuse de conclure** plutôt que d'annoncer une
+capacité qu'il n'a pas prouvée.
+
 `bootstrap.sh` **refuse de continuer** si `daemon/target/release/plume-daemon` est absent : compilez d'abord.
 Il installe le daemon, les collecteurs et leurs units/timers — dont **`plume-backup.timer` (quotidien,
 04:00)**, qui appelle `plume-daemon backup` (copie compacte `VACUUM INTO`, rotation à 7). *Ce chemin hôte

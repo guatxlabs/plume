@@ -65,10 +65,21 @@ async function renderCoverage() {
   const servies = (detections && detections.length) ? detections.length : 0;
   const refus = !!causeServie && servies === 0;
   const incomplet = !!causeServie && servies > 0;
+  // `P11.21-j` — CETTE PHRASE ÉTAIT FRANÇAISE SEULE, ET ELLE L'ÉTAIT DÉJÀ AVANT `P11.21-i`. Le lot
+  // précédent a posé À CÔTÉ un aveu de lecture partielle bilingue par construction : sous `LANG='en'`,
+  // le MÊME panneau rendait donc l'un ou l'autre selon l'issue, et l'issue la plus grave — le refus, la
+  // seule qui interdise toute conclusion — était celle qui restait en français. Le lexique ne pouvait pas
+  // la rattraper : `i18nWalk` n'égale qu'un nœud ENTIER, et cette phrase est composée avec la cause du
+  // démon, donc jamais égale à une clé. Bilingue par construction, comme sa voisine ; la cause servie
+  // reste collée telle quelle, écrite une seule fois côté démon.
   if (refus) {
-    b.innerHTML = '<div class="bad">' + esc("Couverture ATT&CK NON LUE : le démon a refusé et en nomme la cause — « " + causeServie
-      + " » Ce n'est PAS une absence : aucune technique n'a été lue, donc rien ici n'établit qu'aucune n'a "
-      + "été détectée, ni que la couverture soit nulle.") + '</div>';
+    b.innerHTML = '<div class="bad">' + esc(LANG === 'en'
+      ? 'ATT&CK coverage NOT READ: the daemon declined and names the cause — "' + causeServie
+        + '" This is NOT an absence: no technique was read, so nothing here establishes that none was '
+        + 'detected, nor that coverage is nil.'
+      : "Couverture ATT&CK NON LUE : le démon a refusé et en nomme la cause — « " + causeServie
+        + " » Ce n'est PAS une absence : aucune technique n'a été lue, donc rien ici n'établit qu'aucune n'a "
+        + "été détectée, ni que la couverture soit nulle.") + '</div>';
     return;
   }
   if (!servies) { b.innerHTML = '<div class="muted">aucune technique détectée (les alertes taguées MITRE apparaîtront ici)</div>'; return; }

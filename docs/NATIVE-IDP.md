@@ -2,9 +2,16 @@
 
 > **Statut.** OIDC (Authorization-Code + PKCE), LDAP/AD (bind), et TOTP MFA sont **implémentés et testés**.
 > SAML 2.0 SP est **implémenté et testé**, mais **derrière la feature de compilation `saml`** (cf. §5) :
-> compilé **sans** cette feature, le login SAML renvoie **501**. ⚠️ **L'image Docker livrée est construite
-> avec `--features ldap` uniquement** (cf. `Dockerfile`) — donc **SAML y répond 501** ; il faut recompiler
-> avec `--features saml` pour l'activer.
+> compilé **sans** cette feature, le login SAML renvoie **501**. ⚠️ **L'image Docker livrée est bâtie
+> `ldap,cold_tier`** — jeu déclaré une seule fois par `ARG PLUME_FEATURES` dans le
+> [`Dockerfile`](../Dockerfile), depuis `971de7a` (2026‑08‑08) — et **`saml` n'en fait pas partie** :
+> **SAML y répond donc 501**. Pour l'activer, rajoutez-le au jeu sans toucher au fichier :
+> `docker build --build-arg PLUME_FEATURES=ldap,cold_tier,saml .`
+> ⚠️ **Le mode hôte natif ne compile AUCUNE feature optionnelle** : le README et `bootstrap.sh`
+> prescrivent `cargo build --release` **nu**. Sur un binaire hôte ainsi bâti, **le login LDAP/AD répond
+> 501 lui aussi** (et le tier froid est absent) — cf. §3 et
+> [`TROIS-MODES.md` §3.9](TROIS-MODES.md#39-mettre-à-jour). OIDC, TOTP MFA et le SSO d'en-tête, eux, ne
+> dépendent d'aucune feature : ils sont là dans les trois modes.
 > Cet incrément est **additif et fail-closed** : sans fournisseur configuré ni MFA enrôlée, toute
 > l'authentification existante (Basic / cookie de session / token d'agent / HEC / SSO d'en-tête Authentik)
 > est **strictement inchangée** (mode 0 byte-identique, prouvé par la suite de tests).
@@ -88,8 +95,12 @@ sont **jamais** lus.
   Bind avec mot de passe **vide refusé** (anti *unauthenticated-bind*).
 - **Feature `ldap`** : les **fonctions pures** (échappement, mapping) sont compilées/testées **sans** la
   feature ; seul le bind réseau est derrière `#[cfg(feature = "ldap")]` (sans la feature : 501 explicite).
-  **DEPUIS v107 : `--features ldap` est activé PAR DÉFAUT dans l'image stock** (`plume/Dockerfile`) — le
-  login LDAP/AD natif fonctionne sans rebuild (bring-your-own-directory). Coût : ~40 crates **pur-Rust** en
+  **DEPUIS v107 : `--features ldap` est activé PAR DÉFAUT dans l'image stock** — il fait partie du jeu
+  `ldap,cold_tier` que déclare `ARG PLUME_FEATURES` ([`Dockerfile`](../Dockerfile)) — le
+  login LDAP/AD natif fonctionne sans rebuild (bring-your-own-directory). **Ce défaut-ON ne vaut QUE
+  pour l'image** : la recette hôte compile nu, donc un `plume-daemon` installé par `bootstrap.sh` sans
+  `--features ldap` répond **501** à `POST /api/auth/ldap` — le prendre :
+  `cargo build --release --features cold_tier,ldap`. Coût : ~40 crates **pur-Rust** en
   plus (ldap3/lber, asn1/x509, url/idna/icu) ; **aucune** nouvelle dépendance C (`openssl-sys` vient déjà de
   SQLCipher). **INERTE tant qu'aucun provider LDAP n'est configuré+activé** : `POST /api/auth/ldap` répond
   `404 aucun provider LDAP activé` (aucun endpoint ouvert, aucun bind sortant, aucune surface active) — un

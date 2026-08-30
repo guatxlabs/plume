@@ -128,7 +128,7 @@ pub(crate) const UNITES_LIVREES: [(&str, &str); 88] = [
     ("plume-crowdsec.timer", "cbffb6972a2e98ad0a19bc3bac50562ed3b886e09728dfa6ddff8061544baa17"),
     ("plume-custom.service", "dbd2cdd41e5601299a175f21daba546f0e4bd1234f9bf3b73a1676575fd46dee"),
     ("plume-custom.timer", "dc076f4709f13fc41edabf6c72833ef49fdc75b5d11ac4e71bef3d00d042076f"),
-    ("plume-daemon.service", "e2e401cb109916141235cbb6a7c5f48ee2147201ff2fcee90d805fe0fccd6969"),
+    ("plume-daemon.service", "ccc3a4af22c93a6c6fb7c9e05c94d3eb8f3e500adce18c15b5077c87d32731d1"),
     ("plume-dataaccess.service", "d4bd86a8f42e8c93551f10ecb861540a74e7915f85a42b428b1fe7c437f9b046"),
     ("plume-dataaccess.timer", "ade7d8c8ad610441ee597d0962463f27dc79f8f0556dbfed30cfd3bc2a7c2550"),
     ("plume-dataacl.service", "ba2a9d01cd785d6c93db054dc8929fca4bd3a404eb2fe691f6bc3be9fe1f274e"),

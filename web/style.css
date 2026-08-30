@@ -423,6 +423,15 @@ button[aria-pressed="true"]{background:var(--sel-bg);color:var(--sel-fg);border-
 .colsmenu::-webkit-scrollbar-track{background:transparent}
 .colsmenu::-webkit-scrollbar-thumb{background:var(--bd);border:2px solid var(--card);border-radius:6px}
 .colsmenu::-webkit-scrollbar-thumb:hover{background:var(--mut)}
+/* `P11.22-b` — LA MOITIÉ WEBKIT DE LA BARRE VISIBLE, POSÉE ICI PARCE QU'ELLE NE PEUT PAS L'ÊTRE EN LIGNE.
+   Le module pose `scrollbar-width` et `scrollbar-color` sur l'élément, ce qui suffit à Firefox et aux
+   Chromium récents. Les moteurs WebKit et les Chromium anciens n'honorent QUE le pseudo-élément
+   ci-dessous, qui ne s'écrit pas dans un attribut de style. Sans lui, la liste défile mais RIEN ne dit
+   qu'elle continue : le pied collant reste alors le seul signal, et un signal unique est un signal fragile. */
+.sq-menu::-webkit-scrollbar{width:10px}
+.sq-menu::-webkit-scrollbar-track{background:transparent}
+.sq-menu::-webkit-scrollbar-thumb{background:var(--bd);border:2px solid var(--card);border-radius:6px}
+.sq-menu::-webkit-scrollbar-thumb:hover{background:var(--mut)}
 .colsmenu label{display:flex;gap:8px;align-items:center;padding:4px 7px;font-size:12px;cursor:pointer;border-radius:6px;font-family:var(--font-mono)}
 .colsmenu label:hover{background:var(--acc-bg)}
 .colsmenu .colsnm{overflow:hidden;text-overflow:ellipsis;max-width:210px}

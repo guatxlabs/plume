@@ -7389,10 +7389,136 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
       && /style\.top\s*=\s*[^;]*\b\w*\.bottom/.test(src)
       && !/bornerLePopoverSousSonAncre/.test(src))
     .map(([f]) => f).sort();
-  exiger(JSON.stringify(aLaMain56) === JSON.stringify(["app.js", "savedqueries.js", "soql_complete.js"]),
-    `(56-borne) les modules qui positionnent encore un popover depuis un rectangle SANS le geste commun ont changé : ${JSON.stringify(aLaMain56)} au lieu des trois mesurés le 2026-08-30. Un module de plus est une régression ; un module de moins est un reste FERMÉ — dans les deux cas cette borne se remesure et se réécrit, elle n'exige pas que le défaut subsiste.`);
+  exiger(JSON.stringify(aLaMain56) === JSON.stringify(["app.js", "soql_complete.js"]),
+    `(56-borne) les modules qui positionnent un popover depuis un rectangle SANS le geste commun ont changé : ${JSON.stringify(aLaMain56)} au lieu des DEUX MESURÉS SAINS le 2026-08-30. Ils le sont pour deux raisons STRUCTURELLES DIFFÉRENTES, et c'est pourquoi cette borne ne doit PAS tendre vers zéro : l'un ancre sa complétion dans un en-tête collant, si bien que le bas de son ancre ne descend jamais et que son contenu est plafonné ; l'autre pose sa boîte en coordonnées de PAGE, où la queue reste atteignable au défilement. Un module de PLUS est une régression. Un module de MOINS ne peut être qu'un ralliement DÉLIBÉRÉ — et rallier l'un de ces deux-là FERMERAIT UNE FAUSSE ACCUSATION pour le premier et DÉPLACERAIT le second de la hauteur de défilement exactement, le geste commun écrivant une position de FENÊTRE. Dans les deux cas cette borne se remesure et se réécrit, elle n'exige pas qu'un défaut subsiste.`);
 
-  console.log(`[popover-dans-l-ecran] le geste commun de bornage tient la boîte DANS l'écran pour une ancre en haut, au milieu et en bas — hauteur en pixels RÉELS sous l'ancre, débordement rendu, bascule au-dessus quand l'espace manque —, et aucun capteur de défilement en phase de capture ne ferme sa propre liste ni ne cesse de fermer quoi que ce soit. CE QUE CE TÉMOIN NE TIENT PAS : il lit ce que le module POSE, jamais l'encre peinte ; il juge la BOÎTE et jamais son CONTENU ; il ne rejoue aucun redimensionnement de fenêtre ; et ${aLaMain56.length} module(s) positionnent encore un popover à la main (${aLaMain56.join(", ")}) — dont un dont la liste CROÎT avec l'usage, nommé par \`P11.22-b\`.`);
+
+  console.log(`[popover-dans-l-ecran] le geste commun de bornage tient la boîte DANS l'écran pour une ancre en haut, au milieu et en bas — hauteur en pixels RÉELS sous l'ancre, débordement rendu, bascule au-dessus quand l'espace manque —, et aucun capteur de défilement en phase de capture ne ferme sa propre liste ni ne cesse de fermer quoi que ce soit. CE QUE CE TÉMOIN NE TIENT PAS : il lit ce que le module POSE, jamais l'encre peinte ; il juge la BOÎTE et jamais son CONTENU ; il ne rejoue aucun redimensionnement de fenêtre ; et ${aLaMain56.length} module(s) positionnent encore un popover à la main (${aLaMain56.join(", ")}) — les deux MESURÉS SAINS le 2026-08-30, chacun pour une raison qui lui est propre et qu'un ralliement DÉFERAIT.`);
+}
+
+// ---------------------------------------------------------------------------------------------
+// 57. UN SOUS-COMPTE PORTE SA MARQUE LÀ OÙ LE NOMBRE SE LIT — LA CELLULE, ET LE COMPTE DE LA
+//     RANGÉE ; ET LE REFUS PARLE LA LANGUE DE SA VOISINE (`P11.21-j`).
+//
+//     POURQUOI CE TÉMOIN EXISTE, ET IL NE DOUBLE PAS LE 55. Le 55 tient l'AVEU DE PAGE : un corps
+//     « lignes + cause » n'est plus rendu comme un refus, et l'aveu OUVRE le rendu. Il ne dit RIEN de
+//     ce qui se lit plus bas. Un lecteur qui survole une cellule de la matrice sans avoir lu ce
+//     bandeau lit `1r/0a` comme un COMPTE : le défaut fermé à l'échelle de la PAGE restait ouvert à
+//     celle de la CELLULE, sur la surface même où un chiffre trop bas se lit « angle mort de
+//     détection ». Même chose pour le total de la rangée de fraîcheur, qui se présente comme une
+//     POPULATION alors qu'il compte les flux LUS.
+//
+//     L'INSTRUMENT SE VALIDE SUR LE DÉMON, ET C'EST CE QUI EMPÊCHE UN VERT PAR CONSTRUCTION. Ce que
+//     la marque de cellule affirme — un MINORANT sur les alertes, une COUVERTURE qui n'en dépend pas —
+//     est LU dans la cause servie par la route. Le jour où le démon cesse de séparer les deux, marquer
+//     la seule alerte devient un choix sans fondement : ce témoin rougit et demande sa mise à jour.
+//
+//     ET LES DEUX MARQUES DOIVENT ÊTRE CONDITIONNELLES : le chemin NOMINAL est exercé le premier, et
+//     une marque qui s'y rendrait est un ÉCHEC — une cellule qui avoue toujours n'avoue rien.
+//
+//     LA LANGUE SE MESURE PAR DIFFÉRENCE, JAMAIS PAR UNE PHRASE RECOPIÉE : la même issue rendue par
+//     les deux instances du graphe doit rendre DEUX textes. Le témoin d'instrument est l'aveu
+//     PARTIEL, déjà bilingue : s'il rend deux fois le même texte, c'est l'instance qui n'a pas pris
+//     la langue, et le verdict sur le refus ne voudrait rien dire.
+//
+//     CE QU'IL NE TIENT PAS : il juge le TEXTE d'un arbre, jamais l'encre peinte ni la POSITION
+//     visuelle de la marque ; et il ne dit rien de la TEINTE DE FOND de la cellule, qui est dérivée
+//     du même compte d'alertes et donc elle aussi sous-comptée — c'est nommé, ce n'est pas tenu.
+// ---------------------------------------------------------------------------------------------
+{
+  const CAUSE_57 = "CAUSE-DE-TRONCATURE-FABRIQUÉE-PAR-CE-BANC-57 : aucune phrase du démon n'est citée ici";
+  const SUFFIXE_57 = "?plume-lang=en"; // le crochet de résolution est posé par le témoin 10
+  const srcAlertes57 = readFileSync(path.join(RACINE, "daemon", "src", "handlers", "alerts.rs"), "utf8");
+
+  // — instrument : LA SÉPARATION QUE LA MARQUE EXPLOITE EST CELLE DU DÉMON, PAS UNE HYPOTHÈSE DU BANC.
+  const causeAttack57 = (srcAlertes57.match(/CAUSE_COMPTES_D_ALERTES_NON_ETABLIS[^=]*=\s*"([\s\S]*?)";/) || [])[1] || "";
+  exiger(/covered/.test(causeAttack57) && /rule_count/.test(causeAttack57) && /alerts/.test(causeAttack57),
+    "(57-instrument) la cause servie par /api/coverage/attack ne sépare plus les COMPTES D'ALERTES de la COUVERTURE (`covered`, `rule_count`) : marquer le seul nombre d'alertes n'a plus de fondement, mettez ce témoin à jour au lieu de le laisser vert");
+
+  const rendre57 = async (module, nomExport, selecteur, corps, suffixe = "") => {
+    const hote = new Element("div"), leg = new Element("div");
+    const qs = document.querySelector, fx = globalThis.fetch;
+    document.querySelector = (s) => (s === selecteur ? hote : s === "#attack-legend" ? leg : qs(s));
+    globalThis.fetch = async () => ({ ok: true, status: 200, text: async () => JSON.stringify(corps) });
+    try { const m = await import(pathToFileURL(path.join(WEB, module)).href + suffixe); await m[nomExport](); }
+    finally { document.querySelector = qs; globalThis.fetch = fx; }
+    return hote;
+  };
+
+  // --- (a) LA MATRICE ATT&CK : la marque est sur le NOMBRE, et sur lui seul. ---
+  const { motDuSousCompteDAlertes: mot57Cell } = await import(pathToFileURL(path.join(WEB, "attack.js")).href);
+  const MOT_CELL_57 = mot57Cell();
+  const TAC57 = { tactic: "discovery", rule_count: 1, covered: true, techniques: [
+    { tid: "T1046", name: "Network Service Discovery", covered: true, rule_count: 1, alert_count: 0 },
+    { tid: "T1018", name: "Remote System Discovery", covered: false, rule_count: 0, alert_count: 0 }] };
+  const matEntiere57 = await rendre57("attack.js", "loadAttackMatrix", "#attack-body", { tactics: [TAC57], totals: {} });
+  const matPartielle57 = await rendre57("attack.js", "loadAttackMatrix", "#attack-body", { tactics: [TAC57], totals: {}, error: CAUSE_57 });
+  const matRefus57 = await rendre57("attack.js", "loadAttackMatrix", "#attack-body", { tactics: [], totals: {}, error: CAUSE_57 });
+  const cellules57 = (n) => n.querySelectorAll(".attack-cell");
+  const cnt57 = (c) => (c.querySelectorAll(".attack-cnt")[0] || { textContent: "" }).textContent;
+  const titres57 = (n) => cellules57(n).map((c) => c.title || "").join("\n");
+
+  exiger(cellules57(matEntiere57).length === 2 && cellules57(matPartielle57).length === 2,
+    `(57a-instrument) la matrice ne rend pas ses deux techniques (${cellules57(matEntiere57).length} / ${cellules57(matPartielle57).length}) : ce témoin ne pourrait pas rougir`);
+  exiger(MOT_CELL_57.length > 20 && !MOT_CELL_57.includes(CAUSE_57),
+    `(57a-instrument) le mot de la cellule n'est pas dérivable du module (« ${MOT_CELL_57} »)`);
+
+  // LE CHEMIN NOMINAL NE PORTE AUCUNE MARQUE — sans quoi la surface cesserait de distinguer une lecture
+  // entière d'un préfixe, et l'avertissement ne voudrait plus rien dire.
+  exiger(!matEntiere57.textContent.includes("≥") && !titres57(matEntiere57).includes(MOT_CELL_57),
+    `(57a) LA CELLULE AVOUE SUR UNE LECTURE ENTIÈRE : un corps qui avoue toujours n'avoue rien. Rendu : « ${cnt57(cellules57(matEntiere57)[0])} »`);
+
+  const couverte57 = cellules57(matPartielle57).find((c) => c.textContent.includes("T1046"));
+  const aveugle57 = cellules57(matPartielle57).find((c) => c.textContent.includes("T1018"));
+  exiger(couverte57 && /^1r\/≥0a$/.test(cnt57(couverte57)),
+    `(57a) LA CELLULE D'UNE TECHNIQUE COUVERTE AFFICHE SON NOMBRE D'ALERTES SANS MARQUE LOCALE : « ${couverte57 ? cnt57(couverte57) : "(pas de cellule)"} » au lieu de « 1r/≥0a ». Seul le bandeau au-dessus avertit ; un lecteur qui survole cette case sans l'avoir lu prend un SOUS-COMPTE pour un COMPTE, sur la surface même où un chiffre trop bas se lit « angle mort de détection ». Et la marque ne doit toucher QUE le nombre d'alertes : le compte de règles reste établi.`);
+  exiger(couverte57 && (couverte57.title || "").includes(MOT_CELL_57),
+    `(57a) le survol de la cellule marquée ne dit pas POURQUOI le nombre porte un signe : « ${couverte57 && couverte57.title} »`);
+  // TÉMOIN NÉGATIF — la marque ne se pose pas là où rien n'est sous-compté : une cellule d'angle mort ne
+  // rend AUCUN nombre d'alertes, et la marquer accuserait la COUVERTURE, que le démon déclare établie.
+  exiger(aveugle57 && !aveugle57.textContent.includes("≥") && !(aveugle57.title || "").includes(MOT_CELL_57),
+    `(57a) témoin négatif : la marque s'est posée sur une cellule qui ne rend aucun nombre d'alertes — elle y accuse la couverture, que la cause servie déclare ÉTABLIE. Rendu : « ${aveugle57 && cnt57(aveugle57)} »`);
+  // LE REFUS NE CHANGE PAS DE MAIN : aucune cellule, la cause nommée, et aucune marque de sous-compte.
+  exiger(cellules57(matRefus57).length === 0 && matRefus57.textContent.includes(CAUSE_57) && !matRefus57.textContent.includes("≥"),
+    "(57a) un REFUS ne rend plus zéro cellule avec sa cause, ou s'est mis à porter la marque d'un sous-compte qu'il n'a pas");
+
+  // --- (b) LA RANGÉE DE FRAÎCHEUR : le total cesse de se présenter comme une population. ---
+  const { renderFreshnessDetail: detail57, motDuComptePartielDesFlux: mot57Flux } =
+    await import(pathToFileURL(path.join(WEB, "freshness.js")).href);
+  const MOT_FLUX_57 = mot57Flux();
+  const FLUX57 = [{ name: "syslog", kind: "event", age_s: 30, last_seen: 1800000000, status: "frais" },
+                  { name: "auditd", kind: "event", age_s: 40, last_seen: 1800000000, status: "frais" }];
+  const frEntier57 = detail57({ feeds: FLUX57, pipeline_fresh: true });
+  const frPartiel57 = detail57({ feeds: FLUX57, pipeline_fresh: true, error: CAUSE_57 });
+  exiger(MOT_FLUX_57.length > 20 && !MOT_FLUX_57.includes(CAUSE_57),
+    `(57b-instrument) le mot du compte n'est pas dérivable du module (« ${MOT_FLUX_57} »)`);
+  exiger(!frEntier57.includes(MOT_FLUX_57),
+    "(57b) LE CHEMIN NOMINAL PORTE LE MOT D'INCOMPLÉTUDE : une rangée qui avoue toujours n'avoue rien");
+  exiger(frPartiel57.includes(MOT_FLUX_57),
+    "(57b) LES PASTILLES DU RELEVÉ COMPTENT LES FLUX LUS ET SE PRÉSENTENT COMME UNE POPULATION : « N flux observé(s) » se lit comme un inventaire sur une vue dont l'objet est de savoir si la donnée arrive encore, et un total trop bas s'y lit « des sources se sont tues »");
+  const iMot57 = frPartiel57.indexOf(MOT_FLUX_57), iSomme57 = frPartiel57.indexOf(">=<");
+  exiger(iMot57 > -1 && iSomme57 > -1 && iMot57 < iSomme57,
+    "(57b) le mot n'est pas COLLÉ au total : rejeté après les parts, il ne qualifie plus le nombre qu'un lecteur vient chercher");
+  const pulseEntier57 = await rendre57("freshness.js", "renderFreshnessPulse", "#freshness .body", { feeds: FLUX57, pipeline_fresh: true });
+  const pulsePartiel57 = await rendre57("freshness.js", "renderFreshnessPulse", "#freshness .body", { feeds: FLUX57, pipeline_fresh: true, error: CAUSE_57 });
+  exiger(pulsePartiel57.innerHTML.includes(MOT_FLUX_57) && !pulseEntier57.innerHTML.includes(MOT_FLUX_57),
+    "(57b) LE PULSE — la charge VIVE du registre, la surface la plus souvent tirée de ce lot — laisse son compte se présenter comme une population, ou l'avoue sur une lecture entière");
+
+  // --- (c) LE REFUS DE LA COUVERTURE PARLE LA LANGUE DE SA VOISINE. ---
+  const corpsRefus57 = { detections: [], error: CAUSE_57 };
+  const corpsPartiel57 = { detections: [{ mitre: "T1059", count: 2, first_ts: 1800000000 }], error: CAUSE_57 };
+  const covRefusFR = await rendre57("detection_admin.js", "renderCoverage", "#cov-body", corpsRefus57);
+  const covRefusEN = await rendre57("detection_admin.js", "renderCoverage", "#cov-body", corpsRefus57, SUFFIXE_57);
+  const covPartielFR = await rendre57("detection_admin.js", "renderCoverage", "#cov-body", corpsPartiel57);
+  const covPartielEN = await rendre57("detection_admin.js", "renderCoverage", "#cov-body", corpsPartiel57, SUFFIXE_57);
+  exiger(covRefusFR.innerHTML.includes(CAUSE_57) && covRefusEN.innerHTML.includes(CAUSE_57),
+    "(57c-instrument) une des deux instances ne rend plus le refus avec sa cause : la comparaison de langue porterait sur du vide");
+  exiger(covPartielFR.innerHTML !== covPartielEN.innerHTML,
+    "(57c-instrument) l'aveu de lecture PARTIELLE — déjà bilingue par construction — rend le MÊME texte dans les deux instances : c'est la seconde instance du graphe qui n'a pas pris la langue, et le verdict sur le refus ne voudrait rien dire");
+  exiger(covRefusFR.innerHTML !== covRefusEN.innerHTML,
+    `(57c) LA PHRASE DE REFUS DE LA COUVERTURE EST FRANÇAISE SEULE : les deux instances rendent le même texte, et sous l'autre langue cette vue met DEUX REGISTRES dans le même écran — l'aveu de lecture partielle, juste à côté, est bilingue. C'est l'issue la plus grave qui reste sans traduction : la seule qui interdise toute conclusion. Rendu : « ${covRefusFR.innerHTML} »`);
+
+  console.log(`[sous-compte-marque-la-ou-le-nombre-se-lit] la marque descend jusqu'au NOMBRE : une cellule de technique COUVERTE rend « ${cnt57(couverte57)} » sur un corps tronqué et « ${cnt57(cellules57(matEntiere57).find((c) => c.textContent.includes("T1046")))} » sur une lecture entière — le signe ne touche QUE le compte d'alertes, jamais le compte de règles ni l'état de couverture, que la cause servie déclare établis ; une cellule d'angle mort n'en porte aucun (témoin négatif) ; le total de la rangée de fraîcheur porte le mot d'incomplétude COLLÉ au nombre, sur le détail comme sur le pulse, et rien sur une lecture entière ; et le refus de la couverture par détections rend deux textes dans les deux instances du graphe, l'aveu partiel voisin servant de témoin d'instrument. CE QUE CE TÉMOIN NE TIENT PAS : l'encre peinte et la POSITION visuelle des marques, et la teinte de fond de la cellule — dérivée du même compte d'alertes, donc elle aussi sous-comptée, ce qui est nommé et non tenu.`);
 }
 
 // LE VERDICT PORTE SA PROPRE LIMITE (`P11.13-g`). Un vert qui ne dit pas ce sur quoi il ne s'engage pas

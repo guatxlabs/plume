@@ -364,10 +364,39 @@ const ETATS_DE_LA_RANGEE = [...FSTATES].sort((a, b) => rangDEtatDeSource(b) - ra
 // LA RANGÉE DE FRAÎCHEUR : un total et cinq parts qui se le partagent, plus aucun recoupement. La
 // fabrique de familles reste celle de `P11.16-b` — elle sert encore la rangée d'Intégrations, dont le
 // recoupement (« à portée tous hôtes confondus ») EST, lui, une propriété des capteurs comptés.
-function summaryPills(feeds) {
+// `P11.21-j` — LE COMPTE DE LA RANGÉE CESSE DE SE PRÉSENTER COMME UNE POPULATION SUR UN RELEVÉ PARTIEL.
+//
+// LE CONSTAT, ET IL EST À L'ÉCHELLE DU NOMBRE, PAS DE LA PAGE. `P11.21-i` a posé le bandeau d'aveu
+// au-dessus des deux vues, et le commentaire du pulse écrivait déjà, EN COMMENTAIRE, que « les pastilles
+// comptent les flux LUS, pas ceux qui existent » — l'écran, lui, ne le disait nulle part. « 12 flux
+// observé(s) » se lit comme un inventaire ; sur une vue dont l'objet est de savoir si la donnée ARRIVE
+// ENCORE, un total trop bas se lit « des sources se sont tues », et un total trop bas parce que le
+// parcours a été coupé se lit exactement pareil.
+//
+// LE GESTE N'EST PAS INVENTÉ ICI : c'est celui d'`alerts.js` (`motDuCompteIncomplet`, `P11.21-h`), qui
+// accole au compte de sa barre le mot qui l'empêche d'être lu comme une population. Le mot est DÉRIVÉ
+// pour cette vue-ci (des FLUX, pas des lignes) plutôt que réutilisé tel quel : partager le littéral
+// ferait d'un des deux modules un porteur du vocabulaire de l'autre.
+//
+// LA PLACE EST CELLE QUE LA FABRIQUE PRÉVOIT DÉJÀ — `suite`, le fragment rendu DANS la vignette « pour
+// que les signes restent collés aux nombres qu'ils relient ». Le mot qualifie le TOTAL, et la grammaire
+// de la rangée (« le total est la somme des termes ») le fait porter sur toutes ses parts : elles sont
+// des sous-comptes du même parcours coupé. Une marque par vignette dirait six fois la même chose.
+//
+// DISCRET ET CONDITIONNEL : encre neutre, rien qui clignote, et RIEN du tout sur un relevé complet — la
+// rangée y est byte-identique à celle d'avant cette clé.
+function motDuComptePartielDesFlux() {
+  return LANG === 'en'
+    ? 'INCOMPLETE READ: this number counts the feeds read, not those that exist'
+    : "LECTURE INCOMPLÈTE : ce nombre compte les flux lus, pas ceux qui existent";
+}
+function summaryPills(feeds, releveIncomplet) {
   const sc = countStates(feeds);
+  const aveuDuCompte = releveIncomplet
+    ? '<span class="muted">' + esc(' · ' + motDuComptePartielDesFlux()) + '</span>'
+    : '';
   return rangeeDeChiffres([
-    { famille: 'total', valeur: feeds.length, libelle: LANG === 'en' ? 'feed(s) observed' : 'feed(s) observé(s)',
+    { famille: 'total', valeur: feeds.length, libelle: LANG === 'en' ? 'feed(s) observed' : 'feed(s) observé(s)', suite: aveuDuCompte,
       titre: LANG === 'en' ? 'The row recomposes: the total is the sum of the terms joined by « + », and this row holds nothing else.' : 'La rangée se recompose : le total est la somme des termes reliés par « + », et cette rangée ne porte rien d\'autre.' },
     ...ETATS_DE_LA_RANGEE.map(e => ({ famille: 'part', valeur: sc[e], dot: pastilleDEtat(e), libelle: libelleCourtDEtat(e), titre: FSTATE_LBL[e] })),
   ]);
@@ -498,7 +527,11 @@ function renderFreshnessDetail(d) {
   // MESURE QUI ÉVITE UNE FAUSSE ACCUSATION : `pipeline_fresh` ne vient PAS du parcours des flux — il est
   // lu par un `query_row` séparé sur `MAX(ts)` (`daemon/src/handlers/freshness.rs`). Une coupe des flux
   // ne peut donc pas FABRIQUER la bannière « Ingestion en panne », et rien ici n'a à la neutraliser.
-  const aveuDeRacine = bandeauDeReleveIncomplet(etatDuReleveServi(d));
+  // `P11.21-j` — L'ÉTAT SERVI EST NOMMÉ ICI (la lecture du champ reste à un cran de la fonction qui la
+  // porte) parce qu'il sert DEUX fois : le bandeau, et le compte de la rangée, qui cesse de se présenter
+  // comme une population.
+  const etatServi = etatDuReleveServi(d);
+  const aveuDeRacine = bandeauDeReleveIncomplet(etatServi);
   const head0 = !d.pipeline_fresh
     ? `<div class="bad" style="font-weight:600;margin-bottom:8px">${ic('warn')} Ingestion en panne — aucune donnée reçue récemment</div>`
     : `<div class="muted" style="margin-bottom:8px">Collecte OK. L'âge = temps depuis la dernière donnée. Il ne devient un retard que pour une source dont QUELQU'UN — une sonde du démon ou l'exploitant — DÉCLARE une cadence continue ; pour les autres, il ne dit que l'activité.</div>`;
@@ -617,7 +650,7 @@ function renderFreshnessDetail(d) {
   const groups = new Map();
   feeds.forEach(f => { const c = freshState(f); if (!groups.has(c)) groups.set(c, []); groups.get(c).push(f); });
   const cats = [...groups.entries()].sort((a, c) => rangDEtatDeSource(a[0]) - rangDEtatDeSource(c[0]));
-  const summaryLine = `<div class="capsum">${summaryPills(feeds)}${renvoi('#sources')}</div>`;
+  const summaryLine = `<div class="capsum">${summaryPills(feeds, etatServi.incomplet)}${renvoi('#sources')}</div>`;
   const ordre = ordreDansUnEtat();
   let html = aveuDeRacine + head0 + summaryLine + barreDOrdre(ordre);
   for (const [cat, arr] of cats) {
@@ -800,10 +833,11 @@ async function renderFreshnessPulse() {
   const head = !d.pipeline_fresh
     ? `<div class="bad" style="font-weight:600;margin-bottom:8px">${ic('warn')} Ingestion en panne — aucune donnée reçue récemment</div>`
     : '';
-  // L'aveu précède le compte : les pastilles du pulse comptent les flux LUS, pas ceux qui existent.
+  // `P11.21-j` — L'AVEU PRÉCÈDE LE COMPTE, ET LE COMPTE LE PORTE AUSSI : cette phrase-ci décrivait une
+  // propriété que l'écran n'avait pas. Les pastilles du pulse comptent les flux LUS, et elles le DISENT.
   b.innerHTML = bandeauDeReleveIncomplet(etat) + head +
-    `<div class="capsum">${summaryPills(feeds)}${renvoi('#freshness-view')}</div>`;
+    `<div class="capsum">${summaryPills(feeds, etat.incomplet)}${renvoi('#freshness-view')}</div>`;
 }
 
 // exports du module Fraîcheur/Intégrations (importés par app.js : refresh() + bouton #fresh-refresh).
-export { renderIntegrations, renderFreshness, renderFreshnessPulse, renderFreshnessDetail, freshState, countStates, etatDuReleveServi, motDuReleveNonLu, motDuRelevePartiel };
+export { renderIntegrations, renderFreshness, renderFreshnessPulse, renderFreshnessDetail, freshState, countStates, etatDuReleveServi, motDuReleveNonLu, motDuRelevePartiel, motDuComptePartielDesFlux };

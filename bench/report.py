@@ -1008,6 +1008,63 @@ def render_genericity(W, eff, cfgmeta, classes, wins, fmt_dur):
     W("")
 
 
+def desaccords(cfgmeta, a, b, axes=()):
+    """Les clés sur lesquelles DEUX PASSES divergent alors que la comparaison ne les compare pas.
+
+    RIEN N'EST ÉNUMÉRÉ ICI, et c'est le point : les clés viennent des enregistrements eux-mêmes.
+    La dérivation tient en deux règles.
+
+    1. On ne confronte que les clés déclarées **des deux côtés**. Une clé absente d'un côté est une
+       ABSENCE, et une absence ne contredit rien — c'est ce qui fait que `db_bytes_fts0`, relevé par
+       la seule passe FTS-on, n'est pas compté comme un désaccord avec son jumeau FTS-off.
+    2. `axes` = ce que la comparaison compare, PLUS la grandeur qu'elle publie. Ce sont les deux
+       seules clés qui ont le DROIT de différer, et l'appel les nomme parce qu'elles SONT son sujet.
+       Ce n'est pas une liste d'axes : c'est l'énoncé de la comparaison, écrit là où elle se fait.
+
+    RÉSERVE MESURÉE (2026-08-30, ce dépôt, 21 configurations du relevé versionné) : l'enregistrement
+    de configuration mélange À PLAT les RÉGLAGES (`fts_fields`, `mask`, `cold`, `hosts`, `profile`,
+    `version`, `query_concurrency`…) et les RÉSULTATS de la passe (`events`, `db_bytes`,
+    `db_bytes_fts0`, `cold_bytes`). Rien dans la forme du dossier ne les distingue. Exiger l'égalité
+    sur TOUTES les clés serait donc faux dans les deux sens : cela refuserait la comparaison même
+    qu'on vient de réparer (`db_bytes` diffère PARCE QUE `fts_fields` diffère) et cela refuserait le
+    tier froid (`events` chute PARCE QUE les jours anciens ont quitté SQLite). C'est pourquoi la
+    grandeur publiée est DÉCLARÉE par l'appel et non devinée : c'est la seule information que
+    l'enregistrement ne porte pas."""
+    ma, mb = cfgmeta.get(a) or {}, cfgmeta.get(b) or {}
+    return sorted(k for k in (set(ma) & set(mb)) - set(axes) if ma[k] != mb[k])
+
+
+def passe_comparable(cfgmeta, ordre, cible, axes, limite_causes=3):
+    """LA PAIRE EST TROUVÉE PAR LA PROPRIÉTÉ, JAMAIS NOMMÉE DANS LE CODE.
+
+    Rend `(jumeau, None)` s'il existe une passe qui s'accorde avec `cible` sur tout ce que les deux
+    déclarent, hors `axes` ; à égalité, la plus récemment apparue dans le relevé. Sinon
+    `(None, cause)`, où `cause` NOMME les passes les plus proches et l'axe par lequel chacune
+    diverge — un refus qui ne dit pas POURQUOI ne vaut pas mieux qu'un chiffre faux."""
+    proches = [(len(d), c, d) for c, d in
+               ((c, desaccords(cfgmeta, c, cible, axes)) for c in ordre if c != cible)]
+    jum = [c for n, c, _ in proches if n == 0]
+    if jum:
+        return jum[-1], None
+    if not proches:
+        return None, "aucune autre passe dans ce relevé"
+    proches.sort(key=lambda x: x[0])
+    return None, "; ".join(f"`{c}` diverge sur " + ", ".join(f"`{k}`" for k in d)
+                           for _n, c, d in proches[:limite_causes])
+
+
+def refus_de_comparer(quoi, axe, cause):
+    """LE REFUS EST UN CANAL DISTINCT DE LA VALEUR, et il est écrit LÀ OÙ LE CHIFFRE serait apparu.
+
+    Un blanc se lirait « rien à signaler » ; un chiffre se lirait « mesuré ». Ni l'un ni l'autre
+    n'est vrai quand la paire n'existe pas."""
+    return (f"**Comparaison REFUSÉE — {quoi}.** Ce relevé ne contient pas deux passes qui ne "
+            f"diffèrent que par `{axe}` : {cause}. Un écart entre ces passes ne mesurerait pas "
+            f"`{axe}`, il mesurerait leur propre divergence — il n'est donc pas rendu. **Ce n'est "
+            "pas « rien à signaler » : c'est un refus.** Pour obtenir le chiffre, il faut TIRER la "
+            "paire, pas assouplir la garde.")
+
+
 def _cmp_load(eff, cfg):
     """Charge machine (loadavg 1 min) relevée PENDANT une passe : min-max sur ses cellules. Sans elle,
     un écart de latence entre deux passes pourrait n'être qu'un écart de charge."""
@@ -1267,35 +1324,34 @@ def main():
         W(f"- la CONCURRENCE, elle, est mesurée : jusqu'à {_cn} analystes simultanés lançant de très "
           "grosses requêtes sous le même budget de 2 Gio appliqué, avec vérification que la réponse "
           "concurrente est IDENTIQUE à la réponse obtenue seul (section dédiée).")
-    # MÊME correctif que pour les leviers : ne pas exiger le volume EXACT, sinon l'axe masquage
-    # disparaît du verdict dès qu'une nouvelle passe compte quelques événements de plus.
+    # LA PASSE MASQUÉE EST OPPOSÉE À SON JUMEAU, PAS À `ref`. Mesuré le 2026-08-30 : `ref`
+    # (`chaud-seul-v2@1.4M`) et la passe masquée (`fts0-masque-non-vide@1.4M`) divergeaient sur
+    # `version`, `events` et `db_bytes` ; le « x287.3 » publié dans le verdict opposait donc deux
+    # binaires autant que deux masques. Le jumeau est DÉSIGNÉ par la propriété, jamais nommé ici.
     mk = max([c for c in configs if "non-vide" in (cfgmeta[c].get("mask") or "")] or [None],
              key=lambda c: _nev0(c) if c else -1)
-    worst = None
-    if mk:
+    mk_vide, mk_cause = (passe_comparable(cfgmeta, configs, mk, ("mask",)) if mk else (None, None))
+    worst = best = None
+    if mk and mk_vide:
         for cid, _lab, _k in classes:
             for w in wins:
-                x, y = idx.get((mk, cid, w)), idx.get((ref, cid, w))
+                x, y = idx.get((mk, cid, w)), idx.get((mk_vide, cid, w))
                 if x and y and x.get("wall_p50_ms") and y.get("wall_p50_ms"):
                     rr = x["wall_p50_ms"] / y["wall_p50_ms"]
                     if worst is None or rr > worst[0]:
                         worst = (rr, cid, w, y["wall_p50_ms"], x["wall_p50_ms"])
-    best = None
-    if mk:
-        for cid, _lab, _k in classes:
-            for w in wins:
-                x, y = idx.get((mk, cid, w)), idx.get((ref, cid, w))
-                if x and y and x.get("wall_p50_ms") and y.get("wall_p50_ms"):
-                    rr = x["wall_p50_ms"] / y["wall_p50_ms"]
                     if best is None or rr < best[0]:
                         best = (rr, cid, w, y["wall_p50_ms"], x["wall_p50_ms"])
+    if mk and not mk_vide:
+        W("- " + refus_de_comparer("l'effet du masquage sur les latences", "mask", mk_cause))
     if worst:
         W(f"- rien sur un déploiement AVEC masquage à partir des chiffres masque-vide : l'écart "
           f"mesuré le plus fort est **x{worst[0]:.1f}** sur `{worst[1]}` / {worst[2]} "
-          f"({fmt_dur(worst[3])} masque vide contre {fmt_dur(worst[4])} masque non vide).")
+          f"({fmt_dur(worst[3])} masque vide contre {fmt_dur(worst[4])} masque non vide, "
+          f"`{mk_vide}` contre `{mk}` — deux passes qui ne diffèrent QUE par le masque).")
         if best and best[0] < 0.9:
             rw = idx.get((mk, best[1], best[2])) or {}
-            rv = idx.get((ref, best[1], best[2])) or {}
+            rv = idx.get((mk_vide, best[1], best[2])) or {}
             same = rw.get("rows") == rv.get("rows")
             W(f"  Et le masquage ne va pas TOUJOURS dans le sens du ralentissement : sur "
               f"`{best[1]}` / {best[2]} il est **x{best[0]:.2f}**, donc plus RAPIDE "
@@ -1310,7 +1366,9 @@ def main():
               "inverse, et comparer les résultats ligne à ligne. En attendant, la règle est simple — "
               "**une latence qui baisse en présence d'un masque ne doit jamais être citée comme un "
               "gain**.")
-    else:
+    elif not (mk and not mk_vide):
+        # Le cas « paire croisée » est déjà avoué juste au-dessus par un REFUS qui NOMME l'axe
+        # divergent ; on ne le double pas d'une phrase vague qui se lirait comme une absence.
         W("- rien sur un déploiement AVEC masquage : cet axe n'a pas pu être comparé cellule par "
           "cellule dans cette passe.")
     W("")
@@ -2184,15 +2242,55 @@ def main():
     if len(fts0_vide) >= 2:
         W("## Comment la latence monte avec le volume")
         W("")
-        W("Mesuré à plusieurs volumes sur la même machine, même binaire, masque vide, "
-          "`PLUME_FTS_FIELDS=0`, fenêtre « tout ». C'est la pente qui répond à la question "
-          "« des millions d'événements », pas un point isolé.")
+        # CE QUE LES COLONNES TIENNENT FIXE EST DÉRIVÉ DES ENREGISTREMENTS, PLUS AFFIRMÉ.
+        # La version précédente écrivait « sur la même machine, même binaire ». Mesuré le
+        # 2026-08-30 sur le relevé versionné : les 13 colonnes portaient SEPT binaires distincts,
+        # deux d'entre elles tournaient tier froid ACTIF, trois portaient un autre profil de
+        # données, et CINQ partageaient le même volume (600 003) — donc cinq colonnes qui ne sont
+        # pas des points de l'axe. La phrase était fausse sur les quatre points.
+        # POURQUOI ON NE REFUSE PAS ICI, alors que la même divergence fait refuser L3 et L7 : une
+        # série de volumes s'étale sur des jours, donc `version` NE PEUT PAS y être tenu fixe tant
+        # qu'une passe multi-volumes n'a pas été tirée d'un coup avec un seul binaire. Refuser
+        # supprimerait la seule réponse du document à « des millions d'événements » — ce serait
+        # faire TAIRE une comparaison vraie pour fermer une accusation juste. On dit donc ce que le
+        # tableau mélange, à l'endroit exact où on le lit, et le refus reste réservé aux
+        # comparaisons dont la paire propre EXISTE dans le relevé.
+        _fixe = ("events", "db_bytes")
+        _cles = set().union(*(set(cfgmeta[c]) for c in fts0_vide))
+        _bouge = sorted(k for k in _cles - set(_fixe)
+                        if len({json.dumps(cfgmeta[c][k], sort_keys=True, ensure_ascii=False)
+                                for c in fts0_vide if k in cfgmeta[c]}) > 1)
+        _dup = sorted({cfgmeta[c].get("events") for c in fts0_vide
+                       if sum(1 for d in fts0_vide
+                              if cfgmeta[d].get("events") == cfgmeta[c].get("events")) > 1}
+                      - {None})
+        W("Mesuré à plusieurs volumes, masque vide, `PLUME_FTS_FIELDS=0`, fenêtre « tout ». C'est "
+          "la pente qui répond à la question « des millions d'événements », pas un point isolé.")
+        W("")
+        W("**CE QUE CES COLONNES NE TIENNENT PAS FIXE** — dérivé des enregistrements eux-mêmes, "
+          "pas déclaré à la main, parce qu'une phrase de comparabilité qu'on ÉCRIT est une phrase "
+          "qu'on ne mesure plus :")
+        W("")
+        if _bouge:
+            for k in _bouge:
+                _vals = sorted({json.dumps(cfgmeta[c][k], sort_keys=True, ensure_ascii=False)
+                                for c in fts0_vide if k in cfgmeta[c]})
+                W(f"- `{k}` : **{len(_vals)} valeurs distinctes** parmi les colonnes. L'écart lu "
+                  f"d'une colonne à l'autre n'est donc PAS imputable au seul volume.")
+        else:
+            W("- rien : toutes les colonnes s'accordent sur chaque clé que le relevé déclare, hors "
+              "le volume et la taille de base qui en découle.")
+        if _dup:
+            W("- **" + ", ".join(fmt_n(v) for v in _dup) + "** : plusieurs colonnes partagent ce "
+              "volume. Deux colonnes au MÊME volume ne sont pas deux points de l'axe — ce qui les "
+              "sépare est, par construction, autre chose que le volume.")
         W("")
         W("Réserve à connaître avant de citer ce tableau : les volumes viennent de **passes "
           "distinctes**, donc de bases distinctes et de nombres de répétitions possiblement "
           "différents (la colonne `reps` du JSONL brut le dit cellule par cellule). Les points sont "
           "comparables en ordre de grandeur, pas au pourcentage près. Une case vide = classe non "
-          "mesurée à ce volume.")
+          "mesurée à ce volume. **Le rapport de la dernière colonne oppose la PREMIÈRE et la "
+          "DERNIÈRE** : il hérite de tout ce qui est listé ci-dessus.")
         W("")
         hdr = " | ".join(f"{fmt_n(cfgmeta[c].get('events'))} lignes" for c in fts0_vide)
         W(f"| Classe | {hdr} | rapport |")
@@ -2250,12 +2348,12 @@ def main():
     # MÊME référence que le verdict : `--ref` si posé, sinon départage par récence (à volume égal,
     # la dernière passe mesurée gagne).
     base = args.ref or max(cands or configs, key=lambda c: (nev(c), configs.index(c)))
-    vol = nev(base)
-    # Configuration MASQUÉE de référence : la plus grosse mesurée, PAS forcément au volume EXACT de
-    # `base`. Exiger `nev(c) == vol` faisait DISPARAÎTRE le levier du masquage dès qu'une nouvelle
-    # passe comptait quelques événements de plus (le daemon écrit ses propres traces pendant une
-    # passe) — un levier de 36 s s'évaporait pour 4 lignes d'écart. L'écart de volume est REPORTÉ
-    # dans le texte du levier plutôt que caché.
+    # Configuration MASQUÉE de référence : la plus grosse mesurée. Elle n'est PAS contrainte au
+    # volume de `base`, et elle n'a plus à l'être : ce n'est plus `base` qui lui sert de terme de
+    # comparaison, c'est le jumeau que `passe_comparable` lui DÉSIGNE (voir L3). L'ancienne
+    # tolérance de volume — « 4 lignes d'écart ne doivent pas faire s'évaporer un levier de 36 s » —
+    # traitait un symptôme réel avec le mauvais remède : elle laissait passer l'écart de volume ET
+    # l'écart de binaire ET l'écart de base, en n'avouant que le premier.
     masked = max([c for c in configs if "non-vide" in (cfgmeta[c].get("mask") or "")] or [None],
                  key=lambda c: nev(c) if c else -1)
     fts1 = max([c for c in configs if cfgmeta[c].get("fts_fields") == 1] or [None],
@@ -2326,8 +2424,23 @@ def main():
 
     # L3 — masque non vide qui désarme la route de rollups
     if masked:
-        a, b = cell(masked, "C3b-groupby-routable", "all"), cell(base, "C3b-groupby-routable", "all")
+        # MÊME PROPRIÉTÉ QU'EN L7, et MÊME défaut mesuré (2026-08-30) : la passe masque-vide était
+        # prise dans `base`, or `base` (`chaud-seul-v2@1.4M`) et `masked`
+        # (`fts0-masque-non-vide@1.4M`) divergeaient sur `version`, `events` ET `db_bytes` —
+        # l'écart publié mélangeait quatre causes et n'en nommait qu'une. Le jumeau est maintenant
+        # DÉSIGNÉ : la passe qui s'accorde avec la passe masquée sur tout sauf `mask`.
+        vide, cause_mask = passe_comparable(cfgmeta, configs, masked, ("mask",))
+        a = cell(masked, "C3b-groupby-routable", "all")
+        b = cell(vide, "C3b-groupby-routable", "all") if vide else None
         g = gain_ms(a, b)
+        if g is None and not vide:
+            # REFUS, pas disparition : un levier qui s'évapore se lit « plus de problème ».
+            lev.append((-1e9 - 1, "Rendre la route de rollups compatible avec le masquage",
+                        refus_de_comparer("le coût du masquage sur la route de rollups", "mask",
+                                          cause_mask),
+                        f"`{masked}` — paire refusée",
+                        "*Aucun écart n'est rendu ici : le relevé ne contient pas la paire qui "
+                        "isolerait le masquage. C'est un REFUS, pas une absence de problème.*"))
         if g is not None:
             ratio = (a["wall_p50_ms"] / b["wall_p50_ms"]) if b["wall_p50_ms"] else None
             lev.append((g, "Rendre la route de rollups compatible avec le masquage",
@@ -2345,12 +2458,11 @@ def main():
                         "**Coût RAM : celui d'un jeu de rollups supplémentaire** (sur l'installation "
                         "de référence, `event_rollup` pèse de l'ordre du Mio par million d'événements, donc "
                         "marginal), plus le masquage au vol."
-                        + ("" if nev(masked) == vol else
-                           f" **Réserve** : la passe masquée porte {fmt_n(nev(masked))} événements "
-                           f"contre {fmt_n(vol)} pour la passe non masquée — l'écart de volume est "
-                           "négligeable devant le facteur mesuré, mais les deux chiffres ne viennent "
-                           "pas de la MÊME passe."),
-                        "C3b masqué vs non masqué"))
+                        + f" Les deux passes opposées sont `{vide}` et `{masked}` : elles "
+                          "s'accordent sur TOUT ce que le relevé déclare — binaire, nombre "
+                          "d'événements, base, tier froid — sauf le masquage. C'est la seule "
+                          "raison pour laquelle cet écart peut être imputé au masque.",
+                        f"`{vide}` vs `{masked}`"))
 
     # L4 — group-by multi-dim haute cardinalité
     a = cell(base, "C3-groupby-hi", "all")
@@ -2411,34 +2523,74 @@ def main():
 
     # L7 — coût de PLUME_FTS_FIELDS
     if fts1:
-        # La taille de référence FTS-off vient de la configuration FTS-off ELLE-MÊME quand elle
-        # existe : c'est la seule valeur dont on est sûr qu'elle a été relevée sur la même base.
-        # `db_bytes_fts0` passé à la main n'est qu'un repli.
-        d0 = cfgmeta[base].get("db_bytes") or cfgmeta[fts1].get("db_bytes_fts0")
+        # LA PAIRE EST TROUVÉE PAR LA PROPRIÉTÉ, ELLE N'EST PLUS PRISE DANS `base`.
+        # MESURE DU DÉFAUT (2026-08-30, relevé versionné de ce dépôt) : `cfgmeta[base]` opposait
+        # `chaud-seul-v2@1.4M` (bin 4bfcb9f7, 1 440 007 événements, 1434 Mio) à
+        # `fts1-masque-vide@1.4M` (bin 0642474c, 1 440 003 événements, 1401 Mio) — ni le même
+        # binaire, ni le même nombre d'événements, ni le même stade de remplissage. L'écart rendu
+        # valait **-33 Mio / -2 %**, c'est-à-dire le SIGNE INVERSE de ce que le banc mesure, et il
+        # était imprimé à travers un gabarit qui forçait le « + ». Les deux fautes sont corrigées
+        # ici : l'appariement, et le signe (il est DÉRIVÉ du delta, plus jamais affirmé).
+        #
+        # Deux sources, dans cet ordre, et jamais la configuration `--ref` :
+        #  (a) la passe FTS-on porte ELLE-MÊME sa taille d'avant-bascule (`db_bytes_fts0`) : c'est
+        #      la passe comparée à ELLE-MÊME, sur SA base, à divergence nulle par construction —
+        #      la meilleure paire possible, et elle était dans le relevé depuis le début ;
+        #  (b) à défaut, le jumeau FTS-off DÉSIGNÉ par la propriété (`passe_comparable`).
+        # Sur ce relevé les deux rendent le même octet (1 324 294 144), ce qui est la vérification
+        # croisée de (a) par (b).
+        AXES_FTS = ("fts_fields", "db_bytes")
+        fts0, cause_fts = passe_comparable(cfgmeta, configs, fts1, AXES_FTS)
         d1 = cfgmeta[fts1].get("db_bytes")
+        d0 = cfgmeta[fts1].get("db_bytes_fts0") or (cfgmeta[fts0].get("db_bytes") if fts0 else None)
         cls1 = {r["class_id"] for r in eff if r["config_id"] == fts1}
         peak0 = max((r.get("peak_rss_bytes") or 0) for r in eff
-                    if r["config_id"] == base and r["class_id"] in cls1)
+                    if r["config_id"] == fts0 and r["class_id"] in cls1) if fts0 else 0
         peak1 = max((r.get("peak_rss_bytes") or 0) for r in eff if r["config_id"] == fts1)
-        a, b = cell(fts1, "C2d-free-term-rows", "all"), cell(base, "C2d-free-term-rows", "all")
+        a = cell(fts1, "C2d-free-term-rows", "all")
+        b = cell(fts0, "C2d-free-term-rows", "all") if fts0 else None
         g = gain_ms(b, a)
+        # Le SIGNE est DÉRIVÉ du delta. Le gabarit précédent écrivait « +{delta} » quoi qu'il
+        # arrive : sur un delta négatif il rendait « +-33 Mio », et un lecteur pressé y lisait une
+        # hausse. Un gabarit ne doit jamais affirmer ce que la mesure n'a pas dit.
+        dd = (d1 - d0) if (d0 and d1) else None
+        sgn = "" if dd is None else ("+" if dd >= 0 else "-")
         txt = ""
-        if d0 and d1:
+        if dd is not None:
             txt += (f"activer `PLUME_FTS_FIELDS=1` a fait passer la base de "
-                    f"**{fmt_mib(d0)} Mio à {fmt_mib(d1)} Mio** (+{fmt_mib(d1-d0)} Mio, "
-                    f"+{(d1-d0)/d0*100:.0f} %). ")
-        txt += (f"RSS crête, sur les SEULES classes mesurées dans les deux configurations : "
-                f"**{fmt_mib(peak0)} Mio** à `FTS_FIELDS=0` contre **{fmt_mib(peak1)} Mio** à "
-                "`FTS_FIELDS=1`. Attention : chaque configuration repart d'un daemon neuf, donc ces "
-                "deux crêtes n'ont pas eu le même historique pour monter — l'écart n'est PAS "
-                "attribuable au drapeau seul. Le chiffre solide de cette ligne est le coût DISQUE. ")
+                    f"**{fmt_mib(d0)} Mio à {fmt_mib(d1)} Mio** ({sgn}{fmt_mib(abs(dd))} Mio, "
+                    f"{sgn}{abs(dd)/d0*100:.0f} %), sur la paire que la propriété désigne : "
+                    + (f"la passe `{fts1}` comparée à SA PROPRE taille d'avant-bascule "
+                       f"(`db_bytes_fts0`), donc sur la même base, le même binaire et le même "
+                       f"nombre d'événements. " if cfgmeta[fts1].get("db_bytes_fts0")
+                       else f"`{fts0}` contre `{fts1}`. "))
+        else:
+            txt += refus_de_comparer("le coût DISQUE de `PLUME_FTS_FIELDS=1`", "fts_fields",
+                                     cause_fts or "la passe FTS-on ne relève pas `db_bytes`") + " "
+        if fts0:
+            txt += (f"RSS crête, sur les SEULES classes mesurées dans les deux configurations "
+                    f"({len(cls1)}), et sur la MÊME paire : **{fmt_mib(peak0)} Mio** à "
+                    f"`FTS_FIELDS=0` (`{fts0}`) contre **{fmt_mib(peak1)} Mio** à `FTS_FIELDS=1`. "
+                    "Attention : chaque configuration repart d'un daemon neuf, donc ces deux crêtes "
+                    "n'ont pas eu le même historique pour monter — l'écart n'est PAS attribuable au "
+                    "drapeau seul, dans aucun des deux sens. Le chiffre solide de cette ligne est "
+                    "le coût DISQUE. ")
+        elif dd is None:
+            # Le refus DISQUE vient de nommer le MÊME axe et la MÊME cause : le répéter mot pour
+            # mot n'ajoute rien et dilue le refus. On le rattache.
+            txt += ("La crête RSS tombe sous le MÊME refus, pour la MÊME raison : elle demande deux "
+                    "passes, et la paire n'existe pas. ")
+        else:
+            txt += refus_de_comparer("la crête RSS de `PLUME_FTS_FIELDS=1`", "fts_fields",
+                                     cause_fts) + " "
         if g is not None:
-            txt += (f"Écart de latence observé sur le terme libre GXQL (tout l'historique) : "
-                    f"**{fmt_dur(abs(g))}** " + ("en faveur de FTS_FIELDS=1" if g > 0 else
-                    "en défaveur de FTS_FIELDS=1") + " — mais cet écart ne peut PAS venir du "
+            txt += (f"Écart de latence observé sur le terme libre GXQL (tout l'historique), sur la "
+                    f"MÊME paire : **{fmt_dur(abs(g))}** "
+                    + ("en faveur de FTS_FIELDS=1" if g > 0 else "en défaveur de FTS_FIELDS=1")
+                    + " — mais cet écart ne peut PAS venir du "
                     "drapeau, puisque le chemin GXQL ne lit jamais `event_fields_fts` : c'est du "
                     "bruit de mesure sur une machine partagée, et il est reporté comme tel. ")
-        else:
+        elif fts0:
             txt += "Le gain en latence sur le chemin GXQL n'a pas pu être mesuré. "
         txt += ("À retenir : `event_fields_fts` n'est lu que par `/api/search` "
                 "(`handlers/search.rs:146-157`). Le chemin GXQL ne le consulte JAMAIS — donc son coût "
@@ -2449,10 +2601,19 @@ def main():
         # (clé de tri négative) et on remplace l'en-tête « gain » par le coût disque, sinon on
         # publierait « gain : -501 ms », qui ne veut rien dire.
         lev.append((-1e9, "Le coût de `PLUME_FTS_FIELDS=1`, et à qui il profite", txt,
-                    "phase 3 vs phase 2",
-                    (f"Coût DISQUE mesuré : **+{fmt_mib(d1-d0)} Mio** (+{(d1-d0)/d0*100:.0f} %) "
-                     "sur la base. Ce n'est pas un gain, c'est une dépense — et le document dit "
-                     "plus bas à qui elle profite.") if (d0 and d1) else None))
+                    (f"`{fts0}` vs `{fts1}`" if fts0 else f"`{fts1}` — paire refusée"),
+                    (f"Effet DISQUE mesuré sur la SEULE paire que la propriété désigne : "
+                     f"**{sgn}{abs(dd)/d0*100:.0f} %** de base ({sgn}{fmt_mib(abs(dd))} Mio). "
+                     + ("Ce n'est pas un gain, c'est une dépense — et le document dit plus bas à "
+                        "qui elle profite, et ce qu'elle coûte AILLEURS que sur le disque."
+                        if dd > 0 else
+                        "La base RÉTRÉCIT sur cette paire : le sens de cet écart est DÉRIVÉ de la "
+                        "mesure, il n'est pas affirmé par le gabarit — et il contredit ce que le "
+                        "document a longtemps supposé, donc il demande une seconde passe avant "
+                        "d'être cité."))
+                    if dd is not None else
+                    "*Aucun coût disque n'est rendu ici : la paire comparable manque (voir le refus "
+                    "ci-dessous).*"))
 
     lev = [(t if len(t) == 5 else (t[0], t[1], t[2], t[3], None)) for t in lev]
     for i, (g, title, body, src, override) in enumerate(sorted(lev, key=lambda x: -(x[0] or 0)), 1):

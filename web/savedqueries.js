@@ -20,7 +20,7 @@
 // SÉCURITÉ : l'endpoint saved-queries est owner-scoped côté serveur (clé = identité authentifiée ; le client
 // n'envoie JAMAIS d'identifiant d'utilisateur) -> pas d'IDOR/énumération. Le texte GXQL stocké est INERTE :
 // il n'est compilé/masqué/autorisé qu'au run, par le chemin gardé /api/query (comme une requête tapée à la main).
-import { $, api, apiSend, toast, modal, confirmModal } from './core.js';
+import { $, api, apiSend, toast, modal, confirmModal, bornerLePopoverSousSonAncre } from './core.js';
 
 // ============================ 2) HISTORIQUE RÉCENT (localStorage) ============================
 const RECENT_KEY = 'plume_recent_queries';
@@ -58,7 +58,20 @@ let _closeDrop = null;
 function closeDrop() { if (_closeDrop) { const f = _closeDrop; _closeDrop = null; f(); } }
 
 // openDrop(anchor, build) — ouvre un panneau ancré sous `anchor`. `build(panel, close)` remplit le contenu.
-// Ferme au clic extérieur / Échap. Un seul ouvert à la fois.
+// Ferme au clic extérieur / Échap / défilement de la PAGE. Un seul ouvert à la fois.
+//
+// `P11.22-b` — LA BORNE NE BORNAIT PAS CE QU'ON CROYAIT, MESURÉ LE 2026-08-30. Ce panneau tenait sa hauteur
+// de `.sq-menu{max-height:60vh}` et sa position d'un `top = r.bottom + 4` posé à la main. Or une hauteur
+// exprimée en fraction de FENÊTRE limite la HAUTEUR d'une boîte `position:fixed`, JAMAIS sa POSITION : à
+// 60 vh d'une fenêtre de 800 px la boîte fait 480 px, donc elle sortait de l'écran dès que le bas de l'ancre
+// passait 316 px — 84 px dehors pour une ancre à 400 px, 396 px dehors pour une ancre à 712 px. Sans erreur
+// ET SANS BARRE DE DÉFILEMENT : le contenu tenait sous le plafond, rien ne débordait DE LA BOÎTE, c'est la
+// boîte qui débordait de l'écran. Ce n'était pas théorique — le bas de `#qrecent` siège vers 294 px au repos
+// en 1280×800 (`#sql` fait 80 px et les commandes de `.qbar` passent à la ligne), soit 22 px de marge ; la
+// même page en 1366×768 (fenêtre utile ~640 px, donc seuil 252 px) est DÉJÀ dehors de 41 px, et `#sql` est
+// `resize:vertical` — agrandir l'éditeur de 220 px suffit à sortir la boîte sur n'importe quel écran.
+// La hauteur est donc posée en pixels RÉELS sous l'ancre par le geste commun de `core.js`, qui bascule
+// au-dessus de l'ancre quand l'espace manque dessous. Il n'est PAS réécrit ici : il est importé.
 function openDrop(anchor, build) {
   closeDrop();
   const panel = document.createElement('div');
@@ -67,12 +80,29 @@ function openDrop(anchor, build) {
   document.body.appendChild(panel);
   const r = anchor.getBoundingClientRect();
   panel.style.position = 'fixed';
-  panel.style.top = (r.bottom + 4) + 'px';
+  // La barre de défilement est rendue VISIBLE plutôt que laissée en surimpression : c'est ELLE qui dit
+  // qu'il reste des requêtes sous le pli. `overscroll-behavior:contain` retient la molette au bout de la
+  // liste — sans lui elle passerait à la page, et un défilement de page ferme le menu (à raison : il est
+  // ancré en coordonnées de fenêtre). Posé ICI et non dans la feuille de style, qui n'appartient pas à ce
+  // lot ; `.sq-menu` mérite en plus les règles `::-webkit-scrollbar` de `.colsmenu`, qu'un style en ligne
+  // ne peut pas porter — sans elles, Safari garde sa barre escamotable et seul le pied collant parle.
+  panel.style.overscrollBehavior = 'contain';
+  panel.style.scrollbarWidth = 'thin';
+  panel.style.scrollbarColor = 'var(--bd) transparent';
+  bornerLePopoverSousSonAncre(panel, r);
+  // `offsetWidth` est lu APRÈS le bornage : une hauteur bornée peut faire apparaître la barre de
+  // défilement, donc élargir la boîte — le lire avant la déborderait du bord droit de la largeur de barre.
   panel.style.left = Math.max(6, Math.min(r.left, window.innerWidth - panel.offsetWidth - 6)) + 'px';
   const onDoc = e => { if (!panel.contains(e.target) && e.target !== anchor) closeDrop(); };
   const onKey = e => { if (e.key === 'Escape') closeDrop(); };
-  setTimeout(() => { document.addEventListener('mousedown', onDoc); document.addEventListener('keydown', onKey); }, 0);
-  _closeDrop = () => { document.removeEventListener('mousedown', onDoc); document.removeEventListener('keydown', onKey); panel.remove(); };
+  // Le panneau est ancré en coordonnées de FENÊTRE : un défilement de PAGE le laisserait collé à une
+  // position périmée, sous une ancre qui a bougé. On le ferme donc — en phase de CAPTURE, seule façon de
+  // voir le défilement d'un conteneur imbriqué. Mais le document reçoit ALORS le défilement de la liste
+  // elle-même : sans la garde `panel.contains`, elle se fermerait au premier cran de molette, ce qui se
+  // lit exactement « elle ne défile pas ». La garde ne doit pas non plus aller jusqu'à ne PLUS fermer.
+  const onScroll = e => { if (!panel.contains(e.target)) closeDrop(); };
+  setTimeout(() => { document.addEventListener('mousedown', onDoc); document.addEventListener('keydown', onKey); document.addEventListener('scroll', onScroll, true); }, 0);
+  _closeDrop = () => { document.removeEventListener('mousedown', onDoc); document.removeEventListener('keydown', onKey); document.removeEventListener('scroll', onScroll, true); panel.remove(); };
 }
 
 function emptyRow(text) {
@@ -152,10 +182,23 @@ function openRecentMenu(anchor) {
       b.onclick = () => { close(); loadIntoBar(sql); };
       panel.appendChild(b);
     });
-    const sep = document.createElement('div'); sep.className = 'sq-sep'; panel.appendChild(sep);
+    // `P11.22-b` — LA PURGE NE DÉFILE PAS AVEC CE QU'ELLE VIDE. « Effacer l'historique » est la DERNIÈRE
+    // ligne d'une liste qui CROÎT avec l'usage : au plafond de 20 entrées le contenu fait ~670 px, borné
+    // ici à l'espace réel sous l'ancre (~480 px en 800 px de fenêtre, ~330 en 640). Elle était donc la
+    // PREMIÈRE à passer sous le pli, et l'exploitant dont l'historique débordait perdait exactement le
+    // geste qui l'aurait vidé. Collée au bas de la zone défilante (`-4px` = la marge intérieure de
+    // `.minimenu`, qu'elle recouvre), elle reste offerte quel que soit le rang atteint — et sa présence
+    // permanente AU-DESSUS des lignes qui glissent DIT que la liste continue, sans un mot de plus à
+    // traduire. Le fond opaque est porté par le PIED et non par le bouton : `.minimenu-item:hover` garde
+    // ainsi sa prise, qu'un `background` en ligne sur le bouton lui aurait retirée.
+    const pied = document.createElement('div');
+    pied.style.position = 'sticky'; pied.style.bottom = '-4px'; pied.style.background = 'var(--card)';
+    pied.style.display = 'flex'; pied.style.flexDirection = 'column'; pied.style.paddingBottom = '4px';
+    const sep = document.createElement('div'); sep.className = 'sq-sep'; pied.appendChild(sep);
     const clr = document.createElement('button'); clr.type = 'button'; clr.className = 'minimenu-item sq-clear'; clr.textContent = 'Effacer l’historique';
     clr.onclick = () => { close(); writeRecent([]); toast('Historique effacé', 'ok'); };
-    panel.appendChild(clr);
+    pied.appendChild(clr);
+    panel.appendChild(pied);
   });
 }
 

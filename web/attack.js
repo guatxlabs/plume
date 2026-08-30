@@ -87,13 +87,57 @@ function coveredBg(w, max) {
   return 'color-mix(in srgb, var(--ok) ' + pct + '%, transparent)';
 }
 
+// `P11.21-j` — LE SOUS-COMPTE SE DIT SUR LA CELLULE, PAS SEULEMENT EN TÊTE DE PAGE.
+//
+// LE CONSTAT EST À L'ÉCHELLE DE LA CELLULE, ET `P11.21-i` NE L'A FERMÉ QU'À CELLE DE LA PAGE. L'aveu ouvre
+// le rendu, au-dessus de la matrice. Un lecteur qui survole une cellule sans avoir lu ce bandeau lit
+// `1r/0a` comme un COMPTE ; sur une matrice de couverture purple, un compte d'alertes trop bas se lit
+// « angle mort de détection », et c'est le verdict le plus coûteux que cette surface puisse rendre.
+//
+// LA QUESTION TRANCHÉE, ET LE CHIFFRE QUI LA TRANCHE (mesuré le 2026-08-30). Descendre le mot dans la
+// FABRIQUE DE CELLULE, ou faire REFUSER à la page les ratios qu'elle sait partiels ? La seconde branche
+// est écartée pour deux raisons, l'une mesurée, l'autre lue dans le démon :
+//   * LA TAILLE — une matrice réelle compte 183 cellules, pas « beaucoup ». C'est le nombre d'entrées du
+//     catalogue partagé (`guatx_core::attack::CATALOG`, épinglé par `daemon/Cargo.lock` sur v0.2.4,
+//     07b13cf), chacune rendue UNE fois puisque `techniques_for_tactic` filtre sur la tactique unique de
+//     l'entrée. Un booléen évalué 183 fois ne pèse rien devant les quatre `createElement`, la fermeture de
+//     clic et l'infobulle que chaque cellule construit déjà. Le « chemin très chaud » n'existe pas ici :
+//     c'est mesuré, pas supposé, et l'argument de coût qui poussait vers l'autre branche tombe.
+//   * LE SENS DE L'ERREUR — refuser les ratios ferait voir MOINS à l'exploitant, et moins que ce qui est
+//     ÉTABLI : la cause servie sur cette route dit que seuls les comptes d'ALERTES sont des sous-comptes,
+//     et que la couverture (`covered`, `rule_count`) ne vient pas de cette lecture. Effacer un compte de
+//     règles au motif qu'un compte d'alertes est incertain serait un second verdict faux, en sens inverse.
+//
+// LA MARQUE EST DONC LA PLUS PETITE QUI RESTE VRAIE : un signe « au moins » collé au SEUL nombre qui est
+// un minorant. Elle ne touche ni le compte de règles ni l'état de couverture. Elle ne crie pas — une
+// matrice dont chaque cellule porterait un avertissement ne se lirait plus, donc n'avertirait plus. Le
+// POURQUOI vit dans l'infobulle, bilingue par construction ; la cause du démon, elle, reste écrite UNE
+// fois en tête de la vue — la redire par cellule en ferait 183 porteurs qui vieilliraient ensemble.
+//
+// ET LA MARQUE EST CONDITIONNELLE : sur une lecture entière, cette cellule est byte-identique à celle
+// d'avant cette clé. Une cellule qui porterait toujours le signe ne dirait plus rien.
+//
+// LE MOT DE L'INFOBULLE EST DÉRIVÉ, PAS RECOPIÉ. Il dit ce que le démon établit de CETTE route — un
+// minorant sur les alertes, une couverture qui n'en dépend pas — sans reprendre sa phrase, qui
+// vieillirait ici en second porteur.
+function motDuSousCompteDAlertes() {
+  return LANG === 'en'
+    ? 'INCOMPLETE READ: this alert count is a LOWER BOUND — what was read, not what exists. The rule count and the coverage state do not come from that read and stand.'
+    : "LECTURE INCOMPLÈTE : ce nombre d'alertes est un MINORANT — ce qui a été lu, pas ce qui existe. Le compte de règles et l'état de couverture ne viennent pas de cette lecture et tiennent.";
+}
+
 // Une cellule = une technique, en TROIS états : couverte -> fond vert (échelle) ; règle activée mais rien
 // pour la nourrir -> classe .attente (trait plein, encre d'avertissement) ; aucune règle -> .uncovered (grisé
 // pointillé). Les deux derniers partagent `covered:false`, et c'est vrai des deux — rien ne tire.
-function techniqueCell(t, max) {
+// `comptesDAlertesNonEtablis` (`P11.21-j`) : la lecture des alertes par technique n'est pas allée au bout,
+// donc `alert_count` est un MINORANT. Absent ou faux -> rendu inchangé.
+function techniqueCell(t, max, comptesDAlertesNonEtablis) {
   const tid = (t && t.tid) || '?';
   const covered = !!(t && t.covered);
   const attente = enAttenteDeSource(t);
+  // Le signe ne paraît QUE là où un nombre d'alertes est affiché, c'est-à-dire sur une cellule couverte :
+  // les deux autres états ne rendent que des mots de COUVERTURE, et la couverture reste établie.
+  const minorant = !!comptesDAlertesNonEtablis && covered;
   const cell = document.createElement('button');
   cell.type = 'button';
   // TROIS classes pour TROIS états : une cellule en attente de source n'est pas grisée comme un angle
@@ -105,7 +149,7 @@ function techniqueCell(t, max) {
   const manquantes = sourcesManquantes(t);
   const idEl = document.createElement('span'); idEl.className = 'attack-tid'; idEl.textContent = tid;
   const cnt = document.createElement('span'); cnt.className = 'attack-cnt' + (covered ? '' : ' none');
-  cnt.textContent = covered ? (rc + 'r/' + ac + 'a') : attente ? 'source manquante' : 'aucune règle';
+  cnt.textContent = covered ? (rc + 'r/' + (minorant ? '≥' : '') + ac + 'a') : attente ? 'source manquante' : 'aucune règle';
   const nom = techniqueDisplayName(t);
   const nameEl = document.createElement('span'); nameEl.className = 'attack-tname' + (nom ? '' : ' attack-tname-inconnu');
   nameEl.textContent = nom || NOM_INCONNU;
@@ -114,13 +158,14 @@ function techniqueCell(t, max) {
   // qu'avant, à côté de celles qui manquaient. Le raccourci d'import en masse reste sur la légende (admin),
   // et il ne s'offre qu'aux VRAIS angles morts : importer un ruleset ne branche aucun producteur.
   const etatEnInfobulle = covered
-    ? (rc + ' règle(s) · ' + ac + ' alerte(s)')
+    ? (rc + ' règle(s) · ' + (minorant ? '≥' : '') + ac + ' alerte(s)')
     : attente
       ? ("EN ATTENTE DE SOURCE — " + reglesEnAttente(t) + " règle(s) activée(s) portent cette technique, mais rien sur cette base ne produit ce qu'elles interrogent"
          + (manquantes.length ? '. Source(s) à brancher : ' + manquantes.join(', ') : ''))
       : 'ANGLE MORT — aucune règle ne couvre cette technique. Importez un ruleset Sigma pour la couvrir (bouton « Importer un ruleset Sigma »).';
   cell.title = tid + ' — ' + (nom || (NOM_INCONNU + " : identifiant hors du catalogue ATT&CK connu de la console (technique retirée, personnalisée ou mal saisie)"))
     + '\n' + etatEnInfobulle
+    + (minorant ? '\n' + motDuSousCompteDAlertes() : '')
     + '\n' + 'Clic : ses règles, ses alertes, et le geste qui la couvrirait';
   cell.onclick = () => ouvrirLaPorteDeLaTechnique(t);
   return cell;
@@ -256,7 +301,8 @@ function ouvrirLaPorteDeLaTechnique(t) {
 }
 
 // Une colonne = une tactique + ses techniques (couvertes triées en tête, angles morts ensuite).
-function tacticColumn(tac, max) {
+// `comptesDAlertesNonEtablis` (`P11.21-j`) descend jusqu'à la cellule : c'est elle qui porte le nombre.
+function tacticColumn(tac, max, comptesDAlertesNonEtablis) {
   const col = document.createElement('div'); col.className = 'attack-col';
   const techs = Array.isArray(tac && tac.techniques) ? tac.techniques.slice() : [];
   const covered = techs.filter(t => t && t.covered).length;
@@ -274,7 +320,7 @@ function tacticColumn(tac, max) {
   // l'ordre suit ce que l'exploitant peut FAIRE — regarder, brancher, écrire.
   const rang = x => (x && x.covered ? 2 : enAttenteDeSource(x) ? 1 : 0);
   techs.sort((a, b) => (rang(b) - rang(a)) || (techWeight(b) - techWeight(a)));
-  techs.forEach(t => col.appendChild(techniqueCell(t, max)));
+  techs.forEach(t => col.appendChild(techniqueCell(t, max, comptesDAlertesNonEtablis)));
   return col;
 }
 
@@ -464,7 +510,9 @@ async function loadAttackMatrix() {
   tactics.forEach(tac => (tac.techniques || []).forEach(t => { const w = techWeight(t); if (w > max) max = w; }));
   renderLegend(tactics);
   const matrix = document.createElement('div'); matrix.className = 'attack-matrix';
-  tactics.forEach(tac => matrix.appendChild(tacticColumn(tac, max)));
+  // `P11.21-j` — L'ÉTAT LU PLUS HAUT DESCEND JUSQU'À LA CELLULE. Le bandeau ne suffit pas : un lecteur qui
+  // survole une case sans l'avoir lu prendrait un sous-compte pour un compte.
+  tactics.forEach(tac => matrix.appendChild(tacticColumn(tac, max, etat.incomplet)));
   // `P11.21-i` — L'AVEU EST RENDU AVANT LA MATRICE, ET C'EST LA SEULE POSITION HONNÊTE : un démenti posé
   // SOUS le tableau serait rencontré APRÈS lui par un lecteur qui va de haut en bas, c'est-à-dire après
   // qu'il a compté des alertes qui sont des sous-comptes. Sur une lecture entière, ce tableau est vide et
@@ -480,4 +528,4 @@ async function loadAttackMatrix() {
   host.replaceChildren(...noeuds);
 }
 
-export { loadAttackMatrix, techniqueCell, techniqueDisplayName, porteDeLaTechnique, poserLesPortesDeTechnique, refusDeMatrice, etatDeLaMatriceServie, motDeLaMatriceIncomplete, NOM_INCONNU };
+export { loadAttackMatrix, techniqueCell, techniqueDisplayName, porteDeLaTechnique, poserLesPortesDeTechnique, refusDeMatrice, etatDeLaMatriceServie, motDeLaMatriceIncomplete, motDuSousCompteDAlertes, NOM_INCONNU };

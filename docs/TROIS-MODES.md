@@ -285,9 +285,23 @@ lisible via `/proc/<pid>/environ`. **Perte de la clé = perte de la base.**
 
 | | geste |
 |---|---|
-| `host` | recompiler (`cargo build --release`), rejouer `bootstrap.sh` (idempotent) |
+| `host` | recompiler (`cargo build --release` — **build nu : deux capacités en moins**, cf. sous la table), rejouer `bootstrap.sh` (idempotent) |
 | `docker` | `docker compose up -d --build` |
 | `k3s` | reconstruire l'image, la réimporter dans `k3s ctr`, puis `kubectl -n soc rollout restart deploy/soc` |
+
+**Ces trois lignes ne reconstruisent pas le même binaire, et la table seule ne le montre pas.** Les deux
+lignes qui passent par l'image héritent d'un jeu de features déclaré une fois pour
+toutes — `ARG PLUME_FEATURES=ldap,cold_tier` dans le [`Dockerfile`](../Dockerfile), depuis `971de7a`
+(2026‑08‑08). La ligne `host` est **nue** et n'en prend **aucune**. Un binaire hôte bâti ainsi n'a **ni le
+tier froid colonnaire** — `PLUME_COLD_TIER` y est sans effet, et les fichiers‑jour Parquet écrits par un
+autre binaire lui sont invisibles — **ni le bind LDAP/AD natif** : `POST /api/auth/ldap` répond **501**.
+Les prendre : `cargo build --release --features cold_tier,ldap`. Le défaut nu est **assumé, pas
+accidentel** (le coût de construction de `cold_tier` n'est borné par aucun chiffre mesuré ; l'en‑tête de
+`bootstrap.sh` le dit), mais il ne doit pas être **subi** : c'est pourquoi `bootstrap.sh` **mesure** en fin
+d'installation ce que le binaire posé porte — verdict `>> Capacités optionnelles`, obtenu en interrogeant
+`plume-daemon --help` — et **refuse de conclure** plutôt que d'annoncer une capacité non prouvée. Ce
+constat automatique ne couvre que le tier froid ; pour l'annuaire, la preuve est la réponse **501** de la
+route de login.
 
 **Aucune image et aucun binaire ne sont publiés à ce jour** : les trois chemins compilent depuis les
 sources. C'est un manque assumé, écrit dans le [`README`](../README.md#installation).
@@ -337,10 +351,12 @@ vides, et pourquoi.
 
 ## 5. Pourquoi c'est ainsi
 
-**Un seul binaire, trois enveloppes.** Le démon ne sait pas dans quel mode il tourne, et c'est
-voulu : il lit des variables et des chemins, rien d'autre. Tout ce qui distingue les modes vit
-**hors** du binaire — dans une unité systemd, dans un `docker-compose.yml`, dans un manifeste. Le
-prix de ce choix est exactement ce document : les gestes d'exploitation, eux, diffèrent.
+**Un seul binaire, trois enveloppes.** Un seul *programme* — mais pas forcément le même jeu de capacités
+**compilées** : le build de l'image en prend deux que la recette hôte laisse (cf. §3.9). Le démon, lui, ne
+sait pas dans quel mode il tourne, et c'est voulu : il lit des variables et des chemins, rien d'autre.
+Tout ce qui distingue les *modes* vit **hors** du binaire — dans une unité systemd, dans un
+`docker-compose.yml`, dans un manifeste. Le prix de ce choix est exactement ce document : les gestes
+d'exploitation, eux, diffèrent.
 
 **Le niveau « fichier » est coupé en conteneur pour une raison.** Laisser le démon lire
 `/etc/plume/plume.conf` dans une image où ce fichier n'existe pas ferait dépendre le comportement

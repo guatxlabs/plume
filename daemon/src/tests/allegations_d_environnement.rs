@@ -883,11 +883,24 @@ mod allegations_d_environnement_tests {
         let prose: Vec<&str> = brut.lines().filter(|l| l.trim_start().starts_with('#') && l.contains(fichier)).collect();
         assert!(!prose.is_empty(), "INSTRUMENT : plus aucun commentaire ne nomme `{fichier}` — le témoin négatif a disparu");
         assert!(prose.iter().all(|l| !code.contains(l.trim())), "INSTRUMENT : un commentaire a survécu au dépouillement");
-        let lignes: Vec<&str> = code.lines().collect();
-        let ecriture = lignes.iter().position(|l| l.contains(&format!("> {fichier}")))
+        // LA FENÊTRE COMPTE DES INSTRUCTIONS, PAS DES LIGNES DE TEXTE — corrigé le 2026-08-30 après un
+        // ÉCHEC DU PORTILLON DE DÉPLOIEMENT. Le dépouillement ci-dessus retire les commentaires mais
+        // CONSERVE LA LIGNE : une fenêtre prise sur `code.lines()` mesurait donc du VOLUME DE TEXTE.
+        // Quatorze lignes de documentation ajoutées DANS le document de configuration lui-même — du
+        // texte que l'exploitant LIT, qui n'exécute rien et ne peut rien lire — ont suffi à la faire
+        // sortir. La propriété visée n'a jamais été « peu de texte » : c'est « RIEN NE S'EXÉCUTE entre
+        // l'écriture et la fermeture ». On ne garde donc que les lignes NON VIDES après dépouillement,
+        // ce qui rend la garde à la fois JUSTE et plus SERRÉE : une instruction interposée compte, un
+        // commentaire non. Le numéro rendu dans le message reste celui de la ligne SOURCE, pour qu'il
+        // se retrouve dans le fichier.
+        let brutes: Vec<&str> = code.lines().collect();
+        let ligne_source = brutes.iter().position(|l| l.contains(&format!("> {fichier}")))
             .expect("INSTRUMENT : `bootstrap.sh` n'écrit plus `/etc/plume/soc.conf` par redirection — la forme a changé, relire");
+        let lignes: Vec<&str> = brutes.iter().copied().filter(|l| !l.trim().is_empty()).collect();
+        let ecriture = lignes.iter().position(|l| l.contains(&format!("> {fichier}")))
+            .expect("INSTRUMENT : l'écriture a disparu du code dépouillé alors qu'elle est dans le source — le dépouillement ne rend plus ce qu'il prétend");
         let referme = lignes[ecriture..].iter().take(16).any(|l| l.contains(&format!("chmod 0640 {fichier}")) || l.contains(&format!("-m0640 {fichier}")));
-        assert!(referme, "`bootstrap.sh` écrit `{fichier}` (ligne {}) sans le refermer en 0640 dans les lignes qui suivent : la clé SQLCipher et l'empreinte du mot de passe restent lisibles par tout utilisateur local, et le démon démarre pareil", ecriture + 1);
+        assert!(referme, "`bootstrap.sh` écrit `{fichier}` (ligne {}) sans le refermer en 0640 dans les lignes qui suivent : la clé SQLCipher et l'empreinte du mot de passe restent lisibles par tout utilisateur local, et le démon démarre pareil", ligne_source + 1);
     }
 
     // --------------------------------------------------------------------------------------------

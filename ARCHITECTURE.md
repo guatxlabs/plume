@@ -411,10 +411,24 @@ de 2 Gio est **appliqué à l'exécution** dans les **trois** modes (`limits.mem
 **aucun job de CI ne vérifie ce plafond** : c'est une mesure et une borne d'exécution, pas une garantie
 re-prouvée à chaque commit. La consommation dépend surtout de la **concurrence de requêtes**, pas de la
 taille de la base ; mesurez votre propre empreinte et **définissez vos propres seuils**. Leviers disponibles :
-`MALLOC_ARENA_MAX=2` (borne les arènes glibc), `PLUME_QUERY_CONCURRENCY` (borne les requêtes
-simultanées — chacune coûte de la RAM), `PLUME_FTS_FIELDS=0` (défaut : pas de vtable
-`event_fields_fts`, la plus grosse économie disponible). La stratégie tient aux **rollups
+`MALLOC_ARENA_MAX=2` (borne les arènes glibc) et `PLUME_QUERY_CONCURRENCY` (borne les requêtes
+simultanées — chacune coûte de la RAM). La stratégie tient aux **rollups
 par-dimension** + au **cache SWR** — pas à l'index seul. CPU : 2 cœurs suffisent.
+
+**`PLUME_FTS_FIELDS` n'est pas un levier de ce budget, et ce document le rangeait pourtant parmi
+eux.** *Corrigé le 2026-08-30, après relecture du banc et des sources.* Aucune paire comparable du
+banc ne mesure de surcoût MÉMOIRE de la vtable `event_fields_fts` : la seule paire qui partage le
+binaire, le volume et la base rend une crête **plus basse** avec la capacité active, et le banc dit
+lui-même que cet écart n'est pas attribuable au drapeau (chaque configuration repart d'un démon
+neuf). Ce qui est mesuré, c'est un coût de **DISQUE** — de l'ordre d'un dixième de base en plus sur
+cette même paire, au banc du dépôt (`docs/BENCHMARK.md`, levier L6) — et ce qui pèse le plus n'est
+pas chiffrable en octets : **activer cette capacité échange de la performance de recherche contre de
+la confidentialité sur la sauvegarde.** La vtable est déclarée *contentless* (`content=''`), forme
+que le plan de sauvegarde typé refuse (`collect_dump_plan` → `PlanErr::Unsupported`) ; le chemin
+compressé replie alors sur l'export historique, qui **réécrit la base entière EN CLAIR** dans le
+répertoire de staging le temps de chaque cycle (`sqlcipher_export`). C'est cela — non la RAM — qui
+justifie le défaut à `0`, et c'est le même arbitrage explicite que celui de
+`PLUME_SQLITE_DEVERSEMENT`. Détail : [`docs/CHIFFREMENT-COMPRESSION.md`](docs/CHIFFREMENT-COMPRESSION.md).
 
 **Plafond mémoire d'une lecture — et pourquoi il est OPT-IN.** Un `stats … by` ou un `dc()` dont la clé
 n'est pas ordonnée par un index fait **trier** SQLite. Sous `temp_store=MEMORY`, ce tri n'a **aucun

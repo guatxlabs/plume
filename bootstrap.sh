@@ -3,6 +3,33 @@
 #   cd ~/plume/daemon && cargo build --release
 #   HASH=$(~/plume/daemon/target/release/plume-daemon hashpw 'tonmotdepasse')
 #   sudo env PLUME_PASS_HASH="$HASH" bash ~/plume/bootstrap.sh
+#
+# `P7.20-e` — CE QUE CETTE RECETTE COMPILE, ET CE QU'ELLE NE COMPILE PAS. CE SCRIPT NE COMPILE RIEN :
+# il refuse de continuer si le binaire est absent (plus bas) et vous renvoie à `cargo`. La ligne de
+# compilation ci-dessus est donc ce qui DÉCIDE des capacités du mode natif — et jusqu'ici elle ne
+# décidait rien, elle se taisait. `cargo build --release` NU est le défaut, et il est désormais ASSUMÉ
+# ICI : le démon complet, SANS les features optionnelles. L'image conteneur, elle, est bâtie
+# `ldap,cold_tier` (`ARG PLUME_FEATURES` du Dockerfile) — l'écart entre les deux modes était réel et
+# n'était écrit NULLE PART ; il l'est ici, et l'installation le MESURE sur le binaire qu'elle pose
+# (verdict `>> Capacités optionnelles` en fin de course) plutôt que de vous laisser le découvrir.
+#
+# LES DEUX CAPACITÉS QUE LE DÉFAUT NU N'A PAS :
+#   • `cold_tier` — tier froid colonnaire Parquet (#18). Sans elle, `PLUME_COLD_TIER` est SANS EFFET
+#     et des fichiers-jour écrits par un AUTRE binaire seraient INVISIBLES à celui-ci. Avec elle,
+#     RIEN NE CHANGE tant que `PLUME_COLD_TIER=1` n'est pas posé (double porte : compilation PUIS
+#     exécution) — la compiler ne l'allume pas. CE QU'ELLE COÛTE À LA CONSTRUCTION N'EST PAS MESURÉ
+#     ICI, et c'est la raison pour laquelle le défaut reste nu plutôt qu'aligné sur l'image : elle
+#     tire `parquet` (codecs zstd/snap, sans arrow) plus `hkdf`/`sha2`/`bytes` — davantage de caisses
+#     à compiler sur une machine qui n'a pas forcément de quoi, sans un chiffre pour le borner.
+#     Ce qu'elle vaut ALLUMÉE, et ce qu'elle prend, est écrit à côté du réglage lui-même (plus bas,
+#     dans /etc/plume/soc.conf) — dont le fait qu'AUCUN chemin ne ramène un jour froid vers le chaud.
+#   • `ldap` — bind LDAP/AD natif (#44). Sans elle, le login annuaire répond 501. Elle est DÉFAUT-ON
+#     dans l'image conteneur : c'est le second écart entre les deux modes, et il n'est pas silencieux.
+# CE QUE CE FICHIER NE PEUT PAS TENIR SEUL : le README prescrit AUSSI la ligne de compilation, et il
+# la donne nue. Deux endroits à tenir d'accord = une occasion de diverger (le Dockerfile a rencontré
+# exactement ça, `P4.5-a`) ; c'est le contrôle de fin de course qui rattrape l'écart, pas la prose.
+# Les prendre :  cd ~/plume/daemon && cargo build --release --features cold_tier,ldap
+# Sur une machine modeste, bornez le parallélisme comme le fait l'image :  CARGO_BUILD_JOBS=2 cargo …
 set -euo pipefail
 SRC="$(cd "$(dirname "$0")" && pwd)"
 echo ">> Source repo : $SRC"
@@ -61,7 +88,12 @@ install -m0644 "$SRC/systemd/plume-prom-scrape.timer"   /etc/systemd/system/
 
 # daemon (binaire requis)
 if [ ! -x "$SRC/daemon/target/release/plume-daemon" ]; then
-  echo "!! binaire absent — fais d'abord : cd $SRC/daemon && cargo build --release"; exit 1
+  echo "!! binaire absent — fais d'abord :"
+  echo "     cd $SRC/daemon && cargo build --release"
+  echo "   ou, pour les capacités optionnelles que l'image conteneur porte (tier froid, LDAP/AD) :"
+  echo "     cd $SRC/daemon && cargo build --release --features cold_tier,ldap"
+  echo "   (les deux formes sont légitimes ; la nue est le défaut assumé — cf. l'en-tête de ce script)"
+  exit 1
 fi
 install -m0755 "$SRC/daemon/target/release/plume-daemon" /usr/local/bin/plume-daemon
 install -m0644 "$SRC/systemd/plume-daemon.service" /etc/systemd/system/
@@ -83,6 +115,20 @@ PLUME_HOST=soc.localhost
 PLUME_WEB=/usr/local/share/plume/web
 PLUME_DB=/var/lib/plume/db/soc.db
 PLUME_SPOOL=/var/lib/plume/spool
+# TIER FROID COLONNAIRE (#18) — ÉTEINT, ET C'EST UNE DÉCISION (P7.20-e). Ligne COMMENTÉE : le démon
+# saute les lignes qui commencent par un dièse, elle n'arme donc rien. Décommentée, elle ne mord que
+# si ce binaire a été bâti avec la feature (double porte : compilation PUIS exécution) ; le démon dit
+# lequel des trois états est le sien au démarrage — journalctl -u plume-daemon | grep -i 'tier froid'
+# CE QU'ALLUMER FAIT, ET QUI NE SE DÉFAIT PAS : un jour révolu au-delà de la fenêtre chaude QUITTE la
+# table event pour un fichier Parquet chiffré sous /var/lib/plume/db/cold. AUCUN chemin ne ramène un
+# jour froid vers le chaud : le fichier devient la SEULE copie de ces événements.
+# ET CE FICHIER N'EST PAS SAUVEGARDÉ ICI : plume-backup.timer copie la BASE (VACUUM INTO) et rien
+# d'autre ; le répertoire cold n'entre dans aucune archive de ce mode. Le démon sait produire un plan
+# de copie (plume-daemon cold-backup-plan), mais aucune unité de ce dépôt ne l'exécute.
+# CE QUI N'EST PAS MESURÉ, ET QUI DÉCIDE DU DÉFAUT : la crête mémoire imputable à la passe de
+# vieillissement sous le budget de 2 Gio (MemoryMax de plume-daemon.service). Cf.
+# docs/DESIGN-P10-echelle-2go.md, levier A. Seule la valeur 1 allume ; toute autre valeur = éteint.
+#PLUME_COLD_TIER=1
 EOF
   chgrp soc /etc/plume/soc.conf && chmod 0640 /etc/plume/soc.conf
   [ -n "${PLUME_PASS_HASH:-}" ] && echo ">> /etc/plume/soc.conf écrit (hash posé)." \
@@ -196,4 +242,39 @@ echo "       ce que leur extinction ÉTEINT : sans kube-state, l'alerte native �
 echo "       un coffre scellé arrête la rotation des clés de TOUT le cluster (épisode fondateur du 2026-08-26 : vingt-sept secrets externes)."
 echo "       Tant que le timer est éteint ce signal est MUET, et ce silence ne vaut PAS « tout va bien ». Détail : deploy/K8S.md"
 echo "   • Scrape Prometheus (OBS-1, remplace Prom) : remplis /etc/plume/prom-targets + /etc/plume/prom.conf puis sudo systemctl enable --now plume-prom-scrape.timer"
+
+# `P7.20-e` — CAPACITÉS OPTIONNELLES DU BINAIRE RÉELLEMENT POSÉ, MESURÉES ET NON SUPPOSÉES.
+# CE QUE ÇA FERME : l'image conteneur est bâtie `ldap,cold_tier`, la recette native ne l'est pas, et
+# rien ne le disait — l'exploitant natif perdait une capacité EN SILENCE. On ne devine donc pas depuis
+# la ligne de compilation (personne ne sait ce que l'exploitant a tapé) : on DEMANDE AU BINAIRE.
+# L'ANCRE EST LE NOM DE LA SOUS-COMMANDE, pas une phrase : `cold-backup-plan` existe dans les DEUX
+# builds (main.rs la liste des deux côtés), et c'est le binaire lui-même qui la dit indisponible quand
+# la feature manque. `--help` n'ouvre aucune base, ne lit aucune conf et sort immédiatement.
+# TROISIÈME ÉTAT, DÉLIBÉRÉ, ET C'EST LUI QUI DÉCIDE DE LA FORME. LE SENS OPTIMISTE EST LE SEUL QUI
+# COÛTE CHER ICI — croire le tier froid présent, poser PLUME_COLD_TIER=1, et n'obtenir RIEN. Le verdict
+# « PRÉSENT » exige donc une PREUVE POSITIVE (la ligne d'aide du build QUI PORTE la feature), jamais
+# l'absence d'un mot : si les deux formes connues manquent — binaire muet, aide remaniée, phrase
+# renommée dans main.rs — ce contrôle REFUSE DE CONCLURE. Une dérive des libellés du démon dégrade
+# donc ce constat vers le silence, jamais vers une capacité annoncée à tort. Aucun code de sortie n'en
+# dépend : l'installation est finie, ceci n'est qu'un constat.
+AIDE_DAEMON="$(/usr/local/bin/plume-daemon --help 2>&1 || true)"
+LIGNE_COLD="$(printf '%s\n' "$AIDE_DAEMON" | grep -m1 -- 'cold-backup-plan' || true)"
+if [ -n "$LIGNE_COLD" ] && printf '%s' "$LIGNE_COLD" | grep -q 'plan de sauvegarde du tier froid'; then
+  echo ">> Capacités optionnelles — tier froid colonnaire (#18) : PRÉSENT dans ce binaire, et ÉTEINT."
+  echo "   La compilation ne l'allume pas : il faut AUSSI PLUME_COLD_TIER=1 dans /etc/plume/soc.conf"
+  echo "   (la ligne y est écrite, commentée, avec ce qu'elle coûte). Allumé, il déplace des jours"
+  echo "   entiers vers /var/lib/plume/db/cold — SANS retour possible vers le chaud, et HORS de ce que"
+  echo "   plume-backup.timer sauvegarde."
+elif printf '%s' "$LIGNE_COLD" | grep -q 'INDISPONIBLE'; then
+  echo ">> Capacités optionnelles — tier froid colonnaire (#18) : ABSENT de ce binaire (bâti sans"
+  echo "   --features cold_tier). PLUME_COLD_TIER y est SANS EFFET, et des fichiers-jour Parquet"
+  echo "   écrits par un autre binaire seraient INVISIBLES à celui-ci. C'est le défaut ASSUMÉ du mode"
+  echo "   natif ; l'image conteneur, elle, le compile. Le prendre : cd $SRC/daemon &&"
+  echo "   cargo build --release --features cold_tier,ldap  puis rejouer ce script (idempotent)."
+else
+  echo ">> Capacités optionnelles : NON MESURÉES — le binaire n'a pas répondu à --help, ou son aide ne"
+  echo "   porte aucune des deux formes attendues pour 'cold-backup-plan'. Ceci n'est PAS « aucune"
+  echo "   capacité » : c'est un contrôle qui REFUSE DE CONCLURE plutôt que d'en annoncer une."
+  echo "   Vérifie à la main : /usr/local/bin/plume-daemon --help"
+fi
 systemctl is-active plume-daemon.service

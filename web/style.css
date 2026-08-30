@@ -407,12 +407,32 @@ button[aria-pressed="true"]{background:var(--sel-bg);color:var(--sel-fg);border-
 .qtblbar{display:flex;justify-content:flex-end;padding:0 0 5px}
 .colsbtn{background:var(--card2);border:1px solid var(--bd);border-radius:8px;padding:3px 10px;color:var(--mut);cursor:pointer;font-size:12px}
 .colsbtn:hover{border-color:var(--acc);color:var(--acc)}
-.colsmenu{position:fixed;z-index:60;background:var(--card);border:1px solid var(--bd);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.35);padding:6px;max-height:60vh;overflow:auto;min-width:210px}
+/* `P11.22-z` — `max-height:60vh` N'EST PLUS QU'UN FILET. Une borne en `vh` borne la HAUTEUR d'une boîte,
+   jamais sa POSITION : sur un popover `fixed` posé sous une ancre, elle ne garantit la visibilité que si
+   l'ancre siège dans les 40 % hauts de l'écran — ce que la barre d'un tableau de résultats ne promet pas
+   (elle vit aussi dans un panneau de dashboard, posé n'importe où). La hauteur RÉELLE est désormais posée
+   en pixels à l'ouverture, sur l'espace qui existe sous l'ancre (`bornerLePopoverSousSonAncre`, core.js),
+   et le style en ligne l'emporte sur cette règle. `overscroll-behavior:contain` retient la molette au bout
+   de la liste : sans lui, elle passerait à la page, et un défilement de PAGE ferme le menu (à raison — il
+   est ancré en coordonnées de fenêtre). La barre de défilement est rendue VISIBLE, jamais en surimpression :
+   c'est ELLE qui dit qu'il reste des colonnes sous le pli, pendant que le compte du bouton (« Colonnes
+   9/34 ») dit combien il en existe. Une liste qui défile sans que rien ne l'annonce serait le même défaut
+   d'un cran plus haut. */
+.colsmenu{position:fixed;z-index:60;background:var(--card);border:1px solid var(--bd);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.35);padding:6px;max-height:60vh;overflow:auto;min-width:210px;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:var(--bd) transparent}
+.colsmenu::-webkit-scrollbar{width:10px}
+.colsmenu::-webkit-scrollbar-track{background:transparent}
+.colsmenu::-webkit-scrollbar-thumb{background:var(--bd);border:2px solid var(--card);border-radius:6px}
+.colsmenu::-webkit-scrollbar-thumb:hover{background:var(--mut)}
 .colsmenu label{display:flex;gap:8px;align-items:center;padding:4px 7px;font-size:12px;cursor:pointer;border-radius:6px;font-family:var(--font-mono)}
 .colsmenu label:hover{background:var(--acc-bg)}
 .colsmenu .colsnm{overflow:hidden;text-overflow:ellipsis;max-width:210px}
 .colsmenu .colspc{margin-left:auto;color:var(--mut);font-size:11px;padding-left:12px}
-.colsmenu .colsall{width:100%;margin-top:5px;background:var(--card2);border:1px solid var(--bd);border-radius:7px;padding:5px;color:var(--fg);cursor:pointer;font-size:12px}
+/* `P11.22-z` — LA SORTIE DE SECOURS NE DÉFILE PAS AVEC CE QU'ELLE COMMANDE. « Tout afficher » vivait en
+   fin de contenu : dès que la liste dépassait, il partait sous le pli avec les dernières colonnes. Collé
+   au bas de la zone défilante (`-6px` = la marge intérieure du menu, qu'il recouvre), il reste offert quel
+   que soit le rang atteint, et sa présence permanente au-dessus des lignes qui glissent DIT que la liste
+   continue — sans un mot de plus à traduire. */
+.colsmenu .colsall{width:100%;margin-top:5px;background:var(--card2);border:1px solid var(--bd);border-radius:7px;padding:5px;color:var(--fg);cursor:pointer;font-size:12px;position:sticky;bottom:-6px}
 .colsmenu .colsall:hover{border-color:var(--acc);color:var(--acc)}
 .qtable{border-collapse:separate;border-spacing:0;width:100%;font-family:var(--font-mono);font-size:12px}
 /* `P11.15-b` — LE SEUL POINT QUI FAIT LA HAUTEUR D'UNE LIGNE, donc le seul qui lise les jetons de

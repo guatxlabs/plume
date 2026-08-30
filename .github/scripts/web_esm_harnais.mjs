@@ -7282,6 +7282,119 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   console.log(`[page-incomplete-pas-refus] trois vues, trois issues chacune sur le corps que le démon sert VRAIMENT : la matrice ATT&CK rend ses ${cellules55(matPartielle)} technique(s) sous un aveu au lieu de les jeter (elle en jetait toutes, sur une cause qui déclare la couverture ÉTABLIE), la couverture par détections rend ses ${puces55(covPartielle)} technique(s) et distingue encore le VRAI vide du refus, et la fraîcheur — dont le défaut allait dans l'AUTRE sens, un relevé tronqué servi comme complet — avoue à la racine, dans le partage des alertes, et sur ses deux chargeurs de vue. Les TROIS voies d'aveu sont LUES dans le démon et non supposées : si l'une cesse d'être conditionnelle, ce témoin refuse de conclure. Le chemin NOMINAL est exercé le premier et ne porte AUCUN aveu — un corps qui avoue toujours n'avoue rien. Aucune phrase du démon n'est recopiée : la cause injectée est visiblement fabriquée. CE QUE CE TÉMOIN NE TIENT PAS : il juge le TEXTE d'un arbre, jamais ce qu'un moteur de rendu en peint ; il ne dit rien de la position VISUELLE de l'aveu, seulement de son rang dans le document ; et il n'exerce pas /api/alerts, tenu par le témoin de \`P11.21-h\`.`);
 }
 
+// ---------------------------------------------------------------------------------------------
+// 56. UN POPOVER ANCRÉ TIENT DANS L'ÉCRAN, ET LE FAIRE DÉFILER NE LE FERME PAS (`P11.22-z`).
+//
+//     LE CONSTAT D'EXPLOITANT ÉTAIT UN SYMPTÔME VRAI SUR UNE CAUSE FAUSSE, et ce témoin tient les DEUX
+//     causes réelles parce qu'elles sont indépendantes et qu'un correctif peut défaire l'une sans l'autre.
+//
+//     (1) LA BORNE NE BORNAIT PAS CE QU'ON CROYAIT. Une hauteur exprimée en fraction de FENÊTRE limite la
+//     HAUTEUR d'une boîte à position fixe, JAMAIS sa POSITION : ancre en bas d'écran, la boîte descendait
+//     de plusieurs centaines de pixels HORS ÉCRAN — sans erreur, ET SANS BARRE DE DÉFILEMENT, puisque le
+//     contenu tenait sous le plafond. Rien ne débordait DE LA BOÎTE ; c'est la boîte qui débordait de l'écran.
+//
+//     (2) LA LISTE SE FERMAIT AU LIEU DE DÉFILER. Le capteur de défilement est posé sur le document en
+//     phase de CAPTURE — ce qui est NÉCESSAIRE pour voir un défilement dans un conteneur imbriqué — mais
+//     il recevait alors le défilement DE SA PROPRE LISTE. Le remède n'est donc PAS de retirer la capture :
+//     c'est que le gestionnaire IGNORE ce qui vient de son propre popover. Ce témoin exige la garde, pas
+//     l'absence du capteur — et il attrape aussi LE REMÈDE POUSSÉ TROP LOIN, un capteur qui ne ferme plus rien.
+//
+//     CE QU'IL NE TIENT PAS : il lit ce que le module POSE, jamais l'encre peinte. Une borne déplacée dans
+//     la feuille de style le ferait rougir à tort ; une borne posée en pixels puis écrasée par une règle
+//     prioritaire le laisserait vert. Il juge la BOÎTE, jamais son CONTENU : il ne dit rien du nombre de
+//     colonnes qui tiennent dedans. Et il ne rejoue AUCUN redimensionnement de fenêtre, popover ouvert —
+//     limite que le geste commun déclare lui-même.
+// ---------------------------------------------------------------------------------------------
+{
+  const modNoyau56 = await import(pathToFileURL(path.join(WEB, "core.js")).href);
+  const borner56 = modNoyau56.bornerLePopoverSousSonAncre;
+
+  // — instrument : LE GESTE EXISTE ET REND LES DEUX GRANDEURS QU'UN TÉMOIN PEUT LIRE SANS DEVINER.
+  exiger(typeof borner56 === "function",
+    "(56-instrument) le geste commun de bornage des popovers a disparu de core.js : ce témoin n'a plus d'objet, mettez-le à jour au lieu de le laisser vert");
+  const sondeInstrument56 = borner56({ style: {} }, { top: 100, bottom: 140 });
+  exiger(sondeInstrument56 && typeof sondeInstrument56.hauteurMax === "number" && typeof sondeInstrument56.versLeHaut === "boolean",
+    "(56-instrument) le geste commun ne rend plus `{versLeHaut, hauteurMax}` : les jambes qui suivent devineraient au lieu de lire");
+
+  // — jambe A, EXÉCUTÉE : la boîte tient dans l'écran, quelle que soit la hauteur de l'ancre.
+  const H56 = window.innerHeight;
+  const boite56 = (bas) => {
+    const el = { style: {} };
+    const r = borner56(el, { top: bas - 22, bottom: bas });
+    const h = parseInt(el.style.maxHeight, 10);
+    const haut = r.versLeHaut ? (H56 - parseInt(el.style.bottom, 10) - h) : parseInt(el.style.top, 10);
+    return { haut, bas: haut + h, hauteurMax: h, versLeHaut: r.versLeHaut, el };
+  };
+  exiger(H56 > 200, `(56a-instrument) la fenêtre du simulacre fait ${H56}px : trop courte pour que « hors écran » veuille dire quelque chose`);
+  for (const bas of [60, Math.round(H56 / 2), H56 - 88]) {
+    const b = boite56(bas);
+    exiger(b.bas <= H56 && b.haut >= 0,
+      `(56a) LE POPOVER SORT DE L'ÉCRAN : ancre à ${bas}px d'une fenêtre de ${H56}px, la boîte occupe ${b.haut}..${b.bas}px, soit ${Math.max(0, b.bas - H56)}px sous le bord. Une borne en fraction de FENÊTRE limite la HAUTEUR, jamais la POSITION`);
+    exiger(b.el.style.overflowY === "auto",
+      `(56a) le popover ne peut pas défiler à l'intérieur (ancre ${bas}px) : borner sa hauteur sans lui rendre son débordement CACHE les dernières entrées au lieu de les rendre atteignables`);
+    exiger(b.hauteurMax > 0,
+      `(56a) hauteur utile nulle pour une ancre à ${bas}px : le popover serait borné à l'invisible`);
+  }
+  const basse56 = boite56(H56 - 20), haute56 = boite56(60);
+  exiger(basse56.versLeHaut && !haute56.versLeHaut,
+    `(56a) la bascule au-dessus de l'ancre ne suit pas l'espace disponible (ancre basse -> versLeHaut=${basse56.versLeHaut}, ancre haute -> ${haute56.versLeHaut}) : sans elle, une ancre en bas d'écran ne laisse QUE le débordement`);
+
+  // — jambe B, DÉRIVÉE : un capteur de défilement en phase de CAPTURE doit IGNORER son propre popover.
+  //   LE CORPS DU GESTIONNAIRE EST DÉLIMITÉ PAR COMPTAGE, PAS PAR UNE FENÊTRE DE CARACTÈRES, ET C'EST UNE
+  //   CORRECTION MESURÉE DU 2026-08-30 : un premier jet lisait 400 caractères après la déclaration, si bien
+  //   qu'il débordait sur le code VOISIN et y trouvait toujours de quoi s'acquitter. La jambe qui exigeait
+  //   qu'un capteur ferme quelque chose était VERTE PAR CONSTRUCTION — éprouvée par la mutation qui aurait
+  //   dû la faire rougir, elle est restée muette. On délimite donc le corps par équilibrage des accolades
+  //   et des parenthèses, depuis le signe d'affectation jusqu'au point-virgule de profondeur zéro.
+  const corpsDuGestionnaire56 = (src, nom) => {
+    const m = new RegExp("(?:const|let|var)\\s+" + nom + "\\s*=").exec(src);
+    if (!m) {
+      const f = new RegExp("function\\s+" + nom + "\\s*\\(").exec(src);
+      if (!f) return null;
+      let k = src.indexOf("{", f.index), d = 0;
+      for (let n = k; n < src.length; n++) {
+        if (src[n] === "{") d++;
+        else if (src[n] === "}" && --d === 0) return src.slice(k, n + 1);
+      }
+      return null;
+    }
+    let d = 0;
+    for (let n = m.index + m[0].length; n < src.length; n++) {
+      const c = src[n];
+      if (c === "{" || c === "(" || c === "[") d++;
+      else if (c === "}" || c === ")" || c === "]") d--;
+      else if (c === ";" && d <= 0) return src.slice(m.index + m[0].length, n);
+    }
+    return null;
+  };
+  const capteurs56 = [];
+  for (const [f, src] of CORPUS_WEB) {
+    if (!f.endsWith(".js")) continue;
+    const re = /addEventListener\(\s*['"]scroll['"]\s*,\s*([A-Za-z_$][\w$]*)\s*,\s*true\s*\)/g;
+    let m;
+    while ((m = re.exec(src)) !== null) capteurs56.push([f, m[1], corpsDuGestionnaire56(src, m[1])]);
+  }
+  exiger(capteurs56.every(([, , corps]) => corps !== null),
+    `(56b-instrument) le corps d'un gestionnaire de défilement n'a pas pu être délimité (${capteurs56.filter(([, , c]) => c === null).map(([f, n]) => f + ":" + n).join(", ")}) : cette jambe ne mesurerait rien, et se taire serait pire que rougir`);
+  const sansGarde56 = capteurs56.filter(([, , c]) => c && !/\.contains\(/.test(c)).map(([f, n]) => `${f}:${n}`);
+  exiger(sansGarde56.length === 0,
+    `(56b) UN CAPTEUR DE DÉFILEMENT EN PHASE DE CAPTURE NE SE PROTÈGE PAS DE SON PROPRE POPOVER : ${sansGarde56.join(", ")}. En capture, le document reçoit AUSSI le défilement émis par la liste elle-même — elle se ferme au premier cran de molette, ce qui se lit exactement « elle ne défile pas »`);
+  const inertes56 = capteurs56.filter(([, , c]) => c && !/close|fermer|masquer|remove/i.test(c)).map(([f, n]) => `${f}:${n}`);
+  exiger(inertes56.length === 0,
+    `(56b) UN CAPTEUR DE DÉFILEMENT NE FERME PLUS RIEN : ${inertes56.join(", ")}. Se protéger de son propre popover ne doit pas revenir à ne plus JAMAIS le fermer — le popover resterait ancré à une position périmée pendant que la page défile sous lui. C'est LE REMÈDE POUSSÉ TROP LOIN, et il doit rougir autrement que le défaut d'origine`);
+
+  // — jambe C, BORNE MESURÉE : qui positionne encore un popover depuis un rectangle SANS le geste commun.
+  const aLaMain56 = CORPUS_WEB
+    .filter(([f, src]) => f.endsWith(".js") && f !== "core.js"
+      && /style\.top\s*=\s*[^;]*\b\w*\.bottom/.test(src)
+      && !/bornerLePopoverSousSonAncre/.test(src))
+    .map(([f]) => f).sort();
+  exiger(JSON.stringify(aLaMain56) === JSON.stringify(["app.js", "savedqueries.js", "soql_complete.js"]),
+    `(56-borne) les modules qui positionnent encore un popover depuis un rectangle SANS le geste commun ont changé : ${JSON.stringify(aLaMain56)} au lieu des trois mesurés le 2026-08-30. Un module de plus est une régression ; un module de moins est un reste FERMÉ — dans les deux cas cette borne se remesure et se réécrit, elle n'exige pas que le défaut subsiste.`);
+
+  console.log(`[popover-dans-l-ecran] le geste commun de bornage tient la boîte DANS l'écran pour une ancre en haut, au milieu et en bas — hauteur en pixels RÉELS sous l'ancre, débordement rendu, bascule au-dessus quand l'espace manque —, et aucun capteur de défilement en phase de capture ne ferme sa propre liste ni ne cesse de fermer quoi que ce soit. CE QUE CE TÉMOIN NE TIENT PAS : il lit ce que le module POSE, jamais l'encre peinte ; il juge la BOÎTE et jamais son CONTENU ; il ne rejoue aucun redimensionnement de fenêtre ; et ${aLaMain56.length} module(s) positionnent encore un popover à la main (${aLaMain56.join(", ")}) — dont un dont la liste CROÎT avec l'usage, nommé par \`P11.22-b\`.`);
+}
+
 // LE VERDICT PORTE SA PROPRE LIMITE (`P11.13-g`). Un vert qui ne dit pas ce sur quoi il ne s'engage pas
 // se lit comme une COUVERTURE — et un rouge n'a pas plus le droit de laisser croire qu'il a tout regardé.
 // La phrase ci-dessous n'est pas écrite : elle est DÉRIVÉE des sondes de la section 0, donc une capacité

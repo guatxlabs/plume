@@ -179,6 +179,43 @@ services:
       # 0/absent = DÉSACTIVÉ. 86400 = une passe/jour. INOPÉRANT (warn honnête, jamais de VACUUM plein
       # bloquant) si la base n'est pas en `auto_vacuum=INCREMENTAL` — vérifiez avec `plume-daemon db-stats`.
       PLUME_AUTOVACUUM_INTERVAL: "${PLUME_AUTOVACUUM_INTERVAL:-86400}"
+      # --- TIER FROID COLONNAIRE (#18) — ÉTEINT, ET C'EST UNE DÉCISION (`P7.20-e`) ---
+      # DEUX PORTES, ET IL FAUT LES DEUX. (1) COMPILATION : cette image est bâtie `ldap,cold_tier`
+      # (Dockerfile, `ARG PLUME_FEATURES`) — la capacité EST dans le binaire livré ici. (2) EXÉCUTION :
+      # la ligne ci-dessous. Le démon ne reconnaît QUE la valeur `1` ; vide, absente ou toute autre
+      # valeur = éteint. Il DIT lequel des trois états est le sien au démarrage — le site de cette
+      # phrase est daemon/src/cold_banniere.rs, elle se lit par
+      #   docker compose logs soc | grep -i 'tier froid'
+      # LE MODE HÔTE N'A PAS FORCÉMENT CETTE CAPACITÉ : la recette native (`bootstrap.sh`) n'impose
+      # AUCUNE feature, et un binaire bâti sans `cold_tier` rend ces fichiers INVISIBLES au lieu de
+      # les lire. C'est le seul écart de capacité entre les deux modes, et il est désormais dit des
+      # deux côtés plutôt que subi.
+      #
+      # CE QU'ALLUMER FAIT, ET QUI NE SE DÉFAIT PAS. Un jour révolu au-delà de la fenêtre chaude QUITTE
+      # la table `event` pour un fichier Parquet chiffré sous `<répertoire de PLUME_DB>/cold`, soit
+      # /data/cold, sur le volume `soc-data`. Il n'existe AUCUN chemin froid → chaud dans ce produit :
+      # rien ne réhydrate un jour columnarisé. Les lectures unissent chaud et froid, mais le fichier
+      # devient la SEULE copie de ces événements.
+      #
+      # ET CE FICHIER SORT DU PÉRIMÈTRE DE SAUVEGARDE DE CE MODE. Le planificateur ci-dessus n'archive
+      # que la BASE (`plume-<TS>.db.age`) : /data/cold n'y entre PAS. L'escrow ASYMÉTRIQUE
+      # (PLUME_BACKUP_AGE_RECIPIENT) ne couvre PAR CONCEPTION que la fenêtre chaude — le froid partage
+      # la clé SQLCipher, pas la clé publique hors-hôte. Le démon sait PRODUIRE un plan de copie
+      # (`docker compose exec soc plume-daemon cold-backup-plan`), mais RIEN dans ce fichier ne
+      # l'EXÉCUTE : c'est un sidecar d'orchestrateur qui le fait, ailleurs. Allumer ici = déplacer des
+      # preuves vers des fichiers que ce déploiement ne sauvegarde pas.
+      #
+      # CE QUI N'EST PAS MESURÉ, ET QUI DÉCIDE DU DÉFAUT : la crête mémoire IMPUTABLE à la passe de
+      # vieillissement, sous le budget de 2 Gio posé plus bas. Les maxima cgroup relevés sur
+      # l'installation de référence sont CUMULÉS et NON HORODATÉS — ils ne disent pas s'ils tombent
+      # pendant le vieillissement ou pendant une requête. Cf. docs/DESIGN-P10-echelle-2go.md, levier A.
+      #
+      # POUR LES AUTRES `PLUME_COLD_*`, UNE LIGNE DE `.env` NE SUFFIT PAS : ce service ÉNUMÈRE ses
+      # variables (`P4.1-p`), et c'est cette ligne-ci — pas `.env.example` — qui fait arriver
+      # PLUME_COLD_TIER dans le conteneur. Une `PLUME_COLD_DIR` posée dans `.env` sans être ajoutée
+      # ICI n'atteint jamais le démon, et rien ne le dit : la bannière ne dénonce les `PLUME_COLD_*`
+      # sans effet que sur un binaire bâti SANS la feature, ce que cette image n'est pas.
+      PLUME_COLD_TIER: "${PLUME_COLD_TIER:-0}"
     # --- BUDGET RESSOURCES — `P4.14-a` : LE PLAFOND EST POSÉ ICI, PAS SEULEMENT ANNONCÉ ------------
     # Le démon DIT lui-même, au démarrage, si quelque chose d'extérieur le borne. Sans les lignes
     # ci-dessous il imprime « AVERTISSEMENT [couverture=sans-limite] … le budget de 2 Gio du produit

@@ -37,11 +37,13 @@ D'où DEUX JAMBES, et une règle qui les sépare :
       cette jambe (la clé `error`) est FAUX quatre fois sur dix, parce que l'arbre y avoue en TYPÉ.
   (B) LA CLOSURE, SUR LES DEUX VOIES DE LECTURE — c'est le même code, exécuté sur la même connexion.
       Aucune lecture de lignes avalée (`.ok()`, `.unwrap_or*()`, `.flatten()`) sans qu'une BRANCHE de
-      la closure construise un aveu. L'avalement est reconnu qu'il soit écrit en CHAÎNE DIRECTE
-      (`.query_map(..).flatten()`) ou dans un BRAS du `match` dont la lecture est le SCRUTATEUR
-      (`match ..query_map(..) { Ok(r) => r.flatten().collect(), .. }`) — la seconde forme était un
-      angle mort jusqu'au 2026-08-30, et c'est celle sous laquelle trois sites fermés ce jour-là
-      étaient écrits.
+      la closure construise un aveu. L'avalement est reconnu sous TROIS écritures : la CHAÎNE DIRECTE
+      (`.query_map(..).flatten()`), le BRAS du `match` dont la lecture est le SCRUTATEUR
+      (`match ..query_map(..) { Ok(r) => r.flatten().collect(), .. }`), et — depuis `P10.7-h` — le
+      `if let Ok(<nom>) = <lecture> { .. }` SANS `else`, où le chemin d'échec n'est écrit NULLE PART.
+      Les deux dernières étaient des angles morts : la deuxième jusqu'au matin du 2026-08-30, la
+      troisième jusqu'au soir. La troisième est la plus grosse, et la jambe Q savait DÉJÀ refuser
+      cette forme sur les voies de requête — la jambe B ne faisait que ne pas la lire.
   (Q) L'EXÉCUTION DE REQUÊTE. Le bras d'erreur ne peut pas être JETÉ : il propage, devient un statut
       d'échec, ou entre dans le corps sous un aveu.
 
@@ -75,15 +77,17 @@ statuts ») et c'est la forme sous laquelle un site « connu » cesse d'exister 
 
 L'INSTRUMENT SE VALIDE AVANT DE RENDRE UN VERDICT, DANS LES DEUX SENS
 ----------------------------------------------------------------------
-ONZE mutants fabriqués, joués à chaque exécution : un corps par défaut nu DOIT accuser, le même avec un
+QUINZE mutants fabriqués, joués à chaque exécution : un corps par défaut nu DOIT accuser, le même avec un
 aveu NE DOIT PAS ; une lecture de ligne avalée DOIT accuser, la même sous une branche qui avoue NE DOIT
 PAS ; une exécution de requête dont la cause est jetée DOIT accuser, son branchement NE DOIT PAS ; et le
 commentaire qui NOMME la fonction ne doit JAMAIS être compté. Le septième est le cœur : un défaut qui
 AVOUE au-dessus d'une closure qui AVALE doit rester accusé par la jambe B.
 
-Les quatre derniers tiennent la forme ajoutée le 2026-08-30 — l'avalement écrit dans un BRAS DE MATCH —
-et le 8 et le 10 sont une PAIRE DISCRIMINANTE : le bras y est le MÊME texte, seul le SCRUTATEUR change,
-et le verdict doit s'inverser. S'y ajoutent des témoins AU NIVEAU DE L'UNITÉ, qui n'interrogent que le
+Les mutants 8 à 11 tiennent l'avalement écrit dans un BRAS DE MATCH, et le 8 et le 10 sont une PAIRE
+DISCRIMINANTE : le bras y est le MÊME texte, seul le SCRUTATEUR change, et le verdict doit s'inverser.
+Les mutants 12 à 15 tiennent la forme SANS BRANCHE D'ÉCHEC, et ils portent la MÊME discrimination en
+trois axes : le 13 est le 12 avec un `else` (le verdict doit s'inverser sur la seule présence de la
+branche), le 14 est le 12 dont le SCRUTATEUR n'est pas une lecture, et le 15 est le 12 EN COMMENTAIRE. S'y ajoutent des témoins AU NIVEAU DE L'UNITÉ, qui n'interrogent que le
 lecteur de chaînes : la forme neuve est vue, un bras qui SOLDE son parcours ne l'est pas, et un seul
 avalement n'est jamais compté deux fois (`Ok(mut s) => s.query_map(..).unwrap_or_default()` appartient
 à la chaîne directe, pas au bras). CHACUN A ÉTÉ ÉPROUVÉ PAR MUTATION le 2026-08-30 : débrancher la
@@ -194,7 +198,56 @@ PLAFOND_DEFAUT_NU = 16          # jambe A : défauts servis sans aveu — INCHAN
 # laquelle le site cité en preuve de `P10.7-g` — `handlers/dashboards.rs` — n'apparaissait nulle part :
 # la forme y était, sous une voie que la garde ne nommait pas. Une jambe étendue sur une population
 # amputée reste aveugle, et c'est la leçon que ce cliquet porte désormais.
-PLAFOND_CLOSURE_SOURDE = 17     # jambe B : closures qui avalent une lecture de lignes sans aveu
+PLAFOND_CLOSURE_SOURDE = 22     # jambe B : closures qui avalent une lecture de lignes sans aveu
+#
+# ┌─ LA HAUSSE DE 17 À 22 N'EST PAS UNE RÉGRESSION : C'EST UN ÉLARGISSEMENT DU REGARD. ────────────┐
+# │ AUCUNE ligne de `daemon/` n'a changé entre les deux relevés du 2026-08-30 — l'arbre est celui   │
+# │ de `ac7ffac`, mot pour mot. C'est la garde qui s'est mise à lire une TROISIÈME écriture de      │
+# │ l'avalement. Les CINQ accusations neuves existaient déjà avant, muettes, et les DIX-SEPT        │
+# │ anciennes sont TOUTES encore là — vérifié par différence des deux journaux, dans les deux sens, │
+# │ SITE PAR SITE : zéro site accusé perdu. Un verdict qui cesse d'accuser serait une perte même si │
+# │ le total montait ; il n'y en a pas.                                                             │
+# └────────────────────────────────────────────────────────────────────────────────────────────────┘
+# LES CINQ, UNE PAR UNE, RELUES SUR L'ARBRE LE 2026-08-30 — les cinq servent un CORPS, aucune n'est
+# un calcul interne dont l'absence serait un fait légitime, et c'est la mesure qui a AUTORISÉ
+# l'extension (sans elle, l'élargir aurait rejoué l'accusation à tort que `P10.7-g` avait refusée) :
+#   · `fleet.rs:253` et `fleet.rs:276` -> `fleet_scan_all` : `host_rollup` illisible laisse `hosts`
+#     VIDE et `fleet_response` sert `{"hosts": []}` = « la flotte est vide ». LA PLUS GRAVE des cinq :
+#     la closure rend `true` en troisième position quoi qu'il arrive, donc la flotte vide est MISE EN
+#     CACHE (`fleet_map().lock().insert`) et resservie pendant tout le TTL ;
+#   · `overview.rs:68` -> `environments` : `event_rollup` illisible laisse `envs` vide, et le repli
+#     « prod toujours présent » sert alors `[{env:"prod", n:0}]` — un corps qui a l'air NORMAL ;
+#   · `caseops.rs:613` -> `case_links_json` : `{"links": []}` = « ce case n'a aucun lien » ;
+#   · `sources.rs:357` -> déjà accusé (par `pipeline_is_fresh`), et la closure elle-même porte
+#     désormais deux `if let` sans branche sur l'inventaire des sources ;
+#   · `soql_meta.rs:180` -> `soql_known_sources` : vocabulaire de complétion servi par
+#     `/api/soql/schema`. La MOINS grave des cinq — un lecteur n'y lit pas une posture — mais le
+#     résultat est MIS EN CACHE 120 s, donc une lecture ratée se resert.
+#
+# CE QUE LA MESURE A ÉCARTÉ, ET POURQUOI CE N'EST PAS UN OUBLI. La forme sans branche est employée
+# 43 fois sur 15 fichiers de `daemon/src/handlers/` (relevé du 2026-08-30 ; l'allégation portée par la
+# version précédente de ce fichier disait 42 sur 14 — elle était FAUSSE d'un site et d'un fichier).
+# Sur ces 43 : 19 tombent dans une région que la jambe B juge (7 dans une closure, 12 dans le corps
+# d'une fonction appelée à un niveau), et 24 sont HORS de toute région jugée — elles vivent derrière
+# `req_conn!` (`daemon/src/state.rs`), une QUATRIÈME voie de lecture que la population de cette garde
+# ne nomme pas (181 emplois sur 32 fichiers de handlers). Les élargir demande d'élargir la POPULATION,
+# pas la jambe ; c'est la leçon que `read_with` a coûtée le matin même, et elle n'est pas rejouée ici.
+# Des 19 jugeables, 5 sites d'appel gagnent une accusation ; les 14 autres tombent dans une closure
+# DÉJÀ accusée (le compte est par SITE D'APPEL, pas par lecture) ou dans une région qui AVOUE —
+# `freshness.rs:579` porte trois `if let` sans branche et reste INNOCENTÉ parce que sa closure pose
+# `corps["error"]` via `releve.aveu()`. C'est voulu : la garde ne juge pas si l'aveu couvre CETTE
+# lecture-là, et c'est écrit dans « ce qu'elle ne tient pas ».
+#
+# PLAN DE DESCENTE — le geste qui ferme chacune des cinq, dans l'ordre de gravité :
+#   1. `fleet_scan_all` : rendre au troisième champ la valeur « le parcours a-t-il abouti » au lieu de
+#      `true` constant, et ne cacher que si elle est vraie ; le corps porte alors la coupe. -> 21.
+#   2. `overview::environments` : distinguer le repli « prod » du repli « rien n'a été lu » (le second
+#      pose `error`). -> 20.
+#   3. `case_links_json` : rendre `Result` ou poser la coupe dans le corps de `case_links_get`. -> 19.
+#   4. `sources_inventory` : la closure porte déjà un `ok: false` dans son défaut ; poser la même clé
+#      quand l'inventaire est TRONQUÉ. -> 18.
+#   5. `soql_known_sources` : ne pas MET­TRE EN CACHE une liste issue d'une lecture ratée. -> 17.
+# Chacun est un geste LOCAL, jouable aujourd'hui, et aucun ne demande de toucher à cette garde.
 PLAFOND_CAUSE_JETEE = 3         # jambe Q : bras d'erreur jetés
 
 
@@ -643,9 +696,88 @@ def bras_qui_avale(texte, deb, apres):
     return None
 
 
+# --- LA TROISIÈME ÉCRITURE : `if let Ok(<nom>) = <lecture> { .. }` SANS `else` (`P10.7-h`) --------
+# Le motif LIANT est le même que celui des bras (`Ok(<nom>)`, `mut` compris) : ce n'est pas une
+# commodité, c'est la MÊME limite, écrite au même endroit, et elle est déclarée dans « ce que cette
+# garde ne tient pas ». `if let` AVEC `else` n'est PAS jugé ici : une branche existe, et ce qu'elle
+# fait relève du reconnaisseur d'aveu au niveau de la région — c'est EXACTEMENT la règle que la jambe
+# Q applique déjà à la même forme sur les voies de requête (`juger_la_cause`), et la faire diverger
+# ferait dire deux choses différentes à la même garde sur le même texte.
+MOTIF_LIANT_IF_LET = re.compile(r"^Ok\s*\(\s*(?:mut\s+)?[A-Za-z_][A-Za-z0-9_]*\s*\)$")
+
+
+def egal_de_tete(texte):
+    """Index du `=` de LIAISON (profondeur 0, ni `==` ni `!=`/`<=`/`>=`), ou None."""
+    prof = 0
+    for i, c in enumerate(texte):
+        if c in "([{":
+            prof += 1
+        elif c in ")]}":
+            prof -= 1
+            if prof < 0:
+                return None
+        elif c == "=" and prof == 0 and texte[i + 1:i + 2] != "=" and texte[i - 1:i] not in "=!<>":
+            return i
+        elif c == ";" and prof == 0:
+            return None
+    return None
+
+
+def if_let_est_le_scrutateur(texte, deb):
+    """Le `if let Ok(<nom>) =` le plus proche EN AMONT lie-t-il la lecture qui commence en `deb` ?
+
+    C'EST LA MÊME CONDITION QUI EMPÊCHE D'ACCUSER À TORT que pour le `match`, et pour la même raison :
+    sans elle, il suffirait qu'un `if let` quelconque précède une lecture pour que celle-ci soit
+    déclarée sans branche. Une ponctuation d'instruction (`;` `{` `}` `=`) ou un mot-clé entre le `=`
+    et la lecture prouve que ce `if let` porte sur autre chose, et le refus est alors NET."""
+    mots = list(re.finditer(r"\bif\s+let\b", texte[:deb]))
+    if not mots:
+        return False
+    reste = texte[mots[-1].end():deb]
+    eg = egal_de_tete(reste)
+    if eg is None:
+        return False
+    if not MOTIF_LIANT_IF_LET.match(reste[:eg].strip()):
+        return False
+    entre = reste[eg + 1:]
+    if not entre.strip() or re.search(r"[;{}=]|\b(?:if|while|let|for|return|match)\b", entre):
+        return False
+    prof = 0
+    for c in entre:
+        if c in "([":
+            prof += 1
+        elif c in ")]":
+            prof -= 1
+            if prof < 0:
+                return False
+    return prof == 0
+
+
+def if_let_sans_branche(texte, deb, apres):
+    """La lecture qui commence en `deb` est-elle liée par un `if let Ok(<nom>)` dont le bloc n'est
+    suivi d'AUCUN `else` ? Alors son échec n'a pas de branche : il n'est écrit nulle part."""
+    if not if_let_est_le_scrutateur(texte, deb):
+        return None
+    i = apres
+    while i < len(texte) and texte[i] in " \t\n":
+        i += 1
+    if i >= len(texte) or texte[i] != "{":
+        return None
+    f = apparier(texte, i)
+    if f < 0:
+        return None
+    if re.match(r"\s*else\b", texte[f + 1:f + 14]):
+        return None
+    return "if let Ok(..) = <lecture> { .. } sans `else`"
+
+
 def lectures_avalees(texte):
-    """[(ligne relative, chaîne)] pour chaque lecture de lignes dont le refus est avalé — soit par la
-    chaîne qui SUIT l'appel, soit par un BRAS du `match` dont l'appel est le scrutateur."""
+    """[(ligne relative, chaîne, forme)] pour chaque lecture de lignes dont le refus est avalé, sous
+    l'une des TROIS écritures. La FORME est rendue avec l'avalement pour que le journal les distingue :
+    sans elle, une écriture qui en précède une autre dans le fichier ferait TAIRE la seconde dans la
+    phrase imprimée — le site resterait accusé, mais une cause vraie cesserait d'être nommée, et ce
+    dépôt tient qu'un canal de détection qui rétrécit est une perte même quand le verdict ne bouge pas.
+    Les trois branches s'excluent (`continue`) : une lecture ne compte JAMAIS deux fois."""
     out = []
     for r in LECTURE.finditer(texte):
         fin = apparier(texte, r.end() - 1)
@@ -654,11 +786,19 @@ def lectures_avalees(texte):
         jetons, apres = chaine_apres(texte, fin)
         ligne = texte.count("\n", 0, r.start()) + 1
         if any(AVALE.match(j.split("(")[0]) for j in jetons):
-            out.append((ligne, ".".join(jetons)))
+            out.append((ligne, ".".join(jetons), "chaîne directe"))
             continue
         bras = bras_qui_avale(texte, r.start(), apres)
         if bras:
-            out.append((ligne, bras))
+            out.append((ligne, bras, "bras de match"))
+            continue  # DÉFENSIF, et il n'est prouvé par AUCUN témoin : les deux écritures s'excluent
+            # déjà par construction (le mot-clé `match` qui précède la lecture fait échouer le contrôle
+            # de `if_let_est_le_scrutateur`). Le retirer ne change RIEN sur l'arbre du 2026-08-30 —
+            # mesuré — et c'est dit ici plutôt que couvert par un témoin qui serait vert quoi qu'il
+            # arrive : un instrument qui prétend éprouver ce qu'il n'atteint pas est pire que rien.
+        sans = if_let_sans_branche(texte, r.start(), apres)
+        if sans:
+            out.append((ligne, sans, "sans branche d'échec"))
     return out
 
 
@@ -761,6 +901,45 @@ MUTANTS = [
      '        // };\n'
      '        let n: i64 = conn.query_row("SELECT COUNT(*) FROM t", [], |r| r.get(0))?;\n'
      '        json!({ "n": n })\n    });\n    Json(v)\n}\n', None),
+    # --- LES QUATRE SUIVANTS TIENNENT LA FORME AJOUTÉE PAR `P10.7-h` : `if let Ok(..) = <lecture>`
+    # SANS `else`. Le 12 accuse ; le 13 est le MÊME texte AVEC un `else` (la présence de la branche,
+    # et elle seule, inverse le verdict) ; le 14 est le MÊME `if let` dont le SCRUTATEUR n'est pas une
+    # lecture — sans lui, la jambe B lirait les `if let` de tout l'arbre et accuserait à tort, la
+    # faute que ce dépôt tient pour PIRE que l'angle mort ; le 15 met la forme EN COMMENTAIRE.
+    ("12. UN `if let Ok(..)` SANS `else` sur une lecture : le chemin d'échec n'est écrit nulle part",
+     'pub(crate) async fn r12() -> Json<Value> {\n'
+     '    let v = read_with_watchdog(&db, json!({ "rows": [], "error": "x" }), move |conn| {\n'
+     '        let mut out: Vec<Value> = Vec::new();\n'
+     '        if let Ok(mut s) = conn.prepare("SELECT a FROM t") {\n'
+     '            if let Ok(rows) = s.query_map([], |r| r.get::<_, i64>(0)) {\n'
+     '                for a in rows.flatten() { out.push(json!({ "a": a })); }\n'
+     '            }\n        }\n'
+     '        json!({ "rows": out })\n    });\n    Json(v)\n}\n', "B"),
+    ("13. LE MÊME, mais CHAQUE `if let` a son `else` : la branche existe",
+     'pub(crate) async fn r13() -> Json<Value> {\n'
+     '    let v = read_with_watchdog(&db, json!({ "rows": [], "error": "x" }), move |conn| {\n'
+     '        let mut out: Vec<Value> = Vec::new();\n'
+     '        if let Ok(mut s) = conn.prepare("SELECT a FROM t") {\n'
+     '            if let Ok(rows) = s.query_map([], |r| r.get::<_, i64>(0)) {\n'
+     '                for a in rows.flatten() { out.push(json!({ "a": a })); }\n'
+     '            } else { out.push(json!({ "coupe": "parcours NON COMMENCÉ" })); }\n'
+     '        } else { out.push(json!({ "coupe": "énoncé NON PRÉPARÉ" })); }\n'
+     '        json!({ "rows": out })\n    });\n    Json(v)\n}\n', None),
+    ("14. LE MÊME `if let` sans `else`, mais le SCRUTATEUR N'EST PAS une lecture",
+     'pub(crate) async fn r14() -> Json<Value> {\n'
+     '    let v = read_with_watchdog(&db, json!({ "rows": [], "error": "x" }), move |conn| {\n'
+     '        let n: i64 = conn.query_row("SELECT COUNT(*) FROM t", [], |r| r.get(0))?;\n'
+     '        let mut out: Vec<Value> = Vec::new();\n'
+     '        if let Ok(c) = charger_le_cache(&n) { out.push(c); }\n'
+     '        json!({ "n": n, "rows": out })\n    });\n    Json(v)\n}\n', None),
+    ("15. LE MÊME `if let` sans `else`, EN COMMENTAIRE — il ne doit JAMAIS compter",
+     'pub(crate) async fn r15() -> Json<Value> {\n'
+     '    let v = read_with_watchdog(&db, json!({ "rows": [], "error": "x" }), move |conn| {\n'
+     '        // if let Ok(mut s) = conn.prepare("SELECT a FROM t") {\n'
+     '        //     if let Ok(rows) = s.query_map([], f) { for a in rows.flatten() {} }\n'
+     '        // }\n'
+     '        let n: i64 = conn.query_row("SELECT COUNT(*) FROM t", [], |r| r.get(0))?;\n'
+     '        json!({ "n": n })\n    });\n    Json(v)\n}\n', None),
 ]
 
 COMMENTAIRE_QUI_NOMME = (
@@ -768,6 +947,19 @@ COMMENTAIRE_QUI_NOMME = (
     "/* run_query(&db, &sql) y vivait avant P10.7-e */\n"
     "//! la closure passe par read_with_watchdog(&db, json!({}), |conn| lit(conn))\n"
 )
+
+
+def resumer_les_formes(fautives):
+    """`region` : forme ×n (ex. `…`) · … — CHAQUE forme rencontrée est nommée avec un exemple, pour
+    qu'aucune cause vraie ne cesse d'être imprimée quand une autre entre dans le champ."""
+    morceaux = []
+    for nom_corps, av in fautives:
+        par_forme = {}
+        for _ligne, chaine, forme in av:
+            par_forme.setdefault(forme, []).append(chaine)
+        detail = ", ".join(f"{f} ×{len(v)} (ex. `{v[0][:40]}`)" for f, v in sorted(par_forme.items()))
+        morceaux.append(f"`{nom_corps}` {detail}")
+    return " · ".join(morceaux)
 
 
 def analyser(chemin, texte, defs, constructeurs, aveux):
@@ -815,14 +1007,23 @@ def analyser(chemin, texte, defs, constructeurs, aveux):
                                     f"le défaut `{re.sub(r'\\s+', ' ', defaut)[:70]}` est servi par une "
                                     f"fonction qui rend une réponse, et il n'avoue pas"))
             # --- JAMBE B : la closure, et ELLE SEULE (le défaut est hors de la région).
+            # UNE accusation par SITE D'APPEL — le compte n'a pas changé de grain — mais la phrase
+            # les AGRÈGE au lieu de s'arrêter à la première région fautive. La boucle s'arrêtait
+            # avant ; mesuré le 2026-08-30, l'arrêt faisait TAIRE une cause vraie dès qu'une
+            # écriture plus précoce en apparaissait une autre : sur `sources.rs:357`, l'entrée de la
+            # forme sans branche dans la closure masquait le `ok().flatten()` de `pipeline_is_fresh`,
+            # nommé la veille. Le site restait accusé, donc aucun code de sortie ne l'aurait dit —
+            # c'est exactement la perte silencieuse que ce dépôt refuse.
+            fautives = []
             for nom_corps, corps in corps_de_la_closure(code, tranches, fin, defs):
                 av = lectures_avalees(corps)
                 if av and not porte_un_aveu(corps, constructeurs):
-                    accusations.append(("B", ou, nom_fn,
-                                        f"{len(av)} lecture(s) de lignes avalée(s) dans "
-                                        f"`{nom_corps}` (`{av[0][1][:44]}`) sans qu'aucune branche "
-                                        f"n'y construise un aveu"))
-                    break
+                    fautives.append((nom_corps, av))
+            if fautives:
+                total = sum(len(av) for _n, av in fautives)
+                accusations.append(("B", ou, nom_fn,
+                                    f"{total} lecture(s) de lignes avalée(s) sans qu'aucune branche "
+                                    f"n'y construise un aveu — " + resumer_les_formes(fautives)))
         else:
             verdict, raison = juger_la_cause(code, m.start(), fin, pdeb, pfin, sig, constructeurs)
             if verdict == JETE:
@@ -893,6 +1094,79 @@ def valider_instrument(defs, constructeurs):
     if len(lectures_avalees(double)) != 1:
         errs.append(f"témoin du DOUBLE COMPTE : {len(lectures_avalees(double))} avalement(s) relevé(s) "
                     "au lieu de 1 sur un site qui n'en porte qu'un")
+    # LA FORME SANS BRANCHE, AU NIVEAU DE L'UNITÉ, ET DANS LES DEUX SENS. Comme pour le bras, les
+    # mutants pourraient passer pour une raison ÉTRANGÈRE ; ces témoins-ci n'interrogent que le
+    # lecteur de chaînes, sans région ni constructeur.
+    sans_b = ("let mut o = Vec::new(); if let Ok(rows) = stmt.query_map([], f) "
+              "{ for x in rows.flatten() { o.push(x); } }")
+    if not lectures_avalees(sans_b):
+        errs.append("témoin SANS BRANCHE (direct) : `if let Ok(rows) = ..query_map(..) { .. }` sans "
+                    "`else` n'est plus vu comme un avalement — l'angle mort de `P10.7-h` est rouvert")
+    avec_b = sans_b + " else { o.push(json!({ \"error\": \"NON LU\" })); }"
+    if lectures_avalees(avec_b):
+        errs.append("témoin SANS BRANCHE (négatif, `else` présent) : le MÊME `if let` est compté "
+                    "alors qu'une branche d'échec EXISTE — la jambe B accuserait la forme qu'elle "
+                    "réclame, et elle dirait le contraire de la jambe Q sur le même texte")
+    # LE CONTRÔLE DU SCRUTATEUR DE LA FORME NEUVE, ÉPROUVÉ À SON PROPRE NIVEAU — la correction
+    # d'instrument du matin est appliquée d'emblée ici : un témoin écrit au niveau de
+    # `lectures_avalees` sur une entrée SANS lecture serait vert par construction.
+    sif = "if let Ok(mut s) = conn.prepare(sql) {"
+    if not if_let_est_le_scrutateur(sif, sif.index(".prepare")):
+        errs.append("témoin du SCRUTATEUR `if let` (positif, au niveau du prédicat) : "
+                    "`if let Ok(mut s) = conn.prepare(..)` n'est plus reconnu comme liant la lecture")
+    etr_if = "if let Ok(c) = charger_le_cache(&n) { o.push(c); }\nlet n = conn.query_row(sql, [], f);"
+    if if_let_est_le_scrutateur(etr_if, etr_if.index(".query_row")):
+        errs.append("témoin du SCRUTATEUR `if let` (négatif, au niveau du prédicat) : un `if let` "
+                    "ÉTRANGER, clos avant la lecture, est pris pour celui qui la lie — la jambe B "
+                    "déclarerait « sans branche » des lectures qu'aucun `if let` ne porte")
+    # UNE LECTURE NE COMPTE QU'UNE FOIS, ET UNE IMBRICATION EN PORTE DEUX (l'énoncé préparé ET son
+    # parcours) : ni plus — un double compte ferait monter le cliquet sans qu'aucun défaut neuf
+    # n'existe — ni moins — une lecture perdue rendrait un compte amputé en vert.
+    imbrique = ("if let Ok(mut s) = conn.prepare(sql) { if let Ok(rows) = s.query_map([], f) "
+                "{ for x in rows.flatten() { o.push(x); } } }")
+    if len(lectures_avalees(imbrique)) != 2:
+        errs.append(f"témoin de l'IMBRICATION : {len(lectures_avalees(imbrique))} avalement(s) "
+                    "relevé(s) au lieu de 2 sur un site qui porte DEUX lectures sans branche")
+    # LES TROIS ÉCRITURES SONT DISTINGUÉES DANS LA PHRASE. Sans cela, une écriture en masquerait une
+    # autre dans le journal et une cause vraie cesserait d'être nommée sans qu'aucun code de sortie
+    # ne le dise (mesuré le 2026-08-30 sur `sources.rs:357`).
+    formes = {f for _l, _c, f in lectures_avalees(imbrique)
+              + lectures_avalees("let v = stmt.query_map([], f).flatten().collect();")}
+    if formes != {"sans branche d'échec", "chaîne directe"}:
+        errs.append(f"témoin des FORMES : {sorted(formes)} au lieu des deux écritures attendues — le "
+                    "journal ne distingue plus les causes qu'il imprime")
+    # DEUX RÉGIONS FAUTIVES SONT NOMMÉES TOUTES LES DEUX, EN UNE SEULE ACCUSATION, ET LEURS FORMES
+    # AVEC. La boucle de la jambe B s'ARRÊTAIT à la première région fautive ; mesuré le 2026-08-30,
+    # l'arrêt a fait TAIRE une cause vraie (`sources.rs:357` : l'entrée de la forme sans branche dans
+    # la closure masquait le `ok().flatten()` de `pipeline_is_fresh`, nommé la veille) sans qu'aucun
+    # code de sortie ne le dise — le site restait accusé, le compte restait juste.
+    # LA FONCTION APPELÉE EST FABRIQUÉE ICI, PAS PRISE SUR L'ARBRE. Adosser ce témoin à une vraie
+    # fonction fautive du démon en ferait une RANÇON : il rougirait le jour où elle est réparée, et
+    # aucun geste ne pourrait le refermer. `defs` est donc AUGMENTÉ d'une définition inventée.
+    defs_fab = dict(defs)
+    defs_fab["aide_fabriquee"] = [("/fabrique.rs", 1, '{ let n: Option<i64> = conn.query_row('
+                                  '"SELECT MAX(ts) FROM t", [], |r| r.get(0)).ok().flatten(); n }',
+                                  "(conn: &Connection) -> Option<i64>")]
+    src_agr = ('pub(crate) async fn r16() -> Json<Value> {\n'
+               '    let v = read_with_watchdog(&db, json!({ "rows": [], "error": "x" }), move |conn| {\n'
+               '        let mut out: Vec<Value> = Vec::new();\n'
+               '        if let Ok(mut s) = conn.prepare("SELECT a FROM t") {\n'
+               '            if let Ok(rows) = s.query_map([], |r| r.get::<_, i64>(0)) {\n'
+               '                for a in rows.flatten() { out.push(json!({ "a": a })); }\n'
+               '            }\n        }\n'
+               '        json!({ "rows": out, "last": aide_fabriquee(conn) })\n    });\n    Json(v)\n}\n')
+    _s, acc_agr = analyser("/agregation.rs", src_agr, defs_fab, constructeurs, [])
+    raisons = [r for j, _o, _f, r in acc_agr if j == "B"]
+    if len(raisons) != 1:
+        errs.append(f"témoin de l'AGRÉGATION (grain) : {len(raisons)} accusation(s) B pour UN site "
+                    "d'appel — le cliquet ne compte plus des sites, et sa valeur ne veut plus rien dire")
+    elif not all(t in raisons[0] for t in ("<closure>", "aide_fabriquee")):
+        errs.append(f"témoin de l'AGRÉGATION (régions) : « {raisons[0][:150]} » ne nomme pas les DEUX "
+                    "régions fautives — la jambe s'arrête à la première et une cause vraie cesse "
+                    "d'être imprimée sans qu'aucun code de sortie ne le dise")
+    elif not all(t in raisons[0] for t in ("sans branche d'échec", "chaîne directe")):
+        errs.append(f"témoin de l'AGRÉGATION (formes) : « {raisons[0][:150]} » ne distingue plus les "
+                    "écritures — deux causes de nature différente sont rendues indiscernables")
     # L'aveu se reconnaît, et son absence aussi.
     if not porte_un_aveu('json!({ "rows": [], "error": "x" })', constructeurs):
         errs.append("témoin d'AVEU : la clé `error` n'est plus reconnue")
@@ -924,12 +1198,25 @@ def ce_qui_n_est_pas_tenu(non_classes=0):
           "défaut qui est lui-même un corps servi) ferait TAIRE trois accusations vraies de la voie "
           "gardée. Ce qui manque est un vocabulaire d'aveu plus large que la clé `error` ; tant qu'il "
           "n'existe pas, ces défauts-là ne sont ni accusés ni innocentés.\n"
-          "  * la jambe B ne suit que le `match`. `if let Ok(..) = <lecture> { .. }` SANS `else` écrit "
-          "le chemin d'échec nulle part, exactement comme un bras jeté — et la jambe Q sait déjà "
-          "refuser cette forme sur les voies de requête. MESURÉ le 2026-08-30 : 42 sites de cette "
-          "forme sur 14 fichiers de `daemon/src/handlers/`. C'est le plus grand angle mort restant de "
-          "cette garde, il est plus grand que celui qui vient d'être comblé, et il est nommé ici pour "
-          "que son NOMBRE ne soit pas confondu, une fois de plus, avec la population.\n"
+          "  * LA POPULATION, ET C'EST DÉSORMAIS LE PLUS GRAND ANGLE MORT — plus grand que les deux "
+          "écritures comblées le 2026-08-30 réunies. Cette garde ne connaît que `read_with_watchdog`, "
+          "`read_with`, `run_query` et `run_query_ex`. Une QUATRIÈME voie existe, `req_conn!` "
+          "(`daemon/src/state.rs`) : 181 emplois sur 32 fichiers de `daemon/src/handlers/`, soit plus "
+          "que les 56 sites de la population entière. C'est par elle que passent 24 des 43 `if let "
+          "Ok(..) = <lecture>` sans `else` de l'arbre, sur 9 fichiers, dont les six de `system.rs` et "
+          "les quatre de `admin_ui.rs` : ils ne sont ni accusés ni innocentés. Les élargir demande "
+          "d'élargir la POPULATION, pas une jambe — c'est la leçon que `read_with` a coûtée le matin "
+          "même, et l'y rejouer par une jambe serait la rejouer à l'envers.\n"
+          "  * l'aveu est cherché DANS LA RÉGION, jamais sur la lecture. Une closure qui avoue UNE "
+          "coupe innocente TOUTES ses lectures, y compris celles dont l'échec n'est couvert par aucun "
+          "aveu : `freshness.rs:579` porte trois `if let` sans branche sur des `prepare` et reste "
+          "innocenté parce qu'il pose `corps[\"error\"]` pour ses PARCOURS. C'est un choix — le "
+          "resserrer accuserait la surface la plus consciencieuse de l'arbre — mais ce n'en est pas "
+          "moins un trou, et il est ici pour être vu.\n"
+          "  * le `if let` n'est suivi que s'il lie par `Ok(<nom>)`, comme le bras : `Ok((a, b))`, "
+          "`Some(x)` et `while let` ne le sont pas. Un `if let` AVEC `else` n'est PAS jugé sur ce que "
+          "son `else` fait — la branche existe, et c'est tout ce que cette jambe constate ; c'est la "
+          "règle que la jambe Q applique déjà à la même forme.\n"
           "  * le bras n'est suivi que s'il lie par `Ok(<nom>)` : `Ok((a, b))`, `Some(x)` et un bras "
           "fourre-tout `_ =>` ne le sont pas.\n"
           "  * la chaîne d'un bras est suivie DEPUIS LE NOM LIÉ. Un avalement écrit dans une closure "

@@ -221,6 +221,39 @@ function exportBar(name, getData, pdfScope, opts) {
   if (opts.pdf !== false) wrap.appendChild(mk('PDF', 'Imprimer / exporter en PDF', () => exportPDF(pdfScope)));
   return wrap;
 }
+// BORNER UN POPOVER SUR L'ESPACE QUI EXISTE SOUS SON ANCRE — pas sur une fraction d'écran (`P11.22-z`).
+//
+// LE DÉFAUT QUE CE GESTE FERME. Un popover `position:fixed` posé à `rect.bottom + 4` ne bouge PAS quand la
+// page défile : ce qui tombe sous le bord bas de la fenêtre n'y remonte par AUCUN geste. Une borne écrite
+// en `vh` dans la feuille de style borne la HAUTEUR de la boîte, jamais sa POSITION — `max-height:60vh` ne
+// garantit donc la visibilité que si l'ancre siège dans les 40 % hauts de l'écran, ce qu'aucune de ces
+// ancres ne peut promettre : la barre d'un tableau de résultats vit aussi dans un panneau de dashboard,
+// posé n'importe où sur la page. MESURÉ le 2026-08-30 sur le sélecteur de colonnes, ancre à 712 px d'une
+// fenêtre de 800 : la boîte descendait à 1196 px — 396 px hors écran, une quinzaine de lignes — SANS
+// erreur, SANS barre de défilement (le contenu tenait sous le plafond `60vh`, donc rien ne débordait DE
+// LA BOÎTE) et sans qu'un mot dise que des colonnes existaient au-delà du bord.
+//
+// CE QUE LE GESTE POSE. La hauteur maximale RÉELLE, en pixels, à l'ouverture ; `overflow-y:auto` fait
+// alors paraître la barre de défilement, qui est ce qui DIT que la liste continue. Quand l'espace sous
+// l'ancre est trop mince pour être utile, le popover BASCULE au-dessus d'elle — c'est la seule sortie
+// honnête : un plancher en pixels rendrait le débordement au lieu de le fermer.
+//
+// CE QU'IL NE FAIT PAS : rien sur l'axe horizontal (chaque appelant a sa propre logique d'alignement), et
+// il ne re-mesure RIEN après coup — un redimensionnement de la fenêtre, menu ouvert, n'est pas repris.
+// Renvoie `{ versLeHaut, hauteurMax }` : deux grandeurs qu'un témoin peut lire sans deviner.
+export function bornerLePopoverSousSonAncre(popover, rect, marge) {
+  const m = (marge == null ? 8 : marge), ecart = 4, H = window.innerHeight;
+  const sous = H - rect.bottom - ecart - m;        // espace RÉEL sous l'ancre
+  const sur = rect.top - ecart - m;                // espace RÉEL au-dessus
+  const versLeHaut = sous < Math.min(160, sur);    // trop peu dessous ET mieux dessus -> bascule
+  const hauteurMax = Math.max(0, Math.round(versLeHaut ? sur : sous));
+  popover.style.maxHeight = hauteurMax + 'px';
+  popover.style.overflowY = 'auto';
+  if (versLeHaut) { popover.style.top = ''; popover.style.bottom = Math.round(H - rect.top + ecart) + 'px'; }
+  else { popover.style.bottom = ''; popover.style.top = Math.round(rect.bottom + ecart) + 'px'; }
+  return { versLeHaut, hauteurMax };
+}
+
 // Petit menu popover (position:fixed) — items = [{label,fn}]. Un seul ouvert à la fois.
 let _miniMenuClose = null;
 function closeMiniMenu() { if (_miniMenuClose) { const f = _miniMenuClose; _miniMenuClose = null; f(); } }
@@ -230,7 +263,8 @@ function miniMenu(anchor, items) {
   items.forEach(it => { const b = document.createElement('button'); b.type = 'button'; b.className = 'minimenu-item'; b.textContent = it.label; b.onclick = () => { closeMiniMenu(); it.fn(); }; menu.appendChild(b); });
   document.body.appendChild(menu);
   const r = anchor.getBoundingClientRect();
-  menu.style.position = 'fixed'; menu.style.top = (r.bottom + 4) + 'px'; menu.style.left = Math.max(6, r.right - menu.offsetWidth) + 'px';
+  menu.style.position = 'fixed'; menu.style.left = Math.max(6, r.right - menu.offsetWidth) + 'px';
+  bornerLePopoverSousSonAncre(menu, r);   // `P11.22-z` : ce menu n'avait AUCUNE borne de hauteur — ni ici, ni dans la feuille de style
   const onDoc = e => { if (!menu.contains(e.target) && e.target !== anchor) closeMiniMenu(); };
   const onKey = e => { if (e.key === 'Escape') closeMiniMenu(); };
   setTimeout(() => { document.addEventListener('mousedown', onDoc); document.addEventListener('keydown', onKey); }, 0);

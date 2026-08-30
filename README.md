@@ -204,14 +204,20 @@ Le `docker-compose.yml` livré **arme** les ops natives du binaire : planificate
 toutes les 6 h vers `/data/backups` (rétention des 24 plus récents) + **auto‑vacuum quotidien**, sans
 sidecar ni cron hôte. Réglez‑les — ou coupez‑les avec `PLUME_BACKUP_INTERVAL=0` — via `.env`.
 
-> ⚠️ **Armer le planificateur ne suffit pas à obtenir une sauvegarde.** *Mesuré sur l'arbre suivi le
-> 2026‑08‑25 :* le chemin compressé **exige `PLUME_DB_KEY`** (la clé sert de passphrase à l'enveloppe),
-> et cette clé est **vide par défaut**. Sur une installation Docker ou k3s prise telle quelle, chaque
-> cycle échoue en journalisant `backup --compress : PLUME_DB_KEY requis` et **aucune archive n'est
-> produite** — le planificateur continue, aucun voyant ne change. Le mode hôte n'a pas ce trou : son
-> timer emprunte `VACUUM INTO`, qui n'exige aucune clé. Posez une clé, puis **prouvez‑le** avec
-> `plume-daemon backup-verify`. Détail complet :
-> [`docs/CHIFFREMENT-COMPRESSION.md`](docs/CHIFFREMENT-COMPRESSION.md#34-le-défaut-mesuré--sans-clé-de-base-le-planificateur-ne-produit-rien).
+> ⚠️ **La sauvegarde compressée exige une clé de base — et l'âge de la base décide si elle en a une.**
+> *Établi par lecture de l'arbre suivi le 2026‑08‑30 :* le chemin compressé **exige une passphrase**, qui est la
+> clé SQLCipher ; l'ordonnanceur natif comme `plume-daemon backup --compress` la résolvent par
+> `db_key()`, dont la troisième provenance est la clé **auto‑engendrée** de `P9.6-a`. **Sur une
+> installation faite aujourd'hui — volume Docker ou PVC vierge — cette clé naît au premier démarrage
+> et les cycles publient**, sans que vous ayez rien à poser. **Mais une base mise en service AVANT
+> `P9.6-a` (2026‑08‑25) et restée en clair n'en reçoit jamais** : un démarrage n'engendre de clé que
+> pour une base neuve, et son ordonnanceur échoue à chaque passage — journal `[backup-sched]` plus un
+> signal de posture non purgeable. Pour celle‑là, posez une clé explicite ou convertissez‑la. Le mode
+> hôte est hors du sujet : son timer appelle la sous‑commande **sans** `--compress`, donc
+> `VACUUM INTO`, qui n'exige aucune clé — il produit une copie `.db`, pas une archive. Dans tous les
+> cas, **prouvez‑le** avec `plume-daemon backup-verify` : un répertoire de destination vide est un
+> échec, pas un silence. Les trois cas, et les commandes de vérification :
+> [`docs/CHIFFREMENT-COMPRESSION.md`](docs/CHIFFREMENT-COMPRESSION.md#34-la-précondition-du-chemin-compressé--une-clé-de-base-et-doù-elle-vient).
 
 > 🪶 **Démo (peuplée, sans agents)** — ajoutez `PLUME_DEMO=1` : des événements/métriques/alertes d'exemple sur 24 h pour voir Plume *vivant* immédiatement. *(Désactivé hors démo.)*
 
@@ -813,7 +819,7 @@ viennent d'une constante — la commande `c` ci‑dessus la donne.
 | `PLUME_QUERY_BUDGET_MS` | budget d'une requête avant abandon | `5000` |
 | `PLUME_QUERY_MAX` | plafond de lignes rendues par `/api/query` (borné dur à `100000`) | `5000` |
 | `PLUME_SEARCH_LIMIT` / `PLUME_SEARCH_MAX` | défaut et plafond de `/api/search` | `100` / `5000` |
-| `PLUME_FTS_FIELDS` | `1` = indexe aussi les champs JSON en plein texte (**coûteux en RAM**) | `0` |
+| `PLUME_FTS_FIELDS` | `1` = indexe aussi les champs JSON en plein texte (vtable `event_fields_fts`, lue par `/api/search` seul — le chemin GXQL ne la consulte jamais). **Ce n'est PAS un levier de ce budget mémoire** : le banc ne mesure aucun surcoût de RAM pour cette capacité — sa seule paire comparable rend même une crête plus basse avec elle active, sans pour autant l'attribuer au drapeau (`docs/BENCHMARK.md`, levier L6). Son défaut à `0` tient à deux coûts RÉELS, l'un chiffré au banc et l'autre lu dans les sources : environ **un dixième de base en plus**, et surtout un **échange de confidentialité sur la sauvegarde** — cette vtable est *contentless*, forme que le plan de sauvegarde typé ne sait pas représenter, si bien que chaque cycle `--compress` bascule sur l'export historique qui **matérialise la base entière EN CLAIR** dans le staging le temps du cycle (cf. [`docs/CHIFFREMENT-COMPRESSION.md`](docs/CHIFFREMENT-COMPRESSION.md)) | `0` |
 | `PLUME_SQLITE_DEVERSEMENT` | `1` = autorise les tris à déverser sur disque. **Échange de confidentialité** : les temporaires SQLite ne sont **pas** chiffrés par SQLCipher | `0` |
 | `PLUME_SQLITE_DEVERSEMENT_QUOTA_MO` | **borne le volume écrit en clair** quand `PLUME_SQLITE_DEVERSEMENT=1` : au‑delà, l'instruction en cours est ARRÊTÉE sans rendre de résultat. Ce qu'il borne exactement : **les octets que le PROCESSUS détient ouverts** sous le répertoire de déversement, relevés périodiquement. Ce qu'il **ne** borne **pas** : la requête fautive (l'instruction arrêtée est celle qui atteint le point de mesure, pas forcément celle qui a le plus écrit), la RAM, ni quoi que ce soit lorsque le déversement est à `0` (aucune mesure n'est armée). `0` = **aucune borne**. Sans effet si la mesure devient illisible : le refus cesse d'être opposable et la cause est journalisée | `1024` |
 | `PLUME_SQLITE_BUDGET_MB` | budget mémoire du moteur | *(dérivé)* |

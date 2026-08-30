@@ -30,7 +30,11 @@ SystemCallFilter=@system-service
 SystemCallArchitectures=native
 
 # --- limites ressources (alignées sur le budget k3s 2Gi ; le daemon DOIT tenir 2Go, cf tuning
-#     MALLOC_ARENA_MAX=2 + query_sem + FTS_FIELDS off). 256M/200M OOM-aient le daemon au boot (fix). ---
+#     MALLOC_ARENA_MAX=2 + query_sem). 256M/200M OOM-aient le daemon au boot (fix).
+#     PLUME_FTS_FIELDS ne figure PLUS dans ce tuning (corrigé sur l'arbre le 2026-08-30) : aucune
+#     paire comparable du banc ne lui mesure de surcoût mémoire. Son défaut à 0 tient à la SAUVEGARDE —
+#     vtable contentless que le plan de dump typé refuse, d'où un repli sur l'export qui réécrit la
+#     base entière EN CLAIR dans le staging à chaque cycle. Voir docs/CHIFFREMENT-COMPRESSION.md. ---
 MemoryMax=2G
 MemoryHigh=1800M
 CPUQuota=80%

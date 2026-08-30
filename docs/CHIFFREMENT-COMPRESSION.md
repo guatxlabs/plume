@@ -218,6 +218,7 @@ C'est la partie la plus utile de ce document, et la plus facile à oublier.
 | tier froid Parquet | **oui**, et **fail-closed** : sans clé, aucun fichier n'est écrit | `daemon/src/cold_store/` |
 | sauvegarde par le planificateur / `backup --compress` | **oui** (age) — voir §3 | `daemon/src/backup/` |
 | sauvegarde par `plume-daemon backup` sans `--compress` | **hérite de l'état de la source** : le code n'applique aucune clé à la destination, il exécute `VACUUM INTO`. *Que la copie soit chiffrée est une propriété de `VACUUM INTO` sous SQLCipher — **non établie** par ce dépôt, aucun test ne la vérifie.* | `daemon/src/main.rs` |
+| staging d'une sauvegarde compressée | **rien n'est écrit par défaut** (dump typé en flux) ; sur le chemin de repli — déclenché par `PLUME_FTS_FIELDS=1`, ou forcé par `PLUME_BACKUP_FORCE_PLAINTEXT_EXPORT` — **la base ENTIÈRE est réécrite en clair** le temps du cycle, puis effacée par écrasement. Voir §3.2 | `daemon/src/backup/mod.rs` |
 | export du journal d'audit | **non** — JSONL servi en clair | `daemon/src/handlers/governance.rs` |
 | réponses de l'API | en clair, sauf TLS (`PLUME_TLS_CERT`/`PLUME_TLS_KEY`) | — |
 
@@ -262,6 +263,30 @@ fichier** : un dump typé en flux (le défaut, qui n'écrit aucun clair transito
 complète (chemin historique, atteint par repli automatique quand un schéma n'est pas représentable
 en dump typé).
 
+**CE QUI FAIT BASCULER SUR LE CHEMIN HISTORIQUE, ET CE QUE CE CHEMIN ÉCRIT.** *Établi par lecture des
+sources le 2026-08-30.* Le repli n'est pas théorique : il est déclenché par une **table virtuelle FTS
+sans table de contenu**. `collect_dump_plan` ne sait recréer une vtable FTS que lorsqu'elle s'adosse
+à une table ordinaire — c'est le cas de `event_fts` (`content='event'`) — et rend
+`PlanErr::Unsupported` pour toute autre forme. Or `PLUME_FTS_FIELDS=1` crée précisément une vtable
+`content=''` (`event_fields_fts`). Le repli exécute alors `sqlcipher_export`, qui **réécrit la base
+ENTIÈRE EN CLAIR** dans le répertoire de staging le temps du cycle, avant de la compresser et de la
+chiffrer. Le fichier est effacé par écrasement (garde `Drop`) et un balayage réape les orphelins d'un
+processus tué, mais **la fenêtre existe et elle revient à chaque cycle**. Trois conséquences :
+
+- **activer l'indexation plein texte des CHAMPS est un échange performance ↔ confidentialité**, pas
+  un arbitrage de mémoire — c'est la vraie raison pour laquelle `PLUME_FTS_FIELDS` vaut `0` par
+  défaut, et le même genre d'échange explicite que `PLUME_SQLITE_DEVERSEMENT` (§2) ;
+- la ligne de journal de chaque cycle **dit quel chemin a tourné** (`clair-sur-disque=OUI/non`) :
+  c'est le seul moyen de savoir laquelle des deux formes votre installation produit ;
+- `PLUME_BACKUP_STAGING_DIR` déplace ce clair transitoire — sur un volume éphémère, par exemple —
+  et `PLUME_BACKUP_FORCE_PLAINTEXT_EXPORT` force le chemin historique sans recompiler.
+
+```sh
+grep -n "content=''" daemon/src/maintenance.rs
+sed -n '/fn collect_dump_plan/,/Unsupported/p' daemon/src/backup/dump_restauration.rs | tail -5
+grep -n 'sqlcipher_export' daemon/src/backup/mod.rs
+```
+
 | Constante | Valeur littérale | Où |
 |---|---|---|
 | niveau zstd de la sauvegarde | **7** | `daemon/src/backup/mod.rs` |
@@ -291,13 +316,16 @@ Le repli symétrique n'est pas silencieux. Trois choses se produisent, toutes po
    écriture**, sur les deux chemins, pour ne pas produire un fichier qu'on rejetterait ensuite.
    Défaut : `0`.
 
-### 3.4 Le défaut mesuré : sans clé de base, le planificateur ne produit RIEN
+### 3.4 La précondition du chemin compressé : une clé de base, et d'où elle vient
 
-**MESURÉ SUR L'ARBRE SUIVI le 2026-08-25.** C'est le point le plus important de ce document pour un
-exploitant, et il ne figurait dans aucune page.
+**ÉTABLI PAR LECTURE DE L'ARBRE SUIVI le 2026-08-30** — par les sources et leurs littéraux, aucun
+cycle n'ayant été observé (§6). C'est le point le plus important de ce document pour un exploitant,
+parce qu'il décide si une archive existe — et **la réponse dépend de l'âge de la base, pas du mode
+de déploiement.**
 
 Le chemin compressé **exige une passphrase, et cette passphrase est la clé SQLCipher**. La toute
-première garde de `backup_compressed` est :
+première garde de `backup_compressed` refuse une clé absente ou vide, et son refus nomme la
+variable attendue :
 
 ```rust
 let pass = match key {
@@ -306,34 +334,56 @@ let pass = match key {
 };
 ```
 
-Or **la clé est vide par défaut dans les trois modes**, et les manifestes livrés arment pourtant le
-planificateur. Sur une installation Docker ou k3s prise telle quelle, à chaque cycle :
+**Ce qui remplit cet argument est `db_key()`, dans les DEUX chemins de production** :
+l'ordonnanceur natif (`server::run_scheduled_backup`) et la sous-commande
+`plume-daemon backup --compress` (`main.rs`) l'appellent l'un comme l'autre. Or `db_key()` a
+**trois** provenances, et la troisième est la clé **auto-engendrée** de `P9.6-a` (§1) — celle que le
+démon se donne à lui-même sur une base neuve. Le tableau des trois cas :
 
-```
-[backup-sched] backup B1 échoué : backup --compress : PLUME_DB_KEY requis (passphrase age) (best-effort -> on continue)
-```
+| État de la base au premier démarrage | Clé résolue par `db_key()` | Cycle compressé |
+|---|---|---|
+| **NEUVE** (volume, PVC ou `/var/lib/plume/db` vierge), aucune clé fournie | la clé **auto-engendrée** au démarrage — `0600`, à `PLUME_DB_KEY_AUTO_PATH` sinon `<PLUME_DB>.key` | **ABOUTIT** : une archive est écrite à chaque cycle |
+| **ANTÉRIEURE à `P9.6-a`** et restée EN CLAIR, aucune clé fournie | **aucune** : un démarrage n'engendre JAMAIS de clé pour une base qui existe déjà (§1, c'est l'invariant du lot) | **REFUSE à chaque passage**, avec le message ci-dessus |
+| n'importe laquelle, avec `PLUME_DB_KEY_FILE` ou `PLUME_DB_KEY` posée | la clé **explicite** (elle gagne sur l'auto) | ABOUTIT |
 
-**Aucune archive n'est produite.** Le planificateur ne s'arrête pas, ne dégrade aucun voyant, et rien
-d'autre que cette ligne de journal ne le dit. Les deux vérifications :
+**Sur une installation faite aujourd'hui, en Docker comme en k3s, la sauvegarde compressée aboutit
+donc sans qu'on ait rien à poser** : les deux manifestes livrent `PLUME_DB_KEY_AUTO_PATH`, la clé
+naît au premier démarrage, et les cycles publient. C'est la garde de CI
+`check_a_deployment_never_arms_a_task_it_cannot_run.py` qui tient cette conjonction — un manifeste
+qui armerait l'ordonnanceur sans livrer aucune des trois provenances de clé fait rougir la CI.
+
+**Le trou n'a pas disparu pour tout le monde, et c'est la ligne du milieu du tableau.** Une base
+mise en service AVANT `P9.6-a` et laissée en clair n'a aucune clé et n'en recevra pas : son
+ordonnanceur part toutes les 6 h, échoue, et le journal en est le seul témoin immédiat
+(`[backup-sched] backup B1 échoué : … (best-effort -> on continue)`). Depuis `P9.4-b`, un cycle sans
+archive émet aussi un **signal de posture non purgeable**, donc l'absence est visible ailleurs que
+dans un journal — mais **rien ne convertit cette base à votre place** : il faut poser une clé
+explicite, ou exécuter le geste de conversion décrit au §1 (« Convertir une base existante »).
+
+Deux conséquences à tenir ensemble :
+
+- **le mode hôte n'emprunte pas ce chemin du tout** : `plume-backup.timer` appelle `plume-daemon
+  backup` sans `--compress`, c'est-à-dire `VACUUM INTO`, qui n'exige aucune clé. L'asymétrie entre
+  les modes porte sur le FORMAT produit (copie `.db` contre archive `age(zstd(...))`), pas sur
+  l'existence d'une sauvegarde ;
+- **la clé auto est posée par le DÉMON, à son démarrage** (`server::mod.rs` appelle
+  `ensure_encrypted`, la sous-commande non). Un `plume-daemon backup --compress` lancé à la main sur
+  un volume où le démon n'a jamais tourné ne trouve donc rien à relire, et refuse.
+
+Pour **prouver** qu'on est sauvegardé plutôt que de le supposer, la commande est
+`plume-daemon backup-verify` (§3.5), et un répertoire de destination vide est un échec, pas un
+silence. Les trois vérifications :
 
 ```sh
-sed -n '/fn backup_compressed(/,/^}/p' daemon/src/backup/dump_restauration.rs | head -20
-grep -n 'PLUME_DB_KEY\|PLUME_BACKUP_INTERVAL' docker-compose.yml deploy/k3s.yaml
+sed -n '/fn backup_compressed(/,/^}/p' daemon/src/backup/dump_restauration.rs | head -8
+grep -n 'db_key().as_deref()' daemon/src/server/sauvegarde_planifiee.rs daemon/src/main.rs
+grep -n 'PLUME_DB_KEY_AUTO_PATH\|PLUME_BACKUP_INTERVAL' docker-compose.yml deploy/k3s.yaml
 ```
 
-Trois conséquences à tenir ensemble :
-
-- **le mode hôte n'a pas ce trou** : son timer emprunte le chemin `VACUUM INTO`, qui n'exige aucune
-  clé — d'où une asymétrie entre les modes que rien n'annonce ;
-- **poser une clé de base n'est donc pas seulement une décision de confidentialité** : en conteneur
-  et en cluster, c'est la condition pour qu'une sauvegarde existe ;
-- pour **prouver** qu'on est sauvegardé plutôt que de le supposer, la commande est
-  `plume-daemon backup-verify` (§3.5), et un répertoire de destination vide est un échec, pas un
-  silence.
-
-*Cet écart entre ce que les manifestes arment et ce que le code peut produire n'a pas encore de clé
-de roadmap au moment où cette page est écrite ; les décisions sur le chiffrement par défaut sont
-portées par `P9.6-a` dans [`ROADMAP.md`](ROADMAP.md).*
+*Ce que ce paragraphe corrige : jusqu'au 2026-08-30, cette section décrivait comme impossible ce que
+le produit fait depuis `P9.6-a` (2026-08-25) — elle a été écrite avant que la clé auto-engendrée
+existe et n'a pas suivi. Les décisions sur le chiffrement par défaut restent portées par `P9.6-a`
+dans [`ROADMAP.md`](ROADMAP.md).*
 
 ### 3.5 Restaurer, et vérifier
 

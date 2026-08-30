@@ -1,6 +1,6 @@
 // viz.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // Explore + viz/charts: drilldown, fenetre glissante, requete interactive, rendu table/graphes (partages avec dashboards).
-import { $, CSSV, LANG, LOC, SEV, api, apiSend, colComparator, confirmModal, esc, flashStopped, fmtTs, ic, makePager, muted, sev, socIsAdmin, toast, tzOpts } from './core.js';
+import { $, CSSV, LANG, LOC, SEV, api, apiSend, bornerLePopoverSousSonAncre, colComparator, confirmModal, esc, flashStopped, fmtTs, ic, makePager, muted, sev, socIsAdmin, toast, tzOpts } from './core.js';
 import { S } from './state.js';
 // P11.4-h : LE clic qui respecte une sélection (mécanisme partagé, `copie_et_selection.js`).
 import { clicQuiRespecteLaSelection } from './copie_et_selection.js';
@@ -1747,10 +1747,23 @@ function tableEl(cols, rows, query, drill, opts) {
     allb.onclick = () => { hidden.clear(); build(); menu.querySelectorAll('input').forEach(c => c.checked = true); };
     menu.appendChild(allb);
     const r = colsBtn.getBoundingClientRect();
-    menu.style.top = (r.bottom + 4) + 'px'; menu.style.right = (window.innerWidth - r.right) + 'px';
+    menu.style.right = (window.innerWidth - r.right) + 'px';
     document.body.appendChild(menu);
+    // `P11.22-z` — LA HAUTEUR VIENT DE L'ESPACE QUI EXISTE SOUS LE BOUTON, pas d'une fraction d'écran.
+    // Ce menu est le seul de la console à s'ouvrir sous une ancre qui peut siéger N'IMPORTE OÙ : la barre
+    // d'un tableau de résultats vit aussi dans un panneau de dashboard. Le geste partagé pose la borne
+    // réelle et bascule au-dessus du bouton quand il n'y a plus de place dessous (core.js).
+    bornerLePopoverSousSonAncre(menu, r);
     const onclose = e => { if (!menu.contains(e.target) && e.target !== colsBtn) closeColsMenu(); };
-    const onscroll = () => closeColsMenu();
+    // `P11.22-z` — LE CAPTEUR RECEVAIT LE DÉFILEMENT DE SA PROPRE LISTE. Posé sur le document en phase de
+    // CAPTURE, il voit passer TOUT événement `scroll` — y compris celui qu'émet ce menu quand l'exploitant
+    // le fait défiler (un `scroll` ne remonte pas, mais il DESCEND : la capture le livre au document avant
+    // la cible). La liste se refermait donc sous le doigt, ce qui se lit du poste « la liste ne défile
+    // pas » et rend les dernières colonnes inatteignables, sans erreur et sans un mot. Ce capteur n'a
+    // qu'un objet : la page a bougé SOUS un menu ancré en coordonnées de fenêtre. Un défilement né DANS
+    // le menu ne déplace pas son ancre et ne le concerne pas. Mesuré le 2026-08-30 : le menu se détachait
+    // du document au premier cran de molette posé sur lui.
+    const onscroll = e => { if (e && e.target && menu.contains(e.target)) return; closeColsMenu(); };
     S._colsMenuClose = () => { menu.remove(); document.removeEventListener('click', onclose); document.removeEventListener('scroll', onscroll, true); };
     setTimeout(() => { document.addEventListener('click', onclose); document.addEventListener('scroll', onscroll, true); }, 0);
   };

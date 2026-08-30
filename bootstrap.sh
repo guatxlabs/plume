@@ -191,6 +191,9 @@ echo "   • Réponse (root, exécute les actions)  : sudo systemctl enable --no
 echo "       garde-fous : mode 'observe' + dry-run + approbation + allowlist + délégation CrowdSec/fail2ban + limites systemd"
 echo "   • Falco eBPF (si Falco installé)       : sudo systemctl enable --now plume-falco.timer"
 echo "   • Ingestion CrowdSec (si CrowdSec)     : sudo systemctl enable --now plume-crowdsec.timer"
-echo "   • Couverture k8s (si k3s, sur le VPS) : sudo systemctl enable --now plume-kube-state.timer plume-pod-logs.timer"
+echo "   • Couverture k8s (si k3s)              : sudo systemctl enable --now plume-kube-state.timer plume-pod-logs.timer"
+echo "       ce que leur extinction ÉTEINT : sans kube-state, l'alerte native « magasin de secrets pas prêt » ne peut pas se lever —"
+echo "       un coffre scellé arrête la rotation des clés de TOUT le cluster (épisode fondateur du 2026-08-26 : vingt-sept secrets externes)."
+echo "       Tant que le timer est éteint ce signal est MUET, et ce silence ne vaut PAS « tout va bien ». Détail : deploy/K8S.md"
 echo "   • Scrape Prometheus (OBS-1, remplace Prom) : remplis /etc/plume/prom-targets + /etc/plume/prom.conf puis sudo systemctl enable --now plume-prom-scrape.timer"
 systemctl is-active plume-daemon.service

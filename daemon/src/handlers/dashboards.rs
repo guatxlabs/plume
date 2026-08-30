@@ -920,9 +920,30 @@ pub(crate) async fn panel_data(State(st): State<AppState>, Extension(au): Extens
 /// colonne projetée directement, ex `SELECT src_ip …`). Toujours LIVE (jamais mis en cache) -> aucune fuite
 /// inter-rôles via le cache partagé.
 ///
-/// CORRECTION D'UN COMMENTAIRE FAUX (`P10.5-i`) : cette fonction ne prend AUCUN permit — ni `query_sem`
-/// ni `refresh_sem`. Les six `try_acquire` du module sont tous ailleurs. Elle s'exécute directement sur
-/// `spawn_blocking` ; c'est un chemin rare (masques actifs) et il est hors cache.
+/// CE QU'ELLE NE PREND PAS (`P10.5-i`) : aucun permit — ni `query_sem`, ni `refresh_sem`. Elle
+/// s'exécute directement sur `spawn_blocking`. LA PROPRIÉTÉ EST ÉNONCÉE SANS NOMBRE, ET C'EST LE
+/// CORRECTIF (`P10.18-a`, mesuré le 2026-08-30) : la rédaction précédente adossait cette phrase à un
+/// COMPTE d'acquisitions du module. Ce compte comptait des occurrences de TEXTE — les mentions en prose
+/// des commentaires voisins comprises — là où seuls les APPELS engagent quelque chose, et un chiffre
+/// gravé dans un commentaire redevient faux au lot suivant sans que rien ne le signale. La propriété
+/// tenue est donc : AUCUNE acquisition de permis de ce module ne se trouve dans le corps de cette
+/// fonction. Elle est DÉRIVÉE de ce fichier par
+/// `tests::chemin_masque_sans_permis::aucune_acquisition_de_permis_dans_le_chemin_masque`, qui blanchit
+/// les commentaires et les littéraux avant de compter, et dont l'instrument est validé sur des corpus
+/// fabriqués — pas sur l'arbre.
+///
+/// ET CE QUE ÇA COÛTE, PUISQU'ELLE N'EN PREND PAS. Ses deux voisines de ce module prennent le permis de
+/// rafraîchissement SANS attente et retombent sur le cache quand la lane est saturée. Ce chemin-ci est
+/// HORS cache (le `panel_cache` est rôle-agnostique) : il n'a AUCUN repli, donc un `try_acquire` qui
+/// échouerait y deviendrait un REFUS servi et non une réponse plus vieille — prendre le permis
+/// changerait ce que l'appelant REÇOIT. La borne qui subsiste est celle du pool `spawn_blocking` du
+/// runtime, que `main.rs` ne configure pas : le défaut de la dépendance (512 fils, tokio 1.53.0, lu le
+/// 2026-08-30). Sous un budget de 2 Gio, ce n'est pas une borne utile, et c'est écrit ici plutôt que
+/// sous-entendu. Ce qui rend le chemin tenable AUJOURD'HUI n'est pas sa rareté mais sa PORTE :
+/// `panel_data` en est le seul appelant, sous `!masks.is_empty()` — la concurrence de ce chemin vaut
+/// donc le nombre de requêtes de panneau simultanées émises par des rôles À MASQUES ACTIFS, et rien
+/// d'autre ne la borne. Le jour où un rôle masqué devient le cas courant, il ne reste plus de borne :
+/// c'est `P10.18-a`, qui reste OUVERT et n'est PAS fermé par ce commentaire.
 async fn panel_data_masked_live(
     st: &AppState, au: &AuthUser, conf: &HashMap<String, String>, query: &str, is_soql: bool, from: i64, to: i64,
     env: Option<&str>, masks: &guatx_core::soql::FieldMaskSet,

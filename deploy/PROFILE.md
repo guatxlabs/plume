@@ -29,6 +29,14 @@ Principe : *moteur générique + spécifique-infra en CONFIG, jamais en dur* ; c
 | `PLUME_K3S_STORAGE` | chemin du provisioner local-path (métrique PV%) | auto (k3s / local-path-provisioner) |
 | **`PLUME_WATCH_STS`** | **apps critiques à surveiller** : `ns/nom ns/nom …` → métrique `kube_sts_ready_<nom>` + alerte sév 4 « `<nom>` indisponible ». Lu par `kube-state.sh` (émission) **et** le daemon (seed de la règle). | **(vide)** — définis tes apps ; le générique `kube_sts_notready` reste émis sans config |
 
+> **Rotation des clés — aucune variable à régler, mais un minuteur à armer.** Si le cluster utilise
+> `external-secrets`, `kube-state` publie aussi `secretstore_notready` **et son dénominateur**
+> `secretstore_total` : le daemon lève alors **UNE** alerte native (sév. 4, famille
+> `heartbeat.magasin-de-secrets`) quand l'approvisionnement des secrets s'arrête — pas une par secret.
+> Rien à configurer ici ; mais le producteur est `plume-kube-state.timer`, que `bootstrap.sh` laisse
+> **éteint**, et tant qu'il l'est ce signal est **muet** — son silence ne vaut PAS « tout va bien ».
+> Détail et geste d'armement : `deploy/K8S.md`.
+
 ## 3. Collecteurs (réglages par source)
 | Variable | Rôle | Défaut |
 |---|---|---|

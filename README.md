@@ -643,10 +643,16 @@ il n'est pas lisible via `/proc/<pid>/environ`.
 
 ### Ce que ce document couvre, et ce qu'il ne couvre pas
 
-Soyons exacts plutôt que rassurants, et comptons **sur l'arbre** plutôt que de promettre. Le démon
-et les collecteurs lisent **299** variables `PLUME_*` distinctes. **131** apparaissent dans au moins
-un document livré ; **168** n'apparaissent dans **aucun**. Ce README en nomme **54** — il en
-nommait **8** avant cette section.
+Soyons exacts plutôt que rassurants, et comptons **sur l'arbre** plutôt que de promettre. **Relevé
+du 2026-08-30**, rendu par la garde citée juste après : le démon et les collecteurs lisent **319**
+variables `PLUME_*` distinctes. **160** apparaissent dans au moins un document livré ; **159**
+n'apparaissent dans **aucun**. Ce README en nomme **99** — et voici le critère, parce qu'un compte
+sans critère est irréfutable donc inutile : **un jeton `PLUME_[A-Z0-9_]+` distinct, écrit en toutes
+lettres**. Une cellule qui abrège — un nom entier, puis des suffixes seuls — ne nomme *que le
+premier* pour ce critère, ni pour la garde ni pour l'exploitant qui cherche le nom complet ; les
+tableaux ci‑dessous n'abrègent donc plus aucun levier, et neuf des quinze abréviations retirées le
+2026-08-30 étaient la SEULE trace d'un levier dans tout le corpus. Il en nommait **8** avant cette
+section.
 
 **Et ce compte ne dérivera plus en silence** : la garde
 [`check_operator_surface_is_documented.py`](.github/scripts/check_operator_surface_is_documented.py)
@@ -655,37 +661,53 @@ ne cite, et **refuse qu'il augmente**. Elle applique le même critère aux ongle
 capteurs livrés et aux modes de déploiement — pour ceux-là, le plafond est **zéro** (`P9.7-b`).
 
 La section ci‑dessous documente donc **une sélection** : les leviers qu'un exploitant a une raison de
-toucher, groupés par usage. Elle ne couvre pas les 299, et un document qui prétendrait le contraire
+toucher, groupés par usage. Elle ne couvre pas les 319, et un document qui prétendrait le contraire
 serait pire que le silence. Le reste est porté par une clé ouverte de
 [`docs/ROADMAP.md`](docs/ROADMAP.md), et se dérive avec les commandes ci‑dessous.
 
-**Alors dérivez la liste plutôt que de nous croire.** Ces commandes se lancent à la racine du dépôt
-et lisent les sources, donc elles ne peuvent pas vieillir :
+**Alors dérivez la liste plutôt que de nous croire — et UNE SEULE lecture fait foi.** C'est celle de
+la garde, pour une raison simple : c'est la seule qui rougit en intégration continue. Elle rend ses
+propres listes, un nom par ligne et rien d'autre, donc ce document la **cite** au lieu de
+réimplémenter sa règle de lecture (le faire une troisième fois, c'était le défaut, pas le remède) :
 
 ```sh
-# 1. TOUS les leviers du démon, AVEC leur valeur par défaut
+# 1. La liste COMPLÈTE des leviers lus par le code de production — un par ligne
+python3 .github/scripts/check_operator_surface_is_documented.py --liste=lus
+
+# 2. Ceux qu'aucun document ni `.env.example` ne cite — la population exacte du cliquet
+python3 .github/scripts/check_operator_surface_is_documented.py --liste=sans-doc
+
+# 3. Les comptes, sans verdict
+python3 .github/scripts/check_operator_surface_is_documented.py --mesure
+```
+
+**Les deux commandes ci-dessous restent publiées pour ce que la garde ne rend pas : la valeur par
+défaut à côté du nom.** Ce sont des **approximations `grep`, et elles minorent** — elles ne suivent
+ni un levier nommé par une constante (`cfg(&conf, CLE_DU_QUOTA, …)`) ni un appel dont un argument
+antérieur porte une parenthèse (`cfg(&load_config(), "…", …)`). Ne les additionnez pas : voir la
+phrase qui suit le bloc.
+
+```sh
+# a. Les leviers du démon vus par `grep`, AVEC leur valeur par défaut
 grep -rhoE 'cfg[a-z_]*\([^,]+, *"PLUME_[A-Z0-9_]+", *"[^"]*"' daemon/src --include='*.rs' --exclude-dir=tests \
   | sed -E 's/.*"(PLUME_[A-Z0-9_]+)", *"([^"]*)".*/\1 = \2/' | sort -u
 
-# 2. TOUS les leviers des collecteurs et des installateurs, AVEC leur valeur par défaut
+# b. Les leviers des collecteurs et des installateurs, AVEC leur valeur par défaut
 grep -rhoE '\$\{PLUME_[A-Z0-9_]+:-[^}]*\}' collectors bootstrap.sh bootstrap-agent.sh \
   | sed -E 's/\$\{(PLUME_[A-Z0-9_]+):-(.*)\}/\1 = \2/' | sort -u
 
-# 3. La liste COMPLÈTE des leviers lus, et ceux qu'aucun document ne cite
-{ grep -rhoE '(env::var|cfg[a-z_]*)\([^)]*"PLUME_[A-Z0-9_]+"' daemon/src --include='*.rs' --exclude-dir=tests
-  grep -rhoE '\$\{?PLUME_[A-Z0-9_]+' collectors bootstrap.sh bootstrap-agent.sh
-} | grep -oE 'PLUME_[A-Z0-9_]+' | sort -u > /tmp/leviers.txt
-grep -hoE '\bPLUME_[A-Z0-9_]+' $(git ls-files '*.md') .env.example | sort -u > /tmp/documentes.txt
-wc -l < /tmp/leviers.txt                              # leviers lus
-comm -23 /tmp/leviers.txt /tmp/documentes.txt         # ceux qu'aucun document ne cite
-
-# 4. Où une variable donnée est lue, et ce qu'elle vaut par défaut
+# c. Où une variable donnée est lue, et ce qu'elle vaut par défaut
 grep -rn 'PLUME_RETENTION_DAYS' daemon/src collectors --exclude-dir=tests
 ```
 
-Les commandes 1 et 2 rendent ensemble **240** leviers avec leur défaut littéral. Sur une
-instance qui tourne, un administrateur lit les valeurs **effectives** d'une liste sûre de 26 clés
-(jamais un secret) via `GET /api/system/diag`.
+**Ce que `a` et `b` rendent ensemble, et sous quel arbitrage — parce qu'un total nu se lit de deux
+façons qui ne donnent pas le même nombre.** Elles rendent des **lignes**, pas des leviers : au
+**2026-08-30**, `a` en rend 105 et `b` 153, mais leur somme (258) compte deux fois les 8 noms que
+les deux rendent, et `b` écrit 6 leviers sur deux lignes (même nom, deux défauts selon
+l'installateur). Le nombre publié ici est donc, et a toujours été, l'**UNION de leurs noms
+distincts** : **244**. Il *minore* les 319 que la garde lit, et il vieillit à chaque levier ajouté —
+`--liste=lus`, lui, ne vieillit pas. Sur une instance qui tourne, un administrateur lit les valeurs
+**effectives** d'une liste sûre de 26 clés (jamais un secret) via `GET /api/system/diag`.
 
 ### Ma base grossit — qu'est-ce qui grossit ?
 
@@ -717,7 +739,7 @@ poste et les objets ; le raisonnement reste le vôtre.
 ### Les leviers qu'on a une raison de toucher
 
 Les valeurs entre crochets sont les **défauts lus dans les sources** ; celles marquées *(dérivé)*
-viennent d'une constante — la commande 4 ci‑dessus la donne.
+viennent d'une constante — la commande `c` ci‑dessus la donne.
 
 **Identité et exposition du central**
 
@@ -739,7 +761,7 @@ viennent d'une constante — la commande 4 ci‑dessus la donne.
 | `PLUME_TOKEN` | jeton *Bearer* d'agent (préféré) | vide |
 | `PLUME_USER` / `PLUME_PASS` | repli *basic auth* si pas de jeton | vide |
 | `PLUME_HOST_HEADER` | force l'en‑tête `Host` quand on joint le central par IP | vide |
-| `PLUME_TLS_CACERT` / `_CERT` / `_KEY` | mTLS côté agent | vide |
+| `PLUME_TLS_CACERT` / `PLUME_TLS_CERT` / `PLUME_TLS_KEY` | mTLS côté agent | vide |
 
 **Où vivent les données**
 
@@ -801,8 +823,8 @@ viennent d'une constante — la commande 4 ci‑dessus la donne.
 
 | Variable | Effet | Défaut |
 |---|---|---|
-| `PLUME_RL_IP_MAX` / `_AUTH_MAX` / `_GLOBAL_MAX` | limitation de débit par IP, sur l'authentification, et globale | `1200` / `120` / `6000` |
-| `PLUME_SHELL_OCTETS_IP_MAX` / `_GLOBAL_MAX` | budget d'**octets** de la console servie sans identité (fenêtre de 10 s), par IP réelle et global — les plafonds ci-dessus comptent des requêtes et ont été dimensionnés quand un anonyme coûtait 12 octets ; depuis que l'écran de connexion exige de servir le shell, la même requête rend jusqu'à 167 542 octets et ~6,5 ms de `gzip`. Un 304 de revalidation ne porte aucun corps, donc ne consomme rien : la borne ne pèse que sur l'abus. `0` désactive un seau | `67108864` / `268435456` |
+| `PLUME_RL_IP_MAX` / `PLUME_RL_AUTH_MAX` / `PLUME_RL_GLOBAL_MAX` | limitation de débit par IP, sur l'authentification, et globale | `1200` / `120` / `6000` |
+| `PLUME_SHELL_OCTETS_IP_MAX` / `PLUME_SHELL_OCTETS_GLOBAL_MAX` | budget d'**octets** de la console servie sans identité (fenêtre de 10 s), par IP réelle et global — les plafonds ci-dessus comptent des requêtes et ont été dimensionnés quand un anonyme coûtait 12 octets ; depuis que l'écran de connexion exige de servir le shell, la même requête rend jusqu'à 167 542 octets et ~6,5 ms de `gzip`. Un 304 de revalidation ne porte aucun corps, donc ne consomme rien : la borne ne pèse que sur l'abus. `0` désactive un seau | `67108864` / `268435456` |
 | `PLUME_AUTH_LOCK_THRESHOLD` | échecs avant verrouillage à *backoff* exponentiel | `10` |
 | `PLUME_INGEST_MAX_EVENTS` / `PLUME_INGEST_MAX_BODY_MB` | bornes d'un lot d'ingestion | *(dérivé)* |
 
@@ -811,7 +833,7 @@ viennent d'une constante — la commande 4 ci‑dessus la donne.
 | Variable | Effet | Défaut |
 |---|---|---|
 | `PLUME_EXTRA_COLLECTORS` | liste de collecteurs à **installer sans activer** (`"journal auditd custom"`) | vide |
-| `PLUME_WITH_MAIL` · `_YARA` · `_SYSLOG` · `_RESPONDER` · `_PORTSCAN` · `_PORTPROBE` · `_ORIGIN_DROP` · `_CLOUDFLARE` · `_CLOUDFLARE_HTTP` · `_MINIO_AUDIT` · `_ENGAGEMENT` | drapeaux d'installation des modules qui demandent un binaire ou une configuration à part (11 en tout) | `0` |
+| `PLUME_WITH_MAIL` · `PLUME_WITH_YARA` · `PLUME_WITH_SYSLOG` · `PLUME_WITH_RESPONDER` · `PLUME_WITH_PORTSCAN` · `PLUME_WITH_PORTPROBE` · `PLUME_WITH_ORIGIN_DROP` · `PLUME_WITH_CLOUDFLARE` · `PLUME_WITH_CLOUDFLARE_HTTP` · `PLUME_WITH_MINIO_AUDIT` · `PLUME_WITH_ENGAGEMENT` | drapeaux d'installation des modules qui demandent un binaire ou une configuration à part (11 en tout) | `0` |
 | `PLUME_INPUTS_DIR` | répertoire des *scripted inputs* | `/etc/plume/inputs.d` |
 | `PLUME_CUSTOM_TIMEOUT` | borne de durée **par défaut** appliquée à chaque `CMD` de *scripted input*, en secondes. `0` = aucune borne. Un fichier `.input` peut la redéfinir par sa clé `TIMEOUT` | `45` |
 

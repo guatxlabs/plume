@@ -56,7 +56,18 @@ LES QUATRE INVENTAIRES SONT DÉRIVÉS, JAMAIS ÉNUMÉRÉS ICI
       `fn cfg`/`fn cfg_secret`/`fn cfg_secret_optional` étaient lus comme des appels, avec pour
       « clé » le fragment `String>` d'un `HashMap<String, String>` coupé par le découpage à la
       virgule. Une DÉCLARATION n'est pas une lecture ; elle est écartée par sa PROPRIÉTÉ (le mot-clé
-      `fn` qui la précède), pas par son nom — cf. `est_une_declaration`. 22 -> 19.
+      `fn` qui la précède), pas par son nom — cf. `est_une_declaration`. 22 -> 19 AU 2026-08-28.
+      ET LE COMPTE A GRIMPÉ, EXACTEMENT COMME CE PARAGRAPHE ANNONÇAIT QU'IL LE FERAIT : 19 -> 20
+      entre le 2026-08-28 et le 2026-08-30. La hausse est d'UN site, et il a été retrouvé : une
+      boucle sur un tableau LITTÉRAL de deux noms (`for cle in [ … ] { cfg(&conf, cle, …) }`) dans le
+      module du registre. Deux leviers passent donc derrière cette indirection ; l'un d'eux est
+      encore lu ailleurs sous forme littérale et reste vu, l'AUTRE n'est lu QUE là et sort de
+      l'inventaire — 319 leviers publiés au lieu de 320. Il se trouve qu'il est documenté, donc le
+      cliquet n'a pas bougé : la garde ne s'est pas tue par chance, elle s'est tue parce que la seule
+      chose qu'elle savait dire de ce site est le compte qu'elle publie. CE QUE CELA NE CORRIGE PAS :
+      un tableau littéral de noms EST résoluble (les noms sont écrits), et cette lecture ne le
+      résout pas. C'est une extension du découpage par équilibrage, pas une correction de motif, et
+      elle n'est pas faite ici.
       Les blocs `#[cfg(test)]` sont RETIRÉS du texte avant lecture : le critère annonçait déjà
       « code de PRODUCTION », mais il n'excluait les tests que par le CHEMIN — un `mod tests` en
       ligne dans un fichier de production y échappait (mesuré : `PLUME_REFERENCE_BUILD_CHILD`,
@@ -67,8 +78,11 @@ LES QUATRE INVENTAIRES SONT DÉRIVÉS, JAMAIS ÉNUMÉRÉS ICI
       celui qui porte à la fois `PRAGMA temp_store=`, `PRAGMA cache_size=` et `PRAGMA mmap_size=`.
       C'est la propriété que le module revendique lui-même (« le budget mémoire est décidé ici et
       NULLE PART ailleurs ») ; il peut donc être renommé ou déplacé sans que la garde perde son
-      objet. POURQUOI ZÉRO ICI ALORS QUE (D) EST UN CLIQUET : le cliquet tolère 168 leviers muets,
-      donc un levier ajouté À CE MODULE peut s'y glisser dès qu'un autre est documenté ailleurs.
+      objet. POURQUOI ZÉRO ICI ALORS QUE (D) EST UN CLIQUET : le cliquet tolère une population
+      entière de leviers muets (159 au 2026-08-30), donc un levier ajouté À CE MODULE peut s'y
+      glisser dès qu'un autre est documenté ailleurs. Et (E) NE RETRANCHE RIEN à cette population :
+      c'est un critère plus strict posé PAR-DESSUS un sous-ensemble qui y reste — cf. le bloc des
+      plafonds, où la voie d'extinction du cliquet est écrite avec sa date.
       C'est exactement ce qui est arrivé — MESURÉ le 2026-08-28, avant correctif : sur les six
       leviers de ce module, DEUX n'avaient d'entrée nulle part
       (`PLUME_SQLITE_DEVERSEMENT_QUOTA_MO`, qui n'était cité par AUCUN document, et
@@ -108,10 +122,15 @@ cellule, prose, ligne de séparation, bloc de code) — puis la dérivation des 
 un arbre de contrôle, puis des PLANCHERS sur l'arbre réel. Un dépouillement qui ne trouverait plus
 rien ÉCHOUE au lieu de se taire.
 
-Usage :  python3 .github/scripts/check_operator_surface_is_documented.py [--mesure] [RACINE]
+Usage :  python3 .github/scripts/check_operator_surface_is_documented.py
+             [--mesure | --liste=lus | --liste=sans-doc] [RACINE]
 Sortie :  0 = la surface d'exploitation est documentée · 1 = un écart au-dessus d'un plafond ·
-          2 = instrument muet ou faux (aucun verdict rendu). `--mesure` imprime les comptes sans
-          verdict.
+          2 = instrument muet ou faux, ou drapeau inconnu (aucun verdict rendu). `--mesure` imprime
+          les comptes sans verdict ; `--liste=…` imprime la liste demandée, UN NOM PAR LIGNE et rien
+          d'autre, pour que le document d'accueil CITE cette lecture au lieu d'en réimplémenter une
+          troisième en commandes de recherche textuelle (`P10.10-b`). Les deux modes passent d'abord
+          par la validation de l'instrument et par les planchers : une liste rendue par une
+          extraction cassée serait un minorant silencieux.
 """
 from __future__ import annotations
 
@@ -143,12 +162,39 @@ PLAFOND_MODES_SANS_ENTREE = 0
 # (E) LEVIERS DU MODULE DU BUDGET MÉMOIRE : plafond ZÉRO, et il le reste. Relevé sur l'arbre suivi
 # le 2026-08-28, APRÈS la campagne qui accompagne cette extension : 6 leviers, 6 entrées.
 PLAFOND_LEVIERS_DU_BUDGET_SANS_ENTREE = 0
-# CLIQUET des leviers. Relevé sur l'arbre suivi le 2026-08-25, campagne `P9.7-a` comprise :
-# 299 leviers lus par le code de production, 131 cités par au moins un document ou `.env.example`,
-# 168 cités nulle part. Le relevé de la veille était 130/169 ; la campagne en a documenté un de plus
-# (`PLUME_QUERY_BUDGET_INTERACTIVE_MS`) et le plafond a été abaissé d'autant — c'est le seul sens
-# admis. Il ne MONTE jamais sans une raison écrite ici même.
-PLAFOND_LEVIERS_SANS_DOC = 168
+# CLIQUET des leviers. RELEVÉ DU 2026-08-30 sur l'arbre suivi, joué avec `--mesure` : 319 leviers lus
+# par le code de production, 160 cités par au moins un document ou `.env.example`, 159 cités nulle
+# part. Le relevé fondateur du 2026-08-25 était 299/131/168.
+#
+# CE QUE CINQ JOURS ONT MESURÉ, ET QUI EST LA RAISON D'ÊTRE DU PLAN CI-DESSOUS (`P10.10-c`) : le
+# plafond est resté à 168 pendant que la population passait de 299 à 319 leviers — il était donc À
+# MARGE ZÉRO, 168 muets pour un plafond de 168. Un cliquet au ras ne tolère plus rien (c'est l'objet)
+# mais n'a non plus AUCUNE raison écrite de descendre : il peut rester où il est indéfiniment tout en
+# donnant l'apparence d'un progrès. Un cliquet posé sur une dette porte la voie et la date de son
+# extinction, ou il cesse d'être un cliquet.
+#
+# LA VOIE D'EXTINCTION, ET CE QU'ELLE N'EST PAS. Elle n'est PAS « découper une population sous un
+# plafond zéro » : l'inventaire (E) est un critère PLUS STRICT posé sur un SOUS-ENSEMBLE qui reste
+# entièrement dans la population du cliquet — `leviers_lus` lit tout `daemon/src`, module du budget
+# compris. Mesuré : découper ne retranche RIEN au compte. Une seule chose le fait descendre —
+# documenter un levier muet. La voie est donc une PARTITION PAR ORIGINE, fermée population par
+# population, chacune datée ici :
+#   · RELEVÉ DU 2026-08-30 sur les 159 muets : 91 sont lus par le SHELL (capteurs de `collectors/` et
+#     les deux installateurs), 68 par le seul Rust. Un drapeau d'installateur est par construction un
+#     levier d'EXPLOITANT — c'est la population à fermer d'abord, et c'est elle qui porte la
+#     majorité.
+#   · PREMIÈRE TRANCHE FERMÉE LE 2026-08-30, 168 -> 159 : neuf leviers que `README.md` documentait
+#     DÉJÀ, mais dans une forme ABRÉGÉE (`PLUME_WITH_MAIL` · `_YARA` · …). Cette forme est illisible
+#     par `leviers_cites` ET par un exploitant qui cherche le nom complet : la dette n'était pas de
+#     la documentation manquante, c'était une documentation IMPRONONÇABLE. Les quinze abréviations du
+#     document sont écrites en entier ; neuf d'entre elles désignaient un levier muet.
+#   · PROCHAINE ÉCHÉANCE : les 91 drapeaux lus par le shell, par famille de capteur. Tant que cette
+#     ligne ne porte pas une date de relevé plus récente, le cliquet est EN RETARD sur son plan, et
+#     c'est cela qu'il faut lire ici — pas le seul fait qu'il n'a pas monté.
+#
+# Le plafond ne MONTE jamais sans une raison écrite ici même, et ne descend que depuis un compte joué
+# le jour où on l'écrit.
+PLAFOND_LEVIERS_SANS_DOC = 159
 
 # --- PLANCHERS DE NON-DÉGÉNÉRESCENCE -------------------------------------------------------------
 # En dessous, c'est la LECTURE qui est cassée, pas l'arbre qui a maigri — et une garde qui ne
@@ -526,6 +572,31 @@ def leviers_cites(racine: str, suivis: list[str]) -> set[str]:
     return out
 
 
+# --- LISTES COPIABLES ----------------------------------------------------------------------------
+# `P10.10-b`. Le document d'accueil réimplémentait la règle de lecture en commandes de recherche
+# textuelle : une TROISIÈME lecture de la même règle, qui minorait sans le dire, et dont le total
+# publié ne disait pas s'il énonçait une SOMME ou une UNION. Mesuré le 2026-08-30 : les deux
+# arbitrages avaient divergé de quatorze (258 contre 244) et le nombre publié ne valait plus ni l'un
+# ni l'autre. Le remède n'est pas une quatrième lecture — ce serait le défaut reproduit par son
+# correctif — c'est que la garde RENDE la sienne, un nom par ligne, et que le document la cite.
+LISTES = ("lus", "sans-doc")
+
+
+def lignes_de_liste(quelle: str, lus: set[str], cites: set[str]) -> list[str]:
+    """Une liste COPIABLE : un nom de levier par ligne, trié, sans décor, sans verdict.
+
+    FONCTION PURE DE DEUX ENSEMBLES, et c'est délibéré : c'est ce qui permet de la valider sur des
+    entrées FABRIQUÉES (cf. `valider_instrument`) plutôt que sur l'état du dépôt. Un témoin qui
+    exigerait « au moins un levier muet dans l'arbre » serait une RANÇON : il rougirait le jour où la
+    dette est payée, c'est-à-dire le jour du succès.
+    """
+    if quelle == "lus":
+        return sorted(lus)
+    if quelle == "sans-doc":
+        return sorted(lus - cites)
+    raise ValueError(quelle)
+
+
 # --- Validation de l'instrument ------------------------------------------------------------------
 
 CORPUS_TABLEAU = """
@@ -642,6 +713,39 @@ def valider_instrument() -> list[str]:
                     f"n'est pas une lecture — c'est le plancher de 3 mesuré le 2026-08-28.")
     if LEVIER_SHELL.findall('a="${PLUME_DELTA:-1}"; b=$PLUME_EPSILON') != ["PLUME_DELTA", "PLUME_EPSILON"]:
         errs.append("témoin (leviers shell) en échec : les deux formes d'expansion ne sont plus vues.")
+
+    # TÉMOINS DE LA LISTE COPIABLE — sur des ensembles FABRIQUÉS ICI, jamais sur l'arbre. Un levier
+    # LU-ET-MUET doit sortir, un levier LU-ET-CITÉ ne doit pas, et un nom CITÉ SANS ÊTRE LU ne doit
+    # pas s'inviter : ce dernier est le piège du `grep` que ce mode remplace, qui prenait pour un
+    # levier tout jeton `PLUME_*` rencontré.
+    lus_temoins = {"PLUME_MUET", "PLUME_CITE"}
+    cites_temoins = {"PLUME_CITE", "PLUME_JAMAIS_LU"}
+    tout = lignes_de_liste("lus", lus_temoins, cites_temoins)
+    if tout != ["PLUME_CITE", "PLUME_MUET"]:
+        errs.append(f"témoin POSITIF (liste `lus`) en échec : {tout} — la liste doit rendre TOUS les "
+                    f"leviers lus, triés, qu'ils soient documentés ou non.")
+    muets = lignes_de_liste("sans-doc", lus_temoins, cites_temoins)
+    if muets != ["PLUME_MUET"]:
+        errs.append(f"témoin NÉGATIF (liste `sans-doc`) en échec : {muets} — un levier CITÉ n'y a pas "
+                    f"sa place, et un nom cité SANS ÊTRE LU ne doit pas s'y inviter. Une liste qui "
+                    f"les confondrait renverrait le document à la lecture approximative qu'elle "
+                    f"remplace.")
+    # PROPRIÉTÉ STRUCTURELLE, pas un compte : une ligne porte UN nom et rien d'autre. Un décor —
+    # numérotation, virgules, un total en tête — rendrait la sortie non copiable sans qu'aucun compte
+    # ne bouge, donc sans qu'aucun autre témoin ne rougisse.
+    decorees = [l for l in tout + muets if not re.fullmatch(r"PLUME_[A-Z0-9_]+", l)]
+    if decorees:
+        errs.append(f"témoin (forme de la liste) en échec : {decorees} — une ligne doit être un nom "
+                    f"de levier NU. Le document publie cette commande pour qu'on la copie ; un décor "
+                    f"la rend inutilisable en aval sans rien faire rougir ailleurs.")
+    for inconnue in ("", "documentes", "sans doc"):
+        try:
+            lignes_de_liste(inconnue, lus_temoins, cites_temoins)
+        except ValueError:
+            continue
+        errs.append(f"témoin (liste inconnue) en échec : `{inconnue!r}` a été SERVIE au lieu d'être "
+                    f"refusée — une liste servie pour une demande qu'on n'a pas faite est un verdict "
+                    f"rendu sur autre chose que ce qu'on a désigné.")
     return errs
 
 
@@ -652,8 +756,27 @@ def manquants(inventaire, entrees) -> list[str]:
 
 
 def main() -> int:
-    argv = [a for a in sys.argv if a != "--mesure"]
-    mesure = "--mesure" in sys.argv
+    # LES DRAPEAUX SONT LUS, PAS AVALÉS. `racine_designee` refuse plus d'une racine ; un drapeau
+    # laissé dans `argv` serait pris pour une racine, et un drapeau INCONNU silencieusement ignoré
+    # ferait rendre un verdict à la place de ce qu'on a demandé — la retombée muette que la garde
+    # sœur `racine_designee` refuse déjà pour la racine elle-même.
+    drapeaux = [a for a in sys.argv[1:] if a.startswith("-")]
+    argv = [a for a in sys.argv if not a.startswith("-")]
+    mesure = False
+    liste = None
+    for d in drapeaux:
+        if d == "--mesure":
+            mesure = True
+        elif d.startswith("--liste="):
+            liste = d[len("--liste="):]
+            if liste not in LISTES:
+                print(f"::error::`{d}` : liste inconnue. Formes acceptées : "
+                      f"{', '.join('--liste=' + q for q in LISTES)}.")
+                return 2
+        else:
+            print(f"::error::`{d}` : drapeau inconnu. Formes acceptées : --mesure, "
+                  f"{', '.join('--liste=' + q for q in LISTES)}.")
+            return 2
     racine = racine_designee(argv)
 
     errs = valider_instrument()
@@ -715,6 +838,14 @@ def main() -> int:
                   f"propre compte.")
         return 2
 
+    if liste:
+        # AUCUN VERDICT, ET RIEN D'AUTRE QUE DES NOMS : la sortie est faite pour être copiée. Elle
+        # arrive APRÈS la validation de l'instrument et APRÈS les planchers — une liste rendue par
+        # une extraction cassée serait un minorant silencieux, exactement ce que ce mode remplace.
+        for nom in lignes_de_liste(liste, lus, cites):
+            print(nom)
+        return 0
+
     if mesure:
         print(f"onglets      {len(onglets):4d}  sans entrée {len(manquants(onglets, entrees)):4d}  "
               f"(source : {module_nav})")
@@ -760,9 +891,10 @@ def main() -> int:
             f"`.env.example` — le cliquet est à {PLAFOND_LEVIERS_SANS_DOC}, dépassé de {surplus}. "
             f"Ce qui n'est pas documenté ne doit jamais AUGMENTER en silence : documentez le ou les "
             f"leviers ajoutés, ou déclarez-les hors périmètre en écrivant pourquoi. "
-            f"CETTE GARDE COMPTE, ELLE NE TIENT PAS LA LISTE D'HIER : elle ne peut donc pas NOMMER "
-            f"ceux qui viennent d'apparaître. Pour les isoler, comparez la sortie de la commande 3 "
-            f"de la section « Configuration » de `README.md` entre votre branche et la base. "
+            f"CETTE GARDE COMPTE, ELLE NE TIENT PAS LA LISTE D'HIER : elle sait NOMMER toute la "
+            f"population, pas distinguer celui qui vient d'arriver. Pour l'isoler, comparez la "
+            f"sortie de `--liste=sans-doc` entre votre branche et la base — c'est CETTE lecture qui "
+            f"fait foi, et `README.md` la cite au lieu d'en réimplémenter une autre. "
             f"Extrait de la liste complète, par ordre alphabétique : {', '.join(sans_doc[:12])}…")
 
     if verdicts:

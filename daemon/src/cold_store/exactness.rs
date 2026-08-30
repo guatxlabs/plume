@@ -323,7 +323,17 @@ impl TruncatedAggregate {
     /// ce que le moteur colonnaire vaut QUAND C'EST LUI QUI SERT, il dit qu'une route pré-agrégée peut
     /// le devancer sur la MÊME forme, et il renvoie à la seule chose qui sache : la réponse elle-même,
     /// `stats.served_from` (la voie qui a servi — le pré-agrégé s'y écrit `rollup` et publie alors
-    /// `stats.approx`) . La liste des colonnes reste publiée, mais pour ce qu'elle est : ce que le
+    /// `stats.approx`) — SOUS RÉSERVE DU SITE QUI L'ÉCRIT, cf. `P10.5-m` ci-dessous : `apply_rollup_stats`
+    /// N'EST PAS la seule écriture de ce champ de premier niveau — CORRIGÉ LE 2026-08-30 PAR UNE
+    /// RELECTURE ADVERSE, ET LA PHRASE FAUSSE AVAIT ÉTÉ ÉCRITE ICI EN CORRIGEANT `P10.5-m`, C'EST-À-DIRE
+    /// AU SITE MÊME DONT LE DÉFAUT EST « UNE PHRASE QUI NE CORRESPOND PAS AU CODE ». Mesuré : le champ
+    /// de premier niveau a DEUX écrivains — la fonction nommée ci-dessus, et une affectation DIRECTE sur
+    /// la voie colonnaire vectorisée, dans le corps de la route de requête. La phrase d'origine disait
+    /// que cette voie « ne passe pas par elle », ce qui laissait entendre qu'elle ne publie RIEN : c'est
+    /// l'inverse qui est vrai, elle s'annonce elle-même, et l'erreur allait donc dans le sens PESSIMISTE
+    /// — elle décrivait un silence qui n'existe pas. CE QUI RESTE VRAI ET QUI EST L'OBJET DE LA CLÉ :
+    /// les deux écritures ne se dérivent pas l'une de l'autre, et rien ne garantit qu'elles restent
+    /// d'accord — c'est la MULTIPLICITÉ des sites, pas leur silence, qui est le défaut. La liste des colonnes reste publiée, mais pour ce qu'elle est : ce que le
     /// moteur colonnaire sait ROUTER.
     ///
     /// `| table <colonnes>` SANS `head N` retombe sous CE MÊME plafond (`exec_agg` : `cap =
@@ -338,6 +348,42 @@ impl TruncatedAggregate {
     /// façon jamais jusqu'ici — l'interception efface la frontière froide avant que le chemin froid ne
     /// s'exécute — sauf lorsqu'un masque de champ désactive toute route, et dans ce cas la fenêtre
     /// restreinte est bien servie en brut, donc exacte.
+    ///
+    /// `P10.5-m` — LE MODE D'EMPLOI D'UN REFUS DOIT ÊTRE DÉCIDABLE, SINON IL RENVOIE À UNE CASE ABSENTE.
+    /// Ce message est le SEUL endroit où un exploitant à qui le froid vient de refuser un nombre apprend
+    /// comment en obtenir un vrai. Trois de ses clauses ne l'étaient pas (mesuré le 2026-08-30) :
+    ///   ① (b) faisait de `stats.topn_ecartes == 0` le critère d'exactitude. Ce n'est pas décidable : la
+    ///      case est publiée par `apply_rollup_stats` UNIQUEMENT quand `CapMesure::chiffres()` rend
+    ///      `Some`, c'est-à-dire sur l'état `Etablie` seul. Une voie sans plafond (`Cap::Aucun`) et une
+    ///      fenêtre dont l'ampleur n'a pas pu être établie (`NonEtablie`) laissent la case ABSENTE — et
+    ///      la doctrine du site producteur est « une case absente est une case non mesurée, jamais un
+    ///      zéro ». Publier un zéro là serait retourner le défaut ; le critère est donc REFORMULÉ sur
+    ///      les cases toujours présentes : `stats.truncated` (que `CapMesure::tronque()` rend dans les
+    ///      DEUX sens, `NonEtablie` comprise) et la PRÉSENCE de `stats.rollup_note`.
+    ///   ② (b) ne citait que le plafond top-N et le débordement de seaux. Un TROISIÈME écart emprunte la
+    ///      même réponse et n'affecte NI `approx` NI `truncated` : `dim_coverage_conds` restreint le SQL
+    ///      aux bandes témoignées et publie ce qui manque par `join_notes(cov_note, recency_note())` ->
+    ///      `stats.rollup_note`. Une fenêtre alignée à l'heure, `topn_ecartes` à 0, et pourtant des
+    ///      heures entières ABSENTES du compte : c'est exactement le cas que l'ancien critère déclarait
+    ///      exact. La note est donc nommée, et elle entre DANS le critère.
+    ///   ③ la clause qui tranche renvoyait au seul `stats.served_from`. `apply_rollup_stats` en est
+    ///      PAS l'unique écriture (corrigé le 2026-08-30, voir plus haut : la voie vectorisée écrit le
+    ///      champ directement), et `handlers::query::cold_keyset_vectorized_page` ne l'appelle pas : sa
+    ///      page rend par `keyset_reponse` avec le seul champ IMBRIQUÉ `stats.cold.served_from`. Or
+    ///      `| table <colonnes> [| head N]` — la dernière voie que ce message propose — est
+    ///      keyset-applicable (`KEYSET_ROW_PRESERVING`) et c'est précisément ce parcours qui la sert. Le
+    ///      lecteur qui suivait le conseil cherchait une case qui n'existe pas là où il était. C'est une
+    ///      correction de TEXTE au site du message : aucun aveu n'est déplacé.
+    ///
+    /// ET LA LISTE DE COLONNES EST QUALIFIÉE, PAS FILTRÉE. `phys_proj_cols()` = `PARQUET_COLS` ∩
+    /// `Schema::events().default.select_cols` rend ONZE colonnes (mesuré par intersection le
+    /// 2026-08-30). DEUX d'entre elles portent une valeur PAR ÉVÉNEMENT — le champ étendu brut
+    /// (`json_field`) et le texte libre (`freetext_col`) — et un `stats count by` sur l'une d'elles est
+    /// VRAI en rendant un groupe par ligne : exact, et inutilisable. Les RETIRER de la liste rendrait la
+    /// liste FAUSSE sur ce qu'elle prétend être (ce que le moteur sait ROUTER — il les route), et
+    /// rejouerait le défaut d'omission de 2026-08-28 sur `fields`. Elles sont donc GARDÉES et
+    /// QUALIFIÉES, par `caveat_des_colonnes_sans_dimension` — DÉRIVÉ du cœur comme la liste elle-même,
+    /// jamais recopié : si le schéma déclare demain un autre champ JSON, le caveat le suit.
     pub(crate) fn message(&self) -> String {
         format!(
             "refus de rendre un résultat FAUX : {} — mais la lecture froide a dû s'arrêter à {} lignes \
@@ -350,9 +396,17 @@ impl TruncatedAggregate {
              de cette source (défauts par source + PLUME_ROLLUP_DIMS) : servi depuis la base, sans ouvrir \
              un fichier froid, mais APPROXIMATIF — les dimensions à forte cardinalité sont plafonnées \
              top-N par seau horaire (PLUME_ROLLUP_DIM_TOPN) et les seaux qui couvrent les bornes de la \
-             fenêtre sont comptés entiers. La réponse le publie elle-même : `stats.approx`, \
-             `stats.truncated`, et l'ampleur écartée dans `stats.topn_ecartes` — elle n'est EXACTE que si \
-             celle-ci vaut 0 sur une fenêtre alignée à l'heure ; (c) le moteur colonnaire : « search \
+             fenêtre sont comptés entiers. LE CRITÈRE SE LIT SUR LA RÉPONSE, ET IL TIENT EN DEUX CASES \
+             TOUJOURS PRÉSENTES : ce compte n'est EXACT que si `stats.truncated` vaut `false` ET \
+             qu'AUCUNE `stats.rollup_note` n'accompagne la réponse, sur une fenêtre alignée à l'heure. \
+             `stats.approx` dit qu'une voie pré-agrégée a servi ; `stats.rollup_note` PARAÎT dès qu'il \
+             reste quelque chose à dire, et elle porte les trois écarts possibles : des heures que le \
+             pré-agrégé ne couvre PAS — ces heures-là sont ABSENTES du compte, ce n'est pas un zéro de \
+             données —, le seau courant non encore matérialisé, et l'ampleur du plafond top-N. \
+             `stats.topn_ecartes` CHIFFRE cette dernière là où elle a pu être établie ; sur une voie qui \
+             ne pose aucun plafond, comme sur une fenêtre dont l'ampleur n'a pas pu être établie, LA CASE \
+             EST ABSENTE — une case absente est une case NON MESURÉE, jamais un zéro, et c'est \
+             `stats.truncated` qui tranche alors, pas elle ; (c) le moteur colonnaire : « search \
              <filtres> | stats count [by <colonnes>] » balaye TOUT le froid sans hydrater, donc QUAND \
              C'EST LUI QUI SERT sa réponse ne repose sur aucun échantillon, et s'il ne peut pas router \
              vous recevez ce refus plutôt qu'un nombre faux. MAIS CE N'EST PAS LUI QUI DÉCIDE : sur cette \
@@ -361,15 +415,56 @@ impl TruncatedAggregate {
              refus. La liste ci-dessous n'est donc PAS une promesse d'exactitude : c'est l'ensemble des \
              colonnes que le moteur colonnaire sait ROUTER. Ce qui tranche l'exactitude est publié par la \
              RÉPONSE : `stats.served_from` nomme la voie qui a servi (le pré-agrégé s'y écrit `rollup` et \
-             publie alors `stats.approx`). Enfin « search <filtres> | table <colonnes> [| head N] » rend \
-             des lignes VRAIES mais retombe sous CE MÊME plafond quand aucun `head N` ne le borne \
-             (`stats.truncated` le dit). <colonnes> se prend dans {}.",
+             publie alors `stats.approx`). CE CHAMP-LÀ N'EST PAS SUR TOUTES LES RÉPONSES : le parcours \
+             page-à-page colonnaire ne pose que le champ IMBRIQUÉ `stats.cold.served_from`, dont la \
+             valeur se termine par `-vectorized-keyset` — sur une réponse qui porte celui-ci, c'est LUI \
+             qu'il faut lire, et l'absence de `stats.served_from` n'y vaut aucune voie. Enfin « search \
+             <filtres> | table <colonnes> [| head N] » rend des lignes VRAIES mais retombe sous CE MÊME \
+             plafond quand aucun `head N` ne le borne (`stats.truncated` le dit) — et c'est ce \
+             parcours-là qui le sert. <colonnes> se prend dans {}.{}",
             self.famille(),
             self.rows_hydrated,
             self.cap,
-            super::planner::phys_proj_cols().join("/")
+            super::planner::phys_proj_cols().join("/"),
+            caveat_des_colonnes_sans_dimension()
         )
     }
+}
+
+/// LA PART DE LA LISTE PUBLIÉE QUI NE SERT AUCUNE DIMENSION, ÉNONCÉE OU TUE — DÉRIVÉE, JAMAIS RECOPIÉE.
+///
+/// LE DÉFAUT FERMÉ (`P10.5-m`, mesuré le 2026-08-30). Le message propose `stats count [by <colonnes>]`
+/// et publie l'ensemble que le moteur colonnaire sait ROUTER. Deux de ses membres portent une valeur par
+/// ÉVÉNEMENT : un group-by dessus est VRAI et rend un groupe par ligne — donc exact, et inutilisable.
+/// Rien ne le disait, et le refus renvoyait ainsi vers une réponse aussi inexploitable que celle qu'il
+/// venait de refuser.
+///
+/// POURQUOI QUALIFIER ET NON FILTRER. Les retirer rendrait la liste FAUSSE sur ce qu'elle affirme être
+/// (ce que le moteur ROUTE — il les route), et rejouerait à l'envers l'omission de `fields` mesurée le
+/// 2026-08-28. `phys_proj_cols()` a d'ailleurs d'autres lecteurs (`planner::phys_proj`, les témoins de
+/// `cold_store::tests`) : la qualification vit donc ICI, au site du message, et pas dans le moteur.
+///
+/// LA SOURCE EST LE CŒUR, PAS UNE LISTE. `json_field` (le champ étendu brut) et `freetext_col` (le texte
+/// libre) sont DÉCLARÉS par `Schema::events()` ; on les intersecte avec ce que le moteur route. Un
+/// schéma qui en déclarerait d'autres les verrait apparaître sans qu'on touche ici, et un schéma qui
+/// n'en déclare aucun rend la chaîne VIDE — la phrase disparaît au lieu de mentir au singulier.
+fn caveat_des_colonnes_sans_dimension() -> String {
+    let base = guatx_core::soql::Schema::events().default;
+    let par_evenement: Vec<String> = super::planner::phys_proj_cols()
+        .iter()
+        .filter(|c| base.json_field.as_deref() == Some(**c) || base.freetext_col.as_deref() == Some(**c))
+        .map(|c| format!("`{c}`"))
+        .collect();
+    if par_evenement.is_empty() {
+        return String::new();
+    }
+    format!(
+        " TOUTES NE SONT PAS DES DIMENSIONS, et le moteur ne le dit pas : {} portent une valeur par \
+         ÉVÉNEMENT — le champ étendu brut et le texte libre déclarés par le schéma — donc un `stats \
+         count by` sur l'une d'elles est vrai en rendant UN GROUPE PAR LIGNE. Pour compter par un \
+         sous-champ du champ étendu, c'est la voie (b), le pré-agrégé PAR DIMENSION, qui répond.",
+        par_evenement.join(" et ")
+    )
 }
 
 /// Réponse issue d'une lecture qui A PU tronquer son ensemble source.
@@ -465,5 +560,108 @@ impl ColdAnswer {
     #[cfg(test)]
     pub(super) fn is_truncated(&self) -> bool {
         matches!(self, ColdAnswer::Truncated { .. })
+    }
+}
+
+// ====================================================================================================
+// `P10.5-m` — LE MODE D'EMPLOI DU REFUS, TENU PAR CE QUI LE PRODUIT
+//
+// CE TÉMOIN VIT ICI, ET NON DANS `cold_store::tests`, PARCE QUE CE QU'IL TIENT EST PRIVÉ à ce module :
+// la qualification de la liste (`caveat_des_colonnes_sans_dimension`) est DÉRIVÉE du cœur, et un témoin
+// qui la recopierait n'aurait rien mesuré. Il ne compare donc pas deux textes : il MESURE ce que le
+// schéma déclare, puis il LIT ce que le message publie.
+// ====================================================================================================
+#[cfg(test)]
+mod aveu_dexactitude_decidable {
+    fn message_de_refus() -> String {
+        super::TruncatedAggregate { rows_hydrated: 5000, cap: 5000, etage: Some("stats".to_string()) }.message()
+    }
+
+    /// ① LA MESURE : l'ensemble publié est MIXTE — il porte des dimensions ET des colonnes à
+    ///    cardinalité d'événement. Les deux jambes sont exigées : sans la première le caveat serait
+    ///    muet et ce test ne mesurerait rien ; sans la seconde, la liste entière serait inutilisable et
+    ///    c'est la PROPOSITION du message qu'il faudrait reprendre, pas sa qualification.
+    /// ② LA LECTURE : chaque colonne mesurée est NOMMÉE, et la qualification est placée APRÈS la liste
+    ///    — un lecteur qui va de haut en bas ne peut pas prendre la liste pour un ensemble de
+    ///    dimensions avant d'avoir lu ce qu'elle n'est pas.
+    #[test]
+    fn la_liste_publiee_dit_lesquelles_de_ses_colonnes_ne_sont_pas_des_dimensions() {
+        let base = guatx_core::soql::Schema::events().default;
+        let routables = super::super::planner::phys_proj_cols();
+        let (par_evenement, dimensions): (Vec<&str>, Vec<&str>) = routables
+            .iter()
+            .copied()
+            .partition(|c| base.json_field.as_deref() == Some(c) || base.freetext_col.as_deref() == Some(c));
+        assert!(
+            !par_evenement.is_empty(),
+            "TÉMOIN POSITIF EN ÉCHEC : le schéma ne déclare ni champ étendu ni texte libre parmi ce que le \
+             moteur route — il n'y aurait alors rien à qualifier, et ce test ne mesurerait rien"
+        );
+        assert!(
+            !dimensions.is_empty(),
+            "TÉMOIN NÉGATIF EN ÉCHEC : aucune colonne routable ne servirait de dimension — ce n'est plus la \
+             qualification qu'il faut corriger, c'est la voie que le message PROPOSE : {routables:?}"
+        );
+
+        let m = message_de_refus();
+        let liste = routables.join("/");
+        let i_liste = m.find(&liste).expect("le message publie l'ensemble des colonnes routables");
+        for c in &par_evenement {
+            let cite = format!("`{c}`");
+            let i = m[i_liste..]
+                .find(&cite)
+                .unwrap_or_else(|| panic!("la colonne {cite} porte une valeur par ÉVÉNEMENT et le message ne le dit nulle part APRÈS la liste : {m}"));
+            assert!(i > 0, "INSTRUMENT : {cite} doit être citée APRÈS la liste, pas dans la liste");
+        }
+        for c in &dimensions {
+            assert!(
+                !m[i_liste + liste.len()..].contains(&format!("`{c}`")),
+                "la qualification accuse `{c}`, qui EST une dimension : le message écarterait d'une voie qui répond"
+            );
+        }
+    }
+
+    /// LE CRITÈRE D'EXACTITUDE DE LA VOIE PRÉ-AGRÉGÉE EST DÉCIDABLE — IL NE REPOSE PLUS SUR UNE CASE QUI
+    /// PEUT ÊTRE ABSENTE.
+    ///
+    /// LE DÉFAUT MESURÉ (2026-08-30). La clause (b) faisait de `stats.topn_ecartes == 0` le critère.
+    /// `apply_rollup_stats` ne publie cette case que sur `CapMesure::chiffres() == Some`, donc jamais
+    /// sur une voie sans plafond ni sur une fenêtre dont l'ampleur n'a pas pu être établie ; et un
+    /// écart ENTIER — les heures que le pré-agrégé ne couvre pas — n'y apparaît d'aucune façon, il
+    /// voyage par `stats.rollup_note`. Le critère est donc reformulé sur ce qui est TOUJOURS là.
+    ///
+    /// CE QUE CE TÉMOIN NE TIENT PAS : il lit le message. Il ne rejoue pas `apply_rollup_stats` et ne
+    /// prouve pas que les cases citées apparaissent bien sur une réponse — c'est le contrat du site
+    /// producteur, tenu chez lui.
+    #[test]
+    fn le_critere_dexactitude_ne_repose_pas_sur_une_case_qui_peut_etre_absente() {
+        let m = message_de_refus();
+        let deb = m.find("(b)").expect("le message garde sa clause (b)");
+        let fin = m[deb..].find("(c)").expect("le message garde sa clause (c)") + deb;
+        let clause_b = &m[deb..fin];
+        for toujours_la in ["stats.truncated", "stats.rollup_note"] {
+            assert!(
+                clause_b.contains(toujours_la),
+                "le critère doit se lire sur `{toujours_la}`, publiée quelle que soit la voie : {clause_b}"
+            );
+        }
+        // La case chiffrée reste citée — mais JAMAIS sans dire qu'elle peut manquer. C'est la phrase qui
+        // rendait le critère indécidable, et c'est sa présence qu'on exige, pas son absence.
+        let i_ecartes = clause_b.find("topn_ecartes").expect("l'ampleur chiffrée reste nommée : elle renseigne quand elle est là");
+        assert!(
+            clause_b[i_ecartes..].contains("ABSENTE"),
+            "`topn_ecartes` est citée sans que la clause dise qu'elle peut être ABSENTE — un lecteur qui la \
+             trouve vide y lirait un zéro : {clause_b}"
+        );
+        assert!(
+            !clause_b.contains("vaut 0"),
+            "la clause fait de nouveau d'une case chiffrée LE critère : {clause_b}"
+        );
+        // ET LA VOIE VERS LAQUELLE LE MESSAGE RENVOIE POUR TRANCHER EXISTE SUR LA RÉPONSE QU'IL DÉCRIT :
+        // le parcours page-à-page colonnaire ne pose que le champ imbriqué.
+        assert!(
+            m.contains("stats.cold.served_from"),
+            "le message renvoie au seul champ de premier niveau, que le parcours colonnaire ne publie pas : {m}"
+        );
     }
 }

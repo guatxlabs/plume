@@ -202,9 +202,10 @@ pub(crate) async fn firehose_ingest_post(
     }
     // 8) spool enveloppe events + `env_id` (routage environnement du connecteur, cf. ingest_once) + marqueur tenant
     //    (R8 ; mode 0 = "") -> ingéré par la boucle de fond (parsers/extracteur/threat-intel/masquage UNIFORMES).
-    let env = json!({ "ts": now(), "host": host_self(), "kind": "events", "env_id": env_id, "events": events });
-    let body_out = match serde_json::to_string(&env) {
-        Ok(s) => s,
+    // `P6.9-c` — l'enveloppe DÉPLACE le lot (et `env_id` avec lui) au lieu de le recopier ; mesure et
+    // propriété dans `enveloppe_events_serialisee`.
+    let corps = match enveloppe_events_serialisee(events, Some(env_id)) {
+        Ok(c) => c,
         Err(_) => return firehose_err(StatusCode::INTERNAL_SERVER_ERROR, &request_id, "serialize failed"),
     };
     let n = INGEST_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -214,7 +215,7 @@ pub(crate) async fn firehose_ingest_post(
     // `S31` (temps 2) — publication DÉPORTÉE sur le pool bloquant, avec ses deux barrières. Le corps de
     // la réponse Firehose ne peut pas porter de champ `durable` (contrat AWS) : le témoin d'exploitation
     // de cette surface est `plume_spool_barriere_*` dans /metrics.
-    match crate::ingest::spool::publier(tmp, dst, body_out.into_bytes(), st.ingest_fsync).await {
+    match crate::ingest::spool::publier(tmp, dst, corps, st.ingest_fsync).await {
         Err(crate::ingest::spool::EchecSpool::Ecriture) => firehose_err(StatusCode::INTERNAL_SERVER_ERROR, &request_id, "spool write failed"),
         Err(crate::ingest::spool::EchecSpool::Publication) => firehose_err(StatusCode::INTERNAL_SERVER_ERROR, &request_id, "spool publish failed"),
         Ok(_) => firehose_ok(&request_id),

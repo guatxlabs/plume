@@ -5,7 +5,7 @@
 // Le cycle app<->module est benin : les fonctions importees d'app.js ne sont appelees qu'a
 // l'EXECUTION (handlers/async apres await), jamais a l'evaluation du module.
 import { $, LANG, esc, sev, fmtTs, ic, muted, api, apiSend, confirmModal, toast, pagedList, mitreName, managedBadge, gateDeleteBtn, contentSubmit, contentDelete, fetchInto, formMsg, socIsAdmin, lsSet, collapsibleGroup, disclosure } from './core.js';
-import { S, lireLeStockageDuSite, ecrireDansLeStockageDuSite } from './state.js';
+import { S, lireLeStockageDuSite, ecrireDansLeStockageDuSite, ecrireSansDireLeRefus } from './state.js';
 import { initSigmaImport } from './sigmaimport.js';
 import { loadAttackMatrix, poserLesPortesDeTechnique } from './attack.js';
 import { setAlertMitreFilter } from './alerts.js';
@@ -104,7 +104,14 @@ function deplierUnPanneauPersiste(bouton, liste, cle) {
   // sous-banc « stockage refusé » de `web_esm_harnais.mjs`). Refus -> `null` -> le panneau s'ouvre, ce
   // qui est déjà le défaut d'une première visite.
   liste.hidden = lireLeStockageDuSite(cle) === '0';
-  const persister = v => { try { localStorage.setItem(cle, v); } catch (e) {} };
+  // `P4.13-c` — LE SILENCE EST TENU ICI PAR UNE DÉCLARATION, PLUS PAR UNE CAPTURE VIDE. Plier un panneau
+  // est un geste de NAVIGATION : il repart à chaque clic sur le chevron, et DEUX panneaux partagent cette
+  // fonction (`soc_rule_open` en bas de la liste des règles, `soc_parser_open` en bas de celle des
+  // parsers). Un avis par pli serait le BRUIT que cette clé refuse. La perte reste MUETTE, mais elle est
+  // nulle à l'œil : au chargement suivant le panneau s'OUVRE — le défaut de la première visite, déjà
+  // écrit six lignes plus haut. Ce que la capture vide ne disait pas, cette porte le dit ; et c'était la
+  // DERNIÈRE mutation directe du stockage de site dans ce module.
+  const persister = v => ecrireSansDireLeRefus(cle, v);
   disclosure(bouton, liste, {
     open: () => { liste.hidden = false; peindreLeChevron(); persister('1'); },
     close: () => { liste.hidden = true; peindreLeChevron(); persister('0'); },

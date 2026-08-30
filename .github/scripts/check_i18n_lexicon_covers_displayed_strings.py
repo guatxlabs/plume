@@ -337,17 +337,39 @@ PLAFOND_DE_TROUS = {
 # L'abaisser est le sens attendu (déplacer un libellé vers un puits reconnu, ou apprendre la forme à la
 # garde). Le relever exige une raison écrite ici, à côté du chiffre.
 PLAFOND_HORS_REGARD = {
-    "admin_users.js": 14, "ai.js": 1, "alerting.js": 2, "alerts.js": 20, "app.js": 22, "attack.js": 6,
+    "admin_users.js": 14, "ai.js": 1, "alerting.js": 2, "alerts.js": 18, "app.js": 22, "attack.js": 6,
     "audit.js": 0, "cases.js": 68, "composer_depuis_lexistant.js": 6, "connectors.js": 26,
     "copie_et_selection.js": 3, "core.js": 29, "dashboards.js": 22, "dataaccess.js": 11, "datamodels.js": 1,
-    "destinations.js": 37, "detadv.js": 10, "detection_admin.js": 28, "fieldfilters.js": 21, "fleet.js": 7,
+    "destinations.js": 36, "detadv.js": 10, "detection_admin.js": 28, "fieldfilters.js": 19, "fleet.js": 7,
     "freshness.js": 10, "help.js": 30, "i18n_observer.js": 0, "idp.js": 25, "index.html": 0,
     "index_policies.js": 16, "keys.js": 5, "knowledge.js": 7, "login.js": 6, "lookups.js": 9,
     "multitenant.js": 6, "navigation.js": 2, "prefs.js": 0, "processors.js": 10, "producer_ui.js": 7,
-    "recherche_de_liste.js": 1, "retention.js": 16, "risk.js": 5, "runbooks.js": 20, "savedqueries.js": 2,
+    "recherche_de_liste.js": 1, "retention.js": 16, "risk.js": 4, "runbooks.js": 20, "savedqueries.js": 2,
     "sigmaimport.js": 12, "soql_complete.js": 16, "sources.js": 5, "state.js": 0, "suppressions.js": 16,
     "system.js": 33, "threatintel.js": 6, "viz.js": 21,
 }
+# QUATRE DESCENTES AU RAS, 2026-08-30 (`P8.27-g`) — LE JEU EST FERMÉ, ET C'EST TOUT CE QU'ELLES FONT.
+#   alerts.js 20 -> 18 · destinations.js 37 -> 36 · fieldfilters.js 21 -> 19 · risk.js 5 -> 4.
+# Chaque chiffre est le RELEVÉ du 2026-08-30 sur un arbre vérifié STABLE (même `git status` et même empreinte
+# de `web/` à neuf minutes d'intervalle), pas une valeur ronde : la ligne « JEU DU CLIQUET » de l'exécution
+# de ce jour donnait 4 plafonds au-dessus de leur relevé pour SIX crans au total, exactement ces quatre-là,
+# et zéro cran sur les trous. Aucun de ces quatre modules n'est en écriture concurrente ce jour-là (aucun ne
+# figure au `git status` de l'arbre mesuré) : la raison écrite ci-dessous pour NE PAS descendre — deux d'entre
+# eux étaient alors sous une autre main, et un cliquet posé au ras aurait rendu la CI rouge sur le travail
+# d'un autre — a CESSÉ DE VALOIR, et c'est pourquoi la descente est faite maintenant plutôt qu'alors.
+# CE QUE LA DESCENTE PORTE, MESURÉ PAR MUTATION SUR UNE COPIE DE L'ARBRE (2026-08-30, copie dont les quatre
+# modules ont la MÊME empreinte sha256 que l'arbre réel) : six libellés français neufs, aucun au lexique,
+# posés dans les formes non lues que ces quatre modules emploient déjà (entrée de tableau, valeur de clé
+# d'objet, argument de fabrique locale) — deux dans `alerts.js`, deux dans `fieldfilters.js`, un dans
+# `destinations.js`, un dans `risk.js`. Sous les ANCIENS plafonds : code 0, aucune erreur, et la ligne
+# « JEU DU CLIQUET » annonce alors que chaque cliquet est au ras — la garde déclarait n'avoir plus de jeu
+# au moment même où elle venait d'en laisser passer six. Sous les NOUVEAUX plafonds, MÊME arbre muté :
+# code 1, les quatre modules nommés. Corpus restauré et nouveaux plafonds : code 0.
+# CE QUE CES DESCENTES NE FERMENT PAS, ET IL FAUT LE REDIRE ICI : le cliquet garde un COMPTE NET, pas un
+# ENSEMBLE de textes. Sur un module au ras, un libellé neuf posé dans une forme non lue passe VERT dès
+# qu'il en REMPLACE un autre — mesuré par mutation le 2026-08-29 et publié à chaque exécution. Descendre
+# les plafonds ferme la HAUSSE NETTE et rien d'autre. Seule une garde portant sur l'ENSEMBLE des textes
+# fermerait ce chemin, et elle rougirait sur toute réécriture de libellé : ce n'est pas fait.
 # QUINZE BAISSES, 2026-08-29 (`P11.8-c`) — la garde a APPRIS DEUX FORMES, elle n'a pas cessé de regarder :
 # la clé d'objet `emptyText:`/`message:`/`cancelText:` (fabriques de `core.js`, chemin lu dans la fabrique)
 # et le premier argument de `confirmWithConsequence(` (qui devient le `title` d'une modale, donc un `<h3>`).
@@ -369,6 +391,9 @@ PLAFOND_HORS_REGARD = {
 # `fieldfilters.js` et `risk.js`. Deux de ces quatre modules sont en écriture concurrente à l'heure de ce
 # relevé (`git status` les donne modifiés, et `alerts.js` porte déjà un trou qui n'appartient pas à ce lot) :
 # poser leur cliquet au ras rendrait la CI rouge sur le travail d'un autre sans qu'aucun libellé n'ait empiré.
+# CETTE DETTE EST PAYÉE LE 2026-08-30 (`P8.27-g`) : les quatre plafonds sont descendus à leur relevé, la
+# raison d'attendre ayant cessé d'exister avec l'écriture concurrente. Le bloc daté du 2026-08-30 posé
+# juste sous le dictionnaire porte les chiffres et la preuve par mutation.
 # UNE BAISSE ET UNE HAUSSE, 2026-08-26 (`P11.13-f`), toutes deux dues au MÊME changement de règle — la
 # reconnaissance d'un texte affiché ne dépend plus du niveau de parenthèses, elle repose sur ce qui atteint
 # l'écran (voir « CE QUI SE COLLE À UN LITTÉRAL DANS LE NŒUD RENDU »).
@@ -425,16 +450,34 @@ PLAFOND_HORS_REGARD = {
 # indisponibles »), que la règle élargie a révélé et que le lexique couvre depuis. Une non-réparation écrite
 # à côté d'un chiffre que l'instrument contredit dans la même exécution ne couvre rien : elle déplace le
 # regard du défaut qui rougit vers un défaut qui n'existe pas.
-# ON NE POSE PAS UN CLIQUET AU RAS D'UN MODULE QUI BOUGE, ET LA RAISON EST MESURÉE, PAS INVOQUÉE. `alerts.js`
-# reste à 20 : deux relevés du MÊME 2026-08-26, à quelques minutes d'écart, en rendent 18 puis 19 — le fichier
+# ON NE POSE PAS UN CLIQUET AU RAS D'UN MODULE QUI BOUGE, ET LA RAISON EST MESURÉE, PAS INVOQUÉE.
+#
+# ┌─ AVERTISSEMENT POSÉ AVANT LE PARAGRAPHE, ET NON APRÈS (2026-08-30) ─────────────────────────────┐
+# │ LES DEUX CHIFFRES DE PLAFOND CITÉS CI-DESSOUS SONT PÉRIMÉS. Le dictionnaire fait foi, pas cette  │
+# │ prose. Ils ont été descendus à leur relevé le 2026-08-30 (voir le bloc daté sous le             │
+# │ dictionnaire). LA RÈGLE de ce paragraphe reste VRAIE et c'est pourquoi il n'est pas supprimé —   │
+# │ seuls ses exemples ont vieilli.                                                                 │
+# │ POURQUOI CET AVERTISSEMENT EST ICI ET NON PLUS BAS : une relecture adverse a mesuré le           │
+# │ 2026-08-30 qu'une correction posée APRÈS l'erreur laisse un lecteur qui va de haut en bas        │
+# │ rencontrer les chiffres faux COMME DES AFFIRMATIONS avant d'atteindre la note qui les dément.    │
+# │ Corriger n'est pas seulement écrire le vrai : c'est le placer là où le faux serait lu.           │
+# └─────────────────────────────────────────────────────────────────────────────────────────────────┘
+# `alerts.js`
+# restait à 20 : deux relevés du MÊME 2026-08-26, à quelques minutes d'écart, en rendent 18 puis 19 — le fichier
 # a changé entre les deux sous un autre agent (la ligne du repli de chargement des groupes est passée de 706
 # à 795). Un cliquet posé au ras du premier relevé aurait rendu la CI ROUGE sur le travail d'un autre, sans
-# qu'aucun libellé n'ait empiré. `risk.js` reste à 6 pour la même raison et de la même façon mesurée : sa
+# qu'aucun libellé n'ait empiré. `risk.js` restait à 6 pour la même raison et de la même façon mesurée : sa
 # descente à 5 avait été écrite, puis le module est entré en écriture concurrente dans l'heure, et elle a été
 # ANNULÉE avant livraison. Ce n'est pas une hausse (aucun de ces deux chiffres ne dépasse celui de `HEAD`) ni
 # un silence (c'est écrit ici, et le jeu restant est PUBLIÉ à chaque exécution) : c'est une descente RETARDÉE,
 # à faire sur un module stable. Le mouvement à surveiller sur un module qui bouge est celui des TROUS, dont le
 # plafond est à ZÉRO et le reste dans tous les relevés du jour.
+# DEUX CHIFFRES DE CE PARAGRAPHE SONT PÉRIMÉS, ET C'EST LE PARAGRAPHE LUI-MÊME QUI LE DIT MAL : il annonce
+# deux valeurs de plafond pour `alerts.js` et `risk.js` que le dictionnaire ne porte plus — celle de
+# `risk.js` avait déjà été démentie par la baisse du 2026-08-29, celle d'`alerts.js` l'est par la descente
+# du 2026-08-30. Ce qui reste vrai de ce paragraphe est sa RÈGLE (ne pas poser un cliquet au ras d'un
+# module qu'un autre agent écrit) ; ce qui n'en reste pas, ce sont ses deux chiffres. Le dictionnaire est
+# la seule source des plafonds, et la ligne « JEU DU CLIQUET » la seule source de leur jeu.
 # CE QUE CE CLIQUET NE TIENT PAS : il refuse une HAUSSE, il ne force pas une DESCENTE. Un plafond peut donc
 # rester au-dessus de son relevé — c'est du JEU, pas une régression, mais ce jeu est exactement la place que
 # des libellés neufs peuvent prendre sans faire rougir personne. Ce jeu n'est plus écrit dans ce commentaire
@@ -2088,6 +2131,34 @@ def main(argv: list[str]) -> int:
         print("JEU DU CLIQUET : aucun plafond au-dessus de son relevé du jour — chaque cliquet est au ras de sa "
               "mesure. La phrase qui suivait ici (« le moindre libellé neuf posé dans une forme non lue rougit ») "
               "est RÉFUTÉE et retirée : voir la ligne suivante, un cliquet au ras ne dit pas cela.")
+    # LA MARGE DES PLANCHERS EST PUBLIÉE POUR LA MÊME RAISON QUE LE JEU DES PLAFONDS (`P8.27-g`, 2026-08-30).
+    # Trois planchers de ce fichier sont dérivés d'un relevé « moins un vingtième », et ils affirment donc une
+    # PROPRIÉTÉ : perdre plus de 5 % du corpus, de la population regardée ou des clés vivantes fait REFUSER de
+    # conclure. L'arbre grossit, le plancher ne bouge pas, et cette propriété devient fausse EN SILENCE. Le
+    # fichier nomme déjà ce défaut à côté de `MIN_CORPUS` (« un cliquet qui se desserre tout seul ») sans que
+    # rien ne le MESURE — c'est exactement ce qui est arrivé au jeu des plafonds quand il était écrit à la main.
+    # La perte que chaque plancher tolère AUJOURD'HUI est donc dérivée à chaque exécution, comme le jeu.
+    # ELLE NE FAIT PAS ROUGIR, ET C'EST DÉLIBÉRÉ : un plancher qui rougirait parce que l'arbre a grossi serait
+    # une rançon payable le jour où le travail avance, pas une garde. Elle se LIT, et un plancher qu'on a
+    # oublié de resserrer s'y voit — c'est le seul service qu'un aveu dérivé rend et qu'un commentaire ne rend
+    # pas. Le relever reste un GESTE, à faire sur un arbre dont on sait de quels lots il est fait.
+    planchers = (("corpus (octets)", MIN_CORPUS, len(corpus)),
+                 ("population regardée", MIN_POPULATION, population),
+                 ("clés vivantes", MIN_CLES_VIVANTES, len(vivantes)))
+    # LE SEUIL EST LE PLANCHER QUE LA RECETTE DU FICHIER DONNERAIT AUJOURD'HUI, PAS UN POURCENTAGE COMPARÉ À
+    # 5,00. Écrit en pourcentage, ce témoin CRIAIT AU LOUP sur un plancher posé exactement selon la recette :
+    # `1588 * 19 // 20` vaut 1508, et 1588 - 1508 fait 5,04 % — au-dessus de 5,00 par la seule troncature.
+    # Mesuré en jouant le témoin sur une copie dont les trois planchers étaient posés au dérivé du jour :
+    # deux redevenaient muets, le troisième restait accusé. Le seuil est donc le DÉRIVÉ lui-même, en entier
+    # exact (`* 19 // 20`, jamais un flottant), et l'écart est publié en UNITÉS, pas en points de pourcentage.
+    print("MARGE DES PLANCHERS — ce que chacun tolère aujourd'hui, contre le plancher que la recette de ce "
+          "fichier (relevé du jour moins un vingtième) donnerait maintenant :")
+    for nom, plancher, releve in planchers:
+        derive = (releve * 19) // 20
+        perte = 100.0 * (releve - plancher) / releve if releve else 0.0
+        retard = f" — EN RETARD de {derive - plancher} sur son relevé" if plancher < derive else ""
+        print(f"    {nom} : plancher {plancher}, relevé du jour {releve}, dérivé du jour {derive} — "
+              f"{perte:.2f} % de perte tolérée{retard}")
     # CE QUE LE CLIQUET NE VOIT PAS, MÊME AU RAS (`P8.27-g`). La colonne gardée est un COMPTE NET, pas un
     # ENSEMBLE : elle refuse une HAUSSE. Descendre un plafond au relevé — le remède que la clé proposait —
     # ferme la hausse nette et RIEN D'AUTRE. Le publier est le minimum qu'une garde doive à qui la lit :

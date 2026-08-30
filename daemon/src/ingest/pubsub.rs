@@ -263,9 +263,10 @@ pub(crate) async fn pubsub_ingest_post(
     }
     // 8) spool enveloppe events + `env_id` + marqueur tenant (mode 0 = "") -> boucle de fond (parsers/extracteur/
     //    threat-intel/masquage UNIFORMES). Écriture spool en échec = TRANSITOIRE -> 5xx (Pub/Sub rejoue).
-    let env = json!({ "ts": now(), "host": host_self(), "kind": "events", "env_id": env_id, "events": events });
-    let body_out = match serde_json::to_string(&env) {
-        Ok(s) => s,
+    // `P6.9-c` — l'enveloppe DÉPLACE le lot (et `env_id` avec lui) au lieu de le recopier ; mesure et
+    // propriété dans `enveloppe_events_serialisee`.
+    let corps = match enveloppe_events_serialisee(events, Some(env_id)) {
+        Ok(c) => c,
         Err(_) => return err_json(StatusCode::INTERNAL_SERVER_ERROR, "serialize failed"),
     };
     let n = INGEST_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -274,7 +275,7 @@ pub(crate) async fn pubsub_ingest_post(
     let dst = format!("{}/ps-{}-{}{}.json", st.spool, now(), n, mk);
     // `S31` (temps 2) — publication DÉPORTÉE + deux barrières AVANT l'ACK. Pub/Sub ne lit que le statut :
     // le témoin de cette surface est `plume_spool_barriere_*` dans /metrics.
-    match crate::ingest::spool::publier(tmp, dst, body_out.into_bytes(), st.ingest_fsync).await {
+    match crate::ingest::spool::publier(tmp, dst, corps, st.ingest_fsync).await {
         Err(crate::ingest::spool::EchecSpool::Ecriture) => err_json(StatusCode::INTERNAL_SERVER_ERROR, "spool write failed"),
         Err(crate::ingest::spool::EchecSpool::Publication) => err_json(StatusCode::INTERNAL_SERVER_ERROR, "spool publish failed"),
         Ok(_) => pubsub_ok(),

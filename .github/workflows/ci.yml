@@ -713,7 +713,7 @@ env:
   #     ~6,5 ms par arithmétique en release), soit 63 × un 401 et 92,7 Mo/s au banc pour une seule IP.
   #   · CHAQUE RÉPONSE PUBLIQUE EST FACTURABLE (`content-length` présent ET égal au fichier) : sans
   #     cela, la borne ci-dessus aurait un trou muet.
-  EXPECTED_TESTS: "1436"
+  EXPECTED_TESTS: "1437"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -1131,7 +1131,7 @@ jobs:
           # derrière un `cfg(feature)`, et c'est l'ÉCART INCHANGÉ entre les deux profils (243 avant
           # comme après) qui l'établit, pas une lecture des sources. La dérivation complète et la
           # répartition sont écrites auprès d'`EXPECTED_TESTS`, une seule fois.
-          EXPECTED_COLD_TESTS: "1679"
+          EXPECTED_COLD_TESTS: "1680"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail
@@ -1524,6 +1524,36 @@ jobs:
       - name: Ce qu'un exploitant doit pouvoir trouver est documenté — onglets, capteurs, modes et leviers DÉRIVÉS des sources, cliquet sur ce qui n'est pas couvert (P9.7-b)
         run: python3 .github/scripts/check_operator_surface_is_documented.py
 
+      # `P11.21-c` — ET LE NOM QU'UN DOCUMENT DONNE À UN ONGLET EST CELUI QUE LA CONSOLE SERT. Le pas
+      # précédent exige qu'un onglet soit DÉCRIT ; celui-ci exige qu'il soit BIEN NOMMÉ. La distinction
+      # n'est pas rhétorique : depuis `P11.18-o` (2026-08-25), un libellé d'onglet n'est plus ÉCRIT dans
+      # le module — il est DÉRIVÉ du titre du panneau que l'onglet ouvre, ou du lien de barre latérale
+      # quand l'espace n'a qu'un onglet. La console a donc cessé d'avoir un endroit où un nom se recopie ;
+      # la DOCUMENTATION en avait un, une colonne de tableau tenue à la main, et elle a cessé d'être tenue
+      # LE JOUR MÊME sans que rien ne le dise. MESURÉ SUR L'ARBRE SUIVI le 2026-08-30 : 24 des 37 lignes
+      # documentées nommaient un onglet autrement que l'écran — et deux avaient déjà été corrigées à la
+      # main la veille, c'est-à-dire que le remède manuel avait été tenté et laissait 24 lignes derrière.
+      # LES TROIS SOURCES SONT DÉRIVÉES PAR LEUR PROPRIÉTÉ : le modèle est l'unique fichier suivi de
+      # `web/` qui porte `const SPACES = [` ; le document servi, l'unique `.html` suivi qui porte la barre
+      # latérale des espaces ; et les LIGNES à juger sont celles dont la première cellule est un
+      # identifiant d'onglet DÉCLARÉ PAR LE MODÈLE — la population vient du code, jamais d'un nom de
+      # colonne. Aucune des trois ne peut être renommée ou déplacée sans que la garde la retrouve.
+      # ELLE REFUSE DE CONCLURE (code 2) PLUTÔT QUE DE DEVINER, et c'est le cœur du geste : réécrire une
+      # ligne avec un instrument validé À MOITIÉ remplacerait une documentation PÉRIMÉE par une
+      # documentation FAUSSE — la première se soupçonne, la seconde se croit. Sept cas de refus, chacun
+      # NOMMÉ : ancre absente ou dédoublée ; modèle lu en corpus DÉGÉNÉRÉ (c'est la panne exacte qu'une
+      # autre garde a subie le 2026-08-25, tombée de 37 onglets à 2 quand les libellés écrits ont été
+      # ôtés) ; libellé porté par un identifiant non déclaré ; section déclarée absente du document ;
+      # repli sur un lien de barre latérale inexistant ; nom dérivé qui serait l'AVEU que la console ne
+      # sait pas nommer la destination ; titre portant un commentaire en enfant direct, que le code
+      # plierait dans le nom et qu'un lecteur ne verrait pas.
+      # L'INSTRUMENT S'AUTO-VALIDE SUR DES ENTRÉES FABRIQUÉES DANS LA GARDE, jamais sur l'état du dépôt :
+      # une borne posée sur l'arbre rougirait le jour où le travail est fini, ce qui est une rançon et
+      # non une garde. Les quatre chemins de la dérivation, les six refus et la comparaison dans LES DEUX
+      # SENS (documentation périmée / page renommée) y sont exercés.
+      - name: Le nom qu'un document donne à un onglet est celui que la console SERT — dérivé du titre du panneau, refus de conclure plutôt que devinette (P11.21-c)
+        run: python3 .github/scripts/check_a_documented_tab_label_is_the_name_the_console_serves.py
+
       # `P9.4-b` + `P9.6-a` — UN DÉPLOIEMENT N'ARME JAMAIS UNE TÂCHE DONT UNE PRÉCONDITION MANQUE CHEZ
       # LUI. Cette garde était ÉCRITE et volontairement NON CÂBLÉE : elle sortait en refus, et c'était son
       # verdict JUSTE — les deux déploiements de référence armaient l'ordonnanceur de sauvegarde toutes
@@ -1687,6 +1717,32 @@ jobs:
       # ne prouve pas : que les appels sont faits, jamais la survie à une coupure d'alimentation.
       - name: Une publication dans le spool doit être DURABLE, pas seulement atomique
         run: python3 .github/scripts/check_publication_is_durable.py
+
+      # LA MÊME FAMILLE, UN CRAN PLUS TÔT : ce qui est publié est durable ; encore faut-il que le
+      # produire ne coûte pas DEUX FOIS. MESURÉ le 2026-08-30 (`P6.9-c`) : les cinq surfaces qui
+      # décodent un lot avant de le publier (OTLP traces, HEC, audit MinIO, Firehose, Pub/Sub)
+      # bâtissaient leur enveloppe par la macro de sérialisation de `serde_json`, dont le bras de repli
+      # EMPRUNTE son opérande et le rend par `to_value` — l'arbre du lot était donc RECOPIÉ EN
+      # PROFONDEUR, et l'original, jamais consommé, restait vivant à côté de sa copie.
+      # CE QUI REND LE DÉFAUT COÛTEUX EST L'INSTANT, PAS LA TAILLE : la recopie tombe là où l'empreinte
+      # de la requête est maximale — le corps décompressé et l'arbre décodé sont encore vivants (vérifié
+      # par une sonde de compilation qui les LIT après le point de suspension de la publication), donc
+      # le second exemplaire s'AJOUTE au pic au lieu de le remplacer. Sur un produit qui doit tenir dans
+      # 2 Gio, c'est ce qui compte. Gain mesuré au point de publication (allocateur comptant les octets
+      # vifs, corps OTLP synthétique) : le déplacement vaut EXACTEMENT la taille du lot, soit 8,2 % à
+      # 25,3 % de l'empreinte selon la forme du corps, et la restitution du lot après sérialisation
+      # double ces parts. C'est la propriété qui se transporte, pas ces nombres.
+      # La garde n'énumère AUCUN nom de fichier : sa population est DÉRIVÉE du critère « ce fichier
+      # appelle le point de publication du spool », de sorte qu'un récepteur poussé neuf y entre le jour
+      # où il publie. Si ce critère cesse de désigner quoi que ce soit, elle REFUSE DE CONCLURE au lieu
+      # d'afficher un vert vide. Elle s'auto-valide sur dix entrées FABRIQUÉES dans son propre corps
+      # (forme visée, trois formes recopiantes, tableau littéral, champ homonyme hors enveloppe, même
+      # défaut hors population, défaut présent seulement en commentaire, chaîne contenant deux barres).
+      # Elle dit ce qu'elle ne tient pas : elle lit la FORME de la source, jamais une allocation. La
+      # propriété elle-même est épinglée côté Rust par l'identité d'ADRESSE du lot entre l'avant et
+      # l'enveloppe (`l_enveloppe_deplace_son_lot_et_rend_les_memes_octets`).
+      - name: Une enveloppe d'ingestion doit DÉPLACER son lot, jamais le recopier (P6.9-c)
+        run: python3 .github/scripts/check_an_ingestion_envelope_never_copies_its_batch.py
 
       # LE DÉFAUT VOISIN, ET PLUS GRAVE : la garde ci-dessus rend DURABLE ce qui est publié ; celle-ci
       # refuse qu'un capteur ACQUITTE ce qu'il n'a pas encore publié. Un capteur incrémental marque sa

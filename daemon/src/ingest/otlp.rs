@@ -496,9 +496,12 @@ pub(crate) async fn otlp_traces_post(
         // rien d'exploitable (aucun span valide) -> succès OTLP vide (le client ne rejoue pas inutilement).
         return otlp_ok(0);
     }
-    let env = json!({ "ts": now(), "host": host_self(), "kind": "events", "events": events });
-    let body_out = match serde_json::to_string(&env) {
-        Ok(s) => s,
+    // `P6.9-c` — l'enveloppe DÉPLACE le lot. La macro de sérialisation l'aurait emprunté puis recopié
+    // en profondeur, ici précisément : `raw` (le corps décompressé) et `root` (l'arbre décodé) sont
+    // encore vivants à ce point, donc la copie se serait AJOUTÉE au pic. Le pourquoi et la mesure sont
+    // dans `enveloppe_events_serialisee`.
+    let corps = match enveloppe_events_serialisee(events, None) {
+        Ok(c) => c,
         Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "serialize failed").into_response(),
     };
     let n = INGEST_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -512,7 +515,7 @@ pub(crate) async fn otlp_traces_post(
     let dst = format!("{}/otlp-{}-{}{}{}.json", st.spool, now(), n, mk, hk);
     // `S31` (temps 2) — publication DÉPORTÉE + deux barrières. `ExportTraceServiceResponse` n'admet pas
     // de champ inconnu : le témoin de cette surface est `plume_spool_barriere_*` dans /metrics.
-    match crate::ingest::spool::publier(tmp, dst, body_out.into_bytes(), st.ingest_fsync).await {
+    match crate::ingest::spool::publier(tmp, dst, corps, st.ingest_fsync).await {
         Err(crate::ingest::spool::EchecSpool::Ecriture) => (StatusCode::INTERNAL_SERVER_ERROR, "spool write failed").into_response(),
         Err(crate::ingest::spool::EchecSpool::Publication) => (StatusCode::INTERNAL_SERVER_ERROR, "spool publish failed").into_response(),
         Ok(_) => otlp_ok(0),

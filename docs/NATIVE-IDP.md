@@ -12,7 +12,7 @@
 ## 1. Modèle de configuration
 
 Un **fournisseur d'identité** est une ligne de la table `idp_provider` (migration v85), configurée par un
-**admin** via l'UI (`Administration → Identité (SSO)`) ou l'API `/api/idp/providers` (admin-only) :
+**admin** via l'UI (`Administration → Identité fédérée (SSO)`) ou l'API `/api/idp/providers` (admin-only) :
 
 | colonne       | rôle |
 |---------------|------|

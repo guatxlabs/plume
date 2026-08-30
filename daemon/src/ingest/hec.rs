@@ -296,9 +296,12 @@ pub(crate) async fn hec_event_post(State(st): State<AppState>, Extension(au): Ex
     if events.is_empty() {
         return hec_err(StatusCode::BAD_REQUEST, 5, "No data");
     }
-    let env = json!({ "ts": now(), "host": host_self(), "kind": "events", "events": events });
-    let body_out = match serde_json::to_string(&env) {
-        Ok(s) => s,
+    // `P6.9-c` — l'enveloppe DÉPLACE le lot ; l'accusé HEC retient donc sa CARDINALITÉ avant, puisqu'il
+    // n'y a plus de second exemplaire à interroger après. Mesure et propriété dans
+    // `enveloppe_events_serialisee`.
+    let events_acquittes = events.len();
+    let corps = match enveloppe_events_serialisee(events, None) {
+        Ok(c) => c,
         Err(_) => return hec_err(StatusCode::INTERNAL_SERVER_ERROR, 8, "Internal server error"),
     };
     let n = INGEST_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -308,8 +311,8 @@ pub(crate) async fn hec_event_post(State(st): State<AppState>, Extension(au): Ex
     let dst = format!("{}/hec-{}-{}{}{}.json", st.spool, now(), n, mk, hk);
     // `S31` (temps 2) — publication DÉPORTÉE + deux barrières. Le corps HEC est le contrat de Splunk :
     // le témoin de cette surface est `plume_spool_barriere_*` dans /metrics.
-    match crate::ingest::spool::publier(tmp, dst, body_out.into_bytes(), st.ingest_fsync).await {
+    match crate::ingest::spool::publier(tmp, dst, corps, st.ingest_fsync).await {
         Err(_) => hec_err(StatusCode::INTERNAL_SERVER_ERROR, 8, "Internal server error"),
-        Ok(_) => hec_ok(events.len()),
+        Ok(_) => hec_ok(events_acquittes),
     }
 }

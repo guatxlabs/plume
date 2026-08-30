@@ -6,7 +6,7 @@ import {
   ouvrirLaModaleDePlage
 } from './core.js';
 import { installI18nObserver } from './i18n_observer.js';
-import { S, ecrireDansLeStockageDuSite, lireLeStockageDuSite } from './state.js';
+import { S, ecrireDansLeStockageDuSite, ecrireSansDireLeRefus, lireLeStockageDuSite } from './state.js';
 import { banIp, clearDrillCrumb, clearZoom, evLoad, exploreFrom, exploreTo, qHistGo, renderViz, runQuery, setZoom, stopExplore, updateZoomBadge } from './viz.js';
 import { initDashboards, loadDashboard, loadDashboards, refreshPanels } from './dashboards.js';
 import { initLookups } from './lookups.js';
@@ -624,9 +624,18 @@ if ($('#opaccess-src')) $('#opaccess-src').addEventListener('change', loadOperat
   sel.onchange = () => {
     const v = connu(sel.value) ? sel.value : '';
     appliquer(v);
-    // L'ÉCRITURE PEUT JETER (`SecurityError`, stockage de site bloqué). Le choix est alors APPLIQUÉ sans
-    // être retenu : la vue suit le geste, seule la mémoire du poste manque — rien ne casse.
-    try { if (v) localStorage.setItem('soc-density', v); else localStorage.removeItem('soc-density'); } catch (e) {}
+    // `P4.13-c` — CE CRAN EST UNE PRÉFÉRENCE, ET UNE PRÉFÉRENCE DIT SA PERTE. Une capture VIDE tenait ce
+    // silence : le choix était appliqué, jamais retenu, et l'exploitant n'avait RIEN à lire. Or c'est le
+    // SIXIÈME contrôle de préférence de la console — trois partagent sa barre (`#tz`, `#lang`, `#theme`,
+    // juste au-dessus dans `index.html`), deux vivent dans l'administration de la détection (tri des
+    // règles, tri des parsers) — et les cinq autres annoncent TOUS le refus, lui seul se taisait.
+    // « Il a déjà été prévenu ailleurs » n'est pas une propriété du code, c'est un pari sur
+    // l'ORDRE DES CLICS : qui ne touche QUE la densité n'apprend jamais rien. Et ce n'est pas du bruit —
+    // `onchange` ne part qu'au changement RÉEL du sélecteur, jamais à la pose `sel.value = cran`, donc
+    // quelques fois par session au plus, et seulement chez un navigateur qui refuse le stockage.
+    // `v || null` conserve la forme d'avant : le cran « Normale » vaut `''`, et l'écrivain EFFACE la clé
+    // sur `null` — c'est exactement ce que faisait le `removeItem` de la branche `else`.
+    if (!ecrireDansLeStockageDuSite('soc-density', v || null)) toast(LANG === 'en' ? 'Density applied for this session only: this browser refuses site storage, so it will not be kept on the next load.' : "Densité appliquée pour cette session seulement : ce navigateur refuse le stockage de site, elle ne sera pas retenue au prochain chargement.", 'info', 5000);
   };
 })();
 
@@ -854,7 +863,10 @@ function saveOvDrop(from, to) {
   // gardé. LE REFUS N'EST PAS DIT ICI, et c'est une décision mesurée, pas un silence : il n'y a aucune
   // perte à annoncer — l'ordre reste tenu par le store self-scoped, inter-postes. Seule la relecture
   // HORS-LIGNE de cet ordre est perdue, et elle l'est déjà pour tout le reste sur un tel navigateur.
-  ecrireDansLeStockageDuSite('soc_ov_order', JSON.stringify(o));   // miroir sync (compat + hors-ligne)
+  // `P4.13-c` — CE SILENCE-LÀ ÉTAIT DÉJÀ ARGUMENTÉ (juste au-dessus), MAIS LE CODE N'EN DISAIT RIEN : le
+  // verdict de l'écrivain était simplement JETÉ, et une valeur jetée ne distingue pas un choix d'un
+  // oubli. Il passe donc par la porte qui NE REND RIEN, dont le NOM déclare le silence.
+  ecrireSansDireLeRefus('soc_ov_order', JSON.stringify(o));   // miroir sync (compat + hors-ligne)
   prefSet('ovOrder', o);                                          // #62 — persiste côté serveur (cross-device)
   applyOvOrder();
 }

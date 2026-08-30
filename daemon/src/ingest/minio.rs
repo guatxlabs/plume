@@ -221,9 +221,12 @@ pub(crate) async fn ingest_minio_post(State(st): State<AppState>, Extension(au):
         // batch entièrement filtré (bruit/hors scope) : MinIO n'a rien à rejouer -> 204.
         return StatusCode::NO_CONTENT.into_response();
     }
-    let env = json!({ "ts": now(), "host": host_self(), "kind": "events", "events": events });
-    let body_out = match serde_json::to_string(&env) {
-        Ok(s) => s,
+    // `P6.9-c` — l'enveloppe DÉPLACE le lot ; l'accusé retient donc sa CARDINALITÉ avant, puisqu'il n'y
+    // a plus de second exemplaire à interroger après. Mesure et propriété dans
+    // `enveloppe_events_serialisee`.
+    let events_acquittes = events.len();
+    let corps = match enveloppe_events_serialisee(events, None) {
+        Ok(c) => c,
         Err(_) => return server_err("sérialisation échouée"),
     };
     let n = INGEST_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -237,9 +240,9 @@ pub(crate) async fn ingest_minio_post(State(st): State<AppState>, Extension(au):
     // `S31` (temps 2) — publication DÉPORTÉE sur le pool bloquant, avec ses deux barrières, PUIS l'accusé.
     // `durable` est DÉRIVÉ de ce que la publication a obtenu : la barrière désarmée, ou refusée par le
     // noyau après le renommage, le fait retomber à faux tout seul.
-    match crate::ingest::spool::publier(tmp, dst, body_out.into_bytes(), st.ingest_fsync).await {
+    match crate::ingest::spool::publier(tmp, dst, corps, st.ingest_fsync).await {
         Err(_) => server_err("écriture spool échouée"),
-        Ok(p) => (StatusCode::ACCEPTED, Json(json!({ "queued": true, "events": events.len(), "durable": p.durable }))).into_response(),
+        Ok(p) => (StatusCode::ACCEPTED, Json(json!({ "queued": true, "events": events_acquittes, "durable": p.durable }))).into_response(),
     }
 }
 

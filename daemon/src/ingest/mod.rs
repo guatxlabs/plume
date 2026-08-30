@@ -679,6 +679,68 @@ pub(crate) fn ingest_events_batch_env(
     Ok((n, inserted))
 }
 
+/// L'ENVELOPPE DE SPOOL `kind=events`, CONSTRUITE EN DÉPLAÇANT SON LOT (`P6.9-c`, 2026-08-30).
+///
+/// CE QU'ELLE FERME. Les CINQ surfaces qui DÉCODENT un lot avant de le publier (OTLP traces, HEC,
+/// audit MinIO, Firehose, Pub/Sub) construisaient chacune leur enveloppe par la macro de sérialisation
+/// de `serde_json`. Le bras de repli de cette macro emprunte son opérande et le rend par `to_value`
+/// (`serde_json` 1.0.150, `src/macros.rs`) : l'arbre du lot est RECOPIÉ EN PROFONDEUR, et l'original —
+/// emprunté, donc jamais consommé — reste vivant à côté de sa copie. Deux exemplaires, pas un.
+///
+/// POURQUOI L'INSTANT COMPTE PLUS QUE LA TAILLE. La recopie tombait là où l'empreinte de la requête
+/// est à son maximum : ni le corps décompressé ni l'arbre décodé ne sont libérés à ce point. MESURÉ le
+/// 2026-08-30 par une sonde de compilation temporaire qui LIT le corps décompressé, l'arbre décodé et
+/// l'enveloppe APRÈS le point de suspension de la publication : elle compile, donc les trois sont
+/// encore vivants là-bas — a fortiori à la construction, qui est plus tôt. Le second exemplaire
+/// s'AJOUTAIT donc au pic au lieu de le remplacer.
+///
+/// CE QUE CETTE FONCTION GARANTIT, ET PAR QUELLE PROPRIÉTÉ.
+///   * `Value::Array(events)` DÉPLACE le lot : aucune allocation n'est refaite. MESURÉ le 2026-08-30
+///     par IDENTITÉ D'ADRESSE — l'adresse du premier octet d'une chaîne du lot est la MÊME avant et
+///     dans l'enveloppe ; par la macro elle diffère, et elle ne peut pas coïncider par accident
+///     puisque l'original est toujours alloué. Témoin :
+///     `l_enveloppe_deplace_son_lot_et_rend_les_memes_octets`.
+///   * L'enveloppe POSSÈDE le lot, et la valeur temporaire qui la porte meurt à la fin de
+///     l'instruction de sérialisation : le lot est donc RENDU dès les octets produits, avant que la
+///     publication ne soit attendue. C'est la seconde moitié du gain, et elle découle de la
+///     POSSESSION, pas d'un `drop` explicite qu'on pourrait effacer sans que rien ne rougisse.
+///   * La SORTIE est inchangée octet pour octet, et c'est STRUCTUREL : la caractéristique
+///     `preserve_order` est absente du verrou (`serde_json` n'y tire pas `indexmap`), donc une `Map`
+///     est un `BTreeMap` et l'ordre d'insertion ne se voit pas dans le rendu.
+///
+/// CE QUE ÇA VAUT, MESURÉ (poste Hugo, 2026-08-30, allocateur comptant les octets VIFS, corps OTLP
+/// synthétique) : le gain du DÉPLACEMENT vaut EXACTEMENT la taille du lot, et sa PART de l'empreinte
+/// au point de publication dépend de la forme du corps — 8,2 % (40 spans × 40 attributs), 12,0 %
+/// (400 × 12), 25,3 % (400 × 1). La restitution du lot après sérialisation double ces parts (16,5 % /
+/// 24,1 % / 50,7 %) sans toucher au pic instantané. C'est la PROPRIÉTÉ qui se transporte, pas ces
+/// nombres : la part est d'autant plus grande que l'arbre décodé retenu à côté est PETIT devant le lot.
+///
+/// `env_id` vaut `None` pour les surfaces qui n'en portent pas (OTLP, HEC, MinIO) et `Some` pour celles
+/// dont la clé de livraison est liée à un connecteur (Firehose, Pub/Sub) ; il est déplacé lui aussi. La
+/// garde `check_an_ingestion_envelope_never_copies_its_batch.py` refuse qu'une surface de spool
+/// reconstruise une enveloppe qui recopie son lot.
+pub(crate) fn enveloppe_events(events: Vec<Value>, env_id: Option<String>) -> Value {
+    let mut enveloppe = serde_json::Map::new();
+    enveloppe.insert("ts".to_string(), Value::from(now()));
+    enveloppe.insert("host".to_string(), Value::String(host_self()));
+    enveloppe.insert("kind".to_string(), Value::String("events".to_string()));
+    if let Some(id) = env_id {
+        enveloppe.insert("env_id".to_string(), Value::String(id));
+    }
+    // LE GESTE : le lot est DÉPLACÉ dans l'enveloppe. Rien n'est ré-alloué, et il n'en reste pas de
+    // second exemplaire à côté — l'appelant ne peut plus le lire, c'est le compilateur qui le dit.
+    enveloppe.insert("events".to_string(), Value::Array(events));
+    Value::Object(enveloppe)
+}
+
+/// La forme que les cinq surfaces appellent : construire PUIS sérialiser, en une instruction. La valeur
+/// temporaire qui porte l'enveloppe meurt à la fin de cette instruction, donc le lot est RENDU dès les
+/// octets produits — avant que la publication et ses barrières ne soient attendues. C'est une propriété
+/// de POSSESSION, pas un `drop` explicite qu'on pourrait effacer sans que rien ne rougisse.
+pub(crate) fn enveloppe_events_serialisee(events: Vec<Value>, env_id: Option<String>) -> Result<Vec<u8>, serde_json::Error> {
+    serde_json::to_vec(&enveloppe_events(events, env_id))
+}
+
 /// Agent (token) : ingestion du journald brut (NDJSON) shippé depuis un hôte distant (sshd/sudo/su...).
 /// `ship.sh` POSTe ici les fichiers `.ndjson` (que le loop `*.json` n'expédiait pas -> trou de collecte).
 /// Écrit dans le spool (atomique) -> ingéré par la boucle de fond (comme `ingest_post`). NE fait PAS
@@ -1046,4 +1108,84 @@ pub(crate) fn ingest_once(mgr: &TenantDbManager, spool: &str) -> crate::bilan_de
         }
     }
     Mesure::Lue(abandonnes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Adresse du premier octet d'une chaîne portée par le lot. C'est l'INSTRUMENT : une recopie en
+    /// profondeur ré-alloue, donc la change ; un déplacement ne peut pas la changer. Elle ne peut pas
+    /// non plus coïncider par accident, puisque l'exemplaire d'origine reste alloué pendant la mesure.
+    fn adresse_du_premier_message(lot: &[Value]) -> usize {
+        lot[0].get("message").and_then(|m| m.as_str()).expect("le lot fabriqué porte un message").as_ptr() as usize
+    }
+
+    /// `P6.9-c` — L'ENVELOPPE DÉPLACE SON LOT, ET REND EXACTEMENT LES MÊMES OCTETS QU'AVANT.
+    ///
+    /// Le lot est FABRIQUÉ ici : ce témoin ne dépend d'aucun état du dépôt ni d'aucune requête réelle.
+    ///
+    /// L'INSTRUMENT EST VALIDÉ DANS LES DEUX SENS DANS LE MÊME CORPS. Témoin NÉGATIF : la conversion
+    /// empruntante de `serde_json` — celle qu'employait le bras de repli de la macro — rend une adresse
+    /// DIFFÉRENTE, donc l'identité d'adresse sait dire « recopié ». Témoin POSITIF : la construction du
+    /// point commun rend la MÊME adresse. Sans le négatif, l'égalité pourrait être vraie parce que
+    /// l'instrument ne mesure rien.
+    ///
+    /// MUTATION : remplacer le déplacement du lot par une duplication dans `enveloppe_events` ⇒
+    /// `adresse_deplacee` cesse d'égaler `adresse_avant` ⇒ ROUGE. Retirer une clé de l'enveloppe, ou en
+    /// changer une valeur ⇒ les octets cessent d'égaler ceux de la forme attendue ⇒ ROUGE.
+    ///
+    /// CE QU'IL NE PROUVE PAS : le PIC mémoire d'une requête réelle. Il prouve la propriété d'où le pic
+    /// découle — que le lot n'existe qu'en un exemplaire — pas le nombre d'octets d'un OTLP de production.
+    #[test]
+    fn l_enveloppe_deplace_son_lot_et_rend_les_memes_octets() {
+        let mut lot: Vec<Value> = Vec::new();
+        for i in 0..8i64 {
+            let mut ev = serde_json::Map::new();
+            ev.insert("ts".to_string(), Value::from(1_756_500_000i64 + i));
+            ev.insert("source".to_string(), Value::String("p69c".to_string()));
+            ev.insert("message".to_string(), Value::String(format!("evenement fabrique numero {i}")));
+            lot.push(Value::Object(ev));
+        }
+        let adresse_avant = adresse_du_premier_message(&lot);
+        let lot_temoin = lot.clone();
+
+        // TÉMOIN NÉGATIF DE L'INSTRUMENT — la conversion EMPRUNTANTE recopie l'arbre en profondeur.
+        let recopie = serde_json::to_value(&lot).expect("conversion");
+        let adresse_recopiee = adresse_du_premier_message(recopie.as_array().expect("tableau"));
+        assert_ne!(
+            adresse_avant, adresse_recopiee,
+            "instrument INVALIDE : une recopie en profondeur doit changer l'adresse, sinon l'égalité ne prouve rien"
+        );
+        drop(recopie);
+
+        // TÉMOIN POSITIF — la construction du point commun DÉPLACE.
+        let enveloppe = enveloppe_events(lot, None);
+        let adresse_deplacee = adresse_du_premier_message(enveloppe["events"].as_array().expect("tableau"));
+        assert_eq!(
+            adresse_avant, adresse_deplacee,
+            "le lot doit être DÉPLACÉ dans l'enveloppe : une adresse différente signifie qu'il a été recopié"
+        );
+
+        // SORTIE INCHANGÉE, OCTET POUR OCTET. La référence n'est pas rebâtie par le code testé : elle est
+        // ANALYSÉE depuis un texte écrit ici, donc la comparaison n'est pas circulaire. L'ordre des clés
+        // n'entre pas dans la comparaison — sans `preserve_order`, une `Map` est un `BTreeMap`.
+        let octets = serde_json::to_vec(&enveloppe).expect("sérialisation");
+        let attendu_texte = format!(
+            "{{\"ts\":{},\"host\":{},\"kind\":\"events\",\"events\":{}}}",
+            enveloppe["ts"], enveloppe["host"],
+            serde_json::to_string(&lot_temoin).expect("lot témoin")
+        );
+        let attendu: Value = serde_json::from_str(&attendu_texte).expect("référence analysable");
+        assert_eq!(
+            octets,
+            serde_json::to_vec(&attendu).expect("référence sérialisable"),
+            "les octets publiés au spool doivent être ceux d'avant le correctif"
+        );
+
+        // La variante des surfaces liées à un connecteur : `env_id` est déplacé lui aussi, et il apparaît.
+        let avec_env = enveloppe_events(lot_temoin.clone(), Some("prod".to_string()));
+        assert_eq!(avec_env["env_id"], Value::String("prod".to_string()), "`env_id` doit être porté par l'enveloppe");
+        assert_eq!(avec_env["events"].as_array().map(|a| a.len()), Some(lot_temoin.len()), "le lot traverse entier");
+    }
 }

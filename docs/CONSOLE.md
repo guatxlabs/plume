@@ -46,10 +46,11 @@ fragments de premier niveau restent acceptés comme alias, pour ne pas casser le
 
 Un espace qui n'a qu'un seul onglet n'affiche pas de barre d'onglets.
 
-### 1.4 D'où vient ce tableau
+### 1.4 D'où vient ce tableau, et pourquoi il ne peut plus vieillir en silence
 
-**Il est dérivé de la structure de navigation de la console, pas recopié.** Relevé sur l'arbre suivi
-le 2026-08-25 : **8 espaces, 37 onglets**. La commande qui redonne les comptes :
+**La colonne « Onglet » est dérivée de la structure de navigation ; la colonne « Libellé » l'est du
+document servi.** Relevé sur l'arbre suivi le 2026-08-25 : **8 espaces, 37 onglets** — compte
+inchangé le 2026-08-30. La commande qui redonne les comptes :
 
 ```sh
 python3 - <<'PY'
@@ -61,6 +62,31 @@ ong = re.findall(r"\{\s*id:\s*'([a-zA-Z0-9-]+)'\s*,\s*label:", bloc)
 print(len(esp), "espaces,", len(ong), "onglets")
 PY
 ```
+
+**Un libellé n'est pas un nom écrit : c'est un nom DÉRIVÉ.** Depuis le 2026-08-25, la console
+n'écrit plus le nom d'un onglet nulle part. Elle le prend là où il est permanent, dans cet ordre :
+le **titre du panneau** que l'onglet ouvre quand il n'en ouvre qu'un ; à défaut, le **lien de barre
+latérale** de l'espace, quand cet espace n'a qu'un onglet ; à défaut, le libellé qu'un onglet
+**groupe** déclare, faute de panneau unique à nommer (deux cas seulement) ; à défaut, un **aveu**
+qui dit que la destination n'est pas nommée, jamais un silence.
+
+Cette colonne, elle, restait recopiée à la main — et elle a cessé d'être tenue le jour même, sans
+que rien ne le dise. **Mesuré le 2026-08-30 : 24 des 37 lignes nommaient un onglet autrement que
+l'écran.** Elles sont désormais dérivées, et la propriété est **tenue par un instrument** plutôt
+que par une relecture : `check_a_documented_tab_label_is_the_name_the_console_serves.py` rejoue la
+dérivation à chaque intégration, compare, et **refuse de conclure** — au lieu de deviner — sur
+toute destination qu'il ne sait pas trancher. Un titre de panneau modifié fait donc rougir ce
+document.
+
+**Ce que cet instrument ne voit pas**, et c'est écrit ici plutôt que tu par une garde verte : un nom cité en **prose**
+lui échappe, et une colonne de libellé déplacée hors de la deuxième position lui échapperait aussi.
+S'y ajoute un angle mort mesuré le 2026-08-30 en éprouvant la garde elle-même : elle consulte quatre
+sources pour dériver un nom, et l'ORDRE dans lequel elle les consulte — qui EST la dérivation, pas un
+détail — n'est exercé par aucune de ses épreuves. Inverser cet ordre la laisse VERTE. Ni son corpus
+témoin, ni son oracle, ni le document réel ne peuvent le trancher, pour une raison unique : les seuls
+onglets qui retombent sur une source secondaire ont un titre de panneau VIDE, si bien que les deux
+ordres y rendent la même chaîne. Le cas qui déciderait est nommable et n'existe pas : un espace à
+onglet UNIQUE dont le panneau porte un titre DIFFÉRENT de son lien de barre latérale.
 
 ---
 
@@ -96,9 +122,10 @@ plage, distinct de celui des tableaux de bord. Le langage lui-même est décrit 
 | Onglet | Libellé | Rôle | Ce qu'on y fait |
 |---|---|---|---|
 | `alerts` | Alertes | viewer+ | la file des alertes levées par les règles, groupées, à trier |
-| `cases` | Cas | viewer+ | un cas d'incident : chronologie, événements et alertes liés, échéances |
+| `cases` | Cases (gestion d'incident) | viewer+ | un cas d'incident : chronologie, événements et alertes liés, échéances |
 
-La séparation est délibérée : *Alertes* est ce qui arrive, *Cas* est ce qu'on en fait.
+La séparation est délibérée : *Alertes* est ce qui arrive, *Cases (gestion d'incident)* est ce
+qu'on en fait.
 
 ### 2.4 `dashboards` — Tableaux de bord
 
@@ -116,11 +143,11 @@ Sept onglets : de la règle qui détecte à l'action qui répond.
 | Onglet | Libellé | Rôle | Ce qu'on y fait |
 |---|---|---|---|
 | `detection` | Détection | viewer+ lecture · éditeur+ écriture | les règles livrées et les vôtres, et le panneau de couverture |
-| `attack` | ATT&CK | viewer+ | la matrice de couverture MITRE ATT&CK — chaque manqué devient un angle mort visible |
+| `attack` | Matrice ATT&CK (couverture) | viewer+ | la matrice de couverture MITRE ATT&CK — chaque manqué devient un angle mort visible |
 | `playbooks` | Playbooks | viewer+ lecture · **rédaction de runbooks réservée aux administrateurs** | détection → réponse automatique, et l'interrupteur du **Mode Engagement** |
 | `actions` | Actions | viewer+ | la file de riposte : ce qui est proposé, approuvé, appliqué, refusé |
-| `risk` | Risque | viewer+ | score de risque par entité (alerting basé sur le risque) |
-| `detadv` | Avancée | viewer+ lecture · éditeur+ écriture | corrélations de séquence et lignes de base comportementales |
+| `risk` | Risque par entité (RBA) | viewer+ | score de risque par entité (alerting basé sur le risque) |
+| `detadv` | Détection avancée | viewer+ lecture · éditeur+ écriture | corrélations de séquence et lignes de base comportementales |
 | `routing` | Politiques de notification | viewer+ lecture · éditeur+ écriture | à qui part une notification, et ce qu'on met en sourdine |
 
 Une action n'est **jamais** appliquée sans passer par cette chaîne : proposition, **approbation d'un
@@ -133,19 +160,19 @@ Le plus gros espace : treize onglets, de la source brute jusqu'à la couche sém
 
 | Onglet | Libellé | Rôle | Ce qu'on y fait |
 |---|---|---|---|
-| `sources` | Sources | viewer+ | l'inventaire des flux déclarés : attendu contre réel |
-| `freshness-view` | Fraîcheur | viewer+ | la santé de collecte, flux par flux, en détail |
-| `system` | Système | viewer+ lecture · outils d'administration réservés | auto-métriques du démon, santé par composant, bulletin et diagnostic |
-| `fleet` | Flotte | viewer+ | l'inventaire des hôtes et des points d'accès : dernier contact, statut, enrôlement |
-| `connectors` | Connecteurs | **admin** | les sources externes en **PULL** — le chemin d'ajout de source qui existe dans les trois modes |
-| `destinations` | Destinations | **admin** | le renvoi d'événements vers un puits externe (syslog, HEC, webhook) — surface d'exfiltration, d'où la restriction |
+| `sources` | Inventaire des sources | viewer+ | l'inventaire des flux déclarés : attendu contre réel |
+| `freshness-view` | Fraîcheur des sources | viewer+ | la santé de collecte, flux par flux, en détail |
+| `system` | Système — opérabilité | viewer+ lecture · outils d'administration réservés | auto-métriques du démon, santé par composant, bulletin et diagnostic |
+| `fleet` | Flotte — par hôte | viewer+ | l'inventaire des hôtes et des points d'accès : dernier contact, statut, enrôlement |
+| `connectors` | Connecteurs de sources | **admin** | les sources externes en **PULL** — le chemin d'ajout de source qui existe dans les trois modes |
+| `destinations` | Destinations de sortie | **admin** | le renvoi d'événements vers un puits externe (syslog, HEC, webhook) — surface d'exfiltration, d'où la restriction |
 | `processors` | Processeur d'ingest | **admin** | filtrer, masquer, router, échantillonner **à l'ingestion** |
 | `indexes` | Indexes & rétention | **admin** | des index logiques nommés, avec leur rétention et leurs plafonds propres |
-| `parsers` | Parseurs | viewer+ lecture · éditeur+ écriture | les extracteurs de champs, livrés et personnels |
-| `lookups` | Lookups | viewer+ lecture · éditeur+ écriture | les tables de correspondance qu'utilise la commande `lookup` |
-| `knowledge` | Savoir | viewer+ lecture · éditeur+ écriture | objets de savoir résolus au moment de la recherche : alias, champs calculés, types d'événement, étiquettes |
-| `datamodels` | Modèles & Pivot | viewer+ lecture et exécution · éditeur+ écriture | la couche sémantique et le constructeur de rapports par pivot |
-| `dataaccess` | Accès données (DLP) | viewer+ | la gouvernance d'accès aux données, en lecture seule |
+| `parsers` | Parsers (extraction de champs) | viewer+ lecture · éditeur+ écriture | les extracteurs de champs, livrés et personnels |
+| `lookups` | Lookups (tables d'enrichissement) | viewer+ lecture · éditeur+ écriture | les tables de correspondance qu'utilise la commande `lookup` |
+| `knowledge` | Objets de savoir | viewer+ lecture · éditeur+ écriture | objets de savoir résolus au moment de la recherche : alias, champs calculés, types d'événement, étiquettes |
+| `datamodels` | Modèles de données & Pivot | viewer+ lecture et exécution · éditeur+ écriture | la couche sémantique et le constructeur de rapports par pivot |
+| `dataaccess` | Accès données | viewer+ | la gouvernance d'accès aux données, en lecture seule |
 
 > **À noter pour les modes conteneur et cluster.** Déposer un parseur ou une règle **par fichier** y
 > est difficile ou impossible (racine en lecture seule). Les onglets `parsers`, `detection` et
@@ -159,17 +186,17 @@ Le plus gros espace : treize onglets, de la source brute jusqu'à la couche sém
 
 | Onglet | Libellé | Rôle | Ce qu'on y fait |
 |---|---|---|---|
-| `settings` | Compte | son propre compte | mot de passe, préférences, et l'inscription d'un second facteur TOTP |
-| `users` | Users | admin | les comptes et leurs rôles |
-| `tokens` | Jetons | **admin** | provisionner un jeton d'agent ou HEC — le secret ne s'affiche **qu'une fois** |
+| `settings` | Réglages | son propre compte | mot de passe, préférences, et l'inscription d'un second facteur TOTP |
+| `users` | Comptes & accès | admin | les comptes et leurs rôles |
+| `tokens` | Jetons (agent & HEC) | **admin** | provisionner un jeton d'agent ou HEC — le secret ne s'affiche **qu'une fois** |
 | `idp` | Identité fédérée (SSO) | **admin** | fournisseurs OIDC et LDAP — voir [`NATIVE-IDP.md`](NATIVE-IDP.md) |
-| `fieldfilters` | Field filters | **admin** | masquage par champ ; c'est une configuration qui **contraint** les autres rôles |
+| `fieldfilters` | Field filters (masquage PII) | **admin** | masquage par champ ; c'est une configuration qui **contraint** les autres rôles |
 | `tenants` | Tenants | **multi-tenant seulement** | les tenants et les habilitations ; invisible en mono-tenant |
-| `notifiers` | Canaux | admin | où partent les notifications |
-| `threatintel` | Threat Intel | admin | le magasin d'IOC : couverture, liste, ajout, import STIX |
-| `suppressions` | Suppressions | admin | ce qu'on choisit de ne plus voir, et pourquoi |
-| `retention` | Rétention | admin | combien de temps on garde — voir aussi [`PURGE.md`](PURGE.md) |
-| `ledger` | Audit | admin | le journal d'audit en chaîne de hachage, vérifiable hors ligne par `plume-daemon verify` |
+| `notifiers` | Canaux de notification | admin | où partent les notifications |
+| `threatintel` | Threat Intel (IOC) | admin | le magasin d'IOC : couverture, liste, ajout, import STIX |
+| `suppressions` | Suppressions & whitelists actives | admin | ce qu'on choisit de ne plus voir, et pourquoi |
+| `retention` | Rétention des données | admin | combien de temps on garde — voir aussi [`PURGE.md`](PURGE.md) |
+| `ledger` | Journal d'audit | admin | le journal d'audit en chaîne de hachage, vérifiable hors ligne par `plume-daemon verify` |
 
 Le masquage par champ mérite d'être compris avant d'être posé : il agit **à la compilation de la
 requête**, et une requête qui porterait sur un champ masqué est **refusée** plutôt que de rendre une
@@ -201,8 +228,9 @@ ce document — et à sa garde — de s'appuyer sur une source unique plutôt qu
 main.
 
 **Ce qui écrit se distingue de ce qui lit.** Un onglet qui expose une surface d'exfiltration
-(*Destinations*), qui manipule des secrets (*Jetons*, *Identité*) ou qui contraint les autres rôles
-(*Field filters*) est réservé à l'administrateur — et l'API le refuse aussi, indépendamment de ce que
+(*Destinations de sortie*), qui manipule des secrets (*Jetons (agent & HEC)*, *Identité fédérée
+(SSO)*) ou qui contraint les autres rôles (*Field filters (masquage PII)*) est réservé à
+l'administrateur — et l'API le refuse aussi, indépendamment de ce que
 la console montre. Les routes sensibles passent par une confirmation partagée, elle-même **dérivée du
 routeur** par une garde de CI plutôt qu'énumérée.
 

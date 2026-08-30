@@ -26,8 +26,18 @@ avant « Détection »).
 """
 import importlib.util, os, re, sys
 
-RACINE = "/home/guat/wslRecover/guat/GUATX/ops/plume-oss"
-GARDE = os.path.join(RACINE, ".github/scripts/check_a_documented_tab_label_is_the_name_the_console_serves.py")
+# LA RACINE SE DÉRIVE DE LA POSITION DE CE FICHIER, JAMAIS D'UN CHEMIN ÉCRIT — corrigé le 2026-08-30
+# après un ROUGE DE CI que le poste de l'auteur ne pouvait pas produire. La première version portait le
+# chemin absolu de la machine où elle a été écrite : elle y était verte PAR CONSTRUCTION, puisque le
+# chemin y existe, et elle a échoué à la première exécution ailleurs. C'est la forme la plus coûteuse
+# du vert menteur — une garde validée dans l'état de départ de son AUTEUR, pas dans celui de qui la
+# joue. Le motif employé ici est celui de sa garde sœur, dont elle importe déjà le module.
+ICI = os.path.dirname(os.path.realpath(__file__))
+RACINE = os.path.realpath(os.path.join(ICI, "..", ".."))
+GARDE = os.path.join(ICI, "check_a_documented_tab_label_is_the_name_the_console_serves.py")
+if not os.path.exists(GARDE):
+    print(f"::error::la garde sœur est introuvable à côté de celle-ci ({GARDE}) : sans elle, la source des noms servis n'existe pas et ce balayage ne mesurerait RIEN.", file=sys.stderr)
+    raise SystemExit(2)
 
 _spec = importlib.util.spec_from_file_location("garde_libelles", GARDE)
 G = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(G)

@@ -489,6 +489,40 @@ document.querySelectorAll = (sel) => chercher(document.body, sel, true);
 Element.prototype.querySelector = function (sel) { return unSeul(this, sel); };
 Element.prototype.querySelectorAll = function (sel) { return chercher(this, sel, true); };
 
+// ---------------------------------------------------------------------------------------------
+// MODE « UNE SEULE ENTRÉE » (`P11.21-f`). Ouvrir le graphe de modules par UNE porte, et RIEN d'autre.
+//
+// POURQUOI UN PROCESSUS ENTIER POUR UN SEUL IMPORT. La section 1 importe les 49 modules dans le MÊME
+// processus : dès la première entrée, le graphe est en cache, et « ce module se charge » ne dit plus
+// rien de ce qui arrive à qui l'ouvre EN PREMIER. Un registre de modules ne se vide pas ; la seule
+// façon d'obtenir une évaluation NEUVE est un processus neuf. Ce mode est donc l'enfant que la
+// section 1-a relance une fois par module.
+//
+// IL EST POSÉ ICI, juste après le simulacre de document et AVANT la première section : l'enfant paie
+// le simulacre — que les modules exigent pour s'évaluer — et l'import mesuré, rien d'autre. Aucun
+// témoin ne s'exécute entre les deux, donc rien du banc ne peut peser sur ce qui est mesuré.
+//
+// TROIS ISSUES DISTINCTES, et c'est ce qui sépare une mesure d'un accident : `0` = le module s'est
+// chargé, `3` = il a JETÉ (la ligne rendue sur la sortie d'erreur porte le type, le message et le
+// SITE de premier niveau — la ligne à corriger, qui n'est presque jamais dans le module par lequel on
+// est entré), tout autre code = l'enfant est mort d'autre chose et l'appelant REFUSE de conclure.
+// ---------------------------------------------------------------------------------------------
+const UNE_ENTREE = process.env.PLUME_HARNAIS_UNE_ENTREE;
+if (UNE_ENTREE) {
+  try {
+    await import(pathToFileURL(UNE_ENTREE).href);
+    process.exit(0);
+  } catch (e) {
+    // Le cadre de PREMIER NIVEAU est le seul de la pile qui n'a pas de nom de fonction : c'est le corps
+    // d'un module en cours d'évaluation. Les cadres nommés, eux, désignent la fonction appelée, pas le
+    // site qui l'appelle — or c'est le site qu'il faut corriger.
+    const pile = String((e && e.stack) || "");
+    const site = (pile.match(/^\s*at (file:\/\/\S+?:\d+:\d+)$/m) || [])[1] || "(aucun cadre de premier niveau dans la pile)";
+    process.stderr.write(`${(e && e.name) || "(sans type)"}|${String((e && e.message) || "").split("\n")[0]}|${site}\n`);
+    process.exit(3);
+  }
+}
+
 
 // Le plancher de découverte, partagé par la déclaration (section 0) et par la liaison (section 1) :
 // une seule valeur, pour que les deux refusent de conclure sur le même corpus amputé.
@@ -647,6 +681,129 @@ process.on("exit", (code) => {
 //    pas un module ES et lit des globales de son propre contexte).
 // ---------------------------------------------------------------------------------------------
 const modules = readdirSync(WEB).filter((f) => f.endsWith(".js") && f !== "sw.js").sort();
+
+// ---------------------------------------------------------------------------------------------
+// 1-a. LE GRAPHE S'OUVRE PAR N'IMPORTE QUELLE PORTE, ET PAS SEULEMENT PAR CELLE QUE LA PAGE EMPRUNTE
+//      (`P11.21-f`). CE TÉMOIN MESURE, IL NE FERME PAS LA CLÉ.
+//
+//      LE TÉMOIN NAÏF SERAIT VERT PAR CONSTRUCTION, ET C'EST MESURÉ. La boucle de la section 1
+//      ci-dessous importe tous les modules dans le MÊME processus : dès la première entrée, le graphe
+//      est en cache et son verdict ne dépend plus que de l'ordre du répertoire. Mesuré le 2026-08-30,
+//      MÊME corpus, MÊME processus, seul l'ordre changeant : l'ordre alphabétique perd ZÉRO module sur
+//      49 ; entrer par `attack.js`, par `navigation.js` ou par `threatintel.js` en perd VINGT-TROIS —
+//      et c'est EXACTEMENT le même ensemble de 23 aux trois portes, ce qui dit bien que ce qu'on mesure
+//      alors n'est pas « ce module est sain » mais « le cache a été empoisonné par la première entrée ».
+//      Un registre de modules ne se vide pas : la propriété ne se mesure QUE dans un processus NEUF par
+//      entrée — et c'est ce que
+//      le mode « une seule entrée » (posé plus haut, juste après le simulacre) rend possible.
+//
+//      LA SONDE EST POSÉE AVANT LA BOUCLE, ET CET ORDRE EST LA PROPRIÉTÉ. Posée après, elle mesurerait
+//      un processus dont le graphe est déjà chargé — c'est-à-dire rien.
+//
+//      LE DÉFAUT EST LATENT, ET IL EST DIT : la page servie n'ouvre le graphe que par `app.js`
+//      (`index.html` ne porte qu'un seul `<script type="module">`), donc rien n'est cassé à l'écran.
+//      Ce qui est mesuré ici est la portabilité du graphe : un second point d'entrée — un module
+//      chargé à la demande, un banc, un outil — le rencontrerait le jour où il l'ouvre.
+//
+//      CE TÉMOIN NE PROPOSE PAS DE CORRECTIF, et c'est délibéré : déplacer l'appel d'amorçage
+//      fautif hors de la colonne 1, ou l'envelopper dans une attente, a été FABRIQUÉ, JOUÉ et REFUSÉ
+//      par le témoin (53c) de ce même banc, qui exige que l'appel d'amorçage reste en colonne 1 d'un
+//      corps SYNCHRONE — sans quoi « la densité est posée avant la première peinture » devient faux
+//      en silence. Les deux propriétés ne se satisfont pas par un déplacement de ligne.
+// ---------------------------------------------------------------------------------------------
+if (!STOCKAGE_REFUSE) {
+  const { spawnSync } = await import("node:child_process");
+  const { tmpdir } = await import("node:os");
+  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+  const MOI = new URL(import.meta.url).pathname;
+
+  // Une entrée, un processus NEUF. L'environnement est NETTOYÉ des deux autres modes du banc : hériter
+  // de `…_STOCKAGE_REFUSE` ferait mesurer un simulacre différent de celui qu'on prétend mesurer.
+  const ouvrirLeGraphePar = (chemin) => {
+    const env = { ...process.env, PLUME_HARNAIS_UNE_ENTREE: chemin };
+    delete env.PLUME_HARNAIS_STOCKAGE_REFUSE;
+    const r = spawnSync(process.execPath, [MOI], { env, encoding: "utf8" });
+    const derniere = String(r.stderr || "").trim().split("\n").pop();
+    const [type, message, site] = derniere.split("|");
+    return { code: r.status, type, message, site, brut: `${r.stdout || ""}${r.stderr || ""}`.slice(0, 800) };
+  };
+
+  // ------ L'INSTRUMENT SE VALIDE SUR DES MODULES FABRIQUÉS, DANS LES DEUX SENS ------
+  // Sur le dépôt, une sonde qui ne verrait JAMAIS rien serait verte, et une sonde qui verrait TOUJOURS
+  // un échec ne le serait pas — mais aucune des deux ne serait distinguable de la bonne tant qu'on la
+  // juge sur le seul corpus mesuré. Les trois modules ci-dessous sont écrits ICI, hors du dépôt : le
+  // verdict de la sonde sur eux ne dépend d'aucun état du dépôt, donc il ne peut pas devenir une RANÇON.
+  const bac = mkdtempSync(path.join(tmpdir(), "plume-harnais-p11-21-f-"));
+  try {
+    // (+) LE POSITIF. Sans lui, un vert de cette sonde ne prouverait rien : un enfant qui ne chargerait
+    //     jamais rien rendrait « tout jette », un enfant qui ne mesurerait rien rendrait « tout charge ».
+    writeFileSync(path.join(bac, "sain.js"), "const TABLE = { a: 1 };\nexport function lire() { return TABLE.a; }\nexport const PRET = lire();\n");
+    // (−) LE NÉGATIF REPRODUIT LA FORME DU DÉFAUT, PAS UNE ERREUR QUELCONQUE. Deux modules en CYCLE
+    //     dont le corps de l'un appelle son partenaire EN COLONNE 1, avant que la constante que ce
+    //     partenaire lit ne soit initialisée. Ce qui en sort est un `ReferenceError` d'ÉVALUATION
+    //     (« Cannot access … before initialization »), PAS une `SyntaxError` d'ÉDITION DE LIENS : une
+    //     sonde qui ne verrait que les erreurs de liaison — la seule chose que la boucle de la section 1
+    //     sache voir — passerait à côté de tout ce défaut, et c'est EXIGÉ ci-dessous, pas supposé.
+    writeFileSync(path.join(bac, "porte_fautive.js"), "import './partenaire.js';\nexport function poser() { return TABLE.a; }\nconst TABLE = { a: 1 };\n");
+    writeFileSync(path.join(bac, "partenaire.js"), "import { poser } from './porte_fautive.js';\nposer();\n");
+
+    const surSain = ouvrirLeGraphePar(path.join(bac, "sain.js"));
+    const surFautive = ouvrirLeGraphePar(path.join(bac, "porte_fautive.js"));
+    const surAutrePorte = ouvrirLeGraphePar(path.join(bac, "partenaire.js"));
+
+    if (surSain.code !== 0) {
+      console.error(`::error::(1a-instrument) un module FABRIQUÉ SANS DÉFAUT n'est pas vu se charger (code ${surSain.code}) : la sonde ne sait pas reconnaître un chargement, et son vert sur web/ ne prouverait rien. Sortie de l'enfant :\n${surSain.brut}`);
+      process.exit(2);
+    }
+    if (surFautive.code !== 3) {
+      console.error(`::error::(1a-instrument) le couple FABRIQUÉ en cycle — dont un corps appelle son partenaire en colonne 1 — n'est pas vu JETER par sa porte fautive (code ${surFautive.code} au lieu de 3) : la sonde ne mesure pas le défaut qu'elle prétend borner. Sortie de l'enfant :\n${surFautive.brut}`);
+      process.exit(2);
+    }
+    if (surFautive.type !== "ReferenceError" || !/before initialization/.test(surFautive.message || "")) {
+      console.error(`::error::(1a-instrument) le couple fabriqué jette bien, mais PAS DE LA FORME du défaut : « ${surFautive.type} — ${surFautive.message} » au lieu d'un \`ReferenceError\` d'évaluation. Une sonde qui ne verrait que les erreurs d'ÉDITION DE LIENS (\`SyntaxError\` : « does not provide an export named … ») ne mesurerait rien de ceci — c'est précisément ce que la boucle de la section 1 sait déjà voir, et ce témoin-ci n'existe que pour ce qu'elle ne voit pas.`);
+      process.exit(2);
+    }
+    if (surAutrePorte.code !== 0) {
+      console.error(`::error::(1a-instrument) le MÊME couple fabriqué, ouvert par son AUTRE porte, n'est pas vu se charger (code ${surAutrePorte.code}) : la sonde ne distingue pas une porte d'une autre. Or la dépendance au POINT D'ENTRÉE est tout le défaut — sans cette distinction elle mesurerait « ce couple est cassé », ce qui est faux, et non « ce couple ne s'ouvre que par un côté ». Sortie de l'enfant :\n${surAutrePorte.brut}`);
+      process.exit(2);
+    }
+    console.log(`[porte] la sonde est validée DANS LES DEUX SENS sur des modules FABRIQUÉS, hors du dépôt : un module sain est vu se charger ; un couple en cycle dont un corps appelle son partenaire en colonne 1 est vu JETER par sa porte fautive (\`${surFautive.type}\` — ${surFautive.message}), et c'est bien une erreur d'ÉVALUATION, pas d'édition de liens ; et le MÊME couple, ouvert par son AUTRE porte, se charge — la sonde mesure donc la dépendance au point d'entrée, pas une cassure.`);
+  } finally {
+    rmSync(bac, { recursive: true, force: true });
+  }
+
+  // ------ LA MESURE : UN PROCESSUS NEUF PAR PORTE ------
+  if (modules.length < PLANCHER_MODULES) {
+    console.error(`::error::(1a-instrument) seulement ${modules.length} modules découverts sous web/, plancher ${PLANCHER_MODULES} : la découverte est cassée, et un plafond mesuré sur ce corpus amputé ne voudrait rien dire.`);
+    process.exit(2);
+  }
+  const portesQuiJettent = [];
+  for (const f of modules) {
+    const r = ouvrirLeGraphePar(path.join(WEB, f));
+    if (r.code === 0) continue;
+    if (r.code !== 3) {
+      console.error(`::error::(1a-instrument) l'ouverture du graphe par \`web/${f}\` s'est terminée sur le code ${r.code} — ni « se charge » (0) ni « jette » (3) : l'enfant est mort d'autre chose, et ce banc refuse de conclure plutôt que de compter cette porte saine. Sortie de l'enfant :\n${r.brut}`);
+      process.exit(2);
+    }
+    // Le site est rendu RELATIF à la racine du dépôt : c'est la ligne à ouvrir, pas un chemin de machine.
+    portesQuiJettent.push({ f, type: r.type, message: r.message, site: String(r.site || "").replace(pathToFileURL(RACINE).href + "/", "") });
+  }
+
+  // LE PLAFOND EST DATÉ, ET LA COMPARAISON EST « AU PLUS » — jamais une égalité, jamais un plancher.
+  // L'INCLUSION EST LE « AU PLUS » DES ENSEMBLES : une porte qui GUÉRIT laisse ce témoin VERT, une
+  // porte NOUVELLE le fait rougir en la NOMMANT. Le jour où le graphe devient agnostique au point
+  // d'entrée, la liste mesurée est vide et le témoin est vert sans qu'une ligne bouge. Un témoin qui
+  // ne peut être vert que tant que le chantier est ouvert n'est pas une garde, c'est une RANÇON — ce
+  // dépôt en a déjà payé une (voir le témoin 53), et cette borne-ci n'en est pas une.
+  const PORTES_QUI_JETTENT_AU_2026_08_30 = ["attack.js", "navigation.js", "threatintel.js"];
+  const nouvelles = portesQuiJettent.map((p) => p.f).filter((f) => !PORTES_QUI_JETTENT_AU_2026_08_30.includes(f));
+  exiger(nouvelles.length === 0,
+    `(1a) ${nouvelles.length} porte(s) d'entrée JETTENT qui ne le faisaient pas au relevé du 2026-08-30 (${nouvelles.join(", ")}) : ouvrir le graphe de modules par ce fichier, dans un processus neuf, s'arrête sur une erreur d'ÉVALUATION. Détail : ${portesQuiJettent.filter((p) => nouvelles.includes(p.f)).map((p) => `web/${p.f} -> ${p.type} : ${p.message} (site de premier niveau : ${p.site})`).join(" ; ")}. Le relevé de référence est ["${PORTES_QUI_JETTENT_AU_2026_08_30.join('", "')}"] — une porte de MOINS est un reste fermé et laisse ce témoin vert ; cette borne se REMESURE et se réécrit, elle n'exige jamais que le défaut survive.`);
+
+  const guerie = PORTES_QUI_JETTENT_AU_2026_08_30.filter((f) => !portesQuiJettent.some((p) => p.f === f));
+  console.log(`[porte] ${modules.length} portes d'entrée ouvertes CHACUNE dans un processus NEUF (le seul protocole qui mesure quoi que ce soit ici : dans un processus unique, l'ordre alphabétique perd 0 module et une autre porte en perd 23). ${portesQuiJettent.length} JETTENT, au plus les ${PORTES_QUI_JETTENT_AU_2026_08_30.length} du relevé daté du 2026-08-30${guerie.length ? ` (${guerie.length} guérie(s) depuis : ${guerie.join(", ")} — cette borne peut descendre)` : ""} :${portesQuiJettent.length ? "\n  · " + portesQuiJettent.map((p) => `web/${p.f} -> ${p.type} : ${p.message} — site de premier niveau ${p.site}`).join("\n  · ") : " aucune"}\n  CE QUE CE TÉMOIN NE TIENT PAS : le défaut est LATENT — \`index.html\` n'ouvre le graphe que par \`app.js\`, donc rien n'est cassé à l'écran et ce témoin ne mesure pas un incident, il mesure la portabilité du graphe ; il ne dit RIEN des modules qui se chargent mais dont l'ÉTAT diffère selon la porte ; et la comparaison porte sur les NOMS — une porte qui guérit pendant qu'une autre casse, à compte égal, est vue (la nouvelle est nommée), mais un module RENOMMÉ rougira comme une régression tant que ce relevé n'est pas réécrit.`);
+}
+
 const liens = [];
 for (const f of modules) {
   try {

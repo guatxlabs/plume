@@ -70,7 +70,7 @@ mod machine_dune_alerte {
     fn la_machine_est_servie_et_ses_trois_faits_ne_se_confondent_pas() {
         let conn = test_db();
         corpus_des_trois_faits(&conn);
-        let (page, _) = alerts_query_page(&conn, &FiltreAlertes::default(), None, "", 50, 0, false);
+        let (page, _, _) = alerts_query_page(&conn, &FiltreAlertes::default(), None, "", 50, 0, false);
         assert_eq!(page.len(), 4, "instrument : le corpus des trois faits doit être servi en entier");
 
         for titre in ["A nommée", "A inconnue", "A sans machine", "A longue"] {
@@ -128,7 +128,7 @@ mod machine_dune_alerte {
     fn le_surcout_du_corps_est_borne_par_le_nom_de_la_machine() {
         let conn = test_db();
         corpus_des_trois_faits(&conn);
-        let (page, _) = alerts_query_page(&conn, &FiltreAlertes::default(), None, "", 50, 0, false);
+        let (page, _, _) = alerts_query_page(&conn, &FiltreAlertes::default(), None, "", 50, 0, false);
         assert_eq!(page.len(), 4, "instrument : la mesure porte sur le corpus entier");
 
         let corps_servi = serde_json::to_string(&json!({ "alerts": page })).expect("le corps servi se sérialise");

@@ -713,7 +713,7 @@ env:
   #     ~6,5 ms par arithmétique en release), soit 63 × un 401 et 92,7 Mo/s au banc pour une seule IP.
   #   · CHAQUE RÉPONSE PUBLIQUE EST FACTURABLE (`content-length` présent ET égal au fichier) : sans
   #     cela, la borne ci-dessus aurait un trou muet.
-  EXPECTED_TESTS: "1441"
+  EXPECTED_TESTS: "1443"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -1131,7 +1131,7 @@ jobs:
           # derrière un `cfg(feature)`, et c'est l'ÉCART INCHANGÉ entre les deux profils (243 avant
           # comme après) qui l'établit, pas une lecture des sources. La dérivation complète et la
           # répartition sont écrites auprès d'`EXPECTED_TESTS`, une seule fois.
-          EXPECTED_COLD_TESTS: "1686"
+          EXPECTED_COLD_TESTS: "1688"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail
@@ -1819,6 +1819,36 @@ jobs:
       # aveu, sans quoi on aurait troqué une perte silencieuse contre un rejeu permanent.
       - name: Une lecture qui ÉCHOUE ne doit rien acquitter
         run: python3 .github/scripts/check_read_failure_is_not_acknowledged.py
+
+      # `P10.7-g` — LA MÊME FAMILLE, CÔTÉ ROUTE : la lecture a bien eu lieu ou non, et le corps SERVI
+      # doit le dire. Le démon a DEUX voies pour lire des lignes derrière une route — la lecture gardée
+      # par chien de garde et l'exécution de requête — et les deux peuvent échouer : connexion de
+      # lecture indisponible, budget de 5 s épuisé sous charge, table absente, colonne refusée par
+      # l'authorizer. Ce qui partait alors avait la FORME d'un résultat (`controls: []`, `totals: {}`,
+      # `rows: []`, `total: 0`) : indiscernable d'une mesure réellement à zéro, et sur une route de
+      # conformité cela se lit « aucun contrôle en échec » — la valeur la plus rassurante, servie
+      # précisément quand rien n'a été mesuré.
+      # `P10.7-e` a fermé DEUX routes le 2026-08-30 et a écrit lui-même ce qui le condamnerait : « son
+      # correctif est honnête sur une route et muet ailleurs ». Cette garde est la dérivation qui
+      # manquait — elle ne nomme AUCUNE route.
+      # LES DEUX VOIES NE SONT PAS SYMÉTRIQUES, et c'est le cœur : mesuré le 2026-08-30, la valeur par
+      # DÉFAUT n'est rendue que lorsque la connexion n'a pas pu s'ouvrir — un chemin que la concurrence
+      # ne déclenche pas ; quand la garde de budget INTERROMPT, la closure est déjà en cours et c'est SA
+      # valeur qui remonte. Habiller le seul défaut rend donc honnête sur le chemin RARE en laissant
+      # muet celui que la CHARGE déclenche. D'où trois jambes — le défaut qui s'écoule vers une réponse,
+      # la closure qui avale une lecture de lignes, le bras d'erreur d'une exécution de requête — et un
+      # REFUS EXPLICITE que la seconde soit satisfaite par la première : l'aveu de la jambe B est
+      # cherché dans la région de la CLOSURE seulement, la coupure étant structurelle (l'index du
+      # troisième argument) et non une convention.
+      # La population est DÉCOUVERTE dans `daemon/src/handlers/` sur le texte DÉPOUILLÉ de ses
+      # commentaires — une occurrence citée en commentaire existe sur l'arbre et n'est jamais comptée.
+      # Sept mutants fabriqués la valident dans les deux sens à chaque exécution, dont celui qui compte :
+      # un défaut qui AVOUE au-dessus d'une closure qui AVALE reste accusé. Le PLANCHER porte sur la
+      # POPULATION (sous lui, code 2 : refus de conclure, distinct de la violation) et les CLIQUETS sur
+      # les accusations — ils ne montent jamais, et ZÉRO est une valeur atteignable : un témoin qui
+      # exigerait que le défaut survive serait une rançon.
+      - name: Une lecture qui n'a pas eu lieu n'est jamais servie comme un fait (P10.7-g)
+        run: python3 .github/scripts/check_a_read_that_did_not_happen_is_never_served_as_a_fact.py
 
       # `P4.1-q` — LA MÊME FAMILLE, MAIS RIEN N'EST PUBLIÉ DU TOUT. `S32`/`S33`/`S36` ferment le cas
       # où un chiffre RASSURANT part quand même. Ici la détection s'ÉTEINT : un repli d'erreur du

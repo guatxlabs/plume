@@ -730,19 +730,19 @@
             conn.execute("INSERT INTO alert(ts,rule,severity,title,status) VALUES(?1,'rule.1',2,?2,'closed')", params![2000 + i as i64, format!("C{i}")]).unwrap();
         }
         // tous statuts + total : 9 lignes, page bornée.
-        let (p0, t0) = alerts_query_page(&conn, &FiltreAlertes::default(), None, "", 4, 0, true);
+        let (p0, t0, _) = alerts_query_page(&conn, &FiltreAlertes::default(), None, "", 4, 0, true);
         assert_eq!(t0, Some(9), "want_total -> total = COUNT tous statuts");
         assert_eq!(p0.len(), 4, "page bornée à LIMIT=4");
-        let (p1, _) = alerts_query_page(&conn, &FiltreAlertes::default(), None, "", 4, 4, true);
+        let (p1, _, _) = alerts_query_page(&conn, &FiltreAlertes::default(), None, "", 4, 4, true);
         assert_eq!(p1.len(), 4, "page 1 (offset 4)");
-        let (p2, _) = alerts_query_page(&conn, &FiltreAlertes::default(), None, "", 4, 8, true);
+        let (p2, _, _) = alerts_query_page(&conn, &FiltreAlertes::default(), None, "", 4, 8, true);
         assert_eq!(p2.len(), 1, "dernière page partielle");
         // pages disjointes.
         let id0: Vec<i64> = p0.iter().map(|a| a["id"].as_i64().unwrap()).collect();
         let id1: Vec<i64> = p1.iter().map(|a| a["id"].as_i64().unwrap()).collect();
         assert!(id0.iter().all(|x| !id1.contains(x)), "pages disjointes (offset)");
         // chemin BACKLOG (want_total=false, filtre statut=new) : total None, seulement les 'new'.
-        let (bk, tb) = alerts_query_page(&conn, &FiltreAlertes { statut: Some("new".into()), ..Default::default() }, None, "", 200, 0, false);
+        let (bk, tb, _) = alerts_query_page(&conn, &FiltreAlertes { statut: Some("new".into()), ..Default::default() }, None, "", 200, 0, false);
         assert_eq!(tb, None, "backlog : pas de total (borné)");
         assert_eq!(bk.len(), 6, "filtre statut=new appliqué");
         assert!(bk.iter().all(|a| a["status"] == "new"));
@@ -791,11 +791,11 @@
         let hnull = gh.iter().find(|g| g["gkey"] == "").unwrap();
         assert_eq!(hnull["n"], 2, "les alertes host NULL fusionnent dans le groupe ''");
         // ROUND-TRIP du groupe NULL : l'expansion `gval=''` (COALESCE(host,'')='') matche bien les lignes NULL.
-        let (nocc, noct) = alerts_query_page(&conn, &FiltreAlertes::default(), Some("host"), "", 50, 0, true);
+        let (nocc, noct, _) = alerts_query_page(&conn, &FiltreAlertes::default(), Some("host"), "", 50, 0, true);
         assert_eq!(noct, Some(2), "expansion du groupe host '' -> les 2 alertes NULL (round-trip)");
         assert!(nocc.iter().all(|a| a["title"] == "NH1" || a["title"] == "NH2"));
         // EXPANSION d'un groupe via le chemin PLAT (gkey=rule&gval=rule.1) : les 4 occurrences de rule.1, paginées.
-        let (occ, occt) = alerts_query_page(&conn, &FiltreAlertes::default(), Some("rule"), "rule.1", 50, 0, true);
+        let (occ, occt, _) = alerts_query_page(&conn, &FiltreAlertes::default(), Some("rule"), "rule.1", 50, 0, true);
         assert_eq!(occt, Some(4), "expansion -> total = occurrences du groupe");
         assert_eq!(occ.len(), 4);
         assert!(occ.iter().all(|a| a["rule"] == "rule.1"), "l'expansion est SCOPÉE au groupe");

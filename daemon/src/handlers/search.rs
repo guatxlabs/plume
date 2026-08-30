@@ -250,8 +250,14 @@ pub(crate) async fn search(State(st): State<AppState>, Extension(au): Extension<
                     Err(e) => return with_coverage(search_engine_error(&e)),
                 };
                 let rows: Vec<Value> = match stmt.query_map(params![limit], map_row) {
-                    // collect en Result : s'ARRÊTE à la 1re erreur (interruption watchdog) au lieu de la
-                    // swallow + re-step (ce que faisait .flatten() -> le watchdog ne coupait pas le scan).
+                    // collect en Result : la 1re erreur DEVIENT le résultat, au lieu d'être jetée.
+                    // `P10.7-f`, MESURÉ le 2026-08-30 sur une interruption rendue déterministe : quand
+                    // `step()` échoue — le cas de la garde de budget — l'itérateur de rusqlite est TARI
+                    // (`Rows::advance` reprend l'énoncé à la structure sur sa branche d'erreur, et le pas
+                    // suivant rend « fin »). L'idiome qui jette les `Err` rendait donc un PRÉFIXE muet :
+                    // 51 lignes sur 200, sans un mot. La garde COUPAIT bel et bien le balayage ; ce
+                    // qu'elle ne faisait pas, c'était le dire. La phrase qui occupait ces deux lignes
+                    // prêtait au parcours une reprise du pas qu'il n'a jamais eue.
                     // L'erreur est DITE (cf. `search_engine_error`) : un `regex=` au motif invalide
                     // échoue ICI, et il rendait un tableau vide indiscernable d'une absence.
                     Ok(r) => match r.collect::<rusqlite::Result<Vec<Value>>>() { Ok(v) => v, Err(e) => return with_coverage(search_engine_error(&e)) },
@@ -303,8 +309,14 @@ pub(crate) async fn search(State(st): State<AppState>, Extension(au): Extension<
                     Err(e) => return with_coverage(search_engine_error(&e)),
                 };
                 let rows: Vec<Value> = match stmt.query_map(params![match_q, limit], map_row) {
-                    // collect en Result : s'ARRÊTE à la 1re erreur (interruption watchdog) au lieu de la
-                    // swallow + re-step (ce que faisait .flatten() -> le watchdog ne coupait pas le scan).
+                    // collect en Result : la 1re erreur DEVIENT le résultat, au lieu d'être jetée.
+                    // `P10.7-f`, MESURÉ le 2026-08-30 sur une interruption rendue déterministe : quand
+                    // `step()` échoue — le cas de la garde de budget — l'itérateur de rusqlite est TARI
+                    // (`Rows::advance` reprend l'énoncé à la structure sur sa branche d'erreur, et le pas
+                    // suivant rend « fin »). L'idiome qui jette les `Err` rendait donc un PRÉFIXE muet :
+                    // 51 lignes sur 200, sans un mot. La garde COUPAIT bel et bien le balayage ; ce
+                    // qu'elle ne faisait pas, c'était le dire. La phrase qui occupait ces deux lignes
+                    // prêtait au parcours une reprise du pas qu'il n'a jamais eue.
                     // FILET (c) : même si un jour la garde laissait passer une expression que le moteur
                     // refuse, l'analyste verrait le refus — jamais un tableau vide à sa place.
                     Ok(r) => match r.collect::<rusqlite::Result<Vec<Value>>>() { Ok(v) => v, Err(e) => return with_coverage(search_engine_error(&e)) },

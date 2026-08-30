@@ -78,21 +78,21 @@
     #[test]
     fn filtre_source_rend_exactement_les_alertes_imputees_au_nom_entier() {
         let fx = fs_fixture();
-        let (page, total) = alerts_query_page(&fx.conn, &fs_filtre("k8s"), None, "", 50, 0, true);
+        let (page, total, _) = alerts_query_page(&fx.conn, &fs_filtre("k8s"), None, "", 50, 0, true);
         assert_eq!(fs_titres(&page), vec!["A-k8s", "C-deux-sources"], "`k8s` = les alertes imputées à k8s, dont celle à deux sources — ni k8s-audit, ni audit-k8s, ni K8S");
         assert_eq!(total, Some(2), "le total est compté sous le MÊME WHERE");
-        let (page, _) = alerts_query_page(&fx.conn, &fs_filtre("k8s-audit"), None, "", 50, 0, true);
+        let (page, _, _) = alerts_query_page(&fx.conn, &fs_filtre("k8s-audit"), None, "", 50, 0, true);
         assert_eq!(fs_titres(&page), vec!["B-k8s-audit", "C-deux-sources"], "`k8s-audit` ne remonte pas `k8s` seul");
-        let (page, _) = alerts_query_page(&fx.conn, &fs_filtre(SOURCE_INDETERMINABLE), None, "", 50, 0, true);
+        let (page, _, _) = alerts_query_page(&fx.conn, &fs_filtre(SOURCE_INDETERMINABLE), None, "", 50, 0, true);
         assert_eq!(fs_titres(&page), vec!["F-inconnu"], "l'inconnu NOMMÉ se filtre comme un nom (espaces et parenthèses compris)");
         for fragment in ["k8s-au", "8s", "k8", "audit"] {
-            let (page, total) = alerts_query_page(&fx.conn, &fs_filtre(fragment), None, "", 50, 0, true);
+            let (page, total, _) = alerts_query_page(&fx.conn, &fs_filtre(fragment), None, "", 50, 0, true);
             assert!(page.is_empty() && total == Some(0), "un fragment (`{fragment}`) n'est le nom d'aucune source : liste vide et total 0, obtenu {:?}", fs_titres(&page));
         }
         // LA LIMITE NOMMÉE : l'alerte d'avant la migration n'est pas appariée — et la colonne vide est bien
         // le signal que la lecture (fraîcheur) utilise pour retomber sur le texte. Deux lecteurs, un écart
         // connu, écrit ici plutôt que découvert en exploitation.
-        let (page, _) = alerts_query_page(&fx.conn, &fs_filtre("k8s"), None, "", 50, 0, true);
+        let (page, _, _) = alerts_query_page(&fx.conn, &fs_filtre("k8s"), None, "", 50, 0, true);
         assert!(!fs_titres(&page).iter().any(|t| t == "E-avant-migration"), "une alerte `sources=''` n'est pas appariée par le prédicat SQL (limite nommée)");
         assert!(imputation_decoder("").is_empty() && !extract_query_sources("search source=k8s | stats count").is_empty(), "…alors que le chemin de lecture textuel, lui, la nommerait : l'écart existe et il est borné aux alertes d'avant la migration");
 
@@ -117,11 +117,11 @@
     fn filtre_source_se_compose_avec_statut_technique_et_hors_case() {
         let fx = fs_fixture();
         let actives = FiltreAlertes { statut: Some("new".into()), source: "k8s".into(), ..Default::default() };
-        let (page, total) = alerts_query_page(&fx.conn, &actives, None, "", 200, 0, true);
+        let (page, total, _) = alerts_query_page(&fx.conn, &actives, None, "", 200, 0, true);
         assert_eq!(fs_titres(&page), vec!["A-k8s"], "statut=new ∧ source=k8s : C est close");
         assert_eq!(total, Some(1));
         let technique = FiltreAlertes { mitre: "T1110".into(), source: "k8s".into(), ..Default::default() };
-        let (page, _) = alerts_query_page(&fx.conn, &technique, None, "", 200, 0, true);
+        let (page, _, _) = alerts_query_page(&fx.conn, &technique, None, "", 200, 0, true);
         assert_eq!(fs_titres(&page), vec!["C-deux-sources"], "mitre=T1110 ∧ source=k8s : A porte T1046");
         // C rattachée à un cas -> « hors case » l'écarte, la source seule la garde.
         fx.conn.execute("INSERT INTO incident(ts,updated,title) VALUES(1000,1000,'enquête')", []).unwrap();
@@ -130,13 +130,13 @@
             .execute("INSERT INTO incident_item(incident_id,ts,kind,author,body,ref) VALUES(?1,1000,'evidence','a','b',?2)", params![inc, format!("alert:{}", fx.id_c_deux_sources)])
             .unwrap();
         let hors_case = FiltreAlertes { uncased: true, source: "k8s".into(), ..Default::default() };
-        let (page, total) = alerts_query_page(&fx.conn, &hors_case, None, "", 200, 0, true);
+        let (page, total, _) = alerts_query_page(&fx.conn, &hors_case, None, "", 200, 0, true);
         assert_eq!(fs_titres(&page), vec!["A-k8s"], "uncased ∧ source=k8s : C est dans un cas");
         assert_eq!(total, Some(1));
-        let (page, _) = alerts_query_page(&fx.conn, &fs_filtre("k8s"), None, "", 200, 0, true);
+        let (page, _, _) = alerts_query_page(&fx.conn, &fs_filtre("k8s"), None, "", 200, 0, true);
         assert_eq!(fs_titres(&page), vec!["A-k8s", "C-deux-sources"], "cases comprises : C revient");
         // Le chemin BORNÉ (backlog, sans total) applique le même prédicat.
-        let (page, total) = alerts_query_page(&fx.conn, &actives, None, "", 200, 0, false);
+        let (page, total, _) = alerts_query_page(&fx.conn, &actives, None, "", 200, 0, false);
         assert_eq!(fs_titres(&page), vec!["A-k8s"]);
         assert_eq!(total, None, "le backlog borné ne compte pas");
     }
@@ -177,7 +177,7 @@
         assert_eq!(total_hote, Some(1), "par hôte : un seul groupe (sans hôte), B et C");
         assert_eq!(par_hote[0]["n"], 2);
         // L'EXPANSION d'un groupe (chemin plat, gkey/gval) porte le même filtre : rule.1 ∧ k8s = {A}.
-        let (occ, occ_total) = alerts_query_page(&fx.conn, &fs_filtre("k8s"), Some("rule"), "rule.1", 50, 0, true);
+        let (occ, occ_total, _) = alerts_query_page(&fx.conn, &fs_filtre("k8s"), Some("rule"), "rule.1", 50, 0, true);
         assert_eq!(fs_titres(&occ), vec!["A-k8s"], "expansion de rule.1 sous source=k8s : A, pas B ni G");
         assert_eq!(occ_total, Some(1), "…et le total de l'expansion = le `n` du groupe");
         // Statut + source sur les groupes : rule.2 disparaît (C est close).

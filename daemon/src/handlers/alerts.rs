@@ -114,7 +114,14 @@ pub(crate) fn alert_where(f: &FiltreAlertes, group_col: Option<&str>, group_val:
 /// optionnels = expansion d'un groupe), renvoie la fenêtre LIMIT/OFFSET (ordre ts décroissant) + un `total`
 /// OPTIONNEL. `want_total` -> COUNT sous le même WHERE (vue « tous statuts » paginée / occurrences d'un
 /// groupe) ; le backlog (borné) le laisse à None. Fonction pure sur &Connection -> testable sans AppState.
-pub(crate) fn alerts_query_page(conn: &Connection, f: &FiltreAlertes, group_col: Option<&str>, group_val: &str, limit: i64, offset: i64, want_total: bool) -> (Vec<Value>, Option<i64>) {
+///
+/// `P10.7-f` — LE TROISIÈME MEMBRE RENDU EST LA FIN DU PARCOURS, et il n'est pas facultatif : la
+/// garde de budget de `read_with_watchdog` interrompt cet énoncé-ci EN COURS D'ITÉRATION (c'est la
+/// route la plus lourde du démon — vue « tous statuts » = balayage + tri de toute la table `alert`,
+/// cf. la note M6 du gestionnaire), et l'idiome précédent (`.flatten()`) rendait alors un PRÉFIXE
+/// indiscernable d'une page complète. Un appelant ne peut plus prendre la liste sans que la question
+/// « est-ce la réponse ? » lui soit posée par le TYPE.
+pub(crate) fn alerts_query_page(conn: &Connection, f: &FiltreAlertes, group_col: Option<&str>, group_val: &str, limit: i64, offset: i64, want_total: bool) -> (Vec<Value>, Option<i64>, FinDeParcours) {
     // WHERE + binds partagés COUNT/SELECT (mêmes conditions, même ordre) — cf. alert_where (chemin unique).
     let (where_clause, bind_vals) = alert_where(f, group_col, group_val);
     let binds: Vec<&dyn rusqlite::ToSql> = bind_vals.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
@@ -140,9 +147,9 @@ pub(crate) fn alerts_query_page(conn: &Connection, f: &FiltreAlertes, group_col:
     let sql = format!("{base}{where_clause} ORDER BY alert.ts DESC LIMIT {limit} OFFSET {offset}");
     let mut stmt = match conn.prepare(&sql) {
         Ok(s) => s,
-        Err(_) => return (Vec::new(), total),
+        Err(e) => return (Vec::new(), total, FinDeParcours::NonCommence { cause: e.to_string() }),
     };
-    let out: Vec<Value> = match stmt.query_map(binds.as_slice(), |r| {
+    let parcours = match stmt.query_map(binds.as_slice(), |r| {
         // P11.1-a — LE LIEN DE RECHERCHE, construit UNE fois, ici, par le démon : la requête telle qu'elle
         // a compté (`detail`, recopiée à la levée), la fenêtre de la règle et l'instant de l'évaluation
         // (`ts`, rafraîchi à chaque re-tir). Absent pour une alerte sans règle (heartbeat.*, règle
@@ -184,10 +191,40 @@ pub(crate) fn alerts_query_page(conn: &Connection, f: &FiltreAlertes, group_col:
             "host": r.get::<_, Option<String>>(14)?
         }))
     }) {
-        Ok(r) => r.flatten().collect(),
-        Err(_) => return (Vec::new(), total),
+        // `P10.7-f` — l'itérateur est vidé EXACTEMENT comme le faisait `.flatten()` (mêmes lignes,
+        // même ordre) ; ce qui s'ajoute est le compte des `Err` qu'il jetait sans un mot.
+        Ok(r) => parcourir(r),
+        Err(e) => return (Vec::new(), total, FinDeParcours::NonCommence { cause: e.to_string() }),
     };
-    (out, total)
+    (parcours.lignes, total, parcours.fin)
+}
+
+/// `P10.7-f` — CE QUE LA CONSOLE APPREND D'UNE PAGE QUI N'EST PAS LA RÉPONSE.
+///
+/// La phrase dit ce que le corps N'ÉTABLIT PAS, puis laisse la cause du moteur telle qu'il l'a dite
+/// (`interrupted` quand la garde de budget a coupé). Elle nomme aussi ce qui n'est PAS connu — combien
+/// de lignes manquent — parce qu'un chiffre inventé à cet endroit serait le même défaut d'un cran plus
+/// haut : l'énoncé est tari, personne n'a compté le reste.
+pub(crate) const CAUSE_LISTE_D_ALERTES_TRONQUEE: &str = "LISTE D'ALERTES INCOMPLÈTE : le parcours des \
+     lignes n'est pas allé au bout. Ce qui suit est un PRÉFIXE de la page demandée, pas la page — un \
+     compte pris dessus, ou l'absence d'une alerte qu'on y cherchait, ne portent sur RIEN. Combien de \
+     lignes manquent n'est pas connu. Cause : ";
+
+/// LE CORPS SERVI PAR /api/alerts — voie unique, pour que l'aveu ne puisse pas être oublié par un
+/// futur appelant qui recomposerait le corps à la main.
+///
+/// L'AJOUT EST STRICTEMENT CONDITIONNEL : `FinDeParcours::cause()` est la SEULE porte, et elle rend
+/// `None` sur un parcours complet. Un corps qui avouerait toujours n'avouerait rien — c'est la raison
+/// pour laquelle la fin de parcours voyage jusqu'ici au lieu d'être résumée à la source.
+pub(crate) fn corps_de_liste_d_alertes(alertes: Vec<Value>, total: Option<i64>, fin: &FinDeParcours) -> Value {
+    let mut corps = json!({ "alerts": alertes });
+    if let Some(t) = total {
+        corps["total"] = json!(t);
+    }
+    if let Some(cause) = fin.cause() {
+        corps["error"] = json!(format!("{CAUSE_LISTE_D_ALERTES_TRONQUEE}{cause}"));
+    }
+    corps
 }
 
 /// GET /api/alerts?status=&mitre=&uncased=&source=&gkey=&gval=&limit=&offset= — liste plate, ou les
@@ -236,12 +273,8 @@ pub(crate) async fn alerts(State(st): State<AppState>, Extension(au): Extension<
     let gval = gval.to_string();
     let res = tokio::task::spawn_blocking(move || {
         read_with_watchdog(&db_path, json!({ "alerts": [] }), move |conn| {
-            let (out, total) = alerts_query_page(conn, &filtre, group_col, &gval, limit, offset, paged);
-            let mut resp = json!({ "alerts": out });
-            if let Some(t) = total {
-                resp["total"] = json!(t);
-            }
-            resp
+            let (out, total, fin) = alerts_query_page(conn, &filtre, group_col, &gval, limit, offset, paged);
+            corps_de_liste_d_alertes(out, total, &fin)
         })
     })
     .await

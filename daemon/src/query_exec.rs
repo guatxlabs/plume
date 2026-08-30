@@ -454,6 +454,123 @@ pub(crate) fn read_with_watchdog<T>(db_path: &str, default: T, f: impl FnOnce(&C
 }
 
 // =====================================================================================
+// `P10.7-f` — CE QU'UN PARCOURS DE LIGNES DOIT SAVOIR DIRE : LA FIN NORMALE OU L'INTERRUPTION.
+//
+// LE DÉFAUT. `stmt.query_map(..)` rend un itérateur de `Result`. L'idiome livré dans les
+// gestionnaires est `.flatten().collect()` : il jette les `Err` et garde les `Ok`. Sur le chemin
+// que la garde de budget déclenche PAR CONSTRUCTION, la valeur rendue est donc une liste PLUS
+// COURTE, sans un mot — indiscernable d'un résultat complet. Ce n'est pas un refus rendu comme une
+// absence (`P10.7-e`) : c'est un résultat PARTIEL rendu comme un TOTAL, et un analyste n'a rien à
+// lire ni à compter qui puisse le lui apprendre.
+//
+// CE QUI A ÉTÉ MESURÉ LE 2026-08-30, sur une table de 200 lignes, avec une interruption rendue
+// DÉTERMINISTE (fonction scalaire qui appelle `interrupt()` à la 51e ligne — pas un chronomètre) :
+//   · `.flatten().collect()`                -> 51 lignes, AUCUNE erreur, aucune trace ;
+//   · `.collect::<rusqlite::Result<Vec<_>>>()` -> `Err("interrupted")` ;
+//   · sans interruption, le même parcours   -> 200 lignes (la troncature n'est pas un artefact).
+//
+// TROIS FAITS QUE CETTE MESURE A ÉTABLIS, ET QUI GOUVERNENT LA FORME CHOISIE ICI :
+//
+//   (1) APRÈS UNE ERREUR DE `step()`, L'ITÉRATEUR EST TARI. `Rows::advance` (rusqlite 0.31) appelle
+//       `reset()` sur la branche `Err`, et `reset()` fait `self.stmt.take()` : l'appel suivant tombe
+//       sur la branche `else`, rend `Ok(None)`, et `MappedRows` rend `None`. Le parcours s'ARRÊTE.
+//       Une phrase qui vivait dans `handlers/search.rs` disait l'inverse — que l'idiome avalait
+//       l'erreur puis REPRENAIT le pas, si bien que la garde ne coupait pas le balayage. La mesure
+//       la réfute : la garde coupe bel et bien le balayage. Ce qu'elle ne fait pas, c'est le DIRE.
+//
+//   (2) UNE ERREUR DU MAPPEUR, ELLE, NE TARIT RIEN. `MappedRows::next` applique la closure APRÈS un
+//       `step()` réussi : la ligne est SAUTÉE et le parcours continue (mesuré : 4 lignes rendues sur
+//       5, la 3e — un texte là où un entier était demandé — évaporée). Un parcours qui s'arrêterait
+//       à la première erreur échangerait donc une troncature contre une AUTRE troncature, sur un
+//       chemin qui, lui, est nominal. D'où le choix : on VIDE l'itérateur exactement comme
+//       `.flatten()` le fait, et on se contente de COMPTER ce qu'il jetait.
+//
+//   (3) UNE INTERRUPTION NE PORTE QUE SUR L'ÉNONCÉ EN VOL. Mesuré : l'énoncé interrompu rend 51
+//       lignes, et l'énoncé SUIVANT de la même closure, sur la même connexion, en rend 200 ;
+//       `interrupt()` appelé sans énoncé en vol est un no-op (200 lignes ensuite). Deux conséquences.
+//       D'abord, dans une closure multi-énoncés, UNE seule liste du corps servi est tronquée pendant
+//       que les autres sont complètes — la forme la plus indiscernable de toutes. Ensuite, « la garde
+//       a tiré » N'EST PAS « une liste a été tronquée » : un aveu bâti sur le tir de la garde
+//       avouerait à FAUX sur un corps complet. C'est pourquoi l'aveu est adossé à l'erreur que le
+//       parcours VOIT, jamais à l'armement de la garde.
+//
+// CE QUE `Parcours` NE PRÉTEND PAS SAVOIR : COMBIEN de lignes manquent. Le nombre rendu est un
+// nombre d'ERREURS, pas un nombre de lignes perdues — sur une interruption, une seule erreur solde
+// un reste de cardinalité inconnue (l'énoncé est tari, personne n'a compté ce qu'il restait). Publier
+// ce nombre comme un déficit de lignes serait la même faute d'un cran plus haut.
+// =====================================================================================
+
+/// Comment un parcours de lignes s'est terminé. `Complet` est le seul état dans lequel la liste
+/// rendue EST la réponse de l'énoncé ; sinon elle n'en est qu'une partie, et la cause du moteur est
+/// conservée telle qu'il l'a dite (`interrupted` pour la garde de budget comme pour /api/cancel).
+pub(crate) enum FinDeParcours {
+    Complet,
+    /// `erreurs` = NOMBRE D'ERREURS RENCONTRÉES, jamais un nombre de lignes manquantes (cf. l'en-tête).
+    Interrompu { erreurs: usize, cause: String },
+    /// L'énoncé n'a jamais démarré (préparation ou liaison refusée) : la liste vide qui en sort n'est
+    /// pas une absence de lignes, c'est une absence de LECTURE. Variante distincte parce que les deux
+    /// n'apprennent pas la même chose — l'une dit « il en manque », l'autre « il n'y en a eu aucune ».
+    NonCommence { cause: String },
+}
+impl FinDeParcours {
+    /// La cause à publier, ou `None` si le parcours est allé au bout. Un appelant qui avoue
+    /// INCONDITIONNELLEMENT n'avoue rien : cette porte est la seule qui existe.
+    pub(crate) fn cause(&self) -> Option<&str> {
+        match self {
+            FinDeParcours::Complet => None,
+            FinDeParcours::Interrompu { cause, .. } | FinDeParcours::NonCommence { cause } => Some(cause.as_str()),
+        }
+    }
+    /// LE NOMBRE D'ERREURS RENCONTRÉES — jamais un nombre de lignes manquantes, et c'est la raison
+    /// pour laquelle il n'est PAS publié tel quel dans un corps servi. Une interruption de `step()`
+    /// vaut UNE erreur et solde un reste de cardinalité inconnue ; une erreur de mappeur vaut une
+    /// erreur ET exactement une ligne sautée. Les deux comptes se ressemblent et ne s'additionnent
+    /// pas : c'est la CAUSE qui les sépare.
+    pub(crate) fn erreurs(&self) -> usize {
+        match self {
+            FinDeParcours::Complet => 0,
+            FinDeParcours::Interrompu { erreurs, .. } => *erreurs,
+            FinDeParcours::NonCommence { .. } => 0,
+        }
+    }
+}
+
+/// Ce qu'un parcours a rendu ET comment il s'est terminé.
+pub(crate) struct Parcours<T> {
+    pub(crate) lignes: Vec<T>,
+    pub(crate) fin: FinDeParcours,
+}
+
+/// LE PARCOURS QUI DISTINGUE LA FIN NORMALE DE L'INTERRUPTION — remplaçant direct de
+/// `.flatten().collect()`, et STRICTEMENT ADDITIF : l'itérateur est vidé de la même façon, dans le
+/// même ordre, avec les mêmes lignes retenues. Sur un parcours sans erreur, `lignes` est le vecteur
+/// que l'idiome précédent produisait, au même élément ; la seule chose qui s'ajoute est la
+/// possibilité de dire que ce vecteur n'est PAS la réponse.
+pub(crate) fn parcourir<T>(rows: impl Iterator<Item = rusqlite::Result<T>>) -> Parcours<T> {
+    let mut lignes = Vec::new();
+    let mut erreurs = 0usize;
+    let mut cause: Option<String> = None;
+    for r in rows {
+        match r {
+            Ok(v) => lignes.push(v),
+            Err(e) => {
+                erreurs += 1;
+                // La PREMIÈRE cause est gardée : c'est celle qui a tari l'énoncé, donc celle qui
+                // explique le reste manquant. Les suivantes ne peuvent venir que du mappeur.
+                if cause.is_none() {
+                    cause = Some(e.to_string());
+                }
+            }
+        }
+    }
+    let fin = match cause {
+        None => FinDeParcours::Complet,
+        Some(cause) => FinDeParcours::Interrompu { erreurs, cause },
+    };
+    Parcours { lignes, fin }
+}
+
+// =====================================================================================
 // BUDGET DE REQUÊTE (CHANGEMENT 1) — seuil du watchdog PAR REQUÊTE, env-configurable.
 //   - auto (panneaux / pagination / refresh / règles) : PLUME_QUERY_BUDGET_MS (défaut 5000) -> INCHANGÉ,
 //     les tuiles restent protégées comme avant.

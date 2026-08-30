@@ -99,7 +99,7 @@ mod machine_dune_alerte {
         // LA MUTATION QUI COMPTE, DANS LE MÊME CORPS : c'est le COALESCE qui détruit la distinction, et
         // on l'exécute pour prouver que le témoin ci-dessus la mesure vraiment. Sur la MÊME base, l'axe
         // de groupement (qui, lui, coalesce délibérément) range les deux lignes dans UN SEUL groupe ''.
-        let (groupes, _) = alert_groups_query_page(&conn, "host", &FiltreAlertes::default(), 50, 0);
+        let (groupes, _, _) = alert_groups_query_page(&conn, "host", &FiltreAlertes::default(), 50, 0);
         let groupe_vide = groupes
             .iter()
             .find(|g| g["gkey"] == json!(""))

@@ -733,11 +733,40 @@ const clefDeCouverture = (m) => (m.scopeAll ? 'page' : 'servies');
 // (`daemon/src/handlers/portillon.rs`) ; la recopier ici en ferait un second porteur qui vieillirait sans
 // le dire. Ce module n'ajoute que ce que le démon ne peut pas savoir : QUELLE vue a été demandée.
 //
-// DIRECTION DE L'ERREUR : le refus l'emporte sur les lignes éventuellement servies à côté. Un corps
-// portant les deux serait un résultat INCOMPLET ; le rendre en table le présenterait comme complet
-// (rendre PLUS que ce qui est su). Cette surface rend donc MOINS. Aucun corps du démon ne porte les deux.
-function causeDuRefusServi(r) {
-  return (r && r.error != null) ? String(r.error).trim() : '';
+// `P11.21-h` — IL Y A TROIS ÉTATS, PAS DEUX, ET LE TROISIÈME EST NÉ LE 2026-08-30.
+//
+// CE QUE CE BLOC AFFIRMAIT ET QUI EST DEVENU FAUX LE JOUR MÊME : que le refus pouvait l'emporter sur les
+// lignes servies à côté, parce qu'aucun corps du démon ne portait les deux. Depuis `P10.7-f`, la voie
+// unique du corps de `/api/alerts` (`corps_de_liste_d_alertes`, `daemon/src/handlers/alerts.rs`) ajoute une
+// cause à un corps qui porte des lignes RÉELLES quand le parcours a été coupé : la page servie est un
+// PRÉFIXE. La règle « le refus l'emporte » jetait alors les lignes reçues et annonçait que rien n'avait
+// été lu — MOINS que ce qui est su, donc prudent, mais faux.
+//
+// LES TROIS ÉTATS SONT DÉRIVÉS DU CORPS, JAMAIS DE LA ROUTE. Une cause SANS aucune ligne est un REFUS
+// (rien n'a été lu) ; une cause AVEC des lignes est une page INCOMPLÈTE (un préfixe a été lu) ; pas de
+// cause est une lecture entière. Rien ici n'énumère les routes qui savent tronquer : une route qui
+// l'apprendra demain entre dans le troisième état sans qu'un nom soit ajouté ici, et une route qui ne
+// sert jamais les deux reste dans les deux premiers sans qu'un cas mort soit écrit.
+//
+// LE SENS DE L'ERREUR NE S'INVERSE PAS. Le troisième état MONTRE PLUS qu'avant, il ne promet pas plus :
+// l'aveu est rendu AVANT les lignes, et le compte de la barre cesse de se présenter comme une population.
+// Ce qu'un lecteur ne doit jamais tirer d'un préfixe — un compte, ou l'absence de ce qu'il y cherchait —
+// est dit par la cause du démon elle-même, qui est collée telle quelle.
+//
+// L'ÉTAT D'UNE LECTURE SERVIE : `{ cause, refus, incomplet }`, dérivé du corps et du lot de
+// lignes que l'appelant en a tiré. Écrit UNE fois pour les trois chargements de ce module.
+//
+// LA CAUSE EST LUE ICI MÊME, ET CE N'EST PAS UN CHOIX D'ÉCRITURE — C'EST UNE MESURE DU 2026-08-30. Ce
+// module portait un `causeDuRefusServi(r)` que ce corps-ci appelait ; `check_a_refusal_is_not_rendered_as_an_absence.py`
+// (jambe B) est alors passé de 0 à 3 accusations sur `alerts.js`. Sa lecture des lecteurs va d'UN cran :
+// elle reconnaît une fonction du module dont le corps PROPRE porte `.error`, et ne suit aucune
+// indirection. Interposer une fonction de plus entre l'appel et le champ AVEUGLE donc la garde — un
+// remaniement qui ne casse rien, ne fait rougir personne à l'exécution, et RÉTRÉCIT le canal de
+// détection. Les deux fonctions sont fondues en une : un seul lecteur du champ servi, et la garde le voit.
+function etatDeLaLectureServie(r, lignes) {
+  const cause = (r && r.error != null) ? String(r.error).trim() : '';
+  const servies = (lignes && lignes.length) ? lignes.length : 0;
+  return { cause, refus: !!cause && servies === 0, incomplet: !!cause && servies > 0 };
 }
 // La phrase du refus : bilingue par construction, et la cause du démon collée telle quelle.
 function motDuRefusServi(quoi, cause) {
@@ -746,6 +775,30 @@ function motDuRefusServi(quoi, cause) {
       + '" This is NOT an absence: nothing was read, so nothing here is established.'
     : quoi + " NON LUES : le démon a refusé et en nomme la cause — « " + cause
       + " » Ce n'est PAS une absence : rien n'a été lu, donc rien ici n'est établi.";
+}
+// `P11.21-h` — LA PHRASE DE LA PAGE INCOMPLÈTE. Elle n'est PAS celle du refus, et la différence n'est pas
+// de ton : « rien n'a été lu » serait FAUX ici, et ce module rendrait une absence là où il tient un
+// préfixe. Elle n'ajoute que ce que le démon ne peut pas savoir — QUELLE vue a été demandée, et que ce
+// qui suit à l'écran est ce préfixe. Ce qu'un préfixe interdit de conclure est déjà dans la cause servie,
+// écrite une seule fois côté démon : la redire ici en ferait un second porteur qui vieillirait sans le dire.
+function motDeLaPageIncomplete(quoi, cause) {
+  return LANG === 'en'
+    ? quoi + ' PARTIALLY READ — the daemon served rows AND names a cause: "' + cause
+      + '" What is displayed below is that partial read, and nothing more.'
+    : quoi + " PARTIELLEMENT LUES — le démon a servi des lignes ET en nomme la cause : « " + cause
+      + " » Ce qui est affiché ci-dessous est cette lecture partielle, et rien de plus.";
+}
+// `P11.21-h` — LE COMPTE DE LA BARRE CESSE D'ÊTRE UNE POPULATION SUR UN PRÉFIXE. Sans ce mot, le seul
+// endroit où l'exploitant lit un nombre continuerait d'annoncer « N alerte(s) · <portée> » comme un fait,
+// et montrer les lignes RETOURNERAIT le sens de l'erreur : il croirait tenir la liste.
+function motDuCompteIncomplet() {
+  return LANG === 'en'
+    ? ' · INCOMPLETE READ: this number counts the rows read, not those that exist'
+    : ' · LECTURE INCOMPLÈTE : ce nombre compte les lignes lues, pas celles qui existent';
+}
+// L'aveu d'une page incomplète, rendu AVANT les lignes. Vide — donc byte-neutre — sur une lecture entière.
+function bandeauDePageIncomplete(quoi, etat) {
+  return etat.incomplet ? '<div class="bad">' + esc(motDeLaPageIncomplete(quoi, etat.cause)) + '</div>' : '';
 }
 
 async function renderAlerts(loading) {
@@ -771,22 +824,30 @@ async function renderAlerts(loading) {
   const b = $('#alerts .body'); if (!b) return;
   if (loading) { let prog = b.querySelector(':scope > .tableprog'); if (!prog) { prog = document.createElement('div'); prog.className='tableprog'; b.insertBefore(prog, b.firstChild); } prog.hidden=false; b.classList.add('reloading'); }
   let alerts, alertTotal;
-  let refusServi = '';
-  try { const resp = await api(url); refusServi = causeDuRefusServi(resp); alerts = resp.alerts || []; alertTotal = resp.total; } catch (e) { b.classList.remove('reloading'); b.innerHTML = '<div class="bad">alertes indisponibles : ' + esc(e.message) + '</div>'; return; }
+  let etat = { cause: '', refus: false, incomplet: false };
+  try { const resp = await api(url); alerts = resp.alerts || []; alertTotal = resp.total; etat = etatDeLaLectureServie(resp, alerts); } catch (e) { b.classList.remove('reloading'); b.innerHTML = '<div class="bad">alertes indisponibles : ' + esc(e.message) + '</div>'; return; }
   b.classList.remove('reloading');
   // `P10.7-d` — LE REFUS, AVANT TOUTE LECTURE DE LA FORME. Il ne passe pas par `alertesChargees` : une
   // frappe de recherche redessine le dernier lot SERVI, et un lot qui n'existe pas ne se redessine pas.
-  if (refusServi) { b.innerHTML = '<div class="bad">' + esc(motDuRefusServi(LANG === 'en' ? 'Alerts' : 'Alertes', refusServi)) + '</div>'; return; }
+  // `P11.21-h` — C'EST BIEN LE REFUS, ET PLUS TOUTE CAUSE SERVIE : une page incomplète porte une cause ET
+  // des lignes, et elle passe par le chemin du dessin, avec son aveu.
+  if (etat.refus) { b.innerHTML = '<div class="bad">' + esc(motDuRefusServi(LANG === 'en' ? 'Alerts' : 'Alertes', etat.cause)) + '</div>'; return; }
   // P11.1-f — LE LOT SERVI EST MÉMORISÉ, et le dessin en est séparé : une frappe REDESSINE, elle ne
   // recharge pas. Sans cette scission, chercher coûterait une requête HTTP par caractère pour un travail
   // qui est une comparaison de chaînes sur des lignes déjà en mémoire.
-  alertesChargees = { alerts, alertTotal };
-  dessinerLaListePlate(b, alertListModel(), alerts, alertTotal);
+  // `P11.21-h` — L'ÉTAT EST MÉMORISÉ AVEC LE LOT, et pour la même raison : une frappe de recherche
+  // redessine ce lot sans redemander, et un aveu qui ne survivrait pas au redessin disparaîtrait au
+  // premier caractère tapé — l'exploitant tiendrait alors un préfixe présenté comme une page.
+  alertesChargees = { alerts, alertTotal, etat };
+  dessinerLaListePlate(b, alertListModel(), alerts, alertTotal, etat);
 }
 
 // LE DESSIN de la vue plate, sur un lot DÉJÀ servi. Séparé du chargement pour la recherche (`P11.1-f`),
 // et c'est aussi ce qui le rend jugeable par le harnais sans réseau.
-function dessinerLaListePlate(b, m, alerts, alertTotal) {
+function dessinerLaListePlate(b, m, alerts, alertTotal, etat) {
+  // `P11.21-h` — L'ÉTAT EST FACULTATIF : un appelant qui n'en passe pas dessine une lecture ENTIÈRE, ce
+  // qui est exactement ce que faisaient les appelants d'avant. Le troisième état s'ajoute, il ne déplace rien.
+  etat = etat || { cause: '', refus: false, incomplet: false };
   const requete = m.recherche;
   const portee = porteeEnMots(m);
   // LA RECHERCHE SE COMPOSE : elle s'applique APRÈS le serveur (portée, filtre d'affichage,
@@ -802,7 +863,7 @@ function dessinerLaListePlate(b, m, alerts, alertTotal) {
   const count = (m.scopeAll && typeof alertTotal === 'number') ? alertTotal : alerts.length;
   const loaded = {
     count,
-    countLabel: `${count} alerte(s) · ${portee}${m.mitre ? ' · technique ' + m.mitre : ''}${m.source ? ' · source ' + m.source : ''}`,
+    countLabel: `${count} alerte(s) · ${portee}${m.mitre ? ' · technique ' + m.mitre : ''}${m.source ? ' · source ' + m.source : ''}${etat.incomplet ? motDuCompteIncomplet() : ''}`,
     ackableIds: affichees.filter(a => a.status === 'new').map(a => a.id),
     sourceSpan,
     // P11.1-g — la population TELLE QUE LE DÉMON LA DÉCLARE, transmise NUE : `undefined` quand il n'en
@@ -810,7 +871,11 @@ function dessinerLaListePlate(b, m, alerts, alertTotal) {
     // vaut un nombre y compris là où le démon n'a rien déclaré, et ce nombre serait pris pour une population.
     total: alertTotal,
   };
-  const bar = alertActionBarHtml(m, loaded);
+  // `P11.21-h` — L'AVEU PRÉCÈDE LA BARRE ET LES LIGNES : c'est la première chose lue, et il l'est avant
+  // le compte qu'il qualifie. Sur une lecture entière il vaut la chaîne vide, donc le balisage rendu est
+  // byte-identique à celui d'avant cette clé.
+  const aveu = bandeauDePageIncomplete(LANG === 'en' ? 'Alerts' : 'Alertes', etat);
+  const bar = aveu + alertActionBarHtml(m, loaded);
   if (!alerts.length) {
     let vide;
     if (m.mitre) {
@@ -866,24 +931,33 @@ async function renderAlertGroups(loading) {
             + '&limit=' + ALERT_GROUP_PS + '&offset=' + (S.alertGroupPage * ALERT_GROUP_PS);
   if (loading) { let prog = b.querySelector(':scope > .tableprog'); if (!prog) { prog = document.createElement('div'); prog.className='tableprog'; b.insertBefore(prog, b.firstChild); } prog.hidden=false; b.classList.add('reloading'); }
   let groups, total;
-  let refusServi = '';
-  try { const r = await api(url); refusServi = causeDuRefusServi(r); groups = r.groups || []; total = r.total; }
+  let etat = { cause: '', refus: false, incomplet: false };
+  try { const r = await api(url); groups = r.groups || []; total = r.total; etat = etatDeLaLectureServie(r, groups); }
   catch (e) { b.classList.remove('reloading'); b.innerHTML = alertActionBarHtml(m, { count: 0, countLabel: 'groupes indisponibles' }) + '<div class="bad">groupes indisponibles : ' + esc(e.message) + '</div>'; wireAlertActionBar(b, { count: 0 }, m); return; }
   b.classList.remove('reloading');
   // `P10.7-d` — même geste que la vue plate : le refus est rendu là où l'échec l'était déjà, et la barre
   // d'actions y reste inerte (aucun compte n'a été lu, donc aucun geste de masse n'a de portée connue).
-  if (refusServi) {
+  // `P11.21-h` — LA MÊME DÉRIVATION QU'AILLEURS, ET « LE JOUR OÙ » A DURÉ UNE HEURE. Cette vue a d'abord
+  // été relevée INERTE — au moment de la mesure, le seul aveu de `/api/alerts/groups` était le corps de
+  // refus du portillon, qui sert une forme VIDE. La phrase était vraie et a cessé de l'être PENDANT que
+  // cette clé était payée : `corps_de_liste_de_groupes` (`daemon/src/handlers/alerts.rs`) sert désormais
+  // des GROUPES RÉELS avec leur cause quand le parcours a été coupé, et cette route atteint donc bien le
+  // troisième état. Rien n'a eu à être ajouté ici pour cela : l'état est dérivé du CORPS et non de la
+  // route, et c'est exactement ce que cette dérivation achetait. L'écrire route par route aurait rouvert
+  // le défaut de cette clé sur la vue groupée, le jour même.
+  if (etat.refus) {
     b.innerHTML = alertActionBarHtml(m, { count: 0, countLabel: LANG === 'en' ? 'groups NOT READ' : 'groupes NON LUS' })
-      + '<div class="bad">' + esc(motDuRefusServi(LANG === 'en' ? 'Alert groups' : "Groupes d'alertes", refusServi)) + '</div>';
+      + '<div class="bad">' + esc(motDuRefusServi(LANG === 'en' ? 'Alert groups' : "Groupes d'alertes", etat.cause)) + '</div>';
     wireAlertActionBar(b, { count: 0 }, m); return;
   }
+  const aveuDesGroupes = bandeauDePageIncomplete(LANG === 'en' ? 'Alert groups' : "Groupes d'alertes", etat);
   const axisLabel = { rule: 'règle', host: 'hôte', mitre: 'technique' }[m.view] || m.view;
   const count = typeof total === 'number' ? total : groups.length;
   const portee = porteeEnMots(m);
   // `total` = nombre de GROUPES déclaré par le démon ; `ackableIds` est vide en vue groupée (rien n'est
   // acquittable depuis la liste de groupes), la phrase de P11.1-g ne sert donc ici qu'au bouton inerte.
-  const loaded = { count, countLabel: `${count} groupe(s) · par ${axisLabel} · ${portee}${m.mitre ? ' · technique ' + m.mitre : ''}${m.source ? ' · source ' + m.source : ''}`, ackableIds: [], total };
-  const bar = alertActionBarHtml(m, loaded);
+  const loaded = { count, countLabel: `${count} groupe(s) · par ${axisLabel} · ${portee}${m.mitre ? ' · technique ' + m.mitre : ''}${m.source ? ' · source ' + m.source : ''}${etat.incomplet ? motDuCompteIncomplet() : ''}`, ackableIds: [], total };
+  const bar = aveuDesGroupes + alertActionBarHtml(m, loaded);
   if (!groups.length) {
     b.innerHTML = bar + `<div class="ok">Aucune alerte ${m.scopeAll ? '' : 'active '}à trier${m.source ? ` pour la source ${esc(m.source)}` : ''}</div>`;
     wireAlertActionBar(b, loaded, m); return;
@@ -963,16 +1037,20 @@ async function loadGroupOccurrences(body, g, opage) {
             + '&gval=' + encodeURIComponent(g.gkey || '') + '&limit=' + ALERT_OCC_PS + '&offset=' + (opage * ALERT_OCC_PS);
   body.innerHTML = '<div class="tableprog"></div>';
   let occ, total;
-  let refusServi = '';
-  try { const r = await api(url); refusServi = causeDuRefusServi(r); occ = r.alerts || []; total = r.total; }
+  let etat = { cause: '', refus: false, incomplet: false };
+  try { const r = await api(url); occ = r.alerts || []; total = r.total; etat = etatDeLaLectureServie(r, occ); }
   catch (e) { body.innerHTML = '<div class="bad">occurrences indisponibles : ' + esc(e.message) + '</div>'; return; }
   // `P10.7-d` — `body.dataset.loaded` N'EST PAS POSÉ SUR UN REFUS, et c'est la moitié qui compte : ce
   // drapeau dit « ce groupe porte ses occurrences ». Le poser sur un refus figerait l'aveu, et le dépli
   // suivant ne redemanderait rien.
-  if (refusServi) { body.innerHTML = '<div class="bad">' + esc(motDuRefusServi(LANG === 'en' ? 'Occurrences' : 'Occurrences', refusServi)) + '</div>'; return; }
+  if (etat.refus) { body.innerHTML = '<div class="bad">' + esc(motDuRefusServi(LANG === 'en' ? 'Occurrences' : 'Occurrences', etat.cause)) + '</div>'; return; }
+  // `P11.21-h` — UNE PAGE D'OCCURRENCES INCOMPLÈTE EST BIEN CHARGÉE, elle : `dataset.loaded` est posé
+  // parce que ce groupe porte réellement des occurrences. Ce qui manque est DIT au-dessus d'elles, et le
+  // pager qui suit reste dérivé du `total` que le démon déclare, jamais de la longueur du préfixe.
   body.dataset.loaded = '1';
   body.dataset.opage = String(opage); // ui-regression : mémorise la page pour la restaurer après un rebuild (auto-refresh)
-  body.innerHTML = occ.map((a, i) => alertRowHtml(a, i)).join('') || '<div class="muted">aucune occurrence</div>';
+  body.innerHTML = bandeauDePageIncomplete(LANG === 'en' ? 'Occurrences' : 'Occurrences', etat)
+    + (occ.map((a, i) => alertRowHtml(a, i)).join('') || '<div class="muted">aucune occurrence</div>');
   if (typeof total === 'number') {
     const pgState = { page: opage, pageSize: ALERT_OCC_PS, total, shown: occ.length };
     const go = p => loadGroupOccurrences(body, g, p);
@@ -1000,7 +1078,7 @@ function redessinerLesAlertes() {
   // groupes viennent d'une autre route que la liste plate — le lot mémorisé ne les contient pas).
   if (m.view && !m.recherche) return renderAlerts(true);
   if (!alertesChargees) return renderAlerts(true);
-  dessinerLaListePlate(b, m, alertesChargees.alerts, alertesChargees.alertTotal);
+  dessinerLaListePlate(b, m, alertesChargees.alerts, alertesChargees.alertTotal, alertesChargees.etat);
 }
 (() => {
   const champ = $('#alert-search'); if (!champ) return;

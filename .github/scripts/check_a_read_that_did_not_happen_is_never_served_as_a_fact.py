@@ -130,7 +130,16 @@ PLANCHER_FICHIERS = 12
 # Chacun vaut le compte d'accusations DU JOUR. Descendre est une NOTE imprimée, pas un échec ; le
 # compte a le droit d'atteindre zéro (c'est ce qui évite la rançon).
 PLAFOND_DEFAUT_NU = 16          # jambe A : défauts servis sans aveu
-PLAFOND_CLOSURE_SOURDE = 13     # jambe B : closures qui avalent une lecture de lignes sans aveu
+# DESCENDU DE 13 À 12 LE 2026-08-30, sur le relevé de la garde elle-même après la fermeture de
+# quatre closures. LA BAISSE N'EST QUE D'UNE UNITÉ POUR QUATRE FERMETURES, ET LA RAISON EST MESURÉE,
+# éprouvée dans les deux sens sur la machinerie de cette garde : la jambe B est AVEUGLE à l'avalement
+# écrit dans un BRAS DE MATCH. Une chaîne directe est accusée ; la MÊME opération placée dans le bras
+# d'un `match` dont le scrutateur est une lecture de lignes ne l'est PAS — et c'est l'idiome exact de
+# trois des sites fermés ce jour-là. LE CLIQUET ENREGISTRE DONC UNE FERMETURE RÉELLE, MAIS SON NOMBRE
+# N'EST PAS LA POPULATION : ce qu'il compte est plus petit que ce qui existe, et le descendre ne
+# resserre que ce qu'il sait voir. Le remède est nommé et non fait (`P10.7-g`) : que la détection
+# suive les bras d'un `match` dont le scrutateur est une lecture, pas seulement les chaînes directes.
+PLAFOND_CLOSURE_SOURDE = 12     # jambe B : closures qui avalent une lecture de lignes sans aveu
 PLAFOND_CAUSE_JETEE = 3         # jambe Q : bras d'erreur jetés
 
 

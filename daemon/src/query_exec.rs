@@ -548,11 +548,35 @@ pub(crate) struct Parcours<T> {
 /// possibilité de dire que ce vecteur n'est PAS la réponse.
 pub(crate) fn parcourir<T>(rows: impl Iterator<Item = rusqlite::Result<T>>) -> Parcours<T> {
     let mut lignes = Vec::new();
+    let fin = parcourir_chaque(rows, |v| lignes.push(v));
+    Parcours { lignes, fin }
+}
+
+/// LE MÊME PARCOURS, MAIS QUI NE MATÉRIALISE RIEN — remplaçant direct de `for x in rows.flatten() {…}`.
+///
+/// POURQUOI IL EXISTE, ET C'EST UNE MESURE QUI L'IMPOSE, PAS UN GOÛT. `parcourir` est un remplaçant
+/// direct de `.flatten().collect()` — l'appelant voulait déjà le vecteur. Il n'en est PAS un pour la
+/// BOUCLE : `for (srcs, detail) in rows.flatten() { … }` sur `alert WHERE status='new'` consomme les
+/// lignes une par une et n'en garde AUCUNE ; y substituer `parcourir` matérialiserait toute la
+/// sélection (ici : un `detail` complet par alerte active) avant la première itération. Ce dépôt tient
+/// dans 2 Go par contrainte ; échanger une troncature muette contre un pic de mémoire serait payer
+/// l'honnêteté avec la ressource qui manque. D'où cette forme : mêmes lignes, même ordre, même flux,
+/// et rien de plus en mémoire qu'une cause.
+///
+/// Les DEUX règles de `parcourir` valent ici mot pour mot : on ne s'arrête PAS à la première erreur
+/// (une erreur de mappeur ne tarit pas l'itérateur — s'arrêter troquerait une troncature contre une
+/// autre, sur un chemin nominal), et la PREMIÈRE cause est celle qu'on garde (c'est elle qui a tari
+/// l'énoncé). `chaque` n'est appelée que sur les lignes RÉELLEMENT lues : le corps de la boucle est
+/// donc exécuté exactement comme avant.
+pub(crate) fn parcourir_chaque<T>(
+    rows: impl Iterator<Item = rusqlite::Result<T>>,
+    mut chaque: impl FnMut(T),
+) -> FinDeParcours {
     let mut erreurs = 0usize;
     let mut cause: Option<String> = None;
     for r in rows {
         match r {
-            Ok(v) => lignes.push(v),
+            Ok(v) => chaque(v),
             Err(e) => {
                 erreurs += 1;
                 // La PREMIÈRE cause est gardée : c'est celle qui a tari l'énoncé, donc celle qui
@@ -563,11 +587,10 @@ pub(crate) fn parcourir<T>(rows: impl Iterator<Item = rusqlite::Result<T>>) -> P
             }
         }
     }
-    let fin = match cause {
+    match cause {
         None => FinDeParcours::Complet,
         Some(cause) => FinDeParcours::Interrompu { erreurs, cause },
-    };
-    Parcours { lignes, fin }
+    }
 }
 
 // =====================================================================================

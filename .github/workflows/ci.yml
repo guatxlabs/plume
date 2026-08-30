@@ -713,7 +713,7 @@ env:
   #     ~6,5 ms par arithmétique en release), soit 63 × un 401 et 92,7 Mo/s au banc pour une seule IP.
   #   · CHAQUE RÉPONSE PUBLIQUE EST FACTURABLE (`content-length` présent ET égal au fichier) : sans
   #     cela, la borne ci-dessus aurait un trou muet.
-  EXPECTED_TESTS: "1443"
+  EXPECTED_TESTS: "1448"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -1131,7 +1131,7 @@ jobs:
           # derrière un `cfg(feature)`, et c'est l'ÉCART INCHANGÉ entre les deux profils (243 avant
           # comme après) qui l'établit, pas une lecture des sources. La dérivation complète et la
           # répartition sont écrites auprès d'`EXPECTED_TESTS`, une seule fois.
-          EXPECTED_COLD_TESTS: "1688"
+          EXPECTED_COLD_TESTS: "1693"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail
@@ -1668,6 +1668,21 @@ jobs:
       # de l'index lui-même — une phase que l'index ne titre pas est une phase fabriquée.
       - name: Une clé citée par le code existe dans l'index (P8.9-j)
         run: python3 .github/scripts/check_every_key_cited_in_the_code_exists_in_the_index.py
+
+      # `P8.9-k` — UN INSTRUMENT QUI PORTE LE CHEMIN ABSOLU DE LA MACHINE OÙ IL A ÉTÉ ÉCRIT rend deux
+      # verdicts également faux : vert chez son auteur, où le chemin EXISTE et où il balaie le bon
+      # arbre sans rien trouver ; jeté partout ailleurs. Mesuré le 2026-08-30, en fermant un rouge
+      # d'intégration. Le savoir n'était pas absent, il était MAL PLACÉ : ce dépôt refusait déjà
+      # `/home/<compte>` dans un MESSAGE DE COMMIT — où il n'est qu'un bruit de lecture — et nulle
+      # part dans les instruments, où le même littéral change un VERDICT.
+      # LE BALAYAGE NAÏF EST INUTILISABLE : il rend deux occurrences, toutes deux LÉGITIMES (un motif
+      # du système surveillé, et la règle qui refuse ces chemins dans les messages). Le critère est
+      # donc le SEGMENT DE COMPTE — concret contre motif — et non le fichier ni la ligne. Les deux
+      # resserrements évidents ont été essayés et ÉCARTÉS, mesure à l'appui, dans l'en-tête du script :
+      # borner aux instruments exécutables n'écarte PAS le second cas et aveugle 42 instruments sur 56 ;
+      # dépouiller les commentaires n'acquitte rien de plus et rétrécit le canal.
+      - name: Aucun instrument ne porte le chemin de la machine de son auteur (P8.9-k)
+        run: python3 .github/scripts/check_no_instrument_hardcodes_an_author_machine_path.py
 
       # `P11.19-a` — CE QU'UN CAPTEUR ÉMET EST DÉCLARÉ, et le mot étranger est refusé à l'émission.
       - name: Un producteur déclare les valeurs qu'il émet (P11.19-a)

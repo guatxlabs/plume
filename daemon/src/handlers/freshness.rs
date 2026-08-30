@@ -432,6 +432,141 @@ pub(crate) fn extract_query_sources(detail: &str) -> Vec<String> {
     out
 }
 
+// ====================================================================================================
+// `P10.7-f` — CE QUI, DANS UN RELEVÉ DE FRAÎCHEUR, N'EST PAS ALLÉ AU BOUT.
+//
+// POURQUOI CETTE ROUTE-CI EST LA PIRE DE LA FAMILLE. Sa closure porte QUINZE énoncés et balaie les
+// DEUX grandes tables : `MAX(ts) FROM event` pour la santé du pipeline, et `alert WHERE status='new'`
+// en entier pour l'imputation. C'est aussi la seule dont un même corps servi est alimenté par
+// PLUSIEURS énoncés indépendants.
+//
+// ET C'EST EXACTEMENT LÀ QUE LA MESURE DU 2026-08-30 MORD : une interruption ne porte que sur
+// l'énoncé EN VOL. Dans cette closure, la coupe peut donc tronquer les flux d'événements pendant que
+// les instantanés et les métriques sont COMPLETS — la forme la plus indiscernable qui soit. D'où la
+// forme de l'aveu : il NOMME ce qui est incomplet au lieu de condamner la réponse entière, et il
+// n'existe pas du tout quand tous les parcours sont allés au bout. « La garde a tiré » n'est pas
+// « une liste a été tronquée » : rien ici ne regarde l'armement de la garde, seulement l'erreur que
+// le parcours VOIT.
+//
+// DEUX SURFACES SÉPARÉES, DEUX AVEUX. `feeds` est une LISTE (des flux manquent) ; `imputation_des_alertes`
+// est un jeu de COMPTES qui doivent se retrouver entre eux (`actives = avec_cloche + sans_source_nommee
+// + sans_imputation`). Un compte tronqué ne raccourcit rien : il rend une somme qui a l'air juste et
+// qui porte sur moins d'alertes qu'il n'y en a. Son aveu vit DANS l'objet concerné, pour qu'un
+// consommateur qui ne lit que ce sous-objet ne soit pas trompé — et il est REPRIS à la racine, parce
+// que c'est `error` à la racine que la console teste.
+// ====================================================================================================
+
+/// La phrase servie quand un ou plusieurs parcours de ce corps se sont arrêtés en route.
+pub(crate) const CAUSE_FRAICHEUR_INCOMPLETE: &str = "RELEVÉ DE FRAÎCHEUR INCOMPLET : un ou plusieurs \
+     parcours de lignes ne sont pas allés au bout. Ce qui est nommé ci-dessous est un PRÉFIXE ou un \
+     SOUS-COMPTE, pas la mesure — un flux absent de `feeds` n'est PAS un flux qui ne remonte plus, et \
+     un compte pris ici ne porte pas sur tout. Combien il en manque n'est pas connu. Incomplet : ";
+
+/// La phrase servie DANS `imputation_des_alertes` quand c'est ce parcours-là qui a été coupé.
+pub(crate) const CAUSE_IMPUTATION_NON_ETABLIE: &str = "PARTAGE DES ALERTES NON ÉTABLI : le parcours \
+     des alertes actives ne s'est pas achevé. Les quatre nombres se retrouvent encore entre eux, mais \
+     ils portent sur MOINS d'alertes qu'il n'y en a d'actives — et les cloches par source qui en \
+     dérivent sont des sous-comptes. Cause : ";
+
+/// Le nom sous lequel le parcours des alertes actives est noté (et retrouvé pour l'aveu imbriqué).
+const PARCOURS_IMPUTATION: &str = "le partage des alertes actives";
+
+/// `P10.7-f` — LE RELEVÉ DES PARCOURS DE CE CORPS QUI NE SONT PAS ALLÉS AU BOUT.
+///
+/// Rien n'y entre sur un parcours complet : `FinDeParcours::cause()` est la seule porte, et c'est ce
+/// qui empêche un aveu INCONDITIONNEL — un corps qui avoue toujours n'avoue rien.
+#[derive(Default)]
+pub(crate) struct ParcoursDeFraicheur {
+    manquants: Vec<(&'static str, String)>,
+}
+impl ParcoursDeFraicheur {
+    /// Note ce qu'un parcours alimentait, et la cause du moteur telle qu'il l'a dite. Ne note RIEN
+    /// quand le parcours est allé au bout.
+    pub(crate) fn noter(&mut self, quoi: &'static str, fin: &FinDeParcours) {
+        if let Some(cause) = fin.cause() {
+            self.manquants.push((quoi, cause.to_string()));
+        }
+    }
+    /// La phrase de racine, ou `None` si tout est allé au bout.
+    pub(crate) fn aveu(&self) -> Option<String> {
+        if self.manquants.is_empty() {
+            return None;
+        }
+        let liste: Vec<String> = self.manquants.iter().map(|(quoi, cause)| format!("{quoi} ({cause})")).collect();
+        Some(format!("{CAUSE_FRAICHEUR_INCOMPLETE}{}", liste.join(" ; ")))
+    }
+    /// La cause du seul parcours de l'imputation, s'il a été coupé.
+    pub(crate) fn cause_de_l_imputation(&self) -> Option<&str> {
+        self.manquants.iter().find(|(quoi, _)| *quoi == PARCOURS_IMPUTATION).map(|(_, c)| c.as_str())
+    }
+}
+
+/// LE PARTAGE DES ALERTES ACTIVES PAR SOURCE — les quatre familles de `P11.3-d` et les cloches par
+/// feed, lues en UN parcours de `alert WHERE status='new'`.
+///
+/// EXTRAITE DU CORPS DE `compute_freshness` PAR `P10.7-f`, et pour une raison qui n'est pas
+/// esthétique : c'est LE parcours de cette route que la charge peut couper (la table `alert` en
+/// entier, sans borne de fenêtre), et tant qu'il vivait au milieu d'une closure passée à
+/// `read_with_watchdog` AUCUN témoin ne pouvait lui présenter une interruption. Isolée sur
+/// `&Connection`, elle se joue — coupe comprise — sans monter le routeur.
+pub(crate) struct ImputationDesAlertes {
+    /// source -> nb d'alertes actives qui lui sont imputées (la cloche d'un feed).
+    pub(crate) par_source: std::collections::HashMap<String, i64>,
+    pub(crate) actives: i64,
+    pub(crate) avec_cloche: i64,
+    pub(crate) sans_source_nommee: i64,
+    pub(crate) sans_imputation: i64,
+}
+
+/// Lit le partage, et DIT si le parcours est allé au bout.
+///
+/// PARCOURS EN FLUX, ET C'EST UNE CONTRAINTE MESURÉE, PAS UN GOÛT : `parcourir` matérialiserait le
+/// `detail` COMPLET de toutes les alertes actives avant la première itération, sur une base qui doit
+/// tenir dans 2 Go. `parcourir_chaque` garde le flux ligne à ligne de l'idiome précédent et n'ajoute
+/// en mémoire qu'une cause. Les quatre familles se retrouvent toujours entre elles
+/// (`actives = avec_cloche + sans_source_nommee + sans_imputation`) — sur un parcours COUPÉ aussi,
+/// mais alors elles portent sur moins d'alertes qu'il n'y en a, et c'est la fin de parcours qui le dit.
+pub(crate) fn lire_l_imputation_des_alertes(conn: &Connection, envp: &str) -> (ImputationDesAlertes, FinDeParcours) {
+    let mut out = ImputationDesAlertes {
+        par_source: std::collections::HashMap::new(),
+        actives: 0,
+        avec_cloche: 0,
+        sans_source_nommee: 0,
+        sans_imputation: 0,
+    };
+    let avec_colonne = format!("SELECT COALESCE(sources,''), COALESCE(detail,'') FROM alert WHERE status='new'{envp}");
+    let sans_colonne = format!("SELECT '', COALESCE(detail,'') FROM alert WHERE status='new'{envp}");
+    let fin = match conn.prepare(&avec_colonne).or_else(|_| conn.prepare(&sans_colonne)) {
+        Ok(mut s) => match s.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) {
+            Ok(rows) => parcourir_chaque(rows, |(srcs, d): (String, String)| {
+                out.actives += 1;
+                let imputees = if srcs.is_empty() { extract_query_sources(&d) } else { imputation_decoder(&srcs) };
+                let (mut portee, mut nomme_l_inconnu) = (false, false);
+                for src in imputees {
+                    if src == SOURCE_INDETERMINABLE {
+                        nomme_l_inconnu = true;
+                    } else {
+                        *out.par_source.entry(src).or_insert(0) += 1;
+                        portee = true;
+                    }
+                }
+                if portee {
+                    out.avec_cloche += 1;
+                } else if nomme_l_inconnu {
+                    out.sans_source_nommee += 1;
+                } else {
+                    out.sans_imputation += 1;
+                }
+            }),
+            Err(e) => FinDeParcours::NonCommence { cause: e.to_string() },
+        },
+        // LES DEUX ÉNONCÉS ONT ÉTÉ REFUSÉS : ce n'est pas « aucune alerte active », c'est une lecture
+        // qui n'a pas eu lieu (`P10.7-e`). Les quatre nombres restent à zéro et la fin le DIT.
+        Err(e) => FinDeParcours::NonCommence { cause: e.to_string() },
+    };
+    (out, fin)
+}
+
 /// Calcul (LOURD, borné par read_with_watchdog 5 s) de la fraîcheur des sources. Mis en cache SWR par
 /// le handler `freshness` ci-dessus — ne PAS appeler directement depuis le chemin requête.
 pub(crate) fn compute_freshness(db_path: &str, env: Option<&str>) -> Value {
@@ -445,6 +580,8 @@ pub(crate) fn compute_freshness(db_path: &str, env: Option<&str>) -> Value {
         let d1 = now_ts - 86400;        // fenêtre 24h -> estimation de cadence
         let cut7 = now_ts - FENETRE_INVENTAIRE_S; // ne liste que les feeds vus dans la fenêtre de l'inventaire
         let mut feeds: Vec<Value> = Vec::new();
+        // `P10.7-f` — CE QUI, DANS CE CORPS, NE SERA PAS ALLÉ AU BOUT. Vide sur le chemin nominal.
+        let mut releve = ParcoursDeFraicheur::default();
         // SANTÉ DU PIPELINE : la donnée la PLUS récente, TOUTES sources confondues. Tant qu'au moins une
         // source arrive (<10 min), l'ingestion fonctionne. Si même la plus fraîche est vieille -> ingestion
         // en panne (réseau / corruption / collecte arrêtée) = le SEUL cas où on alerte ("muet"). Sinon l'âge
@@ -488,34 +625,11 @@ pub(crate) fn compute_freshness(db_path: &str, env: Option<&str>) -> Value {
         //   - `sans_imputation`      : rien d'enregistré et rien de lisible dans son texte (alerte levée
         //                              avant l'imputation, ou producteur qui ne l'écrit pas). Le compte
         //                              par source l'ignore — et il faut le DIRE, pas la faire disparaître.
-        let mut alert_counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
-        let (mut actives, mut avec_cloche, mut sans_source_nommee, mut sans_imputation) = (0i64, 0i64, 0i64, 0i64);
-        let avec_colonne = format!("SELECT COALESCE(sources,''), COALESCE(detail,'') FROM alert WHERE status='new'{envp}");
-        let sans_colonne = format!("SELECT '', COALESCE(detail,'') FROM alert WHERE status='new'{envp}");
-        if let Ok(mut s) = conn.prepare(&avec_colonne).or_else(|_| conn.prepare(&sans_colonne)) {
-            if let Ok(rows) = s.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) {
-                for (srcs, d) in rows.flatten() {
-                    actives += 1;
-                    let imputees = if srcs.is_empty() { extract_query_sources(&d) } else { imputation_decoder(&srcs) };
-                    let (mut portee, mut nomme_l_inconnu) = (false, false);
-                    for src in imputees {
-                        if src == SOURCE_INDETERMINABLE {
-                            nomme_l_inconnu = true;
-                        } else {
-                            *alert_counts.entry(src).or_insert(0) += 1;
-                            portee = true;
-                        }
-                    }
-                    if portee {
-                        avec_cloche += 1;
-                    } else if nomme_l_inconnu {
-                        sans_source_nommee += 1;
-                    } else {
-                        sans_imputation += 1;
-                    }
-                }
-            }
-        }
+        let (imputation, fin_imputation) = lire_l_imputation_des_alertes(conn, &envp);
+        let alert_counts = imputation.par_source;
+        let (actives, avec_cloche, sans_source_nommee, sans_imputation) =
+            (imputation.actives, imputation.avec_cloche, imputation.sans_source_nommee, imputation.sans_imputation);
+        releve.noter(PARCOURS_IMPUTATION, &fin_imputation);
         // CE QUE L'EXPLOITANT A DÉCLARÉ, lu UNE fois (P11.3-c). N'est appliqué qu'aux feeds `event` : la
         // clé de `source_settings` est un nom de SOURCE, et un `kind` d'instantané qui porterait le même
         // nom n'est pas la même chose — appliquer la déclaration aux deux ferait mentir l'une des deux.
@@ -556,11 +670,13 @@ pub(crate) fn compute_freshness(db_path: &str, env: Option<&str>) -> Value {
         // FROM event WHERE ts>=now-3600 GROUP BY source` full-scannait les 3,9 M lignes chiffrées en ~21 s
         // faute d'index (source,ts) -> tué par le watchdog -> map vide -> retombait sur le plancher : RETIRÉ.)
         if let Ok(mut s) = conn.prepare(&format!("SELECT source, COALESCE(NULLIF(MAX(last_ts),0), MAX(bucket)), SUM(CASE WHEN bucket>=?1 THEN n ELSE 0 END) FROM event_rollup WHERE bucket>=?2 AND source<>''{envp} GROUP BY source HAVING SUM(n)>=3")) {
-            if let Ok(rows) = s.query_map(params![d1, cut7], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))) {
-                for (src, last, n) in rows.flatten() {
+            let fin = match s.query_map(params![d1, cut7], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))) {
+                Ok(rows) => parcourir_chaque(rows, |(src, last, n): (String, i64, i64)| {
                     feeds.push(mk("event", src, last, n));
-                }
-            }
+                }),
+                Err(e) => FinDeParcours::NonCommence { cause: e.to_string() },
+            };
+            releve.noter("les flux d'événements", &fin);
         }
         // INSTANTANÉS — un feed par `kind`, mais dont la FRAÎCHEUR est celle de la machine la PLUS EN
         // RETARD (`MIN` sur les `MAX(ts)` par hôte), même dérivation que `Sonde::Instantane`. Avant :
@@ -573,15 +689,17 @@ pub(crate) fn compute_freshness(db_path: &str, env: Option<&str>) -> Value {
                SELECT kind, host, MAX(ts) AS l, SUM(CASE WHEN ts>?1 THEN 1 ELSE 0 END) AS nn \
                FROM snapshot WHERE ts>?2{envp} GROUP BY kind, host) GROUP BY kind"
         )) {
-            if let Ok(rows) = s.query_map(params![d1, cut7], |r| {
+            let fin = match s.query_map(params![d1, cut7], |r| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?))
             }) {
-                for (k, m, n, nh) in rows.flatten() {
+                Ok(rows) => parcourir_chaque(rows, |(k, m, n, nh): (String, i64, i64, i64)| {
                     let mut f = mk("snapshot", k, m, n);
                     if let Some(o) = f.as_object_mut() { o.insert("n_hosts".into(), json!(nh)); }
                     feeds.push(f);
-                }
-            }
+                }),
+                Err(e) => FinDeParcours::NonCommence { cause: e.to_string() },
+            };
+            releve.noter("les flux d'instantanés", &fin);
         }
         // métriques : un feed agrégé (remote-write) + DÉTAIL par série (déplié dans l'UI sur clic)
         let mlast: Option<i64> = conn.query_row(&format!("SELECT MAX(ts) FROM metric WHERE ts>?1{envp}"), params![cut7], |r| r.get::<_, Option<i64>>(0)).ok().flatten();
@@ -591,13 +709,15 @@ pub(crate) fn compute_freshness(db_path: &str, env: Option<&str>) -> Value {
             // liste des séries (nom + dernière donnée + statut) -> l'UI les déplie sous le feed agrégé.
             let mut series_list: Vec<Value> = Vec::new();
             if let Ok(mut s) = conn.prepare(&format!("SELECT name, MAX(ts), SUM(CASE WHEN ts>?1 THEN 1 ELSE 0 END) FROM metric WHERE ts>?2{envp} GROUP BY name ORDER BY name")) {
-                if let Ok(rows) = s.query_map(params![d1, cut7], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))) {
-                    for (nm, ls, n24) in rows.flatten() {
+                let fin = match s.query_map(params![d1, cut7], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))) {
+                    Ok(rows) => parcourir_chaque(rows, |(nm, ls, n24): (String, i64, i64)| {
                         let age = now_ts - ls;
                         let st = statut_de_source(age, pipeline_fresh, None);
                         series_list.push(json!({ "name": nm, "last_seen": ls, "age_s": age, "n_24h": n24, "status": st }));
-                    }
-                }
+                    }),
+                    Err(e) => FinDeParcours::NonCommence { cause: e.to_string() },
+                };
+                releve.noter("les séries de métriques", &fin);
             }
             let mut mf = mk("metric", format!("métriques · {series} séries"), m, n);
             if let Some(o) = mf.as_object_mut() { o.insert("series".into(), json!(series_list)); }
@@ -609,7 +729,7 @@ pub(crate) fn compute_freshness(db_path: &str, env: Option<&str>) -> Value {
         // sans_source_nommee + sans_imputation`), et c'est ce qui permet au lecteur de vérifier qu'aucune
         // alerte ne s'est perdue en route. `jeton_sans_source` publie le nom EXACT de l'inconnu nommé pour
         // que la console puisse pivoter dessus sans le réécrire en dur.
-        json!({
+        let mut corps = json!({
             "feeds": feeds,
             "ts": now_ts,
             "pipeline_fresh": pipeline_fresh,
@@ -620,7 +740,19 @@ pub(crate) fn compute_freshness(db_path: &str, env: Option<&str>) -> Value {
                 "sans_imputation": sans_imputation,
                 "jeton_sans_source": SOURCE_INDETERMINABLE,
             },
-        })
+        });
+        // `P10.7-f` — L'AVEU EST PORTÉ PAR CE QUI EST INCOMPLET. Celui de l'imputation vit DANS son
+        // objet (un consommateur qui ne lit que ce sous-objet n'est pas trompé) ; celui de la racine
+        // les NOMME tous, parce que c'est `error` à la racine que la console teste. Les deux sont
+        // strictement conditionnels : sur un parcours complet, ce corps est byte-identique à celui
+        // d'avant cette clé.
+        if let Some(cause) = releve.cause_de_l_imputation() {
+            corps["imputation_des_alertes"]["error"] = json!(format!("{CAUSE_IMPUTATION_NON_ETABLIE}{cause}"));
+        }
+        if let Some(phrase) = releve.aveu() {
+            corps["error"] = json!(phrase);
+        }
+        corps
     })
 }
 

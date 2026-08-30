@@ -149,14 +149,14 @@
     fn filtre_source_restreint_les_groupes_leur_apercu_et_leur_expansion() {
         let fx = fs_fixture();
         // Par règle, toute source : rule.1 = {A, B, G}, rule.2 = {C, D}, rule.3 = {E}, heartbeat.x = {F}.
-        let (tous, total) = alert_groups_query_page(&fx.conn, "rule", &FiltreAlertes::default(), 50, 0);
+        let (tous, total, _) = alert_groups_query_page(&fx.conn, "rule", &FiltreAlertes::default(), 50, 0);
         assert_eq!(total, Some(4), "témoin : sans filtre, quatre groupes");
         let r1 = tous.iter().find(|g| g["gkey"] == "rule.1").unwrap();
         assert_eq!(r1["n"], 3);
         assert_eq!(r1["sample_title"], "G-casse", "sans filtre, l'aperçu est la plus récente du groupe (G, ts 1006)");
         // Par règle, source=k8s : rule.1 = {A}, rule.2 = {C}. L'aperçu de rule.1 DOIT être A, pas G (plus
         // récente mais imputée à `K8S`) : la sous-requête d'aperçu est re-scopée à la source.
-        let (groupes, total) = alert_groups_query_page(&fx.conn, "rule", &fs_filtre("k8s"), 50, 0);
+        let (groupes, total, _) = alert_groups_query_page(&fx.conn, "rule", &fs_filtre("k8s"), 50, 0);
         assert_eq!(total, Some(2), "deux groupes portent une alerte imputée à k8s");
         let cles: Vec<&str> = groupes.iter().map(|g| g["gkey"].as_str().unwrap()).collect();
         assert_eq!(cles, vec!["rule.2", "rule.1"], "ordre last_ts DESC dans le set filtré");
@@ -169,11 +169,11 @@
         assert_eq!(r2["n"], 1, "rule.2 : C seule (D = audit-k8s)");
         assert_eq!(r2["sample_title"], "C-deux-sources");
         // Par hôte et par technique : le même WHERE (les trois tris sont des vues d'une même liste).
-        let (par_mitre, _) = alert_groups_query_page(&fx.conn, "mitre", &fs_filtre("k8s"), 50, 0);
+        let (par_mitre, _, _) = alert_groups_query_page(&fx.conn, "mitre", &fs_filtre("k8s"), 50, 0);
         let mut techniques: Vec<&str> = par_mitre.iter().map(|g| g["gkey"].as_str().unwrap()).collect();
         techniques.sort();
         assert_eq!(techniques, vec!["T1046", "T1110"], "par technique : A (T1046) et C (T1110)");
-        let (par_hote, total_hote) = alert_groups_query_page(&fx.conn, "host", &fs_filtre("k8s-audit"), 50, 0);
+        let (par_hote, total_hote, _) = alert_groups_query_page(&fx.conn, "host", &fs_filtre("k8s-audit"), 50, 0);
         assert_eq!(total_hote, Some(1), "par hôte : un seul groupe (sans hôte), B et C");
         assert_eq!(par_hote[0]["n"], 2);
         // L'EXPANSION d'un groupe (chemin plat, gkey/gval) porte le même filtre : rule.1 ∧ k8s = {A}.
@@ -181,7 +181,7 @@
         assert_eq!(fs_titres(&occ), vec!["A-k8s"], "expansion de rule.1 sous source=k8s : A, pas B ni G");
         assert_eq!(occ_total, Some(1), "…et le total de l'expansion = le `n` du groupe");
         // Statut + source sur les groupes : rule.2 disparaît (C est close).
-        let (actifs, total) = alert_groups_query_page(&fx.conn, "rule", &FiltreAlertes { statut: Some("new".into()), source: "k8s".into(), ..Default::default() }, 50, 0);
+        let (actifs, total, _) = alert_groups_query_page(&fx.conn, "rule", &FiltreAlertes { statut: Some("new".into()), source: "k8s".into(), ..Default::default() }, 50, 0);
         assert_eq!(total, Some(1));
         assert_eq!(actifs[0]["gkey"], "rule.1");
     }

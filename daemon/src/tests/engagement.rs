@@ -310,13 +310,13 @@
         conn.execute("INSERT INTO alert(ts,rule,severity,title,mitre) VALUES(1500,'rule.20',3,'scan','T1046')", []).unwrap();
         // event SCOPÉ dans la fenêtre (tagué à l'ingest par engagement_tag_for_ip).
         conn.execute("INSERT INTO event(ts,source,category,severity,message,src_ip,engagement_id) VALUES(1400,'portscan','network',3,'scan','198.51.100.9','engX')", []).unwrap();
-        let out = scoped_coverage_detections(&conn, "engX", 0, ws, we);
+        let (out, _) = scoped_coverage_detections(&conn, "engX", 0, ws, we);
         assert_eq!(out.len(), 1, "le rapport scopé n'est PLUS vide");
         assert_eq!(out[0]["mitre"], json!("T1046"), "T1046 attribué à l'engagement (via event scopé), pas 100 %-manqué");
         assert_eq!(out[0]["count"], json!(1));
         // GATE : sans event scopé (autre engagement, aucun event tagué) -> rapport vide (pas de sur-attribution globale).
         conn.execute("INSERT INTO engagement(id,name,box,scope,window_start,window_end,status) VALUES('engEmpty','n','blackbox','[\"203.0.113.0/24\"]',?1,?2,'active')", params![ws, we]).unwrap();
-        let empty = scoped_coverage_detections(&conn, "engEmpty", 0, ws, we);
+        let (empty, _) = scoped_coverage_detections(&conn, "engEmpty", 0, ws, we);
         assert!(empty.is_empty(), "aucun event scopé -> rapport scopé vide (l'alerte n'est pas sur-attribuée)");
     }
 

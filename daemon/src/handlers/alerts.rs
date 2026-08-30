@@ -227,6 +227,33 @@ pub(crate) fn corps_de_liste_d_alertes(alertes: Vec<Value>, total: Option<i64>, 
     corps
 }
 
+/// `P10.7-f` — CE QUE LA CONSOLE APPREND D'UNE LISTE DE GROUPES QUI N'EST PAS LA RÉPONSE.
+///
+/// La phrase est PROPRE au triage groupé, et pas une copie de celle de la liste plate : ici ce qui
+/// manque n'est pas « des alertes » mais des GROUPES ENTIERS, chacun avec son compte. Un groupe absent
+/// de la page ne dit donc RIEN sur le fait qu'il existe — c'est exactement l'inverse de ce qu'un
+/// triage lit dans une liste groupée. Le `total` (COUNT DISTINCT séparé) reste, lui, un fait.
+pub(crate) const CAUSE_LISTE_DE_GROUPES_TRONQUEE: &str = "LISTE DE GROUPES INCOMPLÈTE : le parcours \
+     des groupes n'est pas allé au bout. Ce qui suit est un PRÉFIXE de la page demandée — des GROUPES \
+     ENTIERS manquent, avec leurs occurrences, et l'absence d'un groupe qu'on y cherchait ne prouve \
+     PAS qu'il n'existe pas. Combien de groupes manquent n'est pas connu. Cause : ";
+
+/// LE CORPS SERVI PAR /api/alerts/groups — voie unique, même raison qu'à la liste plate : l'aveu ne
+/// peut pas être oublié par un futur appelant qui recomposerait le corps à la main.
+///
+/// STRICTEMENT CONDITIONNEL : `FinDeParcours::cause()` est la SEULE porte. Sur un parcours complet
+/// elle rend `None` et le corps est BYTE-IDENTIQUE à celui d'avant cette clé.
+pub(crate) fn corps_de_liste_de_groupes(groupes: Vec<Value>, total: Option<i64>, group_col: &str, fin: &FinDeParcours) -> Value {
+    let mut corps = json!({ "groups": groupes, "group": group_col });
+    if let Some(t) = total {
+        corps["total"] = json!(t);
+    }
+    if let Some(cause) = fin.cause() {
+        corps["error"] = json!(format!("{CAUSE_LISTE_DE_GROUPES_TRONQUEE}{cause}"));
+    }
+    corps
+}
+
 /// GET /api/alerts?status=&mitre=&uncased=&source=&gkey=&gval=&limit=&offset= — liste plate, ou les
 /// occurrences d'un groupe. Paramètres communs aux deux routes : `FiltreAlertes::depuis_requete`.
 ///   - `status` : FIX #1 — pivot MITRE TOUS STATUTS : `all|any|*` -> AUCUN filtre statut (le front demande
@@ -296,7 +323,15 @@ pub(crate) async fn alerts(State(st): State<AppState>, Extension(au): Extension<
 /// Elle est volontairement NON re-filtrée par statut (aperçu best-effort : le titre de la dernière alerte du
 /// groupe, tous statuts) -> aucun bind supplémentaire, aucune fuite (le titre n'est pas un secret ; l'autorizer
 /// SQLite bloque de toute façon user.hash/token.token_hash, absents de `alert`).
-pub(crate) fn alert_groups_query_page(conn: &Connection, group_col: &str, f: &FiltreAlertes, limit: i64, offset: i64) -> (Vec<Value>, Option<i64>) {
+///
+/// `P10.7-f` — LE TROISIÈME MEMBRE RENDU EST LA FIN DU PARCOURS, pour la MÊME raison qu'à la ligne
+/// plate : cet énoncé-ci agrège la table `alert` ENTIÈRE (GROUP BY + deux sous-requêtes corrélées, un
+/// seek par groupe) sous la garde de budget de `read_with_watchdog`. Interrompu EN COURS
+/// D'ITÉRATION, l'idiome précédent (`.flatten()`) rendait un PRÉFIXE de la liste de groupes,
+/// indiscernable d'une page complète — et un triage mené dessus conclut « ce groupe n'existe pas »
+/// sur un groupe qui existe. Le `total`, lui, vient d'un COUNT DISTINCT séparé : il reste un FAIT
+/// quand il aboutit, et c'est lui qui rend l'écart lisible.
+pub(crate) fn alert_groups_query_page(conn: &Connection, group_col: &str, f: &FiltreAlertes, limit: i64, offset: i64) -> (Vec<Value>, Option<i64>, FinDeParcours) {
     let (where_clause, bind_vals) = alert_where(f, None, "");
     let binds: Vec<&dyn rusqlite::ToSql> = bind_vals.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
     // Expression de clé (COALESCE pour host/dedup nullables -> round-trip du groupe '' avec les lignes NULL,
@@ -338,9 +373,9 @@ pub(crate) fn alert_groups_query_page(conn: &Connection, group_col: &str, f: &Fi
     );
     let mut stmt = match conn.prepare(&sql) {
         Ok(s) => s,
-        Err(_) => return (Vec::new(), total),
+        Err(e) => return (Vec::new(), total, FinDeParcours::NonCommence { cause: e.to_string() }),
     };
-    let out: Vec<Value> = match stmt.query_map(sel_binds.as_slice(), |r| {
+    let parcours = match stmt.query_map(sel_binds.as_slice(), |r| {
         Ok(json!({
             "gkey": r.get::<_, Option<String>>(0)?.unwrap_or_default(),
             "n": r.get::<_, i64>(1)?,
@@ -353,10 +388,12 @@ pub(crate) fn alert_groups_query_page(conn: &Connection, group_col: &str, f: &Fi
             "sample_id": r.get::<_, Option<i64>>(8)?
         }))
     }) {
-        Ok(r) => r.flatten().collect(),
-        Err(_) => return (Vec::new(), total),
+        // `P10.7-f` — l'itérateur est vidé EXACTEMENT comme le faisait `.flatten()` (mêmes groupes,
+        // même ordre) ; ce qui s'ajoute est le compte des `Err` qu'il jetait sans un mot.
+        Ok(r) => parcourir(r),
+        Err(e) => return (Vec::new(), total, FinDeParcours::NonCommence { cause: e.to_string() }),
     };
-    (out, total)
+    (parcours.lignes, total, parcours.fin)
 }
 
 /// GET /api/alerts/groups?group=rule|mitre|host|dedup&status=&mitre=&uncased=&source=&limit=&offset= — liste
@@ -381,12 +418,8 @@ pub(crate) async fn alert_groups(State(st): State<AppState>, Extension(au): Exte
     let gc = group_col.to_string();
     let res = tokio::task::spawn_blocking(move || {
         read_with_watchdog(&db_path, json!({ "groups": [] }), move |conn| {
-            let (groups, total) = alert_groups_query_page(conn, &gc, &filtre, limit, offset);
-            let mut resp = json!({ "groups": groups, "group": gc });
-            if let Some(t) = total {
-                resp["total"] = json!(t);
-            }
-            resp
+            let (groups, total, fin) = alert_groups_query_page(conn, &gc, &filtre, limit, offset);
+            corps_de_liste_de_groupes(groups, total, &gc, &fin)
         })
     })
     .await
@@ -404,22 +437,29 @@ pub(crate) async fn alert_groups(State(st): State<AppState>, Extension(au): Exte
 /// l'attaquant scopé était actif. INVARIANT SACRÉ intact : on ne fait que RESTREINDRE l'affichage (la table
 /// alert reste pleine ; la couverture GLOBALE, branche byte-identique, compte toujours tout). NB : sur-attribuer
 /// une détection de la fenêtre est le sens SÛR (l'ancien défaut était le faux 100 %-manqué, dangereux).
-pub(crate) fn scoped_coverage_detections(conn: &Connection, id: &str, since: i64, ws: i64, we: i64) -> Vec<Value> {
+///
+/// `P10.7-f` — REND AUSSI LA FIN DU PARCOURS. Cette agrégation balaie `alert` sur la fenêtre de
+/// l'engagement ET teste l'existence d'un event scopé : elle est sous la garde de budget. Tronquée,
+/// elle faisait disparaître des TECHNIQUES ENTIÈRES du rapport purple — c'est-à-dire fabriquait des
+/// `missed` là où la détection avait tiré, le défaut EXACT que le corps de cette fonction dit avoir
+/// corrigé une fois déjà, revenu par une autre porte.
+pub(crate) fn scoped_coverage_detections(conn: &Connection, id: &str, since: i64, ws: i64, we: i64) -> (Vec<Value>, FinDeParcours) {
     let mut stmt = match conn.prepare(
         "SELECT mitre, COUNT(*) AS count, MIN(ts) AS first_ts FROM alert \
          WHERE mitre IS NOT NULL AND mitre<>'' AND ts>=?1 AND ts>=?3 AND ts<=?4 \
            AND (engagement_id=?2 OR EXISTS(SELECT 1 FROM event e WHERE e.engagement_id=?2 AND e.ts>=?3 AND e.ts<=?4)) \
          GROUP BY mitre ORDER BY count DESC, mitre",
-    ) { Ok(s) => s, Err(_) => return Vec::new() };
-    let rows: Vec<(String, i64, i64)> = match stmt.query_map(params![since, id, ws, we], |r| Ok((
+    ) { Ok(s) => s, Err(e) => return (Vec::new(), FinDeParcours::NonCommence { cause: e.to_string() }) };
+    let parcours = match stmt.query_map(params![since, id, ws, we], |r| Ok((
         r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?
     ))) {
-        Ok(r) => r.flatten().collect(),
-        Err(_) => Vec::new(),
+        Ok(r) => parcourir(r),
+        Err(e) => return (Vec::new(), FinDeParcours::NonCommence { cause: e.to_string() }),
     };
+    let rows = parcours.lignes;
     // MÊME éclatement des tags multi-techniques que la branche globale (cf. explode_detection_rows) :
     // le rapport SCOPÉ ne doit pas dire autre chose que le rapport global sur le même corpus de règles.
-    explode_detection_rows(rows)
+    (explode_detection_rows(rows), parcours.fin)
 }
 
 /// PURPLE — éclate les lignes `(tag_mitre, count, first_ts)` agrégées depuis `alert` en TECHNIQUES
@@ -503,6 +543,34 @@ pub(crate) fn mitre_techniques(tag: &str) -> Vec<String> {
 /// elle qui permet au consommateur de distinguer une détection exacte d'une couverture parente).
 /// Réponse triée par count décroissant (techniques les plus détectées en tête), `mitre` ASC à égalité.
 /// Paramètre optionnel `since` (epoch s) borne la fenêtre.
+/// `P10.7-f` — CE QUE LE CONSOMMATEUR PURPLE APPREND D'UN RAPPORT QUI N'EST PAS LA RÉPONSE.
+///
+/// La phrase nomme la conséquence PROPRE à cette route, et elle n'est pas la même qu'ailleurs : ce
+/// rapport est joint, côté Forge, aux techniques TIRÉES pour produire des verdicts `detected` /
+/// `missed`. Une technique absente de la liste s'y lit « non détectée » — un rapport tronqué ne rend
+/// donc pas une réponse plus courte, il FABRIQUE des faux `missed` et fait mentir le MTTD. C'est le
+/// même défaut que le filtre d'engagement de `scoped_coverage_detections` a corrigé une fois, revenu
+/// par la troncature au lieu du filtre.
+pub(crate) const CAUSE_COUVERTURE_DES_DETECTIONS_TRONQUEE: &str = "RAPPORT DE DÉTECTION INCOMPLET : le \
+     parcours des techniques n'est pas allé au bout. Ce qui suit est un PRÉFIXE — des TECHNIQUES \
+     DÉTECTÉES manquent, et une technique absente de cette liste N'EST PAS une technique manquée. \
+     Combien il en manque n'est pas connu. Cause : ";
+
+/// LE CORPS SERVI PAR /api/coverage/detections — voie unique pour les DEUX branches (globale et
+/// scopée par engagement), pour que l'aveu ne dépende pas de la branche prise.
+///
+/// STRICTEMENT CONDITIONNEL : sur un parcours complet, le corps est byte-identique à celui d'avant.
+pub(crate) fn corps_de_couverture_des_detections(detections: Vec<Value>, portee: Option<Value>, fin: &FinDeParcours) -> Value {
+    let mut corps = json!({ "detections": detections });
+    if let (Some(Value::Object(p)), Some(o)) = (portee, corps.as_object_mut()) {
+        o.extend(p);
+    }
+    if let Some(cause) = fin.cause() {
+        corps["error"] = json!(format!("{CAUSE_COUVERTURE_DES_DETECTIONS_TRONQUEE}{cause}"));
+    }
+    corps
+}
+
 pub(crate) async fn coverage_detections(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Query(q): Query<HashMap<String, String>>) -> Json<Value> {
     let since: i64 = q.get("since").and_then(|s| s.parse().ok()).unwrap_or(0);
     // v75 (MODE ENGAGEMENT) : `?engagement=<id>` -> rapport de couverture SCOPÉ (fondation de la matrice purple
@@ -528,26 +596,44 @@ pub(crate) async fn coverage_detections(State(st): State<AppState>, Extension(au
                 let (ws, we): (i64, i64) = match conn.query_row(
                     "SELECT window_start, window_end FROM engagement WHERE id=?1", params![id],
                     |r| Ok((r.get(0)?, r.get(1)?)),
-                ) { Ok(v) => v, Err(_) => return json!({ "detections": [], "engagement": id }) };
+                ) {
+                    Ok(v) => v,
+                    // La fenêtre de l'engagement n'a pas pu être lue : le rapport qui suivrait ne
+                    // porterait sur RIEN. C'est une lecture NON FAITE (`P10.7-e`), pas une absence de
+                    // détection — et une ligne absente et une ligne illisible ne se disent pas pareil.
+                    Err(e) => {
+                        let fin = match e {
+                            rusqlite::Error::QueryReturnedNoRows => FinDeParcours::Complet,
+                            autre => FinDeParcours::NonCommence { cause: autre.to_string() },
+                        };
+                        return corps_de_couverture_des_detections(Vec::new(), Some(json!({ "engagement": id })), &fin);
+                    }
+                };
                 // Attribution SCOPÉE (via tag alerte OU présence d'events scopés dans la fenêtre) — cf.
                 // scoped_coverage_detections. RESTREINT l'affichage, ne réduit JAMAIS la détection.
-                let out = scoped_coverage_detections(conn, id, since, ws, we);
-                return json!({ "detections": out, "engagement": id, "window_start": ws, "window_end": we });
+                let (out, fin) = scoped_coverage_detections(conn, id, since, ws, we);
+                return corps_de_couverture_des_detections(
+                    out,
+                    Some(json!({ "engagement": id, "window_start": ws, "window_end": we })),
+                    &fin,
+                );
             }
             let mut stmt = match conn.prepare(
                 "SELECT mitre, COUNT(*) AS count, MIN(ts) AS first_ts FROM alert \
                  WHERE mitre IS NOT NULL AND mitre<>'' AND ts>=?1 GROUP BY mitre ORDER BY count DESC, mitre",
             ) {
                 Ok(s) => s,
-                Err(_) => return json!({ "detections": [] }),
+                Err(e) => return corps_de_couverture_des_detections(Vec::new(), None, &FinDeParcours::NonCommence { cause: e.to_string() }),
             };
-            let rows: Vec<(String, i64, i64)> = match stmt.query_map(params![since], row_tuple) {
-                Ok(r) => r.flatten().collect(),
-                Err(_) => return json!({ "detections": [] }),
+            let parcours = match stmt.query_map(params![since], row_tuple) {
+                // `P10.7-f` — mêmes lignes, même ordre que `.flatten()` ; ce qui s'ajoute est le
+                // compte des `Err` que l'idiome jetait sans un mot.
+                Ok(r) => parcourir(r),
+                Err(e) => return corps_de_couverture_des_detections(Vec::new(), None, &FinDeParcours::NonCommence { cause: e.to_string() }),
             };
             // ÉCLATEMENT des tags multi-techniques (Sigma) avant de servir : le consommateur purple
             // joint sur des TECHNIQUES, jamais sur une chaîne composée. Cf. explode_detection_rows.
-            json!({ "detections": explode_detection_rows(rows) })
+            corps_de_couverture_des_detections(explode_detection_rows(parcours.lignes), None, &parcours.fin)
         })
     })
     .await
@@ -722,6 +808,60 @@ fn tactics_json_len(v: &[Value]) -> i64 { v.len() as i64 }
 /// (rule.mitre, enabled=1) et des ALERTES récentes par technique (alert.mitre sur fenêtre `?since=<epoch_s>`,
 /// agrégées depuis la table `alert` via idx_alert_mitre_ts — JAMAIS un scan de la table event). Surface les
 /// techniques NON COUVERTES (blind-spots). ADDITIF / mode-0 byte-identique (nouvel endpoint read-only).
+/// LES ALERTES PAR TECHNIQUE PARENTE, sur la fenêtre `since` — la moitié DÉFENSIVE de la matrice
+/// ATT&CK (l'autre, la couverture, vient des règles activées et ne passe pas par ici).
+///
+/// EXTRAITE DU CORPS DU HANDLER PAR `P10.7-f`, pour la même raison qu'à la fraîcheur : tant que ce
+/// parcours vivait dans une closure passée à `read_with_watchdog`, aucun témoin ne pouvait lui
+/// présenter une interruption. Isolée sur `&Connection`, elle se joue — coupe comprise.
+///
+/// PARCOURS EN FLUX : l'idiome précédent matérialisait un `Vec` intermédiaire pour le reparcourir
+/// aussitôt ; ici chaque ligne agrège et disparaît. Un `prepare` ou un `query_map` refusé est une
+/// lecture NON FAITE (`NonCommence`), pas un compte à zéro.
+pub(crate) fn lire_les_alertes_par_technique(conn: &Connection, since: i64) -> (HashMap<String, i64>, FinDeParcours) {
+    let mut alert_counts: HashMap<String, i64> = HashMap::new();
+    let fin = match conn.prepare(
+        "SELECT mitre, COUNT(*) FROM alert WHERE mitre IS NOT NULL AND mitre<>'' AND ts>=?1 GROUP BY mitre",
+    ) {
+        Ok(mut stmt) => match stmt.query_map(params![since], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))) {
+            Ok(rows) => parcourir_chaque(rows, |(tag, n): (String, i64)| {
+                for p in mitre_parents(&tag) { *alert_counts.entry(p).or_insert(0) += n; }
+            }),
+            Err(e) => FinDeParcours::NonCommence { cause: e.to_string() },
+        },
+        Err(e) => FinDeParcours::NonCommence { cause: e.to_string() },
+    };
+    (alert_counts, fin)
+}
+
+/// `P10.7-f` — CE QUE LA MATRICE APPREND D'UN COMPTE QUI N'EST PAS ÉTABLI, ET POURQUOI CE N'EST PAS
+/// LA MÊME PHRASE QU'AILLEURS.
+///
+/// Ici la liste servie N'EST PAS tronquée : la matrice parcourt le CATALOGUE ATT&CK, pas les lignes
+/// lues, donc toutes les techniques restent présentes quoi qu'il arrive. Ce que la troncature abîme,
+/// ce sont les COMPTES D'ALERTES posés dessus — ils deviennent trop BAS, jamais trop hauts, et une
+/// technique qui a réellement tiré peut afficher `alerts: 0`. Servir cela sans un mot est le sens
+/// DANGEREUX de l'erreur sur une surface de posture : « rien n'a tiré ici » est la lecture la plus
+/// rassurante, servie précisément quand la lecture n'a pas abouti.
+///
+/// CE QUE L'AVEU NE DIT PAS, PARCE QUE CE SERAIT FAUX : que la COUVERTURE est fausse. Elle vient des
+/// règles activées (`lire_la_couverture_des_regles_activees`), pas de cet énoncé-ci ; `covered`,
+/// `rule_count` et `techniques_covered` restent ce qu'ils étaient.
+pub(crate) const CAUSE_COMPTES_D_ALERTES_NON_ETABLIS: &str = "COMPTES D'ALERTES INCOMPLETS : le \
+     parcours des alertes par technique n'est pas allé au bout. Les `alerts` de cette matrice, et le \
+     total `alerts`, sont des SOUS-COMPTES — un `alerts: 0` ne veut pas dire qu'aucune alerte n'a été \
+     levée sur la technique. Combien il en manque n'est pas connu. La COUVERTURE (`covered`, \
+     `rule_count`, `techniques_covered`), elle, ne vient pas de cette lecture et reste établie. Cause : ";
+
+/// LE CORPS SERVI PAR /api/coverage/attack. La matrice est rendue telle quelle ; l'aveu s'AJOUTE, et
+/// seulement quand le parcours des alertes a une cause à dire.
+pub(crate) fn corps_de_matrice_attack(mut matrice: Value, fin: &FinDeParcours) -> Value {
+    if let Some(cause) = fin.cause() {
+        matrice["error"] = json!(format!("{CAUSE_COMPTES_D_ALERTES_NON_ETABLIS}{cause}"));
+    }
+    matrice
+}
+
 pub(crate) async fn coverage_attack(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Query(q): Query<HashMap<String, String>>) -> Json<Value> {
     let since: i64 = q.get("since").and_then(|s| s.parse().ok()).unwrap_or(0);
     // Même régime de concurrence que coverage_detections (query_sem + spawn_blocking + watchdog).
@@ -740,18 +880,11 @@ pub(crate) async fn coverage_attack(State(st): State<AppState>, Extension(au): E
             let lecture = crate::detection_aveugle::lire_la_couverture_des_regles_activees(conn);
             let rule_tags: Vec<String> = lecture.tirent;
             // Alertes par technique sur la fenêtre (table `alert`, indexée ; PAS la table event).
-            let mut alert_counts: HashMap<String, i64> = HashMap::new();
-            if let Ok(mut stmt) = conn.prepare(
-                "SELECT mitre, COUNT(*) FROM alert WHERE mitre IS NOT NULL AND mitre<>'' AND ts>=?1 GROUP BY mitre",
-            ) {
-                if let Ok(rows) = stmt.query_map(params![since], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))) {
-                    let raw: Vec<(String, i64)> = rows.flatten().collect();
-                    for (tag, n) in raw {
-                        for p in mitre_parents(&tag) { *alert_counts.entry(p).or_insert(0) += n; }
-                    }
-                }
-            }
-            build_attack_matrix(&rule_tags, &lecture.en_attente_de_source, &alert_counts)
+            let (alert_counts, fin_des_comptes) = lire_les_alertes_par_technique(conn, since);
+            corps_de_matrice_attack(
+                build_attack_matrix(&rule_tags, &lecture.en_attente_de_source, &alert_counts),
+                &fin_des_comptes,
+            )
         })
     })
     .await

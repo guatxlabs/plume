@@ -70,7 +70,7 @@ if [ "$actuel" != "$CANONIQUE" ]; then
 fi
 
 # PORTÉE DÉRIVÉE DU DIFF, PAS D'UNE LISTE À TENIR : seuls les commits qui touchent au code ou au
-# verrou de dépendances du démon peuvent déplacer le compte de tests.
+# verrou de dépendances d'une caisse compilée peuvent déplacer un compte de tests.
 #
 # TROU FERMÉ LE 2026-08-10, trouvé en éprouvant ce hook au lieu de le croire. La portée ne
 # couvrait QUE `daemon/` — donc éditer le compteur DANS `ci.yml` seul (faute de frappe, mauvaise
@@ -78,12 +78,101 @@ fi
 # chiffre vit. Mesuré : `EXPECTED_TESTS` faussé de 1007 à 999, `ci.yml` seul indexé -> hook rc=0,
 # aucune sortie. Le même diff avec un vrai changement dans `daemon/src/` -> rc=1, dérive nommée.
 # La portée couvre donc les DEUX faces : ce qui peut déplacer le compte, ET ce qui le DÉCLARE.
-if ! git diff --cached --name-only \
-     | grep -qE '^(daemon/(src/|Cargo\.(toml|lock)$)|\.github/workflows/ci\.yml$)'; then
+#
+# SECOND TROU, MESURÉ LE 2026-08-30 (`P8.9-m`) — LA PORTÉE ÉTAIT BORNÉE À UNE CAISSE SUR QUATRE.
+# `daemon/` et `ci.yml` étaient écrits en dur, alors que l'intégration continue fait respecter CINQ
+# compteurs (`EXPECTED_TESTS`, `EXPECTED_COLD_TESTS`, `EXPECTED_S3_TESTS`, `EXPECTED_SYSLOG_TESTS`,
+# `EXPECTED_MAIL_TESTS`) sur quatre caisses. Conséquence exacte : un test ajouté à `collector-syslog`
+# ou à `collector-mail` laissait ce crochet MUET, et la CI ROUGE — la boucle de retour se refermait
+# quinze minutes plus tard, sur une page qu'on n'ouvre pas. C'est le défaut que ce fichier raconte.
+#
+# CE QUI EST CORRIGÉ, ET CE QUI NE PEUT PAS L'ÊTRE ICI. La portée est désormais DÉRIVÉE : toute
+# caisse découverte (`<caisse>/Cargo.toml` + `<caisse>/src/`) et tout workflow qui PORTE un compteur.
+# Mais le script délégué (`compter-les-tests.sh`) ne sait énumérer que les deux suites du démon —
+# ce n'est pas une liste à corriger ici, c'est la portée d'un autre fichier. Faire tourner ce
+# délégué sur un commit de collecteur rendrait un VERT qui ne mesure rien : un aveu trop OPTIMISTE
+# est bien pire qu'un aveu trop prudent. Ce crochet AVOUE donc, nommément, ce qu'il ne compte pas,
+# au lieu de sortir 0 en silence comme il le faisait. La descente de ce reste est une seule chose :
+# apprendre à `compter-les-tests.sh` les compteurs qu'il ne lit pas encore.
+racine_git="$racine"
+
+# Les caisses, DÉCOUVERTES (même dérivation que le pas `cargo-deny` de ci.yml) et les workflows qui
+# PORTENT un compteur. Rien n'est écrit : une caisse ou un workflow neuf entre par construction.
+caisses="$(cd "$racine_git" && find . -mindepth 2 -maxdepth 2 -name Cargo.toml -not -path './target/*' \
+           | sed 's|^\./||; s|/Cargo\.toml$||' | sort -u)"
+flux_porteurs="$(cd "$racine_git" && grep -lE '^[[:space:]]*EXPECTED_[A-Z0-9_]*TESTS?:[[:space:]]*"?[0-9]+"?[[:space:]]*$' \
+                 .github/workflows/*.yml 2>/dev/null | sort -u)"
+
+# PLANCHER DE NON-DÉGÉNÉRESCENCE : une découverte qui ne rend rien laisserait ce crochet inerte, et
+# « aucun contrôle » se lirait comme « rien à contrôler ». Mesuré le 2026-08-30 : 4 caisses, 1 flux.
+if [ -z "$caisses" ] || [ -z "$flux_porteurs" ]; then
+    echo "[pre-commit] REFUS : découverte cassée (caisses='$caisses', flux='$flux_porteurs')." >&2
+    echo "             Ce crochet ne saurait pas quoi contrôler ; il le dit au lieu de laisser passer." >&2
+    exit 2
+fi
+
+motif="$(printf '%s\n' $caisses | sed 's|$|/(src/\|Cargo\\.(toml\|lock)$)|' ; \
+         printf '%s\n' $flux_porteurs | sed 's|\.|\\.|g; s|$|$|')"
+motif="^($(printf '%s' "$motif" | paste -sd'|' -))"
+
+touches="$(git diff --cached --name-only | grep -E "$motif" || true)"
+if [ -z "$touches" ]; then
     exit 0
 fi
 
-echo "[pre-commit] démon ou compteur touché -> vérification du compte de tests."
+# CE QUE LE DÉLÉGUÉ SAIT COMPTER, DÉRIVÉ DE LUI, et ce que la CI fait respecter, dérivé des flux.
+# L'ÉCART est exactement l'angle mort, et il est NOMMÉ à chaque déclenchement.
+# Un compteur VIVANT est reconnu à la FORME qui le rend exécutoire — `NOM: "<nombre>"` seul sur sa
+# ligne —, pas à la simple mention de son nom. Sans cette rigueur, l'alias
+# `EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}` entrait dans la liste et cet aveu nommait un
+# compteur qui n'existe pas : un aveu FAUX vaut à peine mieux qu'un silence.
+compteurs_ci="$(cd "$racine_git" && grep -hE '^[[:space:]]*EXPECTED_[A-Z0-9_]*TESTS?:[[:space:]]*"?[0-9]+"?[[:space:]]*$' $flux_porteurs \
+                | grep -oE 'EXPECTED_[A-Z0-9_]*TESTS?' | sort -u || true)"
+# Côté délégué, les COMMENTAIRES sont exclus : compter une simple mention en prose comme une
+# couverture RÉTRÉCIRAIT le trou avoué. En cas de doute, cet aveu doit SUR-estimer le trou.
+compteurs_delegue="$(grep -vE '^[[:space:]]*#' "$racine/.github/scripts/compter-les-tests.sh" \
+                     | grep -oE 'EXPECTED_[A-Z0-9_]*TESTS?' | sort -u || true)"
+non_couverts="$(comm -23 <(printf '%s\n' "$compteurs_ci") <(printf '%s\n' "$compteurs_delegue") | paste -sd' ' -)"
+compteurs_delegue_ligne="$(printf '%s\n' "$compteurs_delegue" | paste -sd' ' -)"
+
+# Les caisses touchées que le délégué ne sait pas compter : il ne connaît que celle dont il énumère
+# les suites, et c'est LUI qui le dit (il `cd` dedans). Aucune liste n'est écrite ici non plus.
+# LE MOTIF SUIT LE `cd`, ET C'EST UNE CORRECTION MESURÉE DU 2026-08-30. Un premier jet cherchait un
+# guillemet FERMANT entre `racine` et la barre — une forme que le délégué N'EMPLOIE PAS : il écrit
+# `cd "$racine/daemon"`, guillemet AVANT le `$`. La dérivation ne rendait donc RIEN, et le crochet
+# refusait de conclure sur CHAQUE commit. Un refus est le bon comportement quand la mesure manque,
+# mais un refus PERMANENT est une RANÇON : aucun geste ne pouvait le lever. Le motif suit désormais
+# le geste que le commentaire ci-dessus déclare — le `cd` —, ce qui le rend aussi plus ÉTROIT :
+# une occurrence quelconque de `$racine/<minuscule>` ailleurs dans le délégué ne le trompe plus.
+caisse_du_delegue="$(grep -oE 'cd "\$racine/[a-z][a-z0-9-]*' "$racine/.github/scripts/compter-les-tests.sh" \
+                     | sed 's|.*/||' | sort -u | head -1 || true)"
+if [ -z "$caisse_du_delegue" ]; then
+    echo "[pre-commit] REFUS : impossible de dériver la caisse que compter-les-tests.sh sait énumérer." >&2
+    echo "             Sans elle, ce crochet ne saurait ni contrôler ni avouer honnêtement." >&2
+    exit 2
+fi
+for c in $caisses; do
+    [ "$c" = "$caisse_du_delegue" ] && continue
+    if printf '%s\n' "$touches" | grep -qE "^$c/"; then
+        echo "[pre-commit] AVEU : \`$c/\` est touché, et ce crochet NE SAIT PAS compter sa suite."
+        echo "[pre-commit]        Le délégué .github/scripts/compter-les-tests.sh ne connaît que"
+        echo "[pre-commit]        \`$caisse_du_delegue\` ($compteurs_delegue_ligne)."
+        echo "[pre-commit]        Compteurs vivants que ce crochet ne sait PAS vérifier (tous flux"
+        echo "[pre-commit]        confondus — l'appariement compteur/caisse n'est pas dérivé ici) :"
+        echo "[pre-commit]          ${non_couverts:-(aucun)}"
+        echo "[pre-commit]        Un test ajouté ici sera vu par l'intégration continue, pas par vous"
+        echo "[pre-commit]        maintenant. RIEN n'est vérifié pour cette caisse — ne lisez pas le"
+        echo "[pre-commit]        silence qui suit comme un feu vert."
+    fi
+done
+
+# Et le contrôle qui EXISTE vraiment : celui du délégué, sur la caisse qu'il sait énumérer.
+if ! printf '%s\n' "$touches" \
+     | grep -qE "^($caisse_du_delegue/(src/|Cargo\.(toml|lock)$)|$(printf '%s' "$flux_porteurs" | sed 's|\.|\\.|g' | paste -sd'|' -))$|^$caisse_du_delegue/src/"; then
+    exit 0
+fi
+
+echo "[pre-commit] $caisse_du_delegue ou compteur touché -> vérification du compte de tests."
 echo "[pre-commit] ATTENTION : ce contrôle CONSTRUIT (aucun test n'est exécuté, mais le harnais est"
 echo "[pre-commit] compilé pour être énuméré). Il refuse si une construction OU une suite de tests"
 echo "[pre-commit] tourne déjà — un refus dit lequel, et le geste qu'il faut."

@@ -1167,6 +1167,13 @@ jobs:
             echo "::error::the cold_tier feature is no longer contributing tests — this job has become a no-op."
             exit 1
           fi
+          # `P8.9-m` — LE RÉSIDU EST MESURÉ ICI AUSSI, et pas seulement après la suite par défaut.
+          # Ce script CITAIT ce job depuis toujours (« le job cold_tier détourne $TMPDIR ») sans y
+          # être appelé : mesuré le 2026-08-30, un pas sur six. L'appel est DANS le même `run:`,
+          # donc sous le même $TMPDIR isolé exporté plus haut — le mesurer depuis un autre pas ne
+          # regarderait pas le bon répertoire. Le câblage est lui-même gardé
+          # (`--verifier-le-cablage`, job `gardes`) : il ne peut plus se défaire en silence.
+          "$GITHUB_WORKSPACE/.github/aucun-temporaire-laisse.sh" "suite cold_tier"
 
   # ---------------------------------------------------------------------------
   # shell — SYNTAX GATE FOR THE COLLECTORS.
@@ -1212,6 +1219,18 @@ jobs:
       # script, pas cachés.
       - name: Le compte de tests n'existe qu'à un seul endroit, et toute mesure est datée
         run: python3 .github/scripts/check_no_duplicated_test_count.py
+
+      # `P8.9-m` — LE CÂBLAGE D'UNE GARDE EST LUI-MÊME UNE PROPRIÉTÉ. `aucun-temporaire-laisse.sh`
+      # (P7.1-a) décrit une suite qui ne laisse rien derrière elle ; MESURÉ le 2026-08-30, il n'était
+      # appelé qu'après UN pas sur les SIX qui lancent `cargo test` ici — et il NOMMAIT le job
+      # cold_tier dans son propre corps sans y être branché. Le branchement était un geste à la main
+      # dans ce fichier, donc il se défaisait en silence à chaque pas ajouté. Ce contrôle le dérive :
+      # les pas de suite sont lus dans les workflows, et les caisses qui DOIVENT prouver leur absence
+      # de résidu sont celles qui portent `src/tmp_possede.rs` — l'engagement de possession lui-même.
+      # Aucune liste n'est écrite : une caisse qui adopte `tmp_possede` arme ses pas toute seule, et
+      # une caisse qui ne l'a pas est nommée hors portée au lieu d'être accusée d'un geste impossible.
+      - name: La garde « aucun temporaire laissé » est câblée après chaque suite qui doit le prouver
+        run: .github/aucun-temporaire-laisse.sh --verifier-le-cablage
 
       # MÊME DOCTRINE, AUTRE VALEUR — l'étiquette du cœur. MESURÉ le 2026-08-27 : le manifeste
       # épinglait `guatx-core` sur un tag, et NEUF autres lignes du dépôt (deux dans
@@ -2133,6 +2152,8 @@ jobs:
             echo "::error::zero test ran: the filter or the feature gate stopped matching — this step is a no-op."
             exit 1
           fi
+          # `P8.9-m` — même mesure de résidu, même raison, même $TMPDIR isolé (voir le job cold-tier).
+          "$GITHUB_WORKSPACE/.github/aucun-temporaire-laisse.sh" "suite s3_backup"
 
   # ---------------------------------------------------------------------------
   # security — supply-chain + secret hygiene. Independent gate: runs in parallel with

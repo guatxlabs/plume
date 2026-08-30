@@ -733,7 +733,17 @@ if (!STOCKAGE_REFUSE) {
   // un échec ne le serait pas — mais aucune des deux ne serait distinguable de la bonne tant qu'on la
   // juge sur le seul corpus mesuré. Les trois modules ci-dessous sont écrits ICI, hors du dépôt : le
   // verdict de la sonde sur eux ne dépend d'aucun état du dépôt, donc il ne peut pas devenir une RANÇON.
+  // UN `finally` NE SURVIT PAS À UN SIGNAL, ET C'EST MESURÉ (`P8.9-p`, le 2026-08-30). Le retrait
+  // ci-dessous vit dans un `finally` : il s'exécute sur un passage VERT comme sur un passage ROUGE —
+  // les deux vérifiés, zéro résidu. Mais un SIGTERM tue le processus AVANT lui, et six bacs traînaient
+  // dans le répertoire temporaire, laissés par des passages interrompus. Ce n'est pas le `finally` qui
+  // est mal écrit : c'est qu'AUCUNE discipline de nettoyage écrite dans le corps ne survit à un signal.
+  // Le crochet ci-dessous ferme le chemin du signal, et rien d'autre — un SIGKILL restera hors de portée,
+  // ce qui est dit ici plutôt que laissé croire.
   const bac = mkdtempSync(path.join(tmpdir(), "plume-harnais-p11-21-f-"));
+  const balayerLeBac = () => { try { rmSync(bac, { recursive: true, force: true }); } catch { /* déjà retiré */ } };
+  const surSignal = (sig) => { balayerLeBac(); process.removeListener(sig, surSignal); process.kill(process.pid, sig); };
+  for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"]) process.once(sig, () => surSignal(sig));
   try {
     // (+) LE POSITIF. Sans lui, un vert de cette sonde ne prouverait rien : un enfant qui ne chargerait
     //     jamais rien rendrait « tout jette », un enfant qui ne mesurerait rien rendrait « tout charge ».
@@ -7139,6 +7149,139 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   console.log(`[depli-fraicheur] les DEUX pliages du panneau Fraîcheur passent par le geste commun : chaque en-tête de groupe d'état NOMME sa région (\`aria-controls\` = \`fgbody-<état>\`, dérivé du vocabulaire fermé des états, que ni la version à la main ni le balisage ne posaient), porte la marque d'état du geste, et un clic joué sur les nœuds que \`renderFreshness\` construit fait bouger ensemble le pli, l'état annoncé, la marque et la mémoire du pli — deux fois, l'état d'origine rendu ; l'en-tête des séries métriques, qui n'est PAS un \`<button>\`, garde son clavier porteur et bascule par le même geste. \`aria-expanded\` n'est PAS compté comme un gain : il était déjà posé avant le ralliement. CE QUE CE TÉMOIN NE TIENT PAS : la marque \`.on\` est INERTE à l'écran (aucune règle de la feuille ne la vise sur ces deux en-têtes) ; \`aria-controls\` n'est PAS gagné sur les séries métriques, faute d'identité dérivable, et la borne ci-dessus le dit ; le ralliement n'est pas général — ${resteAlaMain54.length} module(s) écrivent encore la bascule à la main (${resteAlaMain54.join(", ")}) ; et rien ici ne prouve qu'une assistance technique RÉELLE lise ces attributs.`);
 }
 
+
+// ---------------------------------------------------------------------------------------------
+// 55. UNE PAGE INCOMPLÈTE N'EST PAS UN REFUS — SUR LES TROIS VUES QUI JETAIENT CE QU'ELLES AVAIENT
+//     REÇU (`P11.21-i`).
+//
+//     POURQUOI CE TÉMOIN EXISTE, ET IL NE DOUBLE PAS LE 51. Le témoin 51 tient DEUX issues sur trois :
+//     un refus ne se rend ni en panne constatée ni en absence établie. Il ne dit RIEN de la troisième,
+//     et c'est précisément celle que `P10.7-f` a créée côté démon — un corps qui porte des LIGNES ET une
+//     CAUSE. Sur ce corps-là, les trois vues prenaient la branche du refus : elles JETAIENT ce qu'elles
+//     avaient reçu. La pire (`attack.js`) annonçait qu'aucune technique n'avait été lue alors que la
+//     cause servie déclare la couverture ÉTABLIE — un verdict de couverture purple faux DEUX fois.
+//
+//     L'INSTRUMENT SE VALIDE SUR LE DÉMON, ET C'EST CE QUI EMPÊCHE UN VERT PAR CONSTRUCTION. Nourrir la
+//     console d'un corps FABRIQUÉ « lignes + cause » prouverait seulement qu'elle gère un cas — pas que
+//     ce cas existe. Les trois voies d'aveu sont donc LUES dans l'arbre du démon, et le témoin refuse de
+//     conclure si l'une disparaît : le jour où une route cesse de pouvoir tronquer, ce témoin rougit et
+//     demande qu'on le mette à jour, au lieu de rester vert sur une propriété devenue vide.
+//
+//     ET L'AVEU DOIT ÊTRE CONDITIONNEL : le chemin NOMINAL est exercé le premier, et un aveu qui s'y
+//     rendrait est un ÉCHEC — un corps qui avoue toujours n'avoue rien.
+//
+//     CE QU'IL NE TIENT PAS : il juge le TEXTE d'un arbre (ou d'une chaîne de balisage), jamais ce qu'un
+//     moteur de rendu en peint ; il ne dit rien de la POSITION visuelle de l'aveu, seulement de son rang
+//     dans l'ordre du document ; et il n'exerce pas la troisième route du démon qui sait tronquer
+//     (`/api/alerts`), tenue par le témoin de `P11.21-h`.
+// ---------------------------------------------------------------------------------------------
+{
+  const CAUSE_55 = "CAUSE-DE-TRONCATURE-FABRIQUÉE-PAR-CE-BANC-55 : aucune phrase du démon n'est citée ici";
+  const srcAlertes55 = readFileSync(path.join(RACINE, "daemon", "src", "handlers", "alerts.rs"), "utf8");
+  const srcFrais55 = readFileSync(path.join(RACINE, "daemon", "src", "handlers", "freshness.rs"), "utf8");
+  // — instrument : LES TROIS VOIES D'AVEU EXISTENT, ET ELLES SONT STRICTEMENT CONDITIONNELLES.
+  const voieConditionnelle = (src, fn) => {
+    const m = src.match(new RegExp("fn " + fn + "\\([\\s\\S]*?\\n\\}"));
+    return !!m && /if let Some\((?:cause|phrase)\)/.test(m[0]) && /\["error"\]/.test(m[0]);
+  };
+  exiger(voieConditionnelle(srcAlertes55, "corps_de_matrice_attack"),
+    "(55-instrument) `corps_de_matrice_attack` n'ajoute plus une cause CONDITIONNELLE à une matrice servie — la propriété que ce témoin tient n'a plus d'objet, mettez-le à jour au lieu de le laisser vert");
+  exiger(voieConditionnelle(srcAlertes55, "corps_de_couverture_des_detections"),
+    "(55-instrument) `corps_de_couverture_des_detections` n'ajoute plus une cause CONDITIONNELLE à des détections servies");
+  exiger(/if let Some\(phrase\) = releve\.aveu\(\)/.test(srcFrais55) && /corps\["error"\] = json!\(phrase\)/.test(srcFrais55),
+    "(55-instrument) `compute_freshness` ne pose plus l'aveu de racine du relevé : la vue de fraîcheur n'a plus de cause à lire");
+  exiger(/corps\["imputation_des_alertes"\]\["error"\]/.test(srcFrais55),
+    "(55-instrument) l'aveu IMBRIQUÉ du partage des alertes a disparu du démon : la moitié du témoin jugerait le vide");
+
+  const rendre55 = async (module, nomExport, selecteur, corps) => {
+    const hote = new Element("div"), leg = new Element("div");
+    const qs = document.querySelector, fx = globalThis.fetch;
+    document.querySelector = (s) => (s === selecteur ? hote : s === "#attack-legend" ? leg : qs(s));
+    globalThis.fetch = async () => ({ ok: true, status: 200, text: async () => JSON.stringify(corps) });
+    try { const m = await import(pathToFileURL(path.join(WEB, module)).href); await m[nomExport](); }
+    finally { document.querySelector = qs; globalThis.fetch = fx; }
+    return hote;
+  };
+
+  // --- (a) LA MATRICE ATT&CK : le pire cas — une cause qui déclare la couverture ÉTABLIE. ---
+  const TAC55 = { tactic: "discovery", rule_count: 1, covered: true, techniques: [
+    { tid: "T1046", name: "Network Service Discovery", covered: true, rule_count: 1, alert_count: 0 },
+    { tid: "T1018", name: "Remote System Discovery", covered: false, rule_count: 0, alert_count: 0 }] };
+  const cellules55 = (n) => n.querySelectorAll(".attack-cell").length;
+  const matEntiere = await rendre55("attack.js", "loadAttackMatrix", "#attack-body", { tactics: [TAC55], totals: {} });
+  const matPartielle = await rendre55("attack.js", "loadAttackMatrix", "#attack-body", { tactics: [TAC55], totals: {}, error: CAUSE_55 });
+  const matRefus = await rendre55("attack.js", "loadAttackMatrix", "#attack-body", { tactics: [], totals: {}, error: CAUSE_55 });
+  exiger(cellules55(matEntiere) === 2,
+    `(55a-instrument) une matrice SERVIE ne rend pas ses techniques (${cellules55(matEntiere)} cellule(s)) : ce témoin ne pourrait pas rougir`);
+  exiger(!matEntiere.textContent.includes(CAUSE_55),
+    "(55a-instrument) une lecture ENTIÈRE rend quand même la cause : la dérivation lit autre chose que ce qu'elle croit");
+  const AVEU_55 = matPartielle.children[0] ? matPartielle.children[0].textContent : "";
+  exiger(AVEU_55.includes(CAUSE_55),
+    `(55a) L'AVEU N'OUVRE PAS LE RENDU : un lecteur qui va de haut en bas le rencontrerait APRÈS la matrice, donc après avoir compté des alertes qui sont des SOUS-COMPTES. Premier nœud : « ${AVEU_55} »`);
+  exiger(!matEntiere.textContent.includes(AVEU_55.slice(0, 40)),
+    "(55a) LE CHEMIN NOMINAL PORTE L'AVEU : un corps qui avoue toujours n'avoue rien, et cette surface cesserait de distinguer une lecture entière d'un préfixe");
+  exiger(cellules55(matPartielle) === cellules55(matEntiere),
+    `(55a) LA MATRICE EST JETÉE SUR UN CORPS QUI LA PORTE : ${cellules55(matPartielle)} cellule(s) rendues au lieu de ${cellules55(matEntiere)}. La cause servie déclare la couverture ÉTABLIE ; annoncer qu'aucune technique n'a été lue est un verdict de couverture FAUX`);
+  exiger(cellules55(matRefus) === 0 && matRefus.textContent.includes(CAUSE_55),
+    "(55a) un REFUS (aucune tactique servie) ne rend plus le refus, ou n'en nomme plus la cause");
+  exiger(new Set([matEntiere.textContent, matPartielle.textContent, matRefus.textContent]).size === 3,
+    "(55a) les trois issues de la matrice (entière, partielle, refus) ne rendent pas trois textes distincts");
+
+  // --- (b) LA COUVERTURE PAR DÉTECTIONS : même triplet, plus le VRAI vide, qui reste une absence. ---
+  const DET55 = [{ mitre: "T1059", count: 2, first_ts: 1800000000 }, { mitre: "T1046", count: 1, first_ts: 1800000000 }];
+  const puces55 = (n) => (n.innerHTML.match(/mitrechip/g) || []).length;
+  const covEntiere = await rendre55("detection_admin.js", "renderCoverage", "#cov-body", { detections: DET55 });
+  const covPartielle = await rendre55("detection_admin.js", "renderCoverage", "#cov-body", { detections: DET55, error: CAUSE_55 });
+  const covRefus = await rendre55("detection_admin.js", "renderCoverage", "#cov-body", { detections: [], error: CAUSE_55 });
+  const covVide = await rendre55("detection_admin.js", "renderCoverage", "#cov-body", { detections: [] });
+  exiger(puces55(covEntiere) === 2 && !covEntiere.innerHTML.includes(CAUSE_55),
+    `(55b-instrument) une couverture SERVIE ne rend pas ses techniques, ou rend une cause qu'elle n'a pas (${puces55(covEntiere)} puce(s))`);
+  exiger(puces55(covPartielle) === puces55(covEntiere),
+    `(55b) LES TECHNIQUES SONT JETÉES SUR UN CORPS QUI LES PORTE : ${puces55(covPartielle)} puce(s) au lieu de ${puces55(covEntiere)}`);
+  exiger(covPartielle.innerHTML.startsWith('<div class="bad">') && covPartielle.innerHTML.includes(CAUSE_55),
+    "(55b) l'aveu n'ouvre pas le rendu de la couverture, ou n'y colle pas la cause du démon");
+  exiger(puces55(covRefus) === 0 && covRefus.innerHTML.includes(CAUSE_55),
+    "(55b) un refus de lire la couverture ne se distingue plus de la lecture partielle");
+  exiger(!covVide.innerHTML.includes(CAUSE_55) && covVide.innerHTML !== covRefus.innerHTML,
+    "(55b) LE VRAI VIDE ET LE REFUS SE CONFONDENT : c'est exactement le défaut que le témoin 51 ferme, revenu par l'autre bout");
+
+  // --- (c) LA FRAÎCHEUR : la route la plus souvent servie, et le défaut y allait dans l'autre sens —
+  //         un relevé TRONQUÉ rendu comme COMPLET, sans un mot. ---
+  const { renderFreshnessDetail: detail55 } = await import(pathToFileURL(path.join(WEB, "freshness.js")).href);
+  const FLUX55 = [{ name: "syslog", kind: "event", age_s: 30, last_seen: 1800000000, status: "frais" },
+                  { name: "auditd", kind: "event", age_s: 40, last_seen: 1800000000, status: "frais" }];
+  const IMP55 = { actives: 5, avec_cloche: 3, sans_source_nommee: 1, sans_imputation: 1, jeton_sans_source: "(source indéterminée)" };
+  const lignes55 = (h) => (h.match(/class="kv"/g) || []).length;
+  const frEntier = detail55({ feeds: FLUX55, pipeline_fresh: true, imputation_des_alertes: IMP55 });
+  const frPartiel = detail55({ feeds: FLUX55, pipeline_fresh: true, imputation_des_alertes: IMP55, error: CAUSE_55 });
+  exiger(lignes55(frEntier) >= 2 && !frEntier.includes(CAUSE_55),
+    `(55c-instrument) le détail ne rend pas ses flux, ou rend une cause qu'il n'a pas (${lignes55(frEntier)} ligne(s))`);
+  exiger(frPartiel.startsWith('<div class="bad">') && frPartiel.includes(CAUSE_55),
+    "(55c) LE RELEVÉ TRONQUÉ EST RENDU COMME UN RELEVÉ COMPLET : la cause servie n'atteint pas l'écran, et l'exploitant ne peut pas soupçonner qu'il manque des flux");
+  exiger(lignes55(frPartiel) === lignes55(frEntier),
+    "(55c) les flux servis ne sont plus rendus sur un relevé partiel : le sens de l'erreur s'est inversé dans l'autre direction");
+  // L'aveu IMBRIQUÉ du partage vit DANS son sous-objet, et il a ses deux issues à lui.
+  const frImp = detail55({ feeds: FLUX55, pipeline_fresh: true, imputation_des_alertes: { ...IMP55, error: CAUSE_55 } });
+  const frImpRefus = detail55({ feeds: FLUX55, pipeline_fresh: true, imputation_des_alertes: { actives: 0, avec_cloche: 0, sans_source_nommee: 0, sans_imputation: 0, jeton_sans_source: "x", error: CAUSE_55 } });
+  exiger(!frEntier.includes(CAUSE_55) && frImp.includes(CAUSE_55) && /5<\/b> alerte/.test(frImp),
+    "(55c) le partage des alertes ne rend pas SA cause À CÔTÉ de ses quatre nombres : une somme qui a l'air juste et porte sur moins d'alertes qu'il n'y en a");
+  exiger(frImpRefus.includes(CAUSE_55),
+    "(55c) un partage dont RIEN n'a été compté reste MUET : l'absence du bloc se lit « aucune alerte active », qui est le fait le plus rassurant de cette vue");
+  // Les deux chargeurs de vue, sur un corps SANS flux et AVEC une cause.
+  const pulseRefus = await rendre55("freshness.js", "renderFreshnessPulse", "#freshness .body", { feeds: [], pipeline_fresh: true, error: CAUSE_55 });
+  const pulseVide = await rendre55("freshness.js", "renderFreshnessPulse", "#freshness .body", { feeds: [], pipeline_fresh: true });
+  const detailRefus = await rendre55("freshness.js", "renderFreshness", "#freshness-panel .body", { feeds: [], pipeline_fresh: true, error: CAUSE_55 });
+  const PHRASE_DE_VIDE_55 = pulseVide.innerHTML;
+  exiger(PHRASE_DE_VIDE_55.length > 20 && !PHRASE_DE_VIDE_55.includes(CAUSE_55),
+    `(55c-instrument) la phrase de référence du VRAI vide n'est pas dérivable (« ${PHRASE_DE_VIDE_55} »)`);
+  exiger(pulseRefus.innerHTML.includes(CAUSE_55) && !pulseRefus.innerHTML.includes(PHRASE_DE_VIDE_55),
+    `(55c) LE PULSE REND UN REFUS COMME UNE ABSENCE — et c'est la charge VIVE de la vue d'arrivée, donc la plus souvent lue de tout ce lot. Rendu : « ${pulseRefus.innerHTML} »`);
+  exiger(detailRefus.innerHTML.includes(CAUSE_55) && !detailRefus.innerHTML.includes(PHRASE_DE_VIDE_55),
+    `(55c) LE DÉTAIL DE LA FRAÎCHEUR REND UN REFUS COMME UNE ABSENCE. Rendu : « ${detailRefus.innerHTML} »`);
+
+  console.log(`[page-incomplete-pas-refus] trois vues, trois issues chacune sur le corps que le démon sert VRAIMENT : la matrice ATT&CK rend ses ${cellules55(matPartielle)} technique(s) sous un aveu au lieu de les jeter (elle en jetait toutes, sur une cause qui déclare la couverture ÉTABLIE), la couverture par détections rend ses ${puces55(covPartielle)} technique(s) et distingue encore le VRAI vide du refus, et la fraîcheur — dont le défaut allait dans l'AUTRE sens, un relevé tronqué servi comme complet — avoue à la racine, dans le partage des alertes, et sur ses deux chargeurs de vue. Les TROIS voies d'aveu sont LUES dans le démon et non supposées : si l'une cesse d'être conditionnelle, ce témoin refuse de conclure. Le chemin NOMINAL est exercé le premier et ne porte AUCUN aveu — un corps qui avoue toujours n'avoue rien. Aucune phrase du démon n'est recopiée : la cause injectée est visiblement fabriquée. CE QUE CE TÉMOIN NE TIENT PAS : il juge le TEXTE d'un arbre, jamais ce qu'un moteur de rendu en peint ; il ne dit rien de la position VISUELLE de l'aveu, seulement de son rang dans le document ; et il n'exerce pas /api/alerts, tenu par le témoin de \`P11.21-h\`.`);
+}
+
 // LE VERDICT PORTE SA PROPRE LIMITE (`P11.13-g`). Un vert qui ne dit pas ce sur quoi il ne s'engage pas
 // se lit comme une COUVERTURE — et un rouge n'a pas plus le droit de laisser croire qu'il a tout regardé.
 // La phrase ci-dessous n'est pas écrite : elle est DÉRIVÉE des sondes de la section 0, donc une capacité
@@ -7150,4 +7293,4 @@ if (echecs.length) {
   console.error(`\n${echecs.length} témoin(s) en échec : la surface aplatit un verdict.${CE_QUE_CE_VERDICT_NE_DIT_PAS}`);
   process.exit(1);
 }
-console.log(`OK — ${modules.length} modules web se lient ; le panneau Système rend l'état « NON LISIBLE » avec sa cause sur 5 tuiles, les bilans de boucles et les grandeurs de composant, et la valeur quand le verdict est « lu » (vrai zéro compris) ; un playbook livré et un runbook créé rendent par la même fabrique de ligne, avec le mot de leur état et leur conséquence ; la liste des alertes rend une seule barre d'actions sur tous ses tris, aucune action n'est désactivée au motif d'une facette, et la facette source dit son objet et son étendue ; une technique ATT&CK sans nom se dit, l'éditeur de requête laisse « != » en place sous la frappe, la palette des modèles porte modifier/supprimer/copier, et le badge de troncature nomme le saut de page ; l'inventaire des sources NOMME le déclarant de chaque source — ce dépôt, le démon, le produit, un connecteur, ou l'exploitant avec sa date — dit « personne ne l'a déclarée » là où c'est le cas, et n'offre de déclarer une cadence que là où aucune sonde n'en déclare ; la fraîcheur rend le statut du démon (une périodique dans sa cadence = frais, jamais « dégradé ») et RÉPARTIT les alertes actives entre celles qu'une cloche porte, celles qui ne se rapportent à aucun flux (et qui pivotent vers elles-mêmes) et celles dont l'imputation n'a jamais été enregistrée, sans rien afficher quand aucune alerte n'est active ; une carte d'administration se replie par son bouton sans jamais le griser, un formulaire de création ne rend aucun bouton nu, et la confirmation partagée exige une conséquence nommée, bloque écartée et passe validée ; la sidebar porte deux espaces « Recherche » et « Cas » égaux au modèle de navigation, les alertes sous Cas, l'éditeur seul sous Recherche, chaque section mappée existe, et les deux familles de l'onglet Playbooks sont nommées dans leurs en-têtes et boutons, la durée du ban suivant la valeur servie ; les fabriques de bouton des cas et des producteurs, la barre des alertes et le bloc MFA ne rendent aucun bouton nu ni style en ligne, et chaque bouton d'aide a sa section ; l'aide « Jetons » s'ouvre et dit le secret montré une seule fois, et une clé sans section ouvre un aveu qui la nomme ; le bouton de fermeture des modales d'aide et les titres du guide rendent en anglais par le lexique, jamais par un mot écrit dans le module ; l'amorçage pose l'observateur du lexique sur le corps du document et celui-ci traduit un nœud texte, un élément et un attribut posés après coup ; le panneau d'accès données rend cinq cartes qui DISTINGUENT un refus du démon d'une absence de données — sans réseau elles avouent leur cause au lieu d'affirmer un vide — son sélecteur et ses sept chemins surveillés ; la ligne d'un lookup porte nom, badge, clé, colonnes et bouton habillé, et le collage CSV lit les guillemets et refuse un collage sans données ; une tuile de dashboard rend son titre, ses outils selon le droit, sa largeur, et sa grille avoue l'erreur sans réseau ; l'encart d'identité nomme la méthode d'authentification hors session cookie et l'écran de connexion verrouille le corps du document en coupant l'auto-rafraîchissement ; un onglet interdit, inconnu ou renommé se replie sur la vue d'ensemble sans réécrire le lien profond ; la ligne d'un cas ouvre et REFERME le détail par le dépli partagé, le bouton du détail emprunte le même chemin et repeint la ligne, un cas terminé rend un statut inerte qui NOMME sa raison et sa sortie là où il n'en rendait aucun, un cas en cours ne la porte pas, et un droit manquant se dit autrement qu'un état qui ne bouge plus ; la ligne d'une règle rend DÉJÀ tester, éditer, supprimer et un interrupteur actif pour un administrateur, inerte et motivé pour un lecteur ; et LA recherche de liste, partagée, resserre sur plusieurs mots sans se soucier de la casse ni des accents, cherche une règle par son nom, sa requête et sa technique, rend une liste plate ordonnée par le tri courant qui DIT combien de lignes sur combien elle montre, nomme ce qu'elle a cherché quand elle ne trouve rien, et se vide au retour d'un enregistrement pour que la règle écrite se voie ; enfin une technique ATT&CK est une PORTE — ses règles, ses détections par le pivot qui existait déjà (le module ne fabrique aucune requête) et le geste qui la couvrirait, un angle mort qui se dit et met la création en avant, une sortie impraticable rendue inerte avec son motif, et un lecteur à qui le rôle manquant est nommé ; un filtre choisi de la barre des alertes ne se marque plus par la graisse de son mot — que le gras réservait ailleurs à l'alarme — mais par un liseré que rien d'autre n'emploie, et il DIT son état ; l'espace qui porte les alertes et les cas les annonce tous les deux — aucun espace à plusieurs onglets ne porte plus le nom d'un seul — et son filtre se nomme par ce qu'il MONTRE au lieu d'une relation que l'exploitant ne savait pas lire ; une alerte se cherche par son titre, le jeton de sa regle et sa source imputee, par LE meme champ partage : la recherche se compose avec la portee, le filtre d'affichage et les facettes sans jamais partir au demon, met le groupement de cote le temps de rendre ses resultats, DIT ce qu'elle couvre — les alertes servies, ou la seule page affichee — et retire de la barre l'acquittement qui la depasserait ; la selection rend ce qui est selectionne — le clic d'une ligne de resultats et celui d'un titre d'alerte se retirent devant une selection faite chez eux, et devant elle seule — pendant qu'UN unique geste de copie, seul ecrivain du presse-papier dans web/, accuse le succes et avoue un refus au lieu de le taire ; le detail d'un composant du panneau Systeme n'est plus coupe a une ligne par la feuille de style — l'avertissement d'exercice de restauration se lit jusqu'a sa conclusion et la reference documentaire qu'il porte se copie en un geste, faute d'etre servie par une route ; et les trois correctifs que rien ne tenait le sont enfin : un refus de lire l'inventaire de flotte ou la couverture ATT&CK ne se rend NI en panne d'ingestion constatée NI en absence établie — les trois issues sont distinctes sur la même fonction, et les deux phrases qu'un refus ne doit pas reprendre sont dérivées du rendu, jamais recopiées ; le bouton qui efface les dates n'est offert que lorsqu'il a quelque chose à retirer, sur quatre états et jusque sur le retrait fait par une AUTRE vue, qui passe par l'écrivain unique de la plage ; et les deux derniers déplis écrits à la main NOMMENT la région qu'ils commandent, ce qu'aucun d'eux ne faisait, la borne disant combien de modules ne sont pas ralliés.${CE_QUE_CE_VERDICT_NE_DIT_PAS}`);
+console.log(`OK — ${modules.length} modules web se lient ; le panneau Système rend l'état « NON LISIBLE » avec sa cause sur 5 tuiles, les bilans de boucles et les grandeurs de composant, et la valeur quand le verdict est « lu » (vrai zéro compris) ; un playbook livré et un runbook créé rendent par la même fabrique de ligne, avec le mot de leur état et leur conséquence ; la liste des alertes rend une seule barre d'actions sur tous ses tris, aucune action n'est désactivée au motif d'une facette, et la facette source dit son objet et son étendue ; une technique ATT&CK sans nom se dit, l'éditeur de requête laisse « != » en place sous la frappe, la palette des modèles porte modifier/supprimer/copier, et le badge de troncature nomme le saut de page ; l'inventaire des sources NOMME le déclarant de chaque source — ce dépôt, le démon, le produit, un connecteur, ou l'exploitant avec sa date — dit « personne ne l'a déclarée » là où c'est le cas, et n'offre de déclarer une cadence que là où aucune sonde n'en déclare ; la fraîcheur rend le statut du démon (une périodique dans sa cadence = frais, jamais « dégradé ») et RÉPARTIT les alertes actives entre celles qu'une cloche porte, celles qui ne se rapportent à aucun flux (et qui pivotent vers elles-mêmes) et celles dont l'imputation n'a jamais été enregistrée, sans rien afficher quand aucune alerte n'est active ; une carte d'administration se replie par son bouton sans jamais le griser, un formulaire de création ne rend aucun bouton nu, et la confirmation partagée exige une conséquence nommée, bloque écartée et passe validée ; la sidebar porte deux espaces « Recherche » et « Cas » égaux au modèle de navigation, les alertes sous Cas, l'éditeur seul sous Recherche, chaque section mappée existe, et les deux familles de l'onglet Playbooks sont nommées dans leurs en-têtes et boutons, la durée du ban suivant la valeur servie ; les fabriques de bouton des cas et des producteurs, la barre des alertes et le bloc MFA ne rendent aucun bouton nu ni style en ligne, et chaque bouton d'aide a sa section ; l'aide « Jetons » s'ouvre et dit le secret montré une seule fois, et une clé sans section ouvre un aveu qui la nomme ; le bouton de fermeture des modales d'aide et les titres du guide rendent en anglais par le lexique, jamais par un mot écrit dans le module ; l'amorçage pose l'observateur du lexique sur le corps du document et celui-ci traduit un nœud texte, un élément et un attribut posés après coup ; le panneau d'accès données rend cinq cartes qui DISTINGUENT un refus du démon d'une absence de données — sans réseau elles avouent leur cause au lieu d'affirmer un vide — son sélecteur et ses sept chemins surveillés ; la ligne d'un lookup porte nom, badge, clé, colonnes et bouton habillé, et le collage CSV lit les guillemets et refuse un collage sans données ; une tuile de dashboard rend son titre, ses outils selon le droit, sa largeur, et sa grille avoue l'erreur sans réseau ; l'encart d'identité nomme la méthode d'authentification hors session cookie et l'écran de connexion verrouille le corps du document en coupant l'auto-rafraîchissement ; un onglet interdit, inconnu ou renommé se replie sur la vue d'ensemble sans réécrire le lien profond ; la ligne d'un cas ouvre et REFERME le détail par le dépli partagé, le bouton du détail emprunte le même chemin et repeint la ligne, un cas terminé rend un statut inerte qui NOMME sa raison et sa sortie là où il n'en rendait aucun, un cas en cours ne la porte pas, et un droit manquant se dit autrement qu'un état qui ne bouge plus ; la ligne d'une règle rend DÉJÀ tester, éditer, supprimer et un interrupteur actif pour un administrateur, inerte et motivé pour un lecteur ; et LA recherche de liste, partagée, resserre sur plusieurs mots sans se soucier de la casse ni des accents, cherche une règle par son nom, sa requête et sa technique, rend une liste plate ordonnée par le tri courant qui DIT combien de lignes sur combien elle montre, nomme ce qu'elle a cherché quand elle ne trouve rien, et se vide au retour d'un enregistrement pour que la règle écrite se voie ; enfin une technique ATT&CK est une PORTE — ses règles, ses détections par le pivot qui existait déjà (le module ne fabrique aucune requête) et le geste qui la couvrirait, un angle mort qui se dit et met la création en avant, une sortie impraticable rendue inerte avec son motif, et un lecteur à qui le rôle manquant est nommé ; un filtre choisi de la barre des alertes ne se marque plus par la graisse de son mot — que le gras réservait ailleurs à l'alarme — mais par un liseré que rien d'autre n'emploie, et il DIT son état ; l'espace qui porte les alertes et les cas les annonce tous les deux — aucun espace à plusieurs onglets ne porte plus le nom d'un seul — et son filtre se nomme par ce qu'il MONTRE au lieu d'une relation que l'exploitant ne savait pas lire ; une alerte se cherche par son titre, le jeton de sa regle et sa source imputee, par LE meme champ partage : la recherche se compose avec la portee, le filtre d'affichage et les facettes sans jamais partir au demon, met le groupement de cote le temps de rendre ses resultats, DIT ce qu'elle couvre — les alertes servies, ou la seule page affichee — et retire de la barre l'acquittement qui la depasserait ; la selection rend ce qui est selectionne — le clic d'une ligne de resultats et celui d'un titre d'alerte se retirent devant une selection faite chez eux, et devant elle seule — pendant qu'UN unique geste de copie, seul ecrivain du presse-papier dans web/, accuse le succes et avoue un refus au lieu de le taire ; le detail d'un composant du panneau Systeme n'est plus coupe a une ligne par la feuille de style — l'avertissement d'exercice de restauration se lit jusqu'a sa conclusion et la reference documentaire qu'il porte se copie en un geste, faute d'etre servie par une route ; et les trois correctifs que rien ne tenait le sont enfin : un refus de lire l'inventaire de flotte ou la couverture ATT&CK ne se rend NI en panne d'ingestion constatée NI en absence établie — les trois issues sont distinctes sur la même fonction, et les deux phrases qu'un refus ne doit pas reprendre sont dérivées du rendu, jamais recopiées ; le bouton qui efface les dates n'est offert que lorsqu'il a quelque chose à retirer, sur quatre états et jusque sur le retrait fait par une AUTRE vue, qui passe par l'écrivain unique de la plage ; et les deux derniers déplis écrits à la main NOMMENT la région qu'ils commandent, ce qu'aucun d'eux ne faisait, la borne disant combien de modules ne sont pas ralliés. ENFIN une page INCOMPLÈTE n'est plus rendue comme un REFUS sur les trois vues qui jetaient ce qu'elles avaient reçu : une matrice ATT&CK, une couverture de détections et un relevé de fraîcheur servis AVEC des lignes ET une cause rendent leurs lignes SOUS un aveu qui ouvre le rendu, le chemin nominal n'en porte aucun, et les trois voies d'aveu sont LUES dans l'arbre du démon — si l'une cesse d'exister, ce témoin REFUSE DE CONCLURE au lieu de rester vert sur une propriété devenue vide.${CE_QUE_CE_VERDICT_NE_DIT_PAS}`);

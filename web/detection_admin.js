@@ -39,18 +39,51 @@ async function renderCoverage() {
   // est exactement ce que `check_a_refusal_is_not_rendered_as_an_absence.py` rend non-écrivable sous
   // `web/`. La cause n'est pas recopiée ici ; elle est écrite une seule fois dans
   // `daemon/src/handlers/portillon.rs` et rendue telle quelle.
+  //
+  // `P11.21-i` — IL Y A TROIS ÉTATS, PAS DEUX, ET LE TROISIÈME EST NÉ LE 2026-08-30.
+  //
+  // CE QUE CE BLOC TENAIT POUR ACQUIS ET QUI EST DEVENU FAUX : que toute cause servie sur cette route
+  // vienne d'un corps SANS détection. Depuis `P10.7-f`, `corps_de_couverture_des_detections`
+  // (`daemon/src/handlers/alerts.rs`) ajoute une cause à une liste qui porte des TECHNIQUES RÉELLES dès
+  // que le parcours a été coupé : la liste servie est un PRÉFIXE. Prendre la branche du refus jetait
+  // alors les techniques reçues et annonçait que rien n'avait été lu — MOINS que ce qui est su.
+  //
+  // LES TROIS ÉTATS SONT DÉRIVÉS DU CORPS, JAMAIS DE LA ROUTE. Une cause SANS détection est un REFUS
+  // (rien n'a été lu) ; une cause AVEC des détections est une lecture PARTIELLE (un préfixe a été lu) ;
+  // pas de cause est une lecture entière. LE TEST DU REFUS RESTE SÉPARÉ DE CELUI DU VIDE — les fondre
+  // est ce que `check_a_refusal_is_not_rendered_as_an_absence.py` rend non-écrivable sous `web/`.
+  //
+  // UN SEUL LECTEUR DU CHAMP SERVI, ICI MÊME, À UN CRAN DE L'APPEL. Interposer une fonction de plus
+  // entre l'appel et `.error` AVEUGLERAIT la jambe B de cette garde, qui dérive ses lecteurs des
+  // fonctions du MÊME module et ne suit aucune indirection (mesuré le 2026-08-30 : zéro à trois
+  // accusations sur `alerts.js`). C'est aussi ce qui INTERDIT de factoriser cette dérivation vers le
+  // point commun ; chaque vue porte donc sa copie, et c'est un coût connu, pas un oubli.
   let rep;
   try { rep = await api('/coverage/detections'); } catch (e) { b.innerHTML = '<div class="muted">couverture indisponible</div>'; return; }
-  const refusServi = (rep && rep.error != null) ? String(rep.error).trim() : '';
-  if (refusServi) {
-    b.innerHTML = '<div class="bad">' + esc("Couverture ATT&CK NON LUE : le démon a refusé et en nomme la cause — « " + refusServi
+  const causeServie = (rep && rep.error != null) ? String(rep.error).trim() : '';
+  const detections = (rep && rep.detections) || [];
+  const servies = (detections && detections.length) ? detections.length : 0;
+  const refus = !!causeServie && servies === 0;
+  const incomplet = !!causeServie && servies > 0;
+  if (refus) {
+    b.innerHTML = '<div class="bad">' + esc("Couverture ATT&CK NON LUE : le démon a refusé et en nomme la cause — « " + causeServie
       + " » Ce n'est PAS une absence : aucune technique n'a été lue, donc rien ici n'établit qu'aucune n'a "
       + "été détectée, ni que la couverture soit nulle.") + '</div>';
     return;
   }
-  const detections = rep.detections || [];
-  if (!detections.length) { b.innerHTML = '<div class="muted">aucune technique détectée (les alertes taguées MITRE apparaîtront ici)</div>'; return; }
-  b.innerHTML = detections.map(d => {
+  if (!servies) { b.innerHTML = '<div class="muted">aucune technique détectée (les alertes taguées MITRE apparaîtront ici)</div>'; return; }
+  // L'AVEU PRÉCÈDE LES LIGNES. Un démenti posé SOUS la liste serait rencontré APRÈS elle par un lecteur
+  // qui va de haut en bas. Bilingue par construction ; la cause du démon est collée telle quelle, elle
+  // n'est écrite qu'UNE fois, côté démon, et la redire ici en ferait un porteur qui vieillirait.
+  // Vide — donc byte-neutre — sur une lecture entière.
+  const aveuPartiel = incomplet
+    ? '<div class="bad">' + esc(LANG === 'en'
+      ? 'ATT&CK coverage PARTIALLY READ — the daemon served techniques AND names a cause: "' + causeServie
+        + '" What is displayed below is that partial read, and nothing more.'
+      : "Couverture ATT&CK PARTIELLEMENT LUE — le démon a servi des techniques ET en nomme la cause : « " + causeServie
+        + " » Ce qui est affiché ci-dessous est cette lecture partielle, et rien de plus.") + '</div>'
+    : '';
+  b.innerHTML = aveuPartiel + detections.map(d => {
     const nm = mitreName(d.mitre);
     return `<div class="kv"><span><span class="mitrechip mitrepivot" data-m="${esc(d.mitre)}" title="Voir les alertes ${esc(d.mitre)}">${esc(d.mitre)}</span>${nm ? ` <span class="muted">— ${esc(nm)}</span>` : ''}</span>` +
     `<b title="1re détection ${fmtTs(d.first_ts)}">${d.count} détection(s) <span class="muted">· depuis ${fmtTs(d.first_ts)}</span></b></div>`;

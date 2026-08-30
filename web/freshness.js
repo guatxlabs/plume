@@ -431,6 +431,60 @@ function barreDOrdre(ordre) {
 
 // RENDU PUR du détail à partir de la charge utile de /api/freshness (exercé par le harnais ESM sur des objets
 // fabriqués). Renvoie le HTML ; `renderFreshness` le pose et câble les gestes.
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// `P11.21-i` — CE PANNEAU AVAIT LE DÉFAUT DANS L'AUTRE SENS, ET C'EST LE PLUS DANGEREUX DES DEUX.
+//
+// CE QUI ÉTAIT FAUX DANS L'ÉNONCÉ DE LA CLÉ, MESURÉ LE 2026-08-30 : il annonçait que ces vues
+// « prennent la branche du refus dès qu'une cause apparaît, donc jettent les données reçues ». Les deux
+// vues de la fraîcheur ne prenaient AUCUNE branche : `error` n'était lu NULLE PART dans ce module. Elles
+// ne rendaient donc pas MOINS que ce qui est su, elles rendaient PLUS — un relevé TRONQUÉ servi comme
+// un relevé COMPLET, sans un mot. C'est le sens optimiste de l'erreur, celui dont un exploitant ne peut
+// même pas soupçonner qu'il manque quelque chose, et il n'est pas rattrapé par la prudence.
+//
+// LA ROUTE EST AUSSI LA PLUS EXPOSÉE DES TROIS, ET CE N'EST PAS UNE INTUITION. (a) Son corps est
+// alimenté par PLUSIEURS parcours indépendants (`ParcoursDeFraicheur`, `daemon/src/handlers/freshness.rs`)
+// et la cause paraît dès qu'UN SEUL n'est pas allé au bout — c'est une union, pas un parcours unique.
+// (b) L'un d'eux lit `alert WHERE status='new'` EN ENTIER, sans borne de fenêtre, là où les deux routes
+// de couverture lisent des agrégats bornés et indexés : c'est exactement le parcours que la garde de
+// budget coupe. (c) Elle est la seule des trois à être une charge VIVE du registre
+// (`navigation.js`) : le pulse repart à chaque tir de cadence sur la vue d'ensemble — la vue d'arrivée —
+// et se re-poll toutes les 3 s pendant le préchauffage, quand les deux panneaux de couverture sont des
+// CATALOGUES qui ne partent qu'à l'entrée dans leur onglet ou sur un geste de rafraîchissement.
+//
+// LES TROIS ÉTATS SONT DÉRIVÉS DU CORPS, JAMAIS DE LA ROUTE, ET LA LECTURE EST À UN CRAN : la jambe B de
+// `check_a_refusal_is_not_rendered_as_an_absence.py` dérive ses lecteurs des fonctions du MÊME module
+// dont le corps PROPRE porte `.error`. Cette fonction en est une ; interposer une indirection de plus
+// l'aveuglerait, et la factorisation vers le point commun est interdite par la même forme.
+function etatDuReleveServi(d) {
+  const cause = (d && d.error != null) ? String(d.error).trim() : '';
+  const flux = (d && d.feeds) || null;
+  const servis = (flux && flux.length) ? flux.length : 0;
+  return { cause, servis, refus: !!cause && servis === 0, incomplet: !!cause && servis > 0 };
+}
+// La phrase du RELEVÉ NON LU. Bilingue par construction ; la cause du démon est collée telle quelle —
+// elle est écrite une seule fois côté démon, la redire ici en ferait un porteur qui vieillirait.
+function motDuReleveNonLu(cause) {
+  return LANG === 'en'
+    ? 'Source freshness NOT READ: the daemon declined and names the cause — "' + cause
+      + '" This is NOT an absence: no feed was read, so nothing here establishes that no source is reporting.'
+    : "Fraîcheur des sources NON LUE : le démon a refusé et en nomme la cause — « " + cause
+      + " » Ce n'est PAS une absence : aucun flux n'a été lu, donc rien ici n'établit qu'aucune source ne remonte.";
+}
+// La phrase du RELEVÉ PARTIEL. Elle n'est PAS celle du refus : « aucun flux n'a été lu » serait faux ici.
+// Elle n'ajoute que ce que le démon ne peut pas savoir — quelle vue a été demandée, et que ce qui suit
+// est ce préfixe.
+function motDuRelevePartiel(cause) {
+  return LANG === 'en'
+    ? 'Source freshness PARTIALLY READ — the daemon served feeds AND names a cause: "' + cause
+      + '" What is displayed below is that partial read, and nothing more.'
+    : "Fraîcheur des sources PARTIELLEMENT LUE — le démon a servi des flux ET en nomme la cause : « " + cause
+      + " » Ce qui est affiché ci-dessous est cette lecture partielle, et rien de plus.";
+}
+// Le bandeau, dans le registre de l'aveu. Vide — donc byte-neutre — sur une lecture entière.
+function bandeauDeReleveIncomplet(etat) {
+  return etat.incomplet ? '<div class="bad">' + esc(motDuRelevePartiel(etat.cause)) + '</div>' : '';
+}
+
 function renderFreshnessDetail(d) {
   const feeds = (d.feeds || []).slice();
   // P11.16-a — COMBIEN de flux de cette liste ne sont PAS des sources d'événements : l'inventaire, qui
@@ -439,6 +493,12 @@ function renderFreshnessDetail(d) {
   feeds.sort((a, c) => (rangDEtatDeSource(freshState(a)) - rangDEtatDeSource(freshState(c))) || a.name.localeCompare(c.name));
   // le STATUT = santé de collecte : muet seulement si l'ingestion est en panne ; en retard seulement au-delà
   // d'une cadence DÉCLARÉE ; sinon l'âge est INFORMATIF.
+  // `P11.21-i` — L'AVEU DE RACINE PRÉCÈDE TOUT LE RESTE, y compris la ligne d'état de la collecte : un
+  // démenti posé plus bas serait rencontré APRÈS les groupes par un lecteur qui va de haut en bas.
+  // MESURE QUI ÉVITE UNE FAUSSE ACCUSATION : `pipeline_fresh` ne vient PAS du parcours des flux — il est
+  // lu par un `query_row` séparé sur `MAX(ts)` (`daemon/src/handlers/freshness.rs`). Une coupe des flux
+  // ne peut donc pas FABRIQUER la bannière « Ingestion en panne », et rien ici n'a à la neutraliser.
+  const aveuDeRacine = bandeauDeReleveIncomplet(etatDuReleveServi(d));
   const head0 = !d.pipeline_fresh
     ? `<div class="bad" style="font-weight:600;margin-bottom:8px">${ic('warn')} Ingestion en panne — aucune donnée reçue récemment</div>`
     : `<div class="muted" style="margin-bottom:8px">Collecte OK. L'âge = temps depuis la dernière donnée. Il ne devient un retard que pour une source dont QUELQU'UN — une sonde du démon ou l'exploitant — DÉCLARE une cadence continue ; pour les autres, il ne dit que l'activité.</div>`;
@@ -459,7 +519,21 @@ function renderFreshnessDetail(d) {
   const orph = imp ? Number(imp.sans_source_nommee) || 0 : 0;
   const muettes = imp ? Number(imp.sans_imputation) || 0 : 0;
   const actives = imp ? Number(imp.actives) || 0 : 0;
+  // `P11.21-i` — LE PARTAGE PORTE SA PROPRE CAUSE, ET ELLE EST LUE ICI MÊME. Le démon la pose DANS
+  // `imputation_des_alertes` (`CAUSE_IMPUTATION_NON_ETABLIE`) précisément pour qu'un consommateur qui ne
+  // lit que ce sous-objet ne soit pas trompé — ce module ne lisait ni celle-ci ni celle de la racine, et
+  // rendait quatre nombres qui se retrouvent entre eux comme s'ils portaient sur TOUTES les alertes
+  // actives. Un compte tronqué ne raccourcit rien : il rend une somme qui a l'air juste.
+  const causeDuPartage = (imp && imp.error != null) ? String(imp.error).trim() : '';
   let bloc = '';
+  if (causeDuPartage && actives === 0) {
+    // Rien n'a été compté ET une cause est servie : ne rien afficher se lirait « aucune alerte active ».
+    bloc = '<div class="bad">' + esc(LANG === 'en'
+      ? 'Active-alert split NOT ESTABLISHED: the daemon declined and names the cause — "' + causeDuPartage
+        + '" This is NOT an absence: nothing was counted, so nothing here establishes that no alert is active.'
+      : "Partage des alertes actives NON ÉTABLI : le démon a refusé et en nomme la cause — « " + causeDuPartage
+        + " » Ce n'est PAS une absence : rien n'a été compté, donc rien ici n'établit qu'aucune alerte n'est active.") + '</div>';
+  }
   if (imp && actives > 0) {
     const jeton = String(imp.jeton_sans_source || '');
     const parts = [`${ic('bell')} <b>${actives}</b> alerte(s) active(s) : <b>${Number(imp.avec_cloche) || 0}</b> imputée(s) à un flux (leur cloche est allumée ci-dessous)`];
@@ -469,7 +543,15 @@ function renderFreshnessDetail(d) {
     if (muettes > 0) {
       parts.push(`<b>${muettes}</b> <span title="Aucune imputation enregistrée et rien de nommable dans leur texte : alertes levées avant l'imputation, ou par un producteur qui ne l'écrit pas. Le compte par source les ignore — c'est dit ici plutôt que tu.">sans imputation enregistrée (le compte par source les ignore)</span>`);
     }
-    bloc = `<div class="muted" style="margin-top:6px">${parts.join(' · ')}.</div>`;
+    // L'aveu PRÉCÈDE les nombres, pour la même raison qu'ailleurs. Vide sur un parcours complet.
+    const aveuDuPartage = causeDuPartage
+      ? '<div class="bad">' + esc(LANG === 'en'
+        ? 'Active-alert split PARTIALLY READ — the daemon served the counts AND names a cause: "' + causeDuPartage
+          + '" The numbers below are that partial read, and nothing more.'
+        : "Partage des alertes actives PARTIELLEMENT LU — le démon a servi les comptes ET en nomme la cause : « " + causeDuPartage
+          + " » Les nombres ci-dessous sont cette lecture partielle, et rien de plus.") + '</div>'
+      : '';
+    bloc = aveuDuPartage + `<div class="muted" style="margin-top:6px">${parts.join(' · ')}.</div>`;
   }
   // une SÉRIE métrique (sous le feed agrégé déplié) : même modèle d'état que les sources (statut du démon).
   const seriesRow = s => {
@@ -537,7 +619,7 @@ function renderFreshnessDetail(d) {
   const cats = [...groups.entries()].sort((a, c) => rangDEtatDeSource(a[0]) - rangDEtatDeSource(c[0]));
   const summaryLine = `<div class="capsum">${summaryPills(feeds)}${renvoi('#sources')}</div>`;
   const ordre = ordreDansUnEtat();
-  let html = head0 + summaryLine + barreDOrdre(ordre);
+  let html = aveuDeRacine + head0 + summaryLine + barreDOrdre(ordre);
   for (const [cat, arr] of cats) {
     trierDansUnEtat(arr, ordre);
     const collapsed = S.freshCollapsed.has('cat:' + cat);
@@ -585,17 +667,26 @@ async function renderFreshness(loading) {
   let d; try { d = await api('/freshness'); } catch (e) { b.classList.remove('reloading'); const p = b.querySelector(':scope > .tableprog'); if (p) p.hidden = true; return; }
   b.classList.remove('reloading');
   const feeds = d.feeds || [];
+  // `P11.21-i` — L'ÉTAT DE LA LECTURE SERVIE, LU À UN CRAN DE L'APPEL, SUR LE CORPS.
+  const etat = etatDuReleveServi(d);
   // FROID : le serveur calcule la fraîcheur en async (~5s, scan 7j chiffré) et renvoie warming SANS bloquer.
   // On affiche un placeholder « … » (PAS un vide-définitif) et on re-poll de façon rapprochée jusqu'à ce que
   // la vraie valeur arrive — au lieu d'attendre le prochain tick d'auto-refresh (30s).
   if (d.warming) {
     clearTimeout(S.freshnessRepollTimer);
     S.freshnessRepollTimer = setTimeout(renderFreshness, 3000);
-    if (!feeds.length) { b.innerHTML = '<div class="muted">… mesure de la fraîcheur des sources en cours</div>'; return; }
+    // `P11.21-i` — LE PRÉCHAUFFAGE NE MANGE PLUS UNE CAUSE SERVIE. « mesure en cours » décrit l'état du
+    // CALCUL, pas une absence : il reste rendu tel quel, mais il ne l'emporte plus sur un aveu du démon.
+    // Le re-poll est armé AVANT, donc rien n'est perdu — le tir suivant repeindra dans 3 s.
+    if (!etat.cause && !feeds.length) { b.innerHTML = '<div class="muted">… mesure de la fraîcheur des sources en cours</div>'; return; }
     // (cas rare) warming avec dernières valeurs connues -> on retombe sur l'affichage normal ci-dessous.
   } else {
     clearTimeout(S.freshnessRepollTimer); S.freshnessRepollTimer = null;
   }
+  // LE REFUS AVANT LE VIDE, ET LES DEUX TESTS SÉPARÉS : « aucun feed récent » sur un corps qui NOMME sa
+  // cause est une lecture non faite servie comme un fait — le vide le plus rassurant qui soit sur une
+  // surface de collecte, servi précisément quand rien n'a été lu.
+  if (etat.refus) { b.innerHTML = '<div class="bad">' + esc(motDuReleveNonLu(etat.cause)) + '</div>'; return; }
   if (!feeds.length) { b.innerHTML = '<div class="muted">aucun feed récent</div>'; return; }
   const html = renderFreshnessDetail(d);
   b.innerHTML = html;
@@ -700,14 +791,19 @@ async function renderFreshnessPulse() {
   const b = $('#freshness .body'); if (!b) return;
   let d; try { d = await api('/freshness'); } catch (e) { return; }
   const feeds = d.feeds || [];
-  if (d.warming && !feeds.length) { b.innerHTML = '<div class="muted">… mesure de la fraîcheur des sources en cours</div>'; return; }
+  // `P11.21-i` — LE PULSE EST LA SURFACE LA PLUS SOUVENT TIRÉE DE TOUT CE LOT (charge VIVE du registre,
+  // sur la vue d'arrivée) : c'est ici qu'un relevé tronqué servi comme complet est vu le plus souvent.
+  const etat = etatDuReleveServi(d);
+  if (d.warming && !etat.cause && !feeds.length) { b.innerHTML = '<div class="muted">… mesure de la fraîcheur des sources en cours</div>'; return; }
+  if (etat.refus) { b.innerHTML = '<div class="bad">' + esc(motDuReleveNonLu(etat.cause)) + '</div>'; return; }
   if (!feeds.length) { b.innerHTML = '<div class="muted">aucun feed récent</div>'; return; }
   const head = !d.pipeline_fresh
     ? `<div class="bad" style="font-weight:600;margin-bottom:8px">${ic('warn')} Ingestion en panne — aucune donnée reçue récemment</div>`
     : '';
-  b.innerHTML = head +
+  // L'aveu précède le compte : les pastilles du pulse comptent les flux LUS, pas ceux qui existent.
+  b.innerHTML = bandeauDeReleveIncomplet(etat) + head +
     `<div class="capsum">${summaryPills(feeds)}${renvoi('#freshness-view')}</div>`;
 }
 
 // exports du module Fraîcheur/Intégrations (importés par app.js : refresh() + bouton #fresh-refresh).
-export { renderIntegrations, renderFreshness, renderFreshnessPulse, renderFreshnessDetail, freshState, countStates };
+export { renderIntegrations, renderFreshness, renderFreshnessPulse, renderFreshnessDetail, freshState, countStates, etatDuReleveServi, motDuReleveNonLu, motDuRelevePartiel };

@@ -1,6 +1,51 @@
 #!/usr/bin/env python3
 """Aucun test ne MUTE l'environnement du processus sans prendre LE verrou d'environnement (`P11.18-w`).
 
+LA POPULATION EST CELLE DES CAISSES QUI TOURNENT, PAS UNE CAISSE ÉCRITE À LA MAIN (`P8.9-m`)
+---------------------------------------------------------------------------------------------
+Cette garde a lu `daemon/src` et rien d'autre pendant que QUATRE caisses compilent et font tourner
+une suite en intégration continue (`daemon`, `agent`, `collector-mail`, `collector-syslog`). Le
+chemin était écrit en dur ; les trois autres n'étaient regardées par personne. Les caisses sont
+désormais DÉCOUVERTES : un répertoire de premier niveau qui porte un `Cargo.toml` avec `[package]`
+et un `src/`. C'est la même dérivation que le pas `cargo-deny` de `ci.yml`, et pour la même raison :
+couvrir une caisse neuve ne doit demander AUCUNE édition ici. Découverte sur le SYSTÈME DE FICHIERS
+et non `git ls-files`, comme le corpus `.rs` juste en dessous et pour la même raison (`P11.13-d`).
+
+CE QUE LA DÉRIVATION A TROUVÉ, MESURÉ LE 2026-08-30 — et ce n'est pas ce qu'on croyait :
+  · `agent`            : 166 `#[test]`, ZÉRO mutation d'environnement. Rien à tenir.
+  · `collector-syslog` :  49 `#[test]`, UN test mutateur, aucun verrou dans la caisse.
+  · `collector-mail`   :   5 `#[test]`, UN test mutateur (par `executer()`, qui pose SIX variables
+                           puis lance `crate::run()`), aucun verrou dans la caisse.
+  · `daemon`           : 1759 `#[test]`, 72 mutateurs, tous sous `VERROU_ENV_PROCESSUS.write()`.
+Les « onze violations » qu'on croyait voir dans les caisses jumelles sont ONZE SITES `set_var` —
+DEUX tests, un par collecteur. L'unité de la propriété est le test, pas l'appel.
+
+UN TROU DE FRONTIÈRE, TROUVÉ PAR LA MÊME DÉRIVATION ET FERMÉ ICI. Un fichier peut être test-only
+par son attribut INTERNE `#![cfg(test)]` en tête, sans que son `mod` porte `#[cfg(test)]`. La
+frontière ne lisait que la seconde forme : `collector-mail/src/garde_lisibilite.rs` (six mutations)
+et `agent/src/source/garde_lisibilite.rs` étaient donc, ENTIÈREMENT, hors du regard — un faux
+NÉGATIF silencieux. `daemon` n'en porte aucun aujourd'hui : ce trou ne changeait pas son verdict,
+il attendait le premier fichier de cette forme. Les deux formes sont maintenant lues.
+
+ET POURQUOI CETTE GARDE N'ACCUSE PAS CES DEUX TESTS — DIT PLUTÔT QUE TU (`P8.9-m`)
+----------------------------------------------------------------------------------
+Le verrou `VERROU_ENV_PROCESSUS` vit dans `daemon/src/tests/common.rs`. Il n'existe pas dans les
+caisses collectrices, et une caisse ne peut pas tenir le verrou d'une autre : exiger son nom là-bas
+serait exiger un geste IMPOSSIBLE, c'est-à-dire une rançon — une CI rouge que la remédiation
+nommée ne peut pas refermer.
+
+La propriété, écrite honnêtement, n'est pas « tenir CE verrou-là » : c'est « les tests d'une caisse
+qui mutent l'environnement sont sérialisés ENTRE EUX par L'UNIQUE verrou de leur caisse ». Elle est
+donc dérivée par caisse, et elle ne MORD qu'à partir de DEUX tests mutateurs — en dessous, il n'y a
+personne avec qui se disputer la ressource, et l'exiger n'achèterait rien. Le seuil n'est pas une
+tolérance : c'est l'arité à laquelle la propriété cesse d'être vide. Il fait de cette garde un
+CLIQUET QUI S'ARME TOUT SEUL : le jour où quelqu'un ajoute un SECOND test mutateur à
+`collector-mail` ou `collector-syslog`, la garde rougit, et le geste — poser UN verrou dans cette
+caisse — est possible, local, et le bon.
+
+Un mutateur solitaire n'est pas passé sous silence pour autant : il est NOMMÉ à chaque exécution,
+avec le seuil, pour que « rien à signaler » ne se confonde jamais avec « pas encore deux ».
+
 LE DÉFAUT QUE CETTE GARDE REND NON-ÉCRIVABLE
 --------------------------------------------
 `cfg()` (daemon/src/main.rs) résout toute clé dans l'ordre `env > conf > défaut`. Un test qui écrit
@@ -35,7 +80,8 @@ LA PROPRIÉTÉ, ET POURQUOI C'EST UNE PROPRIÉTÉ ET PAS UNE LISTE
     un utilitaire écrit CÔTÉ TEST qui la mute — doit tenir `VERROU_ENV_PROCESSUS` EN ÉCRITURE.
 
 Rien n'est énuméré : ni les noms de tests, ni les noms de fichiers, ni les clés d'environnement.
-  · La POPULATION est découverte en parcourant `daemon/src` (le système de fichiers, PAS `git ls-files` :
+  · La POPULATION est découverte en parcourant le `src/` de CHAQUE caisse découverte (le système de
+    fichiers, PAS `git ls-files` :
     une garde à corpus `git ls-files` valide un arbre où un fichier NEUF n'est pas encore suivi, puis
     rougit en CI — le dépôt s'est déjà fait mordre par là, `P11.13-d`).
   · Les MUTATEURS sont DÉRIVÉS des sources en DEUX temps. (a) Toute fonction côté test dont le corps
@@ -98,9 +144,24 @@ import sys
 from pathlib import Path
 
 ETIQUETTE = "verrou-env-processus"
-VERROU = "VERROU_ENV_PROCESSUS"
-ECRITURE = f"{VERROU}.write()"
-SRC = Path("daemon") / "src"
+
+# LA CAISSE DE RÉFÉRENCE : la seule dont on sache, par mesure, ce que la dérivation DOIT y trouver.
+# Elle n'est pas la portée de la garde (la portée est découverte) — elle est son CONTRÔLE POSITIF :
+# si la lecture s'y dégrade, la garde refuse de conclure au lieu de verdir partout en étant aveugle.
+CAISSE_DE_REFERENCE = "daemon"
+VERROU_DE_REFERENCE = "VERROU_ENV_PROCESSUS"
+
+# LE VERROU D'ENVIRONNEMENT D'UNE CAISSE, DÉRIVÉ : un identifiant en majuscules qui contient `ENV`
+# et sur lequel du code de test appelle `.write()`. C'est la forme du patron du dépôt
+# (`let _env = VERROU_ENV_PROCESSUS.write();`). Il n'est écrit ici AUCUN nom de verrou en dur : la
+# caisse qui en pose un demain est couverte, et une caisse qui en pose DEUX est accusée — « deux
+# verrous pour une ressource, c'est zéro verrou » est précisément le défaut mesuré le 2026-08-25.
+PRISE_EN_ECRITURE = re.compile(r"\b([A-Z][A-Z0-9_]*)\s*\.\s*write\s*\(")
+
+# L'ARITÉ À LAQUELLE LA PROPRIÉTÉ CESSE D'ÊTRE VIDE. Un test mutateur SEUL dans sa caisse n'a
+# personne à exclure : le sérialiser n'achète rien, et l'exiger dans une caisse SANS verrou serait
+# exiger un geste impossible. À DEUX, la course existe, et le verrou devient la seule réponse.
+ARITE_OU_LA_PROPRIETE_MORD = 2
 
 # La MUTATION, telle qu'elle s'écrit : `std::env::set_var(…)`, `env::remove_var(…)`, ou l'un des deux
 # importé. Le `(` est exigé : une mention en prose ou en identifiant plus long ne mute rien.
@@ -303,13 +364,38 @@ def fichiers_rs(racine: Path) -> list[Path]:
     return sorted(out)
 
 
+def verrous_env(texte: str) -> set[str]:
+    """Les verrous d'ENVIRONNEMENT pris EN ÉCRITURE dans un texte : un statique en majuscules dont le
+    nom parle d'environnement. Le mode compte — `.read()` n'exclut personne et n'entre donc pas."""
+    return {n for n in PRISE_EN_ECRITURE.findall(texte) if "ENV" in n}
+
+
+def porte_attribut_interne_cfg_test(lignes: list[str]) -> bool:
+    """`#![cfg(test)]` — l'attribut INTERNE qui rend un FICHIER entier test-only. Il ne peut être
+    écrit qu'en tête de fichier (avant tout item), donc le voir en début de ligne suffit. La forme
+    EXTERNE `#[cfg(test)]` (sans `!`) ne dit rien du fichier : elle qualifie l'item qui SUIT."""
+    for l in lignes:
+        if l.strip().replace(" ", "") == "#![cfg(test)]":
+            return True
+    return False
+
+
 def cote_test(repo: Path, chemins: list[Path]) -> set[Path]:
-    """LA FRONTIÈRE, LUE DANS LES SOURCES. Un `mod X;` précédé de `#[cfg(test)]` rend `X.rs` (ou
-    `X/mod.rs`) test-only, et les fichiers qu'il `include!` avec lui. Aucun nom n'est écrit ici."""
+    """LA FRONTIÈRE, LUE DANS LES SOURCES, SOUS SES DEUX FORMES. Un `mod X;` précédé de
+    `#[cfg(test)]` rend `X.rs` (ou `X/mod.rs`) test-only, et les fichiers qu'il `include!` avec lui.
+    ET un fichier qui porte l'attribut INTERNE `#![cfg(test)]` en tête est test-only par lui-même —
+    son `mod` n'a alors aucune raison d'être annoté, et il ne l'est pas. Ne lire que la première
+    forme laissait DEHORS, entièrement, `collector-mail/src/garde_lisibilite.rs` (six mutations
+    d'environnement) et `agent/src/source/garde_lisibilite.rs` : un faux NÉGATIF muet, mesuré le
+    2026-08-30. Aucun nom n'est écrit ici."""
     test_only: set[Path] = set()
     a_voir: list[Path] = []
     for p in chemins:
         lignes = p.read_text(encoding="utf-8", errors="replace").split("\n")
+        # SECONDE FORME : l'attribut INTERNE, lu par une fonction PURE pour être témoignable sans
+        # toucher le disque.
+        if porte_attribut_interne_cfg_test(lignes):
+            a_voir.append(p)
         precede_cfg_test = False
         for l in lignes:
             t = l.strip()
@@ -385,26 +471,26 @@ def temoins():
         '    #[test]\n    fn t() {\n        env::remove_var("PLUME_X");\n    }\n',
     ]
     doit_acquitter = [
-        '    #[test]\n    fn t() {\n        let _e = VERROU_ENV_PROCESSUS.write();\n'
+        '    #[test]\n    fn t() {\n        let _e = VERROU_ENV_TEMOIN.write();\n'
         '        std::env::set_var("PLUME_X", "1");\n    }\n',
         '    #[test]\n    fn t() {\n        let v = std::env::var("PLUME_X");\n    }\n',
         '    #[test]\n    fn t() {\n        // std::env::set_var("PLUME_X", "1");\n    }\n',
     ]
     for src in doit_accuser:
         us = unites("t.rs", src)
-        assert us and MUTATION.search(us[0].corps) and VERROU not in us[0].corps, \
+        assert us and MUTATION.search(us[0].corps) and not verrous_env(us[0].corps), \
             f"témoin POSITIF : un corps qui mute sans verrou n'est pas accusé — {src!r}"
     for src in doit_acquitter:
         us = unites("t.rs", src)
         assert us, f"témoin : corps illisible — {src!r}"
         mute = bool(MUTATION.search(us[0].corps))
-        assert (not mute) or ECRITURE in us[0].corps, \
+        assert (not mute) or verrous_env(us[0].corps), \
             f"témoin NÉGATIF : un corps sain est accusé — {src!r}"
     # LE MODE : `.read()` ne suffit PAS pour muter — les lecteurs sont parallèles entre eux.
-    lecteur_qui_mute = ('    #[test]\n    fn t() {\n        let _e = VERROU_ENV_PROCESSUS.read();\n'
+    lecteur_qui_mute = ('    #[test]\n    fn t() {\n        let _e = VERROU_ENV_TEMOIN.read();\n'
                         '        std::env::set_var("PLUME_X", "1");\n    }\n')
     us = unites("t.rs", lecteur_qui_mute)
-    assert MUTATION.search(us[0].corps) and ECRITURE not in us[0].corps, \
+    assert MUTATION.search(us[0].corps) and not verrous_env(us[0].corps), \
         "témoin : un test qui MUTE sous `.read()` serait acquitté — le mode n'est pas lu"
     # borne de mot : `domain(` n'est pas un appel à `main`
     assert not appelle("    let d = domain(x);", "main"), \
@@ -433,10 +519,126 @@ def temoins():
     assert fermeture({"pose"}, [u for u in us if u.nom == "prepare_plus"]) == {"pose"}, \
         "témoin INVERSE : la fermeture ajoute un nom qu'aucun corps n'appelle"
 
+    # --- LA FRONTIÈRE, SOUS SA SECONDE FORME (`P8.9-m`) --------------------------------------------
+    # Le trou mesuré le 2026-08-30 : un fichier test-only par son attribut INTERNE, dont le `mod`
+    # n'est pas annoté, était ENTIÈREMENT hors du regard — six mutations d'environnement comprises.
+    assert porte_attribut_interne_cfg_test(["//! doc", "", "#![cfg(test)]", "use crate::x;"]), \
+        "témoin : l'attribut INTERNE `#![cfg(test)]` n'est pas lu — un fichier de test entier échappe"
+    assert porte_attribut_interne_cfg_test(["#! [ cfg(test) ]"]), \
+        "témoin : la forme espacée de l'attribut interne n'est pas lue"
+    assert not porte_attribut_interne_cfg_test(["#[cfg(test)]", "mod tests {"]), \
+        "témoin INVERSE : l'attribut EXTERNE rendrait tout un fichier de PRODUCTION test-only"
+    assert not porte_attribut_interne_cfg_test(["// #![cfg(test)] (cité en prose)"]), \
+        "témoin INVERSE : un attribut cité en commentaire ne rend rien test-only"
+
+    # --- LE VERROU DE LA CAISSE, DÉRIVÉ ------------------------------------------------------------
+    # Aucun nom de verrou n'est écrit dans cette garde : elle cherche la FORME du patron du dépôt.
+    assert verrous_env("let _e = VERROU_ENV_PROCESSUS.write();") == {"VERROU_ENV_PROCESSUS"}, \
+        "témoin : la dérivation du verrou ne voit plus le patron du dépôt"
+    assert verrous_env("let _e = ENV_LOCK . write ( ) ;") == {"ENV_LOCK"}, \
+        "témoin : la dérivation du verrou ne survit pas aux espaces"
+    assert verrous_env("A_ENV.write(); B_ENV.write();") == {"A_ENV", "B_ENV"}, \
+        "témoin : DEUX verrous concurrents ne sont pas vus comme deux — c'est le défaut de 2026-08-25"
+    for muet in ("VERROU_ENV_PROCESSUS.read()",   # le mode qui n'exclut personne
+                 "let x = CONF_GLOBALE.write();",  # un verrou qui n'est pas celui de l'environnement
+                 "fn env_lock() { }",              # une fonction, pas un statique pris en écriture
+                 "buf.write(b);"):                 # une écriture ordinaire
+        assert not verrous_env(muet), \
+            f"témoin NÉGATIF : `{muet}` est pris pour le verrou d'environnement d'une caisse"
+    # RÉSIDU ASSUMÉ, FIGÉ ICI plutôt que découvert en CI : le nom est jugé sur la sous-chaîne `ENV`,
+    # donc `MON_ENVELOPPE` en est un. Le pire cas est alors que la caisse de RÉFÉRENCE paraisse en
+    # avoir deux : la garde REFUSE DE CONCLURE (sortie 2). Faux refus possible, faux vert jamais.
+    assert verrous_env("MON_ENVELOPPE.write()") == {"MON_ENVELOPPE"}
+
+    # --- L'ARITÉ À LAQUELLE LA PROPRIÉTÉ MORD ------------------------------------------------------
+    # Elle vaut 2, et pas 1 : à un seul mutateur il n'y a personne à exclure. Le figer ici empêche
+    # qu'un « durcissement » silencieux le passe à 1 et transforme la garde en rançon sur une caisse
+    # qui n'a pas de verrou à prendre.
+    assert ARITE_OU_LA_PROPRIETE_MORD == 2, \
+        "témoin : l'arité a bougé — à 1 la garde exige un verrou que rien ne peut avoir posé"
+
 
 def refuser(msg: str) -> int:
     print(f"::error::[{ETIQUETTE}] {msg}")
     return 2
+
+
+def caisses(repo: Path) -> list[str]:
+    """LES CAISSES QUI TOURNENT, DÉCOUVERTES — jamais écrites. Un répertoire de premier niveau qui
+    porte un `Cargo.toml` avec `[package]` et un `src/`. Même dérivation que le pas `cargo-deny` de
+    `ci.yml` (`find -mindepth 2 -maxdepth 2 -name Cargo.toml`), et pour la même raison : couvrir une
+    caisse neuve ne doit demander aucune édition ici. Système de fichiers, pas `git ls-files` : une
+    caisse écrite et pas encore suivie est du code au même titre (`P11.13-d`)."""
+    out = []
+    for d in sorted(repo.iterdir()):
+        if not d.is_dir() or d.name.startswith(".") or d.name == "target":
+            continue
+        manifeste = d / "Cargo.toml"
+        if not manifeste.is_file() or not (d / "src").is_dir():
+            continue
+        if "[package]" not in manifeste.read_text(encoding="utf-8", errors="replace"):
+            continue
+        out.append(d.name)
+    return out
+
+
+class Bilan:
+    """Ce qu'une caisse rend : de quoi juger, et de quoi AVOUER ce qui n'est pas jugé."""
+
+    __slots__ = ("caisse", "fichiers", "cote_test", "tests", "mutateurs", "verrous", "mutants", "nus")
+
+    def __init__(self, caisse, fichiers, cote_test, tests, mutateurs, verrous, mutants, nus):
+        self.caisse, self.fichiers, self.cote_test = caisse, fichiers, cote_test
+        self.tests, self.mutateurs, self.verrous = tests, mutateurs, verrous
+        self.mutants, self.nus = mutants, nus
+
+
+def analyser_caisse(repo: Path, caisse: str) -> Bilan:
+    """La MÊME dérivation qu'avant, appliquée à une caisse quelconque. Rien n'y est spécifique au
+    démon : ni le nom du verrou (dérivé de la caisse), ni les noms d'utilitaires."""
+    chemins = fichiers_rs(repo / caisse / "src")
+    test_only = cote_test(repo, chemins)
+
+    unites_test_side: list[Unite] = []
+    tests: list[Unite] = []
+    for c in chemins:
+        rel = os.path.relpath(c, repo)
+        src = c.read_text(encoding="utf-8", errors="replace")
+        us = unites(rel, src)
+        if c in test_only:
+            unites_test_side.extend(us)
+        else:
+            plages = blocs_mod_test(src)
+            unites_test_side.extend(u for u in us if any(a <= u.ligne <= b for a, b in plages))
+        tests.extend(u for u in us if u.test)
+
+    directs = {(u.qualifie or u.nom) for u in unites_test_side
+               if not u.test and MUTATION.search(u.corps)}
+    mutateurs = fermeture(directs, unites_test_side)
+
+    # LE VERROU DE CETTE CAISSE, DÉRIVÉ de son propre code de test. Zéro nom écrit ici.
+    verrous: set[str] = set()
+    for u in unites_test_side:
+        verrous |= verrous_env(u.corps)
+
+    def mute(u: Unite) -> bool:
+        return bool(MUTATION.search(u.corps)) or any(appelle(u.corps, n) for n in mutateurs)
+
+    mutants = [u for u in tests if mute(u)]
+
+    nus: list[Unite] = []
+    if len(verrous) == 1:
+        ecriture = f"{next(iter(verrous))}.write()"
+        porteurs = fermeture({u.qualifie or u.nom for u in unites_test_side
+                              if not u.test and ecriture in u.corps}, unites_test_side)
+        nus = [u for u in mutants
+               if ecriture not in u.corps and not any(appelle(u.corps, n) for n in porteurs)]
+    else:
+        # ZÉRO verrou : rien n'exclut personne. DEUX ou plus : « deux verrous pour une ressource,
+        # c'est zéro verrou » — le défaut mesuré le 2026-08-25, avec NEUF verrous dans le démon.
+        nus = list(mutants)
+
+    return Bilan(caisse, len(chemins), len(test_only), tests, mutateurs, verrous, mutants, nus)
 
 
 def main() -> int:
@@ -444,100 +646,106 @@ def main() -> int:
     ap.add_argument("--repo", default=".")
     args = ap.parse_args()
     repo = Path(args.repo).resolve()
-    racine = repo / SRC
 
     temoins()
 
-    if not racine.is_dir():
-        return refuser(f"{racine} : dossier introuvable — la découverte est cassée.")
-    chemins = fichiers_rs(racine)
-    # PLANCHERS, mesurés le 2026-08-25 sur cet arbre : 1615 attributs `#[test]`/`#[tokio::test]` dans
-    # les sources (la suite EXÉCUTÉE en compte moins — beaucoup sont derrière une fonctionnalité cargo
-    # éteinte — et c'est bien la SOURCE que cette garde lit), 72 tests mutateurs. Ils ferment le seul
-    # mode de panne réel de la découverte : un parseur qui ne trouve RIEN et rapporte un vert joyeux.
-    if len(chemins) < 100:
-        return refuser(f"{len(chemins)} fichier(s) .rs découverts sous {SRC}, plancher 100.")
+    # PLANCHER DE DÉCOUVERTE. Le seul mode de panne réel d'une dérivation est de ne RIEN trouver et
+    # de rendre un vert joyeux. Quatre caisses le 2026-08-30 — le même plancher, pour la même raison,
+    # que le pas `cargo-deny` de `ci.yml`.
+    noms = caisses(repo)
+    if len(noms) < 4:
+        return refuser(f"{len(noms)} caisse(s) découverte(s) sous {repo} ({noms}), plancher 4 "
+                       f"(mesuré le 2026-08-30 : daemon, agent, collector-mail, collector-syslog) — "
+                       f"la découverte est cassée, cette garde ne vérifierait RIEN.")
+    print(f"[{ETIQUETTE}] caisses découvertes (Cargo.toml + [package] + src/) : {noms}")
 
-    test_only = cote_test(repo, chemins)
-    if len(test_only) < 40:
-        return refuser(f"{len(test_only)} fichier(s) côté test dérivés des `mod` sous `#[cfg(test)]`, "
-                       f"plancher 40 : la frontière test/production est cassée.")
+    bilans = [analyser_caisse(repo, n) for n in noms]
+    par_nom = {b.caisse: b for b in bilans}
 
-    toutes: list[Unite] = []
-    unites_test_side: list[Unite] = []
-    tests: list[Unite] = []
-    for p in chemins:
-        rel = os.path.relpath(p, repo)
-        src = p.read_text(encoding="utf-8", errors="replace")
-        us = unites(rel, src)
-        toutes.extend(us)
-        if p in test_only:
-            unites_test_side.extend(us)
-        else:
-            plages = blocs_mod_test(src)
-            unites_test_side.extend(u for u in us if any(a <= u.ligne <= b for a, b in plages))
-        tests.extend(u for u in us if u.test)
-    if len(tests) < 900:
-        return refuser(f"{len(tests)} `#[test]` découverts, plancher 900 : la lecture des corps est cassée.")
-
-    # --- (1) LES MUTATEURS, DÉRIVÉS DES SOURCES CÔTÉ TEST -------------------------------------------
-    directs = {(u.qualifie or u.nom) for u in unites_test_side
-               if not u.test and MUTATION.search(u.corps)}
-    mutateurs = fermeture(directs, unites_test_side)
-    indirects = sorted(mutateurs - directs)
-    print(f"[{ETIQUETTE}] mutateurs directs dérivés (utilitaires de test) : {sorted(directs)}")
-    print(f"[{ETIQUETTE}] mutateurs ajoutés par la FERMETURE sur les appels : {indirects}")
-    # CONTRÔLE POSITIF de la dérivation : sans ces deux-là, elle est inerte, et « aucune infraction »
-    # ne dirait rien. `cold_env_on` est une fonction LIBRE (quatre tests de plafonds mutent par elle) ;
-    # `ReglageBackupPose::neuf` est une fonction ASSOCIÉE (invisible à un parseur de fonctions libres).
+    # --- CONTRÔLE POSITIF SUR LA CAISSE DE RÉFÉRENCE ----------------------------------------------
+    # Les planchers ne sont pas des seuils de qualité : ce sont les valeurs sous lesquelles la
+    # LECTURE est cassée. Ils portent sur la caisse dont on a mesuré ce qu'elle contient. Une garde
+    # multi-caisses sans ce contrôle rendrait « aucune infraction » sur quatre lectures mortes.
+    ref = par_nom.get(CAISSE_DE_REFERENCE)
+    if ref is None:
+        return refuser(f"la caisse de référence `{CAISSE_DE_REFERENCE}` n'a pas été découverte : le "
+                       f"contrôle positif de cette garde n'a plus de support.")
+    for valeur, plancher, quoi in ((ref.fichiers, 100, "fichier(s) .rs"),
+                                   (ref.cote_test, 40, "fichier(s) côté test"),
+                                   (len(ref.tests), 900, "`#[test]`"),
+                                   (len(ref.mutants), 40, "test(s) mutateur(s))")):
+        if valeur < plancher:
+            return refuser(f"`{CAISSE_DE_REFERENCE}` : {valeur} {quoi}, plancher {plancher} "
+                           f"(mesuré le 2026-08-30 : 261 fichiers, 100 côté test, 1759 `#[test]`, "
+                           f"72 mutateurs) — la lecture est cassée, la garde refuse de conclure.")
+    # `cold_env_on` est une fonction LIBRE (quatre tests de plafonds mutent par elle) ;
+    # `ReglageBackupPose::neuf` est une fonction ASSOCIÉE (invisible à un parseur de fonctions
+    # libres). Sans elles, la dérivation ne voit plus les mutations INDIRECTES.
     for controle in ("cold_env_on", "ReglageBackupPose::neuf"):
-        if controle not in mutateurs:
-            return refuser(f"la dérivation n'a pas retrouvé `{controle}` : elle ne voit plus les "
-                           f"mutations INDIRECTES, et son verdict ne vaudrait rien.")
+        if controle not in ref.mutateurs:
+            return refuser(f"la dérivation n'a pas retrouvé `{controle}` dans "
+                           f"`{CAISSE_DE_REFERENCE}` : elle ne voit plus les mutations INDIRECTES, "
+                           f"et son verdict ne vaudrait rien.")
+    if ref.verrous != {VERROU_DE_REFERENCE}:
+        return refuser(f"le verrou d'environnement de `{CAISSE_DE_REFERENCE}` dérivé vaut "
+                       f"{sorted(ref.verrous)} au lieu de {{'{VERROU_DE_REFERENCE}'}} : soit la "
+                       f"dérivation du verrou est cassée, soit la caisse en a repris DEUX — et deux "
+                       f"verrous pour une ressource, c'est zéro verrou. La garde refuse de conclure "
+                       f"plutôt que d'acquitter ou d'accuser sur une lecture qu'elle ne comprend pas.")
 
-    # --- (2) LES PORTEURS DU VERROU EN ÉCRITURE, DÉRIVÉS DE LA MÊME FAÇON ---------------------------
-    # LE MODE COMPTE. Un test qui MUTE sous `.read()` n'exclut personne : les lecteurs sont parallèles
-    # entre eux, donc sa mutation s'applique pendant qu'un voisin lit. Exiger `VERROU` sans regarder le
-    # mode acquitterait exactement le cas que la clé ferme.
-    porteurs = fermeture({u.qualifie or u.nom for u in unites_test_side
-                          if not u.test and ECRITURE in u.corps}, unites_test_side)
-    print(f"[{ETIQUETTE}] utilitaires qui prennent le verrou EN ÉCRITURE : {sorted(porteurs)}")
+    # --- LE VERDICT, CAISSE PAR CAISSE ------------------------------------------------------------
+    fautifs: list[Bilan] = []
+    for b in sorted(bilans, key=lambda x: x.caisse):
+        print(f"[{ETIQUETTE}] {b.caisse} : {b.fichiers} fichier(s) .rs, {b.cote_test} côté test, "
+              f"{len(b.tests)} `#[test]`, {len(b.mutants)} mutent l'environnement, "
+              f"verrou(s) dérivé(s) {sorted(b.verrous) or 'AUCUN'}.")
+        if not b.mutants:
+            continue
+        if len(b.mutants) < ARITE_OU_LA_PROPRIETE_MORD:
+            # L'AVEU, ET IL EST NOMMÉ. « Rien à signaler » et « pas encore deux » ne doivent pas se
+            # lire pareil : un mutateur solitaire est une course qui n'attend qu'un voisin.
+            for u in b.mutants:
+                print(f"[{ETIQUETTE}]   ↳ AVEU : `{u.nom}` ({u.fichier}:{u.ligne}) mute "
+                      f"l'environnement et sa caisse ne porte aucun verrou. Sous "
+                      f"{ARITE_OU_LA_PROPRIETE_MORD} tests mutateurs il n'a personne à exclure : "
+                      f"la garde ne l'accuse pas, et elle ne le cache pas. Le SECOND la fera rougir, "
+                      f"et le geste sera de poser UN verrou dans `{b.caisse}`.")
+            continue
+        if b.nus:
+            fautifs.append(b)
 
-    def tient_le_verrou(u: Unite) -> bool:
-        return ECRITURE in u.corps or any(appelle(u.corps, n) for n in porteurs)
-
-    def mute(u: Unite) -> bool:
-        return bool(MUTATION.search(u.corps)) or \
-            any(appelle(u.corps, n) for n in mutateurs)
-
-    mutants = [u for u in tests if mute(u)]
-    nus = [u for u in mutants if not tient_le_verrou(u)]
-    print(f"[{ETIQUETTE}] {len(tests)} `#[test]` lus, {len(mutants)} mutent l'environnement, "
-          f"{len(mutants) - len(nus)} tiennent le verrou.")
-    if len(mutants) < 40:
-        return refuser(f"{len(mutants)} test(s) mutateur(s) trouvés, plancher 40 (mesuré le 2026-08-25 : "
-                       f"72) : la lecture est cassée, la garde refuse de conclure.")
-
-    for u in nus:
-        print(f"::error file={u.fichier},line={u.ligne}::le test `{u.nom}` MUTE une variable "
-              f"d'environnement du processus sans tenir `{VERROU}`. L'environnement est UNE ressource "
-              f"pour tout le binaire de test : ce que ce test pose, il le pose pour tous ceux qui "
-              f"tournent au même instant — et `cfg()` fait passer l'environnement DEVANT la `conf`, donc "
-              f"il écrase même la conf d'un voisin qui croyait décider seul. Prendre le verrou UNIQUE en "
-              f"tête de corps : `let _env = {ECRITURE};`. `.read()` NE SUFFIT PAS pour muter : les "
-              f"lecteurs sont parallèles entre eux, donc la mutation s'appliquerait pendant qu'un voisin "
-              f"lit (`.read()` est le mode de qui DÉPEND de l'environnement sans y toucher). Ne pas "
-              f"ajouter un verrou de plus : deux verrous pour une "
-              f"ressource, c'est zéro verrou.")
-    if nus:
-        print(f"[{ETIQUETTE}] {len(nus)} test(s) mutent l'environnement sans le verrou.")
+    for b in fautifs:
+        unique = f"`{next(iter(b.verrous))}.write()`" if len(b.verrous) == 1 else \
+                 (f"AUCUN verrou dans `{b.caisse}`" if not b.verrous
+                  else f"{len(b.verrous)} verrous concurrents {sorted(b.verrous)}")
+        for u in b.nus:
+            print(f"::error file={u.fichier},line={u.ligne}::le test `{u.nom}` MUTE une variable "
+                  f"d'environnement du processus sans tenir le verrou UNIQUE de sa caisse "
+                  f"({unique}). L'environnement est UNE ressource pour tout le binaire de test : ce "
+                  f"que ce test pose, il le pose pour tous ceux qui tournent au même instant — et "
+                  f"`cfg()` fait passer l'environnement DEVANT la `conf`, donc il écrase même la "
+                  f"conf d'un voisin qui croyait décider seul. `{b.caisse}` porte "
+                  f"{len(b.mutants)} test(s) mutateur(s) : ils se disputent la ressource. Prendre le "
+                  f"verrou en tête de corps : `let _env = <VERROU>.write();`. `.read()` NE SUFFIT "
+                  f"PAS pour muter : les lecteurs sont parallèles entre eux, donc la mutation "
+                  f"s'appliquerait pendant qu'un voisin lit (`.read()` est le mode de qui DÉPEND de "
+                  f"l'environnement sans y toucher). Ne pas ajouter un verrou de plus : deux verrous "
+                  f"pour une ressource, c'est zéro verrou.")
+    if fautifs:
+        total = sum(len(b.nus) for b in fautifs)
+        print(f"[{ETIQUETTE}] {total} test(s) mutent l'environnement sans le verrou unique de leur "
+              f"caisse, dans : {[b.caisse for b in fautifs]}.")
         return 1
 
-    print(f"[{ETIQUETTE}] OK — les {len(mutants)} tests qui mutent l'environnement du processus tiennent "
-          f"tous `{ECRITURE}`, le verrou UNIQUE de cette ressource, dans le mode qui exclut. Ce que cette "
-          f"garde NE tient PAS : le côté LECTEUR (« ce test dépend de l'environnement »), qui n'est pas une "
-          f"propriété syntaxique, et la DURÉE de tenue du verrou.")
+    total_mutants = sum(len(b.mutants) for b in bilans)
+    print(f"[{ETIQUETTE}] OK — sur {len(noms)} caisses découvertes, les {total_mutants} tests qui "
+          f"mutent l'environnement du processus sont, dans chaque caisse où ils sont au moins "
+          f"{ARITE_OU_LA_PROPRIETE_MORD}, tous sous le verrou UNIQUE de cette caisse, dans le mode "
+          f"qui exclut. Ce que cette garde NE tient PAS : le côté LECTEUR (« ce test dépend de "
+          f"l'environnement »), qui n'est pas une propriété syntaxique ; la DURÉE de tenue du "
+          f"verrou ; et le mutateur SOLITAIRE d'une caisse, avoué ci-dessus et pas accusé.")
     return 0
+
 
 
 if __name__ == "__main__":

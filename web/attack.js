@@ -358,17 +358,71 @@ function renderLegend(tactics) {
 // incomplet présenté comme complet — sous une forme que le tableau vide ne trahit pas. Seul le démon peut le
 // dire ; la console ne peut pas le deviner, et ne le devine pas.
 //
-// Rend null quand la réponse porte des tactiques (rien à dire), sinon la phrase qui convient, dans la langue.
+// Rend null quand la matrice est SERVIE — que le corps porte une cause ou non : dans le premier cas ce
+// n'est pas « rien à dire », c'est `loadAttackMatrix` qui le dit, au-dessus de la matrice (`P11.21-i`).
+// Sinon, la phrase de refus qui convient, dans la langue.
+//
+// `P11.21-i` — IL Y A TROIS ÉTATS SUR CETTE ROUTE AUSSI, ET LE TROISIÈME EST NÉ LE 2026-08-30.
+//
+// CE QUE CE MODULE AFFIRMAIT ET QUI EST DEVENU FAUX LE JOUR MÊME — corrigé ICI, à la place où la phrase
+// se lisait, et non démenti plus bas : il écrivait qu'aucun corps du démon ne portait à la fois une
+// cause et des tactiques. Depuis `P10.7-f`, `corps_de_matrice_attack` (`daemon/src/handlers/alerts.rs`)
+// AJOUTE une cause à une matrice ENTIÈREMENT DESSINÉE dès que `lire_les_alertes_par_technique` n'est
+// pas allé au bout. Les deux arrivent donc ensemble, et c'est le cas NOMINAL de la troncature ici.
+//
+// ET C'ÉTAIT FAUX UNE SECONDE FOIS, SUR UN VERDICT DE COUVERTURE PURPLE. La cause que le démon sert sur
+// cette route (`CAUSE_COMPTES_D_ALERTES_NON_ETABLIS`) déclare EXPLICITEMENT que la couverture ne vient
+// pas de cette lecture et reste ÉTABLIE — seuls les comptes d'alertes sont des sous-comptes. La règle
+// « la cause l'emporte » jetait pourtant la matrice ENTIÈRE et annonçait qu'aucune technique n'avait
+// été lue : l'exploitant concluait à une absence de détection là où la détection est mesurée et connue.
+// C'est l'inverse exact du service que cette surface rend, et le sens le plus coûteux de l'erreur.
+//
+// LES TROIS ÉTATS SONT DÉRIVÉS DU CORPS, JAMAIS DE LA ROUTE. Une cause SANS aucune tactique est un REFUS
+// (les trois sorties dégradées rendent `tactics: []`, et rien n'a été construit) ; une cause AVEC des
+// tactiques est une matrice INCOMPLÈTE (elle est dessinée, et ses comptes d'alertes sont trop BAS) ; pas
+// de cause est une lecture entière. Rien ici n'énumère les sorties qui savent tronquer.
+//
+// LE SENS DE L'ERREUR NE S'INVERSE PAS : le troisième état MONTRE la matrice, il ne la donne pas pour
+// juste. L'aveu est rendu AVANT elle, et ce qu'un sous-compte interdit de conclure est dit par la cause
+// du démon elle-même, collée telle quelle — la redire ici en ferait un second porteur qui vieillirait
+// sans le dire (c'est exactement le défaut que la phrase ci-dessus a coûté).
+//
+// UN SEUL LECTEUR DU CHAMP SERVI, À UN CRAN, ET C'EST UNE MESURE DU 2026-08-30 : la jambe B de
+// `check_a_refusal_is_not_rendered_as_an_absence.py` dérive ses lecteurs des fonctions du MÊME module
+// dont le corps PROPRE porte `.error`, et ne suit AUCUNE indirection. Interposer une fonction de plus
+// entre l'appel et le champ AVEUGLERAIT la garde — un remaniement qui ne casse rien, ne fait rougir
+// personne à l'exécution, et RÉTRÉCIT le canal de détection. `loadAttackMatrix` appelle donc CETTE
+// fonction-ci, directement, avec le corps qu'`api()` lui a rendu. La factorisation vers le point commun
+// est INTERDITE par la même forme, et c'est mesuré, pas supposé : chaque vue porte sa propre copie.
+function etatDeLaMatriceServie(d) {
+  const cause = (d && d.error != null) ? String(d.error).trim() : '';
+  const tactiques = (d && Array.isArray(d.tactics)) ? d.tactics : null;
+  const servies = (tactiques && tactiques.length) ? tactiques.length : 0;
+  return { cause, tactiques, servies, refus: !!cause && servies === 0, incomplet: !!cause && servies > 0 };
+}
+
+// LA PHRASE DE LA MATRICE INCOMPLÈTE. Elle n'est PAS celle du refus, et la différence n'est pas de ton :
+// « aucune technique n'a été lue » serait FAUX ici, et cette surface rendrait une absence là où elle tient
+// une matrice. Elle n'ajoute que ce que le démon ne peut pas savoir — QUELLE vue a été demandée, et que
+// ce qui suit à l'écran est cette lecture-là. Bilingue par construction.
+function motDeLaMatriceIncomplete(cause) {
+  return LANG === 'en'
+    ? 'ATT&CK coverage PARTIALLY READ — the daemon served the matrix AND names a cause: "' + cause
+      + '" What is displayed below is that partial read, and nothing more.'
+    : "couverture ATT&CK PARTIELLEMENT LUE — le démon a servi la matrice ET en nomme la cause : « " + cause
+      + " » Ce qui est affiché ci-dessous est cette lecture partielle, et rien de plus.";
+}
+
 function refusDeMatrice(d) {
   // `P10.7-d` — LA CAUSE SERVIE PASSE AVANT LA FORME, ET ELLE EST RENDUE TELLE QUELLE. Depuis
   // `P10.7-c` le démon écrit sa cause sous `error` DANS UN CORPS 200 : `api()` ne jette pas, et une
   // surface qui ne lit que la forme repeint l'aveu en déduction. Le test est SÉPARÉ de celui du vide —
   // c'est la propriété que tient `check_a_refusal_is_not_rendered_as_an_absence.py`.
-  // DIRECTION DE L'ERREUR, ÉCRITE : la cause l'emporte sur des tactiques éventuellement servies à côté.
-  // Un corps qui porterait les deux est un résultat INCOMPLET ; le rendre en table le présenterait comme
-  // complet (rendre PLUS que ce qui est su), et c'est le sens que cette surface refuse. Elle rend donc
-  // MOINS : le refus, jamais la matrice. Aucun corps du démon ne porte les deux aujourd'hui.
-  const cause = (d && d.error != null) ? String(d.error).trim() : '';
+  const etat = etatDeLaMatriceServie(d);
+  // `P11.21-i` — UNE MATRICE SERVIE AVEC UNE CAUSE N'EST PAS UN REFUS. Elle est rendue, et l'aveu
+  // l'accompagne (`loadAttackMatrix`) : prononcer le refus ici jetterait la matrice.
+  if (etat.incomplet) return null;
+  const cause = etat.cause;
   if (cause) {
     return LANG === 'en'
       ? 'ATT&CK coverage NOT COMPUTED: the daemon DECLINED the read and NAMES the cause — "' + cause
@@ -376,8 +430,8 @@ function refusDeMatrice(d) {
       : 'couverture ATT&CK NON CALCULÉE : le démon a REFUSÉ la lecture et en NOMME la cause — « ' + cause
         + ' » Aucune technique n\'a été lue : ce n\'est PAS une absence de couverture, et rien ici n\'est déclaré non couvert.';
   }
-  const tactics = (d && Array.isArray(d.tactics)) ? d.tactics : null;
-  if (tactics && tactics.length) return null;
+  const tactics = etat.tactiques;
+  if (tactics && etat.servies) return null;
   if (tactics) {
     return LANG === 'en'
       ? "ATT&CK coverage NOT COMPUTED: the response carries no tactic, which a computed matrix never does — it carries one per catalogue tactic even when no rule covers anything. The daemon therefore declined or failed the read, through one of its three degraded exits: query semaphore closed (shutdown under way), read database unreachable, or the read task died. WHICH of the three, this surface cannot say: the daemon named NO cause in this body. One of the three — the closed semaphore — now names itself when it plays; a silent body therefore comes from the two others, or from a daemon older than that admission, and this surface does not choose between them. This is NOT an absence of coverage; try again."
@@ -400,7 +454,9 @@ async function loadAttackMatrix() {
     host.replaceChildren(muted(/(^|\s)404(\s|$)/.test(msg) ? 'couverture ATT&CK indisponible (endpoint non déployé).' : 'couverture indisponible : ' + msg));
     return;
   }
-  const tactics = (d && Array.isArray(d.tactics)) ? d.tactics : [];
+  // `P11.21-i` — L'ÉTAT DE LA LECTURE EST LU ICI, À UN CRAN DE L'APPEL, ET SUR LE CORPS SERVI.
+  const etat = etatDeLaMatriceServie(d);
+  const tactics = etat.tactiques || [];
   const refus = refusDeMatrice(d);
   if (refus) { host.replaceChildren(muted(refus)); return; }
   // poids max sur TOUTES les techniques -> échelle de couleur commune (comparaison inter-tactiques honnête).
@@ -409,7 +465,19 @@ async function loadAttackMatrix() {
   renderLegend(tactics);
   const matrix = document.createElement('div'); matrix.className = 'attack-matrix';
   tactics.forEach(tac => matrix.appendChild(tacticColumn(tac, max)));
-  host.replaceChildren(matrix);
+  // `P11.21-i` — L'AVEU EST RENDU AVANT LA MATRICE, ET C'EST LA SEULE POSITION HONNÊTE : un démenti posé
+  // SOUS le tableau serait rencontré APRÈS lui par un lecteur qui va de haut en bas, c'est-à-dire après
+  // qu'il a compté des alertes qui sont des sous-comptes. Sur une lecture entière, ce tableau est vide et
+  // le rendu est byte-identique à celui d'avant cette clé.
+  const noeuds = [];
+  if (etat.incomplet) {
+    const aveu = document.createElement('div');
+    aveu.className = 'bad';
+    aveu.textContent = motDeLaMatriceIncomplete(etat.cause);
+    noeuds.push(aveu);
+  }
+  noeuds.push(matrix);
+  host.replaceChildren(...noeuds);
 }
 
-export { loadAttackMatrix, techniqueCell, techniqueDisplayName, porteDeLaTechnique, poserLesPortesDeTechnique, refusDeMatrice, NOM_INCONNU };
+export { loadAttackMatrix, techniqueCell, techniqueDisplayName, porteDeLaTechnique, poserLesPortesDeTechnique, refusDeMatrice, etatDeLaMatriceServie, motDeLaMatriceIncomplete, NOM_INCONNU };

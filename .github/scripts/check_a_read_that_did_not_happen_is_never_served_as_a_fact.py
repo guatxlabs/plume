@@ -3,10 +3,11 @@
 
 LE DÉFAUT QUE CETTE GARDE REND NON-ÉCRIVABLE
 --------------------------------------------
-Le démon a deux voies pour lire des lignes derrière une route : la lecture gardée par chien de garde
-(`read_with_watchdog`, `daemon/src/query_exec.rs`) et l'exécution de requête (`run_query`/`run_query_ex`,
-même module). Les deux peuvent ÉCHOUER — connexion de lecture indisponible, budget de 5 s épuisé sous
-charge, table absente, colonne refusée par l'authorizer. Quand elles échouent, ce que la route servait
+Le démon a TROIS voies pour lire des lignes derrière une route : la lecture gardée par chien de garde
+(`read_with_watchdog`, `daemon/src/query_exec.rs`), la lecture simple (`read_with`, même module, MÊME
+signature à trois arguments et MÊME chemin de défaut), et l'exécution de requête (`run_query`/
+`run_query_ex`, même module). Les trois peuvent ÉCHOUER — connexion de lecture indisponible, budget de
+5 s épuisé sous charge, table absente, colonne refusée par l'authorizer. Quand elles échouent, ce que la route servait
 jusqu'ici avait la FORME d'un résultat : `controls: []`, `totals: {}`, `rows: []`, `total: 0`. Un
 lecteur ne peut pas distinguer ce corps d'une mesure RÉELLEMENT à zéro, et sur une route de posture il
 se lit « aucun contrôle en échec » — la valeur la plus rassurante, servie précisément quand rien n'a
@@ -31,9 +32,16 @@ chemin que la CHARGE déclenche. C'est exactement la forme du défaut que `P10.7
 D'où DEUX JAMBES, et une règle qui les sépare :
 
   (A) LA VALEUR PAR DÉFAUT. Quand elle s'écoule vers une réponse de la MÊME fonction, elle doit porter
-      un aveu, ou passer par un constructeur d'aveu DÉRIVÉ.
-  (B) LA CLOSURE. Aucune lecture de lignes avalée (`.ok()`, `.unwrap_or*()`, `.flatten()`) sans qu'une
-      BRANCHE de la closure construise un aveu.
+      un aveu, ou passer par un constructeur d'aveu DÉRIVÉ. Elle ne juge que la voie GARDÉE, et la
+      raison est mesurée, écrite au point d'application : sur `read_with`, le vocabulaire d'aveu de
+      cette jambe (la clé `error`) est FAUX quatre fois sur dix, parce que l'arbre y avoue en TYPÉ.
+  (B) LA CLOSURE, SUR LES DEUX VOIES DE LECTURE — c'est le même code, exécuté sur la même connexion.
+      Aucune lecture de lignes avalée (`.ok()`, `.unwrap_or*()`, `.flatten()`) sans qu'une BRANCHE de
+      la closure construise un aveu. L'avalement est reconnu qu'il soit écrit en CHAÎNE DIRECTE
+      (`.query_map(..).flatten()`) ou dans un BRAS du `match` dont la lecture est le SCRUTATEUR
+      (`match ..query_map(..) { Ok(r) => r.flatten().collect(), .. }`) — la seconde forme était un
+      angle mort jusqu'au 2026-08-30, et c'est celle sous laquelle trois sites fermés ce jour-là
+      étaient écrits.
   (Q) L'EXÉCUTION DE REQUÊTE. Le bras d'erreur ne peut pas être JETÉ : il propage, devient un statut
       d'échec, ou entre dans le corps sous un aveu.
 
@@ -56,18 +64,34 @@ handler prend des extracteurs et ne s'écrit dans aucune expression de défaut.
 
 LA POPULATION EST DÉCOUVERTE, JAMAIS ÉNUMÉRÉE
 ----------------------------------------------
-Tout appel, dans `daemon/src/handlers/` (texte DÉPOUILLÉ DE SES COMMENTAIRES), à l'une des deux voies.
-Une route neuve est couverte sans être nommée ici. Une occurrence en COMMENTAIRE n'est JAMAIS comptée —
+Tout appel, dans `daemon/src/handlers/` (texte DÉPOUILLÉ DE SES COMMENTAIRES), à l'une des trois voies.
+Une route neuve est couverte sans être nommée ici. MAIS UNE VOIE OMISE, ELLE, NE L'EST PAS : `read_with`
+a manqué à cette liste jusqu'au 2026-08-30, et ses douze appels sur cinq fichiers n'étaient jugés par
+AUCUNE jambe. C'est la leçon la plus chère de cette garde — une jambe étendue sur une population amputée
+reste aveugle, et le site cité en PREUVE de l'angle mort (`handlers/dashboards.rs`) était précisément
+celui qu'elle ne voyait pas. Une occurrence en COMMENTAIRE n'est JAMAIS comptée —
 il en existe une sur l'arbre (`daemon/src/handlers/alerts.rs`, dans le commentaire de la vue « tous
 statuts ») et c'est la forme sous laquelle un site « connu » cesse d'exister sans qu'un `grep` le voie.
 
 L'INSTRUMENT SE VALIDE AVANT DE RENDRE UN VERDICT, DANS LES DEUX SENS
 ----------------------------------------------------------------------
-Sept mutants fabriqués, joués à chaque exécution : un corps par défaut nu DOIT accuser, le même avec un
+ONZE mutants fabriqués, joués à chaque exécution : un corps par défaut nu DOIT accuser, le même avec un
 aveu NE DOIT PAS ; une lecture de ligne avalée DOIT accuser, la même sous une branche qui avoue NE DOIT
 PAS ; une exécution de requête dont la cause est jetée DOIT accuser, son branchement NE DOIT PAS ; et le
 commentaire qui NOMME la fonction ne doit JAMAIS être compté. Le septième est le cœur : un défaut qui
 AVOUE au-dessus d'une closure qui AVALE doit rester accusé par la jambe B.
+
+Les quatre derniers tiennent la forme ajoutée le 2026-08-30 — l'avalement écrit dans un BRAS DE MATCH —
+et le 8 et le 10 sont une PAIRE DISCRIMINANTE : le bras y est le MÊME texte, seul le SCRUTATEUR change,
+et le verdict doit s'inverser. S'y ajoutent des témoins AU NIVEAU DE L'UNITÉ, qui n'interrogent que le
+lecteur de chaînes : la forme neuve est vue, un bras qui SOLDE son parcours ne l'est pas, et un seul
+avalement n'est jamais compté deux fois (`Ok(mut s) => s.query_map(..).unwrap_or_default()` appartient
+à la chaîne directe, pas au bras). CHACUN A ÉTÉ ÉPROUVÉ PAR MUTATION le 2026-08-30 : débrancher la
+détection des bras, forcer le contrôle du scrutateur à vrai puis à faux, retirer l'arrêt sur une
+lecture — les quatre mutations rendent l'instrument ROUGE (code 2). C'est ainsi qu'un témoin FAUX a été
+retiré du lot : le témoin de scrutateur écrit au niveau de `lectures_avalees` restait VERT sous la
+mutation, son entrée ne contenant aucune lecture ; il est conservé pour ce qu'il tue vraiment, et le
+contrôle qu'il prétendait éprouver l'est désormais à son propre niveau.
 
 PLANCHER SUR LA POPULATION, PAS SUR LES VIOLATIONS
 ---------------------------------------------------
@@ -93,12 +117,24 @@ HANDLERS = os.path.join(DEMON, "handlers")
 
 ETIQUETTE = "lecture-non-faite"
 
-# --- LES DEUX VOIES, NOMMÉES PAR LEUR SITE DE DÉFINITION ----------------------------------------
+# --- LES VOIES, NOMMÉES PAR LEUR SITE DE DÉFINITION ----------------------------------------------
 # Elles sont définies dans `daemon/src/query_exec.rs` ; la garde EXIGE de les y trouver (témoin
 # d'ancrage) avant de compter quoi que ce soit dans les handlers.
+#
+# `read_with` A ÉTÉ AJOUTÉ LE 2026-08-30, ET SON ABSENCE ÉTAIT UN ANGLE MORT PLUS LARGE QUE CELUI QUE
+# `P10.7-g` NOMMAIT. Les deux voies de lecture ont la MÊME signature à trois arguments (chemin, valeur
+# par défaut, closure) et le MÊME chemin de défaut — `read_with` rend `default` sur `Err(_)` de
+# `read_conn_get`, ligne pour ligne comme sa sœur gardée. Douze appels sur cinq fichiers de
+# `daemon/src/handlers/` n'étaient donc jugés par AUCUNE des trois jambes. C'est ce qui a fait rater à
+# la garde le site que `P10.7-g` citait comme sa preuve (`handlers/dashboards.rs`) : la forme y était
+# bien, mais sous une voie que la population ne nommait pas. Une jambe étendue sur une population
+# amputée reste aveugle — l'ordre des alternatives place la plus LONGUE d'abord, sinon `read_with`
+# capterait `read_with_watchdog`.
 VOIE_GARDEE = "read_with_watchdog"
+VOIE_SIMPLE = "read_with"
+VOIES_LECTURE = (VOIE_GARDEE, VOIE_SIMPLE)
 VOIES_REQUETE = ("run_query_ex", "run_query")
-APPEL = re.compile(r"\b(read_with_watchdog|run_query_ex|run_query)\s*\(")
+APPEL = re.compile(r"\b(read_with_watchdog|read_with|run_query_ex|run_query)\s*\(")
 
 # Une fonction dont la sortie EST une réponse : ce qu'elle calcule s'écoule vers son corps servi.
 RETOUR_REPONSE = re.compile(r"->\s*(?:Response\b|Json\s*<|impl\s+IntoResponse\b|\(\s*StatusCode\b)")
@@ -119,27 +155,46 @@ STATUT_ECHEC = re.compile(r"\bStatusCode::|\+=\s*1\b|\breturn\s+Err\s*\(|\bErr\s
 # valeur-là EST un statut d'échec, pas une valeur rassurante.
 MARQUE_ECHEC = re.compile(r"\bok\s*:\s*false\b")
 
-# --- PLANCHERS DE NON-DÉGÉNÉRESCENCE (relevé du 2026-08-30) --------------------------------------
-# Arbre du jour : 44 sites (21 gardés + 23 requêtes) sur 20 fichiers de `daemon/src/handlers/`.
+# --- PLANCHERS DE NON-DÉGÉNÉRESCENCE (relevé du 2026-08-30, APRÈS l'entrée de `read_with`) --------
+# Arbre du jour : 56 sites (33 lectures + 23 requêtes) sur 23 fichiers de `daemon/src/handlers/`
+# — c'était 44 sur 20 tant que `read_with` n'était pas de la famille. Les planchers gardent la
+# proportion que l'auteur avait choisie (~68 % des sites, ~60 % des fichiers) : ils constatent une
+# LECTURE cassée, ils ne réclament pas un volume de code.
 # SOUS ces planchers, c'est la LECTURE qui est cassée, pas le démon qui aurait cessé d'appeler : la
 # garde refuse de conclure (code 2) au lieu de rendre vert en étant aveugle.
-PLANCHER_SITES = 30
-PLANCHER_FICHIERS = 12
+PLANCHER_SITES = 38
+PLANCHER_FICHIERS = 14
 
 # --- CLIQUETS (relevé du 2026-08-30) — ILS NE MONTENT JAMAIS -------------------------------------
 # Chacun vaut le compte d'accusations DU JOUR. Descendre est une NOTE imprimée, pas un échec ; le
 # compte a le droit d'atteindre zéro (c'est ce qui évite la rançon).
-PLAFOND_DEFAUT_NU = 16          # jambe A : défauts servis sans aveu
-# DESCENDU DE 13 À 12 LE 2026-08-30, sur le relevé de la garde elle-même après la fermeture de
-# quatre closures. LA BAISSE N'EST QUE D'UNE UNITÉ POUR QUATRE FERMETURES, ET LA RAISON EST MESURÉE,
-# éprouvée dans les deux sens sur la machinerie de cette garde : la jambe B est AVEUGLE à l'avalement
-# écrit dans un BRAS DE MATCH. Une chaîne directe est accusée ; la MÊME opération placée dans le bras
-# d'un `match` dont le scrutateur est une lecture de lignes ne l'est PAS — et c'est l'idiome exact de
-# trois des sites fermés ce jour-là. LE CLIQUET ENREGISTRE DONC UNE FERMETURE RÉELLE, MAIS SON NOMBRE
-# N'EST PAS LA POPULATION : ce qu'il compte est plus petit que ce qui existe, et le descendre ne
-# resserre que ce qu'il sait voir. Le remède est nommé et non fait (`P10.7-g`) : que la détection
-# suive les bras d'un `match` dont le scrutateur est une lecture, pas seulement les chaînes directes.
-PLAFOND_CLOSURE_SOURDE = 12     # jambe B : closures qui avalent une lecture de lignes sans aveu
+PLAFOND_DEFAUT_NU = 16          # jambe A : défauts servis sans aveu — INCHANGÉ, et c'est mesuré
+#
+# ┌─ LA HAUSSE DE 12 À 17 N'EST PAS UNE RÉGRESSION : C'EST UN ÉLARGISSEMENT DU REGARD. ────────────┐
+# │ AUCUNE ligne de `daemon/` n'a empiré entre les deux relevés du 2026-08-30 ; c'est la garde qui  │
+# │ s'est mise à voir. Les CINQ accusations neuves existaient déjà hier, muettes, et les seize      │
+# │ anciennes sont TOUTES encore là — vérifié par différence des deux journaux, dans les deux sens :│
+# │ zéro accusation disparue. Un verdict qui cesse d'accuser serait une perte même si le total      │
+# │ montait ; il n'y en a pas.                                                                     │
+# └────────────────────────────────────────────────────────────────────────────────────────────────┘
+# D'OÙ VIENNENT LES CINQ, une par une, relues sur l'arbre le 2026-08-30 (aucune n'est fausse) :
+#   · UNE de la détection ÉTENDUE aux bras de `match` (`P10.7-g`) — `handlers/dashboards.rs`,
+#     `match stmt.query_map(..) { Ok(r) => r.flatten().collect(), .. }`. C'était l'angle mort nommé :
+#     la chaîne directe était accusée, ce bras-là ne l'était pas. Mesuré dans les DEUX sens en
+#     soumettant les deux formes à la machinerie de cette garde ;
+#   · QUATRE de l'entrée de `read_with` dans la population — `dash_ergonomics.rs` ×3 (`.map(|rows|
+#     rows.flatten()..)`, une liste TRONQUÉE servie comme complète) et `overview.rs` (CINQ `query_row
+#     (..).unwrap_or(0)` servis en `{"open_alerts": 0, "events": 0, ..}`, le corps le plus rassurant
+#     du démon rendu précisément quand rien n'a été lu).
+#
+# POURQUOI LE CLIQUET DE HIER ÉTAIT UN CHIFFRE, PAS UNE POPULATION. Il était descendu de 13 à 12 pour
+# QUATRE closures fermées, et l'écart accusait la garde : elle ne comptait que ce qu'elle savait voir.
+# Deux causes ont été mesurées depuis, et non une seule : le bras de `match` (nommé par `P10.7-g`) ET
+# une voie entière hors population (`read_with`, 12 appels sur 5 fichiers), qui est la raison pour
+# laquelle le site cité en preuve de `P10.7-g` — `handlers/dashboards.rs` — n'apparaissait nulle part :
+# la forme y était, sous une voie que la garde ne nommait pas. Une jambe étendue sur une population
+# amputée reste aveugle, et c'est la leçon que ce cliquet porte désormais.
+PLAFOND_CLOSURE_SOURDE = 17     # jambe B : closures qui avalent une lecture de lignes sans aveu
 PLAFOND_CAUSE_JETEE = 3         # jambe Q : bras d'erreur jetés
 
 
@@ -517,16 +572,93 @@ def suivre_la_liaison(code, nom, depuis, portee_deb, portee_fin, constructeurs, 
 # ================================================================================================
 # JAMBE B — UNE LECTURE DE LIGNES AVALÉE
 # ================================================================================================
+# Les noms de méthode qui SONT la lecture. Rencontrés en suivant un nom lié par un bras, ils rendent
+# la main à la détection DIRECTE — sans quoi le MÊME avalement serait compté deux fois.
+NOM_LECTURE = re.compile(r"^(?:query_row|query_map|query|prepare|prepare_cached)$")
+# Un bras qui LIE ce que la lecture a rendu : `Ok(r) =>`, `Ok(mut s) =>`. Le bras d'erreur ne lie pas
+# une lecture réussie ; c'est la jambe Q qui juge son sort, et seulement pour les voies de requête.
+BRAS_LIANT = re.compile(r"^\s*Ok\s*\(\s*(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*$")
+
+
+def scrutateur_est_la_lecture(texte, deb):
+    """Le texte entre le dernier `match` et la lecture qui commence en `deb` n'est-il QUE le RECEVEUR
+    de cette lecture (`match stmt` ., `match conn.prepare(&sql)`) ?
+
+    C'EST LA CONDITION QUI EMPÊCHE L'ÉLARGISSEMENT D'ACCUSER À TORT. Sans elle, il suffirait qu'une
+    accolade suive une lecture pour que les bras du `match` le plus proche EN AMONT — un `match` qui
+    porte sur tout autre chose — soient fouillés. Une ponctuation d'instruction (`;` `{` `}` `=` `=>`)
+    ou un mot-clé entre les deux prouve que ce `match` n'est pas celui-ci, et le refus est alors NET :
+    la jambe se tait plutôt que de deviner."""
+    mots = list(re.finditer(r"\bmatch\b", texte[:deb]))
+    if not mots:
+        return False
+    entre = texte[mots[-1].end():deb]
+    if not entre.strip() or re.search(r"[;{}=]|\b(?:if|while|let|for|return|match)\b", entre):
+        return False
+    prof = 0
+    for c in entre:
+        if c in "([":
+            prof += 1
+        elif c in ")]":
+            prof -= 1
+            if prof < 0:
+                return False
+    return prof == 0
+
+
+def bras_qui_avale(texte, deb, apres):
+    """La lecture qui commence en `deb` est-elle le scrutateur d'un `match` dont un BRAS avale ce
+    qu'elle lui a lié ? Rend la chaîne fautive, ou None.
+
+    ANGLE MORT COMBLÉ, MESURÉ LE 2026-08-30 SUR LA MACHINERIE DE CETTE GARDE, DANS LES DEUX SENS :
+    `.query_map(..).flatten()` était accusé ; la MÊME opération écrite `match ..query_map(..) { Ok(r)
+    => r.flatten().collect(), .. }` ne l'était PAS. La raison est structurelle : `chaine_apres` bute
+    sur l'accolade des bras et rend une chaîne VIDE. C'était l'idiome de trois des sites fermés ce
+    jour-là, d'où un cliquet qui n'avait baissé que d'une unité pour quatre fermetures.
+
+    LA CHAÎNE EST SUIVIE DEPUIS LE NOM LIÉ, ET ELLE S'ARRÊTE À LA PREMIÈRE LECTURE RENCONTRÉE.
+    `Ok(mut s) => s.query_map(..).unwrap_or_default()` avale le PARCOURS, pas l'énoncé préparé, et la
+    détection DIRECTE le voit déjà sur `query_map` ; sans cet arrêt, un seul avalement serait compté
+    deux fois et le cliquet monterait sans qu'aucun défaut neuf n'existe."""
+    if not scrutateur_est_la_lecture(texte, deb):
+        return None
+    i = apres
+    while i < len(texte) and texte[i] in " \t\n":
+        i += 1
+    if i >= len(texte) or texte[i] != "{":
+        return None
+    for motif, corps in bras_du_match(texte, i):
+        m = BRAS_LIANT.match(motif)
+        if not m:
+            continue
+        nom = m.group(1)
+        for oc in re.finditer(r"(?<![\w.])" + re.escape(nom) + r"\b", corps):
+            jetons, _ = chaine_apres(corps, oc.start() + len(nom) - 1)
+            for j in jetons:
+                base = j.split("(")[0]
+                if NOM_LECTURE.match(base):
+                    break
+                if AVALE.match(base):
+                    return f"{motif.strip()} => {'.'.join(jetons)}"
+    return None
+
+
 def lectures_avalees(texte):
-    """[(ligne relative, chaîne)] pour chaque lecture de lignes dont la chaîne AVALE le refus."""
+    """[(ligne relative, chaîne)] pour chaque lecture de lignes dont le refus est avalé — soit par la
+    chaîne qui SUIT l'appel, soit par un BRAS du `match` dont l'appel est le scrutateur."""
     out = []
     for r in LECTURE.finditer(texte):
         fin = apparier(texte, r.end() - 1)
         if fin < 0:
             continue
-        jetons, _ = chaine_apres(texte, fin)
+        jetons, apres = chaine_apres(texte, fin)
+        ligne = texte.count("\n", 0, r.start()) + 1
         if any(AVALE.match(j.split("(")[0]) for j in jetons):
-            out.append((texte.count("\n", 0, r.start()) + 1, ".".join(jetons)))
+            out.append((ligne, ".".join(jetons)))
+            continue
+        bras = bras_qui_avale(texte, r.start(), apres)
+        if bras:
+            out.append((ligne, bras))
     return out
 
 
@@ -587,6 +719,48 @@ MUTANTS = [
      '    let v = read_with_watchdog(&db, corps_de_refus(json!({ "rows": [] })), move |conn| {\n'
      '        let n: i64 = conn.query_row("SELECT COUNT(*) FROM t", [], |r| r.get(0)).unwrap_or(0);\n'
      '        json!({ "n": n })\n    });\n    Json(v)\n}\n', "B"),
+    # --- LES QUATRE SUIVANTS TIENNENT LA FORME AJOUTÉE LE 2026-08-30 (`P10.7-g`) : L'AVALEMENT ÉCRIT
+    # DANS UN BRAS DE MATCH. Le 8 et le 10 sont une PAIRE DISCRIMINANTE — le bras y est le MÊME texte
+    # (`Ok(r) => r.flatten().collect()`), seul le SCRUTATEUR change, et le verdict doit s'inverser.
+    # Sans le 10, une détection qui fouillerait les bras de TOUT `match` passerait le 8 et accuserait
+    # à tort partout ailleurs ; c'est la faute que ce dépôt tient pour pire que l'angle mort.
+    ("8. UN BRAS DE MATCH qui avale, scrutateur = une LECTURE de lignes",
+     'pub(crate) async fn r8() -> Json<Value> {\n'
+     '    let v = read_with_watchdog(&db, json!({ "rows": [], "error": "x" }), move |conn| {\n'
+     '        let mut stmt = conn.prepare("SELECT a FROM t").unwrap();\n'
+     '        let out: Vec<Value> = match stmt.query_map([], |r| Ok(json!({ "a": r.get::<_, i64>(0)? }))) {\n'
+     '            Ok(r) => r.flatten().collect(),\n'
+     '            Err(_) => Vec::new(),\n'
+     '        };\n'
+     '        json!({ "rows": out })\n    });\n    Json(v)\n}\n', "B"),
+    ("9. LE MÊME BRAS, sous une branche qui AVOUE",
+     'pub(crate) async fn r9() -> Json<Value> {\n'
+     '    let v = read_with_watchdog(&db, json!({ "rows": [], "error": "x" }), move |conn| {\n'
+     '        let mut stmt = conn.prepare("SELECT a FROM t").unwrap();\n'
+     '        let out: Vec<Value> = match stmt.query_map([], |r| Ok(json!({ "a": r.get::<_, i64>(0)? }))) {\n'
+     '            Ok(r) => r.flatten().collect(),\n'
+     '            Err(_) => Vec::new(),\n'
+     '        };\n'
+     '        json!({ "rows": out, "error": "liste possiblement TRONQUÉE : parcours non soldé" })\n'
+     '    });\n    Json(v)\n}\n', None),
+    ("10. LE MÊME BRAS, mais le scrutateur N'EST PAS une lecture",
+     'pub(crate) async fn r10() -> Json<Value> {\n'
+     '    let v = read_with_watchdog(&db, json!({ "rows": [], "error": "x" }), move |conn| {\n'
+     '        let n: i64 = conn.query_row("SELECT COUNT(*) FROM t", [], |r| r.get(0))?;\n'
+     '        let out: Vec<Value> = match charger_le_cache(&n) {\n'
+     '            Ok(r) => r.flatten().collect(),\n'
+     '            Err(_) => Vec::new(),\n'
+     '        };\n'
+     '        json!({ "n": n, "rows": out })\n    });\n    Json(v)\n}\n', None),
+    ("11. LE MÊME BRAS, EN COMMENTAIRE — il ne doit JAMAIS compter",
+     'pub(crate) async fn r11() -> Json<Value> {\n'
+     '    let v = read_with_watchdog(&db, json!({ "rows": [], "error": "x" }), move |conn| {\n'
+     '        // let out: Vec<Value> = match stmt.query_map([], f) {\n'
+     '        //     Ok(r) => r.flatten().collect(),\n'
+     '        //     Err(_) => Vec::new(),\n'
+     '        // };\n'
+     '        let n: i64 = conn.query_row("SELECT COUNT(*) FROM t", [], |r| r.get(0))?;\n'
+     '        json!({ "n": n })\n    });\n    Json(v)\n}\n', None),
 ]
 
 COMMENTAIRE_QUI_NOMME = (
@@ -615,13 +789,28 @@ def analyser(chemin, texte, defs, constructeurs, aveux):
             continue
         nom_fn, sig, pdeb, pfin = englobantes[0]
         sites.append((ou, voie, nom_fn))
-        if voie == VOIE_GARDEE:
+        if voie in VOIES_LECTURE:
             if len(tranches) < 3:
-                aveux.append(f"{ou} — `{VOIE_GARDEE}` lu avec {len(tranches)} argument(s) au lieu de 3")
+                aveux.append(f"{ou} — `{voie}` lu avec {len(tranches)} argument(s) au lieu de 3")
                 continue
             # --- JAMBE A : le défaut, s'il s'écoule vers une réponse de la MÊME fonction.
+            # ELLE NE JUGE QUE LA VOIE GARDÉE, ET LA RAISON EST MESURÉE, PAS COMMODE (2026-08-30).
+            # Étendue à `read_with`, elle accuse DIX sites dont QUATRE avouent déjà, dans un
+            # vocabulaire TYPÉ que le reconnaisseur d'aveu (la clé `error`) ne lit pas :
+            # `query.rs:1100/1860` rendent `(RollupCoverage::unproven(), DimRollupCoverage::unproven())`
+            # et `query.rs:1132/1892` rendent `rr.cap.sans_base()` — trois constructeurs dont le corps
+            # bâtit une variante « rien d'établi » et dont l'arbre dit lui-même qu'ils sont des AVEUX.
+            # Quatre accusations FAUSSES sur dix, c'est le défaut que ce dépôt tient pour PIRE que
+            # l'angle mort qu'il comblerait. Et le remède évident — n'accuser qu'un défaut qui est
+            # lui-même un corps servi — RÉTRÉCIRAIT un canal existant : il ferait taire trois
+            # accusations vraies de la voie gardée (`compliance.rs:341` rend une `BTreeMap::new()`,
+            # `fleet.rs:253/276` un `(Vec::new(), false, false)`). La jambe A reste donc où son
+            # vocabulaire d'aveu est vrai ; l'élargir demande d'abord d'élargir CE vocabulaire, et
+            # c'est un lot à part. La jambe B, elle, n'a pas ce problème : elle juge la CLOSURE, qui
+            # est le même code sur les deux voies — les cinq accusations qu'elle gagne sur `read_with`
+            # ont été relues une à une le 2026-08-30, et les cinq sont vraies.
             defaut = code[tranches[1][0]:tranches[1][1]].strip()
-            if RETOUR_REPONSE.search(sig) and not porte_un_aveu(defaut, constructeurs):
+            if voie == VOIE_GARDEE and RETOUR_REPONSE.search(sig) and not porte_un_aveu(defaut, constructeurs):
                 accusations.append(("A", ou, nom_fn,
                                     f"le défaut `{re.sub(r'\\s+', ' ', defaut)[:70]}` est servi par une "
                                     f"fonction qui rend une réponse, et il n'avoue pas"))
@@ -665,6 +854,45 @@ def valider_instrument(defs, constructeurs):
     if len(s) != 1:
         errs.append(f"témoin INVERSE du dépouillement : {len(s)} site(s) au lieu de 1 — le lecteur a "
                     "cessé de voir un appel réel")
+    # LA FORME AJOUTÉE, AU NIVEAU DE L'UNITÉ ET DANS LES DEUX SENS. Le mutant 8 pourrait passer pour
+    # une raison ÉTRANGÈRE (un corps voisin ramassé par la région de la closure) ; ces témoins-ci
+    # n'interrogent que le lecteur de chaînes, sans région ni constructeur.
+    bras = ('let v: Vec<Value> = match stmt.query_map([], f) { Ok(r) => r.flatten().collect(), '
+            'Err(_) => Vec::new() };')
+    if not lectures_avalees(bras):
+        errs.append("témoin du BRAS (direct) : `match ..query_map(..) { Ok(r) => r.flatten() .. }` "
+                    "n'est plus vu comme un avalement — l'angle mort de `P10.7-g` est rouvert")
+    if lectures_avalees(bras.replace("stmt.query_map([], f)", "charger_le_cache(&n)")):
+        errs.append("témoin du SCRUTATEUR (négatif) : le MÊME bras est compté alors que le scrutateur "
+                    "n'est PAS une lecture — la jambe B accuserait les bras de tout `match` de l'arbre")
+    # LE CONTRÔLE DU SCRUTATEUR, ÉPROUVÉ À SON PROPRE NIVEAU — ET C'EST UNE CORRECTION D'INSTRUMENT.
+    # Le témoin ci-dessus, joué SEUL, était FAUX : il est vert par construction. Son entrée ne
+    # contient aucune lecture, donc `lectures_avalees` n'entre jamais dans sa boucle et le contrôle
+    # qu'il prétend éprouver n'est pas même appelé. MESURÉ le 2026-08-30 : en forçant
+    # `scrutateur_est_la_lecture` à rendre TOUJOURS vrai, ce témoin restait VERT. Il est conservé —
+    # il tue bien une implémentation qui fouillerait les bras de TOUT `match` de la région — mais il
+    # ne prouve pas ce que son nom annonce, et les deux témoins qui suivent, eux, le prouvent : joués
+    # contre la même mutation, ils rougissent.
+    scrut = "let v: Vec<Value> = match stmt.query_map([], f) {"
+    if not scrutateur_est_la_lecture(scrut, scrut.index(".query_map")):
+        errs.append("témoin du SCRUTATEUR (positif, au niveau du prédicat) : `match stmt.query_map(..)` "
+                    "n'est plus reconnu comme un `match` dont la lecture EST le scrutateur")
+    etranger = 'let m = match mode { 0 => "a", _ => "b" };\nlet n = conn.query_row(sql, [], f);'
+    if scrutateur_est_la_lecture(etranger, etranger.index(".query_row")):
+        errs.append("témoin du SCRUTATEUR (négatif, au niveau du prédicat) : un `match` ÉTRANGER, clos "
+                    "avant la lecture, est pris pour le scrutateur — la jambe B lirait les bras d'un "
+                    "`match` qui ne juge pas cette lecture")
+    if lectures_avalees(bras.replace("r.flatten().collect()", "r.collect::<Result<Vec<_>>>()?")):
+        errs.append("témoin du BRAS (négatif) : un bras qui SOLDE son parcours est compté comme un "
+                    "avalement — la jambe B accuserait la forme même qu'elle réclame")
+    # UN SEUL AVALEMENT NE PEUT PAS ÊTRE COMPTÉ DEUX FOIS. `Ok(mut s) => s.query_map(..).unwrap_or_
+    # default()` est déjà vu par la chaîne DIRECTE sur `query_map` ; si le bras le recomptait, le
+    # cliquet monterait sans qu'aucun défaut neuf n'existe — une hausse qui n'apprendrait rien.
+    double = ('let v = match conn.prepare(sql) { Ok(mut s) => s.query_map([], f).map(|x| x.flatten()'
+              '.collect()).unwrap_or_default(), Err(_) => Vec::new() };')
+    if len(lectures_avalees(double)) != 1:
+        errs.append(f"témoin du DOUBLE COMPTE : {len(lectures_avalees(double))} avalement(s) relevé(s) "
+                    "au lieu de 1 sur un site qui n'en porte qu'un")
     # L'aveu se reconnaît, et son absence aussi.
     if not porte_un_aveu('json!({ "rows": [], "error": "x" })', constructeurs):
         errs.append("témoin d'AVEU : la clé `error` n'est plus reconnue")
@@ -690,6 +918,24 @@ def ce_qui_n_est_pas_tenu(non_classes=0):
           "d'être servi lui échappe. Trois sites de l'arbre sont dans ce cas au 2026-08-30.\n"
           "  * les lectures faites à DEUX niveaux d'appel. La jambe B suit UN niveau, et seulement les "
           "noms qui ont une définition UNIQUE dans l'arbre ; un homonyme n'est pas suivi.\n"
+          "  * le DÉFAUT de `read_with` — la jambe A ne le juge PAS, et c'est un choix mesuré, pas un "
+          "oubli : l'y étendre accuse dix sites dont QUATRE avouent déjà en vocabulaire TYPÉ "
+          "(`RollupCoverage::unproven()`, `rr.cap.sans_base()`), et le remède évident (n'accuser qu'un "
+          "défaut qui est lui-même un corps servi) ferait TAIRE trois accusations vraies de la voie "
+          "gardée. Ce qui manque est un vocabulaire d'aveu plus large que la clé `error` ; tant qu'il "
+          "n'existe pas, ces défauts-là ne sont ni accusés ni innocentés.\n"
+          "  * la jambe B ne suit que le `match`. `if let Ok(..) = <lecture> { .. }` SANS `else` écrit "
+          "le chemin d'échec nulle part, exactement comme un bras jeté — et la jambe Q sait déjà "
+          "refuser cette forme sur les voies de requête. MESURÉ le 2026-08-30 : 42 sites de cette "
+          "forme sur 14 fichiers de `daemon/src/handlers/`. C'est le plus grand angle mort restant de "
+          "cette garde, il est plus grand que celui qui vient d'être comblé, et il est nommé ici pour "
+          "que son NOMBRE ne soit pas confondu, une fois de plus, avec la population.\n"
+          "  * le bras n'est suivi que s'il lie par `Ok(<nom>)` : `Ok((a, b))`, `Some(x)` et un bras "
+          "fourre-tout `_ =>` ne le sont pas.\n"
+          "  * la chaîne d'un bras est suivie DEPUIS LE NOM LIÉ. Un avalement écrit dans une closure "
+          "INTERNE au bras (`Ok(r) => r.filter_map(|x| x.ok()).collect()`) lui échappe ; aucun site de "
+          "l'arbre n'en porte au 2026-08-30, et le jour où il y en aura un, c'est cette ligne-ci qu'il "
+          "faudra tenir, pas le compte.\n"
           "  * les virgules de GÉNÉRIQUES en position d'argument (`HashMap<K, V>` non tourné en "
           "turbofish) découperaient mal un appel. Aucun site de l'arbre n'en porte ; le jour où il y en "
           "aura un, c'est un aveu de lecture qu'il faudra poser, pas un compte amputé rendu en vert.\n"
@@ -706,7 +952,7 @@ def ce_qui_n_est_pas_tenu(non_classes=0):
 def main():
     src_demon = list(sources(DEMON))
     ancre = next((t for c, t in src_demon if c.endswith(os.path.join("daemon", "src", "query_exec.rs"))), "")
-    manquantes = [v for v in (VOIE_GARDEE,) + VOIES_REQUETE if f"fn {v}" not in ancre]
+    manquantes = [v for v in VOIES_LECTURE + VOIES_REQUETE if f"fn {v}" not in ancre]
     if manquantes:
         print(f"::error::les voies {manquantes} ne sont plus DÉFINIES dans daemon/src/query_exec.rs : "
               "la population de cette garde n'a plus d'ancrage.")
@@ -741,8 +987,8 @@ def main():
         ce_qui_n_est_pas_tenu()
         return 2
 
-    gardes = [s for s in sites if s[1] == VOIE_GARDEE]
-    requetes = [s for s in sites if s[1] != VOIE_GARDEE]
+    gardes = [s for s in sites if s[1] in VOIES_LECTURE]
+    requetes = [s for s in sites if s[1] not in VOIES_LECTURE]
     if len(sites) < PLANCHER_SITES or len(fichiers) < PLANCHER_FICHIERS:
         print(f"::error::{len(sites)} site(s) découvert(s) sur {len(fichiers)} fichier(s), planchers "
               f"{PLANCHER_SITES}/{PLANCHER_FICHIERS} : la DÉCOUVERTE est cassée, pas le démon. La garde "
@@ -760,8 +1006,12 @@ def main():
     a_par_jambe = {}
     for jambe, ou, fn, raison in accusations:
         a_par_jambe.setdefault(jambe, []).append((ou, fn, raison))
-    if len(a_par_jambe.get("A", [])) >= len(gardes):
-        print(f"::error::AUCUN des {len(gardes)} défauts de lecture gardée ne porte d'aveu : le "
+    # Il se compte sur les sites que la jambe A JUGE RÉELLEMENT (la voie gardée), jamais sur toute la
+    # famille : mesuré contre `gardes`, il se relâcherait du seul fait que `read_with` a rejoint la
+    # population — un témoin qui s'affaiblit quand le regard s'élargit est un témoin faux.
+    juges_par_a = [s for s in sites if s[1] == VOIE_GARDEE]
+    if len(a_par_jambe.get("A", [])) >= len(juges_par_a):
+        print(f"::error::AUCUN des {len(juges_par_a)} défauts de lecture gardée ne porte d'aveu : le "
               "reconnaisseur d'aveu ne reconnaît plus rien. La garde REFUSE DE CONCLURE.")
         ce_qui_n_est_pas_tenu()
         return 2

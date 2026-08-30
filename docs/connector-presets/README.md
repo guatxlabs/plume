@@ -12,7 +12,7 @@ sont de la documentation. Ajouter un nouveau vendeur = écrire un JSON comme ceu
 
 ## Utilisation
 
-1. Créez un connecteur de type `http_pull` dans l'UI (Détection & Réponse → Connecteurs) ou via
+1. Créez un connecteur de type `http_pull` dans l'UI (Données → Connecteurs de sources) ou via
    `POST /api/connectors` (admin).
 2. **Copiez le contenu d'un preset dans le champ `config`** du connecteur, puis **adaptez-le** :
    URL/host régional, `client_id`, chemins `field_map` (selon le schéma réel de VOTRE tenant/API),

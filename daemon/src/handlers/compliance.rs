@@ -242,6 +242,46 @@ pub(crate) async fn compliance_frameworks_list(Extension(_au): Extension<AuthUse
     Json(json!({ "frameworks": compliance_frameworks() }))
 }
 
+/// `P10.7-e` — LA MOITIÉ D'AVEU QU'AUCUN MOTEUR NE FOURNIT, ÉCRITE UNE FOIS POUR CE MODULE.
+///
+/// LE DÉFAUT. `P10.7-c` a fermé le PORTILLON : un refus de permis rend désormais sa cause. Les
+/// échecs POSTÉRIEURS au portillon, eux, rendaient encore la forme attendue avec toutes ses clés
+/// vides — `controls: []`, `totals: {}` — et un lecteur ne peut pas distinguer ce corps-là d'une
+/// posture RÉELLEMENT à zéro. Sur une route de CONFORMITÉ, cette confusion se lit « aucun contrôle
+/// en échec » : la valeur la plus rassurante, servie précisément quand rien n'a été mesuré.
+///
+/// CE QUE CETTE CONSTANTE EST, ET CE QU'ELLE N'EST PAS. Elle ne remplace AUCUNE cause : le moteur
+/// qui a refusé en produit déjà une (compilation refusée, budget de lecture dépassé, colonne
+/// refusée par l'authorizer), et la sienne est la seule qui dise POURQUOI. Ce qu'aucun moteur ne
+/// peut dire, en revanche, c'est ce que le corps SERVI n'établit pas — cette phrase-là est
+/// PRÉFIXÉE à la cause du moteur, jamais substituée.
+pub(crate) const CAUSE_POSTURE_NON_LUE: &str = "posture NON ÉTABLIE : la lecture n'a pas abouti. Ce corps ne \
+     porte aucun contrôle parce qu'AUCUN n'a été lu — ce n'est pas une couverture nulle. Cause : ";
+
+/// Le pendant pour l'ANCRAGE DE PREUVE d'un rapport de conformité. Il a sa propre phrase parce
+/// qu'il n'établit pas la même chose : une tête de chaîne vide et un compte d'entrées à zéro se
+/// lisent « le journal d'intégrité est vierge », c'est-à-dire l'inverse d'« il n'a pas été lu ».
+pub(crate) const CAUSE_ANCRAGE_NON_LU: &str = "ancrage de preuve NON ÉTABLI : le journal d'intégrité n'a pas \
+     été lu. Ce corps ne porte ni tête de chaîne ni compte d'entrées parce qu'AUCUN n'a été lu — ce \
+     n'est pas un journal vierge. Cause : ";
+
+/// LE CORPS D'UNE POSTURE QUI N'A PAS ÉTÉ LUE : la FORME attendue par le consommateur, INTACTE,
+/// plus la cause sous `error` — la même clé que `bad_req`/`server_err` et que le refus de portillon
+/// (`handlers::portillon::corps_de_refus`), donc la clé que les consommateurs testent DÉJÀ.
+///
+/// L'AJOUT EST STRICTEMENT ADDITIF et STRICTEMENT CONDITIONNEL : aucune clé existante n'est retirée
+/// ni modifiée, et cette fonction n'est appelée QUE sur une branche d'échec. Un corps qui avouerait
+/// TOUJOURS n'avouerait rien — c'est la raison pour laquelle la cause voyage en `Option` jusqu'ici
+/// plutôt que d'être posée sur le chemin nominal puis effacée.
+fn corps_de_lecture_non_faite(forme: Value, ce_qui_n_est_pas_etabli: &str, cause: &str) -> Value {
+    let mut corps = match forme {
+        Value::Object(_) => forme,
+        _ => json!({}),
+    };
+    corps["error"] = json!(format!("{ce_qui_n_est_pas_etabli}{cause}"));
+    corps
+}
+
 /// GET `/api/compliance/posture[?framework=<id>][&since=<epoch_s>]` — ROLLUP de posture de conformité. viewer+,
 /// lecture seule. Compose (a) pass/fail SCA PAR contrôle (posture ingérée, chemin GXQL masqué #45) et (b) les
 /// règles de détection qui MAPPENT ce cadre (`rule.compliance`). Sans `framework` : synthèse par cadre. ADDITIF
@@ -267,14 +307,24 @@ pub(crate) async fn compliance_posture(
     let env = au.env_filter();
     // FIELD FILTERS (#45) : masques EFFECTIFS du rôle/tenant/env -> la posture est lue MASQUÉE (RBAC hérité).
     let masks = effective_masks(&db_path, &au.role, &au.tenant, env);
+    // LA FORME JUSTE EST ÉCRITE HUIT LIGNES PLUS HAUT. Le refus du portillon, lui, avoue depuis
+    // `P10.7-c` ; cette branche-ci — la compilation du langage de requête a été REFUSÉE — rendait la
+    // MÊME forme vide, sans rien dire. Deux voisins, un honnête et un muet, sur la même fonction.
     let sql = match soql_to_sql_masked_x(&compliance_posture_soql(), since, 0, env, &masks) {
         Ok(s) => s,
-        Err(_) => return Json(empty),
+        Err(e) => return Json(corps_de_lecture_non_faite(empty, CAUSE_POSTURE_NON_LUE, &e)),
     };
     let target2 = target.clone();
     let out = tokio::task::spawn_blocking(move || {
-        // (a) posture ingérée.
-        let res = run_query(&db_path, &sql).unwrap_or_else(|_| json!({ "columns": [], "rows": [] }));
+        // (a) posture ingérée. LA CAUSE EXISTE DÉJÀ, ELLE ÉTAIT JETÉE : `run_query` rend un `Err`
+        // PORTEUR (budget de lecture dépassé — le chien de garde de 5 s qui se déclenche sous
+        // charge —, table absente, colonne refusée par l'authorizer), et l'`unwrap_or_else` qui
+        // vivait ici le remplaçait par un résultat vide. Rien n'est inventé ici : la phrase du
+        // moteur est CONSERVÉE telle quelle, on cesse seulement de la perdre.
+        let (res, cause) = match run_query(&db_path, &sql) {
+            Ok(v) => (v, None),
+            Err(e) => (json!({ "columns": [], "rows": [] }), Some(e)),
+        };
         let comp = col_of(&res, "posture_compliance");
         let fwc = col_of(&res, "posture_framework");
         let rez = col_of(&res, "posture_result");
@@ -289,11 +339,13 @@ pub(crate) async fn compliance_posture(
         let agg = posture_aggregate(rows_iter, target2.as_deref());
         // (b) règles mappées.
         let rules = read_with_watchdog(&db_path, std::collections::BTreeMap::new(), rule_compliance_map);
-        (agg, rules, res.get("rows").and_then(|r| r.as_array()).map(|a| a.len()).unwrap_or(0))
+        (agg, rules, res.get("rows").and_then(|r| r.as_array()).map(|a| a.len()).unwrap_or(0), cause)
     })
     .await
-    .unwrap_or_else(|_| (std::collections::BTreeMap::new(), std::collections::BTreeMap::new(), 0));
-    let (agg, rules, scanned) = out;
+    // La tâche bloquante a PANIQUÉ : aucune posture n'a été calculée. Le triplet de zéros qui vivait
+    // ici se servait comme une mesure. La cause vient de `JoinError`, elle n'est pas fabriquée.
+    .unwrap_or_else(|e| (std::collections::BTreeMap::new(), std::collections::BTreeMap::new(), 0, Some(e.to_string())));
+    let (agg, rules, scanned, cause) = out;
     let truncated = scanned as i64 >= COMPLIANCE_POSTURE_ROW_CAP;
 
     match &target {
@@ -337,7 +389,7 @@ pub(crate) async fn compliance_posture(
                 .unwrap_or_default();
             let n_controls = ctrl_json.len();
             let n_rules = rules_mapped.len();
-            Json(json!({
+            let corps = json!({
                 "framework": fw,
                 "since": since,
                 "controls": ctrl_json,
@@ -345,7 +397,11 @@ pub(crate) async fn compliance_posture(
                 "totals": { "pass": tp, "fail": tf, "na": tn, "controls": n_controls, "rules_mapped": n_rules },
                 "truncated": truncated,
                 "frameworks": compliance_frameworks(),
-            }))
+            });
+            Json(match cause {
+                Some(c) => corps_de_lecture_non_faite(corps, CAUSE_POSTURE_NON_LUE, &c),
+                None => corps,
+            })
         }
         // ---- Synthèse : une ligne par cadre (posture + nb de règles mappées). ----
         None => {
@@ -381,13 +437,17 @@ pub(crate) async fn compliance_posture(
                     })
                 })
                 .collect();
-            Json(json!({
+            let corps = json!({
                 "framework": Value::Null,
                 "since": since,
                 "summary": summary,
                 "truncated": truncated,
                 "frameworks": compliance_frameworks(),
-            }))
+            });
+            Json(match cause {
+                Some(c) => corps_de_lecture_non_faite(corps, CAUSE_POSTURE_NON_LUE, &c),
+                None => corps,
+            })
         }
     }
 }
@@ -414,10 +474,29 @@ pub(crate) async fn compliance_report(
     // tamper-evident — la posture n'est PAS une certification, c'est de la couverture prouvable.
     let db_path = req_db_path(&st, &au);
     let evidence = tokio::task::spawn_blocking(move || {
-        read_with_watchdog(&db_path, json!({}), |conn| {
-            let head: String = conn.query_row("SELECT hash FROM ledger ORDER BY id DESC LIMIT 1", [], |r| r.get(0)).unwrap_or_default();
-            let entries: i64 = conn.query_row("SELECT COUNT(*) FROM ledger", [], |r| r.get(0)).unwrap_or(0);
-            let cp_ts: Option<i64> = conn.query_row("SELECT ts FROM checkpoint ORDER BY id DESC LIMIT 1", [], |r| r.get(0)).ok();
+        // `P10.7-e` — CE BLOC DISTINGUE DÉSORMAIS « VIERGE » DE « NON LU », et la distinction n'est
+        // pas cosmétique sur une pièce de conformité : `ledger_head: ""` + `ledger_entries: 0` se
+        // lisait « le journal d'intégrité ne contient rien », c'est-à-dire un CONSTAT, là où la
+        // lecture avait seulement été refusée (budget du chien de garde dépassé, table absente).
+        // LA LIGNE DE PARTAGE EST DANS LA REQUÊTE, PAS DANS UNE CONVENTION : un `COUNT(*)` rend
+        // TOUJOURS une ligne, donc tout `Err` qu'il rend est une lecture qui n'a pas eu lieu ; les
+        // deux autres lectures peuvent légitimement ne rendre AUCUNE ligne (journal vierge, aucun
+        // point de contrôle signé), et ce cas-là reste un fait, servi comme avant.
+        read_with_watchdog(&db_path, corps_de_lecture_non_faite(json!({}), CAUSE_ANCRAGE_NON_LU, "aucune connexion de lecture disponible sur cette base"), |conn| {
+            let entries: i64 = match conn.query_row("SELECT COUNT(*) FROM ledger", [], |r| r.get(0)) {
+                Ok(n) => n,
+                Err(e) => return corps_de_lecture_non_faite(json!({}), CAUSE_ANCRAGE_NON_LU, &e.to_string()),
+            };
+            let head: String = match conn.query_row("SELECT hash FROM ledger ORDER BY id DESC LIMIT 1", [], |r| r.get(0)) {
+                Ok(h) => h,
+                Err(rusqlite::Error::QueryReturnedNoRows) => String::new(), // journal vierge : un FAIT
+                Err(e) => return corps_de_lecture_non_faite(json!({ "ledger_entries": entries }), CAUSE_ANCRAGE_NON_LU, &e.to_string()),
+            };
+            let cp_ts: Option<i64> = match conn.query_row("SELECT ts FROM checkpoint ORDER BY id DESC LIMIT 1", [], |r| r.get(0)) {
+                Ok(t) => Some(t),
+                Err(rusqlite::Error::QueryReturnedNoRows) => None,          // aucun point signé : un FAIT
+                Err(e) => return corps_de_lecture_non_faite(json!({ "ledger_entries": entries, "ledger_head": head }), CAUSE_ANCRAGE_NON_LU, &e.to_string()),
+            };
             json!({
                 "ledger_head": head,
                 "ledger_entries": entries,
@@ -427,7 +506,7 @@ pub(crate) async fn compliance_report(
         })
     })
     .await
-    .unwrap_or_else(|_| json!({}));
+    .unwrap_or_else(|e| corps_de_lecture_non_faite(json!({}), CAUSE_ANCRAGE_NON_LU, &e.to_string()));
     Json(json!({
         "report": "compliance-posture",
         "framework": target,

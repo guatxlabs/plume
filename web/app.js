@@ -190,6 +190,12 @@ async function peindreLaPosture() {
 // Les trois charges que ce fichier PEINT : leur cible et leur cadence sont déclarées dans le registre,
 // seule la fonction est attachée ici. Posé AVANT le premier `route()` (plus bas), sans quoi la
 // première entrée dans la Vue d'ensemble ne peindrait rien.
+// `P11.21-f` — CES TROIS ATTACHES SONT LE PREMIER DES SIX GESTES DE CE CORPS QUI ATTEIGNENT
+// `navigation.js` AU PREMIER NIVEAU (avec `initNavigation()`, `route()` et le `refresh()` d'amorçage).
+// Ils sont sûrs parce que `index.html` n'ouvre le graphe QUE par ce fichier ; ils JETTENT en zone morte
+// dès qu'un autre module en est le point d'entrée — mesuré le 2026-08-30, entrer par `navigation.js`
+// empêche alors vingt-trois modules sur quarante-neuf de se charger. Les DIFFÉRER a été essayé et
+// refusé par le témoin (53c) du harnais ESM. Le raisonnement complet est en tête de `web/navigation.js`.
 poserUneCharge('posture', peindreLaPosture);
 poserUneCharge('firewall', () => renderFirewall());
 poserUneCharge('controls', () => renderControls());

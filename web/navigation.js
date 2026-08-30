@@ -5,6 +5,28 @@
 // par `initNavigation()`, appelée par `app.js` au point où ce bloc vivait. `app.js` garde l'amorçage (le
 // premier `route()` et les initialisations qui suivent) et ré-exporte `SPACES`, `currentTab`,
 // `currentViewName`, `renderNav` et `route` pour les modules seam. N'importe pas `app.js`.
+//
+// `P11.21-f` — ET CETTE DERNIÈRE PHRASE NE PROMET PAS CE QU'UN LECTEUR Y LIT : CE MODULE NE PEUT PAS
+// ÊTRE LE POINT D'ENTRÉE DU GRAPHE. Ne pas importer `app.js` n'y suffit pas — la 3ᵉ importation
+// ci-dessous (`dashboards.js`) mène à `viz.js`, qui l'importe. Entrer par ce fichier fait donc évaluer
+// le corps d'`app.js` AVANT celui-ci, et ce corps-là appelle ICI six gestes au PREMIER NIVEAU (les
+// trois `poserUneCharge`, `initNavigation()`, `route()`, `refresh()`), dont chacun lit une donnée de ce
+// module encore en zone morte : `CHARGES_DE_LA_CONSOLE`, `SPACES`, `TAB`. Mesuré le 2026-08-30, UN
+// PROCESSUS NEUF PAR POINT D'ENTRÉE : trois modules sur quarante-neuf jettent — celui-ci, `attack.js`
+// (atteint par `detection_admin.js`) et `threatintel.js` (atteint par `app.js`). Et dans UN SEUL
+// processus, MÊME corpus, seul l'ORDRE changeant : en alphabétique aucun ne manque, ce fichier en tête
+// VINGT-TROIS sur quarante-neuf ne se chargent plus. Le verdict portait donc sur l'ordre de lecture
+// d'un répertoire, pas sur le code.
+// DIFFÉRER CES SIX GESTES A ÉTÉ ESSAYÉ, PUIS REFUSÉ PAR UN TÉMOIN QUI EXISTAIT DÉJÀ : (53c) du harnais
+// ESM EXIGE que `route()` reste un appel en colonne 1 du corps SYNCHRONE d'`app.js` — sinon la densité
+// est posée après la première peinture et la page se réagence sous les yeux de l'exploitant. L'essai a
+// été joué : il rougit. La seule issue restante est qu'`app.js` cesse d'être une DÉPENDANCE (sept
+// modules l'importent) : c'est un remaniement du graphe, pas un correctif, et il N'EST PAS FAIT.
+// CE QUI EST TENU AUJOURD'HUI : `index.html` n'ouvre le graphe que par `app.js`, donc l'ordre servi au
+// navigateur est le seul sûr, et rien n'est cassé à l'écran. CE QUI NE L'EST PAS : tout autre point
+// d'entrée — un banc, un second paquet, un import différé. Un banc qui importe tous les modules dans
+// UN MÊME processus est vert PAR CONSTRUCTION dès sa première entrée, quelle qu'elle soit.
+//
 // Ce module porte aussi LE NOM D'UNE DESTINATION (`P11.18-o`) : il ne l'écrit pas, il le DÉRIVE de la
 // page — titre du panneau, ou lien de barre latérale quand l'espace n'a qu'un onglet — et le pose là
 // où il manque. Voir le bloc de nommage sous `SPACES`.

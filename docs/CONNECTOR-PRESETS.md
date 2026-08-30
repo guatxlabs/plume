@@ -32,7 +32,7 @@
 
 ## Comment utiliser un preset
 
-1. **Détection & Réponse → Connecteurs** (ou `POST /api/connectors`, admin) → nouveau connecteur
+1. **Données → Connecteurs de sources** (ou `POST /api/connectors`, admin) → nouveau connecteur
    `http_pull`.
 2. **Copiez le JSON du preset** dans le champ `config`, puis adaptez les `REPLACE_*` /
    `{placeholders}` (host régional, tenant, `client_id`, account_id…).

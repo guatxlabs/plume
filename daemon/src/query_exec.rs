@@ -422,7 +422,25 @@ pub(crate) const READ_WATCHDOG_BUDGET_MS: u64 = 5000;
 // Comme read_with mais sous GARDE DE BUDGET (5 s) : interrompt un scan trop long (anti-DoS, cf
 // /api/search : regex/FTS full-scan sans filtre = ~0.8s@1M, linéaire). À appeler depuis
 // spawn_blocking (occupe le thread courant le temps de la requête ; n'occupe donc pas un worker
-// async). Requête coupée -> default.
+// async).
+//
+// CE QUE `default` COUVRE, ET CE QU'IL NE COUVRE PAS — MESURÉ LE 2026-08-30 (`P10.7-e`), parce que
+// la phrase qui vivait ici affirmait l'inverse et qu'un correctif écrit sur sa foi manque sa cible.
+// `default` est rendu sur UN SEUL chemin : `read_conn_get` n'a pas pu fournir de connexion. Quand la
+// GARDE interrompt la requête, la closure `f` est DÉJÀ en cours ; c'est elle qui reçoit
+// `SQLITE_INTERRUPT` de rusqlite, et c'est SA valeur qui remonte — `default` n'est pas consulté.
+// Sonde jouée sur ce module : connexion impossible -> le `default` fabriqué est rendu ; budget épuisé
+// à 5,004 s -> la valeur vient de la closure, et le `default` n'apparaît nulle part.
+//
+// POURQUOI L'ÉCART COMPTE. Les deux chemins n'ont pas la même fréquence. `read_conn_get` ne peut
+// échouer que sur `Connection::open_with_flags` — fichier absent, descripteurs épuisés — et la
+// CONCURRENCE ne le déclenche pas : aucun plafond ne borne les connexions EN COURS (`READ_POOL_CAP`
+// ne borne que les connexions IDLE, et une prise sur pool vide OUVRE au lieu d'attendre).
+// L'interruption, elle, est le chemin que la charge déclenche, par construction. Habiller `default`
+// rend donc un appelant honnête sur le chemin RARE en le laissant muet sur le chemin FRÉQUENT : sur
+// celui-là c'est la closure qui décide, et l'idiome livré la rend muette — `query_row(..).ok()` fait
+// une absence d'un refus, et `query_map(..).flatten()` fait pire, une liste TRONQUÉE servie comme
+// complète.
 pub(crate) fn read_with_watchdog<T>(db_path: &str, default: T, f: impl FnOnce(&Connection) -> T) -> T {
     let conn = match read_conn_get(db_path) { Ok(c) => c, Err(_) => return default };
     let out = {

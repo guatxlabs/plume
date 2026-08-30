@@ -713,7 +713,7 @@ env:
   #     ~6,5 ms par arithmétique en release), soit 63 × un 401 et 92,7 Mo/s au banc pour une seule IP.
   #   · CHAQUE RÉPONSE PUBLIQUE EST FACTURABLE (`content-length` présent ET égal au fichier) : sans
   #     cela, la borne ci-dessus aurait un trou muet.
-  EXPECTED_TESTS: "1439"
+  EXPECTED_TESTS: "1441"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -1131,7 +1131,7 @@ jobs:
           # derrière un `cfg(feature)`, et c'est l'ÉCART INCHANGÉ entre les deux profils (243 avant
           # comme après) qui l'établit, pas une lecture des sources. La dérivation complète et la
           # répartition sont écrites auprès d'`EXPECTED_TESTS`, une seule fois.
-          EXPECTED_COLD_TESTS: "1684"
+          EXPECTED_COLD_TESTS: "1686"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail
@@ -1553,6 +1553,18 @@ jobs:
       # SENS (documentation périmée / page renommée) y sont exercés.
       - name: Le nom qu'un document donne à un onglet est celui que la console SERT — dérivé du titre du panneau, refus de conclure plutôt que devinette (P11.21-c)
         run: python3 .github/scripts/check_a_documented_tab_label_is_the_name_the_console_serves.py
+      # `P11.21-d` — UN CHEMIN DE CONSOLE CITÉ EN PROSE MÈNE LÀ OÙ IL DIT. La garde ci-dessus juge une
+      # COLONNE de tableau, à position fixe : une citation en PROSE lui échappe PAR CONSTRUCTION, et elle
+      # le dit à chaque exécution. Celle-ci prend l'autre moitié. Mesuré le 2026-08-30 : deux citations
+      # rangeaient un onglet sous le mauvais espace ET le nommaient par un titre que la console ne sert
+      # plus. LE CRITÈRE EST DÉRIVÉ ET IL LE FAUT : un nom PÉRIMÉ ne s'énumère pas — on ne cherche pas ce
+      # qu'on ne connaît plus — donc c'est l'autre moitié du couple, celle qui est ENCORE JUSTE, qui
+      # déclare la chaîne. Le corpus est lu comme du TEXTE CONTINU et non ligne à ligne : une citation
+      # coupée en deux avait échappé au balayage précédent, et c'est exactement la cinquième. La source
+      # est CELLE de la garde ci-dessus, importée et non réimplémentée — ce dépôt porte une clé ouverte
+      # dont le défaut est « trois lectures d'une même liste, et aucune ne fait foi ». Ce qu'elle ne sait
+      # pas trancher, elle le PUBLIE au lieu de le deviner.
+      - { name: "Un chemin de console cité en prose mène là où il dit (P11.21-d)", run: python3 .github/scripts/check_a_console_path_cited_in_prose_leads_where_it_says.py }
 
       # `P9.4-b` + `P9.6-a` — UN DÉPLOIEMENT N'ARME JAMAIS UNE TÂCHE DONT UNE PRÉCONDITION MANQUE CHEZ
       # LUI. Cette garde était ÉCRITE et volontairement NON CÂBLÉE : elle sortait en refus, et c'était son

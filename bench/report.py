@@ -2592,6 +2592,21 @@ def main():
                     "bruit de mesure sur une machine partagée, et il est reporté comme tel. ")
         elif fts0:
             txt += "Le gain en latence sur le chemin GXQL n'a pas pu être mesuré. "
+        # LE COÛT QUI DÉCIDE N'EST PAS DANS CE BANC, ET IL A SON LOGEMENT ICI — posé le 2026-08-30
+        # après qu'une correction écrite À LA MAIN dans la page rendue eut été relevée comme
+        # DÉFAISABLE PAR UNE SIMPLE RÉGÉNÉRATION. La substance vit dans le document du chiffrement,
+        # parce qu'elle est établie par LECTURE DES SOURCES et non par une passe de banc : la
+        # recopier ici en ferait une seconde vérité à entretenir, qui vieillirait sans rougir.
+        # Ce que le générateur doit produire, c'est le RENVOI — pour qu'un lecteur du banc ne
+        # puisse pas conclure que le coût publié est le seul, ni qu'un défaut à l'arrêt le serait
+        # pour une raison de performance.
+        txt += ("LE COÛT QUI DÉCIDE N'EST PAS DANS CE BANC, ET IL EST PLUS LOURD QUE CEUX QUI PRÉCÈDENT : "
+                "l'index des champs est déclaré SANS TABLE DE CONTENU, forme que le plan de sauvegarde typé "
+                "ne sait pas recréer ; chaque cycle compressé se replie alors sur un export qui matérialise "
+                "une copie DÉCHIFFRÉE COMPLÈTE de la base, le temps du cycle. Activer cette capacité est donc "
+                "un ÉCHANGE PERFORMANCE CONTRE CONFIDENTIALITÉ, et c'est cette raison-là — non un surcoût de "
+                "mémoire, que ce banc ne mesure dans aucun sens — qui justifie que le défaut soit à l'arrêt. "
+                "Établi par lecture des sources, jamais par une passe : voir `docs/CHIFFREMENT-COMPRESSION.md` §3. ")
         txt += ("À retenir : `event_fields_fts` n'est lu que par `/api/search` "
                 "(`handlers/search.rs:146-157`). Le chemin GXQL ne le consulte JAMAIS — donc son coût "
                 "en disque et en ingest est payé sans que les requêtes GXQL en profitent. C'est le "

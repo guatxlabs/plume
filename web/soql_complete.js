@@ -212,8 +212,53 @@ function positionBox() {
   box.style.minWidth = Math.min(r.width, 480) + 'px';
 }
 
+// ── `P11.22-c` — LA SÉLECTION SUIT LE DÉFILEMENT, ET ELLE NE BOUGE QUE QUAND ELLE EN SORT ─────────
+// MESURÉ le 2026-08-30 : `filterItems` borne l'affichage à 40 suggestions ; la boîte `.soql-ac` plafonne
+// à 280 px, où tiennent 4 lignes portant leur doc sur deux lignes et 8 lignes sans doc. `render()`
+// RECONSTRUIT son contenu — `innerHTML = ''` fait disparaître la hauteur, et le document borne alors le
+// défilement à zéro — et il est rappelé par CHAQUE flèche, pas seulement par chaque frappe. Aucune mise
+// en vue n'existait : une flèche vers le bas au-delà de la 4e ligne surlignait une ligne que personne
+// ne voyait, sans erreur et sans qu'un mot le dise.
+//
+// CE N'EST PAS LE DÉFAUT DE POSITION DE `P11.22-z`/`P11.22-b`, ET LE GESTE COMMUN DE BORNAGE DES POPOVERS
+// N'A RIEN À FAIRE ICI : `positionBox` pose la boîte en coordonnées de PAGE (`window.scrollY + r.bottom`),
+// là où ce geste-là écrit une position de FENÊTRE — l'y rallier déplacerait la boîte de la hauteur de
+// défilement EXACTEMENT. La borne du témoin 56 nomme ce module SAIN pour cette raison précise, et ce
+// correctif ne la touche pas : il ne juge que le DEDANS de la boîte, jamais où elle est posée.
+// (Son nom n'est pas écrit ici À DESSEIN : cette borne cherche le NOM dans tout le fichier, commentaires
+// compris — mesuré le 2026-08-30, l'écrire l'a fait rougir en déclarant un ralliement qui n'existait pas.)
+//
+// DÉCISION PURE, SANS DOM, POUR QU'UN TÉMOIN LA LISE AU LIEU DE LA DEVINER : rend le défilement à POSER,
+// ou `null` quand la ligne active est DÉJÀ dans le champ — et `null` est le cas NOMINAL. Un geste qui
+// recentrerait à chaque frappe, ou qui ramènerait en haut sans qu'on le demande, serait PIRE que
+// l'immobilité d'aujourd'hui : on n'aligne QUE le bord par lequel la ligne est sortie.
+export function defilementQuiGardeLaSuggestionEnVue(vue, ligne) {
+  const champ = Number(vue && vue.hauteurVisible), depart = Number(vue && vue.defilement);
+  const haut = Number(ligne && ligne.haut), hauteur = Number(ligne && ligne.hauteur);
+  // Rien de mesurable (boîte masquée, ou simulacre sans mise en page) -> AUCUN geste. Ne pas bouger vaut
+  // toujours mieux que poser un défilement dérivé d'un NaN, qui remettrait la liste en haut.
+  if (![champ, depart, haut, hauteur].every(Number.isFinite) || champ <= 0 || hauteur <= 0) return null;
+  if (haut < depart) return Math.max(0, haut);                                      // sortie par le HAUT
+  if (haut + hauteur > depart + champ) return Math.max(0, haut + hauteur - champ);  // sortie par le BAS
+  return null;                                                                      // déjà en vue
+}
+
+// Applique la décision sur la boîte réelle. `defilementAvant` est la valeur RELEVÉE avant le vidage :
+// la reposer est ce qui empêche la liste de sauter d'un cran à l'autre quand la sélection remonte sur
+// une ligne qui était déjà visible. Une seule écriture, et aucune quand rien ne doit bouger.
+function garderLaSuggestionActiveEnVue(defilementAvant) {
+  if (!box || box.hidden) return;
+  const ligne = box.children[active];
+  const cible = ligne ? defilementQuiGardeLaSuggestionEnVue(
+    { defilement: defilementAvant, hauteurVisible: box.clientHeight },
+    { haut: ligne.offsetTop, hauteur: ligne.offsetHeight }) : null;
+  const vise = cible == null ? defilementAvant : cible;
+  if (Number.isFinite(vise) && vise !== box.scrollTop) box.scrollTop = vise;
+}
+
 function render() {
   ensureBox();
+  const defilementAvant = box.scrollTop;   // `P11.22-c` — relevé AVANT le vidage, qui le remet à zéro
   box.innerHTML = '';
   curItems.forEach((it, i) => {
     const row = document.createElement('div');
@@ -232,6 +277,7 @@ function render() {
   });
   positionBox();
   box.hidden = curItems.length === 0;
+  garderLaSuggestionActiveEnVue(defilementAvant);
 }
 
 function accept(i) {

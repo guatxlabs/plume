@@ -1585,6 +1585,27 @@ jobs:
       # pas trancher, elle le PUBLIE au lieu de le deviner.
       - { name: "Un chemin de console cité en prose mène là où il dit (P11.21-d)", run: python3 .github/scripts/check_a_console_path_cited_in_prose_leads_where_it_says.py }
 
+      # `P7.20-i` — UN CONTRÔLE CITÉ EXISTE DANS CET ARBRE. La garde ci-dessus juge où MÈNE un chemin de
+      # console ; celle-ci juge qu'un chemin de CONTRÔLE existe tout court. Mesuré le 2026-08-30 : la
+      # recette conteneur et le document de reprise renvoyaient chacun à une garde de capacités comme au
+      # contrôle de référence — DEUX NOMS DIFFÉRENTS, tous deux absents, et les deux répertoires qui les
+      # porteraient absents aussi. Ce dépôt est PUBLIC : le lecteur extérieur croyait qu'une garde existait
+      # là où il n'y en avait aucune, et rien ne le lui disait. L'assertion porte sur l'INDEX et jamais sur
+      # le disque — un fichier présent chez l'auteur et non suivi est ABSENT pour ce lecteur, et c'est un
+      # piège déjà payé ici (2026-08-22). LE DOMAINE EST RESTREINT AUX EXÉCUTABLES ET AUX FLUX PARCE QUE
+      # C'EST MESURÉ : l'appartenance nue de TOUS les chemins cités accuserait 239 fois, 45 fois même après
+      # résolution ; restreint à ce qu'un lecteur est invité à JOUER, le compte est 133 cités / 0 absent, et
+      # un cliquet à zéro est un cliquet qu'on tient. ÉPROUVÉE PAR MUTATION contre l'arbre `378f29e~1`,
+      # AVANT le correctif manuel : elle rougit en nommant le renvoi mort de docs/DR-plume-restore.md. Le
+      # nom mort n'est PAS recopié ici, et ce n'est pas de la coquetterie : au premier jet ce bloc le citait
+      # entre accents graves, et la garde a rougi sur CE fichier en désignant cette ligne — démentir une
+      # phrase fausse en la reproduisant la réintroduit. On nomme le SITE. Elle n'attrape QU'UN des deux
+      # noms morts, et le dit dans son propre en-tête : le second était écrit entre PARENTHÈSES et non
+      # entre accents graves. Élargir aux parenthèses a été mesuré — deux fausses accusations pour une
+      # vraie prise sur la tête — et REFUSÉ. Elle REFUSE DE CONCLURE (sortie 2) plutôt que de verdir en
+      # étant aveugle : racine non dérivable, index vide, corpus vide, ou auto-validation démentie.
+      - { name: "Un contrôle cité existe dans ce dépôt (P7.20-i)", run: python3 .github/scripts/check_a_cited_control_exists_in_this_repo.py }
+
       # `P9.4-b` + `P9.6-a` — UN DÉPLOIEMENT N'ARME JAMAIS UNE TÂCHE DONT UNE PRÉCONDITION MANQUE CHEZ
       # LUI. Cette garde était ÉCRITE et volontairement NON CÂBLÉE : elle sortait en refus, et c'était son
       # verdict JUSTE — les deux déploiements de référence armaient l'ordonnanceur de sauvegarde toutes

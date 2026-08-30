@@ -7521,6 +7521,200 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   console.log(`[sous-compte-marque-la-ou-le-nombre-se-lit] la marque descend jusqu'au NOMBRE : une cellule de technique COUVERTE rend « ${cnt57(couverte57)} » sur un corps tronqué et « ${cnt57(cellules57(matEntiere57).find((c) => c.textContent.includes("T1046")))} » sur une lecture entière — le signe ne touche QUE le compte d'alertes, jamais le compte de règles ni l'état de couverture, que la cause servie déclare établis ; une cellule d'angle mort n'en porte aucun (témoin négatif) ; le total de la rangée de fraîcheur porte le mot d'incomplétude COLLÉ au nombre, sur le détail comme sur le pulse, et rien sur une lecture entière ; et le refus de la couverture par détections rend deux textes dans les deux instances du graphe, l'aveu partiel voisin servant de témoin d'instrument. CE QUE CE TÉMOIN NE TIENT PAS : l'encre peinte et la POSITION visuelle des marques, et la teinte de fond de la cellule — dérivée du même compte d'alertes, donc elle aussi sous-comptée, ce qui est nommé et non tenu.`);
 }
 
+// ---------------------------------------------------------------------------------------------
+// 58. LA SUGGESTION ACTIVE DE LA COMPLÉTION EST TOUJOURS DANS LE CHAMP DE VUE (`P11.22-c`).
+//
+//     MÊME FAMILLE QUE LE 56, UN CRAN PLUS HAUT, ET C'EST POURQUOI IL NE LE DOUBLE PAS. Le 56 tient la
+//     BOÎTE : où elle est posée, et qu'elle tienne dans l'écran. Il le dit lui-même — « il juge la BOÎTE
+//     et jamais son CONTENU ». Celui-ci ne juge QUE le contenu : la boîte de la complétion est
+//     atteignable (elle est posée en coordonnées de PAGE, et c'est la raison pour laquelle la borne du
+//     56 la déclare SAINE), sa queue défile, mais la SÉLECTION n'y allait pas.
+//
+//     MESURÉ le 2026-08-30, avant tout correctif : `filterItems` borne l'affichage à 40 suggestions ;
+//     `.soql-ac` plafonne à 280 px, où tiennent 4 lignes portant leur doc sur deux lignes et 8 sans doc ;
+//     `render()` reconstruit son contenu — le document borne alors le défilement à zéro — et il est
+//     rappelé par CHAQUE flèche, pas seulement par chaque frappe ; et AUCUN geste de mise en vue
+//     n'existait dans le module. Douze flèches vers le bas laissaient le défilement à 0 : la ligne
+//     surlignée était hors du champ, sans erreur et sans qu'un mot le dise.
+//
+//     CE TÉMOIN SERAIT VERT PAR CONSTRUCTION S'IL N'ÉTAIT PAS INSTRUMENTÉ, ET LE LOT QUI A NOMMÉ LA CLÉ
+//     L'AVAIT DIT. Avant le correctif le défilement vaut zéro QUOI QU'IL ARRIVE : un témoin qui lirait
+//     seulement « le défilement vaut ce qu'il doit valoir » sans jamais prouver qu'il PEUT valoir autre
+//     chose tiendrait une propriété vide. D'où trois précautions, et aucune n'est décorative :
+//     (1) LA BOÎTE PEUT ENCORE DÉFILER — lu dans la feuille de style, pas supposé. Le jour où la borne
+//         de hauteur ou le débordement disparaissent de `.soql-ac`, « garder la sélection en vue » ne
+//         veut plus rien dire : ce témoin ROUGIT au lieu de rester vert sur du vide.
+//     (2) LA LISTE DÉBORDE VRAIMENT — le nombre de lignes RENDUES par le module est comparé au nombre
+//         qui tient dans la boîte. Une liste qui tiendrait entière ne pourrait rien prouver.
+//     (3) LA MESURE FABRIQUÉE EST CONSOMMÉE — la section 0 déclare que le simulacre ne tient PAS la mise
+//         en page ; ce témoin la POSE donc lui-même, et il vérifie dans les deux sens qu'elle est bien
+//         lue : géométrie retirée, plus une seule écriture de défilement.
+//
+//     ET LE REMÈDE POUSSÉ TROP LOIN EST ATTRAPÉ SÉPARÉMENT. Un défilement qui sauterait à chaque cran,
+//     ou qui ramènerait l'exploitant en haut sans qu'il le demande, serait PIRE que l'immobilité qu'on
+//     corrige : la jambe (58b) exige ZÉRO écriture tant que la sélection reste visible, et la jambe
+//     (58c) exige que remonter d'un cran sur une ligne DÉJÀ visible ne déplace RIEN — ce que seule la
+//     reprise du défilement au travers de la reconstruction rend possible.
+//
+//     CE QU'IL NE TIENT PAS : il lit ce que le module POSE sur un simulacre dont IL fournit la
+//     géométrie — jamais l'encre peinte, jamais la hauteur qu'un moteur de rendu donnerait vraiment à
+//     une ligne. Il ne juge pas la POSITION de la boîte (c'est le 56). Il ne rejoue ni molette, ni
+//     glissement de barre, ni redimensionnement. Et il ne dit rien de la borne de quarante suggestions :
+//     elle est hors de son objet.
+// ---------------------------------------------------------------------------------------------
+{
+  const mod58 = await import(pathToFileURL(path.join(WEB, "soql_complete.js")).href);
+  const { primeCompletionMeta, initSoqlComplete, defilementQuiGardeLaSuggestionEnVue: enVue58 } = mod58;
+
+  // — instrument (1) : LA BOÎTE PEUT ENCORE DÉFILER. Lu dans la feuille de style servie, pas supposé.
+  const css58 = (CORPUS_WEB.find(([f]) => f === "style.css") || [, ""])[1];
+  const bloc58 = (css58.match(/\.soql-ac\{[^}]*\}/) || [""])[0];
+  const plafond58 = Number((bloc58.match(/max-height:\s*(\d+)px/) || [, 0])[1]);
+  exiger(plafond58 > 0 && /overflow-y:\s*auto/.test(bloc58),
+    `(58-instrument) la boîte de complétion n'est plus une région qui défile — \`.soql-ac\` rend « ${bloc58 || "(bloc introuvable)"} » : sans borne de hauteur NI débordement, « garder la sélection en vue » ne tient plus rien, et rester vert dirait le contraire`);
+  exiger(typeof enVue58 === "function",
+    "(58-instrument) la décision de mise en vue a disparu de soql_complete.js : ce témoin n'a plus d'objet, mettez-le à jour au lieu de le laisser vert");
+
+  // Hauteur UTILE : le plafond lu, moins la bordure (1px × 2) et le remplissage (4px × 2) du même bloc.
+  // Hauteur de LIGNE : celle d'une suggestion portant sa doc sur ses deux lignes (5+5 de remplissage,
+  // 21 de libellé à .92rem/1.55, 1 d'espacement, 2 × 14 de description à .76rem/1.25) — MESURÉE dans la
+  // feuille le 2026-08-30. Ce sont des nombres FABRIQUÉS : ils ne prétendent pas à l'encre peinte, ils
+  // donnent au simulacre une géométrie COHÉRENTE que le code doit consommer correctement.
+  const VUE58 = plafond58 - 10, LIGNE58 = 61;
+  const TIENNENT58 = Math.floor(VUE58 / LIGNE58);
+  exiger(TIENNENT58 >= 2 && TIENNENT58 <= 12,
+    `(58-instrument) ${TIENNENT58} ligne(s) tiendraient dans la boîte : hors de toute plage plausible, la géométrie fabriquée ne modélise plus rien`);
+
+  // — le simulacre ne tient PAS la mise en page (section 0) : ce témoin la POSE, et la RETIRE ensuite.
+  let geometrie58 = true;
+  const poser58 = (nom, lire) => Object.defineProperty(Element.prototype, nom, { configurable: true, get: lire });
+  poser58("offsetHeight", function () { return geometrie58 && this._classes.has("soql-ac-item") ? LIGNE58 : 0; });
+  poser58("offsetTop", function () { const p = this.parentNode; return geometrie58 && p ? p.children.indexOf(this) * LIGNE58 : 0; });
+  poser58("clientHeight", function () { return geometrie58 && this._classes.has("soql-ac") ? VUE58 : 0; });
+
+  class Editeur58 extends Element {
+    constructor() { super("textarea"); this.selectionStart = 0; this.selectionEnd = 0; this._ec = {}; }
+    addEventListener(t, f) { (this._ec[t] = this._ec[t] || []).push(f); }
+    dispatchEvent(ev) { (this._ec[ev.type] || []).forEach((f) => f(ev)); return true; }
+    setSelectionRange(a, b) { this.selectionStart = a; this.selectionEnd = b; }
+  }
+  // Un vocabulaire assez large pour que la liste DÉBORDE : c'est la condition de la mesure, et elle est
+  // vérifiée plus bas sur le nombre de lignes RENDUES, jamais supposée depuis ce jeu.
+  const champs58 = Array.from({ length: 30 }, (_, i) => `champ_${String(i).padStart(2, "0")}`);
+  primeCompletionMeta({
+    base_keywords: ["search", "metric"], commands: ["where", "stats", "sort"],
+    stats_functions: ["count"], eval_functions: ["if"], operators: ["=", "!=", ">", "<"],
+    fields: { core: champs58, extended: [] },
+    values: {}, docs: { fields: Object.fromEntries(champs58.map((c) => [c, "description curée sur deux lignes de " + c])) },
+  }, []);
+
+  const ed58 = new Editeur58();
+  const parId58 = document.getElementById;
+  document.getElementById = (id) => (id === "sql" ? ed58 : new Element("div"));
+  initSoqlComplete();
+  document.getElementById = parId58;
+  exiger(ed58.dataset.acWired === "1", "(58-instrument) l'éditeur fabriqué n'a pas été câblé : rien de ce qui suit ne mesurerait le module");
+
+  const frapper58 = (t) => { ed58.value = t; ed58.setSelectionRange(t.length, t.length); ed58.dispatchEvent({ type: "input" }); };
+  const fleche58 = (key) => ed58.dispatchEvent({ type: "keydown", key, ctrlKey: false, metaKey: false, preventDefault() {} });
+  const pause58 = () => new Promise((r) => setTimeout(r, 0));
+  frapper58("search ");
+  await pause58();
+  const boite58 = document.body.children.find((c) => c.classList.contains("soql-ac"));
+  exiger(!!boite58 && !boite58.hidden, "(58-instrument) la boîte de complétion n'a pas été rendue : le témoin n'a rien à mesurer");
+
+  // Le défilement est un ACCESSEUR : on compte les écritures du module, et on modélise la seule chose que
+  // le document réel fait de son côté — BORNER LE DÉFILEMENT À ZÉRO quand le contenu disparaît. Sans cette
+  // moitié, la reprise du défilement au travers de la reconstruction serait un no-op ici, et la jambe
+  // (58c) serait VERTE PAR CONSTRUCTION : elle ne distinguerait pas un module qui reprend son défilement
+  // d'un module qui repart du haut à chaque cran.
+  let defilement58 = 0, ecritures58 = 0;
+  const htmlOrigine58 = Object.getOwnPropertyDescriptor(Element.prototype, "innerHTML");
+  Object.defineProperty(boite58, "scrollTop", { configurable: true, get: () => defilement58, set: (v) => { defilement58 = v; ecritures58++; } });
+  Object.defineProperty(boite58, "innerHTML", {
+    configurable: true,
+    get() { return htmlOrigine58.get.call(this); },
+    set(v) { htmlOrigine58.set.call(this, v); defilement58 = 0; },   // le DOCUMENT, pas le module : non compté
+  });
+
+  // — instrument (2) : la liste DÉBORDE vraiment de la boîte, sinon rien ne se prouverait.
+  frapper58("search ");
+  await pause58();
+  const rendues58 = boite58.children.length;
+  exiger(rendues58 > TIENNENT58 + 6,
+    `(58-instrument) la liste rend ${rendues58} ligne(s) pour ${TIENNENT58} visible(s) : elle ne déborde pas assez pour que « hors du champ » veuille dire quelque chose`);
+
+  // — instrument (3) : la géométrie fabriquée est-elle CONSOMMÉE ? Sans elle, plus une seule écriture.
+  geometrie58 = false;
+  defilement58 = 0; ecritures58 = 0;
+  for (let i = 0; i < 12; i++) fleche58("ArrowDown");
+  exiger(ecritures58 === 0,
+    `(58-instrument) géométrie RETIRÉE, le module a tout de même écrit ${ecritures58} fois le défilement (valeur ${defilement58}) : il pose un défilement qu'il n'a pas mesuré, et les jambes suivantes liraient un nombre inventé`);
+  geometrie58 = true;
+
+  // — jambe (58a), EXÉCUTÉE : douze flèches vers le bas, et la ligne active est DANS le champ.
+  frapper58("search ");
+  await pause58();
+  defilement58 = 0; ecritures58 = 0;
+  const CIBLE58 = 12;
+  for (let i = 0; i < CIBLE58; i++) fleche58("ArrowDown");
+  const active58 = boite58.children.findIndex((r) => r._classes.has("active"));
+  exiger(active58 === CIBLE58,
+    `(58a-instrument) après ${CIBLE58} flèches la ligne surlignée est la n°${active58} : la navigation au clavier ne fait plus ce que ce témoin croit mesurer`);
+  const hautDeLaLigne58 = active58 * LIGNE58, basDeLaLigne58 = hautDeLaLigne58 + LIGNE58;
+  exiger(hautDeLaLigne58 >= defilement58 && basDeLaLigne58 <= defilement58 + VUE58,
+    `(58a) LA COMPLÉTION SURLIGNE UNE SUGGESTION QUE PERSONNE NE VOIT : après ${CIBLE58} flèches vers le bas, la ligne n°${active58} occupe ${hautDeLaLigne58}..${basDeLaLigne58}px pendant que la boîte montre ${defilement58}..${defilement58 + VUE58}px. La boîte défile — c'est la SÉLECTION qui n'y va pas, et rien à l'écran ne dit qu'il y a plus bas`);
+  exiger(defilement58 === basDeLaLigne58 - VUE58,
+    `(58a) la ligne sortie par le BAS n'est pas alignée sur le bord par lequel elle est sortie : défilement ${defilement58} au lieu de ${basDeLaLigne58 - VUE58} — un alignement en haut, ou un recentrage, déplacerait la liste plus que nécessaire`);
+
+  // — jambe (58b), TÉMOIN NÉGATIF : tant que la sélection reste visible, RIEN ne bouge.
+  frapper58("search ");
+  await pause58();
+  defilement58 = 0; ecritures58 = 0;
+  for (let i = 0; i < TIENNENT58 - 1; i++) fleche58("ArrowDown");
+  exiger(ecritures58 === 0 && defilement58 === 0,
+    `(58b) LE REMÈDE POUSSÉ TROP LOIN : la sélection est encore dans les ${TIENNENT58} premières lignes et le module a déjà écrit ${ecritures58} fois le défilement (valeur ${defilement58}). Une liste qui saute à chaque cran, ou qui se recentre sans qu'on le demande, est PIRE que celle qui ne bougeait pas`);
+
+  // — jambe (58c), LA RECONSTRUCTION : remonter d'un cran sur une ligne DÉJÀ visible ne déplace RIEN.
+  //   `render()` vide son contenu avant de le refaire, ce qui borne le défilement à zéro. Sans reprise,
+  //   ce cran-là recalculerait depuis le haut et la liste sauterait — le défaut RETOURNÉ.
+  frapper58("search ");
+  await pause58();
+  defilement58 = 0;
+  for (let i = 0; i < CIBLE58; i++) fleche58("ArrowDown");
+  const apresDescente58 = defilement58;
+  ecritures58 = 0;
+  fleche58("ArrowUp");
+  const actifRemonte58 = boite58.children.findIndex((r) => r._classes.has("active"));
+  exiger(actifRemonte58 === CIBLE58 - 1,
+    `(58c-instrument) la flèche vers le haut n'a pas reculé d'un cran (ligne n°${actifRemonte58}) : cette jambe ne mesurerait pas ce qu'elle annonce`);
+  exiger(defilement58 === apresDescente58,
+    `(58c) LA LISTE SAUTE À LA RECONSTRUCTION : remonter d'un cran sur une ligne DÉJÀ visible a déplacé le défilement de ${apresDescente58} à ${defilement58}. Le rendu vide son contenu avant de le refaire — le document borne alors le défilement à zéro — et sans reprise de la valeur RELEVÉE avant le vidage, chaque cran repart du haut`);
+
+  // — jambe (58d) : une FRAPPE remet la sélection en tête, et le champ de vue la suit.
+  defilement58 = apresDescente58;
+  frapper58("search c");
+  await pause58();
+  exiger(boite58.children.length > 0 && defilement58 === 0,
+    `(58d) après une frappe, la suggestion active redevient la PREMIÈRE et le champ de vue est resté à ${defilement58} : l'exploitant lirait une fenêtre périmée pendant que la sélection est ailleurs`);
+
+  // — la décision NUE, dans les deux sens : elle ne bouge que par le bord franchi, et elle refuse de
+  //   conclure sur une géométrie qu'elle n'a pas. `null` est le cas NOMINAL.
+  exiger(enVue58({ defilement: 100, hauteurVisible: 270 }, { haut: 120, hauteur: 61 }) === null,
+    "(58e) la décision déplace une ligne DÉJÀ dans le champ : le cas nominal doit être l'immobilité");
+  exiger(enVue58({ defilement: 100, hauteurVisible: 270 }, { haut: 40, hauteur: 61 }) === 40,
+    "(58e) une ligne sortie par le HAUT n'est pas alignée sur le haut du champ");
+  exiger(enVue58({ defilement: 0, hauteurVisible: 270 }, { haut: 305, hauteur: 61 }) === 96,
+    "(58e) une ligne sortie par le BAS n'est pas alignée sur le bas du champ");
+  exiger(enVue58({ defilement: 0, hauteurVisible: 0 }, { haut: 305, hauteur: 61 }) === null
+      && enVue58({ defilement: 0, hauteurVisible: NaN }, { haut: 305, hauteur: 61 }) === null,
+    "(58e) la décision conclut sur une géométrie ABSENTE : elle poserait un défilement dérivé d'un vide, ce qui ramènerait la liste en haut sans qu'on l'ait demandé");
+
+  delete Element.prototype.offsetHeight; delete Element.prototype.offsetTop; delete Element.prototype.clientHeight;
+
+  console.log(`[suggestion-active-en-vue] la complétion rend ${rendues58} suggestions dans une boîte où ${TIENNENT58} tiennent (plafond ${plafond58}px LU dans la feuille servie) : ${CIBLE58} flèches vers le bas laissent la ligne surlignée DANS le champ, alignée sur le seul bord qu'elle a franchi ; tant qu'elle reste visible le module n'écrit PAS UNE FOIS le défilement ; remonter d'un cran au travers d'une reconstruction ne déplace rien ; et une frappe qui remet la sélection en tête ramène le champ de vue avec elle. L'instrument est validé dans les deux sens : géométrie retirée, ZÉRO écriture — le nombre lu plus haut est donc bien MESURÉ et non inventé. CE QUE CE TÉMOIN NE TIENT PAS : la géométrie est FABRIQUÉE (la section 0 déclare que le simulacre ne tient pas la mise en page), donc il juge le code qui la consomme et jamais l'encre peinte ni la hauteur réelle d'une ligne ; il ne dit rien de la POSITION de la boîte, tenue par le témoin 56 ; il ne rejoue ni molette, ni glissement de barre, ni redimensionnement ; et la borne de quarante suggestions est hors de son objet.`);
+}
+
 // LE VERDICT PORTE SA PROPRE LIMITE (`P11.13-g`). Un vert qui ne dit pas ce sur quoi il ne s'engage pas
 // se lit comme une COUVERTURE — et un rouge n'a pas plus le droit de laisser croire qu'il a tout regardé.
 // La phrase ci-dessous n'est pas écrite : elle est DÉRIVÉE des sondes de la section 0, donc une capacité

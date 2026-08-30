@@ -75,6 +75,23 @@ celui qu'elle ne voyait pas. Une occurrence en COMMENTAIRE n'est JAMAIS comptée
 il en existe une sur l'arbre (`daemon/src/handlers/alerts.rs`, dans le commentaire de la vue « tous
 statuts ») et c'est la forme sous laquelle un site « connu » cesse d'exister sans qu'un `grep` le voie.
 
+MAIS UN SITE DÉCOUVERT PEUT AVOIR UNE RÉGION QUI NE S'OUVRE PAS, ET C'EST CE QUE `P10.7-j` A CORRIGÉ.
+La fermeture n'est pas toujours un `|conn| …` : elle peut être le NOM d'une fonction, passé SANS
+parenthèses (`read_with_watchdog(&db_path, BTreeMap::new(), rule_compliance_map)`, un seul site sur
+l'arbre au 2026-08-30). Le relevé de noms exigeait un `(` collé au nom : la jambe B n'ouvrait donc RIEN,
+alors que la jambe A accusait le même site depuis le premier jour. Ce n'était pas la population qui
+manquait — c'était une écriture de Rust ordinaire que le lecteur ne suivait pas, et c'est un TROISIÈME
+axe après les bras de `match` et les `if let` sans branche. Il faut le dire, parce que la leçon inverse
+(« une jambe étendue sur une population amputée reste aveugle ») est vraie AUSSI dans l'autre sens : une
+population complète dont les RÉGIONS ne s'ouvrent pas est tout aussi aveugle, et le compte ne le dit pas.
+
+CE QUE `P10.7-j` A REFUSÉ DE FAIRE, ET LA MESURE QUI L'A ARRÊTÉ. Le lot devait faire entrer `req_conn!`
+dans la population. Il ne l'a PAS fait, et la raison est écrite en toutes lettres dans « ce qu'elle ne
+tient pas » : l'énoncé de départ était faux sur cinq comptes, les dix sites cités en PREUVE ne passent
+pas par cette voie, et l'extension prototypée y multiplie UNE lecture avalée par HUIT accusations. La
+forme dérivable existe (`with_write`, même signature à trois arguments), elle est mesurée, et elle n'est
+pas livrée tant que ses dix accusations n'ont pas été classées une par une.
+
 L'INSTRUMENT SE VALIDE AVANT DE RENDRE UN VERDICT, DANS LES DEUX SENS
 ----------------------------------------------------------------------
 QUINZE mutants fabriqués, joués à chaque exécution : un corps par défaut nu DOIT accuser, le même avec un
@@ -198,7 +215,7 @@ PLAFOND_DEFAUT_NU = 16          # jambe A : défauts servis sans aveu — INCHAN
 # laquelle le site cité en preuve de `P10.7-g` — `handlers/dashboards.rs` — n'apparaissait nulle part :
 # la forme y était, sous une voie que la garde ne nommait pas. Une jambe étendue sur une population
 # amputée reste aveugle, et c'est la leçon que ce cliquet porte désormais.
-PLAFOND_CLOSURE_SOURDE = 22     # jambe B : closures qui avalent une lecture de lignes sans aveu
+PLAFOND_CLOSURE_SOURDE = 23     # jambe B : closures qui avalent une lecture de lignes sans aveu
 #
 # ┌─ LA HAUSSE DE 17 À 22 N'EST PAS UNE RÉGRESSION : C'EST UN ÉLARGISSEMENT DU REGARD. ────────────┐
 # │ AUCUNE ligne de `daemon/` n'a changé entre les deux relevés du 2026-08-30 — l'arbre est celui   │
@@ -248,6 +265,33 @@ PLAFOND_CLOSURE_SOURDE = 22     # jambe B : closures qui avalent une lecture de 
 #      quand l'inventaire est TRONQUÉ. -> 18.
 #   5. `soql_known_sources` : ne pas MET­TRE EN CACHE une liste issue d'une lecture ratée. -> 17.
 # Chacun est un geste LOCAL, jouable aujourd'hui, et aucun ne demande de toucher à cette garde.
+#
+# ┌─ LA HAUSSE DE 22 À 23 N'EST PAS UNE RÉGRESSION : C'EST UN ÉLARGISSEMENT DU REGARD. ────────────┐
+# │ AUCUNE ligne de `daemon/` n'a changé (`P10.7-j`, 2026-08-30) : la garde s'est mise à OUVRIR une │
+# │ région qu'elle refermait, celle d'une fermeture écrite en CHEMIN DE FONCTION NU. Les VINGT-DEUX │
+# │ accusations anciennes sont TOUTES encore là — vérifié par différence des deux journaux, dans    │
+# │ les DEUX sens, ligne par ligne : zéro accusation disparue, et aucune CAUSE IMPRIMÉE perdue (les │
+# │ phrases des vingt-deux sont identiques mot pour mot). L'unique accusation neuve est nommée      │
+# │ ci-dessous.                                                                                     │
+# └────────────────────────────────────────────────────────────────────────────────────────────────┘
+# D'OÙ VIENT LA SEULE, relue sur l'arbre le 2026-08-30 : `compliance.rs:341` -> `rule_compliance_map`.
+# La closure y est passée SANS parenthèses (`read_with_watchdog(&db_path, BTreeMap::new(),
+# rule_compliance_map)`) ; le relevé de noms de `corps_de_la_closure` exigeait un `(` collé au nom et ne
+# voyait donc rien. Le corps avale DEUX lectures sans branche (`compliance.rs:193` `conn.prepare(..)` et
+# `:196` `stmt.query_map(..)`) : une lecture ratée rend une map VIDE, et la posture sert alors « aucune
+# règle activée ne couvre aucun contrôle d'aucun cadre » — un corps de conformité au plus rassurant
+# possible, servi précisément quand rien n'a été lu. Le site était DÉJÀ dans la population et DÉJÀ accusé
+# par la jambe A (son défaut `BTreeMap::new()` n'avoue pas) : la jambe B ne faisait que ne pas lire la
+# région. C'est la MÊME leçon que les bras de `match` et les `if let` sans branche, sur un troisième axe :
+# ce n'est pas la population qui manquait, c'est une écriture de Rust ordinaire que le lecteur ne suivait
+# pas. Et c'est aussi la réfutation de ce que ce fichier affirmait hier — il attribuait ces deux
+# lectures-là à `req_conn!` ; elles n'ont jamais été derrière `req_conn!`.
+#
+# PLAN DE DESCENTE — le geste qui ferme la vingt-troisième :
+#   6. `rule_compliance_map` : distinguer « aucune règle mappée » de « la table `rule` n'a pas été lue ».
+#      Le plus court est de lui faire rendre un `Option`/`Result` et de poser la coupe dans le corps de
+#      `compliance_posture`, qui construit DÉJÀ une réponse et sait déjà y écrire une cause. -> 22.
+# Il reste LOCAL, jouable aujourd'hui, et il ne demande pas de toucher à cette garde.
 PLAFOND_CAUSE_JETEE = 3         # jambe Q : bras d'erreur jetés
 
 
@@ -811,7 +855,20 @@ def corps_de_la_closure(code, tranches, fin, defs):
     troisième argument), pas une convention qu'un correctif pourrait contourner."""
     texte = code[tranches[2][0]:fin]
     corps = [("<closure>", texte)]
-    for nom in sorted(set(re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(", texte))):
+    noms = set(re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(", texte))
+    # LA FERMETURE ÉCRITE EN CHEMIN DE FONCTION NU (`P10.7-j`, mesuré le 2026-08-30). Le troisième
+    # argument n'est pas toujours un `|conn| …` : il peut être le NOM d'une fonction, passé sans
+    # parenthèses (`read_with_watchdog(&db_path, BTreeMap::new(), rule_compliance_map)`). Le relevé de
+    # noms ci-dessus exige un `(` collé au nom — il ne voyait donc RIEN dans ce texte, et la jambe B
+    # n'ouvrait pas le corps. Le site était pourtant DANS la population depuis toujours : il est accusé
+    # par la jambe A depuis le premier jour, et c'est sa CLOSURE qui restait muette. Un seul site de
+    # l'arbre porte cette écriture au 2026-08-30 (`daemon/src/handlers/compliance.rs:341`), et il avale
+    # DEUX lectures. Ce n'est PAS un élargissement de la population : c'est la région d'un site déjà
+    # découvert qui cessait de s'ouvrir sur une écriture de Rust parfaitement ordinaire.
+    nu = re.fullmatch(r"\s*([A-Za-z_][A-Za-z0-9_:]*)\s*", texte)
+    if nu:
+        noms.add(nu.group(1).split("::")[-1])
+    for nom in sorted(noms):
         sites = defs.get(nom)
         if sites and len(sites) == 1:
             corps.append((nom, sites[0][2]))
@@ -1167,6 +1224,63 @@ def valider_instrument(defs, constructeurs):
     elif not all(t in raisons[0] for t in ("sans branche d'échec", "chaîne directe")):
         errs.append(f"témoin de l'AGRÉGATION (formes) : « {raisons[0][:150]} » ne distingue plus les "
                     "écritures — deux causes de nature différente sont rendues indiscernables")
+    # LA FERMETURE ÉCRITE EN CHEMIN DE FONCTION NU (`P10.7-j`), DANS LES TROIS SENS. Les définitions
+    # sont FABRIQUÉES ICI, jamais prises sur l'arbre : adosser ces témoins à `rule_compliance_map` en
+    # ferait une RANÇON — ils rougiraient le jour où il est réparé, et aucun geste ne pourrait les
+    # refermer. Le troisième témoin est celui qui manque le plus souvent : un nom SANS définition ne
+    # doit ni accuser ni faire tomber le lecteur, sinon la garde inventerait une région qu'elle n'a
+    # jamais lue. CHACUN A ÉTÉ ÉPROUVÉ PAR MUTATION le 2026-08-30, et la phrase dit ce qui a été
+    # MESURÉ, pas ce qui serait joli : débrancher la résolution du chemin nu rend le PREMIER rouge (et
+    # avec lui le témoin de prédicat) ; chercher l'aveu dans le texte de la fermeture au lieu de la
+    # RÉGION RÉSOLUE rend le DEUXIÈME rouge — et il est le SEUL des dix-neuf témoins à tuer cette
+    # mutation-là, les autres ne jugeant que des régions `<closure>` ; faire INVENTER un corps à un nom
+    # inconnu rend le TROISIÈME rouge.
+    defs_fab["fermeture_nue_sourde"] = [("/fabrique.rs", 1,
+        '{ let mut o = Vec::new(); if let Ok(mut s) = conn.prepare("SELECT a FROM t") '
+        '{ if let Ok(rows) = s.query_map([], f) { for a in rows.flatten() { o.push(a); } } } '
+        'json!({ "o": o }) }', "(conn: &Connection) -> Value")]
+    defs_fab["fermeture_nue_qui_avoue"] = [("/fabrique.rs", 1,
+        '{ let mut o = Vec::new(); if let Ok(mut s) = conn.prepare("SELECT a FROM t") '
+        '{ if let Ok(rows) = s.query_map([], f) { for a in rows.flatten() { o.push(a); } } } '
+        'json!({ "o": o, "error": "liste possiblement TRONQUÉE : lecture NON SOLDÉE" }) }',
+        "(conn: &Connection) -> Value")]
+    nu_src = ('pub(crate) async fn r17() -> Json<Value> {\n'
+              '    let v = read_with_watchdog(&db, json!({ "rows": [], "error": "x" }), NOM);\n'
+              '    Json(v)\n}\n')
+    def jambes_de(nom):
+        _s, a = analyser("/chemin_nu.rs", nu_src.replace("NOM", nom), defs_fab, constructeurs, [])
+        return {j for j, *_ in a}
+    if "B" not in jambes_de("fermeture_nue_sourde"):
+        errs.append("témoin du CHEMIN NU (positif) : une fermeture passée SANS parenthèses "
+                    "(`read_with_watchdog(&db, defaut, ma_fonction)`) dont le corps AVALE n'est pas "
+                    "accusée — la jambe B a cessé d'ouvrir la région d'un site pourtant DÉCOUVERT, et "
+                    "l'angle mort de `P10.7-j` est rouvert")
+    if "B" in jambes_de("fermeture_nue_qui_avoue"):
+        errs.append("témoin du CHEMIN NU (négatif) : la MÊME fermeture nue, dont le corps AVOUE, est "
+                    "accusée — la jambe B accuserait la forme même qu'elle réclame")
+    if "B" in jambes_de("fonction_qui_nexiste_pas"):
+        errs.append("témoin du CHEMIN NU (nom inconnu) : un chemin SANS définition dans l'arbre "
+                    "produit une accusation B — la garde accuse une région qu'elle n'a jamais lue")
+    # ET LE MÊME CONTRÔLE À SON PROPRE NIVEAU : la résolution doit rendre DEUX régions (le texte du
+    # chemin, qui ne porte aucune lecture, ET le corps résolu), et un `|conn| …` ordinaire ne doit PAS
+    # en gagner une de plus. Sans ce témoin-ci, le précédent pourrait passer pour une raison ÉTRANGÈRE.
+    faux_code = 'read_with_watchdog(&db, json!({}), fermeture_nue_sourde)'
+    tr_nu, fin_nu = arguments(faux_code, faux_code.index("("))
+    regions_nu = [n for n, _c in corps_de_la_closure(faux_code, tr_nu, fin_nu, defs_fab)]
+    if regions_nu != ["<closure>", "fermeture_nue_sourde"]:
+        errs.append(f"témoin du CHEMIN NU (au niveau du prédicat) : régions {regions_nu} au lieu du "
+                    "texte du chemin PLUS le corps résolu — la résolution du chemin nu est cassée")
+    # CE TÉMOIN-CI EST DÉFENSIF, ET IL EST DÉCLARÉ NON PROUVÉ. Relâcher le `fullmatch` en `match` — la
+    # mutation qui fait justement « déborder la résolution de sa forme » — laisse la garde ENTIÈREMENT
+    # VERTE sur l'arbre du 2026-08-30 : le premier identifiant d'un `move |conn| …` est `move`, qui n'a
+    # aucune définition, donc aucune région n'est inventée. Le témoin est conservé parce qu'il tiendrait
+    # le jour où une fermeture commencerait par un nom défini ; il est dit ici plutôt que compté parmi
+    # les témoins prouvés, car un instrument qui prétend éprouver ce qu'il n'atteint pas est pire que rien.
+    faux_lam = 'read_with_watchdog(&db, json!({}), move |conn| lit(conn))'
+    tr_l, fin_l = arguments(faux_lam, faux_lam.index("("))
+    if [n for n, _c in corps_de_la_closure(faux_lam, tr_l, fin_l, defs_fab)][0] != "<closure>":
+        errs.append("témoin du CHEMIN NU (négatif, au niveau du prédicat) : une fermeture `|conn| …` "
+                    "ordinaire est prise pour un chemin nu — la résolution déborde de sa forme")
     # L'aveu se reconnaît, et son absence aussi.
     if not porte_un_aveu('json!({ "rows": [], "error": "x" })', constructeurs):
         errs.append("témoin d'AVEU : la clé `error` n'est plus reconnue")
@@ -1198,15 +1312,73 @@ def ce_qui_n_est_pas_tenu(non_classes=0):
           "défaut qui est lui-même un corps servi) ferait TAIRE trois accusations vraies de la voie "
           "gardée. Ce qui manque est un vocabulaire d'aveu plus large que la clé `error` ; tant qu'il "
           "n'existe pas, ces défauts-là ne sont ni accusés ni innocentés.\n"
-          "  * LA POPULATION, ET C'EST DÉSORMAIS LE PLUS GRAND ANGLE MORT — plus grand que les deux "
-          "écritures comblées le 2026-08-30 réunies. Cette garde ne connaît que `read_with_watchdog`, "
-          "`read_with`, `run_query` et `run_query_ex`. Une QUATRIÈME voie existe, `req_conn!` "
-          "(`daemon/src/state.rs`) : 181 emplois sur 32 fichiers de `daemon/src/handlers/`, soit plus "
-          "que les 56 sites de la population entière. C'est par elle que passent 24 des 43 `if let "
-          "Ok(..) = <lecture>` sans `else` de l'arbre, sur 9 fichiers, dont les six de `system.rs` et "
-          "les quatre de `admin_ui.rs` : ils ne sont ni accusés ni innocentés. Les élargir demande "
-          "d'élargir la POPULATION, pas une jambe — c'est la leçon que `read_with` a coûtée le matin "
-          "même, et l'y rejouer par une jambe serait la rejouer à l'envers.\n"
+          "  * LA POPULATION, ET C'EST TOUJOURS LE PLUS GRAND ANGLE MORT — mais la description qu'en "
+          "faisait ce fichier était FAUSSE SUR CINQ POINTS, re-mesurés le 2026-08-30 (`P10.7-j`) avec la "
+          "machinerie de cette garde, commentaires DÉPOUILLÉS. Elle disait : `req_conn!` 181 emplois "
+          "(mesuré 180) ; la forme `if let Ok(..) = <lecture>` sans `else` employée 43 fois sur 15 "
+          "fichiers (mesuré 42 sur 14 — l'allégation de 42/14 que ce fichier avait DÉCLARÉE fausse était "
+          "donc juste, et sa correction était l'erreur) ; 24 de ces formes hors de toute région jugée sur "
+          "9 fichiers (mesuré 23 sur 8) ; et surtout, que ces 23 vivraient DERRIÈRE `req_conn!` en citant "
+          "en preuve les six de `system.rs` et les quatre de `admin_ui.rs` — or ces DIX-LÀ ne passent PAS "
+          "par `req_conn!` : `system_diag` écrit le prologue À LA MAIN (`req_db(&st, &au)` puis `.lock()`) "
+          "et `suppressions_get` prend DÉLIBÉRÉMENT `st.db` (la base PLATEFORME, c'est documenté au-dessus "
+          "de la fonction). SIX des 23 seulement sont atteignables depuis un `req_conn!` "
+          "(`index_policies.rs:27/30/89/90`, `threat_intel.rs:198/201`). Citer en preuve un site hors de la "
+          "voie qu'on accuse est la faute que ce dépôt paie le plus cher — et la voie qui manquait "
+          "VRAIMENT pour deux de ces sites n'était pas une voie du tout : c'était la RÉGION d'un site "
+          "déjà découvert, comblée par ce lot.\n"
+          "  * LA VOIE D'ÉCRITURE N'EST PAS UNE VOIE, C'EN EST QUATRE, et nommer `req_conn!` seule "
+          "laisserait les trois autres exactement aussi invisibles (mesuré le 2026-08-30 sur "
+          "`daemon/src/handlers/`) : `req_conn!` 180 emplois sur 32 fichiers, le MÊME prologue écrit à la "
+          "main `req_db(..)` + `.lock()` 18 sur 10, `st.db(.clone()).lock()` 37 sur 5, et `with_write` 19 "
+          "sur 6 — 254 sites contre les 56 de la population. Aucun des quatre n'est jugé.\n"
+          "  * `req_conn!` N'EST PAS ENTRÉE DANS LA POPULATION, ET C'EST UNE MESURE, PAS UN OUBLI. "
+          "L'extension a été PROTOTYPÉE le 2026-08-30 (région = de la macro à la fin de la fonction "
+          "englobante, la portée du garde de verrou, PLUS un niveau d'appel — la règle de "
+          "`corps_de_la_closure`) : 68 accusations, le cliquet B passerait de 22 à 90. Ce n'est pas la "
+          "TAILLE qui l'a arrêtée, c'est le GRAIN. Pour `read_with*`, la valeur de la fermeture EST le "
+          "corps servi ; pour `req_conn!`, « de la macro à la fin de la fonction » est TOUT LE RESTE du "
+          "gestionnaire — validation, mutation, audit, réponse — et l'ouverture à un niveau y traîne des "
+          "auxiliaires qui ne servent aucun corps. Conséquence MESURÉE : l'UNIQUE lecture avalée de "
+          "`ledger_append` compte HUIT fois, contre huit gestionnaires différents ; `parsers_reload` "
+          "quatre ; `processors_reload` et `field_filters_reload` trois chacun. Un cliquet qui bouge de "
+          "huit pour un seul geste local ne nomme plus de site — c'est la hausse qui n'apprend rien, celle "
+          "que le témoin du DOUBLE COMPTE refuse déjà au niveau de l'unité.\n"
+          "  * LA FORME QU'IL FAUDRAIT, SI ON VEUT LA SURFACE D'ÉCRITURE, EST `with_write` "
+          "(`daemon/src/query_exec.rs:341`), PAS `req_conn!` : même signature à TROIS arguments avec la "
+          "fermeture en TROISIÈME position, donc `corps_de_la_closure` s'y applique MOT POUR MOT ; ni "
+          "valeur par défaut ni `Result`, donc les jambes A et Q n'y ont rien à juger — exactement "
+          "l'asymétrie qu'on annonçait pour `req_conn!`, mais sur une forme que la machinerie lit DÉJÀ. "
+          "MESURÉ le 2026-08-30 : 19 sites sur 6 fichiers, 10 accusés par la jambe B, 9 ne portant aucune "
+          "lecture avalée, ZÉRO chevauchement avec une région déjà jugée. Elle n'est PAS livrée ici parce "
+          "que ses dix accusations n'ont pas été classées une par une, et la règle de ce fichier est que "
+          "le COMPTE ne dit pas lesquelles sont des défauts.\n"
+          "  * CE QUE LE COMPTE NE DISAIT PAS — les 23 formes que ce fichier déclarait hors région jugée, "
+          "classées une par une le 2026-08-30, et elles ne sont PAS toutes des défauts. DEUX d'entre "
+          "elles (`compliance.rs:193/196`) sont ENTRÉES dans le champ avec le comblement du chemin nu "
+          "ci-dessus : il en reste VINGT ET UNE hors de toute région jugée, sur 7 fichiers. QUINZE des "
+          "23 servent un CORPS : "
+          "`admin_ui.rs:722/726` (le compte d'hôtes qui marque une entrée `contested` — une lecture ratée "
+          "efface le signal ANTI-EMPOISONNEMENT sans rien dire, la plus grave des 23), "
+          "`admin_ui.rs:731/737`, `ai.rs:76` (servi tel quel par `ai_redaction_policy_get` : l'admin lit "
+          "la politique PAR DÉFAUT en croyant lire celle qui est stockée ; côté application le repli est "
+          "conservateur), `index_policies.rs:27/30/89/90`, et les SIX de "
+          "`system.rs` (bundle de support : `recent_events: []`, `heartbeat_alerts: []` — le signal de "
+          "capteur muet lu comme PROPRE — et `unclassified_by_source: []` qui contredit alors le compte "
+          "`events_without_category` servi dans le MÊME corps). DEUX sont un calcul interne dont "
+          "l'absence est un fait LÉGITIME et DOCUMENTÉ : `cases.rs:87/97` (`resolve_case_ref` — la cible "
+          "a été purgée par la rétention, la ref BRUTE reste affichée, et deux tests le fixent). DEUX "
+          "sont FAIL-CLOSED, et l'absence y est un REFUS, pas un fait rassurant : `datamodels.rs:262/263` "
+          "(une allowlist vide fait REJETER tout champ du Pivot -> 400). DEUX ne sont NI l'un NI l'autre, "
+          "et ce sont celles qu'aucune jambe de cette garde ne saurait formuler : `threat_intel.rs:198/201` "
+          "(`ioc_cache_reload` — une lecture ratée REMPLACE ATOMIQUEMENT le cache de match IOC par un set "
+          "VIDE ; aucune route ne ment, la DÉTECTION s'éteint, et il n'existe aucun corps servi où poser "
+          "`error`. Le geste est de ne PAS remplacer le cache après une lecture ratée). Et les DEUX "
+          "entrées du jour (`compliance.rs:193/196`) servent un CORPS : c'est la seule des 23 dont la "
+          "voie était DÉJÀ dans la population, et elle échappait par sa RÉGION, pas par sa voie. Ces "
+          "classements sont dans `daemon/`, ils sont NOMMÉS ici et ne sont pas corrigés par ce lot ; "
+          "sur les 21 qui restent, DEUX seulement passent par `req_conn!` (`index_policies.rs:89/90`, "
+          "plus `:27/30` par un niveau d'appel depuis le même gestionnaire).\n"
           "  * l'aveu est cherché DANS LA RÉGION, jamais sur la lecture. Une closure qui avoue UNE "
           "coupe innocente TOUTES ses lectures, y compris celles dont l'échec n'est couvert par aucun "
           "aveu : `freshness.rs:579` porte trois `if let` sans branche sur des `prepare` et reste "

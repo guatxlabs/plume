@@ -68,6 +68,10 @@ import os
 import re
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from check_every_style_selector_has_a_target import (  # noqa: E402  (ÉLAGAGE PARTAGÉ, source unique — `P11.8-m`)
+    parcours_des_sources)
+
 RACINE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SRC = os.path.join(RACINE, "daemon", "src")
 ETIQUETTE = "P9.4-b"
@@ -336,15 +340,24 @@ def temoins_des_lectures():
 
 # ================================================================================================
 def fichiers_rust(racine):
-    for d, _, fs in os.walk(racine):
+    for d, fs in parcours_des_sources(racine):
         for f in fs:
             if f.endswith(".rs"):
                 yield os.path.join(d, f)
 
 
 def manifestes(racine):
-    for d, sous, fs in os.walk(racine):
-        sous[:] = [s for s in sous if s not in (".git", "target", "node_modules")]
+    """LES MANIFESTES DE DÉPLOIEMENT, PARCOURUS DEPUIS LA RACINE DU DÉPÔT — donc élagués par le geste
+    PARTAGÉ, et plus par la liste privée de trois noms qui vivait ici (`P11.8-m`).
+
+    Mesuré le 2026-08-31 : hors la garde du lexique, c'est le SEUL parcours RÉCURSIF depuis la racine du
+    dépôt de tout `.github/scripts/` (les deux autres balayages de racine s'arrêtent au premier niveau).
+    Sa copie privée avait les deux défauts du modèle avant correction : elle n'élaguait que des
+    RÉPERTOIRES — un `.git` de `git worktree` est un FICHIER (`P11.8-l`) — et elle ignorait `.venv`,
+    `venv`, `vendor`, `site-packages`. Prouvé par mutation le 2026-08-31 : un `.venv/lib/
+    docker-compose.poison.yml` posé à la racine faisait passer la population de 12 manifestes à 13 sans
+    qu'aucun plancher ne rougisse (un plancher ne garde que la BAISSE) ; avec l'élagage partagé, 12."""
+    for d, fs in parcours_des_sources(racine):
         for f in fs:
             if f.endswith((".yml", ".yaml")) or f.startswith("docker-compose"):
                 yield os.path.join(d, f)

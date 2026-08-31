@@ -383,16 +383,87 @@ fn spawn_destination_tick(tenants: TenantDbManager) {
         });
 }
 
+/// `P10.7-w` — LE NOM SOUS LEQUEL LA BOUCLE QUI ANCRE REND SON BILAN. Déclaré dans le module de la
+/// boucle, comme `overlays_adossement::PASSE_OVERLAYS` l'est dans le module de sa passe.
+///
+/// CE QU'IL N'ATTEINT PAS ENCORE, ET C'EST ÉCRIT PARCE QUE C'EST VRAI : la table `bilan_de_tick::BOUCLES`
+/// est ce que `/metrics` PARCOURT (objet `scheduler` et exposition Prometheus). Cette clé n'y figure pas
+/// — l'ajouter demande une ligne dans `bilan_de_tick.rs`, hors du périmètre de ce lot. En l'état, l'aveu
+/// est LISIBLE (`bilan_de_tick::dernier`) et il est sur stderr, mais il n'est pas encore SERVI.
+pub(crate) const BOUCLE_RETENTION: &str = "retention";
+
+/// `P10.7-w` — UNE PASSE DE RÉTENTION SOUS FILET, ET CE QU'ELLE AVOUE. Mesuré le 2026-08-31.
+///
+/// LE DÉFAUT FERMÉ. `spawn_retention_loop` est le SEUL ancrage PÉRIODIQUE de la chaîne d'intégrité :
+/// c'est la seule boucle qui appelle `retention_run_tenant`, donc `sign_checkpoint` (RECOMPTÉ le
+/// 2026-08-31 — `sign_checkpoint` a DEUX autres sites, tous deux NON périodiques : un au BOOT dans
+/// `server/mod.rs`, un dans la sous-commande `retention` que l'exploitant lance à la main). Elle ne
+/// publiait AUCUN bilan et ne portait AUCUN filet — un panic dans la passe tuait le fil, et avec lui
+/// l'ancrage, la purge, la compaction plein-texte, le point de reprise WAL et le vieillissement froid.
+/// Aucun compteur de tick n'existe pour elle (les seuls sont `SCHED_RULE_*` et `SCHED_ROLLUP_*`) : la
+/// mort du fil ne se lisait NULLE PART, pas même à l'heure. Le fil mort, le démon continue de servir et
+/// n'ancre plus RIEN jusqu'au prochain redémarrage. `P10.7-v` détecte l'EFFET (une chaîne non ancrée
+/// depuis plus de deux cadences est accusée par `ledger::ancrage_en_retard`) — mais il faut aller le
+/// LIRE, et un processus qui redémarre souvent ré-ancre à chaque boot, donc n'est jamais accusé.
+///
+/// REPRENDRE, ET NON MOURIR — LA RAISON EST MESURÉE, PAS CHOISIE :
+///   1. c'est ce que fait le seul filet de boucle qui existe déjà ici (`spawn_rule_scheduler` : un
+///      `catch_unwind` PAR TENANT, `bilan.panique(tid)`, `eprintln`, et on continue) ;
+///   2. le verrou d'écriture est un `parking_lot::Mutex` (`main.rs`), qui N'EMPOISONNE PAS : un panic
+///      tenu sous le verrou le rend proprement, donc la passe suivante peut écrire. Sous
+///      `std::sync::Mutex`, reprendre fabriquerait une boucle qui panique à chaque `lock()` — c'est
+///      pourquoi le témoin `la_reprise_retrouve_un_verrou_utilisable` panique VERROU EN MAIN ;
+///   3. mourir emporterait la purge et le point de reprise WAL avec l'ancrage — sur un budget de 2 Go,
+///      un disque qui ne se purge plus est une seconde panne greffée sur la première.
+///
+/// L'AVEU EST UN ÉTAT, PAS UN FLUX — ET C'EST LE PIÈGE ÉVITÉ. Les aveux VOISINS écrits en base
+/// (`emit_ledger_health`, `emit_disk_health`) sont dédupliqués À L'HEURE (`dedup = …-{ts/3600}`).
+/// Or la cadence de CETTE boucle est de 3600 s : la dédup n'y étouffe RIEN en régime permanent (au
+/// plus un aveu par passe de toute façon) — elle protège du boot en crashloop, elle ne masque pas une
+/// panne durable. Mais elle RENDRAIT une ligne par heure, indistinguable d'un incident isolé dans une
+/// liste d'événements. Le bilan, lui, n'est PAS dédupliqué et il est LAST-WRITER-WINS : une passe qui
+/// échoue à chaque tour laisse un `Illisible` en place, donc un ROUGE permanent sur la surface
+/// (`bilan_de_tick::etat_de_surface`) — un état, qu'aucun lecteur ne peut prendre pour un incident isolé.
+/// Corollaire assumé : une passe saine EFFACE l'aveu de la précédente. C'est déjà la sémantique des
+/// quatre boucles voisines, et c'est ce qui rend le témoin négatif exigible.
+///
+/// `passe` est un paramètre pour que l'incident se FABRIQUE au lieu de s'attendre : la production y met
+/// `retention_run_tenant`, les témoins y mettent une passe qui panique.
+pub(crate) fn passe_de_retention_sous_filet(
+    tenants: &TenantDbManager,
+    passe: impl Fn(&Arc<Mutex<Connection>>, &str),
+) -> crate::mesure_environnement::Mesure<u64> {
+    let mut bilan = crate::bilan_de_tick::BilanDuPlanificateur::default();
+    for_each_active_tenant(tenants, |tid, handle, db_path| {
+        // MÊME grain que `spawn_rule_scheduler` : PAR TENANT. Un panic sur la base d'un tenant n'empêche
+        // pas les autres d'être purgés ni leur chaîne d'être ancrée.
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| passe(handle, db_path)));
+        if res.is_err() {
+            bilan.panique(tid);
+            eprintln!(
+                "[retention] panic capturé dans la passe de rétention (tenant '{tid}' isolé) — la boucle \
+                 qui ANCRE le journal d'intégrité SURVIT et le dit ; sans ce filet, le fil mourait et \
+                 l'ancrage s'arrêtait sans aveu"
+            );
+        }
+    });
+    let mesure = bilan.mesure();
+    // APRÈS la passe, comme les quatre boucles voisines (`BOUCLE_INGEST`, `BOUCLE_REGLES`,
+    // `BOUCLE_CONNECTEURS`, `BOUCLE_DESTINATIONS`, `BOUCLE_RAPPORTS`) : le bilan publié est celui du
+    // passage qui vient d'avoir lieu, jamais une intention.
+    crate::bilan_de_tick::publier(BOUCLE_RETENTION, mesure.clone());
+    mesure
+}
+
 fn spawn_retention_loop(tenants: TenantDbManager) {
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_secs(60));
             loop {
-                for_each_active_tenant(&tenants, |_tid, handle, db_path| {
-                    // db_path threadé (#18 FIX #2) : le tier cold en dérive une racine DISJOINTE par tenant
-                    // (jamais le PLUME_COLD_DIR global partagé). Mode 0 : db_path==PLUME_DB -> racine cold
-                    // HISTORIQUE inchangée. Le reste de la rétention IGNORE db_path (comportement identique).
-                    retention_run_tenant(handle, db_path);
-                });
+                // `P10.7-w` — LE PASSAGE EST SOUS FILET ET REND SON BILAN. Le corps par tenant est
+                // INCHANGÉ : db_path threadé (#18 FIX #2) — le tier cold en dérive une racine DISJOINTE
+                // par tenant (jamais le PLUME_COLD_DIR global partagé). Mode 0 : db_path==PLUME_DB ->
+                // racine cold HISTORIQUE inchangée. Le reste de la rétention IGNORE db_path.
+                passe_de_retention_sous_filet(&tenants, |handle, db_path| retention_run_tenant(handle, db_path));
                 std::thread::sleep(Duration::from_secs(3600));
             }
         });
@@ -497,4 +568,155 @@ fn spawn_panel_refresh_loop(tenants: TenantDbManager, refresh_sem: Arc<tokio::sy
                 std::thread::sleep(Duration::from_secs(refresh_s));
             }
         });
+}
+
+// ==================================================================================================
+// `P10.7-w` — LE FILET DE LA BOUCLE QUI ANCRE, ÉPROUVÉ SUR UN INCIDENT FABRIQUÉ.
+//
+// POURQUOI CES TÉMOINS VIVENT ICI ET NON SOUS `src/tests/`. `mod boucles_de_fond;` est PRIVÉ dans
+// `server/mod.rs`, qui n'en réexporte que `spawn_background_jobs` : depuis `crate::tests`, ni
+// `passe_de_retention_sous_filet` ni `BOUCLE_RETENTION` ne sont NOMMABLES. Les y porter demanderait
+// une ligne `pub(crate) use boucles_de_fond::{…};` dans `server/mod.rs` — un fichier hors du
+// périmètre de ce lot. La garde DÉRIVÉE, elle, n'a besoin d'aucun item privé (elle lit la SOURCE) et
+// vit donc bien sous `src/tests/le_filet_de_la_boucle_qui_ancre.rs`.
+//
+// AUCUN TÉMOIN CHRONOMÉTRIQUE : la boucle réelle dort 60 s puis 3600 s ; on ne l'attend pas, on
+// exerce SA PASSE avec un incident FABRIQUÉ. AUCUN TÉMOIN ADOSSÉ À UN DÉFAUT VIVANT : chacun asserte
+// l'état CORRIGÉ et nomme ce que l'arbre rendait avant.
+// ==================================================================================================
+#[cfg(test)]
+mod filet_de_l_ancrage {
+    use super::*;
+    use crate::mesure_environnement::{Mesure, CAUSE_SOURCE_ILLISIBLE};
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    /// Le bilan est un état de PROCESSUS publié sous UNE clé : deux témoins qui la lisent en parallèle
+    /// se voleraient leur mesure. Ils prennent ce verrou. (`parking_lot` : pas d'empoisonnement, donc
+    /// un témoin qui échoue ne fait pas échouer les autres pour une mauvaise raison.)
+    static VERROU_DU_BILAN: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+    /// Le chemin de la base du tenant `default`, RELU dans les assertions : une passe qui recevrait un
+    /// autre chemin travaillerait sur une autre base, et le tier froid en dérive sa racine.
+    const CHEMIN_DEFAULT: &str = "/base/du/tenant/default/plume.db";
+
+    /// Un gestionnaire MODE 0 (`control: None`) : `for_each_active_tenant` y fait EXACTEMENT une
+    /// itération, sur `default`. La table `trace` sert à prouver que la passe ÉCRIT vraiment.
+    fn un_gestionnaire_mode_0() -> TenantDbManager {
+        let conn = Connection::open_in_memory().expect("base mémoire");
+        conn.execute_batch("CREATE TABLE trace(n INTEGER)").expect("table de trace");
+        TenantDbManager {
+            default_db_path: Arc::new(CHEMIN_DEFAULT.to_string()),
+            default_writer: Arc::new(Mutex::new(conn)),
+            control: None,
+            writers: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// (W1) LE TÉMOIN NÉGATIF — UNE PASSE SAINE RESTE MUETTE, ET SON BILAN EST UN VRAI ZÉRO.
+    ///
+    /// Sans lui, un filet qui avouerait TOUJOURS passerait (W2) et (W3) : un aveu inconditionnel n'est
+    /// pas un aveu, c'est une alarme qu'on apprend à ne plus lire. Le CONTRÔLE POSITIF (`passages==1`)
+    /// est là pour la même raison en sens inverse : un `Lue(0)` rendu par une passe JAMAIS APPELÉE
+    /// serait la valeur la plus rassurante du monde.
+    #[test]
+    fn une_passe_de_retention_saine_reste_muette_et_son_bilan_est_un_vrai_zero() {
+        let _v = VERROU_DU_BILAN.lock();
+        let mgr = un_gestionnaire_mode_0();
+        let passages = AtomicU32::new(0);
+        let mesure = passe_de_retention_sous_filet(&mgr, |handle, db_path| {
+            assert_eq!(db_path, CHEMIN_DEFAULT, "la passe reçoit le chemin de SA base");
+            passages.fetch_add(1, Ordering::Relaxed);
+            handle.lock().execute("INSERT INTO trace(n) VALUES(1)", []).expect("la passe écrit vraiment");
+        });
+        assert_eq!(passages.load(Ordering::Relaxed), 1, "CONTRÔLE POSITIF : sans passage, le zéro qui suit ne prouverait rien");
+        assert_eq!(
+            mesure,
+            Mesure::Lue(0),
+            "une passe de rétention SAINE n'a rien à avouer : son bilan est un VRAI zéro, comme celui \
+             des quatre boucles voisines"
+        );
+        assert_eq!(
+            crate::bilan_de_tick::dernier(BOUCLE_RETENTION),
+            Some(Mesure::Lue(0)),
+            "et il est PUBLIÉ — avant ce lot, cette boucle ne publiait RIEN, pas même un tick"
+        );
+        let (etat, detail) =
+            crate::bilan_de_tick::etat_de_surface("green", "rétention à l'heure".to_string(), Some(&Mesure::Lue(0)));
+        assert_eq!((etat, detail.as_str()), ("green", "rétention à l'heure"), "une passe saine ne teinte RIEN");
+    }
+
+    /// (W2) L'INCIDENT EST FABRIQUÉ, ET IL EST AVOUÉ — LA BOUCLE NE MEURT PLUS EN SILENCE.
+    ///
+    /// ATTEINDRE la première assertion EST déjà la moitié de la propriété : sans le `catch_unwind`,
+    /// ce `panic!` déroulerait le fil de la boucle. Avant ce lot, en production, il l'aurait fait —
+    /// l'ancrage du journal d'intégrité se serait arrêté sans qu'aucune surface ne le dise.
+    #[test]
+    fn une_passe_de_retention_qui_panique_est_avouee_et_la_passe_rend_la_main() {
+        let _v = VERROU_DU_BILAN.lock();
+        let mgr = un_gestionnaire_mode_0();
+        let mesure = passe_de_retention_sous_filet(&mgr, |_handle, _db_path| {
+            panic!("incident FABRIQUÉ dans la passe de rétention");
+        });
+        match &mesure {
+            Mesure::Illisible { cause, detail } => {
+                assert_eq!(*cause, CAUSE_SOURCE_ILLISIBLE, "la cause reste dans l'ensemble fermé de `S32`");
+                assert!(detail.contains("default"), "l'aveu NOMME le tenant dont la passe est tombée : {detail}");
+                assert!(detail.contains("paniqué"), "et il dit ce qui est arrivé : {detail}");
+            }
+            Mesure::Lue(n) => panic!("une passe qui a PANIQUÉ a rendu un compte ({n}) au lieu d'un aveu"),
+        }
+        assert_eq!(
+            crate::bilan_de_tick::dernier(BOUCLE_RETENTION),
+            Some(mesure.clone()),
+            "l'aveu est PUBLIÉ, et c'est le MÊME que celui rendu à l'appelant"
+        );
+        let (etat, detail) =
+            crate::bilan_de_tick::etat_de_surface("green", "rétention à l'heure".to_string(), Some(&mesure));
+        assert_eq!(etat, "red", "une passe d'ancrage qui n'a pas eu lieu est ROUGE, pas une passe calme");
+        assert!(detail.contains("AVEUGLE"), "et le détail porte le mot que la surface expose : {detail}");
+    }
+
+    /// (W3) LA REPRISE RETROUVE UN VERROU UTILISABLE — C'EST CE QUI REND « REPRENDRE » LÉGITIME ICI.
+    ///
+    /// LA QUESTION QUE CE TÉMOIN TRANCHE : reprendre après un panic n'est sûr que si le verrou
+    /// d'écriture survit à un panic TENU EN MAIN. C'est vrai de `parking_lot::Mutex` (aucun
+    /// empoisonnement) et FAUX de `std::sync::Mutex`, où la reprise fabriquerait une boucle qui
+    /// panique à chaque `lock()`. Le témoin panique donc VERROU EN MAIN, et exige que la passe
+    /// SUIVANTE prenne le verrou et écrive : le jour où quelqu'un échange le type du verrou, il
+    /// rougit ici plutôt qu'en production.
+    ///
+    /// Il épingle aussi le corollaire assumé du canal choisi : le bilan est un ÉTAT last-writer-wins,
+    /// donc une passe saine EFFACE l'aveu de la précédente — c'est la sémantique des quatre boucles
+    /// voisines, et c'est ce qui interdit de confondre l'aveu avec un flux d'incidents.
+    #[test]
+    fn la_reprise_retrouve_un_verrou_utilisable_apres_un_panic_tenu_sous_le_verrou() {
+        let _v = VERROU_DU_BILAN.lock();
+        let mgr = un_gestionnaire_mode_0();
+        let avoue = passe_de_retention_sous_filet(&mgr, |handle, _db_path| {
+            let c = handle.lock();
+            c.execute("INSERT INTO trace(n) VALUES(1)", []).expect("écriture AVANT l'incident");
+            panic!("incident FABRIQUÉ, VERROU D'ÉCRITURE EN MAIN");
+        });
+        assert!(matches!(avoue, Mesure::Illisible { .. }), "le panic sous verrou est avoué comme les autres");
+
+        let sain = passe_de_retention_sous_filet(&mgr, |handle, _db_path| {
+            handle
+                .lock()
+                .execute("INSERT INTO trace(n) VALUES(2)", [])
+                .expect("LA PROPRIÉTÉ : le verrou d'écriture est REPRENABLE après un panic tenu en main");
+        });
+        assert_eq!(sain, Mesure::Lue(0), "la passe suivante s'exécute normalement : la boucle a REPRIS");
+        let n: i64 = mgr
+            .default_writer
+            .lock()
+            .query_row("SELECT COUNT(*) FROM trace", [], |r| r.get(0))
+            .expect("la base est toujours vivante");
+        assert_eq!(n, 2, "les DEUX écritures ont eu lieu — celle d'avant l'incident et celle d'après");
+        assert_eq!(
+            crate::bilan_de_tick::dernier(BOUCLE_RETENTION),
+            Some(Mesure::Lue(0)),
+            "et l'aveu a été REMPLACÉ par le bilan de la passe saine : le canal est un ÉTAT, pas un \
+             flux — un incident PERMANENT y reste rouge en permanence, un incident RÉSORBÉ s'efface"
+        );
+    }
 }

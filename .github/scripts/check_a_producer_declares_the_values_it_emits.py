@@ -96,6 +96,10 @@ import os
 import re
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from check_every_style_selector_has_a_target import (  # noqa: E402  (ÉLAGAGE PARTAGÉ, source unique — `P11.8-m`)
+    hors_arbre, parcours_des_sources)
+
 RACINE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # ── PORTÉE, DÉRIVÉE ─────────────────────────────────────────────────────────────────────────────
@@ -110,18 +114,24 @@ LIVREE, DEBUG, NON_CONCLUANTE, PROSE, DEVELOPPEMENT = (
 
 
 def fichiers_producteurs():
-    """Tout fichier de production d'un producteur livré, hors suites de test."""
+    """Tout fichier de production d'un producteur livré, hors suites de test.
+
+    LA DÉCOUVERTE PART DE LA RACINE DU DÉPÔT, et l'élagage est le geste PARTAGÉ (`P11.8-m`), pas une
+    liste écrite ici. Deux portes s'ouvraient : un répertoire de premier niveau portant un `Cargo.toml`
+    n'était filtré QUE par ce manifeste (`vendor/`, `target/package/` en portent un), et le parcours de
+    `collectors/` ne filtrait RIEN — un environnement virtuel ou un `node_modules` posé là gonflerait la
+    population de milliers de `.py`, et AUCUN plancher ne rougirait : un plancher ne garde que la BAISSE."""
     out = []
     racines = [os.path.join(RACINE, "collectors")]
     for nom in sorted(os.listdir(RACINE)):
         chemin = os.path.join(RACINE, nom)
-        if nom == CAISSE_HORS_CAPTEUR or not os.path.isdir(chemin):
+        if nom == CAISSE_HORS_CAPTEUR or hors_arbre(nom) or not os.path.isdir(chemin):
             continue
         if os.path.isfile(os.path.join(chemin, "Cargo.toml")):
             racines.append(os.path.join(chemin, "src"))
     for base in racines:
-        for dossier, _, noms in os.walk(base):
-            for n in sorted(noms):
+        for dossier, noms in parcours_des_sources(base):
+            for n in noms:
                 if n.endswith((".sh", ".ps1", ".rs", ".py")) and n != "tests.rs":
                     out.append(os.path.join(dossier, n))
     return out

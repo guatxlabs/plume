@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Aucune règle de `web/style.css` ne cible un identifiant ou une classe que la surface ne pose nulle part
+# DOCSTRING BRUTE : elle cite une expression régulière (`/^\/api\//`). Non brute, `\/` est une séquence
+# d'échappement INVALIDE — un `SyntaxWarning` aujourd'hui, une `SyntaxError` demain — et le bruit sortait
+# sur `stderr` de CHAQUE garde qui importe ce module (`P11.8-m`). Contenu inchangé : vérifié, la docstring
+# ne porte aucune séquence d'échappement VALIDE, les deux littéraux sont le même texte.
+r"""Aucune règle de `web/style.css` ne cible un identifiant ou une classe que la surface ne pose nulle part
 — instrument de mesure et garde de CI (`P11.4-d`).
 
 LE DÉFAUT. Quand un bouton passe au chrome partagé (`.btn`) ou qu'une vue est retirée, ses règles de style
@@ -71,6 +75,69 @@ PLANCHER_SELECTEURS, PLANCHER_FICHIERS = 300, 20
 PLAFOND_ORPHELINS = 0
 
 TOKEN = re.compile(r"([#.])(-?[_a-zA-Z][\w-]*)")
+
+
+# ── CE QUI N'EST JAMAIS DE LA SOURCE — GESTE PARTAGÉ, ÉCRIT ICI ET NULLE PART AILLEURS (`P11.8-m`) ──
+# LE DÉFAUT QUE CECI FERME, ET LE RECENSEMENT QUI LE BORNE (2026-08-31). QUINZE gardes de
+# `.github/scripts/` énumèrent l'arbre DEPUIS LE DISQUE (`os.walk`, `rglob`, `listdir`) au lieu de passer
+# par l'arbre suivi ; les autres passent par `git ls-files` et sont immunisées par construction. QUATRE de
+# ces quinze partent de la RACINE DU DÉPÔT — la garde du lexique (corrigée sous `P11.8-l`), celle-ci n'en
+# est pas, `manifestes()` de la garde des déploiements, et les deux découvertes de caisses (producteurs,
+# verrous d'environnement). UNE SEULE descend `web/` RÉCURSIVEMENT (la garde du stockage de site) ; les
+# trois autres gardes de `web/` y font un `listdir` PLAT et sont immunisées par leur PLATITUDE, pas par
+# une exclusion. Le reste part de `daemon/src` ou de `<caisse>/src`, où ni cargo ni npm n'écrivent jamais.
+# L'ÉNONCÉ « onze n'excluaient RIEN » est donc FAUX et il est corrigé ici : quatre élaguaient déjà, mais
+# CHACUNE AVEC SA PROPRE LISTE — trois noms et des répertoires SEULEMENT pour les déploiements, `.`+`target`
+# pour les verrous d'env, `tests` pour les lectures manquantes, quatre noms pour le lexique. C'est la
+# DIVERGENCE de ces copies qui est le défaut, pas leur absence : élargir une racine rouvrait EN SILENCE le
+# trou que `P11.8-l` venait de fermer, un artefact d'outil entrant dans un corpus de sources.
+#
+# POURQUOI PAS ONZE COPIES. Le dépôt a déjà payé la recopie : trois copies de la racine désignée avaient
+# divergé, et l'une mesurait un arbre qu'on ne lui avait pas désigné (`P8.27-a`, l'en-tête ci-dessus).
+# La règle est donc écrite ICI, à côté de `racine_designee()`, et IMPORTÉE.
+#
+# POURQUOI PAS `git ls-files`, QUI FERMERAIT LE TROU PAR CONSTRUCTION. Parce que ce dépôt a mesuré l'autre
+# bord et l'a écrit cinq fois : un corpus pris dans l'INDEX rend vert sur un fichier ÉCRIT ET PAS ENCORE
+# SUIVI — le moment exact où il porte encore ses défauts (`P11.13-d` dans la garde des verrous d'env,
+# `check_no_naked_site_storage_write.py`, `check_every_guard_written_is_a_guard_wired.py`,
+# `check_no_instrument_hardcodes_an_author_machine_path.py`, `check_coverage_loss_is_never_silent.py`).
+# Convertir échangerait un risque LATENT de gonflement contre un angle mort ACTIF. Le disque reste la
+# source, et c'est l'élagage qui devient une propriété.
+#
+# L'EXCLUSION PORTE SUR LE NOM, FICHIER COMME RÉPERTOIRE (`P11.8-l`) : un `.git` de `git worktree` — ou de
+# sous-module — est un FICHIER dont le contenu est un CHEMIN, et n'élaguer que les répertoires rendait la
+# mesure dépendante de la façon dont l'arbre avait été sorti.
+#
+# VÉRIFIÉ AVANT D'EXCLURE, PARCE QU'UNE EXCLUSION QUI RETIRE UN FICHIER LÉGITIME EST PIRE QUE LE DÉFAUT :
+# le 2026-08-31, aucun des 791 fichiers de `git ls-files` ne porte l'un de ces noms, à aucune profondeur
+# de son chemin (0 pour chacun des douze). `dist` et `build` en sont volontairement ABSENTS : ils nomment
+# aussi bien un artefact qu'un répertoire de sources, et le doute doit aller vers LIRE, pas vers exclure.
+NOMS_HORS_ARBRE = (
+    ".git", "target", "node_modules", "vendor", "__pycache__",
+    ".venv", "venv", "site-packages", ".tox", ".mypy_cache", ".pytest_cache", ".ruff_cache",
+)
+
+
+def hors_arbre(nom):
+    """Ce nom désigne-t-il un artefact d'outil ou une dépendance tierce, jamais une source du dépôt ?"""
+    return nom in NOMS_HORS_ARBRE
+
+
+def parcours_des_sources(racine, hors=()):
+    """`os.walk` dont les artefacts sont ÉLAGUÉS PAR NOM — le seul parcours à la main admis (`P11.8-m`).
+
+    Rend `(dossier, fichiers)` comme `os.walk`, mais : les répertoires portant un nom hors arbre ne sont
+    pas descendus, et les fichiers portant un tel nom ne sont pas rendus. `hors` ajoute les noms propres
+    à un appelant (la garde des lectures manquantes élague `tests`) sans qu'il ait à réécrire l'élagage.
+
+    L'élagage est fait DANS la descente (`dossiers[:] = …`), jamais après : un `node_modules` filtré à la
+    sortie aurait déjà été LU, et un répertoire de construction porte par conception des ordres de
+    grandeur plus de fichiers que les sources dont il dérive : le lire pour le jeter rendrait la garde
+    inutilisable."""
+    interdits = set(NOMS_HORS_ARBRE) | set(hors)
+    for base, dossiers, fichiers in os.walk(racine):
+        dossiers[:] = [d for d in dossiers if d not in interdits]
+        yield base, sorted(f for f in fichiers if f not in interdits)
 
 
 def racine_designee(argv=None):

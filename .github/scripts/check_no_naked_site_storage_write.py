@@ -42,6 +42,9 @@ import os
 import sys
 
 ICI = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, ICI)
+from check_every_style_selector_has_a_target import (  # noqa: E402  (ÉLAGAGE PARTAGÉ, source unique — `P11.8-m`)
+    parcours_des_sources)
 RACINE = os.path.realpath(os.path.join(ICI, "..", ".."))
 CORPUS = os.path.join(RACINE, "web")
 
@@ -548,10 +551,16 @@ def epreuves():
 
 
 def modules_du_corpus(racine):
-    """Population DÉRIVÉE : tout `*.js` sous `web/`, lu sur le DISQUE (pas dans l'index du dépôt)."""
+    """Population DÉRIVÉE : tout `*.js` sous `web/`, lu sur le DISQUE (pas dans l'index du dépôt).
+
+    LE DISQUE RESTE LA SOURCE — c'est écrit en tête, et c'est ce qui fait voir un module neuf avant qu'il
+    soit suivi. Mais le parcours passe par l'ÉLAGAGE PARTAGÉ (`P11.8-m`) : cette garde est la seule à
+    descendre `web/` RÉCURSIVEMENT (ses sœurs y font un `listdir` PLAT, immunisé par sa platitude), donc
+    la seule où un `web/node_modules/` — que rien n'interdit le jour où la console gagne une étape de
+    construction — entrerait dans la population des modules à juger."""
     trouves = []
-    for dossier, _sous, fichiers in os.walk(racine):
-        for f in sorted(fichiers):
+    for dossier, fichiers in parcours_des_sources(racine):
+        for f in fichiers:
             if f.endswith(".js"):
                 trouves.append(os.path.join(dossier, f))
     return sorted(trouves)

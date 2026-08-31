@@ -713,7 +713,7 @@ env:
   #     ~6,5 ms par arithmétique en release), soit 63 × un 401 et 92,7 Mo/s au banc pour une seule IP.
   #   · CHAQUE RÉPONSE PUBLIQUE EST FACTURABLE (`content-length` présent ET égal au fichier) : sans
   #     cela, la borne ci-dessus aurait un trou muet.
-  EXPECTED_TESTS: "1478"
+  EXPECTED_TESTS: "1483"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -1131,7 +1131,7 @@ jobs:
           # derrière un `cfg(feature)`, et c'est l'ÉCART INCHANGÉ entre les deux profils (243 avant
           # comme après) qui l'établit, pas une lecture des sources. La dérivation complète et la
           # répartition sont écrites auprès d'`EXPECTED_TESTS`, une seule fois.
-          EXPECTED_COLD_TESTS: "1723"
+          EXPECTED_COLD_TESTS: "1728"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail

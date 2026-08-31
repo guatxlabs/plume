@@ -577,3 +577,194 @@
             "LE JOURNAL N'A PAS BOUGÉ : une politique non écrite ne s'y consigne pas"
         );
     }
+
+    // ------------------------------------------------------------------------------------------------
+    // (D) `P10.7-q` — LE VÉRIFICATEUR DU JOURNAL D'INTÉGRITÉ CESSE D'APLATIR SES LIGNES.
+    //
+    // LE DÉFAUT, MESURÉ SUR CET ARBRE LE 2026-08-31 AVANT TOUTE CORRECTION, et il était logé DEUX FOIS
+    // dans les quinze lignes de `verify_ledger_conn` — l'instrument même dont c'est le métier :
+    //   · trois maillons en base, le `hash` du dernier remplacé par un blob -> `Ok((2, 0, 0, None))`,
+    //     soit « deux entrées, aucune rupture » rendu sur une chaîne AMPUTÉE dont les trois lignes
+    //     étaient toujours là. Un verdict d'INTÉGRITÉ trop OPTIMISTE ;
+    //   · un checkpoint dont le `pubkey` est un blob -> `Ok((1, 0, 0, None))` : il quittait les DEUX
+    //     compteurs. Et comme `verify_run` ne durcit (sortie 1) que sur `sig_ko > 0`, ABÎMER un
+    //     checkpoint au lieu de le RE-SIGNER faisait imprimer « ledger OK … OK=0 KO=0 » et sortir en 0,
+    //     PIN escrow posé ou non. Le second `flatten()` était donc aussi un contournement du PIN.
+    //
+    // LE GESTE DES TÉMOINS (aucune horloge, aucune durée — le répertoire temporaire est en mémoire ici) :
+    // le MÊME que celui de la section (B bis), une valeur NON TEXTUELLE (`X'FF'`) dans une colonne
+    // d'affinité TEXT. SQLite l'y range telle quelle : la LIGNE reste en base, comptable par
+    // `COUNT(*)`, et c'est sa seule LECTURE typée qui meurt. C'est ce qui rend ces témoins
+    // DISCRIMINANTS — sous une panne globale (table retirée, clé absente) `Err` serait vrai pour la
+    // mauvaise raison, et chaque témoin ci-dessous assert donc l'état SAIN de la MÊME connexion avant
+    // d'abîmer une seule ligne.
+    //
+    // LES QUATRE ISSUES SONT SÉPARÉES, ET DEUX TÉMOINS EXISTENT POUR QUE LE REMÈDE NE DEVIENNE PAS LE
+    // DÉFAUT RETOURNÉ : `une_chaine_saine…` interdit le refus INCONDITIONNEL, `un_checkpoint_sans_
+    // signature…` garde `Err` RÉSERVÉ à ce que la lecture ne rend pas (un NULL se LIT), et
+    // `une_rupture_reelle…` interdit que la nouvelle sortie de refus AVALE l'accusation vraie.
+    // ------------------------------------------------------------------------------------------------
+
+    /// La clé qui SIGNE dans cette section (déterministe, jamais lue depuis un fichier ni l'environnement).
+    fn cle_de_signature_du_temoin() -> ed25519_dalek::SigningKey {
+        ed25519_dalek::SigningKey::from_bytes(&[3u8; 32])
+    }
+
+    /// Rend le `hash` du DERNIER maillon NON TEXTUEL. La ligne RESTE en base (COUNT(*) inchangé) : c'est
+    /// sa lecture typée qui meurt, et elle seule.
+    fn rendre_le_dernier_maillon_illisible(conn: &Connection) {
+        let touchees = conn
+            .execute("UPDATE ledger SET hash=X'FF' WHERE id=(SELECT MAX(id) FROM ledger)", [])
+            .expect("maillon abîmé");
+        assert_eq!(touchees, 1, "fixture : exactement UNE ligne abîmée");
+    }
+
+    /// (D1) TÉMOIN NÉGATIF DE TOUTE LA SECTION — UNE CHAÎNE SAINE RESTE VÉRIFIÉE ET MUETTE.
+    ///
+    /// Un instrument qui refuserait TOUJOURS de conclure ne vaut pas mieux qu'un instrument qui accepte
+    /// toujours : il rend le même service (aucun), en coûtant la confiance en plus. Ce témoin est celui
+    /// qui rougit si quelqu'un « durcit » le vérificateur en un refus inconditionnel.
+    ///
+    /// IL COUVRE AUSSI LE SEUL NULLABLE DE LA TABLE, et c'est là que passe la frontière du correctif :
+    /// `ledger.detail` est nullable au schéma (les quatre autres colonnes lues sont `NOT NULL`). Un
+    /// maillon LÉGITIME dont le `detail` est NULL — hachage calculé sur la chaîne vide, comme la
+    /// production le fait — doit rester LU, pas refusé. `Err` est réservé à ce que la lecture ne rend
+    /// PAS ; un NULL, elle le rend.
+    #[test]
+    fn une_chaine_saine_et_ses_checkpoints_restent_verifies_et_muets() {
+        let conn = un_journal_vierge();
+        for i in 0..3 {
+            ledger_append(&conn, "config.mode", &format!("maillon {i}"));
+        }
+        sign_checkpoint(&conn, &cle_de_signature_du_temoin());
+
+        let (n, sig_ok, sig_ko, rupture) = verify_ledger_conn(&conn, None).expect("une chaîne saine se VÉRIFIE");
+        assert_eq!(n as i64, compter_les_maillons(&conn), "le compte rendu EST le compte en base");
+        assert_eq!(n, 3, "les trois maillons sont vus");
+        assert_eq!((sig_ok, sig_ko), (1, 0), "le checkpoint signé par le vrai chemin est compté OK");
+        assert!(rupture.is_none(), "une chaîne saine n'accuse personne : {rupture:?}");
+
+        // LE SEUL NULLABLE : un maillon légitime SANS `detail`, accroché à la chaîne courante.
+        let (prev, ts, kind) = (
+            conn.query_row("SELECT hash FROM ledger ORDER BY id DESC LIMIT 1", [], |r| r.get::<_, String>(0)).expect("tête lisible"),
+            now(),
+            "config.mode",
+        );
+        conn.execute(
+            "INSERT INTO ledger(ts,kind,detail,prev_hash,hash) VALUES(?1,?2,NULL,?3,?4)",
+            params![ts, kind, prev, sha256_hex(format!("{prev}|{ts}|{kind}|").as_bytes())],
+        )
+        .expect("maillon sans detail inséré");
+
+        let (n, _, _, rupture) = verify_ledger_conn(&conn, None).expect("un `detail` NULL se LIT : il ne refuse rien");
+        assert_eq!(n, 4, "le maillon sans `detail` est COMPTÉ, pas retiré du scan");
+        assert!(rupture.is_none(), "et il n'accuse personne : {rupture:?}");
+    }
+
+    /// (D2) PREMIER ANCRAGE — UN MAILLON QU'ON NE SAIT PAS LIRE ARRÊTE LE SCAN.
+    ///
+    /// L'ancienne réponse est nommée dans l'assertion : `Ok((2, …, None))` sur TROIS lignes toujours
+    /// présentes. Le témoin exige `Err` et vérifie que le compte en base n'a PAS bougé — sans quoi
+    /// « la ligne a disparu » et « la ligne est illisible » se confondraient, ce qui est précisément
+    /// l'erreur que le vérificateur commettait.
+    #[test]
+    fn un_maillon_illisible_fait_refuser_le_verdict_au_lieu_de_quitter_le_scan() {
+        let conn = un_journal_vierge();
+        for i in 0..3 {
+            ledger_append(&conn, "config.mode", &format!("maillon {i}"));
+        }
+        // SENS 1 — la MÊME connexion, avant qu'on abîme quoi que ce soit : elle conclut.
+        let (n, _, _, rupture) = verify_ledger_conn(&conn, None).expect("chaîne saine");
+        assert_eq!((n, rupture), (3, None), "état de départ : trois maillons, aucune rupture");
+
+        rendre_le_dernier_maillon_illisible(&conn);
+        assert_eq!(compter_les_maillons(&conn), 3, "la ligne est TOUJOURS en base : elle est illisible, pas absente");
+
+        // SENS 2 — le verdict DISPARAÎT. Il ne rétrécit pas à « 2 entrées, aucune rupture ».
+        let message = verify_ledger_conn(&conn, None)
+            .map(|v| format!("{v:?}"))
+            .expect_err("une chaîne partiellement lue ne se conclut pas — l'ancienne réponse était Ok((2, 0, 0, None))");
+        assert!(message.contains("maillon"), "le refus NOMME ce qui n'a pas pu être lu : {message}");
+        assert!(message.contains("AUCUN verdict"), "et il dit qu'aucun verdict n'est rendu : {message}");
+    }
+
+    /// (D3) SECOND ANCRAGE, ET IL MORD SEUL — UN CHECKPOINT ILLISIBLE NE DISPARAÎT PLUS DES DEUX COMPTEURS.
+    ///
+    /// POURQUOI CE TÉMOIN EST DISTINCT DE (D2) ET NON SON DOUBLON : le correctif du scan des maillons ne
+    /// touche pas au scan des signatures. Tant que celui-ci aplatissait, un checkpoint abîmé sortait de
+    /// `sig_ok` ET de `sig_ko` — or `verify_run` ne durcit que sur `sig_ko > 0`. ABÎMER un checkpoint au
+    /// lieu de le RE-SIGNER rendait donc « ledger OK … OK=0 KO=0 » et une sortie 0, PIN ESCROW POSÉ OU
+    /// NON : le `flatten()` des signatures était un contournement du PIN. Les deux issues sont assertées.
+    #[test]
+    fn un_checkpoint_illisible_fait_refuser_le_verdict_meme_avec_un_pin_escrow() {
+        let conn = un_journal_vierge();
+        ledger_append(&conn, "config.mode", "maillon 0");
+        let cle = cle_de_signature_du_temoin();
+        let epingle = cle.verifying_key().to_bytes();
+        sign_checkpoint(&conn, &cle);
+
+        // SENS 1 — la MÊME connexion conclut, avec et sans PIN : la signature du vrai chemin est comptée OK.
+        assert_eq!(verify_ledger_conn(&conn, None).expect("sain").1, 1, "sans PIN : une signature OK");
+        assert_eq!(verify_ledger_conn(&conn, Some(&epingle)).expect("sain").1, 1, "PIN == pubkey in-band : OK");
+
+        let touchees = conn
+            .execute("UPDATE checkpoint SET pubkey=X'FF' WHERE id=(SELECT MAX(id) FROM checkpoint)", [])
+            .expect("checkpoint abîmé");
+        assert_eq!(touchees, 1, "fixture : exactement UNE ligne abîmée");
+        let en_base: i64 = conn.query_row("SELECT COUNT(*) FROM checkpoint", [], |r| r.get(0)).expect("checkpoints comptables");
+        assert_eq!(en_base, 1, "le checkpoint est TOUJOURS en base : il est illisible, pas absent");
+
+        // SENS 2 — plus aucun verdict, et surtout plus de sortie 0 sur un checkpoint escamoté.
+        for pin in [None, Some(&epingle)] {
+            let message = verify_ledger_conn(&conn, pin)
+                .map(|v| format!("{v:?}"))
+                .expect_err("un checkpoint illisible ne se conclut pas — l'ancienne réponse était Ok((1, 0, 0, None))");
+            assert!(message.contains("checkpoint"), "le refus NOMME ce qui n'a pas pu être lu : {message}");
+            assert!(message.contains("AUCUN verdict"), "et il dit qu'aucun verdict n'est rendu : {message}");
+        }
+    }
+
+    /// (D4) LA FRONTIÈRE DU REFUS, ET C'EST ELLE QUI EMPÊCHE LE REMÈDE DE DEVENIR LE DÉFAUT RETOURNÉ.
+    ///
+    /// Les TROIS colonnes de contenu de `checkpoint` sont NULLABLES au schéma
+    /// (`ledger_hash TEXT, sig TEXT, pubkey TEXT`). Un NULL n'est PAS une ligne illisible : la lecture le
+    /// rend parfaitement. Ce qu'il n'est pas, c'est une signature valide — donc `sig_ko`, un verdict, et
+    /// pas un refus de conclure. Un correctif qui aurait lu ces colonnes en `String` aurait transformé
+    /// une ligne LISIBLE en refus, c'est-à-dire troqué un verdict trop optimiste contre un mutisme.
+    #[test]
+    fn un_checkpoint_sans_signature_est_lu_et_compte_ko_jamais_un_refus() {
+        let conn = un_journal_vierge();
+        ledger_append(&conn, "config.mode", "maillon 0");
+        conn.execute("INSERT INTO checkpoint(ts,ledger_hash,sig,pubkey) VALUES(?1,NULL,NULL,NULL)", params![now()])
+            .expect("checkpoint sans contenu inséré");
+
+        let (n, sig_ok, sig_ko, rupture) = verify_ledger_conn(&conn, None).expect("un NULL se LIT : aucun refus");
+        assert_eq!(n, 1, "la chaîne reste lue entièrement");
+        assert_eq!((sig_ok, sig_ko), (0, 1), "un checkpoint sans signature est COMPTÉ KO, pas escamoté ni refusé");
+        assert!(rupture.is_none(), "et il ne rompt pas la chaîne des maillons : {rupture:?}");
+    }
+
+    /// (D5) LA VRAIE ACCUSATION SURVIT AU NOUVEAU REFUS.
+    ///
+    /// Un correctif qui ferme une fausse accusation peut faire TAIRE une vraie : il ne casse rien, ne
+    /// fait rougir personne, et RÉTRÉCIT le canal de détection. Le signal d'alerte est exactement celui
+    /// que ce témoin surveille — un verdict qui passerait d'« accuse » à « refuse de conclure ». La
+    /// falsification est ici TEXTUELLE (un `detail` réécrit) : la lecture la rend sans peine, donc la
+    /// sortie attendue reste `Ok((_, Some(id)))`, la rupture NOMMÉE.
+    #[test]
+    fn une_rupture_reelle_reste_une_rupture_nommee_et_non_un_refus() {
+        let conn = un_journal_vierge();
+        for i in 0..3 {
+            ledger_append(&conn, "config.mode", &format!("maillon {i}"));
+        }
+        let vise: i64 = conn
+            .query_row("SELECT id FROM ledger ORDER BY id LIMIT 1 OFFSET 1", [], |r| r.get(0))
+            .expect("deuxième maillon");
+        conn.execute("UPDATE ledger SET detail='reecrit apres coup' WHERE id=?1", params![vise])
+            .expect("detail falsifié");
+
+        let (intacts, _, _, rupture) = verify_ledger_conn(&conn, None).expect("une falsification LISIBLE se conclut");
+        assert_eq!(rupture, Some(vise), "la rupture est NOMMÉE, pas convertie en refus de conclure");
+        assert_eq!(intacts, 3, "et le compte rendu reste celui des lignes LUES, toutes lues");
+    }
+

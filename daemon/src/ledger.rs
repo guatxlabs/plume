@@ -277,6 +277,20 @@ pub(crate) fn sign_checkpoint(conn: &Connection, key: &ed25519_dalek::SigningKey
 /// `open_db`/`ledger-export`) — SANS quoi une base SQLCipher est illisible et un `.unwrap()`
 /// PANIQUERAIT (l'outil de détection de falsification ne tournerait jamais sur une base chiffrée). Toute erreur (clé absente/
 /// incorrecte, base absente, ledger illisible) remonte proprement en `exit(2)` — jamais de panic.
+///
+/// `P10.7-q` — TROIS CODES DE SORTIE, ET LE TROISIÈME EXISTAIT DÉJÀ : `0` = chaîne LUE ENTIÈREMENT et
+/// intègre · `1` = rupture NOMMÉE (ou, PIN escrow posé, un checkpoint non signé par la clé épinglée) ·
+/// `2` = REFUS DE CONCLURE. Ce lot n'INVENTE aucun code : il ÉLARGIT ce qui atteint le `2` — une ligne
+/// que la lecture ne sait pas rendre y arrive maintenant, au lieu de quitter le scan en silence et de
+/// produire un `0`. C'EST LE SEUL ACHEMINEMENT JUSTE : confondre ce cas avec le `1` ferait croire à une
+/// COMPROMISSION là où il n'y a qu'une lecture impossible ; le confondre avec le `0` EST le défaut
+/// d'origine. Le voisin `verify-control` a choisi le même `2` le même jour, indépendamment.
+///
+/// ET LE REFUS PARLE DÉSORMAIS SUR LA MÊME SORTIE QUE LES DEUX AUTRES VERDICTS (stdout) : il partait sur
+/// stderr, donc un `plume-daemon verify > journal.txt` rendait un fichier VIDE — un refus de conclure
+/// qu'on ne peut pas lire ne vaut pas mieux qu'un verdict faux. Rien dans l'arbre (unité systemd,
+/// manifeste k3s, sonde, script de bootstrap, tâche CI, documentation) ne lit ce flux ni ce code : la
+/// SEULE ligne d'aide qui énonce des codes est celle de `verify-control`, et elle est inchangée.
 pub(crate) fn verify_run() {
     let conf = load_config();
     let db_path = cfg(&conf, "PLUME_DB", "/var/lib/plume/db/plume.db");
@@ -296,7 +310,9 @@ pub(crate) fn verify_run() {
             None => println!("ledger OK : {n} entrées chaînées intègres ; checkpoints signés OK={sig_ok} KO={sig_bad}"),
         },
         Err(e) => {
-            eprintln!("verify: {e}"); // clé manquante/incorrecte, base illisible, etc. — jamais un panic
+            // AUCUN VERDICT — clé manquante/incorrecte, base illisible, maillon ou checkpoint qu'on ne sait
+            // pas lire. Jamais un panic, et jamais confondu avec « intègre » (0) ni avec « rompu » (1).
+            println!("VERDICT IMPOSSIBLE : {e} — aucun verdict n'est rendu sur une chaîne partiellement lue");
             std::process::exit(2);
         }
     }
@@ -349,14 +365,51 @@ pub(crate) fn parse_ed25519_pubkey(s: &str) -> Option<[u8; 32]> {
 /// v134 (#11) — PIN escrow OPTIONNEL : `pinned=Some(pk)` -> un checkpoint dont le pubkey in-band != `pk` FAIL
 /// (compté en sig_ko) AVANT toute vérif de signature (on ne fait jamais confiance à un pubkey non-épinglé).
 /// `pinned=None` -> comportement historique (confiance au pubkey in-band). Le RESTE est inchangé.
+///
+/// `P10.7-q` — TROIS ISSUES, ET LA TROISIÈME EST CE QUI DISTINGUE CE VERDICT D'UNE OPINION : `Ok(_, None)`
+/// = chaîne LUE ENTIÈREMENT et intègre · `Ok(_, Some(id))` = rupture NOMMÉE · `Err` = AUCUN verdict. Toute
+/// ligne que la lecture ne sait pas rendre ARRÊTE le scan.
+///
+/// CE QU'IL FAISAIT AVANT LE 2026-08-31, MESURÉ SUR CET ARBRE, ET C'EST LE DÉFAUT QUE CE VÉRIFICATEUR
+/// AURAIT DÛ POURSUIVRE — logé DEUX FOIS dans ses propres lignes :
+///  - `flatten()` sur le scan des MAILLONS : trois maillons en base, le `hash` du dernier remplacé par un
+///    blob (`X'FF'` : SQLite range un BLOB tel quel dans une colonne d'affinité TEXT) -> la ligne quittait
+///    le scan EN SILENCE et la réponse était `Ok((2, 0, 0, None))`, soit « deux entrées, aucune rupture »
+///    rendu sur une chaîne AMPUTÉE dont les trois lignes étaient toujours là. Un verdict d'INTÉGRITÉ trop
+///    OPTIMISTE, la pire direction pour un aveu ;
+///  - `flatten()` sur le scan des CHECKPOINTS, et celui-là DÉSARMAIT LE PIN ESCROW : un checkpoint dont
+///    le `pubkey` est un blob disparaissait des DEUX compteurs (mesuré : un checkpoint en base ->
+///    `Ok((1, 0, 0, None))`, donc `sig_ok=0` ET `sig_ko=0`). Or `verify_run` ne durcit (exit 1) que sur
+///    `sig_ko > 0` : ABÎMER un checkpoint au lieu de le RE-SIGNER faisait donc imprimer « ledger OK …
+///    checkpoints signés OK=0 KO=0 » et sortir en 0, PIN posé ou non.
+///
+/// POURQUOI CE CORRECTIF NE PEUT PAS FAIRE ÉCHOUER UNE VÉRIFICATION LÉGITIME, ET C'EST STRUCTUREL, pas une
+/// opinion : dans `ledger`, `ts`/`kind`/`prev_hash`/`hash` sont `NOT NULL` et `detail` est le SEUL nullable
+/// — il est déjà lu en `Option`. Aucune valeur qu'un writer du produit puisse poser ne fait échouer cette
+/// conversion ; seule une écriture SQL DIRECTE, une restauration partielle ou une corruption le peut. Dans
+/// `checkpoint`, les trois colonnes de contenu sont nullables : elles sont donc lues en `Option` et un NULL
+/// vaut chaîne VIDE — un checkpoint qu'on LIT et qui ne porte pas de signature valide est compté `sig_ko`,
+/// pas un checkpoint qu'on ne sait pas lire. `Err` est réservé à ce que la lecture ne rend PAS.
+///
+/// LE MODÈLE EST `control_ledger_verify_conn` (`rbac.rs`), écrit le même jour EN CHERCHANT CE QU'IL NE
+/// FALLAIT PAS TRANSPOSER D'ICI. Le voisin est arrivé juste : c'est celui-ci qui rattrape son retard.
 pub(crate) fn verify_ledger_conn(conn: &Connection, pinned: Option<&[u8; 32]>) -> Result<(usize, i64, i64, Option<i64>), String> {
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
     let mut stmt = conn.prepare("SELECT id,ts,kind,detail,prev_hash,hash FROM ledger ORDER BY id")
         .map_err(|e| format!("lecture ledger (clé SQLCipher manquante/incorrecte ?): {e}"))?;
-    let rows: Vec<(i64, i64, String, String, String, String)> = stmt
+    let maillons = stmt
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_, Option<String>>(3)?.unwrap_or_default(), r.get(4)?, r.get(5)?)))
-        .map_err(|e| format!("scan ledger: {e}"))?
-        .flatten().collect();
+        .map_err(|e| format!("scan ledger: {e}"))?;
+    // `P10.7-q` — UN MAILLON QU'ON NE SAIT PAS LIRE ARRÊTE TOUT. Le laisser tomber du scan (`flatten`)
+    // rendait un verdict d'intégrité sur une chaîne AMPUTÉE — le pire endroit où loger cette tolérance.
+    // Le rang est celui du SCAN, pas l'`id` : l'`id` de la ligne fautive est justement ce qu'on n'a pas su lire.
+    let mut rows: Vec<(i64, i64, String, String, String, String)> = Vec::new();
+    for (rang, maillon) in maillons.enumerate() {
+        let maillon = maillon.map_err(|e| {
+            format!("maillon #{} ILLISIBLE ({e}) — la chaîne n'a pas pu être lue entièrement : AUCUN verdict", rang + 1)
+        })?;
+        rows.push(maillon);
+    }
     let mut prev = String::new();
     let mut broken: Option<i64> = None;
     for (id, ts, kind, detail, prev_hash, hash) in &rows {
@@ -369,9 +422,27 @@ pub(crate) fn verify_ledger_conn(conn: &Connection, pinned: Option<&[u8; 32]>) -
     }
     let mut cs = conn.prepare("SELECT ledger_hash,sig,pubkey FROM checkpoint ORDER BY id")
         .map_err(|e| format!("lecture checkpoints: {e}"))?;
-    let cps: Vec<(String, String, String)> = cs.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-        .map_err(|e| format!("scan checkpoints: {e}"))?
-        .flatten().collect();
+    let signatures = cs
+        // Les TROIS colonnes de contenu sont nullables au schéma (`checkpoint(ledger_hash TEXT, sig TEXT,
+        // pubkey TEXT)`) : un NULL se LIT, et vaut chaîne vide -> `hex_decode` échoue -> `sig_ko`. Seule une
+        // valeur que la lecture ne sait pas rendre (blob) reste une ligne ILLISIBLE.
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+            ))
+        })
+        .map_err(|e| format!("scan checkpoints: {e}"))?;
+    // `P10.7-q` — MÊME LOI QUE POUR LES MAILLONS, et ici elle vaut aussi comme correctif de SÉCURITÉ : un
+    // checkpoint tombé du scan disparaissait des DEUX compteurs, donc de la condition de durcissement du PIN.
+    let mut cps: Vec<(String, String, String)> = Vec::new();
+    for (rang, signature) in signatures.enumerate() {
+        let signature = signature.map_err(|e| {
+            format!("checkpoint #{} ILLISIBLE ({e}) — les signatures n'ont pas pu être comptées entièrement : AUCUN verdict", rang + 1)
+        })?;
+        cps.push(signature);
+    }
     let (mut sig_ok, mut sig_bad) = (0i64, 0i64);
     for (lh, sig, pk) in &cps {
         let ok = (|| {

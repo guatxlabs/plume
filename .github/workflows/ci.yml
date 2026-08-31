@@ -713,7 +713,7 @@ env:
   #     ~6,5 ms par arithmétique en release), soit 63 × un 401 et 92,7 Mo/s au banc pour une seule IP.
   #   · CHAQUE RÉPONSE PUBLIQUE EST FACTURABLE (`content-length` présent ET égal au fichier) : sans
   #     cela, la borne ci-dessus aurait un trou muet.
-  EXPECTED_TESTS: "1473"
+  EXPECTED_TESTS: "1478"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -1131,7 +1131,7 @@ jobs:
           # derrière un `cfg(feature)`, et c'est l'ÉCART INCHANGÉ entre les deux profils (243 avant
           # comme après) qui l'établit, pas une lecture des sources. La dérivation complète et la
           # répartition sont écrites auprès d'`EXPECTED_TESTS`, une seule fois.
-          EXPECTED_COLD_TESTS: "1718"
+          EXPECTED_COLD_TESTS: "1723"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail
@@ -1412,6 +1412,18 @@ jobs:
         # 22 rendus et une vingtaine — c'est dit ici plutôt que découvert. Le refus de conclure
       # n'est donc pas un bruit permanent : c'est le canal du jour où le moteur quitterait l'image.
       - { name: "Un aveu est PEINT là où il est lu — moteur de rendu, ni masqué ni transparent ni inversé ni rogné, sur la matrice ATT&CK ET les deux aveux de la liste d'alertes (P11.21-k, P11.21-l)", run: python3 .github/scripts/check_an_admission_is_painted_where_it_is_read.py }
+
+      # `P11.21-n` — LA LANGUE DÉCLARÉE EST CELLE QUI EST RENDUE, ET C'EST LA GARDE VOISINE QUI A NOMMÉ
+      # LE DÉFAUT SANS LE CORRIGER : « `web/index.html` déclare `lang="fr"` en dur et AUCUN module ne pose
+      # jamais `document.documentElement.lang` ». Mesuré le 2026-08-31 dans un vrai moteur : une console
+      # dont TOUS les libellés sont peints en anglais annonçait `lang="fr"` — un lecteur d'écran y prononce
+      # l'anglais avec la phonétique française. MÊME MOTEUR, MÊME ABSENCE D'INSTALLATION que la garde
+      # ci-dessus, et le coût est plus BAS qu'elle : SIX rendus, ~17 s (mesuré sur le poste le 2026-08-31,
+      # deux suites cargo tournant en parallèle), parce que les trois cellules de langue — pas de choix en
+      # stockage, `fr`, `en` — tiennent dans UN SEUL rendu. Une garde de TEXTE aurait été moins chère et
+      # AVEUGLE à deux des cinq mutations que ce fichier joue : un attribut posé sur une CONSTANTE, et un
+      # attribut reposé plus tard par un AUTRE module.
+      - { name: "La langue DÉCLARÉE par le document est celle qu'il PEINT — moteur de rendu, trois cellules de langue, vocabulaire dérivé du dictionnaire (P11.21-n)", run: python3 .github/scripts/check_the_declared_language_is_the_one_rendered.py }
 
       # `P11.18-w` — L'ENVIRONNEMENT DU PROCESSUS EST **UNE** RESSOURCE, ET ELLE N'A QU'UN VERROU.
       # `cfg()` résout toute clé dans l'ordre `env > conf > défaut` : un test qui pose une variable ne règle

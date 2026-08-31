@@ -1,4 +1,11 @@
 <!doctype html>
+<!-- `P11.21-n` — `lang="fr"` EST L'AMORÇAGE, PAS LA DÉCLARATION FINALE, ET IL NE SE CORRIGE PAS ICI.
+     Cette valeur ne vaut que tant que le graphe ES n'est pas lié : dans ce cas la seule chose affichée est
+     `#init-echec`, écrit en français quoi qu'il arrive (voir son entrée au lexique dans `web/i18n.js`), donc
+     `fr` est ici la vérité. La langue CHOISIE vit dans le stockage du site (`soc_lang`) et n'est connue qu'à
+     l'évaluation de `web/core.js`, qui pose alors `document.documentElement.lang`. Écrire ici une autre
+     valeur en dur ne ferait que déplacer le mensonge. La garde qui tient le tout :
+     `.github/scripts/check_the_declared_language_is_the_one_rendered.py`. -->
 <html lang="fr" data-theme="dark">
 <head>
 <meta charset="utf-8">

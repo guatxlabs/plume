@@ -979,10 +979,11 @@ const SUBCOMMANDS_COLD: [(&str, &str); 2] = [
 /// détection d'une sous-commande INCONNUE, elle, n'est PAS une comparaison à cette liste (cf. la
 /// garde en bas de `main`). La liste est tenue alignée sur le code par
 /// `aide_cli_liste_les_memes_sous_commandes_que_le_dispatch` (elle lit `main.rs`).
-const SUBCOMMANDS: [(&str, &str); 20] = [
+const SUBCOMMANDS: [(&str, &str); 21] = [
     ("hashpw", "hashpw [<mdp>] — hash argon2 d'un mot de passe (stdin si omis)"),
     ("respond", "respond — boucle du moteur de réponse (service séparé)"),
     ("verify", "verify — vérifie la chaîne d'intégrité du ledger"),
+    ("verify-control", "verify-control — vérifie la chaîne d'intégrité du journal du PLAN DE CONTRÔLE (accès superadmin, ouvertures d'urgence) ; 0 = intègre, 1 = rupture nommée, 2 = AUCUN verdict"),
     ("ledger-export", "ledger-export [--from <id>] [--out <f>] — export JSONL du ledger"),
     ("ledger-verify-export", "ledger-verify-export <f> — vérifie un export hors-ligne"),
     ("scim-token", "scim-token — génère/affiche le jeton SCIM"),
@@ -1072,6 +1073,40 @@ fn main() {
     }
     if args.get(1).map(String::as_str) == Some("verify") {
         verify_run();
+        return;
+    }
+
+    // `P10.7-p` — ARMEMENT DU VÉRIFICATEUR DU PLAN DE CONTRÔLE. Sans ces lignes, `control_ledger_verify_conn`
+    // était un REMÈDE NON ARMÉ : un instrument correct, prouvé par mutation, que personne ne pouvait jouer.
+    // C'est exactement le défaut qu'une garde de ce dépôt poursuit, et le laisser dans un instrument
+    // d'INTÉGRITÉ aurait été le pire endroit possible.
+    //
+    // TROIS SORTIES, ET LA TROISIÈME EST CE QUI DISTINGUE CE VERDICT D'UNE OPINION : `0` = chaîne LUE
+    // ENTIÈREMENT et intègre · `1` = rupture NOMMÉE · `2` = REFUS DE CONCLURE, jamais un vert silencieux.
+    // Ce dernier existe parce que le vérificateur du journal voisin, lui, RETIRE silencieusement du scan
+    // toute ligne illisible et rend « aucune rupture » sur une chaîne amputée — mesuré le 2026-08-31.
+    // Celui-ci ne le fait pas : une ligne illisible lui fait rendre une erreur, et l'exploitant l'apprend.
+    if args.get(1).map(String::as_str) == Some("verify-control") {
+        let conf = load_config();
+        let db_path = cfg(&conf, "PLUME_DB", "/var/lib/plume/db/plume.db");
+        let chemin = crate::state::control_db_path(&conf, &db_path);
+        match crate::db_open::open_db_keyed_without_schema_contract(&chemin, crate::state::control_key().as_deref()) {
+            Err(e) => {
+                println!("VERDICT IMPOSSIBLE : le plan de contrôle ne s'ouvre pas ({chemin}) : {e}");
+                std::process::exit(2);
+            }
+            Ok(conn) => match crate::rbac::control_ledger_verify_conn(&conn) {
+                Err(e) => {
+                    println!("VERDICT IMPOSSIBLE : la chaîne du plan de contrôle n'a pas pu être lue ENTIÈREMENT ({e}) — aucun verdict n'est rendu sur une chaîne partiellement lue");
+                    std::process::exit(2);
+                }
+                Ok((n, Some(id))) => {
+                    println!("INTÉGRITÉ COMPROMISE : rupture de chaîne du plan de contrôle à l'entrée #{id} ({n} entrée(s) intègres avant elle)");
+                    std::process::exit(1);
+                }
+                Ok((n, None)) => println!("control_ledger OK : {n} entrée(s) chaînées intègres, chaîne lue entièrement"),
+            },
+        }
         return;
     }
     // #59 — EXPORT du ledger (chaîne préservée) : `plume-daemon ledger-export [--from <id>] [--out <file>]`.

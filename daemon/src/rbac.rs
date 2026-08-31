@@ -2,7 +2,7 @@
 //! `MinRole`/`route_min_role`/`rbac_gate`), grants SSO/per-tenant (`sso_grants`/`grant_role_for`/
 //! `default_grant`/`platform_user_is_superadmin`), résolution d'accès (`TenantAccess`/`resolve_tenant_access`),
 //! marqueur opérateur cross-tenant (`OPERATOR_ACCESS_*`/`operator_access_should_emit`/`emit_operator_access`/
-//! `control_ledger_prev_hash`/`control_ledger_append`), garde de gestion tenant (`mgmt_*`/`tenant_mgmt_gate`/`can_manage_grants`/
+//! `control_ledger_prev_hash`/`control_ledger_append`/`control_ledger_verify_conn`), garde de gestion tenant (`mgmt_*`/`tenant_mgmt_gate`/`can_manage_grants`/
 //! `valid_grant_role`/`platform_user_name_ok`/`gen_control_id`/`ensure_platform_user`/`tenant_admin_grant_count`)
 //! et l'audit (`audit_tenant_event`/`tenant_db_path`). Extrait de main.rs (refactor split #25 — byte-identique).
 use crate::*;
@@ -551,20 +551,20 @@ pub(crate) fn control_ledger_prev_hash(conn: &Connection) -> rusqlite::Result<St
 /// `prev_hash` VIDE — un ORPHELIN cohérent avec lui-même, en tête d'une chaîne neuve que personne n'a
 /// déclarée. C'est LE journal des accès superadmin cross-tenant et des ouvertures d'urgence.
 ///
-/// POURQUOI LE MÊME GESTE QUE `ledger_append`, MAIS PAS POUR LA MÊME RAISON — et c'est la mesure du
-/// 2026-08-31 qui l'impose. Le raisonnement du journal voisin (« refuser, parce que marquer la rupture
-/// exigerait d'apprendre DEUX tolérances aux DEUX ancrages du vérificateur ») NE SE TRANSPOSE PAS ICI :
-/// `control_ledger` n'a AUCUN vérificateur. Mesuré — la seule lecture SQL de cette table hors tests est
-/// celle-ci ; `verify_ledger_conn`, `ledger_verify_export`, `ledger_export_lines`, `verify_run` et la
-/// route d'export lisent tous la table `ledger` d'une base TENANT, que le control-plane ne porte même
-/// pas (`migrate_control` ne la crée pas). ZÉRO ancrage, donc, et non deux.
+/// POURQUOI LE MÊME GESTE QUE `ledger_append` — et la raison a CHANGÉ le 2026-08-31, dans la journée.
+/// Au moment où cette clé a été posée (`P10.7-o`), la table de ce journal n'avait aucun code de
+/// production qui recalculât sa chaîne : le raisonnement du journal voisin (« refuser, parce que marquer
+/// la rupture exigerait d'apprendre DEUX tolérances aux DEUX ancrages du vérificateur ») ne s'appuyait
+/// donc sur rien ici, et sa CONCLUSION tenait a fortiori — un orphelin posé sur cette table n'était
+/// accusé par personne. `P10.7-p` a comblé ce manque : `control_ledger_verify_conn` (juste en dessous)
+/// applique désormais les DEUX MÊMES ancrages à cette table, et le raisonnement du voisin vaut
+/// maintenant ici À LA LETTRE.
 ///
-/// CE QUE CETTE ABSENCE CHANGE — elle RENFORCE le refus au lieu de l'affaiblir :
-///  - « marquer la rupture » et « déclarer une chaîne neuve » écriraient une marque POUR PERSONNE : sans
-///    lecteur, elles ne feraient qu'officialiser le silence (et coûteraient une colonne, donc une
-///    migration du control-plane) ;
-///  - un orphelin posé ICI n'est détectable par AUCUN code du produit, alors que dans `ledger` deux
-///    ancrages l'accuseraient. L'écrire est donc STRICTEMENT plus grave que chez le voisin ;
+/// CE QUE L'ARRIVÉE DU VÉRIFICATEUR NE CHANGE PAS — le refus reste le bon geste, pour trois raisons
+/// dont deux étaient déjà écrites :
+///  - « marquer la rupture » coûterait une colonne, donc une MIGRATION du control-plane, et « déclarer
+///    une chaîne neuve » demanderait aux deux ancrages d'apprendre à laisser passer un chaînon vide —
+///    c'est-à-dire de créer le chemin par lequel une chaîne rompue devient verte ;
 ///  - le coût du refus est celui qu'on payait déjà : l'`INSERT` ci-dessous est `let _ =`, et dans presque
 ///    tous les modes d'échec de la lecture il échouerait lui aussi — l'entrée était DÉJÀ perdue, en
 ///    silence. Refuser perd la même entrée et le DIT ;
@@ -593,6 +593,87 @@ pub(crate) fn control_ledger_append(st: &AppState, kind: &str, actor: &str, tena
         "INSERT INTO control_ledger(ts,kind,actor,tenant,detail,prev_hash,hash) VALUES(?1,?2,?3,?4,?5,?6,?7)",
         params![ts, kind, actor, tenant, detail, prev, hash],
     );
+}
+
+/// `P10.7-p` — LE VÉRIFICATEUR DE LA CHAÎNE DU JOURNAL DU CONTROL-PLANE : la moitié LECTURE, celle qui
+/// manquait. `P10.7-o` a fermé la moitié ÉCRITURE (le démon ne CRÉE plus de maillon orphelin) ; rien
+/// n'attrapait une rupture arrivée AUTREMENT — écriture SQL directe sur le fichier, restauration
+/// partielle, maillon supprimé, détail altéré. Jusqu'ici le SEUL code qui recalculait cette chaîne était
+/// un test.
+///
+/// LA LOI EST CELLE DU JOURNAL VOISIN (`verify_ledger_conn`, cf. `ledger.rs`), TRANSPOSÉE — DEUX
+/// ANCRAGES, et CHACUN porte SEUL une classe d'altération que l'autre ne voit pas (mesuré par mutation
+/// le 2026-08-31 : relâcher l'un fait tomber un témoin nommé, relâcher l'autre en fait tomber un autre) :
+///  1. CHAÎNAGE — le `prev_hash` déclaré par le maillon doit être le `hash` du maillon précédent. C'est
+///     le SEUL ancrage qui lise la colonne `prev_hash` : sans lui, effacer cette colonne entière d'un
+///     `UPDATE` (restauration partielle, main sur le fichier) passerait inaperçu, puisque le recalcul
+///     ci-dessous n'utilise jamais cette colonne mais la valeur COURANTE de la chaîne ;
+///  2. RECALCUL — le `hash` stocké doit valoir `sha256(prev|ts|kind|actor|tenant|detail)`. C'est le SEUL
+///     ancrage qui lise le CONTENU : sans lui, altérer le `detail` d'un accès break-glass sans toucher
+///     aux deux colonnes de chaînage passerait inaperçu.
+///
+/// CE QUI DIFFÈRE DU VOISIN, ET AUCUN DES TROIS N'EST UN CHOIX DE STYLE :
+///  - la PRÉIMAGE porte SIX champs et non quatre : le control-plane journalise `actor` et `tenant`, que
+///    le journal tenant n'a pas. La FORME du chaînage, elle, est identique (colonnes `prev_hash`/`hash`,
+///    parcours `ORDER BY id`, origine accrochée à la chaîne vide) ;
+///  - AUCUNE vérification de signature : `migrate_control` ne crée pas de table `checkpoint`, il n'y a
+///    donc pas de checkpoint Ed25519 à vérifier sur cette base. Rendre un compteur de signatures
+///    toujours nul serait un aveu FAUX ;
+///  - UN MAILLON ILLISIBLE N'EST PAS UN MAILLON ABSENT, et c'est le point où transposer verbatim aurait
+///    importé un défaut. Le vérificateur voisin aplatit ses lignes : une ligne dont une colonne ne se
+///    convertit pas est SILENCIEUSEMENT retirée du scan. Mesuré le 2026-08-31 sur la table `ledger` —
+///    trois maillons, le hachage du DERNIER remplacé par un blob : la réponse passe de « 3 entrées,
+///    aucune rupture » à « 2 entrées, aucune rupture », un verdict d'intégrité rendu sur une chaîne
+///    amputée, sans un mot. ICI toute ligne illisible rend `Err` : pas de verdict du tout.
+///
+/// RENVOIE `(maillons INTACTS, id du premier maillon en rupture)`. `Ok(_, None)` signifie « chaîne LUE
+/// ENTIÈREMENT et intègre » et rien d'autre. `Err` = AUCUN verdict (table absente, clé
+/// `PLUME_CONTROL_KEY` absente/incorrecte, colonne d'un type inattendu) — jamais « vérifié ».
+///
+/// ARMÉ LE 2026-08-31 PAR LA SOUS-COMMANDE `verify-control` DU BINAIRE. Il ne l'était pas quand ce
+/// moteur a été écrit, et le marqueur de code mort le disait : **un instrument correct que personne
+/// ne peut jouer est un REMÈDE NON ARMÉ**, exactement le défaut qu'une garde de ce dépôt poursuit —
+/// et le loger dans un instrument d'INTÉGRITÉ aurait été le pire endroit possible.
+///
+/// LA TROISIÈME SORTIE EST CE QUI DISTINGUE CE VERDICT D'UNE OPINION, et elle existe pour une raison
+/// MESURÉE : le vérificateur du journal voisin RETIRE SILENCIEUSEMENT du scan toute ligne illisible,
+/// et rend « aucune rupture » sur une chaîne AMPUTÉE — trois maillons en base, deux lus, verdict
+/// intègre. Celui-ci refuse : une ligne illisible rend `Err`, l'appelant sort sur un code distinct,
+/// et l'exploitant apprend qu'AUCUN verdict n'a été rendu plutôt que d'en lire un faux.
+pub(crate) fn control_ledger_verify_conn(conn: &Connection) -> Result<(usize, Option<i64>), String> {
+    let mut stmt = conn
+        .prepare("SELECT id,ts,kind,actor,tenant,detail,prev_hash,hash FROM control_ledger ORDER BY id")
+        .map_err(|e| format!("lecture control_ledger (table absente ? clé PLUME_CONTROL_KEY manquante/incorrecte ?): {e}"))?;
+    let lignes = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                r.get::<_, Option<String>>(5)?.unwrap_or_default(),
+                r.get::<_, String>(6)?,
+                r.get::<_, String>(7)?,
+            ))
+        })
+        .map_err(|e| format!("scan control_ledger: {e}"))?;
+    let mut prev = String::new();
+    let mut intacts = 0usize;
+    for ligne in lignes {
+        // UN MAILLON QU'ON NE SAIT PAS LIRE ARRÊTE TOUT. Le laisser tomber du scan rendrait un verdict
+        // d'intégrité sur une chaîne amputée — le pire endroit où loger cette tolérance.
+        let (id, ts, kind, actor, tenant, detail, prev_hash, hash) = ligne.map_err(|e| {
+            format!("maillon #{} ILLISIBLE ({e}) — la chaîne n'a pas pu être lue entièrement : AUCUN verdict", intacts + 1)
+        })?;
+        let recalcul = sha256_hex(format!("{prev}|{ts}|{kind}|{actor}|{tenant}|{detail}").as_bytes());
+        if prev_hash != prev || recalcul != hash {
+            return Ok((intacts, Some(id)));
+        }
+        intacts += 1;
+        prev = hash;
+    }
+    Ok((intacts, None))
 }
 
 /// #2b (D3/R9) — ÉMISSION STRUCTURELLE du marqueur d'accès opérateur cross-tenant (appelée par auth_guard,

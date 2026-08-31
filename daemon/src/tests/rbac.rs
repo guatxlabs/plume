@@ -1372,14 +1372,16 @@ async fn router_un_segment_statique_gagne_sur_son_parametre_frere() {
 // CROSS-TENANT et des ouvertures d'urgence : la rupture silencieuse est exactement ce qu'un accès
 // illégitime aurait intérêt à provoquer.
 //
-// CE QUI A ÉTÉ MESURÉ AVANT D'APPLIQUER, ET QUI A RÉFUTÉ L'ÉNONCÉ DE DÉPART : `control_ledger` n'a
-// AUCUN vérificateur de chaîne. Pas « un ancrage au lieu de deux » — zéro. `verify_ledger_conn`,
-// `ledger_verify_export`, `ledger_export_lines`, `verify_run` et la route d'export lisent tous la table
-// `ledger` d'une base TENANT ; `migrate_control` ne crée même pas cette table. Le raisonnement du
-// journal voisin (`P10.7-m` : « refuser, parce que marquer la rupture exigerait d'apprendre DEUX
-// tolérances ») ne se transpose donc PAS — mais sa CONCLUSION tient a fortiori : un orphelin posé ici
-// n'est accusé par personne, jamais, et marquer la rupture serait écrire une marque pour un lecteur qui
-// n'existe pas. Cf. le doc-comment de `control_ledger_append`.
+// CE QUI A ÉTÉ MESURÉ AVANT D'APPLIQUER, ET QUI A RÉFUTÉ L'ÉNONCÉ DE DÉPART — ÉTAT DE L'ARBRE AU MATIN
+// DU 2026-08-31, DEPUIS CORRIGÉ : aucun code de production ne recalculait la chaîne de `control_ledger`.
+// Pas « un ancrage au lieu de deux » — zéro. Les cinq lecteurs de chaîne de l'arbre (le vérificateur du
+// journal tenant, ses deux fonctions d'export, la sous-commande `verify` et la route d'export) portent
+// tous sur la table `ledger` d'une base TENANT, que `migrate_control` ne crée même pas. Le raisonnement
+// du journal voisin (`P10.7-m` : « refuser, parce que marquer la rupture exigerait d'apprendre DEUX
+// tolérances ») ne se transposait donc PAS — mais sa CONCLUSION tenait a fortiori : un orphelin posé ici
+// n'était accusé par personne, jamais. `P10.7-p` (plus bas dans ce fichier) a comblé ce manque le MÊME
+// JOUR : `control_ledger_verify_conn` applique désormais les deux mêmes ancrages à cette table, et le
+// raisonnement du voisin vaut maintenant ici à la lettre. Cf. le doc-comment de `control_ledger_append`.
 //
 // LE GESTE DES TÉMOINS (aucune horloge, aucune durée — le répertoire temporaire est en mémoire ici) :
 // une dernière ligne dont le `hash` est un BLOB. SQLite range un BLOB tel quel dans une colonne
@@ -1419,13 +1421,21 @@ fn rendre_le_maillon_de_controle_precedent_illisible(st: &AppState) {
         .expect("ligne de poison insérée");
 }
 
-/// LA LOI DE CHAÎNAGE, RECALCULÉE ICI PARCE QUE LE PRODUIT NE LA RECALCULE NULLE PART. Rend l'`id` du
-/// premier maillon en rupture, ou `None`. Deux ancrages, comme `ledger_verify_export` sur l'autre
-/// journal : `prev_hash` == hachage du maillon précédent, ET recalcul du hachage du maillon courant.
+/// LA LOI DE CHAÎNAGE, RELUE À LA MAIN. Rend l'`id` du premier maillon en rupture, ou `None`. Deux
+/// ancrages, comme `ledger_verify_export` sur l'autre journal : `prev_hash` == hachage du maillon
+/// précédent, ET recalcul du hachage du maillon courant.
 ///
-/// CE N'EST PAS UNE RANÇON : le jour où le produit se dote d'un vrai vérificateur de `control_ledger`,
-/// ce témoin reste VERT. Le format est réécrit à la main — un réordonnancement des champs côté
-/// production ferait rougir ici, ce qui est le seul ancrage que ce test prétend tenir.
+/// CE QUI A CHANGÉ SOUS CE TÉMOIN LE 2026-08-31 : quand il a été écrit, il était le SEUL code de l'arbre
+/// à recalculer cette chaîne — le produit ne la recalculait nulle part. `P10.7-p` a posé
+/// `control_ledger_verify_conn`, et l'annonce faite ici (« le jour où le produit se dote d'un vrai
+/// vérificateur, ce témoin reste VERT ») s'est vérifiée : il n'a pas bougé d'une ligne.
+///
+/// IL EST DÉLIBÉRÉMENT RESTÉ INDÉPENDANT plutôt que de déléguer à la production, et c'est TOUT ce qu'il
+/// tient désormais : le format est réécrit à la main, donc un réordonnancement des champs de la préimage
+/// côté production ferait diverger les deux verdicts — divergence que
+/// `une_chaine_de_controle_intacte_est_declaree_verifiee_et_comptee` assert explicitement. Il ne prétend
+/// PAS, lui, refuser de conclure sur une chaîne illisible : c'est la production qui porte cette
+/// propriété, et un témoin nommé qui la tient.
 fn premiere_rupture_de_la_chaine_de_controle(st: &AppState) -> Option<i64> {
     let cp = st.tenants.control.as_ref().expect("mode 1");
     let conn = cp.conn.lock();
@@ -1562,3 +1572,265 @@ fn un_hachage_de_controle_precedent_illisible_fait_refuser_l_ecriture_du_maillon
         "et la chaîne est restée UNE chaîne : aucun orphelin n'a été posé entre-temps"
     );
 }
+
+// ================================================================================================
+// `P10.7-p` — LA MOITIÉ LECTURE : LE PRODUIT RECALCULE ENFIN LA CHAÎNE DU JOURNAL DU CONTROL-PLANE,
+// ET AUCUN DE SES DEUX ANCRAGES N'EST REDONDANT
+//
+// CE QUE `P10.7-o` A FERMÉ, ET CE QU'IL A LAISSÉ ENTIER : le démon ne CRÉE plus de maillon orphelin.
+// Une rupture arrivée AUTREMENT — écriture SQL directe sur le fichier, restauration partielle, maillon
+// supprimé, détail altéré — n'était détectée par rien. Le seul code de l'arbre qui recalculait cette
+// chaîne était le témoin `premiere_rupture_de_la_chaine_de_controle` ci-dessus : un test.
+//
+// LA PROPRIÉTÉ QUE CES TÉMOINS TIENNENT, ET C'EST LA SEULE QUI COMPTE ICI — le vérificateur porte DEUX
+// ancrages, et AUCUN des deux n'est redondant. Chacun voit une classe d'altération que l'autre NE VOIT
+// PAS, ce que deux témoins mesurent SÉPARÉMENT (`..._n_est_vu_que_par_l_ancrage_de_chainage` et
+// `..._n_est_vu_que_par_l_ancrage_de_recalcul`) : chacun assert non seulement que le verdict accuse,
+// mais aussi que l'AUTRE ancrage reste MUET sur son altération. Relâcher un ancrage en production fait
+// donc tomber UN témoin nommé — mesuré par mutation le 2026-08-31, les deux sens séparément.
+//
+// ET LE POINT OÙ TRANSPOSER LE VOISIN VERBATIM AURAIT IMPORTÉ UN DÉFAUT : le vérificateur du journal
+// tenant aplatit ses lignes, donc une ligne dont une colonne ne se convertit pas quitte le scan en
+// silence. MESURÉ le 2026-08-31 sur trois maillons de la table `ledger`, hachage du DERNIER remplacé par
+// un blob : la réponse passe de « 3 entrées, aucune rupture » à « 2 entrées, aucune rupture ». Un
+// verdict d'intégrité rendu sur une chaîne amputée. `le_verificateur_de_controle_refuse_de_conclure_...`
+// tient le contraire ici, dans les deux sens.
+// ================================================================================================
+
+/// Trois accès de control-plane écrits par la VOIE NOMINALE (jamais un `INSERT` à la main) : la chaîne
+/// de départ, saine, de tous les témoins ci-dessous.
+fn un_journal_de_controle_de_trois_acces() -> (AppState, crate::tmp_possede::TmpDb) {
+    let (st, cptmp) = un_control_plane_au_journal_vierge();
+    control_ledger_append(&st, "superadmin.read", "op-reader", "acme", "");
+    control_ledger_append(&st, "superadmin.write", "op-writer", "acme", "break-glass incident 4412");
+    control_ledger_append(&st, "tenant.create", "op-admin", "beta", "");
+    assert_eq!(compter_les_maillons_de_controle(&st), 3, "fixture : trois maillons nominaux");
+    (st, cptmp)
+}
+
+/// Le VERDICT DE PRODUCTION sur le journal de contrôle de cet état.
+fn verdict_de_controle(st: &AppState) -> Result<(usize, Option<i64>), String> {
+    let cp = st.tenants.control.as_ref().expect("mode 1");
+    let conn = cp.conn.lock();
+    control_ledger_verify_conn(&conn)
+}
+
+/// Les `id` du journal, dans l'ordre — aucun témoin ne code en dur un identifiant de ligne.
+fn les_ids_du_journal_de_controle(st: &AppState) -> Vec<i64> {
+    let cp = st.tenants.control.as_ref().expect("mode 1");
+    let conn = cp.conn.lock();
+    let mut stmt = conn.prepare("SELECT id FROM control_ledger ORDER BY id").expect("journal lisible");
+    let v = stmt.query_map([], |r| r.get(0)).expect("scan").flatten().collect();
+    v
+}
+
+/// UNE MAIN SUR LE FICHIER. Rend le nombre de lignes touchées, pour qu'aucun témoin ne mesure une
+/// altération qui n'a pas eu lieu.
+fn muter_le_journal_de_controle(st: &AppState, sql: &str) -> usize {
+    st.tenants.control.as_ref().expect("mode 1").conn.lock().execute(sql, []).expect("écriture SQL directe")
+}
+
+/// Les maillons, tels qu'en base, pour les deux ancrages isolés ci-dessous.
+fn les_maillons_de_controle(st: &AppState) -> Vec<(i64, i64, String, String, String, String, String, String)> {
+    let cp = st.tenants.control.as_ref().expect("mode 1");
+    let conn = cp.conn.lock();
+    let mut stmt = conn
+        .prepare("SELECT id,ts,kind,actor,tenant,detail,prev_hash,hash FROM control_ledger ORDER BY id")
+        .expect("journal lisible");
+    let v = stmt
+        .query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                r.get::<_, Option<String>>(4)?.unwrap_or_default(), r.get::<_, Option<String>>(5)?.unwrap_or_default(),
+                r.get(6)?, r.get(7)?))
+        })
+        .expect("scan du journal")
+        .flatten()
+        .collect();
+    v
+}
+
+/// LE PREMIER ANCRAGE, ISOLÉ : le `prev_hash` DÉCLARÉ vaut-il le `hash` du maillon précédent ? Ne
+/// recalcule JAMAIS un hachage. Sert à MESURER, dans chaque témoin, lequel des deux ancrages porte
+/// l'altération — sans quoi « le verdict accuse » ne prouverait pas QUEL ancrage a mordu.
+fn premier_maillon_de_controle_au_chainage_faux(st: &AppState) -> Option<i64> {
+    let mut prev = String::new();
+    for (id, _ts, _k, _a, _t, _d, prev_hash, hash) in les_maillons_de_controle(st) {
+        if prev_hash != prev {
+            return Some(id);
+        }
+        prev = hash;
+    }
+    None
+}
+
+/// LE SECOND ANCRAGE, ISOLÉ : le `hash` stocké se recalcule-t-il depuis le CONTENU ? Ne lit JAMAIS la
+/// colonne `prev_hash` — il chaîne sur la valeur courante, exactement comme la production.
+fn premier_maillon_de_controle_au_hachage_faux(st: &AppState) -> Option<i64> {
+    let mut prev = String::new();
+    for (id, ts, kind, actor, tenant, detail, _prev_hash, hash) in les_maillons_de_controle(st) {
+        if sha256_hex(format!("{prev}|{ts}|{kind}|{actor}|{tenant}|{detail}").as_bytes()) != hash {
+            return Some(id);
+        }
+        prev = hash;
+    }
+    None
+}
+
+/// TÉMOIN NÉGATIF DE TOUT LE LOT — UNE CHAÎNE SAINE EST DÉCLARÉE VÉRIFIÉE, ET COMPTÉE. Sans lui, un
+/// vérificateur qui accuserait TOUT serait vert dans les quatre témoins d'accusation qui suivent.
+/// Contient aussi la seule chaîne vide légitime : un journal VIERGE est une chaîne intègre de zéro
+/// maillon — à ne pas confondre avec une table ABSENTE, qui n'est pas une chaîne du tout (cf. le témoin
+/// de refus de conclure).
+#[test]
+fn une_chaine_de_controle_intacte_est_declaree_verifiee_et_comptee() {
+    let (st, _cptmp) = un_control_plane_au_journal_vierge();
+    assert_eq!(verdict_de_controle(&st), Ok((0, None)), "un journal VIERGE est intègre : zéro maillon, zéro rupture");
+
+    control_ledger_append(&st, "superadmin.read", "op-reader", "acme", "");
+    control_ledger_append(&st, "superadmin.write", "op-writer", "acme", "break-glass incident 4412");
+    control_ledger_append(&st, "tenant.create", "op-admin", "beta", "");
+
+    assert_eq!(
+        verdict_de_controle(&st), Ok((3, None)),
+        "trois accès écrits par la voie nominale forment UNE chaîne intègre de trois maillons"
+    );
+    // ACCORD avec la relecture INDÉPENDANTE du témoin (format réécrit à la main) : si la production
+    // réordonnait les champs de sa préimage, les deux verdicts divergeraient ici.
+    assert!(premiere_rupture_de_la_chaine_de_controle(&st).is_none(), "la relecture indépendante conclut pareil");
+    assert_eq!(premier_maillon_de_controle_au_chainage_faux(&st), None, "aucun chaînage faux");
+    assert_eq!(premier_maillon_de_controle_au_hachage_faux(&st), None, "aucun hachage faux");
+}
+
+/// PREMIER ANCRAGE, PROUVÉ SEUL — UNE COLONNE `prev_hash` EFFACÉE PAR ÉCRITURE SQL DIRECTE. C'est le
+/// geste d'une restauration partielle ou d'une main sur le fichier : la colonne qui DÉCLARE la forme de
+/// la chaîne est remise à vide, et RIEN d'autre n'est touché.
+///
+/// CE QUE CE TÉMOIN MESURE, ET POURQUOI IL EST LA PREUVE D'UN ANCRAGE : sous cette altération le SECOND
+/// ancrage reste totalement MUET — il ne lit pas `prev_hash` mais la valeur courante de la chaîne, et
+/// aucune colonne de contenu n'a bougé, donc chaque hachage stocké se recalcule à l'identique. Un
+/// vérificateur qui n'aurait QUE le recalcul rendrait « chaîne intègre » sur ce journal-là. Relâcher la
+/// comparaison de chaînage en production fait tomber CE témoin, et lui seul.
+#[test]
+fn un_prev_hash_efface_par_ecriture_sql_directe_n_est_vu_que_par_l_ancrage_de_chainage() {
+    let (st, _cptmp) = un_journal_de_controle_de_trois_acces();
+    let ids = les_ids_du_journal_de_controle(&st);
+    assert_eq!(verdict_de_controle(&st), Ok((3, None)), "TÉMOIN NÉGATIF : la chaîne part intègre");
+
+    assert_eq!(muter_le_journal_de_controle(&st, "UPDATE control_ledger SET prev_hash=''"), 3, "les trois maillons sont touchés");
+
+    assert_eq!(
+        premier_maillon_de_controle_au_hachage_faux(&st), None,
+        "ISOLATION : le RECALCUL ne voit RIEN de cette altération — sans le premier ancrage, ce journal \
+         effacé serait déclaré intègre"
+    );
+    assert_eq!(
+        premier_maillon_de_controle_au_chainage_faux(&st), Some(ids[1]),
+        "et c'est bien la COMPARAISON DE CHAÎNAGE qui mord, au 2e maillon (le 1er s'accroche \
+         légitimement à la chaîne vide)"
+    );
+    assert_eq!(
+        verdict_de_controle(&st), Ok((1, Some(ids[1]))),
+        "LE VERDICT DE PRODUCTION accuse : un seul maillon intact, rupture au 2e"
+    );
+}
+
+/// SECOND ANCRAGE, PROUVÉ SEUL — LE `detail` D'UN ACCÈS BREAK-GLASS RÉÉCRIT EN PLACE. C'est la raison
+/// invoquée pour ouvrir les données d'un tenant : la ligne la plus intéressante à réécrire du journal.
+/// Les deux colonnes de chaînage ne sont PAS touchées.
+///
+/// CE QUE CE TÉMOIN MESURE, ET POURQUOI IL EST LA PREUVE DE L'AUTRE ANCRAGE : sous cette altération la
+/// COMPARAISON DE CHAÎNAGE reste totalement MUETTE — chaque `prev_hash` vaut toujours le `hash` de son
+/// prédécesseur, aucun n'ayant bougé. Un vérificateur qui n'aurait QUE le chaînage rendrait « chaîne
+/// intègre » sur un journal dont un motif de break-glass a été réécrit. Relâcher le recalcul en
+/// production fait tomber CE témoin, et lui seul.
+#[test]
+fn un_detail_de_break_glass_reecrit_en_place_n_est_vu_que_par_l_ancrage_de_recalcul() {
+    let (st, _cptmp) = un_journal_de_controle_de_trois_acces();
+    let ids = les_ids_du_journal_de_controle(&st);
+    assert_eq!(verdict_de_controle(&st), Ok((3, None)), "TÉMOIN NÉGATIF : la chaîne part intègre");
+
+    let sql = format!("UPDATE control_ledger SET detail='maintenance planifiée' WHERE id={}", ids[1]);
+    assert_eq!(muter_le_journal_de_controle(&st, &sql), 1, "un seul maillon réécrit");
+
+    assert_eq!(
+        premier_maillon_de_controle_au_chainage_faux(&st), None,
+        "ISOLATION : la COMPARAISON DE CHAÎNAGE ne voit RIEN — aucune des deux colonnes de chaînage n'a \
+         bougé ; sans le recalcul, ce motif réécrit serait déclaré intègre"
+    );
+    assert_eq!(
+        premier_maillon_de_controle_au_hachage_faux(&st), Some(ids[1]),
+        "et c'est bien le RECALCUL qui mord, sur le maillon réécrit"
+    );
+    assert_eq!(
+        verdict_de_controle(&st), Ok((1, Some(ids[1]))),
+        "LE VERDICT DE PRODUCTION accuse : un seul maillon intact, rupture sur le maillon réécrit"
+    );
+}
+
+/// UN MAILLON SUPPRIMÉ. Ce témoin ne prouve AUCUN ancrage seul — les deux mordent — et il est ici parce
+/// que la suppression d'une ligne est le geste le plus banal de la liste des ruptures non-écrites, et
+/// que sans lui la couverture s'arrêterait aux deux altérations construites pour isoler les ancrages.
+#[test]
+fn un_maillon_de_controle_supprime_est_accuse() {
+    let (st, _cptmp) = un_journal_de_controle_de_trois_acces();
+    let ids = les_ids_du_journal_de_controle(&st);
+    assert_eq!(verdict_de_controle(&st), Ok((3, None)), "TÉMOIN NÉGATIF : la chaîne part intègre");
+
+    let sql = format!("DELETE FROM control_ledger WHERE id={}", ids[1]);
+    assert_eq!(muter_le_journal_de_controle(&st, &sql), 1, "le maillon du milieu disparaît");
+    assert_eq!(compter_les_maillons_de_controle(&st), 2, "il en reste deux — et ils se COMPTENT sans rien dire");
+
+    assert_eq!(
+        verdict_de_controle(&st), Ok((1, Some(ids[2]))),
+        "le successeur du maillon disparu s'accroche à un hachage qui n'est plus dans le journal"
+    );
+    assert_eq!(premier_maillon_de_controle_au_chainage_faux(&st), Some(ids[2]), "les DEUX ancrages mordent ici :");
+    assert_eq!(premier_maillon_de_controle_au_hachage_faux(&st), Some(ids[2]), "le chaînage ET le recalcul");
+}
+
+/// LE REFUS DE CONCLURE — CE VÉRIFICATEUR NE REND JAMAIS « VÉRIFIÉ » SUR UNE CHAÎNE QU'IL N'A PAS PU
+/// LIRE ENTIÈREMENT. C'est la seule propriété du lot qu'un instrument d'intégrité ne peut pas se
+/// permettre de rater : un maillon retiré du scan parce qu'il est ILLISIBLE fait rendre un verdict
+/// d'intégrité sur une chaîne amputée, et ce verdict est FAUX dans le sens le plus dangereux — trop
+/// optimiste.
+///
+/// INSTRUMENT VALIDÉ DANS LES DEUX SENS, sans quoi « ça rend Err » serait vrai pour la mauvaise raison :
+/// la même chaîne, poison retiré, redevient un verdict d'intégrité complet.
+///
+/// LE GESTE (aucune horloge, aucune durée) : un `hash` en BLOB. SQLite le range tel quel dans une
+/// colonne d'affinité TEXT -> la conversion de CETTE ligne meurt, et elle SEULE.
+#[test]
+fn le_verificateur_de_controle_refuse_de_conclure_sur_un_maillon_illisible() {
+    let (st, _cptmp) = un_journal_de_controle_de_trois_acces();
+    let ids = les_ids_du_journal_de_controle(&st);
+    assert_eq!(verdict_de_controle(&st), Ok((3, None)), "TÉMOIN NÉGATIF : la chaîne part intègre");
+
+    // (1) LE DERNIER maillon — le cas qui compte, parce qu'un scan qui le laisse tomber s'arrête sur une
+    // chaîne PARFAITEMENT continue et n'a donc AUCUNE raison d'accuser.
+    let sql = format!("UPDATE control_ledger SET hash=X'FF' WHERE id={}", ids[2]);
+    assert_eq!(muter_le_journal_de_controle(&st, &sql), 1, "le dernier hachage devient non textuel");
+    let e = verdict_de_controle(&st).expect_err(
+        "un maillon ILLISIBLE doit interdire TOUT verdict : le laisser tomber du scan rendrait « chaîne \
+         intègre » sur un maillon de moins",
+    );
+    assert!(e.contains("ILLISIBLE"), "et l'erreur DIT que la chaîne n'a pas pu être lue : {e}");
+    assert_eq!(
+        compter_les_maillons_de_controle(&st), 3,
+        "TÉMOIN DE FORME : les trois lignes sont TOUJOURS en base — le refus porte sur la LECTURE d'une \
+         ligne, pas sur sa disparition"
+    );
+
+    // (2) SENS 2 — poison retiré, le même journal redevient un verdict complet. Sans ceci, un
+    // vérificateur qui refuserait TOUJOURS de conclure serait vert au premier tiers.
+    let sql = format!("DELETE FROM control_ledger WHERE id={}", ids[2]);
+    assert_eq!(muter_le_journal_de_controle(&st, &sql), 1, "poison retiré");
+    assert_eq!(verdict_de_controle(&st), Ok((2, None)), "la chaîne restante est LUE ENTIÈREMENT et intègre");
+    control_ledger_append(&st, "tenant.create", "op-admin", "beta", "");
+    assert_eq!(verdict_de_controle(&st), Ok((3, None)), "et la voie nominale la prolonge sans rupture");
+
+    // (3) UNE TABLE ABSENTE N'EST PAS UNE CHAÎNE VIDE. Le journal vierge rendait `Ok((0, None))` ; ici
+    // il n'y a rien à lire du tout, et le vérificateur le DIT au lieu de compter zéro.
+    muter_le_journal_de_controle(&st, "DROP TABLE control_ledger");
+    verdict_de_controle(&st).expect_err("table absente -> AUCUN verdict, jamais « zéro maillon, intègre »");
+}
+

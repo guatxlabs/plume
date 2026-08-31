@@ -23,6 +23,19 @@ const CSSV = (n, d) => (getComputedStyle(document.documentElement).getPropertyVa
 let socTZ = lireLeStockageDuSite('soc_tz') || '';
 const LANG = lireLeStockageDuSite('soc_lang') || 'fr';   // langue UI (fr par défaut) ; EN via dico FR->EN
 const LOC = LANG === 'en' ? 'en-US' : 'fr-FR';            // locale des dates/heures
+// `P11.21-n` — LE DOCUMENT DÉCLARE LA LANGUE QU'IL REND. `web/index.html` fixe `lang="fr"` dans son
+// balisage, et c'est le BON amorçage : tant que le graphe ES n'est pas lié, la seule chose que la page
+// puisse afficher est l'aveu `#init-echec`, écrit en français quoi qu'il arrive. Mais dès que ce module
+// s'évalue, la langue est CONNUE — mesuré le 2026-08-31, une console dont tous les libellés sont peints en
+// anglais (« Overview », « Sign in », « Password ») annonçait encore `lang="fr"` : un lecteur d'écran y
+// prononce l'anglais avec la phonétique française. La déclaration suit donc la MÊME condition que `LOC`
+// (une seule ligne à toucher le jour d'une troisième langue) et se pose ICI, à la racine effective du
+// graphe — `login.js` et `app.js` importent tous deux ce module, donc l'écran de connexion est couvert
+// autant que la console. Le geste est INERTE POUR LA PEINTURE, et c'est mesuré : `web/style.css` et
+// `web/index.html` ne portent AUCUN sélecteur `:lang()` ni `[lang]`, ni règle `quotes`/`hyphens` — cet
+// attribut ne parle qu'aux technologies d'assistance et aux sélecteurs de langue à venir. La langue par
+// défaut est INCHANGÉE : sans choix en stockage, `LANG` vaut `'fr'` et le document déclare `fr`.
+document.documentElement.lang = LANG === 'en' ? 'en' : 'fr';
 const tzOpts = () => (socTZ ? { timeZone: socTZ } : {});
 const fmtTs = t => t ? new Date(t * 1000).toLocaleString(LOC, tzOpts()) : '-';
 const SEV = ['info', 'low', 'medium', 'high', 'critical'];

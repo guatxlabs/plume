@@ -463,7 +463,11 @@ pub(crate) mod door_tests {
         //     changerait ce qu'on vient de prouver identique ;
         //   - rouvrir la base BASCULÉE pour inscrire la conversion au journal inaltérable, sur le
         //     même schéma qu'avant la bascule.
-        const SANS_CONTRAT_ATTENDUS: usize = 16;
+        // 16 -> 17 LE 2026-08-31, ET LE CHOIX SE VOIT ICI COMME CETTE GARDE L'EXIGE : la sous-commande
+        // `verify-control` ouvre le PLAN DE CONTRÔLE, qui n'est pas une base plume — il ne porte ni le
+        // schéma ni la version de schéma, et lui appliquer le contrat des bases tenant le REFUSERAIT.
+        // C'est la même raison, et la même porte, que l'ouverture d'amorçage du plan de contrôle.
+        const SANS_CONTRAT_ATTENDUS: usize = 17;
         assert_eq!(
             sans_contrat.len(),
             SANS_CONTRAT_ATTENDUS,

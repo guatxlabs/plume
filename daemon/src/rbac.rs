@@ -2,7 +2,7 @@
 //! `MinRole`/`route_min_role`/`rbac_gate`), grants SSO/per-tenant (`sso_grants`/`grant_role_for`/
 //! `default_grant`/`platform_user_is_superadmin`), résolution d'accès (`TenantAccess`/`resolve_tenant_access`),
 //! marqueur opérateur cross-tenant (`OPERATOR_ACCESS_*`/`operator_access_should_emit`/`emit_operator_access`/
-//! `control_ledger_append`), garde de gestion tenant (`mgmt_*`/`tenant_mgmt_gate`/`can_manage_grants`/
+//! `control_ledger_prev_hash`/`control_ledger_append`), garde de gestion tenant (`mgmt_*`/`tenant_mgmt_gate`/`can_manage_grants`/
 //! `valid_grant_role`/`platform_user_name_ok`/`gen_control_id`/`ensure_platform_user`/`tenant_admin_grant_count`)
 //! et l'audit (`audit_tenant_event`/`tenant_db_path`). Extrait de main.rs (refactor split #25 — byte-identique).
 use crate::*;
@@ -528,18 +528,66 @@ pub(crate) fn operator_access_should_emit(superadmin: &str, tenant: &str, now_i:
     }
 }
 
+/// `P10.7-o` — LE HACHAGE DU DERNIER MAILLON DU CONTROL-PLANE, celui auquel la prochaine entrée doit
+/// s'accrocher. Jumelle EXACTE de `ledger_prev_hash` (cf. `ledger.rs`), sur l'AUTRE base : elle n'existe
+/// que pour DISCRIMINER SUR L'ERREUR.
+///  - `QueryReturnedNoRows` = journal VIERGE = l'ORIGINE LÉGITIME. La toute première écriture s'accroche
+///    à la chaîne VIDE : chemin nominal, il réussit et reste MUET ;
+///  - TOUT autre échec (base illisible, clé `PLUME_CONTROL_KEY` absente, verrou, table absente, colonne
+///    d'un type inattendu) = on ne SAIT PAS à quoi s'accrocher -> `Err`, et l'appelant REFUSE d'écrire.
+pub(crate) fn control_ledger_prev_hash(conn: &Connection) -> rusqlite::Result<String> {
+    match conn.query_row("SELECT hash FROM control_ledger ORDER BY id DESC LIMIT 1", [], |r| r.get::<_, String>(0)) {
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(String::new()), // journal vierge : origine légitime
+        autre => autre,                                                 // lu, ou illisible — jamais confondus
+    }
+}
+
 /// #2b (D3) — journal d'audit hash-chaîné du CONTROL-PLANE (append-only, tamper-evident). Mode 0
 /// (control=None) -> no-op. Sert superadmin.read/superadmin.write (accès cross-tenant) + futures mutations
 /// catalogue. `detail` peut porter la raison du break-glass. Best-effort (n'interrompt pas la requête).
+///
+/// `P10.7-o` — CE QU'IL FAISAIT AVANT LE 2026-08-31 : un `unwrap_or_default()` confondait « journal
+/// vierge » et « lecture impossible ». Une lecture ratée en MILIEU de chaîne écrivait donc un maillon de
+/// `prev_hash` VIDE — un ORPHELIN cohérent avec lui-même, en tête d'une chaîne neuve que personne n'a
+/// déclarée. C'est LE journal des accès superadmin cross-tenant et des ouvertures d'urgence.
+///
+/// POURQUOI LE MÊME GESTE QUE `ledger_append`, MAIS PAS POUR LA MÊME RAISON — et c'est la mesure du
+/// 2026-08-31 qui l'impose. Le raisonnement du journal voisin (« refuser, parce que marquer la rupture
+/// exigerait d'apprendre DEUX tolérances aux DEUX ancrages du vérificateur ») NE SE TRANSPOSE PAS ICI :
+/// `control_ledger` n'a AUCUN vérificateur. Mesuré — la seule lecture SQL de cette table hors tests est
+/// celle-ci ; `verify_ledger_conn`, `ledger_verify_export`, `ledger_export_lines`, `verify_run` et la
+/// route d'export lisent tous la table `ledger` d'une base TENANT, que le control-plane ne porte même
+/// pas (`migrate_control` ne la crée pas). ZÉRO ancrage, donc, et non deux.
+///
+/// CE QUE CETTE ABSENCE CHANGE — elle RENFORCE le refus au lieu de l'affaiblir :
+///  - « marquer la rupture » et « déclarer une chaîne neuve » écriraient une marque POUR PERSONNE : sans
+///    lecteur, elles ne feraient qu'officialiser le silence (et coûteraient une colonne, donc une
+///    migration du control-plane) ;
+///  - un orphelin posé ICI n'est détectable par AUCUN code du produit, alors que dans `ledger` deux
+///    ancrages l'accuseraient. L'écrire est donc STRICTEMENT plus grave que chez le voisin ;
+///  - le coût du refus est celui qu'on payait déjà : l'`INSERT` ci-dessous est `let _ =`, et dans presque
+///    tous les modes d'échec de la lecture il échouerait lui aussi — l'entrée était DÉJÀ perdue, en
+///    silence. Refuser perd la même entrée et le DIT ;
+///  - et pour les `kind` les plus sensibles (`superadmin.read`/`superadmin.write`), `emit_operator_access`
+///    tient un SECOND journal non-désactivable DANS la base du tenant visité : refuser ce maillon-ci
+///    n'aveugle pas l'audit.
+///
+/// L'AVEU NE PORTE QUE LE `kind` — vocabulaire fermé (`superadmin.*`, `tenant.*`, `grant.*`, `scim.*`,
+/// `role.*`). `actor` nomme un compte, `tenant` une cible, `detail` la raison d'un break-glass : aucun
+/// des trois ne sort sur stderr.
 pub(crate) fn control_ledger_append(st: &AppState, kind: &str, actor: &str, tenant: &str, detail: &str) {
     let Some(cp) = st.tenants.control.as_ref() else {
         return;
     };
     let conn = cp.conn.lock();
     let ts = now();
-    let prev: String = conn
-        .query_row("SELECT hash FROM control_ledger ORDER BY id DESC LIMIT 1", [], |r| r.get(0))
-        .unwrap_or_default();
+    let prev = match control_ledger_prev_hash(&conn) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("[control_ledger] WARN maillon '{kind}' NON écrit : hachage précédent ILLISIBLE ({e}) — l'écrire romprait la chaîne");
+            return;
+        }
+    };
     let hash = sha256_hex(format!("{prev}|{ts}|{kind}|{actor}|{tenant}|{detail}").as_bytes());
     let _ = conn.execute(
         "INSERT INTO control_ledger(ts,kind,actor,tenant,detail,prev_hash,hash) VALUES(?1,?2,?3,?4,?5,?6,?7)",

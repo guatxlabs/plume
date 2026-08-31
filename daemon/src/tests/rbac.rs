@@ -1362,3 +1362,203 @@ async fn router_un_segment_statique_gagne_sur_son_parametre_frere() {
     );
     ff_rm(&dbp);
 }
+
+// ================================================================================================
+// `P10.7-o` — LE JOURNAL DU CONTROL-PLANE N'ÉCRIT PLUS DE MAILLON ORPHELIN EN SILENCE
+//
+// LE SITE : `control_ledger_append` lisait le hachage du maillon précédent avec `unwrap_or_default()`.
+// Une lecture ratée en MILIEU de chaîne écrivait donc un maillon de `prev_hash` VIDE — cohérent avec
+// lui-même, en tête d'une chaîne neuve que personne n'a déclarée. C'est le journal des accès superadmin
+// CROSS-TENANT et des ouvertures d'urgence : la rupture silencieuse est exactement ce qu'un accès
+// illégitime aurait intérêt à provoquer.
+//
+// CE QUI A ÉTÉ MESURÉ AVANT D'APPLIQUER, ET QUI A RÉFUTÉ L'ÉNONCÉ DE DÉPART : `control_ledger` n'a
+// AUCUN vérificateur de chaîne. Pas « un ancrage au lieu de deux » — zéro. `verify_ledger_conn`,
+// `ledger_verify_export`, `ledger_export_lines`, `verify_run` et la route d'export lisent tous la table
+// `ledger` d'une base TENANT ; `migrate_control` ne crée même pas cette table. Le raisonnement du
+// journal voisin (`P10.7-m` : « refuser, parce que marquer la rupture exigerait d'apprendre DEUX
+// tolérances ») ne se transpose donc PAS — mais sa CONCLUSION tient a fortiori : un orphelin posé ici
+// n'est accusé par personne, jamais, et marquer la rupture serait écrire une marque pour un lecteur qui
+// n'existe pas. Cf. le doc-comment de `control_ledger_append`.
+//
+// LE GESTE DES TÉMOINS (aucune horloge, aucune durée — le répertoire temporaire est en mémoire ici) :
+// une dernière ligne dont le `hash` est un BLOB. SQLite range un BLOB tel quel dans une colonne
+// d'affinité TEXT -> la LECTURE du maillon précédent meurt, l'ÉCRITURE reste parfaitement vivante.
+// C'est ce qui rend ces témoins DISCRIMINANTS : sous une panne globale (table retirée, base fermée)
+// l'écriture échouerait AUSSI et « aucune ligne écrite » serait vrai pour la mauvaise raison.
+// ================================================================================================
+
+/// Un control-plane dont le journal part réellement VIERGE, et l'état mode 1 qui l'utilise. Le `TmpDb`
+/// est rendu pour que l'appelant le garde vivant : la base du control-plane est un FICHIER.
+fn un_control_plane_au_journal_vierge() -> (AppState, crate::tmp_possede::TmpDb) {
+    let (cp, cptmp) = mk_test_control();
+    {
+        let c = cp.conn.lock();
+        c.execute("DELETE FROM control_ledger", []).expect("journal de contrôle vidé");
+    }
+    let st = tenant_test_state("plume-admin", "plume-editor", "admins", Some(cp));
+    assert_eq!(compter_les_maillons_de_controle(&st), 0, "fixture : le journal de contrôle part VIERGE");
+    (st, cptmp)
+}
+
+fn compter_les_maillons_de_controle(st: &AppState) -> i64 {
+    st.tenants.control.as_ref().expect("mode 1").conn.lock()
+        .query_row("SELECT COUNT(*) FROM control_ledger", [], |r| r.get(0)).expect("journal comptable")
+}
+
+/// LE GESTE. La dernière ligne du journal de contrôle porte un `hash` NON TEXTUEL : `SELECT hash … LIMIT
+/// 1` ne se convertit plus en `String`, et l'erreur rendue n'est PAS `QueryReturnedNoRows`. C'est
+/// exactement la classe d'échec que l'ancien `unwrap_or_default()` confondait avec un journal vierge.
+fn rendre_le_maillon_de_controle_precedent_illisible(st: &AppState) {
+    st.tenants.control.as_ref().expect("mode 1").conn.lock()
+        .execute(
+            "INSERT INTO control_ledger(ts,kind,actor,tenant,detail,prev_hash,hash) \
+             VALUES(?1,'poison','','','hachage non textuel','',X'FF')",
+            params![now()],
+        )
+        .expect("ligne de poison insérée");
+}
+
+/// LA LOI DE CHAÎNAGE, RECALCULÉE ICI PARCE QUE LE PRODUIT NE LA RECALCULE NULLE PART. Rend l'`id` du
+/// premier maillon en rupture, ou `None`. Deux ancrages, comme `ledger_verify_export` sur l'autre
+/// journal : `prev_hash` == hachage du maillon précédent, ET recalcul du hachage du maillon courant.
+///
+/// CE N'EST PAS UNE RANÇON : le jour où le produit se dote d'un vrai vérificateur de `control_ledger`,
+/// ce témoin reste VERT. Le format est réécrit à la main — un réordonnancement des champs côté
+/// production ferait rougir ici, ce qui est le seul ancrage que ce test prétend tenir.
+fn premiere_rupture_de_la_chaine_de_controle(st: &AppState) -> Option<i64> {
+    let cp = st.tenants.control.as_ref().expect("mode 1");
+    let conn = cp.conn.lock();
+    let mut stmt = conn
+        .prepare("SELECT id,ts,kind,actor,tenant,detail,prev_hash,hash FROM control_ledger ORDER BY id")
+        .expect("journal lisible");
+    let lignes: Vec<(i64, i64, String, String, String, String, String, String)> = stmt
+        .query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                r.get::<_, Option<String>>(4)?.unwrap_or_default(), r.get::<_, Option<String>>(5)?.unwrap_or_default(),
+                r.get(6)?, r.get(7)?))
+        })
+        .expect("scan du journal")
+        .flatten()
+        .collect();
+    let mut prev = String::new();
+    for (id, ts, kind, actor, tenant, detail, prev_hash, hash) in &lignes {
+        let recalcul = sha256_hex(format!("{prev}|{ts}|{kind}|{actor}|{tenant}|{detail}").as_bytes());
+        if prev_hash != &prev || &recalcul != hash {
+            return Some(*id);
+        }
+        prev = hash.clone();
+    }
+    None
+}
+
+/// TÉMOIN NÉGATIF DE TOUT LE LOT — LA PREMIÈRE ÉCRITURE D'UN JOURNAL DE CONTRÔLE VIERGE RÉUSSIT ET RESTE
+/// MUETTE. Un correctif qui aurait refusé « quand la lecture ne rend rien » — c'est-à-dire qui n'aurait
+/// pas discriminé sur l'ERREUR — rougirait ICI, et il aurait rendu le journal des accès superadmin
+/// INÉCRIVIBLE sur un control-plane neuf : le remède aggravant exact.
+#[test]
+fn la_premiere_ecriture_du_journal_de_controle_vierge_reussit_et_reste_muette() {
+    let (st, _cptmp) = un_control_plane_au_journal_vierge();
+
+    control_ledger_append(&st, "superadmin.read", "op-reader", "acme", "");
+
+    assert_eq!(
+        compter_les_maillons_de_controle(&st), 1,
+        "l'origine s'ÉCRIT : refuser ici rendrait le journal des accès superadmin inécrivible sur une base neuve"
+    );
+    let (prev_hash, hash): (String, String) = st.tenants.control.as_ref().unwrap().conn.lock()
+        .query_row("SELECT prev_hash,hash FROM control_ledger ORDER BY id DESC LIMIT 1", [], |r| Ok((r.get(0)?, r.get(1)?)))
+        .expect("maillon lisible");
+    assert_eq!(prev_hash, "", "l'origine s'accroche à la chaîne VIDE — c'est le seul vide légitime");
+    assert!(!hash.is_empty(), "et elle porte bien un hachage");
+    assert!(
+        premiere_rupture_de_la_chaine_de_controle(&st).is_none(),
+        "la toute première écriture n'accuse personne"
+    );
+
+    // Et la chaîne se POURSUIT : le 2e maillon s'accroche au 1er (sans quoi « prev_hash vide » serait
+    // vrai partout et ce témoin ne distinguerait pas une origine d'un orphelin).
+    control_ledger_append(&st, "superadmin.write", "op-writer", "acme", "raison du break-glass");
+    assert_eq!(compter_les_maillons_de_controle(&st), 2, "le 2e accès s'écrit aussi");
+    let prev2: String = st.tenants.control.as_ref().unwrap().conn.lock()
+        .query_row("SELECT prev_hash FROM control_ledger ORDER BY id DESC LIMIT 1", [], |r| r.get(0))
+        .expect("maillon lisible");
+    assert_eq!(prev2, hash, "le 2e maillon s'accroche au 1er : c'est UNE chaîne, pas deux origines");
+    assert!(premiere_rupture_de_la_chaine_de_controle(&st).is_none(), "et elle reste continue");
+}
+
+/// LE LECTEUR SÉPARE LES DEUX CAS, ET C'EST TOUT CE QU'IL FAIT. Témoin direct de la discrimination,
+/// indépendant de l'appelant : vierge -> `Ok("")`, illisible -> `Err`, et l'erreur rendue n'est PAS celle
+/// de l'absence (sans quoi les deux se reconfondraient, ce qui est exactement le défaut d'origine).
+#[test]
+fn le_lecteur_du_maillon_de_controle_separe_le_journal_vierge_de_l_illisible() {
+    let (st, _cptmp) = un_control_plane_au_journal_vierge();
+    {
+        let conn = st.tenants.control.as_ref().unwrap().conn.lock();
+        assert_eq!(
+            control_ledger_prev_hash(&conn).expect("un journal de contrôle vierge N'EST PAS une erreur"), "",
+            "vierge -> chaîne vide"
+        );
+    }
+
+    control_ledger_append(&st, "tenant.create", "op", "acme", "");
+    {
+        let conn = st.tenants.control.as_ref().unwrap().conn.lock();
+        let pose = control_ledger_prev_hash(&conn).expect("journal lisible");
+        assert!(!pose.is_empty(), "une chaîne commencée rend son dernier hachage");
+    }
+
+    rendre_le_maillon_de_controle_precedent_illisible(&st);
+    let conn = st.tenants.control.as_ref().unwrap().conn.lock();
+    let e = control_ledger_prev_hash(&conn).expect_err("un hachage non textuel est une ERREUR, pas une chaîne vide");
+    assert!(
+        !matches!(e, rusqlite::Error::QueryReturnedNoRows),
+        "et surtout PAS l'erreur d'absence — c'est cette confusion-là que la clé ferme : {e}"
+    );
+}
+
+/// UNE LECTURE IMPOSSIBLE FAIT REFUSER L'ÉCRITURE DU MAILLON DE CONTRÔLE. Avant le 2026-08-31, ce témoin
+/// comptait UN maillon de plus : un orphelin de `prev_hash` vide, en tête d'une chaîne neuve que personne
+/// n'a déclarée — et que, sur CE journal, AUCUN code du produit n'aurait jamais accusé.
+///
+/// INSTRUMENT VALIDÉ DANS LES DEUX SENS, et c'est ce qui le rend opposable : sous le MÊME poison une
+/// écriture BRUTE passe (la lecture est morte, pas l'écriture), et une fois le poison retiré la voie
+/// nominale réécrit. Un « correctif » qui aurait simplement cessé d'écrire serait vert au premier tiers
+/// et rouge au troisième.
+#[test]
+fn un_hachage_de_controle_precedent_illisible_fait_refuser_l_ecriture_du_maillon() {
+    let (st, _cptmp) = un_control_plane_au_journal_vierge();
+    control_ledger_append(&st, "superadmin.read", "op-reader", "acme", "");
+    rendre_le_maillon_de_controle_precedent_illisible(&st);
+    let avant = compter_les_maillons_de_controle(&st);
+
+    // L'accès cross-tenant le plus sensible du produit, sur un journal dont la tête est illisible.
+    control_ledger_append(&st, "superadmin.write", "op-writer", "acme", "break-glass");
+
+    assert_eq!(
+        compter_les_maillons_de_controle(&st), avant,
+        "AUCUN maillon écrit : à hachage précédent illisible, on préfère l'entrée manquante à la chaîne rompue"
+    );
+
+    // SENS 2 — la LECTURE est morte, l'ÉCRITURE ne l'est pas. Sans cette assertion, le refus mesuré
+    // ci-dessus pourrait n'être qu'une base inutilisable, et le témoin serait vert pour rien.
+    st.tenants.control.as_ref().unwrap().conn.lock()
+        .execute(
+            "INSERT INTO control_ledger(ts,kind,actor,tenant,detail,prev_hash,hash) \
+             VALUES(?1,'sonde','','','','','sonde')",
+            params![now()],
+        )
+        .expect("une écriture brute passe sous le MÊME poison");
+
+    // SENS 3 — poison retiré, la voie nominale réécrit, et la chaîne est restée UNE chaîne.
+    st.tenants.control.as_ref().unwrap().conn.lock()
+        .execute("DELETE FROM control_ledger WHERE kind IN ('poison','sonde')", [])
+        .expect("poison retiré");
+    let avant = compter_les_maillons_de_controle(&st);
+    control_ledger_append(&st, "superadmin.write", "op-writer", "acme", "break-glass");
+    assert_eq!(compter_les_maillons_de_controle(&st), avant + 1, "la lecture redevenue possible, l'écriture reprend");
+    assert!(
+        premiere_rupture_de_la_chaine_de_controle(&st).is_none(),
+        "et la chaîne est restée UNE chaîne : aucun orphelin n'a été posé entre-temps"
+    );
+}

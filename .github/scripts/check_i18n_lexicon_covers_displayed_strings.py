@@ -236,6 +236,60 @@ from check_every_help_trigger_has_a_section import (  # noqa: E402  (source uniq
 RACINE = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", ".."))
 WEB = os.path.join(RACINE, "web")
 LEXIQUE = os.path.join(WEB, "i18n.js")
+# LA RECETTE DES TROIS PLANCHERS, ÉCRITE UNE FOIS ET APPLIQUÉE PAR LE CODE (`P11.8-k`, 2026-08-31).
+# CE FICHIER A TENU PENDANT CINQ JOURS UNE PROPRIÉTÉ PLUS FAIBLE QUE CELLE QU'IL ÉCRIVAIT. La recette
+# « le relevé moins un vingtième » était écrite à trois endroits, et les trois valeurs étaient POSÉES À LA
+# MAIN : rien ne les rattachait à la phrase, et le retard ne se voyait pas dans le chiffre. Mesuré le
+# 2026-08-31 sur HEAD `6f0a5ad`, arbre PROPRE : la population regardée tolérait 10,44 % de perte pour 5 %
+# affichés — PLUS DU DOUBLE de ce qu'elle affirmait tolérer (plancher 1 845 pour un relevé de 2 060, dérivé
+# 1 957) ; le corpus 7,17 % (32 803 575 pour 35 335 969, dérivé 33 569 170) ; les clés vivantes 5,10 %
+# (1 507 pour 1 588, dérivé 1 508). Un lecteur qui croyait la recette croyait une tolérance deux fois plus
+# étroite que celle qui était tenue.
+# ET IL FAUT LIRE CE « DOUBLE » AVEC CE QUI SUIT, SANS QUOI IL FAIT CROIRE À UN TROU QUI N'EXISTAIT PAS.
+# Le facteur 2,09 est vrai DE LA CONSTANTE ; il est FAUX DE LA GARDE, et c'est la mesure qui le dit, pas la
+# prudence. Trois mutations calibrées le 2026-08-31 pour tomber DANS le retard — dans un `git archive HEAD`,
+# des puits neutralisés sans qu'un octet de texte quitte l'arbre : `cases.js` (population 1 955),
+# `dashboards.js`+`risk.js` (1 945), `help.js` (1 887), toutes AU-DESSUS de l'ancien plancher de 1 845 :
+# l'ANCIENNE garde a refusé de conclure les TROIS FOIS. Jamais sur la population — celle-là se taisait bien —
+# mais sur `MIN_CLES_VIVANTES` (1 502 puis 1 499 pour un plancher de 1 507) et sur `PLAFOND_INDECIDABLES`.
+# LA RAISON EST STRUCTURELLE, ET ELLE VAUT POUR TOUTE FAMILLE DE PLANCHERS : ces trois grandeurs NE SONT PAS
+# INDÉPENDANTES. Perdre 105 chaînes affichées a coûté 86 clés vivantes ; le plancher le plus LÂCHE était
+# masqué par le plus SERRÉ, qui n'avait qu'une unité de retard. Ce que ce resserrage achète n'est donc PAS
+# un rattrapage mesurable sur cet axe — aucune mutation n'a été trouvée où l'ancienne garde rendait vert et
+# la neuve refuse. Il achète que le fichier dise vrai, et que le retard ne puisse plus se rouvrir en
+# silence. Un lot qui prétendrait avoir fermé un angle mort ici mentirait ; celui-ci ferme un ÉCART ENTRE
+# UNE PHRASE ET UNE VALEUR, ce qui est un autre défaut et se paie quand même.
+# LE GESTE N'EST PAS D'AMENDER LA PHRASE POUR QU'ELLE DISE 10 %. Ce serait ratifier une dérive que personne
+# n'a décidée, et il faudrait la ré-amender à chaque fois que l'arbre grossit : la recette deviendrait « ce
+# que le retard vaut aujourd'hui », c'est-à-dire rien. C'est la VALEUR qui suit la recette, et c'est le CODE
+# qui l'applique. Seul le RELEVÉ reste écrit à la main — avec sa date ET le commit d'où il sort. L'écart
+# entre la recette et la constante n'est plus une question de discipline : il est devenu IMPOSSIBLE à écrire.
+# CE QUE CETTE DÉRIVATION NE FERME PAS, ET IL FAUT LE DIRE : le RELEVÉ, lui, peut encore prendre du retard
+# quand l'arbre grossit. C'est la ligne « MARGE DES PLANCHERS » du verdict qui le publie à chaque exécution,
+# et elle ne rougit pas — délibérément (voir sa propre note). Ce lot ferme l'arithmétique, pas l'oubli.
+# LA DOCTRINE, TRANCHÉE ICI PARCE QUE CE FICHIER EN PORTAIT DEUX MOITIÉS QU'ON POUVAIT LIRE COMME
+# CONTRAIRES : à côté de `MIN_CORPUS` il était écrit que le plancher SUIT le relevé, à côté de
+# `MIN_POPULATION` qu'il NE BOUGE PAS. Les deux disent la même règle dès que la DIRECTION est nommée, et
+# c'est la direction qui manquait : LE PLANCHER MONTE AVEC UN RELEVÉ ATTRIBUABLE — un arbre commité, daté,
+# nommé — ET NE DESCEND JAMAIS POUR SUIVRE UNE MESURE PLUS BASSE. Ce qui reste interdit, et que ce fichier
+# ne fera pas : dériver un plancher du corpus COURANT à l'exécution. Il suivrait exactement la baisse qu'il
+# a pour tâche de refuser — un cliquet qui descend tout seul, c'est-à-dire l'inverse d'un cliquet.
+# `MIN_CLES` n'est PAS de cette famille et n'a pas à suivre la recette : il ne garde que la LECTURE du
+# lexique, il est bas EXPRÈS, et sa note le dit à côté de lui. Trois planchers suivent la recette, un
+# quatrième s'en exempte avec sa raison écrite ; il n'y en a pas d'autre.
+
+
+def plancher_depuis_releve(releve: int) -> int:
+    """Le relevé moins un vingtième, en ENTIER EXACT (`* 19 // 20`), jamais un flottant.
+
+    C'EST LA TRONCATURE QUI EST LA BONNE VALEUR, PAS L'ARRONDI À 5,00 %. Mesuré le 2026-08-30 en livrant
+    le témoin de `P8.27-g` : comparé à un seuil de 5,00 % en flottant, un plancher posé EXACTEMENT selon
+    cette recette se faisait accuser — `1588 * 19 // 20` vaut 1 508, et 1 588 - 1 508 fait 5,04 %, au-dessus
+    de 5,00 par la seule troncature entière. Un témoin qui accuse un geste juste est un témoin qui ment.
+    La ligne « MARGE DES PLANCHERS » du verdict appelle donc cette MÊME fonction : la valeur gardée et la
+    valeur publiée ne peuvent plus diverger, puisqu'elles sortent du même calcul."""
+    return (releve * 19) // 20
+
 
 # Plancher de population sur l'arbre réel : en dessous, c'est l'extraction qui est cassée.
 # DÉRIVÉ DU RELEVÉ, PAS CHOISI. Relevé le 2026-08-23 : 1 926 chaînes statiques affichées REGARDÉES, tous
@@ -269,10 +323,20 @@ LEXIQUE = os.path.join(WEB, "i18n.js")
 #   2. CE QUI EST UNE PROPRIÉTÉ DE L'INSTRUMENT, C'EST L'ÉCART, et il est INVARIANT PAR L'ARBRE : +11 sur
 #      `web/` de HEAD (1 922 -> 1 933) comme sur `web/` de travail (1 946 -> 1 957). C'est l'écart qui vaut
 #      +11 et non +15, et c'est lui seul que ce commentaire avait le droit d'affirmer.
-# Le plancher, lui, ne bouge pas : il est dérivé du relevé ATTRIBUABLE (1 943), pas de celui du jour, et
-# aucune des mesures ci-dessus ne s'en approche. Un plancher ne DESCEND jamais pour suivre une mesure plus
-# basse — il ne garderait plus rien.
-MIN_POPULATION = 1845
+# CETTE LIGNE DISAIT « le plancher, lui, ne bouge pas », ET C'ÉTAIT UNE MOITIÉ DE RÈGLE QUI A COÛTÉ CINQ
+# JOURS DE RETARD (`P11.8-k`, amendée le 2026-08-31). Ce qu'elle voulait dire est vrai et reste écrit : un
+# plancher ne DESCEND jamais pour suivre une mesure plus basse — il ne garderait plus rien. Ce qu'elle
+# laissait croire est faux : il MONTE avec un relevé ATTRIBUABLE, sans quoi la propriété qu'il affirme
+# devient fausse en silence. Ancré sur le relevé de 1 943 du 2026-08-26, il a laissé l'extraction perdre
+# 10,44 % de sa portée en en annonçant 5.
+# 2026-08-31 (`P11.8-k`) : relevé 2 060 sur HEAD `6f0a5ad`, arbre PROPRE — `git status --porcelain` vide,
+# aucun fichier de l'arbre touché depuis 30 min, empreinte `git ls-files -s` identique à trois relevés
+# espacés. LA RAISON POUR LAQUELLE LE RESSERRAGE N'AVAIT PAS ÉTÉ FAIT LA VEILLE A CESSÉ D'EXISTER, ET C'EST
+# MESURÉ, PAS SUPPOSÉ : la valeur aurait alors été dérivée d'un arbre portant du travail NON COMMITÉ, ce
+# qui aurait fait d'elle un rouge faux. Elle est aujourd'hui attribuable à un commit qu'on peut citer.
+# Le plancher n'est plus écrit : il est DÉRIVÉ du relevé par la recette de ce fichier.
+RELEVE_POPULATION = 2060      # 2026-08-31, HEAD `6f0a5ad`, arbre propre (avant : 1 943 le 2026-08-26)
+MIN_POPULATION = plancher_depuis_releve(RELEVE_POPULATION)   # 1 957 — marge mesurée : 103 chaînes affichées
 # Une clé dont on SAIT qu'elle est affichée par `web/index.html` (bouton d'exécution de la barre).
 CLE_TEMOIN = "Exécuter"
 # Plancher de clés du lexique : relevé le 2026-08-22, 223 clés avant complément, 1 594 après ; 1 719 au
@@ -505,18 +569,39 @@ RE_CORPS_DE_MOT = re.compile(r"[0-9A-Za-zÀ-ÖØ-öø-ÿ]")
 
 # PLANCHERS DE LA SONDE D'EXCÈS. Une sonde d'orphelines validée sur un corpus VIDE accuse TOUTES les clés et
 # se croit juste — c'est la faute que ce dépôt a déjà commise (garde à corpus `git ls-files` validée sur un
-# fichier non suivi). Les deux planchers sont dérivés du relevé du 2026-08-29 moins un vingtième, exactement
-# comme MIN_POPULATION : une sonde qui perdrait plus de 5 % de son corpus, ou de ses clés vivantes, refuse de
-# conclure au lieu d'accuser.
-MIN_CORPUS = 32803575        # relevé 2026-08-29 sur l'ARBRE DE CE DÉPÔT (banc : le corpus dérivé que
-                             # cette garde construit elle-même — sources suivies, pas une installation).
-                             # RELEVÉ À NOUVEAU le même jour, 31 992 507 -> 34 530 079, à l'ajout de la copie
-                             # aux ENTITÉS RÉSOLUES : le plancher SUIT le relevé, sinon la propriété qu'il
+# fichier non suivi). Les deux planchers suivent la MÊME recette que `MIN_POPULATION`, et depuis le
+# 2026-08-31 ils la suivent PAR LE CODE et non plus à la main : une sonde qui perdrait plus de 5 % de son
+# corpus, ou de ses clés vivantes, refuse de conclure au lieu d'accuser.
+# LES DEUX ÉTAIENT EN RETARD, ET LE PREMIER LE DISAIT DÉJÀ SANS SE L'APPLIQUER : la note ci-dessous nommait
+# « un cliquet qui se desserre tout seul » et c'est exactement ce qui lui est arrivé — 7,17 % tolérés pour
+# 5 % affirmés au 2026-08-31 — un retard de plusieurs centaines de milliers d'octets sur le corpus de CE
+# DÉPÔT, mesuré dans un clone ordinaire de la tête, jamais sur une donnée d'exploitation. Nommer un défaut
+# à côté de la valeur qui le porte ne
+# l'empêche pas ; seule la dérivation l'empêche.
+# LE RELEVÉ DU CORPUS SE PREND DANS UN CLONE ORDINAIRE, PAS DANS UN ARBRE DE TRAVAIL LIÉ, ET L'ÉCART EST
+# MESURÉ : `REPERTOIRES_HORS_CORPUS` ne retire que des RÉPERTOIRES, or `git worktree` pose à la racine un
+# `.git` qui est un FICHIER de 83 octets. Joué le 2026-08-31 depuis un arbre lié, le corpus rend 35 336 055
+# au lieu de 35 335 969 : +86 (les 83 octets du pointeur, plus les 3 du séparateur). C'est sans effet sur le
+# verdict — la marge du plancher se compte en millions d'octets — mais un relevé pris là serait ancré sur la
+# LONGUEUR DU CHEMIN de l'arbre lié, ce qui n'est une propriété ni du dépôt ni de l'instrument.
+RELEVE_CORPUS = 35335969     # 2026-08-31, HEAD `6f0a5ad`, clone ordinaire (banc : le corpus dérivé que
+                             # cette garde construit elle-même — sources suivies, pas une installation ;
+                             # `stat1.db`, ignoré et non décodable en UTF-8, n'y entre pas).
+                             # Historique : 31 992 507 puis 34 530 079 le 2026-08-29, à l'ajout de la copie
+                             # aux ENTITÉS RÉSOLUES — le plancher SUIT le relevé, sinon la propriété qu'il
                              # affirme (« perdre plus de 5 % du corpus fait refuser de conclure ») devient
-                             # fausse en silence — laissé à l'ancienne valeur, il aurait toléré 12 % de perte.
-                             # Un plancher qu'on oublie de remonter après avoir élargi ce qu'on lit est un
-                             # cliquet qui se desserre tout seul.
-MIN_CLES_VIVANTES = 1507     # relevé 2026-08-29 : 1 586 clés vues comme chaîne affichée dans un puits reconnu
+                             # fausse en silence ; laissé à l'ancienne valeur, il aurait toléré 12 % de perte.
+# ET LE RELEVÉ SE PREND SUR UN ARBRE PROPRE, CE QUI N'EST PAS UNE PRÉCAUTION MAIS UNE MESURE : le
+# 2026-08-31, entre deux exécutions espacées de quatre minutes, le corpus est passé de 35 335 969 à
+# 35 340 986 — un AUTRE lot venait d'écrire `daemon/src/tests/un_ancrage_qui_ment.rs`, encore NON SUIVI, et
+# de modifier `daemon/src/tests/mod.rs`. Ancrer là aurait posé une constante sur 5 017 octets que personne
+# ne peut retrouver depuis un commit. Le sens de l'erreur est le seul point rassurant, et il vaut d'être
+# écrit : un ajout concurrent ne peut que GROSSIR la mesure, donc un plancher pris sur l'arbre PROPRE reste
+# franchi en intégration — l'inverse (ancrer sur un arbre sale) ne l'est pas.
+MIN_CORPUS = plancher_depuis_releve(RELEVE_CORPUS)          # 33 569 170 — marge : 1 766 799 octets
+RELEVE_CLES_VIVANTES = 1588  # 2026-08-31, HEAD `6f0a5ad` : 1 588 clés vues comme chaîne affichée dans un
+                             # puits reconnu (1 586 au 2026-08-29).
+MIN_CLES_VIVANTES = plancher_depuis_releve(RELEVE_CLES_VIVANTES)   # 1 508 — marge : 80 clés
 
 # CLIQUET DES ORPHELINES PROUVÉES — À ZÉRO depuis le 2026-08-29 : les DIX-HUIT que le lot précédent avait
 # laissées (il ne touchait qu'à la clé de `P11.20-e`, `web/` étant alors en écriture concurrente) sont
@@ -2150,11 +2235,16 @@ def main(argv: list[str]) -> int:
     # `1588 * 19 // 20` vaut 1508, et 1588 - 1508 fait 5,04 % — au-dessus de 5,00 par la seule troncature.
     # Mesuré en jouant le témoin sur une copie dont les trois planchers étaient posés au dérivé du jour :
     # deux redevenaient muets, le troisième restait accusé. Le seuil est donc le DÉRIVÉ lui-même, en entier
-    # exact (`* 19 // 20`, jamais un flottant), et l'écart est publié en UNITÉS, pas en points de pourcentage.
+    # exact, et l'écart est publié en UNITÉS, pas en points de pourcentage.
+    # 2026-08-31 (`P11.8-k`) : ce témoin RECOPIAIT la recette au lieu de l'appeler. Il ne pouvait donc pas
+    # accuser le défaut qui comptait — deux écritures d'une même règle dérivent l'une de l'autre sans bruit —
+    # et il aurait pu à l'inverse innocenter un plancher faux si la copie s'était trompée pareil. Il appelle
+    # désormais `plancher_depuis_releve`, la MÊME fonction qui pose les trois planchers : la valeur gardée et
+    # la valeur publiée sortent du même calcul, et ne peuvent plus diverger.
     print("MARGE DES PLANCHERS — ce que chacun tolère aujourd'hui, contre le plancher que la recette de ce "
           "fichier (relevé du jour moins un vingtième) donnerait maintenant :")
     for nom, plancher, releve in planchers:
-        derive = (releve * 19) // 20
+        derive = plancher_depuis_releve(releve)
         perte = 100.0 * (releve - plancher) / releve if releve else 0.0
         retard = f" — EN RETARD de {derive - plancher} sur son relevé" if plancher < derive else ""
         print(f"    {nom} : plancher {plancher}, relevé du jour {releve}, dérivé du jour {derive} — "

@@ -731,14 +731,29 @@
     /// rend parfaitement. Ce qu'il n'est pas, c'est une signature valide — donc `sig_ko`, un verdict, et
     /// pas un refus de conclure. Un correctif qui aurait lu ces colonnes en `String` aurait transformé
     /// une ligne LISIBLE en refus, c'est-à-dire troqué un verdict trop optimiste contre un mutisme.
+    ///
+    /// CE TÉMOIN A ÉTÉ RESSERRÉ LE 2026-08-31 PAR `P10.7-u`, ET LA RAISON EST ÉCRITE PLUTÔT QUE TUE. Sa
+    /// loi — « `Err` est réservé à ce que la LECTURE ne rend pas » — est INTACTE, et c'est elle qu'il
+    /// garde. Mais sa fixture posait les TROIS colonnes à NULL, mêlant à cette loi-là une seconde,
+    /// orthogonale, écrite depuis : une attestation doit se RATTACHER à la chaîne qu'elle ancre, et un
+    /// `ledger_hash` NULL ne nomme AUCUN état de cette chaîne. Le `ledger_hash` est donc désormais
+    /// CONCORDANT (la vraie tête) ; les deux colonnes de SIGNATURE restent NULL, ce que ce témoin
+    /// affirme dans son propre nom, et son verdict `(0, 1)` est inchangé. Le cas de l'attestation vide
+    /// est gardé à côté, par `une_attestation_vide_est_refusee_et_une_signature_absente_reste_un_verdict`.
     #[test]
     fn un_checkpoint_sans_signature_est_lu_et_compte_ko_jamais_un_refus() {
         let conn = un_journal_vierge();
         ledger_append(&conn, "config.mode", "maillon 0");
-        conn.execute("INSERT INTO checkpoint(ts,ledger_hash,sig,pubkey) VALUES(?1,NULL,NULL,NULL)", params![now()])
-            .expect("checkpoint sans contenu inséré");
+        let tete: String = conn
+            .query_row("SELECT hash FROM ledger ORDER BY id DESC LIMIT 1", [], |r| r.get(0))
+            .expect("tête lisible");
+        conn.execute(
+            "INSERT INTO checkpoint(ts,ledger_hash,sig,pubkey) VALUES(?1,?2,NULL,NULL)",
+            params![now(), tete],
+        )
+        .expect("checkpoint sans signature inséré");
 
-        let (n, sig_ok, sig_ko, rupture) = verify_ledger_conn(&conn, None).expect("un NULL se LIT : aucun refus");
+        let (n, sig_ok, sig_ko, rupture) = verify_ledger_conn(&conn, None).expect("un NULL de SIGNATURE se LIT : aucun refus");
         assert_eq!(n, 1, "la chaîne reste lue entièrement");
         assert_eq!((sig_ok, sig_ko), (0, 1), "un checkpoint sans signature est COMPTÉ KO, pas escamoté ni refusé");
         assert!(rupture.is_none(), "et il ne rompt pas la chaîne des maillons : {rupture:?}");

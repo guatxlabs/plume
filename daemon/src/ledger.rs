@@ -1,6 +1,7 @@
 //! Intégrité + IP protégées. Ledger append-only à chaîne de hash tamper-evident (`ledger_append`),
 //! double-audit fail-closed des mutations de config/source (`audit_config_change`/`audit_source_change`),
-//! checkpoints signés Ed25519 (`ledger_key`/`sign_checkpoint`/`verify_run`), et denylist d'IP protégées
+//! checkpoints signés Ed25519 (`ledger_key`/`sign_checkpoint`/`verify_run`, la concordance de ce qu'ils
+//! attestent avec la chaîne qu'ils ancrent : `attestation_discordante`), et denylist d'IP protégées
 //! (`PROTECTED_IP_MATCHERS`/`protected_ip_matchers`/`ip_is_protected` : loopback/RFC1918/opérateur ->
 //! jamais bannies). Extrait de main.rs (refactor split #25 — byte-identique).
 use crate::*;
@@ -287,6 +288,109 @@ pub(crate) fn ledger_key_load(path: &str, allow_generate: bool) -> Option<ed2551
         }
     }
 }
+/// `P10.7-u` — LA VALEUR QU'ATTESTE UN POINT DE CONTRÔLE POSÉ SUR UN JOURNAL VIERGE. Elle est
+/// HISTORIQUE et délibérément conservée (la changer ferait diverger les points de contrôle d'origine
+/// anciens et neufs sans rien gagner) ; elle est nommée ici parce qu'elle est désormais lue par DEUX
+/// sites — celui qui l'écrit et celui qui la reconnaît — et qu'un littéral recopié dans le second se
+/// serait tu le jour où le premier aurait changé.
+pub(crate) const ATTESTATION_ORIGINE: &str = "genesis";
+
+/// Ce qu'on IMPRIME d'une attestation qu'on refuse. Un `ledger_hash` légitime est un sha256 de 64
+/// caractères — publié tel quel dans l'export inaltérable, donc sans secret. Mais une attestation
+/// DISCORDANTE est, par définition, une valeur que le produit n'a pas écrite : elle peut être de
+/// n'importe quelle longueur et de n'importe quel contenu. On la borne donc avant de la rendre à un
+/// flux, et on nomme le vide plutôt que d'imprimer rien du tout.
+fn apercu_d_attestation(v: &str) -> String {
+    if v.is_empty() {
+        return "attestation VIDE".to_string();
+    }
+    let court: String = v.chars().take(16).collect();
+    if v.chars().count() > 16 { format!("« {court}… »") } else { format!("« {court} »") }
+}
+
+/// `P10.7-u` — LE POINT DE CONTRÔLE CONCORDE-T-IL AVEC LA CHAÎNE QU'IL ANCRE ? Cœur PUR (aucune base,
+/// aucun env, aucune horloge lue : les deux horodatages sont des DONNÉES, prises en argument).
+///
+/// LA QUESTION QUI DÉCIDE VIENT AVANT LE CODE, ET SA RÉPONSE EST LUE DANS `sign_checkpoint_result`,
+/// PAS SUPPOSÉE : un point de contrôle atteste LA TÊTE DE LA CHAÎNE À L'INSTANT OÙ IL A ÉTÉ ÉCRIT —
+/// le `hash` du dernier maillon d'alors, ou `ATTESTATION_ORIGINE` quand le journal était VIERGE.
+/// MESURÉ le 2026-08-31 (trois maillons, un point de contrôle après chacun) : les trois attestations
+/// occupent les positions 0, 1 et 2 de la chaîne. Ce n'est donc PAS la tête ACTUELLE.
+///
+/// D'OÙ LA MESURE QUI A CONDAMNÉ LA COMPARAISON NAÏVE, et elle est la raison d'être de cette fonction :
+/// comparer `checkpoint.ledger_hash` à la tête COURANTE accuse **2 points de contrôle légitimes sur 3**
+/// sur un journal parfaitement sain (mesuré le 2026-08-31 sur le vrai chemin d'écriture). Une fausse
+/// accusation portée par un instrument d'intégrité est pire que l'angle mort qu'elle comble. La
+/// vérification est donc un RATTACHEMENT à la chaîne, jamais une égalité.
+///
+/// LES DEUX SEULES LOIS QUE LE SCHÉMA PERMET DE TENIR SANS FAUSSE ACCUSATION :
+///  1. RATTACHEMENT — l'attestation est `ATTESTATION_ORIGINE`, ou le `hash` d'un maillon de ce journal.
+///     Rien d'autre n'a jamais été une tête de cette chaîne. Ferme le cas MESURÉ d'une valeur FABRIQUÉE
+///     et correctement signée (`Ok((3, 1, 0, None))` avant ce lot), et le cas d'une attestation VIDE.
+///  2. ORIGINE DATÉE — `ATTESTATION_ORIGINE` ne concorde que si la chaîne était encore VIDE à cet
+///     instant. Le seul témoin de cet instant que le schéma porte est `checkpoint.ts` : un maillon
+///     STRICTEMENT antérieur au point de contrôle prouve que la chaîne n'était pas vide. C'est CETTE
+///     loi qui rattrape RÉTROACTIVEMENT ce qu'une base ayant connu `P10.7-t` porte DÉJÀ — un point de
+///     contrôle attestant l'origine, écrit pendant une panne de lecture, resté en base après sa
+///     résorption, et compté VALIDE jusqu'ici.
+///
+/// L'INÉGALITÉ EST STRICTE, ET C'EST CE QUI TIENT LA SECONDE LOI : `now()` est en SECONDES. Un point de
+/// contrôle d'origine et le tout premier maillon peuvent parfaitement tomber dans la MÊME seconde
+/// (base neuve : le tick d'ancrage et la première mutation de config). `<=` accuserait ce journal-là.
+/// Et `sign_checkpoint_result` prélève désormais son horodatage AVANT d'observer la chaîne vide, si
+/// bien qu'un maillon écrit ensuite ne peut pas porter un `ts` strictement plus petit.
+///
+/// UNE TROISIÈME LOI A ÉTÉ ÉCRITE PUIS RETIRÉE, ET C'EST UNE MESURE QUI L'A TRANCHÉE : « les positions
+/// attestées ne décroissent jamais avec l'ordre d'écriture ». Elle est vraie tant qu'UN SEUL signataire
+/// écrit — mais les deux voies de production (`rollups::retention_run` horaire et `server` au boot)
+/// signent depuis des connexions distinctes. Deux signataires qui se chevauchent peuvent LIRE dans un
+/// ordre et INSÉRER dans l'autre : la loi accuserait alors deux points de contrôle parfaitement
+/// légitimes. Une loi qui dépend d'un entrelacement n'est pas une loi ; elle est REFUSÉE, et ce qu'elle
+/// aurait attrapé (un ancrage RÉGRESSÉ sur une tête plus ancienne, la chaîne restant intacte) est écrit
+/// dans le rapport plutôt que gardé par un instrument qui crierait à tort.
+///
+/// CE QU'ELLE NE PROUVE PAS, écrit pour être opposable : le rattachement dit que l'attestation A ÉTÉ une
+/// tête de cette chaîne, pas qu'elle était LA tête à cette seconde-là. La distinction stricte n'est PAS
+/// décidable — `ts` est en secondes, plusieurs maillons tiennent dans une seconde, et rien dans le
+/// schéma ne relie un point de contrôle à un `ledger.id`. La tenir demanderait une colonne, donc une
+/// MIGRATION : porte à sens unique, non franchie.
+///
+/// `maillons` : `(ts, hash)` dans l'ORDRE DE LA CHAÎNE. `points` : `(ts, ledger_hash)` dans l'ordre
+/// d'écriture. Rend `Some(raison)` à la PREMIÈRE discordance, `None` si tout se rattache.
+pub(crate) fn attestation_discordante(maillons: &[(i64, String)], points: &[(i64, String)]) -> Option<String> {
+    use std::collections::HashSet;
+    let connus: HashSet<&str> = maillons.iter().map(|(_, h)| h.as_str()).collect();
+    // Le maillon le plus ANCIEN par l'horodatage, pas le premier de la chaîne : les deux coïncident sur
+    // un journal sain, et prendre le minimum ne peut que RÉDUIRE l'accusation si l'horloge a reculé.
+    let plus_ancien = maillons.iter().map(|(ts, _)| *ts).min();
+    for (rang, (ts, atteste)) in points.iter().enumerate() {
+        if atteste == ATTESTATION_ORIGINE {
+            if let Some(t0) = plus_ancien {
+                if t0 < *ts {
+                    return Some(format!(
+                        "point de contrôle #{} atteste l'ORIGINE d'une chaîne VIDE alors que ce journal portait \
+                         déjà un maillon {} seconde(s) plus tôt — l'attestation ne concorde avec AUCUN état de \
+                         cette chaîne : AUCUN verdict n'est rendu sur une attestation qu'on ne peut pas rattacher",
+                        rang + 1,
+                        ts - t0
+                    ));
+                }
+            }
+            continue;
+        }
+        if !connus.contains(atteste.as_str()) {
+            return Some(format!(
+                "point de contrôle #{} atteste une tête ({}) qui n'est le `hash` d'AUCUNE entrée de ce journal — \
+                 l'attestation ne concorde pas avec la chaîne qu'elle ancre : AUCUN verdict n'est rendu sur une \
+                 attestation qu'on ne peut pas rattacher",
+                rang + 1,
+                apercu_d_attestation(atteste)
+            ));
+        }
+    }
+    None
+}
+
 /// Signe la tête de chaîne du ledger -> checkpoint vérifiable avec la clé publique.
 ///
 /// `P10.7-t` — ON NE SIGNE PAS CE QU'ON N'A PAS PU LIRE. Jusqu'au 2026-08-31 la lecture de la tête portait
@@ -323,17 +427,26 @@ pub(crate) fn ledger_key_load(path: &str, allow_generate: bool) -> Option<ed2551
 /// n'est réécrit ni invalidé.
 pub(crate) fn sign_checkpoint_result(conn: &Connection, key: &ed25519_dalek::SigningKey) -> Result<(), String> {
     use ed25519_dalek::Signer;
+    // `P10.7-u` — L'HORODATAGE EST PRÉLEVÉ AVANT LA LECTURE DE LA TÊTE, ET CE N'EST PAS UN DÉTAIL DE
+    // STYLE : c'est ce qui rend VÉRIFIABLE, sans fausse accusation, l'attestation d'ORIGINE. Un point de
+    // contrôle qui atteste `genesis` ne concorde que si la chaîne était VIDE à cet instant ; le seul
+    // témoin de cet instant que le schéma porte est `checkpoint.ts`. En le prélevant AVANT d'observer la
+    // chaîne vide, on garantit que TOUT maillon écrit ensuite portera un `ts` >= celui-ci — donc que le
+    // contrôle de concordance (`attestation_discordante`, comparaison STRICTE) ne peut pas accuser un
+    // point de contrôle d'origine légitime, même si l'écriture attend une seconde sur un verrou.
+    // Il ne change ni le schéma, ni la préimage signée (la signature porte la TÊTE, jamais l'horodatage).
+    let ts = now();
     // `ledger_prev_hash` DISCRIMINE SUR L'ERREUR (cf. sa note) : `Ok("")` = journal vierge = origine
     // légitime ; `Err` = on ne sait pas à quoi la signature s'appliquerait -> on ne signe pas.
     let head = match ledger_prev_hash(conn) {
-        Ok(h) if h.is_empty() => "genesis".to_string(), // journal vierge : l'origine, valeur historique
+        Ok(h) if h.is_empty() => ATTESTATION_ORIGINE.to_string(), // journal vierge : l'origine, valeur historique
         Ok(h) => h,
         Err(e) => return Err(format!("tête de chaîne ILLISIBLE ({e})")),
     };
     let sig = key.sign(head.as_bytes());
     conn.execute(
         "INSERT INTO checkpoint(ts,ledger_hash,sig,pubkey) VALUES(?1,?2,?3,?4)",
-        params![now(), head, hex_encode(&sig.to_bytes()), hex_encode(key.verifying_key().as_bytes())],
+        params![ts, head, hex_encode(&sig.to_bytes()), hex_encode(key.verifying_key().as_bytes())],
     )
     // L'INSERT était `let _ =` : un point de contrôle qui ne s'écrit PAS se lisait comme un point de
     // contrôle écrit. Le même mot manquant, sur l'autre moitié du geste.
@@ -362,7 +475,12 @@ pub(crate) fn sign_checkpoint(conn: &Connection, key: &ed25519_dalek::SigningKey
 /// intègre · `1` = rupture NOMMÉE (ou, PIN escrow posé, un checkpoint non signé par la clé épinglée) ·
 /// `2` = REFUS DE CONCLURE. Ce lot n'INVENTE aucun code : il ÉLARGIT ce qui atteint le `2` — une ligne
 /// que la lecture ne sait pas rendre y arrive maintenant, au lieu de quitter le scan en silence et de
-/// produire un `0`. C'EST LE SEUL ACHEMINEMENT JUSTE : confondre ce cas avec le `1` ferait croire à une
+/// produire un `0`. `P10.7-u` ÉLARGIT LE MÊME `2`, ET POUR LA MÊME RAISON : un point de contrôle dont
+/// l'attestation ne se RATTACHE à aucun état de la chaîne y arrive aussi. Le `1` lui est refusé — son
+/// unique vocabulaire nomme un `id` de MAILLON, et y router un point de contrôle ferait accuser une
+/// entrée de journal intacte ; le compteur `sig_ko` lui est refusé aussi — sans clé épinglée il
+/// n'entraîne aucun durcissement, donc « ledger OK » et une sortie 0 : c'est-à-dire RENDRE VÉRIFIÉ sur
+/// une concordance qu'on n'a pas pu établir, le défaut d'origine exactement. C'EST LE SEUL ACHEMINEMENT JUSTE : confondre ce cas avec le `1` ferait croire à une
 /// COMPROMISSION là où il n'y a qu'une lecture impossible ; le confondre avec le `0` EST le défaut
 /// d'origine. Le voisin `verify-control` a choisi le même `2` le même jour, indépendamment.
 ///
@@ -391,8 +509,17 @@ pub(crate) fn verify_run() {
         },
         Err(e) => {
             // AUCUN VERDICT — clé manquante/incorrecte, base illisible, maillon ou checkpoint qu'on ne sait
-            // pas lire. Jamais un panic, et jamais confondu avec « intègre » (0) ni avec « rompu » (1).
-            println!("VERDICT IMPOSSIBLE : {e} — aucun verdict n'est rendu sur une chaîne partiellement lue");
+            // pas lire, et depuis `P10.7-u` une attestation qu'on ne sait pas RATTACHER à la chaîne.
+            // Jamais un panic, et jamais confondu avec « intègre » (0) ni avec « rompu » (1).
+            // LA QUEUE FIXE « … sur une chaîne partiellement lue » A ÉTÉ GÉNÉRALISÉE, ET C'EST UN CORRECTIF
+            // DE PHRASE FAUSSE : elle décrivait UNE des causes du refus comme si c'était la seule, et elle
+            // était déjà fausse pour l'ouverture impossible (rien n'a été lu du tout) autant que pour une
+            // attestation qu'on ne sait pas rattacher (tout a été lu). Elle n'est pas SUPPRIMÉE — un
+            // exploitant a besoin de la phrase qui dit « ceci n'est pas un verdict » — mais ramenée à ce
+            // qui est VRAI des quatre causes. Aucun manifeste, unité, sonde ni script ne lit ce flux
+            // (revérifié le 2026-08-31 : la seule ligne d'aide qui énonce des codes est celle de
+            // `verify-control`, et elle est inchangée).
+            println!("VERDICT IMPOSSIBLE : {e} — aucun verdict n'est rendu sur ce que la vérification n'a pas pu établir");
             std::process::exit(2);
         }
     }
@@ -473,6 +600,15 @@ pub(crate) fn parse_ed25519_pubkey(s: &str) -> Option<[u8; 32]> {
 ///
 /// LE MODÈLE EST `control_ledger_verify_conn` (`rbac.rs`), écrit le même jour EN CHERCHANT CE QU'IL NE
 /// FALLAIT PAS TRANSPOSER D'ICI. Le voisin est arrivé juste : c'est celui-ci qui rattrape son retard.
+///
+/// `P10.7-u` — ET IL RESTAIT UNE MOITIÉ, MESURÉE LE 2026-08-31 : cette fonction contrôlait la SIGNATURE
+/// d'un point de contrôle, jamais la CONCORDANCE entre ce qu'il ATTESTE et la chaîne qu'il ancre. Un
+/// point de contrôle attestant `genesis` — ou une valeur entièrement FABRIQUÉE — sur un journal de trois
+/// maillons, CORRECTEMENT SIGNÉ, rendait `Ok((3, 1, 0, None))` : une signature COMPTÉE VALIDE, donc
+/// « ledger OK … OK=1 KO=0 » et une sortie 0. La signature prêtait son autorité à une valeur arbitraire.
+/// La loi est dans `attestation_discordante` (cœur PUR), sa mesure et ses deux frontières avec elle ;
+/// ici on ne décide que de son ACHEMINEMENT — la troisième sortie, et seulement quand la chaîne est
+/// intègre, pour qu'une rupture NOMMÉE ne puisse jamais devenir un refus de conclure.
 pub(crate) fn verify_ledger_conn(conn: &Connection, pinned: Option<&[u8; 32]>) -> Result<(usize, i64, i64, Option<i64>), String> {
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
     let mut stmt = conn.prepare("SELECT id,ts,kind,detail,prev_hash,hash FROM ledger ORDER BY id")
@@ -500,7 +636,12 @@ pub(crate) fn verify_ledger_conn(conn: &Connection, pinned: Option<&[u8; 32]>) -
         }
         prev = hash.clone();
     }
-    let mut cs = conn.prepare("SELECT ledger_hash,sig,pubkey FROM checkpoint ORDER BY id")
+    // `P10.7-u` — `ts` REJOINT LA LECTURE, et c'est la seule colonne ajoutée : sans elle, l'attestation
+    // d'ORIGINE n'est comparable à RIEN (cf. `attestation_discordante`, loi 2). Elle est `INTEGER NOT
+    // NULL` au schéma et les deux seuls écrivains y passent un entier -> aucune valeur que le produit
+    // puisse poser ne fait échouer cette conversion, et une valeur qui la ferait échouer est une ligne
+    // ILLISIBLE au sens exact des deux ancrages voisins.
+    let mut cs = conn.prepare("SELECT ts,ledger_hash,sig,pubkey FROM checkpoint ORDER BY id")
         .map_err(|e| format!("lecture checkpoints: {e}"))?;
     let signatures = cs
         // Les TROIS colonnes de contenu sont nullables au schéma (`checkpoint(ledger_hash TEXT, sig TEXT,
@@ -508,23 +649,48 @@ pub(crate) fn verify_ledger_conn(conn: &Connection, pinned: Option<&[u8; 32]>) -
         // valeur que la lecture ne sait pas rendre (blob) reste une ligne ILLISIBLE.
         .query_map([], |r| {
             Ok((
-                r.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                r.get::<_, i64>(0)?,
                 r.get::<_, Option<String>>(1)?.unwrap_or_default(),
                 r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                r.get::<_, Option<String>>(3)?.unwrap_or_default(),
             ))
         })
         .map_err(|e| format!("scan checkpoints: {e}"))?;
     // `P10.7-q` — MÊME LOI QUE POUR LES MAILLONS, et ici elle vaut aussi comme correctif de SÉCURITÉ : un
     // checkpoint tombé du scan disparaissait des DEUX compteurs, donc de la condition de durcissement du PIN.
-    let mut cps: Vec<(String, String, String)> = Vec::new();
+    let mut cps: Vec<(i64, String, String, String)> = Vec::new();
     for (rang, signature) in signatures.enumerate() {
         let signature = signature.map_err(|e| {
             format!("checkpoint #{} ILLISIBLE ({e}) — les signatures n'ont pas pu être comptées entièrement : AUCUN verdict", rang + 1)
         })?;
         cps.push(signature);
     }
+    // `P10.7-u` — LA CONCORDANCE, ET ELLE EST CONTRÔLÉE ICI PARCE QU'ICI SEULEMENT LES DEUX TABLES SONT
+    // LUES ENTIÈREMENT. Vérifier la SIGNATURE d'une attestation sans jamais la RATTACHER à la chaîne,
+    // c'est prêter l'autorité d'Ed25519 à une valeur arbitraire : mesuré le 2026-08-31, un point de
+    // contrôle attestant `genesis` — ou une valeur FABRIQUÉE — sur un journal de trois maillons, signé
+    // correctement, rendait `Ok((3, 1, 0, None))`, donc « ledger OK … OK=1 KO=0 » et une sortie 0.
+    //
+    // ELLE NE S'EXÉCUTE QUE SI LA CHAÎNE EST INTÈGRE, ET CE N'EST PAS UNE OPTIMISATION : « un correctif
+    // qui ferme une fausse accusation peut faire TAIRE une vraie », et le signal d'alerte est exactement
+    // un verdict qui passerait d'ACCUSE à REFUSE DE CONCLURE. Une rupture NOMMÉE (`Ok(_, Some(id))`) est
+    // le verdict le plus fort que cet instrument sache rendre : elle sort D'ABORD, toujours, et aucun
+    // contrôle de concordance ne peut la convertir en refus.
+    //
+    // ET LE REFUS EST LA TROISIÈME SORTIE, PAS UN COMPTEUR : une attestation discordante ne peut pas
+    // aller dans `sig_ko` — sans clé épinglée, `verify_run` ne durcit pas dessus et imprimerait
+    // « ledger OK » avec une sortie 0, c'est-à-dire rendrait VÉRIFIÉ sur une concordance qu'il n'a pas
+    // pu établir. Elle ne peut pas non plus aller dans `broken`, dont tout le vocabulaire nomme un `id`
+    // de MAILLON : y router un point de contrôle ferait accuser une entrée de journal intacte.
+    if broken.is_none() {
+        let ancrages: Vec<(i64, String)> = rows.iter().map(|(_, ts, _, _, _, h)| (*ts, h.clone())).collect();
+        let attestations: Vec<(i64, String)> = cps.iter().map(|(ts, lh, _, _)| (*ts, lh.clone())).collect();
+        if let Some(raison) = attestation_discordante(&ancrages, &attestations) {
+            return Err(raison);
+        }
+    }
     let (mut sig_ok, mut sig_bad) = (0i64, 0i64);
-    for (lh, sig, pk) in &cps {
+    for (_ts, lh, sig, pk) in &cps {
         let ok = (|| {
             let pkb: [u8; 32] = hex_decode(pk)?.try_into().ok()?;
             // v134 (#11) — PIN escrow : si un pubkey est épinglé et que le pubkey IN-BAND diffère, ce

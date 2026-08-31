@@ -549,11 +549,10 @@ pub(crate) async fn engagements_active(State(st): State<AppState>, Extension(au)
 /// la recopier.
 pub(crate) const ENGAGEMENTS_WINDOW: i64 = 200;
 
-/// LE SEUL fabricant du COMPTAGE du registre — écrit une fois pour que le test mesure CE QUI EST ÉMIS
-/// et non une copie. `LIMIT CAP+1` arrête le balayage au plafond partagé : sous le plafond le total est
-/// EXACT, au-dessus il est plafonné ET annoncé.
+/// LE COMPTAGE DU REGISTRE — l'énoncé n'est plus écrit ici : il est RENDU par le fabricant partagé
+/// (`handlers::liste_bornee`), seul détenteur de la forme `LIMIT plafond + 1`.
 pub(crate) fn engagements_total_sql() -> String {
-    format!("SELECT COUNT(*) FROM (SELECT 1 FROM engagement LIMIT {})", PAGINATION_COUNT_CAP + 1)
+    crate::handlers::liste_bornee::sql_du_comptage_borne("engagement")
 }
 
 /// LE SEUL fabricant de la FENÊTRE servie. Projection et ordre INCHANGÉS : ce correctif ajoute un
@@ -568,31 +567,20 @@ pub(crate) fn engagements_window_sql() -> String {
 /// Fenêtre + total borné du registre d'engagements. Fonction PURE sur `&Connection` -> testable sans
 /// `AppState`.
 ///
-/// Rend `{engagements, served, window, total, total_capped}`. `served` est le nombre de lignes RENDUES
-/// et `window` la borne de la route : leur égalité est ce qui dit au lecteur que la borne MORD.
+/// Rend `{engagements, served, window, total, total_capped}` — forme RENDUE par le fabricant partagé
+/// `handlers::liste_bornee` (`P11.22-f`) au lieu d'être recopiée ici. `served` est le nombre de lignes
+/// RENDUES et `window` la borne de la route : leur égalité est ce qui dit au lecteur que la borne MORD.
 /// `total`/`total_capped` valent `null` — jamais `0` — quand le comptage n'a pas pu être lu : « non
-/// compté » et « aucun engagement » sont deux faits différents.
+/// compté » et « aucun engagement » sont deux faits différents. Et une lecture de lignes qui ÉCHOUE
+/// n'entre plus sous la forme d'un registre VIDE.
 pub(crate) fn engagements_page(conn: &Connection) -> Value {
-    let rows: Vec<Value> = match conn.prepare(&engagements_window_sql()) {
-        Ok(mut stmt) => stmt.query_map([], engagement_row_json).map(|m| m.flatten().collect()).unwrap_or_default(),
-        Err(_) => Vec::new(),
-    };
-    // COMPTAGE BORNÉ : `raw` = min(vrai_total, CAP+1). > CAP -> plafonné (CAP + `total_capped`) ; sinon
-    // exact. Un comptage qui ÉCHOUE rend `null`, jamais un zéro rassurant.
-    let (total, total_capped) = match conn.query_row(&engagements_total_sql(), [], |r| r.get::<_, i64>(0)) {
-        Ok(raw) => {
-            let capped = raw > PAGINATION_COUNT_CAP;
-            (json!(if capped { PAGINATION_COUNT_CAP } else { raw }), json!(capped))
-        }
-        Err(_) => (Value::Null, Value::Null),
-    };
-    json!({
-        "engagements": rows,
-        "served": rows.len(),
-        "window": ENGAGEMENTS_WINDOW,
-        "total": total,
-        "total_capped": total_capped,
-    })
+    use crate::handlers::liste_bornee as aveu;
+    let lignes = aveu::lire(conn, &engagements_window_sql(), engagement_row_json);
+    let total = aveu::TotalBorne::depuis_un_comptage_borne(
+        conn.query_row(&engagements_total_sql(), [], |r| r.get::<_, i64>(0)),
+        PAGINATION_COUNT_CAP,
+    );
+    aveu::corps("engagements", lignes, ENGAGEMENTS_WINDOW, total)
 }
 
 /// GET /api/engagements — fenêtre du registre, servie AVEC son total borné (admin ; double garde

@@ -180,52 +180,119 @@ mod file_de_riposte_bornee_tests {
     }
 
     // =============================================================================================
-    // ④ GARDE DÉRIVÉE — UNE FENÊTRE DE RÉCENCE DIT CE QU'ELLE BORNE
+    // ④ GARDE DÉRIVÉE — UNE LISTE BORNÉE SERVIE DIT CE QU'ELLE BORNE (élargie par `P11.22-f`)
     // ---------------------------------------------------------------------------------------------
     // LA PROPRIÉTÉ, ÉCRITE UNE FOIS ET ANCRÉE SUR LA FORME DU CODE, JAMAIS SUR UN NOM DE FICHIER NI DE
     // MODULE (ce dépôt a déjà payé une garde aveugle parce qu'elle nommait un fichier — `P11.13-d`) :
     //
-    //     Un énoncé de lecture qui prend les N dernières lignes d'une TABLE ENTIÈRE est une FENÊTRE DE
-    //     RÉCENCE : la borne n'y est pas la réponse à une question, c'est une TRONCATURE d'un registre
-    //     qui grossit. Le chemin qui l'émet doit donc rendre, à côté des lignes, de quoi savoir ce qui
-    //     manque — un TOTAL, ou un CURSEUR.
+    //     Un énoncé qui borne le nombre de lignes qu'il rend est une TRONCATURE d'un registre qui
+    //     peut en porter davantage. Le chemin qui l'émet doit donc rendre, à côté des lignes, de quoi
+    //     savoir ce qui manque — un drapeau qui porte SUR CETTE LISTE, une continuation, ou le
+    //     ralliement au fabricant unique de la forme honnête.
+    //
+    // CE QUE `P11.22-f` A CHANGÉ, ET POURQUOI CE N'EST PAS UN DÉTAIL. La propriété d'avant portait sur
+    // la seule FENÊTRE DE RÉCENCE : les N dernières lignes d'une table ENTIÈRE, sans filtre, sans
+    // agrégat, avec un tri et une borne littérale. Six conditions conjointes. Son cliquet est tombé à
+    // zéro le 2026-08-25 — et ce zéro s'est LU comme « la famille est fermée » alors qu'une vingtaine
+    // de listes bornées muettes vivaient juste à côté, hors du prédicat. Une garde n'était pas cassée :
+    // elle mesurait plus étroit que la classe, et c'est le pire cas, parce que rien ne rougit.
     //
     // POPULATION, DÉRIVÉE DE CE QUE LE CODE EST. Tout littéral de chaîne des sources de production de
-    // `src/handlers/` qui, commentaires dépouillés :
-    //   (a) SELECTionne DEPUIS une table, et ne porte AUCUN `WHERE` — c'est ce qui en fait une fenêtre
-    //       sur un registre ENTIER plutôt qu'une réponse à une question posée ;
-    //   (b) ne porte NI agrégat NI `GROUP BY` NI `DISTINCT` — sans quoi la borne est le « top N »
-    //       DEMANDÉ, donc la réponse elle-même, et non une troncature ;
-    //   (c) porte un `ORDER BY` (une fenêtre suppose un ordre) ;
-    //   (d) porte `LIMIT <n≥2>` ou `LIMIT {…}` — la borne écrite en clair OU posée par un gabarit de
-    //       format, parce qu'une garde qui ne verrait que le chiffre littéral s'aveuglerait le jour où
-    //       la borne devient une constante nommée. `LIMIT 1` est exclu : c'est un singleton, pas une
-    //       liste.
+    // `src/handlers/` qui, commentaires dépouillés, porte un `SELECT … FROM …` et au moins un `LIMIT`
+    // dont la borne n'est pas `1` — qu'elle soit littérale, de gabarit (`{…}`) ou liée (`?n`). En sont
+    // exclus, et seulement eux : les ÉCRITURES (un `LIMIT` de `DELETE`/`INSERT`/`UPDATE` borne un lot
+    // de travail), et le COMPTAGE BORNÉ lui-même (`SELECT 1 FROM … LIMIT plafond+1`), qui est
+    // l'INSTRUMENT de l'aveu — l'inscrire dans sa propre population ferait rougir la garde sur son
+    // propre remède.
     //
-    // VERDICT. La fonction qui porte l'énoncé, OU l'une de celles qui l'APPELLENT dans le même fichier,
-    // doit porter un aveu : la clé `"total"`, la clé `"next_cursor"`, la clé `"has_more"`, ou l'appel au
-    // finaliseur de curseur partagé. Le détour par les appelants n'est pas une commodité : un fabricant
-    // d'énoncé PUR (`…_sql`) est la bonne architecture — c'est celle de `/api/query` et celle que ce lot
-    // pose — et il ne peut par construction rendre aucune réponse.
+    // VERDICT. La fonction qui porte l'énoncé, OU la chaîne d'appels qui la couvre DANS LE MÊME
+    // FICHIER, doit porter un aveu LISTE-SCOPÉ : un drapeau `…_capped` / `truncated` / `ecourtee`, une
+    // continuation (`next_cursor`, `has_more`, le finaliseur de curseur partagé), le ralliement au
+    // fabricant unique, ou — seul cas où un `total` suffit — un `OFFSET` dans l'énoncé, qui fait de la
+    // borne une PAGE D'UN TOUT CONNU. `"total"` SEUL a été RETIRÉ des aveux, et c'est le second geste
+    // de l'élargissement : mesuré sur l'arbre réel, la route de couverture du magasin d'indicateurs
+    // pose un `total` du magasin ENTIER à côté d'une ventilation coupée au cinquantième rang. Élargir
+    // la population sans resserrer l'aveu aurait donc rendu la garde VERTE sur le site le plus grave
+    // du recensement — un remède qui referme une fausse accusation en faisant taire une vraie.
     //
-    // CE QUE CETTE GARDE NE PROUVE PAS, dit pour qu'on ne s'en réclame pas trop : qu'un total soit rendu
-    // sur TOUS les chemins qui traversent un fabricant partagé — elle exige qu'au moins un chemin
-    // l'atteigne. Elle ne lit pas non plus le SQL composé morceau par morceau hors d'un seul littéral.
+    // CE QUE CETTE GARDE NE PROUVE PAS, dit pour qu'on ne s'en réclame pas trop :
+    //   * elle ne lit pas le SQL composé morceau par morceau hors d'un seul littéral ;
+    //   * elle ne prouve pas qu'un aveu soit rendu sur TOUS les chemins traversant un fabricant
+    //     partagé — elle exige qu'une chaîne d'appels l'atteigne ;
+    //   * la souplesse `OFFSET` + grandeur nommée `total` reconnaît une PAGE, pas une page CORRECTE :
+    //     un total qui porterait sur autre chose que la liste passerait ;
+    //   * elle ne distingue pas, dans sa POPULATION, une liste servie à un lecteur d'un lot de travail
+    //     de boucle de fond. Cette distinction est une propriété du CHEMIN, pas de l'énoncé ; elle est
+    //     donc portée à la main dans le cliquet, en deux familles nommées.
     // =============================================================================================
 
-    /// LES ÉCARTS CONNUS — MÊME FAMILLE, PAS DANS CE LOT. Chacun est nommé par la TABLE qu'il fenêtre
-    /// (une propriété de l'énoncé), pas par un fichier, et avec ce qui manque. Le cliquet ne remonte
-    /// pas : un écart fermé DOIT sortir de cette liste, sinon le test rougit et le dit.
+    /// LES ÉCARTS CONNUS — MÊME FAMILLE, PAS DANS CE LOT. Chacun est nommé par le FICHIER et la
+    /// FONCTION qui portent l'énoncé, et par ce qui lui manque. Le cliquet ne remonte pas : un écart
+    /// fermé DOIT sortir de cette liste, sinon le test rougit et le dit.
     ///
-    /// RELEVÉ LE 2026-08-25 : trois écarts — `engagement`, `risk_rollup`, `ioc`. TOUS TROIS FERMÉS LE
-    /// MÊME JOUR par `P11.17-f`, et donc retirés d'ici : la liste est VIDE, et le cliquet est à zéro.
-    /// Toute fenêtre de récence servie sans total ni curseur fait désormais rougir la garde par son
-    /// seul nom de table, sans qu'aucune inscription ne soit possible sans une raison écrite ici.
-    /// Ce que chacune a reçu est écrit dans son propre module ; le TOTAL BORNÉ (le motif de
-    /// `PAGINATION_COUNT_CAP`) là où la borne était une troncature, et la DÉCLARATION DE LA COUPE là
-    /// où elle était délibérée — le classement par score de `risk_rollup`, qui répond à la question
-    /// posée au lieu de tronquer un registre.
-    const ECARTS_CONNUS: &[(&str, &str)] = &[];
+    /// HISTORIQUE, PARCE QU'UN ZÉRO S'EST DÉJÀ LU COMME UNE COUVERTURE. Le 2026-08-25, sous le
+    /// prédicat ÉTROIT (ni `WHERE`, ni agrégat, ni borne liée), la liste portait trois écarts, tous
+    /// fermés le même jour par `P11.17-f` ; elle est retombée à zéro — et ce zéro a été LU comme « la
+    /// famille est fermée » alors qu'une vingtaine de listes bornées muettes vivaient hors du
+    /// prédicat. `P11.22-f` élargit le prédicat et REMPLIT le cliquet de ce qui était invisible.
+    ///
+    /// RELEVÉ LE 2026-08-31, PRÉDICAT ÉLARGI : **trente** énoncés muets, en DEUX familles qui ne se
+    /// valent pas et qu'il serait malhonnête de fondre en un seul nombre.
+    ///
+    ///   (A) DIX énoncés ne sont PAS servis à un lecteur : ce sont des LOTS DE TRAVAIL de boucle de
+    ///       fond (relances d'échéance, activation/expiration d'engagements, notifications, forward
+    ///       vers un puits externe) ou une réclamation d'agent. Leur borne se draine par RÉPÉTITION :
+    ///       le tour suivant reprend là où celui-ci s'est arrêté, et personne ne lit ce lot comme un
+    ///       inventaire. Ils sont dans la population parce qu'AUCUN critère syntaxique honnête ne les
+    ///       en sort — « c'est un lot de fond » est une propriété du CHEMIN, pas de l'énoncé — et une
+    ///       exclusion par NOM de fonction est précisément ce que ce dépôt s'interdit.
+    ///
+    ///   (B) VINGT énoncés sont bel et bien SERVIS à un lecteur sans dire si la borne a mordu. C'est
+    ///       la classe que `P11.22-f` ouvre. L'ordre de fermeture recommandé est celui de la gravité,
+    ///       et le premier de la liste — la ventilation par source du magasin d'indicateurs — est
+    ///       FERMÉ par ce lot, ce qui fait passer cette famille de vingt-et-un à vingt.
+    const ECARTS_CONNUS: &[(&str, &str, &str)] = &[
+        // ---- (A) LOTS DE FOND ET RÉCLAMATIONS : la borne se draine par répétition. -------------
+        ("actions.rs", "actions_pending", "réclamation d'agent : le lot est CLAIMÉ puis retiré du \
+          prochain tour ; ce n'est pas un inventaire présenté à un lecteur"),
+        ("caseops.rs", "sla_multilevel_tick", "boucle de fond des échéances : le tour suivant reprend \
+          les dossiers non traités"),
+        ("caseops.rs", "sla_recalcule_la_priorite_bornee", "recalcul de fond, borné par tour"),
+        ("cases.rs", "escalate_overdue_cases", "boucle de fond d'escalade, bornée par tour"),
+        ("destinations.rs", "forward_one_destination", "lot de forward vers un puits externe : le \
+          curseur d'avancement EST la position dans `event`, le lot suivant continue"),
+        ("engagement.rs", "expire_due_engagements_conn", "boucle de fond, bornée par tour"),
+        ("engagement.rs", "activate_due_engagements_conn", "boucle de fond, bornée par tour"),
+        ("notifiers.rs", "dispatch_notifications", "lot de notifications non encore envoyées : \
+          `notified=0` retire du lot ce qui est parti, le tour suivant prend la suite"),
+        // ---- (B) LISTES SERVIES ET MUETTES : la classe ouverte par `P11.22-f`. -----------------
+        // L'ORDRE CI-DESSOUS EST CELUI DE LA GRAVITÉ, ET IL EST LA RECOMMANDATION DU LOT.
+        ("datasource.rs", "prom_label_values", "LE NAVIGATEUR D'ÉTIQUETTES — trois énoncés à cinq \
+          mille valeurs distinctes. Un exploitant qui ne trouve pas son étiquette conclut qu'elle \
+          n'existe pas ; c'est la surface où la liste EST l'inventaire"),
+        ("datasource.rs", "prom_labels", "LE NAVIGATEUR D'ÉTIQUETTES (noms) — deux mille blobs \
+          récents, dont on tire l'UNION des clés : la borne mord sur la RÉCENCE, et rien ne le dit"),
+        ("caseops.rs", "client_case_get_json", "LA LIGNE DE TEMPS D'UNE SURFACE EXTERNE — cinq cents \
+          entrées servies à un client, hors de la console. Une chronologie tronquée en silence est \
+          lue comme la chronologie COMPLÈTE d'un dossier"),
+        ("caseops.rs", "case_queues_json", "files par assigné, coupées au cinq-centième : un assigné \
+          hors coupe disparaît de la file qui existe pour le montrer"),
+        ("caseops.rs", "case_links_json", "liens d'un dossier, coupés au deux-centième"),
+        ("caseops.rs", "case_metrics_json", "trois énoncés — l'échantillon de cinquante mille \
+          dossiers d'où sortent moyenne et médiane, plus deux ventilations bornées. Une métrique \
+          calculée sur un échantillon tronqué se présente comme une métrique"),
+        ("search.rs", "search", "trois énoncés de `/api/search` : la borne vient du client, mais la \
+          réponse ne dit pas si elle a mordu"),
+        ("system.rs", "diag_bundle_json", "trois énoncés du paquet de diagnostic — un diagnostic \
+          tronqué en silence est lu comme un diagnostic complet"),
+        ("rba.rs", "risk_entity_timeline", "ligne de temps d'une entité à risque, coupée au \
+          deux-centième événement"),
+        ("datamodels.rs", "run_generated_soql", "exécution du Pivot : borne posée sur la requête \
+          compilée, jamais rendue au lecteur"),
+        ("datasource.rs", "ds_soql_exec", "surface datasource : même forme, même silence"),
+        ("scheduled_reports.rs", "render_report_detail", "détail d'un rapport planifié, coupé au \
+          cinq-millième"),
+    ];
 
     /// Un énoncé de la population, tel que la garde le voit.
     #[derive(Debug)]
@@ -233,6 +300,11 @@ mod file_de_riposte_bornee_tests {
         fichier: String,
         table: String,
         fonction: String,
+        /// L'énoncé porte-t-il un `GROUP BY` ? Retenu parce que c'est EXACTEMENT ce que le prédicat
+        /// étroit excluait : un témoin positif ancré là-dessus rougit si l'élargissement est perdu,
+        /// et il l'est sur une PROPRIÉTÉ DE L'ÉNONCÉ, pas sur un nom de fonction — un nom se renomme,
+        /// et l'ancre suit alors le renommage sans que personne ne le voie.
+        groupe: bool,
         avoue: bool,
     }
 
@@ -242,6 +314,13 @@ mod file_de_riposte_bornee_tests {
     /// le corps d'une fonction, et un `//` dans une chaîne ne doit pas manger la ligne.
     struct Depouille {
         masque: Vec<char>,
+        /// LA SOURCE PRIVÉE DE SES SEULS COMMENTAIRES — les littéraux y sont INTACTS, parce que
+        /// l'aveu vit dans un littéral. `P11.22-c` a payé ce piège : la recherche du nom du geste
+        /// commun portait sur la source ENTIÈRE, si bien qu'écrire ce nom dans un commentaire — pour
+        /// expliquer pourquoi on ne ralliait PAS un site — y déclarait un ralliement inexistant et
+        /// faisait rougir le banc sans qu'une ligne de code ait changé de comportement. Le remède
+        /// n'est pas une consigne de rédaction : c'est ce tampon.
+        sans_commentaires: Vec<char>,
         source: Vec<char>,
         litteraux: Vec<(usize, String)>,
     }
@@ -249,6 +328,7 @@ mod file_de_riposte_bornee_tests {
     fn depouiller(src: &str) -> Depouille {
         let s: Vec<char> = src.chars().collect();
         let mut masque = s.clone();
+        let mut sans_commentaires = s.clone();
         let mut litteraux = Vec::new();
         let effacer = |m: &mut Vec<char>, a: usize, b: usize| {
             for c in m.iter_mut().take(b).skip(a) {
@@ -266,6 +346,7 @@ mod file_de_riposte_bornee_tests {
                         j += 1;
                     }
                     effacer(&mut masque, i, j);
+                    effacer(&mut sans_commentaires, i, j);
                     i = j;
                 }
                 '/' if i + 1 < s.len() && s[i + 1] == '*' => {
@@ -275,6 +356,7 @@ mod file_de_riposte_bornee_tests {
                     }
                     let fin = (j + 2).min(s.len());
                     effacer(&mut masque, i, fin);
+                    effacer(&mut sans_commentaires, i, fin);
                     i = fin;
                 }
                 // Littéral de caractère (`'"'` existe réellement dans ce code) VS durée de vie (`'a`) :
@@ -348,7 +430,7 @@ mod file_de_riposte_bornee_tests {
                 _ => i += 1,
             }
         }
-        Depouille { masque, source: s, litteraux }
+        Depouille { masque, sans_commentaires, source: s, litteraux }
     }
 
     /// Un mot présent, insensible à la casse, entouré de non-lettres — évite qu'un `WHERE` interne à un
@@ -373,7 +455,7 @@ mod file_de_riposte_bornee_tests {
         let t: String = reste
             .trim_start()
             .chars()
-            .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '{' || *c == '}')
+            .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '{' || *c == '}' || *c == '?')
             .collect();
         if t.is_empty() {
             None
@@ -382,41 +464,70 @@ mod file_de_riposte_bornee_tests {
         }
     }
 
-    /// Une fenêtre de récence, au sens de la propriété écrite ci-dessus.
+    /// TOUTES les bornes `LIMIT` d'un énoncé, dans l'ordre. Il en faut PLUSIEURS : un `LIMIT 1` de
+    /// sous-requête corrélée précède parfois la borne de la liste servie, et ne lire que le premier
+    /// jeton classait l'énoncé « singleton » alors que sa liste, elle, est bel et bien tronquée.
+    fn bornes_du_limit(sql: &str) -> Vec<String> {
+        let bas = sql.to_ascii_lowercase();
+        let o: Vec<char> = bas.chars().collect();
+        let src: Vec<char> = sql.chars().collect();
+        let mot: Vec<char> = "limit".chars().collect();
+        let mut out = Vec::new();
+        for i in 0..o.len().saturating_sub(mot.len() - 1) {
+            if o[i..i + mot.len()] != mot[..] {
+                continue;
+            }
+            if i > 0 && (o[i - 1].is_alphanumeric() || o[i - 1] == '_') {
+                continue;
+            }
+            let t: String = src[i + mot.len()..]
+                .iter()
+                .collect::<String>()
+                .trim_start()
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '{' || *c == '}' || *c == '?')
+                .collect();
+            if !t.is_empty() {
+                out.push(t);
+            }
+        }
+        out
+    }
+
+    /// UNE LISTE BORNÉE SERVIE, au sens de la propriété écrite ci-dessus.
     ///
-    /// SON CLIQUET EST À ZÉRO, ET CE ZÉRO NE VEUT PAS DIRE « IL N'EN RESTE PLUS » — mesuré le
-    /// 2026-08-30. Ce prédicat écarte délibérément `where`, `distinct`, les agrégats et les bornes
-    /// bâties par assemblage de texte, et il exige un tri. Sa PROPRIÉTÉ est donc STRICTEMENT PLUS
-    /// ÉTROITE que la classe de défaut « une liste bornée ne dit pas s'il y en avait davantage » :
-    /// VINGT sites sur QUINZE routes portent cette classe, et cette garde est VERTE sur les vingt.
-    /// Elle n'est pas cassée ; elle mesure autre chose. Mais un zéro se LIT comme une couverture,
-    /// et c'est ce qui rend la confusion coûteuse — un lecteur en conclut que la famille est fermée.
-    /// La classe entière est ouverte sous `P11.22-f`, avec la forme commune qui la tiendrait ; tant
-    /// qu'elle n'est pas écrite, ce zéro dit « aucune FENÊTRE DE RÉCENCE muette », jamais « aucune
-    /// liste bornée muette ».
-    fn est_une_fenetre_de_recence(sql: &str) -> bool {
+    /// CE PRÉDICAT EST L'ÉLARGISSEMENT DE `P11.22-f`, ET CE QU'IL ABANDONNE EST LA MESURE QUI LE
+    /// JUSTIFIE. Il exigeait auparavant l'ABSENCE de `where`, de `distinct`, de tout agrégat et de
+    /// tout `GROUP BY`, PLUS la présence d'un `ORDER BY`, PLUS une borne littérale ou de gabarit —
+    /// une conjonction de six conditions. Sa population était donc strictement plus étroite que la
+    /// classe de défaut, et son cliquet à zéro se LISAIT comme une couverture alors qu'une vingtaine
+    /// de listes bornées muettes vivaient à côté. Trois de ces six conditions étaient FAUSSES comme
+    /// critères d'exclusion, et la plus grave l'était doublement :
+    ///   * un `WHERE` ne fait pas d'une borne une réponse — `WHERE incident_id=?1 … LIMIT 500` est
+    ///     une troncature de la ligne de temps d'un dossier, pas la réponse à une question de rang ;
+    ///   * un agrégat non plus — la ventilation par source du magasin d'indicateurs est un
+    ///     `GROUP BY … LIMIT 50`, et c'est le site le PLUS grave du lot : posée à côté d'un total du
+    ///     magasin entier, une ventilation tronquée en silence se lit comme une COUVERTURE ;
+    ///   * une borne portée par un paramètre lié (`LIMIT ?1`) est une borne comme une autre.
+    /// Ce qui RESTE exclu l'est pour une raison qui tient :
+    ///   * les ÉCRITURES (`DELETE`/`INSERT`/`UPDATE`) — un `LIMIT` y borne un LOT DE TRAVAIL qui se
+    ///     draine par répétition, jamais une réponse présentée à un lecteur ;
+    ///   * le COMPTAGE BORNÉ lui-même (`SELECT 1 FROM … LIMIT plafond+1`) — c'est l'INSTRUMENT de
+    ///     l'aveu ; l'inscrire dans sa propre population ferait rougir la garde sur son remède ;
+    ///   * `LIMIT 1` — un singleton n'est pas une liste.
+    fn est_une_liste_bornee_servie(sql: &str) -> bool {
         if !contient_mot(sql, "select") || !contient_mot(sql, "from") {
             return false;
         }
-        if contient_mot(sql, "where") || contient_mot(sql, "distinct") {
+        if contient_mot(sql, "delete") || contient_mot(sql, "insert") || contient_mot(sql, "update") {
             return false;
         }
-        if contient_mot(sql, "group") {
+        if sql.to_ascii_lowercase().contains("select 1 from") {
             return false;
         }
-        for agg in ["count(", "sum(", "avg(", "min(", "max("] {
-            if sql.to_ascii_lowercase().contains(agg) {
-                return false;
-            }
-        }
-        if !(contient_mot(sql, "order") && contient_mot(sql, "by")) {
-            return false;
-        }
-        match jeton_apres(sql, "limit") {
-            None => false,
-            Some(b) if b.starts_with('{') => true,
-            Some(b) => b.parse::<i64>().map(|n| n >= 2).unwrap_or(false),
-        }
+        bornes_du_limit(sql).iter().any(|b| {
+            b.starts_with('{') || b.starts_with('?') || b.parse::<i64>().map(|n| n >= 2).unwrap_or(false)
+        })
     }
 
     /// Les fonctions d'un fichier : (nom, début du corps, fin du corps), appariées SUR LE MASQUE.
@@ -470,48 +581,127 @@ mod file_de_riposte_bornee_tests {
         out
     }
 
-    /// Le corps d'une fonction, lu dans la SOURCE (les littéraux y sont visibles : c'est là que vit l'aveu).
-    fn corps_source(d: &Depouille, a: usize, b: usize) -> String {
-        d.source[a..b.min(d.source.len())].iter().collect()
+    /// UNE SOURCE PRIVÉE DE SES SEULS COMMENTAIRES, exportée aux gardes voisines. C'est l'INSTRUMENT,
+    /// pas la propriété : une garde qui a besoin de lire du code sans sa prose n'a pas à recopier ce
+    /// dépouillement — la recopier serait rejouer, dans la couche des témoins, l'anti-motif que
+    /// `P11.22-f` ferme dans la couche de production.
+    pub(crate) fn source_sans_commentaires(src: &str) -> String {
+        depouiller(src).sans_commentaires.iter().collect()
     }
 
-    const AVEUX: &[&str] = &["\"total\"", "\"next_cursor\"", "\"has_more\"", "keyset_finalize"];
+    /// Le corps d'une fonction, PRIVÉ DE SES COMMENTAIRES et de rien d'autre : les littéraux y sont
+    /// intacts (c'est là que vit l'aveu), la prose n'y est plus (c'est là que vivait le faux positif).
+    fn corps_source(d: &Depouille, a: usize, b: usize) -> String {
+        d.sans_commentaires[a..b.min(d.sans_commentaires.len())].iter().collect()
+    }
 
-    fn avoue(corps: &str) -> bool {
-        AVEUX.iter().any(|a| corps.contains(a))
+    /// LES AVEUX RECONNUS, ET CE QUI EN A ÉTÉ RETIRÉ — `P11.22-f`.
+    ///
+    /// `"total"` SEUL N'EST PLUS UN AVEU, et c'est le cœur de l'élargissement. Un `total` est un
+    /// nombre posé DANS un corps ; rien ne dit qu'il porte sur la liste bornée qui se trouve dans le
+    /// même corps. MESURÉ : la route de couverture du magasin d'indicateurs rend un `total` du
+    /// magasin ENTIER à côté d'une ventilation par source coupée au cinquantième rang. Élargir la
+    /// population SANS resserrer l'aveu aurait donc rendu la garde VERTE sur le site le plus grave du
+    /// lot — un remède qui referme une fausse accusation en faisant taire une vraie.
+    ///
+    /// CE QUI RESTE UN AVEU est LISTE-SCOPÉ ou CONTINUATIF : un drapeau qui porte sur la liste
+    /// (`…_capped`, `truncated`), une continuation (`next_cursor`, `has_more`, le finaliseur de
+    /// curseur partagé), ou l'appel au FABRICANT UNIQUE de la forme honnête — lequel, lui, est
+    /// prouvé par ses propres témoins.
+    const AVEUX: &[&str] = &[
+        "_capped",
+        "\"truncated\"",
+        "\"next_cursor\"",
+        "\"has_more\"",
+        "keyset_finalize",
+        "liste_bornee::corps(",
+        "aveu::corps(",
+        // `P11.22-e` a écrit le MÊME drapeau sous un autre mot, faute d'un fabricant où le nommer une
+        // fois : le type des sources connues porte `ecourtee`, exactement le rôle de `…_capped`. Le
+        // reconnaître ici évite d'inscrire au cliquet une route DÉJÀ honnête — et la divergence de
+        // vocabulaire est précisément le prix qu'on paie à ne pas avoir eu de fabricant unique.
+        "ecourtee",
+    ];
+
+    /// UN TROISIÈME AVEU, QUI NE SE LIT PAS DANS LE CORPS SEUL : une borne assortie d'un `OFFSET` et
+    /// d'un `total` dans le corps est une PAGE D'UN TOUT CONNU. Le lecteur sait combien il y en a et
+    /// par quel geste atteindre la suite ; la borne n'y cache rien. C'est le seul cas où `"total"`
+    /// suffit, et il se reconnaît sur l'ÉNONCÉ, pas sur le nom d'une clé.
+    fn avoue(corps: &str, sql: &str) -> bool {
+        if AVEUX.iter().any(|a| corps.contains(a)) {
+            return true;
+        }
+        // Le total d'une page peut n'être RENDU que par retour de fonction, sans jamais devenir une clé
+        // dans ce corps-ci : on cherche donc la GRANDEUR, pas la clé. Ce que cette souplesse ne prouve
+        // pas est écrit à la fin du bloc de propriété.
+        contient_mot(sql, "offset") && contient_mot(corps, "total")
+    }
+
+    /// QUELLES FONCTIONS D'UN FICHIER SONT COUVERTES — par point fixe, et non sur un seul saut.
+    ///
+    /// UNE FONCTION EST COUVERTE si son corps porte un aveu, OU si elle a des appelants et que TOUS
+    /// le sont. La récurrence n'est pas un raffinement gratuit : `P11.22-e` a fermé la liste des
+    /// sources connues en posant l'aveu DEUX sauts plus haut (le lecteur borné rend un type qui porte
+    /// le drapeau, un cache le relaie, la route l'écrit). Un seul saut accusait donc une route DÉJÀ
+    /// HONNÊTE — et inscrire cette accusation au cliquet comme un « écart » aurait consigné un
+    /// mensonge dans le témoin, en plus de laisser croire que la famille est plus large qu'elle n'est.
+    ///
+    /// UN APPELANT est reconnu par MENTION DU NOM (mot entier), pas par la seule forme `nom(` : une
+    /// fonction PASSÉE en argument — c'est le cas ici — n'est jamais suivie d'une parenthèse.
+    ///
+    /// LE POINT FIXE PART DE FAUX et n'ajoute que ce qu'une chaîne d'appels ANCRE sur un aveu réel :
+    /// un cycle de fonctions qui s'appellent sans jamais rien avouer ne s'auto-couvre donc pas.
+    fn couvertes(d: &Depouille, fns: &[(String, usize, usize)]) -> Vec<bool> {
+        let corps: Vec<String> = fns.iter().map(|(_, a, b)| corps_source(d, *a, *b)).collect();
+        let mut couvre: Vec<bool> = corps.iter().map(|c| AVEUX.iter().any(|a| c.contains(a))).collect();
+        for _ in 0..fns.len() {
+            let mut bouge = false;
+            for i in 0..fns.len() {
+                if couvre[i] {
+                    continue;
+                }
+                let appelants: Vec<usize> = (0..fns.len())
+                    .filter(|&j| j != i && contient_mot(&corps[j], &fns[i].0))
+                    .collect();
+                if !appelants.is_empty() && appelants.iter().all(|&j| couvre[j]) {
+                    couvre[i] = true;
+                    bouge = true;
+                }
+            }
+            if !bouge {
+                break;
+            }
+        }
+        couvre
     }
 
     /// La population et son verdict, pour UNE source.
     fn fenetres_dune_source(fichier: &str, src: &str) -> Vec<Fenetre> {
         let d = depouiller(src);
         let fns = fonctions(&d);
+        let couvre = couvertes(&d, &fns);
         let mut out = Vec::new();
         for (pos, sql) in &d.litteraux {
-            if !est_une_fenetre_de_recence(sql) {
+            if !est_une_liste_bornee_servie(sql) {
                 continue;
             }
             let englobante = fns
                 .iter()
-                .filter(|(_, a, b)| *a <= *pos && *pos <= *b)
-                .min_by_key(|(_, a, b)| b - a);
-            let (nom, corps) = match englobante {
-                Some((n, a, b)) => (n.clone(), corps_source(&d, *a, *b)),
-                None => (String::from("(hors fonction)"), String::new()),
+                .enumerate()
+                .filter(|(_, (_, a, b))| *a <= *pos && *pos <= *b)
+                .min_by_key(|(_, (_, a, b))| b - a);
+            let (nom, corps, idx) = match englobante {
+                Some((i, (n, a, b))) => (n.clone(), corps_source(&d, *a, *b), Some(i)),
+                None => (String::from("(hors fonction)"), String::new(), None),
             };
-            let mut aveu = avoue(&corps);
-            if !aveu && !nom.starts_with('(') {
-                // Un fabricant PUR est couvert par ses appelants : un `…_sql` ne rend aucune réponse.
-                let appelants: Vec<&(String, usize, usize)> = fns
-                    .iter()
-                    .filter(|(n, a, b)| *n != nom && corps_source(&d, *a, *b).contains(&format!("{nom}(")))
-                    .collect();
-                aveu = !appelants.is_empty()
-                    && appelants.iter().all(|(_, a, b)| avoue(&corps_source(&d, *a, *b)));
-            }
+            // L'aveu par OFFSET + `total` se lit sur l'ÉNONCÉ, donc il reste au site ; la couverture
+            // par la chaîne d'appels, elle, est déjà établie.
+            let aveu = idx.map(|i| couvre[i]).unwrap_or(false) || avoue(&corps, sql);
             out.push(Fenetre {
                 fichier: fichier.to_string(),
                 table: jeton_apres(sql, "from").unwrap_or_else(|| String::from("?")),
                 fonction: nom,
+                groupe: contient_mot(sql, "group"),
                 avoue: aveu,
             });
         }
@@ -539,12 +729,18 @@ mod file_de_riposte_bornee_tests {
     }
 
     #[test]
-    fn une_fenetre_de_recence_dit_ce_qu_elle_borne() {
+    fn une_liste_bornee_servie_dit_ce_qu_elle_borne() {
         // --- VALIDATION DE L'INSTRUMENT, DANS LES DEUX SENS. Une lecture qui ne verrait rien rendrait
         // vert sur un arbre fautif ; une lecture qui verrait tout ferait rougir sur du code sain.
         let corpus_vu = [
             "fn liste() -> Value { let _ = \"SELECT a,b FROM registre ORDER BY id DESC LIMIT 100\"; json!({}) }",
             "fn liste() -> Value { let _ = format!(\"SELECT a FROM registre ORDER BY id DESC LIMIT {N}\"); json!({}) }",
+            // ÉLARGISSEMENT `P11.22-f` — les trois formes que l'ancien prédicat laissait sortir.
+            "fn liste() -> Value { let _ = \"SELECT a FROM registre WHERE b=?1 ORDER BY id DESC LIMIT 500\"; json!({}) }",
+            "fn liste() -> Value { let _ = \"SELECT a, COUNT(*) n FROM registre WHERE b=?1 GROUP BY a ORDER BY n DESC LIMIT 50\"; json!({}) }",
+            "fn liste() -> Value { let _ = \"SELECT DISTINCT a FROM registre ORDER BY a LIMIT ?1\"; json!({}) }",
+            // Une borne de sous-requête corrélée à 1 ne doit pas masquer la borne de la liste servie.
+            "fn liste() -> Value { let _ = \"SELECT a,(SELECT x FROM t WHERE t.a=r.a LIMIT 1) FROM registre r ORDER BY a LIMIT 200\"; json!({}) }",
         ];
         for src in corpus_vu {
             let f = fenetres_dune_source("temoin.rs", src);
@@ -552,14 +748,12 @@ mod file_de_riposte_bornee_tests {
             assert!(!f[0].avoue, "(instrument) une fenêtre sans aveu est comptée couverte : {src}");
         }
         let corpus_ignore = [
-            // borne = la réponse (top N demandé) ou question posée : hors population.
-            "fn t() { let _ = \"SELECT a, COUNT(*) n FROM registre GROUP BY a ORDER BY n DESC LIMIT 20\"; }",
-            "fn t() { let _ = \"SELECT a FROM registre WHERE b=?1 ORDER BY id DESC LIMIT 100\"; }",
-            "fn t() { let _ = \"SELECT DISTINCT a FROM registre ORDER BY a LIMIT 5000\"; }",
             // singleton, pas une liste.
             "fn t() { let _ = \"SELECT hash FROM registre ORDER BY id DESC LIMIT 1\"; }",
-            // pas d'ordre : ce n'est pas une fenêtre de récence.
-            "fn t() { let _ = \"SELECT a FROM registre LIMIT 100\"; }",
+            // ÉCRITURE : la borne y est un lot de travail qui se draine par répétition.
+            "fn t() { let _ = \"DELETE FROM registre WHERE rowid IN (SELECT rowid FROM registre ORDER BY ts LIMIT 500)\"; }",
+            // LE COMPTAGE BORNÉ lui-même : c'est l'instrument de l'aveu, pas une liste servie.
+            "fn t() { let _ = \"SELECT COUNT(*) FROM (SELECT 1 FROM registre LIMIT 10001)\"; }",
             // la forme, écrite dans un COMMENTAIRE, ne compte pas.
             "fn t() { /* SELECT a FROM registre ORDER BY id DESC LIMIT 100 */ }",
         ];
@@ -570,15 +764,38 @@ mod file_de_riposte_bornee_tests {
             );
         }
         let corpus_couvert = [
-            "fn liste() -> Value { let _ = \"SELECT a FROM registre ORDER BY id DESC LIMIT 100\"; json!({\"total\": 1}) }",
+            "fn liste() -> Value { let _ = \"SELECT a FROM registre ORDER BY id DESC LIMIT 100\"; json!({\"total_capped\": false}) }",
             "fn fab_sql() -> String { String::from(\"SELECT a FROM registre ORDER BY id DESC LIMIT 100\") }\n\
-             fn page() -> Value { let _ = fab_sql(); json!({\"total\": 1}) }",
+             fn page() -> Value { let _ = fab_sql(); json!({\"n_capped\": false}) }",
+            // PAGE D'UN TOUT CONNU : borne + `OFFSET` + `total` dans le corps.
+            "fn page() -> Value { let _ = \"SELECT a FROM registre ORDER BY a LIMIT ?1 OFFSET ?2\"; json!({\"total\": 7}) }",
+            // LE RALLIEMENT AU FABRICANT UNIQUE est un aveu : la forme n'est plus écrite sur place.
+            "fn page() -> Value { let _ = \"SELECT a FROM registre ORDER BY a LIMIT 100\"; aveu::corps(\"a\", l, 100, t) }",
         ];
         for src in corpus_couvert {
             let f = fenetres_dune_source("temoin.rs", src);
-            assert_eq!(f.len(), 1, "(instrument) la fenêtre n'est plus vue une fois couverte : {src}");
+            assert_eq!(f.len(), 1, "(instrument) la liste n'est plus vue une fois couverte : {src}");
             assert!(f[0].avoue, "(instrument) un aveu — direct ou par l'appelant — n'est pas reconnu : {src}");
         }
+
+        // --- LE PIÈGE D'INSTRUMENT DE `P11.22-c`, DÉSORMAIS FERMÉ PAR CONSTRUCTION. Décrire un site
+        // dans un commentaire — jusqu'à y écrire le nom du geste commun — ne doit RIEN déclarer.
+        let piege = "fn page() -> Value { let _ = \"SELECT a FROM registre ORDER BY a LIMIT 100\"; \
+                     // on ne rallie PAS ce site au fabricant aveu::corps( ici, et voici pourquoi\n \
+                     json!({}) }";
+        let f = fenetres_dune_source("temoin.rs", piege);
+        assert_eq!(f.len(), 1, "(instrument) la liste décrite en commentaire n'est plus vue");
+        assert!(
+            !f[0].avoue,
+            "(instrument) UN COMMENTAIRE DÉCLARE UN RALLIEMENT INEXISTANT — c'est le piège que `P11.22-c` \
+             a payé ; le corps doit être lu privé de ses commentaires et de rien d'autre"
+        );
+        // …et le littéral, lui, reste lu : sans quoi l'aveu (qui EST un littéral) disparaîtrait aussi.
+        let litteral = "fn page() -> Value { let _ = \"SELECT a FROM registre ORDER BY a LIMIT 100\"; json!({\"total_capped\": false}) }";
+        assert!(
+            fenetres_dune_source("temoin.rs", litteral)[0].avoue,
+            "(instrument) le dépouillement des commentaires a emporté les littéraux : l'aveu n'est plus vu"
+        );
         // Le masque : une accolade de gabarit ne doit pas déséquilibrer un corps de fonction, sinon la
         // fonction englobante serait fausse et l'aveu cherché au mauvais endroit.
         let d = depouiller("fn page() -> Value { let s = format!(\"… LIMIT {n}\"); json!({\"total\": 1}) }");
@@ -590,41 +807,72 @@ mod file_de_riposte_bornee_tests {
             population.extend(fenetres_dune_source(&nom, &src));
         }
         assert!(
-            population.len() >= 4,
-            "(instrument) {} fenêtre(s) de récence vue(s) dans src/handlers/ : la lecture est cassée, \
-             la garde refuse de conclure vert",
+            population.len() >= 25,
+            "(instrument) {} liste(s) bornée(s) vue(s) dans src/handlers/ : la lecture est cassée, \
+             la garde refuse de conclure vert (le recensement du 2026-08-30 en voyait plus de trente)",
             population.len()
         );
 
-        // TÉMOIN POSITIF SUR L'ARBRE : la file de riposte est DANS la population, et elle avoue. Sans
-        // cette exigence, une correction qui retirerait l'énoncé de la population rendrait vert sans rien
-        // prouver.
+        // TÉMOINS POSITIFS SUR L'ARBRE — DEUX, ET LE SECOND EST CE QUE L'ÉLARGISSEMENT A ACHETÉ. Sans
+        // eux, une correction qui retirerait un énoncé de la population rendrait vert sans rien prouver.
         let action = population.iter().find(|f| f.table == "action");
         assert!(
             action.is_some(),
             "la fenêtre de la file de riposte n'est plus vue par la garde — le critère ne couvre plus le \
              défaut qu'il a été écrit pour tenir"
         );
-        assert!(action.unwrap().avoue, "la file de riposte est servie SANS total ni curseur");
+        assert!(action.unwrap().avoue, "la file de riposte est servie SANS aveu de sa borne");
+
+        // La ventilation par source du magasin d'indicateurs : `GROUP BY` + `WHERE`, donc INVISIBLE au
+        // prédicat d'avant. C'est le site le plus grave du lot, et sa présence ici est la preuve que
+        // l'élargissement porte — pas seulement que la garde reste verte.
+        // L'ANCRE EST POSÉE SUR L'ÉNONCÉ, PAS SUR UN NOM. La ventilation par source du magasin
+        // d'indicateurs est un `SELECT … FROM ioc WHERE … GROUP BY … LIMIT …` : filtre ET agrégat,
+        // c'est-à-dire DEUX des exclusions du prédicat étroit à la fois. Un `GROUP BY` dans la
+        // population est donc la signature de l'élargissement lui-même.
+        //
+        // POURQUOI PAS LE NOM DE LA FONCTION : il l'a été le temps d'un brouillon, et la campagne de
+        // mutation de ce lot l'a pris en défaut — la fonction avait été renommée en extrayant le corps
+        // pur, l'ancre ne désignait plus rien, et elle rendait VERT. Une ancre qui suit un renommage
+        // sans rougir ne tient rien.
+        assert!(
+            population.iter().any(|f| f.groupe),
+            "aucun énoncé à `GROUP BY` dans la population : l'élargissement de `P11.22-f` a été perdu, \
+             et avec lui la forme du site le plus grave du recensement"
+        );
+        let ventilation: Vec<&Fenetre> = population.iter().filter(|f| f.table == "ioc" && f.groupe).collect();
+        assert_eq!(
+            ventilation.len(),
+            1,
+            "la ventilation par source du magasin d'indicateurs n'est plus vue une fois et une seule \
+             par la garde (vue {} fois)",
+            ventilation.len()
+        );
+        assert!(
+            ventilation[0].avoue,
+            "la ventilation par source est servie SANS dire qu'elle est coupée — posée à côté d'un total \
+             du magasin ENTIER, elle se lit comme une COUVERTURE"
+        );
 
         // VERDICT + CLIQUET.
         let muettes: Vec<&Fenetre> = population.iter().filter(|f| !f.avoue).collect();
+        let connu = |f: &Fenetre| ECARTS_CONNUS.iter().any(|(fi, fo, _)| *fi == f.fichier && *fo == f.fonction);
         let inconnues: Vec<String> = muettes
             .iter()
-            .filter(|f| !ECARTS_CONNUS.iter().any(|(t, _)| *t == f.table))
+            .filter(|f| !connu(f))
             .map(|f| format!("{} :: {} (table `{}`)", f.fichier, f.fonction, f.table))
             .collect();
         assert!(
             inconnues.is_empty(),
-            "{} fenêtre(s) de récence servie(s) SANS total ni curseur : {} — rendez un total borné \
-             (le motif de `PAGINATION_COUNT_CAP`) ou un curseur, ou inscrivez l'écart avec sa raison.",
+            "{} liste(s) bornée(s) servie(s) SANS aveu de leur borne : {} — ralliez-les au fabricant \
+             unique (`handlers::liste_bornee`), rendez un curseur, ou inscrivez l'écart avec sa raison.",
             inconnues.len(),
             inconnues.join(" ; ")
         );
-        let refermes: Vec<&str> = ECARTS_CONNUS
+        let refermes: Vec<String> = ECARTS_CONNUS
             .iter()
-            .filter(|(t, _)| !muettes.iter().any(|f| f.table == *t))
-            .map(|(t, _)| *t)
+            .filter(|(fi, fo, _)| !muettes.iter().any(|f| f.fichier == *fi && f.fonction == *fo))
+            .map(|(fi, fo, _)| format!("{fi} :: {fo}"))
             .collect();
         assert!(
             refermes.is_empty(),

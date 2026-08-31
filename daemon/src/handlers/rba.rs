@@ -461,7 +461,10 @@ pub(crate) fn risk_over_threshold(score: i64, distinct_tactics: i64, score_hot: 
 /// et le prédicat appliqué à chacune donne le compte au-dessus d'un seuil. Aucun `WHERE` n'y écrit une
 /// seconde fois la règle de seuil.
 pub(crate) fn risk_rollup_recensement_sql() -> String {
-    format!("SELECT score,distinct_tactics,score_hot FROM risk_rollup LIMIT {}", PAGINATION_COUNT_CAP + 1)
+    format!(
+        "SELECT score,distinct_tactics,score_hot FROM risk_rollup LIMIT {}",
+        crate::handlers::liste_bornee::borne_avec_ligne_excedentaire(PAGINATION_COUNT_CAP)
+    )
 }
 
 /// LE SEUL fabricant du CLASSEMENT servi. Projection et ordre INCHANGÉS : ce correctif ajoute des
@@ -476,7 +479,9 @@ pub(crate) fn risk_entities_window_sql() -> String {
 /// Classement + recensement borné des entités à risque. Fonction PURE sur `&Connection` et sur les
 /// seuils -> testable sans `AppState` ni configuration de processus.
 ///
-/// Rend `{entities, served, window, total, total_capped, over_threshold_total, thresholds}`. `served`
+/// Rend `{entities, served, window, total, total_capped, over_threshold_total, thresholds}` — les cinq
+/// premières clés viennent du fabricant partagé `handlers::liste_bornee` (`P11.22-f`), la sixième est
+/// PROPRE à ce panneau et s'y ajoute. `served`
 /// est le nombre de lignes RENDUES et `window` le rang de coupe : leur égalité dit à la vue que la
 /// coupe MORD. `total`/`total_capped`/`over_threshold_total` valent `null` — jamais `0` — quand le
 /// recensement n'a pas pu être lu : « non recensé » et « aucune entité à risque » sont deux faits
@@ -484,32 +489,27 @@ pub(crate) fn risk_entities_window_sql() -> String {
 /// est vrai, `over_threshold_total` est lui aussi un PLANCHER : il n'a été compté que sur les lignes
 /// que le plafond a laissé lire.
 pub(crate) fn risk_entities_page(conn: &Connection, score_thr: i64, tactics_thr: i64, vel_thr: i64) -> Value {
-    let entities: Vec<Value> = match conn.prepare(&risk_entities_window_sql()) {
-        Ok(mut s) => s
-            .query_map([], |r| {
-                let score: i64 = r.get(3)?;
-                let dt: i64 = r.get(5)?;
-                let score_hot: i64 = r.get(7)?;
-                Ok(json!({
-                    "entity_type": r.get::<_, String>(0)?,
-                    "entity": r.get::<_, String>(1)?,
-                    "env_id": r.get::<_, String>(2)?,
-                    "score": score,
-                    "contrib": r.get::<_, i64>(4)?,
-                    "distinct_tactics": dt,
-                    "tactics": r.get::<_, String>(6)?,
-                    "score_hot": score_hot,
-                    "contrib_hot": r.get::<_, i64>(8)?,
-                    "max_severity": r.get::<_, i64>(9)?,
-                    "first_ts": r.get::<_, i64>(10)?,
-                    "last_ts": r.get::<_, i64>(11)?,
-                    "over_threshold": risk_over_threshold(score, dt, score_hot, score_thr, tactics_thr, vel_thr)
-                }))
-            })
-            .map(|rows| rows.flatten().collect())
-            .unwrap_or_default(),
-        Err(_) => Vec::new(),
-    };
+    use crate::handlers::liste_bornee as aveu;
+    let entities = aveu::lire(conn, &risk_entities_window_sql(), |r| {
+        let score: i64 = r.get(3)?;
+        let dt: i64 = r.get(5)?;
+        let score_hot: i64 = r.get(7)?;
+        Ok(json!({
+            "entity_type": r.get::<_, String>(0)?,
+            "entity": r.get::<_, String>(1)?,
+            "env_id": r.get::<_, String>(2)?,
+            "score": score,
+            "contrib": r.get::<_, i64>(4)?,
+            "distinct_tactics": dt,
+            "tactics": r.get::<_, String>(6)?,
+            "score_hot": score_hot,
+            "contrib_hot": r.get::<_, i64>(8)?,
+            "max_severity": r.get::<_, i64>(9)?,
+            "first_ts": r.get::<_, i64>(10)?,
+            "last_ts": r.get::<_, i64>(11)?,
+            "over_threshold": risk_over_threshold(score, dt, score_hot, score_thr, tactics_thr, vel_thr)
+        }))
+    });
     // RECENSEMENT BORNÉ : une passe plafonnée rend le total ET le compte au-dessus d'un seuil, par le
     // MÊME prédicat que les lignes. Une lecture qui ÉCHOUE rend `null`, jamais un zéro rassurant.
     let recense: Option<(i64, i64)> = conn
@@ -529,25 +529,18 @@ pub(crate) fn risk_entities_page(conn: &Connection, score_thr: i64, tactics_thr:
                 })
         })
         .ok();
-    let (total, total_capped, over_threshold_total) = match recense {
-        Some((n, au_dessus)) => {
-            let capped = n > PAGINATION_COUNT_CAP;
-            (
-                json!(if capped { PAGINATION_COUNT_CAP } else { n }),
-                json!(capped),
-                json!(au_dessus.min(PAGINATION_COUNT_CAP)),
-            )
-        }
-        None => (Value::Null, Value::Null, Value::Null),
+    let (total, over_threshold_total) = match recense {
+        Some((n, au_dessus)) => (
+            aveu::TotalBorne::depuis_un_recensement_borne(n, PAGINATION_COUNT_CAP),
+            json!(au_dessus.min(PAGINATION_COUNT_CAP)),
+        ),
+        None => (aveu::TotalBorne::sans_lecture(), Value::Null),
     };
-    json!({
-        "entities": entities,
-        "served": entities.len(),
-        "window": RISK_ENTITIES_WINDOW,
-        "total": total,
-        "total_capped": total_capped,
-        "over_threshold_total": over_threshold_total,
-    })
+    let mut sortie = aveu::corps("entities", entities, RISK_ENTITIES_WINDOW, total);
+    // PROPRE À CE PANNEAU, donc posé ICI et non dans le fabricant : la pastille de seuil est une
+    // DISJONCTION que l'ordre par score ignore, et c'est ce compte-là qui la rend lisible.
+    sortie["over_threshold_total"] = over_threshold_total;
+    sortie
 }
 
 /// GET /api/risk/entities — entités les plus à risque (score cumulé, contributions, tactiques distinctes,

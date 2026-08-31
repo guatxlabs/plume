@@ -491,7 +491,7 @@ pub(crate) const IOCS_WINDOW: i64 = 2000;
 /// ÉMIS et non une copie. `SELECT 1` ne demande aucune colonne, `LIMIT CAP+1` ARRÊTE le balayage au
 /// plafond partagé : sous le plafond le total est EXACT, au-dessus il est plafonné ET annoncé.
 pub(crate) fn iocs_total_sql() -> String {
-    format!("SELECT COUNT(*) FROM (SELECT 1 FROM ioc LIMIT {})", PAGINATION_COUNT_CAP + 1)
+    crate::handlers::liste_bornee::sql_du_comptage_borne("ioc")
 }
 
 /// LE SEUL fabricant de la FENÊTRE servie. Projection et ordre INCHANGÉS : ce correctif ajoute un
@@ -506,53 +506,43 @@ pub(crate) fn iocs_window_sql() -> String {
 /// Fenêtre + total borné de l'inventaire d'indicateurs. Fonction PURE sur `&Connection` -> testable
 /// sans `AppState`.
 ///
-/// Rend `{iocs, served, window, total, total_capped}`. `served` est le nombre de lignes RENDUES et
-/// `window` la borne de la route : leur égalité est précisément ce qui dit à la vue que la borne MORD.
-/// `total`/`total_capped` valent `null` — jamais `0` — quand le comptage n'a pas pu être lu : « non
-/// compté » et « aucun indicateur » sont deux faits différents, et sur un inventaire de renseignement
-/// l'écart va dans le sens dangereux (un magasin qu'on croit vide n'alarme personne).
+/// Rend `{iocs, served, window, total, total_capped}` — forme RENDUE par le fabricant partagé
+/// `handlers::liste_bornee` (`P11.22-f`) au lieu d'être recopiée ici pour la quatrième fois. `served`
+/// est le nombre de lignes RENDUES et `window` la borne de la route : leur égalité est précisément ce
+/// qui dit à la vue que la borne MORD. `total`/`total_capped` valent `null` — jamais `0` — quand le
+/// comptage n'a pas pu être lu : « non compté » et « aucun indicateur » sont deux faits différents, et
+/// sur un inventaire de renseignement l'écart va dans le sens dangereux (un magasin qu'on croit vide
+/// n'alarme personne). MÊME RAISON POUR LA LECTURE DES LIGNES : elle est avouée si elle échoue.
 pub(crate) fn iocs_page(conn: &Connection, now_ts: i64) -> Value {
-    let rows: Vec<Value> = match conn.prepare(&iocs_window_sql()) {
-        Ok(mut stmt) => stmt
-            .query_map([], |r| {
-                let expires: Option<i64> = r.get(8)?;
-                Ok(json!({
-                    "id": r.get::<_, i64>(0)?,
-                    "type": r.get::<_, String>(1)?,
-                    "value": r.get::<_, String>(2)?,
-                    "source": r.get::<_, String>(3)?,
-                    "confidence": r.get::<_, i64>(4)?,
-                    "severity": r.get::<_, i64>(5)?,
-                    "first_seen": r.get::<_, Option<i64>>(6)?,
-                    "last_seen": r.get::<_, Option<i64>>(7)?,
-                    "expires": expires,
-                    "expired": expires.map(|e| e <= now_ts).unwrap_or(false),
-                    "stix_id": r.get::<_, Option<String>>(9)?,
-                    "env_id": r.get::<_, String>(10)?,
-                }))
-            })
-            .map(|rows| rows.flatten().collect())
-            .unwrap_or_default(),
-        Err(_) => Vec::new(),
-    };
-    // COMPTAGE BORNÉ : `raw` = min(vrai_total, CAP+1). > CAP -> plafonné (CAP + `total_capped`) ; sinon
-    // exact. Un comptage qui ÉCHOUE ne rend pas un zéro rassurant : il rend `null`, et la vue dit qu'elle
-    // ne sait pas.
-    let (total, total_capped) = match conn.query_row(&iocs_total_sql(), [], |r| r.get::<_, i64>(0)) {
-        Ok(raw) => {
-            let capped = raw > PAGINATION_COUNT_CAP;
-            (json!(if capped { PAGINATION_COUNT_CAP } else { raw }), json!(capped))
-        }
-        Err(_) => (Value::Null, Value::Null),
-    };
-    json!({
-        "iocs": rows,
-        "served": rows.len(),
-        "window": IOCS_WINDOW,
-        "total": total,
-        "total_capped": total_capped,
-    })
+    use crate::handlers::liste_bornee as aveu;
+    let lignes = aveu::lire(conn, &iocs_window_sql(), |r| {
+        let expires: Option<i64> = r.get(8)?;
+        Ok(json!({
+            "id": r.get::<_, i64>(0)?,
+            "type": r.get::<_, String>(1)?,
+            "value": r.get::<_, String>(2)?,
+            "source": r.get::<_, String>(3)?,
+            "confidence": r.get::<_, i64>(4)?,
+            "severity": r.get::<_, i64>(5)?,
+            "first_seen": r.get::<_, Option<i64>>(6)?,
+            "last_seen": r.get::<_, Option<i64>>(7)?,
+            "expires": expires,
+            "expired": expires.map(|e| e <= now_ts).unwrap_or(false),
+            "stix_id": r.get::<_, Option<String>>(9)?,
+            "env_id": r.get::<_, String>(10)?,
+        }))
+    });
+    let total = aveu::TotalBorne::depuis_un_comptage_borne(
+        conn.query_row(&iocs_total_sql(), [], |r| r.get::<_, i64>(0)),
+        PAGINATION_COUNT_CAP,
+    );
+    aveu::corps("iocs", lignes, IOCS_WINDOW, total)
 }
+
+/// RANG DE COUPE de la ventilation par source servie par `/api/threat-intel/coverage`. Nommé plutôt
+/// qu'écrit dans l'énoncé : la vue le REÇOIT (`by_source_window`) et le test le lit ici au lieu de le
+/// recopier.
+pub(crate) const TI_COVERAGE_SOURCES_MAX: usize = 50;
 
 /// GET /api/threat-intel/iocs — fenêtre des IOC du tenant courant, servie AVEC son total borné. viewer+
 /// (donnée de renseignement, pas un secret). Retourne aussi le statut expiré (calculé au read).
@@ -730,10 +720,11 @@ pub(crate) async fn stix_import(State(st): State<AppState>, Extension(au): Exten
 /// actifs/expirés, ventilation par type et par source). Les HITS dans le temps sont servis par le
 /// chemin GXQL (`search ti_match=1 | timechart count`) — l'enrichissement écrit `ti_match` dans fields,
 /// donc déjà requêtable/graphable via Explore sans scan dédié ici.
-pub(crate) async fn ti_coverage(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
-    let db_path = req_db_path(&st, &au);
-    crate::req_conn!(st, au, conn);
-    let now_ts = now();
+/// LE CORPS DE `/api/threat-intel/coverage`, FONCTION PURE — aucun `AppState`, aucun cache. Extrait
+/// pour la même raison que le corps de `/api/soql/schema` l'a été sous `P11.22-e` : sans extraction on
+/// prouverait que la coupe est CALCULÉE, jamais qu'elle ATTEINT le client. La seule chose que la route
+/// ajoute par-dessus est le relevé du cache de correspondance, qui exige un chemin de base.
+pub(crate) fn ti_coverage_json(conn: &Connection, now_ts: i64) -> Value {
     let total: i64 = conn.query_row("SELECT COUNT(*) FROM ioc", [], |r| r.get(0)).unwrap_or(0);
     let active: i64 = conn.query_row("SELECT COUNT(*) FROM ioc WHERE expires IS NULL OR expires > ?1", params![now_ts], |r| r.get(0)).unwrap_or(0);
     let by_type: Vec<Value> = conn
@@ -743,22 +734,45 @@ pub(crate) async fn ti_coverage(State(st): State<AppState>, Extension(au): Exten
                 .map(|rows| rows.flatten().collect())
         })
         .unwrap_or_default();
-    let by_source: Vec<Value> = conn
-        .prepare("SELECT source, COUNT(*) FROM ioc WHERE expires IS NULL OR expires > ?1 GROUP BY source ORDER BY 2 DESC LIMIT 50")
+    // `P11.22-f` — L'INVENTAIRE PAR SOURCE EST BORNÉ, ET IL LE DIT. Le geste est celui de `P11.22-e` :
+    // on demande UNE LIGNE DE PLUS que le rang de coupe, on en sert le rang de coupe, et l'EXISTENCE de
+    // la ligne excédentaire — jamais servie — fonde l'aveu. Un magasin qui porte PILE le rang de coupe
+    // n'est PAS écourté, et le lui faire dire serait un aveu inconditionnel, donc sans valeur.
+    let lues: Vec<Value> = conn
+        .prepare(&format!(
+            "SELECT source, COUNT(*) FROM ioc WHERE expires IS NULL OR expires > ?1 GROUP BY source ORDER BY 2 DESC LIMIT {}",
+            TI_COVERAGE_SOURCES_MAX + 1
+        ))
         .and_then(|mut s| {
             s.query_map(params![now_ts], |r| Ok(json!({ "source": r.get::<_, String>(0)?, "n": r.get::<_, i64>(1)? })))
                 .map(|rows| rows.flatten().collect())
         })
         .unwrap_or_default();
-    let mut sortie = json!({
+    let (by_source, by_source_capped) =
+        crate::handlers::liste_bornee::couper_a_la_borne(lues, TI_COVERAGE_SOURCES_MAX);
+    json!({
         "total": total,
         "active": active,
         "expired": total - active,
         "by_type": by_type,
         "by_source": by_source,
+        // `P11.22-f` — CE QUI MANQUAIT, ET POURQUOI C'ÉTAIT LE PLUS GRAVE DES VINGT-ET-UN. `total` et
+        // `active` comptent le magasin ENTIER : posés à côté d'une ventilation par source coupée en
+        // silence, ils la faisaient lire comme une COUVERTURE. Un exploitant qui n'y voit pas son flux
+        // en conclut « ce flux n'alimente pas le magasin » — le défaut même qui vient d'être fermé pour
+        // la liste voisine. Le rang de coupe est rendu À CÔTÉ de l'aveu : sans lui, la vue ne peut pas
+        // dire de combien, et un aveu sans son ampleur cesse d'être lu.
+        "by_source_window": TI_COVERAGE_SOURCES_MAX,
+        "by_source_capped": by_source_capped,
         // indice pour l'UI : les hits IOC dans le temps se requêtent en GXQL (aucun scan serveur ici).
         "hits_query": "search ti_match=1 | timechart count",
-    });
+    })
+}
+
+pub(crate) async fn ti_coverage(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
+    let db_path = req_db_path(&st, &au);
+    crate::req_conn!(st, au, conn);
+    let mut sortie = ti_coverage_json(&conn, now());
     // `P10.7-k` — CE QUE LE MAGASIN CONTIENT N'EST PAS CE AVEC QUOI ON DÉTECTE. `active` compte les
     // lignes de la TABLE ; la correspondance à l'ingest, elle, ne lit QUE le cache mémoire. Les deux
     // divergent dès qu'un rechargement échoue, et c'est précisément l'état où ce panneau annonçait

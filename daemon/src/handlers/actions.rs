@@ -373,11 +373,11 @@ pub(crate) async fn action_create(State(st): State<AppState>, Extension(au): Ext
 /// Nommée plutôt qu'écrite dans l'énoncé : la vue la RECOIT, et le test la lit ici au lieu de la recopier.
 pub(crate) const ACTIONS_WINDOW: i64 = 100;
 
-/// LE SEUL fabricant du COMPTAGE de la file — écrit une fois pour que le test mesure CE QUI EST ÉMIS et
-/// non une copie. `SELECT 1` ne demande aucune colonne, `LIMIT CAP+1` ARRÊTE le balayage au plafond :
-/// sous le plafond le total est EXACT, au-dessus il est plafonné ET annoncé.
+/// LE COMPTAGE DE LA FILE — l'énoncé n'est plus écrit ici : il est RENDU par le fabricant partagé
+/// (`handlers::liste_bornee`), qui possède la forme `LIMIT plafond + 1`. Ce nom reste parce que le
+/// test mesure CE QUI EST ÉMIS et non une copie ; ce qu'il rend n'est plus une copie de rien.
 pub(crate) fn actions_total_sql() -> String {
-    format!("SELECT COUNT(*) FROM (SELECT 1 FROM action LIMIT {})", PAGINATION_COUNT_CAP + 1)
+    crate::handlers::liste_bornee::sql_du_comptage_borne("action")
 }
 
 /// LE SEUL fabricant de la FENÊTRE servie. Projection et ordre INCHANGÉS par rapport à la version
@@ -391,41 +391,27 @@ pub(crate) fn actions_window_sql() -> String {
 
 /// Fenêtre + total borné de la file de riposte. Fonction PURE sur `&Connection` -> testable sans AppState.
 ///
-/// Rend `{actions, served, window, total, total_capped}`. `served` est le nombre de lignes RENDUES et
-/// `window` la borne de la route : leur égalité est précisément ce qui dit à la vue que la borne MORD.
-/// `total`/`total_capped` valent `null` — jamais `0` — quand le comptage n'a pas pu être lu : « non
-/// compté » et « aucune action » sont deux faits différents, et sur cette file l'écart va dans le sens
-/// dangereux.
+/// Rend `{actions, served, window, total, total_capped}` — la forme n'est plus écrite ici : elle vient
+/// du fabricant partagé `handlers::liste_bornee` (`P11.22-f`), qui la tenait en quatre exemplaires
+/// recopiés. `served` est le nombre de lignes RENDUES et `window` la borne de la route : leur égalité
+/// est précisément ce qui dit à la vue que la borne MORD. `total`/`total_capped` valent `null` —
+/// jamais `0` — quand le comptage n'a pas pu être lu : « non compté » et « aucune action » sont deux
+/// faits différents, et sur cette file l'écart va dans le sens dangereux. ET DEPUIS `P11.22-f` : une
+/// lecture de lignes qui ÉCHOUE n'entre plus sous la forme d'un vecteur vide — elle est avouée.
 pub(crate) fn actions_page(conn: &Connection) -> Value {
-    let rows: Vec<Value> = match conn.prepare(&actions_window_sql()) {
-        Ok(mut stmt) => stmt
-            .query_map([], |r| {
-                Ok(json!({
-                    "id": r.get::<_, i64>(0)?, "ts": r.get::<_, i64>(1)?, "kind": r.get::<_, String>(2)?, "target": r.get::<_, String>(3)?,
-                    "status": r.get::<_, String>(4)?, "dry_run": r.get::<_, i64>(5)? != 0, "reason": r.get::<_, Option<String>>(6)?,
-                    "result": r.get::<_, Option<String>>(7)?, "done_ts": r.get::<_, Option<i64>>(8)?, "host": r.get::<_, Option<String>>(9)?
-                }))
-            })
-            .map(|m| m.flatten().collect())
-            .unwrap_or_default(),
-        Err(_) => Vec::new(),
-    };
-    // COMPTAGE BORNÉ : `raw` = min(vrai_total, CAP+1). > CAP -> plafonné (CAP + `total_capped`) ; sinon exact.
-    // Un comptage qui ÉCHOUE ne rend pas un zéro rassurant : il rend `null`, et la vue dit qu'elle ne sait pas.
-    let (total, total_capped) = match conn.query_row(&actions_total_sql(), [], |r| r.get::<_, i64>(0)) {
-        Ok(raw) => {
-            let capped = raw > PAGINATION_COUNT_CAP;
-            (json!(if capped { PAGINATION_COUNT_CAP } else { raw }), json!(capped))
-        }
-        Err(_) => (Value::Null, Value::Null),
-    };
-    json!({
-        "actions": rows,
-        "served": rows.len(),
-        "window": ACTIONS_WINDOW,
-        "total": total,
-        "total_capped": total_capped,
-    })
+    use crate::handlers::liste_bornee as aveu;
+    let lignes = aveu::lire(conn, &actions_window_sql(), |r| {
+        Ok(json!({
+            "id": r.get::<_, i64>(0)?, "ts": r.get::<_, i64>(1)?, "kind": r.get::<_, String>(2)?, "target": r.get::<_, String>(3)?,
+            "status": r.get::<_, String>(4)?, "dry_run": r.get::<_, i64>(5)? != 0, "reason": r.get::<_, Option<String>>(6)?,
+            "result": r.get::<_, Option<String>>(7)?, "done_ts": r.get::<_, Option<i64>>(8)?, "host": r.get::<_, Option<String>>(9)?
+        }))
+    });
+    let total = aveu::TotalBorne::depuis_un_comptage_borne(
+        conn.query_row(&actions_total_sql(), [], |r| r.get::<_, i64>(0)),
+        PAGINATION_COUNT_CAP,
+    );
+    aveu::corps("actions", lignes, ACTIONS_WINDOW, total)
 }
 
 pub(crate) async fn actions_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {

@@ -230,7 +230,22 @@ mod constat_de_presence_des_index {
             accueil
         };
 
-        let Some(ligne) = ligne_de_la_passe(&db) else { return };
+        let Some(ligne) = ligne_de_la_passe(&db) else {
+            // `P11.23-b` — LEVIER ÉTEINT : la passe ne crée rien, donc il n'y a AUCUNE ligne de
+            // compte rendu à confronter. Ce test ne peut rien prouver ici et il ne prétend rien ;
+            // le refus part par le canal, la suite reste verte.
+            crate::tests::canal_de_refus::refuser_de_conclure(
+                module_path!(),
+                "un_homonyme_pose_sur_une_autre_table_nest_pas_compte_present",
+                &format!(
+                    "levier `{LEVIER}` {} : la passe de fond n'annonce aucune création, il n'y a \
+                     pas de ligne de compte rendu à confronter — la présence des index n'est pas \
+                     éprouvable dans ce régime. Rejouer la suite levier ARMÉ pour l'éprouver.",
+                    regime()
+                ),
+            );
+            return;
+        };
 
         let attendus = HOT_FIELDS.len();
         let constates = attendus - 1;
@@ -291,7 +306,22 @@ mod constat_de_presence_des_index {
              le précédent"
         );
 
-        let Some(ligne) = ligne_de_la_passe(&db) else { return };
+        let Some(ligne) = ligne_de_la_passe(&db) else {
+            // `P11.23-b` — LEVIER ÉTEINT : la passe ne crée rien, donc il n'y a AUCUNE ligne de
+            // compte rendu à confronter. Ce test ne peut rien prouver ici et il ne prétend rien ;
+            // le refus part par le canal, la suite reste verte.
+            crate::tests::canal_de_refus::refuser_de_conclure(
+                module_path!(),
+                "un_homonyme_sur_une_autre_expression_nest_pas_compte_present",
+                &format!(
+                    "levier `{LEVIER}` {} : la passe de fond n'annonce aucune création, il n'y a \
+                     pas de ligne de compte rendu à confronter — la présence des index n'est pas \
+                     éprouvable dans ce régime. Rejouer la suite levier ARMÉ pour l'éprouver.",
+                    regime()
+                ),
+            );
+            return;
+        };
 
         let attendus = HOT_FIELDS.len();
         assert!(
@@ -330,7 +360,22 @@ mod constat_de_presence_des_index {
             accueil
         };
 
-        let Some(ligne) = ligne_de_la_passe(&db) else { return };
+        let Some(ligne) = ligne_de_la_passe(&db) else {
+            // `P11.23-b` — LEVIER ÉTEINT : la passe ne crée rien, donc il n'y a AUCUNE ligne de
+            // compte rendu à confronter. Ce test ne peut rien prouver ici et il ne prétend rien ;
+            // le refus part par le canal, la suite reste verte.
+            crate::tests::canal_de_refus::refuser_de_conclure(
+                module_path!(),
+                "le_court_circuit_ne_sort_plus_quand_tous_les_noms_sont_occupes",
+                &format!(
+                    "levier `{LEVIER}` {} : la passe de fond n'annonce aucune création, il n'y a \
+                     pas de ligne de compte rendu à confronter — la présence des index n'est pas \
+                     éprouvable dans ce régime. Rejouer la suite levier ARMÉ pour l'éprouver.",
+                    regime()
+                ),
+            );
+            return;
+        };
 
         let attendus = HOT_FIELDS.len();
         assert!(
@@ -362,7 +407,22 @@ mod constat_de_presence_des_index {
     #[test]
     fn les_index_que_le_produit_cree_restent_comptes_presents() {
         let db = base_migree();
-        let Some(ligne) = ligne_de_la_passe(&db) else { return };
+        let Some(ligne) = ligne_de_la_passe(&db) else {
+            // `P11.23-b` — LEVIER ÉTEINT : la passe ne crée rien, donc il n'y a AUCUNE ligne de
+            // compte rendu à confronter. Ce test ne peut rien prouver ici et il ne prétend rien ;
+            // le refus part par le canal, la suite reste verte.
+            crate::tests::canal_de_refus::refuser_de_conclure(
+                module_path!(),
+                "les_index_que_le_produit_cree_restent_comptes_presents",
+                &format!(
+                    "levier `{LEVIER}` {} : la passe de fond n'annonce aucune création, il n'y a \
+                     pas de ligne de compte rendu à confronter — la présence des index n'est pas \
+                     éprouvable dans ce régime. Rejouer la suite levier ARMÉ pour l'éprouver.",
+                    regime()
+                ),
+            );
+            return;
+        };
 
         let attendus = HOT_FIELDS.len();
         assert!(

@@ -374,7 +374,17 @@ mod vieillissement_serie_tests {
     fn la_crete_rss_est_bornee_a_la_fenetre() {
         let _serialise = FENETRES.lock();
         if !cfg!(target_os = "linux") {
-            eprintln!("[mesure] non-Linux : /proc/self/{{status,clear_refs}} absents -> instrument sans objet ici");
+            // `P11.23-b` — LE CHEMIN LE PLUS ANCIEN DE CETTE FAMILLE, et le plus silencieux : sur une
+            // plate-forme sans `/proc` ce test rendait 0 sans rien prouver, et son `eprintln!` était
+            // avalé par `libtest` (mesuré). Il ne doit PAS échouer — aucun geste ne refermerait un
+            // rouge posé là, ce serait une rançon — mais il doit être ENTENDU.
+            crate::tests::canal_de_refus::refuser_de_conclure(
+                module_path!(),
+                "la_crete_rss_est_bornee_a_la_fenetre",
+                "non-Linux : `/proc/self/status` et `/proc/self/clear_refs` n'existent pas, la crête \
+                     RSS n'est pas mesurable et la borne de fenêtre n'est PAS éprouvée sur \
+                     cette plate-forme",
+            );
             return;
         }
         // Le passé du processus : un gros transitoire AVANT toute fenêtre. C'est lui que `VmHWM`
@@ -527,7 +537,17 @@ mod vieillissement_serie_tests {
         );
         let dehors = externe.clore(Issue::Balaye, Compte::default(), Retard::Mesure(0));
         if !cfg!(target_os = "linux") {
-            return; // le reste porte sur `/proc`, absent ailleurs
+            // `P11.23-b` — REFUS PARTIEL, ET IL ÉTAIT TOTALEMENT MUET : le chevauchement vient d'être
+            // tenu, mais tout ce qui suit (la fenêtre EXTERNE mesure, la suivante repart propre) ne
+            // l'est pas. Un commentaire de source ne dit rien à celui qui lit le verdict.
+            crate::tests::canal_de_refus::refuser_de_conclure(
+                module_path!(),
+                "deux_fenetres_qui_se_chevauchent_ne_mesurent_pas_deux_fois",
+                "non-Linux : le chevauchement vient d'être tenu, mais la MOITIÉ qui suit — la fenêtre \
+                     externe mesure vraiment, et la fenêtre suivante ne recycle pas sa ligne de \
+                     base — porte sur `/proc` et n'est PAS éprouvée sur cette plate-forme",
+            );
+            return;
         }
         assert!(matches!(dehors.crete, Crete::Mesuree { .. }), "la fenêtre EXTERNE, elle, doit mesurer");
         let apres = Fenetre::ouvrir().clore(Issue::Balaye, Compte::default(), Retard::Mesure(0));
@@ -765,7 +785,13 @@ mod vieillissement_serie_tests {
     fn ouvrir_et_clore_une_fenetre_ne_fait_que_quatre_lectures_de_proc_et_une_ecriture() {
         let _serialise = FENETRES.lock();
         if !cfg!(target_os = "linux") {
-            eprintln!("[composition] non-Linux : /proc/self/{{status,clear_refs}} absents -> instrument sans objet ici");
+            crate::tests::canal_de_refus::refuser_de_conclure(
+                module_path!(),
+                "ouvrir_et_clore_une_fenetre_ne_fait_que_quatre_lectures_de_proc_et_une_ecriture",
+                "non-Linux : `/proc/self/status` et `/proc/self/clear_refs` n'existent pas, la \
+                     composition de la fenêtre (4 lectures, 1 écriture de `5`) n'est PAS \
+                     comptée sur cette plate-forme",
+            );
             return;
         }
         /// Ce qu'une fenêtre fait, et rien d'autre — DÉRIVÉ DE LA SOURCE, pas d'une durée : `armer_crete`
@@ -864,12 +890,19 @@ mod vieillissement_serie_tests {
                      composition qui a changé, et un aveuglement ne doit jamais servir de cachette"
                 );
             };
-            eprintln!(
-                "[composition] REFUS DE CONCLURE : la crête n'a pas été mesurée (cause `{cause}`), forme \
-                 {forme:?} — {quoi}. La forme est reconnue comme un aveuglement de l'ENVIRONNEMENT, pas \
-                 comme une régression : ce test ne peut rien prouver ici, et il ne prétend rien. \
-                 (`fenetre_concurrente` est le seul cas qui accuse le BANC : le verrou `FENETRES` n'aurait \
-                 pas sérialisé.)"
+            // `P11.23-b` — CE REFUS-CI ÉTAIT LE MIEUX ÉCRIT DE TOUS, ET IL PARTAIT QUAND MÊME DANS
+            // LE VIDE : `libtest` détourne la sortie d'un test qui RÉUSSIT et ne la rend que pour un
+            // test qui échoue (mesuré). Un aveu soigné dans un test vert n'est pas un aveu.
+            crate::tests::canal_de_refus::refuser_de_conclure(
+                module_path!(),
+                "ouvrir_et_clore_une_fenetre_ne_fait_que_quatre_lectures_de_proc_et_une_ecriture",
+                &format!(
+                    "la crête n'a pas été mesurée (cause `{cause}`), forme {forme:?} — {quoi}. La \
+                     forme est reconnue comme un aveuglement de l'ENVIRONNEMENT, pas comme une \
+                     régression : la composition (4 lectures, 1 écriture) n'est PAS comptée ici. \
+                     (`fenetre_concurrente` est le seul cas qui accuse le BANC : le verrou \
+                     `FENETRES` n'aurait pas sérialisé.)"
+                ),
             );
             return;
         };

@@ -3,6 +3,10 @@
     use super::*;
     use rusqlite::Connection;
 
+// `P11.23-b` — LE CANAL DU REFUS DE CONCLURE, inclus EN PREMIER parce que tout module de test
+// qui rend la main sans conclure doit pouvoir l'emprunter. Inerte tant que
+// `PLUME_JOURNAL_DES_REFUS` n'est pas posée par CELUI QUI DÉCIDE (CI, portail de déploiement).
+include!("canal_de_refus.rs");
 include!("common.rs");
 include!("rollup.rs");
 include!("detection.rs");

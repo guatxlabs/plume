@@ -770,6 +770,19 @@ jobs:
           set -euo pipefail
           export TMPDIR="$RUNNER_TEMP/plume-tmp-defaut"
           rm -rf "$TMPDIR"; mkdir -p "$TMPDIR"
+          # `P11.23-b` — LE CANAL DU REFUS DE CONCLURE, ARMÉ ICI. Un test qui ne peut PAS voir
+          # (plate-forme sans `/proc`, levier de configuration éteint, clé SQLCipher dans
+          # l'environnement) a le droit de ne rien prouver ; il n'a pas le droit de se présenter
+          # comme un test qui a prouvé. Il ne doit pas non plus ÉCHOUER : aucun geste ne refermerait
+          # un rouge posé sur un conteneur durci — ce serait une rançon. Il écrit donc une ligne
+          # dans CE fichier, que le pas relit et SERT après la suite. Sans cette variable le canal
+          # est INERTE : rien n'est ouvert, rien n'est créé, la suite est identique (mesuré).
+          # HORS de `$TMPDIR` À DESSEIN : `aucun-temporaire-laisse.sh` y compterait ce journal comme
+          # un résidu de suite. Le nom de la variable n'est PAS recopié dans le lecteur : il le LIT
+          # dans `daemon/src/tests/canal_de_refus.rs` (`VARIABLE_DU_CANAL`), donc écrivain et
+          # lecteur ne peuvent pas diverger en silence.
+          export PLUME_JOURNAL_DES_REFUS="$RUNNER_TEMP/refus-de-conclure-defaut.journal"
+          rm -f "$PLUME_JOURNAL_DES_REFUS"
           rc_cargo=0
           cargo test --locked --verbose 2>&1 | tee /tmp/daemon-tests.log || rc_cargo=$?
           # `P7.19-b` — LE CANAL DISTINCT, ARMÉ ICI. Le code de cargo est CAPTURÉ (et non laissé
@@ -784,6 +797,14 @@ jobs:
           python3 "$GITHUB_WORKSPACE/.github/scripts/check_a_bench_refusal_is_a_distinct_channel.py" \
             --trier /tmp/daemon-tests.log "$rc_cargo" || rc_tri=$?
           [ "$rc_tri" = 0 ] || exit "$rc_tri"
+          # LE CANAL EST RELU ET SERVI — mais son code est GARDÉ POUR LA FIN. Un lecteur qui ne
+          # peut pas conclure (variable absente, écrivain cassé) rend 2 ; le laisser tuer le pas ici
+          # ferait passer le verdict d'« une propriété est violée » à « je n'ai pas pu mesurer »,
+          # c'est-à-dire le défaut d'à côté. Le refus de conclure du LECTEUR ne l'emporte donc
+          # jamais sur un rouge de cargo, du tri, ou du compte.
+          rc_canal=0
+          python3 "$GITHUB_WORKSPACE/.github/scripts/check_a_test_that_declines_to_conclude_says_so.py" \
+            --lire || rc_canal=$?
           total=$(awk '/^test result: ok\. [0-9]+ passed/{s+=$4} END{print s+0}' /tmp/daemon-tests.log)
           echo "tests passed: $total (expected $EXPECTED_TESTS)"
           if [ "$total" != "$EXPECTED_TESTS" ]; then
@@ -793,6 +814,7 @@ jobs:
             exit 1
           fi
           "$GITHUB_WORKSPACE/.github/aucun-temporaire-laisse.sh" "suite par défaut"
+          [ "$rc_canal" = 0 ] || exit "$rc_canal"
 
       # Release build of the default profile — proves the daemon links/optimizes clean.
       - name: cargo build --release (daemon, default features)
@@ -1137,6 +1159,19 @@ jobs:
           set -euo pipefail
           export TMPDIR="$RUNNER_TEMP/plume-tmp-cold"
           rm -rf "$TMPDIR"; mkdir -p "$TMPDIR"
+          # `P11.23-b` — LE CANAL DU REFUS DE CONCLURE, ARMÉ ICI. Un test qui ne peut PAS voir
+          # (plate-forme sans `/proc`, levier de configuration éteint, clé SQLCipher dans
+          # l'environnement) a le droit de ne rien prouver ; il n'a pas le droit de se présenter
+          # comme un test qui a prouvé. Il ne doit pas non plus ÉCHOUER : aucun geste ne refermerait
+          # un rouge posé sur un conteneur durci — ce serait une rançon. Il écrit donc une ligne
+          # dans CE fichier, que le pas relit et SERT après la suite. Sans cette variable le canal
+          # est INERTE : rien n'est ouvert, rien n'est créé, la suite est identique (mesuré).
+          # HORS de `$TMPDIR` À DESSEIN : `aucun-temporaire-laisse.sh` y compterait ce journal comme
+          # un résidu de suite. Le nom de la variable n'est PAS recopié dans le lecteur : il le LIT
+          # dans `daemon/src/tests/canal_de_refus.rs` (`VARIABLE_DU_CANAL`), donc écrivain et
+          # lecteur ne peuvent pas diverger en silence.
+          export PLUME_JOURNAL_DES_REFUS="$RUNNER_TEMP/refus-de-conclure-cold.journal"
+          rm -f "$PLUME_JOURNAL_DES_REFUS"
           rc_cargo=0
           cargo test --locked --features cold_tier --verbose 2>&1 | tee /tmp/cold-tests.log || rc_cargo=$?
           # `P7.19-b` — LE CANAL DISTINCT, ARMÉ ICI. Le code de cargo est CAPTURÉ (et non laissé
@@ -1151,6 +1186,14 @@ jobs:
           python3 "$GITHUB_WORKSPACE/.github/scripts/check_a_bench_refusal_is_a_distinct_channel.py" \
             --trier /tmp/cold-tests.log "$rc_cargo" || rc_tri=$?
           [ "$rc_tri" = 0 ] || exit "$rc_tri"
+          # LE CANAL EST RELU ET SERVI — mais son code est GARDÉ POUR LA FIN. Un lecteur qui ne
+          # peut pas conclure (variable absente, écrivain cassé) rend 2 ; le laisser tuer le pas ici
+          # ferait passer le verdict d'« une propriété est violée » à « je n'ai pas pu mesurer »,
+          # c'est-à-dire le défaut d'à côté. Le refus de conclure du LECTEUR ne l'emporte donc
+          # jamais sur un rouge de cargo, du tri, ou du compte.
+          rc_canal=0
+          python3 "$GITHUB_WORKSPACE/.github/scripts/check_a_test_that_declines_to_conclude_says_so.py" \
+            --lire || rc_canal=$?
           total=$(awk '/^test result: ok\. [0-9]+ passed/{s+=$4} END{print s+0}' /tmp/cold-tests.log)
           echo "cold_tier tests passed: $total (expected $EXPECTED_COLD_TESTS)"
           if [ "$total" != "$EXPECTED_COLD_TESTS" ]; then
@@ -1174,6 +1217,7 @@ jobs:
           # regarderait pas le bon répertoire. Le câblage est lui-même gardé
           # (`--verifier-le-cablage`, job `gardes`) : il ne peut plus se défaire en silence.
           "$GITHUB_WORKSPACE/.github/aucun-temporaire-laisse.sh" "suite cold_tier"
+          [ "$rc_canal" = 0 ] || exit "$rc_canal"
 
   # ---------------------------------------------------------------------------
   # shell — SYNTAX GATE FOR THE COLLECTORS.
@@ -1369,6 +1413,20 @@ jobs:
       # qu'elle est vide. Population DÉCOUVERTE par parcours de `web/`, instrument validé dans les
       # deux sens, refus de conclure sous ses planchers. Ce qu'elle NE tient PAS — la phrase rendue
       # ensuite — est tenu par le harnais ESM (témoin 16), qui exige trois issues distinctes.
+      # `P11.23-b` — UN TEST QUI REND LA MAIN SANS CONCLURE LE DIT PAR LE CANAL. Mesuré le
+      # 2026-08-31 sur cet arbre : QUATORZE chemins de `daemon/src/tests/` sortaient d'un test sans
+      # exercer son assertion (levier de configuration éteint, plate-forme sans `/proc`, clé
+      # SQLCipher dans l'environnement) ; NEUF n'imprimaient rien, et les CINQ qui imprimaient ne
+      # valaient pas mieux — `libtest` détourne la sortie d'un test qui RÉUSSIT et ne la rend que
+      # pour un test qui ÉCHOUE (mesuré sur une caisse d'essai : 0 occurrence sous `cargo test` nu,
+      # 3 sous `--nocapture`, 3 sous `--show-output`). L'aveu partait dans le vide et le portail ne
+      # lisait que le 0. La garde N'EXIGE PAS qu'un test échoue sur un environnement aveugle : ce
+      # serait une rançon. Elle exige que le refus EMPRUNTE LE CANAL. Son critère est POSITIONNEL —
+      # l'appel doit être dans LE BLOC du `return` — et jamais lexical : chercher un mot d'aveu dans
+      # un corps aurait laissé muette la seconde des DEUX sorties de refus d'un même test de
+      # `vieillissement_serie.rs`. Témoins FABRIQUÉS dans la garde (dont ce cas précis), population
+      # DÉRIVÉE de l'arbre syntaxique, et refus de conclure (code 2) quand elle ne peut pas voir.
+      - { name: "Un test qui rend la main sans conclure le DIT par le canal — aucun refus muet dans daemon/src (P11.23-b)", run: python3 .github/scripts/check_a_test_that_declines_to_conclude_says_so.py }
       - { name: "Un refus du démon ne se rend jamais comme une absence de données — aucune condition de web/ ne fond l'échec et le vide (P11.14-c)", run: python3 .github/scripts/check_a_refusal_is_not_rendered_as_an_absence.py }
       # `P4.13-b` — UNE ÉCRITURE NUE AU STOCKAGE DU SITE JETTE AU MILIEU D'UN GESTE. Mesuré le
       # 2026-08-30 sous `PLUME_HARNAIS_STOCKAGE_REFUSE=1` : le tri des règles posait son état sans que

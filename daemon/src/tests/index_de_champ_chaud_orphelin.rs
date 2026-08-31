@@ -298,9 +298,17 @@ mod index_de_champ_chaud_orphelin {
         if !levier_arme() {
             // Levier éteint : la passe ne crée rien, il n'y a aucun nom à confronter. On le DIT — et
             // la purge reste éprouvée par la mutation, qui ne dépend pas du régime.
-            eprintln!(
-                "[P6.8-e] confrontation du préfixe NON ÉPROUVÉE : `{LEVIER}` est éteint dans cette \
-                 suite, la passe ne crée aucun index. Lancer la suite levier armé pour l'éprouver."
+            // `P11.23-b` — « On le DIT » était FAUX du point de vue de celui qui décide : `libtest`
+            // avale la sortie d'un test qui réussit (mesuré : 0 occurrence sous `cargo test` nu).
+            // L'aveu part désormais par le canal, que l'appelant relit après la suite.
+            crate::tests::canal_de_refus::refuser_de_conclure(
+                module_path!(),
+                "le_prefixe_de_la_famille_couvre_les_index_que_le_produit_cree",
+                &format!(
+                    "[P6.8-e] levier `{LEVIER}` ÉTEINT : la passe ne crée aucun index, il n'y a \
+                     aucun nom à confronter au préfixe de famille. La purge, elle, reste éprouvée \
+                     par la mutation (indépendante du régime). Rejouer la suite levier ARMÉ."
+                ),
             );
             return;
         }

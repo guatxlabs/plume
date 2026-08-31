@@ -276,6 +276,19 @@ mod index_de_champ_chaud {
                  à l'arrêt : le kill-switch n'a pas été appliqué. Restants : {avant:?}",
                 regime()
             );
+            // `P11.23-b` — L'ASSERTION CI-DESSUS N'EST PAS LA PROMESSE DU TEST : elle tient « la
+            // famille est absente », pas « le kill-switch RETIRE exactement les index dérivés ».
+            // Rien n'a été créé, donc rien n'a été retiré : le retrait n'est pas éprouvé ici.
+            crate::tests::canal_de_refus::refuser_de_conclure(
+                module_path!(),
+                "le_levier_eteint_retire_exactement_les_index_derives",
+                &format!(
+                    "levier `{LEVIER}` {} : la tâche de fond n'a créé aucun index dérivé, donc le \
+                     RETRAIT n'a rien à mordre et n'est pas éprouvé. Seule l'absence de la famille \
+                     vient d'être tenue. Rejouer la suite levier ARMÉ pour éprouver le retrait.",
+                    regime()
+                ),
+            );
             return;
         }
 
@@ -298,6 +311,19 @@ mod index_de_champ_chaud {
                 "[P6.8-d] retrait NON ÉPROUVÉ : `{LEVIER}` est posé dans l'environnement de cette suite, il \
                  masque la configuration passée en argument. La création reste exigée. Lancer la suite sans \
                  cette variable pour éprouver aussi le kill-switch."
+            );
+            // `P11.23-b` — l'`eprintln!` ci-dessus est AVALÉ par `libtest` pour un test qui réussit
+            // (mesuré : 0 occurrence sous `cargo test` nu). Il reste pour qui joue à la main sous
+            // `--nocapture` ; ce qui atteint celui qui décide, c'est la ligne du canal.
+            crate::tests::canal_de_refus::refuser_de_conclure(
+                module_path!(),
+                "le_levier_eteint_retire_exactement_les_index_derives",
+                &format!(
+                    "`{LEVIER}` est POSÉE dans l'environnement de cette suite : elle masque la \
+                     configuration passée en argument (précédence `env > fichier > défaut`), donc \
+                     le kill-switch n'est pas éprouvable ici. La CRÉATION, elle, vient d'être \
+                     exigée. Rejouer la suite SANS cette variable pour éprouver le retrait."
+                ),
             );
             return;
         }

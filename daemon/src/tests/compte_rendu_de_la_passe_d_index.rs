@@ -202,6 +202,22 @@ mod compte_rendu_de_la_passe_d_index {
                  créer : {annonce:?}",
                 regime()
             );
+            // `P11.23-b` — CE QUI VIENT D'ÊTRE ASSERTÉ N'EST PAS CE QUE CE TEST PROMET. L'assertion
+            // ci-dessus tient une propriété PLUS FAIBLE (« la passe éteinte n'annonce rien ») ; la
+            // propriété que ce test NOMME — le compte rendu NOMME ce qui a manqué — n'est
+            // pas exercée dans ce régime. Le commentaire d'origine disait « pas un test sauté » : il
+            // était vrai pour l'assertion, faux pour la promesse. Le refus part par le canal.
+            crate::tests::canal_de_refus::refuser_de_conclure(
+                module_path!(),
+                "le_compte_rendu_nomme_ce_qui_manque_quand_des_creations_echouent",
+                &format!(
+                    "levier `{LEVIER}` {} : la passe ne crée rien, donc elle n'émet aucun compte \
+                     rendu. La propriété plus faible « une passe éteinte n'annonce rien » vient \
+                     d'être tenue ; celle que ce test nomme ne l'est PAS. Rejouer la suite levier \
+                     ARMÉ pour l'éprouver.",
+                    regime()
+                ),
+            );
             return;
         }
 
@@ -279,6 +295,22 @@ mod compte_rendu_de_la_passe_d_index {
                 "LEVIER {} — la passe de fond a annoncé quelque chose alors qu'elle n'a rien à \
                  créer : {annonce:?}",
                 regime()
+            );
+            // `P11.23-b` — CE QUI VIENT D'ÊTRE ASSERTÉ N'EST PAS CE QUE CE TEST PROMET. L'assertion
+            // ci-dessus tient une propriété PLUS FAIBLE (« la passe éteinte n'annonce rien ») ; la
+            // propriété que ce test NOMME — le compte rendu est COMPLET quand tout réussit — n'est
+            // pas exercée dans ce régime. Le commentaire d'origine disait « pas un test sauté » : il
+            // était vrai pour l'assertion, faux pour la promesse. Le refus part par le canal.
+            crate::tests::canal_de_refus::refuser_de_conclure(
+                module_path!(),
+                "le_compte_rendu_est_complet_quand_toutes_les_creations_reussissent",
+                &format!(
+                    "levier `{LEVIER}` {} : la passe ne crée rien, donc elle n'émet aucun compte \
+                     rendu. La propriété plus faible « une passe éteinte n'annonce rien » vient \
+                     d'être tenue ; celle que ce test nomme ne l'est PAS. Rejouer la suite levier \
+                     ARMÉ pour l'éprouver.",
+                    regime()
+                ),
             );
             return;
         }

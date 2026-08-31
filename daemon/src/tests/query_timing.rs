@@ -184,6 +184,17 @@
         // comme celle-ci, un `PLUME_DB_KEY` posé dans l'env ferait échouer l'ouverture et le test
         // accuserait l'authorizer d'un défaut qui n'est pas le sien. Même garde que `sec.rs`.
         if !std::env::var("PLUME_DB_KEY").map(|v| v.is_empty()).unwrap_or(true) {
+            // `P11.23-b` — CE CHEMIN ÉTAIT ENTIÈREMENT MUET : il n'imprimait rien et rendait 0. Une
+            // suite jouée avec `PLUME_DB_KEY` posée (le portail de déploiement passe par un shell de
+            // connexion) sautait la parité pool/écrivain sans que personne ne puisse le savoir.
+            crate::tests::canal_de_refus::refuser_de_conclure(
+                module_path!(),
+                "rollup_coverage_is_the_same_read_from_the_pool_as_from_the_writer",
+                "`PLUME_DB_KEY` est posée et non vide dans l'environnement de cette suite : le pool \
+                 appliquerait cette clé SQLCipher à une base EN CLAIR et l'ouverture échouerait. La \
+                 parité de couverture pool/écrivain n'est donc PAS éprouvée ici. Rejouer la suite \
+                 sans `PLUME_DB_KEY`.",
+            );
             return;
         }
         let _tmpg1 = crate::tmp_possede::TmpPossede::neuf("cov-pool");

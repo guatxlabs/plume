@@ -43,10 +43,33 @@ import sys
 
 ICI = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ICI)
-from check_every_style_selector_has_a_target import (  # noqa: E402  (ÉLAGAGE PARTAGÉ, source unique — `P11.8-m`)
-    parcours_des_sources)
-RACINE = os.path.realpath(os.path.join(ICI, "..", ".."))
-CORPUS = os.path.join(RACINE, "web")
+from check_every_style_selector_has_a_target import (  # noqa: E402  (GESTES PARTAGÉS, source unique — `P11.8-m`, `P11.8-n`)
+    parcours_des_sources, racine_designee)
+
+# ── LA RACINE EXAMINÉE — GESTE PARTAGÉ, PAS UNE QUATRIÈME COPIE (`P11.8-n`) ───────────────
+# LE DÉFAUT QUE CECI FERME, MESURÉ LE 2026-08-31. Cette garde ACCEPTAIT un argument — lui passer une
+# racine ne provoquait aucune plainte — et elle l'AVALAIT : sa racine venait de la POSITION DE CE
+# FICHIER. Pointée sur un répertoire VIDE, elle rendait un verdict VERT sur le dépôt réel, sortie
+# identique OCTET POUR OCTET à celle du dépôt réel. C'est la famille exacte que `P8.27-a` a déjà
+# payée : un outil qui mesure un arbre que personne ne lui a désigné et présente son verdict comme
+# portant sur celui qu'on lui montrait — son rouge accuse un innocent, et son vert, plus grave parce
+# que silencieux, n'atteste rien. La validation (nombre d'arguments, racine inutilisable, refus code
+# 2, message) n'est donc PAS réécrite ici : c'est celle de `racine_designee()`, importée.
+#
+# CE QUI RESTE PROPRE À CETTE GARDE, ET C'EST TOUT : LA RACINE RETENUE QUAND ON N'EN DÉSIGNE AUCUNE.
+# Sans argument, `racine_designee()` retombe sur le `git rev-parse` du RÉPERTOIRE COURANT. Adopter
+# cette retombée ICI serait une PERTE DE PORTÉE, mesurée le 2026-08-31 : jouée depuis un répertoire
+# courant situé HORS de tout arbre git, la garde sœur du style REFUSE (code 2) sur un arbre SAIN,
+# tandis que les trois gardes ralliées ici rendaient 0 — et `jouer-la-batterie-de-gardes.sh` lance
+# chaque garde SANS se placer dans le dépôt (ligne 264). La racine par défaut reste donc celle-ci,
+# calculée EXACTEMENT comme avant ce correctif, et elle est DÉSIGNÉE à la fonction partagée plutôt
+# que devinée par elle : ce qui pouvait diverger (la validation) est unique, ce qui reste écrit ici
+# (un défaut connu valide) ne peut pas mentir sur l'arbre mesuré.
+DEPOT_DE_CETTE_GARDE = os.path.realpath(os.path.join(ICI, "..", ".."))
+# Renseignées par `main()` : une racine ne se devine pas à l'IMPORT (ce module est importable, et
+# lire `sys.argv` à l'import ferait juger l'argument d'un AUTRE programme).
+RACINE = None
+CORPUS = None
 
 # --- LE CRITÈRE, ÉCRIT ------------------------------------------------------------------------
 # Les deux magasins de site de la plateforme web. Un accès à l'un ou l'autre JETTE quand le navigateur
@@ -567,6 +590,10 @@ def modules_du_corpus(racine):
 
 
 def main():
+    global RACINE, CORPUS
+    RACINE = racine_designee(sys.argv if len(sys.argv) > 1 else [sys.argv[0], DEPOT_DE_CETTE_GARDE])
+    CORPUS = os.path.join(RACINE, "web")
+
     faute = epreuves()
     if faute:
         print(f"::error::instrument INVALIDE, la garde REFUSE DE CONCLURE — {faute}", file=sys.stderr)

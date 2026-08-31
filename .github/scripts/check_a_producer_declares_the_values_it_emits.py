@@ -97,10 +97,33 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from check_every_style_selector_has_a_target import (  # noqa: E402  (ÉLAGAGE PARTAGÉ, source unique — `P11.8-m`)
-    hors_arbre, parcours_des_sources)
+from check_every_style_selector_has_a_target import (  # noqa: E402  (GESTES PARTAGÉS, source unique — `P11.8-m`, `P11.8-n`)
+    hors_arbre, parcours_des_sources, racine_designee)
 
-RACINE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# ── LA RACINE EXAMINÉE — GESTE PARTAGÉ, PAS UNE QUATRIÈME COPIE (`P11.8-n`) ───────────────
+# LE DÉFAUT QUE CECI FERME, MESURÉ LE 2026-08-31. Cette garde ACCEPTAIT un argument — lui passer une
+# racine ne provoquait aucune plainte — et elle l'AVALAIT : sa racine venait de la POSITION DE CE
+# FICHIER. Pointée sur un répertoire VIDE, elle rendait un verdict VERT sur le dépôt réel, sortie
+# identique OCTET POUR OCTET à celle du dépôt réel. C'est la famille exacte que `P8.27-a` a déjà
+# payée : un outil qui mesure un arbre que personne ne lui a désigné et présente son verdict comme
+# portant sur celui qu'on lui montrait — son rouge accuse un innocent, et son vert, plus grave parce
+# que silencieux, n'atteste rien. La validation (nombre d'arguments, racine inutilisable, refus code
+# 2, message) n'est donc PAS réécrite ici : c'est celle de `racine_designee()`, importée.
+#
+# CE QUI RESTE PROPRE À CETTE GARDE, ET C'EST TOUT : LA RACINE RETENUE QUAND ON N'EN DÉSIGNE AUCUNE.
+# Sans argument, `racine_designee()` retombe sur le `git rev-parse` du RÉPERTOIRE COURANT. Adopter
+# cette retombée ICI serait une PERTE DE PORTÉE, mesurée le 2026-08-31 : jouée depuis un répertoire
+# courant situé HORS de tout arbre git, la garde sœur du style REFUSE (code 2) sur un arbre SAIN,
+# tandis que les trois gardes ralliées ici rendaient 0 — et `jouer-la-batterie-de-gardes.sh` lance
+# chaque garde SANS se placer dans le dépôt (ligne 264). La racine par défaut reste donc celle-ci,
+# calculée EXACTEMENT comme avant ce correctif, et elle est DÉSIGNÉE à la fonction partagée plutôt
+# que devinée par elle : ce qui pouvait diverger (la validation) est unique, ce qui reste écrit ici
+# (un défaut connu valide) ne peut pas mentir sur l'arbre mesuré.
+DEPOT_DE_CETTE_GARDE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Renseignée par `main()` : une racine ne se devine pas à l'IMPORT — et ce module-ci EST importé
+# (`check_operator_surface_is_documented.py` lui emprunte ses aides de lecture Rust), si bien que
+# lire `sys.argv` à l'import ferait juger à cette garde l'argument d'une AUTRE.
+RACINE = None
 
 # ── PORTÉE, DÉRIVÉE ─────────────────────────────────────────────────────────────────────────────
 # Un PRODUCTEUR est ce qui écrit un sac `fields` chez l'hôte : les capteurs de `collectors/` et les
@@ -113,6 +136,22 @@ LIVREE, DEBUG, NON_CONCLUANTE, PROSE, DEVELOPPEMENT = (
     "livrée", "debug", "non concluante", "prose", "développement")
 
 
+def racines_producteurs():
+    """Les répertoires BALAYÉS : `collectors/`, plus le `src/` de chaque caisse Rust livrée.
+
+    EXTRAIT de `fichiers_producteurs()` sous `P11.8-n` pour une seule raison : quand la population
+    rendue est VIDE, la garde doit NOMMER ce qu'elle a cherché et où. Un refus qui ne dit pas ce qui
+    manque oblige le lecteur à relire l'instrument pour savoir ce que l'instrument n'a pas trouvé."""
+    racines = [os.path.join(RACINE, "collectors")]
+    for nom in sorted(os.listdir(RACINE)):
+        chemin = os.path.join(RACINE, nom)
+        if nom == CAISSE_HORS_CAPTEUR or hors_arbre(nom) or not os.path.isdir(chemin):
+            continue
+        if os.path.isfile(os.path.join(chemin, "Cargo.toml")):
+            racines.append(os.path.join(chemin, "src"))
+    return racines
+
+
 def fichiers_producteurs():
     """Tout fichier de production d'un producteur livré, hors suites de test.
 
@@ -122,14 +161,7 @@ def fichiers_producteurs():
     `collectors/` ne filtrait RIEN — un environnement virtuel ou un `node_modules` posé là gonflerait la
     population de milliers de `.py`, et AUCUN plancher ne rougirait : un plancher ne garde que la BAISSE."""
     out = []
-    racines = [os.path.join(RACINE, "collectors")]
-    for nom in sorted(os.listdir(RACINE)):
-        chemin = os.path.join(RACINE, nom)
-        if nom == CAISSE_HORS_CAPTEUR or hors_arbre(nom) or not os.path.isdir(chemin):
-            continue
-        if os.path.isfile(os.path.join(chemin, "Cargo.toml")):
-            racines.append(os.path.join(chemin, "src"))
-    for base in racines:
+    for base in racines_producteurs():
         for dossier, noms in parcours_des_sources(base):
             for n in noms:
                 if n.endswith((".sh", ".ps1", ".rs", ".py")) and n != "tests.rs":
@@ -539,6 +571,9 @@ def temoins():
 
 
 def main():
+    global RACINE
+    RACINE = racine_designee(sys.argv if len(sys.argv) > 1 else [sys.argv[0], DEPOT_DE_CETTE_GARDE])
+
     faute = temoins()
     if faute:
         print("INSTRUMENT INVALIDE — " + faute)
@@ -548,7 +583,32 @@ def main():
     compte = {LIVREE: 0, DEVELOPPEMENT: 0, PROSE: 0}
     dette = []
     erreurs = []
-    for chemin in fichiers_producteurs():
+    refus = []
+
+    # ── UN CORPUS VIDE N'EST PAS UNE FAUTE DU DÉPÔT : C'EST UNE MESURE IMPOSSIBLE (`P11.8-n`) ──
+    # MESURÉ LE 2026-08-31, ET PRÉEXISTANT. Privée des répertoires qu'elle balaie, cette garde rendait
+    # UNE VIOLATION (code 1) : « FORME .rs : 0 déclaration(s) trouvée(s), plancher 6 ». Trois formes
+    # d'amputation, trois fois le même code 1 — corpus entier retiré, `collectors/` seul, caisses Rust
+    # seules. Or son propre texte disait déjà l'inverse (« rend la garde muette ») : le CODE accusait
+    # un coupable pendant que le TEXTE avouait une cécité. C'est précisément la contradiction que
+    # `jouer-la-batterie-de-gardes.sh` traque (`texte_refuse`, ligne 126), et elle lui échappait faute
+    # du mot exact. Un exploitant lisait « le dépôt a perdu ses déclarations » là où il fallait lire
+    # « je n'ai rien à mesurer » — deux causes opposées derrière un seul rouge.
+    corpus = fichiers_producteurs()
+    if not [c for c in corpus if os.path.splitext(c)[1] in par_forme]:
+        balayees = racines_producteurs()
+        nommer = lambda ds: ", ".join(os.path.relpath(d, RACINE) for d in ds) or "aucun"
+        print("CORPUS VIDE — la garde REFUSE DE CONCLURE ; elle n'accuse pas.\n"
+              "  Racine examinée      : {}\n"
+              "  Répertoires balayés  : {}\n"
+              "  ABSENTS du disque    : {}\n"
+              "  Aucun fichier `.rs`, `.ps1` ni `.sh` de producteur n'y a été trouvé. Un corpus vide "
+              "n'explique RIEN sur les ensembles fermés de ce dépôt : rendre 1 ici désignerait un "
+              "coupable à la place d'un instrument privé de ce qu'il mesure.".format(
+                  RACINE, nommer(balayees), nommer([b for b in balayees if not os.path.isdir(b)])))
+        return 2
+
+    for chemin in corpus:
         suf = os.path.splitext(chemin)[1]
         if suf not in par_forme:
             continue
@@ -591,11 +651,18 @@ def main():
                     f"{ou} — ATTACHÉ À RIEN : le contrôle d'appartenance ne se suit pas jusqu'à une "
                     f"clé du sac `fields`. Un ensemble fermé qui ne borne aucun champ ÉMIS n'explique rien.")
 
+    # LE MÊME CANAL QUE CI-DESSUS, POUR LA MÊME RAISON (`P11.8-n`). Un plancher de non-dégénérescence
+    # ne dit JAMAIS qu'une déclaration est fautive : il dit qu'une forme entière a disparu du champ de
+    # l'instrument, donc que l'ensemble des accusations rendues est lui-même incomplet. Le plancher et
+    # sa date sont INCHANGÉS (mesurés le 2026-08-26) ; seul le canal change, et il rejoint celui que
+    # ce texte réclamait déjà. Les vraies fautes — non dérivable, attaché à rien, prose, doublon,
+    # taille — et les deux cliquets restent en code 1 : eux portent sur un corpus que l'on a bien lu.
     for suf, plancher in PLANCHER_PAR_FORME.items():
         if par_forme[suf] < plancher:
-            erreurs.append(
+            refus.append(
                 f"FORME {suf} : {par_forme[suf]} déclaration(s) trouvée(s), plancher {plancher} "
-                f"(mesuré le 2026-08-26). Une forme perdue rend la garde muette — elle ÉCHOUE plutôt.")
+                f"(mesuré le 2026-08-26). Une forme perdue rend la garde muette — elle REFUSE DE "
+                f"CONCLURE plutôt.")
     if compte[PROSE] > PROSE_MAX:
         erreurs.append(
             f"CLIQUET : {compte[PROSE]} déclaration(s) en PROSE (aucun site d'échec dans le langage) "
@@ -607,6 +674,15 @@ def main():
             f"{PORTEE_DEVELOPPEMENT_MAX} (mesuré le 2026-08-26, dette assumée sous `P11.19-b`). Ce "
             f"plafond ne DESCEND que : un contrôle neuf s'écrit dans l'artefact LIVRÉ, il ne s'ajoute "
             f"pas à ce qui s'efface au build de release.")
+
+    if refus:
+        print("La garde REFUSE DE CONCLURE — sa mesure est dégénérée, et ce n'est pas un verdict "
+              "sur le dépôt :\n")
+        for r in refus:
+            print("  · " + r)
+        print("\nCe qui suit N'EST PAS rendu : une forme perdue rend incomplète la liste des fautes "
+              "elle-même, donc aucune accusation n'est publiée sur ce corpus-là.")
+        return 2
 
     if erreurs:
         print("Un ensemble fermé déclaré par un capteur n'est plus dérivable, attaché, ou de portée lisible :\n")

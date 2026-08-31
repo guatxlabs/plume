@@ -386,10 +386,14 @@ fn spawn_destination_tick(tenants: TenantDbManager) {
 /// `P10.7-w` — LE NOM SOUS LEQUEL LA BOUCLE QUI ANCRE REND SON BILAN. Déclaré dans le module de la
 /// boucle, comme `overlays_adossement::PASSE_OVERLAYS` l'est dans le module de sa passe.
 ///
-/// CE QU'IL N'ATTEINT PAS ENCORE, ET C'EST ÉCRIT PARCE QUE C'EST VRAI : la table `bilan_de_tick::BOUCLES`
-/// est ce que `/metrics` PARCOURT (objet `scheduler` et exposition Prometheus). Cette clé n'y figure pas
-/// — l'ajouter demande une ligne dans `bilan_de_tick.rs`, hors du périmètre de ce lot. En l'état, l'aveu
-/// est LISIBLE (`bilan_de_tick::dernier`) et il est sur stderr, mais il n'est pas encore SERVI.
+/// SERVI DEPUIS LE 2026-08-31, ET LA PHRASE QUI DISAIT LE CONTRAIRE EST RETIRÉE D'ICI plutôt que
+/// démentie plus bas. Elle affirmait qu'une table ÉCRITE était ce que la surface des métriques
+/// parcourt, et que cette clé n'y figurait pas. **Cette table n'existe plus** : la surface DÉRIVE
+/// désormais sa liste du registre de publication lui-même. Le geste de publier est donc le seul
+/// geste — ce qui publie est servi, LE JOUR OÙ ÇA PUBLIE — et l'oubli qui a produit ce défaut ne
+/// peut plus se reproduire. La moitié qui ne dérive pas — QUEL composant nommé porte QUELLE passe —
+/// reste écrite, mais son oubli est devenu inoffensif : le complément tombe dans un composant
+/// résiduel, si bien que la pire faute possible est « montré deux fois », jamais « montré nulle part ».
 pub(crate) const BOUCLE_RETENTION: &str = "retention";
 
 /// `P10.7-w` — UNE PASSE DE RÉTENTION SOUS FILET, ET CE QU'ELLE AVOUE. Mesuré le 2026-08-31.

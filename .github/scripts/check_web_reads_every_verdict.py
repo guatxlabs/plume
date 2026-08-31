@@ -70,7 +70,12 @@ VERDICT_OBJET = re.compile(r'\.insert\(\s*"verdict"\s*\.into\(\)')
 # `json!({ "x_verdict": … })`. Un littéral nu (`("proc_verdict", "conntrack.sh")` : le NOM d'un champ
 # d'événement d'un capteur, dans l'inventaire des champs collectés) n'est pas une publication.
 LITTERAL_VERDICT = re.compile(r'"([A-Za-z_][A-Za-z0-9_]*)_verdict"\s*(?:\.into\(\)|:)')
-CONST_BOUCLE = re.compile(r'const\s+(BOUCLE_[A-Z0-9_]+)\s*:\s*&str\s*=\s*"([A-Za-z0-9_]+)"')
+CONST_BOUCLE = re.compile(r'const\s+((?:BOUCLE|PASSE)_[A-Z0-9_]+)\s*:\s*&str\s*=\s*"([A-Za-z0-9_]+)"')
+# `PASSE_` EST ADMIS À CÔTÉ DE `BOUCLE_` DEPUIS LE 2026-08-31 : une passe de fond publie le même
+# bilan qu'une boucle sans en être une — elle est jouée UNE FOIS au démarrage, et son verdict vaut
+# jusqu'au redémarrage. Ne reconnaître que `BOUCLE_` aurait fait accuser à tort une constante
+# parfaitement déclarée, au motif qu'elle ne porte pas le nom d'un mécanisme qu'elle n'a pas.
+PUBLIE = re.compile(r"(?:crate::)?bilan_de_tick::publier\(\s*(?:crate::)?(?:[a-z_][a-z0-9_]*::)*([A-Z][A-Z0-9_]{3,})\s*,")
 TABLE_BOUCLES = re.compile(r'const\s+BOUCLES\s*:\s*\[&str;\s*\d+\]\s*=\s*\[([^\]]*)\]')
 
 # Marqueur d'une clé de gabarit : `{boucle}_abandons` -> clés `regles_abandons`… + suffixe `_abandons`.
@@ -105,7 +110,7 @@ def deriver_cles(sources):
     """`sources` : liste de (chemin, texte Rust). Rend ({clé: [sites]}, {suffixe: [sites]}, erreurs).
     Une clé `OBJET` désigne un verdict posé sur l'objet entier (`insert("verdict")`)."""
     cles, suffixes, erreurs = {}, {}, []
-    boucles, table = {}, None
+    boucles, table, publiees = {}, None, set()
     textes = []
     for chemin, texte in sources:
         code = sans_commentaires_rust(texte)
@@ -116,6 +121,14 @@ def deriver_cles(sources):
         textes.append((chemin, code))
         for m in CONST_BOUCLE.finditer(code):
             boucles[m.group(1)] = m.group(2)
+        # LA POPULATION SE DÉRIVE DE CE QUI PUBLIE, PLUS D'UNE TABLE ÉCRITE — corrigé le 2026-08-31,
+        # après que cette garde eut REFUSÉ DE CONCLURE, à raison : le démon parcourait une table tenue
+        # à la main, il DÉRIVE désormais sa liste du registre de publication, donc la table a disparu.
+        # LA NOUVELLE DÉRIVATION EST STRICTEMENT MEILLEURE : elle lit les constantes passées à
+        # `publier(…)` dans le code de PRODUCTION — la MÊME source que le démon —, là où la table
+        # pouvait diverger de ce qui publie réellement, ce qui ÉTAIT le défaut fermé.
+        for m in PUBLIE.finditer(code):
+            publiees.add(m.group(1).split("::")[-1])
         t = TABLE_BOUCLES.search(code)
         if t:
             table = [x.strip() for x in t.group(1).split(",") if x.strip()]
@@ -130,11 +143,12 @@ def deriver_cles(sources):
             noter(cles, m.group(1), chemin)
         for m in BILAN_GABARIT.finditer(code):
             suffixe = m.group(2)
-            if table is None:
+            if table is None and not publiees:
                 erreurs.append(f"{os.path.relpath(chemin, RACINE)} : gabarit `{{{m.group(1)}}}{suffixe}` "
-                               f"sans table `BOUCLES` résolue — les clés concrètes ne peuvent pas être dérivées")
+                               f"et AUCUNE population dérivable — ni table, ni appel à `publier(<CONST>)` en production")
                 continue
-            for nom_const in table:
+            noms = table if table is not None else sorted(publiees)
+            for nom_const in noms:
                 if nom_const.split("::")[-1] not in boucles:
                     erreurs.append(f"table BOUCLES cite `{nom_const}` qui n'est pas une constante `&str` connue")
                     continue

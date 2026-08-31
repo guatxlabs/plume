@@ -2,8 +2,10 @@
 //! incrémentés EN LIGNE sur les chemins déjà chauds (HTTP, ingest, recherche, scheduler) — JAMAIS un scan
 //! de `event` par requête (doctrine 2 Go). `gather_prom` produit l'exposition Prometheus texte ; `gather_json`
 //! la même donnée pour le panneau UI « Système » ; `component_health` dérive un état R/J/V par sous-système
-//! (ingest / détection / rollups / store / forwarder) depuis la fraîcheur + les horodatages de tick + les
-//! compteurs d'erreur. Additif : rien de ceci n'altère une réponse HTTP ni une écriture DB -> mode 0
+//! (ingest / détection / rollups / store / forwarder / passes de fond / restauration) depuis la fraîcheur +
+//! les horodatages de tick + les compteurs d'erreur. `P10.7-x` : le lien composant -> passes de fond est
+//! lu dans `bilan_de_tick::COMPOSANTS`, et TOUT ce qu'aucun composant nommé ne revendique tombe dans le
+//! composant « passes de fond » — un aveu publié n'a plus d'endroit où se perdre. Additif : rien de ceci n'altère une réponse HTTP ni une écriture DB -> mode 0
 //! byte-identique (les atomics sont invisibles du client).
 use crate::*;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
@@ -196,10 +198,13 @@ pub(crate) fn component_health(conn: &Connection, spool: &str, db_path: &str, di
     // Distinct de la profondeur de file : celle-ci dit combien attendent, ceci dit combien ont été
     // laissés de côté (quarantaine, illisibles) — un fichier abandonné à chaque passage reste dans la
     // file et ne s'ingère jamais, et seul ce compte le fait voir.
-    let bilan_ingest = crate::bilan_de_tick::combiner(&[crate::bilan_de_tick::BOUCLE_INGEST]);
+    // P10.7-x — LE COMPOSANT NOMME SON NOM, ET C'EST CE MÊME NOM QUI DIT QUELLES PASSES IL PORTE : une
+    // seule constante écrit les deux, donc l'entrée de `COMPOSANTS` et l'objet servi ne peuvent pas se
+    // désigner différemment.
+    let bilan_ingest = crate::bilan_de_tick::bilan_du_composant(crate::bilan_de_tick::COMPOSANT_INGEST);
     let (istate, idetail) = crate::bilan_de_tick::etat_de_surface(istate, idetail, bilan_ingest.as_ref());
     let mut ingest = serde_json::Map::new();
-    ingest.insert("component".into(), json!("ingest"));
+    ingest.insert("component".into(), json!(crate::bilan_de_tick::COMPOSANT_INGEST));
     ingest.insert("state".into(), json!(istate));
     ingest.insert("detail".into(), json!(idetail));
     queue.poser_dans(&mut ingest, "queue_depth");
@@ -212,16 +217,32 @@ pub(crate) fn component_health(conn: &Connection, spool: &str, db_path: &str, di
     // abandonnées (compilation refusée, évaluation en échec) le rendent JAUNE, avec leur compte.
     let rule_last = SCHED_RULE_LAST_TS.load(Ordering::Relaxed);
     let (dstate, ddetail) = tick_health(rule_last, now_ts, 120, 600, "scheduler de règles");
-    let bilan_detection = crate::bilan_de_tick::combiner(&[crate::bilan_de_tick::BOUCLE_REGLES, crate::bilan_de_tick::BOUCLE_RISQUE]);
+    let bilan_detection = crate::bilan_de_tick::bilan_du_composant(crate::bilan_de_tick::COMPOSANT_DETECTION);
     let (dstate, ddetail) = crate::bilan_de_tick::etat_de_surface(dstate, ddetail, bilan_detection.as_ref());
+    // P10.7-n — ET AVEC QUOI DÉTECTE-T-ON ? Le magasin d'indicateurs savait déjà dire, sur SA route
+    // (`/api/threat-intel/coverage`), que son cache tourne sur un jeu PÉRIMÉ — la table `ioc` n'a pas
+    // pu être relue, le jeu précédent est CONSERVÉ, la correspondance à l'ingest continue dessus. Ni
+    // ce voyant ni `/metrics` ne le portaient : un exploitant qui ne regarde que le vert-orange-rouge
+    // voyait « détection : verte » pendant que le jeu vieillissait sans borne. La mesure n'est PAS un
+    // bilan de tick (elle vit dans un registre à part, keyé par `db_path`, donc par TENANT) : elle
+    // entre par `etat_de_surface_jeu_conserve`, qui est JAUNE là où un tick aveugle est rouge.
+    let cache_indicateurs = ioc_reload_dernier(db_path);
+    let (dstate, ddetail) = crate::bilan_de_tick::etat_de_surface_jeu_conserve(
+        dstate, ddetail, "le cache d'indicateurs (threat-intel)", cache_indicateurs.as_ref(),
+    );
     let n_rules: i64 = conn.query_row("SELECT COUNT(*) FROM rule WHERE enabled=1", [], |r| r.get(0)).unwrap_or(0);
     let mut detection = serde_json::Map::new();
-    detection.insert("component".into(), json!("detection"));
+    detection.insert("component".into(), json!(crate::bilan_de_tick::COMPOSANT_DETECTION));
     detection.insert("state".into(), json!(dstate));
     detection.insert("detail".into(), json!(ddetail));
     detection.insert("enabled_rules".into(), json!(n_rules));
     detection.insert("last_tick".into(), json!(rule_last));
     crate::bilan_de_tick::poser_bilan(&mut detection, "abandons_dernier_tick", bilan_detection.as_ref());
+    // Convention `S32` : la valeur n'apparaît QUE si elle a été lue. Aucun rechargement encore
+    // (démarrage) -> AUCUNE clé posée : l'absence se lit « pas encore », jamais « zéro indicateur ».
+    if let Some(m) = &cache_indicateurs {
+        m.poser_dans(&mut detection, "cache_indicateurs");
+    }
     out.push(Value::Object(detection));
 
     // ROLLUPS : la boucle de rollup tick-t-elle ? (intervalle défaut 120 s).
@@ -281,14 +302,32 @@ pub(crate) fn component_health(conn: &Connection, spool: &str, db_path: &str, di
     // (last_error non vide) -> jaune. Sinon vert. Table absente (schéma < v92) -> idle.
     let (fstate, fdetail) = destination_health(conn);
     // P4.1-r — une liste de destinations qu'on n'a pas pu lire n'était ni « en erreur » ni « OK » : rien.
-    let bilan_forwarder = crate::bilan_de_tick::combiner(&[crate::bilan_de_tick::BOUCLE_DESTINATIONS]);
+    let bilan_forwarder = crate::bilan_de_tick::bilan_du_composant(crate::bilan_de_tick::COMPOSANT_FORWARDER);
     let (fstate, fdetail) = crate::bilan_de_tick::etat_de_surface(fstate, fdetail, bilan_forwarder.as_ref());
     let mut forwarder = serde_json::Map::new();
-    forwarder.insert("component".into(), json!("forwarder"));
+    forwarder.insert("component".into(), json!(crate::bilan_de_tick::COMPOSANT_FORWARDER));
     forwarder.insert("state".into(), json!(fstate));
     forwarder.insert("detail".into(), json!(fdetail));
     crate::bilan_de_tick::poser_bilan(&mut forwarder, "abandons_dernier_tick", bilan_forwarder.as_ref());
     out.push(Value::Object(forwarder));
+
+    // PASSES DE FOND (P10.7-x) — LE COMPLÉMENT : tout ce qu'AUCUN composant ci-dessus ne revendique.
+    // Sans lui, une passe de fond qui publie un aveu — la boucle qui ANCRE la chaîne d'intégrité, la
+    // passe `config.d` du démarrage — le publiait dans le vide : aucun voyant ne bougeait, et la
+    // posture globale restait celle d'un système « qui va bien ». Le composant existe TOUJOURS, même
+    // quand rien n'est orphelin : son absence se lirait, elle aussi, « rien à signaler ».
+    let orphelins = crate::bilan_de_tick::bilans_orphelins();
+    let (bstate, bdetail) = crate::bilan_de_tick::etat_des_passes_orphelines(&orphelins);
+    let mut passes = serde_json::Map::new();
+    passes.insert("component".into(), json!(crate::bilan_de_tick::COMPOSANT_PASSES_DE_FOND));
+    passes.insert("state".into(), json!(bstate));
+    passes.insert("detail".into(), json!(bdetail));
+    // Les noms BRUTS ici (le JSON n'a pas l'alphabet contraint de Prometheus) : c'est ce qui distingue
+    // deux passes que la réduction du nom de série rapprocherait.
+    for (nom, m) in &orphelins {
+        m.poser_dans(&mut passes, &format!("{nom}_abandons"));
+    }
+    out.push(Value::Object(passes));
 
     // RESTAURATION (P8.3-a) : depuis quand une archive n'a-t-elle pas été REMISE EN SERVICE ? Lecture
     // d'UNE ligne `meta`, jamais un scan. Le composant est le seul du lot dont l'état ne décrit pas un
@@ -438,8 +477,19 @@ pub(crate) fn gather_json(conn: &Connection, spool: &str, db_path: &str, schema_
     scheduler.insert("rule_last_tick".into(), json!(SCHED_RULE_LAST_TS.load(Ordering::Relaxed)));
     scheduler.insert("rollup_ticks_total".into(), json!(SCHED_ROLLUP_TICKS.load(Ordering::Relaxed)));
     scheduler.insert("rollup_last_tick".into(), json!(SCHED_ROLLUP_LAST_TS.load(Ordering::Relaxed)));
-    for boucle in crate::bilan_de_tick::BOUCLES {
-        crate::bilan_de_tick::poser_bilan(&mut scheduler, &format!("{boucle}_abandons"), crate::bilan_de_tick::dernier(boucle).as_ref());
+    // P10.7-x — LA TABLE PARCOURUE EST DÉRIVÉE DU REGISTRE (`boucles_publiees`), plus une liste écrite :
+    // une passe qui publie est servie le jour où elle publie. Clés BRUTES ici ; c'est l'exposition
+    // Prometheus qui les réduit à son alphabet.
+    for passe in crate::bilan_de_tick::boucles_publiees() {
+        crate::bilan_de_tick::poser_bilan(&mut scheduler, &format!("{passe}_abandons"), crate::bilan_de_tick::dernier(passe).as_ref());
+    }
+    // P10.7-n — AVEC QUOI LA DÉTECTION PAR INDICATEURS TOURNE, sous la convention `S32` : le nombre
+    // n'apparaît QUE s'il a été lu, et l'objet est vide tant qu'aucun rechargement n'a eu lieu (l'axe
+    // Prometheus s'en déduit plus bas, et ne s'imprime alors pas du tout — sans quoi il accuserait un
+    // démon qui vient de démarrer).
+    let mut detection = serde_json::Map::new();
+    if let Some(m) = ioc_reload_dernier(db_path) {
+        m.poser_dans(&mut detection, "cache_indicateurs");
     }
     json!({
         "ts": now_ts,
@@ -454,6 +504,7 @@ pub(crate) fn gather_json(conn: &Connection, spool: &str, db_path: &str, schema_
         "ingest": ingest,
         "search": { "requests_total": SEARCH_TOTAL.load(Ordering::Relaxed), "p50_ms": p50, "p95_ms": p95, "samples": lat_n },
         "scheduler": scheduler,
+        "detection": detection,
         "db": db,
         "host": hote,
         "alerts_open": alerts_open,
@@ -529,21 +580,42 @@ pub(crate) fn gather_prom(conn: &Connection, spool: &str, db_path: &str, schema_
     // pas tické, ou quand le tick a été AVEUGLE) et la lisibilité du bilan à côté, comme pour toute
     // mesure de `S32`. `g()` n'imprime que ce qu'il trouve : l'absence EST le message, la jauge
     // `…_lisible{cause}` dit pourquoi.
-    for boucle in crate::bilan_de_tick::BOUCLES {
+    // P10.7-x — DÉRIVÉ DU REGISTRE, plus d'une liste écrite : `retention` et `overlays` publiaient un
+    // bilan que cette boucle-ci ne parcourait pas. Le POINTEUR JSON porte la clé BRUTE (un pointeur
+    // n'a pas d'alphabet contraint) ; le NOM DE MÉTRIQUE passe par `nom_de_serie`, parce qu'un nom
+    // invalide fait rejeter le relevé ENTIER. Effet de bord voulu : la table ne contient que des clés
+    // PUBLIÉES, donc le verdict existe toujours — l'ancienne table nommait les six boucles dès le boot
+    // et `lisible()`, ne trouvant pas leur verdict, les accusait toutes d'un tick AVEUGLE.
+    for passe in crate::bilan_de_tick::boucles_publiees() {
+        let serie = crate::bilan_de_tick::nom_de_serie(passe);
+        let jeton = crate::bilan_de_tick::jeton_de_pointeur(passe);
         g(
             &mut o,
-            &format!("plume_scheduler_{boucle}_abandons"),
+            &format!("plume_scheduler_{serie}_abandons"),
             "gauge",
-            &format!("Éléments dus ABANDONNÉS (non évalués) au dernier tick de la boucle « {boucle} »"),
-            &format!("/scheduler/{boucle}_abandons"),
+            &format!("Éléments dus ABANDONNÉS (non évalués) au dernier passage de « {passe} »"),
+            &format!("/scheduler/{jeton}_abandons"),
         );
         lisible(
             &mut o,
-            &format!("plume_scheduler_{boucle}_bilan_lisible"),
-            &format!("le bilan du dernier tick de la boucle « {boucle} » (0 = tick AVEUGLE : sa liste d'éléments dus n'a pas pu être lue)"),
-            &format!("/scheduler/{boucle}_abandons_verdict"),
-            &format!("/scheduler/{boucle}_abandons_cause"),
+            &format!("plume_scheduler_{serie}_bilan_lisible"),
+            &format!("le bilan du dernier passage de « {passe} » (0 = passage AVEUGLE : sa liste d'éléments dus n'a pas pu être lue)"),
+            &format!("/scheduler/{jeton}_abandons_verdict"),
+            &format!("/scheduler/{jeton}_abandons_cause"),
         );
+    }
+    // P10.7-n — AVEC QUOI LA DÉTECTION PAR INDICATEURS TOURNE. Les DEUX séries sont conditionnées à
+    // l'existence du verdict : `lisible()` retombe sur « illisible » quand il ne trouve pas son
+    // pointeur, ce qui accuserait d'un jeu PÉRIMÉ un démon dont le cache n'a simplement jamais été
+    // rechargé. « Pas encore » se dit par l'ABSENCE des deux séries, jamais par une accusation.
+    if j.pointer("/detection/cache_indicateurs_verdict").is_some() {
+        g(&mut o, "plume_ioc_cache_indicateurs", "gauge",
+            "Indicateurs RÉELLEMENT en service dans le cache de correspondance à l'ingest (ABSENT si le dernier rechargement a échoué)",
+            "/detection/cache_indicateurs");
+        lisible(&mut o, "plume_ioc_cache_lisible",
+            "le dernier rechargement du cache d'indicateurs (0 = la table `ioc` n'a pas pu être lue ENTIÈREMENT : \
+             le jeu précédent est CONSERVÉ et la détection continue dessus, mais il vieillit)",
+            "/detection/cache_indicateurs_verdict", "/detection/cache_indicateurs_cause");
     }
     g(&mut o, "plume_db_size_bytes", "gauge", "Taille de la base (db + wal, octets)", "/db/size_bytes");
     lisible(&mut o, "plume_db_size_lisible", "la taille de la base", "/db/size_bytes_verdict", "/db/size_bytes_cause");

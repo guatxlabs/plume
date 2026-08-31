@@ -4,7 +4,7 @@
 //  - (admin) bulletin/MOTD (setting global, bandeau pour TOUS)                             -> /api/bulletin
 //  - (admin) bundle de diagnostic NON-SECRET (support hand-off, téléchargé)               -> GET /api/system/diag
 // LECTURE viewer+. Additif : aucun bulletin -> aucun bandeau (invariant mode 0).
-import { $, api, apiSend, muted, toast, fmtTs, downloadText, humanAge, socIsAdmin } from './core.js';
+import { $, LANG, api, apiSend, muted, toast, fmtTs, downloadText, humanAge, socIsAdmin } from './core.js';
 // P11.4-g : la référence documentaire d'un avertissement est une VALEUR qu'on transporte — geste de copie
 // partagé (`copie_et_selection.js`, `P11.4-h`).
 import { valeurTransportee } from './copie_et_selection.js';
@@ -126,6 +126,11 @@ const COMPOSANT_LBL = {
   db_size_bytes: 'taille base',
   abandons_dernier_passage: 'abandons du dernier passage',
   abandons_dernier_tick: 'abandons du dernier tick',
+  // `P10.7-n` — SANS CETTE LIGNE, LA TUILE AFFICHAIT SA CLÉ BRUTE. Le rendu des verdicts DÉCOUVRE
+  // les clés par leur suffixe, donc ce verdict était bien LU dès le jour où le démon l'a publié —
+  // mais il se lisait `cache_indicateurs : …`, un nom de champ servi à un humain. Le libellé est
+  // bilingue PAR CONSTRUCTION, comme le reste de cette console.
+  cache_indicateurs: LANG === 'en' ? 'indicator cache' : 'cache d\u2019indicateurs',
 };
 function verdictsDuComposant(c) {
   const out = [];

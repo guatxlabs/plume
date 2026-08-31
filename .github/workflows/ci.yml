@@ -713,7 +713,7 @@ env:
   #     ~6,5 ms par arithmétique en release), soit 63 × un 401 et 92,7 Mo/s au banc pour une seule IP.
   #   · CHAQUE RÉPONSE PUBLIQUE EST FACTURABLE (`content-length` présent ET égal au fichier) : sans
   #     cela, la borne ci-dessus aurait un trou muet.
-  EXPECTED_TESTS: "1513"
+  EXPECTED_TESTS: "1520"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -1131,7 +1131,7 @@ jobs:
           # derrière un `cfg(feature)`, et c'est l'ÉCART INCHANGÉ entre les deux profils (243 avant
           # comme après) qui l'établit, pas une lecture des sources. La dérivation complète et la
           # répartition sont écrites auprès d'`EXPECTED_TESTS`, une seule fois.
-          EXPECTED_COLD_TESTS: "1758"
+          EXPECTED_COLD_TESTS: "1765"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail
@@ -1447,6 +1447,18 @@ jobs:
       # 2026-08-22 : 521 noms distincts, 15 orphelins (dont `#ack-all`, mort depuis le chrome partagé), tous
       # retirés ; plafond zéro. L'instrument se valide (une règle `#inexistant{}` rougit, `.btn` non).
       - { name: "Chaque identifiant ou classe ciblé par style.css est posé quelque part dans web/ — dérivé, plafond d'orphelins à zéro (P11.4-d)", run: python3 .github/scripts/check_every_style_selector_has_a_target.py }
+      # `P11.8-n` — AUCUN PARCOURS D'ARBRE NU DEPUIS UNE RACINE DOMINANTE. `P11.8-m` a écrit le geste
+      # d'élagage UNE fois (`NOMS_HORS_ARBRE`, `parcours_des_sources`) ; rien ne rougissait sur un parcours
+      # écrit à la main sans élagage, et le trou restait refermable en silence par le prochain qui en
+      # écrirait un. La forme a été TRANCHÉE PAR LA MESURE le 2026-08-31, et deux formes plus larges ont été
+      # REFUSÉES : accuser TOUT parcours récursif poserait un cliquet à NEUF gardes saines par une propriété
+      # des outils (cargo écrit `target/` à côté de `src/`, jamais dedans) — une rançon ; accuser « les
+      # racines qui peuvent recevoir un artefact » ferait dépendre le verdict d'un `cargo build`, donc
+      # VERT PAR CONSTRUCTION sur la copie neuve de l'intégration. Est accusé le parcours RÉCURSIF dont la
+      # racine est DOMINANTE — dérivée de la position du fichier sans descendre, ou désignée — et qui
+      # n'exclut aucun artefact ; un parcours PLAT ne l'est jamais, il ne descend rien. Mesuré le
+      # 2026-08-31 : 53 instruments, 1 parcours dominant, 0 nu, 1 copie divergente (plafond daté à 1).
+      - { name: "Aucun instrument ne parcourt récursivement une racine dominante sans élaguer les artefacts — racine dérivée de la position du fichier, propagée aux paramètres (P11.8-n)", run: python3 .github/scripts/check_no_guard_walks_the_tree_unpruned.py }
       # `P11.4-e` — CHAQUE DÉCLENCHEUR D'AIDE OUVRE UNE SECTION. Déclencheurs DÉRIVÉS de `web/` (`data-help`
       # en HTML et dans les gabarits, `dataset.help`, `openHelp('…')`, entrées du sommaire du guide), sections
       # DÉRIVÉES de l'objet `HELP` du registre d'aide (`web/help_registry.js`, lui-même dérivé de sa définition,

@@ -585,7 +585,18 @@ PLAFOND_HORS_REGARD = {
 # VÉRIFIÉ AVANT D'EXCLURE, PARCE QU'UNE EXCLUSION QUI RETIRE UN FICHIER LÉGITIME EST PIRE QUE LE DÉFAUT :
 # aucun fichier de ce dépôt ne porte un de ces quatre noms — ni parmi les 656 fichiers que le corpus lit, ni
 # dans `git ls-files` entier, où `.github` n'apparaît QUE comme segment de répertoire (67 fichiers).
-NOMS_HORS_CORPUS = (".git", "target", "node_modules", ".github")
+# NEUF NOMS AJOUTÉS LE 2026-08-31, ET LE CORPUS NE BOUGE PAS — prouvé avant/après. Une garde
+# sœur, qui refuse un parcours d'arbre non élagué depuis une racine dominante, a relevé que cette
+# liste était une COPIE DIVERGENTE du geste partagé : elle en manquait neuf. Aucun de ces neuf
+# répertoires n'existe dans l'arbre aujourd'hui (le seul présent est sous un nom déjà exclu),
+# donc l'ajout est INERTE sur la mesure — et c'est exactement pourquoi il fallait le faire
+# MAINTENANT : le jour où l'un d'eux apparaît, il entrerait dans le corpus et gonflerait les trois
+# relevés qui fondent les planchers, SANS QU'AUCUN NE ROUGISSE — un plancher ne garde que la BAISSE.
+NOMS_HORS_CORPUS = (
+    ".git", "target", "node_modules", ".github",
+    "vendor", "__pycache__", ".venv", "venv", "site-packages",
+    ".tox", ".mypy_cache", ".pytest_cache", ".ruff_cache",
+)
 RE_ECHAPPEMENT = re.compile(r"\\(['\"`\\])")
 SEPARATEUR_CORPUS = "\n\x1e\n"
 RE_CORPS_DE_MOT = re.compile(r"[0-9A-Za-zÀ-ÖØ-öø-ÿ]")

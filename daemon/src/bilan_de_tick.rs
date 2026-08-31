@@ -135,10 +135,87 @@ pub(crate) const BOUCLE_CONNECTEURS: &str = "connecteurs";
 pub(crate) const BOUCLE_DESTINATIONS: &str = "destinations";
 pub(crate) const BOUCLE_RAPPORTS: &str = "rapports";
 pub(crate) const BOUCLE_INGEST: &str = "ingest";
-/// TOUTES les boucles qui publient — c'est cette table que la surface parcourt, pour qu'une boucle
-/// ajoutée demain sans sa case soit visible ici plutôt qu'absente partout.
-pub(crate) const BOUCLES: [&str; 6] =
-    [BOUCLE_REGLES, BOUCLE_RISQUE, BOUCLE_CONNECTEURS, BOUCLE_DESTINATIONS, BOUCLE_RAPPORTS, BOUCLE_INGEST];
+
+/// `P10.7-x` — CE QUE LA SURFACE PARCOURT N'EST PLUS UNE LISTE ÉCRITE À LA MAIN.
+///
+/// CE QUI A ÉTÉ MESURÉ, LE 2026-08-31, AVANT DE CORRIGER. `BOUCLES` était un `[&str; 6]` recopié à
+/// côté des six constantes ci-dessus, et c'est LUI que `metrics::gather_json` et `metrics::gather_prom`
+/// parcouraient. Or HUIT clés étaient publiées dans ce registre par du code de PRODUCTION : les six de
+/// la table, plus `retention` (`server::boucles_de_fond::BOUCLE_RETENTION` — la boucle qui ANCRE la
+/// chaîne d'intégrité, à qui `P10.7-w` venait de donner un bilan en ÉCRIVANT que sa clé manquait ici)
+/// et `overlays` (`overlays_adossement::PASSE_OVERLAYS`, la passe `config.d`). Deux aveux JUSTES,
+/// lisibles par `dernier()`, servis par AUCUNE surface. Ce n'était pas deux accidents : c'est ce que
+/// produit une table qu'il faut PENSER à tenir, et une troisième passe l'aurait rouverte en silence.
+///
+/// LA TABLE EST DONC DÉRIVÉE DU REGISTRE LUI-MÊME — il CONTIENT déjà l'ensemble exact des passes qui
+/// ont publié. `publier` devient le seul geste : ce qui publie est servi, sans qu'aucune liste ait à
+/// l'apprendre. Même figure que `ingest::pubsub::AckDrop::TOUTES` côté raisons d'ack-drop.
+///
+/// TROIS CONSÉQUENCES MESURÉES, écrites parce qu'elles changent la sortie :
+///   1. une passe ajoutée demain est servie le jour où elle publie ; l'oubli n'est plus offert ;
+///   2. UNE FAUSSE ACCUSATION DISPARAÎT, et elle n'avait pas été demandée. La table écrite nommait les
+///      six boucles DÈS LE DÉMARRAGE, avant leur premier tick ; `poser_bilan(None)` ne posait alors
+///      aucune clé, et le helper `lisible()` de l'exposition Prometheus retombe sur
+///      `VERDICT_ILLISIBLE` quand il ne trouve pas son verdict — soit six jauges
+///      `plume_scheduler_<boucle>_bilan_lisible 0` au boot, c'est-à-dire « ce tick était AVEUGLE » sur
+///      des boucles qui n'avaient pas encore tourné. Dérivée, la table ne porte que des clés PUBLIÉES,
+///      dont le verdict existe toujours : l'accusation ne peut plus être portée à vide ;
+///   3. LE REGISTRE NE CONTIENT PAS QUE DES BOUCLES. `overlays` est une passe de DÉMARRAGE, appelée
+///      une seule fois (`server::run` -> `load_overlays`) : son bilan est un verdict de boot qui vaut
+///      jusqu'au redémarrage. La surface ne doit donc RIEN supposer d'une cadence.
+///
+/// CE QUE ÇA NE FAIT PAS : prouver qu'une passe TOURNE. Un fil mort ne publie rien, et l'absence reste
+/// lue « pas encore » — délibérément, un bilan inventé avant le premier passage étant un zéro rassurant.
+pub(crate) fn boucles_publiees() -> Vec<&'static str> {
+    let mut v: Vec<&'static str> = derniers().lock().unwrap_or_else(|e| e.into_inner()).keys().copied().collect();
+    // ORDRE STABLE : un relevé Prometheus et le JSON du panneau se comparent d'une lecture à l'autre,
+    // et l'ordre d'itération d'un `HashMap` ne se compare même pas à lui-même.
+    v.sort_unstable();
+    v
+}
+
+/// LE NOM DE SÉRIE D'UNE PASSE — sa clé réduite à l'alphabet qu'un nom de métrique Prometheus admet.
+/// LA DÉRIVATION A UN COÛT, ET IL EST PAYÉ ICI : la table écrite portait six noms choisis à la main,
+/// tous conformes ; dérivée, elle prend ce que le code publie. Un caractère hors `[a-zA-Z0-9_]` dans
+/// une clé produirait un nom INVALIDE, et Prometheus rejette alors le relevé ENTIER — pas seulement la
+/// série fautive : toute l'observabilité du démon disparaîtrait d'un coup.
+/// CE QUE ÇA NE TIENT PAS, ÉCRIT : la réduction n'est pas injective. Deux clés ne différant que par un
+/// caractère non conforme se rejoindraient sur le même nom de métrique ; seul le composant de santé,
+/// qui porte les noms BRUTS, les distinguerait alors.
+pub(crate) fn nom_de_serie(passe: &str) -> String {
+    passe.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' }).collect()
+}
+
+/// LA CLÉ D'UNE PASSE, ÉCHAPPÉE POUR UN POINTEUR JSON (RFC 6901) : `~` -> `~0`, `/` -> `~1`. L'objet
+/// JSON garde la clé BRUTE — il n'a pas l'alphabet contraint de Prometheus — mais l'exposition la
+/// retrouve par un POINTEUR, dont `/` est le séparateur de niveau : une clé portant un `/` ferait du
+/// pointeur DEUX niveaux, la valeur ne serait jamais retrouvée, et la série DISPARAÎTRAIT du relevé
+/// sans que rien ne le dise. MESURÉ : le témoin de nom de série l'a fait rougir au premier tir — la
+/// table écrite cachait le piège derrière six noms choisis à la main.
+pub(crate) fn jeton_de_pointeur(passe: &str) -> String {
+    passe.replace('~', "~0").replace('/', "~1")
+}
+
+/// LES COMPOSANTS DE LA SURFACE D'ÉTAT ET LES PASSES QU'ILS PORTENT — LE SEUL ENDROIT OÙ CE LIEN EST
+/// ÉCRIT. La surface ne nomme plus une passe : elle nomme SON composant et demande ce qu'il porte.
+///
+/// POURQUOI CETTE TABLE-CI PEUT RESTER ÉCRITE ALORS QUE L'AUTRE NON. « Quel composant nommé porte
+/// quelle passe » est une question de SENS : que les règles et les incidents de risque soient tous
+/// deux « la détection » ne se déduit d'aucune propriété du code. Mais son OUBLI ne fait plus
+/// disparaître personne — ce qu'elle ne revendique pas tombe dans `bilans_orphelins()`, qui est le
+/// COMPLÉMENT (`publiées − revendiquées`) et que la surface porte dans un composant à part. La pire
+/// faute possible ici est donc « montré deux fois », jamais « montré nulle part ».
+pub(crate) const COMPOSANT_INGEST: &str = "ingest";
+pub(crate) const COMPOSANT_DETECTION: &str = "detection";
+pub(crate) const COMPOSANT_FORWARDER: &str = "forwarder";
+/// LE COMPOSANT DU COMPLÉMENT — il porte tout ce qu'aucun composant nommé ne revendique, et il existe
+/// TOUJOURS : son absence se lirait « rien à signaler ».
+pub(crate) const COMPOSANT_PASSES_DE_FOND: &str = "passes_de_fond";
+pub(crate) const COMPOSANTS: [(&str, &[&str]); 3] = [
+    (COMPOSANT_INGEST, &[BOUCLE_INGEST]),
+    (COMPOSANT_DETECTION, &[BOUCLE_REGLES, BOUCLE_RISQUE]),
+    (COMPOSANT_FORWARDER, &[BOUCLE_DESTINATIONS]),
+];
 
 /// LE BILAN DE PLUSIEURS BOUCLES, VU COMME UN SEUL — la détection tourne dans deux boucles (règles,
 /// risque) et la surface n'a qu'un composant « détection ». `None` tant qu'AUCUNE des boucles n'a
@@ -158,6 +235,109 @@ pub(crate) fn combiner(boucles: &[&str]) -> Option<Mesure<u64>> {
         }
     }
     vu.then(|| acc.mesure())
+}
+
+/// LE BILAN CONSOLIDÉ DES PASSES QU'UN COMPOSANT NOMMÉ PORTE. `None` = aucune d'elles n'a encore
+/// publié (démarrage) — jamais un zéro inventé. Un composant absent de `COMPOSANTS` ne porte RIEN,
+/// et c'est la garde `toute_passe_publiee_est_portee_par_un_composant_de_la_surface` qui interdit
+/// qu'un nom vive dans la table sans exister sur la surface (une faute de frappe y ferait taire un
+/// composant sans rien casser ailleurs).
+pub(crate) fn bilan_du_composant(composant: &str) -> Option<Mesure<u64>> {
+    let portees: &[&str] =
+        COMPOSANTS.iter().find(|(nom, _)| *nom == composant).map(|(_, portees)| *portees).unwrap_or(&[]);
+    combiner(portees)
+}
+
+/// LES BILANS QU'AUCUN COMPOSANT NOMMÉ NE REVENDIQUE — `publiées − revendiquées`. C'EST CETTE
+/// SOUSTRACTION QUI FERME LE TROU : une passe qui publie sans que personne l'ait revendiquée tombe
+/// ICI, et son aveu atteint la surface sans que quiconque ait eu à y penser. Écrire deux entrées de
+/// plus dans une liste aurait laissé la troisième s'oublier en silence.
+pub(crate) fn bilans_orphelins() -> Vec<(&'static str, Mesure<u64>)> {
+    boucles_publiees()
+        .into_iter()
+        .filter(|passe| !COMPOSANTS.iter().any(|(_, portees)| portees.contains(passe)))
+        .filter_map(|passe| dernier(passe).map(|m| (passe, m)))
+        .collect()
+}
+
+/// CE QUE LA SURFACE DIT DES PASSES QU'AUCUN COMPOSANT NOMMÉ NE PORTE. Fonction PURE de ses bilans :
+/// aucun registre de processus, aucune base, aucune horloge — donc exerçable sur des entrées
+/// FABRIQUÉES, y compris les états qu'un arbre sain ne produit qu'exceptionnellement.
+///
+/// L'ORDRE DES CAS EST L'ORDRE DE GRAVITÉ, et le premier doit passer devant : une passe AVEUGLE n'a
+/// PAS fait ce qu'elle devait — c'est l'état d'un fil bloqué, pas d'un fil calme — tandis qu'un
+/// abandon est une part du dû qui sera re-tentée. Zéro abandon est VERT et NOMME ce qui est couvert,
+/// sans rien avouer : un aveu inconditionnel n'est pas un aveu.
+pub(crate) fn etat_des_passes_orphelines(bilans: &[(&'static str, Mesure<u64>)]) -> (&'static str, String) {
+    if bilans.is_empty() {
+        return ("idle", "aucune passe de fond hors composant nommé n'a encore publié de bilan".to_string());
+    }
+    let aveugles: Vec<String> = bilans
+        .iter()
+        .filter_map(|(nom, m)| match m {
+            Mesure::Illisible { detail, .. } => Some(format!("{nom} ({detail})")),
+            Mesure::Lue(_) => None,
+        })
+        .collect();
+    if !aveugles.is_empty() {
+        return (
+            "red",
+            format!(
+                "passage(s) AVEUGLE(S) — {} ; ces passes ne sont portées par aucun composant nommé, et \
+                 leur dernier passage n'a PAS fait ce qu'il devait",
+                aveugles.join(" ; ")
+            ),
+        );
+    }
+    let abandons: Vec<String> = bilans
+        .iter()
+        .filter_map(|(nom, m)| match m {
+            Mesure::Lue(n) if *n > 0 => Some(format!("{nom} : {n}")),
+            _ => None,
+        })
+        .collect();
+    if !abandons.is_empty() {
+        return (
+            "yellow",
+            format!(
+                "élément(s) dû(s) ABANDONNÉ(S) au dernier passage ({}) — non traités, re-tentés au suivant",
+                abandons.join(" ; ")
+            ),
+        );
+    }
+    (
+        "green",
+        format!(
+            "{} passe(s) de fond hors composant nommé, 0 abandon au dernier passage : {}",
+            bilans.len(),
+            bilans.iter().map(|(nom, _)| *nom).collect::<Vec<_>>().join(", ")
+        ),
+    )
+}
+
+/// `P10.7-n` — LA MÊME FIGURE QUE `etat_de_surface`, MAIS QUAND LE SERVICE CONTINUE SUR L'ÉTAT
+/// PRÉCÉDENT. `etat_de_surface` traite un bilan de TICK : illisible y veut dire « rien n'a été
+/// évalué », donc ROUGE. Une mesure de RECHARGEMENT ne dit pas cela — le jeu précédent est CONSERVÉ
+/// et le service continue, sur un jeu qui vieillit à chaque échec. ROUGE y serait une SUR-ACCUSATION
+/// (la détection n'est pas éteinte), VERT un mensonge : c'est JAUNE, l'état qui appelle un regard, et
+/// le détail dit sur quoi on tourne encore. Aucune mesure (démarrage) et une mesure SAINE rendent
+/// l'état et le détail INTACTS : le chemin sain reste muet.
+pub(crate) fn etat_de_surface_jeu_conserve(
+    etat: &'static str,
+    detail: String,
+    quoi: &str,
+    mesure: Option<&Mesure<u64>>,
+) -> (&'static str, String) {
+    match mesure {
+        Some(Mesure::Illisible { detail: pourquoi, .. }) => (
+            crate::metrics::pire_des_deux(etat, "yellow"),
+            format!(
+                "{detail} ; {quoi} tourne sur un jeu PÉRIMÉ : {pourquoi} — le dernier jeu lu ENTIÈREMENT \
+                 est CONSERVÉ et le service continue, mais il vieillit à chaque rechargement raté"
+            ),
+        ),
+        _ => (etat, detail),
+    }
 }
 
 /// CE QUE LA SURFACE D'ÉTAT DIT D'UN BILAN, et ce que ça change à l'état du composant. Un tick AVEUGLE

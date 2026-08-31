@@ -96,11 +96,17 @@
 //!     de passe — et non un trou. Les attentes, elles, restent mesurées : la boucle de rollups tient
 //!     le même verrou, et c'était déjà elle que la mesure d'origine avait attrapée.
 //!
-//! CE QUE ÇA COÛTE AU CHEMIN CHAUD. Une observation = six opérations atomiques relâchées (dont deux
-//! boucles de comparaison-échange pour les maxima) sur un chemin qui vient de faire une acquisition
-//! de sémaphore et une requête SQL. Aucune allocation, aucun format, aucune horloge lue en plus :
-//! les deux durées sont DÉJÀ mesurées par `query_timing`, cette série ne fait que les recevoir. Le
-//! coût est mesuré à chaque suite (`une_observation_ne_coute_presque_rien`) plutôt qu'affirmé.
+//! CE QUE ÇA COÛTE AU CHEMIN CHAUD. Une observation = SIX GESTES ATOMIQUES — quatre compteurs
+//! incrémentés, deux maximums relevés (chacun une lecture puis, tant que la valeur monte, un
+//! échange) — sur un chemin qui vient de faire une acquisition de sémaphore et une requête SQL.
+//! Aucune allocation, aucun format, aucune horloge lue en plus : les deux durées sont DÉJÀ mesurées
+//! par `query_timing`, cette série ne fait que les recevoir.
+//!
+//! CE COMPTE EST COMPTÉ, PAS CHRONOMÉTRÉ, et c'est le sujet de `Compteur` ci-dessous :
+//! `une_observation_ne_fait_que_six_gestes_atomiques_et_n_alloue_rien` rend des égalités EXACTES sur
+//! le nombre de gestes et sur les octets de tas (zéro). La forme précédente ANNONÇAIT ce nombre et
+//! ASSERTAIT un rapport de DURÉES ; ce n'est pas la même grandeur, et une durée mesure aussi la
+//! machine.
 
 use crate::*;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -188,36 +194,254 @@ struct Precedent {
 /// l'essai pollue tout le reste — ici, chaque essai monte le sien.
 #[derive(Debug)]
 pub(crate) struct Accumulateur {
-    seaux: [AtomicU64; NB_SEAUX],
-    observations: AtomicU64,
-    permis_us: AtomicU64,
-    verrou_us: AtomicU64,
+    seaux: [Compteur; NB_SEAUX],
+    observations: Compteur,
+    permis_us: Compteur,
+    verrou_us: Compteur,
     /// Maximum depuis le démarrage — jamais remis à zéro (c'est la jauge de `/metrics`).
-    max_vie_us: AtomicU64,
+    max_vie_us: Compteur,
     /// Maximum DE LA FENÊTRE — échangé contre zéro à chaque publication.
-    max_fenetre_us: AtomicU64,
+    max_fenetre_us: Compteur,
     precedent: Mutex<Precedent>,
 }
 
-fn max_atomique(cible: &AtomicU64, v: u64) {
-    let mut vu = cible.load(Ordering::Relaxed);
-    while v > vu {
-        match cible.compare_exchange_weak(vu, v, Ordering::Relaxed, Ordering::Relaxed) {
-            Ok(_) => return,
-            Err(actuel) => vu = actuel,
+// =================================================================================================
+// CE QU'UNE OBSERVATION FAIT AUX ATOMIQUES — UN COMPTE, PAS UNE DURÉE
+// =================================================================================================
+
+/// UNE ATOMIQUE DE L'ACCUMULATEUR, ET LE SEUL CHEMIN VERS ELLE. `AtomicU64` est PRIVÉ : hors de ce
+/// type, rien dans la caisse ne peut incrémenter, lire ni échanger une des onze atomiques de
+/// l'accumulateur. Ce n'est pas une convention, c'est le compilateur — un geste ajouté sur un
+/// compteur EXISTANT est donc compté par construction, et ne peut pas passer à côté du témoin.
+///
+/// LA BORNE, ÉCRITE POUR ÊTRE OPPOSABLE : une atomique NEUVE, déclarée à côté de celles-ci en
+/// `AtomicU64` nu, échapperait au compte. C'est la seule porte qui reste, et elle est étroite : la
+/// structure ci-dessus ne porte aucun champ de ce type.
+///
+/// QUATRE GESTES, ET LEUR SÉPARATION EST LA MESURE. `ajouter` et `relever_le_maximum` sont le chemin
+/// d'OBSERVATION (chaud, une fois par requête) ; `lire` et `prendre` sont le chemin de PUBLICATION
+/// (froid, une fois par fenêtre). Les compter séparément est ce qui permet d'exiger que
+/// l'observation ne fasse AUCUNE lecture et AUCUNE prise — un compteur unique dirait « six gestes »
+/// pour une composition tout autre.
+#[derive(Debug)]
+pub(crate) struct Compteur(AtomicU64);
+
+impl Compteur {
+    fn zero() -> Self {
+        Compteur(AtomicU64::new(0))
+    }
+
+    /// AJOUTE — un `fetch_add` relâché. Le geste est noté AVANT l'atomique : ce sont les TENTATIVES
+    /// qu'on compte, comme pour les lectures de `/proc` dans `vieillissement_serie`.
+    #[inline]
+    fn ajouter(&self, de: u64) {
+        noter_un_ajout();
+        self.0.fetch_add(de, Ordering::Relaxed);
+    }
+
+    /// RELÈVE LE MAXIMUM — une lecture, puis un échange TANT QUE la valeur monte.
+    ///
+    /// C'EST UN SEUL GESTE, ET LE NOMBRE D'ÉCHANGES N'EN EST PAS UN. Le nombre d'itérations dépend
+    /// de la concurrence et, sur les architectures à LL/SC, des échecs SPONTANÉS de
+    /// `compare_exchange_weak` : c'est une grandeur de MACHINE, pas de composition, et elle n'est
+    /// donc pas assertable. Les échanges tentés sont comptés à part et seulement RAPPORTÉS.
+    #[inline]
+    fn relever_le_maximum(&self, v: u64) {
+        noter_un_releve_de_maximum();
+        let mut vu = self.0.load(Ordering::Relaxed);
+        while v > vu {
+            noter_un_echange_tente();
+            match self.0.compare_exchange_weak(vu, v, Ordering::Relaxed, Ordering::Relaxed) {
+                Ok(_) => return,
+                Err(actuel) => vu = actuel,
+            }
         }
+    }
+
+    /// LIT — chemin de PUBLICATION uniquement. Une lecture apparue dans le compte d'une observation
+    /// est une régression : elle voudrait dire que le chemin chaud s'est mis à consulter l'état.
+    #[inline]
+    fn lire(&self) -> u64 {
+        noter_une_lecture();
+        self.0.load(Ordering::Relaxed)
+    }
+
+    /// PREND ET REMET À ZÉRO — l'échange de fin de fenêtre. ÉCHANGE, pas lecture-puis-écriture : une
+    /// observation concurrente ne peut pas être effacée.
+    #[inline]
+    fn prendre(&self) -> u64 {
+        noter_une_prise();
+        self.0.swap(0, Ordering::Relaxed)
+    }
+}
+
+/// LE TÉMOIN NE PÈSE RIEN SUR LE BINAIRE LIVRÉ — corps VIDE et `inline(always)` sous `cfg(not(test))`
+/// — ET LE SITE D'APPEL EST LE MÊME DANS LES DEUX COMPILATIONS : seule change la présence d'un corps.
+///
+/// LE PRIX, NOMMÉ : la composition est prouvée sur une compilation qui n'est pas exactement celle
+/// qu'on livre, et le REPÈRE en durée imprimé par le témoin porte donc sur une observation ALOURDIE
+/// de six écritures dans un `Cell` de fil. Ce repère MAJORE le coût livré ; il ne conclut rien.
+#[cfg(test)]
+#[inline]
+fn noter_un_ajout() {
+    temoin_de_composition::note(temoin_de_composition::Geste::Ajout);
+}
+#[cfg(not(test))]
+#[inline(always)]
+fn noter_un_ajout() {}
+
+#[cfg(test)]
+#[inline]
+fn noter_un_releve_de_maximum() {
+    temoin_de_composition::note(temoin_de_composition::Geste::ReleveDeMaximum);
+}
+#[cfg(not(test))]
+#[inline(always)]
+fn noter_un_releve_de_maximum() {}
+
+#[cfg(test)]
+#[inline]
+fn noter_un_echange_tente() {
+    temoin_de_composition::note(temoin_de_composition::Geste::EchangeTente);
+}
+#[cfg(not(test))]
+#[inline(always)]
+fn noter_un_echange_tente() {}
+
+#[cfg(test)]
+#[inline]
+fn noter_une_lecture() {
+    temoin_de_composition::note(temoin_de_composition::Geste::Lecture);
+}
+#[cfg(not(test))]
+#[inline(always)]
+fn noter_une_lecture() {}
+
+#[cfg(test)]
+#[inline]
+fn noter_une_prise() {
+    temoin_de_composition::note(temoin_de_composition::Geste::Prise);
+}
+#[cfg(not(test))]
+#[inline(always)]
+fn noter_une_prise() {}
+
+/// LE TÉMOIN DE COMPOSITION — il COMPTE les gestes atomiques faits par une portion de code, PAR FIL.
+/// Compilé UNIQUEMENT sous `cfg(test)`.
+///
+/// POURQUOI IL EXISTE, ET CE QU'IL REMPLACE. La propriété gardée est un NOMBRE — « une observation
+/// fait quatre ajouts et deux relevés de maximum, et rien d'autre ». La forme précédente l'approchait
+/// par un RAPPORT DE DURÉES, `médiane(observer) / médiane(fetch_add)`, plafonné au TRIPLE du compte
+/// d'atomiques. Ce n'est pas la même grandeur : une durée mesure aussi la machine. Le jumeau de ce
+/// témoin, dans `vieillissement_serie`, a rendu **13,50** sur un rapport de même forme, sur la
+/// machine de build en train de compiler, alors que sa composition était INTACTE — une accusation
+/// FAUSSE (`P11.23-a`).
+///
+/// PAR FIL, ET CE N'EST PAS UN DÉTAIL : `cargo test` est multi-fils et plusieurs essais observent.
+/// Un compteur global ferait entrer les gestes des voisins dans le compte de l'essai qui mesure, et
+/// le verdict redeviendrait fonction de l'ordonnancement — précisément le défaut qu'on corrige. Sous
+/// `--test-threads=1` tous les essais partagent UN fil : d'où `releve`, qui referme la mesure.
+///
+/// IL N'ALLOUE PAS : le `thread_local!` est initialisé en `const` et ne porte que des `Cell<u64>`
+/// sans `Drop`, donc son premier accès ne passe pas par l'allocateur — que la suite instrumente
+/// (`tas_du_fil`), et sur lequel ce témoin s'appuie pour prouver « zéro octet ».
+///
+/// CE QU'IL NE VOIT PAS, ÉCRIT POUR ÊTRE OPPOSABLE : une atomique NEUVE déclarée hors de `Compteur`,
+/// tout geste vivant dans un bloc `cfg(not(test))`, et TOUT CE QUI N'EST PAS ATOMIQUE — un verrou
+/// pris, une attente, un appel système, une horloge lue. Le tas est tenu à part, par `tas_du_fil`.
+#[cfg(test)]
+pub(crate) mod temoin_de_composition {
+    use std::cell::Cell;
+
+    /// Le geste noté. Une énumération et non cinq fonctions : elle FERME la liste des gestes qu'un
+    /// `Compteur` peut faire, et un geste ajouté demain doit s'y déclarer pour être compté.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub(crate) enum Geste {
+        Ajout,
+        ReleveDeMaximum,
+        EchangeTente,
+        Lecture,
+        Prise,
+    }
+
+    /// Ce qu'une portion de code a fait aux atomiques de l'accumulateur, SUR LE FIL COURANT.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+    pub(crate) struct Composition {
+        /// `fetch_add` relâchés — le chemin chaud en fait QUATRE par observation.
+        pub(crate) ajouts: u64,
+        /// Entrées dans `relever_le_maximum` — DEUX par observation.
+        pub(crate) releves_de_maximum: u64,
+        /// `compare_exchange_weak` TENTÉS. Grandeur de machine : rapportée, jamais assertée.
+        pub(crate) echanges_tentes: u64,
+        /// Lectures — chemin de PUBLICATION. Zéro par observation.
+        pub(crate) lectures: u64,
+        /// Échanges contre zéro — chemin de PUBLICATION. Zéro par observation.
+        pub(crate) prises: u64,
+    }
+
+    /// LES CINQ COMPTES DU FIL, CHACUN DANS SA PROPRE CELLULE — et ce n'est pas un détail de style.
+    /// Une seule `Cell<Composition>` obligeait chaque geste à COPIER les cinq compteurs en entrée et
+    /// en sortie : quarante octets par geste, deux cent quarante par observation. MESURÉ : le repère
+    /// imprimé par le témoin passait de x8 à **x19,04**, AU-DESSUS DU PLAFOND DE 18 que la forme
+    /// précédente assertait — l'instrument coûtait plus cher que ce qu'il mesure. Ici, un geste touche
+    /// HUIT octets, et le repère retombe à **x15,07**.
+    ///
+    /// ET C'EST UNE MESURE DE PLUS CONTRE LA FORME PRÉCÉDENTE : compter, avec cinq `Cell<u64>` de fil,
+    /// ce qu'elle prétendait déjà borner suffisait à faire franchir son plafond. Une grandeur qu'on ne
+    /// peut pas instrumenter sans la faire sortir de ses bornes n'était pas la bonne grandeur.
+    struct Compteurs {
+        ajouts: Cell<u64>,
+        releves_de_maximum: Cell<u64>,
+        echanges_tentes: Cell<u64>,
+        lectures: Cell<u64>,
+        prises: Cell<u64>,
+    }
+
+    thread_local! {
+        static COMPTEURS: Compteurs = const {
+            Compteurs {
+                ajouts: Cell::new(0),
+                releves_de_maximum: Cell::new(0),
+                echanges_tentes: Cell::new(0),
+                lectures: Cell::new(0),
+                prises: Cell::new(0),
+            }
+        };
+    }
+
+    pub(super) fn note(geste: Geste) {
+        COMPTEURS.with(|c| {
+            let compteur = match geste {
+                Geste::Ajout => &c.ajouts,
+                Geste::ReleveDeMaximum => &c.releves_de_maximum,
+                Geste::EchangeTente => &c.echanges_tentes,
+                Geste::Lecture => &c.lectures,
+                Geste::Prise => &c.prises,
+            };
+            compteur.set(compteur.get().saturating_add(1));
+        });
+    }
+
+    pub(crate) fn releve() -> Composition {
+        COMPTEURS.with(|c| Composition {
+            ajouts: c.ajouts.replace(0),
+            releves_de_maximum: c.releves_de_maximum.replace(0),
+            echanges_tentes: c.echanges_tentes.replace(0),
+            lectures: c.lectures.replace(0),
+            prises: c.prises.replace(0),
+        })
     }
 }
 
 impl Accumulateur {
     pub(crate) fn neuf() -> Self {
         Self {
-            seaux: std::array::from_fn(|_| AtomicU64::new(0)),
-            observations: AtomicU64::new(0),
-            permis_us: AtomicU64::new(0),
-            verrou_us: AtomicU64::new(0),
-            max_vie_us: AtomicU64::new(0),
-            max_fenetre_us: AtomicU64::new(0),
+            seaux: std::array::from_fn(|_| Compteur::zero()),
+            observations: Compteur::zero(),
+            permis_us: Compteur::zero(),
+            verrou_us: Compteur::zero(),
+            max_vie_us: Compteur::zero(),
+            max_fenetre_us: Compteur::zero(),
             precedent: Mutex::new(Precedent {
                 instant: Instant::now(),
                 seaux: [0; NB_SEAUX],
@@ -235,22 +459,22 @@ impl Accumulateur {
     /// horloge n'est lue ici, donc la série et la réponse ne peuvent pas se contredire.
     pub(crate) fn observer(&self, permis_us: u64, verrou_us: u64) {
         let total = permis_us.saturating_add(verrou_us);
-        self.observations.fetch_add(1, Ordering::Relaxed);
-        self.permis_us.fetch_add(permis_us, Ordering::Relaxed);
-        self.verrou_us.fetch_add(verrou_us, Ordering::Relaxed);
-        self.seaux[seau_de(total)].fetch_add(1, Ordering::Relaxed);
-        max_atomique(&self.max_vie_us, total);
-        max_atomique(&self.max_fenetre_us, total);
+        self.observations.ajouter(1);
+        self.permis_us.ajouter(permis_us);
+        self.verrou_us.ajouter(verrou_us);
+        self.seaux[seau_de(total)].ajouter(1);
+        self.max_vie_us.relever_le_maximum(total);
+        self.max_fenetre_us.relever_le_maximum(total);
     }
 
     /// Observations depuis le démarrage — pour les essais et l'exposition.
     pub(crate) fn observations(&self) -> u64 {
-        self.observations.load(Ordering::Relaxed)
+        self.observations.lire()
     }
 
     /// Comptes de vie par seau.
     pub(crate) fn seaux(&self) -> [u64; NB_SEAUX] {
-        std::array::from_fn(|i| self.seaux[i].load(Ordering::Relaxed))
+        std::array::from_fn(|i| self.seaux[i].lire())
     }
 
     /// LES POINTS D'UNE FENÊTRE — et la fenêtre est CLOSE par cet appel (la photo est avancée).
@@ -269,12 +493,12 @@ impl Accumulateur {
         let maintenant = Instant::now();
         let fenetre_us = maintenant.duration_since(p.instant).as_micros().min(u64::MAX as u128) as u64;
         let seaux = self.seaux();
-        let observations = self.observations.load(Ordering::Relaxed);
-        let permis_us = self.permis_us.load(Ordering::Relaxed);
-        let verrou_us = self.verrou_us.load(Ordering::Relaxed);
+        let observations = self.observations.lire();
+        let permis_us = self.permis_us.lire();
+        let verrou_us = self.verrou_us.lire();
         // ÉCHANGE, pas lecture-puis-remise-à-zéro : une observation concurrente ne peut pas être
         // effacée. Au pire elle tombe dans la fenêtre SUIVANTE — un décalage, jamais une perte.
-        let max_us = self.max_fenetre_us.swap(0, Ordering::Relaxed);
+        let max_us = self.max_fenetre_us.prendre();
         let d_observations = observations.saturating_sub(p.observations);
         // Le chevauchement est PLAFONNÉ à la durée de la fenêtre : une passe ouverte depuis plus
         // longtemps que la fenêtre ne peut pas avoir couvert plus que la fenêtre elle-même, et un
@@ -351,8 +575,8 @@ impl Accumulateur {
              # TYPE plume_query_attente_ms_total counter\n",
         );
         for (terme, v) in [
-            (TERME_PERMIS, self.permis_us.load(Ordering::Relaxed)),
-            (TERME_VERROU, self.verrou_us.load(Ordering::Relaxed)),
+            (TERME_PERMIS, self.permis_us.lire()),
+            (TERME_VERROU, self.verrou_us.lire()),
         ] {
             o.push_str(&format!(
                 "plume_query_attente_ms_total{{terme=\"{terme}\"}} {}\n",
@@ -366,7 +590,7 @@ impl Accumulateur {
         );
         o.push_str(&format!(
             "plume_query_attente_ms_max {}\n",
-            us_en_ms(self.max_vie_us.load(Ordering::Relaxed))
+            us_en_ms(self.max_vie_us.lire())
         ));
         o.push_str(
             "# HELP plume_query_attente_vieillissement_ms_total Temps cumulé pendant lequel une \

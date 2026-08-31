@@ -473,15 +473,50 @@ mod attente_serie_tests {
 
     /// UNE MESURE QUI COÛTE CE QU'ELLE MESURE FINIT PAR SE FAIRE ÉTEINDRE. L'observation est faite
     /// sur un chemin qui vient d'acquérir un sémaphore et d'exécuter du SQL : elle doit disparaître
-    /// devant. Aucune allocation, aucun format, aucune horloge lue en plus — six atomiques relâchées.
+    /// devant. Ce que ce témoin tient : SIX GESTES ATOMIQUES et ZÉRO OCTET DE TAS, par observation.
     ///
-    /// `P6.9-a` — CE QUI EST ASSERTÉ EST UN RAPPORT, PAS DES NANOSECONDES. La forme précédente
-    /// assertait `< 1 000 ns` par observation. Une borne absolue mesure la machine autant que le code,
-    /// et celle-ci rougissait sous charge alors que rien n'avait changé — mesuré le 2026-08-23 sur ce
-    /// banc (12 cœurs, binaire de test `debug`, mesure épinglée sur UN cœur partagé avec des brûleurs
-    /// de CPU) :
+    /// POURQUOI CE TÉMOIN NE CHRONOMÈTRE PLUS. La forme précédente ANNONÇAIT un compte
+    /// — sa constante s'appelait `ATOMIQUES_PAR_OBSERVATION` et son commentaire disait mot pour mot
+    /// « Le plafond est dérivé de CE nombre, pas d'une durée » — et ASSERTAIT
+    /// `médiane(durées observer) / médiane(durées fetch_add) <= 3 × 6`. Le texte décrivait un compte,
+    /// le code chronométrait. Ce ne sont pas la même grandeur : une durée mesure aussi la machine.
     ///
-    /// | banc                         | ancienne forme (moyenne) | verdict   | rapport MÉDIAN |
+    /// CE N'EST PAS UNE CRAINTE, C'EST UN RELEVÉ. Son JUMEAU de `vieillissement_serie`, écrit le même
+    /// jour et de la même main, portait la même phrase et la même division de médianes. Le
+    /// 2026-08-30, le portail de build du VPS lui a fait rendre **13,50** PENDANT QU'IL COMPILAIT, là
+    /// où la composition en vaut 4 et où le poste de développement rend 4,25–4,28 : une excursion de
+    /// **×3,2 sur une composition INTACTE**, donc une accusation FAUSSE (`P11.23-a`). Ce témoin-ci se
+    /// donnait **×2,05** de marge (plafond 18 contre un pire relevé de 8,77) : moins que l'excursion
+    /// déjà constatée. Il n'a pas rougi ; il n'y avait aucune raison de croire qu'il ne rougirait pas.
+    ///
+    /// CE QUE LA FORME ACTUELLE TIENT, ET C'EST NEUF :
+    ///   * le NOMBRE d'ajouts (`fetch_add`) — exactement 4 par observation, DANS LES DEUX SENS ;
+    ///   * le NOMBRE de relevés de maximum — exactement 2 ;
+    ///   * le nombre de LECTURES et de PRISES sur le chemin chaud — exactement ZÉRO, ce qu'aucun
+    ///     rapport de durées n'aurait su distinguer d'un ajout ;
+    ///   * les OCTETS DE TAS d'une observation — exactement ZÉRO, mesurés par `tas_du_fil`, qui
+    ///     compte les octets Rust vivants du FIL. C'est la promesse « aucune allocation, aucun
+    ///     format » de l'en-tête du module, qui n'était jusqu'ici tenue par rien : le rapport la
+    ///     couvrait de si loin qu'un `format!` isolé serait passé sous son plafond.
+    ///
+    /// CE QUE LE PLAFOND SUPPRIMÉ TENAIT ET QUE LE COMPTE NE TIENT PAS, ÉCRIT POUR ÊTRE OPPOSABLE.
+    /// Un rapport de durées voyait, EN PRINCIPE, tout surcoût ajouté au chemin : un verrou, une
+    /// attente, un appel système, une horloge. Le compte y est AVEUGLE (le tas ne rattrape que ce qui
+    /// alloue). Le rétrécissement est réel — mais il est plus petit qu'il n'en a l'air, et c'est
+    /// CHIFFRABLE : avec un rapport observé à 8,1–8,8 pour un plafond à 18, il fallait ajouter plus
+    /// de NEUF `fetch_add` de coût pour le franchir. Un verrou `parking_lot` non contesté en vaut
+    /// deux ; il passait déjà. Le canal perdu ne rendait pas le verdict qu'on lui prêtait, et il
+    /// accusait à tort sur une autre machine — un canal qui accuse à tort finit désarmé.
+    ///
+    /// LE PLAFOND N'A PAS ÉTÉ ÉLARGI : IL A ÉTÉ SUPPRIMÉ AVEC LA GRANDEUR QU'IL BORNAIT. La mesure de
+    /// durée survit en REPÈRE IMPRIMÉ, jamais en verdict, et l'historique de mesure est conservé
+    /// ci-dessous parce qu'il BORNE ce qui précède — pas par nostalgie.
+    ///
+    /// HISTORIQUE (banc local, 12 cœurs, binaire de test `debug`, mesure épinglée sur UN cœur partagé
+    /// avec des brûleurs de CPU, 2026-08-23) — `P6.9-a` avait déjà remplacé une borne ABSOLUE
+    /// (`< 1 000 ns`) par ce rapport, pour la même raison qu'on le retire aujourd'hui :
+    ///
+    /// | banc                         | forme `P6.9-a` (moyenne) | verdict   | rapport MÉDIAN |
     /// |------------------------------|--------------------------|-----------|----------------|
     /// | au repos                     | 120 ns                   | VERT      | 8,06 à 8,57    |
     /// | 8 brûleurs sur le même cœur  | 1 135 ns                 | **ROUGE** | 8,77           |
@@ -489,52 +524,141 @@ mod attente_serie_tests {
     /// | 32 brûleurs                  | 4 208 ns                 | **ROUGE** | 8,14           |
     /// | 12 brûleurs, machine entière | 412 ns                   | VERT      | 8,17           |
     ///
-    /// Le coût apparent varie de ×35 ; le rapport, de 8 %.
+    /// Le coût apparent variait de ×35 ; le rapport, de 8 % — et c'est ce qui avait fait préférer le
+    /// rapport. Mutation « `observer` répétant dix fois son corps », jouée le 2026-08-23 : rapport 8,5
+    /// -> **72,1 au repos**. Cette même mutation est aujourd'hui attrapée par le COMPTE — 40 ajouts et
+    /// 20 relevés au lieu de 4 et 2 — sans horloge.
     ///
-    /// L'ÉTALON EST L'OPÉRATION DONT L'OBSERVATION EST FAITE : un `fetch_add` relâché sur un
-    /// `AtomicU64`. C'est ce que `observer` fait six fois (quatre compteurs, plus deux maximums qui
-    /// lisent et n'échangent qu'en montant), et rien d'autre ne doit s'y ajouter. Un `format!`, un
-    /// `Instant::now()` ou un verrou coûtent des dizaines d'atomiques et sortent immédiatement du
-    /// plafond ; c'est exactement ce que ce test existe pour interdire.
+    /// LES BLOCS COURTS ET ALTERNÉS SONT CONSERVÉS POUR LE SEUL REPÈRE : sans eux (mesuré : 20 blocs
+    /// de 10 000) la majorité des blocs est préemptée sous charge et le rapport imprimé monte à 375,
+    /// ce qui rendrait le repère illisible. Aucune assertion n'en dépend plus.
     ///
-    /// LES BLOCS SONT COURTS ET ALTERNÉS, ET CE N'EST PAS UN DÉTAIL. Une atomique ne se chronomètre
-    /// pas à l'unité (l'horloge coûte plus cher qu'elle) : on mesure des blocs. Avec des blocs LONGS
-    /// (mesuré : 20 blocs de 10 000), la majorité des blocs est préemptée sous charge et la médiane
-    /// devient celle des blocs préemptés — le rapport est monté à 375, faux rouge. Des blocs COURTS
-    /// (200 blocs de 1 000) restent sous la tranche de l'ordonnanceur, la médiane retombe sur les
-    /// blocs propres, et le rapport tient à 6 % près sur tous les bancs ci-dessus.
+    /// ET LE REPÈRE NE SE COMPARE PLUS À L'HISTORIQUE CI-DESSUS, IL FAUT LE DIRE : sous compilation de
+    /// test, une observation paie AUSSI six écritures dans un `Cell` de fil. Mesuré ici : **x15,07**
+    /// contre 8,06–8,77 pour la forme instrumentée par personne. Ce qui suit est un fait, pas une
+    /// anecdote — COMPTER ce que la forme précédente prétendait borner suffisait à franchir son
+    /// plafond de 18 (la première rédaction du compteur, une seule `Cell<Composition>` de quarante
+    /// octets recopiée à chaque geste, rendait **x19,04**). Une grandeur qu'on ne peut pas
+    /// instrumenter sans la faire sortir de ses bornes n'était pas la bonne grandeur.
     ///
-    /// MUTATION (exécutée le 2026-08-23) : `observer` répétant dix fois son corps porte le rapport de
-    /// 8,5 à **72,1 au repos** et fait rougir cette assertion, au repos comme sous charge.
+    /// CE TÉMOIN N'A AUCUN CANAL DE REFUS DE CONCLURE, ET C'EST UNE PROPRIÉTÉ : il n'interroge aucun
+    /// environnement — ni `/proc`, ni horloge, ni système de fichiers. Il n'y a donc nulle part où un
+    /// aveuglement pourrait se cacher. Ses deux instruments sont en revanche VALIDÉS avant d'être
+    /// crus, par un témoin positif ET un témoin négatif : le mode de panne d'un compteur est de
+    /// rendre vert en étant mort.
     #[test]
-    fn une_observation_ne_coute_presque_rien() {
-        /// Le nombre d'opérations atomiques que fait UNE observation : quatre compteurs incrémentés,
-        /// deux maximums relevés. Le plafond est dérivé de CE nombre, pas d'une durée.
-        const ATOMIQUES_PAR_OBSERVATION: f64 = 6.0;
-        /// LE PLAFOND, ET D'OÙ IL SORT. Mesuré sur ce banc : 8,06 à 8,77 selon la charge — au-dessus
-        /// des six atomiques, parce qu'une observation calcule aussi son seau et paie, en profil
-        /// `debug`, un appel non inliné. Le plafond est posé au TRIPLE du compte d'atomiques : il
-        /// borne la FORME (une poignée d'atomiques) sans borner le profil de compilation, il laisse
-        /// 2,05 fois de marge au-dessus du pire rapport observé (8,77), et il rougit quatre fois plus
-        /// bas que ce que rend une mutation ×10.
-        const RAPPORT_MAX: f64 = 3.0 * ATOMIQUES_PAR_OBSERVATION;
-        /// Le nombre total d'observations est inchangé ; il est découpé en blocs COURTS pour que la
-        /// médiane porte sur des blocs non préemptés (cf. le commentaire de doc).
+    fn une_observation_ne_fait_que_six_gestes_atomiques_et_n_alloue_rien() {
+        /// CE QU'UNE OBSERVATION FAIT, DÉRIVÉ DE LA SOURCE : `observer` incrémente `observations`,
+        /// `permis_us`, `verrou_us` et le seau du total, puis relève `max_vie_us` et `max_fenetre_us`.
+        const AJOUTS_PAR_OBSERVATION: u64 = 4;
+        const RELEVES_PAR_OBSERVATION: u64 = 2;
+        /// ET RIEN D'AUTRE. Lire ou prendre appartient à la PUBLICATION, une fois par fenêtre. Une
+        /// lecture apparue ici voudrait dire que le chemin chaud s'est mis à consulter son état.
+        const LECTURES_PAR_OBSERVATION: u64 = 0;
+        const PRISES_PAR_OBSERVATION: u64 = 0;
+        /// LES OCTETS DE TAS QU'UNE OBSERVATION A LE DROIT DE FAIRE VIVRE. Zéro, et pas « peu » : un
+        /// `format!`, un `String`, un `Vec` ou une boîte en font vivre au moins un.
+        const OCTETS_DE_TAS_PAR_OBSERVATION: u64 = 0;
+        /// Le nombre total d'observations est inchangé ; il reste découpé en blocs COURTS pour que la
+        /// médiane du REPÈRE porte sur des blocs non préemptés (cf. le commentaire de doc).
         const N: u64 = 200_000;
         const BLOCS: usize = 200;
         const PAR_BLOC: u64 = N / BLOCS as u64;
+
+        // =========================================================================================
+        // 1. LES DEUX INSTRUMENTS SONT VALIDÉS AVANT D'ÊTRE CRUS
+        // =========================================================================================
+
+        // LES INSTRUMENTS SE VALIDENT SUR DES GESTES QUI NE SONT PAS L'OBSERVATION, ET C'EST LE POINT.
+        // Une première rédaction validait le compteur sur UNE observation, en exigeant (4, 2, 0, 0).
+        // MESURÉ : les dix mutations jouées rougissaient TOUTES là, sous le message « le compteur ne
+        // compte pas ce qu'il prétend » — y compris celles où le compteur était parfait et où c'était la
+        // COMPOSITION qui avait changé. Un témoin qui accuse l'instrument à la place du coupable est un
+        // faux témoignage, et il masquait de surcroît les trois assertions de composition, jamais
+        // atteintes. Les témoins portent donc sur `lire` et `prendre` — des gestes du chemin de
+        // PUBLICATION, dont le compte ne dépend d'aucune ligne de `observer`.
+        let temoin = Accumulateur::neuf();
+        let _ = temoin_de_composition::releve();
+        let _ = temoin.observations();
+        let une = temoin_de_composition::releve();
+        assert_eq!(
+            (une.ajouts, une.releves_de_maximum, une.lectures, une.prises),
+            (0, 0, 1, 0),
+            "INSTRUMENT : UN geste de lecture s'est compté {une:?} au lieu d'une seule lecture — le \
+             compteur ne distingue pas les gestes, et rien de ce qui suit ne voudrait dire quoi que ce soit"
+        );
+
+        // ET IL SAIT COMPTER AU-DELÀ DE UN. Un compteur saturé à 1, ou remis à zéro à chaque geste,
+        // passerait le témoin ci-dessus et rendrait le volume complet incomptable.
+        let _ = temoin.seaux();
+        let plusieurs = temoin_de_composition::releve();
+        assert_eq!(
+            (plusieurs.lectures, plusieurs.ajouts),
+            (NB_SEAUX as u64, 0),
+            "INSTRUMENT : lire les {NB_SEAUX} seaux s'est compté {plusieurs:?} — le compteur sature, se \
+             remet à zéro tout seul, ou range une lecture ailleurs que dans les lectures"
+        );
+
+        // ET LE CANAL DES PRISES EST VIVANT. Sans ce témoin, « zéro prise par observation » serait vrai
+        // PAR CONSTRUCTION le jour où plus rien n'incrémente ce compteur-là — la forme exacte du témoin
+        // vert et muet. La publication d'une fenêtre en fait EXACTEMENT une (`max_fenetre_us`).
+        let _ = temoin.points_de_fenetre(0);
+        let publication = temoin_de_composition::releve();
+        assert_eq!(
+            (publication.prises, publication.ajouts),
+            (1, 0),
+            "INSTRUMENT : publier une fenêtre s'est compté {publication:?} au lieu d'UNE prise et d'AUCUN \
+             ajout — soit le canal des prises est mort (et « zéro prise par observation » ne prouve plus \
+             rien), soit la publication s'est mise à écrire dans les compteurs qu'elle lit"
+        );
+
+        // TÉMOIN POSITIF DU TAS : un instrument qui ne verrait AUCUNE allocation serait vert quoi
+        // qu'il arrive. On lui en montre une AVANT de lui faire dire zéro.
+        const OCTETS_TEMOIN: usize = 4096;
+        let (_, pic_temoin) = crate::tas_du_fil::pic_vivant_pendant(|| {
+            let v = std::hint::black_box(vec![0u8; OCTETS_TEMOIN]);
+            std::hint::black_box(v.len())
+        });
+        assert!(
+            pic_temoin >= OCTETS_TEMOIN as u64,
+            "INSTRUMENT : le compteur de tas n'a vu que {pic_temoin} octets vivants pour un vecteur de \
+             {OCTETS_TEMOIN} — il est mort ou désarmé, et le « zéro octet » ci-dessous serait vert par \
+             construction"
+        );
+
+        // =========================================================================================
+        // 2. LE COMPTE, SUR LE VOLUME COMPLET
+        // =========================================================================================
 
         let acc = Accumulateur::neuf();
         let etalon = std::sync::atomic::AtomicU64::new(0);
         let un_etalon = || {
             std::hint::black_box(etalon.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
         };
+        let _ = temoin_de_composition::releve();
+
+        // LE TAS EST MESURÉ SUR SON PROPRE BLOC : `pic_vivant_pendant` arme le fil, et une mesure qui
+        // engloberait les chronomètres attribuerait à l'observation ce que `Vec::push` alloue.
+        let (_, pic) = crate::tas_du_fil::pic_vivant_pendant(|| {
+            for i in 0..PAR_BLOC {
+                acc.observer(i % 1_000, i % 5_000_000);
+            }
+        });
+        assert_eq!(
+            pic, OCTETS_DE_TAS_PAR_OBSERVATION,
+            "{PAR_BLOC} observations ont fait vivre {pic} octets de tas au lieu de \
+             {OCTETS_DE_TAS_PAR_OBSERVATION} : une allocation s'est glissée sur le chemin chaud — un \
+             `format!`, un `String`, un `Vec`, une boîte. L'en-tête du module promet « aucune \
+             allocation, aucun format », et c'est ici que cette promesse est tenue"
+        );
+
         // Chauffe : le premier bloc paie le cache d'instructions et le premier défaut de page.
         for i in 0..PAR_BLOC {
             acc.observer(i % 1_000, i % 5_000_000);
             un_etalon();
         }
         // LES DEUX BRAS SONT ENTRELACÉS, bloc par bloc : ils subissent alors le MÊME ordonnancement.
+        // Ils ne rendent plus qu'un REPÈRE.
         let (mut refs, mut obs) = (Vec::with_capacity(BLOCS), Vec::with_capacity(BLOCS));
         for _ in 0..BLOCS {
             let t = Instant::now();
@@ -548,35 +672,73 @@ mod attente_serie_tests {
             }
             obs.push(t.elapsed() / PAR_BLOC as u32);
         }
+        let vue = temoin_de_composition::releve();
+
+        // LE BRAS A-T-IL FAIT LE TRAVAIL ANNONCÉ ? Question posée à la PRODUCTION, pas au témoin :
+        // sans elle, un `observer` devenu inerte rendrait « 0 geste pour 0 observation », donc des
+        // rapports EXACTS et un test vert sur un instrument mort.
+        const OBSERVATIONS: u64 = N + 2 * PAR_BLOC;
+        assert_eq!(
+            acc.observations(),
+            OBSERVATIONS,
+            "le bras mesuré n'a pas fait le travail annoncé — les comptes ci-dessous porteraient sur \
+             autre chose"
+        );
+
+        // LA COMPOSITION, DANS LES DEUX SENS. `assert_eq!` et non `<=` : un geste RETIRÉ est une
+        // régression au même titre qu'un geste ajouté. Un ajout en moins, c'est un terme de la série
+        // qui cesse d'être alimenté — une attente qui disparaît de `/metrics` sans que rien ne casse.
+        assert_eq!(
+            vue.ajouts,
+            AJOUTS_PAR_OBSERVATION * OBSERVATIONS,
+            "{OBSERVATIONS} observations ont fait {} ajouts au lieu de {} ({AJOUTS_PAR_OBSERVATION} par \
+             observation : `observations`, `permis_us`, `verrou_us`, le seau du total). Un ajout EN PLUS \
+             = un compteur ajouté au chemin chaud ; un ajout EN MOINS = un terme de la série qui n'est \
+             plus alimenté",
+            vue.ajouts,
+            AJOUTS_PAR_OBSERVATION * OBSERVATIONS
+        );
+        assert_eq!(
+            vue.releves_de_maximum,
+            RELEVES_PAR_OBSERVATION * OBSERVATIONS,
+            "{OBSERVATIONS} observations ont relevé {} maximums au lieu de {} \
+             ({RELEVES_PAR_OBSERVATION} par observation : `max_vie_us` et `max_fenetre_us`). En MOINS, \
+             c'est l'un des deux maximums qui a cessé d'être tenu — la jauge de `/metrics` ou le \
+             maximum de fenêtre, publiés à leur dernière valeur sans que rien ne le dise",
+            vue.releves_de_maximum,
+            RELEVES_PAR_OBSERVATION * OBSERVATIONS
+        );
+        assert_eq!(
+            (vue.lectures, vue.prises),
+            (LECTURES_PAR_OBSERVATION, PRISES_PAR_OBSERVATION),
+            "le chemin chaud a fait {} lecture(s) et {} prise(s) d'atomique : ces gestes appartiennent à \
+             la PUBLICATION (une fois par fenêtre), pas à l'observation. Une PRISE sur ce chemin \
+             remettrait un compteur à zéro à chaque requête",
+            vue.lectures,
+            vue.prises
+        );
+
+        // =========================================================================================
+        // 3. LE REPÈRE — IMPRIMÉ, JAMAIS ASSERTÉ
+        // =========================================================================================
+        // Ce chiffre dit à un humain ce qu'une observation coûte SUR CETTE MACHINE-LÀ, dans le PROFIL
+        // DE TEST (les compteurs de composition sont actifs : il MAJORE le coût du binaire livré). Il
+        // ne conclut rien, et AUCUNE assertion n'en dépend — c'est le sujet même de ce témoin : la
+        // même mesure, assertée, a produit un rouge FAUX sur la machine de build (`P11.23-a`).
         let mediane = |v: &mut Vec<Duration>| {
             v.sort_unstable();
             v[v.len() / 2]
         };
         let (r, o) = (mediane(&mut refs), mediane(&mut obs));
-
-        assert_eq!(
-            acc.observations(),
-            N + PAR_BLOC,
-            "le bras mesuré n'a pas fait le travail annoncé — le rapport ci-dessous porterait sur autre chose"
-        );
-        // GARDE-FOU DE L'INSTRUMENT : un étalon nul rendrait le rapport infini (faux rouge). Si
-        // l'horloge ne résout plus un bloc d'atomiques, ce test ne peut rien prouver — il doit le DIRE.
-        assert!(
-            r > Duration::ZERO,
-            "l'étalon (un `fetch_add` relâché) mesure {r:?} : l'horloge ne le résout pas, le rapport \
-             ci-dessous ne voudrait rien dire"
-        );
-        let rapport = o.as_secs_f64() / r.as_secs_f64();
-        assert!(
-            rapport <= RAPPORT_MAX,
-            "une observation coûte {rapport:.2} `fetch_add` relâchés ({o:?} contre {r:?}, médianes sur \
-             {BLOCS} blocs de {PAR_BLOC} entrelacés) — au-delà de {RAPPORT_MAX:.0}, ce n'est plus la \
-             composition attendue ({ATOMIQUES_PAR_OBSERVATION:.0} atomiques) : une allocation, un \
-             format, une horloge ou un verrou se sont glissés sur le chemin que la mesure mesure"
-        );
         eprintln!(
-            "[mesure 2026-08-23] une observation : {rapport:.2} `fetch_add` relâchés (médianes {o:?} / \
-             {r:?}). Le chiffre ABSOLU dépend de la machine et n'est qu'un repère : {o:?} par observation."
+            "[repère, non asserté] une observation : {o:?} contre {r:?} pour un `fetch_add` relâché \
+             (médianes sur {BLOCS} blocs de {PAR_BLOC} entrelacés), soit x{:.2}. Composition COMPTÉE : \
+             {} ajouts + {} relevés de maximum pour {OBSERVATIONS} observations, {} échanges tentés \
+             (grandeur de machine, jamais assertée), {pic} octet(s) de tas.",
+            o.as_secs_f64() / r.as_secs_f64().max(1e-9),
+            vue.ajouts,
+            vue.releves_de_maximum,
+            vue.echanges_tentes
         );
     }
 

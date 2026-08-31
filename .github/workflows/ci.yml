@@ -1554,6 +1554,26 @@ jobs:
       - name: Un banc qui refuse de conclure sort par un canal DISTINCT d'une propriété violée
         run: python3 .github/scripts/check_a_bench_refusal_is_a_distinct_channel.py
 
+      # MÊME FAMILLE QUE LE PAS PRÉCÉDENT, UN CRAN PLUS TÔT : là le CANAL était faux, ici c'est la GRANDEUR.
+      # Deux témoins écrits le même jour annonçaient un COMPTE (« quatre lectures de `/proc` »,
+      # « six opérations atomiques »), disaient noir sur blanc que leur plafond en était dérivé « pas
+      # d'une durée », et assertaient un RAPPORT DE MÉDIANES DE DURÉES. Le 2026-08-30, le portail de
+      # déploiement — qui rejoue la suite sur la machine de build PENDANT qu'elle compile — a fait
+      # rendre 13,50 au premier là où la composition en vaut 4, sur un arbre INTACT : une accusation
+      # FAUSSE, par un témoin vert au repos. Le second se donnait 2,05 de marge, moins que l'excursion
+      # de 3,2 déjà constatée sur son jumeau.
+      # LA GARDE EXIGE DEUX JAMBES CONJOINTES, et la conjonction CHOISIT le sens de l'erreur : (A) la
+      # grandeur comparée dérive d'une HORLOGE, reconnu par flot de données sans aucun lexique ; (B) la
+      # prose ATTACHÉE à cette grandeur — le message de l'assertion et la doc des constantes qu'elle
+      # nomme, jamais le récit alentour — annonce un COMPTE D'OPÉRATIONS. Sans (B), silence : un budget
+      # de latence, une temporisation, un filet, deux durées comparées entre elles sont des propriétés
+      # TEMPORELLES légitimes, et une garde qui les accuserait finirait désarmée. Elle NE lit PAS la doc
+      # de la fonction : un fichier doit pouvoir DÉCRIRE ce défaut sans être accusé de le commettre.
+      # Ses six témoins (un à accuser, cinq à blanchir) sont FABRIQUÉS DANS LA GARDE : aucun plancher
+      # sur l'état de l'arbre, qui rougirait le jour où le travail est fini.
+      - name: Un témoin qui ANNONCE un compte ne le tient pas avec une HORLOGE
+        run: python3 .github/scripts/check_a_counted_property_is_never_asserted_through_a_clock.py
+
       # MÊME FAMILLE, APPLIQUÉE À LA DOCUMENTATION : ici ce n'est pas une couverture annoncée qui est
       # injoignable, c'est le DOCUMENT lui-même. Un document à jour que rien ne référence est
       # invisible, donc inexistant pour le lecteur. MESURÉ le 2026-08-20 : 11 des 45 documents suivis

@@ -7860,6 +7860,94 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   console.log(`[liste-ecourtee-le-dit] le démon sert jusqu'à ${NB59} valeurs de source (LIMIT LU dans daemon/src/handlers/soql_meta.rs) et la console en affiche ${BORNE59} : la tête de la boîte porte alors les DEUX nombres et le mot d'écourtement ; une liste ENTIÈRE n'en porte AUCUN (témoin négatif) ; préciser la saisie ÉTEINT l'aveu, ce qui rend l'avertissement actionnable ; et l'aveu n'est ni une suggestion (l'accepter n'insère rien) ni un décalage de la sélection (${CIBLE59} flèches surlignent bien la ${CIBLE59 + 1}e suggestion, chose que le témoin 58 ne peut pas voir puisque sa liste n'est jamais écourtée). CE QUE CE TÉMOIN NE TIENT PAS : il juge le TEXTE d'un arbre, jamais l'encre peinte ni la POSITION visuelle de l'aveu ; il ne dit rien de son annonce par un lecteur d'écran à l'intérieur d'un « role=listbox » ; il ne tient pas la VALEUR de la borne — la plus grande liste FERMÉE du vocabulaire (« CIM_CATEGORIES ») vit dans le cœur, hors de ce dépôt, donc « la borne ne mord jamais sur un énuméré clos » est MESURÉ le 2026-08-30 et NON gardé ; et il ne voit pas la SECONDE troncature, en amont : le démon lui-même s'arrête à ${NB59} sources et ne dit pas s'il y en avait davantage.`);
 }
 
+// ---------------------------------------------------------------------------------------------
+// 60. LES DEUX AVEUX DE LA LISTE D'ALERTES EXISTENT VRAIMENT — ET LE CHEMIN NOMINAL RESTE MUET
+//     (`P11.21-l`).
+//
+//     POURQUOI CE TÉMOIN EXISTE, ET IL COMBLE UN TROU QUE PERSONNE N'AVAIT VU. La garde du rendu
+//     PEINT juge ces deux aveux sur un balisage qu'elle DÉRIVE de la source. Elle prouve qu'une
+//     feuille de style ne peut pas les masquer — elle ne prouve PAS que le module les PRODUIT. Or
+//     mesuré le 2026-08-31 : les HUIT appels de ce banc à la liste plate omettent tous le dernier
+//     argument, celui qui porte l'état de la lecture. Les deux aveux rendaient donc la chaîne vide,
+//     et AUCUN banc du dépôt ne les appelait — leur texte n'existait nulle part hors de `web/`.
+//     Ils n'étaient pas « tenus par leur rang » : ils n'étaient tenus par RIEN.
+//
+//     CE QUE CE TÉMOIN TIENT, ET CE QU'IL LAISSE À SA SŒUR. Ici : le module PRODUIT les deux aveux
+//     sur un corps « lignes + cause », dans le bon ordre, et NE LES PRODUIT PAS sur une lecture
+//     entière. Là-bas : ce qui est produit est effectivement PEINT. Les deux sont nécessaires, et
+//     aucune ne remplace l'autre — l'une sans l'autre laisse passer soit un aveu absent, soit un
+//     aveu invisible.
+//
+//     CE QU'IL NE TIENT PAS : il juge du texte rendu, jamais de l'encre ; et il n'exerce que la
+//     branche française — l'anglaise est plus longue, donc plus exposée au rognage, ce que sa sœur
+//     mesure sans le rejouer dans les deux langues.
+// ---------------------------------------------------------------------------------------------
+{
+  const CAUSE_60 = "CAUSE-DE-TRONCATURE-FABRIQUEE-PAR-CE-BANC-60";
+  const modAlertes60 = await import(pathToFileURL(path.join(WEB, "alerts.js")).href);
+  const modEtat60 = await import(pathToFileURL(path.join(WEB, "state.js")).href);
+  const dessiner60 = modAlertes60.dessinerLaListePlate;
+  const modeleDeListe60 = modAlertes60.alertListModel;
+  const S60 = modEtat60.S;
+  exiger(typeof modeleDeListe60 === "function" && S60 && typeof S60 === "object",
+    "(60-instrument) le modèle de liste ou l'état partagé n'est plus exporté : ce témoin ne pourrait rien dessiner");
+
+  // — instrument : LA FONCTION ACCEPTE ENCORE UN ÉTAT, SINON CE TÉMOIN NE MESURE RIEN.
+  exiger(typeof dessiner60 === "function" && dessiner60.length >= 5,
+    `(60-instrument) la liste plate n'accepte plus d'état de lecture (arité ${dessiner60 && dessiner60.length}) : les deux aveux n'ont plus de chemin, mettez ce témoin à jour au lieu de le laisser vert`);
+
+  const lot60 = [
+    { id: 1, ts: 1, title: "alerte une", severity: 3, status: "new", rule_token: "r1", source: "s1" },
+    { id: 2, ts: 2, title: "alerte deux", severity: 2, status: "new", rule_token: "r2", source: "s2" },
+  ];
+  const peindre60 = (etat) => {
+    const hote = document.createElement("div");
+    S60.AUTH = { user: "root", role: "admin" };
+    S60.alertGroupBy = ""; S60.alertGroupAll = false; S60.alertUncased = true;
+    dessiner60(hote, modeleDeListe60(), lot60, lot60.length, etat);
+    return hote;
+  };
+
+  // — chemin NOMINAL : exercé LE PREMIER, et il doit être MUET.
+  const entier60 = peindre60(undefined);
+  exiger(entier60.querySelectorAll(".alertrow, [data-alert-id]").length > 0 || entier60.textContent.includes("alerte une"),
+    "(60-instrument) une lecture ENTIÈRE ne rend aucune ligne : ce témoin ne pourrait pas distinguer le partiel du vide");
+  exiger(!entier60.querySelector(".bad"),
+    "(60) LE CHEMIN NOMINAL PORTE L'AVEU : une liste complète qui avoue toujours n'avoue rien, et la vue cesserait de distinguer une lecture entière d'un préfixe");
+  exiger(!entier60.textContent.includes("INCOMPLÈTE") && !entier60.textContent.includes("INCOMPLETE"),
+    "(60) la marque du compte est posée sur une lecture ENTIÈRE : elle ne dirait plus rien là où elle mord");
+
+  // — chemin PARTIEL : des lignes ET une cause. Les deux aveux doivent APPARAÎTRE.
+  const partiel60 = peindre60({ cause: CAUSE_60, refus: false, incomplet: true });
+  const bandeau60 = partiel60.querySelector(".bad");
+  exiger(!!bandeau60,
+    "(60a) L'AVEU DE PAGE N'EST PAS PRODUIT sur un corps qui porte des LIGNES et une CAUSE : la vue rend un préfixe comme un total, et rien dans la page ne le dit");
+  exiger(bandeau60.textContent.includes(CAUSE_60),
+    `(60a) l'aveu de page ne porte pas la cause SERVIE : « ${bandeau60.textContent.slice(0, 90)} ». Une phrase sans sa cause ne dit pas ce qui manque`);
+  exiger(partiel60.textContent.includes("INCOMPLÈTE") || partiel60.textContent.includes("INCOMPLETE"),
+    "(60b) LA MARQUE DU COMPTE N'EST PAS PRODUITE : le nombre se présente comme une POPULATION alors qu'il compte les lignes LUES");
+  exiger(partiel60.textContent.includes("alerte une"),
+    "(60c) LES LIGNES SONT JETÉES SUR UN CORPS QUI LES PORTE : l'aveu doit s'AJOUTER aux lignes, jamais les remplacer");
+
+  // — l'ORDRE : l'aveu ouvre le rendu, il ne se lit pas APRÈS ce qu'il qualifie.
+  const texte60 = partiel60.textContent;
+  exiger(texte60.indexOf(CAUSE_60) < texte60.indexOf("alerte une"),
+    "(60d) L'AVEU NE PRÉCÈDE PAS LES LIGNES : un lecteur qui va de haut en bas les rencontrerait avant de savoir qu'elles sont partielles");
+
+  // — LE REFUS N'EST PAS LE TRAVAIL DE CETTE FONCTION, ET C'EST MESURÉ, PAS SUPPOSÉ. Une première
+  //   version de ce témoin exigeait ici qu'une cause SANS ligne fasse nommer le refus. Elle est
+  //   tombée : la liste plate ne dessine que des LIGNES, et l'aveu de page ne se rend que sur
+  //   `incomplet`. Le refus est rendu par l'APPELANT, plus haut, et c'est le geste commun de refus
+  //   qui le tient — pas ici. Exiger d'une fonction ce qu'une autre fait aurait produit un rouge
+  //   INFERMABLE, qu'aucun geste local n'aurait pu éteindre. On garde donc la contrepartie utile :
+  //   sur une cause SANS ligne, cette fonction ne doit surtout pas fabriquer une page PARTIELLE.
+  const refus60 = (() => { const h = document.createElement("div"); dessiner60(h, modeleDeListe60(), [], 0, { cause: CAUSE_60, refus: true, incomplet: false }); return h; })();
+  exiger(!refus60.querySelector(".bad"),
+    "(60e) UNE CAUSE SANS LIGNE EST RENDUE COMME UNE PAGE PARTIELLE : un refus deviendrait un « il y en avait plus », et les trois issues cesseraient d'être distinctes");
+
+  console.log(`[aveux-de-la-liste-existent] la liste plate PRODUIT ses deux aveux sur un corps « lignes + cause » — le bandeau porte la cause servie, la marque du compte dit que le nombre compte les lignes LUES, les lignes sont rendues et l'aveu les PRÉCÈDE — et le chemin NOMINAL n'en porte AUCUN. CE QUE CE TÉMOIN NE TIENT PAS : il juge le TEXTE rendu, jamais l'encre peinte — c'est la garde du rendu peint qui tient l'autre moitié, et aucune des deux ne remplace l'autre ; et il n'exerce que la branche française.`);
+}
+
 // LE VERDICT PORTE SA PROPRE LIMITE (`P11.13-g`). Un vert qui ne dit pas ce sur quoi il ne s'engage pas
 // se lit comme une COUVERTURE — et un rouge n'a pas plus le droit de laisser croire qu'il a tout regardé.
 // La phrase ci-dessous n'est pas écrite : elle est DÉRIVÉE des sondes de la section 0, donc une capacité

@@ -713,7 +713,7 @@ env:
   #     ~6,5 ms par arithmétique en release), soit 63 × un 401 et 92,7 Mo/s au banc pour une seule IP.
   #   · CHAQUE RÉPONSE PUBLIQUE EST FACTURABLE (`content-length` présent ET égal au fichier) : sans
   #     cela, la borne ci-dessus aurait un trou muet.
-  EXPECTED_TESTS: "1465"
+  EXPECTED_TESTS: "1470"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -1131,7 +1131,7 @@ jobs:
           # derrière un `cfg(feature)`, et c'est l'ÉCART INCHANGÉ entre les deux profils (243 avant
           # comme après) qui l'établit, pas une lecture des sources. La dérivation complète et la
           # répartition sont écrites auprès d'`EXPECTED_TESTS`, une seule fois.
-          EXPECTED_COLD_TESTS: "1710"
+          EXPECTED_COLD_TESTS: "1715"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail
@@ -1407,9 +1407,11 @@ jobs:
       # et les aveux jumeaux de `web/alerts.js`, qui restent à couvrir.
       # LE MOTEUR EST LÀ, MESURÉ LE 2026-08-30 : zéro installation, `--dump-dom` d'un Chrome sans
       # tête suffit ; l'image `ubuntu-24.04` — sur laquelle TOUS les jobs d'ici tournent, épinglée —
-      # publie Google Chrome installé PAR DÉFAUT. 11 rendus, ~12 s au total. Le refus de conclure
+      # publie Google Chrome installé PAR DÉFAUT. Le coût a PLUS QUE DOUBLÉ le 2026-08-31 en couvrant
+        # les deux aveux de la liste d'alertes : 11 rendus et une douzaine de secondes sont devenus
+        # 22 rendus et une vingtaine — c'est dit ici plutôt que découvert. Le refus de conclure
       # n'est donc pas un bruit permanent : c'est le canal du jour où le moteur quitterait l'image.
-      - { name: "Un aveu est PEINT là où il est lu — moteur de rendu, ni masqué ni transparent ni inversé, au-dessus de la première cellule, marque non rognée (P11.21-k)", run: python3 .github/scripts/check_an_admission_is_painted_where_it_is_read.py }
+      - { name: "Un aveu est PEINT là où il est lu — moteur de rendu, ni masqué ni transparent ni inversé ni rogné, sur la matrice ATT&CK ET les deux aveux de la liste d'alertes (P11.21-k, P11.21-l)", run: python3 .github/scripts/check_an_admission_is_painted_where_it_is_read.py }
 
       # `P11.18-w` — L'ENVIRONNEMENT DU PROCESSUS EST **UNE** RESSOURCE, ET ELLE N'A QU'UN VERROU.
       # `cfg()` résout toute clé dans l'ordre `env > conf > défaut` : un test qui pose une variable ne règle

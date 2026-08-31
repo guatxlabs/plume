@@ -6,10 +6,48 @@
 use crate::*;
 
 // ---------- intégrité : ledger append-only à chaîne de hash + checkpoints Ed25519 (P3) ----------
+/// `P10.7-m` — LE HACHAGE DU DERNIER MAILLON, celui auquel la prochaine entrée doit s'accrocher. Cette
+/// fonction n'existe que pour DISCRIMINER SUR L'ERREUR, et c'est tout le correctif :
+///  - `QueryReturnedNoRows` = journal VIERGE = l'ORIGINE LÉGITIME. La toute première écriture s'accroche à
+///    la chaîne VIDE : c'est le chemin nominal, il réussit et il reste MUET ;
+///  - TOUT autre échec (base illisible, clé SQLCipher absente, verrou, table absente, colonne d'un type
+///    inattendu) = on ne SAIT PAS à quoi s'accrocher -> `Err`, et l'appelant REFUSE d'écrire.
+///
+/// CE QUE FAISAIENT LES DEUX APPELANTS AVANT LE 2026-08-31, ET POURQUOI C'ÉTAIT GRAVE : un
+/// `unwrap_or_default()` confondait les deux cas. Une lecture ratée en MILIEU de chaîne écrivait donc un
+/// maillon de `prev_hash` VIDE — un maillon ORPHELIN, parfaitement cohérent avec lui-même, en tête d'une
+/// chaîne neuve que personne n'a déclarée.
+///
+/// POURQUOI REFUSER PLUTÔT QUE MARQUER LA RUPTURE OU DÉCLARER UNE CHAÎNE NEUVE — mesuré par MUTATION le
+/// 2026-08-31 : le refus des vérificateurs est DOUBLEMENT ANCRÉ. Dans `verify_ledger_conn`, la comparaison
+/// `prev_hash != prev` ET le RECALCUL `sha256(prev|ts|kind|detail)` sur le maillon COURANT attrapent
+/// l'orphelin CHACUN SEUL (relâcher l'un laisse le témoin VERT ; il ne rougit qu'une fois les DEUX
+/// relâchés) ; `ledger_verify_export` porte les deux mêmes ancrages. Les deux autres issues exigeraient
+/// donc d'apprendre aux DEUX ancrages à laisser passer un chaînon vide — c'est-à-dire de CRÉER le chemin
+/// par lequel une chaîne rompue devient verte. Fermer une fausse accusation en faisant taire une vraie.
+///
+/// ET LE COÛT DU REFUS EST CELUI QUE L'ON PAYAIT DÉJÀ : dans les cas où cette lecture échoue, l'INSERT qui
+/// suit échoue lui aussi et il était avalé — l'événement était DÉJÀ perdu. Refuser ne perd que lui, au
+/// lieu de lui ET de la chaîne.
+pub(crate) fn ledger_prev_hash(conn: &Connection) -> rusqlite::Result<String> {
+    match conn.query_row("SELECT hash FROM ledger ORDER BY id DESC LIMIT 1", [], |r| r.get::<_, String>(0)) {
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(String::new()), // journal vierge : origine légitime
+        autre => autre,                                                // lu, ou illisible — jamais confondus
+    }
+}
 /// Ajoute une entrée au journal d'intégrité (chaîne de hash, append-only, tamper-evident).
 pub(crate) fn ledger_append(conn: &Connection, kind: &str, detail: &str) {
     let ts = now();
-    let prev: String = conn.query_row("SELECT hash FROM ledger ORDER BY id DESC LIMIT 1", [], |r| r.get(0)).unwrap_or_default();
+    // REFUS D'ÉCRIRE plutôt qu'un maillon ORPHELIN (cf. `ledger_prev_hash`) : une entrée manquante vaut
+    // mieux qu'une chaîne rompue en silence. L'aveu est CONDITIONNEL — le chemin nominal ne dit rien — et
+    // il ne porte que le `kind` : le `detail` peut nommer un compte ou une cible.
+    let prev = match ledger_prev_hash(conn) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("[ledger] WARN maillon '{kind}' NON écrit : hachage précédent ILLISIBLE ({e}) — l'écrire romprait la chaîne");
+            return;
+        }
+    };
     let hash = sha256_hex(format!("{prev}|{ts}|{kind}|{detail}").as_bytes());
     let _ = conn.execute("INSERT INTO ledger(ts,kind,detail,prev_hash,hash) VALUES(?1,?2,?3,?4,?5)", params![ts, kind, detail, prev, hash]);
 }
@@ -27,7 +65,10 @@ pub(crate) fn audit_config_change(conn: &Connection, ledger_kind: &str, ledger_d
 /// `plume-engagement` (sev haute) = une DÉFENSE BAISSÉE (création d'un engagement pentest) -> le SOC alerte dessus.
 pub(crate) fn audit_source_change(conn: &Connection, source: &str, ledger_kind: &str, ledger_detail: &str, severity: i64, msg: &str, fields: &str) -> rusqlite::Result<()> {
     let ts = now();
-    let prev: String = conn.query_row("SELECT hash FROM ledger ORDER BY id DESC LIMIT 1", [], |r| r.get(0)).unwrap_or_default();
+    // `P10.7-m` — le hachage précédent ILLISIBLE remonte comme n'importe quel autre échec de ce
+    // double-write : l'appelant ROLLBACK. La mutation n'est pas persistée, et surtout la chaîne n'est pas
+    // rompue. Journal vierge -> chaîne vide, c'est l'origine légitime (cf. `ledger_prev_hash`).
+    let prev = ledger_prev_hash(conn)?;
     let hash = sha256_hex(format!("{prev}|{ts}|{ledger_kind}|{ledger_detail}").as_bytes());
     conn.execute("INSERT INTO ledger(ts,kind,detail,prev_hash,hash) VALUES(?1,?2,?3,?4,?5)", params![ts, ledger_kind, ledger_detail, prev, hash])?;
     conn.execute(

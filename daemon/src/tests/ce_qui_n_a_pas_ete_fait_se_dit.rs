@@ -246,6 +246,200 @@
     }
 
     // ------------------------------------------------------------------------------------------------
+    // (B bis) `P10.7-m` — LA MOITIÉ ÉCRITURE, FERMÉE LE 2026-08-31. Le vérificateur n'a pas bougé d'une
+    // ligne ; c'est `ledger_append` / `audit_source_change` qui cessent d'écrire un maillon orphelin.
+    //
+    // CE QUE LE GESTE EST, ET CE QU'IL N'EST PAS : il ne « refuse » pas — il DISCRIMINE SUR L'ERREUR.
+    // L'absence de ligne (`QueryReturnedNoRows`) est l'ORIGINE LÉGITIME du journal, donc la toute
+    // première écriture nominale : elle s'accroche à la chaîne vide et ne dit rien. Toute AUTRE erreur de
+    // lecture veut dire qu'on ignore à quoi s'accrocher : là, et là seulement, on n'écrit pas.
+    //
+    // LE GESTE DES TÉMOINS (aucune horloge, aucune durée) : une dernière ligne dont le `hash` est un
+    // BLOB. SQLite range un BLOB tel quel dans une colonne d'affinité TEXT -> la LECTURE du maillon
+    // précédent meurt, l'ÉCRITURE reste parfaitement vivante. C'est ce qui rend ces témoins
+    // DISCRIMINANTS : sous une panne globale (table retirée, base fermée) l'écriture échouerait AUSSI et
+    // « aucune ligne écrite » serait vrai pour la mauvaise raison — vert par construction.
+    // ------------------------------------------------------------------------------------------------
+
+    /// Un journal REMIS À VIERGE : `test_db()` fait tourner la chaîne de migrations, qui consigne. Pour
+    /// mesurer la TOUTE PREMIÈRE écriture il faut donc une table réellement vide, pas « presque vide ».
+    fn un_journal_vierge() -> Connection {
+        let conn = test_db();
+        conn.execute("DELETE FROM ledger", []).expect("journal vidé");
+        assert_eq!(compter_les_maillons(&conn), 0, "fixture : le journal part VIERGE");
+        conn
+    }
+
+    fn compter_les_maillons(conn: &Connection) -> i64 {
+        conn.query_row("SELECT COUNT(*) FROM ledger", [], |r| r.get(0)).expect("journal comptable")
+    }
+
+    /// LE GESTE. La dernière ligne du journal porte un `hash` NON TEXTUEL : `SELECT hash … LIMIT 1` ne se
+    /// convertit plus en `String`, et l'erreur rendue n'est PAS `QueryReturnedNoRows`. C'est exactement la
+    /// classe d'échec que l'ancien `unwrap_or_default()` confondait avec un journal vierge.
+    fn rendre_le_maillon_precedent_illisible(conn: &Connection) {
+        conn.execute(
+            "INSERT INTO ledger(ts,kind,detail,prev_hash,hash) VALUES(?1,'poison','hachage non textuel','',X'FF')",
+            params![now()],
+        )
+        .expect("ligne de poison insérée");
+    }
+
+    /// (B1) LE CHEMIN NOMINAL — TÉMOIN NÉGATIF DE TOUT LE LOT. La toute première écriture d'un journal
+    /// VIERGE s'accroche à la chaîne vide, réussit, et n'accuse personne. Un correctif qui aurait refusé
+    /// « quand la lecture ne rend rien » — c'est-à-dire qui n'aurait pas discriminé sur l'ERREUR —
+    /// rougirait ICI, et il aurait rendu le journal d'intégrité INÉCRIVIBLE sur une base neuve.
+    ///
+    /// Les DEUX voies sont exercées : `ledger_append` (best-effort) et `audit_source_change` (fail-closed).
+    #[test]
+    fn la_toute_premiere_ecriture_d_un_journal_vierge_reussit_et_reste_muette() {
+        // (i) la voie best-effort.
+        let conn = un_journal_vierge();
+        ledger_append(&conn, "config.mode", "toute première écriture");
+        assert_eq!(compter_les_maillons(&conn), 1, "l'origine s'ÉCRIT : refuser ici rendrait le journal inécrivible");
+        let (prev_hash, hash): (String, String) = conn
+            .query_row("SELECT prev_hash,hash FROM ledger ORDER BY id DESC LIMIT 1", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .expect("maillon lisible");
+        assert_eq!(prev_hash, "", "l'origine s'accroche à la chaîne VIDE — c'est le seul vide légitime");
+        assert!(!hash.is_empty(), "et elle porte bien un hachage");
+        let (n, _, _, rupture) = verify_ledger_conn(&conn, None).expect("chaîne lisible");
+        assert_eq!(n, 1, "le vérificateur voit l'unique maillon");
+        assert!(rupture.is_none(), "la toute première écriture n'accuse personne : {rupture:?}");
+
+        // (ii) la voie fail-closed, sur un journal vierge lui aussi.
+        let conn = un_journal_vierge();
+        audit_source_change(&conn, "plume-config", "config.mode", "mode passif", 3, "mode changé", "{}")
+            .expect("le double-audit RÉUSSIT sur un journal vierge");
+        assert_eq!(compter_les_maillons(&conn), 1, "le maillon d'origine est posé");
+        let (_, _, _, rupture) = verify_ledger_conn(&conn, None).expect("chaîne lisible");
+        assert!(rupture.is_none(), "et il n'accuse personne : {rupture:?}");
+    }
+
+    /// (B2) LE LECTEUR SÉPARE LES DEUX CAS, ET C'EST TOUT CE QU'IL FAIT. Témoin direct de la
+    /// discrimination, indépendant des deux appelants : vierge -> `Ok("")`, illisible -> `Err`, et
+    /// l'erreur rendue n'est PAS celle de l'absence (sans quoi les deux se reconfondraient).
+    #[test]
+    fn le_lecteur_du_maillon_precedent_separe_le_journal_vierge_de_l_illisible() {
+        let conn = un_journal_vierge();
+        assert_eq!(ledger_prev_hash(&conn).expect("un journal vierge N'EST PAS une erreur"), "");
+
+        ledger_append(&conn, "config.mode", "maillon 0");
+        let pose = ledger_prev_hash(&conn).expect("journal lisible");
+        assert!(!pose.is_empty(), "une chaîne commencée rend son dernier hachage");
+
+        rendre_le_maillon_precedent_illisible(&conn);
+        let e = ledger_prev_hash(&conn).expect_err("un hachage non textuel est une ERREUR, pas une chaîne vide");
+        assert!(
+            !matches!(e, rusqlite::Error::QueryReturnedNoRows),
+            "et surtout PAS l'erreur d'absence — c'est cette confusion-là que la clé ferme : {e}"
+        );
+    }
+
+    /// (B3) UNE LECTURE IMPOSSIBLE FAIT REFUSER L'ÉCRITURE — `ledger_append`. Avant le 2026-08-31, ce
+    /// témoin comptait UN maillon de plus : un orphelin de `prev_hash` vide, en tête d'une chaîne neuve
+    /// que personne n'a déclarée, et que les deux vérificateurs auraient dès lors accusé pour toujours.
+    ///
+    /// INSTRUMENT VALIDÉ DANS LES DEUX SENS, et c'est ce qui le rend opposable : sous le MÊME poison une
+    /// écriture BRUTE passe (la lecture est morte, pas l'écriture), et une fois le poison retiré la voie
+    /// nominale réécrit. Un « correctif » qui aurait simplement cessé d'écrire serait vert au premier
+    /// tiers et rouge au troisième.
+    #[test]
+    fn un_hachage_precedent_illisible_fait_refuser_l_ecriture_du_maillon() {
+        let conn = un_journal_vierge();
+        ledger_append(&conn, "config.mode", "maillon 0");
+        rendre_le_maillon_precedent_illisible(&conn);
+        let avant = compter_les_maillons(&conn);
+
+        ledger_append(&conn, "config.mode", "maillon qui romprait la chaîne");
+
+        assert_eq!(
+            compter_les_maillons(&conn),
+            avant,
+            "AUCUN maillon écrit : à hachage précédent illisible, on préfère l'entrée manquante à la chaîne rompue"
+        );
+
+        // SENS 2 — la LECTURE est morte, l'ÉCRITURE ne l'est pas. Sans cette assertion, le refus mesuré
+        // ci-dessus pourrait n'être qu'une base inutilisable, et le témoin serait vert pour rien.
+        conn.execute(
+            "INSERT INTO ledger(ts,kind,detail,prev_hash,hash) VALUES(?1,'sonde','','','sonde')",
+            params![now()],
+        )
+        .expect("une écriture brute passe sous le MÊME poison");
+
+        // SENS 3 — poison retiré, la voie nominale réécrit. Le refus était CONDITIONNEL.
+        conn.execute("DELETE FROM ledger WHERE kind IN ('poison','sonde')", []).expect("poison retiré");
+        let avant = compter_les_maillons(&conn);
+        ledger_append(&conn, "config.mode", "maillon 1");
+        assert_eq!(compter_les_maillons(&conn), avant + 1, "la lecture redevenue possible, l'écriture reprend");
+        let (_, _, _, rupture) = verify_ledger_conn(&conn, None).expect("chaîne lisible");
+        assert!(rupture.is_none(), "et la chaîne est restée UNE chaîne : {rupture:?}");
+    }
+
+    /// (B4) UNE LECTURE IMPOSSIBLE FAIT REMONTER L'ERREUR — `audit_source_change`. C'est la forme que le
+    /// jumeau portait DÉJÀ pour ses deux écritures : l'erreur remonte, l'appelant ROLLBACK, la mutation
+    /// n'est jamais persistée sans audit. Elle couvre maintenant AUSSI la lecture du maillon précédent.
+    ///
+    /// DEUX assertions, pas une : l'erreur remonte ET rien n'a été écrit — ni le maillon, ni l'event de
+    /// contrôle. Un correctif qui aurait rendu `Err` APRÈS avoir posé l'orphelin passerait la première.
+    #[test]
+    fn un_hachage_precedent_illisible_fait_remonter_l_erreur_du_double_audit() {
+        let conn = un_journal_vierge();
+        ledger_append(&conn, "config.mode", "maillon 0");
+        rendre_le_maillon_precedent_illisible(&conn);
+        let maillons_avant = compter_les_maillons(&conn);
+        let events_avant: i64 = conn
+            .query_row("SELECT COUNT(*) FROM event WHERE source='plume-config'", [], |r| r.get(0))
+            .expect("events comptables");
+
+        let verdict = audit_source_change(&conn, "plume-config", "config.mode", "mode passif", 3, "mode changé", "{}");
+
+        verdict.expect_err("l'erreur DOIT remonter — c'est elle qui fait annuler l'appelant");
+        assert_eq!(compter_les_maillons(&conn), maillons_avant, "aucun maillon orphelin n'a été posé");
+        let events_apres: i64 = conn
+            .query_row("SELECT COUNT(*) FROM event WHERE source='plume-config'", [], |r| r.get(0))
+            .expect("events comptables");
+        assert_eq!(events_apres, events_avant, "et l'event de contrôle non plus : le double-audit est resté ENTIER");
+    }
+
+    /// (B5) LE DOUBLE ANCRAGE DU VÉRIFICATEUR D'EXPORT, MESURÉ SANS TOUCHER AU VÉRIFICATEUR. On ne relâche
+    /// pas son code : on lui présente DEUX variantes du même maillon orphelin, taillées pour n'exposer
+    /// qu'un ancrage à la fois.
+    ///
+    /// POURQUOI CE TÉMOIN EXISTE — c'est LUI qui justifie le geste retenu. Si un seul ancrage tenait la
+    /// chaîne, « marquer la rupture » resterait envisageable : il suffirait d'apprendre UNE tolérance.
+    /// Les deux tenant CHACUN SEUL, marquer la rupture ou déclarer une chaîne neuve exigerait d'en
+    /// apprendre DEUX — donc de créer le chemin par lequel une chaîne rompue devient VERTE. D'où : on
+    /// refuse d'écrire, et le vérificateur ne bouge pas.
+    #[test]
+    fn les_deux_ancrages_du_verificateur_d_export_mordent_chacun_seul() {
+        let conn = un_journal_vierge();
+        for i in 0..2 {
+            ledger_append(&conn, "config.mode", &format!("maillon {i}"));
+        }
+        let (saines, _, dernier_hash) = ledger_export_lines(&conn, 0, 0);
+        assert_eq!(ledger_verify_export(&saines, "").expect("une chaîne saine se vérifie"), 2);
+
+        // Le maillon tel que l'ancien repli l'écrivait : hachage calculé sur la chaîne VIDE.
+        let ts = now();
+        let (kind, detail) = ("config.mode", "en tete d'une chaine neuve");
+        let hachage_du_vide = sha256_hex(format!("|{ts}|{kind}|{detail}").as_bytes());
+
+        // VARIANTE 1 — tel quel : `prev_hash` vide. La COMPARAISON mord la première, et NOMME la rupture.
+        let mut v1 = saines.clone();
+        v1.push(ledger_export_line(99, ts, kind, detail, "", &hachage_du_vide));
+        let m1 = ledger_verify_export(&v1, "").expect_err("un orphelin ne se vérifie pas");
+        assert!(m1.contains("rupture de chaîne"), "premier ancrage — la comparaison : {m1}");
+
+        // VARIANTE 2 — LE MÊME hachage, mais le `prev_hash` RÉPARÉ pour tromper la comparaison. Elle
+        // passe ; le RECALCUL mord seul, et son message est DIFFÉRENT — deux ancrages, pas un dédoublé.
+        let mut v2 = saines.clone();
+        v2.push(ledger_export_line(99, ts, kind, detail, &dernier_hash, &hachage_du_vide));
+        let m2 = ledger_verify_export(&v2, "").expect_err("un hachage calculé sur une autre chaîne ne se vérifie pas");
+        assert!(m2.contains("hash altéré"), "second ancrage — le recalcul, SEUL : {m2}");
+        assert_ne!(m1, m2, "les deux ancrages rendent des verdicts DISTINCTS : ils sont bien deux");
+    }
+
+    // ------------------------------------------------------------------------------------------------
     // (C) `P11.22-e` — LA BORNE DE L'INVENTAIRE DES `source`.
     // ------------------------------------------------------------------------------------------------
 

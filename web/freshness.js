@@ -14,7 +14,7 @@
 // freshness vers sources, jamais l'inverse : sources.js ne dépend que de core.js, donc aucun cycle neuf
 // n'est introduit (celui qui existe, app<->freshness, reste le seul, et il est sans danger — cf. plus haut).
 import { $, api, colComparator, disclosure, esc, fmtTs, ic, LANG } from './core.js';
-import { S } from './state.js';
+import { S, ecrireSansDireLeRefus } from './state.js';
 import { setAlertSourceFilter } from './app.js';
 import { ETAT_DE_SOURCE, etatDeSource, rangDEtatDeSource } from './sources.js';
 import { prefGet, prefSet } from './prefs.js';
@@ -763,7 +763,12 @@ async function renderFreshness(loading) {
   // est exactement le défaut que cette clé ferme. DIFFÉRENCE ASSUMÉE, plutôt que tue : Espace active
   // désormais au RELÂCHEMENT (comportement natif) et non à l'enfoncement.
   // ═══════════════════════════════════════════════════════════════════════════════════════════════
-  const memoriserLesPlis = () => { try { localStorage.setItem('soc_fresh_collapsed', JSON.stringify([...S.freshCollapsed])); } catch (e) {} };
+  // `P4.13-d` — NAVIGATION, ET LE SILENCE EST DÉCLARÉ PAR LA PORTE FRANCHIE. Le pli d'une catégorie de
+  // fraîcheur se REPLIE et se REDÉPLIE à volonté, et cette liste est repeinte toutes les 30 s : son état se
+  // relit à l'œil au chargement suivant, il n'y a aucun choix à annoncer, et un avis par clic de pli userait
+  // celui qui compte. Le silence est le même qu'avant ; ce qui change, c'est qu'il est maintenant DIT — une
+  // capture au corps VIDE ne distinguait pas le silence voulu de l'oubli.
+  const memoriserLesPlis = () => { ecrireSansDireLeRefus('soc_fresh_collapsed', JSON.stringify([...S.freshCollapsed])); };
   b.querySelectorAll('.fgrouphd').forEach(hd => {
     const wrap = hd.closest('.fgroup'); if (!wrap) return;
     const corps = wrap.querySelector('.fgbody'); const cat = wrap.dataset.cat;

@@ -23,6 +23,7 @@
 // SECURITY: the endpoint is self-scoped server-side (keyed by the authenticated identity; the client never
 // sends a user id). We never store secrets here — only UI state.
 import { api, apiSend } from './core.js';
+import { ecrireSansDireLeRefus } from './state.js';
 
 const LS_KEY = 'plume_prefs';
 const LS_PENDING = 'plume_prefs_pending';   // key NAMES only — never values; the values live in the mirror
@@ -33,13 +34,23 @@ let putTimer = null;
 const readyCbs = [];
 
 function readMirror() { try { return JSON.parse(localStorage.getItem(LS_KEY)) || {}; } catch (e) { return {}; } }
-function writeMirror() { try { localStorage.setItem(LS_KEY, JSON.stringify(PREFS)); } catch (e) {} }
+// `P4.13-d` — NAVIGATION : LE MIROIR N'A RIEN À ANNONCER, PARCE QUE LE VRAI MAGASIN EST AILLEURS. Ce que
+// `prefSet` écrit ici est un CACHE synchrone ; la durabilité vient du serveur, que `schedulePut` atteint
+// quoi qu'il arrive. Un navigateur qui refuse le stockage de site perd le raccourci hors-ligne, pas la
+// préférence — et l'avis partirait à CHAQUE écriture de préférence, jusqu'à plusieurs fois par geste
+// d'interface. Le silence est le bon choix ; ce qui manquait, c'est qu'il soit DÉCLARÉ plutôt que laissé
+// à une capture au corps vide, où rien ne le distinguait d'un oubli.
+function writeMirror() { ecrireSansDireLeRefus(LS_KEY, JSON.stringify(PREFS)); }
 // PENDING is persisted next to the mirror (same origin, same store) so an edit made offline still counts as
 // "unacknowledged" after a reload. It holds KEY NAMES only, and it is a Set — repeated edits of the same key
 // never grow it — so it is bounded by the number of DISTINCT top-level pref keys the app writes (four across
 // web/ as measured 2026-08-29), not by the number of edits.
 function readPending() { try { const a = JSON.parse(localStorage.getItem(LS_PENDING)); return new Set(Array.isArray(a) ? a.filter(k => typeof k === 'string') : []); } catch (e) { return new Set(); } }
-function writePending() { try { localStorage.setItem(LS_PENDING, JSON.stringify([...PENDING])); } catch (e) {} }
+// `P4.13-d` — NAVIGATION, POUR LA MÊME RAISON ET AVEC UNE PRÉCISION QUI COMPTE : cette file ne protège QUE
+// le miroir ci-dessus, et les deux tombent ENSEMBLE. Un stockage refusé n'écrit ni l'un ni l'autre, donc il
+// n'y a plus d'écriture hors-ligne à réconcilier au rechargement : ce que la file défendrait n'existe déjà
+// plus. Rien à annoncer que le miroir n'aurait déjà annoncé, et le silence est ici DÉCLARÉ par la porte.
+function writePending() { ecrireSansDireLeRefus(LS_PENDING, JSON.stringify([...PENDING])); }
 
 // prefGet(key, default) — synchronous read of a preference (default when absent).
 export function prefGet(key, dflt) {

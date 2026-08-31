@@ -1,7 +1,7 @@
 // multitenant.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // #2c multi-tenant : switcher tenant/env (header) + vue Tenants + grants + audit acces operateur.
-import { $, LOC, api, apiSend, applyRoleClass, confirmWithConsequence, fmtTs, ic, muted, pagedList, toast } from './core.js';
-import { S } from './state.js';
+import { $, LANG, LOC, api, apiSend, applyRoleClass, confirmWithConsequence, fmtTs, ic, muted, pagedList, toast } from './core.js';
+import { S, ecrireDansLeStockageDuSite, ecrireSansDireLeRefus, lireLeStockageDuSite } from './state.js';
 import { runQ, tableEl } from './viz.js';
 import { ROLE_LABEL, currentTab, fetchMe, loadUsers, refresh, refreshCurrentView, refreshPanels, renderNav, route, setAuthUI } from './app.js';
 
@@ -47,8 +47,12 @@ async function initTenants() {
   const usable = S.MY_TENANTS.filter(t => (S.AUTH && S.AUTH.is_superadmin) || (t && (t.name !== undefined || t.id === (S.AUTH && S.AUTH.tenant))));
   // mode 1 : résout le tenant courant (storage validé -> AUTH.tenant -> 1er de la liste utilisable).
   const ids = usable.map(t => t.id);
-  let cur = '';
-  try { cur = localStorage.getItem('plume_tenant') || ''; } catch (e) {}
+  // `P4.13-d` — NAVIGATION : RÉCONCILIATION AU CHARGEMENT, AUCUN CHOIX À ANNONCER. Cette lecture n'est pas
+  // un geste d'exploitant : elle RESTAURE une position, et la ligne suivante la VALIDE contre la liste réelle
+  // des tenants — un refus du stockage rend exactement ce que rend une clé absente ou périmée, et le repli
+  // écrit juste en dessous s'applique alors mot pour mot. Le lecteur gardé DÉCLARE ce silence par son nom
+  // (`P4.13-a`), là où la capture au corps VIDE qu'il remplace ne le distinguait pas d'un oubli.
+  let cur = lireLeStockageDuSite('plume_tenant') || '';
   if (!ids.includes(cur)) cur = (S.AUTH && ids.includes(S.AUTH.tenant)) ? S.AUTH.tenant : (ids[0] || (S.AUTH && S.AUTH.tenant) || '');
   const differed = !!(S.AUTH && cur && cur !== S.AUTH.tenant);
   S.CURRENT_TENANT = cur;
@@ -75,8 +79,14 @@ async function initTenants() {
 async function switchTenant(tid) {
   if (!tid || tid === S.CURRENT_TENANT) return;
   S.CURRENT_TENANT = tid;
-  try { localStorage.setItem('plume_tenant', tid); } catch (e) {}
+  // `P4.13-d` — PRÉFÉRENCE : UNE BASCULE DE TENANT QUI NE SE RETIENT PAS EST UNE PERTE QUE L'EXPLOITANT DOIT
+  // LIRE. C'est un choix qu'on pose puis qu'on quitte, et il porte plus loin que les autres : au chargement
+  // suivant, `initTenants` retombe sur `AUTH.tenant` — la console repart donc SUR UN AUTRE TENANT que
+  // celui qu'on croyait avoir laissé. La capture au corps VIDE d'avant avalait ce refus, et l'avis de succès
+  // juste en dessous (« Tenant courant : … ») le rendait PIRE : il confirmait un état que rien n'avait retenu.
+  const retenu = ecrireDansLeStockageDuSite('plume_tenant', tid);
   toast('Tenant courant : ' + tid, 'info');
+  if (!retenu) toast(LANG === 'en' ? 'Tenant switched for this session only: this browser refuses site storage, so the next load will start on your home tenant.' : "Tenant basculé pour cette session seulement : ce navigateur refuse le stockage de site, le prochain chargement repartira sur votre tenant d'origine.", 'info', 5000);
   await reloadForTenant();
   const sel = $('#tenant-switch'); if (sel && sel.value !== tid) sel.value = tid;
 }
@@ -117,9 +127,13 @@ async function initEnvironments(reloadOnChange = true) {
   }
   // > 1 env : résout la sélection (storage validé contre la liste réelle de CE tenant).
   const ids = envs.map(e => e.env);
-  let cur = '';
-  try { cur = localStorage.getItem('plume_env') || ''; } catch (e) {}
-  if (cur && !ids.includes(cur)) { cur = ''; try { localStorage.removeItem('plume_env'); } catch (e) {} }
+  // `P4.13-d` — NAVIGATION, DEUX FOIS, ET AUCUN CHOIX D'EXPLOITANT N'EST EN CAUSE ICI. (1) La lecture est une
+  // RÉCONCILIATION AU CHARGEMENT, validée à la ligne même contre la liste réelle des environnements de CE
+  // tenant : un refus rend ce que rend une clé absente, et le repli « Tous » s'applique. (2) L'effacement est
+  // un REPLI APRÈS DISPARITION — l'environnement retenu n'existe plus, on retire une clé devenue fausse. Il
+  // n'y a rien à annoncer : l'exploitant n'a rien réglé, et le sélecteur montre déjà « Tous ».
+  let cur = lireLeStockageDuSite('plume_env') || '';
+  if (cur && !ids.includes(cur)) { cur = ''; ecrireSansDireLeRefus('plume_env', null); }
   S.CURRENT_ENV = cur;
   if (box) box.hidden = false;
   if (sel) {
@@ -146,8 +160,13 @@ async function switchEnv(env) {
   const v = env || '';
   if (v === S.CURRENT_ENV) return;
   S.CURRENT_ENV = v;
-  try { if (v) localStorage.setItem('plume_env', v); else localStorage.removeItem('plume_env'); } catch (e) {}
+  // `P4.13-d` — PRÉFÉRENCE : LE SECOND DES DEUX SITES DE CE MODULE OÙ UN CHOIX EST EN JEU. L'exploitant règle
+  // un axe d'organisation puis le quitte ; s'il n'est pas retenu, le prochain chargement repart sur « Tous »
+  // et les vues ne portent plus le filtre qu'il croyait posé. `null` EFFACE la clé — c'est la forme que la
+  // ligne d'avant écrivait à la main, et l'écrivain partagé la porte déjà (`P4.13-b`).
+  const retenu = ecrireDansLeStockageDuSite('plume_env', v || null);
   toast('Environnement : ' + (v || 'Tous'), 'info');
+  if (!retenu) toast(LANG === 'en' ? 'Environment applied for this session only: this browser refuses site storage, so the next load will start on « All ».' : "Environnement appliqué pour cette session seulement : ce navigateur refuse le stockage de site, le prochain chargement repartira sur « Tous ».", 'info', 5000);
   refreshCurrentView();                                        // overview + panneaux + loader de la vue courante
   const sel = $('#env-switch'); if (sel && sel.value !== v) sel.value = v;
 }
@@ -253,7 +272,12 @@ async function destroyTenant(t) {
   // si le tenant courant vient d'être détruit : bascule sur un tenant encore accessible.
   if (S.CURRENT_TENANT === t.id) {
     const fallback = (S.AUTH && S.AUTH.tenant && S.AUTH.tenant !== t.id) ? S.AUTH.tenant : 'default';
-    S.CURRENT_TENANT = fallback; try { localStorage.setItem('plume_tenant', fallback); } catch (e) {}
+    // `P4.13-d` — NAVIGATION : REPLI APRÈS DESTRUCTION, PAS UNE BASCULE CHOISIE. Le tenant courant vient
+    // d'être DÉTRUIT ; ce que l'on pose n'est pas une préférence mais la seule position encore tenable. Il
+    // n'y a aucun choix à annoncer — la destruction a déjà été dite juste au-dessus (« tenant détruit ») —
+    // et si le stockage refuse, le chargement suivant retombera de toute façon sur `AUTH.tenant`, qui est
+    // précisément ce repli. Le silence est donc DÉCLARÉ, là où la capture VIDE d'avant le laissait nu.
+    S.CURRENT_TENANT = fallback; ecrireSansDireLeRefus('plume_tenant', fallback);
   }
   loadTenantsView();
 }

@@ -4,7 +4,7 @@
 // modules importent depuis ici. Comportement identique au monolithe (mêmes fonctions, juste relocalisées).
 // state.js est un pur leaf (aucun import) -> l'importer ici ne crée aucun cycle. Utilisé par socRole/socIsAdmin
 // (helpers partagés relocalisés depuis app.js, audit H1 — cassent les deps circulaires app<->vues).
-import { S, lireLeStockageDuSite } from './state.js';
+import { S, ecrireDansLeStockageDuSite, ecrireSansDireLeRefus, lireLeStockageDuSite } from './state.js';
 // `P11.18-m` — LA RECHERCHE D'UNE LISTE N'EST PAS RÉÉCRITE ICI : elle vit dans le module qui la porte
 // déjà pour toute la console. `recherche_de_liste.js` est un feuillet — il n'importe rien — donc
 // l'importer depuis le cœur ne crée aucun cycle, et le prédicat, le filtre et la phrase de résumé
@@ -1332,8 +1332,17 @@ function peindreEnGroupes(host, rows, opts) {
     const plie = lsSet(storeKey);
     host.replaceChildren();
     host.appendChild(barreDeRegroupement(dims, dim, rows.length, groupes.length, k => {
-      try { if (cleDuChoix) localStorage.setItem(cleDuChoix, k); } catch (e) {}
+      // `P4.13-d` — PRÉFÉRENCE : LE REGROUPEMENT DIT SA PERTE. Ce qui vivait ici était une capture au corps
+      // VIDE, c'est-à-dire la forme même que `P4.13-b` avait fermée ailleurs et laissée intacte ici : le
+      // refus du stockage était AVALÉ, l'exploitant quittait le panneau en croyant sa dimension retenue et
+      // retrouvait `dims[0]` au chargement suivant, sans un mot. C'est un contrôle qu'on RÈGLE PUIS QU'ON
+      // QUITTE — la famille des tris persistés (`soc_rule_sort`, `soc_parser_sort`), qui avertissent déjà —
+      // et non un geste de navigation qui se répète : l'avis part une poignée de fois par session.
+      // L'ORDRE COMPTE : on écrit, on repeint, PUIS on avoue. L'aveu est ainsi le dernier fait posé, et
+      // la barre qu'il qualifie est déjà celle que l'exploitant lit.
+      const retenu = !cleDuChoix || ecrireDansLeStockageDuSite(cleDuChoix, k);
       peindre();
+      if (!retenu) toast(LANG === 'en' ? 'Grouping applied for this session only: this browser refuses site storage, so it will not be kept on the next load.' : "Regroupement appliqué pour cette session seulement : ce navigateur refuse le stockage de site, il ne sera pas retenu au prochain chargement.", 'info', 5000);
     }));
     // UN ENSEMBLE QUI NE TIENT PAS DANS UNE PAGE ARRIVE REPLIÉ. Le seuil n'est pas un nombre choisi : c'est
     // LA PAGE, le seul budget que cette fabrique connaisse déjà. En deçà, la liste se lit d'un coup comme
@@ -1765,7 +1774,11 @@ const PLIS_PAR_JEU = new WeakMap();
 function persisterLesPlis(storeKey, plis) {
   const table = {};
   plis.forEach((replie, cle) => { table[cle] = !!replie; });
-  try { localStorage.setItem(storeKey, JSON.stringify(table)); } catch (e) {}
+  // `P4.13-d` — NAVIGATION, ET LE SILENCE EST DÉCLARÉ PAR LA PORTE FRANCHIE. Plier un groupe est un geste
+  // qui SE RÉPÈTE (chaque tête de groupe, à chaque peinture) et dont l'état se RELIT À L'ŒIL au chargement
+  // suivant : il n'y a aucun choix d'exploitant à annoncer, et un avis par pli userait celui qui compte.
+  // Rien n'est donc dit — mais plus par une capture VIDE, où rien ne distinguait le silence VOULU de l'oubli.
+  ecrireSansDireLeRefus(storeKey, JSON.stringify(table));
 }
 function plisMemorises(set, storeKey, defautPlie) {
   const jeu = set && typeof set === 'object' ? set : null;

@@ -21,6 +21,7 @@
 // n'envoie JAMAIS d'identifiant d'utilisateur) -> pas d'IDOR/énumération. Le texte GXQL stocké est INERTE :
 // il n'est compilé/masqué/autorisé qu'au run, par le chemin gardé /api/query (comme une requête tapée à la main).
 import { $, api, apiSend, toast, modal, confirmModal, bornerLePopoverSousSonAncre } from './core.js';
+import { ecrireSansDireLeRefus } from './state.js';
 
 // ============================ 2) HISTORIQUE RÉCENT (localStorage) ============================
 const RECENT_KEY = 'plume_recent_queries';
@@ -30,7 +31,12 @@ function readRecent() {
   try { const a = JSON.parse(localStorage.getItem(RECENT_KEY)); return Array.isArray(a) ? a.filter(s => typeof s === 'string') : []; }
   catch (e) { return []; }
 }
-function writeRecent(a) { try { localStorage.setItem(RECENT_KEY, JSON.stringify(a)); } catch (e) {} }
+// `P4.13-d` — NAVIGATION : AUCUN CHOIX N'EST FAIT ICI, ET L'AVIS PARTIRAIT À CHAQUE REQUÊTE. `writeRecent`
+// est appelé par `recordRecentQuery`, lui-même appelé à CHAQUE exécution de requête : c'est un effet de
+// bord automatique, pas un geste que l'exploitant pose en attendant qu'il tienne. Dire la perte ici
+// avertirait à chaque exécution — exactement l'avis inutile qui use celui qui compte. Le silence est
+// DÉCLARÉ par la porte franchie, et non plus laissé à une capture au corps vide.
+function writeRecent(a) { ecrireSansDireLeRefus(RECENT_KEY, JSON.stringify(a)); }
 
 // recordRecentQuery(sql) — appelé à CHAQUE exécution (depuis qHistPush de viz.js). Dédup (retire toute
 // occurrence identique) + place en tête (plus-récent-d'abord) + plafond 20. Fire-and-forget.

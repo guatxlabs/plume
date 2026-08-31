@@ -391,6 +391,118 @@ pub(crate) fn attestation_discordante(maillons: &[(i64, String)], points: &[(i64
     None
 }
 
+/// `P10.7-v` — LA CADENCE À LAQUELLE CETTE CHAÎNE EST ANCRÉE, EN SECONDES. Elle n'est PAS choisie ici,
+/// elle est LUE dans la boucle qui ancre : `server::boucles_de_fond::spawn_retention_loop` dort
+/// `Duration::from_secs(…)` entre deux passes, et chaque passe (`rollups::retention_run_tenant`) finit
+/// par `sign_checkpoint`. Cette durée est un littéral au MILIEU d'un corps de fonction : aucun module ne
+/// peut l'importer. Elle est donc recopiée ici, et TENUE par une garde DÉRIVÉE qui relit ce corps-là
+/// (`la_cadence_d_ancrage_est_celle_de_la_boucle_qui_ancre`). Le jour où quelqu'un change la période de
+/// la boucle, la garde rougit et NOMME la valeur qu'elle a lue — au lieu de laisser ce nombre vieillir
+/// en silence, ce qui est exactement le défaut qu'un seuil écrit à la main installe.
+pub(crate) const CADENCE_D_ANCRAGE_S: i64 = 3600;
+
+/// `P10.7-v` — CE QU'ON TOLÈRE AVANT DE RENDRE UN VERDICT : DEUX cadences.
+///
+/// LE MULTIPLICATEUR EST DÉRIVÉ DE L'ORDONNANCEMENT, PAS CHOISI POUR LE CONFORT. La boucle dort une
+/// cadence ENTIÈRE entre deux passes ; l'écart entre deux ancres successives vaut donc une cadence PLUS
+/// la durée de la passe. Franchir DEUX cadences pleines exige qu'un tick entier n'ait rien produit :
+/// c'est le plus petit multiple qu'un ordonnancement sain ne peut pas atteindre. Et il est écrit EN
+/// FONCTION de la cadence, jamais en secondes — relever la cadence relève la tolérance automatiquement,
+/// comme `COLD_STALL_GRACE_DAYS` plafonne déjà la cadence de tir de son propre détecteur.
+pub(crate) const TOLERANCE_D_ANCRAGE_S: i64 = 2 * CADENCE_D_ANCRAGE_S;
+
+/// `P10.7-v` — UNE CHAÎNE QUE PLUS RIEN N'ANCRE, ET DEPUIS COMBIEN DE TEMPS.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct AncrageEnRetard {
+    /// L'horodatage à partir duquel la chaîne est SANS ancre : le dernier point de contrôle, ou — quand
+    /// il n'y en a jamais eu — le plus ancien maillon (la chaîne n'a alors jamais été ancrée de sa vie).
+    pub(crate) depuis: i64,
+    /// La durée écoulée depuis, mesurée contre l'instant de référence que l'APPELANT fournit.
+    pub(crate) secondes: i64,
+    /// `true` : aucun point de contrôle n'existe. `depuis` est alors le plus ancien maillon.
+    pub(crate) jamais_ancree: bool,
+}
+
+/// `P10.7-v` — LA CHAÎNE EST-ELLE RESTÉE SANS ANCRE PLUS LONGTEMPS QUE LA CADENCE NE LE REND PLAUSIBLE ?
+/// Cœur PUR : aucune base, aucun env, AUCUNE HORLOGE LUE — les trois horodatages sont des DONNÉES.
+///
+/// LA QUESTION QUI DÉCIDE VIENT AVANT LE CODE, ET ELLE EST LA SEULE QUI COMPTE : un journal JEUNE n'a
+/// légitimement AUCUN point de contrôle. Comment le distinguer d'un journal dont on a EFFACÉ les
+/// ancres, avec ce que le schéma porte déjà ? RÉPONSE MESURÉE LE 2026-08-31 : oui, et sans colonne
+/// neuve — `ledger.ts` et `checkpoint.ts` sont tous deux `INTEGER NOT NULL`. La grandeur qui les sépare
+/// n'est pas « y a-t-il des ancres », c'est DEPUIS COMBIEN DE TEMPS il n'y en a pas :
+///  - trois maillons nés dans la même minute, aucune ancre -> 0 s d'attente : le tick n'est pas encore
+///    passé, RIEN n'est dit ;
+///  - trois maillons étalés sur vingt jours, aucune ancre -> vingt jours pendant lesquels au moins
+///    quatre cent quatre-vingts ticks auraient dû ancrer. Il ne s'agit plus d'un journal jeune.
+/// La même grandeur borne la SECONDE moitié du défaut : une chaîne ancrée puis délaissée porte un
+/// dernier point de contrôle qui VIEILLIT, et c'est cette durée-là qu'aucune alerte n'escaladait.
+///
+/// CE QUE L'INSTANT DE RÉFÉRENCE VAUT, ET POURQUOI IL EST UN ARGUMENT PLUTÔT QU'UN `now()` : les deux
+/// sites qui posent cette question ne lisent PAS la même chose.
+///  - Le rapport de conformité est servi par le démon SUR SA PROPRE BASE VIVANTE : là, l'horloge du
+///    lecteur EST celle de l'instance, et `now()` est la bonne référence. C'est le seul endroit qui
+///    attrape une chaîne délaissée QUI NE GROSSIT PLUS (plus aucune mutation de config -> plus aucun
+///    maillon neuf -> rien d'autre ne bouge).
+///  - `plume-daemon verify` reçoit un CHEMIN. Ce fichier peut être une archive restaurée, une copie
+///    forensique, une base de recette : l'horloge de la machine qui lit n'a alors AUCUN rapport avec
+///    l'instance qui a écrit, et comparer à `now()` accuserait toute archive du seul fait d'être une
+///    archive. Sa référence est donc le DERNIER MAILLON — le dernier instant que le fichier lui-même
+///    prouve, sans horloge. Une archive saine y est MUETTE, et c'est vérifié.
+///
+/// UNE LOI A ÉTÉ ÉCRITE PUIS REFUSÉE, ET C'EST LA MÊME RAISON QUE POUR LA TROISIÈME LOI DE `P10.7-u` :
+/// « le nombre d'ancres doit valoir au moins la durée divisée par la cadence » attraperait l'effacement
+/// PARTIEL (ne garder que la plus récente). Elle est FAUSSE dès que l'instance n'a pas tourné en
+/// continu — un démon allumé une heure par jour produit vingt-quatre fois moins d'ancres que cette loi
+/// n'en exige, et serait accusé chaque jour. Ce qu'elle aurait attrapé est écrit ici plutôt que gardé
+/// par un instrument qui crierait à tort.
+///
+/// `None` = rien à dire : aucun maillon ET aucune ancre (il n'y a rien à ancrer), ou l'attente est sous
+/// la tolérance. Le chemin nominal est MUET.
+pub(crate) fn ancrage_en_retard(
+    reference: i64,
+    plus_ancien_maillon: Option<i64>,
+    dernier_ancrage: Option<i64>,
+) -> Option<AncrageEnRetard> {
+    // L'ancre la plus RÉCENTE gagne sur le plus ancien maillon : tant qu'une ancre existe, c'est elle
+    // qui date la dernière preuve. Le plus ancien maillon ne sert QUE si la chaîne n'a jamais été
+    // ancrée — et il est alors le seul témoin, dans le schéma, de l'instant où elle a commencé.
+    let (depuis, jamais_ancree) = match (dernier_ancrage, plus_ancien_maillon) {
+        (Some(ancre), _) => (ancre, false),
+        (None, Some(maillon)) => (maillon, true),
+        (None, None) => return None, // ni maillon ni ancre : il n'y a rien à ancrer, donc rien à dire
+    };
+    let secondes = reference - depuis;
+    // INÉGALITÉ STRICTE SUR LA TOLÉRANCE : une attente EXACTEMENT égale à deux cadences est encore ce
+    // qu'un ordonnancement à la seconde près peut produire. On n'accuse qu'au-DELÀ.
+    if secondes > TOLERANCE_D_ANCRAGE_S {
+        Some(AncrageEnRetard { depuis, secondes, jamais_ancree })
+    } else {
+        None
+    }
+}
+
+/// `P10.7-v` — CE QU'ON DIT D'UNE CHAÎNE QUE PLUS RIEN N'ANCRE. Texte UNIQUE, partagé par les deux
+/// sites, pour qu'un exploitant lise la MÊME phrase dans la console et dans la sortie de la CLI.
+///
+/// ELLE NE NOMME PAS DE CAUSE, ET C'EST DÉLIBÉRÉ : « effacé », « jamais signé faute de clé » et
+/// « la boucle qui ancre est morte » produisent le MÊME état, et le schéma ne porte rien qui les
+/// sépare. Nommer l'un des trois serait une accusation que la mesure ne soutient pas.
+pub(crate) fn raison_d_ancrage_en_retard(r: &AncrageEnRetard) -> String {
+    let debut = if r.jamais_ancree {
+        format!("cette chaîne n'a JAMAIS porté de point de contrôle, et son plus ancien maillon date de {} s plus tôt", r.secondes)
+    } else {
+        format!("cette chaîne n'a plus été ancrée depuis {} s (dernier point de contrôle : ts={})", r.secondes, r.depuis)
+    };
+    format!(
+        "CHAÎNE NON ANCRÉE : {debut} — la cadence d'ancrage est de {CADENCE_D_ANCRAGE_S} s et la \
+         tolérance de {TOLERANCE_D_ANCRAGE_S} s. Une chaîne de hachage sans point de contrôle signé est \
+         cohérente avec elle-même mais RÉINSCRIPTIBLE d'un bout à l'autre par qui écrit dans la base : \
+         « intègre » ne s'y démontre plus. La cause n'est PAS établie ici (points de contrôle effacés, \
+         clé de signature absente, ou boucle d'ancrage arrêtée produisent le même état)"
+    )
+}
+
 /// Signe la tête de chaîne du ledger -> checkpoint vérifiable avec la clé publique.
 ///
 /// `P10.7-t` — ON NE SIGNE PAS CE QU'ON N'A PAS PU LIRE. Jusqu'au 2026-08-31 la lecture de la tête portait
@@ -484,6 +596,18 @@ pub(crate) fn sign_checkpoint(conn: &Connection, key: &ed25519_dalek::SigningKey
 /// COMPROMISSION là où il n'y a qu'une lecture impossible ; le confondre avec le `0` EST le défaut
 /// d'origine. Le voisin `verify-control` a choisi le même `2` le même jour, indépendamment.
 ///
+/// `P10.7-v` ÉLARGIT LE MÊME `2` UNE TROISIÈME FOIS — UNE CHAÎNE QUE PLUS RIEN N'ANCRE. MESURÉ le
+/// 2026-08-31 avec le VRAI binaire, sur deux bases construites par le vrai chemin d'écriture : un
+/// journal de trois maillons étalés sur trente jours dont TOUS les points de contrôle ont été effacés,
+/// et un journal de trois maillons nés dans la même seconde qui n'en a jamais eu, rendaient la MÊME
+/// ligne au caractère près — « ledger OK : 3 entrées chaînées intègres ; checkpoints signés OK=0 KO=0 »
+/// — et sortaient TOUS DEUX en 0. L'instrument ne séparait donc pas « rien à vérifier » de « tout a été
+/// effacé ». Le `1` lui est refusé (la chaîne est intacte : crier à la compromission serait faux) et le
+/// `0` l'est aussi : la cohérence interne d'une chaîne de hachage ne se démontre PAS sans ancre — qui
+/// écrit dans la base la réécrit d'un bout à l'autre — donc « intègre » y serait le verdict trop
+/// OPTIMISTE que cette feuille poursuit. Le contrôle vit dans `verify_ledger`, PAS dans le cœur : cf. sa
+/// note, `crypto::prouver_l_equivalence` pose au cœur une tout autre question.
+///
 /// ET LE REFUS PARLE DÉSORMAIS SUR LA MÊME SORTIE QUE LES DEUX AUTRES VERDICTS (stdout) : il partait sur
 /// stderr, donc un `plume-daemon verify > journal.txt` rendait un fichier VIDE — un refus de conclure
 /// qu'on ne peut pas lire ne vaut pas mieux qu'un verdict faux. Rien dans l'arbre (unité systemd,
@@ -509,7 +633,8 @@ pub(crate) fn verify_run() {
         },
         Err(e) => {
             // AUCUN VERDICT — clé manquante/incorrecte, base illisible, maillon ou checkpoint qu'on ne sait
-            // pas lire, et depuis `P10.7-u` une attestation qu'on ne sait pas RATTACHER à la chaîne.
+            // pas lire, depuis `P10.7-u` une attestation qu'on ne sait pas RATTACHER à la chaîne, et depuis
+            // `P10.7-v` une chaîne que plus rien n'ancre depuis plus longtemps que la cadence ne l'admet.
             // Jamais un panic, et jamais confondu avec « intègre » (0) ni avec « rompu » (1).
             // LA QUEUE FIXE « … sur une chaîne partiellement lue » A ÉTÉ GÉNÉRALISÉE, ET C'EST UN CORRECTIF
             // DE PHRASE FAUSSE : elle décrivait UNE des causes du refus comme si c'était la seule, et elle
@@ -535,7 +660,49 @@ pub(crate) fn verify_ledger(db_path: &str) -> Result<(usize, i64, i64, Option<i6
     // v134 (#11) — applique le PIN escrow (PLUME_LEDGER_PUBKEY) s'il est configuré (sinon None -> comportement
     // historique : on fait confiance au pubkey IN-BAND de chaque checkpoint).
     let pinned = ledger_pinned_pubkey();
-    verify_ledger_conn(&conn, pinned.as_ref())
+    let verdict = verify_ledger_conn(&conn, pinned.as_ref())?;
+    // `P10.7-v` — L'ABSENCE D'ANCRAGE EST CONTRÔLÉE ICI, ET PAS DANS `verify_ledger_conn`, POUR UNE
+    // RAISON MESURÉE : le cœur a un SECOND consommateur, `crypto::prouver_l_equivalence`, qui s'en sert
+    // pour prouver qu'une CONVERSION de base au repos a recopié le journal fidèlement. Sa question est
+    // « cette copie est-elle identique ? », jamais « cette chaîne est-elle ancrée ? » : y router ce
+    // verdict aurait fait ABANDONNER la conversion d'une base parfaitement copiée, sous une phrase qui
+    // aurait dit « journal ILLISIBLE dans la copie » alors qu'il se lit. Une fausse accusation, dans un
+    // geste destructif. Le contrat de `verify_ledger_conn` est donc INCHANGÉ, et ce wrapper — dont les
+    // seuls appelants sont `verify_run` et son témoin — porte seul la loi.
+    //
+    // LA RUPTURE PASSE D'ABORD, comme pour la concordance de `P10.7-u` : `Ok(_, Some(id))` est le
+    // verdict le plus fort que cet instrument sache rendre, et aucun contrôle d'ancrage ne peut le
+    // convertir en refus de conclure.
+    if verdict.3.is_none() {
+        if let Some(raison) = ancrage_en_retard_de_la_base(&conn)? {
+            return Err(raison);
+        }
+    }
+    Ok(verdict)
+}
+
+/// `P10.7-v` — LES TROIS HORODATAGES QUE LA LOI D'ANCRAGE DEMANDE, LUS SUR LA BASE, PUIS PASSÉS AU CŒUR
+/// PUR. La référence est le DERNIER MAILLON et non `now()` : cette fonction sert `plume-daemon verify`,
+/// qui reçoit un CHEMIN et peut donc lire une archive restaurée ou une copie forensique, dont l'âge
+/// n'accuse personne (cf. la note de `ancrage_en_retard`). Sans maillon, il n'y a rien à ancrer.
+///
+/// LES DEUX LECTURES SONT DES AGRÉGATS, ET C'EST LA MÊME LIGNE DE PARTAGE QUE CELLE DU RAPPORT DE
+/// CONFORMITÉ : `MIN`/`MAX` rendent TOUJOURS une ligne (`NULL` sur une table vide), donc tout `Err`
+/// qu'ils rendent est une lecture qui n'a pas eu lieu — jamais une table vide.
+fn ancrage_en_retard_de_la_base(conn: &Connection) -> Result<Option<String>, String> {
+    let (plus_ancien, dernier_maillon) = conn
+        .query_row("SELECT MIN(ts), MAX(ts) FROM ledger", [], |r| {
+            Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, Option<i64>>(1)?))
+        })
+        .map_err(|e| format!("bornes temporelles du journal ILLISIBLES ({e}) — AUCUN verdict d'ancrage"))?;
+    let dernier_ancrage = conn
+        .query_row("SELECT MAX(ts) FROM checkpoint", [], |r| r.get::<_, Option<i64>>(0))
+        .map_err(|e| format!("horodatage du dernier point de contrôle ILLISIBLE ({e}) — AUCUN verdict d'ancrage"))?;
+    let reference = match dernier_maillon {
+        Some(t) => t,
+        None => return Ok(None), // aucun maillon : il n'y a rien à ancrer
+    };
+    Ok(ancrage_en_retard(reference, plus_ancien, dernier_ancrage).map(|r| raison_d_ancrage_en_retard(&r)))
 }
 /// v134 (#11) — PUBKEY ESCROW ÉPINGLÉ (OPTIONNEL) : `PLUME_LEDGER_PUBKEY` (hex 64 chars, ou base64 standard)
 /// = la clé PUBLIQUE ed25519 de confiance (escrow hors-bande). POSÉ -> la vérification REFUSE tout checkpoint

@@ -497,12 +497,52 @@ pub(crate) async fn compliance_report(
                 Err(rusqlite::Error::QueryReturnedNoRows) => None,          // aucun point signé : un FAIT
                 Err(e) => return corps_de_lecture_non_faite(json!({ "ledger_entries": entries, "ledger_head": head }), CAUSE_ANCRAGE_NON_LU, &e.to_string()),
             };
-            json!({
+            // `P10.7-v` — LE PLUS ANCIEN MAILLON REJOINT LA LECTURE, ET C'EST LA SEULE COLONNE
+            // AJOUTÉE. Sans lui, « aucun point de contrôle » n'est comparable à RIEN : un journal
+            // JEUNE n'en a légitimement pas, et l'accuser serait pire que l'angle mort. `MIN(ts)`
+            // rend TOUJOURS une ligne (`NULL` sur une table vide) — même ligne de partage que le
+            // `COUNT(*)` ci-dessus : tout `Err` qu'il rend est une lecture qui n'a pas eu lieu.
+            let premier_ts: Option<i64> = match conn.query_row("SELECT MIN(ts) FROM ledger", [], |r| r.get::<_, Option<i64>>(0)) {
+                Ok(t) => t,
+                Err(e) => return corps_de_lecture_non_faite(
+                    json!({ "ledger_entries": entries, "ledger_head": head, "last_checkpoint_ts": cp_ts }),
+                    CAUSE_ANCRAGE_NON_LU,
+                    &e.to_string(),
+                ),
+            };
+            let mut corps = json!({
                 "ledger_head": head,
                 "ledger_entries": entries,
                 "last_checkpoint_ts": cp_ts,
+                "ledger_first_ts": premier_ts,
+                "anchoring_cadence_s": CADENCE_D_ANCRAGE_S,
                 "note": "ancrage lecture-seule sur le ledger d'intégrité (Ed25519). L'export/stream du ledger est un chantier séparé (revue sécu).",
-            })
+            });
+            // `P10.7-v` — L'HORODATAGE DU DERNIER POINT DE CONTRÔLE ÉTAIT RAPPORTÉ, ET RIEN NE
+            // L'INTERPRÉTAIT : une panne d'ancrage pouvait durer une heure, un jour, une semaine, et
+            // cette pièce de conformité continuait de servir un nombre que personne ne comparait à
+            // rien. Il devient un VERDICT au-delà de ce que la cadence rend plausible (la loi et sa
+            // frontière : `ledger::ancrage_en_retard`).
+            //
+            // ICI, ET SEULEMENT ICI, LA RÉFÉRENCE EST `now()` : ce corps est servi par le démon SUR SA
+            // PROPRE BASE VIVANTE, donc l'horloge du lecteur EST celle de l'instance qui écrit. C'est
+            // aussi le seul des deux sites qui attrape une chaîne délaissée QUI NE GROSSIT PLUS —
+            // `plume-daemon verify`, lui, reçoit un chemin qui peut être une archive et se date sur le
+            // dernier maillon. Deux références, une seule loi.
+            //
+            // LA CLÉ N'APPARAÎT QUE QUAND ELLE ACCUSE : un corps qui porterait toujours un verdict
+            // d'ancrage n'en rendrait aucun. Et AUCUNE ÉCRITURE n'est faite — pas d'event SOC émis
+            // depuis une route de lecture : l'invariant de ce rapport est qu'il n'écrit rien.
+            if let Some(retard) = ancrage_en_retard(now(), premier_ts, cp_ts) {
+                corps["anchoring_overdue"] = json!({
+                    "since_ts": retard.depuis,
+                    "seconds": retard.secondes,
+                    "never_anchored": retard.jamais_ancree,
+                    "tolerance_s": TOLERANCE_D_ANCRAGE_S,
+                    "statement": raison_d_ancrage_en_retard(&retard),
+                });
+            }
+            corps
         })
     })
     .await

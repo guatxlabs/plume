@@ -101,8 +101,9 @@ concaténations et du texte d'`index.html` — elle aurait fait retirer des clé
 cassé l'anglais en croyant faire le ménage. LE SENS DE L'ERREUR EST CHOISI : taire une orpheline coûte
 une entrée morte, en inventer une coûte un libellé français servi à un lecteur anglophone.
 LE CORPUS EST DÉRIVÉ, ET CHACUNE DE SES EXCLUSIONS EST MOTIVÉE. Tout fichier texte du dépôt, sauf le lexique
-lui-même, les répertoires qui ne livrent rien à un navigateur (`.git`, `target`, `node_modules`, et
-`.github` — sans quoi la garde ressusciterait toute clé qu'elle NOMME dans son propre commentaire), et
+lui-même, tout ce qui PORTE un nom qui ne livre rien à un navigateur — répertoire OU fichier (`.git`,
+`target`, `node_modules`, et `.github` — sans quoi la garde ressusciterait toute clé qu'elle NOMME dans son
+propre commentaire) —, et
 les `*.md`, qui ne sont pas SERVIS : une phrase citée dans un document ne fait pas vivre une clé — et le
 2026-08-29 DEUX des orphelines alors prouvées ne subsistaient QUE dans `docs/`, dette de documentation en
 plus de la dette de lexique, l'une et l'autre payées ce jour-là (le titre servi, « Identité fédérée (SSO) »
@@ -558,11 +559,33 @@ PLAFOND_HORS_REGARD = {
 # ---------------------------------------------------------------------------------------------
 # L'EXCÈS DU LEXIQUE — une entrée dont la chaîne source n'existe plus (`P11.8-g`).
 # ---------------------------------------------------------------------------------------------
-# RÉPERTOIRES HORS CORPUS : ils ne livrent rien à un navigateur. `.github` en fait partie POUR UNE RAISON
-# QUI SE MESURE — les dix-huit orphelines sont NOMMÉES dans le commentaire du cliquet ci-dessous ; un corpus
-# qui lirait ce fichier les trouverait toutes « présentes dans le dépôt », donc indécidables. La garde se
-# rendrait aveugle en s'écrivant elle-même.
-REPERTOIRES_HORS_CORPUS = (".git", "target", "node_modules", ".github")
+# NOMS HORS CORPUS : ce qu'ils désignent ne livre rien à un navigateur. `.github` en fait partie POUR UNE
+# RAISON QUI SE MESURE — les dix-huit orphelines sont NOMMÉES dans le commentaire du cliquet ci-dessous ; un
+# corpus qui lirait ce fichier les trouverait toutes « présentes dans le dépôt », donc indécidables. La garde
+# se rendrait aveugle en s'écrivant elle-même.
+# L'EXCLUSION PORTE SUR LE NOM, PAS SUR LE TYPE (`P11.8-l`, 2026-08-31), ET CE FUT UN INSTRUMENT DONT LA
+# MESURE DÉPENDAIT DE LA FAÇON DONT L'ARBRE AVAIT ÉTÉ SORTI. Elle ne retirait que des RÉPERTOIRES ; or
+# `git worktree` — et un sous-module — posent un `.git` qui est un FICHIER, et son contenu est un CHEMIN.
+# MESURÉ le 2026-08-31 sur un même commit de CE dépôt, sorti de TROIS façons. Ce qui porte la
+# connaissance est l'ÉCART, jamais la taille absolue : clone ordinaire et archive de la tête rendent
+# le MÊME corpus ; un arbre de travail LIÉ rend **cinquante-trois octets de plus**, soit exactement la
+# taille de son pointeur plus celle du séparateur. ET LE NOMBRE SUIT LA LONGUEUR DU CHEMIN : un second
+# arbre lié, même commit, dont le seul nom d'administration était plus long, rendait cent quinze octets
+# de plus — l'écart entre les deux valant exactement la différence de longueur des deux pointeurs.
+# LA PRÉCISION QUI REND LE DÉFAUT PIRE QU'IL N'EN A L'AIR : ce n'est pas la profondeur où l'arbre est
+# posé — deux arbres liés de même nom à des profondeurs différentes rendent le MÊME pointeur. C'est le
+# chemin du dépôt PRINCIPAL plus le nom d'administration, si bien que le MÊME arbre lié, sous deux
+# clones, donne DEUX nombres. Et le code sortait à ZÉRO dans les trois cas : le défaut était SILENCIEUX.
+# 112 octets). Deux sorties du même commit ne rendaient donc pas le même nombre. Sans effet sur le verdict —
+# la marge des planchers se compte en millions d'octets — mais un relevé pris là aurait ancré TROIS planchers
+# sur un accident de chemin, et personne ne l'aurait su. PRÉCISION MESURÉE QUE L'ÉNONCÉ N'AVAIT PAS : ce n'est
+# pas la profondeur où l'arbre est posé qui compte, c'est la longueur du chemin du dépôt PRINCIPAL plus le nom
+# d'administration de l'arbre — deux arbres liés de même nom placés à des profondeurs différentes rendent le
+# MÊME nombre (51 octets chacun, vérifié), deux noms de longueurs différentes non.
+# VÉRIFIÉ AVANT D'EXCLURE, PARCE QU'UNE EXCLUSION QUI RETIRE UN FICHIER LÉGITIME EST PIRE QUE LE DÉFAUT :
+# aucun fichier de ce dépôt ne porte un de ces quatre noms — ni parmi les 656 fichiers que le corpus lit, ni
+# dans `git ls-files` entier, où `.github` n'apparaît QUE comme segment de répertoire (67 fichiers).
+NOMS_HORS_CORPUS = (".git", "target", "node_modules", ".github")
 RE_ECHAPPEMENT = re.compile(r"\\(['\"`\\])")
 SEPARATEUR_CORPUS = "\n\x1e\n"
 RE_CORPS_DE_MOT = re.compile(r"[0-9A-Za-zÀ-ÖØ-öø-ÿ]")
@@ -578,12 +601,12 @@ RE_CORPS_DE_MOT = re.compile(r"[0-9A-Za-zÀ-ÖØ-öø-ÿ]")
 # DÉPÔT, mesuré dans un clone ordinaire de la tête, jamais sur une donnée d'exploitation. Nommer un défaut
 # à côté de la valeur qui le porte ne
 # l'empêche pas ; seule la dérivation l'empêche.
-# LE RELEVÉ DU CORPUS SE PREND DANS UN CLONE ORDINAIRE, PAS DANS UN ARBRE DE TRAVAIL LIÉ, ET L'ÉCART EST
-# MESURÉ : `REPERTOIRES_HORS_CORPUS` ne retire que des RÉPERTOIRES, or `git worktree` pose à la racine un
-# `.git` qui est un FICHIER de 83 octets. Joué le 2026-08-31 depuis un arbre lié, le corpus rend 35 336 055
-# au lieu de 35 335 969 : +86 (les 83 octets du pointeur, plus les 3 du séparateur). C'est sans effet sur le
-# verdict — la marge du plancher se compte en millions d'octets — mais un relevé pris là serait ancré sur la
-# LONGUEUR DU CHEMIN de l'arbre lié, ce qui n'est une propriété ni du dépôt ni de l'instrument.
+# LE RELEVÉ DU CORPUS NE DÉPEND PLUS DU MODE DE SORTIE DE L'ARBRE (`P11.8-l`, fermée le 2026-08-31) : le
+# pointeur `.git` d'un arbre lié est un FICHIER, il entrait dans le corpus, et il déplaçait la mesure de la
+# longueur de son propre chemin. `NOMS_HORS_CORPUS` porte désormais sur le NOM, fichier comme répertoire, et
+# les trois modes de sortie du MÊME commit rendent le MÊME nombre — la note de cette constante porte les trois
+# mesures. Le relevé ci-dessous se prend toujours dans un CLONE ORDINAIRE, non plus parce que l'autre mode
+# mentait, mais parce que c'est le mode qu'un tiers peut refaire sans rien savoir de mon poste.
 RELEVE_CORPUS = 35335969     # 2026-08-31, HEAD `6f0a5ad`, clone ordinaire (banc : le corpus dérivé que
                              # cette garde construit elle-même — sources suivies, pas une installation ;
                              # `stat1.db`, ignoré et non décodable en UTF-8, n'y entre pas).
@@ -1551,8 +1574,13 @@ def corpus_du_depot() -> tuple[str, set[str]]:
     morceaux: list[str] = []
     litteraux: set[str] = set()
     for base, dossiers, fichiers in os.walk(RACINE):
-        dossiers[:] = [d for d in dossiers if d not in REPERTOIRES_HORS_CORPUS]
+        # LE MÊME NOM EXCLUT LES DEUX, ET LES DEUX LIGNES SE LISENT ENSEMBLE POUR QU'ELLES NE DÉRIVENT PLUS
+        # (`P11.8-l`) : un `.git` RÉPERTOIRE et un `.git` FICHIER sont le même artefact sous deux modes de
+        # sortie de l'arbre ; n'en retirer qu'un rendait la mesure dépendante de celui qu'on avait sous la main.
+        dossiers[:] = [d for d in dossiers if d not in NOMS_HORS_CORPUS]
         for f in sorted(fichiers):
+            if f in NOMS_HORS_CORPUS:
+                continue
             chemin = os.path.join(base, f)
             if chemin == LEXIQUE or f.endswith(".md"):
                 continue
@@ -1655,6 +1683,22 @@ def valider_sonde_d_exces(vivantes: set[str], corpus: str, litteraux: set[str],
     if len(vivantes) < MIN_CLES_VIVANTES:
         errs.append(f"{len(vivantes)} clés vues comme chaîne affichée, plancher {MIN_CLES_VIVANTES} : "
                     f"l'appariement lexique/population est cassé, et tout le reste serait accusé.")
+    # TÉMOIN DU MODE DE SORTIE (`P11.8-l`, 2026-08-31). Un pointeur `gitdir:` en tête d'un morceau du corpus
+    # signe un artefact de PLOMBERIE git lu comme du texte servi : le `.git` FICHIER que pose un arbre de
+    # travail lié ou un sous-module. Il ne fait pas ROUGIR le lexique, il fait REFUSER DE CONCLURE — la
+    # grandeur mesurée dépendrait de la longueur du chemin où l'arbre a été posé, et aucun relevé pris là ne
+    # serait attribuable à un commit. Le motif est cherché en TÊTE de morceau — début du corpus, ou juste
+    # après un séparateur — et non n'importe où : un texte qui PARLE de `gitdir` n'est pas un pointeur, et une
+    # garde qui refuserait de conclure sur une phrase de documentation serait une rançon.
+    # CE QU'IL N'ACHÈTE PAS, ET C'EST LA MOITIÉ QUI COMPTE : en intégration continue l'arbre est un clone
+    # ordinaire, ce témoin y est vert QUOI QU'IL ARRIVE, et il ne garde donc PAS la CI contre un retour en
+    # arrière de `NOMS_HORS_CORPUS`. Il ne garde que celui qui PREND un relevé depuis un arbre lié — c'est-
+    # à-dire exactement le geste par lequel le défaut est entré, et le seul où la valeur fausse serait écrite.
+    if corpus.startswith("gitdir: ") or "\x1e\ngitdir: " in corpus:
+        errs.append("le corpus porte un pointeur `gitdir:` : un `.git` de plomberie (arbre de travail LIÉ ou "
+                    "sous-module) y est entré comme s'il était du texte servi. La mesure dépend alors de la "
+                    "LONGUEUR DU CHEMIN où l'arbre a été posé — deux sorties du même commit ne rendent pas le "
+                    "même nombre, et aucun relevé pris ici n'est attribuable à un commit.")
     if errs:
         return errs  # les témoins qui suivent n'auraient plus de corpus à quoi se mesurer
     verdict, _ = verdict_d_une_cle(CLE_TEMOIN, vivantes, corpus, litteraux)
@@ -2272,7 +2316,8 @@ def main(argv: list[str]) -> int:
           f"dans le dépôt hors d'un puits reconnu, {len(indecidables) - ailleurs} qu'un littéral de bord pourrait "
           f"composer — et {len(orphelines)} sont des ORPHELINES PROUVÉES (texte absent du dépôt ENTIER, et aucun "
           f"littéral n'en formerait le bord). Corpus dérivé : {len(corpus)} octets, {len(litteraux)} littéraux de "
-          f"l'arbre servi ; `*.md` et {'/'.join(REPERTOIRES_HORS_CORPUS)} exclus (rien de cela n'atteint un "
+          f"l'arbre servi ; `*.md` et tout {'/'.join(NOMS_HORS_CORPUS)} — répertoire OU fichier, le pointeur "
+          f"`.git` d'un arbre de travail lié en est un — exclus (rien de cela n'atteint un "
           f"navigateur, et lire `.github` ferait ressusciter toute clé que ce fichier NOMME). `--exces` les liste.")
     for c, _ in orphelines:
         print(f"    ORPHELINE PROUVÉE  {c}")

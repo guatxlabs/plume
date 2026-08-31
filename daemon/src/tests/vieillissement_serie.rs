@@ -10,7 +10,10 @@
 //      DEPUIS LE DÉMARRAGE : on prouve ici qu'un gros transitoire ANTÉRIEUR à la fenêtre n'entre pas
 //      dans la mesure, et qu'une fenêtre où rien ne se passe n'hérite pas de la précédente.
 //   4. LE TEMPS CPU EST CELUI DU FIL, pas du processus — prouvé en faisant brûler un AUTRE fil.
-//   5. LE COÛT EST BORNÉ ET MESURÉ (disque, sur le schéma RÉEL), et la publication ne peut pas être
+//   5. LA COMPOSITION DE L'INSTRUMENT EST COMPTÉE (quatre lectures de `/proc/self/status`, une
+//      écriture de `5` dans `clear_refs` — un COMPTE, pas une durée : un rapport de durées mesurait
+//      aussi la machine et a accusé à tort), LE COÛT DISQUE EST BORNÉ ET MESURÉ (sur le schéma RÉEL),
+//      et la publication ne peut pas être
 //      contournée par un retour anticipé (garde DÉRIVÉE du source de `cold_age_run`).
 //
 // Les fonctions qui portent la logique sont PURES (elles reçoivent le bilan) : elles se testent sans
@@ -674,97 +677,235 @@ mod vieillissement_serie_tests {
     }
 
     // =============================================================================================
-    // 5. LE COÛT EST BORNÉ, ET LA PUBLICATION N'EST PAS CONTOURNABLE
+    // 5. LA COMPOSITION DE L'INSTRUMENT EST COMPTÉE, LE COÛT DISQUE EST BORNÉ, ET LA PUBLICATION
+    //    N'EST PAS CONTOURNABLE
     // =============================================================================================
 
-    /// CE QUE L'INSTRUMENT COÛTE — un CHIFFRE, pas une intention. La fenêtre s'ouvre et se ferme UNE
-    /// FOIS par vieillissement (cadence horaire de `retention_run`), jamais dans une boucle chaude ; son
-    /// coût doit donc être négligeable devant une passe qui dure des secondes. Ce n'est pas une évidence :
-    /// `/proc/self/clear_refs` accepte d'autres valeurs que `5`, et elles, elles PARCOURENT toute la
-    /// table des pages du processus (`1`/`2`/`3` : bits « référencé/accédé », `4` : bits soft-dirty, avec
-    /// purge de TLB — `Documentation/filesystems/proc.rst`, relu le 2026-08-22). Écrire la
-    /// mauvaise valeur transformerait une mesure gratuite en balayage de tout l'espace d'adressage.
+    /// CE QUE L'INSTRUMENT FAIT À `/proc` — un COMPTE, et depuis ce lot c'est bien un COMPTE qui est
+    /// asserté. La fenêtre s'ouvre et se ferme UNE FOIS par vieillissement (cadence horaire de
+    /// `retention_run`), jamais dans une boucle chaude ; ce qu'il faut garder, c'est qu'elle ne se mette
+    /// pas à faire DAVANTAGE. Ce n'est pas une évidence : `/proc/self/clear_refs` accepte d'autres
+    /// valeurs que `5`, et elles, elles PARCOURENT toute la table des pages du processus (`1`/`2`/`3` :
+    /// bits « référencé/accédé », `4` : bits soft-dirty, avec purge de TLB —
+    /// `Documentation/filesystems/proc.rst`, relu le 2026-08-22). Écrire la mauvaise valeur
+    /// transformerait une mesure gratuite en balayage de tout l'espace d'adressage — ET laisserait le pic
+    /// à sa valeur cumulée depuis le démarrage, donc la crête publiée ne serait plus celle de la fenêtre.
     ///
-    /// CE QUE CE TEST ATTRAPE, ET CE QU'IL N'ATTRAPE PAS — mesuré le 2026-08-10, pas supposé. L'hypothèse de départ était
-    /// que ce test serait la garde contre `clear_refs=1` : FAUX. Mutation exécutée (`b"5"` -> `b"1"`) : le
-    /// coût par fenêtre passe de **179 µs à 303 µs** (×1,7) — le test reste VERT. La table des pages d'un
-    /// binaire de test (~20 Mio résidents) est trop petite pour que le balayage se voie. Ce qui attrape
-    /// VRAIMENT la mauvaise valeur est le test SÉMANTIQUE `la_crete_rss_est_bornee_a_la_fenetre` : `1` ne
-    /// remet PAS le pic à zéro, la validation le voit, et il rougit sur `reset_refuse` (vérifié le
-    /// 2026-08-10). Ce test-ci ne garde donc qu'une chose : un changement d'ORDRE DE GRANDEUR du coût de
-    /// l'instrument.
+    /// POURQUOI CE TEST NE CHRONOMÈTRE PLUS, ET CE QU'IL A FALLU JOUER POUR LE SAVOIR. La forme
+    /// précédente ANNONÇAIT un compte (« quatre lectures ») et ASSERTAIT un rapport de DURÉES,
+    /// `médiane(fenêtre) / médiane(lecture)`, plafonné à 8. Ce ne sont pas la même grandeur. Le
+    /// 2026-08-30, le portail de build du VPS a rendu **13,50** (444,973 µs contre 32,97 µs) PENDANT
+    /// QU'IL COMPILAIT, sur un arbre dont la composition était INTACTE : une accusation FAUSSE, contre un
+    /// code juste, par un témoin vert au repos sur le poste de développement.
     ///
-    /// `P6.9-a` — POURQUOI UN RAPPORT, ET PLUS DES MICROSECONDES ABSOLUES. La forme précédente assertait
-    /// `moyenne < 500 µs`. Une borne absolue ne peut pas exprimer « l'ordre de grandeur n'a pas changé » :
-    /// elle mesure la MACHINE autant que le code. Mesuré sur ce banc (12 cœurs, binaire de test `debug`,
-    /// mesure épinglée sur UN cœur partagé avec des brûleurs de CPU) :
+    /// LE MÉCANISME DE CE ROUGE N'EST PAS PROUVÉ, ET ON NE PRÉTEND PAS LE CONNAÎTRE. Quatre candidats ont
+    /// été FABRIQUÉS ET JOUÉS sur le poste de développement (12 cœurs, charge RÉELLE : une suite
+    /// `cargo test` ÉTRANGÈRE à 14 fils, `load average` 10,9), et les quatre sont REFUSÉS par la mesure.
+    /// `K/R` désigne un bras fait UNIQUEMENT de quatre lectures, sans écriture — même durée d'exposition
+    /// que la fenêtre, mais rien d'autre :
     ///
-    /// | banc                        | moyenne par fenêtre | ancienne forme | rapport MÉDIAN |
-    /// |-----------------------------|---------------------|----------------|----------------|
-    /// | au repos                    | 123 µs              | VERT           | 4,25           |
-    /// | 8 brûleurs sur le même cœur | 655 µs              | **ROUGE**      | 4,28           |
-    /// | 16 brûleurs                 | 833 µs              | **ROUGE**      | 4,26           |
+    /// | condition jouée                                          | K/R (4 lectures) | rapport fenêtre |
+    /// |----------------------------------------------------------|------------------|-----------------|
+    /// | charge externe seule (suite étrangère, load 10,9)         | 3,98             | 4,27            |
+    /// | + 8 brûleurs CPU dans le processus mesuré                 | 4,00             | 4,24            |
+    /// | + 24 brûleurs CPU                                         | —                | 4,40            |
+    /// | 2 fils du MÊME processus qui défautent (contention `mm`)  | 4,03             | 4,24            |
+    /// | 6 fils du MÊME processus qui défautent                    | 4,08             | 4,36            |
     ///
-    /// Le coût apparent varie de ×6,8 ; le rapport, de 0,7 %. C'est la définition d'une garde qui mesure
-    /// le code et non l'ordonnanceur — et une borne absolue relevée à 900 µs n'aurait fait que déplacer
-    /// la même faute d'un cran.
+    /// `K/R` reste à 3,98–4,08 sous TOUTES ces charges. Cela RÉFUTE l'explication la plus naturelle — « le
+    /// bras long offre plus de prises à la préemption, donc sa médiane enfle plus que proportionnellement » :
+    /// si c'était vrai, K/R enflerait AUSSI, et il ne bouge pas. Mesuré et écarté également : les deux
+    /// `clock_gettime(CLOCK_THREAD_CPUTIME_ID)` que la fenêtre ajoute et que la référence n'a pas (ils ne
+    /// passent pas par le vDSO, contrairement à `CLOCK_MONOTONIC`) coûtent **0,08 lecture**, invariants
+    /// sous 24 brûleurs.
     ///
-    /// LA RÉFÉRENCE EST L'OPÉRATION DONT LA FENÊTRE EST FAITE : `champ_status_octets`, une lecture de
-    /// `/proc/self/status`. Une fenêtre en fait QUATRE (`ouvrir` : `VmRSS`, puis `VmHWM` et `VmRSS` pour
-    /// VALIDER le reset ; `clore` : `VmHWM`) plus UNE écriture dans `clear_refs` et deux horloges. Le
-    /// rapport attendu est donc « quatre et des poussières », et c'est bien ce qu'on mesure — le
-    /// dénominateur n'est pas un étalon choisi, c'est le composant.
+    /// CE QUI RESTE DÉDUCTIBLE DES DEUX SEULS CHIFFRES DU VPS : quatre lectures y valent 4 × 32,97 =
+    /// 131,9 µs, donc **~313 µs des 445 µs sont HORS des lectures**. L'excès est CONCENTRÉ, pas réparti —
+    /// et c'est précisément ce qu'un rapport ne peut pas dire, puisqu'il divise deux totaux. Le seul
+    /// candidat non réfuté est l'écriture de `clear_refs`, la seule opération que le bras de référence ne
+    /// fait pas. IL RESTE NON PROUVÉ : le reproduire demanderait de mettre CE poste sous pression
+    /// mémoire, ce qui a été refusé (16 Go, zram déjà à ~7,6 Gio, `earlyoom` a tué une suite le jour même).
     ///
-    /// LA MÉDIANE, PAS LA MOYENNE, et ce n'est pas un détail de goût : sous 16 brûleurs le rapport des
-    /// MOYENNES tombe à 1,56, parce qu'une préemption de plusieurs millisecondes s'ajoute IDENTIQUEMENT
-    /// aux deux bras et pousse leur rapport vers 1. Une garde bâtie sur la moyenne ne rougirait donc pas
-    /// seulement à tort sous charge : elle deviendrait AVEUGLE. La médiane, elle, ignore les préemptions
-    /// (elles sont rares) et garde le coût réel.
+    /// ET C'EST LE POINT : LE CORRECTIF NE DÉPEND PAS DE CONNAÎTRE CE MÉCANISME. Quelle que soit la
+    /// grandeur physique qui a enflé là-bas, elle a fait rougir un témoin dont la propriété était TENUE.
+    /// On compte donc ce qu'on annonce. Le plafond n'a PAS été relevé — il a été SUPPRIMÉ avec la
+    /// grandeur qu'il bornait, et remplacé par une égalité exacte, plus stricte dans les deux sens.
     ///
-    /// MUTATION (exécutée le 2026-08-23) : rendre l'instrument dix fois plus cher — `armer_crete` répétant
-    /// dix fois sa séquence lecture/écriture/relecture — porte le rapport de 4,25 à **33,1 au repos et
-    /// 33,6 sous charge** (attendu : 31 lectures + 10 écritures, soit ~33,5 — la mesure et la
-    /// composition tombent d'accord), et fait rougir cette assertion dans les DEUX conditions.
+    /// CE QUE LA FORME ACTUELLE TIENT, ET C'EST NEUF :
+    ///   * le NOMBRE de lectures de `/proc/self/status` (exactement 4), dans les DEUX sens (`assert_eq!`) ;
+    ///   * le NOMBRE d'écritures dans `clear_refs` (exactement 1) ;
+    ///   * la VALEUR écrite (`5`), comparée à un littéral que ce test possède EN PROPRE. C'est la promesse
+    ///     que l'ancien message d'erreur FAISAIT sans la tenir, et sa propre prose le consignait : le
+    ///     2026-08-10 la mutation `b"5"` -> `b"1"` le laissait VERT (179 µs -> 303 µs) ; le 2026-08-23 elle
+    ///     rendait 8,43–8,64 contre un plafond de 8, soit 5 % — « cinq pour cent ne sont pas une garde ».
+    ///     Elle est désormais tenue sans marge d'interprétation, et sans horloge.
     ///
-    /// CE QU'ON NE REVENDIQUE PAS. Sous `clear_refs=1`, le rapport mesuré vaut 8,43 à 8,64 (2026-08-23),
-    /// donc il DÉPASSE le plafond — de 5 %. Cinq pour cent ne sont pas une garde : c'est le test
-    /// SÉMANTIQUE qui attrape cette valeur, et lui la voit sans marge d'interprétation (`reset_refuse`).
-    /// Le chiffre est consigné parce qu'il borne le plafond par le haut, pas parce qu'il ajouterait une
-    /// promesse.
+    /// CE QUE LA FORME ACTUELLE A PERDU, ÉCRIT POUR ÊTRE OPPOSABLE. Un rapport de durées voyait, en
+    /// principe, TOUT surcoût ajouté à la fenêtre — un verrou, une attente, une allocation énorme, un
+    /// `sleep` — même sans toucher `/proc`. Le compte y est AVEUGLE. C'est un rétrécissement RÉEL du canal
+    /// de détection, assumé pour une raison : ce canal-là ne rendait pas de verdict fiable (il accusait à
+    /// tort sur le VPS), et un canal qui accuse à tort finit par être désarmé — ce qui aurait tout coûté.
+    /// La mesure de durée est CONSERVÉE, mais comme REPÈRE IMPRIMÉ, jamais comme verdict.
+    ///
+    /// CE QUE LE COMPTE NE VOIT PAS NON PLUS : un accès à `/proc` qui n'emprunterait ni
+    /// `champ_status_octets` ni `ecrire_clear_refs`, et tout accès vivant dans un bloc `cfg(not(test))`.
+    ///
+    /// L'HISTORIQUE DE MESURE EST CONSERVÉ parce qu'il BORNE ce qui précède, pas par nostalgie. Forme
+    /// « rapport » sur ce banc : 4,25 au repos, 4,28 sous 8 brûleurs, 4,26 sous 16 — le coût apparent
+    /// variait de ×6,8 pour 0,7 % de rapport, et c'est ce qui avait fait préférer un rapport à une borne
+    /// absolue de 500 µs (`P6.9-a`). Mutation « instrument dix fois plus cher » (`armer_crete` répétant dix
+    /// fois sa séquence), jouée le 2026-08-23 : rapport 33,1 au repos et 33,6 sous charge. Cette même
+    /// mutation est aujourd'hui attrapée par le COMPTE — 31 lectures et 10 écritures — sans horloge.
+    ///
+    /// LE TEST QUI ATTRAPE `clear_refs=1` PAR LA SÉMANTIQUE RESTE `la_crete_rss_est_bornee_a_la_fenetre` :
+    /// `1` ne remet pas le pic à zéro, la validation le voit, il rougit sur `reset_refuse` (vérifié le
+    /// 2026-08-10). Ce test-ci l'attrape désormais AUSSI, par la valeur écrite : deux chemins
+    /// INDÉPENDANTS pour la même faute, et c'est voulu.
     #[test]
-    fn ouvrir_et_clore_une_fenetre_ne_coute_que_quelques_lectures_de_proc() {
+    fn ouvrir_et_clore_une_fenetre_ne_fait_que_quatre_lectures_de_proc_et_une_ecriture() {
         let _serialise = FENETRES.lock();
         if !cfg!(target_os = "linux") {
-            eprintln!("[mesure] non-Linux : instrument absent, coût sans objet ici");
+            eprintln!("[composition] non-Linux : /proc/self/{{status,clear_refs}} absents -> instrument sans objet ici");
             return;
         }
-        /// Le nombre de lectures de `/proc/self/status` qu'une fenêtre effectue — trois à l'ouverture,
-        /// une à la fermeture. C'est de CE nombre que le plafond est dérivé, pas d'une durée.
-        const LECTURES_PAR_FENETRE: f64 = 4.0;
-        /// LE PLAFOND, ET D'OÙ IL SORT. Mesuré sur ce banc : 4,25 au repos, 4,28 et 4,26 sous charge
-        /// (le détail est dans le commentaire de doc ci-dessus). Le plafond est posé au DOUBLE de la
-        /// composition — il absorbe une machine où l'écriture de `clear_refs` coûterait jusqu'à quatre
-        /// lectures (elle en coûte 0,25 ici) et reste très en dessous de ce que rend une mutation ×10.
-        const RAPPORT_MAX: f64 = 2.0 * LECTURES_PAR_FENETRE;
-        const N: usize = 200;
+        /// Ce qu'une fenêtre fait, et rien d'autre — DÉRIVÉ DE LA SOURCE, pas d'une durée : `armer_crete`
+        /// lit `VmRSS`, écrit `clear_refs`, relit `VmHWM` puis `VmRSS` pour VALIDER le reset ; `clore` lit
+        /// `VmHWM`.
+        const LECTURES_PAR_FENETRE: u32 = 4;
+        const ECRITURES_PAR_FENETRE: u32 = 1;
+        /// LA VALEUR ATTENDUE, TENUE ICI EN PROPRE. Ce littéral est une COPIE DÉLIBÉRÉE de celui de
+        /// `vieillissement_serie.rs` : importer la constante de production reviendrait à la vérifier
+        /// CONTRE ELLE-MÊME, et ce test resterait vert quelle que soit la valeur réellement écrite. La
+        /// duplication est la garde — ne pas la factoriser.
+        const VALEUR_ATTENDUE: &[u8] = b"5";
 
-        let une_fenetre =
-            || Fenetre::ouvrir().clore(Issue::Balaye, Compte::default(), Retard::Mesure(0));
-        let une_lecture = || champ_status_octets("VmHWM:");
-        // Chauffe : le tout premier accès à `/proc/self/status` paie le cache de dentry.
-        let _ = black_box(une_fenetre());
-        let _ = black_box(une_lecture());
+        // TÉMOIN POSITIF DE L'INSTRUMENT, AVANT DE S'EN SERVIR : une lecture NUE doit compter pour UNE et
+        // ne rien écrire. Sans lui, un compteur figé, mort ou qui compte double rendrait tout ce qui suit
+        // muet ou menteur — et le mode de panne d'un témoin est justement de rendre vert en étant aveugle.
+        let _ = temoin_de_composition::releve();
+        let _ = black_box(champ_status_octets("VmHWM:"));
+        let nue = temoin_de_composition::releve();
+        assert_eq!(
+            (nue.lectures_de_status, nue.ecritures_de_clear_refs),
+            (1, 0),
+            "INSTRUMENT : une lecture NUE de `/proc/self/status` s'est comptée {nue:?} au lieu de (1, 0) — \
+             le compteur ne compte pas ce qu'il prétend, et rien de ce qui suit ne voudrait dire quoi que ce soit"
+        );
 
-        // LES DEUX BRAS SONT ENTRELACÉS, tour par tour : ils subissent alors le MÊME ordonnancement.
-        // Deux boucles successives laisseraient la charge de la machine changer entre les deux, et le
-        // rapport mesurerait cette dérive plutôt que le coût.
-        let (mut refs, mut fens) = (Vec::with_capacity(N), Vec::with_capacity(N));
-        for _ in 0..N {
+        // TROIS TENTATIVES, PAS UNE. `reset_effectif` peut refuser à cause d'un VOISIN : `VmHWM`/`VmRSS`
+        // sont des grandeurs de PROCESSUS, et un fil de test qui relâche plusieurs Mio entre l'écriture et
+        // la relecture fait retomber le RSS sous le pic. C'est rare et transitoire ; une seule tentative
+        // laisserait ce test refuser de conclure au hasard de l'ordonnancement.
+        let (mut mesuree, mut aveugle) = (None, None);
+        for _ in 0..3 {
+            let bilan = Fenetre::ouvrir().clore(Issue::Balaye, Compte::default(), Retard::Mesure(0));
+            let vue = temoin_de_composition::releve();
+
+            // 1. LA VALEUR ÉCRITE SE VÉRIFIE À CHAQUE TOUR, ET AVANT TOUT LE RESTE. C'est la seule
+            //    assertion qui vaille MÊME quand la crête n'a pas pu être mesurée — et c'est exactement le
+            //    cas de `clear_refs=1` : le reset ne prend pas, la fenêtre rend `reset_refuse`, donc un
+            //    contrôle placé APRÈS le refus de conclure ne verrait JAMAIS la mauvaise valeur.
+            if vue.ecritures_de_clear_refs > 0 {
+                let ecrit: &[u8] = vue.derniere_valeur_ecrite.unwrap_or(&[]);
+                assert_eq!(
+                    ecrit,
+                    VALEUR_ATTENDUE,
+                    "la fenêtre a écrit `{}` dans `/proc/self/clear_refs` au lieu de `{}` : seul `5` remet \
+                     `VmHWM` au RSS courant. `1`/`2`/`3` (bits référencé/accédé) et `4` (soft-dirty) \
+                     PARCOURENT toute la table des pages avec purge de TLB, et laissent le pic à sa valeur \
+                     cumulée DEPUIS LE DÉMARRAGE — la crête publiée serait celle de toute la vie du \
+                     processus, pas celle de la fenêtre",
+                    String::from_utf8_lossy(ecrit),
+                    String::from_utf8_lossy(VALEUR_ATTENDUE)
+                );
+            }
+            match bilan.crete {
+                Crete::Mesuree { .. } => {
+                    mesuree = Some(vue);
+                    break;
+                }
+                Crete::NonMesuree(cause) => aveugle = Some((cause, vue)),
+            }
+        }
+
+        // 2. L'INSTRUMENT A-T-IL PU VOIR ? La question se tranche sur le TYPE que rend la PRODUCTION, pas
+        //    sur une supposition d'environnement : `Crete::Mesuree` n'existe QUE si les quatre lectures et
+        //    l'écriture ont abouti ET si le reset a été validé. C'est donc exactement la précondition sous
+        //    laquelle « 4 et 1 » est la bonne attente. Deux situations rendraient un compte FAUX sans que
+        //    rien ne soit cassé — `/proc/self/status` illisible (conteneur durci) : sortie après 1 lecture ;
+        //    écriture refusée : sortie après 1 lecture et 1 écriture. Un témoin qui ne peut pas voir doit
+        //    REFUSER DE CONCLURE, pas accuser.
+        let Some(vue) = mesuree else {
+            let (cause, vue) = aveugle.expect("INSTRUMENT : trois tours sans crête mesurée ET sans cause nommée");
+            // ...MAIS UN AVEUGLEMENT NE DOIT JAMAIS SERVIR DE CACHETTE, et c'est le piège central de
+            // cette forme : un témoin qui se tait précisément quand il faudrait qu'il parle est pire
+            // qu'absent. Les formes qu'un refus peut prendre sont ÉNUMÉRABLES DEPUIS LA SOURCE, et il n'y
+            // en a que cinq — `armer_crete` sort après 1 lecture (`/proc` illisible), après 1 lecture et
+            // 1 écriture (écriture refusée), ou après 3 lectures et 1 écriture (relecture manquée, ou
+            // reset non pris) ; `clore` peut échouer sur sa lecture après 4 et 1 ; et une fenêtre non
+            // exclusive ne touche `/proc` ni en lecture ni en écriture. Toute AUTRE forme n'est pas un
+            // environnement aveugle, c'est une composition qui a changé — y compris le cas sournois où
+            // l'écriture aurait DISPARU (le reset ne prendrait plus, la fenêtre rendrait `reset_refuse`,
+            // et un simple plafond l'aurait laissée passer).
+            const REFUS_POSSIBLES: [(u32, u32, &str); 5] = [
+                (0, 0, "une autre fenêtre était ouverte : `armer_crete` n'a pas été appelé"),
+                (1, 0, "la 1re lecture (`VmRSS`) a échoué : `/proc/self/status` illisible"),
+                (1, 1, "l'écriture de `clear_refs` a été refusée"),
+                (3, 1, "une relecture de validation a échoué, ou le reset n'a pas pris"),
+                (4, 1, "la lecture de `clore` (`VmHWM`) a échoué"),
+            ];
+            let forme = (vue.lectures_de_status, vue.ecritures_de_clear_refs);
+            let connue = REFUS_POSSIBLES.iter().find(|(l, e, _)| (*l, *e) == forme);
+            let Some((.., quoi)) = connue else {
+                panic!(
+                    "la crête n'a pas été mesurée (cause `{cause}`) et la fenêtre a fait {vue:?} — or AUCUN \
+                     chemin de refus de la source ne produit la forme {forme:?}. Les seules possibles sont \
+                     {REFUS_POSSIBLES:?}. Ce n'est donc PAS l'instrument qui est aveugle : c'est la \
+                     composition qui a changé, et un aveuglement ne doit jamais servir de cachette"
+                );
+            };
+            eprintln!(
+                "[composition] REFUS DE CONCLURE : la crête n'a pas été mesurée (cause `{cause}`), forme \
+                 {forme:?} — {quoi}. La forme est reconnue comme un aveuglement de l'ENVIRONNEMENT, pas \
+                 comme une régression : ce test ne peut rien prouver ici, et il ne prétend rien. \
+                 (`fenetre_concurrente` est le seul cas qui accuse le BANC : le verrou `FENETRES` n'aurait \
+                 pas sérialisé.)"
+            );
+            return;
+        };
+
+        // 3. LA COMPOSITION, DANS LES DEUX SENS. `assert_eq!` et non `<=` : une lecture RETIRÉE est une
+        //    régression au même titre qu'une lecture ajoutée — ce serait la VALIDATION du reset qui
+        //    disparaîtrait, et avec elle le seul contrôle qui empêche de publier un pic antérieur à la
+        //    fenêtre.
+        assert_eq!(
+            vue.ecritures_de_clear_refs, ECRITURES_PAR_FENETRE,
+            "ouvrir+fermer une fenêtre a écrit {} fois dans `/proc/self/clear_refs` au lieu de \
+             {ECRITURES_PAR_FENETRE} (compte du FIL courant, relevé sur la seule fenêtre) — la composition \
+             de l'instrument a changé",
+            vue.ecritures_de_clear_refs
+        );
+        assert_eq!(
+            vue.lectures_de_status, LECTURES_PAR_FENETRE,
+            "ouvrir+fermer une fenêtre a lu {} fois `/proc/self/status` au lieu de {LECTURES_PAR_FENETRE} \
+             (compte du FIL courant, relevé sur la seule fenêtre). La composition attendue : `armer_crete` \
+             lit `VmRSS`, écrit `clear_refs`, relit `VmHWM` puis `VmRSS` pour VALIDER le reset ; `clore` lit \
+             `VmHWM`. Une lecture EN PLUS = un accès à `/proc` ajouté au chemin de la fenêtre ; une lecture \
+             EN MOINS = une étape de la validation qui a disparu",
+            vue.lectures_de_status
+        );
+
+        // REPÈRE, PAS GARDE — et la distinction est le sujet même de ce test. Ce chiffre dit à un humain ce
+        // que l'instrument coûte SUR CETTE MACHINE-LÀ ; il ne conclut rien et AUCUNE assertion n'en dépend.
+        // C'est délibéré : la même mesure, assertée, a produit un rouge FAUX sur le VPS le 2026-08-30.
+        const TOURS: usize = 40;
+        let (mut refs, mut fens) = (Vec::with_capacity(TOURS), Vec::with_capacity(TOURS));
+        for _ in 0..TOURS {
             let t = Instant::now();
-            let _ = black_box(une_lecture());
+            let _ = black_box(champ_status_octets("VmHWM:"));
             refs.push(t.elapsed());
             let t = Instant::now();
-            let _ = black_box(une_fenetre());
+            let _ = black_box(Fenetre::ouvrir().clore(Issue::Balaye, Compte::default(), Retard::Mesure(0)));
             fens.push(t.elapsed());
         }
         let mediane = |v: &mut Vec<Duration>| {
@@ -772,28 +913,12 @@ mod vieillissement_serie_tests {
             v[v.len() / 2]
         };
         let (r, f) = (mediane(&mut refs), mediane(&mut fens));
-
-        // GARDE-FOU DE L'INSTRUMENT LUI-MÊME : un dénominateur nul rendrait le rapport infini (faux
-        // rouge) ou indéfini. Si la lecture de `/proc` n'est plus mesurable par l'horloge, ce test ne
-        // peut rien prouver — et il doit le DIRE, pas rendre un chiffre.
-        assert!(
-            r > Duration::ZERO,
-            "la lecture de référence de `/proc/self/status` mesure {r:?} : l'horloge ne la résout pas, \
-             le rapport ci-dessous ne voudrait rien dire"
-        );
-        let rapport = f.as_secs_f64() / r.as_secs_f64();
-        assert!(
-            rapport <= RAPPORT_MAX,
-            "ouvrir+fermer une fenêtre coûte {rapport:.2} lectures de `/proc/self/status` ({f:?} contre \
-             {r:?}, médianes sur {N} tours entrelacés) — au-delà de {RAPPORT_MAX:.0}, ce n'est plus la \
-             composition attendue ({LECTURES_PAR_FENETRE:.0} lectures + une écriture dans `clear_refs`) : \
-             vérifier que `clear_refs` reçoit bien `5` (remise à zéro du pic) et pas `1`/`2`/`3` (bits \
-             soft-dirty, TLB flush), et qu'aucune lecture de `/proc` n'a été ajoutée à la fenêtre"
-        );
+        let _ = temoin_de_composition::releve(); // le repère ne doit rien laisser dans le compte du fil
         eprintln!(
-            "[mesure 2026-08-23] ouverture+fermeture d'une fenêtre : {rapport:.2} lectures de \
-             `/proc/self/status` (médianes {f:?} / {r:?}). Le chiffre ABSOLU dépend de la machine et \
-             n'est donc rien d'autre qu'un repère : {f:?} par fenêtre, une fois l'heure."
+            "[repère, PAS une garde] ouverture+fermeture d'une fenêtre : {f:?} (médiane sur {TOURS} tours \
+             entrelacés) contre {r:?} pour une lecture nue de `/proc/self/status`. Une fois l'heure. Ce \
+             chiffre dépend de la machine, il n'est ASSERTÉ nulle part, et le verdict de ce test est le \
+             COMPTE ci-dessus."
         );
     }
 

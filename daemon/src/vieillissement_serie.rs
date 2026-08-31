@@ -615,7 +615,8 @@ impl Fenetre {
     /// OUVRE la fenêtre : prend l'exclusivité, arme la crête, PUIS démarre les chronomètres. L'ordre
     /// compte : `t0` est pris APRÈS l'armement, donc la durée publiée est celle de la PASSE et non celle
     /// de l'instrument — QUATRE lectures de `/proc/self/status` et une écriture dans `clear_refs`, cf.
-    /// `ouvrir_et_clore_une_fenetre_ne_coute_que_quelques_lectures_de_proc`, qui en garde le RAPPORT.
+    /// `ouvrir_et_clore_une_fenetre_ne_fait_que_quatre_lectures_de_proc_et_une_ecriture`, qui COMPTE
+    /// ces accès (il ne les chronomètre plus : un rapport de durées mesurait aussi la machine).
     pub(crate) fn ouvrir() -> Fenetre {
         let exclusive = FENETRE_ACTIVE
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -669,7 +670,7 @@ fn armer_crete() -> (Option<u64>, Option<&'static str>) {
     if champ_status_octets("VmRSS:").is_none() {
         return (None, Some(CRETE_PROC_ABSENT)); // `/proc` illisible -> on ne prétend rien.
     }
-    if std::fs::write("/proc/self/clear_refs", b"5").is_err() {
+    if ecrire_clear_refs(RESET_DU_PIC).is_err() {
         return (None, Some(CRETE_RESET_REFUSE));
     }
     let (Some(hwm), Some(rss)) = (champ_status_octets("VmHWM:"), champ_status_octets("VmRSS:")) else {
@@ -690,14 +691,143 @@ pub(crate) fn reset_effectif(hwm_apres_reset: u64, rss_apres_reset: u64) -> bool
     hwm_apres_reset <= rss_apres_reset.saturating_add(TOLERANCE_RESET_OCTETS)
 }
 
+// =================================================================================================
+// CE QUE LA FENÊTRE FAIT À `/proc` — UN COMPTE, PAS UNE DURÉE
+// =================================================================================================
+
+/// LA VALEUR ÉCRITE DANS `clear_refs`, NOMMÉE UNE FOIS ET PASSÉE À L'ÉCRIVAIN. `5` =
+/// `CLEAR_REFS_MM_HIWATER_RSS` : le noyau remet `VmHWM` au RSS courant SANS parcourir la table des
+/// pages. `1`/`2`/`3` (bits « référencé/accédé ») et `4` (soft-dirty) la parcourent ENTIÈREMENT, avec
+/// purge de TLB, et ne remettent PAS le pic à zéro — `Documentation/filesystems/proc.rst`.
+///
+/// LE TEST EN TIENT UNE COPIE INDÉPENDANTE, ET CETTE DUPLICATION *EST* LA GARDE. Elle est la seule chose
+/// qui distingue « la valeur juste » de « la valeur que ce fichier contient » : un témoin qui
+/// importerait cette constante-ci la vérifierait CONTRE ELLE-MÊME et serait vert par construction.
+/// Ne la factorisez pas.
+const RESET_DU_PIC: &[u8] = b"5";
+
+/// LE SEUL POINT D'ÉCRITURE DANS `/proc` DE TOUT LE DÉMON, et le passage OBLIGÉ du témoin de
+/// composition. La valeur DÉCLARÉE au témoin est la MÊME LIAISON que celle qui est écrite, dans un seul
+/// appel : le compte ne peut donc pas mentir sur ce qui a été fait, y compris le jour où quelqu'un
+/// change la valeur écrite sans toucher au témoin.
+fn ecrire_clear_refs(valeur: &'static [u8]) -> std::io::Result<()> {
+    noter_une_ecriture_de_clear_refs(valeur);
+    std::fs::write("/proc/self/clear_refs", valeur)
+}
+
+/// LE TÉMOIN NE PÈSE RIEN SUR LE BINAIRE LIVRÉ — corps VIDE et `inline(always)` sous `cfg(not(test))` —
+/// ET LE SITE D'APPEL EST LE MÊME DANS LES DEUX COMPILATIONS. C'est ce second point qui limite la
+/// divergence : la SUITE D'OPÉRATIONS de `champ_status_octets` et de `ecrire_clear_refs` ne dépend pas
+/// du profil, seul le corps d'une fonction vide change.
+///
+/// LE PRIX, NOMMÉ : la composition est prouvée sur une compilation qui n'est pas exactement celle qu'on
+/// livre, et un accès à `/proc` qui vivrait dans un bloc `cfg(not(test))` resterait invisible au compte.
+/// Il n'y en a aucun aujourd'hui, et `la_crete_memoire_n_a_qu_un_lecteur_et_le_rss_courant_se_lit_ailleurs`
+/// tient déjà « `VmHWM` n'a qu'un lecteur hors tests » sur le CORPUS. La suite diverge par ailleurs du
+/// binaire livré bien plus que par ceci — elle remplace l'ALLOCATEUR GLOBAL (`tas_du_fil`) : le surcoût
+/// de divergence de ce témoin-ci est marginal, pas nul, et c'est écrit pour être opposable.
+#[cfg(test)]
+#[inline]
+fn noter_une_lecture_de_status() {
+    temoin_de_composition::note_lecture();
+}
+#[cfg(not(test))]
+#[inline(always)]
+fn noter_une_lecture_de_status() {}
+
+#[cfg(test)]
+#[inline]
+fn noter_une_ecriture_de_clear_refs(valeur: &'static [u8]) {
+    temoin_de_composition::note_ecriture(valeur);
+}
+#[cfg(not(test))]
+#[inline(always)]
+fn noter_une_ecriture_de_clear_refs(_valeur: &'static [u8]) {}
+
+/// LE TÉMOIN DE COMPOSITION — il COMPTE les accès d'une fenêtre à `/proc` et retient la valeur
+/// réellement passée à `clear_refs`. Compilé UNIQUEMENT sous `cfg(test)`.
+///
+/// POURQUOI IL EXISTE, ET CE QU'IL REMPLACE. La propriété gardée est un NOMBRE — « une fenêtre fait
+/// QUATRE lectures de `/proc/self/status` et UNE écriture de `5` dans `clear_refs` ». La forme
+/// précédente l'approchait par un RAPPORT DE DURÉES, `médiane(fenêtre) / médiane(lecture)`, qui n'est
+/// pas la même grandeur : une durée mesure aussi la machine. Le 2026-08-30, le portail de build du VPS
+/// a rendu **13,50** sur ce rapport PENDANT QU'IL COMPILAIT, sur un arbre dont la composition était
+/// intacte — une accusation FAUSSE. Un compte, lui, ne dépend d'aucune horloge et d'aucun ordonnanceur.
+///
+/// PAR FIL, ET CE N'EST PAS UN DÉTAIL : `cargo test` est multi-fils et plusieurs tests ouvrent des
+/// fenêtres. Un compteur global ferait entrer les accès des voisins dans le compte du test qui mesure,
+/// et le verdict redeviendrait fonction de l'ordonnancement — précisément le défaut qu'on corrige.
+///
+/// IL N'ALLOUE PAS : le `thread_local!` est initialisé en `const` et `Composition` est `Copy` sans
+/// `Drop`, donc son premier accès ne passe pas par l'allocateur — que la suite instrumente
+/// (`tas_du_fil`) et qu'une initialisation paresseuse perturberait.
+///
+/// CE QU'IL NE VOIT PAS, ÉCRIT POUR ÊTRE OPPOSABLE : un accès à `/proc` qui n'emprunterait ni
+/// `champ_status_octets` ni `ecrire_clear_refs` (un `read_to_string` posé ailleurs à la main), et tout
+/// accès vivant dans un bloc `cfg(not(test))`. Il ne dit RIEN non plus du COÛT de ces accès : une
+/// opération coûteuse ajoutée à la fenêtre qui ne touche pas `/proc` ne le fait pas bouger.
+#[cfg(test)]
+pub(crate) mod temoin_de_composition {
+    use std::cell::Cell;
+
+    /// Ce qu'une portion de code a fait à `/proc`, SUR LE FIL COURANT.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub(crate) struct Composition {
+        /// Entrées dans `champ_status_octets` : les TENTATIVES, pas les succès.
+        pub(crate) lectures_de_status: u32,
+        /// Écritures TENTÉES dans `/proc/self/clear_refs`, même raison.
+        pub(crate) ecritures_de_clear_refs: u32,
+        /// Dernière valeur passée à l'écriture ; `None` = aucune écriture tentée.
+        pub(crate) derniere_valeur_ecrite: Option<&'static [u8]>,
+    }
+
+    const VIERGE: Composition = Composition {
+        lectures_de_status: 0,
+        ecritures_de_clear_refs: 0,
+        derniere_valeur_ecrite: None,
+    };
+
+    thread_local! {
+        static COMPOSITION: Cell<Composition> = const { Cell::new(VIERGE) };
+    }
+
+    pub(super) fn note_lecture() {
+        COMPOSITION.with(|c| {
+            let mut v = c.get();
+            v.lectures_de_status = v.lectures_de_status.saturating_add(1);
+            c.set(v);
+        });
+    }
+
+    pub(super) fn note_ecriture(valeur: &'static [u8]) {
+        COMPOSITION.with(|c| {
+            let mut v = c.get();
+            v.ecritures_de_clear_refs = v.ecritures_de_clear_refs.saturating_add(1);
+            v.derniere_valeur_ecrite = Some(valeur);
+            c.set(v);
+        });
+    }
+
+    /// REND le compte du fil courant ET LE REMET À ZÉRO — les deux dans le même geste, pour qu'il
+    /// n'existe aucune façon de lire un compte sans le refermer : deux mesures successives se
+    /// contamineraient, et la seconde accuserait le code pour les accès de la première.
+    pub(crate) fn releve() -> Composition {
+        COMPOSITION.with(|c| c.replace(VIERGE))
+    }
+}
+
 /// Lit un champ `Vm*` de `/proc/self/status` (exprimé en kio) et le rend en OCTETS. `None` si `/proc`
 /// est illisible ou le champ absent -> l'appelant en fait un trou nommé, jamais un zéro.
 ///
-/// VISIBLE DANS LA CAISSE parce que c'est l'OPÉRATION ÉLÉMENTAIRE dont une fenêtre n'est qu'un petit
-/// multiple : `ouvrir_et_clore_une_fenetre_ne_coute_que_quelques_lectures_de_proc` mesure le coût d'une fenêtre EN
-/// UNITÉS DE CET APPEL. Une référence recopiée dans le test dériverait de celle-ci sans que rien ne
-/// le dise ; celle-ci ne peut pas dériver d'elle-même.
+/// VISIBLE DANS LA CAISSE parce que c'est le SEUL lecteur de `/proc/self/status` du démon, donc le seul
+/// endroit d'où une fenêtre puisse être COMPTÉE :
+/// `ouvrir_et_clore_une_fenetre_ne_fait_que_quatre_lectures_de_proc_et_une_ecriture` compte les entrées
+/// ici. Le compte est pris À L'ENTRÉE, avant la lecture : ce sont les TENTATIVES qu'on veut, pas les
+/// succès — sur un `/proc` illisible, c'est le compte qui distingue « l'instrument est aveugle » de « la
+/// composition a changé », et un compteur qui ne monterait qu'en cas de succès effacerait cette
+/// différence.
 pub(crate) fn champ_status_octets(cle: &str) -> Option<u64> {
+    noter_une_lecture_de_status();
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
     let ligne = status.lines().find(|l| l.starts_with(cle))?;
     let kio: u64 = ligne.split_whitespace().nth(1)?.parse().ok()?;

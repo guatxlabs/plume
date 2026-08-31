@@ -155,7 +155,14 @@ pub(crate) async fn ledger_export_get(State(st): State<AppState>, Extension(au):
     let from_id: i64 = q.get("from_id").and_then(|s| s.trim().parse().ok()).unwrap_or(0).max(0);
     let limit: i64 = q.get("limit").and_then(|s| s.trim().parse().ok()).unwrap_or(10000).clamp(1, 100000);
     with_write(&st, &au, |conn| {
-        let (lines, last_id, last_hash) = ledger_export_lines(conn, from_id, limit);
+        // `P10.7-s` — une tranche qu'on ne sait pas lire rend 500, jamais un `200` à corps VIDE. Le corps
+        // vide en succès est le pire des deux : il se sauvegarde, se vérifie (`Ok(0)`) et se classe comme
+        // une copie légitime. Un `200` reste possible AVEC un corps vide, et c'est voulu : c'est la réponse
+        // JUSTE quand la tranche demandée est réellement vide (`from_id` au-delà du dernier maillon).
+        let (lines, last_id, last_hash) = match ledger_export_lines(conn, from_id, limit) {
+            Ok(t) => t,
+            Err(e) => return server_err(format!("export du ledger impossible : {e}")),
+        };
         let body = if lines.is_empty() { String::new() } else { format!("{}\n", lines.join("\n")) };
         (
             StatusCode::OK,
@@ -316,7 +323,16 @@ pub(crate) async fn ledger_sink_flush(State(st): State<AppState>, Extension(au):
     if enabled == 0 {
         return err_json(StatusCode::CONFLICT, "sink désactivé");
     }
-    let (lines, new_last_id, new_last_hash) = ledger_export_lines(&conn, last_id, 100000);
+    // `P10.7-s` — LE CURSEUR NE BOUGE PAS SUR UNE TRANCHE QU'ON N'A PAS SU LIRE, et c'est ici que le défaut
+    // coûtait le plus cher : la lecture aplatissait, le flush écrivait ce qu'elle avait bien voulu rendre,
+    // puis avançait `last_id` — le maillon sauté n'entrait JAMAIS dans la copie inaltérable, et les envois
+    // suivants annonçaient « exported: 0 ». Une lacune permanente ET silencieuse dans une preuve WORM.
+    // Le refus arrive AVANT le raccourci « rien à exporter » : sans quoi « illisible » se relirait
+    // exactement comme « rien de neuf », qui est la confusion que ce lot ferme.
+    let (lines, new_last_id, new_last_hash) = match ledger_export_lines(&conn, last_id, 100000) {
+        Ok(t) => t,
+        Err(e) => return server_err(format!("export vers le sink '{name}' impossible : {e}")),
+    };
     if lines.is_empty() {
         return Json(json!({ "ok": true, "exported": 0, "last_id": last_id })).into_response();
     }

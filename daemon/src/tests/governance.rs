@@ -876,7 +876,7 @@ detection:
         for i in 0..5 {
             ledger_append(&conn, "test.kind", &format!("entrée {i}"));
         }
-        let (lines, last_id, last_hash) = ledger_export_lines(&conn, 0, 0);
+        let (lines, last_id, last_hash) = ledger_export_lines(&conn, 0, 0).expect("une chaîne saine s'exporte");
         assert_eq!(lines.len(), 5, "5 entrées exportées");
         assert!(last_id > 0 && !last_hash.is_empty());
         // Vérification EXTERNE (hors base) : chaîne intègre depuis genesis.
@@ -898,7 +898,7 @@ detection:
         }
         let head_before: String = conn.query_row("SELECT hash FROM ledger ORDER BY id DESC LIMIT 1", [], |r| r.get(0)).unwrap();
         let n_before: i64 = conn.query_row("SELECT COUNT(*) FROM ledger", [], |r| r.get(0)).unwrap();
-        let _ = ledger_export_lines(&conn, 0, 0);
+        let _ = ledger_export_lines(&conn, 0, 0).expect("une chaîne saine s'exporte");
         let head_after: String = conn.query_row("SELECT hash FROM ledger ORDER BY id DESC LIMIT 1", [], |r| r.get(0)).unwrap();
         let n_after: i64 = conn.query_row("SELECT COUNT(*) FROM ledger", [], |r| r.get(0)).unwrap();
         assert_eq!(head_before, head_after, "export ne modifie pas le head du ledger");

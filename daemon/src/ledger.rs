@@ -204,6 +204,31 @@ pub(crate) fn emit_ledger_unsigned(conn: &Connection, now_ts: i64, active_path: 
     emit_ledger_health(conn, now_ts, "unsigned", 4, msg, fields)
 }
 
+/// `P10.7-t` — signal SOC : LA SIGNATURE D'UN POINT DE CONTRÔLE A ÉTÉ REFUSÉE parce que la tête de chaîne
+/// n'a pas pu être LUE. Sans lui, le correctif de `sign_checkpoint` ne vaudrait RIEN : ses deux appelants de
+/// production ignorent la valeur de retour (un bras de `match` typé `()`), donc un refus muet remplacerait
+/// un mensonge signé par une DISPARITION silencieuse des points de contrôle — le même défaut, déplacé.
+///
+/// MÊME CANAL QUE `emit_ledger_unsigned`, ET C'EST LA MÊME CLASSE DE PANNE : « les points de contrôle ne
+/// s'écrivent plus ». `kind` DISTINCT (`checkpoint-refused` vs `unsigned`) parce que la CAUSE et le geste
+/// de remédiation diffèrent — là, escrow la clé ; ici, la base ne se lit pas. Dédup HORAIRE partagée ->
+/// un tick `retention_run` par heure plus un boot en crashloop ne font PAS de tempête.
+///
+/// CE QU'IL NE GARANTIT PAS, ET C'EST ÉCRIT PARCE QUE C'EST VRAI : l'aveu est un INSERT. Si la base est
+/// illisible ET inécrivable, il échoue lui aussi et il ne reste que stderr (émis inconditionnellement par
+/// l'appelant). Il MORD dans le cas mesuré — une lecture typée qui meurt sur une base par ailleurs vivante.
+/// Sévérité 4 (P1) : une chaîne d'intégrité qui cesse d'être ancrée est une perte de preuve, pas un détail.
+pub(crate) fn emit_ledger_checkpoint_refused(conn: &Connection, now_ts: i64, raison: &str) -> bool {
+    let msg = format!(
+        "POINT DE CONTRÔLE NON ÉCRIT : la tête de la chaîne d'intégrité n'a pas pu être lue ({raison}) — \
+         AUCUNE signature n'est posée sur une chaîne qu'on n'a pas lue. La fenêtre en cours n'est PAS ancrée \
+         (elle reste vérifiable par recalcul). Vérifier la lisibilité de la table `ledger` (clé SQLCipher, \
+         restauration partielle, colonne d'un type inattendu)."
+    );
+    let fields = json!({ "signing": "refused", "reason": "ledger-head-unreadable", "detail": raison }).to_string();
+    emit_ledger_health(conn, now_ts, "checkpoint-refused", 4, msg, fields)
+}
+
 /// v105 (STEP 1) — signal SOC : la clé Vault ACTIVE DIFFÈRE de la clé LEGACY résiduelle au cutover (fork
 /// silencieux de la chaîne d'intégrité). Émis JUSTE AVANT le refus-de-boot (server/mod.rs) pour qu'une trace
 /// non-purgeable subsiste malgré l'arrêt. Sévérité 4 (P1).
@@ -263,14 +288,69 @@ pub(crate) fn ledger_key_load(path: &str, allow_generate: bool) -> Option<ed2551
     }
 }
 /// Signe la tête de chaîne du ledger -> checkpoint vérifiable avec la clé publique.
-pub(crate) fn sign_checkpoint(conn: &Connection, key: &ed25519_dalek::SigningKey) {
+///
+/// `P10.7-t` — ON NE SIGNE PAS CE QU'ON N'A PAS PU LIRE. Jusqu'au 2026-08-31 la lecture de la tête portait
+/// un `unwrap_or_else(|_| "genesis")` qui confondait DEUX choses que `ledger_prev_hash` sépare depuis
+/// `P10.7-m` : un journal VIERGE (aucune ligne — l'origine légitime, dont `genesis` EST la valeur juste) et
+/// une lecture IMPOSSIBLE. Dans le second cas il écrivait un point de contrôle SIGNÉ attestant l'ORIGINE
+/// d'une chaîne vide, sur un journal qui portait des maillons.
+///
+/// CE QUE ÇA COÛTAIT, MESURÉ (2026-08-31, trois maillons du vrai chemin, `hash` de la tête remplacé par un
+/// blob puis REMIS) : le point de contrôle mensonger reste en base après la résorption de la panne, et
+/// `verify_ledger_conn` rend alors `Ok((3, 1, 0, None))` — trois maillons intègres, **une signature comptée
+/// OK**, aucune rupture. `plume-daemon verify` imprime « ledger OK … OK=1 KO=0 » et sort en 0. La signature
+/// donne à l'attestation exactement l'autorité qu'elle ne mérite pas, et rien ne la reprend jamais : aucun
+/// vérificateur ne compare `checkpoint.ledger_hash` à la tête réelle (il ne vérifie que la SIGNATURE de
+/// cette valeur). Un mensonge signé, permanent, indistinguable d'un point de contrôle légitime.
+///
+/// LA DÉCISION, ET SA RAISON : entre une fenêtre NON ANCRÉE — visible, et par ailleurs toujours vérifiable
+/// par recalcul de la chaîne, qui ne dépend d'aucun checkpoint — et un point de contrôle qui MENT avec
+/// autorité, on choisit la première. Refuser ne retire aucune preuve : il retire une FAUSSE preuve.
+///
+/// CE QUE FONT LES APPELANTS QUAND ELLE REFUSE — MESURÉ AVANT D'ÉCRIRE LE REMÈDE, parce qu'un refus qui
+/// disparaît ne vaut pas mieux qu'un mensonge. Les DEUX voies de production (`rollups::retention_run`,
+/// horaire, et `server` au boot) appellent depuis un BRAS DE `match` TYPÉ `()` : elles ne bouclent pas,
+/// n'alertent pas, et n'ont aucune valeur à examiner. Un `Result` rendu ici serait tombé dans le vide.
+///
+/// D'OÙ LA FORME : le cœur qui REFUSE (`sign_checkpoint_result`) est séparé du geste de production
+/// (`sign_checkpoint`), qui AVOUE. La signature `()` est CONSERVÉE — et ce n'est pas qu'une commodité :
+/// elle rend l'aveu INDÉTOURNABLE. Avec un `Result`, un appelant futur écrit `let _ =` et la confession
+/// disparaît ; ici il n'a rien à jeter, et tout nouveau site hérite de l'aveu sans le savoir.
+///
+/// LE CHEMIN NOMINAL EST BYTE-IDENTIQUE : journal vierge -> `Ok("")` -> `genesis` (la valeur historique,
+/// délibérément conservée : la changer ferait diverger les points de contrôle d'origine anciens et neufs
+/// sans rien gagner) ; tête lue -> son `hash`. Aucun schéma ne bouge, aucun point de contrôle existant
+/// n'est réécrit ni invalidé.
+pub(crate) fn sign_checkpoint_result(conn: &Connection, key: &ed25519_dalek::SigningKey) -> Result<(), String> {
     use ed25519_dalek::Signer;
-    let head: String = conn.query_row("SELECT hash FROM ledger ORDER BY id DESC LIMIT 1", [], |r| r.get(0)).unwrap_or_else(|_| "genesis".into());
+    // `ledger_prev_hash` DISCRIMINE SUR L'ERREUR (cf. sa note) : `Ok("")` = journal vierge = origine
+    // légitime ; `Err` = on ne sait pas à quoi la signature s'appliquerait -> on ne signe pas.
+    let head = match ledger_prev_hash(conn) {
+        Ok(h) if h.is_empty() => "genesis".to_string(), // journal vierge : l'origine, valeur historique
+        Ok(h) => h,
+        Err(e) => return Err(format!("tête de chaîne ILLISIBLE ({e})")),
+    };
     let sig = key.sign(head.as_bytes());
-    let _ = conn.execute(
+    conn.execute(
         "INSERT INTO checkpoint(ts,ledger_hash,sig,pubkey) VALUES(?1,?2,?3,?4)",
         params![now(), head, hex_encode(&sig.to_bytes()), hex_encode(key.verifying_key().as_bytes())],
-    );
+    )
+    // L'INSERT était `let _ =` : un point de contrôle qui ne s'écrit PAS se lisait comme un point de
+    // contrôle écrit. Le même mot manquant, sur l'autre moitié du geste.
+    .map(|_| ())
+    .map_err(|e| format!("écriture du point de contrôle refusée ({e})"))
+}
+
+/// LE GESTE DE PRODUCTION : signe, ou AVOUE. Enveloppe `sign_checkpoint_result` (cf. sa note pour la
+/// décision et sa mesure). Deux canaux, pour deux lecteurs : stderr (l'exploitant qui suit le journal du
+/// processus) et un event SOC non-purgeable, sévérité 4, dédupé à l'heure (la console, où l'on ALERTE).
+/// Aucun des deux ne porte de `detail` de maillon : le message d'erreur rusqlite nomme une colonne et un
+/// type, jamais une donnée. Chemin nominal : RIEN n'est émis — un instrument qui parle toujours ne dit rien.
+pub(crate) fn sign_checkpoint(conn: &Connection, key: &ed25519_dalek::SigningKey) {
+    if let Err(raison) = sign_checkpoint_result(conn, key) {
+        eprintln!("[ledger] WARN point de contrôle NON écrit : {raison} — on ne signe pas ce qu'on n'a pas pu lire");
+        let _ = emit_ledger_checkpoint_refused(conn, now(), &raison);
+    }
 }
 /// `plume-daemon verify` : recalcule la chaîne + vérifie les signatures des checkpoints.
 /// INVARIANT : ouvre la base par le chemin KEYÉ (READ-ONLY + `PRAGMA key` via apply_key, comme

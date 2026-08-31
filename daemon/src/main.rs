@@ -1125,7 +1125,16 @@ fn main() {
             Ok(c) => c,
             Err(e) => { eprintln!("ledger-export: ouverture {db_path}: {e}"); std::process::exit(2); }
         };
-        let (lines, last_id, last_hash) = ledger_export_lines(&conn, from, 0);
+        // `P10.7-s` — LE REFUS SORT SUR LE CODE `2`, comme les deux vérificateurs voisins (`verify` /
+        // `verify-control`) : « je n'ai pas pu lire » n'est ni un export réussi (`0`) ni une copie
+        // compromise (`1`). Et il part sur STDERR, à l'inverse de `verify_run` qui parle sur stdout — la
+        // différence n'est pas un oubli : ici stdout EST le canal de la copie quand `--out` est absent
+        // (`plume-daemon ledger-export > copie.jsonl`), donc y écrire un message le ferait ENTRER dans la
+        // copie. Les lignes de succès de cette sous-commande étaient déjà sur stderr pour cette raison.
+        let (lines, last_id, last_hash) = match ledger_export_lines(&conn, from, 0) {
+            Ok(t) => t,
+            Err(e) => { eprintln!("EXPORT IMPOSSIBLE : {e} — aucune copie n'est produite sur une chaîne partiellement lue"); std::process::exit(2); }
+        };
         match &out {
             Some(path) => {
                 // CLI opérateur (shell de confiance) -> confine_root=None : chemin d'export LIBRE (inchangé).

@@ -239,7 +239,7 @@
         );
 
         // ET LE VÉRIFICATEUR D'EXPORT, sur la MÊME base : même loi, même refus.
-        let (lignes, _, _) = ledger_export_lines(&conn, 0, 0);
+        let (lignes, _, _) = ledger_export_lines(&conn, 0, 0).expect("toutes les lignes se LISENT : c'est leur CHAÎNAGE qui est rompu");
         let verdict = ledger_verify_export(&lignes, "");
         let message = verdict.expect_err("l'export d'une chaîne rompue ne doit pas se vérifier");
         assert!(message.contains("rupture de chaîne"), "le message NOMME la rupture : {message}");
@@ -416,7 +416,7 @@
         for i in 0..2 {
             ledger_append(&conn, "config.mode", &format!("maillon {i}"));
         }
-        let (saines, _, dernier_hash) = ledger_export_lines(&conn, 0, 0);
+        let (saines, _, dernier_hash) = ledger_export_lines(&conn, 0, 0).expect("une chaîne saine s'exporte");
         assert_eq!(ledger_verify_export(&saines, "").expect("une chaîne saine se vérifie"), 2);
 
         // Le maillon tel que l'ancien repli l'écrivait : hachage calculé sur la chaîne VIDE.

@@ -121,8 +121,37 @@ pub(crate) fn ledger_export_line(id: i64, ts: i64, kind: &str, detail: &str, pre
 
 /// Lit une TRANCHE du ledger (`id > from_id`, ordre croissant, borné `limit`) et rend (lignes JSONL,
 /// dernier id, dernier hash). SELECT SEUL sur `ledger` -> AUCUN chemin de mutation (l'append-only reste
-/// intact). Table absente -> vide. `limit<=0` -> pas de borne (export complet).
-pub(crate) fn ledger_export_lines(conn: &Connection, from_id: i64, limit: i64) -> (Vec<String>, i64, String) {
+/// intact). `limit<=0` -> pas de borne (export complet).
+///
+/// `P10.7-s` — UNE TRANCHE QU'ON NE SAIT PAS LIRE N'EST PAS UNE TRANCHE VIDE, ET CE TYPE LE DIT. Jusqu'au
+/// 2026-08-31 cette fonction APLATISSAIT : un `let Ok(…) else { return vide }` sur le préparatif, un
+/// `flatten()` sur les lignes. Deux formes MESURÉES ce jour-là, et elles ne coûtent pas la même chose :
+///
+///  1. PRÉPARATIF RATÉ (table `ledger` absente, clé SQLCipher absente/incorrecte) -> ZÉRO ligne, curseur
+///     inchangé, et `ledger_verify_export(&[], "")` rend `Ok(0)` : « export OK : 0 entrées chaînées
+///     intègres ». Un verdict d'intégrité sur une copie qui n'a jamais été lue.
+///  2. LIGNE ILLISIBLE (colonne d'un type inattendu — restauration partielle, écriture SQL directe). Deux
+///     sous-formes, et la MESURE a REFUSÉ la version courte de l'énoncé qui a ouvert cette clé :
+///       · la ligne illisible est la DERNIÈRE (3 maillons, le 3e abîmé) -> 2 lignes, `Ok(2)` du
+///         vérificateur : « intègre », littéralement le faux vert annoncé. Curseur à 2 -> l'envoi suivant
+///         relit la même ligne illisible, rend zéro, et la route répond `"exported": 0` : la copie WORM
+///         est GELÉE, définitivement, sans un mot ;
+///       · la ligne illisible est au MILIEU (le 2e des 3) -> 2 lignes AUSSI, mais le vérificateur d'export
+///         les REJETTE (`rupture de chaîne`, ancrage `prev_hash`). L'énoncé disait « également déclarés
+///         intègres » : c'est FAUX de cette sous-forme. Ce qui est vrai, et pire, c'est le CURSEUR : il
+///         avance à 3, donc le maillon #2 n'entre JAMAIS dans la copie inaltérable — une lacune
+///         PERMANENTE — et aucun appelant de production n'interroge le vérificateur sur ce chemin
+///         (`ledger_sink_flush` écrit puis avance), si bien que ce refus-là n'est LU par personne.
+///
+/// LA LOI EST DONC CELLE DES VÉRIFICATEURS VOISINS (`verify_ledger_conn`, `control_ledger_verify_conn`),
+/// À LA LETTRE : ce que la lecture ne rend PAS -> `Err`, aucun export. Ce qu'elle rend -> exporté, y
+/// compris un `detail` NULL (seul nullable de la table), qui vaut chaîne vide comme en production.
+///
+/// CE QU'ON N'A PAS FAIT, ET C'EST DÉLIBÉRÉ : `ledger_verify_export` n'est PAS durci à rejeter un export
+/// VIDE. Un export incrémental est LÉGITIMEMENT vide quand rien n'est neuf ; l'y forcer troquerait le faux
+/// vert contre une fausse accusation, tous les jours. La distinction se fait ICI, à la LECTURE, où elle est
+/// connue — pas plus tard, par une heuristique sur une longueur.
+pub(crate) fn ledger_export_lines(conn: &Connection, from_id: i64, limit: i64) -> Result<(Vec<String>, i64, String), String> {
     let sql = if limit > 0 {
         "SELECT id,ts,kind,detail,prev_hash,hash FROM ledger WHERE id>?1 ORDER BY id ASC LIMIT ?2".to_string()
     } else {
@@ -130,28 +159,33 @@ pub(crate) fn ledger_export_lines(conn: &Connection, from_id: i64, limit: i64) -
     };
     let mut out = Vec::new();
     let (mut last_id, mut last_hash) = (from_id, String::new());
-    let Ok(mut stmt) = conn.prepare(&sql) else {
-        return (out, last_id, last_hash);
-    };
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| format!("lecture ledger (table absente ? clé SQLCipher manquante/incorrecte ?): {e} — AUCUN export"))?;
     let bind: Vec<&dyn rusqlite::ToSql> = if limit > 0 { vec![&from_id, &limit] } else { vec![&from_id] };
-    let rows = stmt.query_map(bind.as_slice(), |r| {
-        Ok((
-            r.get::<_, i64>(0)?,
-            r.get::<_, i64>(1)?,
-            r.get::<_, String>(2)?,
-            r.get::<_, Option<String>>(3)?.unwrap_or_default(),
-            r.get::<_, String>(4)?,
-            r.get::<_, String>(5)?,
-        ))
-    });
-    if let Ok(rows) = rows {
-        for (id, ts, kind, detail, prev_hash, hash) in rows.flatten() {
-            out.push(ledger_export_line(id, ts, &kind, &detail, &prev_hash, &hash));
-            last_id = id;
-            last_hash = hash;
-        }
+    let rows = stmt
+        .query_map(bind.as_slice(), |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
+            ))
+        })
+        .map_err(|e| format!("scan ledger: {e} — AUCUN export"))?;
+    // Le rang est celui du SCAN dans la TRANCHE, pas l'`id` : l'`id` de la ligne fautive est justement ce
+    // qu'on n'a pas su lire. Même formulation que les deux vérificateurs voisins.
+    for (rang, ligne) in rows.enumerate() {
+        let (id, ts, kind, detail, prev_hash, hash) = ligne.map_err(|e| {
+            format!("maillon #{} de la tranche ILLISIBLE ({e}) — la tranche n'a pas pu être lue entièrement : AUCUN export, et le curseur NE bouge PAS", rang + 1)
+        })?;
+        out.push(ledger_export_line(id, ts, &kind, &detail, &prev_hash, &hash));
+        last_id = id;
+        last_hash = hash;
     }
-    (out, last_id, last_hash)
+    Ok((out, last_id, last_hash))
 }
 
 /// VÉRIFICATION EXTERNE d'une copie exportée (JSONL) : pour CHAQUE ligne, recompute sha256(prev|ts|kind|

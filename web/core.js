@@ -1310,6 +1310,11 @@ function hoteDesLignesDUnGroupe(lignes, opts) {
   return h;
 }
 
+// `P4.13-e` — LA DIMENSION CHOISIE, RETENUE POUR LA SESSION. Clé de choix -> dimension, posée par le geste
+// et lue par la repeinte. Elle DOUBLE le magasin, elle ne le remplace pas : le magasin porte le choix d'un
+// chargement à l'autre, celle-ci le porte d'une repeinte à l'autre quand le navigateur refuse le stockage.
+const choixDeDimensionEnSession = new Map();
+
 // Rend la liste groupée dans `host`, ou `null` si aucune dimension ne s'applique (l'appelant retombe alors
 // sur la liste plate — rien n'est caché, rien n'est deviné).
 function peindreEnGroupes(host, rows, opts) {
@@ -1320,9 +1325,20 @@ function peindreEnGroupes(host, rows, opts) {
   // déclarent que `group.storeKey`, la valeur lue est exactement celle d'avant.
   const storeKey = identiteDeLaListe(opts);
   const cleDuChoix = storeKey ? storeKey + ':dim' : '';
+  // `P4.13-e` — LE CHOIX TIENT LA SESSION MÊME QUAND LE STOCKAGE EST REFUSÉ, ET C'EST CE QUI REND L'AVEU
+  // VRAI. MESURÉ le 2026-08-31 au banc ESM, refus posé autour du seul clic : la dimension « statut » était
+  // choisie, la barre revenait à « gravité » — `dims[0]`. La cause est ici : la repeinte RELIT le choix dans
+  // le magasin, si bien qu'un refus le ramène au défaut À CHAQUE passe. L'aveu posé par `P4.13-d` annonçait
+  // alors « appliqué pour cette session seulement » sur un geste qui n'avait RIEN appliqué, pas même pour ce
+  // clic — une surface qui affirme ce que le code ne fait pas, ce qui est pire que le silence qu'elle
+  // remplaçait. Le repli n'est pas un troisième état : c'est le geste que `saveDaDrop` (web/dataaccess.js)
+  // a déjà payé pour le même défaut sur l'ordre des cartes, dont la persistance n'a pas non plus de jumeau
+  // serveur. Il vit AU MODULE et non dans la fermeture, parce que l'appelant refabrique la liste entière à
+  // chaque rendu (`renderRules()` rappelle `pagedList`) : une mémoire de fermeture serait perdue au premier
+  // rafraîchissement, c'est-à-dire au moment même où l'exploitant croirait son choix tenu.
+  // QUAND LE MAGASIN RÉPOND, RIEN NE CHANGE : les deux sources portent alors la même valeur.
   const dimensionChoisie = () => {
-    let c = '';
-    try { c = cleDuChoix ? (localStorage.getItem(cleDuChoix) || '') : ''; } catch (e) { c = ''; }
+    const c = choixDeDimensionEnSession.get(cleDuChoix) || (cleDuChoix ? (lireLeStockageDuSite(cleDuChoix) || '') : '');
     return dims.find(d => d.cle === c) || dims[0];
   };
   let interne = null;
@@ -1340,6 +1356,7 @@ function peindreEnGroupes(host, rows, opts) {
       // et non un geste de navigation qui se répète : l'avis part une poignée de fois par session.
       // L'ORDRE COMPTE : on écrit, on repeint, PUIS on avoue. L'aveu est ainsi le dernier fait posé, et
       // la barre qu'il qualifie est déjà celle que l'exploitant lit.
+      if (cleDuChoix) choixDeDimensionEnSession.set(cleDuChoix, k);   // `P4.13-e` — le choix tient la session
       const retenu = !cleDuChoix || ecrireDansLeStockageDuSite(cleDuChoix, k);
       peindre();
       if (!retenu) toast(LANG === 'en' ? 'Grouping applied for this session only: this browser refuses site storage, so it will not be kept on the next load.' : "Regroupement appliqué pour cette session seulement : ce navigateur refuse le stockage de site, il ne sera pas retenu au prochain chargement.", 'info', 5000);

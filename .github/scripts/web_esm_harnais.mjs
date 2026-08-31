@@ -7948,6 +7948,229 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   console.log(`[aveux-de-la-liste-existent] la liste plate PRODUIT ses deux aveux sur un corps « lignes + cause » — le bandeau porte la cause servie, la marque du compte dit que le nombre compte les lignes LUES, les lignes sont rendues et l'aveu les PRÉCÈDE — et le chemin NOMINAL n'en porte AUCUN. CE QUE CE TÉMOIN NE TIENT PAS : il juge le TEXTE rendu, jamais l'encre peinte — c'est la garde du rendu peint qui tient l'autre moitié, et aucune des deux ne remplace l'autre ; et il n'exerce que la branche française.`);
 }
 
+// ---------------------------------------------------------------------------------------------
+// 61. LES TROIS CHOIX D'EXPLOITANT DISENT LEUR PERTE, ET NE LA DISENT QUE QUAND ELLE A LIEU
+//     (`P4.13-e`).
+//
+//     CE QUE CETTE SECTION RAPATRIE. Les trois aveux posés par `P4.13-d` — le choix de dimension de
+//     regroupement (`web/core.js`), la bascule de tenant et celle d'environnement
+//     (`web/multitenant.js`) — n'étaient exercés par AUCUN témoin de cette batterie : ils étaient
+//     prouvés par un banc écrit HORS du dépôt et joué à la main. Un correctif qui les RETIRERAIT
+//     laissait donc la CI VERTE. Ce qui est prouvé une fois se rejoue, ou n'est pas prouvé.
+//
+//     POURQUOI ICI, ET NON DANS LE SOUS-BANC « STOCKAGE REFUSÉ » (section 1bis) OÙ VIVENT LEURS AÎNÉS.
+//     Ce mode-là refuse le stockage pour TOUT le processus : il ne sait montrer que la moitié REFUSÉE
+//     du geste. Or l'aveu qui partirait TOUJOURS est le défaut SYMÉTRIQUE, et le pire des deux — il
+//     ferait mentir la surface sur le chemin NOMINAL, celui que l'exploitant emprunte tous les jours —
+//     et il y serait VERT PAR CONSTRUCTION. Le refus est donc posé et retiré AUTOUR du seul geste jugé,
+//     ce qui rend les deux jambes jouables côte à côte : l'écriture ÉCHOUE -> l'aveu APPARAÎT ;
+//     l'écriture RÉUSSIT -> aucun aveu.
+//
+//     AUCUN MOT D'AVEU N'EST CHERCHÉ, ET C'EST LA PROPRIÉTÉ QUI L'INTERDIT. Une liste de mots rend une
+//     garde VERTE sur le site le plus grave dès qu'un mot trop générique y figure (mesuré le
+//     2026-08-31, sur cette famille exacte). Ce qui est lu ici est la DIFFÉRENCE entre deux jouées du
+//     MÊME geste, sur la MÊME valeur, à la MÊME position de départ : l'aveu, c'est ce que la surface
+//     peint EN PLUS quand l'écriture a été refusée.
+//     CE QUE CETTE FORME NE SÉPARE PAS, écrit plutôt que tu : « l'aveu n'existe pas » et « l'aveu est
+//     INCONDITIONNEL » se lisent tous deux dans le même écart NUL. Les deux exigences rendent donc les
+//     DEUX listes peintes, et le rouge porte de quoi trancher sans relire le module.
+// ---------------------------------------------------------------------------------------------
+{
+  const modEtat61 = await import(pathToFileURL(path.join(WEB, "state.js")).href);
+  const modCore61 = await import(pathToFileURL(path.join(WEB, "core.js")).href);
+  const modTenant61 = await import(pathToFileURL(path.join(WEB, "multitenant.js")).href);
+  const S61 = modEtat61.S;
+
+  // LE REFUS DU STOCKAGE, POSÉ ET RETIRÉ. Les descripteurs sont RELUS sur `globalThis` avant d'être
+  // remplacés, jamais reconstruits de mémoire : restaurer autre chose que ce qui était là ferait juger
+  // les jouées « saines » sur un simulacre que personne n'a installé.
+  const descripteurs61 = ["localStorage", "sessionStorage"].map((c) => [c, Object.getOwnPropertyDescriptor(globalThis, c)]);
+  const poserLeRefus61 = () => {
+    const jeter = () => { const e = new Error("Access to storage is not allowed from this context."); e.name = "SecurityError"; throw e; };
+    for (const [c] of descripteurs61) Object.defineProperty(globalThis, c, { get: jeter, set: () => {}, configurable: true });
+  };
+  const retirerLeRefus61 = () => { for (const [c, d] of descripteurs61) Object.defineProperty(globalThis, c, d); };
+
+  // L'INSTRUMENT SE VALIDE DANS LES DEUX SENS AVANT DE JUGER QUOI QUE CE SOIT, et sur une clé FABRIQUÉE
+  // ICI. Un refus qui ne prendrait pas rendrait la jambe POSITIVE vide de sens ; une restauration qui
+  // ne rendrait pas le magasin rendrait la jambe NÉGATIVE vraie par vacuité.
+  poserLeRefus61();
+  const verdict61Refuse = modEtat61.ecrireDansLeStockageDuSite("temoin_p4_13_e", "1");
+  retirerLeRefus61();
+  const verdict61Sain = modEtat61.ecrireDansLeStockageDuSite("temoin_p4_13_e", "1");
+  const relu61 = modEtat61.lireLeStockageDuSite("temoin_p4_13_e");
+  modEtat61.ecrireDansLeStockageDuSite("temoin_p4_13_e", null);
+  exiger(verdict61Refuse === false,
+    `(61-instrument) le refus POSÉ ne fait pas refuser l'écrivain partagé — il rend ${JSON.stringify(verdict61Refuse)} au lieu de \`false\`. Les jambes POSITIVES ci-dessous seraient vraies par vacuité : elles exerceraient un stockage qui marche.`);
+  exiger(verdict61Sain === true && relu61 === "1",
+    `(61-instrument) le refus RETIRÉ ne rend pas le magasin (l'écrivain rend ${JSON.stringify(verdict61Sain)}, la relecture rend ${JSON.stringify(relu61)}) : les jambes NÉGATIVES ci-dessous jugeraient une écriture qui a en fait ÉCHOUÉ, et un aveu inconditionnel y passerait.`);
+
+  const viderLesAvis61 = () => { const h = document.querySelector("#toasts"); if (h) h.replaceChildren(); };
+  const avisPeints61 = () => document.querySelectorAll(".toast").map((t) => t.textContent);
+  const battre61 = async () => { for (let i = 0; i < 4; i++) await new Promise((r) => setTimeout(r, 0)); };
+  // Les options d'un `select` CONSTRUIT vivent dans ses enfants — `sel.options` n'est rempli que par
+  // l'analyse d'une chaîne de balisage (`P11.18-z` le disait déjà). Le banc hors dépôt lisait
+  // `sel.options` : il changeait donc la liste pour `undefined`, et n'a jamais exercé un CHANGEMENT de
+  // dimension. L'aveu partait quand même — l'écrivain EFFACE sur `undefined` — mais rien n'était appliqué.
+  const optionsDe61 = (sel) => (sel.children || []).filter((c) => c.tagName === "OPTION");
+
+  // LE JUGE, COMMUN AUX TROIS SITES. Il ne connaît aucun texte : il compare ce que la surface peint
+  // quand l'écriture est REFUSÉE à ce qu'elle peint quand elle est RETENUE, pour le MÊME geste.
+  const juger61 = (cle, nom, refus, sain) => {
+    const aveux = refus.filter((t) => !sain.includes(t));
+    exiger(aveux.length === 1 && !!aveux[0],
+      `(${cle}) L'AVEU NE SE DISTINGUE PAS. ${nom} : l'écriture REFUSÉE peint ${JSON.stringify(refus)}, l'écriture RETENUE peint ${JSON.stringify(sain)}. Deux causes, et l'écart nul ne les sépare pas : ou bien l'aveu n'existe pas / ne parvient pas à la surface — l'exploitant croit son choix retenu et le retrouvera défait sans un mot — ou bien il est INCONDITIONNEL, et la surface annonce alors une perte sur un chemin où il n'y en a aucune.`);
+    exiger(sain.length === refus.length - 1,
+      `(${cle}-négatif) L'ÉCRITURE RETENUE NE DOIT RIEN AVOUER. ${nom} : elle peint ${sain.length} avis (${JSON.stringify(sain)}) contre ${refus.length} sur le refus (${JSON.stringify(refus)}) — attendu exactement UN de moins. Un aveu rendu INCONDITIONNEL passerait la jambe positive : c'est celle-ci, et elle seule, qui l'accuse.`);
+    return aveux[0] || "";
+  };
+
+  // ── (a) LE CHOIX DE DIMENSION DE REGROUPEMENT (`web/core.js`) ────────────────────────────────
+  // C'est le plus discutable des trois, et la clôture de `P4.13-d` le disait : ce n'est pas un réglage
+  // dans un panneau, c'est un contrôle d'une barre. Il reste rangé en PRÉFÉRENCE, et c'est MESURÉ :
+  // les TROIS seules listes groupées du corpus vivent dans `web/detection_admin.js`, le module qui
+  // porte déjà `#rule-sort` et `#parser-sort` — deux `select` persistés, rangés en PRÉFÉRENCE, qui
+  // AVERTISSENT (section 1quinquies). Le ranger en NAVIGATION ferait répondre deux contrôles voisins
+  // du MÊME panneau différemment au MÊME geste. Et la justification propre à NAVIGATION — « son état se
+  // relit à l'œil au chargement suivant » — est précisément ce qui manque ici : au chargement suivant
+  // la barre montre `dims[0]`, qui se lit comme un état légitime, donc rien ne prévient l'exploitant.
+  const CLE_61A = "temoin_p4_13_e_regroupement";
+  const jouerLeRegroupement61 = (refuse) => {
+    modEtat61.ecrireDansLeStockageDuSite(`${CLE_61A}:dim`, null);
+    const hote = document.createElement("div");
+    document.body.appendChild(hote);
+    const lignes = [{ severity: 1, status: "open", title: "a" }, { severity: 2, status: "ack", title: "b" }];
+    modCore61.pagedList(hote, {
+      mode: "client", pageSize: 50, rows: lignes,
+      columns: [{ k: "title", t: "Titre" }],
+      renderRow: (r) => { const tr = document.createElement("tr"); tr.textContent = r.title; return tr; },
+      group: { storeKey: CLE_61A },
+    });
+    const sel = hote.querySelectorAll("select.picon")[0];
+    if (!sel || typeof sel.onchange !== "function") { hote.remove(); return { erreur: "aucune barre de regroupement n'est rendue" }; }
+    const valeurs = optionsDe61(sel).map((o) => o.value);
+    const autre = valeurs.filter((v) => v !== sel.value)[0];
+    if (!autre) { hote.remove(); return { erreur: `une seule dimension applicable (${JSON.stringify(valeurs)}), aucun CHANGEMENT n'est exerçable` }; }
+    viderLesAvis61();
+    sel.value = autre;
+    if (refuse) poserLeRefus61();
+    let leve = null;
+    try { sel.onchange(); } catch (e) { leve = `${e && e.name} — ${e && e.message}`; }
+    if (refuse) retirerLeRefus61();
+    const selApres = hote.querySelectorAll("select.picon")[0];
+    const applique = selApres ? selApres.value : "(aucune barre après le geste)";
+    const stocke = modEtat61.lireLeStockageDuSite(`${CLE_61A}:dim`);
+    hote.remove();
+    return { leve, dits: avisPeints61(), choisie: autre, applique, stocke };
+  };
+  const a61Sain = jouerLeRegroupement61(false);
+  const a61Refus = jouerLeRegroupement61(true);
+  let aveu61a = "";
+  if (a61Sain.erreur || a61Refus.erreur) {
+    exiger(false, `(61a-instrument) le geste de regroupement n'est pas exerçable (${a61Sain.erreur || a61Refus.erreur}) : le témoin REFUSE DE CONCLURE au lieu de rendre vert sur un geste qu'il n'a pas joué.`);
+  } else {
+    exiger(!a61Sain.leve && !a61Refus.leve,
+      `(61a) LE CHOIX DE REGROUPEMENT JETTE (retenu : ${a61Sain.leve} ; refusé : ${a61Refus.leve}) : une écriture nue s'exécute dans le gestionnaire, et la barre reste à moitié changée.`);
+    exiger(a61Sain.stocke === a61Sain.choisie && a61Refus.stocke === null,
+      `(61a-instrument) LE REFUS N'A PAS MORDU SUR CE SITE : après la jouée RETENUE la clé porte ${JSON.stringify(a61Sain.stocke)} (attendu « ${a61Sain.choisie} »), après la jouée REFUSÉE elle porte ${JSON.stringify(a61Refus.stocke)} (attendu \`null\`). Les deux jouées ont donc exercé le MÊME magasin, et la comparaison ci-dessous ne mesure rien.`);
+    exiger(a61Sain.applique === a61Sain.choisie,
+      `(61a-instrument) CONTRÔLE POSITIF PERDU : sur le chemin NOMINAL, la barre montre « ${a61Sain.applique} » alors que « ${a61Sain.choisie} » vient d'être choisi — le geste ne fait rien du tout, et tout ce qui suit serait vrai par vacuité.`);
+    exiger(a61Refus.applique === a61Refus.choisie,
+      `(61a) LE GESTE EST INERTE QUAND LE STOCKAGE REFUSE : « ${a61Refus.choisie} » a été choisi, la barre montre « ${a61Refus.applique} ». Le rendu RELIT la dimension dans le magasin à chaque repeinte, si bien qu'un refus la ramène à \`dims[0]\` — et l'aveu qui dit « appliqué pour cette session seulement » devient FAUX : rien n'a été appliqué, pas même pour ce clic. C'est le défaut que \`saveDaDrop\` (web/dataaccess.js) avait déjà payé avec son repli en mémoire.`);
+    aveu61a = juger61("61a", "le choix de dimension de regroupement (web/core.js)", a61Refus.dits, a61Sain.dits);
+    console.log(`[stockage] le choix de dimension de regroupement DIT sa perte, et ne la dit QUE là : le choix est APPLIQUÉ dans les deux jouées (retenue « ${a61Sain.choisie} » -> « ${a61Sain.applique} », refusée « ${a61Refus.choisie} » -> « ${a61Refus.applique} »), l'écriture refusée peint ${a61Refus.dits.length} avis (« ${aveu61a} ») et l'écriture retenue ${a61Sain.dits.length}.`);
+  }
+
+  // ── (b) LA BASCULE DE TENANT (`web/multitenant.js`) ──────────────────────────────────────────
+  // La perte porte plus loin que les autres : au chargement suivant, `initTenants` retombe sur
+  // `AUTH.tenant`, donc la console repart SUR UN AUTRE TENANT que celui qu'on croyait avoir laissé.
+  const AUTH61 = S61.AUTH, TENANT61 = S61.CURRENT_TENANT, ENV61 = S61.CURRENT_ENV, FETCH61 = globalThis.fetch;
+  S61.AUTH = { user: "temoin", tenant: "maison", role: "admin", is_superadmin: true };
+  try { await modTenant61.initTenants(); } catch (e) { /* le simulacre n'a pas de réseau : la liste reste vide, le câblage suffit */ }
+  const selTenant61 = document.querySelector("#tenant-switch");
+  const jouerLaBasculeDeTenant61 = async (refuse) => {
+    S61.CURRENT_TENANT = "maison";
+    modEtat61.ecrireDansLeStockageDuSite("plume_tenant", null);
+    viderLesAvis61();
+    selTenant61.value = "un-autre-tenant";
+    if (refuse) poserLeRefus61();
+    let leve = null, promesse = null;
+    try { promesse = selTenant61.onchange(); } catch (e) { leve = `${e && e.name} — ${e && e.message}`; }
+    const dits = avisPeints61();                 // les deux avis sont peints AVANT le premier `await`
+    if (refuse) retirerLeRefus61();
+    const stocke = modEtat61.lireLeStockageDuSite("plume_tenant");
+    try { await promesse; } catch (e) { /* le rechargement des vues part au réseau, absent ici */ }
+    await battre61();
+    return { leve, dits, courant: S61.CURRENT_TENANT, stocke };
+  };
+  let aveu61b = "";
+  if (!selTenant61 || typeof selTenant61.onchange !== "function") {
+    exiger(false, "(61b-instrument) `#tenant-switch` n'a pas de gestionnaire `onchange` après `initTenants()` : la bascule de tenant ne peut pas être exercée, et le témoin REFUSE DE CONCLURE.");
+  } else {
+    const b61Sain = await jouerLaBasculeDeTenant61(false);
+    const b61Refus = await jouerLaBasculeDeTenant61(true);
+    exiger(!b61Sain.leve && !b61Refus.leve,
+      `(61b) LA BASCULE DE TENANT JETTE (retenu : ${b61Sain.leve} ; refusé : ${b61Refus.leve}) : le contexte est posé, les vues ne sont jamais rechargées.`);
+    exiger(b61Sain.stocke === "un-autre-tenant" && b61Refus.stocke === null,
+      `(61b-instrument) LE REFUS N'A PAS MORDU SUR CE SITE : après la jouée RETENUE \`plume_tenant\` porte ${JSON.stringify(b61Sain.stocke)}, après la jouée REFUSÉE ${JSON.stringify(b61Refus.stocke)} (attendu \`null\`). Les deux jouées ont exercé le MÊME magasin, et la comparaison ci-dessous ne mesure rien.`);
+    exiger(b61Sain.courant === "un-autre-tenant" && b61Refus.courant === "un-autre-tenant",
+      `(61b-instrument) CONTRÔLE POSITIF PERDU : \`S.CURRENT_TENANT\` vaut « ${b61Sain.courant} » / « ${b61Refus.courant} » après la bascule — le gestionnaire n'a rien fait, et tout ce qui suit serait vrai par vacuité.`);
+    aveu61b = juger61("61b", "la bascule de tenant (web/multitenant.js)", b61Refus.dits, b61Sain.dits);
+    console.log(`[stockage] la bascule de tenant DIT sa perte, et ne la dit QUE là : l'écriture refusée peint ${b61Refus.dits.length} avis (« ${aveu61b} ») et l'écriture retenue ${b61Sain.dits.length}.`);
+  }
+
+  // ── (c) LA BASCULE D'ENVIRONNEMENT (`web/multitenant.js`) ────────────────────────────────────
+  // JAMAIS EXERCÉE PAR LE BANC HORS DÉPÔT, qui n'en portait aucune section : le sélecteur n'est câblé
+  // que lorsque le démon sert PLUS D'UN environnement, ce qu'il faut servir ici. Sans stockage retenu,
+  // le prochain chargement repart sur « Tous » et les vues ne portent plus le filtre posé.
+  globalThis.fetch = async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ environments: [{ env: "prod", n: 9 }, { env: "staging", n: 4 }], current: "" }) });
+  try { await modTenant61.initEnvironments(false); } catch (e) { /* jugé par le contrôle positif ci-dessous */ }
+  const selEnv61 = document.querySelector("#env-switch");
+  const jouerLaBasculeDEnv61 = async (refuse) => {
+    S61.CURRENT_ENV = "";
+    modEtat61.ecrireDansLeStockageDuSite("plume_env", null);
+    viderLesAvis61();
+    selEnv61.value = "staging";
+    if (refuse) poserLeRefus61();
+    let leve = null, promesse = null;
+    try { promesse = selEnv61.onchange(); } catch (e) { leve = `${e && e.name} — ${e && e.message}`; }
+    const dits = avisPeints61();
+    if (refuse) retirerLeRefus61();
+    const stocke = modEtat61.lireLeStockageDuSite("plume_env");
+    try { await promesse; } catch (e) { /* rechargement des vues : réseau simulé, sans objet ici */ }
+    await battre61();
+    return { leve, dits, courant: S61.CURRENT_ENV, stocke };
+  };
+  let aveu61c = "";
+  if (!selEnv61 || typeof selEnv61.onchange !== "function") {
+    exiger(false, "(61c-instrument) `#env-switch` n'a pas de gestionnaire `onchange` alors que DEUX environnements sont servis : la bascule d'environnement ne peut pas être exercée, et le témoin REFUSE DE CONCLURE.");
+  } else {
+    const c61Sain = await jouerLaBasculeDEnv61(false);
+    const c61Refus = await jouerLaBasculeDEnv61(true);
+    exiger(!c61Sain.leve && !c61Refus.leve,
+      `(61c) LA BASCULE D'ENVIRONNEMENT JETTE (retenu : ${c61Sain.leve} ; refusé : ${c61Refus.leve}) : le filtre est posé, les vues ne sont jamais rechargées.`);
+    exiger(c61Sain.stocke === "staging" && c61Refus.stocke === null,
+      `(61c-instrument) LE REFUS N'A PAS MORDU SUR CE SITE : après la jouée RETENUE \`plume_env\` porte ${JSON.stringify(c61Sain.stocke)}, après la jouée REFUSÉE ${JSON.stringify(c61Refus.stocke)} (attendu \`null\`). Les deux jouées ont exercé le MÊME magasin, et la comparaison ci-dessous ne mesure rien.`);
+    exiger(c61Sain.courant === "staging" && c61Refus.courant === "staging",
+      `(61c-instrument) CONTRÔLE POSITIF PERDU : \`S.CURRENT_ENV\` vaut « ${c61Sain.courant} » / « ${c61Refus.courant} » après la bascule — le gestionnaire n'a rien fait, et tout ce qui suit serait vrai par vacuité.`);
+    aveu61c = juger61("61c", "la bascule d'environnement (web/multitenant.js)", c61Refus.dits, c61Sain.dits);
+    console.log(`[stockage] la bascule d'environnement DIT sa perte, et ne la dit QUE là : l'écriture refusée peint ${c61Refus.dits.length} avis (« ${aveu61c} ») et l'écriture retenue ${c61Sain.dits.length}.`);
+  }
+
+  // LES TROIS AVEUX SONT TROIS PHRASES DISTINCTES. Un correctif qui replierait les trois sites sur un
+  // seul message ferait dire à la surface « quelque chose n'a pas été retenu » sans dire QUOI — or ce
+  // qui est perdu (une dimension, un tenant, un filtre) est ce qui décide s'il faut refaire le geste.
+  const distincts61 = new Set([aveu61a, aveu61b, aveu61c].filter(Boolean));
+  exiger(distincts61.size === [aveu61a, aveu61b, aveu61c].filter(Boolean).length,
+    `(61d) DEUX DES TROIS AVEUX SONT LE MÊME TEXTE (${JSON.stringify([aveu61a, aveu61b, aveu61c])}) : la surface annonce une perte sans nommer ce qui est perdu, et l'exploitant ne sait pas quel geste refaire.`);
+
+  // REMISE EN PLACE : cette section pose une identité, un tenant, un environnement et un réseau simulé.
+  globalThis.fetch = FETCH61;
+  S61.AUTH = AUTH61; S61.CURRENT_TENANT = TENANT61; S61.CURRENT_ENV = ENV61;
+  for (const c of ["plume_tenant", "plume_env", `${CLE_61A}:dim`, "temoin_p4_13_e"]) modEtat61.ecrireDansLeStockageDuSite(c, null);
+  viderLesAvis61();
+}
+
 // LE VERDICT PORTE SA PROPRE LIMITE (`P11.13-g`). Un vert qui ne dit pas ce sur quoi il ne s'engage pas
 // se lit comme une COUVERTURE — et un rouge n'a pas plus le droit de laisser croire qu'il a tout regardé.
 // La phrase ci-dessous n'est pas écrite : elle est DÉRIVÉE des sondes de la section 0, donc une capacité

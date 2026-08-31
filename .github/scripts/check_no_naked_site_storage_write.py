@@ -46,6 +46,15 @@ jetée), et la porte SILENCIEUSE ne doit jamais être LUE comme une valeur (elle
 test serait toujours faux). Les deux portes sont DÉRIVÉES du corpus — qui mute, qui rend — et aucun nom
 de fonction n'est écrit ici.
 
+`P4.13-e` — ET LE VERDICT REÇU PUIS LAISSÉ TOMBER. Ce qui précède accuse le verdict JETÉ À L'APPEL
+(`f(…);` en instruction). Il ne voyait RIEN du verdict REÇU puis abandonné : `const retenu = f(k, v);`
+suivi de rien. La valeur a été rendue, elle est liée, personne ne la consulte — et pour l'exploitant
+c'est mot pour mot la perte MUETTE que `P4.13-b` a fermée. La propriété ajoutée est structurelle : une
+liaison `const`/`let` qui reçoit un écrivain à verdict doit être RELUE dans sa portée. MESURÉ le
+2026-08-31 par mutation sur les CINQ sites réels du corpus (core.js, multitenant.js ×2, dataaccess.js,
+detection_admin.js) : retirer la relecture de l'un d'eux fait rougir, la remplacer par une AUTRE
+relecture ne fait rien rougir.
+
 LE SEUL PLANCHER QUI SUBSISTE PORTE SUR LES ÉCRITURES, PAS SUR LES FAUTES. Si le corpus ne contient
 AUCUNE écriture au stockage, la garde REFUSE DE CONCLURE au lieu de rendre un vert par vacuité : un
 analyseur cassé trouve zéro écriture, exactement comme un dépôt qui n'en contient plus.
@@ -837,6 +846,106 @@ def _lu_comme_valeur(jetons, k):
     return suivant.genre == "op" and suivant.valeur in OPERANDE_APRES
 
 
+def _fin_du_bloc_englobant(jetons, k):
+    """L'indice de la `}` qui referme le bloc contenant l'indice `k`, ou None au niveau du module.
+
+    Le premier `}` rencontré en avançant sans `{` ouvert à son crédit referme ce bloc — c'est la portée
+    exacte d'un `const`/`let`, donc la seule fenêtre où sa relecture est en droit possible.
+    """
+    prof = 0
+    for j in range(k, len(jetons)):
+        t = jetons[j]
+        if t.genre != "op":
+            continue
+        if t.valeur == "{":
+            prof += 1
+        elif t.valeur == "}":
+            if prof == 0:
+                return j
+            prof -= 1
+    return None
+
+
+def _liaison_qui_recoit(jetons, k):
+    """Le nom lié par `const|let <ident> = … <appel d'indice k> …`, ou None.
+
+    LA BORNE, ET C'EST ELLE QUI ÉVITE LA FAUSSE ACCUSATION : l'appel doit être HORS de toute parenthèse
+    ou de tout crochet resté ouvert depuis le `=`. `const x = f(…)` et `const x = !c || f(…)` font tous
+    deux couler le verdict dans `x` ; `const x = g(f(…))` NON — le verdict a été REMIS à `g`, qui en fait
+    ce qu'il veut, et l'accuser reviendrait à inventer un défaut. La marche arrière s'arrête au premier
+    `;`, `,`, `{` ou `}` de niveau : au-delà, ce n'est plus le même initialiseur.
+    """
+    prof, j, bornes = 0, k - 1, 0
+    while j >= 0 and bornes < 400:
+        bornes += 1
+        t = jetons[j]
+        if t.genre == "op":
+            if t.valeur in (")", "]", "}"):
+                prof += 1
+            elif t.valeur in ("(", "[", "{"):
+                if prof == 0:
+                    return None
+                prof -= 1
+            elif prof == 0 and t.valeur in (";", ","):
+                return None
+            elif prof == 0 and t.valeur == "=":
+                if (j >= 2 and jetons[j - 1].genre == "nom"
+                        and jetons[j - 2].genre == "nom" and jetons[j - 2].valeur in ("const", "let")):
+                    return jetons[j - 1].valeur
+                return None
+        elif prof == 0 and t.genre == "nom" and t.valeur in ("return", "throw", "case", "do", "else"):
+            return None
+        j -= 1
+    return None
+
+
+def verdicts_recus_puis_laisses_tomber(jetons, verdicts):
+    """`const x = <écrivain à verdict>(…)` dont `x` n'est JAMAIS RELU dans sa portée : (ligne, motif).
+
+    `P4.13-e` — L'AUTRE MOITIÉ DU MÊME PIÈGE, ET CELLE QUI RESTAIT OUVERTE. `fautes_de_porte` accuse le
+    verdict JETÉ à l'appel (`f(…);` en instruction). Elle ne voit RIEN du verdict REÇU puis abandonné :
+    `const retenu = f(k, v);` suivi de rien. La valeur existe, elle a été rendue, elle est liée — et
+    personne ne la consulte. Pour l'exploitant, c'est mot pour mot le défaut que `P4.13-b` a fermé : il
+    croit son choix retenu, il ne l'est pas, et rien ne le lui dit. Un `catch` vide et une liaison morte
+    perdent le même fait ; les distinguer serait une distinction d'auteur, pas de lecteur.
+
+    LA FORME EST ÉTROITE, ET LA DIRECTION DE L'ERREUR EST LE SOUS-COMPTE. Seules `const` et `let` sont
+    jugées : leur portée est le BLOC, donc l'absence de relecture avant la `}` qui le referme est une
+    absence de relecture tout court. `var` déborde son bloc et n'est pas jugé ; une liaison posée au
+    niveau du module non plus (aucun bloc ne la referme) ; une déstructuration non plus. Une occurrence
+    du nom SUFFIT à innocenter — y compris dans un rappel écrit plus bas, qui peut très bien le lire
+    plus tard. Ce qui reste accusé ne peut pas être relu : c'est une valeur morte.
+
+    AUCUN MOT N'EST CHERCHÉ, ICI NON PLUS. Ce que la relecture fait du verdict — un avis peint, une
+    branche, un journal — n'est PAS de ce ressort : la garde lit du texte, elle ne peut pas voir la
+    surface. C'est le banc ESM qui juge l'aveu PEINT (`web_esm_harnais.mjs`, témoin 61, deux jouées du
+    même geste sous refus posé et retiré) ; ces deux mesures ne se remplacent pas.
+    """
+    vus = []
+    for k, ligne, nom in _appels(jetons, verdicts):
+        identifiant = _liaison_qui_recoit(jetons, k)
+        if identifiant is None:
+            continue
+        fin = _fin_du_bloc_englobant(jetons, k)
+        if fin is None:
+            continue
+        relu = False
+        for j in range(k + 1, fin):
+            t = jetons[j]
+            if t.genre != "nom" or t.valeur != identifiant:
+                continue
+            if jetons[j - 1].genre == "op" and jetons[j - 1].valeur in (".", "?."):
+                continue      # `o.retenu` est un MEMBRE homonyme, pas cette liaison
+            relu = True
+            break
+        if not relu:
+            vus.append((ligne, f"le verdict de `{nom}(…)` est RETENU dans `{identifiant}` puis JAMAIS RELU "
+                               "dans sa portée : le refus du stockage est bien REÇU, et il est laissé tomber "
+                               "sur place — l'exploitant croit son choix retenu exactement comme si rien "
+                               "n'avait été rendu"))
+    return vus
+
+
 def fautes_de_porte(jetons, verdicts, silencieuses):
     """Les DEUX SENS du même piège : (ligne, motif).
 
@@ -861,6 +970,8 @@ def fautes_de_porte(jetons, verdicts, silencieuses):
         if _lu_comme_valeur(jetons, k):
             vus.append((ligne, f"`{nom}(…)` est LU COMME UNE VALEUR : cette porte ne rend RIEN, donc le "
                                "test est toujours faux et l'avis partirait même quand l'écriture a RÉUSSI"))
+    # (3) `P4.13-e` — le verdict REÇU dans une liaison que personne ne relit : voir la fonction ci-dessus.
+    vus.extend(verdicts_recus_puis_laisses_tomber(jetons, verdicts))
     return vus
 
 
@@ -1029,6 +1140,31 @@ TEMOINS_PORTES = [
      {"magasin.js": _SOCLE, "vue.js": "function a(){ const t = [poserSansRienDire]; t[0]('k', 1); }"}, 0),
     ("LA BORNE, ÉCRITE : dans le module qui mute, un corps réduit à l'appel jeté EST une porte",
      {"magasin.js": _SOCLE + "function a(){ poserOuNon('k', 1); }"}, 0),
+    # `P4.13-e` — LE VERDICT REÇU PUIS LAISSÉ TOMBER : le troisième sens du même piège.
+    ("LE VERDICT REÇU PUIS LAISSÉ TOMBER : lié, jamais relu",
+     {"magasin.js": _SOCLE, "vue.js": "function a(){ const retenu = poserOuNon('k', 1); g('fait'); }"}, 1),
+    ("le verdict reçu PUIS relu : c'est son emploi juste",
+     {"magasin.js": _SOCLE, "vue.js": "function a(){ const retenu = poserOuNon('k', 1); if (!retenu) g('perdu'); }"}, 0),
+    ("relu DANS un rappel écrit plus bas : innocenté, et c'est le sous-compte assumé",
+     {"magasin.js": _SOCLE, "vue.js": "function a(){ const retenu = poserOuNon('k', 1); h(() => g(retenu)); }"}, 0),
+    ("`let` est jugé comme `const` — même portée de bloc",
+     {"magasin.js": _SOCLE, "vue.js": "function a(){ let retenu = poserOuNon('k', 1); g('fait'); }"}, 1),
+    ("`var` n'est PAS jugé : sa portée déborde le bloc qui le referme",
+     {"magasin.js": _SOCLE, "vue.js": "function a(){ var retenu = poserOuNon('k', 1); g('fait'); }"}, 0),
+    ("un MEMBRE homonyme ne compte pas comme une relecture",
+     {"magasin.js": _SOCLE, "vue.js": "function a(){ const retenu = poserOuNon('k', 1); g(o.retenu); }"}, 1),
+    ("le verdict PASSÉ par une expression, lié, jamais relu — la forme du site réel de `web/core.js`",
+     {"magasin.js": _SOCLE, "vue.js": "function a(){ const retenu = !cle || poserOuNon('k', 1); g('fait'); }"}, 1),
+    ("le verdict ARGUMENT d'un autre appel n'est PAS jugé : il a été REMIS, pas jeté",
+     {"magasin.js": _SOCLE, "vue.js": "function a(){ const t = g(poserOuNon('k', 1)); h('fait'); }"}, 0),
+    ("le verdict passé par une expression PUIS relu : rien à dire",
+     {"magasin.js": _SOCLE, "vue.js": "function a(){ const retenu = !cle || poserOuNon('k', 1); if (!retenu) g('perdu'); }"}, 0),
+    ("relu HORS du bloc qui referme la liaison : la relecture est impossible, la faute reste",
+     {"magasin.js": _SOCLE, "vue.js": "function a(){ if (c) { const retenu = poserOuNon('k', 1); } g(retenu); }"}, 1),
+    ("liaison au niveau du MODULE : aucun bloc ne la referme, elle n'est pas jugée",
+     {"magasin.js": _SOCLE, "vue.js": "const retenu = poserOuNon('k', 1);"}, 0),
+    ("une PORTE SILENCIEUSE liée à un nom est accusée UNE fois — par l'ancien sens, pas deux",
+     {"magasin.js": _SOCLE, "vue.js": "function a(){ const rien = poserSansRienDire('k', 1); g('fait'); }"}, 1),
 ]
 
 
@@ -1209,15 +1345,31 @@ def main():
           f"silencieuse(s) ({', '.join(sorted(silencieuses)) or 'aucune'}) ; aucun verdict n'est JETÉ en "
           "instruction, et aucune porte silencieuse n'est LUE comme une valeur — le piège que `web/state.js` "
           "nommait par écrit sans que rien ne le tienne.\n"
+          "`P4.13-e` — ET AUCUN VERDICT N'EST REÇU PUIS LAISSÉ TOMBER : une liaison `const`/`let` qui reçoit "
+          "un écrivain à verdict est RELUE dans sa portée. Une valeur rendue puis abandonnée perd le refus "
+          "exactement comme une capture vide ; la borne qui évite la fausse accusation est écrite et "
+          "fabriquée ici — un verdict REMIS en argument à un autre appel (`g(f(…))`) n'est pas jugé, `var` "
+          "non plus, ni une liaison au niveau du module.\n"
           f"{len(TEMOINS)} + {len(TEMOINS_AVEU)} + {len(TEMOINS_PORTES)} témoins FABRIQUÉS ICI valident "
           "l'instrument dans les deux sens — y compris un `catch (e) { console.warn(e); }`, qui est ACCUSÉ, "
           "et un corpus sans écrivain à verdict, où la propriété des portes est VIDE et n'accuse personne. "
           "Zéro écriture dans tout le corpus fait REFUSER DE CONCLURE.\n"
-          "CE QU'ELLE NE TIENT PAS : que l'aveu atteigne la SURFACE où le choix est lu — faire sortir le "
-          "refus n'oblige personne à le DIRE, et le site qui le reçoit peut encore le laisser tomber "
-          "(cela se juge au banc ESM, sous `PLUME_HARNAIS_STOCKAGE_REFUSE=1`, en lisant les avis peints) ; "
-          "que le silence VOULU soit MOTIVÉ — la porte silencieuse déclare qu'on se tait, pas pourquoi, et "
-          "la raison vit dans le commentaire du site d'appel, que rien ne lit ; qu'un `return;` NU dans une "
+          "CE QU'ELLE NE TIENT PAS : que l'aveu atteigne la SURFACE où le choix est lu. La moitié "
+          "STRUCTURELLE de ce trou est fermée depuis `P4.13-e` (le verdict reçu doit être RELU) ; l'autre "
+          "moitié — que la relecture DÉBOUCHE sur quelque chose de peint — ne se lit pas dans le texte, et "
+          "chercher un mot d'aveu dans un corps est précisément ce qui rend une garde VERTE sur le site le "
+          "plus grave. Elle se juge au banc ESM (`web_esm_harnais.mjs`, témoin 61), qui joue DEUX fois le "
+          "même geste — refus du stockage posé, puis retiré — et lit les avis PEINTS : l'aveu doit "
+          "apparaître sur le refus, et lui seul. Les deux mesures ne se remplacent pas. "
+          "Que le silence VOULU soit MOTIVÉ n'est PAS tenu non plus, et le remède a été MESURÉ puis "
+          "REFUSÉ deux fois plutôt qu'une : (1) exiger un commentaire adjacent serait vert par "
+          "construction — les 9 sites d'appel de la porte silencieuse en portent DÉJÀ 4 à 6 lignes "
+          "(relevé du 2026-08-31), et un `// x` suffirait ensuite ; (2) porter la raison en TROISIÈME "
+          "ARGUMENT, forme lisible par une garde, fait ROUGIR "
+          "`check_i18n_lexicon_covers_displayed_strings.py` — rejoué le 2026-08-31 sur `web/prefs.js` "
+          "(plafond hors-regard 0) et `web/app.js` (plafond 22), les deux en rouge, et la ligne « JEU DU "
+          "CLIQUET » du jour dit que les 48 plafonds sont AU RAS, donc les 9 sites seraient concernés, pas "
+          "les deux qu'annonçait `P4.13-c`. Qu'un `return;` NU dans une "
           "capture n'apprenne rien à l'appelant (il est ACCUSÉ, mais `return undefined` explicite ne le "
           "serait pas) ; les LECTURES sous capture vide, hors de cette population — un refus de lecture rend "
           "ce que rend une clé absente, et l'initialisation de la variable fait office de repli, de sorte "

@@ -823,20 +823,46 @@ function cleDeReglage(idPanneau, cols) { return idPanneau ? ('p' + idPanneau) : 
 // valeur, et `Number(' ')` vaut 0 — elle est donc lue comme un zéro. Le dire autrement demande de changer
 // la définition que TOUT ce module partage, pas une phrase ; ce n'est pas fait ici.
 function porteUneValeur(v) { return v !== null && v !== undefined && v !== ''; }
+// `P11.20-y` — ET UNE SEULE DÉFINITION DE « CE QUE CETTE CELLULE SE LIT COMME NOMBRE ». C'est le geste
+// posé JUSTE AU-DESSUS le 2026-08-27, repris tel quel — demander AVANT de convertir — sur la seule
+// question qu'il ne posait pas. ELLE EST BÂTIE SUR LUI, ELLE NE LE DOUBLE PAS : « cette ligne porte
+// quelque chose » n'a toujours qu'un écrivain, et celle-ci ajoute « et ce qui est porté se lit-il ? ».
+// Les deux ensemble rendent TROIS issues là où il n'y en avait que deux, et c'est ce qui manquait : un
+// nombre ; rien de porté ; ou quelque chose de porté que personne ne sait lire.
+// C'EST LA BORNE ÉCRITE AU PRÉDICAT D'AU-DESSUS, ET ELLE EST FERMÉE ICI : `Number(' ')` vaut 0 et est
+// FINI, si bien qu'une chaîne de BLANCS traversait toute conversion en zéro pendant que la phrase
+// servie l'appelait « nulle ». Elle n'est plus lue comme un nombre nulle part, parce qu'il n'y a
+// qu'un endroit où on le décide.
+// UN VRAI ZÉRO REND 0, JAMAIS `undefined` : c'est ce qui sépare ce geste d'une suppression des zéros,
+// et c'est la propriété que le témoin NÉGATIF du banc exerce.
+// CE QU'ELLE NE TRANCHE PAS, écrit plutôt que tu : une valeur qui n'est ni une chaîne ni un nombre
+// (un booléen servi par un connecteur) reste lue par `Number`, où `true` vaut 1. Aucune route de ce
+// dépôt n'en sert, et trancher ici serait deviner une donnée que rien n'a mesurée.
+function nombreLu(v) {
+  if (!porteUneValeur(v)) return undefined;                        // rien n'est porté : rien n'a été lu
+  if (typeof v === 'string' && v.trim() === '') return undefined;  // des BLANCS ne sont pas un zéro
+  const n = Number(v);
+  return Number.isFinite(n) ? n : undefined;                       // du texte non plus
+}
+// La lecture d'une COLONNE, faite une fois pour les figures qui la dessinent : chaque rang rend le
+// nombre que sa ligne porte, ou `undefined`. L'APPELANT DÉCLARE CE QU'IL EN FAIT — il n'y a pas de
+// réponse commune, et c'est la mesure qui l'a dit : une part d'un tout, une hauteur de barre, une
+// abscisse et une intensité de cellule ne perdent pas la même chose quand la lecture n'a pas eu lieu.
+const colonneLue = (rows, i) => rows.map(r => nombreLu(r[i]));
 function profilDeColonne(nom, i, rows) {
   let nonVides = 0, nombres = 0; const vus = new Set();
   for (const r of rows) {
     const v = r[i];
     if (!porteUneValeur(v)) continue;
     nonVides++;
-    if (Number.isFinite(Number(v))) nombres++;
+    if (nombreLu(v) !== undefined) nombres++;
     vus.add(String(v));
   }
   return { nom, i, nonVides, nombres, cardinalite: vus.size, numerique: nonVides > 0 && nombres === nonVides };
 }
 function profilsDeColonnes(cols, rows) { return cols.map((nom, i) => profilDeColonne(nom, i, rows)); }
 function premiereNonNumerique(rows, i) {
-  for (const r of rows) { const v = r[i]; if (v !== null && v !== undefined && v !== '' && !Number.isFinite(Number(v))) return String(v).slice(0, 40); }
+  for (const r of rows) { const v = r[i]; if (porteUneValeur(v) && nombreLu(v) === undefined) return String(v).slice(0, 40); }
   return '';
 }
 
@@ -1031,7 +1057,7 @@ function refusDUneFigureMuette(mode, cols, rows, figure) {
   const i = cols.length - 1, nom = cols[i], col = 'la colonne « ' + nom + ' »', colEn = 'column “' + nom + '”';
   const lues = rows.map(r => r[i]).filter(porteUneValeur);
   const absentes = rows.length - lues.length;
-  const nombres = lues.map(Number).filter(n => Number.isFinite(n));
+  const nombres = lues.map(nombreLu).filter(n => n !== undefined);
   const negatives = nombres.filter(n => n < 0), positives = nombres.filter(n => n > 0);
   const manque = absentes > 0 ? {
     fr: ' ' + absentes + ' des ' + rows.length + ' ligne(s) servies ne portent AUCUNE valeur dans cette colonne : elles n’entrent dans aucun des comptes ci-dessus, une absence n’étant pas un zéro.',
@@ -1404,13 +1430,19 @@ function gaugeEl(cols, rows, query, drill) {
   // leur compte (`stat` rend « - », `pie` et `histogram` la disent) ; celle-ci l'affirmait à l'envers.
   // Ce n'est pas un REFUS — la donnée n'a rien d'impossible — donc cela se règle ici et non à la porte.
   if (!rows.length) return muted(LANG === 'en' ? 'no data' : 'aucune donnée');
-  const raw = Number(rows[0][rows[0].length - 1]);
-  const v = Number.isFinite(raw) ? raw : 0;
+  // `P11.20-y` — UNE VALEUR NON LUE N'EST PAS UN ZÉRO, ICI NON PLUS. Le geste posé juste au-dessus le
+  // 2026-08-27 fermait ZÉRO LIGNE — « 0 / 1 », dont les deux termes sont fabriqués — et laissait ouvert
+  // le cas d'une ligne SERVIE qui ne porte rien : la jauge rendait alors le MÊME « 0 / 1 »,
+  // indiscernable d'un vrai zéro (mesuré le 2026-09-01). Ce qui n'a pas été lu se rend comme sa sœur
+  // qui ne trace pas le rend — par `fmtVal` sur la cellule SERVIE, qui écrit « - » d'une absence — et
+  // ni l'arc de remplissage ni l'échelle ne sont dessinés, faute d'un nombre d'où les tirer.
+  const lu = nombreLu(rows[0][rows[0].length - 1]);
+  const v = lu ?? 0;
   // échelle : % -> 100 ; sinon max explicite (rows fournit [val,max]) sinon arrondi « joli » au-dessus de v.
   const pct = key && UNITS[key] === '%';
   let max = pct ? 100 : (rows.length && rows[0].length > 1 ? Number(rows[0][0]) : 0);
   if (!max || max <= 0) { const m = Math.max(1, v); const p = Math.pow(10, Math.floor(Math.log10(m))); max = Math.ceil(m / p) * p; }
-  const frac = Math.max(0, Math.min(1, v / max));
+  const frac = lu === undefined ? 0 : Math.max(0, Math.min(1, v / max));
   const W = 220, H = 150, cx = W / 2, cy = H - 24, r = 84, START = Math.PI * 0.75, SWEEP = Math.PI * 1.5;
   const pt = a => [cx + r * Math.cos(a), cy - r * Math.sin(a) * -1]; // y-down : sin inversé
   const arc = (a0, a1, color, w) => {
@@ -1424,7 +1456,8 @@ function gaugeEl(cols, rows, query, drill) {
   svg.appendChild(arc(a0, aEnd, CSSV('--bd', '#16202e'), 12));       // piste
   if (frac > 0) svg.appendChild(arc(a0, aVal, CSSV('--acc', '#2dd4bf'), 12)); // remplissage
   const txt = (y, s, cls, size) => { const e = mk('text'); e.setAttribute('x', cx); e.setAttribute('y', y); e.setAttribute('text-anchor', 'middle'); e.setAttribute('fill', CSSV(cls, '#e6eef6')); e.setAttribute('font-size', size); e.textContent = s; svg.appendChild(e); };
-  txt(cy - 6, fmtVal(key, v), '--fg', 26); txt(cy + 16, '/ ' + fmtVal(key, max), '--mut', 12);
+  txt(cy - 6, fmtVal(key, lu === undefined ? rows[0][rows[0].length - 1] : v), '--fg', 26);
+  if (lu !== undefined) txt(cy + 16, '/ ' + fmtVal(key, max), '--mut', 12);
   if (query || drill) { svg.style.cursor = 'pointer'; svg.onclick = () => statDrill(query, drill); }
   return noeudUneSeuleLigne(svg, rows);
 }
@@ -1452,11 +1485,30 @@ function noeudNonMontre(bouts) {
   dit.textContent = (LANG === 'en' ? 'Not shown — ' : 'Non montré — ') + bouts.join(' ; ') + '.';
   return dit;
 }
+// `P11.20-y` — UN SEUL ÉCRIVAIN DES DEUX CAUSES « RIEN N'A ÉTÉ LU ICI », comme il n'y a qu'un seul
+// écrivain du nœud qui les porte et un seul du nœud de refus. CINQ figures disent maintenant la même
+// chose de la même cellule ; l'écrire cinq fois, c'est se donner cinq phrases qui finiront par
+// diverger — et c'est DÉJÀ arrivé dans ce module, où une figure appelait « nulle ou négative » ce
+// qu'elle n'avait pas lu. LA CAUSE EST LUE, JAMAIS SUPPOSÉE : `porteUneValeur` sépare les deux, et
+// seule celle qui a au moins une ligne est écrite. Quand rien n'est perdu la liste est VIDE, et
+// l'appelant n'ajoute rien — c'est ce qui garde le balisage d'aujourd'hui byte-identique.
+function boutsDeNonLues(nom, rows, i) {
+  const absentes = rows.filter(r => !porteUneValeur(r[i])).length;
+  const illisibles = rows.filter(r => porteUneValeur(r[i]) && nombreLu(r[i]) === undefined).length;
+  const bouts = [];
+  if (absentes > 0) bouts.push(LANG === 'en'
+    ? absentes + ' of the ' + rows.length + ' served row(s) carry NO value in “' + nom + '”: nothing was read there, and an absence is not a zero'
+    : absentes + ' des ' + rows.length + ' ligne(s) servies ne portent AUCUNE valeur dans « ' + nom + ' » : rien n’y a été lu, et une absence n’est pas un zéro');
+  if (illisibles > 0) bouts.push(LANG === 'en'
+    ? illisibles + ' of the ' + rows.length + ' served row(s) carry a value in “' + nom + '” that is NOT a number: it was not read as zero, it was not read at all'
+    : illisibles + ' des ' + rows.length + ' ligne(s) servies portent dans « ' + nom + ' » une valeur qui n’est PAS un nombre : elle n’a pas été lue comme un zéro, elle n’a pas été lue du tout');
+  return bouts;
+}
 const PLAFOND_LEGENDE = 12;   // au-delà, la légende dépasse la figure et cesse d'être lisible
 function pieEl(cols, rows, query, drill, donut) {
   const NS = 'http://www.w3.org/2000/svg', mk = t => document.createElementNS(NS, t);
   const vi = cols.length - 1;
-  const data = rows.map(r => ({ label: r[0] == null ? '-' : String(r[0]), v: Math.max(0, Number(r[vi]) || 0) })).filter(d => d.v > 0);
+  const data = rows.map(r => ({ label: r[0] == null ? '-' : String(r[0]), v: Math.max(0, nombreLu(r[vi]) ?? 0) })).filter(d => d.v > 0);
   const total = data.reduce((s, d) => s + d.v, 0);
   const wrap = document.createElement('div'); wrap.className = 'piewrap';
   if (!total) { wrap.appendChild(muted('aucune donnée')); return wrap; }
@@ -1490,22 +1542,20 @@ function pieEl(cols, rows, query, drill, donut) {
     row.append(sw, lb, vc); legend.appendChild(row);
   });
   wrap.append(svg, legend);
-  const ecartees = rows.filter(r => !(Math.max(0, Number(r[vi]) || 0) > 0));
-  const absentes = ecartees.filter(r => !porteUneValeur(r[vi])).length;
-  const illisibles = ecartees.filter(r => porteUneValeur(r[vi]) && !Number.isFinite(Number(r[vi]))).length;
-  const nonPositives = ecartees.length - absentes - illisibles;
+  const ecartees = rows.filter(r => !(Math.max(0, nombreLu(r[vi]) ?? 0) > 0));
+  // `P11.20-y` — LES DEUX CAUSES « RIEN N'A ÉTÉ LU » VIENNENT DE L'ÉCRIVAIN UNIQUE, et la troisième se
+  // DÉDUIT d'elles : ce qui reste, une fois retiré ce qui n'a pas été lu, a bien été LU et vaut zéro ou
+  // moins. Comptée ainsi, « nulle ou négative » ne peut plus se dire d'une cellule illisible — et elle
+  // se disait d'une chaîne de BLANCS, dans le geste même dont l'objet est de nommer la cause lue.
+  const nonLues = boutsDeNonLues(cols[vi], rows, vi);
+  const nonPositives = ecartees.length - rows.filter(r => nombreLu(r[vi]) === undefined).length;
   const nonListees = Math.max(0, data.length - PLAFOND_LEGENDE);
   if (ecartees.length > 0 || nonListees > 0) {
     const bouts = [];
     if (nonPositives > 0) bouts.push(LANG === 'en'
       ? nonPositives + ' of the ' + rows.length + ' served row(s) are drawn by no sector: their value is zero or negative, which is not a share of a whole'
       : nonPositives + ' des ' + rows.length + ' ligne(s) servies ne sont portées par aucun secteur : leur valeur est nulle ou négative, ce qui n’est pas une part d’un tout');
-    if (absentes > 0) bouts.push(LANG === 'en'
-      ? absentes + ' of the ' + rows.length + ' served row(s) carry NO value in “' + cols[vi] + '”: nothing was read there, and an absence is not a zero'
-      : absentes + ' des ' + rows.length + ' ligne(s) servies ne portent AUCUNE valeur dans « ' + cols[vi] + ' » : rien n’y a été lu, et une absence n’est pas un zéro');
-    if (illisibles > 0) bouts.push(LANG === 'en'
-      ? illisibles + ' of the ' + rows.length + ' served row(s) carry a value in “' + cols[vi] + '” that is NOT a number: it was not read as zero, it was not read at all'
-      : illisibles + ' des ' + rows.length + ' ligne(s) servies portent dans « ' + cols[vi] + ' » une valeur qui n’est PAS un nombre : elle n’a pas été lue comme un zéro, elle n’a pas été lue du tout');
+    bouts.push(...nonLues);
     if (nonListees > 0) bouts.push(LANG === 'en'
       ? nonListees + ' drawn categor(ies) are not listed below — the legend stops at ' + PLAFOND_LEGENDE
       : nonListees + ' catégorie(s) dessinées ne sont pas listées ci-dessous — la légende s’arrête à ' + PLAFOND_LEGENDE);
@@ -1543,9 +1593,9 @@ function heatmapEl(cols, rows, query, drill) {
     if (!colSeen.has(ck)) { colSeen.add(ck); colKeys.push(ck); }
     const k = rk + '\x1f' + ck;
     if (cell.has(k)) ecrasees++;
-    cell.set(k, Number(r[vi]) || 0);
+    cell.set(k, nombreLu(r[vi]));   // `P11.20-y` : une cellule NON LUE reste vide, elle ne vaut pas zéro
   });
-  const max = Math.max(1, ...[...cell.values()]);
+  const max = Math.max(1, ...[...cell.values()].filter(n => n !== undefined));
   const wrap = document.createElement('div'); wrap.className = 'heatwrap';
   const tbl = document.createElement('table'); tbl.className = 'heatmap';
   const thead = document.createElement('thead'); const htr = document.createElement('tr');
@@ -1585,6 +1635,7 @@ function heatmapEl(cols, rows, query, drill) {
   if (ecrasees > 0) bouts.push(LANG === 'en'
     ? ecrasees + ' of the ' + rows.length + ' served row(s) are carried by no cell: another row holds the SAME (row, column) pair and the last one served wins'
     : ecrasees + ' des ' + rows.length + ' ligne(s) servies ne sont portées par aucune cellule : une autre ligne porte la MÊME paire (ligne, colonne) et la dernière servie l’emporte');
+  bouts.push(...boutsDeNonLues(cols[vi], rows, vi));
   if (bouts.length) wrap.appendChild(noeudNonMontre(bouts));
   return wrap;
 }
@@ -1602,7 +1653,7 @@ function heatmapEl(cols, rows, query, drill) {
 function histogramEl(cols, rows, query, drill) {
   const NS = 'http://www.w3.org/2000/svg', mk = t => document.createElementNS(NS, t);
   const vi = cols.length - 1;
-  const vals = rows.map(r => Number(r[vi])).filter(n => Number.isFinite(n));
+  const vals = colonneLue(rows, vi).filter(n => n !== undefined);   // `P11.20-y` : une chaîne de BLANCS n'est plus une valeur de la distribution
   const wrap = document.createElement('div'); wrap.className = 'histwrap';
   // UNE ABSENCE SE DIT PAR LE FAIT MESURÉ, PAS PAR UNE CAUSE INVENTÉE (`P11.18-p`). Sur ZÉRO ligne, cette
   // représentation disait « aucune donnée NUMÉRIQUE » : elle attribuait à la NATURE de la colonne une
@@ -1614,7 +1665,7 @@ function histogramEl(cols, rows, query, drill) {
   let bins;
   if (cols.length >= 2) {
     // pré-agrégé [clé, count] -> une barre par ligne (ordre préservé).
-    bins = rows.map(r => ({ label: r[0] == null ? '-' : String(r[0]), c: Number(r[vi]) || 0 }));
+    bins = rows.filter(r => nombreLu(r[vi]) !== undefined).map(r => ({ label: r[0] == null ? '-' : String(r[0]), c: nombreLu(r[vi]) }));
   } else {
     const mn = Math.min(...vals), mx = Math.max(...vals);
     const nb = Math.max(1, Math.min(24, Math.ceil(Math.log2(vals.length) + 1)));
@@ -1637,7 +1688,9 @@ function histogramEl(cols, rows, query, drill) {
   const ax = mk('path'); ax.setAttribute('d', `M${pad},${H - pad} L${W - pad},${H - pad}`); ax.setAttribute('stroke', CSSV('--bd', '#16202e')); ax.setAttribute('fill', 'none'); svg.appendChild(ax);
   const txt = (x, y, s, a) => { const e = mk('text'); e.setAttribute('x', x); e.setAttribute('y', y); e.setAttribute('fill', CSSV('--mut', '#8aa0b4')); e.setAttribute('font-size', '10'); if (a) e.setAttribute('text-anchor', a); e.textContent = s; svg.appendChild(e); };
   if (n) { txt(pad, H - 8, bins[0].label); txt(W - pad, H - 8, bins[n - 1].label, 'end'); txt(3, pad, String(max)); }
-  return svg;
+  const bouts = boutsDeNonLues(cols[vi], rows, vi);
+  if (!bouts.length) return svg;                       // rien de perdu, rien d'ajouté
+  wrap.append(svg, noeudNonMontre(bouts)); return wrap;
 }
 
 // `table *` & co : `fields` est un JSON (les clés varient par event/source -> pas de schéma fixe
@@ -1848,14 +1901,19 @@ function statEl(cols, rows, query, drill) {
 
 function barEl(cols, rows, query, drill) {
   const vi = cols.length - 1, key = unitKeyFor(cols, query);
-  const nums = rows.map(r => Number(r[vi]) || 0);
-  const max = Math.max(1, ...nums);
+  // `P11.20-y` — UNE LIGNE NON LUE N'A PAS DE LONGUEUR, et n'entre pas dans le maximum. Elle rendait
+  // une barre de largeur ZÉRO indiscernable d'un vrai zéro et sans un mot — mesuré le 2026-08-27 sur
+  // [['a',5],['b',null],['c',7]], et le module le NOMMAIT comme un reste ouvert au lieu de le fermer.
+  // Le libellé et la cellule servie restent rendus, c'est ce que la donnée porte ; mais aucune barre
+  // ne la MESURE, et ce qui n'a pas été lu se compte et se dit.
+  const nums = colonneLue(rows, vi);
+  const max = Math.max(1, ...nums.filter(n => n !== undefined));
   const wrap = document.createElement('div'); wrap.className = 'bars';
   rows.forEach((r, i) => {
     const row = document.createElement('div'); row.className = 'barrow';
     const lab = document.createElement('span'); lab.className = 'barlabel'; lab.textContent = String(r[0]);
     const track = document.createElement('div'); track.className = 'bartrack';
-    const fill = document.createElement('div'); fill.className = 'barfill'; fill.style.width = (nums[i] / max * 100) + '%';
+    const fill = document.createElement('div'); fill.className = 'barfill'; if (nums[i] !== undefined) fill.style.width = (nums[i] / max * 100) + '%';
     track.appendChild(fill);
     const val = document.createElement('span'); val.className = 'barval'; val.textContent = fmtVal(key, r[vi]);
     const tipTxt = `${r[0]} : ${fmtVal(key, r[vi])}`;
@@ -1865,7 +1923,9 @@ function barEl(cols, rows, query, drill) {
     else if (!DIMENSIONLESS.has(cols[0])) { row.style.cursor = 'pointer'; row.title = 'Cliquer pour voir les événements'; row.onclick = () => drilldown(cols[0], r[0]); }
     row.append(lab, track, val); wrap.appendChild(row);
   });
-  return wrap;
+  const bouts = boutsDeNonLues(cols[vi], rows, vi);
+  if (!bouts.length) return wrap;                      // rien de perdu, rien d'ajouté : le balisage ne bouge pas
+  const box = document.createElement('div'); box.append(wrap, noeudNonMontre(bouts)); return box;
 }
 
 function fmtMaybeTime(v) {
@@ -1877,30 +1937,38 @@ function fmtMaybeTime(v) {
 function lineEl(cols, rows, query, drill) {
   const NS = 'http://www.w3.org/2000/svg', mk = t => document.createElementNS(NS, t);
   const W = 640, H = 200, pad = 30, key = unitKeyFor(cols, query);
-  const xs = rows.map(r => Number(r[0]) || 0);
-  const ys = rows.map(r => Number(r[r.length - 1]) || 0);
+  // `P11.20-y` — CE QUI N'A PAS ÉTÉ LU N'ENTRE PAS DANS L'ÉTENDUE, et c'est le cas le plus grave que
+  // ce module ait mesuré : une SEULE ligne sans abscisse ramenait `xmin` à ZÉRO. Mesuré le 2026-09-01
+  // sur [[1,10],[null,20],[3,30]] — le point d'abscisse 1 quittait le bord gauche (30) pour 223,33, la
+  // série qui commence à UN se dessinant comme si elle commençait à ZÉRO, sous des repères qui, eux,
+  // imprimaient bien « 1 » et « 3 ». Ce n'est plus une phrase qui ment, c'est une FIGURE.
+  // LES DEUX FENTES SONT DEMANDÉES ENSEMBLE : un point n'est plaçable que si son abscisse ET son
+  // ordonnée ont été lues, et une ligne à qui l'une manque n'a pas de place sur ce dessin.
+  const tracees = rows.filter(r => nombreLu(r[0]) !== undefined && nombreLu(r[r.length - 1]) !== undefined);
+  const xs = colonneLue(tracees, 0);
+  const ys = tracees.map(r => nombreLu(r[r.length - 1]));
   const ymax = Math.max(1, ...ys), xmin = Math.min(...xs), xmax = Math.max(...xs);
   const sx = x => pad + (xmax > xmin ? (x - xmin) / (xmax - xmin) : 0.5) * (W - 2 * pad);
   const sy = y => H - pad - (y / ymax) * (H - 2 * pad);
   const svg = mk('svg'); svg.setAttribute('viewBox', `0 0 ${W} ${H}`); svg.setAttribute('class', 'linechart');
   const txt = (x, y, s, a) => { const e = mk('text'); e.setAttribute('x', x); e.setAttribute('y', y); e.setAttribute('fill', CSSV('--mut', '#8aa0b4')); e.setAttribute('font-size', '10'); e.setAttribute('text-anchor', a || 'start'); e.textContent = s; svg.appendChild(e); };
   const axis = mk('path'); axis.setAttribute('d', `M${pad},${pad} L${pad},${H - pad} L${W - pad},${H - pad}`); axis.setAttribute('stroke', CSSV('--bd', '#16202e')); axis.setAttribute('fill', 'none'); svg.appendChild(axis);
-  if (rows.length) {
-    const pts = rows.map((r, i) => `${sx(xs[i])},${sy(ys[i])}`);
+  if (tracees.length) {
+    const pts = tracees.map((r, i) => `${sx(xs[i])},${sy(ys[i])}`);
     const area = mk('polygon');
     area.setAttribute('points', `${sx(xs[0])},${H - pad} ${pts.join(' ')} ${sx(xs[xs.length - 1])},${H - pad}`);
     area.setAttribute('fill', CSSV('--acc-soft', 'rgba(45,212,191,.16)')); svg.appendChild(area);
     const poly = mk('polyline'); poly.setAttribute('points', pts.join(' ')); poly.setAttribute('fill', 'none'); poly.setAttribute('stroke', CSSV('--acc', '#2dd4bf')); poly.setAttribute('stroke-width', '2'); svg.appendChild(poly);
-    rows.forEach((r, i) => { const c = mk('circle'); c.setAttribute('cx', sx(xs[i])); c.setAttribute('cy', sy(ys[i])); c.setAttribute('r', rows.length === 1 ? '4' : '2.5'); c.setAttribute('fill', CSSV('--acc', '#2dd4bf')); svg.appendChild(c); });
+    tracees.forEach((r, i) => { const c = mk('circle'); c.setAttribute('cx', sx(xs[i])); c.setAttribute('cy', sy(ys[i])); c.setAttribute('r', tracees.length === 1 ? '4' : '2.5'); c.setAttribute('fill', CSSV('--acc', '#2dd4bf')); svg.appendChild(c); });
     txt(3, pad, fmtVal(key, ymax));
     txt(pad, H - 8, fmtMaybeTime(xs[0]));
     if (xs.length > 1) txt(W - pad, H - 8, fmtMaybeTime(xs[xs.length - 1]), 'end');
   }
-  if (rows.length > 1 && xmin > 1e9 && xmax < 2e10) { // axe X temporel -> zoom par drag
+  if (tracees.length > 1 && xmin > 1e9 && xmax < 2e10) { // axe X temporel -> zoom par drag
     attachZoom(svg, W, vx => xmin + Math.max(0, Math.min(1, (vx - pad) / (W - 2 * pad))) * (xmax - xmin));
   }
   attachTip(svg, W, vx => { let b = 0, bd = 1e9; for (let i = 0; i < xs.length; i++) { const d = Math.abs(sx(xs[i]) - vx); if (d < bd) { bd = d; b = i; } } return (xs.length && bd < 40) ? `${fmtMaybeTime(xs[b])} : ${fmtVal(key, ys[b])}` : ''; });
-  if (rows.length) {
+  if (tracees.length) {
     // crosshair + point au survol ; clic -> evenements du bucket
     const cross = mk('line'); cross.setAttribute('y1', pad); cross.setAttribute('y2', H - pad); cross.setAttribute('stroke', CSSV('--mut', '#8aa0b4')); cross.setAttribute('stroke-dasharray', '3 3'); cross.style.display = 'none'; svg.appendChild(cross);
     const mark = mk('circle'); mark.setAttribute('r', '4.5'); mark.setAttribute('fill', CSSV('--acc', '#2dd4bf')); mark.setAttribute('stroke', CSSV('--card', '#0c1422')); mark.setAttribute('stroke-width', '2'); mark.style.display = 'none'; svg.appendChild(mark);
@@ -1921,7 +1989,13 @@ function lineEl(cols, rows, query, drill) {
       else if (timeZoomEnabled()) drillTime(xs[hi], span);                                  // zoom-temporel : dashboards uniquement
     });
   }
-  return svg;
+  // Les DEUX colonnes que ce dessin lit sont nommées, chacune avec ce qui lui manque : c'est la
+  // fente, pas la ligne, qui explique l'absence d'un point. Sur un résultat à UNE colonne il n'y en a
+  // qu'une à nommer, et la nommer deux fois compterait deux fois la même perte.
+  const rangs = cols.length > 1 ? [0, cols.length - 1] : [0];
+  const bouts = rangs.flatMap(i => boutsDeNonLues(cols[i], rows, i));
+  if (!bouts.length) return svg;                       // rien de perdu, rien d'ajouté
+  const box = document.createElement('div'); box.append(svg, noeudNonMontre(bouts)); return box;
 }
 
 function renderViz() {

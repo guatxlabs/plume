@@ -5270,17 +5270,32 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   // ---- (a) LE NÉGATIF : SANS LA PORTE, LES SIX FIGURES FAUSSES SONT TOUJOURS LÀ ----
   // Chacune à sa signature MESURÉE, jamais à une phrase — une phrase se reformule.
   const nu = (m, rows) => viz.vizSansPorte(m, COLS, rows, "", "");
+  // `P11.20-y` A DÉPLACÉ CES SIGNATURES, ET C'EST UNE MESURE — PAS UN ASSOUPLISSEMENT. Ce qui était
+  // épinglé ici (trois barres à 0 % de large, trois points empilés, une jauge « 0 / 1 ») était la
+  // signature de `Number(v) || 0` : un zéro FABRIQUÉ à partir de ce qui n'avait pas été lu. Ce zéro
+  // n'existe plus dans les figures, et il n'y existe plus MÊME SANS LA PORTE — la lecture a été
+  // corrigée là où elle se fait, pas seulement là où elle est jugée.
+  // LE DÉFAUT QUE (45b) PRÉVIENT RESTE RÉEL : il est reconstitué À LA MAIN juste en dessous, dans la
+  // forme que (45e-négatif) emploie déjà pour la jauge — c'est cela qui interdit à (45b) de devenir
+  // vrai par vacuité. Et LA PROPRIÉTÉ QUI FAIT DE (45b) UNE MESURE N'A PAS BOUGÉ D'UN POUCE : sans la
+  // porte, un GRAPHE est rendu et aucun refus ne prend sa place. On exige les deux, plus la signature
+  // d'AUJOURD'HUI — si quelqu'un rétablit la conversion aveugle, ces lignes rougissent.
+  const zeroFabrique = (v) => Number(v) || 0;
+  exiger([null, undefined, "", "   ", "rouge"].every((v) => zeroFabrique(v) === 0),
+    "(45a-négatif) la conversion d'avant, reconstituée à la main, ne fabrique plus un zéro de ce qu'elle n'a pas lu : (45b) ne prouverait pas qu'un zéro était fabriqué");
+  const empilesAvant = TXT.map((r) => zeroFabrique(r[0]));
+  exiger(empilesAvant.length === 3 && new Set(empilesAvant).size === 1,
+    `(45a-négatif) la conversion d'avant n'empile plus les trois abscisses textuelles sur un point unique (${JSON.stringify(empilesAvant)})`);
   const barres = classe(nu("bar", TXT), "barfill").map((n) => n.style.width);
-  exiger(barres.length === 3 && barres.every((w) => w === "0%"),
-    `(45a-négatif) « bar » sans la porte ne trace plus ses trois barres à 0 % de large (${JSON.stringify(barres)}) : la signature du défaut a bougé, et le positif ne prouverait plus rien`);
+  exiger(barres.length === 3 && barres.every((w) => w === undefined),
+    `(45a-négatif) « bar » sans la porte pose encore une largeur sur des lignes qu'il n'a pas lues (${JSON.stringify(barres)}) : la conversion aveugle est de retour`);
   exiger(nu("bar", TXT).textContent.includes("rouge"),
     "(45a-négatif) « bar » sans la porte n'imprime plus le texte à côté de la barre vide — c'est CE voisinage qui rend le graphe faux crédible");
   const pts = (trouver(nu("line", TXT), (n) => n.tagName === "POLYLINE")[0] || { attributes: {} }).attributes.points || "";
-  const distincts = new Set(pts.split(" ").filter(Boolean));
-  exiger(pts && distincts.size === 1,
-    `(45a-négatif) « line » sans la porte n'écrase plus ses abscisses sur un point unique (${distincts.size} point(s) distincts sur « ${pts} »)`);
-  exiger(/0\s*\/\s*1/.test(nu("gauge", TXT).textContent.replace(/\s+/g, " ")),
-    `(45a-négatif) « gauge » sans la porte n'affiche plus le rapport fabriqué « 0 / 1 » : « ${nu("gauge", TXT).textContent} »`);
+  exiger(pts === "",
+    `(45a-négatif) « line » sans la porte trace encore une courbe sur des abscisses qu'il n'a pas lues (« ${pts} »)`);
+  exiger(nu("gauge", TXT).textContent.includes("rouge") && !/0\s*\/\s*1/.test(nu("gauge", TXT).textContent.replace(/\s+/g, " ")),
+    `(45a-négatif) « gauge » sans la porte fabrique encore un rapport à la place de la cellule servie : « ${nu("gauge", TXT).textContent} »`);
   for (const m of ["pie", "donut"]) exiger(/aucune donnée|no data/i.test(nu(m, TXT).textContent) && TXT.length === 3,
     `(45a-négatif) « ${m} » sans la porte n'annonce plus une ABSENCE alors que ${TXT.length} lignes existent : « ${nu(m, TXT).textContent} »`);
   const cellules = classe(nu("heatmap", TXT), "heatcell").map((n) => n.textContent);
@@ -5289,13 +5304,17 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   // `histogram` : son aveu ne sortait QUE si aucune valeur n'était un nombre. Sur une colonne MÉLANGÉE
   // il rendait la valeur textuelle en barre de hauteur ZÉRO — donc son honnêteté n'était que partielle.
   const hauteurs = trouver(viz.vizSansPorte("histogram", COLS, MIXTE, "", ""), (n) => n.tagName === "RECT").map((n) => Number(n.attributes.height));
-  exiger(hauteurs.length === 3 && hauteurs.filter((h) => h === 0).length === 1,
-    `(45a-négatif) « histogram » sans la porte ne rend plus la valeur non numérique d'une colonne MÉLANGÉE en barre de hauteur zéro (${JSON.stringify(hauteurs)}) : l'aveu qu'il rend sur du tout-texte cachait ce cas`);
-  // Aucune de ces figures ne DISAIT quoi que ce soit du problème : ni la colonne, ni le mot.
+  exiger(hauteurs.length === 2 && !hauteurs.includes(0),
+    `(45a-négatif) « histogram » sans la porte rend encore la valeur non numérique d'une colonne MÉLANGÉE en barre de hauteur zéro (${JSON.stringify(hauteurs)}) : la conversion aveugle est de retour`);
+  // CE QUE CES FIGURES DISENT MAINTENANT SANS LA PORTE, ET CE QU'ELLES NE DISENT TOUJOURS PAS. Elles
+  // NOMMENT désormais la colonne — `P11.20-y` leur a donné l'aveu de ce qu'elles n'ont pas lu, et cet
+  // aveu vaut sur les DEUX chemins. Ce qu'elles ne font toujours pas, et qui est TOUT ce que (45b)
+  // mesure : dire que le graphe serait FAUX, et PRENDRE LA PLACE du graphe. Un aveu ACCOMPAGNE, un
+  // refus REMPLACE — c'est la distinction que le module écrit, et c'est elle qu'on exige ici.
   for (const m of coercantes) {
-    const t = nu(m, TXT).textContent;
-    exiger(!t.includes("sev") && !/FAUX|FALSE/.test(t),
-      `(45a-négatif) « ${m} » sans la porte nomme déjà la colonne ou dit déjà le faux (« ${t.slice(0, 100)} ») : le positif ne mesurerait plus rien`);
+    const n = nu(m, TXT);
+    exiger(!/FAUX|FALSE/.test(n.textContent) && classe(n, "bad").length === 0,
+      `(45a-négatif) « ${m} » sans la porte dit déjà le faux, ou rend déjà un refus qui prend la place du graphe (« ${n.textContent.slice(0, 100)} ») : le positif ne mesurerait plus rien`);
   }
 
   // ---- (b) LE POSITIF : LA PORTE REFUSE, ET LE REFUS DIT POURQUOI ----
@@ -5344,9 +5363,12 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   for (const m of abscissantes) {
     // Le marqueur de survol est un CERCLE sans abscisse tant qu'on n'a pas survolé : on ne lit que les
     // marques réellement POSÉES, sinon le témoin compterait un point que personne ne voit.
+    // MÊME DÉPLACEMENT QU'EN (45a-négatif), MÊME REMÈDE : la conversion qui empilait est reconstituée
+    // à la main (juste au-dessus), et ce qu'on exige du chemin NU est ce que la porte ajoute — un
+    // graphe est rendu, aucun refus ne le remplace. Les points, eux, ne sont plus posés du tout.
     const empiles = trouver(viz.vizSansPorte(m, COLS, CAT, "", ""), (n) => n.tagName === "CIRCLE").map((n) => n.attributes.cx).filter((v) => v !== undefined);
-    exiger(empiles.length === 3 && new Set(empiles).size === 1,
-      `(45c-bis-négatif) « ${m} » sans la porte n'empile plus ses trois points sur une abscisse unique (${JSON.stringify(empiles)}) : le positif ne prouverait rien`);
+    exiger(empiles.length === 0 && classe(viz.vizSansPorte(m, COLS, CAT, "", ""), "bad").length === 0,
+      `(45c-bis-négatif) « ${m} » sans la porte pose encore ${empiles.length} point(s) sur des abscisses qu'il n'a pas lues (${JSON.stringify(empiles)}), ou refuse déjà : le positif ne prouverait rien`);
     const t = viz.vizElement(m, COLS, CAT, "", "").textContent;
     exiger(/Graphe refusé|Chart refused/.test(t) && t.includes("host") && /abscisse|X axis/.test(t),
       `(45c-bis) « ${m} » trace encore une abscisse textuelle sous une ordonnée numérique, ou son refus ne nomme pas l'abscisse : « ${t.slice(0, 160)} »`);
@@ -5407,7 +5429,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     && deuxLangues.fr.includes("sev") && deuxLangues.en.includes("sev"),
     `(45g) le refus ne porte pas deux textes distincts nommant la colonne : ${JSON.stringify(deuxLangues)}`);
 
-  console.log(`[graphe-refuse] les ${MODES.length} représentations du dispatcher sont partagées PAR LE SONDAGE, pas par une liste : ${coercantes.length} ramènent leur ORDONNÉE à un nombre (${coercantes.join(", ")}), ${libres.length} non (${libres.join(", ")}), et ${abscissantes.length} placent leurs lignes selon l'ABSCISSE et la ramènent à un nombre (${abscissantes.join(", ")}) — la faute que la clé attribuait à « line » est celle-là, et une porte posée sur la seule ordonnée l'aurait fermée par accident : sous une ordonnée NUMÉRIQUE et une abscisse textuelle, « line » empilait toujours ses trois points sur une abscisse unique, ce qui est reproduit ici. Les autres modes, dont la jauge (qui lit sa colonne 0 comme une ÉCHELLE et non comme une position), ne sont PAS refusés sur la même donnée : une abscisse textuelle y est une catégorie légitime. Sans la porte, les six figures fausses relevées sur banc sont TOUTES reproduites ici à leur signature exacte — barres à 0 % avec le mot à côté, courbe écrasée sur un point, jauge « 0 / 1 », camembert qui annonce une absence sur trois lignes, grille de chaleur vide — et l'aveu d'« histogram » se révèle partiel : sur une colonne MÉLANGÉE il rendait la valeur textuelle en barre de hauteur zéro. Avec la porte, chacune est REFUSÉE et le refus nomme la colonne, le compte et un exemple, dans les deux langues ; une colonne SANS AUCUNE valeur reçoit une phrase différente, qui ne compte pas « 0 sur 0 » ; la barre de réglage reste au-dessus du refus, donc il y a une issue ; la jauge n'affirme plus « 0 / 1 » sur zéro ligne ; et aucun module ne nomme le dispatcher NU. NON-RÉGRESSION : sur un résultat dont les DEUX fentes sont valides, les ${MODES.length} modes rendent un balisage BYTE-IDENTIQUE à celui d'avant la porte, et le comparateur qui l'établit voit bouger exactement les ${coercantes.length} modes qui coercent dès qu'on lui donne du texte. CE QUE CE TÉMOIN NE TIENT PAS : l'encre réellement peinte (section 0 — la largeur nulle est lue sur le style EN LIGNE) et les panneaux semés par le démon, dont les requêtes vivent hors de web/.`);
+  console.log(`[graphe-refuse] les ${MODES.length} représentations du dispatcher sont partagées PAR LE SONDAGE, pas par une liste : ${coercantes.length} ramènent leur ORDONNÉE à un nombre (${coercantes.join(", ")}), ${libres.length} non (${libres.join(", ")}), et ${abscissantes.length} placent leurs lignes selon l'ABSCISSE et la ramènent à un nombre (${abscissantes.join(", ")}) — la faute que la clé attribuait à « line » est celle-là, et une porte posée sur la seule ordonnée l'aurait fermée par accident : sous une ordonnée NUMÉRIQUE et une abscisse textuelle, « line » empilait ses trois points sur une abscisse unique, ce qui est reproduit ici PAR LA CONVERSION D'AVANT, remontée à la main depuis que la figure elle-même a cessé de le faire. Les autres modes, dont la jauge (qui lit sa colonne 0 comme une ÉCHELLE et non comme une position), ne sont PAS refusés sur la même donnée : une abscisse textuelle y est une catégorie légitime. Sans la porte, ce que ces figures rendent a CHANGÉ le 2026-09-01 (\`P11.20-y\`) et ce témoin le dit au lieu d'imprimer l'ancienne phrase : les trois signatures fabriquées — barres à 0 % de large, points empilés sur une abscisse unique, jauge « 0 / 1 » — n'existent plus, parce que la lecture a été corrigée LÀ OÙ ELLE SE FAIT et pas seulement là où elle est jugée ; elles sont reconstituées À LA MAIN ici, sans quoi le positif serait vrai par vacuité. Ce qui reste vrai du chemin nu, et qui est tout ce que la porte ajoute : un GRAPHE est rendu, aucun refus ne prend sa place, et rien n'y dit que le graphe serait FAUX — camembert qui annonce une absence sur trois lignes et grille de chaleur vide compris. Avec la porte, chacune est REFUSÉE et le refus nomme la colonne, le compte et un exemple, dans les deux langues ; une colonne SANS AUCUNE valeur reçoit une phrase différente, qui ne compte pas « 0 sur 0 » ; la barre de réglage reste au-dessus du refus, donc il y a une issue ; la jauge n'affirme plus « 0 / 1 » sur zéro ligne ; et aucun module ne nomme le dispatcher NU. NON-RÉGRESSION : sur un résultat dont les DEUX fentes sont valides, les ${MODES.length} modes rendent un balisage BYTE-IDENTIQUE à celui d'avant la porte, et le comparateur qui l'établit voit bouger exactement les ${coercantes.length} modes qui coercent dès qu'on lui donne du texte. CE QUE CE TÉMOIN NE TIENT PAS : l'encre réellement peinte (section 0 — la largeur nulle est lue sur le style EN LIGNE) et les panneaux semés par le démon, dont les requêtes vivent hors de web/.`);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -8269,6 +8291,204 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   S61.AUTH = AUTH61; S61.CURRENT_TENANT = TENANT61; S61.CURRENT_ENV = ENV61;
   for (const c of ["plume_tenant", "plume_env", `${CLE_61A}:dim`, "temoin_p4_13_e"]) modEtat61.ecrireDansLeStockageDuSite(c, null);
   viderLesAvis61();
+}
+
+
+// ---------------------------------------------------------------------------------------------
+// 62. UNE VALEUR ILLISIBLE N'EST JAMAIS RENDUE COMME UN ZÉRO (`P11.20-y`).
+//
+//     LE CONSTAT, ET CE QU'IL AVAIT DE PLUS GRAVE QUE LES PRÉCÉDENTS. `P11.18-p` avait fermé la
+//     phrase — un refus qui NOMME au lieu d'une absence affirmée — et `P11.20-x` la figure vide.
+//     Restait un cas où ce n'était NI l'une NI l'autre : la lecture elle-même. `Number(' ')` vaut 0
+//     et est FINI, `Number(null)` aussi ; une chaîne de BLANCS était donc comptée numérique par le
+//     profil de colonne, et une ABSENCE, sautée par ce même profil, franchissait les deux portes
+//     avant d'être convertie en zéro par la figure. MESURÉ LE 2026-09-01 sur `line` et
+//     [[1,10],[null,20],[3,30]] : `xmin` valait ZÉRO, le point d'abscisse 1 quittait le bord gauche
+//     (30) pour 223,33, et les repères imprimaient pourtant « 1 » et « 3 ». La série qui commence à
+//     UN se dessinait comme si elle commençait à ZÉRO. Ce n'est plus une phrase qui ment : c'est une
+//     FIGURE, et aucune des deux portes ne pouvait la voir.
+//
+//     CE QUE CE TÉMOIN JUGE, ET COMMENT IL ÉVITE DE SE VALIDER LUI-MÊME. Il ne lit AUCUN mot dans le
+//     source du module : il fabrique des lignes, rend, et compare des RENDUS. La comparaison qui
+//     décide est toujours adossée à un CONTRÔLE POSITIF — deux valeurs RÉELLES différentes doivent
+//     rendre deux choses différentes — sans quoi « une cellule illisible ne rend pas comme un zéro »
+//     serait vrai par vacuité sur une représentation qui ne lit pas ce rang. Les représentations et
+//     les fentes jugées viennent du SONDAGE, jamais d'une liste : une figure posée demain est vue.
+//
+//     LE TÉMOIN NÉGATIF EST LA MOITIÉ QUI COMPTE. Un remède qui traiterait TOUT comme illisible
+//     passerait le positif haut la main : un VRAI zéro doit donc continuer de déplacer l'origine, de
+//     remplir la jauge et de recevoir la phrase « toutes NULLES », et une donnée entièrement LUE ne
+//     doit pas s'entendre avouer une lecture manquante. C'est ce que (62a-négatif), (62b-négatif) et
+//     (62c-négatif) exigent, et c'est ce qu'un aveu inconditionnel ferait rougir.
+// ---------------------------------------------------------------------------------------------
+{
+  const viz62 = await import(pathToFileURL(path.join(WEB, "viz.js")).href);
+  const source62 = readFileSync(path.join(WEB, "viz.js"), "utf8");
+
+  // LES REPRÉSENTATIONS SONT LUES DANS LE DISPATCHER, comme en (45) : une liste écrite ici cesserait
+  // de couvrir une figure ajoutée demain, et c'est exactement ce que la famille poursuit.
+  const iDeb62 = source62.indexOf("function vizSansPorte(");
+  const iFin62 = source62.indexOf("function vizElement(");
+  exiger(iDeb62 >= 0 && iFin62 > iDeb62,
+    "(62-instrument) le dispatcher de représentations n'est plus lisible dans web/viz.js : les modes de ce témoin ne dériveraient de rien");
+  const MODES62 = [...new Set([...source62.slice(iDeb62, iFin62).matchAll(/mode === '([a-z]+)'/g)].map((m) => m[1]))].concat("table");
+  exiger(MODES62.length >= 9, `(62-instrument) ${MODES62.length} mode(s) lus, plancher 9 : ce témoin ne couvrirait presque rien`);
+
+  const ATTRS62 = ["points", "d", "x", "y", "cx", "cy", "r", "width", "height"];
+  const geo62 = (n, out = []) => {
+    if (n && n.attributes) {
+      const g = ATTRS62.map((a) => n.attributes[a]).filter((v) => v !== undefined);
+      if (g.length) out.push(n.tagName + "|" + g.join(","));
+      if (n.style && n.style.width) out.push(n.tagName + "|w=" + n.style.width);
+      if (n.style && n.style.background) out.push(n.tagName + "|b=" + n.style.background);
+    }
+    for (const c of (n && n.children) || []) geo62(c, out);
+    return out;
+  };
+  const T62 = (e) => e.textContent.replace(/\s+/g, " ").trim();
+  const cueillir62 = (el, pred, acc = []) => { if (el && pred(el)) acc.push(el); for (const c of (el && el.children) || []) cueillir62(c, pred, acc); return acc; };
+  const aveux62 = (e) => cueillir62(e, (n) => n.classList && n.classList.contains("rf-hint") && !n.classList.contains("bad"));
+  const refus62 = (e) => cueillir62(e, (n) => n.classList && n.classList.contains("rf-hint") && n.classList.contains("bad"));
+  // L'EMPREINTE QUI DÉCIDE : ce qu'un lecteur VOIT — la géométrie ET le texte servi. Comparer l'une
+  // sans l'autre laisserait passer une figure identique qui dirait autre chose, ou l'inverse.
+  const empreinte62 = (e) => geo62(e).join(";") + "␟" + T62(e);
+  const rendre62 = (m, cols, rows) => viz62.vizElement(m, cols, rows, "", "");
+
+  // LES QUATRE CLASSES DE CELLULE, FABRIQUÉES ICI : aucune ne vient du dépôt, si bien que ce témoin
+  // ne peut pas devenir vert le jour où le travail est fini ni rouge le jour où une donnée change.
+  const ILLISIBLES62 = [["absente", null], ["indéfinie", undefined], ["chaîne vide", ""], ["blancs", "   "]];
+
+  // ---- (62a) L'ORIGINE D'UN AXE NE BOUGE PAS POUR UNE LIGNE QUI N'A PAS ÉTÉ LUE ----
+  const XC62 = ["bucket", "n"];
+  const SERIE62 = (v) => [[1, 10], [v, 20], [3, 30]];
+  const RETIREE62 = [[1, 10], [3, 30]];                 // la MÊME série, la ligne illisible retirée
+  // Le marqueur de SURVOL est un cercle sans abscisse tant que personne n'a survolé : on ne lit que
+  // les points réellement POSÉS, sinon ce témoin compterait une marque que le lecteur ne voit pas.
+  const cxDe62 = (e) => cueillir62(e, (n) => n.tagName === "CIRCLE").map((n) => n.attributes.cx).filter((v) => v !== undefined);
+  const traceurs62 = MODES62.filter((m) => viz62.sondage(m).abscisseNumerique);
+  exiger(traceurs62.length > 0 && traceurs62.length < MODES62.length,
+    `(62a-instrument) la sonde d'abscisse ne partage plus les modes (${traceurs62.length} sur ${MODES62.length}) : un verdict constant ne mesurerait rien`);
+  let axesJuges62 = 0;
+  for (const m of traceurs62) {
+    const refCX = cxDe62(rendre62(m, XC62, RETIREE62));
+    exiger(refCX.length === 2, `(62a-instrument) « ${m} » ne pose pas deux points sur la série de référence (${JSON.stringify(refCX)}) : la comparaison d'origine ne mesurerait rien`);
+    exiger(JSON.stringify(cxDe62(rendre62(m, XC62, SERIE62(2)))) !== JSON.stringify(refCX),
+      `(62a-instrument) « ${m} » pose les mêmes abscisses avec ou sans une ligne du milieu RÉELLE : ce comparateur ne verrait pas une origine bouger`);
+    for (const [nom, v] of ILLISIBLES62) {
+      const e = rendre62(m, XC62, SERIE62(v));
+      if (refus62(e).length) continue;                  // la porte a tranché avant : (62b) le juge
+      axesJuges62++;
+      exiger(JSON.stringify(cxDe62(e)) === JSON.stringify(refCX),
+        `(62a) « ${m} » : une abscisse ${nom} DÉPLACE les points de la série (${JSON.stringify(cxDe62(e))} au lieu de ${JSON.stringify(refCX)}) — la figure dessine une origine que la donnée ne porte pas`);
+      exiger(aveux62(e).length === 1 && T62(e).includes(XC62[0]),
+        `(62a) « ${m} » : une abscisse ${nom} est retirée du dessin SANS que la colonne soit nommée : « ${T62(e).slice(0, 140)} »`);
+    }
+  }
+  exiger(axesJuges62 >= 3, `(62a-instrument) ${axesJuges62} axe(s) jugé(s) : le corpus s'est vidé et (62a) ne dirait rien`);
+
+  // ---- (62a-négatif) UN VRAI ZÉRO DÉPLACE BIEN L'ORIGINE, ET NE DIT RIEN ----
+  // Sans lui, un remède qui écarterait TOUTES les lignes passerait (62a) sans faute.
+  for (const m of traceurs62) {
+    const zero = rendre62(m, XC62, SERIE62(0));
+    exiger(JSON.stringify(cxDe62(zero)) !== JSON.stringify(cxDe62(rendre62(m, XC62, RETIREE62))),
+      `(62a-négatif) « ${m} » traite un VRAI zéro d'abscisse comme une ligne non lue : il ne place plus les points là où la donnée le demande`);
+    exiger(aveux62(zero).length === 0 && refus62(zero).length === 0,
+      `(62a-négatif) « ${m} » avoue ou refuse sur un VRAI zéro d'abscisse : « ${T62(zero)} »`);
+  }
+
+  // ---- (62b) UNE CHAÎNE DE BLANCS N'EST PAS UNE VALEUR NULLE, ET LA PHRASE LE DIT ----
+  const KV62 = ["k", "v"];
+  const coercantes62 = MODES62.filter((m) => viz62.sondage(m).ordonneeNumerique);
+  exiger(coercantes62.length > 0 && coercantes62.length < MODES62.length,
+    `(62b-instrument) le sondage ne partage plus les modes sur l'ordonnée (${coercantes62.length} sur ${MODES62.length}) : un verdict constant ne mesurerait rien`);
+  for (const m of coercantes62) {
+    const t = T62(rendre62(m, KV62, [["a", 5], ["b", "   "], ["c", 7]]));
+    exiger(/Graphe refusé|Chart refused/.test(t),
+      `(62b) « ${m} » trace encore une ordonnée dont une valeur sur trois est une chaîne de BLANCS : « ${t.slice(0, 140)} »`);
+    exiger(!/toutes NULLES|all ZERO|nulle ou négative|zero or negative/.test(t),
+      `(62b) « ${m} » appelle NULLE une chaîne de BLANCS, qui n'a pas été lue : « ${t.slice(0, 200)} »`);
+  }
+
+  // ---- (62b-négatif) LA PHRASE DES VRAIS ZÉROS EXISTE TOUJOURS, ET ELLE LEUR EST RÉSERVÉE ----
+  const ZEROS62 = [["a", 0], ["b", 0]];
+  const disentNulles62 = MODES62.filter((m) => /toutes NULLES|all ZERO/.test(T62(rendre62(m, KV62, ZEROS62))));
+  exiger(disentNulles62.length > 0,
+    "(62b-négatif) plus AUCUNE représentation ne dit « toutes NULLES » sur une colonne de VRAIS zéros : le remède a emporté la phrase juste avec la fausse, et (62b) ne prouverait rien");
+
+  // ---- (62c) L'ORACLE : UNE CELLULE NON LUE NE SE REND PAS COMME UN VRAI ZÉRO ----
+  // Posé sur les DEUX fentes, mode par mode, avec son contrôle positif à chaque couple.
+  let juges62 = 0; const muets62 = [];
+  for (const [fente, coerce, cols, mk] of [
+    ["ordonnée", (s) => s.ordonneeNumerique, KV62, (v) => [["a", 5], ["b", v], ["c", 7]]],
+    // LA PREMIÈRE LIGNE EST UN CORPUS À PART, ET L'OUBLIER LAISSAIT UN SITE ENTIER HORS DU REGARD.
+    // MESURÉ LE 2026-09-01 par mutation : certaines représentations ne lisent QUE la première ligne
+    // servie (la jauge, sa sœur qui ne trace pas), si bien qu'une cellule illisible posée au MILIEU ne
+    // les atteint jamais — et une conversion aveugle rétablie chez elles restait VERTE. Ce n'est pas
+    // un type de graphe qui est nommé ici : c'est une POSITION de ligne que le corpus doit couvrir.
+    ["ordonnée en PREMIÈRE ligne", (s) => s.ordonneeNumerique, KV62, (v) => [["a", v], ["b", 5], ["c", 7]]],
+    ["abscisse", (s) => s.abscisseNumerique, XC62, SERIE62],
+  ]) {
+    for (const m of MODES62) {
+      if (!coerce(viz62.sondage(m))) continue;
+      const z = rendre62(m, cols, mk(0)), n = rendre62(m, cols, mk(9));
+      if (empreinte62(z) === empreinte62(n)) { muets62.push(m + "/" + fente); continue; }
+      for (const [nom, v] of ILLISIBLES62) {
+        const e = rendre62(m, cols, mk(v));
+        juges62++;
+        exiger(T62(e) !== T62(z),
+          `(62c) « ${m} » sert EXACTEMENT le même texte pour une cellule ${nom} d'${fente} que pour un VRAI zéro : « ${T62(e).slice(0, 140)} »`);
+        exiger(refus62(e).length > 0 || aveux62(e).length > 0,
+          `(62c) « ${m} » ne refuse ni n'avoue sur une cellule ${nom} d'${fente} : « ${T62(e).slice(0, 140)} »`);
+      }
+    }
+  }
+  exiger(juges62 >= 40, `(62c-instrument) ${juges62} couple(s) jugé(s), muets : ${JSON.stringify(muets62)} — le corpus s'est vidé`);
+
+  // ---- (62c-négatif) CE QUI EST ENTIÈREMENT LU NE S'ENTEND RIEN AVOUER ----
+  // LE TÉMOIN QUI FAIT ROUGIR UN AVEU INCONDITIONNEL. Des vrais zéros, des négatifs, des libellés
+  // nuls (ce qui n'est PAS une valeur non lue : la colonne 0 d'une figure est une catégorie).
+  const LUS62 = [
+    [KV62, [["a", 5], ["b", 0], ["c", -2]]],
+    [KV62, [["a", 0], ["b", 0]]],
+    [XC62, [[1, 5], [2, 0], [3, 7]]],
+    [XC62, [[0, 5], [2, 0], [3, 7]]],
+    [["r", "c", "v"], [["a", "p", 5], ["b", "q", 0], ["c", "r", 7]]],
+  ];
+  for (const m of MODES62) for (const [cols, rows] of LUS62) {
+    const e = rendre62(m, cols, rows);
+    exiger(!/n’y a été lu|was read there|n’a pas été lue|it was not read/.test(T62(e)),
+      `(62c-négatif) « ${m} » avoue une lecture manquante sur une donnée ENTIÈREMENT lue : « ${T62(e).slice(0, 160)} »`);
+  }
+
+  // ---- (62d) LES DEUX CAUSES SONT COMPTÉES À PART, ET NON FONDUES EN UNE ----
+  // Sur le chemin NU, seul endroit où les deux classes coexistent : la porte refuse les blancs avant.
+  const MELANGE62 = [["a", 5], ["b", null], ["c", "  "], ["d", 7]];
+  const nu62 = viz62.vizSansPorte("bar", KV62, MELANGE62, "", "");
+  const avis62 = aveux62(nu62);
+  exiger(avis62.length === 1, `(62d-instrument) le chemin nu ne rend pas UN aveu unique (${avis62.length}) : ce qui suit ne mesurerait rien`);
+  const bouts62 = T62(avis62[0]).split(" ; ");
+  exiger(bouts62.length === 2 && new Set(bouts62).size === 2,
+    `(62d) les deux causes « rien n'a été lu » sont fondues en une seule phrase : ${JSON.stringify(bouts62)}`);
+  exiger(bouts62.every((b) => b.includes(KV62[1]) && b.includes(String(MELANGE62.length))),
+    `(62d) une des deux causes ne nomme pas la colonne ou ne compte pas sur les lignes SERVIES : ${JSON.stringify(bouts62)}`);
+  exiger(geo62(nu62).length > 0 && refus62(nu62).length === 0,
+    `(62d) l'aveu a PRIS LA PLACE du graphe au lieu de l'accompagner — un refus remplace, un aveu accompagne : ${geo62(nu62).length} marque(s), ${refus62(nu62).length} refus`);
+
+  // ---- (62e) LE REFUS EXISTE DANS LES DEUX LANGUES, ET NOMME LA COLONNE DANS LES DEUX ----
+  const deux62 = viz62.refusDeRepresentation(coercantes62[0], KV62, [["a", 5], ["b", "   "], ["c", 7]]);
+  exiger(deux62 && deux62.fr && deux62.en && deux62.fr !== deux62.en && deux62.fr.includes(KV62[1]) && deux62.en.includes(KV62[1]),
+    `(62e) le refus d'une chaîne de BLANCS ne porte pas deux textes distincts nommant la colonne : ${JSON.stringify(deux62)}`);
+
+  // ---- (62f) UN SEUL ÉCRIVAIN DE L'AVEU, MESURÉ SUR CE QUE LES FIGURES RENDENT ----
+  const prefixes62 = new Set(); const avouantes62 = [];
+  for (const m of MODES62) {
+    const e = viz62.vizSansPorte(m, KV62, [["a", 5], ["b", null], ["c", 7]], "", "");
+    for (const a of aveux62(e)) { prefixes62.add(T62(a).slice(0, 12)); avouantes62.push(m); }
+  }
+  exiger(avouantes62.length >= 4 && prefixes62.size === 1,
+    `(62f) les figures qui avouent une lecture manquante (${JSON.stringify(avouantes62)}) n'écrivent pas par le MÊME nœud : ${JSON.stringify([...prefixes62])}`);
+
+  console.log(`[valeur-illisible-jamais-un-zero] UNE VALEUR ILLISIBLE N'EST PLUS RENDUE COMME UN ZÉRO, ET LA PHRASE SERVIE DIT CE QUI A ÉTÉ LU. Le module partageait UNE définition — « cette ligne porte une valeur » — et convertissait sans jamais demander si ce qui était porté SE LISAIT : \`Number(' ')\` et \`Number(null)\` valant 0 et étant FINIS, une chaîne de BLANCS passait pour un zéro MESURÉ et une absence, sautée par le profil de colonne, franchissait les deux portes avant d'être dessinée à zéro. La conséquence la plus grave n'était pas une phrase mais une FIGURE : sur les ${traceurs62.length} représentation(s) que le sondage dit placer leurs lignes par l'ABSCISSE (${traceurs62.join(", ")}), une seule ligne sans abscisse ramenait l'étendue à ZÉRO — la série qui commence à UN se dessinait depuis l'origine, sous des repères imprimant « 1 » et « 3 ». ${axesJuges62} axe(s) sont jugés ici sur les ${ILLISIBLES62.length} classes de cellule illisible : les points restent EXACTEMENT là où la même série les pose une fois la ligne retirée, et la colonne est NOMMÉE. ${juges62} couple(s) (représentation, fente, classe) sont passés à l'oracle — une cellule non lue ne sert pas le même texte qu'un VRAI zéro, et la figure refuse ou avoue — chacun adossé à son contrôle positif (deux valeurs réelles doivent rendre deux choses différentes), ${muets62.length} couple(s) écartés pour instrument muet${muets62.length ? " (" + muets62.join(", ") + ")" : ""}. Les ${coercantes62.length} représentation(s) qui ramènent leur ordonnée à un nombre REFUSENT désormais une chaîne de blancs et ne l'appellent plus « nulle », pendant que ${disentNulles62.length} d'entre elles gardent cette phrase pour de VRAIS zéros. Les deux causes « rien n'a été lu » — rien de porté, quelque chose de porté qu'on ne sait pas lire — sont comptées À PART, nommées avec leur colonne sur le compte des lignes SERVIES, et écrites par un SEUL nœud partagé par les ${new Set(avouantes62).size} figures qui avouent. LE NÉGATIF, QUI EST LA MOITIÉ QUI COMPTE : un VRAI zéro déplace toujours l'origine, ne fait avouer personne, et ${MODES62.length * LUS62.length} rendus sur une donnée ENTIÈREMENT lue — vrais zéros et valeurs négatives compris — ne prononcent pas un mot ; un aveu inconditionnel les ferait tous rougir. CE QUE CE TÉMOIN NE TIENT PAS : l'encre réellement peinte et la mise en page (section 0) ; la GÉOMÉTRIE d'une ligne non lue prise séparément — l'oracle ci-dessus se contente que le TEXTE servi diffère de celui d'un vrai zéro, si bien qu'une figure qui redessinerait la ligne À ZÉRO tout en l'avouant lui échapperait ; c'est (45a-négatif) qui tient ce cas-là, mesuré par mutation sur les deux figures concernées, et la coupure entre les deux témoins est donc à connaître ; une cellule de grille de chaleur qui ne porte RIEN et une qui porte un VRAI zéro se peignent pareil — l'aveu compte la LIGNE, il ne désigne pas la CELLULE, et rien ici ne le rattrape ; l'aveu rendu en ANGLAIS — seul le refus est vérifié dans les deux langues, par un objet qui porte les deux textes, là où l'aveu passe par \`LANG\` au rendu ; le fait qu'une jauge dont la première ligne n'est pas lue rende « - » plutôt qu'un mot, ce qui est ce que sa sœur qui ne trace pas fait déjà mais reste un TIRET et non une phrase ; les valeurs qui ne sont ni chaîne ni nombre (un booléen servi par un connecteur reste lu par \`Number\`, où \`true\` vaut 1 — aucune route de ce dépôt n'en sert) ; et les panneaux SEMÉS par le démon, dont les requêtes vivent hors de web/.`);
 }
 
 // LE VERDICT PORTE SA PROPRE LIMITE (`P11.13-g`). Un vert qui ne dit pas ce sur quoi il ne s'engage pas

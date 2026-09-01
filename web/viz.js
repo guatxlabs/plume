@@ -685,6 +685,27 @@ const SONDE_XT2 = [['sd', 4, 3], ['te', 5, 9], ['uf', 6, 1]];
 const SONDE_LARGE_COLS = ['sonde_a', 'sonde_b', 'sonde_c', 'sonde_d', 'sonde_e'];
 const SONDE_LARGE = [[10, 4, 3, 7, 2], [20, 5, 9, 8, 6]];
 const RANGS_HORS_FENTES = [2, 3];   // sur CINQ colonnes : ni la première, ni la deuxième, ni la dernière
+// `P11.20-x` — LA QUESTION QUE LA CLÉ POSAIT AU SONDAGE : « CETTE FIGURE ATTEND-ELLE UN AGRÉGAT DÉJÀ EN
+// SEAUX, OU DÉCOUPE-T-ELLE ELLE-MÊME ? » Le sondage rendait cinq faits, aucun ne disait celui-là ; le
+// geste manquait, et le module tranchait la question DANS la figure. IL LA REND MAINTENANT, et par la
+// forme des autres : on rend sur un jeu FABRIQUÉ, on mute, on compare.
+// LA PROPRIÉTÉ QUI SÉPARE LES DEUX SÉMANTIQUES : un découpage range les lignes PAR VALEUR, si bien que
+// l'ORDRE dans lequel elles sont servies ne l'atteint pas. Une figure qui lit la valeur d'une LIGNE, elle,
+// dessine dans l'ordre servi. On permute donc les lignes : géométrie INCHANGÉE = découpage.
+// TÉMOIN POSITIF D'ABORD, sans quoi l'invariance ne dirait rien : une VALEUR changée doit bouger la
+// géométrie. Il n'est pas décoratif — mesuré le 2026-09-01, `table`, `stat` et `gauge` sont invariantes à
+// la permutation pour la raison inverse (elles ne lisent pas ce rang), et c'est LUI qui les écarte.
+// LA QUESTION SE POSE PAR NOMBRE DE COLONNES SERVIES, parce que la réponse en dépend : mesuré, la même
+// représentation découpe sur UNE colonne et lit un agrégat dès qu'un libellé l'accompagne. Aucun type de
+// graphe n'est nommé : une représentation posée demain qui découperait est vue par la même mesure.
+const SONDE_SEAU_V = [1, 2, 3, 40];
+const SONDE_SEAU_PERMUTE = [40, 3, 2, 1];   // les MÊMES valeurs, dans un autre ordre
+const SONDE_SEAU_MUTE = [1, 20, 3, 40];     // une valeur CHANGÉE : le témoin positif
+// La valeur en DERNIER rang (la règle positionnelle), un libellé distinct par ligne en tête : sans lui,
+// les lignes se rabattraient sur une même clé chez qui en fabrique une, et la permutation ne dirait rien.
+const ligneDeSondeSeau = (v, n) => Array.from({ length: n }, (_, k) => (k === n - 1 ? v : (k === 0 ? 'sonde_' + v : 'sonde_m' + k)));
+const jeuDeSondeSeau = (vals, n) => vals.map(v => ligneDeSondeSeau(v, n));
+const colsDeSondeSeau = n => Array.from({ length: n }, (_, k) => 'sonde_c' + k);
 // La GÉOMÉTRIE d'un rendu = ce qui place ou dimensionne une marque. Le TEXTE en est exclu : c'est lui
 // qui rend un graphe faux crédible (une barre à 0 % qui affiche « rouge » juste à côté). Les marques
 // CONSTANTES d'un rendu (le tracé d'une icône) ne gênent pas : le sondage ne lit jamais une géométrie
@@ -736,6 +757,22 @@ function sondage(mode) {
   const s = { trace, ordonneeNumerique, placeParAbscisse, abscisseNumerique, fentes, litAuDelaDesFentes };
   _sondages.set(mode, s);
   return s;
+}
+
+// `P11.20-x` — MÉMOÏSÉ SUR LE COUPLE (représentation, nombre de colonnes) : c'est le couple qui décide,
+// pas la représentation seule. Trois rendus par couple, une seule fois, comme les autres sondages.
+const _seaux = new Map();
+function decoupeEnSeaux(mode, nCols) {
+  if (!(nCols > 0)) return false;
+  const cle = mode + '|' + nCols;
+  if (_seaux.has(cle)) return _seaux.get(cle);
+  const cols = colsDeSondeSeau(nCols);
+  const geo = vals => marquesDe(rendreEnSonde(mode, jeuDeSondeSeau(vals, nCols), cols)).join(';');
+  const base = geo(SONDE_SEAU_V);
+  const litCeRang = base !== geo(SONDE_SEAU_MUTE);          // TÉMOIN POSITIF : la géométrie suit la valeur
+  const r = litCeRang && base === geo(SONDE_SEAU_PERMUTE);  // ... et l'ORDRE des lignes ne l'atteint pas
+  _seaux.set(cle, r);
+  return r;
 }
 
 // -- LE MAGASIN DU RÉGLAGE ---------------------------------------------------------------------
@@ -804,7 +841,7 @@ function premiereNonNumerique(rows, i) {
 }
 
 // -- UN CHOIX IMPOSSIBLE PRODUIT UN REFUS QUI DIT POURQUOI --------------------------------------
-// Trois causes, toutes DÉRIVÉES — de ce que la requête rend, et de ce que la représentation a répondu
+// Quatre causes, toutes DÉRIVÉES — de ce que la requête rend, et de ce que la représentation a répondu
 // au sondage. Aucune ne cite un type de graphe. Le refus prend la place du GRAPHE, jamais celle des
 // données : il n'est décidé dans aucun test qui jugerait aussi un vide, et il nomme la colonne, le
 // compte et la valeur qui le motivent.
@@ -938,6 +975,32 @@ function refusDeRepresentation(mode, cols, rows) {
     return {
       fr: fente.role.fr + ' « ' + p.nom + ' » n’est pas un nombre — ' + (p.nonVides - p.nombres) + ' valeur(s) sur ' + p.nonVides + ' n’en sont pas, par exemple « ' + premiereNonNumerique(rows, i) + ' ». ' + fente.faux.fr + ', et le graphe serait FAUX. Règle les axes, porte un agrégat à cette place, ou choisis une représentation qui ne l’exprime pas en nombre.',
       en: fente.role.en + ' “' + p.nom + '” is not a number — ' + (p.nonVides - p.nombres) + ' of ' + p.nonVides + ' values are not, for example “' + premiereNonNumerique(rows, i) + '”. ' + fente.faux.en + ', and the chart would be FALSE. Set the axes, put an aggregate in that slot, or pick a representation that does not express it as a number.',
+    };
+  }
+  // `P11.20-x` — LA QUATRIÈME CAUSE : UN DÉCOUPAGE EN SEAUX EXIGE UNE ÉTENDUE, ET LA COLONNE DOIT LA
+  // PORTER. Elle ne vient pas d'une fente ramenée à un nombre — la colonne EST numérique et les deux
+  // portes d'avant la laissent passer — mais de ce que la figure FAIT de cette colonne : elle la découpe
+  // elle-même, et sans deux valeurs distinctes il n'y a rien à découper. Le module écrivait alors
+  // `(mx - mn) / nb || 1` : la largeur de seau est INVENTÉE, et les bornes affichées ne viennent plus de
+  // la donnée. MESURÉ LE 2026-09-01, sans cette porte : `[[42],[42],[42]]` rendait « 42.0 … 44.0 … 3 » —
+  // `44` n'a JAMAIS été servi ; et `[[42]]` rendait UNE barre étiquetée « 42.0 » sous un axe affichant
+  // **1**, mot pour mot la figure que la clé décrit. C'est le seul chemin par lequel cette figure restait
+  // atteignable, l'ARITÉ ayant cessé d'être lue le 2026-08-27 (voir `histogramEl`).
+  // LE VERDICT VIENT DU SONDAGE, PAS D'UN TYPE : `decoupeEnSeaux` répond sur le couple (représentation,
+  // nombre de colonnes servies), et le RANG découpé est celui de l'ordonnée, lu dans la table du réglage
+  // comme partout ailleurs. Aucun nom de graphe n'est écrit ici.
+  // UNE ABSENCE N'EST PAS UNE VALEUR, ICI NON PLUS : les lignes qui ne portent rien sont comptées À PART
+  // au lieu d'être fondues dans « une seule valeur distincte » — la même discipline que la porte de rendu.
+  if (decoupeEnSeaux(mode, cols.length)) {
+    const i = rangDeFente('y', cols.length);
+    const p = profilDeColonne(cols[i], i, rows);
+    const vides = rows.length - p.nonVides;
+    const sans = vides > 0
+      ? { fr: ' ' + vides + ' des ' + rows.length + ' ligne(s) servies n’y portent AUCUNE valeur : elles n’entrent pas dans ce compte, une absence n’étant pas une valeur.', en: ' ' + vides + ' of the ' + rows.length + ' served row(s) carry NO value there: they enter none of that count — an absence is not a value.' }
+      : { fr: '', en: '' };
+    if (p.nonVides > 0 && p.cardinalite < 2) return {
+      fr: 'la colonne « ' + p.nom + ' » ne porte qu’UNE seule valeur distincte sur les ' + p.nonVides + ' ligne(s) qui y portent quelque chose.' + sans.fr + ' Cette représentation y découpe elle-même ses seaux, et un découpage SANS ÉTENDUE en invente les bornes : celles qui s’afficheraient ne viendraient pas de la donnée. Porte un agrégat DÉJÀ en seaux à cette place, ou choisis une représentation qui dessine des valeurs plutôt qu’une distribution.',
+      en: 'column “' + p.nom + '” carries only ONE distinct value across the ' + p.nonVides + ' row(s) that carry anything there.' + sans.en + ' This representation cuts its own buckets there, and cutting WITHOUT A RANGE invents their edges: the ones displayed would not come from the data. Put an ALREADY-bucketed aggregate in that slot, or pick a representation that draws values rather than a distribution.',
     };
   }
   return null;

@@ -6550,9 +6550,109 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   const deuxLignes49 = viz49.vizElement(binneur49, ["host", "n"], [["web-01", 42], ["web-02", 7]], "", "").textContent;
   exiger(deuxLignes49.includes("web-01") && deuxLignes49.includes("42"),
     `(49k) le même agrégat à DEUX lignes ne rend plus ses libellés servis : « ${deuxLignes49} »`);
-  const seuleColonne49 = viz49.vizElement(binneur49, ["n"], [[42]], "", "").textContent;
-  exiger(!seuleColonne49.includes("web-01") && /42/.test(seuleColonne49),
-    `(49k-inverse) un résultat à UNE colonne n'est plus binné : « ${seuleColonne49} »`);
+  // `P11.20-x` — LA DONNÉE DE CET INVERSE A CHANGÉ, ET C'EST UNE MESURE : `[[42]]` ne porte qu'UNE valeur
+  // distincte, et une figure qui découpe ses propres seaux la REFUSE désormais (voir (49m)). Le côté
+  // « découpe » du partage se juge donc sur une colonne qui porte une ÉTENDUE — et sa signature n'est plus
+  // un libellé absent mais le fait qu'une marque ne corresponde PAS à une ligne servie : un agrégat rend
+  // une barre PAR LIGNE, un découpage en rend autant que de seaux.
+  const ETALE49k = [[1], [2], [3], [40]];
+  const barresSeuleColonne49 = barresDe49(binneur49, ["n"], ETALE49k);
+  exiger(barresSeuleColonne49.length > 0 && barresSeuleColonne49.length !== ETALE49k.length,
+    `(49k-inverse) un résultat à UNE colonne rend ${barresSeuleColonne49.length} marque(s) pour ${ETALE49k.length} ligne(s) servies : il n'est plus DÉCOUPÉ mais lu comme un agrégat, et le partage jugé ici n'a plus deux côtés`);
+  const barresAgregat49 = barresDe49(binneur49, ["host", "n"], [["web-01", 42], ["web-02", 7]]);
+  exiger(barresAgregat49.length === 2,
+    `(49k-inverse) l'autre côté a bougé aussi : un agrégat de 2 ligne(s) rend ${barresAgregat49.length} marque(s) au lieu d'une par ligne — les deux sémantiques ne se distinguent plus`);
+
+  // ---- (m) UN DÉCOUPAGE EN SEAUX EXIGE UNE ÉTENDUE, ET LE SONDAGE DIT QUI DÉCOUPE (`P11.20-x`) ----
+  // LE DÉFAUT VISÉ N'EST NI UN REFUS NI UN SILENCE : c'est un NOMBRE FAUX rendu comme s'il était juste.
+  // (49k) tient que le PARTAGE des deux sémantiques a cessé de lire l'ARITÉ. La figure que la clé décrit —
+  // une barre unique dont l'étiquette porte la valeur servie et dont l'axe affiche UN — restait pourtant
+  // atteignable par l'AUTRE branche : un résultat que la figure découpe ELLE-MÊME. Mesuré le 2026-09-01
+  // sans la porte : `[[42]]` rendait « 42.0 … 1 » et `[[42],[42],[42]]` rendait une borne « 44.0 » que
+  // RIEN n'avait servie — la largeur de seau étant fabriquée quand l'étendue est nulle.
+  // QUI DÉCOUPE N'EST PAS ÉNUMÉRÉ ICI : il est MESURÉ, par la propriété qui sépare les deux sémantiques —
+  // un découpage range les lignes PAR VALEUR, donc l'ORDRE dans lequel elles sont servies ne l'atteint
+  // pas. Le témoin positif (une VALEUR changée doit bouger la géométrie) est ce qui empêche de confondre
+  // « elle découpe » avec « elle ne lit pas ce rang », et il est vérifié PORTANT.
+  const mAttrs49 = src49.match(/const ATTRS_GEOMETRIE = \[([^\]]*)\]/);
+  exiger(!!mAttrs49, "(49m-instrument) la liste des attributs de géométrie n'est plus lisible dans web/viz.js : ce témoin ne saurait plus ce qu'est une marque, et il REFUSE DE CONCLURE au lieu de rester vert sur un prédicat vide");
+  const ATTRS49 = mAttrs49 ? [...mAttrs49[1].matchAll(/'([a-z]+)'/g)].map((x) => x[1]) : [];
+  exiger(ATTRS49.length >= 5, `(49m-instrument) ${ATTRS49.length} attribut(s) de géométrie lus dans le module, plancher 5 : la mesure de « cette figure a dessiné » ne porterait presque sur rien, et ce témoin REFUSE DE CONCLURE`);
+  const geo49 = (el) => cueillir49(el, () => true, [])
+    .map((e) => e.tagName + "|" + ATTRS49.map((a) => e.attributes[a]).filter((v) => v !== undefined).join(",") + "|" + ((e.style && e.style.width) || ""))
+    .filter((x) => !/\|\|$/.test(x)).join(";");
+  const refuse49 = (el) => cueillir49(el, (e) => e.classList && e.classList.contains("bad"), []).length > 0;
+  // Le jeu FABRIQUÉ de ce témoin est écrit ICI, jamais lu dans l'arbre : la valeur en dernier rang, un
+  // libellé distinct en tête, et autant de colonnes que le couple sondé en demande.
+  const NCOLS49 = [1, 2, 3];
+  const ligne49 = (v, n) => Array.from({ length: n }, (_, k) => (k === n - 1 ? v : (k === 0 ? "t" + v : "m" + k)));
+  const jeu49 = (vals, n) => vals.map((v) => ligne49(v, n));
+  const colonnes49 = (n) => Array.from({ length: n }, (_, k) => (k === n - 1 ? "octets" : "d" + k));
+  const nu49 = (m, n, vals) => viz49.vizSansPorte(m, colonnes49(n), jeu49(vals, n), "", "");
+  const ETALE49 = [1, 2, 3, 40], PERMUTE49 = [40, 3, 2, 1], MUTE49 = [1, 20, 3, 40];
+  const couples49 = MODES49.flatMap((m) => NCOLS49.map((n) => ({ m, n })));
+  const invariants49 = couples49.filter((c) => geo49(nu49(c.m, c.n, ETALE49)) === geo49(nu49(c.m, c.n, PERMUTE49)));
+  const decoupeurs49 = invariants49.filter((c) => geo49(nu49(c.m, c.n, ETALE49)) !== geo49(nu49(c.m, c.n, MUTE49)));
+  exiger(decoupeurs49.length > 0,
+    `(49m-instrument) aucun des ${couples49.length} couple(s) (représentation, nombre de colonnes) ne découpe ses seaux : la propriété jugée ici n'existerait plus, et ce témoin REFUSE DE CONCLURE au lieu de rester vert`);
+  exiger(invariants49.length > decoupeurs49.length,
+    `(49m-instrument) le TÉMOIN POSITIF n'écarte aucun couple (${invariants49.length} invariants, ${decoupeurs49.length} découpeurs) : l'invariance à la permutation serait seule à décider, et une représentation qui ne LIT PAS ce rang serait comptée comme découpeuse. Ce témoin REFUSE DE CONCLURE`);
+  // DEUX DÉRIVATIONS INDÉPENDANTES DU MÊME FAIT, et elles doivent nommer la même représentation : celle
+  // de (49k) lit le RENDU (des barres dont certaines sont à zéro), celle-ci lit l'INVARIANCE À L'ORDRE.
+  exiger(decoupeurs49.every((c) => c.m === binneur49) && decoupeurs49.some((c) => c.n === 1),
+    `(49m-instrument) les deux dérivations divergent : (49k) nomme « ${binneur49} », l'invariance à l'ordre nomme ${JSON.stringify(decoupeurs49)}. L'une des deux mesure autre chose que ce qu'elle dit, et ce témoin REFUSE DE CONCLURE`);
+  // LE DÉFAUT. Sur une colonne SANS ÉTENDUE, un couple qui découpe ne doit plus DESSINER : il refuse, et
+  // le refus NOMME la colonne. Le prédicat n'emprunte aucun mot au module — il lit des marques et une classe.
+  for (const c of decoupeurs49) {
+    for (const vals of [[42], [42, 42, 42]]) {
+      const el = nu49(c.m, c.n, vals) && viz49.vizElement(c.m, colonnes49(c.n), jeu49(vals, c.n), "", "");
+      // DEUX FAITS, DEUX PHRASES : « elle dessine encore » et « son refus ne nomme pas la colonne » ne
+      // disent pas la même chose, et une phrase doit être vraie mot à mot de ce qu'elle a vu.
+      exiger(!geo49(el) && refuse49(el),
+        `(49m) « ${c.m} » sur ${c.n} colonne(s) et ${vals.length} ligne(s) ne portant qu'UNE valeur distincte DESSINE encore au lieu de refuser : « ${el.textContent.slice(0, 160)} » — les bornes de ses seaux sont fabriquées, l'étendue servie étant nulle`);
+      exiger(!(!geo49(el) && refuse49(el)) || el.textContent.includes("octets"),
+        `(49m) « ${c.m} » sur ${c.n} colonne(s) et ${vals.length} ligne(s) REFUSE bien, mais son refus ne NOMME pas la colonne « octets » : « ${el.textContent.slice(0, 160)} » — l'exploitant ne sait pas laquelle porter autrement`);
+    }
+    // LA SIGNATURE EXACTE DU NOMBRE FAUX : deux données SERVIES DIFFÉRENTES rendues par la MÊME figure.
+    const a49 = viz49.vizElement(c.m, colonnes49(c.n), jeu49([42], c.n), "", "");
+    const b49 = viz49.vizElement(c.m, colonnes49(c.n), jeu49([7], c.n), "", "");
+    exiger(!(geo49(a49) && geo49(a49) === geo49(b49)),
+      `(49m) « ${c.m} » sur ${c.n} colonne(s) rend la MÊME figure pour « 42 » et pour « 7 » tout en dessinant : ce qu'elle affiche n'est décidé par aucune des deux données servies`);
+  }
+  // NON-RÉGRESSION — LE REFUS N'EST PAS INCONDITIONNEL. Sur une colonne qui porte une ÉTENDUE, le même
+  // couple DESSINE toujours, et sa géométrie suit les valeurs. Sans ce témoin, refuser TOUJOURS passerait.
+  for (const c of decoupeurs49) {
+    const large49m = viz49.vizElement(c.m, colonnes49(c.n), jeu49(ETALE49, c.n), "", "");
+    exiger(!!geo49(large49m) && !refuse49(large49m),
+      `(49m-négatif) « ${c.m} » sur ${c.n} colonne(s) REFUSE une colonne qui porte ${new Set(ETALE49).size} valeurs distinctes : le refus est devenu inconditionnel et retire une figure JUSTE — « ${large49m.textContent.slice(0, 160)} »`);
+    exiger(geo49(large49m) !== geo49(viz49.vizElement(c.m, colonnes49(c.n), jeu49(MUTE49, c.n), "", "")),
+      `(49m-négatif) « ${c.m} » sur ${c.n} colonne(s) rend la même géométrie sur deux jeux étalés DIFFÉRENTS : ce qu'il dessine ne suit plus les valeurs servies`);
+    // LE SEUIL EST ÉPINGLÉ À SA BORNE, ET C'EST UNE MUTATION QUI L'A EXIGÉ : jouée le 2026-09-01, une
+    // porte réglée à « moins de TROIS valeurs distinctes » passait ce témoin sans rougir, parce qu'il ne
+    // jugeait que UNE (refusée) et QUATRE (dessinée). DEUX valeurs FONT une étendue : elles se dessinent.
+    const DEUX49 = [1, 9];
+    const deux49m = viz49.vizElement(c.m, colonnes49(c.n), jeu49(DEUX49, c.n), "", "");
+    exiger(!!geo49(deux49m) && !refuse49(deux49m),
+      `(49m-négatif) « ${c.m} » sur ${c.n} colonne(s) REFUSE une colonne qui porte EXACTEMENT ${new Set(DEUX49).size} valeurs distinctes : deux valeurs font une étendue, et la porte mord une case trop loin — « ${deux49m.textContent.slice(0, 160)} »`);
+  }
+  // NON-RÉGRESSION — RIEN D'AUTRE N'A BOUGÉ. Sur la MÊME donnée sans étendue, seuls les couples qui
+  // découpent refusent ; les autres rendent ce qu'ils rendaient. Le compte est DÉRIVÉ, jamais écrit.
+  // LA MESURE EST UNE DIFFÉRENCE, PAS UN ABSOLU, et c'est ce qui la rend juste : des refus PRÉEXISTANTS
+  // vivent déjà sur ce jeu fabriqué (une abscisse textuelle en est un). Ce qui se juge est donc ce que
+  // la nouvelle porte AJOUTE : les couples qui refusent une colonne SANS étendue et ne refusent pas la
+  // MÊME donnée étalée. Cet ensemble doit être EXACTEMENT celui des découpeurs — ni plus, ni moins.
+  const refusantsSur49 = (vals) => couples49.filter((c) => refuse49(viz49.vizElement(c.m, colonnes49(c.n), jeu49(vals, c.n), "", ""))).map((c) => c.m + "|" + c.n);
+  const refusEtale49 = new Set(refusantsSur49(ETALE49));
+  const ajoutes49 = refusantsSur49([42]).filter((k) => !refusEtale49.has(k)).sort();
+  const attendus49 = decoupeurs49.map((c) => c.m + "|" + c.n).sort();
+  exiger(ajoutes49.join(",") === attendus49.join(","),
+    `(49m-négatif) la porte ne mord pas là où elle le dit : elle AJOUTE ${JSON.stringify(ajoutes49)} par rapport à la même donnée étalée, là où le sondage nomme ${JSON.stringify(attendus49)} — elle déborde de ce qu'elle mesure, ou elle en manque`);
+  // L'AGRÉGAT DÉJÀ EN SEAUX, À UNE SEULE LIGNE, EST RENDU — PAS REFUSÉ. C'est l'autre moitié de la clé :
+  // fermer le chemin du découpage sans étendue ne doit pas fermer celui de l'agrégat servi.
+  const seau49 = viz49.vizElement(binneur49, ["seau", "n"], [["0-10", 42]], "", "");
+  exiger(!refuse49(seau49) && seau49.textContent.includes("0-10") && seau49.textContent.includes("42"),
+    `(49m-négatif) un agrégat DÉJÀ en seaux servi sur UNE ligne est refusé ou amputé : « ${seau49.textContent.slice(0, 160)} » — la donnée servie dit « 0-10 » et « 42 »`);
+  console.log(`[graphe-seaux] UNE FIGURE QUI DÉCOUPE SES PROPRES SEAUX EXIGE UNE ÉTENDUE, ET LE SONDAGE DIT QUI DÉCOUPE : sur les ${couples49.length} couple(s) (représentation, nombre de colonnes servies) balayés, ${invariants49.length} sont invariants à la PERMUTATION des lignes et ${decoupeurs49.length} le sont POUR LA BONNE RAISON — le témoin positif écarte les ${invariants49.length - decoupeurs49.length} autres, qui ne lisent tout simplement pas ce rang. Aucun type de graphe n'est nommé : le verdict vient du SONDAGE, et il est recoupé par la dérivation INDÉPENDANTE de (49k), qui lit le rendu. Sur une colonne qui ne porte qu'UNE valeur distincte, ces couples ne DESSINENT plus : ils refusent en nommant la colonne, là où ils rendaient une barre unique dont l'axe affichait « 1 » et des bornes de seau que rien n'avait servies. LA SIGNATURE DU NOMBRE FAUX EST TENUE À PART : deux données servies différentes ne rendent plus la MÊME figure dessinée. NON-RÉGRESSION, sans quoi un refus INCONDITIONNEL passerait : sur une colonne qui porte une étendue, les mêmes couples dessinent toujours et leur géométrie suit les valeurs ; aucun des ${couples49.length - decoupeurs49.length} couples qui ne découpent rien ne s'est mis à refuser ; et un agrégat DÉJÀ en seaux servi sur UNE SEULE ligne reste rendu avec son libellé et sa valeur. CE QUE CE TÉMOIN NE TIENT PAS : il ne juge que les représentations du dispatcher de ce module et les nombres de colonnes ${JSON.stringify(NCOLS49)} — un découpage qui n'apparaîtrait qu'à quatre colonnes lui échapperait ; il ne dit rien de l'encre peinte ni de la mise en page (section 0) ; il ne mesure pas ce qu'une colonne numérique TROUÉE devient une fois la porte franchie (le trou reste dessiné à zéro) ; et il ne voit aucun panneau SEMÉ par le démon, dont les requêtes vivent hors de web/.`);
 
   // ---- (l) LA LANGUE DE « aucune donnée » EST SERVIE PAR LE LEXIQUE, ET LA MESURE L'ÉTABLIT ----
   const SUFFIXE49 = "?plume-lang=en";

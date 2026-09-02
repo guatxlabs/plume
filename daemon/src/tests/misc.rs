@@ -541,8 +541,13 @@
     /// y sont), et route_min_role("/metrics") = Read -> un anonyme (aucune identité) est rejeté 401 en amont.
     #[tokio::test]
     async fn day2_metrics_exposition_shape_and_auth() {
-        SCHED_RULE_LAST_TS.store(now(), MOrd::Relaxed);
-        SCHED_ROLLUP_LAST_TS.store(now(), MOrd::Relaxed);
+        // `P11.24-e` — CE TÉMOIN POSAIT LES DEUX HORODATAGES DE TICK, ET C'ÉTAIT LUI L'AUTRE MOITIÉ
+        // DU DÉFAUT. Il n'asserte RIEN sur l'état des composants : les sept chaînes qu'il exige sont
+        // des NOMS de séries, imprimés quel que soit le vert-orange-rouge (`plume_component_up{…}`
+        // est émis pour chaque composant, à n'importe quel score). Les deux écritures ne lui
+        // servaient donc à rien — mais elles écrasaient l'ambiant que `day2_component_health_rgy`
+        // venait de poser, et faisaient basculer SON verdict. Retirées : plus rien ici ne parle à
+        // un autre témoin.
         let st = sso_test_state("plume-admin", "plume-editor", "admins");
         let (code, body) = resp_bytes(metrics_endpoint(State(st)).await).await;
         assert_eq!(code, StatusCode::OK);
@@ -581,12 +586,33 @@
     }
 
     /// SANTÉ PAR COMPOSANT : R/J/V calculé depuis fraîcheur + ticks + disque + destinations.
+    ///
+    /// `P11.24-e` — CE TÉMOIN A CHANGÉ DE FORME LE 2026-09-02, ET IL FAUT DIRE POURQUOI.
+    ///
+    /// Il ÉCRIVAIT l'âge du dernier tick dans les atomiques de PROCESSUS, puis lisait la surface
+    /// d'état, qui les relisait. Entre les deux, tout autre témoin du même binaire pouvait y écrire
+    /// — et `day2_metrics_exposition_shape_and_auth`, quelques lignes plus haut dans ce fichier, y
+    /// écrivait `maintenant` sans en avoir besoin. Le portail de déploiement a rougi là-dessus le
+    /// 2026-09-01 (« tick règles ancien -> détection non verte (green) ») ; rejoué SEUL, il passait.
+    ///
+    /// LE MÉCANISME ANNONCÉ — « un seuil d'âge franchi sous la charge » — EST RÉFUTÉ PAR
+    /// L'ARITHMÉTIQUE DU TÉMOIN LUI-MÊME : il posait mille secondes d'âge contre un plafond de cent
+    /// vingt, donc il aurait fallu que l'ordonnanceur lui vole huit cent quatre-vingts secondes
+    /// entre l'écriture et la lecture. Ce qui bascule le verdict n'est pas un retard, c'est une
+    /// AUTRE ÉCRITURE. La charge ne fait qu'élargir la fenêtre où elle s'intercale.
+    ///
+    /// AUCUN SEUIL N'A ÉTÉ ÉLARGI : la grandeur ambiante a été RETIRÉE de la décision. Le témoin
+    /// INJECTE la fraîcheur qu'il veut juger ; l'atomique de processus ne le concerne plus.
+    ///
+    /// ET IL PORTE SON PROPRE CONTRÔLE D'INSTRUMENT : les deux appels ne diffèrent QUE par la
+    /// fraîcheur injectée. Si `component_health_avec` ignorait son argument pour relire l'ambiant,
+    /// les deux verdicts seraient IDENTIQUES et la seconde moitié rougirait — l'injection est donc
+    /// prouvée par le témoin, pas supposée.
     #[test]
     fn day2_component_health_rgy() {
         let c = day2_conn();
         // ticks récents -> détection/rollups verts ; event frais -> ingest vert.
-        SCHED_RULE_LAST_TS.store(now(), MOrd::Relaxed);
-        SCHED_ROLLUP_LAST_TS.store(now(), MOrd::Relaxed);
+        let recente = FraicheurDesTicks { regles: now(), rollups: now() };
         c.execute("INSERT INTO event(ts,source,category,severity,message) VALUES(?1,'sshd','auth',1,'x')", params![now()]).unwrap();
         // S32 — le spool est un répertoire RÉEL et vide. Ce test portait sur la fraîcheur, les ticks et
         // les destinations ; il passait un chemin inexistant parce que la profondeur de file y valait
@@ -595,17 +621,21 @@
         // répertoire — sans quoi ce test mesurerait la panne de mesure au lieu de la fraîcheur.
         let spool = crate::tmp_possede::TmpPossede::neuf("day2-sante-spool");
         let spool = spool.to_str().unwrap();
-        let comps = component_health(&c, spool, "", 80);
+        let comps = component_health_avec(&c, spool, "", 80, recente);
         let get = |name: &str| comps.iter().find(|v| v["component"] == name).cloned().unwrap();
         assert_eq!(get("ingest")["state"], "green", "event frais + spool vide LISIBLE -> ingest vert");
         assert_eq!(get("detection")["state"], "green", "tick règles récent -> détection verte");
         assert_eq!(get("rollups")["state"], "green", "tick rollup récent -> rollups verts");
         assert_eq!(get("forwarder")["state"], "idle", "aucune destination -> forwarder idle");
-        // détection en retard : tick ancien -> jaune/rouge (pas vert).
-        SCHED_RULE_LAST_TS.store(now() - 1000, MOrd::Relaxed);
-        let comps2 = component_health(&c, spool, "", 80);
+        // détection en retard : tick ancien -> jaune/rouge (pas vert). SEULE la fraîcheur INJECTÉE
+        // change entre les deux appels — ni la base, ni le spool, ni l'ambiant du processus.
+        let ancienne = FraicheurDesTicks { regles: now() - 1000, ..recente };
+        let comps2 = component_health_avec(&c, spool, "", 80, ancienne);
         let det = comps2.iter().find(|v| v["component"] == "detection").unwrap();
-        assert_ne!(det["state"], "green", "tick règles ancien -> détection non verte ({})", det["state"]);
+        assert_ne!(det["state"], "green",
+                   "tick règles ancien -> détection non verte ({}). Les deux appels ne diffèrent que \
+                    par la fraîcheur INJECTÉE : un verdict identique au précédent signifierait que la \
+                    surface d'état relit l'ambiant au lieu de son argument.", det["state"]);
         // posture globale = pire état.
         assert!(matches!(worst_state(&comps2), "yellow" | "red"));
     }

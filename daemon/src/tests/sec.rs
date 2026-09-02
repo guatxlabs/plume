@@ -157,6 +157,16 @@ fn sec_h1_verify_ledger_keyed_never_panics() {
         assert_eq!(n, 1);
         assert!(broken.is_none());
         let _ = std::fs::remove_file(&p2);
+    } else {
+        // `P11.23-e` — LEVIER DU PRODUIT, PAS ENVIRONNEMENT AVEUGLE : n'importe quel exploitant pose
+        // `PLUME_DB_KEY`, et ce bras (d) — le SEUL qui exerce le wrapper de PRODUCTION — disparaît
+        // sans un mot. Les bras (a)…(c) restent verts, et le test se présente comme complet.
+        crate::tests::canal_de_refus::refuser_de_conclure(
+            module_path!(),
+            "sec_h1_verify_ledger_keyed_never_panics",
+            "`PLUME_DB_KEY` est posée dans l'environnement : le bras (d) — le wrapper de PRODUCTION \
+             `verify_ledger` sur une base en clair — n'a pas été exercé. Rejouer sans cette variable.",
+        );
     }
     let _ = std::fs::remove_file(&p);
 }
@@ -563,6 +573,16 @@ fn v105_ledger_key_read_and_failclosed() {
     if std::env::var("PLUME_LEDGER_KEY_PATH").is_err() {
         assert!(ledger_key(&conf).is_none(), "PLUME_LEDGER_KEY_PATH -> Secret absent -> fail-closed");
         assert!(!std::path::Path::new(&secret_missing).exists(), "fail-closed : aucune clé générée");
+    } else {
+        // `P11.23-e` — le bras (e) est le seul à tenir le fail-closed de la résolution par conf ;
+        // une variable posée dans l'environnement le fait disparaître en silence.
+        crate::tests::canal_de_refus::refuser_de_conclure(
+            module_path!(),
+            "v105_ledger_key_read_and_failclosed",
+            "`PLUME_LEDGER_KEY_PATH` est posée dans l'environnement (elle gagne sur la carte de \
+             configuration) : le bras (e) — Secret absent -> fail-closed, aucune clé générée — n'a \
+             pas été exercé. Rejouer sans cette variable.",
+        );
     }
 }
 
@@ -959,6 +979,16 @@ fn secretprov_phase2_tenant_vs_overlay_semantics_preserved() {
     if std::env::var("PLUME_VAULT_ADDR").is_err() {
         assert!(resolve_tenant_key("vault:secret/data/ghost").is_err(),
             "tenant vault: HTTP non configuré -> Err (fail-closed ; sens HTTP distinct de l'env-projection)");
+    } else {
+        // `P11.23-e` — le second des « DEUX SENS » annoncés par ce test disparaît dès qu'un Vault est
+        // configuré, et le test continue de dire qu'il les tient tous les deux.
+        crate::tests::canal_de_refus::refuser_de_conclure(
+            module_path!(),
+            "secretprov_phase2_tenant_vs_overlay_semantics_preserved",
+            "`PLUME_VAULT_ADDR` est posée : le sens HTTP KV-v2 (non configuré -> Err fail-closed) n'a \
+             pas été exercé, alors que ce test annonce tenir les DEUX sens de `vault:`. Rejouer sans \
+             cette variable.",
+        );
     }
 
     // ---- préfixe INCONNU / cleartext -> Err des deux côtés (fail-closed) ----

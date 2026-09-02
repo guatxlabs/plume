@@ -161,6 +161,54 @@ pub(crate) fn health_score(state: &str) -> f64 {
 /// JSON {component, state, detail, ...}. Lecture SEULE, sur PETITES tables (rollup/alert/destination) +
 /// atomics + statvfs : jamais un scan de `event`. Appelé par /metrics, /api/system/health et le diag-bundle.
 pub(crate) fn component_health(conn: &Connection, spool: &str, db_path: &str, disk_warn_pct: u8) -> Vec<Value> {
+    component_health_avec(conn, spool, db_path, disk_warn_pct, FraicheurDesTicks::du_processus())
+}
+
+/// LA FRAÎCHEUR DES DEUX BOUCLES DE FOND, TELLE QU'ELLE ENTRE DANS LA SURFACE D'ÉTAT.
+///
+/// `P11.24-e` — POURQUOI CE TYPE EXISTE, ET CE QU'IL RETIRE. Les deux horodatages sont des
+/// atomiques de PROCESSUS : la boucle de fond les pose, la surface d'état les lit. Sous
+/// `cargo test`, les deux vivent dans le MÊME processus que tous les témoins, et un témoin qui
+/// voulait un tick ANCIEN devait l'écrire dans l'atomique commune, puis appeler la surface. Entre
+/// les deux, n'importe quel autre témoin du binaire pouvait y écrire `maintenant` — et le verdict
+/// du premier basculait. MESURÉ le 2026-09-01 : le portail de déploiement a rougi sur
+/// « tick règles ancien -> détection non verte (green) » ; rejoué SEUL, il passe.
+///
+/// LE MÉCANISME N'ÉTAIT PAS UN SEUIL D'ÂGE FRANCHI SOUS LA CHARGE. L'écart posé par le témoin
+/// était de MILLE secondes contre un plafond de cent vingt : il aurait fallu que l'ordonnanceur
+/// lui vole huit cent quatre-vingts secondes entre l'écriture et la lecture. Ce qui bascule le
+/// verdict, c'est une AUTRE écriture, pas un retard.
+///
+/// CE QUE CE TYPE CHANGE : la surface d'état ne lit plus l'ambiant elle-même. Elle reçoit une
+/// fraîcheur, et le seul site qui la dérive du processus est `du_processus`. Un témoin INJECTE
+/// donc la sienne et ne partage plus rien avec personne. La production, elle, ne voit aucune
+/// différence : `component_health` compose exactement les deux.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct FraicheurDesTicks {
+    /// Horodatage unix du dernier tick du planificateur de règles (0 = jamais tické).
+    pub(crate) regles: i64,
+    /// Horodatage unix du dernier tick de la boucle de rollup (0 = jamais tické).
+    pub(crate) rollups: i64,
+}
+
+impl FraicheurDesTicks {
+    /// CE QUE LE PROCESSUS A VU — le SEUL site qui lit les deux atomiques pour la surface d'état.
+    pub(crate) fn du_processus() -> Self {
+        Self {
+            regles: SCHED_RULE_LAST_TS.load(Ordering::Relaxed),
+            rollups: SCHED_ROLLUP_LAST_TS.load(Ordering::Relaxed),
+        }
+    }
+}
+
+/// LE CORPS DE `component_health`, avec la fraîcheur des ticks EN ENTRÉE plutôt qu'en ambiant.
+pub(crate) fn component_health_avec(
+    conn: &Connection,
+    spool: &str,
+    db_path: &str,
+    disk_warn_pct: u8,
+    fraicheur: FraicheurDesTicks,
+) -> Vec<Value> {
     let now_ts = now();
     let mut out = Vec::new();
 
@@ -215,7 +263,7 @@ pub(crate) fn component_health(conn: &Connection, spool: &str, db_path: &str, di
     // P4.1-r — ET QU'A-T-IL ÉVALUÉ ? Un tick à l'heure qui n'a pas pu lire ses règles était VERT ici :
     // le bilan publié par le planificateur (règles + incidents de risque) le rend ROUGE, et des règles
     // abandonnées (compilation refusée, évaluation en échec) le rendent JAUNE, avec leur compte.
-    let rule_last = SCHED_RULE_LAST_TS.load(Ordering::Relaxed);
+    let rule_last = fraicheur.regles;
     let (dstate, ddetail) = tick_health(rule_last, now_ts, 120, 600, "scheduler de règles");
     let bilan_detection = crate::bilan_de_tick::bilan_du_composant(crate::bilan_de_tick::COMPOSANT_DETECTION);
     let (dstate, ddetail) = crate::bilan_de_tick::etat_de_surface(dstate, ddetail, bilan_detection.as_ref());
@@ -246,7 +294,7 @@ pub(crate) fn component_health(conn: &Connection, spool: &str, db_path: &str, di
     out.push(Value::Object(detection));
 
     // ROLLUPS : la boucle de rollup tick-t-elle ? (intervalle défaut 120 s).
-    let rollup_last = SCHED_ROLLUP_LAST_TS.load(Ordering::Relaxed);
+    let rollup_last = fraicheur.rollups;
     let (rstate, rdetail) = tick_health(rollup_last, now_ts, 300, 900, "boucle de rollup");
     out.push(json!({ "component": "rollups", "state": rstate, "detail": rdetail, "last_tick": rollup_last }));
 

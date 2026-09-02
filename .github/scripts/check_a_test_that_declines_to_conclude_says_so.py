@@ -36,11 +36,38 @@ TROIS CANAUX
   1  violé — le site est NOMMÉ (fichier, ligne, test, et ce qui manque).
   2  l'instrument ne peut pas voir — il REFUSE DE CONCLURE, il n'accuse pas.
 
+LA SECONDE FAMILLE, MESURÉE LE 2026-09-02 (`P11.23-e`)
+=======================================================
+Un refus peut s'écrire SANS sortie anticipée : les assertions vivent dans une branche que
+l'environnement peut ne pas prendre, et la jumelle ne porte aucun verdict. Rien ne sort, donc
+l'analyse ci-dessus ne voyait rien.
+
+LA POPULATION A ÉTÉ DÉRIVÉE, PAS ESTIMÉE. Sur 1 847 fonctions de test de la caisse, 82 ne portent
+AUCUNE assertion sur un chemin d'exécution garanti ; 64 d'entre elles bouclent sur un corpus
+LITTÉRAL non vide (leur chemin muet n'existe pas) ou délèguent leur verdict à un auxiliaire ; des
+18 restantes, celles dont le chemin muet s'ouvre sans toucher une ligne de Rust sont SEPT — cinq
+branches conditionnées par une lecture d'environnement ou par un levier du produit, et deux dont
+la jumelle n'est pas vide mais ne fait que du ménage. Toutes empruntent désormais le canal.
+
+CE QUE CETTE GARDE AJOUTE, ET SON CRITÈRE RESTE POSITIONNEL : un `if` dont la CONDITION lit
+l'environnement, dont la branche prise porte une assertion et ne sort pas, et dont la JUMELLE ne
+porte aucun verdict, doit appeler le canal DANS le bloc de cette jumelle, à sa profondeur. Une
+jumelle absente est refusée avec le geste écrit (`else { … }`).
+
 CE QU'ELLE NE TIENT PAS — DIT PLUTÔT QUE SOUS-ENTENDU
 ======================================================
-  · LA FORME `return`. Un refus écrit sans `return` — des assertions enfermées dans une branche
-    dont la jumelle est vide, ou un test dont le corps entier est sous un `if cfg!(…)` — n'est pas
-    vu. C'est la forme des quatorze sites mesurés, ce n'est pas toute la famille.
+  · UNE CONDITION QUI CACHE SA LECTURE. Le critère de population reconnaît les lectures
+    d'environnement ÉCRITES DANS LA CONDITION. MESURÉ : deux sites réels de
+    `branche_d_echec_muette.rs` passent par un auxiliaire (`priver_de_lecture(&rules)`) et
+    échappent donc à cette garde — ils empruntent le canal parce qu'un humain les y a mis, pas
+    parce qu'elle les y oblige.
+  · LES AUTRES CONSTRUITS. `match` sur l'environnement et boucles sur une collection dérivée de
+    l'environnement ne sont pas analysés. MESURÉ le 2026-09-02 : zéro `match` de cette forme, et
+    les trois boucles trouvées portent déjà leur propre plancher de non-vacuité.
+  · UNE CHAÎNE `else if`. Le site est laissé hors population : sa jumelle n'est pas un bloc.
+  · UN CORPUS QUI PERD SA MATIÈRE. Un test qui boucle sur un corpus lu d'un fichier de données ne
+    sort pas et ne branche pas : il itère zéro fois. Ce qui tient cette forme est un PLANCHER dans
+    l'instrument qui produit le corpus, pas cette garde.
   · UNE SEULE CAISSE. La population est celle de la caisse qui PORTE le canal (dérivée : on remonte
     de `canal_de_refus.rs` jusqu'au `Cargo.toml`). Les caisses jumelles ne peuvent pas appeler le
     canal d'une autre — l'exiger serait une rançon. MESURÉ le 2026-08-31 : `agent`,
@@ -75,6 +102,16 @@ CODE_INSTRUMENT = 2
 APPEL = "canal_de_refus::refuser_de_conclure"
 VARIABLE_DECL = re.compile(r'const\s+VARIABLE_DU_CANAL\s*:\s*&str\s*=\s*"([^"]+)"\s*;')
 ATTR_TEST = re.compile(r"#\[\s*(?:tokio::)?test\s*[\](]")
+
+# CE QUI FAIT D'UNE CONDITION UNE LECTURE D'ENVIRONNEMENT. Sur-approximation ASSUMÉE : elle
+# reconnaît l'appel ÉCRIT DANS LA CONDITION, jamais un mot d'aveu dans un corps. Ses faux négatifs
+# sont NOMMÉS dans le bandeau — une condition qui délègue à un auxiliaire lui échappe.
+LECTURES_D_ENVIRONNEMENT = (
+    "env::var", "env::var_os", "cfg!(", ".exists()", "fs::read", "fs::metadata",
+    "fs::read_dir", "fs::read_to_string", "fs::symlink_metadata", "libc::",
+    "Command::new", "available_parallelism", "target_os",
+)
+ASSERTION = re.compile(r"\b(assert|assert_eq|assert_ne|debug_assert|panic|unreachable)\s*!")
 
 
 # =================================================================================================
@@ -248,6 +285,108 @@ def arguments(brut, apres_parenthese):
     return None
 
 
+def faute_des_arguments(brut, trouve, nom):
+    """L'appel trouvé à l'offset `trouve` porte-t-il ses trois arguments, et nomme-t-il SON test ?
+    Rend la faute, ou None. Une seule rédaction pour les deux familles."""
+    par = brut.find("(", trouve + len(APPEL))
+    args = arguments(brut, par + 1) if par != -1 else None
+    if args is None or len(args) < 3:
+        return ("l'appel au canal n'a pas ses trois arguments "
+                "(`module_path!()`, le nom du test, la cause).")
+    if args[0] != "module_path!()":
+        return (f"le 1er argument du canal est `{args[0]}` et non `module_path!()` : "
+                "un chemin de module écrit à la main dérive au premier déplacement.")
+    if args[1] != f'"{nom}"':
+        return (f"le canal est appelé avec {args[1]} alors que le test s'appelle "
+                f"`{nom}` : l'aveu enverrait chercher au mauvais endroit.")
+    return None
+
+
+def appel_dans_le_bloc(net, ouvrante, borne):
+    """L'offset du dernier `APPEL` écrit DANS le bloc ouvert en `ouvrante`, à SA profondeur, avant
+    `borne`. C'est LE critère positionnel : un appel niché dans un sous-bloc ne compte pas."""
+    trouve, prof, j = None, 0, ouvrante + 1
+    while j < borne:
+        if net[j] == "{":
+            prof += 1
+        elif net[j] == "}":
+            prof -= 1
+        elif prof == 0 and net.startswith(APPEL, j):
+            trouve = j
+        j += 1
+    return trouve
+
+
+def branches_muettes(net, brut, acc, fin, zones, nom, chemin):
+    """LA SECONDE FAMILLE (`P11.23-e`) : une branche conditionnée par une lecture d'environnement,
+    qui porte l'assertion et ne sort pas, dont la JUMELLE ne porte aucun verdict."""
+    sites = []
+    for m in re.finditer(r"\bif\b", net[acc:fin]):
+        pos = acc + m.start()
+        if any(a <= pos <= b for a, b in zones):
+            continue
+        # LA CONDITION : de `if` à l'accolade ouvrante, à profondeur nulle de parenthèses.
+        j, prof = pos + 2, 0
+        while j < fin:
+            c = net[j]
+            if c in "([":
+                prof += 1
+            elif c in ")]":
+                prof -= 1
+            elif c == "{" and prof == 0:
+                break
+            j += 1
+        if j >= fin:
+            continue
+        cond = net[pos + 2:j]
+        if not any(lecture in cond for lecture in LECTURES_D_ENVIRONNEMENT):
+            continue
+        f_then = fin_de_bloc(net, j)
+        if f_then is None:
+            continue
+        corps_then = net[j:f_then + 1]
+        # La branche doit PORTER un verdict, et ne pas SORTIR (cette forme-là est déjà tenue).
+        if not ASSERTION.search(corps_then):
+            continue
+        if re.search(r"\breturn\b", corps_then):
+            continue
+        ligne = brut[:pos].count("\n") + 1
+        site = {"fichier": chemin, "ligne": ligne, "test": nom,
+                "hors_population": False, "famille": "branche", "faute": None}
+        m_else = re.match(r"\s*else\b", net[f_then + 1:])
+        if not m_else:
+            site["faute"] = ("cette branche est conditionnée par une lecture d'ENVIRONNEMENT, elle "
+                             "porte l'assertion du test, et elle n'a PAS de jumelle : quand la "
+                             "condition est fausse, le test rend la main sans rien avoir prouvé et "
+                             "sans le dire. Écrire la jumelle : `else { "
+                             "crate::tests::canal_de_refus::refuser_de_conclure(module_path!(), "
+                             f'"{nom}", "<pourquoi rien n\'a pu être mesuré ici>") }}`.')
+            sites.append(site)
+            continue
+        apres = f_then + 1 + m_else.end()
+        if re.match(r"\s*if\b", net[apres:]):
+            continue  # chaîne `else if` : hors population, borne dite dans le bandeau
+        k = net.find("{", apres)
+        if k == -1 or k > fin:
+            continue
+        f_else = fin_de_bloc(net, k)
+        if f_else is None:
+            continue
+        if ASSERTION.search(net[k:f_else + 1]):
+            continue  # la jumelle porte SON propre verdict : rien n'est muet
+        trouve = appel_dans_le_bloc(net, k, f_else)
+        if trouve is None:
+            site["faute"] = ("la jumelle de cette branche d'environnement ne porte AUCUN verdict et "
+                             "n'appelle PAS le canal : la propriété que ce test nomme n'est pas "
+                             "exercée, et rien ne le dit. Écrire, dans CE bloc `else` : "
+                             "`crate::tests::canal_de_refus::refuser_de_conclure(module_path!(), "
+                             f'"{nom}", "<pourquoi rien n\'a pu être mesuré ici>")`.')
+        else:
+            site["faute"] = faute_des_arguments(brut, trouve, nom)
+        sites.append(site)
+    return sites
+
+
 def analyser(brut, chemin="<fabriqué>"):
     """Rend (sites, tests_vus). Un site = un dict décrivant UN `return` de test et son verdict.
 
@@ -279,24 +418,14 @@ def analyser(brut, chemin="<fabriqué>"):
                 continue
             ligne = brut[:pos].count("\n") + 1
             site = {"fichier": chemin, "ligne": ligne, "test": nom,
-                    "hors_population": protocole, "faute": None}
+                    "hors_population": protocole, "famille": "sortie", "faute": None}
             if protocole:
                 sites.append(site)
                 continue
             # ── LE CRITÈRE EST POSITIONNEL : l'appel doit être dans LE BLOC du `return`, au même
             #    niveau d'accolades. Un aveu ailleurs dans le test ne blanchit pas ce chemin-ci.
             ouv = ouvrante_du_bloc(net, acc, pos)
-            trouve = None
-            prof = 0
-            j = ouv + 1
-            while j < pos:
-                if net[j] == "{":
-                    prof += 1
-                elif net[j] == "}":
-                    prof -= 1
-                elif prof == 0 and net.startswith(APPEL, j):
-                    trouve = j
-                j += 1
+            trouve = appel_dans_le_bloc(net, ouv, pos)
             if trouve is None:
                 site["faute"] = ("ce `return` sort du test SANS passer par le canal. Écrire, dans "
                                  "CE bloc et juste avant lui : "
@@ -304,18 +433,12 @@ def analyser(brut, chemin="<fabriqué>"):
                                  f'"{nom}", "<pourquoi rien n\'a pu être mesuré ici>")`.')
                 sites.append(site)
                 continue
-            par = brut.find("(", trouve + len(APPEL))
-            args = arguments(brut, par + 1) if par != -1 else None
-            if args is None or len(args) < 3:
-                site["faute"] = ("l'appel au canal n'a pas ses trois arguments "
-                                 "(`module_path!()`, le nom du test, la cause).")
-            elif args[0] != "module_path!()":
-                site["faute"] = (f"le 1er argument du canal est `{args[0]}` et non `module_path!()` : "
-                                 "un chemin de module écrit à la main dérive au premier déplacement.")
-            elif args[1] != f'"{nom}"':
-                site["faute"] = (f"le canal est appelé avec {args[1]} alors que le test s'appelle "
-                                 f"`{nom}` : l'aveu enverrait chercher au mauvais endroit.")
+            site["faute"] = faute_des_arguments(brut, trouve, nom)
             sites.append(site)
+        # LA SECONDE FAMILLE — jugée sur les MÊMES zones à ignorer, et hors du protocole de
+        # ré-exécution (dont le bras de l'enfant n'est pas un aveuglement).
+        if not protocole:
+            sites.extend(branches_muettes(net, brut, acc, fin, zones, nom, chemin))
     return sites, tests_vus
 
 
@@ -433,6 +556,112 @@ def temoins():
             assert!(s.len() > 0);
         }
     """, [("t_accolade_en_chaine", True)]))
+
+    # ── LA SECONDE FAMILLE (`P11.23-e`) : une branche d'environnement dont la jumelle est muette.
+    cas.append(("POSITIF — branche d'environnement, AUCUNE jumelle", """
+        #[test]
+        fn t_branche_nue() {
+            if std::env::var("PLUME_X").is_ok() {
+                assert!(quelque_chose);
+            }
+            assert!(autre_chose);
+        }
+    """, [("t_branche_nue", True)]))
+
+    cas.append(("NÉGATIF — branche d'environnement, jumelle qui AVOUE", """
+        #[test]
+        fn t_branche_avouee() {
+            if std::env::var("PLUME_X").is_ok() {
+                assert!(quelque_chose);
+            } else {
+                %s(module_path!(), "t_branche_avouee", "levier posé : rien mesuré");
+            }
+        }
+    """ % A, [("t_branche_avouee", False)]))
+
+    # LE TÉMOIN QUI INTERDIT LA FAUSSE CORRECTION, DEUXIÈME FAMILLE : un aveu dans LA PREMIÈRE
+    # jumelle ne blanchit pas la SECONDE. C'est la transposition exacte de `t_deux_sorties`, et un
+    # critère d'appartenance au corps laisserait la seconde muette pour toujours.
+    cas.append(("POSITIF — deux branches d'environnement, la seconde jumelle MUETTE", """
+        #[test]
+        fn t_deux_branches() {
+            if std::env::var("A").is_ok() {
+                assert!(un);
+            } else {
+                %s(module_path!(), "t_deux_branches", "porte A");
+            }
+            if std::env::var("B").is_ok() {
+                assert!(deux);
+            } else {
+                let _ = 1;
+            }
+        }
+    """ % A, [("t_deux_branches", False), ("t_deux_branches", True)]))
+
+    cas.append(("POSITIF — l'aveu de la jumelle est NICHÉ dans un sous-bloc", """
+        #[test]
+        fn t_jumelle_nichee() {
+            if cfg!(target_os = "linux") {
+                assert!(un);
+            } else {
+                if bavard { %s(module_path!(), "t_jumelle_nichee", "…"); }
+            }
+        }
+    """ % A, [("t_jumelle_nichee", True)]))
+
+    cas.append(("NÉGATIF — la jumelle porte SON PROPRE verdict", """
+        #[test]
+        fn t_jumelle_qui_juge() {
+            if std::env::var("A").is_ok() {
+                assert!(un);
+            } else {
+                assert!(deux);
+            }
+        }
+    """, []))
+
+    cas.append(("NÉGATIF — condition qui ne lit PAS l'environnement : hors population", """
+        #[test]
+        fn t_condition_ordinaire() {
+            if compte > 3 {
+                assert!(un);
+            }
+            assert!(deux);
+        }
+    """, []))
+
+    cas.append(("NÉGATIF — branche d'environnement DANS une closure", """
+        #[test]
+        fn t_branche_en_closure() {
+            let f = || { if std::env::var("A").is_ok() { assert!(un); } };
+            f();
+            assert!(deux);
+        }
+    """, []))
+
+    # ET LA FRONTIÈRE ENTRE LES DEUX FAMILLES : une branche qui SORT est jugée UNE fois, par la
+    # règle du `return` — pas deux, ce qui doublerait l'accusation sur un site déjà conforme.
+    cas.append(("NÉGATIF — branche d'environnement qui SORT avec son aveu : jugée UNE fois", """
+        #[test]
+        fn t_branche_qui_sort() {
+            if !std::env::var("A").is_ok() {
+                %s(module_path!(), "t_branche_qui_sort", "levier éteint");
+                return;
+            }
+            assert!(un);
+        }
+    """ % A, [("t_branche_qui_sort", False)]))
+
+    cas.append(("POSITIF — la jumelle avoue au nom d'un AUTRE test", """
+        #[test]
+        fn t_jumelle_mal_nommee() {
+            if std::env::var("A").is_ok() {
+                assert!(un);
+            } else {
+                %s(module_path!(), "t_le_voisin", "…");
+            }
+        }
+    """ % A, [("t_jumelle_mal_nommee", True)]))
 
     for nom, source, attendu in cas:
         sites, _ = analyser(source, "<témoin>")
@@ -601,8 +830,11 @@ def mode_garde():
               "test qui a prouvé.", file=sys.stderr)
         return CODE_VIOLE
 
-    print(f"TENU — les {len(tous)} chemin(s) qui rendent la main sans conclure, sur {tests} fonctions "
-          f"de test de `{os.path.relpath(caisse, RACINE)}`, empruntent tous le canal "
+    sorties = len([s for s in tous if s.get("famille") == "sortie"])
+    branches = len(tous) - sorties
+    print(f"TENU — les {len(tous)} chemin(s) qui rendent la main sans conclure ({sorties} sortie(s) "
+          f"anticipée(s), {branches} branche(s) d'environnement à jumelle muette), sur {tests} "
+          f"fonctions de test de `{os.path.relpath(caisse, RACINE)}`, empruntent tous le canal "
           f"(`{variable}`), nomment leur propre test et prennent `module_path!()`. "
           f"{hors} site(s) hors population (protocole de ré-exécution).")
     print("POURQUOI CETTE GARDE EXISTE : `libtest` détourne la sortie d'un test qui RÉUSSIT — un "
@@ -611,10 +843,12 @@ def mode_garde():
           "`return`), jamais lexical : un aveu ailleurs dans le même test ne blanchit rien.")
     print("CE QU'ELLE N'ACCUSE PAS : un `return` TERMINAL (dernière instruction du corps) ne saute "
           "rien et reste hors population.")
-    print("CE QU'ELLE NE TIENT PAS : la forme `return` seulement (un refus enfermé dans une branche "
-          "sans `return` n'est pas vu) ; une seule caisse, celle qui porte le canal (les trois "
-          "caisses jumelles portent zéro chemin de ce genre — borne vide aujourd'hui) ; le TEXTE, "
-          "pas l'exécution (que le canal ait écrit, seul `--lire` le montre).")
+    print("CE QU'ELLE NE TIENT PAS : une condition qui CACHE sa lecture d'environnement derrière un "
+          "auxiliaire (deux sites réels de `branche_d_echec_muette.rs` sont dans ce cas) ; le `match` "
+          "et les boucles sur une collection dérivée de l'environnement (mesurés : zéro et trois, ces "
+          "trois-là portant déjà leur plancher) ; une chaîne `else if` ; un corpus qui perd sa matière "
+          "(c'est un plancher dans l'instrument qui tient cette forme) ; une seule caisse, celle qui "
+          "porte le canal ; le TEXTE, pas l'exécution (que le canal ait écrit, seul `--lire` le montre).")
     return CODE_TENU
 
 

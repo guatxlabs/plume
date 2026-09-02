@@ -131,6 +131,18 @@
                 let m = refus_sans_suppression(crate::prune_orphan_overlays(&conn, &root), "fichier refusé");
                 assert!(m.starts_with(CAUSE_SOURCE_REFUSEE) && m.contains("bad.json"), "cause E/S et fichier nommés : {m}");
                 familles += 1;
+            } else {
+                // `P11.23-e` — LA PRIVATION NE MORD PAS (porteur `root`, ou système de fichiers qui
+                // ignore le mode) : la famille « source refusée » n'est PAS exercée. Le plancher
+                // `MIN_FAMILLES_ADOSSEMENT` est atteint par les trois familles inconditionnelles,
+                // donc rien ne rougit et rien ne le disait.
+                crate::tests::canal_de_refus::refuser_de_conclure(
+                    module_path!(),
+                    "l_elagage_refuse_sur_un_adossement_illisible_et_ne_supprime_rien",
+                    "le retrait des droits sur un FICHIER ne mord pas sur ce porteur (root, ou \
+                     système de fichiers sans permissions) : la famille « source refusée au niveau \
+                     fichier » n'a pas été exercée. Rejouer sous un utilisateur non privilégié.",
+                );
             }
             let _ = std::fs::set_permissions(&bad, std::fs::Permissions::from_mode(0o644));
         }
@@ -147,6 +159,19 @@
             familles += 1;
         } else {
             rendre_la_lecture(&rules);
+            // `P11.23-e` — MÊME CHEMIN MUET, SUR LE RÉPERTOIRE CETTE FOIS, ET AVEC UNE JUMELLE QUI
+            // N'EST PAS VIDE : elle rend les droits. Ce qui compte n'est donc pas qu'une jumelle
+            // soit VIDE, c'est qu'elle ne porte AUCUN verdict. Et la condition cache sa lecture du
+            // système de fichiers derrière un auxiliaire (`priver_de_lecture`) : la garde de CI ne
+            // voit pas ce site-ci, et cette borne est écrite dans son bandeau.
+            crate::tests::canal_de_refus::refuser_de_conclure(
+                module_path!(),
+                "l_elagage_refuse_sur_un_adossement_illisible_et_ne_supprime_rien",
+                "le retrait des droits sur le RÉPERTOIRE `rules/` ne mord pas sur ce porteur (root, \
+                 ou système de fichiers sans permissions) : la famille « dossier refusé » — celle \
+                 qui a motivé ce témoin — n'a pas été exercée. Rejouer sous un utilisateur non \
+                 privilégié.",
+            );
         }
         }
 
@@ -201,6 +226,19 @@
             assert!(matches!(bilan_de_tick::dernier(crate::overlays_adossement::PASSE_OVERLAYS), Some(Mesure::Illisible { .. })), "l'aveu est publié");
         } else {
             rendre_la_lecture(&rules);
+            // `P11.23-e` — MÊME CHEMIN MUET, SUR LE RÉPERTOIRE CETTE FOIS, ET AVEC UNE JUMELLE QUI
+            // N'EST PAS VIDE : elle rend les droits. Ce qui compte n'est donc pas qu'une jumelle
+            // soit VIDE, c'est qu'elle ne porte AUCUN verdict. Et la condition cache sa lecture du
+            // système de fichiers derrière un auxiliaire (`priver_de_lecture`) : la garde de CI ne
+            // voit pas ce site-ci, et cette borne est écrite dans son bandeau.
+            crate::tests::canal_de_refus::refuser_de_conclure(
+                module_path!(),
+                "un_chargement_dit_ce_qu_il_ignore_et_le_publie",
+                "le retrait des droits sur le RÉPERTOIRE `rules/` ne mord pas sur ce porteur (root, \
+                 ou système de fichiers sans permissions) : la famille « dossier refusé » — celle \
+                 qui a motivé ce témoin — n'a pas été exercée. Rejouer sous un utilisateur non \
+                 privilégié.",
+            );
         }
         }
     }

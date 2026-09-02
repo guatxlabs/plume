@@ -246,6 +246,20 @@ mod allowlist_du_responder_tests {
                 agent: champs[2].to_string(),
             });
         }
+        // `P11.23-e` — L'ARGUMENT DE RACINE, ET IL MANQUAIT À TROIS CONSOMMATEURS SUR CINQ. Un corpus
+        // réduit à ses commentaires est LISIBLE — le `unwrap_or_else` ci-dessus ne mord pas — et rend
+        // zéro ligne. Les témoins qui bouclent dessus SANS plancher (`chaque_ligne_du_corpus_…`,
+        // `aucune_ligne_n_est_retenue_…`) sortiraient alors VERTS sans avoir exercé une seule
+        // assertion : c'est la forme de `P11.23-e` sans aucune sortie anticipée. Deux de leurs
+        // voisins portaient déjà leur propre plancher (`exercees >= 8`, `services.len() >= 5`) ; le
+        // plancher est ici remonté DANS l'instrument, donc tout consommateur en hérite — y compris
+        // celui qu'on écrira demain.
+        assert!(
+            !lignes.is_empty(),
+            "INSTRUMENT : le corpus partagé ({}) ne porte AUCUNE ligne de matière — tout témoin qui \
+             boucle dessus serait vert sans rien prouver",
+            chemin.display()
+        );
         lignes
     }
 

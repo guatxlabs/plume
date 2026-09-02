@@ -316,6 +316,22 @@
         if !std::path::Path::new(&chemin).exists() {
             assert_eq!(db_key(), None,
                 "aucune clé nulle part et aucun fichier de clé -> `None`, exactement comme avant `P9.6-a`");
+        } else {
+            // `P11.23-e` — LE CHEMIN MUET DE CE TEST, ET IL N'A PAS DE `return` POUR LE TRAHIR.
+            // Sur une machine où le fichier de clé auto EXISTE (un hôte qui a déjà fait tourner le
+            // démon), la seule assertion qui porte l'invariant annoncé — « sans fichier de clé, la
+            // résolution rend ce qu'elle rendait » — est SAUTÉE, et le test reste vert sur les deux
+            // qui l'encadrent. Le refus part par le canal plutôt que d'échouer : ce fichier
+            // appartient à la machine, pas au test, et un rouge y serait inrefermable.
+            crate::tests::canal_de_refus::refuser_de_conclure(
+                module_path!(),
+                "p96a_sans_fichier_de_cle_la_resolution_ambiante_est_inchangee",
+                &format!(
+                    "le fichier de clé auto « {chemin} » EXISTE sur cette machine : l'invariant \
+                     « aucune clé nulle part -> `None` » n'a PAS été exercé. Rejouer sur un hôte \
+                     qui n'a jamais démarré le démon, ou après avoir retiré ce fichier."
+                ),
+            );
         }
         assert_eq!(cle_auto_lire("/chemin/qui/n/existe/pas/du/tout.key"), None);
     }

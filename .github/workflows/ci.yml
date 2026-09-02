@@ -713,7 +713,17 @@ env:
   #     ~6,5 ms par arithmétique en release), soit 63 × un 401 et 92,7 Mo/s au banc pour une seule IP.
   #   · CHAQUE RÉPONSE PUBLIQUE EST FACTURABLE (`content-length` présent ET égal au fichier) : sans
   #     cela, la borne ci-dessus aurait un trou muet.
-  EXPECTED_TESTS: "1526"
+  # `P11.24-e` (2026-09-02) : **+1**, et un seul — `fraicheur_de_tick_injectee.rs` porte la garde
+  # STRUCTURELLE qui interdit à un test d'écrire la fraîcheur ambiante des boucles de fond
+  # (`aucun_test_n_ecrit_la_fraicheur_ambiante_des_boucles_de_fond`). Le témoin de santé
+  # `day2_component_health_rgy` a CHANGÉ DE FORME sans changer de compte : il décide désormais sur
+  # une fraîcheur INJECTÉE (`component_health_avec`) au lieu d'une atomique de processus qu'un autre
+  # témoin du même binaire écrasait. `P11.23-e` n'ajoute AUCUN test : sept branches muettes
+  # empruntent le canal de refus existant, et le plancher du corpus partagé est une assertion de
+  # plus dans un auxiliaire, pas une fonction de test. Le MÊME +1 sur `EXPECTED_COLD_TESTS` — la
+  # garde n'est derrière aucun `cfg(feature)`, et c'est l'ÉCART INCHANGÉ entre les deux profils
+  # (**245** avant comme après) qui l'établit, pas une lecture des sources.
+  EXPECTED_TESTS: "1527"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -1153,7 +1163,11 @@ jobs:
           # derrière un `cfg(feature)`, et c'est l'ÉCART INCHANGÉ entre les deux profils (243 avant
           # comme après) qui l'établit, pas une lecture des sources. La dérivation complète et la
           # répartition sont écrites auprès d'`EXPECTED_TESTS`, une seule fois.
-          EXPECTED_COLD_TESTS: "1771"
+          # `P11.24-e` (2026-09-02) : +1, le MÊME que sur `EXPECTED_TESTS` — il n'est derrière aucun
+          # `cfg(feature)`, et c'est l'ÉCART INCHANGÉ entre les deux profils (245 avant comme après)
+          # qui l'établit, pas une lecture des sources. La dérivation est écrite auprès
+          # d'`EXPECTED_TESTS`, une seule fois.
+          EXPECTED_COLD_TESTS: "1772"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail

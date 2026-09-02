@@ -220,7 +220,7 @@
     fn sonde_plan_nomme_son_index() {
         let db = base_pathologique(4_000);
         let conn = db.lock();
-        for (id, _, _, sonde, _) in COLLECTORS.iter() {
+        for (id, _, _, sonde, _) in table_declaree!(COLLECTORS) {
             let r = sonde.requete();
             let mut s = conn.prepare(&format!("EXPLAIN QUERY PLAN {}", r.sql())).unwrap();
             let plan: String = s

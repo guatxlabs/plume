@@ -723,7 +723,15 @@ env:
   # plus dans un auxiliaire, pas une fonction de test. Le MÊME +1 sur `EXPECTED_COLD_TESTS` — la
   # garde n'est derrière aucun `cfg(feature)`, et c'est l'ÉCART INCHANGÉ entre les deux profils
   # (**245** avant comme après) qui l'établit, pas une lecture des sources.
-  EXPECTED_TESTS: "1527"
+  # `P11.23-g` (2026-09-02) : **+1**, et un seul — `plancher_des_tables_declarees.rs` porte le
+  # témoin de son propre instrument (`le_plancher_des_tables_declarees_accuse_l_instrument_et_
+  # nomme_la_table`), qui joue le plancher sur DEUX tables FABRIQUÉES dans le test, l'une pleine et
+  # l'autre vide. Les DIX consommateurs, eux, n'ajoutent aucun test : leurs dix-neuf boucles
+  # porteuses changent d'expression itérée (`TABLE` -> `table_declaree!(TABLE)`) sans changer de
+  # compte. Le MÊME +1 sur `EXPECTED_COLD_TESTS` — le témoin n'est derrière aucun `cfg(feature)`,
+  # et c'est l'ÉCART INCHANGÉ entre les deux profils (**245** avant comme après) qui l'établit, pas
+  # une lecture des sources.
+  EXPECTED_TESTS: "1528"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -1167,7 +1175,11 @@ jobs:
           # `cfg(feature)`, et c'est l'ÉCART INCHANGÉ entre les deux profils (245 avant comme après)
           # qui l'établit, pas une lecture des sources. La dérivation est écrite auprès
           # d'`EXPECTED_TESTS`, une seule fois.
-          EXPECTED_COLD_TESTS: "1772"
+          # `P11.23-g` (2026-09-02) : +1, le MÊME que sur `EXPECTED_TESTS` — il n'est derrière
+          # aucun `cfg(feature)`, et c'est l'ÉCART INCHANGÉ entre les deux profils (245 avant comme
+          # après) qui l'établit, pas une lecture des sources. La dérivation est écrite auprès
+          # d'`EXPECTED_TESTS`, une seule fois.
+          EXPECTED_COLD_TESTS: "1773"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail
@@ -1441,6 +1453,22 @@ jobs:
       # `vieillissement_serie.rs`. Témoins FABRIQUÉS dans la garde (dont ce cas précis), population
       # DÉRIVÉE de l'arbre syntaxique, et refus de conclure (code 2) quand elle ne peut pas voir.
       - { name: "Un test qui rend la main sans conclure le DIT par le canal — aucun refus muet dans daemon/src (P11.23-b)", run: python3 .github/scripts/check_a_test_that_declines_to_conclude_says_so.py }
+      # `P11.23-g` — LE JUMEAU SANS SORTIE NI BRANCHE. Un test dont TOUTES les assertions vivent
+      # dans une boucle sur une table DÉCLARÉE ailleurs que lui n'a rien à sauter et rien à
+      # avouer : le jour où la table perd sa matière, la boucle itère zéro fois et `libtest`
+      # compte un test PASSÉ de plus. MESURÉ le 2026-09-02, par propriété : DIX tests, dix-neuf
+      # boucles porteuses, DOUZE tables — dont six vivent dans la caisse voisine `guatx_core`.
+      # DÉMONTRÉ : `COLLECTORS` vidée sans plancher, le témoin de dédup rend « ok. 1 passed »
+      # après ZÉRO assertion. Le remède n'est PAS le canal de refus — il les rendrait verts et
+      # muets là où ils doivent ROUGIR : une table vidée est une panne d'INSTRUMENT, pas un
+      # environnement aveugle. Le plancher est donc posé DANS LE FOURNISSEUR
+      # (`daemon/src/tests/plancher_des_tables_declarees.rs`), même geste que celui qui a fermé
+      # deux des neuf sites de `P11.23-e`, et cette garde l'impose aux consommateurs futurs.
+      # Verdict PAR BOUCLE (un site routé ne blanchit pas son voisin), analyseur lexical IMPORTÉ
+      # de la garde ci-dessus et non recopié, quatorze témoins FABRIQUÉS dans la garde, population
+      # DÉRIVÉE comme contrôle positif contre le vert par vacuité, et refus de conclure (code 2)
+      # si le plancher n'exige plus rien ou n'accuse plus l'INSTRUMENT.
+      - { name: "Un test qui boucle sur une table déclarée passe par le plancher — vider la table ROUGIT (P11.23-g)", run: python3 .github/scripts/check_a_test_that_loops_over_a_declared_table_has_a_floor.py }
       - { name: "Un refus du démon ne se rend jamais comme une absence de données — aucune condition de web/ ne fond l'échec et le vide (P11.14-c)", run: python3 .github/scripts/check_a_refusal_is_not_rendered_as_an_absence.py }
       # `P4.13-b` — UNE ÉCRITURE NUE AU STOCKAGE DU SITE JETTE AU MILIEU D'UN GESTE. Mesuré le
       # 2026-08-30 sous `PLUME_HARNAIS_STOCKAGE_REFUSE=1` : le tri des règles posait son état sans que

@@ -59,7 +59,7 @@
             };
             format!("search | {stage}")
         };
-        for cmd in SOQL_PIPE_COMMANDS {
+        for cmd in table_declaree!(SOQL_PIPE_COMMANDS) {
             let q = minimal(cmd);
             assert!(
                 to_sql(&q, 0, 0, &sch).is_ok(),
@@ -74,7 +74,7 @@
     #[test]
     fn completion_vocab_stats_functions_compile() {
         let sch = Schema::events();
-        for f in SOQL_STATS_FUNCTIONS {
+        for f in table_declaree!(SOQL_STATS_FUNCTIONS) {
             let q = if *f == "count" { "search | stats count".to_string() } else { format!("search | stats {f}(source)") };
             assert!(to_sql(&q, 0, 0, &sch).is_ok(), "fonction stats de complétion '{f}' REJETÉE : {q} -> {:?}", to_sql(&q, 0, 0, &sch));
         }
@@ -86,7 +86,7 @@
     #[test]
     fn completion_vocab_eval_functions_compile() {
         let sch = Schema::events();
-        for f in SOQL_EVAL_FUNCTIONS {
+        for f in table_declaree!(SOQL_EVAL_FUNCTIONS) {
             let q = format!("search | eval x = {f}(source)");
             assert!(to_sql(&q, 0, 0, &sch).is_ok(), "fonction eval de complétion '{f}' REJETÉE : {q} -> {:?}", to_sql(&q, 0, 0, &sch));
         }
@@ -97,7 +97,7 @@
     #[test]
     fn completion_vocab_operators_compile() {
         let sch = Schema::events();
-        for op in SOQL_FILTER_OPERATORS {
+        for op in table_declaree!(SOQL_FILTER_OPERATORS) {
             // numérique pour les comparateurs d'ordre (severity), textuel pour = / != / : / =~.
             let q = match *op {
                 ">" | ">=" | "<" | "<=" => format!("search severity{op}1"),
@@ -227,11 +227,11 @@
                 );
             }
         };
-        check(DOC_BASE_KEYWORDS, SOQL_BASE_KEYWORDS, "base_keywords");
-        check(DOC_COMMANDS, SOQL_PIPE_COMMANDS, "commands");
-        check(DOC_STATS_FUNCTIONS, SOQL_STATS_FUNCTIONS, "stats_functions");
-        check(DOC_EVAL_FUNCTIONS, SOQL_EVAL_FUNCTIONS, "eval_functions");
-        check(DOC_OPERATORS, SOQL_FILTER_OPERATORS, "operators");
-        check(DOC_KEYWORDS, SOQL_KEYWORDS, "keywords");
-        check(DOC_FIELDS, CIM_CORE_FIELDS, "fields");
+        check(DOC_BASE_KEYWORDS, table_declaree!(SOQL_BASE_KEYWORDS), "base_keywords");
+        check(DOC_COMMANDS, table_declaree!(SOQL_PIPE_COMMANDS), "commands");
+        check(DOC_STATS_FUNCTIONS, table_declaree!(SOQL_STATS_FUNCTIONS), "stats_functions");
+        check(DOC_EVAL_FUNCTIONS, table_declaree!(SOQL_EVAL_FUNCTIONS), "eval_functions");
+        check(DOC_OPERATORS, table_declaree!(SOQL_FILTER_OPERATORS), "operators");
+        check(DOC_KEYWORDS, table_declaree!(SOQL_KEYWORDS), "keywords");
+        check(DOC_FIELDS, table_declaree!(CIM_CORE_FIELDS), "fields");
     }

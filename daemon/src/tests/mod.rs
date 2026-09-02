@@ -7,6 +7,10 @@
 // qui rend la main sans conclure doit pouvoir l'emprunter. Inerte tant que
 // `PLUME_JOURNAL_DES_REFUS` n'est pas posée par CELUI QUI DÉCIDE (CI, portail de déploiement).
 include!("canal_de_refus.rs");
+// `P11.23-g` — LE PLANCHER DES TABLES DÉCLARÉES, inclus juste après le canal et AVANT tout
+// consommateur : il définit la macro `table_declaree!`, dont la portée est TEXTUELLE, donc tout
+// fichier inclus plus bas la voit et aucun fichier inclus plus haut ne pourrait l'utiliser.
+include!("plancher_des_tables_declarees.rs");
 include!("common.rs");
 include!("rollup.rs");
 include!("detection.rs");

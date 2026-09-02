@@ -453,7 +453,7 @@
     /// résoudrait l'alerte de parc (ou l'inverse). Dérivé de `COLLECTORS`, jamais d'une liste tenue à part.
     #[test]
     fn hotes_muets_prefixe_de_dedup_ne_collisionne_avec_aucun_capteur() {
-        for (id, _, _, _, _) in COLLECTORS.iter() {
+        for (id, _, _, _, _) in table_declaree!(COLLECTORS) {
             let cle = format!("hb-{id}");
             assert!(
                 !cle.starts_with(DEDUP_FLOTTE_MUETTE),

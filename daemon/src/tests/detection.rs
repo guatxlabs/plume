@@ -2102,7 +2102,7 @@
     /// La table logsource->category ne cible QUE des catégories CIM valides (pas de dérive taxonomie).
     #[test]
     fn sigma_logsource_map_targets_are_cim() {
-        for (k, c) in SIGMA_LOGSOURCE_CATEGORY {
+        for (k, c) in table_declaree!(SIGMA_LOGSOURCE_CATEGORY) {
             assert!(cim_category_ok(c), "logsource '{k}' -> '{c}' n'est PAS une catégorie CIM");
         }
     }
@@ -2131,7 +2131,7 @@
     fn sigma_logsource_targets_are_emitted_by_a_shipped_collector() {
         let root = f7_repo_root();
         // (A) chaque citation est VÉRIFIÉE contre le fichier livré.
-        for (cat, file, frag) in SIGMA_TARGET_CATEGORY_EMITTERS {
+        for (cat, file, frag) in table_declaree!(SIGMA_TARGET_CATEGORY_EMITTERS) {
             let p = root.join(file);
             let body = std::fs::read_to_string(&p)
                 .unwrap_or_else(|e| panic!("citation `{cat}` -> fichier livré '{file}' illisible ({e})"));
@@ -2142,14 +2142,14 @@
             assert!(cim_category_ok(cat), "catégorie citée '{cat}' hors taxonomie CIM");
         }
         // (B) chaque cible de la table a une citation.
-        for (ls, cat) in SIGMA_LOGSOURCE_CATEGORY {
+        for (ls, cat) in table_declaree!(SIGMA_LOGSOURCE_CATEGORY) {
             assert!(SIGMA_TARGET_CATEGORY_EMITTERS.iter().any(|(c, _, _)| c == cat),
                 "logsource '{ls}' -> '{cat}' : AUCUN émetteur livré cité pour cette catégorie. Mesurer qui \
                  l'alimente et l'ajouter à SIGMA_TARGET_CATEGORY_EMITTERS, ou NE PAS mapper ce logsource \
                  (non mappé = visiblement non catégorisé ; mappé vers du vide = fausse couverture).");
         }
         // Anti-rot : aucune citation ORPHELINE (une cible retirée de la table doit retirer sa citation).
-        for (cat, file, _) in SIGMA_TARGET_CATEGORY_EMITTERS {
+        for (cat, file, _) in table_declaree!(SIGMA_TARGET_CATEGORY_EMITTERS) {
             assert!(SIGMA_LOGSOURCE_CATEGORY.iter().any(|(_, c)| c == cat),
                 "citation orpheline `{cat}` ({file}) : plus aucun logsource ne vise cette catégorie");
         }

@@ -356,11 +356,11 @@
     /// run_due_rules/run_risk_rules les sauteraient silencieusement -> activation inerte). Garde-fou direct.
     #[test]
     fn seeded_activation_rules_compile() {
-        for (_n, q, is_soql, _op, _th, _sev, _iv, win, _m) in TI_ALERT_RULES {
-            rule_sql(q, is_soql != 0, win).unwrap_or_else(|e| panic!("règle TI '{q}' ne compile pas: {e}"));
+        for (_n, q, is_soql, _op, _th, _sev, _iv, win, _m) in table_declaree!(TI_ALERT_RULES) {
+            rule_sql(q, *is_soql != 0, *win).unwrap_or_else(|e| panic!("règle TI '{q}' ne compile pas: {e}"));
         }
-        for (_n, q, is_soql, win, _sev, _rs, _et, _ef, _iv, _m) in RISK_STARTER_RULES {
-            rule_sql(q, is_soql != 0, win).unwrap_or_else(|e| panic!("règle RBA '{q}' ne compile pas: {e}"));
+        for (_n, q, is_soql, win, _sev, _rs, _et, _ef, _iv, _m) in table_declaree!(RISK_STARTER_RULES) {
+            rule_sql(q, *is_soql != 0, *win).unwrap_or_else(|e| panic!("règle RBA '{q}' ne compile pas: {e}"));
         }
     }
 

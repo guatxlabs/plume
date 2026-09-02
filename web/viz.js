@@ -635,7 +635,12 @@ function vizElement(mode, cols, rows, query, drill) {
   if (refus) return noeudDeRefus(refus);
   const figure = vizSansPorte(mode, cols, rows, query, drill);
   const muette = refusDUneFigureMuette(mode, cols, rows, figure);
-  return muette ? noeudDeRefus(muette) : figure;
+  if (muette) return noeudDeRefus(muette);
+  // `P11.18-p` — LA TROISIÈME RÈGLE DE CE POINT D'ENTRÉE, ET LA SEULE QUI NE SOIT PAS UN REFUS : sur
+  // ZÉRO ligne, une figure dont le rendu ne dit rien reçoit le FAIT que quatre représentations disent
+  // déjà pour leur compte. Elle est posée APRÈS les deux portes parce qu'elle les suppose : là où il
+  // n'y a aucune ligne, ni l'une ni l'autre ne s'arme.
+  return figureSansLigneEstMuette(rows, figure) ? noeudAucuneLigne() : figure;
 }
 
 // ==============================================================================================
@@ -679,11 +684,16 @@ function vizElement(mode, cols, rows, query, drill) {
 // dont l'ordonnée porte au moins une valeur strictement positive, les neuf représentations rendent un
 // balisage byte-identique, porte comprise. La borne de cette phrase est celle du témoin qui l'établit :
 // il joue un jeu FABRIQUÉ, il ne dit rien des panneaux SEMÉS par le démon, dont les requêtes vivent hors
-// de `web/`. CE QUI RESTE OUVERT, ÉCRIT PLUTÔT QUE TU : une colonne numérique LÀ OÙ ELLE EST REMPLIE mais
-// trouée (`null`, chaîne vide) franchit les deux portes — `profilDeColonne` saute les vides avant de
-// conclure — et `Number(v) || 0` dessine ces trous à ZÉRO (mesuré le 2026-08-27 : `bar` sur
-// [['a',5],['b',null],['c',7]] rend trois barres, celle du milieu à 0 % de large, « - » imprimé à côté).
-// Ce n'est pas la même faute, et elle n'est pas fermée ici. Le refus ci-dessous, lui, reste attaché au
+// de `web/`. CE QUI ÉTAIT DÉCLARÉ OUVERT ICI EST FERMÉ, ET LE DÉCLARER ENCORE SERAIT LE DÉFAUT QUE CE
+// MODULE POURSUIT. La phrase qui vivait à cette place disait qu'une colonne numérique LÀ OÙ ELLE EST
+// REMPLIE mais trouée franchit les deux portes — ce qui reste VRAI, `profilDeColonne` sautant les vides
+// avant de conclure — et que `Number(v) || 0` dessinait ces trous à ZÉRO. CETTE SECONDE MOITIÉ EST
+// FAUSSE DEPUIS LE 2026-09-01 : `nombreLu` rend `undefined` d'une cellule non lue, aucune figure ne lui
+// donne de longueur, et ce qui n'a pas été lu est COMPTÉ et DIT (`boutsDeNonLues`). RE-MESURÉ le
+// 2026-09-02 sur `[['a',5],['b',null],['c',7]]` : `bar` ne pose plus que DEUX largeurs, `histogram`
+// écarte la ligne, `heatmap` lui donne une encre qui n'est pas celle de l'échelle (`P11.24-d`), et les
+// cinq figures traçantes écrivent « 1 des 3 ligne(s) servies ne portent AUCUNE valeur dans “n” ». Le
+// refus ci-dessous, lui, reste attaché au
 // CHOIX : il porte en plus le plafond de cardinalité, qui juge la LISIBILITÉ et non la vérité, et que la
 // porte n'impose donc pas par défaut.
 const PLAFOND_CARDINALITE_ABSCISSE = 200;   // au-delà, une marque occupe moins de 3 unités sur les 580
@@ -1138,6 +1148,50 @@ function noeudDeRefus(refus) {
   return d;
 }
 
+// `P11.18-p` — UN SEUL ÉCRIVAIN DU FAIT « AUCUNE LIGNE N'A ÉTÉ SERVIE », ET CE N'EST PAS UN REFUS.
+// Sur zéro ligne, l'absence est un FAIT : rien n'a été coercé, aucune figure n'a menti, et il n'y a
+// rien à compter. La phrase existait DÉJÀ dans ce module — `gaugeEl` et `histogramEl` la rendent
+// chacune sur `!rows.length` — et elle est reprise TELLE QUELLE ici plutôt qu'écrite une troisième
+// fois : c'est la même discipline que le nœud de refus, celui de la perte et celui des deux causes de
+// non-lecture, chacun à un seul écrivain.
+// CE QUI N'EST PAS RALLIÉ, ET LA MESURE QUI LE DIT : `pieEl` rend le MÊME mot, mais sur `!total` —
+// une condition qui vaut aussi sur des lignes SERVIES dont aucune valeur n'est strictement positive
+// (chemin que `vizElement` refuse depuis la porte de rendu, et que `vizSansPorte` laisse atteindre).
+// Un écrivain nommé « aucune ligne » y dirait donc faux ; sa chaîne française, elle, est une clé du
+// lexique que le parcours de traduction rend en anglais. La DEUX-VOIES reste ouverte et nommée.
+function noeudAucuneLigne() { return muted(LANG === 'en' ? 'no data' : 'aucune donnée'); }
+
+// `P11.18-p` — SUR ZÉRO LIGNE, UN CADRE VIDE N'AFFIRME RIEN, MAIS IL NE DIT RIEN NON PLUS.
+//
+// LE RESTE QUE LA CLÉ NOMMAIT, MESURÉ LE 2026-09-02 SUR LES NEUF REPRÉSENTATIONS, SANS AUCUNE LIGNE :
+// `gauge`, `pie`, `donut` et `histogram` DISENT « aucune donnée » ; `stat` rend « - » et `table` ses
+// en-têtes — ce sont des faits ; `bar` rend `<div class="bars"></div>`, `line` un cadre d'axes seul et
+// `heatmap` une grille sans corps. TROIS rendus dont le texte est VIDE : ils ne mentent pas, et ils ne
+// disent rien non plus. Le compte est celui de la clé, et il est ici RE-MESURÉ, pas recopié.
+//
+// LE PRÉDICAT NE NOMME AUCUN TYPE DE GRAPHE ET N'EMPRUNTE RIEN AU VOCABULAIRE DES MARQUES. La porte de
+// rendu, juste au-dessus, compte les MARQUES : elle ne peut pas trancher ce cas-là, parce que `line`
+// pose bien une marque sur zéro ligne — le tracé de ses axes — et n'en dit pas un mot pour autant. La
+// question qui sépare les trois familles est donc autre, et elle se lit sur le rendu comme le reste :
+// cette figure DIT-elle quelque chose ? Une représentation posée demain qui rendrait un cadre muet est
+// couverte sans qu'on l'écrive, et celle qui dit déjà l'absence pour son compte ne voit jamais cette
+// règle — elle se retire d'elle-même le jour où la figure parle, sans qu'aucune liste soit tenue.
+//
+// CE QUE CETTE RÈGLE N'EST PAS : un refus. Rien n'est impossible, rien n'est faux — le résultat est
+// vide. Elle ne prend donc pas le nœud du refus mais celui du FAIT, et elle ne s'arme que là où il n'y
+// a AUCUNE ligne : sur des lignes servies, dire « aucune donnée » serait exactement le mensonge que
+// cette clé poursuit depuis son ouverture.
+//
+// CE QU'ELLE NE VOIT PAS, ÉCRIT PLUTÔT QUE TU : elle lit le TEXTE d'un arbre, jamais l'encre peinte —
+// une feuille de style qui masquerait ce mot lui échapperait. Et sa portée est bornée par les
+// appelants : sur Dashboards, le panneau comme l'aperçu d'instantané écartent un résultat sans ligne
+// AVANT d'appeler la représentation (`dashboards.js`, deux sites, avec leur propre phrase de fenêtre) ;
+// le chemin qui atteint vraiment cette règle est celui de l'éditeur de requête, qui rend son résultat
+// d'agrégation sans jamais l'écarter.
+function figureSansLigneEstMuette(rows, figure) {
+  return !rows.length && String((figure && figure.textContent) || '').trim() === '';
+}
+
 function refusDeReglage(mode, cols, rows, reglage) {
   const s = sondage(mode), profils = profilsDeColonnes(cols, rows);
   const parNom = nom => profils.find(p => p.nom === nom) || null;
@@ -1471,7 +1525,7 @@ function gaugeEl(cols, rows, query, drill) {
   // alors que rien n'a été mesuré. Toutes les autres représentations rendent déjà cette absence pour
   // leur compte (`stat` rend « - », `pie` et `histogram` la disent) ; celle-ci l'affirmait à l'envers.
   // Ce n'est pas un REFUS — la donnée n'a rien d'impossible — donc cela se règle ici et non à la porte.
-  if (!rows.length) return muted(LANG === 'en' ? 'no data' : 'aucune donnée');
+  if (!rows.length) return noeudAucuneLigne();   // `P11.18-p` : l'écrivain unique du fait, byte-identique à la phrase qui vivait ici
   // `P11.20-y` — UNE VALEUR NON LUE N'EST PAS UN ZÉRO, ICI NON PLUS. Le geste posé juste au-dessus le
   // 2026-08-27 fermait ZÉRO LIGNE — « 0 / 1 », dont les deux termes sont fabriqués — et laissait ouvert
   // le cas d'une ligne SERVIE qui ne porte rien : la jauge rendait alors le MÊME « 0 / 1 »,
@@ -1575,6 +1629,18 @@ function pieEl(cols, rows, query, drill, donut) {
   const data = rows.map(r => ({ label: r[0] == null ? '-' : String(r[0]), v: Math.max(0, nombreLu(r[vi]) ?? 0) })).filter(d => d.v > 0);
   const total = data.reduce((s, d) => s + d.v, 0);
   const wrap = document.createElement('div'); wrap.className = 'piewrap';
+  // `P11.18-p` — CE RALLIEMENT A ÉTÉ ESSAYÉ, JOUÉ, ET RETIRÉ — LA MESURE EST LA RAISON. Cette figure
+  // écrit le mot de l'absence en français EN DUR, là où les autres le choisissent par la langue : c'est
+  // la DEUX-VOIES que `P11.18-p` nomme depuis le 2026-08-27, et la chaîne française est une clé du
+  // lexique que le parcours de traduction rend en anglais. La faire passer par l'écrivain unique du fait
+  // sur `!rows.length` rendait bien l'anglais SANS le parcours — et FAISAIT TAIRE, mesuré le 2026-09-02,
+  // le témoin négatif qui établit que la mesure d'origine lisait ce module HORS du parcours : il ne
+  // restait plus une seule de ces phrases écrite en dur, et sa moitié cessait de mesurer quoi que ce
+  // soit. Un correctif qui ferme une accusation vraie en la privant de son objet coûte plus qu'il ne
+  // rend. La DEUX-VOIES reste donc ouverte, nommée, et TENUE par ce témoin-là.
+  // L'AUTRE RAISON, indépendante de la première : `!total` vaut AUSSI sur des lignes SERVIES dont
+  // aucune valeur n'est strictement positive (chemin que la porte de rendu ferme depuis `vizElement`,
+  // et que seul le sondage atteint) — un écrivain nommé « aucune ligne » y dirait FAUX.
   if (!total) { wrap.appendChild(muted('aucune donnée')); return wrap; }
   const W = 180, cx = W / 2, cy = W / 2, r = 78, rin = donut ? 44 : 0;
   const svg = mk('svg'); svg.setAttribute('viewBox', `0 0 ${W} ${W}`); svg.setAttribute('class', 'piechart');
@@ -1756,7 +1822,7 @@ function histogramEl(cols, rows, query, drill) {
   // absence qu'elle n'avait pas mesurée — rien n'avait été servi, donc rien n'avait été lu. La phrase de
   // la nature reste, mais pour le seul cas qui l'établit : des lignes servies dont aucune valeur n'est un
   // nombre (chemin que la porte de `vizElement` ferme, et que `vizSansPorte` laisse encore atteindre).
-  if (!rows.length) { wrap.appendChild(muted(LANG === 'en' ? 'no data' : 'aucune donnée')); return wrap; }
+  if (!rows.length) { wrap.appendChild(noeudAucuneLigne()); return wrap; }   // `P11.18-p` : l'écrivain unique du fait, byte-identique à la phrase qui vivait ici
   if (!vals.length) { wrap.appendChild(muted('aucune donnée numérique')); return wrap; }
   let bins;
   if (cols.length >= 2) {

@@ -6381,8 +6381,9 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
 //         « corrige » pas une phrase qui atteint déjà son lecteur en retirant la clé qui l'y porte.
 //     CE QUE CE TÉMOIN NE TIENT PAS : ni la mise en page ni l'encre peinte (section 0) — tout y est lu
 //     sur le TEXTE du document ; il ne dit rien des panneaux SEMÉS par le démon, dont les requêtes vivent
-//     hors de `web/` ; et il ne juge pas ce qu'une chaîne de BLANCS (`' '`) devrait valoir : le module la
-//     lit comme un zéro, ce qu'il DÉCLARE, et changer cela changerait sa définition partagée du vide.
+//     hors de `web/` ; et il ne juge pas ce qu'une chaîne de BLANCS (`' '`) devrait valoir — la phrase qui
+//     vivait ici, « le module la lit comme un zéro », est FAUSSE depuis `P11.20-y` (2026-09-01) : elle
+//     n'est plus lue comme un nombre nulle part, et c'est (62) qui tient ce cas-là, pas celui-ci.
 // ---------------------------------------------------------------------------------------------
 {
   const url49 = (f) => pathToFileURL(path.join(WEB, f)).href;
@@ -6731,7 +6732,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   const seau49 = viz49.vizElement(binneur49, ["seau", "n"], [["0-10", 42]], "", "");
   exiger(!refuse49(seau49) && seau49.textContent.includes("0-10") && seau49.textContent.includes("42"),
     `(49m-négatif) un agrégat DÉJÀ en seaux servi sur UNE ligne est refusé ou amputé : « ${seau49.textContent.slice(0, 160)} » — la donnée servie dit « 0-10 » et « 42 »`);
-  console.log(`[graphe-seaux] UNE FIGURE QUI DÉCOUPE SES PROPRES SEAUX EXIGE UNE ÉTENDUE, ET LE SONDAGE DIT QUI DÉCOUPE : sur les ${couples49.length} couple(s) (représentation, nombre de colonnes servies) balayés, ${invariants49.length} sont invariants à la PERMUTATION des lignes et ${decoupeurs49.length} le sont POUR LA BONNE RAISON — le témoin positif écarte les ${invariants49.length - decoupeurs49.length} autres, qui ne lisent tout simplement pas ce rang. Aucun type de graphe n'est nommé : le verdict vient du SONDAGE, et il est recoupé par la dérivation INDÉPENDANTE de (49k), qui lit le rendu. Sur une colonne qui ne porte qu'UNE valeur distincte, ces couples ne DESSINENT plus : ils refusent en nommant la colonne, là où ils rendaient une barre unique dont l'axe affichait « 1 » et des bornes de seau que rien n'avait servies. LA SIGNATURE DU NOMBRE FAUX EST TENUE À PART : deux données servies différentes ne rendent plus la MÊME figure dessinée. NON-RÉGRESSION, sans quoi un refus INCONDITIONNEL passerait : sur une colonne qui porte une étendue, les mêmes couples dessinent toujours et leur géométrie suit les valeurs ; aucun des ${couples49.length - decoupeurs49.length} couples qui ne découpent rien ne s'est mis à refuser ; et un agrégat DÉJÀ en seaux servi sur UNE SEULE ligne reste rendu avec son libellé et sa valeur. CE QUE CE TÉMOIN NE TIENT PAS : il ne juge que les représentations du dispatcher de ce module et les nombres de colonnes ${JSON.stringify(NCOLS49)} — un découpage qui n'apparaîtrait qu'à quatre colonnes lui échapperait ; il ne dit rien de l'encre peinte ni de la mise en page (section 0) ; il ne mesure pas ce qu'une colonne numérique TROUÉE devient une fois la porte franchie (le trou reste dessiné à zéro) ; et il ne voit aucun panneau SEMÉ par le démon, dont les requêtes vivent hors de web/.`);
+  console.log(`[graphe-seaux] UNE FIGURE QUI DÉCOUPE SES PROPRES SEAUX EXIGE UNE ÉTENDUE, ET LE SONDAGE DIT QUI DÉCOUPE : sur les ${couples49.length} couple(s) (représentation, nombre de colonnes servies) balayés, ${invariants49.length} sont invariants à la PERMUTATION des lignes et ${decoupeurs49.length} le sont POUR LA BONNE RAISON — le témoin positif écarte les ${invariants49.length - decoupeurs49.length} autres, qui ne lisent tout simplement pas ce rang. Aucun type de graphe n'est nommé : le verdict vient du SONDAGE, et il est recoupé par la dérivation INDÉPENDANTE de (49k), qui lit le rendu. Sur une colonne qui ne porte qu'UNE valeur distincte, ces couples ne DESSINENT plus : ils refusent en nommant la colonne, là où ils rendaient une barre unique dont l'axe affichait « 1 » et des bornes de seau que rien n'avait servies. LA SIGNATURE DU NOMBRE FAUX EST TENUE À PART : deux données servies différentes ne rendent plus la MÊME figure dessinée. NON-RÉGRESSION, sans quoi un refus INCONDITIONNEL passerait : sur une colonne qui porte une étendue, les mêmes couples dessinent toujours et leur géométrie suit les valeurs ; aucun des ${couples49.length - decoupeurs49.length} couples qui ne découpent rien ne s'est mis à refuser ; et un agrégat DÉJÀ en seaux servi sur UNE SEULE ligne reste rendu avec son libellé et sa valeur. CE QUE CE TÉMOIN NE TIENT PAS : il ne juge que les représentations du dispatcher de ce module et les nombres de colonnes ${JSON.stringify(NCOLS49)} — un découpage qui n'apparaîtrait qu'à quatre colonnes lui échapperait ; il ne dit rien de l'encre peinte ni de la mise en page (section 0) ; il ne mesure pas ce qu'une colonne numérique TROUÉE devient une fois la porte franchie — le trou n'y est plus dessiné à zéro depuis \`P11.20-y\`, et ce sont (62) et (63) qui le tiennent ; et il ne voit aucun panneau SEMÉ par le démon, dont les requêtes vivent hors de web/.`);
 
   // ---- (l) LA LANGUE DE « aucune donnée » EST SERVIE PAR LE LEXIQUE, ET LA MESURE L'ÉTABLIT ----
   const SUFFIXE49 = SUFFIXE_LANGUE;   // `P11.24-j` : un seul écrivain de l'adresse, le crochet est posé au préambule
@@ -6752,7 +6753,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
       `(49l) sous LANG='en', « ${m} » sert encore du français APRÈS le parcours de traduction : « ${n.textContent} » — la clé du lexique manque`);
   }
 
-  console.log(`[reglage-honore-ou-dit] LE RÉGLAGE DE L'EXPLOITANT EST HONORÉ : sur « ${large49} », les ${FENTES49.length} fentes × toutes les colonnes d'un résultat à ${C5.length} et à ${C3.length} colonnes (${honorees49} réglages balayés) posent la colonne réglée à la position que son infobulle promet, sans perdre ni doubler une seule colonne servie — là où la projection d'avant, rejouée ici, restait INERTE sur ${inertes49} de ces ${total49} réglages (elle rendait l'ordre SANS réglage) et remettait deux fois la même colonne sur le chemin étroit. Ce qu'un réglage ne peut PAS faire se DIT au lieu de s'évanouir : deux fentes sur la même colonne, une fente médiane sur un résultat sans milieu — chacune nommée avec la colonne et les libellés que l'exploitant voit, la barre restant au-dessus pour la défaire — et un réglage posé sur une fente que la représentation NE LIT PAS ne refuse rien et ne déplace rien. NON-RÉGRESSION : sur les ${MODES49.length} modes, un réglage qui nomme pour chaque fente la colonne qui y est déjà rend un balisage byte-identique et ne prononce pas un mot. UNE ABSENCE N'EST PAS UN ZÉRO : ni dans le refus d'une figure muette (une ligne sans valeur est comptée À PART, les vrais zéros gardant « toutes NULLES »), ni dans ce qu'une figure écarte (« nulle ou négative » ne se dit plus d'une valeur absente ni d'une valeur illisible). CE QU'UNE FIGURE NE MONTRE PAS, ELLE LE COMPTE : la grille dit sa coupe (${R70.length - lignesRendues} lignes sur ${R70.length}) et les lignes qu'une autre écrase, ${uneSeule49.length} représentations disent les lignes servies qu'elles ne lisent pas — sans que ce soit un refus, et sans nommer une colonne là où c'est une ligne qui manque — et toutes se taisent quand elles ne perdent rien. L'histogramme partage ses deux sémantiques sur la FORME du résultat et non sur son arité. Enfin la langue : « aucune donnée » atteint un lecteur anglophone par le LEXIQUE là où le module l'écrit en dur, mesuré en appliquant le parcours de traduction au nœud rendu — les deux moitiés tenues, pour qu'on ne retire pas la clé qui l'y porte. CE QUE CE TÉMOIN NE TIENT PAS : l'encre peinte et la mise en page (section 0) ; les panneaux SEMÉS par le démon, dont les requêtes vivent hors de web/ ; et ce qu'une chaîne de BLANCS devrait valoir — le module la lit comme un zéro, et il le déclare.`);
+  console.log(`[reglage-honore-ou-dit] LE RÉGLAGE DE L'EXPLOITANT EST HONORÉ : sur « ${large49} », les ${FENTES49.length} fentes × toutes les colonnes d'un résultat à ${C5.length} et à ${C3.length} colonnes (${honorees49} réglages balayés) posent la colonne réglée à la position que son infobulle promet, sans perdre ni doubler une seule colonne servie — là où la projection d'avant, rejouée ici, restait INERTE sur ${inertes49} de ces ${total49} réglages (elle rendait l'ordre SANS réglage) et remettait deux fois la même colonne sur le chemin étroit. Ce qu'un réglage ne peut PAS faire se DIT au lieu de s'évanouir : deux fentes sur la même colonne, une fente médiane sur un résultat sans milieu — chacune nommée avec la colonne et les libellés que l'exploitant voit, la barre restant au-dessus pour la défaire — et un réglage posé sur une fente que la représentation NE LIT PAS ne refuse rien et ne déplace rien. NON-RÉGRESSION : sur les ${MODES49.length} modes, un réglage qui nomme pour chaque fente la colonne qui y est déjà rend un balisage byte-identique et ne prononce pas un mot. UNE ABSENCE N'EST PAS UN ZÉRO : ni dans le refus d'une figure muette (une ligne sans valeur est comptée À PART, les vrais zéros gardant « toutes NULLES »), ni dans ce qu'une figure écarte (« nulle ou négative » ne se dit plus d'une valeur absente ni d'une valeur illisible). CE QU'UNE FIGURE NE MONTRE PAS, ELLE LE COMPTE : la grille dit sa coupe (${R70.length - lignesRendues} lignes sur ${R70.length}) et les lignes qu'une autre écrase, ${uneSeule49.length} représentations disent les lignes servies qu'elles ne lisent pas — sans que ce soit un refus, et sans nommer une colonne là où c'est une ligne qui manque — et toutes se taisent quand elles ne perdent rien. L'histogramme partage ses deux sémantiques sur la FORME du résultat et non sur son arité. Enfin la langue : « aucune donnée » atteint un lecteur anglophone par le LEXIQUE là où le module l'écrit en dur, mesuré en appliquant le parcours de traduction au nœud rendu — les deux moitiés tenues, pour qu'on ne retire pas la clé qui l'y porte. CE QUE CE TÉMOIN NE TIENT PAS : l'encre peinte et la mise en page (section 0) ; les panneaux SEMÉS par le démon, dont les requêtes vivent hors de web/ ; et ce qu'une chaîne de BLANCS devrait valoir — elle n'est plus lue comme un nombre nulle part depuis \`P11.20-y\`, et c'est (62) qui le tient.`);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -8998,6 +8999,223 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     `(64e) l'aveu du forage retiré ne compte pas la même chose dans les deux langues (fr « ${chiffres64(aveuFR64)} », en « ${chiffres64(aveuEN64)} »)`);
 
   console.log(`[fenetre-de-forage-a-un-seul-ecrivain] LES TROIS SITES QUI FABRIQUAIENT UNE DURÉE SONT FERMÉS, ET C'EST JOUÉ AU CLIC, PAS LU DANS LE SOURCE. Une table de seaux ouvrait SOIXANTE secondes quelle que soit la cadence servie ; les fenêtres qu'elle ouvre maintenant, relevées en cliquant CHAQUE ligne, sont exactement les écarts que sa colonne d'instants PORTE — ${JSON.stringify(largeursPortees64(REGULIERE64))} sur une table régulière, ${JSON.stringify(largeursPortees64(IRREGULIERE64))} sur une table irrégulière où la largeur est celle du VOISIN de la ligne cliquée (${JSON.stringify(parLigne64)}, et non l'écart des deux premières appliqué partout). Une table d'une seule ligne et une table de deux lignes du MÊME instant n'ouvrent plus rien : elles le DISENT, à côté de la table et avant le clic, par le nœud que cinq figures partageaient déjà — et le forage de VALEUR part quand même, sans plage, comme le fait déjà le forage d'un chiffre. Le zoom temporel de la courbe, seul autre consommateur, refuse la même chose par le même écrivain. TROIS INSTRUMENTS bornent le verdict : sans gabarit de forage, sur une colonne de tête qui n'est pas une colonne d'instants, et sur le chemin nominal, aucune fenêtre ne s'ouvre et aucun aveu ne s'écrit — le balisage d'une table entièrement cadencée reste une TABLE NUE. CE QUE CE TÉMOIN NE TIENT PAS : le PLACEMENT du survol de la courbe, fourni à la main comme en (63) ; le fait qu'une ligne dont la fenêtre est refusée garde le MÊME curseur et la MÊME infobulle qu'une ligne qui l'ouvre — elle offre toujours son forage de valeur, mais rien à l'écran ne distingue les deux gestes AVANT le clic ; le sort d'un gabarit qui NOMME \`$from\`/\`$to\` sans qu'aucune fenêtre ait été lue — les marqueurs partent alors tels quels vers le démon, exactement comme ils le font déjà depuis le forage d'un chiffre, et personne ici ne juge ce que le démon en fait ; le COMPTE, qui reste à la LIGNE SERVIE et non à l'instant distinct, si bien que deux lignes du même instant sont comptées deux fois ; et le dernier seau d'une colonne, borné par l'écart au PRÉCÉDENT faute de successeur servi.`);
+}
+
+// ---------------------------------------------------------------------------------------------
+// 65. SUR ZÉRO LIGNE, UNE FIGURE QUI NE DIT RIEN LE DIT MAINTENANT (`P11.18-p`).
+//
+//     LE CONSTAT, ET IL EST LE DERNIER DES TROIS QUE `P11.18-p` NOMMAIT. Les deux autres — une
+//     colonne numérique TROUÉE dessinée à zéro sans qu'aucun compte ne le dise, et une chaîne de
+//     BLANCS lue comme un zéro — ont été FERMÉS par `P11.20-y` et `P11.24-d` sans que la clé soit
+//     mise à jour ; celui-ci tenait encore, et il a été RE-MESURÉ le 2026-09-02 avant d'être touché :
+//     sur ZÉRO ligne, quatre représentations DISENT l'absence, deux rendent un fait qui leur est
+//     propre (un tiret, des en-têtes), et TROIS rendaient un cadre dont le texte est VIDE. Elles
+//     n'affirmaient rien de faux — et elles ne disaient rien non plus.
+//
+//     POURQUOI LA PORTE DE RENDU NE POUVAIT PAS LE VOIR. Elle compte les MARQUES, et l'une des trois
+//     en pose une sur zéro ligne : le tracé de ses axes. Le fait qu'une figure ne dise rien n'est donc
+//     pas le fait qu'elle ne dessine rien — ce sont deux mesures distinctes sur le même rendu, et
+//     c'est la seconde qui manquait. Ce témoin n'énumère aucun type de graphe : les représentations
+//     viennent du DISPATCHER, et le prédicat est « le texte de ce rendu est-il vide ? ».
+//
+//     LE TÉMOIN NÉGATIF EST LA MOITIÉ QUI COMPTE, DEUX FOIS. Une règle qui dirait « aucune donnée »
+//     sur des lignes SERVIES recréerait mot pour mot le défaut fondateur de cette clé : (65d) l'exige
+//     sur neuf jeux servis. Et une règle qui ne lirait pas le RENDU — un simple `if (!rows.length)` au
+//     point d'entrée — APLATIRAIT les deux représentations qui rendent leur propre fait : (65c) l'exige.
+// ---------------------------------------------------------------------------------------------
+{
+  const viz65 = await import(pathToFileURL(path.join(WEB, "viz.js")).href);
+  const source65 = readFileSync(path.join(WEB, "viz.js"), "utf8");
+
+  // LES REPRÉSENTATIONS SONT LUES DANS LE DISPATCHER, comme en (45) et (62) : une liste écrite ici
+  // cesserait de couvrir une figure ajoutée demain, et c'est exactement ce que la famille poursuit.
+  const iDeb65 = source65.indexOf("function vizSansPorte(");
+  const iFin65 = source65.indexOf("function vizElement(");
+  exiger(iDeb65 >= 0 && iFin65 > iDeb65,
+    "(65-instrument) le dispatcher de représentations n'est plus lisible dans web/viz.js : les modes de ce témoin ne dériveraient de rien");
+  const MODES65 = [...new Set([...source65.slice(iDeb65, iFin65).matchAll(/mode === '([a-z]+)'/g)].map((m) => m[1]))].concat("table");
+  exiger(MODES65.length >= 9, `(65-instrument) ${MODES65.length} mode(s) lus, plancher 9 : ce témoin ne couvrirait presque rien`);
+
+  const T65 = (e) => String((e && e.textContent) || "").replace(/\s+/g, " ").trim();
+  const cueillir65 = (el, pred, acc = []) => { if (el && pred(el)) acc.push(el); for (const c of (el && el.children) || []) cueillir65(c, pred, acc); return acc; };
+  const classes65 = (el) => cueillir65(el, (n) => n.className).map((n) => n.className);
+  // LE PRÉDICAT QUI DÉCIDE, ET IL N'EMPRUNTE RIEN AU VOCABULAIRE DU MODULE : ce rendu porte-t-il un mot ?
+  const ditQuelqueChose65 = (el) => T65(el) !== "";
+  const rendre65 = (m, cols, rows) => viz65.vizElement(m, cols, rows, "", "");
+  const AUCUNE_LIGNE65 = [];
+
+  // ---- (65-instrument-bis) LE PRÉDICAT EST VALIDÉ DANS LES DEUX SENS, SUR DES NŒUDS FABRIQUÉS ----
+  // Sans cela, « toutes les représentations disent quelque chose » serait vrai par vacuité le jour où
+  // le prédicat cesserait de distinguer. Les deux formes MUETTES sont celles que les trois figures
+  // rendaient AVANT ce lot, reconstituées à la main et hors du dépôt : un cadre nu, et un cadre qui
+  // porte une géométrie sans un mot.
+  {
+    const nu65 = document.createElement("div");
+    const geometrique65 = document.createElement("svg");
+    const trace65 = document.createElement("path"); trace65.setAttribute("d", "M30,30 L30,170 L610,170");
+    geometrique65.appendChild(trace65);
+    const parlant65 = document.createElement("div"); parlant65.textContent = "-";
+    exiger(!ditQuelqueChose65(nu65) && !ditQuelqueChose65(geometrique65),
+      "(65-instrument-bis) le prédicat « ce rendu ne dit rien » ne reconnaît pas un cadre nu ni un cadre qui ne porte qu'une géométrie : il ne mesurerait pas ce que ce témoin lui demande");
+    exiger(ditQuelqueChose65(parlant65),
+      "(65-instrument-bis) le prédicat « ce rendu ne dit rien » ne reconnaît pas un rendu qui porte un mot : il rendrait VRAI partout, et (65a) passerait sans rien mesurer");
+  }
+
+  // ---- (65a) SUR ZÉRO LIGNE, AUCUNE REPRÉSENTATION NE RESTE MUETTE ----
+  const COLS65 = ["host", "n"];
+  const rendusVides65 = new Map(MODES65.map((m) => [m, rendre65(m, COLS65, AUCUNE_LIGNE65)]));
+  const muettes65 = MODES65.filter((m) => !ditQuelqueChose65(rendusVides65.get(m)));
+  exiger(muettes65.length === 0,
+    `(65a) sur ZÉRO ligne servie, ${muettes65.length} représentation(s) rendent un cadre dont le texte est VIDE (${muettes65.join(", ")}) : elles n'affirment rien, et elles ne disent rien non plus`);
+
+  // ---- (65b) UNE SEULE PHRASE POUR L'ABSENCE, ET ELLE EST DÉRIVÉE DE CE QUI EXISTAIT DÉJÀ ----
+  // La phrase n'est PAS écrite ici, et elle n'est pas non plus lue sur le chemin que ce lot vient de
+  // poser — ce serait circulaire, et un idiome NEUF passerait alors sans être vu. Elle est lue sur les
+  // représentations prises SANS la porte : ce qu'elles disaient déjà d'elles-mêmes, avant ce lot. Le
+  // texte que le PLUS d'entre elles rendent sur zéro ligne EST la phrase de l'absence.
+  // LES TROIS QUI SE TAISAIENT SONT ALORS IDENTIFIÉES SANS ÊTRE NOMMÉES : ce sont celles dont le rendu
+  // NU ne dit toujours rien. L'exigence porte sur elles — elles doivent rendre CETTE phrase, pas une
+  // autre —, et c'est ce qui interdit d'inventer un douzième idiome au point d'entrée.
+  const nus65 = new Map(MODES65.map((m) => [m, T65(viz65.vizSansPorte(m, COLS65, AUCUNE_LIGNE65, "", ""))]));
+  const compte65 = new Map();
+  for (const m of MODES65) { const t = nus65.get(m); if (t !== "") compte65.set(t, (compte65.get(t) || 0) + 1); }
+  const [PHRASE65, N_PARTAGEE65] = [...compte65.entries()].sort((a, b) => b[1] - a[1])[0] || ["", 0];
+  exiger(N_PARTAGEE65 >= 2 && PHRASE65 !== "",
+    `(65b-instrument) aucune phrase d'absence n'est PARTAGÉE par au moins deux représentations prises sans la porte (la plus fréquente, « ${PHRASE65} », est rendue ${N_PARTAGEE65} fois) : « un seul écrivain » ne mesurerait rien`);
+  const muettesSansPorte65 = MODES65.filter((m) => nus65.get(m) === "");
+  for (const m of muettesSansPorte65) exiger(T65(rendusVides65.get(m)) === PHRASE65,
+    `(65b) « ${m} » ne dit rien d'elle-même sur zéro ligne, et le point d'entrée lui donne « ${T65(rendusVides65.get(m))} » là où les autres rendent « ${PHRASE65} » : c'est un idiome de plus, pas la phrase qui existait`);
+  const disentLAbsence65 = MODES65.filter((m) => T65(rendusVides65.get(m)) === PHRASE65);
+  const disentAutreChose65 = MODES65.filter((m) => T65(rendusVides65.get(m)) !== PHRASE65);
+
+  // ---- (65c) LA RÈGLE LIT LE RENDU, ELLE N'APLATIT PAS — LE CONTRÔLE QUI TUE LA VERSION PARESSEUSE ----
+  // Un `if (!rows.length) return <la phrase>` au point d'entrée passerait (65a) et (65b) haut la main,
+  // et il RETIRERAIT le fait propre des représentations qui en rendent un. C'est ce contrôle, et lui
+  // seul, qui sépare une règle DÉRIVÉE du rendu d'un drapeau posé sur le nombre de lignes.
+  exiger(disentAutreChose65.length >= 1,
+    `(65c) sur ZÉRO ligne, les ${MODES65.length} représentations rendent TOUTES la même phrase : celles qui rendaient un fait qui leur est propre ont été APLATIES par une règle qui ne lit pas le rendu`);
+  for (const m of disentAutreChose65) exiger(ditQuelqueChose65(rendusVides65.get(m)),
+    `(65c) « ${m} » ne rend ni la phrase partagée ni un fait qui lui soit propre sur zéro ligne`);
+
+  // ---- (65d) LE NÉGATIF : SUR DES LIGNES SERVIES, PERSONNE N'AFFIRME CETTE PHRASE ----
+  // C'est le défaut FONDATEUR de cette clé — une absence affirmée là où les lignes existent — et un
+  // aveu inconditionnel ferait rougir chacun des rendus ci-dessous.
+  //
+  // AFFIRMER N'EST PAS MENTIONNER, ET MON PREMIER PRÉDICAT CONFONDAIT LES DEUX. Écrit avec un simple
+  // `includes`, il accusait le REFUS de la porte de rendu, dont la dernière phrase CITE le mot pour le
+  // démentir (« le rendre “aucune donnée” affirmerait une absence ») : le témoin rougissait sur le
+  // geste même qui ferme le défaut. Une phrase est AFFIRMÉE quand un nœud du rendu ne dit QUE cela ;
+  // citée, elle vit à l'intérieur d'une phrase plus longue. Le prédicat est validé dans les deux sens
+  // juste en dessous, sans quoi il rendrait faux partout et (65d) passerait sans rien mesurer.
+  const JEUX65 = [
+    ["nominal", COLS65, [["a", 5], ["b", 3], ["c", 7]]],
+    ["une seule ligne", COLS65, [["a", 5]]],
+    ["vrais zéros", COLS65, [["a", 0], ["b", 0], ["c", 0]]],
+    ["valeurs négatives", COLS65, [["a", -1], ["b", -2], ["c", -3]]],
+    ["colonne trouée", COLS65, [["a", 5], ["b", null], ["c", 7]]],
+    ["chaîne de blancs", COLS65, [["a", 5], ["b", "   "], ["c", 7]]],
+    ["colonne textuelle", ["host", "sev"], [["a", "rouge"], ["b", "vert"], ["c", "rouge"]]],
+    ["abscisse temporelle", ["bucket", "n"], [[1700000000, 5], [1700000300, 7], [1700000600, 2]]],
+    ["une seule colonne", ["n"], [[1], [2], [3], [40]]],
+    ["deux dimensions", ["host", "svc", "n"], [["a", "x", 5], ["b", "y", 3], ["c", "x", 7]]],
+  ];
+  const affirme65 = (el) => cueillir65(el, (n) => T65(n) === PHRASE65).length > 0;
+  {
+    // LES DEUX SENS SONT ÉPROUVÉS SUR DES NŒUDS FABRIQUÉS ICI, hors du dépôt : une exigence adossée à
+    // une phrase du module deviendrait une RANÇON le jour où cette phrase change pour une bonne raison.
+    const affirmant65 = document.createElement("div"); affirmant65.textContent = PHRASE65;
+    const citant65 = document.createElement("div");
+    citant65.textContent = "les lignes existent : le rendre « " + PHRASE65 + " » affirmerait une absence";
+    exiger(affirme65(affirmant65),
+      "(65d-instrument) le prédicat « ce rendu AFFIRME l'absence » ne la retrouve pas dans un nœud qui ne dit QUE cela : il rendrait faux partout et (65d) passerait sans rien mesurer");
+    exiger(!affirme65(citant65),
+      "(65d-instrument) le prédicat « ce rendu AFFIRME l'absence » accuse un nœud qui CITE la phrase pour la démentir : il rougirait sur le geste même qui ferme ce défaut");
+  }
+  let servisJuges65 = 0;
+  for (const [nom, cols, rows] of JEUX65) {
+    for (const m of MODES65) {
+      servisJuges65++;
+      const el = rendre65(m, cols, rows);
+      exiger(!affirme65(el),
+        `(65d) « ${m} » AFFIRME l'absence (« ${PHRASE65} ») sur un jeu de ${rows.length} ligne(s) SERVIES (${nom}) : c'est le mensonge que cette clé poursuit — « ${T65(el).slice(0, 160)} »`);
+    }
+  }
+
+  // ---- (65e) CE N'EST PAS UN REFUS, ET CE N'EST PAS UN AVEU DE PERTE ----
+  // Les deux marques sont DÉRIVÉES de rendus qui les portent vraiment, jamais tapées ici : un refus
+  // (une ordonnée textuelle) et un aveu de perte (une colonne trouée). Sur zéro ligne, ni l'un ni
+  // l'autre n'a lieu d'être — rien n'est impossible, et il n'y a rien à compter.
+  const classesDUnRefus65 = classes65(rendre65("bar", COLS65, [["a", "rouge"], ["b", "vert"]])).filter((c) => /\bbad\b/.test(c));
+  const classesDUnAveu65 = classes65(rendre65("bar", COLS65, [["a", 5], ["b", null]])).filter((c) => c.includes("hint") && !/\bbad\b/.test(c));
+  exiger(classesDUnRefus65.length > 0 && classesDUnAveu65.length > 0,
+    `(65e-instrument) la marque d'un refus (${classesDUnRefus65.length}) ou celle d'un aveu de perte (${classesDUnAveu65.length}) n'est plus dérivable d'un rendu qui la porte : (65e) ne mesurerait rien`);
+  for (const m of MODES65) {
+    const vues = classes65(rendusVides65.get(m));
+    exiger(!vues.some((c) => classesDUnRefus65.includes(c)),
+      `(65e) « ${m} » rend un REFUS sur zéro ligne : l'absence est un fait, elle n'a rien d'impossible`);
+    exiger(!vues.some((c) => classesDUnAveu65.includes(c)),
+      `(65e) « ${m} » rend un aveu de PERTE sur zéro ligne : il n'y a aucune ligne à laisser de côté`);
+  }
+
+  // ---- (65f) LE CHEMIN QUI ATTEINT VRAIMENT CETTE RÈGLE EST JOUÉ, PAS SUPPOSÉ ----
+  // `P11.24-i` : une propriété qu'on lit dans le source n'est pas une propriété qu'on joue. Sur
+  // Dashboards, le panneau comme l'aperçu d'instantané écartent un résultat sans ligne AVANT d'appeler
+  // la représentation ; l'éditeur de requête, lui, rend son résultat d'agrégation sans jamais
+  // l'écarter, et c'est LUI qu'on joue ici — sur les nœuds réels d'`index.html`.
+  const qresult65 = document.querySelector("#qresult"), selViz65 = document.querySelector("#viz");
+  exiger(!!qresult65 && !!selViz65,
+    "(65f-instrument) `#qresult` ou `#viz` est absent d'index.html : le chemin de l'éditeur de requête ne serait pas exerçable et ce qui suit passerait en étant muet");
+  if (qresult65 && selViz65) {
+    const offerts65 = (selViz65.options || []).map((o) => o.getAttribute("value") || o.textContent).filter((v) => MODES65.includes(v));
+    exiger(offerts65.length >= 2,
+      `(65f-instrument) le sélecteur de représentation d'Explore n'offre que ${offerts65.length} mode(s) du dispatcher : le chemin joué ne dirait presque rien`);
+    const etat65 = await import(pathToFileURL(path.join(WEB, "state.js")).href);
+    const vizAvant65 = selViz65.value, resultatAvant65 = etat65.S.lastResult;
+    const muettesJouees65 = [];
+    for (const m of offerts65) {
+      selViz65.value = m;
+      etat65.S.lastResult = { columns: COLS65, rows: [] };
+      viz65.renderViz();
+      const figure65 = qresult65.children[qresult65.children.length - 1];
+      if (!ditQuelqueChose65(figure65)) muettesJouees65.push(m);
+    }
+    exiger(muettesJouees65.length === 0,
+      `(65f) JOUÉ dans l'éditeur de requête sur un résultat d'agrégation SANS LIGNE : ${muettesJouees65.length} représentation(s) offertes par le sélecteur rendent encore un cadre muet (${muettesJouees65.join(", ")})`);
+    selViz65.value = vizAvant65; etat65.S.lastResult = resultatAvant65; qresult65.replaceChildren();
+    var OFFERTS65 = offerts65;
+  }
+
+  // ---- (65g) LES DEUX LANGUES, ET L'INSTRUMENT QUI ÉPROUVE LA LANGUE LUE ----
+  // `P11.24-j` — un module chargé sous une adresse de langue est un module DISTINCT. Sans le crochet
+  // de résolution posé au préambule, il lierait le `core.js` FRANÇAIS et ce témoin passerait en étant
+  // MUET. L'instrument l'éprouve sur CE module-ci.
+  localStorage.setItem("soc_lang", "en");
+  const vizEN65 = await import(adresseSousLaLangue("viz.js"));
+  localStorage.removeItem("soc_lang");
+  const zeroEN65 = new Map(MODES65.map((m) => [m, T65(vizEN65.vizElement(m, COLS65, AUCUNE_LIGNE65, "", ""))]));
+  // DEUX VOIES POUR LA MÊME FAMILLE DE PHRASES, ET LA MESURE LES SÉPARE ICI SANS EN JUGER : celles qui
+  // choisissent par la LANGUE rendent un texte DIFFÉRENT du français dès le rendu ; celles qui écrivent
+  // le français en dur s'en remettent au parcours du lexique, et c'est (49l) qui tient cette moitié-là,
+  // le parcours appliqué. La DEUX-VOIES est nommée par `P11.18-p` depuis le 2026-08-27 : ce lot ne la
+  // ferme pas, et il a MESURÉ pourquoi — voir `pieEl`.
+  const parLaLangue65 = disentLAbsence65.filter((m) => zeroEN65.get(m) !== PHRASE65);
+  const parLeLexique65 = disentLAbsence65.filter((m) => zeroEN65.get(m) === PHRASE65);
+  exiger(parLaLangue65.length > 0,
+    `(65g-instrument) AUCUNE représentation ne rend l'absence autrement qu'en français sous \`viz.js${SUFFIXE_LANGUE}\` : ce module sert du français en se croyant lu en anglais, et tout ce qui suit passerait en étant muet`);
+  const PHRASE_EN65 = zeroEN65.get(parLaLangue65[0]);
+  exiger(!/[éèêëàâçùûôîï]/.test(PHRASE_EN65), `(65g) la phrase d'absence choisie par la langue porte un accent français sous LANG='en' : « ${PHRASE_EN65} »`);
+  for (const m of parLaLangue65) exiger(zeroEN65.get(m) === PHRASE_EN65,
+    `(65g) « ${m} » ne rend pas la MÊME phrase d'absence que les autres de sa voie sous LANG='en' : « ${zeroEN65.get(m)} » au lieu de « ${PHRASE_EN65} »`);
+  for (const m of disentAutreChose65) exiger(zeroEN65.get(m) !== PHRASE_EN65 && zeroEN65.get(m) !== PHRASE65,
+    `(65g) « ${m} » est APLATIE sur la phrase d'absence sous LANG='en' alors qu'elle rend un fait propre sous LANG='fr' : « ${zeroEN65.get(m)} »`);
+
+  // LA BORNE DES APPELANTS, MESURÉE ET NON GARDÉE : le nombre de sites qui écartent un résultat sans
+  // ligne AVANT la représentation. Il est IMPRIMÉ, pas exigé — une exigence sur l'état d'un fichier
+  // voisin deviendrait une rançon le jour où ce fichier change pour une bonne raison.
+  const ecartsAvantFigure65 = (readFileSync(path.join(WEB, "dashboards.js"), "utf8").match(/(?<!function )corpsSansLigne\(/g) || []).length;
+
+
+  console.log(`[zero-ligne-ne-se-tait-plus] SUR ZÉRO LIGNE, PLUS AUCUNE REPRÉSENTATION NE REND UN CADRE MUET, ET LA PHRASE N'EST PAS UNE INVENTION. Le constat a été RE-MESURÉ avant d'être touché : sur les ${MODES65.length} représentations du dispatcher, ${disentLAbsence65.length} rendent maintenant la MÊME phrase d'absence (« ${PHRASE65} »), dont ${muettesSansPorte65.length} (${muettesSansPorte65.join(", ")}) qui, prises SANS la porte, ne disent toujours rien — un cadre nu, une grille sans corps, et des axes tracés sans un mot : c'est le point d'entrée qui parle pour elles, et ce compte est le RESTE que ce lot ferme, dérivé du module et non recopié de la clé. ${disentAutreChose65.length} représentations gardent le fait qui leur est propre (${disentAutreChose65.join(", ")}). LA PHRASE EST DÉRIVÉE DU MODULE, JAMAIS RECOPIÉE : c'est le texte que le plus de représentations rendaient déjà. LE PRÉDICAT NE NOMME AUCUN TYPE ET N'EMPRUNTE RIEN AU VOCABULAIRE DES MARQUES — la porte de rendu, elle, ne pouvait pas voir ce cas, une des trois posant bien une marque (ses axes) sur zéro ligne. LES DEUX NÉGATIFS SONT LA MOITIÉ QUI COMPTE : ${servisJuges65} rendus sur ${JEUX65.length} jeux SERVIS — vrais zéros, négatives, colonne trouée, chaîne de blancs, colonne textuelle compris — ne prononcent PAS un mot de cette phrase (un aveu inconditionnel les ferait tous rougir), et les ${disentAutreChose65.length} représentations qui rendent un fait propre ne sont PAS aplaties (une règle posée sur le seul nombre de lignes, sans lire le rendu, les effacerait). Aucun refus et aucun aveu de perte ne paraît sur zéro ligne, les deux marques étant dérivées de rendus qui les portent vraiment. LE CHEMIN EST JOUÉ, PAS LU : ${(typeof OFFERTS65 !== "undefined" ? OFFERTS65.length : 0)} représentation(s) offertes par le sélecteur d'Explore sont rendues sur un résultat d'agrégation SANS LIGNE, par les nœuds réels d'index.html, et aucune ne reste muette. LES DEUX LANGUES SONT EXERCÉES, ET LES DEUX VOIES DE TRADUCTION SONT COMPTÉES PLUTÔT QUE CONFONDUES : ${parLaLangue65.length} représentation(s) choisissent la phrase PAR LA LANGUE et la rendent en anglais dès le rendu (« ${PHRASE_EN65} »), ${parLeLexique65.length} l'écrivent en français EN DUR et s'en remettent au parcours du lexique — moitié tenue par (49l), pas par celui-ci —, sous un instrument qui exige que l'instance anglaise porte bien l'anglais. CE QUE CE TÉMOIN NE TIENT PAS : l'encre peinte et la mise en page (section 0) — une feuille de style qui masquerait ce mot lui échapperait ; il juge le TEXTE d'un arbre et jamais la POSITION visuelle de la phrase ; il ne dit rien du chemin des Dashboards, où ${ecartsAvantFigure65} site(s) rendent un corps SANS LIGNE par une fabrique qui leur est propre, avant toute représentation, avec leur propre phrase de fenêtre — compté, non gardé ; il ne FERME pas la DEUX-VOIES de traduction que la clé nomme depuis le 2026-08-27 — ${parLeLexique65.length} figure(s) rendent encore ce mot par une chaîne française passée au lexique — et le ralliement a été ESSAYÉ puis RETIRÉ, pour deux raisons mesurées le 2026-09-02 : il faisait TAIRE le témoin négatif de (49l), qui établit que la mesure d'origine lisait ce module HORS du parcours de traduction, et la condition de cette figure vaut AUSSI sur des lignes servies, où un écrivain nommé « aucune ligne » dirait faux ; et il ne dit rien des panneaux SEMÉS par le démon, dont les requêtes vivent hors de web/.`);
 }
 
 // LE VERDICT PORTE SA PROPRE LIMITE (`P11.13-g`). Un vert qui ne dit pas ce sur quoi il ne s'engage pas

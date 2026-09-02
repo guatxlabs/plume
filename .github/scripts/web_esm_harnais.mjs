@@ -5298,9 +5298,23 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     `(45a-négatif) « gauge » sans la porte fabrique encore un rapport à la place de la cellule servie : « ${nu("gauge", TXT).textContent} »`);
   for (const m of ["pie", "donut"]) exiger(/aucune donnée|no data/i.test(nu(m, TXT).textContent) && TXT.length === 3,
     `(45a-négatif) « ${m} » sans la porte n'annonce plus une ABSENCE alors que ${TXT.length} lignes existent : « ${nu(m, TXT).textContent} »`);
-  const cellules = classe(nu("heatmap", TXT), "heatcell").map((n) => n.textContent);
-  exiger(cellules.length > 0 && cellules.every((t) => t === ""),
-    `(45a-négatif) « heatmap » sans la porte ne rend plus une grille ENTIÈREMENT vide sur des valeurs qui existent (${JSON.stringify(cellules)})`);
+  // `P11.24-d` A DÉPLACÉ CETTE SIGNATURE, ET C'EST UNE MESURE. Ce qui était épinglé ici — une grille
+  // ENTIÈREMENT vide — était la signature d'une case servie non lue rendue comme une case que RIEN
+  // n'atteint : la propriété tenue (« aucun nombre n'est peint sur ce qui n'a pas été lu ») était vraie,
+  // mais elle l'était de la même façon pour un VRAI zéro, ce qui la rendait sans valeur. On exige
+  // maintenant les DEUX moitiés : aucun nombre, ET la marque de « rien n'a été lu » sur chaque case —
+  // marque DÉRIVÉE de ce que la jauge sert d'une cellule non lue, jamais recopiée ici.
+  const marqueNonLue = nu("gauge", [["a", null]]).textContent.trim();
+  exiger(marqueNonLue !== "" && !/\d/.test(marqueNonLue),
+    `(45a-négatif-instrument) la marque d'une valeur non lue, lue sur la jauge, est vide ou porte un chiffre (« ${marqueNonLue} ») : la comparaison ci-dessous ne mesurerait rien`);
+  const cellulesTxt = classe(nu("heatmap", TXT), "heatcell").map((n) => n.textContent);
+  exiger(cellulesTxt.length > 0 && cellulesTxt.every((t) => !/\d/.test(t)),
+    `(45a-négatif) « heatmap » sans la porte peint un NOMBRE sur des valeurs qu'il n'a pas lues (${JSON.stringify(cellulesTxt)}) : la conversion aveugle est de retour`);
+  exiger(cellulesTxt.every((t) => t === marqueNonLue),
+    `(45a-négatif) « heatmap » sans la porte rend une case SERVIE mais non lue comme une case que rien n'atteint (${JSON.stringify(cellulesTxt)} au lieu de « ${marqueNonLue} » partout)`);
+  const marquees = classe(nu("heatmap", TXT), "heatcell-nonlue").length;
+  exiger(marquees === cellulesTxt.length,
+    `(45a-négatif) ${marquees} case(s) sur ${cellulesTxt.length} portent l'encre réservée à « rien n'a été lu » : l'encre vient de l'échelle, ou elle manque`);
   // `histogram` : son aveu ne sortait QUE si aucune valeur n'était un nombre. Sur une colonne MÉLANGÉE
   // il rendait la valeur textuelle en barre de hauteur ZÉRO — donc son honnêteté n'était que partielle.
   const hauteurs = trouver(viz.vizSansPorte("histogram", COLS, MIXTE, "", ""), (n) => n.tagName === "RECT").map((n) => Number(n.attributes.height));
@@ -8489,6 +8503,264 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     `(62f) les figures qui avouent une lecture manquante (${JSON.stringify(avouantes62)}) n'écrivent pas par le MÊME nœud : ${JSON.stringify([...prefixes62])}`);
 
   console.log(`[valeur-illisible-jamais-un-zero] UNE VALEUR ILLISIBLE N'EST PLUS RENDUE COMME UN ZÉRO, ET LA PHRASE SERVIE DIT CE QUI A ÉTÉ LU. Le module partageait UNE définition — « cette ligne porte une valeur » — et convertissait sans jamais demander si ce qui était porté SE LISAIT : \`Number(' ')\` et \`Number(null)\` valant 0 et étant FINIS, une chaîne de BLANCS passait pour un zéro MESURÉ et une absence, sautée par le profil de colonne, franchissait les deux portes avant d'être dessinée à zéro. La conséquence la plus grave n'était pas une phrase mais une FIGURE : sur les ${traceurs62.length} représentation(s) que le sondage dit placer leurs lignes par l'ABSCISSE (${traceurs62.join(", ")}), une seule ligne sans abscisse ramenait l'étendue à ZÉRO — la série qui commence à UN se dessinait depuis l'origine, sous des repères imprimant « 1 » et « 3 ». ${axesJuges62} axe(s) sont jugés ici sur les ${ILLISIBLES62.length} classes de cellule illisible : les points restent EXACTEMENT là où la même série les pose une fois la ligne retirée, et la colonne est NOMMÉE. ${juges62} couple(s) (représentation, fente, classe) sont passés à l'oracle — une cellule non lue ne sert pas le même texte qu'un VRAI zéro, et la figure refuse ou avoue — chacun adossé à son contrôle positif (deux valeurs réelles doivent rendre deux choses différentes), ${muets62.length} couple(s) écartés pour instrument muet${muets62.length ? " (" + muets62.join(", ") + ")" : ""}. Les ${coercantes62.length} représentation(s) qui ramènent leur ordonnée à un nombre REFUSENT désormais une chaîne de blancs et ne l'appellent plus « nulle », pendant que ${disentNulles62.length} d'entre elles gardent cette phrase pour de VRAIS zéros. Les deux causes « rien n'a été lu » — rien de porté, quelque chose de porté qu'on ne sait pas lire — sont comptées À PART, nommées avec leur colonne sur le compte des lignes SERVIES, et écrites par un SEUL nœud partagé par les ${new Set(avouantes62).size} figures qui avouent. LE NÉGATIF, QUI EST LA MOITIÉ QUI COMPTE : un VRAI zéro déplace toujours l'origine, ne fait avouer personne, et ${MODES62.length * LUS62.length} rendus sur une donnée ENTIÈREMENT lue — vrais zéros et valeurs négatives compris — ne prononcent pas un mot ; un aveu inconditionnel les ferait tous rougir. CE QUE CE TÉMOIN NE TIENT PAS : l'encre réellement peinte et la mise en page (section 0) ; la GÉOMÉTRIE d'une ligne non lue prise séparément — l'oracle ci-dessus se contente que le TEXTE servi diffère de celui d'un vrai zéro, si bien qu'une figure qui redessinerait la ligne À ZÉRO tout en l'avouant lui échapperait ; c'est (45a-négatif) qui tient ce cas-là, mesuré par mutation sur les deux figures concernées, et la coupure entre les deux témoins est donc à connaître ; une cellule de grille de chaleur qui ne porte RIEN et une qui porte un VRAI zéro se peignent pareil — l'aveu compte la LIGNE, il ne désigne pas la CELLULE, et rien ici ne le rattrape ; l'aveu rendu en ANGLAIS — seul le refus est vérifié dans les deux langues, par un objet qui porte les deux textes, là où l'aveu passe par \`LANG\` au rendu ; le fait qu'une jauge dont la première ligne n'est pas lue rende « - » plutôt qu'un mot, ce qui est ce que sa sœur qui ne trace pas fait déjà mais reste un TIRET et non une phrase ; les valeurs qui ne sont ni chaîne ni nombre (un booléen servi par un connecteur reste lu par \`Number\`, où \`true\` vaut 1 — aucune route de ce dépôt n'en sert) ; et les panneaux SEMÉS par le démon, dont les requêtes vivent hors de web/.`);
+}
+
+// 63. UNE FIGURE NE PEINT NI N'OUVRE UNE GRANDEUR QUE LA DONNÉE NE PORTE PAS (`P11.24-d`, `P11.24-a`).
+//
+//     DEUX DÉFAUTS, UNE SEULE FAMILLE : une figure affirmait ce que la donnée ne portait pas. L'un se
+//     peint (la grille), l'autre s'ouvre au clic (la courbe), et les deux fabriquaient leur grandeur.
+//
+//     `P11.24-d` — LE DÉFAUT DONT LA DÉMONSTRATION ÉTAIT L'ABSENCE DE ROUGEUR. Un lot précédent avait
+//     posé dans `heatmapEl` une lecture à trois issues (« une cellule NON LUE reste vide, elle ne vaut
+//     pas zéro ») et mesuré qu'une mutation la rendant de nouveau aveugle NE ROUGISSAIT PAS. Elle avait
+//     raison de ne pas rougir : le `|| 0` de la boucle de peinture rabattait ensuite sur le même vide la
+//     case qu'aucune ligne n'atteint, la case dont la ligne servie n'a rien livré, et la case qui porte
+//     un VRAI zéro — trois situations, une seule encre, une seule infobulle « … : 0 ». Le geste posé
+//     était donc SANS EFFET OBSERVABLE, et l'annuler ne changeait rien : c'était la démonstration du
+//     défaut. CE TÉMOIN EXIGE MAINTENANT QUE LES TROIS DIFFÈRENT, si bien que la même mutation rougit.
+//
+//     `P11.24-a` — MESURÉ EN JOUANT LE CLIC, PAS EN LISANT LE SOURCE. Le constat était une lecture de
+//     source, refusée à la fermeture par le lot précédent faute d'être exerçable : le chemin passe par
+//     un survol, et le survol lit une MISE EN PAGE que ce shim ne calcule pas. Il est exerçable — la
+//     mise en page est FOURNIE ici, à la main, et l'instrument est validé DANS LES DEUX SENS : sans
+//     elle, le même clic n'ouvre rien. Ce qui est jugé n'est donc pas le placement (section 0 dit qu'il
+//     ne tient pas), c'est la GRANDEUR ouverte, lue sur l'état partagé que le clic écrit.
+//
+//     ET LE CONSTAT ÉTAIT PLUS ÉTROIT QUE LE DÉFAUT. Il nommait la série d'UN point (durée fixe de 60 s
+//     inventée). Joué, le même geste ouvre AUSSI une plage de largeur ZÉRO sur deux points de même
+//     abscisse, et sur une série irrégulière il applique l'écart des DEUX PREMIERS points à TOUS les
+//     autres. C'est pourquoi ce témoin ne juge pas « la série a-t-elle plus d'un point » mais « chaque
+//     fenêtre ouverte est-elle un écart que la série PORTE » — et il exige d'en voir plus d'un.
+// ---------------------------------------------------------------------------------------------
+{
+  const viz63 = await import(pathToFileURL(path.join(WEB, "viz.js")).href);
+  const { S: S63 } = await import(pathToFileURL(path.join(WEB, "state.js")).href);
+  const source63 = readFileSync(path.join(WEB, "viz.js"), "utf8");
+  const urlWeb63 = (f, suffixe = "") => pathToFileURL(path.join(WEB, f)).href + suffixe;
+
+  // LES REPRÉSENTATIONS SONT LUES DANS LE DISPATCHER, comme en (45) et (62).
+  const iDeb63 = source63.indexOf("function vizSansPorte(");
+  const iFin63 = source63.indexOf("function vizElement(");
+  exiger(iDeb63 >= 0 && iFin63 > iDeb63,
+    "(63-instrument) le dispatcher de représentations n'est plus lisible dans web/viz.js : rien de ce qui suit ne dériverait de quoi que ce soit");
+  const MODES63 = [...new Set([...source63.slice(iDeb63, iFin63).matchAll(/mode === '([a-z]+)'/g)].map((m) => m[1]))].concat("table");
+  exiger(MODES63.length >= 9, `(63-instrument) ${MODES63.length} mode(s) lus, plancher 9 : ce témoin ne couvrirait presque rien`);
+
+  const cu63 = (el, pred, acc = []) => { if (el && pred(el)) acc.push(el); for (const c of (el && el.children) || []) cu63(c, pred, acc); return acc; };
+  const T63 = (e) => e.textContent.replace(/\s+/g, " ").trim();
+  const aveux63 = (e) => cu63(e, (n) => n.classList && n.classList.contains("rf-hint") && !n.classList.contains("bad"));
+  // LA MÊME DÉFINITION DE « MARQUE » QUE LE MODULE (`marquesDe`) : ce qui place ou dimensionne, jamais
+  // le texte. La recopier ici est le seul moyen de la mesurer sans demander au module de se juger.
+  const ATTRS63 = ["points", "d", "x", "y", "cx", "cy", "r", "width", "height"];
+  const marques63 = (n, out = []) => {
+    if (n && n.attributes) {
+      if (ATTRS63.some((a) => n.attributes[a] !== undefined)) out.push(1);
+      if (n.style && n.style.width) out.push(1);
+      if (n.style && n.style.background) out.push(1);
+    }
+    for (const c of (n && n.children) || []) marques63(c, out);
+    return out;
+  };
+
+  // ---- (63a) LA MAILLE : COMBIEN DE FIGURES PEIGNENT À LA CASE, COMBIEN À LA LIGNE ----
+  // LA QUESTION QUI DÉCIDE DE LA FORME DU REMÈDE, et elle se MESURE. Une figure peint « au produit »
+  // quand ses marques sont le croisement de DEUX dimensions : la MOITIÉ des lignes servies y peint
+  // AUTANT de marques que le jeu complet, parce que les cases manquantes sont peintes quand même.
+  // TÉMOIN POSITIF À CHAQUE MODE, sans quoi le verdict serait vrai par vacuité : une figure qui ne lit
+  // pas au-delà de sa première ligne (la jauge, sa sœur qui ne trace pas) est INVARIANTE elle aussi, et
+  // c'est lui qui l'écarte au lieu de la ranger avec la grille.
+  const C63 = ["r", "c", "v"];
+  const UNE63 = [[1, "x", 10]];
+  const PLEIN63 = [[1, "x", 10], [1, "y", 20], [2, "x", 30], [2, "y", 40]];   // le PRODUIT 2x2 entier
+  const MOITIE63 = [[1, "x", 10], [2, "y", 40]];                              // un SOUS-ENSEMBLE STRICT
+  const nMarques63 = (m, rows) => marques63(viz63.vizSansPorte(m, C63, rows, "", "")).length;
+  const auProduit63 = [], aLaLigne63 = [], ecartees63 = [];
+  for (const m of MODES63) {
+    const u = nMarques63(m, UNE63), p = nMarques63(m, PLEIN63), d = nMarques63(m, MOITIE63);
+    if (!(p > u)) { ecartees63.push(m); continue; }        // ne lit pas au-delà de la première ligne, ou ne pose aucune marque
+    (d === p ? auProduit63 : aLaLigne63).push(m);
+  }
+  exiger(auProduit63.length === 1 && aLaLigne63.length >= 4,
+    `(63a) la maille n'est plus partagée comme elle a été mesurée : ${auProduit63.length} figure(s) au PRODUIT (${auProduit63.join(", ") || "aucune"}), ${aLaLigne63.length} à la LIGNE (${aLaLigne63.join(", ")}), ${ecartees63.length} écartée(s) (${ecartees63.join(", ")}) — le remède de \`P11.24-d\` est local PARCE QUE ce compte vaut un ; s'il change, il n'est plus local`);
+  const grille63 = auProduit63[0];
+  exiger(nMarques63(grille63, MOITIE63) > MOITIE63.length,
+    `(63a-instrument) « ${grille63} » ne peint pas plus de marques (${nMarques63(grille63, MOITIE63)}) qu'il n'a de lignes servies (${MOITIE63.length}) : il n'y aurait aucune case « que rien ne porte » à distinguer`);
+
+  // ---- (63b) TROIS SITUATIONS DE CASE, TROIS RENDUS — ET LE VRAI ZÉRO EST UNE VALEUR ----
+  const cases63 = (rows) => cu63(viz63.vizSansPorte(grille63, C63, rows, "", ""), (n) => n.classList && n.classList.contains("heatcell"));
+  // L'INFOBULLE EST LE SEUL TEXTE QUE LA GRILLE DONNE D'UNE CASE : elle se lit en exerçant le survol.
+  const bulles63 = (rows) => cases63(rows).map((td) => { S63._charttip = null; td.dispatchEvent({ type: "mousemove", clientX: 5, clientY: 5 }); return S63._charttip ? S63._charttip.textContent : "(muette)"; });
+  const encre63 = (rows) => cases63(rows).map((td) => `${td.textContent}|${(td.style && td.style.background) || ""}|${td.className}|${td.onclick ? "forable" : "inerte"}`);
+  //  · a/x = 5 partout : le repère commun. La case a/y porte tour à tour RIEN (aucune ligne), un VRAI
+  //    zéro, et une valeur SERVIE qu'on ne sait pas lire. b/x n'est jamais servie dans aucun des trois.
+  const NON_SERVIE63 = [[1, "x", 5], [2, "y", 7]];
+  const VRAI_ZERO63 = [[1, "x", 5], [1, "y", 0], [2, "y", 7]];
+  const ILLISIBLE63 = [[1, "x", 5], [1, "y", "   "], [2, "y", 7]];
+  const iAY63 = 1;   // ordre de rendu : (1,x), (1,y), (2,x), (2,y)
+  exiger(cases63(NON_SERVIE63).length === 4 && cases63(VRAI_ZERO63).length === 4 && cases63(ILLISIBLE63).length === 4,
+    "(63b-instrument) les trois jeux ne rendent pas la MÊME grille de quatre cases : les rangs comparés ci-dessous ne désigneraient pas la même case");
+  // TÉMOIN POSITIF : deux valeurs RÉELLES différentes rendent deux choses différentes sur cette case.
+  exiger(encre63(VRAI_ZERO63)[iAY63] !== encre63([[1, "x", 5], [1, "y", 9], [2, "y", 7]])[iAY63],
+    "(63b-instrument) la case comparée rend la même chose pour 0 et pour 9 : ce comparateur ne verrait aucune des trois situations");
+  const trois63 = [["aucune ligne servie", NON_SERVIE63], ["un VRAI zéro", VRAI_ZERO63], ["une valeur servie non lue", ILLISIBLE63]];
+  for (let i = 0; i < trois63.length; i++) for (let j = i + 1; j < trois63.length; j++) {
+    exiger(encre63(trois63[i][1])[iAY63] !== encre63(trois63[j][1])[iAY63],
+      `(63b) une case qui porte ${trois63[i][0]} et une case qui porte ${trois63[j][0]} se peignent à l'IDENTIQUE : « ${encre63(trois63[i][1])[iAY63]} »`);
+    exiger(bulles63(trois63[i][1])[iAY63] !== bulles63(trois63[j][1])[iAY63],
+      `(63b) l'infobulle d'une case qui porte ${trois63[i][0]} et celle d'une case qui porte ${trois63[j][0]} servent le MÊME texte : « ${bulles63(trois63[i][1])[iAY63]} »`);
+  }
+  // UN VRAI ZÉRO EST UNE VALEUR, ET IL EST TRAITÉ COMME TELLE : son chiffre est écrit, il reçoit une
+  // encre de l'ÉCHELLE (celle-là même que porte une valeur réelle), et il est forable comme elle.
+  const zeroPeint63 = cases63(VRAI_ZERO63)[iAY63];
+  exiger(zeroPeint63.textContent === "0", `(63b) un VRAI zéro lu n'écrit pas son chiffre dans la case : « ${zeroPeint63.textContent} »`);
+  const fond63 = (td) => (td.style && td.style.background) || "";
+  exiger(fond63(zeroPeint63) !== "" && fond63(zeroPeint63).slice(0, 9) === fond63(cases63(VRAI_ZERO63)[0]).slice(0, 9),
+    `(63b) un VRAI zéro lu ne reçoit pas une encre de l'ÉCHELLE comme une valeur réelle : « ${fond63(zeroPeint63)} » contre « ${fond63(cases63(VRAI_ZERO63)[0])} »`);
+  exiger(!!cases63(VRAI_ZERO63)[iAY63].onclick, "(63b) un VRAI zéro lu n'est pas forable, alors qu'une ligne servie le porte");
+  // ... et l'encre de « servie mais non lue » NE VIENT PAS DE L'ÉCHELLE : rien de commun avec un fond de valeur.
+  const nonLue63 = cases63(ILLISIBLE63)[iAY63];
+  exiger(fond63(nonLue63) === "" && nonLue63.className !== cases63(ILLISIBLE63)[0].className,
+    `(63b) une case SERVIE dont rien n'a été lu prend son encre sur l'échelle des valeurs (« ${fond63(nonLue63)} », classe « ${nonLue63.className} »)`);
+  exiger(!nonLue63.onclick, "(63b) une case dont rien n'a été lu est forable : le clic partirait sur une valeur que personne n'a lue");
+  // NÉGATIF : une grille ENTIÈREMENT lue ne porte aucune encre de non-lecture et n'avoue rien de neuf.
+  const pleine63 = viz63.vizSansPorte(grille63, C63, PLEIN63, "", "");
+  exiger(cu63(pleine63, (n) => n.classList && n.classList.contains("heatcell-nonlue")).length === 0,
+    "(63b-négatif) une grille dont chaque case est LUE porte tout de même l'encre de « rien n'a été lu » : le remède crie à tort");
+  exiger(aveux63(pleine63).length === 0,
+    `(63b-négatif) une grille dont chaque case est LUE avoue une perte : « ${T63(pleine63)} »`);
+  // NÉGATIF, LA MOITIÉ QUI COMPTE : sur une grille CREUSE mais entièrement lue — le cas ordinaire d'un
+  // `stats count by a, b` — rien n'est marqué ni avoué. Sans lui, marquer toutes les cases vides
+  // passerait (63b) haut la main et couvrirait de bruit tous les panneaux qui se lisent aujourd'hui.
+  const creuse63 = viz63.vizSansPorte(grille63, C63, MOITIE63, "", "");
+  exiger(cu63(creuse63, (n) => n.classList && n.classList.contains("heatcell-nonlue")).length === 0 && aveux63(creuse63).length === 0,
+    `(63b-négatif) une grille CREUSE mais entièrement lue marque ou avoue ses cases vides : « ${T63(creuse63)} »`);
+
+  // ---- (63c) LA CONVERSION D'AVANT, RECONSTITUÉE À LA MAIN ----
+  // Ce que faisait le `|| 0` : il rendait INDISCERNABLES « rien n'a été lu » et « zéro a été lu ». On le
+  // rejoue ici, hors du module, pour que (63b) ne puisse pas devenir vrai par vacuité le jour où la
+  // grille cesserait de peindre quoi que ce soit.
+  const rabat63 = (v) => v || 0;
+  exiger(rabat63(undefined) === rabat63(0),
+    "(63c) la conversion d'avant, reconstituée à la main, ne confond plus une lecture manquante et un zéro : (63b) ne prouverait pas qu'elles l'étaient");
+  exiger(encre63(VRAI_ZERO63)[iAY63] !== encre63(NON_SERVIE63)[iAY63],
+    "(63c) la grille, elle, les confond encore : le rabattement est de retour dans la figure");
+
+  // ---- (63d) UNE FENÊTRE DE FORAGE EST LUE SUR LA SÉRIE, OU LE GESTE SE RETIRE ----
+  const XC63 = ["bucket", "n"], T0 = 1735689600;   // un instant réel : la branche temporelle demande > 1e9
+  const DRILL63 = "search x $from $to";
+  // LA MISE EN PAGE EST FOURNIE — LE SHIM N'EN CALCULE PAS — ET C'EST DÉCLARÉ. `svg` est le seul nœud
+  // dont la géométrie décide du point survolé ; tout le reste du chemin (survol, clic, état écrit) est
+  // du code de la console.
+  const poserUneMiseEnPage63 = (svg) => { svg.getBoundingClientRect = () => ({ top: 0, left: 0, width: 640, height: 200, right: 640, bottom: 200 }); return svg; };
+  const svgDe63 = (rows) => { const e = viz63.vizSansPorte("line", XC63, rows, "", DRILL63); return e.tagName === "SVG" ? e : cu63(e, (n) => n.tagName === "SVG")[0]; };
+  // BALAYAGE : on ne recopie PAS la formule de placement du module — on survole toute la largeur et on
+  // relève les fenêtres qui s'ouvrent. Ce que ce témoin lit est donc l'ENSEMBLE des largeurs offertes.
+  const largeursOffertes63 = (rows, avecMiseEnPage = true) => {
+    const svg = svgDe63(rows);
+    if (!svg) return null;
+    if (avecMiseEnPage) poserUneMiseEnPage63(svg);
+    const vues = [];
+    for (let cx = 0; cx <= 640; cx += 2) {
+      S63.zoomRange = null;
+      // UN FORAGE RELANCE LA REQUÊTE, ET LA RELANCE ANNULE CELLE D'AVANT PAR LE RÉSEAU — qui n'existe
+      // pas ici. Le marqueur « en vol » laissé par le clic précédent est donc retiré avant le suivant :
+      // c'est la limite du shim, déclarée, et elle ne touche pas la grandeur mesurée (la fenêtre écrite).
+      S63.exploreInflight = null;
+      svg.dispatchEvent({ type: "mousemove", clientX: cx, clientY: 100 });
+      svg.dispatchEvent({ type: "click" });
+      if (S63.zoomRange) vues.push(S63.zoomRange.to - S63.zoomRange.from);
+    }
+    S63.exploreInflight = null;
+    S63.zoomRange = null;
+    return [...new Set(vues)].sort((a, b) => a - b);
+  };
+  const REGULIERE63 = [[T0, 10], [T0 + 300, 20]];
+  const IRREGULIERE63 = [[T0, 10], [T0 + 300, 20], [T0 + 9000, 30]];
+  // L'INSTRUMENT, DANS LES DEUX SENS. Avec la mise en page, le clic ouvre ; SANS elle, le même clic
+  // n'ouvre rien — donc ce qui suit mesure bien le geste, et le verdict ne vient pas d'un shim complaisant.
+  exiger(largeursOffertes63(REGULIERE63).length > 0,
+    "(63d-instrument) mise en page fournie, aucun clic n'ouvre de fenêtre sur une série régulière : le chemin du forage n'est pas exercé et rien de ce qui suit ne mesurerait quoi que ce soit");
+  exiger(largeursOffertes63(REGULIERE63, false).length === 0,
+    "(63d-instrument) sans mise en page, un clic ouvre tout de même une fenêtre : le survol ne lit plus le placement, et l'instrument ci-dessus ne prouve pas ce qu'il dit");
+  // LES ÉCARTS QUE LA SÉRIE PORTE SONT DÉRIVÉS DU JEU FABRIQUÉ ICI, jamais du module.
+  const ecartsDe63 = (rows) => [...new Set(rows.slice(1).map((r, i) => r[0] - rows[i][0]).filter((d) => d > 0))].sort((a, b) => a - b);
+  exiger(ecartsDe63(IRREGULIERE63).length > 1,
+    "(63d-instrument) la série irrégulière ne porte plus deux écarts distincts : une largeur unique la satisferait et (63d) ne verrait pas l'écart des deux premiers points appliqué partout");
+  for (const [nom, rows] of [["régulière", REGULIERE63], ["irrégulière", IRREGULIERE63]]) {
+    const offertes = largeursOffertes63(rows), attendus = ecartsDe63(rows);
+    exiger(JSON.stringify(offertes) === JSON.stringify(attendus),
+      `(63d) sur la série ${nom}, les fenêtres ouvertes mesurent ${JSON.stringify(offertes)} alors que la série ne porte que les écarts ${JSON.stringify(attendus)} : une largeur est FABRIQUÉE, ou celle d'un point est appliquée à un autre`);
+    exiger(aveux63(viz63.vizSansPorte("line", XC63, rows, "", DRILL63)).length === 0,
+      `(63d-négatif) sur la série ${nom}, dont chaque point porte son écart, la courbe annonce tout de même un point sans fenêtre`);
+  }
+  // LES DEUX SÉRIES QUI NE PORTENT AUCUNE CADENCE : le geste se retire, et il le DIT.
+  for (const [nom, rows] of [["d'un seul point", [[T0, 10]]], ["de deux points de MÊME abscisse", [[T0, 10], [T0, 20]]]]) {
+    exiger(largeursOffertes63(rows).length === 0,
+      `(63d) une série ${nom} ouvre encore une fenêtre au clic (${JSON.stringify(largeursOffertes63(rows))}) : la largeur ne vient d'aucun écart servi`);
+    const dit = aveux63(viz63.vizSansPorte("line", XC63, rows, "", DRILL63)).map(T63).join(" ");
+    exiger(dit.includes(String(rows.length)) && /fenêtre|window/.test(dit),
+      `(63d) une série ${nom} retire le geste sans un mot : « ${dit} » — un retrait muet est indiscernable d'une panne`);
+  }
+  // NÉGATIF : sur une abscisse NON temporelle, aucune fenêtre n'était offerte — l'annoncer crierait au loup.
+  const nonTemporelle63 = viz63.vizSansPorte("line", XC63, [[1, 10]], "", DRILL63);
+  exiger(aveux63(nonTemporelle63).length === 0,
+    `(63d-négatif) une série à UN point dont l'abscisse n'est pas un instant annonce un forage retiré, alors qu'elle n'en offrait aucun : « ${T63(nonTemporelle63)} »`);
+
+  // ---- (63e) LES AVEUX SE RENDENT DANS LES DEUX LANGUES ----
+  // LE FIL QUI RESTAIT OUVERT. Un lot avait mesuré que le mécanisme de langue du harnais « ne semblait
+  // pas atteindre ce module » et avait refusé de conclure. Il l'atteint : le crochet de résolution posé
+  // en (10) propage le suffixe d'URL aux imports RELATIFS, donc `viz.js?…` importe un `core.js?…` neuf
+  // dont `soc_lang` est relu. LA CONDITION, ELLE, EST RÉELLE ET ELLE EST NOMMÉE : ce crochet est posé
+  // PAR (10), donc un témoin placé AVANT lui verrait bien un module français. L'instrument est exigé
+  // ci-dessous : si la seconde instance ne porte pas l'anglais, ce témoin le DIT au lieu de passer à vide.
+  const SUFFIXE63 = "?plume-lang=en";
+  localStorage.setItem("soc_lang", "en");
+  const coreEN63 = await import(urlWeb63("core.js", SUFFIXE63));
+  const vizEN63 = await import(urlWeb63("viz.js", SUFFIXE63));
+  localStorage.removeItem("soc_lang");
+  exiger(coreEN63.LANG === "en",
+    `(63e-instrument) la seconde instance du graphe ne porte pas l'anglais (« ${coreEN63.LANG} ») : le mécanisme de langue n'atteint pas ce module et ce qui suit ne mesurerait rien`);
+  const ditEN63 = (fn) => aveux63(fn(vizEN63)).map((n) => n.textContent).join(" ");
+  const ditFR63 = (fn) => aveux63(fn(viz63)).map((n) => n.textContent).join(" ");
+  const CAS_LANGUE63 = [
+    ["une valeur servie non lue", (v) => v.vizSansPorte("bar", ["k", "v"], [["a", 5], ["b", null], ["c", 7]], "", "")],
+    ["un point sans fenêtre de forage", (v) => v.vizSansPorte("line", XC63, [[T0, 10]], "", DRILL63)],
+  ];
+  // COMPARER LES DEUX TEXTES BRUTS NE SUFFIT PAS : le même mot français écrit SANS accent dans la
+  // branche anglaise passerait pour une traduction. On compare donc les deux phrases DÉPOUILLÉES de
+  // leurs diacritiques et de leur ponctuation — deux branches qui disent la même chose s'y rejoignent.
+  // LE NŒUD QUI PORTE L'AVEU COMMENCE PAR SON PROPRE EN-TÊTE (« Non montré — » / « Not shown — »), et
+  // celui-là est bien traduit : le comparer emporterait le verdict à lui seul, et une phrase restée en
+  // français DERRIÈRE lui passerait. On ne compare donc que le CORPS, après le tiret d'en-tête.
+  const corps63 = (t) => t.replace(/^[^—]*—\s*/, "");
+  const dépouiller63 = (t) => corps63(t).normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[’'`]/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
+  const chiffres63 = (t) => (t.match(/\d+/g) || []).join(",");
+  for (const [nom, fn] of CAS_LANGUE63) {
+    const en = ditEN63(fn), fr = ditFR63(fn);
+    exiger(en !== "" && fr !== "",
+      `(63e) l'aveu « ${nom} » ne se rend pas dans l'une des deux langues (fr « ${fr} », en « ${en} »)`);
+    exiger(dépouiller63(en) !== dépouiller63(fr),
+      `(63e) l'aveu « ${nom} » rend la MÊME phrase dans les deux langues, aux accents près (« ${en} ») : il lui manque une langue`);
+    exiger(!/[éèêëàâçùûôîï]/.test(en), `(63e) l'aveu « ${nom} » sous LANG='en' porte un accent français : « ${en} »`);
+    exiger(!/ of the | served row| no window|carries no gap/.test(fr), `(63e) l'aveu « ${nom} » sous LANG='fr' rend un mot anglais : « ${fr} »`);
+    // ... et les DEUX disent le MÊME fait mesuré : une traduction qui compterait autre chose ne serait
+    // pas une traduction. Sans cela, une branche anglaise servant une phrase quelconque passerait.
+    exiger(chiffres63(en) === chiffres63(fr) && chiffres63(fr) !== "",
+      `(63e) l'aveu « ${nom} » ne compte pas la même chose dans les deux langues (fr « ${chiffres63(fr)} », en « ${chiffres63(en)} »)`);
+  }
+  // L'INFOBULLE DE LA GRILLE PORTE ELLE AUSSI SES DEUX LANGUES — c'est le seul texte qu'une case donne.
+  // LA SECONDE INSTANCE A SON PROPRE ÉTAT : `state.js?…` est un module DISTINCT, donc l'infobulle
+  // anglaise s'écrit dans SON `S`, pas dans celui du graphe français. Lire le mauvais `S` rendait ce
+  // témoin MUET — mesuré le 2026-09-02 : une mutation qui servait le français sous LANG='en' passait.
+  const { S: SEN63 } = await import(urlWeb63("state.js", SUFFIXE63));
+  exiger(SEN63 !== S63, "(63e-instrument) les deux instances du graphe partagent leur état : l'infobulle anglaise ne serait pas distinguée de la française");
+  const bulleEN63 = (() => { const td = cu63(vizEN63.vizSansPorte(grille63, C63, ILLISIBLE63, "", ""), (n) => n.classList && n.classList.contains("heatcell"))[iAY63]; SEN63._charttip = null; td.dispatchEvent({ type: "mousemove", clientX: 5, clientY: 5 }); return SEN63._charttip ? SEN63._charttip.textContent : "(muette)"; })();
+  exiger(bulleEN63 !== "(muette)", "(63e-instrument) le survol d'une case de la grille anglaise n'écrit aucune infobulle : le témoin ci-dessous serait vrai par vacuité");
+  exiger(dépouiller63(bulleEN63) !== dépouiller63(bulles63(ILLISIBLE63)[iAY63]),
+    `(63e) l'infobulle d'une case servie non lue rend la MÊME phrase dans les deux langues, aux accents près : « ${bulleEN63} »`);
+  exiger(!/[éèêëàâçùûôîï]/.test(bulleEN63), `(63e) l'infobulle d'une case servie non lue porte un accent français sous LANG='en' : « ${bulleEN63} »`);
+
+  console.log(`[grandeur-que-la-donnee-ne-porte-pas] DEUX FIGURES AFFIRMAIENT CE QUE LA DONNÉE NE PORTAIT PAS — l'une en peignant, l'autre en ouvrant une plage au clic. LA MAILLE EST MESURÉE, PAS SUPPOSÉE : sur ${MODES63.length} représentations, ${auProduit63.length} peint au PRODUIT de deux dimensions (${auProduit63.join(", ")}) — la moitié des lignes y peint AUTANT de marques que le jeu complet — ${aLaLigne63.length} peignent une marque PAR LIGNE SERVIE (${aLaLigne63.join(", ")}) et ${ecartees63.length} sont écartées par leur témoin positif (${ecartees63.join(", ")}) parce qu'elles ne lisent pas au-delà de leur première ligne ou ne posent aucune marque. C'est ce compte, et lui seul, qui dit que le remède de \`P11.24-d\` est LOCAL. Dans cette grille, trois situations rendaient la MÊME case vide et la MÊME infobulle « … : 0 » : une case qu'aucune ligne n'atteint, une case dont la ligne servie n'a rien livré, une case qui porte un VRAI zéro. Elles rendent maintenant trois choses différentes — le zéro écrit son chiffre, reçoit une encre de l'ÉCHELLE et se fore comme une valeur ; la case non lue porte une encre qui n'est PAS de l'échelle et ne se fore pas ; la case que rien n'atteint reste vide — pendant qu'une grille entièrement lue, et une grille CREUSE mais entièrement lue, ne marquent ni n'avouent rien. LA FENÊTRE DE FORAGE EST JOUÉE, PAS LUE : la mise en page est fournie à la main (le shim n'en calcule pas) et l'instrument est validé dans les deux sens — sans elle, le même clic n'ouvre rien. Les largeurs offertes par un balayage complet de la courbe sont exactement les écarts que la série PORTE, sur une série régulière comme sur une série irrégulière où l'écart des deux premiers points était appliqué à tous les autres ; une série d'un seul point et une série de deux points de MÊME abscisse n'ouvrent plus rien et le DISENT, là où elles inventaient 60 secondes et une plage de largeur zéro. Les deux aveux et l'infobulle sont rendus dans les DEUX langues, sous un instrument qui exige que la seconde instance porte bien l'anglais. CE QUE CE TÉMOIN NE TIENT PAS : l'encre réellement peinte — la classe posée est lue, jamais la couleur calculée (section 0) — donc une feuille de style qui donnerait à « rien n'a été lu » l'apparence d'une valeur lui échapperait ; le PLACEMENT du survol, fourni à la main, si bien qu'un défaut de géométrie qui ferait désigner au clic un AUTRE point que celui survolé n'est vu par personne ; les DEUX AUTRES sites du module qui fabriquent encore une fenêtre — \`customDrill\` invente 60 s quand son appelant porte \`from\` sans \`to\`, et \`tableEl\` est exactement cet appelant sur une colonne d'instants — mesurés le 2026-09-02 (une table de seaux de 300 s ouvre des fenêtres de 60 s) et NON corrigés ici ; le fait qu'un point qui n'ouvre plus rien continue de n'offrir aucun curseur distinct, comme avant ; le dernier seau d'une série, borné par l'écart au PRÉCÉDENT faute de successeur servi ; et le COMPTE des cases non lues, qui reste à la LIGNE (\`boutsDeNonLues\`) — la grille DÉSIGNE la case, elle ne la recompte pas, si bien qu'une ligne écrasée par une collision est comptée une fois et désignée zéro fois.`);
 }
 
 // LE VERDICT PORTE SA PROPRE LIMITE (`P11.13-g`). Un vert qui ne dit pas ce sur quoi il ne s'engage pas

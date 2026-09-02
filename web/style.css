@@ -525,6 +525,10 @@ tr.rowdetail>td{background:var(--card2);padding:10px 14px;white-space:normal;max
 .heatmap th{position:sticky;top:0;background:var(--card);color:var(--mut);font-weight:600;padding:2px 6px;text-align:left;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .heatmap th.heatrow{position:static;text-align:right}
 .heatcell{text-align:center;padding:2px 6px;border:1px solid var(--bd);font-variant-numeric:tabular-nums;min-width:28px}
+/* `P11.24-d` — une case SERVIE dont rien n'a ete lu : une encre A ELLE, jamais un ton de l'echelle.
+   Prise sur l'echelle (`--acc`, ce que peint la valeur), elle se lirait comme une valeur faible : c'est
+   le defaut retourne. Hachure sur la couleur des bordures + texte en gris : hors echelle des deux cotes. */
+.heatcell-nonlue{color:var(--mut);background-image:repeating-linear-gradient(135deg,var(--bd) 0 2px,transparent 2px 6px)}
 .panelbody .gaugechart,.panelbody .histchart{max-height:none;flex:1 1 0;min-height:90px}
 .panelbody .piewrap,.panelbody .heatwrap{flex:0 0 auto}
 

@@ -67,6 +67,25 @@ function drillTime(t, span) {
   runQuery();
 }
 
+// `P11.24-a` — LA LARGEUR D'UN SEAU SE LIT SUR L'ÉCART À SON VOISIN, JAMAIS SUR LE NOMBRE DE POINTS.
+// MESURÉ le 2026-09-02 en JOUANT le clic (survol puis clic sur le point choisi, la mise en page fournie
+// à la main faute de calcul de rendu ici) : sur UN seul point, la courbe ouvrait une plage de SOIXANTE
+// secondes que rien n'avait servie ; sur deux points de MÊME abscisse, une plage de largeur ZÉRO ; et sur
+// une série irrégulière (t, t+300, t+9000) le clic du DERNIER point ouvrait 300 s — l'écart des DEUX
+// PREMIERS appliqué à un seau qui en vaut 8 700, faux d'un facteur 29. L'écart des deux premiers points
+// n'était donc pas la bonne grandeur non plus : c'est l'écart AU VOISIN DU POINT CLIQUÉ qui l'est.
+// RENDRE `undefined` EST UNE RÉPONSE, pas un échec : une série d'un seul point, ou dont tous les instants
+// se confondent, ne porte AUCUNE cadence — et l'appelant refuse au lieu d'inventer une durée.
+// CE QUE CET ÉCRIVAIN NE TRANCHE PAS, écrit plutôt que tu : le dernier seau d'une série est borné par
+// l'écart au PRÉCÉDENT, faute de successeur servi — la donnée ne dit pas où il s'arrête, et c'est le
+// seul écart qu'elle porte pour lui.
+function largeurDeSeauLue(instants, t) {
+  const suite = [...new Set(instants.filter(x => Number.isFinite(x)))].sort((a, b) => a - b);
+  const i = suite.indexOf(t);
+  if (i < 0 || suite.length < 2) return undefined;
+  return i + 1 < suite.length ? suite[i + 1] - t : t - suite[i - 1];
+}
+
 // B : drill CONFIGURABLE par panneau. Le panneau definit un GXQL avec des marqueurs
 // $value (valeur cliquee), $from / $to (bornes du bucket temporel). Substitution sure :
 // $value -> litteral entre guillemets, debarrasse de | [ ] " et retours ligne (anti-injection GXQL).
@@ -1578,6 +1597,19 @@ function pieEl(cols, rows, query, drill, donut) {
 //    cellules, `2` et `3` — la valeur `1` a DISPARU sans un mot, et la grille se présentait comme le
 //    résultat complet. Ici la perte n'est pas un zéro écarté mais une valeur VRAIE : elle se compte et
 //    se dit. Écraser reste le comportement — sommer inventerait un agrégat que la requête n'a pas demandé.
+//  · UNE CONFUSION — `P11.24-d`, fermée le 2026-09-02, et c'est la SEULE figure du module qui pouvait la
+//    porter : sur neuf représentations, huit posent une marque PAR LIGNE SERVIE ; celle-ci peint le
+//    PRODUIT des deux dimensions. Mesuré : deux lignes servies rendent QUATRE cases — la moitié de la
+//    grille n'est atteinte par aucune ligne. Le `|| 0` qui ouvrait la boucle rabattait sur ce même vide
+//    les cases qui portaient une valeur LUE valant zéro et celles dont la ligne servie n'a rien livré :
+//    les trois rendaient une case transparente, sans texte, sans forage, et servaient la MÊME infobulle
+//    « … : 0 ». Le geste posé par `P11.20-y` juste en dessous — « une cellule non lue reste vide » — était
+//    donc SANS EFFET OBSERVABLE, et une mutation qui l'annulait ne faisait rougir personne : c'était la
+//    démonstration du défaut, pas son absence. Une valeur lue est peinte comme une valeur (zéro compris,
+//    au plancher de l'échelle, chiffre écrit, forage offert) ; une case servie non lue porte une encre
+//    HORS échelle ; une case qu'aucune ligne n'atteint reste vide — et l'infobulle dit laquelle des
+//    trois. LE COMPTE, lui, reste à la LIGNE (`boutsDeNonLues`, partagé par cinq figures) : la grille
+//    DÉSIGNE la case, elle ne recompte pas ce qu'un écrivain commun compte déjà.
 const PLAFOND_LIGNES_GRILLE = 60;     // au-delà, la grille ne tient plus dans le panneau
 const PLAFOND_COLONNES_GRILLE = 40;   // idem en largeur ; les DEUX sont lus par la phrase qui les avoue
 function heatmapEl(cols, rows, query, drill) {
@@ -1607,14 +1639,33 @@ function heatmapEl(cols, rows, query, drill) {
     const tr = document.createElement('tr');
     const rh = document.createElement('th'); rh.className = 'heatrow'; rh.textContent = rk; rh.title = rk; tr.appendChild(rh);
     colKeys.slice(0, PLAFOND_COLONNES_GRILLE).forEach(ck => {
-      const v = cell.get(rk + '\x1f' + ck) || 0;
-      const td = document.createElement('td'); td.className = 'heatcell';
-      const alpha = v > 0 ? (0.12 + 0.88 * (v / max)) : 0;
-      td.style.background = v > 0 ? `color-mix(in srgb, ${CSSV('--acc', '#2dd4bf')} ${Math.round(alpha * 100)}%, transparent)` : 'transparent';
-      td.textContent = v > 0 ? String(v) : '';
-      const tipTxt = `${rk}${has2 ? ' / ' + ck : ''} : ${v}`;
+      // `P11.24-d` — TROIS SITUATIONS, TROIS ENCRES. La carte porte DÉJÀ la distinction (`Map.set(k,
+      // undefined)` laisse `has(k)` vrai) : c'est le `|| 0` d'ici qui la détruisait, et le geste posé au
+      // dessus par `P11.20-y` — « une cellule NON LUE reste vide » — n'avait donc AUCUN effet observable.
+      const servie = cell.has(rk + '\x1f' + ck);   // une ligne servie porte cette paire (ligne, colonne)
+      const lu = servie ? cell.get(rk + '\x1f' + ck) : undefined;   // ... et ce qu'on y a lu, `undefined` = rien
+      const td = document.createElement('td');
+      // L'ENCRE DE « SERVIE MAIS NON LUE » NE VIENT PAS DE L'ÉCHELLE : prise dessus, elle se lirait comme
+      // une valeur, ce qui est le défaut retourné. Elle est portée par une classe, et par elle seule.
+      td.className = 'heatcell' + (servie && lu === undefined ? ' heatcell-nonlue' : '');
+      const part = lu === undefined ? 0 : Math.max(0, Math.min(1, lu / max));
+      const alpha = 0.12 + 0.88 * part;
+      // Une case qu'AUCUNE ligne n'atteint reste transparente : c'est vrai, et c'est le cas majoritaire
+      // d'une grille creuse. Une case SERVIE mais non lue ne pose aucun fond en ligne — sa classe peint.
+      if (lu !== undefined) td.style.background = `color-mix(in srgb, ${CSSV('--acc', '#2dd4bf')} ${Math.round(alpha * 100)}%, transparent)`;
+      else if (!servie) td.style.background = 'transparent';
+      // Le MÊME tiret que ce module sert déjà d'une valeur absente (`fmtVal`, que la jauge rend sur une
+      // première ligne non lue) : un seul mot pour « rien n'a été lu », pas un douzième.
+      td.textContent = lu !== undefined ? String(lu) : (servie ? fmtVal(null, undefined) : '');
+      // L'INFOBULLE AFFIRMAIT UN ZÉRO SUR LES TROIS. Mesuré le 2026-09-02 : une case non servie, une case
+      // à VRAI zéro et une case illisible servaient toutes « a / y : 0 » — le seul texte que la grille
+      // donne d'une cellule, et il était faux sur deux d'entre elles.
+      const dit = lu !== undefined ? String(lu)
+        : servie ? (LANG === 'en' ? 'nothing was read here' : 'rien n’y a été lu')
+                 : (LANG === 'en' ? 'no served row' : 'aucune ligne servie');
+      const tipTxt = `${rk}${has2 ? ' / ' + ck : ''} : ${dit}`;
       td.addEventListener('mousemove', e => tipShow(tipTxt, e)); td.addEventListener('mouseleave', tipHide);
-      if (v > 0) {
+      if (lu !== undefined) {   // une valeur LUE — un vrai zéro compris — est portée par une ligne servie, donc forable
         if (drill) { td.style.cursor = 'pointer'; td.onclick = () => customDrill(drill, { value: rk }); }
         else if (!DIMENSIONLESS.has(cols[0])) { td.style.cursor = 'pointer'; td.onclick = () => drilldown(cols[0], rk); }
       }
@@ -1984,7 +2035,9 @@ function lineEl(cols, rows, query, drill) {
     svg.addEventListener('click', () => {
       if (svg._zoomed) { svg._zoomed = false; return; }
       if (hi < 0 || xs[hi] <= 1e9) return;
-      const span = xs.length > 1 ? xs[1] - xs[0] : 60;
+      // `P11.24-a` : la largeur est LUE sur la série, et un point qui n'en porte pas n'ouvre RIEN.
+      const span = largeurDeSeauLue(xs, xs[hi]);
+      if (span === undefined) return;
       if (drill) customDrill(drill, { from: xs[hi], to: xs[hi] + span, value: ys[hi] });   // drill champ/valeur : partout (cœur d'Explore)
       else if (timeZoomEnabled()) drillTime(xs[hi], span);                                  // zoom-temporel : dashboards uniquement
     });
@@ -1994,6 +2047,14 @@ function lineEl(cols, rows, query, drill) {
   // qu'une à nommer, et la nommer deux fois compterait deux fois la même perte.
   const rangs = cols.length > 1 ? [0, cols.length - 1] : [0];
   const bouts = rangs.flatMap(i => boutsDeNonLues(cols[i], rows, i));
+  // `P11.24-a` — UN GESTE QUI SE RETIRE LE DIT. Le clic d'un point TEMPOREL ouvre la fenêtre de son
+  // seau ; là où la série ne porte aucun écart d'où la lire, il ne s'ouvre plus rien, et se taire
+  // rendrait ce retrait indiscernable d'une panne. LE COMPTE EST BORNÉ À CE QUI OFFRAIT LE GESTE :
+  // une abscisse non temporelle n'ouvrait déjà aucune fenêtre, et l'annoncer crierait au loup.
+  const sansCadence = xs.filter(x => x > 1e9 && largeurDeSeauLue(xs, x) === undefined).length;
+  if (sansCadence > 0) bouts.push(LANG === 'en'
+    ? sansCadence + ' of the ' + xs.length + ' drawn point(s) open no window when clicked: the series carries no gap to read their bucket width from, and a fixed duration would invent one'
+    : sansCadence + ' des ' + xs.length + ' point(s) tracés n’ouvrent aucune fenêtre au clic : la série ne porte aucun écart d’où lire la largeur de leur seau, et une durée fixe en inventerait une');
   if (!bouts.length) return svg;                       // rien de perdu, rien d'ajouté
   const box = document.createElement('div'); box.append(svg, noeudNonMontre(bouts)); return box;
 }

@@ -57,7 +57,13 @@ function drilldown(field, value) {
 // clic sur un point/bucket temporel -> zoom sur la fenêtre + vue événements (les logs précis).
 // DASHBOARDS UNIQUEMENT (sur Explore le picker local fait foi) — cf. les gardes timeZoomEnabled() aux clics.
 function drillTime(t, span) {
-  S.zoomRange = { from: Math.floor(t), to: Math.ceil(t + (span || 60)) };
+  // `P11.24-i` : LA LARGEUR VIENT DE L'ÉCRIVAIN UNIQUE, JAMAIS D'UNE CONSTANTE. Ce site rabattait sur
+  // SOIXANTE secondes tout écart nul ou absent (`span || 60`) — une durée dérivée de RIEN, ni de la
+  // série ni de l'arité de l'appel. Sans largeur lue le geste ne s'ouvre plus ; c'est son appelant qui
+  // dit, à côté de la figure et AVANT le clic, combien de gestes offerts n'ouvrent rien.
+  const fenetre = fenetreDeForage(t, span);
+  if (!fenetre) return;
+  S.zoomRange = fenetre;
   updateZoomBadge();
   if ($('#sql')) $('#sql').value = 'search';
   location.hash = 'explore';
@@ -86,6 +92,20 @@ function largeurDeSeauLue(instants, t) {
   return i + 1 < suite.length ? suite[i + 1] - t : t - suite[i - 1];
 }
 
+// `P11.24-i` — UN SEUL ÉCRIVAIN DE LA FENÊTRE DE FORAGE, ET IL N'INVENTE AUCUNE DURÉE.
+// TROIS sites fabriquaient la MÊME constante de soixante secondes, et aucun ne la dérivait de quoi que
+// ce soit : `drillTime` sur un écart nul ou absent, `customDrill` quand son appelant portait un début
+// SANS FIN, et `tableEl` était exactement cet appelant — mesuré le 2026-09-02, une table de seaux de
+// 300 s ouvrait des fenêtres de 60 s, cinq fois trop étroites, sur des lignes que le démon avait bel
+// et bien servies avec leur cadence. La largeur se LIT sur l'écart au voisin (`largeurDeSeauLue`) ou
+// elle ne se lit pas ; ici on ne fait que la POSER en bornes entières.
+// RENDRE `undefined` EST UNE RÉPONSE, pas un échec : le geste refuse la fenêtre, il ne casse pas le
+// forage de VALEUR, et son retrait est avoué à côté de la figure (`boutsDeForagesSansFenetre`).
+function fenetreDeForage(debut, largeur) {
+  if (!Number.isFinite(debut) || !Number.isFinite(largeur) || largeur <= 0) return undefined;
+  return { from: Math.floor(debut), to: Math.ceil(debut + largeur) };
+}
+
 // B : drill CONFIGURABLE par panneau. Le panneau definit un GXQL avec des marqueurs
 // $value (valeur cliquee), $from / $to (bornes du bucket temporel). Substitution sure :
 // $value -> litteral entre guillemets, debarrasse de | [ ] " et retours ligne (anti-injection GXQL).
@@ -95,16 +115,19 @@ function customDrill(tpl, ctx) {
   if (!tpl) return;
   let q = tpl;
   if (ctx.value !== undefined && ctx.value !== null) q = q.split('$value').join(sanitizeVal(ctx.value));
-  const timed = ctx.from !== undefined;
-  if (timed) {
-    const f = Math.floor(ctx.from), t = Math.ceil(ctx.to !== undefined ? ctx.to : ctx.from + 60);
-    q = q.split('$from').join(String(f)).split('$to').join(String(t));
-    S.zoomRange = { from: f, to: t }; updateZoomBadge(); // scope le Plume panel au bucket clique
+  // `P11.24-i` : LA FENÊTRE EST CELLE QUE L'APPELANT A LUE — `ctx.largeur` est un écart SERVI, jamais
+  // une arité. Un début sans largeur n'en fabrique plus une : les marqueurs restent alors tels quels et
+  // aucune plage n'est posée, ce qui est EXACTEMENT le chemin déjà emprunté par le forage d'un chiffre
+  // (`statDrill`, contexte vide) — le forage de VALEUR, lui, part normalement.
+  const fenetre = fenetreDeForage(ctx.from, ctx.largeur);
+  if (fenetre) {
+    q = q.split('$from').join(String(fenetre.from)).split('$to').join(String(fenetre.to));
+    S.zoomRange = fenetre; updateZoomBadge(); // scope le Plume panel au bucket clique
   }
   if ($('#sql')) $('#sql').value = q;
   if ($('#viz')) $('#viz').value = 'table';
   location.hash = 'explore';
-  setDrillCrumb(ctx.value !== undefined && ctx.value !== null ? String(ctx.value) : (timed ? 'période ' + fmtTs(S.zoomRange.from) : 'drill'));
+  setDrillCrumb(ctx.value !== undefined && ctx.value !== null ? String(ctx.value) : (fenetre ? 'période ' + fmtTs(fenetre.from) : 'drill'));
   // clic-drill : scope le Plume panel UNIQUEMENT. PAS de refresh()/loadDashboard() global pour la branche
   // temporelle -> on ne re-scope plus toute la page Dashboards (le drag-zoom dashboard reste, lui, intact).
   runQuery();
@@ -1523,6 +1546,28 @@ function boutsDeNonLues(nom, rows, i) {
     : illisibles + ' des ' + rows.length + ' ligne(s) servies portent dans « ' + nom + ' » une valeur qui n’est PAS un nombre : elle n’a pas été lue comme un zéro, elle n’a pas été lue du tout');
   return bouts;
 }
+// `P11.24-i` — UN SEUL ÉCRIVAIN DE L'AVEU « CE CLIC N'OUVRE RIEN », comme il n'y a qu'un seul écrivain
+// de la largeur, un seul des deux causes de non-lecture et un seul du nœud qui les porte. DEUX figures
+// offrent une fenêtre de forage — la courbe sur ses points temporels, la table sur sa colonne d'instants
+// — et l'écrire deux fois, c'est se donner deux phrases qui finiront par diverger : c'est DÉJÀ arrivé
+// dans ce module.
+//
+// CE QUE MONTRE UN FORAGE REFUSÉ, ET LA MESURE QUI LE TRANCHE : rien de neuf AU CLIC, et un aveu
+// COMPTÉ écrit à côté de la figure, lisible AVANT qu'on clique. Un avis par clic se paierait autant de
+// fois que le geste est offert — une page de table en offre `pageSize` (50 par défaut), une courbe un
+// par point tracé — et il userait le seul canal que ce module réserve au RÉSULTAT d'une action
+// DEMANDÉE (`toast`, 3 sites : la création d'un ban et deux échecs de lecture de courrier). L'aveu, lui,
+// s'écrit une fois par figure, par le nœud que cinq figures partagent déjà.
+// LE COMPTE EST BORNÉ À CE QUI OFFRAIT LE GESTE : là où aucune fenêtre n'était proposée — une abscisse
+// non temporelle, une table sans gabarit de forage —, l'annoncer crierait au loup. Quand rien n'est
+// refusé la liste est VIDE et l'appelant n'ajoute rien : le balisage d'aujourd'hui ne bouge pas.
+function boutsDeForagesSansFenetre(nom, instants, offerts) {
+  const sans = offerts.filter(t => fenetreDeForage(t, largeurDeSeauLue(instants, t)) === undefined).length;
+  if (sans === 0) return [];
+  return [LANG === 'en'
+    ? sans + ' of the ' + offerts.length + ' clickable point(s) on “' + nom + '” open no window: the series carries no gap to read their bucket width from, and a fixed duration would invent one'
+    : sans + ' des ' + offerts.length + ' point(s) cliquables de « ' + nom + ' » n’ouvrent aucune fenêtre : la série ne porte aucun écart d’où lire la largeur de leur seau, et une durée fixe en inventerait une'];
+}
 const PLAFOND_LEGENDE = 12;   // au-delà, la légende dépasse la figure et cesse d'être lisible
 function pieEl(cols, rows, query, drill, donut) {
   const NS = 'http://www.w3.org/2000/svg', mk = t => document.createElementNS(NS, t);
@@ -1794,6 +1839,13 @@ function tableEl(cols, rows, query, drill, opts) {
   // SÉLECTEUR DE COLONNES : couverture (% de lignes non vides) par colonne ; si la table est large
   // (multi-sources), on MASQUE par défaut les colonnes creuses hors cœur -> propre sans scoper la requête.
   const cover = cols.map((_, i) => rows.length ? rows.reduce((n, r) => n + (r[i] != null && r[i] !== '' ? 1 : 0), 0) / rows.length : 1);
+  // `P11.24-i` — CETTE TABLE EST L'APPELANT QUI DONNAIT UN DÉBUT SANS FIN. Quand sa colonne de tête est
+  // une colonne d'INSTANTS (`DIMENSIONLESS`) et qu'un gabarit de forage est posé, chaque ligne offre au
+  // clic la fenêtre de son seau — et cette fenêtre était SOIXANTE secondes, quelle que soit la cadence
+  // servie : une table de seaux de 300 s en ouvrait cinq fois trop peu. La largeur se lit ICI, sur
+  // l'écart au VOISIN dans la colonne servie, par le même écrivain que la courbe.
+  const instantsDeTete = DIMENSIONLESS.has(cols[0]) ? rows.map(r => nombreLu(r[0])) : [];
+  const instantsLus = instantsDeTete.filter(t => t !== undefined);
   const CORE = new Set(['ts', '_time', 'time', 'bucket', 'source', 'host', 'message', 'src_ip', 'dst_ip']);
   const hidden = new Set();
   if (order.length > 12) cols.forEach((c, i) => { if (!CORE.has(c) && cover[i] < 0.5) hidden.add(i); });
@@ -1872,7 +1924,9 @@ function tableEl(cols, rows, query, drill, opts) {
       // partagé rend le clic à sa place — il se retire quand une sélection vient d'être faite ICI, et
       // seulement ici (une sélection ailleurs dans la page ne gèle rien).
       clicQuiRespecteLaSelection(tr, () => {
-        if (drill) { const c = { value: row[0] }; if (DIMENSIONLESS.has(cols[0])) c.from = Number(row[0]); return customDrill(drill, c); }
+        // `P11.24-i` : la fenêtre est LUE sur la colonne servie ; là où elle ne porte aucun écart, elle
+        // n'est pas armée et le forage de VALEUR part quand même — le retrait est dit sous la table.
+        if (drill) { const c = { value: row[0] }; if (DIMENSIONLESS.has(cols[0])) { c.from = nombreLu(row[0]); c.largeur = largeurDeSeauLue(instantsLus, c.from); } return customDrill(drill, c); }
         if (!DIMENSIONLESS.has(cols[0])) return drilldown(cols[0], row[0]);
         const nx = tr.nextSibling;
         if (nx && nx.classList && nx.classList.contains('rowdetail')) { nx.remove(); return; }
@@ -1890,7 +1944,17 @@ function tableEl(cols, rows, query, drill, opts) {
     if (colsBtn) colsBtn.textContent = `Colonnes ${vcount()}/${order.length} ▾`;
   }
   build();
-  if (order.length <= 7) return pg ? withPagers(tbl) : tbl;   // peu de colonnes -> pas de sélecteur
+  // `P11.24-i` — L'AVEU EST ÉCRIT LÀ OÙ LA TABLE SE LIT, AVANT LE CLIC, et il ne s'écrit que là où le
+  // geste était OFFERT : un gabarit de forage posé sur une colonne d'instants. Quand chaque ligne porte
+  // sa largeur — le cas ordinaire d'un `stats count by bucket` —, la liste est vide et le balisage ne
+  // bouge pas d'un octet. Ce nœud est celui que cinq figures partagent déjà (`noeudNonMontre`).
+  const boutsDeForage = (drill && DIMENSIONLESS.has(cols[0]))
+    ? boutsDeForagesSansFenetre(cols[0], instantsLus, instantsDeTete) : [];
+  const avecLAveuDuForage = el => {
+    if (!boutsDeForage.length) return el;
+    const box = document.createElement('div'); box.append(el, noeudNonMontre(boutsDeForage)); return box;
+  };
+  if (order.length <= 7) return avecLAveuDuForage(pg ? withPagers(tbl) : tbl);   // peu de colonnes -> pas de sélecteur
   const wrap = document.createElement('div'); wrap.className = 'qtblwrap';
   const bar = document.createElement('div'); bar.className = 'qtblbar';
   colsBtn = document.createElement('button'); colsBtn.type = 'button'; colsBtn.className = 'colsbtn';
@@ -1935,7 +1999,7 @@ function tableEl(cols, rows, query, drill, opts) {
     setTimeout(() => { document.addEventListener('click', onclose); document.addEventListener('scroll', onscroll, true); }, 0);
   };
   bar.appendChild(colsBtn); wrap.append(bar, tbl);
-  return pg ? withPagers(wrap) : wrap;
+  return avecLAveuDuForage(pg ? withPagers(wrap) : wrap);
 }
 
 function statEl(cols, rows, query, drill) {
@@ -2036,10 +2100,14 @@ function lineEl(cols, rows, query, drill) {
       if (svg._zoomed) { svg._zoomed = false; return; }
       if (hi < 0 || xs[hi] <= 1e9) return;
       // `P11.24-a` : la largeur est LUE sur la série, et un point qui n'en porte pas n'ouvre RIEN.
+      // `P11.24-i` : la fenêtre a un SEUL écrivain, et les deux consommateurs la refusent sans largeur
+      // lue. La branche de forage, elle, se retire AVANT d'appeler : le gabarit du panneau nomme
+      // `$from`/`$to` et partirait sinon avec ses marqueurs nus.
       const span = largeurDeSeauLue(xs, xs[hi]);
-      if (span === undefined) return;
-      if (drill) customDrill(drill, { from: xs[hi], to: xs[hi] + span, value: ys[hi] });   // drill champ/valeur : partout (cœur d'Explore)
-      else if (timeZoomEnabled()) drillTime(xs[hi], span);                                  // zoom-temporel : dashboards uniquement
+      if (drill) {
+        if (!fenetreDeForage(xs[hi], span)) return;
+        customDrill(drill, { from: xs[hi], largeur: span, value: ys[hi] });                 // drill champ/valeur : partout (cœur d'Explore)
+      } else if (timeZoomEnabled()) drillTime(xs[hi], span);                                // zoom-temporel : dashboards uniquement ; sans largeur lue, il refuse
     });
   }
   // Les DEUX colonnes que ce dessin lit sont nommées, chacune avec ce qui lui manque : c'est la
@@ -2049,12 +2117,10 @@ function lineEl(cols, rows, query, drill) {
   const bouts = rangs.flatMap(i => boutsDeNonLues(cols[i], rows, i));
   // `P11.24-a` — UN GESTE QUI SE RETIRE LE DIT. Le clic d'un point TEMPOREL ouvre la fenêtre de son
   // seau ; là où la série ne porte aucun écart d'où la lire, il ne s'ouvre plus rien, et se taire
-  // rendrait ce retrait indiscernable d'une panne. LE COMPTE EST BORNÉ À CE QUI OFFRAIT LE GESTE :
-  // une abscisse non temporelle n'ouvrait déjà aucune fenêtre, et l'annoncer crierait au loup.
-  const sansCadence = xs.filter(x => x > 1e9 && largeurDeSeauLue(xs, x) === undefined).length;
-  if (sansCadence > 0) bouts.push(LANG === 'en'
-    ? sansCadence + ' of the ' + xs.length + ' drawn point(s) open no window when clicked: the series carries no gap to read their bucket width from, and a fixed duration would invent one'
-    : sansCadence + ' des ' + xs.length + ' point(s) tracés n’ouvrent aucune fenêtre au clic : la série ne porte aucun écart d’où lire la largeur de leur seau, et une durée fixe en inventerait une');
+  // rendrait ce retrait indiscernable d'une panne. `P11.24-i` : cette phrase avait un SECOND lecteur
+  // (la table d'instants), elle passe donc par l'écrivain unique — c'est lui qui borne le compte à ce
+  // qui offrait le geste, une abscisse non temporelle n'en ayant jamais offert aucun.
+  bouts.push(...boutsDeForagesSansFenetre(cols[0], xs, xs.filter(x => x > 1e9)));
   if (!bouts.length) return svg;                       // rien de perdu, rien d'ajouté
   const box = document.createElement('div'); box.append(svg, noeudNonMontre(bouts)); return box;
 }

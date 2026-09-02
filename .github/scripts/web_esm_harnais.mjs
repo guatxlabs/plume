@@ -100,6 +100,11 @@ class Element {
   removeChild(c) { this._enfants = this._enfants.filter((x) => x !== c); this._v++; this._html = undefined; if (c && c.parentNode === this) c.parentNode = null; return c; }
   remove() { if (this.parentNode) this.parentNode.removeChild(this); }
   replaceWith(...cs) { if (!this.parentNode) return; const p = this.parentNode, i = p._enfants.indexOf(this); p._enfants.splice(i, 1, ...cs); p._v++; p._html = undefined; this.parentNode = null; cs.forEach((c) => (c.parentNode = p)); }
+  // `P11.24-i` — `after` MANQUAIT, et ce n'était pas un détail de confort : le dépli d'une ligne de
+  // résultats l'emploie (`tr.after(dtr)`), si bien que TOUT témoin qui clique une ligne sans gabarit de
+  // forage faisait TOMBER le banc au lieu de rendre un verdict. Un instrument qui s'écroule sur le
+  // chemin nominal ne mesure rien de ce qu'il prétend écarter.
+  after(...cs) { const p = this.parentNode; if (!p) return; let i = p._enfants.indexOf(this); cs.forEach((c) => { const n = typeof c === "string" ? document.createTextNode(c) : c; this._detacher(n); n.parentNode = p; p._enfants.splice(++i, 0, n); }); p._v++; p._html = undefined; }
   // ATTRIBUTS REFLÉTÉS (`P11.8-d`). Un navigateur REFLÈTE ces propriétés IDL dans l'attribut du même nom :
   // `el.placeholder = '…'` POSE l'attribut, et `setAttribute('placeholder', …)` change la propriété. Le shim
   // ne le faisait pas, et c'était un TROU DE TÉMOIN, pas un détail : `i18nWalk` lit et écrit les libellés
@@ -529,6 +534,41 @@ if (UNE_ENTREE) {
 const PLANCHER_MODULES = 20;
 const echecs = [];
 const exiger = (cond, msg) => { if (!cond) echecs.push(msg); };
+
+// ---------------------------------------------------------------------------------------------
+// `P11.24-j` — L'ADRESSE DE LANGUE EST POSÉE ICI, AU PRÉAMBULE, ET PLUS AU MILIEU D'UNE SECTION.
+//
+// Un module chargé sous un suffixe d'URL est une instance DISTINCTE : `core.js?…` relit `soc_lang` et
+// porte sa propre `LANG`. Mais un module ne relit pas le stockage — il IMPORTE `./core.js`, et c'est ce
+// crochet de résolution qui propage le suffixe aux imports RELATIFS. Sans lui, `viz.js?…` lie le
+// `core.js` FRANÇAIS : le module est neuf, sa langue ne l'est pas.
+//
+// CE CROCHET ÉTAIT POSÉ DANS LE BLOC DU TÉMOIN 10. Ce n'était pas une panne — le mécanisme atteignait
+// bien les modules —, c'était une DÉPENDANCE D'ORDRE QUE RIEN NE DÉCLARAIT : tout témoin écrit AVANT
+// lui aurait lu du français en croyant lire de l'anglais, pendant qu'un `core.js?…` chargé sous SA
+// PROPRE adresse porte, lui, bien l'anglais — la contradiction sur laquelle un lot précédent avait
+// buté, le témoin voisin passant parce qu'il posait le crochet lui-même.
+//
+// LA MESURE QUI A DÉCIDÉ DU DÉPLACEMENT (2026-09-02) : ONZE sections lisent une adresse de langue
+// (13, 14, 15, 38, 39, 46, 48, 49, 50, 57, 63) et TOUTES sont en aval du témoin 10 ; AUCUN module n'est
+// chargé sous une telle adresse en amont. Poser le crochet plus tôt ne change donc ce que voit aucun
+// témoin déjà écrit — le crochet est INERTE sur un parent sans suffixe —, et il n'y a plus d'amont.
+// LA SECONDE MESURE, celle qui a décidé de l'AJOUT : retirer le crochet fait rougir CINQUANTE-SEPT
+// témoins, dont AUCUN ne le nomme — le premier accuse les tuiles Système de n'être pas traduites,
+// pendant que `coreEN.LANG === 'en'` passe. Symptôme vrai, cause fausse. Un témoin qui lit une langue
+// le DÉCLARE donc désormais, et la déclaration s'éprouve : voir `(10-instrument)`.
+// ---------------------------------------------------------------------------------------------
+const SUFFIXE_LANGUE = "?plume-lang=en";
+const adresseSousLaLangue = (f, suffixe = SUFFIXE_LANGUE) => pathToFileURL(path.join(WEB, f)).href + suffixe;
+{
+  const nodeModule = await import("node:module");
+  if (typeof nodeModule.registerHooks === "function") {
+    nodeModule.registerHooks({ resolve(spec, ctx, next) { const r = next(spec, ctx); return ctx.parentURL && ctx.parentURL.includes(SUFFIXE_LANGUE) && r.url.startsWith("file:") && !r.url.includes("?") ? { ...r, url: r.url + SUFFIXE_LANGUE } : r; } });
+  } else {
+    nodeModule.register("data:text/javascript," + encodeURIComponent(
+      `export async function resolve(spec, ctx, next) { const r = await next(spec, ctx); return ctx.parentURL && ctx.parentURL.includes(${JSON.stringify(SUFFIXE_LANGUE)}) && r.url.startsWith("file:") && !r.url.includes("?") ? { ...r, url: r.url + ${JSON.stringify(SUFFIXE_LANGUE)} } : r; }`));
+  }
+}
 
 // ---------------------------------------------------------------------------------------------
 // 0. CE QUE CE BANC NE TIENT PAS — ÉTABLI PAR SONDAGE, JAMAIS RECOPIÉ (`P11.13-g`).
@@ -1864,16 +1904,10 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     return out;
   };
 
-  // Seconde instance du graphe sous `LANG='en'` : un crochet de résolution propage le suffixe d'URL aux
-  // imports relatifs (`i18n.js?x` importe `./core.js` → `core.js?x`, instance neuve, `soc_lang` relu).
-  const SUFFIXE = "?plume-lang=en";
-  const nodeModule = await import("node:module");
-  if (typeof nodeModule.registerHooks === "function") {
-    nodeModule.registerHooks({ resolve(spec, ctx, next) { const r = next(spec, ctx); return ctx.parentURL && ctx.parentURL.includes(SUFFIXE) && r.url.startsWith("file:") && !r.url.includes("?") ? { ...r, url: r.url + SUFFIXE } : r; } });
-  } else {
-    nodeModule.register("data:text/javascript," + encodeURIComponent(
-      `export async function resolve(spec, ctx, next) { const r = await next(spec, ctx); return ctx.parentURL && ctx.parentURL.includes(${JSON.stringify(SUFFIXE)}) && r.url.startsWith("file:") && !r.url.includes("?") ? { ...r, url: r.url + ${JSON.stringify(SUFFIXE)} } : r; }`));
-  }
+  // Seconde instance du graphe sous `LANG='en'` : le crochet de résolution qui propage le suffixe d'URL
+  // aux imports relatifs (`i18n.js?x` importe `./core.js` → `core.js?x`, instance neuve, `soc_lang` relu)
+  // est posé AU PRÉAMBULE depuis `P11.24-j` — il l'était ici, au milieu de cette section.
+  const SUFFIXE = SUFFIXE_LANGUE;
   const urlWeb = (f, suffixe = "") => pathToFileURL(path.join(WEB, f)).href + suffixe;
   localStorage.setItem("soc_lang", "en");
   const coreEN = await import(urlWeb("core.js", SUFFIXE));
@@ -1883,6 +1917,15 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   const coreFR = await import(urlWeb("core.js"));
   const { i18nWalk: walkFR } = await import(urlWeb("i18n.js"));
   exiger(coreEN.LANG === "en" && coreFR.LANG === "fr", `(10) instrument : les deux instances de core.js ne portent pas deux langues (« ${coreEN.LANG} » / « ${coreFR.LANG} »)`);
+  // `P11.24-j` — ICI SE DÉCLARE QU'UN TÉMOIN LIT UNE LANGUE, ET LA DÉCLARATION S'ÉPROUVE. L'exigence
+  // ci-dessus ne la tient PAS : `core.js?…` est chargé sous SA PROPRE adresse, donc il relit `soc_lang`
+  // et porte l'anglais même sans crochet. Ce qui doit être éprouvé, c'est la PROPAGATION aux imports
+  // RELATIFS — `i18n.js?…` a-t-il lié le `core.js` anglais ou le français ? Sans crochet, cinquante-sept
+  // témoins rougissaient sans qu'AUCUN ne le nomme : le premier accusait les tuiles Système.
+  const sondeDuCrochet = new Element("div"); sondeDuCrochet.textContent = "Liens";
+  walkEN(sondeDuCrochet);
+  exiger(sondeDuCrochet.textContent === "Links",
+    `(10-instrument) LE CROCHET DE RÉSOLUTION DE LANGUE NE PROPAGE PAS : \`i18n.js${SUFFIXE}\` a lié un \`core.js\` qui ne porte pas l'anglais (« Liens » rend « ${sondeDuCrochet.textContent} »). Tout module chargé sous une adresse de langue sert alors du FRANÇAIS en se croyant lu en anglais, et les verdicts de langue qui suivent accusent la traduction au lieu du crochet.`);
 
   // (a) une tuile de system.js rendue sous LANG='en', puis parcourue comme un nœud ajouté : anglais.
   const wrapEN = new Element("div");
@@ -2068,7 +2111,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
 {
   const { createHash } = await import("node:crypto");
   const empreinte = (t) => createHash("sha256").update(t, "utf8").digest("hex").slice(0, 16);
-  const SUFFIXE = "?plume-lang=en";
+  const SUFFIXE = SUFFIXE_LANGUE;   // `P11.24-j` : un seul écrivain de l'adresse, le crochet est posé au préambule
   const urlWeb = (f, suffixe = "") => pathToFileURL(path.join(WEB, f)).href + suffixe;
   const { openHelp: ouvrirFR } = await import(urlWeb("help.js"));
   localStorage.setItem("soc_lang", "en");
@@ -2120,7 +2163,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
 //     en français — une clé au lexique dont l'anglais n'est jamais rendu était un faux vert.
 // ---------------------------------------------------------------------------------------------
 {
-  const SUFFIXE = "?plume-lang=en";
+  const SUFFIXE = SUFFIXE_LANGUE;   // `P11.24-j` : un seul écrivain de l'adresse, le crochet est posé au préambule
   const urlWeb = (f, suffixe = "") => pathToFileURL(path.join(WEB, f)).href + suffixe;
   const aideFR = await import(urlWeb("help.js"));
   localStorage.setItem("soc_lang", "en");
@@ -2192,7 +2235,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
 //     importent `app.js` la tirent) ; l'import ici la garantit sans la dédoubler.
 // ---------------------------------------------------------------------------------------------
 {
-  const SUFFIXE = "?plume-lang=en";
+  const SUFFIXE = SUFFIXE_LANGUE;   // `P11.24-j` : un seul écrivain de l'adresse, le crochet est posé au préambule
   const urlWeb = (f, suffixe = "") => pathToFileURL(path.join(WEB, f)).href + suffixe;
   const surLeCorps = () => observateursPoses.filter((o) => o.cible === document.body);
   exiger(observateursSurLeCorpsApresLiaison === 0, `(15) LANG='fr' : ${observateursSurLeCorpsApresLiaison} observateur(s) posé(s) sur le corps du document par la liaison — l'amorçage français n'observe rien`);
@@ -4374,7 +4417,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   exiger(lu.size === 3, `(38) instrument : ${lu.size} jeton(s) lus sur le corpus témoin, 3 attendus — ${[...lu].join(" ")}`);
 
   // La référence est lue dans le panneau RENDU, jamais dans la source du registre.
-  const SUF = "?plume-lang=en";
+  const SUF = SUFFIXE_LANGUE;   // `P11.24-j` : un seul écrivain de l'adresse, le crochet est posé au préambule
   const urlAide = (f, suffixe = "") => pathToFileURL(path.join(WEB, f)).href + suffixe;
   const aideFR = await import(urlAide("help.js"));
   localStorage.setItem("soc_lang", "en");
@@ -4610,7 +4653,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   exiger(CAUSE_DU_DEMON.length > 40 && !CAUSE_DU_DEMON.includes("\\"),
     `(39) instrument : la cause extraite du démon fait ${CAUSE_DU_DEMON.length} caractère(s) et porte encore une continuation — le recollement du littéral Rust est faux, et tout ce qui s'appuie dessus jugerait d'un texte inventé`);
 
-  const SUF = "?plume-lang=en";
+  const SUF = SUFFIXE_LANGUE;   // `P11.24-j` : un seul écrivain de l'adresse, le crochet est posé au préambule
   const urlM = (f, suffixe = "") => pathToFileURL(path.join(WEB, f)).href + suffixe;
   const { refusDeMatrice: refusFR } = await import(urlM("attack.js"));
   localStorage.setItem("soc_lang", "en");
@@ -4938,7 +4981,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
 //     capture serveur de l'instantané, qui ne porte aucun champ d'axe (mesuré dans le démon, pas ici).
 // ---------------------------------------------------------------------------------------------
 {
-  const SUF41 = "?plume-lang=en";
+  const SUF41 = SUFFIXE_LANGUE;   // `P11.24-j` : un seul écrivain de l'adresse, le crochet est posé au préambule
   const url41 = (f, sfx = "") => pathToFileURL(path.join(WEB, f)).href + sfx;
   const vizFR = await import(url41("viz.js"));
   const prefsFR = await import(url41("prefs.js"));
@@ -6241,7 +6284,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     `(48g) le refus ne dit pas que les lignes servies EXISTENT : « ${refusNul.slice(0, 220)} »`);
   // LES DEUX LANGUES, par une seconde instance du module : un refus servi dans une seule langue n'est
   // pas servi. La phrase anglaise doit nommer la même colonne et ne pas garder la française.
-  const viz48EN = await import(url48("viz.js") + "?plume-lang=en");
+  const viz48EN = await import(url48("viz.js") + SUFFIXE_LANGUE);
   const refusEN = viz48EN.vizElement(modeMuet, C2, JEUX["tout nul"], "", "").textContent;
   exiger(/Chart refused/.test(refusEN) && refusEN.includes("n") && /ROWS DO EXIST/.test(refusEN) && !/ligne\(s\) servies/.test(refusEN),
     `(48g) sous LANG='en' le refus de figure muette n'est pas rendu en anglais, ou n'y dit plus que les lignes existent : « ${refusEN.slice(0, 220)} »`);
@@ -6691,7 +6734,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   console.log(`[graphe-seaux] UNE FIGURE QUI DÉCOUPE SES PROPRES SEAUX EXIGE UNE ÉTENDUE, ET LE SONDAGE DIT QUI DÉCOUPE : sur les ${couples49.length} couple(s) (représentation, nombre de colonnes servies) balayés, ${invariants49.length} sont invariants à la PERMUTATION des lignes et ${decoupeurs49.length} le sont POUR LA BONNE RAISON — le témoin positif écarte les ${invariants49.length - decoupeurs49.length} autres, qui ne lisent tout simplement pas ce rang. Aucun type de graphe n'est nommé : le verdict vient du SONDAGE, et il est recoupé par la dérivation INDÉPENDANTE de (49k), qui lit le rendu. Sur une colonne qui ne porte qu'UNE valeur distincte, ces couples ne DESSINENT plus : ils refusent en nommant la colonne, là où ils rendaient une barre unique dont l'axe affichait « 1 » et des bornes de seau que rien n'avait servies. LA SIGNATURE DU NOMBRE FAUX EST TENUE À PART : deux données servies différentes ne rendent plus la MÊME figure dessinée. NON-RÉGRESSION, sans quoi un refus INCONDITIONNEL passerait : sur une colonne qui porte une étendue, les mêmes couples dessinent toujours et leur géométrie suit les valeurs ; aucun des ${couples49.length - decoupeurs49.length} couples qui ne découpent rien ne s'est mis à refuser ; et un agrégat DÉJÀ en seaux servi sur UNE SEULE ligne reste rendu avec son libellé et sa valeur. CE QUE CE TÉMOIN NE TIENT PAS : il ne juge que les représentations du dispatcher de ce module et les nombres de colonnes ${JSON.stringify(NCOLS49)} — un découpage qui n'apparaîtrait qu'à quatre colonnes lui échapperait ; il ne dit rien de l'encre peinte ni de la mise en page (section 0) ; il ne mesure pas ce qu'une colonne numérique TROUÉE devient une fois la porte franchie (le trou reste dessiné à zéro) ; et il ne voit aucun panneau SEMÉ par le démon, dont les requêtes vivent hors de web/.`);
 
   // ---- (l) LA LANGUE DE « aucune donnée » EST SERVIE PAR LE LEXIQUE, ET LA MESURE L'ÉTABLIT ----
-  const SUFFIXE49 = "?plume-lang=en";
+  const SUFFIXE49 = SUFFIXE_LANGUE;   // `P11.24-j` : un seul écrivain de l'adresse, le crochet est posé au préambule
   localStorage.setItem("soc_lang", "en");
   const vizEN49 = await import(url49("viz.js") + SUFFIXE49);
   const { i18nWalk: walk49 } = await import(url49("i18n.js") + SUFFIXE49);
@@ -7563,7 +7606,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
 // ---------------------------------------------------------------------------------------------
 {
   const CAUSE_57 = "CAUSE-DE-TRONCATURE-FABRIQUÉE-PAR-CE-BANC-57 : aucune phrase du démon n'est citée ici";
-  const SUFFIXE_57 = "?plume-lang=en"; // le crochet de résolution est posé par le témoin 10
+  const SUFFIXE_57 = SUFFIXE_LANGUE;   // `P11.24-j` : un seul écrivain de l'adresse, le crochet est posé au préambule (il l'était par le témoin 10)
   const srcAlertes57 = readFileSync(path.join(RACINE, "daemon", "src", "handlers", "alerts.rs"), "utf8");
 
   // — instrument : LA SÉPARATION QUE LA MARQUE EXPLOITE EST CELLE DU DÉMON, PAS UNE HYPOTHÈSE DU BANC.
@@ -8713,7 +8756,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   // dont `soc_lang` est relu. LA CONDITION, ELLE, EST RÉELLE ET ELLE EST NOMMÉE : ce crochet est posé
   // PAR (10), donc un témoin placé AVANT lui verrait bien un module français. L'instrument est exigé
   // ci-dessous : si la seconde instance ne porte pas l'anglais, ce témoin le DIT au lieu de passer à vide.
-  const SUFFIXE63 = "?plume-lang=en";
+  const SUFFIXE63 = SUFFIXE_LANGUE;   // `P11.24-j` : un seul écrivain de l'adresse, le crochet est posé au préambule
   localStorage.setItem("soc_lang", "en");
   const coreEN63 = await import(urlWeb63("core.js", SUFFIXE63));
   const vizEN63 = await import(urlWeb63("viz.js", SUFFIXE63));
@@ -8761,6 +8804,200 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   exiger(!/[éèêëàâçùûôîï]/.test(bulleEN63), `(63e) l'infobulle d'une case servie non lue porte un accent français sous LANG='en' : « ${bulleEN63} »`);
 
   console.log(`[grandeur-que-la-donnee-ne-porte-pas] DEUX FIGURES AFFIRMAIENT CE QUE LA DONNÉE NE PORTAIT PAS — l'une en peignant, l'autre en ouvrant une plage au clic. LA MAILLE EST MESURÉE, PAS SUPPOSÉE : sur ${MODES63.length} représentations, ${auProduit63.length} peint au PRODUIT de deux dimensions (${auProduit63.join(", ")}) — la moitié des lignes y peint AUTANT de marques que le jeu complet — ${aLaLigne63.length} peignent une marque PAR LIGNE SERVIE (${aLaLigne63.join(", ")}) et ${ecartees63.length} sont écartées par leur témoin positif (${ecartees63.join(", ")}) parce qu'elles ne lisent pas au-delà de leur première ligne ou ne posent aucune marque. C'est ce compte, et lui seul, qui dit que le remède de \`P11.24-d\` est LOCAL. Dans cette grille, trois situations rendaient la MÊME case vide et la MÊME infobulle « … : 0 » : une case qu'aucune ligne n'atteint, une case dont la ligne servie n'a rien livré, une case qui porte un VRAI zéro. Elles rendent maintenant trois choses différentes — le zéro écrit son chiffre, reçoit une encre de l'ÉCHELLE et se fore comme une valeur ; la case non lue porte une encre qui n'est PAS de l'échelle et ne se fore pas ; la case que rien n'atteint reste vide — pendant qu'une grille entièrement lue, et une grille CREUSE mais entièrement lue, ne marquent ni n'avouent rien. LA FENÊTRE DE FORAGE EST JOUÉE, PAS LUE : la mise en page est fournie à la main (le shim n'en calcule pas) et l'instrument est validé dans les deux sens — sans elle, le même clic n'ouvre rien. Les largeurs offertes par un balayage complet de la courbe sont exactement les écarts que la série PORTE, sur une série régulière comme sur une série irrégulière où l'écart des deux premiers points était appliqué à tous les autres ; une série d'un seul point et une série de deux points de MÊME abscisse n'ouvrent plus rien et le DISENT, là où elles inventaient 60 secondes et une plage de largeur zéro. Les deux aveux et l'infobulle sont rendus dans les DEUX langues, sous un instrument qui exige que la seconde instance porte bien l'anglais. CE QUE CE TÉMOIN NE TIENT PAS : l'encre réellement peinte — la classe posée est lue, jamais la couleur calculée (section 0) — donc une feuille de style qui donnerait à « rien n'a été lu » l'apparence d'une valeur lui échapperait ; le PLACEMENT du survol, fourni à la main, si bien qu'un défaut de géométrie qui ferait désigner au clic un AUTRE point que celui survolé n'est vu par personne ; les DEUX AUTRES sites du module qui fabriquent encore une fenêtre — \`customDrill\` invente 60 s quand son appelant porte \`from\` sans \`to\`, et \`tableEl\` est exactement cet appelant sur une colonne d'instants — mesurés le 2026-09-02 (une table de seaux de 300 s ouvre des fenêtres de 60 s) et NON corrigés ici ; le fait qu'un point qui n'ouvre plus rien continue de n'offrir aucun curseur distinct, comme avant ; le dernier seau d'une série, borné par l'écart au PRÉCÉDENT faute de successeur servi ; et le COMPTE des cases non lues, qui reste à la LIGNE (\`boutsDeNonLues\`) — la grille DÉSIGNE la case, elle ne la recompte pas, si bien qu'une ligne écrasée par une collision est comptée une fois et désignée zéro fois.`);
+}
+
+// ---------------------------------------------------------------------------------------------
+// 64. UNE FENÊTRE DE FORAGE A UN SEUL ÉCRIVAIN, ET PLUS AUCUN SITE N'INVENTE DE DURÉE (`P11.24-i`).
+//
+//     LE TÉMOIN 63 A FERMÉ LA COURBE ET DÉCLARÉ CE QU'IL LAISSAIT OUVERT, mot pour mot : « les DEUX
+//     AUTRES sites du module qui fabriquent encore une fenêtre — `customDrill` invente 60 s quand son
+//     appelant porte `from` sans `to`, et `tableEl` est exactement cet appelant ». Un troisième
+//     refabriquait la MÊME constante sur un écart nul ou absent (`drillTime`, `span || 60`). Aucune
+//     n'était dérivée de quoi que ce soit — ni de la série, ni de l'arité de l'appel — et AUCUN témoin
+//     ne les tenait : les rendre fautifs restait VERT.
+//
+//     CE QUE MONTRE UN FORAGE REFUSÉ, ET C'EST LA QUESTION QUI BLOQUAIT LA FERMETURE. Rien de neuf AU
+//     CLIC, et un aveu COMPTÉ à côté de la figure, lisible AVANT qu'on clique — la réponse que ce
+//     module a DÉJÀ donnée sur la courbe (`P11.24-a`), rendue par le nœud que cinq figures partagent.
+//     La table la reprend par le MÊME écrivain : un avis par clic se paierait autant de fois que le
+//     geste est offert (une page en offre `pageSize`, 50 par défaut) et userait le seul canal que ce
+//     module réserve au RÉSULTAT d'une action demandée. ET LE FORAGE DE VALEUR N'EST PAS CASSÉ : la
+//     ligne part quand même, avec sa valeur, sans plage — le chemin qu'emprunte déjà le forage d'un
+//     chiffre. C'est exercé ci-dessous dans les deux sens, pas affirmé.
+//
+//     TROIS INSTRUMENTS, sans quoi rien de ce qui suit ne mesurerait quoi que ce soit : une table SANS
+//     gabarit de forage n'ouvre aucune fenêtre (les largeurs relevées viennent bien du geste), une
+//     table dont la colonne de tête n'est pas une colonne d'instants non plus, et les écarts attendus
+//     sont DÉRIVÉS du jeu fabriqué ici, jamais demandés au module.
+// ---------------------------------------------------------------------------------------------
+{
+  const viz64 = await import(pathToFileURL(path.join(WEB, "viz.js")).href);
+  const { S: S64 } = await import(pathToFileURL(path.join(WEB, "state.js")).href);
+  const T64 = 1735689600;                       // un instant réel : la branche temporelle demande > 1e9
+  const INSTANTS64 = ["bucket", "n"];           // `bucket` est une colonne d'INSTANTS (DIMENSIONLESS)
+  const NOMMEE64 = ["src_ip", "n"];             // ... et celle-ci n'en est pas une
+  const DRILL64 = "search v=$value $from $to";  // le gabarit NOMME la valeur ET les deux bornes
+  const cu64 = (el, pred, acc = []) => { if (el && pred(el)) acc.push(el); for (const c of (el && el.children) || []) cu64(c, pred, acc); return acc; };
+  const T = (e) => e.textContent.replace(/\s+/g, " ").trim();
+  const aveux64 = (e) => cu64(e, (n) => n.classList && n.classList.contains("rf-hint") && !n.classList.contains("bad"));
+  const champSql64 = () => document.querySelector("#sql");
+
+  const REGULIERE64 = [[T64, 1], [T64 + 300, 2], [T64 + 600, 3]];
+  const IRREGULIERE64 = [[T64, 1], [T64 + 300, 2], [T64 + 9000, 3]];
+  const UNE_LIGNE64 = [[T64, 1]];
+  const MEME_INSTANT64 = [[T64, 1], [T64, 2]];
+
+  // LES LARGEURS QUE LA COLONNE PORTE, DÉRIVÉES DU JEU FABRIQUÉ ICI. Le dernier seau est borné par
+  // l'écart au PRÉCÉDENT, faute de successeur servi — c'est le seul écart que la donnée porte pour lui,
+  // et c'est déclaré comme tel par le module.
+  const largeursPortees64 = (rows) => {
+    const s = [...new Set(rows.map((r) => r[0]))].sort((a, b) => a - b);
+    if (s.length < 2) return [];
+    return [...new Set(s.map((t, i) => (i + 1 < s.length ? s[i + 1] - t : t - s[i - 1])))].sort((a, b) => a - b);
+  };
+
+  const tableDe64 = (rows, drill, cols = INSTANTS64, mod = viz64) => mod.vizSansPorte("table", cols, rows, "", drill);
+  const lignesForables64 = (el) => cu64(el, (n) => n.tagName === "TR" && typeof n.onclick === "function");
+  // BALAYAGE : on clique CHAQUE ligne offerte et on relève la fenêtre qui s'écrit dans l'état partagé.
+  // Le marqueur « en vol » du clic précédent est retiré avant le suivant (le shim n'a pas de réseau) :
+  // c'est la limite déclarée par le témoin 63, et elle ne touche pas la grandeur mesurée.
+  const largeursOffertes64 = (rows, drill = DRILL64, cols = INSTANTS64) => {
+    const el = tableDe64(rows, drill, cols);
+    const vues = [];
+    for (const tr of lignesForables64(el)) {
+      S64.zoomRange = null; S64.exploreInflight = null;
+      tr.onclick({});
+      if (S64.zoomRange) vues.push(S64.zoomRange.to - S64.zoomRange.from);
+    }
+    S64.zoomRange = null; S64.exploreInflight = null;
+    return [...new Set(vues)].sort((a, b) => a - b);
+  };
+  const requeteApresClic64 = (rows, drill = DRILL64, cols = INSTANTS64) => {
+    const tr = lignesForables64(tableDe64(rows, drill, cols))[0];
+    if (!tr) return "(aucune ligne forable)";
+    S64.zoomRange = null; S64.exploreInflight = null;
+    if (champSql64()) champSql64().value = "";
+    tr.onclick({});
+    S64.zoomRange = null; S64.exploreInflight = null;
+    return champSql64() ? champSql64().value : "(pas de champ de requête)";
+  };
+
+  // ---- (64a) L'INSTRUMENT, DANS LES DEUX SENS ----
+  exiger(lignesForables64(tableDe64(REGULIERE64, DRILL64)).length === REGULIERE64.length,
+    `(64a-instrument) ${lignesForables64(tableDe64(REGULIERE64, DRILL64)).length} ligne(s) forable(s) pour ${REGULIERE64.length} ligne(s) servies : le geste n'est pas offert là où on croit le mesurer`);
+  exiger(largeursOffertes64(REGULIERE64).length > 0,
+    "(64a-instrument) aucun clic n'ouvre de fenêtre sur une table de seaux réguliers : le chemin du forage n'est pas exercé et rien de ce qui suit ne mesurerait quoi que ce soit");
+  exiger(largeursOffertes64(REGULIERE64, "").length === 0,
+    `(64a-instrument) une table SANS gabarit de forage ouvre tout de même une fenêtre (${JSON.stringify(largeursOffertes64(REGULIERE64, ""))}) : les largeurs relevées ne viennent pas du geste mesuré`);
+  exiger(largeursOffertes64(REGULIERE64, DRILL64, NOMMEE64).length === 0,
+    `(64a-instrument) une table dont la colonne de tête n'est pas une colonne d'instants ouvre une fenêtre (${JSON.stringify(largeursOffertes64(REGULIERE64, DRILL64, NOMMEE64))}) : ce n'est pas la cadence servie qui est lue`);
+  exiger(largeursPortees64(IRREGULIERE64).length > 1,
+    "(64a-instrument) la table irrégulière ne porte plus deux écarts distincts : une largeur unique la satisferait, et (64b) ne verrait pas une durée fabriquée");
+
+  // ---- (64b) CHAQUE FENÊTRE OUVERTE EST UN ÉCART QUE LA COLONNE PORTE ----
+  // C'est ici que la fabrication meurt : 60 s n'est un écart d'AUCUN de ces deux jeux.
+  for (const [nom, rows] of [["régulière", REGULIERE64], ["irrégulière", IRREGULIERE64]]) {
+    const offertes = largeursOffertes64(rows), attendues = largeursPortees64(rows);
+    exiger(JSON.stringify(offertes) === JSON.stringify(attendues),
+      `(64b) sur la table ${nom}, les fenêtres ouvertes au clic mesurent ${JSON.stringify(offertes)} alors que la colonne d'instants ne porte que les écarts ${JSON.stringify(attendues)} : une durée est FABRIQUÉE, ou la largeur d'une ligne est appliquée à une autre`);
+    exiger(aveux64(tableDe64(rows, DRILL64)).length === 0,
+      `(64b-négatif) sur la table ${nom}, dont chaque ligne porte son écart, la table annonce tout de même une ligne sans fenêtre : « ${T(tableDe64(rows, DRILL64))} »`);
+    exiger(tableDe64(rows, DRILL64).tagName === "TABLE",
+      `(64b-négatif) une table dont chaque ligne porte son écart n'est plus rendue nue mais enveloppée (« ${tableDe64(rows, DRILL64).tagName} ») : le balisage du chemin nominal a bougé`);
+  }
+  // ... et la borne du seau est bien celle de son VOISIN : le premier seau de la table irrégulière
+  // ouvre 300 s, le dernier 8 700 — l'écart des deux premiers appliqué partout donnerait 300 pour tous.
+  const parLigne64 = (() => {
+    const el = tableDe64(IRREGULIERE64, DRILL64), out = [];
+    for (const tr of lignesForables64(el)) { S64.zoomRange = null; S64.exploreInflight = null; tr.onclick({}); out.push(S64.zoomRange ? S64.zoomRange.to - S64.zoomRange.from : null); }
+    S64.zoomRange = null; S64.exploreInflight = null; return out;
+  })();
+  exiger(JSON.stringify(parLigne64) === JSON.stringify([300, 8700, 8700]),
+    `(64b) les fenêtres ouvertes ligne par ligne sur la table irrégulière valent ${JSON.stringify(parLigne64)} au lieu de [300,8700,8700] : la largeur n'est pas lue sur l'écart au VOISIN de la ligne cliquée`);
+
+  // ---- (64c) LÀ OÙ LA COLONNE NE PORTE AUCUN ÉCART, LE GESTE SE RETIRE — ET IL LE DIT ----
+  for (const [nom, rows] of [["d'une seule ligne", UNE_LIGNE64], ["de deux lignes du MÊME instant", MEME_INSTANT64]]) {
+    exiger(largeursOffertes64(rows).length === 0,
+      `(64c) une table ${nom} ouvre encore une fenêtre au clic (${JSON.stringify(largeursOffertes64(rows))}) : la largeur ne vient d'aucun écart servi`);
+    const dit = aveux64(tableDe64(rows, DRILL64)).map(T).join(" ");
+    exiger(dit.includes(String(rows.length)) && /fenêtre|window/.test(dit),
+      `(64c) une table ${nom} retire le geste sans un mot : « ${dit} » — un retrait muet est indiscernable d'une panne`);
+    // LE FORAGE DE VALEUR N'EST PAS CASSÉ : la ligne part, avec sa valeur, et sans plage.
+    const q = requeteApresClic64(rows);
+    exiger(q.includes(String(rows[0][0])) && !/\$value/.test(q),
+      `(64c) le forage de VALEUR ne part plus quand la fenêtre est refusée : la requête posée est « ${q} »`);
+  }
+  // NÉGATIFS : là où le geste n'était pas offert, l'annoncer crierait au loup.
+  for (const [nom, el] of [
+    ["une table d'une seule ligne SANS gabarit de forage", tableDe64(UNE_LIGNE64, "")],
+    ["une table d'une seule ligne dont la colonne de tête n'est pas un instant", tableDe64(UNE_LIGNE64, DRILL64, NOMMEE64)],
+  ]) exiger(aveux64(el).length === 0, `(64c-négatif) ${nom} annonce un forage retiré, alors qu'elle n'en offrait aucun : « ${T(el)} »`);
+  // ... et rendre l'aveu INCONDITIONNEL doit casser ces négatifs : ils sont donc exercés à l'envers ici,
+  // sur le chemin nominal, où l'aveu doit rester ABSENT — c'est (64b-négatif) et les deux lignes ci-dessus.
+
+  // ---- (64d) LE ZOOM TEMPOREL REFUSE LA MÊME CHOSE, SUR LE MÊME ÉCRIVAIN ----
+  // Le troisième site rabattait tout écart nul ou absent sur soixante secondes (`span || 60`). Il n'est
+  // atteignable que par la branche DASHBOARDS de la courbe (`timeZoomEnabled`), donc la vue est posée.
+  {
+    const hash64 = location.hash;
+    location.hash = "#dashboards";
+    const poserUneMiseEnPage64 = (svg) => { svg.getBoundingClientRect = () => ({ top: 0, left: 0, width: 640, height: 200, right: 640, bottom: 200 }); return svg; };
+    const svgDe64 = (rows) => { const e = viz64.vizSansPorte("line", INSTANTS64, rows, "", ""); return e.tagName === "SVG" ? e : cu64(e, (n) => n.tagName === "SVG")[0]; };
+    const zoomsOfferts64 = (rows) => {
+      const svg = svgDe64(rows); if (!svg) return null;
+      poserUneMiseEnPage64(svg);
+      const vues = [];
+      for (let cx = 0; cx <= 640; cx += 2) {
+        S64.zoomRange = null; S64.exploreInflight = null;
+        // LE GESTE MESURÉ SE DÉTRUIT LUI-MÊME : un zoom qui aboutit envoie la console sur Explore, où la
+        // branche n'est plus armée — le premier clic réussi rendait donc MUETS tous les suivants, et le
+        // balayage d'après aurait mesuré un refus qui n'était que l'absence du geste. La vue est reposée
+        // à chaque clic. Mesuré le 2026-09-02, sur ce témoin même, où la mutation restait VERTE.
+        location.hash = "#dashboards";
+        svg.dispatchEvent({ type: "mousemove", clientX: cx, clientY: 100 });
+        svg.dispatchEvent({ type: "click" });
+        if (S64.zoomRange) vues.push(S64.zoomRange.to - S64.zoomRange.from);
+      }
+      S64.zoomRange = null; S64.exploreInflight = null;
+      return [...new Set(vues)].sort((a, b) => a - b);
+    };
+    exiger(JSON.stringify(zoomsOfferts64(REGULIERE64)) === JSON.stringify(largeursPortees64(REGULIERE64)),
+      `(64d-instrument) le zoom temporel de la courbe n'ouvre pas les écarts que la série porte (${JSON.stringify(zoomsOfferts64(REGULIERE64))} contre ${JSON.stringify(largeursPortees64(REGULIERE64))}) : la branche mesurée ci-dessous n'est pas exercée`);
+    for (const [nom, rows] of [["d'un seul point", UNE_LIGNE64], ["de deux points de MÊME abscisse", MEME_INSTANT64]])
+      exiger(zoomsOfferts64(rows).length === 0,
+        `(64d) le zoom temporel d'une série ${nom} ouvre encore une plage (${JSON.stringify(zoomsOfferts64(rows))}) : une largeur nulle ou absente est refabriquée`);
+    // L'INSTRUMENT N'EST PAS USÉ PAR CE QU'IL VIENT DE MESURER : la série régulière rouvre ses 300 s
+    // APRÈS les deux séries dégénérées. Sans cette reprise, un refus mesuré ne se distinguerait pas
+    // d'une branche que les balayages précédents auraient désarmée — c'est exactement ce qui est arrivé.
+    exiger(JSON.stringify(zoomsOfferts64(REGULIERE64)) === JSON.stringify(largeursPortees64(REGULIERE64)),
+      `(64d-instrument) après les deux séries dégénérées, la série régulière n'ouvre plus ses écarts (${JSON.stringify(zoomsOfferts64(REGULIERE64))} contre ${JSON.stringify(largeursPortees64(REGULIERE64))}) : le balayage a désarmé la branche, et les deux verdicts ci-dessus mesuraient une absence de geste, pas un refus`);
+    location.hash = hash64;
+  }
+
+  // ---- (64e) L'AVEU SE REND DANS LES DEUX LANGUES, ET LE TÉMOIN DÉCLARE CELLE QU'IL LIT ----
+  // `P11.24-j` — LE PIÈGE MESURÉ : un module chargé sous une adresse de langue est un module DISTINCT.
+  // Sans le crochet de résolution (posé au préambule), il lierait le `core.js` FRANÇAIS et servirait du
+  // français pendant que ce témoin croirait lire l'anglais. L'INSTRUMENT CI-DESSOUS L'ÉPROUVE SUR CE
+  // MODULE-CI, pas sur un `core.js` chargé sous sa propre adresse — celui-là porte l'anglais même sans
+  // crochet, et le lire ferait passer ce témoin en étant MUET.
+  localStorage.setItem("soc_lang", "en");
+  const vizEN64 = await import(adresseSousLaLangue("viz.js"));
+  localStorage.removeItem("soc_lang");
+  const aveuFR64 = aveux64(tableDe64(UNE_LIGNE64, DRILL64)).map(T).join(" ");
+  const aveuEN64 = aveux64(tableDe64(UNE_LIGNE64, DRILL64, INSTANTS64, vizEN64)).map(T).join(" ");
+  exiger(/^Not shown/.test(aveuEN64),
+    `(64e-instrument) l'aveu rendu par \`viz.js${SUFFIXE_LANGUE}\` ne commence pas par son en-tête ANGLAIS (« ${aveuEN64} ») : ce module sert du français en se croyant lu en anglais, et tout ce qui suit passerait en étant muet`);
+  const dépouiller64 = (t) => t.replace(/^[^—]*—\s*/, "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[’'`]/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
+  const chiffres64 = (t) => (t.match(/\d+/g) || []).join(",");
+  exiger(aveuFR64 !== "" && aveuEN64 !== "", `(64e) l'aveu du forage retiré ne se rend pas dans l'une des deux langues (fr « ${aveuFR64} », en « ${aveuEN64} »)`);
+  exiger(dépouiller64(aveuEN64) !== dépouiller64(aveuFR64),
+    `(64e) l'aveu du forage retiré rend la MÊME phrase dans les deux langues, aux accents près (« ${aveuEN64} ») : il lui manque une langue`);
+  exiger(!/[éèêëàâçùûôîï]/.test(aveuEN64), `(64e) l'aveu du forage retiré porte un accent français sous LANG='en' : « ${aveuEN64} »`);
+  exiger(!/ of the | clickable point| no window|carries no gap/.test(aveuFR64), `(64e) l'aveu du forage retiré rend un mot anglais sous LANG='fr' : « ${aveuFR64} »`);
+  exiger(chiffres64(aveuEN64) === chiffres64(aveuFR64) && chiffres64(aveuFR64) !== "",
+    `(64e) l'aveu du forage retiré ne compte pas la même chose dans les deux langues (fr « ${chiffres64(aveuFR64)} », en « ${chiffres64(aveuEN64)} »)`);
+
+  console.log(`[fenetre-de-forage-a-un-seul-ecrivain] LES TROIS SITES QUI FABRIQUAIENT UNE DURÉE SONT FERMÉS, ET C'EST JOUÉ AU CLIC, PAS LU DANS LE SOURCE. Une table de seaux ouvrait SOIXANTE secondes quelle que soit la cadence servie ; les fenêtres qu'elle ouvre maintenant, relevées en cliquant CHAQUE ligne, sont exactement les écarts que sa colonne d'instants PORTE — ${JSON.stringify(largeursPortees64(REGULIERE64))} sur une table régulière, ${JSON.stringify(largeursPortees64(IRREGULIERE64))} sur une table irrégulière où la largeur est celle du VOISIN de la ligne cliquée (${JSON.stringify(parLigne64)}, et non l'écart des deux premières appliqué partout). Une table d'une seule ligne et une table de deux lignes du MÊME instant n'ouvrent plus rien : elles le DISENT, à côté de la table et avant le clic, par le nœud que cinq figures partageaient déjà — et le forage de VALEUR part quand même, sans plage, comme le fait déjà le forage d'un chiffre. Le zoom temporel de la courbe, seul autre consommateur, refuse la même chose par le même écrivain. TROIS INSTRUMENTS bornent le verdict : sans gabarit de forage, sur une colonne de tête qui n'est pas une colonne d'instants, et sur le chemin nominal, aucune fenêtre ne s'ouvre et aucun aveu ne s'écrit — le balisage d'une table entièrement cadencée reste une TABLE NUE. CE QUE CE TÉMOIN NE TIENT PAS : le PLACEMENT du survol de la courbe, fourni à la main comme en (63) ; le fait qu'une ligne dont la fenêtre est refusée garde le MÊME curseur et la MÊME infobulle qu'une ligne qui l'ouvre — elle offre toujours son forage de valeur, mais rien à l'écran ne distingue les deux gestes AVANT le clic ; le sort d'un gabarit qui NOMME \`$from\`/\`$to\` sans qu'aucune fenêtre ait été lue — les marqueurs partent alors tels quels vers le démon, exactement comme ils le font déjà depuis le forage d'un chiffre, et personne ici ne juge ce que le démon en fait ; le COMPTE, qui reste à la LIGNE SERVIE et non à l'instant distinct, si bien que deux lignes du même instant sont comptées deux fois ; et le dernier seau d'une colonne, borné par l'écart au PRÉCÉDENT faute de successeur servi.`);
 }
 
 // LE VERDICT PORTE SA PROPRE LIMITE (`P11.13-g`). Un vert qui ne dit pas ce sur quoi il ne s'engage pas

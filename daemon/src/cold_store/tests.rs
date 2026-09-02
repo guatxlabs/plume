@@ -11077,7 +11077,7 @@ fn une_connexion_de_sonde_refuse_d_ecrire() {
     }
     let conn = ouvrir_en_lecture_seule(&chemin.to_string_lossy()).expect("la base de test doit s'ouvrir");
     assert!(
-        conn.is_readonly(rusqlite::DatabaseName::Main).expect("verdict de SQLite lisible"),
+        conn.is_readonly(rusqlite::MAIN_DB).expect("verdict de SQLite lisible"),
         "SQLite considère la base OUVERTE EN ÉCRITURE -> le descripteur de la sonde n'est pas read-only"
     );
     // Et la lecture, elle, fonctionne (sans ça, « read-only » serait trivialement vrai sur une base

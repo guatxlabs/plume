@@ -128,5 +128,10 @@ SELECT '### FIELD_FILTER_ROWS';
 SELECT COUNT(*) FROM field_filter;         -- 0 = ENSEMBLE DE MASQUAGE VIDE en production
 SELECT '### DBSTAT_BY_NAME';
 -- dbstat parcourt TOUS les b-trees : c'est la mesure exacte du poids table / index / FTS.
--- Nécessite SQLITE_ENABLE_DBSTAT_VTAB (présent dans le sqlcipher d'Ubuntu).
+-- Nécessite SQLITE_ENABLE_DBSTAT_VTAB (présent dans le paquet `sqlcipher` de Debian/Ubuntu).
+-- `P7.20-l` — CE PRÉREQUIS EST UN OUTIL D'HÔTE QU'AUCUN SCRIPT DE CE DÉPÔT N'INSTALLE. Sans lui,
+-- la recette s'arrête à mi-chemin, et on l'apprend au moment où l'on en a besoin. Le vérifier
+-- AVANT de commencer :
+--   sqlcipher :memory: "SELECT 1 FROM pragma_compile_options WHERE compile_options='ENABLE_DBSTAT_VTAB';"
+-- une ligne « 1 » = utilisable ; aucune sortie = ce client ne sait pas mener ces passes.
 SELECT name, SUM(pgsize), COUNT(*) FROM dbstat GROUP BY name ORDER BY 2 DESC;

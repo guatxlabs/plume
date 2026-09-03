@@ -287,6 +287,22 @@ grandeur relevé sur une base réelle) : dix millions d'événements font une di
 
 ## Re-profiler une autre production
 
+**PRÉREQUIS SUR L'HÔTE, ET IL N'EST INSTALLÉ PAR AUCUN SCRIPT DE CE DÉPÔT** (`P7.20-l`) : un client
+`sqlcipher` en ligne de commande, compilé avec `SQLITE_ENABLE_DBSTAT_VTAB` — sans cette option, les
+passes d'occupation de `prod-profile.sql` échouent et la recette s'arrête à mi-chemin. Le paquet
+Debian/Ubuntu `sqlcipher` porte l'option ; ailleurs, la vérifier avant de commencer :
+
+```sh
+command -v sqlcipher || sudo apt-get install -y sqlcipher
+sqlcipher :memory: "SELECT 1 FROM pragma_compile_options WHERE compile_options='ENABLE_DBSTAT_VTAB';"
+# une ligne « 1 » = l'option est présente ; AUCUNE sortie = ce client ne sait pas profiler
+```
+
+Ce prérequis se DÉCLARE ici au lieu d'être découvert au moment où l'on en a besoin : l'outil vit sur
+l'hôte, aucun manifeste ne le pose, et un ménage de paquets le retirerait sans que rien ne rougisse.
+Aucune garde ne le tient — une garde de dépôt ne peut pas juger un hôte qu'elle n'exécute pas, et
+faire rougir la CI pour un outil d'exploitant serait une rançon.
+
 ```sh
 DB=/chemin/plume.db
 KEY=<PLUME_DB_KEY>

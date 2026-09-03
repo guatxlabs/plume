@@ -917,6 +917,39 @@ pub(crate) fn reference_shape() -> Result<&'static std::collections::BTreeSet<St
     REFERENCE_SHAPE.get_or_init(build_reference_shape).as_ref().map_err(|e| e.clone())
 }
 
+/// LA DDL QUE **CE BINAIRE** DÉCLARE POUR UN OBJET — fabriquée exactement comme la forme de référence
+/// l'est : base VIDE en mémoire, `db/schema.sql`, puis la chaîne de migrations.
+///
+/// POURQUOI CETTE SOURCE ET AUCUNE AUTRE. Le seul appelant s'en sert quand le catalogue de la base
+/// ouverte vient de se révéler ABÎMÉ. Lire la DDL DANS ce catalogue reviendrait à demander à l'objet
+/// suspect de se décrire lui-même : la déclaration qu'on relirait pourrait être précisément celle qui
+/// est fausse. La référence, elle, ne dépend que du binaire.
+///
+/// `Ok(None)` = ce binaire ne déclare AUCUN objet de ce nom (ce n'est pas une erreur : la base peut
+/// porter des objets que le binaire ne connaît pas, cf. le périmètre de `schema_gaps`).
+/// `Err` = la référence elle-même n'a pas pu être bâtie — jamais un feu vert.
+pub(crate) fn ddl_de_reference(nom: &str) -> Result<Option<String>, String> {
+    use rusqlite::OptionalExtension;
+    let _muet = MigrationLogSilencer::new();
+    let conn = Connection::open_in_memory()
+        .map_err(|e| format!("base de référence : ouverture impossible ({e})"))?;
+    conn.execute_batch(include_str!("../../db/schema.sql"))
+        .map_err(|e| format!("base de référence : db/schema.sql non applicable ({e})"))?;
+    if !migrate(&conn) {
+        return Err(format!(
+            "base de référence : la chaîne de migrations de CE binaire s'arrête à v{} sur une base NEUVE \
+             (attendu v{CODE_SCHEMA_MAX})",
+            read_schema_version(&conn)
+        ));
+    }
+    conn.query_row("SELECT sql FROM sqlite_master WHERE name = ?1", [nom], |r| {
+        r.get::<_, Option<String>>(0)
+    })
+    .optional()
+    .map_err(|e| format!("base de référence : lecture de la DDL de `{nom}` impossible ({e})"))
+    .map(|o| o.flatten())
+}
+
 /// CE QUE LA BASE OUVERTE N'A PAS ALORS QUE CE BINAIRE LE DÉCLARE — vide = rien à signaler.
 ///
 /// Comparaison d'ensembles dans UN SEUL SENS : `référence − base`. Ce qui est EN TROP dans la base

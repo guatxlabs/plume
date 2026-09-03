@@ -137,9 +137,8 @@ impl PreparedDb {
     /// contrat. Le daemon y pose ses PRAGMA (`tune`) : `busy_timeout` DOIT précéder `prepare_schema`,
     /// sinon une contention transitoire redevient un refus (mesuré,
     /// `write_contention_on_an_up_to_date_database_is_not_a_refusal`).
-    pub(crate) fn open_with_prelude(path: &str, prelude: impl FnOnce(&Connection)) -> Result<Self, DbOpenError> {
-        let conn = raw_env(path).map_err(DbOpenError::Ouverture)?;
-        let prete = Self::seal(conn, prelude)?;
+    pub(crate) fn open_with_prelude(path: &str, prelude: impl Fn(&Connection)) -> Result<Self, DbOpenError> {
+        let prete = Self::ouvrir_en_reconstruisant_les_index_derives(&|| raw_env(path), &prelude)?;
         // `P9.6-a` — LA POSTURE DE LA CLÉ AT-REST SE DIT ICI, ET LA PORTÉE EST DÉRIVÉE. Une base née
         // chiffrée tourne sous une clé que le PRODUIT s'est donnée à lui-même : la perdre, c'est perdre
         // le SOC entier, définitivement. Une ligne sur la sortie d'erreur au moment de l'engendrement ne
@@ -164,15 +163,59 @@ impl PreparedDb {
     pub(crate) fn open_keyed_with_prelude(
         path: &str,
         key: Option<&str>,
-        prelude: impl FnOnce(&Connection),
+        prelude: impl Fn(&Connection),
     ) -> Result<Self, DbOpenError> {
-        let conn = raw_keyed(path, key).map_err(DbOpenError::Ouverture)?;
-        Self::seal(conn, prelude)
+        Self::ouvrir_en_reconstruisant_les_index_derives(&|| raw_keyed(path, key), &prelude)
+    }
+
+    /// LA PORTE, PLUS UNE SEULE RÉPARATION : celle d'un index ENTIÈREMENT DÉRIVABLE.
+    ///
+    /// `P8.10-m` — MESURÉ EN PRODUCTION le 2026-09-03, trois heures d'arrêt total. Le contrat de schéma
+    /// force la construction des tables virtuelles ; celle de l'index plein-texte a rendu SQLITE_CORRUPT
+    /// et le démon s'est arrêté — aucune requête, aucune ingestion, aucune surface de santé. Le refus
+    /// était HONNÊTE : l'index était réellement abîmé. Ce qui ne l'était pas, c'est son PRIX.
+    ///
+    /// LA FRONTIÈRE QUE LA PORTE NE TRAÇAIT PAS, ET QUI EST TOUT LE CORRECTIF. Le refus se justifie par
+    /// « servir rendrait des fonctions silencieusement absentes » — et c'est VRAI d'un objet SOURCE :
+    /// une table de bannissement détruite ne se re-fabrique pas, ce qu'elle contenait est perdu, et
+    /// démarrer sans elle transforme un contrôle de sécurité en passe-plat. C'est FAUX d'un objet
+    /// DÉRIVÉ : une table plein-texte à contenu externe ne porte AUCUNE donnée propre, sa source est
+    /// intacte à côté, et la reconstruire restitue la fonction à l'identique sans inventer une seule
+    /// ligne. La porte traitait les deux pareil ; elle les distingue désormais, et la distinction est
+    /// DÉRIVÉE de la DDL de référence — aucune liste de noms de tables n'est tenue ici.
+    ///
+    /// CE QUE CE CHEMIN NE PEUT PAS FAIRE, ET C'EST VOULU : il ne juge de rien tout seul. Si la
+    /// reconstruction n'est pas applicable, le message de refus d'origine part INTACT ; si elle est
+    /// tentée et échoue, la porte refuse EN LE DISANT ; et si elle réussit, le contrat est REJUGÉ sur
+    /// une connexion NEUVE — c'est ce second verdict, pas la réparation, qui autorise à servir.
+    fn ouvrir_en_reconstruisant_les_index_derives(
+        ouvrir: &dyn Fn() -> rusqlite::Result<Connection>,
+        prelude: &dyn Fn(&Connection),
+    ) -> Result<Self, DbOpenError> {
+        let conn = ouvrir().map_err(DbOpenError::Ouverture)?;
+        let refus = match Self::seal(conn, prelude) {
+            Ok(prete) => return Ok(prete),
+            Err(DbOpenError::Contrat(e)) => e,
+            Err(autre) => return Err(autre),
+        };
+        match reconstruire_index_derive(ouvrir, &refus) {
+            // Rien n'a été tenté : le refus part MOT POUR MOT tel qu'il était avant ce correctif.
+            IndexDerive::NonApplicable => Err(DbOpenError::Contrat(refus)),
+            IndexDerive::Echouee(pourquoi) => Err(DbOpenError::Contrat(format!(
+                "{refus} — reconstruction de l'index dérivé TENTÉE et ÉCHOUÉE : {pourquoi}"
+            ))),
+            IndexDerive::Reconstruit(trace) => {
+                let conn = ouvrir().map_err(DbOpenError::Ouverture)?;
+                let prete = Self::seal(conn, prelude)?;
+                eprintln!("[schema] {trace}");
+                Ok(prete)
+            }
+        }
     }
 
     /// L'UNIQUE endroit où une `Connection` devient un `PreparedDb`. Tout ce qui est écrit dans la doc
     /// du module sur l'ORDRE se lit ici, en trois lignes.
-    fn seal(conn: Connection, prelude: impl FnOnce(&Connection)) -> Result<Self, DbOpenError> {
+    fn seal(conn: Connection, prelude: &dyn Fn(&Connection)) -> Result<Self, DbOpenError> {
         if let Err(v) = schema_downgrade_guard(&conn) {
             return Err(DbOpenError::PlusRecenteQueCeBinaire(v));
         }
@@ -192,6 +235,160 @@ impl std::ops::Deref for PreparedDb {
     fn deref(&self) -> &Connection {
         &self.0
     }
+}
+
+/// CE QU'UNE TENTATIVE DE RECONSTRUCTION A DONNÉ — trois issues DISTINCTES, et la distinction porte le
+/// correctif : « rien n'a été tenté » doit laisser le refus d'origine MOT POUR MOT. Un correctif qui
+/// reformule une accusation qu'il ne traite pas la rend illisible, et c'est ainsi qu'un remède fait
+/// taire une vraie alerte sans rien casser.
+enum IndexDerive {
+    /// Le refus ne porte pas sur un index dérivé que CE binaire déclare — ou pas sur un index du tout.
+    NonApplicable,
+    /// Reconstruit. La chaîne dit QUOI, et COMBIEN DE FOIS cela a déjà eu lieu sur cette base.
+    Reconstruit(String),
+    /// Tentée, et ÉCHOUÉE. Un fait à écrire dans le refus, jamais à taire.
+    Echouee(String),
+}
+
+/// LE NOM DE LA TABLE VIRTUELLE QUE LE MOTEUR N'A PAS SU CONSTRUIRE, extrait de SON message à lui.
+/// DÉRIVÉ du texte du moteur : aucun nom de table n'est écrit ici, donc un index dérivé déclaré demain
+/// est couvert le jour où il est déclaré, sans que son auteur ait à connaître ce fichier.
+pub(crate) fn nom_de_vtable_en_echec(message: &str) -> Option<String> {
+    const MARQUEUR: &str = "vtable constructor failed: ";
+    let nom: String = message
+        .split(MARQUEUR)
+        .nth(1)?
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect();
+    (!nom.is_empty()).then_some(nom)
+}
+
+/// UN OBJET EST-IL **ENTIÈREMENT** DÉRIVABLE ? Vrai UNIQUEMENT d'une table FTS5 déclarée sur un contenu
+/// EXTERNE NON VIDE : elle ne porte alors aucune donnée propre, sa source est la table nommée par
+/// `content=`, et la rebâtir n'invente rien.
+///
+/// LE CAS DANGEREUX EST NOMMÉ ET EXCLU. `content=''` déclare une table FTS5 **sans contenu**, où
+/// l'index EST la donnée : la reconstruire la DÉTRUIRAIT. Le prédicat exige donc une valeur NON VIDE,
+/// et c'est la seule chose qui sépare une réparation d'une perte de données. Un témoin le tient.
+pub(crate) fn est_entierement_derivable(ddl: &str) -> bool {
+    let d: String = ddl.to_ascii_lowercase().replace(|c: char| c.is_whitespace(), "");
+    if !d.contains("usingfts5(") {
+        return false;
+    }
+    match d.split("content='").nth(1) {
+        Some(apres) => !apres.starts_with('\''),
+        None => false,
+    }
+}
+
+/// Les jokers de `LIKE` neutralisés dans un nom d'objet — sans quoi le `_` de `event_fts` apparierait
+/// n'importe quel caractère et l'énumération des tables d'ombre déborderait de sa table.
+fn echapper_like(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('_', "\\_").replace('%', "\\%")
+}
+
+/// DÉCIDE si le refus est réparable, et le répare le cas échéant. Ne décide de rien d'autre : c'est
+/// l'appelant qui rejuge le contrat, sur une connexion neuve, et c'est ce second verdict qui autorise
+/// à servir.
+fn reconstruire_index_derive(
+    ouvrir: &dyn Fn() -> rusqlite::Result<Connection>,
+    refus: &str,
+) -> IndexDerive {
+    let Some(nom) = nom_de_vtable_en_echec(refus) else {
+        return IndexDerive::NonApplicable;
+    };
+    // LA DDL VIENT DE LA RÉFÉRENCE, JAMAIS DU CATALOGUE OUVERT : c'est ce catalogue-là qu'on soupçonne.
+    let ddl = match crate::migrate::ddl_de_reference(&nom) {
+        Ok(Some(d)) => d,
+        Ok(None) => return IndexDerive::NonApplicable,
+        Err(e) => return IndexDerive::Echouee(e),
+    };
+    if !est_entierement_derivable(&ddl) {
+        return IndexDerive::NonApplicable;
+    }
+    match rebatir(ouvrir, &nom, &ddl) {
+        Ok(trace) => IndexDerive::Reconstruit(trace),
+        Err(e) => IndexDerive::Echouee(e),
+    }
+}
+
+/// LA RECONSTRUCTION, EN DEUX SESSIONS — et les deux sessions sont nécessaires, pas une élégance.
+/// Retirer une table virtuelle dont le constructeur ÉCHOUE demande d'écrire dans le catalogue à la
+/// main (`DROP TABLE` la construirait d'abord, donc échouerait). Or une connexion qui vient de
+/// réécrire son propre catalogue garde en mémoire l'ancien : la recréation y verrait encore l'objet
+/// qu'elle vient d'effacer. Une connexion NEUVE relit — c'est le seul geste portable, et il ne
+/// dépend d'aucune version du moteur.
+fn rebatir(
+    ouvrir: &dyn Fn() -> rusqlite::Result<Connection>,
+    nom: &str,
+    ddl: &str,
+) -> Result<String, String> {
+    let cite = |s: &str| format!("\"{}\"", s.replace('"', "\"\""));
+
+    // SESSION A — retirer la déclaration abîmée, puis ses tables d'ombre.
+    {
+        let conn = ouvrir().map_err(|e| format!("réouverture impossible ({e})"))?;
+        // Les tables d'ombre se DÉRIVENT du catalogue ; aucune liste de suffixes n'est tenue ici, donc
+        // un format de moteur qui en ajouterait une demain est couvert sans qu'on y pense.
+        let motif = format!("{}\\_%", echapper_like(nom));
+        let ombres: Vec<String> = {
+            let mut st = conn
+                .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE ?1 ESCAPE '\\'")
+                .map_err(|e| format!("énumération des tables d'ombre impossible ({e})"))?;
+            let lignes = st
+                .query_map([&motif], |r| r.get::<_, String>(0))
+                .map_err(|e| format!("énumération des tables d'ombre impossible ({e})"))?;
+            let mut v = Vec::new();
+            for l in lignes {
+                v.push(l.map_err(|e| format!("énumération des tables d'ombre impossible ({e})"))?);
+            }
+            v
+        };
+        conn.execute_batch("PRAGMA writable_schema=ON;")
+            .map_err(|e| format!("catalogue non ouvrable en écriture ({e})"))?;
+        conn.execute("DELETE FROM sqlite_master WHERE name = ?1", [nom])
+            .map_err(|e| format!("retrait de la déclaration de `{nom}` impossible ({e})"))?;
+        conn.execute_batch("PRAGMA writable_schema=OFF;")
+            .map_err(|e| format!("catalogue non refermable ({e})"))?;
+        for o in &ombres {
+            conn.execute_batch(&format!("DROP TABLE IF EXISTS {};", cite(o)))
+                .map_err(|e| format!("retrait de la table d'ombre `{o}` impossible ({e})"))?;
+        }
+    }
+
+    // SESSION B — recréer À L'IDENTIQUE DE LA RÉFÉRENCE, puis rebâtir depuis la source.
+    let conn = ouvrir().map_err(|e| format!("réouverture impossible ({e})"))?;
+    conn.execute_batch(ddl)
+        .map_err(|e| format!("recréation de `{nom}` impossible ({e})"))?;
+    conn.execute_batch(&format!(
+        "INSERT INTO {t}({t}) VALUES('rebuild');",
+        t = cite(nom)
+    ))
+    .map_err(|e| format!("reconstruction du contenu de `{nom}` impossible ({e})"))?;
+
+    // LA TRACE EST UN COMPTE, PAS UN BOOLÉEN — ET C'EST TOUT L'ENJEU. Une réparation qui réussit en
+    // silence devient une routine, et une routine cache la seule chose qui compte : que la corruption
+    // REVIENT. Un compteur non purgeable dans la base, repris dans la ligne de journal, fait que
+    // « 1re » et « 4e » ne se lisent pas pareil — sans que personne ait à s'en souvenir.
+    let cle = format!("index_derive_reconstruit_{nom}");
+    conn.execute(
+        "INSERT INTO meta(key,value) VALUES(?1,'1') \
+         ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER)+1 AS TEXT)",
+        [&cle],
+    )
+    .map_err(|e| format!("trace de reconstruction non écrite ({e})"))?;
+    let combien: String = conn
+        .query_row("SELECT value FROM meta WHERE key = ?1", [&cle], |r| r.get(0))
+        .map_err(|e| format!("trace de reconstruction non relue ({e})"))?;
+
+    Ok(format!(
+        "INDEX DÉRIVÉ RECONSTRUIT : `{nom}` ne se construisait plus, et le contrat de schéma refusait de \
+         servir. Cet index est déclaré à CONTENU EXTERNE — il ne porte aucune donnée propre — il a donc été \
+         rebâti depuis sa source, et AUCUNE ligne n'a été inventée. Reconstruction n°{combien} de `{nom}` sur \
+         cette base : le compte vit dans `meta.{cle}`, il ne se purge pas, et s'il monte ce n'est plus une \
+         réparation, c'est un défaut de stockage à instruire."
+    ))
 }
 
 /// OUVERTURE **SANS** LE CONTRAT DE SCHÉMA, clé de l'environnement. Le nom est la demande explicite :

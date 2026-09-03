@@ -767,7 +767,22 @@ env:
   # pour une régression. Le MÊME +14 sur `EXPECTED_COLD_TESTS` — aucun n'est derrière un
   # `cfg(feature)`, et c'est l'ÉCART INCHANGÉ entre les deux profils (**245** avant comme après) qui
   # l'établit, pas une lecture des sources.
-  EXPECTED_TESTS: "1547"
+  # `P8.10-m` — +7 LE 2026-09-03, APRÈS UNE PANNE DE PRODUCTION DE TROIS HEURES. Le contrat de schéma
+  # force la construction des tables virtuelles ; celle de l'index plein-texte a rendu SQLITE_CORRUPT et
+  # le démon s'est arrêté — aucune requête, aucune ingestion, aucune surface de santé. Le refus était
+  # HONNÊTE (l'index était réellement abîmé) mais son PRIX ne l'était pas : cet index est déclaré à
+  # contenu EXTERNE, il ne porte aucune donnée propre, sa source était intacte, et il s'est rebâti en
+  # moins de trois minutes. La porte distingue désormais un objet DÉRIVÉ d'un objet SOURCE — le premier
+  # se reconstruit, le second refuse comme avant, et la distinction est DÉRIVÉE de la DDL de référence,
+  # pas d'une liste de noms. Les sept témoins tiennent les DEUX sens, et NEUF vérifications de mutation
+  # les ont éprouvés : réparation débranchée -> les trois témoins positifs rougissent et les deux négatifs
+  # restent verts ; prédicat relâché sur le cas DANGEREUX (`content=''`, où l'index EST la donnée et où
+  # le rebâtir la détruirait) -> seul le témoin du prédicat rougit ; contenu non rebâti -> le témoin qui
+  # compte les lignes rougit, celui qui ne regarde que la déclaration reste vert. Le MÊME +7 sur
+  # `EXPECTED_COLD_TESTS` — aucun n'est derrière un `cfg(feature)`, et c'est l'ÉCART INCHANGÉ entre les
+  # deux profils (**245** avant comme après) qui l'établit, pas une lecture des sources. Les deux chiffres
+  # viennent de `.github/scripts/compter-les-tests.sh`, jamais d'une addition.
+  EXPECTED_TESTS: "1554"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -1226,7 +1241,7 @@ jobs:
           # `P11.20-n` et `P11.20-h` (2026-09-03) : +14, les MÊMES quatorze que sur `EXPECTED_TESTS` —
           # aucun derrière un `cfg(feature)`, et c'est l'ÉCART INCHANGÉ entre les deux profils (245 avant
           # comme après) qui l'établit. La dérivation est écrite auprès d'`EXPECTED_TESTS`, une seule fois.
-          EXPECTED_COLD_TESTS: "1792"
+          EXPECTED_COLD_TESTS: "1799"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail

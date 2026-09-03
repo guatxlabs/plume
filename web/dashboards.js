@@ -796,8 +796,22 @@ async function addDashboardFlow() {
   if (attachable.length) fields.push({ name: 'existing', label: 'Rattacher un dashboard existant', type: 'select', value: '', options: [{ value: '', label: '+ Creer un nouveau dashboard' }, ...attachable.map(d => ({ value: String(d.id), label: d.name + (d.view_id ? ' (deplace depuis une autre vue)' : '') }))] });
   fields.push({ name: 'name', label: attachable.length ? 'Nom (si nouveau)' : 'Nom', placeholder: 'ex: Plume vue d ensemble', value: '' });
   fields.push({ name: 'visibility', label: 'Visibilité (si nouveau)', type: 'select', value: 'private', options: [{ value: 'private', label: 'Privé (vous + admin)' }, { value: 'shared', label: 'Partagé (groupe)' }] });
+  // `P11.20-p` — OÙ ARRIVE CE QUI VIENT D'ÊTRE CRÉÉ, DIT PAR LA FENÊTRE QUI LE CRÉE. Le mécanisme que la clé
+  // accusait est RÉFUTÉ : cette surface n'envoie AUCUN paramètre de vue quand aucune n'est choisie (voir
+  // `loadDashboards`), donc rien n'est « ajouté à un filtre ». Le défaut réel est plus simple, et il subsiste :
+  // « — Sans filtre de vue — » N'EST NI UNE VUE NI LE NON-RANGÉ — c'est l'ABSENCE de filtre, qui montre AUSSI
+  // les tableaux de bord rangés ailleurs —, et créer pendant qu'il est actif range l'objet dans AUCUNE vue sans
+  // qu'une phrase le dise. La destination est DÉRIVÉE de ce que la ligne d'envoi passe (`view_id`), jamais devinée.
+  // La phrase est BILINGUE PAR CONSTRUCTION plutôt que française et confiée au lexique : le libellé de la
+  // vue est INTERPOLÉ (une chaîne composée n'est jamais égale à une clé, elle ne serait donc jamais traduite).
+  const nomDeVue = view ? ((((S.viewList || []).find(v => String(v.id) === String(view)) || {}).name) || view) : '';
+  const destination = view
+    ? (LANG === 'en' ? 'Destination: the view “' + nomDeVue + '”.' : 'Destination : la vue « ' + nomDeVue + ' ».')
+    : (LANG === 'en'
+      ? 'Destination: NO view — this dashboard will not be filed anywhere. “— No view filter —” is not a destination: it is the ABSENCE of a filter, and the list it shows ALSO contains the dashboards filed in a view.'
+      : 'Destination : AUCUNE vue — ce tableau de bord ne sera rangé nulle part. « — Sans filtre de vue — » n\'est pas une destination : c\'est l\'ABSENCE de filtre, et la liste qu\'il montre contient AUSSI les tableaux de bord rangés dans une vue.');
   const r = await modal({
-    title: 'Ajouter un dashboard', okText: 'Ajouter', fields,
+    title: 'Ajouter un dashboard', okText: 'Ajouter', fields, consequence: destination,
     validate: v => {
       if (v.existing) return null; // rattachement d'un existant
       if (!v.name || !v.name.trim()) return 'Donne un nom, ou choisis un dashboard existant.';

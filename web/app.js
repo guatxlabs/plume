@@ -327,7 +327,13 @@ if ($('#qprev')) { $('#qprev').innerHTML = ic('chevleft'); $('#qprev').addEventL
 if ($('#qnext')) { $('#qnext').innerHTML = ic('chevright'); $('#qnext').addEventListener('click', () => qHistGo(1)); }
 if ($('#sql')) $('#sql').addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); clearDrillCrumb(); runQuery(); } });
 if ($('#viz')) $('#viz').addEventListener('change', renderViz);
-if ($('#qsize')) $('#qsize').addEventListener('change', () => { if (S.evState.q) { S.evState.page = 0; evLoad(); } });
+// `P11.20-v` — CHANGER LA TAILLE DE PAGE CHANGE LES FRONTIÈRES DU PARCOURS, DONC LA PILE DE CURSEURS AVEC.
+// Les curseurs mémorisés ont été capturés aux frontières de l'ANCIENNE taille ; le rechargement n'en réécrit
+// qu'un seul (celui de la page servie), et le pager étant NUMÉROTÉ dès que le total est connu, un clic sur un
+// rang plus lointain repartait d'un curseur qui n'était plus à sa place — page silencieusement DÉCALÉE, que le
+// démon ne peut PAS voir puisque la numérotation, elle, n'a pas bougé. La pile revient donc à son état initial
+// EN MÊME TEMPS que la page : c'est le geste que la reprise sans curseur de `viz.js` pose déjà (`cursors = [null]`).
+if ($('#qsize')) $('#qsize').addEventListener('change', () => { if (S.evState.q) { S.evState.cursors = [null]; S.evState.page = 0; evLoad(); } });
 if ($('#qexport-csv')) $('#qexport-csv').addEventListener('click', () => exploreExport('csv'));
 if ($('#qexport-json')) $('#qexport-json').addEventListener('click', () => exploreExport('json'));
 if ($('#qexport-pdf')) $('#qexport-pdf').addEventListener('click', () => exportPDF('explore'));

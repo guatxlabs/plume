@@ -1392,8 +1392,16 @@ function selecteurDeFente(libelle, infobulle, colonnes, choix, onChoix) {
 // être honorée, c'est un REFUS qui le dit, à la place du graphe. Avant le 2026-08-27, une 2e dimension
 // était offerte sur un résultat de deux colonnes, où la position médiane EST la dernière : le choix
 // s'évanouissait en silence. MESURÉ ce jour-là, les neuf représentations répondent toutes « je lis le
-// dernier rang », si bien que la fente d'ordonnée reste offerte partout sans être écrite comme une
-// exception — c'est le sondage qui le dit, et non une ligne d'ici.
+// dernier rang », si bien que `fenteOfferte` rend VRAI pour l'ordonnée sur les neuf, sans qu'aucune
+// exception soit écrite — c'est le sondage qui le dit, et non une ligne d'ici.
+// MAIS « OFFERTE PAR CETTE FONCTION » N'EST PAS « OFFERTE À L'ÉCRAN », ET LA PHRASE QUI VIVAIT ICI DISAIT
+// « PARTOUT » : elle était FAUSSE, mesuré le 2026-09-03 (`P11.20-s`). Cette barre n'est construite que si son
+// appelant la demande, et `noeudsDeVizReglee` ne la demande que sous `regle || (sondage(mode).trace &&
+// cols.length >= 2)` — une gate que la phrase ne mentionnait pas. Sur les DEUX représentations qui ne TRACENT
+// pas (les sept autres tracent ; c'est encore le sondage qui partage, aucun type n'est nommé ici), AUCUNE fente
+// n'est donc offerte tant qu'aucun réglage n'est en vigueur, ordonnée comprise. Ce qui reste vrai sans réserve
+// est l'autre moitié : un réglage POSÉ ramène la barre entière, y compris là où rien ne trace — c'est ce qui
+// fait qu'« une fente RÉGLÉE reste offerte quoi qu'il arrive » n'est pas, elle, une promesse trop large.
 function barreDeReglage(mode, cols, rows, reglage, onChoix) {
   const son = sondage(mode), profils = profilsDeColonnes(cols, rows);
   const barre = document.createElement('div');

@@ -151,7 +151,11 @@ function renderSourcesInventory(wrap, d) {
     : 'Ingestion en panne — aucune donnée reçue récemment.';
   wrap.appendChild(banner);
   // `P11.18-y` — LE PÉRIMÈTRE AVANT LA LISTE, ET MÊME QUAND ELLE EST VIDE (voir l'en-tête du module).
-  wrap.appendChild(noteDePerimetreDeLInventaire());
+  // `P11.20-u` — MAIS SOUS LA GARDE DE CE QU'IL COMMENTE. La note explique un vide INEXPLIQUÉ : « la liste
+  // ne montre pas tout, et voici les bornes ». Quand le bandeau juste au-dessus a déjà DIT la cause — l'ingestion
+  // est en panne —, l'ajouter donne DEUX explications d'un même vide sans dire laquelle s'applique, et prête à
+  // une panne une raison bornée-et-honnête qui est fausse. Elle suit donc la MÊME garde que le bandeau.
+  if (d.pipeline_fresh) wrap.appendChild(noteDePerimetreDeLInventaire());
   const tblHost = document.createElement('div'); wrap.appendChild(tblHost);
   const editable = canEditSources();
   const nUnexpected = sources.filter(s => s.unexpected).length;

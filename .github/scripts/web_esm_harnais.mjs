@@ -9322,6 +9322,402 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   console.log(`[cle-de-lexique-tenue-la-ou-elle-sert] LA CLÉ « aucune donnée » → « no data » EST DÉSORMAIS TENUE SUR LE SITE QUI LA PORTE POUR TOUTE LA CONSOLE, ET PLUS PAR UNE FIGURE QUI PASSAIT PAR LÀ. La mesure qui a fait naître ce témoin : retirer cette entrée du lexique ne faisait rougir que (49l) — DEUX assertions sur les quelque 1 500 de ce banc —, alors que ${sitesDeLaCle66.length} module(s) de web/ écrivent cette chaîne en dur (${sitesDeLaCle66.join(", ") || "aucun"}). Ce qui est JOUÉ ici : la fabrique de liste partagée, appelée sur ZÉRO ligne et sans texte de vide, rend « ${avant66.slice(0, 60)} » AVANT le parcours du lexique et « ${apres66.slice(0, 60)} » APRÈS — les deux moitiés, pour qu'un lexique mort ne puisse pas passer pour vivant. NON-RÉGRESSION : un appelant qui FOURNIT son texte de vide le retrouve mot pour mot, avant comme après le parcours. CE QUE CE TÉMOIN NE TIENT PAS : le corps sans ligne d'un panneau de Dashboards, dont la fabrique n'est pas exportée — compté ci-dessus, pas gardé ; l'encre peinte et la mise en page (section 0) ; et les autres clés du lexique, dont ce témoin ne dit rien.${""}`);
 }
 
+// ---------------------------------------------------------------------------------------------
+// 67. UNE NOTE DE PÉRIMÈTRE SUIT LA GARDE DE CE QU'ELLE COMMENTE (`P11.20-u`).
+//
+//     LE CONSTAT, RE-MESURÉ AVANT D'ÊTRE TOUCHÉ. `renderSourcesInventory` rend un bandeau dont le TEXTE
+//     et la CLASSE dépendent de `pipeline_fresh` — « Ingestion en panne » en `bad`, la phrase nominale en
+//     `muted` — puis, DEUX LIGNES PLUS BAS, une note de périmètre posée SANS AUCUNE GARDE. Sur une
+//     réponse qui déclare l'ingestion en panne avec une liste vide, le lecteur recevait donc DEUX
+//     explications du même vide : une panne, et « rien n'a franchi les bornes ». Rien ne disait laquelle
+//     s'applique, et la seconde prête à une panne une raison bornée-et-honnête qui est FAUSSE.
+//
+//     CE QUI FERME LA CLÉ EST LE TÉMOIN NÉGATIF, PAS LE GESTE. Un geste qui SUPPRIMERAIT la note
+//     fermerait ce constat et rouvrirait `P11.18-y` — dont toute la propriété est que le périmètre se dit
+//     AVANT la liste, y compris quand elle est vide. Les deux moitiés sont donc exigées ensemble : la
+//     note est là sur le chemin nominal (liste pleine ET liste vide), elle n'y est plus quand la cause du
+//     vide est déjà dite.
+//
+//     LA NOTE EST RECONNUE À SA CLASSE, JAMAIS À UN MOT DE SON TEXTE. Un prédicat de sous-chaîne
+//     accuserait le commentaire qui CITE la phrase pour la démentir — le piège s'est refermé neuf fois
+//     dans ce dépôt. Ce témoin compte des NŒUDS portant `srcperimetre`, et le contrôle positif interdit
+//     qu'un compte à zéro passe pour une correction.
+//
+//     CE QUE CE TÉMOIN NE TIENT PAS : ni la mise en page ni l'encre peinte (section 0) — il juge un arbre
+//     et une classe, pas ce qui est affiché ; il ne dit rien de la note en ANGLAIS (le module choisit sa
+//     langue à l'intérieur de la note, pas à la garde, donc la garde est la même) ; et il ÉNONCE le cas
+//     « ingestion en panne AVEC des lignes servies », où la note disparaît aussi — conséquence ASSUMÉE de
+//     faire suivre à la note la garde EXACTE du bandeau, exigée ci-dessous plutôt que laissée muette.
+// ---------------------------------------------------------------------------------------------
+{
+  const { renderSourcesInventory: rendreInv67 } = await import(pathToFileURL(path.join(WEB, "sources.js")).href);
+  const cueillir67 = (el, pred, acc) => { if (pred(el)) acc.push(el); (el.children || []).forEach((c) => cueillir67(c, pred, acc)); return acc; };
+  const notesDe67 = (h) => cueillir67(h, (e) => e.classList && e.classList.contains("srcperimetre"), []);
+  const bandeauDe67 = (h) => (h.children || [])[0] || null;
+  const UNE_SOURCE67 = {
+    source: "portprobe", expected: true, unexpected: false, in_collectors: true, declaree_par: "ce dépôt",
+    raison_attendue: "émise par un fichier livré (collectors/portprobe.sh)", marquage: null,
+    cadence_declarable: true, cadence_declaree: "non_declaree", cadence_interval_s: null, cadence_capteur: null,
+    cadence_par: null, cadence_le: null, observed_interval_s: null, last_seen: 1000, age_s: 60, n_24h: 10, status: "frais",
+  };
+  const rendre67 = (fresh, sources) => { const h = new Element("div"); rendreInv67(h, { ok: true, pipeline_fresh: fresh, sources }); return h; };
+  const roleAvant67 = document.body.className;
+  document.body.className = "role-viewer";
+  let nominalVide67, nominalPlein67, panneVide67, pannePleine67;
+  try {
+    nominalVide67 = rendre67(true, []);
+    nominalPlein67 = rendre67(true, [UNE_SOURCE67]);
+    panneVide67 = rendre67(false, []);
+    pannePleine67 = rendre67(false, [UNE_SOURCE67]);
+
+    // (a) INSTRUMENT : les deux états rendus sont bien les deux états décrits.
+    exiger(!!bandeauDe67(nominalPlein67) && bandeauDe67(nominalPlein67).classList.contains("muted") && !bandeauDe67(nominalPlein67).classList.contains("bad"),
+      `(67a-instrument) l'état NOMINAL ne rend pas le bandeau nominal (classe « ${bandeauDe67(nominalPlein67) && bandeauDe67(nominalPlein67).className} ») : ce qui suit ne porterait pas sur l'état décrit`);
+    exiger(!!bandeauDe67(panneVide67) && bandeauDe67(panneVide67).classList.contains("bad"),
+      `(67a-instrument) l'état « ingestion en panne » ne rend pas le bandeau d'alarme (classe « ${bandeauDe67(panneVide67) && bandeauDe67(panneVide67).className} ») : le cas exercé n'est pas celui du constat`);
+    exiger(String(bandeauDe67(panneVide67).textContent).trim() !== String(bandeauDe67(nominalPlein67).textContent).trim(),
+      "(67a-instrument) les deux bandeaux portent le MÊME texte : la garde `pipeline_fresh` ne partage plus rien, et les deux états mesurés seraient le même");
+
+    // (b) CONTRÔLE POSITIF — `P11.18-y` NE BOUGE PAS : sur le chemin nominal, la note est là, y compris
+    //     sur une liste VIDE, le seul cas où « il n'y a rien » et « rien n'a franchi les bornes » se
+    //     lisent pareil. Sans cette moitié, SUPPRIMER la note passerait pour la correction demandée.
+    exiger(notesDe67(nominalPlein67).length === 1,
+      `(67b) sur le chemin nominal, l'inventaire ne pose plus sa note de périmètre (${notesDe67(nominalPlein67).length} nœud(s) « srcperimetre ») : la vue se laisse de nouveau lire comme complète`);
+    exiger(notesDe67(nominalVide67).length === 1,
+      `(67b) sur une liste VIDE et une ingestion SAINE, la note de périmètre a disparu (${notesDe67(nominalVide67).length} nœud(s)) : c'est le seul cas où le lecteur peut conclure « il n'y a rien » alors que la réponse est « rien n'a franchi les bornes »`);
+    exiger(String(notesDe67(nominalVide67)[0] && notesDe67(nominalVide67)[0].textContent).trim().length > 80,
+      "(67b-instrument) le nœud de périmètre est quasi vide : compter sa présence ne mesurerait plus rien");
+
+    // (c) LE TÉMOIN NÉGATIF — CELUI QUI FERME LA CLÉ. La cause du vide est CONNUE et le bandeau la dit :
+    //     la note n'a plus rien à expliquer, et l'ajouter donne deux explications d'un même vide.
+    exiger(notesDe67(panneVide67).length === 0,
+      `(67c) l'ingestion est déclarée EN PANNE et la liste est vide : la note de périmètre est tout de même rendue (${notesDe67(panneVide67).length} nœud(s)) — le lecteur reçoit DEUX explications du même vide, et la seconde prête à une panne une raison bornée-et-honnête qui est fausse`);
+    exiger(notesDe67(pannePleine67).length === 0,
+      `(67c) la note de périmètre ne suit pas la garde du bandeau qu'elle commente : elle paraît encore sur un état « ingestion en panne » servi AVEC des lignes (${notesDe67(pannePleine67).length} nœud(s))`);
+  } finally {
+    document.body.className = roleAvant67;
+  }
+  console.log(`[note-de-perimetre-sous-la-meme-garde] LA NOTE DE PÉRIMÈTRE DE L'INVENTAIRE SUIT DÉSORMAIS LA GARDE DE CE QU'ELLE COMMENTE (\`P11.20-u\`). Le bandeau est gardé par \`pipeline_fresh\` — texte ET classe changent — pendant que la note posée deux lignes plus bas ne l'était PAS DU TOUT : sur une réponse « ingestion en panne » à liste vide, l'écran rendait la panne PUIS une explication bornée-et-honnête du même vide, sans dire laquelle s'applique. LES DEUX MOITIÉS SONT EXIGÉES ENSEMBLE, et c'est ce qui distingue un correctif d'une suppression : la note est là sur le chemin nominal, liste pleine (${notesDe67(nominalPlein67).length} nœud) comme liste VIDE (${notesDe67(nominalVide67).length} nœud, la moitié que \`P11.18-y\` a payée), et elle n'y est PLUS quand la cause du vide est déjà dite (${notesDe67(panneVide67).length}). LA NOTE EST RECONNUE À SA CLASSE, jamais à un mot de son texte : un prédicat de sous-chaîne accuserait le commentaire qui CITE la phrase pour la démentir. CE QUE CE TÉMOIN NE TIENT PAS : ni la mise en page ni l'encre peinte (section 0) ; ni la note en anglais, la langue se choisissant DANS la note et non à sa garde ; et il ÉNONCE la conséquence assumée du geste — sur « ingestion en panne » servie AVEC des lignes, la note disparaît aussi (${notesDe67(pannePleine67).length} nœud), parce qu'elle suit la garde EXACTE du bandeau et non une condition sur le vide.`);
+}
+
+// ---------------------------------------------------------------------------------------------
+// 68. UN RÉGLAGE QUI CHANGE LES FRONTIÈRES D'UN PARCOURS VIDE LES CURSEURS MÉMORISÉS (`P11.20-v`).
+//
+//     LA QUESTION QUE LA CLÉ LAISSAIT OUVERTE — « le banc peut-il en témoigner sans navigateur ? » — EST
+//     TRANCHÉE ICI, ET LA RÉPONSE EST OUI. Le câblage vit au top-level d'`app.js`, sur le `#qsize` d'une
+//     page RÉELLE (le simulacre analyse `index.html`) : le geste se JOUE — on change la valeur du
+//     sélecteur et on distribue l'événement, comme un exploitant le ferait.
+//
+//     CE QUI EST MESURÉ EST LA CONSÉQUENCE, PAS L'ÉTAT. Un témoin qui relirait `S.evState.cursors`
+//     prouverait qu'un tableau a été remis à zéro, pas qu'une page décalée ne part plus. Ce témoin
+//     capture donc le CORPS envoyé à `/api/query` :
+//     (b) CONTRÔLE POSITIF — hors changement de taille, un clic sur un rang lointain part bien avec le
+//         curseur mémorisé pour ce rang. Sans lui, (d) serait vrai par vacuité : un banc où AUCUN curseur
+//         ne part jamais rendrait le même vert.
+//     (c) LE GESTE — la page revient à zéro ET la pile revient à son état initial, dans le même geste.
+//     (d) LA CONSÉQUENCE — le même clic sur le même rang, APRÈS un changement de taille, ne part plus
+//         avec un curseur capturé aux frontières de l'ANCIENNE taille : il repart par un saut d'offset
+//         calculé sur la NOUVELLE. C'est exactement ce que le garde-fou serveur ne pouvait PAS voir, la
+//         numérotation étant la même des deux côtés.
+//     (e) LA GARDE DU CÂBLAGE RESTE — sans requête en cours, changer la taille ne touche à rien : une
+//         version qui effacerait la pile à tout coup passerait (c) en cassant autre chose.
+//
+//     CE QUE CE TÉMOIN NE TIENT PAS : le démon n'est pas là — il ne dit RIEN de ce qu'une page d'offset
+//     rendrait, seulement de ce qui part ; ni la mise en page ni l'encre peinte (section 0) ; et il ne
+//     couvre que le sélecteur de TAILLE — si un autre réglage change demain les frontières d'un parcours,
+//     c'est un autre câblage, et ce témoin ne le verra pas.
+// ---------------------------------------------------------------------------------------------
+{
+  const { S: S68 } = await import(pathToFileURL(path.join(WEB, "state.js")).href);
+  const viz68 = await import(pathToFileURL(path.join(WEB, "viz.js")).href);
+  await import(pathToFileURL(path.join(WEB, "app.js")).href);   // le câblage du sélecteur vit à son top-level
+  const qsize68 = document.querySelector("#qsize");
+  const tic68 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser68 = async (n = 30) => { for (let i = 0; i < n; i++) await tic68(); };
+  const corps68 = [];
+  const fetchOrigine68 = globalThis.fetch, etatOrigine68 = S68.evState, tailleOrigine68 = qsize68 ? qsize68.value : "";
+  globalThis.fetch = async (u, o) => {
+    const url = String(u);
+    if (url.includes("/api/query")) { try { corps68.push(JSON.parse((o && o.body) || "{}")); } catch (e) { corps68.push({}); } }
+    return { ok: true, status: 200, text: async () => JSON.stringify({ columns: ["ts", "host"], rows: [], stats: { elapsed_ms: 1 }, has_more: false }) };
+  };
+  // Une pile de curseurs telle qu'un parcours séquentiel l'a REMPLIE : quatre frontières, celles de la
+  // taille COURANTE. C'est l'état exact que la clé décrit.
+  const pileFraiche68 = () => { S68.exploreInflight = null; S68.evState = { q: "search sshd", isSoql: true, keyset: true, cursors: [null, "c1", "c2", "c3"], page: 3, pageSize: 100, total: 400, shown: 0, totalCapped: false, countFired: true, realTotal: true, win: { from: 1000, to: 2000 } }; };
+  const NOUVELLE_TAILLE68 = 500;
+  let curseurNominal68 = null, offsetApres68 = null, curseurApres68 = "(non joué)", pileApres68 = "(non jouée)", pageApres68 = -1, pileSansRequete68 = "(non jouée)", nbCablages68 = 0;
+  try {
+    // (a) INSTRUMENT : le sélecteur de la page réelle porte le câblage, et un seul.
+    exiger(!!qsize68 && qsize68.tagName === "SELECT" && (qsize68.options || []).length > 1,
+      "(68a-instrument) `#qsize` n'est pas le sélecteur de taille de page d'index.html : le geste exercé ci-dessous ne serait pas celui de l'exploitant");
+    const ecouteurs68 = ((qsize68 && qsize68._ecouteurs) || []).filter((e) => e.type === "change");
+    nbCablages68 = ecouteurs68.length;
+    // UN MODULE CHARGÉ SOUS UNE ADRESSE DE LANGUE EST UN MODULE DISTINCT, et cette évidence est ici une
+    // MESURE : ce banc charge `app.js` deux fois — l'instance française et celle que la section 14 tire
+    // sous `?plume-lang=en` — et CHACUNE câble le même `#qsize` de la page réelle. Une première version de
+    // ce témoin exigeait « exactement un » et rougissait sur le banc VERT. Le compte attendu est donc
+    // « au moins un » ; la seconde instance porte son PROPRE `state.js`, dont `evState.q` est vide, donc sa
+    // garde ne laisse rien partir — ce que (68b) vérifie en COMPTANT les envois, pas en le supposant.
+    exiger(ecouteurs68.length >= 1,
+      `(68a-instrument) \`#qsize\` ne porte AUCUN capteur « change » : le câblage du top-level d'app.js a disparu, le geste ci-dessous ne serait joué par personne, et tout ce qui suit passerait sans rien mesurer`);
+
+    // (b) CONTRÔLE POSITIF : le curseur mémorisé EST celui qui part, hors changement de taille.
+    pileFraiche68();
+    corps68.length = 0;
+    await viz68.evLoad();
+    await laisser68();
+    curseurNominal68 = corps68.length ? corps68[0].cursor : null;
+    exiger(corps68.length === 1 && curseurNominal68 === "c3",
+      `(68b-instrument) un clic sur le 4e rang ne part PAS avec le curseur mémorisé pour ce rang (${corps68.length} envoi(s), curseur « ${curseurNominal68} ») : le mécanisme que ce témoin surveille n'est pas exercé, et (68d) serait vert par vacuité`);
+
+    // (c) LE GESTE : changer la taille remet la page à zéro ET la pile à son état initial, ensemble.
+    pileFraiche68();
+    qsize68.value = String(NOUVELLE_TAILLE68);
+    qsize68.dispatchEvent({ type: "change" });
+    pageApres68 = S68.evState.page;
+    pileApres68 = JSON.stringify(S68.evState.cursors);
+    exiger(pageApres68 === 0,
+      `(68c-instrument) changer la taille de page ne remet plus le numéro de page à zéro (page ${pageApres68}) : le défaut mesuré n'est plus celui que ce témoin décrit`);
+    exiger(pileApres68 === "[null]",
+      `(68c) changer la taille de page laisse la pile de curseurs INTACTE (${pileApres68}) : les entrées capturées aux frontières de l'ANCIENNE taille survivent, une seule sera réécrite au rechargement, et le pager est NUMÉROTÉ dès que le total est connu`);
+    await laisser68();
+
+    // (d) LA CONSÉQUENCE : le même clic sur le même rang ne part plus avec un curseur périmé.
+    corps68.length = 0;
+    S68.evState.page = 3;
+    await viz68.evLoad();
+    await laisser68();
+    curseurApres68 = corps68.length ? (corps68[0].cursor === undefined ? "(aucun curseur envoyé)" : String(corps68[0].cursor)) : "(aucun envoi)";
+    offsetApres68 = corps68.length ? corps68[0].offset : null;
+    exiger(corps68.length === 1 && corps68[0].cursor === undefined,
+      `(68d) après un changement de taille, un clic sur le 4e rang repart d'un curseur qui n'est plus à sa place (« ${curseurApres68} ») : la page servie est silencieusement DÉCALÉE, et le démon ne peut PAS le voir puisque la numérotation, elle, n'a pas bougé`);
+    exiger(offsetApres68 === 3 * NOUVELLE_TAILLE68,
+      `(68d) la page non atteinte en séquentiel ne repart pas par un saut d'offset calculé sur la NOUVELLE taille (offset ${offsetApres68}, attendu ${3 * NOUVELLE_TAILLE68}) : ce qui part ne décrit ni l'ancienne frontière ni la nouvelle`);
+
+    // (e) LA GARDE DU CÂBLAGE RESTE : sans requête en cours, le geste ne touche à rien.
+    S68.exploreInflight = null;
+    S68.evState = { q: "", isSoql: false, keyset: true, cursors: [null, "z1", "z2"], page: 2, pageSize: 100, total: 0, shown: 0, totalCapped: false, countFired: true };
+    qsize68.dispatchEvent({ type: "change" });
+    pileSansRequete68 = JSON.stringify(S68.evState.cursors);
+    exiger(pileSansRequete68 === '[null,"z1","z2"]' && S68.evState.page === 2,
+      `(68e-négatif) sans requête en cours, changer la taille efface tout de même l'état du parcours (${pileSansRequete68}, page ${S68.evState.page}) : le remède déborde la garde qu'il devait suivre`);
+  } finally {
+    globalThis.fetch = fetchOrigine68;
+    S68.evState = etatOrigine68; S68.exploreInflight = null;
+    if (qsize68) qsize68.value = tailleOrigine68;
+  }
+  console.log(`[taille-de-page-vide-les-curseurs] CHANGER LA TAILLE DE PAGE VIDE DÉSORMAIS LA PILE DE CURSEURS, ET LA QUESTION QUE LA CLÉ LAISSAIT OUVERTE EST TRANCHÉE : le banc en témoigne SANS NAVIGATEUR, en distribuant l'événement sur le \`#qsize\` de la page réelle, qui porte ${nbCablages68} câblage(s) « change » — un par instance d'app.js chargée dans ce processus, un module sous adresse de langue étant un module DISTINCT ; seule l'instance française mute l'état mesuré ici. CE QUI EST MESURÉ EST LA CONSÉQUENCE, PAS L'ÉTAT : le contrôle positif établit d'abord qu'un clic sur le 4e rang part bien avec le curseur mémorisé pour ce rang (« ${curseurNominal68} ») — sans lui, un banc où aucun curseur ne part jamais rendrait le même vert ; puis, APRÈS le changement de taille, le même clic sur le même rang ne porte plus AUCUN curseur (« ${curseurApres68} ») et repart par un saut d'offset calculé sur la NOUVELLE taille (${offsetApres68}). La pile revient à ${pileApres68} en même temps que la page à ${pageApres68}, dans le même geste — c'est ce que le garde-fou serveur ne pouvait PAS voir, la numérotation étant la même des deux côtés. LE REMÈDE NE DÉBORDE PAS SA GARDE : sans requête en cours, le geste laisse l'état du parcours intact (${pileSansRequete68}). CE QUE CE TÉMOIN NE TIENT PAS : le démon n'est pas là — rien n'est dit de ce qu'une page d'offset RENDRAIT ; ni la mise en page ni l'encre peinte (section 0) ; et il ne couvre que le sélecteur de TAILLE, pas un futur réglage qui changerait les frontières par un autre câblage.`);
+}
+
+// ---------------------------------------------------------------------------------------------
+// 69. LA FENÊTRE QUI CRÉE UN TABLEAU DE BORD DIT OÙ IL ARRIVE (`P11.20-p`).
+//
+//     LE MÉCANISME QUE LA CLÉ ACCUSAIT EST RÉFUTÉ, ET LA RÉFUTATION EST MESURÉE ICI, PAS CRUE. La clé
+//     disait qu'un tableau de bord créé est « ajouté dynamiquement au filtre sans vue ». Le témoin (a)
+//     lit les URL que la surface demande vraiment : sans vue choisie, la charge part SANS aucun
+//     paramètre de vue — il n'y a donc pas de « filtre sans vue » auquel ajouter quoi que ce soit.
+//
+//     LE DÉFAUT RÉEL SUBSISTE, ET IL EST PLUS SIMPLE. « — Sans filtre de vue — » n'est NI une vue NI le
+//     non-rangé : c'est l'ABSENCE de filtre, et la liste qu'il montre contient AUSSI les tableaux de bord
+//     rangés dans une vue. Créer pendant qu'il est actif range l'objet dans AUCUNE vue, sans qu'une
+//     phrase le dise. La destination est donc NOMMÉE dans la fenêtre qui crée.
+//
+//     LA PHRASE EST JUGÉE PAR SON ACCORD AVEC LE FIL, JAMAIS PAR UN MOT QU'ON AURAIT ÉCRIT ICI :
+//     (b) elle NOMME la vue SERVIE par la route quand il y en a une — le nom vient de la charge utile,
+//         pas de ce témoin ; (c) elle DIFFÈRE dans les deux directions — une phrase unique passerait (b)
+//         en mentant à l'autre cas ; (d) elle s'accorde avec le `view_id` que l'écriture emporte
+//         réellement, dans les deux directions : c'est ce qui interdit de la laisser dériver.
+//
+//     CE QUE CE TÉMOIN NE TIENT PAS : ni la mise en page ni l'encre peinte (section 0) ; il ne dit rien
+//     du DÉMON — ce que la route fait d'un `view_id` nul n'est pas mesuré ici ; il ne dit rien de la
+//     création d'un PANNEAU, qui a sa propre fenêtre ; et il ne rend pas « sans vue » filtrant, ce qui
+//     demanderait une écriture côté démon (la branche qui traiterait ce paramètre est morte).
+// ---------------------------------------------------------------------------------------------
+{
+  const modDash69 = await import(pathToFileURL(path.join(WEB, "dashboards.js")).href);
+  const { S: S69 } = await import(pathToFileURL(path.join(WEB, "state.js")).href);
+  const tic69 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser69 = async (n = 25) => { for (let i = 0; i < n; i++) await tic69(); };
+  const cueillir69 = (el, pred, acc) => { if (pred(el)) acc.push(el); (el.children || []).forEach((c) => cueillir69(c, pred, acc)); return acc; };
+  const parClasse69 = (racine, cl) => cueillir69(racine, (e) => e.classList && e.classList.contains(cl), [])[0] || null;
+  const fenetre69 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !c.classList.contains("out")).pop();
+
+  const VUE69 = { id: 7, name: "Production", owner: "hugo", visibility: "private", dashboards: 2 };
+  const lectures69 = [], ecritures69 = [];
+  const boutonNouveau69 = new Element("button"), selecteurVue69 = new Element("select"), hoteVue69 = new Element("div");
+  const hotes69 = { "#dash-new": boutonNouveau69, "#view": selecteurVue69, "#dashview": hoteVue69 };
+  const qsOrigine69 = document.querySelector, fetchOrigine69 = globalThis.fetch;
+  const etatOrigine69 = { role: S69.viewsRole, me: S69.viewsMe, liste: S69.viewList, dash: S69.dashList };
+  document.querySelector = (sel) => (Object.prototype.hasOwnProperty.call(hotes69, sel) ? hotes69[sel] : new Element("div"));
+  globalThis.fetch = async (u, o) => {
+    const url = String(u), methode = (o && o.method) || "GET";
+    if (methode !== "GET") { ecritures69.push({ url, body: JSON.parse((o && o.body) || "{}") }); return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, id: 99 }) }; }
+    lectures69.push(url);
+    if (url.includes("/api/views")) return { ok: true, status: 200, text: async () => JSON.stringify({ views: [VUE69], me: "hugo", role: "admin" }) };
+    if (url.includes("/api/dashboards")) return { ok: true, status: 200, text: async () => JSON.stringify({ dashboards: [], role: "admin" }) };
+    return { ok: true, status: 200, text: async () => JSON.stringify({}) };
+  };
+  // Le geste de l'exploitant : ouvrir la fenêtre de création, y taper un nom, valider. Ce qui est lu est
+  // la CONSÉQUENCE affichée ; ce qui est capturé est l'écriture qui part.
+  const creer69 = async (nom) => {
+    boutonNouveau69.dispatchEvent({ type: "click" });
+    await laisser69();
+    const ov = fenetre69();
+    const csq = ov ? parClasse69(ov, "modal-consequence") : null;
+    const phrase = csq ? String(csq.textContent).trim() : "";
+    const form = ov && ov.children[0] ? ov.children[0].children[0] : null;
+    const champ = form ? cueillir69(form, (e) => e.getAttribute && e.getAttribute("data-n") === "name", [])[0] : null;
+    if (champ) champ.value = nom;
+    const avant = ecritures69.length;
+    if (form && typeof form.onsubmit === "function") form.onsubmit({ preventDefault() {} });
+    await laisser69();
+    return { phrase, ecriture: ecritures69.slice(avant).find((e) => /\/api\/dashboards$/.test(e.url)) || null };
+  };
+  let sansVue69 = { phrase: "", ecriture: null }, avecVue69 = { phrase: "", ecriture: null }, urlSansVue69 = "", urlAvecVue69 = "";
+  try {
+    modDash69.initDashboards();
+    await laisser69();
+
+    // (a) LA RÉFUTATION, MESURÉE : sans vue choisie, AUCUN paramètre de vue ne part.
+    urlSansVue69 = lectures69.filter((u) => u.includes("/api/dashboards")).pop() || "";
+    exiger(!!urlSansVue69, "(69a-instrument) aucune charge de tableaux de bord n'a été demandée : la réfutation ci-dessous ne porterait sur rien");
+    exiger(!/[?&]view=/.test(urlSansVue69),
+      `(69a) la surface envoie un paramètre de vue alors qu'aucune vue n'est choisie (« ${urlSansVue69} ») : le mécanisme que la clé accusait existerait bel et bien, et ce lot corrigerait le mauvais défaut`);
+    selecteurVue69.value = "7";
+    selecteurVue69.dispatchEvent({ type: "change" });
+    await laisser69();
+    urlAvecVue69 = lectures69.filter((u) => u.includes("/api/dashboards")).pop() || "";
+    exiger(/[?&]view=7(?:$|&)/.test(urlAvecVue69),
+      `(69a-instrument) une vue CHOISIE ne fait pas partir son filtre (« ${urlAvecVue69} ») : le témoin négatif ci-dessus serait vrai par vacuité, la surface n'envoyant jamais rien`);
+
+    // (b) et (c) LA DESTINATION EST NOMMÉE, ET ELLE DIFFÈRE DANS LES DEUX DIRECTIONS.
+    avecVue69 = await creer69("tb-dans-une-vue");
+    selecteurVue69.value = "";
+    selecteurVue69.dispatchEvent({ type: "change" });
+    await laisser69();
+    sansVue69 = await creer69("tb-hors-vue");
+
+    exiger(sansVue69.phrase.length > 40 && avecVue69.phrase.length > 20,
+      `(69b) la fenêtre de création ne NOMME pas où l'objet arrivera (« ${avecVue69.phrase} » / « ${sansVue69.phrase} ») : l'exploitant valide sans savoir où le tableau de bord se range`);
+    exiger(avecVue69.phrase.includes(VUE69.name),
+      `(69b) la destination annoncée ne nomme pas la vue SERVIE par la route (« ${avecVue69.phrase} », vue « ${VUE69.name} ») : la phrase n'est pas dérivée de ce qui est choisi`);
+    exiger(!sansVue69.phrase.includes(VUE69.name) && sansVue69.phrase !== avecVue69.phrase,
+      `(69c-négatif) les deux destinations reçoivent la MÊME annonce (« ${sansVue69.phrase} ») : une phrase constante passerait le témoin précédent en mentant à l'un des deux cas`);
+
+    // (d) LA PHRASE S'ACCORDE AVEC CE QUI PART, dans les deux directions.
+    exiger(!!avecVue69.ecriture && Number(avecVue69.ecriture.body.view_id) === VUE69.id,
+      `(69d-instrument) la création dans une vue n'emporte pas son identifiant (${JSON.stringify(avecVue69.ecriture && avecVue69.ecriture.body)}) : l'accord phrase/fil ne se mesurerait pas`);
+    exiger(!!sansVue69.ecriture && sansVue69.ecriture.body.view_id === null,
+      `(69d) la création SANS vue n'emporte pas une destination nulle (${JSON.stringify(sansVue69.ecriture && sansVue69.ecriture.body)}) : la phrase annoncerait autre chose que ce que le fil transporte`);
+  } finally {
+    document.querySelector = qsOrigine69; globalThis.fetch = fetchOrigine69;
+    S69.viewsRole = etatOrigine69.role; S69.viewsMe = etatOrigine69.me; S69.viewList = etatOrigine69.liste; S69.dashList = etatOrigine69.dash;
+    document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
+  }
+  console.log(`[destination-dune-creation-nommee] LA FENÊTRE QUI CRÉE UN TABLEAU DE BORD DIT OÙ IL ARRIVE (\`P11.20-p\`). LE MÉCANISME QUE LA CLÉ ACCUSAIT EST RÉFUTÉ PAR MESURE, PAS PAR LECTURE : sans vue choisie, la charge part « ${urlSansVue69} » — AUCUN paramètre de vue —, donc il n'existe aucun « filtre sans vue » auquel une création serait ajoutée ; une vue choisie, elle, fait bien partir son filtre (« ${urlAvecVue69} »), sans quoi ce négatif serait vrai par vacuité. LE DÉFAUT RÉEL EST PLUS SIMPLE ET IL SUBSISTAIT : « — Sans filtre de vue — » n'est ni une vue ni le non-rangé, et créer pendant qu'il est actif range l'objet dans AUCUNE vue sans qu'une phrase le dise. La destination est désormais annoncée dans les deux directions — « ${avecVue69.phrase} » / « ${sansVue69.phrase} » — et elle est JUGÉE PAR L'ACCORD AVEC LE FIL, jamais par un mot écrit ici : le nom de la vue vient de la charge utile servie, les deux annonces diffèrent, et chacune s'accorde avec le \`view_id\` que l'écriture emporte (${JSON.stringify(avecVue69.ecriture && avecVue69.ecriture.body.view_id)} / ${JSON.stringify(sansVue69.ecriture && sansVue69.ecriture.body.view_id)}). CE QUE CE TÉMOIN NE TIENT PAS : le démon n'est pas là — ce qu'il fait d'un \`view_id\` nul n'est pas mesuré ; la création d'un PANNEAU a sa propre fenêtre et n'est pas couverte ; ni la mise en page ni l'encre peinte (section 0) ; et « sans vue » ne FILTRE toujours pas — le rendre filtrant demande une écriture côté démon, dont la branche est morte.`);
+}
+
+// ---------------------------------------------------------------------------------------------
+// 70. UNE FENTE « OFFERTE » PAR LA TABLE N'EST PAS UNE FENTE OFFERTE À L'ÉCRAN (`P11.20-s`).
+//
+//     LE CŒUR DU CONSTAT D'ORIGINE EST FAUX, ET LA PHRASE RÉELLEMENT FAUSSE EST AILLEURS. La clé
+//     accusait « une fente RÉGLÉE n'est pas offerte pour cinq représentations » : (e) mesure le
+//     contraire — un réglage posé ramène la barre entière, sur toutes. La phrase qui mentait est celle
+//     qui affirmait que la fente d'ordonnée « reste offerte PARTOUT » : la barre est gatée un cran plus
+//     haut, dans `noeudsDeVizReglee`, et cette gate ne figurait dans aucune phrase du module.
+//
+//     TOUT EST DÉRIVÉ, RIEN N'EST RECOPIÉ. Les représentations sont lues dans le dispatcher ; le partage
+//     « trace / ne trace pas » vient du SONDAGE, pas d'une liste ; le libellé de la fente vient de la
+//     table des fentes ; la gate est lue dans le SOURCE, et le lecteur RETIRE LES COMMENTAIRES avant de
+//     chercher — sans quoi il trouverait la phrase qui NOMME la gate pour la décrire, et le piège
+//     « affirmer n'est pas mentionner » s'est déjà refermé neuf fois ici. Le décompte des deux lectures
+//     est IMPRIMÉ, ce qui rend le retrait visible plutôt que cru.
+//
+//     CE TÉMOIN NE DEMANDE AUCUN CHANGEMENT DE COMPORTEMENT : le lot ne touche ici qu'à une phrase de
+//     commentaire. Ce qui est gardé est la PROPRIÉTÉ que la phrase décrit — si elle bouge, ce témoin
+//     rougit et la phrase se relit. LE LIBELLÉ DU COMMENTAIRE N'EST PAS GREPÉ, délibérément : un
+//     prédicat de sous-chaîne sur un commentaire est exactement le piège nommé ci-dessus.
+//
+//     CE QUE CE TÉMOIN NE TIENT PAS : ni la mise en page ni l'encre peinte (section 0) — il lit un arbre ;
+//     il ne dit rien de l'ÉCART entre ce que la barre offre et ce que le sélecteur de la page offre, qui
+//     appartient à une autre clé ; et il ne garde pas les MOTS du commentaire, seulement ce qu'ils disent.
+// ---------------------------------------------------------------------------------------------
+{
+  const viz70 = await import(pathToFileURL(path.join(WEB, "viz.js")).href);
+  const prefs70 = await import(pathToFileURL(path.join(WEB, "prefs.js")).href);
+  const source70 = readFileSync(path.join(WEB, "viz.js"), "utf8");
+  const cueillir70 = (el, pred, acc) => { if (pred(el)) acc.push(el); (el.children || []).forEach((c) => cueillir70(c, pred, acc)); return acc; };
+  const PANNEAU70 = 7070, CLE70 = "p" + PANNEAU70;
+  const COLS70 = ["host", "count"], ROWS70 = [["web-01", 12], ["db-01", 7], ["web-02", 3]];
+
+  // -- L'INSTRUMENT : LES MODES, LE LIBELLÉ DE LA FENTE ET LA GATE SONT TOUS LUS AILLEURS QU'ICI --
+  const corpsDispatcher70 = source70.match(/function vizSansPorte\([\s\S]*?\n\}/);
+  exiger(!!corpsDispatcher70, "(70-instrument) `vizSansPorte` est introuvable dans web/viz.js : les représentations ne sont plus dérivées et ce témoin ne couvrirait rien");
+  const MODES70 = [...new Set([...(corpsDispatcher70 ? corpsDispatcher70[0] : "").matchAll(/mode === '([a-z]+)'/g)].map((m) => m[1]))].concat("table");
+  exiger(MODES70.length >= 9, `(70-instrument) ${MODES70.length} représentation(s) lue(s) dans le dispatcher, plancher 9 : la lecture est cassée`);
+  const mLibelleY70 = source70.match(/\{ cle: 'y',[\s\S]*?libelle: \{ fr: '([^']*)'/);
+  exiger(!!mLibelleY70, "(70-instrument) le libellé français de la fente d'ORDONNÉE n'est plus lisible dans la table des fentes : le contrôle ci-dessous ne saurait plus quelle fente il regarde");
+  const LIBELLE_Y70 = mLibelleY70 ? mLibelleY70[1].trim() : " ";
+
+  const corpsReglee70 = source70.match(/function noeudsDeVizReglee\([\s\S]*?\n\}/);
+  exiger(!!corpsReglee70, "(70-instrument) `noeudsDeVizReglee` est introuvable : la gate que ce témoin nomme n'est plus adossée à rien");
+  const texteReglee70 = corpsReglee70 ? corpsReglee70[0] : "";
+  const lignesBarreBrut70 = texteReglee70.split("\n").filter((l) => /barreDeReglage\(/.test(l));
+  const lignesBarreCode70 = texteReglee70.split("\n").filter((l) => !/^\s*\/\//.test(l)).filter((l) => /barreDeReglage\(/.test(l));
+  // LE PIÈGE, MONTRÉ PLUTÔT QU'ANNONCÉ. Sur le FICHIER ENTIER, la gate est NOMMÉE par la phrase corrigée
+  // autant qu'écrite par le code : un prédicat de sous-chaîne naïf accuserait donc la phrase qui la décrit.
+  // Les deux comptes sont IMPRIMÉS et non exigés — exiger qu'un commentaire contienne (ou ne contienne pas)
+  // tel mot serait une RANÇON sur sa formulation, ce que ce dépôt refuse par ailleurs.
+  const mentionsGateBrut70 = source70.split("\n").filter((l) => /sondage\(mode\)\.trace/.test(l)).length;
+  const mentionsGateCode70 = source70.split("\n").filter((l) => !/^\s*\/\//.test(l)).filter((l) => /sondage\(mode\)\.trace/.test(l)).length;
+  exiger(lignesBarreCode70.length === 1,
+    `(70-instrument) ${lignesBarreCode70.length} ligne(s) de CODE demandent la barre de réglage (attendu 1) : la gate n'est plus un geste unique et ce témoin mesurerait la mauvaise`);
+  exiger(lignesBarreCode70.length === 1 && /sondage\(mode\)\.trace/.test(lignesBarreCode70[0]),
+    `(70-instrument) la gate lue dans le CODE ne conditionne plus la barre au fait de TRACER (« ${(lignesBarreCode70[0] || "").trim().slice(0, 120)} ») : la propriété décrite ci-dessous n'est plus celle du module`);
+
+  // -- (a) LA PRÉMISSE DE LA PHRASE EST VRAIE : les neuf disent lire le dernier rang --
+  const sansDernierRang70 = MODES70.filter((m) => !viz70.sondage(m).fentes[2]);
+  exiger(sansDernierRang70.length === 0,
+    `(70a) ${sansDernierRang70.length} représentation(s) ne lisent PAS le dernier rang (${sansDernierRang70.join(", ")}) : la prémisse « toutes répondent je lis le dernier rang » a cessé d'être vraie, et la phrase du module la répète`);
+
+  // -- (b) LE PARTAGE QUE LA PHRASE PASSAIT SOUS SILENCE, dérivé du sondage --
+  const sansTrace70 = MODES70.filter((m) => !viz70.sondage(m).trace);
+  const avecTrace70 = MODES70.filter((m) => viz70.sondage(m).trace);
+  exiger(sansTrace70.length > 0 && avecTrace70.length > 0,
+    `(70b-instrument) le sondage ne partage plus les représentations sur le fait de TRACER (${sansTrace70.length} / ${avecTrace70.length}) : « partout » et « pas partout » se confondraient, et ce témoin serait vrai par vacuité`);
+
+  const selectsDe70 = (ns) => ns.flatMap((n) => cueillir70(n, (e) => e.tagName === "SELECT", []));
+  const fenteYDe70 = (ns) => ns.flatMap((n) => cueillir70(n, (e) => e.tagName === "LABEL" && String(e.textContent).trim().startsWith(LIBELLE_Y70), []));
+  const rendre70 = (mode, reglage) => { prefs70.prefSet("viz_axes", reglage ? { [CLE70]: reglage } : {}); return viz70.noeudsDeVizReglee(mode, COLS70, ROWS70, "", "", PANNEAU70, () => {}); };
+
+  const reglageOrigine70 = prefs70.prefGet("viz_axes", {});
+  let muettes70 = [], offertes70 = [], regleesMuettes70 = [];
+  try {
+    // -- (c) LA PHRASE « PARTOUT » ÉTAIT FAUSSE : sans réglage, les représentations qui ne TRACENT pas
+    //        n'offrent AUCUNE fente, ordonnée comprise — leur barre n'est même pas construite.
+    muettes70 = sansTrace70.filter((m) => fenteYDe70(rendre70(m, null)).length === 0);
+    exiger(muettes70.length === sansTrace70.length,
+      `(70c) la fente d'ordonnée serait offerte PARTOUT : ${sansTrace70.length - muettes70.length} des ${sansTrace70.length} représentation(s) qui ne tracent pas l'offrent, alors que la gate de \`noeudsDeVizReglee\` ne construit pas leur barre — si c'est le code qui a changé, c'est la phrase du module qu'il faut relire`);
+    exiger(sansTrace70.every((m) => selectsDe70(rendre70(m, null)).length === 0),
+      `(70c) une représentation qui ne trace pas rend tout de même un sélecteur de réglage sans qu'aucun réglage soit en vigueur : la gate lue dans le code ne décrit plus ce que le module fait`);
+
+    // -- (d) CONTRÔLE POSITIF : là où ça trace, la fente d'ordonnée EST offerte. Sans lui, (c) passerait
+    //        sur un module qui n'offrirait plus jamais rien.
+    offertes70 = avecTrace70.filter((m) => fenteYDe70(rendre70(m, null)).length === 1);
+    exiger(offertes70.length === avecTrace70.length,
+      `(70d-instrument) ${avecTrace70.length - offertes70.length} des ${avecTrace70.length} représentation(s) qui TRACENT n'offrent pas la fente « ${LIBELLE_Y70} » sur un résultat à deux colonnes : le contrôle positif tombe, et (70c) serait vert sur un module devenu muet`);
+
+    // -- (e) L'AUTRE MOITIÉ DE LA PHRASE RESTE VRAIE, et c'est ce que la clé accusait à tort : un réglage
+    //        POSÉ ramène la barre entière, y compris là où rien ne trace.
+    regleesMuettes70 = sansTrace70.filter((m) => fenteYDe70(rendre70(m, { y: "count" })).length === 0);
+    exiger(regleesMuettes70.length === 0,
+      `(70e) une fente RÉGLÉE cesse d'être offerte sur ${regleesMuettes70.length} représentation(s) (${regleesMuettes70.join(", ")}) : un réglage qu'on ne peut plus atteindre est un réglage qu'on ne peut plus défaire, et la phrase du module le promet`);
+  } finally {
+    prefs70.prefSet("viz_axes", reglageOrigine70 || {});
+  }
+  console.log(`[fente-offerte-nest-pas-fente-atteignable] LE CŒUR DU CONSTAT D'ORIGINE EST RÉFUTÉ ET LA PHRASE RÉELLEMENT FAUSSE EST CORRIGÉE (\`P11.20-s\`). CE QUI EST VRAI : les ${MODES70.length} représentations répondent TOUTES « je lis le dernier rang » au sondage, donc la table offre la fente d'ordonnée sur les ${MODES70.length} ; et une fente RÉGLÉE reste offerte quoi qu'il arrive — sur les ${sansTrace70.length} représentation(s) qui ne tracent pas (${sansTrace70.join(", ")}), un réglage posé ramène la barre entière, ce que la clé accusait à tort d'être faux « pour cinq représentations ». CE QUI ÉTAIT FAUX, ET QUE LA PHRASE DU MODULE AFFIRMAIT : « la fente d'ordonnée reste offerte PARTOUT ». La barre est gatée un cran plus haut, dans \`noeudsDeVizReglee\`, sous une condition que la phrase ne mentionnait pas : sans réglage en vigueur, les ${muettes70.length} représentation(s) qui ne tracent pas n'offrent AUCUNE fente, pendant que les ${offertes70.length} qui tracent offrent bien « ${LIBELLE_Y70} ». LES VRAIS COMPTES SONT DONC ${sansTrace70.length} ET ${avecTrace70.length}, PAS CINQ. TOUT EST DÉRIVÉ : les modes viennent du dispatcher, le partage du SONDAGE, le libellé de la table des fentes, la gate du SOURCE — et le lecteur de la gate RETIRE LES COMMENTAIRES avant de chercher sur le corps de la fonction, ${lignesBarreBrut70.length} ligne(s) brute(s) demandent la barre et ${lignesBarreCode70.length} une fois les commentaires retirés ; sur le FICHIER ENTIER, la gate est nommée par ${mentionsGateBrut70} ligne(s) dont ${mentionsGateCode70} seulement sont du CODE — l'écart est exactement la phrase qui la DÉCRIT, et un prédicat naïf l'accuserait : sans ce retrait il accuserait la phrase qui NOMME la gate pour la décrire, et ce piège s'est déjà refermé neuf fois ici. CE QUE CE TÉMOIN NE TIENT PAS : les MOTS du commentaire, délibérément — un prédicat de sous-chaîne sur un commentaire est ce même piège ; l'écart entre ce que la barre offre et ce que le sélecteur de la page offre, qui appartient à une autre clé ; ni la mise en page ni l'encre peinte (section 0).`);
+}
+
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;
 verdictRendu = true;
 if (echecs.length) {

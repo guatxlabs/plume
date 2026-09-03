@@ -14,12 +14,29 @@ refuse() { printf 'REFUS — identite non canonique.\n  attendu : %s <%s>\n%s\n'
   "$CANONIQUE_NOM" "$CANONIQUE_MEL" "$1" >&2; exit 1; }
 
 if [ "${1:-}" = "--index" ]; then
+  # `P8.9-n` — DEUX SONDES, PARCE QU'ELLES NE REPONDENT PAS A LA MEME QUESTION.
+  #
+  # (1) LA CONFIGURATION du clone : c'est elle qui donne le geste ACTIONNABLE quand elle est
+  #     fausse, et c'est le cas frequent (un clone frais herite de la config GLOBALE).
+  # (2) L'IDENTITE EFFECTIVE de l'auteur du prochain commit. MESURE le 2026-09-03 : avec
+  #     `GIT_AUTHOR_NAME` pose dans l'environnement, la config reste canonique et la sonde (1)
+  #     ACCEPTE — pendant que le commit partirait sous l'autre nom. Une variable d'environnement
+  #     SURCHARGE la config sans la modifier, donc lire la config ne dit RIEN de ce qui va etre
+  #     ecrit. Ce controle-la vivait dans `.githooks/pre-commit`, avec une SECONDE copie du
+  #     canonique, sous un commentaire qui affirmait que le canonique n'avait qu'un seul lieu.
+  #     Il est ici desormais : un seul litteral, et c'est le controle FORT qui reste.
   n="$(git config user.name  || true)"; m="$(git config user.email || true)"
   [ "$n" = "$CANONIQUE_NOM" ] && [ "$m" = "$CANONIQUE_MEL" ] || refuse \
 "  configure : $n <$m>
   poser LOCALEMENT dans ce clone :
     git config user.name  \"$CANONIQUE_NOM\"
     git config user.email \"$CANONIQUE_MEL\""
+  effectif="$(git var GIT_AUTHOR_IDENT | sed 's/ [0-9]\{9,\} [+-][0-9]\{4\}$//')"
+  [ "$effectif" = "$CANONIQUE_NOM <$CANONIQUE_MEL>" ] || refuse \
+"  auteur effectif du prochain commit : $effectif
+  la configuration du clone est pourtant canonique : une variable d'environnement la SURCHARGE
+  (GIT_AUTHOR_NAME / GIT_AUTHOR_EMAIL, ou EMAIL). Les retirer de l'environnement, ou les poser
+  a la valeur canonique."
   exit 0
 fi
 

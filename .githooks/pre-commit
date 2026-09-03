@@ -50,24 +50,26 @@ racine="$(git rev-parse --show-toplevel)"
 # la config locale : c'est ainsi que l'historique public a fini avec deux auteurs pour une
 # seule personne.
 #
-# POURQUOI LE CANONIQUE EST ÉCRIT ICI ET PLUS DANS `.mailmap`. Un `.mailmap` a été essayé
-# puis RETIRÉ : il ne change pas la page « Contributors » de GitHub, qui apparie les
-# commits à des comptes par leur ADRESSE — vérifié, l'ancien compte y figurait toujours.
-# Garder un fichier qui ne tient pas sa promesse est pire que ne pas l'avoir. La garde,
-# elle, tient : elle empêche le PROCHAIN commit de partir sous la mauvaise identité. Son
-# canonique vit donc ici, à un seul endroit, dans le seul fichier qui le consomme.
+# POURQUOI PAS DANS `.mailmap`. Un `.mailmap` a été essayé puis RETIRÉ : il ne change pas la
+# page « Contributors » de GitHub, qui apparie les commits à des comptes par leur ADRESSE —
+# vérifié, l'ancien compte y figurait toujours. Garder un fichier qui ne tient pas sa promesse
+# est pire que ne pas l'avoir.
 #
-# CE N'EST PAS UNE FRONTIÈRE DE SÉCURITÉ : `--no-verify` la contourne, et c'est assumé.
-CANONIQUE="guatxlabs <noreply@guatx.com>"
-actuel="$(git var GIT_AUTHOR_IDENT | sed 's/ [0-9]\{9,\} [+-][0-9]\{4\}$//')"
-if [ "$actuel" != "$CANONIQUE" ]; then
-    echo "[pre-commit] REFUS : ce commit partirait sous « $actuel »." >&2
-    echo "             Ce dépôt public publie sous « $CANONIQUE »." >&2
-    echo "             Cause la plus fréquente : la config git GLOBALE de la machine, héritée" >&2
-    echo "             faute de réglage local — un clone frais y retombe systématiquement." >&2
-    echo "             Geste :  git config user.name guatxlabs && git config user.email noreply@guatx.com" >&2
-    exit 1
-fi
+# `P8.9-n` — LE CONTRÔLE VIT DANS LE FICHIER QUI POSSÈDE LE CANONIQUE, ET IL Y EST APPELÉ
+# DÈS LA LIGNE 3. Ce hook portait ici une SECONDE copie du littéral, sous un commentaire qui
+# affirmait que le canonique n'avait qu'un seul lieu — pendant que le script délégué, appelé
+# 55 lignes plus haut, affirmait la même chose de lui-même. Deux fichiers revendiquaient
+# d'être l'endroit unique, et la phrase était donc fausse aux deux endroits.
+#
+# CE QUI A ÉTÉ DÉPLACÉ, ET POURQUOI CE N'ÉTAIT PAS UNE REDONDANCE (mesuré le 2026-09-03) :
+# la copie d'ici lisait l'identité EFFECTIVE (`git var GIT_AUTHOR_IDENT`), là où le script
+# ne lisait que la CONFIGURATION. Avec `GIT_AUTHOR_NAME` dans l'environnement, la config
+# reste canonique et le script ACCEPTAIT un commit qui serait parti sous un autre nom. Le
+# contrôle fort n'a donc pas été supprimé : il a rejoint le canonique, qui est désormais
+# écrit une seule fois, à un seul endroit, et c'est vérifiable.
+#
+# CE N'EST PAS UNE FRONTIÈRE DE SÉCURITÉ : `--no-verify` la contourne, et c'est assumé. La
+# frontière est la CI, qui rejoue la même vérification sur la plage poussée.
 
 # PORTÉE DÉRIVÉE DU DIFF, PAS D'UNE LISTE À TENIR : seuls les commits qui touchent au code ou au
 # verrou de dépendances d'une caisse compilée peuvent déplacer un compte de tests.

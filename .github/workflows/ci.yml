@@ -2221,6 +2221,14 @@ jobs:
       # données, et l'historique déjà poussé — elle tient la version servie, pas le passé.
       - name: Un chiffre d'exploitation ne se publie pas (AGENTS.md §4)
         run: python3 .github/scripts/check_no_operational_figure_is_published.py
+      # `P8.9-n` — DEUX FICHIERS AFFIRMAIENT CHACUN ÊTRE L'ENDROIT UNIQUE où vit l'identité de
+      # publication, et le second APPELLE le premier dès sa ligne 3. La phrase était fausse aux deux
+      # endroits, écrite là où elle aurait dû être garantie. La duplication était PORTEUSE : la copie
+      # du crochet lisait l'identité EFFECTIVE quand le script ne lisait que la CONFIGURATION — une
+      # variable d'environnement passait donc le script. Le contrôle fort a rejoint le canonique ;
+      # cette garde empêche la copie de repousser, et exige que toute MENTION lui soit identique.
+      - name: L'identité canonique a une seule source, et aucune mention n'en diverge (P8.9-n)
+        run: python3 .github/scripts/check_identite_canonique_a_une_seule_source.py
 
       # Discovery is by EXTENSION **and** by first-line SHEBANG, deliberately: today all 43
       # tracked scripts carry a `.sh` extension (measured), and 42 of them a sh/bash shebang —

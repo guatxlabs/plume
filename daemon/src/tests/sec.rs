@@ -1308,8 +1308,16 @@ fn sec_ff_no_unmasked_compile_in_caller_scoped_surfaces() {
     assert!(files.len() > 20, "la garde doit VOIR les handlers (trouvés : {})", files.len());
 
     // ---------- PARTIE 1 : l'ensemble des PORTES non masquées est FERMÉ et déclaré. ----------
-    // Chaque entrée = (fonction, pourquoi elle a le DROIT de compiler sans masque). Ces fonctions n'ont
-    // PAS d'appelant : elles servent l'ordonnanceur / la validation de syntaxe / un chemin déjà gaté.
+    // Chaque entrée = (fonction, pourquoi elle a le DROIT de compiler sans masque).
+    // LE CRITÈRE N'EST **PAS** « pas d'appelant », ET CETTE PHRASE-LÀ ÉTAIT ÉCRITE ICI JUSQU'AU
+    // 2026-09-03 : elle était FAUSSE, et la PREMIÈRE ENTRÉE de la table la démentait déjà en toutes
+    // lettres. Mesuré : les TROIS entrées ont des appelants de production. Le critère réel est que
+    // l'ABSENCE DE MASQUE soit SÛRE, et il se dit de trois façons différentes ci-dessous : la porte
+    // est atteinte mais la PARTIE 2 couvre ses surfaces par un marqueur ; l'évaluateur doit rester
+    // tenant-wide et sa surface est gardée ailleurs ; la fonction ne renvoie AUCUNE donnée.
+    // POURQUOI CETTE CORRECTION COMPTE PLUS QU'UNE CELLULE D'INDEX : la consigne fausse vivait aussi
+    // dans le MESSAGE D'ÉCHEC ci-dessous, donc elle était rendue à CHAQUE auteur qui déclenchait ce
+    // témoin, et une justification « pas d'appelant » aurait été acceptée tout en étant fausse.
     const DECLARED_UNMASKED_GATES: &[(&str, &str)] = &[
         ("compile_panneau_avoue", "panneaux : UNIQUE porte de compilation d'un panneau (`handlers::panneau_avoue`, P10.5-i). CETTE PORTE A DES APPELANTS — c'est ce qui la distingue des deux autres entrées, et la justification le dit au lieu de l'inverse. MESURÉ le 2026-08-28 par `grep -rn 'compile_panneau_avoue(' daemon/src --include=*.rs | grep -v /tests/` : QUATRE sites d'appel de production (rollups.rs, dash_ergonomics.rs, dashboards.rs deux fois), auxquels s'ajoute la porte de validation `valider_panneau` du coffre lui-même, employée par overlays_oac.rs — qui n'écrit donc PAS le marqueur. C'est la PARTIE 2 qui couvre les surfaces qui l'atteignent, par ce même marqueur. La surface panel_data bascule sur panel_data_masked_live dès qu'un masque est actif"),
         ("eval_baseline", "évaluateur PARTAGÉ avec l'ordonnanceur : doit rester tenant-wide (D7) ; la SURFACE baseline_test est gardée par caller_dryrun_guard"),
@@ -1329,7 +1337,8 @@ fn sec_ff_no_unmasked_compile_in_caller_scoped_surfaces() {
     assert_eq!(found, declared,
         "PORTES DE COMPILATION NON MASQUÉES dans daemon/src/handlers/** : l'ensemble TROUVÉ doit être \
          l'ensemble DÉCLARÉ. Trouvé={found:?} / Déclaré={declared:?}. Si vous ajoutez une porte non masquée, \
-         déclarez-la ICI avec sa justification (« pas d'appelant »), et vérifiez que la PARTIE 2 couvre les \
+         déclarez-la ICI en disant POURQUOI l'absence de masque est SÛRE — avoir des appelants n'est PAS \
+         disqualifiant, les trois entrées déclarées en ont — et vérifiez que la PARTIE 2 couvre les \
          surfaces qui l'atteignent — sinon vous rouvrez l'oracle #45.");
 
     // ---------- PARTIE 2 : toute SURFACE d'appelant qui atteint une porte résout le masque. ----------

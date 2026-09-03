@@ -9657,7 +9657,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   exiger(MODES70.length >= 9, `(70-instrument) ${MODES70.length} représentation(s) lue(s) dans le dispatcher, plancher 9 : la lecture est cassée`);
   const mLibelleY70 = source70.match(/\{ cle: 'y',[\s\S]*?libelle: \{ fr: '([^']*)'/);
   exiger(!!mLibelleY70, "(70-instrument) le libellé français de la fente d'ORDONNÉE n'est plus lisible dans la table des fentes : le contrôle ci-dessous ne saurait plus quelle fente il regarde");
-  const LIBELLE_Y70 = mLibelleY70 ? mLibelleY70[1].trim() : " ";
+  const LIBELLE_Y70 = mLibelleY70 ? mLibelleY70[1].trim() : "\u0000";   // sentinelle : l ECHAPPEMENT, jamais l octet NUL brut (un NUL fait sauter le fichier en silence pour grep sans -a, donc tout balayage de secrets l ignore)
 
   const corpsReglee70 = source70.match(/function noeudsDeVizReglee\([\s\S]*?\n\}/);
   exiger(!!corpsReglee70, "(70-instrument) `noeudsDeVizReglee` est introuvable : la gate que ce témoin nomme n'est plus adossée à rien");
@@ -9716,6 +9716,203 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     prefs70.prefSet("viz_axes", reglageOrigine70 || {});
   }
   console.log(`[fente-offerte-nest-pas-fente-atteignable] LE CŒUR DU CONSTAT D'ORIGINE EST RÉFUTÉ ET LA PHRASE RÉELLEMENT FAUSSE EST CORRIGÉE (\`P11.20-s\`). CE QUI EST VRAI : les ${MODES70.length} représentations répondent TOUTES « je lis le dernier rang » au sondage, donc la table offre la fente d'ordonnée sur les ${MODES70.length} ; et une fente RÉGLÉE reste offerte quoi qu'il arrive — sur les ${sansTrace70.length} représentation(s) qui ne tracent pas (${sansTrace70.join(", ")}), un réglage posé ramène la barre entière, ce que la clé accusait à tort d'être faux « pour cinq représentations ». CE QUI ÉTAIT FAUX, ET QUE LA PHRASE DU MODULE AFFIRMAIT : « la fente d'ordonnée reste offerte PARTOUT ». La barre est gatée un cran plus haut, dans \`noeudsDeVizReglee\`, sous une condition que la phrase ne mentionnait pas : sans réglage en vigueur, les ${muettes70.length} représentation(s) qui ne tracent pas n'offrent AUCUNE fente, pendant que les ${offertes70.length} qui tracent offrent bien « ${LIBELLE_Y70} ». LES VRAIS COMPTES SONT DONC ${sansTrace70.length} ET ${avecTrace70.length}, PAS CINQ. TOUT EST DÉRIVÉ : les modes viennent du dispatcher, le partage du SONDAGE, le libellé de la table des fentes, la gate du SOURCE — et le lecteur de la gate RETIRE LES COMMENTAIRES avant de chercher sur le corps de la fonction, ${lignesBarreBrut70.length} ligne(s) brute(s) demandent la barre et ${lignesBarreCode70.length} une fois les commentaires retirés ; sur le FICHIER ENTIER, la gate est nommée par ${mentionsGateBrut70} ligne(s) dont ${mentionsGateCode70} seulement sont du CODE — l'écart est exactement la phrase qui la DÉCRIT, et un prédicat naïf l'accuserait : sans ce retrait il accuserait la phrase qui NOMME la gate pour la décrire, et ce piège s'est déjà refermé neuf fois ici. CE QUE CE TÉMOIN NE TIENT PAS : les MOTS du commentaire, délibérément — un prédicat de sous-chaîne sur un commentaire est ce même piège ; l'écart entre ce que la barre offre et ce que le sélecteur de la page offre, qui appartient à une autre clé ; ni la mise en page ni l'encre peinte (section 0).`);
+}
+
+// ---------------------------------------------------------------------------------------------
+// 71. LA FENÊTRE D'UN PARCOURS PAGINÉ NE GLISSE PLUS SOUS LES PIEDS DU LECTEUR (`P11.20-w`).
+//
+//     LE DÉFAUT, LU DANS `dashboards.js`. `loadServerPage` appelait `panelWindow()` À CHAQUE PAGE, et les
+//     DEUX branches de cette fonction sont GLISSANTES : `window_s > 0` rend « maintenant - fenêtre », et le
+//     repli `currentFrom()` (`web/viz.js`) rend « maintenant - #range » tant qu'aucun intervalle absolu
+//     n'est posé. Deux pages d'un même parcours partaient donc sur deux bornes basses différentes. La garde
+//     VOISINE — celle que la section 68 exerce — compare la fenêtre servie à celle de la page précédente et,
+//     la trouvant différente, jette les curseurs et ramène le lecteur à la page 0 : une seconde d'écart
+//     suffisait. Le module se décrit pourtant lui-même comme le « MIRROIR d'Explore `evLoad` », et l'Explore
+//     avait déjà reçu le gel (`P10.5-g`, `S.evState.win`) ; c'est cette forme-là qui est reprise.
+//
+//     CE QUI EST MESURÉ EST CE QUI PART SUR LE RÉSEAU, pas un état interne. Le banc fige `Date.now`, rend
+//     un vrai panneau à fenêtre épinglée, ouvre le parcours, FAIT AVANCER l'horloge, puis CLIQUE sur le
+//     « suivant » du pager — et lit les corps envoyés à `/api/query` :
+//     (a) INSTRUMENT — la première page part bien sur « maintenant - fenêtre » et en mode curseur, et le
+//         TOTAL du pager est compté sur la MÊME fenêtre que les pages (un total compté ailleurs serait un
+//         nombre faux affiché sous des lignes justes).
+//     (b) LA PROPRIÉTÉ — après 45 s d'horloge, la page suivante part sur la MÊME borne basse.
+//     (c) LA CONSÉQUENCE — elle porte le curseur capturé sur la page précédente, réémis TEL QUEL. Sans le
+//         gel, la garde voisine l'aurait jeté et le lecteur serait revenu à la page 0 sans rien demander.
+//     (d) CONTRÔLE POSITIF, ET LA GARDE VOISINE RESTE VIVANTE — un RENDU du panneau (rafraîchissement)
+//         ouvre un nouveau parcours : l'horloge est relue, la fenêtre bouge pour de bon, et les curseurs de
+//         l'ancienne sont jetés. Sans lui, (b) serait vert sur un module qui aurait cessé de lire l'heure.
+//
+//     CE QUE CE TÉMOIN NE TIENT PAS : le démon n'est pas là — rien n'est dit de ce qu'une page RENDRAIT ;
+//     il n'exerce que la branche `window_s > 0`, la branche du repli `currentFrom()` étant réglée par le
+//     même point de gel mais non jouée ici ; ni la mise en page ni l'encre peinte (section 0).
+// ---------------------------------------------------------------------------------------------
+{
+  const { renderDashboard: rendreDash71 } = await import(pathToFileURL(path.join(WEB, "dashboards.js")).href);
+  const { S: S71 } = await import(pathToFileURL(path.join(WEB, "state.js")).href);
+  const tic71 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser71 = async (n = 40) => { for (let i = 0; i < n; i++) await tic71(); };
+  const cueillir71 = (el, pred, acc) => { if (pred(el)) acc.push(el); (el.children || []).forEach((c) => cueillir71(c, pred, acc)); return acc; };
+  const FENETRE71 = 900, TAILLE71 = 50, TOTAL71 = 500, AVANCE71 = 45, RENDU71 = 60;
+  const PANNEAU71 = { id: 4271, title: "Parcours", query: "search source=sshd", is_soql: true, viz: "table", window_s: FENETRE71, cols: 1, visibility: "shared" };
+  const LIGNES71 = Array.from({ length: TAILLE71 }, (_, i) => [1000 + i, "h" + i]);
+  const CURSEUR71 = { ts: 900, id: 7, espace: "froid" };   // le démon y pose plus que {ts,id} : on vérifie qu'il revient TEL QUEL
+  const corps71 = [];
+  const fetchOrigine71 = globalThis.fetch, horlogeOrigine71 = Date.now, cartesOrigine71 = S71.panelCards;
+  let horloge71 = 1767225600000;   // horloge FIGÉE : c'est le banc qui la fait avancer, jamais le temps réel
+  const reponse71 = (o) => ({ ok: true, status: 200, text: async () => JSON.stringify(o), json: async () => o });
+  const bornesDe71 = () => Math.floor(horloge71 / 1000) - FENETRE71;
+  const pages71 = () => corps71.filter((b) => !b.count_only);
+  const comptes71 = () => corps71.filter((b) => b.count_only);
+  let from0_71 = null, fromCompte71 = null, page1_71 = null, apres71 = null, nbPages71 = 0;
+  try {
+    Date.now = () => horloge71;
+    globalThis.fetch = async (u, o) => {
+      const url = String(u);
+      if (url.startsWith("/api/dashboard/")) return reponse71({ panels: [PANNEAU71], editable: true });
+      if (url === "/api/query") {
+        let b = {}; try { b = JSON.parse((o && o.body) || "{}"); } catch (e) { b = {}; }
+        corps71.push(b);
+        return b.count_only ? reponse71({ total: TOTAL71 })
+          : reponse71({ columns: ["ts", "host"], rows: LIGNES71, total: TOTAL71, next_cursor: CURSEUR71, stats: { elapsed_ms: 1 } });
+      }
+      return reponse71({});
+    };
+    S71.panelCards = [];
+    const tuile71 = rendreDash71({ id: 71, name: "Parcours", panels: 1, cols: 1, editable: true, collapsed: false });
+    await laisser71();
+    const carte71 = cueillir71(tuile71, (e) => e.classList && e.classList.contains("panel"), [])[0];
+    exiger(!!carte71 && !!carte71._panel && typeof carte71._panel.reload === "function",
+      "(71-instrument) le tableau de bord n'a rendu AUCUNE carte de panneau rechargeable : rien de ce qui suit ne serait exercé");
+    if (carte71 && carte71._panel) {
+      // -- (a) INSTRUMENT : l'ouverture du parcours lit l'horloge, part en mode curseur, et le total du
+      //        pager est compté sur la MÊME fenêtre que les pages.
+      corps71.length = 0;
+      await carte71._panel.reload();
+      await laisser71();
+      const p0 = pages71()[0] || {};
+      from0_71 = p0.from;
+      nbPages71 = pages71().length;
+      exiger(nbPages71 === 1 && p0.keyset === true && p0.limit === TAILLE71,
+        `(71a-instrument) l'ouverture du parcours n'a pas envoyé UNE page en mode curseur (${nbPages71} envoi(s), keyset ${JSON.stringify(p0.keyset)}, limite ${p0.limit}) : le mécanisme surveillé n'est pas celui qui tourne`);
+      exiger(from0_71 === bornesDe71(),
+        `(71a-instrument) la première page ne part pas sur « maintenant - ${FENETRE71} s » (${from0_71} au lieu de ${bornesDe71()}) : le panneau épinglé n'est pas celui que ce témoin croit exercer`);
+      const c0 = comptes71()[0];
+      fromCompte71 = c0 ? c0.from : null;
+      exiger(!!c0 && c0.from === from0_71 && c0.to === p0.to,
+        `(71a) le TOTAL du pager est compté sur une autre fenêtre que les pages (compte ${fromCompte71}, pages ${from0_71}) : le nombre affiché sous les lignes ne décrit pas les lignes`);
+
+      // -- (b) LA PROPRIÉTÉ : l'horloge avance, la page suivante part sur la MÊME borne basse.
+      horloge71 += AVANCE71 * 1000;
+      const suivant71 = cueillir71(carte71, (e) => e.classList && e.classList.contains("evnext"), [])[0];
+      exiger(!!suivant71 && suivant71.disabled === false,
+        `(71b-instrument) le pager ne rend pas de bouton « suivant » cliquable (${suivant71 ? "désactivé" : "absent"}) : le geste du lecteur ne serait pas joué`);
+      corps71.length = 0;
+      if (suivant71) suivant71.onclick();
+      await laisser71();
+      page1_71 = pages71()[0] || {};
+      exiger(pages71().length === 1 && page1_71.from === from0_71,
+        `(71b) après ${AVANCE71} s d'horloge, la page suivante repart sur une AUTRE fenêtre (${page1_71.from} au lieu de ${from0_71}) : le parcours glisse sous les pieds du lecteur`);
+
+      // -- (c) LA CONSÉQUENCE : le curseur de la page précédente est réémis, TEL QUEL.
+      exiger(!!page1_71.cursor && page1_71.cursor.espace === CURSEUR71.espace && page1_71.cursor.ts === CURSEUR71.ts,
+        `(71c) la page suivante ne porte pas le curseur capturé sur la précédente (${JSON.stringify(page1_71.cursor)}) : la garde voisine l'a jeté, et le lecteur est renvoyé au sommet de la liste sans l'avoir demandé`);
+
+      // -- (d) CONTRÔLE POSITIF, ET LA GARDE VOISINE RESTE VIVANTE : un RENDU rouvre le parcours.
+      corps71.length = 0;
+      horloge71 += RENDU71 * 1000;
+      await carte71._panel.reload();
+      await laisser71();
+      apres71 = pages71()[0] || {};
+      exiger(apres71.from === bornesDe71() && apres71.from !== from0_71,
+        `(71d-instrument) un RENDU du panneau ne relit plus l'horloge (${apres71.from}, attendu ${bornesDe71()}) : (71b) serait vert sur un module qui aurait cessé de lire l'heure, donc vrai par vacuité`);
+      exiger(apres71.cursor === undefined,
+        `(71d) la fenêtre a réellement bougé et le curseur de l'ANCIENNE est tout de même réémis (${JSON.stringify(apres71.cursor)}) : le gel a débordé la garde voisine, qui doit rester libre de jeter ce qui est périmé`);
+    }
+  } finally {
+    globalThis.fetch = fetchOrigine71; Date.now = horlogeOrigine71; S71.panelCards = cartesOrigine71;
+  }
+  console.log(`[fenetre-de-parcours-gelee] UN PARCOURS PAGINÉ DE PANNEAU NE GLISSE PLUS SOUS LES PIEDS DE SON LECTEUR (\`P11.20-w\`). CE QUI EST MESURÉ EST CE QUI PART SUR LE RÉSEAU : l'ouverture du parcours envoie ${nbPages71} page en mode curseur bornée à ${from0_71}, et le TOTAL du pager est compté sur cette MÊME borne (${fromCompte71}) ; puis l'horloge du banc avance de ${AVANCE71} s et le clic « suivant » du pager repart sur ${page1_71 && page1_71.from} — la MÊME borne — en portant le curseur de la page précédente réémis TEL QUEL (espace « ${page1_71 && page1_71.cursor && page1_71.cursor.espace} », un champ que la recopie à deux champs perdrait). AVANT, la borne était relue à chaque page : une seconde d'écart suffisait pour que la garde voisine juge la fenêtre changée, jette les curseurs et ramène le lecteur à la page 0. LE CONTRÔLE POSITIF TIENT L'AUTRE MOITIÉ : un RENDU du panneau rouvre un parcours, relit l'horloge (${apres71 && apres71.from}, soit ${RENDU71} s plus loin) et n'émet AUCUN curseur — la garde voisine reste donc vivante, et le gel ne l'a pas rendue muette. LA FORME EST REPRISE DE \`P10.5-g\` (\`S.evState.win\`, web/viz.js), que ce module citait déjà comme son miroir sans en avoir repris le gel. CE QUE CE TÉMOIN NE TIENT PAS : le démon n'est pas là — rien n'est dit de ce qu'une page RENDRAIT ; seule la branche \`window_s > 0\` est jouée, celle du repli \`currentFrom()\` passant par le même point de gel sans être exercée ici ; ni la mise en page ni l'encre peinte (section 0).`);
+}
+
+// ---------------------------------------------------------------------------------------------
+// 72. L'AIDE NE CITE AUCUNE BORNE QUE LA VUE NE PORTE PAS (`P11.20-g`).
+//
+//     LE DÉFAUT, MESURÉ. La section « accès données » du registre d'aide annonçait une fenêtre d'analyse
+//     de trente jours, DANS LES DEUX LANGUES. La vue avait retiré ce chiffre le 2026-08-25 et son module
+//     dit pourquoi en toutes lettres : le panneau n'a JAMAIS lu la rétention — elle est réglable par
+//     déploiement et servie par le démon — donc le nombre affiché était sans source. L'aide ne se
+//     contentait plus d'être muette : elle AFFIRMAIT au lecteur une borne que rien ne porte.
+//
+//     LE TÉMOIN TIENT LA PROPRIÉTÉ, PAS LES MOTS. Un prédicat de sous-chaîne sur un chiffre est le piège
+//     qui s'est refermé neuf fois dans ce dépôt : il accuse le commentaire qui CITE un mot pour le
+//     démentir, et il ne dit rien du jour où la vue offrira une autre borne. Les DEUX côtés sont donc
+//     dérivés, et la question posée est un rapport d'inclusion :
+//     (a) INSTRUMENT — ce que la vue OFFRE est dérivé de DEUX sites indépendants de `web/dataaccess.js` :
+//         la table d'options du sélecteur (ce que l'exploitant voit) et le corps de `daFromValue` (ce que
+//         le code calcule). Ils doivent s'ACCORDER, et il doit y en avoir au moins deux — sinon la
+//         dérivation est cassée et tout ce qui suit serait vrai par vacuité.
+//     (b) CONTRÔLE POSITIF — un corps d'aide FABRIQUÉ qui cite une borne hors de l'offre EST accusé.
+//     (c) CONTRÔLE NÉGATIF — un corps d'aide fabriqué qui cite une borne DE l'offre ne l'est pas.
+//     (d) LA PROPRIÉTÉ — le corps réel, dans les deux langues, ne cite aucune borne hors de l'offre.
+//
+//     CE QUE CE TÉMOIN NE TIENT PAS : il ne juge QUE le couple « aide `dataaccess` ↔ vue `dataaccess.js` »
+//     — les autres sections n'ont pas de vue dérivable, et leurs bornes citées sont IMPRIMÉES sans être
+//     jugées, pour que l'angle mort se voie ; il ne tient que les bornes de DURÉE, pas les autres nombres
+//     d'un corps d'aide ; il ne dit rien du sens INVERSE (une vue qui porterait une borne dont l'aide ne
+//     parle pas) ; et il ne lit pas la rétention réelle du déploiement, que la console ne lit pas non plus.
+// ---------------------------------------------------------------------------------------------
+{
+  const { HELP: HELP72 } = await import(pathToFileURL(path.join(WEB, "help_registry.js")).href);
+  const srcVue72 = readFileSync(path.join(WEB, "dataaccess.js"), "utf8");
+  // Une durée écrite pour un humain -> des secondes. Le garde-fou `(?<![A-Za-z0-9])` évite qu'un mot
+  // porteur de chiffre (« k8s ») se lise comme « 8 secondes » : mesuré, c'est arrivé sur une autre section.
+  const dureesDe72 = (t) => {
+    const out = new Set();
+    for (const m of String(t).matchAll(/(?<![A-Za-z0-9])(\d+)\s*(secondes?|seconds?|minutes?|min|heures?|hours?|jours?|days?|[hjds])\b/gi)) {
+      const u = m[2].toLowerCase();
+      out.add(Number(m[1]) * (/^(sec|s$)/.test(u) ? 1 : /^min/.test(u) ? 60 : /^h/.test(u) ? 3600 : 86400));
+    }
+    return out;
+  };
+  const lisible72 = (s) => (s % 86400 === 0 ? s / 86400 + " j" : s % 3600 === 0 ? s / 3600 + " h" : s % 60 === 0 ? s / 60 + " min" : s + " s");
+  // (a) INSTRUMENT : l'offre de la vue, dérivée de DEUX sites qui doivent s'accorder.
+  const ligneOptions72 = srcVue72.split("\n").find((l) => /wsel\.appendChild\(o\)/.test(l)) || "";
+  const offertes72 = dureesDe72(ligneOptions72);
+  const debut72 = srcVue72.indexOf("function daFromValue");
+  const corpsBorne72 = debut72 < 0 ? "" : srcVue72.slice(debut72, srcVue72.indexOf("\n}", debut72));
+  const calculees72 = new Set([...corpsBorne72.matchAll(/\b(\d{5,})\b/g)].map((m) => Number(m[1])));
+  const PLANCHER_BORNES72 = 2;
+  exiger(offertes72.size >= PLANCHER_BORNES72,
+    `(72a-instrument) ${offertes72.size} borne(s) dérivée(s) de la table d'options de web/dataaccess.js, plancher ${PLANCHER_BORNES72} — la dérivation est cassée et tout ce qui suit serait vrai par vacuité`);
+  exiger(calculees72.size === offertes72.size && [...calculees72].every((d) => offertes72.has(d)),
+    `(72a-instrument) les deux sites de la vue ne s'accordent plus : le sélecteur offre {${[...offertes72].sort((x, y) => x - y).map(lisible72).join(", ")}} et \`daFromValue\` calcule {${[...calculees72].sort((x, y) => x - y).map(lisible72).join(", ")}} — l'un des deux a bougé, et l'offre lue ici ne décrit plus ce que la vue fait`);
+  // (b) CONTRÔLE POSITIF et (c) CONTRÔLE NÉGATIF, sur des corps FABRIQUÉS — la phrase fautive d'origine
+  // n'est PAS recopiée ici : on décrit le défaut, on ne le reproduit pas (le site est nommé plus haut).
+  const horsOffre72 = (t) => [...dureesDe72(t)].filter((d) => !offertes72.has(d));
+  const SONDE_HORS72 = "• fenêtre d'analyse : 90 j / analysis window: 90 days";
+  const SONDE_DANS72 = "• fenêtre d'analyse : " + [...offertes72].sort((x, y) => x - y).map(lisible72).join(" ou ");
+  exiger(horsOffre72(SONDE_HORS72).length === 1,
+    `(72b-instrument) un corps d'aide qui cite une borne HORS de l'offre n'est pas accusé (${JSON.stringify(horsOffre72(SONDE_HORS72))}) : le lecteur de durées est aveugle, et (72d) serait vert quoi qu'écrive l'aide`);
+  exiger(dureesDe72(SONDE_DANS72).size >= PLANCHER_BORNES72 && horsOffre72(SONDE_DANS72).length === 0,
+    `(72c-instrument) un corps d'aide qui ne cite QUE des bornes de l'offre est tout de même accusé (${JSON.stringify(horsOffre72(SONDE_DANS72))}) : l'instrument accuserait toute aide qui parle de sa fenêtre`);
+  // (d) LA PROPRIÉTÉ, sur le corps RÉEL, dans les deux langues.
+  const section72 = HELP72.dataaccess || {};
+  const PLANCHER_CORPS72 = 200;
+  const corpsFR72 = ((section72.fr || {}).title || "") + "\n" + ((section72.fr || {}).body || "");
+  const corpsEN72 = ((section72.en || {}).title || "") + "\n" + ((section72.en || {}).body || "");
+  exiger(corpsFR72.length >= PLANCHER_CORPS72 && corpsEN72.length >= PLANCHER_CORPS72,
+    `(72d-instrument) la section « accès données » rend ${corpsFR72.length} / ${corpsEN72.length} caractères (plancher ${PLANCHER_CORPS72}) : une section vidée ne cite aucune borne et passerait sans rien dire`);
+  const fautesFR72 = horsOffre72(corpsFR72), fautesEN72 = horsOffre72(corpsEN72);
+  exiger(fautesFR72.length === 0 && fautesEN72.length === 0,
+    `(72d) l'aide « accès données » AFFIRME au lecteur ${fautesFR72.length + fautesEN72.length} borne(s) que la vue ne porte pas — fr {${fautesFR72.map(lisible72).join(", ")}}, en {${fautesEN72.map(lisible72).join(", ")}} — alors que son sélecteur n'offre que {${[...offertes72].sort((x, y) => x - y).map(lisible72).join(", ")}} et « toute la rétention », un chiffre que le panneau n'a jamais lu. Écrire dans web/help_registry.js, section « dataaccess », ce que la vue fait ; les deux langues comptent.`);
+  // POPULATION IMPRIMÉE, JAMAIS JUGÉE : les bornes que citent les AUTRES sections. Aucune vue n'en est
+  // dérivable ici, donc aucune n'est accusée — mais l'angle mort se voit au lieu de se deviner.
+  const autres72 = Object.entries(HELP72)
+    .filter(([k]) => k !== "dataaccess")
+    .map(([k, e]) => [k, [...new Set([...dureesDe72(((e.fr || {}).title || "") + "\n" + ((e.fr || {}).body || "")), ...dureesDe72(((e.en || {}).title || "") + "\n" + ((e.en || {}).body || ""))])].sort((x, y) => x - y)])
+    .filter(([, d]) => d.length);
+  console.log(`[aide-ne-cite-que-ce-que-la-vue-porte] L'AIDE « ACCÈS DONNÉES » NE CITE PLUS AUCUNE BORNE QUE LA VUE NE PORTE PAS (\`P11.20-g\`), ET C'EST UN RAPPORT D'INCLUSION, PAS UNE RECHERCHE DE MOT. CE QUE LA VUE OFFRE EST DÉRIVÉ DE DEUX SITES QUI S'ACCORDENT : la table d'options du sélecteur de web/dataaccess.js rend {${[...offertes72].sort((x, y) => x - y).map(lisible72).join(", ")}} et le corps de \`daFromValue\` calcule {${[...calculees72].sort((x, y) => x - y).map(lisible72).join(", ")}} — plus « toute la rétention », qui n'est PAS un chiffre, et c'est précisément ce que la vue a cessé d'en écrire un le 2026-08-25 : le panneau n'a jamais lu la rétention, réglable par déploiement et servie par le démon. LE CORPS RÉEL, DANS LES DEUX LANGUES (${corpsFR72.length} et ${corpsEN72.length} caractères), ne cite plus aucune durée hors de cette offre. LES DEUX CONTRÔLES ENCADRENT L'INSTRUMENT : un corps fabriqué qui cite une borne hors offre EST accusé, un corps qui ne cite que l'offre ne l'est pas — sans le premier le témoin serait vert quoi qu'écrive l'aide, sans le second il accuserait toute aide qui parle de sa fenêtre. CE QUE CE TÉMOIN NE TIENT PAS : il ne juge QUE ce couple ; les ${autres72.length} autres sections qui citent une durée sont IMPRIMÉES sans être jugées, faute de vue dérivable — ${autres72.map(([k, d]) => k + " {" + d.map(lisible72).join(", ") + "}").join(" · ")} ; il ne lit que les DURÉES ; il ne dit rien du sens inverse (une borne portée par la vue et tue par l'aide) ; et il ne lit pas la rétention du déploiement, que la console ne lit pas davantage.`);
 }
 
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;

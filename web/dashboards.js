@@ -593,14 +593,38 @@ async function renderPanel(p, editable = true) {
   // = null = sommet), capturé depuis `next_cursor` de la page i-1. Le SQL brut (admin, non-from_soql) reste en OFFSET.
   const panelKeyset = pIsSoql && !pIsProjected; // le daemon: do_keyset = keyset && from_soql && !projection
   const spg = { page: 0, pageSize: PANEL_PAGE, total: 0, shown: 0, totalCapped: false, countFired: false, realTotal: false, cols: null, rows: null,
-    keyset: panelKeyset, cursors: [null] };
+    keyset: panelKeyset, cursors: [null], ouvrir: true };   // `ouvrir` : la prochaine page RELIT l'horloge (cf. `P11.20-w`)
   // ne serveur-pagine QUE les listes de lignes (table + non-agrégé) ET seulement quand /api/query est autorisé
   // pour l'appelant (GXQL ouvert à tous ; SQL brut réservé admin) -> sinon repli sur la pagination CLIENT.
   const serverPaged = () => curViz === 'table' && !pIsAgg && (pIsSoql || socIsAdmin());
+  // `P11.20-w` — L'HORLOGE EST LUE ICI, ET NULLE PART AILLEURS DANS LE PARCOURS. Les deux branches sont
+  // GLISSANTES : `window_s > 0` rend `now - fenêtre`, et le repli `currentFrom()` (web/viz.js) rend
+  // `now - #range` dès qu'aucun zoom absolu n'est posé. Deux appels séparés d'une seconde rendent donc
+  // deux bornes basses différentes. Cette fonction reste celle qui LIT l'horloge — un rendu d'un seul
+  // coup en a besoin ; c'est `fenetreDuParcours()` qui décide QUAND la lire.
   function panelWindow() {
     const from = p.window_s > 0 ? Math.floor(Date.now() / 1000) - p.window_s : (currentFrom() || 0);
     const to = p.window_s > 0 ? 0 : currentTo();
     return { from, to };
+  }
+  // `P11.20-w` — LA FENÊTRE D'UN PARCOURS PAGINÉ EST GELÉE À SON OUVERTURE. FORME REPRISE DE `P10.5-g`
+  // (`web/viz.js`, `S.evState.win`), qui a corrigé exactement ce défaut dans l'Explore ; ce pager-ci se
+  // décrit lui-même comme le « MIRROIR d'Explore `evLoad` » et n'avait pas repris le gel.
+  //
+  // CE QUI SE PASSAIT. `loadServerPage` appelait `panelWindow()` À CHAQUE PAGE. Sur un panneau à fenêtre
+  // fixe, la borne basse avançait d'une seconde à l'autre ; la garde voisine COMPARE la fenêtre servie à
+  // celle de la page précédente et, la trouvant différente, jetait les curseurs et ramenait le lecteur à
+  // la page 0. Un parcours paginé glissait donc sous ses pieds. Pire sur une fenêtre froide : le démon
+  // numérote les lignes par leur RANG dans l'ensemble hydraté, avancer la borne basse décale tous les
+  // rangs, et le curseur de la page précédente ne désigne plus la même ligne (cf. `P10.5-g`).
+  //
+  // OÙ S'OUVRE UN PARCOURS, ET POURQUOI PAS AILLEURS. `load()` est le rendu du panneau (premier affichage,
+  // rafraîchissement manuel, tick d'auto-rafraîchissement) : il OUVRE. Les clics du pager ne passent pas
+  // par lui et REPRENNENT la fenêtre gelée. La garde voisine reste donc vivante — elle ne peut plus être
+  // déclenchée par la seule horloge, mais un rafraîchissement qui déplace réellement la fenêtre la fait
+  // toujours rougir, et jeter les curseurs y est le geste JUSTE.
+  function fenetreDuParcours(ouvrir) {
+    return (ouvrir || !spg.win) ? panelWindow() : spg.win;
   }
   function panelBad(m) { body.replaceChildren(Object.assign(document.createElement('div'), { className: 'bad', textContent: 'Erreur : ' + m })); }
   function renderServerPaged() {
@@ -626,7 +650,7 @@ async function renderPanel(p, editable = true) {
     const ctrl = new AbortController(); card._loadCtrl = ctrl; panelInflight.add(ctrl);
     if (prog) prog.hidden = false; if (pstop) pstop.hidden = false;
     try {
-      const { from, to } = panelWindow(); pFrom = from; pTo = to;
+      const { from, to } = fenetreDuParcours(spg.ouvrir); spg.ouvrir = false; pFrom = from; pTo = to;
       // ① : la fenêtre a changé -> les curseurs {ts,id} capturés pour l'ancienne fenêtre sont obsolètes -> on
       // repart de la page 0 (curseur sommet) et on recompte le total. (L'offset, lui, reste valide sur toute fenêtre.)
       if (spg.keyset && spg.win && (spg.win.from !== from || spg.win.to !== to)) { page = 0; spg.cursors = [null]; spg.countFired = false; spg.realTotal = false; }
@@ -726,7 +750,8 @@ async function renderPanel(p, editable = true) {
   }
   // chargement NON bloquant -> carte rendue tout de suite, requetes EN PARALLELE (WAL).
   async function load() {
-    if (serverPaged()) return loadServerPage(spg.page || 0);
+    // `P11.20-w` — UN RENDU DU PANNEAU OUVRE UN PARCOURS : c'est le seul endroit d'où l'horloge est relue.
+    if (serverPaged()) { spg.ouvrir = true; return loadServerPage(spg.page || 0); }
     if (card._loadCtrl) { try { card._loadCtrl.abort(); } catch (e) {} }
     const ctrl = new AbortController(); card._loadCtrl = ctrl; panelInflight.add(ctrl);
     if (prog) prog.hidden = false;

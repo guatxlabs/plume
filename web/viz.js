@@ -872,8 +872,12 @@ function cleDeReglage(idPanneau, cols) { return idPanneau ? ('p' + idPanneau) : 
 // bien qu'une absence passait pour une valeur nulle lue — mesuré le 2026-08-27, et c'était exactement le
 // grief que la première porte se fait à elle-même (« le zéro affirmerait une lecture qui n'a pas eu lieu »).
 // CE QUE CE PRÉDICAT NE TRANCHE PAS, écrit plutôt que tu : une chaîne de BLANCS (`' '`) est ici une
-// valeur, et `Number(' ')` vaut 0 — elle est donc lue comme un zéro. Le dire autrement demande de changer
-// la définition que TOUT ce module partage, pas une phrase ; ce n'est pas fait ici.
+// valeur — ce prédicat répond « la cellule porte-t-elle QUELQUE CHOSE », et une chaîne de blancs en
+// porte. LA CLAUSE QUI SUIVAIT ÉTAIT PÉRIMÉE ET DISAIT LE CONTRAIRE DU CODE : elle affirmait qu'une
+// telle chaîne « est donc lue comme un zéro » et que « ce n'est pas fait ici ». C'EST FAIT, vingt
+// lignes plus bas, depuis le 2026-09-01 : `nombreLu` rend `undefined` sur une chaîne dont le trim est
+// vide, donc elle n'entre JAMAIS dans un compte de zéros mesurés. Les deux prédicats disent des choses
+// DIFFÉRENTES sur la même cellule, et c'est voulu : porter une valeur n'est pas porter un nombre.
 function porteUneValeur(v) { return v !== null && v !== undefined && v !== ''; }
 // `P11.20-y` — ET UNE SEULE DÉFINITION DE « CE QUE CETTE CELLULE SE LIT COMME NOMBRE ». C'est le geste
 // posé JUSTE AU-DESSUS le 2026-08-27, repris tel quel — demander AVANT de convertir — sur la seule

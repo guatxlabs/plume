@@ -666,14 +666,14 @@ retention lever). Admin only.
 • « Fichiers sensibles / tamper » : événements auditd critiques.
 • « Intégrité (FIM) » : changements de fichiers surveillés.
 • « ACL » et « RBAC Kubernetes » : droits fichiers et cluster.
-• Aucune action possible ici (fenêtre d'analyse : 30 j).` },
+• Aucune action possible ici ; la fenêtre d'analyse se choisit au-dessus des panneaux (toute la rétention par défaut).` },
     en: { title: `Data access (DLP / governance)`, body:
 `READ-ONLY access governance (Varonis style) — not content DLP.
 • "Who touches what": data access (source dataaccess).
 • "Sensitive files / tamper": critical auditd events.
 • "Integrity (FIM)": changes to watched files.
 • "ACL" and "Kubernetes RBAC": file and cluster permissions.
-• No action is possible here (analysis window: 30 days).` },
+• No action is possible here; the analysis window is picked above the panels (whole retention by default).` },
   },
   settings: {
     fr: { title: `Compte / Réglages`, body:

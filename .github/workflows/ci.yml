@@ -782,7 +782,23 @@ env:
   # `EXPECTED_COLD_TESTS` — aucun n'est derrière un `cfg(feature)`, et c'est l'ÉCART INCHANGÉ entre les
   # deux profils (**245** avant comme après) qui l'établit, pas une lecture des sources. Les deux chiffres
   # viennent de `.github/scripts/compter-les-tests.sh`, jamais d'une addition.
-  EXPECTED_TESTS: "1554"
+  # `P4.1-v` — +5 LE 2026-09-03, TROUVÉ EN RÉSOLVANT LA PANNE DE `P8.10-m`. Un lot d'ingest que le dépôt
+  # durable n'a pas su écrire est ÉCARTÉ vers une quarantaine — bon geste, explicitement « rejouable,
+  # aucune perte silencieuse », et le rejeu l'a confirmé (760 lots, 24 028 événements revenus intégralement,
+  # parce que l'écart suit un ROLLBACK atomique). LE DÉFAUT N'EST PAS L'ÉCART, C'EST QUE PERSONNE NE LE
+  # REGARDE : rien ne lisait ce répertoire, et le seul compte publié était celui des abandons du DERNIER
+  # PASSAGE — retombé à zéro dès la reprise pendant que 760 lots dormaient, dont un depuis VINGT-NEUF JOURS.
+  # Le commentaire qui justifiait ce compteur énonçait lui-même son angle mort : un fichier abandonné
+  # « reste dans la file », or un fichier écarté en SORT. Les deux moitiés livrées sont indissociables et
+  # c'est la règle anti-rançon : la profondeur est publiée sur la surface de santé (elle DÉCLASSE le verdict
+  # sans effacer ce qu'il disait déjà) ET un geste la vide (`spool-requeue`, inscrit dans l'inventaire des
+  # sous-commandes, sans aucune ouverture de base — il sert justement quand la porte refuse de servir).
+  # Un cinquième témoin ferme un défaut de la MÊME famille trouvé au même endroit : la branche de dernier
+  # recours EFFACE le lot et la ligne annonçait quand même « quarantaine ». SIX vérifications de mutation :
+  # répertoire absent redevenu illisible, verdict non déclassé, détail écrasé au lieu d'ajouté, simulation
+  # qui déplace, aveu qui redit « quarantaine » dans les trois cas — chacune rougit son témoin et LUI SEUL.
+  # Le MÊME +5 sur `EXPECTED_COLD_TESTS`, écart **245** INCHANGÉ, mesuré par le script du dépôt.
+  EXPECTED_TESTS: "1559"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -1241,7 +1257,7 @@ jobs:
           # `P11.20-n` et `P11.20-h` (2026-09-03) : +14, les MÊMES quatorze que sur `EXPECTED_TESTS` —
           # aucun derrière un `cfg(feature)`, et c'est l'ÉCART INCHANGÉ entre les deux profils (245 avant
           # comme après) qui l'établit. La dérivation est écrite auprès d'`EXPECTED_TESTS`, une seule fois.
-          EXPECTED_COLD_TESTS: "1799"
+          EXPECTED_COLD_TESTS: "1804"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail

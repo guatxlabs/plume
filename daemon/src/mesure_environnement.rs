@@ -305,6 +305,46 @@ pub(crate) fn profondeur_file_depuis(spool: &std::path::Path) -> Mesure<u64> {
     Mesure::Lue(n)
 }
 
+/// PROFONDEUR DE LA QUARANTAINE D'INGEST — les lots que le dépôt durable a ÉCARTÉS et que plus rien
+/// ne regarde. `P4.1-v`, mesuré le 2026-09-03 pendant une panne réelle : 760 lots, dont un qui y
+/// dormait depuis vingt-neuf jours, sans qu'aucune surface ne les ait jamais nommés.
+///
+/// LA DIFFÉRENCE AVEC `profondeur_file_depuis` EST DÉLIBÉRÉE ET C'EST LA SEULE. Un répertoire de
+/// quarantaine ABSENT est un VRAI ZÉRO : il n'est créé qu'au premier écart, donc son absence dit
+/// exactement « rien n'a jamais été écarté ». Là où un spool disparu est une CÉCITÉ (la voie
+/// d'ingest pourrait être morte sans que rien ne le dise), ici l'absence est une information
+/// complète. Un répertoire qui EXISTE mais ne se lit pas reste `Illisible`, et un parcours
+/// interrompu aussi — un compte partiel serait plus petit que la réalité, donc plus rassurant.
+pub(crate) fn profondeur_quarantaine_depuis(qdir: &std::path::Path) -> Mesure<u64> {
+    let entrees = match std::fs::read_dir(qdir) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Mesure::Lue(0),
+        Err(e) => {
+            return Mesure::Illisible { cause: cause_io(&e), detail: format!("{} : {e}", qdir.display()) }
+        }
+    };
+    let mut n = 0u64;
+    for entree in entrees {
+        match entree {
+            Ok(e) => {
+                if entree_de_spool_comptee(&e.file_name().to_string_lossy()) {
+                    n += 1;
+                }
+            }
+            Err(e) => {
+                return Mesure::Illisible {
+                    cause: cause_io(&e),
+                    detail: format!(
+                        "{} : parcours interrompu ({e}) — un compte partiel serait plus petit que la quarantaine réelle",
+                        qdir.display()
+                    ),
+                }
+            }
+        }
+    }
+    Mesure::Lue(n)
+}
+
 // =================================================================================================
 // LES ENTRÉES NOMMÉES D'UN RÉPERTOIRE — `S29`, l'allégation d'hôte mesurée au lieu d'être écrite
 // =================================================================================================

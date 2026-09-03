@@ -139,6 +139,16 @@ pub(crate) fn spool_queue_depth(spool: &str) -> mesure_environnement::Mesure<u64
     mesure_environnement::profondeur_file_depuis(std::path::Path::new(spool))
 }
 
+/// `P4.1-v` — LES LOTS ÉCARTÉS, ET COMBIEN ILS SONT. Distinct de la profondeur de file : celle-ci dit
+/// combien ATTENDENT leur tour, celui-ci dit combien ont QUITTÉ la file sans jamais entrer en base.
+/// Le compte des abandons du DERNIER PASSAGE ne les couvre pas — il retombe à zéro dès la passe
+/// suivante, et un lot écarté ne revient jamais de lui-même. Répertoire absent = vrai zéro.
+pub(crate) fn spool_quarantine_depth(spool: &str) -> mesure_environnement::Mesure<u64> {
+    mesure_environnement::profondeur_quarantaine_depuis(std::path::Path::new(
+        &crate::state::repertoire_de_quarantaine(spool),
+    ))
+}
+
 /// Taille de la base (fichier principal + journal d'écriture) en octets — `stat` seulement, jamais un
 /// `COUNT(*)`. Le journal ABSENT vaut zéro (c'est un vrai zéro) ; le fichier principal injoignable
 /// rend `Illisible`.
@@ -249,6 +259,32 @@ pub(crate) fn component_health_avec(
     // P10.7-x — LE COMPOSANT NOMME SON NOM, ET C'EST CE MÊME NOM QUI DIT QUELLES PASSES IL PORTE : une
     // seule constante écrit les deux, donc l'entrée de `COMPOSANTS` et l'objet servi ne peuvent pas se
     // désigner différemment.
+    // `P4.1-v` — LA QUARANTAINE NE MASQUE AUCUN ÉTAT, ELLE DÉCLASSE ET S'AJOUTE. Elle est un fait
+    // DIFFÉRENT de la fraîcheur et du retard : les lots ne sont ni perdus ni en attente, ils sont
+    // SORTIS de la file. Annoncer « données fraîches » pendant que 760 lots dorment à côté est
+    // exactement le mensonge que cette clé ferme — mais écraser le détail existant en effacerait un
+    // autre. Le verdict ne peut donc que DESCENDRE (vert ou inactif -> jaune, jamais l'inverse), et
+    // la phrase s'AJOUTE. Elle nomme le geste : un compte sans geste de fermeture serait une rançon.
+    let quarantaine = spool_quarantine_depth(spool);
+    let (istate, idetail) = match quarantaine.valeur() {
+        Some(&q) if q > 0 => (
+            if istate == "red" { istate } else { "yellow" },
+            format!(
+                "{idetail} — ET {q} lot(s) d'ingest en QUARANTAINE : écartés de la file, conservés et \
+                 rejouables, mais JAMAIS entrés en base tant que personne ne les y remet. Geste : \
+                 `plume-daemon spool-requeue`.",
+            ),
+        ),
+        None => (
+            if istate == "red" { istate } else { "yellow" },
+            format!(
+                "{idetail} — et la QUARANTAINE n'est PAS LISIBLE ({}) : ce n'est pas « aucun lot \
+                 écarté », c'est « pas de mesure ».",
+                quarantaine.detail().unwrap_or("cause non renseignée")
+            ),
+        ),
+        Some(_) => (istate, idetail),
+    };
     let bilan_ingest = crate::bilan_de_tick::bilan_du_composant(crate::bilan_de_tick::COMPOSANT_INGEST);
     let (istate, idetail) = crate::bilan_de_tick::etat_de_surface(istate, idetail, bilan_ingest.as_ref());
     let mut ingest = serde_json::Map::new();
@@ -256,6 +292,7 @@ pub(crate) fn component_health_avec(
     ingest.insert("state".into(), json!(istate));
     ingest.insert("detail".into(), json!(idetail));
     queue.poser_dans(&mut ingest, "queue_depth");
+    quarantaine.poser_dans(&mut ingest, "quarantine_depth");
     crate::bilan_de_tick::poser_bilan(&mut ingest, "abandons_dernier_passage", bilan_ingest.as_ref());
     out.push(Value::Object(ingest));
 
@@ -499,6 +536,7 @@ pub(crate) fn gather_json(conn: &Connection, spool: &str, db_path: &str, schema_
     ingest.insert("files_total".into(), json!(INGEST_FILES_TOTAL.load(Ordering::Relaxed)));
     ingest.insert("events_1h".into(), json!(events_1h));
     spool_queue_depth(spool).poser_dans(&mut ingest, "queue_depth");
+    spool_quarantine_depth(spool).poser_dans(&mut ingest, "quarantine_depth");
     ingest.insert("push_zero_map_total".into(), json!(PUSH_ZERO_MAP_TOTAL.load(Ordering::Relaxed)));
     ingest.insert("spool_barriere_fichier_total".into(), json!(SPOOL_BARRIERE_FICHIER_TOTAL.load(Ordering::Relaxed)));
     ingest.insert("spool_barriere_repertoire_total".into(), json!(SPOOL_BARRIERE_REPERTOIRE_TOTAL.load(Ordering::Relaxed)));

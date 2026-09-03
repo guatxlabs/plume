@@ -979,7 +979,7 @@ const SUBCOMMANDS_COLD: [(&str, &str); 2] = [
 /// détection d'une sous-commande INCONNUE, elle, n'est PAS une comparaison à cette liste (cf. la
 /// garde en bas de `main`). La liste est tenue alignée sur le code par
 /// `aide_cli_liste_les_memes_sous_commandes_que_le_dispatch` (elle lit `main.rs`).
-const SUBCOMMANDS: [(&str, &str); 21] = [
+const SUBCOMMANDS: [(&str, &str); 22] = [
     ("hashpw", "hashpw [<mdp>] — hash argon2 d'un mot de passe (stdin si omis)"),
     ("respond", "respond — boucle du moteur de réponse (service séparé)"),
     ("verify", "verify — vérifie la chaîne d'intégrité du ledger"),
@@ -1001,6 +1001,7 @@ const SUBCOMMANDS: [(&str, &str); 21] = [
     ("migrate-check", "migrate-check — compare le schéma live au code (lecture seule)"),
     ("db-stats", "db-stats — occupation disque SQLite (lecture seule)"),
     ("fts-compact", "fts-compact — fusionne les segments de l'index plein-texte (rend les octets morts des purges)"),
+    ("spool-requeue", "spool-requeue [--dry-run] — remet dans la file d'ingest les lots mis en QUARANTAINE (écartés après un ROLLBACK, donc rejouables et absents de la base). N'ouvre PAS la base : le geste reste disponible quand le démon refuse de servir"),
 ];
 
 fn usage() -> String {
@@ -1369,6 +1370,58 @@ fn main() {
     //
     // `PLUME_FTS_COMPACT=0` est RESPECTÉ ICI AUSSI : un kill-switch qu'une sous-commande contourne
     // n'est pas un kill-switch. Dans ce cas la commande le DIT et ne fusionne rien.
+    // `P4.1-v` — LE GESTE QUI FERME LE COMPTE. Publier la profondeur de la quarantaine sans offrir
+    // de quoi la vider serait une RANÇON : une surface qui accuse en permanence, qu'aucune action ne
+    // peut éteindre. Les lots écartés le sont APRÈS un ROLLBACK atomique — aucun de leurs événements
+    // n'est en base — donc les remettre dans la file les ingère UNE fois, sans doublon possible.
+    // AUCUNE OUVERTURE DE BASE ICI, ET C'EST LOAD-BEARING : ce geste sert précisément quand la porte
+    // refuse de servir, c'est-à-dire au moment où la quarantaine se remplit le plus vite.
+    // `P4.1-v` — LE GESTE QUI FERME LE COMPTE. Publier la profondeur de la quarantaine sans offrir
+    // de quoi la vider serait une RANÇON : une surface qui accuse en permanence, qu'aucune action ne
+    // peut éteindre. AUCUNE OUVERTURE DE BASE ICI, ET C'EST LOAD-BEARING : ce geste sert précisément
+    // quand la porte refuse de servir, c'est-à-dire au moment où la quarantaine se remplit le plus
+    // vite. La décision vit dans `state::remettre_la_quarantaine_en_file`, qui est éprouvée ; ici on
+    // n'imprime que ce qu'elle rend.
+    if args.get(1).map(String::as_str) == Some("spool-requeue") {
+        let a_blanc = args.iter().any(|a| a == "--dry-run");
+        let conf = load_config();
+        let spool = cfg(&conf, "PLUME_SPOOL", "/var/lib/plume/spool");
+        let bilan = match crate::state::remettre_la_quarantaine_en_file(&spool, a_blanc) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("spool-requeue : {e} — AUCUN lot remis en file.");
+                std::process::exit(2);
+            }
+        };
+        if bilan.trouves.is_empty() {
+            println!("spool-requeue : quarantaine VIDE — rien à remettre en file.");
+            std::process::exit(0);
+        }
+        if a_blanc {
+            println!("spool-requeue --dry-run : {} lot(s) SERAIENT remis en file.", bilan.trouves.len());
+            for n in bilan.trouves.iter().take(10) {
+                println!("  {n}");
+            }
+            if bilan.trouves.len() > 10 {
+                println!("  … et {} autre(s)", bilan.trouves.len() - 10);
+            }
+            std::process::exit(0);
+        }
+        println!(
+            "spool-requeue : {} lot(s) remis dans la file d'ingest ({spool}). Le démon les reprend à sa \
+             cadence ; la profondeur de quarantaine servie par la surface de santé doit retomber.",
+            bilan.remis
+        );
+        if !bilan.refuses.is_empty() {
+            eprintln!("spool-requeue : {} lot(s) NON remis, restés en quarantaine :", bilan.refuses.len());
+            for r in bilan.refuses.iter().take(10) {
+                eprintln!("  {r}");
+            }
+            std::process::exit(1);
+        }
+        std::process::exit(0);
+    }
+
     if args.get(1).map(String::as_str) == Some("fts-compact") {
         let mut conf = load_config();
         conf.entry("PLUME_FTS_COMPACT_PASSES".to_string()).or_insert_with(|| "5000".to_string());

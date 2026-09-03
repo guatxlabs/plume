@@ -1064,14 +1064,119 @@ pub(crate) fn resolve_ingest_target(mgr: &TenantDbManager, tenant: &str) -> Opti
 /// QUARANTAINE d'un fichier spool NON routable (tenant inconnu/suspendu) : déplacé sous `<spool>/quarantine`
 /// -> JAMAIS inséré dans une base client, JAMAIS de repli vers `default`. Best-effort (dernier recours : rm
 /// pour ne pas boucler indéfiniment sur un fichier non routable).
+/// LE SOUS-RÉPERTOIRE DE QUARANTAINE, NOMMÉ UNE SEULE FOIS. `P4.1-v` — trois lecteurs en dépendent
+/// (le dépôt qui y écarte, la mesure qui compte, le geste qui vide) : un nom recopié les laisserait
+/// diverger sans que rien ne rougisse.
+pub(crate) fn repertoire_de_quarantaine(spool: &str) -> String {
+    format!("{spool}/quarantine")
+}
+
+/// CE QU'UNE REMISE EN FILE A DONNÉ. `P4.1-v` — le geste qui ferme le compte de la quarantaine.
+pub(crate) struct RemiseEnFile {
+    /// Les lots trouvés en quarantaine, dans un ordre stable.
+    pub(crate) trouves: Vec<String>,
+    /// Combien ont VRAIMENT été remis (zéro en simulation, et c'est la seule différence).
+    pub(crate) remis: usize,
+    /// Ceux que le déplacement a refusés, avec leur cause. Un échec PARTIEL est un fait.
+    pub(crate) refuses: Vec<String>,
+}
+
+/// REMET DANS LA FILE D'INGEST LES LOTS MIS EN QUARANTAINE. `P4.1-v`.
+///
+/// POURQUOI C'EST SÛR, ET LA RAISON N'EST PAS L'IDEMPOTENCE. Le champ anti-doublon est OPTIONNEL —
+/// mesuré le 2026-09-03 sur une quarantaine réelle : 3 994 événements le portaient, 20 161 non. Ce
+/// qui rend le rejeu sûr est ailleurs, et c'est plus fort : un lot part en quarantaine APRÈS un
+/// ROLLBACK ATOMIQUE, donc AUCUN de ses événements n'est en base. Le remettre en file l'ingère une
+/// fois, pas deux.
+///
+/// UN PARCOURS INTERROMPU N'AGIT PAS. Une entrée illisible en cours de route rendrait une liste plus
+/// COURTE que la réalité : agir dessus laisserait des lots derrière en silence, c'est-à-dire refaire
+/// le défaut qu'on ferme. Le geste REFUSE alors, et il le dit.
+///
+/// `Err` = la quarantaine n'a pas pu être ÉNUMÉRÉE. Un répertoire ABSENT n'est pas une erreur : c'est
+/// une quarantaine vide, et rien n'a jamais été écarté.
+pub(crate) fn remettre_la_quarantaine_en_file(spool: &str, a_blanc: bool) -> Result<RemiseEnFile, String> {
+    let qdir = repertoire_de_quarantaine(spool);
+    let entrees = match std::fs::read_dir(&qdir) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(RemiseEnFile { trouves: Vec::new(), remis: 0, refuses: Vec::new() })
+        }
+        Err(e) => return Err(format!("{qdir} illisible ({e})")),
+    };
+    let mut trouves = Vec::new();
+    for entree in entrees {
+        match entree {
+            Ok(e) => {
+                let nom = e.file_name().to_string_lossy().into_owned();
+                if crate::mesure_environnement::entree_de_spool_comptee(&nom) {
+                    trouves.push(nom);
+                }
+            }
+            Err(e) => {
+                return Err(format!(
+                    "parcours de {qdir} interrompu ({e}) — agir sur une liste tronquée en oublierait en silence"
+                ))
+            }
+        }
+    }
+    trouves.sort();
+    if a_blanc {
+        return Ok(RemiseEnFile { trouves, remis: 0, refuses: Vec::new() });
+    }
+    let (mut remis, mut refuses) = (0usize, Vec::new());
+    for n in &trouves {
+        match std::fs::rename(format!("{qdir}/{n}"), format!("{spool}/{n}")) {
+            Ok(()) => remis += 1,
+            Err(e) => refuses.push(format!("{n} ({e})")),
+        }
+    }
+    Ok(RemiseEnFile { trouves, remis, refuses })
+}
+
 pub(crate) fn quarantine_spool_file(spool: &str, path: &std::path::Path, name: &str, reason: &str) {
-    let qdir = format!("{spool}/quarantine");
+    let qdir = repertoire_de_quarantaine(spool);
     let _ = std::fs::create_dir_all(&qdir);
     let dst = format!("{qdir}/{name}");
-    if std::fs::rename(path, &dst).is_err() {
-        let _ = std::fs::remove_file(path);
+    if std::fs::rename(path, &dst).is_ok() {
+        eprintln!("{}", aveu_de_mise_a_lecart(reason, name, &qdir, Ecart::Ecarte));
+        return;
     }
-    eprintln!("[ingest] {reason} -> quarantaine : {name}");
+    // `P4.1-v` — L'AVEU CESSE DE MENTIR DANS LA BRANCHE D'ÉCHEC. Le dernier recours EFFACE le
+    // fichier (sans quoi la file bouclerait indéfiniment dessus), et la ligne annonçait pourtant
+    // « quarantaine » : elle promettait un lot conservé et examinable là où il ne restait rien.
+    let issue = if std::fs::remove_file(path).is_ok() { Ecart::Detruit } else { Ecart::Reste };
+    eprintln!("{}", aveu_de_mise_a_lecart(reason, name, &qdir, issue));
+}
+
+/// CE QU'IL EST ADVENU DU LOT — trois issues, et elles ne se traitent pas pareil.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Ecart {
+    /// Déplacé en quarantaine : conservé, examinable, rejouable.
+    Ecarte,
+    /// Le déplacement a échoué et le dernier recours l'a EFFACÉ. Rien n'est rejouable.
+    Detruit,
+    /// Le déplacement a échoué et l'effacement aussi : la file va y revenir.
+    Reste,
+}
+
+/// L'AVEU, EN FONCTION PURE POUR ÊTRE REJOUABLE. `P4.1-v` — la ligne d'origine disait « quarantaine »
+/// dans les TROIS cas, alors que deux d'entre eux ne mettent rien à l'écart. Un lot DÉTRUIT et un lot
+/// ÉCARTÉ n'appellent pas la même suite, et seul le mot les sépare : sortir la phrase du site
+/// d'écriture est ce qui permet de la TENIR par un témoin au lieu de l'espérer.
+pub(crate) fn aveu_de_mise_a_lecart(reason: &str, name: &str, qdir: &str, issue: Ecart) -> String {
+    match issue {
+        Ecart::Ecarte => format!("[ingest] {reason} -> quarantaine : {name}"),
+        Ecart::Detruit => format!(
+            "[ingest] {reason} -> MISE À L'ÉCART IMPOSSIBLE ({qdir} inutilisable) : le lot `{name}` a été \
+             DÉTRUIT en dernier recours, pour que la file ne boucle pas dessus. Ce n'est PAS une mise à \
+             l'écart : son contenu n'est plus rejouable."
+        ),
+        Ecart::Reste => format!(
+            "[ingest] {reason} -> MISE À L'ÉCART IMPOSSIBLE ({qdir} inutilisable) : le lot `{name}` est \
+             LAISSÉ EN PLACE et la file va y revenir. Ce n'est PAS une mise à l'écart."
+        ),
+    }
 }
 
 /// Résout le tenant COURANT d'un user (mode 1) : sélection explicite (header/param) si l'user y a un grant

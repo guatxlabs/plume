@@ -772,7 +772,7 @@ env:
   # le démon s'est arrêté — aucune requête, aucune ingestion, aucune surface de santé. Le refus était
   # HONNÊTE (l'index était réellement abîmé) mais son PRIX ne l'était pas : cet index est déclaré à
   # contenu EXTERNE, il ne porte aucune donnée propre, sa source était intacte, et il s'est rebâti en
-  # moins de trois minutes. La porte distingue désormais un objet DÉRIVÉ d'un objet SOURCE — le premier
+  # quelques minutes. La porte distingue désormais un objet DÉRIVÉ d'un objet SOURCE — le premier
   # se reconstruit, le second refuse comme avant, et la distinction est DÉRIVÉE de la DDL de référence,
   # pas d'une liste de noms. Les sept témoins tiennent les DEUX sens, et NEUF vérifications de mutation
   # les ont éprouvés : réparation débranchée -> les trois témoins positifs rougissent et les deux négatifs
@@ -784,8 +784,8 @@ env:
   # viennent de `.github/scripts/compter-les-tests.sh`, jamais d'une addition.
   # `P4.1-v` — +5 LE 2026-09-03, TROUVÉ EN RÉSOLVANT LA PANNE DE `P8.10-m`. Un lot d'ingest que le dépôt
   # durable n'a pas su écrire est ÉCARTÉ vers une quarantaine — bon geste, explicitement « rejouable,
-  # aucune perte silencieuse », et le rejeu l'a confirmé (760 lots, 24 028 événements revenus intégralement,
-  # parce que l'écart suit un ROLLBACK atomique). LE DÉFAUT N'EST PAS L'ÉCART, C'EST QUE PERSONNE NE LE
+  # aucune perte silencieuse », et le rejeu l'a confirmé (tous les lots écartés
+  # sont revenus, sans un seul doublon, parce que l'écart suit un ROLLBACK atomique). LE DÉFAUT N'EST PAS L'ÉCART, C'EST QUE PERSONNE NE LE
   # REGARDE : rien ne lisait ce répertoire, et le seul compte publié était celui des abandons du DERNIER
   # PASSAGE — retombé à zéro dès la reprise pendant que 760 lots dormaient, dont un depuis VINGT-NEUF JOURS.
   # Le commentaire qui justifiait ce compteur énonçait lui-même son angle mort : un fichier abandonné

@@ -1084,7 +1084,7 @@ pub(crate) struct RemiseEnFile {
 /// REMET DANS LA FILE D'INGEST LES LOTS MIS EN QUARANTAINE. `P4.1-v`.
 ///
 /// POURQUOI C'EST SÛR, ET LA RAISON N'EST PAS L'IDEMPOTENCE. Le champ anti-doublon est OPTIONNEL —
-/// mesuré le 2026-09-03 sur une quarantaine réelle : 3 994 événements le portaient, 20 161 non. Ce
+/// mesuré sur une quarantaine réelle, une MINORITÉ d'événements le portait. Ce
 /// qui rend le rejeu sûr est ailleurs, et c'est plus fort : un lot part en quarantaine APRÈS un
 /// ROLLBACK ATOMIQUE, donc AUCUN de ses événements n'est en base. Le remettre en file l'ingère une
 /// fois, pas deux.

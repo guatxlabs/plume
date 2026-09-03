@@ -944,10 +944,20 @@ viennent d'une constante — la commande `c` ci‑dessus la donne.
 > ouverte. De ce côté‑là, **seules les plages réservées EN DUR protègent par défaut** : `PLUME_PROTECTED_IPS` et `PLUME_OPERATOR_IPS` ont pour valeur par défaut la chaîne VIDE et aucun
 > installateur ne les sème, si bien qu'aucune adresse publique — donc aucun rebond
 > d'administration réel — n'est protégée tant que l'exploitant n'a pas édité sa configuration.
-> La rédaction précédente nommait « l'opérateur et la passerelle » parmi les protections : **c'était faux par défaut**, et corrigé le 2026-08-28. Ce n'est **pas** fermé par le lot ci‑dessus, et le naïf ne l'est pas non
-> plus : le **défaut** des deux chemins est le même fichier, donc un lecteur d'épargne calqué sur
-> celui de l'agent refuserait **tout** ban sur toute installation centrale existante — dont le
-> fichier porte des noms de service.
+> La rédaction précédente nommait « l'opérateur et la passerelle » parmi les protections : **c'était faux par défaut**, et corrigé le 2026-08-28. Ce n'est **pas** fermé par le lot ci‑dessus. **La raison écrite ici jusqu'au 2026-09-03
+> était fausse, et c'est une mesure qui l'a dite** : on lisait que le défaut des deux chemins étant
+> le même fichier, un lecteur d'épargne calqué sur celui de l'agent refuserait **tout** ban sur
+> toute installation centrale existante. La prémisse est vraie, la **conclusion ne l'est pas** — le
+> fichier que l'installateur sème ne porte que des commentaires en colonne zéro, et le prédicat de
+> l'agent y rend la branche qui **bannit** : le comportement par défaut serait donc INCHANGÉ, et un
+> témoin du dépôt mesure déjà exactement ce contenu. Mieux : l'installateur d'agent pose
+> `PLUME_RESPONDER_ALLOW` sur un fichier au **nom distinct** (`responder-ban-exempt.allow`), qu'il
+> crée et documente — un lecteur central dont le défaut serait ce nom-là n'ouvrirait jamais la liste
+> d'arrêts de service, et sur une installation antérieure il lirait un fichier absent, donc aucune
+> protection : exactement le comportement historique. **Le geste manquant existe donc, mal placé.**
+> Ce qui bloque réellement est ailleurs et plus dur : `PLUME_RESPONDER_ALLOW` n'est posée que dans
+> l'environnement de l'unité d'**agent**, tandis que l'unité du responder **central** charge une
+> autre configuration, qui ne porte ce levier dans aucun installateur ni manifeste.
 > ⚠️ **Une ligne CIDR est désormais refusée** — `203.0.113.0/24` **comme** `2001:db8::/32` : la
 > recherche s'est toujours faite par **égalité de ligne**, donc un masque n'a **jamais** épargné
 > personne — il laissait le ban partir en silence. Écrivez une adresse par ligne, ou employez

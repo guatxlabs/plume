@@ -51,6 +51,39 @@
     // `aucune_sauvegarde_de_test_ne_lit_les_reglages_sans_le_verrou` continue de l'exiger, en DÉDUISANT
     // des sources qui déclenche une sauvegarde.
 
+    // `P7.19-j` — LA POPULATION DES LECTEURS A ÉTÉ DÉRIVÉE, ET UNE GARDE A ÉTÉ REFUSÉE. LE CHIFFRE.
+    //
+    // CE QUI EST GARDÉ AUJOURD'HUI, EXACTEMENT. Deux gardes, et l'une des deux juge bien des LECTEURS :
+    //   · les ÉCRIVAINS, toutes clés confondues — `check_no_test_mutates_the_process_env_unlocked.py`
+    //     exige `.write()` de tout test qui MUTE l'environnement ;
+    //   · les LECTEURS D'UNE SEULE FAMILLE — `aucune_sauvegarde_de_test_ne_lit_les_reglages_sans_le_verrou`
+    //     exige `.read()` de tout test qui déclenche une SAUVEGARDE (clés `PLUME_BACKUP_*`).
+    // L'angle mort n'est donc pas « les lecteurs ne sont pas gardés » : c'est que la garde des lecteurs
+    // est adossée à UNE famille de clés, et que le défaut est entré par une AUTRE (`PLUME_COLD_TIER`).
+    //
+    // LA POPULATION, DÉRIVÉE ET NON ÉNUMÉRÉE (mesurée le 2026-09-03 sur cet arbre, par la mécanique de
+    // la garde de sauvegarde généralisée aux 22 clés que la caisse POSE). « Nu » = un `#[test]` qui
+    // atteint un lecteur de production d'une de ces clés sans prendre ce verrou. Selon la profondeur de
+    // dérivation — 0 = le test appelle la fonction qui NOMME la clé ; n = plus n crans d'appelants
+    // publics, ce que fait la garde de sauvegarde existante :
+    //     profondeur 0 : 111 gardés,  54 nus        profondeur 2 : 155 gardés, 228 nus
+    //     profondeur 1 : 151 gardés, 183 nus        profondeur 4 : 155 gardés, 326 nus
+    //
+    // LA GARDE EST REFUSÉE, ET C'EST LE RAPPORT QUI TRANCHE. Un seul lecteur nu a JAMAIS été mesuré
+    // exposé (`idx49_row_and_size_caps` : jeu réduit joué huit fois, six rouges). La garde la plus
+    // ÉTROITE concevable en accuserait 54, la plus large 326 — pour un fautif connu. Un rouge
+    // d'intégration sur 54 à 326 témoins légitimes, qu'aucun geste utile ne referme, est une RANÇON :
+    // il serait payé en `.read()` posés au hasard, ce qui n'ajoute aucune propriété et retire le sens
+    // du verrou. Le compte est écrit ici pour que le refus soit RELISIBLE, et non refait à l'aveugle.
+    //
+    // CE QUI A ÉTÉ FAIT À LA PLACE, ET SA BORNE. Le verrou est posé sur la FAMILLE ENTIÈRE de
+    // `retention_run` — les douze lecteurs nus restants, en plus du seul exposé — parce qu'un lecteur
+    // « inoffensif aujourd'hui » ne l'est que tant que le drapeau ne change pas ce qu'il éprouve. Cela
+    // ferme la famille NOMMÉE ; cela ne ferme pas la classe. La voie qui la fermerait — une lecture qui
+    // ne passe plus par l'environnement du processus — bute sur `main::cfg`, dont la précédence
+    // `env > conf > défaut` est un CONTRAT D'EXPLOITATION (systemd / k3s posent des `PLUME_*`) : la
+    // changer pour arranger la caisse serait corriger le produit au bénéfice du banc.
+
     /// Pose un réglage de sauvegarde LE TEMPS D'UNE PORTÉE et restaure la valeur antérieure au `Drop` —
     /// y compris quand la portée se termine par un panic d'assertion. Un `remove_var` écrit en ligne
     /// droite après la mesure, lui, est SAUTÉ par le déroulement de la pile : la variable resterait posée

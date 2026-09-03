@@ -819,6 +819,10 @@ detection:
     /// hors portée -> purgé ; après levée -> re-purgeable. Preuve que la garde est branchée sur le chemin réel.
     #[test]
     fn gov_legal_hold_blocks_deletion() {
+        // `P7.19-j` — `retention_run` RELIT `PLUME_COLD_TIER` dans l'environnement PROCESS-global, que les
+        // témoins `fix18_*` POSENT sous `.write()`. Verrou partagé PARTOUT dans la famille, pas seulement
+        // là où le drapeau mord aujourd'hui : c'est l'écart entre les deux qui a laissé entrer le défaut.
+        let _reglages = VERROU_ENV_PROCESSUS.read();
         let conn = test_db();
         let old = now() - 40 * 86400; // au-delà du plancher 7 j
         conn.execute("INSERT INTO setting(scope,key,value) VALUES('global','retention_days','7')", []).unwrap();
@@ -849,6 +853,10 @@ detection:
     /// preuve dont on ne peut prouver qu'elle n'est pas retenue). Décision testée directement + de bout en bout.
     #[test]
     fn gov_legal_hold_failclosed_when_undeterminable() {
+        // `P7.19-j` — `retention_run` RELIT `PLUME_COLD_TIER` dans l'environnement PROCESS-global, que les
+        // témoins `fix18_*` POSENT sous `.write()`. Verrou partagé PARTOUT dans la famille, pas seulement
+        // là où le drapeau mord aujourd'hui : c'est l'écart entre les deux qui a laissé entrer le défaut.
+        let _reglages = VERROU_ENV_PROCESSUS.read();
         let conn = test_db();
         // Décision unitaire : pas de hold -> NoHolds ; hold actif -> Guard.
         assert!(matches!(legal_hold_enforcement(&conn), HoldEnforce::NoHolds));
@@ -974,6 +982,10 @@ detection:
     /// (c) legal_hold_enforcement=NoHolds -> guard=RETENTION_NONPURGE exact -> purge byte-identique.
     #[test]
     fn gov_mode0_parity() {
+        // `P7.19-j` — `retention_run` RELIT `PLUME_COLD_TIER` dans l'environnement PROCESS-global, que les
+        // témoins `fix18_*` POSENT sous `.write()`. Verrou partagé PARTOUT dans la famille, pas seulement
+        // là où le drapeau mord aujourd'hui : c'est l'écart entre les deux qui a laissé entrer le défaut.
+        let _reglages = VERROU_ENV_PROCESSUS.read();
         // (a) rôles de base : résolution COURT-CIRCUITÉE avant tout lookup custom (indépendant du cache).
         assert_eq!(effective_base_role("admin"), "admin");
         assert_eq!(role_rank("admin"), 3);
@@ -1004,6 +1016,10 @@ detection:
     /// (prouvé par gov_mode0_parity : les littéraux snapshot/alert de la branche NoHolds sont inchangés).
     #[test]
     fn gov_legal_hold_blocks_alert_and_snapshot() {
+        // `P7.19-j` — `retention_run` RELIT `PLUME_COLD_TIER` dans l'environnement PROCESS-global, que les
+        // témoins `fix18_*` POSENT sous `.write()`. Verrou partagé PARTOUT dans la famille, pas seulement
+        // là où le drapeau mord aujourd'hui : c'est l'écart entre les deux qui a laissé entrer le défaut.
+        let _reglages = VERROU_ENV_PROCESSUS.read();
         let old = now() - 4000 * 86400; // au-delà de tout plafond de rétention (event/alert/snapshot)
         let seed = |conn: &Connection| {
             conn.execute("INSERT INTO setting(scope,key,value) VALUES('global','retention_days','7')", []).unwrap();

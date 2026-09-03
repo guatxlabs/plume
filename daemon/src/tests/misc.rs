@@ -19,6 +19,10 @@
     /// (origin='daemon') SURVIT. Preuve du découplage anti-empoisonnement / anti-remplissage disque.
     #[test]
     fn v2_m1_retention_purge_decoupled_from_forgeable_source() {
+        // `P7.19-j` — `retention_run` RELIT `PLUME_COLD_TIER` dans l'environnement PROCESS-global, que les
+        // témoins `fix18_*` POSENT sous `.write()`. Verrou partagé PARTOUT dans la famille, pas seulement
+        // là où le drapeau mord aujourd'hui : c'est l'écart entre les deux qui a laissé entrer le défaut.
+        let _reglages = VERROU_ENV_PROCESSUS.read();
         let conn = test_db();
         let old = now() - 40 * 86400; // au-delà du plancher 7 j
         conn.execute("INSERT INTO setting(scope,key,value) VALUES('global','retention_days','7')", []).unwrap();

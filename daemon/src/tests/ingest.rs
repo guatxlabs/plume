@@ -13,6 +13,10 @@
     /// index sans policy tombe sur le global.
     #[test]
     fn idx49_per_index_retention_prunes_only_its_index() {
+        // `P7.19-j` — `retention_run` RELIT `PLUME_COLD_TIER` dans l'environnement PROCESS-global, que les
+        // témoins `fix18_*` POSENT sous `.write()`. Verrou partagé PARTOUT dans la famille, pas seulement
+        // là où le drapeau mord aujourd'hui : c'est l'écart entre les deux qui a laissé entrer le défaut.
+        let _reglages = VERROU_ENV_PROCESSUS.read();
         let conn = test_db();
         conn.execute("INSERT INTO setting(scope,key,value) VALUES('global','retention_days','30')", []).unwrap();
         conn.execute("INSERT INTO index_policy(name,retention_days) VALUES('auth',400)", []).unwrap();
@@ -32,6 +36,10 @@
     /// B — un index SANS policy tombe sur la rétention GLOBALE, même quand d'AUTRES index ont une policy.
     #[test]
     fn idx49_no_policy_index_falls_back_to_global() {
+        // `P7.19-j` — `retention_run` RELIT `PLUME_COLD_TIER` dans l'environnement PROCESS-global, que les
+        // témoins `fix18_*` POSENT sous `.write()`. Verrou partagé PARTOUT dans la famille, pas seulement
+        // là où le drapeau mord aujourd'hui : c'est l'écart entre les deux qui a laissé entrer le défaut.
+        let _reglages = VERROU_ENV_PROCESSUS.read();
         let conn = test_db();
         conn.execute("INSERT INTO setting(scope,key,value) VALUES('global','retention_days','30')", []).unwrap();
         conn.execute("INSERT INTO index_policy(name,retention_days) VALUES('auth',400)", []).unwrap(); // policy sur un AUTRE index
@@ -48,6 +56,10 @@
     /// (chemin byte-identique) ; les events de contrôle daemon survivent toujours (garde inchangée).
     #[test]
     fn idx49_mode0_no_policy_global_retention_identical() {
+        // `P7.19-j` — `retention_run` RELIT `PLUME_COLD_TIER` dans l'environnement PROCESS-global, que les
+        // témoins `fix18_*` POSENT sous `.write()`. Verrou partagé PARTOUT dans la famille, pas seulement
+        // là où le drapeau mord aujourd'hui : c'est l'écart entre les deux qui a laissé entrer le défaut.
+        let _reglages = VERROU_ENV_PROCESSUS.read();
         let conn = test_db();
         assert_eq!(conn.query_row("SELECT COUNT(*) FROM index_policy", [], |r| r.get::<_,i64>(0)).unwrap(), 0, "aucune policy = mode 0");
         conn.execute("INSERT INTO setting(scope,key,value) VALUES('global','retention_days','30')", []).unwrap();
@@ -71,6 +83,10 @@
     /// planchée à 7 j (un event < 7 j SURVIT malgré une policy à 1 j).
     #[test]
     fn idx49_bad_policy_fails_safe_no_over_delete() {
+        // `P7.19-j` — `retention_run` RELIT `PLUME_COLD_TIER` dans l'environnement PROCESS-global, que les
+        // témoins `fix18_*` POSENT sous `.write()`. Verrou partagé PARTOUT dans la famille, pas seulement
+        // là où le drapeau mord aujourd'hui : c'est l'écart entre les deux qui a laissé entrer le défaut.
+        let _reglages = VERROU_ENV_PROCESSUS.read();
         let conn = test_db();
         conn.execute("INSERT INTO setting(scope,key,value) VALUES('global','retention_days','30')", []).unwrap();
         // (1) nom INVALIDE (espace + '!') avec une rétention agressive 1 j -> load_index_policies l'ÉCARTE.

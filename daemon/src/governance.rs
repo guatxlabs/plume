@@ -93,6 +93,9 @@ pub(crate) fn legal_hold_enforcement(conn: &Connection) -> HoldEnforce {
 /// par une future prévisualisation). Pur sur &Connection. Fail-safe : erreur -> false (ne retient rien de
 /// force côté LECTURE ; la garde de SUPPRESSION, elle, est fail-closed séparément dans legal_hold_enforcement).
 pub(crate) fn event_is_held(conn: &Connection, source: &str, ts: i64) -> bool {
+    // `P7.19-i` — ce `LIMIT 1` est SANS ORDRE et le reste : la projection est la CONSTANTE `1` et le
+    // seul consommateur est `.is_ok()`. Toutes les lignes candidates se projettent à l'identique, donc
+    // aucun ordre ne peut changer la réponse — c'est une EXISTENCE, pas une ligne retenue.
     conn.query_row(
         "SELECT 1 FROM legal_hold h WHERE h.active=1 \
            AND (h.scope_source='' OR h.scope_source=?1) \

@@ -135,9 +135,19 @@ pub(crate) fn alerts_query_page(conn: &Connection, f: &FiltreAlertes, group_col:
     // FIX #4 — LEFT JOIN rule pour exposer `window_s` (la fenêtre d'évaluation EXACTE de la règle) au
     // front, qui centre le drilldown dessus. alert.rule = 'rule.{id}' (cf run_due_rules) -> join sur
     // ('rule.'||r.id). NULL pour les alertes hors règle (heartbeat.*). `ts` est déjà exposé.
+    // `P7.19-i` — « L'INCIDENT » D'UNE ALERTE EST LE RATTACHEMENT LE PLUS RÉCENT, ET C'EST ÉCRIT.
+    // L'ensemble PEUT être multiple : `case_item_add` INSÈRE sans contrainte d'unicité sur `ref`, donc
+    // une même alerte liée à deux cases porte deux lignes `incident_item`, et le `LIMIT 1` SANS ORDRE
+    // d'avant en servait une au hasard — la colonne que le front transforme en lien vers « le » case.
+    // POURQUOI « le plus récent » et NON un refus : le filtre `uncased` de cette même route est un
+    // `NOT EXISTS` (cf. `alert_where`) qui compte une alerte doublement liée comme CASÉE ; rendre NULL
+    // ici la ferait afficher « non casée » dans la ligne d'une liste qui la dit casée — deux surfaces
+    // qui se contredisent, soit une AGGRAVATION du défaut qu'on ferme. L'ordre est TOTAL (`id` est la
+    // clé primaire INTEGER, donc unique) : deux exécutions rendent la même ligne.
     let base = "SELECT alert.id,alert.ts,alert.rule,alert.severity,alert.title,alert.status,\
                 COALESCE(alert.detail,''),\
-                (SELECT incident_id FROM incident_item WHERE ref='alert:'||alert.id LIMIT 1),\
+                (SELECT ii.incident_id FROM incident_item ii WHERE ii.ref='alert:'||alert.id \
+                   ORDER BY ii.ts DESC, ii.id DESC LIMIT 1),\
                 COALESCE(alert.mitre,''),r.window_s,\
                 COALESCE(alert.acked_at,0),COALESCE(alert.acked_by,''),\
                 COALESCE(alert.sources,''),COALESCE(r.is_soql,1),\

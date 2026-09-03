@@ -116,6 +116,9 @@ pub(crate) async fn scim_user_get(State(st): State<AppState>, Extension(ctx): Ex
     // (identité d'un autre tenant JAMAIS révélée), même si le platform_user existe globalement.
     let name: Option<String> = {
         let conn = cp.conn.lock();
+        // `P7.19-i` — `LIMIT 1` sans ordre, et sans arbitraire : `"grant"` a pour clé primaire
+        // `(user_id, tenant_id)` et `platform_user.id` est clé primaire, donc ce prédicat lié sur les
+        // DEUX colonnes de la clé ne peut joindre qu'AU PLUS UNE ligne. Le singleton vient du SCHÉMA.
         conn.query_row(
             "SELECT p.name FROM platform_user p JOIN \"grant\" g ON g.user_id=p.id \
              WHERE p.id=?1 AND g.tenant_id=?2 LIMIT 1",
@@ -196,6 +199,9 @@ pub(crate) async fn scim_user_replace(State(st): State<AppState>, Extension(ctx)
     // du token -> 404, même si le platform_user existe globalement (pas d'oracle d'existence cross-tenant).
     let name: Option<String> = {
         let conn = cp.conn.lock();
+        // `P7.19-i` — `LIMIT 1` sans ordre, et sans arbitraire : `"grant"` a pour clé primaire
+        // `(user_id, tenant_id)` et `platform_user.id` est clé primaire, donc ce prédicat lié sur les
+        // DEUX colonnes de la clé ne peut joindre qu'AU PLUS UNE ligne. Le singleton vient du SCHÉMA.
         conn.query_row(
             "SELECT p.name FROM platform_user p JOIN \"grant\" g ON g.user_id=p.id \
              WHERE p.id=?1 AND g.tenant_id=?2 LIMIT 1",
@@ -231,6 +237,8 @@ pub(crate) async fn scim_user_delete(State(st): State<AppState>, Extension(ctx):
     {
         // #59 — existence TENANT-SCOPÉE (mirroir du GET/PUT) : id sans grant dans ce tenant -> 404.
         let conn = cp.conn.lock();
+        // `P7.19-i` — même singleton de SCHÉMA que le GET/PUT, et la projection est en outre la
+        // constante `1` lue par `.is_err()` : deux raisons indépendantes pour que l'ordre ne décide rien.
         if conn.query_row(
             "SELECT 1 FROM platform_user p JOIN \"grant\" g ON g.user_id=p.id \
              WHERE p.id=?1 AND g.tenant_id=?2 LIMIT 1",

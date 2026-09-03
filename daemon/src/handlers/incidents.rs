@@ -190,6 +190,39 @@ fn runbook_meta_json(conn: &Connection, rb_id: i64) -> Option<Value> {
     ).ok()
 }
 
+/// `P7.19-i` — LE RUNBOOK ATTACHÉ À UN CASE : LA SEULE LIGNE ADMISSIBLE, PAS LA PREMIÈRE VENUE.
+///
+/// LE DÉFAUT. Deux surfaces (`case_runbooks_json` -> `attached_runbook_id`, `case_steps_json` ->
+/// `runbook`) lisaient `SELECT runbook_id FROM case_step WHERE incident_id=?1 LIMIT 1`, SANS ORDRE.
+/// L'ensemble EST multiple par construction — `attach_runbook` écrit UNE LIGNE PAR ÉTAPE, donc un
+/// case porte autant de lignes que son runbook a d'étapes — et rien dans l'énoncé ne disait laquelle
+/// des N lignes devait décider. Que le `runbook_id` s'y trouve CONSTANT ne vient pas du schéma : il
+/// n'y a ni contrainte d'unicité ni clé composite sur `case_step`, seulement le refus applicatif
+/// `already > 0` d'`attach_runbook`. Une lecture qui se trouve rendre la bonne ligne n'est pas une
+/// réponse : elle est vraie tant que l'invariant tient, muette le jour où il cède.
+///
+/// CE QUI EST RETENU MAINTENANT. Le runbook qui rend compte de la TOTALITÉ des étapes du case —
+/// c'est-à-dire le seul admissible sous l'invariant « un runbook par case » que `attach_runbook`
+/// PROMET. Le test est POSITIF (le groupe doit COUVRIR toutes les lignes ; la qualité est
+/// CONSTATÉE), et la question de l'ordre ne se pose plus : l'énoncé rend AU PLUS UNE ligne par
+/// construction, sans `LIMIT` et sans `ORDER BY`.
+///
+/// SI L'ENSEMBLE EST MULTIPLE (deux runbooks distincts sur un même case), l'énoncé rend ZÉRO ligne
+/// et cette fonction rend `None` : « je ne sais pas nommer LE runbook » plutôt qu'un nom tiré au
+/// sort. C'est la même loi que `P7.19-f` : refuser de publier vaut mieux que publier un nombre qu'on
+/// ne sait pas lire. Les étapes, elles, restent listées — `case_steps_json` ne perd rien, il cesse
+/// seulement de coiffer des étapes de DEUX runbooks du nom d'UN SEUL.
+fn runbook_attache(conn: &Connection, id: i64) -> Option<i64> {
+    conn.query_row(
+        "SELECT cs.runbook_id FROM case_step cs WHERE cs.incident_id=?1 \
+         GROUP BY cs.runbook_id \
+         HAVING COUNT(*) = (SELECT COUNT(*) FROM case_step WHERE incident_id=?1)",
+        params![id],
+        |r| r.get::<_, i64>(0),
+    )
+    .ok()
+}
+
 /// Projection incident + runbook recommandé + runbooks disponibles pour un case. INTERNE (jamais client-read).
 pub(crate) fn case_runbooks_json(conn: &Connection, id: i64) -> Option<Value> {
     let (tier, itype, commander): (Option<i64>, Option<String>, Option<String>) = conn
@@ -197,7 +230,7 @@ pub(crate) fn case_runbooks_json(conn: &Connection, id: i64) -> Option<Value> {
         .ok()?;
     let (tactic, technique, targets) = dominant_tactic_and_target(conn, id);
     let recommended = pick_runbook_id(conn, tactic.as_deref(), technique.as_deref()).and_then(|rb| runbook_meta_json(conn, rb));
-    let attached: Option<i64> = conn.query_row("SELECT runbook_id FROM case_step WHERE incident_id=?1 LIMIT 1", params![id], |r| r.get(0)).ok();
+    let attached: Option<i64> = runbook_attache(conn, id); // `P7.19-i` — LA seule ligne admissible, pas la première venue.
     let available: Vec<Value> = conn
         .prepare("SELECT id,key,name,match_kind,match_key,description,managed FROM runbook WHERE active=1 ORDER BY (match_kind='*'), id")
         .and_then(|mut s| s.query_map([], |r| Ok(json!({
@@ -296,8 +329,9 @@ pub(crate) fn case_steps_json(conn: &Connection, id: i64) -> Value {
     let total = steps.len() as i64;
     let done = steps.iter().filter(|s| s.get("status").and_then(|v| v.as_str()) == Some("done")).count() as i64;
     let skipped = steps.iter().filter(|s| s.get("status").and_then(|v| v.as_str()) == Some("skipped")).count() as i64;
-    let runbook = conn.query_row("SELECT runbook_id FROM case_step WHERE incident_id=?1 LIMIT 1", params![id], |r| r.get::<_, i64>(0))
-        .ok().and_then(|rb| runbook_meta_json(conn, rb));
+    // `P7.19-i` — LA seule ligne admissible (cf. `runbook_attache`) ; `null` si le case porte des
+    // étapes de DEUX runbooks, plutôt qu'un en-tête tiré au sort au-dessus d'étapes mélangées.
+    let runbook = runbook_attache(conn, id).and_then(|rb| runbook_meta_json(conn, rb));
     json!({ "steps": steps, "progress": { "total": total, "done": done, "skipped": skipped }, "runbook": runbook })
 }
 

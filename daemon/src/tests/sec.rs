@@ -636,6 +636,10 @@ fn v105_ledger_cutover_key_equality_backstop() {
 // ================================================================================================
 #[test]
 fn v105_ledger_unsigned_signal_soc_visible_nonpurgeable_deduped() {
+        // `P7.19-j` — `retention_run` RELIT `PLUME_COLD_TIER` dans l'environnement PROCESS-global, que les
+    // témoins `fix18_*` POSENT sous `.write()`. Verrou partagé PARTOUT dans la famille, pas seulement
+    // là où le drapeau mord aujourd'hui : c'est l'écart entre les deux qui a laissé entrer le défaut.
+    let _reglages = VERROU_ENV_PROCESSUS.read();
     let conn = test_db();
     let cnt_health = |c: &Connection| c.query_row(
         "SELECT COUNT(*) FROM event WHERE source='plume-config' AND origin='daemon' AND category='health'", [], |r| r.get::<_, i64>(0)).unwrap();

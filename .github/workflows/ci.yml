@@ -745,7 +745,18 @@ env:
   # `EXPECTED_COLD_TESTS` — aucun des deux n'est derrière un `cfg(feature)`, et c'est l'ÉCART
   # INCHANGÉ entre les deux profils (**245** avant comme après) qui l'établit, pas une lecture des
   # sources.
-  EXPECTED_TESTS: "1530"
+  # `P7.19-i` (2026-09-03) : **+3**, dérivés du diff — les trois témoins de
+  # `la_ligne_retenue_est_choisie.rs`, un par loi de sélection, chacun FABRIQUANT l'ensemble
+  # multiple qu'aucune donnée de banc ne produisait et REJOUANT l'ancienne lecture telle qu'elle
+  # était : même dossier, même ligne étrangère, placée devant elle rend le runbook ÉTRANGER,
+  # placée derrière elle rend le vrai. Les trois autres fonctions ajoutées par ce passage sont des
+  # AUXILIAIRES (une lecture corrigée partagée par deux surfaces, un rejeu de l'ancienne forme, une
+  # fabrique de fixture) et n'ajoutent aucun test. `P7.19-j` n'en ajoute AUCUN : ses douze prises de
+  # verrou sont une ligne dans des témoins existants, et sa garde a été REFUSÉE avec son chiffre.
+  # Le MÊME +3 sur `EXPECTED_COLD_TESTS` — aucun n'est derrière un `cfg(feature)`, et c'est l'ÉCART
+  # INCHANGÉ entre les deux profils (**245** avant comme après) qui l'établit, pas une lecture des
+  # sources.
+  EXPECTED_TESTS: "1533"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -1197,7 +1208,11 @@ jobs:
           # aucun n'est derrière un `cfg(feature)`, et c'est l'ÉCART INCHANGÉ entre les deux profils
           # (245 avant comme après) qui l'établit, pas une lecture des sources. La dérivation est
           # écrite auprès d'`EXPECTED_TESTS`, une seule fois.
-          EXPECTED_COLD_TESTS: "1775"
+          # `P7.19-i` (2026-09-03) : +3, les MÊMES trois que sur `EXPECTED_TESTS` — aucun n'est
+          # derrière un `cfg(feature)`, et c'est l'ÉCART INCHANGÉ entre les deux profils (245 avant
+          # comme après) qui l'établit, pas une lecture des sources. La dérivation est écrite auprès
+          # d'`EXPECTED_TESTS`, une seule fois.
+          EXPECTED_COLD_TESTS: "1778"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail

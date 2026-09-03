@@ -155,6 +155,10 @@
     /// l'ÉTAT FINAL et les sémantiques (planchers, RETENTION_NONPURGE, filtre status).
     #[test]
     fn f3_retention_run_chunked_purges_old_keeps_recent() {
+        // `P7.19-j` — `retention_run` RELIT `PLUME_COLD_TIER` dans l'environnement PROCESS-global, que les
+        // témoins `fix18_*` POSENT sous `.write()`. Verrou partagé PARTOUT dans la famille, pas seulement
+        // là où le drapeau mord aujourd'hui : c'est l'écart entre les deux qui a laissé entrer le défaut.
+        let _reglages = VERROU_ENV_PROCESSUS.read();
         let db = Arc::new(Mutex::new(test_db()));
         let n = now();
         let old = n - 4000 * 86400; // au-delà du plafond 3650 j -> purgé quelles que soient les valeurs de rétention.
@@ -199,6 +203,10 @@
     /// choisit `old` ENTRE raw_h (48 h -> rollup+purge) et metric_days (90 j -> le rollup SURVIT ce tick).
     #[test]
     fn v134_metric_rollup_and_purge_atomic_no_loss() {
+        // `P7.19-j` — `retention_run` RELIT `PLUME_COLD_TIER` dans l'environnement PROCESS-global, que les
+        // témoins `fix18_*` POSENT sous `.write()`. Verrou partagé PARTOUT dans la famille, pas seulement
+        // là où le drapeau mord aujourd'hui : c'est l'écart entre les deux qui a laissé entrer le défaut.
+        let _reglages = VERROU_ENV_PROCESSUS.read();
         let db = Arc::new(Mutex::new(test_db()));
         let n = now();
         let old = n - 10 * 86400; // 10 j : > raw_h (48 h -> rollup+purge), < metric_days (90 j -> rollup conservé).

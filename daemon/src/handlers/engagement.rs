@@ -253,11 +253,30 @@ pub(crate) fn engagement_rand_hex(nbytes: usize) -> Option<String> {
 /// credential ne s'authentifie NI avant window_start (engagement 'scheduled'), NI après window_end (même si le
 /// sweep de révocation est EN RETARD : double-garde comme l'enforcer) ; un grant 'revoked' (fin/expiry) ->
 /// aucune ligne -> false. Appelé UNIQUEMENT pour les noms `eng-cred-*` (0 coût pour un compte normal).
+///
+/// `P7.19-i` — LA FENÊTRE EST CELLE DE LA SEULE LIAISON ADMISSIBLE, ET LE MULTIPLE EST UN REFUS.
+///
+/// LE DÉFAUT. Cette porte lisait `… WHERE g.ref = ?1 AND … status = 'issued' LIMIT 1`, SANS ORDRE.
+/// Deux grants `issued` sur la même `ref` — l'un vers un engagement OUVERT, l'autre vers un
+/// engagement CLOS — auraient donné une fenêtre TIRÉE AU SORT : un `LIMIT 1` sans ordre est
+/// fail-OPEN une fois sur deux là où toute la fonction est écrite pour être fail-closed. C'est la
+/// seule des trois lectures de `P7.19-i` dont l'arbitraire décide d'une AUTHENTIFICATION.
+///
+/// CE QUI EST RETENU MAINTENANT : la fenêtre du grant `scoped_cred` `issued` de cette `ref` À
+/// CONDITION QU'IL SOIT SEUL (`HAVING COUNT(*) = 1`, test POSITIF : l'unicité doit être CONSTATÉE).
+/// Multiple -> ZÉRO ligne -> `unwrap_or(false)` -> la porte REFUSE. L'énoncé rend au plus une ligne
+/// par construction : ni `LIMIT`, ni `ORDER BY`, donc plus d'ordre à choisir.
+///
+/// CE REFUS N'ENFERME PERSONNE. Une `ref` de `scoped_cred` est `eng-cred-<12 octets CSPRNG>` (96
+/// bits) et `user.name` est UNIQUE, donc deux liaisons `issued` sur la même `ref` ne sont pas un
+/// état légitime que le produit sait produire : c'est une base trafiquée ou corrompue. Refuser y est
+/// la bonne réponse — et c'est exactement le cas que l'ancienne lecture traitait au hasard.
 pub(crate) fn engagement_cred_within_window(conn: &Connection, username: &str, now_i: i64) -> bool {
     conn.query_row(
         "SELECT e.window_start, e.window_end FROM engagement_grant g \
            JOIN engagement e ON e.id = g.engagement_id \
-          WHERE g.ref = ?1 AND g.kind = 'scoped_cred' AND g.status = 'issued' LIMIT 1",
+          WHERE g.ref = ?1 AND g.kind = 'scoped_cred' AND g.status = 'issued' \
+          GROUP BY g.ref HAVING COUNT(*) = 1",
         params![username],
         |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
     )

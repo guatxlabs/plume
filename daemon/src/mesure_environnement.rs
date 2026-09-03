@@ -316,9 +316,24 @@ pub(crate) fn profondeur_file_depuis(spool: &std::path::Path) -> Mesure<u64> {
 /// complète. Un répertoire qui EXISTE mais ne se lit pas reste `Illisible`, et un parcours
 /// interrompu aussi — un compte partiel serait plus petit que la réalité, donc plus rassurant.
 pub(crate) fn profondeur_quarantaine_depuis(qdir: &std::path::Path) -> Mesure<u64> {
+    // L'ABSENCE EST UNE RÉPONSE, ELLE SE CONSTATE AVANT DE LIRE. Le répertoire n'est créé qu'au
+    // premier écart : « il n'existe pas » DIT « rien n'a jamais été écarté ». Ce zéro ne doit
+    // JAMAIS sortir d'une branche d'erreur — un `Err(..) => Lue(0)` est indiscernable d'un échec
+    // maquillé en mesure, et c'est exactement ce que ce dépôt refuse. `try_exists` sépare les trois
+    // cas là où `exists` en confond deux : absent (zéro vrai), présent (on lit), NON DÉCIDABLE
+    // (droits refusés sur le parent) — et ce dernier ne conclut pas.
+    match qdir.try_exists() {
+        Ok(false) => return Mesure::Lue(0),
+        Ok(true) => {}
+        Err(e) => {
+            return Mesure::Illisible {
+                cause: cause_io(&e),
+                detail: format!("{} : existence non décidable ({e})", qdir.display()),
+            }
+        }
+    }
     let entrees = match std::fs::read_dir(qdir) {
         Ok(e) => e,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Mesure::Lue(0),
         Err(e) => {
             return Mesure::Illisible { cause: cause_io(&e), detail: format!("{} : {e}", qdir.display()) }
         }

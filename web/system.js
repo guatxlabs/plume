@@ -131,6 +131,10 @@ const COMPOSANT_LBL = {
   // mais il se lisait `cache_indicateurs : …`, un nom de champ servi à un humain. Le libellé est
   // bilingue PAR CONSTRUCTION, comme le reste de cette console.
   cache_indicateurs: LANG === 'en' ? 'indicator cache' : 'cache d\u2019indicateurs',
+  // `P4.1-v` — LA PROFONDEUR DE LA QUARANTAINE D'INGEST. Distincte de la file : celle-ci dit
+  // combien de lots ATTENDENT leur tour, celle-là combien en sont SORTIS sans jamais entrer en
+  // base. Sans cette entrée, la tuile rendrait sa clé brute à un humain.
+  quarantine_depth: LANG === 'en' ? 'ingest quarantine' : 'quarantaine d\u2019ingest',
 };
 function verdictsDuComposant(c) {
   const out = [];
@@ -229,6 +233,12 @@ function rendreSysteme(wrap, m, h) {
     mesureTile('RSS mémoire', p, 'rss_bytes', fmtBytes),
     tile('Ingest / h', String(ing.events_1h ?? 0), 'total ' + (ing.events_total ?? 0)),
     mesureTile('File spool', ing, 'queue_depth', String, 'fichiers en attente'),
+    // `P4.1-v` — LES LOTS ÉCARTÉS SONT À L'ÉCRAN, PAS SEULEMENT DANS UN JOURNAL. Un lot que le
+    // dépôt durable n'a pas su écrire quitte la file et n'y revient jamais seul : il est
+    // conservé et rejouable, mais absent de la base tant que personne ne l'y remet. Le
+    // sous-titre nomme le geste, parce qu'un compte sans geste de fermeture est une rançon.
+    mesureTile('Quarantaine ingest', ing, 'quarantine_depth', String,
+      LANG === 'en' ? 'set-aside batches — replay with spool-requeue' : 'lots écartés — rejouer avec spool-requeue'),
     tile('Recherche p50', (se.p50_ms ?? 0) + ' ms', 'p95 ' + (se.p95_ms ?? 0) + ' ms'),
     tile('Recherches', String(se.requests_total ?? 0), se.samples ? se.samples + ' échantillons' : ''),
     tile('Scheduler', String(sc.rule_ticks_total ?? 0) + ' ticks', sc.rule_last_tick ? 'règles : ' + humanAge(Math.max(0, (m.ts || 0) - sc.rule_last_tick)) : 'démarrage'),

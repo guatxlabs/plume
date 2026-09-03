@@ -1023,6 +1023,57 @@ fn usage() -> String {
     s
 }
 
+/// `P4.1-v` — REMET EN FILE LES LOTS ÉCARTÉS, ET NE REND JAMAIS LA MAIN.
+///
+/// AUCUNE OUVERTURE DE BASE ICI, ET C'EST LOAD-BEARING : ce geste sert précisément quand la porte
+/// refuse de servir, c'est-à-dire au moment où la quarantaine se remplit le plus vite. Lui opposer le
+/// contrat de schéma le retirerait des mains de l'exploitant à l'instant où il compte.
+///
+/// TROIS SORTIES DISTINCTES, parce qu'elles n'appellent pas la même suite : 0 = fait (ou rien à
+/// faire), 1 = fait PARTIELLEMENT (des lots sont restés, et ils sont nommés), 2 = la quarantaine n'a
+/// pas pu être ÉNUMÉRÉE, donc rien n'a été tenté et le compte reste inconnu.
+/// LE CHEMIN ARRIVE RÉSOLU, il ne se lit pas ici. Cette fonction ÉNUMÈRE un répertoire, donc elle
+/// répond de tout ce qu'elle abandonne — et lui faire lire la configuration au passage y ferait
+/// entrer la lecture de configuration ELLE-MÊME, une fonction partagée par toutes les
+/// sous-commandes, que ce lot n'a aucune raison de remanier (mesuré : deux branches d'abandon
+/// préexistantes accusées du seul fait de cet appel).
+fn commande_spool_requeue(spool: &str, a_blanc: bool) -> ! {
+    let bilan = match crate::state::remettre_la_quarantaine_en_file(spool, a_blanc) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("spool-requeue : {e} — AUCUN lot remis en file.");
+            std::process::exit(2);
+        }
+    };
+    if bilan.trouves.is_empty() {
+        println!("spool-requeue : quarantaine VIDE — rien à remettre en file.");
+        std::process::exit(0);
+    }
+    if a_blanc {
+        println!("spool-requeue --dry-run : {} lot(s) SERAIENT remis en file.", bilan.trouves.len());
+        for n in bilan.trouves.iter().take(10) {
+            println!("  {n}");
+        }
+        if bilan.trouves.len() > 10 {
+            println!("  … et {} autre(s)", bilan.trouves.len() - 10);
+        }
+        std::process::exit(0);
+    }
+    println!(
+        "spool-requeue : {} lot(s) remis dans la file d'ingest ({spool}). Le démon les reprend à sa \
+         cadence ; la profondeur de quarantaine servie par la surface de santé doit retomber.",
+        bilan.remis
+    );
+    if !bilan.refuses.is_empty() {
+        eprintln!("spool-requeue : {} lot(s) NON remis, restés en quarantaine :", bilan.refuses.len());
+        for r in bilan.refuses.iter().take(10) {
+            eprintln!("  {r}");
+        }
+        std::process::exit(1);
+    }
+    std::process::exit(0);
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     // LE RÉPERTOIRE DE DÉVERSEMENT, POSÉ AVANT TOUT. `sqlite3_os_init()` lit `getenv("SQLITE_TMPDIR")`
@@ -1370,56 +1421,16 @@ fn main() {
     //
     // `PLUME_FTS_COMPACT=0` est RESPECTÉ ICI AUSSI : un kill-switch qu'une sous-commande contourne
     // n'est pas un kill-switch. Dans ce cas la commande le DIT et ne fusionne rien.
-    // `P4.1-v` — LE GESTE QUI FERME LE COMPTE. Publier la profondeur de la quarantaine sans offrir
-    // de quoi la vider serait une RANÇON : une surface qui accuse en permanence, qu'aucune action ne
-    // peut éteindre. Les lots écartés le sont APRÈS un ROLLBACK atomique — aucun de leurs événements
-    // n'est en base — donc les remettre dans la file les ingère UNE fois, sans doublon possible.
-    // AUCUNE OUVERTURE DE BASE ICI, ET C'EST LOAD-BEARING : ce geste sert précisément quand la porte
-    // refuse de servir, c'est-à-dire au moment où la quarantaine se remplit le plus vite.
-    // `P4.1-v` — LE GESTE QUI FERME LE COMPTE. Publier la profondeur de la quarantaine sans offrir
-    // de quoi la vider serait une RANÇON : une surface qui accuse en permanence, qu'aucune action ne
-    // peut éteindre. AUCUNE OUVERTURE DE BASE ICI, ET C'EST LOAD-BEARING : ce geste sert précisément
-    // quand la porte refuse de servir, c'est-à-dire au moment où la quarantaine se remplit le plus
-    // vite. La décision vit dans `state::remettre_la_quarantaine_en_file`, qui est éprouvée ; ici on
-    // n'imprime que ce qu'elle rend.
+    // `P4.1-v` — LE GESTE QUI FERME LE COMPTE, dans SA fonction. Publier la profondeur de la
+    // quarantaine sans offrir de quoi la vider serait une RANÇON : une surface qui accuse en
+    // permanence, qu'aucune action ne peut éteindre. Le corps vit hors de `main` — il ÉNUMÈRE un
+    // répertoire, et une fonction qui énumère doit répondre de ce qu'elle abandonne ; la garder ici
+    // ferait entrer `main` tout entier dans ce périmètre (mesuré : quatre branches d'abandon
+    // préexistantes accusées d'un coup).
     if args.get(1).map(String::as_str) == Some("spool-requeue") {
-        let a_blanc = args.iter().any(|a| a == "--dry-run");
         let conf = load_config();
         let spool = cfg(&conf, "PLUME_SPOOL", "/var/lib/plume/spool");
-        let bilan = match crate::state::remettre_la_quarantaine_en_file(&spool, a_blanc) {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!("spool-requeue : {e} — AUCUN lot remis en file.");
-                std::process::exit(2);
-            }
-        };
-        if bilan.trouves.is_empty() {
-            println!("spool-requeue : quarantaine VIDE — rien à remettre en file.");
-            std::process::exit(0);
-        }
-        if a_blanc {
-            println!("spool-requeue --dry-run : {} lot(s) SERAIENT remis en file.", bilan.trouves.len());
-            for n in bilan.trouves.iter().take(10) {
-                println!("  {n}");
-            }
-            if bilan.trouves.len() > 10 {
-                println!("  … et {} autre(s)", bilan.trouves.len() - 10);
-            }
-            std::process::exit(0);
-        }
-        println!(
-            "spool-requeue : {} lot(s) remis dans la file d'ingest ({spool}). Le démon les reprend à sa \
-             cadence ; la profondeur de quarantaine servie par la surface de santé doit retomber.",
-            bilan.remis
-        );
-        if !bilan.refuses.is_empty() {
-            eprintln!("spool-requeue : {} lot(s) NON remis, restés en quarantaine :", bilan.refuses.len());
-            for r in bilan.refuses.iter().take(10) {
-                eprintln!("  {r}");
-            }
-            std::process::exit(1);
-        }
-        std::process::exit(0);
+        commande_spool_requeue(&spool, args.iter().any(|a| a == "--dry-run"));
     }
 
     if args.get(1).map(String::as_str) == Some("fts-compact") {

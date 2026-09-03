@@ -6740,20 +6740,47 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   const vizEN49 = await import(url49("viz.js") + SUFFIXE49);
   const { i18nWalk: walk49 } = await import(url49("i18n.js") + SUFFIXE49);
   localStorage.removeItem("soc_lang");
-  const disentVide49 = MODES49.filter((m) => /aucune donnée|no data/i.test(vizEN49.vizElement(m, C2, [], "", "").textContent));
-  exiger(disentVide49.length >= 3,
-    `(49l-instrument) seules ${disentVide49.length} représentation(s) DISENT l'absence sur zéro ligne : la mesure de la langue ne porterait presque sur rien`);
-  const enDurFr49 = disentVide49.filter((m) => /aucune donnée/.test(vizEN49.vizElement(m, C2, [], "", "").textContent));
-  exiger(enDurFr49.length > 0,
-    "(49l-négatif) plus aucune de ces phrases n'est écrite en français en dur : la moitié qui montre que la mesure d'origine lisait le module HORS du parcours de traduction ne mesure plus rien");
-  for (const m of disentVide49) {
-    const n = vizEN49.vizElement(m, C2, [], "", "");
-    walk49(n);
-    exiger(/no data/i.test(n.textContent) && !/aucune donnée/.test(n.textContent),
-      `(49l) sous LANG='en', « ${m} » sert encore du français APRÈS le parcours de traduction : « ${n.textContent} » — la clé du lexique manque`);
+  // `P11.24-t` — LA POPULATION EST DÉRIVÉE DU MODULE, PLUS D'UN SOUS-ENSEMBLE CHOISI, ET C'EST CE QUI
+  // A DÉBLOQUÉ LA CLÉ. Ce témoin ne regardait que les rendus SANS LIGNE : sa moitié négative tenait
+  // donc à UNE phrase servie par UNE figure, et le jour où cette figure choisirait sa langue elle-même
+  // — ce qui est arrivé le 2026-09-02 —, la moitié qui MESURE serait tombée alors que le module écrit
+  // toujours du français ailleurs. Mesuré ce jour-là sur 324 rendus : sous l'adresse anglaise, DEUX
+  // textes distincts arrivaient encore en français, et le second (« aucune donnée numérique », rendu
+  // par l'histogramme) vit sur des lignes SERVIES — hors de portée du sous-ensemble d'avant.
+  // CE QUE CE NÉGATIF GARDE, ET QUE SON LIBELLÉ NE DISAIT PAS : que le parcours du lexique est PORTANT
+  // sur un rendu de ce module. Sans lui, la boucle ci-dessous reste verte même si le lexique est mort
+  // — chaque figure rendant déjà l'anglais toute seule —, et rien ne distinguerait « le module a
+  // choisi l'anglais » de « l'adresse de langue du banc a traduit sans qu'on le sache ».
+  const JEUX49L = { vide: [], zero: [["a", 0]], négative: [["a", -3]], texte: [["a", "oui"], ["b", "non"]],
+    "non lue": [["a", null], ["b", 4]], blancs: [["a", "   "], ["b", 4]], "une seule valeur": [["a", 42], ["b", 42], ["c", 42]],
+    trouée: [["a", 3], ["b", null], ["c", 7]] };
+  const rendusEN49 = [];
+  for (const m of MODES49) for (const [nj, lignes] of Object.entries(JEUX49L)) for (const [cn, C] of [["2", C2], ["3", C3]]) {
+    const rows = C === C3 ? lignes.map((r) => [r[0], "s", r[r.length - 1]]) : lignes;
+    for (const [pn, f] of [["par la porte", vizEN49.vizElement], ["sans la porte", vizEN49.vizSansPorte]]) {
+      let n; try { n = f(m, C, rows, "", ""); } catch (e) { continue; }
+      const avant = n.textContent; walk49(n);
+      rendusEN49.push({ ou: `${m} · ${cn} colonne(s) · ${nj} · ${pn}`, avant, apres: n.textContent });
+    }
   }
+  exiger(rendusEN49.length >= MODES49.length * 8,
+    `(49l-instrument) le balayage n'a produit que ${rendusEN49.length} rendus sous l'adresse anglaise pour ${MODES49.length} représentations : la mesure de la langue porterait sur presque rien`);
+  exiger(rendusEN49.some((r) => r.avant.trim() !== ""),
+    "(49l-instrument) aucun des rendus sous l'adresse anglaise ne porte le moindre texte : le parcours du lexique n'aurait rien à traduire et tout ce qui suit passerait en étant muet");
+  const traduits49 = rendusEN49.filter((r) => r.avant !== r.apres);
+  exiger(traduits49.length > 0,
+    "(49l-négatif) plus AUCUN rendu de ce module sous LANG='en' n'est modifié par le parcours du lexique : la moitié qui montre que la mesure lit ce module HORS du parcours ne mesure plus rien, et la boucle ci-dessous resterait verte avec un lexique MORT");
+  const ACCENT49 = /[éèêëàâäçùûüôöîïœÉÈÊÀÇÔ]/;
+  for (const r of rendusEN49) {
+    exiger(!ACCENT49.test(r.apres),
+      `(49l) sous LANG='en', « ${r.ou} » sert encore du français APRÈS le parcours de traduction : « ${r.apres.trim().slice(0, 120)} » — la clé du lexique manque, ou la phrase n'est pas un nœud ENTIER`);
+  }
+  // LE POSITIF QUI EMPÊCHE LE PRÉDICAT DE MESURER LE VIDE : au moins un rendu portait bien un accent
+  // AVANT le parcours, sans quoi « aucun accent après » serait vrai d'un module qui n'écrit rien.
+  exiger(rendusEN49.some((r) => ACCENT49.test(r.avant)),
+    "(49l-instrument) aucun rendu de ce module sous LANG='en' ne porte d'accent français AVANT le parcours : le prédicat « plus d'accent après » serait vrai par construction");
 
-  console.log(`[reglage-honore-ou-dit] LE RÉGLAGE DE L'EXPLOITANT EST HONORÉ : sur « ${large49} », les ${FENTES49.length} fentes × toutes les colonnes d'un résultat à ${C5.length} et à ${C3.length} colonnes (${honorees49} réglages balayés) posent la colonne réglée à la position que son infobulle promet, sans perdre ni doubler une seule colonne servie — là où la projection d'avant, rejouée ici, restait INERTE sur ${inertes49} de ces ${total49} réglages (elle rendait l'ordre SANS réglage) et remettait deux fois la même colonne sur le chemin étroit. Ce qu'un réglage ne peut PAS faire se DIT au lieu de s'évanouir : deux fentes sur la même colonne, une fente médiane sur un résultat sans milieu — chacune nommée avec la colonne et les libellés que l'exploitant voit, la barre restant au-dessus pour la défaire — et un réglage posé sur une fente que la représentation NE LIT PAS ne refuse rien et ne déplace rien. NON-RÉGRESSION : sur les ${MODES49.length} modes, un réglage qui nomme pour chaque fente la colonne qui y est déjà rend un balisage byte-identique et ne prononce pas un mot. UNE ABSENCE N'EST PAS UN ZÉRO : ni dans le refus d'une figure muette (une ligne sans valeur est comptée À PART, les vrais zéros gardant « toutes NULLES »), ni dans ce qu'une figure écarte (« nulle ou négative » ne se dit plus d'une valeur absente ni d'une valeur illisible). CE QU'UNE FIGURE NE MONTRE PAS, ELLE LE COMPTE : la grille dit sa coupe (${R70.length - lignesRendues} lignes sur ${R70.length}) et les lignes qu'une autre écrase, ${uneSeule49.length} représentations disent les lignes servies qu'elles ne lisent pas — sans que ce soit un refus, et sans nommer une colonne là où c'est une ligne qui manque — et toutes se taisent quand elles ne perdent rien. L'histogramme partage ses deux sémantiques sur la FORME du résultat et non sur son arité. Enfin la langue : « aucune donnée » atteint un lecteur anglophone par le LEXIQUE là où le module l'écrit en dur, mesuré en appliquant le parcours de traduction au nœud rendu — les deux moitiés tenues, pour qu'on ne retire pas la clé qui l'y porte. CE QUE CE TÉMOIN NE TIENT PAS : l'encre peinte et la mise en page (section 0) ; les panneaux SEMÉS par le démon, dont les requêtes vivent hors de web/ ; et ce qu'une chaîne de BLANCS devrait valoir — elle n'est plus lue comme un nombre nulle part depuis \`P11.20-y\`, et c'est (62) qui le tient.`);
+  console.log(`[reglage-honore-ou-dit] LE RÉGLAGE DE L'EXPLOITANT EST HONORÉ : sur « ${large49} », les ${FENTES49.length} fentes × toutes les colonnes d'un résultat à ${C5.length} et à ${C3.length} colonnes (${honorees49} réglages balayés) posent la colonne réglée à la position que son infobulle promet, sans perdre ni doubler une seule colonne servie — là où la projection d'avant, rejouée ici, restait INERTE sur ${inertes49} de ces ${total49} réglages (elle rendait l'ordre SANS réglage) et remettait deux fois la même colonne sur le chemin étroit. Ce qu'un réglage ne peut PAS faire se DIT au lieu de s'évanouir : deux fentes sur la même colonne, une fente médiane sur un résultat sans milieu — chacune nommée avec la colonne et les libellés que l'exploitant voit, la barre restant au-dessus pour la défaire — et un réglage posé sur une fente que la représentation NE LIT PAS ne refuse rien et ne déplace rien. NON-RÉGRESSION : sur les ${MODES49.length} modes, un réglage qui nomme pour chaque fente la colonne qui y est déjà rend un balisage byte-identique et ne prononce pas un mot. UNE ABSENCE N'EST PAS UN ZÉRO : ni dans le refus d'une figure muette (une ligne sans valeur est comptée À PART, les vrais zéros gardant « toutes NULLES »), ni dans ce qu'une figure écarte (« nulle ou négative » ne se dit plus d'une valeur absente ni d'une valeur illisible). CE QU'UNE FIGURE NE MONTRE PAS, ELLE LE COMPTE : la grille dit sa coupe (${R70.length - lignesRendues} lignes sur ${R70.length}) et les lignes qu'une autre écrase, ${uneSeule49.length} représentations disent les lignes servies qu'elles ne lisent pas — sans que ce soit un refus, et sans nommer une colonne là où c'est une ligne qui manque — et toutes se taisent quand elles ne perdent rien. L'histogramme partage ses deux sémantiques sur la FORME du résultat et non sur son arité. Enfin la langue, ET SA POPULATION EST DÉRIVÉE DU MODULE : sur ${rendusEN49.length} rendus balayés sous l'adresse anglaise, ${traduits49.length} sont encore MODIFIÉS par le parcours du lexique — c'est la moitié NÉGATIVE, celle qui établit que ce banc lit ce module HORS du parcours et que la boucle ne serait pas verte avec un lexique mort —, et AUCUN ne porte plus un caractère accenté français APRÈS le parcours, alors que ${rendusEN49.filter((r) => ACCENT49.test(r.avant)).length} en portent AVANT. Le sous-ensemble d'avant (les seuls rendus SANS LIGNE) tenait cette moitié à UNE phrase d'UNE figure : \`P11.24-t\` l'a ralliée à la voie de la langue, et ce témoin continue de mesurer parce qu'il regarde désormais tout ce que le module rend. CE QUE CE TÉMOIN NE TIENT PAS : l'encre peinte et la mise en page (section 0) ; les panneaux SEMÉS par le démon, dont les requêtes vivent hors de web/ ; et ce qu'une chaîne de BLANCS devrait valoir — elle n'est plus lue comme un nombre nulle part depuis \`P11.20-y\`, et c'est (62) qui le tient.`);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -9196,8 +9223,10 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   // DEUX VOIES POUR LA MÊME FAMILLE DE PHRASES, ET LA MESURE LES SÉPARE ICI SANS EN JUGER : celles qui
   // choisissent par la LANGUE rendent un texte DIFFÉRENT du français dès le rendu ; celles qui écrivent
   // le français en dur s'en remettent au parcours du lexique, et c'est (49l) qui tient cette moitié-là,
-  // le parcours appliqué. La DEUX-VOIES est nommée par `P11.18-p` depuis le 2026-08-27 : ce lot ne la
-  // ferme pas, et il a MESURÉ pourquoi — voir `pieEl`.
+  // le parcours appliqué. La DEUX-VOIES nommée par `P11.18-p` depuis le 2026-08-27 est FERMÉE par
+  // `P11.24-t` : ce compte peut donc valoir ZÉRO sans que rien soit cassé — il n'est pas EXIGÉ, et
+  // c'est délibéré. Ce qui est exigé vit ailleurs : (49l) pour le français que ce module écrit encore
+  // en dur, (66) pour la clé de lexique que le ralliement aurait laissée sans témoin.
   const parLaLangue65 = disentLAbsence65.filter((m) => zeroEN65.get(m) !== PHRASE65);
   const parLeLexique65 = disentLAbsence65.filter((m) => zeroEN65.get(m) === PHRASE65);
   exiger(parLaLangue65.length > 0,
@@ -9215,13 +9244,84 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   const ecartsAvantFigure65 = (readFileSync(path.join(WEB, "dashboards.js"), "utf8").match(/(?<!function )corpsSansLigne\(/g) || []).length;
 
 
-  console.log(`[zero-ligne-ne-se-tait-plus] SUR ZÉRO LIGNE, PLUS AUCUNE REPRÉSENTATION NE REND UN CADRE MUET, ET LA PHRASE N'EST PAS UNE INVENTION. Le constat a été RE-MESURÉ avant d'être touché : sur les ${MODES65.length} représentations du dispatcher, ${disentLAbsence65.length} rendent maintenant la MÊME phrase d'absence (« ${PHRASE65} »), dont ${muettesSansPorte65.length} (${muettesSansPorte65.join(", ")}) qui, prises SANS la porte, ne disent toujours rien — un cadre nu, une grille sans corps, et des axes tracés sans un mot : c'est le point d'entrée qui parle pour elles, et ce compte est le RESTE que ce lot ferme, dérivé du module et non recopié de la clé. ${disentAutreChose65.length} représentations gardent le fait qui leur est propre (${disentAutreChose65.join(", ")}). LA PHRASE EST DÉRIVÉE DU MODULE, JAMAIS RECOPIÉE : c'est le texte que le plus de représentations rendaient déjà. LE PRÉDICAT NE NOMME AUCUN TYPE ET N'EMPRUNTE RIEN AU VOCABULAIRE DES MARQUES — la porte de rendu, elle, ne pouvait pas voir ce cas, une des trois posant bien une marque (ses axes) sur zéro ligne. LES DEUX NÉGATIFS SONT LA MOITIÉ QUI COMPTE : ${servisJuges65} rendus sur ${JEUX65.length} jeux SERVIS — vrais zéros, négatives, colonne trouée, chaîne de blancs, colonne textuelle compris — ne prononcent PAS un mot de cette phrase (un aveu inconditionnel les ferait tous rougir), et les ${disentAutreChose65.length} représentations qui rendent un fait propre ne sont PAS aplaties (une règle posée sur le seul nombre de lignes, sans lire le rendu, les effacerait). Aucun refus et aucun aveu de perte ne paraît sur zéro ligne, les deux marques étant dérivées de rendus qui les portent vraiment. LE CHEMIN EST JOUÉ, PAS LU : ${(typeof OFFERTS65 !== "undefined" ? OFFERTS65.length : 0)} représentation(s) offertes par le sélecteur d'Explore sont rendues sur un résultat d'agrégation SANS LIGNE, par les nœuds réels d'index.html, et aucune ne reste muette. LES DEUX LANGUES SONT EXERCÉES, ET LES DEUX VOIES DE TRADUCTION SONT COMPTÉES PLUTÔT QUE CONFONDUES : ${parLaLangue65.length} représentation(s) choisissent la phrase PAR LA LANGUE et la rendent en anglais dès le rendu (« ${PHRASE_EN65} »), ${parLeLexique65.length} l'écrivent en français EN DUR et s'en remettent au parcours du lexique — moitié tenue par (49l), pas par celui-ci —, sous un instrument qui exige que l'instance anglaise porte bien l'anglais. CE QUE CE TÉMOIN NE TIENT PAS : l'encre peinte et la mise en page (section 0) — une feuille de style qui masquerait ce mot lui échapperait ; il juge le TEXTE d'un arbre et jamais la POSITION visuelle de la phrase ; il ne dit rien du chemin des Dashboards, où ${ecartsAvantFigure65} site(s) rendent un corps SANS LIGNE par une fabrique qui leur est propre, avant toute représentation, avec leur propre phrase de fenêtre — compté, non gardé ; il ne FERME pas la DEUX-VOIES de traduction que la clé nomme depuis le 2026-08-27 — ${parLeLexique65.length} figure(s) rendent encore ce mot par une chaîne française passée au lexique — et le ralliement a été ESSAYÉ puis RETIRÉ, pour deux raisons mesurées le 2026-09-02 : il faisait TAIRE le témoin négatif de (49l), qui établit que la mesure d'origine lisait ce module HORS du parcours de traduction, et la condition de cette figure vaut AUSSI sur des lignes servies, où un écrivain nommé « aucune ligne » dirait faux ; et il ne dit rien des panneaux SEMÉS par le démon, dont les requêtes vivent hors de web/.`);
+  console.log(`[zero-ligne-ne-se-tait-plus] SUR ZÉRO LIGNE, PLUS AUCUNE REPRÉSENTATION NE REND UN CADRE MUET, ET LA PHRASE N'EST PAS UNE INVENTION. Le constat a été RE-MESURÉ avant d'être touché : sur les ${MODES65.length} représentations du dispatcher, ${disentLAbsence65.length} rendent maintenant la MÊME phrase d'absence (« ${PHRASE65} »), dont ${muettesSansPorte65.length} (${muettesSansPorte65.join(", ")}) qui, prises SANS la porte, ne disent toujours rien — un cadre nu, une grille sans corps, et des axes tracés sans un mot : c'est le point d'entrée qui parle pour elles, et ce compte est le RESTE que ce lot ferme, dérivé du module et non recopié de la clé. ${disentAutreChose65.length} représentations gardent le fait qui leur est propre (${disentAutreChose65.join(", ")}). LA PHRASE EST DÉRIVÉE DU MODULE, JAMAIS RECOPIÉE : c'est le texte que le plus de représentations rendaient déjà. LE PRÉDICAT NE NOMME AUCUN TYPE ET N'EMPRUNTE RIEN AU VOCABULAIRE DES MARQUES — la porte de rendu, elle, ne pouvait pas voir ce cas, une des trois posant bien une marque (ses axes) sur zéro ligne. LES DEUX NÉGATIFS SONT LA MOITIÉ QUI COMPTE : ${servisJuges65} rendus sur ${JEUX65.length} jeux SERVIS — vrais zéros, négatives, colonne trouée, chaîne de blancs, colonne textuelle compris — ne prononcent PAS un mot de cette phrase (un aveu inconditionnel les ferait tous rougir), et les ${disentAutreChose65.length} représentations qui rendent un fait propre ne sont PAS aplaties (une règle posée sur le seul nombre de lignes, sans lire le rendu, les effacerait). Aucun refus et aucun aveu de perte ne paraît sur zéro ligne, les deux marques étant dérivées de rendus qui les portent vraiment. LE CHEMIN EST JOUÉ, PAS LU : ${(typeof OFFERTS65 !== "undefined" ? OFFERTS65.length : 0)} représentation(s) offertes par le sélecteur d'Explore sont rendues sur un résultat d'agrégation SANS LIGNE, par les nœuds réels d'index.html, et aucune ne reste muette. LES DEUX LANGUES SONT EXERCÉES, ET LES DEUX VOIES DE TRADUCTION SONT COMPTÉES PLUTÔT QUE CONFONDUES : ${parLaLangue65.length} représentation(s) choisissent la phrase PAR LA LANGUE et la rendent en anglais dès le rendu (« ${PHRASE_EN65} »), ${parLeLexique65.length} l'écrivent en français EN DUR et s'en remettent au parcours du lexique — moitié tenue par (49l), pas par celui-ci —, sous un instrument qui exige que l'instance anglaise porte bien l'anglais. CE QUE CE TÉMOIN NE TIENT PAS : l'encre peinte et la mise en page (section 0) — une feuille de style qui masquerait ce mot lui échapperait ; il juge le TEXTE d'un arbre et jamais la POSITION visuelle de la phrase ; il ne dit rien du chemin des Dashboards, où ${ecartsAvantFigure65} site(s) rendent un corps SANS LIGNE par une fabrique qui leur est propre, avant toute représentation, avec leur propre phrase de fenêtre — compté, non gardé ; la DEUX-VOIES de traduction que la clé nommait depuis le 2026-08-27 est FERMÉE par \`P11.24-t\` et ce n'est pas ce témoin-ci qui la tient : ${parLeLexique65.length} figure(s) rendent encore ce mot par une chaîne française passée au lexique. Le ralliement avait été ESSAYÉ puis RETIRÉ le 2026-09-02 parce qu'il faisait TAIRE le témoin négatif de (49l) ; la question que personne n'avait posée l'a été depuis, et la réponse est que ce négatif gardait DEUX choses — la clé du lexique elle-même, désormais tenue par (66) sur l'écrivain de liste vide que toute la console partage, et le fait que ce module sert ENCORE du français en dur, que (49l) voit maintenant sur TOUS ses rendus et plus seulement sur ceux sans ligne. La seconde raison écrite alors reste vraie et n'a pas bougé : la condition de cette figure vaut AUSSI sur des lignes servies, où un écrivain nommé « aucune ligne » dirait faux — c'est pourquoi elle choisit sa langue au lieu d'appeler cet écrivain. Enfin il ne dit rien des panneaux SEMÉS par le démon, dont les requêtes vivent hors de web/.`);
 }
 
 // LE VERDICT PORTE SA PROPRE LIMITE (`P11.13-g`). Un vert qui ne dit pas ce sur quoi il ne s'engage pas
 // se lit comme une COUVERTURE — et un rouge n'a pas plus le droit de laisser croire qu'il a tout regardé.
 // La phrase ci-dessous n'est pas écrite : elle est DÉRIVÉE des sondes de la section 0, donc une capacité
 // fermée en sort d'elle-même et une capacité qui régresse y entre sans que personne l'écrive.
+// ---------------------------------------------------------------------------------------------
+// 66. UNE CLÉ DE LEXIQUE EST TENUE LÀ OÙ ELLE SERT, PLUS PAR UNE FIGURE QUI PASSAIT PAR LÀ
+//     (`P11.24-t`).
+//
+//     CE TÉMOIN NAÎT D'UNE MESURE, ET LA MESURE EST LE RÉSULTAT. Le 2026-09-02, en cherchant ce que
+//     gardait vraiment le négatif de (49l), on a retiré du lexique la seule entrée
+//     « aucune donnée » → « no data » et rejoué le banc entier : DEUX assertions rougissent, toutes
+//     deux dans (49l), et RIEN d'autre parmi les 67 verdicts. Or cette clé est lue par TROIS sites de
+//     `web/` — le camembert de `viz.js`, l'écrivain de LISTE VIDE que TOUTE la console partage
+//     (`pagedList` de `core.js`), et un panneau de Dashboards. Les deux derniers n'étaient exercés en
+//     anglais par PERSONNE : la clé dont ils dépendent tenait à une figure qui n'a rien à voir avec
+//     eux, et la rallier à la voie de la langue — ce que `P11.24-t` fait — aurait laissé cette clé
+//     SANS AUCUN TÉMOIN, libre d'être retirée sans qu'un seul rouge paraisse.
+//
+//     LE CHEMIN EST JOUÉ, PAS LU. La fabrique de liste est appelée sur ZÉRO ligne et SANS texte de
+//     vide fourni — le seul cas où elle écrit la phrase elle-même — puis le parcours du lexique est
+//     appliqué au nœud RENDU. Une garde qui vérifierait la présence de la clé DANS le lexique ne
+//     dirait rien de ce que l'écran porte : c'est exactement la distinction que le témoin 14 a déjà
+//     payée pour les modales.
+//
+//     LES DEUX MOITIÉS, SANS QUOI LE VERT NE VAUDRAIT RIEN : la phrase arrive en FRANÇAIS avant le
+//     parcours — sinon ce témoin resterait vert avec un lexique MORT, la fabrique ayant choisi sa
+//     langue toute seule — et en ANGLAIS après. Et le texte de vide FOURNI par l'appelant est rendu
+//     tel quel : la fabrique n'impose pas sa phrase à qui en apporte une.
+//
+//     CE QUE CE TÉMOIN NE TIENT PAS : le troisième site de la clé — le corps sans ligne d'un panneau
+//     de Dashboards — dont la fabrique n'est pas exportée ; il est COMPTÉ ici, pas gardé. Ni l'encre
+//     peinte ni la mise en page (section 0). Et il ne dit rien des autres clés du lexique : il tient
+//     CELLE-CI, parce que c'est celle dont la mesure a montré qu'elle ne tenait à rien.
+// ---------------------------------------------------------------------------------------------
+{
+  localStorage.setItem("soc_lang", "en");
+  const coreEN66 = await import(adresseSousLaLangue("core.js"));
+  const { i18nWalk: walk66 } = await import(adresseSousLaLangue("i18n.js"));
+  localStorage.removeItem("soc_lang");
+  exiger(coreEN66.LANG === "en",
+    `(66-instrument) l'instance de core.js chargée sous l'adresse de langue porte « ${coreEN66.LANG} » et non « en » : elle lirait du français en se croyant anglaise, et tout ce qui suit passerait en étant muet`);
+
+  const listeVide66 = (opts) => {
+    const hote = new Element("div");
+    coreEN66.pagedList(hote, Object.assign({ mode: "client", pageSize: 50, rows: [], columns: [{ key: "nom", label: "Nom" }] }, opts || {}));
+    return hote;
+  };
+  const nu66 = listeVide66();
+  const avant66 = nu66.textContent.trim();
+  exiger(avant66 !== "",
+    "(66-instrument) la fabrique de liste ne rend AUCUN texte sur zéro ligne : le site où vit la clé du lexique n'est pas atteint, et ce témoin ne mesurerait rien");
+  exiger(/aucune donnée/.test(avant66),
+    `(66-négatif) sur zéro ligne, la fabrique de liste partagée ne sert PLUS le français en dur (« ${avant66.slice(0, 90)} ») : elle choisit désormais sa langue elle-même, ce témoin resterait vert avec un lexique MORT, et la clé « aucune donnée » n'est plus tenue par personne — il faut alors la tenir sur le site qui la porte encore, pas retirer cette moitié`);
+  walk66(nu66);
+  const apres66 = nu66.textContent.trim();
+  exiger(/no data/i.test(apres66) && !/aucune donnée/.test(apres66),
+    `(66) sous LANG='en', la liste vide de TOUTE la console sert encore du français APRÈS le parcours du lexique : « ${apres66.slice(0, 90)} » — la clé « aucune donnée » manque au lexique, et plus rien dans ce banc ne le disait`);
+
+  // LE TEXTE DE VIDE FOURNI PAR L'APPELANT RESTE LE SIEN : sans ce second témoin, une fabrique qui
+  // écrirait TOUJOURS sa propre phrase passerait le premier.
+  const fourni66 = listeVide66({ emptyText: "zzz-aucun-hote-declare-zzz" });
+  const texteFourni66 = fourni66.textContent.trim();
+  walk66(fourni66);
+  exiger(texteFourni66 === "zzz-aucun-hote-declare-zzz" && fourni66.textContent.trim() === "zzz-aucun-hote-declare-zzz",
+    `(66-négatif) la fabrique de liste impose sa phrase de vide à un appelant qui en fournit une : « ${texteFourni66} » puis « ${fourni66.textContent.trim()} » au lieu de « zzz-aucun-hote-declare-zzz »`);
+
+  // LE TROISIÈME SITE EST COMPTÉ, PAS GARDÉ : sa fabrique n'est pas exportée. Un compte sur l'état
+  // d'un fichier voisin ne s'EXIGE pas — ce serait une rançon le jour où ce fichier change pour une
+  // bonne raison —, il s'IMPRIME.
+  const sitesDeLaCle66 = CORPUS_WEB.filter(([f]) => f.endsWith(".js") && f !== "i18n.js")
+    .reduce((acc, [f, src]) => (/(?:'|")aucune donnée(?:'|")/.test(src) ? acc.concat(f) : acc), []);
+
+  console.log(`[cle-de-lexique-tenue-la-ou-elle-sert] LA CLÉ « aucune donnée » → « no data » EST DÉSORMAIS TENUE SUR LE SITE QUI LA PORTE POUR TOUTE LA CONSOLE, ET PLUS PAR UNE FIGURE QUI PASSAIT PAR LÀ. La mesure qui a fait naître ce témoin : retirer cette entrée du lexique ne faisait rougir que (49l) — DEUX assertions sur les quelque 1 500 de ce banc —, alors que ${sitesDeLaCle66.length} module(s) de web/ écrivent cette chaîne en dur (${sitesDeLaCle66.join(", ") || "aucun"}). Ce qui est JOUÉ ici : la fabrique de liste partagée, appelée sur ZÉRO ligne et sans texte de vide, rend « ${avant66.slice(0, 60)} » AVANT le parcours du lexique et « ${apres66.slice(0, 60)} » APRÈS — les deux moitiés, pour qu'un lexique mort ne puisse pas passer pour vivant. NON-RÉGRESSION : un appelant qui FOURNIT son texte de vide le retrouve mot pour mot, avant comme après le parcours. CE QUE CE TÉMOIN NE TIENT PAS : le corps sans ligne d'un panneau de Dashboards, dont la fabrique n'est pas exportée — compté ci-dessus, pas gardé ; l'encre peinte et la mise en page (section 0) ; et les autres clés du lexique, dont ce témoin ne dit rien.${""}`);
+}
+
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;
 verdictRendu = true;
 if (echecs.length) {

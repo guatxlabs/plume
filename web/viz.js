@@ -901,6 +901,24 @@ function nombreLu(v) {
 // réponse commune, et c'est la mesure qui l'a dit : une part d'un tout, une hauteur de barre, une
 // abscisse et une intensité de cellule ne perdent pas la même chose quand la lecture n'a pas eu lieu.
 const colonneLue = (rows, i) => rows.map(r => nombreLu(r[i]));
+// L'ÉCHELLE « JOLIE » AU-DESSUS D'UNE VALEUR LUE : la puissance de dix immédiatement supérieure,
+// arrondie au multiple. NOMMÉE parce qu'elle ne doit être calculée que là où il Y A une valeur — la
+// laisser en ligne dans la jauge est ce qui l'avait fait alimenter par un zéro fabriqué.
+const arrondiAuDessus = (n) => { const m = Math.max(1, n); const p = Math.pow(10, Math.floor(Math.log10(m))); return Math.ceil(m / p) * p; };
+// `P11.24-s` — UNE ABSENCE N'A PAS DE PLACE SUR UNE ÉCHELLE, ET CE GESTE N'EN INVENTE AUCUNE.
+// C'est la forme de `nombreLu` reprise d'un cran plus loin — un seul écrivain, et l'appelant déclare
+// ce qu'il en fait. CE QUI COMPTE N'EST PAS QU'IL REFUSE LE ZÉRO, c'est que les figures peignent SUR
+// SA RÉPONSE au lieu de re-tester l'absence pour leur compte : tant que la peinture vivait sous SA
+// PROPRE garde `lu !== undefined`, une valeur de repli posée juste au-dessus n'était jamais lue —
+// inerte, invisible, et prête à ressusciter `P11.24-d` le jour où quelqu'un sortirait la pose du fond
+// de sa garde. Mesuré le 2026-09-02, par MUTATION sur le banc entier : remettre ce repli laissait les
+// 67 verdicts VERTS. Désormais un repli glissé entre ce geste et le pinceau donne une PLACE à ce qui
+// n'a pas été lu, donc fait PEINDRE la case — et (63b) rougit au lieu de se taire.
+// LE COMPTE QUI A DÉCIDÉ DE LA FORME (2026-09-02) : sur les 41 replis de littéral de ce module,
+// mesurés par traceur ET par deux poisons sur 4 170 rendus, DEUX étaient de cette famille — celui-ci
+// et celui de la jauge. Aucune garde de source n'est écrite : deux sites ne font pas une règle
+// mécanique, et une garde qui accuserait les 39 autres serait une rançon.
+const placeSurEchelle = (lu, max) => (lu === undefined ? undefined : Math.max(0, Math.min(1, lu / max)));
 function profilDeColonne(nom, i, rows) {
   let nonVides = 0, nombres = 0; const vus = new Set();
   for (const r of rows) {
@@ -988,13 +1006,17 @@ function premiereNonNumerique(rows, i) {
 //    refus. `histogram`, lui, disait « aucune donnée NUMÉRIQUE » là où AUCUNE donnée n'avait été
 //    servie : il attribuait à la nature de la colonne une absence qu'il n'avait pas mesurée — corrigé
 //    le 2026-08-27 dans `histogramEl` même, par la phrase du fait. LA LANGUE DE CES PHRASES A ÉTÉ MISE
-//    EN DOUTE, ET LA MESURE A RÉFUTÉ LE DOUTE (2026-08-27) : `pie` et `donut` écrivent « aucune donnée »
-//    en dur là où `gauge` et `histogram` choisissent par `LANG`, mais les DEUX chemins servent l'anglais
-//    — la chaîne en dur est une clé du lexique, et `i18nWalk` rend « no data » sur le nœud de `pieEl`
-//    comme sur celui de `gaugeEl` (mesuré en appliquant le parcours au nœud rendu sous `LANG='en'`).
-//    Lire ces figures HORS du parcours de traduction fait voir un français qui n'atteint aucun lecteur.
-//    Ce que la mesure laisse ouvert n'est donc pas la langue mais la DEUX-VOIES : deux mécanismes de
-//    traduction pour la même famille de phrases, dont un seul est visible dans le module ;
+//    EN DOUTE, ET LA MESURE A RÉFUTÉ LE DOUTE (2026-08-27) : `pie` et `donut` écrivaient « aucune
+//    donnée » en dur là où `gauge` et `histogram` choisissent par `LANG`, mais les DEUX chemins
+//    servaient l'anglais — la chaîne en dur est une clé du lexique, et `i18nWalk` rendait « no data »
+//    sur le nœud de `pieEl` comme sur celui de `gaugeEl`. La DEUX-VOIES que cette mesure laissait
+//    ouverte est FERMÉE depuis `P11.24-t` (2026-09-02) : `pieEl` choisit sa langue comme les autres.
+//    CE QU'IL A FALLU MESURER AVANT DE LE FAIRE, et qui avait arrêté un lot : ce que gardait le témoin
+//    négatif qui rougissait au ralliement. Deux choses, aucune nommée par son libellé — la CLÉ du
+//    lexique elle-même, que trois modules lisent et que ce seul témoin tenait (elle est désormais
+//    tenue sur `pagedList`, l'écrivain de liste vide de toute la console), et le fait que ce module
+//    sert ENCORE du français en dur, sans quoi une adresse de langue qui traduirait d'elle-même
+//    passerait inaperçue — vrai encore aujourd'hui par « aucune donnée numérique » ;
 //  · l'échelle que `gauge` lit en colonne 0 — la sonde d'abscisse ne mute que le rang du MILIEU, donc
 //    elle ne confond pas « placer une ligne » avec « lire un maximum », et `gauge` n'est pas refusée
 //    sur un résultat `[libellé, compte]`, qui est son entrée la plus naturelle ;
@@ -1154,11 +1176,13 @@ function noeudDeRefus(refus) {
 // chacune sur `!rows.length` — et elle est reprise TELLE QUELLE ici plutôt qu'écrite une troisième
 // fois : c'est la même discipline que le nœud de refus, celui de la perte et celui des deux causes de
 // non-lecture, chacun à un seul écrivain.
-// CE QUI N'EST PAS RALLIÉ, ET LA MESURE QUI LE DIT : `pieEl` rend le MÊME mot, mais sur `!total` —
-// une condition qui vaut aussi sur des lignes SERVIES dont aucune valeur n'est strictement positive
-// (chemin que `vizElement` refuse depuis la porte de rendu, et que `vizSansPorte` laisse atteindre).
-// Un écrivain nommé « aucune ligne » y dirait donc faux ; sa chaîne française, elle, est une clé du
-// lexique que le parcours de traduction rend en anglais. La DEUX-VOIES reste ouverte et nommée.
+// CE QUI N'EST PAS RALLIÉ À CET ÉCRIVAIN-CI, ET LA MESURE QUI LE DIT : `pieEl` rend le MÊME mot, mais
+// sur `!total` — une condition qui vaut aussi sur des lignes SERVIES dont aucune valeur n'est
+// strictement positive (chemin que `vizElement` refuse depuis la porte de rendu, et que
+// `vizSansPorte` laisse atteindre). Un écrivain nommé « aucune ligne » y dirait donc FAUX, et c'est
+// pourquoi elle garde sa propre condition. Sa LANGUE, en revanche, n'est plus déléguée au lexique :
+// `P11.24-t` l'a ralliée à la voie que ce nœud emprunte, une fois mesuré ce que la seconde voie
+// permettait de mesurer. La DEUX-VOIES est fermée ; ce qu'elle tenait vit ailleurs, exercé.
 function noeudAucuneLigne() { return muted(LANG === 'en' ? 'no data' : 'aucune donnée'); }
 
 // `P11.18-p` — SUR ZÉRO LIGNE, UN CADRE VIDE N'AFFIRME RIEN, MAIS IL NE DIT RIEN NON PLUS.
@@ -1533,12 +1557,19 @@ function gaugeEl(cols, rows, query, drill) {
   // qui ne trace pas le rend — par `fmtVal` sur la cellule SERVIE, qui écrit « - » d'une absence — et
   // ni l'arc de remplissage ni l'échelle ne sont dessinés, faute d'un nombre d'où les tirer.
   const lu = nombreLu(rows[0][rows[0].length - 1]);
-  const v = lu ?? 0;
-  // échelle : % -> 100 ; sinon max explicite (rows fournit [val,max]) sinon arrondi « joli » au-dessus de v.
+  // `P11.24-s` — LE REPLI QUI VIVAIT ICI (`lu ?? 0`) N'ÉTAIT JAMAIS LU, ET C'EST CE QUI EN FAISAIT UN
+  // PIÈGE. Il alimentait l'échelle, et l'échelle n'était RENDUE que sous `lu !== undefined` : deux
+  // tests du MÊME fait, le zéro fabriqué dormant entre les deux. Mesuré le 2026-09-02, sur le banc
+  // entier : le remplacer par une valeur absurde ne faisait rougir AUCUN des 67 verdicts. L'absence
+  // traverse maintenant — pas de lecture, pas d'échelle, pas de place sur l'échelle — et chaque geste
+  // lit CETTE absence-là. Un repli remis ici redonne une échelle à une ligne non lue, donc ressuscite
+  // le « 0 / 1 » que `P11.20-y` avait retiré, et (45a) rougit.
+  // échelle : % -> 100 ; sinon max explicite (rows fournit [val,max]) sinon arrondi « joli » au-dessus de la valeur LUE.
   const pct = key && UNITS[key] === '%';
-  let max = pct ? 100 : (rows.length && rows[0].length > 1 ? Number(rows[0][0]) : 0);
-  if (!max || max <= 0) { const m = Math.max(1, v); const p = Math.pow(10, Math.floor(Math.log10(m))); max = Math.ceil(m / p) * p; }
-  const frac = lu === undefined ? 0 : Math.max(0, Math.min(1, v / max));
+  const explicite = pct ? 100 : (rows.length && rows[0].length > 1 ? Number(rows[0][0]) : 0);
+  const max = lu === undefined ? undefined
+    : (explicite && explicite > 0 ? explicite : arrondiAuDessus(lu));
+  const frac = placeSurEchelle(lu, max);
   const W = 220, H = 150, cx = W / 2, cy = H - 24, r = 84, START = Math.PI * 0.75, SWEEP = Math.PI * 1.5;
   const pt = a => [cx + r * Math.cos(a), cy - r * Math.sin(a) * -1]; // y-down : sin inversé
   const arc = (a0, a1, color, w) => {
@@ -1548,12 +1579,14 @@ function gaugeEl(cols, rows, query, drill) {
   };
   const svg = mk('svg'); svg.setAttribute('viewBox', `0 0 ${W} ${H}`); svg.setAttribute('class', 'gaugechart');
   // angles : START à gauche-haut, on tourne dans le sens horaire de SWEEP.
-  const a0 = START, aEnd = START - SWEEP, aVal = START - SWEEP * frac;
+  const a0 = START, aEnd = START - SWEEP;
   svg.appendChild(arc(a0, aEnd, CSSV('--bd', '#16202e'), 12));       // piste
-  if (frac > 0) svg.appendChild(arc(a0, aVal, CSSV('--acc', '#2dd4bf'), 12)); // remplissage
+  // L'ANGLE DU REMPLISSAGE SE CALCULE SOUS SA GARDE, pas à côté : hors d'elle il n'a pas de valeur à
+  // prendre, et lui en donner une serait exactement le repli que cette clé retire.
+  if (frac > 0) svg.appendChild(arc(a0, START - SWEEP * frac, CSSV('--acc', '#2dd4bf'), 12)); // remplissage
   const txt = (y, s, cls, size) => { const e = mk('text'); e.setAttribute('x', cx); e.setAttribute('y', y); e.setAttribute('text-anchor', 'middle'); e.setAttribute('fill', CSSV(cls, '#e6eef6')); e.setAttribute('font-size', size); e.textContent = s; svg.appendChild(e); };
-  txt(cy - 6, fmtVal(key, lu === undefined ? rows[0][rows[0].length - 1] : v), '--fg', 26);
-  if (lu !== undefined) txt(cy + 16, '/ ' + fmtVal(key, max), '--mut', 12);
+  txt(cy - 6, fmtVal(key, lu === undefined ? rows[0][rows[0].length - 1] : lu), '--fg', 26);
+  if (max !== undefined) txt(cy + 16, '/ ' + fmtVal(key, max), '--mut', 12);
   if (query || drill) { svg.style.cursor = 'pointer'; svg.onclick = () => statDrill(query, drill); }
   return noeudUneSeuleLigne(svg, rows);
 }
@@ -1629,19 +1662,26 @@ function pieEl(cols, rows, query, drill, donut) {
   const data = rows.map(r => ({ label: r[0] == null ? '-' : String(r[0]), v: Math.max(0, nombreLu(r[vi]) ?? 0) })).filter(d => d.v > 0);
   const total = data.reduce((s, d) => s + d.v, 0);
   const wrap = document.createElement('div'); wrap.className = 'piewrap';
-  // `P11.18-p` — CE RALLIEMENT A ÉTÉ ESSAYÉ, JOUÉ, ET RETIRÉ — LA MESURE EST LA RAISON. Cette figure
-  // écrit le mot de l'absence en français EN DUR, là où les autres le choisissent par la langue : c'est
-  // la DEUX-VOIES que `P11.18-p` nomme depuis le 2026-08-27, et la chaîne française est une clé du
-  // lexique que le parcours de traduction rend en anglais. La faire passer par l'écrivain unique du fait
-  // sur `!rows.length` rendait bien l'anglais SANS le parcours — et FAISAIT TAIRE, mesuré le 2026-09-02,
-  // le témoin négatif qui établit que la mesure d'origine lisait ce module HORS du parcours : il ne
-  // restait plus une seule de ces phrases écrite en dur, et sa moitié cessait de mesurer quoi que ce
-  // soit. Un correctif qui ferme une accusation vraie en la privant de son objet coûte plus qu'il ne
-  // rend. La DEUX-VOIES reste donc ouverte, nommée, et TENUE par ce témoin-là.
-  // L'AUTRE RAISON, indépendante de la première : `!total` vaut AUSSI sur des lignes SERVIES dont
-  // aucune valeur n'est strictement positive (chemin que la porte de rendu ferme depuis `vizElement`,
-  // et que seul le sondage atteint) — un écrivain nommé « aucune ligne » y dirait FAUX.
-  if (!total) { wrap.appendChild(muted('aucune donnée')); return wrap; }
+  // `P11.24-t` — LE RALLIEMENT A LIEU, ET LA QUESTION QUI LE BLOQUAIT A ENFIN ÉTÉ POSÉE. Cette figure
+  // écrivait le mot de l'absence en français EN DUR, là où les autres le choisissent par la langue :
+  // la DEUX-VOIES que `P11.18-p` nommait depuis le 2026-08-27. Un premier lot avait essayé, joué, puis
+  // RETIRÉ le ralliement, parce qu'il faisait rougir le témoin négatif de (49l) — celui qui établit
+  // qu'une mesure lit ce module HORS du parcours du lexique. CE QUE CE TÉMOIN GARDAIT A ÉTÉ MESURÉ le
+  // 2026-09-02, et il gardait DEUX choses que son libellé ne disait pas : (1) que le parcours du
+  // lexique est PORTANT sur un rendu de ce module — sans quoi sa boucle serait verte même si le
+  // lexique était mort ; (2) que l'adresse de langue du banc ne traduit pas d'elle-même. La (1) ne
+  // dépend pas de CETTE phrase : la clé `aucune donnée` est aussi celle de l'écrivain de liste vide
+  // partagé par toute la console (`core.js`) et des panneaux de Dashboards, et c'est LÀ qu'elle est
+  // désormais tenue. La (2) ne dépend pas de CETTE phrase non plus : sous l'adresse anglaise, ce
+  // module sert TOUJOURS du français en dur — « aucune donnée numérique », que l'histogramme rend sur
+  // des lignes SERVIES — et le témoin le voit maintenant, sa population étant dérivée de TOUS les
+  // rendus du module et non des seuls rendus sans ligne.
+  // CE QUI NE CHANGE PAS, ET QUI RESTE LA RAISON DE NE PAS APPELER `noeudAucuneLigne()` ICI : `!total`
+  // vaut AUSSI sur des lignes SERVIES dont aucune valeur n'est strictement positive (chemin que la
+  // porte ferme depuis `vizElement`, et que seul le sondage atteint) — un écrivain nommé « aucune
+  // ligne » y dirait FAUX. La phrase est donc la même qu'avant, mot pour mot ; seule sa LANGUE est
+  // choisie ici plutôt que déléguée.
+  if (!total) { wrap.appendChild(muted(LANG === 'en' ? 'no data' : 'aucune donnée')); return wrap; }
   const W = 180, cx = W / 2, cy = W / 2, r = 78, rin = donut ? 44 : 0;
   const svg = mk('svg'); svg.setAttribute('viewBox', `0 0 ${W} ${W}`); svg.setAttribute('class', 'piechart');
   let a0 = -Math.PI / 2;
@@ -1759,11 +1799,17 @@ function heatmapEl(cols, rows, query, drill) {
       // L'ENCRE DE « SERVIE MAIS NON LUE » NE VIENT PAS DE L'ÉCHELLE : prise dessus, elle se lirait comme
       // une valeur, ce qui est le défaut retourné. Elle est portée par une classe, et par elle seule.
       td.className = 'heatcell' + (servie && lu === undefined ? ' heatcell-nonlue' : '');
-      const part = lu === undefined ? 0 : Math.max(0, Math.min(1, lu / max));
-      const alpha = 0.12 + 0.88 * part;
+      // `P11.24-s` — LA PEINTURE LIT LA RÉPONSE DE L'ÉCRIVAIN, ELLE NE RE-TESTE PLUS L'ABSENCE. Le
+      // repli sur zéro qui vivait sur cette ligne (`lu === undefined ? 0 : …`) était SANS EFFET
+      // OBSERVABLE — la pose du fond vivait sous sa propre garde — et le remettre laissait les 67
+      // verdicts du banc verts (mesuré le 2026-09-02). Deux tests du même fait, un repli inerte entre
+      // les deux : c'est la forme exacte du piège. Ici il n'y a plus qu'un fait, et il porte la
+      // décision — un repli glissé n'importe où sur ce chemin donne une PLACE à la case non lue,
+      // donc la fait peindre sur l'échelle, donc ressuscite `P11.24-d` sous le nez de (63b).
+      const part = placeSurEchelle(lu, max);
       // Une case qu'AUCUNE ligne n'atteint reste transparente : c'est vrai, et c'est le cas majoritaire
       // d'une grille creuse. Une case SERVIE mais non lue ne pose aucun fond en ligne — sa classe peint.
-      if (lu !== undefined) td.style.background = `color-mix(in srgb, ${CSSV('--acc', '#2dd4bf')} ${Math.round(alpha * 100)}%, transparent)`;
+      if (part !== undefined) td.style.background = `color-mix(in srgb, ${CSSV('--acc', '#2dd4bf')} ${Math.round((0.12 + 0.88 * part) * 100)}%, transparent)`;
       else if (!servie) td.style.background = 'transparent';
       // Le MÊME tiret que ce module sert déjà d'une valeur absente (`fmtVal`, que la jauge rend sur une
       // première ligne non lue) : un seul mot pour « rien n'a été lu », pas un douzième.

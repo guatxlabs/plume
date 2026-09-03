@@ -374,17 +374,185 @@ fn le_regime_de_statistiques_est_constate_a_trois_crans_et_nomme() {
          resterait non représentatif. C'est un constat, pas un détail de build."
     );
 
-    // CRAN 0 — base neuve : aucune statistique. C'est ce que voit une instance fraîche, avant que
-    // l'analyse de fond n'ait tourné.
-    assert_eq!(
-        regime_statistiques(&conn, "event"),
-        RegimeStatistiques::Aucune,
-        "base neuve : aucune statistique ne doit être constatée"
+    // ═════════════════════════════════════════════════════════════════════════════════════════
+    // CRAN 0 — UNE BASE QUI N'A JAMAIS PORTÉ DE LIGNE D'ÉVÉNEMENT.
+    //
+    // `P7.19-g` — CE QUE CE CRAN AFFIRMAIT, ET POURQUOI C'ÉTAIT VRAI PAR ACCIDENT. Il exigeait
+    // `Aucune` sur `event`, en appelant cette base « neuve ». Elle ne l'est pas au sens qu'il
+    // entendait : la chaîne de migration que `base_au_schema_reel` déroule exécute elle-même DEUX
+    // `ANALYZE` (v32 « ANALYZE pour les index composés », puis v35), et ce témoin les IMPRIME de
+    // lui-même sous `--nocapture`. L'assertion tenait donc parce que le moteur épinglé n'écrit RIEN
+    // pour une table VIDE — pas parce que rien n'avait analysé.
+    //
+    // MESURÉ (banc hors caisse, cinq moteurs compilés avec les mêmes options, schéma de ce dépôt) :
+    // à partir de 3.46.1 un `ANALYZE` sur une table VIDE écrit une ligne `0 0 0` pour chaque index
+    // PARTIEL, et toujours rien pour un index PLEIN. `event` porte un index partiel
+    // (`idx_event_health_beat`, `WHERE category='health'`), donc ce cran basculerait de `Aucune` à
+    // `Agregees` sur le seul changement de moteur, sans qu'une seule donnée n'ait été analysée.
+    //
+    // CE QU'IL AFFIRME MAINTENANT — TROIS PROPRIÉTÉS VRAIES DES DEUX CÔTÉS DU MOTEUR, et qui
+    // ACCUSENT toujours. La piste « aucune statistique DÉTAILLÉE, et aucune ligne ne décrivant un
+    // index NON partiel » a été ÉPROUVÉE puis REFUSÉE TELLE QUELLE : appliquée à `event` seule, elle
+    // est STRICTEMENT PLUS FAIBLE que ce qu'elle remplace — un constat qui regarderait l'EXISTENCE de
+    // `sqlite_stat1` au lieu des lignes qui portent la table rendrait `Agregees`, ce qui reste « pas
+    // de statistique détaillée », et le témoin passerait au vert sur le défaut qu'il existe pour
+    // attraper. Ce qui la rend à nouveau accusatrice est (0a) : le constat est éprouvé sur une
+    // POPULATION de tables DÉRIVÉE du catalogue, pas sur `event` seule.
+    // ═════════════════════════════════════════════════════════════════════════════════════════
+
+    // (0a) LE RÉGIME EST CONSTATÉ TABLE PAR TABLE, JAMAIS « GLOBALEMENT ». Population DÉRIVÉE du
+    // catalogue : toute table du schéma réel qui est VIDE et ne porte AUCUN index partiel. Aucun des
+    // moteurs mesurés n'écrit de ligne pour un index PLEIN sur une table vide — la propriété est donc
+    // vraie des deux côtés. Et c'est CE cran qui rougit si le constat cessait de regarder les lignes
+    // qui portent la table : `sqlite_stat1` EXISTE ici (les tables de configuration semées par le
+    // schéma, elles, ont bien été analysées), et `sqlite_stat4` aussi.
+    let tables_vides_sans_index_partiel: Vec<String> = {
+        let noms: Vec<String> = {
+            let mut st = conn
+                .prepare(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' \
+                     AND sql IS NOT NULL ORDER BY name",
+                )
+                .expect("catalogue des tables lisible");
+            let it = st.query_map([], |r| r.get::<_, String>(0)).expect("catalogue des tables lisible");
+            it.map(|r| r.expect("nom de table lisible")).collect()
+        };
+        noms.into_iter()
+            .filter(|t| {
+                let vide = conn
+                    .query_row(&format!("SELECT NOT EXISTS(SELECT 1 FROM \"{t}\")"), [], |r| r.get::<_, i64>(0))
+                    .unwrap_or(0)
+                    == 1;
+                let partiels = conn
+                    .query_row("SELECT COUNT(*) FROM pragma_index_list(?1) WHERE partial=1", params![t], |r| {
+                        r.get::<_, i64>(0)
+                    })
+                    .unwrap_or(0);
+                vide && partiels == 0
+            })
+            .collect()
+    };
+    // LA POPULATION EST IMPRIMÉE, jamais figée dans une constante de source : le compte du jour se
+    // lit sous `--nocapture`, et seul le PLANCHER est asservi.
+    eprintln!(
+        "[P7.19-g] cran 0 — tables VIDES sans index partiel dérivées du catalogue : {}",
+        tables_vides_sans_index_partiel.len()
     );
-    let obs = observatoire_neuf(crate::index_usage::INDEX_CAP, 1);
+    // PLANCHER : sans matière, la boucle ci-dessous itérerait zéro fois et ce cran serait VERT ET
+    // VIDE. Le nombre est un PLANCHER, pas le compte du jour — MESURÉ à 72 le 2026-09-03 sur cet
+    // arbre, asservi à 20 : il tient tant que le schéma ne se vide pas, et il rougit si la
+    // dérivation cesse de dériver.
+    assert!(
+        tables_vides_sans_index_partiel.len() >= 20,
+        "INSTRUMENT : la dérivation ne rend que {} table(s) VIDE(S) sans index partiel — le cran 0 \
+         n'exercerait presque rien. Ce n'est pas la propriété qui est fausse, c'est la matière qui a \
+         disparu.",
+        tables_vides_sans_index_partiel.len()
+    );
+    for t in &tables_vides_sans_index_partiel {
+        assert_eq!(
+            regime_statistiques(&conn, t),
+            RegimeStatistiques::Aucune,
+            "`{t}` est VIDE et ne porte aucun index partiel : aucun moteur n'écrit de statistique \
+             pour elle, donc son régime doit être `Aucune`. Le constater autrement veut dire que le \
+             régime est lu sur l'EXISTENCE de `sqlite_stat1` au lieu des lignes qui portent CETTE \
+             table — et alors tout verdict de plan serait annoncé sous des statistiques qui \
+             n'existent pas."
+        );
+    }
+    // Et le CONTRÔLE INVERSE de l'instrument : `sqlite_stat1` et `sqlite_stat4` EXISTENT bien sur
+    // cette base (les `ANALYZE` de la chaîne de migration les ont créés). Sans cette ligne, les
+    // `Aucune` ci-dessus seraient indiscernables d'un moteur qui n'analyse rien du tout.
+    for t in ["sqlite_stat1", "sqlite_stat4"] {
+        assert_eq!(
+            conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                params![t],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap_or(0),
+            1,
+            "CONTRÔLE INVERSE : `{t}` devrait exister — la chaîne de migration exécute `ANALYZE`. \
+             S'il n'existe pas, les régimes `Aucune` du cran 0 ne prouvent plus rien : ils ne \
+             distingueraient plus « cette table n'a pas été analysée » de « rien n'a été analysé »."
+        );
+    }
+
+    // (0b) SUR `event` : TOUTE ligne de statistiques présente décrit un index PARTIEL. L'ensemble est
+    // VIDE sous le moteur épinglé et vaut les index partiels au-delà — dans les deux cas, une ligne
+    // décrivant un index NON partiel voudrait dire que des DONNÉES ont été analysées, ce qu'aucune
+    // base neuve ne doit pouvoir affirmer.
+    let lignes_de_stat_sur_event: Vec<(Option<String>, String)> = {
+        let mut st = conn
+            .prepare("SELECT idx, stat FROM sqlite_stat1 WHERE tbl='event' ORDER BY COALESCE(idx,'')")
+            .expect("sqlite_stat1 lisible");
+        let it = st
+            .query_map([], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?)))
+            .expect("sqlite_stat1 lisible");
+        it.map(|r| r.expect("ligne de sqlite_stat1 lisible")).collect()
+    };
     let index = index_de_event(&conn);
+    for (idx, stat) in &lignes_de_stat_sur_event {
+        let nom = idx.as_deref().unwrap_or("(la TABLE)");
+        let partiel = idx
+            .as_deref()
+            .and_then(|n| index.iter().find(|i| i.nom == n))
+            .map(|i| i.partiel)
+            .unwrap_or(false);
+        assert!(
+            partiel,
+            "base neuve : `sqlite_stat1` porte une ligne pour `{nom}` (`{stat}`), qui n'est PAS un \
+             index partiel. Une telle ligne ne peut venir que d'une analyse de DONNÉES — or aucune \
+             ligne d'événement n'a jamais été écrite ici. Lignes lues : {lignes_de_stat_sur_event:?}"
+        );
+    }
+
+    // (0c) CONSÉQUENCE DIRECTE, ET C'EST LA JAUGE DE `P7.19-f` : rien à publier. Sous le moteur
+    // épinglé parce qu'aucune ligne n'existe ; au-delà parce que les seules qui existent décrivent
+    // des index partiels, et valent ZÉRO — les publier dirait « table vide » d'une table dont on ne
+    // sait rien.
+    assert_eq!(
+        crate::index_usage::lignes_estimees(&conn, "event"),
+        None,
+        "aucune ligne de statistiques ne décrit un index NON partiel de `event` : l'estimation ne \
+         doit pas être publiée DU TOUT — surtout pas au compte d'un index partiel, qui est celui du \
+         SOUS-ENSEMBLE. Lignes lues : {lignes_de_stat_sur_event:?}"
+    );
+
+    // ET LE RÉGIME PUBLIÉ EST CELUI QUI EST CONSTATÉ — le cran attendu est recalculé ICI, par la
+    // lecture propre du témoin, jamais en rappelant la fonction éprouvée (une constante vérifiée
+    // contre elle-même serait verte par construction).
+    let cran_attendu_lu_par_le_temoin = |table: &str| -> RegimeStatistiques {
+        let porte_des_lignes = |t: &str| -> bool {
+            conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                params![t],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap_or(0)
+                == 1
+                && conn
+                    .query_row(&format!("SELECT EXISTS(SELECT 1 FROM {t} WHERE tbl=?1)"), params![table], |r| {
+                        r.get::<_, i64>(0)
+                    })
+                    .unwrap_or(0)
+                    == 1
+        };
+        if porte_des_lignes("sqlite_stat4") {
+            RegimeStatistiques::Detaillees
+        } else if porte_des_lignes("sqlite_stat1") {
+            RegimeStatistiques::Agregees
+        } else {
+            RegimeStatistiques::Aucune
+        }
+    };
+    let obs = observatoire_neuf(crate::index_usage::INDEX_CAP, 1);
     obs.observer(&conn, &enonce_qui_force(index.first().expect("au moins un index")), crate::index_usage::Consommateur::Analyste);
-    assert_eq!(obs.regime(), Some(RegimeStatistiques::Aucune), "le régime constaté doit être publié tel quel");
+    assert_eq!(
+        obs.regime(),
+        Some(cran_attendu_lu_par_le_temoin("event")),
+        "le régime constaté doit être publié tel quel"
+    );
 
     // CRAN 1 — des statistiques AGRÉGÉES posées à la main, sans aucun échantillon : exactement ce que
     // le rejeu du corpus fermé sait produire, et exactement ce qui ne suffit pas.
@@ -625,3 +793,147 @@ fn lexposition_publie_lestimation_de_lignes_dont_le_planificateur_se_sert() {
          du processus, et c'est précisément ce que cette série existe pour ne pas faire"
     );
 }
+
+/// ⑪ `P7.19-f` — LA JAUGE RETIENT LA LIGNE QUI DÉCRIT LA **TABLE**, PAS LA PREMIÈRE VENUE.
+///
+/// LE DÉFAUT QUE CE TÉMOIN REND NON-ÉCRIVABLE. Une ligne de `sqlite_stat1` décrit **l'index qui la
+/// porte**, et sa première grandeur est le nombre de lignes que CET index indexe. Pour un index
+/// **PARTIEL**, c'est le compte du SOUS-ENSEMBLE. La jauge retenait la première ligne rendue pour la
+/// table, sans ordre — et l'ordre dans lequel `sqlite_stat1` rend ses lignes n'est spécifié nulle
+/// part. MESURÉ hors caisse sur trois moteurs (3.39.4, 3.46.1, 3.51.3), avec l'index partiel créé en
+/// dernier : c'est bien la ligne PARTIELLE qui sortait la première, et la jauge publiait `1200` là
+/// où la table portait `3000` lignes. SUR LA BASE D'ÉPREUVE AU SCHÉMA RÉEL, EN REVANCHE, l'ordre est
+/// favorable — l'unique index partiel de `event` sort en SIXIÈME position et l'ancienne lecture
+/// rendait le bon nombre. C'est dit dans ce sens-là plutôt que dans l'autre : le défaut est LATENT
+/// ici et ne le reste que par un ordre que rien ne garantit, ce qui est précisément pourquoi ce
+/// témoin FABRIQUE l'ordre défavorable au lieu d'attendre de le rencontrer.
+///
+/// LA TABLE DE STATISTIQUES EST **FABRIQUÉE** ICI, à dessein : elle est inscriptible, et c'est le
+/// seul moyen de FORCER l'ordre défavorable au lieu d'espérer le rencontrer. Le contrôle qui rend ce
+/// témoin honnête est le premier : on VÉRIFIE que la lecture sans ordre rendrait bien la ligne
+/// partielle, sinon la fabrication ne mettrait le correctif à l'épreuve de rien.
+#[test]
+fn lestimation_de_lignes_ne_retient_jamais_la_ligne_dun_index_partiel() {
+    let (_chemin, db) = base_au_schema_reel("idxobs-lignes-partiel");
+    let conn = db.lock();
+
+    // Le partage plein/partiel est DEMANDÉ au catalogue, jamais écrit ici : un nom d'index recopié
+    // serait faux le jour où le schéma en gagne ou en perd un.
+    let index = index_de_event(&conn);
+    let partiels: Vec<&IndexEvent> = index.iter().filter(|i| i.partiel).collect();
+    let pleins: Vec<&IndexEvent> = index.iter().filter(|i| !i.partiel).collect();
+    assert!(
+        !partiels.is_empty() && !pleins.is_empty(),
+        "INSTRUMENT : `event` doit porter AU MOINS un index partiel ET un index plein pour que ce \
+         témoin distingue quoi que ce soit. Constaté : {} partiel(s), {} plein(s).",
+        partiels.len(),
+        pleins.len()
+    );
+
+    const LIGNES_DE_LA_TABLE: i64 = 3_000;
+    const LIGNES_DU_SOUS_ENSEMBLE: i64 = 30;
+
+    // On FABRIQUE la table de statistiques : d'abord TOUTES les lignes partielles, ensuite les
+    // pleines. L'ordre d'insertion est l'ordre défavorable — et il est VÉRIFIÉ juste après.
+    conn.execute_batch("ANALYZE").expect("ANALYZE (création de sqlite_stat1)");
+    let poser = |ix: &IndexEvent, n: i64| {
+        conn.execute(
+            "INSERT INTO sqlite_stat1(tbl,idx,stat) VALUES('event',?1,?2)",
+            params![ix.nom, format!("{n} 1")],
+        )
+        .expect("sqlite_stat1 inscriptible");
+    };
+    let refaire = |avec_les_pleins: bool| {
+        conn.execute("DELETE FROM sqlite_stat1 WHERE tbl='event'", []).expect("sqlite_stat1 inscriptible");
+        for ix in &partiels {
+            poser(ix, LIGNES_DU_SOUS_ENSEMBLE);
+        }
+        if avec_les_pleins {
+            for ix in &pleins {
+                poser(ix, LIGNES_DE_LA_TABLE);
+            }
+        }
+        // `ANALYZE sqlite_master` : SQLite RELIT `sqlite_stat1` (les lignes posées à la main ne sont
+        // pas vues avant). Même geste que le rejeu du corpus fermé.
+        conn.execute_batch("ANALYZE sqlite_master").expect("relecture des statistiques");
+    };
+
+    // ① CONTRÔLE DE L'INSTRUMENT — SANS LUI, CE TÉMOIN NE PROUVERAIT RIEN. La lecture SANS ORDRE,
+    // celle que la jauge faisait, doit bien rendre la ligne PARTIELLE sur cette fabrication.
+    refaire(true);
+    let sans_ordre: String = conn
+        .query_row(
+            "SELECT stat FROM sqlite_stat1 WHERE tbl='event' AND stat IS NOT NULL AND stat<>'' LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .expect("la fabrication porte au moins une ligne");
+    let premiere_grandeur = |s: &str| -> i64 { s.split_whitespace().next().unwrap_or("").parse().unwrap_or(-1) };
+    assert_eq!(
+        premiere_grandeur(&sans_ordre),
+        LIGNES_DU_SOUS_ENSEMBLE,
+        "CONTRÔLE EN ÉCHEC : la lecture SANS ORDRE ne rend pas la ligne partielle sur cette \
+         fabrication ({sans_ordre}) — le correctif ne serait donc mis à l'épreuve de rien, et le \
+         vert qui suit n'affirmerait pas ce qu'il prétend"
+    );
+
+    // ② LE TÉMOIN POSITIF : malgré cet ordre, la jauge rend le nombre de la TABLE.
+    assert_eq!(
+        crate::index_usage::lignes_estimees(&conn, "event"),
+        Some(LIGNES_DE_LA_TABLE),
+        "la jauge a retenu une ligne d'index PARTIEL : elle publierait le compte du SOUS-ENSEMBLE \
+         ({LIGNES_DU_SOUS_ENSEMBLE}) à la place de celui de la table ({LIGNES_DE_LA_TABLE}), et un \
+         lecteur de `/metrics` en conclurait que la table est trop petite pour qu'un index serve"
+    );
+
+    // ②bis LA LIGNE QUI DÉCRIT LA **TABLE** PASSE AVANT CELLE DE TOUT INDEX. `ANALYZE` ne l'écrit
+    // que pour une table SANS index, mais le rejeu du corpus fermé la SYNTHÉTISE (`poser_stats_de_
+    // production`), et c'est la seule ligne qui décrive la table sans passer par ce qu'un index en
+    // indexe. Ce cran tient l'ADMISSION de cette ligne et sa PRIORITÉ ; ce qu'il ne distingue PAS
+    // est dit franchement : `ORDER BY s.idx` seul rendrait le même résultat, SQLite triant les
+    // `NULL` en tête d'un ordre croissant — mesuré, cette mutation-là reste VERTE. Le terme de tête
+    // explicite n'achète donc pas un comportement, il achète de ne pas dépendre d'une convention de
+    // tri ; les deux mutations qui changent VRAIMENT quelque chose (ordre inversé, ligne de table
+    // exclue de l'admission) rougissent bien ici.
+    const LIGNES_DE_LA_LIGNE_DE_TABLE: i64 = 4_242;
+    conn.execute(
+        "INSERT INTO sqlite_stat1(tbl,idx,stat) VALUES('event',NULL,?1)",
+        params![LIGNES_DE_LA_LIGNE_DE_TABLE.to_string()],
+    )
+    .expect("sqlite_stat1 inscriptible");
+    conn.execute_batch("ANALYZE sqlite_master").expect("relecture des statistiques");
+    assert_eq!(
+        crate::index_usage::lignes_estimees(&conn, "event"),
+        Some(LIGNES_DE_LA_LIGNE_DE_TABLE),
+        "la ligne qui décrit la TABLE doit l'emporter sur celle de n'importe quel index : c'est la \
+         seule qui parle de la table sans passer par ce qu'un index en indexe"
+    );
+
+    // ③ LE TÉMOIN NÉGATIF : seules les lignes partielles existent -> on ne publie RIEN. Publier le
+    // compte du sous-ensemble serait un chiffre FAUX présenté comme une mesure ; publier `0` — ce
+    // que le moteur écrit à partir de 3.46.1 pour un index partiel sur table vide — affirmerait une
+    // table vide. Le sentinelle d'absence de ce code n'est PAS zéro : c'est `None`.
+    refaire(false);
+    assert_eq!(
+        crate::index_usage::lignes_estimees(&conn, "event"),
+        None,
+        "aucune ligne ne décrit la table ni un index NON partiel : il n'y a RIEN à publier. Rendre \
+         le compte d'un index partiel publierait le sous-ensemble pour le tout"
+    );
+
+    // ④ ET LA SÉRIE SUIT L'ÉTAT INTERNE : l'observatoire n'expose pas de ligne pour une estimation
+    // qu'il n'a pas.
+    let obs = observatoire_neuf(crate::index_usage::INDEX_CAP, 1);
+    obs.observer(&conn, ENONCE_SANS_INDEX, crate::index_usage::Consommateur::Analyste);
+    let expose = obs.exposition_prom();
+    assert!(
+        expose.lines().any(|l| l.starts_with("plume_index_usage_plans_lus_total")),
+        "CONTRÔLE : l'exposition doit être NON VIDE, sinon l'absence prouvée juste après ne prouverait rien"
+    );
+    assert!(
+        !expose.lines().any(|l| l.starts_with("plume_index_usage_lignes_estimees")),
+        "une estimation absente ne doit pas être publiée. Exposition lue : {expose}"
+    );
+    assert_eq!(obs.lignes_estimees(), None, "et l'état interne dit la même chose que la série");
+}
+

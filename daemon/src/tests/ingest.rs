@@ -100,6 +100,20 @@
     /// fenêtre récente sous le budget estimé. Tous les events sont récents (global inactif) -> seul le plafond agit.
     #[test]
     fn idx49_row_and_size_caps() {
+        // `P7.19-f/g`, DÉFAUT PRÉEXISTANT TROUVÉ EN JOUANT CE LOT — LECTEUR NON VERROUILLÉ.
+        // Ce témoin est le SEUL de sa famille à éprouver le chemin des PLAFONDS (`max_rows` /
+        // `max_bytes`), et c'est exactement le chemin que `retention_run` SAUTE quand
+        // `PLUME_COLD_TIER=1` (correctif #18 : sous cold, capper les lignes RÉCENTES non archivées
+        // les perdrait). Les témoins `fix18_*` juste en dessous POSENT et RETIRENT cette variable
+        // process-globale sous `VERROU_ENV_PROCESSUS.write()` ; celui-ci la LISAIT sans prendre le
+        // verrou. MESURÉ SUR L'ARBRE AU `HEAD`, SANS AUCUNE MODIFICATION : le jeu réduit
+        // {ce témoin + les quatre `fix18_*`} joué huit fois sous `--features cold_tier` rend SIX
+        // ROUGES et deux verts — la suite froide complète n'était verte que parce que
+        // l'ordonnancement global tenait les deux familles à l'écart, et AJOUTER DEUX TÉMOINS
+        // N'IMPORTE OÙ suffisait à les rapprocher. Population dérivée : 13 témoins appellent
+        // `retention_run` sans ce verrou, mais UN SEUL est exposé — les douze autres n'éprouvent
+        // que la rétention par ÂGE, que le drapeau froid ne change pas.
+        let _g = VERROU_ENV_PROCESSUS.read();
         let conn = test_db();
         conn.execute("INSERT INTO setting(scope,key,value) VALUES('global','retention_days','30')", []).unwrap();
         conn.execute("INSERT INTO index_policy(name,max_rows) VALUES('cap',3)", []).unwrap();

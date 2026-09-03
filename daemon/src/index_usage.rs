@@ -253,10 +253,49 @@ pub(crate) fn regime_statistiques(conn: &Connection, table: &str) -> RegimeStati
 /// l'estimation datant de la dernière analyse, celle qui a réellement décidé du plan lu. `None` quand
 /// `sqlite_stat1` n'existe pas ou ne porte pas la table : le planificateur devine alors une constante,
 /// et publier cette constante ferait passer une supposition pour une mesure.
+///
+/// `P7.19-f` — LA LIGNE RETENUE EST CHOISIE, ELLE N'EST PLUS LA PREMIÈRE VENUE.
+///
+/// LE DÉFAUT. Cette lecture retenait la première ligne que `sqlite_stat1` rendait pour la table
+/// (`… WHERE tbl=?1 … LIMIT 1`), sans ordre. Or une ligne de `sqlite_stat1` décrit **l'index qui la
+/// porte**, et sa première grandeur est le nombre de lignes que CET index indexe : pour un index
+/// **PARTIEL**, c'est le compte du SOUS-ENSEMBLE, pas celui de la table.
+///
+/// CE QUE LA MESURE DIT EXACTEMENT, sans l'arrondir dans le mauvais sens. L'ordre dans lequel
+/// `sqlite_stat1` rend ses lignes n'est spécifié nulle part, et il dépend du schéma :
+///   · sur la base d'épreuve au schéma RÉEL, l'unique index partiel de `event` sort en SIXIÈME
+///     position et la lecture sans ordre rendait le BON nombre — le défaut y est donc LATENT, pas
+///     visible ;
+///   · sur un schéma où l'index partiel est créé en DERNIER, la même lecture rend la ligne PARTIELLE
+///     en premier — MESURÉ hors caisse sur trois moteurs (3.39.4, 3.46.1, 3.51.3) : `1200` publié là
+///     où la table portait `3000` lignes.
+/// Autrement dit : ce que la jauge publie dépend de l'ordre de création des index, et rien ne le
+/// garantit. Et à partir de 3.46.1 le défaut cesse d'être latent sur une base NEUVE, où les seules
+/// lignes écrites décrivent les index partiels et valent ZÉRO.
+///
+/// CE QUI EST RETENU MAINTENANT, DANS CET ORDRE :
+///   ① la ligne qui décrit la TABLE elle-même (`idx IS NULL`) — ce que `ANALYZE` écrit pour une table
+///      SANS index, et ce que le rejeu du corpus fermé synthétise ;
+///   ② sinon la ligne d'un index que le catalogue déclare NON partiel — un tel index porte exactement
+///      une entrée par ligne de table, donc sa première grandeur EST le compte de la table ;
+///   ③ sinon RIEN. Une base neuve sous un moteur récent ne porte QUE des lignes d'index partiels, à
+///      `0` : les publier dirait « table vide » d'une table qui ne l'est pas.
+///
+/// LA PARTIALITÉ EST DEMANDÉE AU CATALOGUE (`pragma_index_list`), jamais énumérée : un nom d'index
+/// écrit ici serait faux le jour où un index partiel est ajouté, et c'est exactement la classe de
+/// défaut que cette correction ferme. Le test d'appartenance est POSITIF (`partial = 0` doit être
+/// constaté) : une ligne dont le catalogue ne connaît plus l'index n'est pas retenue faute de pouvoir
+/// être classée — refuser de publier vaut mieux que publier un nombre qu'on ne sait pas lire.
 pub(crate) fn lignes_estimees(conn: &Connection, table: &str) -> Option<i64> {
     let stat: String = conn
         .query_row(
-            "SELECT stat FROM sqlite_stat1 WHERE tbl=?1 AND stat IS NOT NULL AND stat<>'' LIMIT 1",
+            "SELECT s.stat FROM sqlite_stat1 AS s \
+             WHERE s.tbl=?1 AND s.stat IS NOT NULL AND s.stat<>'' \
+               AND (s.idx IS NULL \
+                    OR EXISTS (SELECT 1 FROM pragma_index_list(?1) AS il \
+                               WHERE il.name = s.idx AND il.partial = 0)) \
+             ORDER BY (s.idx IS NULL) DESC, s.idx \
+             LIMIT 1",
             params![table],
             |r| r.get(0),
         )

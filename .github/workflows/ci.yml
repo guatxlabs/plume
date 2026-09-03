@@ -731,7 +731,21 @@ env:
   # compte. Le MÊME +1 sur `EXPECTED_COLD_TESTS` — le témoin n'est derrière aucun `cfg(feature)`,
   # et c'est l'ÉCART INCHANGÉ entre les deux profils (**245** avant comme après) qui l'établit, pas
   # une lecture des sources.
-  EXPECTED_TESTS: "1528"
+  # `P7.19-f` et `P7.19-g` (2026-09-03) : **+2**, dérivés du diff et non d'un rapport —
+  # `lestimation_de_lignes_ne_retient_jamais_la_ligne_dun_index_partiel` (la jauge ne retient plus
+  # la ligne d'un index PARTIEL, dont la première grandeur décrit le SOUS-ENSEMBLE et non la table ;
+  # la partialité est DEMANDÉE au catalogue du moteur, aucun nom d'index n'est écrit) et
+  # `la_version_du_moteur_de_stockage_est_epinglee_et_son_comportement_danalyse_avec` (deux épingles :
+  # la version, constante écrite à la main contre `sqlite_version()` lu sur le moteur lié ; et le
+  # COMPORTEMENT dont deux témoins de cet arbre dépendent, mesuré par un `ANALYZE` réellement
+  # exécuté). Le cran 0 du régime de statistiques CHANGE DE FORME sans changer de compte : il affirme
+  # désormais trois propriétés vraies des DEUX côtés du moteur, sur une population de tables DÉRIVÉE
+  # du catalogue au lieu d'une table nommée. Le correctif du verrou d'environnement dans
+  # `tests/ingest.rs` n'ajoute AUCUN test : c'est une ligne dans un témoin existant. Le MÊME +2 sur
+  # `EXPECTED_COLD_TESTS` — aucun des deux n'est derrière un `cfg(feature)`, et c'est l'ÉCART
+  # INCHANGÉ entre les deux profils (**245** avant comme après) qui l'établit, pas une lecture des
+  # sources.
+  EXPECTED_TESTS: "1530"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -1179,7 +1193,11 @@ jobs:
           # aucun `cfg(feature)`, et c'est l'ÉCART INCHANGÉ entre les deux profils (245 avant comme
           # après) qui l'établit, pas une lecture des sources. La dérivation est écrite auprès
           # d'`EXPECTED_TESTS`, une seule fois.
-          EXPECTED_COLD_TESTS: "1773"
+          # `P7.19-f` et `P7.19-g` (2026-09-03) : +2, les MÊMES deux que sur `EXPECTED_TESTS` —
+          # aucun n'est derrière un `cfg(feature)`, et c'est l'ÉCART INCHANGÉ entre les deux profils
+          # (245 avant comme après) qui l'établit, pas une lecture des sources. La dérivation est
+          # écrite auprès d'`EXPECTED_TESTS`, une seule fois.
+          EXPECTED_COLD_TESTS: "1775"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail

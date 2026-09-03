@@ -812,7 +812,11 @@ viennent d'une constante — la commande `c` ci‑dessus la donne.
 
 | Variable | Effet | Défaut |
 |---|---|---|
-| `PLUME_RETENTION_DAYS` | âge au‑delà duquel les événements sont purgés | `30` |
+| `PLUME_RETENTION_DAYS` | âge au‑delà duquel les **événements** sont purgés — **et, à la même borne, leurs deux tables de pré‑agrégat** (`event_rollup`, `event_dim_rollup`). Le nom n'en annonce qu'une : les trois partent ensemble | `30` |
+| `PLUME_SNAPSHOT_DAYS` | âge au‑delà duquel les **instantanés** sont purgés | `30` |
+| `PLUME_ALERT_DAYS` | âge au‑delà duquel les **alertes DÉJÀ TRAITÉES** sont purgées. Une alerte jamais acquittée n'est **jamais** purgée par ce levier — c'est voulu, et le nom ne le porte pas | `90` |
+| `PLUME_METRIC_DAYS` | âge au‑delà duquel le **pré‑agrégé des métriques** est purgé. **Ce levier ne touche PAS la table des métriques brutes** malgré son nom : celle‑ci est gouvernée par le levier suivant, et en HEURES | `90` |
+| `PLUME_METRIC_RAW_HOURS` | âge — **en heures** — au‑delà duquel les **métriques brutes** sont purgées. C'est lui, et non `PLUME_METRIC_DAYS`, qui décide de la profondeur des courbes temps réel. Régler la rétention « des métriques » à quatre‑vingt‑dix jours sans toucher celui‑ci laisse les courbes s'arrêter à deux | `48` |
 | `PLUME_RETENTION_PURGE_BATCH` | taille de LOT des purges de rétention. La purge supprime PAR LOTS de cette taille et **relâche le verrou d'écriture entre les lots**, pour qu'un premier passage sur un gros arriéré n'affame pas l'ingestion pendant toute sa durée. L'état final est le même qu'une suppression non bornée ; seule la granularité change. Borné à `[500, 200000]` | `10000` |
 | `PLUME_AUTOVACUUM_INTERVAL` | secondes entre deux passes de *vacuum* incrémental ; `0` = désactivé | `0` |
 | `PLUME_VENTILATION_INTERVAL_S` | secondes entre deux relevés de la VENTILATION de la base — quel poste occupe quoi. `0` = aucun fil, donc aucune série. Le relevé parcourt TOUTES les pages : c'est le prix de savoir ce qui grossit | `3600` |

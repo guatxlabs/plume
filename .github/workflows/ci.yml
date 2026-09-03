@@ -2229,6 +2229,14 @@ jobs:
       # cette garde empêche la copie de repousser, et exige que toute MENTION lui soit identique.
       - name: L'identité canonique a une seule source, et aucune mention n'en diverge (P8.9-n)
         run: python3 .github/scripts/check_identite_canonique_a_une_seule_source.py
+      # `P4.9-a` — TROIS DES CINQ LEVIERS DE RÉTENTION DÉCLARAIENT MOINS QU'ILS NE GOUVERNENT : un nom
+      # qui porte « metric » et purge le PRÉ-AGRÉGÉ (la table brute étant purgée par un voisin, en
+      # HEURES), un levier qui purge TROIS tables en n'en nommant qu'une, un autre qui n'atteint que les
+      # alertes déjà traitées. Un lot a lu ces noms de bonne foi et publié un horizon faux d'un facteur
+      # quarante-cinq. La propriété tenue n'est pas « un levier nomme une table qu'il gouverne » — trop
+      # faible — mais que l'ensemble des tables PURGÉES par la passe soit EXACTEMENT l'ensemble déclaré.
+      - name: Un levier de rétention déclare toutes les tables qu'il purge (P4.9-a)
+        run: python3 .github/scripts/check_retention_declare_ce_quelle_purge.py
 
       # Discovery is by EXTENSION **and** by first-line SHEBANG, deliberately: today all 43
       # tracked scripts carry a `.sh` extension (measured), and 42 of them a sh/bash shebang —

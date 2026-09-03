@@ -556,9 +556,17 @@ pub(crate) fn daemon_excl_registry(conn: &Connection, conf: &HashMap<String, Str
         edit_key: "",
     });
     // A4 — planchers de RÉTENTION (collection-reducing : lifecycle des données). Valeur effective + planchers DURS.
+    // `P4.9-a` — CE QUE LE LEVIER PURGE ARRIVE JUSQU'À CELUI QUI LE RÈGLE. Trois des cinq leviers
+    // déclaraient moins qu'ils ne gouvernent : un nom qui porte « metric » et purge le pré-agrégé, un
+    // levier qui purge TROIS tables en n'en nommant qu'une, un autre qui n'atteint que les alertes déjà
+    // traitées. Servir la portée à côté de la valeur est ce qui empêche l'exploitant de régler
+    // quatre-vingt-dix jours et de voir ses courbes s'arrêter après deux, sans que rien ne le lui dise.
     let ret: Vec<Value> = RETENTION_FIELDS
         .iter()
-        .map(|&(k, env_key, d, floor, ceil)| json!({ "key": k, "effective": retention_effective(conn, conf, k), "floor": floor, "ceil": ceil, "default": d, "env": env_key }))
+        .map(|&(k, env_key, d, floor, ceil)| {
+            let tables = crate::RETENTION_PORTEE.iter().find(|(c, _)| *c == k).map(|(_, t)| *t).unwrap_or(&[]);
+            json!({ "key": k, "effective": retention_effective(conn, conf, k), "floor": floor, "ceil": ceil, "default": d, "env": env_key, "tables": tables })
+        })
         .collect();
     out.push(ExclEntry {
         name: "retention_floors",

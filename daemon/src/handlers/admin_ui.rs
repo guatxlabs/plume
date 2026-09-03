@@ -564,7 +564,14 @@ pub(crate) fn daemon_excl_registry(conn: &Connection, conf: &HashMap<String, Str
     let ret: Vec<Value> = RETENTION_FIELDS
         .iter()
         .map(|&(k, env_key, d, floor, ceil)| {
-            let tables = crate::RETENTION_PORTEE.iter().find(|(c, _)| *c == k).map(|(_, t)| *t).unwrap_or(&[]);
+            // DÉRIVÉ de la déclaration UNIQUE (`FAMILLES_DE_RETENTION`), qui porte la relation
+            // table -> clé -> unité. Une seconde table disant la même chose a existé quelques heures
+            // et a été retirée : deux déclarations d'une même relation dérivent.
+            let tables: Vec<&str> = crate::handlers::panneau_avoue::FAMILLES_DE_RETENTION
+                .iter()
+                .filter(|(_, cle, _)| *cle == k)
+                .map(|(table, _, _)| *table)
+                .collect();
             json!({ "key": k, "effective": retention_effective(conn, conf, k), "floor": floor, "ceil": ceil, "default": d, "env": env_key, "tables": tables })
         })
         .collect();

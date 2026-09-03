@@ -38,6 +38,17 @@ MAIN = Path("daemon/src/main.rs")
 PASSE = Path("daemon/src/rollups.rs")
 FONCTION = "fn retention_run_tenant"
 
+# LA DÉCLARATION VIT DANS UN SEUL FICHIER, ET C'EST LE PLUS RICHE (il porte aussi les UNITÉS).
+# Une seconde table disant la même chose a existé quelques heures dans `main.rs` le 2026-09-04 : elle a
+# été retirée, parce que deux déclarations d'une même relation dérivent — le défaut de `P8.9-n`.
+DECLARATION = Path("daemon/src/handlers/panneau_avoue.rs")
+
+# LES DEUX SITES QUI SUPPRIMENT DES LIGNES AU TITRE DU CYCLE DE VIE, mesurés le 2026-09-04 : la passe
+# de rétention, et le vieillissement vers le tier froid — qui purge `event` depuis une fonction APPELÉE,
+# donc invisible à un balayage borné à la passe. La liste sert de CONTRAT : un troisième site qui
+# appellerait une aide de purge fait rougir tant qu'il n'est pas nommé ici et sa table déclarée.
+SITES_DU_CYCLE_DE_VIE = [PASSE, Path("daemon/src/cold_store/aging.rs")]
+
 
 def sans_commentaire(src: str) -> str:
     """Les lignes de commentaire sont RETIRÉES : une purge citée dans une explication n'est pas une
@@ -51,13 +62,16 @@ def cles_declarees(src: str) -> list:
 
 
 def portee_declaree(src: str) -> dict:
-    bloc = re.search(r"RETENTION_PORTEE[^=]*=\s*\[(.*?)\n\];", src, re.S)
+    """La déclaration UNIQUE, lue telle qu'elle est écrite — `(table, clé, unité)` — et INVERSÉE en
+    `clé -> [tables]`. L'inversion se fait ici et nulle part ailleurs : c'est ce qui évite d'entretenir
+    une seconde table dans l'autre sens."""
+    bloc = re.search(r"FAMILLES_DE_RETENTION[^=]*=\s*&\[(.*?)\n\];", src, re.S)
     if not bloc:
         return {}
     out = {}
-    for cle, tables in re.findall(r'\(\s*"([a-z_][a-z0-9_]*)"\s*,\s*&\[([^\]]*)\]\s*\)', bloc.group(1)):
-        out[cle] = sorted(set(re.findall(r'"([a-z_][a-z0-9_]*)"', tables)))
-    return out
+    for table, cle in re.findall(r'\(\s*"([a-z_][a-z0-9_]*)"\s*,\s*"([a-z_][a-z0-9_]*)"\s*,', bloc.group(1)):
+        out.setdefault(cle, []).append(table)
+    return {c: sorted(set(t)) for c, t in out.items()}
 
 
 def corps_de_la_passe(src: str) -> str:
@@ -72,35 +86,71 @@ def corps_de_la_passe(src: str) -> str:
     return src[i : min(fins)] if fins else src[i:]
 
 
-def tables_purgees(corps: str) -> list:
-    """Les tables que la passe supprime, DÉRIVÉES de ses appels de purge et de ses instructions."""
+def tables_par_les_aides(src: str) -> list:
+    """Les tables supprimées par les AIDES DE PURGE — le canal du cycle de vie. Mesuré le 2026-09-04 :
+    ces aides ne sont appelées que depuis deux fichiers, ce qui en fait une population sûre."""
     t = set()
-    t |= set(re.findall(r'chunked_purge\(\s*db\s*,\s*"([a-z_][a-z0-9_]*)"', corps))
-    t |= set(re.findall(r'retention_prune_table\(\s*db\s*,\s*"([a-z_][a-z0-9_]*)"', corps))
-    t |= set(re.findall(r'DELETE\s+FROM\s+([a-z_][a-z0-9_]*)', corps))
+    t |= set(re.findall(r'chunked_purge\(\s*\n?\s*db\s*,\s*\n?\s*"([a-z_][a-z0-9_]*)"', src))
+    t |= set(re.findall(r'retention_prune_table\(\s*\n?\s*db\s*,\s*\n?\s*"([a-z_][a-z0-9_]*)"', src))
     return sorted(t)
+
+
+def tables_par_instruction(corps: str) -> list:
+    """Les tables supprimées par une instruction ÉCRITE À LA MAIN, cherchées UNIQUEMENT dans le corps de
+    la passe. Les élargir au fichier entier accuserait des suppressions qui ne relèvent pas du cycle de
+    vie — mesuré : plus de soixante-dix instructions de suppression dans le démon, presque toutes des
+    gestes légitimes d'utilisateur. Une garde qui les compterait serait une rançon."""
+    return sorted(set(re.findall(r'DELETE\s+FROM\s+([a-z_][a-z0-9_]*)', corps)))
+
+
+def fichiers_qui_purgent(racine: Path) -> list:
+    """Quels fichiers de PRODUCTION appellent une aide de purge — la population, DÉRIVÉE de l'arbre."""
+    out = []
+    for f in sorted(racine.rglob("*.rs")):
+        if "/tests/" in str(f) or f.name == "tests.rs":
+            continue
+        # LE MÊME PRÉDICAT QUE L'EXTRACTION, et pas un autre : un fichier « purge » s'il en résulte une
+        # TABLE. Écarter les fichiers qui DÉFINISSENT une aide était trop grossier — la passe de
+        # rétention définit l'une d'elles ET l'appelle douze fois, et se serait exclue elle-même.
+        src = sans_commentaire(f.read_text(encoding="utf-8", errors="replace"))
+        if tables_par_les_aides(src):
+            out.append(f)
+    return out
 
 
 def valider_linstrument() -> list:
     faux = []
     if cles_declarees('const RETENTION_FIELDS: [x; 1] = [\n    ("a_days", "E", 1, 2, 3),\n];') != ["a_days"]:
         faux.append("lecture des clés cassée")
-    p = portee_declaree('const RETENTION_PORTEE: [x; 1] = [\n    ("a_days", &["t1", "t2"]),\n];')
-    if p != {"a_days": ["t1", "t2"]}:
+    # LES NOMS FABRIQUÉS NE RESSEMBLENT PAS AUX NOMS RÉELS, ET C'EST DÉLIBÉRÉ : le 2026-09-04, un
+    # fixture portant des chiffres (`t1`, `t2`) a révélé que la classe de caractères de cette garde
+    # excluait les chiffres — invisible sur les tables du produit, qui n'en portent aucun. Un corpus
+    # calqué sur l'existant valide l'accord avec l'existant, pas la correction.
+    p = portee_declaree(
+        'pub(crate) const FAMILLES_DE_RETENTION: &[(&str, &str, i64)] = &[\n'
+        '    ("t1", "a_days", 86_400),\n    ("t2", "a_days", 86_400),\n    ("t3", "b_hours", 3_600),\n];'
+    )
+    if p != {"a_days": ["t1", "t2"], "b_hours": ["t3"]}:
         faux.append(f"lecture de la portée cassée : {p!r}")
     if portee_declaree("rien") != {}:
         faux.append("une source sans portée devrait rendre un dictionnaire vide")
 
-    corps = 'fn retention_run_tenant() {\n  chunked_purge(db, "alpha", ..);\n  retention_prune_table(db, "beta", ..);\n  conn.execute("DELETE FROM gamma WHERE ts < ?1");\n}\nfn autre() {\n  chunked_purge(db, "hors_passe", ..);\n}\n'
-    vus = tables_purgees(corps_de_la_passe(corps))
-    if vus != ["alpha", "beta", "gamma"]:
-        faux.append(f"extraction des purges cassée : {vus!r}")
-    if "hors_passe" in vus:
-        faux.append("une purge HORS de la passe ne doit pas être comptée")
+    src = 'fn retention_run_tenant() {\n  chunked_purge(db, "alpha", ..);\n  retention_prune_table(db, "beta", ..);\n  conn.execute("DELETE FROM gamma WHERE ts < ?1");\n}\nfn autre() {\n  chunked_purge(db, "ailleurs", ..);\n  conn.execute("DELETE FROM geste_utilisateur WHERE id=?1");\n}\n'
+    aides = tables_par_les_aides(src)
+    if aides != ["ailleurs", "alpha", "beta"]:
+        faux.append(f"extraction par les AIDES cassée : {aides!r}")
+    instr = tables_par_instruction(corps_de_la_passe(src))
+    if instr != ["gamma"]:
+        faux.append(f"extraction par INSTRUCTION cassée : {instr!r}")
+    if "geste_utilisateur" in instr:
+        faux.append("une suppression HORS de la passe est comptée comme rétention")
     commente = 'fn retention_run_tenant() {\n  // chunked_purge(db, "citee_en_commentaire", ..);\n  chunked_purge(db, "vraie", ..);\n}\n'
-    vus2 = tables_purgees(corps_de_la_passe(sans_commentaire(commente)))
-    if vus2 != ["vraie"]:
-        faux.append(f"une purge CITÉE en commentaire est comptée à tort : {vus2!r}")
+    if tables_par_les_aides(sans_commentaire(commente)) != ["vraie"]:
+        faux.append("une purge CITÉE en commentaire est comptée à tort")
+    # UN APPEL ÉCRIT SUR PLUSIEURS LIGNES DOIT ÊTRE VU : c'est la forme du site du tier froid.
+    multi = 'chunked_purge(\n    db,\n    "sur_plusieurs_lignes",\n    &format!("..."),\n);'
+    if tables_par_les_aides(multi) != ["sur_plusieurs_lignes"]:
+        faux.append("un appel de purge écrit sur plusieurs lignes échappe à l'extraction")
     return faux
 
 
@@ -112,52 +162,73 @@ def main() -> int:
         print("\nLa garde ne peut pas conclure : elle ne se croit pas elle-même.")
         return 2
 
-    for f in (MAIN, PASSE):
+    for f in [MAIN, DECLARATION] + SITES_DU_CYCLE_DE_VIE:
         if not f.exists():
             print(f"::error::{f} est introuvable — aucun verdict possible.")
             return 2
 
-    src_main = MAIN.read_text(encoding="utf-8")
-    cles = cles_declarees(src_main)
-    portee = portee_declaree(src_main)
+    cles = cles_declarees(MAIN.read_text(encoding="utf-8"))
+    portee = portee_declaree(DECLARATION.read_text(encoding="utf-8"))
     if not cles or not portee:
-        print("::error::`RETENTION_FIELDS` ou `RETENTION_PORTEE` n'est plus lisible dans la source.")
+        print(f"::error::les leviers ({MAIN}) ou leur portée ({DECLARATION}) ne sont plus lisibles.")
         return 2
 
+    # LA POPULATION DES SITES EST DÉRIVÉE DE L'ARBRE, PAS RECOPIÉE : un troisième fichier qui se
+    # mettrait à purger fait rougir tant qu'il n'est pas nommé et sa table déclarée.
+    trouves = fichiers_qui_purgent(Path("daemon/src"))
+    attendus = sorted(str(f) for f in SITES_DU_CYCLE_DE_VIE)
+    if sorted(str(f) for f in trouves) != attendus:
+        for f in trouves:
+            if str(f) not in attendus:
+                print(f"::error::{f} appelle une aide de purge et n'est pas un site du cycle de vie déclaré. "
+                      "Nommez-le dans la garde ET déclarez la table qu'il purge, ou n'employez pas ces aides.")
+        for a in attendus:
+            if a not in [str(f) for f in trouves]:
+                print(f"::error::{a} est déclaré site du cycle de vie mais n'appelle plus aucune aide de purge.")
+        print("\nLa population des sites qui suppriment a changé.")
+        return 1
+
+    purgees = set()
+    for f in SITES_DU_CYCLE_DE_VIE:
+        purgees |= set(tables_par_les_aides(sans_commentaire(f.read_text(encoding="utf-8"))))
     corps = corps_de_la_passe(sans_commentaire(PASSE.read_text(encoding="utf-8")))
     if not corps:
         print(f"::error::le corps de `{FONCTION}` est introuvable — la garde ne juge rien.")
         return 2
-    purgees = tables_purgees(corps)
+    purgees |= set(tables_par_instruction(corps))
+    purgees = sorted(purgees)
     if not purgees:
-        print("::error::aucune purge trouvée dans la passe de rétention — l'extraction est aveugle.")
+        print("::error::aucune purge trouvée — l'extraction est aveugle.")
         return 2
 
     defauts = []
     for c in cles:
         if c not in portee:
-            defauts.append(f"::error::le levier `{c}` n'a AUCUNE portée déclarée : ajoutez les tables qu'il purge à `RETENTION_PORTEE`.")
+            defauts.append(f"::error::le levier `{c}` n'a AUCUNE portée déclarée dans {DECLARATION}.")
     for c in portee:
         if c not in cles:
-            defauts.append(f"::error::`RETENTION_PORTEE` déclare `{c}`, qui n'est pas un levier de `RETENTION_FIELDS`.")
+            defauts.append(f"::error::{DECLARATION} déclare `{c}`, qui n'est pas un levier de `RETENTION_FIELDS`.")
 
     declarees = sorted({t for ts in portee.values() for t in ts})
     for t in purgees:
         if t not in declarees:
-            defauts.append(f"::error::la passe de rétention purge `{t}`, qu'AUCUN levier ne déclare. Le périmètre déclaré doit couvrir TOUTES les tables purgées.")
+            defauts.append(f"::error::le cycle de vie purge `{t}`, qu'AUCUN levier ne déclare. Le périmètre "
+                           "déclaré doit couvrir TOUTES les tables purgées.")
     for t in declarees:
         if t not in purgees:
-            defauts.append(f"::error::`{t}` est déclarée gouvernée, mais la passe de rétention ne la purge plus : la déclaration est devenue fausse.")
+            defauts.append(f"::error::`{t}` est déclarée gouvernée, mais plus aucun site ne la purge : "
+                           "la déclaration est devenue fausse.")
 
     if defauts:
         for d in defauts:
             print(d)
-        print(f"\n{len(defauts)} divergence(s) entre ce qu'un levier DÉCLARE et ce que la rétention PURGE.")
+        print(f"\n{len(defauts)} divergence(s) entre ce qu'un levier DÉCLARE et ce que le cycle de vie PURGE.")
         return 1
 
     print(
-        f"{len(cles)} levier(s) de rétention, {len(declarees)} table(s) déclarée(s), "
-        f"{len(purgees)} table(s) réellement purgée(s) par la passe : les deux ensembles coïncident."
+        f"{len(cles)} levier(s), {len(declarees)} table(s) déclarée(s) dans {DECLARATION.name}, "
+        f"{len(purgees)} table(s) réellement purgée(s) par {len(SITES_DU_CYCLE_DE_VIE)} site(s) du cycle "
+        "de vie : les deux ensembles coïncident."
     )
     return 0
 

@@ -548,32 +548,15 @@ const RETENTION_FIELDS: [(&str, &str, i64, i64, i64); 5] = [
     ("metric_raw_hours", "PLUME_METRIC_RAW_HOURS", 48, 24, 8760),
 ];
 
-/// `P4.9-a` — CE QUE CHAQUE LEVIER DE RÉTENTION PURGE RÉELLEMENT, DÉCLARÉ À CÔTÉ DE LUI.
-///
-/// POURQUOI CETTE TABLE EXISTE. Un lot a lu les NOMS de bonne foi et publié un horizon optimiste d'un
-/// facteur quarante-cinq ; son témoin était vert parce qu'il vérifiait une constante contre elle-même.
-/// L'exploitant qui règle « la rétention des métriques » à quatre-vingt-dix jours et voit ses courbes
-/// s'arrêter après deux rencontre le même mur, sans que rien ne le lui dise. RECENSEMENT DÉRIVÉ du
-/// 2026-09-04, en suivant les instructions de suppression et jamais les noms — TROIS des cinq leviers
-/// déclaraient moins qu'ils ne gouvernent :
-///   · `metric_days` porte le mot « metric » et gouverne le PRÉ-AGRÉGÉ, pas la table des métriques ;
-///     celle-ci est purgée par `metric_raw_hours`, en HEURES. Deux voisins, deux UNITÉS.
-///   · `retention_days` purge TROIS tables à la même borne — les événements et deux pré-agrégats —
-///     là où son nom n'en annonce qu'une. Il ne se trompe pas de table : il SOUS-DÉCLARE son rayon.
-///   · `alert_days` ne purge que les alertes DÉJÀ TRAITÉES (`status<>'new'`) : une alerte jamais
-///     acquittée n'est jamais purgée. C'est voulu, et le nom ne le porte pas.
-///
-/// LA PROPRIÉTÉ TENUE N'EST PAS « un levier nomme une table qu'il gouverne » — trop faible, le levier
-/// des événements la satisferait. C'est : LE PÉRIMÈTRE DÉCLARÉ COUVRE TOUTES LES TABLES QU'IL PURGE.
-/// Une garde dérivée le vérifie contre le CODE de la passe de rétention, pas contre cette table :
-/// ajouter une purge sans l'inscrire ici fait rougir, et inscrire une table qu'on ne purge plus aussi.
-pub(crate) const RETENTION_PORTEE: [(&str, &[&str]); 5] = [
-    ("retention_days", &["event", "event_rollup", "event_dim_rollup"]),
-    ("snapshot_days", &["snapshot"]),
-    ("alert_days", &["alert"]),
-    ("metric_days", &["metric_rollup"]),
-    ("metric_raw_hours", &["metric"]),
-];
+// `P4.9-a` — CE QUE CHAQUE LEVIER PURGE RÉELLEMENT EST DÉCLARÉ **AILLEURS, ET UNE SEULE FOIS** :
+// `handlers::panneau_avoue::FAMILLES_DE_RETENTION` porte la relation table -> clé -> UNITÉ, dérivée
+// des ordres de suppression eux-mêmes.
+//
+// UNE SECONDE TABLE A EXISTÉ ICI QUELQUES HEURES, LE 2026-09-04, ET ELLE EST RETIRÉE. Elle disait la
+// même chose en moins riche (sans les unités), et deux déclarations d'une même relation dérivent :
+// c'est exactement le défaut fermé par `P8.9-n` la veille, reproduit par la main qui venait de le
+// fermer. La garde lit donc la déclaration UNIQUE et la confronte au CODE des deux sites qui
+// suppriment — la passe de rétention et le vieillissement vers le tier froid.
 
 /// Résout la valeur COURANTE d'une clé de rétention par la MÊME chaîne que l'application (correctif H2) :
 /// setting(scope='global',key) si présent&parsable -> sinon cfg (env PLUME_* > conf > défaut) -> clamp[plancher,plafond].

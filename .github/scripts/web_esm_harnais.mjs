@@ -10367,6 +10367,51 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   console.log(`[contribution-de-risque-refus-lisible] \`P11.20-i\` SUR-DÉCRIVAIT, ET CE QUI RESTE EST FERMÉ PAR UN REFUS LISIBLE. « Ne mènent nulle part » était vrai — aucune ligne ne portait de geste — mais la cause écrite était fausse : la route SERT bien l'identifiant de règle (\`SELECT ts,risk_score,source,rule_id,reason,mitre,severity\`), et la surface ne l'AFFICHAIT même pas ; elle l'affiche maintenant. Le manque réel est plus étroit et plus profond : \`risk_event\` ne stocke NI la requête telle qu'elle a compté NI sa fenêtre, et un identifiant de règle n'est pas une requête — la règle a pu changer depuis. Fabriquer le pivot rendrait des événements que rien ne rattache au score affiché, exactement ce que \`P11.14-b\` a refusé pour l'alerte. Les ${DETAIL75.contributions.length} contributions servies rendent donc chacune un contrôle INERTE ET MOTIVÉ (grammaire de \`P11.14-b\`, dérivée de \`P11.4-l\`) : \`aria-disabled\` et non \`disabled\`, qui couperait le survol ; aucune ligne n'offre de geste ; le survol NOMME ce qui manque ; le clic dit EXACTEMENT la même phrase ; et une contribution qui nomme sa règle ne dit pas la même chose qu'une contribution qui n'en nomme aucune. L'INSTRUMENT EST VALIDÉ DANS LES DEUX SENS : la liste VOISINE du même module porte bien un geste de ligne et OUVRE le détail — sans quoi « aucun geste » ne mesurerait qu'un banc aveugle. LA VRAIE PORTE, ET SON COÛT, écrits plutôt que tus : il faut que le DÉMON écrive à l'imputation ce qu'il vient de compter — la requête et sa fenêtre à côté de la contribution, comme \`P11.1-a\` l'a fait pour l'alerte — donc une colonne de plus dans \`risk_event\`, une migration, et le remplissage aux sites d'imputation. Aucune console ne peut s'en passer ni l'anticiper. CE QUE CE TÉMOIN NE TIENT PAS : il lit ce que la console REÇOIT, il ne prouve pas ce que le démon peut servir ; il ne juge ni encre ni grisé ; et il ne dit rien de ce que coûterait la vraie porte au-delà de l'avoir nommée.`);
 }
 
+// ---------------------------------------------------------------------------------------------
+// 76. UN ACQUITTEMENT REND SON COMPTE À CELUI QUI L'A ENGAGÉ, ET N'EN INVENTE PAS (`P11.1-h`).
+//    MESURÉ le 2026-09-03 : le démon rend déjà le nombre exact d'alertes acquittées (`{"acked": n}`,
+//    `handlers/cases.rs`), et la console JETAIT la réponse — `await apiSend('/alerts/ack-all')`, sans
+//    rien en faire. L'analyste engageait donc un geste dont il ne pouvait connaître l'ampleur ni AVANT
+//    (le démon ne déclare aucun total pour le dos des actives, cf. `P11.1-g`) ni APRÈS.
+//    LES DEUX PORTÉES ONT DEUX SOURCES DE VÉRITÉ DIFFÉRENTES, et c'est le fond de la clé : sur la portée
+//    globale SEUL le démon sait, sur la portée par identifiants la console a envoyé et compte. Une
+//    réponse SANS compte laisse donc la console sans nombre — et elle le DIT, au lieu d'écrire « 0 »
+//    (faux : le geste a réussi) ou de fabriquer un chiffre (pire).
+//    CE QUE CE TÉMOIN NE TIENT PAS : il juge la DÉCISION, pas le câblage — il ne prouve pas que le toast
+//    est appelé ; et il ne rend pas la phrase anglaise (les deux langues vivent dans le dictionnaire
+//    partagé du module, la propriété y est structurelle, elle n'est pas exercée ici).
+// ---------------------------------------------------------------------------------------------
+{
+  const { phraseDuCompteAcquitte } = await import(pathToFileURL(path.join(WEB, "alerts.js")).href);
+
+  const globalAvecCompte = phraseDuCompteAcquitte({ toutes: true }, { acked: 7 });
+  const globalSansCompte = phraseDuCompteAcquitte({ toutes: true }, null);
+  const globalReponseMuette = phraseDuCompteAcquitte({ toutes: true }, {});
+  const parIdentifiants = phraseDuCompteAcquitte({ ids: [11, 22, 33] }, null);
+
+  exiger(/\b7\b/.test(globalAvecCompte),
+    `(76) le compte rendu par le démon doit atteindre l'analyste : « ${globalAvecCompte} »`);
+  exiger(/\b3\b/.test(parIdentifiants),
+    `(76) la portée par identifiants compte ce qu'elle a envoyé : « ${parIdentifiants} »`);
+
+  // LE CAS QUI FAIT TOUT L'INTÉRÊT : sans compte, on ne l'invente pas.
+  exiger(!/\d/.test(globalSansCompte),
+    `(76) sans compte du démon, la console ne doit AUCUN chiffre — surtout pas un zéro : « ${globalSansCompte}"`);
+  exiger(globalSansCompte === globalReponseMuette,
+    `(76) une réponse absente et une réponse sans « acked » sont le MÊME cas : « ${globalSansCompte} » / « ${globalReponseMuette} »`);
+
+  // CONTRÔLE D'INSTRUMENT : les deux phrases doivent DIFFÉRER, sinon les assertions ci-dessus ne
+  // mesurent rien — une fonction rendant toujours le même texte les passerait toutes sauf celle-ci.
+  exiger(globalAvecCompte !== globalSansCompte,
+    "(76) « compte connu » et « compte inconnu » doivent rendre deux phrases DISTINCTES");
+  // Et un compte de zéro RÉELLEMENT rendu par le démon est un vrai zéro : il s'écrit.
+  const vraiZero = phraseDuCompteAcquitte({ toutes: true }, { acked: 0 });
+  exiger(/\b0\b/.test(vraiZero) && vraiZero !== globalSansCompte,
+    `(76) un zéro DÉCLARÉ par le démon est une mesure, pas une absence : « ${vraiZero} »`);
+
+  console.log(`[acquittement-rend-son-compte] \`P11.1-h\` FERMÉE. Le démon rendait déjà le compte exact de ce qu'il acquittait ; la console jetait la réponse, si bien que le geste le plus large du produit restait d'ampleur inconnue AVANT comme APRÈS. Les deux portées ont deux sources de vérité DIFFÉRENTES et la fonction les traite comme telles : sur la portée globale seul le démon sait — la console ne peut pas le dériver, faute de total déclaré sur le dos des actives — et sur la portée par identifiants la console compte ce qu'elle a envoyé. LE CAS QUI PORTE LA CLÉ est celui du compte ABSENT : la phrase rendue ne contient alors AUCUN chiffre, une réponse vide et une réponse sans « acked » sont le même cas, et un zéro réellement DÉCLARÉ reste une mesure qui s'écrit — trois verdicts distincts là où un « 0 » unique aurait menti dans deux d'entre eux. L'INSTRUMENT EST CONTRÔLÉ : les phrases « compte connu » et « compte inconnu » doivent différer, sans quoi une fonction rendant toujours le même texte passerait tout le reste. CE QUE CE TÉMOIN NE TIENT PAS : il juge la décision, pas le câblage du toast, et il n'exerce pas la seconde langue.`);
+}
+
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;
 verdictRendu = true;
 if (echecs.length) {

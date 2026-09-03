@@ -282,9 +282,37 @@ function alertRowHtml(a, i) {
 // redériver la réponse pour savoir s'il doit rafraîchir.
 async function acquitter(portee) {
   if (!await confirmModal(portee.phrase, { okText: 'Acquitter', danger: false })) return false;
-  if (portee.toutes) await apiSend('/alerts/ack-all');
+  // `P11.1-h` — LE COMPTE REVIENT À CELUI QUI A ENGAGÉ LE GESTE. La question de la confirmation nomme la
+  // PORTÉE ; elle ne pouvait pas en nommer l'AMPLEUR, faute de total publié pour le dos des actives. Le
+  // démon, lui, sait exactement combien il a acquitté et le rendait déjà (`{"acked": n}`) — la console
+  // jetait la réponse. Deux chemins, deux sources de vérité DIFFÉRENTES, et c'est voulu :
+  //   · global : SEUL le démon connaît le nombre, la console ne peut pas le dériver ;
+  //   · par identifiant : la console les a envoyés, elle les compte — et si la boucle échoue, l'erreur
+  //     remonte comme avant, donc ce compte ne décrit que des envois RÉELLEMENT aboutis.
+  let reponse = null;
+  if (portee.toutes) reponse = await apiSend('/alerts/ack-all');
   else for (const id of portee.ids) await apiSend('/alerts/' + id + '/ack');
+  toast(phraseDuCompteAcquitte(portee, reponse));
   return true;
+}
+
+// LA DÉCISION, PURE ET DONC ÉPROUVABLE. Ce qu'un acquittement REND à celui qui l'a engagé, dérivé de la
+// portée et de la réponse du démon — sans horloge, sans réseau, sans document.
+//
+// DEUX SOURCES DE VÉRITÉ DIFFÉRENTES, ET LA DISTINCTION EST LE FOND DE LA CLÉ :
+//   · portée GLOBALE — seul le démon connaît le nombre. La console ne peut pas le dériver : `/api/alerts`
+//     ne déclare aucun `total` sur le dos des actives (c'est écrit plus haut, `P11.1-g`). Une réponse sans
+//     `acked` laisse donc la console SANS compte, et elle le DIT au lieu d'écrire un zéro — le geste a
+//     réussi, prétendre « 0 alerte acquittée » serait faux, et fabriquer un nombre serait pire.
+//   · portée par IDENTIFIANTS — la console les a envoyés un à un ; si la boucle est allée au bout, elle
+//     sait exactement combien. Un échec en route remonte comme avant et n'atteint jamais cette fonction.
+export function phraseDuCompteAcquitte(portee, reponse) {
+  const combien = portee.toutes
+    ? (reponse && typeof reponse.acked === 'number' ? reponse.acked : null)
+    : (portee.ids ? portee.ids.length : null);
+  return combien === null
+    ? motDeLAcquittement('acquittees_sans_compte')
+    : motDeLAcquittement('acquittees', { n: combien });
 }
 // WIRING partagé des lignes d'alerte présentes dans `host` pour le tableau `alerts` (index-aligné avec
 // data-idx). `afterAck` = callback exécuté après un acquittement (vue plate: renderAlerts/refresh ; groupe:
@@ -433,6 +461,18 @@ const ACQUITTEMENT_MOTS = {
     en: 'It takes NO filter: it also crosses what this list leaves out and announces in its count — {restrictions}.',
   },
   liste_courante: { fr: 'Liste courante : {n}.', en: 'Current list: {n}.' },
+  // `P11.1-h` — CE QUI A ÉTÉ FAIT, DIT APRÈS COUP, PARCE QUE C'EST LE SEUL MOMENT OÙ ON LE SAIT.
+  // Le démon rend déjà le compte exact de ce qu'il a acquitté ; la console le JETAIT. Pour le geste
+  // global, ce nombre est le SEUL vrai : la console ne peut pas le dériver, puisque le démon ne
+  // déclare aucun total pour le dos des alertes actives — c'est précisément ce qui rendait le geste
+  // d'ampleur inconnue au moment de l'engager.
+  acquittees: { fr: '{n} alerte(s) acquittée(s).', en: '{n} alert(s) acknowledged.' },
+  // ET SI LE DÉMON NE DIT RIEN, LA CONSOLE NE L'INVENTE PAS. Un « 0 alerte acquittée » serait faux
+  // (le geste a réussi) et un compte fabriqué serait pire : on dit qu'on ne sait pas.
+  acquittees_sans_compte: {
+    fr: 'Acquittement effectué. Le démon n\'a pas déclaré combien d\'alertes il a acquittées.',
+    en: 'Acknowledgement done. The daemon did not declare how many alerts it acknowledged.',
+  },
   // LA PONCTUATION EST DE LA LANGUE, ELLE AUSSI. Le français pose une espace devant le point
   // d'interrogation, l'anglais non : la coller en dur rendait « … the search “web-01” ? This gesture… ».
   // C'est le SEUL séparateur qui distingue la QUESTION du survol — d'où sa place ici, avec les mots.

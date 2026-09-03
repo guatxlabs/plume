@@ -953,22 +953,90 @@ async function loadViews() {
     (views || []).forEach(v => { const o = document.createElement('option'); o.value = v.id; o.textContent = `${v.name}${v.visibility === 'shared' ? ' (équipe)' : ' (privé)'} (${v.dashboards})`; sel.appendChild(o); });
     if (cur) sel.value = cur;
   } catch (e) {}
-  updateViewShareBtn();
+  refleterLesDroitsDeLaVue();
 }
 // #17 team — SAVED-VIEW SHARING : bascule du scope d'une vue partagée<->privée. Backend prêt (view_update
 // accepte {visibility} ; views_list renvoie owner/visibility/me/role). Garde MIROIR de view_update (admin,
 // propriétaire, ou vue sans owner legacy) ; le daemon refait foi (défense en profondeur).
+//
+// `P11.20-o` — LE VU DE CETTE CLÉ EST RÉFUTÉ, ET LE DÉFAUT RÉEL EST AILLEURS (mesuré le 2026-09-03).
+// La clé accusait le geste de partage d'être « offert là où les droits ne le permettent pas ». Il ne
+// l'était pas : la garde miroir ci-dessous lui est ANTÉRIEURE, et le refus du démon est rendu au clic.
+// LA DATATION DE LA CELLULE EST ELLE AUSSI TROP COURTE, mesurée : « antérieure de cinq jours » date le
+// DÉPLACEMENT de ce bloc depuis `app.js` (2026-08-22) ; le prédicat, lui, vit sans interruption depuis la
+// publication initiale (2026-07-25), soit trente-trois jours avant que le VU ne soit écrit. Ce qui était en défaut est la FORME du refus — le contrôle était CACHÉ (`hidden`), ce
+// qui laisse l'exploitant sans explication et contredit la grammaire que ce dépôt a livrée ailleurs :
+// un geste d'écriture refusé RESTE, inerte, AVEC sa raison (`core.js`, `P11.4-l`). La feuille de style
+// avait déjà payé exactement cette erreur sur les boutons d'écriture, et elle est reproduite ici.
+// POURQUOI `aria-disabled` ET NON `disabled` : le choix est celui de `P11.4-l`, et il est mesuré — un
+// contrôle désactivé ne reçoit plus le survol, son infobulle ne s'afficherait jamais, et la raison
+// serait écrite sans pouvoir être lue. L'inertie vient d'ailleurs : le gestionnaire du bouton DIT le
+// refus au lieu de laisser un geste sans effet, ce qu'il faisait déjà.
+// ET DEUX BOUTONS VOISINS N'AVAIENT NI GARDE NI RATTRAPAGE : renommer et supprimer une vue passent par
+// `view_update` et `view_delete`, qui portent la MÊME clause d'appartenance que le partage — un lecteur
+// non propriétaire recevait un 403 que personne ne lisait, l'envoi n'étant pas même entouré. Les trois
+// contrôles miroitent donc le MÊME prédicat, écrit une fois, et chacun entoure son envoi.
+// CE QUE CE MIROIR NE FAIT PAS : il n'AUTORISE rien. La garde qui lie est le démon ; celle-ci ne fait
+// que dire, avant le geste, ce qu'il répondra — et le dire est tout ce qui manquait.
+const REFUS_DE_VUE_MOTS = {
+  aucune_vue: { fr: "Aucune vue choisie : ce geste porte sur UNE vue, et « — Sans filtre de vue — » n'en est pas une — choisissez-en une dans la liste.", en: 'No view selected: this gesture applies to ONE view, and “— No view filter —” is not one — pick one from the list.' },
+  pas_proprietaire: { fr: "Vue d'un autre : seuls son propriétaire et un administrateur peuvent la partager, la renommer ou la supprimer (le serveur le refuse aussi).", en: 'Someone else’s view: only its owner and an administrator may share, rename or delete it (the server refuses it too).' },
+};
+const motDuRefusDeVue = (cause) => (LANG === 'en' ? REFUS_DE_VUE_MOTS[cause].en : REFUS_DE_VUE_MOTS[cause].fr);
+// LE REFUS DU SERVEUR, RENDU AU LIEU D'ÊTRE AVALÉ — le geste est nommé ici, la cause vient du démon telle
+// qu'il l'a écrite. Le bouton de partage entourait déjà son envoi ; ses deux voisins ne le faisaient pas.
+const GESTE_DE_VUE_MOTS = {
+  suppression: { fr: 'Suppression de la vue refusée par le serveur', en: 'View deletion refused by the server' },
+  renommage: { fr: 'Renommage de la vue refusé par le serveur', en: 'View rename refused by the server' },
+};
+const motDuRefusServeurDeVue = (geste, e) => (LANG === 'en' ? GESTE_DE_VUE_MOTS[geste].en : GESTE_DE_VUE_MOTS[geste].fr) + ' (' + (e && e.message ? e.message : e) + ')';
 function viewCanShare(v) { return !!v && (S.viewsRole === 'admin' || !v.owner || v.owner === S.viewsMe); }
+// La raison de refuser CETTE vue, ou '' si rien ne la refuse. UN SEUL LECTEUR pour les trois contrôles :
+// deux formulations du même refus divergeraient, et le démon n'en porte qu'une.
+function motDuRefusDeLaVue(v) {
+  if (!v) return motDuRefusDeVue('aucune_vue');
+  if (!viewCanShare(v)) return motDuRefusDeVue('pas_proprietaire');
+  return '';
+}
+// Pose le refus SUR le contrôle (grammaire de `P11.4-l`) : il reste VISIBLE, il porte la marque
+// accessible, et son infobulle DIT pourquoi. Idempotent. Rend true si un refus a été posé.
+function rendreInerteAvecSonMotif(btn, motif, survolPermis) {
+  if (!btn) return false;
+  btn.hidden = false;
+  if (motif) { btn.setAttribute('aria-disabled', 'true'); btn.title = motif; return true; }
+  btn.removeAttribute('aria-disabled');
+  if (survolPermis) btn.title = survolPermis;
+  return false;
+}
 function updateViewShareBtn() {
   const btn = $('#view-share'), sel = $('#view'); if (!btn || !sel) return;
   const v = S.viewList.find(x => String(x.id) === String(sel.value));
-  if (!v || !viewCanShare(v)) { btn.hidden = true; return; }
+  btn.innerHTML = ic('users');
+  const motif = motDuRefusDeLaVue(v);
+  if (rendreInerteAvecSonMotif(btn, motif)) { btn.classList.remove('on'); btn.removeAttribute('aria-pressed'); return; }
   const shared = v.visibility === 'shared';
-  btn.hidden = false; btn.innerHTML = ic('users'); btn.classList.toggle('on', shared);
+  btn.classList.toggle('on', shared);
   btn.setAttribute('aria-pressed', shared ? 'true' : 'false');
   const owner = v.owner ? ' (propriétaire : ' + v.owner + ')' : '';
   btn.title = shared ? `Vue partagée avec l'équipe${owner} — cliquer pour la rendre privée`
                      : `Vue privée${owner} — cliquer pour la partager avec l'équipe`;
+}
+// LES DEUX VOISINS, PAR LE MÊME PRÉDICAT ET LA MÊME GRAMMAIRE. Leur survol PERMIS est celui que la page
+// leur a écrit : le reposer ici efface la raison du refus quand elle cesse de s'appliquer, sans quoi une
+// vue redevenue accessible garderait le motif d'une autre.
+const SURVOL_PERMIS_DE_VUE = {
+  'view-rename': { fr: 'Renommer la vue', en: 'Rename the view' },
+  'view-del': { fr: 'Supprimer la vue (les dashboards sont conservés)', en: 'Delete the view (its dashboards are kept)' },
+};
+function refleterLesDroitsDeLaVue() {
+  updateViewShareBtn();
+  const sel = $('#view'); if (!sel) return;
+  const v = S.viewList.find(x => String(x.id) === String(sel.value));
+  const motif = motDuRefusDeLaVue(v);
+  Object.keys(SURVOL_PERMIS_DE_VUE).forEach(id => {
+    const permis = SURVOL_PERMIS_DE_VUE[id];
+    rendreInerteAvecSonMotif($('#' + id), motif, LANG === 'en' ? permis.en : permis.fr);
+  });
 }
 
 function initDashboards() {
@@ -985,12 +1053,14 @@ function initDashboards() {
   if ($('#dash-prev')) $('#dash-prev').addEventListener('click', () => { if (PLAY.on) { playShow(PLAY.idx - 1); playTick(); } });
   if ($('#dash-next')) $('#dash-next').addEventListener('click', () => { if (PLAY.on) { playShow(PLAY.idx + 1); playTick(); } });
   if ($('#dash-playint')) $('#dash-playint').addEventListener('change', () => { if (PLAY.on) playTick(); });
-  if ($('#view')) { $('#view').addEventListener('change', loadDashboards); $('#view').addEventListener('change', updateViewShareBtn); }
+  if ($('#view')) { $('#view').addEventListener('change', loadDashboards); $('#view').addEventListener('change', refleterLesDroitsDeLaVue); }
   if ($('#view-share')) $('#view-share').addEventListener('click', async () => {
     const sel = $('#view'); const id = sel && sel.value;
     const v = S.viewList.find(x => String(x.id) === String(id));
-    if (!v) { toast('Sélectionne une vue à partager (pas « — Sans filtre de vue — »).', 'bad'); return; }
-    if (!viewCanShare(v)) { toast('Seuls le propriétaire ou un admin peuvent changer le partage.', 'bad'); return; }
+    // `P11.20-o` — LE CLIC DIT EXACTEMENT CE QUE LE SURVOL ANNONÇAIT : une seule écriture des deux
+    // refus, pour qu'ils ne puissent pas diverger. Le rendu du refus, lui, existait déjà.
+    const motif = motDuRefusDeLaVue(v);
+    if (motif) { toast(motif, 'bad', 6000); return; }
     const next = v.visibility === 'shared' ? 'private' : 'shared';
     // `P11.13-b` — CE GESTE CHANGE QUI PEUT LIRE, ET IL PARTAIT SANS RIEN DEMANDER. Un clic sur une
     // icône basculait une vue privée en vue d'équipe (et l'inverse) : aucune conséquence n'était
@@ -1018,7 +1088,7 @@ function initDashboards() {
     if (!await confirmWithConsequence(geste, consequence)) return;
     try { await apiSend('/views/' + id, 'POST', { visibility: next }); }
     catch (e) { toast('Changement de partage refusé (' + (e && e.message ? e.message : e) + ')', 'bad'); return; }
-    await loadViews(); sel.value = id; updateViewShareBtn();
+    await loadViews(); sel.value = id; refleterLesDroitsDeLaVue();
     toast(next === 'shared' ? 'Vue partagée avec l\'équipe' : 'Vue rendue privée', 'ok');
   });
   if ($('#view-new')) $('#view-new').addEventListener('click', async () => {
@@ -1033,20 +1103,31 @@ function initDashboards() {
     await loadViews(); if (cr.id) $('#view').value = cr.id; loadDashboards(); toast('Vue créée', 'ok');
   });
   if ($('#view-del')) $('#view-del').addEventListener('click', async () => {
-    const sel = $('#view'); if (!sel.value) { toast('Sélectionne une vue à supprimer.', 'bad'); return; }
+    const sel = $('#view');
+    // `P11.20-o` — MÊME PRÉDICAT, MÊME PHRASE que le partage : `view_delete` porte la MÊME clause
+    // d'appartenance que `view_update`, et ce bouton n'en miroitait aucune.
+    const motif = motDuRefusDeLaVue(S.viewList.find(x => String(x.id) === String(sel && sel.value)));
+    if (motif) { toast(motif, 'bad', 6000); return; }
     if (!await confirmModal('Supprimer cette vue ? Les dashboards sont conservés (détachés de la vue).', { danger: true })) return;
-    await apiSend('/views/' + sel.value, 'DELETE');
+    // ... ET L'ENVOI EST ENTOURÉ : un refus du démon partait dans un rejet que personne ne traitait, si
+    // bien que la vue restait à l'écran sans un mot — le défaut même que ce dépôt refuse ailleurs.
+    try { await apiSend('/views/' + sel.value, 'DELETE'); }
+    catch (e) { toast(motDuRefusServeurDeVue('suppression', e), 'bad', 6000); return; }
     sel.value = ''; await loadViews(); loadDashboards();
   });
   if ($('#view-rename')) {
     $('#view-rename').innerHTML = ic('pencil');
     $('#view-rename').addEventListener('click', async () => {
       const sel = $('#view'); const id = sel && sel.value;
-      if (!id) { toast('Sélectionne une vue à renommer (pas « — Sans filtre de vue — »).', 'bad'); return; }
       const v = S.viewList.find(x => String(x.id) === String(id));
+      // `P11.20-o` — `view_update` sert le renommage ET le partage, et porte pour les deux la MÊME clause
+      // d'appartenance. Ce bouton ne miroitait que l'absence de choix, jamais le droit.
+      const motif = motDuRefusDeLaVue(v);
+      if (motif) { toast(motif, 'bad', 6000); return; }
       const r = await modal({ title: 'Renommer la vue', okText: 'Enregistrer', fields: [{ name: 'name', label: 'Nom', required: true, value: v ? v.name : '' }], validate: x => S.viewList.some(y => String(y.id) !== String(id) && y.name === x.name.trim()) ? 'Une vue porte déjà ce nom.' : null });
       if (!r) return;
-      await apiSend('/views/' + id, 'POST', { name: r.name.trim() });
+      try { await apiSend('/views/' + id, 'POST', { name: r.name.trim() }); }
+      catch (e) { toast(motDuRefusServeurDeVue('renommage', e), 'bad', 6000); return; }
       await loadViews(); $('#view').value = id; toast('Vue renommée', 'ok');
     });
   }

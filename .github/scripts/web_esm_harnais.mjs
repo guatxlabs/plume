@@ -8865,6 +8865,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   const INSTANTS64 = ["bucket", "n"];           // `bucket` est une colonne d'INSTANTS (DIMENSIONLESS)
   const NOMMEE64 = ["src_ip", "n"];             // ... et celle-ci n'en est pas une
   const DRILL64 = "search v=$value $from $to";  // le gabarit NOMME la valeur ET les deux bornes
+  const VALEUR_SEULE64 = "search v=$value";      // ... et celui-ci ne nomme QUE la valeur
   const cu64 = (el, pred, acc = []) => { if (el && pred(el)) acc.push(el); for (const c of (el && el.children) || []) cu64(c, pred, acc); return acc; };
   const T = (e) => e.textContent.replace(/\s+/g, " ").trim();
   const aveux64 = (e) => cu64(e, (n) => n.classList && n.classList.contains("rf-hint") && !n.classList.contains("bad"));
@@ -8950,10 +8951,18 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     const dit = aveux64(tableDe64(rows, DRILL64)).map(T).join(" ");
     exiger(dit.includes(String(rows.length)) && /fenêtre|window/.test(dit),
       `(64c) une table ${nom} retire le geste sans un mot : « ${dit} » — un retrait muet est indiscernable d'une panne`);
-    // LE FORAGE DE VALEUR N'EST PAS CASSÉ : la ligne part, avec sa valeur, et sans plage.
-    const q = requeteApresClic64(rows);
-    exiger(q.includes(String(rows[0][0])) && !/\$value/.test(q),
-      `(64c) le forage de VALEUR ne part plus quand la fenêtre est refusée : la requête posée est « ${q} »`);
+    // LE FORAGE DE VALEUR N'EST PAS CASSÉ : un gabarit qui ne nomme QUE la valeur part, avec elle et
+    // sans plage — le chemin qu'emprunte déjà le forage d'un chiffre.
+    const qValeur = requeteApresClic64(rows, VALEUR_SEULE64);
+    exiger(qValeur.includes(String(rows[0][0])) && !/\$value/.test(qValeur),
+      `(64c) le forage de VALEUR ne part plus quand la fenêtre est refusée : la requête posée est « ${qValeur} »`);
+    // `P11.20-q` — ET LE GABARIT QUI NOMME DES BORNES QU'AUCUNE FENÊTRE NE SERT NE PART PLUS DU TOUT.
+    // C'est le reste que ce témoin déclarait ouvert mot pour mot — « les marqueurs partent alors tels
+    // quels vers le démon » — et qui n'était pas un problème du démon : `$from` était POSÉ dans le champ
+    // de requête, sous les yeux de l'exploitant, par une console qui prétendait porter une requête.
+    const qBornes = requeteApresClic64(rows, DRILL64);
+    exiger(qBornes === "",
+      `(64c) un gabarit qui nomme des bornes qu'aucune fenêtre ne sert part tout de même, avec ses marqueurs nus : la requête posée est « ${qBornes} »`);
   }
   // NÉGATIFS : là où le geste n'était pas offert, l'annoncer crierait au loup.
   for (const [nom, el] of [
@@ -9025,7 +9034,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   exiger(chiffres64(aveuEN64) === chiffres64(aveuFR64) && chiffres64(aveuFR64) !== "",
     `(64e) l'aveu du forage retiré ne compte pas la même chose dans les deux langues (fr « ${chiffres64(aveuFR64)} », en « ${chiffres64(aveuEN64)} »)`);
 
-  console.log(`[fenetre-de-forage-a-un-seul-ecrivain] LES TROIS SITES QUI FABRIQUAIENT UNE DURÉE SONT FERMÉS, ET C'EST JOUÉ AU CLIC, PAS LU DANS LE SOURCE. Une table de seaux ouvrait SOIXANTE secondes quelle que soit la cadence servie ; les fenêtres qu'elle ouvre maintenant, relevées en cliquant CHAQUE ligne, sont exactement les écarts que sa colonne d'instants PORTE — ${JSON.stringify(largeursPortees64(REGULIERE64))} sur une table régulière, ${JSON.stringify(largeursPortees64(IRREGULIERE64))} sur une table irrégulière où la largeur est celle du VOISIN de la ligne cliquée (${JSON.stringify(parLigne64)}, et non l'écart des deux premières appliqué partout). Une table d'une seule ligne et une table de deux lignes du MÊME instant n'ouvrent plus rien : elles le DISENT, à côté de la table et avant le clic, par le nœud que cinq figures partageaient déjà — et le forage de VALEUR part quand même, sans plage, comme le fait déjà le forage d'un chiffre. Le zoom temporel de la courbe, seul autre consommateur, refuse la même chose par le même écrivain. TROIS INSTRUMENTS bornent le verdict : sans gabarit de forage, sur une colonne de tête qui n'est pas une colonne d'instants, et sur le chemin nominal, aucune fenêtre ne s'ouvre et aucun aveu ne s'écrit — le balisage d'une table entièrement cadencée reste une TABLE NUE. CE QUE CE TÉMOIN NE TIENT PAS : le PLACEMENT du survol de la courbe, fourni à la main comme en (63) ; le fait qu'une ligne dont la fenêtre est refusée garde le MÊME curseur et la MÊME infobulle qu'une ligne qui l'ouvre — elle offre toujours son forage de valeur, mais rien à l'écran ne distingue les deux gestes AVANT le clic ; le sort d'un gabarit qui NOMME \`$from\`/\`$to\` sans qu'aucune fenêtre ait été lue — les marqueurs partent alors tels quels vers le démon, exactement comme ils le font déjà depuis le forage d'un chiffre, et personne ici ne juge ce que le démon en fait ; le COMPTE, qui reste à la LIGNE SERVIE et non à l'instant distinct, si bien que deux lignes du même instant sont comptées deux fois ; et le dernier seau d'une colonne, borné par l'écart au PRÉCÉDENT faute de successeur servi.`);
+  console.log(`[fenetre-de-forage-a-un-seul-ecrivain] LES TROIS SITES QUI FABRIQUAIENT UNE DURÉE SONT FERMÉS, ET C'EST JOUÉ AU CLIC, PAS LU DANS LE SOURCE. Une table de seaux ouvrait SOIXANTE secondes quelle que soit la cadence servie ; les fenêtres qu'elle ouvre maintenant, relevées en cliquant CHAQUE ligne, sont exactement les écarts que sa colonne d'instants PORTE — ${JSON.stringify(largeursPortees64(REGULIERE64))} sur une table régulière, ${JSON.stringify(largeursPortees64(IRREGULIERE64))} sur une table irrégulière où la largeur est celle du VOISIN de la ligne cliquée (${JSON.stringify(parLigne64)}, et non l'écart des deux premières appliqué partout). Une table d'une seule ligne et une table de deux lignes du MÊME instant n'ouvrent plus rien : elles le DISENT, à côté de la table et avant le clic, par le nœud que cinq figures partageaient déjà — et le forage de VALEUR part quand même, sans plage, comme le fait déjà le forage d'un chiffre. Le zoom temporel de la courbe, seul autre consommateur, refuse la même chose par le même écrivain. TROIS INSTRUMENTS bornent le verdict : sans gabarit de forage, sur une colonne de tête qui n'est pas une colonne d'instants, et sur le chemin nominal, aucune fenêtre ne s'ouvre et aucun aveu ne s'écrit — le balisage d'une table entièrement cadencée reste une TABLE NUE. CE QUE CE TÉMOIN NE TIENT PAS : le PLACEMENT du survol de la courbe, fourni à la main comme en (63) ; le fait qu'une ligne dont la fenêtre est refusée garde le MÊME curseur et la MÊME infobulle qu'une ligne qui l'ouvre — elle offre toujours son forage de valeur, mais rien à l'écran ne distingue les deux gestes AVANT le clic ; ce que dit le refus d'un gabarit dont les marqueurs ne sont pas servis — ce témoin établit seulement qu'il NE PART PLUS (\`P11.20-q\` : il partait, marqueurs nus, jusqu'au champ de requête), et c'est le témoin 73 qui juge la phrase rendue ; le COMPTE, qui reste à la LIGNE SERVIE et non à l'instant distinct, si bien que deux lignes du même instant sont comptées deux fois ; et le dernier seau d'une colonne, borné par l'écart au PRÉCÉDENT faute de successeur servi.`);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -9913,6 +9922,449 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     .map(([k, e]) => [k, [...new Set([...dureesDe72(((e.fr || {}).title || "") + "\n" + ((e.fr || {}).body || "")), ...dureesDe72(((e.en || {}).title || "") + "\n" + ((e.en || {}).body || ""))])].sort((x, y) => x - y)])
     .filter(([, d]) => d.length);
   console.log(`[aide-ne-cite-que-ce-que-la-vue-porte] L'AIDE « ACCÈS DONNÉES » NE CITE PLUS AUCUNE BORNE QUE LA VUE NE PORTE PAS (\`P11.20-g\`), ET C'EST UN RAPPORT D'INCLUSION, PAS UNE RECHERCHE DE MOT. CE QUE LA VUE OFFRE EST DÉRIVÉ DE DEUX SITES QUI S'ACCORDENT : la table d'options du sélecteur de web/dataaccess.js rend {${[...offertes72].sort((x, y) => x - y).map(lisible72).join(", ")}} et le corps de \`daFromValue\` calcule {${[...calculees72].sort((x, y) => x - y).map(lisible72).join(", ")}} — plus « toute la rétention », qui n'est PAS un chiffre, et c'est précisément ce que la vue a cessé d'en écrire un le 2026-08-25 : le panneau n'a jamais lu la rétention, réglable par déploiement et servie par le démon. LE CORPS RÉEL, DANS LES DEUX LANGUES (${corpsFR72.length} et ${corpsEN72.length} caractères), ne cite plus aucune durée hors de cette offre. LES DEUX CONTRÔLES ENCADRENT L'INSTRUMENT : un corps fabriqué qui cite une borne hors offre EST accusé, un corps qui ne cite que l'offre ne l'est pas — sans le premier le témoin serait vert quoi qu'écrive l'aide, sans le second il accuserait toute aide qui parle de sa fenêtre. CE QUE CE TÉMOIN NE TIENT PAS : il ne juge QUE ce couple ; les ${autres72.length} autres sections qui citent une durée sont IMPRIMÉES sans être jugées, faute de vue dérivable — ${autres72.map(([k, d]) => k + " {" + d.map(lisible72).join(", ") + "}").join(" · ")} ; il ne lit que les DURÉES ; il ne dit rien du sens inverse (une borne portée par la vue et tue par l'aide) ; et il ne lit pas la rétention du déploiement, que la console ne lit pas davantage.`);
+}
+
+// ---------------------------------------------------------------------------------------------
+// 73. UN FORAGE REFUSÉ NOMME SA CAUSE, ET AUCUN MARQUEUR DE GABARIT N'ATTEINT L'ÉCRAN (`P11.20-q`).
+//
+//     CE QUE LA CLÉ AFFIRMAIT ET QUE CE TÉMOIN RÉFUTE : elle était rangée en SÛRETÉ D'EXPLOITATION et
+//     annonçait qu'un clic sans requête configurée « lance quand même une recherche sans filtre » sur une
+//     installation qui porte beaucoup de données. Rien de tel ne part : les quatre chemins arrêtaient le
+//     geste. Ce qu'ils ne faisaient pas, c'est le DIRE — et un `return` nu est, pour qui vient de
+//     cliquer, indiscernable d'une panne. Le péril n'était pas la charge, c'était le diagnostic.
+//
+//     (a) L'INSTRUMENT, DANS LES DEUX SENS. Le champ de requête est LU après chaque clic : un clic qui
+//         aboutit doit l'écrire, sans quoi « champ vide » ne prouverait pas un refus mais un instrument
+//         aveugle. Et un clic refusé doit le laisser INTACT, sans quoi le refus ne serait qu'un mot.
+//     (b) LE MARQUEUR QUI FUYAIT. Un panneau « chiffre » dont le gabarit de clic nomme `$value` n'a
+//         AUCUNE valeur cliquée à lui donner : `$value` était posé TEL QUEL dans le champ de requête,
+//         montré à l'exploitant et envoyé au démon comme s'il était du langage.
+//     (c) CHAQUE REFUS NOMME SA CAUSE, ET LES CAUSES SONT DISTINCTES. Un message unique passerait (b) en
+//         disant la même chose partout : les phrases rendues sont donc comparées DEUX À DEUX.
+//     (d) LE NOMINAL NE BOUGE PAS. Les deux chemins qui aboutissaient aboutissent, à l'octet près.
+//     (e) LES REFUS SE RENDENT DANS LES DEUX LANGUES, sous un instrument qui exige que la seconde
+//         instance porte bien l'anglais (`P11.24-j` : un module chargé sous une adresse de langue est un
+//         module DISTINCT, et un témoin qui lit une langue le DÉCLARE).
+//
+//     CE QUE CE TÉMOIN NE TIENT PAS : les deux chemins de refus qui restent des RÉSIDUS DÉFENSIFS —
+//     `gabarit_absent`, qu'aucun des sept appelants ne peut atteindre (tous sont sous un `if (drill)`),
+//     et `chiffre_sans_cible`, qu'AUCUNE entrée ne peut atteindre (le test qui le précède exige que la
+//     requête commence par `search`, si bien que la première section de tube en porte toujours le mot) ;
+//     ils sont NOMMÉS mais non joués, et un témoin qui les jouerait mesurerait sa propre fabrication. Il
+//     ne dit rien non plus de ce que le démon fait d'une requête, ni des deux chemins de refus muets qui
+//     vivent de SON côté (`query.rs`, `query_exec.rs`) et que ce lot n'a pas touchés. Et il ne peint
+//     rien : l'encre d'un avis est celle de la feuille de style, que la section 0 ne mesure pas.
+// ---------------------------------------------------------------------------------------------
+{
+  const viz73 = await import(pathToFileURL(path.join(WEB, "viz.js")).href);
+  const { S: S73 } = await import(pathToFileURL(path.join(WEB, "state.js")).href);
+  const cu73 = (el, pred, acc = []) => { if (el && pred(el)) acc.push(el); for (const c of (el && el.children) || []) cu73(c, pred, acc); return acc; };
+  const parClasse73 = (el, cl) => cu73(el, (n) => n.classList && n.classList.contains(cl));
+  const champ73 = () => document.querySelector("#sql");
+  const avis73 = () => document.querySelectorAll(".toast").map((t) => t.textContent);
+
+  // UN GESTE, UNE RÉPONSE. Le champ est vidé, les avis DÉJÀ peints sont comptés, le clic est joué, et on
+  // relève ce que CE geste a écrit : le champ, et la seule TRANCHE d'avis qu'il a ajoutée — jamais le
+  // dernier avis d'un journal partagé, qu'un geste voisin pourrait coiffer.
+  const jouer73 = (noeud) => {
+    if (!noeud) return { requete: "(aucun contrôle offert)", dits: [] };
+    if (champ73()) champ73().value = "";
+    S73.zoomRange = null; S73.exploreInflight = null;
+    const n = avis73().length;
+    noeud.onclick({});
+    S73.zoomRange = null; S73.exploreInflight = null;
+    return { requete: champ73() ? champ73().value : "(pas de champ de requête)", dits: avis73().slice(n) };
+  };
+  // Le contrôle n'est retenu que s'il PORTE un geste : un chiffre qui n'offre aucun clic n'est pas un
+  // refus, c'est l'absence de la question — et les confondre ferait passer (73c) pour un verdict.
+  const chiffre73 = (query, drill, mod = viz73) => parClasse73(mod.vizSansPorte("stat", ["k", "v"], [["a", 42]], query, drill), "statbig").filter((n) => typeof n.onclick === "function")[0] || null;
+  const barres73 = (rows, mod = viz73) => parClasse73(mod.vizSansPorte("bar", ["src_ip", "n"], rows, "", ""), "barrow").filter((n) => typeof n.onclick === "function");
+
+  const NOMINAL73 = "search source=srv1";
+  const GABARIT_VALEUR73 = "search source=$value | table ts,source";
+  const GABARIT_NU73 = "search x $from $to";
+
+  // ---- (73a) L'INSTRUMENT, DANS LES DEUX SENS ----
+  const surChiffre73 = jouer73(chiffre73(NOMINAL73, ""));
+  exiger(surChiffre73.requete === NOMINAL73,
+    `(73a-instrument) le clic d'un panneau « chiffre » qui PORTE une requête n'écrit pas le champ de requête (« ${surChiffre73.requete} ») : un champ vide ne prouverait alors aucun refus, seulement un instrument aveugle`);
+  exiger(surChiffre73.dits.length === 0,
+    `(73a-instrument) un forage qui ABOUTIT rend tout de même un avis (${JSON.stringify(surChiffre73.dits)}) : l'avis ne mesurerait plus un refus`);
+  exiger(barres73([["1.2.3.4", 5]]).length === 1,
+    `(73a-instrument) ${barres73([["1.2.3.4", 5]]).length} barre(s) offrent un clic pour une ligne servie : le second chemin n'est pas exercé`);
+  exiger(chiffre73("", "") === null,
+    "(73a-instrument) un panneau « chiffre » SANS requête ni gabarit offre tout de même un clic : le refus mesuré en (73c) ne serait pas celui qu'on croit");
+
+  // ---- (73b) LE MARQUEUR QUI FUYAIT ----
+  const fuite73 = jouer73(chiffre73(NOMINAL73, GABARIT_VALEUR73));
+  exiger(!/\$value/.test(fuite73.requete),
+    `(73b) un marqueur de substitution atteint le champ de requête : « ${fuite73.requete} » — l'exploitant lit « $value », et cette requête part au démon comme si c'était du langage`);
+  exiger(fuite73.requete === "",
+    `(73b) le forage d'un chiffre dont le gabarit nomme une valeur qu'aucun clic ne sert part tout de même : « ${fuite73.requete} »`);
+  exiger(fuite73.dits.length === 1 && /\$value/.test(fuite73.dits[0]),
+    `(73b) le refus ne NOMME pas le marqueur qu'il n'a pas su remplacer (${JSON.stringify(fuite73.dits)}) : « rien ne se passe » reste indiscernable d'une panne`);
+
+  // ---- (73c) CHAQUE REFUS NOMME SA CAUSE, ET LES CAUSES SONT DISTINCTES ----
+  const REFUS73 = [
+    ["un chiffre sans requête", jouer73(chiffre73("   ", ""))],
+    ["un gabarit dont la valeur n'est pas servie", fuite73],
+    ["un gabarit dont les bornes ne sont pas servies", jouer73(chiffre73(NOMINAL73, GABARIT_NU73))],
+    ["une part sans valeur", jouer73(barres73([["", 5]])[0])],
+  ];
+  for (const [nom, r] of REFUS73) {
+    exiger(r.requete === "", `(73c) le refus « ${nom} » laisse tout de même partir une requête : « ${r.requete} »`);
+    exiger(r.dits.length === 1 && String(r.dits[0]).trim().length > 40,
+      `(73c) le refus « ${nom} » ne rend rien de lisible (${JSON.stringify(r.dits)}) : un refus muet est indiscernable d'une panne`);
+  }
+  const phrases73 = REFUS73.map(([, r]) => String(r.dits[0] || ""));
+  for (let i = 0; i < phrases73.length; i++)
+    for (let j = i + 1; j < phrases73.length; j++)
+      exiger(phrases73[i] !== phrases73[j],
+        `(73c) « ${REFUS73[i][0]} » et « ${REFUS73[j][0]} » rendent LA MÊME phrase (« ${phrases73[i]} ») : un message générique remplace un silence par un bruit, et ne dit à personne quoi corriger`);
+  // ... et le refus d'une part sans valeur NOMME la colonne qu'il a lue : sans cela il ne désignerait
+  // rien dans une table qui en porte sept.
+  exiger(/src_ip/.test(phrases73[3]), `(73c) le refus d'une part sans valeur ne nomme pas la colonne lue : « ${phrases73[3]} »`);
+
+  // ---- (73d) LE NOMINAL NE BOUGE PAS ----
+  const nominalBarre73 = jouer73(barres73([["1.2.3.4", 5]])[0]);
+  exiger(nominalBarre73.requete === 'search src_ip="1.2.3.4"' && nominalBarre73.dits.length === 0,
+    `(73d) le forage d'une part QUI PORTE une valeur a changé : « ${nominalBarre73.requete} » ${JSON.stringify(nominalBarre73.dits)}`);
+  const nominalGabarit73 = jouer73(barres73([["srv1", 5]])[0]);
+  exiger(nominalGabarit73.requete === 'search src_ip="srv1"',
+    `(73d) le forage nominal d'une part est refusé alors que sa valeur est servie : « ${nominalGabarit73.requete} »`);
+
+  // ---- (73e) LES REFUS SE RENDENT DANS LES DEUX LANGUES ----
+  // La langue est POSÉE avant l'import : l'instance sous ce suffixe est peut-être déjà en cache (le
+  // témoin 64 la charge), mais un témoin qui compterait là-dessus deviendrait faux le jour où 64 bouge.
+  localStorage.setItem("soc_lang", "en");
+  const vizEN73 = await import(adresseSousLaLangue("viz.js"));
+  localStorage.removeItem("soc_lang");
+  const fuiteEN73 = jouer73(chiffre73(NOMINAL73, GABARIT_VALEUR73, vizEN73));
+  const ditEN73 = String(fuiteEN73.dits[0] || "");
+  exiger(ditEN73 !== "" && ditEN73 !== phrases73[1],
+    `(73e-instrument) le refus rendu par \`viz.js${SUFFIXE_LANGUE}\` est le MÊME qu'en français (« ${ditEN73} ») : ce module sert du français en se croyant lu en anglais, et rien de ce qui suit ne mesurerait une langue`);
+  exiger(!/[éèêëàâçùûôîï]/.test(ditEN73), `(73e) le refus du forage porte un accent français sous LANG='en' : « ${ditEN73} »`);
+  exiger(/\$value/.test(ditEN73), `(73e) le refus anglais ne nomme plus le marqueur : « ${ditEN73} »`);
+  exiger(!/ refuse d| gabarit | marqueurs que/.test(ditEN73), `(73e) le refus rend un mot français sous LANG='en' : « ${ditEN73} »`);
+
+  document.querySelectorAll(".toast").forEach((t) => t.remove());
+  console.log(`[forage-refuse-nomme-sa-cause] LE CLASSEMENT DE \`P11.20-q\` EST RÉFUTÉ, ET LE DÉFAUT MESURÉ EST AILLEURS. Ce n'était pas une clé de sûreté d'exploitation : aucun de ces chemins ne laissait partir une requête sans filtre — ils ne laissaient RIEN partir, et les gardes qui les arrêtent leur sont ANTÉRIEURES. C'était une clé d'HONNÊTETÉ DU REFUS, et elle se ferme en deux gestes JOUÉS ici, pas lus dans le source : ${REFUS73.length} chemins de clic rendaient un \`return\` nu et rendent maintenant chacun SA phrase — les ${(phrases73.length * (phrases73.length - 1)) / 2} paires sont comparées, aucune n'est la même, et celle d'une part sans valeur nomme la COLONNE qu'elle a lue ; et un gabarit dont un marqueur n'est pas servi ne part plus du tout, là où \`$value\` était POSÉ tel quel dans le champ de requête, montré à l'exploitant et envoyé au démon comme s'il était du langage. L'INSTRUMENT EST VALIDÉ DANS LES DEUX SENS : un clic qui aboutit ÉCRIT le champ (sans quoi « champ vide » ne prouverait qu'un instrument aveugle) et ne rend AUCUN avis, un panneau sans requête ni gabarit n'offre aucun clic, et les deux forages nominaux partent à l'octet près. Les refus se rendent dans les DEUX langues, sous un instrument qui exige que la seconde instance porte bien l'anglais. CE QUE CE TÉMOIN NE TIENT PAS : les DEUX chemins de refus qui restent des résidus défensifs — l'un n'est atteignable par aucun des sept appelants de \`customDrill\`, l'autre par aucune entrée de \`statDrill\` — sont NOMMÉS mais jamais joués, et les jouer mesurerait une fabrication ; les deux chemins muets qui vivent du côté du démon (\`query.rs\`, \`query_exec.rs\`) ne sont pas touchés par ce lot ; l'aveu COMPTÉ que \`P11.24-i\` écrit à côté d'une figure n'est pas remplacé par ces avis et reste jugé par le témoin 64 ; et rien ici ne juge l'encre peinte, que le simulacre ne mesure pas.`);
+}
+
+// ---------------------------------------------------------------------------------------------
+// 74. UN CONTRÔLE QU'UN DROIT REFUSE SE MONTRE, INERTE ET MOTIVÉ — IL NE SE CACHE PLUS (`P11.20-o`).
+//
+//     CE QUE LA CLÉ AFFIRMAIT ET QUE CE TÉMOIN RÉFUTE : elle disait le geste de partage « offert là où
+//     les droits ne le permettent pas ». Il ne l'était pas — la garde miroir lui était ANTÉRIEURE et le
+//     refus du démon était rendu au clic. La datation de la cellule est elle-même trop courte, mesurée :
+//     « cinq jours » date le DÉPLACEMENT du bloc depuis `app.js` (2026-08-22), pas le prédicat, qui vit
+//     depuis la publication initiale (2026-07-25) — trente-trois jours avant que le VU ne soit écrit. Le défaut réel est la FORME du refus : le
+//     contrôle était CACHÉ, ce qui laisse l'exploitant sans explication et contredit la grammaire que ce
+//     dépôt a livrée ailleurs (`core.js`, `P11.4-l` : un geste d'écriture refusé RESTE, inerte, AVEC sa
+//     raison). Et DEUX boutons voisins — renommer, supprimer — ne miroitaient AUCUN droit et
+//     n'entouraient AUCUN de leurs envois, alors que les trois routes portent la MÊME clause.
+//
+//     (a) L'INSTRUMENT : sur une vue que l'on POSSÈDE, les trois contrôles sont visibles, aucun n'est
+//         inerte, et le partage part — sans ce sens positif, « tout est inerte » passerait pour un
+//         verdict.
+//     (b) LA FORME DU REFUS : sur une vue d'un AUTRE, les trois contrôles restent VISIBLES, portent
+//         `aria-disabled` — et non `disabled`, qui couperait le survol et rendrait la raison illisible —
+//         et chacun DIT pourquoi dans son infobulle.
+//     (c) LE CLIC DIT LA MÊME CHOSE, ET RIEN NE PART. Une infobulle qu'un clic contredirait ne vaut rien.
+//     (d) DEUX CAUSES, DEUX PHRASES : « aucune vue choisie » et « vue d'un autre » ne se corrigent pas du
+//         même geste, et un motif unique passerait (b) en ne disant rien à personne.
+//     (e) LE MOTIF NE COLLE PAS : quand la vue redevient accessible, l'infobulle redevient celle du
+//         geste PERMIS et la marque d'inertie est retirée — un refus qui resterait accroché mentirait.
+//     (f) LES DEUX LANGUES, sous un instrument qui exige que la seconde instance porte bien l'anglais.
+//
+//     CE QUE CE TÉMOIN NE TIENT PAS : ni l'encre ni le grisé — la section 0 ne mesure aucun style
+//     calculé, donc « visible » est ici l'attribut du document, jamais un pixel ; ni ce que le démon fait
+//     de l'écriture (il n'est pas là) ; ni le bouton « + Vue », que rien ne borne et qui n'est donc pas
+//     dans la population ; ni le corps de la fenêtre de confirmation, tenu par le témoin 47.
+// ---------------------------------------------------------------------------------------------
+{
+  const url74 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const modDash74 = await import(url74("dashboards.js"));
+  const { S: S74 } = await import(url74("state.js"));
+  const tic74 = () => new Promise((r) => setTimeout(r, 0));
+  const laisserTourner74 = async (n = 20) => { for (let i = 0; i < n; i++) await tic74(); };
+  const avis74 = () => document.querySelectorAll(".toast").map((t) => t.textContent);
+
+  const CONTROLES74 = ["#view-share", "#view-rename", "#view-del"];
+  const etatVue74 = { views: [{ id: 7, name: "Production", owner: "hugo", visibility: "private", dashboards: 2 }], me: "hugo", role: "admin" };
+  const ecritures74 = [];
+  const qsOrigine74 = document.querySelector, fetchOrigine74 = globalThis.fetch;
+  const etatOrigine74 = { role: S74.viewsRole, me: S74.viewsMe, liste: S74.viewList };
+
+  // UN JEU DE CONTRÔLES NEUF PAR PASSE : deux instances du module écriraient sinon sur les mêmes nœuds,
+  // et la seconde lirait ce que la première a laissé.
+  // L'HÔTE DES AVIS EST RÉEL ET IL EST DANS LE CORPS DU DOCUMENT. Sans lui, la recherche détournée rend
+  // un nœud DÉTACHÉ neuf à chaque appel : l'avis s'y peint et personne ne le retrouve — un refus muet et
+  // un refus qu'on ne sait pas lire seraient alors indiscernables, ce qui est exactement le défaut jugé.
+  const hoteDesAvis74 = new Element("div");
+  hoteDesAvis74.id = "toasts";
+  document.body.appendChild(hoteDesAvis74);
+  const poserLesControles74 = () => {
+    const sel = new Element("select");
+    const hotes = { "#view": sel, "#toasts": hoteDesAvis74 };
+    for (const c of CONTROLES74) hotes[c] = new Element("button");
+    document.querySelector = (s) => (Object.prototype.hasOwnProperty.call(hotes, s) ? hotes[s] : new Element("div"));
+    return hotes;
+  };
+  globalThis.fetch = async (u, o) => {
+    const url = String(u), methode = (o && o.method) || "GET";
+    if (methode !== "GET") { ecritures74.push(methode + " " + url); return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true }) }; }
+    if (url.includes("/api/views")) return { ok: true, status: 200, text: async () => JSON.stringify(etatVue74) };
+    return { ok: true, status: 200, text: async () => JSON.stringify({}) };
+  };
+  // L'ÉTAT DE CHAQUE CONTRÔLE, LU DANS LE DOCUMENT : montré ou caché, inerte ou non, et ce qu'il DIT.
+  const etatDe74 = (b) => ({ cache: !!b.hidden, inerte: b.getAttribute("aria-disabled") === "true", coupe: b.hasAttribute("disabled"), dit: b.getAttribute("title") || "" });
+  const passe74 = async (hotes, mod) => {
+    mod.initDashboards();
+    await laisserTourner74();
+    hotes["#view"].value = "7";
+    hotes["#view"].dispatchEvent({ type: "change" });
+    await laisserTourner74();
+    return CONTROLES74.map((c) => [c, etatDe74(hotes[c])]);
+  };
+
+  try {
+    // ---- (74a) L'INSTRUMENT : une vue que l'on POSSÈDE ----
+    const hotesA74 = poserLesControles74();
+    const permis74 = await passe74(hotesA74, modDash74);
+    for (const [c, e] of permis74) {
+      exiger(!e.cache && !e.inerte,
+        `(74a-instrument) sur une vue que l'on POSSÈDE, ${c} est ${e.cache ? "caché" : "inerte"} : le sens positif n'est pas joué et « tout est inerte » passerait pour un verdict`);
+      exiger(e.dit.trim().length > 0, `(74a-instrument) ${c} n'annonce rien du tout sur une vue permise : l'infobulle lue en (74b) ne mesurerait aucune raison`);
+    }
+    const avantPermis74 = ecritures74.length;
+    hotesA74["#view-share"].dispatchEvent({ type: "click" });
+    await laisserTourner74();
+    exiger(document.body.children.some((c) => c.classList && c.classList.contains("modal-ov")),
+      "(74a-instrument) le partage d'une vue POSSÉDÉE n'ouvre plus rien : le chemin permis n'est pas atteignable et (74c) mesurerait une absence de geste");
+    document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
+    exiger(ecritures74.length === avantPermis74, "(74a-instrument) le geste permis a écrit sans confirmation : ce n'est pas ce chemin qui est mesuré ici");
+
+    // ---- (74b) LA FORME DU REFUS, sur une vue d'un AUTRE ----
+    etatVue74.views = [{ id: 7, name: "Production", owner: "alice", visibility: "private", dashboards: 2 }];
+    etatVue74.me = "hugo"; etatVue74.role = "viewer";
+    const hotesB74 = poserLesControles74();
+    const refuses74 = await passe74(hotesB74, modDash74);
+    for (const [c, e] of refuses74) {
+      exiger(!e.cache, `(74b) ${c} est CACHÉ sur une vue d'un autre : l'exploitant ne sait ni que le geste existe, ni que c'est son rôle qui le borne`);
+      exiger(e.inerte, `(74b) ${c} ne porte pas la marque d'inertie sur une vue d'un autre : un geste que le démon refusera se présente comme disponible`);
+      exiger(!e.coupe, `(74b) ${c} est rendu \`disabled\` : il ne recevrait plus le survol, et la raison serait écrite sans pouvoir être lue (c'est le choix de \`P11.4-l\`)`);
+      exiger(e.dit.trim().length > 30, `(74b) ${c} est inerte SANS dire pourquoi : « ${e.dit} »`);
+    }
+
+    // ---- (74c) LE CLIC DIT LA MÊME CHOSE, ET RIEN NE PART ----
+    for (const c of CONTROLES74) {
+      const avant = ecritures74.length, n = avis74().length;
+      hotesB74[c].dispatchEvent({ type: "click" });
+      await laisserTourner74();
+      const dits = avis74().slice(n);
+      exiger(ecritures74.length === avant,
+        `(74c) le clic de ${c} sur une vue d'un autre laisse partir une écriture (${JSON.stringify(ecritures74.slice(avant))})`);
+      exiger(dits.length === 1 && dits[0] === etatDe74(hotesB74[c]).dit,
+        `(74c) le clic de ${c} ne dit pas ce que son survol annonçait (clic ${JSON.stringify(dits)}, survol « ${etatDe74(hotesB74[c]).dit} ») : deux formulations du même refus finissent par diverger`);
+    }
+    document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
+
+    // ---- (74d) DEUX CAUSES, DEUX PHRASES ----
+    const hotesD74 = poserLesControles74();
+    modDash74.initDashboards();
+    await laisserTourner74();
+    hotesD74["#view"].value = "";
+    hotesD74["#view"].dispatchEvent({ type: "change" });
+    await laisserTourner74();
+    for (const c of CONTROLES74) {
+      const sansVue = etatDe74(hotesD74[c]), autrui = refuses74.find(([n]) => n === c)[1];
+      exiger(!sansVue.cache && sansVue.inerte && sansVue.dit.trim().length > 30,
+        `(74d) sans vue choisie, ${c} n'est pas rendu inerte et motivé : ${JSON.stringify(sansVue)}`);
+      exiger(sansVue.dit !== autrui.dit,
+        `(74d) ${c} rend LA MÊME phrase pour « aucune vue choisie » et pour « vue d'un autre » (« ${sansVue.dit} ») : les deux ne se corrigent pas du même geste, et un motif unique ne dit rien à personne`);
+    }
+
+    // ---- (74e) LE MOTIF NE COLLE PAS ----
+    etatVue74.views = [{ id: 7, name: "Production", owner: "hugo", visibility: "private", dashboards: 2 }];
+    etatVue74.role = "admin";
+    const hotesE74 = poserLesControles74();
+    const rendus74 = await passe74(hotesE74, modDash74);
+    for (const [c, e] of rendus74) {
+      exiger(!e.inerte, `(74e) ${c} reste inerte alors que la vue est redevenue accessible : le refus est resté accroché`);
+      exiger(e.dit !== refuses74.find(([n]) => n === c)[1].dit,
+        `(74e) ${c} annonce encore le motif du REFUS sur une vue permise : « ${e.dit} »`);
+    }
+
+    // ---- (74f) LES DEUX LANGUES ----
+    etatVue74.views = [{ id: 7, name: "Production", owner: "alice", visibility: "private", dashboards: 2 }];
+    etatVue74.role = "viewer";
+    localStorage.setItem("soc_lang", "en");
+    const modDashEN74 = await import(adresseSousLaLangue("dashboards.js"));
+    localStorage.removeItem("soc_lang");
+    const hotesF74 = poserLesControles74();
+    const anglais74 = await passe74(hotesF74, modDashEN74);
+    for (const [c, e] of anglais74) {
+      exiger(e.inerte, `(74f-instrument) sous l'adresse anglaise, ${c} n'est plus inerte : la seconde instance ne joue pas le même chemin et rien de ce qui suit ne mesurerait une langue`);
+      exiger(e.dit !== refuses74.find(([n]) => n === c)[1].dit,
+        `(74f) ${c} rend la MÊME phrase sous l'adresse anglaise qu'en français (« ${e.dit} ») : ce module sert du français en se croyant lu en anglais`);
+      exiger(!/[éèêëàâçùûôîï]/.test(e.dit), `(74f) le motif de ${c} porte un accent français sous LANG='en' : « ${e.dit} »`);
+    }
+  } finally {
+    document.querySelector = qsOrigine74; globalThis.fetch = fetchOrigine74;
+    S74.viewsRole = etatOrigine74.role; S74.viewsMe = etatOrigine74.me; S74.viewList = etatOrigine74.liste;
+    document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
+    document.querySelectorAll(".toast").forEach((t) => t.remove());
+    hoteDesAvis74.remove();
+  }
+
+  console.log(`[controle-refuse-reste-inerte-et-motive] LE VU DE \`P11.20-o\` EST RÉFUTÉ ET LE DÉFAUT RÉEL EST FERMÉ. Le geste de partage n'était PAS offert sans droit — la garde miroir vit depuis la publication initiale (2026-07-25), trente-trois jours avant que le VU ne soit écrit, et non « cinq jours » comme la cellule le dit en datant en réalité le DÉPLACEMENT du bloc ; et le refus du démon était rendu. Ce qui était en défaut est la FORME du refus. Les ${CONTROLES74.length} contrôles du bandeau des vues (partager, renommer, supprimer) appliquent maintenant la grammaire que ce dépôt avait livrée dans \`core.js\` sous \`P11.4-l\` et que la feuille de style avait déjà payée : le contrôle RESTE visible, porte \`aria-disabled\` — et non \`disabled\`, qui couperait le survol et rendrait la raison illisible — et DIT dans son infobulle pourquoi il ne fera rien. Les deux voisins, qui ne miroitaient AUCUN droit et n'entouraient AUCUN envoi alors que \`view_update\` et \`view_delete\` portent la MÊME clause d'appartenance que le partage, passent par le MÊME prédicat et la MÊME phrase. C'EST JOUÉ, PAS LU : sur une vue possédée les trois contrôles sont vifs et le partage ouvre sa confirmation ; sur une vue d'autrui ils sont inertes, motivés, et leur clic dit EXACTEMENT ce que leur survol annonçait sans qu'aucune écriture ne parte ; « aucune vue choisie » et « vue d'un autre » ne rendent pas la même phrase ; et le motif ne colle pas — il disparaît dès que la vue redevient accessible. Les motifs se rendent dans les deux langues. CE QUE CE TÉMOIN NE TIENT PAS : le grisé, qui est de l'encre et que le simulacre ne mesure pas (section 0) ; ce que le démon fait des écritures, absent de ce banc ; le bouton « + Vue », que rien ne borne ; et le corps de la confirmation de partage, tenu par le témoin 47.`);
+}
+
+// ---------------------------------------------------------------------------------------------
+// 75. UNE CONTRIBUTION QUI NE MÈNE NULLE PART LE DIT, ET ELLE DIT CE QU'IL LUI MANQUE (`P11.20-i`).
+//
+//     CE QUE LA CLÉ SUR-DÉCRIT, ET QUE CE TÉMOIN MESURE : « les contributions récentes nomment des
+//     règles et ne mènent nulle part ». La moitié « ne mènent nulle part » était vraie — aucune ligne ne
+//     portait de geste —, mais sa cause était fausse : la route SERT `rule_id`, et la surface ne
+//     l'affichait même pas. Le manque réel est plus étroit ET plus profond : `risk_event` ne stocke NI la
+//     requête telle qu'elle a compté, NI sa fenêtre. Un identifiant de règle n'est pas une requête, et la
+//     règle a pu changer depuis : fabriquer un pivot à partir de lui rendrait des événements que RIEN ne
+//     rattache au score affiché. C'est ce que `P11.14-b` a refusé pour le pivot depuis une alerte.
+//
+//     CE QUE CE LOT TRANCHE : le REFUS LISIBLE, et il le dit là où la clé menait — sur la LIGNE. La
+//     vraie porte demande que le démon ÉCRIVE à l'imputation ce qu'il vient de compter, comme
+//     `P11.1-a` l'a fait pour l'alerte : une colonne de plus dans `risk_event`, une migration, et le
+//     remplissage aux sites d'imputation. C'est un chantier de démon, hors de portée d'une console.
+//
+//     (a) L'INSTRUMENT, DANS LES DEUX SENS : la liste VOISINE du même module porte bien un geste de
+//         ligne, et il OUVRE le détail. Sans lui, « aucun geste sur les contributions » ne mesurerait
+//         qu'un banc qui ne sait pas lire un geste de ligne.
+//     (b) LA RÈGLE SERVIE EST AFFICHÉE — c'est le point que la clé croyait absent.
+//     (c) AUCUNE LIGNE DE CONTRIBUTION NE SE PRÉSENTE COMME UNE PORTE : pas de geste de ligne, et le
+//         contrôle porte `aria-disabled` — non `disabled`, qui couperait le survol.
+//     (d) LE REFUS EST LISIBLE ET IL NOMME CE QUI MANQUE, et le clic dit ce que le survol annonçait.
+//     (e) DEUX CAUSES, DEUX PHRASES : une contribution de règle et une contribution sans règle ne
+//         manquent pas de la même chose.
+//     (f) LES DEUX LANGUES.
+//
+//     CE QUE CE TÉMOIN NE TIENT PAS : il ne prouve pas que le démon ne sert AUCUNE requête — il lit ce
+//     que la console reçoit, et c'est le source du démon qui a été lu pour l'écrire ; il ne juge ni
+//     l'encre ni le grisé (section 0) ; et il ne dit rien du coût de la vraie porte, qui n'est pas ici.
+// ---------------------------------------------------------------------------------------------
+{
+  const url75 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const modRisk75 = await import(url75("risk.js"));
+  const tic75 = () => new Promise((r) => setTimeout(r, 0));
+  const laisserTourner75 = async (n = 20) => { for (let i = 0; i < n; i++) await tic75(); };
+  const cu75 = (el, pred, acc = []) => { if (el && pred(el)) acc.push(el); for (const c of (el && el.children) || []) cu75(c, pred, acc); return acc; };
+  const avis75 = () => document.querySelectorAll(".toast").map((t) => t.textContent);
+
+  const ENTITES75 = {
+    entities: [{ entity_type: "host", entity: "srv1", score: 90, contrib: 2, distinct_tactics: 1, tactics: "TA0001", score_hot: 10, max_severity: 3, first_ts: 1735689000, last_ts: 1735689600, over_threshold: 1 }],
+    served: 1, window: 1, total: 1, total_capped: false, over_threshold_total: 1, thresholds: { score: 50, distinct_tactics: 2, velocity: 5, window_s: 86400 },
+  };
+  // DEUX CONTRIBUTIONS, ET DEUX SEULEMENT PARCE QUE LE DÉMON N'EN SERT PAS D'AUTRE FORME : l'une nomme sa
+  // règle (`rule_id` entier), l'autre non (`rule_id` nul — renseignement ou geste manuel). Aucune des
+  // deux ne porte de requête : c'est la colonne que `risk_event` n'a pas.
+  const DETAIL75 = {
+    entity_type: "host", entity: "srv1",
+    summary: { score: 90, contrib: 2, distinct_tactics: 1, tactics: "TA0001", score_hot: 10, contrib_hot: 1, max_severity: 3, first_ts: 1735689000, last_ts: 1735689600 },
+    timeline: [{ ts: 1735689600, score: 90, contrib: 2 }],
+    contributions: [
+      { ts: 1735689600, risk_score: 50, source: "rule", rule_id: 42, reason: "connexion inhabituelle", mitre: "T1078", severity: 3 },
+      { ts: 1735689000, risk_score: 40, source: "ti", rule_id: null, reason: "indicateur externe", mitre: "", severity: 2 },
+    ],
+  };
+
+  const qsOrigine75 = document.querySelector, fetchOrigine75 = globalThis.fetch;
+  const hoteDesAvis75 = new Element("div"); hoteDesAvis75.id = "toasts"; document.body.appendChild(hoteDesAvis75);
+  const liste75 = new Element("div"), detail75 = new Element("div"), legende75 = new Element("div");
+  document.body.append(liste75, detail75, legende75);
+  const hotes75 = { "#risk-list": liste75, "#risk-detail": detail75, "#risk-legend": legende75, "#toasts": hoteDesAvis75 };
+  document.querySelector = (s) => (Object.prototype.hasOwnProperty.call(hotes75, s) ? hotes75[s] : new Element("div"));
+  globalThis.fetch = async (u) => {
+    const url = String(u);
+    if (url.includes("/api/risk/entities")) return { ok: true, status: 200, text: async () => JSON.stringify(ENTITES75) };
+    if (url.includes("/api/risk/entity/")) return { ok: true, status: 200, text: async () => JSON.stringify(DETAIL75) };
+    return { ok: true, status: 200, text: async () => JSON.stringify({}) };
+  };
+
+  const lignesForables75 = (h) => cu75(h, (n) => n.tagName === "TR" && typeof n.onclick === "function");
+  const pivots75 = (h) => cu75(h, (n) => n.classList && n.classList.contains("contribpivot"));
+  const ouvrirLeDetail75 = async (mod) => {
+    liste75.replaceChildren(); detail75.replaceChildren();
+    await mod.loadRiskView();
+    await laisserTourner75();
+    const tr = lignesForables75(liste75)[0];
+    if (tr) tr.onclick();
+    await laisserTourner75();
+    return tr;
+  };
+
+  try {
+    const ligneOuvrante75 = await ouvrirLeDetail75(modRisk75);
+
+    // ---- (75a) L'INSTRUMENT, DANS LES DEUX SENS ----
+    exiger(!!ligneOuvrante75,
+      "(75a-instrument) la liste des entités n'offre AUCUN geste de ligne : ce banc ne sait pas lire un geste de ligne, et « aucun geste sur les contributions » ne mesurerait rien");
+    exiger(pivots75(detail75).length === DETAIL75.contributions.length,
+      `(75a-instrument) ${pivots75(detail75).length} contrôle(s) de contribution rendus pour ${DETAIL75.contributions.length} contribution(s) servies : le détail n'est pas celui qu'on croit mesurer`);
+
+    // ---- (75b) LA RÈGLE SERVIE EST AFFICHÉE ----
+    const textes75 = pivots75(detail75).map((n) => n.textContent);
+    exiger(textes75.some((t) => t.includes(String(DETAIL75.contributions[0].rule_id))),
+      `(75b) la règle que la route SERT n'atteint toujours pas l'écran (${JSON.stringify(textes75)}) : l'identifiant est inutilisé côté surface`);
+
+    // ---- (75c) AUCUNE LIGNE DE CONTRIBUTION NE SE PRÉSENTE COMME UNE PORTE ----
+    exiger(lignesForables75(detail75).length === 0,
+      `(75c) ${lignesForables75(detail75).length} ligne(s) de contribution portent un geste de ligne : elles se présentent comme une porte alors que rien de servi ne porte la requête qui a compté`);
+    for (const p of pivots75(detail75)) {
+      exiger(p.getAttribute("aria-disabled") === "true", `(75c) un contrôle de contribution ne porte pas la marque d'inertie : « ${p.textContent} »`);
+      exiger(!p.hasAttribute("disabled"), `(75c) un contrôle de contribution est rendu \`disabled\` : il ne recevrait plus le survol et sa raison serait écrite sans pouvoir être lue`);
+    }
+
+    // ---- (75d) LE REFUS EST LISIBLE, ET LE CLIC DIT CE QUE LE SURVOL ANNONÇAIT ----
+    for (const p of pivots75(detail75)) {
+      const survol = p.getAttribute("title") || "";
+      exiger(survol.trim().length > 80 && /requête|query/.test(survol),
+        `(75d) la ligne ne dit pas POURQUOI elle n'est pas cliquable, ni ce qui lui manque : « ${survol} »`);
+      // LE GESTE EST VÉRIFIÉ AVANT D'ÊTRE JOUÉ : un contrôle sans gestionnaire ferait JETER ce témoin, et
+      // un banc qui MEURT n'accuse rien — il laisse une pile d'appels là où il devait nommer un défaut.
+      // Mesuré ici même le 2026-09-03, en jouant la mutation qui retire le gestionnaire.
+      exiger(typeof p.onclick === "function",
+        `(75d) le contrôle d'une contribution n'écoute aucun clic : le refus reste au seul survol, et un clic sur une ligne inerte ne dit rien du tout`);
+      const n = avis75().length;
+      if (typeof p.onclick === "function") p.onclick();
+      const dits = avis75().slice(n);
+      exiger(dits.length === 1 && dits[0] === survol,
+        `(75d) le clic d'un contrôle de contribution ne dit pas ce que son survol annonçait (clic ${JSON.stringify(dits)}, survol « ${survol} »)`);
+    }
+
+    // ---- (75e) DEUX CAUSES, DEUX PHRASES ----
+    const motifs75 = pivots75(detail75).map((p) => p.getAttribute("title") || "");
+    exiger(motifs75[0] !== motifs75[1],
+      `(75e) une contribution QUI NOMME sa règle et une contribution qui n'en nomme AUCUNE rendent la MÊME phrase (« ${motifs75[0]} ») : elles ne manquent pourtant pas de la même chose, et un motif unique ne dit à personne ce qui la rouvrirait`);
+
+    // ---- (75f) LES DEUX LANGUES ----
+    localStorage.setItem("soc_lang", "en");
+    const modRiskEN75 = await import(adresseSousLaLangue("risk.js"));
+    localStorage.removeItem("soc_lang");
+    await ouvrirLeDetail75(modRiskEN75);
+    const motifsEN75 = pivots75(detail75).map((p) => p.getAttribute("title") || "");
+    exiger(motifsEN75.length === motifs75.length,
+      `(75f-instrument) l'instance anglaise ne rend pas les mêmes ${motifs75.length} contrôles (${motifsEN75.length}) : le même chemin n'est pas joué et rien de ce qui suit ne mesurerait une langue`);
+    for (let i = 0; i < motifsEN75.length; i++) {
+      exiger(motifsEN75[i] !== motifs75[i], `(75f) le motif d'une contribution est le MÊME sous l'adresse anglaise (« ${motifsEN75[i]} ») : ce module sert du français en se croyant lu en anglais`);
+      exiger(!/[éèêëàâçùûôîï]/.test(motifsEN75[i]), `(75f) le motif d'une contribution porte un accent français sous LANG='en' : « ${motifsEN75[i]} »`);
+    }
+  } finally {
+    document.querySelector = qsOrigine75; globalThis.fetch = fetchOrigine75;
+    document.querySelectorAll(".toast").forEach((t) => t.remove());
+    [liste75, detail75, legende75, hoteDesAvis75].forEach((n) => n.remove());
+  }
+
+  console.log(`[contribution-de-risque-refus-lisible] \`P11.20-i\` SUR-DÉCRIVAIT, ET CE QUI RESTE EST FERMÉ PAR UN REFUS LISIBLE. « Ne mènent nulle part » était vrai — aucune ligne ne portait de geste — mais la cause écrite était fausse : la route SERT bien l'identifiant de règle (\`SELECT ts,risk_score,source,rule_id,reason,mitre,severity\`), et la surface ne l'AFFICHAIT même pas ; elle l'affiche maintenant. Le manque réel est plus étroit et plus profond : \`risk_event\` ne stocke NI la requête telle qu'elle a compté NI sa fenêtre, et un identifiant de règle n'est pas une requête — la règle a pu changer depuis. Fabriquer le pivot rendrait des événements que rien ne rattache au score affiché, exactement ce que \`P11.14-b\` a refusé pour l'alerte. Les ${DETAIL75.contributions.length} contributions servies rendent donc chacune un contrôle INERTE ET MOTIVÉ (grammaire de \`P11.14-b\`, dérivée de \`P11.4-l\`) : \`aria-disabled\` et non \`disabled\`, qui couperait le survol ; aucune ligne n'offre de geste ; le survol NOMME ce qui manque ; le clic dit EXACTEMENT la même phrase ; et une contribution qui nomme sa règle ne dit pas la même chose qu'une contribution qui n'en nomme aucune. L'INSTRUMENT EST VALIDÉ DANS LES DEUX SENS : la liste VOISINE du même module porte bien un geste de ligne et OUVRE le détail — sans quoi « aucun geste » ne mesurerait qu'un banc aveugle. LA VRAIE PORTE, ET SON COÛT, écrits plutôt que tus : il faut que le DÉMON écrive à l'imputation ce qu'il vient de compter — la requête et sa fenêtre à côté de la contribution, comme \`P11.1-a\` l'a fait pour l'alerte — donc une colonne de plus dans \`risk_event\`, une migration, et le remplissage aux sites d'imputation. Aucune console ne peut s'en passer ni l'anticiper. CE QUE CE TÉMOIN NE TIENT PAS : il lit ce que la console REÇOIT, il ne prouve pas ce que le démon peut servir ; il ne juge ni encre ni grisé ; et il ne dit rien de ce que coûterait la vraie porte au-delà de l'avoir nommée.`);
 }
 
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;

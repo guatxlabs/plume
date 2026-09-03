@@ -44,7 +44,11 @@ function resetDrill() {
 const DIMENSIONLESS = new Set(['ts', 'bucket']); // 1re colonne temporelle -> pas un axe de filtrage
 
 function drilldown(field, value) {
-  if (value == null || value === '' || !field || DIMENSIONLESS.has(field)) return;
+  // `P11.20-q` — TROIS IMPASSES DISTINCTES SORTAIENT PAR LE MÊME `return` NU. Elles ne se corrigent pas
+  // de la même façon et elles ne se lisent pas pareil : ce qui est refusé est nommé, une par une.
+  if (!field) return refuserLeForage('champ_absent');
+  if (DIMENSIONLESS.has(field)) return refuserLeForage('colonne_sans_dimension', field);
+  if (value == null || value === '') return refuserLeForage('valeur_absente', field);
   const lit = /^-?\d+(\.\d+)?$/.test(String(value)) ? String(value) : `"${String(value).replace(/"/g, '')}"`;
   const sqlBox = $('#sql');
   if (sqlBox) sqlBox.value = `search ${field}=${lit}`;
@@ -52,6 +56,7 @@ function drilldown(field, value) {
   location.hash = 'explore';
   setDrillCrumb(field + '=' + value);
   runQuery();
+  return true;
 }
 
 // clic sur un point/bucket temporel -> zoom sur la fenêtre + vue événements (les logs précis).
@@ -111,15 +116,81 @@ function fenetreDeForage(debut, largeur) {
 // $value -> litteral entre guillemets, debarrasse de | [ ] " et retours ligne (anti-injection GXQL).
 function sanitizeVal(v) { return '"' + String(v).replace(/[|\[\]"\n\r]/g, ' ').trim() + '"'; }
 
+// `P11.20-q` — UN FORAGE QUI NE PART PAS LE DIT, ET IL NOMME SA CAUSE ; AUCUN MARQUEUR N'ATTEINT L'ÉCRAN.
+//
+// CE QUE LE CLASSEMENT DE LA CLÉ AFFIRMAIT, ET QUI EST RÉFUTÉ (mesuré le 2026-09-03) : elle était rangée
+// en sûreté d'exploitation et invoquait un péril de CHARGE — « cliquer lance quand même une recherche qui
+// ne porte aucun filtre ». Aucun de ces chemins ne laisse partir une requête sans filtre : ils ne
+// laissent RIEN partir, et les gardes qui les arrêtent leur sont antérieures. Ce qui manquait n'est pas
+// une garde, c'est l'HONNÊTETÉ DU REFUS — un `return` nu est, pour qui vient de cliquer, indiscernable
+// d'une panne — et un marqueur de gabarit NON substitué qui, lui, arrivait jusqu'au champ de requête.
+//
+// LE CANAL EST CELUI QUE CE DÉPÔT RÉSERVE AU RÉSULTAT D'UNE ACTION DEMANDÉE : un avis par CLIC, comme
+// `alertDrill` (`alerts.js`, `P11.14-b`) en rend déjà un sur un pivot refusé. Il ne remplace PAS l'aveu
+// COMPTÉ que `P11.24-i` écrit à côté d'une figure et que cinq figures partagent (`noeudNonMontre`) :
+// celui-là dit AVANT le clic combien de gestes offerts n'ouvrent aucune fenêtre, sur une population
+// entière ; celui-ci répond au geste qu'on vient de faire, et ne se paie qu'une fois par geste. Les deux
+// coexistent, et le second ne s'écrit sur AUCUN chemin que le premier couvre déjà — `drillTime` garde
+// son `return` silencieux, parce que son appelant a compté et dit son retrait avant le clic.
+//
+// CHAQUE CAUSE A SA PHRASE. Un message unique dirait la même chose sur quatre chemins et remplacerait un
+// silence par un bruit : ce qui manque à un panneau sans gabarit, à un chiffre sans requête, à une part
+// sans valeur et à un gabarit dont les marqueurs ne sont pas servis n'est pas la même chose, et le geste
+// pour y remédier non plus. Les phrases sont BILINGUES PAR CONSTRUCTION (`{fr, en}` choisi par LANG),
+// comme celles du pivot d'alerte : écrites une fois, jamais recollées à l'exécution.
+//
+// DEUX DES QUATRE CHEMINS SONT DES RÉSIDUS DÉFENSIFS, et c'est écrit plutôt que tu : `gabarit_absent`
+// n'est atteignable par aucun appelant (les sept sites qui appellent `customDrill` sont tous sous un
+// `if (drill)`), et `chiffre_sans_cible` ne l'est par AUCUNE entrée (le test qui le précède exige que la
+// requête commence par `search`, si bien que la première section de tube en porte toujours le mot). Ils
+// nomment tout de même leur cause : un refus défensif qui se tait coûte le même diagnostic qu'un autre.
+const FORAGE_MOTS = {
+  gabarit_absent: { fr: "Rien à forer : ce panneau ne porte AUCUN gabarit de requête au clic, et la console n'en fabrique pas — donnez-lui-en un en éditant le panneau.", en: 'Nothing to drill: this panel carries NO click-query template, and the console does not make one up — give it one by editing the panel.' },
+  chiffre_sans_requete: { fr: "Rien à forer derrière ce chiffre : le panneau ne porte aucune requête, et la console refuse d'en inventer une — chercher son libellé rendrait un vide qui ne prouverait rien.", en: 'Nothing to drill behind this figure: the panel carries no query, and the console refuses to invent one — searching its wording would return an emptiness that proves nothing.' },
+  chiffre_sans_cible: { fr: "Rien à forer derrière ce chiffre : une fois sa partie agrégée retirée, la requête du panneau ne laisse aucune cible à ouvrir.", en: 'Nothing to drill behind this figure: once its aggregating part is removed, the panel query leaves no target to open.' },
+  valeur_absente: { fr: "Rien à forer ici : cette part ne porte AUCUNE valeur dans la colonne servie, et une absence ne se cherche pas.", en: 'Nothing to drill here: this slice carries NO value in the served column, and an absence cannot be searched for.' },
+  champ_absent: { fr: "Rien à forer ici : la réponse servie ne nomme aucune colonne de tête, il n'y a donc aucun champ sur lequel filtrer.", en: 'Nothing to drill here: the served answer names no leading column, so there is no field to filter on.' },
+  colonne_sans_dimension: { fr: "Rien à forer sur cette colonne : c'est une colonne d'instants, un axe de temps et non un axe de filtrage.", en: 'Nothing to drill on this column: it is a column of instants, a time axis and not a filtering axis.' },
+  marqueurs_nus: { fr: "Le forage ne part pas : ce clic ne sert pas de quoi remplacer les marqueurs que le gabarit du panneau nomme, et la console refuse de les envoyer tels quels.", en: 'The drill does not depart: this click does not serve what would replace the markers the panel template names, and the console refuses to send them as they are.' },
+};
+const motDuForage = (cause) => (LANG === 'en' ? FORAGE_MOTS[cause].en : FORAGE_MOTS[cause].fr);
+// Rend TOUJOURS false — l'appelant écrit `return refuserLeForage(…)`, comme `alertDrill` rend false pour
+// que personne n'ait à redériver la réponse. Le DÉTAIL est le nom de ce qui manque (une colonne, des
+// marqueurs) : ce n'est pas une phrase, il n'a donc pas de langue, et il est cité à part plutôt que fondu
+// dans le mot — une phrase recollée à l'exécution ne serait égale à aucune clé et resterait française.
+function refuserLeForage(cause, detail) {
+  toast(motDuForage(cause) + (detail ? ' (' + detail + ')' : ''), 'bad', 6000);
+  return false;
+}
+// LES MARQUEURS D'UN GABARIT, ÉNUMÉRÉS UNE SEULE FOIS : la substitution et le contrôle lisent la MÊME
+// liste, sans quoi un marqueur ajouté d'un côté fuirait de l'autre.
+const MARQUEURS_DE_GABARIT = ['$value', '$from', '$to'];
+// CE QUE LE CLIC NE SERT PAS, LU SUR LE GABARIT ET JAMAIS SUR LA REQUÊTE COMPOSÉE. Chercher un marqueur
+// dans le texte composé accuserait une VALEUR CLIQUÉE qui contiendrait « $to » — `sanitizeVal` retire les
+// séparateurs GXQL, pas le signe du marqueur — et ferait refuser un forage parfaitement servi.
+function marqueursNonServis(tpl, aValeur, aFenetre) {
+  return MARQUEURS_DE_GABARIT.filter(m => String(tpl).indexOf(m) >= 0 && !(m === '$value' ? aValeur : aFenetre));
+}
+
 function customDrill(tpl, ctx) {
-  if (!tpl) return;
-  let q = tpl;
-  if (ctx.value !== undefined && ctx.value !== null) q = q.split('$value').join(sanitizeVal(ctx.value));
+  if (!tpl) return refuserLeForage('gabarit_absent');
   // `P11.24-i` : LA FENÊTRE EST CELLE QUE L'APPELANT A LUE — `ctx.largeur` est un écart SERVI, jamais
-  // une arité. Un début sans largeur n'en fabrique plus une : les marqueurs restent alors tels quels et
-  // aucune plage n'est posée, ce qui est EXACTEMENT le chemin déjà emprunté par le forage d'un chiffre
-  // (`statDrill`, contexte vide) — le forage de VALEUR, lui, part normalement.
+  // une arité. Un début sans largeur n'en fabrique plus une.
+  // `P11.20-q` — ET CE QUE CETTE CLAUSE-LÀ DISAIT DE LA SUITE EST RÉFUTÉ. Elle concluait « les marqueurs
+  // restent alors tels quels », en s'autorisant du chemin du forage d'un chiffre (`statDrill`, contexte
+  // vide) — c'est-à-dire du MÊME défaut, pris pour une référence. Un marqueur laissé tel quel n'est pas
+  // resté dans le gabarit : il est POSÉ dans le champ de requête, montré à l'exploitant, et envoyé au
+  // démon comme s'il était du langage. Ce que le clic ne sert pas est donc REFUSÉ et NOMMÉ, avant que
+  // quoi que ce soit ne soit posé — l'état partagé compris, dont le zoom, qui bougeait avant le contrôle.
+  // LE FORAGE DE VALEUR N'EST PAS CASSÉ POUR AUTANT : un gabarit qui ne nomme que `$value` sur un clic
+  // qui sert une valeur part exactement comme avant, sans plage, et le compte des gestes qui n'ouvrent
+  // aucune fenêtre reste écrit à côté de la figure par son écrivain unique.
+  const aValeur = ctx.value !== undefined && ctx.value !== null;
   const fenetre = fenetreDeForage(ctx.from, ctx.largeur);
+  const nus = marqueursNonServis(tpl, aValeur, !!fenetre);
+  if (nus.length) return refuserLeForage('marqueurs_nus', nus.join(' '));
+  let q = tpl;
+  if (aValeur) q = q.split('$value').join(sanitizeVal(ctx.value));
   if (fenetre) {
     q = q.split('$from').join(String(fenetre.from)).split('$to').join(String(fenetre.to));
     S.zoomRange = fenetre; updateZoomBadge(); // scope le Plume panel au bucket clique
@@ -131,6 +202,7 @@ function customDrill(tpl, ctx) {
   // clic-drill : scope le Plume panel UNIQUEMENT. PAS de refresh()/loadDashboard() global pour la branche
   // temporelle -> on ne re-scope plus toute la page Dashboards (le drag-zoom dashboard reste, lui, intact).
   runQuery();
+  return true;
 }
 
 // C : clic sur un panneau "stat" (un seul chiffre) -> voir ce qu'il y a derriere.
@@ -139,14 +211,15 @@ function customDrill(tpl, ctx) {
 function statDrill(query, drill) {
   if (drill) return customDrill(drill, {});
   const q = (query || '').trim();
-  if (!q) return;
+  if (!q) return refuserLeForage('chiffre_sans_requete');
   const target = /^\s*search\b/i.test(q) ? q.split('|')[0].trim() : q;
-  if (!target) return;
+  if (!target) return refuserLeForage('chiffre_sans_cible');
   if ($('#sql')) $('#sql').value = target;
   if ($('#viz')) $('#viz').value = 'table';
   location.hash = 'explore';
   setDrillCrumb(target);
   runQuery();
+  return true;
 }
 
 // --- unités des métriques (pour des axes/valeurs lisibles) ---

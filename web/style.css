@@ -953,6 +953,12 @@ button.btn-busy::after{content:"";position:absolute;top:50%;left:50%;width:12px;
       `.alertdrill{cursor:pointer}` quel que soit leur ordre — cf. `P11.14-f`, où une règle postérieure
       à spécificité ÉGALE annulait un masquage. La raison du refus reste lisible au survol (le contrôle
       n'est pas `disabled`, qui couperait l'infobulle). */
+/* `P11.20-i` — LA MÊME GRAMMAIRE, SUR LA RÈGLE D'UNE CONTRIBUTION DE RISQUE. Le contrôle se MONTRE, il
+   ne se cache pas, et il se lit comme indisponible : encre atténuée, aucun curseur qui invite au clic, et
+   `cursor:help` parce que c'est le SURVOL qui porte la raison. La sélection reste possible (l'identifiant
+   de règle se colle dans un ticket). Le contrôle n'est pas `disabled`, qui couperait l'infobulle — c'est
+   le choix de `P11.4-l`, et il est la raison d'être de cette règle. */
+.contribpivot[aria-disabled="true"]{opacity:.66;cursor:help}
 #alerts .body.reloading,#freshness .body.reloading{opacity:.5;transition:opacity .1s;pointer-events:none}
 .ackdone{display:inline-flex;align-items:center;gap:4px;font-size:12px;color:var(--ok);opacity:.8;padding:3px 9px;border:1px solid var(--bd);border-radius:7px}
 .ackdone .ic{width:14px;height:14px}

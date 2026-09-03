@@ -4,7 +4,7 @@
 //   GET /api/risk/entities                 -> {entities:[{entity_type,entity,env_id,score,contrib,distinct_tactics,tactics,score_hot,contrib_hot,max_severity,first_ts,last_ts,over_threshold}], served, window, total, total_capped, over_threshold_total, thresholds:{score,distinct_tactics,velocity,window_s}}
 //   GET /api/risk/entity/{etype}/{entity}    -> {entity_type,entity,summary:{…}|null, timeline:[{ts,score,contrib}], contributions:[{ts,risk_score,source,rule_id,reason,mitre,severity}]}
 // SÉCU UI : tout en textContent/esc (anti-XSS). Aucune mutation (aucun apiSend).
-import { $, api, fetchInto, fmtTs, humanAge, LANG, muted, pagedList, sev } from './core.js';
+import { $, api, fetchInto, fmtTs, humanAge, LANG, muted, pagedList, sev, toast } from './core.js';
 
 let _thresholds = null;   // seuils courants (pour la légende) — repeuplés à chaque chargement.
 
@@ -127,6 +127,45 @@ const MOT_RISQUE_AUCUNE_ENTITE = LANG === 'en'
   ? 'No entity carries risk — the risk engine (RBA) has not attributed any contribution yet.'
   : "Aucune entité à risque — le moteur de risque (RBA) n'a pas encore attribué de contribution.";
 
+// `P11.20-i` — UNE CONTRIBUTION QUI NE MÈNE NULLE PART LE DIT, ET ELLE DIT CE QU'IL LUI MANQUE.
+//
+// CE QUE LA CELLULE DE CETTE CLÉ SUR-DÉCRIT, mesuré le 2026-09-03 : « les contributions nomment des
+// règles et ne mènent nulle part ». La moitié « ne mènent nulle part » est vraie — aucune ligne ne
+// portait de geste —, mais sa cause était fausse : la route SERT bien `rule_id` (`risk_entity_timeline`,
+// `SELECT ts,risk_score,source,rule_id,reason,mitre,severity`), et la surface ne l'affichait même pas.
+// Le manque réel est plus étroit ET plus profond : `risk_event` ne stocke NI la requête telle qu'elle a
+// compté, NI la fenêtre sur laquelle elle a compté — l'identifiant d'une règle n'est pas sa requête, et
+// la règle a pu être modifiée depuis. Fabriquer un pivot à partir du seul identifiant rendrait un
+// ensemble d'événements que RIEN ne rattache au score affiché : c'est exactement ce que `P11.14-b` a
+// refusé pour le pivot depuis une alerte, et la réponse est la même ici.
+//
+// CE QUE CE LOT TRANCHE, ET CE QU'IL LAISSE : le REFUS LISIBLE. La vraie porte demande que le démon
+// ÉCRIVE à l'imputation ce qu'il vient de compter — la requête et sa fenêtre, à côté de la contribution,
+// comme `P11.1-a` l'a fait pour l'alerte (`search_link`) — donc une colonne de plus dans `risk_event`,
+// une migration, et le remplissage à l'UNIQUE site qui y écrit (`INSERT OR IGNORE INTO risk_event`,
+// `daemon/src/handlers/rba.rs` : un seul, compté). C'est un chantier de démon, pas un lot de console, et
+// la console ne peut ni l'anticiper ni s'en passer.
+//
+// LA GRAMMAIRE EST CELLE DÉJÀ LIVRÉE (`P11.14-b`, elle-même dérivée de `P11.4-l`) : le contrôle reste
+// LISIBLE, porte `aria-disabled` — et non `disabled`, qui couperait le survol et rendrait la raison
+// illisible —, et son clic DIT le refus au lieu de le laisser sans effet. La ligne n'offre AUCUN curseur
+// de pointeur : un contrôle qui ne mène nulle part ne se présente pas comme un contrôle qui mène
+// quelque part. Les deux phrases sont bilingues par construction et écrites UNE fois, servant au survol
+// comme au clic — deux formulations divergeraient.
+const CONTRIBUTION_MOTS = {
+  regle_sans_requete: { fr: "Cette contribution nomme la règle qui l'a comptée, mais rien de ce qui est enregistré ne porte la requête TELLE QU'ELLE A COMPTÉ ni la fenêtre sur laquelle elle a compté : la console refuse de refabriquer une recherche à partir du seul identifiant, elle rendrait des événements que rien ne rattache à ce score.", en: 'This contribution names the rule that counted it, but nothing recorded carries the query AS IT COUNTED nor the window it counted over: the console refuses to rebuild a search from the identifier alone, it would return events that nothing ties to this score.' },
+  aucune_regle: { fr: "Cette contribution ne nomme AUCUNE règle — elle vient du renseignement sur les menaces ou d'un geste manuel — et rien de ce qui est enregistré ne porte de requête : il n'y a rien vers quoi pivoter, et la console ne le devinera pas.", en: 'This contribution names NO rule — it comes from threat intelligence or from a manual gesture — and nothing recorded carries a query: there is nothing to pivot to, and the console will not guess.' },
+};
+// La règle NOMMÉE par une contribution, et le mot de son refus. Fonction PURE : une ligne servie -> un
+// état. `rule_id` est servi `null` pour les contributions qui ne viennent pas d'une règle.
+function pivotDUneContribution(r) {
+  r = r || {};
+  const regle = (r.rule_id === null || r.rule_id === undefined || String(r.rule_id).trim() === '') ? '' : String(r.rule_id);
+  const mots = CONTRIBUTION_MOTS[regle ? 'regle_sans_requete' : 'aucune_regle'];
+  return { mode: 'aucun', regle, survol: LANG === 'en' ? mots.en : mots.fr };
+}
+const MOT_RISQUE_COL_REGLE = LANG === 'en' ? 'Rule' : 'Règle';
+
 // ---- vue détail d'UNE entité : synthèse + timeline horaire + contributions ----
 async function openEntity(etype, entity) {
   const det = $('#risk-detail'); if (!det) return;
@@ -190,6 +229,17 @@ async function openEntity(etype, entity) {
       { key: 'ts', label: 'Horodatage', sortable: true, sortVal: r => r.ts || 0, render: r => { const s = document.createElement('span'); s.textContent = fmtTs(r.ts); s.title = String(r.ts); return s; } },
       { key: 'risk_score', label: 'Score', sortable: true, align: 'r', sortVal: r => r.risk_score || 0, render: r => String(r.risk_score == null ? 0 : r.risk_score) },
       { key: 'source', label: 'Source', sortable: true, sortVal: r => r.source || '', render: r => { const c = document.createElement('code'); c.textContent = r.source || '?'; return c; } },
+      // `P11.20-i` — LA RÈGLE SERVIE EST ENFIN AFFICHÉE, ET LA LIGNE DIT POURQUOI ELLE NE S'OUVRE PAS.
+      { key: 'rule_id', label: MOT_RISQUE_COL_REGLE, sortable: true, sortVal: r => (r.rule_id == null ? -1 : Number(r.rule_id)), render: r => {
+        const p = pivotDUneContribution(r);
+        const c = document.createElement('code');
+        c.className = 'contribpivot';
+        c.textContent = p.regle ? '#' + p.regle : '—';
+        c.setAttribute('aria-disabled', 'true');
+        c.title = p.survol;
+        c.onclick = () => toast(p.survol, 'bad', 8000);
+        return c;
+      } },
       { key: 'severity', label: 'Sévérité', sortable: true, sortVal: r => r.severity || 0, render: r => { const s = document.createElement('span'); s.className = 'sev'; s.textContent = sev(r.severity); return s; } },
       { key: 'mitre', label: 'MITRE', sortable: true, sortVal: r => r.mitre || '', render: r => { const c = document.createElement('code'); c.textContent = r.mitre || '—'; return c; } },
       { key: 'reason', label: 'Motif', render: r => { const s = document.createElement('span'); s.textContent = r.reason || ''; if (r.reason) s.title = r.reason; return s; } },

@@ -455,16 +455,70 @@ pub(crate) fn risk_over_threshold(score: i64, distinct_tactics: i64, score_hot: 
     score >= score_thr || (tactics_thr > 0 && distinct_tactics >= tactics_thr) || (vel_thr > 0 && score_hot >= vel_thr)
 }
 
-/// LE SEUL fabricant du RECENSEMENT borné — UNE passe, DEUX chiffres. Ne demande que les trois
-/// colonnes dont le prédicat de seuil a besoin, et `LIMIT CAP+1` arrête le balayage au plafond
-/// partagé : le nombre de lignes rendues donne le total (exact sous le plafond, plafonné au-dessus),
-/// et le prédicat appliqué à chacune donne le compte au-dessus d'un seuil. Aucun `WHERE` n'y écrit une
-/// seconde fois la règle de seuil.
+/// LE SEUL fabricant du RECENSEMENT borné — UNE passe, TROIS chiffres. `LIMIT CAP+1` arrête le
+/// balayage au plafond partagé : le nombre de lignes rendues donne le total (exact sous le plafond,
+/// plafonné au-dessus), et le prédicat appliqué à chacune donne le compte au-dessus d'un seuil. Aucun
+/// `WHERE` n'y écrit une seconde fois la règle de seuil.
+///
+/// `P11.20-h` — DEUX COLONNES DE PLUS (`entity_type`, `entity`), ET POURQUOI. Le 3e chiffre —
+/// combien d'entités au-dessus du seuil sont des machines que l'exploitant a DÉCLARÉES hors du parc —
+/// ne se compte pas sans savoir DE QUELLE entité chaque ligne parle. Le compter sur la seule fenêtre
+/// SERVIE en ferait un plancher d'un autre plafond que `over_threshold_total`, donc deux chiffres non
+/// comparables sur le même panneau. Les deux colonnes entrent dans le MÊME balayage déjà borné : rien
+/// n'est scanné en plus, seule la projection s'élargit sur une table dont la cardinalité est celle des
+/// entités À RISQUE (cf. l'en-tête du module), pas celle de `event`.
 pub(crate) fn risk_rollup_recensement_sql() -> String {
     format!(
-        "SELECT score,distinct_tactics,score_hot FROM risk_rollup LIMIT {}",
+        "SELECT score,distinct_tactics,score_hot,entity_type,entity FROM risk_rollup LIMIT {}",
         crate::handlers::liste_bornee::borne_avec_ligne_excedentaire(PAGINATION_COUNT_CAP)
     )
+}
+
+/// `P11.20-h` — CE QUE L'EXPLOITANT A DÉCLARÉ DE CETTE ENTITÉ, ou `null`.
+///
+/// LE DÉFAUT MESURÉ (2026-09-03). Le classement de risque ne lisait RIEN de `host_settings` : une
+/// machine DÉCOMMISSIONNÉE (déclarée `retire`) et un banc de test (déclaré `silence_attendu`)
+/// arrivaient dans la liste et dans `over_threshold_total` exactement comme une machine de
+/// production, sans un mot pour les distinguer. La console ne pouvait pas trancher, et le compte de
+/// posture mélangeait le parc et ce qui n'en fait plus partie.
+///
+/// CE QUE LE PARTAGE D'ESPACE DE NOMS ÉCONOMISE. `host_settings.host`, `host_rollup.host`,
+/// `token.host` et `risk_rollup.entity` (pour `entity_type='host'`) nomment tous la MÊME valeur —
+/// `event.host`. Une déclaration posée pour la vue de flotte sert donc le risque SANS rien de neuf :
+/// pas de table, pas de colonne (donc AUCUN franchissement de schéma), pas de seconde surface de
+/// déclaration à tenir cohérente, pas d'API supplémentaire. Le geste se réduit à une jointure de
+/// LECTURE et à deux champs publiés.
+///
+/// CE QU'ELLE NE FAIT PAS, ET C'EST DÉLIBÉRÉ. Elle n'EXCLUT rien : ni du classement, ni du compte
+/// `over_threshold_total`, ni de l'alerte. Une machine retirée qui accumule du risque reste VISIBLE
+/// et reste comptée — convertir un signal en extinction ferait taire une accusation, et le chemin de
+/// DÉTECTION refuse déjà toute exclusion de ce genre, par écrit (cf. `rule_sql_masked`). Ce qui est
+/// ajouté, c'est de quoi LIRE la liste : une marque par entité, et un compte à côté du total.
+///
+/// SEULES les entités `host` peuvent porter une marque : c'est le seul espace de noms partagé. Pour
+/// `user`, `ip` ou tout autre type, la valeur est `null` — « personne n'a rien dit » et « ce type
+/// n'est pas déclarable » se lisent tous deux comme l'absence de marque, et le panneau ne doit pas en
+/// inventer une.
+pub(crate) fn attente_de_lentite(
+    marquages: &HashMap<String, crate::handlers::hotes_declares::MarquageHote>,
+    entity_type: &str,
+    entity: &str,
+) -> Option<&'static str> {
+    if entity_type != "host" {
+        return None;
+    }
+    marquages.get(entity).and_then(|m| m.attente).map(|a| a.jeton())
+}
+
+/// `P11.20-h` — UNE ENTITÉ AU-DESSUS DU SEUIL EST-ELLE UNE MACHINE DÉCLARÉE HORS DU PARC ?
+/// `Retire` SEUL : `silence_attendu` dit que la machine se TAIT normalement, pas qu'elle a quitté le
+/// parc — elle peut parfaitement être attaquée, et son risque est celui d'une machine vivante.
+pub(crate) fn entite_hors_parc(
+    marquages: &HashMap<String, crate::handlers::hotes_declares::MarquageHote>,
+    entity_type: &str,
+    entity: &str,
+) -> bool {
+    attente_de_lentite(marquages, entity_type, entity) == Some(AttenteDeclaree::Retire.jeton())
 }
 
 /// LE SEUL fabricant du CLASSEMENT servi. Projection et ordre INCHANGÉS : ce correctif ajoute des
@@ -490,13 +544,21 @@ pub(crate) fn risk_entities_window_sql() -> String {
 /// que le plafond a laissé lire.
 pub(crate) fn risk_entities_page(conn: &Connection, score_thr: i64, tactics_thr: i64, vel_thr: i64) -> Value {
     use crate::handlers::liste_bornee as aveu;
+    // `P11.20-h` — CE QUE L'EXPLOITANT A DÉCLARÉ DES MACHINES, lu UNE FOIS pour la page entière
+    // (`host_settings` est de la taille du parc DÉCLARÉ, pas du parc). C'est la MÊME lecture que celle
+    // de la vue de flotte et de la sonde de parc : un seul espace de noms (`event.host`), une seule
+    // déclaration, deux consommateurs.
+    let marquages = crate::handlers::hotes_declares::marquages_dhotes(conn);
     let entities = aveu::lire(conn, &risk_entities_window_sql(), |r| {
         let score: i64 = r.get(3)?;
         let dt: i64 = r.get(5)?;
         let score_hot: i64 = r.get(7)?;
+        let etype: String = r.get(0)?;
+        let ent: String = r.get(1)?;
+        let attente = attente_de_lentite(&marquages, &etype, &ent);
         Ok(json!({
-            "entity_type": r.get::<_, String>(0)?,
-            "entity": r.get::<_, String>(1)?,
+            "entity_type": etype,
+            "entity": ent,
             "env_id": r.get::<_, String>(2)?,
             "score": score,
             "contrib": r.get::<_, i64>(4)?,
@@ -507,39 +569,57 @@ pub(crate) fn risk_entities_page(conn: &Connection, score_thr: i64, tactics_thr:
             "max_severity": r.get::<_, i64>(9)?,
             "first_ts": r.get::<_, i64>(10)?,
             "last_ts": r.get::<_, i64>(11)?,
-            "over_threshold": risk_over_threshold(score, dt, score_hot, score_thr, tactics_thr, vel_thr)
+            "over_threshold": risk_over_threshold(score, dt, score_hot, score_thr, tactics_thr, vel_thr),
+            // `P11.20-h` : le jeton STABLE de la déclaration d'hôte, ou `null` — jamais une valeur
+            // inventée pour un type d'entité qui n'a pas d'espace de déclaration.
+            "attente": attente
         }))
     });
     // RECENSEMENT BORNÉ : une passe plafonnée rend le total ET le compte au-dessus d'un seuil, par le
     // MÊME prédicat que les lignes. Une lecture qui ÉCHOUE rend `null`, jamais un zéro rassurant.
-    let recense: Option<(i64, i64)> = conn
+    let recense: Option<(i64, i64, i64)> = conn
         .prepare(&risk_rollup_recensement_sql())
         .and_then(|mut s| {
-            s.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)))
-                .map(|rows| {
-                    let mut n = 0i64;
-                    let mut au_dessus = 0i64;
-                    for (score, dt, hot) in rows.flatten() {
-                        n += 1;
-                        if risk_over_threshold(score, dt, hot, score_thr, tactics_thr, vel_thr) {
-                            au_dessus += 1;
+            s.query_map([], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, String>(3)?, r.get::<_, String>(4)?))
+            })
+            .map(|rows| {
+                let mut n = 0i64;
+                let mut au_dessus = 0i64;
+                let mut hors_parc = 0i64;
+                for (score, dt, hot, etype, ent) in rows.flatten() {
+                    n += 1;
+                    if risk_over_threshold(score, dt, hot, score_thr, tactics_thr, vel_thr) {
+                        au_dessus += 1;
+                        // `P11.20-h` : le MÊME prédicat de seuil, un cran plus loin — jamais un
+                        // second `WHERE` qui réécrirait la règle.
+                        if entite_hors_parc(&marquages, &etype, &ent) {
+                            hors_parc += 1;
                         }
                     }
-                    (n, au_dessus)
-                })
+                }
+                (n, au_dessus, hors_parc)
+            })
         })
         .ok();
-    let (total, over_threshold_total) = match recense {
-        Some((n, au_dessus)) => (
+    let (total, over_threshold_total, over_threshold_hors_parc) = match recense {
+        Some((n, au_dessus, hors_parc)) => (
             aveu::TotalBorne::depuis_un_recensement_borne(n, PAGINATION_COUNT_CAP),
             json!(au_dessus.min(PAGINATION_COUNT_CAP)),
+            json!(hors_parc.min(PAGINATION_COUNT_CAP)),
         ),
-        None => (aveu::TotalBorne::sans_lecture(), Value::Null),
+        None => (aveu::TotalBorne::sans_lecture(), Value::Null, Value::Null),
     };
     let mut sortie = aveu::corps("entities", entities, RISK_ENTITIES_WINDOW, total);
     // PROPRE À CE PANNEAU, donc posé ICI et non dans le fabricant : la pastille de seuil est une
     // DISJONCTION que l'ordre par score ignore, et c'est ce compte-là qui la rend lisible.
     sortie["over_threshold_total"] = over_threshold_total;
+    // `P11.20-h` — LE COMPTE QUI SE LIT À CÔTÉ DU TOTAL, JAMAIS À SA PLACE. Combien des entités
+    // au-dessus du seuil sont des MACHINES QUE L'EXPLOITANT A DÉCLARÉES HORS DU PARC. Compté sur le
+    // MÊME balayage borné que `over_threshold_total`, donc lisible avec lui ; `null` — jamais `0` —
+    // quand le recensement n'a pas pu être lu, parce que sur un panneau de posture « non recensé »
+    // et « aucune » vont dans des sens opposés.
+    sortie["over_threshold_hors_parc"] = over_threshold_hors_parc;
     sortie
 }
 

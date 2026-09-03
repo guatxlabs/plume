@@ -45,8 +45,11 @@ fn vis_of(b: &Value) -> &'static str {
 // =====================================================================================
 pub(crate) async fn library_panels_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
     let (me, role) = (au.name.clone(), au.role.clone());
-    // #64 : autorité admin EFFECTIVE (rôle composable base=admin inclus).
-    let adm = au.is_admin();
+    // #64 : autorité admin EFFECTIVE (rôle composable base=admin inclus) — portée par `ident`, dont
+    // `is_admin()` est la première branche.
+    // `P11.20-n` — `ident` porte l'identité jusqu'au coffre : le drapeau `editable` et le filtre
+    // `lisible_par` rendent la MÊME décision, écrite une seule fois.
+    let ident = au.clone();
     read_with(req_db_path(&st, &au).as_str(), Json(json!({ "library_panels": [], "me": &me, "role": &role })), |conn| {
         let mut stmt = match conn.prepare(
             "SELECT id,name,title,query,is_soql,viz,COALESCE(drill,''),COALESCE(owner,''),COALESCE(visibility,'shared'),\
@@ -72,7 +75,9 @@ pub(crate) async fn library_panels_list(State(st): State<AppState>, Extension(au
                 rows.flatten()
                     .filter(|(_, _, _, _, _, _, _, owner, vis, _)| panneau_resolu::lisible_par(owner, vis, &au))
                     .map(|(id, name, title, query, is_soql, viz, drill, owner, vis, used_by)| {
-                        let owns = adm || owner.is_empty() || owner == me;
+                        // `P11.20-n` — le drapeau dit ce que la porte fera : `ergo_editable`, dont
+                        // le corps EST `lisible_par`. Une seule phrase pour la porte et pour la vue.
+                        let owns = panneau_resolu::lisible_par(&owner, &vis, &ident);
                         json!({
                             "id": id, "name": name, "title": title, "query": query, "is_soql": is_soql, "viz": viz,
                             "drill": drill, "owner": owner, "visibility": vis, "used_by": used_by, "editable": owns
@@ -165,12 +170,15 @@ pub(crate) fn playlist_items_json(b: &Value) -> Option<String> {
 
 pub(crate) async fn playlists_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
     let (me, role) = (au.name.clone(), au.role.clone());
-    // #64 : autorité admin EFFECTIVE (rôle composable base=admin inclus) -> bind `?1` visibilité + ownership.
+    // #64 : autorité admin EFFECTIVE (rôle composable base=admin inclus) -> bind `?1` visibilité.
+    // `P11.20-n` — l'ownership de la closure passe par `ident` et le coffre ; `?2<>''` refuse
+    // l'appariement d'une identité SANS NOM à une colonne `owner` vide.
     let adm = if au.is_admin() { "admin" } else { "" };
+    let ident = au.clone();
     read_with(req_db_path(&st, &au).as_str(), Json(json!({ "playlists": [], "me": &me, "role": &role })), |conn| {
         let mut stmt = match conn.prepare(
             "SELECT id,name,interval_s,items,COALESCE(owner,''),COALESCE(visibility,'shared') FROM playlist \
-             WHERE ?1='admin' OR COALESCE(visibility,'shared')='shared' OR owner=?2 OR COALESCE(owner,'')='' \
+             WHERE ?1='admin' OR COALESCE(visibility,'shared')='shared' OR (?2<>'' AND owner=?2) \
              ORDER BY name,id",
         ) {
             Ok(s) => s,
@@ -179,12 +187,14 @@ pub(crate) async fn playlists_list(State(st): State<AppState>, Extension(au): Ex
         let out: Vec<Value> = stmt
             .query_map(params![adm, me], |r| {
                 let owner: String = r.get(4)?;
+                let vis: String = r.get(5)?;
                 let items_raw: String = r.get(3)?;
                 let items: Value = serde_json::from_str(&items_raw).unwrap_or_else(|_| json!([]));
-                let owns = adm == "admin" || owner.is_empty() || owner == me;
+                // `P11.20-n` — le drapeau dit ce que la porte fera : `ergo_editable` = `lisible_par`.
+                let owns = panneau_resolu::lisible_par(&owner, &vis, &ident);
                 Ok(json!({
                     "id": r.get::<_, i64>(0)?, "name": r.get::<_, String>(1)?, "interval_s": r.get::<_, i64>(2)?,
-                    "items": items, "owner": owner, "visibility": r.get::<_, String>(5)?, "editable": owns
+                    "items": items, "owner": owner, "visibility": vis, "editable": owns
                 }))
             })
             .map(|rows| rows.flatten().collect())
@@ -354,7 +364,8 @@ pub(crate) async fn snapshot_create(State(st): State<AppState>, Extension(au): E
             Err(_) => return (StatusCode::NOT_FOUND, "dashboard introuvable").into_response(),
         }
     };
-    if !au.is_admin() && vis != "shared" && !owner.is_empty() && owner != au.name {
+    // `P11.20-n` — MÊME phrase que `dash_get` : un dashboard SANS propriétaire n'est plus « à nous ».
+    if !panneau_resolu::lisible_par(&owner, &vis, &au) {
         return forbidden("dashboard privé");
     }
     let snap_name = b.get("name").and_then(|v| v.as_str()).map(|s| s.to_string()).unwrap_or_else(|| name.clone());

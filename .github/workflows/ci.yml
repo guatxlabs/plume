@@ -756,7 +756,18 @@ env:
   # Le MÊME +3 sur `EXPECTED_COLD_TESTS` — aucun n'est derrière un `cfg(feature)`, et c'est l'ÉCART
   # INCHANGÉ entre les deux profils (**245** avant comme après) qui l'établit, pas une lecture des
   # sources.
-  EXPECTED_TESTS: "1533"
+  # `P11.20-n` et `P11.20-h` (2026-09-03) : **+14**, comptés par ÉNUMÉRATION et non par motif — huit
+  # `#[test]` et six `#[tokio::test]`, forme que le premier relevé avait ratée. Les deux tiers tiennent
+  # la CONFIDENTIALITÉ : un objet sans propriétaire cessait d'être un accident de colonne vide, et la
+  # portée de lecture donnait à TOUT compte l'autorité de propriétaire sur les objets semés — panneaux
+  # privés servis en texte ET en données, figés dans un instantané partageable, plus l'autorité de
+  # suppression. Le témoin qui décide joue DEUX IDENTITÉS distinctes, avec son contrôle positif (le
+  # propriétaire, lui, voit) et le bien commun préservé. Un second assermente la DÉCISION de
+  # resserrement, motif interpolé dans chaque message d'échec pour que le prochain ne la prenne pas
+  # pour une régression. Le MÊME +14 sur `EXPECTED_COLD_TESTS` — aucun n'est derrière un
+  # `cfg(feature)`, et c'est l'ÉCART INCHANGÉ entre les deux profils (**245** avant comme après) qui
+  # l'établit, pas une lecture des sources.
+  EXPECTED_TESTS: "1547"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -1212,7 +1223,10 @@ jobs:
           # derrière un `cfg(feature)`, et c'est l'ÉCART INCHANGÉ entre les deux profils (245 avant
           # comme après) qui l'établit, pas une lecture des sources. La dérivation est écrite auprès
           # d'`EXPECTED_TESTS`, une seule fois.
-          EXPECTED_COLD_TESTS: "1778"
+          # `P11.20-n` et `P11.20-h` (2026-09-03) : +14, les MÊMES quatorze que sur `EXPECTED_TESTS` —
+          # aucun derrière un `cfg(feature)`, et c'est l'ÉCART INCHANGÉ entre les deux profils (245 avant
+          # comme après) qui l'établit. La dérivation est écrite auprès d'`EXPECTED_TESTS`, une seule fois.
+          EXPECTED_COLD_TESTS: "1792"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail

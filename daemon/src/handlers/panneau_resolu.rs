@@ -44,11 +44,42 @@ pub(crate) const COL_IS_SOQL: &str = "COALESCE(lp.is_soql,p.is_soql)";
 pub(crate) const COL_VIZ: &str = "COALESCE(lp.viz,p.viz)";
 pub(crate) const COL_DRILL: &str = "COALESCE(lp.drill,p.drill,'')";
 
-/// LA LISIBILITÉ d'une définition de bibliothèque, écrite UNE FOIS : admin, partagée, propriétaire,
-/// ou ownership vide (legacy). `library_panels_list` (l'inventaire) et le rattachement l'empruntent
-/// tous les deux — ce que l'editor ne VOIT pas, il ne peut donc pas le rattacher.
+/// `P11.20-n` — L'AUTORITÉ DE PROPRIÉTAIRE : admin, ou le propriétaire NOMMÉ. UNE COLONNE VIDE
+/// N'OCTROIE RIEN.
+///
+/// LE DÉFAUT MESURÉ (2026-09-03). Douze sites écrivaient `owner.is_empty()` — ou son jumeau SQL
+/// `COALESCE(owner,'')=''` — comme une CLAUSE D'OCTROI : une colonne `owner` vide y valait
+/// « appartient au lecteur », donc autorité de propriétaire pour QUICONQUE. Or aucun chemin
+/// d'écriture ne laisse `owner` vide : `dash_create`, `view_create`, `library_panel_create` et
+/// `playlist_create` posent tous `au.name`. Les seules lignes sans propriétaire sont celles que les
+/// SEMEURS écrivent — et elles portent TOUTES `visibility='shared'` (mesuré et gardé par
+/// `un_objet_seme_declare_son_etat_commun`). La clause n'apportait donc RIEN au bien commun (déjà
+/// porté par `shared`) et TOUT à l'accident : sur un dashboard semé,
+/// `PorteeLecture::du_dashboard(quiconque, "")` rendait `Proprietaire`, et un panneau `private`
+/// posé là était servi à TOUS les comptes — par `dash_get`, par `panel_data`, et FIGÉ dans un
+/// snapshot partageable par jeton.
+///
+/// LA DÉCISION, ET CE QU'ELLE NE FAIT PAS. « Sans propriétaire » cesse d'être une propriété : c'est
+/// une ABSENCE. Le bien commun se DÉCLARE, par `visibility='shared'` — colonne qui existe déjà,
+/// `NOT NULL DEFAULT 'shared'` au schéma, écrite par les semeurs. AUCUN franchissement de schéma.
+/// On n'a pas suivi la prescription voisine « publiques ou à nous » : elle RELÂCHERAIT le démon, qui
+/// ne rend que ce qui nous appartient sur `saved_query` (aucun `shared` là-bas, et il n'en gagne pas).
+///
+/// LA SECONDE MOITIÉ DU MÊME DÉFAUT, TROUVÉE EN L'ÉCRIVANT : `owner == au.name` seul appariait aussi
+/// une colonne vide à une IDENTITÉ SANS NOM. Le dépôt en fabrique (`AuthUser { name: String::new() }`
+/// pour un relais non lié, cf. `transport_liaison`) — d'où le `!owner.is_empty()` EXPLICITE ici : il
+/// REFUSE, il n'octroie pas.
+pub(crate) fn autorite_de_proprietaire(owner: &str, au: &AuthUser) -> bool {
+    au.is_admin() || (!owner.is_empty() && owner == au.name)
+}
+
+/// LA LISIBILITÉ d'un objet de tableau de bord (dashboard, définition de bibliothèque, playlist),
+/// écrite UNE FOIS : déclaré commun (`shared`), ou autorité de propriétaire. `library_panels_list`
+/// (l'inventaire) et le rattachement l'empruntent tous les deux — ce que l'editor ne VOIT pas, il ne
+/// peut donc pas le rattacher — et depuis `P11.20-n` `dash_editable`, `ergo_editable`, `dash_get`,
+/// `panel_access` et la capture de snapshot aussi : une seule phrase, six surfaces.
 pub(crate) fn lisible_par(owner: &str, visibility: &str, au: &AuthUser) -> bool {
-    au.is_admin() || visibility == "shared" || owner == au.name || owner.is_empty()
+    visibility == "shared" || autorite_de_proprietaire(owner, au)
 }
 
 /// CE QUE LE LECTEUR D'UN DASHBOARD A LE DROIT D'Y VOIR. Énum FERMÉ, sans `Default` : tout site qui
@@ -61,16 +92,21 @@ pub(crate) fn lisible_par(owner: &str, visibility: &str, au: &AuthUser) -> bool 
 /// mais `snapshot_create` -> **200** avec la ligne privée FIGÉE dans le snapshot, partageable par
 /// jeton. L'en-tête du module affirmait pourtant « hérite #45 + RBAC ».
 pub(crate) enum PorteeLecture {
-    /// Propriétaire du dashboard, admin, ou dashboard sans propriétaire (legacy) : voit tout.
+    /// Propriétaire du dashboard, ou admin : voit tout. `P11.20-n` — un dashboard SANS propriétaire
+    /// n'entre plus ici : personne n'hérite d'une autorité que personne ne détient.
     Proprietaire,
     /// Simple lecteur du partage : ne voit que les panneaux `shared`.
     LecteurDuPartage,
 }
 
 impl PorteeLecture {
-    /// Résolue par la MÊME règle que `dash_editable`/`dash_get` : admin, propriétaire, ou ownership vide.
+    /// Résolue par la MÊME règle que `dash_editable`/`dash_get`, EMPRUNTÉE et non réécrite :
+    /// [`autorite_de_proprietaire`]. `P11.20-n` — un dashboard sans propriétaire rend
+    /// `LecteurDuPartage` À TOUT LE MONDE : ses panneaux `shared` restent servis (le bien commun est
+    /// déclaré par `visibility`), ses panneaux `private` ne sont servis à PERSONNE. C'est le prix
+    /// assumé de l'absence : un panneau privé sur un objet que nul ne possède n'a pas de destinataire.
     pub(crate) fn du_dashboard(au: &AuthUser, owner: &str) -> Self {
-        if au.is_admin() || owner.is_empty() || owner == au.name { Self::Proprietaire } else { Self::LecteurDuPartage }
+        if autorite_de_proprietaire(owner, au) { Self::Proprietaire } else { Self::LecteurDuPartage }
     }
     /// FAIL-CLOSED : hors `Proprietaire`, seule la valeur EXACTE `shared` ouvre. `panel_access` testait
     /// `!= "private"` là où `dash_get` testait `== "shared"` — une valeur ni l'une ni l'autre (colonne

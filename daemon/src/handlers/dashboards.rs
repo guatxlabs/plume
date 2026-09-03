@@ -12,7 +12,10 @@ use crate::*;
 
 // ---------- dashboards (P3) ----------
 // Le compte peut-il modifier ce dashboard (et ses panneaux) ?
-// admin : toujours ; sinon : propriétaire, dashboard partagé, ou ownership hérité (legacy/vide).
+// `P11.20-n` — LA RÈGLE EST EMPRUNTÉE, PLUS RÉÉCRITE : `panneau_resolu::lisible_par` (admin, déclaré
+// `shared`, ou propriétaire NOMMÉ). Elle ne dit plus « ownership hérité (legacy/vide) » : une colonne
+// vide n'octroie rien. Le dashboard SEMÉ reste éditable parce qu'il est `shared`, pas parce qu'il est
+// sans propriétaire.
 pub(crate) fn dash_editable(conn: &Connection, au: &AuthUser, dash_id: i64) -> bool {
     if au.is_admin() {
         return true;
@@ -22,7 +25,7 @@ pub(crate) fn dash_editable(conn: &Connection, au: &AuthUser, dash_id: i64) -> b
         params![dash_id],
         |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
     ) {
-        Ok((owner, vis)) => owner == au.name || owner.is_empty() || vis == "shared",
+        Ok((owner, vis)) => panneau_resolu::lisible_par(&owner, &vis, au),
         Err(_) => false,
     }
 }
@@ -52,7 +55,8 @@ pub(crate) fn panel_access(conn: &Connection, au: &AuthUser, panel_id: i64) -> O
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .ok()?;
-    let accessible = au.is_admin() || dvis == "shared" || downer == au.name || downer.is_empty();
+    // `P11.20-n` — MÊME phrase que `dash_editable`/`dash_get`, empruntée au coffre.
+    let accessible = panneau_resolu::lisible_par(&downer, &dvis, au);
     if !accessible {
         return None;
     }
@@ -80,14 +84,18 @@ pub(crate) async fn dash_list(State(st): State<AppState>, Extension(au): Extensi
                 (SELECT COUNT(*) FROM panel p WHERE p.dashboard_id=d.id),
                 COALESCE(d.cols,2),COALESCE(d.height,0),COALESCE(d.collapsed,0),COALESCE(d.position,d.id)
          FROM dashboard d
-         WHERE (?1='admin' OR COALESCE(d.visibility,'shared')='shared' OR d.owner=?2 OR COALESCE(d.owner,'')=''){extra}
+         WHERE (?1='admin' OR COALESCE(d.visibility,'shared')='shared' OR (?2<>'' AND d.owner=?2)){extra}
          ORDER BY COALESCE(d.position,d.id), d.id"
     );
     let (me, role) = (au.name.clone(), au.role.clone());
     // #64 : AUTORITÉ ADMIN EFFECTIVE (rôle composable base=admin inclus) via `is_admin()` -> `adm` sert de bind
-    // SQL `?1` (visibilité) ET de test d'ownership dans la closure. Byte-identique en mode 0 (rôle de base admin
-    // -> "admin", sinon ""). `role` reste la valeur brute renvoyée pour l'affichage.
+    // SQL `?1` (visibilité). Byte-identique en mode 0 (rôle de base admin -> "admin", sinon "").
+    // `role` reste la valeur brute renvoyée pour l'affichage.
+    // `P11.20-n` — LE TEST D'OWNERSHIP DE LA CLOSURE NE S'ÉCRIT PLUS ICI : `ident` porte l'identité
+    // complète jusqu'au coffre, qui rend le MÊME verdict que la porte. Le bind `?2` est gardé par
+    // `?2<>''` parce qu'une identité SANS NOM (relais non lié) s'apparierait sinon à une colonne vide.
     let adm = if au.is_admin() { "admin" } else { "" };
+    let ident = au.clone();
     read_with(req_db_path(&st, &au).as_str(), Json(json!({ "dashboards": [], "me": &me, "role": &role })), |conn| {
         let mut stmt = match conn.prepare(&sql) {
             Ok(s) => s,
@@ -95,10 +103,16 @@ pub(crate) async fn dash_list(State(st): State<AppState>, Extension(au): Extensi
         };
         let out: Vec<Value> = match stmt.query_map(params![adm, me], |r| {
             let owner: String = r.get(2)?;
-            let owns = adm == "admin" || owner.is_empty() || owner == me;
+            let vis: String = r.get(3)?;
+            // `P11.20-n` — LE DRAPEAU DIT CE QUE LA PORTE FERA, et rien d'autre. La porte d'écriture
+            // est `dash_editable`, dont le corps EST `lisible_par` : le drapeau l'emprunte donc au
+            // MÊME endroit. Écrire ici `autorite_de_proprietaire` (mon premier jet) rendait
+            // `editable:false` sur un dashboard COMMUN que le serveur laisse pourtant modifier —
+            // un drapeau qui ment sur sa propre porte, exactement le défaut d'à côté.
+            let owns = panneau_resolu::lisible_par(&owner, &vis, &ident);
             Ok(json!({
                 "id": r.get::<_, i64>(0)?, "name": r.get::<_, String>(1)?,
-                "owner": owner, "visibility": r.get::<_, String>(3)?,
+                "owner": owner, "visibility": vis,
                 "view_id": r.get::<_, Option<i64>>(4)?, "panels": r.get::<_, i64>(5)?,
                 "cols": r.get::<_, i64>(6)?, "height": r.get::<_, i64>(7)?,
                 "collapsed": r.get::<_, i64>(8)? != 0, "position": r.get::<_, i64>(9)?,
@@ -178,12 +192,20 @@ pub(crate) async fn dash_get(State(st): State<AppState>, Extension(au): Extensio
     let Some((name, owner, vis, view_id)) = meta else {
         return (StatusCode::NOT_FOUND, "dashboard introuvable").into_response();
     };
-    if !au.is_admin() && vis != "shared" && !owner.is_empty() && owner != au.name {
+    if !panneau_resolu::lisible_par(&owner, &vis, &au) {
         return (StatusCode::FORBIDDEN, "dashboard privé").into_response();
     }
     // P7.13-a : portée de lecture DÉRIVÉE au coffre (même décision que `panel_access` et que la capture).
     let portee = PorteeLecture::du_dashboard(&au, &owner);
+    // `P11.20-n` — DEUX FAITS DISTINCTS, longtemps confondus en un seul booléen parce que la clause
+    // d'octroi les rendait égaux sur les objets sans propriétaire :
+    //   · `owns` = la PORTÉE DE LECTURE (voir un panneau privé, voir le TEXTE d'une requête privée).
+    //     Strictement le propriétaire ou l'admin — c'est une décision de CONFIDENTIALITÉ.
+    //   · `editable` = ce que la PORTE D'ÉCRITURE laissera passer (`dash_editable`), qui inclut le
+    //     bien commun DÉCLARÉ. C'est une décision d'ERGONOMIE, et elle doit dire la vérité sur la
+    //     porte : la vue masquerait sinon un geste que le serveur accepte.
     let owns = portee.est_proprietaire();
+    let editable = dash_editable(&conn, &au, id);
     // LIBRARY PANELS (#54) : titre/requête/is_soql/viz/drill AFFICHÉS sont résolus depuis `library_panel`
     // quand le panneau la référence. La résolution est EMPRUNTÉE au coffre `panneau_resolu` (P7.13-a) —
     // elle n'est plus réécrite ici, et `build.rs` refuse de compiler toute réécriture ailleurs.
@@ -220,7 +242,7 @@ pub(crate) async fn dash_get(State(st): State<AppState>, Extension(au): Extensio
         })
         .collect();
     Json(json!({
-        "id": id, "name": name, "owner": owner, "visibility": vis, "view_id": view_id, "editable": owns,
+        "id": id, "name": name, "owner": owner, "visibility": vis, "view_id": view_id, "editable": editable,
         "panels": panels
     }))
     .into_response()
@@ -230,7 +252,9 @@ pub(crate) async fn dash_delete(State(st): State<AppState>, Extension(au): Exten
     crate::req_conn!(st, au, conn);
     match conn.query_row("SELECT COALESCE(owner,'') FROM dashboard WHERE id=?1", params![id], |r| r.get::<_, String>(0)) {
         Ok(owner) => {
-            if !au.is_admin() && !owner.is_empty() && owner != au.name {
+            // `P11.20-n` — SUPPRIMER EST UN GESTE DE PROPRIÉTAIRE, et une colonne vide n'octroie pas
+            // la propriété : l'objet SEMÉ (sans propriétaire) redevient admin-seul à la suppression.
+            if !panneau_resolu::autorite_de_proprietaire(&owner, &au) {
                 return StatusCode::FORBIDDEN;
             }
         }
@@ -1010,7 +1034,9 @@ pub(crate) async fn view_delete(State(st): State<AppState>, Extension(au): Exten
     crate::req_conn!(st, au, conn);
     match conn.query_row("SELECT COALESCE(owner,'') FROM view WHERE id=?1", params![id], |r| r.get::<_, String>(0)) {
         Ok(owner) => {
-            if !au.is_admin() && !owner.is_empty() && owner != au.name {
+            // `P11.20-n` — SUPPRIMER EST UN GESTE DE PROPRIÉTAIRE, et une colonne vide n'octroie pas
+            // la propriété : l'objet SEMÉ (sans propriétaire) redevient admin-seul à la suppression.
+            if !panneau_resolu::autorite_de_proprietaire(&owner, &au) {
                 return StatusCode::FORBIDDEN;
             }
         }
@@ -1025,7 +1051,9 @@ pub(crate) async fn view_update(State(st): State<AppState>, Extension(au): Exten
     crate::req_conn!(st, au, conn);
     match conn.query_row("SELECT COALESCE(owner,'') FROM view WHERE id=?1", params![id], |r| r.get::<_, String>(0)) {
         Ok(owner) => {
-            if !au.is_admin() && !owner.is_empty() && owner != au.name {
+            // `P11.20-n` — SUPPRIMER EST UN GESTE DE PROPRIÉTAIRE, et une colonne vide n'octroie pas
+            // la propriété : l'objet SEMÉ (sans propriétaire) redevient admin-seul à la suppression.
+            if !panneau_resolu::autorite_de_proprietaire(&owner, &au) {
                 return StatusCode::FORBIDDEN;
             }
         }

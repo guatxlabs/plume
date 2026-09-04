@@ -864,7 +864,7 @@ viennent d'une constante — la commande `c` ci‑dessus la donne.
 |---|---|---|
 | `PLUME_RESPONDER` | `1` = le moteur de réponse tourne | `0` |
 | `PLUME_RESPONDER_APPLY` | `1` = il **applique** ; `0` = *dry‑run* qui journalise sans agir | `0` |
-| `PLUME_RESPONDER_ALLOW` | chemin de la liste des **adresses à ne jamais bannir**, lue par le responder d'**agent** — voir l'avertissement sous le tableau | `/etc/plume/responder.allow` |
+| `PLUME_RESPONDER_ALLOW` | chemin de la liste des **adresses à ne jamais bannir**, lue par le responder d'**agent** — voir l'avertissement sous le tableau | `/etc/plume/responder.allow` — **repli COMPILÉ dans `collectors/respond.sh`, employé seulement si la variable n'est pas posée**. Une installation d'agent NEUVE la pose, elle, à `/etc/plume/responder-ban-exempt.allow` (`bootstrap-agent.sh`) : les deux valeurs sont vraies, de deux objets différents. Le repli partage son chemin avec la liste de **services** du démon — d'où l'avertissement |
 | `PLUME_STOP_SERVICE_ALLOW` | chemin de la liste des **services systemd autorisés** pour `stop_service`, lue par le **démon** — posez-la ailleurs si la machine est à la fois centrale et agent | `/etc/plume/responder.allow` |
 | `PLUME_BAN_DURATION` | durée d'un bannissement | `4h` |
 | `PLUME_PROTECTED_IPS` / `PLUME_OPERATOR_IPS` | IP qu'aucune action ne peut bannir (ne vous enfermez pas dehors) | vide |

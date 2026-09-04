@@ -126,8 +126,10 @@ label de VOTRE ingress controller) — aucun autre pod ne peut atteindre le daem
 - **`respond.sh`** (responder, opt-in `PLUME_WITH_RESPONDER=1`) : modèle **pull** (aucune entrée
   réseau sur l'agent) — `plume-respond-agent.timer` tire `/api/actions/pending`, applique les
   bans/unbans en **déléguant** à CrowdSec → fail2ban → nft, **dry-run par défaut** (`PLUME_RESPONDER_APPLY=0`)
-  + **liste d'épargne** `PLUME_RESPONDER_ALLOW` (défaut `/etc/plume/responder-ban-exempt.allow` sur une
-  installation neuve). Token **lié à l'hôte** (anti-IDOR).
+  + **liste d'épargne** `PLUME_RESPONDER_ALLOW` (`/etc/plume/responder-ban-exempt.allow` — valeur POSÉE par
+  `bootstrap-agent.sh` sur une installation d'agent neuve, PAS le repli du script : celui-ci, employé quand la
+  variable n'est pas posée, vaut `/etc/plume/responder.allow` et partage donc son chemin avec la liste de
+  services du démon ; les deux valeurs sont vraies, de deux objets différents). Token **lié à l'hôte** (anti-IDOR).
   ⚠️ **Deux politiques, deux fichiers, deux lecteurs — et ils ne se recouvrent pas** (`P4.7-a`/`P4.7-b`) :
   ce fichier-ci porte des **adresses à ne jamais bannir**, lues par `is_ip` (shell) ; le démon lit
   `PLUME_STOP_SERVICE_ALLOW` (même chemin historique `/etc/plume/responder.allow`) comme des **noms de

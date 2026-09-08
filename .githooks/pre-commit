@@ -180,4 +180,10 @@ echo "[pre-commit] compilé pour être énuméré). Il refuse si une constructio
 echo "[pre-commit] tourne déjà — un refus dit lequel, et le geste qu'il faut."
 echo "[pre-commit] Pour attendre au lieu de refuser :  COMPTER_ATTENDRE=1 git commit …"
 echo "[pre-commit] Pour ne pas contrôler du tout      :  git commit --no-verify"
+# P8.5-d — LE HARNAIS DE TESTS N'EST PAS LE BINAIRE. Énumérer les tests compile sous cfg(test) ; un
+# symbole gaté `#[cfg(test)]` et consommé par la production y passe, puis rougit sur le nœud (porte de
+# déploiement, au bout d’un build complet) et dans la CI. La production est compilée ICI, hors cfg(test), avec le jeu de
+# features que le Dockerfile déclare — par le script qui dit ce qu'il mesure et refuse s'il ne peut pas.
+echo "[pre-commit] Et le binaire de PRODUCTION doit compiler hors cfg(test), features du Dockerfile."
+"$racine/.github/scripts/verifier-le-binaire-de-production-compile.sh" || exit $?
 exec "$racine/.github/scripts/compter-les-tests.sh"

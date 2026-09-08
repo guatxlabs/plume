@@ -59,6 +59,7 @@ use super::vectorized::{
     can_vectorize, vec_count, vec_group_count, vec_materialize, vec_materialize_keyset, GroupKey, IntOp, MatRow, Pred,
 };
 use parquet::file::reader::FileReader;
+#[cfg(test)] // la jauge `DECODE_INFLIGHT` est compilée en test seulement : hors cfg(test) l'import serait inutilisé (P8.5-d)
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 

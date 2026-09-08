@@ -15,7 +15,11 @@ use crate::*;
 mod groupes_de_routes; // LA TABLE DE ROUTAGE : les sous-routeurs par domaine + leur composition
 pub(crate) use groupes_de_routes::build_router;
 mod sauvegarde_planifiee; // ORDONNANCEUR DE SAUVEGARDE NATIF : réglage, destination, cycle, posture
-pub(crate) use sauvegarde_planifiee::{premiere_attente_derivee, scheduled_backup_cycle, spawn_backup_scheduler};
+pub(crate) use sauvegarde_planifiee::spawn_backup_scheduler;
+// `scheduled_backup_cycle` et `premiere_attente_derivee` ne sont appelés hors de leur module que par les tests : hors
+// cfg(test) leur réexportation est un import inutilisé, rendu par `verifier-le-binaire-de-production-compile.sh` (P8.5-d).
+#[cfg(test)]
+pub(crate) use sauvegarde_planifiee::{premiere_attente_derivee, scheduled_backup_cycle};
 mod travaux_sur_la_base; // TRAVAUX SUR LA BASE PRIMAIRE : vacuum, ANALYZE, index, FTS, pré-chauffage
 use travaux_sur_la_base::*; // les `spawn_*` que le lancement des travaux de fond appelle sans les qualifier
 pub(crate) use travaux_sur_la_base::spawn_autovacuum_loop;

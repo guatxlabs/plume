@@ -156,3 +156,36 @@ Deux précisions sur ce que la matrice compte, côté consommateur (la boucle pu
 - **Un tag peut porter PLUSIEURS techniques** (`"T1595.002 T1046"`, séparateurs espace/virgule/
   point-virgule — la norme SigmaHQ). L'endpoint les **éclate** : une entrée par technique, counts
   sommés, `first_ts` = la première détection. La chaîne composée n'est jamais servie telle quelle.
+
+## Règles graine (posées à l'installation) — sur quelle population chaque seuil a été calibré
+
+Les règles de ce catalogue sont **éteintes** par défaut ; celles-ci, au contraire, sont **posées à
+l'installation** (`seeds.rs`), et activées **seulement si un producteur livré émet la télémétrie
+qu'elles lisent** — une règle dont personne n'alimente la source est posée éteinte, et l'audit dit
+laquelle et pourquoi (verrou valable sur une base NEUVE : une installation déjà en service garde ce
+que sa migration a posé). Un seuil n'a de sens que pour la population sur laquelle il a été calibré.
+Cette table dit laquelle, et ce qu'une population **neuve** sous la même règle change (`P4.12-e`).
+
+| Règle graine | Forme de la requête | Seuil et fenêtre | Population de calibrage | Une population neuve sous cette règle |
+|--------------|---------------------|------------------|-------------------------|---------------------------------------|
+| Brute-force auth par IP (5 min) | `category=auth action=failure \| stats count by src_ip \| where count > 15` | > 15 échecs par IP, 5 min, tirée toutes les 60 s | le `rhost` de **sshd** : du SSH exposé, où 15 échecs en 5 min depuis une même adresse est un automate | les échecs **Windows** (4625/4771/4776) portent `src_ip` depuis le 2026-08-29 : une passerelle RDS/Citrix ou un contrôleur de domaine qui concentre les échecs de tout un service sous UNE adresse dépasse ce seuil un lundi matin, sans attaque. Et une alerte ouverte est rafraîchie sans re-notification (`P4.12-h`) |
+| RBA : brute-force d'authentification (risque par IP source) | `category=auth action=failure \| stats count by src_ip \| where count > 5` | > 5 échecs par IP, 1 h, 30 points de risque par contribution, entité `ip` | le même `rhost` de sshd ; le score ne franchit le seuil d'alerte qu'après plusieurs heures distinctes | sur un parc Windows, chaque poste dont un client mail, un lecteur réseau mappé ou une tâche planifiée porte un mot de passe périmé contribue chaque heure : jusqu'à une alerte de risque **par poste** (clé de dédup par entité) |
+| Pic d'échecs d'authentification (1h) | `category=auth action=failure \| stats count` | > 100 échecs toutes sources, 1 h | le pic **global** d'un hôte exposé (SSH + mail) — c'est lui qui voit un password-spray réparti sur beaucoup d'adresses, que la règle par IP ne voit pas | un parc entier compte ses échecs au même endroit : le seuil est atteint par le seul bruit de fond d'un grand nombre de postes |
+| Port-scan détecté (nft PORTSCAN, 10 min) | `source=portscan dir=inbound \| stats count` | > 0 événement, 10 min | la chaîne `PORTSCAN` de nftables : un événement n'existe que si le pare-feu l'a déjà classé | aucune : la population est celle que le pare-feu produit |
+| RBA : reconnaissance / port-scan (risque par hôte ciblé) | `source=portscan dir=inbound \| stats count by host \| where count > 0` | > 0 par hôte, 1 h, 20 points, entité `host` | la même chaîne `PORTSCAN` | aucune |
+| CPU > 90 % (10 min) | `SELECT value FROM metric WHERE name='cpu_pct' … LIMIT 1` | dernière valeur > 90, 10 min | aucune population : un seuil de capacité, pas de comportement | un hôte chargé par construction (bâtisseur, traitement par lots) lève l'alerte à chaque fenêtre |
+| CF : scan/bot absorbé au edge (> 20 challenges managés/IP) · exploit WAF managé (> 3 blocages) · L7 flood (> 100 req/IP) · recon multi-vhost (> 3 vhosts/IP) · volume de challenges (> 20 IP distinctes) | `source=cloudflare …` | voir `seeds.rs` | **non calibrées** : le code le dit lui-même (« seuils à calibrer »), elles décrivent la forme des événements qu'un plan Cloudflare sans WAF managé émet | un plan avec WAF managé, ou un site à fort trafic, change le sens de chaque seuil : à recalibrer par l'exploitant |
+
+**Ce qu'une couverture accidentelle cachait.** Avant que les échecs Windows ne portent `src_ip`
+(`P4.12-a`), ils tombaient tous dans un seul seau vide : un password-spray de vingt adresses à dix
+échecs chacune faisait `count=200 > 15` et la règle « Brute-force auth par IP » tirait — pour une
+mauvaise raison, mais elle tirait. Depuis, vingt seaux de dix, aucun au-dessus de quinze, **aucune
+alerte par IP** : ce cas n'est vu que par le « Pic d'échecs (1h) » (seuil 100) et par la règle de
+ce catalogue « Brute-force distribué (nombreuses IP sources sur l'auth) », qui est **éteinte par
+défaut** comme tout le catalogue. Un exploitant qui veut voir le spray l'active ; ce document ne
+prétend pas qu'il est couvert sans cela.
+
+**Ce que personne n'a mesuré.** Le taux d'échecs d'authentification par IP d'un parc Windows **au
+repos** — le chiffre qui déciderait si les seuils ci-dessus produisent des faux positifs sur cette
+population — n'a été mesuré sur aucune machine. Tant qu'il ne l'est pas, ni « faux positif » ni
+« vrai positif » ne peut être affirmé pour les échecs Windows.

@@ -246,7 +246,7 @@ async function renderIntegrations() {
       : ecart > 0
         ? (LANG === 'en' ? `${listees} machine(s) listed below, ${ecart} more than that total: a machine DECLARED withdrawn from the estate stays listed and leaves the denominator` : `${listees} machine(s) listée(s) ci-dessous, ${ecart} de plus que ce total : une machine DÉCLARÉE retirée du parc reste listée et sort du dénominateur`)
         : (LANG === 'en' ? `${listees} machine(s) listed below, fewer than that total: the two readings do not agree — they are taken one after the other` : `${listees} machine(s) listée(s) ci-dessous, moins que ce total : les deux lectures ne s'accordent pas — elles sont prises l'une après l'autre`);
-    return `<div class="muted flrattache" style="font-size:11px">${esc(phrase)}</div>`;
+    return `<div class="muted flrattache">${esc(phrase)}</div>`;
   };
   const flotteLigne = fl === undefined ? ''
     : fl === null ? '<div class="kv"><span class="muted">hôtes muets : inventaire illisible (aucun verdict rendu)</span></div>'

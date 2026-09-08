@@ -52,10 +52,10 @@
     // bilan inventé avant le premier passage serait un zéro rassurant). Le nom de série est ASSAINI
     // pour Prometheus ; deux clés ne différant que par un caractère non conforme se rejoindraient sur
     // le même nom de métrique, et seul le composant de santé — qui porte les noms BRUTS — les
-    // distinguerait alors. Et le second reste de `P10.7-n` n'est PAS fermé ici : `ti_coverage` lit
-    // `total`/`active` en `unwrap_or(0)`, donc le magasin se dit « vide » quand sa lecture échoue ; le
-    // site est `handlers/threat_intel.rs`, hors du périmètre de ce lot, et le témoin qui le CONSTATE
-    // est `le_panneau_de_couverture_dit_avec_quoi_on_detecte`.
+    // distinguerait alors. Le second reste de `P10.7-n` — `ti_coverage` lisait `total`/`active` en
+    // `unwrap_or(0)`, donc le magasin se disait « vide » quand sa lecture échouait — est FERMÉ le
+    // 2026-09-08 dans `handlers/threat_intel.rs` : les deux comptes sont des mesures posées avec leur
+    // verdict, et `le_panneau_de_couverture_dit_avec_quoi_on_detecte` le tient.
     // ================================================================================================
 
     /// Le nom de série tel que l'exposition le fabrique, pour une clé de passe donnée.

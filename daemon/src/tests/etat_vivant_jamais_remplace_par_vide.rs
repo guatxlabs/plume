@@ -209,12 +209,13 @@
         assert!(v.get("cache_actifs").is_none(), "la valeur DISPARAÎT quand elle n'a pas été lue (S32) : {v}");
         assert_eq!(v["cache_actifs_verdict"], VERDICT_ILLISIBLE, "le panneau AVOUE : {v}");
         assert!(v["cache_actifs_detail"].as_str().unwrap_or("").contains('2'), "et il dit sur combien d'indicateurs la détection continue : {v}");
-        // CE QUE CE MÊME CORPS MONTRE ENCORE, ET QUE CE LOT NE FERME PAS : `total`/`active` sont lus avec
-        // un `unwrap_or(0)`. Le magasin se lit donc « vide » alors que la détection tourne sur deux
-        // indicateurs — même figure, même route, un site plus loin. Le témoin le CONSTATE plutôt que de
-        // le taire, pour que la clé qui le fermera trouve la mesure déjà écrite.
-        assert_eq!(v["active"], 0, "constat (non fermé par P10.7-k) : la lecture du magasin retombe encore sur zéro");
-        assert_eq!(v["cache_actifs_verdict"], VERDICT_ILLISIBLE, "seul l'axe CACHE distingue aujourd'hui « vide » de « pas lu »");
+        // ③ LE MAGASIN LUI-MÊME AVOUE (second reste de `P10.7-n`, fermé le 2026-09-08) : `total` et `active`
+        // étaient lus en `unwrap_or(0)`, et un magasin illisible se disait « vide ». Les valeurs DISPARAISSENT,
+        // le verdict et la cause sont posés à côté, et `expired` — qui les soustrayait — n'est plus fabriqué.
+        assert!(v.get("total").is_none() && v.get("active").is_none(), "un magasin ILLISIBLE ne se dit plus vide : {v}");
+        assert_eq!(v["total_verdict"], VERDICT_ILLISIBLE, "le total AVOUE : {v}");
+        assert_eq!(v["active_verdict"], VERDICT_ILLISIBLE, "le compte actif AVOUE : {v}");
+        assert!(v.get("expired").is_none(), "aucune soustraction de valeurs non lues : {v}");
     }
 
     /// LE DÉNOMINATEUR D'HÔTES EST LU OU AVOUÉ, JAMAIS REMPLACÉ PAR « 1 ». Le panneau des suppressions

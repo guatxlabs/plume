@@ -10,7 +10,10 @@
 // (`producer_ui.js`) — mêmes classes `.rulerow`, même interrupteur ON/OFF, même badge d'origine, mêmes
 // classes de bouton. Les étapes d'un runbook LIVRÉ se lisent (« Étapes ») sans passer par l'éditeur, qui
 // reste réservé aux custom. L'éditeur utilise `.ruleform/.rf-row/.rf-actions` comme le formulaire des
-// playbooks : aucun style en ligne, aucune classe sans règle CSS.
+// playbooks. `P11.20-k`, mesuré le 2026-09-08 : la phrase « aucun style en ligne, aucune classe sans règle
+// CSS » qui figurait ici était FAUSSE (cinq `style.cssText`, trois classes sans règle) ; elle est vraie
+// depuis : les mises en page vivent dans `style.css` (`.rb-steps`, `.rb-phase`, `.rb-line`, `.rb-inline`,
+// `.rb-cond`, `.rb-step`), et une classe qui n'a pas de règle n'est pas posée.
 import { $, api, apiSend, confirmModal, disclosure, LANG, modal, muted, pagedList, toast, socIsAdmin, gateDeleteBtn, ic } from './core.js';
 import { producerRow, rowButton, announceCreated, takePendingNote, destinationNote } from './producer_ui.js';
 
@@ -143,7 +146,7 @@ function rbRow(r) {
 // ═══════════════════════════════════════════════════════════════════════════════════════════════
 function poserLeDepliDesEtapes(btn, row, id) {
   const box = document.createElement('div'); box.className = 'rb-steps';
-  box.style.cssText = 'flex-basis:100%;padding:4px 0 4px 28px';
+  /* `.rb-steps` porte la mise en page (style.css) */
   disclosure(btn, box, {
     observe: false,
     isOpen: () => !!box.parentNode,
@@ -159,8 +162,8 @@ async function remplirLesEtapes(box, id) {
   if (data.description) box.appendChild(muted(data.description));
   let lastPhase = null;
   (data.step_list || []).forEach(s => {
-    if (s.phase !== lastPhase) { lastPhase = s.phase; const h = document.createElement('div'); h.className = 'muted'; h.style.cssText = 'font-size:11px;font-weight:700;margin-top:6px'; h.textContent = (PHASE_LABEL[s.phase] || s.phase).toUpperCase(); box.appendChild(h); }
-    const line = document.createElement('div'); line.style.cssText = 'font-size:12px;padding:2px 0';
+    if (s.phase !== lastPhase) { lastPhase = s.phase; const h = document.createElement('div'); h.className = 'muted rb-phase'; h.textContent = (PHASE_LABEL[s.phase] || s.phase).toUpperCase(); box.appendChild(h); }
+    const line = document.createElement('div'); line.className = 'rb-line';
     const t = document.createElement('b'); t.textContent = s.title; line.appendChild(t);
     if (s.step_kind === 'search') { const c = document.createElement('code'); c.className = 'rulecond'; c.textContent = s.search_soql || 'search'; c.style.marginLeft = '6px'; line.appendChild(c); }
     if (s.step_kind === 'response') { const c = document.createElement('code'); c.className = 'rulecond'; c.textContent = 'réponse : ' + (s.action_kind || ''); c.style.marginLeft = '6px'; line.appendChild(c); }
@@ -183,7 +186,7 @@ async function openEditor(id) {
   const row1 = document.createElement('div'); row1.className = 'rf-row';
   const nameI = mkInput('Nom du runbook', data.name); nameI.setAttribute('aria-label', 'Nom du runbook'); nameI.style.flex = '1'; nameI.style.minWidth = '220px';
   const mkindS = mkSelect(['*', 'tactic', 'technique'], data.match_kind);
-  const mkeyWrap = document.createElement('span'); mkeyWrap.style.cssText = 'display:inline-flex;gap:4px;align-items:center';
+  const mkeyWrap = document.createElement('span'); mkeyWrap.className = 'rb-inline';
   const rebuildMkey = () => {
     mkeyWrap.replaceChildren();
     if (mkindS.value === 'tactic') { const s = mkSelect(RB_TACTICS, data.match_key); s.dataset.mkey = '1'; mkeyWrap.appendChild(s); }
@@ -247,7 +250,7 @@ function stepEditor(s) {
   const title = mkInput('Titre de l\'étape', s.title); title.dataset.f = 'title'; title.style.flex = '1';
   const guide = mkInput('Guidance (optionnel)', s.guidance); guide.dataset.f = 'guidance'; guide.style.flex = '1';
   const kind = mkSelect(RB_KINDS, s.step_kind); kind.dataset.f = 'kind';
-  const cond = document.createElement('span'); cond.style.cssText = 'display:inline-flex;gap:4px;align-items:center;flex:1;min-width:160px';
+  const cond = document.createElement('span'); cond.className = 'rb-inline rb-cond';
   const rebuild = () => {
     cond.replaceChildren();
     if (kind.value === 'search') { const i = mkInput('search host=$target$ | stats count by source', s.search_soql); i.dataset.f = 'soql'; i.style.flex = '1'; cond.append(muted('GXQL'), i); }

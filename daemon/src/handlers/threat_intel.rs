@@ -725,8 +725,19 @@ pub(crate) async fn stix_import(State(st): State<AppState>, Extension(au): Exten
 /// prouverait que la coupe est CALCULÉE, jamais qu'elle ATTEINT le client. La seule chose que la route
 /// ajoute par-dessus est le relevé du cache de correspondance, qui exige un chemin de base.
 pub(crate) fn ti_coverage_json(conn: &Connection, now_ts: i64) -> Value {
-    let total: i64 = conn.query_row("SELECT COUNT(*) FROM ioc", [], |r| r.get(0)).unwrap_or(0);
-    let active: i64 = conn.query_row("SELECT COUNT(*) FROM ioc WHERE expires IS NULL OR expires > ?1", params![now_ts], |r| r.get(0)).unwrap_or(0);
+    use crate::mesure_environnement::{Mesure, CAUSE_SOURCE_ILLISIBLE};
+    // `P10.7-n` (second reste, fermé le 2026-09-08) : `total` et `active` étaient lus en `unwrap_or(0)`, donc un
+    // magasin ILLISIBLE se disait VIDE — le zéro le plus rassurant, à côté d'une détection qui tournait sur un
+    // jeu réel. Ils sont désormais des MESURES : lues, elles portent leur valeur (un vrai zéro compris) ; illisibles,
+    // la valeur DISPARAÎT et le verdict, la cause et le détail sont posés à côté (S32), comme `cache_actifs`.
+    let compte = |sql: &str, p: &[&dyn rusqlite::ToSql]| -> Mesure<i64> {
+        match conn.query_row(sql, p, |r| r.get::<_, i64>(0)) {
+            Ok(n) => Mesure::Lue(n),
+            Err(e) => Mesure::Illisible { cause: CAUSE_SOURCE_ILLISIBLE, detail: format!("{sql} : {e}") },
+        }
+    };
+    let total = compte("SELECT COUNT(*) FROM ioc", &[]);
+    let active = compte("SELECT COUNT(*) FROM ioc WHERE expires IS NULL OR expires > ?1", &[&now_ts]);
     let by_type: Vec<Value> = conn
         .prepare("SELECT type, COUNT(*) FROM ioc WHERE expires IS NULL OR expires > ?1 GROUP BY type ORDER BY 2 DESC")
         .and_then(|mut s| {
@@ -750,10 +761,7 @@ pub(crate) fn ti_coverage_json(conn: &Connection, now_ts: i64) -> Value {
         .unwrap_or_default();
     let (by_source, by_source_capped) =
         crate::handlers::liste_bornee::couper_a_la_borne(lues, TI_COVERAGE_SOURCES_MAX);
-    json!({
-        "total": total,
-        "active": active,
-        "expired": total - active,
+    let mut sortie = json!({
         "by_type": by_type,
         "by_source": by_source,
         // `P11.22-f` — CE QUI MANQUAIT, ET POURQUOI C'ÉTAIT LE PLUS GRAVE DES VINGT-ET-UN. `total` et
@@ -766,7 +774,15 @@ pub(crate) fn ti_coverage_json(conn: &Connection, now_ts: i64) -> Value {
         "by_source_capped": by_source_capped,
         // indice pour l'UI : les hits IOC dans le temps se requêtent en GXQL (aucun scan serveur ici).
         "hits_query": "search ti_match=1 | timechart count",
-    })
+    });
+    if let Some(o) = sortie.as_object_mut() {
+        total.poser_dans(o, "total");
+        active.poser_dans(o, "active");
+        if let (Some(t), Some(a)) = (total.valeur(), active.valeur()) {
+            o.insert("expired".to_string(), json!(t - a));
+        }
+    }
+    sortie
 }
 
 pub(crate) async fn ti_coverage(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {

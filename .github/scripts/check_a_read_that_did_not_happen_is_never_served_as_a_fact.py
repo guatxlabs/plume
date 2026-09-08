@@ -184,6 +184,13 @@ VOIES_LECTURE = (VOIE_GARDEE, VOIE_SIMPLE)
 # accusations contre huit gestionnaires. Ici la région est la fermeture, exactement comme pour
 # `read_with*`.
 VOIE_ECRITURE = "with_write"
+# LA JAMBE A JUGE LES DEUX VOIES DE LECTURE (`P10.7-i`, 2026-09-08) — jamais la voie d'écriture, dont le
+# deuxième argument est l'identité de l'appelant et non un défaut. Elle s'est arrêtée à la voie gardée le
+# 2026-08-30 parce que son vocabulaire d'aveu (la clé `error`) accusait À TORT quatre sites de `read_with`
+# qui avouent par le TYPE ; le vocabulaire lit désormais les constructeurs documentés `AVEU`, et les six
+# accusations restantes de `read_with` étaient VRAIES (quatre listes et deux vues d'ensemble servies comme
+# des faits quand la lecture n'avait pas eu lieu) : elles sont corrigées, et la voie est jugée.
+VOIES_JUGEES_PAR_A = (VOIE_GARDEE, "read_with")
 # Les voies dont le TROISIÈME argument est une région de fermeture. La jambe B les juge toutes ; les
 # jambes A et Q n'en jugent qu'une (`VOIE_GARDEE`).
 VOIES_FERMETURE = VOIES_LECTURE + (VOIE_ECRITURE,)
@@ -250,7 +257,7 @@ PLAFOND_DEFAUT_NU = 16          # jambe A : défauts servis sans aveu — INCHAN
 # laquelle le site cité en preuve de `P10.7-g` — `handlers/dashboards.rs` — n'apparaissait nulle part :
 # la forme y était, sous une voie que la garde ne nommait pas. Une jambe étendue sur une population
 # amputée reste aveugle, et c'est la leçon que ce cliquet porte désormais.
-PLAFOND_CLOSURE_SOURDE = 28     # jambe B : closures qui avalent une lecture de lignes sans aveu
+PLAFOND_CLOSURE_SOURDE = 27     # jambe B : closures qui avalent une lecture de lignes sans aveu (28 -> 27 le 2026-09-08 : un aveu TYPÉ reconnu)
 #
 # ┌─ LA HAUSSE DE 17 À 22 N'EST PAS UNE RÉGRESSION : C'EST UN ÉLARGISSEMENT DU REGARD. ────────────┐
 # │ AUCUNE ligne de `daemon/` n'a changé entre les deux relevés du 2026-08-30 — l'arbre est celui   │
@@ -513,11 +520,27 @@ def definitions(src):
     return out
 
 
-def constructeurs_d_aveu(defs):
-    """Les fonctions dont le corps PROPRE pose la clé `error` ET qui rendent une valeur écrivable dans
-    une expression. Aucun point fixe : suivre les appelants ferait de tout handler un constructeur
-    (mesuré le 2026-08-30 : 298 noms au lieu de 36), et un critère qui reconnaît tout ne refuse rien."""
+DOC_D_AVEU = re.compile(r"///\s*AVEU\b[^\n]*\n(?:[ \t]*///[^\n]*\n)*[ \t]*(?:pub(?:\([^)]*\))?\s+)?fn\s+([A-Za-z_]\w*)")
+
+
+def constructeurs_avoues_par_leur_doc(src):
+    """LE VOCABULAIRE TYPÉ (`P10.7-i`, mesuré le 2026-09-08) : l'arbre avoue AUSSI par des constructeurs
+    nommés — `RollupCoverage::unproven()`, `Cap::sans_base()`, `Exactitude::indecidable()` … — dont le
+    corps bâtit une variante « rien d'établi ». La propriété qui les reconnaît est DÉRIVABLE et c'est
+    celle que l'arbre se donne : leur commentaire de documentation commence par `AVEU` (six sur six le
+    jour de la mesure, aucune liste). Lu sur le texte BRUT, puisque `definitions` retire les commentaires."""
     out = set()
+    for _chemin, texte in src:
+        out.update(m.group(1) for m in DOC_D_AVEU.finditer(texte))
+    return out
+
+
+def constructeurs_d_aveu(defs, src=()):
+    """Les fonctions dont le corps PROPRE pose la clé `error` ET qui rendent une valeur écrivable dans
+    une expression — PLUS celles que leur documentation déclare `AVEU` (`constructeurs_avoues_par_leur_doc`).
+    Aucun point fixe : suivre les appelants ferait de tout handler un constructeur
+    (mesuré le 2026-08-30 : 298 noms au lieu de 36), et un critère qui reconnaît tout ne refuse rien."""
+    out = constructeurs_avoues_par_leur_doc(src)
     for nom, sites in defs.items():
         for _chemin, _ligne, corps, sig in sites:
             if POSE_AVEU.search(corps) and RETOUR_CORPS.search(sig.strip()):
@@ -1214,7 +1237,9 @@ def analyser(chemin, texte, defs, constructeurs, aveux):
             # et `query.rs:1132/1892` rendent `rr.cap.sans_base()` — trois constructeurs dont le corps
             # bâtit une variante « rien d'établi » et dont l'arbre dit lui-même qu'ils sont des AVEUX.
             # Quatre accusations FAUSSES sur dix, c'est le défaut que ce dépôt tient pour PIRE que
-            # l'angle mort qu'il comblerait. Et le remède évident — n'accuser qu'un défaut qui est
+            # l'angle mort qu'il comblerait. [ÉTAT DU 2026-08-30 ; DEPUIS LE 2026-09-08 le vocabulaire
+            # lit ces constructeurs (doc `AVEU`), les quatre fausses accusations sont tombées, les six
+            # vraies ont été corrigées, et `read_with` est jugé : `VOIES_JUGEES_PAR_A`.] Et le remède évident — n'accuser qu'un défaut qui est
             # lui-même un corps servi — RÉTRÉCIRAIT un canal existant : il ferait taire trois
             # accusations vraies de la voie gardée (`compliance.rs:341` rend une `BTreeMap::new()`,
             # `fleet.rs:253/276` un `(Vec::new(), false, false)`). La jambe A reste donc où son
@@ -1228,7 +1253,7 @@ def analyser(chemin, texte, defs, constructeurs, aveux):
             # déjà ; le témoin 20 le tient dans le temps, parce qu'une extension future de la jambe A est
             # exactement ce qui rouvrirait ce trou.
             defaut = code[tranches[1][0]:tranches[1][1]].strip()
-            if voie == VOIE_GARDEE and RETOUR_REPONSE.search(sig) and not porte_un_aveu(defaut, constructeurs):
+            if voie in VOIES_JUGEES_PAR_A and RETOUR_REPONSE.search(sig) and not porte_un_aveu(defaut, constructeurs):
                 accusations.append(("A", ou, nom_fn,
                                     f"le défaut `{re.sub(r'\\s+', ' ', defaut)[:70]}` est servi par une "
                                     f"fonction qui rend une réponse, et il n'avoue pas"))
@@ -1287,6 +1312,19 @@ def valider_instrument(defs, constructeurs):
             errs.append(f"témoin « {nom} » : NON accusé (jambes vues : {sorted(jambes) or 'aucune'}), "
                         f"attendu la jambe {attendu} — la garde laisse passer le défaut qu'elle nomme")
     # LE COMMENTAIRE QUI NOMME LA FONCTION N'EST JAMAIS UN SITE.
+    brut = [("/typé.rs", "/// AVEU : rien n\'est établi ici.\n    pub(crate) fn rien_d_etabli() -> Self { Self(Etat::Rien) }\n"
+                          "/// Pas un aveu.\n    pub(crate) fn plein() -> Self { Self(Etat::Plein) }\n")]
+    typés = constructeurs_avoues_par_leur_doc(brut)
+    if typés != {"rien_d_etabli"}:
+        errs.append(f"témoin du VOCABULAIRE TYPÉ : {sorted(typés)} au lieu de ['rien_d_etabli'] — la doc `AVEU` "
+                    "n\'est plus lue, ou une doc qui n\'avoue pas est prise pour un aveu")
+    for defaut, attendu in (("Portee::rien_d_etabli()", None), ("Portee::plein()", "A")):
+        _s, acc = analyser("/typé_voie.rs", "fn f() -> Json<Value> { Json(read_with_watchdog(&d, " + defaut + ", |c| lit(c))) }",
+                           defs, constructeurs | typés, [])
+        jambes = {j for j, *_ in acc if j != "?"}
+        if (attendu is None and "A" in jambes) or (attendu == "A" and "A" not in jambes):
+            errs.append(f"témoin du DÉFAUT TYPÉ « {defaut} » : jambes vues {sorted(jambes) or 'aucune'}, attendu "
+                        f"{attendu or 'aucune accusation'} — un aveu porté par le type ne vaut plus un aveu porté par une clé")
     s, _a = analyser("/commentaire.rs", COMMENTAIRE_QUI_NOMME, defs, constructeurs, [])
     if s:
         errs.append(f"témoin du COMMENTAIRE : {len(s)} site(s) comptés dans un texte qui n'est fait que "
@@ -1517,12 +1555,12 @@ def ce_qui_n_est_pas_tenu(non_classes=0):
           "d'être servi lui échappe. Trois sites de l'arbre sont dans ce cas au 2026-08-30.\n"
           "  * les lectures faites à DEUX niveaux d'appel. La jambe B suit UN niveau, et seulement les "
           "noms qui ont une définition UNIQUE dans l'arbre ; un homonyme n'est pas suivi.\n"
-          "  * le DÉFAUT de `read_with` — la jambe A ne le juge PAS, et c'est un choix mesuré, pas un "
-          "oubli : l'y étendre accuse dix sites dont QUATRE avouent déjà en vocabulaire TYPÉ "
-          "(`RollupCoverage::unproven()`, `rr.cap.sans_base()`), et le remède évident (n'accuser qu'un "
-          "défaut qui est lui-même un corps servi) ferait TAIRE trois accusations vraies de la voie "
-          "gardée. Ce qui manque est un vocabulaire d'aveu plus large que la clé `error` ; tant qu'il "
-          "n'existe pas, ces défauts-là ne sont ni accusés ni innocentés.\n"
+          "  * le DÉFAUT de `read_with` EST jugé par la jambe A depuis le 2026-09-08 (`P10.7-i`) : le "
+          "vocabulaire d'aveu lit les constructeurs que l'arbre documente `AVEU` (six le jour de la mesure), "
+          "les quatre sites qui avouaient par le TYPE ne sont plus accusés, et les six qui servaient une "
+          "liste vide ou des zéros comme un fait avouent. Ce que le vocabulaire typé NE LIT PAS : un "
+          "constructeur qui avoue sans porter cette doc — il serait accusé, et c'est l'aveu écrit qui "
+          "manque, pas la garde.\n"
           "  * LA POPULATION, ET C'EST TOUJOURS LE PLUS GRAND ANGLE MORT — mais la description qu'en "
           "faisait ce fichier était FAUSSE SUR CINQ POINTS, re-mesurés le 2026-08-30 (`P10.7-j`) avec la "
           "machinerie de cette garde, commentaires DÉPOUILLÉS. Elle disait : `req_conn!` 181 emplois "
@@ -1653,7 +1691,7 @@ def main():
         return 2
 
     defs = definitions(src_demon)
-    constructeurs = constructeurs_d_aveu(defs)
+    constructeurs = constructeurs_d_aveu(defs, src_demon)
 
     errs = valider_instrument(defs, constructeurs)
     if errs:

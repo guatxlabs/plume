@@ -31,7 +31,7 @@ pub(crate) async fn overview(State(st): State<AppState>, Extension(au): Extensio
     // env_id v66) ; le count d'events passe alors par un COUNT direct filtré (le cache tous-env ne
     // s'applique plus). Valeur validée (env_slug_ok) + échappée (soql_esc) -> anti-injection.
     let env = au.env_filter().map(|e| e.to_string());
-    read_with(req_db_path(&st, &au).as_str(), Json(json!({ "open_alerts": 0, "events": 0, "ts": now() })), |conn| {
+    read_with(req_db_path(&st, &au).as_str(), Json(json!({ "error": "lecture NON FAITE : aucune connexion de lecture disponible", "open_alerts": 0, "events": 0, "ts": now() })), |conn| {
         // suffixe `AND <col>.env_id='<env>'` (ou '' en mode 0/all) pour une table donnée.
         let envp = |col: &str| -> String {
             match env.as_deref() {
@@ -65,7 +65,7 @@ pub(crate) async fn overview(State(st): State<AppState>, Extension(au): Extensio
 /// tout-prod -> `[{env:"prod", n:N}]` (fallback « prod » garanti même rollup vide) ; sélecteur caché côté UI.
 pub(crate) async fn environments(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
     let current = au.env_filter().map(|e| e.to_string());
-    read_with(req_db_path(&st, &au).as_str(), Json(json!({ "environments": [{ "env": "prod", "n": 0 }], "current": Value::Null })), |conn| {
+    read_with(req_db_path(&st, &au).as_str(), Json(json!({ "error": "lecture NON FAITE : aucune connexion de lecture disponible", "environments": [{ "env": "prod", "n": 0 }], "current": Value::Null })), |conn| {
         let mut envs: Vec<Value> = Vec::new();
         if let Ok(mut s) = conn.prepare("SELECT env_id, COALESCE(SUM(n),0) FROM event_rollup GROUP BY env_id ORDER BY env_id") {
             if let Ok(rows) = s.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))) {

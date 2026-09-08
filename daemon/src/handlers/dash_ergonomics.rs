@@ -50,7 +50,7 @@ pub(crate) async fn library_panels_list(State(st): State<AppState>, Extension(au
     // `P11.20-n` — `ident` porte l'identité jusqu'au coffre : le drapeau `editable` et le filtre
     // `lisible_par` rendent la MÊME décision, écrite une seule fois.
     let ident = au.clone();
-    read_with(req_db_path(&st, &au).as_str(), Json(json!({ "library_panels": [], "me": &me, "role": &role })), |conn| {
+    read_with(req_db_path(&st, &au).as_str(), Json(json!({ "error": "lecture NON FAITE : aucune connexion de lecture disponible", "library_panels": [], "me": &me, "role": &role })), |conn| {
         let mut stmt = match conn.prepare(
             "SELECT id,name,title,query,is_soql,viz,COALESCE(drill,''),COALESCE(owner,''),COALESCE(visibility,'shared'),\
                     (SELECT COUNT(*) FROM panel p WHERE p.library_panel_id=library_panel.id) \
@@ -175,7 +175,7 @@ pub(crate) async fn playlists_list(State(st): State<AppState>, Extension(au): Ex
     // l'appariement d'une identité SANS NOM à une colonne `owner` vide.
     let adm = if au.is_admin() { "admin" } else { "" };
     let ident = au.clone();
-    read_with(req_db_path(&st, &au).as_str(), Json(json!({ "playlists": [], "me": &me, "role": &role })), |conn| {
+    read_with(req_db_path(&st, &au).as_str(), Json(json!({ "error": "lecture NON FAITE : aucune connexion de lecture disponible", "playlists": [], "me": &me, "role": &role })), |conn| {
         let mut stmt = match conn.prepare(
             "SELECT id,name,interval_s,items,COALESCE(owner,''),COALESCE(visibility,'shared') FROM playlist \
              WHERE ?1='admin' OR COALESCE(visibility,'shared')='shared' OR (?2<>'' AND owner=?2) \
@@ -402,7 +402,7 @@ pub(crate) async fn snapshots_list(State(st): State<AppState>, Extension(au): Ex
     let (me, role) = (au.name.clone(), au.role.clone());
     // #64 : autorité admin EFFECTIVE (rôle composable base=admin inclus) -> bind `?1` visibilité + ownership.
     let adm = if au.is_admin() { "admin" } else { "" };
-    read_with(req_db_path(&st, &au).as_str(), Json(json!({ "snapshots": [], "me": &me, "role": &role })), |conn| {
+    read_with(req_db_path(&st, &au).as_str(), Json(json!({ "error": "lecture NON FAITE : aucune connexion de lecture disponible", "snapshots": [], "me": &me, "role": &role })), |conn| {
         // MÉTADONNÉES seulement (jamais le blob `data` en liste). L'admin voit tout ; sinon ses propres captures.
         let mut stmt = match conn.prepare(
             "SELECT id,dashboard_id,name,token,created,COALESCE(created_by,''),COALESCE(role_at_capture,'') FROM dashboard_snapshot \

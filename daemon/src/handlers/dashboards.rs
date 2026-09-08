@@ -96,7 +96,7 @@ pub(crate) async fn dash_list(State(st): State<AppState>, Extension(au): Extensi
     // `?2<>''` parce qu'une identité SANS NOM (relais non lié) s'apparierait sinon à une colonne vide.
     let adm = if au.is_admin() { "admin" } else { "" };
     let ident = au.clone();
-    read_with(req_db_path(&st, &au).as_str(), Json(json!({ "dashboards": [], "me": &me, "role": &role })), |conn| {
+    read_with(req_db_path(&st, &au).as_str(), Json(json!({ "error": "lecture NON FAITE : aucune connexion de lecture disponible", "dashboards": [], "me": &me, "role": &role })), |conn| {
         let mut stmt = match conn.prepare(&sql) {
             Ok(s) => s,
             Err(_) => return Json(json!({ "dashboards": [], "me": &me, "role": &role })),

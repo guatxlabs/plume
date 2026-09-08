@@ -144,9 +144,11 @@ mod sondes; // LES SONDES DE FRAÎCHEUR : ce qu'une sonde OBSERVE, la requête D
 // E0659 sur les 23 sites d'appel. Un import nommé prime sur tout glob : la résolution redevient
 // EXACTEMENT celle d'avant l'extraction.
 pub(crate) use sondes::{
-    cadence_declaree, cadence_du_feed, CadenceDeclaree, CadenceExploitant, Cout, Portee, Sonde, COLLECTORS, DDL_IDX_BATTEMENT_SANTE,
+    cadence_declaree, cadence_du_feed, CadenceDeclaree, CadenceExploitant, Portee, Sonde, COLLECTORS, DDL_IDX_BATTEMENT_SANTE,
     IDX_BATTEMENT_SANTE, NATURES_DECLARABLES,
 };
+#[cfg(test)] // `Cout` n'est consommé que par `tests/sondes_cout.rs` : hors cfg(test), l'import serait inutilisé (P8.5-d)
+pub(crate) use sondes::Cout;
 mod sonde_de_flotte; // P3.2-a : LA SONDE DE FLOTTE — un hôte qui se tait ENTIÈREMENT lève un signal, rendu comme un COMPTE et non comme une série par hôte (la portée par hôte des 21 sondes multiplierait la cardinalité par la taille du parc)
 pub(crate) use sonde_de_flotte::*;
 mod sonde_du_magasin_de_secrets; // P9.8-a : LE MAGASIN DE SECRETS QUI NE PEUT PLUS SERVIR — un coffre scellé éteint la rotation des clés de TOUS ses consommateurs à la fois, et rien ne le disait hors d'une commande d'exploitant (mesuré : les seules sorties étaient `eprintln!` et `exit(78)`). Le signal porte sur le MAGASIN, jamais sur ses consommateurs (une alerte, pas vingt-sept), il ne conclut RIEN sans relevé, et il se résout au premier relevé qui voit les magasins prêts

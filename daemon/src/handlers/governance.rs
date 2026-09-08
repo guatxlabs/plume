@@ -177,6 +177,37 @@ pub(crate) async fn ledger_export_get(State(st): State<AppState>, Extension(au):
     })
 }
 
+/// GET /api/control-ledger/export?from_id=<n>&limit=<n> -> JSONL de la chaîne du journal de CONTRÔLE (accès
+/// superadmin cross-tenant, ouvertures d'urgence, gestes d'administration), en-têtes `x-plume-ledger-last-id`
+/// / `x-plume-ledger-last-hash` comme l'export voisin. En mode 0 il n'y a PAS de plan de contrôle : la route
+/// le DIT (404 nommé) au lieu de rendre une chaîne vide qui se lirait comme « rien ne s'est passé ».
+pub(crate) async fn control_ledger_export_get(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Query(q): Query<HashMap<String, String>>) -> Response {
+    if !au.is_admin() {
+        return forbidden("réservé à l'administrateur");
+    }
+    let Some(cp) = st.tenants.control.as_ref() else {
+        return err_json(StatusCode::NOT_FOUND, "aucun plan de contrôle : le journal de contrôle n'existe qu'en mode multi-tenant (PLUME_MULTI_TENANT)");
+    };
+    let from_id: i64 = q.get("from_id").and_then(|s| s.trim().parse().ok()).unwrap_or(0).max(0);
+    let limit: i64 = q.get("limit").and_then(|s| s.trim().parse().ok()).unwrap_or(10000).clamp(1, 100000);
+    let conn = cp.conn.lock();
+    let (lines, last_id, last_hash) = match crate::governance::control_ledger_export_lines(&conn, from_id, limit) {
+        Ok(t) => t,
+        Err(e) => return server_err(format!("export du journal de contrôle impossible : {e}")),
+    };
+    let body = if lines.is_empty() { String::new() } else { format!("{}\n", lines.join("\n")) };
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "application/x-ndjson".to_string()),
+            (header::HeaderName::from_static("x-plume-ledger-last-id"), last_id.to_string()),
+            (header::HeaderName::from_static("x-plume-ledger-last-hash"), last_hash),
+        ],
+        body,
+    )
+        .into_response()
+}
+
 fn sink_json(id: i64, name: &str, kind: &str, target: &str, secret_ref: &str, enabled: i64, last_id: i64, last_hash: &str) -> Value {
     json!({
         "id": id, "name": name, "kind": kind, "target": target,

@@ -898,6 +898,34 @@ detection:
 
     /// EXPORT = READ-ONLY : ledger_export_lines ne MUTE jamais le ledger (append-only intact) — aucun chemin
     /// de mutation vers le ledger via l'export. Le head/compte reste identique après export.
+    /// `P10.7-r` — LE JOURNAL DE CONTRÔLE S'EXPORTE ET SA COPIE SE VÉRIFIE SANS LA BASE. Cinq maillons écrits par
+    /// le chemin de production, exportés, vérifiés hors ligne ; un maillon altéré rompt ; et la base n'a pas bougé.
+    #[test]
+    fn gov_control_ledger_export_preserves_and_verifies_chain() {
+        let (cp, _tmp) = mk_test_control();
+        let st = tenant_test_state("adm-cl", "edi-cl", "sa-cl", Some(cp));
+        for i in 0..5 {
+            control_ledger_append(&st, "test.kind", "sa-cl", "tenant-x", &format!("entrée {i}"));
+        }
+        let cp = st.tenants.control.as_ref().expect("plan de contrôle présent");
+        let conn = cp.conn.lock();
+        let (n_avant, tete_avant): (i64, String) = (
+            conn.query_row("SELECT COUNT(*) FROM control_ledger", [], |r| r.get(0)).unwrap(),
+            conn.query_row("SELECT hash FROM control_ledger ORDER BY id DESC LIMIT 1", [], |r| r.get(0)).unwrap(),
+        );
+        let (lines, last_id, last_hash) = crate::governance::control_ledger_export_lines(&conn, 0, 0).expect("une chaîne saine s'exporte");
+        assert_eq!(lines.len(), 5, "5 maillons exportés");
+        assert!(last_id > 0 && last_hash == tete_avant, "le curseur rendu est la tête de la chaîne");
+        assert_eq!(crate::governance::control_ledger_verify_export(&lines, "").unwrap(), 5, "la copie se vérifie sans la base");
+        assert_eq!(control_ledger_verify_conn(&conn).expect("chaîne lisible"), (5, None), "et la base elle-même est intègre");
+        let mut tampered = lines.clone();
+        let v: Value = serde_json::from_str(&tampered[2]).unwrap();
+        tampered[2] = json!({ "id": v["id"], "ts": v["ts"], "kind": v["kind"], "actor": v["actor"], "tenant": "AUTRE-TENANT", "detail": v["detail"], "prev_hash": v["prev_hash"], "hash": v["hash"] }).to_string();
+        assert!(crate::governance::control_ledger_verify_export(&tampered, "").is_err(), "un tenant réécrit rompt la copie");
+        let n_apres: i64 = conn.query_row("SELECT COUNT(*) FROM control_ledger", [], |r| r.get(0)).unwrap();
+        assert_eq!(n_avant, n_apres, "l'export n'écrit rien");
+    }
+
     #[test]
     fn gov_ledger_export_is_readonly() {
         let conn = test_db();

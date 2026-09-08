@@ -434,6 +434,8 @@ fn governance_retention_ledger_routes() -> Router<AppState> {
         // rôles composables. Toutes admin-only (route_min_role -> Admin, GET compris). Mode 0 : tables vides
         // (holds/sinks) -> inertes ; /api/roles -> 404 (control-plane requis).
         .route("/api/ledger/export", get(ledger_export_get))
+        // `P10.7-r` — la copie exportable du journal de CONTRÔLE (plan de contrôle, mode multi-tenant).
+        .route("/api/control-ledger/export", get(control_ledger_export_get))
         .route("/api/ledger-sinks", get(ledger_sinks_list).post(ledger_sink_create))
         .route("/api/ledger-sinks/{id}", delete(ledger_sink_delete))
         .route("/api/ledger-sinks/{id}/flush", post(ledger_sink_flush))

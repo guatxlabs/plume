@@ -197,6 +197,77 @@ pub(crate) fn ledger_export_lines(conn: &Connection, from_id: i64, limit: i64) -
 /// détecte toute altération SANS accès à la base. `expect_prev` = hash attendu AVANT la 1re ligne (pour un
 /// export incrémental : le last_hash du curseur ; pour un export complet : "" = genesis). Renvoie le nombre
 /// d'entrées vérifiées, ou Err(message) à la 1re rupture.
+/// LE JOURNAL DE CONTRÔLE S'EXPORTE COMME LE JOURNAL DES TENANTS (`P10.7-r`, 2026-09-09). Mesuré la veille :
+/// `verify-control` rejoue toute la chaîne hors ligne, mais aucune route ne LISAIT `control_ledger` — donc
+/// aucune copie hors de la machine, et une réécriture complète re-chaînée restait invisible. Une ligne par
+/// maillon, avec TOUT ce que le hachage couvre (`prev|ts|kind|actor|tenant|detail`) : une copie exportée se
+/// vérifie sans la base, par `control_ledger_verify_export`. Même contrat de tranche que le voisin : une
+/// tranche illisible ne rend RIEN et ne bouge pas le curseur.
+pub(crate) fn control_ledger_export_line(id: i64, ts: i64, kind: &str, actor: &str, tenant: &str, detail: &str, prev_hash: &str, hash: &str) -> String {
+    json!({ "id": id, "ts": ts, "kind": kind, "actor": actor, "tenant": tenant, "detail": detail, "prev_hash": prev_hash, "hash": hash }).to_string()
+}
+
+pub(crate) fn control_ledger_export_lines(conn: &Connection, from_id: i64, limit: i64) -> Result<(Vec<String>, i64, String), String> {
+    let sql = if limit > 0 {
+        "SELECT id,ts,kind,actor,tenant,detail,prev_hash,hash FROM control_ledger WHERE id>?1 ORDER BY id ASC LIMIT ?2".to_string()
+    } else {
+        "SELECT id,ts,kind,actor,tenant,detail,prev_hash,hash FROM control_ledger WHERE id>?1 ORDER BY id ASC".to_string()
+    };
+    let mut out = Vec::new();
+    let (mut last_id, mut last_hash) = (from_id, String::new());
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| format!("lecture du journal de contrôle (table absente ? clé du plan de contrôle manquante/incorrecte ?): {e} — AUCUN export"))?;
+    let bind: Vec<&dyn rusqlite::ToSql> = if limit > 0 { vec![&from_id, &limit] } else { vec![&from_id] };
+    let rows = stmt
+        .query_map(bind.as_slice(), |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                r.get::<_, Option<String>>(5)?.unwrap_or_default(),
+                r.get::<_, String>(6)?,
+                r.get::<_, String>(7)?,
+            ))
+        })
+        .map_err(|e| format!("scan du journal de contrôle: {e} — AUCUN export"))?;
+    for (rang, ligne) in rows.enumerate() {
+        let (id, ts, kind, actor, tenant, detail, prev_hash, hash) = ligne.map_err(|e| {
+            format!("maillon #{} de la tranche ILLISIBLE ({e}) — la tranche n'a pas pu être lue entièrement : AUCUN export, et le curseur NE bouge PAS", rang + 1)
+        })?;
+        out.push(control_ledger_export_line(id, ts, &kind, &actor, &tenant, &detail, &prev_hash, &hash));
+        last_id = id;
+        last_hash = hash;
+    }
+    Ok((out, last_id, last_hash))
+}
+
+/// Vérification HORS LIGNE d'une copie exportée du journal de contrôle : même recette de hachage que
+/// `control_ledger_append` (`prev|ts|kind|actor|tenant|detail`), même sévérité que `ledger_verify_export`.
+pub(crate) fn control_ledger_verify_export(lines: &[String], expect_prev: &str) -> Result<usize, String> {
+    let mut prev = expect_prev.to_string();
+    let mut n = 0usize;
+    for (i, line) in lines.iter().enumerate() {
+        let v: Value = serde_json::from_str(line).map_err(|e| format!("ligne {i}: JSON invalide: {e}"))?;
+        let id = v.get("id").and_then(|x| x.as_i64()).ok_or_else(|| format!("ligne {i}: id manquant"))?;
+        let ts = v.get("ts").and_then(|x| x.as_i64()).ok_or_else(|| format!("ligne {i}: ts manquant"))?;
+        let champ = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+        let (kind, actor, tenant, detail, prev_hash, hash) = (champ("kind"), champ("actor"), champ("tenant"), champ("detail"), champ("prev_hash"), champ("hash"));
+        if prev_hash != prev {
+            return Err(format!("ligne {i} (entrée #{id}): rupture de chaîne (prev_hash != hash précédent)"));
+        }
+        let recomputed = sha256_hex(format!("{prev}|{ts}|{kind}|{actor}|{tenant}|{detail}").as_bytes());
+        if recomputed != hash {
+            return Err(format!("ligne {i} (entrée #{id}): hachage recalculé différent — maillon altéré"));
+        }
+        prev = hash;
+        n += 1;
+    }
+    Ok(n)
+}
+
 pub(crate) fn ledger_verify_export(lines: &[String], expect_prev: &str) -> Result<usize, String> {
     let mut prev = expect_prev.to_string();
     let mut n = 0usize;

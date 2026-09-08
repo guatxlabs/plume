@@ -299,6 +299,7 @@ pub(crate) fn route_min_role(path: &str, mutating: bool) -> MinRole {
         || path.starts_with("/api/retention")
         || path.starts_with("/api/ledger") // #38 ledger view + #59 /api/ledger/export (chaîne préservée) : GET compris -> ADMIN
         || path.starts_with("/api/ledger-sinks") // #59 sinks d'export streaming (secret_ref) : GET compris -> ADMIN
+        || path.starts_with("/api/control-ledger") // `P10.7-r` export du journal de CONTRÔLE (accès superadmin, gestes d'admin) : ADMIN
         || path.starts_with("/api/legal-holds") // #59 legal-hold / rétention-lock (gouvernance destructive) : GET compris -> ADMIN
         // PURGE EXPLICITE D'ÉVÉNEMENTS : la seule surface qui DÉTRUIT des preuves à la demande. ADMIN-only,
         // GET compris (aucun GET n'existe aujourd'hui — le préfixe ferme d'avance toute lecture future de

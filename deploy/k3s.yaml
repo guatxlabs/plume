@@ -135,9 +135,12 @@ spec:
             # phrase tapée par un humain — le tier froid protège déjà le même secret à log_n=12.
             # - { name: PLUME_BACKUP_SCRYPT_LOG_N, value: "12" }
             #
-            # Auto-vacuum incrémental (non bloquant). INOPÉRANT — avec un warn honnête, jamais de
-            # VACUUM plein bloquant — si la base n'est pas en `auto_vacuum=INCREMENTAL` (`db-stats`).
-            - { name: PLUME_AUTOVACUUM_INTERVAL, value: "86400" }
+            # Auto-vacuum incrémental (non bloquant) : DÉSARMÉ (`P7.20-d`). Il n'opère que sur une base
+            # en `auto_vacuum=INCREMENTAL`, mode que le schéma du démon ne pose JAMAIS (sur une base
+            # existante il exigerait une reconstruction complète et bloquante) : armé, il ne ferait que
+            # tourner à vide avec un avertissement au démarrage. Poser une valeur > 0 seulement sur une
+            # base créée en INCREMENTAL, vérifiée par `plume-daemon db-stats`.
+            - { name: PLUME_AUTOVACUUM_INTERVAL, value: "0" }
             # Borne les arenas malloc glibc : mesuré 2300 -> 310 MiB de RSS sur ce process (nombreux
             # threads : rollup/refresh/ingest + pool read-only). Indispensable pour tenir la limite 2Gi.
             - { name: MALLOC_ARENA_MAX, value: "2" }

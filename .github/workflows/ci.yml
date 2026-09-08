@@ -1887,6 +1887,15 @@ jobs:
       - name: Un déploiement n'arme jamais une tâche dont une précondition n'est pas satisfaite chez lui (P9.4-b)
         run: python3 .github/scripts/check_a_deployment_never_arms_a_task_it_cannot_run.py
 
+      # `P7.20-d` — MÊME FAMILLE, quand la précondition n'est pas une variable livrée mais un MODE que
+      # seul le code peut poser : la passe d'entretien incrémental se rend inerte (`continue`) tant que
+      # `PRAGMA auto_vacuum` ne vaut pas 2, et le schéma ne l'assigne nulle part. Deux manifestes et le
+      # fichier d'environnement d'exemple l'armaient quand même. La garde lit le gate et le PRAGMA dans
+      # le corps de la tâche (forme de `P9.4-b`, importée), et rougit sur toute livraison non nulle tant
+      # que le code n'assigne pas ce PRAGMA ; éprouvée dans les deux sens sur des arbres fabriqués.
+      - name: Un manifeste n'arme jamais un entretien dont le mode n'est posé nulle part (P7.20-d)
+        run: python3 .github/scripts/check_a_manifest_never_arms_a_maintenance_the_daemon_never_enables.py
+
       # `P8.9-c` — MÊME FAMILLE, APPLIQUÉE À L'INDEX DES CLÉS : ici ce n'est ni la couverture ni le
       # document qui manque, c'est ce que la ligne dit d'ELLE-MÊME. Une clé porte un état, et ✅
       # promet qu'il n'y a plus rien à faire. MESURÉ le 2026-08-23, avant réparation : sur 155 lignes

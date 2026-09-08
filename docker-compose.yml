@@ -175,10 +175,12 @@ services:
       # plancher, ça ne fait que consommer de la RAM. Prix mesuré le 2026-08-09 : 16 -> 67 108 864 o,
       # 20 -> 1 073 741 824 o. Cf. docs/DR-plume-restore.md.
       PLUME_BACKUP_SCRYPT_LOG_N: "${PLUME_BACKUP_SCRYPT_LOG_N:-}"
-      # --- AUTO-VACUUM INCRÉMENTAL (reclaim non-bloquant, best-effort) ---
-      # 0/absent = DÉSACTIVÉ. 86400 = une passe/jour. INOPÉRANT (warn honnête, jamais de VACUUM plein
-      # bloquant) si la base n'est pas en `auto_vacuum=INCREMENTAL` — vérifiez avec `plume-daemon db-stats`.
-      PLUME_AUTOVACUUM_INTERVAL: "${PLUME_AUTOVACUUM_INTERVAL:-86400}"
+      # --- AUTO-VACUUM INCRÉMENTAL (reclaim non-bloquant, best-effort) : DÉSARMÉ (`P7.20-d`) ---
+      # 0/absent = DÉSACTIVÉ. Il n'opère que sur une base en `auto_vacuum=INCREMENTAL`, mode que le
+      # schéma du démon ne pose JAMAIS : armé (86400 = une passe/jour), il tournerait à vide avec un
+      # avertissement au démarrage. Poser une valeur > 0 seulement sur une base créée en INCREMENTAL,
+      # vérifiée par `plume-daemon db-stats`.
+      PLUME_AUTOVACUUM_INTERVAL: "${PLUME_AUTOVACUUM_INTERVAL:-0}"
       # --- TIER FROID COLONNAIRE (#18) — ÉTEINT, ET C'EST UNE DÉCISION (`P7.20-e`) ---
       # DEUX PORTES, ET IL FAUT LES DEUX. (1) COMPILATION : cette image est bâtie `ldap,cold_tier`
       # (Dockerfile, `ARG PLUME_FEATURES`) — la capacité EST dans le binaire livré ici. (2) EXÉCUTION :

@@ -693,6 +693,22 @@ pub(crate) fn apply_excl_placeholders(query: &str, is_soql: bool) -> String {
     query.replace("__OPERATOR_EXCL__", op).replace("__SELF_EXCL__", slf)
 }
 
+/// LES MARQUEURS DE FENÊTRE D'UNE REQUÊTE BRUTE, PAR UN SEUL ÉCRIVAIN (`P11.24-m`, mesuré le 2026-09-08).
+/// `__FROM__` / `__TO__` sont substitués par le DÉMON, jamais par la console : un marqueur nu n'atteint
+/// donc jamais SQLite. Ce que cinq sites écrivaient chacun de leur côté : `__TO__` remplacé par `to`
+/// TEL QUEL — or `to == 0` veut dire « pas de borne haute » (le compilateur GXQL n'émet `ts <= to` que
+/// si `to > 0`, et la console envoie `to: 0` dès qu'aucun zoom n'est posé). En SQL brut, ce zéro devenait
+/// `ts <= 0` : un résultat VIDE fabriqué, présenté comme le contenu de la fenêtre. Ici, une borne haute
+/// absente vaut « pas de borne » (`i64::MAX`), comme en GXQL ; `__FROM__` reste `from` (0 = depuis toujours,
+/// ce que `ts >= 0` dit déjà). Fast-path : aucun marqueur -> chaîne rendue telle quelle.
+pub(crate) fn substituer_les_marqueurs_de_fenetre(sql: &str, from: i64, to: i64) -> String {
+    if !sql.contains("__FROM__") && !sql.contains("__TO__") {
+        return sql.to_string();
+    }
+    let borne_haute = if to > 0 { to } else { i64::MAX };
+    sql.replace("__FROM__", &from.to_string()).replace("__TO__", &borne_haute.to_string())
+}
+
 /// PHASE 3b — refresh ASYNCHRONE (SWR) d'un panneau. Déclenché par panel_data quand le cache est périmé
 /// ou absent. Ne bloque JAMAIS le chemin requête :
 ///   - anti-stampede : un seul refresh EN VOL par clé (panel_id, range_key) via st.panel_refresh_inflight ;

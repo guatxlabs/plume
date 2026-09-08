@@ -38,7 +38,7 @@ fn rule_sql_masked(query: &str, is_soql: bool, window_s: i64, masks: &guatx_core
     // invalide -> visible au test/PREPARE, jamais un angle mort silencieux.
     // FILTRE ENVIRONNEMENT (#2d) : TOUJOURS None ici — la DÉTECTION est tenant-wide (D7) : une règle
     // s'évalue sur TOUS les environnements du tenant (une attaque sur staging doit alerter). Jamais d'env.
-    if is_soql { soql_to_sql_masked_x(query, from, 0, None, masks) } else { Ok(query.replace("__FROM__", &from.to_string())) }
+    if is_soql { soql_to_sql_masked_x(query, from, 0, None, masks) } else { Ok(substituer_les_marqueurs_de_fenetre(query, from, 0)) }
 }
 
 /// #45 — UNIQUE PORTE DE COMPILATION D'UNE REQUÊTE DE RÈGLE POUR UN APPELANT IDENTIFIÉ.
@@ -147,7 +147,7 @@ pub(crate) fn lien_de_recherche_de_regle(query: &str, is_soql: bool, window_s: i
     let from = if window_s > 0 { ts - window_s } else { 0 };
     let to = ts;
     if !is_soql {
-        let q = query.replace("__FROM__", &from.to_string()).replace("__TO__", &to.to_string());
+        let q = substituer_les_marqueurs_de_fenetre(query, from, to);
         return LienDeRecherche { query: q, is_soql: false, from, to };
     }
     let mut etages = guatx_core::soql::soql_split_pipes(query);

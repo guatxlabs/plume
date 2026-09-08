@@ -105,7 +105,7 @@ pub(crate) fn compile_panneau_avoue(query: &str, is_soql: bool, from: i64, to: i
         soql_to_sql_x(&query, from, to, env).map(|sql| PanneauCompile { sql, provenance: Provenance::CompilateurBrut })
     } else {
         Ok(PanneauCompile {
-            sql: query.replace("__FROM__", &from.to_string()).replace("__TO__", &to.to_string()),
+            sql: substituer_les_marqueurs_de_fenetre(&query, from, to),
             provenance: Provenance::Opaque,
         })
     }
@@ -124,7 +124,7 @@ pub(crate) fn compile_panneau_avoue_masque(
     let sql = if is_soql {
         soql_to_sql_masked_x(&q2, from, to, env, masks)?
     } else {
-        q2.replace("__FROM__", &from.to_string()).replace("__TO__", &to.to_string())
+        substituer_les_marqueurs_de_fenetre(&q2, from, to)
     };
     Ok(PanneauCompile { sql, provenance: Provenance::Opaque })
 }

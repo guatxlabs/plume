@@ -316,6 +316,25 @@ pub(crate) async fn pivot_compile(State(st): State<AppState>, Extension(au): Ext
 /// redaction/RBAC). Masques EFFECTIFS du rôle -> un champ masqué reste masqué (projection) et un filtre sur
 /// champ masqué échoue-fermé. run_query_ex applique l'authorizer read-pool (denylist de secrets) + budget +
 /// plafond de lignes. AUCUNE surface SQL brute n'est ouverte.
+/// L'AVEU DE BANDE FROIDE D'UNE REQUÊTE ENGENDRÉE (`P10.19-a`, mesuré le 2026-09-08). Le pivot et les jeux
+/// de données compilent sur le schéma des ÉVÉNEMENTS — la table que le vieillissement déplace vers le froid —
+/// et ce chemin ne consulte JAMAIS la bande froide : quand la fenêtre demandée commence SOUS la frontière
+/// (`from < b`), le résultat est calculé sur la fenêtre chaude seule. Ce chemin ne passe pas par le coffre des
+/// panneaux ; il DIT donc ce qu'il n'a pas vu, dans la même case `stats.cold` que `/api/query` renseigne, avec
+/// la frontière comme fait. Pure : la frontière lui est donnée (None = tier froid éteint ou fenêtre chaude).
+pub(crate) fn aveu_de_bande_froide(from: i64, frontiere: Option<i64>) -> Option<Value> {
+    let b = frontiere?;
+    if from >= b {
+        return None;
+    }
+    Some(json!({
+        "served_from": "hot",
+        "boundary_ts": b,
+        "aveu": "bande froide NON consultée : ce chemin (pivot / jeu de données) calcule sur la fenêtre chaude seule ; \
+                 les lignes antérieures à boundary_ts existent peut-être dans le tier froid et ne sont pas comptées",
+    }))
+}
+
 async fn run_generated_soql(st: &AppState, au: &AuthUser, soql: &str, from: i64, to: i64, limit: i64) -> Response {
     let env = au.env_filter();
     let masks = effective_masks(req_db_path(st, au).as_str(), &au.role, &au.tenant, env);
@@ -338,6 +357,22 @@ async fn run_generated_soql(st: &AppState, au: &AuthUser, soql: &str, from: i64,
         Err(_) => return Json(crate::handlers::portillon::corps_de_refus(json!({ "columns": [], "rows": [] }))).into_response(),
     };
     let db_path = req_db_path(st, au);
+    // La frontière froide est lue avec les MÊMES primitives que `/api/query` (gate de compilation `cold_tier`
+    // + gate d'exécution `PLUME_COLD_TIER`) ; sans elles, aucune frontière et donc aucun aveu — ce qui est vrai :
+    // sans tier froid, la fenêtre chaude est toute la donnée.
+    #[allow(unused_mut)]
+    let mut frontiere_froide: Option<i64> = None;
+    #[cfg(feature = "cold_tier")]
+    {
+        let conf = load_config();
+        if crate::cold_store::cold_tier_runtime_on(&conf) {
+            let rc = req_db(st, au);
+            let c = rc.lock();
+            let rd = retention_effective(&c, &conf, "retention_days");
+            frontiere_froide = Some(crate::cold_store::cold_query_boundary(&c, &conf, now(), rd));
+        }
+    }
+    let aveu_froid = aveu_de_bande_froide(from, frontiere_froide);
     let lim = limit.clamp(1, 10_000);
     let page_sql = format!("SELECT * FROM ({compiled}) LIMIT {lim}");
     let budget = query_budget_interactive_ms();
@@ -347,6 +382,10 @@ async fn run_generated_soql(st: &AppState, au: &AuthUser, soql: &str, from: i64,
         Ok(Ok(mut v)) => {
             v["compiled_sql"] = json!(soql_echo);
             v["soql"] = json!(soql);
+            if let Some(aveu) = aveu_froid {
+                v["stats"]["served_from"] = json!("hot");
+                v["stats"]["cold"] = aveu;
+            }
             Json(v).into_response()
         }
         Ok(Err(e)) => bad_req(e),

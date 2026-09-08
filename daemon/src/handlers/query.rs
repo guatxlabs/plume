@@ -1174,7 +1174,7 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
             return forbidden("SQL brut réservé à l'administrateur (utilisez GXQL)");
         }
         let raw = apply_excl_placeholders(body.str_field("sql").trim(), false);
-        (raw.replace("__FROM__", &from.to_string()).replace("__TO__", &to.to_string()), false)
+        (substituer_les_marqueurs_de_fenetre(&raw, from, to), false)
     };
     if sql.is_empty() {
         return bad_req("requête vide");
@@ -1905,7 +1905,7 @@ pub(crate) async fn export(State(st): State<AppState>, Extension(au): Extension<
             return forbidden("SQL brut réservé à l'administrateur (utilisez GXQL)");
         }
         let raw = apply_excl_placeholders(body.str_field("sql").trim(), false);
-        (raw.replace("__FROM__", &from.to_string()).replace("__TO__", &to.to_string()), false)
+        (substituer_les_marqueurs_de_fenetre(&raw, from, to), false)
     };
     if sql.is_empty() {
         return bad_req("requête vide");

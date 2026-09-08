@@ -731,3 +731,85 @@
         eprintln!("[B2 bench] 48k events — rollup={:?} raw={:?} (x{:.1})", d_roll, d_raw, d_raw.as_secs_f64() / d_roll.as_secs_f64().max(1e-9));
         assert!(d_roll <= d_raw, "le group-by multi-dim via rollup (corps définitif) NE DOIT PAS être plus lent que le scan brut (rollup={d_roll:?} raw={d_raw:?})");
     }
+
+    // ============================================================================================
+    // `P11.24-m` — LES MARQUEURS DE FENÊTRE D'UNE REQUÊTE BRUTE. Mesuré le 2026-09-08 : six sites
+    // substituaient chacun `__TO__` par `to` tel quel, et `to == 0` (« pas de borne haute », ce que la
+    // console envoie sans zoom et ce que le compilateur GXQL lit ainsi) devenait `ts <= 0` : un résultat
+    // VIDE fabriqué. Un seul écrivain désormais, et il lit `0` comme le compilateur.
+    // ============================================================================================
+    #[test]
+    fn p1124m_une_borne_haute_absente_ne_devient_pas_ts_inferieur_a_zero() {
+        let gabarit = "SELECT COUNT(*) FROM event WHERE ts>=__FROM__ AND ts<=__TO__";
+        let sans_borne = crate::handlers::dashboards::substituer_les_marqueurs_de_fenetre(gabarit, 10, 0);
+        assert!(!sans_borne.contains("ts<=0"), "to=0 est « pas de borne », jamais `ts<=0` : {sans_borne}");
+        assert!(sans_borne.contains(&format!("ts<={}", i64::MAX)), "une borne haute absente vaut i64::MAX : {sans_borne}");
+        assert!(sans_borne.contains("ts>=10"), "__FROM__ reste `from` : {sans_borne}");
+        let borne = crate::handlers::dashboards::substituer_les_marqueurs_de_fenetre(gabarit, 10, 20);
+        assert!(borne.contains("ts>=10 AND ts<=20"), "une borne haute posée est substituée telle quelle : {borne}");
+        let nu = "SELECT 1";
+        assert_eq!(crate::handlers::dashboards::substituer_les_marqueurs_de_fenetre(nu, 10, 20), nu, "sans marqueur, rien ne change");
+    }
+
+    /// LA POPULATION EST L'ARBRE, PAS UNE LISTE : tout `.replace("__FROM__"` / `.replace("__TO__"` du code de
+    /// production doit vivre DANS `substituer_les_marqueurs_de_fenetre`. Un septième site qui naîtrait ailleurs
+    /// recréerait le `ts <= 0` sans que personne ne le remarque — c'est ce test qui le remarque.
+    #[test]
+    fn p1124m_les_marqueurs_de_fenetre_ont_un_seul_ecrivain() {
+        fn rust_de_production(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for e in std::fs::read_dir(dir).expect("lecture du répertoire des sources") {
+                let p = e.expect("entrée").path();
+                let nom = p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+                if p.is_dir() {
+                    if nom != "tests" { rust_de_production(&p, out); }
+                } else if nom.ends_with(".rs") && !nom.ends_with("tests.rs") {
+                    out.push(p);
+                }
+            }
+        }
+        let racine = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut fichiers = Vec::new();
+        rust_de_production(&racine, &mut fichiers);
+        assert!(fichiers.len() > 50, "la population de sources est anormalement petite ({}) : le parcours a changé", fichiers.len());
+        let mut ecrivains: Vec<String> = Vec::new();
+        for f in &fichiers {
+            let src = std::fs::read_to_string(f).expect("source lisible");
+            let mut fonction_courante = String::new();
+            for (i, ligne) in src.lines().enumerate() {
+                let code = ligne.trim_start();
+                if code.starts_with("//") { continue; }
+                if let Some(pos) = code.find("fn ") {
+                    if code[..pos].chars().all(|c| c.is_alphanumeric() || c == '(' || c == ')' || c == ' ' || c == '_') {
+                        fonction_courante = code[pos + 3..].split(|c: char| !c.is_alphanumeric() && c != '_').next().unwrap_or("").to_string();
+                    }
+                }
+                if code.contains(".replace(\"__FROM__\"") || code.contains(".replace(\"__TO__\"") {
+                    ecrivains.push(format!("{}:{} dans `{}`", f.strip_prefix(&racine).unwrap_or(f).display(), i + 1, fonction_courante));
+                }
+            }
+        }
+        assert_eq!(ecrivains.len(), 1, "UN seul écrivain des marqueurs attendu, vus : {ecrivains:?}");
+        assert!(ecrivains[0].ends_with("dans `substituer_les_marqueurs_de_fenetre`"), "l'écrivain unique n'est pas celui attendu : {}", ecrivains[0]);
+    }
+
+    // ============================================================================================
+    // `P10.19-a` — LE PIVOT DIT CE QU'IL N'A PAS VU. Il compile sur le schéma des événements, la table que le
+    // vieillissement déplace vers le froid, sans consulter la bande froide : quand la fenêtre commence sous
+    // la frontière, l'aveu est posé dans `stats.cold`, et il ne l'est que là où la frontière le dit.
+    // ============================================================================================
+    #[test]
+    fn p1019a_l_aveu_de_bande_froide_ne_dit_que_ce_que_la_frontiere_dit() {
+        use crate::handlers::datamodels::aveu_de_bande_froide;
+        assert!(aveu_de_bande_froide(10, None).is_none(), "sans tier froid, la fenêtre chaude est toute la donnée : aucun aveu");
+        assert!(aveu_de_bande_froide(100, Some(50)).is_none(), "fenêtre entièrement chaude (from >= frontière) : aucun aveu");
+        let aveu = aveu_de_bande_froide(10, Some(50)).expect("fenêtre sous la frontière : un aveu");
+        assert_eq!(aveu["served_from"], json!("hot"));
+        assert_eq!(aveu["boundary_ts"], json!(50));
+        assert!(aveu["aveu"].as_str().unwrap_or("").contains("NON consultée"), "l'aveu nomme ce qui n'a pas été lu : {aveu}");
+        // ET IL EST POSÉ SUR LE CHEMIN : la fonction qui exécute pivot et jeux de données l'appelle.
+        let src = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/handlers/datamodels.rs")).unwrap();
+        let debut = src.find("async fn run_generated_soql").expect("run_generated_soql existe");
+        let corps = &src[debut..];
+        assert!(corps.contains("aveu_de_bande_froide(from, frontiere_froide)"), "run_generated_soql ne pose plus l'aveu de bande froide");
+        assert!(corps.contains("v[\"stats\"][\"cold\"] = aveu"), "l'aveu n'est plus écrit dans stats.cold de la réponse");
+    }

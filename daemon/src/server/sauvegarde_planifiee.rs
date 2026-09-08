@@ -24,15 +24,52 @@ use super::*;
 pub(crate) fn spawn_backup_scheduler(conf: HashMap<String, String>, db_path: String) {
         let interval: u64 = cfg(&conf, "PLUME_BACKUP_INTERVAL", "0").parse().unwrap_or(0);
         if interval == 0 { return; } // DÉSACTIVÉ (défaut) -> aucun thread -> byte-identique.
+        std::thread::spawn(move || {
+            let _arme = demarrer_le_planificateur(conf, db_path, interval);
+        });
+}
+
+/// `P9.4-a` — PRÉPARER, PUIS BOUCLER, EN DEUX FONCTIONS. La préparation rend sa cause d'échec comme VALEUR
+/// (`?` sur chaque lecture) ; c'est ici, à l'unique point de décision, qu'un planificateur qui ne pourra
+/// JAMAIS publier le DIT par le signal de `P9.4-b` (événement SOC durable, non purgeable) et non par une
+/// seule ligne de journal d'hôte — puis rend `false` : il n'est pas armé. La boucle, elle, ne décide rien
+/// et ne rend jamais la main.
+fn demarrer_le_planificateur(conf: HashMap<String, String>, db_path: String, interval: u64) -> bool {
+        let pret = match preparer_le_planificateur(&conf, &db_path, interval) {
+            Ok(p) => p,
+            Err(cause) => {
+                eprintln!("[backup-sched] {cause} -> scheduler DÉSACTIVÉ, et c'est signalé (aucune archive ne sera publiée)");
+                signaler_qu_aucune_archive_n_a_ete_publiee(&db_path, db_key().as_deref(), "destination", &cause);
+                return false;
+            }
+        };
+        boucle_du_planificateur(db_path, pret)
+}
+
+/// Ce que la boucle a besoin de savoir, résolu UNE fois au démarrage (cf. `P9.4-a` : ces scalaires ne
+/// sont jamais relus — c'est écrit dans le corpus des trois modes).
+struct PlanificateurPret {
+    dest: String,
+    keep: usize,
+    interval: u64,
+    on_start: bool,
+    #[cfg(feature = "s3_backup")]
+    sink_objet: Option<std::sync::Arc<sink_s3::CibleS3>>,
+}
+
+/// Lit les réglages et prépare la destination. `Err(cause)` = le planificateur ne pourra JAMAIS publier
+/// (destination objet non compilée ou irrésoluble, répertoire impossible à créer) — chaque échec est
+/// PROPAGÉ, aucune branche ne se tait. Le gate d'activation (`PLUME_BACKUP_INTERVAL`) reste chez l'appelant.
+fn preparer_le_planificateur(conf: &HashMap<String, String>, db_path: &str, interval: u64) -> Result<PlanificateurPret, String> {
 
         // DEST par défaut = `<dir(db_path)>/backups` : À CÔTÉ de la base -> déjà sur le volume monté, zéro config.
-        let default_dest = std::path::Path::new(&db_path).parent()
+        let default_dest = std::path::Path::new(db_path).parent()
             .filter(|d| !d.as_os_str().is_empty())
             .map(|d| d.join("backups").to_string_lossy().into_owned())
             .unwrap_or_else(|| "backups".to_string());
-        let dest = cfg(&conf, "PLUME_BACKUP_DEST", &default_dest);
-        let keep: usize = cfg(&conf, "PLUME_BACKUP_KEEP", "24").parse().unwrap_or(24).max(1);
-        let on_start = cfg(&conf, "PLUME_BACKUP_ON_START", "0") == "1";
+        let dest = cfg(conf, "PLUME_BACKUP_DEST", &default_dest);
+        let keep: usize = cfg(conf, "PLUME_BACKUP_KEEP", "24").parse().unwrap_or(24).max(1);
+        let on_start = cfg(conf, "PLUME_BACKUP_ON_START", "0") == "1";
 
         // ─── DESTINATION OBJET (`s3://…`) ────────────────────────────────────────────────────────────
         // SANS la feature `s3_backup` : le module `sink_s3` n'existe pas dans ce binaire, et la branche
@@ -40,12 +77,10 @@ pub(crate) fn spawn_backup_scheduler(conf: HashMap<String, String>, db_path: Str
         // rend le profil par défaut inchangé (aucun `s3://` accepté, aucune socket, aucun thread).
         #[cfg(not(feature = "s3_backup"))]
         if dest.starts_with("s3://") {
-            eprintln!(
-                "[backup-sched] PLUME_BACKUP_DEST={dest} : sink S3 natif-Rust NON COMPILÉ dans ce binaire \
-                 (feature `s3_backup`, OFF par défaut) ; utilisez un répertoire LOCAL (volume monté), \
-                 recompilez avec `--features s3_backup`, ou passez par un dépôt objet externe \
-                 -> scheduler DÉSACTIVÉ.");
-            return;
+            return Err(format!(
+                "PLUME_BACKUP_DEST={dest} : sink S3 natif-Rust NON COMPILÉ dans ce binaire (feature `s3_backup`, \
+                 OFF par défaut) ; utilisez un répertoire LOCAL (volume monté), recompilez avec \
+                 `--features s3_backup`, ou passez par un dépôt objet externe"));
         }
         // AVEC la feature : la destination objet est RÉSOLUE MAINTENANT, au démarrage, pas au premier cycle.
         // Une configuration incomplète arrête l'ordonnanceur ici avec sa cause NOMMÉE — elle ne le laisse
@@ -55,18 +90,10 @@ pub(crate) fn spawn_backup_scheduler(conf: HashMap<String, String>, db_path: Str
         // journal (cf. le type `Matiere` de `sink_s3`).
         #[cfg(feature = "s3_backup")]
         let sink_objet: Option<std::sync::Arc<sink_s3::CibleS3>> = if dest.starts_with("s3://") {
-            match sink_s3::depuis_reglages(&conf, &dest) {
-                Ok(c) => {
-                    eprintln!("[backup-sched] destination OBJET résolue : {c:?}");
-                    Some(std::sync::Arc::new(c))
-                }
-                Err(e) => {
-                    eprintln!(
-                        "[backup-sched] PLUME_BACKUP_DEST={dest} : {e} -> scheduler DÉSACTIVÉ (fail-closed ; \
-                         aucune sauvegarde locale ne sera écrite sous ce nom).");
-                    return;
-                }
-            }
+            let c = sink_s3::depuis_reglages(conf, &dest)
+                .map_err(|e| format!("PLUME_BACKUP_DEST={dest} : {e} (fail-closed ; aucune sauvegarde locale ne sera écrite sous ce nom)"))?;
+            eprintln!("[backup-sched] destination OBJET résolue : {c:?}");
+            Some(std::sync::Arc::new(c))
         } else {
             None
         };
@@ -75,34 +102,124 @@ pub(crate) fn spawn_backup_scheduler(conf: HashMap<String, String>, db_path: Str
         // distant échoue. La rétention DISTANTE, elle, n'est pas implémentée : c'est une règle de cycle de vie
         // du bucket, mécanisme natif de tous les fournisseurs (cf. l'en-tête de `sink_s3`).
         #[cfg(feature = "s3_backup")]
-        let dest = if sink_objet.is_some() { cfg(&conf, sink_s3::CLE_S3_STAGING, &default_dest) } else { dest };
+        let dest = if sink_objet.is_some() { cfg(conf, sink_s3::CLE_S3_STAGING, &default_dest) } else { dest };
 
-        std::thread::spawn(move || {
-            eprintln!(
-                "[backup-sched] ACTIF : intervalle={interval}s dest={dest} keep={keep} on_start={on_start} \
-                 (B1 age(zstd), rename atomique, rétention KEEP-N, best-effort)");
-            if let Err(e) = std::fs::create_dir_all(&dest) {
-                eprintln!("[backup-sched] création DEST {dest} impossible : {e} — scheduler ABANDONNÉ (best-effort)");
-                return;
-            }
-            std::thread::sleep(Duration::from_secs(90)); // laisse passer le bind + la liveness (comme les autres boucles)
-            // UN SEUL point d'appel du cycle, quel que soit le sink -> le chemin local et le chemin objet ne
-            // peuvent pas diverger sur la cadence, le démarrage à chaud ou la rétention.
+        preparer_la_destination(&dest)?;
+        Ok(PlanificateurPret {
+            dest,
+            keep,
+            interval,
+            on_start,
             #[cfg(feature = "s3_backup")]
-            let cycle = |db: &str, d: &str, k: usize| match sink_objet.as_deref() {
-                Some(cible) => {
-                    run_scheduled_backup_objet(db, d, k, cible);
-                }
-                None => run_scheduled_backup(db, d, k),
-            };
-            #[cfg(not(feature = "s3_backup"))]
-            let cycle = |db: &str, d: &str, k: usize| run_scheduled_backup(db, d, k);
-            if on_start { cycle(&db_path, &dest, keep); } // backup-on-start optionnel (comme le sidecar)
-            loop {
-                std::thread::sleep(Duration::from_secs(interval));
-                cycle(&db_path, &dest, keep);
+            sink_objet,
+        })
+}
+
+/// La boucle du planificateur, dans son fil : mise en route, première attente DÉRIVÉE, puis un cycle par
+/// intervalle. Elle ne décide rien — tout ce qui pouvait échouer a été résolu par `preparer_le_planificateur`.
+fn boucle_du_planificateur(db_path: String, pret: PlanificateurPret) -> ! {
+        let PlanificateurPret { dest, keep, interval, on_start, .. } = pret;
+        eprintln!(
+            "[backup-sched] ACTIF : intervalle={interval}s dest={dest} keep={keep} on_start={on_start} \
+             (B1 age(zstd), rename atomique, rétention KEEP-N, best-effort)");
+        std::thread::sleep(Duration::from_secs(90)); // laisse passer le bind + la liveness (comme les autres boucles)
+        // UN SEUL point d'appel du cycle, quel que soit le sink -> le chemin local et le chemin objet ne
+        // peuvent pas diverger sur la cadence, le démarrage à chaud ou la rétention.
+        #[cfg(feature = "s3_backup")]
+        let sink_objet = pret.sink_objet;
+        #[cfg(feature = "s3_backup")]
+        let cycle = |db: &str, d: &str, k: usize| match sink_objet.as_deref() {
+            Some(cible) => {
+                run_scheduled_backup_objet(db, d, k, cible);
             }
-        });
+            None => run_scheduled_backup(db, d, k),
+        };
+        #[cfg(not(feature = "s3_backup"))]
+        let cycle = |db: &str, d: &str, k: usize| run_scheduled_backup(db, d, k);
+        // `P9.4-a` — LA PREMIÈRE ATTENTE EST DÉRIVÉE DE LA DERNIÈRE ARCHIVE, JAMAIS D'UN INTERVALLE ENTIER.
+        // Avant : « on_start ? cycle : rien », puis un intervalle ENTIER de sommeil — chaque redémarrage
+        // repoussait la sauvegarde d'un intervalle, en silence, et un processus qui redémarre plus souvent
+        // que son intervalle n'en produisait JAMAIS. Le planificateur lit désormais ce qu'il écrit lui-même :
+        // la plus récente archive RÉGULIÈRE de la destination. Aucune -> tout de suite ; une archive plus
+        // ancienne que l'intervalle -> tout de suite ; une archive fraîche -> le reste de l'intervalle.
+        // `PLUME_BACKUP_ON_START=1` reste le geste qui FORCE une sauvegarde même devant une archive fraîche.
+        let mesure = premiere_attente_derivee(&dest, interval, now());
+        let premiere = if on_start { 0 } else { mesure.secondes };
+        eprintln!(
+            "[backup-sched] première sauvegarde dans {premiere}s — dérivée de {} archive(s) régulière(s) de {dest}{}{} \
+             (intervalle {interval}s, on_start={on_start}) ; un redémarrage ne repousse plus la cadence",
+            mesure.archives_regulieres,
+            if mesure.repertoire_lisible { "" } else { " — RÉPERTOIRE ILLISIBLE, donc tout de suite" },
+            if mesure.entrees_illisibles > 0 { format!(", {} entrée(s) illisible(s) ignorée(s)", mesure.entrees_illisibles) } else { String::new() },
+        );
+        std::thread::sleep(Duration::from_secs(premiere));
+        loop {
+            cycle(&db_path, &dest, keep);
+            std::thread::sleep(Duration::from_secs(interval));
+        }
+}
+
+/// La destination des archives, créée si besoin. Rend la CAUSE d'un échec comme valeur (aucune branche
+/// n'abandonne rien ici) : c'est l'appelant qui décide ce qu'un cycle impossible doit dire.
+fn preparer_la_destination(dest: &str) -> Result<(), String> {
+        std::fs::create_dir_all(dest).map_err(|e| format!("création DEST {dest} impossible : {e}"))
+}
+
+/// `P9.4-a` — CE QUE LA PREMIÈRE ATTENTE A LU, ET CE QU'ELLE N'A PAS PU LIRE. Une lecture abandonnée se COMPTE,
+/// elle ne se tait pas (`check_coverage_loss_is_never_silent`) : le journal de démarrage publie ces comptes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PremiereAttente {
+    /// Secondes à attendre avant le premier cycle (0 = tout de suite).
+    pub(crate) secondes: u64,
+    /// Archives RÉGULIÈRES lues (nom classé régulier ET instant de fichier lisible).
+    pub(crate) archives_regulieres: u32,
+    /// Entrées du répertoire qu'on n'a pas pu lire (entrée, métadonnées ou instant illisibles) — IGNORÉES, et dites.
+    pub(crate) entrees_illisibles: u32,
+    /// Le répertoire lui-même s'est-il laissé lister ? Sinon `secondes` vaut 0 : quand on ne sait pas, on sauvegarde.
+    pub(crate) repertoire_lisible: bool,
+}
+
+/// `P9.4-a` — Secondes à attendre avant le PREMIER cycle, dérivées de la plus récente archive RÉGULIÈRE
+/// (`plume-<TS>.db.age`, classée par `classify_backup_name` — la SEULE fonction qui connaît les formes de
+/// nom, jamais une seconde écriture du motif) présente dans `dest_dir` : `max(0, dernière + interval − now)`,
+/// borné par `interval`. AUCUNE archive lisible, répertoire absent ou illisible -> 0 : quand on ne sait pas,
+/// on sauvegarde — l'inverse (attendre un intervalle entier faute de savoir) est exactement le défaut fermé —
+/// et ce qui n'a pas pu être lu est COMPTÉ dans la mesure rendue, jamais avalé.
+/// L'instant de l'archive est celui de son FICHIER (mtime), pas celui de son nom : le nom porte la seconde de
+/// la prise, le fichier porte celle de la publication, et c'est la publication qui compte pour la cadence.
+/// PURE sur le système de fichiers : testable avec un répertoire fabriqué et des mtimes posés.
+pub(crate) fn premiere_attente_derivee(dest_dir: &str, interval: u64, now_ts: i64) -> PremiereAttente {
+        let mut mesure = PremiereAttente { secondes: 0, archives_regulieres: 0, entrees_illisibles: 0, repertoire_lisible: true };
+        let entrees = match std::fs::read_dir(dest_dir) {
+            Ok(e) => e,
+            Err(_) => {
+                mesure.repertoire_lisible = false; // COMPTÉ et publié : « tout de suite », et le journal dit pourquoi
+                return mesure;
+            }
+        };
+        // Le plus récent instant lu, ou aucun : `archives_regulieres` en tient le compte, la valeur suit.
+        let mut derniere: i64 = i64::MIN;
+        for entree in entrees {
+            let e = match entree {
+                Ok(e) => e,
+                Err(_) => { mesure.entrees_illisibles += 1; continue; }
+            };
+            if !matches!(classify_backup_name(&e.file_name().to_string_lossy()), ParsedBackup::Regular(_)) { continue; }
+            let instant = match e.metadata().and_then(|md| md.modified()) {
+                Ok(t) => t,
+                Err(_) => { mesure.entrees_illisibles += 1; continue; }
+            };
+            let secondes_epoch = match instant.duration_since(std::time::UNIX_EPOCH) {
+                Ok(d) => d.as_secs() as i64,
+                Err(_) => { mesure.entrees_illisibles += 1; continue; }
+            };
+            mesure.archives_regulieres += 1;
+            derniere = derniere.max(secondes_epoch);
+        }
+        if mesure.archives_regulieres > 0 {
+            mesure.secondes = (derniere + interval as i64 - now_ts).clamp(0, interval as i64) as u64;
+        }
+        mesure
 }
 
 /// Un CYCLE du scheduler natif (résout clé+destinataire depuis l'ENV `PLUME_DB_KEY` / `PLUME_BACKUP_AGE_RECIPIENT`,

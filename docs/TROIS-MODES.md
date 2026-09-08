@@ -244,22 +244,23 @@ redémarrage**. Corriger l'intervalle, la destination ou la rétention **exige**
 
 #### Ce que le redémarrage coûte, et qui n'est écrit nulle part ailleurs
 
-> ⚠️ **Redémarrer le démon remet la cadence de sauvegarde à zéro.** Le planificateur ne garde aucune
-> trace de sa dernière exécution : il attend 90 s (le temps du bind et de la *liveness*), puis dort un
-> intervalle **entier** avant son premier cycle — `PLUME_BACKUP_ON_START` valant `0` par défaut et
-> n'étant posé nulle part dans `deploy/k3s.yaml`. Avec l'intervalle livré (`21600` s, soit 6 h, dans
-> `deploy/k3s.yaml`, `docker-compose.yml` et `.env.example`), **chaque redémarrage repousse la
-> prochaine sauvegarde de 6 h 1 min 30 s**, et rien ne le dit.
+> **Jusqu'au 2026-09-08, redémarrer le démon remettait la cadence de sauvegarde à zéro.** Le
+> planificateur ne gardait aucune trace de sa dernière exécution : 90 s d'attente (bind et *liveness*),
+> puis un intervalle **entier** de sommeil avant son premier cycle. Avec l'intervalle livré (`21600` s,
+> soit 6 h), chaque redémarrage repoussait la sauvegarde de 6 h 1 min 30 s, et un pod qui redémarre plus
+> souvent que son intervalle — déploiement, `rollout restart`, éviction, `OOMKill` — **ne produisait
+> jamais aucune archive**, pendant que la console annonçait « 24 × 6 h » à côté d'un répertoire vide.
+> Le signal SOC d'un cycle stérile (`P9.4-b`) ne couvrait pas ce cas : il n'est émis que par un cycle
+> qui s'exécute.
 >
-> Le cas qui fait mal n'est pas la reconfiguration volontaire, c'est la **churn** : un pod qui
-> redémarre plus souvent que son intervalle — déploiement, `rollout restart`, éviction, nœud
-> `NotReady`, `OOMKill` — **ne produit jamais aucune archive**, pendant que la console annonce une
-> rétention « 24 × 6 h » à côté d'un répertoire vide. Le signal SOC qui dénonce un cycle stérile
-> (`P9.4-b`) n'aide pas ici : il n'est émis que par un cycle qui **s'exécute** et échoue, jamais par un
-> cycle qui n'a pas encore eu lieu.
->
-> Ce qu'on peut faire aujourd'hui : poser `PLUME_BACKUP_ON_START=1` — au prix d'une sauvegarde à
-> chaque redémarrage, ce qui est une tempête si le processus boucle — ou **vérifier le répertoire
+> **Depuis `P9.4-a` (2026-09-08), la première attente est DÉRIVÉE de la plus récente archive régulière
+> de la destination** (`premiere_attente_derivee`, `daemon/src/server/sauvegarde_planifiee.rs`) : aucune
+> archive, ou une archive plus vieille que l'intervalle → sauvegarde **tout de suite** après les 90 s ;
+> une archive fraîche → le **reste** de l'intervalle. Un redémarrage ne repousse donc plus la cadence, un
+> processus qui boucle ne produit pas non plus de tempête (dès qu'une archive existe, il attend le
+> reste), et le démon **le dit** au démarrage (« première sauvegarde dans N s »). Le planificateur lit ce
+> qu'il écrit lui-même — aucun état nouveau, aucun secret. `PLUME_BACKUP_ON_START=1` reste le geste qui
+> **force** une sauvegarde même devant une archive fraîche. Ce qui reste vrai : **vérifier le répertoire
 > plutôt que le réglage**, dans les trois modes :
 > ```sh
 > ls -la "$PLUME_BACKUP_DEST"     # host ; docker/k3s : la même commande via `exec` (§3.5)

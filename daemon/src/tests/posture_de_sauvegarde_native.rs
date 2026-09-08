@@ -362,6 +362,67 @@
     }
 
     // ============================================================================================
+    // ============================================================================================
+    // P9.4-a — LA PREMIÈRE ATTENTE DU PLANIFICATEUR EST DÉRIVÉE DE LA DERNIÈRE ARCHIVE.
+    // --------------------------------------------------------------------------------------------
+    // Un redémarrage repoussait la sauvegarde d'un intervalle ENTIER, en silence ; un processus qui
+    // redémarre plus souvent que son intervalle n'en produisait jamais. La fonction ci-dessous est ce
+    // qui décide du premier cycle ; elle est PURE sur un répertoire fabriqué, avec des mtimes posés.
+    // ============================================================================================
+
+    /// Une archive fabriquée dans `dir`, dont le fichier porte l'instant `mtime` (secondes epoch).
+    fn archive_datee(dir: &std::path::Path, nom: &str, mtime: i64) {
+        let chemin = dir.join(nom);
+        let f = std::fs::File::create(&chemin).unwrap();
+        f.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(mtime as u64)).unwrap();
+    }
+
+    /// (1) AUCUNE ARCHIVE -> 0 : quand on ne sait pas, on sauvegarde. Répertoire ABSENT -> 0 aussi, et la
+    /// mesure DIT que le répertoire n'était pas lisible : l'abandon est compté, jamais tu.
+    #[test]
+    fn p94a_sans_archive_la_premiere_sauvegarde_est_immediate() {
+        let dir = crate::tmp_possede::TmpPossede::neuf("p94a-vide");
+        let d = dir.to_string_lossy().into_owned();
+        let m = crate::server::premiere_attente_derivee(&d, 3600, 1_800_000_000);
+        assert_eq!((m.secondes, m.archives_regulieres, m.repertoire_lisible), (0, 0, true));
+        let absent = crate::server::premiere_attente_derivee(&format!("{d}/inexistant"), 3600, 1_800_000_000);
+        assert_eq!((absent.secondes, absent.repertoire_lisible), (0, false), "répertoire illisible -> tout de suite, ET c'est dit");
+    }
+
+    /// (2) UNE ARCHIVE FRAÎCHE -> le RESTE de l'intervalle, jamais l'intervalle entier ; une archive plus
+    /// vieille que l'intervalle -> 0. Et c'est la plus RÉCENTE qui décide.
+    #[test]
+    fn p94a_l_attente_est_le_reste_de_l_intervalle_depuis_la_derniere_archive() {
+        let dir = crate::tmp_possede::TmpPossede::neuf("p94a-reste");
+        let d = dir.to_string_lossy().into_owned();
+        let maintenant = 1_800_000_000i64;
+        archive_datee(&dir, "plume-20260101T000000Z.db.age", maintenant - 5_000);
+        archive_datee(&dir, "plume-20260102T000000Z.db.age", maintenant - 100);
+        let m = crate::server::premiere_attente_derivee(&d, 3600, maintenant);
+        assert_eq!(m.secondes, 3500, "la plus récente décide : 3600 - 100");
+        assert_eq!((m.archives_regulieres, m.entrees_illisibles), (2, 0), "deux archives lues, rien d'illisible");
+        assert_eq!(crate::server::premiere_attente_derivee(&d, 60, maintenant).secondes, 0, "archive plus vieille que l'intervalle -> tout de suite");
+        assert_eq!(crate::server::premiere_attente_derivee(&d, 3600, maintenant - 200).secondes, 3600, "horloge en retard sur l'archive -> borné à l'intervalle, jamais au-delà");
+    }
+
+    /// (3) SEULES LES ARCHIVES RÉGULIÈRES COMPTENT — classées par le classificateur de production, pas par un
+    /// motif recopié : un instantané pré-migration, un préschéma ou un fichier temporaire ne datent pas la cadence.
+    #[test]
+    fn p94a_seules_les_archives_regulieres_datent_la_cadence() {
+        let dir = crate::tmp_possede::TmpPossede::neuf("p94a-classes");
+        let d = dir.to_string_lossy().into_owned();
+        let maintenant = 1_800_000_000i64;
+        archive_datee(&dir, "premigrate-abc1234-20260102T000000Z.db.age", maintenant - 10);
+        archive_datee(&dir, "plume-20260102T000000Z-preschema119.db.age", maintenant - 10);
+        archive_datee(&dir, ".plume-20260102T000000Z.db.age.tmp.4242", maintenant - 10);
+        archive_datee(&dir, "notes.txt", maintenant - 10);
+        let m = crate::server::premiere_attente_derivee(&d, 3600, maintenant);
+        assert_eq!((m.secondes, m.archives_regulieres), (0, 0), "aucune archive RÉGULIÈRE -> tout de suite");
+        archive_datee(&dir, "plume-20260101T000000Z.db.age", maintenant - 1_000);
+        let m = crate::server::premiere_attente_derivee(&d, 3600, maintenant);
+        assert_eq!((m.secondes, m.archives_regulieres), (2600, 1), "la régulière seule fait foi, même plus ancienne que les autres");
+    }
+
     // P9.4-b — UN CYCLE QUI NE PRODUIT RIEN LE DIT ; UN CYCLE QUI PRODUIT NE DIT RIEN.
     // --------------------------------------------------------------------------------------------
     // LE DÉFAUT, MESURÉ SUR LES SOURCES le 2026-08-25. La branche de SUCCÈS du cycle natif lève deux

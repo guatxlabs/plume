@@ -812,7 +812,7 @@ viennent d'une constante — la commande `c` ci‑dessus la donne.
 | `PLUME_BACKUP_INTERVAL` | secondes entre deux sauvegardes ; **`0` = aucune sauvegarde** | `0` |
 | `PLUME_BACKUP_KEEP` | rétention *keep‑N* | `24` |
 | `PLUME_BACKUP_DEST` | répertoire local de destination | `<dir(PLUME_DB)>/backups` |
-| `PLUME_BACKUP_ON_START` | `1` = une sauvegarde au démarrage | `0` |
+| `PLUME_BACKUP_ON_START` | `1` = une sauvegarde au démarrage **même** devant une archive fraîche ; à `0`, la première sauvegarde est dérivée de la plus récente archive (tout de suite s'il n'y en a aucune ou qu'elle est plus vieille que l'intervalle, sinon le reste de l'intervalle) | `0` |
 | `PLUME_BACKUP_AGE_RECIPIENT` | clé **publique** age pour un séquestre hors machine | vide |
 | `PLUME_BACKUP_REQUIRE_ASYMMETRIC` | `1` = refuse le repli symétrique (déchiffrable par la machine) | `0` |
 

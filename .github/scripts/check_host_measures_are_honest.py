@@ -51,8 +51,11 @@ RACINE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file_
 CAPTEUR = os.path.join(RACINE, "collectors", "resources.sh")
 LIB = os.path.join(RACINE, "collectors", "lib.sh")
 
-# `temp_c` lit /sys, que le capteur ne paramètre pas : la machine de CI décide de sa présence.
-HORS_PERIMETRE = {"temp_c"}
+# `/sys` est FABRIQUÉ lui aussi, VIDE : aucune sonde thermique, ce qui est une propriété de la machine et
+# non une lecture ratée — `temp_c` n'est donc ni publiée ni avouée ici, et la machine de CI ne décide
+# plus de rien. La température a sa propre garde, avec ses propres sondes fabriquées
+# (`check_cpu_temperature_covers_every_package.py`).
+HORS_PERIMETRE = set()
 # Plancher de non-dégénérescence : en dessous, c'est l'instrument qui est cassé, pas le capteur.
 MIN_MESURES = 4
 
@@ -67,6 +70,7 @@ def arborescence(base, exploitable):
     sources présentes dont le contenu ne porte rien d'utilisable."""
     proc = os.path.join(base, "proc")
     os.makedirs(os.path.join(proc, "net"))
+    os.makedirs(os.path.join(base, "sys", "class"))
     binz = os.path.join(base, "bin")
     for d in (binz, os.path.join(base, "spool"), os.path.join(base, "state")):
         os.makedirs(d)
@@ -111,6 +115,7 @@ def executer(base, proc, binz):
         PLUME_SPOOL=os.path.join(base, "spool"),
         PLUME_STATE=os.path.join(base, "state"),
         PLUME_PROC_ROOT=proc,
+        PLUME_SYS_ROOT=os.path.join(base, "sys"),
         # Le répertoire de `/proc` fabriqué fait un cible de `df` parfaitement valide pour le témoin (1) ;
         # au témoin (2) c'est le stub qui échoue, quelle que soit la cible.
         PLUME_DISK_TARGET=proc,

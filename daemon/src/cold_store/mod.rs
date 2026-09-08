@@ -106,12 +106,10 @@ pub(crate) use reader::{cold_query_boundary, cold_tier_runtime_on, cold_union_qu
 // handler ne peut pas affirmer que sa requête ne dérive rien, il ne peut que le faire dériver.
 pub(crate) use exactness::{AnswerShape, ColdAnswer, Rendered, TruncatedAggregate};
 // #18 P4a — surface du routeur consommée par le handler /api/query (câblage runtime) + le harnais de parité.
-pub(crate) use planner::{
-    cold_keyset_page, cold_vectorized_armed, cold_vectorized_merge_try, cold_vectorized_try, prune_counters,
-    route_counters, route_counters_reset,
-};
+pub(crate) use planner::{cold_keyset_page, cold_vectorized_armed, cold_vectorized_merge_try, cold_vectorized_try};
+// `P7.1-c` — les compteurs de route/d'élagage n'existent QUE pour les tests, tenus par base de fixture.
 #[cfg(test)]
-pub(crate) use planner::{decode_gauge, decode_gauge_reset};
+pub(crate) use planner::{decode_gauge, decode_gauge_reset, route_counters_of, route_counters_reset_of};
 // #28 PHASE B — élagage dimensionnel : le type de prédicat + l'extracteur (parse le GXQL en égalités de dims
 // universelles). `DimEq` est OPAQUE hors cold_store (champs pub(super)) -> query.rs ne fait que le transporter.
 pub(crate) use seal::{extract_cold_dim_preds, DimEq};

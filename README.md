@@ -515,6 +515,14 @@ le collecteur tourne sur un hôte Linux, mais la **cible** peut être n'importe 
 > ```sh
 > search category=config collect_status=unavailable | table host, source, reason, detail
 > ```
+> **Le capteur de ressources (`resources.sh`) se laisse ÉPROUVER sans machine.** Trois leviers ne servent
+> qu'à cela et ne changent rien en exploitation : `PLUME_PROC_ROOT` (racine de `/proc`, défaut `/proc`),
+> `PLUME_SYS_ROOT` (racine de `/sys`, défaut `/sys` — c'est là que vivent les sondes thermiques) et
+> `PLUME_DISK_TARGET` (cible du `df`, défaut `/`). Les gardes de CI fabriquent un `/proc`, un `/sys` et un
+> `df` de toutes pièces — sources vides, deux processeurs, une sonde illisible — et exécutent le capteur
+> TEL QU'IL EST LIVRÉ contre eux, au lieu de laisser la machine de CI décider de ce qui est éprouvé.
+> Depuis le 2026-09-08, `temp_c` est la température du processeur LE PLUS CHAUD et `temp_cpu_packages`
+> dit sur combien de processeurs elle porte ; une sonde présente mais illisible s'avoue avec sa clé.
 > **`bootstrap-agent.sh` n'installe que trois collecteurs** — `resources` (métriques), `integrity` (FIM)
 > et `ship` (expédition). *Mesuré le 2026‑08‑01 sur Ubuntu 24.04 Server : après un `bootstrap-agent.sh`
 > par défaut, le SOC ne reçoit **aucun** événement de sécurité — seulement des métriques et des

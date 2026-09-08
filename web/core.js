@@ -836,9 +836,10 @@ function pagedList(host, opts) {
 //       est déjà servie par un BOUTON d'en-tête (`#rangepick`, `#qrangepick`), donc une modale ; la
 //       cible de jours vit DANS le panneau, à côté du sélecteur de paliers de la vue, donc une barre.
 //   (b) CE QUE LA ROUTE DE L'APPELANT SAIT PORTER — une borne HAUTE, ou pas. `POST /api/query` la
-//       porte ; `GET /api/ledger` ne prend qu'un NOMBRE DE JOURS depuis maintenant et n'en porte
-//       aucune. Quand elle manque, une plage dont la FIN est antérieure à maintenant est REFUSÉE, et
-//       le refus nomme la raison de l'APPELANT — écrite là où elle est vraie, jamais ici.
+//       porte (`to`) ; `GET /api/ledger` la porte depuis `P11.18-t` (`until_ts`). Le mécanisme reste :
+//       quand elle manque, une plage dont la FIN est antérieure à maintenant est REFUSÉE, et le refus
+//       nomme la raison de l'APPELANT — écrite là où elle est vraie, jamais ici. Aujourd'hui aucun des
+//       quatre consommateurs n'est dans ce cas ; la porte le dirait le jour où l'un y retomberait.
 //
 // CE QUE CE PARTAGE NE FAIT PAS, écrit plutôt que tu : il ne fond pas les deux PRÉSENTATIONS en une.
 // Elles existent toutes deux, sont toutes deux déjà stylées, et chacune est celle que sa vue offre

@@ -194,7 +194,7 @@ PLAFOND_LEVIERS_DU_BUDGET_SANS_ENTREE = 0
 #
 # Le plafond ne MONTE jamais sans une raison écrite ici même, et ne descend que depuis un compte joué
 # le jour où on l'écrit.
-PLAFOND_LEVIERS_SANS_DOC = 159
+PLAFOND_LEVIERS_SANS_DOC = 157  # 159 -> 157 le 2026-09-08 : PLUME_PROC_ROOT, PLUME_SYS_ROOT (neuf) et PLUME_DISK_TARGET documentés ensemble (README, capteur de ressources)
 
 # --- PLANCHERS DE NON-DÉGÉNÉRESCENCE -------------------------------------------------------------
 # En dessous, c'est la LECTURE qui est cassée, pas l'arbre qui a maigri — et une garde qui ne

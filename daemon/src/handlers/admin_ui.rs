@@ -227,6 +227,11 @@ pub(crate) struct LedgerAsk {
     pub(crate) limit: i64,
     /// Borne basse de temps, INCLUSE. `i64::MIN` = aucune borne (tout l'historique).
     pub(crate) since: i64,
+    /// `P11.18-t` — Borne HAUTE de temps, INCLUSE (`until_ts`). `i64::MAX` = aucune borne (jusqu'à
+    /// maintenant). C'est ce qui manquait à la route : sans elle, une plage dont la FIN est passée ne
+    /// pouvait pas être demandée, et la valeur de plage PARTAGÉE avec la prévention des fuites ne
+    /// savait exprimer que ce que cette route, la plus pauvre des deux, exprimait.
+    pub(crate) until: i64,
     /// Fenêtre demandée, en jours (0 = aucune borne). RENDUE au client pour qu'il puisse la DIRE.
     pub(crate) window_days: i64,
     /// Curseur de continuation : `id` de la DERNIÈRE ligne rendue -> la page suivante est `id < cursor`.
@@ -274,19 +279,19 @@ pub(crate) fn ledger_plan(cursor: Option<i64>, offset: i64) -> LedgerPlan {
 /// propriété qui décide, et c'est elle qui est éprouvée : le nombre de LIGNES TRAVERSÉES est plafonné,
 /// donc le nombre de pages lues et déchiffrées aussi.
 pub(crate) fn ledger_total_sql() -> String {
-    format!("SELECT COUNT(*) FROM (SELECT 1 FROM ledger WHERE ts>=?1 LIMIT {})", PAGINATION_COUNT_CAP + 1)
+    format!("SELECT COUNT(*) FROM (SELECT 1 FROM ledger WHERE ts>=?1 AND ts<=?2 LIMIT {})", PAGINATION_COUNT_CAP + 1)
 }
 
 /// LE SEUL fabricant de page du journal d'audit. `cursor`/`offset` sont des `i64` parsés stricts en amont
-/// et formatés directement -> injection impossible (même raisonnement que `page_sql`). La borne de temps
-/// part en PARAMÈTRE LIÉ (`?1`) et la taille de page aussi (`?2`). Projection et ordre INCHANGÉS par
-/// rapport à la version d'origine : `id,ts,kind,detail,hash`, `ORDER BY id DESC`.
+/// et formatés directement -> injection impossible (même raisonnement que `page_sql`). Les DEUX bornes de
+/// temps partent en PARAMÈTRES LIÉS (`?1` basse, `?2` haute) et la taille de page aussi (`?3`). Projection
+/// et ordre INCHANGÉS par rapport à la version d'origine : `id,ts,kind,detail,hash`, `ORDER BY id DESC`.
 pub(crate) fn ledger_page_sql(plan: &LedgerPlan) -> String {
-    const TETE: &str = "SELECT id,ts,kind,detail,hash FROM ledger WHERE ts>=?1";
+    const TETE: &str = "SELECT id,ts,kind,detail,hash FROM ledger WHERE ts>=?1 AND ts<=?2";
     match plan {
-        LedgerPlan::Cursor(c) => format!("{TETE} AND id<{c} ORDER BY id DESC LIMIT ?2"),
-        LedgerPlan::Jump(o) => format!("{TETE} ORDER BY id DESC LIMIT ?2 OFFSET {o}"),
-        LedgerPlan::First => format!("{TETE} ORDER BY id DESC LIMIT ?2"),
+        LedgerPlan::Cursor(c) => format!("{TETE} AND id<{c} ORDER BY id DESC LIMIT ?3"),
+        LedgerPlan::Jump(o) => format!("{TETE} ORDER BY id DESC LIMIT ?3 OFFSET {o}"),
+        LedgerPlan::First => format!("{TETE} ORDER BY id DESC LIMIT ?3"),
     }
 }
 
@@ -304,7 +309,7 @@ pub(crate) fn ledger_page(conn: &Connection, ask: &LedgerAsk) -> Value {
     //     est déjà connu du client, et le relire coûterait le plafond POUR RIEN. `null` dit « non compté »,
     //     ce qu'un `0` ne saurait pas dire.
     let (total, total_capped) = if ask.count {
-        let raw: i64 = conn.query_row(&ledger_total_sql(), params![ask.since], |r| r.get(0)).unwrap_or(0);
+        let raw: i64 = conn.query_row(&ledger_total_sql(), params![ask.since, ask.until], |r| r.get(0)).unwrap_or(0);
         let capped = raw > PAGINATION_COUNT_CAP;
         (json!(if capped { PAGINATION_COUNT_CAP } else { raw }), json!(capped))
     } else {
@@ -320,7 +325,7 @@ pub(crate) fn ledger_page(conn: &Connection, ask: &LedgerAsk) -> Value {
     let sql = ledger_page_sql(&ledger_plan(ask.cursor, ask.offset));
     let entries: Vec<Value> = match conn.prepare(&sql) {
         Ok(mut stmt) => stmt
-            .query_map(params![ask.since, ask.limit], |r| {
+            .query_map(params![ask.since, ask.until, ask.limit], |r| {
                 Ok(json!({
                     "id": r.get::<_, i64>(0)?,
                     "ts": r.get::<_, i64>(1)?,
@@ -351,6 +356,8 @@ pub(crate) fn ledger_page(conn: &Connection, ask: &LedgerAsk) -> Value {
         // Borne basse EFFECTIVE, ou `null` quand il n'y a pas de borne (jamais `i64::MIN`, qui se lirait
         // comme une date absurde côté client).
         "since": if ask.window_days > 0 { json!(ask.since) } else { Value::Null },
+        // Borne haute EFFECTIVE, ou `null` quand il n'y en a pas (jamais `i64::MAX`, même raison).
+        "until_ts": if ask.until < i64::MAX { json!(ask.until) } else { Value::Null },
         "oldest_ts": oldest_ts,
         "older_outside_window": oldest_ts.map(|t| t < ask.since).unwrap_or(false),
         "has_more": !next_cursor.is_null(),
@@ -359,8 +366,8 @@ pub(crate) fn ledger_page(conn: &Connection, ask: &LedgerAsk) -> Value {
     })
 }
 
-/// GET /api/ledger?limit=<n>&window_days=<j>&cursor=<id>&offset=<n>&count=<0|1> -> page du journal
-/// d'intégrité (audit tamper-evident), ordre `id` décroissant. Rend l'audit RÉELLEMENT consultable in-UI
+/// GET /api/ledger?limit=<n>&window_days=<j>&until_ts=<epoch>&cursor=<id>&offset=<n>&count=<0|1> -> page
+/// du journal d'intégrité (audit tamper-evident), ordre `id` décroissant. Rend l'audit RÉELLEMENT consultable in-UI
 /// (correctif H1 : le ledger n'avait qu'un `verify` CLI). Admin only (B9).
 ///
 /// LECTURE SEULE — ET LE CODE LE FAIT MAINTENANT. L'en-tête disait « lecture seule » pendant que le
@@ -381,8 +388,12 @@ pub(crate) fn ledger_page(conn: &Connection, ask: &LedgerAsk) -> Value {
 /// `FENETRE_DEFAUT` dans `web/audit.js`, où la vue le NOMME au-dessus du tableau. L'écrire aussi ici en
 /// ferait un second compteur, qui pourrirait.
 ///
-/// Un décalage au-delà de `LEDGER_JUMP_MAX`, une fenêtre non numérique, un permis ou une connexion de
-/// lecture indisponibles -> REFUS explicite. Jamais une page vide : sur cette vue, un vide se lit comme
+/// `until_ts` (`P11.18-t`) : borne HAUTE INCLUSE, en secondes epoch ; ABSENT = aucune (jusqu'à maintenant).
+/// Une fin qui PRÉCÈDE la borne basse de la fenêtre est REFUSÉE : ce n'est pas une fenêtre vide, c'est une
+/// demande contradictoire, et une page vide se lirait comme un journal vide.
+///
+/// Un décalage au-delà de `LEDGER_JUMP_MAX`, une fenêtre ou une borne haute non numérique, un permis ou une
+/// connexion de lecture indisponibles -> REFUS explicite. Jamais une page vide : sur cette vue, un vide se lit comme
 /// un fait, et une ligne manquante ne se remarque pas.
 pub(crate) async fn ledger_get(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Query(q): Query<HashMap<String, String>>) -> Response {
     if !au.is_admin() {
@@ -411,9 +422,27 @@ pub(crate) async fn ledger_get(State(st): State<AppState>, Extension(au): Extens
         },
     };
     let since = if window_days > 0 { now() - window_days * 86_400 } else { i64::MIN };
+    let until: i64 = match q.get("until_ts").map(|s| s.trim()) {
+        None | Some("") => i64::MAX,
+        Some(s) => match s.parse::<i64>() {
+            Ok(n) if n > 0 => n,
+            _ => {
+                return bad_req(
+                    "borne haute invalide : `until_ts` attend un instant en secondes epoch (entier positif), ou rien \
+                     pour aller jusqu'à maintenant.",
+                )
+            }
+        },
+    };
+    if until < since {
+        return bad_req(format!(
+            "fenêtre contradictoire : la fin demandée ({until}) précède le début de la fenêtre ({since}). Aucune \
+             page n'est rendue — une page vide se lirait comme un journal vide."
+        ));
+    }
     // `count=0` -> ne recompte pas (le client garde le total de la première page de son parcours).
     let count = q.get("count").map(|s| !matches!(s.trim(), "0" | "false" | "no")).unwrap_or(true);
-    let ask = LedgerAsk { limit, since, window_days, cursor, offset, count };
+    let ask = LedgerAsk { limit, since, until, window_days, cursor, offset, count };
     let _permit = match acquire_query_permit(&st.query_sem).await {
         Ok((p, _wait)) => p,
         Err(_) => {

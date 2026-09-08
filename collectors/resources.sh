@@ -21,6 +21,9 @@ PREV="$STATE/resources.prev"
 # y compris une machine dont `/proc` répond parfaitement, qui est le témoin sans lequel une version
 # rendant TOUJOURS « illisible » passerait pour correcte. Les valeurs par défaut sont les vraies.
 PROC="${PLUME_PROC_ROOT:-/proc}"
+# `/sys` se paramètre comme `/proc` : une garde peut alors FABRIQUER des sondes (deux processeurs, une
+# sonde illisible, aucune sonde) au lieu de laisser la machine de CI décider de ce qu'elle éprouve.
+SYS="${PLUME_SYS_ROOT:-/sys}"
 DISK_TARGET="${PLUME_DISK_TARGET:-/}"
 MEMINFO="$PROC/meminfo"
 
@@ -102,26 +105,47 @@ if [ -z "$disk_pct" ]; then
 fi
 # température CPU : on CIBLE le capteur CPU (coretemp/k10temp/x86_pkg_temp), pas le plus chaud
 # (le max attrape le WiFi/NVMe, souvent plus chauds que le CPU au repos).
+#
+# `P11.20-a` — TOUS LES PROCESSEURS, PAS LE PREMIER. Une machine à deux sockets porte DEUX hwmon
+# coretemp/k10temp (un par processeur) ; s'arrêter au premier publiait le socket 0 seul, en silence —
+# un NOMBRE FAUX sur toute machine qui en a plus d'un. `temp_c` est désormais la température du
+# processeur LE PLUS CHAUD (c'est ce qu'une règle à seuil veut savoir), et `temp_cpu_packages` DIT sur
+# combien de processeurs elle porte : le fil ne transporte qu'un couple nom-valeur, la portée voyage
+# donc à côté, sous sa propre clé. Une sonde PRÉSENTE mais illisible n'est plus confondue avec une
+# sonde ABSENTE : la première est une lecture ratée, qui s'avoue ; la seconde une propriété de la machine.
 temp_c=0
-# 1) hwmon coretemp/k10temp/zenpower/cpu_thermal -> temp1_input (Package / Tctl)
-for h in /sys/class/hwmon/hwmon*; do
+temp_cpu_packages=0
+temp_sondes_illisibles=""
+# temp_lue <fichier en millidegrés> — accumule le MAX et le COMPTE ; une sonde illisible est notée, pas comptée.
+temp_lue() {
+  if _t=$(awk 'NF && $1 ~ /^-?[0-9]+$/ { printf "%.1f", $1/1000; ok=1 } END { exit !ok }' "$1" 2>/dev/null); then
+    temp_cpu_packages=$((temp_cpu_packages + 1))
+    if [ "$temp_cpu_packages" -eq 1 ] || awk -v a="$_t" -v b="$temp_c" 'BEGIN { exit !(a > b) }'; then temp_c=$_t; fi
+  else
+    temp_sondes_illisibles="${temp_sondes_illisibles:+$temp_sondes_illisibles }$1"
+  fi
+}
+# 1) hwmon coretemp/k10temp/zenpower/cpu_thermal -> temp1_input (Package / Tctl), UN PAR PROCESSEUR
+for h in "$SYS"/class/hwmon/hwmon*; do
   case "$(cat "$h/name" 2>/dev/null)" in
-    coretemp|k10temp|zenpower|cpu_thermal|cpu-thermal)
-      [ -r "$h/temp1_input" ] && { temp_c=$(awk '{printf "%.1f",$1/1000}' "$h/temp1_input"); break; } ;;
+    coretemp|k10temp|zenpower|cpu_thermal|cpu-thermal) [ -e "$h/temp1_input" ] && temp_lue "$h/temp1_input" ;;
   esac
 done
-# 2) sinon : zone thermique CPU (x86_pkg_temp / cpu-thermal)
-if [ "$temp_c" = "0" ]; then
-  for z in /sys/class/thermal/thermal_zone*; do
+# 2) sinon : zones thermiques CPU (x86_pkg_temp / cpu-thermal), une par processeur elles aussi
+if [ "$temp_cpu_packages" -eq 0 ]; then
+  for z in "$SYS"/class/thermal/thermal_zone*; do
     case "$(cat "$z/type" 2>/dev/null)" in
-      x86_pkg_temp|cpu-thermal|cpu_thermal)
-        [ -r "$z/temp" ] && { temp_c=$(awk '{printf "%.1f",$1/1000}' "$z/temp"); break; } ;;
+      x86_pkg_temp|cpu-thermal|cpu_thermal) [ -e "$z/temp" ] && temp_lue "$z/temp" ;;
     esac
   done
 fi
-# 3) repli : 1re zone thermique lisible (sous-estime mais jamais WiFi/NVMe)
-if [ "$temp_c" = "0" ]; then
-  for z in /sys/class/thermal/thermal_zone*/temp; do [ -r "$z" ] && { temp_c=$(awk '{printf "%.1f",$1/1000}' "$z"); break; }; done
+# 3) repli : la 1re zone thermique lisible (sous-estime, mais jamais WiFi/NVMe) — portée : UNE zone
+if [ "$temp_cpu_packages" -eq 0 ]; then
+  for z in "$SYS"/class/thermal/thermal_zone*/temp; do
+    [ -e "$z" ] || continue
+    temp_lue "$z"
+    [ "$temp_cpu_packages" -gt 0 ] && break
+  done
 fi
 # --- compteurs cumulés dont on tire des TAUX ---------------------------------------------------------
 # `!vu` plutôt qu'un `exit` dans awk : un `exit` s'y lit comme une sortie du CAPTEUR pour la garde de
@@ -211,11 +235,17 @@ ajoute_mesure load1         "$load1"
 ajoute_mesure mem_pct       "$mem_pct"
 ajoute_mesure swap_pct      "$swap_pct"
 ajoute_mesure disk_root_pct "$disk_pct"
-# temp_c : pas de sonde thermique (VM/conteneur = aucun hwmon/thermal_zone) -> temp_c reste 0
-# -> on NE l'émet PAS (sinon faux « 0 °C » trompeur). Émis seulement si une vraie sonde existe.
-# C'EST CETTE RÈGLE-LÀ, déjà tenue ici, que les huit autres mesures appliquent désormais. Elle ne
-# s'avoue pas : l'absence de sonde thermique est une propriété de la MACHINE, pas une lecture ratée.
-[ "$temp_c" != "0" ] && ajoute_mesure temp_c "$temp_c"
+# temp_c : pas de sonde thermique (VM/conteneur = aucun hwmon/thermal_zone) -> RIEN n'est émis (sinon
+# faux « 0 °C » trompeur). C'EST CETTE RÈGLE-LÀ, déjà tenue ici, que les huit autres mesures appliquent
+# désormais. Elle ne s'avoue pas : l'absence de sonde est une propriété de la MACHINE, pas une lecture
+# ratée. Une sonde PRÉSENTE mais illisible, elle, EST une lecture ratée : elle s'avoue avec sa clé.
+# `temp_cpu_packages` part avec `temp_c` et jamais sans : c'est la portée de la valeur, pas une mesure.
+if [ "$temp_cpu_packages" -gt 0 ]; then
+  ajoute_mesure temp_c "$temp_c"
+  ajoute_mesure temp_cpu_packages "$temp_cpu_packages"
+elif [ -n "$temp_sondes_illisibles" ]; then
+  plume_mesure_absente temp_c "$(plume_cause_mesure "${temp_sondes_illisibles%% *}")" "sonde(s) CPU présente(s) mais illisible(s) : $temp_sondes_illisibles — la règle « température > seuil » ne peut pas lever"
+fi
 ajoute_mesure net_rx_bps    "$net_rx_bps"
 ajoute_mesure net_tx_bps    "$net_tx_bps"
 ajoute_mesure mem_slab_mb   "$mem_slab_mb"

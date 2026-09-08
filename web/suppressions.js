@@ -220,11 +220,13 @@ async function loadSuppressions() {
         // PROVENANCE (anti-empoisonnement) : un auto-report NON attesté (host auto-déclaré) ou CONTESTÉ
         // (plusieurs hôtes revendiquent la même source) NE fait PAS foi — badge d'alerte visible pour que
         // le `type` déclaré ne masque jamais silencieusement un vrai filtre.
+        // `P11.15-d` : la mention est le FRÈRE de l'entrée dans la cellule (fragment), pas son enfant —
+        // c'est ainsi que la règle partagée de la feuille lui donne son écart, sans marge en ligne.
         if (c.contested || c.attested === false) {
-          const w = document.createElement('span'); w.className = 'badge'; w.style.cssText = 'margin-left:6px;background:#c0392b22;color:#e74c3c;border:1px solid #e74c3c55;font-size:10px;padding:1px 5px;border-radius:4px';
+          const w = document.createElement('span'); w.className = 'badge'; w.style.cssText = 'background:#c0392b22;color:#e74c3c;border:1px solid #e74c3c55;font-size:10px;padding:1px 5px;border-radius:4px';
           w.textContent = c.contested ? '⚠ hôtes contestés' : '⚠ non attesté';
           w.title = c.contested ? "Plusieurs hôtes distincts auto-reportent cette source — provenance à vérifier (un report peut en usurper un autre)." : "Report auto-déclaré (token non lié à un host) — provenance NON attestée : le type déclaré ne fait pas foi.";
-          sp.appendChild(w);
+          const f = document.createDocumentFragment(); f.append(sp, w); return f;
         }
         return sp;
       } },

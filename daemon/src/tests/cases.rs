@@ -360,7 +360,10 @@
     }
 
     fn led_ask(limit: i64, since: i64, window_days: i64, cursor: Option<i64>, offset: i64) -> LedgerAsk {
-        LedgerAsk { limit, since, window_days, cursor, offset, count: true }
+        LedgerAsk { limit, since, until: i64::MAX, window_days, cursor, offset, count: true }
+    }
+    fn led_ask_jusqua(limit: i64, since: i64, until: i64, cursor: Option<i64>) -> LedgerAsk {
+        LedgerAsk { limit, since, until, window_days: if since > i64::MIN { 1 } else { 0 }, cursor, offset: 0, count: true }
     }
 
     fn led_ids(v: &Value) -> Vec<i64> {
@@ -401,6 +404,33 @@
         assert_eq!(f["window_days"], json!(1));
         assert_eq!(f["older_outside_window"], json!(true), "la borne MORD, et la route le dit");
         assert_eq!(f["oldest_ts"], json!(1001), "…en nommant la plus ancienne entrée du journal");
+    }
+
+    /// `P11.18-t` — LA BORNE HAUTE EST PORTÉE PAR LA ROUTE, INCLUSE, ET RENDUE. Sans elle, une plage dont
+    /// la fin est passée ne pouvait pas être demandée : la vue la REFUSAIT, et la valeur de plage
+    /// partagée avec la prévention des fuites ne savait exprimer que « jusqu'à maintenant ».
+    #[test]
+    fn ledger_page_borne_haute_incluse_et_rendue() {
+        let conn = test_db();
+        led_semer(&conn, 7, 1000); // ts 1001..1007
+        // --- HAUTE SEULE : tout ce qui est <= 1004, total sur la plage, borne rendue.
+        let h = ledger_page(&conn, &led_ask_jusqua(10, i64::MIN, 1004, None));
+        assert_eq!(led_ids(&h), vec![4, 3, 2, 1], "la borne haute est INCLUSE (ts=1004 est rendu), rien au-dessus");
+        assert_eq!(h["total"], json!(4), "le total porte sur la PLAGE");
+        assert_eq!(h["until_ts"], json!(1004), "la borne haute effective est rendue : la vue peut la DIRE");
+        assert_eq!(h["since"], Value::Null, "aucune borne basse -> aucune date inventée");
+        // --- LES DEUX BORNES : une fenêtre fermée [1003, 1005], parcourue par clé.
+        let d = ledger_page(&conn, &led_ask_jusqua(2, 1003, 1005, None));
+        assert_eq!(led_ids(&d), vec![5, 4], "première page de la plage fermée, id décroissant");
+        assert_eq!(d["total"], json!(3));
+        assert_eq!(d["has_more"], json!(true));
+        let d2 = ledger_page(&conn, &led_ask_jusqua(2, 1003, 1005, d["next_cursor"].as_i64()));
+        assert_eq!(led_ids(&d2), vec![3], "la page suivante reste DANS la plage");
+        assert_eq!(d2["has_more"], json!(false));
+        // --- SANS BORNE HAUTE (i64::MAX) : rien ne change par rapport au contrat d'avant, et rien n'est rendu.
+        let s = ledger_page(&conn, &led_ask(10, i64::MIN, 0, None, 0));
+        assert_eq!(led_ids(&s).len(), 7);
+        assert_eq!(s["until_ts"], Value::Null, "pas de borne haute -> null, jamais i64::MAX");
     }
 
     /// (2) PARCOURS INTÉGRAL PAR CLÉ : chaque entrée visitée EXACTEMENT une fois, dans l'ordre de la
@@ -453,20 +483,20 @@
     #[test]
     fn ledger_total_cout_independant_du_volume() {
         // Le MÊME énoncé, privé de `LIMIT CAP+1` — la mutation exacte de ce que la correction ajoute.
-        const SANS_BORNE: &str = "SELECT COUNT(*) FROM (SELECT 1 FROM ledger WHERE ts>=?1)";
+        const SANS_BORNE: &str = "SELECT COUNT(*) FROM (SELECT 1 FROM ledger WHERE ts>=?1 AND ts<=?2)";
         let petit = test_db();
         led_semer(&petit, PAGINATION_COUNT_CAP + 500, 1_700_000_000);
         let grand = test_db();
         led_semer(&grand, 2 * (PAGINATION_COUNT_CAP + 500), 1_700_000_000);
 
         let sql = ledger_total_sql();
-        let c_petit = led_lignes(&petit, &sql, &[i64::MIN]);
-        let c_grand = led_lignes(&grand, &sql, &[i64::MIN]);
+        let c_petit = led_lignes(&petit, &sql, &[i64::MIN, i64::MAX]);
+        let c_grand = led_lignes(&grand, &sql, &[i64::MIN, i64::MAX]);
         assert_eq!(c_petit, c_grand, "MUTATION x2 du volume : le comptage borné lit le MÊME nombre de lignes");
         assert!(c_grand <= PAGINATION_COUNT_CAP + 1, "…et ce nombre est le plafond lui-même ({c_grand})");
 
-        let s_petit = led_lignes(&petit, SANS_BORNE, &[i64::MIN]);
-        let s_grand = led_lignes(&grand, SANS_BORNE, &[i64::MIN]);
+        let s_petit = led_lignes(&petit, SANS_BORNE, &[i64::MIN, i64::MAX]);
+        let s_grand = led_lignes(&grand, SANS_BORNE, &[i64::MIN, i64::MAX]);
         assert!(
             s_grand > s_petit * 3 / 2,
             "témoin INVERSE : privé de sa borne, le MÊME comptage DOIT suivre le volume (petit={s_petit}, \
@@ -499,7 +529,7 @@
         // Par CLÉ : le curseur qui ouvre la page k est l'id de la dernière ligne de la page k-1.
         let cle = |k: i64| {
             let sql = ledger_page_sql(&ledger_plan(Some(max_id - (k - 1) * lim + 1), 0));
-            led_pas(&conn, &sql, &[i64::MIN, lim])
+            led_pas(&conn, &sql, &[i64::MIN, i64::MAX, lim])
         };
         let c_proche = cle(proche);
         let c_loin = cle(loin);
@@ -507,7 +537,7 @@
         // Par DÉCALAGE, sur les MÊMES pages.
         let saut = |k: i64| {
             let sql = ledger_page_sql(&ledger_plan(None, (k - 1) * lim));
-            led_pas(&conn, &sql, &[i64::MIN, lim])
+            led_pas(&conn, &sql, &[i64::MIN, i64::MAX, lim])
         };
         let s_proche = saut(proche);
         let s_loin = saut(loin);
@@ -539,7 +569,7 @@
         // NON DEMANDÉ, DONC NON COMPTÉ — et `null` le dit. Un `0` mentirait (« journal vide »), et sur
         // cette vue un chiffre faux ne se remarque pas. Un total ne bouge pas au fil d'un parcours : la
         // vue le demande une fois par fenêtre, les pages suivantes ne repaient plus le plafond.
-        let sans = LedgerAsk { limit: 10, since: i64::MIN, window_days: 0, cursor: None, offset: 0, count: false };
+        let sans = LedgerAsk { limit: 10, since: i64::MIN, until: i64::MAX, window_days: 0, cursor: None, offset: 0, count: false };
         let v = ledger_page(&au_dessus, &sans);
         assert_eq!(v["total"], Value::Null, "non demandé -> `total:null`, jamais un zéro");
         assert_eq!(v["total_capped"], Value::Null, "et rien n'est affirmé sur un plafond qu'on n'a pas éprouvé");

@@ -61,18 +61,20 @@ function daFromValue() {
 // borne qu'on n'hérite plus n'a pas à être nommée, et une phrase permanente se lirait comme une
 // borne permanente.
 //
-// CE QUE CE PANNEAU NE PEUT TOUJOURS PAS ENVOYER, ET LA RAISON A CHANGÉ AVEC LE FAIT. Une plage dont
-// la FIN est antérieure à maintenant reste REFUSÉE — non plus parce que le fabricant client ne sait
-// pas poser `to` (il le sait), mais parce que la plage est PARTAGÉE avec le journal d'audit, dont la
-// route ne porte AUCUNE borne haute. La valeur commune ne peut exprimer que ce que la route la plus
-// pauvre exprime ; poser ici une fin passée ferait afficher au journal une fenêtre qu'il n'a pas.
+// CE QUE CE PANNEAU ENVOIE DÉSORMAIS (`P11.18-t`, 2026-09-08). Une plage dont la FIN est antérieure à
+// maintenant était REFUSÉE ici, non parce que le fabricant client ne savait pas poser `to` (il le
+// sait), mais parce que la plage est PARTAGÉE avec le journal d'audit, dont la route ne portait
+// aucune borne haute. La route du journal porte `until_ts` ; la valeur commune sait donc exprimer une
+// fin passée, et ce panneau la passe à `runQ` par `opts.to` — depuis la plage, et JAMAIS depuis
+// `S.zoomRange`, qui reste l'intervalle d'une autre vue.
 // =================================================================================================
-const PORTE_DE_LA_PREVENTION_DES_FUITES = {
-  borneHaute: false,
-  refus: choisie => (LANG === 'en'
-    ? 'Range refused: the upper bound cannot be set from here. This route (POST /api/query) does accept `to`, and the shared query builder now takes it as an argument — but this range is SHARED with the audit journal, whose route carries no upper bound at all, so the end you chose (' + choisie.texteFin + ') would show there as a window the journal does not have. What this panel can send: from ' + choisie.texteDebut + ' up to now.'
-    : "Plage refusée : la borne HAUTE ne se pose pas d'ici. Cette route (POST /api/query) accepte bien `to`, et le fabricant de requête partagé le prend désormais en argument — mais cette plage est PARTAGÉE avec le journal d'audit, dont la route ne porte aucune borne haute, si bien que la fin choisie (" + choisie.texteFin + ") y afficherait une fenêtre que le journal n'a pas. Ce que ce panneau sait envoyer : du " + choisie.texteDebut + " jusqu'à maintenant."),
-};
+const PORTE_DE_LA_PREVENTION_DES_FUITES = { borneHaute: true };
+
+// La borne HAUTE de ce panneau : la fin de la plage choisie, ou rien (0). Symétrique de `daFromValue`.
+function daToValue() {
+  const plage = plageActive();
+  return plage ? plage.fin : 0;
+}
 
 // =================================================================================================
 // `P11.14-c` — TROIS ISSUES DISTINCTES, LÀ OÙ CE PANNEAU N'EN RENDAIT QU'UNE.
@@ -219,6 +221,7 @@ async function renderDataAccess() {
   bar.appendChild(poserLeChoixDeDates('dataaccess', CIBLE_DE_PLAGE, PORTE_DE_LA_PREVENTION_DES_FUITES, () => renderDataAccess()).barre);
   host.appendChild(bar);
   const daFrom = daFromValue();
+  const daTo = daToValue();   // `P11.18-t` : la fin choisie part avec le début
   // Figé pour ce rendu : le sélecteur comme les dates peuvent changer pendant les requêtes en vol. Une
   // plage se nomme par ses deux jours ; un palier par sa clé (voir `daRenduDeReponse`).
   const daWin = plage ? (plage.texteDebut + ' → ' + plage.texteFin) : S.daWin;
@@ -236,7 +239,7 @@ async function renderDataAccess() {
       // `P11.14-c` — les DEUX issues passent par la MÊME fonction : une promesse rejetée (réseau,
       // réponse tronquée par un proxy) est une cause NOMMÉE, pas un vide. Une seule porte de rendu,
       // donc aucune branche ne peut ré-inventer une absence dans son coin.
-      runQ(q.soql, true, daFrom)
+      runQ(q.soql, true, daFrom, undefined, undefined, { to: daTo })
         .then(j => slot.replaceChildren(daRenduDeReponse(j, daWin, q.soql)))
         .catch(e => slot.replaceChildren(daRenduDeReponse({ error: (e && e.message) || '' }, daWin, q.soql)));
     });

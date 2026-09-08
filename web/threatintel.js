@@ -98,7 +98,7 @@ function renderIocList() {
       const s = document.createElement('span');
       if (!r.expires) { s.className = 'muted'; s.textContent = 'jamais'; return s; }
       s.textContent = fmtTs(r.expires); s.title = String(r.expires);
-      if (r.expired) { const b = document.createElement('span'); b.className = 'badge'; b.textContent = 'expiré'; b.style.cssText = 'margin-left:6px;color:var(--warn);border-color:color-mix(in srgb,var(--warn) 40%,transparent)'; const f = document.createDocumentFragment(); f.append(s, b); return f; }
+      if (r.expired) { const b = document.createElement('span'); b.className = 'badge'; b.textContent = 'expiré'; b.style.cssText = 'color:var(--warn);border-color:color-mix(in srgb,var(--warn) 40%,transparent)'; const f = document.createDocumentFragment(); f.append(s, b); return f; }   // `P11.15-d` : frère de l'entrée dans la cellule, l'écart vient de la règle partagée
       return s;
     } },
     { key: 'env_id', label: 'Env', sortable: true, sortVal: r => r.env_id || '', render: r => { const c = document.createElement('code'); c.textContent = r.env_id || 'prod'; return c; } },

@@ -6006,11 +6006,19 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
       "(42c) la PREMIÈRE mention est décalée elle aussi : c'est l'entrée, elle n'a rien à qualifier");
   }
   // LE RÉSIDU, COMPTÉ SUR LE SOURCE ET NON DEVINÉ : une marge écrite en style EN LIGNE par un module
-  // l'emporte sur la feuille. Le compte est celui des LIGNES de `web/*.js` qui écrivent à la fois une
-  // marge en ligne et l'une des deux classes de mention — c'est une lecture de TEXTE, pas un rendu.
+  // l'emporte sur la feuille. `P11.15-d` (2026-09-08) — LE PRÉDICAT EST RESSERRÉ AU CAS VISÉ, ET C'EST
+  // UN CLIQUET À ZÉRO. Le prédicat précédent (« margin » + « badge|muted » sur une ligne) comptait
+  // DIX-NEUF sites dont SEIZE n'étaient pas le cas : des marges VERTICALES de bloc (`margin:6px 0`), que
+  // la règle partagée — qui n'agit que sur l'axe en ligne — ne remplace pas, et deux poussées de mise en
+  // page (`margin-left:auto`). Les suivre aurait cassé la console sur seize sites. Le cas visé, et lui
+  // seul : une MENTION (`badge`) qui s'écrit une marge sur l'axe EN LIGNE — un écart que la règle
+  // partagée donne déjà à toute mention frère de son entrée. Compte dérivé du texte de `web/*.js` ;
+  // les trois sites qui restaient (risque, suppressions, renseignement) sont portés sur la règle.
   const margesEnLigne = CORPUS_WEB.filter(([f]) => f.endsWith(".js"))
     .flatMap(([f, src]) => src.split("\n").map((l, i) => [f, i + 1, l]))
-    .filter(([, , l]) => /margin(?:-left|-inline-start|\s*:)/.test(l) && /(?:cssText|style=)/.test(l) && /(?:badge|muted)/.test(l));
+    .filter(([, , l]) => /(?:cssText|style=)\s*=?\s*['"`][^'"`]*margin-(?:left|inline-start)\s*:\s*(?!auto)/.test(l) && /className\s*=\s*['"]badge['"]/.test(l));
+  exiger(margesEnLigne.length === 0,
+    `(42c) ${margesEnLigne.length} mention(s) s'écrivent une marge en ligne sur l'axe en ligne au lieu de recevoir leur écart de la règle partagée : ${margesEnLigne.map(([f, i]) => f + ":" + i).join(" · ")} — poser la mention comme FRÈRE de son entrée dans la cellule, et retirer la marge`);
 
   // (42d) `P11.15-b` — LA DENSITÉ EST UN JEU DE JETONS, ET LE DÉFAUT NE CHANGE RIEN.
   for (const jeton of ["--dens-y", "--dens-x", "--dens-lh"]) {
@@ -10410,6 +10418,41 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     `(76) un zéro DÉCLARÉ par le démon est une mesure, pas une absence : « ${vraiZero} »`);
 
   console.log(`[acquittement-rend-son-compte] \`P11.1-h\` FERMÉE. Le démon rendait déjà le compte exact de ce qu'il acquittait ; la console jetait la réponse, si bien que le geste le plus large du produit restait d'ampleur inconnue AVANT comme APRÈS. Les deux portées ont deux sources de vérité DIFFÉRENTES et la fonction les traite comme telles : sur la portée globale seul le démon sait — la console ne peut pas le dériver, faute de total déclaré sur le dos des actives — et sur la portée par identifiants la console compte ce qu'elle a envoyé. LE CAS QUI PORTE LA CLÉ est celui du compte ABSENT : la phrase rendue ne contient alors AUCUN chiffre, une réponse vide et une réponse sans « acked » sont le même cas, et un zéro réellement DÉCLARÉ reste une mesure qui s'écrit — trois verdicts distincts là où un « 0 » unique aurait menti dans deux d'entre eux. L'INSTRUMENT EST CONTRÔLÉ : les phrases « compte connu » et « compte inconnu » doivent différer, sans quoi une fonction rendant toujours le même texte passerait tout le reste. CE QUE CE TÉMOIN NE TIENT PAS : il juge la décision, pas le câblage du toast, et il n'exerce pas la seconde langue.`);
+}
+
+// 77. `P11.18-t` — LES DEUX BORNES DE `runQ` ONT LE MÊME DÉFAUT : AUCUNE. Une requête n'hérite pas de
+// l'intervalle réglé dans une AUTRE vue (`S.zoomRange`, l'Explore). La borne haute le tenait depuis
+// `P11.18-r` ; la borne BASSE, elle, héritait encore par son défaut — exactement la forme qui avait
+// produit le premier défaut. Témoin COMPORTEMENTAL : `fetch` est remplacé par un capteur de corps,
+// l'intervalle de l'Explore est posé, et `runQ` est appelé SANS borne — le corps envoyé doit porter
+// `from = 0` et `to = 0`. Puis le témoin positif : les bornes PASSÉES arrivent telles quelles.
+{
+  const { S } = await import(pathToFileURL(path.join(WEB, "state.js")).href);
+  const { runQ } = await import(pathToFileURL(path.join(WEB, "viz.js")).href);
+  const ancienFetch = globalThis.fetch;
+  const ancienneZone = S.zoomRange;
+  const corpsEnvoyes = [];
+  globalThis.fetch = async (_url, init) => {
+    corpsEnvoyes.push(JSON.parse(init && init.body ? init.body : "{}"));
+    return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => ({ ok: true, rows: [], columns: [] }), text: async () => "{}" };
+  };
+  try {
+    S.zoomRange = { from: 1_700_000_000, to: 1_700_003_600 };   // l'intervalle d'une AUTRE vue
+    await runQ("search source=x | head 1", true, undefined, 5, 0, {});
+    const muet = corpsEnvoyes[corpsEnvoyes.length - 1] || {};
+    exiger(muet.from === 0 && muet.to === 0,
+      `(77) un appelant qui ne dit rien part avec from=${muet.from}, to=${muet.to} : au moins une borne HÉRITE de l'intervalle d'une autre vue (S.zoomRange), le défaut de \`P11.18-r\` est revenu par la borne basse`);
+    await runQ("search source=x | head 1", true, 123, 5, 0, { to: 456 });
+    const explicite = corpsEnvoyes[corpsEnvoyes.length - 1] || {};
+    exiger(explicite.from === 123 && explicite.to === 456,
+      `(77) les bornes PASSÉES n'arrivent pas telles quelles : from=${explicite.from}, to=${explicite.to} — le témoin négatif ci-dessus ne prouverait rien si l'argument n'était pas lu`);
+    // CONTRÔLE D'INSTRUMENT : le capteur a bien vu deux corps, sinon les deux assertions ont jugé du vide.
+    exiger(corpsEnvoyes.length === 2, `(77) instrument : ${corpsEnvoyes.length} corps capturé(s) au lieu de 2 — \`fetch\` n'a pas été traversé`);
+  } finally {
+    globalThis.fetch = ancienFetch;
+    S.zoomRange = ancienneZone;
+  }
+  console.log("[bornes-par-defaut] `P11.18-t` (1) FERMÉE : ni la borne basse ni la borne haute de `runQ` n'héritent de l'intervalle d'une autre vue ; un appelant muet part sans borne, un appelant explicite est lu tel quel.");
 }
 
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;

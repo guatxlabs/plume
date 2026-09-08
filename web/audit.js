@@ -59,35 +59,25 @@ function ledgerCell(txt, title) { const s = document.createElement('span'); s.te
 // SOUS-ENSEMBLE de ce qu'une route riche sait exprimer. Dans l'autre sens, le journal aurait hérité
 // d'une plage promettant une borne que sa route ne porte pas.
 //
-// CE QUE LES DEUX ROUTES ACCEPTENT — LU, PAS SUPPOSÉ (2026-08-25) :
-//   * `GET /api/ledger` (`daemon/src/handlers/admin_ui.rs`, `ledger_get`) accepte EXACTEMENT cinq
-//     paramètres : `limit`, `offset`, `cursor`, `window_days`, `count`. AUCUN n'est une borne HAUTE.
-//     `window_days` est un NOMBRE DE JOURS ; la borne basse en est DÉRIVÉE côté démon
-//     (`since = now() - window_days * 86_400`) et la borne haute est l'instant présent, par
-//     construction — l'en-tête de la route l'écrit d'ailleurs (« sa borne haute étant l'instant
-//     présent »), c'est ce qui rend chaque page bon marché malgré un `ledger(ts)` non indexé.
+// CE QUE LES DEUX ROUTES ACCEPTENT — LU, PAS SUPPOSÉ (2026-08-25, revu le 2026-09-08) :
+//   * `GET /api/ledger` (`daemon/src/handlers/admin_ui.rs`, `ledger_get`) accepte `limit`, `offset`,
+//     `cursor`, `window_days`, `count` — et, depuis `P11.18-t`, `until_ts` : la borne HAUTE, INCLUSE,
+//     en secondes epoch. `window_days` reste un NOMBRE DE JOURS ; la borne basse en est DÉRIVÉE côté
+//     démon (`since = now() - window_days * 86_400`). Sans `until_ts`, la borne haute est l'instant
+//     présent, par construction ; avec, le démon la RÉPÈTE dans sa réponse pour que la vue la dise.
 //   * `POST /api/query` (`daemon/src/handlers/query.rs`) accepte `from` ET `to` (secondes epoch,
 //     `0` = pas de borne) ; le compilateur les émet en `ts >= from` et `ts <= to`
 //     (`guatx_core::soql`, `table_base`).
 //
-// CONSÉQUENCE, ASSUMÉE ET DITE. Une plage dont la FIN est antérieure à maintenant est REFUSÉE par les
-// deux vues, chacune nommant SA raison mesurée. Elle n'est ni tronquée en silence, ni filtrée après
-// coup : sur le journal l'ordre est `id` DÉCROISSANT, donc appliquer une borne haute dans le
-// navigateur rendrait VIDES les premières pages (les plus récentes, justement celles au-dessus de la
-// fin choisie) et ferait compter au total des entrées que la vue cacherait — c'est-à-dire rendrait un
-// refus comme une absence, ce que ce dépôt refuse par ailleurs
+// CE QUI ÉTAIT REFUSÉ, ET NE L'EST PLUS (`P11.18-t`, 2026-09-08). Une plage dont la FIN est antérieure
+// à maintenant était REFUSÉE par les deux vues : la route du journal ne portait aucune borne haute, et
+// la valeur de plage étant PARTAGÉE, la route la plus pauvre décidait de ce que la valeur commune
+// savait exprimer — poser une fin passée ici aurait fait afficher au journal une fenêtre qu'il n'avait
+// pas. La route porte désormais `until_ts` ; les deux vues envoient donc la fin choisie, chacune par
+// son paramètre. Ce qui reste vrai : on ne filtre JAMAIS dans le navigateur pour compenser une borne
+// que la route ne porterait pas — l'ordre étant `id` DÉCROISSANT, cela viderait les premières pages et
+// ferait compter des entrées cachées, un refus rendu comme une absence
 // (`check_a_refusal_is_not_rendered_as_an_absence.py`).
-//
-// CE QUI A ÉTÉ FERMÉ DEPUIS, ET CE QUI RESTE. Côté prévention des fuites, le résidu écrit ici est
-// CLOS (`P11.18-r`, 2026-08-25) : `runQ` prend désormais la borne haute EN ARGUMENT, avec un défaut
-// qui n'hérite de rien, et ce panneau n'hérite donc plus de l'intervalle de l'Explore. Ce qui a
-// remplacé cette raison n'est pas une absence de raison : la plage est PARTAGÉE avec le journal, dont
-// la route ne porte aucune borne haute, et c'est ce partage qui gouverne les deux — la route la plus
-// pauvre décide de ce que la valeur commune sait exprimer.
-// RESTE, NOMMÉ : une borne haute servie par la route du journal la lèverait pour les deux. Elle
-// pagine DÉJÀ par `id` décroissant et son `cursor` est un `id` — un `until_ts` traduit côté démon (ou
-// un `max_id`) tiendrait dans `LedgerAsk`/`ledger_page_sql` sans changer la forme de la page. C'est
-// hors de ce lot, qui ne touche pas au démon.
 // =================================================================================================
 
 // LA PLAGE COURANTE, PARTAGÉE PAR LES DEUX VUES : `null` = aucune, les paliers gouvernent. Le partage
@@ -110,16 +100,11 @@ const CIBLE_DE_PLAGE = {
   poser: p => { plageChoisie = p; },
 };
 
-// CE QUE LA ROUTE DE CETTE VUE SAIT PORTER : le SECOND paramètre. `GET /api/ledger` accepte
-// exactement cinq paramètres et AUCUN n'est une borne haute (voir l'en-tête, où ils sont LUS). Une
-// plage dont la FIN est antérieure à maintenant ne peut donc pas être envoyée : elle est REFUSÉE, et
-// le refus nomme CETTE raison-là. Il est écrit ici parce que c'est ici qu'il est vrai.
-const PORTE_DU_JOURNAL = {
-  borneHaute: false,
-  refus: plage => (LANG === 'en'
-    ? 'Range refused: the audit journal route takes only a NUMBER OF DAYS back from now (window_days) and carries no upper bound, so the end you chose (' + plage.texteFin + ') cannot be sent. Applying it here instead would empty the newest pages and count entries the view would hide. What this route accepts: from ' + plage.texteDebut + ' up to now.'
-    : "Plage refusée : la route du journal d'audit ne prend qu'un NOMBRE DE JOURS depuis maintenant (window_days) et ne porte aucune borne haute, donc la fin choisie (" + plage.texteFin + ") ne peut pas être envoyée. L'appliquer ici viderait les pages les plus récentes et ferait compter des entrées que la vue cacherait. Ce que cette route accepte : du " + plage.texteDebut + " jusqu'à maintenant."),
-};
+// CE QUE LA ROUTE DE CETTE VUE SAIT PORTER : le SECOND paramètre. `GET /api/ledger` porte une borne
+// haute (`until_ts`, `P11.18-t`) : une fin antérieure à maintenant PART, elle n'est plus refusée.
+// La porte n'a donc plus de phrase de refus à donner — le point commun ne l'appelle que quand la
+// route ne porte pas la borne.
+const PORTE_DU_JOURNAL = { borneHaute: true };
 
 function plageActive() { return plageChoisie; }
 
@@ -220,9 +205,13 @@ function direLaFenetre(j) {
     parts.push((LANG === 'en' ? 'Dates chosen: ' : 'Dates choisies : ') + plageChoisie.texteDebut
       + ' → ' + plageChoisie.texteFin
       + (LANG === 'en'
-        ? ' — this route bounds in whole DAYS back from now, so the window asked for is '
-        : " — cette route borne en JOURS entiers depuis maintenant, la fenêtre demandée vaut donc ")
-      + joursDemandes + (LANG === 'en' ? ' days, rounded UP so that nothing before the chosen day is hidden.' : ' jours, arrondis AU SUPÉRIEUR pour ne rien cacher avant le jour choisi.'));
+        ? ' — this route bounds the START in whole DAYS back from now, so the window asked for is '
+        : " — cette route borne le DÉBUT en JOURS entiers depuis maintenant, la fenêtre demandée vaut donc ")
+      + joursDemandes + (LANG === 'en' ? ' days, rounded UP so that nothing before the chosen day is hidden' : ' jours, arrondis AU SUPÉRIEUR pour ne rien cacher avant le jour choisi')
+      // LA FIN, TELLE QUE LE DÉMON L'A APPLIQUÉE — lue dans sa réponse, jamais recopiée de la saisie.
+      + (typeof j.until_ts === 'number'
+        ? (LANG === 'en' ? '; the END is applied by the server up to ' : ' ; la FIN est appliquée par le serveur jusqu\'au ') + fmtTs(j.until_ts) + (LANG === 'en' ? ' (included).' : ' (inclus).')
+        : (LANG === 'en' ? '; the server applied NO end bound.' : ' ; le serveur n\'a appliqué AUCUNE borne de fin.')));
   }
   // LE PLAFOND DU SERVEUR, DÉRIVÉ DE SA RÉPONSE. La route CLAMPE `window_days` au lieu de refuser : la
   // fenêtre rendue peut donc être plus étroite que celle demandée. On ne recopie pas son plafond — on
@@ -275,6 +264,7 @@ async function loadLedger() {
       const page = limit > 0 ? Math.round(offset / limit) : 0;
       const cur = curseurs[page];
       let url = '/ledger?limit=' + limit + '&window_days=' + joursDemandes;
+      if (plageChoisie) url += '&until_ts=' + plageChoisie.fin;   // `P11.18-t` : la fin choisie PART, incluse (dernière seconde du jour)
       if (cur != null) url += '&cursor=' + cur;           // page atteinte PAR CLÉ (parcours séquentiel)
       else if (offset > 0) url += '&offset=' + offset;    // saut à un NUMÉRO : décalage, borné côté démon
       if (totalDeLaFenetre !== null) url += '&count=0';   // total déjà su pour CETTE fenêtre : ne pas le refaire compter

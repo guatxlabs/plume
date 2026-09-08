@@ -77,49 +77,72 @@ fn soql_num(s: &str) -> bool {
 }
 
 // ====================================================================================================
-// COMPTEURS DE ROUTE (observabilité + preuve de test). `vectorized` = requêtes servies par les kernels ;
-// `fallback` = requêtes renvoyées au chemin actuel. Le harnais RESET puis lit ces compteurs pour prouver
-// QUELLE route a servi chaque requête (bords de fenêtre, formes non supportées, masques, …).
+// COMPTEURS DE ROUTE ET D'ÉLAGAGE (preuve de test). `vectorized` = requêtes servies par les kernels ;
+// `fallback` = requêtes renvoyées au chemin actuel ; `pruned`/`scanned` (#28 P3.5) = fichiers SAUTÉS par
+// le seal (jamais déchiffrés) contre fichiers remis aux kernels. Le harnais les lit pour prouver QUELLE
+// route a servi chaque requête et que l'élagage a eu lieu SANS toucher au chemin oracle.
+//
+// `P7.1-c` — UN GRAND-LIVRE PAR FIXTURE, JAMAIS UNE SOMME DE PROCESSUS. Ces quatre compteurs étaient des
+// statiques `AtomicU64` munies d'une remise à zéro : la forme exacte retirée au compteur de déchiffrements
+// (`crypto.rs`, `P7.1-b`). Mesuré le 2026-08-28 : 37 témoins atteignaient un incrément, dont 14 sans
+// prendre le verrou de famille que les 9 lecteurs prenaient entre eux — la famille s'excluait elle-même et
+// n'excluait personne d'autre ; un lecteur pouvait donc compter les routes d'un voisin. Le compte est
+// désormais tenu SOUS LA CLÉ DE LA BASE (`db_path`) dont chaque fixture possède la sienne : un test lit ce
+// que sa fixture a provoqué, sans dépendre du nombre de fils ni de ses voisins, sans verrou ni remise à
+// zéro globale. Aucun consommateur de production n'a jamais existé (l'observabilité « future » ne s'est
+// jamais écrite) : hors des tests, noter une route ne coûte rien et ne conserve rien.
 // ====================================================================================================
-static ROUTE_VEC: AtomicU64 = AtomicU64::new(0);
-static ROUTE_FALLBACK: AtomicU64 = AtomicU64::new(0);
-// #28 P3.5 — ÉLAGAGE SEAL du chemin vectorisé : fichiers SAUTÉS (seal prouve 0 match, jamais déchiffrés) vs
-// fichiers SÉLECTIONNÉS (scannés/déchiffrés). Le harnais RESET puis lit ces compteurs pour PROUVER l'élagage
-// (files_pruned == N-1 sur `source=rare`) SANS toucher au chemin oracle. `scanned` = fichiers effectivement remis
-// aux kernels (== nombre de `open_verified` sur le chemin heureux). Cumulés (comme les compteurs de route).
-static PRUNE_PRUNED: AtomicU64 = AtomicU64::new(0);
-static PRUNE_SCANNED: AtomicU64 = AtomicU64::new(0);
-
-/// (vectorized, fallback) — compteurs cumulés de décisions de route.
-#[allow(dead_code)] // consommé par le harnais de parité (cfg(test)) + l'observabilité future.
-pub(crate) fn route_counters() -> (u64, u64) {
-    (ROUTE_VEC.load(Ordering::Relaxed), ROUTE_FALLBACK.load(Ordering::Relaxed))
+#[cfg(test)]
+#[derive(Default, Clone, Copy)]
+pub(crate) struct CompteursDeRoute {
+    pub(crate) vectorized: u64,
+    pub(crate) fallback: u64,
+    pub(crate) pruned: u64,
+    pub(crate) scanned: u64,
 }
 
-/// (files_pruned, files_scanned) — #28 P3.5 : compteurs cumulés d'élagage seal du chemin vectorisé.
-#[allow(dead_code)] // consommé par le harnais de preuve d'élagage (cfg(test)) + l'observabilité future.
-pub(crate) fn prune_counters() -> (u64, u64) {
-    (PRUNE_PRUNED.load(Ordering::Relaxed), PRUNE_SCANNED.load(Ordering::Relaxed))
+#[cfg(test)]
+fn livre_des_routes() -> &'static parking_lot::Mutex<std::collections::HashMap<String, CompteursDeRoute>> {
+    static LIVRE: std::sync::OnceLock<parking_lot::Mutex<std::collections::HashMap<String, CompteursDeRoute>>> =
+        std::sync::OnceLock::new();
+    LIVRE.get_or_init(Default::default)
 }
 
-/// RESET des compteurs (tests). Non utilisé en production (le handler ne remet jamais à zéro).
-#[allow(dead_code)]
-pub(crate) fn route_counters_reset() {
-    ROUTE_VEC.store(0, Ordering::Relaxed);
-    ROUTE_FALLBACK.store(0, Ordering::Relaxed);
-    PRUNE_PRUNED.store(0, Ordering::Relaxed);
-    PRUNE_SCANNED.store(0, Ordering::Relaxed);
+/// Les compteurs de CETTE base, tels que ses propres requêtes les ont laissés (tout à zéro si aucune).
+#[cfg(test)]
+pub(crate) fn route_counters_of(db_path: &str) -> CompteursDeRoute {
+    livre_des_routes().lock().get(db_path).copied().unwrap_or_default()
 }
 
-fn note_vec() {
-    ROUTE_VEC.fetch_add(1, Ordering::Relaxed);
+/// Remise à zéro des compteurs de CETTE base seulement — un test rejoue plusieurs requêtes sur sa
+/// fixture et veut lire chacune isolément ; aucune autre base n'est touchée.
+#[cfg(test)]
+pub(crate) fn route_counters_reset_of(db_path: &str) {
+    livre_des_routes().lock().remove(db_path);
 }
-fn note_fallback() {
-    ROUTE_FALLBACK.fetch_add(1, Ordering::Relaxed);
+
+#[cfg(test)]
+fn note(db_path: &str, f: impl FnOnce(&mut CompteursDeRoute)) {
+    f(livre_des_routes().lock().entry(db_path.to_string()).or_default());
 }
-fn note_prune(pruned: usize, scanned: usize) {
-    PRUNE_PRUNED.fetch_add(pruned as u64, Ordering::Relaxed);
-    PRUNE_SCANNED.fetch_add(scanned as u64, Ordering::Relaxed);
+
+fn note_vec(db_path: &str) {
+    #[cfg(test)]
+    note(db_path, |c| c.vectorized += 1);
+    let _ = db_path;
+}
+fn note_fallback(db_path: &str) {
+    #[cfg(test)]
+    note(db_path, |c| c.fallback += 1);
+    let _ = db_path;
+}
+fn note_prune(db_path: &str, pruned: usize, scanned: usize) {
+    #[cfg(test)]
+    note(db_path, |c| {
+        c.pruned += pruned as u64;
+        c.scanned += scanned as u64;
+    });
+    let _ = (db_path, pruned, scanned);
 }
 
 /// GATE 0 — le routeur vectorisé est-il ARMÉ ? **DÉFAUT : OUI** dès que le tier froid est actif.
@@ -696,30 +719,30 @@ pub(crate) fn cold_vectorized_try(
     // des refus, jamais des nombres faux. Le défaut DORMANT d'origine était la cause MESURÉE du défaut de
     // correction (aucune des 105 cellules froides du banc n'atteignait les kernels).
     if !cold_vectorized_armed(conf) {
-        note_fallback();
+        note_fallback(db_path);
         return Ok(None);
     }
     // GATE 1 : cold ON (le PLUME_COLD_TIER est vérifié par l'appelant qui a calculé `boundary` ; on re-checke
     // par sûreté -> sans le flag, aucun tier cold, fallback).
     if !cold_tier_runtime_on(conf) {
-        note_fallback();
+        note_fallback(db_path);
         return Ok(None);
     }
     // GATE 3 : masques vides (HASH/MASK/DENY non reproductibles ici / colonne déniée) -> fallback.
     if !masks_empty {
-        note_fallback();
+        note_fallback(db_path);
         return Ok(None);
     }
     // GATE 2 : fenêtre PUR-FROID stricte. borne haute bornée (>0) ET strictement sous la frontière.
     if !(q_to > 0 && q_to < boundary) {
-        note_fallback();
+        note_fallback(db_path);
         return Ok(None);
     }
     // GATE 4 : forme vectorisable.
     let plan = match map_soql(soql) {
         Some(p) => p,
         None => {
-            note_fallback();
+            note_fallback(db_path);
             return Ok(None);
         }
     };
@@ -730,7 +753,7 @@ pub(crate) fn cold_vectorized_try(
         VecAgg::Materialize(p, _) => p.iter().map(|s| &**s).collect(),
     };
     if !can_vectorize(&plan.pred, &extra) {
-        note_fallback();
+        note_fallback(db_path);
         return Ok(None);
     }
 
@@ -781,13 +804,13 @@ pub(crate) fn cold_vectorized_try(
         None => {
             // Pas de clé cold -> ensemble vide == l'oracle (hydrate renvoie table vide). Résultat "vide" routé.
             let v = build_empty(&plan.agg, t0);
-            note_vec();
+            note_vec(db_path);
             return Ok(Some(v));
         }
     };
     // #28 P3.5 — PREUVE d'élagage : les fichiers ÉLAGUÉS (retirés de `scan.files` par le seal) ne seront JAMAIS
     // remis à `open_verified`/`open_cold_reader` -> jamais déchiffrés. Compteurs enregistrés dès la sélection.
-    note_prune(scan.pruned, scan.files.len());
+    note_prune(db_path, scan.pruned, scan.files.len());
 
     // GATE 5 : PAS DE TRONCATURE — DÉSORMAIS RESTREINTE À LA MATÉRIALISATION.
     //
@@ -811,7 +834,7 @@ pub(crate) fn cold_vectorized_try(
     if matches!(plan.agg, VecAgg::Materialize(..)) {
         let cap = cold_hydrate_row_cap() as i64;
         if window_rows_capped(&scan, lo, hi, &deny, cap)?.is_none() {
-            note_fallback();
+            note_fallback(db_path);
             return Ok(None); // > cap -> l'oracle TRONQUERAIT ses LIGNES -> fallback (préfixe de l'oracle préservé)
         }
     }
@@ -828,14 +851,14 @@ pub(crate) fn cold_vectorized_try(
     // retombe sur `cold_union_query` (invariant préservé).
     match exec_agg(&scan, &plan.agg, &full, &deny, cold_group_max(conf), t0)? {
         Some(mut value) => {
-            note_vec();
+            note_vec(db_path);
             // TRANSPARENCE (parité ignore `stats` — comparée sur columns+rows) : couverture d'élagage seal.
             value["stats"]["cold_files_pruned"] = json!(scan.pruned);
             value["stats"]["cold_files_scanned"] = json!(scan.files.len());
             Ok(Some(value))
         }
         None => {
-            note_fallback();
+            note_fallback(db_path);
             Ok(None)
         }
     }
@@ -1087,7 +1110,7 @@ pub(crate) fn cold_keyset_page(
         Some(s) => s,
         None => return Ok(Some((columns, Vec::new()))), // pas de clé cold -> vide == oracle (hydrate vide)
     };
-    note_prune(scan.pruned, scan.files.len());
+    note_prune(db_path, scan.pruned, scan.files.len());
 
     // Fichiers en `ts_max DÉCROISSANT` (tie-break day/seq desc, déterministe) -> EARLY-STOP inter-fichiers correct.
     let mut order: Vec<&(String, Sel)> = scan.files.iter().collect();
@@ -1669,17 +1692,17 @@ pub(crate) fn cold_vectorized_merge_try(
 
     // GATE 0 : ARMÉ PAR DÉFAUT (comme P4a) ; `=0` désarme et fait retomber sur un chemin qui REFUSE.
     if !cold_vectorized_armed(conf) {
-        note_fallback();
+        note_fallback(db_path);
         return Ok(None);
     }
     // GATE 1 : cold ON.
     if !cold_tier_runtime_on(conf) {
-        note_fallback();
+        note_fallback(db_path);
         return Ok(None);
     }
     // GATE 3 : masques vides (HASH/MASK non reproductibles par le kernel) -> fallback.
     if !masks_empty {
-        note_fallback();
+        note_fallback(db_path);
         return Ok(None);
     }
     // GATE 2 : fenêtre CHEVAUCHANTE (strictement DANS la fenêtre). froid présent : q_from < boundary. hot
@@ -1687,14 +1710,14 @@ pub(crate) fn cold_vectorized_merge_try(
     // (`0 < q_to < boundary`, routé par P4a) et le pur-hot (`boundary <= q_from`) sont DÉCLINÉS ici.
     let straddles = q_from < boundary && (q_to <= 0 || q_to >= boundary);
     if !straddles {
-        note_fallback();
+        note_fallback(db_path);
         return Ok(None);
     }
     // GATE 4 : forme vectorisable (count / group-by / top-N / table sur colonnes physiques).
     let plan = match map_soql(soql) {
         Some(p) => p,
         None => {
-            note_fallback();
+            note_fallback(db_path);
             return Ok(None);
         }
     };
@@ -1704,7 +1727,7 @@ pub(crate) fn cold_vectorized_merge_try(
         VecAgg::Materialize(p, _) => p.iter().map(|s| &**s).collect(),
     };
     if !can_vectorize(&plan.pred, &extra) {
-        note_fallback();
+        note_fallback(db_path);
         return Ok(None);
     }
 
@@ -1746,11 +1769,11 @@ pub(crate) fn cold_vectorized_merge_try(
             // Pas de clé cold lisible -> partie froide VIDE ; le résultat == la SEULE partie hot (l'oracle
             // hydrate 0 ligne cold). On délègue au fallback complet (cold_union_query) : plus simple et sûr
             // (aucune duplication du chemin hot pur ; ce cas est marginal : cold ON mais clé absente).
-            note_fallback();
+            note_fallback(db_path);
             return Ok(None);
         }
     };
-    note_prune(scan.pruned, scan.files.len());
+    note_prune(db_path, scan.pruned, scan.files.len());
 
     // GATE 5 (cap FROID) — MÊME restriction qu'en P4a : elle ne vaut plus que pour la MATÉRIALISATION.
     // Pour un agrégat, retomber sur l'oracle au-delà du cap, c'est retomber sur un agrégat calculé sur
@@ -1760,7 +1783,7 @@ pub(crate) fn cold_vectorized_merge_try(
     // le HOT-arm de l'oracle borne sa SORTIE à `cap` GROUPES, donc au-delà le merge lui-même serait incomplet.)
     let cap = cold_hydrate_row_cap() as i64;
     if matches!(plan.agg, VecAgg::Materialize(..)) && window_rows_capped(&scan, lo, hi, &deny, cap)?.is_none() {
-        note_fallback();
+        note_fallback(db_path);
         return Ok(None);
     }
 
@@ -1778,7 +1801,7 @@ pub(crate) fn cold_vectorized_merge_try(
     // porte le `stats count[ by …]` OU le `table …`, les `sort`/`head` éventuels sont en aval -> retirés).
     let stages = guatx_core::soql::soql_split_pipes(soql);
     if stages.len() < 2 {
-        note_fallback();
+        note_fallback(db_path);
         return Ok(None); // défense (map_soql l'exclut déjà)
     }
     let hot_base = format!("{} | {}", stages[0].trim(), stages[1].trim());
@@ -1791,7 +1814,7 @@ pub(crate) fn cold_vectorized_merge_try(
             let cold_total = par_count(&scan, &full, &deny)?;
             let hv = hot_partial(db_path, conf, env_filter, boundary, q_to, &hot_base, dim_preds, budget_ms, qid)?;
             let hot_total = value_rows(&hv).first().and_then(|r| r.first()).and_then(|v| v.as_i64()).unwrap_or(0);
-            note_vec();
+            note_vec(db_path);
             Ok(Some(finalize(cols, vec![vec![json!(cold_total + hot_total)]], false, t0)))
         }
         VecAgg::GroupCount(dims) | VecAgg::TopN(dims, _, _) => {
@@ -1823,7 +1846,7 @@ pub(crate) fn cold_vectorized_merge_try(
             // capé (`hot_group_count >= cap`) OU groupes MERGÉS `> cap` (l'oracle caperait le COMBINÉ) — P4b ne
             // peut PAS garantir la parité (merge incomplet / sur-ensemble) -> FALLBACK vers `cold_union_query`.
             if oracle_would_truncate_groups(hot_group_count, groups.len() as i64, cap) {
-                note_fallback();
+                note_fallback(db_path);
                 return Ok(None);
             }
             match &plan.agg {
@@ -1840,7 +1863,7 @@ pub(crate) fn cold_vectorized_merge_try(
                     // head-cut -> quels membres entrent est AMBIGU (ordre intra-égalité de l'oracle indéfini) ->
                     // fallback. Cut strict / < n groupes / n==0 -> SET déterminé par le count seul == oracle.
                     if *n >= 1 && *n < groups.len() && groups[*n - 1].1 == groups[*n].1 {
-                        note_fallback();
+                        note_fallback(db_path);
                         return Ok(None);
                     }
                     groups.truncate(*n);
@@ -1857,7 +1880,7 @@ pub(crate) fn cold_vectorized_merge_try(
                     d
                 })
                 .collect();
-            note_vec();
+            note_vec(db_path);
             Ok(Some(finalize(cols, rows, false, t0)))
         }
         VecAgg::Materialize(proj, head) => {
@@ -1882,14 +1905,14 @@ pub(crate) fn cold_vectorized_merge_try(
             // ROUTAIT un résultat plus complet que l'oracle tronqué -> DIVERGENCE). La borne de sortie effective
             // est `min(N, cap)` pour un head explicite, `cap` sinon (`oracle_would_truncate_rows`).
             if oracle_would_truncate_rows(total, *head, cap) {
-                note_fallback();
+                note_fallback(db_path);
                 return Ok(None);
             }
             // Pas de troncature -> concat (hot puis cold, comme l'`UNION ALL` de l'oracle ; l'ordre n'est de
             // toute façon pas observable ici puisqu'on ne tronque pas). truncated=false (parité).
             let mut rows = hot_rows;
             rows.extend(cold_rows);
-            note_vec();
+            note_vec(db_path);
             Ok(Some(finalize(cols, rows, false, t0)))
         }
     }

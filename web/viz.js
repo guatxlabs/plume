@@ -635,14 +635,16 @@ function reprendreSansCurseur(j) {
 // CE QUI N'EST PAS FAIT, ET POURQUOI. On ne filtre JAMAIS côté navigateur pour compenser une borne
 // que la route ne porte pas : l'ordre étant décroissant, cela viderait les premières pages et ferait
 // compter au total des lignes cachées — c'est-à-dire rendrait un refus comme une absence.
-// LA BORNE BASSE reste ce qu'elle était : elle est DÉJÀ un argument (`fromOverride`), et ses deux
-// appelants hors Explore la posent tous les deux. Aucune vue n'en hérite, mesuré le même jour ; son
-// défaut hérite pourtant encore, et c'est un reste NOMMÉ plutôt que corrigé au passage.
+// LA BORNE BASSE SUIT LA MÊME RÈGLE (`P11.18-t`, 2026-09-08) : son défaut est `0` — aucune borne — et
+// n'hérite plus de `S.zoomRange`. Elle était déjà un argument (`fromOverride`) que tout appelant hors
+// Explore posait ; seul son DÉFAUT héritait encore, c'est-à-dire exactement la forme qui avait produit
+// le défaut de la borne haute. L'Explore, seule vue qui règle et affiche cet intervalle, passe
+// désormais ses deux bornes EXPLICITEMENT ; un appelant neuf qui ne dit rien part sans borne.
 // ==============================================================================================
 async function runQ(query, isSoql, fromOverride, limit, offset, opts) {
   opts = opts || {};
   const body = isSoql ? { soql: query } : { sql: query };
-  body.from = (fromOverride !== undefined ? fromOverride : exploreFrom());
+  body.from = (fromOverride !== undefined ? fromOverride : 0);
   body.to = (opts.to !== undefined ? opts.to : 0);
   if (limit !== undefined && limit !== null) {
     body.limit = limit;
@@ -2666,7 +2668,7 @@ async function runQuery() {
   const t0 = performance.now();
   $('#qstats').textContent = 'exécution…';
   try {
-    const j = await runQ(q, isSoql, undefined, null, 0, { qid, signal: ctrl.signal, to: exploreTo() });   // idem : borne posée par la vue qui la règle
+    const j = await runQ(q, isSoql, exploreFrom(), null, 0, { qid, signal: ctrl.signal, to: exploreTo() });   // idem : borne posée par la vue qui la règle
     if (!S.exploreInflight || S.exploreInflight.qid !== qid) return;   // supersédée -> on ignore le résultat périmé
     if (j.error) { showQError(j.error); return; }
     S.lastResult = { columns: j.columns, rows: j.rows };

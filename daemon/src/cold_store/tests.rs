@@ -7441,27 +7441,29 @@ fn audit_over_prune_partial_null_column() {
 // compteur de route — donc aucun cycle possible entre les deux.
 // ====================================================================================================
 
-/// Le verrou du COMPTEUR DE ROUTE, et de lui seul (état global du process, pas une variable d'environnement).
-fn compteur_de_route_lock() -> parking_lot::MutexGuard<'static, ()> {
-    // `parking_lot` : pas d'empoisonnement, donc un panic d'assertion sous garde relâche un verrou SAIN au
-    // lieu de geler toute la famille — ce que l'ancien `unwrap_or_else(|e| e.into_inner())` obtenait à la main.
-    static COMPTEUR_DE_ROUTE: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
-    COMPTEUR_DE_ROUTE.lock()
+/// CE QUE PREND UN TEST P4A : l'environnement du processus en LECTURE — sa `conf` ne décide de rien tant
+/// qu'un voisin peut poser la même clé dans l'environnement, qui passe DEVANT. `P7.1-c` : il ne prend PLUS
+/// de verrou de compteur de route — les compteurs sont tenus par base (`route_counters_of(&f.dbp)`), un test
+/// ne lit que ce que sa fixture a provoqué, et personne n'a plus rien à exclure.
+/// `P7.1-c` — les compteurs de CETTE fixture, dans la forme que les assertions lisent depuis toujours.
+fn route_pair_of(dbp: &str) -> (u64, u64) {
+    let c = route_counters_of(dbp);
+    (c.vectorized, c.fallback)
+}
+fn prune_pair_of(dbp: &str) -> (u64, u64) {
+    let c = route_counters_of(dbp);
+    (c.pruned, c.scanned)
 }
 
-/// CE QUE PREND UN TEST P4A : l'environnement du processus en LECTURE — sa `conf` ne décide de rien tant
-/// qu'un voisin peut poser la même clé dans l'environnement, qui passe DEVANT — puis le compteur de route.
-fn p4a_lock() -> (parking_lot::RwLockReadGuard<'static, ()>, parking_lot::MutexGuard<'static, ()>) {
-    let environnement = crate::tests::VERROU_ENV_PROCESSUS.read();
-    (environnement, compteur_de_route_lock())
+fn p4a_lock() -> parking_lot::RwLockReadGuard<'static, ()> {
+    crate::tests::VERROU_ENV_PROCESSUS.read()
 }
 
 /// LA VARIANTE ÉCRIVAINE, pour un test p4a qui MUTE l'environnement (`PLUME_COLD_READ_PARALLELISM`,
-/// `PLUME_QUERY_MAX`) : même ordre d'acquisition, mais en exclusion totale. Un test qui prendrait
-/// `p4a_lock()` PUIS l'écriture se bloquerait lui-même : la variante existe pour rendre ce cas impossible.
-fn p4a_lock_env_mute() -> (parking_lot::RwLockWriteGuard<'static, ()>, parking_lot::MutexGuard<'static, ()>) {
-    let environnement = crate::tests::VERROU_ENV_PROCESSUS.write();
-    (environnement, compteur_de_route_lock())
+/// `PLUME_QUERY_MAX`) : exclusion totale. Un test qui prendrait `p4a_lock()` PUIS l'écriture se
+/// bloquerait lui-même : la variante existe pour rendre ce cas impossible.
+fn p4a_lock_env_mute() -> parking_lot::RwLockWriteGuard<'static, ()> {
+    crate::tests::VERROU_ENV_PROCESSUS.write()
 }
 
 /// Ligne de fixture P4a — dims VARIÉES (source/severity/host/src_ip) + `url` SANS espace (regex/glob testables
@@ -7642,21 +7644,21 @@ fn p4a_window_edges_and_route_counter_census() {
     let _lk = p4a_lock();
     let f = p4a_fixture("p4a-edge", 30);
     // (a) pur-froid -> Some ; (b) to==b -> None ; (c) to dans le hot -> None ; (d) to=0 (non borné) -> None.
-    route_counters_reset();
+    route_counters_reset_of(&f.dbp);
     assert!(p4a_plan(&f, "search | stats count", f.to).is_some(), "entièrement froide -> vectorisé");
     assert!(p4a_plan(&f, "search | stats count", f.b).is_none(), "borne haute == frontière -> fallback (hot possible)");
     assert!(p4a_plan(&f, "search | stats count", f.b + 10_000).is_none(), "borne haute dans le hot -> fallback");
     assert!(p4a_plan(&f, "search | stats count", 0).is_none(), "borne haute non bornée -> fallback");
-    let (vec_n, fb_n) = route_counters();
+    let (vec_n, fb_n) = route_pair_of(&f.dbp);
     assert_eq!((vec_n, fb_n), (1, 3), "census exact : 1 vectorisé, 3 fallback (compteur exposé)");
 
     // Parité au bord froid maximal : to = b-1 (encore pur-froid) doit router et == oracle.
-    route_counters_reset();
+    route_counters_reset_of(&f.dbp);
     let to_edge = f.b - 1;
     let plan = p4a_plan(&f, "search | stats count by source", to_edge);
     assert!(plan.is_some(), "to=b-1 encore pur-froid -> vectorisé");
     p4a_assert_parity(&p4a_oracle(&f, "search | stats count by source", to_edge), plan.as_ref().unwrap(), "bord froid b-1");
-    assert_eq!(route_counters(), (1, 0), "census : 1 vectorisé, 0 fallback");
+    assert_eq!(route_pair_of(&f.dbp), (1, 0), "census : 1 vectorisé, 0 fallback");
 }
 
 /// MASQUAGE #45 — DEUX volets :
@@ -7854,28 +7856,28 @@ fn p4a_prune_parity_on_off_oracle() {
         assert!(!preds.is_empty(), "prédicat d'élagage extrait du SQL compilé : {soql}");
         let oracle = prune_oracle(&f, soql, &preds);
         // PRUNE ON.
-        route_counters_reset();
+        route_counters_reset_of(&f.dbp);
         let on = cold_vectorized_try(&f.dbp, &f.conf, None, f.from, f.to, f.b, soql, true, 60_000, &preds).unwrap();
         assert!(on.is_some(), "routé vectorisé : {soql}");
-        let (pruned, scanned) = prune_counters();
+        let (pruned, scanned) = prune_pair_of(&f.dbp);
         assert!(pruned >= 1, "{soql}: au moins 1 fichier élagué (files_pruned={pruned})");
         assert_eq!(pruned + scanned, n as u64, "{soql}: élagués + scannés == N fichiers");
         // PRUNE OFF (mêmes lignes rendues, mais AUCUN élagage -> tous scannés).
-        route_counters_reset();
+        route_counters_reset_of(&f.dbp);
         let off = cold_vectorized_try(&f.dbp, &f.conf, None, f.from, f.to, f.b, soql, true, 60_000, &[]).unwrap();
         assert!(off.is_some(), "routé (prune off) : {soql}");
-        assert_eq!(prune_counters(), (0, n as u64), "{soql}: prune OFF -> 0 élagué, N scannés");
+        assert_eq!(prune_pair_of(&f.dbp), (0, n as u64), "{soql}: prune OFF -> 0 élagué, N scannés");
         // PARITÉ TRIPLE : on == off == oracle.
         p4a_assert_parity(&oracle, on.as_ref().unwrap(), &format!("{soql} [prune-on == oracle]"));
         p4a_assert_parity(&oracle, off.as_ref().unwrap(), &format!("{soql} [prune-off == oracle]"));
     }
 
     // PREUVE FORTE (chemin min/max déterministe) : `source=rare` -> EXACTEMENT N-1 élagués, 1 scanné.
-    route_counters_reset();
+    route_counters_reset_of(&f.dbp);
     let soql = "search source=rare | stats count";
     let preds = prune_preds(&f, soql, f.to);
     let _ = cold_vectorized_try(&f.dbp, &f.conf, None, f.from, f.to, f.b, soql, true, 60_000, &preds).unwrap();
-    assert_eq!(prune_counters(), ((n - 1) as u64, 1), "source=rare -> N-1 élagués, 1 scanné (élagage déterministe min/max)");
+    assert_eq!(prune_pair_of(&f.dbp), ((n - 1) as u64, 1), "source=rare -> N-1 élagués, 1 scanné (élagage déterministe min/max)");
 }
 
 /// (2) PREUVE DE NON-DÉCHIFFREMENT : les fichiers non-matchants sont CORROMPUS -> s'ils étaient déchiffrés,
@@ -7964,10 +7966,10 @@ fn p4a_prune_denied_column_never_prunes() {
     }
     // Pred DIRECT sur la dim déniée (le garde doit le retirer avant l'élagage).
     let preds = vec![DimEq { dim: ColdDim::Source, value: "rare".into() }];
-    route_counters_reset();
+    route_counters_reset_of(&f.dbp);
     let r = cold_vectorized_try(&f.dbp, &f.conf, None, f.from, f.to, f.b, "search source=rare | stats count", true, 60_000, &preds).unwrap();
     assert!(r.is_some(), "routé");
-    assert_eq!(prune_counters().0, 0, "colonne DÉNIÉE -> AUCUN élagage seal (garde #45)");
+    assert_eq!(prune_pair_of(&f.dbp).0, 0, "colonne DÉNIÉE -> AUCUN élagage seal (garde #45)");
     crate::field_deny_cols_cell().write().remove(&f.dbp); // hygiène
 }
 
@@ -7986,20 +7988,20 @@ fn p4a_prune_no_overprune_regex_and_present_value() {
     for soql in ["search source=~^web$ | stats count", "search source=w* | stats count"] {
         let preds = prune_preds(&f, soql, f.to);
         assert!(preds.is_empty(), "regex/LIKE -> aucun pred d'élagage : {soql}");
-        route_counters_reset();
+        route_counters_reset_of(&f.dbp);
         let r = cold_vectorized_try(&f.dbp, &f.conf, None, f.from, f.to, f.b, soql, true, 60_000, &preds).unwrap();
         assert!(r.is_some(), "routé : {soql}");
-        assert_eq!(prune_counters(), (0, n as u64), "{soql}: 0 élagué, N scannés");
+        assert_eq!(prune_pair_of(&f.dbp), (0, n as u64), "{soql}: 0 élagué, N scannés");
         p4a_assert_parity(&prune_oracle(&f, soql, &preds), r.as_ref().unwrap(), soql);
     }
     // VALEUR PRÉSENTE partout : `source=web` est dans les 3 blooms + dans [min,max] -> aucun fichier élagué.
     let soql = "search source=web | stats count";
     let preds = prune_preds(&f, soql, f.to);
     assert!(!preds.is_empty());
-    route_counters_reset();
+    route_counters_reset_of(&f.dbp);
     let r = cold_vectorized_try(&f.dbp, &f.conf, None, f.from, f.to, f.b, soql, true, 60_000, &preds).unwrap();
     assert!(r.is_some());
-    assert_eq!(prune_counters(), (0, n as u64), "source=web présent partout -> 0 élagué, N scannés");
+    assert_eq!(prune_pair_of(&f.dbp), (0, n as u64), "source=web présent partout -> 0 élagué, N scannés");
     p4a_assert_parity(&prune_oracle(&f, soql, &preds), r.as_ref().unwrap(), soql);
 }
 
@@ -8156,10 +8158,10 @@ fn hostile_tiebreak_fallback_only_on_boundary_tie() {
     for _ in 0..1 { rows_a.push((0, "db")); }
     let fa = hostile_fixture("hostile-notie", &rows_a);
     let soql = "search | stats count by source | sort -count | head 2";
-    route_counters_reset();
+    route_counters_reset_of(&fa.dbp);
     let plan = p4a_plan(&fa, soql, fa.to);
     assert!(plan.is_some(), "cut NON-ambigu -> DOIT router vectorisé (pas de fallback inutile) : {soql}");
-    assert_eq!(route_counters(), (1, 0), "cut strict : 1 vectorisé, 0 fallback");
+    assert_eq!(route_pair_of(&fa.dbp), (1, 0), "cut strict : 1 vectorisé, 0 fallback");
     p4a_assert_parity(&p4a_oracle(&fa, soql, fa.to), plan.as_ref().unwrap(), soql);
 
     // (b) tie au bord : web×5, api×5 (ÉGALITÉ au sommet), db×1. `head 1` coupe DANS l'égalité web/api -> fallback.
@@ -8169,10 +8171,10 @@ fn hostile_tiebreak_fallback_only_on_boundary_tie() {
     for _ in 0..1 { rows_b.push((0, "db")); }
     let fb = hostile_fixture("hostile-boundtie", &rows_b);
     let soql_tie = "search | stats count by source | sort -count | head 1";
-    route_counters_reset();
+    route_counters_reset_of(&fb.dbp);
     let plan_tie = p4a_plan(&fb, soql_tie, fb.to);
     assert!(plan_tie.is_none(), "tie au bord du head-cut -> DOIT fallback (None) : {soql_tie}");
-    assert_eq!(route_counters(), (0, 1), "tie au bord : 0 vectorisé, 1 fallback");
+    assert_eq!(route_pair_of(&fb.dbp), (0, 1), "tie au bord : 0 vectorisé, 1 fallback");
 }
 
 // ====================================================================================================
@@ -8264,9 +8266,9 @@ fn adv_prune_no_overprune_every_present_value() {
             "severity" => &sev.to_string() == val,
             _ => false,
         }).count();
-        route_counters_reset();
+        route_counters_reset_of(&f.dbp);
         let on = cold_vectorized_try(&f.dbp, &f.conf, None, f.from, f.to, f.b, &soql, true, 60_000, &preds).unwrap().unwrap();
-        let (_pruned, scanned) = prune_counters();
+        let (_pruned, scanned) = prune_pair_of(&f.dbp);
         assert!(scanned as usize >= want, "{soql}: {scanned} scannés < {want} porteurs = SUR-ÉLAGAGE (ligne perdue)");
         p4a_assert_parity(&adv_full_scan(&f, &soql), &on, &format!("{soql} [vec == full-scan]"));
         assert_eq!(on["rows"][0][0].as_i64().unwrap(), want as i64, "{soql}: count == nb porteurs ({want})");
@@ -8300,10 +8302,10 @@ fn adv_prune_denied_bloom_only_and_composite() {
         w.insert(f.dbp.clone(), s);
     }
     let preds = vec![DimEq { dim: ColdDim::SrcIp, value: "10.9.9.9".into() }];
-    route_counters_reset();
+    route_counters_reset_of(&f.dbp);
     let r = cold_vectorized_try(&f.dbp, &f.conf, None, f.from, f.to, f.b, "search src_ip=10.9.9.9 | stats count", true, 60_000, &preds).unwrap();
     assert!(r.is_some(), "routé");
-    assert_eq!(prune_counters().0, 0, "src_ip DÉNIÉ (bloom-seul) -> 0 élagage seal (garde #45)");
+    assert_eq!(prune_pair_of(&f.dbp).0, 0, "src_ip DÉNIÉ (bloom-seul) -> 0 élagage seal (garde #45)");
     crate::field_deny_cols_cell().write().remove(&f.dbp);
 
     // (b) COMPOSITE And(dénié, autorisé) : deny `source` ; preds INJECTÉS=[source=rare (dénié), host=h9 (autorisé)].
@@ -8321,9 +8323,9 @@ fn adv_prune_denied_bloom_only_and_composite() {
         DimEq { dim: ColdDim::Source, value: "rare".into() },
         DimEq { dim: ColdDim::Host, value: "h9".into() },
     ];
-    route_counters_reset();
+    route_counters_reset_of(&f.dbp);
     let on = cold_vectorized_try(&f.dbp, &f.conf, None, f.from, f.to, f.b, "search host=h9 | stats count", true, 60_000, &preds).unwrap();
-    let (pruned, _scanned) = prune_counters();
+    let (pruned, _scanned) = prune_pair_of(&f.dbp);
     crate::field_deny_cols_cell().write().remove(&f.dbp);
     assert!(on.is_some(), "routé (GXQL n'implique pas la colonne déniée)");
     assert_eq!(pruned, 1, "garde: `source` RETIRÉ -> élagage host-SEUL (pruned==1=idx0), PAS l'élagage source (idx2) -> aucune fuite via la dim déniée");
@@ -8364,9 +8366,9 @@ fn adv_prune_deny_case_insensitive_guard() {
         s.insert("Source".to_string()); // casse non-canonique -> désormais captée par eq_ignore_ascii_case.
         w.insert(f.dbp.clone(), s);
     }
-    route_counters_reset();
+    route_counters_reset_of(&f.dbp);
     let _ = cold_vectorized_try(&f.dbp, &f.conf, None, f.from, f.to, f.b, soql, true, 60_000, &preds).unwrap();
-    let (pruned, _scanned) = prune_counters();
+    let (pruned, _scanned) = prune_pair_of(&f.dbp);
     crate::field_deny_cols_cell().write().remove(&f.dbp);
     assert_eq!(pruned, 0, "DURCISSEMENT : deny \"Source\" (casse-variante) DOIT être capté (eq_ignore_ascii_case) -> 0 élagage, pas de fuite timing ; pruned={pruned}");
 
@@ -8378,9 +8380,9 @@ fn adv_prune_deny_case_insensitive_guard() {
         s.insert("source".to_string());
         w.insert(f.dbp.clone(), s);
     }
-    route_counters_reset();
+    route_counters_reset_of(&f.dbp);
     let _ = cold_vectorized_try(&f.dbp, &f.conf, None, f.from, f.to, f.b, soql, true, 60_000, &preds).unwrap();
-    let (pruned2, _s2) = prune_counters();
+    let (pruned2, _s2) = prune_pair_of(&f.dbp);
     crate::field_deny_cols_cell().write().remove(&f.dbp);
     assert_eq!(pruned2, 0, "casse canonique \"source\" -> garde ACTIF -> 0 élagage (comportement voulu)");
 }
@@ -8626,21 +8628,21 @@ fn p4b_window_edges_and_route_census() {
     let f = p4b_fixture("p4b-edges", &cold, &hot);
 
     // (a) chevauchante -> routé, census (1,0).
-    route_counters_reset();
+    route_counters_reset_of(&f.dbp);
     assert!(p4b_merge(&f, "search | stats count").is_some(), "chevauchante -> merge routé");
-    assert_eq!(route_counters(), (1, 0), "census : 1 merge, 0 fallback");
+    assert_eq!(route_pair_of(&f.dbp), (1, 0), "census : 1 merge, 0 fallback");
 
     // (b) PUR-FROID (to = b-1 < boundary) -> le merge DÉCLINE (domaine de P4a), census (0,1).
-    route_counters_reset();
+    route_counters_reset_of(&f.dbp);
     let r_cold = cold_vectorized_merge_try(&f.dbp, &f.conf, None, f.from, f.b - 1, f.b, "search | stats count", true, 60_000, None, &[]).unwrap();
     assert!(r_cold.is_none(), "pur-froid -> merge décline (None)");
-    assert_eq!(route_counters(), (0, 1), "census : 0 merge, 1 fallback");
+    assert_eq!(route_pair_of(&f.dbp), (0, 1), "census : 0 merge, 1 fallback");
 
     // (c) PUR-HOT (from = boundary >= boundary) -> décline, census (0,1).
-    route_counters_reset();
+    route_counters_reset_of(&f.dbp);
     let r_hot = cold_vectorized_merge_try(&f.dbp, &f.conf, None, f.b, f.to, f.b, "search | stats count", true, 60_000, None, &[]).unwrap();
     assert!(r_hot.is_none(), "pur-hot -> merge décline (None)");
-    assert_eq!(route_counters(), (0, 1), "census : 0 merge, 1 fallback");
+    assert_eq!(route_pair_of(&f.dbp), (0, 1), "census : 0 merge, 1 fallback");
 
     // (d) bord exact boundary == to : fenêtre [from, boundary] -> un seul instant hot (ts==boundary) -> routé + parité.
     let soql = "search | stats count by source";

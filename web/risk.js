@@ -20,7 +20,7 @@ async function loadRiskView() {
     { key: 'entity', label: 'Entité', sortable: true, sortVal: r => r.entity || '', render: r => {
       const f = document.createDocumentFragment();
       const s = document.createElement('span'); s.textContent = r.entity == null ? '' : r.entity; s.title = s.textContent; f.appendChild(s);
-      if (r.over_threshold) { const b = document.createElement('span'); b.className = 'badge'; b.textContent = 'seuil'; b.title = 'Au-dessus d\'un seuil de risque (score / tactiques / vélocité)'; b.style.cssText = 'margin-left:6px;color:var(--sev4);border-color:color-mix(in srgb,var(--sev4) 45%,transparent)'; f.appendChild(b); }
+      if (r.over_threshold) { const b = document.createElement('span'); b.className = 'badge'; b.textContent = 'seuil'; b.title = 'Au-dessus d\'un seuil de risque (score / tactiques / vélocité)'; b.style.cssText = 'color:var(--sev4);border-color:color-mix(in srgb,var(--sev4) 45%,transparent)'; f.appendChild(b); }   // `P11.15-d` : l'écart vient de la règle partagée (frère de l'entrée dans la cellule), pas d'une marge en ligne
       return f;
     } },
     { key: 'entity_type', label: 'Type', sortable: true, sortVal: r => r.entity_type || '', render: r => { const c = document.createElement('code'); c.textContent = r.entity_type || '?'; return c; } },

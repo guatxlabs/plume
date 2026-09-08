@@ -82,10 +82,10 @@ pub(super) fn cold_decrypt_count() -> u64 {
 /// verrou à prendre, aucune sérialisation payée — c'est la figure de `tmp_possede.rs` (« on n'énumère pas
 /// ce qu'il faut effacer : on POSSÈDE le contenant ») appliquée au comptage.
 ///
-/// CE QUE ÇA NE TIENT PAS, et il faut le dire : les compteurs de ROUTE et d'ÉLAGAGE (`ROUTE_VEC`,
-/// `ROUTE_FALLBACK`, `PRUNE_PRUNED`, `PRUNE_SCANNED`, `planner.rs`) restent des sommes de processus avec un
-/// `route_counters_reset()`, protégées par le seul `compteur_de_route_lock()` que les tests p4a prennent
-/// entre eux. Le même défaut y est donc encore écrivable par un test NON-p4a qui routerait ou élaguerait.
+/// CE QUI RESTAIT, ET QUI EST FERMÉ DEPUIS (`P7.1-c`, 2026-09-08) : les compteurs de ROUTE et d'ÉLAGAGE
+/// (`planner.rs`) étaient encore des sommes de processus avec une remise à zéro, protégées par un verrou
+/// que seuls les tests p4a prenaient entre eux. Ils sont tenus depuis sous la clé de la BASE de chaque
+/// fixture (`route_counters_of(db_path)`), par la même figure que ce grand-livre — et le verrou a disparu.
 #[cfg(test)]
 fn livre_des_dechiffrements() -> &'static parking_lot::Mutex<std::collections::HashMap<std::path::PathBuf, u64>> {
     static LIVRE: std::sync::OnceLock<parking_lot::Mutex<std::collections::HashMap<std::path::PathBuf, u64>>> =

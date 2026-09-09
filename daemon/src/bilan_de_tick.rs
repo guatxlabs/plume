@@ -36,10 +36,17 @@ pub(crate) type BilanDeTick = Mesure<u32>;
 
 /// LA CAUSE, DÉRIVÉE DE L'ERREUR SQLITE — un seul auteur, comme `cause_io` pour les erreurs d'E/S.
 /// « no such table » / « no such column » est une FORME que la base ne présente pas (schéma en
-/// retard, migration non appliquée) ; tout le reste est une lecture qui a échoué.
+/// retard, migration non appliquée) ; une ligne qui EXISTE et se LIT mais dont une colonne n'a pas
+/// la forme attendue (type inattendu, conversion impossible, valeur hors plage) est AUSSI une forme
+/// inconnue — la source était lisible, c'est son CONTENU qui ne se décode pas (`P10.7-n`, reste
+/// déclaré le 2026-08-31, fermé le 2026-09-09 : elle se disait « source illisible » et le témoin
+/// figeait ce mot) ; tout le reste est une lecture qui a échoué.
 pub(crate) fn cause_sql(e: &rusqlite::Error) -> &'static str {
     match e {
         rusqlite::Error::SqliteFailure(_, Some(msg)) if msg.starts_with("no such ") => CAUSE_FORME_INCONNUE,
+        rusqlite::Error::InvalidColumnType(..)
+        | rusqlite::Error::FromSqlConversionFailure(..)
+        | rusqlite::Error::IntegralValueOutOfRange(..) => CAUSE_FORME_INCONNUE,
         _ => CAUSE_SOURCE_ILLISIBLE,
     }
 }

@@ -129,7 +129,7 @@
     /// vide pour la trahir. Une ligne dont `confidence` ne porte pas un entier suffit à le montrer.
     #[test]
     fn une_ligne_indecodable_n_ampute_plus_le_jeu_d_indicateurs_en_silence() {
-        use crate::mesure_environnement::{Mesure, CAUSE_SOURCE_ILLISIBLE};
+        use crate::mesure_environnement::{Mesure, CAUSE_FORME_INCONNUE};
 
         let conn = test_db();
         let dbp = "p107k-parcours";
@@ -157,7 +157,7 @@
         let aveu = ioc_reload_dernier(dbp).expect("issue publiée");
         match &aveu {
             Mesure::Illisible { cause, detail } => {
-                assert_eq!(*cause, CAUSE_SOURCE_ILLISIBLE, "la ligne existe et se lit, c'est son CONTENU qui ne se décode pas : {detail}");
+                assert_eq!(*cause, CAUSE_FORME_INCONNUE, "la ligne existe et se lit, c'est son CONTENU qui n'a pas la forme attendue — « forme inconnue », pas « source illisible » (P10.7-n) : {detail}");
             }
             Mesure::Lue(n) => panic!(
                 "un parcours interrompu a rendu un compte ({n}) : la ligne indécodable a été SAUTÉE et le \

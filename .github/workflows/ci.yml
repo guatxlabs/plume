@@ -1498,6 +1498,14 @@ jobs:
       - name: Les commentaires et la documentation s'adressent au lecteur, pas à leur auteur
         run: python3 .github/scripts/check_prose_addresses_the_reader_not_the_author.py
 
+      # `P9.6-b` — UN GESTE QUI N'A DE SENS QUE SUR L'HÔTE NATIF RENVOIE À SA FORME DANS LES TROIS MODES.
+      # Population DÉRIVÉE de la forme de la commande (toute invocation de `bash bootstrap[-agent].sh`
+      # dans le README), critère local (un renvoi vers docs/TROIS-MODES.md à moins de douze lignes,
+      # citant une section qui existe — dérivée des titres de la page). Mesuré le 2026-09-09 : cinq
+      # invocations sur cinq en étaient orphelines.
+      - name: Chaque geste d'hôte natif du README renvoie à sa forme dans les trois modes
+        run: python3 .github/scripts/check_every_host_only_gesture_points_to_its_three_mode_form.py
+
       # LA MÊME CHAÎNE, À SON DERNIER MAILLON (`S37`) : le démon publie `<clé>_verdict` / `_cause` /
       # `_detail` à côté de chaque grandeur qu'il n'a pas pu lire (`S32`, `P4.1-r`), et tout s'arrête à
       # la frontière du navigateur si la surface ne LIT pas le verdict — une grandeur illisible s'y

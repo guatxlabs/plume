@@ -226,6 +226,8 @@ sidecar ni cron hôte. Réglez‑les — ou coupez‑les avec `PLUME_BACKUP_INTE
 cd daemon && cargo build --release && cd ..          # binaire unique (Rust stable) — build NU : cf. juste dessous
 sudo bash bootstrap.sh                               # central: daemon + units, :7000 (idempotent)
 ```
+
+> **En conteneur ou en cluster, ce geste n'a pas cette forme** (le central est une image, reconstruite puis remplacée) : voir [docs/TROIS-MODES.md §1](docs/TROIS-MODES.md) et [docs/TROIS-MODES.md §3.9](docs/TROIS-MODES.md).
 **Ce que cette ligne de compilation ne prend pas.** `cargo build --release` **sans `--features`** est le
 défaut assumé du mode hôte, et il laisse de côté les **deux** capacités optionnelles que l'image
 conteneur, elle, compile (`ARG PLUME_FEATURES=ldap,cold_tier`, cf. [`Dockerfile`](Dockerfile)) :
@@ -261,6 +263,8 @@ printf 'PLUME_CENTRAL=%s\nPLUME_TOKEN=%s\n' 'https://central:7000' '<token>' \
 sudo chgrp soc /etc/plume/plume.conf && sudo chmod 0640 /etc/plume/plume.conf
 sudo bash bootstrap-agent.sh          # conf déjà présente -> conservée telle quelle
 ```
+
+> **En conteneur ou en cluster, ce geste n'a pas cette forme** (le jeton et les réglages se posent dans l'`env:` du déploiement, pas par un installateur) : voir [docs/TROIS-MODES.md §3.5](docs/TROIS-MODES.md) et [docs/TROIS-MODES.md §3.2](docs/TROIS-MODES.md).
 
 > ### ⚠️ Ne passez JAMAIS le token sur la ligne de commande
 > La forme `sudo env PLUME_TOKEN='<token>' bash bootstrap-agent.sh` **fuite le token dans le SOC
@@ -369,6 +373,8 @@ activer, l'opérateur décide.
 ```sh
 sudo env PLUME_EXTRA_COLLECTORS="custom" PLUME_CENTRAL=… PLUME_TOKEN=… bash bootstrap-agent.sh
 ```
+
+> **En conteneur ou en cluster, ce geste n'a pas cette forme** (une source de collecte s'ajoute autrement, ou n'existe pas dans ce mode) : voir [docs/TROIS-MODES.md §3.3](docs/TROIS-MODES.md).
 
 **② Créer le répertoire d'entrées.** **Aucun script ne le crée** — ni `bootstrap.sh`, ni
 `bootstrap-agent.sh`, ni le collecteur lui‑même. Sans lui, `custom.sh` ne collecte rien : il émet un
@@ -537,6 +543,7 @@ le collecteur tourne sur un hôte Linux, mais la **cible** peut être n'importe 
 > sudo env PLUME_EXTRA_COLLECTORS="journal auditd" bash bootstrap-agent.sh   # installe, N'ACTIVE PAS
 > sudo systemctl enable --now plume-journal.timer plume-auditd.timer         # l'opérateur active
 > ```
+> **En conteneur ou en cluster, ce geste n'a pas cette forme** (les collecteurs shell sont un artefact d'hôte) : voir [docs/TROIS-MODES.md §3.3](docs/TROIS-MODES.md).
 > `journal` (→ `category=auth`, sources `sshd`/`sudo`/`su`) est **immédiatement** productif. `auditd`
 > (→ `category=exec`) a besoin, en plus, que le **noyau** journalise les `execve` — c'est une politique
 > d'audit, pas un réglage du collecteur. Deux commandes :
@@ -562,6 +569,7 @@ le collecteur tourne sur un hôte Linux, mais la **cible** peut être n'importe 
 > enregistrement `EXECVE` ; les deux pièges corrigés → 9 règles et `category=exec` alimenté.*
 >
 > **Windows** (poste, entreprise, Windows Server) a un **collecteur natif PowerShell clé-en-main** — événements · pare-feu · réseau · Defender — dans **[`collectors/windows/`](collectors/windows/)** : copiez-le, planifiez-le (tâche toutes les 5 min), il POST directement au central. **macOS** : via un scripted input (`log show`).
+> **En conteneur ou en cluster, ce geste n'a pas cette forme** (les collecteurs shell sont un artefact d'hôte) : voir [docs/TROIS-MODES.md §3.3](docs/TROIS-MODES.md).
 
 #### Les collecteurs livrés — quarante existent, trois s'installent
 

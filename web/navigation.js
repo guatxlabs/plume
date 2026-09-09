@@ -32,6 +32,7 @@
 // où il manque. Voir le bloc de nommage sous `SPACES`.
 import { $, LANG } from './core.js';
 import { S } from './state.js';
+import { CHARGES_POSEES } from './registres.js'; // `P11.21-f` : l'attache des peintres vit dans un module feuille
 import { loadDashboards, refreshPanels } from './dashboards.js';
 import { renderDataAccess } from './dataaccess.js';
 import { loadCases } from './cases.js';
@@ -354,10 +355,26 @@ const SECTIONS_SANS_CHARGE = ['query'];
 // ferait de ce fichier un fourre-tout ; les déclarer ailleurs rouvrirait la divergence que ce registre
 // ferme. Une cible inconnue est REFUSÉE plutôt qu'ajoutée en douce : sans cela, une faute de frappe
 // créerait une charge fantôme qu'aucune section ne montre et qu'aucun témoin ne verrait.
+// `P11.21-f` — POSER N'EST PLUS LIRE LA LISTE. `app.js` pose ses peintres au chargement ; quand on entre dans le
+// graphe par `navigation.js`, `app.js` s'évalue AVANT le corps de ce module et `CHARGES_DE_LA_CONSOLE` est encore
+// en zone morte : lire la liste ici jetait. L'attache va dans un registre FEUILLE (`registres.js`, jamais en zone
+// morte) ; la liste est consultée quand on LIT une charge, c'est-à-dire après que tout le graphe est évalué. La
+// règle « une charge posée doit être déclarée `pose: true` » n'est pas perdue : elle est jugée à la première
+// lecture (`verifierLesChargesPosees`), et elle jette toujours, avec le même mot.
 function poserUneCharge(cible, charger) {
-  const c = CHARGES_DE_LA_CONSOLE.find(x => x.cible === cible && x.pose);
-  if (!c) throw new Error('charge non déclarée : ' + cible);
-  c.charger = charger;
+  CHARGES_POSEES.set(cible, charger);
+}
+let chargesPoseesVerifiees = false;
+function verifierLesChargesPosees() {
+  if (chargesPoseesVerifiees) return;
+  for (const cible of CHARGES_POSEES.keys()) {
+    if (!CHARGES_DE_LA_CONSOLE.some(x => x.cible === cible && x.pose)) throw new Error('charge non déclarée : ' + cible);
+  }
+  chargesPoseesVerifiees = true;
+}
+function peintreDe(c) {
+  verifierLesChargesPosees();
+  return c.charger || (c.pose ? CHARGES_POSEES.get(c.cible) : undefined);
 }
 
 // AFFICHÉE = ni la cible ni aucun de ses parents ne porte `hidden`. `showView` masque les sections des
@@ -371,7 +388,7 @@ function cibleAffichee(id) {
   return true;
 }
 function chargeAffichee(c) {
-  return !!c.charger && cibleAffichee(c.cible);  // déclarée sans peintre attaché : rien à peindre
+  return !!peintreDe(c) && cibleAffichee(c.cible);  // déclarée sans peintre attaché : rien à peindre
 }
 // DANS LA VUE = la cible vit sous <main>, donc un onglet la montre ou la masque. Hors de <main>
 // (en-tête, pied de page) une cible est visible partout : elle suit la cadence, pas les entrées de vue.
@@ -401,7 +418,7 @@ function lancerLesCharges(liste, depuis) {
   const promesses = partantes.map(c => {
     if (!cadence) c._demande = Date.now();
     c._enVol = true;
-    return Promise.resolve().then(c.charger).finally(() => { c._enVol = false; });
+    return Promise.resolve().then(peintreDe(c)).finally(() => { c._enVol = false; });
   });
   // L'ÉCHEC D'UNE CHARGE SE DIT, QUEL QUE SOIT CELUI QUI L'A LANCÉE. Écrit ICI et non chez l'appelant :
   // seule la cadence avait un `catch` qui portait l'aveu au pied de page ; une charge lancée à l'entrée

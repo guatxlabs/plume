@@ -11,6 +11,7 @@
 import { $, api, apiSend, disclosure, fetchInto, fmtTs, humanAge, LANG, modal, muted, pagedList, sev, toast } from './core.js';
 import { champDeRecherche, filtrerParRecherche, texteCherchable } from './recherche_de_liste.js';
 import { uiIsAdmin } from './multitenant.js';
+import { RECHERCHE_IOC } from './registres.js'; // `P11.21-f` : l'état de recherche vit dans un module feuille
 // P11.12-a : ce panneau avait le PREMIER filtre de liste de la console, câblé en place. Il prend
 // désormais le mécanisme partagé (`recherche_de_liste.js`) — même prédicat, mêmes mots, même Échap que
 // la recherche des règles ; il n'en reste pas une seconde écriture.
@@ -20,7 +21,8 @@ const IOC_TYPES = ['ip', 'domain', 'url', 'hash_md5', 'hash_sha1', 'hash_sha256'
 
 let _allIocs = [];      // dernières lignes SERVIES — filtrées côté client par la recherche.
 let _borneIocs = null;  // la réponse ENTIÈRE : c'est elle qui porte la fenêtre, le servi et le total.
-let _iocSearch = '';    // filtre de recherche courant (valeur/type/source).
+// Le filtre de recherche courant (valeur/type/source) vit dans `RECHERCHE_IOC.valeur` (`registres.js`) : un `let` de
+// ce module était en zone morte quand `initThreatIntel` était appelé avant le corps du module (`P11.21-f`).
 
 // ---- chargement du panneau : tuile de couverture + liste des IOC (+ resync du filtre) ----
 async function loadThreatIntel() {
@@ -84,7 +86,7 @@ async function loadIocs() {
 
 function renderIocList() {
   const host = $('#ti-ioc-list'); if (!host) return;
-  const q = _iocSearch.trim();
+  const q = RECHERCHE_IOC.valeur.trim();
   const rows = filtrerParRecherche(_allIocs, q, x => texteCherchable([x.value, x.type, x.source]));
   const nowS = Math.floor(Date.now() / 1000);
   const columns = [
@@ -257,7 +259,7 @@ function initThreatIntel() {
   if ($('#ti-imp-cancel')) $('#ti-imp-cancel').onclick = () => { const f = $('#ti-import-form'); if (f) f.classList.add('hidden'); };
   if ($('#ti-import-form')) $('#ti-import-form').addEventListener('submit', doImport);
   // P11.4-b : le cadre du filtre prend le chrome partagé `.field` — posé désormais par le câblage partagé.
-  if ($('#ti-search')) { const poignee = champDeRecherche($('#ti-search'), { auChangement: v => { _iocSearch = v; renderIocList(); } }); _iocSearch = poignee.valeur(); }
+  if ($('#ti-search')) { const poignee = champDeRecherche($('#ti-search'), { auChangement: v => { RECHERCHE_IOC.valeur = v; renderIocList(); } }); RECHERCHE_IOC.valeur = poignee.valeur(); }
 }
 
 export { loadThreatIntel, initThreatIntel };

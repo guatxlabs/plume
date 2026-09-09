@@ -23,6 +23,7 @@
 import { $, LANG, api, muted, socIsAdmin, socRole, closeModals } from './core.js';
 import { setAlertMitreFilter } from './app.js';
 import { openSigmaImport } from './sigmaimport.js';
+import { PORTES_DE_TECHNIQUE as PORTES } from './registres.js'; // `P11.21-f` : les portes vivent dans un module feuille, jamais en zone morte
 
 // P11.6-a — LE NOM D'UNE TECHNIQUE EST DÉRIVÉ, JAMAIS LAISSÉ VIDE. MESURÉ le 2026-08-22 : le démon
 // n'émettait aucun `name` et cette matrice rendait `t.name || ''` -> TOUTES les cellules (183 techniques
@@ -176,7 +177,8 @@ function techniqueCell(t, max, comptesDAlertesNonEtablis) {
 // ouvrir son formulaire et sa recherche). Elles arrivent ici par injection plutôt que par un import :
 // `detection_admin.js` importe déjà ce module, l'importer en retour ferait un cycle dont l'un des deux
 // bouts s'évaluerait à moitié.
-const PORTES = { regles: null, creer: null };
+// `PORTES` est importé de `registres.js` (module feuille) : la constante locale qui vivait ici était en zone
+// morte temporelle quand on entrait dans le graphe par ce fichier (`P11.21-f`).
 function poserLesPortesDeTechnique(p) { PORTES.regles = (p && p.regles) || null; PORTES.creer = (p && p.creer) || null; }
 
 // Un bouton de sortie. Une sortie impraticable est RENDUE, inerte, et son `title` DIT POURQUOI : une sortie

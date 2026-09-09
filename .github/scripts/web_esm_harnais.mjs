@@ -845,7 +845,16 @@ if (!STOCKAGE_REFUSE) {
   // d'entrée, la liste mesurée est vide et le témoin est vert sans qu'une ligne bouge. Un témoin qui
   // ne peut être vert que tant que le chantier est ouvert n'est pas une garde, c'est une RANÇON — ce
   // dépôt en a déjà payé une (voir le témoin 53), et cette borne-ci n'en est pas une.
-  const PORTES_QUI_JETTENT_AU_2026_08_30 = ["attack.js", "navigation.js", "threatintel.js"];
+  // RELEVÉ DU 2026-09-09 : UNE porte au lieu de trois. `attack.js` et `threatintel.js` sont GUÉRIES par
+  // `web/registres.js` — un module feuille porte les valeurs qu'on écrivait au chargement dans une constante
+  // encore en zone morte (`PORTES`, `_iocSearch`, et l'attache des charges). `navigation.js` jette encore, un
+  // cran plus loin et pour une raison PLUS PROFONDE, mesurée : `app.js` exécute `initNavigation()` puis
+  // `route()` à son premier niveau ; par la porte `navigation.js`, c'est TOUT l'état de ce module (`SPACES`,
+  // `TAB`, `CHARGES_DE_LA_CONSOLE`…) qui est en zone morte, et la liste des charges ne peut pas vivre dans une
+  // feuille (elle ferme sur les peintres importés). Le remède est de couper le cycle qui évalue `app.js` avant
+  // `navigation.js`, pas de déplacer une constante de plus — chantier nommé sous `P11.21-f`. Une porte guérie
+  // qui rejette est NOMMÉE et fait rougir ce témoin.
+  const PORTES_QUI_JETTENT_AU_2026_08_30 = ["navigation.js"];
   const nouvelles = portesQuiJettent.map((p) => p.f).filter((f) => !PORTES_QUI_JETTENT_AU_2026_08_30.includes(f));
   exiger(nouvelles.length === 0,
     `(1a) ${nouvelles.length} porte(s) d'entrée JETTENT qui ne le faisaient pas au relevé du 2026-08-30 (${nouvelles.join(", ")}) : ouvrir le graphe de modules par ce fichier, dans un processus neuf, s'arrête sur une erreur d'ÉVALUATION. Détail : ${portesQuiJettent.filter((p) => nouvelles.includes(p.f)).map((p) => `web/${p.f} -> ${p.type} : ${p.message} (site de premier niveau : ${p.site})`).join(" ; ")}. Le relevé de référence est ["${PORTES_QUI_JETTENT_AU_2026_08_30.join('", "')}"] — une porte de MOINS est un reste fermé et laisse ce témoin vert ; cette borne se REMESURE et se réécrit, elle n'exige jamais que le défaut survive.`);

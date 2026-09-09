@@ -1760,6 +1760,11 @@ def main():
                     la = (r.get("pressure_before") or {}).get("loadavg") or [0]
                     notes.append(f"dispersion x{p95v/p50v:.1f} (loadavg {la[0]:.0f}) — "
                                  "p95 dominé par la contention, pas par plume")
+                # `P7.20-j` (2026-09-09) — UNE BARRE VERTICALE DANS UN LIBELLÉ EST UNE CELLULE DE PLUS. Le libellé
+                # de `C4d-keyset-projete` porte « (| table) » : non échappé, il coupait la ligne en onze cellules
+                # là où l'en-tête en déclare dix, et la garde de forme des tableaux rougissait sur 61 lignes du
+                # document régénéré. Le texte libre d'une cellule est ÉCHAPPÉ ici, à l'écriture, jamais à la main.
+                label = str(label).replace("\\|", "|").replace("|", "\\|")  # idempotent : on normalise, puis on échappe
                 W(f"| `{cid}` <br><sub>{label}</sub> | {w} | "
                   f"{fmt_ms(r.get('wall_p50_ms'))} | {fmt_ms(r.get('wall_p95_ms'))} | "
                   f"{fmt_ms(r.get('cold_first_wall_ms'))} | "

@@ -4,7 +4,7 @@
      Ne pas l'éditer à la main : la prochaine passe l'écrase. Tout commentaire durable va dans
      bench/README.md. -->
 
-Rendu le 2026-08-03 10:23:43+0200 depuis `results-smoke-200k.jsonl`, `results.jsonl`, `results-2026-07-31.jsonl`, `results-2026-07-31-corrige.jsonl`, `parity-avant-2026-07-31.jsonl`, `parity-apres-2026-07-31.jsonl`, `parity-couverture-2026-07-31.jsonl`, `concurrency-2026-08-01.jsonl`, `concurrency-reproduction-2026-08-01.jsonl`, `concurrency-attribution-2026-08-01.jsonl`, `concurrency-corrige-2026-08-01.jsonl`, `generique-2026-08-03.jsonl` — données brutes VERSIONNÉES dans [`bench/results/`](../bench/results/), pour que ce tableau puisse être contredit et pas seulement cru (cf. `bench/README.md`).
+Rendu le 2026-09-09 16:15:55+0200 depuis `results-smoke-200k.jsonl`, `results.jsonl`, `results-2026-07-31.jsonl`, `results-2026-07-31-corrige.jsonl`, `parity-avant-2026-07-31.jsonl`, `parity-apres-2026-07-31.jsonl`, `parity-couverture-2026-07-31.jsonl`, `concurrency-2026-08-01.jsonl`, `concurrency-reproduction-2026-08-01.jsonl`, `concurrency-attribution-2026-08-01.jsonl`, `concurrency-corrige-2026-08-01.jsonl`, `generique-2026-08-03.jsonl` — données brutes VERSIONNÉES dans [`bench/results/`](../bench/results/), pour que ce tableau puisse être contredit et pas seulement cru (cf. `bench/README.md`).
 
 ## Ce que ce document est, et ce qu'il n'est pas
 
@@ -44,8 +44,8 @@ Volume de référence : **1 440 007 événements** (`chaud-seul-v2@1.4M`), base 
 - rien au-delà de 1 440 007 événements. La cible de 10 M n'a pas été atteinte par le vrai chemin d'ingest — non pas faute de l'avoir cherché, mais parce que le débit d'ingest s'effondre avec le volume déjà en base, ce que la section « D'où vient l'effondrement » ATTRIBUE désormais (et non plus suppose) : le coût CPU par événement monte, le daemon écrit de plus en plus d'octets par ligne, et le chemin d'écriture est séquentiel. Le coût restant pour atteindre 10 M y est chiffré, en tant que PLANCHER arithmétique sur des débits mesurés. Toute latence annoncée à 10 M ou 100 M serait une extrapolation, pas une mesure.
 - rien sur le multi-tenant (voir la section dédiée). Le tier froid, lui, EST mesuré ici — mais seulement dans `froid-actif@1.4M`, `froid-actif-v2@1.4M`, à une seule fenêtre chaude et un seul volume : les autres tableaux restent des tableaux SANS tier froid.
 - la CONCURRENCE, elle, est mesurée : jusqu'à 10 analystes simultanés lançant de très grosses requêtes sous le même budget de 2 Gio appliqué, avec vérification que la réponse concurrente est IDENTIQUE à la réponse obtenue seul (section dédiée).
-- rien sur un déploiement AVEC masquage à partir des chiffres masque-vide : l'écart mesuré le plus fort est **x287.3** sur `C3b-groupby-routable` / 24h (8.6 ms masque vide contre 2.5 s masque non vide).
-  Et le masquage ne va pas TOUJOURS dans le sens du ralentissement : sur `C2-free-term` / 24h il est **x0.14**, donc plus RAPIDE (741 ms masque vide contre 101 ms masque non vide, même nombre de lignes rendues). **La cause n'est PAS établie par cette mesure**, et on ne va pas l'inventer. Deux mécanismes candidats, qui demandent chacun une expérience dédiée pour être départagés : (a) un masque posé sur une dimension à haute cardinalité l'effondre, il reste moins de groupes à agréger — la requête va plus vite **parce que la réponse a changé** ; (b) la passe masquée a tourné APRÈS la passe non masquée, donc sur un cache de pages plus chaud. Ce qui trancherait : rejouer les deux passes dans l'ordre inverse, et comparer les résultats ligne à ligne. En attendant, la règle est simple — **une latence qui baisse en présence d'un masque ne doit jamais être citée comme un gain**.
+- rien sur un déploiement AVEC masquage à partir des chiffres masque-vide : l'écart mesuré le plus fort est **x239.5** sur `C3b-groupby-routable` / all (152 ms masque vide contre 36.3 s masque non vide, `fts0-masque-vide@1.4M` contre `fts0-masque-non-vide@1.4M` — deux passes qui ne diffèrent QUE par le masque).
+  Et le masquage ne va pas TOUJOURS dans le sens du ralentissement : sur `C4b-raw-deep` / all il est **x0.05**, donc plus RAPIDE (1055 ms masque vide contre 54 ms masque non vide, même nombre de lignes rendues). **La cause n'est PAS établie par cette mesure**, et on ne va pas l'inventer. Deux mécanismes candidats, qui demandent chacun une expérience dédiée pour être départagés : (a) un masque posé sur une dimension à haute cardinalité l'effondre, il reste moins de groupes à agréger — la requête va plus vite **parce que la réponse a changé** ; (b) la passe masquée a tourné APRÈS la passe non masquée, donc sur un cache de pages plus chaud. Ce qui trancherait : rejouer les deux passes dans l'ordre inverse, et comparer les résultats ligne à ligne. En attendant, la règle est simple — **une latence qui baisse en présence d'un masque ne doit jamais être citée comme un gain**.
 
 ## Matériel et conditions
 
@@ -53,7 +53,7 @@ Volume de référence : **1 440 007 événements** (`chaud-seul-v2@1.4M`), base 
 |---|---|
 | Processeur | Intel(R) Core(TM) i7-9750H CPU @ 2.60GHz (12 cœurs logiques) |
 | RAM de la machine | 15.4 Gio |
-| Noyau | 7.1.4-zen1-1-zen |
+| Noyau | 7.1.8-zen1-3-zen |
 | Version de plume mesurée | `bin:72c367a16a91f06a construit:2026-08-03T06:02:47Z (HEAD au rendu: 77600da — indicatif, l'arbre bouge)` |
 | Volumes mesurés | 200 003 événements, 335 255 événements, 600 003 événements, 1 440 003 événements, 1 440 007 événements |
 | Taille de la base (SQLCipher, chiffrée) | 1039 Mio, 1263 Mio, 1401 Mio, 1434 Mio, 197 Mio, 336 Mio, 351 Mio, 377 Mio, 560 Mio, 634 Mio, 647 Mio, 649 Mio, 656 Mio |
@@ -597,9 +597,9 @@ processus (0 = servi depuis le cache de pages).
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 1h | 51 | 51 | 51 | 440 | 0 | 1 | raw |  |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 24h | 702 | 802 | 552 | 440 | 0 | 1 | raw |  |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | all | 3357 | 4789 | 3357 | 440 | 0 | 1 | raw | **pris sous swap — à rejouer** |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 51 | 52 | 52 | 747 | 0 | 200 | raw \|  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 52 | 152 | 152 | 747 | 0 | 200 | raw \|  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 52 | 62 | 52 | 747 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | 1h | 51 | 52 | 52 | 747 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | 24h | 52 | 152 | 152 | 747 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | all | 52 | 62 | 52 | 747 | 0 | 200 | raw |  |
 
 ## Résultats — `apres-leviers@1.4M`
 
@@ -667,9 +667,9 @@ processus (0 = servi depuis le cache de pages).
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 1h | 3.5 | 724 | 724 | 402 | 0 | 1 | raw | dispersion x204.6 (loadavg 3) — p95 dominé par la contention, pas par plume |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 24h | 597 | 896 | 896 | 414 | 0 | 1 | raw |  |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | all | 2696 | 8066 | 2550 | 452 | 0 | 1 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 1.6 | 2.1 | 2.1 | 687 | 0 | 200 | raw \|  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 1.4 | 2.0 | 1.4 | 687 | 0 | 200 | raw \|  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 1.6 | 1.9 | 1.7 | 687 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | 1h | 1.6 | 2.1 | 2.1 | 687 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | 24h | 1.4 | 2.0 | 1.4 | 687 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | all | 1.6 | 1.9 | 1.7 | 687 | 0 | 200 | raw |  |
 
 ## Résultats — `chaud-seul@1.4M`
 
@@ -771,11 +771,11 @@ processus (0 = servi depuis le cache de pages).
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 7d | 4286 | 4395 | 4395 | 462 | 0 | 1 | raw |  |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | au-dela-7d | 2750 | 6896 | 2550 | 460 | 0 | 1 | raw |  |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | all | 2924 | 9404 | 2630 | 486 | 0 | 1 | raw | dispersion x3.2 (loadavg 3) — p95 dominé par la contention, pas par plume |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 1.6 | 1.7 | 1.6 | 769 | 0 | 200 | raw \|  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 1.6 | 1.9 | 1.9 | 769 | 0 | 200 | raw \|  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 7d | 1.5 | 1.5 | 1.5 | 769 | 0 | 200 | raw \|  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | au-dela-7d | 2.9 | 3.6 | 1.6 | 769 | 0 | 200 | raw \|  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 1.6 | 2.4 | 2.2 | 769 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | 1h | 1.6 | 1.7 | 1.6 | 769 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | 24h | 1.6 | 1.9 | 1.9 | 769 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | 7d | 1.5 | 1.5 | 1.5 | 769 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | au-dela-7d | 2.9 | 3.6 | 1.6 | 769 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | all | 1.6 | 2.4 | 2.2 | 769 | 0 | 200 | raw |  |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 1h | 3.1 | 2820 | 2820 | 699 | 0 | 1 | raw | dispersion x912.7 (loadavg 4) — p95 dominé par la contention, pas par plume |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 24h | 604 | 1647 | 1537 | 699 | 0 | 1 | raw |  |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 7d | 275 | 638 | 638 | 699 | 0 | 1 | raw |  |
@@ -892,11 +892,11 @@ processus (0 = servi depuis le cache de pages).
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 7d | 5331 | 6060 | 4427 | 357 | 0 | 1 | scan | tronqué |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | au-dela-7d | 1045 | 1402 | 1045 | 357 | 0 | 1 | scan | tronqué |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | all | 4478 | 4705 | 4705 | 357 | 0 | 1 | scan | tronqué |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 1.7 | 6.9 | 6.9 | 506 | 0 | 200 | raw \| dispersion x4.1 (loadavg 4) — p95 dominé par la contention, pas par plume |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 1.6 | 1.8 | 1.5 | 506 | 0 | 200 | raw \|  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 7d | 544 | 571 | 544 | 506 | 0 | 200 | scan \| tronqué |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | au-dela-7d | 1065 | 1376 | 1376 | 506 | 0 | 200 | scan \| tronqué |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 1122 | 1450 | 1127 | 506 | 0 | 200 | scan \| tronqué |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | 1h | 1.7 | 6.9 | 6.9 | 506 | 0 | 200 | raw | dispersion x4.1 (loadavg 4) — p95 dominé par la contention, pas par plume |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | 24h | 1.6 | 1.8 | 1.5 | 506 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | 7d | 544 | 571 | 544 | 506 | 0 | 200 | scan | tronqué |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | au-dela-7d | 1065 | 1376 | 1376 | 506 | 0 | 200 | scan | tronqué |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | all | 1122 | 1450 | 1127 | 506 | 0 | 200 | scan | tronqué |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 1h | 1.7 | 25 | 25 | 506 | 0 | 1 | raw | dispersion x14.7 (loadavg 3) — p95 dominé par la contention, pas par plume |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 24h | 503 | 1237 | 503 | 506 | 0 | 1 | raw |  |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 7d | 597 | 937 | 639 | 506 | 0 | 1 | scan | tronqué |
@@ -1163,11 +1163,11 @@ processus (0 = servi depuis le cache de pages).
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 7d | — | — | 4067 | 468 | 0 | — | scan | ERREUR: {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendr / 0/3 tirs OK |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | au-dela-7d | — | — | 1101 | 468 | 0 | — | scan | ERREUR: {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendr / 0/7 tirs OK |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | all | — | — | 5113 | 468 | 0 | — | scan | ERREUR: {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendr / 0/3 tirs OK |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 1.9 | 2.2 | 2.2 | 509 | 0 | 200 | raw \|  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 1.9 | 2.4 | 2.0 | 509 | 0 | 200 | raw \|  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 7d | 2.3 | 2.5 | 2.2 | 509 | 0 | 0 | scan \|  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | au-dela-7d | 1164 | 1294 | 1110 | 509 | 0 | 200 | scan \| tronqué |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 3.1 | 7.3 | 7.3 | 509 | 0 | 0 | scan \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | 1h | 1.9 | 2.2 | 2.2 | 509 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | 24h | 1.9 | 2.4 | 2.0 | 509 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | 7d | 2.3 | 2.5 | 2.2 | 509 | 0 | 0 | scan |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | au-dela-7d | 1164 | 1294 | 1110 | 509 | 0 | 200 | scan | tronqué |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | all | 3.1 | 7.3 | 7.3 | 509 | 0 | 0 | scan |  |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 1h | 1.8 | 26 | 26 | 509 | 0 | 1 | raw | dispersion x14.5 (loadavg 4) — p95 dominé par la contention, pas par plume |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 24h | 506 | 547 | 547 | 509 | 0 | 1 | raw |  |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 7d | 654 | 759 | 654 | 509 | 0 | 1 | cold-vectorized-merge |  |
@@ -1284,11 +1284,11 @@ processus (0 = servi depuis le cache de pages).
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 7d | 8349 | 11.0 s | 8349 | 801 | 0 | 1 | raw | **pris sous swap — à rejouer** |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | au-dela-7d | 3484 | 4323 | 3484 | 801 | 0 | 1 | raw | **pris sous swap — à rejouer** |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | all | 3685 | 8071 | 3685 | 801 | 0 | 1 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 6.7 | 9.9 | 9.9 | 972 | 0 | 200 | raw \|  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 6.4 | 6.9 | 6.4 | 972 | 0 | 200 | raw \|  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 7d | 6.4 | 6.9 | 6.4 | 972 | 0 | 200 | raw \|  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | au-dela-7d | 6.5 | 7.7 | 7.7 | 972 | 0 | 200 | raw \|  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 6.9 | 8.0 | 6.5 | 972 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | 1h | 6.7 | 9.9 | 9.9 | 972 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | 24h | 6.4 | 6.9 | 6.4 | 972 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | 7d | 6.4 | 6.9 | 6.4 | 972 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | au-dela-7d | 6.5 | 7.7 | 7.7 | 972 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | all | 6.9 | 8.0 | 6.5 | 972 | 0 | 200 | raw |  |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 1h | 2.5 | 28 | 28 | 987 | 0 | 1 | raw | dispersion x11.3 (loadavg 4) — p95 dominé par la contention, pas par plume |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 24h | 600 | 1668 | 1389 | 987 | 0 | 1 | raw |  |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 7d | 259 | 661 | 661 | 987 | 0 | 1 | raw |  |
@@ -1405,11 +1405,11 @@ processus (0 = servi depuis le cache de pages).
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 7d | 241 | 4163 | 267 | 767 | 0 | 1 | raw | dispersion x17.3 (loadavg 6) — p95 dominé par la contention, pas par plume |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | au-dela-7d | 1481 | 2602 | 2059 | 763 | 0 | 1 | raw |  |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | all | 1454 | 2432 | 1308 | 551 | 0 | 1 | raw | **pris sous swap — à rejouer** |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 2.2 | 3.8 | 2.8 | 547 | 0 | 200 | raw \|  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 2.1 | 3.7 | 1.9 | 547 | 0 | 200 | raw \|  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 7d | 2.4 | 3.5 | 2.6 | 547 | 0 | 200 | raw \|  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | au-dela-7d | 1.7 | 5.8 | 5.8 | 547 | 0 | 200 | raw \| dispersion x3.4 (loadavg 6) — p95 dominé par la contention, pas par plume |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 2.1 | 2.9 | 2.6 | 547 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | 1h | 2.2 | 3.8 | 2.8 | 547 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | 24h | 2.1 | 3.7 | 1.9 | 547 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | 7d | 2.4 | 3.5 | 2.6 | 547 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | au-dela-7d | 1.7 | 5.8 | 5.8 | 547 | 0 | 200 | raw | dispersion x3.4 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | all | 2.1 | 2.9 | 2.6 | 547 | 0 | 200 | raw |  |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 1h | 1.8 | 14 | 14 | 547 | 0 | 1 | raw | dispersion x7.9 (loadavg 6) — p95 dominé par la contention, pas par plume |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 24h | 9.9 | 147 | 147 | 547 | 0 | 1 | raw | dispersion x14.9 (loadavg 6) — p95 dominé par la contention, pas par plume |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 7d | 8.3 | 10 | 8.3 | 547 | 0 | 1 | raw |  |
@@ -1526,11 +1526,11 @@ processus (0 = servi depuis le cache de pages).
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 7d | 1980 | 2793 | 911 | 626 | 0 | 1 | raw |  |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | au-dela-7d | 1428 | 2502 | 2113 | 833 | 0 | 1 | raw |  |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | all | 1491 | 2647 | 1461 | 836 | 0 | 1 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 1.8 | 3.2 | 1.8 | 619 | 0 | 200 | raw \|  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 2.2 | 2.5 | 2.3 | 619 | 0 | 200 | raw \|  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 7d | 1.9 | 2.8 | 2.2 | 619 | 0 | 200 | raw \|  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | au-dela-7d | 2.0 | 3.0 | 3.0 | 619 | 0 | 200 | raw \|  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 1.9 | 2.6 | 2.6 | 619 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | 1h | 1.8 | 3.2 | 1.8 | 619 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | 24h | 2.2 | 2.5 | 2.3 | 619 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | 7d | 1.9 | 2.8 | 2.2 | 619 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | au-dela-7d | 2.0 | 3.0 | 3.0 | 619 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | all | 1.9 | 2.6 | 2.6 | 619 | 0 | 200 | raw |  |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 1h | 1.4 | 23 | 23 | 834 | 0 | 1 | raw | dispersion x16.8 (loadavg 6) — p95 dominé par la contention, pas par plume |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 24h | 21 | 297 | 297 | 834 | 0 | 1 | raw | dispersion x14.3 (loadavg 6) — p95 dominé par la contention, pas par plume |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 7d | 1842 | 4922 | 1654 | 834 | 0 | 1 | raw |  |
@@ -1647,11 +1647,11 @@ processus (0 = servi depuis le cache de pages).
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 7d | 1595 | 2715 | 216 | 535 | 0 | 1 | raw |  |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | au-dela-7d | 908 | 1601 | 728 | 562 | 0 | 1 | raw |  |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | all | 781 | 801 | 749 | 355 | 0 | 1 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 1.7 | 2.6 | 2.6 | 594 | 0 | 200 | raw \|  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 1.8 | 3.0 | 3.0 | 594 | 0 | 200 | raw \|  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 7d | 1.8 | 3.8 | 3.8 | 594 | 0 | 200 | raw \|  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | au-dela-7d | 2.1 | 2.4 | 2.1 | 594 | 0 | 200 | raw \|  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 1.9 | 2.9 | 1.7 | 594 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | 1h | 1.7 | 2.6 | 2.6 | 594 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | 24h | 1.8 | 3.0 | 3.0 | 594 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | 7d | 1.8 | 3.8 | 3.8 | 594 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | au-dela-7d | 2.1 | 2.4 | 2.1 | 594 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | all | 1.9 | 2.9 | 1.7 | 594 | 0 | 200 | raw |  |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 1h | 1.5 | 10 | 10 | 384 | 0 | 1 | raw | dispersion x6.9 (loadavg 7) — p95 dominé par la contention, pas par plume |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 24h | 188 | 201 | 201 | 384 | 0 | 1 | raw |  |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 7d | 9.4 | 115 | 115 | 384 | 0 | 1 | raw | dispersion x12.2 (loadavg 7) — p95 dominé par la contention, pas par plume |
@@ -1768,11 +1768,11 @@ processus (0 = servi depuis le cache de pages).
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 7d | 196 | 453 | 453 | 799 | 0 | 1 | raw |  |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | au-dela-7d | 1419 | 2150 | 757 | 799 | 0 | 1 | raw |  |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | all | 1636 | 2548 | 1806 | 798 | 0 | 1 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 9.3 | 9.9 | 9.9 | 587 | 0 | 200 | raw \|  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 7.7 | 9.3 | 7.7 | 587 | 0 | 200 | raw \|  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 7d | 8.9 | 11 | 7.7 | 587 | 0 | 200 | raw \|  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | au-dela-7d | 8.9 | 12 | 9.6 | 587 | 0 | 200 | raw \|  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 7.7 | 10.0 | 8.0 | 587 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | 1h | 9.3 | 9.9 | 9.9 | 587 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | 24h | 7.7 | 9.3 | 7.7 | 587 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | 7d | 8.9 | 11 | 7.7 | 587 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | au-dela-7d | 8.9 | 12 | 9.6 | 587 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | all | 7.7 | 10.0 | 8.0 | 587 | 0 | 200 | raw |  |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 1h | 1.5 | 20 | 20 | 803 | 0 | 1 | raw | dispersion x13.4 (loadavg 6) — p95 dominé par la contention, pas par plume |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 24h | 7.7 | 138 | 138 | 803 | 0 | 1 | raw | dispersion x17.9 (loadavg 6) — p95 dominé par la contention, pas par plume |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 7d | 6.8 | 8.0 | 8.0 | 803 | 0 | 1 | raw |  |
@@ -1889,11 +1889,11 @@ processus (0 = servi depuis le cache de pages).
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 7d | 1792 | 2710 | 1291 | 722 | 0 | 1 | raw |  |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | au-dela-7d | 1487 | 2638 | 2638 | 673 | 0 | 1 | raw |  |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | all | 1512 | 2524 | 1979 | 673 | 0 | 1 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 2.2 | 2.8 | 2.2 | 809 | 0 | 200 | raw \|  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 2.2 | 3.0 | 1.4 | 809 | 0 | 200 | raw \|  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 7d | 2.1 | 3.2 | 1.5 | 809 | 0 | 200 | raw \|  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | au-dela-7d | 2.2 | 3.1 | 1.9 | 809 | 0 | 200 | raw \|  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 1.9 | 2.8 | 1.8 | 809 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | 1h | 2.2 | 2.8 | 2.2 | 809 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | 24h | 2.2 | 3.0 | 1.4 | 809 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | 7d | 2.1 | 3.2 | 1.5 | 809 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | au-dela-7d | 2.2 | 3.1 | 1.9 | 809 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | all | 1.9 | 2.8 | 1.8 | 809 | 0 | 200 | raw |  |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 1h | 1.2 | 9.6 | 9.6 | 851 | 0 | 1 | raw | dispersion x7.7 (loadavg 5) — p95 dominé par la contention, pas par plume |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 24h | 7.5 | 78 | 78 | 851 | 0 | 1 | raw | dispersion x10.3 (loadavg 5) — p95 dominé par la contention, pas par plume |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 7d | 7.8 | 8.3 | 7.7 | 851 | 0 | 1 | raw |  |
@@ -2010,11 +2010,11 @@ processus (0 = servi depuis le cache de pages).
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 7d | 857 | 1939 | 946 | 617 | 0 | 1 | raw |  |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | au-dela-7d | 1317 | 1747 | 1281 | 617 | 0 | 1 | raw |  |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | all | 1435 | 2456 | 2250 | 631 | 0 | 1 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 2.2 | 2.8 | 2.4 | 620 | 0 | 200 | raw \|  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 2.1 | 2.7 | 2.1 | 620 | 0 | 200 | raw \|  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 7d | 2.4 | 2.6 | 2.5 | 620 | 0 | 200 | raw \|  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | au-dela-7d | 2.1 | 2.7 | 2.1 | 620 | 0 | 200 | raw \|  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 1.9 | 2.4 | 1.8 | 620 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | 1h | 2.2 | 2.8 | 2.4 | 620 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | 24h | 2.1 | 2.7 | 2.1 | 620 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | 7d | 2.4 | 2.6 | 2.5 | 620 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | au-dela-7d | 2.1 | 2.7 | 2.1 | 620 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | all | 1.9 | 2.4 | 1.8 | 620 | 0 | 200 | raw |  |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 1h | 1.4 | 12 | 12 | 744 | 0 | 1 | raw | dispersion x8.2 (loadavg 5) — p95 dominé par la contention, pas par plume |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 24h | 8.7 | 88 | 88 | 744 | 0 | 1 | raw | dispersion x10.2 (loadavg 5) — p95 dominé par la contention, pas par plume |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 7d | 7.8 | 8.2 | 7.9 | 744 | 0 | 1 | raw |  |
@@ -2131,11 +2131,11 @@ processus (0 = servi depuis le cache de pages).
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 7d | 4785 | 5177 | 1842 | 827 | 0 | 1 | raw |  |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | au-dela-7d | 3199 | 4470 | 4470 | 627 | 0 | 1 | raw |  |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | all | 2677 | 4887 | 4887 | 825 | 0 | 1 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 2.9 | 4.2 | 2.1 | 777 | 0 | 200 | raw \|  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 2.5 | 3.0 | 3.0 | 777 | 0 | 200 | raw \|  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 7d | 2.9 | 3.7 | 2.0 | 777 | 0 | 200 | raw \|  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | au-dela-7d | 3.0 | 3.7 | 3.0 | 777 | 0 | 200 | raw \|  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 2.5 | 2.8 | 2.8 | 777 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | 1h | 2.9 | 4.2 | 2.1 | 777 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | 24h | 2.5 | 3.0 | 3.0 | 777 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | 7d | 2.9 | 3.7 | 2.0 | 777 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | au-dela-7d | 3.0 | 3.7 | 3.0 | 777 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (\| table)</sub> | all | 2.5 | 2.8 | 2.8 | 777 | 0 | 200 | raw |  |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 1h | 1.9 | 21 | 21 | 776 | 0 | 1 | raw | dispersion x11.2 (loadavg 6) — p95 dominé par la contention, pas par plume |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 24h | 11 | 302 | 302 | 776 | 0 | 1 | raw | dispersion x27.7 (loadavg 6) — p95 dominé par la contention, pas par plume |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 7d | 8.3 | 10 | 8.7 | 776 | 0 | 1 | raw |  |
@@ -3772,9 +3772,16 @@ puisse les contredire, pas pour en tirer une conclusion.
 
 ## Comment la latence monte avec le volume
 
-Mesuré à plusieurs volumes sur la même machine, même binaire, masque vide, `PLUME_FTS_FIELDS=0`, fenêtre « tout ». C'est la pente qui répond à la question « des millions d'événements », pas un point isolé.
+Mesuré à plusieurs volumes, masque vide, `PLUME_FTS_FIELDS=0`, fenêtre « tout ». C'est la pente qui répond à la question « des millions d'événements », pas un point isolé.
 
-Réserve à connaître avant de citer ce tableau : les volumes viennent de **passes distinctes**, donc de bases distinctes et de nombres de répétitions possiblement différents (la colonne `reps` du JSONL brut le dit cellule par cellule). Les points sont comparables en ordre de grandeur, pas au pourcentage près. Une case vide = classe non mesurée à ce volume.
+**CE QUE CES COLONNES NE TIENNENT PAS FIXE** — dérivé des enregistrements eux-mêmes, pas déclaré à la main, parce qu'une phrase de comparabilité qu'on ÉCRIT est une phrase qu'on ne mesure plus :
+
+- `cold` : **2 valeurs distinctes** parmi les colonnes. L'écart lu d'une colonne à l'autre n'est donc PAS imputable au seul volume.
+- `profile` : **4 valeurs distinctes** parmi les colonnes. L'écart lu d'une colonne à l'autre n'est donc PAS imputable au seul volume.
+- `version` : **7 valeurs distinctes** parmi les colonnes. L'écart lu d'une colonne à l'autre n'est donc PAS imputable au seul volume.
+- **600 003, 1 440 007** : plusieurs colonnes partagent ce volume. Deux colonnes au MÊME volume ne sont pas deux points de l'axe — ce qui les sépare est, par construction, autre chose que le volume.
+
+Réserve à connaître avant de citer ce tableau : les volumes viennent de **passes distinctes**, donc de bases distinctes et de nombres de répétitions possiblement différents (la colonne `reps` du JSONL brut le dit cellule par cellule). Les points sont comparables en ordre de grandeur, pas au pourcentage près. Une case vide = classe non mesurée à ce volume. **Le rapport de la dernière colonne oppose la PREMIÈRE et la DERNIÈRE** : il hérite de tout ce qui est listé ci-dessus.
 
 | Classe | 200 003 lignes | 335 255 lignes | 600 003 lignes | 600 003 lignes | 600 003 lignes | 600 003 lignes | 600 003 lignes | 1 440 003 lignes | 1 440 007 lignes | 1 440 007 lignes | 1 440 007 lignes | 1 440 007 lignes | 1 440 007 lignes | rapport |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
@@ -3812,9 +3819,9 @@ dit ce que le levier ajouterait au budget de 2 Gio ; quand il est nul, c'est éc
 
 ### L1. Rendre la route de rollups compatible avec le masquage
 
-*Gain mesuré : **36.2 s** au p50 sur la cellule la plus parlante (C3b masqué vs non masqué). Ce n'est pas une promesse de gain : c'est l'écart QUE LA MESURE MONTRE aujourd'hui entre le chemin lent et un chemin rapide déjà existant ou atteignable.*
+*Gain mesuré : **36.1 s** au p50 sur la cellule la plus parlante (`fts0-masque-vide@1.4M` vs `fts0-masque-non-vide@1.4M`). Ce n'est pas une promesse de gain : c'est l'écart QUE LA MESURE MONTRE aujourd'hui entre le chemin lent et un chemin rapide déjà existant ou atteignable.*
 
-le MÊME group-by, le MÊME rôle : **141 ms** masque vide (servi depuis `rollup`, 63 lignes) contre **36.3 s** masque non vide (servi depuis `raw`, 70 lignes — les comptes diffèrent parce que la route de rollups est APPROCHÉE, `stats.approx=true` : c'est le prix de sa vitesse), soit **257.8x plus lent**. Le rempart de confidentialité est donc aussi un frein de performance : un masque non vide désarme la route de rollups (`handlers/query.rs:282`) parce que `event_rollup` stocke `src_ip`/`host` en clair. Deux voies : masquer à la lecture du rollup, ou matérialiser un rollup par classe de masque. **Coût RAM : celui d'un jeu de rollups supplémentaire** (sur l'installation de référence, `event_rollup` pèse de l'ordre du Mio par million d'événements, donc marginal), plus le masquage au vol. **Réserve** : la passe masquée porte 1 440 003 événements contre 1 440 007 pour la passe non masquée — l'écart de volume est négligeable devant le facteur mesuré, mais les deux chiffres ne viennent pas de la MÊME passe.
+le MÊME group-by, le MÊME rôle : **152 ms** masque vide (servi depuis `rollup`, 63 lignes) contre **36.3 s** masque non vide (servi depuis `raw`, 70 lignes — les comptes diffèrent parce que la route de rollups est APPROCHÉE, `stats.approx=true` : c'est le prix de sa vitesse), soit **239.5x plus lent**. Le rempart de confidentialité est donc aussi un frein de performance : un masque non vide désarme la route de rollups (`handlers/query.rs:282`) parce que `event_rollup` stocke `src_ip`/`host` en clair. Deux voies : masquer à la lecture du rollup, ou matérialiser un rollup par classe de masque. **Coût RAM : celui d'un jeu de rollups supplémentaire** (sur l'installation de référence, `event_rollup` pèse de l'ordre du Mio par million d'événements, donc marginal), plus le masquage au vol. Les deux passes opposées sont `fts0-masque-vide@1.4M` et `fts0-masque-non-vide@1.4M` : elles s'accordent sur TOUT ce que le relevé déclare — binaire, nombre d'événements, base, tier froid — sauf le masquage. C'est la seule raison pour laquelle cet écart peut être imputé au masque.
 
 ### L2. Rendre l'index d'hôte utilisable AVEC une borne temporelle
 
@@ -3842,13 +3849,9 @@ la même aiguille, le même nombre de lignes rendues : **3.1 s** par GXQL (`mess
 
 ### L6. Le coût de `PLUME_FTS_FIELDS=1`, et à qui il profite
 
-*Coût DISQUE mesuré sur la SEULE paire comparable du banc : **+11 %** de base (relevé du 2026-07-30, binaire `0642474ceedfaf15`, 1 440 003 événements synthétiques, masque vide, tier froid off). Ce n'est pas un gain, c'est une dépense — et le document dit plus bas à qui elle profite, et ce qu'elle coûte AILLEURS que sur le disque.*
+*Effet DISQUE mesuré sur la SEULE paire que la propriété désigne : **+11 %** de base (+138 Mio). Ce n'est pas un gain, c'est une dépense — et le document dit plus bas à qui elle profite, et ce qu'elle coûte AILLEURS que sur le disque.*
 
-**CE QUE LE CHIFFRE RENDU PAR L'INSTRUMENT NE DIT PAS, ET QU'IL FAUT LIRE AVANT LE RESTE.** Le coût disque de cette section est rendu par `bench/report.py` en opposant la taille de base de la passe `FTS_FIELDS=1` à celle de la configuration de RÉFÉRENCE du rendu (`--ref`) — deux passes qui n'ont ni le même binaire, ni le même nombre d'événements, ni le même stade de remplissage. **Lu tel quel, l'écart a le MAUVAIS SIGNE** : il donne à croire qu'activer la capacité RÉDUIT la base. Ce n'est pas ce que le banc mesure. La paire comparable existe et elle est dans les données brutes : les deux configurations `fts0-masque-vide@1.4M` et `fts1-masque-vide@1.4M` de `bench/results/results.jsonl` partagent le binaire (`0642474ceedfaf15`), le nombre d'événements (1 440 003), le masque et la même base — et l'enregistrement de la passe `fts1` porte lui-même la taille d'AVANT la bascule (champ `db_bytes_fts0`). **Sur cette paire, activer `PLUME_FTS_FIELDS=1` fait CROÎTRE la base d'environ 11 %** — une hausse d'à peu près un dixième, pas une baisse. *Relevé du 2026-07-30 au banc de ce dépôt, données synthétiques (`bench/gen_events.py`), tier froid off.* Le remède appartient au rendu, pas à ce texte : `bench/report.py` doit prendre `db_bytes_fts0` de la passe `fts1` — la valeur que la passe a elle-même relevée sur SA base — au lieu de la taille de la configuration `--ref`. Tant que ce n'est pas fait, **un nouveau rendu réintroduira le mauvais signe**.
-
-**Le RSS ne dit rien du drapeau, dans aucun des deux sens.** Le rendu oppose **987 Mio** à `FTS_FIELDS=0` et **691 Mio** à `FTS_FIELDS=1`, mais ces deux crêtes viennent, elles aussi, de passes appariées en travers. Sur la paire comparable ci-dessus, restreinte aux 9 classes mesurées des deux côtés, les crêtes sont **1072 Mio** à `FTS_FIELDS=0` contre **691 Mio** à `FTS_FIELDS=1` — c'est-à-dire **plus BASSE avec la capacité active**. Il ne faut pas non plus lire cela comme une économie : chaque configuration repart d'un daemon neuf, les deux crêtes n'ont pas eu le même historique pour monter, et **aucune** de ces mesures n'est attribuable au drapeau seul. La conclusion honnête est qu'**il n'existe au banc aucune mesure d'un surcoût MÉMOIRE de cette capacité**, et que justifier son défaut à `0` par la RAM n'a pas d'appui ici. Écart de latence observé sur le terme libre GXQL (tout l'historique) : **798 ms** en défaveur de FTS_FIELDS=1 — mais cet écart ne peut PAS venir du drapeau, puisque le chemin GXQL ne lit jamais `event_fields_fts` : c'est du bruit de mesure sur une machine partagée, et il est reporté comme tel. À retenir : `event_fields_fts` n'est lu que par `/api/search` (`handlers/search.rs:146-157`). Le chemin GXQL ne le consulte JAMAIS — donc son coût en disque et en ingest est payé sans que les requêtes GXQL en profitent. C'est le levier « Câbler FTS5 sur le chemin GXQL » qui rendrait ce coût déjà consenti utile aux requêtes GXQL.
-
-**LE COÛT QUI N'EST PAS DANS CE BANC, ET C'EST LE PLUS LOURD : LA SAUVEGARDE CHANGE DE CHEMIN.** Établi par lecture des sources le 2026-08-30, pas par une passe de banc. `event_fields_fts` est déclarée `content=''` (`daemon/src/maintenance.rs`, `FTS_FIELDS_VTABLE_DDL`), c'est-à-dire **sans table de contenu**. Le plan de sauvegarde typé refuse cette forme : `collect_dump_plan` ne sait recréer une vtable FTS que lorsqu'elle s'adosse à une table ordinaire — c'est le cas de `event_fts` (`content='event'`), pas de celle-ci — et rend `PlanErr::Unsupported` (`daemon/src/backup/dump_restauration.rs`). `backup_compressed` replie alors sur `backup_compressed_legacy`, dont le commentaire dit ce qu'il fait : `sqlcipher_export` **réécrit la base ENTIÈRE EN CLAIR** dans le répertoire de staging, le temps de chaque cycle. Autrement dit : tant que `PLUME_FTS_FIELDS=0`, la sauvegarde compressée est un dump typé en flux qui n'écrit aucun clair sur disque ; à `1`, **chaque** cycle matérialise une copie déchiffrée complète de la base. Le fichier est effacé de façon sûre par un garde `Drop` et un balayage d'orphelins couvre les interruptions, mais la fenêtre existe et elle revient à chaque cycle. **Activer cette capacité est donc un échange performance contre confidentialité**, et c'est cette phrase-là — non un surcoût mémoire — qui justifie que le défaut soit `0`. Voir `docs/CHIFFREMENT-COMPRESSION.md` §3.
+activer `PLUME_FTS_FIELDS=1` a fait passer la base de **1263 Mio à 1401 Mio** (+138 Mio, +11 %), sur la paire que la propriété désigne : la passe `fts1-masque-vide@1.4M` comparée à SA PROPRE taille d'avant-bascule (`db_bytes_fts0`), donc sur la même base, le même binaire et le même nombre d'événements. RSS crête, sur les SEULES classes mesurées dans les deux configurations (9), et sur la MÊME paire : **1072 Mio** à `FTS_FIELDS=0` (`fts0-masque-vide@1.4M`) contre **691 Mio** à `FTS_FIELDS=1`. Attention : chaque configuration repart d'un daemon neuf, donc ces deux crêtes n'ont pas eu le même historique pour monter — l'écart n'est PAS attribuable au drapeau seul, dans aucun des deux sens. Le chiffre solide de cette ligne est le coût DISQUE. Écart de latence observé sur le terme libre GXQL (tout l'historique), sur la MÊME paire : **501 ms** en défaveur de FTS_FIELDS=1 — mais cet écart ne peut PAS venir du drapeau, puisque le chemin GXQL ne lit jamais `event_fields_fts` : c'est du bruit de mesure sur une machine partagée, et il est reporté comme tel. LE COÛT QUI DÉCIDE N'EST PAS DANS CE BANC, ET IL EST PLUS LOURD QUE CEUX QUI PRÉCÈDENT : l'index des champs est déclaré SANS TABLE DE CONTENU, forme que le plan de sauvegarde typé ne sait pas recréer ; chaque cycle compressé se replie alors sur un export qui matérialise une copie DÉCHIFFRÉE COMPLÈTE de la base, le temps du cycle. Activer cette capacité est donc un ÉCHANGE PERFORMANCE CONTRE CONFIDENTIALITÉ, et c'est cette raison-là — non un surcoût de mémoire, que ce banc ne mesure dans aucun sens — qui justifie que le défaut soit à l'arrêt. Établi par lecture des sources, jamais par une passe : voir `docs/CHIFFREMENT-COMPRESSION.md` §3. À retenir : `event_fields_fts` n'est lu que par `/api/search` (`handlers/search.rs:146-157`). Le chemin GXQL ne le consulte JAMAIS — donc son coût en disque et en ingest est payé sans que les requêtes GXQL en profitent. C'est le levier « Câbler FTS5 sur le chemin GXQL » qui rendrait ce coût déjà consenti utile aux requêtes GXQL.
 
 ## Ce qui n'est PAS mesuré ici
 

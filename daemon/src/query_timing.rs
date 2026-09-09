@@ -18,9 +18,17 @@
 //! (`concurrency-2026-08-01.jsonl`). REPRODUIT le jour du correctif sur la même base, même
 //! binaire d'avant : **16,5 s en solo** (`concurrency-reproduction-2026-08-01.jsonl`). Une valeur
 //! structurellement impossible : avec un permit libre, une requête ne peut pas attendre son tour.
-//! La métrique désignait donc précisément le levier qu'il ne fallait pas toucher — la même campagne de
-//! banc mesure qu'à `query_sem=8` contre 3, sur le MÊME travail, le débit tombe (×0,46), le p95 passe de
-//! 27 s à 50 s, la RSS crête gagne 725 Mio, et le daemon est TUÉ par le noyau à 10 analystes.
+//! La métrique désignait donc un levier dont le PRIX est ailleurs que là où son nom envoyait chercher.
+//! `P10.11-d` — LE CHIFFRE NOMME SA PASSE, ET UN CHIFFRE QUE LE BANC ÉCARTE N'EST PLUS UN ARGUMENT :
+//! la paire d'AVANT le correctif (`conc-sem8@1.4M` contre `conc-sem3@1.4M`,
+//! `concurrency-2026-08-01.jsonl`) mesurait à `query_sem=8` un débit ×0,46, un p95 de 27 s à 50 s et
+//! le daemon TUÉ à 10 analystes — mais l'outil du banc ÉCARTE cette paire de toute comparaison
+//! attribuable au sémaphore, et la paire d'APRÈS, même jour, même machine, même mélange imposé
+//! (`conc-sem8-corrige@1.4M`, `concurrency-corrige-2026-08-01.jsonl`) dit l'inverse : 210 requêtes
+//! sur 210 servies à 10 analystes, 0,60 q/s, aucun processus tué. Ce qui SURVIT des deux paires est le
+//! prix mémoire : RSS crête 2 035 Mio dès 8 analystes sous un cgroup de 2 Gio (plafond touché
+//! 892 090 fois au niveau 10), contre 1 318 Mio à 4. Le sémaphore élargi coûte de la mémoire, pas du
+//! débit — c'est la seule phrase de ce paragraphe que le banc actuel tient.
 //!
 //! CE QUE C'ÉTAIT, MESURÉ (`concurrency-attribution-2026-08-01.jsonl`, binaire à découpage, verrou
 //! encore en place) : à 1 analyste pour 3 permis, l'attente du permit tombe à **0,000 ms** et

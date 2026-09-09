@@ -183,6 +183,10 @@ mod chemin_masque_sans_permis {
 
     /// L'intervalle d'octets du CORPS de `nom` dans un texte blanchi, par appariement d'accolades
     /// depuis la première qui suit la signature. Un échec ne conclut pas : il fait échouer le test.
+    /// Façades pour le module transitif voisin (`P10.18-a`, réserve levée) : le MÊME dépouilleur, jamais recopié.
+    pub(super) fn blanchir_pub(src: &str) -> String { blanchir(src) }
+    pub(super) fn appels_de_permis_pub(blanchi: &str) -> Vec<(usize, usize)> { appels_de_permis(blanchi) }
+
     fn corps_de(blanchi: &str, nom: &str) -> (usize, usize) {
         let sig = blanchi
             .find(nom)
@@ -291,6 +295,164 @@ mod chemin_masque_sans_permis {
              `try_acquire` qui échoue y devient un REFUS servi au lieu d'une réponse plus vieille — prendre le \
              permit CHANGE ce que l'appelant reçoit. Reprendre la décision et le commentaire ensemble, jamais ce \
              test seul."
+        );
+    }
+}
+
+// ================================================================================================
+// `P10.18-a`, RÉSERVE LEVÉE le 2026-09-09 : LA PROPRIÉTÉ SUIT LES APPELS HORS DU FICHIER. Le témoin
+// ci-dessus lit UN fichier : « ce chemin n'acquiert rien » serait FAUX si le corps appelait un auxiliaire
+// d'un autre module qui, lui, acquiert. Ici la population est l'ARBRE : les fonctions libres appelées
+// depuis le corps sont résolues dans `daemon/src/**` (hors tests), puis leurs appelées, jusqu'au point
+// fixe ; chaque corps atteint est passé au même dépouilleur de permis. Un homonyme (deux définitions du
+// même nom) n'est pas suivi — il est COMPTÉ et nommé, jamais tu ; un nom sans définition (macro, méthode
+// d'un type externe, `Some`/`Ok`) sort naturellement de la population.
+// ================================================================================================
+mod chemin_masque_sans_permis_transitif {
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::path::{Path, PathBuf};
+
+    fn sources_du_demon() -> BTreeMap<String, String> {
+        fn marche(dir: &Path, out: &mut Vec<PathBuf>) {
+            for e in std::fs::read_dir(dir).expect("répertoire des sources") {
+                let p = e.expect("entrée").path();
+                let nom = p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+                if p.is_dir() {
+                    if nom != "tests" { marche(&p, out); }
+                } else if nom.ends_with(".rs") && !nom.ends_with("tests.rs") {
+                    out.push(p);
+                }
+            }
+        }
+        let racine = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut fichiers = Vec::new();
+        marche(&racine, &mut fichiers);
+        assert!(fichiers.len() > 50, "population de sources anormalement petite ({}) : le parcours a changé", fichiers.len());
+        fichiers
+            .into_iter()
+            .map(|p| {
+                let rel = p.strip_prefix(&racine).unwrap_or(&p).display().to_string();
+                let src = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("INSTRUMENT : {} illisible : {e}", p.display()));
+                (rel, super::chemin_masque_sans_permis::blanchir_pub(&src))
+            })
+            .collect()
+    }
+
+    /// Toutes les définitions `fn NOM(` d'un texte blanchi : (nom, début du corps, fin du corps).
+    fn definitions(blanchi: &str) -> Vec<(String, usize, usize)> {
+        let b = blanchi.as_bytes();
+        let mut out = Vec::new();
+        let mut d = 0usize;
+        while let Some(rel) = blanchi[d..].find("fn ") {
+            let deb = d + rel;
+            d = deb + 3;
+            if deb > 0 && (b[deb - 1].is_ascii_alphanumeric() || b[deb - 1] == b'_') { continue; }
+            let mut j = deb + 3;
+            let n0 = j;
+            while j < b.len() && (b[j].is_ascii_alphanumeric() || b[j] == b'_') { j += 1; }
+            if j == n0 { continue; }
+            let nom = &blanchi[n0..j];
+            let Some(par) = blanchi[j..].find('(') else { continue };
+            if blanchi[j..j + par].trim_start().starts_with('<') || blanchi[j..j + par].trim().is_empty() {
+                // `fn nom<T>(` ou `fn nom(`
+            } else { continue; }
+            let Some(acc) = blanchi[j..].find('{') else { continue };
+            let pv = blanchi[j..].find(';').unwrap_or(usize::MAX);
+            if pv < acc { continue; } // déclaration sans corps (trait)
+            let ouvre = j + acc;
+            let (mut prof, mut k) = (0i32, ouvre);
+            let mut fin = None;
+            while k < b.len() {
+                if b[k] == b'{' { prof += 1; } else if b[k] == b'}' { prof -= 1; if prof == 0 { fin = Some(k + 1); break; } }
+                k += 1;
+            }
+            if let Some(f) = fin { out.push((nom.to_string(), ouvre, f)); }
+        }
+        out
+    }
+
+    /// Les appels de fonctions LIBRES d'un corps : identifiant suivi de `(`, ni méthode (`.x(`), ni macro (`x!(`).
+    fn appels_libres(corps: &str) -> BTreeSet<String> {
+        let b = corps.as_bytes();
+        let mut out = BTreeSet::new();
+        let mut i = 0usize;
+        while i < b.len() {
+            if b[i].is_ascii_alphabetic() || b[i] == b'_' {
+                let deb = i;
+                while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') { i += 1; }
+                let mut j = i;
+                while j < b.len() && (b[j] as char).is_whitespace() { j += 1; }
+                let precedent = if deb > 0 { b[deb - 1] } else { b' ' };
+                if j < b.len() && b[j] == b'(' && precedent != b'.' && precedent != b'!' {
+                    out.insert(corps[deb..i].to_string());
+                }
+            } else { i += 1; }
+        }
+        out
+    }
+
+    /// Point fixe depuis `nom_entree` défini dans `fichier_entree` : (corps atteints avec permis, fonctions suivies, homonymes non suivis).
+    fn permis_atteints(sources: &BTreeMap<String, String>, fichier_entree: &str, nom_entree: &str) -> (Vec<String>, usize, Vec<String>) {
+        let mut index: BTreeMap<String, Vec<(String, usize, usize)>> = BTreeMap::new();
+        for (rel, bl) in sources {
+            for (nom, deb, fin) in definitions(bl) { index.entry(nom).or_default().push((rel.clone(), deb, fin)); }
+        }
+        let entree = index.get(nom_entree).and_then(|v| v.iter().find(|(r, _, _)| r == fichier_entree).cloned())
+            .unwrap_or_else(|| panic!("INSTRUMENT : `{nom_entree}` introuvable dans {fichier_entree}"));
+        let mut a_voir = vec![(nom_entree.to_string(), entree)];
+        let mut vus: BTreeSet<String> = BTreeSet::new();
+        let mut fautes = Vec::new();
+        let mut homonymes = Vec::new();
+        while let Some((nom, (rel, deb, fin))) = a_voir.pop() {
+            if !vus.insert(nom.clone()) { continue; }
+            let corps = &sources[&rel][deb..fin];
+            for (o, _) in super::chemin_masque_sans_permis::appels_de_permis_pub(corps) {
+                let ligne = sources[&rel][..deb + o].matches('\n').count() + 1;
+                fautes.push(format!("{rel}:{ligne} dans `{nom}`"));
+            }
+            for appelee in appels_libres(corps) {
+                match index.get(&appelee) {
+                    Some(defs) if defs.len() == 1 => a_voir.push((appelee.clone(), defs[0].clone())),
+                    Some(_) => homonymes.push(appelee.clone()),
+                    None => {}
+                }
+            }
+        }
+        homonymes.sort(); homonymes.dedup();
+        (fautes, vus.len(), homonymes)
+    }
+
+    /// L'INSTRUMENT, ÉPROUVÉ SUR DES SOURCES FABRIQUÉES DANS LES DEUX SENS : un auxiliaire d'un AUTRE fichier
+    /// qui acquiert est atteint ; le même corpus sans l'appel ne l'atteint pas ; un homonyme est compté, pas suivi.
+    #[test]
+    fn p1018a_le_point_fixe_atteint_un_permis_pris_dans_un_autre_module() {
+        let mut s = BTreeMap::new();
+        s.insert("a.rs".to_string(), "pub(crate) async fn cible() -> Response {\n    let x = aux(1);\n    autre(x)\n}\n".to_string());
+        s.insert("b.rs".to_string(), "fn aux(n: i64) -> i64 {\n    let _p = sem.try_acquire_owned();\n    n\n}\nfn autre(n: i64) -> Response { json!(n) }\n".to_string());
+        s.insert("c.rs".to_string(), "fn autre(n: i64) -> Response { let _p = sem.try_acquire(); json!(n) }\n".to_string());
+        let (fautes, suivies, homonymes) = permis_atteints(&s, "a.rs", "cible");
+        assert_eq!(fautes, vec!["b.rs:2 dans `aux`".to_string()], "le permis pris dans b.rs DOIT être atteint depuis a.rs");
+        assert_eq!(suivies, 2, "cible + aux suivies ; `autre` est un homonyme");
+        assert_eq!(homonymes, vec!["autre".to_string()], "l'homonyme est COMPTÉ et nommé, jamais suivi ni tu");
+        let mut sans = s.clone();
+        sans.insert("a.rs".to_string(), "pub(crate) async fn cible() -> Response {\n    json!(1)\n}\n".to_string());
+        let (fautes2, _, _) = permis_atteints(&sans, "a.rs", "cible");
+        assert!(fautes2.is_empty(), "sans l'appel, rien n'est atteint : {fautes2:?}");
+    }
+
+    /// LA PROPRIÉTÉ, SUR L'ARBRE : le chemin masqué hors cache n'acquiert aucun permis, NI DIRECTEMENT NI PAR
+    /// UN AUXILIAIRE d'un autre module. Le message dit combien de fonctions ont été suivies et quels homonymes
+    /// ne l'ont pas été — ce que le témoin ne tient pas est ÉCRIT dans son propre verdict.
+    #[test]
+    fn p1018a_le_chemin_masque_nacquiert_aucun_permis_transitivement() {
+        let sources = sources_du_demon();
+        let (fautes, suivies, homonymes) = permis_atteints(&sources, "handlers/dashboards.rs", "panel_data_masked_live");
+        assert!(suivies >= 2, "INSTRUMENT : {suivies} fonction(s) suivie(s) seulement — le point fixe n'a rien résolu, la propriété serait vide");
+        assert!(
+            fautes.is_empty(),
+            "un permis est acquis SUR LE CHEMIN MASQUÉ, par un auxiliaire : {fautes:?} ({suivies} fonction(s) suivie(s) ; \
+             homonymes non suivis : {homonymes:?}). Le chemin est HORS cache : un `try_acquire` qui échoue y devient un \
+             REFUS servi à la place d'une réponse. Reprendre la décision et le commentaire ensemble, jamais ce test seul."
         );
     }
 }

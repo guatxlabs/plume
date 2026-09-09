@@ -128,10 +128,12 @@ export function ecrireDansLeStockageDuSite(cle, valeur) {
 // JAMAIS, y compris sur un vrai refus. Aucune des deux valeurs n'est bonne : c'est l'USAGE EN POSITION
 // DE VALEUR qui est fautif, et le langage ne sait pas l'interdire.
 //
-// LE GESTE QUI FERMERAIT VRAIMENT CE PIÈGE est une propriété dérivée — « la porte silencieuse n'est
-// jamais LUE comme une valeur » — à ajouter à `check_no_naked_site_storage_write.py`, qui analyse déjà
-// ce corpus lexicalement. Elle n'est PAS écrite : le piège est LATENT (les deux appels d'aujourd'hui
-// l'emploient bien comme une instruction), et il reste ouvert sous `P4.13-c` plutôt que tu ici.
+// LE GESTE QUI FERME CE PIÈGE est une propriété dérivée — « la porte silencieuse n'est jamais LUE comme
+// une valeur » — et elle EST TENUE depuis `P4.13-d` par `check_no_naked_site_storage_write.py` : les deux
+// portes y sont dérivées du corpus sans qu'aucun nom soit écrit (un écrivain à verdict, une porte qui ne
+// rend rien), et un témoin fabriqué « porte silencieuse lue comme une valeur » y est ACCUSÉ. Le paragraphe
+// qui figurait ici disait la propriété « pas écrite, ouverte sous P4.13-c » : il était périmé d'un lot
+// (vérifié le 2026-09-09). Un appel de cette porte en position de valeur rougit la CI.
 export function ecrireSansDireLeRefus(cle, valeur) {
   ecrireDansLeStockageDuSite(cle, valeur);
 }

@@ -396,7 +396,7 @@ if ($('#case-mine')) $('#case-mine').addEventListener('click', () => {
   btn.setAttribute('aria-pressed', on ? 'true' : 'false');
   loadCases();
 });
-// si l'assigné est édité à la main, l'état visuel du bouton « À moi » se resynchronise (pressé ssi == moi).
+// si l'assigné est édité à la main, l'état visuel du bouton « À moi » se resynchronise (pressé ssi l'assigné est l'utilisateur courant).
 if ($('#case-assignee-filter')) $('#case-assignee-filter').addEventListener('input', () => {
   const btn = $('#case-mine'); if (!btn) return;
   const me = (S.AUTH && S.AUTH.user) || '';

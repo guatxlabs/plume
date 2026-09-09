@@ -8,7 +8,7 @@
 # │ déjà prise ? » n'y a pas de sens. Ici elle en a un, et c'est tout ce que ce fichier ajoute.   │
 # └──────────────────────────────────────────────────────────────────────────────────────────────┘
 #
-# CE QU'IL CORRIGE, ET C'ÉTAIT MOI. Jouer la batterie pendant qu'une suite de tests tourne fait
+# CE QU'IL CORRIGE, ET LA FAUTE ÉTAIT CELLE DE L'AUTEUR DE CE DÉPÔT. Jouer la batterie pendant qu'une suite de tests tourne fait
 # échouer le témoin de crête mémoire : il mesure ce que la machine LUI LAISSE, et sous la charge
 # d'une quarantaine de scripts concurrents les octets alloués dans sa fenêtre n'apparaissent plus.
 # Le test n'est pas fautif — sous famine il REFUSE au lieu de rendre un chiffre faux. Vu QUATRE FOIS

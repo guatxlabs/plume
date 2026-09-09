@@ -16,8 +16,8 @@
 //   * les fichiers de TEST (`est_test`) — un test a le droit d'appeler le PRAGMA nu ;
 //   * les modules `#[cfg(test)]` INTERNES à un fichier de production — c'est
 //     `texte_de_production` qui les retire. `migrate.rs` en contient deux occurrences, dans
-//     le module de test ouvert ligne 5137. **Mon premier comptage annonçait 7 sites de
-//     production ; il y en a 5.** J'avais compté sur un `grep` brut, qui ne sait pas ce
+//     le module de test ouvert ligne 5137. **Le premier comptage annonçait 7 sites de
+//     production ; il y en a 5.** Il reposait sur un `grep` brut, qui ne sait pas ce
 //     qu'est un module de test ;
 //   * les COMMENTAIRES (`sans_commentaire`) — `rollups.rs` explique dans un commentaire
 //     pourquoi son ordre d'opérations précède « le `wal_checkpoint(TRUNCATE)` du bloc
@@ -88,7 +88,7 @@ mod checkpoint_wal_voie_unique_tests {
     #[test]
     fn le_checkpoint_rend_un_verdict_lisible() {
         use crate::db_open::{checkpoint_wal_tronque, Checkpoint};
-        // TEMPORAIRE POSSÉDÉ, et c'est la garde de BUILD qui me l'a appris : mon premier jet
+        // TEMPORAIRE POSSÉDÉ, et c'est la garde de BUILD qui l'a appris : le premier jet
         // appelait `std::env::temp_dir()` et `garde_temporaire_possede` a FAIT ÉCHOUER la
         // compilation. Elle avait raison — SQLite crée deux sidecars (`-wal`, `-shm`) que
         // personne ne nomme, et c'était 90 % de la fuite mesurée le 2026-08-03.
@@ -102,7 +102,7 @@ mod checkpoint_wal_voie_unique_tests {
         assert!(v.a_tronque(), "sans lecteur concurrent, le checkpoint doit TRONQUER — obtenu {v:?}");
 
         // TÉMOIN NÉGATIF, ET IL A TROUVÉ UN VRAI TROU. Sur une base HORS mode WAL, SQLite
-        // rend `busy=0` et `log = checkpointed = -1`. Mon premier jet tombait dans la
+        // rend `busy=0` et `log = checkpointed = -1`. Le premier jet tombait dans la
         // branche nominale et annonçait « tronqué » avec `pages: -1` — un succès pour une
         // opération qui n'a PAS eu lieu, c'est-à-dire exactement le défaut que cette voie
         // existe pour fermer. Sans ce témoin, la fonction aurait remplacé un mensonge

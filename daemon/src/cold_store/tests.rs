@@ -7902,7 +7902,7 @@ fn p4a_prune_avoids_decryption_of_pruned_files() {
     }
     let soql = "search source=rare | stats count";
     let preds = prune_preds(&f, soql, f.to);
-    // `P7.1-b` — JE COMPTE MES FICHIERS, PAS CEUX DU PROCESSUS. La version d'avant remettait à zéro une
+    // `P7.1-b` — CE TÉMOIN COMPTE SES FICHIERS, PAS CEUX DU PROCESSUS. La version d'avant remettait à zéro une
     // somme GLOBALE puis la relisait : sous `cargo test`, qui exécute en parallèle dans un seul processus,
     // elle mesurait aussi ses voisins. Ici chaque relevé est pris SOUS un jour-file qui m'appartient, donc
     // aucun voisin ne peut y entrer — quel que soit le nombre de fils, et sans sérialiser personne.
@@ -10768,7 +10768,7 @@ fn un_vieillissement_reussi_rend_compte_de_ce_quil_a_fait() {
 /// par le `DELETE`, elle annoncerait 40 lignes drainées à CHAQUE tick horaire — un drainage imaginaire,
 /// et la « quantité de données déplacées par jour » serait fausse d'un facteur 24.
 ///
-/// CE QUE CE TEST NE PROUVE PAS — mesuré, pas supposé. J'ai cru qu'il serait la garde du choix « compte
+/// CE QUE CE TEST NE PROUVE PAS — mesuré, pas supposé. Il a d'abord été tenu pour la garde du choix « compte
 /// RÉEL du DELETE plutôt qu'espéré du seal » : FAUX. Mutation exécutée le 2026-08-10 (publier `f.expected`)
 /// ⇒ ce test reste VERT, parce que la 2e passe ne découvre AUCUN jour candidat (le chaud est vide) et
 /// n'atteint donc jamais la phase 2. La garde de ce choix est le test SUIVANT, qui construit le seul

@@ -9157,7 +9157,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   // C'est le défaut FONDATEUR de cette clé — une absence affirmée là où les lignes existent — et un
   // aveu inconditionnel ferait rougir chacun des rendus ci-dessous.
   //
-  // AFFIRMER N'EST PAS MENTIONNER, ET MON PREMIER PRÉDICAT CONFONDAIT LES DEUX. Écrit avec un simple
+  // AFFIRMER N'EST PAS MENTIONNER, ET LE PREMIER PRÉDICAT DE CE TÉMOIN CONFONDAIT LES DEUX. Écrit avec un simple
   // `includes`, il accusait le REFUS de la porte de rendu, dont la dernière phrase CITE le mot pour le
   // démentir (« le rendre “aucune donnée” affirmerait une absence ») : le témoin rougissait sur le
   // geste même qui ferme le défaut. Une phrase est AFFIRMÉE quand un nœud du rendu ne dit QUE cela ;

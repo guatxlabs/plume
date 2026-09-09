@@ -106,7 +106,7 @@ pub(crate) async fn dash_list(State(st): State<AppState>, Extension(au): Extensi
             let vis: String = r.get(3)?;
             // `P11.20-n` — LE DRAPEAU DIT CE QUE LA PORTE FERA, et rien d'autre. La porte d'écriture
             // est `dash_editable`, dont le corps EST `lisible_par` : le drapeau l'emprunte donc au
-            // MÊME endroit. Écrire ici `autorite_de_proprietaire` (mon premier jet) rendait
+            // MÊME endroit. Écrire ici `autorite_de_proprietaire` (le premier jet) rendait
             // `editable:false` sur un dashboard COMMUN que le serveur laisse pourtant modifier —
             // un drapeau qui ment sur sa propre porte, exactement le défaut d'à côté.
             let owns = panneau_resolu::lisible_par(&owner, &vis, &ident);

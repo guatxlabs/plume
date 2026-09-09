@@ -171,7 +171,7 @@ verrous_existants() {
 # mesuré sur util-linux 2.42.2. La version précédente lisait « non-zéro » = « tenu » : un
 # `.cargo-lock` en mode 000 produisait un REFUS PERMANENT que rien ne débloquait, et l'instrument
 # se déclarait valide. Un défaut d'OUVERTURE est un AVEU, pas un verrou.
-#   0 = TENU        1 = LIBRE        2 = JE N'AI PAS PU OUVRIR
+#   0 = TENU        1 = LIBRE        2 = « JE N'AI PAS PU OUVRIR »
 verrou_tenu() {
     local rc=0
     flock -n "$1" -c true 9>&- 2>/dev/null || rc=$?

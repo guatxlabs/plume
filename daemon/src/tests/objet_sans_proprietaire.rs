@@ -432,7 +432,7 @@ fn aucun_site_hors_du_coffre_ne_fait_d_une_colonne_vide_un_octroi() {
 // (7) UN DRAPEAU NE MENT PAS SUR SA PROPRE PORTE — le défaut que ce lot a FAILLI introduire.
 // -------------------------------------------------------------------------------------
 /// PREMIER JET DE CE LOT, ET IL ÉTAIT FAUX : ayant remplacé la clause d'octroi partout par la même
-/// expression, j'avais fait dire au drapeau `editable` ce que dit la PORTÉE DE LECTURE — donc
+/// expression, la première version faisait dire au drapeau `editable` ce que dit la PORTÉE DE LECTURE — donc
 /// `false` sur un dashboard COMMUN que le serveur laisse pourtant modifier. La vue aurait masqué un
 /// geste accepté. Ce sont DEUX faits distincts, que la clause d'octroi rendait égaux sur les objets
 /// sans propriétaire et qui ont cessé de l'être : la portée est une décision de CONFIDENTIALITÉ,
@@ -626,9 +626,9 @@ async fn les_drapeaux_editable_de_la_bibliotheque_et_des_playlists_disent_leur_p
             assert!(vu(&ladm), "{quoi} « {etiquette} » : l'admin voit tout — sinon les refus ci-dessous ne prouveraient pas qu'il RESTE quelque chose");
             match etiquette {
                 "propriétaire nommé + partagé" | "SANS propriétaire + partagé" => {
-                    // DÉCISION DE PRODUIT ANTÉRIEURE À CE LOT, QUE JE NE DESSERRE NI NE RESSERRE :
+                    // DÉCISION DE PRODUIT ANTÉRIEURE À CE LOT, QUE CE LOT NE DESSERRE NI NE RESSERRE :
                     // `visibility='shared'` vaut « modifiable par le partage » (`lisible_par`). Un
-                    // tiers voit et modifie. Je la NOMME au lieu de plier l'assertion.
+                    // tiers voit et modifie. Elle est NOMMÉE au lieu de plier l'assertion.
                     assert!(vu(&lb) && vu(&la), "{quoi} « {etiquette} » : DÉCLARÉ commun -> servi à tous (décision antérieure à `P11.20-n`)");
                     assert_ne!(sp_porte_ergo(&st, &bob, quoi, id).await, StatusCode::FORBIDDEN, "{quoi} « {etiquette} » : et modifiable par le partage — ce lot ne touche pas à ce geste");
                 }

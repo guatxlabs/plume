@@ -54,8 +54,8 @@
 // elle ne prouve pas que ce test exerce le chemin de production qui l'émet — aucun scanner de source ne
 // peut le faire. C'est une condition NÉCESSAIRE, et c'est exactement celle qui manquait deux fois de suite.
 //
-// ET CE QU'ON A MESURÉ LE 2026-08-16, PARCE QUE « NÉCESSAIRE » INVITE À CONCLURE TROP VITE. J'avais
-// consigné SIX clés « glace mince » — une seule citation spécifique chacune, donc « à un test de retomber
+// ET CE QU'ON A MESURÉ LE 2026-08-16, PARCE QUE « NÉCESSAIRE » INVITE À CONCLURE TROP VITE. La première
+// passe avait consigné SIX clés « glace mince » — une seule citation spécifique chacune, donc « à un test de retomber
 // dans le rouge ». La MUTATION dit autre chose : les huit sites d'émission de ces six causes remplacés par
 // des littéraux distincts, la suite par défaut (1039) tombe à 1037 et la suite `cold_tier` (1259) rend
 // CINQ échecs. Autrement dit **5 des 6 sont bel et bien pilotées** par un test qui exerce le chemin :
@@ -78,7 +78,7 @@
 // `CAUSE_AUCUNE` est le mot « aucune », qui apparaît **119 fois** dans le corpus de test. Un compteur qui
 // accepte les littéraux passerait au vert sur du bruit pour toute cause au nom courant — il serait plus
 // faible, pas plus fort. Le compteur reste donc sur l'IDENTIFIANT, et la couverture réelle se mesure par
-// MUTATION, pas par lecture de source. C'est écrit ici pour que le prochain lecteur (moi) ne redéduise pas
+// MUTATION, pas par lecture de source. C'est écrit ici pour que le prochain lecteur ne redéduise pas
 // la même inquiétude à partir du même angle mort.
 
 #[cfg(test)]
@@ -330,7 +330,7 @@ mod cles_de_cause_gardees_tests {
         // non comme garde active : la première personne qui écrira un nom de clé littéral ici la rendra
         // porteuse sans y penser, et c'est justement le geste qu'on ne veut pas avoir à surveiller.
         //
-        // CE QUE JE N'AI PAS PROUVÉ, ET JE LE DIS PLUTÔT QUE DE LAISSER CROIRE : qu'elle SAURAIT mordre.
+        // CE QUI N'EST PAS PROUVÉ, ET QUI EST DIT PLUTÔT QUE LAISSÉ CROIRE : qu'elle SAURAIT mordre.
         // Le démontrer demanderait de fabriquer une clé factice dépourvue de garde ailleurs puis de la
         // citer ici — un test du test, pour une branche que la mesure dit sans objet. Ce qui EST vérifié à
         // chaque exécution, en revanche, c'est sa PRÉCONDITION : l'`assert!` ci-dessous refuse de conclure

@@ -13,11 +13,11 @@
 // nommé cinq jours plus tôt, DANS LE MÊME DOCUMENT. Deux occurrences, deux causes différentes, aucune
 // visible dans un diff : une collision ne se voit qu'en regardant TOUT le document.
 //
-// POURQUOI CE N'EST PAS LA GARDE « UNE CLÉ = UNE LIGNE », ET C'EST LE POINT IMPORTANT. C'est la règle que
-// j'ai écrite en premier, et LA MESURE L'A RÉFUTÉE : elle accusait `P4.1-p`, `P10.2-a`, `P10.2-c`,
+// POURQUOI CE N'EST PAS LA GARDE « UNE CLÉ = UNE LIGNE », ET C'EST LE POINT IMPORTANT. C'est la règle
+// écrite en premier, et LA MESURE L'A RÉFUTÉE : elle accusait `P4.1-p`, `P10.2-a`, `P10.2-c`,
 // `P10.2-d`, `P4.4-a` et `P4.5-b` — six entrées parfaitement légitimes, parce que ce document a une
 // convention établie où une clé nomme un THÈME et plusieurs lignes le détaillent. Même faute que
-// `P10.14-a`, dont ma règle de départ attrapait 0 constat sur 113 : une règle inventée par moi contre une
+// `P10.14-a`, dont la règle de départ attrapait 0 constat sur 113 : une règle inventée contre une
 // règle que le document se donne à lui-même.
 //
 // LA RÈGLE RETENUE EST CELLE DU DOCUMENT. `*(clé neuve)*` n'est pas une décoration : c'est une

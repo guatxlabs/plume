@@ -1,6 +1,6 @@
 // viz.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // Explore + viz/charts: drilldown, fenetre glissante, requete interactive, rendu table/graphes (partages avec dashboards).
-import { $, CSSV, LANG, LOC, SEV, api, apiSend, bornerLePopoverSousSonAncre, colComparator, confirmModal, esc, flashStopped, fmtTs, ic, makePager, muted, sev, socIsAdmin, toast, tzOpts } from './core.js';
+import { $, CSSV, LANG, LOC, SEV, api, apiSend, bornerLePopoverSousSonAncre, colComparator, largeursDeColonnes, confirmModal, esc, flashStopped, fmtTs, ic, makePager, muted, sev, socIsAdmin, toast, tzOpts } from './core.js';
 import { S } from './state.js';
 // P11.4-h : LE clic qui respecte une sélection (mécanisme partagé, `copie_et_selection.js`).
 import { clicQuiRespecteLaSelection } from './copie_et_selection.js';
@@ -2033,7 +2033,11 @@ function tableEl(cols, rows, query, drill, opts) {
   const showNum = rows.length > 1;   // colonne « # » (numéro de ligne) inutile s'il n'y a qu'une seule ligne
   const key = unitKeyFor(cols, query), last = cols.length - 1;
   const order = cols.map((_, i) => i);   // ordre d'affichage (indices d'origine) -> reordonnable
-  const widths = {};                     // largeurs par colonne d'origine (px)
+  // `P11.15-a` — les largeurs choisies vivent dans le magasin PAR PERSONNE de `largeursDeColonnes`, par
+  // NOM de colonne, sous l'identité « explore » : elles survivent au tri, au réordonnancement, à la
+  // requête suivante qui sert la même colonne, et au rechargement. La variable locale qui les perdait
+  // à chaque redessin a disparu.
+  const largeurs = largeursDeColonnes((opts && opts.identiteDesLargeurs) || 'explore');
   let sortIdx = -1, sortDir = 1;         // colonne triee + sens (1 asc / -1 desc)
   // SÉLECTEUR DE COLONNES : couverture (% de lignes non vides) par colonne ; si la table est large
   // (multi-sources), on MASQUE par défaut les colonnes creuses hors cœur -> propre sans scoper la requête.
@@ -2085,20 +2089,13 @@ function tableEl(cols, rows, query, drill, opts) {
       const th = document.createElement('th'); th.draggable = true;
       const lab = document.createElement('span'); lab.textContent = cols[oi]; th.appendChild(lab);
       if (oi === sortIdx) { const ar = document.createElement('span'); ar.className = 'sortar'; ar.innerHTML = chevron(sortDir > 0); th.appendChild(ar); }
-      if (widths[oi]) th.style.width = widths[oi] + 'px';
+      largeurs.appliquer(th, cols[oi]);
       th.onclick = e => { if (e.target.classList.contains('rsz')) return; if (sortIdx === oi) sortDir = -sortDir; else { sortIdx = oi; sortDir = 1; } build(); };
       th.ondragstart = e => e.dataTransfer.setData('text/plain', String(pos));
       th.ondragover = e => { e.preventDefault(); th.classList.add('dragover'); };
       th.ondragleave = () => th.classList.remove('dragover');
       th.ondrop = e => { e.preventDefault(); th.classList.remove('dragover'); const from = Number(e.dataTransfer.getData('text/plain')); if (Number.isInteger(from) && from !== pos) { const [m] = order.splice(from, 1); order.splice(pos, 0, m); build(); } };
-      const rsz = document.createElement('span'); rsz.className = 'rsz'; th.appendChild(rsz);
-      rsz.onmousedown = e => {
-        e.preventDefault(); e.stopPropagation();
-        const x0 = e.clientX, w0 = th.offsetWidth;
-        const mv = ev => { widths[oi] = Math.max(40, w0 + ev.clientX - x0); th.style.width = widths[oi] + 'px'; };
-        const up = () => { document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); };
-        document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up);
-      };
+      largeurs.poignee(th, cols[oi]);   // `P11.15-a` : le geste partagé, la largeur posée au relâchement
       htr.appendChild(th);
     });
     thead.replaceChildren(htr);

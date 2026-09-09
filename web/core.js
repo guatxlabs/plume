@@ -656,10 +656,66 @@ function poserLaRechercheDeLaListe(host, opts) {
 // de rangement que le regroupement emploie déjà (`opts.group.storeKey`, qui vaut identité à lui seul).
 // Cette identité, et elle seule, arme la mémoire de recherche de `P11.18-z` : sans elle, la liste n'a
 // aucune mémoire et se comporte exactement comme avant cette clé.
+// `P11.15-a` — LA LARGEUR QU'UNE MAIN CHOISIT SURVIT AU REDESSIN, ET LE GESTE EST LE MÊME PARTOUT.
+// Mesuré le 2026-08-27 : la poignée d'élargissement n'existait que sur la table des résultats de requête,
+// et la largeur choisie vivait dans une variable locale reconstruite à chaque redessin — perdue au tri,
+// à la page suivante, au rechargement. Ici vit le geste UNIQUE, appelé par les deux fabriques (`pagedList`
+// et `tableEl` de viz.js). Ce qu'il retient est PAR PERSONNE (arbitrage de `P11.18-q`, repris tel quel :
+// la table n'a aucune fente pour une largeur, et une largeur d'écran n'appartient pas à l'objet partagé),
+// sous UNE clé de préférence (`colw`) qui porte { <identité de table>: { <nom de colonne>: px } } — par
+// NOM de colonne, pas par position, pour survivre au réordonnancement et au masquage.
+// LE MAGASIN EST BRANCHÉ, PAS IMPORTÉ : `prefs.js` importe ce module, donc ce module ne peut pas
+// l'importer en retour. Tant que rien n'est branché, le stockage du site tient le rôle (même contrat, une
+// durabilité par navigateur) ; `prefs.js` se branche à son chargement et apporte la durabilité par compte.
+let magasinDeLargeurs = null;
+export function brancherLeMagasinDeLargeurs(magasin) { magasinDeLargeurs = magasin; }
+const CLE_DE_STOCKAGE_DES_LARGEURS = 'plume.colw';
+function toutesLesLargeurs() {
+  if (magasinDeLargeurs) { const v = magasinDeLargeurs.lire(); return v && typeof v === 'object' ? v : {}; }
+  try { const v = JSON.parse(lireLeStockageDuSite(CLE_DE_STOCKAGE_DES_LARGEURS) || '{}'); return v && typeof v === 'object' ? v : {}; } catch (e) { return {}; }
+}
+function ecrireToutesLesLargeurs(tout) {
+  if (magasinDeLargeurs) { magasinDeLargeurs.ecrire(tout); return; }
+  ecrireSansDireLeRefus(CLE_DE_STOCKAGE_DES_LARGEURS, JSON.stringify(tout));
+}
+export const LARGEUR_MINIMALE_DE_COLONNE = 40;
+export function largeursDeColonnes(identite) {
+  const cle = identite ? String(identite) : '';
+  const memoire = {};   // sans identité : la largeur survit au redessin de CETTE table, pas au rechargement
+  const lues = () => (cle ? (toutesLesLargeurs()[cle] || {}) : memoire);
+  const soi = {
+    lire(nom) { const px = Number(lues()[nom]); return Number.isFinite(px) && px >= LARGEUR_MINIMALE_DE_COLONNE ? px : undefined; },
+    poser(nom, px) {
+      const v = Math.max(LARGEUR_MINIMALE_DE_COLONNE, Math.round(Number(px) || 0));
+      if (!cle) { memoire[nom] = v; return; }
+      const tout = toutesLesLargeurs(); tout[cle] = Object.assign({}, tout[cle] || {}, { [nom]: v }); ecrireToutesLesLargeurs(tout);
+    },
+    appliquer(th, nom) { const px = soi.lire(nom); if (px) th.style.width = px + 'px'; },
+    // La poignée : une bande à droite de l'en-tête ; glisser change la largeur pendant le geste et la
+    // POSE au relâchement (une seule écriture par geste, pas une par pixel).
+    poignee(th, nom) {
+      const rsz = document.createElement('span'); rsz.className = 'rsz'; th.appendChild(rsz);
+      rsz.onmousedown = e => {
+        e.preventDefault(); e.stopPropagation();
+        // `offsetWidth` est un nombre dans un navigateur ; ailleurs (une boîte non mesurée) il vaut 0, jamais NaN.
+        const x0 = e.clientX, w0 = Number(th.offsetWidth) || 0; let w = w0;
+        const mv = ev => { w = Math.max(LARGEUR_MINIMALE_DE_COLONNE, w0 + ev.clientX - x0); th.style.width = w + 'px'; };
+        const up = () => { document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); soi.poser(nom, w); };
+        document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up);
+      };
+      return rsz;
+    },
+  };
+  return soi;
+}
+
 function pagedList(host, opts) {
   const pageSize = opts.pageSize || 50;
   const state = { page: 0, pageSize, total: 0, shown: 0 };
   const columns = opts.columns || null;
+  // `P11.15-a` — les largeurs choisies : par personne quand la liste a une identité (`storeKey` ou l'id
+  // de son hôte), sinon pour la vie de cette liste (elles survivent quand même au tri et à la page).
+  const largeurs = largeursDeColonnes(opts.storeKey || (host && host.id) || '');
   // `P11.18-m` — SANS L'OPTION, `cible` EST `host` : la peinture, la liste groupée et le message d'erreur
   // écrivent exactement où ils écrivaient, et rien n'est interposé.
   const chercheur = opts.recherche ? poserLaRechercheDeLaListe(host, opts) : null;
@@ -723,8 +779,10 @@ function pagedList(host, opts) {
       if (c.sortable) {
         th.style.cursor = 'pointer'; th.title = 'Trier par ' + (c.label != null ? c.label : c.key);
         if (sort && sort.key === c.key) { const ar = document.createElement('span'); ar.className = 'sortar'; ar.textContent = sort.dir > 0 ? ' ▲' : ' ▼'; th.appendChild(ar); }
-        th.onclick = () => { if (sort && sort.key === c.key) sort.dir = -sort.dir; else sort = { key: c.key, dir: 1 }; state.page = 0; reload(); };
+        // un clic sur la poignée n'est pas un tri
+        th.onclick = e => { if (e && e.target && e.target.classList && e.target.classList.contains('rsz')) return; if (sort && sort.key === c.key) sort.dir = -sort.dir; else sort = { key: c.key, dir: 1 }; state.page = 0; reload(); };
       }
+      largeurs.appliquer(th, c.key); largeurs.poignee(th, c.key);   // `P11.15-a`
       htr.appendChild(th);
     });
     thead.appendChild(htr); table.appendChild(thead);

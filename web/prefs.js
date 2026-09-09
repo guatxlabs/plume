@@ -22,7 +22,7 @@
 //
 // SECURITY: the endpoint is self-scoped server-side (keyed by the authenticated identity; the client never
 // sends a user id). We never store secrets here — only UI state.
-import { api, apiSend } from './core.js';
+import { api, apiSend, brancherLeMagasinDeLargeurs } from './core.js';
 import { ecrireSansDireLeRefus } from './state.js';
 
 const LS_KEY = 'plume_prefs';
@@ -123,3 +123,12 @@ export async function prefsInit() {
 try {
   window.addEventListener('pagehide', () => { if (putTimer) { clearTimeout(putTimer); putTimer = null; flushPrefs(); } });
 } catch (e) {}
+
+// `P11.15-a` — LES LARGEURS DE COLONNES CHOISIES SONT UNE PRÉFÉRENCE DE LA PERSONNE, durable et
+// suivie d'un appareil à l'autre comme les autres : ce module se BRANCHE sur le geste partagé de
+// core.js (qui ne peut pas l'importer, puisque ce module l'importe). UNE clé de premier niveau, `colw`,
+// pour que l'ensemble en attente reste borné (voir PENDING ci-dessus) : { <table>: { <colonne>: px } }.
+brancherLeMagasinDeLargeurs({
+  lire: () => prefGet('colw', {}),
+  ecrire: (tout) => prefSet('colw', tout),
+});

@@ -10513,6 +10513,71 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   console.log(`[fraîcheur] \`P11.21-b\` : le démon émet ${flux.length} flux agrégé « metric » (ligne ${flux[0] ? flux[0].i : "?"}) et la console en équipe exactement un — dépendance VÉRIFIÉE de source à source, plus supposée.`);
 }
 
+// ---------------------------------------------------------------------------------------------
+// 78. LA LARGEUR QU'UNE MAIN CHOISIT SURVIT AU REDESSIN, ET LE GESTE EST LE MÊME SUR LES DEUX
+//     FABRIQUES (`P11.15-a`, mesuré le 2026-08-27, fermé le 2026-09-09).
+//     CE QUI ÉTAIT MESURÉ : une poignée d'élargissement sur UNE seule fabrique (la table des résultats
+//     de requête), et une largeur choisie vivant dans une variable locale reconstruite à chaque
+//     redessin — perdue au tri, à la page suivante, au rechargement. CE QUE CE TÉMOIN TIENT, EN LE
+//     JOUANT : (a) la fabrique partagée `pagedList` pose une poignée par colonne ; (b) un glissement
+//     RÉEL — mousedown sur la poignée, mousemove et mouseup sur le document, le chemin que la console
+//     câble — change la largeur pendant le geste et la POSE au relâchement ; (c) la largeur survit à un
+//     tri (redessin) et à une liste RECONSTRUITE sous la même identité — c'est-à-dire au rechargement,
+//     puisque la reconstruction ne partage aucune variable avec la première ; (d) une identité
+//     DIFFÉRENTE n'hérite de rien ; (e) la table des résultats de requête (`tableEl`) lit le MÊME
+//     magasin, sous son identité ; (f) le magasin par personne est branché par `prefs.js`, pas
+//     recopié. Un plancher tient la largeur au-dessus de 40 px — une colonne écrasée à zéro
+//     disparaîtrait sans un mot.
+//     CE QU'IL NE TIENT PAS : la largeur PEINTE — le simulacre ne mesure aucune boîte (`offsetWidth`
+//     y vaut 0, d'où des largeurs égales au déplacement) ; ce qui est jugé est l'attribut posé et sa
+//     persistance, pas l'encre.
+// ---------------------------------------------------------------------------------------------
+{
+  const { pagedList, largeursDeColonnes, LARGEUR_MINIMALE_DE_COLONNE } = await import(pathToFileURL(path.join(WEB, "core.js")).href);
+  const viz = await import(pathToFileURL(path.join(WEB, "viz.js")).href);
+  const cueillir = (el, pred, acc) => { if (pred(el)) acc.push(el); (el.children || []).forEach((c) => cueillir(c, pred, acc)); return acc; };
+  const enTetes = (h) => cueillir(h, (e) => e.tagName === "TH", []);
+  const poigneeDe = (th) => cueillir(th, (e) => e.classList && e.classList.contains("rsz"), [])[0];
+  const colonnes = [{ key: "nom", label: "Nom", sortable: true }, { key: "etat", label: "État" }];
+  const lot = [{ nom: "web-01", etat: "muet" }, { nom: "db-01", etat: "frais" }];
+  const rendre = (identite) => { const hote = new Element("div"); hote.id = ""; pagedList(hote, { mode: "client", pageSize: 50, rows: lot, columns: colonnes, storeKey: identite }); return hote; };
+  const ID = "banc_p1115a_" + Math.random().toString(36).slice(2, 8);
+  // (a) une poignée par colonne, sur la fabrique partagée
+  const h1 = rendre(ID); const ths1 = enTetes(h1);
+  exiger(ths1.length === 2 && ths1.every((th) => !!poigneeDe(th)), `(78a) la fabrique partagée pose ${ths1.filter((th) => !!poigneeDe(th)).length} poignée(s) sur ${ths1.length} en-tête(s) — le geste n'est pas partagé`);
+  exiger(!ths1[0].style.width, "(78a) une colonne jamais réglée porte déjà une largeur — le magasin n'est pas vide sous une identité neuve");
+  // (b) un glissement réel : mousedown sur la poignée, mousemove + mouseup sur le document
+  const glisser = (th, de, a) => {
+    poigneeDe(th).dispatchEvent(new Evenement("mousedown", { clientX: de, bubbles: true }));
+    document.dispatchEvent(new Evenement("mousemove", { clientX: a }));
+    document.dispatchEvent(new Evenement("mouseup", {}));
+  };
+  glisser(ths1[0], 100, 220);
+  exiger(ths1[0].style.width === "120px", `(78b) après un glissement de 120 px, l'en-tête porte « ${ths1[0].style.width} » — le geste ne change pas la largeur, ou le chemin document→poignée n'est pas celui que la console câble`);
+  exiger(largeursDeColonnes(ID).lire("nom") === 120, `(78b) la largeur posée au relâchement se relit « ${largeursDeColonnes(ID).lire("nom")} » au lieu de 120 — rien n'est POSÉ`);
+  // (c) survit au tri (redessin) et à une reconstruction sous la même identité
+  ths1[0].dispatchEvent(new Evenement("click", { target: ths1[0], bubbles: true }));
+  const apresTri = enTetes(h1);
+  exiger(apresTri[0].style.width === "120px", `(78c) après un tri, la colonne réglée porte « ${apresTri[0].style.width} » — la largeur choisie est perdue au redessin, le défaut mesuré le 2026-08-27`);
+  const h2 = rendre(ID);
+  exiger(enTetes(h2)[0].style.width === "120px" && !enTetes(h2)[1].style.width, `(78c) une liste RECONSTRUITE sous la même identité rend « ${enTetes(h2)[0].style.width} » / « ${enTetes(h2)[1].style.width} » — la largeur ne survit pas au rechargement, ou déborde sur une colonne non réglée`);
+  // (d) une autre identité n'hérite de rien
+  const h3 = rendre(ID + "_autre");
+  exiger(!enTetes(h3)[0].style.width, `(78d) une liste d'une AUTRE identité hérite « ${enTetes(h3)[0].style.width} » — les largeurs ne sont pas rangées par table`);
+  // le plancher : un glissement vers la gauche ne peut pas écraser la colonne
+  glisser(enTetes(h2)[1], 300, 0);
+  exiger(enTetes(h2)[1].style.width === LARGEUR_MINIMALE_DE_COLONNE + "px" && largeursDeColonnes(ID).lire("etat") === LARGEUR_MINIMALE_DE_COLONNE, `(78-plancher) un glissement à zéro rend « ${enTetes(h2)[1].style.width} » / ${largeursDeColonnes(ID).lire("etat")} — une colonne peut disparaître sans un mot`);
+  // (e) la table des résultats de requête lit le même magasin, sous son identité
+  largeursDeColonnes("explore").poser("host", 177);
+  const t = viz.tableEl(["host", "n"], [["a", 1], ["b", 2]], "search x | stats count by host", null, {});
+  const thsT = enTetes(t).filter((th) => !(th.classList && th.classList.contains("numcol")));
+  exiger(thsT.length === 2 && thsT[0].style.width === "177px" && !thsT[1].style.width && thsT.every((th) => !!poigneeDe(th)), `(78e) la table des résultats rend « ${thsT[0] && thsT[0].style.width} » / « ${thsT[1] && thsT[1].style.width} » avec ${thsT.filter((th) => !!poigneeDe(th)).length} poignée(s) — elle ne lit pas le magasin partagé sous « explore »`);
+  // (f) le magasin par personne est BRANCHÉ par prefs.js, jamais importé par core.js (le cycle serait la zone morte de `P11.21-f`)
+  const coreSrc = readFileSync(path.join(WEB, "core.js"), "utf8"), prefsSrc = readFileSync(path.join(WEB, "prefs.js"), "utf8");
+  exiger(!/from '\.\/prefs\.js'/.test(coreSrc) && /brancherLeMagasinDeLargeurs\(\{/.test(prefsSrc) && /prefGet\('colw'/.test(prefsSrc) && /prefSet\('colw'/.test(prefsSrc), "(78f) le magasin des largeurs n'est plus branché par prefs.js sous la clé unique « colw », ou core.js importe prefs.js — cycle, ou préférence perdue");
+  console.log(`[largeur-de-colonne] \`P11.15-a\` : la fabrique partagée pose ${ths1.length} poignées ; un glissement réel de 120 px pose 120 px, relu après un tri et après une RECONSTRUCTION sous la même identité, absent sous une autre ; plancher ${LARGEUR_MINIMALE_DE_COLONNE} px tenu ; la table des résultats lit le même magasin sous « explore » (177 px posés, 177 px rendus) ; magasin par personne branché par prefs.js. Non tenu : la largeur PEINTE (aucune boîte mesurée ici).`);
+}
+
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;
 verdictRendu = true;
 if (echecs.length) {

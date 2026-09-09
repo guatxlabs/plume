@@ -518,6 +518,9 @@ le collecteur tourne sur un hôte Linux, mais la **cible** peut être n'importe 
 > **Le capteur de ressources (`resources.sh`) se laisse ÉPROUVER sans machine.** Trois leviers ne servent
 > qu'à cela et ne changent rien en exploitation : `PLUME_PROC_ROOT` (racine de `/proc`, défaut `/proc`),
 > `PLUME_SYS_ROOT` (racine de `/sys`, défaut `/sys` — c'est là que vivent les sondes thermiques) et
+> `PLUME_CONTROLS_ROOT` (répertoire des catalogues de contrôles d'exploitant lus par `controls.sh`, défaut
+> `/etc/plume/controls.d` — le troisième chemin d'entrée d'exploitant, détournable depuis le 2026-09-09 comme
+> ses deux voisins, pour qu'un témoin l'exerce sans écrire dans `/etc`) et
 > `PLUME_DISK_TARGET` (cible du `df`, défaut `/`). Les gardes de CI fabriquent un `/proc`, un `/sys` et un
 > `df` de toutes pièces — sources vides, deux processeurs, une sonde illisible — et exécutent le capteur
 > TEL QU'IL EST LIVRÉ contre eux, au lieu de laisser la machine de CI décider de ce qui est éprouvé.

@@ -1483,6 +1483,12 @@ jobs:
       - name: La température CPU porte sur tous les processeurs, et dit sur combien
         run: python3 .github/scripts/check_cpu_temperature_covers_every_package.py
 
+      # `P4.8-a` — le troisième chemin d'entrée d'exploitant, le catalogue de contrôles, est détournable
+      # (`PLUME_CONTROLS_ROOT`) comme ses deux voisins, et un témoin l'exerce dans un bac : verdicts vrai/faux,
+      # commentaire ignoré, dernière ligne sans saut de ligne lue, et rien ne fuit sans le levier.
+      - name: Le capteur de contrôles lit le catalogue qu'on lui désigne, et le lit entier
+        run: python3 .github/scripts/check_controls_sensor_reads_the_catalog_it_is_told.py
+
       # LA MÊME CHAÎNE, À SON DERNIER MAILLON (`S37`) : le démon publie `<clé>_verdict` / `_cause` /
       # `_detail` à côté de chaque grandeur qu'il n'a pas pu lire (`S32`, `P4.1-r`), et tout s'arrête à
       # la frontière du navigateur si la surface ne LIT pas le verdict — une grandeur illisible s'y

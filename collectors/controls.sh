@@ -125,7 +125,13 @@ command -v aide           >/dev/null 2>&1 && add aide_db         "$(aide_verdict
 # il n'est plus comblé par ce catalogue.
 
 # --- Contrôles propres au déploiement (k3s : crowdsec pod, etc.) sans toucher au script générique ---
-for f in /etc/plume/controls.d/*.check; do
+# `PLUME_CONTROLS_ROOT` : le répertoire des catalogues d'exploitant (défaut `/etc/plume/controls.d`). Vide en
+# production ; un témoin y met un catalogue fabriqué pour exercer CETTE boucle sans écrire hors de son bac
+# (`P4.8-a`, 2026-09-09 : c'était le seul chemin d'entrée d'exploitant écrit en dur, ses deux voisins —
+# `PLUME_PROC_ROOT`/`PLUME_SYS_ROOT` dans resources.sh, `PLUME_UNIT_ROOT` dans integrity.sh — étaient déjà
+# détournables). Le motif est le leur, DÉPLACÉ, pas un troisième.
+CONTROLS_ROOT="${PLUME_CONTROLS_ROOT:-/etc/plume/controls.d}"
+for f in "$CONTROLS_ROOT"/*.check; do
   [ -r "$f" ] || continue
   # `|| [ -n "$cid$ccmd" ]` — MEME FAMILLE QUE `collectors/respond.sh` ET `collectors/custom.sh`,
   # MESUREE le 2026-08-27 : `while read` n execute pas son corps sur une derniere ligne depourvue de
@@ -133,9 +139,8 @@ for f in /etc/plume/controls.d/*.check; do
   # DERNIER controle — le controle disparaissait du verdict sans etre compte `indetermine`, donc
   # sans un mot. Ici la perte va dans la direction rassurante (un verrou de moins a verifier, donc
   # « 0 manquant » de plus), ce qui est exactement la valeur qu il ne faut jamais deviner.
-  # CE QUI N EST PAS TENU, ET C EST DIT : ce chemin (`/etc/plume/controls.d`) n est pas
-  # parametrable, aucun temoin du depot ne peut donc l exercer sans ecrire dans `/etc`. La
-  # correction est un DEPLACEMENT du meme motif, prouve chez ses deux voisins parametrables.
+  # Ce chemin est PARAMETRABLE depuis le 2026-09-09 (`PLUME_CONTROLS_ROOT`, ci-dessus) : un temoin du
+  # depot exerce cette boucle sans ecrire dans `/etc` — le deplacement du motif des deux voisins, fait.
   cid=""; ccmd=""
   while IFS='|' read -r cid ccmd || [ -n "${cid:-}${ccmd:-}" ]; do
     [ -n "${cid:-}" ] || continue

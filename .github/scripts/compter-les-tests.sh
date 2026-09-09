@@ -44,10 +44,17 @@
 # que la mesure revienne LÀ où la décision se prend : la machine, avant le commit.
 #
 # POURQUOI CE SCRIPT RESTE UTILISABLE ALORS QUE LES SUITES NE LE SONT PAS. Construire le harnais et
-# l'énumérer coûte une compilation ; l'EXÉCUTER coûte, MESURÉ le 2026-08-09 sur 12 cœurs, 187 s
-# (profil par défaut) + 2627 s (`cold_tier`), soit ~47 min. Un garde à 34 s se subit ; un garde à
-# 47 min se contourne. Le gain est réel — il n'est simplement pas gratuit, et ce n'est pas la même
-# chose.
+# l'énumérer coûte une compilation ; l'EXÉCUTER coûte des MINUTES, et c'est l'ORDRE DE GRANDEUR qui
+# fonde la règle, pas le chiffre : un garde de quelques dizaines de secondes se subit, un garde de
+# plusieurs minutes se contourne. Le gain est réel — il n'est simplement pas gratuit, et ce n'est
+# pas la même chose.
+#   RE-MESURÉ le 2026-09-09 sur l'arbre 93d37cb (12 cœurs, CARGO_BUILD_JOBS=4, poste sans autre
+#   charge, artefacts déjà construits) : exécution 256 s pour le profil par défaut (`EXPECTED_TESTS`)
+#   + 706 s pour `cold_tier` (`EXPECTED_COLD_TESTS`), soit ~16 min pour les deux suites, toutes vertes.
+#   LE CHIFFRE PRÉCÉDENT ÉTAIT PÉRIMÉ PAR UNE CLÉ FERMÉE (`P8.5-c`) : mesuré le 2026-08-09, il
+#   disait 187 s + 2627 s (~47 min) ; `P8.23-a` a depuis divisé le coût du profil froid par ~3,7
+#   sans que cette ligne soit reprise. Une mesure citée comme ARGUMENT nomme la clé dont elle
+#   dépend : si `P8.23-a` bouge à nouveau, c'est ici qu'il faut re-mesurer.
 #
 # CE QU'IL NE PROUVE PAS, ET IL FAUT LE DIRE : que les tests PASSENT. Il compte des tests DÉCLARÉS,
 # pas des tests verts. C'est exactement ce que la garde de `ci.yml` compare (un compte), et c'est

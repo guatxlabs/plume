@@ -156,7 +156,7 @@ un artefact d'hôte. Ce que vous faites à la place, en conteneur et en cluster 
 1. **Un agent sur une machine d'à côté** qui pousse vers le central (`POST /api/ingest`, jeton
    *Bearer*) — hôte Linux avec `bootstrap-agent.sh`, agent d'endpoint de [`../agent/`](../agent/README.md),
    ou collecteur Windows de [`../collectors/windows/`](../collectors/windows/README.md) ;
-2. **une source en PULL** déclarée dans la console (onglet *Connecteurs*, admin) — le démon va
+2. **une source en PULL** déclarée dans la console (espace *Données* → onglet *Connecteurs de sources*, admin) — le démon va
    chercher, rien n'est installé nulle part ;
 3. **un récepteur** que le central expose déjà : Splunk HEC, OTLP, syslog
    ([`../deploy/SYSLOG.md`](../deploy/SYSLOG.md)).

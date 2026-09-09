@@ -62,12 +62,16 @@
     // ================================================================================================
 
     /// Sous ce nombre de sites d'acquisition RÉELLEMENT lus, ce n'est pas l'arbre qui est propre,
-    /// c'est la lecture qui est cassée — et un balayage aveugle rend vert. MESURÉ le 2026-08-28 :
-    /// 19 sites (13 corps 200 passant par le portillon, 6 réponses d'échec HTTP).
+    /// c'est la lecture qui est cassée — et un balayage aveugle rend vert. MESURÉ le 2026-09-09 sur
+    /// l'arbre 93d37cb (inchangé depuis le 2026-08-28) : 19 sites (13 corps 200 passant par le
+    /// portillon, 6 réponses d'échec HTTP) — le nombre que l'assertion compare, avant tout filtre.
     const PORTILLON_PLANCHER_SITES: usize = 15;
 
     /// Idem pour la jambe exécutée : sous ce nombre de routes GET dérivées, la sonde ne prouve plus
-    /// rien. MESURÉ le 2026-08-28 : 11 routes GET sans paramètre.
+    /// rien. MESURÉ le 2026-09-09 sur l'arbre 93d37cb : 11 routes GET sans paramètre DÉRIVÉES, dont
+    /// UNE déjà atteinte par une sonde écrite et retirée du balayage — l'assertion porte sur les
+    /// 10 restantes, pas sur 11 (`P8.27-c` : le chiffre est relevé APRÈS le filtre que l'assertion
+    /// applique, comme la population qu'il décrit).
     const PORTILLON_PLANCHER_ROUTES: usize = 8;
 
     /// LES SONDES ÉCRITES À LA MAIN, et pourquoi chacune l'est.

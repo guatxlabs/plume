@@ -1366,6 +1366,8 @@ jobs:
       # 30+ faux positifs sur des ID d'événements et des adresses IP) ; résidus écrits dans le
       # script, pas cachés.
       - name: Le compte de tests n'existe qu'à un seul endroit, et toute mesure est datée
+        id: garde_01
+        continue-on-error: true
         run: python3 .github/scripts/check_no_duplicated_test_count.py
 
       # `P8.9-m` — LE CÂBLAGE D'UNE GARDE EST LUI-MÊME UNE PROPRIÉTÉ. `aucun-temporaire-laisse.sh`
@@ -1393,6 +1395,8 @@ jobs:
       # mesure DATÉE : « lecture du cœur v0.2.1 ») ne la déclenche pas, et c'est calibré sur
       # l'arbre : sans cette adjacence, sept citations historiques légitimes auraient rougi.
       - name: L'étiquette du cœur ne vit qu'au manifeste (recopiée, elle vieillit)
+        id: garde_02
+        continue-on-error: true
         run: python3 .github/scripts/check_the_core_pin_is_never_recopied.py
 
       # Un capteur qui ne peut pas collecter doit le DIRE. MESURÉ le 2026-08-01 sur une VM Ubuntu
@@ -1402,6 +1406,8 @@ jobs:
       # La garde n'énumère aucun capteur : elle exige que TOUTE sortie anticipée soit classée par
       # l'une des trois primitives de lib.sh, donc un capteur écrit demain est couvert d'office.
       - name: Un capteur qui ne peut pas collecter doit le dire (aucune sortie muette)
+        id: garde_03
+        continue-on-error: true
         run: python3 .github/scripts/check_collector_exit_is_classified.py
 
       # MÊME DÉFAUT, AUTRE LANGAGE — et sur la flotte DOMINANTE en entreprise. La garde ci-dessus ne
@@ -1416,6 +1422,8 @@ jobs:
       # `pwsh` est fourni par l'image ubuntu-24.04 (PowerShell 7.6.3, vérifié dans le README de
       # actions/runner-images) ; s'il manquait, la garde ÉCHOUE au lieu de passer.
       - name: Le collecteur Windows ne peut ni mentir ni oublier (AST PowerShell)
+        id: garde_04
+        continue-on-error: true
         run: python3 .github/scripts/check_windows_collector_is_honest.py
 
       # MÊME CAPTEUR, DÉFAUT VOISIN, ET IL SE LIT DANS L'ÉCART ENTRE LES DEUX ÉMETTEURS LIVRÉS.
@@ -1442,6 +1450,8 @@ jobs:
       # témoins positifs ET négatifs. Ce qu'elle NE tient PAS est écrit dans son en-tête et porté par
       # `P4.12-c` : elle compare des frontières, pas des formes canoniques.
       - name: Aucun capteur Windows livré ne laisse passer une adresse que l'autre écarte (P4.12-a)
+        id: garde_05
+        continue-on-error: true
         run: python3 .github/scripts/check_a_windows_sensor_promotes_the_address_it_carries.py
 
       # MÊME FAMILLE, AUTRE CAUSE : ici le capteur n'est pas muet, il ANNONCE une couverture que son
@@ -1457,6 +1467,8 @@ jobs:
       # à sable effectif (unit + drop-in, scalaires écrasés / listes unionnées) et refuse tout chemin
       # annoncé devenu injoignable. Elle porte ses propres témoins positif et négatif.
       - name: La couverture ANNONCÉE par un capteur doit être ATTEIGNABLE sous son bac à sable
+        id: garde_06
+        continue-on-error: true
         run: python3 .github/scripts/check_fim_coverage_is_reachable.py
       - { name: "Le capteur d'intégrité voit un drop-in systemd et les types d'unités du chemin de recherche DÉRIVÉ, dit la voie, et avoue un répertoire illisible (P3.8-a)", run: .github/scripts/verifier-fim-couvre-les-unites-systemd.sh }
 
@@ -1473,6 +1485,8 @@ jobs:
       # dans la sortie du premier) : source lisible valant réellement zéro -> la mesure est PUBLIÉE
       # à 0 ; source non exploitable -> AUCUN nombre, et un aveu qui NOMME la clé et sa cause.
       - name: Une mesure d'hôte qui n'a pas pu être prise n'est pas publiée comme un zéro
+        id: garde_07
+        continue-on-error: true
         run: python3 .github/scripts/check_host_measures_are_honest.py
 
       # `P11.20-a` — la température CPU portait sur le PREMIER processeur et se taisait sur les autres :
@@ -1481,12 +1495,16 @@ jobs:
       # est livré, contre un `/sys` fabriqué (deux processeurs + une NVMe plus chaude ; sonde vide ;
       # zone thermique seule).
       - name: La température CPU porte sur tous les processeurs, et dit sur combien
+        id: garde_08
+        continue-on-error: true
         run: python3 .github/scripts/check_cpu_temperature_covers_every_package.py
 
       # `P4.8-a` — le troisième chemin d'entrée d'exploitant, le catalogue de contrôles, est détournable
       # (`PLUME_CONTROLS_ROOT`) comme ses deux voisins, et un témoin l'exerce dans un bac : verdicts vrai/faux,
       # commentaire ignoré, dernière ligne sans saut de ligne lue, et rien ne fuit sans le levier.
       - name: Le capteur de contrôles lit le catalogue qu'on lui désigne, et le lit entier
+        id: garde_09
+        continue-on-error: true
         run: python3 .github/scripts/check_controls_sensor_reads_the_catalog_it_is_told.py
 
       # `P8.9-l` — LA RÈGLE QUE LES DOCUMENTS EXIGENT DES FICHIERS EST TENUE PAR UN INSTRUMENT. AGENTS.md
@@ -1496,6 +1514,8 @@ jobs:
       # et l'index reste sous un cliquet à la baisse (52 lignes le 2026-09-09), plafond zéro ailleurs
       # (vingt-trois lignes réécrites ce jour-là).
       - name: Les commentaires et la documentation s'adressent au lecteur, pas à leur auteur
+        id: garde_10
+        continue-on-error: true
         run: python3 .github/scripts/check_prose_addresses_the_reader_not_the_author.py
 
       # `P9.6-b` — UN GESTE QUI N'A DE SENS QUE SUR L'HÔTE NATIF RENVOIE À SA FORME DANS LES TROIS MODES.
@@ -1504,6 +1524,8 @@ jobs:
       # citant une section qui existe — dérivée des titres de la page). Mesuré le 2026-09-09 : cinq
       # invocations sur cinq en étaient orphelines.
       - name: Chaque geste d'hôte natif du README renvoie à sa forme dans les trois modes
+        id: garde_11
+        continue-on-error: true
         run: python3 .github/scripts/check_every_host_only_gesture_points_to_its_three_mode_form.py
 
       # LA MÊME CHAÎNE, À SON DERNIER MAILLON (`S37`) : le démon publie `<clé>_verdict` / `_cause` /
@@ -1518,8 +1540,10 @@ jobs:
       # rend le panneau Système sur des objets fabriqués : état « NON LISIBLE » avec sa cause, abandons
       # visibles, et la valeur — vrai zéro compris — quand le verdict est « lu ».
       - name: La surface web lit chaque verdict que le démon publie, et le rend comme un état
+        id: garde_12
+        continue-on-error: true
         run: python3 .github/scripts/check_web_reads_every_verdict.py
-      - { name: "Toute route sensible du démon (détruit / élève un droit / arme une réponse — DÉRIVÉE du routeur) a ses appelants web derrière la confirmation partagée (P11.5-b)", run: python3 .github/scripts/check_sensitive_routes_are_confirmed.py }
+      - { name: "Toute route sensible du démon (détruit / élève un droit / arme une réponse — DÉRIVÉE du routeur) a ses appelants web derrière la confirmation partagée (P11.5-b)", run: python3 .github/scripts/check_sensitive_routes_are_confirmed.py, id: garde_13, continue-on-error: true }
 
       # `P7.19-d` — LA SYNTAXE D'UN GABARIT DE ROUTE EST CELLE DU ROUTEUR, PARTOUT OÙ ELLE EST ÉCRITE.
       # La montée `axum` 0.7 -> 0.8 fait passer `/api/cases/:id` à `/api/cases/{id}`, et la bibliothèque
@@ -1533,8 +1557,8 @@ jobs:
       # inécrivable la seule phrase qui vaille sur cette rupture — c'est : une ligne qui porte l'ANCIENNE
       # doit porter la NOUVELLE sur la MÊME ligne. Prouvée par MUTATION le 2026-08-26 : remettre UN
       # commentaire de `web/` à l'ancienne syntaxe la fait rougir, le restaurer la fait reverdir.
-      - { name: "Un gabarit de route s'écrit dans la syntaxe du routeur partout où il est décrit — démon, console, documents publiés (P7.19-d)", run: python3 .github/scripts/check_route_templates_use_the_router_syntax.py }
-      - { name: "Aucun bouton de la surface web sans classe partagée ni contexte stylant — contextes et classes DÉRIVÉS de style.css, sites dérivés des modules (P11.4-b)", run: python3 .github/scripts/check_every_button_wears_shared_chrome.py }
+      - { name: "Un gabarit de route s'écrit dans la syntaxe du routeur partout où il est décrit — démon, console, documents publiés (P7.19-d)", run: python3 .github/scripts/check_route_templates_use_the_router_syntax.py, id: garde_14, continue-on-error: true }
+      - { name: "Aucun bouton de la surface web sans classe partagée ni contexte stylant — contextes et classes DÉRIVÉS de style.css, sites dérivés des modules (P11.4-b)", run: python3 .github/scripts/check_every_button_wears_shared_chrome.py, id: garde_15, continue-on-error: true }
 
       # `P11.14-c` — UN REFUS NE SE REND JAMAIS COMME UNE ABSENCE. Le panneau DLP décidait de son
       # affichage sur UNE condition (`!j || j.error || !Array.isArray(j.rows) || !j.rows.length`) :
@@ -1561,7 +1585,7 @@ jobs:
       # un corps aurait laissé muette la seconde des DEUX sorties de refus d'un même test de
       # `vieillissement_serie.rs`. Témoins FABRIQUÉS dans la garde (dont ce cas précis), population
       # DÉRIVÉE de l'arbre syntaxique, et refus de conclure (code 2) quand elle ne peut pas voir.
-      - { name: "Un test qui rend la main sans conclure le DIT par le canal — aucun refus muet dans daemon/src (P11.23-b)", run: python3 .github/scripts/check_a_test_that_declines_to_conclude_says_so.py }
+      - { name: "Un test qui rend la main sans conclure le DIT par le canal — aucun refus muet dans daemon/src (P11.23-b)", run: python3 .github/scripts/check_a_test_that_declines_to_conclude_says_so.py, id: garde_16, continue-on-error: true }
       # `P11.23-g` — LE JUMEAU SANS SORTIE NI BRANCHE. Un test dont TOUTES les assertions vivent
       # dans une boucle sur une table DÉCLARÉE ailleurs que lui n'a rien à sauter et rien à
       # avouer : le jour où la table perd sa matière, la boucle itère zéro fois et `libtest`
@@ -1577,8 +1601,8 @@ jobs:
       # de la garde ci-dessus et non recopié, quatorze témoins FABRIQUÉS dans la garde, population
       # DÉRIVÉE comme contrôle positif contre le vert par vacuité, et refus de conclure (code 2)
       # si le plancher n'exige plus rien ou n'accuse plus l'INSTRUMENT.
-      - { name: "Un test qui boucle sur une table déclarée passe par le plancher — vider la table ROUGIT (P11.23-g)", run: python3 .github/scripts/check_a_test_that_loops_over_a_declared_table_has_a_floor.py }
-      - { name: "Un refus du démon ne se rend jamais comme une absence de données — aucune condition de web/ ne fond l'échec et le vide (P11.14-c)", run: python3 .github/scripts/check_a_refusal_is_not_rendered_as_an_absence.py }
+      - { name: "Un test qui boucle sur une table déclarée passe par le plancher — vider la table ROUGIT (P11.23-g)", run: python3 .github/scripts/check_a_test_that_loops_over_a_declared_table_has_a_floor.py, id: garde_17, continue-on-error: true }
+      - { name: "Un refus du démon ne se rend jamais comme une absence de données — aucune condition de web/ ne fond l'échec et le vide (P11.14-c)", run: python3 .github/scripts/check_a_refusal_is_not_rendered_as_an_absence.py, id: garde_18, continue-on-error: true }
       # `P4.13-b` — UNE ÉCRITURE NUE AU STOCKAGE DU SITE JETTE AU MILIEU D'UN GESTE. Mesuré le
       # 2026-08-30 sous `PLUME_HARNAIS_STOCKAGE_REFUSE=1` : le tri des règles posait son état sans que
       # la liste soit repeinte, et un dépôt de carte laissait l'ordre inchangé. Le geste ne rend pas
@@ -1588,7 +1612,7 @@ jobs:
       # lexical qui écarte commentaires, chaînes, gabarits et littéraux d'expression régulière, témoins
       # FABRIQUÉS DANS LA GARDE et non lus du dépôt, cliquet à zéro, et refus de conclure (code 2) si le
       # corpus ne porte AUCUNE écriture — contrôle positif contre le vert par vacuité.
-      - { name: "Aucune écriture au stockage du site n'est nue dans web/ (P4.13-b)", run: python3 .github/scripts/check_no_naked_site_storage_write.py }
+      - { name: "Aucune écriture au stockage du site n'est nue dans web/ (P4.13-b)", run: python3 .github/scripts/check_no_naked_site_storage_write.py, id: garde_19, continue-on-error: true }
 
       # `P11.21-k` — UN AVEU SE PROUVE LÀ OÙ IL SE VOIT, PAS LÀ OÙ IL EST ÉCRIT. Le harnais ESM
       # juge le RANG d'un nœud dans le document ; sa propre section 0 PUBLIE qu'il ne tient NI la
@@ -1620,7 +1644,7 @@ jobs:
         # les deux aveux de la liste d'alertes : 11 rendus et une douzaine de secondes sont devenus
         # 22 rendus et une vingtaine — c'est dit ici plutôt que découvert. Le refus de conclure
       # n'est donc pas un bruit permanent : c'est le canal du jour où le moteur quitterait l'image.
-      - { name: "Un aveu est PEINT là où il est lu — moteur de rendu, ni masqué ni transparent ni inversé ni rogné, sur la matrice ATT&CK ET les deux aveux de la liste d'alertes (P11.21-k, P11.21-l)", run: python3 .github/scripts/check_an_admission_is_painted_where_it_is_read.py }
+      - { name: "Un aveu est PEINT là où il est lu — moteur de rendu, ni masqué ni transparent ni inversé ni rogné, sur la matrice ATT&CK ET les deux aveux de la liste d'alertes (P11.21-k, P11.21-l)", run: python3 .github/scripts/check_an_admission_is_painted_where_it_is_read.py, id: garde_20, continue-on-error: true }
 
       # `P11.21-n` — LA LANGUE DÉCLARÉE EST CELLE QUI EST RENDUE, ET C'EST LA GARDE VOISINE QUI A NOMMÉ
       # LE DÉFAUT SANS LE CORRIGER : « `web/index.html` déclare `lang="fr"` en dur et AUCUN module ne pose
@@ -1632,7 +1656,7 @@ jobs:
       # stockage, `fr`, `en` — tiennent dans UN SEUL rendu. Une garde de TEXTE aurait été moins chère et
       # AVEUGLE à deux des cinq mutations que ce fichier joue : un attribut posé sur une CONSTANTE, et un
       # attribut reposé plus tard par un AUTRE module.
-      - { name: "La langue DÉCLARÉE par le document est celle qu'il PEINT — moteur de rendu, trois cellules de langue, vocabulaire dérivé du dictionnaire (P11.21-n)", run: python3 .github/scripts/check_the_declared_language_is_the_one_rendered.py }
+      - { name: "La langue DÉCLARÉE par le document est celle qu'il PEINT — moteur de rendu, trois cellules de langue, vocabulaire dérivé du dictionnaire (P11.21-n)", run: python3 .github/scripts/check_the_declared_language_is_the_one_rendered.py, id: garde_21, continue-on-error: true }
 
       # `P11.18-w` — L'ENVIRONNEMENT DU PROCESSUS EST **UNE** RESSOURCE, ET ELLE N'A QU'UN VERROU.
       # `cfg()` résout toute clé dans l'ordre `env > conf > défaut` : un test qui pose une variable ne règle
@@ -1648,14 +1672,14 @@ jobs:
       # corpus lu sur le SYSTÈME DE FICHIERS et non `git ls-files` (`P11.13-d`) ; témoins positif, négatif, de
       # mode et de fermeture ; refus de conclure (sortie 2) sous ses planchers. Elle DIT ce qu'elle ne tient
       # pas : le côté lecteur, qui n'est pas une propriété syntaxique, et la durée de tenue.
-      - { name: "Aucun test du démon ne mute une variable d'environnement du processus sans tenir EN ÉCRITURE le verrou UNIQUE de cette ressource (P11.18-w)", run: python3 .github/scripts/check_no_test_mutates_the_process_env_unlocked.py }
+      - { name: "Aucun test du démon ne mute une variable d'environnement du processus sans tenir EN ÉCRITURE le verrou UNIQUE de cette ressource (P11.18-w)", run: python3 .github/scripts/check_no_test_mutates_the_process_env_unlocked.py, id: garde_22, continue-on-error: true }
 
       # `P11.4-d` — AUCUNE RÈGLE DE STYLE SANS CIBLE. Les sélecteurs d'identifiant et de classe sont DÉRIVÉS de
       # `style.css`, le corpus où un nom peut être posé est DÉRIVÉ de `web/` (code sans commentaires) ; un nom
       # construit par concaténation ou gabarit est « indécidable » et nommé, jamais compté orphelin. Mesuré le
       # 2026-08-22 : 521 noms distincts, 15 orphelins (dont `#ack-all`, mort depuis le chrome partagé), tous
       # retirés ; plafond zéro. L'instrument se valide (une règle `#inexistant{}` rougit, `.btn` non).
-      - { name: "Chaque identifiant ou classe ciblé par style.css est posé quelque part dans web/ — dérivé, plafond d'orphelins à zéro (P11.4-d)", run: python3 .github/scripts/check_every_style_selector_has_a_target.py }
+      - { name: "Chaque identifiant ou classe ciblé par style.css est posé quelque part dans web/ — dérivé, plafond d'orphelins à zéro (P11.4-d)", run: python3 .github/scripts/check_every_style_selector_has_a_target.py, id: garde_23, continue-on-error: true }
       # `P11.8-n` — AUCUN PARCOURS D'ARBRE NU DEPUIS UNE RACINE DOMINANTE. `P11.8-m` a écrit le geste
       # d'élagage UNE fois (`NOMS_HORS_ARBRE`, `parcours_des_sources`) ; rien ne rougissait sur un parcours
       # écrit à la main sans élagage, et le trou restait refermable en silence par le prochain qui en
@@ -1667,14 +1691,14 @@ jobs:
       # racine est DOMINANTE — dérivée de la position du fichier sans descendre, ou désignée — et qui
       # n'exclut aucun artefact ; un parcours PLAT ne l'est jamais, il ne descend rien. Mesuré le
       # 2026-08-31 : 53 instruments, 1 parcours dominant, 0 nu, 1 copie divergente (plafond daté à 1).
-      - { name: "Aucun instrument ne parcourt récursivement une racine dominante sans élaguer les artefacts — racine dérivée de la position du fichier, propagée aux paramètres (P11.8-n)", run: python3 .github/scripts/check_no_guard_walks_the_tree_unpruned.py }
+      - { name: "Aucun instrument ne parcourt récursivement une racine dominante sans élaguer les artefacts — racine dérivée de la position du fichier, propagée aux paramètres (P11.8-n)", run: python3 .github/scripts/check_no_guard_walks_the_tree_unpruned.py, id: garde_24, continue-on-error: true }
       # `P11.4-e` — CHAQUE DÉCLENCHEUR D'AIDE OUVRE UNE SECTION. Déclencheurs DÉRIVÉS de `web/` (`data-help`
       # en HTML et dans les gabarits, `dataset.help`, `openHelp('…')`, entrées du sommaire du guide), sections
       # DÉRIVÉES de l'objet `HELP` du registre d'aide (`web/help_registry.js`, lui-même dérivé de sa définition,
       # pas nommé) ; une section sans déclencheur est une information. Mesuré le
       # 2026-08-22 : deux déclencheurs sans section (« tokens » en HTML, « processors » au sommaire du guide) ;
       # l'ouvreur se taisait (harnais : zéro nœud rendu), il rend désormais un aveu qui nomme la clé.
-      - { name: "Chaque déclencheur d'aide de la console (HTML et JS) ouvre une section du registre d'aide — dérivé dans les deux sens, module du registre dérivé (P11.4-e)", run: python3 .github/scripts/check_every_help_trigger_has_a_section.py }
+      - { name: "Chaque déclencheur d'aide de la console (HTML et JS) ouvre une section du registre d'aide — dérivé dans les deux sens, module du registre dérivé (P11.4-e)", run: python3 .github/scripts/check_every_help_trigger_has_a_section.py, id: garde_25, continue-on-error: true }
 
       # `P11.8-a` — LE LEXIQUE FR/EN COUVRE CE QUE CHAQUE MODULE AFFICHE. La console traduit par dictionnaire
       # (`i18n.js`, correspondance EXACTE d'un nœud texte ou d'un attribut affiché) : une chaîne sans clé
@@ -1684,6 +1708,8 @@ jobs:
       # `index.html`), valide son instrument sur un corpus témoin dans les deux sens, refuse de conclure sous
       # ses planchers, et tient un PLAFOND DE TROUS par module : une chaîne affichée de plus sans entrée rougit.
       - name: Le lexique fr/en couvre les chaînes affichées de chaque module web (aucun trou de plus)
+        id: garde_26
+        continue-on-error: true
         run: python3 .github/scripts/check_i18n_lexicon_covers_displayed_strings.py
 
       # LA MÊME FIGURE, PORTÉE À LA SURFACE ENTIÈRE : la garde ci-dessus tient UNE mesure d'hôte sur
@@ -1700,6 +1726,8 @@ jobs:
       # les deux sens, et mutation déclarée INCONCLUANTE plutôt que verte quand une sortie vide n'est
       # pas une lecture nominale. Sous deux capteurs exerçables, elle ÉCHOUE au lieu de conclure.
       - name: Un capteur shell ne publie pas un nombre qu'il n'a pas pu lire
+        id: garde_27
+        continue-on-error: true
         run: python3 .github/scripts/check_collector_reads_are_honest.py
 
       # MÊME FAMILLE, PORTÉE SUR UN MÉCANISME DE SÉCURITÉ, ET C'EST LÀ QU'ELLE COÛTE LE PLUS : un
@@ -1719,6 +1747,8 @@ jobs:
       # NOMMÉ (cause de l'ensemble fermé) ; liste lisible et RÉELLEMENT vide -> comportement normal,
       # sans refus. Sans ce second témoin, un enforcer qui refuserait toujours passerait le premier.
       - name: Un enforcer qui ne peut pas lire sa liste de protection REFUSE (fail-closed)
+        id: garde_28
+        continue-on-error: true
         run: python3 .github/scripts/check_enforcer_lists_fail_closed.py
 
       # `P4.7-j` — L'IDENTITÉ D'UNE ADRESSE EST SA VALEUR, ET IL N'EN EXISTE QU'UNE LECTURE.
@@ -1735,6 +1765,8 @@ jobs:
       # La moitié SHELL ne peut pas appeler le canonicaliseur du démon : elle doit porter un AVEU
       # ÉCRIT qui NOMME la divergence, mesurée et inscrite dans `collectors/engagement-adapter.sh`.
       - name: Il n'existe qu'UNE canonicalisation d'adresse, et c'est celle qui replie la forme mappée (P4.7-j)
+        id: garde_29
+        continue-on-error: true
         run: python3 .github/scripts/check_one_canonical_address_form.py
 
       # `P4.7-g` — UN NOM, DEUX QUESTIONS : `parse_excl_item` sert le RENDU D'AFFICHAGE (où un préfixe
@@ -1747,6 +1779,8 @@ jobs:
       # (`ledger.rs` x2, `handlers/engagement.rs` x2) -> la garde était ROUGE avant, VERTE après.
       # Le module d'AFFICHAGE est DÉRIVÉ (le fichier qui définit `ExclClauses`), pas écrit.
       - name: L'analyseur du rendu d'affichage n'a QUE des consommateurs d'affichage (P4.7-g)
+        id: garde_30
+        continue-on-error: true
         run: python3 .github/scripts/check_display_parser_has_only_display_consumers.py
 
       # `P7.19-b` — « JE N'AI PAS PU MESURER » NE SORT PAS PAR LE MÊME CANAL QUE « LA PROPRIÉTÉ EST
@@ -1761,6 +1795,8 @@ jobs:
       # banc passe son journal au tri. La marque n'est recopiée nulle part : elle est lue dans le
       # banc, et sa disparition fait REFUSER la garde (code 2) au lieu de la rendre verte.
       - name: Un banc qui refuse de conclure sort par un canal DISTINCT d'une propriété violée
+        id: garde_31
+        continue-on-error: true
         run: python3 .github/scripts/check_a_bench_refusal_is_a_distinct_channel.py
 
       # MÊME FAMILLE QUE LE PAS PRÉCÉDENT, UN CRAN PLUS TÔT : là le CANAL était faux, ici c'est la GRANDEUR.
@@ -1781,6 +1817,8 @@ jobs:
       # Ses six témoins (un à accuser, cinq à blanchir) sont FABRIQUÉS DANS LA GARDE : aucun plancher
       # sur l'état de l'arbre, qui rougirait le jour où le travail est fini.
       - name: Un témoin qui ANNONCE un compte ne le tient pas avec une HORLOGE
+        id: garde_32
+        continue-on-error: true
         run: python3 .github/scripts/check_a_counted_property_is_never_asserted_through_a_clock.py
 
       # MÊME FAMILLE, APPLIQUÉE À LA DOCUMENTATION : ici ce n'est pas une couverture annoncée qui est
@@ -1798,6 +1836,8 @@ jobs:
       # UN DOCUMENT AJOUTÉ SANS ENTRÉE D'INDEX FAIT ROUGIR CE PAS, ET C'EST L'OBJET : l'index se tient
       # au moment où le document est écrit, pas lors d'un futur audit.
       - name: Un document suivi doit être ATTEIGNABLE depuis la page d'accueil
+        id: garde_33
+        continue-on-error: true
         run: python3 .github/scripts/check_every_doc_is_reachable.py
 
       # `P9.7-b` — CE QU'UN EXPLOITANT DOIT POUVOIR TROUVER EST DOCUMENTÉ. Même famille que le pas
@@ -1826,6 +1866,8 @@ jobs:
       # LE CORPUS QU'ELLE LIT EST CELUI DES FICHIERS SUIVIS, délibérément : un document hors index
       # n'existe pas pour elle comme il n'existe pas pour le lecteur du dépôt.
       - name: Ce qu'un exploitant doit pouvoir trouver est documenté — onglets, capteurs, modes et leviers DÉRIVÉS des sources, cliquet sur ce qui n'est pas couvert (P9.7-b)
+        id: garde_34
+        continue-on-error: true
         run: python3 .github/scripts/check_operator_surface_is_documented.py
 
       # `P11.21-c` — ET LE NOM QU'UN DOCUMENT DONNE À UN ONGLET EST CELUI QUE LA CONSOLE SERT. Le pas
@@ -1856,6 +1898,8 @@ jobs:
       # non une garde. Les quatre chemins de la dérivation, les six refus et la comparaison dans LES DEUX
       # SENS (documentation périmée / page renommée) y sont exercés.
       - name: Le nom qu'un document donne à un onglet est celui que la console SERT — dérivé du titre du panneau, refus de conclure plutôt que devinette (P11.21-c)
+        id: garde_35
+        continue-on-error: true
         run: python3 .github/scripts/check_a_documented_tab_label_is_the_name_the_console_serves.py
       # `P11.21-d` — UN CHEMIN DE CONSOLE CITÉ EN PROSE MÈNE LÀ OÙ IL DIT. La garde ci-dessus juge une
       # COLONNE de tableau, à position fixe : une citation en PROSE lui échappe PAR CONSTRUCTION, et elle
@@ -1868,7 +1912,7 @@ jobs:
       # est CELLE de la garde ci-dessus, importée et non réimplémentée — ce dépôt porte une clé ouverte
       # dont le défaut est « trois lectures d'une même liste, et aucune ne fait foi ». Ce qu'elle ne sait
       # pas trancher, elle le PUBLIE au lieu de le deviner.
-      - { name: "Un chemin de console cité en prose mène là où il dit (P11.21-d)", run: python3 .github/scripts/check_a_console_path_cited_in_prose_leads_where_it_says.py }
+      - { name: "Un chemin de console cité en prose mène là où il dit (P11.21-d)", run: python3 .github/scripts/check_a_console_path_cited_in_prose_leads_where_it_says.py, id: garde_36, continue-on-error: true }
 
       # `P7.20-i` — UN CONTRÔLE CITÉ EXISTE DANS CET ARBRE. La garde ci-dessus juge où MÈNE un chemin de
       # console ; celle-ci juge qu'un chemin de CONTRÔLE existe tout court. Mesuré le 2026-08-30 : la
@@ -1889,7 +1933,7 @@ jobs:
       # entre accents graves. Élargir aux parenthèses a été mesuré — deux fausses accusations pour une
       # vraie prise sur la tête — et REFUSÉ. Elle REFUSE DE CONCLURE (sortie 2) plutôt que de verdir en
       # étant aveugle : racine non dérivable, index vide, corpus vide, ou auto-validation démentie.
-      - { name: "Un contrôle cité existe dans ce dépôt (P7.20-i)", run: python3 .github/scripts/check_a_cited_control_exists_in_this_repo.py }
+      - { name: "Un contrôle cité existe dans ce dépôt (P7.20-i)", run: python3 .github/scripts/check_a_cited_control_exists_in_this_repo.py, id: garde_37, continue-on-error: true }
 
       # `P9.4-b` + `P9.6-a` — UN DÉPLOIEMENT N'ARME JAMAIS UNE TÂCHE DONT UNE PRÉCONDITION MANQUE CHEZ
       # LUI. Cette garde était ÉCRITE et volontairement NON CÂBLÉE : elle sortait en refus, et c'était son
@@ -1908,6 +1952,8 @@ jobs:
       # l'aboutissement réel du cycle — dit à l'exécution par le signal non purgeable — et ce qu'un
       # fichier d'environnement d'exploitant ajouterait hors du dépôt.
       - name: Un déploiement n'arme jamais une tâche dont une précondition n'est pas satisfaite chez lui (P9.4-b)
+        id: garde_38
+        continue-on-error: true
         run: python3 .github/scripts/check_a_deployment_never_arms_a_task_it_cannot_run.py
 
       # `P7.20-d` — MÊME FAMILLE, quand la précondition n'est pas une variable livrée mais un MODE que
@@ -1917,6 +1963,8 @@ jobs:
       # le corps de la tâche (forme de `P9.4-b`, importée), et rougit sur toute livraison non nulle tant
       # que le code n'assigne pas ce PRAGMA ; éprouvée dans les deux sens sur des arbres fabriqués.
       - name: Un manifeste n'arme jamais un entretien dont le mode n'est posé nulle part (P7.20-d)
+        id: garde_39
+        continue-on-error: true
         run: python3 .github/scripts/check_a_manifest_never_arms_a_maintenance_the_daemon_never_enables.py
 
       # `P8.9-c` — MÊME FAMILLE, APPLIQUÉE À L'INDEX DES CLÉS : ici ce n'est ni la couverture ni le
@@ -1937,6 +1985,8 @@ jobs:
       # reste disparaît du document plutôt que de rester verte en ne gardant plus rien. Ce qu'elle ne
       # tient pas est écrit : la seule famille lexicale du reste, et aucun dépôt voisin.
       - name: Un reste sous une clé fermée appartient à une clé ouverte, ou se déclare
+        id: garde_40
+        continue-on-error: true
         run: python3 .github/scripts/check_every_residue_belongs_to_an_open_key.py
 
       # `P10.5-g` — UN REMÈDE MACHINE PUBLIÉ PAR LE DÉMON EST LU PAR LA CONSOLE. Mesuré le 2026-08-28 :
@@ -1948,6 +1998,8 @@ jobs:
       # ne soit tenue à côté. Elle refuse de conclure sous son plancher. Ce qu'elle ne tient pas est écrit
       # dans son en-tête : que le remède soit OBÉI, une autre forme que le booléen nu, un client hors web/.
       - name: Un remède machine publié dans un refus est lu par la console
+        id: garde_41
+        continue-on-error: true
         run: python3 .github/scripts/check_a_machine_remedy_is_read_by_the_console.py
 
       # `P8.9-d` — LA FORME DU TABLEAU, LÀ OÙ LES TROIS GARDES VOISINES NE LISENT QUE SON TEXTE. Mesuré
@@ -1967,6 +2019,8 @@ jobs:
       # son découpeur ne se reconnaît plus, et dit ce qu'elle ne tient pas : la forme seulement, jamais le
       # texte, et pas les tableaux montrés dans un bloc de code, qui sont des échantillons.
       - name: Une ligne de tableau porte la forme que son en-tête déclare (P8.9-d)
+        id: garde_42
+        continue-on-error: true
         run: python3 .github/scripts/check_every_table_row_carries_the_shape_its_header_declares.py
 
       # `P8.9-g` — UNE CLÉ NEUVE S'AJOUTE À LA FIN DU DOCUMENT, QUI N'EST PAS LA FIN DE SA PHASE. Mesuré
@@ -1976,6 +2030,8 @@ jobs:
       # la clé elle-même — aucune phase n'est énumérée ici, en ajouter une n'oblige à rien toucher — et
       # elle refuse de conclure si son propre instrument échoue à ses témoins ou si le corpus est vide.
       - name: Une clé se lit sous le titre de sa phase (P8.9-g)
+        id: garde_43
+        continue-on-error: true
         run: python3 .github/scripts/check_every_key_sits_under_the_section_of_its_phase.py
 
       # `P8.9-h` — UNE CELLULE PORTAIT DEUX MARQUEURS D'ÉTAT COLLÉS, valeur que la légende ne déclare
@@ -1984,6 +2040,8 @@ jobs:
       # DÉRIVÉS de la table de légende du document : en ajouter un n'oblige à rien toucher ici, et un
       # document qui porte des clés sans légende fait REFUSER DE CONCLURE plutôt que passer au vert.
       - name: L'état d'une clé est un de ceux que la légende déclare (P8.9-h)
+        id: garde_44
+        continue-on-error: true
         run: python3 .github/scripts/check_a_key_state_is_one_the_legend_declares.py
 
       # `P8.9-i` — UNE GARDE ÉCRITE MAIS NON CÂBLÉE NE REFUSE RIEN, et son verdict se lit pourtant comme
@@ -1992,6 +2050,8 @@ jobs:
       # seul vert ne bouge. Le corpus est le RÉPERTOIRE et non l'index du dépôt — une garde neuve existe
       # sur le disque avant d'être suivie, et c'est là qu'on oublie de la câbler.
       - name: Une garde écrite est une garde câblée (P8.9-i)
+        id: garde_45
+        continue-on-error: true
         run: python3 .github/scripts/check_every_guard_written_is_a_guard_wired.py
 
       # `P8.9-j` — UNE CLÉ CITÉE PAR LE CODE MAIS ABSENTE DE L'INDEX désigne un travail que rien ne suit.
@@ -2001,6 +2061,8 @@ jobs:
       # lit que l'index : il ne pouvait pas les voir. La borne des clés FACTICES des témoins est dérivée
       # de l'index lui-même — une phase que l'index ne titre pas est une phase fabriquée.
       - name: Une clé citée par le code existe dans l'index (P8.9-j)
+        id: garde_46
+        continue-on-error: true
         run: python3 .github/scripts/check_every_key_cited_in_the_code_exists_in_the_index.py
 
       # `P8.9-k` — UN INSTRUMENT QUI PORTE LE CHEMIN ABSOLU DE LA MACHINE OÙ IL A ÉTÉ ÉCRIT rend deux
@@ -2016,16 +2078,22 @@ jobs:
       # borner aux instruments exécutables n'écarte PAS le second cas et aveugle 42 instruments sur 56 ;
       # dépouiller les commentaires n'acquitte rien de plus et rétrécit le canal.
       - name: Aucun instrument ne porte le chemin de la machine de son auteur (P8.9-k)
+        id: garde_47
+        continue-on-error: true
         run: python3 .github/scripts/check_no_instrument_hardcodes_an_author_machine_path.py
 
       # `P11.19-a` — CE QU'UN CAPTEUR ÉMET EST DÉCLARÉ, et le mot étranger est refusé à l'émission.
       - name: Un producteur déclare les valeurs qu'il émet (P11.19-a)
+        id: garde_48
+        continue-on-error: true
         run: python3 .github/scripts/check_a_producer_declares_the_values_it_emits.py
 
       # `P11.18-z` — LA RECHERCHE D'UNE LISTE SURVIT AU RENDU QUI DÉTRUIT SON CHAMP. La garde tient que
       # chaque liste cherchable déclare l'identité stable sans laquelle la mémoire ne peut pas s'armer :
       # sans elle, le mécanisme est posé mais la vue se comporte comme avant, en silence.
       - name: Une liste cherchable se souvient de sa recherche (P11.18-z)
+        id: garde_49
+        continue-on-error: true
         run: python3 .github/scripts/check_every_searchable_list_remembers_its_search.py
 
       # `P8.9-f` — L'INDEX ET LES COMMITS POUVAIENT SE CONTREDIRE SANS QUE RIEN NE LE DISE. Deux fois
@@ -2045,6 +2113,8 @@ jobs:
       # quatre-vingt-neuf commits de fermeture sur cent-dix, et ne dirait rien d'une bascule ABSENTE,
       # qui est justement le défaut. Elle refuse de conclure (code 2) sous ses planchers.
       - name: L'index concorde avec ce qu'un commit déclare fermé — posée sous P8.9-f, qu'elle ne ferme pas
+        id: garde_50
+        continue-on-error: true
         run: python3 .github/scripts/check_the_index_agrees_with_what_a_commit_closes.py
 
       # MÊME FAMILLE, APPLIQUÉE AU PLAN DES MODULES : un document que rien ne relit dérive. Le plan
@@ -2062,6 +2132,8 @@ jobs:
       # ``) : ce qu'est un module dépend du langage de l'arbre, et une garde qui supposait `.rs` ne
       # pouvait tenir que la moitié du produit. Le corpus témoin porte les deux langages.
       - name: Le plan des modules dit vrai sur l'arbre suivi, dans les deux sens — démon ET console (P7.18-a)
+        id: garde_51
+        continue-on-error: true
         run: python3 .github/scripts/check_module_map_matches_tree.py
 
       # MÊME FAMILLE, APPLIQUÉE À LA PROMESSE CENTRALE DU PRODUIT : une garantie AFFIRMÉE que le code
@@ -2077,6 +2149,8 @@ jobs:
       # vérifie l'ORDRE réel (contenu AVANT le renommage, répertoire APRÈS). Elle dit aussi ce qu'elle
       # ne prouve pas : que les appels sont faits, jamais la survie à une coupure d'alimentation.
       - name: Une publication dans le spool doit être DURABLE, pas seulement atomique
+        id: garde_52
+        continue-on-error: true
         run: python3 .github/scripts/check_publication_is_durable.py
 
       # LA MÊME FAMILLE, UN CRAN PLUS TÔT : ce qui est publié est durable ; encore faut-il que le
@@ -2103,6 +2177,8 @@ jobs:
       # propriété elle-même est épinglée côté Rust par l'identité d'ADRESSE du lot entre l'avant et
       # l'enveloppe (`l_enveloppe_deplace_son_lot_et_rend_les_memes_octets`).
       - name: Une enveloppe d'ingestion doit DÉPLACER son lot, jamais le recopier (P6.9-c)
+        id: garde_53
+        continue-on-error: true
         run: python3 .github/scripts/check_an_ingestion_envelope_never_copies_its_batch.py
 
       # LE DÉFAUT VOISIN, ET PLUS GRAVE : la garde ci-dessus rend DURABLE ce qui est publié ; celle-ci
@@ -2123,6 +2199,8 @@ jobs:
       # aucune clé de dédoublonnage, leurs doublons seront VISIBLES) ni la survie à une coupure
       # d'alimentation.
       - name: Un filigrane doit SUIVRE la publication qu'il acquitte, jamais la précéder
+        id: garde_54
+        continue-on-error: true
         run: python3 .github/scripts/check_watermark_follows_publication.py
 
       # LA MOITIÉ MANQUANTE DE LA GARDE PRÉCÉDENTE. Publier avant d'acquitter transforme une perte
@@ -2143,6 +2221,8 @@ jobs:
       # passes, faute de quoi elles tomberaient dans la même seconde et une clé bâtie sur l'instant de
       # publication paraîtrait stable.
       - name: Un rejeu doit être ABSORBÉ par le central, pas seulement visible
+        id: garde_55
+        continue-on-error: true
         run: python3 .github/scripts/check_replay_is_absorbable.py
 
       # LA MÊME FAMILLE, PAR LA PORTE DE SORTIE — et c'est un défaut de CORRECTION, pas un oubli.
@@ -2167,6 +2247,8 @@ jobs:
       # figé, aveu émis, tranche rejouée ; source LUE sans rien à signaler -> marqueur écrit et aucun
       # aveu, sans quoi on aurait troqué une perte silencieuse contre un rejeu permanent.
       - name: Une lecture qui ÉCHOUE ne doit rien acquitter
+        id: garde_56
+        continue-on-error: true
         run: python3 .github/scripts/check_read_failure_is_not_acknowledged.py
 
       # `P10.7-g` — LA MÊME FAMILLE, CÔTÉ ROUTE : la lecture a bien eu lieu ou non, et le corps SERVI
@@ -2197,6 +2279,8 @@ jobs:
       # les accusations — ils ne montent jamais, et ZÉRO est une valeur atteignable : un témoin qui
       # exigerait que le défaut survive serait une rançon.
       - name: Une lecture qui n'a pas eu lieu n'est jamais servie comme un fait (P10.7-g)
+        id: garde_57
+        continue-on-error: true
         run: python3 .github/scripts/check_a_read_that_did_not_happen_is_never_served_as_a_fact.py
 
       # `P4.1-q` — LA MÊME FAMILLE, MAIS RIEN N'EST PUBLIÉ DU TOUT. `S32`/`S33`/`S36` ferment le cas
@@ -2223,6 +2307,8 @@ jobs:
       # INVERSE — dont la pose DÉGÉNÉRÉE qui ne surveille plus rien, et un scrutin sous bloc `unsafe`
       # qu'une lecture naïve des accolades ne voit pas.
       - name: Une couverture qu'on n'a pas pu poser ne s'éteint pas en silence
+        id: garde_58
+        continue-on-error: true
         run: python3 .github/scripts/check_coverage_loss_is_never_silent.py
 
       # DU CODE LIVRÉ QU'AUCUN JOB NE COMPILE (`P8.24-a`). Une fonctionnalité cargo éteinte par défaut
@@ -2260,6 +2346,8 @@ jobs:
       # planchers, et dit ce qu'elle ne voit pas : un relevé sans forme reconnaissable, les fichiers de
       # données, et l'historique déjà poussé — elle tient la version servie, pas le passé.
       - name: Un chiffre d'exploitation ne se publie pas (AGENTS.md §4)
+        id: garde_59
+        continue-on-error: true
         run: python3 .github/scripts/check_no_operational_figure_is_published.py
       # `P8.9-n` — DEUX FICHIERS AFFIRMAIENT CHACUN ÊTRE L'ENDROIT UNIQUE où vit l'identité de
       # publication, et le second APPELLE le premier dès sa ligne 3. La phrase était fausse aux deux
@@ -2268,6 +2356,8 @@ jobs:
       # variable d'environnement passait donc le script. Le contrôle fort a rejoint le canonique ;
       # cette garde empêche la copie de repousser, et exige que toute MENTION lui soit identique.
       - name: L'identité canonique a une seule source, et aucune mention n'en diverge (P8.9-n)
+        id: garde_60
+        continue-on-error: true
         run: python3 .github/scripts/check_identite_canonique_a_une_seule_source.py
       # `P4.9-a` — TROIS DES CINQ LEVIERS DE RÉTENTION DÉCLARAIENT MOINS QU'ILS NE GOUVERNENT : un nom
       # qui porte « metric » et purge le PRÉ-AGRÉGÉ (la table brute étant purgée par un voisin, en
@@ -2276,6 +2366,8 @@ jobs:
       # quarante-cinq. La propriété tenue n'est pas « un levier nomme une table qu'il gouverne » — trop
       # faible — mais que l'ensemble des tables PURGÉES par la passe soit EXACTEMENT l'ensemble déclaré.
       - name: Un levier de rétention déclare toutes les tables qu'il purge (P4.9-a)
+        id: garde_61
+        continue-on-error: true
         run: python3 .github/scripts/check_retention_declare_ce_quelle_purge.py
 
       # Discovery is by EXTENSION **and** by first-line SHEBANG, deliberately: today all 43
@@ -2362,6 +2454,83 @@ jobs:
   # additive, so a combined check can hide a feature that only fails on its own (e.g. one that
   # relies on an import another feature happens to bring in).
   # ---------------------------------------------------------------------------
+
+      # `P8.29-c` — CHAQUE GARDE EST JOUÉE, ET LE VERDICT LES RASSEMBLE. Vécu trois fois le 2026-09-03 et
+      # une fois de plus le 2026-09-09 : un pas rouge ARRÊTAIT le travail et cachait les suivants, chaque
+      # défaut coûtant un aller-retour de publication. Le remède est celui de `P8.29-a` (job `security`) :
+      # les gardes sont INDÉPENDANTES — chacune lit l'arbre, aucune ne consomme un artefact produit par
+      # une autre (mesuré : zéro argument de fichier, les seuls prérequis sont des outils que le pas
+      # installe lui-même ou que l'image fournit) — donc chacune est tolérante et identifiée, et ce pas
+      # final REFUSE si l'une a échoué, en NOMMANT chacune. Les pas non-gardes (checkout, câblage du
+      # temporaire, fonctionnalités cargo, bash -n) restent en série : ils gardent leur rôle de socle.
+      - name: Toutes les gardes ont été jouées, et toutes ont passé
+        if: always()
+        run: |
+          set -u
+          rc=0; total=0; rouges=0
+          total=$((total+1)); o="${{ steps.garde_01.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_no_duplicated_test_count.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_02.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_the_core_pin_is_never_recopied.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_03.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_collector_exit_is_classified.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_04.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_windows_collector_is_honest.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_05.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_windows_sensor_promotes_the_address_it_carries.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_06.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_fim_coverage_is_reachable.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_07.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_host_measures_are_honest.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_08.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_cpu_temperature_covers_every_package.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_09.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_controls_sensor_reads_the_catalog_it_is_told.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_10.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_prose_addresses_the_reader_not_the_author.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_11.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_every_host_only_gesture_points_to_its_three_mode_form.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_12.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_web_reads_every_verdict.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_13.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_sensitive_routes_are_confirmed.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_14.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_route_templates_use_the_router_syntax.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_15.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_every_button_wears_shared_chrome.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_16.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_test_that_declines_to_conclude_says_so.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_17.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_test_that_loops_over_a_declared_table_has_a_floor.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_18.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_refusal_is_not_rendered_as_an_absence.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_19.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_no_naked_site_storage_write.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_20.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_an_admission_is_painted_where_it_is_read.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_21.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_the_declared_language_is_the_one_rendered.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_22.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_no_test_mutates_the_process_env_unlocked.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_23.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_every_style_selector_has_a_target.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_24.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_no_guard_walks_the_tree_unpruned.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_25.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_every_help_trigger_has_a_section.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_26.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_i18n_lexicon_covers_displayed_strings.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_27.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_collector_reads_are_honest.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_28.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_enforcer_lists_fail_closed.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_29.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_one_canonical_address_form.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_30.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_display_parser_has_only_display_consumers.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_31.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_bench_refusal_is_a_distinct_channel.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_32.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_counted_property_is_never_asserted_through_a_clock.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_33.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_every_doc_is_reachable.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_34.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_operator_surface_is_documented.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_35.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_documented_tab_label_is_the_name_the_console_serves.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_36.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_console_path_cited_in_prose_leads_where_it_says.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_37.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_cited_control_exists_in_this_repo.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_38.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_deployment_never_arms_a_task_it_cannot_run.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_39.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_manifest_never_arms_a_maintenance_the_daemon_never_enables.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_40.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_every_residue_belongs_to_an_open_key.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_41.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_machine_remedy_is_read_by_the_console.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_42.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_every_table_row_carries_the_shape_its_header_declares.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_43.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_every_key_sits_under_the_section_of_its_phase.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_44.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_key_state_is_one_the_legend_declares.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_45.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_every_guard_written_is_a_guard_wired.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_46.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_every_key_cited_in_the_code_exists_in_the_index.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_47.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_no_instrument_hardcodes_an_author_machine_path.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_48.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_producer_declares_the_values_it_emits.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_49.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_every_searchable_list_remembers_its_search.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_50.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_the_index_agrees_with_what_a_commit_closes.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_51.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_module_map_matches_tree.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_52.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_publication_is_durable.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_53.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_an_ingestion_envelope_never_copies_its_batch.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_54.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_watermark_follows_publication.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_55.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_replay_is_absorbable.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_56.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_read_failure_is_not_acknowledged.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_57.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_read_that_did_not_happen_is_never_served_as_a_fact.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_58.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_coverage_loss_is_never_silent.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_59.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_no_operational_figure_is_published.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_60.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_identite_canonique_a_une_seule_source.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_61.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_retention_declare_ce_quelle_purge.py : $o"; }
+          echo "gardes jouées : $total ; en échec : $rouges"
+          exit $rc
   features:
     name: features (cargo check per off-by-default feature)
     runs-on: ubuntu-24.04

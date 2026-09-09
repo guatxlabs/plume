@@ -219,6 +219,16 @@ plume-daemon restore /restore/plume-<TS>.db.age /data/plume.db --force
 `restore` refuse d'écraser une DB existante sans `--force`. La DB restaurée est byte-rejouable
 (round-trip prouvé par les tests).
 
+> ⚠️ **Lisez le code de sortie de `plume-daemon restore` LUI-MÊME, jamais celui d'un tube** (`P8.10-k`,
+> mesuré le 2026-09-09 sur le binaire : un déchiffrement qui échoue — passphrase ou identité absente —
+> rend **1**, imprime « déchiffrement age … No matching keys found », et **ne crée pas** la destination ;
+> avec `--force` sur une base existante, l'ancienne base reste **intacte**). Le code **zéro** et le fichier
+> **vide** vus pendant un incident viennent d'une forme de shell, pas de la commande : à travers un tube
+> (`… | tee`, `… | zstd -d > fichier`), `$?` est celui du DERNIER programme, et une redirection crée le
+> fichier avant que quiconque n'ait déchiffré quoi que ce soit. `set -o pipefail`, ou lisez `${PIPESTATUS[0]}`,
+> et ne relancez jamais le démon sur une destination que `restore` n'a pas annoncée en sortie standard.
+
+
 ## Vérification automatisée (restore-test) et sa dégradation assumée
 
 Le restore-test **in-cluster** ne peut PAS détenir l'identité privée (la mettre en cluster ruinerait le

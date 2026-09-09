@@ -1672,6 +1672,14 @@
         let r2 = dir.join("r2.db").to_string_lossy().into_owned();
         assert!(crate::backup::restore_compressed(&dest, &r2, Some(key), true, None).is_err(),
             "backup asymétrique NON déchiffrable à la seule passphrase");
+        // `P8.10-k` (2026-09-09) — L'ÉCHEC FABRIQUÉ (identité absente) NE LAISSE AUCUN FICHIER DERRIÈRE LUI :
+        // un fichier vide à la destination serait pris pour une base par la commande suivante, qui y déroulerait
+        // les migrations et rendrait vert. Et sous `--force` sur une base EXISTANTE, l'ancienne base reste INTACTE.
+        assert!(!std::path::Path::new(&r2).exists(), "un déchiffrement qui échoue ne crée pas la destination : {r2}");
+        let r3 = dir.join("r3.db").to_string_lossy().into_owned();
+        std::fs::write(&r3, b"ancienne-base-intacte").unwrap();
+        assert!(crate::backup::restore_compressed(&dest, &r3, Some(key), true, None).is_err(), "même échec sous --force");
+        assert_eq!(std::fs::read(&r3).unwrap(), b"ancienne-base-intacte", "sous --force, un déchiffrement qui échoue ne touche pas la base existante");
 
         // (4) INERTE : recipient=None -> symétrique (scrypt), full-verify EN cluster (comportement historique).
         let dest_sym = dir.join("sym.age").to_string_lossy().into_owned();

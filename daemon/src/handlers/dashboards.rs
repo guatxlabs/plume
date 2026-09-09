@@ -141,14 +141,24 @@ pub(crate) async fn dash_create(State(st): State<AppState>, Extension(au): Exten
     Json(json!({ "id": conn.last_insert_rowid() }))
 }
 
-pub(crate) async fn dash_update(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> StatusCode {
+pub(crate) async fn dash_update(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
     crate::req_conn!(st, au, conn);
     let exists: bool = conn.query_row("SELECT 1 FROM dashboard WHERE id=?1", params![id], |_| Ok(())).is_ok();
     if !exists {
-        return StatusCode::NOT_FOUND;
+        return StatusCode::NOT_FOUND.into_response();
     }
     if !dash_editable(&conn, &au, id) {
-        return StatusCode::FORBIDDEN;
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    // `P11.20-m` — LE GESTE DE PARTAGE EST JUGÉ AVANT TOUTE ÉCRITURE : refusé avec la raison tant
+    // qu'un élément du tableau de bord est moins visible ; rien du corps n'est appliqué sur un refus.
+    let visibilite: String = conn
+        .query_row("SELECT COALESCE(visibility,'shared') FROM dashboard WHERE id=?1", params![id], |r| r.get(0))
+        .unwrap_or_else(|_| "shared".into());
+    if panneau_resolu::est_un_geste_de_partage(&b, &visibilite) {
+        if let Some(element) = panneau_resolu::ElementMoinsVisible::d_un_tableau_de_bord(&conn, id) {
+            return panneau_resolu::refus_de_partage(&element, "le tableau de bord");
+        }
     }
     if let Some(name) = b.get("name").and_then(|v| v.as_str()) {
         let _ = conn.execute("UPDATE dashboard SET name=?1 WHERE id=?2", params![name, id]);
@@ -177,7 +187,7 @@ pub(crate) async fn dash_update(State(st): State<AppState>, Extension(au): Exten
     if let Some(v) = b.get("position").and_then(|v| v.as_i64()) {
         let _ = conn.execute("UPDATE dashboard SET position=?1 WHERE id=?2", params![v, id]);
     }
-    StatusCode::NO_CONTENT
+    StatusCode::NO_CONTENT.into_response()
 }
 
 pub(crate) async fn dash_get(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
@@ -308,7 +318,7 @@ pub(crate) async fn panel_create(State(st): State<AppState>, Extension(au): Exte
     Json(json!({ "id": conn.last_insert_rowid() })).into_response()
 }
 
-pub(crate) async fn panel_update(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> StatusCode {
+pub(crate) async fn panel_update(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
     crate::req_conn!(st, au, conn);
     // État courant du panneau : dashboard (droit d'édition) + ses colonnes propres + la référence de
     // bibliothèque qu'il porte AUJOURD'HUI (elle entre dans le calcul de ce qui s'exécutera).
@@ -318,10 +328,20 @@ pub(crate) async fn panel_update(State(st): State<AppState>, Extension(au): Exte
         |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)? != 0, r.get::<_, String>(2)?, r.get::<_, Option<i64>>(3)?)),
     ) {
         Ok(x) => x,
-        Err(_) => return StatusCode::NOT_FOUND,
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
     };
     if !dash_editable(&conn, &au, did) {
-        return StatusCode::FORBIDDEN;
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    // `P11.20-m` — le geste de partage d'un panneau est jugé AVANT toute écriture : la définition de
+    // bibliothèque privée qu'il exécute le retient, et le refus la nomme avec son propriétaire.
+    let visibilite: String = conn
+        .query_row("SELECT COALESCE(visibility,'shared') FROM panel WHERE id=?1", params![id], |r| r.get(0))
+        .unwrap_or_else(|_| "shared".into());
+    if panneau_resolu::est_un_geste_de_partage(&b, &visibilite) {
+        if let Some(element) = panneau_resolu::ElementMoinsVisible::d_un_panneau(&conn, id) {
+            return panneau_resolu::refus_de_partage(&element, "le panneau");
+        }
     }
     // LIBRARY PANELS (#54) : (dé)référencer une définition réutilisable. UNIQUE lecture du champ —
     // la valeur retenue sert À LA FOIS à la porte ci-dessous et à l'écriture plus bas.
@@ -340,10 +360,10 @@ pub(crate) async fn panel_update(State(st): State<AppState>, Extension(au): Exte
     let eff_soql = b.get("is_soql").and_then(|v| v.as_bool()).unwrap_or(cur_soql);
     let def = match DefinitionExecutee::projetee(&conn, &au, cur_bib, &ref_bib, (eff_query, eff_soql)) {
         Ok(d) => d,
-        Err((code, _)) => return code,
+        Err((code, _)) => return code.into_response(),
     };
     if !def.permise_pour(&au.role) {
-        return StatusCode::FORBIDDEN;
+        return StatusCode::FORBIDDEN.into_response();
     }
     if let Some(viz) = b.get("viz").and_then(|v| v.as_str()) {
         let _ = conn.execute("UPDATE panel SET viz=?1 WHERE id=?2", params![viz, id]);
@@ -389,7 +409,7 @@ pub(crate) async fn panel_update(State(st): State<AppState>, Extension(au): Exte
     // 1 ligne max) -> aucun payload périmé servi après changement de requête/viz/fenêtre/visibilité. La
     // garde query_fp (v36) couvre déjà le cas requête, ceci couvre aussi viz/window/visibilité d'un coup.
     panneau_avoue::cache_invalider_panneau(&conn, id);
-    StatusCode::NO_CONTENT
+    StatusCode::NO_CONTENT.into_response()
 }
 
 pub(crate) async fn panel_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> StatusCode {
@@ -1063,17 +1083,27 @@ pub(crate) async fn view_delete(State(st): State<AppState>, Extension(au): Exten
     StatusCode::NO_CONTENT
 }
 
-pub(crate) async fn view_update(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> StatusCode {
+pub(crate) async fn view_update(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
     crate::req_conn!(st, au, conn);
     match conn.query_row("SELECT COALESCE(owner,'') FROM view WHERE id=?1", params![id], |r| r.get::<_, String>(0)) {
         Ok(owner) => {
             // `P11.20-n` — SUPPRIMER EST UN GESTE DE PROPRIÉTAIRE, et une colonne vide n'octroie pas
             // la propriété : l'objet SEMÉ (sans propriétaire) redevient admin-seul à la suppression.
             if !panneau_resolu::autorite_de_proprietaire(&owner, &au) {
-                return StatusCode::FORBIDDEN;
+                return StatusCode::FORBIDDEN.into_response();
             }
         }
-        Err(_) => return StatusCode::NOT_FOUND,
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    }
+    // `P11.20-m` — le geste de partage d'une vue est jugé AVANT toute écriture : un tableau de bord
+    // privé rangé dans la vue le retient, et le refus le nomme.
+    let visibilite: String = conn
+        .query_row("SELECT COALESCE(visibility,'private') FROM view WHERE id=?1", params![id], |r| r.get(0))
+        .unwrap_or_else(|_| "private".into());
+    if panneau_resolu::est_un_geste_de_partage(&b, &visibilite) {
+        if let Some(element) = panneau_resolu::ElementMoinsVisible::d_une_vue(&conn, id) {
+            return panneau_resolu::refus_de_partage(&element, "la vue");
+        }
     }
     if let Some(name) = b.get("name").and_then(|v| v.as_str()) {
         let _ = conn.execute("UPDATE view SET name=?1 WHERE id=?2", params![name, id]);
@@ -1082,5 +1112,5 @@ pub(crate) async fn view_update(State(st): State<AppState>, Extension(au): Exten
         let vis = if vis == "shared" { "shared" } else { "private" };
         let _ = conn.execute("UPDATE view SET visibility=?1 WHERE id=?2", params![vis, id]);
     }
-    StatusCode::NO_CONTENT
+    StatusCode::NO_CONTENT.into_response()
 }

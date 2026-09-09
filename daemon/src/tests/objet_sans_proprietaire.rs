@@ -201,7 +201,7 @@ async fn deux_identites_un_objet_sans_proprietaire_ne_fuit_pas_le_panneau_prive(
     // touche pas — et le drapeau continue de dire la vérité sur la porte.
     assert!(editable, "un dashboard PARTAGÉ reste modifiable par le partage — le drapeau annonce la porte");
     assert_eq!(
-        dash_update(State(st.clone()), Extension(bob.clone()), Path(did_alice), Json(json!({ "name": "renommé" }))).await,
+        dash_update(State(st.clone()), Extension(bob.clone()), Path(did_alice), Json(json!({ "name": "renommé" }))).await.status(),
         StatusCode::NO_CONTENT,
         "…et la porte le confirme : drapeau et porte ne divergent pas"
     );
@@ -445,7 +445,7 @@ async fn le_drapeau_editable_dit_ce_que_la_porte_fera() {
 
     // (a) SUR LE BIEN COMMUN : la porte accepte, donc le drapeau l'annonce — et la PORTÉE, elle,
     //     refuse toujours le panneau privé (mesuré par le témoin à deux identités).
-    let porte_reelle = dash_update(State(st.clone()), Extension(bob.clone()), Path(seme), Json(json!({ "name": "renommé par bob" }))).await;
+    let porte_reelle = dash_update(State(st.clone()), Extension(bob.clone()), Path(seme), Json(json!({ "name": "renommé par bob" }))).await.status();
     assert_eq!(porte_reelle, StatusCode::NO_CONTENT, "la porte d'écriture accepte : le dashboard est DÉCLARÉ commun");
     let (_, _, drapeau) = sp_panneaux_servis(&st, &bob, seme).await;
     assert!(drapeau, "…donc le drapeau doit l'annoncer. `false` ici masquerait un geste que le serveur accepte");
@@ -456,7 +456,7 @@ async fn le_drapeau_editable_dit_ce_que_la_porte_fera() {
     // (b) SUR UN OBJET PRIVÉ D'AUTRUI : la porte refuse, et le drapeau ne promet rien.
     let (_, v) = pb_json(dash_create(State(st.clone()), Extension(sp_au("alice", "editor")), Json(json!({ "name": "privé d'alice", "visibility": "private" }))).await.into_response()).await;
     let prive_alice = v["id"].as_i64().unwrap();
-    let porte = dash_update(State(st.clone()), Extension(bob.clone()), Path(prive_alice), Json(json!({ "name": "x" }))).await;
+    let porte = dash_update(State(st.clone()), Extension(bob.clone()), Path(prive_alice), Json(json!({ "name": "x" }))).await.status();
     assert_eq!(porte, StatusCode::FORBIDDEN, "la porte refuse");
     let v = dash_list(State(st.clone()), Extension(bob.clone()), Query(HashMap::new())).await.0;
     assert!(!v["dashboards"].as_array().unwrap().iter().any(|d| d["id"] == json!(prive_alice)), "…et l'objet n'est même pas listé");
@@ -507,7 +507,7 @@ async fn un_objet_sans_proprietaire_ne_se_supprime_plus_qu_en_admin() {
             "{qui} supprime la vue SEMÉE. AVANT ce lot : 204. {SP_MOTIF_DU_RESSERREMENT}"
         );
         assert_eq!(
-            view_update(State(st.clone()), Extension(au.clone()), Path(vue), Json(json!({ "name": "renommée par un tiers" }))).await,
+            view_update(State(st.clone()), Extension(au.clone()), Path(vue), Json(json!({ "name": "renommée par un tiers" }))).await.status(),
             StatusCode::FORBIDDEN,
             "{qui} renomme la vue SEMÉE. AVANT ce lot : 204. {SP_MOTIF_DU_RESSERREMENT}"
         );
@@ -524,7 +524,7 @@ async fn un_objet_sans_proprietaire_ne_se_supprime_plus_qu_en_admin() {
     let a_alice = v["id"].as_i64().unwrap();
     let (_, v) = pb_json(view_create(State(st.clone()), Extension(alice.clone()), Json(json!({ "name": "vue d'alice", "visibility": "private" }))).await.into_response()).await;
     let vue_alice = v["id"].as_i64().unwrap();
-    assert_eq!(view_update(State(st.clone()), Extension(alice.clone()), Path(vue_alice), Json(json!({ "name": "vue d'alice, renommée" }))).await, StatusCode::NO_CONTENT, "alice renomme SA vue");
+    assert_eq!(view_update(State(st.clone()), Extension(alice.clone()), Path(vue_alice), Json(json!({ "name": "vue d'alice, renommée" }))).await.status(), StatusCode::NO_CONTENT, "alice renomme SA vue");
     assert_eq!(view_delete(State(st.clone()), Extension(alice.clone()), Path(vue_alice)).await, StatusCode::NO_CONTENT, "alice supprime SA vue");
     assert_eq!(dash_delete(State(st.clone()), Extension(alice.clone()), Path(a_alice)).await, StatusCode::NO_CONTENT, "alice supprime SON dashboard");
     // …et bob ne dispose pas de ce qui est à alice (le second bras des deux identités).
@@ -533,7 +533,7 @@ async fn un_objet_sans_proprietaire_ne_se_supprime_plus_qu_en_admin() {
     assert_eq!(view_delete(State(st.clone()), Extension(bob.clone()), Path(vue_alice2)).await, StatusCode::FORBIDDEN, "bob ne supprime pas la vue d'alice");
 
     // --- CONTRÔLE POSITIF 2 : l'ADMIN, lui, peut. La capacité est rendue à un rôle, pas détruite. ---
-    assert_eq!(view_update(State(st.clone()), Extension(admin.clone()), Path(vue), Json(json!({ "name": "SOC (admin)" }))).await, StatusCode::NO_CONTENT, "l'admin renomme la vue semée");
+    assert_eq!(view_update(State(st.clone()), Extension(admin.clone()), Path(vue), Json(json!({ "name": "SOC (admin)" }))).await.status(), StatusCode::NO_CONTENT, "l'admin renomme la vue semée");
     assert_eq!(view_delete(State(st.clone()), Extension(admin.clone()), Path(vue)).await, StatusCode::NO_CONTENT, "l'admin supprime la vue semée");
     assert_eq!(dash_delete(State(st.clone()), Extension(admin.clone()), Path(seme)).await, StatusCode::NO_CONTENT, "l'admin supprime le dashboard semé");
     {

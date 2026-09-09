@@ -266,3 +266,129 @@ impl DefinitionExecutee {
         .ok()
     }
 }
+
+// =====================================================================================
+// `P11.20-m` — L'ÉLÉMENT MOINS VISIBLE D'UN OBJET COMPOSÉ.
+//
+// DÉCISION DE PRODUIT de l'exploitant (2026-09-10) : le partage d'un contenant est REFUSÉ tant
+// qu'un de ses éléments est moins visible que ce que le geste rendrait commun, et le refus NOMME
+// l'élément — ni retrait silencieux, ni simple avertissement de console. La règle est la même pour
+// une vue (qui porte des tableaux de bord), un tableau de bord (qui porte des panneaux) et un
+// panneau (qui peut exécuter une définition de bibliothèque) : ce sont les trois arêtes que la base
+// REPRÉSENTE ; la quatrième, panneau → requête enregistrée, n'existe pas (le panneau COPIE le texte,
+// mesuré le 2026-09-03). « Visible » est la valeur EXACTE `shared`, même règle que [`PorteeLecture`] :
+// une valeur ni `shared` ni `private` est traitée comme la moins visible, fail-closed.
+//
+// CE QUE CE REFUS NE FAIT PAS : il ne ferme pas une fuite. Depuis `P11.20-n`, un élément privé posé
+// dans un contenant commun n'est servi qu'à qui a l'autorité dessus (`dash_get`, `panel_access`, la
+// capture). Le refus rend la RÈGLE explicite au moment du geste, au lieu de laisser l'auteur croire
+// qu'il a partagé ce que les lecteurs ne verront pas — et il nomme qui doit agir quand l'élément
+// appartient à quelqu'un d'autre.
+// =====================================================================================
+
+/// L'élément qui retient un partage : son genre (pour la phrase), son identifiant, son nom, son
+/// propriétaire quand il en a un (une définition de bibliothèque d'autrui ne se partage pas depuis
+/// le tableau de bord qui l'exécute : c'est à son propriétaire de le faire), et le nombre d'éléments
+/// qui retiennent, celui-ci compris — la phrase nomme le premier et compte les autres, pour que
+/// l'auteur sache s'il a UN geste à faire ou plusieurs.
+pub(crate) struct ElementMoinsVisible {
+    pub(crate) genre: &'static str,
+    pub(crate) id: i64,
+    pub(crate) nom: String,
+    pub(crate) proprietaire: String,
+    pub(crate) retenus: i64,
+}
+
+impl ElementMoinsVisible {
+    /// La phrase du refus, telle que la console l'affiche (le corps de la réponse est ce texte).
+    pub(crate) fn phrase_de_refus(&self, contenant: &str) -> String {
+        let a_qui = if self.proprietaire.is_empty() { String::new() } else { format!(", à {}", self.proprietaire) };
+        let autres = if self.retenus > 1 {
+            format!(" — et {} autre(s) élément(s) le retiennent aussi", self.retenus - 1)
+        } else {
+            String::new()
+        };
+        format!(
+            "Partage refusé : {} « {} » (n° {}{a_qui}) est privé{autres}. Partagez d'abord cet élément, ou retirez-le, puis partagez {contenant}.",
+            self.genre, self.nom, self.id
+        )
+    }
+
+    fn premier(conn: &Connection, sql_compte: &str, sql_premier: &str, id: i64, genre: &'static str) -> Option<Self> {
+        let retenus: i64 = conn.query_row(sql_compte, params![id], |r| r.get(0)).unwrap_or(0);
+        if retenus == 0 {
+            return None;
+        }
+        conn.query_row(sql_premier, params![id], |r| {
+            Ok(Self { genre, id: r.get(0)?, nom: r.get(1)?, proprietaire: r.get(2)?, retenus })
+        })
+        .ok()
+    }
+
+    /// Une VUE porte des tableaux de bord (`dashboard.view_id`) : le premier non commun retient.
+    pub(crate) fn d_une_vue(conn: &Connection, view_id: i64) -> Option<Self> {
+        Self::premier(
+            conn,
+            "SELECT COUNT(*) FROM dashboard WHERE view_id=?1 AND COALESCE(visibility,'shared')<>'shared'",
+            "SELECT id,name,COALESCE(owner,'') FROM dashboard WHERE view_id=?1 AND COALESCE(visibility,'shared')<>'shared' ORDER BY id LIMIT 1",
+            view_id,
+            "le tableau de bord",
+        )
+    }
+
+    /// Un TABLEAU DE BORD porte des panneaux : un panneau non commun retient ; sinon, une définition
+    /// de bibliothèque non commune qu'un de ses panneaux exécute retient (elle est à son propriétaire).
+    pub(crate) fn d_un_tableau_de_bord(conn: &Connection, dash_id: i64) -> Option<Self> {
+        Self::premier(
+            conn,
+            "SELECT COUNT(*) FROM panel WHERE dashboard_id=?1 AND COALESCE(visibility,'shared')<>'shared'",
+            "SELECT id,title,'' FROM panel WHERE dashboard_id=?1 AND COALESCE(visibility,'shared')<>'shared' ORDER BY id LIMIT 1",
+            dash_id,
+            "le panneau",
+        )
+        .or_else(|| {
+            Self::premier(
+                conn,
+                "SELECT COUNT(*) FROM panel p JOIN library_panel lp ON lp.id=p.library_panel_id \
+                 WHERE p.dashboard_id=?1 AND COALESCE(lp.visibility,'shared')<>'shared'",
+                "SELECT lp.id,lp.name,COALESCE(lp.owner,'') FROM panel p JOIN library_panel lp ON lp.id=p.library_panel_id \
+                 WHERE p.dashboard_id=?1 AND COALESCE(lp.visibility,'shared')<>'shared' ORDER BY p.id LIMIT 1",
+                dash_id,
+                "la définition de bibliothèque",
+            )
+        })
+    }
+
+    /// Un PANNEAU peut exécuter une définition de bibliothèque : non commune, elle retient.
+    pub(crate) fn d_un_panneau(conn: &Connection, panel_id: i64) -> Option<Self> {
+        Self::premier(
+            conn,
+            "SELECT COUNT(*) FROM panel p JOIN library_panel lp ON lp.id=p.library_panel_id \
+             WHERE p.id=?1 AND COALESCE(lp.visibility,'shared')<>'shared'",
+            "SELECT lp.id,lp.name,COALESCE(lp.owner,'') FROM panel p JOIN library_panel lp ON lp.id=p.library_panel_id \
+             WHERE p.id=?1 AND COALESCE(lp.visibility,'shared')<>'shared'",
+            panel_id,
+            "la définition de bibliothèque",
+        )
+    }
+}
+
+/// Le GESTE de partage : `visibility` du corps vaut `shared` ALORS QUE l'objet ne l'est pas encore.
+/// Un renvoi idempotent (`shared` sur un objet déjà commun — la fiche d'édition d'un panneau renvoie
+/// tous ses champs) n'est pas un geste et n'est pas jugé : rendre un élément privé APRÈS le partage
+/// reste permis, c'est une réduction de visibilité, et `P11.20-n` garantit qu'il n'est servi qu'à
+/// qui a l'autorité dessus.
+pub(crate) fn est_un_geste_de_partage(corps: &serde_json::Value, visibilite_courante: &str) -> bool {
+    corps.get("visibility").and_then(|v| v.as_str()) == Some("shared") && visibilite_courante != "shared"
+}
+
+/// La réponse du refus : 409 (l'état de l'objet contredit le geste) et la phrase en clair, que la
+/// console affiche telle quelle dans son message d'échec.
+pub(crate) fn refus_de_partage(element: &ElementMoinsVisible, contenant: &str) -> Response {
+    (
+        StatusCode::CONFLICT,
+        [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        element.phrase_de_refus(contenant),
+    )
+        .into_response()
+}

@@ -92,7 +92,7 @@ async fn un_editor_ne_peut_pas_executer_de_sql_brut_par_la_bibliotheque() {
     let (_did, pid) = pb_dash_panel(&st);
 
     // LA PORTE QU'ON NE CASSE PAS — l'editor reste refusé à l'ÉCRITURE de SQL brut, des deux côtés.
-    let direct = panel_update(State(st.clone()), Extension(edt.clone()), Path(pid), Json(json!({ "is_soql": false, "query": "SELECT name,role FROM user" }))).await;
+    let direct = panel_update(State(st.clone()), Extension(edt.clone()), Path(pid), Json(json!({ "is_soql": false, "query": "SELECT name,role FROM user" }))).await.status();
     assert_eq!(direct.as_u16(), 403, "bascule directe du panneau en SQL brut");
     let (c, _) = pb_lib(&st, &edt, json!({ "name": "tentative", "query": "SELECT 1", "is_soql": false })).await;
     assert_eq!(c, 403, "création d'une définition de bibliothèque en SQL brut");
@@ -106,7 +106,7 @@ async fn un_editor_ne_peut_pas_executer_de_sql_brut_par_la_bibliotheque() {
     assert_eq!(c, 200, "l'admin, lui, a bien le droit");
 
     // LE CONTOURNEMENT MESURÉ, MAINTENANT FERMÉ : rattacher = exécuter, donc la porte s'applique.
-    let attache = panel_update(State(st.clone()), Extension(edt.clone()), Path(pid), Json(json!({ "library_panel_id": lib }))).await;
+    let attache = panel_update(State(st.clone()), Extension(edt.clone()), Path(pid), Json(json!({ "library_panel_id": lib }))).await.status();
     assert_eq!(attache.as_u16(), 403, "AVANT correctif : 204. Rattacher une définition SQL BRUT = l'exécuter.");
 
     // …et RIEN n'a été écrit : le panneau exécute toujours SA requête GXQL.
@@ -120,7 +120,7 @@ async fn un_editor_ne_peut_pas_executer_de_sql_brut_par_la_bibliotheque() {
     assert_eq!(vd.get("columns"), Some(&json!(["message"])), "le panneau rend SA requête GXQL, pas la table `user`");
 
     // L'ADMIN, lui, rattache — et lit. La capacité n'a pas été détruite, elle a été rendue à son rôle.
-    let attache_adm = panel_update(State(st.clone()), Extension(adm.clone()), Path(pid), Json(json!({ "library_panel_id": lib }))).await;
+    let attache_adm = panel_update(State(st.clone()), Extension(adm.clone()), Path(pid), Json(json!({ "library_panel_id": lib }))).await.status();
     assert_eq!(attache_adm.as_u16(), 204, "l'admin garde le rattachement d'une définition SQL brut");
     let (cd, vd) = pb_json(panel_data(State(st.clone()), Extension(adm.clone()), Path(pid), pb_q()).await).await;
     assert_eq!((cd, pb_lignes(&vd)), (200, 2), "l'admin lit bien les 2 comptes");
@@ -128,10 +128,10 @@ async fn un_editor_ne_peut_pas_executer_de_sql_brut_par_la_bibliotheque() {
     // …ET L'EDITOR NE PEUT PLUS ÉDITER CE PANNEAU-LÀ : il EXÉCUTE du SQL brut, même si `panel.is_soql`
     // vaut toujours 1. C'est la 2e omission que la porte d'origine laissait passer (elle lisait
     // `p.is_soql` : mesuré 204 sur un simple changement de titre).
-    let titre = panel_update(State(st.clone()), Extension(edt.clone()), Path(pid), Json(json!({ "title": "renommé" }))).await;
+    let titre = panel_update(State(st.clone()), Extension(edt.clone()), Path(pid), Json(json!({ "title": "renommé" }))).await.status();
     assert_eq!(titre.as_u16(), 403, "éditer un panneau qui EXÉCUTE du SQL brut reste admin");
     // …mais il peut le DÉTACHER (le panneau redevient le sien, en GXQL) : on ne l'enferme pas.
-    let detache = panel_update(State(st.clone()), Extension(edt.clone()), Path(pid), Json(json!({ "library_panel_id": null }))).await;
+    let detache = panel_update(State(st.clone()), Extension(edt.clone()), Path(pid), Json(json!({ "library_panel_id": null }))).await.status();
     assert_eq!(detache.as_u16(), 204, "détacher rend le panneau à son propriétaire (fail-closed ≠ cul-de-sac)");
     ff_rm(&dbp);
 }
@@ -182,7 +182,7 @@ async fn un_editor_ne_peut_pas_rattacher_une_definition_privee_d_autrui() {
     let liste = library_panels_list(State(st.clone()), Extension(edt.clone())).await;
     let vus: Vec<i64> = liste.0.get("library_panels").and_then(|a| a.as_array()).unwrap().iter().filter_map(|x| x.get("id").and_then(|i| i.as_i64())).collect();
     assert!(!vus.contains(&lib), "l'editor ne VOIT pas la définition privée d'autrui");
-    let attache = panel_update(State(st.clone()), Extension(edt.clone()), Path(pid), Json(json!({ "library_panel_id": lib }))).await;
+    let attache = panel_update(State(st.clone()), Extension(edt.clone()), Path(pid), Json(json!({ "library_panel_id": lib }))).await.status();
     assert_eq!(attache.as_u16(), 403, "AVANT correctif : 204. Ce qu'on ne voit pas ne se rattache pas.");
 
     // Ni le TEXTE ni les DONNÉES de la définition privée ne lui parviennent.
@@ -195,14 +195,14 @@ async fn un_editor_ne_peut_pas_rattacher_une_definition_privee_d_autrui() {
     assert!(!rendu.contains("SECRET-COFFRE"), "AVANT : 2 lignes du coffre étaient rendues ; obtenu {rendu}");
 
     // PAS D'ORACLE D'ÉNUMÉRATION : une définition INEXISTANTE répond EXACTEMENT comme une privée d'autrui.
-    let inexistante = panel_update(State(st.clone()), Extension(edt.clone()), Path(pid), Json(json!({ "library_panel_id": 999_999 }))).await;
+    let inexistante = panel_update(State(st.clone()), Extension(edt.clone()), Path(pid), Json(json!({ "library_panel_id": 999_999 }))).await.status();
     assert_eq!(inexistante.as_u16(), attache.as_u16(), "inexistante et privée d'autrui : même réponse");
 
     // Le PARTAGÉ, lui, reste rattachable — l'editor garde son CRUD (invariant rbac.rs §7).
     let (_, partagee) = pb_lib(&st, &adm, json!({
         "name": "partagee", "query": "search source=coffre | table message", "is_soql": true, "visibility": "shared"
     })).await;
-    let ok = panel_update(State(st.clone()), Extension(edt.clone()), Path(pid), Json(json!({ "library_panel_id": partagee }))).await;
+    let ok = panel_update(State(st.clone()), Extension(edt.clone()), Path(pid), Json(json!({ "library_panel_id": partagee }))).await.status();
     assert_eq!(ok.as_u16(), 204, "une définition PARTAGÉE en GXQL reste rattachable par l'editor");
     let (cd, vd) = pb_json(panel_data(State(st.clone()), Extension(edt.clone()), Path(pid), pb_q()).await).await;
     assert_eq!((cd, pb_lignes(&vd)), (200, 2), "…et elle s'exécute bien");
@@ -351,7 +351,7 @@ async fn une_bibliotheque_passee_privee_apres_coup_reste_resolue() {
         conn.execute("INSERT INTO event(ts,source,message) VALUES(50,'coffre','APRES-COUP')", []).unwrap();
     }
     let (_, lib) = pb_lib(&st, &adm, json!({ "name": "p", "query": "search source=coffre | table message", "is_soql": true, "visibility": "shared" })).await;
-    assert_eq!(panel_update(State(st.clone()), Extension(edt.clone()), Path(pid), Json(json!({ "library_panel_id": lib }))).await.as_u16(), 204);
+    assert_eq!(panel_update(State(st.clone()), Extension(edt.clone()), Path(pid), Json(json!({ "library_panel_id": lib }))).await.status().as_u16(), 204);
     assert_eq!(library_panel_update(State(st.clone()), Extension(adm.clone()), Path(lib), Json(json!({ "visibility": "private" }))).await.as_u16(), 204);
     let (cd, vd) = pb_json(panel_data(State(st.clone()), Extension(edt.clone()), Path(pid), pb_q()).await).await;
     assert_eq!((cd, pb_lignes(&vd)), (200, 1), "RÉSIDU DÉCLARÉ : la révocation n'est pas rétroactive");

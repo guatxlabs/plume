@@ -174,7 +174,8 @@ PLAFOND_ABANDONS = 11
 # plus faible : la portée qui confirme peut appartenir à un geste VOISIN — mesuré sur `web/destinations.js`,
 # le déclencheur de sortie de données et l'interrupteur d'activation empruntaient tous deux la confirmation
 # du bouton qui SUPPRIME, seule fonction du module à en porter une. Compté, jamais accusé ; ne se relève pas.
-PLAFOND_CONFIRME_PAR_APPELANT = 30
+# Descendu 30 → 29 le 2026-09-09 sur l'invitation de la garde elle-même (« peut descendre à 29 »).
+PLAFOND_CONFIRME_PAR_APPELANT = 29
 # PLANCHER DES SITES OBTENUS PAR UNE ENVELOPPE (`P11.13-h` (a)) : atteste que le suivi des enveloppes est
 # BRANCHÉ sur le verdict, pas seulement validé en témoin. Mesuré sur l'arbre ; il ne descend pas.
 PLANCHER_SITES_PAR_ENVELOPPE = 4

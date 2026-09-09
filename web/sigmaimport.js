@@ -11,8 +11,15 @@
 //   (comportement backend) -> on le signale + lien vers la liste des règles pour relire/activer.
 // DÉGRADATION : si /api/sigma/import-bulk 404 (daemon concurrent pas encore déployé), message clair, aucune
 //   erreur dure. ADDITIF : ce module n'écrit rien tout seul (une mutation = un import explicite de l'admin).
-import { $, esc, ic, muted, toast, apiSend, closeModals, withBusy, pagedList, socIsAdmin } from './core.js';
+import { $, LANG, esc, ic, muted, toast, apiSend, closeModals, withBusy, pagedList, socIsAdmin } from './core.js';
 import { destinationNote } from './producer_ui.js';
+
+// `P11.8-j` — DEUX NŒUDS QUE LE LEXIQUE NE PEUT PAS VOIR, RENDUS BILINGUES PAR LEUR MODULE. La règle qui
+// décide « ceci est un libellé » écarte un mot tout en minuscules sans second mot et une parenthèse : un
+// lecteur anglophone lisait « (sans nom) » et « désactivées » sous une phrase anglaise. Les traduire par le
+// lexique aurait relevé un cliquet de deux crans sans que la mesure d'excès sache les trancher ; ici le
+// module choisit le mot d'après la langue, sans rien devoir au lexique — bilingue par construction.
+const SANS_NOM = () => (LANG === 'en' ? '(no name)' : '(sans nom)');
 
 // Rafraîchisseur post-import (injecté par app.js via initSigmaImport) : recharge règles/couverture/matrice.
 // `var` (hoisté, PAS de TDZ) et non `let` : app.js appelle initSigmaImport au top-level et le graphe est
@@ -121,7 +128,7 @@ function renderSummary(host, sum) {
     pagedList(spHost, {
       mode: 'client', pageSize: 50, rows: sansProducteur,
       columns: [
-        { key: 'ref', label: 'Règle', sortable: true, sortVal: s => (s && s.ref) || '', render: s => (s && s.ref) || '(sans nom)' },
+        { key: 'ref', label: 'Règle', sortable: true, sortVal: s => (s && s.ref) || '', render: s => (s && s.ref) || SANS_NOM() },
         { key: 'mitre', label: 'Technique', sortable: true, sortVal: s => (s && s.mitre) || '', render: s => (s && s.mitre) || '—' },
         { key: 'sources_manquantes', label: 'Source(s) à brancher', sortable: false,
           render: s => {
@@ -139,7 +146,7 @@ function renderSummary(host, sum) {
   if (sum.disabled_on_import !== false && (imported || updated)) {
     const note = document.createElement('div'); note.className = 'sigma-note';
     note.appendChild(document.createTextNode('Les règles importées arrivent '));
-    const strong = document.createElement('b'); strong.textContent = 'désactivées'; note.appendChild(strong);
+    const strong = document.createElement('b'); strong.textContent = LANG === 'en' ? 'disabled' : 'désactivées'; note.appendChild(strong);
     note.appendChild(document.createTextNode(' — relisez-les puis activez celles voulues dans '));
     const link = document.createElement('a'); link.href = '#detection'; link.className = 'sigma-link'; link.textContent = 'la liste des règles';
     link.onclick = () => { closeModals(); location.hash = 'detection'; };
@@ -156,7 +163,7 @@ function renderSummary(host, sum) {
     pagedList(skHost, {
       mode: 'client', pageSize: 50, rows: skipped,
       columns: [
-        { key: 'ref', label: 'Règle', sortable: true, sortVal: s => (s && (s.ref || s.title || s.name)) || '', render: s => (s && (s.ref || s.title || s.name)) || '(sans nom)' },
+        { key: 'ref', label: 'Règle', sortable: true, sortVal: s => (s && (s.ref || s.title || s.name)) || '', render: s => (s && (s.ref || s.title || s.name)) || SANS_NOM() },
         { key: 'reason', label: 'Raison', sortable: true, sortVal: s => (s && s.reason) || '', render: s => { const d = document.createElement('span'); d.style.whiteSpace = 'normal'; d.textContent = (s && s.reason) || '—'; return d; } },
       ],
     });

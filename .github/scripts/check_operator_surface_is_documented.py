@@ -159,6 +159,13 @@ from check_a_producer_declares_the_values_it_emits import (  # noqa: E402  (sour
 PLAFOND_ONGLETS_SANS_ENTREE = 0
 PLAFOND_CAPTEURS_SANS_ENTREE = 0
 PLAFOND_MODES_SANS_ENTREE = 0
+# `P4.1-u` (2026-09-09) — CINQUIÈME INVENTAIRE, DÉRIVÉ DE L'ANALYSEUR D'ARGUMENTS : la table `SUBCOMMANDS` de
+# `daemon/src/main.rs` (celle que `--help` rend) est énumérable, donc l'inventaire des sous-commandes de la ligne
+# de commande se DÉRIVE au lieu de s'écrire. Mesuré avant : 21 sous-commandes sur 22 n'avaient aucune entrée
+# de tableau dans le corpus servi — dont `backup-classify`, posée comme correctif côté produit de `P4.4-n` et
+# nommée par personne. Plafond ZÉRO : une sous-commande neuve sans ligne de tableau rougit.
+PLAFOND_SOUS_COMMANDES_SANS_ENTREE = 0
+MIN_SOUS_COMMANDES = 5
 # (E) LEVIERS DU MODULE DU BUDGET MÉMOIRE : plafond ZÉRO, et il le reste. Relevé sur l'arbre suivi
 # le 2026-08-28, APRÈS la campagne qui accompagne cette extension : 6 leviers, 6 entrées.
 PLAFOND_LEVIERS_DU_BUDGET_SANS_ENTREE = 0
@@ -214,6 +221,8 @@ MIN_DOCS = 40
 # La DÉFINITION de la structure de navigation. Même ancre pour localiser le module et pour en lire
 # les onglets : le fichier n'est jamais nommé.
 DEFINITION_NAVIGATION = re.compile(r"\bconst\s+SPACES\s*=\s*\[")
+DEFINITION_SOUS_COMMANDES = re.compile(r"\bconst\s+SUBCOMMANDS\s*:\s*\[\(&str,\s*&str\);\s*\d+\]\s*=\s*\[")
+SOUS_COMMANDE = re.compile(r'^\s*\("([a-z][a-z0-9-]*)",\s*"')
 # Un onglet : `{ id: 'x', label: … }` — c'est la présence de `label` qui distingue un onglet d'un
 # espace (un espace porte `tabs:`), donc la forme, pas la position.
 ONGLET = re.compile(r"\{\s*id:\s*['\"]([A-Za-z0-9_-]+)['\"]\s*,\s*label\s*:")
@@ -356,6 +365,27 @@ def onglets_declares(racine: str, suivis: list[str]) -> tuple[str, list[str]]:
     fin = texte.find("\n];", debut)
     bloc = texte[debut:fin if fin > 0 else len(texte)]
     return module, sorted({m.group(1) for m in ONGLET.finditer(bloc)})
+
+
+def sous_commandes_declarees(racine: str, suivis: list[str]) -> tuple[str, list[str]]:
+    """(fichier porteur, sous-commandes) : les premières cellules de la table `SUBCOMMANDS`, celle que `--help` rend."""
+    porteur = porteur_unique(racine, suivis, "daemon/src/", DEFINITION_SOUS_COMMANDES,
+                             "table des sous-commandes de la ligne de commande",
+                             exclure=lambda c: not est_source_rust_de_production(c))
+    noms: list[str] = []
+    dedans = False
+    with open(os.path.join(racine, porteur), encoding="utf-8", errors="replace") as fh:
+        for ligne in fh:
+            if not dedans:
+                if DEFINITION_SOUS_COMMANDES.search(ligne):
+                    dedans = True
+                continue
+            if ligne.strip().startswith("];"):
+                break
+            m = SOUS_COMMANDE.match(ligne)
+            if m:
+                noms.append(m.group(1))
+    return porteur, sorted(set(noms))
 
 
 def modes_declares(racine: str, suivis: list[str]) -> tuple[str, list[str]]:
@@ -771,6 +801,12 @@ def valider_instrument() -> list[str]:
         errs.append(f"témoin (modes) en échec : obtenu {modes} — le `case` qui valide le mode n'est "
                     f"plus reconnu, l'inventaire des modes serait vide et la garde muette.")
 
+    if not DEFINITION_SOUS_COMMANDES.search('const SUBCOMMANDS: [(&str, &str); 2] = ['):
+        errs.append("témoin (sous-commandes) en échec : la déclaration de la table `SUBCOMMANDS` n'est plus reconnue.")
+    noms_sc = [SOUS_COMMANDE.match(l).group(1) for l in ('    ("hashpw", "hashpw — …"),', '    ("backup-classify", "backup-classify <nom>… — …"),') if SOUS_COMMANDE.match(l)]
+    if noms_sc != ["hashpw", "backup-classify"] or SOUS_COMMANDE.match('    // ("commentee", "x"),'):
+        errs.append(f"témoin (sous-commandes) en échec : {noms_sc} — la première cellule d'un tuple `(\"nom\", \"aide\")` "
+                    f"doit être lue, et un tuple en commentaire ne doit pas l'être.")
     consts = constantes_texte([CORPUS_RUST])
     consts.update(CORPUS_RUST_CONSTANTES_EXTERNES)
     if consts.get("CLE_NOMMEE") != "PLUME_DELTA" or consts.get("PREFIXE") != "PLUME_PREFIXE_":
@@ -911,6 +947,7 @@ def main() -> int:
     try:
         module_nav, onglets = onglets_declares(racine, suivis)
         script_modes, modes = modes_declares(racine, suivis)
+        module_cli, sous_commandes = sous_commandes_declarees(racine, suivis)
         module_budget, leviers_budget = leviers_du_budget_memoire(racine, suivis)
     except InstrumentMuet as e:
         print(f"::error::{e}")
@@ -924,6 +961,7 @@ def main() -> int:
         (len(onglets), MIN_ONGLETS, f"onglets déclarés par `{module_nav}`"),
         (len(capteurs), MIN_CAPTEURS, "capteurs livrés sous `collectors/`"),
         (len(modes), MIN_MODES, f"modes de déploiement acceptés par `{script_modes}`"),
+        (len(sous_commandes), MIN_SOUS_COMMANDES, f"sous-commandes déclarées par `{module_cli}`"),
         (len(lus), MIN_LEVIERS, "leviers `PLUME_*` lus par le code de production"),
         (len(leviers_budget), MIN_LEVIERS_DU_BUDGET,
          f"leviers lus par `{module_budget}` (module du budget mémoire)"),
@@ -951,6 +989,8 @@ def main() -> int:
         print(f"capteurs     {len(capteurs):4d}  sans entrée {len(manquants(capteurs, entrees)):4d}")
         print(f"modes        {len(modes):4d}  sans entrée {len(manquants(modes, entrees)):4d}  "
               f"(source : {script_modes})")
+        print(f"sous-cmd     {len(sous_commandes):4d}  sans entrée {len(manquants(sous_commandes, entrees)):4d}  "
+              f"(source : {module_cli})")
         print(f"leviers lus  {len(lus):4d}  cités {len(lus & cites):4d}  sans doc {len(sans_doc):4d}"
               f"  (clés d'exécution non résolues : {len(cles_dexecution)})")
         print(f"budget mém.  {len(leviers_budget):4d}  sans entrée "
@@ -966,6 +1006,10 @@ def main() -> int:
          "ajoutez-lui une ligne au tableau des capteurs"),
         (modes, PLAFOND_MODES_SANS_ENTREE, "mode de déploiement",
          f"décrivez-le pour les gestes d'exploitation (il est accepté par `{script_modes}`)"),
+        (sous_commandes, PLAFOND_SOUS_COMMANDES_SANS_ENTREE, "sous-commande de la ligne de commande",
+         f"ajoutez-lui une ligne au tableau des sous-commandes du README (elle est déclarée par `{module_cli}`, "
+         f"table `SUBCOMMANDS`, celle que `--help` rend — un correctif « côté produit » sans consommateur ni "
+         f"entrée n'a rien corrigé, `P4.1-u`)"),
         (leviers_budget, PLAFOND_LEVIERS_DU_BUDGET_SANS_ENTREE,
          "levier du module qui décide le budget mémoire",
          f"documentez-le là où vivent ses sœurs — `README.md`, `deploy/PROFILE.md` — avec sa valeur "

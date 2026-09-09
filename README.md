@@ -656,6 +656,40 @@ n'est pas mesuré** à ce jour : nous ne publierons ce chiffre qu'une fois le ba
 
 Les fichiers de `config.d/` sont chargés au démarrage de façon **idempotente** (un overlay l'emporte sur le builtin de même nom) ; un fichier invalide est **ignoré avec un avertissement**, jamais un crash. Vue d'ensemble des points d'extension (parser · connecteur · détection · threat-intel · enforcer) et modèle *bring-your-own-vendor* : **[`docs/SDK.md`](docs/SDK.md)**.
 
+## Sous-commandes de `plume-daemon`
+
+Le binaire porte, à côté du démon, les gestes d'exploitation de la ligne de commande. **Ce tableau est
+DÉRIVÉ de la table que `plume-daemon --help` rend** (`SUBCOMMANDS`, `daemon/src/main.rs`), et la garde
+[`check_operator_surface_is_documented.py`](.github/scripts/check_operator_surface_is_documented.py)
+refuse qu'une sous-commande déclarée par le code n'ait pas sa ligne ici — mesuré le 2026-09-09 : vingt et
+une sur vingt-deux n'en avaient aucune, dont `backup-classify`, le correctif « côté produit » de `P4.4-n` que
+personne ne nommait (`P4.1-u`). La colonne de droite est le texte d'aide du binaire, tel quel.
+
+| Sous-commande | Ce qu'elle fait (texte de `--help`) |
+|---------------|-------------------------------------|
+| `hashpw` | hash argon2 d'un mot de passe (stdin si omis) |
+| `respond` | boucle du moteur de réponse (service séparé) |
+| `verify` | vérifie la chaîne d'intégrité du ledger |
+| `verify-control` | vérifie la chaîne d'intégrité du journal du PLAN DE CONTRÔLE (accès superadmin, ouvertures d'urgence) ; 0 = intègre, 1 = rupture nommée, 2 = AUCUN verdict |
+| `ledger-export` | export JSONL du ledger |
+| `ledger-verify-export` | vérifie un export hors-ligne |
+| `scim-token` | génère/affiche le jeton SCIM |
+| `token` | jetons d'agent |
+| `sigma-import` | importe des règles Sigma |
+| `retention` | applique la rétention maintenant |
+| `purge` | purge ciblée (cf. docs/PURGE.md) |
+| `backup` | sauvegarde chiffrée |
+| `restore` | restaure une sauvegarde |
+| `backup-verify` | vérifie une sauvegarde (structure ; restauration complète si la clé de lecture est fournie) |
+| `restore-drill` | exercice de restauration : depuis quand aucun n'a eu lieu, ou enregistre une attestation |
+| `chiffrer-au-repos` | chiffre une base EXISTANTE restée en clair. IRRÉVERSIBLE : exige une clé explicite, PLUME_DB_KEY_ESCROWED=1, et produit une sauvegarde VÉRIFIÉE PAR RESTAURATION avant de basculer |
+| `backup-prune-plan` | plan de purge des sauvegardes (lecture seule) |
+| `backup-classify` | classe de rétention d'un nom de sauvegarde, une ligne « <nom> <classe> » par nom (stdin si aucun argument ; sortie 3 si un nom est inclassable, donc jamais purgé) |
+| `migrate-check` | compare le schéma live au code (lecture seule) |
+| `db-stats` | occupation disque SQLite (lecture seule) |
+| `fts-compact` | fusionne les segments de l'index plein-texte (rend les octets morts des purges) |
+| `spool-requeue` | remet dans la file d'ingest les lots mis en QUARANTAINE (écartés après un ROLLBACK, donc rejouables et absents de la base). N'ouvre PAS la base : le geste reste disponible quand le démon refuse de servir |
+
 ## Configuration : les variables `PLUME_*`
 
 **Où on les pose, et qui gagne.** Toute la configuration passe par des variables `PLUME_*`, et la

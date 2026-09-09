@@ -64,11 +64,11 @@ pub(crate) const SHELL_JS_CLOSURE: &[&str] = &[
     "/keys.js", "/knowledge.js", "/login.js",
     "/lookups.js", "/multitenant.js", "/navigation.js",
     "/prefs.js", "/processors.js", "/producer_ui.js",
-    "/recherche_de_liste.js", "/retention.js", "/risk.js",
-    "/runbooks.js", "/savedqueries.js", "/sigmaimport.js",
-    "/soql_complete.js", "/sources.js", "/state.js",
-    "/suppressions.js", "/system.js", "/threatintel.js",
-    "/viz.js",
+    "/recherche_de_liste.js", "/registres.js", "/retention.js",
+    "/risk.js", "/runbooks.js", "/savedqueries.js",
+    "/sigmaimport.js", "/soql_complete.js", "/sources.js",
+    "/state.js", "/suppressions.js", "/system.js",
+    "/threatintel.js", "/viz.js",
 ];
 
 /// P4.13-a — le document d'entrée et ce qu'il référence DIRECTEMENT, hors JavaScript (cf. `SHELL_JS_CLOSURE`).

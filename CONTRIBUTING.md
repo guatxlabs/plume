@@ -295,6 +295,19 @@ git config core.hooksPath .githooks   # arme les gardes ci-dessous
 **Deux gardes versionnées** appliquent le mécanisable : `pre-commit` refuse un commit dont
 l'auteur n'est pas le canonique ; `commit-msg` refuse un message portant un chemin machine,
 un pseudo personnel ou une adresse tierce. Les hooks sont une **boucle de retour**, pas une
-frontière — la CI juge tout commit poussé, sur toute branche, et c'est elle qui lie. Le STYLE, lui, n'est pas mécanisé : une garde
-qui prétendrait en juger produirait du bruit et finirait désarmée. Il se tient à la
-relecture.
+frontière — la CI juge tout commit poussé, sur toute branche, et c'est elle qui lie. Le STYLE, lui, n'est mécanisé que là
+où un critère dérivable n'accuse pas à tort : depuis le 2026-09-09, la première personne dans les
+commentaires et la documentation est tenue par `check_prose_addresses_the_reader_not_the_author.py`
+(famille lue dans le vérificateur de message, citations et messages à l'exploitant retirés). Le reste
+du style se tient à la relecture — une garde qui prétendrait en juger produirait du bruit et
+finirait désarmée.
+
+**Un chiffre porte son témoin.** Convention d'écriture, posée le 2026-09-09 et non mécanisée : quand
+une phrase du dépôt publie une mesure — une durée, un volume, un compte, un ratio —, elle nomme, à
+côté du nombre, **la date** et **l'instrument** qui l'a produit : « 256 s (mesuré le 2026-09-09 par
+`cargo test --locked`, 12 cœurs) », « 19 sites (mesuré le 2026-09-09 par
+`le_portillon_clos_avoue_sur_le_routeur_reel_et_se_tait_quand_il_ouvre`) ». Mesuré le 2026-09-02 :
+sur mille trente-quatre lignes portant un nombre et une unité physique, six nommaient leur témoin ;
+une garde qui l'exigerait aujourd'hui accuserait presque tout le corpus, donc elle n'existe pas —
+c'est la convention qui doit d'abord faire sa population, ligne neuve après ligne neuve. Un chiffre
+sans témoin n'est pas faux ; il est invérifiable, et il vieillit sans que rien ne le dise.

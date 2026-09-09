@@ -211,6 +211,33 @@ def scenario_respond(nom, prepare_liste, attendu, cible="203.0.113.7"):
                 echec(f"respond/{nom}: ban posé sur une IP présente dans la liste d'épargne.")
 
 
+def lignes_du_contenu(brut):
+    """Les lignes que l'installateur ÉCRIT, telles quelles — forme `echo "..."` ou chaîne `printf`.
+
+    `P8.27-e` (mesuré le 2026-09-03, un caractère) : cette fonction filtrait `l.strip() != ""`, donc
+    une ligne de BLANCS semée dans le contenu par défaut DISPARAISSAIT avant d'atteindre le scénario,
+    et la garde restait verte sur la forme qu'un éditeur produit par accident — alors que, côté
+    produit, une telle ligne échoue au test de forme, classe l'entrée en forme inconnue, et
+    AUCUN ban ne part de l'hôte. Seule la ligne STRICTEMENT vide est retirée : le responder l'ignore.
+    Les lignes sont rendues TELLES QUELLES, jamais classées avant d'être jugées."""
+    lignes = [l for l in re.findall(r'"([^"]*)"', brut)] if "echo" in brut else brut.split("\\n")
+    return [l for l in lignes if l != ""]
+
+
+def valider_l_extraction():
+    """L'instrument se valide sur des entrées FABRIQUÉES, dans les deux formes et dans les deux sens :
+    une ligne de blancs SURVIT, une ligne strictement vide est retirée, un commentaire reste."""
+    forme_echo = 'echo "# en-tete"\n      echo ""\n      echo "   "\n      echo "nginx.service"'
+    forme_printf = "# en-tete\\n\\n   \\nnginx.service"
+    for nom, brut, attendu in (("echo", forme_echo, ["# en-tete", "   ", "nginx.service"]),
+                               ("printf", forme_printf, ["# en-tete", "   ", "nginx.service"])):
+        obtenu = lignes_du_contenu(brut)
+        if obtenu != attendu:
+            echec(f"INSTRUMENT : l'extraction du contenu par défaut (forme {nom}) rend {obtenu!r} au lieu "
+                  f"de {attendu!r} — une ligne de blancs doit SURVIVRE jusqu'au scénario (`P8.27-e`) et "
+                  f"seule la ligne strictement vide est retirée. Aucun verdict n'est rendu sur cette base.")
+
+
 def temoins_respond():
     def liste_absente_mais_posee(tmp):
         return os.path.join(tmp, "liste-qui-nexiste-pas.allow")   # chemin POSÉ, fichier absent
@@ -269,8 +296,7 @@ def temoins_respond():
         if not m:
             return None
         brut = m.group(1)
-        lignes = [l for l in re.findall(r'"([^"]*)"', brut)] if "echo" in brut else brut.split("\\n")
-        lignes = [l for l in lignes if l.strip() != ""]
+        lignes = lignes_du_contenu(brut)
         # VALIDATION DE L'INSTRUMENT, ET ELLE NE DOIT PAS SE CONFONDRE AVEC LE VERDICT. Ce qui est
         # vérifié ici est que l'EXTRACTION a marché — plusieurs lignes, dont au moins une qui
         # ressemble à l'en-tête que ces fichiers portent. Ce qui NE l'est pas ici : que le contenu
@@ -773,6 +799,11 @@ def temoins_du_corpus_partage():
 
 
 def main():
+    valider_l_extraction()
+    if ERREURS:
+        for e in ERREURS:
+            print(e, file=sys.stderr)
+        sys.exit(2)
     couverts = {"collectors/respond.sh": temoins_respond,
                 "collectors/engagement-adapter.sh": temoins_adaptateur}
     manquants = set(ENFORCERS) - set(couverts)

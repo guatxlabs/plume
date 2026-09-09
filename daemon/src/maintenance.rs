@@ -855,12 +855,67 @@ pub(crate) fn ensure_rollup_srcip_host_panels<C: SqlExec>(conn: &C) {
     }
 }
 
+/// Seuil de lignes à partir duquel une passe d'analyse prise sur une base plus petite est à REFAIRE
+/// (`P7.19-h`) : en dessous, les statistiques ne pèsent rien pour le planificateur ; au-dessus, un
+/// compte pris sur une base vide — un ZÉRO écrit pour l'index partiel de la table d'événements par le
+/// moteur cible — ne décrit plus la table interrogée.
+pub(crate) const SEUIL_DE_LIGNES_DE_REARMEMENT_DE_L_ANALYSE: i64 = 1_000;
+/// Facteur de croissance de la table qui réarme la passe : analysée à N lignes, la base l'est de
+/// nouveau à 4N. Une poignée de passes sur la vie d'une base (1 k, 4 k, 16 k, … 4 M), jamais une par
+/// démarrage — et sous rétention, l'identifiant continue de croître avec l'ingestion, ce qui est le
+/// sens voulu : plus de lignes VUES, des statistiques à rafraîchir.
+pub(crate) const FACTEUR_DE_CROISSANCE_DE_REARMEMENT_DE_L_ANALYSE: i64 = 4;
+
+/// Le jalon `analyze_full_done` porte la version de schéma ET la taille de la table au moment de la
+/// passe : `<version>@<lignes>`. Un jalon ancien (`<version>` seul) se lit comme une taille INCONNUE,
+/// valant base vide : la passe se refait dès que la table dépasse le seuil, une fois.
+pub(crate) fn jalon_d_analyse_complete(version: &str, lignes: i64) -> String {
+    format!("{version}@{lignes}")
+}
+
+/// Décompose un jalon en (version de schéma, lignes analysées) ; un jalon sans taille rend 0 lignes.
+pub(crate) fn lire_le_jalon_d_analyse_complete(jalon: &str) -> (&str, i64) {
+    match jalon.split_once('@') {
+        Some((version, lignes)) => (version, lignes.parse().unwrap_or(0)),
+        None => (jalon, 0),
+    }
+}
+
+/// La passe est à refaire quand la version de schéma du jalon n'est plus la courante (un bump
+/// d'index l'a désynchronisé, à dessein), OU quand la table a franchi le seuil ET grandi du facteur
+/// depuis la passe. `None` = jamais analysée. Une base vide qui reste vide ne relance rien.
+pub(crate) fn la_passe_d_analyse_complete_est_a_refaire(
+    jalon: Option<&str>,
+    version: &str,
+    lignes_maintenant: i64,
+) -> bool {
+    let Some(jalon) = jalon else { return true };
+    let (version_du_jalon, lignes_du_jalon) = lire_le_jalon_d_analyse_complete(jalon);
+    if version_du_jalon != version {
+        return true;
+    }
+    let plancher = SEUIL_DE_LIGNES_DE_REARMEMENT_DE_L_ANALYSE
+        .max(lignes_du_jalon.saturating_mul(FACTEUR_DE_CROISSANCE_DE_REARMEMENT_DE_L_ANALYSE));
+    lignes_maintenant >= plancher
+}
+
+/// Taille de la table d'événements telle que la passe la mesure : `MAX(id)` et non `COUNT(*)`, parce
+/// que compter balaie — et sous SQLCipher déchiffre — la table entière à CHAQUE démarrage, quand
+/// l'identifiant monotone se lit en une descente d'arbre et borne par le haut le nombre de lignes
+/// jamais insérées.
+pub(crate) fn taille_de_la_table_des_evenements(conn: &Connection) -> i64 {
+    conn.query_row("SELECT COALESCE(MAX(id),0) FROM event", [], |r| r.get(0))
+        .unwrap_or(0)
+}
+
 /// ANALYZE COMPLET (analysis_limit=0) EN TÂCHE DE FOND : déchiffre toute la table `event`
 /// (coûteux : 1-2 min sur base SQLCipher volumineuse) pour des stats exactes -> le planner choisit
 /// idx_event_sev_srcip. Lancé APRÈS le bind (boot non bloquant). Gardé par la meta clé 'analyze_full_done'
-/// = version du schéma au moment du ANALYZE : on ne le refait qu'une fois par schéma (idempotent, ré-armé
-/// si un futur changement d'index bump la version). On prend le lock writer (ANALYZE écrit sqlite_stat1),
-/// mais brièvement comparé au bind, et hors du chemin de démarrage.
+/// = `<version du schéma>@<lignes de event>` au moment du ANALYZE : refait à chaque bump de schéma
+/// (idempotent, ré-armé si un futur changement d'index bump la version) ET quand la table a franchi le
+/// seuil et grandi du facteur depuis la passe (`P7.19-h` : une passe prise sur une base VIDE à
+/// l'installation ne fige plus ses zéros pour toute la vie du schéma). On prend le lock writer (ANALYZE
+/// écrit sqlite_stat1), mais brièvement comparé au bind, et hors du chemin de démarrage.
 pub(crate) fn analyze_full_background(db: &Arc<Mutex<Connection>>) {
     let conn = db.lock();
     let ver: String = conn
@@ -869,15 +924,17 @@ pub(crate) fn analyze_full_background(db: &Arc<Mutex<Connection>>) {
     let done: Option<String> = conn
         .query_row("SELECT value FROM meta WHERE key='analyze_full_done'", [], |r| r.get(0))
         .ok();
-    if done.as_deref() == Some(ver.as_str()) {
-        return; // déjà fait pour ce schéma
+    let lignes = taille_de_la_table_des_evenements(&conn);
+    if !la_passe_d_analyse_complete_est_a_refaire(done.as_deref(), &ver, lignes) {
+        return; // déjà fait pour ce schéma, sur une table de taille comparable
     }
     let _ = conn.execute_batch("PRAGMA analysis_limit=0; ANALYZE;");
+    let jalon = jalon_d_analyse_complete(&ver, lignes);
     let _ = conn.execute(
         "INSERT OR REPLACE INTO meta(key,value) VALUES('analyze_full_done', ?1)",
-        params![ver],
+        params![jalon],
     );
-    eprintln!("[analyze] ANALYZE complet terminé (tâche de fond) -> stats exactes pour les index composés");
+    eprintln!("[analyze] ANALYZE complet terminé (tâche de fond, jalon {jalon}) -> stats exactes pour les index composés");
 }
 
 /// PHASE 1 — BACKFILL EN FOND de `event_fields_fts` pour les 1,24M lignes existantes. Modèle

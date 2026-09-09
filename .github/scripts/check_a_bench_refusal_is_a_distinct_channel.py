@@ -229,8 +229,42 @@ def repertoires_par_ligne(texte):
     return par_ligne
 
 
+def pas_vise_le_crate(rep, corps, crate):
+    """`P8.27-d` (3) — LA POPULATION EST UNE PROPRIÉTÉ DU PAS, PAS LA FORME D'UN CHAMP. Un pas lance
+    `cargo test` dans le crate du banc s'il y est PLACÉ (`working-directory`) OU s'il l'y DÉSIGNE depuis
+    la racine (`cd <crate> && cargo test`, `cargo test --manifest-path <crate>/Cargo.toml`). Mesuré le
+    2026-08-28 : la première forme seule laissait un pas écrit depuis la racine HORS population, donc
+    non jugé — une exception que personne n'avait écrite."""
+    if rep == crate:
+        return True
+    c = re.escape(crate.rstrip("/"))
+    return bool(re.search(r"(?:^|[\s;&|(])cd\s+(?:\./)?" + c + r"(?:/|\s|$)", corps, re.M)
+                or re.search(r"--manifest-path[=\s]+(?:\./)?" + c + r"/Cargo\.toml\b", corps))
+
+
+def _valider_la_population():
+    """L'instrument se valide dans les deux sens sur des pas FABRIQUÉS."""
+    cas = [
+        ("daemon", "cargo test --locked", "daemon", True),
+        (None, "cd daemon && cargo test --locked", "daemon", True),
+        (None, "cargo test --locked --manifest-path daemon/Cargo.toml", "daemon", True),
+        (None, "cargo test --locked --manifest-path ./daemon/Cargo.toml", "daemon", True),
+        (None, "cargo test --locked", "daemon", False),
+        ("agent", "cargo test --locked", "daemon", False),
+        (None, "cd daemonette && cargo test", "daemon", False),
+        (None, "cargo test --manifest-path agent/Cargo.toml", "daemon", False),
+    ]
+    return [f"pas_vise_le_crate({rep!r}, {corps!r}, {crate!r}) rend {not attendu}, attendu {attendu}"
+            for rep, corps, crate, attendu in cas if pas_vise_le_crate(rep, corps, crate) != attendu]
+
+
 def propriete_tri_cable(erreurs):
     """DÉRIVÉE, JAMAIS ÉNUMÉRÉE : tout pas qui lance `cargo test` DANS LE CRATE DU BANC trie."""
+    ecarts = _valider_la_population()
+    if ecarts:
+        erreurs.append("l'instrument de population ne se reconnaît plus lui-même : " + " ; ".join(ecarts)
+                       + " — la garde REFUSE DE CONCLURE.")
+        return None
     crate = crate_du_banc()
     if crate is None:
         erreurs.append("le crate du banc n'a pas pu être dérivé (aucun `Cargo.toml` au-dessus de "
@@ -257,7 +291,7 @@ def propriete_tri_cable(erreurs):
             if not LANCE_CARGO_TEST.search(corps):
                 continue
             rep = repertoires[ligne - 1] if ligne - 1 < len(repertoires) else None
-            if rep != crate:
+            if not pas_vise_le_crate(rep, corps, crate):
                 hors_population += 1
                 continue
             vus += 1

@@ -51,6 +51,35 @@ pub(crate) fn host_inventory_simple(conn: &Connection) -> Vec<Value> {
     hosts
 }
 
+/// `P11.20-l` — LA LISTE D'HÔTES DU PANNEAU D'INTÉGRATIONS EST BORNÉE, ET LA COUPE EST MESURÉE.
+/// Mesuré le 2026-09-03 : la vue d'ensemble rendait l'INTÉGRALITÉ de `host_inventory_simple` — sans
+/// pagination, sans coupe, sans aveu — là où la Flotte, sur le même parc, sert 50 lignes par page et
+/// plafonne à 500 côté route. Sur un parc de milliers de machines, un panneau de synthèse peignait des
+/// milliers de lignes. La borne est celle de la page de Flotte, et la coupe est PROUVÉE par la ligne
+/// excédentaire (`liste_bornee::couper_a_la_borne`), jamais déduite d'une longueur ; le total est un
+/// COMPTE sur le rollup (cardinalité de la flotte, sub-ms), rendu à côté pour que la vue rattache la
+/// liste à sa population au lieu de la deviner. `None` = comptage illisible, jamais un zéro.
+pub(crate) const BORNE_HOTES_DU_PANNEAU: i64 = 50;
+pub(crate) fn hotes_du_panneau_bornes(conn: &Connection, borne: i64) -> (Vec<Value>, bool, Option<i64>) {
+    let lues = match conn.prepare(
+        "SELECT host, MAX(last_ts) m FROM host_rollup WHERE host<>'' GROUP BY host ORDER BY m DESC LIMIT ?1",
+    ) {
+        Ok(mut stmt) => match stmt.query_map(
+            params![crate::handlers::liste_bornee::borne_avec_ligne_excedentaire(borne)],
+            |r| Ok(json!({ "host": r.get::<_, String>(0)?, "last_seen": r.get::<_, i64>(1)? })),
+        ) {
+            Ok(rows) => rows.flatten().collect::<Vec<Value>>(),
+            Err(_) => Vec::new(),
+        },
+        Err(_) => Vec::new(),
+    };
+    let (servies, coupee) = crate::handlers::liste_bornee::couper_a_la_borne(lues, borne.max(0) as usize);
+    let total = conn
+        .query_row("SELECT COUNT(DISTINCT host) FROM host_rollup WHERE host<>''", [], |r| r.get::<_, i64>(0))
+        .ok();
+    (servies, coupee, total)
+}
+
 /// FLOTTE — inventaire (fonction PURE sur &Connection). Renvoie la liste COMPLÈTE d'hôtes (non triée, non
 /// paginée) + `pipeline_fresh`. Les hôtes sont lus du rollup pré-agrégé `host_rollup` (v77, cf. rollup_hosts) :
 /// last_seen=MAX(last_ts), first_seen=MIN(first_ts), signals=SUM(sig_total+sig_hot) — PLUS de `MAX(ts) GROUP BY

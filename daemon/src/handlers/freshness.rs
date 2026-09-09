@@ -281,7 +281,10 @@ pub(crate) fn compute_integrations(db_path: &str) -> Value {
             })
             .collect();
         // INVENTAIRE d'hôtes = host_rollup pré-agrégé (cf. rollup_hosts) : AUCUN scan de event∪metric∪snapshot.
-        let hosts = host_inventory_simple(conn);
+        // `P11.20-l` — BORNÉ à la page de Flotte, coupe mesurée, total compté : la vue rattache la liste
+        // à sa population et renvoie à la Flotte pour le reste, au lieu de peindre un parc entier.
+        let (hosts, hosts_truncated, hosts_total) = hotes_du_panneau_bornes(conn, BORNE_HOTES_DU_PANNEAU);
+        let hosts_served = hosts.len();
         // P3.2-a — LE VERDICT DE FLOTTE, en COMPTE et non en série par hôte (cf. `sonde_de_flotte.rs`).
         // C'est le seul chiffre de ce panneau qui parle des machines MUETTES ; les 21 sondes à portée
         // « tous hôtes confondus » ci-dessus ne peuvent pas le dire, par construction. `None` (lecture
@@ -298,7 +301,15 @@ pub(crate) fn compute_integrations(db_path: &str) -> Value {
             }),
             None => Value::Null,
         };
-        json!({ "collectors": collectors, "hosts": hosts, "flotte": flotte })
+        json!({
+            "collectors": collectors,
+            "hosts": hosts,
+            "hosts_window": BORNE_HOTES_DU_PANNEAU,
+            "hosts_served": hosts_served,
+            "hosts_truncated": hosts_truncated,
+            "hosts_total": hosts_total,
+            "flotte": flotte,
+        })
     })
 }
 /// Fraîcheur PAR SOURCE (data-driven, pas la liste figée des collecteurs) : pour chaque feed —

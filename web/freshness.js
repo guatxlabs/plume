@@ -125,6 +125,29 @@ const RENVOIS = {
     titre: LANG === 'en' ? 'What has been DETECTED, all sources together, with its own filters and facets: Cases → Alerts.' : 'Ce qui a été DÉTECTÉ, toutes sources confondues, avec ses propres filtres et facettes : Cas → Alertes.',
   },
 };
+// `P11.20-l` — LA PHRASE DE COUPE, PURE ET EXPORTÉE pour que le harnais la juge sur des corps fabriqués.
+// Rien quand le démon n'a rien coupé ; un compte quand il a coupé et sait combien ; l'aveu que le total
+// n'est pas lu quand il a coupé sans pouvoir compter — jamais un zéro à la place d'une lecture absente.
+export function totalDHotesLu(d) {
+  if (!d || d.hosts_total === null || d.hosts_total === undefined) return undefined;
+  const n = Number(d.hosts_total);
+  return Number.isFinite(n) ? n : undefined;
+}
+export function phraseDeCoupeDesHotes(d) {
+  if (!d || !d.hosts_truncated) return '';
+  const servies = Number(d.hosts_served ?? (d.hosts || []).length) || 0;
+  // `null` n'est PAS zéro : `Number(null)` vaut 0, et le témoin 79 a attrapé un « sur 0 » fabriqué ici.
+  const total = totalDHotesLu(d);
+  if (total !== undefined) {
+    return LANG === 'en'
+      ? `${servies} of ${total} host(s) listed here — the most recent ones; the whole estate is in Fleet.`
+      : `${servies} hôte(s) listé(s) ici sur ${total} — les plus récents ; le parc entier est dans Flotte.`;
+  }
+  return LANG === 'en'
+    ? `${servies} host(s) listed here, and the list was CUT — the total could not be read; the whole estate is in Fleet.`
+    : `${servies} hôte(s) listé(s) ici, et la liste a été COUPÉE — le total n'a pas pu être lu ; le parc entier est dans Flotte.`;
+}
+
 function renvoi(destination) {
   const r = RENVOIS[destination];
   if (!r) {
@@ -187,9 +210,13 @@ async function renderIntegrations() {
       titre: LANG === 'en' ? 'ALREADY counted in one of the terms above — this number crosses the distribution, it does not share it. These probes return the FRESHEST data of the estate: they stay green as long as a single machine still talks. Fully silent machines are counted separately (Hosts).' : 'DÉJÀ comptées dans l\'un des termes ci-dessus — ce nombre recoupe la répartition, il ne la partage pas. Ces sondes rendent la donnée la plus FRAÎCHE du parc : elles restent vertes tant qu\'une seule machine parle encore. Les machines entièrement muettes sont comptées à part (Hôtes).' },
   ]) +
     renvoi('#freshness-view') + renvoi('#sources') + `</div>`;
-  const hosts = (d.hosts || []).length
+  // `P11.20-l` — LA LISTE EST BORNÉE PAR LA ROUTE, ET LA COUPE SE LIT ICI. Le démon sert `hosts_window`
+  // lignes au plus et DIT s'il en a coupé (`hosts_truncated`, mesuré par la ligne excédentaire) et combien
+  // il y en a (`hosts_total`). La phrase est dérivée de ces trois nombres, jamais de la longueur seule.
+  const hosts = ((d.hosts || []).length
     ? d.hosts.map(h => `<div class="kv"><span>${ic('server')} ${esc(h.host)}</span><span class="muted">${fmtTs(h.last_seen)}</span></div>`).join('')
-    : '<div class="muted">hôte local uniquement — aucun agent distant n\'a encore poussé de logs.</div>';
+    : '<div class="muted">hôte local uniquement — aucun agent distant n\'a encore poussé de logs.</div>')
+    + (phraseDeCoupeDesHotes(d) ? `<div class="muted flcoupe">${esc(phraseDeCoupeDesHotes(d))} ${renvoi('#fleet')}</div>` : '');
   // P3.2-a — LE COMPTE D'HÔTES MUETS, seul chiffre de ce panneau qui parle des machines qui se sont tues
   // (les sondes ci-dessus ne le peuvent pas : leur portée les en empêche). `flotte` absent/null = la
   // lecture de l'inventaire a échoué -> on l'ÉCRIT au lieu d'afficher un zéro rassurant.
@@ -245,12 +272,14 @@ async function renderIntegrations() {
   // pas tu quand il vaut zéro : un rattachement qui disparaît à zéro ne se distingue plus d'un
   // rattachement qui n'a jamais été écrit, et c'est exactement le défaut qu'on ferme ici.
   const rattachementDeLaListe = (f) => {
-    const ecart = listees - (Number(f.attendus) || 0);
+    // `P11.20-l` : quand la liste est coupée, c'est le TOTAL servi qui se rattache, pas la page.
+    const population = (d.hosts_truncated && totalDHotesLu(d) !== undefined) ? totalDHotesLu(d) : listees;
+    const ecart = population - (Number(f.attendus) || 0);
     const phrase = ecart === 0
-      ? (LANG === 'en' ? `the ${listees} machine(s) listed below are exactly that total` : `les ${listees} machine(s) listée(s) ci-dessous sont exactement ce total`)
+      ? (LANG === 'en' ? `the ${population} machine(s) listed below are exactly that total` : `les ${population} machine(s) listée(s) ci-dessous sont exactement ce total`)
       : ecart > 0
-        ? (LANG === 'en' ? `${listees} machine(s) listed below, ${ecart} more than that total: a machine DECLARED withdrawn from the estate stays listed and leaves the denominator` : `${listees} machine(s) listée(s) ci-dessous, ${ecart} de plus que ce total : une machine DÉCLARÉE retirée du parc reste listée et sort du dénominateur`)
-        : (LANG === 'en' ? `${listees} machine(s) listed below, fewer than that total: the two readings do not agree — they are taken one after the other` : `${listees} machine(s) listée(s) ci-dessous, moins que ce total : les deux lectures ne s'accordent pas — elles sont prises l'une après l'autre`);
+        ? (LANG === 'en' ? `${population} machine(s) listed below, ${ecart} more than that total: a machine DECLARED withdrawn from the estate stays listed and leaves the denominator` : `${population} machine(s) listée(s) ci-dessous, ${ecart} de plus que ce total : une machine DÉCLARÉE retirée du parc reste listée et sort du dénominateur`)
+        : (LANG === 'en' ? `${population} machine(s) listed below, fewer than that total: the two readings do not agree — they are taken one after the other` : `${population} machine(s) listée(s) ci-dessous, moins que ce total : les deux lectures ne s'accordent pas — elles sont prises l'une après l'autre`);
     return `<div class="muted flrattache">${esc(phrase)}</div>`;
   };
   const flotteLigne = fl === undefined ? ''

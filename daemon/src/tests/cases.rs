@@ -972,6 +972,30 @@
         assert_eq!(a_sig2, 5, "re-tick ne double pas la fenêtre chaude");
     }
 
+    /// `P11.20-l` — LA LISTE D'HÔTES DU PANNEAU EST BORNÉE, LA COUPE EST PROUVÉE PAR LA LIGNE
+    /// EXCÉDENTAIRE, ET LE TOTAL EST COMPTÉ. Sous la borne : tout est servi, rien n'est avoué.
+    /// Au-dessus : `borne` lignes, la coupe est vraie, et le total dit combien il y en avait.
+    #[test]
+    fn le_panneau_d_hotes_est_borne_et_avoue_la_coupe() {
+        let conn = test_db();
+        for i in 0..3 {
+            conn.execute("INSERT INTO host_rollup(host, env_id, last_ts, first_ts, sig_total, sig_hot, updated) VALUES(?1,'prod',?2,?2,1,0,?2)",
+                         params![format!("h{i}"), 1_000 + i]).unwrap();
+        }
+        let (servies, coupee, total) = hotes_du_panneau_bornes(&conn, 3);
+        assert_eq!(servies.len(), 3, "pile la borne : tout est servi");
+        assert!(!coupee, "pile la borne : AUCUNE coupe — l'aveu est mesuré par la ligne excédentaire, pas déduit de la longueur");
+        assert_eq!(total, Some(3));
+        conn.execute("INSERT INTO host_rollup(host, env_id, last_ts, first_ts, sig_total, sig_hot, updated) VALUES('h9','prod',2000,2000,1,0,2000)", []).unwrap();
+        let (servies, coupee, total) = hotes_du_panneau_bornes(&conn, 3);
+        assert_eq!(servies.len(), 3, "au-dessus de la borne : `borne` lignes, pas une de plus");
+        assert!(coupee, "au-dessus de la borne : la coupe est AVOUÉE");
+        assert_eq!(total, Some(4), "le total compte la population entière, pas la page");
+        assert_eq!(servies[0]["host"], "h9", "les plus récents d'abord : la ligne coupée est la plus ancienne");
+        // la liste complète reste disponible pour la Flotte : la borne ne touche pas `host_inventory_simple`
+        assert_eq!(host_inventory_simple(&conn).len(), 4);
+    }
+
     /// HOST_ROLLUP (v77) — PREUVE que /api/fleet ET /api/integrations lisent le ROLLUP et NON un scan de
     /// event∪metric∪snapshot : après avoir peuplé host_rollup, on VIDE les 3 tables brutes ; les hôtes DOIVENT
     /// rester (un scan renverrait 0). C'est aussi la garantie « agent mort reste visible » (rollup jamais pruné).

@@ -10578,6 +10578,36 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   console.log(`[largeur-de-colonne] \`P11.15-a\` : la fabrique partagée pose ${ths1.length} poignées ; un glissement réel de 120 px pose 120 px, relu après un tri et après une RECONSTRUCTION sous la même identité, absent sous une autre ; plancher ${LARGEUR_MINIMALE_DE_COLONNE} px tenu ; la table des résultats lit le même magasin sous « explore » (177 px posés, 177 px rendus) ; magasin par personne branché par prefs.js. Non tenu : la largeur PEINTE (aucune boîte mesurée ici).`);
 }
 
+// ---------------------------------------------------------------------------------------------
+// 79. LA LISTE D'HÔTES DU PANNEAU D'INTÉGRATIONS EST BORNÉE PAR LA ROUTE, ET LA COUPE SE LIT
+//     (`P11.20-l`, mesuré le 2026-09-03, fermé le 2026-09-09).
+//     CE QUI ÉTAIT MESURÉ : la vue d'ensemble rendait l'INTÉGRALITÉ de sa collection d'hôtes — sans
+//     pagination, sans coupe, sans aveu — là où la Flotte sert 50 lignes par page. Le démon borne
+//     désormais à la page de Flotte, PROUVE la coupe par la ligne excédentaire et COMPTE le total ;
+//     la phrase de cette surface est DÉRIVÉE de ces trois nombres, jamais de la longueur seule.
+//     CE QUE CE TÉMOIN TIENT, sur des corps FABRIQUÉS et dans les deux langues : rien à dire quand
+//     rien n'est coupé (une longueur égale à la borne n'est pas une coupe — c'est le démon qui la
+//     mesure) ; un compte « n sur N » quand la coupe est dite et le total lu ; l'aveu que le total
+//     n'a pas été lu quand la coupe est dite sans total — jamais un zéro à la place d'une lecture
+//     absente ; et le renvoi vers la Flotte dans les deux cas.
+//     CE QU'IL NE TIENT PAS : la borne elle-même (50) et la ligne excédentaire — c'est le témoin du
+//     démon `le_panneau_d_hotes_est_borne_et_avoue_la_coupe` qui les tient.
+// ---------------------------------------------------------------------------------------------
+{
+  const { phraseDeCoupeDesHotes } = await import(pathToFileURL(path.join(WEB, "freshness.js")).href);
+  const pleine = Array.from({ length: 50 }, (_, i) => ({ host: "h" + i, last_seen: 1 }));
+  exiger(phraseDeCoupeDesHotes({ hosts: pleine, hosts_window: 50, hosts_served: 50, hosts_truncated: false, hosts_total: 50 }) === "",
+    "(79a) une liste pile à la borne, que le démon dit NON coupée, fait dire une coupe — la phrase se déduit d'une longueur au lieu de lire l'aveu");
+  exiger(phraseDeCoupeDesHotes({ hosts: [], hosts_truncated: false }) === "" && phraseDeCoupeDesHotes(null) === "", "(79a) un corps vide ou absent fait parler la coupe");
+  const dite = phraseDeCoupeDesHotes({ hosts: pleine, hosts_window: 50, hosts_served: 50, hosts_truncated: true, hosts_total: 1234 });
+  exiger(/\b50\b/.test(dite) && /\b1234\b/.test(dite) && /Flotte|Fleet/.test(dite), `(79b) coupe dite et total lu : « ${dite} » ne porte pas « 50 », « 1234 » et le renvoi vers la Flotte`);
+  const sansTotal = phraseDeCoupeDesHotes({ hosts: pleine, hosts_window: 50, hosts_served: 50, hosts_truncated: true, hosts_total: null });
+  exiger(/\b50\b/.test(sansTotal) && !/\b0\b/.test(sansTotal) && /COUPÉE|CUT/.test(sansTotal) && /total/i.test(sansTotal), `(79c) coupe dite SANS total : « ${sansTotal} » doit avouer que le total n'a pas été lu, sans fabriquer un zéro`);
+  const src = readFileSync(path.join(WEB, "freshness.js"), "utf8");
+  exiger(/hosts_truncated && totalDHotesLu\(d\) !== undefined\) \? totalDHotesLu\(d\) : listees/.test(src), "(79d) le rattachement de la liste à son total ne compare plus la POPULATION servie quand la liste est coupée — la phrase « moins que ce total » redeviendrait fausse sur un parc borné");
+  console.log(`[hotes-bornes] \`P11.20-l\` : la phrase de coupe se tait sur une liste non coupée (même pile à la borne), dit « n sur N » quand le total est lu, avoue un total non lu sans fabriquer un zéro, renvoie à la Flotte ; le rattachement compare le TOTAL quand la liste est coupée. Non tenu ici : la borne (50) et la ligne excédentaire — témoin du démon.`);
+}
+
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;
 verdictRendu = true;
 if (echecs.length) {

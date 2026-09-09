@@ -590,6 +590,15 @@ pub(crate) fn restore_compressed(src: &str, dest_db: &str, key: Option<&str>, ov
         return Err(format!("restore : {dest_db} existe déjà — relancer avec --force pour écraser"));
     }
 
+    // `P8.10-l` — UNE ARCHIVE DE SÉQUESTRE SANS IDENTITÉ SE REFUSE EN CLAIR, AVANT age. Sinon la
+    // bibliothèque rend « no matching keys », qui se lit comme un défaut de l'archive alors que c'est
+    // la conception qui parle : l'identité n'est pas ici, et le message dit chez qui elle est.
+    if identity.is_none() {
+        let f = std::fs::File::open(src).map_err(|e| format!("ouverture src : {e}"))?;
+        if let Ok(super::verification::BackupKind::Asymmetric) = super::verification::inspect_age_header(std::io::BufReader::with_capacity(BACKUP_BUF, f)) {
+            return Err(format!("restore : {} (aucune identité privée fournie : PLUME_BACKUP_AGE_IDENTITY ou PLUME_BACKUP_AGE_IDENTITY_FILE)", super::phrase_de_sequestre()));
+        }
+    }
     // 1) age décrypte -> zstd décode -> flux clair EN MÉMOIRE (jamais tout sur disque pour B1).
     let f = std::fs::File::open(src).map_err(|e| format!("ouverture src : {e}"))?;
     let r = std::io::BufReader::with_capacity(BACKUP_BUF, f);

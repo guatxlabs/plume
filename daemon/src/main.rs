@@ -1622,7 +1622,7 @@ deux compare une PARTIE a un TOUT (mecanisme detaille dans db_ventilation.rs)."
             Ok((kind, contenu)) => {
                 println!("backup-verify -> {src}  kind={kind:?}  full_decrypt_verified={}{}",
                     contenu.is_some(),
-                    if contenu.is_some() { "" } else { "  (structurel-seul ; vérif complète = DRILL DR avec identité escrow)" });
+                    if contenu.is_some() { String::new() } else { format!("  (structurel-seul — {})", backup::phrase_de_sequestre()) });
                 // P8.3-a — UNE VÉRIFICATION COMPLÈTE EST UN EXERCICE DE RESTAURATION, et elle en émet
                 // l'ATTESTATION. Une ligne, sur la sortie standard, qui traverse l'isolement de la machine
                 // d'exercice sans qu'aucune clé ne fasse le voyage inverse :
@@ -1721,6 +1721,7 @@ deux compare une PARTIE a un TOUT (mecanisme detaille dans db_ventilation.rs)."
                 let etat = exercice_de_restauration::etat(
                     dernier.as_ref(), escrow, now(), exercice_de_restauration::age_max_s());
                 println!("restore-drill : {} — {}", etat.mot(), etat.detail());
+                if escrow { println!("identité de séquestre (asymétrique) : détenteur {}", backup::detenteur_du_sequestre()); }
                 match &dernier {
                     Some(d) => println!("dernier exercice : archive={} chiffrement={} tables={} lignes={}",
                         d.archive, exercice_de_restauration::mot_du_chiffrement(d.chiffrement), d.tables, d.lignes),

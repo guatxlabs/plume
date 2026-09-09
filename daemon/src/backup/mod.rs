@@ -616,6 +616,28 @@ pub(crate) fn plain_temp_path(beside: &str) -> std::path::PathBuf {
 /// Une clé PUBLIQUE n'est PAS un secret : peut vivre en clair dans l'env/ConfigMap du pod, ou dans
 /// `/etc/plume/soc.conf` sur un hôte (P8.7-a : `env > fichier PLUME_CONFIG`). Non posé ->
 /// `None` -> repli sur le chiffrement SYMÉTRIQUE par passphrase (= clé SQLCipher) = comportement historique.
+/// `P8.10-l` — QUI DÉTIENT L'IDENTITÉ DE SÉQUESTRE. Mesuré le 2026-09-03, base à l'arrêt : depuis le
+/// pod, aucune restauration d'une archive asymétrique n'est possible — c'est la valeur du séquestre —
+/// mais la conséquence n'était écrite nulle part où on la lit EN SITUATION : le vérificateur parlait
+/// de « vérification structurelle seule » et la restauration rendait une erreur de bibliothèque. Le
+/// levier `PLUME_BACKUP_ESCROW_HOLDER` (texte libre : une équipe, un coffre, un nom de procédure) est
+/// cité par chaque message qui refuse ; vide, le message dit que le détenteur n'est PAS déclaré, ce
+/// qui est déjà une information — jamais un nom inventé.
+pub(crate) const CLE_DETENTEUR_DU_SEQUESTRE: &str = "PLUME_BACKUP_ESCROW_HOLDER";
+pub(crate) fn detenteur_du_sequestre() -> String {
+    let brut = cfg(&load_config(), CLE_DETENTEUR_DU_SEQUESTRE, "");
+    let d = brut.trim();
+    if d.is_empty() { format!("NON DÉCLARÉ (posez {CLE_DETENTEUR_DU_SEQUESTRE})") } else { d.to_string() }
+}
+/// LA PHRASE, ÉCRITE UNE FOIS : ce que le lecteur doit savoir quand une archive ne peut pas être
+/// restaurée là où il est.
+pub(crate) fn phrase_de_sequestre() -> String {
+    format!("CETTE SAUVEGARDE NE PEUT PAS ÊTRE RESTAURÉE ICI : elle est chiffrée pour l'identité de séquestre \
+             (asymétrique, X25519) et l'identité PRIVÉE est hors du cluster — détenteur : {}. La restauration et \
+             la vérification complète se font là où cette identité est, et s'attestent ensuite sur ce nœud par \
+             `plume-daemon restore-drill record`.", detenteur_du_sequestre())
+}
+
 pub(crate) fn backup_age_recipient() -> Option<String> {
     Some(reglage_sauvegarde(CLE_BACKUP_AGE_RECIPIENT)).filter(|s| !s.is_empty())
 }

@@ -1670,6 +1670,9 @@
         }
         // (3) restore SANS identité (passphrase seule) -> ÉCHOUE (le pod ne peut pas lire les backups asym).
         let r2 = dir.join("r2.db").to_string_lossy().into_owned();
+        let refus = crate::backup::restore_compressed(&dest, &r2, Some(key), true, None).unwrap_err();
+        assert!(refus.contains("NE PEUT PAS ÊTRE RESTAURÉE ICI") && refus.contains("détenteur"),
+                "`P8.10-l` : le refus doit dire que l'archive de séquestre n'est pas restaurable ici et chez qui l'identité est, pas une erreur de bibliothèque : {refus}");
         assert!(crate::backup::restore_compressed(&dest, &r2, Some(key), true, None).is_err(),
             "backup asymétrique NON déchiffrable à la seule passphrase");
         // `P8.10-k` (2026-09-09) — L'ÉCHEC FABRIQUÉ (identité absente) NE LAISSE AUCUN FICHIER DERRIÈRE LUI :

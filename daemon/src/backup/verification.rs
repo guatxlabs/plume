@@ -169,8 +169,14 @@ pub(crate) fn verify_backup(src: &str, key: Option<&str>, identity: Option<&age:
         BackupKind::Asymmetric => identity.is_some(),
     };
     if !can_full {
-        eprintln!("[backup-verify] {src} : {kind:?} — vérif STRUCTURELLE OK (en-tête age v1 + stanza {} + taille {} o). \
-Vérif COMPLÈTE (déchiffrer+ouvrir la DB) requiert l'identité age PRIVÉE escrow HORS-cluster (DRILL DR) — non tentée.",
+        // `P8.10-l` — LA NUANCE TECHNIQUE DISAIT MOINS QUE LE FAIT. « Vérification structurelle seule »
+        // se lisait comme un détail ; ce que le lecteur doit savoir, c'est que cette archive n'est PAS
+        // restaurable ici, et chez qui l'identité est.
+        let pourquoi = match kind {
+            BackupKind::Asymmetric => super::phrase_de_sequestre(),
+            BackupKind::Symmetric => String::from("archive symétrique et PLUME_DB_KEY absente ici : la vérification complète n'est pas tentée."),
+        };
+        eprintln!("[backup-verify] {src} : {kind:?} — vérif STRUCTURELLE OK (en-tête age v1 + stanza {} + taille {} o). {pourquoi}",
             match kind { BackupKind::Symmetric => "scrypt", BackupKind::Asymmetric => "X25519" }, meta.len());
         return Ok((kind, None));
     }

@@ -112,6 +112,12 @@ et immuables : aucun re-wrap, aucun clair.
    **compte** les fichiers-jour froids de l'escrow et les nomme, mais **ne les vérifie pas** : quand il y
    en a, son verdict est `SUCCES PARTIEL — PORTEE : base CHAUDE seule`. La vérification des deux étages
    reste un **drill DR hors-cluster** avec l'identité age d'escrow.
+   Depuis le 2026-09-09 (`P8.10-l`), `restore`, `backup-verify` et `restore-drill status` le **disent en
+   situation** : « cette sauvegarde ne peut pas être restaurée ici … détenteur : … » — le détenteur est
+   le texte de `PLUME_BACKUP_ESCROW_HOLDER` (équipe, coffre, procédure) ; vide, il est dit « non déclaré »,
+   jamais inventé. Mesuré en production le 2026-09-09 : `restore-drill status` rend « jamais » (code 3) —
+   aucun exercice de restauration n'a encore été enregistré, donc aucune archive de séquestre n'a été
+   prouvée restaurable ; c'est un geste de l'exploitant, avec l'identité qu'il détient.
 
 **État mesuré le 2026-08-08 sur l'installation de référence** : tous les fichiers-jour présents sur le
 disque étaient **séquestrés** (témoin positif : les objets sous le préfixe `plume/` les couvrent tous ;

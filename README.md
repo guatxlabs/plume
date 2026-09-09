@@ -669,9 +669,9 @@ il n'est pas lisible via `/proc/<pid>/environ`.
 ### Ce que ce document couvre, et ce qu'il ne couvre pas
 
 Soyons exacts plutôt que rassurants, et comptons **sur l'arbre** plutôt que de promettre. **Relevé
-du 2026-08-30**, rendu par la garde citée juste après : le démon et les collecteurs lisent **319**
-variables `PLUME_*` distinctes. **160** apparaissent dans au moins un document livré ; **159**
-n'apparaissent dans **aucun**. Ce README en nomme **99** — et voici le critère, parce qu'un compte
+du 2026-09-09**, rendu par la garde citée juste après : le démon et les collecteurs lisent **321**
+variables `PLUME_*` distinctes. **164** apparaissent dans au moins un document livré ; **157**
+n'apparaissent dans **aucun**. Ce README en nomme **107** — et voici le critère, parce qu'un compte
 sans critère est irréfutable donc inutile : **un jeton `PLUME_[A-Z0-9_]+` distinct, écrit en toutes
 lettres**. Une cellule qui abrège — un nom entier, puis des suffixes seuls — ne nomme *que le
 premier* pour ce critère, ni pour la garde ni pour l'exploitant qui cherche le nom complet ; les
@@ -706,32 +706,21 @@ python3 .github/scripts/check_operator_surface_is_documented.py --liste=sans-doc
 python3 .github/scripts/check_operator_surface_is_documented.py --mesure
 ```
 
-**Les deux commandes ci-dessous restent publiées pour ce que la garde ne rend pas : la valeur par
-défaut à côté du nom.** Ce sont des **approximations `grep`, et elles minorent** — elles ne suivent
-ni un levier nommé par une constante (`cfg(&conf, CLE_DU_QUOTA, …)`) ni un appel dont un argument
-antérieur porte une parenthèse (`cfg(&load_config(), "…", …)`). Ne les additionnez pas : voir la
-phrase qui suit le bloc.
+**La valeur par défaut à côté du nom est rendue par la garde elle-même** — c'est ce que deux
+approximations `grep` publiées ici jusqu'au 2026-09-09 rendaient en minorant (elles ne suivaient ni
+un levier nommé par une constante, ni un tableau littéral de noms dans une boucle), avec un total
+daté qui vieillissait à chaque levier ajouté. Elles sont retirées : **une seule lecture fait foi**,
+et elle ne vieillit pas.
 
 ```sh
-# a. Les leviers du démon vus par `grep`, AVEC leur valeur par défaut
-grep -rhoE 'cfg[a-z_]*\([^,]+, *"PLUME_[A-Z0-9_]+", *"[^"]*"' daemon/src --include='*.rs' --exclude-dir=tests \
-  | sed -E 's/.*"(PLUME_[A-Z0-9_]+)", *"([^"]*)".*/\1 = \2/' | sort -u
+# 4. Chaque levier lu, AVEC sa valeur par défaut (« — » quand le code n'en pose aucune de littérale)
+python3 .github/scripts/check_operator_surface_is_documented.py --liste=defauts
 
-# b. Les leviers des collecteurs et des installateurs, AVEC leur valeur par défaut
-grep -rhoE '\$\{PLUME_[A-Z0-9_]+:-[^}]*\}' collectors bootstrap.sh bootstrap-agent.sh \
-  | sed -E 's/\$\{(PLUME_[A-Z0-9_]+):-(.*)\}/\1 = \2/' | sort -u
-
-# c. Où une variable donnée est lue, et ce qu'elle vaut par défaut
+# 5. Où une variable donnée est lue, et ce qu'elle vaut par défaut
 grep -rn 'PLUME_RETENTION_DAYS' daemon/src collectors --exclude-dir=tests
 ```
 
-**Ce que `a` et `b` rendent ensemble, et sous quel arbitrage — parce qu'un total nu se lit de deux
-façons qui ne donnent pas le même nombre.** Elles rendent des **lignes**, pas des leviers : au
-**2026-08-30**, `a` en rend 105 et `b` 153, mais leur somme (258) compte deux fois les 8 noms que
-les deux rendent, et `b` écrit 6 leviers sur deux lignes (même nom, deux défauts selon
-l'installateur). Le nombre publié ici est donc, et a toujours été, l'**UNION de leurs noms
-distincts** : **244**. Il *minore* les 319 que la garde lit, et il vieillit à chaque levier ajouté —
-`--liste=lus`, lui, ne vieillit pas. Sur une instance qui tourne, un administrateur lit les valeurs
+Sur une instance qui tourne, un administrateur lit les valeurs
 **effectives** d'une liste sûre de 26 clés (jamais un secret) via `GET /api/system/diag`.
 
 ### Ma base grossit — qu'est-ce qui grossit ?

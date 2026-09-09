@@ -238,6 +238,10 @@ APPEL_DE_CONFIG = re.compile(r"\b(env::var|cfg[a-z_]*)\s*\(")
 RANG_DE_LA_CLE = {"env::var": 0}  # tout `cfg…` -> 1 (cf. `rang_de_la_cle`)
 CLE_LITTERALE = re.compile(r'^"([^"]*)"$')
 CLE_IDENTIFIANT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*$")
+# `P10.10-b` (2026-09-09) — UN TABLEAU LITTÉRAL DE NOMS EST RÉSOLUBLE, ET IL L'EST : `for cle in ["PLUME_A", CLE_B] {
+# cfg(&conf, cle, …) }` lie la variable de boucle à des noms ÉCRITS (ou à des constantes, résolues comme ailleurs).
+# Mesuré le 2026-08-30 : un levier lu SEULEMENT par cette forme sortait de l'inventaire (319 publiés au lieu de 320).
+BOUCLE_LITTERALE = re.compile(r"\bfor\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+\[([^\]]*)\]")
 # Un ATTRIBUT Rust (`#[cfg(test)]`, `#[cfg_attr(not(feature=\"x\"), allow(…))]`) n'est PAS une lecture
 # de configuration, et il porte le même mot. Ses intervalles sont retirés des sites — mesuré : deux
 # `cfg_attr` de `daemon/src/handlers/query.rs` rendaient `allow(unused_mut, unused_variables)` comme
@@ -480,6 +484,22 @@ def leviers_dun_texte_rust(texte: str, consts: dict[str, str]) -> tuple[set[str]
     hors_portee = _spans_attribut(code, "#[cfg(test)]") + spans_dattribut(code)
     leviers: set[str] = set()
     non_resolues: list[str] = []
+    boucles: dict[str, list[str]] = {}
+    # Lu sur le texte LISIBLE (commentaires retirés, chaînes intactes — même index que `code`) : le tableau
+    # porte des littéraux, que `code` opacifie.
+    for b in BOUCLE_LITTERALE.finditer(lisible):
+        if _dans(hors_portee, b.start()):
+            continue
+        noms = []
+        for item in b.group(2).split(","):
+            item = item.strip()
+            lit = CLE_LITTERALE.match(item)
+            if lit:
+                noms.append(lit.group(1))
+            elif CLE_IDENTIFIANT.match(item) and consts.get(item.split("::")[-1]) is not None:
+                noms.append(consts[item.split("::")[-1]])
+        if noms:
+            boucles[b.group(1)] = noms
     for m in APPEL_DE_CONFIG.finditer(code):
         if _dans(hors_portee, m.start()) or est_une_declaration(code, m.start()):
             continue
@@ -493,6 +513,9 @@ def leviers_dun_texte_rust(texte: str, consts: dict[str, str]) -> tuple[set[str]
         litteral = CLE_LITTERALE.match(cle)
         if litteral:
             valeur = litteral.group(1)
+        elif CLE_IDENTIFIANT.match(cle) and cle in boucles:
+            leviers |= {v for v in boucles[cle] if v.startswith("PLUME_") and not v.endswith("_")}
+            continue
         elif CLE_IDENTIFIANT.match(cle):
             valeur = consts.get(cle.split("::")[-1])
             if valeur is None:
@@ -504,6 +527,65 @@ def leviers_dun_texte_rust(texte: str, consts: dict[str, str]) -> tuple[set[str]
         if valeur.startswith("PLUME_") and not valeur.endswith("_"):
             leviers.add(valeur)
     return leviers, non_resolues
+
+
+DEFAUT_SHELL = re.compile(r"\$\{(PLUME_[A-Z0-9_]+):-([^}]*)\}")
+
+
+def defauts_dun_texte_rust(texte: str, consts: dict[str, str]) -> dict[str, str]:
+    """`P10.10-b` — LA VALEUR PAR DÉFAUT À CÔTÉ DU NOM, ce que les deux approximations `grep` du README
+    rendaient (en minorant) et que la garde ne rendait pas. Même lecture que `leviers_dun_texte_rust` :
+    l'argument qui SUIT la clé, quand il est un littéral. Un levier lu sans défaut littéral rend « — »."""
+    com, cha = _zones(texte, ".rs")
+    code = _code(texte, com, cha)
+    lisible = _hors_commentaire(texte, com)
+    hors_portee = _spans_attribut(code, "#[cfg(test)]") + spans_dattribut(code)
+    out: dict[str, str] = {}
+    for m in APPEL_DE_CONFIG.finditer(code):
+        if _dans(hors_portee, m.start()) or est_une_declaration(code, m.start()):
+            continue
+        args = arguments_de_lappel(code, lisible, m.end() - 1)
+        rang = rang_de_la_cle(m.group(1))
+        if args is None or len(args) <= rang:
+            continue
+        lit = CLE_LITTERALE.match(args[rang])
+        nom = lit.group(1) if lit else consts.get(args[rang].split("::")[-1])
+        if not nom or not nom.startswith("PLUME_") or nom.endswith("_"):
+            continue
+        defaut = CLE_LITTERALE.match(args[rang + 1]) if len(args) > rang + 1 else None
+        valeur = defaut.group(1) if defaut else "—"
+        if nom not in out or out[nom] == "—":
+            out[nom] = valeur
+    return out
+
+
+def defauts_lus(racine: str, suivis: list[str]) -> dict[str, str]:
+    """Nom -> valeur par défaut, sur le MÊME corpus que `leviers_lus` (Rust de production, collecteurs, installateurs)."""
+    textes: dict[str, str] = {}
+    for chemin in suivis:
+        if est_source_rust_de_production(chemin):
+            try:
+                with open(os.path.join(racine, chemin), encoding="utf-8", errors="replace") as fh:
+                    textes[chemin] = fh.read()
+            except OSError:
+                continue
+    consts = constantes_texte(textes.values())
+    out: dict[str, str] = {}
+    for texte in textes.values():
+        for nom, val in defauts_dun_texte_rust(texte, consts).items():
+            if nom not in out or out[nom] == "—":
+                out[nom] = val
+    for chemin in suivis:
+        if not (chemin.startswith("collectors/") or chemin in ("bootstrap.sh", "bootstrap-agent.sh")):
+            continue
+        try:
+            with open(os.path.join(racine, chemin), encoding="utf-8", errors="replace") as fh:
+                for nom, val in DEFAUT_SHELL.findall(fh.read()):
+                    if nom not in out or out[nom] == "—":
+                        out[nom] = val
+        except OSError:
+            continue
+    return out
 
 
 def leviers_lus(racine: str, suivis: list[str]) -> tuple[set[str], list[str]]:
@@ -579,7 +661,7 @@ def leviers_cites(racine: str, suivis: list[str]) -> set[str]:
 # arbitrages avaient divergé de quatorze (258 contre 244) et le nombre publié ne valait plus ni l'un
 # ni l'autre. Le remède n'est pas une quatrième lecture — ce serait le défaut reproduit par son
 # correctif — c'est que la garde RENDE la sienne, un nom par ligne, et que le document la cite.
-LISTES = ("lus", "sans-doc")
+LISTES = ("lus", "sans-doc", "defauts")
 
 
 def lignes_de_liste(quelle: str, lus: set[str], cites: set[str]) -> list[str]:
@@ -595,6 +677,11 @@ def lignes_de_liste(quelle: str, lus: set[str], cites: set[str]) -> list[str]:
     if quelle == "sans-doc":
         return sorted(lus - cites)
     raise ValueError(quelle)
+
+
+def lignes_de_defauts(defauts: dict[str, str]) -> list[str]:
+    """`--liste=defauts` : `NOM = défaut`, trié, un par ligne ; « — » quand le code ne pose aucun défaut littéral."""
+    return [f"{nom} = {val}" for nom, val in sorted(defauts.items())]
 
 
 # --- Validation de l'instrument ------------------------------------------------------------------
@@ -692,6 +779,18 @@ def valider_instrument() -> list[str]:
                     f"NOMMÉ par une constante redeviendrait invisible.")
     vus, inconnus = leviers_dun_texte_rust(CORPUS_RUST, consts)
     doit = {"PLUME_ALPHA", "PLUME_BETA", "PLUME_GAMMA", "PLUME_DELTA", "PLUME_EPSILON", "PLUME_ZETA"}
+    en_boucle, _ = leviers_dun_texte_rust('fn t() { for cle in ["PLUME_BOUCLE_A", CLE_NOMMEE] { let _ = cfg(&conf, cle, "0"); } }', consts)
+    if en_boucle != {"PLUME_BOUCLE_A", "PLUME_DELTA"}:
+        errs.append(f"témoin (boucle sur tableau littéral) en échec : {sorted(en_boucle)} — un nom écrit dans le tableau "
+                    f"d'une boucle `for cle in [...]` EST résoluble (littéral ou constante) et doit être VU (`P10.10-b`).")
+    d_rust = defauts_dun_texte_rust('fn t() { let _ = cfg(&conf, "PLUME_AVEC", "42"); let _ = env::var("PLUME_SANS"); }', {})
+    if d_rust != {"PLUME_AVEC": "42", "PLUME_SANS": "—"}:
+        errs.append(f"témoin (défauts Rust) en échec : {d_rust} — le défaut littéral qui suit la clé doit être rendu, "
+                    f"et un levier sans défaut rendu « — ».")
+    if DEFAUT_SHELL.findall('a="${PLUME_DELTA:-1}"; b=$PLUME_EPSILON') != [("PLUME_DELTA", "1")]:
+        errs.append("témoin (défauts shell) en échec : la forme `${X:-défaut}` ne rend plus le défaut.")
+    if lignes_de_defauts({"PLUME_B": "—", "PLUME_A": "x"}) != ["PLUME_A = x", "PLUME_B = —"]:
+        errs.append("témoin (liste `defauts`) en échec : `NOM = défaut`, trié, un par ligne.")
     if vus != doit:
         manque, en_trop = sorted(doit - vus), sorted(vus - doit)
         if manque:
@@ -842,7 +941,7 @@ def main() -> int:
         # AUCUN VERDICT, ET RIEN D'AUTRE QUE DES NOMS : la sortie est faite pour être copiée. Elle
         # arrive APRÈS la validation de l'instrument et APRÈS les planchers — une liste rendue par
         # une extraction cassée serait un minorant silencieux, exactement ce que ce mode remplace.
-        for nom in lignes_de_liste(liste, lus, cites):
+        for nom in (lignes_de_defauts(defauts_lus(racine, suivis)) if liste == "defauts" else lignes_de_liste(liste, lus, cites)):
             print(nom)
         return 0
 

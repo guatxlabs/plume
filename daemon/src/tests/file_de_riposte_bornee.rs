@@ -616,6 +616,12 @@ mod file_de_riposte_bornee_tests {
         "keyset_finalize",
         "liste_bornee::corps(",
         "aveu::corps(",
+        // `P11.20-l` (2026-09-09) — LA SECONDE PORTE DU FABRICANT, pour les listes qui vivent DANS un
+        // corps plus grand : `couper_a_la_borne` mesure la coupe par la ligne excédentaire, et la route
+        // qui l'appelle sert le drapeau sous un nom LISTE-SCOPÉ (`hosts_truncated`). Le suffixe
+        // `_truncated` est reconnu comme `_capped` l'est : un drapeau qui nomme sa liste.
+        "liste_bornee::couper_a_la_borne(",
+        "_truncated",
         // `P11.22-e` a écrit le MÊME drapeau sous un autre mot, faute d'un fabricant où le nommer une
         // fois : le type des sources connues porte `ecourtee`, exactement le rôle de `…_capped`. Le
         // reconnaître ici évite d'inscrire au cliquet une route DÉJÀ honnête — et la divergence de

@@ -5298,3 +5298,31 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
             unites.len(), UNITES_PLUME_DECLENCHANT_LE_FIM, unites
         );
     }
+
+// `P4.12-f` — UNE CLÉ POSÉE PAR UN PRODUCTEUR QUI FAIT TAIRE UN RENOMMAGE CLIENT EST COMPTÉE, PAR CLÉ.
+// La précédence est inchangée (la valeur posée gagne) ; ce qui change est que le silence devient un
+// nombre. Une valeur égale ne compte pas ; une valeur vide n'a jamais rien posé ni rien tu.
+#[cfg(test)]
+mod p412f_preemption_comptee {
+    use super::*;
+    #[test]
+    fn une_cle_deja_posee_qui_differe_est_comptee_par_cle_et_une_valeur_egale_ne_l_est_pas() {
+        let avant_total = crate::metrics::INGEST_CHAMP_PREEMPTE_TOTAL.load(std::sync::atomic::Ordering::Relaxed);
+        let avant_cle = crate::metrics::CHAMPS_PREEMPTES.lock().unwrap().get("src_ip_p412f").copied().unwrap_or(0);
+        let mut obj = serde_json::Map::new(); let mut added = false;
+        crate::parsers::dfield_put(&mut obj, &mut added, "src_ip_p412f", "203.0.113.7");
+        assert!(added && obj["src_ip_p412f"] == "203.0.113.7", "clé absente : le parseur pose");
+        added = false;
+        crate::parsers::dfield_put(&mut obj, &mut added, "src_ip_p412f", "203.0.113.7");
+        assert!(!added, "valeur égale : rien à poser, et rien n'est tu");
+        crate::parsers::dfield_put(&mut obj, &mut added, "src_ip_p412f", "198.51.100.9");
+        assert!(!added && obj["src_ip_p412f"] == "203.0.113.7", "la valeur posée GAGNE — la précédence est inchangée");
+        crate::parsers::dfield_put(&mut obj, &mut added, "src_ip_p412f", "");
+        assert!(!added, "une valeur vide ne pose ni ne tait rien");
+        let apres_total = crate::metrics::INGEST_CHAMP_PREEMPTE_TOTAL.load(std::sync::atomic::Ordering::Relaxed);
+        let apres_cle = crate::metrics::CHAMPS_PREEMPTES.lock().unwrap().get("src_ip_p412f").copied().unwrap_or(0);
+        assert_eq!(apres_cle - avant_cle, 1, "UNE préemption, sur CETTE clé : la valeur égale et la valeur vide n'ont pas compté");
+        assert!(apres_total >= avant_total + 1, "le total monte d'au moins un (d'autres témoins peuvent compter en parallèle)");
+    }
+}
+

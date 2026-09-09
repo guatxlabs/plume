@@ -409,9 +409,19 @@ pub(crate) fn dparser_captures(msg: &str, steps: &[DExtract]) -> std::collection
 /// Écrit `k=v` dans le sac `fields` de sortie, borné et SANS écrasement (collecteur > parseur : une clé
 /// déjà posée par le collecteur GAGNE). `added` passe à true dès qu'une clé est réellement ajoutée.
 pub(crate) fn dfield_put(obj: &mut serde_json::Map<String, Value>, added: &mut bool, k: &str, v: &str) {
-    if !v.is_empty() && !obj.contains_key(k) {
-        obj.insert(k.to_string(), Value::String(generic_trunc(v)));
-        *added = true;
+    if v.is_empty() { return; }
+    match obj.get(k) {
+        None => {
+            obj.insert(k.to_string(), Value::String(generic_trunc(v)));
+            *added = true;
+        }
+        // `P4.12-f` — LA PRÉCÉDENCE « producteur > parseur » EST VOULUE ; LE SILENCE NE L'ÉTAIT PAS.
+        // Une valeur déjà posée qui DIFFÈRE de ce que le parseur client aurait mis fait taire un
+        // renommage déclaré : c'est compté, par clé. Une valeur égale ne tait rien et ne compte pas.
+        Some(existante) => {
+            let meme = existante.as_str().map(|e| e == generic_trunc(v)).unwrap_or(false);
+            if !meme { crate::metrics::compter_un_champ_preempte(k); }
+        }
     }
 }
 

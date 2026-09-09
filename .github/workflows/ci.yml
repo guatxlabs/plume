@@ -798,7 +798,7 @@ env:
   # répertoire absent redevenu illisible, verdict non déclassé, détail écrasé au lieu d'ajouté, simulation
   # qui déplace, aveu qui redit « quarantaine » dans les trois cas — chacune rougit son témoin et LUI SEUL.
   # Le MÊME +5 sur `EXPECTED_COLD_TESTS`, écart **245** INCHANGÉ, mesuré par le script du dépôt.
-  EXPECTED_TESTS: "1572"
+  EXPECTED_TESTS: "1573"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -1257,7 +1257,7 @@ jobs:
           # `P11.20-n` et `P11.20-h` (2026-09-03) : +14, les MÊMES quatorze que sur `EXPECTED_TESTS` —
           # aucun derrière un `cfg(feature)`, et c'est l'ÉCART INCHANGÉ entre les deux profils (245 avant
           # comme après) qui l'établit. La dérivation est écrite auprès d'`EXPECTED_TESTS`, une seule fois.
-          EXPECTED_COLD_TESTS: "1817"
+          EXPECTED_COLD_TESTS: "1818"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail

@@ -24,6 +24,25 @@ pub(crate) static INGEST_FILES_TOTAL: AtomicU64 = AtomicU64::new(0);
 /// ou field_map/records_path mal configuré). Rend OBSERVABLE un misconfig de source push qui, sinon, serait
 /// silencieusement ACK-droppé (200/204) : un compteur qui grimpe sans `ingest_events_total` correspondant.
 pub(crate) static PUSH_ZERO_MAP_TOTAL: AtomicU64 = AtomicU64::new(0);
+/// `P4.12-f` — UNE CLÉ POSÉE PAR UN PRODUCTEUR A FAIT TAIRE UN RENOMMAGE DÉCLARÉ PAR LE CLIENT. La
+/// précédence « collecteur > parseur » est un invariant voulu (`dfield_put`) ; ce qui ne l'était pas,
+/// c'est le SILENCE : un client qui avait déposé un parseur déclaratif capturant `src_ip` voyait son
+/// mapping devenir un no-op dès que l'agent posait la clé, sans compteur ni ligne de journal. Compté
+/// ici quand la valeur du parseur DIFFÈRE de celle qui est déjà posée (une valeur égale ne fait taire
+/// rien), et ventilé par CLÉ dans une table bornée — c'est la clé, pas la source, qui dit à
+/// l'exploitant quel mapping ne s'applique plus.
+pub(crate) static INGEST_CHAMP_PREEMPTE_TOTAL: AtomicU64 = AtomicU64::new(0);
+pub(crate) static CHAMPS_PREEMPTES: std::sync::Mutex<std::collections::BTreeMap<String, u64>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+pub(crate) const CHAMPS_PREEMPTES_PLAFOND: usize = 64;
+pub(crate) fn compter_un_champ_preempte(cle: &str) {
+    INGEST_CHAMP_PREEMPTE_TOTAL.fetch_add(1, Ordering::Relaxed);
+    if let Ok(mut m) = CHAMPS_PREEMPTES.lock() {
+        if let Some(n) = m.get_mut(cle) { *n += 1; }
+        else if m.len() < CHAMPS_PREEMPTES_PLAFOND { m.insert(cle.to_string(), 1); }
+        else if let Some(n) = m.get_mut("(autres)") { *n += 1; }
+        else { m.insert("(autres)".to_string(), 1); }
+    }
+}
 /// P4.1-p — un compteur PAR RAISON d'ACK-DROP Pub/Sub. Pourquoi pas un seul total : `push_zero_map_total`
 /// était incrémenté aussi bien par un `field_map` mal configuré que par une bombe gzip. L'exploitant qui le
 /// voyait grimper allait donc inspecter son mapping alors que la cause pouvait être une TAILLE. Un compteur
@@ -538,6 +557,9 @@ pub(crate) fn gather_json(conn: &Connection, spool: &str, db_path: &str, schema_
     spool_queue_depth(spool).poser_dans(&mut ingest, "queue_depth");
     spool_quarantine_depth(spool).poser_dans(&mut ingest, "quarantine_depth");
     ingest.insert("push_zero_map_total".into(), json!(PUSH_ZERO_MAP_TOTAL.load(Ordering::Relaxed)));
+    // `P4.12-f` — le compte des renommages clients tus par une clé de producteur, et par quelle clé.
+    ingest.insert("field_preempted_total".into(), json!(INGEST_CHAMP_PREEMPTE_TOTAL.load(Ordering::Relaxed)));
+    ingest.insert("fields_preempted".into(), json!(CHAMPS_PREEMPTES.lock().map(|m| m.clone()).unwrap_or_default()));
     ingest.insert("spool_barriere_fichier_total".into(), json!(SPOOL_BARRIERE_FICHIER_TOTAL.load(Ordering::Relaxed)));
     ingest.insert("spool_barriere_repertoire_total".into(), json!(SPOOL_BARRIERE_REPERTOIRE_TOTAL.load(Ordering::Relaxed)));
     ingest.insert("spool_barriere_echec_total".into(), json!(SPOOL_BARRIERE_ECHEC_TOTAL.load(Ordering::Relaxed)));
@@ -647,6 +669,7 @@ pub(crate) fn gather_prom(conn: &Connection, spool: &str, db_path: &str, schema_
     g(&mut o, "plume_spool_queue_files", "gauge", "Fichiers en attente dans le spool", "/ingest/queue_depth");
     lisible(&mut o, "plume_spool_queue_lisible", "la profondeur de la file d'ingest", "/ingest/queue_depth_verdict", "/ingest/queue_depth_cause");
     g(&mut o, "plume_push_zero_map_total", "counter", "Batches push acceptés mais mappés à 0 event (misconfig source push)", "/ingest/push_zero_map_total");
+    g(&mut o, "plume_ingest_field_preempted_total", "counter", "Renommages de champ déclarés par un parseur client et TUS par une clé déjà posée par le producteur (P4.12-f ; ventilation par clé : /api/metrics ingest.fields_preempted)", "/ingest/field_preempted_total");
     // `S31` — les barrières de durabilité du spool. Les DEUX premières montent ENSEMBLE (une publication
     // durable en prend une de chaque) ; un écart entre elles, ou `echec` qui grimpe, signale un 2xx qui
     // n'est plus adossé à une barrière — le seul signal disponible sur les quatre surfaces à contrat

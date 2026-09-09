@@ -10487,6 +10487,29 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   console.log("[pivot] `P10.19-a` : l'aveu de bande froide du démon est PEINT par la vue pivot (pastille + aveu en survol + frontière), et rien n'est peint sans lui.");
 }
 
+// ---------------------------------------------------------------------------------------------
+// `P11.21-b` — LA DÉPENDANCE N'EST PLUS SUPPOSÉE, ELLE EST VÉRIFIÉE. La console câble le dépli des séries
+// métriques AU SINGULIER (`querySelector('.fmetricbody')`, une seule clé de pliage) parce que le démon
+// n'émet qu'UN flux agrégé `kind:"metric"` (`daemon/src/handlers/freshness.rs`, un `mk("metric", …)`).
+// Ce témoin lit la source du démon : le jour où un second flux naît, il rougit en nommant le site, et
+// c'est la console qu'il faudra équiper — pas ce témoin qu'il faudra taire. L'instrument est éprouvé
+// sur un texte fabriqué à deux flux avant de lire le vrai.
+// ---------------------------------------------------------------------------------------------
+{
+  const DAEMON_FRESHNESS = path.join(RACINE, "daemon", "src", "handlers", "freshness.rs");
+  // NUMÉROTER AVANT D'ÉCARTER : la première version filtrait les commentaires puis numérotait, et
+  // la ligne 3 d'un texte fabriqué s'appelait 2 — l'instrument s'est pris lui-même en défaut.
+  const fluxMetriques = (texte) => texte.split("\n").map((l, i) => ({ i: i + 1, l })).filter((x) => !/^\s*\/\//.test(x.l)).map((x) => ({ i: x.i, n: (x.l.match(/\bmk\(\s*"metric"/g) || []).length })).filter((x) => x.n > 0);
+  const fabrique = fluxMetriques('let a = mk("metric", x);\n// mk("metric", commenté)\nlet b = mk("metric", y);\n');
+  exiger(fabrique.length === 2 && fabrique.map((x) => x.i).join(",") === "1,3", `(P11.21-b) instrument : deux flux fabriqués doivent être vus aux lignes 1 et 3, vus : ${JSON.stringify(fabrique)}`);
+  const src = readFileSync(DAEMON_FRESHNESS, "utf8");
+  const flux = fluxMetriques(src);
+  exiger(flux.length === 1, `(P11.21-b) le démon émet ${flux.length} flux agrégé(s) « metric » (lignes ${flux.map((x) => x.i).join(", ")} de daemon/src/handlers/freshness.rs) ; la console n'équipe que le PREMIER (\`.fmetricbody\` au singulier, une clé de pliage) : équiper la console avant d'ajouter un flux.`);
+  const console_src = readFileSync(path.join(WEB, "freshness.js"), "utf8");
+  exiger(/querySelector\('\.fmetricbody'\)/.test(console_src), "(P11.21-b) instrument : le câblage au singulier de `.fmetricbody` n'est plus reconnaissable — relire la propriété avant ce témoin");
+  console.log(`[fraîcheur] \`P11.21-b\` : le démon émet ${flux.length} flux agrégé « metric » (ligne ${flux[0] ? flux[0].i : "?"}) et la console en équipe exactement un — dépendance VÉRIFIÉE de source à source, plus supposée.`);
+}
+
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;
 verdictRendu = true;
 if (echecs.length) {

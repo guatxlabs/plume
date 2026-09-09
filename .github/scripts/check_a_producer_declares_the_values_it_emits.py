@@ -35,7 +35,11 @@ CE QUE LA GARDE TIENT — TROIS PROPRIÉTÉS, TOUTES DÉRIVÉES
     productrices ne posent pas `debug-assertions`. Le binaire LIVRÉ n'a aucun contrôle. La garde
     n'affirme donc plus « c'est tenu » : elle DÉRIVE la portée de chaque contrôle et la NOMME.
       · `livrée`        — le contrôle est dans l'artefact livré (`assert!`, ou un `if` dont le bloc
-                          échoue ; en PowerShell, un `-notcontains` dont le bloc `throw`).
+                          échoue ; en PowerShell, un `-notcontains` dont le bloc `throw`) — OU, depuis
+                          la décision de produit du 2026-09-10 (`P11.19-b`), un `if` dont le bloc AVOUE :
+                          le mot part tel quel et le bloc pose la clé `hors_vocabulaire` sur le sac émis.
+                          Avouer est un site d'échec au sens de cette garde : le mot étranger devient
+                          VISIBLE et requêtable, jamais avalé.
       · `développement` — le contrôle est sous `debug_assertions` et le profil de release de SA
                           caisse ne le garde pas. Dérivé du `Cargo.toml` de la caisse : si quelqu'un
                           y pose `debug-assertions = true` demain, la garde reclasse toute seule.
@@ -354,6 +358,9 @@ def _mots_rust(bloc, consts):
     return mots
 
 
+AVEU_HORS_VOCABULAIRE = re.compile(r"\bhors_vocabulaire\b")
+
+
 def _portee_rust(code, nom, hors_portee, dev_spans):
     """La PORTÉE du contrôle d'appartenance sur `nom`, et la variable qu'il borne.
 
@@ -374,7 +381,8 @@ def _portee_rust(code, nom, hors_portee, dev_spans):
             p = LIVREE
         elif re.match(r"^(if|while)\b", tete):
             b = _bloc(code, m.end())
-            p = LIVREE if (b and RUST_ECHEC.search(code[b[0]:b[1]])) else NON_CONCLUANTE
+            # `P11.19-b` — un bloc qui AVOUE (pose `hors_vocabulaire`) vaut un bloc qui échoue.
+            p = LIVREE if (b and (RUST_ECHEC.search(code[b[0]:b[1]]) or AVEU_HORS_VOCABULAIRE.search(code[b[0]:b[1]]))) else NON_CONCLUANTE
         else:
             p = NON_CONCLUANTE
         if meilleure is None or rang[p] > rang[meilleure]:
@@ -499,7 +507,7 @@ PROSE_MAX = 1
 # mesure du jour, il ne peut que DESCENDRE, et la dette qu'il compte porte sa clé OUVERTE
 # `P11.19-b` — décider ce qu'un producteur fait d'un mot étranger EN PRODUCTION est une décision de
 # produit dans les caisses Rust, pas un nombre à écrire ici.
-PORTEE_DEVELOPPEMENT_MAX = 6
+PORTEE_DEVELOPPEMENT_MAX = 0   # descendu 6 -> 0 le 2026-09-10 (`P11.19-b`) : les six contrôles sont livrés par l'aveu
 
 
 def temoins():
@@ -517,6 +525,10 @@ def temoins():
         # un `if` qui CONSTATE sans échouer n'est pas un contrôle : la garde refuse de conclure.
         (".rs", base + "fn f(){ if !T.contains(&mot) { log(\"bof\"); } " + emis + "}",
          [("T", "champ", ["un", "deux"], NON_CONCLUANTE)]),
+        # `P11.19-b` — un `if` dont le bloc AVOUE (pose `hors_vocabulaire`) est LIVRÉ : le mot part tel quel, marqué.
+        (".rs", base + "fn f(){ let mut hors_vocabulaire = Vec::new(); if !T.contains(&mot) { hors_vocabulaire.push(\"champ\"); } "
+         + 'let _ = json!({ "champ": mot, "hors_vocabulaire": hors_vocabulaire, });' + "}",
+         [("T", "champ", ["un", "deux"], LIVREE)]),
         # `assert!` réel, mais sous `#[cfg(debug_assertions)]` : le site est de développement.
         (".rs", base + "#[cfg(debug_assertions)]\nfn v(){ assert!(T.contains(&mot)); }\nfn f(){ " + emis + "}",
          [("T", "champ", ["un", "deux"], DEBUG)]),
@@ -697,8 +709,8 @@ def main():
         "OK — {} ensemble(s) fermé(s) déclaré(s) par les producteurs livrés (Rust {}, PowerShell {}, "
         "shell {}), tous dérivables et attachés à un champ émis.\nPORTÉE DES CONTRÔLES, DÉRIVÉE DE CE "
         "QUI EST LIVRÉ : {} tenu(s) dans l'artefact livré ; {} tenu(s) SEULEMENT EN DÉVELOPPEMENT "
-        "(plafond {}, `P11.19-b` OUVERTE — le binaire de release n'a AUCUN contrôle sur ces "
-        "valeurs-là) ; {} en PROSE, sans aucun site d'échec (plafond {}).{}\nNON TENU ici : que le "
+        "(plafond {} — `P11.19-b` FERMÉE le 2026-09-10 : un mot étranger est ÉMIS TEL QUEL et AVOUÉ dans "
+        "`hors_vocabulaire`, jamais avalé ; ce plafond ne remonte pas) ; {} en PROSE, sans aucun site d'échec (plafond {}).{}\nNON TENU ici : que le "
         "contrôle s'exécute, l'accord entre producteurs, le sens de chaque valeur, et l'arrivée à "
         "l'écran (aucune déclaration n'atteint le fil — `P11.19-a`).".format(
             sum(par_forme.values()), par_forme[".rs"], par_forme[".ps1"], par_forme[".sh"],

@@ -167,10 +167,14 @@ pub fn event_indisponibilite(
     detail: &str,
     ts: i64,
 ) -> serde_json::Value {
-    debug_assert!(RAISONS.contains(&raison), "raison hors de l'ensemble ferme : {raison:?}");
-    debug_assert!(CAUSES.contains(&cause), "cause hors de l'ensemble ferme : {cause:?}");
+    // `P11.19-b` — DÉCISION DE PRODUIT (2026-09-10) : UN MOT HORS VOCABULAIRE PART TEL QUEL, ET L'AVEU
+    // LE MARQUE (le `debug_assert!` d'avant s'effaçait du binaire livré). `fields.hors_vocabulaire`
+    // nomme le(s) champ(s) qui sortent de l'ensemble déclaré ; rien n'est perdu, la dette se voit.
+    let mut hors_vocabulaire: Vec<&'static str> = Vec::new();
+    if !RAISONS.contains(&raison) { hors_vocabulaire.push("reason"); }
+    if !CAUSES.contains(&cause) { hors_vocabulaire.push("cause"); }
     debug_assert!(cause != CAUSE_AUCUNE, "un aveu sans cause n'avoue rien");
-    let fields = json!({
+    let mut fields = json!({
         "type": "collector-availability",
         "collector": source,
         "collect_status": "unavailable",
@@ -179,6 +183,7 @@ pub fn event_indisponibilite(
         "verdict": VERDICT_ILLISIBLE,
         "detail": detail,
     });
+    if !hors_vocabulaire.is_empty() { fields["hors_vocabulaire"] = json!(hors_vocabulaire.join(",")); }
     let dd = format!("avail-{source}-{:x}-{}", empreinte(&fields.to_string()), ts / 3600);
     json!({
         "ts": ts,
@@ -311,5 +316,18 @@ mod tests {
         for (i, a) in CAUSES.iter().enumerate() {
             assert!(!CAUSES[i + 1..].contains(a), "cause en double : {a}");
         }
+    }
+
+    /// `P11.19-b` — UN MOT HORS VOCABULAIRE PART TEL QUEL, ET L'AVEU LE MARQUE ; un mot connu ne porte aucun aveu.
+    #[test]
+    fn un_mot_hors_vocabulaire_est_emis_tel_quel_et_avoue() {
+        let ev = event_indisponibilite("t", "mot-etranger", CAUSE_SOURCE_ABSENTE, "d", 3_600);
+        assert_eq!(ev["fields"]["reason"], "mot-etranger", "le mot part INCHANGÉ : rien n'est perdu");
+        assert_eq!(ev["fields"]["hors_vocabulaire"], "reason", "l'aveu nomme le champ qui sort de l'ensemble");
+        let deux = event_indisponibilite("t", "mot-etranger", "cause-etrangere", "d", 3_600);
+        assert_eq!(deux["fields"]["hors_vocabulaire"], "reason,cause");
+        let propre = event_indisponibilite("t", RAISON_SOURCE_ABSENTE, CAUSE_SOURCE_ABSENTE, "d", 3_600);
+        assert!(propre["fields"].get("hors_vocabulaire").is_none(), "un mot connu ne porte AUCUN aveu");
+        assert_ne!(ev["dedup"], propre["dedup"], "l'aveu entre dans la clé : un aveu marqué n'écrase pas un aveu propre");
     }
 }

@@ -132,6 +132,18 @@ def claim_re(value: str) -> re.Pattern[str]:
 
 
 ANY_CLAIM = re.compile((NUM_CORE % r"\d{3,4}") + rf"[ \t]*{WORDS}\b", re.I)
+
+# UN COMPTEUR N'EST RECOPIABLE QUE S'IL IDENTIFIE UNE SUITE. Mesuré le 2026-09-10 : le compteur du
+# collecteur mail est passé à 6, et la garde a accusé trois commentaires sans rapport — « 6 tests
+# rouges » d'une saisie FTS, « 6 passed » d'une suite fabriquée — parce qu'un 6 se rencontre partout.
+# Le sens (B) le savait déjà (il ne regarde que 3-4 chiffres) ; le sens (A) l'apprend : seule une
+# valeur d'au moins trois chiffres est prise pour une copie du compteur vivant. Ce que ça ne tient
+# pas, et qui est dit : un compteur à deux chiffres recopié quelque part n'est plus vu par (A).
+CHIFFRES_IDENTIFIANTS = 3
+
+
+def compteurs_identifiants(counters: dict[str, str]) -> dict[str, str]:
+    return {k: v for k, v in counters.items() if len(v) >= CHIFFRES_IDENTIFIANTS}
 YEAR = re.compile(r"\b(?:19|20)\d{2}\b")
 
 
@@ -195,6 +207,12 @@ def temoins() -> None:
     )
     vu = dict(COMPTEUR.findall(wf))
     attendu = {"EXPECTED_TESTS": "8765", "EXPECTED_MAIL_TESTS": "5", "EXPECTED_S3_TEST": "12"}
+    # --- UN PETIT COMPTEUR N'IDENTIFIE RIEN : « 5 tests » ailleurs n'est pas une copie de MAIL=5 ------
+    assert compteurs_identifiants(vu) == {"EXPECTED_TESTS": "8765"}, (
+        f"témoin des compteurs IDENTIFIANTS : {compteurs_identifiants(vu)} — seuls les compteurs d'au moins "
+        f"{CHIFFRES_IDENTIFIANTS} chiffres sont recopiables, un 5 ou un 12 se rencontrent partout")
+    assert not claim_re("5").search("un texte qui ne parle pas de la suite") and claim_re("8765").search("8765 tests"), \
+        "témoin : la forme « <nombre> tests » doit rester reconnue pour un compteur identifiant"
     assert vu == attendu, (
         f"témoin de DÉRIVATION : {vu} au lieu de {attendu}. La forme lue est « EXPECTED_…TESTS: \"n\" » "
         f"à n'importe quelle indentation — c'est l'indentation d'un `step` qui masquait trois "
@@ -258,7 +276,7 @@ def main() -> int:
     print("[count-guard] compteurs vivants DÉRIVÉS de "
           + ", ".join(sorted(porteurs)) + " : "
           + ", ".join(f"{k}={v}" for k, v in sorted(counters.items())))
-    pats = {name: claim_re(val) for name, val in counters.items()}
+    pats = {name: claim_re(val) for name, val in compteurs_identifiants(counters).items()}
 
     # DEUX exemptions, et ce ne sont pas des exceptions à une liste : ce sont les deux fichiers
     # AUTO-RÉFÉRENTS. `ci.yml` PORTE la valeur (c'est le point), et ce script DÉFINIT le motif —

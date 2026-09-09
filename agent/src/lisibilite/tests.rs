@@ -277,3 +277,17 @@ fn les_mots_de_cause_sont_ceux_du_demon() {
         );
     }
 }
+
+/// `P11.19-b` — UN MOT HORS VOCABULAIRE PART TEL QUEL, ET L'AVEU LE MARQUE ; un mot connu ne porte aucun aveu.
+#[test]
+fn un_mot_hors_vocabulaire_est_emis_tel_quel_et_avoue() {
+    let ev = super::event_indisponibilite("t", "h", "mot-etranger", super::CAUSE_SOURCE_ABSENTE, "d", 3_600);
+    assert_eq!(ev.fields["reason"], "mot-etranger", "le mot part INCHANGÉ : rien n'est perdu");
+    assert_eq!(ev.fields["hors_vocabulaire"], "reason", "l'aveu nomme le champ qui sort de l'ensemble");
+    let deux = super::event_indisponibilite("t", "h", "mot-etranger", "cause-etrangere", "d", 3_600);
+    assert_eq!(deux.fields["hors_vocabulaire"], "reason,cause");
+    let propre = super::event_indisponibilite("t", "h", super::RAISON_DEPENDANCE_ABSENTE, super::CAUSE_SOURCE_ABSENTE, "d", 3_600);
+    assert!(propre.fields.get("hors_vocabulaire").is_none(), "un mot connu ne porte AUCUN aveu");
+    assert_ne!(ev.dedup, propre.dedup, "l'aveu entre dans la clé : un aveu marqué n'écrase pas un aveu propre");
+}
+

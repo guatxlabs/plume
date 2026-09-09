@@ -3018,7 +3018,7 @@ jobs:
       - name: cargo test (collector-syslog) + assert the test count
         working-directory: collector-syslog
         env:
-          EXPECTED_SYSLOG_TESTS: "49"
+          EXPECTED_SYSLOG_TESTS: "50"
         run: |
           set -euo pipefail
           cargo test --locked --verbose 2>&1 | tee /tmp/syslog-tests.log
@@ -3037,7 +3037,7 @@ jobs:
       - name: cargo test (collector-mail) + assert the test count
         working-directory: collector-mail
         env:
-          EXPECTED_MAIL_TESTS: "5"
+          EXPECTED_MAIL_TESTS: "6"
         run: |
           set -euo pipefail
           cargo test --locked --verbose 2>&1 | tee /tmp/mail-tests.log

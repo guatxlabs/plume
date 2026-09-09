@@ -271,10 +271,17 @@ pub fn event_indisponibilite(
     // champs une surface libre, et c'est ainsi qu'une dimension de recherche devient inexploitable. En
     // production le contrôle s'efface (aucun coût par événement) ; en développement et dans la suite,
     // il fait tomber le premier site qui inventerait une clé.
-    debug_assert!(RAISONS.contains(&raison), "raison hors de l'ensemble fermé du contrat shell : {raison:?}");
-    debug_assert!(CAUSES.contains(&cause), "cause hors de l'ensemble fermé du démon : {cause:?}");
+    // `P11.19-b` — DÉCISION DE PRODUIT (2026-09-10) : UN MOT HORS VOCABULAIRE PART TEL QUEL, ET L'AVEU
+    // LE MARQUE. Le `debug_assert!` qui vivait ici s'effaçait du binaire livré (`P11.19-a`) : en
+    // production un mot étranger devenait une surface libre sans que rien ne le dise. Désormais le mot
+    // est émis inchangé — rien n'est perdu — et `fields.hors_vocabulaire` nomme le(s) champ(s) qui
+    // sortent de l'ensemble déclaré : l'analyste voit la dette, la garde de CI la compte, et la clé de
+    // dédoublonnage la porte (un aveu marqué n'écrase pas un aveu propre).
+    let mut hors_vocabulaire: Vec<&'static str> = Vec::new();
+    if !RAISONS.contains(&raison) { hors_vocabulaire.push("reason"); }
+    if !CAUSES.contains(&cause) { hors_vocabulaire.push("cause"); }
     debug_assert!(cause != CAUSE_AUCUNE, "un aveu d'indisponibilité sans cause n'avoue rien");
-    let fields = json!({
+    let mut fields = json!({
         "type": "collector-availability",
         "collector": source,
         "collect_status": "unavailable",
@@ -283,6 +290,7 @@ pub fn event_indisponibilite(
         "verdict": VERDICT_ILLISIBLE,
         "detail": detail,
     });
+    if !hors_vocabulaire.is_empty() { fields["hors_vocabulaire"] = json!(hors_vocabulaire.join(",")); }
     let dd = format!("avail-{source}-{:x}-{}", empreinte(&fields.to_string()), ts / 3600);
     Event {
         ts,

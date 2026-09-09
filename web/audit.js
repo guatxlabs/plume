@@ -252,6 +252,12 @@ async function loadLedger() {
   pagedList(wrap, {
     mode: 'server',
     pageSize: S.LEDGER_LIMIT,
+    // `P11.18-x` — la recherche est ACTIVÉE telle quelle : la fabrique dit d'elle-même qu'elle ne
+    // couvre que la page servie. La porter à la route a été mesuré et REFUSÉ le 2026-09-09 : la table
+    // `ledger` n'a d'index que sur sa clé, une recherche serveur sur `detail` serait un parcours
+    // complet d'un journal de plusieurs millions de lignes, et un index plein-texte exigerait une
+    // migration de schéma — une porte à sens unique.
+    recherche: true, storeKey: 'audit',
     emptyText: "aucune entrée d'audit",
     columns: [
       { key: 'id', label: '#', render: en => String(en.id) },

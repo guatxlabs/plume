@@ -215,6 +215,9 @@ async function loadCases() {
   S.casePager = pagedList(wrap, {
     mode: 'server',
     pageSize: 50,
+    // `P11.18-x` — même arbitrage que le journal d'audit : recherche activée sur la page servie, portée
+    // dite par la fabrique ; une recherche serveur sur le titre d'un cas n'a pas d'index et n'est pas posée.
+    recherche: true, storeKey: 'cases',
     renderRow: caseRow,
     emptyText: 'aucun case',
     fetchPage: async ({ limit, offset }) => {

@@ -86,9 +86,9 @@ TIMEOUT_DEFAUT="${PLUME_CUSTOM_TIMEOUT:-45}"
 borne_entiere() {
   case "$2" in
     ''|*[!0-9]*)
-      plume_report_availability "$SOURCE" unavailable missing-config \
-        "$1=\"$2\" n'est pas un entier dans $f — repli sur $3. La borne demandee n'est PAS celle qui s'applique." \
-        2 2>/dev/null || true
+      # `P4.6-c` : la collecte est ENTIÈRE, l'aveu ne dit donc pas une incapacité (état `fallback`,
+      # déclaré dans docs/CIM.md) — la règle « capteur indisponible » ne se lève pas, la pastille tient.
+      plume_reglage_illisible "$SOURCE" "$1" "$2" "$3" "$f"
       printf '%s' "$3" ;;
     *) printf '%s' "$2" ;;
   esac

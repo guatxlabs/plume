@@ -455,14 +455,15 @@ kctl() {
 #   collection-capped   — LE SEUL MOT DE CETTE LISTE QUI NE DÉCRIT PAS UNE INCAPACITÉ, ET C'EST
 #       DÉLIBÉRÉ. « Le seul » portait sur le VOCABULAIRE, et se lisait comme portant sur les EMPLOIS :
 #       c'est plus large que la mesure, et le lot qui l'a écrit a lui-même introduit un contre-exemple
-#       — `collectors/custom.sh` avoue `unavailable / missing-config` quand une borne mal écrite
+#       — `collectors/custom.sh` avouait `unavailable / missing-config` quand une borne mal écrite
 #       retombe sur son défaut, ALORS QUE la source est intégralement collectée (MESURÉ le
-#       2026-08-27 : `MAX=deux` -> 4 événements publiés ET l'aveu). Ce qui est vrai reste vrai —
-#       aucun autre MOT de la liste ne décrit autre chose qu'une incapacité — mais un EMPLOI de ces
-#       mots-là peut désormais accompagner une collecte complète, et il fait alors basculer la
-#       pastille d'une source saine. La borne est écrite ici plutôt que corrigée à la va-vite : la
-#       corriger demande un `collect_status` que `docs/CIM.md` ne déclare pas, donc un changement de
-#       contrat, du démon et des règles livrées — hors de la zone de ce lot. Il dit que
+#       2026-08-27 : `MAX=deux` -> 4 événements publiés ET l'aveu), et la pastille d'une source
+#       saine basculait. CORRIGÉ le 2026-09-09 (`P4.6-c`) par un HUITIÈME mot et un TROISIÈME état,
+#       déclarés dans `docs/CIM.md` : `collect_status=fallback` / `reason=unreadable-config`, porte
+#       `plume_reglage_illisible`, que la règle livrée n'interroge pas. Coût mesuré du troisième état :
+#       UN lecteur par valeur (la règle `de-collector-unavailable`, qui filtre `unavailable` et reste
+#       juste), AUCUN chemin du démon qui compare la valeur (`collected.rs` ne tient que la
+#       provenance du champ), aucune migration (les champs sont du JSON libre). Il dit que
 #       le capteur a collecté, puis a COUPÉ lui-même ce qu'il rapportait, à une borne QUI EST SIENNE
 #       (un plafond de lignes par passage, une borne de durée sur une commande d'exploitant). La
 #       source allait bien ; c'est la couverture qui est incomplète, et elle l'est PAR CONSTRUCTION.
@@ -697,6 +698,21 @@ plume_borne_fermee() {
 # CE QUE CELA COUTE, DIT : dans une meme heure, seul le PREMIER compte survit au dedoublonnage du
 # central. L'exploitant lit « cette source a ete tronquee a ce plafond, voici un ordre de grandeur »,
 # pas la serie des passages. C'est l'echange assume contre une alerte qui ne bat pas 60 fois par heure.
+# plume_reglage_illisible <source> <clé> <valeur> <défaut> <fichier> — n'exite PAS. `P4.6-c` (mesuré le
+# 2026-08-27, corrigé le 2026-09-09) : un réglage qu'on ne sait pas lire retombe sur son défaut et la
+# collecte est ENTIÈRE. Le dire par `unavailable / missing-config` empruntait le vocabulaire de
+# l'incapacité : la règle livrée `de-collector-unavailable` alertait et la pastille d'une source SAINE
+# basculait. Ce geste-ci publie `collect_status=fallback` / `reason=unreadable-config` — un état que
+# `docs/CIM.md` DÉCLARE désormais, que la règle livrée n'interroge pas, et que l'exploitant requête :
+#   search category=config collect_status=fallback | table host, source, reason, detail
+# Sévérité 1 : c'est une configuration à corriger, pas un trou de couverture. La clé de dédup porte
+# la source et la CLÉ du réglage, pas la valeur lue (même raison que plume_collecte_tronquee).
+plume_reglage_illisible() {
+  plume_report_availability "$1" fallback unreadable-config \
+    "$2=\"$3\" n'est pas lisible dans ${5:-la déclaration} — repli sur $4. La borne demandée n'est PAS celle qui s'applique ; la collecte, elle, est entière." \
+    1 "reglage-illisible|$1|$2" 2>/dev/null || true
+}
+
 plume_collecte_tronquee() {
   _pct_borne=$(plume_borne_fermee "$2")
   _pct_n="${3:-}"

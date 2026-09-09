@@ -449,15 +449,17 @@ TIMEOUT=45                                # borne de durée de CMD, en secondes 
 > ⚠️ **Une borne mal écrite ne fait plus disparaître l'entrée.** `MAX=deux` faisait échouer `head` et,
 > le code de retour d'un tube étant celui de son dernier maillon, l'entrée entière disparaissait avec
 > un code de sortie 0 et un spool vide (mesuré 2026‑08‑27). Une borne non entière retombe désormais
-> sur son défaut **et le dit** (`reason=missing-config`). De même, sur un hôte **sans `timeout`**, la
+> sur son défaut **et le dit** (`reason=unreadable-config`). De même, sur un hôte **sans `timeout`**, la
 > borne de durée n'est pas armée — et cela aussi est avoué (`reason=missing-dependency`) plutôt que
 > laissé croire.
-> **Limite écrite, parce qu'elle coûte** : ces deux aveux‑là empruntent `collect_status=unavailable`,
-> donc ils lèvent l'alerte « capteur indisponible » et font basculer la pastille — alors que dans le
-> premier cas la source est **intégralement collectée** (mesuré : `MAX=deux` → 4 événements publiés
-> *et* l'aveu). Le mot dit une incapacité qui n'a pas eu lieu. Le corriger demande un
-> `collect_status` que `docs/CIM.md` ne déclare pas, donc un changement de contrat : ce n'est pas
-> fait, et c'est dit ici plutôt que laissé croire.
+> **Ce que chacun de ces aveux fait basculer, et pourquoi.** Une borne illisible retombe sur son défaut
+> mais la source est **intégralement collectée** (mesuré : `MAX=deux` → 4 événements publiés *et*
+> l'aveu) : depuis le 2026-09-09 cet aveu-là porte `collect_status=fallback` /
+> `reason=unreadable-config` — un troisième état, déclaré dans `docs/CIM.md` —, la règle « capteur
+> indisponible » ne se lève pas et la pastille tient ; il se requête par
+> `search category=config collect_status=fallback`. Le second aveu (hôte sans `timeout`) garde
+> `collect_status=unavailable` **à dessein** : la borne de durée est un garde‑fou, et un capteur qui
+> tourne sans lui est bien dégradé, même quand il a tout collecté.
 >
 > ⚠️ **Une dernière ligne sans saut de ligne final est lue, elle aussi.** `while read` n'exécute pas
 > son corps sur une ligne non terminée : une déclaration écrite `SOURCE=…\nCMD=…` **sans** `\n`

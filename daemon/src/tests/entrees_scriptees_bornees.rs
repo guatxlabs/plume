@@ -353,16 +353,20 @@ mod entrees_scriptees_bornees_tests {
                    "l'entrée ENTIÈRE disparaissait quand la borne n'était pas un entier");
         let aveux = bac.aveux();
         assert_eq!(aveux.len(), 1, "le repli sur le défaut doit être dit : {aveux:?}");
-        assert!(aveux[0].contains("\"reason\":\"missing-config\""),
+        assert!(aveux[0].contains("\"reason\":\"unreadable-config\""),
                 "un réglage illisible est un défaut de CONFIGURATION, et il se nomme : {}", aveux[0]);
-        // BORNE ÉCRITE, PARCE QU'ELLE COÛTE : cet aveu emprunte `collect_status=unavailable`, donc la
-        // règle livrée `de-collector-unavailable` ALERTE et la pastille de la source BASCULE — alors
-        // que la source est INTÉGRALEMENT collectée (les 4 événements ci-dessus). Le mot dit une
-        // incapacité qui n'a pas eu lieu. Le corriger demande un `collect_status` que `docs/CIM.md`
-        // ne déclare pas — donc le contrat, le démon et les règles livrées : hors de la zone de ce
-        // lot. Ce témoin ÉPINGLE le fait pour qu'il ne se perde pas.
+        // `P4.6-c` — LA COLLECTE EST ENTIÈRE, L'AVEU NE DIT DONC PAS UNE INCAPACITÉ. Il empruntait
+        // `collect_status=unavailable` : la règle livrée `de-collector-unavailable` alertait et la
+        // pastille d'une source SAINE basculait (épinglé ici le 2026-08-27, corrigé le 2026-09-09).
+        // L'état est le troisième que `docs/CIM.md` déclare, `fallback`, et la règle ne le filtre pas.
+        assert!(aveux[0].contains("\"collect_status\":\"fallback\""),
+                "l'aveu d'un repli doit porter l'état `fallback` déclaré par le contrat : {}", aveux[0]);
+        assert!(!aveux[0].contains("\"collect_status\":\"unavailable\""),
+                "un repli n'est PAS une indisponibilité : la règle livrée alerterait sur une source saine : {}", aveux[0]);
+        assert!(aveux[0].contains("la collecte, elle, est entière"),
+                "l'aveu doit dire que la collecte est entière, sinon le lecteur suppose l'inverse : {}", aveux[0]);
         assert_eq!(bac.evenements().len(), 4,
-                   "la source est collectée ENTIÈREMENT malgré l'aveu d'indisponibilité");
+                   "la source est collectée ENTIÈREMENT, et l'aveu de repli l'accompagne");
     }
 
     // ---------------------------------------------------------------------------------------------

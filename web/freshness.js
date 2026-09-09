@@ -165,6 +165,11 @@ async function renderIntegrations() {
   // `portee` vient du serveur (dérivé du type de la sonde) — on le COMPTE ici plutôt que de le déduire
   // d'une liste locale, qui aurait dérivé du jour où une sonde change de portée.
   const confondues = collectors.filter(c => c.portee === 'tous hôtes confondus').length;
+  // `P11.20-k` (2026-09-09) — LES MOTS PORTENT LEUR SUJET. Cette rangée et celle des flux de Fraîcheur sortent
+  // de la même fabrique, dans le même `.capsum`, avec les mêmes pastilles ; « muet » et « en attente » n'y
+  // désignaient pas la même chose (un CAPTEUR décroché contre un FLUX sans donnée récente ; une sonde JAMAIS
+  // vue contre un flux qui attend). Chaque libellé de cette rangée nomme donc ce qu'il compte — capteur(s),
+  // hôte(s) — et « jamais vu(s) » remplace « en attente », que la rangée des flux garde pour son propre sens.
   // P11.16-b — CETTE RANGÉE PORTAIT LE MÊME DÉFAUT que celle de Fraîcheur, et elle est réparée par la
   // MÊME fabrique : « déclarés = branchés + muets + en attente » se lisait déjà en commentaire ici, et
   // la portée « tous hôtes confondus » RECOUPE ces trois parts (une sonde de cette portée est déjà
@@ -172,11 +177,11 @@ async function renderIntegrations() {
   const capsum = `<div class="capsum">` + rangeeDeChiffres([
     { famille: 'total', valeur: total, libelle: LANG === 'en' ? 'declared sensors' : 'capteurs déclarés',
       titre: LANG === 'en' ? 'A sensor is a PROBE TYPE, not a source: the total is shared by the three terms joined by « + ». What follows « of which » is taken from the same population and is not part of the addition.' : 'Un capteur est un TYPE de sonde, pas une source : le total se partage entre les trois termes reliés par « + ». Ce qui suit « dont » est pris sur la même population et n\'entre pas dans l\'addition.' },
-    { famille: 'part', valeur: connected, libelle: LANG === 'en' ? 'connected' : 'branché(s)',
+    { famille: 'part', valeur: connected, libelle: LANG === 'en' ? 'connected sensor(s)' : 'capteur(s) branché(s)',
       titre: LANG === 'en' ? 'Declared sensors that have already reported at least one piece of data.' : 'Capteurs déclarés ayant déjà remonté au moins une donnée.' },
-    { famille: 'part', valeur: mute.length, dot: 'muet', libelle: LANG === 'en' ? 'mute' : 'muet(s)', suite: withNames(mute),
+    { famille: 'part', valeur: mute.length, dot: 'muet', libelle: LANG === 'en' ? 'mute sensor(s)' : 'capteur(s) muet(s)', suite: withNames(mute),
       titre: LANG === 'en' ? 'Connected then dropped out (continuous dead-man\'s-switch): to investigate.' : 'Branché puis décroché (dead-man\'s-switch continu) : à investiguer.' },
-    { famille: 'part', valeur: waiting.length, dot: 'attente', libelle: LANG === 'en' ? 'waiting' : 'en attente', suite: withNames(waiting),
+    { famille: 'part', valeur: waiting.length, dot: 'attente', libelle: LANG === 'en' ? 'never-seen sensor(s)' : 'capteur(s) jamais vu(s)', suite: withNames(waiting),
       titre: LANG === 'en' ? 'Declared, never seen: no data yet from this probe.' : 'Déclaré, jamais vu : aucune donnée de cette sonde à ce jour.' },
     { famille: 'recoupement', valeur: confondues, libelle: LANG === 'en' ? 'at « all hosts together » scope' : 'à portée « tous hôtes confondus »',
       titre: LANG === 'en' ? 'ALREADY counted in one of the terms above — this number crosses the distribution, it does not share it. These probes return the FRESHEST data of the estate: they stay green as long as a single machine still talks. Fully silent machines are counted separately (Hosts).' : 'DÉJÀ comptées dans l\'un des termes ci-dessus — ce nombre recoupe la répartition, il ne la partage pas. Ces sondes rendent la donnée la plus FRAÎCHE du parc : elles restent vertes tant qu\'une seule machine parle encore. Les machines entièrement muettes sont comptées à part (Hôtes).' },
@@ -230,7 +235,7 @@ async function renderIntegrations() {
         titre: LANG === 'en' ? 'Machines seen at least once and NOT declared withdrawn from the estate. The total is shared by the three terms joined by « + ».' : 'Machines vues au moins une fois et NON déclarées retirées du parc. Le total se partage entre les trois termes reliés par « + ».' },
       { famille: 'part', valeur: attendus - muets - tus, libelle: LANG === 'en' ? 'signalling' : 'qui signalent',
         titre: LANG === 'en' ? 'A signal arrived recently enough for this machine not to be counted mute.' : 'Un signal est arrivé assez récemment pour que la machine ne soit pas comptée muette.' },
-      { famille: 'part', valeur: muets, dot: 'muet', libelle: LANG === 'en' ? 'mute' : 'muet(s)',
+      { famille: 'part', valeur: muets, dot: 'muet', libelle: LANG === 'en' ? 'mute host(s)' : 'hôte(s) muet(s)',
         titre: (LANG === 'en' ? 'No signal at all for more than ' : 'Aucun signal depuis plus de ') + minutes + (LANG === 'en' ? ' min, and nobody declared that silence: to investigate.' : ' min, et personne n\'a déclaré ce silence : à investiguer.') },
       { famille: 'part', valeur: tus, libelle: LANG === 'en' ? 'at declared silence' : 'au silence déclaré',
         titre: LANG === 'en' ? 'Mute too, but someone declared that silence expected: counted apart, and out of the alert.' : 'Muettes elles aussi, mais quelqu\'un a déclaré ce silence attendu : comptées à part, et hors alerte.' },

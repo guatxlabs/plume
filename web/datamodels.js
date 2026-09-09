@@ -277,6 +277,23 @@ function renderResults(host, d) {
   const columns = cols.map(c => ({ key: c, label: c, sortable: true, sortVal: r => r[c], render: r => { const s = document.createElement('span'); const v = r[c]; s.textContent = v == null ? '' : String(v); return s; } }));
   const box = document.createElement('div');
   if (d && d.stats) { const p = document.createElement('div'); p.className = 'muted'; p.style.margin = '4px 0'; p.textContent = d.stats.rows + ' ligne(s)' + (d.stats.truncated ? ' (tronqué)' : '') + ' — ' + d.stats.elapsed_ms + ' ms'; box.appendChild(p); }
+  // `P10.19-a` — L'AVEU DE BANDE FROIDE ATTEINT L'ÉCRAN. Depuis le 2026-09-08 le démon écrit dans `stats.cold` que
+  // ce chemin (pivot / jeu de données) a calculé sur la fenêtre chaude SEULE quand la fenêtre demandée commence sous
+  // la frontière froide ; un résultat partiel peint sans ce mot se lirait comme entier. La pastille porte le mot
+  // court, l'aveu complet en survol, et la frontière en clair. Sans `stats.cold`, rien n'est peint : sans tier
+  // froid, la fenêtre chaude est toute la donnée.
+  if (d && d.stats && d.stats.cold && d.stats.cold.aveu) {
+    const aveu = document.createElement('div'); aveu.className = 'muted'; aveu.style.margin = '4px 0';
+    const pastille = document.createElement('span'); pastille.className = 'qb qb-approx';
+    pastille.textContent = LANG === 'en' ? 'cold band NOT read' : 'bande froide NON lue';
+    pastille.title = String(d.stats.cold.aveu);
+    aveu.appendChild(pastille);
+    const b = Number(d.stats.cold.boundary_ts);
+    if (Number.isFinite(b)) {
+      aveu.appendChild(document.createTextNode((LANG === 'en' ? ' — computed on the hot window only, boundary ' : ' — calculé sur la fenêtre chaude seule, frontière ') + new Date(b * 1000).toISOString()));
+    }
+    box.appendChild(aveu);
+  }
   const listHost = document.createElement('div'); box.appendChild(listHost);
   host.replaceChildren(box);
   if (!cols.length) { listHost.appendChild(muted('aucune colonne (résultat vide).')); return; }

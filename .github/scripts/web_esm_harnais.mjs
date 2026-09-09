@@ -10455,6 +10455,29 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   console.log("[bornes-par-defaut] `P11.18-t` (1) FERMÉE : ni la borne basse ni la borne haute de `runQ` n'héritent de l'intervalle d'une autre vue ; un appelant muet part sans borne, un appelant explicite est lu tel quel.");
 }
 
+// ---------------------------------------------------------------------------------------------
+// `P10.19-a` — L'AVEU DE BANDE FROIDE DU PIVOT ATTEINT L'ÉCRAN. Le démon écrit dans `stats.cold` qu'un résultat
+// de pivot ou de jeu de données a été calculé sur la fenêtre chaude seule ; la vue le PEINT (pastille, aveu en
+// survol, frontière en clair). Témoin dans les deux sens : avec `stats.cold`, la pastille est là et porte l'aveu ;
+// sans, rien n'est peint — sans tier froid, la fenêtre chaude est toute la donnée, et une pastille mentirait.
+// ---------------------------------------------------------------------------------------------
+{
+  const { renderResults } = await import(pathToFileURL(path.join(WEB, "datamodels.js")).href);
+  const cueillirTout = (el, pred, acc) => { if (pred(el)) acc.push(el); (el.children || []).forEach((c) => cueillirTout(c, pred, acc)); return acc; };
+  const aveu = "bande froide NON consultée : ce chemin (pivot / jeu de données) calcule sur la fenêtre chaude seule";
+  const hoteAvec = new Element("div");
+  renderResults(hoteAvec, { columns: ["a"], rows: [[1]], stats: { rows: 1, truncated: false, served_from: "hot", cold: { served_from: "hot", boundary_ts: 1700000000, aveu } } });
+  const pastilles = cueillirTout(hoteAvec, (e) => /\bqb-approx\b/.test(String(e.className || "")), []);
+  exiger(pastilles.length === 1, `(P10.19-a) avec stats.cold, la vue pivot doit peindre UNE pastille d'aveu, vues : ${pastilles.length}`);
+  exiger(pastilles.length === 1 && String(pastilles[0].title || "").includes("NON consultée"), "(P10.19-a) la pastille porte l'aveu complet du démon en survol");
+  exiger(/frontière|boundary/.test(hoteAvec.textContent || "") && /2023-11-14/.test(hoteAvec.textContent || ""), "(P10.19-a) la frontière froide est écrite en clair à côté de la pastille");
+  const hoteSans = new Element("div");
+  renderResults(hoteSans, { columns: ["a"], rows: [[1]], stats: { rows: 1, truncated: false } });
+  const sans = cueillirTout(hoteSans, (e) => /\bqb-approx\b/.test(String(e.className || "")), []);
+  exiger(sans.length === 0, `(P10.19-a) sans stats.cold, aucune pastille ne doit être peinte, vues : ${sans.length}`);
+  console.log("[pivot] `P10.19-a` : l'aveu de bande froide du démon est PEINT par la vue pivot (pastille + aveu en survol + frontière), et rien n'est peint sans lui.");
+}
+
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;
 verdictRendu = true;
 if (echecs.length) {

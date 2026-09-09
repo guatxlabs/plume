@@ -401,10 +401,13 @@ function renderLegend(tactics) {
 // elle est réelle — sur un corps muet, dont il ne peut savoir s'il vient des deux autres sorties ou d'un
 // démon antérieur à cet aveu. C'est un RÉTRÉCISSEMENT de ce que la surface affirme.
 //
-// CE QUI RESTE OUVERT ET QUE CETTE SURFACE NE PEUT PAS VOIR (`P11.6-e`) : la lecture interrompue par le chien
-// de garde rend une matrice ENTIÈREMENT DESSINÉE à couverture sous-comptée. C'est le même défaut — un résultat
-// incomplet présenté comme complet — sous une forme que le tableau vide ne trahit pas. Seul le démon peut le
-// dire ; la console ne peut pas le deviner, et ne le devine pas.
+// CE QUI ÉTAIT OUVERT ICI ET NE L'EST PLUS (`P11.6-e`, fermée le 2026-09-09) : la lecture interrompue par le
+// chien de garde rendait une matrice ENTIÈREMENT DESSINÉE à comptes d'alertes sous-comptés — le même défaut,
+// un résultat incomplet présenté comme complet, sous une forme que le tableau vide ne trahit pas. Seul le
+// démon pouvait le dire, et il le dit depuis `P10.7-f` : la cause arrive sous `error` À CÔTÉ des tactiques,
+// `etatDeLaMatriceServie` la lit (`incomplet`), `loadAttackMatrix` la rend au-dessus de la matrice
+// (`P11.21-i`) et chaque cellule marque son minorant (`P11.21-j`). La console ne devine toujours rien :
+// elle rend ce que le démon dit, et ce qu'il ne dit pas — COMBIEN il en manque — n'est pas inventé ici.
 //
 // Rend null quand la matrice est SERVIE — que le corps porte une cause ou non : dans le premier cas ce
 // n'est pas « rien à dire », c'est `loadAttackMatrix` qui le dit, au-dessus de la matrice (`P11.21-i`).

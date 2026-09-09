@@ -78,6 +78,7 @@ cassé serait le pire des deux mondes.
 import os
 import re
 import subprocess
+import unicodedata
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -122,6 +123,29 @@ def decouper(ligne):
         tampon.append(c); i += 1
     morceaux.append("".join(tampon))
     return morceaux
+
+
+# UN ÉTAT NE SE TROUVE QUE SOUS L'EN-TÊTE « État » (mesuré le 2026-09-09) : le commit 8ad2bd0 a porté, sur
+# la ligne `P4.1-u` de l'index, « ✅ » dans la colonne « Périmètre » (le TITRE de la clé, écrasé) et « ⬜ »
+# dans la colonne « État » — un instrument d'édition avait compté les cellules à partir de la mauvaise
+# borne. La ligne avait le bon nombre de cellules et les bonnes barres : la forme déclarée était tenue,
+# le sens était détruit, et aucune des trois gardes qui lisent l'index ne l'a vu — elles lisent l'état à
+# sa POSITION, et il y était, faux. La propriété est DÉRIVÉE de l'en-tête : dans un tableau qui déclare
+# une colonne « État », une cellule qui n'est QU'un état ne peut être que sous cet en-tête-là. Un
+# tableau sans colonne « État » (une légende des symboles, par exemple) n'est pas jugé.
+ETATS = frozenset({"✅", "🔵", "⬜", "🔒", "❓"})
+
+
+def sans_accents(texte):
+    return "".join(c for c in unicodedata.normalize("NFD", texte) if unicodedata.category(c) != "Mn")
+
+
+def colonne_d_etat(entete):
+    """L'indice de la colonne « État » de cet en-tête, ou None si le tableau n'en déclare pas."""
+    for i, cellule in enumerate(entete):
+        if sans_accents(cellule).strip().lower() == "etat":
+            return i
+    return None
 
 
 def forme(ligne):
@@ -180,9 +204,20 @@ def tableaux(lignes):
 def fautes_du_document(lignes):
     """[(numéro, motif)] pour ce document. Vide = toutes ses lignes portent la forme déclarée."""
     out = []
-    for _n_delim, (n_col, tete_d, queue_d), corps in tableaux(lignes):
+    for n_delim, (n_col, tete_d, queue_d), corps in tableaux(lignes):
+        # `n_delim` est un numéro de ligne (base 1) ; l'en-tête est la ligne qui précède la délimitation.
+        etat = colonne_d_etat(forme(lignes[n_delim - 2])[0])
         for n, ligne in corps:
             cellules, tete, queue = forme(ligne)
+            if len(cellules) == n_col and etat is not None:
+                for i, cellule in enumerate(cellules):
+                    if i != etat and cellule.strip() in ETATS:
+                        out.append((n, f"un état « {cellule.strip()} » dans la colonne {i + 1}, alors que ce "
+                                       f"tableau déclare sa colonne « État » en position {etat + 1} : la "
+                                       f"forme est tenue, le SENS ne l'est pas — cette cellule était autre "
+                                       f"chose (un titre, un périmètre) et un instrument a écrit l'état au "
+                                       f"mauvais endroit (8ad2bd0 sur `P4.1-u`, 2026-09-09). Restaurez la "
+                                       f"cellule écrasée depuis l'historique et posez l'état sous « État »"))
             if len(cellules) > n_col:
                 perdu = "|".join(cellules[n_col:])
                 out.append((n, f"{len(cellules)} cellules là où le tableau en déclare {n_col} : le rendu "
@@ -228,9 +263,18 @@ CORPUS = [
      ["| a | b | c | d | e |", "|---|---|---|---|---|", "| 1 | 2 | 3 | 4 |"], [3]),
     ("un tableau SANS barres de bord dont une ligne en porte une",
      ["a | b", "---|---", "1 | 2", "| 3 | 4"], [4]),
+    ("un état écrit dans la colonne du TITRE — le défaut de 8ad2bd0 sur `P4.1-u`",
+     ["| Clé | Périmètre | État | Ce que la clé désigne |", "|---|---|---|---|",
+      "| **P1.1-a** | ✅ | ⬜ | VU le 2026-09-09 |"], [3]),
+    ("un état dans la colonne du constat, l'état lui-même étant juste",
+     ["| Clé | Périmètre | État | Constat |", "|---|---|---|---|", "| `P1.1-a` | titre | ✅ | 🔵 |"], [3]),
     # ── CE QUE LA GARDE NE DOIT PAS REFUSER ────────────────────────────────────────────────────
     ("un tableau bien formé",
      ["| Clé | État |", "|---|---|", "| `P1.1-a` | ✅ |", "| `P1.1-b` | ⬜ |"], []),
+    ("une légende des états — aucune colonne « État », les symboles sont du contenu et ne sont pas jugés",
+     ["| Symbole | Sens |", "|---|---|", "| ✅ | fermée |", "| ⬜ | ouverte |"], []),
+    ("l'en-tête « Etat » sans accent ou en capitales désigne la même colonne",
+     ["| Clé | ETAT | Constat |", "|---|---|---|", "| `P1.1-a` | 🔵 | un titre qui parle d'un ✅ posé |"], []),
     ("une barre ÉCHAPPÉE est du contenu, pas une cellule — la convention du dépôt",
      ["| Clé | Constat |", "|---|---|", "| `P1.1-a` | `metric x \\| stats max(value)` mesuré |"], []),
     ("un tableau SANS barres de bord, tenu à sa propre forme",
@@ -334,7 +378,8 @@ def main():
           f"{n_tableaux} tableaux de {documents} documents Markdown ; chacune porte le nombre de cellules "
           f"et les barres de bord que la ligne de délimitation de son tableau déclare. Forme seulement : "
           f"le TEXTE des cellules est tenu ailleurs ; les tableaux montrés dans un bloc de code sont des "
-          f"échantillons et ne sont pas jugés.")
+          f"échantillons et ne sont pas jugés. Et dans les tableaux qui déclarent une colonne « État », un état "
+          f"ne se lit que sous cet en-tête-là.")
     return 0
 
 

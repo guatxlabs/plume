@@ -244,11 +244,20 @@ pub(crate) fn allowlist_stop_service(lecture: std::io::Result<String>) -> Result
 /// Délègue à `action_valid_ctx` avec le drapeau engagement RÉEL (byte-identique quand off : le drapeau vaut
 /// false -> la clause engagement n'est même pas évaluée -> comportement STRICTEMENT identique à aujourd'hui).
 pub(crate) fn action_valid(kind: &str, target: &str, db_path: &str) -> Result<(), String> {
-    action_valid_ctx(kind, target, engagement_enabled(), db_path)
+    action_valid_ctx_declaree(kind, target, engagement_enabled(), db_path, liste_protegee_declaree())
 }
 /// Cœur testable de `action_valid` : `engagement_on` explicite (le drapeau global est injecté par l'appelant).
 /// `db_path` = tenant acteur -> le guard Arm A ne consulte QUE le scope de CE tenant (isolation multi-tenant).
+/// `P4.7-e` — cette forme SUPPOSE la liste protégée déclarée : elle sert aux témoins qui exercent la forme
+/// d'une cible et à la validation de forme (`incidents.rs`), jamais à l'enforcement, qui passe par
+/// `action_valid` et reçoit le fait réel.
 pub(crate) fn action_valid_ctx(kind: &str, target: &str, engagement_on: bool, db_path: &str) -> Result<(), String> {
+    action_valid_ctx_declaree(kind, target, engagement_on, db_path, true)
+}
+/// `P4.7-e` — LA BORNE COMPLÈTE : forme, protection, liste déclarée, engagement. `protection_declaree`
+/// est le fait dérivé des leviers (`ledger::liste_protegee_declaree`), injecté par l'appelant pour
+/// que la propriété se teste sans toucher l'environnement du processus.
+pub(crate) fn action_valid_ctx_declaree(kind: &str, target: &str, engagement_on: bool, db_path: &str, protection_declaree: bool) -> Result<(), String> {
     match kind {
         "ban_ip" | "unban_ip" => {
             // v1 : IPv4. `P4.7-b` — c'est la BORNE D'ENFORCEMENT (Q1), PAS le classificateur d'adresse
@@ -266,6 +275,12 @@ pub(crate) fn action_valid_ctx(kind: &str, target: &str, engagement_on: bool, db
             // (inoffensif : ces IP ne sont jamais bannies -> no-op), on ne bride donc QUE le ban destructif.
             if kind == "ban_ip" && ip_is_protected(target) {
                 return Err("IP protégée (loopback/privée/opérateur) — ban refusé".into());
+            }
+            // `P4.7-e` — TANT QU'AUCUNE ADRESSE PROTÉGÉE N'EST DÉCLARÉE, AUCUN BAN NE PART. Un défaut vide
+            // qui se tait est le pire des deux : le refus nomme les leviers et l'assomption. La levée
+            // (`unban_ip`) n'est jamais refusée pour cette raison — une soupape ne se ferme pas.
+            if kind == "ban_ip" {
+                if let Some(refus) = refus_de_ban_sans_liste_declaree(protection_declaree) { return Err(refus); }
             }
             // ARM A (v75, MODE ENGAGEMENT) : le BAN d'une IP dans le scope d'un engagement ACTIF est REFUSÉ —
             // le daemon suspend SON PROPRE auto-ban (run_playbooks skippe sur action_valid Err), EXACTEMENT comme
@@ -566,12 +581,20 @@ pub(crate) fn netban_from_actions_enabled() -> bool {
 /// (fin du faux no-op `01.02.03.04`). Réutilise les gardes : jamais loopback/privé/opérateur/passerelle
 /// (`ip_is_protected`), suspend sous engagement autorisé actif.
 pub(crate) fn netban_validate_ip(ip: &str, db_path: &str) -> Result<String, String> {
+    netban_validate_ip_ctx(ip, db_path, liste_protegee_declaree())
+}
+/// `P4.7-e` — même borne que `action_valid`, pour le ban HTTP posé à la main par un administrateur :
+/// `protection_declaree` injecté, pour la même raison.
+pub(crate) fn netban_validate_ip_ctx(ip: &str, db_path: &str, protection_declaree: bool) -> Result<String, String> {
     // `P4.7-j` — l'UNIQUE canonicaliseur du produit (il REPLIE `::ffff:a.b.c.d`, `parse + to_string`
     // non) : l'entrée stockée et l'IP calculée par `real_client_ip` se clent enfin sur la même VALEUR.
     let parsed = ssrf_norm_ip(ip).ok_or_else(|| "IP invalide".to_string())?;
     let canon = parsed.to_string();
     if ip_is_protected(&canon) {
         return Err("IP protégée (loopback/privée/opérateur/passerelle) — ban refusé".into());
+    }
+    if let Some(refus) = refus_de_ban_sans_liste_declaree(protection_declaree) {
+        return Err(refus);
     }
     if engagement_enabled() && ip_in_active_engagement(&canon, db_path) {
         return Err("IP sous engagement autorisé actif — ban suspendu (détection/alerte inchangées)".into());

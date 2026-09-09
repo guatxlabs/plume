@@ -221,6 +221,7 @@
 
     #[tokio::test]
     async fn api_post_list_delete_roundtrip() {
+        crate::ledger::declarer_la_liste_pour_ce_temoin();   // `P4.7-e` : ce témoin pose un ban, il déclare sa population
         let _g = NETBAN_TEST_LOCK.lock();
         netban_cache().write().clear();
         let st = sso_test_state("plume-admin", "plume-editor", "admins");
@@ -249,6 +250,7 @@
 
     #[tokio::test]
     async fn api_post_permanent_when_no_ttl() {
+        crate::ledger::declarer_la_liste_pour_ce_temoin();   // `P4.7-e` : ce témoin pose un ban, il déclare sa population
         let _g = NETBAN_TEST_LOCK.lock();
         netban_cache().write().clear();
         let st = sso_test_state("plume-admin", "plume-editor", "admins");
@@ -295,15 +297,15 @@
     #[test]
     fn netban_validate_accepts_ipv6_and_canonicalizes() {
         // F5 : IPv6 bannissable. F7 : canonicalisation (jamais stocké tel quel -> matche real_client_ip).
-        assert_eq!(netban_validate_ip("2001:DB8::1", "").unwrap(), "2001:db8::1", "IPv6 canonique (minuscule/compressé)");
-        assert_eq!(netban_validate_ip("  1.2.3.4 ", "").unwrap(), "1.2.3.4", "IPv4 trim + canonique");
+        assert_eq!(netban_validate_ip_ctx("2001:DB8::1", "", true).unwrap(), "2001:db8::1", "IPv6 canonique (minuscule/compressé)");
+        assert_eq!(netban_validate_ip_ctx("  1.2.3.4 ", "", true).unwrap(), "1.2.3.4", "IPv4 trim + canonique");
         // octets à zéro-tête : soit refusés, soit canonicalisés — JAMAIS stockés tels quels (fin du faux no-op).
-        let r = netban_validate_ip("01.02.03.04", "");
+        let r = netban_validate_ip_ctx("01.02.03.04", "", true);
         assert!(r.is_err() || r.as_deref() == Ok("1.2.3.4"), "zéro-tête : refusé ou canonicalisé, jamais brut");
-        assert!(netban_validate_ip("pas-une-ip", "").is_err());
+        assert!(netban_validate_ip_ctx("pas-une-ip", "", true).is_err());
         // protégées (v4 & v6) refusées.
-        assert!(netban_validate_ip("127.0.0.1", "").is_err(), "loopback v4 protégé");
-        assert!(netban_validate_ip("::1", "").is_err(), "loopback v6 protégé");
+        assert!(netban_validate_ip_ctx("127.0.0.1", "", true).is_err(), "loopback v4 protégé");
+        assert!(netban_validate_ip_ctx("::1", "", true).is_err(), "loopback v6 protégé");
     }
 
     #[test]
@@ -560,6 +562,7 @@
     /// qui ne bloque pas serait le pire des deux mondes : l'opérateur croirait l'IP contenue.
     #[tokio::test]
     async fn api_netban_refuse_507_quand_plein_et_publie_sa_borne() {
+        crate::ledger::declarer_la_liste_pour_ce_temoin();   // `P4.7-e` : ce témoin pose un ban, il déclare sa population
         let _g = NETBAN_TEST_LOCK.lock();
         let st = sso_test_state("plume-admin", "plume-editor", "admins");
         netban_remplir_le_cache(NETBAN_CACHE_CAP);
@@ -575,3 +578,44 @@
         assert!(vue["tronque"].is_boolean(), "l'état de troncature est publié");
         netban_cache().write().clear();
     }
+
+// `P4.7-e` — TANT QU'AUCUNE ADRESSE PROTÉGÉE N'EST DÉCLARÉE, AUCUN BAN NE PART, ET LE REFUS LE DIT.
+// Mesuré le 2026-08-28 : les deux leviers valent la chaîne vide par défaut et aucun installateur ne les
+// sème — sur un central neuf, aucune adresse publique n'était protégée et le ban partait quand même.
+// Le fait « déclarée » est INJECTÉ (jamais lu dans l'environnement du processus) : ces témoins tiennent
+// la borne dans les deux sens et la soupape.
+#[cfg(test)]
+mod p47e_ban_sans_liste_declaree {
+    use super::*;
+    #[test]
+    fn un_ban_est_refuse_tant_qu_aucune_adresse_protegee_n_est_declaree() {
+        let refus = crate::handlers::actions::action_valid_ctx_declaree("ban_ip", "203.0.113.7", false, "", false).unwrap_err();
+        assert!(refus.contains("aucune adresse protégée n'a été déclarée") && refus.contains(crate::ledger::CLE_BANNIR_SANS_LISTE_DECLAREE),
+                "le refus doit nommer le fait ET l'assomption : {refus}");
+        assert!(crate::handlers::actions::action_valid_ctx_declaree("ban_ip", "203.0.113.7", false, "", true).is_ok(),
+                "liste déclarée : le même ban passe");
+        assert!(crate::handlers::actions::action_valid_ctx_declaree("unban_ip", "203.0.113.7", false, "", false).is_ok(),
+                "une LEVÉE n'est jamais refusée pour cette raison — une soupape ne se ferme pas");
+        assert!(crate::handlers::actions::action_valid_ctx("ban_ip", "203.0.113.7", false, "").is_ok(),
+                "la forme `_ctx` suppose la liste déclarée : elle sert aux témoins de forme, pas à l'enforcement");
+        let http = crate::handlers::actions::netban_validate_ip_ctx("203.0.113.7", "", false).unwrap_err();
+        assert!(http.contains("aucune adresse protégée n'a été déclarée"), "le ban HTTP à la main porte la même borne : {http}");
+        assert!(crate::handlers::actions::netban_validate_ip_ctx("127.0.0.1", "", false).unwrap_err().contains("IP protégée"),
+                "une IP protégée est refusée POUR CETTE raison, plus spécifique, avant la borne de déclaration");
+    }
+    #[test]
+    fn la_declaration_est_derivee_des_leviers_et_de_l_assomption() {
+        use std::collections::HashMap;
+        let mut conf: HashMap<String, String> = HashMap::new();
+        assert!(!crate::ledger::liste_protegee_declaree_par(&conf), "aucun levier : rien n'est déclaré");
+        conf.insert("PLUME_OPERATOR_IPS".into(), " , ".into());
+        assert!(!crate::ledger::liste_protegee_declaree_par(&conf), "des virgules et des blancs ne déclarent rien");
+        conf.insert("PLUME_OPERATOR_IPS".into(), "203.0.113.9".into());
+        assert!(crate::ledger::liste_protegee_declaree_par(&conf), "une adresse déclare");
+        conf.clear(); conf.insert("PLUME_PROTECTED_IPS".into(), "198.51.100.0/24".into());
+        assert!(crate::ledger::liste_protegee_declaree_par(&conf), "l'autre levier déclare aussi");
+        conf.clear(); conf.insert(crate::ledger::CLE_BANNIR_SANS_LISTE_DECLAREE.into(), "1".into());
+        assert!(crate::ledger::liste_protegee_declaree_par(&conf), "l'assomption posée vaut déclaration — elle est un choix, pas un défaut");
+        assert!(crate::ledger::refus_de_ban_sans_liste_declaree(true).is_none() && crate::ledger::refus_de_ban_sans_liste_declaree(false).is_some());
+    }
+}

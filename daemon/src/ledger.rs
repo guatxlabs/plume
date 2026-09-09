@@ -906,6 +906,56 @@ pub(crate) struct DenylistProtegee {
     /// Items REFUSÉS à l'amorçage : `(item tel qu'écrit, raison)`. Un item inanalysable ne devient JAMAIS
     /// un matcher inerte — il est REFUSÉ ET NOMMÉ, et le registre never-ban le rend à l'exploitant.
     pub(crate) refuses: Vec<(String, String)>,
+    /// `P4.7-e` — L'EXPLOITANT A-T-IL DÉCLARÉ AU MOINS UNE ADRESSE PROTÉGÉE ? Dérivé des deux leviers
+    /// (contenu non vide après `trim`), jamais d'une déclaration séparée. Sur un central neuf les deux
+    /// sont vides : seules les plages réservées protègent, AUCUNE adresse publique — donc pas de
+    /// rebond d'administration —, et un ban automatique peut enfermer l'exploitant dehors.
+    pub(crate) declaree: bool,
+}
+
+/// `P4.7-e` — LE LEVIER D'ASSOMPTION : bannir SANS liste déclarée est un choix qui se pose, pas un
+/// défaut qui se tait. Vide ou différent de `1`, le démon REFUSE tout `ban_ip` tant qu'aucune adresse
+/// protégée n'est déclarée, et le dit.
+pub(crate) const CLE_BANNIR_SANS_LISTE_DECLAREE: &str = "PLUME_RESPOND_BAN_WITHOUT_PROTECTED_LIST";
+
+/// PURE : les leviers `conf` déclarent-ils une liste ? (au moins un item non vide, ou l'assomption posée).
+pub(crate) fn liste_protegee_declaree_par(conf: &std::collections::HashMap<String, String>) -> bool {
+    if cfg(conf, CLE_BANNIR_SANS_LISTE_DECLAREE, "0").trim() == "1" { return true; }
+    ["PLUME_OPERATOR_IPS", "PLUME_PROTECTED_IPS"].iter().any(|cle| {
+        cfg(conf, cle, "").split(',').any(|item| !item.trim().is_empty())
+    })
+}
+
+/// COUTURE DES TÉMOINS, ET RIEN D'AUTRE : un témoin qui exerce un ban par le routeur réel DÉCLARE sa
+/// population en appelant `declarer_la_liste_pour_ce_temoin()` — jamais en écrivant l'environnement du
+/// processus. Le défaut reste `false` sous `cfg(test)` aussi : la borne n'est pas suspendue en bloc, elle
+/// est levée par le témoin qui en a besoin, à l'endroit où il en a besoin. Ce qu'un test ne tient pas et
+/// qui est dit : le routeur réel n'est pas exercé SANS déclaration (le drapeau, une fois posé, vaut pour
+/// tout le processus de test) ; le refus est tenu par les formes injectées (`action_valid_ctx_declaree`).
+#[cfg(test)]
+pub(crate) static LISTE_DECLAREE_POUR_LES_TEMOINS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[cfg(test)]
+pub(crate) fn declarer_la_liste_pour_ce_temoin() {
+    LISTE_DECLAREE_POUR_LES_TEMOINS.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub(crate) fn liste_protegee_declaree() -> bool {
+    #[cfg(test)]
+    {
+        if LISTE_DECLAREE_POUR_LES_TEMOINS.load(std::sync::atomic::Ordering::Relaxed) { return true; }
+    }
+    protected_denylist().declaree || cfg(&load_config(), CLE_BANNIR_SANS_LISTE_DECLAREE, "0").trim() == "1"
+}
+
+/// LE REFUS, ÉCRIT UNE FOIS. `None` quand une liste est déclarée (ou l'assomption posée) ; sinon la
+/// cause, telle que l'exploitant la lit dans le dossier de l'action et dans le journal.
+pub(crate) fn refus_de_ban_sans_liste_declaree(declaree: bool) -> Option<String> {
+    if declaree { return None; }
+    Some(format!(
+        "BAN REFUSÉ : aucune adresse protégée n'a été déclarée (PLUME_PROTECTED_IPS et PLUME_OPERATOR_IPS vides) — \
+         sur un central neuf, seules les plages réservées protègent, aucune adresse publique, donc aucun rebond \
+         d'administration : déclarez au moins l'adresse de l'exploitant et la passerelle, ou posez \
+         {CLE_BANNIR_SANS_LISTE_DECLAREE}=1 pour assumer ce risque."))
 }
 
 /// UN ITEM DE `PLUME_OPERATOR_IPS` / `PLUME_PROTECTED_IPS`, ANALYSÉ EN RÉSEAU (`P4.7-i`).
@@ -1064,7 +1114,7 @@ static PROTECTED_IP_MATCHERS: std::sync::OnceLock<DenylistProtegee> = std::sync:
 pub(crate) fn protected_denylist() -> &'static DenylistProtegee {
     PROTECTED_IP_MATCHERS.get_or_init(|| {
         let conf = load_config();
-        let mut d = DenylistProtegee { reseaux: Vec::new(), refuses: Vec::new() };
+        let mut d = DenylistProtegee { reseaux: Vec::new(), refuses: Vec::new(), declaree: liste_protegee_declaree_par(&conf) };
         // opérateur (défaut = l'opérateur plateforme) + liste additionnelle passerelle/DNS (défaut vide).
         for cle in ["PLUME_OPERATOR_IPS", "PLUME_PROTECTED_IPS"] {
             let defaut = if cle == "PLUME_OPERATOR_IPS" { PLUME_OPERATOR_IPS_DEFAULT } else { "" };

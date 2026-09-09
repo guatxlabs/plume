@@ -282,6 +282,7 @@
     /// publique (attaquant). L'unban n'est jamais bridé. Les autres actions sont inchangées.
     #[test]
     fn v2_m2_ban_denylist_protects_infra_ips() {
+        crate::ledger::declarer_la_liste_pour_ce_temoin();   // `P4.7-e` : ce témoin pose un ban, il déclare sa population
         // public (attaquant) -> ban autorisé. db_path="default" : aucun engagement scope pour ce tenant.
         assert!(action_valid("ban_ip", "203.0.113.7", "default").is_ok(), "ban d'une IP publique OK");
         assert!(action_valid("ban_ip", "192.0.2.18", "default").is_ok());

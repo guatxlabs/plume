@@ -912,7 +912,8 @@ viennent d'une constante — la commande `c` ci‑dessus la donne.
 | `PLUME_RESPONDER_ALLOW` | chemin de la liste des **adresses à ne jamais bannir**, lue par le responder d'**agent** — voir l'avertissement sous le tableau | `/etc/plume/responder.allow` — **repli COMPILÉ dans `collectors/respond.sh`, employé seulement si la variable n'est pas posée**. Une installation d'agent NEUVE la pose, elle, à `/etc/plume/responder-ban-exempt.allow` (`bootstrap-agent.sh`) : les deux valeurs sont vraies, de deux objets différents. Le repli partage son chemin avec la liste de **services** du démon — d'où l'avertissement |
 | `PLUME_STOP_SERVICE_ALLOW` | chemin de la liste des **services systemd autorisés** pour `stop_service`, lue par le **démon** — posez-la ailleurs si la machine est à la fois centrale et agent | `/etc/plume/responder.allow` |
 | `PLUME_BAN_DURATION` | durée d'un bannissement | `4h` |
-| `PLUME_PROTECTED_IPS` / `PLUME_OPERATOR_IPS` | IP qu'aucune action ne peut bannir (ne vous enfermez pas dehors) | vide |
+| `PLUME_PROTECTED_IPS` / `PLUME_OPERATOR_IPS` | IP qu'aucune action ne peut bannir (ne vous enfermez pas dehors). **Tant que les deux sont vides, aucun `ban_ip` ne part** : le refus nomme les leviers (`P4.7-e`) | vide |
+| `PLUME_RESPOND_BAN_WITHOUT_PROTECTED_LIST` | `1` = assumer de bannir SANS aucune adresse protégée déclarée (un central neuf n'en protège aucune de publique, donc aucun rebond d'administration) — un choix qui se pose, pas un défaut qui se tait | `0` |
 
 > ⚠️ **`/etc/plume/responder.allow` a porté DEUX listes incompatibles.**
 > L'installateur du central y sème une liste de **services systemd** autorisés pour `stop_service`, et
@@ -993,7 +994,7 @@ viennent d'une constante — la commande `c` ci‑dessus la donne.
 > ouverte. De ce côté‑là, **seules les plages réservées EN DUR protègent par défaut** : `PLUME_PROTECTED_IPS` et `PLUME_OPERATOR_IPS` ont pour valeur par défaut la chaîne VIDE et aucun
 > installateur ne les sème, si bien qu'aucune adresse publique — donc aucun rebond
 > d'administration réel — n'est protégée tant que l'exploitant n'a pas édité sa configuration.
-> La rédaction précédente nommait « l'opérateur et la passerelle » parmi les protections : **c'était faux par défaut**, et corrigé le 2026-08-28. Ce n'est **pas** fermé par le lot ci‑dessus. **La raison écrite ici jusqu'au 2026-09-03
+> La rédaction précédente nommait « l'opérateur et la passerelle » parmi les protections : **c'était faux par défaut**, et corrigé le 2026-08-28. **Depuis le 2026-09-09 (`P4.7-e`), le démon REFUSE tout `ban_ip` tant qu'aucune adresse protégée n'est déclarée** — le refus nomme les deux leviers et l'assomption `PLUME_RESPOND_BAN_WITHOUT_PROTECTED_LIST=1` ; un défaut vide ne se tait plus. **La raison écrite ici jusqu'au 2026-09-03
 > était fausse, et c'est une mesure qui l'a dite** : on lisait que le défaut des deux chemins étant
 > le même fichier, un lecteur d'épargne calqué sur celui de l'agent refuserait **tout** ban sur
 > toute installation centrale existante. La prémisse est vraie, la **conclusion ne l'est pas** — le

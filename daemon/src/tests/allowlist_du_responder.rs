@@ -796,6 +796,7 @@ mod allowlist_du_responder_tests {
     /// posée, bilan à zéro. Un correctif qui compterait (ou jetterait) tout échouerait ici.
     #[test]
     fn une_riposte_portable_est_posee_et_le_bilan_reste_un_vrai_zero() {
+        crate::ledger::declarer_la_liste_pour_ce_temoin();   // `P4.7-e` : ce témoin pose un ban, il déclare sa population
         use crate::mesure_environnement::Mesure;
         let (bilan, posees) = tick_de_playbook("p47c-nominal", "ban_ip", "203.0.113.7");
         assert_eq!(posees, 1, "la riposte nominale n'est plus posée : le correctif a cassé le chemin");

@@ -4,7 +4,7 @@
 // modules importent depuis ici. Comportement identique au monolithe (mêmes fonctions, juste relocalisées).
 // state.js est un pur leaf (aucun import) -> l'importer ici ne crée aucun cycle. Utilisé par socRole/socIsAdmin
 // (helpers partagés relocalisés depuis app.js, audit H1 — cassent les deps circulaires app<->vues).
-import { S, ecrireDansLeStockageDuSite, ecrireSansDireLeRefus, lireLeStockageDuSite } from './state.js';
+import { S, ecrireDansLeStockageDuSite, ecrireSansDireLeRefus, lireLeStockageDuSite, RAISONS_DE_SILENCE } from './state.js';
 // `P11.18-m` — LA RECHERCHE D'UNE LISTE N'EST PAS RÉÉCRITE ICI : elle vit dans le module qui la porte
 // déjà pour toute la console. `recherche_de_liste.js` est un feuillet — il n'importe rien — donc
 // l'importer depuis le cœur ne crée aucun cycle, et le prédicat, le filtre et la phrase de résumé
@@ -676,7 +676,7 @@ function toutesLesLargeurs() {
 }
 function ecrireToutesLesLargeurs(tout) {
   if (magasinDeLargeurs) { magasinDeLargeurs.ecrire(tout); return; }
-  ecrireSansDireLeRefus(CLE_DE_STOCKAGE_DES_LARGEURS, JSON.stringify(tout));
+  ecrireSansDireLeRefus(CLE_DE_STOCKAGE_DES_LARGEURS, JSON.stringify(tout), RAISONS_DE_SILENCE.CONVENANCE_PAR_NAVIGATEUR);
 }
 export const LARGEUR_MINIMALE_DE_COLONNE = 40;
 export function largeursDeColonnes(identite) {
@@ -1854,7 +1854,7 @@ function persisterLesPlis(storeKey, plis) {
   // qui SE RÉPÈTE (chaque tête de groupe, à chaque peinture) et dont l'état se RELIT À L'ŒIL au chargement
   // suivant : il n'y a aucun choix d'exploitant à annoncer, et un avis par pli userait celui qui compte.
   // Rien n'est donc dit — mais plus par une capture VIDE, où rien ne distinguait le silence VOULU de l'oubli.
-  ecrireSansDireLeRefus(storeKey, JSON.stringify(table));
+  ecrireSansDireLeRefus(storeKey, JSON.stringify(table), RAISONS_DE_SILENCE.CONVENANCE_PAR_NAVIGATEUR);
 }
 function plisMemorises(set, storeKey, defautPlie) {
   const jeu = set && typeof set === 'object' ? set : null;

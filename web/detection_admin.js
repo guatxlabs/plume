@@ -5,7 +5,7 @@
 // Le cycle app<->module est benin : les fonctions importees d'app.js ne sont appelees qu'a
 // l'EXECUTION (handlers/async apres await), jamais a l'evaluation du module.
 import { $, LANG, esc, sev, fmtTs, ic, muted, api, apiSend, confirmModal, toast, pagedList, mitreName, managedBadge, gateDeleteBtn, contentSubmit, contentDelete, fetchInto, formMsg, socIsAdmin, lsSet, collapsibleGroup, disclosure } from './core.js';
-import { S, lireLeStockageDuSite, ecrireDansLeStockageDuSite, ecrireSansDireLeRefus } from './state.js';
+import { S, lireLeStockageDuSite, ecrireDansLeStockageDuSite, ecrireSansDireLeRefus, RAISONS_DE_SILENCE } from './state.js';
 import { initSigmaImport } from './sigmaimport.js';
 import { loadAttackMatrix, poserLesPortesDeTechnique } from './attack.js';
 import { setAlertMitreFilter } from './alerts.js';
@@ -155,7 +155,7 @@ function deplierUnPanneauPersiste(bouton, liste, cle) {
   // nulle à l'œil : au chargement suivant le panneau s'OUVRE — le défaut de la première visite, déjà
   // écrit six lignes plus haut. Ce que la capture vide ne disait pas, cette porte le dit ; et c'était la
   // DERNIÈRE mutation directe du stockage de site dans ce module.
-  const persister = v => ecrireSansDireLeRefus(cle, v);
+  const persister = v => ecrireSansDireLeRefus(cle, v, RAISONS_DE_SILENCE.CONVENANCE_PAR_NAVIGATEUR);
   disclosure(bouton, liste, {
     open: () => { liste.hidden = false; peindreLeChevron(); persister('1'); },
     close: () => { liste.hidden = true; peindreLeChevron(); persister('0'); },

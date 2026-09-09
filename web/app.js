@@ -6,7 +6,7 @@ import {
   ouvrirLaModaleDePlage
 } from './core.js';
 import { installI18nObserver } from './i18n_observer.js';
-import { S, ecrireDansLeStockageDuSite, ecrireSansDireLeRefus, lireLeStockageDuSite } from './state.js';
+import { S, ecrireDansLeStockageDuSite, ecrireSansDireLeRefus, lireLeStockageDuSite, RAISONS_DE_SILENCE } from './state.js';
 import { banIp, clearDrillCrumb, clearZoom, evLoad, exploreFrom, exploreTo, qHistGo, renderViz, runQuery, setZoom, stopExplore, updateZoomBadge } from './viz.js';
 import { initDashboards, loadDashboard, loadDashboards, refreshPanels } from './dashboards.js';
 import { initLookups } from './lookups.js';
@@ -878,7 +878,7 @@ function saveOvDrop(from, to) {
   // `P4.13-c` — CE SILENCE-LÀ ÉTAIT DÉJÀ ARGUMENTÉ (juste au-dessus), MAIS LE CODE N'EN DISAIT RIEN : le
   // verdict de l'écrivain était simplement JETÉ, et une valeur jetée ne distingue pas un choix d'un
   // oubli. Il passe donc par la porte qui NE REND RIEN, dont le NOM déclare le silence.
-  ecrireSansDireLeRefus('soc_ov_order', JSON.stringify(o));   // miroir sync (compat + hors-ligne)
+  ecrireSansDireLeRefus('soc_ov_order', JSON.stringify(o), RAISONS_DE_SILENCE.CACHE_DUN_MAGASIN_DURABLE);   // miroir sync (compat + hors-ligne)
   prefSet('ovOrder', o);                                          // #62 — persiste côté serveur (cross-device)
   applyOvOrder();
 }

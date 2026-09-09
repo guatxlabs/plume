@@ -134,7 +134,22 @@ export function ecrireDansLeStockageDuSite(cle, valeur) {
 // rend rien), et un témoin fabriqué « porte silencieuse lue comme une valeur » y est ACCUSÉ. Le paragraphe
 // qui figurait ici disait la propriété « pas écrite, ouverte sous P4.13-c » : il était périmé d'un lot
 // (vérifié le 2026-09-09). Un appel de cette porte en position de valeur rougit la CI.
-export function ecrireSansDireLeRefus(cle, valeur) {
+// `P4.13-f` — LA RAISON DU SILENCE EST UN IDENTIFIANT D'UN ENSEMBLE FERMÉ, PAS UN COMMENTAIRE NI UN
+// LITTÉRAL. Deux remèdes avaient été réfutés par la mesure (2026-09-01) : exiger un commentaire adjacent
+// est vert par construction (neuf sites en portaient déjà, un commentaire vide passerait demain), et
+// porter la raison en chaîne libre relève le lexique. Ici la raison est un MEMBRE de cet objet, passé en
+// troisième argument : la garde `check_no_naked_site_storage_write.py` dérive l'ensemble de cette
+// déclaration et refuse un franchissement sans membre, ou avec un membre qu'elle ne connaît pas. Deux
+// raisons suffisent aujourd'hui, et une troisième s'ajoute ICI, jamais à l'appel :
+//   · CACHE_DUN_MAGASIN_DURABLE — la durabilité vit ailleurs (le serveur des préférences) ; ce que le
+//     navigateur refuse d'écrire n'est qu'un raccourci, et l'avis partirait à chaque geste (`P4.13-d`) ;
+//   · CONVENANCE_PAR_NAVIGATEUR — un pli, un ordre, une largeur : perdre le choix coûte un défaut
+//     raisonnable, et le dire coûterait plus que la perte.
+export const RAISONS_DE_SILENCE = Object.freeze({
+  CACHE_DUN_MAGASIN_DURABLE: 'cache',
+  CONVENANCE_PAR_NAVIGATEUR: 'convenance',
+});
+export function ecrireSansDireLeRefus(cle, valeur, raison) {
   ecrireDansLeStockageDuSite(cle, valeur);
 }
 

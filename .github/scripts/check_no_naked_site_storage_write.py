@@ -946,7 +946,85 @@ def verdicts_recus_puis_laisses_tomber(jetons, verdicts):
     return vus
 
 
-def fautes_de_porte(jetons, verdicts, silencieuses):
+RAISONS = "RAISONS_DE_SILENCE"
+
+
+def raisons_du_corpus(sources):
+    """`P4.13-f` — L'ENSEMBLE FERMÉ DES RAISONS DE SILENCE, DÉRIVÉ DE SA DÉCLARATION. `None` quand aucun
+    module ne déclare `RAISONS_DE_SILENCE = {…}` (ou `= Object.freeze({…})`) : le sens (4) ne s'applique
+    alors pas — un corpus fabriqué sans déclaration garde ses deux portes nues — et `main` refuse de
+    conclure sur l'arbre réel, où la déclaration doit exister."""
+    membres = None
+    for texte in sources.values():
+        jetons = analyser(texte)
+        for k, t in enumerate(jetons):
+            if not (t.genre == "nom" and t.valeur == RAISONS and k + 1 < len(jetons)
+                    and jetons[k + 1].genre == "op" and jetons[k + 1].valeur == "="):
+                continue
+            j = k + 2
+            if j + 3 < len(jetons) and jetons[j].valeur == "Object" and jetons[j + 1].valeur == "." \
+                    and jetons[j + 2].valeur == "freeze" and jetons[j + 3].valeur == "(":
+                j += 4
+            if j >= len(jetons) or not (jetons[j].genre == "op" and jetons[j].valeur == "{"):
+                continue
+            fin = _fin_daccolade(jetons, j)
+            if fin is None:
+                continue
+            membres = set() if membres is None else membres
+            for i in range(j + 1, fin):
+                if jetons[i].genre == "nom" and i + 1 < fin and jetons[i + 1].genre == "op" and jetons[i + 1].valeur == ":":
+                    membres.add(jetons[i].valeur)
+    return membres
+
+
+def _arguments_de_l_appel(jetons, k_nom):
+    """Les arguments d'un appel `nom(…)` : liste de tranches (début, fin) de jetons, coupées aux virgules
+    de premier niveau. `None` si la parenthèse ne se ferme pas."""
+    k_ouvre = k_nom + 1
+    apres = _fin_de_parenthese(jetons, k_ouvre)      # l'aide rend l'indice qui SUIT la parenthèse fermante
+    if apres is None:
+        return None
+    k_ferme = apres - 1
+    args, debut, prof = [], k_ouvre + 1, 0
+    for i in range(k_ouvre + 1, k_ferme):
+        t = jetons[i]
+        if t.genre == "op" and t.valeur in ("(", "[", "{"):
+            prof += 1
+        elif t.genre == "op" and t.valeur in (")", "]", "}"):
+            prof -= 1
+        elif t.genre == "op" and t.valeur == "," and prof == 0:
+            args.append((debut, i))
+            debut = i + 1
+    if k_ferme > debut:
+        args.append((debut, k_ferme))
+    return args
+
+
+def franchissements_sans_raison(jetons, silencieuses, raisons):
+    """(4) `P4.13-f` — UNE PORTE SILENCIEUSE SE FRANCHIT AVEC SA RAISON, membre de l'ensemble fermé.
+    Sans troisième argument, ou avec autre chose qu'un membre connu de `RAISONS_DE_SILENCE`, le silence
+    n'est pas MOTIVÉ d'une façon qu'une machine relit."""
+    vus = []
+    if not raisons:
+        return vus
+    for k, ligne, nom in _appels(jetons, silencieuses):
+        args = _arguments_de_l_appel(jetons, k)
+        if args is None or len(args) < 3:
+            vus.append((ligne, f"`{nom}(…)` est franchie SANS raison : le troisième argument doit être un membre de "
+                               f"`{RAISONS}` (déclaré dans web/state.js), lisible par cette garde — pas un commentaire"))
+            continue
+        d, f = args[2]
+        tranche = jetons[d:f]
+        ok = (len(tranche) == 3 and tranche[0].genre == "nom" and tranche[0].valeur == RAISONS
+              and tranche[1].genre == "op" and tranche[1].valeur == "." and tranche[2].genre == "nom"
+              and tranche[2].valeur in raisons)
+        if not ok:
+            vus.append((ligne, f"`{nom}(…)` porte une raison que `{RAISONS}` ne déclare pas : une raison neuve "
+                               f"s'ajoute à la déclaration, jamais à l'appel"))
+    return vus
+
+
+def fautes_de_porte(jetons, verdicts, silencieuses, raisons=None):
     """Les DEUX SENS du même piège : (ligne, motif).
 
     (1) un écrivain à VERDICT appelé en INSTRUCTION, hors du corps d'une porte silencieuse : sa valeur
@@ -972,6 +1050,8 @@ def fautes_de_porte(jetons, verdicts, silencieuses):
                                "test est toujours faux et l'avis partirait même quand l'écriture a RÉUSSI"))
     # (3) `P4.13-e` — le verdict REÇU dans une liaison que personne ne relit : voir la fonction ci-dessus.
     vus.extend(verdicts_recus_puis_laisses_tomber(jetons, verdicts))
+    # (4) `P4.13-f` — le silence voulu porte sa raison, membre d'un ensemble fermé dérivé du corpus.
+    vus.extend(franchissements_sans_raison(jetons, silencieuses, raisons))
     return vus
 
 
@@ -1010,10 +1090,11 @@ def portes_du_corpus(sources):
 def fautes_de_porte_du_corpus(sources):
     """Les fautes de porte d'un corpus `{nom: texte}` : (nom, ligne, motif)."""
     verdicts, silencieuses = portes_du_corpus(sources)
+    raisons = raisons_du_corpus(sources)
     vues = []
     for nom, texte in sources.items():
         jetons = analyser(texte)
-        for ligne, motif in fautes_de_porte(jetons, verdicts, silencieuses):
+        for ligne, motif in fautes_de_porte(jetons, verdicts, silencieuses, raisons):
             vues.append((nom, ligne, motif))
     return vues
 
@@ -1129,6 +1210,22 @@ TEMOINS_PORTES = [
      {"magasin.js": _SOCLE, "vue.js": "function a(){ if (!poserSansRienDire('k', 1)) g('perdu'); }"}, 1),
     ("la porte silencieuse appelée en instruction : c'est son emploi juste",
      {"magasin.js": _SOCLE, "vue.js": "function a(){ poserSansRienDire('k', 1); }"}, 0),
+    # ---- (4) `P4.13-f` — la raison typée, sur un corpus qui DÉCLARE l'ensemble ---------------------
+    ("raison déclarée, membre connu : franchissement juste",
+     {"magasin.js": _SOCLE + "const RAISONS_DE_SILENCE = Object.freeze({ CACHE: 'cache', PLI: 'pli' });",
+      "vue.js": "function a(){ poserSansRienDire('k', 1, RAISONS_DE_SILENCE.PLI); }"}, 0),
+    ("raison déclarée, franchissement SANS raison : accusé",
+     {"magasin.js": _SOCLE + "const RAISONS_DE_SILENCE = { CACHE: 'cache' };",
+      "vue.js": "function a(){ poserSansRienDire('k', 1); }"}, 1),
+    ("raison déclarée, membre INCONNU : accusé — une raison neuve s'ajoute à la déclaration",
+     {"magasin.js": _SOCLE + "const RAISONS_DE_SILENCE = { CACHE: 'cache' };",
+      "vue.js": "function a(){ poserSansRienDire('k', 1, RAISONS_DE_SILENCE.AUTRE); }"}, 1),
+    ("raison déclarée, chaîne libre à la place du membre : accusé",
+     {"magasin.js": _SOCLE + "const RAISONS_DE_SILENCE = { CACHE: 'cache' };",
+      "vue.js": "function a(){ poserSansRienDire('k', 1, 'parce que'); }"}, 1),
+    ("un argument imbriqué ne dérange pas le découpage : `f(a, [1,2], RAISONS_DE_SILENCE.CACHE)`",
+     {"magasin.js": _SOCLE + "const RAISONS_DE_SILENCE = { CACHE: 'cache' };",
+      "vue.js": "function a(){ poserSansRienDire(g(1, 2), [1, 2], RAISONS_DE_SILENCE.CACHE); }"}, 0),
     ("RENOMMER LES DEUX PORTES NE CHANGE RIEN — la dérivation ne connaît aucun nom",
      {"magasin.js": _SOCLE_AUTRES_NOMS, "vue.js": "function a(){ zz1('k', 1); }"}, 1),
     ("un verdict jeté sous une branche d'`if` sans accolades",
@@ -1280,6 +1377,11 @@ def main():
     # `P4.13-d` — LES DEUX PORTES SONT DÉRIVÉES DU CORPUS ENTIER, PAS DU MODULE COURANT : l'écrivain à
     # verdict vit dans un module, ses appelants dans quarante autres.
     verdicts, silencieuses = portes_du_corpus(sources)
+    if raisons_du_corpus(sources) is None:
+        print(f"::error::AUCUNE déclaration `{RAISONS}` dans le corpus : le sens (4) de `P4.13-f` n'a plus de "
+              "socle, et un vert ici voudrait dire « chaque silence est motivé » sans qu'aucune raison ne soit "
+              "lisible — la garde REFUSE DE CONCLURE.", file=sys.stderr)
+        return 2
     fautes_portes = fautes_de_porte_du_corpus(sources)
 
     # CONTRÔLE POSITIF : zéro écriture dans TOUT le corpus, c'est ce que rend un analyseur cassé.

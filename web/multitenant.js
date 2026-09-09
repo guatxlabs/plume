@@ -1,7 +1,7 @@
 // multitenant.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // #2c multi-tenant : switcher tenant/env (header) + vue Tenants + grants + audit acces operateur.
 import { $, LANG, LOC, api, apiSend, applyRoleClass, confirmWithConsequence, fmtTs, ic, muted, pagedList, toast } from './core.js';
-import { S, ecrireDansLeStockageDuSite, ecrireSansDireLeRefus, lireLeStockageDuSite } from './state.js';
+import { S, ecrireDansLeStockageDuSite, ecrireSansDireLeRefus, lireLeStockageDuSite, RAISONS_DE_SILENCE } from './state.js';
 import { runQ, tableEl } from './viz.js';
 import { ROLE_LABEL, currentTab, fetchMe, loadUsers, refresh, refreshCurrentView, refreshPanels, renderNav, route, setAuthUI } from './app.js';
 
@@ -133,7 +133,7 @@ async function initEnvironments(reloadOnChange = true) {
   // un REPLI APRÈS DISPARITION — l'environnement retenu n'existe plus, on retire une clé devenue fausse. Il
   // n'y a rien à annoncer : l'exploitant n'a rien réglé, et le sélecteur montre déjà « Tous ».
   let cur = lireLeStockageDuSite('plume_env') || '';
-  if (cur && !ids.includes(cur)) { cur = ''; ecrireSansDireLeRefus('plume_env', null); }
+  if (cur && !ids.includes(cur)) { cur = ''; ecrireSansDireLeRefus('plume_env', null, RAISONS_DE_SILENCE.CONVENANCE_PAR_NAVIGATEUR); }
   S.CURRENT_ENV = cur;
   if (box) box.hidden = false;
   if (sel) {
@@ -277,7 +277,7 @@ async function destroyTenant(t) {
     // n'y a aucun choix à annoncer — la destruction a déjà été dite juste au-dessus (« tenant détruit ») —
     // et si le stockage refuse, le chargement suivant retombera de toute façon sur `AUTH.tenant`, qui est
     // précisément ce repli. Le silence est donc DÉCLARÉ, là où la capture VIDE d'avant le laissait nu.
-    S.CURRENT_TENANT = fallback; ecrireSansDireLeRefus('plume_tenant', fallback);
+    S.CURRENT_TENANT = fallback; ecrireSansDireLeRefus('plume_tenant', fallback, RAISONS_DE_SILENCE.CONVENANCE_PAR_NAVIGATEUR);
   }
   loadTenantsView();
 }

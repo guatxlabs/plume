@@ -297,6 +297,18 @@ fn refuse_curseur_sans_lecteur(espace: &str) -> Response {
         .into_response()
 }
 
+/// `P10.5-g` (b) — LA FORME UNIQUE D'UN REFUS DE CURSEUR PRODUIT PAR LA VOIE VECTORISÉE : 422, cause machine,
+/// phrase, et l'ordre de reprendre sans curseur — la même forme que les refus posés en amont par le handler,
+/// pour que la console applique le même remède (`restart_without_cursor`).
+#[cfg(feature = "cold_tier")]
+fn refuse_curseur_nomme(reason: &'static str, message: String) -> Response {
+    (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        Json(json!({ "error": message, "reason": reason, "restart_without_cursor": true })),
+    )
+        .into_response()
+}
+
 /// `P10.5-g` — REFUS NOMMÉ D'UN CURSEUR FROID QUI NE DIT PAS DANS QUEL ESPACE IL A ÉTÉ NUMÉROTÉ.
 ///
 /// LA FAMILLE, FERMÉE PLUTÔT QUE LE CAS (mesuré le 2026-08-28). Six reprises ont fermé, un par un, les
@@ -723,6 +735,41 @@ pub(crate) fn keyset_finalize(v: &mut Value, lim: i64, espace_froid: Option<(&st
     v["limit"] = json!(lim);
 }
 
+/// `P10.5-g` (b) — L'ISSUE D'UNE PAGE VECTORISÉE EST TYPÉE. Un REFUS est DÉTERMINISTE : le curseur reçu ne
+/// peut plus être servi tel quel — sa marque le dit fabriqué par cette voie alors qu'il est remonté au-dessus
+/// de la frontière (fenêtre chaude élargie par l'exploitant), ou sa voie ne sert plus cette page (second
+/// environnement scellé entre deux pages, garde de gate) — et il sort en 422 nommé, avec sa cause machine et
+/// l'ordre de reprendre sans curseur, comme les autres refus de curseur du handler. Une ERREUR est ce qui
+/// peut réussir à la prochaine tentative (bras chaud sous budget, lecture froide qui échoue) et sort en 5xx.
+/// Avant : les deux formes sortaient en erreur serveur nue, et le site d'appel déclarait retriable ce qui ne
+/// l'était pas — le client rejouait un curseur mort jusqu'à ce qu'un humain lise l'incident.
+#[cfg(feature = "cold_tier")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum IssueKeysetVectorise {
+    Refus { reason: &'static str, message: String },
+    Erreur(String),
+}
+
+/// Les deux lecteurs qui servent aux TÉMOINS à juger une issue sur sa cause machine et sur ce qu'elle
+/// nomme ; le handler, lui, la démonte par `match` (un refus → 422 nommé, une erreur → 5xx).
+#[cfg(all(test, feature = "cold_tier"))]
+impl IssueKeysetVectorise {
+    /// Le texte lisible de l'issue, quelle que soit sa forme.
+    pub(crate) fn texte(&self) -> &str {
+        match self {
+            IssueKeysetVectorise::Refus { message, .. } => message,
+            IssueKeysetVectorise::Erreur(e) => e,
+        }
+    }
+    /// La cause machine d'un refus, `None` pour une erreur : c'est ce que le client reçoit dans `reason`.
+    pub(crate) fn cause(&self) -> Option<&'static str> {
+        match self {
+            IssueKeysetVectorise::Refus { reason, .. } => Some(reason),
+            IssueKeysetVectorise::Erreur(_) => None,
+        }
+    }
+}
+
 /// ①a — UNE page keyset hot∪cold SANS CAP, servie par le moteur colonnaire (matérialisation keyset du brut froid).
 /// SÉQUENCE HOT-PUIS-COLD (insight frontière : hot `ts>=boundary` puis cold `ts<boundary` ne s'interleavent PAS en
 /// `ts DESC`) :
@@ -771,7 +818,7 @@ pub(crate) fn cold_keyset_vectorized_page(
     budget_ms: u64,
     qid: Option<&str>,
     preds: &[crate::cold_store::DimEq],
-) -> Result<Option<Value>, String> {
+) -> Result<Option<Value>, IssueKeysetVectorise> {
     // Curseur DANS le cold -> page pur-froide (aucune ligne hot due : hot `ts>=boundary > cts`).
     let pure_cold = matches!(cursor, Some((cts, _)) if cts < boundary);
     // LA MARQUE, **LUE** — jamais devinée. La question que le lot précédent posait au `ts` — « sous la
@@ -789,11 +836,15 @@ pub(crate) fn cold_keyset_vectorized_page(
         // voie colonnaire », la position dit « ligne chaude », qui porte l'`id` RÉEL d'`event`. Aucune
         // des deux lectures n'est sûre -> échec de page, jamais une page qui commence ailleurs.
         (Some(crate::EspaceCurseur::Colonnaire), false) => {
-            return Err(
-                "cold keyset (fail-closed, cohérence espace-id) : curseur marqué par le browse colonnaire \
-                 mais situé AU-DESSUS de la frontière froide — reprenez le parcours sans curseur"
+            return Err(IssueKeysetVectorise::Refus {
+                reason: "cold_cursor_marque_au_dessus_de_la_frontiere",
+                message: "curseur refusé (cohérence espace-id) : ce curseur porte la marque du browse colonnaire \
+                          mais il est situé AU-DESSUS de la frontière froide — la marque dit « identifiant fabriqué \
+                          par la voie froide », la position dit « ligne chaude, identifiant réel ». Cause ordinaire : \
+                          la fenêtre chaude a été élargie par l'exploitant et la frontière a RECULÉ sous un curseur déjà \
+                          émis. Aucune des deux lectures n'est sûre : reprenez le parcours SANS curseur."
                     .to_string(),
-            )
+            })
         }
         // La marque d'une AUTRE voie connue (l'oracle d'union) : SON lecteur sait la relire — et lui seul
         // sait aussi si sa NUMÉROTATION est encore la sienne (la marque porte son empreinte, comparée dans
@@ -802,11 +853,12 @@ pub(crate) fn cold_keyset_vectorized_page(
         // Marque SANS lecteur : personne ici ne sait ce que ce nombre veut dire. Le handler refuse déjà
         // ce cas en amont ; ce bras tient la même règle pour tout appelant interne.
         (Some(crate::EspaceCurseur::SansLecteur), _) => {
-            return Err(
-                "cold keyset (fail-closed, cohérence espace-id) : espace d'identifiant inconnu sur le \
-                 curseur — reprenez le parcours sans curseur"
+            return Err(IssueKeysetVectorise::Refus {
+                reason: "cold_cursor_espace_sans_lecteur",
+                message: "curseur refusé (cohérence espace-id) : espace d'identifiant inconnu sur le curseur — \
+                          reprenez le parcours sans curseur"
                     .to_string(),
-            )
+            })
         }
         // CURSEUR FROID SANS AUCUNE MARQUE -> ÉCHEC DE PAGE, SANS EXCEPTION.
         //
@@ -827,13 +879,14 @@ pub(crate) fn cold_keyset_vectorized_page(
         // cas en amont, en 422 (`refuse_curseur_froid_sans_espace`) ; ce bras tient la même règle pour tout
         // appelant interne, et il ne consulte plus rien pour la tenir.
         (None, true) => {
-            return Err(
-                "cold keyset (fail-closed, cohérence espace-id) : curseur froid SANS espace d'identifiant — \
-                 sous la frontière aucune ligne ne porte d'identifiant stocké, et ce curseur ne dit pas quelle \
-                 voie a fabriqué le sien. Reprenez le parcours sans curseur, et renvoyez désormais le \
-                 `next_cursor` reçu tel quel (champ `espace` compris) au lieu de reconstruire {ts,id}"
+            return Err(IssueKeysetVectorise::Refus {
+                reason: "cold_cursor_sans_espace",
+                message: "curseur refusé (cohérence espace-id) : curseur froid SANS espace d'identifiant — sous la \
+                          frontière aucune ligne ne porte d'identifiant stocké, et ce curseur ne dit pas quelle voie \
+                          a fabriqué le sien. Reprenez le parcours sans curseur, et renvoyez désormais le \
+                          `next_cursor` reçu tel quel (champ `espace` compris) au lieu de reconstruire {ts,id}"
                     .to_string(),
-            );
+            });
         }
         // Page 1, ou curseur CHAUD : rien à trancher, `event.id` se lit pareil partout.
         (None, false) => {}
@@ -848,9 +901,19 @@ pub(crate) fn cold_keyset_vectorized_page(
     // il est synthétique ». La prémisse est FAUSSE : l'oracle rend lui aussi des curseurs sous la
     // frontière, et c'est le cas ORDINAIRE de toute forme que le colonnaire ne route pas. Elle est
     // désormais `curseur_de_cette_voie`, qui NE se devine pas : elle se LIT sur le curseur.
-    let repli = |motif: &str| -> Result<Option<Value>, String> {
+    let repli = |motif: &str| -> Result<Option<Value>, IssueKeysetVectorise> {
         if curseur_de_cette_voie {
-            Err(format!("cold keyset (fail-closed, cohérence espace-id) : {motif}"))
+            // `P10.5-g` (b) — DÉTERMINISTE : la voie qui a numéroté ce curseur ne sert plus cette page (un second
+            // environnement scellé entre deux pages, une garde de gate, un masque) ; rejouer ne change rien.
+            Err(IssueKeysetVectorise::Refus {
+                reason: "cold_cursor_voie_devenue_non_routable",
+                message: format!(
+                    "curseur refusé (cohérence espace-id) : ce curseur a été numéroté par le browse colonnaire, et \
+                     cette voie ne peut plus servir cette page ({motif}) — le rejouer par l'oracle rendrait une page \
+                     qui COMMENCE AILLEURS. Cause ordinaire : un second environnement a été scellé entre deux pages, \
+                     ou un réglage de la voie a changé. Reprenez le parcours SANS curseur."
+                ),
+            })
         } else {
             Ok(None)
         }
@@ -888,7 +951,7 @@ pub(crate) fn cold_keyset_vectorized_page(
             // Le fallback légitime = formes JAMAIS routables (curseur oracle dès la page 1) via les `Ok(None)` plus bas.
             // La sonde `LIMIT 0` du cas pur-froid emprunte le MÊME refus : une référence qu'on n'a pas pu
             // dériver ne se remplace pas par « aucune comparaison ».
-            Err(e) => return Err(format!("hot keyset (fail-closed, cohérence espace-id): {e}")),
+            Err(e) => return Err(IssueKeysetVectorise::Erreur(format!("hot keyset (fail-closed, cohérence espace-id): {e}"))),
         }
     };
     let hot_count = rows.len() as i64;
@@ -896,7 +959,9 @@ pub(crate) fn cold_keyset_vectorized_page(
     let cold_limit = if pure_cold { n } else { (n - hot_count).max(0) };
     let cold_cursor = if pure_cold { cursor } else { None };
     let (cold_cols, cold_rows) = if cold_limit > 0 {
-        match crate::cold_store::cold_keyset_page(db_path, conf, env, from, to, boundary, soql, true, cold_cursor, cold_limit as usize, preds)? {
+        match crate::cold_store::cold_keyset_page(db_path, conf, env, from, to, boundary, soql, true, cold_cursor, cold_limit as usize, preds)
+            .map_err(IssueKeysetVectorise::Erreur)?
+        {
             Some(x) => x,
             // Part froide non routable (garde de gate, masque, forme, multi-env non scopé) -> repli
             // COMPLET, jamais une page partielle — et jamais un repli qui changerait d'espace d'id.
@@ -1352,9 +1417,11 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
                             return keyset_reponse(v, keyset_trim, &timings, &sql_for_resp);
                         }
                         Ok(Ok(None)) => { /* non routable -> FALLBACK cold_union_query ci-dessous */ }
-                        // Err = corruption froid OU erreur hot transitoire : côté SERVEUR, fail-closed
-                        // et RETRIABLE (5xx, pas 4xx) -> le client re-tente et reste sur le chemin vectorisé.
-                        Ok(Err(e)) => return server_err(e),
+                        // `P10.5-g` (b) — l'issue est TYPÉE : un refus déterministe sort en 422 nommé (le client
+                        // reprend sans curseur), une erreur (corruption froide, bras chaud transitoire) en 5xx
+                        // retriable — le client re-tente et reste sur le chemin vectorisé.
+                        Ok(Err(IssueKeysetVectorise::Refus { reason, message })) => return refuse_curseur_nomme(reason, message),
+                        Ok(Err(IssueKeysetVectorise::Erreur(e))) => return server_err(e),
                         Err(_) => return server_err("exécution échouée"),
                     }
                 }

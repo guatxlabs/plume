@@ -9420,7 +9420,7 @@ fn ks_page_brute(
     soql: &str,
     cursor: KsCurseur,
     n: i64,
-) -> Result<Option<Value>, String> {
+) -> Result<Option<Value>, crate::IssueKeysetVectorise> {
     let (cur, espace) = cursor;
     crate::cold_keyset_vectorized_page(&f.dbp, conf, None, base_sql, soql, f.from, f.to, f.b, cur, espace.as_deref(), n, 60_000, None, &[])
 }
@@ -9588,9 +9588,12 @@ fn ks_page_pur_froide_compare_ses_colonnes_a_la_forme_deduite_du_chaud() {
         &[],
     )
     .expect_err("page PUREMENT FROIDE aux colonnes divergentes : refus attendu — c'est P10.5-g");
+    // `P10.5-g` (b) — et ce refus est DÉTERMINISTE (la voie ne sert plus cette page) : il sort typé `Refus`,
+    // avec sa cause machine, jamais comme une erreur retriable.
+    assert_eq!(refus.cause(), Some("cold_cursor_voie_devenue_non_routable"), "un refus typé, pas une erreur : {refus:?}");
     assert!(
-        refus.contains("colonnes froid/chaud divergentes"),
-        "le refus doit NOMMER la divergence de colonnes, pas se lire comme une panne quelconque : {refus}"
+        refus.texte().contains("colonnes froid/chaud divergentes"),
+        "le refus doit NOMMER la divergence de colonnes, pas se lire comme une panne quelconque : {refus:?}"
     );
 
     // ③ TÉMOIN NÉGATIF. Colonnes conformes, même page purement froide -> SERVIE, avec des lignes, et sous
@@ -9733,9 +9736,10 @@ fn ks_un_repli_vers_loracle_ne_change_jamais_despace_didentifiant() {
     );
     let refus = ks_page_brute(&fm, &fm.conf, &sql_m, "search source=auditd", froid_marque.clone(), 10)
         .expect_err("curseur MARQUÉ (donc synthétique) : se replier sur l'oracle produirait un trou ou un doublon SILENCIEUX");
+    assert_eq!(refus.cause(), Some("cold_cursor_voie_devenue_non_routable"), "un refus typé, pas une erreur : {refus:?}");
     assert!(
-        refus.contains("espace-id"),
-        "le refus doit NOMMER sa cause (l'espace d'id), sinon il se lira comme une panne quelconque : {refus}"
+        refus.texte().contains("espace-id"),
+        "le refus doit NOMMER sa cause (l'espace d'id), sinon il se lira comme une panne quelconque : {refus:?}"
     );
 
     // ④ AUCUNE MARQUE DU TOUT -> ÉCHEC DE PAGE, ET LE VERDICT NE DÉPEND PLUS DE LA FORME. Les deux
@@ -9750,9 +9754,10 @@ fn ks_un_repli_vers_loracle_ne_change_jamais_despace_didentifiant() {
             "un curseur froid SANS espace d'identifiant ne se rejoue pas : sous la frontière aucune ligne ne porte \
              d'identifiant stocké, et les DEUX voies marquent ce qu'elles émettent",
         );
+        assert_eq!(refus_nu.cause(), Some("cold_cursor_sans_espace"), "({etiquette}) un refus typé, pas une erreur : {refus_nu:?}");
         assert!(
-            refus_nu.contains("SANS espace d'identifiant") && refus_nu.contains("next_cursor"),
-            "le refus ({etiquette}) doit NOMMER ce qui manque ET dire ce que le client doit faire : {refus_nu}"
+            refus_nu.texte().contains("SANS espace d'identifiant") && refus_nu.texte().contains("next_cursor"),
+            "le refus ({etiquette}) doit NOMMER ce qui manque ET dire ce que le client doit faire : {refus_nu:?}"
         );
     }
 }
@@ -9807,18 +9812,20 @@ fn ks_chaque_espace_didentifiant_va_a_son_lecteur_et_aucun_autre() {
     let inconnu: KsCurseur = (Some((f.b - 1, 3)), Some("espace-que-ce-binaire-ne-connait-pas".to_string()));
     let refus_inconnu = ks_page_brute(&f, &f.conf, &conforme, soql, inconnu, n)
         .expect_err("un espace d'identifiant sans lecteur ne se rejoue pas");
+    assert_eq!(refus_inconnu.cause(), Some("cold_cursor_espace_sans_lecteur"), "un refus typé, pas une erreur : {refus_inconnu:?}");
     assert!(
-        refus_inconnu.contains("espace d'identifiant inconnu"),
-        "le refus doit NOMMER sa cause, sinon il se lira comme une panne quelconque : {refus_inconnu}"
+        refus_inconnu.texte().contains("espace d'identifiant inconnu"),
+        "le refus doit NOMMER sa cause, sinon il se lira comme une panne quelconque : {refus_inconnu:?}"
     );
 
     // ③ NOTRE MARQUE AU-DESSUS DE LA FRONTIÈRE -> incohérence, échec de page.
     let au_dessus: KsCurseur = (Some((f.b + 1, 7)), Some(crate::ESPACE_ID_COLD_VECTORISE.to_string()));
     let refus_haut = ks_page_brute(&f, &f.conf, &conforme, soql, au_dessus, n)
         .expect_err("marque de la voie colonnaire sur une position chaude : les deux lectures se contredisent");
+    assert_eq!(refus_haut.cause(), Some("cold_cursor_marque_au_dessus_de_la_frontiere"), "un refus typé, pas une erreur : {refus_haut:?}");
     assert!(
-        refus_haut.contains("AU-DESSUS de la frontière"),
-        "le refus doit dire CE QUI se contredit : {refus_haut}"
+        refus_haut.texte().contains("AU-DESSUS de la frontière"),
+        "le refus doit dire CE QUI se contredit : {refus_haut:?}"
     );
 
     // ④ UN CURSEUR FROID **SANS** MARQUE -> ÉCHEC DE PAGE, SUR UNE TRAVERSÉE PARFAITEMENT ROUTABLE.
@@ -9832,9 +9839,10 @@ fn ks_chaque_espace_didentifiant_va_a_son_lecteur_et_aucun_autre() {
     let nu: KsCurseur = (Some((f.b - 1, 3)), None);
     let refus_nu = ks_page_brute(&f, &f.conf, &conforme, soql, nu, n)
         .expect_err("un curseur froid sans espace d'identifiant ne se rejoue pas, quelle que soit la forme de la traversée");
+    assert_eq!(refus_nu.cause(), Some("cold_cursor_sans_espace"), "un refus typé, pas une erreur : {refus_nu:?}");
     assert!(
-        refus_nu.contains("SANS espace d'identifiant"),
-        "le refus doit NOMMER ce qui manque, sinon il se lira comme une panne quelconque : {refus_nu}"
+        refus_nu.texte().contains("SANS espace d'identifiant"),
+        "le refus doit NOMMER ce qui manque, sinon il se lira comme une panne quelconque : {refus_nu:?}"
     );
 }
 

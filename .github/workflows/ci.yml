@@ -1269,7 +1269,7 @@ jobs:
           # `P11.20-n` et `P11.20-h` (2026-09-03) : +14, les MÊMES quatorze que sur `EXPECTED_TESTS` —
           # aucun derrière un `cfg(feature)`, et c'est l'ÉCART INCHANGÉ entre les deux profils (245 avant
           # comme après) qui l'établit. La dérivation est écrite auprès d'`EXPECTED_TESTS`, une seule fois.
-          EXPECTED_COLD_TESTS: "1881"
+          EXPECTED_COLD_TESTS: "1882"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail

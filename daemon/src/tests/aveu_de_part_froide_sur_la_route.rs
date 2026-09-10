@@ -161,6 +161,27 @@
         }
     }
 
+    /// `P10.5-g` (b) — UN CURSEUR MARQUÉ PAR LA VOIE COLONNAIRE MAIS REMONTÉ AU-DESSUS DE LA FRONTIÈRE EST REFUSÉ
+    /// EN 422 NOMMÉ, jamais en erreur serveur retriable : la cause est déterministe (la frontière a reculé sous un
+    /// curseur déjà émis, cas ordinaire d'une fenêtre chaude élargie), et le client doit reprendre sans curseur.
+    #[cfg(feature = "cold_tier")]
+    #[tokio::test]
+    async fn p10_5g_un_curseur_marque_remonte_au_dessus_de_la_frontiere_est_refuse_nomme() {
+        let _env = VERROU_ENV_PROCESSUS.write();
+        let banc = BancFroidSurLaRoute::monter("curseur-marque-remonte", true).await;
+        banc.vieillir();
+        // Fenêtre chevauchante, curseur CHAUD (au-dessus de la frontière) portant la marque colonnaire.
+        let corps = format!(
+            "{{\"soql\":\"search source=froid\",\"keyset\":true,\"limit\":10,\"from\":{},\"to\":{},\"cursor\":{{\"ts\":{},\"id\":1,\"espace\":\"{}\"}}}}",
+            banc.base_froide - 60, banc.maintenant + 60, banc.maintenant, crate::ESPACE_ID_COLD_VECTORISE
+        );
+        let entetes = [("Content-Type", "application/json")];
+        let (code, texte) = router_probe_envoi(banc.addr, "POST", "/api/query", Some(&banc.authz), &entetes, &corps).await;
+        assert_eq!(code, 422, "un curseur marqué remonté au-dessus de la frontière est un refus DÉTERMINISTE, pas une erreur serveur retriable : {texte}");
+        assert!(texte.contains("cold_cursor_marque_au_dessus_de_la_frontiere"), "le refus nomme sa cause machine : {texte}");
+        assert!(texte.contains("\"restart_without_cursor\":true"), "le refus porte l'ordre de reprendre sans curseur : {texte}");
+    }
+
     /// La somme de la dernière colonne des lignes servies : le compte d'une agrégation.
     #[cfg(feature = "cold_tier")]
     fn compte_servi(v: &Value) -> i64 {

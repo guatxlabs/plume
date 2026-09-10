@@ -14,6 +14,7 @@
 //   DELETE /api/datasets/{id}                                            (editor+)
 // SÉCU UI : tout en textContent/esc (anti-XSS). Mutations via apiSend (jeton CSRF auto).
 import { $, api, apiSend, fetchInto, LANG, muted, pagedList, toast, modal, confirmModal, managedBadge, gateDeleteBtn } from './core.js';
+import { phraseDeCoupe } from './coupe_de_liste.js'; // `P11.22-g` : le résultat borné du Pivot dit sa coupe
 
 // État module : cache du GET /api/datamodels + sélection courante (modèle -> objet).
 let DM = { models: [], objects: [], fields: [], field_types: [], stat_funcs: [], filter_ops: [] };
@@ -238,6 +239,9 @@ async function pivotRun() {
     const d = await apiSend('/pivot/run', 'POST', Object.assign(collectSpec(), { from, to }));
     if (d && d.soql) { const el = $('#dm-pivot-soql'); el.hidden = false; el.textContent = d.soql; }
     renderResults($('#dm-pivot-result'), d);
+    // `P11.22-g` — la borne du Pivot est lue avec sa ligne excédentaire et dite ici quand elle mord.
+    const coupe = phraseDeCoupe(d, '');
+    if (coupe) { const c = document.createElement('div'); c.className = 'muted coupe-de-liste'; c.style.cssText = 'font-size:12px;margin-top:4px'; c.textContent = coupe; $('#dm-pivot-result').appendChild(c); }
   } catch (e) { toast('exécution : ' + ((e && e.message) || e), 'err', 6000); $('#dm-pivot-result').replaceChildren(muted('erreur : ' + ((e && e.message) || e))); }
 }
 async function pivotSave() {

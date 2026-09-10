@@ -65,6 +65,7 @@ pub(crate) const SHELL_JS_CLOSURE: &[&str] = &[
     "/connectors.js",
     "/copie_et_selection.js",
     "/core.js",
+    "/coupe_de_liste.js",
     "/dashboards.js",
     "/dataaccess.js",
     "/datamodels.js",

@@ -63,8 +63,12 @@ pub(crate) fn ds_soql_exec(
     let base = soql_to_sql_masked_x(soql, from, to, env, &masks)?;
     // pagination/plafond par WRAP (marche même si {base} a déjà un LIMIT : l'inner cape, l'outer borne).
     let cap = ds_row_cap(limit);
-    let sql = format!("SELECT * FROM ({base}) LIMIT {cap}");
-    run_query_ex(db_path, &sql, budget_ms, None)
+    // `P11.22-g` — la borne est LUE avec sa ligne excédentaire et la coupe est DITE (`served`, `window`,
+    // `truncated`) : une datasource qui reçoit pile `cap` lignes apprend s'il en existait davantage.
+    let sql = format!("SELECT * FROM ({base}) LIMIT {}", crate::handlers::liste_bornee::borne_avec_ligne_excedentaire(cap));
+    let mut v = run_query_ex(db_path, &sql, budget_ms, None)?;
+    crate::handlers::liste_bornee::couper_le_corps_a_la_borne(&mut v, "rows", cap.max(0) as usize);
+    Ok(v)
 }
 
 /// Sérialise le résultat run_query_ex selon `format` :
@@ -73,10 +77,27 @@ pub(crate) fn ds_soql_exec(
 /// Les valeurs sont DÉJÀ caviardées (masque émis dans le SQL) -> jamais de clair non masqué.
 fn ds_shape(v: &Value, format: &str) -> Value {
     if format == "table" {
-        json!({ "columns": v.get("columns").cloned().unwrap_or(json!([])), "rows": v.get("rows").cloned().unwrap_or(json!([])) })
+        json!({ "columns": v.get("columns").cloned().unwrap_or(json!([])), "rows": v.get("rows").cloned().unwrap_or(json!([])),
+                "served": v.get("served").cloned().unwrap_or(Value::Null), "window": v.get("window").cloned().unwrap_or(Value::Null),
+                "truncated": v.get("truncated").cloned().unwrap_or(Value::Null) })
     } else {
         result_to_json_records(v)
     }
+}
+
+/// `P11.22-g` — L'AVEU DE COUPE SUR LE FIL, POUR LES DEUX FORMES. La forme `records` est un TABLEAU d'objets
+/// (ce que Grafana Infinity consomme) : aucune place dans le corps pour un drapeau sans en changer la forme.
+/// Les trois en-têtes portent donc l'aveu quelle que soit la forme, et la forme `table` le répète dans le
+/// corps. Un client qui ne lit pas les en-têtes n'est pas trompé pour autant : il n'a rien lu.
+fn ds_reponse_avec_aveu_de_coupe(v: &Value, format: &str) -> Response {
+    let mut r = Json(ds_shape(v, format)).into_response();
+    let h = r.headers_mut();
+    for (nom, cle) in [("x-plume-served", "served"), ("x-plume-window", "window"), ("x-plume-truncated", "truncated")] {
+        if let Some(val) = v.get(cle).map(|x| x.to_string()) {
+            if let Ok(hv) = axum::http::HeaderValue::from_str(&val) { h.insert(nom, hv); }
+        }
+    }
+    r
 }
 
 /// Extrait (soql, from, to, limit, format) d'une map de params (GET query OU champs JSON).
@@ -109,7 +130,7 @@ async fn ds_soql_run(st: AppState, au: AuthUser, soql: String, from: i64, to: i6
     })
     .await;
     match res {
-        Ok(Ok(v)) => Json(ds_shape(&v, &format)).into_response(),
+        Ok(Ok(v)) => ds_reponse_avec_aveu_de_coupe(&v, &format),
         Ok(Err(e)) => bad_req(e),
         Err(_) => server_err("exécution échouée"),
     }
@@ -138,6 +159,22 @@ fn prom_err(msg: impl Into<String>) -> Response {
 fn prom_ok(data: Value) -> Response {
     Json(json!({ "status": "success", "data": data })).into_response()
 }
+/// `P11.22-g` — LA RÉPONSE PROMETHEUS QUI DIT SA COUPE. `warnings` est le champ que l'API Prometheus réserve
+/// aux avertissements non fatals (Grafana l'affiche) : c'est là qu'une liste coupée le dit, sans changer la
+/// forme de `data`. Sans coupe, la réponse est byte-identique à `prom_ok`.
+fn prom_ok_borne(data: Vec<Value>, borne: usize, coupee: bool, avertissement: String) -> Response {
+    if !coupee {
+        return prom_ok(json!(data));
+    }
+    let _ = borne;
+    Json(json!({ "status": "success", "data": data, "warnings": [avertissement] })).into_response()
+}
+
+/// Bornes du navigateur d'étiquettes (`P11.22-g`) : nommées, rendues dans l'avertissement, lues avec leur
+/// ligne excédentaire. Cinq mille valeurs distinctes par étiquette ; deux mille blobs RÉCENTS pour l'union
+/// des clés — cette seconde borne mord sur la récence, et l'avertissement le dit.
+pub(crate) const PROM_LABEL_VALUES_WINDOW: i64 = 5000;
+pub(crate) const PROM_LABELS_SAMPLE_WINDOW: i64 = 2000;
 
 /// Un nom de métrique Prometheus valide (alnum + `_` + `:`), non vide.
 fn prom_name_ok(name: &str) -> bool {
@@ -402,32 +439,43 @@ pub(crate) async fn prom_query_range(State(st): State<AppState>, Extension(au): 
 pub(crate) async fn prom_label_values(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(label): Path<String>, Query(q): Query<HashMap<String, String>>) -> Response {
     let masks = caller_masks(&st, &au);
     let db_path = req_db_path(&st, &au);
-    if label == "__name__" {
-        let sql = "SELECT DISTINCT name FROM metric ORDER BY name LIMIT 5000".to_string();
-        return prom_distinct_col(&st, &db_path, &sql).await;
-    }
-    if !prom_label_ok(&label) {
-        return prom_err("nom de label invalide");
-    }
-    // fail-closed : label masqué -> refus (pas d'oracle par énumération).
-    let col_key = if label == "host" { "host" } else { label.as_str() };
-    if masks.get(col_key).is_some() {
-        return prom_err(format!("label masqué : {label}"));
-    }
-    let _ = q;
-    let sql = if label == "host" {
-        "SELECT DISTINCT host AS v FROM metric WHERE host IS NOT NULL AND host<>'' ORDER BY v LIMIT 5000".to_string()
+    let lues_max = crate::handlers::liste_bornee::borne_avec_ligne_excedentaire(PROM_LABEL_VALUES_WINDOW);
+    let sql = if label == "__name__" {
+        format!("SELECT DISTINCT name FROM metric ORDER BY name LIMIT {lues_max}")
     } else {
-        format!("SELECT DISTINCT json_extract(labels,'$.{label}') AS v FROM metric WHERE v IS NOT NULL ORDER BY v LIMIT 5000")
+        if !prom_label_ok(&label) {
+            return prom_err("nom de label invalide");
+        }
+        // fail-closed : label masqué -> refus (pas d'oracle par énumération).
+        let col_key = if label == "host" { "host" } else { label.as_str() };
+        if masks.get(col_key).is_some() {
+            return prom_err(format!("label masqué : {label}"));
+        }
+        let _ = q;
+        if label == "host" {
+            format!("SELECT DISTINCT host AS v FROM metric WHERE host IS NOT NULL AND host<>'' ORDER BY v LIMIT {lues_max}")
+        } else {
+            format!("SELECT DISTINCT json_extract(labels,'$.{label}') AS v FROM metric WHERE v IS NOT NULL ORDER BY v LIMIT {lues_max}")
+        }
     };
-    prom_distinct_col(&st, &db_path, &sql).await
+    // `P11.22-g` — les trois énoncés ont lu la borne plus une ; la coupe est mesurée ICI, dans la fonction qui
+    // porte les énoncés, et DITE dans `warnings` : un exploitant qui ne trouve pas son étiquette sait qu'elle
+    // peut exister au-delà de la borne.
+    let (lues, coupe_du_moteur) = match prom_distinct_col(&st, &db_path, &sql).await { Ok(v) => v, Err(refus) => return refus };
+    let borne = PROM_LABEL_VALUES_WINDOW.max(0) as usize;
+    let (data, coupee) = crate::handlers::liste_bornee::couper_a_la_borne(lues, borne);
+    prom_ok_borne(data, borne, coupee || coupe_du_moteur, format!(
+        "liste coupée à {borne} valeurs distinctes : il en existe davantage dans la base — une étiquette absente d'ici n'est pas absente"))
 }
 
-/// Exécute un SELECT d'UNE colonne et renvoie `{status:success,data:[...]}` (valeurs string).
-async fn prom_distinct_col(st: &AppState, db_path: &str, sql: &str) -> Response {
+/// Exécute un SELECT d'UNE colonne et rend les valeurs LUES (chaînes), la ligne excédentaire comprise, et le
+/// drapeau de coupe du MOTEUR (`stats.truncated`, sa propre borne `PLUME_QUERY_MAX`) — la coupe et
+/// l'avertissement appartiennent à l'appelant qui porte l'énoncé (`prom_label_values`, `P11.22-g`). `Err` porte
+/// la réponse de refus toute faite (permis fermé, exécution échouée).
+async fn prom_distinct_col(st: &AppState, db_path: &str, sql: &str) -> Result<(Vec<Value>, bool), Response> {
     let _permit = match acquire_query_permit(&st.query_sem).await {
         Ok((p, _wait)) => p,
-        Err(_) => return err_json(StatusCode::SERVICE_UNAVAILABLE, "service indisponible"),
+        Err(_) => return Err(err_json(StatusCode::SERVICE_UNAVAILABLE, "service indisponible")),
     };
     let dbp = db_path.to_string();
     let sql = sql.to_string();
@@ -435,11 +483,12 @@ async fn prom_distinct_col(st: &AppState, db_path: &str, sql: &str) -> Response 
     match res {
         Ok(Ok(v)) => {
             let empty: Vec<Value> = Vec::new();
-            let data: Vec<Value> = v.get("rows").and_then(|r| r.as_array()).unwrap_or(&empty).iter().filter_map(|row| row.as_array().and_then(|a| a.first()).cloned()).filter(|x| !x.is_null()).collect();
-            prom_ok(json!(data))
+            // Le moteur a SA borne (`PLUME_QUERY_MAX`) et dit sa coupe : rendue avec les lignes, repliée par l'appelant.
+            let coupe_du_moteur = v["stats"]["truncated"].as_bool().unwrap_or(false);
+            Ok((v.get("rows").and_then(|r| r.as_array()).unwrap_or(&empty).iter().filter_map(|row| row.as_array().and_then(|a| a.first()).cloned()).filter(|x| !x.is_null()).collect(), coupe_du_moteur))
         }
-        Ok(Err(e)) => prom_err(e),
-        Err(_) => prom_err("exécution échouée"),
+        Ok(Err(e)) => Err(prom_err(e)),
+        Err(_) => Err(prom_err("exécution échouée")),
     }
 }
 
@@ -454,14 +503,20 @@ pub(crate) async fn prom_labels(State(st): State<AppState>, Extension(au): Exten
     };
     let dbp = db_path.clone();
     // échantillon borné des blobs de labels récents -> union des clés.
-    let sql = "SELECT DISTINCT labels FROM metric ORDER BY ts DESC LIMIT 2000".to_string();
+    let sql = format!("SELECT DISTINCT labels FROM metric ORDER BY ts DESC LIMIT {}", crate::handlers::liste_bornee::borne_avec_ligne_excedentaire(PROM_LABELS_SAMPLE_WINDOW));
     let res = tokio::task::spawn_blocking(move || run_query_ex(&dbp, &sql, query_budget_ms(), None)).await;
     let mut keys: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     keys.insert("__name__".into());
     keys.insert("host".into());
+    // `P11.22-g` — l'échantillon est lu avec sa ligne excédentaire : si elle existe, l'union des clés n'a vu
+    // que les blobs les plus RÉCENTS, et la réponse le dit (`warnings`) au lieu de présenter l'union comme totale.
+    let mut echantillon_coupe = false;
     if let Ok(Ok(v)) = res {
         let empty: Vec<Value> = Vec::new();
-        for row in v.get("rows").and_then(|r| r.as_array()).unwrap_or(&empty) {
+        let blobs: Vec<Value> = v.get("rows").and_then(|r| r.as_array()).unwrap_or(&empty).clone();
+        let (blobs, coupee) = crate::handlers::liste_bornee::couper_a_la_borne(blobs, PROM_LABELS_SAMPLE_WINDOW.max(0) as usize);
+        echantillon_coupe = coupee || v["stats"]["truncated"].as_bool().unwrap_or(false);
+        for row in blobs.iter() {
             if let Some(blob) = row.as_array().and_then(|a| a.first()).and_then(|x| x.as_str()) {
                 if let Ok(Value::Object(m)) = serde_json::from_str::<Value>(blob) {
                     for k in m.keys() {
@@ -473,7 +528,8 @@ pub(crate) async fn prom_labels(State(st): State<AppState>, Extension(au): Exten
     }
     // retire les clés masquées pour l'appelant (fail-closed : jamais exposer un champ masqué comme label).
     let data: Vec<Value> = keys.into_iter().filter(|k| k == "__name__" || masks.get(if k == "host" { "host" } else { k.as_str() }).is_none()).map(Value::String).collect();
-    prom_ok(json!(data))
+    prom_ok_borne(data, PROM_LABELS_SAMPLE_WINDOW.max(0) as usize, echantillon_coupe, format!(
+        "union des clés calculée sur les {} blobs de labels les plus récents seulement : une clé portée par des points plus anciens peut manquer ici", PROM_LABELS_SAMPLE_WINDOW))
 }
 
 /// GET/POST /api/v1/series?match[]=selector — jeux de labels des séries correspondantes (masqués).

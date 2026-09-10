@@ -102,6 +102,7 @@ pub(crate) async fn search(State(st): State<AppState>, Extension(au): Extension<
     // à la mesure de concurrence pèse pourtant sur elle : elle consomme les mêmes permis. L'horloge
     // démarre ici, le découpage est publié à la sortie sous la MÊME forme que /api/query.
     let clock = QueryClock::start();
+    use crate::handlers::liste_bornee as aveu;
     let term = q.get("q").cloned().unwrap_or_default();
     let mut limit: i64 = q.get("limit").and_then(|s| s.parse().ok()).unwrap_or(st.search_limit_default).clamp(1, st.search_limit_max);
     if term.trim().is_empty() {
@@ -249,7 +250,7 @@ pub(crate) async fn search(State(st): State<AppState>, Extension(au): Extension<
                     Ok(s) => s,
                     Err(e) => return with_coverage(search_engine_error(&e)),
                 };
-                let rows: Vec<Value> = match stmt.query_map(params![limit], map_row) {
+                let rows: Vec<Value> = match stmt.query_map(params![aveu::borne_avec_ligne_excedentaire(limit)], map_row) {
                     // collect en Result : la 1re erreur DEVIENT le résultat, au lieu d'être jetée.
                     // `P10.7-f`, MESURÉ le 2026-08-30 sur une interruption rendue déterministe : quand
                     // `step()` échoue — le cas de la garde de budget — l'itérateur de rusqlite est TARI
@@ -308,7 +309,7 @@ pub(crate) async fn search(State(st): State<AppState>, Extension(au): Extension<
                     Ok(s) => s,
                     Err(e) => return with_coverage(search_engine_error(&e)),
                 };
-                let rows: Vec<Value> = match stmt.query_map(params![match_q, limit], map_row) {
+                let rows: Vec<Value> = match stmt.query_map(params![match_q, aveu::borne_avec_ligne_excedentaire(limit)], map_row) {
                     // collect en Result : la 1re erreur DEVIENT le résultat, au lieu d'être jetée.
                     // `P10.7-f`, MESURÉ le 2026-08-30 sur une interruption rendue déterministe : quand
                     // `step()` échoue — le cas de la garde de budget — l'itérateur de rusqlite est TARI
@@ -324,7 +325,11 @@ pub(crate) async fn search(State(st): State<AppState>, Extension(au): Extension<
                 };
                 rows
             };
-            let mut v = with_coverage(json!({ "results": out }));
+            // `P11.22-g` — la borne vient du client, et la réponse dit si elle a MORDU : les trois énoncés ont lu
+            // `limit + 1` lignes, la ligne excédentaire fonde `truncated`, et `served`/`window` l'accompagnent.
+            let (out, coupee) = aveu::couper_a_la_borne(out, limit.max(0) as usize);
+            let servies = out.len();
+            let mut v = with_coverage(json!({ "results": out, "served": servies, "window": limit, "truncated": coupee }));
             if !literal.is_empty() {
                 v["literal"] = json!({
                     "terms": literal,

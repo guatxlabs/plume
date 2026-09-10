@@ -181,3 +181,39 @@ pub(crate) fn couper_a_la_borne(mut lues: Vec<Value>, borne: usize) -> (Vec<Valu
     lues.truncate(borne);
     (lues, ecourtee)
 }
+
+/// LA SOUS-LISTE POSÉE DANS UN CORPS PLUS GRAND, AVEC SON AVEU — la seconde porte, écrite une fois pour
+/// les huit listes qui vivent à côté d'autres champs (`P11.22-g`). L'appelant a lu `borne + 1` lignes
+/// (`borne_avec_ligne_excedentaire`) ; ici on coupe, et on pose QUATRE clés : `<cle>` (les lignes),
+/// `<cle>_served`, `<cle>_window`, `<cle>_truncated` — le drapeau nomme sa liste, comme `hosts_truncated`
+/// le fait pour la Flotte. Un site qui poserait la liste sans ces trois voisines rouvrirait le silence.
+pub(crate) fn poser_la_sous_liste(corps: &mut serde_json::Map<String, Value>, cle: &str, lues: Vec<Value>, borne: usize) {
+    let (servies, coupee) = couper_a_la_borne(lues, borne);
+    corps.insert(format!("{cle}_served"), json!(servies.len()));
+    corps.insert(format!("{cle}_window"), json!(borne));
+    corps.insert(format!("{cle}_truncated"), json!(coupee));
+    corps.insert(cle.to_string(), Value::Array(servies));
+}
+
+/// LA COUPE D'UN CORPS DE REQUÊTE COMPILÉE — la troisième porte (`P11.22-g`). Trois surfaces enveloppent
+/// une requête DÉJÀ compilée (`SELECT * FROM ({compilee}) LIMIT n`) et n'ont aucune table à donner au
+/// comptage borné ; ce qu'elles peuvent faire, c'est lire `n + 1` lignes et laisser la ligne excédentaire
+/// PROUVER la coupe. Le corps rendu par `run_query_ex` porte ses lignes sous `cle` ; on les coupe à `borne`
+/// et on pose `served`, `window`, `truncated` à côté de `columns`/`rows`/`stats`.
+///
+/// DEUX BORNES, UN SEUL AVEU. Le moteur de lecture a SA borne (`PLUME_QUERY_MAX`, 5 000 par défaut) et
+/// mesure sa coupe de la même façon — par la ligne de trop, rendue `stats.truncated` (mesuré le
+/// 2026-09-10 : une borne de site à 5 000 ne voit jamais sa ligne excédentaire, le moteur l'a déjà retenue).
+/// L'aveu replie donc les deux : `truncated` vaut si l'une des deux bornes a mordu, et `window` est la
+/// fenêtre EFFECTIVE — celle du site, ou celle du moteur quand c'est elle qui a coupé avant. Un corps sans
+/// tableau sous `cle` (requête sans ligne) reçoit `served: 0`, `truncated: false` — rien n'a été coupé.
+pub(crate) fn couper_le_corps_a_la_borne(corps: &mut Value, cle: &str, borne: usize) {
+    let coupe_du_moteur = corps["stats"]["truncated"].as_bool().unwrap_or(false);
+    let lues = corps.get_mut(cle).and_then(|r| r.as_array_mut()).map(std::mem::take).unwrap_or_default();
+    let (servies, coupee) = couper_a_la_borne(lues, borne);
+    let n = servies.len();
+    corps["served"] = json!(n);
+    corps["window"] = json!(if coupe_du_moteur && n < borne { n } else { borne });
+    corps["truncated"] = json!(coupee || coupe_du_moteur);
+    corps[cle] = Value::Array(servies);
+}

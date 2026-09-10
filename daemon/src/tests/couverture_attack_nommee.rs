@@ -169,37 +169,8 @@
         assert_eq!(sans_identite, 401, "le catalogue reste derrière l'identité, comme tout /api/");
         use base64::Engine as _;
         let lecteur = format!("Basic {}", base64::engine::general_purpose::STANDARD.encode("vwr:viewerpw12345"));
-        // Lecture jusqu'à EOF : l'objet fait ~20 Kio, plus que ce que la sonde bornée garde.
-        let corps = {
-            use tokio::io::{AsyncReadExt, AsyncWriteExt};
-            let req = format!("GET /api/attack/catalogue HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\nAuthorization: {lecteur}\r\n\r\n");
-            let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
-            s.write_all(req.as_bytes()).await.unwrap();
-            let mut buf = Vec::new();
-            s.read_to_end(&mut buf).await.unwrap();
-            let txt = String::from_utf8_lossy(&buf).into_owned();
-            assert!(txt.starts_with("HTTP/1.1 200"), "un lecteur reçoit le catalogue : {}", txt.lines().next().unwrap_or(""));
-            let brut = txt.split("\r\n\r\n").nth(1).unwrap_or_default().to_string();
-            // Le routeur sert ce corps en TRANSFERT MORCELÉ (`Transfer-Encoding: chunked`, mesuré : « 3649\r\n{… ») :
-            // chaque morceau est précédé de sa taille en hexadécimal. On recolle avant de lire le JSON.
-            if txt.to_ascii_lowercase().contains("transfer-encoding: chunked") { demorceler(brut.as_bytes()) } else { brut }
-        };
-        /// Recolle un corps en transfert morcelé : `taille-hex\r\n octets \r\n … 0\r\n\r\n`. Sur les octets, pas sur des caractères.
-        fn demorceler(b: &[u8]) -> String {
-            let mut out = Vec::new();
-            let mut i = 0;
-            while i < b.len() {
-                let fin_taille = b[i..].windows(2).position(|w| w == b"\r\n").map(|k| i + k).unwrap_or(b.len());
-                let taille_txt = std::str::from_utf8(&b[i..fin_taille]).unwrap_or("0").split(';').next().unwrap_or("0").trim();
-                let taille = usize::from_str_radix(taille_txt, 16).unwrap_or(0);
-                if taille == 0 { break; }
-                let debut = fin_taille + 2;
-                let fin = (debut + taille).min(b.len());
-                out.extend_from_slice(&b[debut..fin]);
-                i = fin + 2;
-            }
-            String::from_utf8_lossy(&out).into_owned()
-        }
+        let (statut, corps) = lire_le_corps_entier(addr, "/api/attack/catalogue", &lecteur).await;
+        assert_eq!(statut, 200, "un lecteur reçoit le catalogue");
         let v: Value = serde_json::from_str(&corps).unwrap_or_else(|e| panic!("corps non-JSON ({e}) : {}", &corps[..corps.len().min(200)]));
         assert_eq!(v, crate::attack_names::catalogue_attack_json(), "la route sert l'objet que la fonction pure rend, sans rien y ajouter ni retirer");
         // Les deux identifiants rencontrés SANS NOM en usage réel (2026-08-27) : la technique est servie nommée,
@@ -208,4 +179,39 @@
         let parent = v["techniques"]["T1195"]["name"].as_str().unwrap();
         let compose = v["forms"]["unknown_sub_technique"].as_str().unwrap().replace("{parent}", parent).replace("{n}", "002");
         assert_eq!(Some(compose), crate::attack_names::technique_name("T1195.002"));
+    }
+
+    /// Recolle un corps en transfert morcelé : `taille-hex\r\n octets \r\n … 0\r\n\r\n`. Sur les octets, pas sur des
+    /// caractères. Le routeur sert ses corps `Json` ainsi (mesuré le 2026-09-10 : « 3649\r\n{… ») : un témoin de
+    /// route qui lit le corps après la ligne vide reçoit les tailles dans son JSON s'il ne recolle pas.
+    fn demorceler(b: &[u8]) -> String {
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < b.len() {
+            let fin_taille = b[i..].windows(2).position(|w| w == b"\r\n").map(|k| i + k).unwrap_or(b.len());
+            let taille_txt = std::str::from_utf8(&b[i..fin_taille]).unwrap_or("0").split(';').next().unwrap_or("0").trim();
+            let taille = usize::from_str_radix(taille_txt, 16).unwrap_or(0);
+            if taille == 0 { break; }
+            let debut = fin_taille + 2;
+            let fin = (debut + taille).min(b.len());
+            out.extend_from_slice(&b[debut..fin]);
+            i = fin + 2;
+        }
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
+    /// GET authentifié sur le routeur réel -> (statut, corps ENTIER recollé). Lit jusqu'à EOF (`Connection: close`)
+    /// et dé-morcelle si la réponse est en transfert morcelé — la sonde bornée de `rbac.rs` ne garde qu'un début.
+    async fn lire_le_corps_entier(addr: std::net::SocketAddr, chemin: &str, authz: &str) -> (u16, String) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let req = format!("GET {chemin} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\nAuthorization: {authz}\r\n\r\n");
+        let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+        s.write_all(req.as_bytes()).await.unwrap();
+        let mut buf = Vec::new();
+        s.read_to_end(&mut buf).await.unwrap();
+        let txt = String::from_utf8_lossy(&buf).into_owned();
+        let statut: u16 = txt.split_whitespace().nth(1).and_then(|c| c.parse().ok()).unwrap_or(0);
+        let brut = txt.split("\r\n\r\n").nth(1).unwrap_or_default().to_string();
+        let corps = if txt.to_ascii_lowercase().contains("transfer-encoding: chunked") { demorceler(brut.as_bytes()) } else { brut };
+        (statut, corps)
     }

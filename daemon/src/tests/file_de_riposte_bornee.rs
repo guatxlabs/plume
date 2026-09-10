@@ -265,33 +265,11 @@ mod file_de_riposte_bornee_tests {
         ("engagement.rs", "activate_due_engagements_conn", "boucle de fond, bornée par tour"),
         ("notifiers.rs", "dispatch_notifications", "lot de notifications non encore envoyées : \
           `notified=0` retire du lot ce qui est parti, le tour suivant prend la suite"),
-        // ---- (B) LISTES SERVIES ET MUETTES : la classe ouverte par `P11.22-f`. -----------------
-        // L'ORDRE CI-DESSOUS EST CELUI DE LA GRAVITÉ, ET IL EST LA RECOMMANDATION DU LOT.
-        ("datasource.rs", "prom_label_values", "LE NAVIGATEUR D'ÉTIQUETTES — trois énoncés à cinq \
-          mille valeurs distinctes. Un exploitant qui ne trouve pas son étiquette conclut qu'elle \
-          n'existe pas ; c'est la surface où la liste EST l'inventaire"),
-        ("datasource.rs", "prom_labels", "LE NAVIGATEUR D'ÉTIQUETTES (noms) — deux mille blobs \
-          récents, dont on tire l'UNION des clés : la borne mord sur la RÉCENCE, et rien ne le dit"),
-        ("caseops.rs", "client_case_get_json", "LA LIGNE DE TEMPS D'UNE SURFACE EXTERNE — cinq cents \
-          entrées servies à un client, hors de la console. Une chronologie tronquée en silence est \
-          lue comme la chronologie COMPLÈTE d'un dossier"),
-        ("caseops.rs", "case_queues_json", "files par assigné, coupées au cinq-centième : un assigné \
-          hors coupe disparaît de la file qui existe pour le montrer"),
-        ("caseops.rs", "case_links_json", "liens d'un dossier, coupés au deux-centième"),
-        ("caseops.rs", "case_metrics_json", "trois énoncés — l'échantillon de cinquante mille \
-          dossiers d'où sortent moyenne et médiane, plus deux ventilations bornées. Une métrique \
-          calculée sur un échantillon tronqué se présente comme une métrique"),
-        ("search.rs", "search", "trois énoncés de `/api/search` : la borne vient du client, mais la \
-          réponse ne dit pas si elle a mordu"),
-        ("system.rs", "diag_bundle_json", "trois énoncés du paquet de diagnostic — un diagnostic \
-          tronqué en silence est lu comme un diagnostic complet"),
-        ("rba.rs", "risk_entity_timeline", "ligne de temps d'une entité à risque, coupée au \
-          deux-centième événement"),
-        ("datamodels.rs", "run_generated_soql", "exécution du Pivot : borne posée sur la requête \
-          compilée, jamais rendue au lecteur"),
-        ("datasource.rs", "ds_soql_exec", "surface datasource : même forme, même silence"),
-        ("scheduled_reports.rs", "render_report_detail", "détail d'un rapport planifié, coupé au \
-          cinq-millième"),
+        // ---- (B) LISTES SERVIES ET MUETTES : la classe ouverte par `P11.22-f`, FERMÉE par `P11.22-g`
+        // le 2026-09-10. Les douze fonctions (vingt énoncés) passent par le fabricant — `corps`, la
+        // seconde porte `poser_la_sous_liste`/`couper_a_la_borne`, ou la troisième `couper_le_corps_a_la_borne`
+        // pour les requêtes compilées — et ce cliquet ne porte plus aucune liste servie. Le vingt-et-unième
+        // naîtra ROUGE, et il devra entrer ICI avec sa raison, ou passer par une porte.
     ];
 
     /// Un énoncé de la population, tel que la garde le voit.
@@ -621,7 +599,16 @@ mod file_de_riposte_bornee_tests {
         // qui l'appelle sert le drapeau sous un nom LISTE-SCOPÉ (`hosts_truncated`). Le suffixe
         // `_truncated` est reconnu comme `_capped` l'est : un drapeau qui nomme sa liste.
         "liste_bornee::couper_a_la_borne(",
+        "aveu::couper_a_la_borne(",
         "_truncated",
+        // `P11.22-g` (2026-09-10) — DEUX PORTES DE PLUS, dans le même fabricant : `poser_la_sous_liste` (une
+        // liste dans un corps plus grand, avec ses trois voisines `_served`/`_window`/`_truncated`) et
+        // `couper_le_corps_a_la_borne` (un corps de requête COMPILÉE, lu avec sa ligne excédentaire). Chacune
+        // est prouvée par ses témoins ; le reconnaître ici est ce qui a vidé la famille (B) du cliquet.
+        "liste_bornee::poser_la_sous_liste(",
+        "aveu::poser_la_sous_liste(",
+        "liste_bornee::couper_le_corps_a_la_borne(",
+        "aveu::couper_le_corps_a_la_borne(",
         // `P11.22-e` a écrit le MÊME drapeau sous un autre mot, faute d'un fabricant où le nommer une
         // fois : le type des sources connues porte `ecourtee`, exactement le rôle de `…_capped`. Le
         // reconnaître ici évite d'inscrire au cliquet une route DÉJÀ honnête — et la divergence de

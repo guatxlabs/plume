@@ -289,23 +289,36 @@ pub(crate) fn case_link_remove(conn: &Connection, a: i64, b: i64, author: &str) 
     true
 }
 
+/// Borne des liens d'un dossier (`P11.22-g`) : nommée, rendue avec la liste, lue avec sa ligne excédentaire.
+pub(crate) const CASE_LINKS_WINDOW: i64 = 200;
+
 /// Liens d'un case (dans les deux sens) résolus en (id, titre, statut, kind). Point-lookups bornés (budget 2 Go).
-pub(crate) fn case_links_json(conn: &Connection, id: i64) -> Vec<Value> {
-    let mut out = Vec::new();
-    if let Ok(mut stmt) = conn.prepare(
-        "SELECT CASE WHEN l.src_id=?1 THEN l.dst_id ELSE l.src_id END AS other, l.kind, l.note, \
-                COALESCE(i.title,''), COALESCE(i.status,'') \
-         FROM case_link l JOIN incident i ON i.id = (CASE WHEN l.src_id=?1 THEN l.dst_id ELSE l.src_id END) \
-         WHERE l.src_id=?1 OR l.dst_id=?1 ORDER BY l.created DESC LIMIT 200",
-    ) {
-        if let Ok(rows) = stmt.query_map(params![id], |r| {
-            Ok(json!({ "id": r.get::<_,i64>(0)?, "kind": r.get::<_,String>(1)?, "note": r.get::<_,String>(2)?,
-                       "title": r.get::<_,String>(3)?, "status": r.get::<_,String>(4)? }))
-        }) {
-            out = rows.flatten().collect();
+/// Rend le corps du fabricant partagé — `{links, served, window, total, total_capped}` — au lieu d'un tableau nu :
+/// un dossier qui porte plus de liens que la borne le DIT (`P11.22-g`), et une lecture qui échoue est avouée.
+pub(crate) fn case_links_json(conn: &Connection, id: i64) -> Value {
+    use crate::handlers::liste_bornee as aveu;
+    let lues: Result<Vec<Value>, rusqlite::Error> = conn
+        .prepare(
+            "SELECT CASE WHEN l.src_id=?1 THEN l.dst_id ELSE l.src_id END AS other, l.kind, l.note, \
+                    COALESCE(i.title,''), COALESCE(i.status,'') \
+             FROM case_link l JOIN incident i ON i.id = (CASE WHEN l.src_id=?1 THEN l.dst_id ELSE l.src_id END) \
+             WHERE l.src_id=?1 OR l.dst_id=?1 ORDER BY l.created DESC LIMIT ?2",
+        )
+        .and_then(|mut stmt| {
+            stmt.query_map(params![id, aveu::borne_avec_ligne_excedentaire(CASE_LINKS_WINDOW)], |r| {
+                Ok(json!({ "id": r.get::<_,i64>(0)?, "kind": r.get::<_,String>(1)?, "note": r.get::<_,String>(2)?,
+                           "title": r.get::<_,String>(3)?, "status": r.get::<_,String>(4)? }))
+            })
+            .map(|x| x.flatten().collect())
+        });
+    match lues {
+        Ok(v) => {
+            let vues = v.len() as i64;
+            let (servies, _) = aveu::couper_a_la_borne(v, CASE_LINKS_WINDOW as usize);
+            aveu::corps("links", aveu::Lignes::Lues(servies), CASE_LINKS_WINDOW, aveu::TotalBorne::depuis_un_recensement_borne(vues, CASE_LINKS_WINDOW))
         }
+        Err(_) => aveu::corps("links", aveu::Lignes::Illisible, CASE_LINKS_WINDOW, aveu::TotalBorne::sans_lecture()),
     }
-    out
 }
 
 // ================================================================================================
@@ -315,6 +328,8 @@ pub(crate) fn case_links_json(conn: &Connection, id: i64) -> Vec<Value> {
 /// Résumé de file par ASSIGNEE : open (actifs non fusionnés), overdue (SLA legacy dépassé), ack_pending (SLA
 /// multi-niveau : ack_due dépassé, pas acquitté), breach (ack/resolve breach), waiting (en pause). Un bucket
 /// `(none)` agrège les non-assignés. Lecture pure agrégée (GROUP BY) sur `incident` (human-scale). #39.
+/// Borne des files par assigné (`P11.22-g`) : nommée, rendue, lue avec sa ligne excédentaire.
+pub(crate) const CASE_QUEUES_WINDOW: i64 = 500;
 pub(crate) fn case_queues_json(conn: &Connection, now_i: i64) -> Value {
     let sql = "SELECT COALESCE(NULLIF(assignee,''),'(none)') AS who, \
                COUNT(*) AS open, \
@@ -324,17 +339,26 @@ pub(crate) fn case_queues_json(conn: &Connection, now_i: i64) -> Value {
                SUM(CASE WHEN status='waiting' THEN 1 ELSE 0 END) AS waiting \
                FROM incident \
                WHERE archived=0 AND merged_into IS NULL AND status NOT IN ('resolved','closed','contained') \
-               GROUP BY who ORDER BY open DESC, who LIMIT 500";
-    let rows: Vec<Value> = conn
+               GROUP BY who ORDER BY open DESC, who LIMIT ?2";
+    // `P11.22-g` — la borne est lue avec sa ligne excédentaire et le corps est celui du fabricant partagé :
+    // un assigné hors coupe ne disparaît plus en silence de la file qui existe pour le montrer.
+    use crate::handlers::liste_bornee as aveu;
+    let lues: Result<Vec<Value>, rusqlite::Error> = conn
         .prepare(sql)
         .and_then(|mut s| {
-            s.query_map(params![now_i], |r| {
+            s.query_map(params![now_i, aveu::borne_avec_ligne_excedentaire(CASE_QUEUES_WINDOW)], |r| {
                 Ok(json!({ "assignee": r.get::<_,String>(0)?, "open": r.get::<_,i64>(1)?, "overdue": r.get::<_,i64>(2)?,
                            "ack_pending": r.get::<_,i64>(3)?, "breach": r.get::<_,i64>(4)?, "waiting": r.get::<_,i64>(5)? }))
             }).map(|x| x.flatten().collect())
-        })
-        .unwrap_or_default();
-    json!({ "queues": rows })
+        });
+    match lues {
+        Ok(v) => {
+            let vues = v.len() as i64;
+            let (servies, _) = aveu::couper_a_la_borne(v, CASE_QUEUES_WINDOW as usize);
+            aveu::corps("queues", aveu::Lignes::Lues(servies), CASE_QUEUES_WINDOW, aveu::TotalBorne::depuis_un_recensement_borne(vues, CASE_QUEUES_WINDOW))
+        }
+        Err(_) => aveu::corps("queues", aveu::Lignes::Illisible, CASE_QUEUES_WINDOW, aveu::TotalBorne::sans_lecture()),
+    }
 }
 
 // ================================================================================================
@@ -357,20 +381,32 @@ fn p50(mut v: Vec<i64>) -> Option<i64> {
 ///   - overall {resolved, mtta_mean, mtta_p50, mttr_mean, mttr_p50, ack_breaches, resolve_breaches} + open_now,
 ///     overdue_now (instantanés) ; by_assignee & by_severity (mean MTTA/MTTR + résolus + breach).
 /// Lecture pure. `to<=0` -> now. Fenêtre par défaut = 30 j si from<=0.
+/// Bornes du tableau MTTA/MTTR (`P11.22-g`) : l'échantillon d'où sortent moyenne et médiane, et les deux
+/// ventilations. Nommées, rendues dans le corps, lues avec leur ligne excédentaire.
+pub(crate) const CASE_METRICS_SAMPLE_WINDOW: i64 = 50_000;
+pub(crate) const CASE_METRICS_BY_ASSIGNEE_WINDOW: i64 = 200;
+pub(crate) const CASE_METRICS_BY_SEVERITY_WINDOW: i64 = 20;
 pub(crate) fn case_metrics_json(conn: &Connection, from_in: i64, to_in: i64) -> Value {
     let to = if to_in > 0 { to_in } else { now() };
     let from = if from_in > 0 { from_in } else { to - 30 * 86400 };
     // Valeurs individuelles (résolus dans la fenêtre) pour mean + p50 (Rust). Borné LIMIT (garde-fou mémoire).
     let mut mtta: Vec<i64> = Vec::new();
     let mut mttr: Vec<i64> = Vec::new();
+    // `P11.22-g` — l'échantillon est lu avec sa ligne excédentaire : si elle existe, moyenne et médiane sont
+    // calculées sur un échantillon COUPÉ et le corps le dit (`sample_truncated`), au lieu de les présenter
+    // comme la mesure de la fenêtre entière.
+    use crate::handlers::liste_bornee as aveu;
+    let mut echantillon_vu: i64 = 0;
     if let Ok(mut stmt) = conn.prepare(
         "SELECT first_response_ts, closed_ts, ts, COALESCE(sla_pause_accum,0) FROM incident \
-         WHERE closed_ts IS NOT NULL AND closed_ts>=?1 AND closed_ts<=?2 AND merged_into IS NULL LIMIT 50000",
+         WHERE closed_ts IS NOT NULL AND closed_ts>=?1 AND closed_ts<=?2 AND merged_into IS NULL LIMIT ?3",
     ) {
-        if let Ok(rows) = stmt.query_map(params![from, to], |r| {
+        if let Ok(rows) = stmt.query_map(params![from, to, aveu::borne_avec_ligne_excedentaire(CASE_METRICS_SAMPLE_WINDOW)], |r| {
             Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?))
         }) {
             for (fr, closed, ts, pause) in rows.flatten() {
+                echantillon_vu += 1;
+                if echantillon_vu > CASE_METRICS_SAMPLE_WINDOW { break; }
                 if let Some(fr) = fr {
                     if fr >= ts {
                         mtta.push(fr - ts);
@@ -405,8 +441,8 @@ pub(crate) fn case_metrics_json(conn: &Connection, from_in: i64, to_in: i64) -> 
                 AVG(CASE WHEN closed_ts-ts-COALESCE(sla_pause_accum,0)>=0 THEN closed_ts-ts-COALESCE(sla_pause_accum,0) END), \
                 SUM(CASE WHEN ack_breached=1 OR resolve_breached=1 THEN 1 ELSE 0 END) \
          FROM incident WHERE closed_ts IS NOT NULL AND closed_ts>=?1 AND closed_ts<=?2 AND merged_into IS NULL \
-         GROUP BY who ORDER BY COUNT(*) DESC LIMIT 200")
-        .and_then(|mut s| s.query_map(params![from, to], |r| {
+         GROUP BY who ORDER BY COUNT(*) DESC LIMIT ?3")
+        .and_then(|mut s| s.query_map(params![from, to, aveu::borne_avec_ligne_excedentaire(CASE_METRICS_BY_ASSIGNEE_WINDOW)], |r| {
             Ok(json!({ "assignee": r.get::<_,String>(0)?, "resolved": r.get::<_,i64>(1)?,
                        "mtta_mean": r.get::<_,Option<f64>>(2)?.map(|x| x as i64),
                        "mttr_mean": r.get::<_,Option<f64>>(3)?.map(|x| x as i64),
@@ -417,13 +453,13 @@ pub(crate) fn case_metrics_json(conn: &Connection, from_in: i64, to_in: i64) -> 
                 AVG(CASE WHEN first_response_ts IS NOT NULL AND first_response_ts>=ts THEN first_response_ts-ts END), \
                 AVG(CASE WHEN closed_ts-ts-COALESCE(sla_pause_accum,0)>=0 THEN closed_ts-ts-COALESCE(sla_pause_accum,0) END) \
          FROM incident WHERE closed_ts IS NOT NULL AND closed_ts>=?1 AND closed_ts<=?2 AND merged_into IS NULL \
-         GROUP BY severity ORDER BY severity DESC LIMIT 20")
-        .and_then(|mut s| s.query_map(params![from, to], |r| {
+         GROUP BY severity ORDER BY severity DESC LIMIT ?3")
+        .and_then(|mut s| s.query_map(params![from, to, aveu::borne_avec_ligne_excedentaire(CASE_METRICS_BY_SEVERITY_WINDOW)], |r| {
             Ok(json!({ "severity": r.get::<_,i64>(0)?, "resolved": r.get::<_,i64>(1)?,
                        "mtta_mean": r.get::<_,Option<f64>>(2)?.map(|x| x as i64),
                        "mttr_mean": r.get::<_,Option<f64>>(3)?.map(|x| x as i64) }))
         }).map(|x| x.flatten().collect())).unwrap_or_default();
-    json!({
+    let mut corps = json!({
         "window": { "from": from, "to": to },
         "overall": {
             "resolved": resolved, "open_now": open_now, "overdue_now": overdue_now,
@@ -431,9 +467,19 @@ pub(crate) fn case_metrics_json(conn: &Connection, from_in: i64, to_in: i64) -> 
             "mttr_mean": mean(&mttr), "mttr_p50": p50(mttr.clone()),
             "ack_breaches": ack_breaches, "resolve_breaches": resolve_breaches,
         },
-        "by_assignee": by_assignee,
-        "by_severity": by_severity,
-    })
+        "by_assignee": [],
+        "by_severity": [],
+    });
+    // `P11.22-g` — les deux ventilations sont posées par la seconde porte du fabricant (`<cle>_served`,
+    // `<cle>_window`, `<cle>_truncated`), et l'échantillon dit sa fenêtre et sa coupe.
+    if let Some(obj) = corps.as_object_mut() {
+        aveu::poser_la_sous_liste(obj, "by_assignee", by_assignee, CASE_METRICS_BY_ASSIGNEE_WINDOW as usize);
+        aveu::poser_la_sous_liste(obj, "by_severity", by_severity, CASE_METRICS_BY_SEVERITY_WINDOW as usize);
+        obj.insert("sample_window".into(), json!(CASE_METRICS_SAMPLE_WINDOW));
+        obj.insert("sample_size".into(), json!(echantillon_vu.min(CASE_METRICS_SAMPLE_WINDOW)));
+        obj.insert("sample_truncated".into(), json!(echantillon_vu > CASE_METRICS_SAMPLE_WINDOW));
+    }
+    corps
 }
 
 // ================================================================================================
@@ -533,6 +579,8 @@ pub(crate) fn client_cases_list_json(conn: &Connection, db_path: &str, masks: &g
 /// DÉTAIL CLIENT d'un case : la projection fermée + une timeline RESTREINTE aux événements de CYCLE DE VIE
 /// (created/status/sla/merge) — JAMAIS les notes internes, actions, ni les refs alert/event (télémétrie interne).
 /// Les auteurs analystes sont ANONYMISÉS ('SOC'). None si le case n'existe pas / est archivé / fusionné.
+/// Borne de la ligne de temps servie au portail client (`P11.22-g`).
+pub(crate) const CLIENT_CASE_TIMELINE_WINDOW: i64 = 500;
 pub(crate) fn client_case_get_json(conn: &Connection, db_path: &str, masks: &guatx_core::soql::FieldMaskSet, id: i64, now_i: i64) -> Option<Value> {
     let mut c = conn.query_row(
         "SELECT id,ts,updated,COALESCE(title,''),status,severity,priority,closed_ts, \
@@ -543,14 +591,19 @@ pub(crate) fn client_case_get_json(conn: &Connection, db_path: &str, masks: &gua
         |r| Ok(client_case_row(db_path, masks, r.get(0)?, r.get(1)?, r.get(2)?, &r.get::<_, String>(3)?, &r.get::<_, String>(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get::<_, i64>(8)? != 0, r.get::<_, i64>(9)? != 0, r.get::<_, i64>(10)? != 0)),
     ).ok()?;
     // Timeline CYCLE DE VIE uniquement (allowlist de kinds ; auteurs anonymisés ; body des notes/alertes EXCLU).
+    // `P11.22-g` — LA LIGNE DE TEMPS D'UNE SURFACE EXTERNE dit sa coupe : lue avec sa ligne excédentaire,
+    // posée par la seconde porte du fabricant (`timeline_served`, `timeline_window`, `timeline_truncated`).
+    // Un client qui lit `timeline` seul lit ce qu'il lisait ; celui qui lit les trois voisines sait.
     let items: Vec<Value> = conn
-        .prepare("SELECT ts,kind FROM incident_item WHERE incident_id=?1 AND kind IN ('created','status','sla','merge') ORDER BY ts,id LIMIT 500")
-        .and_then(|mut s| s.query_map(params![id], |r| {
+        .prepare("SELECT ts,kind FROM incident_item WHERE incident_id=?1 AND kind IN ('created','status','sla','merge') ORDER BY ts,id LIMIT ?2")
+        .and_then(|mut s| s.query_map(params![id, crate::handlers::liste_bornee::borne_avec_ligne_excedentaire(CLIENT_CASE_TIMELINE_WINDOW)], |r| {
             let kind: String = r.get(1)?;
             Ok(json!({ "ts": r.get::<_,i64>(0)?, "event": kind, "by": "SOC" }))
         }).map(|x| x.flatten().collect()))
         .unwrap_or_default();
-    c["timeline"] = json!(items);
+    if let Some(obj) = c.as_object_mut() {
+        crate::handlers::liste_bornee::poser_la_sous_liste(obj, "timeline", items, CLIENT_CASE_TIMELINE_WINDOW as usize);
+    }
     Some(c)
 }
 
@@ -610,7 +663,7 @@ pub(crate) async fn case_unmerge_handler(State(st): State<AppState>, Extension(a
 /// GET /api/cases/{id}/links — liens du case. POST /api/cases/{id}/links {to,kind,note} — ajoute un lien.
 pub(crate) async fn case_links_get(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Json<Value> {
     let db_path = req_db_path(&st, &au);
-    let res = tokio::task::spawn_blocking(move || read_with_watchdog(&db_path, json!({ "links": [] }), move |conn| json!({ "links": case_links_json(conn, id) })))
+    let res = tokio::task::spawn_blocking(move || read_with_watchdog(&db_path, json!({ "links": [] }), move |conn| case_links_json(conn, id)))
         .await
         .unwrap_or_else(|_| json!({ "links": [] }));
     Json(res)

@@ -5,6 +5,7 @@
 //   GET /api/risk/entity/{etype}/{entity}    -> {entity_type,entity,summary:{…}|null, timeline:[{ts,score,contrib}], contributions:[{ts,risk_score,source,rule_id,reason,mitre,severity}]}
 // SÉCU UI : tout en textContent/esc (anti-XSS). Aucune mutation (aucun apiSend).
 import { $, api, fetchInto, fmtTs, humanAge, LANG, muted, pagedList, sev, toast } from './core.js';
+import { phraseDeCoupe } from './coupe_de_liste.js'; // `P11.22-g` : les contributions bornées disent leur coupe
 
 let _thresholds = null;   // seuils courants (pour la légende) — repeuplés à chaque chargement.
 
@@ -221,6 +222,9 @@ async function openEntity(etype, entity) {
   const ch = document.createElement('div'); ch.className = 'fldname'; ch.style.cssText = 'margin:12px 0 4px'; ch.textContent = 'Contributions récentes';
   det.appendChild(ch);
   const clist = document.createElement('div'); det.appendChild(clist);
+  // `P11.22-g` — la ligne de temps des contributions est bornée ; quand la borne mord, c'est dit sous la table.
+  const coupe = phraseDeCoupe(d, 'contributions');
+  if (coupe) { const c = document.createElement('div'); c.className = 'muted coupe-de-liste'; c.style.cssText = 'font-size:12px;margin-top:4px'; c.textContent = coupe; det.appendChild(c); }
   const contribs = Array.isArray(d.contributions) ? d.contributions : [];
   pagedList(clist, {
     mode: 'client', pageSize: 25, rows: contribs,

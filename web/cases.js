@@ -1,6 +1,7 @@
 // cases.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // Cases (gestion d'incident, first-class #4a): liste/detail/CRUD + rattachement d'items.
 import { $, api, apiSend, confirmModal, confirmWithConsequence, disclosure, downloadText, exportPDF, fmtTs, ic, LANG, modal, muted, pagedList, sev, toCSV, toast, tsSlug, withBusy, socIsAdmin, socRole } from './core.js';
+import { phraseDAffichagePartiel, phraseDEchantillonCoupe, phraseDeCoupe } from './coupe_de_liste.js'; // `P11.22-g` : une liste bornée dit sa coupe
 import { S } from './state.js';
 import { refresh } from './app.js';
 // #3 incidents : « Lancer la recherche » d'une step ouvre l'Explore avec le GXQL recompilé (réutilise le
@@ -532,10 +533,12 @@ function fmtDur(s) {
 
 // #39 — BANDEAU CHARGE + MTTA/MTTR (queues par assignee + KPI). Vide (masqué) tant qu'aucun case -> mode 0
 // n'affiche rien. Lecture seule (viewer+). Les chips de file filtrent la liste sur l'assignee (per-assignee queue).
+const FILES_AFFICHEES = 12; // la coupe de la console sur les puces de file — dite par `phraseDAffichagePartiel`
 async function loadCaseOpsSummary() {
   const host = $('#caseops-summary'); if (!host) return;
   let queues = [], metrics = {}, refus = '';
-  try { const r = await api('/cases/queues'); refus = causeDuRefusServi(r); queues = r.queues || []; } catch (e) {}
+  let reponseDesFiles = null;
+  try { reponseDesFiles = await api('/cases/queues'); refus = causeDuRefusServi(reponseDesFiles); queues = reponseDesFiles.queues || []; } catch (e) {}
   try { metrics = await api('/cases/metrics'); refus = refus || causeDuRefusServi(metrics); } catch (e) {}
   host.replaceChildren();
   // `P10.7-d` — LE BANDEAU DISPARAISSAIT SUR UN REFUS, exactement comme il disparaît en mode 0 (aucun cas).
@@ -566,15 +569,21 @@ async function loadCaseOpsSummary() {
   if (queues && queues.length) {
     const qwrap = document.createElement('div'); qwrap.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;margin-top:8px';
     qwrap.appendChild(Object.assign(document.createElement('span'), { textContent: 'Files :', className: 'muted', style: 'font-size:12px;align-self:center' }));
-    queues.slice(0, 12).forEach(q => {
+    queues.slice(0, FILES_AFFICHEES).forEach(q => {
       const chip = document.createElement('button'); chip.type = 'button'; chip.className = 'casechip'; chip.style.cursor = 'pointer';
       chip.textContent = q.assignee + ' · ' + q.open + (q.overdue ? ' (' + q.overdue + ' retard)' : '') + (q.breach ? ' ⚠' + q.breach : '');
       chip.title = 'Filtrer la file de ' + q.assignee;
       chip.onclick = () => { const inp = $('#case-assignee-filter'); if (inp && q.assignee !== '(none)') { inp.value = q.assignee; loadCases(); } };
       qwrap.appendChild(chip);
     });
+    // `P11.22-g` — deux coupes DITES : celle du démon (files servies à la borne) et celle de la console (12 puces).
+    const coupes = [phraseDAffichagePartiel(Math.min(queues.length, FILES_AFFICHEES), queues.length), phraseDeCoupe(reponseDesFiles, '')].filter(Boolean).join(' · ');
+    if (coupes) { const c = document.createElement('span'); c.className = 'muted coupe-de-liste'; c.style.cssText = 'font-size:12px;align-self:center'; c.textContent = coupes; qwrap.appendChild(c); }
     host.appendChild(qwrap);
   }
+  // `P11.22-g` — un échantillon MTTA/MTTR coupé se présente comme coupé, pas comme la mesure de la fenêtre.
+  const echantillon = phraseDEchantillonCoupe(metrics);
+  if (echantillon) { const e = document.createElement('div'); e.className = 'muted coupe-de-liste'; e.style.cssText = 'font-size:12px;margin-top:4px'; e.textContent = echantillon; host.appendChild(e); }
 }
 
 // #39 — section LIENS & FUSION du détail : "fusionné dans #N" (+ dé-fusion editor) + chips de liens (cliquables).
@@ -592,8 +601,8 @@ async function renderCaseLinks(box, c) {
     }
     sec.appendChild(m);
   }
-  let links = [];
-  try { ({ links } = await api('/cases/' + c.id + '/links')); } catch (e) {}
+  let links = [], reponseDesLiens = null;
+  try { reponseDesLiens = await api('/cases/' + c.id + '/links'); links = reponseDesLiens.links || []; } catch (e) {}
   if (links && links.length) {
     sec.appendChild(Object.assign(document.createElement('div'), { className: 'casesec', textContent: 'Liens' }));
     const wrap = document.createElement('div'); wrap.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px';
@@ -608,6 +617,9 @@ async function renderCaseLinks(box, c) {
       }
       wrap.appendChild(chip);
     });
+    // `P11.22-g` — un dossier qui porte plus de liens que la borne le dit.
+    const coupe = phraseDeCoupe(reponseDesLiens, '');
+    if (coupe) { const c = document.createElement('span'); c.className = 'muted coupe-de-liste'; c.style.cssText = 'font-size:12px;align-self:center'; c.textContent = coupe; wrap.appendChild(c); }
     sec.appendChild(wrap);
   }
   if (sec.childNodes.length) box.appendChild(sec);

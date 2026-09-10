@@ -144,6 +144,11 @@ fn format_report_detail(name: &str, v: &Value) -> (i64, String) {
         }
     }
     if n > 20 { out.push_str(&format!("… (+{} lignes non affichées)\n", n - 20)); }
+    // `P11.22-g` — la coupe mesurée par la ligne excédentaire est DITE dans le texte livré, avec sa borne.
+    if v.get("truncated").and_then(|t| t.as_bool()).unwrap_or(false) {
+        let borne = v.get("window").and_then(|w| w.as_i64()).unwrap_or(n);
+        out.push_str(&format!("LISTE COUPÉE à {borne} lignes : le rapport en portait davantage, et ce texte n'en est pas le total.\n"));
+    }
     (n, out)
 }
 
@@ -194,13 +199,18 @@ pub(crate) fn deliver_report(db: &Arc<Mutex<Connection>>, db_path: &str, id: i64
 /// (`tenant='clientX'`) matchent. Un `tenant=""` codé en dur les RATAIT -> livraison de données brutes non
 /// masquées (HIGH). `env=None` baseline (documenté). Exécute et rend `(count, detail_texte_masqué)`. Extrait de
 /// `deliver_report` UNIQUEMENT pour rendre le contenu livré OBSERVABLE (test de non-régression du masque tenant).
+/// Borne du détail d'un rapport planifié (`P11.22-g`) : nommée, dite dans le texte livré quand elle mord.
+pub(crate) const REPORT_DETAIL_WINDOW: i64 = 5000;
 pub(crate) fn render_report_detail(db_path: &str, name: &str, run_as: &str, tenant: &str, soql: &str) -> Result<(i64, String), String> {
     let masks = effective_masks(db_path, run_as, tenant, None);
     // Choke-point unique : `soql_to_sql_masked_x` (= /api/query) -> denylist de secrets + enum fermée intacts.
     let compiled = soql_to_sql_masked_x(soql, 0, 0, None, &masks)?;
     if compiled.is_empty() { return Err("rapport : requête vide".into()); }
-    let page_sql = format!("SELECT * FROM ({compiled}) LIMIT 5000");
-    let v = run_query_ex(db_path, &page_sql, query_budget_interactive_ms(), None)?;
+    // `P11.22-g` — lue avec sa ligne excédentaire, coupée par la troisième porte du fabricant : le détail livré
+    // dit qu'il est coupé, au lieu de se présenter comme le rapport entier.
+    let page_sql = format!("SELECT * FROM ({compiled}) LIMIT {}", crate::handlers::liste_bornee::borne_avec_ligne_excedentaire(REPORT_DETAIL_WINDOW));
+    let mut v = run_query_ex(db_path, &page_sql, query_budget_interactive_ms(), None)?;
+    crate::handlers::liste_bornee::couper_le_corps_a_la_borne(&mut v, "rows", REPORT_DETAIL_WINDOW.max(0) as usize);
     Ok(format_report_detail(name, &v))
 }
 

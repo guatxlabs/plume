@@ -374,12 +374,15 @@ async fn run_generated_soql(st: &AppState, au: &AuthUser, soql: &str, from: i64,
     }
     let aveu_froid = aveu_de_bande_froide(from, frontiere_froide);
     let lim = limit.clamp(1, 10_000);
-    let page_sql = format!("SELECT * FROM ({compiled}) LIMIT {lim}");
+    // `P11.22-g` — la requête compilée est lue avec sa ligne excédentaire ; la troisième porte du fabricant coupe
+    // le corps à `lim` et pose `served`, `window`, `truncated` : la borne du Pivot n'est plus muette.
+    let page_sql = format!("SELECT * FROM ({compiled}) LIMIT {}", crate::handlers::liste_bornee::borne_avec_ligne_excedentaire(lim));
     let budget = query_budget_interactive_ms();
     let soql_echo = compiled.clone();
     let res = tokio::task::spawn_blocking(move || run_query_ex(&db_path, &page_sql, budget, None)).await;
     match res {
         Ok(Ok(mut v)) => {
+            crate::handlers::liste_bornee::couper_le_corps_a_la_borne(&mut v, "rows", lim.max(0) as usize);
             v["compiled_sql"] = json!(soql_echo);
             v["soql"] = json!(soql);
             if let Some(aveu) = aveu_froid {

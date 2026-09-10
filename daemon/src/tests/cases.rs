@@ -1660,12 +1660,12 @@
         assert!(case_link_add(&conn, a, b, "related", "same actor", "bob"));
         assert!(case_link_add(&conn, a, b, "related", "", "bob"), "idempotent (dédup)");
         assert_eq!(conn.query_row::<i64, _, _>("SELECT COUNT(*) FROM case_link", [], |r| r.get(0)).unwrap(), 1, "dédup : un seul lien");
-        assert_eq!(case_links_json(&conn, a).len(), 1);
-        assert_eq!(case_links_json(&conn, b).len(), 1, "visible des deux côtés");
-        assert_eq!(case_links_json(&conn, a)[0]["id"].as_i64().unwrap(), b);
+        assert_eq!(case_links_json(&conn, a)["links"].as_array().unwrap().len(), 1);
+        assert_eq!(case_links_json(&conn, b)["links"].as_array().unwrap().len(), 1, "visible des deux côtés");
+        assert_eq!(case_links_json(&conn, a)["links"][0]["id"].as_i64().unwrap(), b);
         assert_eq!(conn.query_row::<i64, _, _>("SELECT COUNT(*) FROM ledger WHERE kind='case.link'", [], |r| r.get(0)).unwrap(), 1);
         assert!(case_link_remove(&conn, b, a, "bob"), "unlink des deux sens");
-        assert_eq!(case_links_json(&conn, a).len(), 0);
+        assert_eq!(case_links_json(&conn, a)["links"].as_array().unwrap().len(), 0);
         assert!(case_get_json(&conn, a, now()).is_some() && case_get_json(&conn, b, now()).is_some(), "cases intacts");
     }
 

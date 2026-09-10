@@ -641,6 +641,8 @@ pub(crate) async fn risk_entities(State(st): State<AppState>, Extension(au): Ext
 /// GET /api/risk/entity/{etype}/{entity} — SYNTHÈSE (rollup) + TIMELINE horaire + contributions récentes d'UNE
 /// entité. La timeline/les contributions lisent la PETITE table `risk_event` INDEXÉE par (entity_type,entity)
 /// -> lookup ciblé, PAS un scan de `event`. viewer+.
+/// Borne des contributions d'une entité à risque (`P11.22-g`) : nommée, rendue, lue avec sa ligne excédentaire.
+pub(crate) const RISK_ENTITY_CONTRIBUTIONS_WINDOW: i64 = 200;
 pub(crate) async fn risk_entity_timeline(
     State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path((etype, entity)): Path<(String, String)>,
 ) -> Json<Value> {
@@ -672,12 +674,14 @@ pub(crate) async fn risk_entity_timeline(
             .unwrap_or_default(),
         Err(_) => Vec::new(),
     };
+    // `P11.22-g` — la ligne de temps des contributions est lue avec sa ligne excédentaire et posée par la seconde
+    // porte du fabricant : `contributions_served`, `contributions_window`, `contributions_truncated`.
     let contributions: Vec<Value> = match conn.prepare(
         "SELECT ts,risk_score,source,rule_id,reason,mitre,severity FROM risk_event \
-         WHERE entity_type=?1 AND entity=?2 ORDER BY ts DESC LIMIT 200",
+         WHERE entity_type=?1 AND entity=?2 ORDER BY ts DESC LIMIT ?3",
     ) {
         Ok(mut s) => s
-            .query_map(params![etype, entity], |r| {
+            .query_map(params![etype, entity, crate::handlers::liste_bornee::borne_avec_ligne_excedentaire(RISK_ENTITY_CONTRIBUTIONS_WINDOW)], |r| {
                 Ok(json!({
                     "ts": r.get::<_, i64>(0)?, "risk_score": r.get::<_, i64>(1)?, "source": r.get::<_, String>(2)?,
                     "rule_id": r.get::<_, Option<i64>>(3)?, "reason": r.get::<_, String>(4)?,
@@ -688,5 +692,9 @@ pub(crate) async fn risk_entity_timeline(
             .unwrap_or_default(),
         Err(_) => Vec::new(),
     };
-    Json(json!({ "entity_type": etype, "entity": entity, "summary": summary, "timeline": timeline, "contributions": contributions }))
+    let mut corps = json!({ "entity_type": etype, "entity": entity, "summary": summary, "timeline": timeline, "contributions": [] });
+    if let Some(obj) = corps.as_object_mut() {
+        crate::handlers::liste_bornee::poser_la_sous_liste(obj, "contributions", contributions, RISK_ENTITY_CONTRIBUTIONS_WINDOW as usize);
+    }
+    Json(corps)
 }

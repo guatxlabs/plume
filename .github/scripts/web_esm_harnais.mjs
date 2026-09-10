@@ -11011,6 +11011,49 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   console.log("[part-froide-lue] `P10.5-i`/`P10.5-q` : l'aveu de part froide publié par la route de requête est LU par la console — quatre états (moteur colonnaire, part servie, rien de vieilli, non lu) rendus par un libellé statique et une infobulle qui porte les fichiers, les lignes et la frontière ; l'absence d'aveu ne rend rien ; le badge s'ajoute aux autres sans les remplacer. CE QUE CE TÉMOIN NE TIENT PAS : la route des panneaux, qui ne publie pas cet aveu (le reste de `P10.5-i`), et l'encre peinte.");
 }
 
+// ---------------------------------------------------------------------------------------------
+// 82. UNE LISTE BORNÉE DIT SA COUPE, ET LA CONSOLE LA LIT D'UNE SEULE FAÇON (`P11.22-g`).
+//     Le démon sert, à côté de douze listes bornées qui restaient muettes, l'aveu du fabricant partagé —
+//     `served`/`window`/`total`/`total_capped`/`truncated`, nus ou préfixés du nom de la liste. Ce témoin
+//     tient la LECTURE unique de la console (`coupe_de_liste.js`) sur des réponses FABRIQUÉES : la phrase
+//     paraît quand une borne a mordu (ligne excédentaire, comptage plafonné, total au-delà des servies), se
+//     tait quand rien n'est coupé, et se tait AUSSI quand aucun aveu n'est servi — en distinguant les deux
+//     (`connue`), parce qu'un compte non publié n'est jamais un zéro. La coupe que la console fait elle-même
+//     (douze puces de file) est dite par le même module. Enfin, les trois surfaces ralliées le lisent.
+// ---------------------------------------------------------------------------------------------
+{
+  const { lectureDeCoupe, phraseDeCoupe, phraseDAffichagePartiel, phraseDEchantillonCoupe } = await import(pathToFileURL(path.join(WEB, "coupe_de_liste.js")).href);
+  // — aucun aveu servi : rien à dire, et c'est DIT comme « non connue », pas comme « pas de coupe ».
+  const aucun = lectureDeCoupe({ queues: [1, 2, 3] }, "");
+  exiger(aucun.connue === false && aucun.coupee === null && phraseDeCoupe({ queues: [1, 2, 3] }, "") === "", "(82) sans aveu servi, la lecture est « non connue » et la phrase vide");
+  // — la ligne excédentaire a existé : phrase, avec les deux nombres.
+  const ph = phraseDeCoupe({ results: [1, 2], served: 2, window: 2, truncated: true }, "");
+  exiger(/\b2\b/.test(ph) && /coup|cut/i.test(ph), `(82) borne mordue par la ligne excédentaire : « ${ph} »`);
+  exiger(phraseDeCoupe({ results: [1, 2, 3], served: 3, window: 3, truncated: false }, "") === "", "(82) à la borne exacte sans ligne excédentaire, rien n'est dit");
+  // — comptage plafonné : phrase avec « au moins ».
+  const pl = phraseDeCoupe({ queues: [], served: 500, window: 500, total: 500, total_capped: true }, "");
+  exiger(/500/.test(pl) && /au moins|at least/.test(pl), `(82) total plafonné : « ${pl} »`);
+  // — total exact au-delà des servies : coupe ; total égal : rien.
+  exiger(/\b5\b/.test(phraseDeCoupe({ served: 5, window: 5, total: 9, total_capped: false }, "")) , "(82) un total au-delà des servies est une coupe");
+  exiger(phraseDeCoupe({ served: 5, window: 10, total: 5, total_capped: false }, "") === "", "(82) un total égal aux servies n'est pas une coupe");
+  // — préfixe : une liste qui vit dans un corps plus grand.
+  const pr = phraseDeCoupe({ contributions: [], contributions_served: 200, contributions_window: 200, contributions_truncated: true }, "contributions");
+  exiger(/200/.test(pr), `(82) préfixe « contributions » lu : « ${pr} »`);
+  exiger(phraseDeCoupe({ contributions_served: 200, contributions_window: 200, contributions_truncated: true }, "") === "", "(82) sans le préfixe, l'aveu préfixé n'est pas lu à tort");
+  // — la coupe de la console elle-même, et l'échantillon des métriques.
+  exiger(/12/.test(phraseDAffichagePartiel(12, 500)) && /500/.test(phraseDAffichagePartiel(12, 500)), "(82) la coupe de la console nomme les deux nombres");
+  exiger(phraseDAffichagePartiel(5, 5) === "" && phraseDAffichagePartiel(null, 5) === "", "(82) rien à dire quand tout est affiché ou quand un nombre manque");
+  exiger(/50000/.test(phraseDEchantillonCoupe({ sample_truncated: true, sample_window: 50000 })) && phraseDEchantillonCoupe({ sample_truncated: false, sample_window: 50000 }) === "", "(82) l'échantillon coupé est dit avec sa fenêtre, l'échantillon entier se tait");
+  // — un compte non publié n'est jamais un zéro : le module ne replie pas `served` sur 0.
+  const srcModule = readFileSync(path.join(WEB, "coupe_de_liste.js"), "utf8");
+  exiger(!/served'\]\s*\|\|\s*0|\|\|\s*0\b/.test(srcModule), "(82) le module replie un compte absent sur zéro");
+  // — les trois surfaces ralliées lisent ce module.
+  for (const f of ["cases.js", "risk.js", "datamodels.js"]) {
+    exiger(/from '\.\/coupe_de_liste\.js'/.test(readFileSync(path.join(WEB, f), "utf8")), `(82) ${f} ne lit pas la coupe des listes bornées`);
+  }
+  console.log("[coupe-de-liste] `P11.22-g` : la lecture unique de l'aveu de coupe est tenue sur huit réponses fabriquées — ligne excédentaire, comptage plafonné, total au-delà, total égal, borne exacte, aveu absent (dit « non connu », jamais zéro), préfixe lu et non lu à tort — plus la coupe de la console et l'échantillon des métriques ; cases.js, risk.js et datamodels.js la lisent. CE QUE CE TÉMOIN NE TIENT PAS : que le démon serve bien ces champs — ce sont ses témoins (p11_22g_*) qui le tiennent, sur des populations fabriquées à la borne plus une.");
+}
+
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;
 verdictRendu = true;
 if (echecs.length) {

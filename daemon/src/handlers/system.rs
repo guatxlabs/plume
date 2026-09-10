@@ -115,7 +115,14 @@ pub(crate) fn key_is_secretish(k: &str) -> bool {
 /// non-secrets), self-métriques, santé, échantillon d'events opérationnels NON-PII, comptes agrégés.
 /// N'exécute QUE des SELECT sur un ALLOWLIST de tables/colonnes -> ne peut PAS lire user.hash / token.* /
 /// *.config / *.secret / user_mfa.* (les colonnes de la denylist query_exec) ni de PII (username/src_ip).
+/// Bornes des trois listes du paquet de diagnostic (`P11.22-g`) : nommées, rendues à côté de chaque liste
+/// (`<cle>_served`, `<cle>_window`, `<cle>_truncated`), lues avec leur ligne excédentaire. Un diagnostic
+/// coupé se lit comme coupé, plus comme complet.
+pub(crate) const DIAG_RECENT_EVENTS_WINDOW: i64 = 30;
+pub(crate) const DIAG_HEARTBEAT_ALERTS_WINDOW: i64 = 20;
+pub(crate) const DIAG_UNCLASSIFIED_SOURCES_WINDOW: i64 = 20;
 pub(crate) fn diag_bundle_json(conn: &Connection, spool: &str, db_path: &str, warn: u8) -> Value {
+    use crate::handlers::liste_bornee as aveu;
     let sv = schema_version(conn);
     // Résumé de config : allowlist + garde secretish. Valeur "" pour une clé non posée. Les chemins TLS_CERT/
     // KEY sont des CHEMINS de fichier (pas la clé elle-même) -> sûrs ; mais on émet juste "posé"/"" (booléen)
@@ -136,9 +143,9 @@ pub(crate) fn diag_bundle_json(conn: &Connection, spool: &str, db_path: &str, wa
     let mut recent: Vec<Value> = Vec::new();
     if let Ok(mut s) = conn.prepare(
         "SELECT ts, source, severity, message FROM event \
-         WHERE source IN ('plume-disk','plume-config') ORDER BY ts DESC LIMIT 30",
+         WHERE source IN ('plume-disk','plume-config') ORDER BY ts DESC LIMIT ?1",
     ) {
-        if let Ok(rows) = s.query_map([], |r| {
+        if let Ok(rows) = s.query_map(params![aveu::borne_avec_ligne_excedentaire(DIAG_RECENT_EVENTS_WINDOW)], |r| {
             Ok(json!({ "ts": r.get::<_, i64>(0)?, "source": r.get::<_, String>(1)?, "severity": r.get::<_, i64>(2)?, "message": r.get::<_, String>(3)? }))
         }) {
             recent = rows.flatten().collect();
@@ -147,9 +154,9 @@ pub(crate) fn diag_bundle_json(conn: &Connection, spool: &str, db_path: &str, wa
     // Alertes heartbeat (capteur muet) ouvertes — signal d'angle mort, NON-PII (rule=heartbeat.<id>).
     let mut heartbeats: Vec<Value> = Vec::new();
     if let Ok(mut s) = conn.prepare(
-        "SELECT ts, rule, title FROM alert WHERE rule LIKE 'heartbeat.%' AND status IN ('new','ack') ORDER BY ts DESC LIMIT 20",
+        "SELECT ts, rule, title FROM alert WHERE rule LIKE 'heartbeat.%' AND status IN ('new','ack') ORDER BY ts DESC LIMIT ?1",
     ) {
-        if let Ok(rows) = s.query_map([], |r| {
+        if let Ok(rows) = s.query_map(params![aveu::borne_avec_ligne_excedentaire(DIAG_HEARTBEAT_ALERTS_WINDOW)], |r| {
             Ok(json!({ "ts": r.get::<_, i64>(0)?, "rule": r.get::<_, String>(1)?, "title": r.get::<_, String>(2)? }))
         }) {
             heartbeats = rows.flatten().collect();
@@ -178,15 +185,15 @@ pub(crate) fn diag_bundle_json(conn: &Connection, spool: &str, db_path: &str, wa
     let mut unclassified: Vec<Value> = Vec::new();
     if let Ok(mut s) = conn.prepare(
         "SELECT source, COUNT(*) n FROM event WHERE category IS NULL OR category='' \
-         GROUP BY source ORDER BY n DESC LIMIT 20",
+         GROUP BY source ORDER BY n DESC LIMIT ?1",
     ) {
-        if let Ok(rows) = s.query_map([], |r| {
+        if let Ok(rows) = s.query_map(params![aveu::borne_avec_ligne_excedentaire(DIAG_UNCLASSIFIED_SOURCES_WINDOW)], |r| {
             Ok(json!({ "source": r.get::<_, String>(0)?, "events": r.get::<_, i64>(1)? }))
         }) {
             unclassified = rows.flatten().collect();
         }
     }
-    json!({
+    let mut paquet = json!({
         "generated_at": now(),
         "kind": "plume-diagnostic-bundle",
         "version": env!("CARGO_PKG_VERSION"),
@@ -194,11 +201,18 @@ pub(crate) fn diag_bundle_json(conn: &Connection, spool: &str, db_path: &str, wa
         "config": Value::Object(cfgmap),
         "metrics": crate::gather_json(conn, spool, db_path, sv, warn),
         "health": crate::component_health(conn, spool, db_path, warn),
-        "recent_events": recent,
-        "heartbeat_alerts": heartbeats,
+        "recent_events": [],
+        "heartbeat_alerts": [],
         "counts": counts,
-        "unclassified_by_source": unclassified,
-    })
+        "unclassified_by_source": [],
+    });
+    // `P11.22-g` — les trois listes sont posées par la seconde porte du fabricant, chacune avec sa coupe mesurée.
+    if let Some(obj) = paquet.as_object_mut() {
+        aveu::poser_la_sous_liste(obj, "recent_events", recent, DIAG_RECENT_EVENTS_WINDOW as usize);
+        aveu::poser_la_sous_liste(obj, "heartbeat_alerts", heartbeats, DIAG_HEARTBEAT_ALERTS_WINDOW as usize);
+        aveu::poser_la_sous_liste(obj, "unclassified_by_source", unclassified, DIAG_UNCLASSIFIED_SOURCES_WINDOW as usize);
+    }
+    paquet
 }
 
 /// GET /api/system/diag — ADMIN-ONLY (route_min_role Admin + re-check ici). Bundle JSON pour le support.

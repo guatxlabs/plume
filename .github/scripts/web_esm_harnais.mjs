@@ -11175,6 +11175,39 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   console.log("[listes-non-lues] `P10.7-z` : la fenêtre de rattachement lit l'aveu « liste NON LUE » et le dit ; une liste lue et vide n'affiche rien");
 }
 
+// ---------------------------------------------------------------------------------------------
+// 86. LA PASTILLE DE POSTURE NE PEINT PAS « OK » SUR UN COMPTE NON ÉTABLI (`P10.7-g`, lot 91, 2026-09-11).
+//     Le démon sert `error` + `non_etablis` quand un compte de la vue d'ensemble n'a pas été lu ; la pastille
+//     peignait « OK » en vert sur cinq zéros par défaut. Joué par le registre des charges, avec le peintre réel.
+// ---------------------------------------------------------------------------------------------
+{
+  const nav86 = await import(pathToFileURL(path.join(WEB, "navigation.js")).href);
+  await import(pathToFileURL(path.join(WEB, "app.js")).href);
+  const fetchOrigine86 = globalThis.fetch;
+  const posture86 = () => nav86.chargesAffichees().filter((c) => c.cible === "posture");
+  exiger(posture86().length === 1, `(86-instrument) la charge « posture » n'est pas affichée (${posture86().length}) : rien ne serait peint`);
+  const pastille86 = document.querySelector("#posture");
+  exiger(!!pastille86 && pastille86.id === "posture", "(86-instrument) la pastille #posture est absente de l'arbre");
+  let corps86 = { open_alerts: 0, events: 0, ts: 1700000000 };
+  globalThis.fetch = async (u) => {
+    const url = String(u);
+    if (url.includes("/api/overview")) return { ok: true, status: 200, text: async () => JSON.stringify(corps86) };
+    return { ok: true, status: 200, text: async () => JSON.stringify({}) };
+  };
+  try {
+    await nav86.lancerLesCharges(posture86());
+    exiger(/OK/.test(String(pastille86.textContent)) && /\bok\b/.test(String(pastille86.className)),
+      `(86a) posture lue, zéro alerte : « OK » attendu (texte « ${pastille86.textContent} », classe « ${pastille86.className} »)`);
+    corps86 = { open_alerts: 0, events: 0, ts: 1700000000, error: "compte NON ÉTABLI : la lecture de open_alerts n'a pas abouti", non_etablis: ["open_alerts"] };
+    await nav86.lancerLesCharges(posture86());
+    exiger(/NON LUE|NOT READ/.test(String(pastille86.textContent)) && /\bbad\b/.test(String(pastille86.className)),
+      `(86b) compte NON ÉTABLI : la pastille doit le dire au lieu de rassurer (texte « ${pastille86.textContent} », classe « ${pastille86.className} »)`);
+  } finally {
+    globalThis.fetch = fetchOrigine86;
+  }
+  console.log("[posture] `P10.7-g` (lot 91) : la pastille dit « posture NON LUE » quand un compte n'est pas établi, et « OK » seulement sur des comptes lus");
+}
+
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;
 verdictRendu = true;
 if (echecs.length) {

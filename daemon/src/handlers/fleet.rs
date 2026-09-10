@@ -89,7 +89,9 @@ pub(crate) fn hotes_du_panneau_bornes(conn: &Connection, borne: i64) -> (Vec<Val
 /// en profondeur ; le scan lourd n'existe plus). Le tri (clé whitelistée) + LIMIT/OFFSET sont appliqués À PART
 /// (fleet_sort_paginate). NB : host_rollup n'étant JAMAIS prunée, un hôte dont TOUS les events ont été purgés par
 /// la rétention reste VISIBLE (son last_ts colle) — comportement VOULU pour une flotte (agent mort = visible).
-pub(crate) fn fleet_scan_all(conn: &Connection, now_ts: i64) -> (Vec<Value>, bool) {
+/// Le troisième champ rendu dit si la lecture des hôtes a ABOUTI (`P10.7-g`, lot 91) : faux quand `host_rollup` est
+/// illisible ou qu'une ligne l'est. L'enrôlement, lui, reste au mieux (absent = inventaire complet sans enrôlement).
+pub(crate) fn fleet_scan_all(conn: &Connection, now_ts: i64) -> (Vec<Value>, bool, bool) {
     let pipeline_fresh = pipeline_is_fresh(conn, now_ts);
     // ENRÔLEMENT (best-effort, mode 0) : host -> (name, created, last_used). token_hash JAMAIS lu (l'authorizer
     // read-pool le refuserait de toute façon). ORDER BY created DESC + or_insert -> on garde l'enrôlement le
@@ -115,12 +117,23 @@ pub(crate) fn fleet_scan_all(conn: &Connection, now_ts: i64) -> (Vec<Value>, boo
     // « personne n'a rien dit », c'est-à-dire sur « le silence alerte » — une lecture impossible produit
     // PLUS d'alertes, jamais moins.
     let marquages = marquages_dhotes(conn);
-    if let Ok(mut stmt) = conn.prepare(
-        "SELECT host, MAX(last_ts) AS last_seen, MIN(first_ts) AS first_seen, \
-         SUM(sig_total + sig_hot) AS signals FROM host_rollup WHERE host<>'' GROUP BY host",
-    ) {
-        if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?))) {
-            for (h, last, first, n) in rows.flatten() {
+    // `P10.7-g` (lot 91) — LA LECTURE DES HÔTES DIT SI ELLE A ABOUTI. Une table illisible laissait `hosts` VIDE et le
+    // gestionnaire mettait cette flotte vide EN CACHE pour tout le TTL : « la flotte est vide » resservi trente
+    // secondes. Le verdict rendu ici gate le cache et pose `error` dans le corps servi.
+    let mut hotes_lus = true;
+    let lignes: Result<Vec<(String, i64, i64, i64)>, rusqlite::Error> = conn
+        .prepare(
+            "SELECT host, MAX(last_ts) AS last_seen, MIN(first_ts) AS first_seen, \
+             SUM(sig_total + sig_hot) AS signals FROM host_rollup WHERE host<>'' GROUP BY host",
+        )
+        .and_then(|mut stmt| {
+            stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?)))
+                .and_then(|rows| rows.collect())
+        });
+    match lignes {
+        Err(_) => hotes_lus = false,
+        Ok(lignes) => {
+            for (h, last, first, n) in lignes {
                 let age = now_ts - last;
                 let status = fleet_status(age);
                 let e = enroll.get(&h);
@@ -149,7 +162,7 @@ pub(crate) fn fleet_scan_all(conn: &Connection, now_ts: i64) -> (Vec<Value>, boo
             }
         }
     }
-    (hosts, pipeline_fresh)
+    (hosts, pipeline_fresh, hotes_lus)
 }
 
 /// P11.10-a — LES PARTS, ET ELLES S'ADDITIONNENT. Calculée sur la liste COMPLÈTE (jamais sur la page
@@ -214,7 +227,7 @@ pub(crate) fn fleet_sort_paginate(mut hosts: Vec<Value>, sort: &str, dir_desc: b
 /// n'appelle PAS ceci (il scanne via le cache SWR) ; conservé pour fleet_query_page(&conn, …) direct (tests).
 #[allow(dead_code)] // utilisé uniquement par les tests (le handler passe par fleet_scan_all + le cache SWR)
 pub(crate) fn fleet_query_page(conn: &Connection, now_ts: i64, sort: &str, dir_desc: bool, limit: i64, offset: i64) -> (Vec<Value>, i64, bool) {
-    let (hosts, pipeline_fresh) = fleet_scan_all(conn, now_ts);
+    let (hosts, pipeline_fresh, _) = fleet_scan_all(conn, now_ts);
     let (page, total) = fleet_sort_paginate(hosts, sort, dir_desc, limit, offset);
     (page, total, pipeline_fresh)
 }
@@ -232,6 +245,9 @@ pub(crate) fn fleet_query_page(conn: &Connection, now_ts: i64, sort: &str, dir_d
 // lecture cachée. MT-KEY : clé = db_path (R3) -> jamais de partage inter-tenant. Lecture seule (read pool + watchdog) :
 // aucune touche mode 0 / data-plane / ingest.
 pub(crate) const FLEET_TTL: Duration = Duration::from_secs(30);
+/// L'aveu servi quand la flotte n'a pas pu être lue (`P10.7-g`, lot 91) : la liste vide n'est pas un inventaire, et
+/// elle n'est pas mise en cache.
+pub(crate) const FLOTTE_NON_LUE: &str = "flotte NON LUE : la lecture des hôtes n'a pas abouti — cette liste vide n'est pas un inventaire établi, et elle n'est pas mise en cache";
 // MT-KEY: cache par db_path. Valeur = (liste COMPLÈTE d'hôtes NON paginée, pipeline_fresh).
 pub(crate) static FLEET_CACHE: std::sync::OnceLock<Mutex<HashMap<String, (Instant, (Vec<Value>, bool))>>> = std::sync::OnceLock::new();
 // Gate anti-stampede GLOBAL (booléen, AUCUNE donnée tenant -> pas un vecteur de fuite) : UN refresh en vol.
@@ -280,8 +296,8 @@ pub(crate) async fn fleet(State(st): State<AppState>, Extension(au): Extension<A
                     let ts2 = now();
                     if let Ok((hosts_new, pf_new, done)) = tokio::task::spawn_blocking(move || {
                         read_with_watchdog(db.as_str(), (Vec::<Value>::new(), false, false), move |conn| {
-                            let (h, p) = fleet_scan_all(conn, ts2);
-                            (h, p, true)
+                            let (h, p, lus) = fleet_scan_all(conn, ts2);
+                            (h, p, lus)
                         })
                     })
                     .await
@@ -303,8 +319,8 @@ pub(crate) async fn fleet(State(st): State<AppState>, Extension(au): Extension<A
     let db2 = db_path.clone();
     let scan = tokio::task::spawn_blocking(move || {
         read_with_watchdog(db2.as_str(), (Vec::<Value>::new(), false, false), move |conn| {
-            let (h, p) = fleet_scan_all(conn, now_ts);
-            (h, p, true)
+            let (h, p, lus) = fleet_scan_all(conn, now_ts);
+            (h, p, lus)
         })
     })
     .await;
@@ -313,8 +329,13 @@ pub(crate) async fn fleet(State(st): State<AppState>, Extension(au): Extension<A
             if done {
                 fleet_map().lock().insert(ckey, (Instant::now(), (hosts_full.clone(), pf)));
             }
-            Json(fleet_response(&hosts_full, pf, &sort, dir_desc, limit, offset, now_ts))
+            let mut corps = fleet_response(&hosts_full, pf, &sort, dir_desc, limit, offset, now_ts);
+            if !done {
+                // `P10.7-g` (lot 91) — non lu (table illisible, ligne illisible ou garde-fou) : servi SANS cache, et DIT.
+                corps["error"] = json!(FLOTTE_NON_LUE);
+            }
+            Json(corps)
         }
-        Err(_) => Json(json!({ "hosts": [] })),
+        Err(_) => Json(json!({ "hosts": [], "error": FLOTTE_NON_LUE })),
     }
 }

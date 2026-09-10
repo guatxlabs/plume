@@ -250,7 +250,7 @@
         // une machine RETIRÉE qui parle encore : elle doit rester listée et sortir du dénominateur.
         hd_declarer(&conn, "frais0", "retire", "root", now_ts);
 
-        let (hosts, _) = fleet_scan_all(&conn, now_ts);
+        let (hosts, _, _) = fleet_scan_all(&conn, now_ts);
         assert_eq!(hosts.len(), 8, "toutes les machines restent LISTÉES, retirées comprises");
         let r = repartition_de_flotte(&hosts);
         let g = |k: &str| r[k].as_i64().unwrap();
@@ -393,7 +393,7 @@
             "sans les déclarations, la sonde retombe sur son comportement d'avant : elle alerte sur TOUT"
         );
         // et l'inventaire ne s'effondre pas non plus : chaque machine retombe sur « personne n'a rien dit ».
-        let (hosts, _) = fleet_scan_all(&conn, now_ts);
+        let (hosts, _, _) = fleet_scan_all(&conn, now_ts);
         assert_eq!(hosts.len(), 8);
         assert!(hosts.iter().all(|h| h["attente"] == "non_declare" && h["alerte_si_muet"] == true));
     }

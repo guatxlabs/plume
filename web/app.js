@@ -185,6 +185,13 @@ async function peindreLaPosture() {
   const ov = await api('/overview');
   $('#updated').textContent = fmtTs(ov.ts);
   const p = $('#posture');
+  // `P10.7-g` (lot 91) — un compte NON ÉTABLI ne se peint pas « OK » : la pastille dit que la posture n'a pas été lue.
+  if (ov && ov.error) {
+    p.textContent = LANG === 'en' ? 'posture NOT READ' : 'posture NON LUE';
+    p.title = String(ov.error);
+    p.className = 'posture bad';
+    return;
+  }
   p.textContent = ov.open_alerts > 0 ? `${ov.open_alerts} alerte(s)` : 'OK ';
   p.className = 'posture ' + (ov.open_alerts > 0 ? 'bad' : 'ok');
 }

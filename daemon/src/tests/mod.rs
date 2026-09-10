@@ -136,4 +136,5 @@ include!("panneau_avoue_bande_froide.rs"); // P10.5-q : le coffre des panneaux p
 include!("parseur_csv.rs"); // P3.10-a : un CSV de télémétrie entre par le parseur déclaratif (étape csv : colonnes déclarées, en-tête reconnue et comptée, découpe conforme, bornes, spec invalide ignorée, exemple livré)
 include!("escrow_froid_dans_les_trois_modes.rs"); // P7.20-f : les trois modes mettent les jours froids à l'abri (unité hôte, planificateur natif, aide dans les deux formes du binaire, runbook sans sidecar fantôme)
 include!("assertions_de_duree_derivees.rs");
-include!("listes_illisibles_avouent.rs"); // P10.7-z : sept listes non bornées avouent « liste NON LUE » quand leur lecture échoue, au lieu de servir un registre vide // P8.27-d : le balayage des assertions de durée d'horloge est dérivé par la machine, chaque membre traité et nommé, un membre neuf rougit
+include!("listes_illisibles_avouent.rs");
+include!("corps_rassurants_avouent.rs"); // P10.7-g (lot 91) : vue d'ensemble, environnements et flotte disent ce qui n'a pas été lu ; une flotte non lue n'est jamais mise en cache // P10.7-z : sept listes non bornées avouent « liste NON LUE » quand leur lecture échoue, au lieu de servir un registre vide // P8.27-d : le balayage des assertions de durée d'horloge est dérivé par la machine, chaque membre traité et nommé, un membre neuf rougit

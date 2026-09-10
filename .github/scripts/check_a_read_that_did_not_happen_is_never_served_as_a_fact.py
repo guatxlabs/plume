@@ -458,7 +458,7 @@ SITES_ADMIS = {
         ("daemon/src/handlers/fleet.rs", "fleet"): 2,
         ("daemon/src/handlers/sources.rs", "sources_inventory"): 1,
     },
-    "B": {  # closure SOURDE : 18 accusations sur 17 sites (25 le 2026-09-10 matin ; sept listes avouent depuis `P10.7-z`)
+    "B": {  # closure SOURDE : 17 accusations sur 16 sites (18 après `P10.7-z` ; les environnements avouent depuis le lot 91)
         ("daemon/src/handlers/admin_ui.rs", "ledger_get"): 1,
         ("daemon/src/handlers/admin_ui.rs", "retention_settings_get"): 1,
         ("daemon/src/handlers/alerts.rs", "alert_groups"): 1,
@@ -470,9 +470,13 @@ SITES_ADMIS = {
         ("daemon/src/handlers/cases.rs", "cases_list"): 1,
         ("daemon/src/handlers/compliance.rs", "compliance_posture"): 1,
         ("daemon/src/handlers/engagement.rs", "mode_get"): 1,
+        # `fleet` ×2 : GUÉRIE depuis le lot 91 (verdict typé rendu par fleet_scan_all, cache gaté, `error` posé) mais l'aveu
+        # vit HORS de la closure, dans le corps du gestionnaire — cet instrument ne le voit pas. Exemption gardée avec
+        # sa raison plutôt que d'élargir la lecture ; le témoin de route (corps_rassurants_avouent.rs) tient la propriété.
         ("daemon/src/handlers/fleet.rs", "fleet"): 2,
         ("daemon/src/handlers/freshness.rs", "compute_integrations"): 1,
-        ("daemon/src/handlers/overview.rs", "environments"): 1,
+        # `overview` : ses cinq comptes AVOUENT depuis le lot 91 (`error` + `non_etablis`) ; l'accusation qui reste est
+        # celle du compteur d'événements EN CACHE (`events_count_cached`, un niveau plus bas), reste nommé dans l'index.
         ("daemon/src/handlers/overview.rs", "overview"): 1,
         ("daemon/src/handlers/search.rs", "search"): 1,
         ("daemon/src/handlers/sources.rs", "sources_inventory"): 1,

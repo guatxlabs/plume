@@ -9395,7 +9395,12 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   exiger(!!qresult65 && !!selViz65,
     "(65f-instrument) `#qresult` ou `#viz` est absent d'index.html : le chemin de l'éditeur de requête ne serait pas exerçable et ce qui suit passerait en étant muet");
   if (qresult65 && selViz65) {
-    const offerts65 = (selViz65.options || []).map((o) => o.getAttribute("value") || o.textContent).filter((v) => MODES65.includes(v));
+    // `P11.20-d` : le <select> de l'éditeur est VIDE dans index.html — app.js le pose au démarrage depuis la
+    // liste unique (representations.js). Ici il est posé par le MÊME geste, et lu par ses enfants (le simulacre
+    // ne dérive pas `options` des enfants ajoutés après l'analyse).
+    const rep65 = await import(pathToFileURL(path.join(WEB, "representations.js")).href);
+    rep65.poserLesRepresentations(selViz65);
+    const offerts65 = Array.from(selViz65.children || []).map((o) => o.value || o.getAttribute("value") || o.textContent).filter((v) => MODES65.includes(v));
     exiger(offerts65.length >= 2,
       `(65f-instrument) le sélecteur de représentation d'Explore n'offre que ${offerts65.length} mode(s) du dispatcher : le chemin joué ne dirait presque rien`);
     const etat65 = await import(pathToFileURL(path.join(WEB, "state.js")).href);
@@ -11078,6 +11083,41 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     exiger(phrases.includes(c), `(83) le champ chaud « ${c} » n'a pas de phrase d'au moins vingt caractères dans le catalogue`);
   }
   console.log("[champs-chauds-documentes] `P11.19-a` (tranche) : les douze champs étendus chauds sont servis avec une phrase (`docs.extended`) et la barre les lit. CE QUE CE TÉMOIN NE TIENT PAS : la déclaration par capteur de ce qu'il ÉMET (`# plume-emits:`), qui reste l'objet de la clé.");
+}
+
+// ---------------------------------------------------------------------------------------------
+// 84. L'ÉDITEUR OFFRE LES MÊMES REPRÉSENTATIONS QUE LES PANNEAUX (`P11.20-d`, tranche du 2026-09-10).
+//     Mesuré le 2026-08-25 : quatre contre neuf, parce que la liste était écrite quatre fois. Ce témoin
+//     tient la liste unique (neuf, ordonnée, une icône chacune), le geste qui la pose dans un choix (vide
+//     d'abord, valeur voulue gardée, inconnue rabattue sur la table), et l'absence de toute copie : ni le
+//     <select> de l'éditeur ni les trois sites des panneaux n'écrivent plus une représentation en dur.
+// ---------------------------------------------------------------------------------------------
+{
+  const rep = await import(pathToFileURL(path.join(WEB, "representations.js")).href);
+  exiger(rep.REPRESENTATIONS.length === 9, `(84) neuf représentations attendues, ${rep.REPRESENTATIONS.length} servies`);
+  exiger(rep.REPRESENTATIONS[0].value === "table" && rep.REPRESENTATIONS[8].value === "histogram", "(84) l'ordre de la liste a changé");
+  for (const r of rep.REPRESENTATIONS) {
+    exiger(typeof rep.ICONE_DE_REPRESENTATION[r.value] === "string", `(84) la représentation ${r.value} n'a pas d'icône`);
+    exiger(typeof r.label === "string" && r.label.length > 0, `(84) la représentation ${r.value} n'a pas de libellé`);
+  }
+  const select = document.createElement("select");
+  select.value = "gauge";
+  rep.poserLesRepresentations(select);
+  exiger(select.children.length === 9, `(84) le choix posé porte ${select.children.length} option(s), pas neuf`);
+  exiger(select.value === "gauge", `(84) la valeur en place n'est pas gardée : ${select.value}`);
+  rep.poserLesRepresentations(select, "inconnue");
+  exiger(select.value === "table", `(84) une représentation inconnue ne retombe pas sur la table : ${select.value}`);
+  exiger(select.children.length === 9, "(84) poser deux fois duplique les options");
+  rep.poserLesRepresentations(select, "heatmap");
+  exiger(select.value === "heatmap", "(84) la représentation voulue n'est pas posée");
+  // — aucune copie de la liste : index.html vide, dashboards.js sans tableau ni chaîne en dur, app.js pose.
+  const html = readFileSync(path.join(WEB, "index.html"), "utf8");
+  exiger(/<select id="viz" aria-label="Visualisation"><\/select>/.test(html), "(84) le <select> de l'éditeur porte encore des options en dur");
+  const dash = readFileSync(path.join(WEB, "dashboards.js"), "utf8");
+  exiger(!/\[\['table', 'Table'\]/.test(dash) && !/<option value="table">/.test(dash) && !/label: 'Camembert'/.test(dash), "(84) dashboards.js écrit encore une copie de la liste");
+  exiger(/poserLesRepresentations\(ef\.querySelector\('\.pe-viz'\), p\.viz\)/.test(dash), "(84) le formulaire de panneau ne pose pas la liste");
+  exiger(/poserLesRepresentations\(\$\('#viz'\)\)/.test(readFileSync(path.join(WEB, "app.js"), "utf8")), "(84) l'éditeur ne pose pas la liste au démarrage");
+  console.log("[representations] `P11.20-d` (tranche) : une seule liste de neuf représentations, posée dans l'éditeur, le sélecteur et les formulaires de panneau ; aucune copie en dur ne subsiste.");
 }
 
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;

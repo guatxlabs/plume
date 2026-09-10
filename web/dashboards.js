@@ -13,6 +13,7 @@ import { prefGet, prefSet } from './prefs.js';
 // P11.13-a : l'inventaire de ce que le produit porte DÉJÀ (modèles livrés, requêtes enregistrées,
 // requêtes de règles), offert à qui compose un panneau. Ce module ne connaît rien d'un tableau de bord.
 import { choisirDansLexistant } from './composer_depuis_lexistant.js';
+import { ICONE_DE_REPRESENTATION, REPRESENTATIONS, poserLesRepresentations } from './representations.js'; // `P11.20-d` : une seule liste de représentations
 
 // `P10.5-i` — CE QU'UN PANNEAU N'A PAS PU VOIR ARRIVE JUSQU'À L'ÉCRAN.
 //
@@ -104,7 +105,7 @@ function getPanelObserver() {
 // auto-refresh : ne recharge QUE les panneaux déjà chargés ET visibles (window_s===0) -> ne force pas le
 // fetch des panneaux hors-écran/cachés à chaque tick (le lazy-load s'en charge à leur apparition).
 function refreshPanels() { S.panelCards.forEach(c => { const pn = c._panel; if (c.isConnected && pn && pn.window_s === 0 && pn.loaded && pn.visible) pn.reload(); }); }
-const VIZOPTS = [{ value: 'table', label: 'Table' }, { value: 'bar', label: 'Barres' }, { value: 'line', label: 'Courbe' }, { value: 'stat', label: 'Stat' }, { value: 'gauge', label: 'Jauge' }, { value: 'pie', label: 'Camembert' }, { value: 'donut', label: 'Donut' }, { value: 'heatmap', label: 'Heatmap' }, { value: 'histogram', label: 'Histogramme' }];
+const VIZOPTS = REPRESENTATIONS; // `P11.20-d` : la liste unique (representations.js), plus une copie ici
 // `P11.17-b` — L'ACCÈS À CE QUI EST DÉJÀ ENREGISTRÉ PART DE L'ENDROIT OÙ L'ON COMPOSE, ET PORTE LE NOM DE
 // CE QU'IL OFFRE. La console offrait DEUX entrées voisines pour un même but, et une seule aboutissait :
 // l'icône « + » (« Ajouter un panneau »), celle qu'on prend spontanément, ouvrait le formulaire nu ; et un
@@ -449,8 +450,8 @@ async function renderPanel(p, editable = true) {
   let curViz = p.viz;
   const seg = document.createElement('div'); seg.className = 'seg'; seg.setAttribute('role', 'group'); seg.setAttribute('aria-label', 'Visualisation');
   const btns = {};
-  const VIZIC = { table: 'table', bar: 'bars', line: 'activity', stat: 'hash', gauge: 'gauge', pie: 'pie', donut: 'pie', heatmap: 'grid', histogram: 'histogram' };
-  [['table', 'Table'], ['bar', 'Barres'], ['line', 'Courbe'], ['stat', 'Stat'], ['gauge', 'Jauge'], ['pie', 'Camembert'], ['donut', 'Donut'], ['heatmap', 'Heatmap'], ['histogram', 'Histogramme']].forEach(([m, lab]) => {
+  const VIZIC = ICONE_DE_REPRESENTATION;
+  REPRESENTATIONS.map((r) => [r.value, r.label]).forEach(([m, lab]) => {
     const b = document.createElement('button'); b.innerHTML = ic(VIZIC[m]); b.title = lab; b.setAttribute('aria-label', lab);
     if (m === curViz) b.classList.add('on');
     b.onclick = () => {
@@ -508,14 +509,14 @@ async function renderPanel(p, editable = true) {
   // formulaire d'édition par panneau (titre / requête / viz / fenêtre)
   const ef = document.createElement('form'); ef.className = 'ruleform'; ef.hidden = true;
   ef.innerHTML = `<input class="pe-title" placeholder="titre"><textarea class="pe-query" rows="2" spellcheck="false"></textarea>`
-    + `<div class="rf-row"><label>Viz <select class="pe-viz"><option value="table">Table</option><option value="bar">Barres</option><option value="line">Courbe</option><option value="stat">Stat</option><option value="gauge">Jauge</option><option value="pie">Camembert</option><option value="donut">Donut</option><option value="heatmap">Heatmap</option><option value="histogram">Histogramme</option></select></label>`
+    + `<div class="rf-row"><label>Viz <select class="pe-viz"></select></label>`
     + `<label>Fenêtre(s) (0 = globale) <input class="pe-win" type="number" value="0"></label></div>`
     + `<div class="rf-row"><label>Panneau <select class="pe-vis"><option value="shared">public</option><option value="private">privé</option></select></label>`
     + `<label><input class="pe-qpriv" type="checkbox"> requête privée (cacher le texte aux autres)</label></div>`
     + `<label class="pe-drill-l">Requête au clic / drill (vide = défaut) <textarea class="pe-drill" rows="2" spellcheck="false" placeholder="search source=$value | table ts,source,src_ip,message"></textarea></label>`
     + `<div class="rf-hint">Marqueurs au clic : $value (valeur cliquée, mise entre guillemets) ; $from / $to (bornes du bucket). Un clic temporel restreint déjà la fenêtre au bucket.</div>`
     + `<div class="rf-actions"><button type="submit">Enregistrer</button><button type="button" class="pe-cancel">Annuler</button></div>`;
-  ef.querySelector('.pe-title').value = p.title; ef.querySelector('.pe-query').value = p.query; ef.querySelector('.pe-viz').value = p.viz; ef.querySelector('.pe-win').value = p.window_s || 0;
+  ef.querySelector('.pe-title').value = p.title; ef.querySelector('.pe-query').value = p.query; poserLesRepresentations(ef.querySelector('.pe-viz'), p.viz); ef.querySelector('.pe-win').value = p.window_s || 0;
   ef.querySelector('.pe-vis').value = p.visibility || 'shared'; ef.querySelector('.pe-qpriv').checked = !!p.query_private;
   ef.querySelector('.pe-drill').value = p.drill || '';
   edit.onclick = () => { ef.hidden = !ef.hidden; };

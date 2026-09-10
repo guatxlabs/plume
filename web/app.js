@@ -24,6 +24,7 @@ import { initThreatIntel } from './threatintel.js';
 import { loadRiskView } from './risk.js';
 import { loadDetAdv } from './detadv.js';
 import { loadAttackMatrix } from './attack.js';
+import { poserLesRepresentations } from './representations.js'; // `P11.20-d` : l'éditeur offre les neuf représentations, depuis la liste unique
 import { initSigmaImport } from './sigmaimport.js';
 import { loadOperatorAudit, loadTenantsView } from './multitenant.js';
 import { addToCase, canEditCases, createCase, loadCases, openCase } from './cases.js';
@@ -326,6 +327,9 @@ if ($('#run')) $('#run').addEventListener('click', () => { clearDrillCrumb(); ru
 if ($('#qprev')) { $('#qprev').innerHTML = ic('chevleft'); $('#qprev').addEventListener('click', () => qHistGo(-1)); }
 if ($('#qnext')) { $('#qnext').innerHTML = ic('chevright'); $('#qnext').addEventListener('click', () => qHistGo(1)); }
 if ($('#sql')) $('#sql').addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); clearDrillCrumb(); runQuery(); } });
+// `P11.20-d` — l'éditeur offre les MÊMES représentations que les panneaux (neuf, depuis la liste unique) :
+// le <select> de index.html est vide, il est posé ici, avant d'écouter ses changements.
+poserLesRepresentations($('#viz'));
 if ($('#viz')) $('#viz').addEventListener('change', renderViz);
 // `P11.20-v` — CHANGER LA TAILLE DE PAGE CHANGE LES FRONTIÈRES DU PARCOURS, DONC LA PILE DE CURSEURS AVEC.
 // Les curseurs mémorisés ont été capturés aux frontières de l'ANCIENNE taille ; le rechargement n'en réécrit

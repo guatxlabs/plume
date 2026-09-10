@@ -380,7 +380,7 @@ PLAFOND_DE_TROUS = {
     "help.js": 0, "i18n_observer.js": 0, "idp.js": 0, "index.html": 0, "index_policies.js": 0, "keys.js": 0, "knowledge.js": 0, "login.js": 0, "lookups.js": 0,
     "composer_depuis_lexistant.js": 0,
     "multitenant.js": 0, "navigation.js": 0, "prefs.js": 0, "processors.js": 0, "producer_ui.js": 0, "retention.js": 0,
-    "copie_et_selection.js": 0, "recherche_de_liste.js": 0, "registres.js": 0, "risk.js": 0, "runbooks.js": 0, "savedqueries.js": 0, "sigmaimport.js": 0, "soql_complete.js": 0,
+    "copie_et_selection.js": 0, "recherche_de_liste.js": 0, "registres.js": 0, "representations.js": 0, "risk.js": 0, "runbooks.js": 0, "savedqueries.js": 0, "sigmaimport.js": 0, "soql_complete.js": 0,
     "sources.js": 0, "state.js": 0, "suppressions.js": 0, "system.js": 0, "threatintel.js": 0, "viz.js": 0,
 }
 
@@ -411,7 +411,7 @@ PLAFOND_HORS_REGARD = {
     # `processors.js` 10 -> 11 le 2026-09-10 (P4.12-b) : un cinquième libellé de compteur (« renommés ») passe par la
     # fabrique locale `stat(`, que la garde ne lit pas — exactement comme ses quatre voisins déjà hors regard.
     "multitenant.js": 6, "navigation.js": 2, "prefs.js": 0, "processors.js": 11, "producer_ui.js": 7,
-    "recherche_de_liste.js": 1, "retention.js": 16, "registres.js": 0, "risk.js": 4, "runbooks.js": 20, "savedqueries.js": 2,
+    "recherche_de_liste.js": 1, "retention.js": 16, "registres.js": 0, "representations.js": 0, "risk.js": 4, "runbooks.js": 20, "savedqueries.js": 2,
     "sigmaimport.js": 12, "soql_complete.js": 16, "sources.js": 5, "state.js": 0, "suppressions.js": 16,
     "system.js": 33, "threatintel.js": 6, "viz.js": 21,
 }

@@ -11734,3 +11734,28 @@ fn p7_20f_un_temporaire_de_copie_interrompue_n_est_pas_une_cle() {
     assert_eq!(cles.len(), 1, "le temporaire n'est toujours pas une clé : {cles:?}");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+// ====================================================================================================
+// `P10.5-o` — LA TRONCATURE VECTORISÉE EST TYPÉE : mesurée ou complète par construction, jamais un faux nu.
+// ====================================================================================================
+
+/// La finalisation publie le drapeau ET son origine : une mesure reste « mesuree » vraie ou fausse ; une
+/// complétude par construction se dit comme telle ; et une coupe de SORTIE (au-delà du plafond
+/// d'hydratation) est une mesure faite ici, qui l'emporte sur la complétude d'entrée.
+#[test]
+fn p10_5o_la_troncature_vectorisee_porte_son_origine() {
+    use super::planner::{finalize, Troncature};
+    let t0 = std::time::Instant::now();
+    let cols = vec!["a".to_string()];
+    let v = finalize(cols.clone(), vec![vec![serde_json::json!(1)]], Troncature::Mesuree(true), t0);
+    assert_eq!((v["stats"]["truncated"].as_bool(), v["stats"]["truncated_origin"].as_str()), (Some(true), Some("mesuree")), "{v}");
+    let v = finalize(cols.clone(), vec![vec![serde_json::json!(1)]], Troncature::Mesuree(false), t0);
+    assert_eq!((v["stats"]["truncated"].as_bool(), v["stats"]["truncated_origin"].as_str()), (Some(false), Some("mesuree")), "{v}");
+    let v = finalize(cols.clone(), vec![vec![serde_json::json!(1)]], Troncature::CompleteParConstruction, t0);
+    assert_eq!((v["stats"]["truncated"].as_bool(), v["stats"]["truncated_origin"].as_str()), (Some(false), Some("complete_par_construction")), "{v}");
+    let cap = super::cold_hydrate_row_cap();
+    let trop: Vec<Vec<serde_json::Value>> = (0..cap + 1).map(|i| vec![serde_json::json!(i)]).collect();
+    let v = finalize(cols, trop, Troncature::CompleteParConstruction, t0);
+    assert_eq!((v["stats"]["truncated"].as_bool(), v["stats"]["truncated_origin"].as_str(), v["stats"]["rows"].as_u64()),
+               (Some(true), Some("mesuree"), Some(cap as u64)), "la coupe de sortie est une mesure faite ici : {}", v["stats"]);
+}

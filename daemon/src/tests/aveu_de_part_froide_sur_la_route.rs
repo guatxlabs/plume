@@ -268,6 +268,10 @@
         assert_eq!(v1["stats"]["cold"]["served_from"].as_str(), Some("cold-vectorized"), "et dans l'aveu de part froide : {}", v1["stats"]["cold"]);
         assert!(v1["stats"]["cold"]["boundary_ts"].as_i64().is_some(), "l'aveu de la voie porte la frontière : {}", v1["stats"]["cold"]);
         assert_eq!(compte_servi(&v1), LIGNES_FROIDES, "la fenêtre purement froide compte les lignes vieillies, et elles seules : {}", v1["rows"]);
+        // `P10.5-o` — le drapeau de troncature de la voie porte son ORIGINE : un compte sur tous les fichiers est
+        // complet par construction, et se dit comme tel — pas comme une mesure qui n'a pas eu lieu.
+        assert_eq!(v1["stats"]["truncated"].as_bool(), Some(false), "{}", v1["stats"]);
+        assert_eq!(v1["stats"]["truncated_origin"].as_str(), Some("complete_par_construction"), "l'origine du drapeau est publiée : {}", v1["stats"]);
 
         // (2) FENÊTRE CHEVAUCHANTE (`from < B <= to`) : la fusion, `cold-vectorized-merge`, et toutes les lignes.
         let (code2, v2) = banc.interroger(soql, banc.base_froide - 60, banc.maintenant + 60).await;
@@ -275,6 +279,7 @@
         assert_eq!(v2["stats"]["served_from"].as_str(), Some("cold-vectorized-merge"), "la fusion doit se nommer dans `stats.served_from` : {}", v2["stats"]);
         assert_eq!(v2["stats"]["cold"]["served_from"].as_str(), Some("cold-vectorized-merge"), "et dans l'aveu de part froide : {}", v2["stats"]["cold"]);
         assert_eq!(compte_servi(&v2), LIGNES_FROIDES + 1, "la fenêtre chevauchante compte les lignes des deux bras : {}", v2["rows"]);
+        assert_eq!(v2["stats"]["truncated_origin"].as_str(), Some("complete_par_construction"), "la fusion de deux comptes est complète par construction : {}", v2["stats"]);
 
         // (3) TÉMOIN NÉGATIF : une fenêtre entièrement chaude ne porte aucune des deux valeurs de la voie.
         let (code3, v3) = banc.interroger(soql, banc.maintenant - JOUR, banc.maintenant + 60).await;

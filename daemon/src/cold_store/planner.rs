@@ -1147,8 +1147,8 @@ pub(crate) fn cold_keyset_page(
 fn build_empty(agg: &VecAgg, t0: Instant) -> Value {
     let cols = plan_columns(agg);
     match agg {
-        VecAgg::Count => finalize(cols, vec![vec![json!(0)]], false, t0),
-        _ => finalize(cols, vec![], false, t0),
+        VecAgg::Count => finalize(cols, vec![vec![json!(0)]], Troncature::CompleteParConstruction, t0),
+        _ => finalize(cols, vec![], Troncature::CompleteParConstruction, t0),
     }
 }
 
@@ -1395,7 +1395,8 @@ fn exec_agg(scan: &ColdScan, agg: &VecAgg, full: &Pred, deny: &std::collections:
         VecAgg::Count => {
             // #18 P6 — somme des counts partiels PARALLÈLES (fusion commutative) ; == somme séquentielle.
             let total = par_count(scan, full, deny)?;
-            Ok(Some(finalize(cols, vec![vec![json!(total)]], false, t0)))
+            // Un compte sur TOUS les fichiers du plan : complet par construction, rien à mesurer.
+            Ok(Some(finalize(cols, vec![vec![json!(total)]], Troncature::CompleteParConstruction, t0)))
         }
         VecAgg::GroupCount(dims) => {
             let agg_map = scan_group(scan, full, dims, deny, group_max)?;
@@ -1403,7 +1404,8 @@ fn exec_agg(scan: &ColdScan, agg: &VecAgg, full: &Pred, deny: &std::collections:
             // stable (l'invariant porte sur les DONNÉES ; le harnais compare normalisé). N'ALTÈRE aucune donnée.
             let mut rows: Vec<(GroupKey, i64)> = agg_map.into_iter().collect();
             rows.sort_by(|a, b| a.0.cmp(&b.0));
-            Ok(Some(finalize(cols, group_rows(&rows, dims), false, t0)))
+            // `scan_group` REFUSE au-delà de `group_max` (Err) au lieu de couper : ce qui arrive ici est complet.
+            Ok(Some(finalize(cols, group_rows(&rows, dims), Troncature::CompleteParConstruction, t0)))
         }
         VecAgg::TopN(dims, asc, n) => {
             let agg_map = scan_group(scan, full, dims, deny, group_max)?;
@@ -1425,7 +1427,8 @@ fn exec_agg(scan: &ColdScan, agg: &VecAgg, full: &Pred, deny: &std::collections:
                 return Ok(None); // tie au bord -> fallback vers cold_union_query
             }
             ranked.truncate(*n);
-            Ok(Some(finalize(cols, group_rows(&ranked, dims), false, t0)))
+            // La tête explicite est une borne DEMANDÉE, pas une coupe subie : complet par construction.
+            Ok(Some(finalize(cols, group_rows(&ranked, dims), Troncature::CompleteParConstruction, t0)))
         }
         VecAgg::Materialize(proj, head) => {
             // Cap = head si fourni, sinon le plafond d'hydratation (mêmes bornes que l'oracle). Ordre CANONIQUE
@@ -1449,7 +1452,7 @@ fn exec_agg(scan: &ColdScan, agg: &VecAgg, full: &Pred, deny: &std::collections:
                 .into_iter()
                 .map(|r| r.into_iter().map(sqlval_to_json).collect())
                 .collect();
-            Ok(Some(finalize(cols, out, truncated, t0)))
+            Ok(Some(finalize(cols, out, Troncature::Mesuree(truncated), t0)))
         }
     }
 }
@@ -1545,16 +1548,46 @@ fn sqlval_to_json(v: rusqlite::types::Value) -> Value {
 /// INTRODUITE par la correction. On applique donc ICI le MÊME plafond, une fois, pour toute forme
 /// présente ou future : c'est une troncature de SORTIE (chaque ligne rendue reste exacte), pas la
 /// troncature d'ENTRÉE que `exactness` interdit.
-fn finalize(columns: Vec<String>, mut rows: Vec<Vec<Value>>, truncated: bool, t0: Instant) -> Value {
+/// `P10.5-o` — LA TRONCATURE EST TYPÉE, JAMAIS UN FAUX NU. Un booléen posé en dur ne distingue pas « mesuré
+/// et faux » de « jamais mesuré » ; chaque chemin dit désormais lequel des deux il est, et la réponse publie
+/// l'origine à côté du drapeau (`stats.truncated_origin`). La coupe de SORTIE (`out_cap`) reste une mesure
+/// faite ici même : elle rend l'origine « mesurée » quelle que soit l'entrée.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Troncature {
+    /// MESURÉE sur ce chemin : `true`, des lignes manquent ; `false`, la mesure dit qu'aucune ne manque
+    /// (une garde qui a comparé le total au plafond, un drapeau relu sur le bras chaud, un cap franchi).
+    Mesuree(bool),
+    /// COMPLÈTE PAR CONSTRUCTION : le chemin ne PEUT pas tronquer — agrégat sur tous les fichiers, tête
+    /// explicite (`head N` est une borne demandée, pas une coupe), résultat vide, borne de groupes qui
+    /// REFUSE au-delà au lieu de couper. Dit comme tel, et non comme une mesure qui n'a pas eu lieu.
+    CompleteParConstruction,
+}
+
+impl Troncature {
+    pub(super) fn est_tronquee(self) -> bool {
+        matches!(self, Troncature::Mesuree(true))
+    }
+    pub(super) fn origine(self) -> &'static str {
+        match self {
+            Troncature::Mesuree(_) => "mesuree",
+            Troncature::CompleteParConstruction => "complete_par_construction",
+        }
+    }
+}
+
+pub(super) fn finalize(columns: Vec<String>, mut rows: Vec<Vec<Value>>, troncature: Troncature, t0: Instant) -> Value {
     let out_cap = cold_hydrate_row_cap();
-    let truncated = truncated || rows.len() > out_cap;
+    let coupe_de_sortie = rows.len() > out_cap;
+    let truncated = troncature.est_tronquee() || coupe_de_sortie;
+    // Une coupe de sortie est une MESURE faite ici : elle l'emporte sur « complète par construction ».
+    let origine = if coupe_de_sortie { Troncature::Mesuree(true).origine() } else { troncature.origine() };
     rows.truncate(out_cap);
     let n = rows.len();
     let elapsed_ms = (t0.elapsed().as_secs_f64() * 1_000_000.0).round() / 1000.0;
     json!({
         "columns": columns,
         "rows": rows,
-        "stats": { "elapsed_ms": elapsed_ms, "rows": n, "truncated": truncated },
+        "stats": { "elapsed_ms": elapsed_ms, "rows": n, "truncated": truncated, "truncated_origin": origine },
     })
 }
 
@@ -1816,12 +1849,18 @@ pub(crate) fn cold_vectorized_merge_try(
             let hv = hot_partial(db_path, conf, env_filter, boundary, q_to, &hot_base, dim_preds, budget_ms, qid)?;
             let hot_total = value_rows(&hv).first().and_then(|r| r.first()).and_then(|v| v.as_i64()).unwrap_or(0);
             note_vec(db_path);
-            Ok(Some(finalize(cols, vec![vec![json!(cold_total + hot_total)]], false, t0)))
+            // Deux comptes (froid sur tous les fichiers, chaud par COUNT) : aucun des deux ne peut tronquer.
+            Ok(Some(finalize(cols, vec![vec![json!(cold_total + hot_total)]], Troncature::CompleteParConstruction, t0)))
         }
         VecAgg::GroupCount(dims) | VecAgg::TopN(dims, _, _) => {
             // FROID : group-by count vectorisé (map non tronquée). HOT : group-by count SQLite (SANS head).
             let cold_map = scan_group(&scan, &full, dims, &deny, cold_group_max(conf))?;
             let hv = hot_partial(db_path, conf, env_filter, boundary, q_to, &hot_base, dim_preds, budget_ms, qid)?;
+            // `P10.5-o` — LA TRONCATURE D'ENTRÉE DU BRAS CHAUD EST LUE, PLUS POSÉE À FAUX : le bras chaud borne sa
+            // sortie à `PLUME_QUERY_MAX` groupes et le dit dans ses propres `stats` ; une fusion qui passait
+            // « non tronqué » servait alors un ensemble amputé comme complet. Le froid, lui, est complet par
+            // construction (`scan_group` refuse au-delà de sa borne au lieu de couper).
+            let chaud_tronque = hv.get("stats").and_then(|s| s.get("truncated")).and_then(|t| t.as_bool()).unwrap_or(false);
             let hot_rows = value_rows(&hv);
             // FIX #18 P4b-cap — l'oracle groupe (froid∪hot) via `run_on_conn`, qui BORNE sa SORTIE à `cap`
             // GROUPES ; et son HOT-arm interne (`count by dims` SANS limite) est LUI-MÊME capé à `cap`. Le nombre
@@ -1882,7 +1921,7 @@ pub(crate) fn cold_vectorized_merge_try(
                 })
                 .collect();
             note_vec(db_path);
-            Ok(Some(finalize(cols, rows, false, t0)))
+            Ok(Some(finalize(cols, rows, Troncature::Mesuree(chaud_tronque), t0)))
         }
         VecAgg::Materialize(proj, head) => {
             // FROID : matérialise TOUTES les lignes matchantes (<= cold window <= cap, gate 5) SANS head.
@@ -1895,6 +1934,10 @@ pub(crate) fn cold_vectorized_merge_try(
             // HOT : matérialise TOUTES les lignes hot matchantes (hot_base = `| table cols`, SANS head).
             let hv = hot_partial(db_path, conf, env_filter, boundary, q_to, &hot_base, dim_preds, budget_ms, qid)?;
             let hot_rows = value_rows(&hv);
+            // `P10.5-o` — le bras chaud borne sa propre sortie et le dit : un bras chaud coupé à `cap` avec un
+            // froid vide rend un `total` égal au plafond, que la garde ci-dessous ne peut pas voir. Le drapeau
+            // est donc LU sur le bras, pas déduit du total.
+            let chaud_tronque = hv.get("stats").and_then(|s| s.get("truncated")).and_then(|t| t.as_bool()).unwrap_or(false);
             let total = (cold_rows.len() + hot_rows.len()) as i64;
             // L'ordre de l'`UNION ALL` de l'oracle (hot-arm puis cold-arm, sous plan SQLite) n'est PAS
             // reproductible de façon fiable. On ne route donc la matérialisation QUE quand elle ne TRONQUE
@@ -1910,11 +1953,13 @@ pub(crate) fn cold_vectorized_merge_try(
                 return Ok(None);
             }
             // Pas de troncature -> concat (hot puis cold, comme l'`UNION ALL` de l'oracle ; l'ordre n'est de
-            // toute façon pas observable ici puisqu'on ne tronque pas). truncated=false (parité).
+            // toute façon pas observable ici puisqu'on ne tronque pas). La garde ci-dessus a MESURÉ le total
+            // contre la borne effective, et le bras chaud a été LU : « non tronqué » est ici une mesure, jamais
+            // une constante (`P10.5-o`).
             let mut rows = hot_rows;
             rows.extend(cold_rows);
             note_vec(db_path);
-            Ok(Some(finalize(cols, rows, false, t0)))
+            Ok(Some(finalize(cols, rows, Troncature::Mesuree(chaud_tronque), t0)))
         }
     }
 }

@@ -3,7 +3,7 @@
 // Extrait d'app.js en PURE MOVE ; depuis P11.1 : lien de recherche servi par le démon, barre d'actions unique.
 // Le cycle app<->module est benin : les fonctions importees d'app.js ne sont appelees qu'a
 // l'EXECUTION (handlers/async apres await), jamais a l'evaluation du module.
-import { $, esc, sev, fmtTs, ic, withBusy, api, apiSend, makePager, exportBar, confirmModal, mitreName, LANG, toast } from './core.js';
+import { $, esc, sev, fmtTs, ic, withBusy, api, apiSend, makePager, exportBar, confirmModal, modal, mitreName, LANG, toast } from './core.js';
 import { S } from './state.js';
 import { banIp, runQuery, updateZoomBadge } from './viz.js';
 import { canEditCases, addToCase, openCase } from './cases.js';
@@ -87,6 +87,49 @@ const PIVOT_MOTS = {
   aucun: { fr: "Aucun pivot exact : le démon n'a servi AUCUNE fenêtre d'évaluation pour cette alerte, la console n'a donc pas la requête qui l'a comptée. Elle refuse d'en fabriquer une — chercher son libellé rendrait un vide qui ne prouverait rien. Elle ne peut pas davantage renvoyer vers ce qui FONDE l'alerte : rien de ce qui est servi ne le déclare, et la console ne le devinera pas.", en: 'No exact pivot: the daemon served NO evaluation window for this alert, so the console does not have the query that counted it. It refuses to make one up — searching its wording would return an emptiness that proves nothing. Nor can it point to what the alert is FOUNDED on: nothing that is served declares it, and the console will not guess.' },
 };
 const motDuPivot = (mode) => (LANG === 'en' ? PIVOT_MOTS[mode].en : PIVOT_MOTS[mode].fr);
+// P11.14-h — LE FONDEMENT EST DÉCLARÉ PAR LE DÉMON À LA LEVÉE (`basis`, vocabulaire fermé de fondement.rs) ;
+// la console le LIT, elle ne le devine plus d'après le jeton de règle. Fondée sur un instantané, l'alerte
+// pivote vers le dernier instantané de ce genre pour cette machine ; sans machine servie, le refus le dit.
+PIVOT_MOTS.instantane = {
+  fr: "Cliquer → voir l'instantané de cette machine (les contrôles attendus et leur dernier état) ; l'alerte est fondée sur un instantané, pas sur une recherche d'événements.",
+  en: "Click → see this machine's snapshot (the expected controls and their last state); the alert is founded on a snapshot, not on an event search.",
+};
+PIVOT_MOTS.instantane_sans_machine = {
+  fr: "Aucun pivot : l'alerte est fondée sur un instantané mais le démon n'a servi aucune machine — la console refuse de deviner laquelle.",
+  en: 'No pivot: the alert is founded on a snapshot but the daemon served no machine — the console refuses to guess which one.',
+};
+const MOTS_INSTANTANE = {
+  titre: { fr: 'Instantané', en: 'Snapshot' }, pris: { fr: 'pris le', en: 'taken on' }, fermer: { fr: 'Fermer', en: 'Close' },
+  controles: { fr: 'contrôles attendus', en: 'expected controls' },
+  absent: { fr: "aucun instantané de ce genre n'a été servi pour cette machine", en: 'no snapshot of this kind has been served for this machine' },
+  tenu: { fr: 'tenu', en: 'held' }, manquant: { fr: 'MANQUANT', en: 'MISSING' }, sans: { fr: 'sans verdict', en: 'no verdict' },
+};
+const motDeLInstantane = (cle) => (LANG === 'en' ? MOTS_INSTANTANE[cle].en : MOTS_INSTANTANE[cle].fr);
+// LA DESTINATION D'UN FONDEMENT D'INSTANTANÉ : /api/snapshot/{genre}/{machine} (404 = pas d'instantané de cette
+// machine, jamais celui d'une autre). Un catalogue de contrôles est rendu contrôle par contrôle avec son
+// verdict ; un autre genre, clé par clé. Une absence ou une erreur est DITE dans la fenêtre, pas avalée.
+async function ouvrirLInstantane(kind, host) {
+  const body = document.createElement('div'); body.className = 'instantane';
+  let r = null;
+  try { r = await api(`/snapshot/${encodeURIComponent(kind)}/${encodeURIComponent(host)}`); }
+  catch (e) { body.appendChild(Object.assign(document.createElement('p'), { className: 'muted', textContent: `${motDeLInstantane('absent')} (${(e && e.message) || e})` })); }
+  const data = r && r.data && typeof r.data === 'object' ? r.data : null;
+  if (data && Array.isArray(data.controls)) {
+    body.appendChild(Object.assign(document.createElement('p'), { textContent: `${data.controls.length} ${motDeLInstantane('controles')}` }));
+    const ul = document.createElement('ul'); ul.className = 'controles';
+    data.controls.forEach(c => {
+      const verdict = c.ok === true ? 'tenu' : c.ok === false ? 'manquant' : 'sans';
+      ul.appendChild(Object.assign(document.createElement('li'), { className: verdict === 'tenu' ? 'ok' : verdict === 'manquant' ? 'bad' : 'muted', textContent: `${c.id || '?'} : ${motDeLInstantane(verdict)}` }));
+    });
+    body.appendChild(ul);
+  } else if (data) {
+    const ul = document.createElement('ul');
+    Object.entries(data).forEach(([k, v]) => ul.appendChild(Object.assign(document.createElement('li'), { textContent: `${k} : ${typeof v === 'object' ? JSON.stringify(v) : String(v)}` })));
+    body.appendChild(ul);
+  }
+  const quand = r && r.ts ? ` (${motDeLInstantane('pris')} ${fmtTs(r.ts)})` : '';
+  await modal({ title: `${motDeLInstantane('titre')} ${kind} — ${host}${quand}`, body, okText: 'OK', cancelText: motDeLInstantane('fermer') });
+}
 // P4.12-h — UN ÉPISODE OUVERT DIT DEPUIS QUAND : le démon sert `opened_at`, jamais écrasé par un
 // rafraîchissement ; la mention n'apparaît que si l'épisode a été rafraîchi au moins une fois
 // (`opened_at < ts`), donc dérivée de la donnée, sans seuil décoratif. Bilingue par construction.
@@ -101,6 +144,10 @@ function pivotDUneAlerte(a) {
   // La fenêtre du lien est celle de l'évaluation : [ts - window_s, ts], sans marge — une marge rendait
   // le lien PLUS LARGE que le compte sur toutes les règles (mesuré P11.1-a).
   if (lien) return { mode: 'exact', query: lien.query, from: lien.from, to: lien.to, survol: motDuPivot('exact') };
+  if (a.basis === 'instantane') {
+    if (a.host && a.basis_ref) return { mode: 'instantane', kind: a.basis_ref, host: a.host, query: '', from: null, to: null, survol: motDuPivot('instantane') };
+    return { mode: 'aucun', query: '', from: null, to: null, survol: motDuPivot('instantane_sans_machine') };
+  }
   const ipm = ((a.title || '') + ' ' + (a.detail || '')).match(ALERT_IP_RE);
   if (ipm) {
     const w = (a.window_s || 3600);
@@ -125,6 +172,7 @@ function alertDrill(a) {
   // `P11.4-l`) : la raison est écrite UNE fois, portée par le survol du contrôle, et le clic la DIT.
   // RIEN d'autre ne bouge : ni l'onglet courant, ni le champ de requête, ni la fenêtre de zoom partagée.
   if (pivot.mode === 'aucun') { toast(pivot.survol, 'bad', 6000); return false; }
+  if (pivot.mode === 'instantane') { ouvrirLInstantane(pivot.kind, pivot.host); return true; }
   if (pivot.from != null && pivot.to != null) {
     S.zoomRange = { from: pivot.from, to: pivot.to };
     updateZoomBadge(); if (typeof updateRangeBtn === 'function') updateRangeBtn();

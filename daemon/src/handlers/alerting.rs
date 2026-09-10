@@ -451,8 +451,8 @@ pub(crate) fn run_advanced_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> 
                 }
             };
             let _ = conn.execute(
-                "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,mitre,src_ip,pid,host) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-                params![now_ts, format!("rule.{id}"), severity, title, query, dedup, mitre, a_src, a_pid, a_host],
+                "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,mitre,src_ip,pid,host,basis) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+                params![now_ts, format!("rule.{id}"), severity, title, query, dedup, mitre, a_src, a_pid, a_host, crate::fondement::Fondement::Regle.mot()],
             );
             let _ = conn.execute(
                 "INSERT OR REPLACE INTO alert_throttle(rule_id,throttle_key,last_fire) VALUES(?1,?2,?3)",

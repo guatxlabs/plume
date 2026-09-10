@@ -123,6 +123,11 @@ CREATE TABLE IF NOT EXISTS alert(
   -- valeur courante de la règle, rafraîchie ; `notified_value` = valeur au moment de la dernière notification,
   -- écrite par le notificateur. Le critère de re-notification vit dans handlers/detection.rs. MIROIR de v120.
   opened_at INTEGER, current_value REAL, notified_value REAL,
+  -- v121 (P11.14-h) — SUR QUOI L'ALERTE EST FONDÉE : `basis` = un mot du vocabulaire fermé de daemon/src/fondement.rs
+  -- (regle | instantane | battement | capteur), écrit à la levée par le site qui sait ce qu'il fait ; `basis_ref` =
+  -- pour un instantané, son GENRE (firewall, controls) — la machine est `host`, l'instant `ts`. '' = antérieure
+  -- à v121 : fondement NON déclaré, la console garde son refus honnête. MIROIR de la migration v121.
+  basis TEXT NOT NULL DEFAULT '', basis_ref TEXT NOT NULL DEFAULT '',
   env_id TEXT NOT NULL DEFAULT 'prod',       -- v66 : environnement intra-tenant (#2a-2a), INERTE en mode 0
   -- v75 (MODE ENGAGEMENT) — TAG engagement de l'alerte (fondation du rapport de couverture scopé
   -- `/api/coverage/detections?engagement=<id>`). DEFAULT '' = INERTE en mode 0/off. MIROIR de la migration v75.

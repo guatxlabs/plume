@@ -825,8 +825,8 @@ pub(crate) fn check_heartbeats(db: &Arc<Mutex<Connection>>) -> crate::bilan_de_t
             // l'extraction textuelle historique n'imputait RIEN pour AUCUN des 23 capteurs.
             let sources = imputation_encoder(&imputer_alerte_de_capteur(sonde));
             let _ = conn.execute(
-                "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,sources) VALUES(?1,?2,2,?3,?4,?5,?6)",
-                params![now_ts, format!("heartbeat.{id}"), format!("Capteur muet : {label}"), detail, dedup, sources],
+                "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,sources,basis) VALUES(?1,?2,2,?3,?4,?5,?6,?7)",
+                params![now_ts, format!("heartbeat.{id}"), format!("Capteur muet : {label}"), detail, dedup, sources, crate::fondement::Fondement::BattementDeCoeur.mot()],
             );
             // Épisode DÉJÀ ouvert (l'INSERT ci-dessus est un no-op) : l'imputation est tout de même
             // rafraîchie, pour la même raison que côté règles — la liste des sources d'un capteur peut
@@ -901,14 +901,15 @@ fn verifier_flotte_muette(conn: &Connection, now_ts: i64) -> crate::bilan_de_tic
     // retomber en silence sur l'extraction textuelle (cf. `imputation.rs`).
     let sources = imputation_encoder(&[SOURCE_INDETERMINABLE.to_string()]);
     let _ = conn.execute(
-        "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,sources) VALUES(?1,?2,2,?3,?4,?5,?6)",
+        "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,sources,basis) VALUES(?1,?2,2,?3,?4,?5,?6,?7)",
         params![
             now_ts,
             "heartbeat.flotte-hotes-muets",
             format!("Hôtes muets : {} sur {}", f.muets, f.attendus),
             detail_flotte_muette(&f, now_ts),
             dedup,
-            sources
+            sources,
+            crate::fondement::Fondement::BattementDeCoeur.mot()
         ],
     );
     crate::mesure_environnement::Mesure::Lue(0)

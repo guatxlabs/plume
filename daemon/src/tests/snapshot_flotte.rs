@@ -578,10 +578,13 @@
         // 2026-08-25 (P11.18-i) : un SEPTIÈME site, `controles_de_defense.rs` — « depuis quand cet état
         // dure », c'est-à-dire le dernier instantané de CETTE machine dont l'empreinte DIFFÈRE. C'est
         // encore le cas (b) : la requête porte `host IS ?1`, et cette garde l'a signalée à l'écriture.
+        // 2026-09-10 (P11.14-h) : un HUITIÈME site, `store.rs` (`dernier_instantane_de`) — la destination
+        // d'une alerte fondée sur un instantané : le dernier instantané d'un genre pour UNE machine, porté
+        // par `AND host=?2`. Cas (b) de nouveau, signalé par cette garde à l'écriture.
         vues.sort();
         assert_eq!(
             vues,
-            vec!["controles_de_defense.rs", "sondes.rs", "sondes.rs", "store.rs", "store.rs", "store.rs", "store.rs"],
+            vec!["controles_de_defense.rs", "sondes.rs", "sondes.rs", "store.rs", "store.rs", "store.rs", "store.rs", "store.rs"],
             "ANTI-ROT : l'ensemble des interrogations de `snapshot` PAR `kind` vues par l'extracteur a \
              changé. (a) requête reformatée -> réparez l'EXTRACTEUR, sinon la garde passe au vert en ne \
              regardant rien ; (b) site ajouté/retiré LÉGITIMEMENT -> vérifiez qu'il porte l'hôte et mettez \

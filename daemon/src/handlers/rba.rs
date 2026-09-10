@@ -359,8 +359,8 @@ fn risk_incidents_eval(conn: &Connection, conf: &HashMap<String, String>, n: i64
         let rule_tag = format!("risk.{etype}.{entity}");
         // no-op si une alerte ouverte porte déjà la clé (INSERT OR IGNORE sur dedup UNIQUE) -> pas de renotif.
         let _ = conn.execute(
-            "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,mitre) VALUES(?1,?2,?3,?4,?5,?6,?7)",
-            params![n, rule_tag, sev, title, detail, dedup, first_mitre],
+            "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,mitre,basis) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+            params![n, rule_tag, sev, title, detail, dedup, first_mitre, crate::fondement::Fondement::Regle.mot()],
         );
         // rafraîchit l'affichage (ts/score/sévérité montent) SANS toucher `notified` -> pas de renotif.
         let _ = conn.execute(

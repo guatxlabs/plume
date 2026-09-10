@@ -151,7 +151,8 @@ pub(crate) fn alerts_query_page(conn: &Connection, f: &FiltreAlertes, group_col:
                 COALESCE(alert.mitre,''),r.window_s,\
                 COALESCE(alert.acked_at,0),COALESCE(alert.acked_by,''),\
                 COALESCE(alert.sources,''),COALESCE(r.is_soql,1),\
-                alert.host,COALESCE(alert.opened_at,alert.ts),alert.current_value \
+                alert.host,COALESCE(alert.opened_at,alert.ts),alert.current_value,\
+                COALESCE(alert.basis,''),COALESCE(alert.basis_ref,'') \
                 FROM alert LEFT JOIN rule r ON ('rule.'||r.id)=alert.rule";
     // limit/offset = i64 déjà validés (clamp) -> injection impossible ; interpolés (pas de bind supplémentaire).
     let sql = format!("{base}{where_clause} ORDER BY alert.ts DESC LIMIT {limit} OFFSET {offset}");
@@ -181,6 +182,9 @@ pub(crate) fn alerts_query_page(conn: &Connection, f: &FiltreAlertes, group_col:
             // `P4.12-h` — l'instant d'OUVERTURE de l'épisode (jamais écrasé par un rafraîchissement ; égal à
             // `ts` pour une alerte jamais rafraîchie) et la valeur courante de la règle (absente hors règle).
             "opened_at": r.get::<_, i64>(15)?, "value": r.get::<_, Option<f64>>(16)?,
+            // `P11.14-h` — SUR QUOI l'alerte est FONDÉE, tel que le démon l'a écrit à la levée (vocabulaire fermé
+            // de `fondement.rs` ; vide = antérieure à v121, non déclaré) et, pour un instantané, son genre.
+            "basis": r.get::<_, String>(17)?, "basis_ref": r.get::<_, String>(18)?,
             // S7 — les sources auxquelles l'alerte est IMPUTÉE, telles qu'elles ont été DÉRIVÉES DE LA
             // DONNÉE à sa levée. Le front en a besoin pour le pivot « voir les N alertes de <source> »
             // depuis la cloche d'un feed : sans ce champ il refiltrerait le TEXTE de `detail` et

@@ -89,6 +89,25 @@ pub(crate) async fn environments(State(st): State<AppState>, Extension(au): Exte
 /// est strictement celle d'avant — mais ils sont désormais ATTRIBUÉS (`host`) et accompagnés de la
 /// ventilation complète (`hosts`) et de son dénominateur (`n_hosts`) : aucune surface ne peut plus
 /// présenter une machine comme le parc SANS LE DIRE.
+/// `P11.14-h` — L'INSTANTANÉ D'UN GENRE POUR UNE MACHINE : la destination d'une alerte fondée sur un
+/// instantané (`basis=instantane`, `basis_ref=<genre>`, `host=<machine>`). Rend le DERNIER instantané de
+/// cette série ; 404 quand la série n'existe pas — jamais l'instantané d'une autre machine à la place.
+pub(crate) async fn snapshot_par_genre_et_machine(
+    State(st): State<AppState>,
+    Extension(au): Extension<AuthUser>,
+    Path((kind, host)): Path<(String, String)>,
+) -> Response {
+    crate::req_conn!(st, au, conn);
+    match crate::ingest::store::dernier_instantane_de(&conn, &kind, &host) {
+        Some((ts, hash, data)) => Json(json!({
+            "kind": kind, "host": host, "ts": ts, "hash": hash,
+            "data": serde_json::from_str::<Value>(&data).unwrap_or(Value::Null)
+        }))
+        .into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
 pub(crate) async fn panel(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(kind): Path<String>) -> Json<Value> {
     crate::req_conn!(st, au, conn);
     let par_hote = crate::ingest::store::dernier_instantane_par_hote(&conn, &kind, 500);

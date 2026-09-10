@@ -5169,7 +5169,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
 // ---------------------------------------------------------------------------------------------
 {
   const { caseRow, renderCaseDetail } = await import(pathToFileURL(path.join(WEB, "cases.js")).href);
-  const { pivotDUneAlerte, dessinerLaListePlate, alertListModel } = await import(pathToFileURL(path.join(WEB, "alerts.js")).href);
+  const { pivotDUneAlerte, dessinerLaListePlate, alertListModel, alertDrill } = await import(pathToFileURL(path.join(WEB, "alerts.js")).href);
   const { S } = await import(pathToFileURL(path.join(WEB, "state.js")).href);
   const tick = () => new Promise((r) => setTimeout(r, 0));
   const cueillir = (el, pred, acc) => { if (pred(el)) acc.push(el); (el.children || []).forEach((c) => cueillir(c, pred, acc)); return acc; };
@@ -5260,6 +5260,30 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     const rendu = String(listeA.innerHTML);
     exiger(/data-pivot="aucun"[^>]*aria-disabled="true"/.test(rendu), "(43f) la ligne du refus ne porte plus son inertie aux aides techniques : le refus redeviendrait un clic sans effet");
     exiger(!/data-pivot="exact"[^>]*aria-disabled/.test(rendu), "(43f) témoin inverse : la ligne d'un pivot EXACT est rendue inerte elle aussi");
+
+    // (g) `P11.14-h` — LE FONDEMENT DÉCLARÉ FAIT DU REFUS UN PIVOT. Une alerte que le démon dit fondée sur un
+    //     INSTANTANÉ mène à l'instantané de ce genre pour cette machine ; le clic l'OUVRE (fenêtre qui nomme
+    //     la machine et chaque contrôle attendu avec son verdict) au lieu de refuser. Témoin inverse : sans
+    //     machine servie, le fondement seul ne mène nulle part et le refus le dit — la console ne devine pas.
+    const surInstantane = { ...regleSupprimee, id: 13, rule: "control.catalog", title: "Contrôles manquants", basis: "instantane", basis_ref: "controls", host: "srv-7" };
+    const pInst = pivotDUneAlerte(surInstantane);
+    exiger(pInst.mode === "instantane" && pInst.kind === "controls" && pInst.host === "srv-7", `(43g) une alerte fondée sur un instantané (machine et genre servis) n'est pas lue comme un pivot vers cet instantané : ${JSON.stringify(pInst)}`);
+    exiger(pInst.survol !== refus.survol && /instantan/i.test(pInst.survol), `(43g) le survol du pivot d'instantané ne nomme pas l'instantané, ou répète le refus : « ${pInst.survol} »`);
+    const sansMachine = pivotDUneAlerte({ ...surInstantane, host: "" });
+    exiger(sansMachine.mode === "aucun" && /machine/.test(sansMachine.survol), `(43g) témoin inverse : sans machine servie, le fondement d'instantané mène quelque part ou ne dit pas ce qui manque : ${JSON.stringify(sansMachine)}`);
+    const fetchAvant43g = globalThis.fetch;
+    globalThis.fetch = async (url) => (/\/api\/snapshot\/controls\/srv-7$/.test(String(url))
+      ? rep({ kind: "controls", host: "srv-7", ts: 1000, hash: "h", data: { failed: 1, controls: [{ id: "auditd", ok: true }, { id: "ufw", ok: false }, { id: "aide", ok: null }] } })
+      : rep({ alerts: [], total: 0 }));
+    const ouvert = alertDrill(surInstantane); await tick(); await tick(); await tick();
+    exiger(ouvert === true, "(43g) le clic sur une alerte fondée sur un instantané est encore rendu comme un refus");
+    const fenetre = document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).pop();
+    exiger(!!fenetre, "(43g) aucune fenêtre n'a été posée : l'instantané n'est montré nulle part");
+    const texteFenetre = String(fenetre.textContent || fenetre.innerHTML || "");
+    exiger(/srv-7/.test(texteFenetre) && /controls/.test(texteFenetre), `(43g) la fenêtre ne nomme ni la machine ni le genre de l'instantané : « ${texteFenetre.slice(0, 160)} »`);
+    exiger(/auditd/.test(texteFenetre) && /ufw/.test(texteFenetre) && /aide/.test(texteFenetre), `(43g) la fenêtre ne rend pas chaque contrôle attendu : « ${texteFenetre.slice(0, 200)} »`);
+    exiger(/MANQUANT|MISSING/.test(texteFenetre) && /sans verdict|no verdict/.test(texteFenetre), `(43g) les verdicts (manquant / sans verdict) ne sont pas dits : « ${texteFenetre.slice(0, 200)} »`);
+    fenetre.remove(); globalThis.fetch = fetchAvant43g;
     exiger(rendu.includes(refus.survol), "(43f) le survol de la ligne refusée n'est pas le mot du refus : le survol et le clic ont deux auteurs, et ils divergeront");
   } finally {
     document.querySelector = qsOrigine; globalThis.fetch = fetchOrigine;

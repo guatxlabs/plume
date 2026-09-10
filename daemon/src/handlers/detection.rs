@@ -399,8 +399,8 @@ pub(crate) fn run_due_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
             // l'alerte hérite du tag MITRE de la règle -> /api/coverage/detections joint sur `mitre`.
             // no-op si une alerte ouverte porte déjà la clé -> plus de renotif à chaque fenêtre.
             let _ = conn.execute(
-                "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,mitre,sources,current_value) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
-                params![now_ts, format!("rule.{id}"), severity, title, query, dedup, mitre, sources, val],
+                "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,mitre,sources,current_value,basis) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                params![now_ts, format!("rule.{id}"), severity, title, query, dedup, mitre, sources, val, crate::fondement::Fondement::Regle.mot()],
             );
             // rafraîchit l'affichage (ts/valeur/sévérité — utile pour les gauges type CPU dont la valeur bouge).
             // `P4.12-h` : l'instant d'OUVERTURE est gardé (`opened_at` prend l'ancien `ts` une fois, puis

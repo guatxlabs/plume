@@ -90,7 +90,7 @@ impl Drop for MigrationLogSilencer {
 /// rien (toutes ses gardes `v < N` sont fausses) et OPÈRE À L'AVEUGLE sur un schéma qu'il ne connaît pas
 /// -> risque de corruption (survivable AUJOURD'HUI car migrations additives, mais non gardé). On REFUSE
 /// d'ouvrir : arrêt PROPRE (exit non-zéro), JAMAIS un panic, JAMAIS un « proceed » silencieux.
-pub(crate) const CODE_SCHEMA_MAX: i64 = 120;
+pub(crate) const CODE_SCHEMA_MAX: i64 = 121;
 
 /// Lit `meta.schema_version` (défaut 1 si table/lignes absentes ou illisibles) — MÊME lecture que `migrate()`.
 /// Une base NEUVE (pas encore de table meta) renvoie 1 -> jamais refusée par la garde.
@@ -819,6 +819,7 @@ fn migrate_chain(conn: &Connection) -> bool {
     if v < 118 && !migrate_step(conn, 118, migrate_v118) { return false; }
     if v < 119 && !migrate_step(conn, 119, migrate_v119) { return false; }
     if v < 120 && !migrate_step(conn, 120, migrate_v120) { return false; }
+    if v < 121 && !migrate_step(conn, 121, migrate_v121) { return false; }
     true
 }
 
@@ -1396,6 +1397,18 @@ fn migrate_v120(conn: &MigTx) {
     let _ = conn.execute("ALTER TABLE alert ADD COLUMN notified_value REAL", []);
     let _ = conn.execute("UPDATE meta SET value='120' WHERE key='schema_version'", []);
     mig_log!("[migration] schéma -> v120 (P4.12-h : alert.opened_at / current_value / notified_value — un épisode ouvert garde son instant d'ouverture et re-notifie quand sa valeur a doublé depuis la dernière notification)");
+}
+
+/// v121 (`P11.14-h`) — CHAQUE ALERTE DÉCLARE SUR QUOI ELLE EST FONDÉE. `basis` porte un mot du vocabulaire
+/// fermé de `fondement.rs` (règle, instantané, battement de cœur, capteur), écrit à la levée par le site
+/// qui sait ce qu'il fait ; `basis_ref` porte, pour un instantané, le GENRE (`firewall`, `controls`) — la
+/// machine est `host`, l'instant `ts`. DEFAULT '' = alerte antérieure : fondement NON déclaré, et la
+/// console garde alors son refus honnête au lieu de le deviner. MIROIR dans db/schema.sql.
+fn migrate_v121(conn: &MigTx) {
+    let _ = conn.execute("ALTER TABLE alert ADD COLUMN basis TEXT NOT NULL DEFAULT ''", []);
+    let _ = conn.execute("ALTER TABLE alert ADD COLUMN basis_ref TEXT NOT NULL DEFAULT ''", []);
+    let _ = conn.execute("UPDATE meta SET value='121' WHERE key='schema_version'", []);
+    mig_log!("[migration] schéma -> v121 (P11.14-h : alert.basis / basis_ref — chaque alerte déclare son fondement à la levée, dans un vocabulaire fermé ; vide = antérieure, non déclaré)");
 }
 
 /// v108 (PERF — RECHERCHE RAW HAUT-VOLUME source=X sur fenêtre longue). MARQUEUR PUR (aucune DDL lourde

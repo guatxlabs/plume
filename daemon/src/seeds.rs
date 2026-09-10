@@ -59,8 +59,8 @@ pub(crate) fn seed_demo(conn: &Connection) {
         ("demo.scan", 2, "Scan de ports", "198.51.100.42 sonde 3389 / 445 / 22"),
     ] {
         let _ = conn.execute(
-            "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,host) VALUES(?1,?2,?3,?4,?5,?6,?7)",
-            params![now_ts - 600, rule, sev, title, detail, format!("demo-{rule}"), host],
+            "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,host,basis) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+            params![now_ts - 600, rule, sev, title, detail, format!("demo-{rule}"), host, crate::fondement::Fondement::Regle.mot()],
         );
     }
     // ---- CASES de démo (PLUME_DEMO=1) : 2 incidents SYNTHÉTIQUES pour illustrer la vue case-detail (README).

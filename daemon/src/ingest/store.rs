@@ -687,3 +687,15 @@ impl guatx_core::store::EventStore for SqlcipherStore {
         run_query_ex(db_path, &sql, budget_ms, qid).map_err(guatx_core::store::StoreError::Backend)
     }
 }
+
+/// `P11.14-h` — LE DERNIER INSTANTANÉ D'UN GENRE POUR UNE MACHINE : la destination d'une alerte fondée
+/// sur un instantané. Rend `(ts, empreinte, charge)` de la ligne la plus récente de la série
+/// `(kind, host)`, et rien d'une autre machine.
+pub(crate) fn dernier_instantane_de(conn: &Connection, kind: &str, host: &str) -> Option<(i64, String, String)> {
+    conn.query_row(
+        "SELECT ts, COALESCE(hash,''), COALESCE(data,'') FROM snapshot WHERE kind=?1 AND host=?2 ORDER BY ts DESC LIMIT 1",
+        params![kind, host],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )
+    .ok()
+}

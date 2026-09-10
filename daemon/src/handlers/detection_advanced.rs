@@ -316,8 +316,8 @@ pub(crate) fn run_correlations(db: &Arc<Mutex<Connection>>, db_path: &str) -> cr
                 _ => (None, None, None),
             };
             let _ = conn.execute(
-                "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,mitre,src_ip,pid,host) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-                params![now_ts, format!("corr.{}", ev.id), ev.severity, title, detail_full, dedup, ev.mitre, e_src, e_pid, e_host],
+                "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,mitre,src_ip,pid,host,basis) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+                params![now_ts, format!("corr.{}", ev.id), ev.severity, title, detail_full, dedup, ev.mitre, e_src, e_pid, e_host, crate::fondement::Fondement::Regle.mot()],
             );
             let _ = conn.execute(
                 "UPDATE alert SET opened_at=COALESCE(opened_at, ts), ts=?1, title=?2, severity=?3, detail=?4 WHERE dedup=?5 AND status IN ('new','ack')",
@@ -614,8 +614,8 @@ pub(crate) fn run_baselines(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
                 let title = format!("Anomalie baseline : {} — {} ({})", ev.name, hit.entity, ev.entity_type);
                 let detail = format!("valeur {:.1} au bucket {} — déviation z={:.2} ≥ seuil {:.1}", hit.value, ev.bucket, hit.z, ev.z_threshold);
                 let _ = conn.execute(
-                    "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,mitre) VALUES(?1,?2,?3,?4,?5,?6,?7)",
-                    params![now_ts, format!("baseline.{}", ev.id), ev.severity, title, detail, dedup, ev.mitre],
+                    "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,mitre,basis) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+                    params![now_ts, format!("baseline.{}", ev.id), ev.severity, title, detail, dedup, ev.mitre, crate::fondement::Fondement::Regle.mot()],
                 );
             }
         }

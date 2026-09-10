@@ -37,6 +37,8 @@ fn overview_search_routes() -> Router<AppState> {
         .route("/api/overview", get(overview))
         .route("/api/environments", get(environments)) // #2d : liste des environnements + compte (filtre X-Plume-Env)
         .route("/api/panel/{kind}", get(panel))
+        // `P11.14-h` — l'instantané d'un genre pour UNE machine (destination d'une alerte fondée sur un instantané).
+        .route("/api/snapshot/{kind}/{host}", get(snapshot_par_genre_et_machine))
         .route("/api/search", get(search))
 }
 

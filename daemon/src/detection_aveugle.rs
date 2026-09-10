@@ -191,8 +191,8 @@ pub(crate) fn consigner_abandon(
     // imputer une source ferait basculer la pastille d'une source qui n'a rien fait (cf. flotte muette).
     let sources = crate::imputation_encoder(&[crate::SOURCE_INDETERMINABLE.to_string()]);
     let _ = conn.execute(
-        "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,sources) VALUES(?1,?2,?3,?4,?5,?6,?7)",
-        params![now_ts, format!("{FAMILLE_ALERTE}.{id}"), severity, titre, detail, dedup, sources],
+        "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,sources,basis) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+        params![now_ts, format!("{FAMILLE_ALERTE}.{id}"), severity, titre, detail, dedup, sources, crate::fondement::Fondement::Capteur.mot()],
     );
     let _ = conn.execute(
         "UPDATE alert SET opened_at=COALESCE(opened_at, ts), ts=?1, title=?2, detail=?3 WHERE dedup=?4 AND status IN ('new','ack')",

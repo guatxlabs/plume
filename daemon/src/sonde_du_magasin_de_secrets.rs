@@ -332,8 +332,8 @@ pub(crate) fn verifier_le_magasin_de_secrets(conn: &Connection, now_ts: i64) -> 
             // capteur qui fonctionne parfaitement — la même raison que pour la flotte muette.
             let sources = crate::imputation_encoder(&[crate::SOURCE_INDETERMINABLE.to_string()]);
             let _ = conn.execute(
-                "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,sources) VALUES(?1,?2,?3,?4,?5,?6,?7)",
-                params![now_ts, FAMILLE_ALERTE, SEVERITE, titre, detail, DEDUP_MAGASIN, sources],
+                "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,sources,basis) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+                params![now_ts, FAMILLE_ALERTE, SEVERITE, titre, detail, DEDUP_MAGASIN, sources, crate::fondement::Fondement::Capteur.mot()],
             );
             // Épisode DÉJÀ ouvert : on rafraîchit le texte et l'horodatage SANS toucher `notified`
             // (pas de re-notification à chaque tick), exactement comme `detection_aveugle`.

@@ -1038,9 +1038,9 @@ pub(crate) fn ingest_once(mgr: &TenantDbManager, spool: &str) -> crate::bilan_de
                         // lie d'ailleurs `host`). MESURÉ sans l'hôte : 5 machines sans lockdown -> 1 alerte.
                         let dedup = serie.cle_alerte(&format!("fw-lockdown-{}", ts / 86400));
                         if conn.execute(
-                            "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,host) \
-                             VALUES(?1,'firewall.lockdown',3,?2,?3,?4,?5)",
-                            params![ts, "Contrôle firewall docker-lan-lockdown ABSENT", data.to_string(), dedup, host],
+                            "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,host,basis,basis_ref) \
+                             VALUES(?1,'firewall.lockdown',3,?2,?3,?4,?5,?6,?7)",
+                            params![ts, "Contrôle firewall docker-lan-lockdown ABSENT", data.to_string(), dedup, host, crate::fondement::Fondement::Instantane.mot(), kind],
                         ).is_err() { ok = false; }
                     }
                 }
@@ -1062,9 +1062,9 @@ pub(crate) fn ingest_once(mgr: &TenantDbManager, spool: &str) -> crate::bilan_de
                             .and_then(|t| crate::controles_de_defense::jour_utc(&conn, t));
                         let titre = crate::controles_de_defense::enonce_des_manquants(&etat, failed, host, depuis.as_deref());
                         if conn.execute(
-                            "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,host) \
-                             VALUES(?1,'control.catalog',3,?2,?3,?4,?5)",
-                            params![ts, titre, data.to_string(), dedup, host],
+                            "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,host,basis,basis_ref) \
+                             VALUES(?1,'control.catalog',3,?2,?3,?4,?5,?6,?7)",
+                            params![ts, titre, data.to_string(), dedup, host, crate::fondement::Fondement::Instantane.mot(), kind],
                         ).is_err() { ok = false; }
                     }
                     // UN CATALOGUE VIDE SE DIT. `failed=0` sur un catalogue vide est la valeur la PLUS
@@ -1076,9 +1076,9 @@ pub(crate) fn ingest_once(mgr: &TenantDbManager, spool: &str) -> crate::bilan_de
                     if ok && etat.declare_vide() {
                         let dedup = serie.cle_alerte(&format!("controls-vides-{}", ts / 86400));
                         if conn.execute(
-                            "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,host) \
-                             VALUES(?1,'control.catalog.vide',2,?2,?3,?4,?5)",
-                            params![ts, crate::controles_de_defense::enonce_du_catalogue_vide(host), data.to_string(), dedup, host],
+                            "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,host,basis,basis_ref) \
+                             VALUES(?1,'control.catalog.vide',2,?2,?3,?4,?5,?6,?7)",
+                            params![ts, crate::controles_de_defense::enonce_du_catalogue_vide(host), data.to_string(), dedup, host, crate::fondement::Fondement::Instantane.mot(), kind],
                         ).is_err() { ok = false; }
                     }
                 }

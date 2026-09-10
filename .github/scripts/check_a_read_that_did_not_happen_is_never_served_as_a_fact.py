@@ -452,7 +452,7 @@ SITES_ADMIS = {
         # gardée avec sa raison ; defauts_gardes_avouent.rs tient la propriété.
         ("daemon/src/handlers/compliance.rs", "compliance_posture"): 1,
     },
-    "B": {  # closure SOURDE : 17 accusations sur 16 sites (18 après `P10.7-z` ; les environnements avouent depuis le lot 91)
+    "B": {  # closure SOURDE : 15 accusations sur 14 sites (17 après le lot 91 ; la fiche et la liste des dossiers avouent depuis le lot 93)
         ("daemon/src/handlers/admin_ui.rs", "ledger_get"): 1,
         ("daemon/src/handlers/admin_ui.rs", "retention_settings_get"): 1,
         ("daemon/src/handlers/alerts.rs", "alert_groups"): 1,
@@ -460,8 +460,6 @@ SITES_ADMIS = {
         ("daemon/src/handlers/caseops.rs", "case_metrics"): 1,
         ("daemon/src/handlers/caseops.rs", "client_case_get"): 1,
         ("daemon/src/handlers/caseops.rs", "client_cases_list"): 1,
-        ("daemon/src/handlers/cases.rs", "case_get"): 1,
-        ("daemon/src/handlers/cases.rs", "cases_list"): 1,
         ("daemon/src/handlers/compliance.rs", "compliance_posture"): 1,
         ("daemon/src/handlers/engagement.rs", "mode_get"): 1,
         # `fleet` ×2 : GUÉRIE depuis le lot 91 (verdict typé rendu par fleet_scan_all, cache gaté, `error` posé) mais l'aveu

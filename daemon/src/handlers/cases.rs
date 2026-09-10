@@ -241,8 +241,11 @@ pub(crate) fn case_apply_update(conn: &Connection, id: i64, author: &str, b: &Va
 
 /// Métadonnées + timeline (refs alert/event RÉSOLUES en titre+sévérité) d'un case, avec overdue calculé AU
 /// READ (now > sla_due ET statut non terminal). None si introuvable. #4a.
-pub(crate) fn case_get_json(conn: &Connection, id: i64, now_i: i64) -> Option<Value> {
-    let mut c = conn
+/// `P10.7-g` (lot 93) — LA FICHE EST LUE, OU ELLE DIT QU'ELLE NE L'A PAS ÉTÉ. `Ok(None)` n'est rendu que sur une
+/// absence ÉTABLIE (`QueryReturnedNoRows`) ; toute autre issue de lecture — fiche ou ligne de temps — remonte en
+/// `Err`, et le gestionnaire la sert en 5xx nommé au lieu du 404 « introuvable » qui inventait une absence.
+pub(crate) fn case_get_lu(conn: &Connection, id: i64, now_i: i64) -> Result<Option<Value>, rusqlite::Error> {
+    let mut c = match conn
         .query_row(
             "SELECT id,ts,updated,title,status,severity,COALESCE(owner,''),COALESCE(summary,''),closed_ts,\
                     priority,COALESCE(assignee,''),sla_due,first_response_ts,\
@@ -272,19 +275,19 @@ pub(crate) fn case_get_json(conn: &Connection, id: i64, now_i: i64) -> Option<Va
                     "disposition_by": r.get::<_, String>(25)?
                 }))
             },
-        )
-        .ok()?;
+        ) {
+        Ok(v) => v,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+        Err(e) => return Err(e),
+    };
     // #39 — la timeline d'un case CIBLE combine les items des cases fusionnés DEDANS (merged_into=?1). En mode 0
     // (aucune fusion) le sous-SELECT est vide -> items STRICTEMENT identiques (parité).
     let mut stmt = conn
         .prepare("SELECT id,ts,kind,COALESCE(author,''),COALESCE(body,''),COALESCE(ref,'') FROM incident_item \
-                  WHERE incident_id=?1 OR incident_id IN (SELECT id FROM incident WHERE merged_into=?1) ORDER BY ts,id")
-        .ok()?;
+                  WHERE incident_id=?1 OR incident_id IN (SELECT id FROM incident WHERE merged_into=?1) ORDER BY ts,id")?;
     let rows: Vec<(i64, i64, String, String, String, String)> = stmt
-        .query_map(params![id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))
-        .ok()?
-        .flatten()
-        .collect();
+        .query_map(params![id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
     let items: Vec<Value> = rows
         .into_iter()
         .map(|(iid, its, kind, author, body, rf)| {
@@ -294,7 +297,14 @@ pub(crate) fn case_get_json(conn: &Connection, id: i64, now_i: i64) -> Option<Va
         })
         .collect();
     c["items"] = json!(items);
-    Some(c)
+    Ok(Some(c))
+}
+
+/// La forme d'avant, gardée pour les témoins qui lisent une fiche connue : une lecture ratée s'y confond avec une
+/// absence, ce que le gestionnaire ne fait plus (`case_get_lu`).
+#[cfg(test)]
+pub(crate) fn case_get_json(conn: &Connection, id: i64, now_i: i64) -> Option<Value> {
+    case_get_lu(conn, id, now_i).ok().flatten()
 }
 
 /// Liste filtrée (status/assignee/priority/overdue) + tri OVERDUE-FIRST puis actifs avant terminaux puis
@@ -327,13 +337,13 @@ pub(crate) fn cases_list_json_paged(conn: &Connection, now_i: i64, status: &str,
                  AND (?3='' OR COALESCE(assignee,'')=?3) \
                  AND (?4=0 OR priority=?4) \
                  AND (?5=0 OR (sla_due IS NOT NULL AND ?1 > sla_due AND status NOT IN ('resolved','closed','contained')))";
-    let total: i64 = conn
-        .query_row(
-            &format!("SELECT COUNT(*) FROM incident {where_clause}"),
-            params![now_i, status, assignee, priority, overdue_only as i64, archived as i64],
-            |r| r.get(0),
-        )
-        .unwrap_or(0);
+    // `P10.7-g` (lot 93) — le compte et les lignes sont TYPÉS : un échec rend la liste NON ÉTABLIE (forme conservée,
+    // `total` nul, `error` posé) au lieu d'un `{ cases: [], total: 0 }` qui se lisait « aucun dossier ».
+    let total: Result<i64, rusqlite::Error> = conn.query_row(
+        &format!("SELECT COUNT(*) FROM incident {where_clause}"),
+        params![now_i, status, assignee, priority, overdue_only as i64, archived as i64],
+        |r| r.get(0),
+    );
     let sql = format!(
         "SELECT id,ts,updated,title,status,severity,COALESCE(owner,''),\
                priority,COALESCE(assignee,''),sla_due,\
@@ -343,12 +353,8 @@ pub(crate) fn cases_list_json_paged(conn: &Connection, now_i: i64, status: &str,
                FROM incident {where_clause} ORDER BY {order} LIMIT ?7 OFFSET ?8",
         order = case_order_clause(sort)
     );
-    let mut stmt = match conn.prepare(&sql) {
-        Ok(s) => s,
-        Err(_) => return json!({ "cases": [], "total": total }),
-    };
-    let rows: Vec<Value> = stmt
-        .query_map(params![now_i, status, assignee, priority, overdue_only as i64, archived as i64, limit, offset], |r| {
+    let lues: Result<Vec<Value>, rusqlite::Error> = conn.prepare(&sql).and_then(|mut stmt| {
+        stmt.query_map(params![now_i, status, assignee, priority, overdue_only as i64, archived as i64, limit, offset], |r| {
             Ok(json!({
                 "id": r.get::<_, i64>(0)?, "ts": r.get::<_, i64>(1)?, "updated": r.get::<_, i64>(2)?,
                 "title": r.get::<_, String>(3)?, "status": r.get::<_, String>(4)?, "severity": r.get::<_, i64>(5)?,
@@ -361,9 +367,12 @@ pub(crate) fn cases_list_json_paged(conn: &Connection, now_i: i64, status: &str,
                 "disposition": r.get::<_, Option<String>>(13)?
             }))
         })
-        .map(|x| x.flatten().collect())
-        .unwrap_or_default();
-    json!({ "cases": rows, "total": total })
+        .and_then(|x| x.collect())
+    });
+    match (total, lues) {
+        (Ok(total), Ok(rows)) => json!({ "cases": rows, "total": total }),
+        _ => crate::handlers::liste_bornee::corps_de_liste_illisible(json!({ "total": Value::Null }), "cases"),
+    }
 }
 
 /// Wrapper rétro-compat : tri par défaut (overdue-first), page unique bornée à 300 (comportement historique).
@@ -487,8 +496,10 @@ pub(crate) async fn case_get(State(st): State<AppState>, Extension(au): Extensio
     let dbp = req_db_path(&st, &au);
     let masks = effective_masks(&dbp, &au.role, &au.tenant, au.env_filter());
     with_write(&st, &au, move |conn| {
-    match case_get_json(&conn, id, now()) {
-        Some(mut c) => {
+    match case_get_lu(&conn, id, now()) {
+        // `P10.7-g` (lot 93) — une lecture qui échoue n'est pas une absence : 5xx nommé, jamais « introuvable ».
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": format!("dossier NON LU : la lecture a échoué ({e}) — ce n'est pas une absence établie"), "lecture_non_faite": true }))).into_response(),
+        Ok(Some(mut c)) => {
             if !masks.is_empty() {
                 if let Some(items) = c.get_mut("items").and_then(|i| i.as_array_mut()) {
                     for it in items.iter_mut() {
@@ -503,7 +514,7 @@ pub(crate) async fn case_get(State(st): State<AppState>, Extension(au): Extensio
             }
             Json(c).into_response()
         }
-        None => (StatusCode::NOT_FOUND, "incident introuvable").into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, "incident introuvable").into_response(),
     }
     })
 }

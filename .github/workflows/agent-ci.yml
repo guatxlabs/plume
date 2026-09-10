@@ -97,16 +97,24 @@ jobs:
         working-directory: agent
         shell: bash
         env:
-          EXPECTED_AGENT_TESTS: "167"
+          # UN COMPTE PAR SYSTÈME, jamais un seul pour la matrice : les lecteurs natifs (journald, Event Log,
+          # unified-log) portent des témoins gatés par cfg — MESURÉ le 2026-09-10 sur les journaux des trois
+          # jambes (7ba7636) : 167 sur Linux, 166 sur macOS, 164 sur Windows. Un seul chiffre avait rougi deux
+          # jambes sur trois pour une raison qui n'était pas un test disparu.
+          EXPECTED_AGENT_TESTS_Linux: "167"
+          EXPECTED_AGENT_TESTS_macOS: "166"
+          EXPECTED_AGENT_TESTS_Windows: "164"
         run: |
           export TMPDIR="${RUNNER_TEMP}/plume-tmp-agent"; mkdir -p "$TMPDIR"
+          EXPECTED_AGENT_TESTS=$(eval "printf '%s' \"\${EXPECTED_AGENT_TESTS_${RUNNER_OS}:-}\"")
+          [ -n "$EXPECTED_AGENT_TESTS" ] || { echo "::error::aucun compte de tests attendu pour RUNNER_OS=${RUNNER_OS} : posez EXPECTED_AGENT_TESTS_${RUNNER_OS} depuis l'énumération de cette jambe"; exit 2; }
           rc_cargo=0
           cargo test --locked --verbose 2>&1 | tee agent-tests.log || rc_cargo=$?
           [ "$rc_cargo" = 0 ] || exit "$rc_cargo"
           total=$(grep -E '^test result: ok\. [0-9]+ passed' agent-tests.log | awk '{s+=$4} END{print s+0}')
           echo "agent tests passed: $total (expected $EXPECTED_AGENT_TESTS)"
           if [ "$total" != "$EXPECTED_AGENT_TESTS" ]; then
-            echo "::error::agent test count is $total, expected $EXPECTED_AGENT_TESTS — if the change legitimately adds or removes tests, update EXPECTED_AGENT_TESTS HERE, from your own re-enumeration (cargo test -- --list), never from a sum."
+            echo "::error::agent test count is $total on ${RUNNER_OS}, expected $EXPECTED_AGENT_TESTS — if the change legitimately adds or removes tests, update EXPECTED_AGENT_TESTS_${RUNNER_OS} HERE, from this leg's own enumeration, never from a sum nor from another system."
             exit 1
           fi
           rm -f agent-tests.log

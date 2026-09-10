@@ -11062,6 +11062,24 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   console.log("[coupe-de-liste] `P11.22-g` : la lecture unique de l'aveu de coupe est tenue sur huit réponses fabriquées — ligne excédentaire, comptage plafonné, total au-delà, total égal, borne exacte, aveu absent (dit « non connu », jamais zéro), préfixe lu et non lu à tort — plus la coupe de la console et l'échantillon des métriques ; cases.js, risk.js et datamodels.js la lisent. CE QUE CE TÉMOIN NE TIENT PAS : que le démon serve bien ces champs — ce sont ses témoins (p11_22g_*) qui le tiennent, sur des populations fabriquées à la borne plus une.");
 }
 
+// ---------------------------------------------------------------------------------------------
+// 83. LES CHAMPS ÉTENDUS CHAUDS ONT LEUR PHRASE DANS LA BARRE (`P11.19-a`, tranche du 2026-09-10).
+//     La complétion proposait douze clés du sac `fields` sans une description ; le démon les sert sous
+//     `docs.extended` (couverture exigée par `soql_docs_cover_all_vocab`) et la doc inline de la console
+//     les cherche. Ce témoin tient les deux textes : la catégorie est servie, et elle est lue.
+// ---------------------------------------------------------------------------------------------
+{
+  const srcMeta = readFileSync(path.join(RACINE, "daemon", "src", "handlers", "soql_meta.rs"), "utf8");
+  exiger(/"extended": docs_object\(DOC_HOT_FIELDS\)/.test(srcMeta), "(83) le démon ne sert pas `docs.extended`");
+  const srcComp = readFileSync(path.join(WEB, "soql_complete.js"), "utf8");
+  exiger(/'fields', 'extended', 'operators'/.test(srcComp), "(83) la doc inline de la console ne cherche pas dans `docs.extended`");
+  const phrases = [...srcMeta.matchAll(/\("([a-z_]+)", "[^"]{20,}"\),\s*$/gm)].map((m) => m[1]);
+  for (const c of ["action", "user", "owner", "kind", "ns", "role", "scope", "verb", "resource", "operation", "dir", "risk"]) {
+    exiger(phrases.includes(c), `(83) le champ chaud « ${c} » n'a pas de phrase d'au moins vingt caractères dans le catalogue`);
+  }
+  console.log("[champs-chauds-documentes] `P11.19-a` (tranche) : les douze champs étendus chauds sont servis avec une phrase (`docs.extended`) et la barre les lit. CE QUE CE TÉMOIN NE TIENT PAS : la déclaration par capteur de ce qu'il ÉMET (`# plume-emits:`), qui reste l'objet de la clé.");
+}
+
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;
 verdictRendu = true;
 if (echecs.length) {

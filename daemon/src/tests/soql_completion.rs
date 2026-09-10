@@ -234,4 +234,6 @@
         check(DOC_OPERATORS, table_declaree!(SOQL_FILTER_OPERATORS), "operators");
         check(DOC_KEYWORDS, table_declaree!(SOQL_KEYWORDS), "keywords");
         check(DOC_FIELDS, table_declaree!(CIM_CORE_FIELDS), "fields");
+        // `P11.19-a` — les douze champs étendus chauds sont servis AVEC une phrase, comme les champs cœur.
+        check(DOC_HOT_FIELDS, table_declaree!(HOT_FIELDS), "extended");
     }

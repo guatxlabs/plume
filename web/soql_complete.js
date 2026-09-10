@@ -54,7 +54,7 @@ function knownValuesFor(field) {
 function docLookup(token) {
   if (!SCHEMA || !SCHEMA.docs || !token) return null;
   const d = SCHEMA.docs;
-  for (const cat of ['commands', 'stats_functions', 'eval_functions', 'base_keywords', 'keywords', 'fields', 'operators']) {
+  for (const cat of ['commands', 'stats_functions', 'eval_functions', 'base_keywords', 'keywords', 'fields', 'extended', 'operators']) { // `P11.19-a` : les champs étendus chauds ont leur phrase
     if (d[cat] && Object.prototype.hasOwnProperty.call(d[cat], token)) return d[cat][token];
   }
   return null;

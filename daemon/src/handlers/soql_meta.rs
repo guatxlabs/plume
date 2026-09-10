@@ -134,6 +134,25 @@ pub(crate) const DOC_FIELDS: &[(&str, &str)] = &[
     ("env_id", "Identifiant d'environnement (axe intra-tenant)."),
 ];
 
+/// `P11.19-a` (2026-09-10) — Descriptions des champs ÉTENDUS CHAUDS (`HOT_FIELDS`), les douze clés du sac `fields`
+/// que la complétion proposait SANS UNE PHRASE. Chaque phrase nomme le producteur livré qui pose la clé (relevé
+/// dans `collectors/` et `soql_glue.rs`) : c'est l'aide de la barre, jamais une donnée d'événement. La couverture
+/// est exigée par `soql_docs_cover_all_vocab` — un treizième champ chaud sans phrase rougit.
+pub(crate) const DOC_HOT_FIELDS: &[(&str, &str)] = &[
+    ("action", "Action du vocabulaire CIM fermé (allow, deny, ban, login…) — posée par les capteurs de bans et d'accès aux données, et par les parseurs."),
+    ("user", "Compte utilisateur impliqué (accès aux données, audit, authentification)."),
+    ("owner", "Propriétaire de l'objet observé (fichier ou ACL — capteur dataacl)."),
+    ("kind", "Nature de l'élément observé : suid, unit, preload… pour l'intégrité ; type de ressource pour le RBAC Kubernetes."),
+    ("ns", "Espace de noms Kubernetes de l'objet (capteur kube-rbac, audit d'API)."),
+    ("role", "Rôle RBAC lié ou porté par l'acteur (capteur kube-rbac)."),
+    ("scope", "Portée de l'observation : host ou container pour l'intégrité, portée d'un lien RBAC pour Kubernetes."),
+    ("verb", "Verbe d'un audit d'API Kubernetes (get, list, create, delete…)."),
+    ("resource", "Ressource visée par un audit d'API Kubernetes (pods, secrets…)."),
+    ("operation", "Opération d'un audit d'API de coffre (Vault : create, read, delete…)."),
+    ("dir", "Direction d'un flux réseau observé, in ou out (capteur conntrack)."),
+    ("risk", "Marque de risque posée par un capteur sur l'élément observé (dataacl, kube-rbac)."),
+];
+
 /// Description d'un `token` dans une table de doc (comparaison exacte). None si absent. Accessseur de TEST
 /// (la coverage `soql_docs_cover_all_vocab` s'en sert) — `#[cfg(test)]` comme `soql_template_queries`.
 #[cfg(test)]
@@ -287,6 +306,8 @@ pub(crate) fn soql_schema_json(sources: SourcesConnues) -> Value {
             "operators": docs_object(DOC_OPERATORS),
             "keywords": docs_object(DOC_KEYWORDS),
             "fields": docs_object(DOC_FIELDS),
+            // `P11.19-a` — les champs étendus chauds ont leur phrase, comme les champs cœur.
+            "extended": docs_object(DOC_HOT_FIELDS),
         },
         "cim_version": CIM_VERSION,
     })

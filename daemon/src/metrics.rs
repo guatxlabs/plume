@@ -66,6 +66,13 @@ pub(crate) fn compter_un_evenement_sans_adresse_source(source: &str) {
 pub(crate) fn sans_adresse_source_de(source: &str) -> Option<u64> {
     SOURCES_SANS_ADRESSE.lock().ok().and_then(|m| m.get(source).copied())
 }
+/// `P3.10-a` — LIGNES D'EN-TÊTE D'UN EXPORT CSV rencontrées par une étape `csv` d'un parseur déclaratif : reconnues
+/// (cellules == colonnes déclarées), laissées SANS capture, et comptées ici. Un exploitant qui voit ce compte
+/// monter à chaque envoi sait que son export inclut l'en-tête et que la ligne est stockée telle quelle, non enrichie.
+pub(crate) static INGEST_EN_TETES_CSV_TOTAL: AtomicU64 = AtomicU64::new(0);
+pub(crate) fn compter_une_ligne_d_en_tete_csv() {
+    INGEST_EN_TETES_CSV_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
 /// P4.1-p — un compteur PAR RAISON d'ACK-DROP Pub/Sub. Pourquoi pas un seul total : `push_zero_map_total`
 /// était incrémenté aussi bien par un `field_map` mal configuré que par une bombe gzip. L'exploitant qui le
 /// voyait grimper allait donc inspecter son mapping alors que la cause pouvait être une TAILLE. Un compteur
@@ -586,6 +593,8 @@ pub(crate) fn gather_json(conn: &Connection, spool: &str, db_path: &str, schema_
     // `P4.12-b` — les événements indexés sans adresse source, et par quelle source.
     ingest.insert("events_without_src_ip_total".into(), json!(INGEST_SANS_ADRESSE_SOURCE_TOTAL.load(Ordering::Relaxed)));
     ingest.insert("sources_without_src_ip".into(), json!(SOURCES_SANS_ADRESSE.lock().map(|m| m.clone()).unwrap_or_default()));
+    // `P3.10-a` — les lignes d'en-tête CSV reconnues par un parseur déclaratif, laissées sans capture.
+    ingest.insert("csv_header_lines_total".into(), json!(INGEST_EN_TETES_CSV_TOTAL.load(Ordering::Relaxed)));
     ingest.insert("spool_barriere_fichier_total".into(), json!(SPOOL_BARRIERE_FICHIER_TOTAL.load(Ordering::Relaxed)));
     ingest.insert("spool_barriere_repertoire_total".into(), json!(SPOOL_BARRIERE_REPERTOIRE_TOTAL.load(Ordering::Relaxed)));
     ingest.insert("spool_barriere_echec_total".into(), json!(SPOOL_BARRIERE_ECHEC_TOTAL.load(Ordering::Relaxed)));
@@ -697,6 +706,7 @@ pub(crate) fn gather_prom(conn: &Connection, spool: &str, db_path: &str, schema_
     g(&mut o, "plume_push_zero_map_total", "counter", "Batches push acceptés mais mappés à 0 event (misconfig source push)", "/ingest/push_zero_map_total");
     g(&mut o, "plume_ingest_field_preempted_total", "counter", "Renommages de champ déclarés par un parseur client et TUS par une clé déjà posée par le producteur (P4.12-f ; ventilation par clé : /api/metrics ingest.fields_preempted)", "/ingest/field_preempted_total");
     g(&mut o, "plume_ingest_events_without_src_ip_total", "counter", "Événements indexés sans adresse source, invisibles des règles par entité (P4.12-b ; ventilation par source dans /api/metrics ingest.sources_without_src_ip)", "/ingest/events_without_src_ip_total");
+    g(&mut o, "plume_ingest_csv_header_lines_total", "counter", "Lignes d'en-tête d'export CSV reconnues par une étape csv d'un parseur déclaratif, laissées sans capture (P3.10-a)", "/ingest/csv_header_lines_total");
     // `S31` — les barrières de durabilité du spool. Les DEUX premières montent ENSEMBLE (une publication
     // durable en prend une de chaque) ; un écart entre elles, ou `echec` qui grimpe, signale un 2xx qui
     // n'est plus adossé à une barrière — le seul signal disponible sur les quatre surfaces à contrat

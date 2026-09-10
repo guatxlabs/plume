@@ -186,6 +186,8 @@ pub(crate) const DPARSER_MAX_RE_LEN: usize = 1000;
 /// était sans plafond -> coût CPU/RAM par event linéaire en N sans borne. Au-delà -> WARN + skip (jamais
 /// fatal ; les parseurs n'arrivent que par config.d git-reviewé, ceci borde l'axe de croissance).
 pub(crate) const DPARSER_MAX_TOTAL: usize = 256;
+/// `P3.10-a` — PLAFOND DES COLONNES d'une étape `csv` (aligné sur `DPARSER_MAX_CAPS` : une colonne = une capture).
+pub(crate) const DPARSER_MAX_CSV_COLS: usize = 32;
 
 /// Une valeur de mapping : littérale (`"firewall"`, `2`) ou référence à une capture (`"$srcip"`).
 #[derive(Debug, Clone)]
@@ -210,9 +212,51 @@ impl DMapVal {
     }
 }
 
-/// Une étape d'extraction : groupes regex nommés, ou balayage kv/logfmt, ou objet JSON top-level.
+/// Une étape d'extraction : groupes regex nommés, balayage kv/logfmt, objet JSON top-level, ou — `P3.10-a` —
+/// une ligne DÉLIMITÉE (CSV) dont les colonnes sont DÉCLARÉES : un parseur voit UN message à la fois et ne
+/// garde aucun état entre deux lignes, donc la ligne d'en-têtes d'un export ne peut pas être « lue une fois » ;
+/// elle est reconnue (cellules == colonnes déclarées), laissée sans capture et COMPTÉE.
 #[derive(Debug, Clone)]
-pub(crate) enum DExtract { Regex(regex::Regex), Kv, Json }
+pub(crate) enum DExtract { Regex(regex::Regex), Kv, Json, Csv { delim: u8, columns: Vec<String> } }
+
+/// `P3.10-a` — DÉCOUPE UNE LIGNE DÉLIMITÉE selon la forme usuelle des exports (RFC 4180, une ligne) :
+/// séparateur hors guillemets ; une cellule qui COMMENCE par `"` est quotée jusqu'au `"` fermant, un `""`
+/// intérieur vaut un `"` littéral, et le séparateur qu'elle contient ne coupe pas ; `\r`/`\n` finals ôtés.
+/// Ce que cette découpe NE fait PAS, et qui est dit : un retour à la ligne À L'INTÉRIEUR d'une cellule quotée
+/// est hors de portée par construction (le message EST une ligne) ; un guillemet non refermé prend le reste
+/// de la ligne comme cellule, sans erreur ni drop. Aucune borne ici : c'est `dcap_put` qui borne les captures.
+pub(crate) fn decouper_une_ligne_csv(ligne: &str, delim: u8) -> Vec<String> {
+    let ligne = ligne.trim_end_matches(['\r', '\n']);
+    let mut cellules: Vec<String> = Vec::new();
+    let mut courante = String::new();
+    let mut entre_guillemets = false;
+    let mut debut_de_cellule = true;
+    let mut it = ligne.chars().peekable();
+    while let Some(c) = it.next() {
+        if entre_guillemets {
+            if c == '"' {
+                if it.peek() == Some(&'"') { courante.push('"'); it.next(); } else { entre_guillemets = false; }
+            } else {
+                courante.push(c);
+            }
+            continue;
+        }
+        if debut_de_cellule && c == '"' {
+            entre_guillemets = true;
+            debut_de_cellule = false;
+            continue;
+        }
+        if c.is_ascii() && c as u8 == delim {
+            cellules.push(std::mem::take(&mut courante));
+            debut_de_cellule = true;
+            continue;
+        }
+        debut_de_cellule = false;
+        courante.push(c);
+    }
+    cellules.push(courante);
+    cellules
+}
 
 /// Le mapping vendeur -> CIM. Chaque cible est optionnelle ; `fields` = champs étendus arbitraires.
 #[derive(Debug, Clone, Default)]
@@ -271,8 +315,29 @@ pub(crate) fn dparser_compile(source: &str, spec: &Value) -> Result<CompiledDPar
                 extract.push(DExtract::Kv);
             } else if o.get("json").and_then(|x| x.as_bool()).unwrap_or(false) {
                 extract.push(DExtract::Json);
+            } else if let Some(csv) = o.get("csv") {
+                // `P3.10-a` — `{"csv": {"delimiter": ",", "columns": [...]}}` : séparateur d'UN octet ASCII (ni
+                // guillemet ni fin de ligne), colonnes non vides, requêtables, distinctes, ≤ DPARSER_MAX_CSV_COLS.
+                let co = csv.as_object().ok_or_else(|| format!("étape extract[{i}] : `csv` doit être un objet"))?;
+                let delim_txt = co.get("delimiter").and_then(|d| d.as_str()).unwrap_or(",");
+                let delim = match delim_txt.as_bytes() {
+                    [b] if b.is_ascii() && *b != b'"' && *b != b'\n' && *b != b'\r' => *b,
+                    _ => return Err(format!("étape extract[{i}] : `delimiter` doit être un seul caractère ASCII, ni guillemet ni fin de ligne")),
+                };
+                let cols = co.get("columns").and_then(|c| c.as_array()).ok_or_else(|| format!("étape extract[{i}] : `columns` (tableau de noms) requis"))?;
+                if cols.is_empty() || cols.len() > DPARSER_MAX_CSV_COLS {
+                    return Err(format!("étape extract[{i}] : `columns` doit compter entre 1 et {DPARSER_MAX_CSV_COLS} noms"));
+                }
+                let mut columns: Vec<String> = Vec::with_capacity(cols.len());
+                for c in cols {
+                    let nom = c.as_str().unwrap_or("");
+                    if !soql_ident_ok(nom) { return Err(format!("étape extract[{i}] : colonne « {nom} » non requêtable (attendu [A-Za-z0-9_])")); }
+                    if columns.iter().any(|d| d == nom) { return Err(format!("étape extract[{i}] : colonne « {nom} » en double")); }
+                    columns.push(nom.to_string());
+                }
+                extract.push(DExtract::Csv { delim, columns });
             } else {
-                return Err(format!("étape extract[{i}] inconnue (attendu regex|kv|logfmt|json)"));
+                return Err(format!("étape extract[{i}] inconnue (attendu regex|kv|logfmt|json|csv)"));
             }
         }
     }
@@ -373,6 +438,19 @@ pub(crate) fn dparser_captures(msg: &str, steps: &[DExtract]) -> std::collection
                             _ => {}
                         }
                     }
+                }
+            }
+            DExtract::Csv { delim, columns } => {
+                let cellules = decouper_une_ligne_csv(msg, *delim);
+                // La ligne d'EN-TÊTES d'un export (cellules == colonnes déclarées, ordre et casse) n'est pas un
+                // enregistrement : aucune capture, et elle est comptée pour que l'exploitant la voie passer.
+                if cellules.len() == columns.len() && cellules.iter().zip(columns).all(|(c, n)| c.trim() == n) {
+                    crate::metrics::compter_une_ligne_d_en_tete_csv();
+                    continue;
+                }
+                // Colonne manquante -> aucune capture (jamais un champ vide) ; cellule surnuméraire -> ignorée.
+                for (nom, cellule) in columns.iter().zip(cellules.iter()) {
+                    if !dcap_put(&mut caps, nom, cellule) { break; }
                 }
             }
             DExtract::Kv => {

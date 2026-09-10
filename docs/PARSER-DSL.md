@@ -48,7 +48,12 @@ une capture absente = **aucun enrichissement** (jamais une suppression). Toute r
   "extract": [               // OPTIONNEL : étapes ORDONNÉES d'extraction -> sac de captures.
     { "regex": "SRC=(?P<src>\\S+) DST=(?P<dst>\\S+)" },  // groupes NOMMÉS Rust (?P<nom>…)
     { "kv": true },          // balaye key=value / key="quoté" / logfmt   (alias: "logfmt": true)
-    { "json": true }         // message = objet JSON top-level, aplati 1 niveau (k, k.sous-clé)
+    { "json": true },        // message = objet JSON top-level, aplati 1 niveau (k, k.sous-clé)
+    { "csv": { "delimiter": ",", "columns": ["ts", "src", "dst", "action"] } }
+                             // message = UNE ligne délimitée (export CSV) ; chaque cellule est capturée
+                             //   sous le nom de la colonne DÉCLARÉE (guillemets, "" intérieur et séparateur
+                             //   quoté respectés). La ligne d'en-tête (cellules == colonnes) n'est PAS un
+                             //   enregistrement : aucune capture, comptée (ingest.csv_header_lines_total).
   ],
 
   "map": {                   // REQUIS : assigne des valeurs aux champs CIM.
@@ -73,6 +78,11 @@ telle quelle** (jamais un champ vide écrit, jamais un drop).
 
 **Bornes** (budget RAM) : ≤ 8 étapes `extract`, ≤ 32 captures, valeur ≤ 256 c., regex ≤ 1000 c., message
 tronqué à 8192. Clés de `map.fields` : doivent passer `soql_ident_ok` (`[A-Za-z0-9_]`), sinon ignorées.
+Étape `csv` : `delimiter` = un seul caractère ASCII (ni guillemet ni fin de ligne, défaut `,`), `columns` =
+1 à 32 noms requêtables et distincts ; une colonne manquante n'écrit rien, une cellule surnuméraire est
+ignorée. Hors de portée, et dit plutôt que tu : un retour à la ligne à l'intérieur d'une cellule quotée (le
+message EST une ligne — un tel export doit être recollé en amont) et un export UTF-16 (à convertir en UTF-8).
+Exemple livré : `config.d/parsers/example-csv-firewall.json`.
 
 ---
 

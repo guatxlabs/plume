@@ -1,0 +1,17 @@
+{
+  "_comment": "Overlay PARSEUR DÉCLARATIF (config.d) — export CSV d'un pare-feu -> CIM firewall (P3.10-a). POURQUOI : une télémétrie de sécurité exportée en CSV (console d'éditeur, serveur Windows) doit entrer par la MÊME porte que le reste — un événement par ligne sous /api/ingest, la ligne brute dans `message` — et recevoir la même normalisation, les mêmes bornes et le même masquage. L'étape `csv` découpe la ligne selon la forme usuelle des exports (guillemets, `\"\"` intérieur, séparateur quoté) et pose chaque cellule sous le nom de la colonne DÉCLARÉE : un parseur ne voit qu'une ligne à la fois, donc l'en-tête ne se lit pas « une fois » — elle est reconnue (cellules == colonnes), laissée sans capture et comptée (`ingest.csv_header_lines_total`). Adaptez `source`, `delimiter` et `columns` à votre export ; `match` garde ce parseur hors des lignes qui ne sont pas des enregistrements. ENRICH-only, jamais un drop. Ce que cette découpe ne fait pas : un retour à la ligne à l'intérieur d'une cellule (le message est une ligne) et un export UTF-16.",
+  "name": "export CSV firewall → CIM",
+  "source": "csv-firewall",
+  "enabled": true,
+  "extract": [
+    { "csv": { "delimiter": ",", "columns": ["ts", "src", "dst", "dport", "proto", "action"] } }
+  ],
+  "map": {
+    "category": "firewall",
+    "severity": 2,
+    "src_ip": "$src",
+    "dst_ip": "$dst",
+    "action": "$action",
+    "fields": { "dst_port": "$dport", "proto": "$proto" }
+  }
+}

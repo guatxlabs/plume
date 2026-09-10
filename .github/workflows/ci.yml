@@ -2391,6 +2391,14 @@ jobs:
         continue-on-error: true
         run: python3 .github/scripts/check_ship_bounds_the_spool_and_says_its_losses.py
 
+      # Le critère de « définition d'adresse » est écrit, la population est dérivée par ce critère
+      # sur les quatre caisses et les capteurs shell, et chaque définition est avouée avec sa
+      # catégorie et son consommateur : une définition neuve non avouée refuse, un aveu sans objet aussi.
+      - name: Une définition d'adresse est comptée par un critère écrit et avouée avec son consommateur (P4.7-j)
+        id: garde_65
+        continue-on-error: true
+        run: python3 .github/scripts/check_address_definitions_are_counted_by_a_written_criterion.py
+
       # Discovery is by EXTENSION **and** by first-line SHEBANG, deliberately: today all 43
       # tracked scripts carry a `.sh` extension (measured), and 42 of them a sh/bash shebang —
       # the odd one out is `collectors/lib.sh`, a SOURCED library with no shebang, which the
@@ -2553,6 +2561,7 @@ jobs:
           total=$((total+1)); o="${{ steps.garde_62.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_blocked_work_names_its_cause.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_63.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_tmp_possede_copies_are_identical.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_64.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_ship_bounds_the_spool_and_says_its_losses.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_65.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_address_definitions_are_counted_by_a_written_criterion.py : $o"; }
           echo "gardes jouées : $total ; en échec : $rouges"
           exit $rc
   features:

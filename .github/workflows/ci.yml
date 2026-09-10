@@ -2369,6 +2369,13 @@ jobs:
         id: garde_61
         continue-on-error: true
         run: python3 .github/scripts/check_retention_declare_ce_quelle_purge.py
+      # `P8.29-b` — QUARANTE-TROIS CLÉS SUR CENT DIX-SEPT n'étaient pas du travail disponible et portaient
+      # l'état des autres : le blocage est une propriété du MOMENT, marquée en tête de cellule dans un
+      # vocabulaire fermé, et l'index publie une lecture dérivée que cette garde recompte.
+      - name: Une clé ouverte que rien ne peut prendre le dit, et la lecture publiée est celle de la dérivation (P8.29-b)
+        id: garde_62
+        continue-on-error: true
+        run: python3 .github/scripts/check_blocked_work_names_its_cause.py
 
       # Discovery is by EXTENSION **and** by first-line SHEBANG, deliberately: today all 43
       # tracked scripts carry a `.sh` extension (measured), and 42 of them a sh/bash shebang —
@@ -2529,6 +2536,7 @@ jobs:
           total=$((total+1)); o="${{ steps.garde_59.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_no_operational_figure_is_published.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_60.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_identite_canonique_a_une_seule_source.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_61.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_retention_declare_ce_quelle_purge.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_62.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_blocked_work_names_its_cause.py : $o"; }
           echo "gardes jouées : $total ; en échec : $rouges"
           exit $rc
   features:

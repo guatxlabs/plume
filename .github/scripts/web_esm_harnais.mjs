@@ -10719,6 +10719,192 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   console.log(`[hotes-bornes] \`P11.20-l\` : la phrase de coupe se tait sur une liste non coupée (même pile à la borne), dit « n sur N » quand le total est lu, avoue un total non lu sans fabriquer un zéro, renvoie à la Flotte ; le rattachement compare le TOTAL quand la liste est coupée. Non tenu ici : la borne (50) et la ligne excédentaire — témoin du démon.`);
 }
 
+// 80. LES REPLIS D'UN MODULE SONT DÉNOMBRÉS PAR UN CRITÈRE ÉCRIT, ET LE CORPUS LES PRODUIT
+//     (`P11.24-s`, `P11.24-w`, mesuré le 2026-09-10).
+//     CE QUI ÉTAIT MESURÉ : la cellule annonçait « 41 replis, 23 jamais produits », comptés par un
+//     instrument joué une fois et jamais commité — rien dans le dépôt ne rejouait le compte, et rien
+//     n'aurait rougi s'il avait changé. Ce témoin porte l'instrument.
+//     LE CRITÈRE, ÉCRIT UNE FOIS : un repli est `X ?? LIT` ou `X || LIT` où LIT est un littéral PUR —
+//     nombre, chaîne, mot-clé, tableau ou objet sans appel ni identifiant en valeur — relevé sur le
+//     module commentaires et littéraux blanchis par un tokeniseur à pile, ET l'expression `${…}` d'un
+//     gabarit est du CODE (elle est comptée : sept sites vivent là, que l'instrument d'origine ignorait).
+//     (a) L'INSTRUMENT, validé aux deux bouts sur un corpus fabriqué : il compte ce qu'il doit, il ne
+//         compte ni un commentaire, ni une chaîne, ni un repli qui appelle.
+//     (b) LA POPULATION : le compte dérivé sur `web/viz.js` est EXACTEMENT celui de l'aveu — un repli
+//         de plus ou de moins refuse, et c'est l'aveu qu'on corrige, jamais le critère.
+//     (c) LA COPIE TRACÉE : chaque littéral de repli est enveloppé d'un marqueur, le module est
+//         réimporté depuis un bac temporaire (imports relatifs rendus absolus), et un corpus de gestes
+//         — réponses du démon sans `rows`, sans `columns`, sans `compiled_sql` ; contrôles vides ;
+//         une ligne datée pour la chronologie ; une représentation par famille — est joué contre lui.
+//     (d) LE VERDICT : chaque repli non produit est AVOUÉ par sa clé avec la raison ; un repli avoué
+//         que le corpus atteint refuse (retirer l'aveu) ; un repli non produit sans aveu refuse (le
+//         produire, ou l'avouer avec sa raison). Le compte est donc rejoué à chaque exécution.
+//     CE QU'IL NE TIENT PAS : qu'un repli produit rende une valeur JUSTE — c'est `(45a)`/`(63b)` qui
+//     tiennent les deux replis qui mentaient ; et l'encre peinte, hors de portée du simulacre.
+// ---------------------------------------------------------------------------------------------
+{
+  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { S } = await import(pathToFileURL(path.join(WEB, "state.js")).href);
+
+  // (a) LE TOKENISEUR À PILE : commentaires, chaînes, gabarits et expressions rationnelles blanchis en
+  //     CONSERVANT les positions ; l'intérieur d'une expression `${…}` est conservé (c'est du code).
+  const blanchir80 = (src) => {
+    const out = src.split(""); const n = src.length; let i = 0;
+    const regexPossible = (k) => { let j = k - 1; while (j >= 0 && /\s/.test(src[j])) j--; if (j < 0) return true; return /[(,=:\[!&|?{};+\-*%<>~^]/.test(src[j]) || /(?:return|typeof|case|in|of|new|delete|void|throw)$/.test(src.slice(Math.max(0, j - 6), j + 1)); };
+    while (i < n) {
+      const c = src[i], d = src[i + 1];
+      if (c === "/" && d === "/") { while (i < n && src[i] !== "\n") { out[i] = " "; i++; } continue; }
+      if (c === "/" && d === "*") { out[i] = out[i + 1] = " "; i += 2; while (i < n && !(src[i] === "*" && src[i + 1] === "/")) { out[i] = src[i] === "\n" ? "\n" : " "; i++; } if (i < n) { out[i] = out[i + 1] = " "; i += 2; } continue; }
+      if (c === '"' || c === "'" || c === "`") {
+        const q = c; i++;
+        while (i < n && src[i] !== q) {
+          if (src[i] === "\\") { out[i] = " "; i++; if (i < n) { out[i] = src[i] === "\n" ? "\n" : " "; i++; } continue; }
+          if (q === "`" && src[i] === "$" && src[i + 1] === "{") { let prof = 1; i += 2; while (i < n && prof > 0) { if (src[i] === "{") prof++; else if (src[i] === "}") prof--; i++; } continue; }
+          out[i] = src[i] === "\n" ? "\n" : " "; i++;
+        }
+        i++; continue;
+      }
+      if (c === "/" && regexPossible(i)) {
+        let j = i + 1, cls = false;
+        while (j < n && src[j] !== "\n") { if (src[j] === "\\") { j += 2; continue; } if (src[j] === "[") cls = true; else if (src[j] === "]") cls = false; else if (src[j] === "/" && !cls) break; j++; }
+        if (j < n && src[j] === "/") { for (let k = i + 1; k < j; k++) out[k] = " "; i = j + 1; while (i < n && /[a-z]/.test(src[i])) i++; continue; }
+      }
+      i++;
+    }
+    return out.join("");
+  };
+  const DECLARATION80 = /(?:function\s+([A-Za-z_$][\w$]*)\s*\(|(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>)/g;
+  const replis80 = (src) => {
+    const b = blanchir80(src); const sites = []; const ordinaux = new Map();
+    const re = /(\?\?|\|\|)\s*/g; let m;
+    while ((m = re.exec(b))) {
+      const k = m.index + m[0].length; const c = b[k]; let fin = -1, forme = null;
+      if (c === '"' || c === "'" || c === "`") { forme = "chaîne"; fin = b.indexOf(c, k + 1); if (fin < 0) continue; fin += 1; }
+      else if (/[0-9]/.test(c) || (c === "-" && /[0-9]/.test(b[k + 1]))) { forme = "nombre"; fin = k + /^-?[0-9][0-9_.eExa-fA-F]*/.exec(b.slice(k))[0].length; }
+      else if (c === "[" || c === "{") {
+        const ouv = c, fer = c === "[" ? "]" : "}"; let prof = 0, j = k;
+        for (; j < b.length; j++) { if (b[j] === ouv) prof++; else if (b[j] === fer) { prof--; if (prof === 0) break; } }
+        const corps = b.slice(k + 1, j);
+        if (corps.includes("(")) continue;
+        if (/[A-Za-z_$][\w$]*/.test(corps.replace(/[A-Za-z_$][\w$]*\s*:/g, "").replace(/\b(true|false|null|undefined)\b/g, ""))) continue;
+        forme = ouv === "[" ? "tableau" : "objet"; fin = j + 1;
+      } else { const mm = /^(true|false|null|undefined)\b/.exec(b.slice(k)); if (!mm) continue; forme = "mot-clé"; fin = k + mm[0].length; }
+      let nom = "(module)", d; DECLARATION80.lastIndex = 0; const avant = b.slice(0, k);
+      while ((d = DECLARATION80.exec(avant))) nom = d[1] || d[2];
+      const ord = (ordinaux.get(nom) || 0) + 1; ordinaux.set(nom, ord);
+      sites.push({ cle: nom + "#" + ord, op: m[1], forme, ligne: avant.split("\n").length, debut: k, fin, lit: src.slice(k, fin) });
+    }
+    return sites;
+  };
+  const corpusTok80 = "// a || 0 dans un commentaire\nconst s = 'b || 1 dans une chaîne';\nfunction f(x, y) {\n  const a = x ?? 0;\n  const b = y || '';\n  const c = x || [];\n  const d = y || { k: 1, l: true };\n  const e = x || g();\n  const h = y || { k: g() };\n  const i = x || y;\n  return `${a || 'gabarit'}`;\n}\n";
+  const vus80 = replis80(corpusTok80).map((s) => s.cle + "=" + s.forme);
+  exiger(JSON.stringify(vus80) === JSON.stringify(["f#1=nombre", "f#2=chaîne", "f#3=tableau", "f#4=objet", "f#5=chaîne"]),
+    `(80a) instrument : sur un corpus fabriqué, le tokeniseur rend ${JSON.stringify(vus80)} — attendu cinq replis (nombre, chaîne, tableau, objet, gabarit), ni le commentaire, ni la chaîne, ni les deux replis qui appellent, ni l'identifiant`);
+
+  // (b) LA POPULATION DU MODULE, EXACTEMENT CELLE DE L'AVEU.
+  const REPLIS_AVOUES80 = 48;
+  const srcViz80 = readFileSync(path.join(WEB, "viz.js"), "utf8");
+  const sites80 = replis80(srcViz80);
+  exiger(sites80.length === REPLIS_AVOUES80,
+    `(80b) \`web/viz.js\` porte ${sites80.length} repli(s) de littéral par le critère écrit, l'aveu en porte ${REPLIS_AVOUES80} : ${sites80.length > REPLIS_AVOUES80 ? "un repli neuf est entré — le retirer, ou relever l'aveu avec la raison écrite à côté" : "un repli a disparu — abaisser l'aveu d'exactement ce que le lot retire"} (${sites80.map((s) => s.cle + "@" + s.ligne).join(", ")})`);
+
+  // (c) LA COPIE TRACÉE, dans un bac temporaire, imports relatifs rendus absolus.
+  const produits80 = new Set(); globalThis.__replisProduits80 = (k) => { produits80.add(k); };
+  let trace80 = srcViz80;
+  for (let i = sites80.length - 1; i >= 0; i--) { const s = sites80[i]; trace80 = trace80.slice(0, s.debut) + "(globalThis.__replisProduits80(" + JSON.stringify(s.cle) + "), " + s.lit + ")" + trace80.slice(s.fin); }
+  const baseWeb80 = pathToFileURL(WEB).href + "/";
+  trace80 = trace80.replace(/from\s+'\.\//g, "from '" + baseWeb80).replace(/import\('\.\//g, "import('" + baseWeb80);
+  const bac80 = mkdtempSync(path.join(tmpdir(), "plume-harnais-p11-24-w-"));
+  const fetchOrigine80 = globalThis.fetch;
+  const sauve80 = { evState: S.evState, lastResult: S.lastResult, isAdmin: S.isAdmin, zoomRange: S.zoomRange, inflight: S.exploreInflight, qHist: S.qHist, qHistIdx: S.qHistIdx };
+  const controles80 = ["#qsize", "#qrange", "#viz", "#range", "#sql"].map((id) => [id, document.querySelector(id)]).filter(([, el]) => el);
+  const valeursOrigine80 = controles80.map(([id, el]) => [id, el.value]);
+  const pas80 = [];
+  const jouer80 = async (nom, fn) => { try { await fn(); pas80.push(nom + " ✓"); } catch (e) { pas80.push(nom + " ✗ " + (e && e.message)); } };
+  const reponse80 = (corps) => ({ ok: true, status: 200, headers: { get: () => "application/json" }, text: async () => (typeof corps === "string" ? corps : JSON.stringify(corps)), json: async () => (typeof corps === "string" ? JSON.parse(corps) : corps) });
+  let corpsSuivant80 = {};
+  try {
+    writeFileSync(path.join(bac80, "viz_tracee.mjs"), trace80);
+    const V = await import(pathToFileURL(path.join(bac80, "viz_tracee.mjs")).href);
+    globalThis.fetch = async (u) => (String(u).includes("/api/mail/body") ? reponse80({}) : reponse80(corpsSuivant80));
+    const poser = (id, v) => { const el = document.querySelector(id); if (el) el.value = v; };
+    poser("#qsize", ""); poser("#qrange", ""); poser("#viz", ""); poser("#range", "");
+    S.zoomRange = null; S.isAdmin = true; S.exploreInflight = null;
+    const etat = (sup) => ({ q: "search x", isSoql: true, keyset: true, cursors: [null], page: 0, pageSize: 100, total: -1, shown: 0, totalCapped: false, realTotal: false, win: { from: 0, to: 0 }, ...sup });
+    // Réponses du démon sans `rows`, sans `columns`, sans `compiled_sql`, sans `next_cursor`.
+    await jouer80("runQ sans options", async () => { corpsSuivant80 = {}; await V.runQ("search x", true, undefined, 5, 0); });
+    await jouer80("evLoad curseur, corps vide", async () => { corpsSuivant80 = {}; S.evState = etat({}); await V.evLoad(); });
+    await jouer80("evLoad décalage, corps vide", async () => { corpsSuivant80 = {}; S.evState = etat({ keyset: false, total: 0 }); await V.evLoad(); });
+    // Une ligne datée : la chronologie se dessine, les facettes se comptent, le bouton de courriel se pose.
+    await jouer80("evLoad avec lignes datées", async () => {
+      corpsSuivant80 = { columns: ["ts", "source", "message", "severity", "src_ip", "host", "fields"], rows: [[1700000000, "sshd", "m", 2, "1.2.3.4", "h", "{\"k\":\"v\"}"], [1700003600, "mail", "m2", 1, "", "h", "{\"account\":\"a\",\"fileid\":\"f\"}"], [1700007200, "sshd", "m3", 1, "", "h", null]], stats: { elapsed_ms: 1 }, has_more: false };
+      S.evState = etat({ keyset: false, total: 0 }); await V.evLoad();
+      const btn = document.querySelector("#qresult") && document.querySelector("#qresult").querySelector(".mailbtn");
+      if (btn) { if (typeof btn.click === "function") btn.click(); else if (btn.onclick) btn.onclick({ target: btn }); }
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    await jouer80("renderViz sur contrôle vide", async () => { S.lastResult = { columns: ["k", "v"], rows: [] }; V.renderViz(); });
+    await jouer80("currentFrom sur contrôle vide", async () => { V.currentFrom(); });
+    await jouer80("runQuery agrégation, corps sans compiled_sql", async () => { poser("#sql", "search x | stats count"); corpsSuivant80 = { columns: ["count"], rows: [[1]], stats: { rows: 1, elapsed_ms: 1 } }; await V.runQuery(); await new Promise((r) => setTimeout(r, 0)); });
+    await jouer80("runQuery agrégation, corps sans lignes", async () => { poser("#sql", "search x | stats count"); corpsSuivant80 = { columns: ["count"], stats: { rows: 0, elapsed_ms: 1 } }; await V.runQuery(); await new Promise((r) => setTimeout(r, 0)); });
+    await jouer80("coverageBadge sans avis", async () => { V.coverageBadge({ coverage: { older_outside_window: true } }); });
+    await jouer80("tableEl avec unité d'octets illisible et pagination", async () => { V.tableEl(["host", "net_rx_bps"], [["h", "x"]], undefined, null, { pager: true }); });
+    await jouer80("sondage de chaque représentation", async () => { for (const m of ["stat", "bar", "line", "gauge", "pie", "donut", "heatmap", "histogram", "table"]) V.sondage(m); });
+    await jouer80("secteurs avec une valeur absente", async () => { V.noeudsDeVizReglee("pie", ["k", "v"], [["a", 1], ["b", 2], ["c", null]]); });
+    // La porte refuse une colonne à une seule valeur AVANT de dessiner : le repli de largeur nulle de
+    // l'histogramme vit derrière elle (voir l'aveu). Le geste est joué pour que l'aveu reste une mesure.
+    await jouer80("histogramme sur une seule valeur", async () => { V.noeudsDeVizReglee("histogram", ["n"], [[5], [5], [5]]); });
+    await jouer80("ligne et barres", async () => { V.noeudsDeVizReglee("line", ["x", "y"], [[1, 2], [2, 3]]); V.noeudsDeVizReglee("bar", ["k", "v"], []); });
+    await jouer80("réglage : choisir « par défaut » dans la barre", async () => {
+      const noeuds = V.noeudsDeVizReglee("bar", ["k", "v"], [["a", 1], ["b", 2]], undefined, null, undefined, () => {});
+      const selects = []; const cueillir = (el) => { if (el && el.tagName === "SELECT") selects.push(el); (el && el.children || []).forEach(cueillir); };
+      noeuds.forEach(cueillir);
+      if (!selects.length) throw new Error("aucun sélecteur de fente dans la barre de réglage");
+      selects[0].value = ""; if (typeof selects[0].onchange === "function") selects[0].onchange({ target: selects[0] });
+    });
+    await jouer80("refus de réglage sur colonne absente", async () => { V.refusDeReglage("bar", ["a", "b"], [[1, 2]], { x: "zzz" }); });
+  } finally {
+    globalThis.fetch = fetchOrigine80; delete globalThis.__replisProduits80;
+    S.evState = sauve80.evState; S.lastResult = sauve80.lastResult; S.isAdmin = sauve80.isAdmin; S.zoomRange = sauve80.zoomRange; S.exploreInflight = sauve80.inflight; S.qHist = sauve80.qHist; S.qHistIdx = sauve80.qHistIdx;
+    for (const [id, v] of valeursOrigine80) { const el = document.querySelector(id); if (el) el.value = v; }
+    rmSync(bac80, { recursive: true, force: true });
+  }
+
+  // (d) LE VERDICT : les non-produits, avoués un par un avec la raison.
+  const NON_PRODUITS_AVOUES80 = {
+    // Deux gardes défensives qu'aucun appelant n'atteint : les jouer mesurerait une fabrication
+    // (c'est ce que `[forage-refuse-nomme-sa-cause]` refuse déjà pour les deux refus voisins).
+    "statDrill#1": "aucun appelant ne passe une requête vide à statDrill (deux sites, tous deux sous une requête)",
+    "showQError#1": "aucun appelant ne passe un message vide à showQError (les six sites passent j.error ou e.message, jamais vides)",
+    // Trois propriétés que le simulacre donne à TOUT élément : une liste d'enfants, des attributs, et un
+    // texte non vide sur chaque rendu de sonde. Un nœud sans elles n'existe qu'en navigateur (nœud texte).
+    "marquesDe#2": "le simulacre donne une liste d'enfants à tout élément : `(n && n.children) || []` ne replie que sur un nœud texte, hors de sa portée",
+    "empreinteDe#1": "le simulacre donne des attributs à tout élément : `n.attributes || {}` ne replie que sur un nœud texte",
+    "empreinteDe#2": "chaque rendu de sonde porte du texte (libellés d'axes, valeurs) : `n.textContent || ''` ne replie que sur une figure muette, que la porte refuse avant le sondage",
+    // Un repli DERRIÈRE la porte : `refusDeRepresentation` refuse une colonne à une seule valeur avant de
+    // dessiner, donc la largeur de classe nulle (`|| 1`) n'est atteignable que par `vizSansPorte`, réservé
+    // au sondage, dont les jeux portent toujours deux valeurs distinctes. C'est un repli de la même famille
+    // que les deux inertes de `P11.24-s` : il ne ment pas, il ne sert plus.
+    "histogramEl#1": "derrière la porte qui refuse une colonne à une seule valeur ; atteignable seulement par vizSansPorte, réservé au sondage",
+    // Un corps sans `rows` sur le chemin d'agrégation ne survit pas à la représentation qui précède
+    // l'interrupteur d'export : le repli est écrit après un point que ce corps ne franchit pas. Le démon
+    // sert toujours `rows` ; le jour où il ne le ferait pas, c'est `renderViz` qui le dirait, pas ce repli.
+    "runQuery#1": "un corps sans rows ne franchit pas renderViz, qui précède ce repli ; le démon sert toujours rows",
+  };
+  const nonProduits80 = sites80.filter((s) => !produits80.has(s.cle));
+  const sansAveu80 = nonProduits80.filter((s) => !(s.cle in NON_PRODUITS_AVOUES80));
+  const aveuxAtteints80 = Object.keys(NON_PRODUITS_AVOUES80).filter((k) => produits80.has(k));
+  const aveuxSansObjet80 = Object.keys(NON_PRODUITS_AVOUES80).filter((k) => !sites80.some((s) => s.cle === k));
+  console.log(`[replis-du-module] pas joués : ${pas80.join(" · ")}`);
+  console.log(`[replis-du-module] ${sites80.length} repli(s), ${produits80.size} produit(s) ; non produits : ${nonProduits80.map((s) => s.cle + "@" + s.ligne + " " + s.op + " " + s.lit.slice(0, 20)).join(", ") || "aucun"}`);
+  exiger(produits80.size >= 30, `(80c) instrument : le corpus n'a produit que ${produits80.size} repli(s) sur ${sites80.length} — la copie tracée n'a pas été exercée (pas : ${pas80.join(" · ")})`);
+  exiger(sansAveu80.length === 0, `(80d) repli(s) NON PRODUIT(S) SANS AVEU : ${sansAveu80.map((s) => s.cle + "@" + s.ligne).join(", ")} — porter le corpus jusqu'à eux, ou les avouer avec la raison`);
+  exiger(aveuxAtteints80.length === 0, `(80d) aveu(x) que le corpus ATTEINT : ${aveuxAtteints80.join(", ")} — retirer l'aveu, le repli est produit`);
+  exiger(aveuxSansObjet80.length === 0, `(80d) aveu(x) sans objet : ${aveuxSansObjet80.join(", ")} — le repli n'existe plus sous cette clé`);
+  console.log(`[replis-du-module] \`P11.24-s\`/\`P11.24-w\` : le compte des replis de \`web/viz.js\` est DÉRIVÉ par un critère écrit (${sites80.length}, validé sur un corpus fabriqué aux deux bouts), une copie TRACÉE du module est jouée contre un corpus de gestes, ${produits80.size} replis sont PRODUITS et ${nonProduits80.length} sont AVOUÉS non produits avec leur raison — le nombre n'est plus une phrase, il se rejoue. CE QUE CE TÉMOIN NE TIENT PAS : la justesse de la valeur substituée (tenue par (45a)/(63b)), et l'encre peinte.`);
+}
+
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;
 verdictRendu = true;
 if (echecs.length) {

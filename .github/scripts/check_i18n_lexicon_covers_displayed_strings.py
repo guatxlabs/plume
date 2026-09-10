@@ -1015,6 +1015,13 @@ def _dans_bloc_lang_en(texte_code: str, p: int) -> bool:
 RE_SINK_AFFECT = re.compile(r"\.(%s)\s*=\s*$" % "|".join(SINKS_AFFECTATION))
 RE_SINK_CLE = re.compile(r"[{,]\s*(%s)\s*:\s*$" % "|".join(SINKS_CLE))
 RE_SINK_APPEL = re.compile(r"\b(%s)\(\s*$" % "|".join(SINKS_APPEL))
+# `P11.8-c` — LE SECOND ARGUMENT DE `confirmWithConsequence(` EST UN PUITS, lu dans la fabrique : `modal()` le
+# pose en `<p class="modal-consequence">${esc(opts.consequence)}</p>`, un nœud entier. Le contexte lu est celui
+# qui précède le littéral depuis le dernier `;` : il finit par `confirmWithConsequence(<premier argument>, ` où
+# le premier argument, déjà réduit à `""` ou à une expression, ne porte AUCUNE virgule de premier niveau — une
+# virgule intermédiaire signale une position ultérieure (les options), qui n'est pas ce puits. Mesuré le
+# 2026-09-10 : trois conséquences françaises écrites en littéral statique étaient hors-regard sans clé.
+RE_SINK_APPEL_2E = re.compile(r"\bconfirmWithConsequence\(\s*[^,;()]*(?:\([^()]*\)[^,;()]*)*,\s*$")
 # `setAttribute(` : le NOM de l'attribut est le littéral qui PRÉCÈDE la valeur (la tokenisation l'a réduit
 # à `""`, il est donc relu dans la liste des littéraux). Sans cette vérification, `setAttribute('d', …)` d'un
 # tracé SVG était compté comme un puits d'affichage — mesuré le 2026-08-23 : 5 occurrences dans `web/viz.js`,
@@ -1051,6 +1058,8 @@ def _est_puits(avant: str, attribut: str = "") -> bool:
     a = avant.rstrip()
     if RE_SINK_AFFECT.search(a) or RE_SINK_CLE.search(a) or RE_SINK_APPEL.search(a):
         return True
+    if RE_SINK_APPEL_2E.search(a):
+        return True  # `P11.8-c` : la conséquence d'une confirmation, second argument
     if RE_SINK_SETATTR.search(a):
         return attribut.strip() in ATTRS_HTML
     if RE_CLE_LITTERALE.search(a):
@@ -1783,7 +1792,8 @@ host.appendChild(Object.assign(document.createElement('div'), { className: 'mute
 w.appendChild(Object.assign(document.createElement('i'), { 'aria-label': 'Affiché dix-neuf' }));
 const dur = { storeKey: 'Sous une clé que le document ne connaît pas' };
 const fab = { emptyText: 'Affiché vingt', message: 'Affiché vingt et un', cancelText: 'Affiché vingt-deux' };
-confirmWithConsequence('Affiché vingt-trois', 'xx');
+confirmWithConsequence('Affiché vingt-trois', 'Affiché vingt-quatre');
+confirmWithConsequence(x, y, 'Troisieme position hors regard');
 z1.innerHTML = '<span class="mtl">' + (cond ? 'Noeud entre balises' : 'z') + '</span>';
 z2.textContent = (cond ? 'Fragment colle a droite' : 'z') + ' suite du texte';
 """
@@ -1810,12 +1820,15 @@ x.textContent = 'Hors registre';
 # 2026-08-29) : la valeur ne rejoint le document ni par une affectation ni par une propriété du document,
 # mais par la CONVENTION D'APPEL d'une fabrique de `core.js` — `emptyText:` que `muted()` pose en
 # `textContent`, `message:` et `cancelText:` que `modal()` pose en nœuds texte, et le premier argument de
-# `confirmWithConsequence(` qui devient le `title` de cette modale. Sans ces quatre témoins, retirer une clé
+# `confirmWithConsequence(` qui devient le `title` de cette modale ; « Affiché vingt-quatre » est son SECOND argument,
+# la conséquence, posée par `modal()` en nœud entier (`P11.8-c`, 2026-09-10), et « Troisieme position hors regard » son
+# NÉGATIF : une position ultérieure n'est pas ce puits. Sans ces témoins, retirer une clé
 # de `CLES_APPLICATIVES` — ce qui est arrivé DEUX FOIS par simple divergence avec `core.js` — repasserait
 # sans bruit, et le module retomberait au vert en n'affichant plus rien de traduit.
 ATTENDUS_STATIQUES = {"aucun runbook", "nom et champ requis", "Affiché dix-sept",
                       "Affiché dix-huit", "Affiché dix-neuf", "Noeud entre balises",
                       "Affiché vingt", "Affiché vingt et un", "Affiché vingt-deux", "Affiché vingt-trois",
+                      "Affiché vingt-quatre",
                       "Affiché un", "Affiché deux", "Affiché trois", "Affiché quatre", "Affiché cinq",
                       "Affiché six", "Affiché sept", "Affiché huit", "Affiché neuf", "Affiché dix",
                       "Affiché onze", "Affiché douze", "Affiché treize", "Affiché quatorze", "Affiché quinze",
@@ -1833,7 +1846,7 @@ ATTENDUS_DYNAMIQUES = 5
 # affirmation a tenu la clé la plus portante de `web/` hors du regard pendant qu'elle l'attestait
 # indécidable. Le choix se porte sur `storeKey:`, dont `identiteDeLaListe()` fait une identité de rangement
 # jamais rendue : un témoin négatif doit citer une clé dont on peut PROUVER qu'elle n'affiche rien.
-INTERDITS = {"Sous une clé que le document ne connaît pas",
+INTERDITS = {"Sous une clé que le document ne connaît pas", "Troisieme position hors regard",
              "src_ip", "/api/v1/alerts", "count", "sort -count",
              "Fragment de ternaire", "Fragment HTML de bord :", "Fragment colle a droite",
              "Pas affiché", "pas-une-chaine affichée", "valeur_technique", "pas une chaîne", "T1110", "…", "x",

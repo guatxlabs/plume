@@ -406,6 +406,12 @@ const I18N_EN = {
   // … et son pendant côté import Sigma : ce que l'import ne ferme pas, avec le geste qui le fermerait.
   "Ces règles sont créées et resteront éditables : c'est leur SOURCE qui n'existe pas sur cette base. Elles ne comptent donc dans aucun des deux bouts du delta ci-dessus. Brancher le producteur leur donne de quoi tirer, une fois activées — il n'y a pas de règle à réécrire.": "These rules are created and stay editable: it is their SOURCE that does not exist on this database. They therefore count in neither end of the delta above. Wiring the producer gives them something to fire on, once enabled — there is no rule to rewrite.",
   "Source(s) à brancher": "Source(s) to wire",
+  // P10.5-i (2026-09-10) — L'AVEU DE PART FROIDE, lu sur la ligne de badges de l'Explore : quatre libellés statiques.
+  "froid : moteur colonnaire": "cold: columnar engine",
+  "froid : lu sans compte": "cold: read, no count",
+  "froid : part servie": "cold: share served",
+  "froid : rien de vieilli": "cold: nothing aged",
+  "froid : non lu": "cold: not read",
   "Technique": "Technique",
   "Ouvre le panneau des règles, la recherche posée sur cette technique : la ou les règles existent et sont activées — c'est leur source qui manque.": "Opens the rule panel with the search set to this technique: the rule or rules exist and are enabled — it is their source that is missing.",
   "Ouvre le formulaire de règle avec cette technique déjà renseignée. Une règle de plus ne remplace pas le producteur qui manque : sans lui, elle ne tirera pas davantage.": "Opens the rule form with this technique already filled in. One more rule does not replace the missing producer: without it, that rule will not fire either.",

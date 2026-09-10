@@ -548,6 +548,51 @@ function coverageHorizonNodes(stats) {
 // est approximatif/tronqué, vs un scan brut exact. stats.served_from "rollup"|"raw" + approx + truncated.
 // `navigation` (optionnel) = { keyset, saut, page } : le contexte de feuilletage, qui change ce que
 // « tronqué » veut dire (cf. truncationBadge).
+// `P10.5-i` / `P10.5-q` (2026-09-10) — L'AVEU DE PART FROIDE, LU PAR LA CONSOLE. Le démon publie
+// `stats.cold` sur la route de requête depuis `P10.5-c` — la provenance (`served_from`), la frontière
+// chaud/froid, le compte de fichiers lus et de lignes hydratées — et AUCUN module de la console ne le
+// lisait : l'aveu arrivait dans le navigateur et s'arrêtait là, le défaut « le démon avoue, la console
+// n'écoute pas » que `provenanceBadge` a déjà fermé pour le plafond top-N. QUATRE ÉTATS, parce que la
+// route en dit quatre (mesurés sur la route par `l_aveu_de_part_froide_est_servi_sur_la_reponse_entiere_de_la_route`) :
+//   • la voie colonnaire a servi (pur froid ou fusion) ;
+//   • le bras froid a servi une part (au moins un fichier lu) ;
+//   • le bras froid a été lu et n'a RIEN porté (zéro fichier) — la provenance dit ce que le SQL a PU
+//     lire, pas ce qu'il a lu, et c'est ici que la zone grise « journée franchie, pas encore vieillie »
+//     se voit au lieu de passer pour une absence ;
+//   • le bras froid n'a pas pu être lu (une requête de métriques, que le vieillissement ne touche pas).
+// Le libellé est STATIQUE (traduisible) ; les nombres et la date vivent dans l'infobulle.
+function coldShareBadge(stats) {
+  const c = stats && stats.cold;
+  if (!c || typeof c.served_from !== 'string') return null;
+  const b = document.createElement('span');
+  b.className = 'qb qb-froid';
+  // AUCUN REPLI SUR LES COMPTEURS : un compte que la route n'a pas publié n'est pas un zéro (`P11.24-s`) —
+  // il est dit « non publié », et le libellé ne tranche « part servie » ou « rien de vieilli » que sur
+  // un compte réellement lu.
+  const fichiers = Number.isFinite(c.files_read) ? c.files_read : null;
+  const lignes = Number.isFinite(c.rows_hydrated) ? c.rows_hydrated : null;
+  const frontiere = Number.isFinite(c.boundary_ts) ? '\nFrontière chaud/froid : ' + fmtTs(c.boundary_ts) : '';
+  const comptes = (fichiers === null ? 'compte de fichiers non publié' : fichiers + ' fichier(s) lu(s)') + ', '
+    + (lignes === null ? 'compte de lignes non publié' : lignes + ' ligne(s) hydratée(s)') + '.';
+  if (c.served_from.startsWith('cold-vectorized')) {
+    b.textContent = 'froid : moteur colonnaire';
+    b.title = 'Servi par le moteur colonnaire du tier froid' + (c.served_from.endsWith('-merge') ? ', fusionné avec le chaud sur une fenêtre chevauchante.' : ', sur une fenêtre entièrement froide.') + frontiere;
+  } else if (c.served_from === 'hot+cold' && fichiers === null) {
+    b.textContent = 'froid : lu sans compte';
+    b.title = "Le bras froid a été lu ; la route n'a pas publié ce qu'il a porté." + '\n' + comptes + frontiere;
+  } else if (c.served_from === 'hot+cold' && fichiers > 0) {
+    b.textContent = 'froid : part servie';
+    b.title = 'Une part de cette réponse vient du tier froid.' + '\n' + comptes + frontiere;
+  } else if (c.served_from === 'hot+cold') {
+    b.textContent = 'froid : rien de vieilli';
+    b.title = "Le bras froid a été lu et n'a rien porté sur cette fenêtre : aucune journée vieillie. Une journée passée sous la frontière mais pas encore vieillie n'est servie par aucun bras jusqu'à la passe de vieillissement." + frontiere;
+  } else {
+    b.textContent = 'froid : non lu';
+    b.title = "Cette réponse n'a pas pu lire le bras froid : sa requête n'interroge pas les événements. Les métriques ne vieillissent pas, la réponse est entière." + frontiere;
+  }
+  return b;
+}
+
 function renderQBadge(stats, navigation) {
   const el = $('#qbadge'); if (!el) return;
   const parts = [];
@@ -562,10 +607,14 @@ function renderQBadge(stats, navigation) {
   // serveur a pu CHIFFRER ce que le plafond écarte (stats.topn_ecartes/topn_total), on l'affiche ; sinon on
   // dit que l'ampleur est INCONNUE — jamais un chiffre qu'on n'a pas.
   if (stats && stats.truncated) parts.push(truncationBadge(stats, navigation));
-  el.replaceChildren(...parts.map(([cls, text, title]) => {
+  const noeuds = parts.map(([cls, text, title]) => {
     const b = document.createElement('span'); b.className = 'qb ' + cls; b.textContent = text; b.title = title; return b;
-  }));
-  el.hidden = parts.length === 0;
+  });
+  // L'aveu de part froide, quand la route l'a publié : un nœud de plus, jamais à la place des autres.
+  const froid = coldShareBadge(stats);
+  if (froid) noeuds.push(froid);
+  el.replaceChildren(...noeuds);
+  el.hidden = noeuds.length === 0;
 }
 
 // message propre à partir d'une exception levée par le fetch (annulation / budget / réponse vide).
@@ -2688,4 +2737,4 @@ async function runQuery() {
 function showQExport(has) { const el = $('#qexport'); if (el) el.hidden = !has; }
 
 
-export { banIp, clearDrillCrumb, clearZoom, coverageBadge, coverageHorizonNodes, provenanceBadge, currentFrom, currentTo, evLoad, exploreFrom, exploreTo, noeudsDeVizReglee, qHistGo, queryCount, refusDeReglage, reglageLu, renderViz, runQ, runQuery, setZoom, sondage, stopExplore, tableEl, updateZoomBadge, vizElement, vizSansPorte, refusDeRepresentation, truncationBadge };
+export { banIp, clearDrillCrumb, clearZoom, coldShareBadge, coverageBadge, coverageHorizonNodes, renderQBadge, provenanceBadge, currentFrom, currentTo, evLoad, exploreFrom, exploreTo, noeudsDeVizReglee, qHistGo, queryCount, refusDeReglage, reglageLu, renderViz, runQ, runQuery, setZoom, sondage, stopExplore, tableEl, updateZoomBadge, vizElement, vizSansPorte, refusDeRepresentation, truncationBadge };

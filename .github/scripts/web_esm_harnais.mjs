@@ -10905,6 +10905,50 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   console.log(`[replis-du-module] \`P11.24-s\`/\`P11.24-w\` : le compte des replis de \`web/viz.js\` est DÉRIVÉ par un critère écrit (${sites80.length}, validé sur un corpus fabriqué aux deux bouts), une copie TRACÉE du module est jouée contre un corpus de gestes, ${produits80.size} replis sont PRODUITS et ${nonProduits80.length} sont AVOUÉS non produits avec leur raison — le nombre n'est plus une phrase, il se rejoue. CE QUE CE TÉMOIN NE TIENT PAS : la justesse de la valeur substituée (tenue par (45a)/(63b)), et l'encre peinte.`);
 }
 
+// 81. L'AVEU DE PART FROIDE EST LU PAR LA CONSOLE (`P10.5-i`, `P10.5-q`, 2026-09-10).
+//     CE QUI ÉTAIT MESURÉ : la route de requête publie `stats.cold` (provenance, frontière, fichiers lus,
+//     lignes hydratées) et aucun module de la console ne le lisait — « le démon avoue, la console
+//     n'écoute pas », l'aggravant nommé par la cellule. QUATRE états sont rendus par un libellé STATIQUE
+//     et une infobulle qui porte les nombres et la date ; l'absence d'aveu ne rend rien (binaire antérieur,
+//     surface non couverte). Le témoin lit AUSSI le démon : les quatre valeurs de provenance qu'il rend
+//     doivent exister dans `handlers/query.rs` et `cold_store/reader.rs`, sinon ce témoin jugerait un
+//     vocabulaire que rien ne produit.
+// ---------------------------------------------------------------------------------------------
+{
+  const { coldShareBadge, renderQBadge } = await import(pathToFileURL(path.join(WEB, "viz.js")).href);
+  const srcQ = readFileSync(path.join(RACINE, "daemon", "src", "handlers", "query.rs"), "utf8");
+  const srcR = readFileSync(path.join(RACINE, "daemon", "src", "cold_store", "reader.rs"), "utf8");
+  exiger(/"cold-vectorized"/.test(srcQ) && /"cold-vectorized-merge"/.test(srcQ), "(81) instrument : le démon ne nomme plus les deux valeurs de la voie colonnaire");
+  exiger(/"hot\+cold"/.test(srcR) && /"hot"/.test(srcR), "(81) instrument : le démon ne nomme plus les deux valeurs de provenance de l'union");
+  const cas = [
+    [{ cold: { served_from: "cold-vectorized", boundary_ts: 1_700_000_000 } }, "froid : moteur colonnaire", /entièrement froide/],
+    [{ cold: { served_from: "cold-vectorized-merge", boundary_ts: 1_700_000_000 } }, "froid : moteur colonnaire", /fusionné/],
+    [{ cold: { served_from: "hot+cold", files_read: 3, rows_hydrated: 120, boundary_ts: 1_700_000_000 } }, "froid : part servie", /3 fichier\(s\) lu\(s\), 120 ligne\(s\)/],
+    [{ cold: { served_from: "hot+cold", files_read: 0, rows_hydrated: 0, boundary_ts: 1_700_000_000 } }, "froid : rien de vieilli", /pas encore vieillie/],
+    [{ cold: { served_from: "hot", files_read: 0, rows_hydrated: 0, boundary_ts: 1_700_000_000 } }, "froid : non lu", /métriques ne vieillissent pas/],
+    // Un compte NON PUBLIÉ n'est pas un zéro : le libellé ne tranche pas, l'infobulle le dit (`P11.24-s`).
+    [{ cold: { served_from: "hot+cold", boundary_ts: 1_700_000_000 } }, "froid : lu sans compte", /compte de fichiers non publié/],
+  ];
+  for (const [stats, texte, infobulle] of cas) {
+    const b = coldShareBadge(stats);
+    exiger(!!b && b.textContent === texte, `(81) ${stats.cold.served_from} / ${stats.cold.files_read} fichier(s) : libellé « ${b && b.textContent} », attendu « ${texte} »`);
+    exiger(!!b && infobulle.test(b.title || ""), `(81) ${stats.cold.served_from} : l'infobulle ne dit pas ${infobulle} — « ${b && b.title} »`);
+    exiger(!!b && /Frontière chaud\/froid/.test(b.title || ""), `(81) ${stats.cold.served_from} : la frontière publiée n'atteint pas l'infobulle`);
+  }
+  exiger(coldShareBadge({ served_from: "raw" }) === null && coldShareBadge(null) === null, "(81) témoin négatif : sans aveu de part froide, un badge est fabriqué");
+  // L'INTÉGRATION : la ligne de badges de l'Explore porte le nœud, à côté des autres, jamais à leur place.
+  const qbadge = document.querySelector("#qbadge");
+  exiger(!!qbadge, "(81) instrument : #qbadge absent de la page réelle");
+  renderQBadge({ served_from: "raw", cold: { served_from: "hot+cold", files_read: 1, rows_hydrated: 5, boundary_ts: 1_700_000_000 } }, null);
+  const textes = (qbadge.children || []).map((c) => c.textContent);
+  exiger(textes.includes("brut") && textes.includes("froid : part servie"), `(81) la ligne de badges ne porte pas le badge froid À CÔTÉ de la provenance : ${JSON.stringify(textes)}`);
+  exiger(qbadge.hidden === false, "(81) la ligne de badges reste cachée avec un aveu à rendre");
+  renderQBadge({ served_from: "raw" }, null);
+  exiger(!(qbadge.children || []).some((c) => /^froid/.test(c.textContent)), "(81) témoin négatif : un badge froid survit à une réponse sans aveu");
+  renderQBadge(null, null);
+  console.log("[part-froide-lue] `P10.5-i`/`P10.5-q` : l'aveu de part froide publié par la route de requête est LU par la console — quatre états (moteur colonnaire, part servie, rien de vieilli, non lu) rendus par un libellé statique et une infobulle qui porte les fichiers, les lignes et la frontière ; l'absence d'aveu ne rend rien ; le badge s'ajoute aux autres sans les remplacer. CE QUE CE TÉMOIN NE TIENT PAS : la route des panneaux, qui ne publie pas cet aveu (le reste de `P10.5-i`), et l'encre peinte.");
+}
+
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;
 verdictRendu = true;
 if (echecs.length) {

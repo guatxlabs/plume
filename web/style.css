@@ -357,6 +357,7 @@ button[aria-pressed="true"]{background:var(--sel-bg);color:var(--sel-fg);border-
 .qb{font-family:var(--font-mono);font-size:11px;padding:2px 9px;border-radius:var(--pill);border:1px solid var(--bd);background:var(--card2);color:var(--mut)}
 .qb-rollup{background:var(--acc-bg);color:var(--acc);border-color:color-mix(in srgb,var(--acc) 35%,transparent)}
 .qb-approx{background:color-mix(in srgb,var(--warn) 14%,transparent);color:var(--warn);border-color:color-mix(in srgb,var(--warn) 38%,transparent)}
+.qb-froid{background:color-mix(in srgb,var(--acc) 10%,transparent);color:var(--mut);border-color:color-mix(in srgb,var(--acc) 30%,transparent)} /* P10.5-i : l'aveu de part froide, lu */
 .qb-trunc{background:color-mix(in srgb,var(--bad) 14%,transparent);color:var(--bad);border-color:color-mix(in srgb,var(--bad) 40%,transparent);font-weight:700}
 .qresult{overflow:auto;max-height:72vh}   /* PAS de border-radius : un conteneur scrollable arrondi CLIPPE l'en-tête sticky aux coins -> effet "décroche de qlq mm" au défilement */
 /* Explore : la requête + résultats occupent toute la largeur (sections explore-only) -> pas de vide */

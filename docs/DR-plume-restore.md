@@ -77,18 +77,22 @@ lignes `event` **supprimées de la base chaude**. La base chaude ne porte donc p
 `PLUME_COLD_HOT_WINDOW_DAYS` (**7 jours** par défaut) ; le reste de la rétention
 (`PLUME_COLD_RETENTION_DAYS=365`) vit **uniquement** sous `PLUME_COLD_DIR=/data/cold`.
 
-**Il n'y a pas de perte de données.** Les fichiers-jour froids sont séquestrés à chaque cycle du
-sidecar `backup` par `plume-daemon cold-backup-plan`, en copie verbatim incrémentale vers
-`<votre-bucket>/plume/cold/<tenant>/<env>/<AAAA-MM-JJ>-<NNNN>.parquet`. Ils sont déjà zstd+age-chiffrés
-et immuables : aucun re-wrap, aucun clair.
+**Il n'y a pas de perte de données.** Les fichiers-jour froids sont mis à l'abri par le démon lui-même
+(`P7.20-f`) : après chaque cycle du planificateur natif (`PLUME_BACKUP_INTERVAL` — conteneur et cluster) et
+par `plume-backup.timer` en mode hôte (`plume-daemon cold-escrow <destination>`), en copie verbatim
+incrémentale sous `<destination de sauvegarde>/cold/<tenant>/<env>/<AAAA-MM-JJ>-<NNNN>.parquet` — ce qui
+expédie la destination expédie aussi les jours froids. `cold-backup-plan` reste la forme lecture seule pour
+un exécutant externe. Ils sont déjà zstd+age-chiffrés et immuables : aucun re-wrap, aucun clair. **Réserve
+(`P7.20-m`)** : avec une destination OBJET (`s3://`, fonctionnalité `s3_backup`), les jours froids restent
+dans la zone de préparation locale et n'y sont pas déposés.
 
 **Ce qu'il faut en retenir pour un DR :**
 
 1. Restaurer `plume-<TS>.db.age` seul rend un SOC **fonctionnel mais amputé** : la recherche répondra,
    et ne verra que les 7 derniers jours. Un incident daté d'il y a trois semaines sera **absent sans le
    moindre message d'erreur**.
-2. Une restauration complète a **deux composants** : le `.db.age` chaud **et** l'arborescence `cold/` du
-   même bucket, remise sous `PLUME_COLD_DIR` avant le démarrage du daemon.
+2. Une restauration complète a **deux composants** : le `.db.age` chaud **et** l'arborescence `cold/` de
+   la même destination de sauvegarde, remise sous `PLUME_COLD_DIR` avant le démarrage du daemon.
 3. **L'ordre compte** : déposer les fichiers-jour froids *avant* le premier boot. Le daemon lit
    `cold_seal` dans la base restaurée ; un jour scellé dont le fichier Parquet est absent est un trou
    silencieux, pas une erreur de boot.

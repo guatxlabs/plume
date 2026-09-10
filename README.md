@@ -695,6 +695,8 @@ personne ne nommait (`P4.1-u`). La colonne de droite est le texte d'aide du bina
 | `chiffrer-au-repos` | chiffre une base EXISTANTE restée en clair. IRRÉVERSIBLE : exige une clé explicite, PLUME_DB_KEY_ESCROWED=1, et produit une sauvegarde VÉRIFIÉE PAR RESTAURATION avant de basculer |
 | `backup-prune-plan` | plan de purge des sauvegardes (lecture seule) |
 | `backup-classify` | classe de rétention d'un nom de sauvegarde, une ligne « <nom> <classe> » par nom (stdin si aucun argument ; sortie 3 si un nom est inclassable, donc jamais purgé) |
+| `cold-escrow` | met à l'abri les jours froids scellés sous `<destination>/cold` (copie verbatim incrémentale, jamais de suppression ; ce que le planificateur natif fait après chaque cycle) — binaire bâti avec `cold_tier`, sinon l'aide la dit INDISPONIBLE |
+| `cold-backup-plan` | plan de mise à l'abri des jours froids, lecture seule, pour un exécutant externe — binaire bâti avec `cold_tier` |
 | `migrate-check` | compare le schéma live au code (lecture seule) |
 | `db-stats` | occupation disque SQLite (lecture seule) |
 | `fts-compact` | fusionne les segments de l'index plein-texte (rend les octets morts des purges) |

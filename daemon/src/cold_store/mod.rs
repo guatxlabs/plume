@@ -65,6 +65,9 @@ mod vectorized;
 // sélection de fichiers de `reader`/`seal`/`paths`/`crypto`. Le résultat routé == résultat actuel (invariant).
 mod planner;
 mod backup;
+// `P7.20-f` — L'EXÉCUTANT du plan d'escrow : copie verbatim incrémentale des jours-files scellés sous la
+// destination de sauvegarde, consommé par le planificateur natif (`server`) et la sous-commande `cold-escrow` (`main`).
+pub(crate) mod escrow_local;
 
 // Re-glob PRIVÉ de chaque sous-module -> tous les items intra-cold_store (`pub(super)`/`pub(crate)`) sont visibles
 // par les SIBLINGS (via `use super::*`) et par le module `tests` (enfant), reproduisant EXACTEMENT la portée « tout
@@ -96,6 +99,8 @@ use vectorized::*;
 pub(crate) use aging::{cold_age_run, cold_hot_window_days, cold_retention_days, reparse_lower_bound};
 pub(crate) use paths::cold_root;
 pub(crate) use backup::cold_backup_plan;
+// `P7.20-f` — l'exécutant du plan, consommé par `server::sauvegarde_planifiee` et le dispatch `cold-escrow` de `main`.
+pub(crate) use escrow_local::mettre_a_l_abri_les_jours_froids;
 // `P10.13-a` — la sonde de lecture seule, consommée par le dispatch `cold-aging-plan` de `main`.
 pub(crate) use sonde_vieillissement::cold_aging_plan;
 // `ColdUnionMeta` entre dans la façade parce que `handlers/query` NOMME désormais le type : l'aveu de

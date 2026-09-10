@@ -122,9 +122,10 @@ PLUME_SPOOL=/var/lib/plume/spool
 # CE QU'ALLUMER FAIT, ET QUI NE SE DÉFAIT PAS : un jour révolu au-delà de la fenêtre chaude QUITTE la
 # table event pour un fichier Parquet chiffré sous /var/lib/plume/db/cold. AUCUN chemin ne ramène un
 # jour froid vers le chaud : le fichier devient la SEULE copie de ces événements.
-# ET CE FICHIER N'EST PAS SAUVEGARDÉ ICI : plume-backup.timer copie la BASE (VACUUM INTO) et rien
-# d'autre ; le répertoire cold n'entre dans aucune archive de ce mode. Le démon sait produire un plan
-# de copie (plume-daemon cold-backup-plan), mais aucune unité de ce dépôt ne l'exécute.
+# ET CE FICHIER EST MIS À L'ABRI AVEC LA BASE (P7.20-f) : plume-backup.timer copie la BASE (VACUUM INTO)
+# puis joue `plume-daemon cold-escrow <répertoire des sauvegardes>`, qui copie verbatim chaque jour-file
+# scellé sous <répertoire>/cold/… (incrémental, jamais de suppression) — si ce binaire porte la feature ;
+# sinon le journal de l'unité dit qu'il n'y a aucun jour froid à mettre à l'abri.
 # CE QUI N'EST PAS MESURÉ, ET QUI DÉCIDE DU DÉFAUT : la crête mémoire imputable à la passe de
 # vieillissement sous le budget de 2 Gio (MemoryMax de plume-daemon.service). Cf.
 # docs/DESIGN-P10-echelle-2go.md, levier A. Seule la valeur 1 allume ; toute autre valeur = éteint.

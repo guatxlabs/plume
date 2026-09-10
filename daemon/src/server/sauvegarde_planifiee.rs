@@ -55,6 +55,10 @@ struct PlanificateurPret {
     on_start: bool,
     #[cfg(feature = "s3_backup")]
     sink_objet: Option<std::sync::Arc<sink_s3::CibleS3>>,
+    /// `P7.20-f` — la racine des jours-files froids à mettre à l'abri après chaque cycle (même dérivation que
+    /// l'aging et `cold-backup-plan` : `cold_root`), résolue une fois comme le reste.
+    #[cfg(feature = "cold_tier")]
+    cold_dir: std::path::PathBuf,
 }
 
 /// Lit les réglages et prépare la destination. `Err(cause)` = le planificateur ne pourra JAMAIS publier
@@ -112,6 +116,8 @@ fn preparer_le_planificateur(conf: &HashMap<String, String>, db_path: &str, inte
             on_start,
             #[cfg(feature = "s3_backup")]
             sink_objet,
+            #[cfg(feature = "cold_tier")]
+            cold_dir: crate::cold_store::cold_root(conf, db_path),
         })
 }
 
@@ -127,15 +133,44 @@ fn boucle_du_planificateur(db_path: String, pret: PlanificateurPret) -> ! {
         // peuvent pas diverger sur la cadence, le démarrage à chaud ou la rétention.
         #[cfg(feature = "s3_backup")]
         let sink_objet = pret.sink_objet;
+        // `P7.20-f` — LES JOURS FROIDS SONT MIS À L'ABRI APRÈS CHAQUE CYCLE, à côté des archives : résolu une
+        // fois, dit une fois au démarrage, joué par `mettre_a_l_abri_les_jours_froids_apres_le_cycle`.
+        #[cfg(feature = "cold_tier")]
+        let cold_dir = pret.cold_dir;
+        #[cfg(feature = "cold_tier")]
+        {
+            #[cfg(feature = "s3_backup")]
+            let note_objet = if sink_objet.is_some() {
+                " — destination OBJET : les jours froids restent dans la zone de préparation locale et n'y sont PAS déposés (P7.20-m)"
+            } else {
+                ""
+            };
+            #[cfg(not(feature = "s3_backup"))]
+            let note_objet = "";
+            eprintln!(
+                "[backup-sched] escrow froid ACTIF : les jours-files scellés de {} sont copiés verbatim sous {dest}/{} \
+                 après chaque cycle (incrémental, jamais de suppression){note_objet}",
+                cold_dir.display(),
+                crate::cold_store::escrow_local::RACINE_DE_L_ESCROW
+            );
+        }
         #[cfg(feature = "s3_backup")]
-        let cycle = |db: &str, d: &str, k: usize| match sink_objet.as_deref() {
-            Some(cible) => {
-                run_scheduled_backup_objet(db, d, k, cible);
+        let cycle = |db: &str, d: &str, k: usize| {
+            match sink_objet.as_deref() {
+                Some(cible) => {
+                    run_scheduled_backup_objet(db, d, k, cible);
+                }
+                None => run_scheduled_backup(db, d, k),
             }
-            None => run_scheduled_backup(db, d, k),
+            #[cfg(feature = "cold_tier")]
+            mettre_a_l_abri_les_jours_froids_apres_le_cycle(db, &cold_dir, d);
         };
         #[cfg(not(feature = "s3_backup"))]
-        let cycle = |db: &str, d: &str, k: usize| run_scheduled_backup(db, d, k);
+        let cycle = |db: &str, d: &str, k: usize| {
+            run_scheduled_backup(db, d, k);
+            #[cfg(feature = "cold_tier")]
+            mettre_a_l_abri_les_jours_froids_apres_le_cycle(db, &cold_dir, d);
+        };
         // `P9.4-a` — LA PREMIÈRE ATTENTE EST DÉRIVÉE DE LA DERNIÈRE ARCHIVE, JAMAIS D'UN INTERVALLE ENTIER.
         // Avant : « on_start ? cycle : rien », puis un intervalle ENTIER de sommeil — chaque redémarrage
         // repoussait la sauvegarde d'un intervalle, en silence, et un processus qui redémarre plus souvent
@@ -258,6 +293,27 @@ fn run_scheduled_backup_objet(db_path: &str, staging: &str, keep: usize, cible: 
                        la seule copie de ce cycle", chemin.display());
         }
         Some(nom)
+}
+
+/// `P7.20-f` — APRÈS chaque cycle, que l'archive ait été publiée ou non, les jours-files froids scellés sont
+/// mis à l'abri sous `<dest>/cold` : un jour-file est déjà immuable et chiffré, sa mise à l'abri ne dépend pas
+/// de l'archive de la base. La base s'ouvre par la même porte que les signaux, avec la clé de l'environnement
+/// comme le cycle lui-même. Le journal ne parle que s'il y a eu quelque chose à copier, un échec ou une entrée
+/// illisible : un cycle sans jour froid neuf reste silencieux. Un contrat non satisfait ne joue rien et le DIT.
+#[cfg(feature = "cold_tier")]
+fn mettre_a_l_abri_les_jours_froids_apres_le_cycle(db_path: &str, cold_dir: &std::path::Path, dest_dir: &str) {
+        let key = db_key();
+        match PreparedDb::open_keyed_with_prelude(db_path, key.as_deref(), |c| { let _ = c.busy_timeout(Duration::from_secs(5)); }) {
+            Ok(conn) => {
+                let rendu = crate::cold_store::mettre_a_l_abri_les_jours_froids(&conn, cold_dir, "default", std::path::Path::new(dest_dir));
+                if rendu.a_quelque_chose_a_dire() {
+                    eprintln!("[backup-sched] escrow froid : {}", rendu.phrase());
+                }
+            }
+            Err(e) => eprintln!(
+                "[backup-sched] escrow froid NON joué ce cycle (la base n'a pas passé le contrat de schéma : {e}) — un jour \
+                 froid scellé depuis la dernière mise à l'abri attend le cycle suivant"),
+        }
 }
 
 /// P8.25-a + P8.26-a — CE QU'UNE ARCHIVE PUBLIÉE IMPLIQUE, DIT PAR LE CYCLE NATIF. Deux signaux de posture

@@ -664,7 +664,12 @@ pub(crate) mod door_tests {
         // `verify-control` ouvre le PLAN DE CONTRÔLE, qui n'est pas une base plume — il ne porte ni le
         // schéma ni la version de schéma, et lui appliquer le contrat des bases tenant le REFUSERAIT.
         // C'est la même raison, et la même porte, que l'ouverture d'amorçage du plan de contrôle.
-        const SANS_CONTRAT_ATTENDUS: usize = 17;
+        // 17 -> 18 LE 2026-09-10 (`P7.20-f`) : la sous-commande `cold-escrow` joue le plan d'escrow du tier
+        // froid depuis `plume-backup.timer`, et c'est un CALCUL DE SAUVEGARDE (un SELECT sur l'index
+        // `cold_seal`, puis des copies de fichiers) — la même ouverture, pour la même raison, que
+        // `cold-backup-plan` : refuser une base au schéma inattendu ferait sauter la mise à l'abri au
+        // moment exact où la base va mal, soit le trou de sauvegarde qu'on veut le moins.
+        const SANS_CONTRAT_ATTENDUS: usize = 18;
         assert_eq!(
             sans_contrat.len(),
             SANS_CONTRAT_ATTENDUS,

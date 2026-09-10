@@ -981,13 +981,15 @@ const ARGUMENT_ABSENT_LE_SERVEUR: &str = "\u{0}serveur";
 /// (« indisponible » plutôt que de la promettre), et le rejet doit le dire aussi — sinon un
 /// opérateur qui suit la doc du tier froid lit « argument inconnu » et croit à une faute de frappe.
 #[cfg(feature = "cold_tier")]
-const SUBCOMMANDS_COLD: [(&str, &str); 2] = [
+const SUBCOMMANDS_COLD: [(&str, &str); 3] = [
     ("cold-backup-plan", "cold-backup-plan — plan de sauvegarde du tier froid (lecture seule)"),
+    ("cold-escrow", "cold-escrow <destination> — met à l'abri les jours froids scellés sous <destination>/cold (copie verbatim incrémentale, jamais de suppression ; ce que le planificateur natif fait après chaque cycle)"),
     ("cold-aging-plan", "cold-aging-plan — plan d'exécution + chronométrage de la passe de vieillissement (lecture seule)"),
 ];
 #[cfg(not(feature = "cold_tier"))]
-const SUBCOMMANDS_COLD: [(&str, &str); 2] = [
+const SUBCOMMANDS_COLD: [(&str, &str); 3] = [
     ("cold-backup-plan", "cold-backup-plan — INDISPONIBLE dans ce binaire (compilé sans `--features cold_tier`)"),
+    ("cold-escrow", "cold-escrow — INDISPONIBLE dans ce binaire (compilé sans `--features cold_tier`)"),
     ("cold-aging-plan", "cold-aging-plan — INDISPONIBLE dans ce binaire (compilé sans `--features cold_tier`)"),
 ];
 
@@ -1871,6 +1873,38 @@ deux compare une PARTIE a un TOUT (mecanisme detaille dans db_ventilation.rs)."
             out.push('\n');
         }
         print!("{out}");
+        return;
+    }
+    // `P7.20-f` — L'EXÉCUTANT du plan d'escrow froid, pour le mode HÔTE : `plume-backup.timer` joue
+    // `cold-escrow <destination>` après la sauvegarde de la base (`collectors/backup.sh`) et met les
+    // jours-files scellés à l'abri sous `<destination>/cold/…` — copie verbatim incrémentale, jamais de
+    // suppression. MÊME exécutant que le planificateur natif après chaque cycle (`server::sauvegarde_planifiee`) :
+    // un seul code, deux moments. Sortie 2 sans destination, 1 si au moins une copie a échoué (l'unité système
+    // le voit), 0 sinon — y compris quand il n'y a rien à copier, ce qui est dit sur la sortie d'erreur.
+    // Même ouverture SANS contrat que `cold-backup-plan`, pour la même raison : refuser une base au schéma
+    // inattendu ferait sauter l'escrow au moment exact où la base va mal.
+    #[cfg(feature = "cold_tier")]
+    if args.get(1).map(String::as_str) == Some("cold-escrow") {
+        let Some(destination) = args.get(2).filter(|a| !a.starts_with('-')).cloned() else {
+            eprintln!("usage : plume-daemon cold-escrow <destination>   (le répertoire des sauvegardes ; les jours froids vont sous <destination>/cold)");
+            std::process::exit(2);
+        };
+        let conf = load_config();
+        let db_path = cfg(&conf, "PLUME_DB", "/var/lib/plume/db/plume.db");
+        let cold_dir = cold_store::cold_root(&conf, &db_path);
+        let conn = match open_db_without_schema_contract(&db_path) {
+            Ok(c) => c,
+            Err(e) => { eprintln!("[cold-escrow] ouverture DB {db_path} : {e}"); std::process::exit(1); }
+        };
+        if let Err(e) = conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get::<_, i64>(0)) {
+            eprintln!("[cold-escrow] base illisible (clé PLUME_DB_KEY incorrecte ?) : {e}");
+            std::process::exit(1);
+        }
+        let rendu = cold_store::mettre_a_l_abri_les_jours_froids(&conn, &cold_dir, "default", std::path::Path::new(&destination));
+        eprintln!("[cold-escrow] {}  cold_dir={}  destination={destination}", rendu.phrase(), cold_dir.display());
+        if !rendu.echecs.is_empty() {
+            std::process::exit(1);
+        }
         return;
     }
     // `P10.13-a` — L'INSTRUMENT QUI MANQUAIT. La passe horaire de vieillissement lisait presque toute la

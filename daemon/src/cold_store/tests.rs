@@ -11646,3 +11646,91 @@ fn le_rapport_ne_publie_aucune_duree_sans_dire_de_quel_cache_elle_vient() {
     drop(db);
     let _ = std::fs::remove_dir_all(&root);
 }
+
+// ====================================================================================================
+// `P7.20-f` — L'EXÉCUTANT du plan d'escrow, dans le démon (`escrow_local`).
+// ====================================================================================================
+
+/// (1) COPIE VERBATIM, INCRÉMENTALE, ET LA DESTINATION EST LA MÉMOIRE : deux jours scellés sont copiés sous
+/// `<destination>/cold/<clé>` octet pour octet ; rejouer ne recopie rien ; un troisième jour scellé ensuite est
+/// le seul copié au tour suivant. Aucun état à part : ce que la destination porte est ce qui est à l'abri.
+#[test]
+fn p7_20f_l_escrow_local_copie_verbatim_et_ne_recopie_jamais() {
+    let root = tmp_root("p7-20f-copie");
+    let cold = root.join("cold");
+    let destination = root.join("backups");
+    let db = mkdb(&root);
+    seal0_k(&db, "prod", 100, 5, 1, 5);
+    seal0_k(&db, "prod", 101, 4, 1, 4);
+    touch_cold_file(&cold, "prod", 100, 0);
+    touch_cold_file(&cold, "prod", 101, 0);
+    std::fs::write(file_path(&cold, "prod", 101, 0), b"contenu du jour 101, verbatim").unwrap();
+    let r1 = { let c = db.lock(); escrow_local::mettre_a_l_abri_les_jours_froids(&c, &cold, "default", &destination) };
+    assert_eq!((r1.deja_a_l_abri, r1.a_copier, r1.copies), (0, 2, 2), "{}", r1.phrase());
+    assert!(r1.echecs.is_empty() && r1.entrees_illisibles == 0, "{}", r1.phrase());
+    let copie = destination.join(exp_key("prod", 101, 0));
+    assert_eq!(std::fs::read(&copie).unwrap(), b"contenu du jour 101, verbatim", "copie VERBATIM sous la clé du plan");
+    assert!(destination.join(exp_key("prod", 100, 0)).exists());
+    // Rejouer : la destination est la mémoire — rien à copier, les deux clés sont vues.
+    let r2 = { let c = db.lock(); escrow_local::mettre_a_l_abri_les_jours_froids(&c, &cold, "default", &destination) };
+    assert_eq!((r2.deja_a_l_abri, r2.a_copier, r2.copies), (2, 0, 0), "{}", r2.phrase());
+    assert!(!r2.a_quelque_chose_a_dire(), "un cycle sans jour neuf n'a rien à dire : {}", r2.phrase());
+    // Un troisième jour scellé : lui seul est copié.
+    seal0_k(&db, "staging", 100, 2, 1, 2);
+    touch_cold_file(&cold, "staging", 100, 0);
+    let r3 = { let c = db.lock(); escrow_local::mettre_a_l_abri_les_jours_froids(&c, &cold, "default", &destination) };
+    assert_eq!((r3.deja_a_l_abri, r3.a_copier, r3.copies), (2, 1, 1), "{}", r3.phrase());
+    assert!(destination.join(exp_key("staging", 100, 0)).exists());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// (2) JAMAIS DE SUPPRESSION, ET UN ÉCHEC EST COMPTÉ, PAS AVALÉ : un fichier étranger sous la destination
+/// survit et compte parmi ce qui y est ; une destination dont `cold` est un FICHIER rend chaque copie en échec
+/// NOMMÉ (clé et cause), sans déclarer de succès.
+#[test]
+fn p7_20f_l_escrow_local_ne_supprime_rien_et_compte_ses_echecs() {
+    let root = tmp_root("p7-20f-echec");
+    let cold = root.join("cold");
+    let destination = root.join("backups");
+    let db = mkdb(&root);
+    seal0_k(&db, "prod", 100, 5, 1, 5);
+    touch_cold_file(&cold, "prod", 100, 0);
+    std::fs::create_dir_all(destination.join("cold/default/prod")).unwrap();
+    let etranger = destination.join("cold/default/prod/etranger.bin");
+    std::fs::write(&etranger, b"pas au plan").unwrap();
+    let r = { let c = db.lock(); escrow_local::mettre_a_l_abri_les_jours_froids(&c, &cold, "default", &destination) };
+    assert_eq!((r.deja_a_l_abri, r.copies), (1, 1), "{}", r.phrase());
+    assert!(etranger.exists(), "rien n'est jamais supprimé sous la destination");
+    let destination2 = root.join("backups2");
+    std::fs::create_dir_all(&destination2).unwrap();
+    std::fs::write(destination2.join("cold"), b"un fichier, pas un repertoire").unwrap();
+    let r2 = { let c = db.lock(); escrow_local::mettre_a_l_abri_les_jours_froids(&c, &cold, "default", &destination2) };
+    assert_eq!((r2.a_copier, r2.copies, r2.echecs.len()), (1, 0, 1), "{}", r2.phrase());
+    assert!(r2.echecs[0].contains(&exp_key("prod", 100, 0)), "l'échec nomme la clé : {}", r2.phrase());
+    assert!(r2.phrase().contains("ÉCHEC"), "{}", r2.phrase());
+    assert!(r2.a_quelque_chose_a_dire());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// (3) UN TEMPORAIRE D'UNE COPIE INTERROMPUE N'EST PAS UNE CLÉ : caché sous la destination, il est ignoré du
+/// relevé, le jour est copié quand même, et le relevé suivant porte la clé publiée.
+#[test]
+fn p7_20f_un_temporaire_de_copie_interrompue_n_est_pas_une_cle() {
+    let root = tmp_root("p7-20f-tmp");
+    let cold = root.join("cold");
+    let destination = root.join("backups");
+    let db = mkdb(&root);
+    seal0_k(&db, "prod", 100, 5, 1, 5);
+    touch_cold_file(&cold, "prod", 100, 0);
+    let repertoire = destination.join("cold/default/prod");
+    std::fs::create_dir_all(&repertoire).unwrap();
+    std::fs::write(repertoire.join(".copie-interrompue.parquet.tmp.999"), b"moitie").unwrap();
+    let (cles, illisibles) = escrow_local::cles_deja_a_l_abri(&destination);
+    assert!(cles.is_empty() && illisibles == 0, "un temporaire caché n'est pas une clé : {cles:?}");
+    let r = { let c = db.lock(); escrow_local::mettre_a_l_abri_les_jours_froids(&c, &cold, "default", &destination) };
+    assert_eq!((r.a_copier, r.copies), (1, 1), "{}", r.phrase());
+    let (cles, _) = escrow_local::cles_deja_a_l_abri(&destination);
+    assert!(cles.contains(&exp_key("prod", 100, 0)), "{cles:?}");
+    assert_eq!(cles.len(), 1, "le temporaire n'est toujours pas une clé : {cles:?}");
+    let _ = std::fs::remove_dir_all(&root);
+}

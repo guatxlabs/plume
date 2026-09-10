@@ -1,5 +1,5 @@
 [Unit]
-Description=plume — backup compact de la base (VACUUM INTO) + rotation
+Description=plume — backup compact de la base (VACUUM INTO) + rotation + mise à l'abri des jours froids (cold-escrow)
 
 [Service]
 Type=oneshot

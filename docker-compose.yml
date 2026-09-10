@@ -199,13 +199,12 @@ services:
       # rien ne réhydrate un jour columnarisé. Les lectures unissent chaud et froid, mais le fichier
       # devient la SEULE copie de ces événements.
       #
-      # ET CE FICHIER SORT DU PÉRIMÈTRE DE SAUVEGARDE DE CE MODE. Le planificateur ci-dessus n'archive
-      # que la BASE (`plume-<TS>.db.age`) : /data/cold n'y entre PAS. L'escrow ASYMÉTRIQUE
-      # (PLUME_BACKUP_AGE_RECIPIENT) ne couvre PAR CONCEPTION que la fenêtre chaude — le froid partage
-      # la clé SQLCipher, pas la clé publique hors-hôte. Le démon sait PRODUIRE un plan de copie
-      # (`docker compose exec soc plume-daemon cold-backup-plan`), mais RIEN dans ce fichier ne
-      # l'EXÉCUTE : c'est un sidecar d'orchestrateur qui le fait, ailleurs. Allumer ici = déplacer des
-      # preuves vers des fichiers que ce déploiement ne sauvegarde pas.
+      # ET CE FICHIER EST MIS À L'ABRI PAR LE PLANIFICATEUR CI-DESSUS (P7.20-f) : après chaque cycle,
+      # chaque jour-file scellé de /data/cold est copié verbatim sous PLUME_BACKUP_DEST/cold/… (incrémental,
+      # jamais de suppression) — ce qui expédie /data/backups expédie aussi les jours froids. L'escrow
+      # ASYMÉTRIQUE (PLUME_BACKUP_AGE_RECIPIENT) ne couvre PAR CONCEPTION que la fenêtre chaude — le froid
+      # partage la clé SQLCipher, pas la clé publique hors-hôte : restaurer un jour froid exige la clé du
+      # tenant. `plume-daemon cold-backup-plan` reste la forme lecture seule pour un exécutant externe.
       #
       # CE QUI N'EST PAS MESURÉ, ET QUI DÉCIDE DU DÉFAUT : la crête mémoire IMPUTABLE à la passe de
       # vieillissement, sous le budget de 2 Gio posé plus bas. Les maxima cgroup relevés sur

@@ -370,9 +370,31 @@ mod vieillissement_serie_tests {
     /// casser le reset est interceptée AVANT par la validation ou par le témoin positif. Il reste une
     /// OBSERVATION (+0,0 Mio mesuré), pas une garde — c'est écrit ici pour ne pas le croire plus fort
     /// qu'il n'est.
+    ///
+    /// `P10.5-r` — CE TÉMOIN EST RÉSERVÉ AU RÉGIME D'ALLOCATION PAR DÉFAUT, ET IL LE DIT (tranché le
+    /// 2026-09-10). Son contrôle positif n'est pas invariant au nombre d'arènes de l'allocateur : sous
+    /// `MALLOC_ARENA_MAX=2` — le levier que la PRODUCTION pose (`deploy/k3s.yaml`) et que ni la suite ni
+    /// l'intégration ne posent — un processus qui a déjà touché des gibioctets sert les 64 Mio depuis des
+    /// pages DÉJÀ RÉSIDENTES et la crête ne bouge pas (relevé du 2026-09-03 : « pic 2371,9 Mio, base
+    /// 2371,8 »). Deux courses complètes rouges avec la variable, une verte sans : c'était la variable de
+    /// celui qui mesurait, pas une propriété du dépôt. Rendre le contrôle positif indépendant de la
+    /// réutilisation de pages est possible (pages fraîches cartographiées à la main) mais changerait ce
+    /// que le témoin ÉPROUVE — la crête telle que le démon la mesure sur ses allocations ordinaires. Le
+    /// choix est donc : le témoin garde sa mesure, ne se desserre pas (NE PAS abaisser le seuil ni
+    /// réduire l'allocation : il deviendrait vert et muet), et quand la variable est posée, son rouge
+    /// NOMME la variable pour que le prochain qui le voit sache immédiatement que sa mesure en porte une
+    /// de trop. Il ne s'éteint PAS sous ce régime : un rouge expliqué vaut mieux qu'un vert qui ne mesure
+    /// plus, et une extinction ferait taire l'accusation pour un lecteur qui n'aurait pas posé la variable.
     #[test]
     fn la_crete_rss_est_bornee_a_la_fenetre() {
         let _serialise = FENETRES.lock();
+        // Lecture de l'environnement du processus (verrou partagé en lecture : d'autres témoins le posent).
+        let _env = crate::tests::VERROU_ENV_PROCESSUS.read();
+        let regime_de_production = std::env::var("MALLOC_ARENA_MAX").ok();
+        let variable_de_trop = |b: &str| match &regime_de_production {
+            Some(v) => format!(" — MALLOC_ARENA_MAX={v} est posé dans cet environnement : c'est le régime de la PRODUCTION, sous lequel ce {b} réutilise des pages déjà résidentes et rougit par sa MESURE, pas par le code (`P10.5-r`) ; rejouer sans la variable avant d'accuser le dépôt"),
+            None => String::new(),
+        };
         if !cfg!(target_os = "linux") {
             // `P11.23-b` — LE CHEMIN LE PLUS ANCIEN DE CETTE FAMILLE, et le plus silencieux : sur une
             // plate-forme sans `/proc` ce test rendait 0 sans rien prouver, et son `eprintln!` était
@@ -412,9 +434,10 @@ mod vieillissement_serie_tests {
         assert!(
             pic_a - base_a >= 32 * 1024 * 1024,
             "TÉMOIN POSITIF : 64 Mio alloués DANS la fenêtre n'y apparaissent pas (pic {:.1} Mio, base \
-             {:.1} Mio) -> la mesure lit un instantané, pas un PIC",
+             {:.1} Mio) -> la mesure lit un instantané, pas un PIC{}",
             mio(pic_a),
-            mio(base_a)
+            mio(base_a),
+            variable_de_trop("contrôle positif")
         );
         assert!(
             pic_b - base_b < 32 * 1024 * 1024,

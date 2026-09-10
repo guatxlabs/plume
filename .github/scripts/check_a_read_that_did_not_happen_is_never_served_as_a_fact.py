@@ -231,7 +231,8 @@ PLANCHER_FICHIERS = 15
 # --- CLIQUETS (relevé du 2026-08-30) — ILS NE MONTENT JAMAIS -------------------------------------
 # Chacun vaut le compte d'accusations DU JOUR. Descendre est une NOTE imprimée, pas un échec ; le
 # compte a le droit d'atteindre zéro (c'est ce qui évite la rançon).
-PLAFOND_DEFAUT_NU = 16          # jambe A : défauts servis sans aveu — INCHANGÉ, et c'est mesuré
+# jambe A : 16 le 2026-08-30. Depuis le 2026-09-10 (`P10.7-y`) le compte est DÉRIVÉ de l'ensemble nommé
+# `SITES_ADMIS["A"]` (plus bas) : ce n'est plus un chiffre qui borne, c'est une liste de sites qui juge.
 #
 # ┌─ LA HAUSSE DE 12 À 17 N'EST PAS UNE RÉGRESSION : C'EST UN ÉLARGISSEMENT DU REGARD. ────────────┐
 # │ AUCUNE ligne de `daemon/` n'a empiré entre les deux relevés du 2026-08-30 ; c'est la garde qui  │
@@ -257,7 +258,11 @@ PLAFOND_DEFAUT_NU = 16          # jambe A : défauts servis sans aveu — INCHAN
 # laquelle le site cité en preuve de `P10.7-g` — `handlers/dashboards.rs` — n'apparaissait nulle part :
 # la forme y était, sous une voie que la garde ne nommait pas. Une jambe étendue sur une population
 # amputée reste aveugle, et c'est la leçon que ce cliquet porte désormais.
-PLAFOND_CLOSURE_SOURDE = 27     # jambe B : closures qui avalent une lecture de lignes sans aveu (28 -> 27 le 2026-09-08 : un aveu TYPÉ reconnu)
+# jambe B : 27 le 2026-09-08 (28 -> 27 : un aveu TYPÉ reconnu). Depuis le 2026-09-10 (`P10.7-y`) le compte est
+# DÉRIVÉ de `SITES_ADMIS["B"]`. L'ARBRE ÉTAIT À 25 DEPUIS LE LOT `d7bb103` (`P11.22-g`, 2026-09-10 13:57Z) ET LE
+# CLIQUET NE POUVAIT QUE LE NOTER : bisecté sur neuf commits du jour, les deux closures disparues sont
+# `caseops.rs` `case_links_get` et `case_queues`, dont le corps rend désormais `Lignes::Illisible` +
+# `TotalBorne::sans_lecture()` sur `Err(_)` — un aveu RÉEL, pas un canal rétréci (vérifié sur le diff).
 #
 # ┌─ LA HAUSSE DE 17 À 22 N'EST PAS UNE RÉGRESSION : C'EST UN ÉLARGISSEMENT DU REGARD. ────────────┐
 # │ AUCUNE ligne de `daemon/` n'a changé entre les deux relevés du 2026-08-30 — l'arbre est celui   │
@@ -418,7 +423,76 @@ PLAFOND_CLOSURE_SOURDE = 27     # jambe B : closures qui avalent une lecture de 
 #  11. `setting_days` : distinguer `QueryReturnedNoRows` (le résolveur descend d'un cran : c'est un
 #      fait) d'une vraie erreur de lecture, et laisser `retention_settings_get` poser la coupe dans
 #      l'objet qu'il construit. -> 23.
-PLAFOND_CAUSE_JETEE = 3         # jambe Q : bras d'erreur jetés
+# jambe Q : 3 le 2026-08-30. Depuis le 2026-09-10 (`P10.7-y`) le compte est DÉRIVÉ de `SITES_ADMIS["Q"]`.
+
+# --- ENSEMBLES NOMMÉS (`P10.7-y`, 2026-09-10) — LES TROIS CLIQUETS DE COMPTE SONT DEVENUS TROIS LISTES DE SITES
+# JUGÉES DANS LES DEUX SENS. Un cliquet de compte a deux angles morts, tous deux MESURÉS sur cette garde :
+#   · une accusation FERMÉE et une accusation OUVERTE le même jour laissent le compte immobile — le cliquet
+#     rend vert, et le site neuf entre sans être nommé ;
+#   · une descente réelle (27 -> 25 le 2026-09-10, par `d7bb103`) n'est qu'une NOTE imprimée : personne
+#     n'est obligé de la lire, et le cliquet est resté à 27 pendant neuf commits.
+# Chaque entrée est un site d'appel accusé — (fichier, fonction) -> nombre d'accusations — relevé le
+# 2026-09-10 sur l'arbre de `0db5f10` en jouant cette garde. Le jugement est SYMÉTRIQUE :
+#   · une accusation hors de l'ensemble (ou un site qui en gagne une de plus) est une FORME NEUVE :
+#     rouge — la forme doit avouer, ou entrer ici AVEC sa raison ;
+#   · une entrée sans accusation est une EXEMPTION SANS OBJET : rouge — le site avoue désormais, ou n'existe
+#     plus, ou la garde a cessé de le voir ; dans les trois cas l'ensemble doit le DIRE, et le troisième cas
+#     est exactement celui qu'un cliquet de compte laissait passer en vert.
+# Renommer une fonction accusée fait donc rougir DEUX fois (forme neuve + exemption sans objet) : c'est voulu,
+# la liste se corrige à la main avec la raison du renommage. ZÉRO reste atteignable jambe par jambe : une
+# jambe dont l'ensemble est vide ne réclame rien — aucune rançon.
+SITES_ADMIS = {
+    "A": {  # défaut NU servi : 16 accusations sur 15 sites
+        ("daemon/src/handlers/admin_ui.rs", "ledger_get"): 1,
+        ("daemon/src/handlers/alerts.rs", "alert_groups"): 1,
+        ("daemon/src/handlers/alerts.rs", "alerts"): 1,
+        ("daemon/src/handlers/alerts.rs", "coverage_attack"): 1,
+        ("daemon/src/handlers/alerts.rs", "coverage_detections"): 1,
+        ("daemon/src/handlers/caseops.rs", "case_links_get"): 1,
+        ("daemon/src/handlers/caseops.rs", "case_metrics"): 1,
+        ("daemon/src/handlers/caseops.rs", "case_queues"): 1,
+        ("daemon/src/handlers/caseops.rs", "client_case_get"): 1,
+        ("daemon/src/handlers/caseops.rs", "client_cases_list"): 1,
+        ("daemon/src/handlers/caseops.rs", "sla_policies_list"): 1,
+        ("daemon/src/handlers/cases.rs", "cases_list"): 1,
+        ("daemon/src/handlers/compliance.rs", "compliance_posture"): 1,
+        ("daemon/src/handlers/fleet.rs", "fleet"): 2,
+        ("daemon/src/handlers/sources.rs", "sources_inventory"): 1,
+    },
+    "B": {  # closure SOURDE : 25 accusations sur 24 sites
+        ("daemon/src/handlers/admin_ui.rs", "ledger_get"): 1,
+        ("daemon/src/handlers/admin_ui.rs", "retention_settings_get"): 1,
+        ("daemon/src/handlers/alerts.rs", "alert_groups"): 1,
+        ("daemon/src/handlers/alerts.rs", "alerts"): 1,
+        ("daemon/src/handlers/caseops.rs", "case_metrics"): 1,
+        ("daemon/src/handlers/caseops.rs", "client_case_get"): 1,
+        ("daemon/src/handlers/caseops.rs", "client_cases_list"): 1,
+        ("daemon/src/handlers/caseops.rs", "sla_policies_list"): 1,
+        ("daemon/src/handlers/cases.rs", "case_get"): 1,
+        ("daemon/src/handlers/cases.rs", "cases_list"): 1,
+        ("daemon/src/handlers/compliance.rs", "compliance_posture"): 1,
+        ("daemon/src/handlers/dash_ergonomics.rs", "library_panels_list"): 1,
+        ("daemon/src/handlers/dash_ergonomics.rs", "playlists_list"): 1,
+        ("daemon/src/handlers/dash_ergonomics.rs", "snapshots_list"): 1,
+        ("daemon/src/handlers/dashboards.rs", "dash_list"): 1,
+        ("daemon/src/handlers/engagement.rs", "mode_get"): 1,
+        ("daemon/src/handlers/fleet.rs", "fleet"): 2,
+        ("daemon/src/handlers/freshness.rs", "compute_integrations"): 1,
+        ("daemon/src/handlers/governance.rs", "ledger_sinks_list"): 1,
+        ("daemon/src/handlers/governance.rs", "legal_holds_list"): 1,
+        ("daemon/src/handlers/overview.rs", "environments"): 1,
+        ("daemon/src/handlers/overview.rs", "overview"): 1,
+        ("daemon/src/handlers/search.rs", "search"): 1,
+        ("daemon/src/handlers/sources.rs", "sources_inventory"): 1,
+    },
+    "Q": {  # cause JETÉE : 3 accusations sur 2 sites
+        ("daemon/src/handlers/datasource.rs", "prom_labels"): 1,
+        ("daemon/src/handlers/query.rs", "query"): 2,
+    },
+}
+PLAFOND_DEFAUT_NU = sum(SITES_ADMIS["A"].values())
+PLAFOND_CLOSURE_SOURDE = sum(SITES_ADMIS["B"].values())
+PLAFOND_CAUSE_JETEE = sum(SITES_ADMIS["Q"].values())
 
 
 def apparier(code, i):
@@ -1543,6 +1617,9 @@ def valider_instrument(defs, constructeurs):
 
 def ce_qui_n_est_pas_tenu(non_classes=0):
     print(f"\n[{ETIQUETTE}] CE QUE CETTE GARDE NE TIENT PAS :\n"
+          "  * que le NOM d'une fonction accusée soit stable : les ensembles nommés (`P10.7-y`) sont indexés par "
+          "(fichier, fonction), et renommer une fonction accusée fait rougir deux fois — forme neuve et exemption "
+          "sans objet. C'est le signal voulu ; la liste se corrige à la main, avec la raison.\n"
           "  * qu'un aveu soit VRAI. Elle juge qu'une cause atteint le corps servi, pas que la phrase "
           "qui l'accompagne dise quelque chose. Un `error: \"\"` la satisferait.\n"
           "  * la JAMBE EXÉCUTÉE. Rien ici ne lance le routeur sous un budget épuisé : la garde lit du "
@@ -1767,22 +1844,34 @@ def main():
           f"(closure sourde) {nb}/{PLAFOND_CLOSURE_SOURDE} · jambe Q (cause jetée) "
           f"{nq}/{PLAFOND_CAUSE_JETEE} · non classés {nc}.")
 
-    depasse = [(j, n, p) for j, n, p in (("A", na, PLAFOND_DEFAUT_NU), ("B", nb, PLAFOND_CLOSURE_SOURDE),
-                                         ("Q", nq, PLAFOND_CAUSE_JETEE)) if n > p]
-    if depasse:
-        for j, n, p in depasse:
-            print(f"::error::jambe {j} : {n} accusation(s) pour un cliquet à {p}. Ce cliquet NE MONTE "
-                  "PAS : la forme neuve doit avouer, ou l'aveu doit entrer dans la branche.")
+    # `P10.7-y` — JUGEMENT DANS LES DEUX SENS, site par site, contre l'ensemble nommé de chaque jambe.
+    ecarts = 0
+    for jambe in ("A", "B", "Q"):
+        vus = {}
+        for ou, fn, _raison in a_par_jambe.get(jambe, []):
+            cle = (ou.rsplit(":", 1)[0], fn)
+            vus[cle] = vus.get(cle, 0) + 1
+        admis = SITES_ADMIS[jambe]
+        for (fichier, fn), n in sorted(vus.items()):
+            if n > admis.get((fichier, fn), 0):
+                ecarts += 1
+                print(f"::error file={fichier}::[{jambe}] FORME NEUVE — `{fn}` porte {n} accusation(s) pour "
+                      f"{admis.get((fichier, fn), 0)} admise(s) dans SITES_ADMIS[\"{jambe}\"]. La forme doit "
+                      "avouer, ou entrer dans l'ensemble AVEC sa raison — jamais en silence.")
+        for (fichier, fn), n in sorted(admis.items()):
+            if vus.get((fichier, fn), 0) < n:
+                ecarts += 1
+                print(f"::error file={fichier}::[{jambe}] EXEMPTION SANS OBJET — `{fn}` est admis {n} fois dans "
+                      f"SITES_ADMIS[\"{jambe}\"] et n'est accusé que {vus.get((fichier, fn), 0)} fois : le site "
+                      "avoue désormais, ou n'existe plus, ou cette garde a cessé de le voir. Dans les trois cas, "
+                      "retirer l'entrée en disant lequel — un canal qui rétrécit ne doit pas passer pour un défaut fermé.")
+    if ecarts:
+        print(f"::error::{ecarts} écart(s) entre les accusations du jour et les ensembles nommés. L'ensemble se "
+              "corrige à la main, avec la raison ; ZÉRO reste atteignable jambe par jambe.")
         ce_qui_n_est_pas_tenu(nc)
         return 1
-
-    dessous = [(j, n, p) for j, n, p in (("A", na, PLAFOND_DEFAUT_NU), ("B", nb, PLAFOND_CLOSURE_SOURDE),
-                                         ("Q", nq, PLAFOND_CAUSE_JETEE)) if n < p]
-    if dessous:
-        print(f"[{ETIQUETTE}] LE CLIQUET PEUT DESCENDRE : " + ", ".join(f"jambe {j} à {n} (au lieu de {p})"
-                                                                       for j, n, p in dessous)
-              + ". Un cliquet refuse une hausse ; il ne force aucune baisse, et ZÉRO est une valeur "
-                "atteignable — un témoin qui exigerait que le défaut survive serait une rançon.")
+    print(f"[{ETIQUETTE}] les trois ensembles nommés sont EXACTEMENT ce que l'arbre porte "
+          f"(A {na}, B {nb}, Q {nq}) — ni forme neuve, ni exemption sans objet.")
     ce_qui_n_est_pas_tenu(nc)
     return 0
 

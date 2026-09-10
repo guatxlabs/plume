@@ -758,3 +758,35 @@ fn sink_s3_empreinte_en_flux_ne_retient_pas_le_fichier() {
          l'empreinte ne serait alors pas en flux"
     );
 }
+
+/// `P7.20-m` — LES JOURS FROIDS SONT DÉPOSÉS, ET LA ZONE DE PRÉPARATION NE GARDE QUE CE QUI EST À L'ABRI.
+/// Deux copies : la première est déposée puis relue (confirmée) et RESTE ; la seconde est refusée par le
+/// service et sa copie locale est RETIRÉE — au cycle suivant, l'escrow local la trouvera absente et la
+/// recopiera, donc la redéposera. La clé déposée est la clé du plan, préfixée par la cible comme l'archive.
+#[cfg(feature = "s3_backup")]
+#[test]
+fn sink_s3_les_jours_froids_sont_deposes_et_une_copie_sans_depot_est_retiree() {
+    let dir = crate::tmp_possede::TmpPossede::neuf("s3-jours-froids");
+    let a = fichier_epreuve(&dir, "2026-09-01-0000.parquet", 4_096);
+    let _b = fichier_epreuve(&dir, "2026-09-02-0000.parquet", 2_048);
+    let service = service_factice(vec![
+        ReponseScriptee::ok(200, vec![("ETag", "\"jour-a\"".to_string())]),
+        ReponseScriptee::ok(200, vec![("Content-Length", a.len().to_string())]),
+        ReponseScriptee::ok(500, vec![]),
+    ]);
+    let cible = cible_factice(&service.endpoint(), "plume/noeud-1");
+    let copies = vec![
+        ("cold/default/prod/2026-09-01-0000.parquet".to_string(), dir.sous("2026-09-01-0000.parquet").chemin().to_path_buf()),
+        ("cold/default/prod/2026-09-02-0000.parquet".to_string(), dir.sous("2026-09-02-0000.parquet").chemin().to_path_buf()),
+    ];
+    let rendu = crate::sink_s3::deposer_les_jours_froids(&cible, &copies, V4_HORODATAGE);
+    assert_eq!(rendu.deposes, 1, "{}", rendu.phrase());
+    assert_eq!(rendu.retires, vec!["cold/default/prod/2026-09-02-0000.parquet".to_string()], "{}", rendu.phrase());
+    assert!(dir.sous("2026-09-01-0000.parquet").chemin().exists(), "la copie DÉPOSÉE reste : elle est à l'abri");
+    assert!(!dir.sous("2026-09-02-0000.parquet").chemin().exists(), "la copie sans dépôt confirmé est RETIRÉE : rejouée au cycle suivant");
+    assert!(rendu.phrase().contains("RETIRÉE"), "{}", rendu.phrase());
+    let recus = service.recus();
+    assert_eq!(recus[0].chemin, "/sauvegardes/plume/noeud-1/cold/default/prod/2026-09-01-0000.parquet", "la clé du plan, sous le préfixe de la cible");
+    assert_eq!(recus[0].corps, a, "l'octet déposé est l'octet du jour-file, verbatim");
+    assert_eq!(recus[2].chemin, "/sauvegardes/plume/noeud-1/cold/default/prod/2026-09-02-0000.parquet");
+}

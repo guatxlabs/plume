@@ -100,7 +100,7 @@ pub(crate) use aging::{cold_age_run, cold_hot_window_days, cold_retention_days, 
 pub(crate) use paths::cold_root;
 pub(crate) use backup::cold_backup_plan;
 // `P7.20-f` — l'exécutant du plan, consommé par `server::sauvegarde_planifiee` et le dispatch `cold-escrow` de `main`.
-pub(crate) use escrow_local::mettre_a_l_abri_les_jours_froids;
+pub(crate) use escrow_local::{mettre_a_l_abri_les_jours_froids, EscrowFroidRendu};
 // `P10.13-a` — la sonde de lecture seule, consommée par le dispatch `cold-aging-plan` de `main`.
 pub(crate) use sonde_vieillissement::cold_aging_plan;
 // `ColdUnionMeta` entre dans la façade parce que `handlers/query` NOMME désormais le type : l'aveu de

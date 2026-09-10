@@ -2666,7 +2666,7 @@ jobs:
           # La feature n'ajoute AUCUN test à la suite par défaut — vérifié par ÉNUMÉRATION le même
           # jour (`-- --list` avec et sans la feature : l'écart vaut exactement ce nombre, et les
           # noms de l'écart sont tous ceux de `tests/sink_s3.rs`).
-          EXPECTED_S3_TESTS: "12"
+          EXPECTED_S3_TESTS: "13"
         run: |
           set -euo pipefail
           export TMPDIR="$RUNNER_TEMP/plume-tmp-s3"

@@ -661,6 +661,56 @@ fn entetes_signes(empreinte: &str, horodatage: &str, jeton: Option<&Matiere>) ->
 // LE DÉPÔT
 // ================================================================================================
 
+/// `P7.20-m` — CE QU'UN DÉPÔT DES JOURS FROIDS A FAIT, compté : les copies déposées et confirmées, celles
+/// RETIRÉES de la zone de préparation parce que leur dépôt n'a pas été confirmé (elles seront recopiées et
+/// redéposées au cycle suivant : la zone de préparation ne garde que ce qui est à l'abri là-bas), et la
+/// ligne d'exploitation de chaque issue.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct DepotDesJoursFroids {
+    pub(crate) deposes: usize,
+    pub(crate) retires: Vec<String>,
+    pub(crate) lignes: Vec<String>,
+}
+
+impl DepotDesJoursFroids {
+    pub(crate) fn phrase(&self) -> String {
+        let mut s = format!("{} jour(s) froid(s) déposé(s) et confirmé(s)", self.deposes);
+        if !self.retires.is_empty() {
+            s.push_str(&format!(
+                ", {} copie(s) locale(s) RETIRÉE(S) faute de dépôt confirmé (rejouées au cycle suivant) : {}",
+                self.retires.len(), self.retires.join(" ; ")
+            ));
+        }
+        s
+    }
+}
+
+/// `P7.20-m` — Dépose chaque copie locale d'un jour froid sous SA clé (`cold/<tenant>/<env>/<jour>-<seq>.parquet`,
+/// préfixée par la cible comme l'archive), par le MÊME geste que l'archive (dépôt puis relecture). Une issue
+/// autre que « déposé et confirmé » RETIRE la copie locale : la zone de préparation est la mémoire de
+/// l'escrow (`cold_store::escrow_local`), et une copie qui y resterait sans dépôt ferait croire le jour à
+/// l'abri ; retirée, elle est recopiée et redéposée au cycle suivant. Aucune suppression distante, jamais.
+pub(crate) fn deposer_les_jours_froids(
+    cible: &CibleS3,
+    copies: &[(String, std::path::PathBuf)],
+    horodatage: &str,
+) -> DepotDesJoursFroids {
+    let mut rendu = DepotDesJoursFroids::default();
+    for (cle, chemin) in copies {
+        let issue = deposer_fichier(cible, cle, chemin, horodatage);
+        rendu.lignes.push(format!("{cle} -> {issue}"));
+        if issue.est_depose() {
+            rendu.deposes += 1;
+        } else {
+            match std::fs::remove_file(chemin) {
+                Ok(()) => rendu.retires.push(cle.clone()),
+                Err(e) => rendu.lignes.push(format!("{cle} : copie locale NON retirée ({e}) — elle sera prise pour un jour à l'abri jusqu'au prochain relevé")),
+            }
+        }
+    }
+    rendu
+}
+
 /// Dépose `chemin` sous la clé `<préfixe>/<nom>` de la cible, puis RELIT l'objet pour confirmer.
 ///
 /// `horodatage` au format `AAAAMMJJTHHMMSSZ` (celui de `backup::fmt_backup_ts`) — passé en paramètre

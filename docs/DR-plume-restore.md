@@ -82,9 +82,10 @@ lignes `event` **supprimées de la base chaude**. La base chaude ne porte donc p
 par `plume-backup.timer` en mode hôte (`plume-daemon cold-escrow <destination>`), en copie verbatim
 incrémentale sous `<destination de sauvegarde>/cold/<tenant>/<env>/<AAAA-MM-JJ>-<NNNN>.parquet` — ce qui
 expédie la destination expédie aussi les jours froids. `cold-backup-plan` reste la forme lecture seule pour
-un exécutant externe. Ils sont déjà zstd+age-chiffrés et immuables : aucun re-wrap, aucun clair. **Réserve
-(`P7.20-m`)** : avec une destination OBJET (`s3://`, fonctionnalité `s3_backup`), les jours froids restent
-dans la zone de préparation locale et n'y sont pas déposés.
+un exécutant externe. Ils sont déjà zstd+age-chiffrés et immuables : aucun re-wrap, aucun clair. Avec une
+destination OBJET (`s3://`, fonctionnalité `s3_backup`), chaque copie est ensuite déposée sous sa clé et
+confirmée par relecture ; une copie sans dépôt confirmé est retirée de la zone de préparation et rejouée
+au cycle suivant (`P7.20-m`).
 
 **Ce qu'il faut en retenir pour un DR :**
 

@@ -141,7 +141,7 @@ fn boucle_du_planificateur(db_path: String, pret: PlanificateurPret) -> ! {
         {
             #[cfg(feature = "s3_backup")]
             let note_objet = if sink_objet.is_some() {
-                " — destination OBJET : les jours froids restent dans la zone de préparation locale et n'y sont PAS déposés (P7.20-m)"
+                " — destination OBJET : chaque copie est ensuite DÉPOSÉE sous sa clé et confirmée ; une copie sans dépôt confirmé est retirée et rejouée au cycle suivant (P7.20-m)"
             } else {
                 ""
             };
@@ -163,7 +163,22 @@ fn boucle_du_planificateur(db_path: String, pret: PlanificateurPret) -> ! {
                 None => run_scheduled_backup(db, d, k),
             }
             #[cfg(feature = "cold_tier")]
-            mettre_a_l_abri_les_jours_froids_apres_le_cycle(db, &cold_dir, d);
+            {
+                let rendu = mettre_a_l_abri_les_jours_froids_apres_le_cycle(db, &cold_dir, d);
+                // `P7.20-m` — avec une destination objet, les copies faites à ce tour sont déposées une par une.
+                // Les trois autres issues sont NOMMÉES : rien de neuf à déposer, escrow local non joué (sa
+                // cause est dite par l'escrow lui-même), destination locale (le dépôt n'existe pas).
+                match (sink_objet.as_deref(), rendu) {
+                    (Some(cible), Some(rendu)) if !rendu.copies_faites.is_empty() => {
+                        let depot = sink_s3::deposer_les_jours_froids(cible, &rendu.copies_faites, &fmt_backup_ts(now()));
+                        for l in &depot.lignes { eprintln!("[backup-sched-objet] jour froid {l}"); }
+                        eprintln!("[backup-sched-objet] escrow froid : {}", depot.phrase());
+                    }
+                    (Some(_), Some(_)) => {} // aucune copie neuve ce tour : rien à déposer, et l'escrow local l'a déjà dit s'il y avait à dire
+                    (Some(_), None) => eprintln!("[backup-sched-objet] aucun dépôt des jours froids ce cycle : l'escrow local n'a pas été joué (cause dite ci-dessus)"),
+                    (None, _) => {} // destination locale : la zone de préparation EST la destination, il n'y a pas de dépôt
+                }
+            }
         };
         #[cfg(not(feature = "s3_backup"))]
         let cycle = |db: &str, d: &str, k: usize| {
@@ -301,7 +316,7 @@ fn run_scheduled_backup_objet(db_path: &str, staging: &str, keep: usize, cible: 
 /// comme le cycle lui-même. Le journal ne parle que s'il y a eu quelque chose à copier, un échec ou une entrée
 /// illisible : un cycle sans jour froid neuf reste silencieux. Un contrat non satisfait ne joue rien et le DIT.
 #[cfg(feature = "cold_tier")]
-fn mettre_a_l_abri_les_jours_froids_apres_le_cycle(db_path: &str, cold_dir: &std::path::Path, dest_dir: &str) {
+fn mettre_a_l_abri_les_jours_froids_apres_le_cycle(db_path: &str, cold_dir: &std::path::Path, dest_dir: &str) -> Option<crate::cold_store::EscrowFroidRendu> {
         let key = db_key();
         match PreparedDb::open_keyed_with_prelude(db_path, key.as_deref(), |c| { let _ = c.busy_timeout(Duration::from_secs(5)); }) {
             Ok(conn) => {
@@ -309,10 +324,11 @@ fn mettre_a_l_abri_les_jours_froids_apres_le_cycle(db_path: &str, cold_dir: &std
                 if rendu.a_quelque_chose_a_dire() {
                     eprintln!("[backup-sched] escrow froid : {}", rendu.phrase());
                 }
+                Some(rendu)
             }
-            Err(e) => eprintln!(
+            Err(e) => { eprintln!(
                 "[backup-sched] escrow froid NON joué ce cycle (la base n'a pas passé le contrat de schéma : {e}) — un jour \
-                 froid scellé depuis la dernière mise à l'abri attend le cycle suivant"),
+                 froid scellé depuis la dernière mise à l'abri attend le cycle suivant"); None }
         }
 }
 

@@ -15,8 +15,10 @@
 //! temporaire caché, taille vérifiée, renommage) ; JAMAIS de suppression sous la destination (l'immutabilité
 //! et la rétention de l'archive sont du ressort de la destination, pas de ce module) ; chaque échec et chaque
 //! entrée illisible sont COMPTÉS et nommés, jamais avalés.
-//! CE QUI N'EST PAS TENU, dit ici : la destination OBJET (`s3://`, fonctionnalité `s3_backup`) — les jours
-//! froids sont mis à l'abri dans la zone de préparation locale et n'y sont PAS déposés (`P7.20-m`).
+//! DESTINATION OBJET (`s3://`, fonctionnalité `s3_backup`, `P7.20-m`) : les copies faites à ce tour sont rendues
+//! (`copies_faites`) pour que le planificateur les DÉPOSE une par une ; une copie dont le dépôt n'est pas
+//! confirmé est retirée de la zone de préparation, si bien que « présente ici » veut dire « déposée là-bas »
+//! et que le tour suivant la rejoue.
 use super::*;
 use std::collections::HashSet;
 use std::path::Path;
@@ -35,6 +37,8 @@ pub(crate) struct EscrowFroidRendu {
     pub(crate) octets_copies: u64,
     pub(crate) entrees_illisibles: usize,
     pub(crate) echecs: Vec<String>,
+    /// Les copies FAITES à ce tour, (clé, copie locale) : ce qu'un dépôt objet a encore à déposer (`P7.20-m`).
+    pub(crate) copies_faites: Vec<(String, std::path::PathBuf)>,
 }
 
 impl EscrowFroidRendu {
@@ -122,6 +126,7 @@ pub(crate) fn mettre_a_l_abri_les_jours_froids(
             Ok(n) => {
                 rendu.copies += 1;
                 rendu.octets_copies += n;
+                rendu.copies_faites.push((item.key.clone(), destination.join(&item.key)));
             }
             Err(cause) => rendu.echecs.push(format!("{} : {cause}", item.key)),
         }

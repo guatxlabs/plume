@@ -1038,6 +1038,41 @@ pub(crate) fn open_cold_union(
     boundary: i64,
     dim_preds: &[DimEq],
 ) -> Result<ColdUnionConn, String> {
+    open_cold_union_avec(db_path, conf, env_filter, q_from, q_to, boundary, dim_preds, true)
+}
+
+/// `P10.5-j` — LE MÊME MONTAGE, SANS PAYER L'HYDRATATION. Une requête dont le SQL ne peut lire ni `event`
+/// ni `cold_event` (la base `metric`, compilée sur deux tables que le vieillissement ne touche jamais)
+/// arrivait ici par le seul déclencheur de FENÊTRE, et faisait déchiffrer et décoder des fichiers froids
+/// que sa réponse ne pouvait pas lire — à la charge du budget mémoire que cette phase défend. Ici la table
+/// `cold_event` est montée VIDE, la vue d'union et le câblage de sécurité sont identiques (le SQL compilé
+/// s'exécute sur la même forme), et aucun fichier n'est ouvert. La décision de PRENDRE cette porte
+/// appartient à l'appelant qui voit le SQL (`cold_union_query`), par une dérivation biaisée du côté sûr :
+/// un doute hydrate.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn open_cold_union_sans_hydratation(
+    db_path: &str,
+    conf: &HashMap<String, String>,
+    env_filter: Option<&str>,
+    q_from: i64,
+    q_to: i64,
+    boundary: i64,
+    dim_preds: &[DimEq],
+) -> Result<ColdUnionConn, String> {
+    open_cold_union_avec(db_path, conf, env_filter, q_from, q_to, boundary, dim_preds, false)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn open_cold_union_avec(
+    db_path: &str,
+    conf: &HashMap<String, String>,
+    env_filter: Option<&str>,
+    q_from: i64,
+    q_to: i64,
+    boundary: i64,
+    dim_preds: &[DimEq],
+    hydrater: bool,
+) -> Result<ColdUnionConn, String> {
     use rusqlite::types::Value as SqlVal;
 
     // (1) HOT conn RO + clé DU TENANT. Budget mémoire par `sqlite_plafond` : la table TEMP d'hydratation
@@ -1098,7 +1133,9 @@ pub(crate) fn open_cold_union(
     for n in [lo, hi, boundary, cap as i64] {
         empreinte = seal::fnv1a64_chaine(empreinte, &n.to_le_bytes());
     }
-    if hi >= lo {
+    // `P10.5-j` : sans hydratation, la boucle est sautée entière — aucun fichier sélectionné, ouvert ni
+    // décodé ; les compteurs restent à zéro et disent ce qui s'est passé.
+    if hi >= lo && hydrater {
         for env in &envs {
             if !env_id_ok(env) {
                 continue; // fail-safe (anti-traversée) — jamais de chemin arbitraire.
@@ -1181,7 +1218,17 @@ pub(crate) fn cold_union_query(
     qid: Option<&str>,
     dim_preds: &[DimEq],
 ) -> Result<(ColdAnswer, ColdUnionMeta), String> {
-    let u = open_cold_union(db_path, conf, env_filter, q_from, q_to, boundary, dim_preds)?;
+    // `P10.5-j` — LA DÉRIVATION EST CONSULTÉE AVANT D'HYDRATER, ET ELLE NE PEUT QUE SUR-HYDRATER : son
+    // propre témoin l'écrit, un littéral qui contient le mot compte comme une lecture — « un refus de
+    // trop, jamais un nombre faux de trop ». Une requête qui ne peut pas lire le bras froid obtient le
+    // même montage (vue d'union, câblage de sécurité) sur une table froide VIDE : rien n'est déchiffré
+    // pour elle, et sa réponse est celle de la fenêtre chaude, que le refus d'exactitude ne frappe pas.
+    let lecture = LectureDuBrasFroid::derivee_du_sql(&[page_sql, count_sql.unwrap_or("")]);
+    let u = if lecture.a_pu_lire_le_froid() {
+        open_cold_union(db_path, conf, env_filter, q_from, q_to, boundary, dim_preds)?
+    } else {
+        open_cold_union_sans_hydratation(db_path, conf, env_filter, q_from, q_to, boundary, dim_preds)?
+    };
     let page = run_on_conn(&u.conn, db_path, page_sql, budget_ms, qid)?;
     let total = match count_sql {
         Some(cs) => run_on_conn(&u.conn, db_path, cs, budget_ms, qid)
@@ -1193,8 +1240,8 @@ pub(crate) fn cold_union_query(
     // FENÊTRE seule : il ne regarde pas la TABLE. Une requête de la base `metric` (compilée par le cœur en
     // `metric ∪ metric_rollup`, deux tables de `main` que le vieillissement ne touche JAMAIS) arrivait donc
     // ici avec un `truncated` hérité d'une hydratation qu'elle ne lit pas — et se faisait REFUSER. La portée
-    // est DÉRIVÉE du SQL RÉELLEMENT EXÉCUTÉ (page ET count), jamais déclarée par l'appelant.
-    let lecture = LectureDuBrasFroid::derivee_du_sql(&[page_sql, count_sql.unwrap_or("")]);
+    // est DÉRIVÉE du SQL RÉELLEMENT EXÉCUTÉ (page ET count), jamais déclarée par l'appelant — la même
+    // dérivation que celle qui a décidé, plus haut, de payer ou non l'hydratation.
     let mut meta = u.meta;
     meta.bras_froid_lu = lecture.a_pu_lire_le_froid();
     let answer = ColdAnswer::new(page, total, meta.truncated, cold_hydrate_row_cap(), meta.rows_hydrated, lecture);

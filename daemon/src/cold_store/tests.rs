@@ -3771,7 +3771,15 @@ fn une_serie_que_le_froid_ne_stocke_pas_reste_exacte_sous_le_plafond_du_froid() 
     // L'AVEU DE PROVENANCE suit ce que la réponse a LU, pas ce que l'hydratation a fait : `stats.cold`
     // en tire `served_from` et son propre `truncated` (`handlers::query::stats_cold`).
     assert!(!meta.bras_froid_lu, "cette réponse n'a lu aucune ligne froide -> la provenance ne dit pas « hot+cold »");
-    assert!(meta.truncated, "l'HYDRATATION, elle, a bien plafonné — c'est un coût payé, pas une propriété de la réponse");
+    // `P10.5-j` — LE COÛT N'EST PLUS PAYÉ : avant ce lot, cette même lecture déchiffrait et décodait cinq
+    // mille lignes froides que la réponse ne pouvait pas lire (`truncated` était vrai ici, « un coût payé,
+    // pas une propriété de la réponse »). La dérivation est consultée AVANT d'hydrater : zéro fichier
+    // ouvert, zéro ligne hydratée, aucun plafond mordu — et la réponse ci-dessous reste exactement celle
+    // de la fenêtre chaude. Le jour où `truncated` redevient vrai ici, l'hydratation est de nouveau payée
+    // pour rien.
+    assert!(!meta.truncated, "P10.5-j : l'hydratation a été payée pour une requête qui ne peut pas lire le bras froid");
+    assert_eq!(meta.files_read, 0, "P10.5-j : un fichier froid a été ouvert pour une requête qui ne peut pas le lire");
+    assert_eq!(meta.rows_hydrated, 0, "P10.5-j : des lignes froides ont été hydratées pour une requête qui ne peut pas les lire");
     let rendu = ans
         .render(AnswerShape::of_gxql(soql))
         .unwrap_or_else(|t| panic!("REFUS FAUX : {} — la requête ne lit ni `event` ni `cold_event`", t.message()));

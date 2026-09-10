@@ -755,37 +755,56 @@
     ///
     /// L'INSTRUMENT SE VALIDE : les deux ancrages doivent être TROUVÉS, et le nombre de sites d'aveu
     /// doit être NON NUL — sans quoi ce test serait vert par vacuité.
+    /// `P8.27-d` (1) — LA POPULATION EST UNE PROPRIÉTÉ, PLUS UN LITTÉRAL D'APPEL. La forme précédente
+    /// appariait `stats_cold(boundary, &meta)` — noms de liaison compris — dans le seul `query.rs` : un
+    /// site écrit avec d'autres noms, ou posé dans un autre module de `handlers/`, sortait de la
+    /// population sans rougir. Ici la propriété est « un APPEL de `stats_cold(` », dans tout fichier de
+    /// `handlers/` (récursif), la définition (`fn stats_cold`) exclue ; la sortie est la première forme
+    /// de réponse rencontrée après l'appel. Le plancher tient toujours : au moins deux sites, sinon
+    /// l'instrument ne mesure rien.
     #[cfg(feature = "cold_tier")]
     #[test]
     fn ks_tout_aveu_de_part_froide_saccompagne_de_laveu_de_voie() {
-        let src = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("handlers").join("query.rs"),
-        )
-        .expect("le handler de requête est lisible");
-        let code: String = src.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
-
-        // Les SITES D'AVEU DE PART FROIDE : les appels, pas la définition (qui porte le `fn`).
-        let sites: Vec<usize> = code.match_indices("stats_cold(boundary, &meta)").map(|(i, _)| i).collect();
-        assert!(
-            sites.len() >= 2,
-            "INSTRUMENT : au moins deux chemins d'union publient `stats.cold` (vu {}) — sinon ce témoin ne mesure rien",
-            sites.len()
-        );
-        for i in &sites {
-            // La FIN du chemin : la première sortie rencontrée après l'aveu.
-            let reste = &code[*i..];
-            let fin = ["keyset_reponse(", "Json(value).into_response()", "Json(v).into_response()"]
-                .iter()
-                .filter_map(|m| reste.find(m))
-                .min()
-                .unwrap_or_else(|| panic!("INSTRUMENT : aucun site de SORTIE après l'aveu de part froide à l'offset {i}"));
-            let segment = &reste[..fin];
-            assert!(
-                segment.contains("apply_rollup_stats("),
-                "un chemin publie `stats.cold` (offset {i}) puis REND sans publier `stats.served_from` — c'est \
-                 exactement le champ auquel le refus d'exactitude renvoie le lecteur. Segment : {segment}"
-            );
+        fn fichiers_rs(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for e in std::fs::read_dir(dir).expect("handlers/ lisible").flatten() {
+                let p = e.path();
+                if p.is_dir() { fichiers_rs(&p, out); } else if p.extension().is_some_and(|x| x == "rs") { out.push(p); }
+            }
         }
+        let racine = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("handlers");
+        let mut fichiers = Vec::new();
+        fichiers_rs(&racine, &mut fichiers);
+        assert!(fichiers.len() > 10, "INSTRUMENT : handlers/ balayé ({} fichiers)", fichiers.len());
+        let mut total = 0usize;
+        for f in &fichiers {
+            let src = std::fs::read_to_string(f).unwrap();
+            let code: String = src.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+            // Les SITES D'AVEU DE PART FROIDE : les appels, pas la définition (précédée de `fn `).
+            let sites: Vec<usize> = code
+                .match_indices("stats_cold(")
+                .map(|(i, _)| i)
+                .filter(|i| !code[..*i].ends_with("fn "))
+                .collect();
+            for i in &sites {
+                total += 1;
+                // La FIN du chemin : la première sortie rencontrée après l'aveu — une réponse rendue ou
+                // la fabrique de réponse du keyset. Une sortie absente est un défaut d'INSTRUMENT, dit.
+                let reste = &code[*i..];
+                let fin = ["keyset_reponse(", ".into_response()"]
+                    .iter()
+                    .filter_map(|m| reste.find(m))
+                    .min()
+                    .unwrap_or_else(|| panic!("INSTRUMENT : aucun site de SORTIE après l'aveu de part froide ({}:{i})", f.display()));
+                let segment = &reste[..fin];
+                assert!(
+                    segment.contains("apply_rollup_stats("),
+                    "un chemin publie `stats.cold` ({}:{i}) puis REND sans publier `stats.served_from` — c'est \
+                     exactement le champ auquel le refus d'exactitude renvoie le lecteur. Segment : {segment}",
+                    f.display()
+                );
+            }
+        }
+        assert!(total >= 2, "INSTRUMENT : au moins deux chemins d'union publient `stats.cold` (vu {total}) — sinon ce témoin ne mesure rien");
     }
 
     /// `P10.5-g` — LA RÈGLE D'ENTRÉE N'EST PAS RECOPIÉE DANS LE HANDLER, ELLE Y EST LUE.

@@ -115,6 +115,7 @@ pub(crate) const SOURCES_LIVREES: &[(&str, &str)] = &[
     ("portscan", "collectors/portscan.sh"),
     ("prom-scrape", "collectors/prom-scrape.sh"),
     ("resources", "collectors/resources.sh"),
+    ("ship", "collectors/ship.sh"),
     ("sshd", "daemon/src/sondes.rs"),
     ("sshd-session", "daemon/src/sondes.rs"),
     ("su", "daemon/src/sondes.rs"),

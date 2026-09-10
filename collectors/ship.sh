@@ -1,5 +1,5 @@
 #!/bin/sh
-# plume-source: aucune
+# plume-source: ship
 # Agent SOC — shipper : pousse les fichiers du spool vers le SOC CENTRAL.
 #   *.json   (enveloppes events/metrics/firewall/controls) -> POST /api/ingest
 #   *.ndjson (journald brut : sshd/sshd-session/sudo/su)    -> POST /api/ingest/journal

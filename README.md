@@ -830,6 +830,7 @@ viennent d'une constante — la commande `c` ci‑dessus la donne.
 |---|---|---|
 | `PLUME_DB` | fichier SQLite | `/var/lib/plume/db/plume.db` |
 | `PLUME_SPOOL` | spool d'expédition côté agent | `/var/lib/plume/spool` |
+| `PLUME_SPOOL_MAX_FILES` | plafond du spool de l'hôte (fichiers) : au-delà, `ship.sh` évince les PLUS ANCIENS, l'avoue au central par une enveloppe de disponibilité qui porte le compte (`spool-full`) — la perte n'est jamais silencieuse ; un refus permanent (400/413/415/422) part dans `$STATE/refuses/` et est avoué (`ingest-refused`) | `5000` |
 | `PLUME_STATE` | filigranes des collecteurs | `/var/lib/plume/state` |
 | `PLUME_CONFIG_DIR` | overlays `config.d` (parsers, règles, playbooks) | `/usr/local/share/plume/config.d` |
 | `PLUME_WEB` | racine de la PWA servie | `/usr/local/share/plume/web` |

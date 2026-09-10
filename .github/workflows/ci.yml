@@ -2383,6 +2383,13 @@ jobs:
         id: garde_63
         continue-on-error: true
         run: python3 .github/scripts/check_tmp_possede_copies_are_identical.py
+      # `P9.7-c` (item 4) — LE TAMPON DE L'HÔTE EST BORNÉ, ET LA PERTE EST COMPTÉE ET DITE : au-delà du plafond,
+      # ship.sh évince les plus anciens et l'avoue ; un refus permanent du central est mis à l'écart et avoué.
+      # Jambe EXÉCUTÉE : ship.sh est lancé pour de vrai contre un curl instrumenté.
+      - name: Le tampon de l'hôte est borné et chaque perte est comptée et dite (P9.7-c)
+        id: garde_64
+        continue-on-error: true
+        run: python3 .github/scripts/check_ship_bounds_the_spool_and_says_its_losses.py
 
       # Discovery is by EXTENSION **and** by first-line SHEBANG, deliberately: today all 43
       # tracked scripts carry a `.sh` extension (measured), and 42 of them a sh/bash shebang —
@@ -2545,6 +2552,7 @@ jobs:
           total=$((total+1)); o="${{ steps.garde_61.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_retention_declare_ce_quelle_purge.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_62.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_blocked_work_names_its_cause.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_63.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_tmp_possede_copies_are_identical.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_64.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_ship_bounds_the_spool_and_says_its_losses.py : $o"; }
           echo "gardes jouées : $total ; en échec : $rouges"
           exit $rc
   features:

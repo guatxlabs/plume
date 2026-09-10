@@ -166,6 +166,13 @@ laquelle et pourquoi (verrou valable sur une base NEUVE : une installation déj�
 que sa migration a posé). Un seuil n'a de sens que pour la population sur laquelle il a été calibré.
 Cette table dit laquelle, et ce qu'une population **neuve** sous la même règle change (`P4.12-e`).
 
+Depuis la migration v122 (`P4.12-g`), cette population est aussi **déclarée dans la base**, lisible par
+le code : la colonne `population` de chaque règle livrée (table unique `daemon/src/population_de_calibrage.rs`,
+écrite par les semeurs et rejouée par la migration sans écraser une déclaration de l'exploitant), et la
+boucle de règles écrit au tir, dans `population_vue`, les sources imputées qui n'en font pas partie — la
+ligne de la règle porte alors « population neuve : <source> ». Cette table reste la prose de cette
+déclaration ; le code en est la source de vérité.
+
 | Règle graine | Forme de la requête | Seuil et fenêtre | Population de calibrage | Une population neuve sous cette règle |
 |--------------|---------------------|------------------|-------------------------|---------------------------------------|
 | Brute-force auth par IP (5 min) | `category=auth action=failure \| stats count by src_ip \| where count > 15` | > 15 échecs par IP, 5 min, tirée toutes les 60 s | le `rhost` de **sshd** : du SSH exposé, où 15 échecs en 5 min depuis une même adresse est un automate | les échecs **Windows** (4625/4771/4776) portent `src_ip` depuis le 2026-08-29 : une passerelle RDS/Citrix ou un contrôleur de domaine qui concentre les échecs de tout un service sous UNE adresse dépasse ce seuil un lundi matin, sans attaque. Et une alerte ouverte est rafraîchie sans re-notification (`P4.12-h`) |

@@ -90,7 +90,7 @@ impl Drop for MigrationLogSilencer {
 /// rien (toutes ses gardes `v < N` sont fausses) et OPÈRE À L'AVEUGLE sur un schéma qu'il ne connaît pas
 /// -> risque de corruption (survivable AUJOURD'HUI car migrations additives, mais non gardé). On REFUSE
 /// d'ouvrir : arrêt PROPRE (exit non-zéro), JAMAIS un panic, JAMAIS un « proceed » silencieux.
-pub(crate) const CODE_SCHEMA_MAX: i64 = 121;
+pub(crate) const CODE_SCHEMA_MAX: i64 = 122;
 
 /// Lit `meta.schema_version` (défaut 1 si table/lignes absentes ou illisibles) — MÊME lecture que `migrate()`.
 /// Une base NEUVE (pas encore de table meta) renvoie 1 -> jamais refusée par la garde.
@@ -820,6 +820,7 @@ fn migrate_chain(conn: &Connection) -> bool {
     if v < 119 && !migrate_step(conn, 119, migrate_v119) { return false; }
     if v < 120 && !migrate_step(conn, 120, migrate_v120) { return false; }
     if v < 121 && !migrate_step(conn, 121, migrate_v121) { return false; }
+    if v < 122 && !migrate_step(conn, 122, migrate_v122) { return false; }
     true
 }
 
@@ -1409,6 +1410,21 @@ fn migrate_v121(conn: &MigTx) {
     let _ = conn.execute("ALTER TABLE alert ADD COLUMN basis_ref TEXT NOT NULL DEFAULT ''", []);
     let _ = conn.execute("UPDATE meta SET value='121' WHERE key='schema_version'", []);
     mig_log!("[migration] schéma -> v121 (P11.14-h : alert.basis / basis_ref — chaque alerte déclare son fondement à la levée, dans un vocabulaire fermé ; vide = antérieure, non déclaré)");
+}
+
+/// v122 (`P4.12-g`) — LA POPULATION DE CALIBRAGE D'UNE RÈGLE EST LISIBLE PAR LE CODE. `rule.population` :
+/// les sources sur lesquelles le seuil a été calibré (table unique `population_de_calibrage.rs`, rejouée
+/// ici pour les règles livrées d'une base existante, sans écraser une déclaration de l'exploitant) ;
+/// `rule.population_vue` : les sources imputées au dernier tir HORS de cette population, écrites par la
+/// boucle de règles — vide = aucune, ou population non déclarée. MIROIR dans db/schema.sql.
+fn migrate_v122(conn: &MigTx) {
+    let _ = conn.execute("ALTER TABLE rule ADD COLUMN population TEXT NOT NULL DEFAULT ''", []);
+    let _ = conn.execute("ALTER TABLE rule ADD COLUMN population_vue TEXT NOT NULL DEFAULT ''", []);
+    for (nom, population) in crate::population_de_calibrage::POPULATIONS_DE_CALIBRAGE {
+        let _ = conn.execute(crate::population_de_calibrage::SQL_DECLARER_LA_POPULATION, params![nom, population]);
+    }
+    let _ = conn.execute("UPDATE meta SET value='122' WHERE key='schema_version'", []);
+    mig_log!("[migration] schéma -> v122 (P4.12-g : rule.population / population_vue — la population de calibrage d'une règle livrée est déclarée dans la base, et une population neuve sous la règle est dite au tir)");
 }
 
 /// v108 (PERF — RECHERCHE RAW HAUT-VOLUME source=X sur fenêtre longue). MARQUEUR PUR (aucune DDL lourde

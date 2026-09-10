@@ -178,6 +178,11 @@ CREATE TABLE IF NOT EXISTS rule(
   severity INTEGER NOT NULL DEFAULT 2,
   interval_s INTEGER NOT NULL DEFAULT 300,
   window_s INTEGER NOT NULL DEFAULT 3600,
+  -- v122 (P4.12-g) — `population` : les SOURCES sur lesquelles le seuil de cette règle a été calibré (séparées par
+  -- des virgules ; '' = non déclarée, rien n'est dit d'elle), écrite par les semeurs pour les règles livrées et
+  -- posable par l'exploitant ; `population_vue` : les sources imputées au dernier tir HORS de cette population,
+  -- écrites par la boucle de règles ('' = aucune). MIROIR de la migration v122.
+  population TEXT NOT NULL DEFAULT '', population_vue TEXT NOT NULL DEFAULT '',
   -- 0 = builtin/seed | 1 = overlay-file (config.d, versionné git) | 2 = ad-hoc UI (CRUD)
   managed INTEGER NOT NULL DEFAULT 0,
   last_run INTEGER, last_value REAL, last_fired INTEGER,

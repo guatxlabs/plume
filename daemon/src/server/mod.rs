@@ -509,6 +509,7 @@ fn open_and_migrate_db(db_path: String, spool: String, conf: HashMap<String, Str
     seed_runbooks(&conn);   // #3 incidents Phase 1 : runbooks managés keyés MITRE (flag dédié `seeded_runbooks`)
     seed_ti_alert_rules(&conn);   // #23 activation : alerte sur match IOC confiance≥80 (managé, inerte tant qu'aucun IOC)
     seed_risk_rules(&conn);       // #24 activation : règles RBA mode risque (brute-force/recon par entité, managé)
+    crate::population_de_calibrage::declarer_les_populations(&conn); // P4.12-g : la population de calibrage des règles livrées, lisible par le code (ne remplit que le vide)
     seed_example_playbooks(&conn);
     seed_ssh_cve_playbook(&conn);
     seed_k8s_rules(&conn);

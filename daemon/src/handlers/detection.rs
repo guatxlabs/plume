@@ -225,7 +225,7 @@ pub(crate) fn detect_concurrency() -> usize {
 /// Un worker EMPOISONNÉ est simplement ABSENT de la carte -> l'appelant pose l'inconnu NOMMÉ, jamais un
 /// silence. `due` est la liste telle que la phase 1 l'a lue : c'est elle qui porte `is_soql` et
 /// `window_s`, que la phase 2 ne recopie pas.
-type RegleDue = (i64, String, String, bool, String, f64, i64, i64, String);
+type RegleDue = (i64, String, String, bool, String, f64, i64, i64, String, String);
 fn imputations_des_regles_qui_tirent(
     db_path: &str,
     due: &[RegleDue],
@@ -241,7 +241,7 @@ fn imputations_des_regles_qui_tirent(
         let part: Vec<(i64, String)> = std::thread::scope(|s| {
             chunk
                 .iter()
-                .map(|(id, _name, query, is_soql, _op, _th, _sev, window_s, _mitre)| {
+                .map(|(id, _name, query, is_soql, _op, _th, _sev, window_s, _mitre, _population)| {
                     s.spawn(move || (*id, imputer_alerte_de_regle(db_path, query, *is_soql, *window_s)))
                 })
                 .collect::<Vec<_>>()
@@ -285,7 +285,7 @@ pub(crate) fn run_due_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
         // mode 0 ces colonnes valent 0/'' -> le prédicat est TOUJOURS vrai -> sélection STRICTEMENT identique
         // à l'historique (aucune règle avancée -> byte-identique).
         let mut stmt = match conn.prepare(
-            "SELECT id,name,query,is_soql,op,threshold,severity,window_s,COALESCE(mitre,'') FROM rule \
+            "SELECT id,name,query,is_soql,op,threshold,severity,window_s,COALESCE(mitre,''),COALESCE(population,'') FROM rule \
              WHERE enabled=1 AND COALESCE(risk_score,0)=0 \
                AND COALESCE(suppress_window_s,0)=0 AND COALESCE(throttle_field,'')='' AND COALESCE(per_result,0)=0 \
                AND (last_run IS NULL OR ?1 - last_run >= interval_s)",
@@ -297,6 +297,7 @@ pub(crate) fn run_due_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
             Ok((
                 r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)? != 0,
                 r.get::<_, String>(4)?, r.get::<_, f64>(5)?, r.get::<_, i64>(6)?, r.get::<_, i64>(7)?, r.get::<_, String>(8)?,
+                r.get::<_, String>(9)?,
             ))
         }) {
             Ok(r) => r,
@@ -319,6 +320,8 @@ pub(crate) fn run_due_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
     // traite par TRANCHES de `detect_concurrency()` (défaut 3, miroir de query_sem) : au plus N évals en vol.
     // Le résultat est indépendant de l'ordre/tranchage (phase 3 écrit par id de règle) -> sémantique préservée.
     let cc = detect_concurrency();
+    // `P4.12-g` — la population de calibrage de chaque règle due, pour dire au tir ce qui la déborde.
+    let populations: HashMap<i64, String> = due.iter().map(|d| (d.0, d.9.clone())).collect();
     // Le VERDICT d'une évaluation : la valeur, ou l'abandon AVEC SA CAUSE (`P3.9-a`). Un seul `None`
     // fondait erreur de requête, budget dépassé, cellule non numérique et panique du fil ; la cause
     // est désormais conservée jusqu'à la phase 3, qui la consigne par règle.
@@ -327,7 +330,7 @@ pub(crate) fn run_due_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
     for chunk in due.chunks(cc) {
         let chunk_res: Vec<_> = std::thread::scope(|s| {
             let fils: Vec<_> = chunk.iter()
-                .map(|(id, name, query, is_soql, op, threshold, severity, window_s, mitre)| {
+                .map(|(id, name, query, is_soql, op, threshold, severity, window_s, mitre, _population)| {
                     s.spawn(move || match rule_sql(query, *is_soql, *window_s) {
                         // BUDGET INTERACTIF (pas le budget auto 5 s) : la détection est un balayage de FOND,
                         // hors lock d'écriture, sur sa propre connexion read-only -> tolère un scan brut de
@@ -351,7 +354,7 @@ pub(crate) fn run_due_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
                 // relue dans `chunk`, pas dans le fil qui a paniqué) : aucune alerte fabriquée, aucun
                 // last_value=0.0 « tout clair », la règle re-tentée au prochain tick et son abandon consigné
                 // avec sa cause. Même garantie fail-closed que les branches Err ci-dessus.
-                .map(|(h, (id, name, query, _is_soql, op, threshold, severity, window_s, mitre))| {
+                .map(|(h, (id, name, query, _is_soql, op, threshold, severity, window_s, mitre, _population))| {
                     h.join().unwrap_or_else(|_| {
                         (*id, name.clone(), op.clone(), *threshold, *severity, *window_s, query.clone(), mitre.clone(),
                          Err(AbandonDEvaluation::evaluateur_en_panne()))
@@ -396,6 +399,14 @@ pub(crate) fn run_due_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
             // vide voudrait dire « alerte d'avant la migration » et ferait retomber le lecteur sur le
             // texte de la règle EN SILENCE. Un tir sans imputation calculable porte l'inconnu NOMMÉ.
             let sources = imputations.get(&id).cloned().unwrap_or_else(|| imputation_encoder(&[]));
+            // `P4.12-g` — UNE POPULATION NEUVE SOUS CETTE RÈGLE EST DITE là où la règle se lit : les sources
+            // imputées (déjà calculées, aucune requête de plus) HORS de la population de calibrage déclarée
+            // sont écrites sur la règle ; vide = aucune, ou aucune population déclarée.
+            let hors_population = crate::population_de_calibrage::sources_hors_population(
+                populations.get(&id).map(String::as_str).unwrap_or(""),
+                &crate::imputation::imputation_decoder(&sources),
+            );
+            let _ = conn.execute("UPDATE rule SET population_vue=?1 WHERE id=?2", params![hors_population.join(","), id]);
             // l'alerte hérite du tag MITRE de la règle -> /api/coverage/detections joint sur `mitre`.
             // no-op si une alerte ouverte porte déjà la clé -> plus de renotif à chaque fenêtre.
             let _ = conn.execute(
@@ -431,7 +442,7 @@ pub(crate) async fn rules_list(State(st): State<AppState>, Extension(au): Extens
     // MISC : dégrade proprement en liste vide sur erreur prepare/query (comme correlations_list/baselines_list),
     // au lieu d'un .unwrap() qui panique -> 500 (et, sur l'écrivain partagé, risque de propagation de panic).
     let mut stmt = match conn
-        .prepare("SELECT id,name,enabled,query,is_soql,op,threshold,severity,interval_s,window_s,last_run,last_value,last_fired,COALESCE(mitre,''),managed,COALESCE(compliance,''),COALESCE(suppress_window_s,0),COALESCE(throttle_field,''),COALESCE(per_result,0) FROM rule ORDER BY id")
+        .prepare("SELECT id,name,enabled,query,is_soql,op,threshold,severity,interval_s,window_s,last_run,last_value,last_fired,COALESCE(mitre,''),managed,COALESCE(compliance,''),COALESCE(suppress_window_s,0),COALESCE(throttle_field,''),COALESCE(per_result,0),COALESCE(population,''),COALESCE(population_vue,'') FROM rule ORDER BY id")
     {
         Ok(s) => s,
         Err(_) => return Json(json!({ "rules": [] })),
@@ -448,6 +459,8 @@ pub(crate) async fn rules_list(State(st): State<AppState>, Extension(au): Extens
                 "mitre": r.get::<_, String>(13)?, "managed": r.get::<_, i64>(14)?, "compliance": r.get::<_, String>(15)?,
                 // #48 : réglages de tir avancé (0/''/false = mode historique).
                 "suppress_window_s": r.get::<_, i64>(16)?, "throttle_field": r.get::<_, String>(17)?, "per_result": r.get::<_, i64>(18)? != 0,
+                // `P4.12-g` : la population de calibrage déclarée, et les sources vues au dernier tir HORS d'elle.
+                "population": r.get::<_, String>(19)?, "population_vue": r.get::<_, String>(20)?,
                 // P11.13-a : la MÊME requête, rendue réutilisable par un panneau (étage scalaire terminal
                 // retiré en GXQL, brut intact avec ses marqueurs de fenêtre). Dérivée par le démon pour
                 // que la console n'ait rien à réécrire — et rendue à côté de `query`, jamais à sa place.

@@ -285,9 +285,26 @@ function apresEnregistrementDUneRegle() {
 // Conséquence de l'interrupteur : lever des alertes (ou du risque) ; pas de confirmation (rien ne touche le
 // réseau). Bascule ADMIN-only via /enabled (audité, persistant — overlays config.d compris) ; un non-admin voit
 // la case en lecture seule, le serveur re-gate (403).
+// P4.12-g — UNE POPULATION NEUVE SOUS UNE RÈGLE EST DITE là où la règle se lit : le démon écrit au tir les
+// sources imputées hors de la population de calibrage déclarée ; la console les montre, sans les deviner.
+const POPULATION_MOTS = {
+  neuve: { fr: 'population neuve :', en: 'new population:' },
+  titre: {
+    fr: "Les seuils de cette règle ont été calibrés sur la population « {pop} » ; ses dernières contributions viennent aussi de « {vue} », qui n'en fait pas partie — le seuil n'a pas été calibré pour elle.",
+    en: "This rule's thresholds were calibrated on the population “{pop}”; its latest contributions also come from “{vue}”, which is not part of it — the threshold was not calibrated for it.",
+  },
+};
+function chipDePopulationNeuve(r) {
+  if (!r.population_vue) return null;
+  const c = document.createElement('span'); c.className = 'mitrechip bad';
+  c.textContent = `${LANG === 'en' ? POPULATION_MOTS.neuve.en : POPULATION_MOTS.neuve.fr} ${r.population_vue}`;
+  c.title = (LANG === 'en' ? POPULATION_MOTS.titre.en : POPULATION_MOTS.titre.fr).replace('{pop}', r.population || '?').replace('{vue}', r.population_vue);
+  return c;
+}
 function ruleRowModel(r) {
   const dest = DESTINATIONS[detectionDestination(r.risk_score)];
   const chips = [];
+  const populationNeuve = chipDePopulationNeuve(r); if (populationNeuve) chips.push(populationNeuve);
   // tag MITRE ATT&CK (purple) : technique que la règle DÉTECTE — clé de jointure avec Forge (red).
   if (r.mitre) { const mt = document.createElement('span'); mt.className = 'mitrechip'; mt.textContent = r.mitre; const _mn = mitreName(r.mitre); mt.title = (_mn ? r.mitre + ' — ' + _mn + ' · ' : '') + 'technique MITRE ATT&CK détectée par cette règle'; chips.push(mt); }
   // #38 : cadres de conformité couverts (posture/couverture, pas certification) — un chip par cadre distinct.

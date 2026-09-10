@@ -5284,6 +5284,20 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     exiger(/auditd/.test(texteFenetre) && /ufw/.test(texteFenetre) && /aide/.test(texteFenetre), `(43g) la fenêtre ne rend pas chaque contrôle attendu : « ${texteFenetre.slice(0, 200)} »`);
     exiger(/MANQUANT|MISSING/.test(texteFenetre) && /sans verdict|no verdict/.test(texteFenetre), `(43g) les verdicts (manquant / sans verdict) ne sont pas dits : « ${texteFenetre.slice(0, 200)} »`);
     fenetre.remove(); globalThis.fetch = fetchAvant43g;
+
+    // (h) `P4.12-g` — UNE POPULATION NEUVE SOUS UNE RÈGLE EST DITE là où la règle se lit. Le démon sert
+    //     `population` (calibrage déclaré) et `population_vue` (sources vues au tir HORS de la population) ;
+    //     la ligne porte alors une puce qui nomme la source neuve et, au survol, la population de calibrage.
+    //     Témoin inverse : sans source hors population, aucune puce — la console ne devine rien.
+    const { ruleRowModel } = await import(pathToFileURL(path.join(WEB, "detection_admin.js")).href);
+    const regleBase = { id: 5, name: "Brute-force auth par IP (5 min)", enabled: true, query: "search category=auth action=failure | stats count by src_ip | where count > 15 | stats count", is_soql: true, op: ">", threshold: 0, severity: 3, interval_s: 60, window_s: 300, last_value: null, last_fired: null, mitre: "T1110", managed: 1, compliance: "", risk_score: 0 };
+    const avecNeuve = ruleRowModel({ ...regleBase, population: "sshd", population_vue: "winlog" });
+    const puces = (m) => (m.chips || []).map((c) => c.textContent || "");
+    exiger(puces(avecNeuve).some((t) => /population neuve|new population/.test(t) && /winlog/.test(t)), `(43h) la règle dont le démon dit une population neuve ne la montre pas : ${JSON.stringify(puces(avecNeuve))}`);
+    const puceNeuve = (avecNeuve.chips || []).find((c) => /winlog/.test(c.textContent || ""));
+    exiger(puceNeuve && /sshd/.test(puceNeuve.title || "") && /winlog/.test(puceNeuve.title || ""), `(43h) le survol de la puce ne nomme pas la population de calibrage ET la source neuve : « ${puceNeuve && puceNeuve.title} »`);
+    const sansNeuve = ruleRowModel({ ...regleBase, population: "sshd", population_vue: "" });
+    exiger(!puces(sansNeuve).some((t) => /population neuve|new population/.test(t)), `(43h) témoin inverse : une règle sans source hors population porte quand même une puce : ${JSON.stringify(puces(sansNeuve))}`);
     exiger(rendu.includes(refus.survol), "(43f) le survol de la ligne refusée n'est pas le mot du refus : le survol et le clic ont deux auteurs, et ils divergeront");
   } finally {
     document.querySelector = qsOrigine; globalThis.fetch = fetchOrigine;

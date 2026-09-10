@@ -10990,6 +10990,9 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     [{ cold: { served_from: "hot", files_read: 0, rows_hydrated: 0, boundary_ts: 1_700_000_000 } }, "froid : non lu", /métriques ne vieillissent pas/],
     // Un compte NON PUBLIÉ n'est pas un zéro : le libellé ne tranche pas, l'infobulle le dit (`P11.24-s`).
     [{ cold: { served_from: "hot+cold", boundary_ts: 1_700_000_000 } }, "froid : lu sans compte", /compte de fichiers non publié/],
+    // `P10.5-q` — le cinquième état : un chemin qui ne consulte jamais la bande froide et le DIT (coffre des
+    // panneaux, pivot, jeux de données) ; sans ce bras il serait rendu « non lu … la réponse est entière ».
+    [{ cold: { served_from: "hot", boundary_ts: 1_700_000_000, aveu: "bande froide NON consultée : ce chemin (coffre des panneaux) calcule sur la fenêtre chaude seule" } }, "froid : bande non lue", /coffre des panneaux/],
   ];
   for (const [stats, texte, infobulle] of cas) {
     const b = coldShareBadge(stats);
@@ -10998,6 +11001,11 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     exiger(!!b && /Frontière chaud\/froid/.test(b.title || ""), `(81) ${stats.cold.served_from} : la frontière publiée n'atteint pas l'infobulle`);
   }
   exiger(coldShareBadge({ served_from: "raw" }) === null && coldShareBadge(null) === null, "(81) témoin négatif : sans aveu de part froide, un badge est fabriqué");
+  // `P10.5-q` — LES PANNEAUX LISENT L'AVEU QU'ILS REÇOIVENT : `dashboards.js` importe le badge froid et le pose
+  // avec les deux autres dans son geste unique — c'est ce qui manquait aux 27 panneaux tabulaires semés.
+  const srcDash = readFileSync(path.join(WEB, "dashboards.js"), "utf8");
+  exiger(/import \{[^}]*\bcoldShareBadge\b[^}]*\} from '\.\/viz\.js'/.test(srcDash), "(81) dashboards.js n'importe pas coldShareBadge : l'aveu reçu par les panneaux n'est pas lu");
+  exiger(/\[coverageBadge\(stats\), provenanceBadge\(stats\), coldShareBadge\(stats\)\]/.test(srcDash), "(81) le geste unique de pose des aveux d'un panneau ne porte pas le badge froid à côté des deux autres");
   // L'INTÉGRATION : la ligne de badges de l'Explore porte le nœud, à côté des autres, jamais à leur place.
   const qbadge = document.querySelector("#qbadge");
   exiger(!!qbadge, "(81) instrument : #qbadge absent de la page réelle");

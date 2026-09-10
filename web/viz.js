@@ -586,6 +586,12 @@ function coldShareBadge(stats) {
   } else if (c.served_from === 'hot+cold') {
     b.textContent = 'froid : rien de vieilli';
     b.title = "Le bras froid a été lu et n'a rien porté sur cette fenêtre : aucune journée vieillie. Une journée passée sous la frontière mais pas encore vieillie n'est servie par aucun bras jusqu'à la passe de vieillissement." + frontiere;
+  } else if (typeof c.aveu === 'string' && c.aveu) {
+    // `P10.5-q` — LE CINQUIÈME ÉTAT : un chemin qui ne consulte JAMAIS la bande froide (coffre des panneaux, pivot,
+    // jeux de données) sert `served_from: "hot"` AVEC une phrase d'aveu ; sans ce bras, il tomberait dans « non
+    // lu … la réponse est entière », c'est-à-dire l'inverse de ce que le démon vient de dire.
+    b.textContent = 'froid : bande non lue';
+    b.title = c.aveu + frontiere;
   } else {
     b.textContent = 'froid : non lu';
     b.title = "Cette réponse n'a pas pu lire le bras froid : sa requête n'interroge pas les événements. Les métriques ne vieillissent pas, la réponse est entière." + frontiere;

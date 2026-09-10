@@ -155,6 +155,7 @@ const I18N_EN = {
   "événement": "event", "dormant": "dormant",
   // P11.8-a — couverture ATT&CK (attack.js)
   "nom inconnu": "unknown name", "aucune règle": "no rule",
+  "froid : bande non lue": "cold: band not read",
   // P4.12-b — action rename des processeurs (processors.js)
   "arg = origine->cible : copie un champ vendeur vers une colonne d’entité (ex. fields.otel.client.address->src_ip) ; une colonne déjà posée par le producteur gagne": "arg = origin->target: copies a vendor field into an entity column (e.g. fields.otel.client.address->src_ip); a column already set by the producer wins",
   // P11.6-c — catalogue des noms ATT&CK dérivé du démon (catalogue_attack.js) : les motifs d'un nom absent

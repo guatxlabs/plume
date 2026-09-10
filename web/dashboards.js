@@ -6,7 +6,7 @@
 // `renderDashboard` est exporté pour le harnais. N'importe pas `app.js`.
 import { $, ic, flashStopped, stopBtn, toast, modal, confirmModal, confirmWithConsequence, toCSV, downloadText, tsSlug, exportPDF, miniMenu, api, apiSend, transientGatewayMsg, makePager, socIsAdmin, applyRoleClass, roleSansEcriturePartagee, LANG } from './core.js';
 import { S } from './state.js';
-import { coverageBadge, coverageHorizonNodes, provenanceBadge, currentFrom, currentTo, noeudsDeVizReglee, queryCount, runQuery, tableEl, vizElement } from './viz.js';
+import { coldShareBadge, coverageBadge, coverageHorizonNodes, provenanceBadge, currentFrom, currentTo, noeudsDeVizReglee, queryCount, runQuery, tableEl, vizElement } from './viz.js'; // `P10.5-q` : l'aveu de part froide que les panneaux reçoivent est LU
 // P11.4-h : LE geste de copie de la console (mécanisme partagé).
 import { boutonDeCopie } from './copie_et_selection.js';
 import { prefGet, prefSet } from './prefs.js';
@@ -36,7 +36,9 @@ import { choisirDansLexistant } from './composer_depuis_lexistant.js';
 /// `provenance_non_derivee` + `rollup_note` et AUCUN module de la console ne les lisait — onze panneaux
 /// livrés affichaient un nombre PLAFONNÉ par le top-N d'un pré-agrégé comme un nombre entier.
 function poserLesAveuxDuPanneau(hote, stats, avant) {
-  for (const b of [coverageBadge(stats), provenanceBadge(stats)]) {
+  // `P10.5-q` — `stats.cold` arrivait jusqu'ici (panneaux tabulaires servis par /api/query, coffre des panneaux) et
+  // personne ne le lisait : les quatre états du lot 65 et le cinquième (bande non lue) sont posés à côté des autres.
+  for (const b of [coverageBadge(stats), provenanceBadge(stats), coldShareBadge(stats)]) {
     if (!b) continue;
     if (avant) hote.insertBefore(b, avant); else hote.appendChild(b);
   }

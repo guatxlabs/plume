@@ -308,11 +308,24 @@ fn borne_froide(_conn: &Connection, _conf: &HashMap<String, String>, _now_s: i64
 /// la granularité à laquelle le dépôt tient DÉJÀ deux fenêtres pour identiques (`cache_range_key`), pas
 /// une tolérance inventée.
 pub(crate) fn horizon(db_path: &str, conf: &HashMap<String, String>, pc: &PanneauCompile, from: i64) -> Value {
-    horizon_du_sql(db_path, conf, &pc.sql, from, now())
+    horizon_et_frontiere(db_path, conf, pc, from).0
+}
+
+/// `P10.5-q` — L'HORIZON ET, À CÔTÉ, LA FRONTIÈRE FROIDE TELLE QU'ELLE A ÉTÉ MESURÉE (`None` = tier froid
+/// absent, éteint, ou requête qui ne nomme pas `event`). `horizon_du_sql` la calculait déjà et la PERDAIT
+/// dans une comparaison ; `executer` en a besoin pour dire, dans `stats.cold`, que cette lecture n'a pas
+/// vu la bande froide — la même case et la même phrase que le pivot et les jeux de données.
+pub(crate) fn horizon_et_frontiere(db_path: &str, conf: &HashMap<String, String>, pc: &PanneauCompile, from: i64) -> (Value, Option<i64>) {
+    horizon_et_frontiere_du_sql(db_path, conf, &pc.sql, from, now())
 }
 
 /// Cœur testable de `horizon` : `now_s` injecté (aucune horloge murale dans les témoins).
 pub(crate) fn horizon_du_sql(db_path: &str, conf: &HashMap<String, String>, sql: &str, from: i64, now_s: i64) -> Value {
+    horizon_et_frontiere_du_sql(db_path, conf, sql, from, now_s).0
+}
+
+/// `horizon_du_sql` qui rend AUSSI la frontière froide mesurée (cf. `horizon_et_frontiere`).
+pub(crate) fn horizon_et_frontiere_du_sql(db_path: &str, conf: &HashMap<String, String>, sql: &str, from: i64, now_s: i64) -> (Value, Option<i64>) {
     let mut cov = json!({ "searched_from": from, "calcule_a": now_s });
     let cles = cles_de_retention_du_sql(sql);
     if cles.is_empty() {
@@ -322,13 +335,13 @@ pub(crate) fn horizon_du_sql(db_path: &str, conf: &HashMap<String, String>, sql:
              table dont la rétention est connue. Ce n'est donc pas « rien n'a été perdu » — c'est « on \
              ne sait pas jusqu'où cette réponse a pu voir »."
         );
-        return cov;
+        return (cov, None);
     }
     let nomme_event = sql_nomme(sql, "event");
     // UNE SEULE prise du pool de LECTURE (jamais le mutex d'écriture partagé). DÉFAUT EXPLICITE : pool
     // indisponible -> `None`, et l'aveu le dit SANS horizon_ts. Un plancher calculé hors base serait
     // indiscernable d'un plancher mesuré.
-    let mesure: Option<(i64, &'static str)> = read_with(db_path, None, |c| {
+    let (mesure, frontiere): (Option<(i64, &'static str)>, Option<i64>) = read_with(db_path, (None, None), |c| {
         let mut haut: Option<(i64, &'static str)> = None;
         for (cle, unite) in &cles {
             // UNE CLÉ INCONNUE DE `RETENTION_FIELDS` REND 0, ET UN 0 ICI SERAIT INDISCERNABLE D'UN POOL
@@ -345,12 +358,13 @@ pub(crate) fn horizon_du_sql(db_path: &str, conf: &HashMap<String, String>, sql:
                 haut = Some((ts, RAISON_RETENTION));
             }
         }
-        if let Some(b) = borne_froide(c, conf, now_s, nomme_event) {
+        let frontiere = borne_froide(c, conf, now_s, nomme_event);
+        if let Some(b) = frontiere {
             if haut.map(|(h, _)| b > h).unwrap_or(true) {
                 haut = Some((b, RAISON_COLD));
             }
         }
-        haut
+        (haut, frontiere)
     });
     let Some((horizon_ts, raison)) = mesure else {
         cov["reason"] = json!(RAISON_HORIZON_NON_MESURE);
@@ -358,14 +372,14 @@ pub(crate) fn horizon_du_sql(db_path: &str, conf: &HashMap<String, String>, sql:
             "le pool de lecture n'a pas pu être pris ; l'horizon n'a PAS été mesuré. Cette réponse ne \
              dit donc RIEN de ce qu'elle a pu voir — ni qu'elle est complète, ni qu'elle ne l'est pas."
         );
-        return cov;
+        return (cov, frontiere);
     };
     cov["horizon_ts"] = json!(horizon_ts);
     let dehors = from > 0 && from + CACHE_BUCKET_S < horizon_ts;
     cov["older_outside_window"] = json!(dehors);
     cov["reason"] = json!(if from <= 0 { RAISON_FENETRE_NON_BORNEE } else { raison });
     cov["notice"] = json!(notice_d_horizon(raison, dehors, from));
-    cov
+    (cov, frontiere)
 }
 
 /// LA PHRASE. Elle dit ce que le corps de la réponse n'établit PAS — sans quoi une courbe écourtée se
@@ -434,9 +448,20 @@ fn poser_coverage(v: &mut Value, cov: Value) {
 ///
 /// `columns` et `rows` NE SONT PAS TOUCHÉS. Seul `stats` est enrichi — c'est ce qui distingue « dire »
 /// de « corriger », et la seule preuve que la voie (a) n'a pas empiété sur (b)/(c).
+/// Le nom sous lequel le coffre se désigne dans l'aveu de bande froide (`stats.cold.aveu`).
+pub(crate) const CHEMIN_DU_COFFRE_DES_PANNEAUX: &str = "coffre des panneaux";
+
 pub(crate) fn executer(db_path: &str, conf: &HashMap<String, String>, pc: PanneauCompile, from: i64) -> Result<Value, String> {
     let mut v = run_query(db_path, &pc.sql)?;
-    let couverture = horizon(db_path, conf, &pc, from);
+    let (couverture, frontiere) = horizon_et_frontiere(db_path, conf, &pc, from);
+    // `P10.5-q` — CE COFFRE NE LIT JAMAIS LA BANDE FROIDE (`run_query` = pool chaud, jamais l'union froide).
+    // Quand la fenêtre demandée commence sous la frontière, il le DIT dans `stats.cold`, avec la frontière
+    // mesurée par `borne_froide` — la même case et la même phrase que le pivot et les jeux de données, que
+    // la console lit déjà. Sans tier froid, ou sur une requête qui ne nomme pas `event`, rien n'est ajouté :
+    // la charge utile reste byte-identique. `columns`/`rows` ne sont jamais touchés.
+    if let Some(aveu) = crate::handlers::datamodels::aveu_de_bande_froide_du_chemin(from, frontiere, CHEMIN_DU_COFFRE_DES_PANNEAUX) {
+        v["stats"]["cold"] = aveu;
+    }
     let PanneauCompile { sql, provenance } = pc;
     match provenance {
         Provenance::RouteePreagrege(approx, cap, note) => {

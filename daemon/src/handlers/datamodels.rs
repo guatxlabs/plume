@@ -323,6 +323,13 @@ pub(crate) async fn pivot_compile(State(st): State<AppState>, Extension(au): Ext
 /// panneaux ; il DIT donc ce qu'il n'a pas vu, dans la même case `stats.cold` que `/api/query` renseigne, avec
 /// la frontière comme fait. Pure : la frontière lui est donnée (None = tier froid éteint ou fenêtre chaude).
 pub(crate) fn aveu_de_bande_froide(from: i64, frontiere: Option<i64>) -> Option<Value> {
+    aveu_de_bande_froide_du_chemin(from, frontiere, "pivot / jeu de données")
+}
+
+/// LE MÊME AVEU, POUR UN AUTRE CHEMIN QUI NE CONSULTE PAS LA BANDE FROIDE (`P10.5-q`) : le coffre des panneaux
+/// (`panneau_avoue::executer`) la nomme à son tour. Une seule forme, une seule case `stats.cold`, et le
+/// chemin est DIT dans la phrase — un lecteur sait lequel n'a pas regardé.
+pub(crate) fn aveu_de_bande_froide_du_chemin(from: i64, frontiere: Option<i64>, chemin: &str) -> Option<Value> {
     let b = frontiere?;
     if from >= b {
         return None;
@@ -330,8 +337,8 @@ pub(crate) fn aveu_de_bande_froide(from: i64, frontiere: Option<i64>) -> Option<
     Some(json!({
         "served_from": "hot",
         "boundary_ts": b,
-        "aveu": "bande froide NON consultée : ce chemin (pivot / jeu de données) calcule sur la fenêtre chaude seule ; \
-                 les lignes antérieures à boundary_ts existent peut-être dans le tier froid et ne sont pas comptées",
+        "aveu": format!("bande froide NON consultée : ce chemin ({chemin}) calcule sur la fenêtre chaude seule ; \
+                 les lignes antérieures à boundary_ts existent peut-être dans le tier froid et ne sont pas comptées"),
     }))
 }
 

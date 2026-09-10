@@ -487,12 +487,13 @@ env:
   #     en mode 0 (l'espace d'identifiant d'un curseur froid). C'est le premier lot où l'écart bouge
   #     pour cette seconde raison : « sous `cold_store/` » n'est donc PAS la règle, la règle est
   #     « derrière la feature, où que le test soit écrit ».
-  # RÉ-MESURÉ le 2026-09-10 (lot P10.5-k) : 1599 -> 1599 et 1844 -> **1845** (+1). L'écart passe de 245
-  # à **246**, et le +1 est ÉCRIT : un seul test, `daemon/src/tests/aveu_de_part_froide_sur_la_route.rs`,
-  # compilé dans les deux profils mais portant lui-même `#[cfg(feature = "cold_tier")]` — il allume le
-  # tier froid, vieillit du froid et lit l'aveu `stats.cold` sur la réponse entière de `/api/query`, ce
-  # qui n'a pas de sens en mode 0. Seconde occurrence de la seconde raison (« derrière la feature, où que
-  # le test soit écrit »).
+  # RÉ-MESURÉ le 2026-09-10 (lots P10.5-k puis P10.5-n) : 1599 -> 1599 et 1844 -> **1846** (+2). L'écart
+  # passe de 245 à **247**, et le +2 est ÉCRIT : deux tests de
+  # `daemon/src/tests/aveu_de_part_froide_sur_la_route.rs`, fichier compilé dans les deux profils mais dont
+  # chaque test porte `#[cfg(feature = "cold_tier")]` — ils allument le tier froid, vieillissent du froid et
+  # lisent l'aveu de part froide et l'aveu de voie sur la réponse entière de `/api/query`, ce qui n'a pas de
+  # sens en mode 0. Seconde occurrence de la seconde raison (« derrière la feature, où que le test soit
+  # écrit »).
   #
   # Les deux dérivations FERMENT contre la mesure — 1382+2 = 1384 et 1618+2+4 = 1624 — et c'est cette
   # fermeture, pas une lecture des sources, qui dit qu'aucun test n'a été perdu en chemin. Répartition
@@ -1264,7 +1265,7 @@ jobs:
           # `P11.20-n` et `P11.20-h` (2026-09-03) : +14, les MÊMES quatorze que sur `EXPECTED_TESTS` —
           # aucun derrière un `cfg(feature)`, et c'est l'ÉCART INCHANGÉ entre les deux profils (245 avant
           # comme après) qui l'établit. La dérivation est écrite auprès d'`EXPECTED_TESTS`, une seule fois.
-          EXPECTED_COLD_TESTS: "1845"
+          EXPECTED_COLD_TESTS: "1846"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail

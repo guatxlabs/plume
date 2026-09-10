@@ -408,7 +408,9 @@ PLAFOND_HORS_REGARD = {
     "destinations.js": 36, "detadv.js": 10, "detection_admin.js": 28, "fieldfilters.js": 19, "fleet.js": 7,
     "freshness.js": 10, "help.js": 30, "i18n_observer.js": 0, "idp.js": 25, "index.html": 0,
     "index_policies.js": 16, "keys.js": 5, "knowledge.js": 7, "login.js": 6, "lookups.js": 9,
-    "multitenant.js": 6, "navigation.js": 2, "prefs.js": 0, "processors.js": 10, "producer_ui.js": 7,
+    # `processors.js` 10 -> 11 le 2026-09-10 (P4.12-b) : un cinquième libellé de compteur (« renommés ») passe par la
+    # fabrique locale `stat(`, que la garde ne lit pas — exactement comme ses quatre voisins déjà hors regard.
+    "multitenant.js": 6, "navigation.js": 2, "prefs.js": 0, "processors.js": 11, "producer_ui.js": 7,
     "recherche_de_liste.js": 1, "retention.js": 16, "registres.js": 0, "risk.js": 4, "runbooks.js": 20, "savedqueries.js": 2,
     "sigmaimport.js": 12, "soql_complete.js": 16, "sources.js": 5, "state.js": 0, "suppressions.js": 16,
     "system.js": 33, "threatintel.js": 6, "viz.js": 21,

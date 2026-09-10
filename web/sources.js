@@ -215,6 +215,15 @@ function renderSourcesInventory(wrap, d) {
         prod.title = LANG === 'en' ? 'Matching a source with its producer is DERIVED from what the shipped producers declare: a probe installed outside this repository does not enter that derivation. Declaring a source expected says it is WANTED, never what EMITS it — so this blank is said rather than left to be guessed.' : 'Le rapprochement entre une source et son producteur est DÉRIVÉ de ce que les producteurs livrés déclarent : une sonde installée hors de ce dépôt n\'y entre pas. Déclarer une source attendue dit qu\'on la VEUT, jamais ce qui l\'ÉMET — ce blanc est donc dit, plutôt que laissé à deviner.';
       }
       f.appendChild(prod);
+      // `P4.12-b` — depuis le démarrage du démon, les événements de cette source ÉCRITS sans adresse source :
+      // les règles par entité (src_ip) ne les voient pas. `null` = aucun compté ; rien n'est dit alors.
+      if (typeof s.without_src_ip_since_start === 'number' && s.without_src_ip_since_start > 0) {
+        const sansAdresse = document.createElement('span'); sansAdresse.className = 'muted srcsansadresse'; sansAdresse.style.cssText = 'display:block;font-size:10px;color:var(--warn)';
+        sansAdresse.textContent = LANG === 'en'
+          ? s.without_src_ip_since_start + ' event(s) written without a source address since the daemon started — invisible to entity rules; a rename processor (fields.key->src_ip) fills the column'
+          : s.without_src_ip_since_start + ' événement(s) écrit(s) sans adresse source depuis le démarrage du démon — invisibles des règles par entité ; un processeur rename (fields.clé->src_ip) remplit la colonne';
+        f.appendChild(sansAdresse);
+      }
       return f;
     } },
     { key: 'expected', label: 'Déclarée', sortable: true, sortVal: s => s.expected ? 1 : 0, render: s => {

@@ -305,6 +305,29 @@ d'une ligne récente.
 
 ---
 
+### 4.x Renommer un champ vendeur vers une colonne d'entité — `P4.12-b` (2026-09-10)
+
+La promotion (`promoted_fields`) ne lit que `fields.src_ip` / `fields.rhost`, `fields.dst_ip`, `fields.url`.
+Un producteur qui nomme autrement son adresse — un attribut OTLP `otel.client.address`, une clé HEC `src`,
+un label Loki, un `remotehost` MinIO — laisse la colonne `src_ip` vide, et les règles par entité s'appliquent
+au vide. Le renommage champ→champ des connecteurs (`field_map`) ne couvrait que `http_pull`, Firehose et
+Pub/Sub ; les six autres voies d'entrée (`/api/ingest`, journald, MinIO, HEC, OTLP, Loki) n'en avaient aucun.
+
+Le levier est le **moteur des processeurs** (action `rename`, table `ingest_rule`, API admin, rechargé à
+chaud), qui s'exécute sur TOUTES les voies après la promotion : `match_field=source`, `match_op=eq`,
+`match_value=<source>`, `action=rename`, `action_arg=fields.otel.client.address->src_ip`. Cibles admises :
+`src_ip`, `dst_ip`, `url`, `host`, `fields.<clé>` ; l'origine reste dans `fields` ; une colonne déjà posée
+par le producteur GAGNE (précédence collecteur > parseur) et la préemption est comptée par clé
+(`ingest.fields_preempted`, `P4.12-f`).
+
+Ce qui le mesure : `ingest.events_without_src_ip_total` et `ingest.sources_without_src_ip{source}` dans
+`/api/metrics` (et `plume_ingest_events_without_src_ip_total` en Prometheus) comptent, depuis le démarrage,
+les événements ÉCRITS sans adresse source, par source ; l'inventaire des sources porte le même compte
+(`without_src_ip_since_start`). Une règle `rename` qui remplit la colonne fait descendre ce compte : c'est
+la preuve de son effet. Reste connu : le mode multi-tenant (control-plane) ne lie pas un jeton à un
+connecteur, et un renommage par JETON exigerait de transporter `connector_id` jusqu'au cœur (canal de
+l'`env_id` Firehose) — non construit, le prédicat par `source` couvre le besoin mesuré.
+
 ## 5. Politique de version
 
 - `CIM_VERSION = "1.3"`. **Additif** (nouvelle catégorie/nouveau champ étendu) → bump

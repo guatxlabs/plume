@@ -21,8 +21,15 @@
 //!     MASK    : réécrit UN champ (redaction PII : message/host/src_ip/dst_ip/url/fields.<clé>).
 //!     ROUTE   : pose l'environnement cible (`env_id`) -> classe de rétention / index logique.
 //!     SAMPLE  : garde 1 event sur N d'une source bruyante (les N-1 autres droppés, comptés).
-//! Les règles s'appliquent DANS L'ORDRE (`ord`). DROP et SAMPLE-out court-circuitent (return) ; MASK et
-//! ROUTE mutent la ligne puis l'évaluation CONTINUE. Composition sur le modèle CIM — ZÉRO hardcode vendeur.
+//!     RENAME  : `P4.12-b` (2026-09-10) — copie la valeur d'un champ vers une colonne d'ENTITÉ (`src_ip`,
+//!               `dst_ip`, `url`, `host`) ou vers `fields.<clé>` : c'est le renommage champ->champ que
+//!               seuls trois connecteurs offraient (`field_map`), rendu joignable depuis TOUTES les voies
+//!               d'entrée par un prédicat sur la `source` — un attribut OTLP `otel.client.address`, une
+//!               clé HEC `src`, un label Loki deviennent l'adresse que les règles par entité lisent. La
+//!               valeur d'origine reste dans `fields` ; une colonne déjà posée par le producteur GAGNE
+//!               (précédence collecteur > parseur, comme `dfield_put`) et la préemption est COMPTÉE.
+//! Les règles s'appliquent DANS L'ORDRE (`ord`). DROP et SAMPLE-out court-circuitent (return) ; MASK,
+//! ROUTE et RENAME mutent la ligne puis l'évaluation CONTINUE. Composition sur le modèle CIM — ZÉRO hardcode vendeur.
 //!
 //! INVARIANT MODE 0 (byte-identique) : AUCUNE règle définie -> le registre de `db_path` est vide ->
 //! `processors_apply` renvoie `Keep` en un `read()` + `get()` (zéro allocation, ligne stockée IDENTIQUE).
@@ -103,6 +110,27 @@ impl MatchField {
     pub(crate) fn maskable(&self) -> bool {
         !matches!(self, MatchField::Category | MatchField::Severity)
     }
+    /// Une CIBLE de RENAME (`P4.12-b`) : les colonnes d'entité et le sac `fields`. Ni `category` ni
+    /// `severity` (dimensions de détection), ni `message` (le texte), ni `source` (l'identité du producteur,
+    /// que l'inventaire des sources et les prédicats de ce moteur lisent) : réécrire l'une d'elles depuis
+    /// un champ vendeur changerait ce que toutes les règles voient, pas seulement l'entité.
+    pub(crate) fn cible_de_renommage(&self) -> bool {
+        matches!(self, MatchField::SrcIp | MatchField::DstIp | MatchField::Url | MatchField::Host | MatchField::Field(_))
+    }
+    /// Le nom sous lequel ce champ se déclare (`src_ip`, `fields.<clé>`…) — pour compter et pour dire.
+    pub(crate) fn nom(&self) -> String {
+        match self {
+            MatchField::Category => "category".into(),
+            MatchField::Source => "source".into(),
+            MatchField::Severity => "severity".into(),
+            MatchField::Host => "host".into(),
+            MatchField::SrcIp => "src_ip".into(),
+            MatchField::DstIp => "dst_ip".into(),
+            MatchField::Url => "url".into(),
+            MatchField::Message => "message".into(),
+            MatchField::Field(k) => format!("fields.{k}"),
+        }
+    }
     /// Valeur STRING du champ pour un event donné (lecture seule). `None` = champ absent.
     pub(crate) fn value_of(&self, row: &EventRow) -> Option<String> {
         match self {
@@ -144,7 +172,12 @@ pub(crate) enum RuleAction {
     Mask { field: MatchField },
     Route { env: String },
     Sample { n: u32 },
+    /// `P4.12-b` — copie `from` vers `to` (colonne d'entité ou `fields.<clé>`) quand `to` est vide.
+    Rename { from: MatchField, to: MatchField },
 }
+
+/// La flèche qui sépare l'origine de la cible dans `action_arg` d'un RENAME : `fields.otel.client.address->src_ip`.
+pub(crate) const RENAME_FLECHE: &str = "->";
 
 /// Compteurs atomiques d'une règle (lock-free sur le chemin chaud). Persistants à travers les reloads
 /// (stockés dans `PROC_COUNTERS`, clé (db_path,id)) -> l'UI voit un cumul stable, pas remis à zéro à
@@ -157,6 +190,8 @@ pub(crate) struct RuleCounters {
     pub routed: AtomicU64,
     pub sampled_out: AtomicU64,
     pub seen: AtomicU64,
+    /// `P4.12-b` — lignes dont la cible a été ÉCRITE (une origine vide ou une cible déjà posée ne comptent pas ici).
+    pub renamed: AtomicU64,
 }
 
 /// Règle COMPILÉE (prête pour le chemin chaud). `counters` est partagé (Arc) avec le magasin stable.
@@ -288,6 +323,20 @@ pub(crate) fn compile_rule(
             }
             RuleAction::Sample { n }
         }
+        "rename" => {
+            let (de, vers) = action_arg
+                .split_once(RENAME_FLECHE)
+                .ok_or_else(|| format!("argument de rename invalide : attendu `<origine>{RENAME_FLECHE}<cible>` (ex. `fields.otel.client.address{RENAME_FLECHE}src_ip`)"))?;
+            let from = MatchField::parse(de).map_err(|e| format!("origine de rename invalide: {e}"))?;
+            let to = MatchField::parse(vers).map_err(|e| format!("cible de rename invalide: {e}"))?;
+            if !to.cible_de_renommage() {
+                return Err(format!("cible de rename refusée: '{}' (seules les colonnes d'entité src_ip/dst_ip/url/host et fields.<clé> se renomment)", vers.trim()));
+            }
+            if from == to {
+                return Err("rename d'un champ vers lui-même".to_string());
+            }
+            RuleAction::Rename { from, to }
+        }
         other => return Err(format!("action inconnue: '{other}'")),
     };
     Ok(CompiledRule {
@@ -371,6 +420,46 @@ fn apply_mask(row: &mut EventRow, field: &MatchField) -> bool {
     }
 }
 
+/// `P4.12-b` — COPIE `from` vers `to`. Rend `true` quand la cible a été écrite. Trois cas qui ne l'écrivent
+/// pas, et ce qu'ils disent : une origine absente ou vide (rien à copier — pas une faute) ; une cible qui
+/// porte DÉJÀ une autre valeur (le producteur l'a posée : sa précédence est l'invariant de `dfield_put`, et
+/// la préemption est COMPTÉE par clé comme sous `P4.12-f`) ; un sac `fields` indécodable (no-op, comme MASK).
+/// L'origine n'est jamais retirée : renommer ici, c'est promouvoir, pas perdre.
+fn apply_rename(row: &mut EventRow, from: &MatchField, to: &MatchField) -> bool {
+    let valeur = match from.value_of(row) {
+        Some(v) if !v.trim().is_empty() => v,
+        _ => return false,
+    };
+    let deja = match to.value_of(row) {
+        Some(v) if !v.trim().is_empty() => Some(v),
+        _ => None,
+    };
+    if let Some(d) = deja {
+        if d != valeur {
+            crate::metrics::compter_un_champ_preempte(&to.nom());
+        }
+        return false;
+    }
+    match to {
+        MatchField::SrcIp => { row.src_ip = Some(valeur); true }
+        MatchField::DstIp => { row.dst_ip = Some(valeur); true }
+        MatchField::Url => { row.url = Some(valeur); true }
+        MatchField::Host => { row.host = Some(valeur); true }
+        MatchField::Field(k) => {
+            let mut v: Value = match row.fields.as_deref() {
+                Some(f) => match serde_json::from_str(f) { Ok(v) => v, Err(_) => return false },
+                None => json!({}),
+            };
+            match v.as_object_mut() {
+                Some(obj) => { obj.insert(k.clone(), Value::String(valeur)); row.fields = Some(v.to_string()); true }
+                None => false,
+            }
+        }
+        // Refusées à la compilation : no-op défensif.
+        MatchField::Category | MatchField::Severity | MatchField::Message | MatchField::Source => false,
+    }
+}
+
 /// APPLIQUE le pipeline de `db_path` à un event NORMALISÉ (`row`) juste avant l'INSERT. Renvoie `Drop`
 /// (ne pas indexer, déjà compté) ou `Keep` (indexer `row`, éventuellement muté par MASK/ROUTE).
 ///
@@ -411,6 +500,12 @@ fn processors_apply_inner(db_path: &str, row: &mut EventRow, count: bool) -> Pro
                 row.env_id = Some(env.clone());
                 if count { rule.counters.routed.fetch_add(1, Ordering::Relaxed); }
             }
+            RuleAction::Rename { from, to } => {
+                if apply_rename(row, from, to) && count {
+                    rule.counters.renamed.fetch_add(1, Ordering::Relaxed);
+                }
+                // RENAME ne court-circuite pas : une règle MASK ou DROP en aval voit la colonne remplie.
+            }
             RuleAction::Sample { n } => {
                 // Garde 1 event sur N (le PREMIER de chaque fenêtre : seen % n == 0). Les N-1 autres sont
                 // droppés (comptés sampled_out). n==1 -> tout gardé (no-op utile). DRY-RUN : `seen` n'avance
@@ -434,7 +529,7 @@ fn processors_apply_inner(db_path: &str, row: &mut EventRow, count: bool) -> Pro
 pub(crate) fn processors_counters_json(db_path: &str) -> Value {
     let g = proc_counters_cell().read();
     let mut per_rule = serde_json::Map::new();
-    let (mut td, mut tm, mut tr, mut ts) = (0u64, 0u64, 0u64, 0u64);
+    let (mut td, mut tm, mut tr, mut ts, mut tn) = (0u64, 0u64, 0u64, 0u64, 0u64);
     for ((dbp, id), c) in g.rules.iter() {
         if dbp != db_path {
             continue;
@@ -443,15 +538,16 @@ pub(crate) fn processors_counters_json(db_path: &str) -> Value {
         let m = c.masked.load(Ordering::Relaxed);
         let r = c.routed.load(Ordering::Relaxed);
         let s = c.sampled_out.load(Ordering::Relaxed);
-        td += d; tm += m; tr += r; ts += s;
+        let rn = c.renamed.load(Ordering::Relaxed);
+        td += d; tm += m; tr += r; ts += s; tn += rn;
         per_rule.insert(id.to_string(), json!({
             "matched": c.matched.load(Ordering::Relaxed),
-            "dropped": d, "masked": m, "routed": r, "sampled_out": s,
+            "dropped": d, "masked": m, "routed": r, "sampled_out": s, "renamed": rn,
         }));
     }
     json!({
         "per_rule": per_rule,
-        "totals": { "dropped": td, "masked": tm, "routed": tr, "sampled_out": ts, "not_indexed": td + ts },
+        "totals": { "dropped": td, "masked": tm, "routed": tr, "sampled_out": ts, "renamed": tn, "not_indexed": td + ts },
         "reload_errors": g.reload_errors.get(db_path).copied().unwrap_or(0),
     })
 }

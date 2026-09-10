@@ -155,6 +155,8 @@ const I18N_EN = {
   "événement": "event", "dormant": "dormant",
   // P11.8-a — couverture ATT&CK (attack.js)
   "nom inconnu": "unknown name", "aucune règle": "no rule",
+  // P4.12-b — action rename des processeurs (processors.js)
+  "arg = origine->cible : copie un champ vendeur vers une colonne d’entité (ex. fields.otel.client.address->src_ip) ; une colonne déjà posée par le producteur gagne": "arg = origin->target: copies a vendor field into an entity column (e.g. fields.otel.client.address->src_ip); a column already set by the producer wins",
   // P11.6-c — catalogue des noms ATT&CK dérivé du démon (catalogue_attack.js) : les motifs d'un nom absent
   "nom inconnu : identifiant hors du catalogue ATT&CK du démon": "unknown name: identifier outside the daemon's ATT&CK catalogue",
   "nom inconnu : identifiant hors format": "unknown name: malformed identifier",
@@ -913,7 +915,7 @@ const I18N_EN = {
   "aucun tenant provisionné": "no tenant provisioned", "réactivé": "reactivated", "tenant détruit": "tenant destroyed",
   // P11.8-a — processors.js
   "Clé du champ": "Field key", "DROP : n’indexe pas (compté dropped-by-policy)": "DROP: does not index (counted dropped-by-policy)",
-  "Nom (ex: drop debug logs)": "Name (e.g. drop debug logs)", "arg : mask=champ · route=env · sample=N": "arg: mask=field · route=env · sample=N",
+  "Nom (ex: drop debug logs)": "Name (e.g. drop debug logs)", "arg : mask=champ · route=env · sample=N · rename=origine->cible": "arg: mask=field · route=env · sample=N · rename=origin->target",
   "arg = N (garde 1 event sur N)": "arg = N (keeps 1 event in N)",
   "arg = champ à masquer (message/host/src_ip/dst_ip/url/fields.": "arg = field to mask (message/host/src_ip/dst_ip/url/fields.",
   "arg = environnement cible (classe de rétention / index)": "arg = target environment (retention class / index)",

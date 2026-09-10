@@ -355,7 +355,7 @@ fn cim_warn_sur_etat(source: &str, cat: &CategorieIngeree) {
 /// au lieu de le supprimer. Mirroir STRICT de `ingest_events_batch` (voie `.json`), pour que la voie journald
 /// NE PERDE PLUS silencieusement des events auth (sshd/sudo/su) sur une écriture DB en échec (disque plein,
 /// base verrouillée). Succès : sémantique/lignes stockées INCHANGÉES (parité mode 0).
-fn ingest_journal_lines(conn: &Connection, db_path: &str, content: &str, forced_host: Option<&str>) -> Result<usize, usize> {
+pub(crate) fn ingest_journal_lines(conn: &Connection, db_path: &str, content: &str, forced_host: Option<&str>) -> Result<usize, usize> {
     let _ = conn.execute_batch("BEGIN IMMEDIATE");
     let mut n = 0usize;
     let mut batch_min = i64::MAX;   // plus vieux ts du batch -> plancher de rattrapage host_rollup (buffer journald tardif)
@@ -422,7 +422,10 @@ fn ingest_journal_lines(conn: &Connection, db_path: &str, content: &str, forced_
         // ING-1 FAIL-SAFE : sur erreur d'INSERT mid-batch (base verrouillée, disque plein…) -> ROLLBACK
         // ATOMIQUE + `Err(n)` remonté (le daemon NE tombe PAS) -> l'appelant met le fichier en QUARANTAINE
         // (rejouable) au lieu de le supprimer -> aucune perte silencieuse (CALQUE de `ingest_events_batch`).
-        if let Err(e) = store().insert_event(conn, &EventRow {
+        // `P4.12-b` — la voie journald passait à côté des processeurs alors que l'en-tête de `processors.rs`
+        // affirmait le contraire (mesuré le 2026-09-10) : DROP, MASK, ROUTE, SAMPLE et RENAME s'y appliquent
+        // désormais comme sur la voie générique, et la ligne écrite sans adresse source y est comptée aussi.
+        let mut row = EventRow {
             ts,
             source,
             category: "auth".into(),
@@ -439,7 +442,15 @@ fn ingest_journal_lines(conn: &Connection, db_path: &str, content: &str, forced_
             engagement_id: String::new(),
             origin: String::new(),
             env_id: None,
-        }) {
+        };
+        if let ProcVerdict::Drop = processors_apply(db_path, &mut row) {
+            n += 1;
+            continue;
+        }
+        if row.src_ip.as_deref().map(|s| s.trim().is_empty()).unwrap_or(true) {
+            crate::metrics::compter_un_evenement_sans_adresse_source(&row.source);
+        }
+        if let Err(e) = store().insert_event(conn, &row) {
             eprintln!("[ingest] journal INSERT échoué -> ROLLBACK du batch ({db_path}) : {e}");
             let _ = conn.execute_batch("ROLLBACK");
             return Err(n);
@@ -649,6 +660,11 @@ pub(crate) fn ingest_events_batch_env(
         if let ProcVerdict::Drop = processors_apply(db_path, &mut row) {
             n += 1;
             continue;
+        }
+        // `P4.12-b` — la ligne ÉCRITE sans adresse source est comptée par source, après les processeurs
+        // (un RENAME qui vient de remplir la colonne ne compte pas) : c'est ce que les règles par entité verront.
+        if row.src_ip.as_deref().map(|s| s.trim().is_empty()).unwrap_or(true) {
+            crate::metrics::compter_un_evenement_sans_adresse_source(&row.source);
         }
         match store().insert_event(conn, &row) {
             // INSERT OR IGNORE : `c` = 1 si la ligne est écrite, 0 si dédupliquée -> `inserted` = lignes neuves.

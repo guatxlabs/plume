@@ -13,7 +13,7 @@ import { uiIsAdmin } from './multitenant.js';
 
 const FIELDS = ['category', 'source', 'severity', 'host', 'src_ip', 'dst_ip', 'url', 'message', 'fields.<clé>'];
 const OPS = ['eq', 'ne', 'contains', 'regex', 'any'];
-const ACTIONS = ['drop', 'mask', 'route', 'sample'];
+const ACTIONS = ['drop', 'mask', 'route', 'sample', 'rename']; // `P4.12-b` : rename = champ vendeur -> colonne d'entité
 
 function num(v) { return typeof v === 'number' ? v : 0; }
 
@@ -57,6 +57,7 @@ function totalsBar(counters) {
     stat('masqués', t.masked),
     stat('routés', t.routed),
     stat('échantillonnés-out', t.sampled_out),
+    stat('renommés', t.renamed),
   );
   return bar;
 }
@@ -92,7 +93,7 @@ function ruleRow(r, counters) {
   // Compteurs par-règle.
   const pr = (counters.per_rule || {})[String(r.id)] || {};
   const cnt = document.createElement('span'); cnt.className = 'muted'; cnt.style.marginLeft = 'auto';
-  cnt.textContent = `matched ${num(pr.matched)} · drop ${num(pr.dropped)} · mask ${num(pr.masked)} · route ${num(pr.routed)} · sample-out ${num(pr.sampled_out)}`;
+  cnt.textContent = `matched ${num(pr.matched)} · drop ${num(pr.dropped)} · mask ${num(pr.masked)} · route ${num(pr.routed)} · sample-out ${num(pr.sampled_out)} · rename ${num(pr.renamed)}`;
 
   const del = document.createElement('button'); del.type = 'button'; del.textContent = 'Supprimer'; del.className = 'btn btn-sm btn-danger'; // P11.4-b : classe partagée
   del.onclick = async () => {
@@ -120,7 +121,7 @@ export function openProcessorForm() {
   const op = sel(OPS, 'eq');
   const val = mk('input', { placeholder: 'valeur (ou regex)', autocomplete: 'off' });
   const action = sel(ACTIONS, 'drop');
-  const arg = mk('input', { placeholder: 'arg : mask=champ · route=env · sample=N', autocomplete: 'off' });
+  const arg = mk('input', { placeholder: 'arg : mask=champ · route=env · sample=N · rename=origine->cible', autocomplete: 'off' });
 
   const hint = mk('span', { className: 'muted' }, '');
   const syncHint = () => {
@@ -128,6 +129,7 @@ export function openProcessorForm() {
     hint.textContent = a === 'mask' ? 'arg = champ à masquer (message/host/src_ip/dst_ip/url/fields.<clé>)'
       : a === 'route' ? "arg = environnement cible (classe de rétention / index)"
       : a === 'sample' ? 'arg = N (garde 1 event sur N)'
+      : a === 'rename' ? 'arg = origine->cible : copie un champ vendeur vers une colonne d’entité (ex. fields.otel.client.address->src_ip) ; une colonne déjà posée par le producteur gagne'
       : 'DROP : n’indexe pas (compté dropped-by-policy)';
     arg.disabled = (a === 'drop');
     val.disabled = (op.value === 'any');

@@ -105,6 +105,10 @@
 
     #[test]
     fn l_horizon_dit_ce_qu_une_fenetre_n_a_pas_pu_voir_et_se_tait_quand_rien_ne_manque() {
+        // Ce témoin DÉPEND de l'environnement (il exige le tier froid éteint, que `cfg` lit d'abord là) :
+        // il tient le verrou en lecture, sans quoi un témoin qui allume le tier sous le verrou en écriture
+        // le fait rougir au hasard — mesuré le 2026-09-10, en CI comme sur le poste.
+        let _env = VERROU_ENV_PROCESSUS.read();
         let (path, conn) = pa_base("horizon");
         let conf = pa_conf();
         let q = pa_requete_metrique(&conn);

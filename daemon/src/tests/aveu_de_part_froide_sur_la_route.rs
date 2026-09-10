@@ -31,9 +31,16 @@
     // d'une autre famille (`coverage.reason`) ; et la troncature, que la fixture n'atteint pas (cent
     // vingt lignes, sous tout plafond).
     /// LE BANC FROID SUR LA ROUTE, partagé par les témoins de ce fichier : le tier froid posé par
-    /// l'ENVIRONNEMENT (la seule voie que la route lit), la base ouverte après la pose de la clé, cent
-    /// vingt lignes huit jours en arrière et une ligne chaude, le routeur réel servi sur l'adresse de
-    /// bouclage. Le vieillissement est un geste séparé (`vieillir`) : un témoin lit avant et après.
+    /// l'ENVIRONNEMENT (la seule voie que la route lit), la clé de la base posée dans le REGISTRE PAR
+    /// TENANT et jamais dans l'environnement, cent vingt lignes huit jours en arrière et une ligne chaude,
+    /// le routeur réel servi sur l'adresse de bouclage. Le vieillissement est un geste séparé
+    /// (`vieillir`) : un témoin lit avant et après.
+    ///
+    /// POURQUOI LA CLÉ NE PASSE PAS PAR L'ENVIRONNEMENT, MESURÉ le 2026-09-10 : `open_db` lit la clé globale
+    /// (environnement puis fichier de configuration), donc une clé posée là, même sous le verrou en
+    /// écriture, s'applique à TOUTE base ouverte par un témoin voisin qui ne tient pas le verrou en lecture
+    /// — quatre témoins étrangers ont rougi en une suite (« file is not a database », un 401 de routeur, un
+    /// inventaire vide). Le registre est indexé par le chemin de la base : il n'atteint que celle-ci.
     #[cfg(feature = "cold_tier")]
     struct BancFroidSurLaRoute {
         st: AppState,
@@ -48,16 +55,17 @@
         authz: String,
     }
 
-    /// Retire à la chute les variables posées, panic compris : un témoin qui laisserait le tier froid
-    /// allumé changerait le verdict du suivant.
+    /// Retire à la chute les variables posées ET la clé enregistrée pour le chemin, panic compris : un
+    /// témoin qui laisserait le tier froid allumé ou une clé dans le registre changerait le verdict du suivant.
     #[cfg(feature = "cold_tier")]
-    struct PoseDEnvironnement(Vec<&'static str>);
+    struct PoseDEnvironnement(Vec<&'static str>, String);
     #[cfg(feature = "cold_tier")]
     impl Drop for PoseDEnvironnement {
         fn drop(&mut self) {
             for k in &self.0 {
                 std::env::remove_var(k);
             }
+            crate::crypto::unregister_db_key(&self.1);
         }
     }
 
@@ -72,10 +80,9 @@
         /// verrou d'environnement en écriture.
         async fn monter(etiquette: &str, vectorise: bool) -> Self {
             let cle = "plume-cold-route-test-key-do-not-use-in-prod-0000";
-            let poses: [(&'static str, &str); 4] = [
+            let poses: [(&'static str, &str); 3] = [
                 ("PLUME_COLD_TIER", "1"),
                 ("PLUME_COLD_HOT_WINDOW_DAYS", "2"),
-                ("PLUME_DB_KEY", cle),
                 ("PLUME_COLD_VECTORIZED", if vectorise { "1" } else { "0" }),
             ];
             // `PLUME_COLD_DIR` volontairement ABSENT : la racine froide dérive du chemin de la base, donc vit
@@ -84,14 +91,16 @@
             for (k, v) in poses {
                 std::env::set_var(k, v);
             }
-            let nettoyage = PoseDEnvironnement(poses.iter().map(|(k, _)| *k).collect());
             let mut conf: HashMap<String, String> = HashMap::new();
             for (k, v) in poses {
                 conf.insert(k.to_string(), v.to_string());
             }
-            // La base est ouverte APRÈS la pose de la clé : toutes ses ouvertures, fixture et route, la partagent.
-            let (st, base) = router_test_state(etiquette);
+            // La base est chiffrée par une clé ENREGISTRÉE POUR SON CHEMIN : la fixture, la route et le
+            // vieillissement (`cold_base_secret` lit le registre en premier) la partagent sans qu'elle
+            // touche l'environnement ni la carte de configuration.
+            let (st, base) = router_test_state_avec(etiquette, Some(cle));
             let chemin_base = base.as_str().to_string();
+            let nettoyage = PoseDEnvironnement(poses.iter().map(|(k, _)| *k).collect(), chemin_base.clone());
             let maintenant = now();
             let minuit = maintenant.div_euclid(JOUR) * JOUR;
             let base_froide = minuit - 8 * JOUR;

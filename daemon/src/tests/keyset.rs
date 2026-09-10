@@ -861,8 +861,11 @@
     /// la règle existait, une clause plus haut la court-circuitait.
     ///
     /// LA CAUSE CHOISIE EST (c) — le curseur renvoyé AVEC un `offset` non nul — parce qu'elle ferme la
-    /// porte QUEL QUE SOIT l'état du tier froid dans ce processus : le verdict ne dépend donc d'aucune
-    /// variable d'environnement qu'un autre test pourrait tenir au même instant.
+    /// porte QUEL QUE SOIT l'état du tier froid dans ce processus. MAIS LA JAMBE NÉGATIVE, ELLE, EN DÉPEND
+    /// (mesuré le 2026-09-10) : un curseur sans marque n'est SERVI que tier froid éteint — allumé par un
+    /// témoin voisin sous le verrou en écriture, la route refuse le curseur décalé (422) et ce témoin
+    /// rougissait au hasard. Il tient donc le verrou en lecture, comme tout témoin qui dépend de
+    /// l'environnement.
     ///
     /// LES DEUX SENS :
     ///   • le curseur MARQUÉ (marque connue, puis marque inconnue) -> 422 qui NOMME sa cause ;
@@ -872,6 +875,7 @@
     #[cfg(feature = "cold_tier")]
     #[tokio::test]
     async fn ks_un_curseur_marque_est_refuse_quand_sa_voie_ne_sert_pas_la_page() {
+        let _env = VERROU_ENV_PROCESSUS.read();
         let (st, _db) = router_test_state("ks-espace-sans-lecteur");
         let addr = router_serve(st).await;
         let authz = viewer_authz();

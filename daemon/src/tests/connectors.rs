@@ -1105,8 +1105,20 @@
 
     /// AppState mode-0 file-backed (réutilise sso_test_state puis re-pointe db/db_path/tenants sur le fichier).
     fn ds_file_state(path: &str) -> AppState {
+        ds_file_state_sur(path, open_db(path).unwrap())
+    }
+
+    /// La même fixture, sur une base CHIFFRÉE par la clé enregistrée pour ce chemin (`register_db_key`) :
+    /// aucune clé n'entre dans l'environnement du processus, donc aucune ouverture concurrente d'une base
+    /// en clair n'en souffre — la clé par tenant est la seule voie isolante (`P10.5-k`, mesuré : une clé
+    /// posée dans l'environnement a cassé quatre témoins voisins en une seule suite).
+    fn ds_file_state_chiffre(path: &str, cle: &str) -> AppState {
+        ds_file_state_sur(path, crate::db_open::open_db_keyed(path, Some(cle)).unwrap())
+    }
+
+    fn ds_file_state_sur(path: &str, conn: Connection) -> AppState {
         let mut st = sso_test_state("plume-admin", "plume-editor", "admins");
-        let db = Arc::new(Mutex::new(open_db(path).unwrap()));
+        let db = Arc::new(Mutex::new(conn));
         let db_path = Arc::new(path.to_string());
         st.db = db.clone();
         st.db_path = db_path.clone();

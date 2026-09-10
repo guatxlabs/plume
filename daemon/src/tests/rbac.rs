@@ -931,14 +931,30 @@ fn router_viewer_self_service(path: &str) -> bool {
 /// AppState file-backed avec un mot de passe admin POSÉ (sinon `auth_guard` est en mode SETUP et répond
 /// 401 partout pour une raison qui n'est PAS l'authentification) + un compte `viewer` réel.
 fn router_test_state(tag: &str) -> (AppState, crate::tmp_possede::TmpDb) {
+    router_test_state_avec(tag, None)
+}
+
+/// La même fabrique, base CHIFFRÉE par `cle`, enregistrée pour ce chemin dans le registre par tenant : les
+/// connexions que le routeur ouvre lui-même (union froide, lectures) la retrouvent par `apply_key_for`,
+/// et RIEN n'entre dans l'environnement du processus. L'appelant oublie la clé à la fin (`unregister_db_key`).
+fn router_test_state_avec(tag: &str, cle: Option<&str>) -> (AppState, crate::tmp_possede::TmpDb) {
     let path = ff_tmp_path(tag);
+    if let Some(k) = cle {
+        crate::crypto::register_db_key(path.as_str(), Some(k.to_string()));
+    }
     {
-        let conn = open_db(&path).unwrap();
+        let conn = match cle {
+            Some(k) => crate::db_open::open_db_keyed(&path, Some(k)).unwrap(),
+            None => open_db(&path).unwrap(),
+        };
         conn.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
         assert!(migrate(&conn), "fixture routeur : migrations complètes");
         conn.execute("INSERT INTO user(name,hash,role) VALUES('vwr',?1,'viewer')", params![hash_pw("viewerpw12345").unwrap()]).unwrap();
     }
-    let mut st = ds_file_state(&path);
+    let mut st = match cle {
+        Some(k) => ds_file_state_chiffre(&path, k),
+        None => ds_file_state(&path),
+    };
     st.user = Arc::new("root".to_string());
     st.pass_hash = Arc::new(hash_pw("rootpw1234567").unwrap());
     // Plafonds de rate-limit relevés : le balayage envoie >250 requêtes depuis 127.0.0.1 en <10 s, ce qui

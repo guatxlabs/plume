@@ -155,6 +155,11 @@ const I18N_EN = {
   "événement": "event", "dormant": "dormant",
   // P11.8-a — couverture ATT&CK (attack.js)
   "nom inconnu": "unknown name", "aucune règle": "no rule",
+  // P11.6-c — catalogue des noms ATT&CK dérivé du démon (catalogue_attack.js) : les motifs d'un nom absent
+  "nom inconnu : identifiant hors du catalogue ATT&CK du démon": "unknown name: identifier outside the daemon's ATT&CK catalogue",
+  "nom inconnu : identifiant hors format": "unknown name: malformed identifier",
+  "nom non servi : catalogue des noms pas encore chargé": "name not served: name catalogue not loaded yet",
+  "nom non servi : catalogue des noms indisponible": "name not served: name catalogue unavailable",
   "ANGLE MORT — aucune règle ne couvre cette technique. Importez un ruleset Sigma pour la couvrir (bouton « Importer un ruleset Sigma »).": "BLIND SPOT — no rule covers this technique. Import a Sigma ruleset to cover it (button “Import a Sigma ruleset”).",
   "Combler les angles morts : importer une bibliothèque de détection Sigma": "Close the blind spots: import a Sigma detection library",
   "Importer un ruleset Sigma →": "Import a Sigma ruleset →",

@@ -3,7 +3,8 @@
 // Extrait d'app.js en PURE MOVE ; depuis P11.1 : lien de recherche servi par le démon, barre d'actions unique.
 // Le cycle app<->module est benin : les fonctions importees d'app.js ne sont appelees qu'a
 // l'EXECUTION (handlers/async apres await), jamais a l'evaluation du module.
-import { $, esc, sev, fmtTs, ic, withBusy, api, apiSend, makePager, exportBar, confirmModal, modal, mitreName, LANG, toast } from './core.js';
+import { $, esc, sev, fmtTs, ic, withBusy, api, apiSend, makePager, exportBar, confirmModal, modal, LANG, toast } from './core.js';
+import { libelleDeTechnique } from './catalogue_attack.js'; // `P11.6-c` : nom dérivé du catalogue servi, ou motif de son absence
 import { S } from './state.js';
 import { banIp, runQuery, updateZoomBadge } from './viz.js';
 import { canEditCases, addToCase, openCase } from './cases.js';
@@ -305,7 +306,7 @@ function alertRowHtml(a, i) {
   const cas = a.case_id
     ? `<button class="casechip" data-cid="${a.case_id}" title="Rattachée au case #${a.case_id} - cliquer pour ouvrir">${ic('case')} #${a.case_id}</button>`
     : (canEditCases() ? `<button class="casebtn" data-t="${esc(a.title)}" data-d="${esc(a.detail || '')}" data-id="${a.id}" title="Ajouter à un case">${ic('case')}</button>` : '');
-  const mt = a.mitre ? ` <span class="mitrechip mitrepivot" data-m="${esc(a.mitre)}" title="${esc(a.mitre)}${mitreName(a.mitre) ? ' — ' + esc(mitreName(a.mitre)) : ''} · filtrer les alertes par cette technique (MITRE ATT&CK, héritée de la règle)">${esc(a.mitre)}</span>` : '';
+  const mt = a.mitre ? ` <span class="mitrechip mitrepivot" data-m="${esc(a.mitre)}" title="${esc(libelleDeTechnique(a.mitre))} · filtrer les alertes par cette technique (MITRE ATT&CK, héritée de la règle)">${esc(a.mitre)}</span>` : '';
   return `
     <div class="alert sev-${a.severity}">
       <span class="sev">${sev(a.severity)}</span>
@@ -1098,7 +1099,7 @@ function alertGroupHtml(g) {
   const view = S.alertGroupBy || '';
   const emptyLabel = view === 'host' ? '(sans hôte)' : view === 'mitre' ? '(sans technique)' : '(sans clé)';
   const key = g.gkey ? esc(g.gkey) : `<span class="muted">${emptyLabel}</span>`;
-  const mt = (g.mitre && view !== 'mitre') ? ` <span class="mitrechip" title="${esc(g.mitre)}${mitreName(g.mitre) ? ' — ' + esc(mitreName(g.mitre)) : ''}">${esc(g.mitre)}</span>` : '';
+  const mt = (g.mitre && view !== 'mitre') ? ` <span class="mitrechip" title="${esc(libelleDeTechnique(g.mitre))}">${esc(g.mitre)}</span>` : '';
   // cellule « actives » TOUJOURS émise (vide si 0) pour garder l'alignement de la grille .agsum stable.
   const open = g.open_n > 0 ? `<span class="agopen" title="${g.open_n} encore active(s) (status=new)">${g.open_n} active(s)</span>` : `<span class="agopen" style="visibility:hidden"></span>`;
   return `

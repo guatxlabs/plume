@@ -2668,7 +2668,10 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   exiger(rl.filtrerParRecherche(lignes, "SSH", texte).length === 1, "(23a) la casse change le résultat");
   exiger(rl.filtrerParRecherche(lignes, "fenetre", texte).length === 1, "(23a) un mot sans accent ne trouve pas le mot accentué");
 
-  // (b) ce qu'une règle offre à la recherche — chaque source jugée séparément.
+  // (b) ce qu'une règle offre à la recherche — chaque source jugée séparément. Le nom de la technique vient du
+  //     catalogue SERVI (`P11.6-c`) : on en pose un FABRIQUÉ, de la forme du démon, pour ce seul scénario.
+  const catalogueServi = await import(pathToFileURL(path.join(WEB, "catalogue_attack.js")).href);
+  exiger(catalogueServi.poserLeCatalogueAttack({ techniques: { T1110: { name: "Brute Force", tactic: "credential-access" } }, sub_techniques: { "T1110.003": { name: "Brute Force: Password Spraying", parent: "T1110" } }, forms: { unknown_sub_technique: "{parent} (sous-technique .{n})" } }) === true, "(23b) le catalogue fabriqué doit être posé");
   const regle = { id: 1, name: "Échecs SSH", query: "search source=sshd failed | stats count", mitre: "T1110.003", severity: 3, managed: 2, enabled: 1, op: ">", threshold: 5, risk_score: 0 };
   const cherchable = texteCherchableDUneRegle(regle);
   for (const [quoi, mot] of [["le nom", "Échecs SSH"], ["la requête", "sshd"], ["l'identifiant de la technique", "T1110.003"], ["le nom de la technique", "Brute Force"]]) {
@@ -2676,6 +2679,8 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   }
   exiger(rl.correspondALaRecherche(cherchable, "T1110"), "(23b) la technique PARENTE ne trouve pas la règle taguée par une sous-technique : la matrice ATT&CK n'ouvrirait rien");
   exiger(!rl.correspondALaRecherche(cherchable, "T1190"), "(23b) témoin inverse : une technique étrangère trouve la règle — le texte cherchable colle tout");
+  catalogueServi.oublierLeCatalogueAttack();
+  exiger(!rl.correspondALaRecherche(texteCherchableDUneRegle(regle), "Brute Force"), "(23b) témoin inverse : sans catalogue servi, aucun nom de technique n'est cherchable — la console n'en connaît aucun par cœur");
 
   // (c)(d) la composition, sur le panneau réel.
   const liste = new Element("div"); liste.id = "rule-list";
@@ -3866,21 +3871,22 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
 
 
 // ---------------------------------------------------------------------------------------------
-// 33. LA CONSOLE NE PORTE PAS UNE SECONDE COPIE DU CATALOGUE ATT&CK (`P11.6-c`).
-//     Le catalogue vit d'un seul côté : `daemon/src/attack_names.rs`. La console garde un
-//     SOUS-ENSEMBLE de libellés pour les deux panneaux dont les routes servent `mitre` NU (file
-//     d'alertes, administration des règles) ; la matrice, elle, ne garde plus rien — son nom est servi.
-//     Un sous-ensemble recopié à la main n'est pas un repli : c'est une source qui vieillit sans le
-//     dire. Ce témoin lui retire ce silence. Il DÉRIVE du texte du démon le nom que celui-ci émettrait
-//     pour chaque clé listée — la même règle de résolution, réécrite ici — et refuse l'écart DANS LES
-//     DEUX SENS : un libellé qui s'écarte, une clé que le catalogue ne connaît pas. Il ne peut pas
-//     rendre la table complète (elle nomme moins que le catalogue, et c'est écrit à côté d'elle) ;
-//     il garantit qu'elle est INCOMPLÈTE et jamais FAUSSE.
-//     L'INSTRUMENT EST VALIDÉ AVANT TOUT VERDICT : les tables lues non vides, la règle de résolution
-//     éprouvée sur ses quatre cas (composition, parent seul, hors catalogue, hors format), et surtout
-//     ce que le témoin a LU du texte de `core.js` confronté à ce que le module SERT — une lecture
-//     désynchronisée garderait une valeur qui ne mesure rien.
-//     Enfin il refuse une TROISIÈME copie : aucun autre module de `web/` ne pose de table `T####: "…"`.
+// 33. LA CONSOLE NE PORTE AUCUNE TABLE DE NOMS ATT&CK : ELLE DÉRIVE CHAQUE LIBELLÉ DU CATALOGUE SERVI (`P11.6-c`).
+//     Jusqu'au 2026-09-10, la console gardait un SOUS-ENSEMBLE de 14 libellés écrit à la main pour les
+//     panneaux dont les routes servent `mitre` NU ; ce témoin le tenait « incomplet mais jamais faux », et
+//     publiait ce qu'il ne tenait pas : la complétude. L'usage réel l'a rencontrée (`T1562`, `T1195.002`
+//     rendus sans nom). La table n'existe plus : le démon sert son catalogue ENTIER par une route dédiée,
+//     et `catalogue_attack.js` (module feuille) en dérive chaque nom ou DIT pourquoi il manque.
+//     CE QUE CE TÉMOIN FAIT. Il lit les deux tables ET les deux gabarits de composition dans le texte du
+//     démon, réécrit la règle de résolution (les données ne sont jamais recopiées), FABRIQUE l'objet servi
+//     comme `catalogue_attack_json` le fabrique, le pose dans le module sans réseau, puis confronte le nom
+//     que la console rend au nom que le démon rendrait — sur TOUTE la population (183 + 16), plus une
+//     sous-technique inconnue fabriquée sous CHAQUE parent, plus les cas hors catalogue et hors format.
+//     L'INSTRUMENT EST VALIDÉ AVANT TOUT VERDICT : tables et gabarits lus non vides, règle éprouvée sur ses
+//     quatre cas, clés de l'objet servi présentes mot pour mot dans le texte du démon.
+//     ET CE QUI EST DIT QUAND LE NOM MANQUE : avant la pose, un nom absent porte un ÉTAT et un MOTIF, jamais
+//     une chaîne vide ; une forme servie inattendue est refusée et dite. Enfin, aucun module de `web/` ne
+//     pose plus de table `T####: "…"`, le module feuille n'importe rien, et le geste réseau lui est prêté.
 // ---------------------------------------------------------------------------------------------
 {
   const rs = readFileSync(path.join(RACINE, "daemon", "src", "attack_names.rs"), "utf8");
@@ -3892,10 +3898,17 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     if (m) for (const e of m[1].replace(/\s+/g, " ").matchAll(/\(\s*"(T\d{4}(?:\.\d{3})?)"\s*,\s*"((?:[^"\\]|\\.)*)"\s*,?\s*\)/g)) t.set(e[1], e[2]);
     return t;
   };
+  const gabaritRust = (nom) => {
+    const m = rs.match(new RegExp(`const ${nom}: &str = "((?:[^"\\\\]|\\\\.)*)";`));
+    exiger(!!m, `(33) gabarit \`${nom}\` introuvable dans le texte du démon : la composition ne se lit plus`);
+    return m ? m[1] : "";
+  };
   const PARENTS = tableRust("TECHNIQUE_NAMES");
   const SOUS = tableRust("SUBTECHNIQUE_NAMES");
+  const FORME_NOMMEE = gabaritRust("FORME_SOUS_TECHNIQUE_NOMMEE");
+  const FORME_INCONNUE = gabaritRust("FORME_SOUS_TECHNIQUE_INCONNUE");
 
-  // Règle de résolution du démon (`attack_names::technique_name`), DÉRIVÉE et non recopiée en données.
+  // Règle de résolution du démon (`attack_names::technique_name`), DÉRIVÉE : tables et gabarits lus, jamais recopiés.
   const nomDuDemon = (tid) => {
     const t = String(tid == null ? "" : tid).trim().toUpperCase();
     const point = t.indexOf(".");
@@ -3907,48 +3920,97 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     if (parent === undefined) return null;
     if (!sous) return parent;
     const n = SOUS.get(t);
-    return n === undefined ? `${parent} (sous-technique .${sous})` : `${parent}: ${n}`;
+    return n === undefined ? FORME_INCONNUE.replace("{parent}", parent).replace("{n}", sous) : FORME_NOMMEE.replace("{parent}", parent).replace("{sous}", n);
   };
 
-  // — instrument : les tables sont lues, et la règle se comporte comme celle du démon sur ses 4 cas.
+  // — instrument : tables et gabarits lus, et la règle se comporte comme celle du démon sur ses 4 cas.
   exiger(PARENTS.size > 100 && SOUS.size > 0, `(33) catalogue lu vide ou tronqué (${PARENTS.size} technique(s) parente(s), ${SOUS.size} sous-technique(s)) : le témoin refuse de conclure`);
+  exiger(FORME_INCONNUE.includes("{parent}") && FORME_INCONNUE.includes("{n}") && FORME_NOMMEE.includes("{parent}") && FORME_NOMMEE.includes("{sous}"), `(33) gabarits lus sans leurs trous : « ${FORME_NOMMEE} », « ${FORME_INCONNUE} »`);
   exiger(nomDuDemon(" t1110.003 ") === "Brute Force: Password Spraying", `(33) composition parent+sous-technique non reproduite : « ${nomDuDemon(" t1110.003 ")} »`);
   exiger(nomDuDemon("T1110.999") === "Brute Force (sous-technique .999)", `(33) sous-technique inconnue : « ${nomDuDemon("T1110.999")} » au lieu du parent qui DIT le rang`);
   exiger(nomDuDemon("T9999") === null, "(33) un identifiant hors catalogue doit rendre null, pas un nom");
   exiger(nomDuDemon("pas-un-identifiant") === null, "(33) un jeton hors format doit rendre null");
 
-  const srcCore = readFileSync(path.join(WEB, "core.js"), "utf8");
-  const mTable = srcCore.match(/const MITRE_NAMES = \{([\s\S]*?)\};/);
-  exiger(!!mTable, "(33) table `MITRE_NAMES` introuvable dans core.js : le témoin ne lit plus ce qu'il juge");
-  const locale = new Map();
-  if (mTable) for (const e of mTable[1].matchAll(/"?(T\d{4}(?:\.\d{3})?)"?\s*:\s*"((?:[^"\\]|\\.)*)"/g)) locale.set(e[1], e[2]);
-  exiger(locale.size > 0, "(33) table locale lue vide : le témoin refuse de conclure sur une lecture qui ne rend rien");
-
-  // — instrument : ce qui a été LU du texte est bien ce que le module SERT.
-  const { mitreName } = await import(pathToFileURL(path.join(WEB, "core.js")).href);
-  for (const [tid, nom] of locale) {
-    exiger(mitreName(tid) === nom, `(33) lecture désynchronisée : le texte de core.js donne « ${nom} » pour ${tid}, le module sert « ${mitreName(tid)} »`);
+  const mod = await import(pathToFileURL(path.join(WEB, "catalogue_attack.js")).href);
+  // — instrument : les clés que la console lit sont ÉCRITES, mot pour mot, dans le texte du démon.
+  for (const [role, cle] of Object.entries(mod.CLES_DU_CATALOGUE_SERVI)) {
+    exiger(rs.includes(`"${cle}"`), `(33) la console lit la clé « ${cle} » (${role}) que le texte du démon n'écrit nulle part : le contrat est rompu d'un côté`);
   }
 
-  // — le verdict, dans les deux sens.
+  // — AVANT la pose : un nom absent porte un état et un motif, jamais une chaîne vide. L'état trouvé ici dépend
+  //   de ce que les scénarios précédents ont laissé (l'amorçage d'`app.js` prête le geste réseau et le voit
+  //   échouer ; 23b pose puis oublie) : on ne le juge pas, on POSE chacun des deux états sans nom et on les juge.
+  mod.oublierLeCatalogueAttack();
+  const avant = mod.nomDeTechnique("T1562");
+  exiger(avant.nom === null && avant.etat === "non chargé" && typeof avant.motif === "string" && avant.motif.length > 0, `(33) avant chargement, T1562 doit rendre nom null + état « non chargé » + motif ; rendu ${JSON.stringify(avant)}`);
+  exiger(mod.libelleDeTechnique("T1562") === "T1562 — " + avant.motif, `(33) le libellé avant chargement doit porter le motif : « ${mod.libelleDeTechnique("T1562")} »`);
+
+  // — le geste réseau PRÊTÉ : un `api` fabriqué qui échoue laisse l'état « indisponible » avec SA cause ; un `api`
+  //   qui sert l'objet le pose ; deux appelants pendant le même chargement partagent une seule promesse.
+  exiger((await mod.chargerLeCatalogueAttack(async () => { throw new Error("réseau coupé (fabriqué)"); })) === false, "(33) un chargement qui échoue doit rendre false");
+  const indisponible = mod.nomDeTechnique("T1562");
+  exiger(indisponible.nom === null && indisponible.etat === "indisponible" && typeof indisponible.motif === "string" && indisponible.motif.length > 0 && mod.CATALOGUE_ATTACK.cause === "réseau coupé (fabriqué)", `(33) après un chargement en échec, T1562 doit rendre nom null + état « indisponible » + motif, et le registre la cause ; rendu ${JSON.stringify(indisponible)} (cause « ${mod.CATALOGUE_ATTACK.cause} »)`);
+  exiger(mod.libelleDeTechnique("T1562") === "T1562 — " + indisponible.motif, "(33) le libellé en indisponibilité porte le motif");
+  mod.oublierLeCatalogueAttack();
+
+  // — une forme servie inattendue (sans gabarit) est REFUSÉE et dite, pas acceptée à moitié.
+  const tronque = { techniques: { T1562: { name: "Impair Defenses" } }, sub_techniques: {} };
+  exiger(mod.poserLeCatalogueAttack(tronque) === false && mod.CATALOGUE_ATTACK.etat === "indisponible" && mod.nomDeTechnique("T1562").etat === "indisponible", "(33) un objet servi sans gabarit doit être refusé et l'état dire « indisponible »");
+
+  // — l'objet servi, FABRIQUÉ comme `catalogue_attack_json` le fabrique (la tactique n'est pas lue par la console : laissée nulle).
+  const servi = { techniques: {}, sub_techniques: {}, forms: { unknown_sub_technique: FORME_INCONNUE }, counts: { techniques: PARENTS.size, sub_techniques: SOUS.size } };
+  for (const [tid, nom] of PARENTS) servi.techniques[tid] = { name: nom, tactic: null };
+  for (const sid of SOUS.keys()) servi.sub_techniques[sid] = { name: nomDuDemon(sid), parent: sid.split(".")[0] };
+  exiger(mod.poserLeCatalogueAttack(servi) === true && mod.CATALOGUE_ATTACK.etat === "chargé", "(33) l'objet servi de la forme du démon doit être posé");
+  mod.oublierLeCatalogueAttack();
+  let appels = 0;
+  const apiQuiSert = async (chemin) => { appels++; exiger(chemin === "/attack/catalogue", `(33) le module demande « ${chemin} » au lieu de la route dédiée`); return servi; };
+  const [p1, p2] = [mod.chargerLeCatalogueAttack(apiQuiSert), mod.chargerLeCatalogueAttack(apiQuiSert)];
+  exiger(p1 === p2, "(33) deux chargements concurrents doivent partager UNE promesse");
+  exiger((await p1) === true && appels === 1 && mod.CATALOGUE_ATTACK.etat === "chargé", `(33) un chargement qui sert doit poser le catalogue en UN appel (${appels})`);
+  exiger((await mod.chargerLeCatalogueAttack(apiQuiSert)) === true && appels === 1, "(33) un catalogue déjà chargé ne se recharge pas");
+
+  // — le verdict sur TOUTE la population : ce que la console rend est ce que le démon rendrait.
   const ecarts = [];
-  const inconnues = [];
-  for (const [tid, nom] of locale) {
-    const attendu = nomDuDemon(tid);
-    if (attendu === null) inconnues.push(tid);
-    else if (attendu !== nom) ecarts.push(`${tid} : console « ${nom} » ≠ démon « ${attendu} »`);
+  let servis = 0, composes = 0;
+  for (const tid of [...PARENTS.keys(), ...SOUS.keys()]) {
+    const r = mod.nomDeTechnique(tid);
+    if (r.nom !== nomDuDemon(tid) || r.etat !== "servi") ecarts.push(`${tid} : console ${JSON.stringify(r)} ≠ démon « ${nomDuDemon(tid)} »`);
+    else servis++;
   }
-  exiger(ecarts.length === 0, `(33) ${ecarts.length} libellé(s) de la console ont DIVERGÉ du catalogue du démon : ${ecarts.join(" ; ")} — deux porteurs du même savoir, donc deux vérités`);
-  exiger(inconnues.length === 0, `(33) ${inconnues.length} clé(s) de la console que le catalogue du démon ne connaît pas : ${inconnues.join(", ")} — un libellé sans porteur est une source qui invente`);
+  // — une sous-technique inconnue sous CHAQUE parent : composée du nom servi et du gabarit servi, mot pour mot.
+  for (const tid of PARENTS.keys()) {
+    const fabrique = `${tid}.999`;
+    if (SOUS.has(fabrique)) continue;
+    const r = mod.nomDeTechnique(fabrique);
+    if (r.nom !== nomDuDemon(fabrique) || r.etat !== "composé") ecarts.push(`${fabrique} : console ${JSON.stringify(r)} ≠ démon « ${nomDuDemon(fabrique)} »`);
+    else composes++;
+  }
+  exiger(ecarts.length === 0, `(33) ${ecarts.length} écart(s) entre le nom rendu par la console et celui du démon : ${ecarts.slice(0, 5).join(" ; ")}${ecarts.length > 5 ? " ; …" : ""}`);
+  exiger(servis === PARENTS.size + SOUS.size && composes === PARENTS.size, `(33) population jugée : ${servis} servis (attendu ${PARENTS.size + SOUS.size}), ${composes} composés (attendu ${PARENTS.size})`);
+  // — les deux identifiants rencontrés sans nom en usage réel, et les cas sans nom, DITS.
+  exiger(mod.nomDeTechnique("T1562").nom === PARENTS.get("T1562"), "(33) T1562 (règles livrées) est nommée par le catalogue servi");
+  exiger(mod.nomDeTechnique("T1195.002").nom === nomDuDemon("T1195.002") && mod.nomDeTechnique("T1195.002").etat === "composé", `(33) T1195.002 (sous-technique d'exploitant) se compose du parent servi : « ${mod.nomDeTechnique("T1195.002").nom} »`);
+  exiger(mod.nomDeTechnique(" t1110.003 ").nom === "Brute Force: Password Spraying", "(33) casse et blancs tolérés comme chez le démon");
+  const horsCatalogue = mod.nomDeTechnique("T9999");
+  exiger(horsCatalogue.nom === null && horsCatalogue.etat === "hors catalogue" && horsCatalogue.motif && mod.libelleDeTechnique("T9999") === "T9999 — " + horsCatalogue.motif, `(33) hors catalogue : ${JSON.stringify(horsCatalogue)}`);
+  const horsFormat = mod.nomDeTechnique("pas-un-identifiant");
+  exiger(horsFormat.nom === null && horsFormat.etat === "hors format" && horsFormat.motif, `(33) hors format : ${JSON.stringify(horsFormat)}`);
+  exiger([mod.nomDeTechnique("T1562"), horsCatalogue, horsFormat, avant].every((r) => r.nom !== ""), "(33) un nom n'est jamais une chaîne vide");
 
-  // — aucune troisième copie, et la matrice n'en reprend pas une.
-  const autresPorteurs = modules.filter((f) => f !== "core.js")
-    .filter((f) => /[{,]\s*"?T\d{4}(?:\.\d{3})?"?\s*:\s*"/.test(readFileSync(path.join(WEB, f), "utf8")));
-  exiger(autresPorteurs.length === 0, `(33) ${autresPorteurs.length} autre(s) module(s) posent une table identifiant ATT&CK -> nom : ${autresPorteurs.join(", ")} — la console n'en porte qu'UNE, et c'est celle que ce témoin tient`);
-  const srcAttack = readFileSync(path.join(WEB, "attack.js"), "utf8");
-  exiger(!/\bmitreName\b/.test(srcAttack), "(33) `attack.js` reprend la table locale alors que sa route sert un nom pour chaque technique qu'elle rend : un second porteur y rouvrirait la divergence");
+  // — plus aucune table dans la console, le module feuille n'importe rien, et le geste réseau est prêté.
+  const porteurs = modules.filter((f) => /[{,]\s*"?T\d{4}(?:\.\d{3})?"?\s*:\s*"/.test(readFileSync(path.join(WEB, f), "utf8")));
+  exiger(porteurs.length === 0, `(33) ${porteurs.length} module(s) posent une table identifiant ATT&CK -> nom : ${porteurs.join(", ")} — la console n'en porte plus AUCUNE, le catalogue est servi`);
+  const reliquats = modules.filter((f) => /\b(mitreName|MITRE_NAMES)\b/.test(readFileSync(path.join(WEB, f), "utf8")));
+  exiger(reliquats.length === 0, `(33) reliquat de l'ancienne table dans ${reliquats.join(", ")}`);
+  const srcFeuille = readFileSync(path.join(WEB, "catalogue_attack.js"), "utf8");
+  exiger(!/^\s*import\s/m.test(srcFeuille), "(33) `catalogue_attack.js` doit rester un module FEUILLE (aucun import) : `core.js` le lit, un import de `core.js` fermerait un cycle");
+  exiger(/chargerLeCatalogueAttack\(api\)/.test(readFileSync(path.join(WEB, "login.js"), "utf8")), "(33) `login.js` doit prêter le geste réseau au module feuille à l'ouverture de session");
+  for (const f of ["alerts.js", "detection_admin.js", "core.js"]) {
+    exiger(/from '\.\/catalogue_attack\.js'/.test(readFileSync(path.join(WEB, f), "utf8")), `(33) ${f} nomme encore une technique sans le catalogue servi`);
+  }
 
-  console.log(`[attack-catalogue] catalogue du démon LU : ${PARENTS.size} techniques parentes, ${SOUS.size} sous-techniques nommées. La console en nomme ${locale.size}, toutes DÉRIVÉES : aucun écart, aucune clé hors catalogue, aucune autre table dans web/, et la matrice n'en porte plus (son nom est servi). Ce que ce témoin NE tient PAS, et qui est écrit à côté de la table : la COMPLÉTUDE — la console peut nommer moins que le démon, et le fera dès qu'une technique s'ajoutera ; seule une route dédiée servant le catalogue ferait disparaître ce sous-ensemble.`);
+  console.log(`[attack-catalogue] catalogue du démon LU : ${PARENTS.size} techniques parentes, ${SOUS.size} sous-techniques nommées, deux gabarits. Objet servi fabriqué comme le démon le fabrique et posé sans réseau : ${servis} noms servis et ${composes} sous-techniques inconnues composées, tous égaux mot pour mot à ce que le démon rendrait ; T1562 et T1195.002 nommés ; hors catalogue, hors format et « pas encore chargé » DITS par un état et un motif, jamais par une chaîne vide ; une forme servie inattendue refusée. Plus aucune table dans web/. Ce que ce témoin NE tient PAS : que la route réponde — c'est le témoin de route du démon (p11_6c_la_route_du_catalogue_…) qui le tient, sur le routeur réel.`);
 }
 
 // ---------------------------------------------------------------------------------------------

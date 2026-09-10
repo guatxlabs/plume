@@ -213,6 +213,7 @@ pub(crate) use handlers::caseops::*; // #39 team case-ops
 pub(crate) use handlers::incidents::*; // #3 incidents Phase 1 : élévation + runbooks + wizard de steps
 pub(crate) use handlers::compliance::*; // #38 mapping de conformité (rollup posture + rapport + normalisation des tags)
 pub(crate) use handlers::alerts::*;
+pub(crate) use handlers::catalogue_attack::*; // P11.6-c : GET /api/attack/catalogue
 pub(crate) use handlers::overview::*;
 mod state;
 pub(crate) use state::*;

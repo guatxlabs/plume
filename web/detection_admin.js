@@ -4,7 +4,8 @@
 // PURE MOVE : corps de fonctions IDENTIQUES au monolithe, seuls les import/export sont ajoutes.
 // Le cycle app<->module est benin : les fonctions importees d'app.js ne sont appelees qu'a
 // l'EXECUTION (handlers/async apres await), jamais a l'evaluation du module.
-import { $, LANG, esc, sev, fmtTs, ic, muted, api, apiSend, confirmModal, toast, pagedList, mitreName, managedBadge, gateDeleteBtn, contentSubmit, contentDelete, fetchInto, formMsg, socIsAdmin, lsSet, collapsibleGroup, disclosure } from './core.js';
+import { $, LANG, esc, sev, fmtTs, ic, muted, api, apiSend, confirmModal, toast, pagedList, managedBadge, gateDeleteBtn, contentSubmit, contentDelete, fetchInto, formMsg, socIsAdmin, lsSet, collapsibleGroup, disclosure } from './core.js';
+import { libelleDeTechnique, nomDeTechnique } from './catalogue_attack.js'; // `P11.6-c` : nom dérivé du catalogue servi, ou motif de son absence
 import { S, lireLeStockageDuSite, ecrireDansLeStockageDuSite, ecrireSansDireLeRefus, RAISONS_DE_SILENCE } from './state.js';
 import { initSigmaImport } from './sigmaimport.js';
 import { loadAttackMatrix, poserLesPortesDeTechnique } from './attack.js';
@@ -95,8 +96,8 @@ async function renderCoverage() {
         + " » Ce qui est affiché ci-dessous est cette lecture partielle, et rien de plus.") + '</div>'
     : '';
   b.innerHTML = aveuPartiel + detections.map(d => {
-    const nm = mitreName(d.mitre);
-    return `<div class="kv"><span><span class="mitrechip mitrepivot" data-m="${esc(d.mitre)}" title="Voir les alertes ${esc(d.mitre)}">${esc(d.mitre)}</span>${nm ? ` <span class="muted">— ${esc(nm)}</span>` : ''}</span>` +
+    const nm = nomDeTechnique(d.mitre);
+    return `<div class="kv"><span><span class="mitrechip mitrepivot" data-m="${esc(d.mitre)}" title="Voir les alertes ${esc(d.mitre)}">${esc(d.mitre)}</span> <span class="muted${nm.nom ? '' : ' attack-tname-inconnu'}">— ${esc(nm.nom || nm.motif)}</span></span>` +
     `<b title="1re détection ${fmtTs(d.first_ts)}">${d.count} détection(s) <span class="muted">· depuis ${fmtTs(d.first_ts)}</span></b></div>`;
   }).join('');
   b.querySelectorAll('.mitrepivot').forEach(el => el.onclick = () => setAlertMitreFilter(el.dataset.m));
@@ -202,7 +203,7 @@ if ($(RF.mitre)) $(RF.mitre).addEventListener('input', refreshMitreHint);
 // inclusion de chaîne — c'est aussi ce qui fait qu'une cellule de la matrice ATT&CK (`P11.6-b`), dont
 // l'identifiant est la technique PARENTE, ouvre bien les règles qui la couvrent.
 function texteCherchableDUneRegle(r) {
-  return texteCherchable([r && r.name, r && r.query, r && r.mitre, mitreName((r && r.mitre) || '')]);
+  return texteCherchable([r && r.name, r && r.query, r && r.mitre, nomDeTechnique((r && r.mitre) || '').nom || '']);
 }
 // La recherche courante du panneau. Remplacée au câblage du champ ; sans champ dans le document (test,
 // rendu partiel), elle vaut la chaîne vide et la liste rend exactement comme avant.
@@ -306,7 +307,7 @@ function ruleRowModel(r) {
   const chips = [];
   const populationNeuve = chipDePopulationNeuve(r); if (populationNeuve) chips.push(populationNeuve);
   // tag MITRE ATT&CK (purple) : technique que la règle DÉTECTE — clé de jointure avec Forge (red).
-  if (r.mitre) { const mt = document.createElement('span'); mt.className = 'mitrechip'; mt.textContent = r.mitre; const _mn = mitreName(r.mitre); mt.title = (_mn ? r.mitre + ' — ' + _mn + ' · ' : '') + 'technique MITRE ATT&CK détectée par cette règle'; chips.push(mt); }
+  if (r.mitre) { const mt = document.createElement('span'); mt.className = 'mitrechip'; mt.textContent = r.mitre; mt.title = libelleDeTechnique(r.mitre) + ' · technique MITRE ATT&CK détectée par cette règle'; chips.push(mt); }
   // #38 : cadres de conformité couverts (posture/couverture, pas certification) — un chip par cadre distinct.
   if (r.compliance) {
     const seen = new Set();

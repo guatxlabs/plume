@@ -20,6 +20,16 @@
 //! (sous-technique .NNN) » quand seul le parent l'est — jamais une chaîne vide. `None` signifie
 //! « identifiant hors catalogue » et c'est à la surface de DIRE « nom inconnu », pas de taire.
 //!
+//! ROUTE DÉDIÉE (`P11.6-c`, 2026-09-10). La matrice n'est plus la seule surface à porter un nom : la
+//! file d'alertes, l'administration des règles et le panneau de couverture des détections reçoivent `mitre`
+//! NU de leurs routes, et la console y nommait par une table de 14 libellés tenue à la main — `T1562`,
+//! cité par deux règles livrées, et une sous-technique d'exploitant (`T1195.002`) y arrivaient en numéro
+//! seul. `catalogue_attack_json` sert le catalogue ENTIER tel que ce module le nomme, en un objet sans
+//! permis de requête ni lecture de base (`GET /api/attack/catalogue`) ; la console en dérive chaque
+//! libellé et ne porte plus aucune table. Le seul cas qu'elle compose elle-même — une sous-technique dont
+//! le démon ne connaît que le parent — l'est à partir du GABARIT servi (`forms.unknown_sub_technique`),
+//! le même que `technique_name` applique ici : une seule forme, écrite une fois.
+//!
 //! IDENTIFIANT RETIRÉ. `T1488` (Disk Content Wipe) a été retiré d'ATT&CK (repris par `T1561.001`) ; il reste
 //! dans le catalogue du cœur pour ne pas perdre une règle qui le citerait. Son nom le dit.
 
@@ -268,6 +278,13 @@ fn normaliser(tid: &str) -> Option<String> {
     }
 }
 
+/// Gabarit du nom d'une sous-technique CONNUE (« Parent: Sous-technique ») et gabarit d'une sous-technique
+/// dont seul le PARENT est connu (« Parent (sous-technique .NNN) »). `technique_name` les applique, et la
+/// route du catalogue sert le second (`P11.6-c`) : la console compose ce cas à partir du gabarit servi au
+/// lieu d'en porter une copie. Une forme écrite deux fois finirait par diverger.
+pub(crate) const FORME_SOUS_TECHNIQUE_NOMMEE: &str = "{parent}: {sous}";
+pub(crate) const FORME_SOUS_TECHNIQUE_INCONNUE: &str = "{parent} (sous-technique .{n})";
+
 fn nom_parent(base: &str) -> Option<&'static str> {
     TECHNIQUE_NAMES
         .iter()
@@ -295,8 +312,38 @@ pub(crate) fn technique_name(tid: &str) -> Option<String> {
             .find(|(t, _)| *t == norm)
             .map(|(_, n)| *n)
         {
-            Some(n) => Some(format!("{parent}: {n}")),
-            None => Some(format!("{parent} (sous-technique .{s})")),
+            Some(n) => Some(FORME_SOUS_TECHNIQUE_NOMMEE.replace("{parent}", parent).replace("{sous}", n)),
+            None => Some(FORME_SOUS_TECHNIQUE_INCONNUE.replace("{parent}", parent).replace("{n}", &s)),
         },
     }
+}
+
+/// `P11.6-c` — LE CATALOGUE ENTIER, TEL QUE CE MODULE LE NOMME, en un objet que `GET /api/attack/catalogue`
+/// sert tel quel. `techniques` : chaque technique parente du catalogue du cœur, avec son nom et sa tactique
+/// primaire ; `sub_techniques` : chaque sous-technique nommée, avec son nom COMPOSÉ (celui que
+/// `technique_name` rend) et son parent ; `forms.unknown_sub_technique` : le gabarit qu'une surface applique
+/// à une sous-technique dont seul le parent est connu ; `counts` : les deux populations, pour qu'un lecteur
+/// qui reçoit moins que le compte le voie. Une technique que ce module ne saurait pas nommer n'est PAS
+/// émise sous un nom vide : elle manque, et le compte le dit — le témoin de non-divergence en fait un rouge.
+pub(crate) fn catalogue_attack_json() -> serde_json::Value {
+    use serde_json::{json, Map};
+    let mut techniques = Map::new();
+    for (tid, tactique) in guatx_core::attack::CATALOG {
+        if let Some(nom) = technique_name(tid) {
+            techniques.insert(tid.to_string(), json!({ "name": nom, "tactic": tactique }));
+        }
+    }
+    let mut sous_techniques = Map::new();
+    for (sid, _) in SUBTECHNIQUE_NAMES {
+        if let Some(nom) = technique_name(sid) {
+            sous_techniques.insert(sid.to_string(), json!({ "name": nom, "parent": guatx_core::attack::parent_technique(sid) }));
+        }
+    }
+    let (n_techniques, n_sous_techniques) = (techniques.len(), sous_techniques.len());
+    json!({
+        "techniques": techniques,
+        "sub_techniques": sous_techniques,
+        "forms": { "unknown_sub_technique": FORME_SOUS_TECHNIQUE_INCONNUE },
+        "counts": { "techniques": n_techniques, "sub_techniques": n_sous_techniques },
+    })
 }

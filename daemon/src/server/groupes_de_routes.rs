@@ -50,6 +50,7 @@ fn alerts_coverage_routes() -> Router<AppState> {
         .route("/api/alerts/{id}/ack", post(ack))
         .route("/api/coverage/detections", get(coverage_detections))
         .route("/api/coverage/attack", get(coverage_attack)) // #22 (Tier-2) : matrice de couverture ATT&CK (règles+alertes par technique/tactique, blind-spots). viewer+, read-only.
+        .route("/api/attack/catalogue", get(attack_catalogue)) // P11.6-c : le catalogue ATT&CK nommé, entier, constant — sans permis de requête, sans lecture de base. viewer+, read-only.
 }
 
 fn compliance_routes() -> Router<AppState> {

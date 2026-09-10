@@ -3,6 +3,7 @@ pub(crate) mod admin_ui;
 pub(crate) mod alerting; // #48/#53 : canaux (Slack/PagerDuty/générique/lookup) + suppression + politiques + silences
 pub(crate) mod alerts;
 pub(crate) mod cases;
+pub(crate) mod catalogue_attack; // P11.6-c : le catalogue ATT&CK nommé, servi entier par une route dédiée sans permis de requête
 pub(crate) mod caseops; // #39 team case-ops : per-assignee queues + merge/link + multi-level SLA + MTTA/MTTR + client-read API
 pub(crate) mod incidents; // #3 incidents Phase 1 : élévation case->incident + runbooks managés keyés MITRE + wizard de steps (réutilise timeline/ledger/actions)
 pub(crate) mod compliance; // #38 : mapping de conformité (tags de cadre par règle + rollup posture + rapport)

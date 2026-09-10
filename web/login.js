@@ -9,6 +9,7 @@ import { initAiAssist } from './ai.js';
 import { initEnvironments, initTenants } from './multitenant.js';
 import { prefsInit } from './prefs.js';
 import { loadBulletin } from './system.js';
+import { chargerLeCatalogueAttack } from './catalogue_attack.js'; // `P11.6-c` : le catalogue des noms ATT&CK, chargé une fois par session
 
 // ============ AUTH : écran de login (form-login), logout, état d'auth =============================
 // Contrat daemon :
@@ -105,8 +106,13 @@ async function doLogout() {
 function initAuthGate() {
     bindLoginForm();
     const lo = $('#logout'); if (lo && !lo._bound) { lo._bound = true; lo.onclick = doLogout; }
-    fetchMe().then(me => {
+    // `P11.6-c` — le catalogue des noms ATT&CK part EN MÊME TEMPS que /api/me (même identité de session) et
+    // est attendu avant d'ouvrir l'app : chaque surface qui nomme une technique le trouve posé, sans second
+    // rendu. En échec il ne bloque rien — le registre porte l'état, et les surfaces le disent à la place du nom.
+    const catalogueAttack = chargerLeCatalogueAttack(api);
+    fetchMe().then(async me => {
       if (me && me.user) {
+        await catalogueAttack;
         S.AUTH = me; setAuthUI(); applyRoleClass(me.role); showLogin(false);   // SSO/cookie/démo : app directe
         prefsInit();      // #62 — charge les préférences self-scoped du compte (favoris + réglages par vue) puis rejoue les callbacks
         loadBulletin();   // #51 DAY-2 OPS — bandeau MOTD (aucun bulletin -> reste caché ; invariant mode 0)

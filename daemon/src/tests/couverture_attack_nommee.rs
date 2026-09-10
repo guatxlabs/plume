@@ -118,3 +118,94 @@
         assert_eq!(nom("T1110.x"), None);
         assert!(nom("T1488").unwrap().contains("retiré"), "un identifiant retiré d'ATT&CK le dit dans son nom");
     }
+
+    // ============================================================================================
+    // P11.6-c — LE CATALOGUE EST SERVI ENTIER PAR UNE ROUTE DÉDIÉE, ET LA CONSOLE N'EN PORTE PLUS.
+    // Ce que le démon nomme, la route le sert tel quel : chaque technique du catalogue du cœur, chaque
+    // sous-technique nommée, le gabarit du cas « parent seul connu », et les deux comptes. Le premier
+    // témoin confronte l'objet servi à `technique_name` sur TOUTE la population (dérivée, jamais listée) ;
+    // le second traverse le routeur réel : un lecteur reçoit l'objet, une requête sans identité est refusée.
+    // ============================================================================================
+
+    #[test]
+    fn p11_6c_le_catalogue_servi_nomme_chaque_technique_comme_le_demon() {
+        use crate::attack_names::{catalogue_attack_json, technique_name, FORME_SOUS_TECHNIQUE_INCONNUE, SUBTECHNIQUE_NAMES};
+        let v = catalogue_attack_json();
+        let techniques = v["techniques"].as_object().expect("`techniques` est un objet");
+        let sous = v["sub_techniques"].as_object().expect("`sub_techniques` est un objet");
+        // Population : exactement le catalogue du cœur, et exactement les sous-techniques nommées — une technique
+        // que le démon ne saurait pas nommer MANQUERAIT ici, et ce compte la trahit.
+        assert_eq!(techniques.len(), guatx_core::attack::CATALOG.len(), "techniques servies ≠ catalogue du cœur");
+        assert_eq!(sous.len(), SUBTECHNIQUE_NAMES.len(), "sous-techniques servies ≠ sous-techniques nommées");
+        assert_eq!(v["counts"]["techniques"].as_u64(), Some(techniques.len() as u64));
+        assert_eq!(v["counts"]["sub_techniques"].as_u64(), Some(sous.len() as u64));
+        for (tid, tactique) in guatx_core::attack::CATALOG {
+            let servi = techniques.get(*tid).unwrap_or_else(|| panic!("{tid} absente du catalogue servi"));
+            assert_eq!(servi["name"].as_str(), technique_name(tid).as_deref(), "{tid} : le nom servi n'est pas celui que le démon rend");
+            assert!(!servi["name"].as_str().unwrap_or("").trim().is_empty(), "{tid} : nom servi vide");
+            assert_eq!(servi["tactic"].as_str(), Some(*tactique), "{tid} : tactique servie");
+        }
+        for (sid, _) in SUBTECHNIQUE_NAMES {
+            let servi = sous.get(*sid).unwrap_or_else(|| panic!("{sid} absente des sous-techniques servies"));
+            assert_eq!(servi["name"].as_str(), technique_name(sid).as_deref(), "{sid} : nom composé servi ≠ démon");
+            assert!(servi["name"].as_str().unwrap().contains(": "), "{sid} : une sous-technique connue se sert composée « Parent: Sous-technique »");
+            assert_eq!(servi["parent"].as_str(), guatx_core::attack::parent_technique(sid).as_deref(), "{sid} : parent servi");
+        }
+        // Le gabarit servi est CELUI que `technique_name` applique : composé côté client avec le nom servi du
+        // parent, il rend mot pour mot ce que le démon rendrait pour une sous-technique qu'il ne connaît pas.
+        let gabarit = v["forms"]["unknown_sub_technique"].as_str().expect("gabarit servi");
+        assert_eq!(gabarit, FORME_SOUS_TECHNIQUE_INCONNUE);
+        let parent = techniques["T1110"]["name"].as_str().unwrap();
+        let compose = gabarit.replace("{parent}", parent).replace("{n}", "999");
+        assert_eq!(Some(compose), technique_name("T1110.999"), "composition client ≠ composition démon");
+        assert!(gabarit.contains("{parent}") && gabarit.contains("{n}"), "un gabarit sans ses deux trous ne compose rien");
+    }
+
+    #[tokio::test]
+    async fn p11_6c_la_route_du_catalogue_est_lue_par_un_lecteur_et_refusee_sans_identite() {
+        let (st, _base) = router_test_state("catalogue-attack");
+        let addr = router_serve(st).await;
+        let (sans_identite, _) = router_probe_corps(addr, "GET", "/api/attack/catalogue", None, &[]).await;
+        assert_eq!(sans_identite, 401, "le catalogue reste derrière l'identité, comme tout /api/");
+        use base64::Engine as _;
+        let lecteur = format!("Basic {}", base64::engine::general_purpose::STANDARD.encode("vwr:viewerpw12345"));
+        // Lecture jusqu'à EOF : l'objet fait ~20 Kio, plus que ce que la sonde bornée garde.
+        let corps = {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let req = format!("GET /api/attack/catalogue HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\nAuthorization: {lecteur}\r\n\r\n");
+            let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+            s.write_all(req.as_bytes()).await.unwrap();
+            let mut buf = Vec::new();
+            s.read_to_end(&mut buf).await.unwrap();
+            let txt = String::from_utf8_lossy(&buf).into_owned();
+            assert!(txt.starts_with("HTTP/1.1 200"), "un lecteur reçoit le catalogue : {}", txt.lines().next().unwrap_or(""));
+            let brut = txt.split("\r\n\r\n").nth(1).unwrap_or_default().to_string();
+            // Le routeur sert ce corps en TRANSFERT MORCELÉ (`Transfer-Encoding: chunked`, mesuré : « 3649\r\n{… ») :
+            // chaque morceau est précédé de sa taille en hexadécimal. On recolle avant de lire le JSON.
+            if txt.to_ascii_lowercase().contains("transfer-encoding: chunked") { demorceler(brut.as_bytes()) } else { brut }
+        };
+        /// Recolle un corps en transfert morcelé : `taille-hex\r\n octets \r\n … 0\r\n\r\n`. Sur les octets, pas sur des caractères.
+        fn demorceler(b: &[u8]) -> String {
+            let mut out = Vec::new();
+            let mut i = 0;
+            while i < b.len() {
+                let fin_taille = b[i..].windows(2).position(|w| w == b"\r\n").map(|k| i + k).unwrap_or(b.len());
+                let taille_txt = std::str::from_utf8(&b[i..fin_taille]).unwrap_or("0").split(';').next().unwrap_or("0").trim();
+                let taille = usize::from_str_radix(taille_txt, 16).unwrap_or(0);
+                if taille == 0 { break; }
+                let debut = fin_taille + 2;
+                let fin = (debut + taille).min(b.len());
+                out.extend_from_slice(&b[debut..fin]);
+                i = fin + 2;
+            }
+            String::from_utf8_lossy(&out).into_owned()
+        }
+        let v: Value = serde_json::from_str(&corps).unwrap_or_else(|e| panic!("corps non-JSON ({e}) : {}", &corps[..corps.len().min(200)]));
+        assert_eq!(v, crate::attack_names::catalogue_attack_json(), "la route sert l'objet que la fonction pure rend, sans rien y ajouter ni retirer");
+        // Les deux identifiants rencontrés SANS NOM en usage réel (2026-08-27) : la technique est servie nommée,
+        // la sous-technique d'exploitant se compose du parent servi et du gabarit servi.
+        assert_eq!(v["techniques"]["T1562"]["name"], "Impair Defenses");
+        let parent = v["techniques"]["T1195"]["name"].as_str().unwrap();
+        let compose = v["forms"]["unknown_sub_technique"].as_str().unwrap().replace("{parent}", parent).replace("{n}", "002");
+        assert_eq!(Some(compose), crate::attack_names::technique_name("T1195.002"));
+    }

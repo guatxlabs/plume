@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# plume-source: engagement-adapter
 # =============================================================================
 # Plume — Authorized-Engagement ENFORCER-EXEMPTION adapter (HOST-SIDE, PULL).
 # -----------------------------------------------------------------------------

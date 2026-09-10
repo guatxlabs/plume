@@ -1,4 +1,5 @@
 #!/bin/sh
+# plume-source: dataacl
 # Capteur Plume (PLUGIN, OPT-IN) : CARTE D'ACCES aux donnees (Varonis brique b) -> events source=dataacl.
 # QUI PEUT acceder a QUOI + PROPRIETAIRE : snapshot des permissions (owner/group/mode) des dossiers
 # sensibles + flags risque (world-readable/writable, SUID/SGID). Dedup (chemin+mode+owner+group) ->

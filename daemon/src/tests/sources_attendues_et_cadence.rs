@@ -206,6 +206,48 @@
         assert!(sans.iter().all(|re| !re.is_match("source: \"html-anchor\".into()")), "hors démon/agent, un champ `source` de structure n'est pas un producteur");
     }
 
+    /// `P11.16-a` — CHAQUE CAPTEUR LIVRÉ DÉCLARE SES SOURCES, en tête, en position triviale à lire
+    /// (`# plume-source: a, b` ou `# plume-source: aucune` pour une bibliothèque) : la dérivation cesse
+    /// de dépendre du style d'écriture — un capteur qui passerait par une variable serait invisible à
+    /// la forme — et un capteur neuf qui oublie de déclarer rougit ici, en nommant ce que la forme y
+    /// voit. La forme reste le CONTRÔLE de la déclaration : ce que la forme voit doit être déclaré, et
+    /// ce qui est déclaré doit être une source livrée connue du miroir.
+    #[test]
+    fn chaque_capteur_livre_declare_ses_sources_et_la_forme_ne_contredit_pas_la_declaration() {
+        let racine = sac_racine();
+        let shell = sac_motifs_shell();
+        let declaration = regex::Regex::new(r"(?m)^#\s*plume-source:\s*(.+?)\s*$").unwrap();
+        let livrees: std::collections::BTreeSet<&str> = crate::handlers::sources::SOURCES_LIVREES.iter().map(|(s, _)| *s).collect();
+        let (mut fautes, mut vus) = (Vec::new(), 0usize);
+        for ext in ["sh", "py"] {
+            for rel in sac_fichiers(&racine, "collectors", ext, false) {
+                let Ok(txt) = std::fs::read_to_string(racine.join(&rel)) else { continue };
+                vus += 1;
+                let corps = sac_depouiller(&txt, false);
+                let mut inferees: std::collections::BTreeSet<String> = Default::default();
+                for re in &shell { inferees.extend(re.captures_iter(&corps).map(|c| c[1].to_string())); }
+                let Some(m) = declaration.captures(&txt) else {
+                    fautes.push(format!("{rel} : AUCUNE déclaration `# plume-source:` — la forme y voit {inferees:?}"));
+                    continue;
+                };
+                let brut = m[1].trim();
+                let declarees: std::collections::BTreeSet<String> = if brut == "aucune" {
+                    Default::default()
+                } else {
+                    brut.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()
+                };
+                for src in &inferees {
+                    if !declarees.contains(src) { fautes.push(format!("{rel} : la forme émet `{src}` que la déclaration ne porte pas (déclaré : {brut})")); }
+                }
+                for src in &declarees {
+                    if !livrees.contains(src.as_str()) { fautes.push(format!("{rel} : déclare `{src}`, qui n'est pas une source livrée connue de SOURCES_LIVREES")); }
+                }
+            }
+        }
+        assert!(vus >= 30, "instrument : {vus} capteur(s) lu(s), la surface a cessé d'être vue");
+        assert!(fautes.is_empty(), "capteurs dont la déclaration manque ou contredit la forme ({}):\n{}", fautes.len(), fautes.join("\n"));
+    }
+
     /// LA GARDE : `SOURCES_LIVREES` est le miroir des fichiers livrés, dans les DEUX sens, et chaque famille
     /// de la surface mord encore (plancher).
     #[test]

@@ -1,4 +1,5 @@
 #!/bin/sh
+# plume-source: prom-scrape
 # Agent SOC - scrape Prometheus (OBS-1, remplacement de Prometheus) : curl les /metrics d'une
 # liste de cibles -> POST /api/metrics/prom (format texte d'exposition, parse cote daemon).
 # OPT-IN. Cibles : /etc/plume/prom-targets (1 URL/ligne, # = commentaire) ou $PLUME_PROM_TARGETS.

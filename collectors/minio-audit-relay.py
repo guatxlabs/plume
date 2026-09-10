@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# plume-source: minio-audit
 # Plume relais/collecteur HOST (OPT-IN, LONG-RUNNING) : telemetrie d'acces objet MinIO -> source=minio-audit.
 #
 # POURQUOI : aujourd'hui une suppression de backup (ransomware/insider) n'est detectee par RIEN. Ce relais

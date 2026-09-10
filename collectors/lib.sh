@@ -1,3 +1,4 @@
+# plume-source: aucune
 # shellcheck shell=sh
 # Plume collectors — shared POSIX-sh library (sourced, NEVER executed directly).
 # Sourced at the top of a collector, right after `set -eu`, via:

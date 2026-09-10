@@ -1,4 +1,5 @@
 #!/bin/sh
+# plume-source: controls
 # Capteur Plume : Control Catalog (« zéro-trou ») MODE-AWARE. Vérifie que les contrôles de défense
 # ATTENDUS sont présents et vivants -> snapshot 'controls' (failed>0 = alerte). ROOT, lecture seule.
 #

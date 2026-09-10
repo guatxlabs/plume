@@ -1,4 +1,5 @@
 #!/bin/sh
+# plume-source: aucune
 # Backup compact de la base SOC (VACUUM INTO via le binaire) + rotation (garde 7).
 set -eu
 DIR="${PLUME_BACKUP_DIR:-/var/lib/plume/backups}"

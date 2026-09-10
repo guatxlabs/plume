@@ -1,4 +1,5 @@
 #!/bin/sh
+# plume-source: k8s-log
 # Capteur Plume : logs des pods k8s (/var/log/pods) FILTRÉS (sécurité) -> events source=k8s-log.
 # PAS du Loki exhaustif : ne ship que les lignes notables (filtre configurable), borné (anti-volume).
 # Offset par fichier. ROOT / OPT-IN. Skip si /var/log/pods absent.

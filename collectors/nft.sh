@@ -1,4 +1,5 @@
 #!/bin/sh
+# plume-source: nft
 # Capteur Plume (PLUGIN) : COMPTEURS des sets nft (blocklists CAPI/crowdsec/fail2ban) -> metrics.
 # Le SOC "voit" l'enforcement au niveau PAQUET sans ingerer les milliers d'IP : on emet juste les
 # COMPTES par set (+ total) = volume mini, zero bruit. OPT-IN, lecture seule.

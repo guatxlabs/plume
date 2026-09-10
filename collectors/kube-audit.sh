@@ -1,4 +1,5 @@
 #!/bin/sh
+# plume-source: kube-audit
 # Capteur Plume : log d'audit de l'API Kubernetes (kube-apiserver --audit-log-path) -> events.
 # Couvre "qui a fait quoi sur l'API du cluster" (create/update/delete/patch + accès refusés 403/401).
 # ROOT (le log est sous /var/lib/rancher/k3s/server, 0600 root). OPT-IN. SANS jq (grep -oP, sûr).

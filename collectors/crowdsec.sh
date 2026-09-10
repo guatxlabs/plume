@@ -1,4 +1,5 @@
 #!/bin/sh
+# plume-source: crowdsec
 # Capteur Plume : INGÈRE les alertes CrowdSec (cscli) -> events source=crowdsec.
 # On NE refait PAS la détection/le ban : CrowdSec reste l'IPS, le SOC corrèle/notifie/investigue.
 # Requiert cscli + jq. ROOT. Optionnel (skip si absents). Dédup par id d'alerte (idempotent).

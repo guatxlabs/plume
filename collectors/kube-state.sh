@@ -1,4 +1,5 @@
 #!/bin/sh
+# plume-source: k8s
 # Capteur Plume : état du cluster k8s/k3s via kubectl -> metrics + events (couvre l'angle mort Prometheus).
 # pods down/crashloop/OOMKilled, nodes NotReady, deployments dégradés. SANS jq (awk sur --no-headers).
 # Requiert kubectl + accès cluster (KUBECONFIG). ROOT / OPT-IN. Skip si kubectl absent.

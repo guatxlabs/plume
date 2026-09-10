@@ -1,4 +1,5 @@
 #!/bin/sh
+# plume-source: minio
 # Capteur Plume (PLUGIN, OPT-IN) : gouvernance d'acces MinIO / S3 (Varonis brique c) -> source=minio.
 # QUI a acces a QUEL stockage objet, et QUELS buckets sont exposes : map utilisateurs->policy +
 # etat public/prive des buckets + flags risque (policy admin/rw, bucket PUBLIC). Dedup

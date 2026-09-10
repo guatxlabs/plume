@@ -1,4 +1,5 @@
 #!/bin/sh
+# plume-source: web
 # Capteur Plume (PLUGIN, OPT-IN) : access-logs Traefik (JSON) -> events source=web.
 # Vue "trafic web" facon FortiGate : qui (src_ip reelle via Cf-Connecting-Ip / forwarded) accede a
 # quel host/chemin, methode, statut, octets, duree, routeur, User-Agent. Groupable en GXQL

@@ -1,4 +1,5 @@
 #!/bin/sh
+# plume-source: yara
 # Capteur Plume (PLUGIN, OFF PAR DEFAUT) : scan YARA des chemins surveilles -> events source=yara
 # category=malware. Un match de regle YARA = malware/IOC sur l'hote (severity 4).
 #

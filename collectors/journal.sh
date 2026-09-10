@@ -1,4 +1,5 @@
 #!/bin/sh
+# plume-source: journal
 # Capteur Plume : journald -> events auth (sshd/sudo/su). ROOT (via plume-journal.service).
 # Dump NDJSON brut (journalctl -o json, 1 objet JSON valide/ligne) dans le spool ;
 # la transformation -> table `event` est faite par le daemon (Rust, sûr, sans jq).

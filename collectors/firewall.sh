@@ -1,4 +1,5 @@
 #!/bin/sh
+# plume-source: firewall
 # Capteur Plume : firewall (nftables) — snapshot d'INTÉGRITÉ du ruleset + (si applicable) le contrôle
 # docker-lan-lockdown. Exécuté en ROOT par plume-firewall.service. Lecture seule, aucune action.
 #

@@ -1,4 +1,5 @@
 #!/bin/sh
+# plume-source: custom
 # Capteur Plume GÉNÉRIQUE — "scripted inputs" : sources définies par l'OPÉRATEUR, SANS CODE.
 # Lit /etc/plume/inputs.d/*.input (KEY=value), exécute CMD, expédie chaque ligne stdout (filtrée +
 # bornée + dédupée) en event source=<SOURCE>. Les parsers du registre s'appliquent ensuite -> input

@@ -1,4 +1,5 @@
 #!/bin/sh
+# plume-source: aucune
 # Agent Plume — responder : applique SUR CET HOTE les actions (ban/unban IP) decidees par le central.
 # Modele pull (pas d'entree reseau sur l'agent) : GET /api/actions/pending?host=... -> applique -> POST result.
 # OPT-IN (PLUME_RESPONDER=1). DRY-RUN par defaut (PLUME_RESPONDER_APPLY=1 pour appliquer reellement).

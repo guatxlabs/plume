@@ -1,4 +1,5 @@
 #!/bin/sh
+# plume-source: vuln
 # Capteur SOC (PLUGIN) : scan de vulnerabilites des images deployees -> events source=vuln.
 # = la "detection KACE" cote SOC (CVE + version corrigee) ; la PWA/ArgoCD pousse le correctif.
 # Plugin : si trivy absent -> exit 0. Sans jq (trivy --format template -> TSV). Incremental (etat).

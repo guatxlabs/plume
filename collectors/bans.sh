@@ -1,4 +1,5 @@
 #!/bin/sh
+# plume-source: fail2ban
 # Capteur Plume : agrège les BANS ACTIFS de tous les backends -> events category=ban (cherchables :
 #   category:ban ip:1.2.3.4   -> cette IP est-elle bannie, et par quoi ?
 #   source:fail2ban category:ban   -> tous les bans fail2ban

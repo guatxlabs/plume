@@ -1,4 +1,5 @@
 #!/bin/sh
+# plume-source: portprobe
 # Capteur Plume (PLUGIN, OPT-IN) : PORT-PROBE low-and-slow via la table nft 'plume-portscan'.
 # Complement de portscan.sh : celui-la lit le LOG kernel PORTSCAN (scanner RAPIDE, seuil de DEBIT). Ici on lit
 # l'APPARTENANCE au set dynamique ps_rate_v4/ps_rate_v6 (timeout 60s) = "a sonde un port NON ouvert",

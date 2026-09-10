@@ -1,4 +1,5 @@
 #!/bin/sh
+# plume-source: dataaccess
 # Capteur Plume (PLUGIN, OPT-IN) : ACCES AUX DONNEES facon Varonis -> events source=dataaccess.
 # QUI (auid -> user) a fait QUELLE action (open/write/delete/chmod/chown) sur QUEL fichier sensible,
 # d'apres les watches auditd plume_data/plume_etc/plume_creds (cf systemd/plume-audit.rules, filtre auid>=1000

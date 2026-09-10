@@ -28,23 +28,24 @@ pub(crate) async fn legal_holds_list(State(st): State<AppState>, Extension(au): 
         return forbidden("réservé à l'administrateur");
     }
     with_write(&st, &au, |conn| {
-        let rows: Vec<Value> = match conn.prepare(
+        // `P10.7-z` — une lecture qui échoue AVOUE (`ok: false` + `error`) au lieu de servir « aucune rétention légale ».
+        let lues: Result<Vec<Value>, rusqlite::Error> = conn.prepare(
             "SELECT id,name,reason,scope_source,scope_start_ts,scope_end_ts,active,created,created_by,released_ts,released_by \
              FROM legal_hold ORDER BY active DESC, id DESC",
-        ) {
-            Ok(mut s) => s
-                .query_map([], |r| {
+        ).and_then(|mut s| {
+            s.query_map([], |r| {
                     Ok(hold_json(
                         r.get::<_, i64>(0)?, &r.get::<_, String>(1)?, &r.get::<_, String>(2)?, &r.get::<_, String>(3)?,
                         r.get::<_, i64>(4)?, r.get::<_, i64>(5)?, r.get::<_, i64>(6)?, r.get::<_, i64>(7)?,
                         &r.get::<_, String>(8)?, r.get::<_, i64>(9)?, &r.get::<_, String>(10)?,
                     ))
                 })
-                .map(|it| it.flatten().collect())
-                .unwrap_or_default(),
-            Err(_) => Vec::new(),
-        };
-        Json(json!({ "ok": true, "holds": rows })).into_response()
+                .and_then(|it| it.collect::<Result<Vec<Value>, _>>())
+        });
+        match lues {
+            Ok(rows) => Json(json!({ "ok": true, "holds": rows })).into_response(),
+            Err(_) => Json(crate::handlers::liste_bornee::corps_de_liste_illisible(json!({ "ok": false }), "holds")).into_response(),
+        }
     })
 }
 
@@ -222,16 +223,17 @@ pub(crate) async fn ledger_sinks_list(State(st): State<AppState>, Extension(au):
         return forbidden("réservé à l'administrateur");
     }
     with_write(&st, &au, |conn| {
-        let rows: Vec<Value> = match conn.prepare("SELECT id,name,kind,target,secret_ref,enabled,last_id,last_hash FROM ledger_sink ORDER BY id") {
-            Ok(mut s) => s
-                .query_map([], |r| {
+        // `P10.7-z` — une lecture qui échoue AVOUE au lieu de servir « aucun puits configuré ».
+        let lues: Result<Vec<Value>, rusqlite::Error> = conn.prepare("SELECT id,name,kind,target,secret_ref,enabled,last_id,last_hash FROM ledger_sink ORDER BY id").and_then(|mut s| {
+            s.query_map([], |r| {
                     Ok(sink_json(r.get::<_, i64>(0)?, &r.get::<_, String>(1)?, &r.get::<_, String>(2)?, &r.get::<_, String>(3)?, &r.get::<_, String>(4)?, r.get::<_, i64>(5)?, r.get::<_, i64>(6)?, &r.get::<_, String>(7)?))
                 })
-                .map(|it| it.flatten().collect())
-                .unwrap_or_default(),
-            Err(_) => Vec::new(),
-        };
-        Json(json!({ "ok": true, "sinks": rows })).into_response()
+                .and_then(|it| it.collect::<Result<Vec<Value>, _>>())
+        });
+        match lues {
+            Ok(rows) => Json(json!({ "ok": true, "sinks": rows })).into_response(),
+            Err(_) => Json(crate::handlers::liste_bornee::corps_de_liste_illisible(json!({ "ok": false }), "sinks")).into_response(),
+        }
     })
 }
 

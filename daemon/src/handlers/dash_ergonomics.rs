@@ -57,13 +57,13 @@ pub(crate) async fn library_panels_list(State(st): State<AppState>, Extension(au
              FROM library_panel ORDER BY name,id",
         ) {
             Ok(s) => s,
-            Err(_) => return Json(json!({ "library_panels": [], "me": &me, "role": &role })),
+            Err(_) => return Json(crate::handlers::liste_bornee::corps_de_liste_illisible(json!({ "me": &me, "role": &role }), "library_panels")),
         };
         // P7.13-a — LE MÊME PRÉDICAT que celui qui autorise un RATTACHEMENT (`panneau_resolu::lisible_par`).
         // Il était auparavant écrit une 2e fois en SQL ici ; c'est cette duplication qui rendait crédible
         // « l'editor ne voit pas cette définition » alors que le rattachement, lui, ne regardait rien.
         // Le filtre passe en Rust (la table des définitions réutilisables est petite : dizaines de lignes).
-        let out: Vec<Value> = stmt
+        let out: Result<Vec<Value>, rusqlite::Error> = stmt
             .query_map([], |r| {
                 Ok((
                     r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?,
@@ -71,8 +71,9 @@ pub(crate) async fn library_panels_list(State(st): State<AppState>, Extension(au
                     r.get::<_, String>(8)?, r.get::<_, i64>(9)?,
                 ))
             })
-            .map(|rows| {
-                rows.flatten()
+            .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
+            .map(|lues| {
+                lues.into_iter()
                     .filter(|(_, _, _, _, _, _, _, owner, vis, _)| panneau_resolu::lisible_par(owner, vis, &au))
                     .map(|(id, name, title, query, is_soql, viz, drill, owner, vis, used_by)| {
                         // `P11.20-n` — le drapeau dit ce que la porte fera : `ergo_editable`, dont
@@ -85,7 +86,12 @@ pub(crate) async fn library_panels_list(State(st): State<AppState>, Extension(au
                     })
                     .collect()
             })
-            .unwrap_or_default();
+            ;
+        // `P10.7-z` — une exécution qui échoue AVOUE, au lieu de servir une bibliothèque vide.
+        let out = match out {
+            Ok(v) => v,
+            Err(_) => return Json(crate::handlers::liste_bornee::corps_de_liste_illisible(json!({ "me": &me, "role": &role }), "library_panels")),
+        };
         Json(json!({ "library_panels": out, "me": &me, "role": &role }))
     })
 }
@@ -182,9 +188,9 @@ pub(crate) async fn playlists_list(State(st): State<AppState>, Extension(au): Ex
              ORDER BY name,id",
         ) {
             Ok(s) => s,
-            Err(_) => return Json(json!({ "playlists": [], "me": &me, "role": &role })),
+            Err(_) => return Json(crate::handlers::liste_bornee::corps_de_liste_illisible(json!({ "me": &me, "role": &role }), "playlists")),
         };
-        let out: Vec<Value> = stmt
+        let out: Result<Vec<Value>, rusqlite::Error> = stmt
             .query_map(params![adm, me], |r| {
                 let owner: String = r.get(4)?;
                 let vis: String = r.get(5)?;
@@ -197,8 +203,11 @@ pub(crate) async fn playlists_list(State(st): State<AppState>, Extension(au): Ex
                     "items": items, "owner": owner, "visibility": vis, "editable": owns
                 }))
             })
-            .map(|rows| rows.flatten().collect())
-            .unwrap_or_default();
+            .and_then(|rows| rows.collect::<Result<Vec<Value>, _>>());
+        let out = match out {
+            Ok(v) => v,
+            Err(_) => return Json(crate::handlers::liste_bornee::corps_de_liste_illisible(json!({ "me": &me, "role": &role }), "playlists")),
+        };
         Json(json!({ "playlists": out, "me": &me, "role": &role }))
     })
 }
@@ -409,9 +418,9 @@ pub(crate) async fn snapshots_list(State(st): State<AppState>, Extension(au): Ex
              WHERE ?1='admin' OR COALESCE(created_by,'')=?2 ORDER BY created DESC,id DESC",
         ) {
             Ok(s) => s,
-            Err(_) => return Json(json!({ "snapshots": [], "me": &me, "role": &role })),
+            Err(_) => return Json(crate::handlers::liste_bornee::corps_de_liste_illisible(json!({ "me": &me, "role": &role }), "snapshots")),
         };
-        let out: Vec<Value> = stmt
+        let out: Result<Vec<Value>, rusqlite::Error> = stmt
             .query_map(params![adm, me], |r| {
                 let created_by: String = r.get(5)?;
                 let owns = adm == "admin" || created_by == me;
@@ -421,8 +430,11 @@ pub(crate) async fn snapshots_list(State(st): State<AppState>, Extension(au): Ex
                     "role_at_capture": r.get::<_, String>(6)?, "editable": owns
                 }))
             })
-            .map(|rows| rows.flatten().collect())
-            .unwrap_or_default();
+            .and_then(|rows| rows.collect::<Result<Vec<Value>, _>>());
+        let out = match out {
+            Ok(v) => v,
+            Err(_) => return Json(crate::handlers::liste_bornee::corps_de_liste_illisible(json!({ "me": &me, "role": &role }), "snapshots")),
+        };
         Json(json!({ "snapshots": out, "me": &me, "role": &role }))
     })
 }

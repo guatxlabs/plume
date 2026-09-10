@@ -442,7 +442,7 @@ PLANCHER_FICHIERS = 15
 # la liste se corrige à la main avec la raison du renommage. ZÉRO reste atteignable jambe par jambe : une
 # jambe dont l'ensemble est vide ne réclame rien — aucune rançon.
 SITES_ADMIS = {
-    "A": {  # défaut NU servi : 16 accusations sur 15 sites
+    "A": {  # défaut NU servi : 15 accusations sur 14 sites (16 le 2026-09-10 matin ; `sla_policies_list` avoue depuis `P10.7-z`)
         ("daemon/src/handlers/admin_ui.rs", "ledger_get"): 1,
         ("daemon/src/handlers/alerts.rs", "alert_groups"): 1,
         ("daemon/src/handlers/alerts.rs", "alerts"): 1,
@@ -453,13 +453,12 @@ SITES_ADMIS = {
         ("daemon/src/handlers/caseops.rs", "case_queues"): 1,
         ("daemon/src/handlers/caseops.rs", "client_case_get"): 1,
         ("daemon/src/handlers/caseops.rs", "client_cases_list"): 1,
-        ("daemon/src/handlers/caseops.rs", "sla_policies_list"): 1,
         ("daemon/src/handlers/cases.rs", "cases_list"): 1,
         ("daemon/src/handlers/compliance.rs", "compliance_posture"): 1,
         ("daemon/src/handlers/fleet.rs", "fleet"): 2,
         ("daemon/src/handlers/sources.rs", "sources_inventory"): 1,
     },
-    "B": {  # closure SOURDE : 25 accusations sur 24 sites
+    "B": {  # closure SOURDE : 18 accusations sur 17 sites (25 le 2026-09-10 matin ; sept listes avouent depuis `P10.7-z`)
         ("daemon/src/handlers/admin_ui.rs", "ledger_get"): 1,
         ("daemon/src/handlers/admin_ui.rs", "retention_settings_get"): 1,
         ("daemon/src/handlers/alerts.rs", "alert_groups"): 1,
@@ -467,19 +466,12 @@ SITES_ADMIS = {
         ("daemon/src/handlers/caseops.rs", "case_metrics"): 1,
         ("daemon/src/handlers/caseops.rs", "client_case_get"): 1,
         ("daemon/src/handlers/caseops.rs", "client_cases_list"): 1,
-        ("daemon/src/handlers/caseops.rs", "sla_policies_list"): 1,
         ("daemon/src/handlers/cases.rs", "case_get"): 1,
         ("daemon/src/handlers/cases.rs", "cases_list"): 1,
         ("daemon/src/handlers/compliance.rs", "compliance_posture"): 1,
-        ("daemon/src/handlers/dash_ergonomics.rs", "library_panels_list"): 1,
-        ("daemon/src/handlers/dash_ergonomics.rs", "playlists_list"): 1,
-        ("daemon/src/handlers/dash_ergonomics.rs", "snapshots_list"): 1,
-        ("daemon/src/handlers/dashboards.rs", "dash_list"): 1,
         ("daemon/src/handlers/engagement.rs", "mode_get"): 1,
         ("daemon/src/handlers/fleet.rs", "fleet"): 2,
         ("daemon/src/handlers/freshness.rs", "compute_integrations"): 1,
-        ("daemon/src/handlers/governance.rs", "ledger_sinks_list"): 1,
-        ("daemon/src/handlers/governance.rs", "legal_holds_list"): 1,
         ("daemon/src/handlers/overview.rs", "environments"): 1,
         ("daemon/src/handlers/overview.rs", "overview"): 1,
         ("daemon/src/handlers/search.rs", "search"): 1,

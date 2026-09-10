@@ -692,8 +692,9 @@ pub(crate) async fn case_unlink_handler(State(st): State<AppState>, Extension(au
 /// GET /api/sla-policies — liste des politiques SLA multi-niveau. Lecture (viewer+).
 pub(crate) async fn sla_policies_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
     let db_path = req_db_path(&st, &au);
-    let res = tokio::task::spawn_blocking(move || read_with_watchdog(&db_path, json!({ "policies": [] }), |conn| {
-        let rows: Vec<Value> = conn
+    // `P10.7-z` — les trois sorties sans lecture AVOUENT : aucune connexion, exécution qui échoue, tâche qui ne rend rien.
+    let res = tokio::task::spawn_blocking(move || read_with_watchdog(&db_path, json!({ "policies": [], "error": "lecture NON FAITE : aucune connexion de lecture disponible" }), |conn| {
+        let lues: Result<Vec<Value>, rusqlite::Error> = conn
             .prepare("SELECT id,name,priority,ack_target_s,resolve_target_s,enabled FROM sla_policy ORDER BY priority")
             .and_then(|mut s| {
                 s.query_map([], |r| {
@@ -702,11 +703,13 @@ pub(crate) async fn sla_policies_list(State(st): State<AppState>, Extension(au):
                         "ack_target_s": r.get::<_, i64>(3)?, "resolve_target_s": r.get::<_, i64>(4)?, "enabled": r.get::<_, i64>(5)? != 0
                     }))
                 })
-                .map(|x| x.flatten().collect())
-            })
-            .unwrap_or_default();
-        json!({ "policies": rows })
-    })).await.unwrap_or_else(|_| json!({ "policies": [] }));
+                .and_then(|x| x.collect::<Result<Vec<Value>, _>>())
+            });
+        match lues {
+            Ok(rows) => json!({ "policies": rows }),
+            Err(_) => crate::handlers::liste_bornee::corps_de_liste_illisible(json!({}), "policies"),
+        }
+    })).await.unwrap_or_else(|_| json!({ "policies": [], "error": "lecture NON FAITE : la tâche de lecture ne s'est pas terminée" }));
     Json(res)
 }
 

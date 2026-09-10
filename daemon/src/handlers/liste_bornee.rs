@@ -151,6 +151,19 @@ where
 /// Une lecture `Illisible` conserve la FORME (la clé de liste existe, vide) et y ajoute `error` : un
 /// client qui lit `j.<cle>.length` continue de fonctionner, et celui qui teste `error` apprend que
 /// ce vide n'est pas un fait. Une liste `Lues` — fût-elle vide — n'ajoute RIEN.
+/// LE CORPS D'UNE LISTE **NON BORNÉE** QUI N'A PAS PU ÊTRE LUE (`P10.7-z`). Les petites tables de réglage
+/// (panneaux de bibliothèque, listes de lecture, instantanés, tableaux de bord, rétentions légales, puits du
+/// journal, politiques SLA) n'ont ni fenêtre ni comptage : leur corps est `{ <cle>: [...] }` plus les champs
+/// propres à la route. Quand la lecture échoue, la clé EXISTE, VIDE — un client qui lit `j.<cle>.length`
+/// continue de fonctionner — et `error` porte `CAUSE_LISTE_ILLISIBLE` : ce vide n'est pas un fait établi.
+/// Avant : sept routes servaient `[]` nu sur une préparation ou une exécution qui avait échoué, et deux
+/// d'entre elles y ajoutaient `ok: true`.
+pub(crate) fn corps_de_liste_illisible(mut corps: Value, cle: &str) -> Value {
+    corps[cle] = json!([]);
+    corps["error"] = json!(CAUSE_LISTE_ILLISIBLE);
+    corps
+}
+
 pub(crate) fn corps(cle: &str, lignes: Lignes, borne: i64, total: TotalBorne) -> Value {
     let (total_json, capped_json) = total.en_json();
     let (rows, illisible) = match lignes {

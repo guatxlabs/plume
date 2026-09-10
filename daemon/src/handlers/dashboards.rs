@@ -99,7 +99,7 @@ pub(crate) async fn dash_list(State(st): State<AppState>, Extension(au): Extensi
     read_with(req_db_path(&st, &au).as_str(), Json(json!({ "error": "lecture NON FAITE : aucune connexion de lecture disponible", "dashboards": [], "me": &me, "role": &role })), |conn| {
         let mut stmt = match conn.prepare(&sql) {
             Ok(s) => s,
-            Err(_) => return Json(json!({ "dashboards": [], "me": &me, "role": &role })),
+            Err(_) => return Json(crate::handlers::liste_bornee::corps_de_liste_illisible(json!({ "me": &me, "role": &role }), "dashboards")),
         };
         let out: Vec<Value> = match stmt.query_map(params![adm, me], |r| {
             let owner: String = r.get(2)?;
@@ -119,8 +119,12 @@ pub(crate) async fn dash_list(State(st): State<AppState>, Extension(au): Extensi
                 "editable": owns
             }))
         }) {
-            Ok(r) => r.flatten().collect(),
-            Err(_) => return Json(json!({ "dashboards": [], "me": &me, "role": &role })),
+            // `P10.7-z` — une ligne en erreur (dont « no such table » rendu au premier pas) rend la liste NON ÉTABLIE.
+            Ok(r) => match r.collect::<Result<Vec<Value>, _>>() {
+                Ok(v) => v,
+                Err(_) => return Json(crate::handlers::liste_bornee::corps_de_liste_illisible(json!({ "me": &me, "role": &role }), "dashboards")),
+            },
+            Err(_) => return Json(crate::handlers::liste_bornee::corps_de_liste_illisible(json!({ "me": &me, "role": &role }), "dashboards")),
         };
         Json(json!({ "dashboards": out, "me": &me, "role": &role }))
     })

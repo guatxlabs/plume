@@ -37,7 +37,7 @@ ICI = os.path.dirname(os.path.abspath(__file__))
 RACINE = os.path.realpath(os.path.join(ICI, os.pardir, os.pardir))
 VERIFICATEUR = ".github/scripts/verifier-message-de-commit.sh"
 INDEX = "docs/ROADMAP.md"
-PLAFOND_INDEX = 52          # mesuré le 2026-09-09 sous les deux motifs dérivés ; ne peut que baisser
+PLAFOND_INDEX = 0           # 52 le 2026-09-09, 0 le 2026-09-10 (`P8.9-l`, 89 réécritures) ; ne peut que baisser, et il est en bas
 MIN_FICHIERS = 300
 MIN_MOTIFS = 2
 

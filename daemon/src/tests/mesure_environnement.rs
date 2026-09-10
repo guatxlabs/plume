@@ -484,7 +484,7 @@ mod mesure_environnement_tests {
             let (me, lue) = crate::handlers::actions::identite_pour_reclamation(etiquette, mesure);
             let mut st = c.prepare(crate::handlers::actions::ACTIONS_A_RECLAMER_ICI).unwrap();
             let mut v: Vec<String> = st
-                .query_map(rusqlite::params![me, i64::from(lue)], |r| r.get::<_, String>(2))
+                .query_map(rusqlite::params![me, i64::from(lue), 0i64, crate::handlers::actions::RECLAMATION_PERIMEE_S], |r| r.get::<_, String>(2))
                 .unwrap()
                 .flatten()
                 .collect();

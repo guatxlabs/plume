@@ -110,3 +110,22 @@
         assert_eq!(fv["src_ip"], "203.0.113.7"); assert_eq!(fv["dst_ip"], "198.51.100.2"); assert_eq!(fv["action"], "deny");
         assert_eq!(fv["dst_port"], "22"); assert_eq!(fv["proto"], "tcp");
     }
+
+    /// `P3.10-b` — L'AGENT DÉCOUPE AVEC LE MÊME TEXTE QUE LE DÉMON. La fonction est copiée (deux caisses, aucun
+    /// lien de compilation) : ce témoin exige que les deux CORPS soient identiques à l'octet, et rougit dès que
+    /// l'un des deux bouge sans l'autre — c'est ce qui rend la copie tenable.
+    #[test]
+    fn p3_10b_l_agent_decoupe_avec_le_meme_texte_que_le_demon() {
+        let demon = include_str!("../parsers.rs");
+        let agent = include_str!("../../../agent/src/source/ligne_delimitee.rs");
+        let corps = |src: &str, nom: &str| -> String {
+            let debut = src.find(&format!("fn {nom}(ligne: &str, delim: u8) -> Vec<String> {{\n")).unwrap_or_else(|| panic!("{nom} introuvable"));
+            let apres = &src[debut..];
+            let fin = apres.find("\n}\n").expect("fin de fonction");
+            apres[apres.find('\n').unwrap() + 1..fin].to_string()
+        };
+        let d = corps(demon, "decouper_une_ligne_csv");
+        let a = corps(agent, "decouper_une_ligne_delimitee");
+        assert!(d.len() > 400, "instrument : corps du démon lu ({} octets)", d.len());
+        assert_eq!(d, a, "les deux automates ont divergé : recopier le corps du démon dans l'agent (ou l'inverse), jamais deux découpes");
+    }

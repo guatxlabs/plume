@@ -38,6 +38,8 @@ regex = '^(?P<ip>\S+) \S+ \S+ \[(?P<time>[^\]]+)\] "(?P<method>\S+) (?P<path>\S+
 
 # --- 2) FILE : log CSV/délimité, sans regex (parseur découpe zéro-dépendance) --------------------------
 # Pour un fichier « colonnes séparées » (CSV, TSV, pipe…), nommez simplement les colonnes dans l'ordre.
+# Séparateur d'un caractère : découpe conforme (cellule quotée, "" intérieur, séparateur quoté), et la ligne
+# d'en-têtes (cellules == colonnes) est expédiée sans poser de champ. Séparateur de plusieurs caractères : découpe nue.
 [[source]]
 type = "file"
 name = "app-audit"

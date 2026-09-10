@@ -61,10 +61,22 @@ impl Parser {
                 }
             }
             Parser::Split { delimiter, fields } => {
-                let parts: Vec<&str> = line.split(delimiter.as_str()).collect();
+                // `P3.10-b` — un séparateur d'UN octet ASCII passe par l'automate conforme (cellule quotée, `""`,
+                // séparateur quoté) — le même texte que celui du démon ; un séparateur de plusieurs caractères
+                // (` | `, `::`) garde la découpe nue, qui n'a pas de forme quotée à respecter.
+                let parts: Vec<String> = match delimiter.as_bytes() {
+                    [b] if b.is_ascii() => super::ligne_delimitee::decouper_une_ligne_delimitee(line, *b),
+                    _ => line.split(delimiter.as_str()).map(|s| s.to_string()).collect(),
+                };
+                // La ligne d'EN-TÊTES d'un export (cellules == colonnes déclarées) n'est pas un enregistrement :
+                // elle est expédiée telle quelle (jamais un drop) mais ne pose AUCUN champ — sinon `fields.ts`
+                // vaut « ts » et la première ligne de chaque fichier ment.
+                if parts.len() == fields.len() && parts.iter().zip(fields.iter()).all(|(c, n)| c.trim() == n) {
+                    return m;
+                }
                 for (i, name) in fields.iter().enumerate() {
                     if let Some(v) = parts.get(i) {
-                        m.insert(name.clone(), Value::String((*v).to_string()));
+                        m.insert(name.clone(), Value::String(v.clone()));
                     }
                 }
             }
@@ -551,6 +563,37 @@ mod tests {
         assert_eq!(e.fields["user"], "bob");
         assert_eq!(e.fields["action"], "delete");
         assert!(e.fields.get("extra").is_none(), "colonne surnuméraire ignorée");
+    }
+
+    /// `P3.10-b` — une cellule quotée qui contient le séparateur reste UNE cellule, `""` vaut un guillemet.
+    #[test]
+    fn split_parser_respecte_les_guillemets() {
+        let p = Parser::compile(&Some(ParserCfg { regex: None, delimiter: Some(",".into()), fields: vec!["user".into(), "note".into(), "n".into()] })).unwrap();
+        let e = line_to_event("csvsrc", "", 1, "h", &p, r#"alice,"a, b ""c""",3"#).unwrap();
+        assert_eq!(e.fields["user"], "alice");
+        assert_eq!(e.fields["note"], "a, b \"c\"", "le séparateur quoté ne coupe pas, `\"\"` vaut un guillemet");
+        assert_eq!(e.fields["n"], "3");
+    }
+
+    /// `P3.10-b` — la ligne d'en-têtes est expédiée (jamais un drop) mais ne pose aucun champ.
+    #[test]
+    fn split_parser_ne_pose_aucun_champ_sur_la_ligne_d_en_tete() {
+        let p = Parser::compile(&Some(ParserCfg { regex: None, delimiter: Some(",".into()), fields: vec!["ts".into(), "user".into(), "action".into()] })).unwrap();
+        let e = line_to_event("csvsrc", "", 1, "h", &p, "ts,user,action").unwrap();
+        assert!(e.fields.as_object().unwrap().is_empty(), "l'en-tête ne pose aucun champ : {}", e.fields);
+        assert_eq!(e.message, "ts,user,action", "la ligne est expédiée telle quelle");
+        // Une cellule qui vaut par hasard un nom de colonne n'est pas une en-tête : toutes doivent coïncider.
+        let e = line_to_event("csvsrc", "", 1, "h", &p, "1700,user,delete").unwrap();
+        assert_eq!(e.fields["user"], "user");
+    }
+
+    /// `P3.10-b` — un séparateur de plusieurs caractères garde la découpe nue (aucune forme quotée à respecter).
+    #[test]
+    fn split_parser_multi_caracteres_reste_nu() {
+        let p = Parser::compile(&Some(ParserCfg { regex: None, delimiter: Some(" | ".into()), fields: vec!["a".into(), "b".into()] })).unwrap();
+        let e = line_to_event("s", "", 1, "h", &p, "x | \"y | z\"").unwrap();
+        assert_eq!(e.fields["a"], "x");
+        assert_eq!(e.fields["b"], "\"y", "découpe nue : le guillemet n'est pas interprété sur un séparateur multi-caractères");
     }
 
     #[test]

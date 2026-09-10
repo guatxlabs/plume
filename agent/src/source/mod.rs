@@ -18,6 +18,7 @@ pub mod fim;
 /// rendre un lot vide sans dire si elle a lu.
 mod garde_lisibilite;
 pub mod generic;
+pub mod ligne_delimitee; // `P3.10-b` : la découpe délimitée conforme, même texte que le démon
 pub mod linux;
 pub mod macos;
 pub mod windows;

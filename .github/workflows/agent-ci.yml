@@ -101,9 +101,9 @@ jobs:
           # unified-log) portent des témoins gatés par cfg — MESURÉ le 2026-09-10 sur les journaux des trois
           # jambes (7ba7636) : 167 sur Linux, 166 sur macOS, 164 sur Windows. Un seul chiffre avait rougi deux
           # jambes sur trois pour une raison qui n'était pas un test disparu.
-          EXPECTED_AGENT_TESTS_Linux: "167"
-          EXPECTED_AGENT_TESTS_macOS: "166"
-          EXPECTED_AGENT_TESTS_Windows: "164"
+          EXPECTED_AGENT_TESTS_Linux: "173"
+          EXPECTED_AGENT_TESTS_macOS: "172"
+          EXPECTED_AGENT_TESTS_Windows: "170"
         run: |
           export TMPDIR="${RUNNER_TEMP}/plume-tmp-agent"; mkdir -p "$TMPDIR"
           EXPECTED_AGENT_TESTS=$(eval "printf '%s' \"\${EXPECTED_AGENT_TESTS_${RUNNER_OS}:-}\"")

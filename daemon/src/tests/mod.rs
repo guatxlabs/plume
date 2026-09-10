@@ -129,3 +129,4 @@ include!("alerte_chronique_renotifiee.rs"); // P4.12-h : un épisode ouvert gard
 include!("fondement_declare_a_la_levee.rs"); // P11.14-h : chaque alerte déclare son fondement à la levée (vocabulaire fermé), la destination d'un instantané est servie par genre et machine (migration v121)
 include!("population_de_calibrage_declaree.rs"); // P4.12-g : la population de calibrage d'une règle livrée est lisible par le code, une population neuve est dite au tir (migration v122)
 include!("verdict_de_dossier_conserve.rs"); // P4.7-f : le responder local ne double pas un agent qui a réclamé, et ne remplace jamais un verdict déjà posé
+include!("aveu_de_part_froide_sur_la_route.rs"); // P10.5-k : l'aveu de part froide est exercé sur la réponse entière de la route, tier froid allumé et froid semé par le vieillissement réel (profil froid seul)

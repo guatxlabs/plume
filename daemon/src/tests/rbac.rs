@@ -1006,10 +1006,12 @@ async fn router_probe_envoi(addr: std::net::SocketAddr, method: &str, path: &str
         let mut s = tokio::net::TcpStream::connect(addr).await.ok()?;
         s.write_all(req.as_bytes()).await.ok()?;
         // Lecture BORNÉE : le serveur ferme après la réponse (`Connection: close`), mais une réponse
-        // longue (exposition Prometheus, page servie) ne doit pas faire lire la sonde sans limite.
-        let mut brut: Vec<u8> = Vec::with_capacity(1024);
-        let mut buf = [0u8; 1024];
-        while brut.len() < 4096 {
+        // longue (exposition Prometheus, page servie) ne doit pas faire lire la sonde sans limite. La borne
+        // est passée de 4 Kio à 64 Kio le 2026-09-10 (`P10.5-k`) : une réponse de requête complète, avec
+        // ses statistiques, dépasse 4 Kio, et un témoin qui la juge doit la lire ENTIÈRE — la borne reste.
+        let mut brut: Vec<u8> = Vec::with_capacity(4096);
+        let mut buf = [0u8; 4096];
+        while brut.len() < 65_536 {
             match s.read(&mut buf).await.ok()? {
                 0 => break,
                 n => brut.extend_from_slice(&buf[..n]),

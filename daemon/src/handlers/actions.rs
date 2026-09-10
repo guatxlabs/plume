@@ -258,6 +258,18 @@ pub(crate) fn action_valid_ctx(kind: &str, target: &str, engagement_on: bool, db
 /// est le fait dérivé des leviers (`ledger::liste_protegee_declaree`), injecté par l'appelant pour
 /// que la propriété se teste sans toucher l'environnement du processus.
 pub(crate) fn action_valid_ctx_declaree(kind: &str, target: &str, engagement_on: bool, db_path: &str, protection_declaree: bool) -> Result<(), String> {
+    action_valid_ctx_protection(kind, target, engagement_on, db_path, protection_declaree, crate::ledger::protected_denylist())
+}
+/// `P4.7-c` — LA BORNE COMPLÈTE AVEC LA PROTECTION INJECTÉE : la forme qu'un témoin exerce en semant une
+/// liste d'épargne dans un fichier fabriqué, sans toucher l'environnement du processus ni le cache.
+pub(crate) fn action_valid_ctx_protection(
+    kind: &str,
+    target: &str,
+    engagement_on: bool,
+    db_path: &str,
+    protection_declaree: bool,
+    protection: &crate::ledger::DenylistProtegee,
+) -> Result<(), String> {
     match kind {
         "ban_ip" | "unban_ip" => {
             // v1 : IPv4. `P4.7-b` — c'est la BORNE D'ENFORCEMENT (Q1), PAS le classificateur d'adresse
@@ -271,9 +283,15 @@ pub(crate) fn action_valid_ctx_declaree(kind: &str, target: &str, engagement_on:
             // blocage, il en retire.
             let ok = if kind == "ban_ip" { cible_de_ban_acceptee(target) } else { cible_de_levee_acceptee(target) };
             if !ok { return Err("IPv4 invalide".into()); }
+            // `P4.7-c` — LA LISTE D'ÉPARGNE DU CENTRAL, NOMMÉE DANS LE REFUS : ses adresses sont aussi dans
+            // `reseaux` (le geste suivant les refuserait de toute façon), mais l'exploitant qui a écrit
+            // une adresse dans SA liste doit lire que c'est ELLE qui a parlé, et laquelle.
+            if kind == "ban_ip" && crate::ledger::ip_est_epargnee_ctx(target, &protection.epargne) {
+                return Err(format!("IP ÉPARGNÉE (liste d'épargne du central, {}) — ban refusé", protection.epargne_chemin));
+            }
             // M2 : refuse le BAN d'une IP protégée (loopback/privée/opérateur/passerelle). L'unban reste permis
             // (inoffensif : ces IP ne sont jamais bannies -> no-op), on ne bride donc QUE le ban destructif.
-            if kind == "ban_ip" && ip_is_protected(target) {
+            if kind == "ban_ip" && ip_is_protected_ctx(target, &protection.reseaux) {
                 return Err("IP protégée (loopback/privée/opérateur) — ban refusé".into());
             }
             // `P4.7-e` — TANT QU'AUCUNE ADRESSE PROTÉGÉE N'EST DÉCLARÉE, AUCUN BAN NE PART. Un défaut vide
@@ -1070,33 +1088,15 @@ pub(crate) fn respond_run() {
     // l'agent : deux politiques sous un même nom sont exactement le défaut que cette clé ferme.
     let chemin_allow = cfg(&conf, "PLUME_STOP_SERVICE_ALLOW", "/etc/plume/responder.allow");
     let allow = allowlist_stop_service(std::fs::read_to_string(&chemin_allow));
-    // `P4.7-c` — CE RESPONDER-CI NE LIT AUCUNE LISTE D'ÉPARGNE, ET C'EST UNE DIRECTION OUVERTE.
-    // Re-mesuré le 2026-08-28 : `grep -rn PLUME_RESPONDER_ALLOW daemon/` ne rend que des
-    // COMMENTAIRES. La liste chargée ci-dessus est celle de `stop_service`, et elle n'est consultée
-    // que sous `if kind == "stop_service"` (plus bas) : le chemin `ban_ip` ne la voit jamais — c'est
-    // ce qui rend l'élargissement du classificateur de `P4.7-b` incapable de changer un verdict de
-    // ban, et c'est aussi ce qui laisse le trou ci-dessous.
-    // CE QUE ÇA COÛTE, SUR LA MACHINE MÊME QUE `P4.7-a`/`P4.7-b` DÉCRIVENT (centrale ET agent) :
-    // l'exploitant sépare proprement les deux politiques, garde `/etc/plume/responder.allow` comme
-    // liste d'IP à NE JAMAIS bannir, y écrit son rebond d'administration — et une action `ban_ip`
-    // non ciblée est réclamée ICI (timer 20 s) AVANT que `collectors/respond.sh` ne la voie. Le ban
-    // PART : la liste d'épargne n'a jamais été ouverte. Seuls `ip_is_protected` (plages réservées,
-    // opérateur, passerelle) et la garde d'engagement filtrent de ce côté.
-    // POURQUOI CE LOT NE LA FERME PAS. **LA RAISON ÉCRITE ICI JUSQU'AU 2026-08-28 ÉTAIT FAUSSE, ET
-    // C'EST UNE MESURE QUI L'A DITE.** Elle affirmait qu'un lecteur d'épargne calqué sur celui de
-    // l'agent refuserait TOUT bannissement sur toute installation centrale existante. La prémisse est
-    // vraie — les deux leviers ont le même chemin par défaut — mais la conclusion ne l'est pas : le
-    // fichier que l'installateur SÈME ne porte que des commentaires en colonne zéro, et le prédicat de
-    // l'agent y rend la branche qui BANNIT. Le comportement par défaut serait donc INCHANGÉ ; seules
-    // les installations qui peuplent RÉELLEMENT cette liste d'arrêts de service seraient touchées. Un
-    // témoin du dépôt mesure d'ailleurs déjà exactement ce contenu et exige ce verdict.
-    // LA VRAIE RAISON EST PLUS DURE, ET ELLE N'ÉTAIT ÉCRITE NULLE PART : `PLUME_RESPONDER_ALLOW` n'est
-    // posée que dans le fichier d'environnement de l'unité d'AGENT ; l'unité du responder CENTRAL
-    // charge une AUTRE configuration, qui ne porte ce levier dans aucun installateur ni manifeste. Un
-    // lecteur d'épargne côté démon clé sur ce levier lirait donc le fichier d'arrêts de service sur
-    // TOUTES les installations, y compris les duales correctement séparées : il n'ouvrirait JAMAIS la
-    // liste d'épargne réelle. Fermer `P4.7-c` demande un chemin d'épargne PROPRE au démon et un
-    // arbitrage écrit sur ce que vaut une liste illisible ; c'est un lot d'enforcement, pas celui-ci.
+    // `P4.7-c` — LA LISTE D'ÉPARGNE DU CENTRAL EST LUE, ET PAS ICI : elle entre dans la protection par
+    // `ledger::denylist_depuis` (levier PROPRE `PLUME_CENTRAL_BAN_EXEMPT_FILE`, défaut = le fichier au nom
+    // distinct que l'installateur d'agent sème), si bien que `action_valid`, rejoué sur chaque action
+    // réclamée ci-dessous, refuse un ban sur une adresse épargnée en NOMMANT l'épargne — comme le font la
+    // création, l'approbation, les playbooks et le ban HTTP à la main, qui consultent la même protection.
+    // Ce qui en reste hors : la DISTRIBUTION aux agents (`actions_pending`) ne revalide rien, et un blocage
+    // déjà posé ne se lève que par `unban_ip`. Jusqu'au 2026-09-10, ce responder ne lisait AUCUNE liste
+    // d'épargne (seule celle de `stop_service` était chargée, sous sa seule branche) : sur une machine à
+    // la fois centrale et agent, un ban réclamé ici partait avant que `collectors/respond.sh` ne le voie.
     let jail = cfg(&conf, "PLUME_FAIL2BAN_JAIL", "sshd");
     // déléguer le ban à l'IPS existant ; nft = fallback seulement
     let backend = match cfg(&conf, "PLUME_BAN_BACKEND", "auto").as_str() {

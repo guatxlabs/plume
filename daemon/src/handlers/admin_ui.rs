@@ -655,12 +655,21 @@ pub(crate) fn daemon_excl_registry(conn: &Connection, conf: &HashMap<String, Str
     let mut refus_lisibles: Vec<String> = d.refuses.iter().take(APERCU_REFUS)
         .map(|(item, raison)| format!("« {item} » REFUSÉ : {raison}")).collect();
     if d.refuses.len() > APERCU_REFUS { refus_lisibles.push(format!("+{} refus", d.refuses.len() - APERCU_REFUS)); }
+    // `P4.7-c` — LA LISTE D'ÉPARGNE DU CENTRAL, DITE AVEC SON ÉTAT : absente n'est pas illisible, et
+    // « lue » porte ses trois comptes. Ce que le démon a lu au démarrage — il ne relit qu'au redémarrage.
+    let epargne_etat = match &d.epargne_etat {
+        crate::ledger::EtatDEpargne::Absente => "absente".to_string(),
+        crate::ledger::EtatDEpargne::Lue { lignes, epargnees, refusees } => format!("lue : {lignes} ligne(s), {epargnees} épargnée(s), {refusees} refusée(s)"),
+        crate::ledger::EtatDEpargne::Illisible(cause) => format!("ILLISIBLE : {cause}"),
+    };
     let resume = format!(
-        "{} réseau(x) protégé(s){}{}{} + loopback/RFC1918/ULA (built-in)",
+        "{} réseau(x) protégé(s){}{}{} + loopback/RFC1918/ULA (built-in) — liste d'épargne du central ({}) : {}",
         nb.len(),
         if morceaux.is_empty() { String::new() } else { format!(" : {}", morceaux.join(" · ")) },
         if refuses.is_empty() { String::new() } else { format!(" — {} item(s) REFUSÉ(S)", refuses.len()) },
         if refus_lisibles.is_empty() { String::new() } else { format!(" : {}", refus_lisibles.join(" · ")) },
+        d.epargne_chemin,
+        epargne_etat,
     );
     out.push(ExclEntry {
         name: "protected_ip_matchers",
@@ -668,7 +677,7 @@ pub(crate) fn daemon_excl_registry(conn: &Connection, conf: &HashMap<String, Str
         scope: "responder / enforcement ban",
         etype: ExclType::Host,
         value: resume,
-        detail: json!({ "configured": nb, "refuses": refuses, "builtin": "loopback/link-local/RFC1918/ULA", "note": "HOST/enforcement — appartenance au RÉSEAU (base/bits), jamais préfixe de chaîne ; partage PLUME_OPERATOR_IPS mais JAMAIS pilotable d'ici (§4 : surfacer≠piloter)", "ecart_avec_l_affichage": "L'EXCLUSION D'AFFICHAGE (panneaux « menace externe ») LIT LE MÊME CSV AVEC UNE AUTRE SÉMANTIQUE, PLUS LARGE : un PRÉFIXE TEXTUEL tronqué à la frontière d'octet/hextet. Conséquence à connaître : pour un « 172.16.0.0/12 » écrit, 172.15.0.1 est MASQUÉE dans les panneaux (préfixe « 172. ») et pourtant BANNISSABLE (hors du /12). L'écart est délibéré — un préfixe est la seule réponse qui se rende en SQL — mais il va dans le sens « invisible ET non protégée »." }),
+        detail: json!({ "configured": nb, "refuses": refuses, "epargne": { "chemin": d.epargne_chemin, "etat": epargne_etat, "adresses": d.epargne.len() }, "builtin": "loopback/link-local/RFC1918/ULA", "note": "HOST/enforcement — appartenance au RÉSEAU (base/bits), jamais préfixe de chaîne ; partage PLUME_OPERATOR_IPS mais JAMAIS pilotable d'ici (§4 : surfacer≠piloter)", "ecart_avec_l_affichage": "L'EXCLUSION D'AFFICHAGE (panneaux « menace externe ») LIT LE MÊME CSV AVEC UNE AUTRE SÉMANTIQUE, PLUS LARGE : un PRÉFIXE TEXTUEL tronqué à la frontière d'octet/hextet. Conséquence à connaître : pour un « 172.16.0.0/12 » écrit, 172.15.0.1 est MASQUÉE dans les panneaux (préfixe « 172. ») et pourtant BANNISSABLE (hors du /12). L'écart est délibéré — un préfixe est la seule réponse qui se rende en SQL — mais il va dans le sens « invisible ET non protégée »." }),
         source: "PROTECTED_IP_MATCHERS / ip_is_protected_ctx",
         editable: false,
         edit_key: "",

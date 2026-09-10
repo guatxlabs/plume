@@ -911,6 +911,108 @@ pub(crate) struct DenylistProtegee {
     /// sont vides : seules les plages réservées protègent, AUCUNE adresse publique — donc pas de
     /// rebond d'administration —, et un ban automatique peut enfermer l'exploitant dehors.
     pub(crate) declaree: bool,
+    /// `P4.7-c` — LES ADRESSES DE LA LISTE D'ÉPARGNE DU CENTRAL, à part (elles sont AUSSI dans `reseaux`,
+    /// d'où les cinq chemins d'enforcement les lisent sans un site de plus) : le refus d'un ban peut
+    /// ainsi NOMMER l'épargne plutôt que « loopback/privée/opérateur ».
+    pub(crate) epargne: Vec<(std::net::IpAddr, u32)>,
+    /// Ce que la lecture du fichier d'épargne a rendu, pour le registre never-ban.
+    pub(crate) epargne_etat: EtatDEpargne,
+    /// Le chemin lu (levier ou défaut), pour que le refus et le registre le nomment.
+    pub(crate) epargne_chemin: String,
+}
+
+/// `P4.7-c` — LE LEVIER PROPRE AU DÉMON pour la liste des adresses à ne jamais bannir. Un nom PROPRE et
+/// non `PLUME_RESPONDER_ALLOW` : ce levier-là n'est posé que dans l'environnement de l'unité d'AGENT,
+/// et sur un agent ancien il pointe encore le fichier PARTAGÉ des arrêts de service — le réutiliser
+/// rouvrirait `P4.7-a`. Le défaut est le fichier au nom DISTINCT que l'installateur d'agent sème : sur
+/// une machine à la fois centrale et agent, le démon lit la même liste que le responder d'hôte ; sur
+/// un central pur, le fichier est absent et rien ne change.
+pub(crate) const CLE_LISTE_D_EPARGNE_DU_CENTRAL: &str = "PLUME_CENTRAL_BAN_EXEMPT_FILE";
+pub(crate) const DEFAUT_LISTE_D_EPARGNE_DU_CENTRAL: &str = "/etc/plume/responder-ban-exempt.allow";
+
+/// Ce qu'une lecture de la liste d'épargne a rendu — trois états, jamais confondus.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum EtatDEpargne {
+    /// Le fichier n'existe pas : rien n'est épargné par lui, et ce n'est pas une faute (central pur).
+    Absente,
+    /// Lu : combien de lignes utiles, combien épargnent, combien sont refusées (et comptées).
+    Lue { lignes: usize, epargnees: usize, refusees: usize },
+    /// Le fichier existe et ne se lit pas (droits, encodage) : la cause, et aucune adresse n'en sort.
+    Illisible(String),
+}
+
+/// Le résultat de `lire_la_liste_d_epargne`.
+pub(crate) struct LectureDEpargne {
+    pub(crate) adresses: Vec<(std::net::IpAddr, u32)>,
+    pub(crate) refusees: Vec<(String, String)>,
+    pub(crate) etat: EtatDEpargne,
+}
+
+/// PURE — UNE LIGNE DE LA LISTE D'ÉPARGNE : une adresse (/32 ou /128), ou la raison du refus. LA MÊME
+/// STRICTESSE QUE LE LECTEUR D'HÔTE (`collectors/respond.sh`), pour qu'aucune ligne ne soit honorée d'un
+/// côté et refusée de l'autre : ni masque, ni zone, ni forme IPv4-mappée, ni blancs en tête ou en fin
+/// (commentaire indenté, espace de fin, CRLF). Une chaîne que l'hôte lit comme une FORME sans que ce soit
+/// une adresse (`999.999.999.999`) est ici refusée et comptée : inerte là-bas, dite ici.
+pub(crate) fn ligne_d_epargne(ligne: &str) -> Result<(std::net::IpAddr, u32), String> {
+    if ligne != ligne.trim() {
+        return Err("blancs en tête ou en fin (commentaire indenté, espace de fin, CRLF) — l'hôte refuse aussi".into());
+    }
+    if ligne.contains('/') {
+        return Err("masque : une adresse par ligne, jamais un réseau — l'hôte refuse aussi ; un réseau se déclare par PLUME_PROTECTED_IPS".into());
+    }
+    if ligne.contains('%') {
+        return Err("zone d'interface — refusée des deux côtés".into());
+    }
+    if ligne.to_ascii_lowercase().starts_with("::ffff:") {
+        return Err("forme IPv4-mappée : écrivez l'adresse IPv4 nue — l'hôte refuse aussi".into());
+    }
+    match ssrf_norm_ip(ligne) {
+        Some(ip) => Ok((ip, if ip.is_ipv4() { 32 } else { 128 })),
+        None => Err("pas une adresse analysable : lisible côté hôte (une forme), elle n'y épargne rien non plus".into()),
+    }
+}
+
+/// LA LISTE D'ÉPARGNE DU CENTRAL, LUE UNE FOIS : une adresse par ligne, `#` en colonne zéro et ligne vide
+/// ignorés. ARBITRAGE ÉCRIT (`P4.7-c`) : l'hôte DÉSARME tout ban de sa machine sur une ligne illisible ;
+/// le central ne peut pas se le permettre de la même façon — il commande la flotte entière, et un refus
+/// muet à cet étage est la faille bloquante que la conception refusée portait. Ici une ligne illisible
+/// est IGNORÉE, COMPTÉE et RENDUE au registre never-ban avec sa raison ; les lignes lisibles épargnent ;
+/// un fichier absent n'épargne rien et n'est pas une faute ; un fichier illisible n'épargne rien et le dit.
+pub(crate) fn lire_la_liste_d_epargne(chemin: &std::path::Path) -> LectureDEpargne {
+    let texte = match std::fs::read_to_string(chemin) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return LectureDEpargne { adresses: Vec::new(), refusees: Vec::new(), etat: EtatDEpargne::Absente };
+        }
+        Err(e) => {
+            return LectureDEpargne { adresses: Vec::new(), refusees: Vec::new(), etat: EtatDEpargne::Illisible(e.to_string()) };
+        }
+    };
+    let mut lecture = LectureDEpargne { adresses: Vec::new(), refusees: Vec::new(), etat: EtatDEpargne::Absente };
+    let mut lignes = 0usize;
+    // `split('\n')` et non `lines()` : un `\r` de fin RESTE sur la ligne et se refuse, comme chez l'hôte.
+    for brut in texte.split('\n') {
+        if brut.is_empty() || brut.starts_with('#') {
+            continue;
+        }
+        lignes += 1;
+        match ligne_d_epargne(brut) {
+            Ok(net) => lecture.adresses.push(net),
+            Err(raison) => lecture.refusees.push((brut.to_string(), raison)),
+        }
+    }
+    lecture.etat = EtatDEpargne::Lue { lignes, epargnees: lecture.adresses.len(), refusees: lecture.refusees.len() };
+    lecture
+}
+
+/// Une adresse est-elle sur la liste d'épargne ? Même analyse que la protection (valeur, jamais écriture).
+pub(crate) fn ip_est_epargnee_ctx(ip: &str, epargne: &[(std::net::IpAddr, u32)]) -> bool {
+    let ip = ip.trim();
+    if ip.is_empty() {
+        return false;
+    }
+    let Some(p) = ssrf_norm_ip(&ip.to_ascii_lowercase()) else { return false };
+    epargne.iter().any(|(net, bits)| ip_in_cidr(p, *net, *bits))
 }
 
 /// `P4.7-e` — LE LEVIER D'ASSOMPTION : bannir SANS liste déclarée est un choix qui se pose, pas un
@@ -1110,24 +1212,55 @@ pub(crate) fn etendue_du_reseau(net: std::net::IpAddr, bits: u32) -> (std::net::
 }
 
 static PROTECTED_IP_MATCHERS: std::sync::OnceLock<DenylistProtegee> = std::sync::OnceLock::new();
-/// La denylist COMPLÈTE : réseaux retenus ET items refusés (avec leur raison).
+/// La denylist COMPLÈTE : réseaux retenus ET items refusés (avec leur raison). Lue UNE FOIS par processus
+/// (le démon est long-running : une liste d'épargne éditée est relue au redémarrage — dit au registre).
 pub(crate) fn protected_denylist() -> &'static DenylistProtegee {
-    PROTECTED_IP_MATCHERS.get_or_init(|| {
-        let conf = load_config();
-        let mut d = DenylistProtegee { reseaux: Vec::new(), refuses: Vec::new(), declaree: liste_protegee_declaree_par(&conf) };
-        // opérateur (défaut = l'opérateur plateforme) + liste additionnelle passerelle/DNS (défaut vide).
-        for cle in ["PLUME_OPERATOR_IPS", "PLUME_PROTECTED_IPS"] {
-            let defaut = if cle == "PLUME_OPERATOR_IPS" { PLUME_OPERATOR_IPS_DEFAULT } else { "" };
-            for item in cfg(&conf, cle, defaut).split(',') {
-                match parse_protected_item(item) {
-                    None => {}
-                    Some(Ok(net)) => d.reseaux.push(net),
-                    Some(Err(raison)) => d.refuses.push((item.trim().to_string(), raison)),
-                }
+    PROTECTED_IP_MATCHERS.get_or_init(|| denylist_depuis(&load_config()))
+}
+/// PURE VIS-À-VIS DE L'ENVIRONNEMENT : la denylist dérivée d'une configuration DONNÉE — les deux leviers
+/// d'adresses, puis la liste d'épargne du central (`P4.7-c`), dont les adresses REJOIGNENT `reseaux` (les
+/// cinq chemins d'enforcement qui consultent la protection les voient sans un site de plus) et dont les
+/// refus sont NOMMÉS. Une liste d'épargne non vide DÉCLARE la liste au sens de `P4.7-e` : écrire ce qu'on
+/// épargne, c'est déclarer ce qu'on protège.
+pub(crate) fn denylist_depuis(conf: &std::collections::HashMap<String, String>) -> DenylistProtegee {
+    let mut d = DenylistProtegee {
+        reseaux: Vec::new(),
+        refuses: Vec::new(),
+        declaree: liste_protegee_declaree_par(conf),
+        epargne: Vec::new(),
+        epargne_etat: EtatDEpargne::Absente,
+        epargne_chemin: String::new(),
+    };
+    // opérateur (défaut = l'opérateur plateforme) + liste additionnelle passerelle/DNS (défaut vide).
+    for cle in ["PLUME_OPERATOR_IPS", "PLUME_PROTECTED_IPS"] {
+        let defaut = if cle == "PLUME_OPERATOR_IPS" { PLUME_OPERATOR_IPS_DEFAULT } else { "" };
+        for item in cfg(conf, cle, defaut).split(',') {
+            match parse_protected_item(item) {
+                None => {}
+                Some(Ok(net)) => d.reseaux.push(net),
+                Some(Err(raison)) => d.refuses.push((item.trim().to_string(), raison)),
             }
         }
-        d
-    })
+    }
+    let chemin = cfg(conf, CLE_LISTE_D_EPARGNE_DU_CENTRAL, DEFAUT_LISTE_D_EPARGNE_DU_CENTRAL);
+    let lecture = lire_la_liste_d_epargne(std::path::Path::new(&chemin));
+    for (ligne, raison) in lecture.refusees {
+        d.refuses.push((format!("liste d'épargne {chemin} : « {ligne} »"), raison));
+    }
+    if let EtatDEpargne::Illisible(cause) = &lecture.etat {
+        d.refuses.push((
+            format!("liste d'épargne {chemin}"),
+            format!("ILLISIBLE ({cause}) : aucune adresse n'en est protégée ; le central ne désarme pas ses bans pour autant (l'hôte, lui, désarme) — corrigez le fichier, puis redémarrez le démon, qui ne le relit qu'au démarrage"),
+        ));
+    }
+    d.reseaux.extend(lecture.adresses.iter().copied());
+    if !lecture.adresses.is_empty() {
+        d.declaree = true;
+    }
+    d.epargne = lecture.adresses;
+    d.epargne_etat = lecture.etat;
+    d.epargne_chemin = chemin;
+    d
 }
 /// Les RÉSEAUX protégés seuls (le consommateur d'enforcement). Signature volontairement typée :
 /// aucune chaîne n'en sort, donc aucune comparaison textuelle n'est écrivable en aval.

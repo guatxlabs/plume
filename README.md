@@ -913,7 +913,8 @@ viennent d'une constante — la commande `c` ci‑dessus la donne.
 | `PLUME_RESPONDER_ALLOW` | chemin de la liste des **adresses à ne jamais bannir**, lue par le responder d'**agent** — voir l'avertissement sous le tableau | `/etc/plume/responder.allow` — **repli COMPILÉ dans `collectors/respond.sh`, employé seulement si la variable n'est pas posée**. Une installation d'agent NEUVE la pose, elle, à `/etc/plume/responder-ban-exempt.allow` (`bootstrap-agent.sh`) : les deux valeurs sont vraies, de deux objets différents. Le repli partage son chemin avec la liste de **services** du démon — d'où l'avertissement |
 | `PLUME_STOP_SERVICE_ALLOW` | chemin de la liste des **services systemd autorisés** pour `stop_service`, lue par le **démon** — posez-la ailleurs si la machine est à la fois centrale et agent | `/etc/plume/responder.allow` |
 | `PLUME_BAN_DURATION` | durée d'un bannissement | `4h` |
-| `PLUME_PROTECTED_IPS` / `PLUME_OPERATOR_IPS` | IP qu'aucune action ne peut bannir (ne vous enfermez pas dehors). **Tant que les deux sont vides, aucun `ban_ip` ne part** : le refus nomme les leviers (`P4.7-e`) | vide |
+| `PLUME_CENTRAL_BAN_EXEMPT_FILE` | chemin de la liste des **adresses à ne jamais bannir** lue par le **démon** (`P4.7-c`) : une adresse par ligne, même strictesse que l'hôte (ni masque, ni zone, ni forme mappée, ni blancs) ; fichier absent = rien ; ligne illisible = ignorée, **comptée** et rendue au registre never-ban — le central ne désarme pas ses bans, l'hôte oui ; ses adresses rejoignent l'ensemble protégé et **déclarent** la liste (`P4.7-e`) ; lue au démarrage, relue au redémarrage | `/etc/plume/responder-ban-exempt.allow` |
+| `PLUME_PROTECTED_IPS` / `PLUME_OPERATOR_IPS` | IP qu'aucune action ne peut bannir (ne vous enfermez pas dehors). **Tant que les deux sont vides — et la liste d'épargne du central aussi —, aucun `ban_ip` ne part** : le refus nomme les leviers (`P4.7-e`) | vide |
 | `PLUME_RESPOND_BAN_WITHOUT_PROTECTED_LIST` | `1` = assumer de bannir SANS aucune adresse protégée déclarée (un central neuf n'en protège aucune de publique, donc aucun rebond d'administration) — un choix qui se pose, pas un défaut qui se tait | `0` |
 
 > ⚠️ **`/etc/plume/responder.allow` a porté DEUX listes incompatibles.**
@@ -987,8 +988,10 @@ viennent d'une constante — la commande `c` ci‑dessus la donne.
 > le critère d'adresse lui-même, voir l'avertissement ci-dessus.
 > **Pour tenir les deux politiques sur une même machine**, donnez un chemin propre à l'une des deux :
 > `PLUME_STOP_SERVICE_ALLOW` (démon) ou `PLUME_RESPONDER_ALLOW` (agent).
-> ⚠️ **Et la liste d'épargne ne protège que du côté AGENT — `P4.7-c`, ouverte.** Le responder du
-> **central** (`respond_run`) ne consulte **aucune** liste d'épargne : re‑mesuré le 2026‑08‑28,
+> ✅ **`P4.7-c` FERMÉE le 2026-09-10 : le démon lit sa propre liste d'épargne** — `PLUME_CENTRAL_BAN_EXEMPT_FILE`, dont le défaut est le fichier au nom distinct que l'installateur d'agent sème ; ses adresses rejoignent l'ensemble protégé que consultent la création, l'approbation, les playbooks, le responder du central et le ban HTTP à la main, et le refus **nomme l'épargne et son fichier**. Ce qui reste hors : la distribution aux agents ne revalide rien, un blocage déjà posé ne se lève que par `unban_ip`, et le démon ne relit le fichier qu'au redémarrage. Ce qui suit est l'histoire du trou, gardée telle quelle.
+>
+> ⚠️ **Et la liste d'épargne ne protégeait que du côté AGENT — `P4.7-c`, jusqu'au 2026-09-10.** Le responder du
+> **central** (`respond_run`) ne consultait **aucune** liste d'épargne : re‑mesuré le 2026‑08‑28,
 > `PLUME_RESPONDER_ALLOW` n'apparaît dans le démon que dans des commentaires. Sur une machine à la
 > fois centrale et agent, une action `ban_ip` non ciblée est réclamée par le démon (timer 20 s)
 > **avant** que `collectors/respond.sh` ne la voie : le ban part sans que la liste d'épargne ait été

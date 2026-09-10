@@ -487,6 +487,10 @@ env:
   #     en mode 0 (l'espace d'identifiant d'un curseur froid). C'est le premier lot où l'écart bouge
   #     pour cette seconde raison : « sous `cold_store/` » n'est donc PAS la règle, la règle est
   #     « derrière la feature, où que le test soit écrit ».
+  # RÉ-MESURÉ le 2026-09-10 (lot P4.7-c) : 1599 -> **1603** (+4) et 1846 -> **1850** (+4). L'écart reste
+  # 247 : les quatre témoins de `daemon/src/tests/netban.rs` (module `p47c_liste_d_epargne_du_central`)
+  # ne portent aucun `cfg(feature)` et comptent dans les deux profils.
+  #
   # RÉ-MESURÉ le 2026-09-10 (lots P10.5-k puis P10.5-n) : 1599 -> 1599 et 1844 -> **1846** (+2). L'écart
   # passe de 245 à **247**, et le +2 est ÉCRIT : deux tests de
   # `daemon/src/tests/aveu_de_part_froide_sur_la_route.rs`, fichier compilé dans les deux profils mais dont
@@ -806,7 +810,7 @@ env:
   # répertoire absent redevenu illisible, verdict non déclassé, détail écrasé au lieu d'ajouté, simulation
   # qui déplace, aveu qui redit « quarantaine » dans les trois cas — chacune rougit son témoin et LUI SEUL.
   # Le MÊME +5 sur `EXPECTED_COLD_TESTS`, écart **245** INCHANGÉ, mesuré par le script du dépôt.
-  EXPECTED_TESTS: "1599"
+  EXPECTED_TESTS: "1603"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -1265,7 +1269,7 @@ jobs:
           # `P11.20-n` et `P11.20-h` (2026-09-03) : +14, les MÊMES quatorze que sur `EXPECTED_TESTS` —
           # aucun derrière un `cfg(feature)`, et c'est l'ÉCART INCHANGÉ entre les deux profils (245 avant
           # comme après) qui l'établit. La dérivation est écrite auprès d'`EXPECTED_TESTS`, une seule fois.
-          EXPECTED_COLD_TESTS: "1846"
+          EXPECTED_COLD_TESTS: "1850"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail

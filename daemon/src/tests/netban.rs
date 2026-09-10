@@ -619,3 +619,108 @@ mod p47e_ban_sans_liste_declaree {
         assert!(crate::ledger::refus_de_ban_sans_liste_declaree(true).is_none() && crate::ledger::refus_de_ban_sans_liste_declaree(false).is_some());
     }
 }
+
+// `P4.7-c` (2026-09-10) — LE RESPONDER DU CENTRAL LIT SA PROPRE LISTE D'ÉPARGNE, ET LA REFUSE PAR SON NOM.
+// La liste est SEMÉE dans un fichier possédé, la protection est DÉRIVÉE d'une configuration fabriquée
+// (`denylist_depuis`, jamais l'environnement ni le cache), et la borne du responder est exercée par sa
+// forme injectée. Les deux sens, la soupape, l'arbitrage sur l'illisible, et le fichier absent.
+#[cfg(test)]
+mod p47c_liste_d_epargne_du_central {
+    use std::collections::HashMap;
+
+    fn conf_vers(chemin: &str) -> HashMap<String, String> {
+        let mut conf = HashMap::new();
+        conf.insert(crate::ledger::CLE_LISTE_D_EPARGNE_DU_CENTRAL.to_string(), chemin.to_string());
+        conf
+    }
+
+    #[test]
+    fn une_ligne_d_epargne_a_la_strictesse_du_lecteur_d_hote() {
+        use crate::ledger::ligne_d_epargne;
+        assert_eq!(ligne_d_epargne("203.0.113.7").map(|(_, b)| b), Ok(32), "une IPv4 nue épargne, en /32");
+        assert_eq!(ligne_d_epargne("2001:db8::1").map(|(_, b)| b), Ok(128), "une IPv6 nue épargne, en /128");
+        for (ligne, motif) in [
+            ("203.0.113.0/24", "masque"),
+            ("fe80::1%eth0", "zone"),
+            ("::ffff:203.0.113.7", "mappée"),
+            (" 203.0.113.7", "blancs"),
+            ("203.0.113.7 ", "blancs"),
+            ("203.0.113.7\r", "blancs"),
+            ("999.999.999.999", "analysable"),
+            ("sshd", "analysable"),
+        ] {
+            let refus = ligne_d_epargne(ligne).expect_err(&format!("« {ligne} » doit être refusée"));
+            assert!(refus.contains(motif), "« {ligne} » : la raison doit nommer « {motif} » — {refus}");
+        }
+    }
+
+    #[test]
+    fn la_liste_d_epargne_est_lue_comptee_et_ses_refus_nommes() {
+        use crate::ledger::{lire_la_liste_d_epargne, EtatDEpargne};
+        let bac = crate::tmp_possede::TmpPossede::neuf("epargne-central");
+        let chemin = bac.sous("responder-ban-exempt.allow");
+        std::fs::write(
+            chemin.chemin(),
+            "# rebond d'administration\n203.0.113.7\n\n198.51.100.0/24\n  # commentaire indenté\n2001:db8::1\n999.999.999.999\n",
+        )
+        .unwrap();
+        let lecture = lire_la_liste_d_epargne(chemin.chemin());
+        assert_eq!(lecture.etat, EtatDEpargne::Lue { lignes: 5, epargnees: 2, refusees: 3 }, "cinq lignes utiles : deux épargnent, trois sont refusées et comptées");
+        assert_eq!(lecture.adresses.len(), 2);
+        assert_eq!(lecture.refusees.len(), 3);
+        assert!(lecture.refusees.iter().any(|(l, r)| l == "198.51.100.0/24" && r.contains("masque")), "le masque est refusé avec sa raison : {:?}", lecture.refusees);
+        // ABSENT : rien, et ce n'est pas une faute.
+        let absente = lire_la_liste_d_epargne(bac.sous("absente.allow").chemin());
+        assert_eq!(absente.etat, EtatDEpargne::Absente);
+        assert!(absente.adresses.is_empty() && absente.refusees.is_empty());
+    }
+
+    #[test]
+    fn le_responder_du_central_refuse_un_ban_sur_une_adresse_epargnee_et_le_nomme() {
+        use crate::handlers::actions::action_valid_ctx_protection;
+        use crate::ledger::denylist_depuis;
+        let bac = crate::tmp_possede::TmpPossede::neuf("epargne-responder");
+        let chemin = bac.sous("responder-ban-exempt.allow");
+        std::fs::write(chemin.chemin(), "203.0.113.7\n").unwrap();
+        let conf = conf_vers(chemin.as_str());
+        let d = denylist_depuis(&conf);
+        assert!(d.declaree, "écrire ce qu'on épargne DÉCLARE la liste au sens de P4.7-e");
+        assert_eq!(d.epargne.len(), 1);
+        assert!(d.reseaux.iter().any(|(ip, b)| ip.to_string() == "203.0.113.7" && *b == 32), "l'adresse épargnée rejoint l'ensemble protégé, d'où les cinq chemins la lisent");
+
+        // ① LE BAN EST REFUSÉ, ET LE REFUS NOMME L'ÉPARGNE ET LE FICHIER — pas « loopback/privée/opérateur ».
+        let refus = action_valid_ctx_protection("ban_ip", "203.0.113.7", false, "", true, &d).unwrap_err();
+        assert!(refus.contains("ÉPARGNÉE") && refus.contains(chemin.as_str()), "le refus doit nommer l'épargne et son fichier : {refus}");
+        // ② MÊME ADRESSE, ÉCRITE AUTREMENT : l'identité est la valeur, jamais l'écriture (P4.7-g).
+        let mappee = action_valid_ctx_protection("ban_ip", "::ffff:203.0.113.7", false, "", true, &d);
+        assert!(mappee.is_err(), "la forme mappée de l'adresse épargnée ne contourne pas l'épargne");
+        // ③ TÉMOIN NÉGATIF : une autre adresse publique passe.
+        assert!(action_valid_ctx_protection("ban_ip", "203.0.113.8", false, "", true, &d).is_ok(), "une adresse hors liste n'est pas refusée");
+        // ④ LA SOUPAPE : la levée n'est jamais refusée pour cette raison.
+        assert!(action_valid_ctx_protection("unban_ip", "203.0.113.7", false, "", true, &d).is_ok(), "une levée ne se ferme pas");
+        // ⑤ LA PROTECTION GÉNÉRIQUE EST INCHANGÉE : loopback reste refusée pour SA raison.
+        let loop_ = action_valid_ctx_protection("ban_ip", "127.0.0.1", false, "", true, &d).unwrap_err();
+        assert!(loop_.contains("IP protégée") && !loop_.contains("ÉPARGNÉE"), "une adresse réservée est refusée pour sa raison propre : {loop_}");
+    }
+
+    #[test]
+    fn une_liste_illisible_est_dite_sans_desarmer_le_central() {
+        use crate::handlers::actions::action_valid_ctx_protection;
+        use crate::ledger::{denylist_depuis, EtatDEpargne};
+        let bac = crate::tmp_possede::TmpPossede::neuf("epargne-illisible");
+        // Un RÉPERTOIRE à la place du fichier : il existe et ne se lit pas comme un fichier.
+        let chemin = bac.sous("responder-ban-exempt.allow");
+        std::fs::create_dir_all(chemin.chemin()).unwrap();
+        let d = denylist_depuis(&conf_vers(chemin.as_str()));
+        assert!(matches!(d.epargne_etat, EtatDEpargne::Illisible(_)), "un fichier qui existe et ne se lit pas est ILLISIBLE, pas absent : {:?}", d.epargne_etat);
+        assert!(d.epargne.is_empty(), "aucune adresse ne sort d'une liste illisible");
+        assert!(d.refuses.iter().any(|(item, raison)| item.contains("liste d'épargne") && raison.contains("ILLISIBLE")), "l'illisible est RENDU au registre avec sa raison : {:?}", d.refuses);
+        assert!(!d.declaree, "une liste illisible ne déclare rien");
+        // L'ARBITRAGE : le central ne désarme pas — un ban sur une adresse publique passe (liste déclarée par ailleurs).
+        assert!(action_valid_ctx_protection("ban_ip", "203.0.113.7", false, "", true, &d).is_ok(), "le central ne désarme pas ses bans sur une liste illisible : c'est l'hôte qui le fait, et le registre le dit ici");
+        // FICHIER ABSENT : le comportement historique, strictement.
+        let d2 = denylist_depuis(&conf_vers(bac.sous("nulle-part.allow").as_str()));
+        assert_eq!(d2.epargne_etat, EtatDEpargne::Absente);
+        assert!(d2.refuses.is_empty() && !d2.declaree, "absente : rien de refusé, rien de déclaré");
+    }
+}

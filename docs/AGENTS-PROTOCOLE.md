@@ -367,8 +367,9 @@ d'audit.
 > sur les deux — est que le démon en reconnaît **strictement plus** de formes que l'agent, donc
 > qu'aucune ligne n'est acceptée en silence par les deux. Ce n'est **pas** l'égalité, et le rejet de
 > chaque lecteur n'est **pas** dérivé du prédicat qui décide ce qu'on sait bannir.
-> **Et la liste d'épargne ne vaut que côté agent** (`P4.7-c`, ouverte) : le responder du central ne
-> la consulte pas.
+> **Depuis le 2026-09-10 (`P4.7-c`), la liste d'épargne vaut aussi côté central** : le démon lit `PLUME_CENTRAL_BAN_EXEMPT_FILE` (défaut : le fichier distinct semé par l'installateur d'agent), ses adresses rejoignent l'ensemble protégé et un ban réclamé par le central sur l'une d'elles est refusé en nommant l'épargne ; une ligne illisible est comptée au registre never-ban sans désarmer le central. Ce qui suit décrit l'état antérieur.
+> **Et la liste d'épargne ne valait que côté agent** (`P4.7-c`, jusqu'au 2026-09-10) : le responder du central ne
+> la consultait pas.
 
 ---
 

@@ -445,7 +445,7 @@ pub(crate) async fn actions_pending(State(st): State<AppState>, Extension(au): E
     }
     let host = au.name.clone();
     let now_ts = now();
-    const STALE: i64 = 300; // re-remise si réclamée sans résultat depuis > 5 min (agent planté)
+    const STALE: i64 = RECLAMATION_PERIMEE_S; // re-remise si réclamée sans résultat depuis > 5 min (agent planté) — la MÊME fenêtre que le responder local (P4.7-f)
     crate::req_conn!(st, au, conn);
     // host=?1 : actions ciblant CET hôte. host NULL/'' : actions non assignées (créées depuis l'UI sans
     // cible explicite) -> réclamables par n'importe quel agent ; à la réclamation on les ASSIGNE à l'hôte
@@ -990,8 +990,24 @@ pub(crate) fn ensure_nft_blocklist() {
 ///
 /// La constante existe pour que le test exerce l'énoncé du PRODUIT et non une recopie : une paraphrase
 /// resterait verte le jour où celui-ci changerait.
+/// `P4.7-f` — UNE RÉCLAMATION D'AGENT VAUT PENDANT CE DÉLAI : au-delà, l'agent est tenu pour planté et
+/// l'action est re-remise (par `actions_pending` à un agent, ou par le responder local). Une seule valeur,
+/// lue par les deux : deux fenêtres différentes referaient la course que cette clé ferme.
+pub(crate) const RECLAMATION_PERIMEE_S: i64 = 300;
+
+/// Les actions que CE responder exécute : approuvées, non ciblées ou ciblant cette machine — ET que
+/// aucun agent n'a réclamées récemment (`P4.7-f`) : le central ne double plus un agent qui tient déjà
+/// le dossier, lui qui lit la liste d'épargne que le central n'a pas. Paramètres : ?1 = identité,
+/// ?2 = identité lue (0/1), ?3 = maintenant, ?4 = délai de péremption d'une réclamation.
 pub(crate) const ACTIONS_A_RECLAMER_ICI: &str = "SELECT id,kind,target,dry_run FROM action \
-     WHERE status='approved' AND (host IS NULL OR host='' OR (?2 = 1 AND host = ?1))";
+     WHERE status='approved' AND (host IS NULL OR host='' OR (?2 = 1 AND host = ?1)) \
+       AND (claimed_ts IS NULL OR ?3 - claimed_ts > ?4)";
+
+/// `P4.7-f` — LA CLÔTURE D'UNE ACTION NE REMPLACE JAMAIS UN VERDICT DÉJÀ POSÉ : elle n'écrit que sur une
+/// action encore `approved`. Un agent qui a posté « adresse épargnée » a le dernier mot ; le responder
+/// local, s'il arrive après, le DIT au journal au lieu de l'écraser.
+pub(crate) const SQL_CLORE_UNE_ACTION_APPROUVEE: &str =
+    "UPDATE action SET status=?2, result=?3, done_ts=?4 WHERE id=?1 AND status='approved'";
 
 /// QUELLE IDENTITÉ CE RESPONDER OPPOSE AUX ACTIONS CIBLÉES, ET S'IL EN A UNE — pur, donc exerçable.
 ///
@@ -1115,7 +1131,7 @@ pub(crate) fn respond_run() {
         identite_pour_reclamation(&cfg(&conf, "PLUME_HOST_LABEL", ""), crate::maintenance::identite_hote());
     let pending: Vec<(i64, String, String, bool)> = match conn.prepare(ACTIONS_A_RECLAMER_ICI) {
         Ok(mut s) => s
-            .query_map(params![me, i64::from(identite_lue)], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)? != 0)))
+            .query_map(params![me, i64::from(identite_lue), now(), RECLAMATION_PERIMEE_S], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)? != 0)))
             .map(|x| x.flatten().collect())
             .unwrap_or_default(),
         Err(_) => return,
@@ -1130,7 +1146,7 @@ pub(crate) fn respond_run() {
     }
     for (id, kind, target, dry) in pending {
         if let Err(e) = action_valid(&kind, &target, &db_path) {
-            let _ = conn.execute("UPDATE action SET status='blocked', result=?2, done_ts=?3 WHERE id=?1", params![id, format!("invalide : {e}"), now()]);
+            let _ = conn.execute("UPDATE action SET status='blocked', result=?2, done_ts=?3 WHERE id=?1 AND status='approved'", params![id, format!("invalide : {e}"), now()]);
             continue;
         }
         if kind == "stop_service" {
@@ -1138,12 +1154,12 @@ pub(crate) fn respond_run() {
                 // La liste n'a PAS été lue, ou elle porte l'autre politique : le refus NOMME
                 // laquelle des deux, au lieu de se déguiser en « ce service n'y est pas ».
                 Err(pourquoi) => {
-                    let _ = conn.execute("UPDATE action SET status='blocked', result=?2, done_ts=?3 WHERE id=?1",
+                    let _ = conn.execute("UPDATE action SET status='blocked', result=?2, done_ts=?3 WHERE id=?1 AND status='approved'",
                         params![id, format!("allowlist stop_service INEXPLOITABLE ({chemin_allow}) : {pourquoi}"), now()]);
                     continue;
                 }
                 Ok(services) if !services.contains(&target) => {
-                    let _ = conn.execute("UPDATE action SET status='blocked', result=?2, done_ts=?3 WHERE id=?1",
+                    let _ = conn.execute("UPDATE action SET status='blocked', result=?2, done_ts=?3 WHERE id=?1 AND status='approved'",
                         params![id, format!("service hors allowlist ({chemin_allow})"), now()]);
                     continue;
                 }
@@ -1157,12 +1173,12 @@ pub(crate) fn respond_run() {
         let (prog, args) = match platform_command(&platform, &kind, &target, &backend, &jail, generic.as_deref()) {
             Ok(pa) => pa,
             Err(e) => {
-                let _ = conn.execute("UPDATE action SET status='blocked', result=?2, done_ts=?3 WHERE id=?1", params![id, format!("gabarit plateforme refusé : {e}"), now()]);
+                let _ = conn.execute("UPDATE action SET status='blocked', result=?2, done_ts=?3 WHERE id=?1 AND status='approved'", params![id, format!("gabarit plateforme refusé : {e}"), now()]);
                 continue;
             }
         };
         if dry {
-            let _ = conn.execute("UPDATE action SET status='dryrun', result=?2, done_ts=?3 WHERE id=?1", params![id, format!("[dry-run] {prog} {}", args.join(" ")), now()]);
+            let _ = conn.execute("UPDATE action SET status='dryrun', result=?2, done_ts=?3 WHERE id=?1 AND status='approved'", params![id, format!("[dry-run] {prog} {}", args.join(" ")), now()]);
             continue;
         }
         let (status, result) = match std::process::Command::new(&prog).args(&args).output() {
@@ -1177,7 +1193,17 @@ pub(crate) fn respond_run() {
             }
             Err(e) => ("failed", format!("exec: {e}")),
         };
-        let _ = conn.execute("UPDATE action SET status=?2, result=?3, done_ts=?4 WHERE id=?1", params![id, status, result, now()]);
+        let clos = conn.execute(SQL_CLORE_UNE_ACTION_APPROUVEE, params![id, status, result, now()]).unwrap_or(0);
+        if clos == 0 {
+            // `P4.7-f` — un verdict PLUS INFORMÉ est déjà posé (l'agent, qui lit la liste d'épargne, a répondu
+            // entre la sélection et l'exécution) : il est CONSERVÉ, et le journal dit ce que ce responder
+            // a obtenu de son côté au lieu de le faire passer pour le verdict du dossier.
+            let conserve: String = conn
+                .query_row("SELECT COALESCE(status,'') FROM action WHERE id=?1", params![id], |r| r.get(0))
+                .unwrap_or_default();
+            ledger_append(&conn, "action.exec.verdict-conserve", &format!("{kind} {target} : verdict `{conserve}` déjà posé, conservé ; ce responder avait obtenu `{status}` ({result})"));
+            continue;
+        }
         ledger_append(&conn, "action.exec", &format!("{kind} {target} -> {status}"));
         // BAN NATIF PLUME (chantier ② Phase 1) : quand le RESPONDER local exécute réellement un ban_ip/unban_ip,
         // synchronise AUSSI le store `net_ban` (blocage HTTP). Sur ce chemin (processus responder SÉPARÉ), le

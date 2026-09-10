@@ -128,3 +128,4 @@ include!("partage_refuse_avec_la_raison.rs"); // P11.20-m : le partage d'un obje
 include!("alerte_chronique_renotifiee.rs"); // P4.12-h : un épisode ouvert garde son instant d'ouverture et re-notifie quand sa valeur a doublé (migration v120)
 include!("fondement_declare_a_la_levee.rs"); // P11.14-h : chaque alerte déclare son fondement à la levée (vocabulaire fermé), la destination d'un instantané est servie par genre et machine (migration v121)
 include!("population_de_calibrage_declaree.rs"); // P4.12-g : la population de calibrage d'une règle livrée est lisible par le code, une population neuve est dite au tir (migration v122)
+include!("verdict_de_dossier_conserve.rs"); // P4.7-f : le responder local ne double pas un agent qui a réclamé, et ne remplace jamais un verdict déjà posé

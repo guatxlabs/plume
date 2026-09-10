@@ -1076,25 +1076,34 @@
     }
 
     /// HOST_ROLLUP (v77) — COÛT du tick borné : l'UPSERT est UN statement batché (agrégat), pas du travail
-    /// par-ligne, et reste TRÈS en-dessous du watchdog 5 s. (Mesure imprimée avec --nocapture.)
+    /// par-ligne. `P7.19-b` — LE TICK EST JUGÉ PAR CONCORDANCE, PLUS CONTRE UN MUR : la forme précédente
+    /// (`d < 2 s`) comparait une durée MESURÉE à une constante absolue, donc une machine chargée l'aurait fait
+    /// rougir en disant « propriété violée » là où la vérité est « pas pu mesurer ». L'étalon est le travail
+    /// PAR-LIGNE que le tick doit battre — l'insertion des 5 000 événements, mesurée dans la même fenêtre, sur
+    /// la même machine : la vitesse de la machine s'annule dans le rapport, et un instrument qui ne mesure
+    /// rien (étalon nul) REFUSE de conclure au lieu de rendre un vert. Le facteur 4 est une marge, pas une
+    /// mesure : au banc de développement (2026-09-10) le tick vaut environ un soixantième de l'insertion (3,6 ms pour 220 ms).
     #[test]
     fn host_rollup_maintenance_cost_is_bounded() {
         let conn = test_db();
         let t = now();
+        let insertion = std::time::Instant::now();
         conn.execute_batch("BEGIN").unwrap();
         for i in 0..5000i64 {
             conn.execute("INSERT INTO event(ts,host,source,message) VALUES(?1,?2,'sshd','m')",
                 params![t - (i % 3000), format!("host{}", i % 20)]).unwrap();
         }
         conn.execute_batch("COMMIT").unwrap();
+        let etalon = insertion.elapsed();
         conn.execute("DELETE FROM meta WHERE key='host_rollup_wm'", []).unwrap();
         let start = std::time::Instant::now();
         rollup_hosts(&conn);
         let d = start.elapsed();
-        eprintln!("[measure] rollup_hosts sur 5000 events / 20 hôtes : {d:?}");
+        eprintln!("[measure] rollup_hosts sur 5000 events / 20 hôtes : {d:?} (étalon : insertion par-ligne {etalon:?})");
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM host_rollup", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 20, "20 hôtes agrégés en une passe");
-        assert!(d < std::time::Duration::from_secs(2), "un tick rollup_hosts reste bien SOUS le watchdog 5 s (mesuré {d:?})");
+        assert!(etalon > std::time::Duration::ZERO, "INSTRUMENT : l'étalon (insertion de 5 000 lignes) n'a pas été mesuré — refus de conclure");
+        assert!(d <= etalon * 4, "un tick rollup_hosts (agrégat batché) coûte {d:?}, plus de quatre fois l'insertion par-ligne qu'il doit battre ({etalon:?})");
     }
 
     /// HOST_ROLLUP (cas BACKDATED) — un event TARDIF (ts < watermark, agent offline qui rejoue son buffer) doit

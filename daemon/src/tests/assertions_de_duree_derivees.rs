@@ -15,13 +15,12 @@
     /// d'instrument, borne elle-même temporelle, ou NON TRAITÉ et dit) — et un membre neuf, écrit
     /// demain dans n'importe quel fichier, rougit tant qu'il n'est pas nommé. L'instrument se valide :
     /// il doit trouver au moins trois membres et au moins un fichier qui mesure une horloge, sans quoi
+    /// (le tick de `cases.rs`, seul NON TRAITÉ, est jugé par concordance depuis le lot 84 et a quitté la liste)
     /// il serait vert par vacuité.
     #[test]
     fn les_assertions_sur_une_duree_d_horloge_sont_derivees_et_chacune_est_traitee() {
         /// (fichier, fragment de la condition, raison) — la population TRAITÉE, avec sa raison écrite.
         const TRAITEES: &[(&str, &str, &str)] = &[
-            ("cases.rs", "d < std::time::Duration::from_secs(2)",
-             "NON TRAITÉ, et dit (`P7.19-b`) : un tick jugé contre un mur sans étalonnage ni canal de refus — le corriger demande une concordance ou le canal partagé"),
             ("entrees_scriptees_bornees.rs", "duree_ms < 10_000",
              "la borne jugée est elle-même une durée d'horloge (TIMEOUT=1 s), marge 10× : il n'y a pas de mesure sans horloge à cet endroit"),
             ("entrees_scriptees_bornees.rs", "duree_ms < 5_000",

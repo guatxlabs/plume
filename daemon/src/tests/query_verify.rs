@@ -220,11 +220,12 @@
     // seule LENTEUR de la machine peut faire rougir, en disant « la propriété est violée » là où la
     // vérité est « je n'ai pas pu mesurer ».
     // MEMBRES — TROIS, ET UN SEUL EST NON TRAITÉ :
-    //   * `daemon/src/tests/cases.rs:1043` — `assert!(d < Duration::from_secs(2))` sur un tick
-    //     `rollup_hosts`, sans étalonnage et sans canal de refus. C'EST LE MEMBRE NON TRAITÉ, et il
-    //     est nommé plutôt que passé sous silence : le corriger demande soit une concordance (juger
-    //     le tick RELATIVEMENT à un travail mesuré sur la même machine, comme `P6.9-b` l'a fait), soit
-    //     le canal de refus rendu partageable hors de ce module. Aucun des deux n'est dans ce lot.
+    //   * `daemon/src/tests/cases.rs` — `assert!(d < Duration::from_secs(2))` sur un tick
+    //     `rollup_hosts`, sans étalonnage et sans canal de refus : LE MEMBRE NON TRAITÉ de ce balayage,
+    //     TRAITÉ le 2026-09-10 (`P7.19-b`, lot 84) par concordance — le tick est jugé relativement à
+    //     l'insertion par-ligne mesurée dans la même fenêtre, avec refus de conclure sur étalon nul.
+    //     Depuis le lot 78, ce balayage est tenu par un témoin DÉRIVÉ (`assertions_de_duree_derivees.rs`)
+    //     et cette liste à la main n'est plus que le récit de sa fondation.
     //   * `daemon/src/tests/entrees_scriptees_bornees.rs` — `duree_ms < 10_000` pour une borne
     //     demandée à 1 s : membre par la forme, marge de 10×, et la borne qu'il juge est elle-même
     //     une durée d'horloge — il n'y a pas de mesure sans horloge à cet endroit.

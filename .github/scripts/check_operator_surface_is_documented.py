@@ -199,9 +199,56 @@ PLAFOND_LEVIERS_DU_BUDGET_SANS_ENTREE = 0
 #     ligne ne porte pas une date de relevé plus récente, le cliquet est EN RETARD sur son plan, et
 #     c'est cela qu'il faut lire ici — pas le seul fait qu'il n'a pas monté.
 #
-# Le plafond ne MONTE jamais sans une raison écrite ici même, et ne descend que depuis un compte joué
-# le jour où on l'écrit.
-PLAFOND_LEVIERS_SANS_DOC = 157  # 159 -> 157 le 2026-09-08 : PLUME_PROC_ROOT, PLUME_SYS_ROOT (neuf) et PLUME_DISK_TARGET documentés ensemble (README, capteur de ressources)
+# LE CLIQUET EST UN ENSEMBLE, PLUS UN COMPTE (`P10.10-c`, 2026-09-10). Un compte se laissait compenser :
+# retirer la documentation d'un levier et en documenter un autre laissait le chiffre STABLE et passait
+# vert. Ici la dette est NOMMÉE levier par levier — la liste ci-dessous est le relevé de `--liste=sans-doc`
+# joué le 2026-09-10 (156 noms ; 157 -> 156 sans lot dédié : un levier a été cité entre-temps) — et elle
+# est jugée dans les DEUX sens : un levier muet qui n'y est pas est NEUF et rougit avec son nom ; un nom
+# de la liste qui est désormais cité (ou n'est plus lu) est une exemption SANS OBJET et rougit aussi,
+# pour que la liste ne puisse que fondre. Elle ne s'allonge que par une raison écrite ici même, et
+# chaque retrait est un levier documenté le jour où on le retire. Un lot concurrent qui documente un
+# levier retire SON nom : deux lots le même jour se rencontrent sur une ligne, plus sur un chiffre.
+LEVIERS_MUETS_ADMIS = frozenset((
+    "PLUME_ACL_DEPTH", "PLUME_ACL_MAX", "PLUME_ACL_PATHS", "PLUME_AI_MAX_CALLS_PER_MIN",
+    "PLUME_AI_MAX_TOKENS", "PLUME_AUDIT_BULK_ROWS", "PLUME_AUDIT_LOG", "PLUME_AUDIT_MAX",
+    "PLUME_AUDIT_REAL_USER_ONLY", "PLUME_AUDIT_TAMPER_KEYS", "PLUME_AUTH_LOCK_BASE_S", "PLUME_AUTH_LOCK_MAX_S",
+    "PLUME_AUTOVACUUM_BATCH_PAGES", "PLUME_AUTOVACUUM_MIN_FREE_PAGES", "PLUME_BACKUP_DIR", "PLUME_BANNED_IP_BACKFILL",
+    "PLUME_BANNED_IP_RETENTION", "PLUME_BOOT_PREWARM", "PLUME_CAUSES_MESURE", "PLUME_CF_ACCOUNT",
+    "PLUME_CF_API", "PLUME_CF_HTTP_LAG", "PLUME_CF_HTTP_LIMIT", "PLUME_CF_LIMIT",
+    "PLUME_CF_TOKEN", "PLUME_CF_ZONE", "PLUME_CLAMAV_MAX", "PLUME_CLAMAV_PATHS",
+    "PLUME_COLD_FILE_MAX_ROWS", "PLUME_COLD_GROUP_MAX", "PLUME_COLD_READ_PARALLELISM", "PLUME_COLD_ROWGROUP_ROWS",
+    "PLUME_COLD_STALL_CHECK_INTERVAL_S", "PLUME_CONNTRACK_INTERVAL", "PLUME_CONNTRACK_MAX", "PLUME_CONNTRACK_WINDOW",
+    "PLUME_CONTROL_DB", "PLUME_CONTROL_KEY", "PLUME_CROWDSEC_AGENT", "PLUME_CROWDSEC_AGENT_CONTAINER",
+    "PLUME_CSCLI", "PLUME_DEFENDER_MAX_PAGES", "PLUME_DETECT_CONCURRENCY", "PLUME_ENGAGEMENT_ADAPTER",
+    "PLUME_ENGAGEMENT_ALLOWLIST", "PLUME_ENGAGEMENT_FAILCLOSED_N", "PLUME_ENGAGEMENT_MAX_WINDOW", "PLUME_ENGAGEMENT_MIN_V4_PREFIX",
+    "PLUME_ENGAGEMENT_MIN_V6_PREFIX", "PLUME_ENGAGEMENT_MODE", "PLUME_ENGAGEMENT_SKEW_TOL", "PLUME_EXEC_PLATFORM",
+    "PLUME_EXPORT_MAX", "PLUME_FAIL2BAN_JAIL", "PLUME_FIM_FILES", "PLUME_FIM_PRUNE",
+    "PLUME_FIREHOSE_MAX_DECOMPRESS", "PLUME_FTS_BACKFILL_BATCH", "PLUME_FTS_BACKFILL_SLEEP_MS", "PLUME_FTS_COMPACT_PAGES",
+    "PLUME_FTS_COMPACT_PASSES", "PLUME_FTS_COMPACT_REPOS_MS", "PLUME_FTS_FIELDS_BACKFILL", "PLUME_GENERIC_EXTRACT",
+    "PLUME_HEC_SOURCETYPE_MAP", "PLUME_HTTP_PULL_MAX_PAGES", "PLUME_IMGDRIFT_IMAGES", "PLUME_IMGDRIFT_MAX_IMAGES",
+    "PLUME_IOC_BLOOM", "PLUME_IOC_BLOOM_MIN", "PLUME_KUBE_AUDIT_LOG", "PLUME_KUBE_AUDIT_MAX",
+    "PLUME_LEDGER_EXPORT_DIR", "PLUME_LEDGER_KEY_PATH", "PLUME_LIB", "PLUME_MAIL_BODY_CMD",
+    "PLUME_MAIL_CONTAINER", "PLUME_MAIL_F2B_CONTAINER", "PLUME_MAIL_F2B_NS", "PLUME_MAIL_F2B_POD",
+    "PLUME_MAIL_LOG", "PLUME_MAIL_MAX", "PLUME_MAIL_NS", "PLUME_MAIL_SELECTOR",
+    "PLUME_MAIL_SRC", "PLUME_METRICS_TOKEN", "PLUME_MINIO_ALIAS", "PLUME_MINIO_AUDIT_BIND",
+    "PLUME_MINIO_AUDIT_BUCKETS", "PLUME_MINIO_AUDIT_DROP_APIS", "PLUME_MINIO_AUDIT_PORT", "PLUME_MINIO_NS",
+    "PLUME_MOUNTINFO", "PLUME_NOTIFY_NTFY_TOKEN", "PLUME_ORIGINDROP_MAX", "PLUME_ORIGINDROP_TABLE",
+    "PLUME_ORIGIN_CHAIN", "PLUME_ORIGIN_TABLE", "PLUME_PANEL_DEFAULT_WINDOW", "PLUME_PANEL_LIVE_MS",
+    "PLUME_PANEL_REFRESH_S", "PLUME_POD_LOG_DIR", "PLUME_POD_LOG_MIN_SEV", "PLUME_PORTSCAN_MAX",
+    "PLUME_PROM_TARGETS", "PLUME_PROM_TARGETS_FILE", "PLUME_RISK_TACTICS_THRESHOLD", "PLUME_RISK_TI_BUCKET_S",
+    "PLUME_RISK_TI_SCORE", "PLUME_RISK_VELOCITY", "PLUME_RISK_VELOCITY_WINDOW_S", "PLUME_RISK_WINDOW_S",
+    "PLUME_ROLLUP_MULTIDIM", "PLUME_SELF_HOSTS", "PLUME_SESSION_KEY", "PLUME_SESSION_SECRET",
+    "PLUME_SIGMA_BULK_MAX", "PLUME_SIGMA_BULK_MAX_BYTES", "PLUME_SILENCE_MAX_TTL_S", "PLUME_SKOPEO_OPTS",
+    "PLUME_SOQL_PRUNE_MESSAGE", "PLUME_SSO_GROUP_EDITOR", "PLUME_SSO_GROUP_SUPERADMIN", "PLUME_SSRF_ALLOW",
+    "PLUME_SURICATA_EVE", "PLUME_SURICATA_TYPES", "PLUME_TAXII_MAX_PAGES", "PLUME_TRIVY_OPTS",
+    "PLUME_TRUSTED_ORIGINS", "PLUME_UFW_DUMP", "PLUME_UFW_MAX", "PLUME_UNIT_ROOT",
+    "PLUME_VAULT_ADDR", "PLUME_VAULT_CA", "PLUME_VAULT_TOKEN", "PLUME_VAULT_TOKEN_FILE",
+    "PLUME_VULN_IMAGES", "PLUME_VULN_MAX_EVENTS", "PLUME_VULN_MAX_IMAGES", "PLUME_VULN_MIN_SEVERITY",
+    "PLUME_WAL_LIMITE_MB", "PLUME_WEB_LOG", "PLUME_WEB_MAX", "PLUME_WEB_NS",
+    "PLUME_WEB_SELECTOR", "PLUME_WEB_SKIP_HOST", "PLUME_WEB_SKIP_PATH", "PLUME_WEB_SKIP_ROUTER",
+    "PLUME_WEB_SRC", "PLUME_YARA_MAX", "PLUME_YARA_MAX_EVENTS", "PLUME_YARA_MAX_FILE_SIZE",
+    "PLUME_YARA_PATHS", "PLUME_YARA_PRUNE", "PLUME_YARA_RULES", "PLUME_YARA_TIMEOUT",
+))
 
 # --- PLANCHERS DE NON-DÉGÉNÉRESCENCE -------------------------------------------------------------
 # En dessous, c'est la LECTURE qui est cassée, pas l'arbre qui a maigri — et une garde qui ne
@@ -1027,18 +1074,20 @@ def main() -> int:
                     f"Une MENTION en prose ne compte pas : la première cellule d'une ligne de "
                     f"tableau est ce qui engage le document.")
 
-    if len(sans_doc) > PLAFOND_LEVIERS_SANS_DOC:
-        surplus = len(sans_doc) - PLAFOND_LEVIERS_SANS_DOC
+    # `P10.10-c` — LA DETTE EST UN ENSEMBLE NOMMÉ, JUGÉ DANS LES DEUX SENS.
+    neufs = sorted(set(sans_doc) - LEVIERS_MUETS_ADMIS)
+    sans_objet = sorted(LEVIERS_MUETS_ADMIS - set(sans_doc))
+    if neufs:
         verdicts.append(
-            f"{len(sans_doc)} leviers `PLUME_*` ne sont cités par AUCUN document ni par "
-            f"`.env.example` — le cliquet est à {PLAFOND_LEVIERS_SANS_DOC}, dépassé de {surplus}. "
-            f"Ce qui n'est pas documenté ne doit jamais AUGMENTER en silence : documentez le ou les "
-            f"leviers ajoutés, ou déclarez-les hors périmètre en écrivant pourquoi. "
-            f"CETTE GARDE COMPTE, ELLE NE TIENT PAS LA LISTE D'HIER : elle sait NOMMER toute la "
-            f"population, pas distinguer celui qui vient d'arriver. Pour l'isoler, comparez la "
-            f"sortie de `--liste=sans-doc` entre votre branche et la base — c'est CETTE lecture qui "
-            f"fait foi, et `README.md` la cite au lieu d'en réimplémenter une autre. "
-            f"Extrait de la liste complète, par ordre alphabétique : {', '.join(sans_doc[:12])}…")
+            f"{len(neufs)} levier(s) `PLUME_*` muet(s) NEUF(S), cités par AUCUN document ni par `.env.example` et "
+            f"absents de la dette admise (`LEVIERS_MUETS_ADMIS`) : {', '.join(neufs)}. Ce qui n'est pas documenté "
+            f"ne doit jamais AUGMENTER en silence : documentez-les (la première cellule d'une ligne de tableau de "
+            f"`README.md` ou `deploy/PROFILE.md`), ou inscrivez-les dans la dette avec une raison écrite à côté.")
+    if sans_objet:
+        verdicts.append(
+            f"{len(sans_objet)} nom(s) de la dette admise (`LEVIERS_MUETS_ADMIS`) ne sont plus muets — cités "
+            f"désormais, ou plus lus par le code : {', '.join(sans_objet)}. Une exemption sans objet est une liste "
+            f"morte : retirez-les de la dette dans le même lot, elle ne peut que fondre.")
 
     if verdicts:
         for v in verdicts:
@@ -1051,7 +1100,7 @@ def main() -> int:
           f"{len(capteurs)} capteurs, {len(modes)} modes ({script_modes}), "
           f"{len(leviers_budget)} leviers de budget mémoire ({module_budget}) : tous ont une entrée. "
           f"Leviers `PLUME_*` : {len(lus)} lus, {len(lus & cites)} cités, {len(sans_doc)} sans "
-          f"aucune documentation (cliquet {PLAFOND_LEVIERS_SANS_DOC}). "
+          f"aucune documentation (dette nommée : {len(LEVIERS_MUETS_ADMIS)}, jugée dans les deux sens). "
           f"NON COUVERT, et c'est dit : {len(cles_dexecution)} clé(s) de configuration sont des "
           f"variables d'exécution, sans nom statique à documenter.")
     return 0

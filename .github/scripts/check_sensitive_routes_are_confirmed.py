@@ -102,7 +102,9 @@ ici avec un chiffre relevé un jour donné, que plus rien ne suivait. Elle est m
 appel confirmé retient l'ORIGINE de sa confirmation — `propre` (écrite dans la fonction qui envoie),
 `ancetre` (une portée qui la CONTIENT), `appelant` (une portée qui la NOMME). Seule la troisième est
 faible : la portée qui confirme peut appartenir à un geste VOISIN. Le compte des `appelant` est PUBLIÉ
-et tenu par un plancher (`PLAFOND_CONFIRME_PAR_APPELANT`) qui ne se relève pas. C'est un COMPTE, pas un
+et tenu par un ENSEMBLE NOMMÉ (`CONFIRMEES_PAR_APPELANT_ADMISES`, `P11.13-c`, 2026-09-10) qui ne peut que fondre :
+chaque site où la lecture est existentielle est écrit (fichier, fonction), un site neuf rougit avec son nom, un site
+qui n'est plus faible sort de la liste dans le même lot. C'était un COMPTE, pas un
 resserrement : aucune de ces routes n'est accusée, et la garde ne rend ni plus ni moins de « confirmée »
 qu'avant ce compte.
 MESURÉ le 2026-08-29 sur `web/destinations.js`, et c'est la forme la plus nette : une SEULE fonction du
@@ -143,7 +145,7 @@ conclure.
 
 LES TROIS PLANCHERS SE RE-MESURENT EN UNE EXÉCUTION
 ---------------------------------------------------
-`PLAFOND_ABANDONS` et `PLAFOND_CONFIRME_PAR_APPELANT` portent des nombres relevés sur l'arbre. Quand la
+`PLAFOND_ABANDONS` porte un nombre relevé sur l'arbre, `CONFIRMEES_PAR_APPELANT_ADMISES` des noms. Quand la
 garde en trouve MOINS elle le dit et invite à descendre le plancher ; quand elle en trouve PLUS elle
 rougit et imprime le compte. Aucun des deux ne se relève : les faire monter ferait de la place au lieu
 d'en reprendre.
@@ -175,7 +177,42 @@ PLAFOND_ABANDONS = 11
 # le déclencheur de sortie de données et l'interrupteur d'activation empruntaient tous deux la confirmation
 # du bouton qui SUPPRIME, seule fonction du module à en porter une. Compté, jamais accusé ; ne se relève pas.
 # Descendu 30 → 29 le 2026-09-09 sur l'invitation de la garde elle-même (« peut descendre à 29 »).
-PLAFOND_CONFIRME_PAR_APPELANT = 29
+# `P11.13-c` — LA LIMITE EXISTENTIELLE EST NOMMÉE SITE PAR SITE, PLUS COMPTÉE. Relevé du 2026-09-10 : les appels
+# mutants dont la « confirmée » vient d'une portée qui les NOMME (ni la leur, ni une portée qui les contient).
+# Jugé dans les deux sens : un site absent d'ici est NEUF et rougit ; un site d'ici qui n'est plus faible est
+# une exemption SANS OBJET et rougit — la liste ne s'allonge que par une raison écrite, et fond dès qu'une
+# confirmation est écrite dans la fonction qui envoie. Le RESSERREMENT (juger tous les chemins) reste refusé
+# par la mesure de l'en-tête : il produirait une fausse accusation sur les motifs qui se recouvrent.
+CONFIRMEES_PAR_APPELANT_ADMISES = frozenset((
+    ("web/cases.js", "advanceStep"),
+    ("web/cases.js", "attachRunbook"),
+    ("web/cases.js", "attachToCasePrompt"),
+    ("web/cases.js", "caseUpdate"),
+    ("web/cases.js", "incidentDeclare"),
+    ("web/cases.js", "linkCasePrompt"),
+    ("web/cases.js", "mergeCasePrompt"),
+    ("web/cases.js", "prepareResponse"),
+    ("web/connectors.js", "connectorRow"),
+    ("web/connectors.js", "testConnector"),
+    ("web/dashboards.js", "addDashboardFlow"),
+    ("web/dashboards.js", "captureSnapshot"),
+    ("web/dashboards.js", "createPanelModal"),
+    ("web/dashboards.js", "patchDash"),
+    ("web/dashboards.js", "patchPanel"),
+    ("web/datamodels.js", "runDataset"),
+    ("web/destinations.js", "destinationRow"),
+    ("web/detadv.js", "testBaseline"),
+    ("web/detadv.js", "testCorrelation"),
+    ("web/detection_admin.js", "playbookRowModel"),
+    ("web/detection_admin.js", "ruleRowModel"),
+    ("web/idp.js", "<anonyme>"),
+    ("web/idp.js", "startEnroll"),
+    ("web/knowledge.js", "create"),
+    ("web/runbooks.js", "runbookRowModel"),
+    ("web/sources.js", "declareCadence"),
+    ("web/sources.js", "sourcePut"),
+    ("web/suppressions.js", "suppressionsPut"),
+))
 # PLANCHER DES SITES OBTENUS PAR UNE ENVELOPPE (`P11.13-h` (a)) : atteste que le suivi des enveloppes est
 # BRANCHÉ sur le verdict, pas seulement validé en témoin. Mesuré sur l'arbre ; il ne descend pas.
 PLANCHER_SITES_PAR_ENVELOPPE = 4
@@ -1071,18 +1108,27 @@ def main():
     # peut être livré qu'APRÈS le paiement des dettes qu'il révèle (`P11.13-h` (c)).
     par_appelant = sorted({(a[0], a[1], a[5]) for a in appels if a[6] == "appelant"})
     print(f"\nconfirmations accordées par une portée qui NOMME l'appelant (ni la sienne, ni une portée qui la "
-          f"contient) : {len(par_appelant)} appel(s), plancher {PLAFOND_CONFIRME_PAR_APPELANT} — la portée qui "
-          "confirme peut appartenir à un geste VOISIN, et cette forme de « confirmée » n'est pas une preuve.")
+          f"contient) : {len(par_appelant)} appel(s), dette nommée de {len(CONFIRMEES_PAR_APPELANT_ADMISES)} site(s) — la "
+          "portée qui confirme peut appartenir à un geste VOISIN, et cette forme de « confirmée » n'est pas une preuve.")
     for f, ligne, fn in par_appelant:
         print(f"  par-appelant  {f}:{ligne} dans `{fn}`")
-    if len(par_appelant) > PLAFOND_CONFIRME_PAR_APPELANT:
-        print(f"::error::{len(par_appelant)} appel(s) mutant(s) tiennent leur « confirmée » d'une portée qui les "
-              f"NOMME, plancher {PLAFOND_CONFIRME_PAR_APPELANT} : un de plus. Écris la confirmation dans la fonction "
-              "qui envoie, ou dans une portée qui la contient — ce plancher ne se relève pas.")
+    # `P11.13-c` — jugé dans les DEUX sens, site par site (fichier, fonction), jamais par un compte.
+    faibles = {(f, fn) for f, _, fn in par_appelant}
+    neufs = sorted(faibles - CONFIRMEES_PAR_APPELANT_ADMISES)
+    sans_objet = sorted(CONFIRMEES_PAR_APPELANT_ADMISES - faibles)
+    if neufs:
+        print("::error::" + f"{len(neufs)} appel(s) mutant(s) NEUF(S) tiennent leur « confirmée » d'une portée qui les NOMME, "
+              "hors de la dette admise (`CONFIRMEES_PAR_APPELANT_ADMISES`) : "
+              + ", ".join(f"{f} `{fn}`" for f, fn in neufs)
+              + ". Écris la confirmation dans la fonction qui envoie, ou dans une portée qui la contient — la dette ne s'allonge "
+              "que par une raison écrite à côté de la liste.")
         return 1
-    if len(par_appelant) < PLAFOND_CONFIRME_PAR_APPELANT:
-        print(f"note : le plancher des « confirmée par appelant » peut descendre à {len(par_appelant)} "
-              "(`PLAFOND_CONFIRME_PAR_APPELANT`).")
+    if sans_objet:
+        print("::error::" + f"{len(sans_objet)} site(s) de la dette admise (`CONFIRMEES_PAR_APPELANT_ADMISES`) ne sont plus "
+              "confirmés par un appelant — confirmation écrite au bon endroit, fonction renommée ou disparue : "
+              + ", ".join(f"{f} `{fn}`" for f, fn in sans_objet)
+              + ". Retire-les de la dette dans le même lot : une exemption sans objet est une liste morte.")
+        return 1
     if len(asymetries) < PLAFOND_ASYMETRIE:
         print(f"note : le cliquet peut descendre à {len(asymetries)} (`PLAFOND_ASYMETRIE`).")
     print(f"\nOK — {len(couverts)} route(s) sensible(s) confirmée(s) par la surface, {len(sans)} sans appelant web "

@@ -322,6 +322,12 @@ pub(crate) fn read_conn_put(db_path: &str, conn: Connection) {
 /// donc les lectures fréquentes (dashboards/alertes/overview, x2 si 2 fenêtres) ne contendent plus
 /// avec l'ingestion. La closure construit la valeur ; la connexion est rendue au pool. `default` si
 /// la connexion échoue. (Snapshot WAL = lecture cohérente, légèrement décalée = OK pour de la lecture.)
+/// LES DEUX CAUSES D'UN DÉFAUT GARDÉ (`P10.7-g`, lot 92), écrites une fois : aucune connexion de lecture (la valeur
+/// par défaut de `read_with*` est servie), ou la tâche bloquante qui ne rend rien (jointure). Un défaut qui les porte
+/// sous `error` n'est plus un corps rassurant : le consommateur lit la clé qu'il teste déjà.
+pub(crate) const LECTURE_NON_FAITE_SANS_CONNEXION: &str = "lecture NON FAITE : aucune connexion de lecture disponible";
+pub(crate) const LECTURE_NON_FAITE_TACHE_INTERROMPUE: &str = "lecture NON FAITE : la tâche de lecture ne s'est pas terminée";
+
 pub(crate) fn read_with<T>(db_path: &str, default: T, f: impl FnOnce(&Connection) -> T) -> T {
     match read_conn_get(db_path) {
         Ok(conn) => {

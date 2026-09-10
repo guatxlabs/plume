@@ -316,13 +316,13 @@ pub(crate) async fn alerts(State(st): State<AppState>, Extension(au): Extension<
     let db_path = req_db_path(&st, &au);
     let gval = gval.to_string();
     let res = tokio::task::spawn_blocking(move || {
-        read_with_watchdog(&db_path, json!({ "alerts": [] }), move |conn| {
+        read_with_watchdog(&db_path, json!({ "alerts": [], "error": crate::query_exec::LECTURE_NON_FAITE_SANS_CONNEXION }), move |conn| {
             let (out, total, fin) = alerts_query_page(conn, &filtre, group_col, &gval, limit, offset, paged);
             corps_de_liste_d_alertes(out, total, &fin)
         })
     })
     .await
-    .unwrap_or_else(|_| json!({ "alerts": [] }));
+    .unwrap_or_else(|_| json!({ "alerts": [], "error": crate::query_exec::LECTURE_NON_FAITE_TACHE_INTERROMPUE }));
     Json(res).into_response()
 }
 
@@ -434,13 +434,13 @@ pub(crate) async fn alert_groups(State(st): State<AppState>, Extension(au): Exte
     let db_path = req_db_path(&st, &au);
     let gc = group_col.to_string();
     let res = tokio::task::spawn_blocking(move || {
-        read_with_watchdog(&db_path, json!({ "groups": [] }), move |conn| {
+        read_with_watchdog(&db_path, json!({ "groups": [], "error": crate::query_exec::LECTURE_NON_FAITE_SANS_CONNEXION }), move |conn| {
             let (groups, total, fin) = alert_groups_query_page(conn, &gc, &filtre, limit, offset);
             corps_de_liste_de_groupes(groups, total, &gc, &fin)
         })
     })
     .await
-    .unwrap_or_else(|_| json!({ "groups": [] }));
+    .unwrap_or_else(|_| json!({ "groups": [], "error": crate::query_exec::LECTURE_NON_FAITE_TACHE_INTERROMPUE }));
     Json(res).into_response()
 }
 
@@ -604,7 +604,7 @@ pub(crate) async fn coverage_detections(State(st): State<AppState>, Extension(au
     };
     let db_path = req_db_path(&st, &au);
     let res = tokio::task::spawn_blocking(move || {
-        read_with_watchdog(&db_path, json!({ "detections": [] }), move |conn| {
+        read_with_watchdog(&db_path, json!({ "detections": [], "error": crate::query_exec::LECTURE_NON_FAITE_SANS_CONNEXION }), move |conn| {
             let row_tuple = |r: &rusqlite::Row| -> rusqlite::Result<(String, i64, i64)> {
                 Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))
             };
@@ -654,7 +654,7 @@ pub(crate) async fn coverage_detections(State(st): State<AppState>, Extension(au
         })
     })
     .await
-    .unwrap_or_else(|_| json!({ "detections": [] }));
+    .unwrap_or_else(|_| json!({ "detections": [], "error": crate::query_exec::LECTURE_NON_FAITE_TACHE_INTERROMPUE }));
     Json(res)
 }
 
@@ -944,7 +944,7 @@ pub(crate) async fn coverage_attack(State(st): State<AppState>, Extension(au): E
     };
     let db_path = req_db_path(&st, &au);
     let res = tokio::task::spawn_blocking(move || {
-        read_with_watchdog(&db_path, json!({ "tactics": [], "totals": {} }), move |conn| {
+        read_with_watchdog(&db_path, json!({ "tactics": [], "totals": {}, "error": crate::query_exec::LECTURE_NON_FAITE_SANS_CONNEXION }), move |conn| {
             // Règles ACTIVÉES portant un tag MITRE, MOINS celles qu'aucun producteur ne peut nourrir
             // sur CETTE base (`P9.5-a`) : « activée » n'a jamais voulu dire « surveillante ». Point
             // unique — la lecture directe de `rule WHERE enabled=1` a été RETIRÉE d'ici, et une garde
@@ -962,6 +962,6 @@ pub(crate) async fn coverage_attack(State(st): State<AppState>, Extension(au): E
         })
     })
     .await
-    .unwrap_or_else(|_| json!({ "tactics": [], "totals": {} }));
+    .unwrap_or_else(|_| json!({ "tactics": [], "totals": {}, "error": crate::query_exec::LECTURE_NON_FAITE_TACHE_INTERROMPUE }));
     Json(res)
 }

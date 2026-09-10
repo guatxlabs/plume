@@ -442,21 +442,15 @@ PLANCHER_FICHIERS = 15
 # la liste se corrige à la main avec la raison du renommage. ZÉRO reste atteignable jambe par jambe : une
 # jambe dont l'ensemble est vide ne réclame rien — aucune rançon.
 SITES_ADMIS = {
-    "A": {  # défaut NU servi : 15 accusations sur 14 sites (16 le 2026-09-10 matin ; `sla_policies_list` avoue depuis `P10.7-z`)
-        ("daemon/src/handlers/admin_ui.rs", "ledger_get"): 1,
-        ("daemon/src/handlers/alerts.rs", "alert_groups"): 1,
-        ("daemon/src/handlers/alerts.rs", "alerts"): 1,
-        ("daemon/src/handlers/alerts.rs", "coverage_attack"): 1,
-        ("daemon/src/handlers/alerts.rs", "coverage_detections"): 1,
-        ("daemon/src/handlers/caseops.rs", "case_links_get"): 1,
-        ("daemon/src/handlers/caseops.rs", "case_metrics"): 1,
-        ("daemon/src/handlers/caseops.rs", "case_queues"): 1,
-        ("daemon/src/handlers/caseops.rs", "client_case_get"): 1,
-        ("daemon/src/handlers/caseops.rs", "client_cases_list"): 1,
-        ("daemon/src/handlers/cases.rs", "cases_list"): 1,
-        ("daemon/src/handlers/compliance.rs", "compliance_posture"): 1,
+    "A": {  # défaut NU servi : 3 accusations sur 2 sites (15 le 2026-09-10 ; douze défauts portent leur cause dans leur littéral depuis le lot 92)
+        # `fleet` ×2 : le défaut gardé est un TRIPLET typé ((hôtes, fraîcheur, lu) — cf. lot 91) et l'aveu `error` est posé
+        # dans le corps du gestionnaire quand `lu` est faux ; cet instrument juge le littéral du défaut, qui ne peut pas
+        # porter la clé. Exemption gardée avec sa raison ; corps_rassurants_avouent.rs tient la propriété.
         ("daemon/src/handlers/fleet.rs", "fleet"): 2,
-        ("daemon/src/handlers/sources.rs", "sources_inventory"): 1,
+        # `compliance_posture` : le défaut des règles mappées est TYPÉ (`Err(())`, lot 92) et la cause rejoint `error` par
+        # `corps_de_lecture_non_faite` ; cet instrument juge le littéral du défaut, qui ne peut pas porter la clé. Exemption
+        # gardée avec sa raison ; defauts_gardes_avouent.rs tient la propriété.
+        ("daemon/src/handlers/compliance.rs", "compliance_posture"): 1,
     },
     "B": {  # closure SOURDE : 17 accusations sur 16 sites (18 après `P10.7-z` ; les environnements avouent depuis le lot 91)
         ("daemon/src/handlers/admin_ui.rs", "ledger_get"): 1,

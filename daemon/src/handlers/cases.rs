@@ -458,12 +458,12 @@ pub(crate) async fn cases_list(State(st): State<AppState>, Extension(au): Extens
     let db_path = req_db_path(&st, &au);
     let now_i = now();
     let res = tokio::task::spawn_blocking(move || {
-        read_with_watchdog(&db_path, json!({ "cases": [], "total": 0 }), move |conn| {
+        read_with_watchdog(&db_path, json!({ "cases": [], "total": 0, "error": crate::query_exec::LECTURE_NON_FAITE_SANS_CONNEXION }), move |conn| {
             cases_list_json_paged(conn, now_i, &status, &assignee, priority, overdue_only, archived, &sort, limit, offset)
         })
     })
     .await
-    .unwrap_or_else(|_| json!({ "cases": [], "total": 0 }));
+    .unwrap_or_else(|_| json!({ "cases": [], "total": 0, "error": crate::query_exec::LECTURE_NON_FAITE_TACHE_INTERROMPUE }));
     Json(res)
 }
 

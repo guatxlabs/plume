@@ -4783,8 +4783,10 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   const routeAttack = srcMatrice.match(/pub\(crate\) async fn coverage_attack\([\s\S]*?\n\}/);
   exiger(!!routeAttack, "(39) instrument : `coverage_attack` introuvable dans le démon — le témoin ne peut plus compter les sorties dégradées de la route qu'`attack.js` interroge");
   const corpsRoute = (routeAttack || [""])[0];
-  const FORME_VIDE = /json!\(\{\s*"tactics":\s*\[\],\s*"totals":\s*\{\}\s*\}\)/g;
-  const FORME_VIDE_MARQUEE = /corps_de_refus\(\s*json!\(\{\s*"tactics":\s*\[\],\s*"totals":\s*\{\}\s*\}\)\s*\)/g;
+  // `P10.7-g` (lot 92) — une sortie dégradée peut porter sa cause DANS son littéral (`"error": …`) : elle est
+  // alors MARQUÉE au même titre que celle du portillon. Le compte lit les deux écritures, jamais une seule.
+  const FORME_VIDE = /json!\(\{\s*"tactics":\s*\[\],\s*"totals":\s*\{\}\s*(?:,\s*"error":[^}]*)?\}\)/g;
+  const FORME_VIDE_MARQUEE = /corps_de_refus\(\s*json!\(\{\s*"tactics":\s*\[\],\s*"totals":\s*\{\}\s*\}\)\s*\)|json!\(\{\s*"tactics":\s*\[\],\s*"totals":\s*\{\}\s*,\s*"error":/g;
   const sortiesDegradees = (corpsRoute.match(FORME_VIDE) || []).length;
   const sortiesMarquees = (corpsRoute.match(FORME_VIDE_MARQUEE) || []).length;
   exiger(sortiesDegradees >= 2 && sortiesMarquees >= 1 && sortiesMarquees <= sortiesDegradees,

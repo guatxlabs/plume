@@ -453,10 +453,11 @@ pub(crate) async fn ledger_get(State(st): State<AppState>, Extension(au): Extens
         }
     };
     let db_path = req_db_path(&st, &au);
-    let res = tokio::task::spawn_blocking(move || read_with_watchdog(&db_path, Value::Null, move |conn| ledger_page(conn, &ask)))
+    // `P10.7-g` (lot 92) — le défaut porte sa cause au lieu d'un `Null` : le 500 nommé ci-dessous reste la sortie.
+    let res = tokio::task::spawn_blocking(move || read_with_watchdog(&db_path, json!({ "error": crate::query_exec::LECTURE_NON_FAITE_SANS_CONNEXION, "lecture_non_faite": true }), move |conn| ledger_page(conn, &ask)))
         .await
-        .unwrap_or(Value::Null);
-    if res.is_null() {
+        .unwrap_or_else(|_| json!({ "error": crate::query_exec::LECTURE_NON_FAITE_TACHE_INTERROMPUE, "lecture_non_faite": true }));
+    if res.is_null() || res.get("lecture_non_faite").is_some() {
         return server_err(
             "journal d'audit illisible (connexion de lecture indisponible). Aucune page n'est rendue — une \
              page vide se lirait comme un journal vide.",

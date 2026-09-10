@@ -355,7 +355,7 @@ pub(crate) async fn sources_inventory(State(st): State<AppState>, Extension(au):
     let now_ts = now();
     let db_path = req_db_path(&st, &au);
     tokio::task::spawn_blocking(move || {
-        read_with_watchdog(db_path.as_str(), Json(json!({ "ok": false, "sources": [], "generated": now_ts })), move |conn| {
+        read_with_watchdog(db_path.as_str(), Json(json!({ "ok": false, "sources": [], "generated": now_ts, "error": crate::query_exec::LECTURE_NON_FAITE_SANS_CONNEXION })), move |conn| {
             let d1 = now_ts - 86400;
             let cut7 = now_ts - FENETRE_INVENTAIRE_S;
             let pipe_fresh = pipeline_is_fresh(conn, now_ts);

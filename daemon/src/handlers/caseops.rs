@@ -620,9 +620,9 @@ pub(crate) async fn case_queues(State(st): State<AppState>, Extension(au): Exten
     };
     let db_path = req_db_path(&st, &au);
     let now_i = now();
-    let res = tokio::task::spawn_blocking(move || read_with_watchdog(&db_path, json!({ "queues": [] }), move |conn| case_queues_json(conn, now_i)))
+    let res = tokio::task::spawn_blocking(move || read_with_watchdog(&db_path, json!({ "queues": [], "error": crate::query_exec::LECTURE_NON_FAITE_SANS_CONNEXION }), move |conn| case_queues_json(conn, now_i)))
         .await
-        .unwrap_or_else(|_| json!({ "queues": [] }));
+        .unwrap_or_else(|_| json!({ "queues": [], "error": crate::query_exec::LECTURE_NON_FAITE_TACHE_INTERROMPUE }));
     Json(res)
 }
 
@@ -635,9 +635,9 @@ pub(crate) async fn case_metrics(State(st): State<AppState>, Extension(au): Exte
         Err(_) => return Json(crate::handlers::portillon::corps_de_refus(json!({}))),
     };
     let db_path = req_db_path(&st, &au);
-    let res = tokio::task::spawn_blocking(move || read_with_watchdog(&db_path, json!({}), move |conn| case_metrics_json(conn, from, to)))
+    let res = tokio::task::spawn_blocking(move || read_with_watchdog(&db_path, json!({ "error": crate::query_exec::LECTURE_NON_FAITE_SANS_CONNEXION }), move |conn| case_metrics_json(conn, from, to)))
         .await
-        .unwrap_or_else(|_| json!({}));
+        .unwrap_or_else(|_| json!({ "error": crate::query_exec::LECTURE_NON_FAITE_TACHE_INTERROMPUE }));
     Json(res)
 }
 
@@ -663,9 +663,9 @@ pub(crate) async fn case_unmerge_handler(State(st): State<AppState>, Extension(a
 /// GET /api/cases/{id}/links — liens du case. POST /api/cases/{id}/links {to,kind,note} — ajoute un lien.
 pub(crate) async fn case_links_get(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Json<Value> {
     let db_path = req_db_path(&st, &au);
-    let res = tokio::task::spawn_blocking(move || read_with_watchdog(&db_path, json!({ "links": [] }), move |conn| case_links_json(conn, id)))
+    let res = tokio::task::spawn_blocking(move || read_with_watchdog(&db_path, json!({ "links": [], "error": crate::query_exec::LECTURE_NON_FAITE_SANS_CONNEXION }), move |conn| case_links_json(conn, id)))
         .await
-        .unwrap_or_else(|_| json!({ "links": [] }));
+        .unwrap_or_else(|_| json!({ "links": [], "error": crate::query_exec::LECTURE_NON_FAITE_TACHE_INTERROMPUE }));
     Json(res)
 }
 
@@ -898,10 +898,10 @@ pub(crate) async fn client_cases_list(State(st): State<AppState>, Extension(au):
     let now_i = now();
     let res = tokio::task::spawn_blocking(move || {
         let dbp = db_path.clone();
-        read_with_watchdog(&db_path, json!({ "cases": [], "total": 0 }), move |conn| client_cases_list_json(conn, &dbp, &masks, now_i, &state, limit, offset))
+        read_with_watchdog(&db_path, json!({ "cases": [], "total": 0, "error": crate::query_exec::LECTURE_NON_FAITE_SANS_CONNEXION }), move |conn| client_cases_list_json(conn, &dbp, &masks, now_i, &state, limit, offset))
     })
     .await
-    .unwrap_or_else(|_| json!({ "cases": [], "total": 0 }));
+    .unwrap_or_else(|_| json!({ "cases": [], "total": 0, "error": crate::query_exec::LECTURE_NON_FAITE_TACHE_INTERROMPUE }));
     Json(res)
 }
 
@@ -913,11 +913,14 @@ pub(crate) async fn client_case_get(State(st): State<AppState>, Extension(au): E
     let now_i = now();
     let res = tokio::task::spawn_blocking(move || {
         let dbp = db_path.clone();
-        read_with_watchdog(&db_path, None, move |conn| client_case_get_json(conn, &dbp, &masks, id, now_i))
+        // `P10.7-g` (lot 92) — une lecture NON FAITE n'est pas une absence : « case introuvable » (404) ne se sert
+        // que sur une lecture aboutie qui n'a rien trouvé ; sans connexion, ou tâche interrompue, c'est un 5xx qui le dit.
+        read_with_watchdog(&db_path, Some(json!({ "error": crate::query_exec::LECTURE_NON_FAITE_SANS_CONNEXION, "lecture_non_faite": true })), move |conn| client_case_get_json(conn, &dbp, &masks, id, now_i))
     })
     .await
-    .unwrap_or(None);
+    .unwrap_or_else(|_| Some(json!({ "error": crate::query_exec::LECTURE_NON_FAITE_TACHE_INTERROMPUE, "lecture_non_faite": true })));
     match res {
+        Some(v) if v.get("lecture_non_faite").is_some() => (StatusCode::INTERNAL_SERVER_ERROR, Json(v)).into_response(),
         Some(v) => Json(v).into_response(),
         None => (StatusCode::NOT_FOUND, "case introuvable").into_response(),
     }

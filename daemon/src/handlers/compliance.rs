@@ -338,7 +338,12 @@ pub(crate) async fn compliance_posture(
         });
         let agg = posture_aggregate(rows_iter, target2.as_deref());
         // (b) règles mappées.
-        let rules = read_with_watchdog(&db_path, std::collections::BTreeMap::new(), rule_compliance_map);
+        // `P10.7-g` (lot 92) — les règles mappées NON LUES rejoignent la cause : une carte vide se lisait « aucune
+        // règle ne couvre aucun contrôle », le corps le plus rassurant de la conformité, servi sans connexion.
+        let (rules, cause) = match read_with_watchdog(&db_path, Err(()), |conn| Ok(rule_compliance_map(conn))) {
+            Ok(r) => (r, cause),
+            Err(()) => (std::collections::BTreeMap::new(), cause.or_else(|| Some(crate::query_exec::LECTURE_NON_FAITE_SANS_CONNEXION.to_string()))),
+        };
         (agg, rules, res.get("rows").and_then(|r| r.as_array()).map(|a| a.len()).unwrap_or(0), cause)
     })
     .await

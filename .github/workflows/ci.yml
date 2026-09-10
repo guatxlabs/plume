@@ -2376,6 +2376,13 @@ jobs:
         id: garde_62
         continue-on-error: true
         run: python3 .github/scripts/check_blocked_work_names_its_cause.py
+      # `P8.9-o` — LA POSSESSION DES TEMPORAIRES EST UN FICHIER, copié à l'identique dans chaque caisse qui la
+      # porte : recopier plutôt que partager (aucune dépendance entre caisses), sous une garde qui refuse la
+      # dérive. Chaque caisse qui porte `src/tmp_possede.rs` arme le balayage « aucun temporaire laissé ».
+      - name: Les copies de la possession des temporaires sont identiques à la référence (P8.9-o)
+        id: garde_63
+        continue-on-error: true
+        run: python3 .github/scripts/check_tmp_possede_copies_are_identical.py
 
       # Discovery is by EXTENSION **and** by first-line SHEBANG, deliberately: today all 43
       # tracked scripts carry a `.sh` extension (measured), and 42 of them a sh/bash shebang —
@@ -2537,6 +2544,7 @@ jobs:
           total=$((total+1)); o="${{ steps.garde_60.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_identite_canonique_a_une_seule_source.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_61.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_retention_declare_ce_quelle_purge.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_62.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_blocked_work_names_its_cause.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_63.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_tmp_possede_copies_are_identical.py : $o"; }
           echo "gardes jouées : $total ; en échec : $rouges"
           exit $rc
   features:
@@ -3030,6 +3038,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo test --locked --verbose 2>&1 | tee /tmp/syslog-tests.log
+          "$GITHUB_WORKSPACE/.github/aucun-temporaire-laisse.sh" "suite collector-syslog"
           total=$(grep -oP 'test result: ok\. \K[0-9]+' /tmp/syslog-tests.log | paste -sd+ | bc)
           echo "collector-syslog tests passed: $total (expected $EXPECTED_SYSLOG_TESTS)"
           if [ "$total" != "$EXPECTED_SYSLOG_TESTS" ]; then
@@ -3049,6 +3058,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo test --locked --verbose 2>&1 | tee /tmp/mail-tests.log
+          "$GITHUB_WORKSPACE/.github/aucun-temporaire-laisse.sh" "suite collector-mail"
           total=$(grep -oP 'test result: ok\. \K[0-9]+' /tmp/mail-tests.log | paste -sd+ | bc)
           echo "collector-mail tests passed: $total (expected $EXPECTED_MAIL_TESTS)"
           if [ "$total" != "$EXPECTED_MAIL_TESTS" ]; then

@@ -6,6 +6,8 @@
 /// examiner ne se conclut pas par « 0 alerte ».
 mod garde_lisibilite;
 mod lisibilite;
+#[cfg(test)]
+mod tmp_possede; // P8.9-o : le temporaire de test SE POSSÈDE (copie identique de daemon/src/tmp_possede.rs, gardée)
 mod maildir;
 mod patterns;
 mod url_extract;

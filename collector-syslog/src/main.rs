@@ -11,6 +11,8 @@
 mod fortigate;
 mod framing;
 mod lisibilite;
+#[cfg(test)]
+mod tmp_possede; // P8.9-o : le temporaire de test SE POSSÈDE (copie identique de daemon/src/tmp_possede.rs, gardée)
 mod parser;
 mod spool;
 
@@ -795,7 +797,8 @@ mod tests {
     ///    satisfaits par une fonction qui ne dirait jamais `Depasse`.
     #[test]
     fn un_spool_illisible_ne_se_lit_pas_comme_un_spool_sous_le_budget() {
-        let base = std::env::temp_dir().join(format!("plume-s33-{}", std::process::id()));
+        let tmp = crate::tmp_possede::TmpPossede::neuf("syslog-s33"); // P8.9-o : possédé
+        let base = tmp.to_path_buf();
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
         let mut c = cfg_with_allow(Vec::new());

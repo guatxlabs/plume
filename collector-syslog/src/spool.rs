@@ -43,7 +43,8 @@ mod tests {
 
     #[test]
     fn writes_valid_envelope() {
-        let dir = std::env::temp_dir().join(format!("plume-syslog-test-{}", std::process::id()));
+        let tmp = crate::tmp_possede::TmpPossede::neuf("syslog-spool"); // P8.9-o : possédé
+        let dir = tmp.to_path_buf();
         let dir_s = dir.to_string_lossy().to_string();
         let _ = std::fs::create_dir_all(&dir);
         let events = vec![json!({"ts":1,"source":"fortigate","category":"firewall","severity":1,"message":"x"})];

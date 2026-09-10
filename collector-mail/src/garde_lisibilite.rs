@@ -28,27 +28,7 @@ use std::path::{Path, PathBuf};
 /// l'instrument qui est cassé, pas la surface. La garde refuse alors de conclure.
 const MIN_FAMILLES: usize = 2;
 
-struct TmpPossede(PathBuf);
-
-impl TmpPossede {
-    fn neuf(tag: &str) -> Self {
-        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let d = std::env::temp_dir().join(format!("plume-s36-mail-garde-{tag}-{}-{n}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        Self(d)
-    }
-    fn chemin(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TmpPossede {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
+use crate::tmp_possede::TmpPossede; // P8.9-o : la possession partagée, plus une copie locale
 
 /// Un message parfaitement ordinaire et ANODIN : décodable, et qui ne déclenche aucun motif. C'est le
 /// témoin ② — sans lui, on ne saurait pas distinguer « examiné et sain » de « jamais examiné ».
@@ -73,7 +53,12 @@ fn ecrire_message(dossier: &Path, nom: &str, octets: &[u8]) {
 
 /// Exécute le collecteur TEL QU'IL EST LIVRÉ sur l'arborescence fabriquée, et rend les enveloppes
 /// écrites dans le spool.
+/// `P8.9-o` — l'environnement du PROCESSUS est partagé par tous les fils de test : celui qui l'écrit
+/// tient ce verrou jusqu'à la fin de l'exécution (un poison de panique ne le bloque pas : il se reprend).
+static VERROU_ENV_PROCESSUS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn executer(racine: &Path, spool: &Path, etat: &Path, dossier: &str) -> Vec<serde_json::Value> {
+    let _verrou = VERROU_ENV_PROCESSUS.lock().unwrap_or_else(|e| e.into_inner());
     std::env::set_var("PLUME_MAIL_ROOT", racine);
     std::env::set_var("PLUME_SPOOL", spool);
     std::env::set_var("PLUME_MAIL_STATE", etat);
@@ -126,7 +111,7 @@ fn evenements(envs: &[serde_json::Value]) -> Vec<serde_json::Value> {
 #[test]
 fn une_boite_qu_on_ne_sait_pas_examiner_ne_se_conclut_pas_par_zero_alerte() {
     let tmp = TmpPossede::neuf("boite");
-    let racine = tmp.chemin().join("maildir");
+    let racine = tmp.join("maildir");
     let boite = racine.join("alice");
     let mut familles = 0usize;
 
@@ -135,8 +120,8 @@ fn une_boite_qu_on_ne_sait_pas_examiner_ne_se_conclut_pas_par_zero_alerte() {
     //    examiné, et l'état incrémentiel le marque vu.
     // =============================================================================================
     ecrire_message(&boite.join("cur"), "1700000000.M1.hote:2,S", MESSAGE_SAIN);
-    let spool = tmp.chemin().join("spool-sain");
-    let etat = tmp.chemin().join("etat-sain");
+    let spool = tmp.join("spool-sain");
+    let etat = tmp.join("etat-sain");
     let envs = executer(&racine, &spool, &etat, "*");
     assert!(
         aveux(&envs).is_empty(),
@@ -154,10 +139,10 @@ fn une_boite_qu_on_ne_sait_pas_examiner_ne_se_conclut_pas_par_zero_alerte() {
     //    précisément ce qui le rendait invisible. Il doit produire un événement qui le DÉSIGNE, et
     //    un aveu qui NOMME la cause.
     // =============================================================================================
-    let racine2 = tmp.chemin().join("maildir-indecodable");
+    let racine2 = tmp.join("maildir-indecodable");
     ecrire_message(&racine2.join("bob").join("cur"), "1700000001.M2.hote:2,S", MESSAGE_INDECODABLE);
-    let spool2 = tmp.chemin().join("spool-indecodable");
-    let envs2 = executer(&racine2, &spool2, &tmp.chemin().join("etat-indecodable"), "*");
+    let spool2 = tmp.join("spool-indecodable");
+    let envs2 = executer(&racine2, &spool2, &tmp.join("etat-indecodable"), "*");
     let a2 = aveux(&envs2);
     assert!(
         a2.iter().any(|e| e["fields"]["cause"] == lisibilite::CAUSE_FORME_INCONNUE),
@@ -174,13 +159,13 @@ fn une_boite_qu_on_ne_sait_pas_examiner_ne_se_conclut_pas_par_zero_alerte() {
     // ① DEUXIÈME FAMILLE : UN COMPTE DONT LE DOSSIER DEMANDÉ N'EXISTE PAS. Il était sauté en
     //    silence, et le rapport le comptait quand même parmi les comptes balayés.
     // =============================================================================================
-    let racine3 = tmp.chemin().join("maildir-dossier");
+    let racine3 = tmp.join("maildir-dossier");
     ecrire_message(&racine3.join("carol").join("cur"), "1700000002.M3.hote:2,S", MESSAGE_SAIN);
     ecrire_message(&racine3.join("carol").join(".Archive").join("cur"), "1700000003.M4.hote:2,S", MESSAGE_SAIN);
     ecrire_message(&racine3.join("dave").join("cur"), "1700000004.M5.hote:2,S", MESSAGE_SAIN);
-    let spool3 = tmp.chemin().join("spool-dossier");
+    let spool3 = tmp.join("spool-dossier");
     // `dave` n'a pas de dossier `Archive` : son compte entier sort du périmètre pour ce passage.
-    let envs3 = executer(&racine3, &spool3, &tmp.chemin().join("etat-dossier"), "Archive");
+    let envs3 = executer(&racine3, &spool3, &tmp.join("etat-dossier"), "Archive");
     let a3 = aveux(&envs3);
     assert!(
         a3.iter().any(|e| {
@@ -201,7 +186,7 @@ fn une_boite_qu_on_ne_sait_pas_examiner_ne_se_conclut_pas_par_zero_alerte() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let racine4 = tmp.chemin().join("maildir-illisible");
+        let racine4 = tmp.join("maildir-illisible");
         let cur = racine4.join("erin").join("cur");
         ecrire_message(&cur, "1700000005.M6.hote:2,S", MESSAGE_SAIN);
         let cible = cur.join("1700000005.M6.hote:2,S");
@@ -210,8 +195,8 @@ fn une_boite_qu_on_ne_sait_pas_examiner_ne_se_conclut_pas_par_zero_alerte() {
         // Si elle le peut (exécution privilégiée), la privation ne mord pas et la famille n'est pas
         // comptée — plutôt que d'être déclarée couverte sans avoir été vue.
         if std::fs::read(&cible).is_err() {
-            let spool4 = tmp.chemin().join("spool-illisible");
-            let etat4 = tmp.chemin().join("etat-illisible");
+            let spool4 = tmp.join("spool-illisible");
+            let etat4 = tmp.join("etat-illisible");
             let envs4 = executer(&racine4, &spool4, &etat4, "*");
             let a4 = aveux(&envs4);
             assert!(

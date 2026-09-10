@@ -329,7 +329,8 @@ fn mode_zero_empty_paths_is_inert() {
             panic!("mode 0 : la probe ne doit JAMAIS être appelée");
         }
     }
-    let state_dir = std::env::temp_dir().join(format!("plume-fim-test-{}", std::process::id()));
+    let tmp = crate::tmp_possede::TmpPossede::neuf("fim-test"); // P8.9-o : possédé
+    let state_dir = tmp.to_path_buf();
     let _ = std::fs::create_dir_all(&state_dir);
     let cfg = FimCfg { paths: Vec::new(), ..FimCfg::default() }; // AUCUN chemin
     let mut r = FimReader::new(cfg, "h".into(), &state_dir);
@@ -379,7 +380,8 @@ fn lue(l: crate::lisibilite::Lecture<Option<FileMeta>>) -> Option<FileMeta> {
 fn probe_never_follows_symlink_and_skips_nonregular() {
     use std::io::Write;
     use std::os::unix::ffi::OsStrExt;
-    let dir = std::env::temp_dir().join(format!("plume-fim-probe-{}", std::process::id()));
+    let tmp = crate::tmp_possede::TmpPossede::neuf("fim-probe"); // P8.9-o : possédé
+    let dir = tmp.to_path_buf();
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
 
@@ -625,7 +627,8 @@ fn pose_de_couverture_complete_ne_dit_rien_de_particulier() {
 fn la_pose_noyau_compte_ce_qu_elle_abandonne() {
     use super::linux::{FanotifyBackend, InotifyBackend};
     let cfg = FimCfg { recursive: true, max_watches: 4096, ..FimCfg::default() };
-    let base = std::env::temp_dir().join(format!("plume-p41q-{}", std::process::id()));
+    let tmp = crate::tmp_possede::TmpPossede::neuf("fim-p41q"); // P8.9-o : possédé
+    let base = tmp.to_path_buf();
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(base.join("sous")).expect("le témoin a besoin d'un répertoire lisible");
     let absente = base.join("jamais-creee");

@@ -173,16 +173,9 @@ pub fn publier(final_path: &Path, contenu: &[u8], mode: Option<u32>) -> std::io:
 mod tests {
     use super::*;
 
-    fn tmpdir(tag: &str) -> PathBuf {
-        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let mut d = std::env::temp_dir();
-        d.push(format!(
-            "plume-agent-durable-{tag}-{}-{}",
-            std::process::id(),
-            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    /// `P8.9-o` — le temporaire SE POSSÈDE : effacé à la destruction, panique comprise, plus en fin de corps.
+    fn tmpdir(tag: &str) -> crate::tmp_possede::TmpPossede {
+        crate::tmp_possede::TmpPossede::neuf(&format!("agent-durable-{tag}"))
     }
 
     /// CE QUE CE TEST PROUVE : que les synchronisations sont APPELÉES sur le chemin de publication,
@@ -214,7 +207,6 @@ mod tests {
             "le RÉPERTOIRE doit être synchronisé après le renommage (unix) — sans quoi l'entrée peut manquer alors que le fichier existe"
         );
         assert_eq!(std::fs::read(dir.join("a.spool")).unwrap(), b"charge utile");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -224,7 +216,6 @@ mod tests {
         let restants: Vec<String> =
             std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
         assert_eq!(restants, vec!["b.spool".to_string()], "aucun temporaire ne subsiste après publication");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[cfg(unix)]
@@ -235,7 +226,6 @@ mod tests {
         let p = dir.join("c.cursor");
         publier(&p, b"cur-1", Some(0o600)).unwrap();
         assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -245,7 +235,6 @@ mod tests {
         publier(&p, b"ancien", None).unwrap();
         publier(&p, b"nouveau", None).unwrap();
         assert_eq!(std::fs::read(&p).unwrap(), b"nouveau");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// GARDE DÉRIVÉE, PAS UNE LISTE : elle découvre les sources de ce binaire et refuse tout

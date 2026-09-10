@@ -588,7 +588,8 @@ mod tests {
     #[test]
     fn file_reader_tails_new_lines_and_advances_cursor() {
         // fichier temp sur disque (dev box Linux) : teste le vrai chemin d'IO du tail.
-        let dir = std::env::temp_dir();
+        let tmp = crate::tmp_possede::TmpPossede::neuf("generic-tail"); // P8.9-o : possédé
+        let dir: &std::path::Path = &tmp;
         let path = dir.join(format!("plume-agent-filetest-{}.log", std::process::id()));
         {
             let mut f = std::fs::File::create(&path).unwrap();
@@ -624,7 +625,8 @@ mod tests {
 
     #[test]
     fn file_reader_tail_mode_skips_existing_history() {
-        let dir = std::env::temp_dir();
+        let tmp = crate::tmp_possede::TmpPossede::neuf("generic-tail"); // P8.9-o : possédé
+        let dir: &std::path::Path = &tmp;
         let path = dir.join(format!("plume-agent-filetail-{}.log", std::process::id()));
         {
             let mut f = std::fs::File::create(&path).unwrap();

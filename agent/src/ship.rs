@@ -598,11 +598,9 @@ mod tests {
         }
     }
 
-    fn tmpdir(tag: &str) -> std::path::PathBuf {
-        let mut d = std::env::temp_dir();
-        d.push(format!("plume-agent-ship-{tag}-{}-{}", std::process::id(), crate::source::now_secs()));
-        let _ = std::fs::remove_dir_all(&d);
-        d
+    /// `P8.9-o` — le temporaire SE POSSÈDE : effacé à la destruction, panique comprise, plus en fin de corps.
+    fn tmpdir(tag: &str) -> crate::tmp_possede::TmpPossede {
+        crate::tmp_possede::TmpPossede::neuf(&format!("agent-ship-{tag}"))
     }
 
     fn entry(endpoint: &str, body: &str, source: &str, cursor: &str) -> SpoolEntry {
@@ -629,8 +627,8 @@ mod tests {
     fn drain_acks_all_and_saves_cursor() {
         let sdir = tmpdir("ack-spool");
         let cdir = tmpdir("ack-cur");
-        let spool = Spool::open(&sdir, 100).unwrap();
-        let cursors = CursorStore::open(&cdir).unwrap();
+        let spool = Spool::open(sdir.to_path_buf(), 100).unwrap();
+        let cursors = CursorStore::open(cdir.to_path_buf()).unwrap();
         spool.push(&entry("/api/ingest", "{\"a\":1}", "s1", "cur-1")).unwrap();
         spool
             .push(&entry("/api/ingest/journal", "line1\nline2", "s2", "cur-2"))
@@ -655,16 +653,14 @@ mod tests {
         assert!(calls[0].1.iter().any(|(k, v)| k == "Content-Type" && v == "application/json"));
         assert_eq!(calls[1].2, b"line1\nline2", "corps ndjson brut expédié tel quel");
         drop(calls);
-        std::fs::remove_dir_all(&sdir).ok();
-        std::fs::remove_dir_all(&cdir).ok();
     }
 
     #[test]
     fn drain_503_keeps_entry_bumps_backoff_no_cursor() {
         let sdir = tmpdir("503-spool");
         let cdir = tmpdir("503-cur");
-        let spool = Spool::open(&sdir, 100).unwrap();
-        let cursors = CursorStore::open(&cdir).unwrap();
+        let spool = Spool::open(sdir.to_path_buf(), 100).unwrap();
+        let cursors = CursorStore::open(cdir.to_path_buf()).unwrap();
         spool.push(&entry("/api/ingest", "{}", "s1", "cur-1")).unwrap();
         spool.push(&entry("/api/ingest", "{}", "s1", "cur-2")).unwrap();
 
@@ -680,16 +676,14 @@ mod tests {
         assert_eq!(cursors.load("s1").valeur().cloned().flatten(), None, "curseur NON avancé sans ack");
         // un seul POST tenté (drain s'arrête au 1er retry).
         assert_eq!(shipper.transport.calls.lock().unwrap().len(), 1);
-        std::fs::remove_dir_all(&sdir).ok();
-        std::fs::remove_dir_all(&cdir).ok();
     }
 
     #[test]
     fn drain_poison_drops_forward() {
         let sdir = tmpdir("poison-spool");
         let cdir = tmpdir("poison-cur");
-        let spool = Spool::open(&sdir, 100).unwrap();
-        let cursors = CursorStore::open(&cdir).unwrap();
+        let spool = Spool::open(sdir.to_path_buf(), 100).unwrap();
+        let cursors = CursorStore::open(cdir.to_path_buf()).unwrap();
         spool.push(&entry("/api/ingest", "bad", "s1", "cur-1")).unwrap();
         spool.push(&entry("/api/ingest", "{}", "s1", "cur-2")).unwrap();
 
@@ -703,8 +697,6 @@ mod tests {
         assert_eq!(st.acked, 1);
         assert!(spool.is_empty().expect("spool lisible"), "poison supprimé + 2e ackée");
         assert_eq!(cursors.load("s1").valeur().cloned().flatten().as_deref(), Some("cur-2"));
-        std::fs::remove_dir_all(&sdir).ok();
-        std::fs::remove_dir_all(&cdir).ok();
     }
 
     #[test]

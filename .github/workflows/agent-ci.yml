@@ -89,9 +89,28 @@ jobs:
       # TESTS NATIFS : parsing (tous OS) + roundtrips curseur/spool. Les tests
       # d'I/O disque utilisent std::env::temp_dir() -> écrivable sur les 3 runners.
       # Aucun test ne requiert d'accès au journal/Event Log réel ni au réseau.
-      - name: cargo test (natif)
+      # `P8.9-o` — la caisse POSSÈDE ses temporaires (agent/src/tmp_possede.rs) : la suite tourne dans un
+      # $TMPDIR isolé et PROUVE qu'elle n'y laisse rien, sur les trois systèmes (le balayage est POSIX,
+      # `bash` est le shell des trois jambes). Et le COMPTE des tests est assuré, comme pour les autres
+      # caisses : un flux qui ne l'assère pas laisse un test disparaître en silence.
+      - name: cargo test (natif) + assert the test count + aucun temporaire laissé
         working-directory: agent
-        run: cargo test --locked --verbose
+        shell: bash
+        env:
+          EXPECTED_AGENT_TESTS: "167"
+        run: |
+          export TMPDIR="${RUNNER_TEMP}/plume-tmp-agent"; mkdir -p "$TMPDIR"
+          rc_cargo=0
+          cargo test --locked --verbose 2>&1 | tee agent-tests.log || rc_cargo=$?
+          [ "$rc_cargo" = 0 ] || exit "$rc_cargo"
+          total=$(grep -E '^test result: ok\. [0-9]+ passed' agent-tests.log | awk '{s+=$4} END{print s+0}')
+          echo "agent tests passed: $total (expected $EXPECTED_AGENT_TESTS)"
+          if [ "$total" != "$EXPECTED_AGENT_TESTS" ]; then
+            echo "::error::agent test count is $total, expected $EXPECTED_AGENT_TESTS — if the change legitimately adds or removes tests, update EXPECTED_AGENT_TESTS HERE, from your own re-enumeration (cargo test -- --list), never from a sum."
+            exit 1
+          fi
+          rm -f agent-tests.log
+          "$GITHUB_WORKSPACE/.github/aucun-temporaire-laisse.sh" "suite agent"
 
       # SMOKE sans réseau : le binaire doit démarrer et parser sa CLI clap.
       # (On NE lance PAS `test-ship` : il exige un fichier de config + un endpoint

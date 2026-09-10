@@ -10,6 +10,8 @@ mod buffer;
 mod config;
 mod durable;
 mod lisibilite;
+#[cfg(test)]
+mod tmp_possede; // P8.9-o : le temporaire de test SE POSSÈDE (copie identique de daemon/src/tmp_possede.rs, gardée)
 mod ship;
 mod source;
 mod service;

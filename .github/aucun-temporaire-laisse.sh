@@ -232,11 +232,13 @@ echo "   contrôle positif : OK (la sonde voit ce qu'elle doit voir)"
 # LA MESURE.
 restes=$(find "${TMPDIR}" -mindepth 1 -maxdepth 1 -name "${motif}" | wc -l)
 if [ "${restes}" -ne 0 ]; then
-  octets=$(find "${TMPDIR}" -mindepth 1 -maxdepth 1 -name "${motif}" -printf '%s\n' | awk '{s+=$1} END{print s+0}')
+  # `du -k` et `ls -ld` : POSIX, là où `find -printf` est une extension GNU absente du find de macOS
+  # (la matrice de l'agent tourne sur trois systèmes) — le compte en octets devient un compte en Kio.
+  octets=$(find "${TMPDIR}" -mindepth 1 -maxdepth 1 -name "${motif}" -exec du -sk {} + | awk '{s+=$1*1024} END{print s+0}')
   echo "::error::${suite} : ${restes} temporaire(s) laissé(s) dans \$TMPDIR (${octets} octets) — attendu 0"
   echo "::error::un temporaire de test doit être POSSÉDÉ (daemon/src/tmp_possede.rs) : il naît dans un"
   echo "::error::répertoire à lui, effacé récursivement à la destruction du garde — sidecars compris."
-  find "${TMPDIR}" -mindepth 1 -maxdepth 1 -name "${motif}" -printf '  %10s  %f\n' | sort -k2 | head -40
+  find "${TMPDIR}" -mindepth 1 -maxdepth 1 -name "${motif}" -exec ls -ld {} + | sort -k9 | head -40
   exit 1
 fi
 echo "   résidu : 0 — ${suite} ne laisse rien derrière elle"

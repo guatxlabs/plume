@@ -276,11 +276,9 @@ impl Backoff {
 mod tests {
     use super::*;
 
-    fn tmpdir(tag: &str) -> PathBuf {
-        let mut d = std::env::temp_dir();
-        let n = SEQ.fetch_add(1, Ordering::Relaxed);
-        d.push(format!("plume-agent-test-{tag}-{}-{n}", std::process::id()));
-        d
+    /// `P8.9-o` — le temporaire SE POSSÈDE : effacé à la destruction, panique comprise, plus en fin de corps.
+    fn tmpdir(tag: &str) -> crate::tmp_possede::TmpPossede {
+        crate::tmp_possede::TmpPossede::neuf(&format!("agent-buffer-{tag}"))
     }
 
     fn entry(body: &str, cursor: Option<&str>) -> SpoolEntry {
@@ -295,7 +293,7 @@ mod tests {
     #[test]
     fn spool_roundtrip_fifo() {
         let dir = tmpdir("fifo");
-        let s = Spool::open(&dir, 100).unwrap();
+        let s = Spool::open(dir.to_path_buf(), 100).unwrap();
         s.push(&entry("a", Some("c1"))).unwrap();
         s.push(&entry("b", Some("c2"))).unwrap();
         s.push(&entry("c", Some("c3"))).unwrap();
@@ -306,7 +304,6 @@ mod tests {
         // remove le premier -> reste 2
         s.remove(&es[0].0);
         assert_eq!(s.len().expect("spool lisible"), 2);
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// `S33` — UNE FILE QU'ON NE SAIT PAS LIRE N'EST PAS UNE FILE VIDE, ET UN PLAFOND QUI NE SAIT PAS
@@ -323,7 +320,7 @@ mod tests {
     #[test]
     fn une_file_illisible_ne_se_lit_pas_comme_une_file_vide() {
         let dir = tmpdir("profondeur");
-        let s = Spool::open(&dir, 3).unwrap();
+        let s = Spool::open(dir.to_path_buf(), 3).unwrap();
 
         // ② le cas nominal, d'abord : lu, et la valeur est un VRAI zéro.
         assert_eq!(s.len().expect("un répertoire présent se lit"), 0, "file réellement vide -> 0");
@@ -332,7 +329,7 @@ mod tests {
         s.push(&entry("a", Some("c1"))).unwrap();
         assert_eq!(s.len().expect("un répertoire présent se lit"), 1);
 
-        // ① la source disparaît sous les pieds du processus.
+        // ① la source disparaît sous les pieds du processus (c'est la MUTATION du scénario, pas un nettoyage).
         std::fs::remove_dir_all(&dir).unwrap();
         let v = s.len();
         assert!(v.is_err(), "une file qu'on ne sait pas lire ne rend PAS 0 : {v:?}");
@@ -343,7 +340,7 @@ mod tests {
     #[test]
     fn spool_ring_evicts_oldest_when_over_cap() {
         let dir = tmpdir("ring");
-        let s = Spool::open(&dir, 3).unwrap();
+        let s = Spool::open(dir.to_path_buf(), 3).unwrap();
         for i in 0..10 {
             s.push(&entry(&format!("e{i}"), Some(&format!("c{i}")))).unwrap();
         }
@@ -352,34 +349,31 @@ mod tests {
         // les 3 plus RÉCENTES survivent (e7,e8,e9), les vieilles sont évincées.
         assert_eq!(es[0].1.body, "e7");
         assert_eq!(es[2].1.body, "e9");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn spool_entry_survives_reopen() {
         let dir = tmpdir("persist");
         {
-            let s = Spool::open(&dir, 10).unwrap();
+            let s = Spool::open(dir.to_path_buf(), 10).unwrap();
             s.push(&entry("body-with\nnewline", Some("cur"))).unwrap();
         }
-        let s2 = Spool::open(&dir, 10).unwrap();
+        let s2 = Spool::open(dir.to_path_buf(), 10).unwrap();
         let es = s2.entries();
         assert_eq!(es.len(), 1);
         assert_eq!(es[0].1.body, "body-with\nnewline", "corps ndjson multi-lignes préservé");
         assert_eq!(es[0].1.cursor.as_deref(), Some("cur"));
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn cursor_store_only_after_save() {
         let dir = tmpdir("cursor");
-        let cs = CursorStore::open(&dir).unwrap();
+        let cs = CursorStore::open(dir.to_path_buf()).unwrap();
         assert_eq!(cs.load("s").valeur().cloned().flatten(), None, "rien avant save");
         cs.save("s", &None).unwrap();
         assert_eq!(cs.load("s").valeur().cloned().flatten(), None, "save(None) = no-op");
         cs.save("s", &Some("cur-9".into())).unwrap();
         assert_eq!(cs.load("s").valeur().cloned().flatten().as_deref(), Some("cur-9"));
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// `S36` — UNE POSITION DE REPRISE QU'ON NE SAIT PAS LIRE N'EST PAS UN PREMIER DÉMARRAGE.
@@ -395,7 +389,7 @@ mod tests {
     fn un_curseur_illisible_ne_se_lit_pas_comme_un_premier_demarrage() {
         use crate::lisibilite::{Lecture, CAUSE_FORME_INCONNUE, VERDICT_ILLISIBLE, VERDICT_LU};
         let dir = tmpdir("curseur-verdict");
-        let cs = CursorStore::open(&dir).unwrap();
+        let cs = CursorStore::open(dir.to_path_buf()).unwrap();
 
         // ② le cas nominal d'abord : jamais écrit -> LU, aucune position, aucun aveu.
         let v = cs.load("neuve");
@@ -412,7 +406,6 @@ mod tests {
         assert_eq!(v.verdict(), VERDICT_ILLISIBLE, "un fichier vide n'est pas « aucun curseur »");
         assert_eq!(v.cause(), CAUSE_FORME_INCONNUE);
         assert!(matches!(v, Lecture::Illisible { .. }));
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

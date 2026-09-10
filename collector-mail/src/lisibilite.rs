@@ -203,25 +203,7 @@ mod tests {
 
     /// Un repertoire temporaire POSSEDE : rien de la machine qui execute la suite n'entre dans un
     /// verdict — c'est ce qui rend ces temoins valables sur un hote sans `/proc` comme sur un autre.
-    struct TmpPossede(std::path::PathBuf);
-    impl TmpPossede {
-        fn neuf(tag: &str) -> Self {
-            static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-            let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let d = std::env::temp_dir().join(format!("plume-s36-mail-{tag}-{}-{n}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&d);
-            std::fs::create_dir_all(&d).unwrap();
-            Self(d)
-        }
-        fn join(&self, p: &str) -> std::path::PathBuf {
-            self.0.join(p)
-        }
-    }
-    impl Drop for TmpPossede {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
+    use crate::tmp_possede::TmpPossede; // P8.9-o : la possession partagée, plus une copie locale
 
     /// LA PAIRE SUR L'IDENTITE. ② une source presente et renseignee est LUE et sa valeur publiee ;
     /// ① une source absente rend un VERDICT et AUCUN nom. Sans le second temoin, une version qui ne

@@ -207,7 +207,7 @@ pub(crate) fn soql_known_sources_bornees(conn: &Connection) -> SourcesConnues {
 }
 
 /// La LISTE seule, pour les deux lecteurs internes qui n'ont pas de réponse HTTP où porter l'aveu :
-/// `sigma::delta_de_couverture_d_un_import` et `detection_aveugle::lire_la_couverture_des_regles_activees`.
+/// `sigma::delta_de_couverture_d_un_import` et `detection_aveugle::lire_la_couverture_des_regles`.
 /// Tous deux ÉCRIVENT déjà le sens de leur erreur (cf. le bloc « ce que cette lecture ne tient pas » de
 /// `detection_aveugle` : une source hors borne fait SOUS-compter la couverture, jamais sur-compter) — ce
 /// n'est donc pas un silence, c'est une borne assumée et documentée à l'endroit où elle mord.

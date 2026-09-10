@@ -1248,6 +1248,10 @@ h2 .ihelp,h3 .ihelp{vertical-align:middle;margin-left:6px;position:relative;top:
    qu'il y a bien quelque chose, et l'encre d'avertissement, parce qu'un geste est attendu. */
 .attack-cell.attente,.attack-legend .swatch.attente{background:color-mix(in srgb,var(--warn) 14%,transparent)}
 .attack-cell.attente{border-color:color-mix(in srgb,var(--warn) 45%,transparent);color:var(--fg)}
+/* P9.5-a — quatrième état : une règle EXISTE, éteinte. Ni le grisé pointillé du vide, ni l'encre
+   d'avertissement de l'attente : un fond neutre plus soutenu et un trait pointé, la règle est là. */
+.attack-cell.eteinte,.attack-legend .swatch.eteinte{background:color-mix(in srgb,var(--mut) 24%,transparent)}
+.attack-cell.eteinte{border-style:dotted;border-color:color-mix(in srgb,var(--mut) 70%,transparent);color:var(--fg)}
 .attack-cell .attack-tid{font-family:var(--font-mono);font-weight:700}
 .attack-cell .attack-cnt{float:right;font-family:var(--font-mono);font-size:10px;opacity:.85}
 .attack-cell .attack-tname{display:block;font-size:10px;opacity:.9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}

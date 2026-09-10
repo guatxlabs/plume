@@ -936,7 +936,7 @@ pub(crate) const DETECTION_RULES_SEC4: [(&str, &str, i64, &str, f64, i64, i64, i
 /// déjà en service, la ligne a été posée ACTIVE par la migration, et rien ne l'éteint — le rattrapage
 /// est refusé sur mesure (la base ne sait pas distinguer « laissée allumée par le semis » de « allumée
 /// parce que l'exploitant la veut »). C'est la LECTURE de la couverture qui est rendue honnête pour
-/// les deux populations : `detection_aveugle::lire_la_couverture_des_regles_activees`, dont le bandeau porte la
+/// les deux populations : `detection_aveugle::lire_la_couverture_des_regles`, dont le bandeau porte la
 /// mesure et le geste écarté.
 fn actif_si_un_producteur_livre_existe(conn: &Connection, nom: &str, query: &str, actif_voulu: i64) -> i64 {
     if actif_voulu == 0 {

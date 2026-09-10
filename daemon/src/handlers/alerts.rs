@@ -697,12 +697,22 @@ pub(crate) fn mitre_parents(tag: &str) -> Vec<String> {
 /// attente de source.
 ///
 /// Forme : `{ tactics:[{tactic, techniques:[{tid, name, rule_count, alert_count, covered,
-/// rules_en_attente_de_source, sources_manquantes}], rule_count, alert_count, covered,
-/// techniques_en_attente_de_source}], totals:{tactics, tactics_covered, techniques, techniques_covered,
-/// techniques_uncovered, techniques_en_attente_de_source, rules_mapped, alerts} }`.
+/// rules_en_attente_de_source, sources_manquantes, regles_eteintes, regles_eteintes_nommees:[{id, name,
+/// sources_manquantes}], gestes:[{source, fichier, destination}]}], rule_count, alert_count, covered,
+/// techniques_en_attente_de_source, techniques_avec_regle_eteinte}], totals:{tactics, tactics_covered,
+/// techniques, techniques_covered, techniques_uncovered, techniques_en_attente_de_source,
+/// techniques_avec_regle_eteinte, rules_mapped, alerts} }`.
+///
+/// LE QUATRIÈME ÉTAT (`P9.5-a`, 2026-09-10) : `regles_eteintes` compte les règles DÉSACTIVÉES qui taguent la
+/// technique, `regles_eteintes_nommees` en nomme au plus `REGLES_ETEINTES_NOMMEES_MAX` (le compte dit le
+/// reste), chacune avec les sources que rien ne produit — vide : l'activer suffit ; non vide : brancher
+/// d'abord. Et `gestes` NOMME LE FICHIER À COPIER ET SA DESTINATION pour chaque source à brancher que ce
+/// dépôt sait produire (entrée scriptée, capteur livré) : une source absente de `gestes` est une source
+/// que ce dépôt ne sait pas brancher, et la console le dit au lieu d'inventer un chemin.
 pub(crate) fn build_attack_matrix(
     enabled_rule_tags: &[String],
     regles_en_attente_de_source: &[(String, Vec<String>)],
+    regles_eteintes: &[crate::detection_aveugle::RegleEteinte],
     alert_counts: &HashMap<String, i64>,
 ) -> Value {
     use std::collections::HashMap as Map;
@@ -735,6 +745,36 @@ pub(crate) fn build_attack_matrix(
             attente_sources.get(tid).map(|s| s.iter().cloned().collect()).unwrap_or_default(),
         )
     };
+    // LES RÈGLES ÉTEINTES, par technique parente, et L'UNION des sources à brancher (celles des règles
+    // activées affamées ET celles des règles éteintes faute de producteur) : c'est sur cette union que
+    // le geste de branchement est dérivé.
+    let mut eteintes_par_technique: Map<String, Vec<&crate::detection_aveugle::RegleEteinte>> = Map::new();
+    let mut sources_a_brancher: Map<String, std::collections::BTreeSet<String>> = attente_sources.clone();
+    for regle in regles_eteintes {
+        for p in mitre_parents(&regle.mitre) {
+            eteintes_par_technique.entry(p.clone()).or_default().push(regle);
+            let e = sources_a_brancher.entry(p).or_default();
+            for s in &regle.sources_manquantes { e.insert(s.clone()); }
+        }
+    }
+    let etat_des_eteintes = |tid: &str| -> (i64, Vec<Value>) {
+        let Some(regles) = eteintes_par_technique.get(tid) else { return (0, Vec::new()) };
+        let mut triees: Vec<&&crate::detection_aveugle::RegleEteinte> = regles.iter().collect();
+        triees.sort_by_key(|r| r.id);
+        let nommees = triees
+            .iter()
+            .take(REGLES_ETEINTES_NOMMEES_MAX)
+            .map(|r| json!({ "id": r.id, "name": r.nom, "sources_manquantes": r.sources_manquantes }))
+            .collect();
+        (regles.len() as i64, nommees)
+    };
+    let gestes = |tid: &str| -> Vec<Value> {
+        let Some(sources) = sources_a_brancher.get(tid) else { return Vec::new() };
+        crate::entrees_scriptees::gestes_de_branchement(sources.iter())
+            .into_iter()
+            .map(|g| json!({ "source": g.source, "fichier": g.fichier, "destination": g.destination }))
+            .collect()
+    };
 
     // techniques connues du CATALOG (pour détecter les tags hors-catalogue -> pseudo-tactique `unmapped`).
     let known: std::collections::HashSet<&'static str> =
@@ -743,10 +783,11 @@ pub(crate) fn build_attack_matrix(
     let mut tactics_json: Vec<Value> = Vec::new();
     let (mut tot_tech, mut tot_tech_cov, mut tot_tac_cov, mut tot_alerts) = (0i64, 0i64, 0i64, 0i64);
     let mut tot_tech_attente = 0i64;
+    let mut tot_tech_eteinte = 0i64;
 
     for tac in guatx_core::attack::TACTICS {
         let mut techs: Vec<Value> = Vec::new();
-        let (mut t_rc, mut t_ac, mut t_cov, mut t_att) = (0i64, 0i64, false, 0i64);
+        let (mut t_rc, mut t_ac, mut t_cov, mut t_att, mut t_ete) = (0i64, 0i64, false, 0i64, 0i64);
         for tid in guatx_core::attack::techniques_for_tactic(tac) {
             let rc = *rule_count.get(tid).unwrap_or(&0);
             let ac = *alert_counts.get(tid).unwrap_or(&0);
@@ -757,16 +798,19 @@ pub(crate) fn build_attack_matrix(
             // Le troisième état est ce qui reste quand rien ne peut tirer ET qu'une règle existe : il ne
             // se confond ni avec le premier (elle ne couvre pas) ni avec le dernier (elle existe).
             if !covered && att > 0 { tot_tech_attente += 1; t_att += 1; }
+            // Le QUATRIÈME état : rien ne tire, aucune règle activée n'attend, mais une règle EXISTE, éteinte.
+            let (n_eteintes, eteintes_nommees) = etat_des_eteintes(tid);
+            if !covered && att == 0 && n_eteintes > 0 { tot_tech_eteinte += 1; t_ete += 1; }
             t_rc += rc; t_ac += ac; t_cov = t_cov || covered;
             // P11.6-a : le NOM voyage avec l'identifiant (`attack_names`) ; `null` = hors catalogue, et la
             // surface doit alors le dire (« nom inconnu »), jamais rendre un vide.
-            techs.push(json!({ "tid": tid, "name": crate::attack_names::technique_name(tid), "rule_count": rc, "alert_count": ac, "covered": covered, "rules_en_attente_de_source": att, "sources_manquantes": manquantes }));
+            techs.push(json!({ "tid": tid, "name": crate::attack_names::technique_name(tid), "rule_count": rc, "alert_count": ac, "covered": covered, "rules_en_attente_de_source": att, "sources_manquantes": manquantes, "regles_eteintes": n_eteintes, "regles_eteintes_nommees": eteintes_nommees, "gestes": gestes(tid) }));
         }
         tot_alerts += t_ac;
         if t_cov { tot_tac_cov += 1; }
         tactics_json.push(json!({
             "tactic": tac, "techniques": techs, "rule_count": t_rc, "alert_count": t_ac, "covered": t_cov,
-            "techniques_en_attente_de_source": t_att
+            "techniques_en_attente_de_source": t_att, "techniques_avec_regle_eteinte": t_ete
         }));
     }
 
@@ -778,9 +822,10 @@ pub(crate) fn build_attack_matrix(
     // Une technique hors catalogue portée par la SEULE règle en attente de source est perdue si on ne la
     // replie pas ici : le troisième état doit voyager par la même porte que les deux autres.
     for k in attente_count.keys() { if !known.contains(k.as_str()) { extra.insert(k.clone()); } }
+    for k in eteintes_par_technique.keys() { if !known.contains(k.as_str()) { extra.insert(k.clone()); } }
     if !extra.is_empty() {
         let mut techs: Vec<Value> = Vec::new();
-        let (mut t_rc, mut t_ac, mut t_cov, mut t_att) = (0i64, 0i64, false, 0i64);
+        let (mut t_rc, mut t_ac, mut t_cov, mut t_att, mut t_ete) = (0i64, 0i64, false, 0i64, 0i64);
         for tid in &extra {
             let rc = *rule_count.get(tid).unwrap_or(&0);
             let ac = *alert_counts.get(tid).unwrap_or(&0);
@@ -789,14 +834,17 @@ pub(crate) fn build_attack_matrix(
             tot_tech += 1;
             if covered { tot_tech_cov += 1; }
             if !covered && att > 0 { tot_tech_attente += 1; t_att += 1; }
+            // Le QUATRIÈME état : rien ne tire, aucune règle activée n'attend, mais une règle EXISTE, éteinte.
+            let (n_eteintes, eteintes_nommees) = etat_des_eteintes(tid);
+            if !covered && att == 0 && n_eteintes > 0 { tot_tech_eteinte += 1; t_ete += 1; }
             t_rc += rc; t_ac += ac; t_cov = t_cov || covered;
-            techs.push(json!({ "tid": tid, "name": crate::attack_names::technique_name(tid), "rule_count": rc, "alert_count": ac, "covered": covered, "rules_en_attente_de_source": att, "sources_manquantes": manquantes }));
+            techs.push(json!({ "tid": tid, "name": crate::attack_names::technique_name(tid), "rule_count": rc, "alert_count": ac, "covered": covered, "rules_en_attente_de_source": att, "sources_manquantes": manquantes, "regles_eteintes": n_eteintes, "regles_eteintes_nommees": eteintes_nommees, "gestes": gestes(tid) }));
         }
         tot_alerts += t_ac;
         if t_cov { tot_tac_cov += 1; }
         tactics_json.push(json!({
             "tactic": "unmapped", "techniques": techs, "rule_count": t_rc, "alert_count": t_ac, "covered": t_cov,
-            "techniques_en_attente_de_source": t_att
+            "techniques_en_attente_de_source": t_att, "techniques_avec_regle_eteinte": t_ete
         }));
     }
 
@@ -812,6 +860,10 @@ pub(crate) fn build_attack_matrix(
             // de source N'EST PAS couverte (rien ne tire). Ce compte dit COMBIEN d'entre elles ont déjà
             // leur règle — donc combien se ferment en branchant un producteur, sans écrire une ligne.
             "techniques_en_attente_de_source": tot_tech_attente,
+            // SOUS-ENSEMBLE de `techniques_uncovered` lui aussi, disjoint du précédent : combien de
+            // techniques non couvertes ont DÉJÀ une règle, éteinte — donc combien se ferment d'un clic
+            // (ou d'un fichier copié puis d'un clic), sans écrire une ligne.
+            "techniques_avec_regle_eteinte": tot_tech_eteinte,
             "rules_mapped": rules_mapped,
             "alerts": tot_alerts
         }
@@ -819,6 +871,10 @@ pub(crate) fn build_attack_matrix(
 }
 #[inline]
 fn tactics_json_len(v: &[Value]) -> i64 { v.len() as i64 }
+
+/// Combien de règles éteintes une technique NOMME (le compte `regles_eteintes` dit le total) : la porte
+/// a besoin d'un nom pour dire « activez-la », pas d'une liste sans borne.
+pub(crate) const REGLES_ETEINTES_NOMMEES_MAX: usize = 3;
 
 /// #22 — GET `/api/coverage/attack` : matrice de couverture ATT&CK (viewer+, lecture seule). Compose
 /// le mapping technique->tactique (guatx_core::attack) avec le comptage des RÈGLES de détection activées
@@ -862,7 +918,7 @@ pub(crate) fn lire_les_alertes_par_technique(conn: &Connection, since: i64) -> (
 /// rassurante, servie précisément quand la lecture n'a pas abouti.
 ///
 /// CE QUE L'AVEU NE DIT PAS, PARCE QUE CE SERAIT FAUX : que la COUVERTURE est fausse. Elle vient des
-/// règles activées (`lire_la_couverture_des_regles_activees`), pas de cet énoncé-ci ; `covered`,
+/// règles activées (`lire_la_couverture_des_regles`), pas de cet énoncé-ci ; `covered`,
 /// `rule_count` et `techniques_covered` restent ce qu'ils étaient.
 pub(crate) const CAUSE_COMPTES_D_ALERTES_NON_ETABLIS: &str = "COMPTES D'ALERTES INCOMPLETS : le \
      parcours des alertes par technique n'est pas allé au bout. Les `alerts` de cette matrice, et le \
@@ -894,12 +950,13 @@ pub(crate) async fn coverage_attack(State(st): State<AppState>, Extension(au): E
             // unique — la lecture directe de `rule WHERE enabled=1` a été RETIRÉE d'ici, et une garde
             // refuse qu'elle réapparaisse. Sur une base déjà déployée, c'est le SEUL endroit qui
             // corrige la fausse couverture : l'activation de la ligne n'est pas touchée.
-            let lecture = crate::detection_aveugle::lire_la_couverture_des_regles_activees(conn);
+            let lecture = crate::detection_aveugle::lire_la_couverture_des_regles(conn);
             let rule_tags: Vec<String> = lecture.tirent;
+            let regles_eteintes = lecture.eteintes;
             // Alertes par technique sur la fenêtre (table `alert`, indexée ; PAS la table event).
             let (alert_counts, fin_des_comptes) = lire_les_alertes_par_technique(conn, since);
             corps_de_matrice_attack(
-                build_attack_matrix(&rule_tags, &lecture.en_attente_de_source, &alert_counts),
+                build_attack_matrix(&rule_tags, &lecture.en_attente_de_source, &regles_eteintes, &alert_counts),
                 &fin_des_comptes,
             )
         })

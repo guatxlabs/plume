@@ -537,7 +537,7 @@
 
         // ③ LA CONSÉQUENCE DE SÉCURITÉ : ce que la matrice ANNONCE couvert.
         let tags_actifs: Vec<String> = lignes.iter().filter(|(_, _, a, m)| *a == 1 && !m.is_empty()).map(|(_, _, _, m)| m.clone()).collect();
-        let matrice = crate::handlers::alerts::build_attack_matrix(&tags_actifs, &[], &std::collections::HashMap::new());
+        let matrice = crate::handlers::alerts::build_attack_matrix(&tags_actifs, &[], &[], &std::collections::HashMap::new());
         let mut couvertes: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         let mut non_couvertes: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for tactique in matrice.get("tactics").and_then(|t| t.as_array()).into_iter().flatten() {
@@ -600,7 +600,7 @@
     // assertion « la matrice rend `t` comme angle mort », écrite `non_honnete.contains(t)`. Elle est une
     // TAUTOLOGIE : `build_attack_matrix` parcourt TOUT le catalogue et pose `covered = rc > 0` sur
     // chaque technique, donc l'ensemble des non-couvertes contient forcément toute technique à
-    // `rule_count = 0`. MESURÉ PAR MUTATION : le corps de `lire_la_couverture_des_regles_activees`
+    // `rule_count = 0`. MESURÉ PAR MUTATION : le corps de `lire_la_couverture_des_regles`
     // remplacé par une lecture qui rend TOUT en attente — cette jambe restait VERTE. Elle ne pouvait
     // donc pas voir que la correction avait RETOURNÉ le défaut au lieu de le fermer : la règle affamée
     // retombait dans le seau de « personne n'a jamais écrit de règle ». Ce qui la remplace juge ce qui
@@ -610,7 +610,7 @@
 
     #[test]
     fn une_base_deja_deployee_ne_compte_pas_couverte_une_regle_qu_aucun_producteur_ne_nourrit() {
-        use crate::detection_aveugle::{lire_la_couverture_des_regles_activees, sources_sans_producteur_livre};
+        use crate::detection_aveugle::{lire_la_couverture_des_regles, sources_sans_producteur_livre};
         use crate::handlers::alerts::{build_attack_matrix, mitre_parents};
 
         let (_tmp, conn) = base_semee("regle-vivante-sans-producteur");
@@ -649,7 +649,7 @@
             let v: Vec<String> = stmt.query_map([], |r| r.get(0)).unwrap().flatten().collect();
             v
         };
-        let lecture = lire_la_couverture_des_regles_activees(&conn);
+        let lecture = lire_la_couverture_des_regles(&conn);
         let tags_honnetes = lecture.tirent.clone();
         let couvertes = |tags: &[String]| -> std::collections::BTreeSet<String> {
             let mut s = std::collections::BTreeSet::new();
@@ -677,7 +677,7 @@
         let lire = |tags: &[String],
                     attente: &[(String, Vec<String>)]|
          -> std::collections::BTreeMap<String, (bool, i64, Vec<String>)> {
-            let m = build_attack_matrix(tags, attente, &std::collections::HashMap::new());
+            let m = build_attack_matrix(tags, attente, &[], &std::collections::HashMap::new());
             let mut out = std::collections::BTreeMap::new();
             for tac in m.get("tactics").and_then(|t| t.as_array()).into_iter().flatten() {
                 for tech in tac.get("techniques").and_then(|t| t.as_array()).into_iter().flatten() {
@@ -780,7 +780,7 @@
             rusqlite::params![0i64, source_manquante, 1i64],
         )
         .unwrap();
-        let lecture_apres = lire_la_couverture_des_regles_activees(&conn);
+        let lecture_apres = lire_la_couverture_des_regles(&conn);
         let apres = couvertes(&lecture_apres.tirent);
         let rendu_apres = lire(&lecture_apres.tirent, &lecture_apres.en_attente_de_source);
         for p in mitre_parents(mitre_cible) {
@@ -820,7 +820,7 @@
 
     #[test]
     fn un_import_ne_ferme_pas_un_angle_mort_qu_aucun_producteur_ne_nourrit() {
-        use crate::detection_aveugle::{lire_la_couverture_des_regles_activees, sources_sans_producteur_livre};
+        use crate::detection_aveugle::{lire_la_couverture_des_regles, sources_sans_producteur_livre};
         use crate::handlers::alerts::mitre_parents;
         use crate::sigma::{delta_de_couverture_d_un_import, sigma_covered_parents, SigmaTranslation};
 
@@ -844,7 +844,7 @@
         for (id, _, _) in &cibles {
             conn.execute("UPDATE rule SET enabled=1 WHERE id=?1", rusqlite::params![id]).unwrap();
         }
-        let lecture = lire_la_couverture_des_regles_activees(&conn);
+        let lecture = lire_la_couverture_des_regles(&conn);
         let couvertes_avant = sigma_covered_parents(&lecture.tirent);
         let (_, mitre_cible, q_cible) = cibles
             .iter()
@@ -1102,4 +1102,145 @@
             "lecture NUE des règles activées retrouvée dans {nues:?} : `{LECTURE_NUE}` compte une règle \
              activée comme une règle surveillante. Passer par l'une des portes dérivées {portes:?}."
         );
+    }
+
+    // `P9.5-a` (2026-09-10) — LE QUATRIÈME ÉTAT, SUR L'INSTALLATION FRAÎCHE QUE LE VERROU CRÉE.
+    //
+    // Le verrou du semis éteint la règle Vault faute de producteur ; la lecture ne lisait que les règles
+    // activées ; la matrice rendait donc pour cette technique EXACTEMENT ce qu'elle rend pour une technique
+    // que personne n'a jamais portée, et la console prescrivait « créer la règle » — la règle existe, dans
+    // le panneau voisin. Ce témoin exige que la lecture RENDE les éteintes avec leur raison (les deux causes :
+    // faute de producteur, et par intention), que la matrice les COMPTE à part (quatrième état, disjoint du
+    // troisième), qu'elle NOMME la règle et LE FICHIER À COPIER avec sa destination, et — témoin négatif —
+    // qu'une technique sans aucune règle rende zéro et rien.
+    #[test]
+    fn une_regle_semee_eteinte_se_distingue_d_une_technique_que_rien_ne_porte() {
+        use crate::detection_aveugle::lire_la_couverture_des_regles;
+        use crate::entrees_scriptees::geste_de_branchement;
+        use crate::handlers::alerts::{build_attack_matrix, mitre_parents};
+        use std::collections::{BTreeMap, HashMap};
+
+        let (_tmp, conn) = base_semee("regle-semee-eteinte");
+        let lecture = lire_la_couverture_des_regles(&conn);
+
+        // ① LA LECTURE rend les éteintes, chacune éteinte EN BASE, avec de quoi la nommer.
+        let faute_de_producteur: Vec<_> = lecture.eteintes.iter().filter(|r| !r.sources_manquantes.is_empty()).collect();
+        let par_intention: Vec<_> = lecture.eteintes.iter().filter(|r| r.sources_manquantes.is_empty()).collect();
+        assert!(
+            !faute_de_producteur.is_empty(),
+            "aucune règle semée éteinte FAUTE DE PRODUCTEUR n'est rendue : soit la lecture ne lit plus les \
+             éteintes, soit le verrou du semis n'éteint plus rien — dans les deux cas ce témoin ne juge aucun cas réel"
+        );
+        assert!(
+            !par_intention.is_empty(),
+            "aucune règle semée éteinte PAR INTENTION (source livrée, règle sombre par défaut) n'est rendue : \
+             la seconde cause d'extinction, celle où activer suffit, n'est plus distinguable"
+        );
+        for r in &lecture.eteintes {
+            assert!(r.id > 0 && !r.nom.is_empty() && !r.mitre.is_empty(), "règle éteinte sans identité : {r:?}");
+            let enabled: i64 = conn.query_row("SELECT enabled FROM rule WHERE id=?1", [r.id], |x| x.get(0)).unwrap();
+            assert_eq!(enabled, 0, "la règle « {} » est rendue ÉTEINTE alors qu'elle est activée en base", r.nom);
+        }
+
+        // ② LA MATRICE : le quatrième état, compté à part, nommé, avec le geste.
+        let m = build_attack_matrix(&lecture.tirent, &lecture.en_attente_de_source, &lecture.eteintes, &HashMap::new());
+        let mut techniques: BTreeMap<String, serde_json::Value> = BTreeMap::new();
+        for tac in m.get("tactics").and_then(|t| t.as_array()).into_iter().flatten() {
+            for tech in tac.get("techniques").and_then(|t| t.as_array()).into_iter().flatten() {
+                if let Some(tid) = tech.get("tid").and_then(|t| t.as_str()) {
+                    techniques.insert(tid.to_string(), tech.clone());
+                }
+            }
+        }
+        let entier = |t: &serde_json::Value, cle: &str| t.get(cle).and_then(|v| v.as_i64()).unwrap_or(-1);
+        let nommees = |t: &serde_json::Value| -> Vec<serde_json::Value> {
+            t.get("regles_eteintes_nommees").and_then(|v| v.as_array()).cloned().unwrap_or_default()
+        };
+        let gestes = |t: &serde_json::Value| -> Vec<serde_json::Value> {
+            t.get("gestes").and_then(|v| v.as_array()).cloned().unwrap_or_default()
+        };
+
+        // (a) faute de producteur : la règle est nommée AVEC ses sources manquantes, et le geste nomme le
+        //     fichier à copier et sa destination pour chaque source que ce dépôt sait produire.
+        let regle = faute_de_producteur[0];
+        let tid = mitre_parents(&regle.mitre).into_iter().next().expect("un tag MITRE a une technique parente");
+        let t = techniques.get(&tid).unwrap_or_else(|| panic!("technique {tid} absente de la matrice"));
+        assert!(entier(t, "regles_eteintes") >= 1, "{tid} : `regles_eteintes` = {}", entier(t, "regles_eteintes"));
+        let entree = nommees(t)
+            .into_iter()
+            .find(|n| n.get("name").and_then(|v| v.as_str()) == Some(regle.nom.as_str()))
+            .unwrap_or_else(|| panic!("{tid} : la règle éteinte « {} » n'est pas NOMMÉE : {:?}", regle.nom, nommees(t)));
+        let sources_servies: Vec<String> = entree
+            .get("sources_manquantes")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+            .unwrap_or_default();
+        assert_eq!(sources_servies, regle.sources_manquantes, "{tid} : la RAISON de l'extinction ne voyage pas jusqu'à la matrice");
+        let attendus: Vec<_> = regle.sources_manquantes.iter().filter_map(|s| geste_de_branchement(s)).collect();
+        assert!(
+            !attendus.is_empty(),
+            "aucune des sources manquantes {:?} n'a de geste dérivé : ce témoin ne prouverait rien du fichier à copier",
+            regle.sources_manquantes
+        );
+        for g in &attendus {
+            let servi = gestes(t)
+                .into_iter()
+                .find(|x| x.get("source").and_then(|v| v.as_str()) == Some(g.source.as_str()))
+                .unwrap_or_else(|| panic!("{tid} : aucun geste servi pour la source « {} » : {:?}", g.source, gestes(t)));
+            assert_eq!(servi.get("fichier").and_then(|v| v.as_str()), Some(g.fichier.as_str()), "{tid} : le fichier à copier n'est pas nommé");
+            assert_eq!(
+                servi.get("destination").and_then(|v| v.as_str()),
+                g.destination.as_deref(),
+                "{tid} : la destination du fichier n'est pas celle que le dépôt déclare"
+            );
+        }
+        assert!(
+            attendus.iter().any(|g| g.destination.is_some()),
+            "aucun geste ne porte de destination : le témoin ne prouve pas que l'écran saura dire OÙ copier"
+        );
+
+        // (b) par intention : nommée, sans source manquante, et rien à copier — l'activer suffit.
+        let regle = par_intention[0];
+        let tid = mitre_parents(&regle.mitre).into_iter().next().expect("un tag MITRE a une technique parente");
+        let t = techniques.get(&tid).unwrap_or_else(|| panic!("technique {tid} absente de la matrice"));
+        assert!(entier(t, "regles_eteintes") >= 1, "{tid} : la règle éteinte par intention n'est pas comptée");
+        let entree = nommees(t)
+            .into_iter()
+            .find(|n| n.get("name").and_then(|v| v.as_str()) == Some(regle.nom.as_str()))
+            .unwrap_or_else(|| panic!("{tid} : la règle éteinte « {} » n'est pas NOMMÉE", regle.nom));
+        assert_eq!(
+            entree.get("sources_manquantes").and_then(|v| v.as_array()).map(|a| a.len()),
+            Some(0),
+            "{tid} : une règle éteinte par intention se voit attribuer une source manquante"
+        );
+
+        // (c) TÉMOIN NÉGATIF : une technique du catalogue qu'aucune règle — active ou éteinte — ne tague rend
+        //     zéro et rien ; sans lui, « la matrice nomme » se prouverait sur une valeur que toute cellule porte.
+        let portees: std::collections::BTreeSet<String> = lecture
+            .tirent
+            .iter()
+            .chain(lecture.en_attente_de_source.iter().map(|(m, _)| m))
+            .chain(lecture.eteintes.iter().map(|r| &r.mitre))
+            .flat_map(|m| mitre_parents(m))
+            .collect();
+        let (tid_vide, t_vide) = techniques
+            .iter()
+            .find(|(tid, _)| !portees.contains(*tid))
+            .expect("le catalogue porte au moins une technique qu'aucune règle semée ne tague");
+        assert_eq!(entier(t_vide, "regles_eteintes"), 0, "{tid_vide} : une technique que rien ne porte compte une règle éteinte");
+        assert!(nommees(t_vide).is_empty() && gestes(t_vide).is_empty(), "{tid_vide} : une technique que rien ne porte nomme une règle ou un geste");
+        assert_eq!(entier(t_vide, "rules_en_attente_de_source"), 0);
+
+        // (d) LE COMPTE GLOBAL est celui des cellules, et le quatrième état est DISJOINT du troisième.
+        let recompte = techniques
+            .values()
+            .filter(|t| {
+                !t.get("covered").and_then(|v| v.as_bool()).unwrap_or(true)
+                    && entier(t, "rules_en_attente_de_source") == 0
+                    && entier(t, "regles_eteintes") > 0
+            })
+            .count() as i64;
+        let total = m.pointer("/totals/techniques_avec_regle_eteinte").and_then(|v| v.as_i64()).unwrap_or(-1);
+        assert_eq!(total, recompte, "`totals.techniques_avec_regle_eteinte` ne recompte pas les cellules");
+        assert!(total >= 1, "aucune technique n'est dans le quatrième état sur une installation fraîche : le témoin ne juge rien");
     }

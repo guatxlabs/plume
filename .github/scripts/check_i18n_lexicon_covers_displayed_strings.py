@@ -677,7 +677,10 @@ PLAFOND_ORPHELINES = 0
 # pour toujours — leur texte EST dans le dépôt, la sonde ne pouvait donc jamais les accuser. C'est le compte
 # des nœuds À CHEVAL, plus bas, qui les a désignées. Le cliquet descend d'exactement ce que le lot retire :
 # le laisser à 230 le DESSERRERAIT de deux crans, et son jeu était mesuré à ZÉRO la veille.
-PLAFOND_INDECIDABLES = 228
+# 2026-09-10 (`P9.5-a`), 228 -> 225 : les cinq libellés de la légende ATT&CK arrivent en nœud texte créé au site
+# d'appel au lieu d'une chaîne passée à une fabrique locale — quatre clés jusque-là indécidables sont vues servies,
+# et la cinquième, neuve (« règle éteinte (à activer) »), entre vivante au lieu de pousser le compte à 229.
+PLAFOND_INDECIDABLES = 225
 
 # CLIQUET DES NŒUDS À CHEVAL (`P11.8-i`) — un nœud RENDU qui traverse une borne de littéral et qu'aucune
 # clé ne couvre. Relevé le 2026-08-30 : DEUX, tous deux dans la modale d'import Sigma, comblés dans le même

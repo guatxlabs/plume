@@ -729,3 +729,68 @@
         let v = verdict_de_source(None, Some(&MarquageSource { expected: true, ..Default::default() }));
         assert!(v.libelle().unwrap().contains("non consigné"), "{v:?}");
     }
+
+    /// `P9.5-a` (2026-09-10) — `ENTREES_SCRIPTEES_LIVREES` est le MIROIR de `deploy/*.input.example`, dans les
+    /// deux sens : chaque fichier de la famille déclare `SOURCE=` et sa première ligne dit où le copier
+    /// (« Copier dans /chemin ») ; la table porte exactement ces triplets, et aucune de ces sources n'est
+    /// déjà émise par un fichier livré (sinon elle vivrait dans `SOURCES_LIVREES`).
+    #[test]
+    fn entrees_scriptees_livrees_est_le_miroir_de_deploy() {
+        use crate::entrees_scriptees::ENTREES_SCRIPTEES_LIVREES;
+        let dir = sac_racine().join("deploy");
+        let mut derivees: Vec<(String, String, String)> = Vec::new();
+        for e in std::fs::read_dir(&dir).expect("deploy/ est lisible").flatten() {
+            let p = e.path();
+            let nom = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+            if !nom.ends_with(".input.example") {
+                continue;
+            }
+            let texte = std::fs::read_to_string(&p).unwrap();
+            let premiere = texte.lines().next().unwrap_or("");
+            let destination = premiere
+                .split("Copier dans ")
+                .nth(1)
+                .and_then(|s| s.split_whitespace().next())
+                .map(|s| s.trim_matches('`').trim_end_matches('.').to_string())
+                .unwrap_or_default();
+            assert!(destination.starts_with('/'), "`deploy/{nom}` : la première ligne ne dit pas où copier le fichier (« Copier dans /chemin ») : {premiere:?}");
+            let source = texte
+                .lines()
+                .find_map(|l| l.strip_prefix("SOURCE="))
+                .map(|s| s.trim().to_string())
+                .unwrap_or_else(|| panic!("`deploy/{nom}` : aucune ligne `SOURCE=` — l'entrée ne déclare pas ce qu'elle produit"));
+            derivees.push((source, format!("deploy/{nom}"), destination));
+        }
+        derivees.sort();
+        assert!(!derivees.is_empty(), "aucune entrée scriptée sous deploy/ : l'instrument ne voit plus la famille, il rendrait vert sur une table vide");
+        let mut table: Vec<(String, String, String)> =
+            ENTREES_SCRIPTEES_LIVREES.iter().map(|(s, f, d)| (s.to_string(), f.to_string(), d.to_string())).collect();
+        table.sort();
+        assert_eq!(table, derivees, "`ENTREES_SCRIPTEES_LIVREES` n'est plus le miroir de deploy/*.input.example : aligner la table sur l'arbre (jamais l'inverse)");
+        for (s, _, _) in ENTREES_SCRIPTEES_LIVREES {
+            assert!(
+                !crate::handlers::sources::SOURCES_LIVREES.iter().any(|(t, _)| t == s),
+                "`{s}` est à la fois une entrée scriptée et une source émise par un fichier livré : le geste de branchement aurait deux réponses"
+            );
+        }
+    }
+
+    /// Le répertoire où le geste envoie un capteur shell est celui où l'amorçage le pose, et le geste est
+    /// dérivé dans l'ordre déclaré : entrée scriptée, capteur livré, fichier émetteur seul, rien.
+    #[test]
+    fn le_repertoire_des_capteurs_est_celui_de_l_amorcage() {
+        use crate::entrees_scriptees::{geste_de_branchement, REPERTOIRE_DES_CAPTEURS_SUR_L_HOTE as REP};
+        for f in ["bootstrap.sh", "bootstrap-agent.sh"] {
+            let t = std::fs::read_to_string(sac_racine().join(f)).unwrap_or_else(|e| panic!("{f} : {e}"));
+            let pose = t.lines().any(|l| l.trim_start().starts_with("install ") && l.contains(&format!("{REP}/")));
+            assert!(pose, "`{f}` ne pose plus aucun capteur sous `{REP}` : la destination servie à l'écran serait fausse");
+        }
+        let capteur = geste_de_branchement("journal").expect("`journal` est émise par collectors/journal.sh");
+        assert_eq!(capteur.fichier, "collectors/journal.sh");
+        assert_eq!(capteur.destination.as_deref(), Some(format!("{REP}/journal.sh").as_str()));
+        let entree = geste_de_branchement("vault-audit").expect("`vault-audit` est une entrée scriptée livrée");
+        assert!(entree.destination.as_deref().is_some_and(|d| d.starts_with("/etc/plume/inputs.d/")), "{entree:?}");
+        let demon = geste_de_branchement("plume-config").expect("`plume-config` est émise par le démon");
+        assert_eq!(demon.destination, None, "un fichier du démon n'est pas un fichier que l'on copie sur un hôte : {demon:?}");
+        assert_eq!(geste_de_branchement("source-que-rien-ne-produit"), None, "une source que rien ne produit reçoit un geste inventé");
+    }

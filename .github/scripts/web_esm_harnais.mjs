@@ -2772,6 +2772,16 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
 //         la règle soit PRATICABLE et MÈNE, et que l'import Sigma — qui ne branche aucun producteur — ne
 //         soit plus proposé. Il lit AUSSI le démon : sans les deux clés servies, cet état serait
 //         inatteignable et le vert ne prouverait rien du geste réellement servi.
+//     (g) LE QUATRIÈME ÉTAT (`P9.5-a`, 2026-09-10) : une règle EXISTE, ÉTEINTE. Sur une installation
+//         fraîche, la règle Vault est semée désactivée faute de producteur et la règle YARA par intention ;
+//         la lecture ne lisait que les activées, donc la porte rendait « aucune règle activée ne couvre
+//         cette technique » et mettait « créer la règle » en avant — la règle est dans le panneau voisin.
+//         Ce témoin exige que l'état soit rendu DISTINCT des trois autres, que la RÈGLE soit NOMMÉE, que
+//         la cause décide de la phrase (à brancher d'abord / à activer), que LE FICHIER À COPIER ET SA
+//         DESTINATION soient nommés quand le démon les sert (trou (2) de la clé), que la sortie vers la
+//         règle soit praticable, mise en avant et MÈNE, et que ni « créer la règle qui la couvrira » ni
+//         l'import Sigma ne soient proposés. Il lit le démon : les clés `regles_eteintes`,
+//         `regles_eteintes_nommees` et `gestes` doivent être servies par `build_attack_matrix`.
 // ---------------------------------------------------------------------------------------------
 {
   const { porteDeLaTechnique, poserLesPortesDeTechnique, techniqueCell } = await import(pathToFileURL(path.join(WEB, "attack.js")).href);
@@ -2887,7 +2897,70 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     exiger(!/vault-audit/.test(celluleAveugle.title || "") && /ANGLE MORT/.test(celluleAveugle.title || ""),
       `(24f) témoin négatif : le survol d'un vrai angle mort ne dit plus « angle mort », ou nomme une source : « ${celluleAveugle.title} »`);
 
-    console.log(`[ATT&CK] une technique ouvre une porte : ses règles, ses détections (le pivot existant, aucune requête fabriquée) et le geste qui la couvrirait ; un angle mort le dit, met la création en avant et rend la sortie vide inerte avec son motif ; un lecteur voit la création inerte, motivée par le rôle. ET UN TROISIÈME ÉTAT, lu de bout en bout (le démon sert le compte des règles en attente ET les sources qui manquent ; la console les rend) : une technique dont la règle EXISTE et est ACTIVÉE mais que rien ne nourrit n'est PLUS annoncée « aucune règle » — elle NOMME la source à brancher, la sortie vers la règle est praticable, mise en avant, et elle MÈNE ; « créer la règle qui la couvrira » et l'import Sigma, qui ne branchent aucun producteur, ne sont plus proposés ; et la cellule porte un habillage que le vrai angle mort ne porte pas, ce que le témoin négatif vérifie dans l'autre sens. CE QUE CE TÉMOIN NE TIENT PAS : l'encre réellement peinte (le simulacre ne lit aucun style calculé), et le fait qu'une règle en attente soit RETROUVÉE par la recherche du panneau des règles — il tient que la sortie l'appelle sur la technique, pas ce que ce panneau en fait.`);
+    // (g) LE QUATRIÈME ÉTAT. L'INSTRUMENT D'ABORD : le démon sert-il les trois clés ?
+    exiger(/"regles_eteintes"/.test(corpsMat[0]) && /"regles_eteintes_nommees"/.test(corpsMat[0]) && /"gestes"/.test(corpsMat[0]),
+      "(24g) instrument : `build_attack_matrix` ne sert plus le compte des règles éteintes, leurs noms et les gestes — le quatrième état serait inatteignable, et ce témoin jugerait un objet que rien ne produit");
+    exiger(/lecture\.eteintes\.push\(RegleEteinte/.test(srcLecture),
+      "(24g) instrument : la lecture du démon ne rend plus les règles éteintes — la porte ne pourrait plus distinguer une règle semée éteinte d'une technique que rien ne porte");
+    // Le fichier à copier vient du démon, jamais d'ici : le harnais lit la table livrée pour ne pas juger un chemin inventé.
+    const srcEntrees = readFileSync(path.join(RACINE, "daemon", "src", "entrees_scriptees.rs"), "utf8");
+    const entree = srcEntrees.match(/\("([^"]+)",\s*"([^"]+)",\s*"([^"]+)"\)/);
+    exiger(!!entree, "(24g) instrument : aucune entrée scriptée livrée lisible dans `entrees_scriptees.rs` — le fichier à copier ne peut pas être jugé");
+    const [, sourceLivree, fichierLivre, destinationLivree] = entree;
+
+    // Cause 1 : semée éteinte FAUTE DE PRODUCTEUR — brancher d'abord, et le fichier est nommé avec sa destination.
+    const eteinteABrancher = { tid: "T1552", name: "Unsecured Credentials", covered: false, rule_count: 0, alert_count: 0,
+      rules_en_attente_de_source: 0, sources_manquantes: [], regles_eteintes: 1,
+      regles_eteintes_nommees: [{ id: 7, name: "Vault: lecture de secret par une identité inattendue", sources_manquantes: [sourceLivree] }],
+      gestes: [{ source: sourceLivree, fichier: fichierLivre, destination: destinationLivree }] };
+    const porteEteinte = porteDeLaTechnique(eteinteABrancher);
+    const texteEteinte = porteEteinte.textContent;
+    exiger(!/ANGLE MORT/.test(texteEteinte), `(24g) une technique dont la règle EXISTE, éteinte, est rendue comme un angle mort : « ${texteEteinte} »`);
+    exiger(!/ACTIVÉES/.test(texteEteinte) && /ÉTEINTE/.test(texteEteinte),
+      `(24g) l'état ne dit pas que la règle est ÉTEINTE, ou la dit activée : « ${texteEteinte} »`);
+    exiger(/Vault: lecture de secret/.test(texteEteinte), `(24g) la règle éteinte n'est pas NOMMÉE : « ${texteEteinte} »`);
+    exiger(/Brancher le producteur/.test(texteEteinte) && texteEteinte.includes(sourceLivree),
+      `(24g) une règle éteinte faute de producteur ne dit pas de brancher d'abord, ou ne nomme pas la source : « ${texteEteinte} »`);
+    exiger(texteEteinte.includes(fichierLivre) && texteEteinte.includes(destinationLivree),
+      `(24g) le FICHIER À COPIER et sa DESTINATION ne sont pas nommés (trou (2) de P9.5-a) : « ${texteEteinte} »`);
+    const versReglesEteintes = parLibelle(porteEteinte, /règles éteintes qui la portent/);
+    exiger(!!versReglesEteintes, `(24g) aucune sortie vers la règle éteinte : ${JSON.stringify(sorties(porteEteinte).map((x) => x.textContent))}`);
+    exiger(versReglesEteintes && versReglesEteintes.disabled !== true && versReglesEteintes.classList.contains("btn-primary"),
+      "(24g) la sortie vers la règle éteinte est inerte ou n'est pas mise en avant : c'est pourtant là que l'interrupteur vit");
+    exiger(!parLibelle(porteEteinte, /Créer la règle qui la couvrira/), "(24g) la console propose encore de « créer la règle qui la couvrira » sur une technique dont la règle existe, éteinte");
+    const ajoutEteinte = parLibelle(porteEteinte, /Ajouter une règle sur cette technique/);
+    exiger(!!ajoutEteinte && !ajoutEteinte.classList.contains("btn-primary"), "(24g) écrire une règle de plus est mis en avant là où il suffit d'activer");
+    exiger(!parLibelle(porteEteinte, /ruleset Sigma/), "(24g) l'import Sigma est proposé sur une technique dont la règle existe, éteinte : importer n'active rien");
+    vus.length = 0;
+    versReglesEteintes?.onclick?.();
+    exiger(vus.join(" ") === "regles:T1552", `(24g) la sortie vers la règle éteinte n'appelle pas le panneau des règles sur CETTE technique : ${JSON.stringify(vus)}`);
+
+    // Cause 2 : éteinte PAR INTENTION (source livrée) — l'activer suffit, et aucun fichier n'est prescrit.
+    const eteinteAActiver = { tid: "T1204", name: "User Execution", covered: false, rule_count: 0, alert_count: 0,
+      rules_en_attente_de_source: 0, sources_manquantes: [], regles_eteintes: 1,
+      regles_eteintes_nommees: [{ id: 9, name: "YARA : match (malware/IOC détecté)", sources_manquantes: [] }], gestes: [] };
+    const texteActiver = porteDeLaTechnique(eteinteAActiver).textContent;
+    exiger(/L'activer depuis le panneau des règles suffit/.test(texteActiver) && !/Brancher le producteur/.test(texteActiver),
+      `(24g) une règle éteinte par intention se voit prescrire un branchement, ou pas l'activation : « ${texteActiver} »`);
+    exiger(/YARA : match/.test(texteActiver) && !/Fichier\(s\) à copier/.test(texteActiver),
+      `(24g) la règle éteinte par intention n'est pas nommée, ou un fichier à copier est inventé : « ${texteActiver} »`);
+
+    // Le troisième état porte AUSSI le geste (trou (2) sur une base déployée : règle activée, source manquante).
+    const attenteAvecGeste = { ...enAttente, gestes: [{ source: sourceLivree, fichier: fichierLivre, destination: destinationLivree }] };
+    const texteAttenteGeste = porteDeLaTechnique(attenteAvecGeste).textContent;
+    exiger(texteAttenteGeste.includes(fichierLivre) && texteAttenteGeste.includes(destinationLivree),
+      `(24g) sur une règle activée qui attend sa source, le fichier à copier n'est pas nommé : « ${texteAttenteGeste} »`);
+
+    // LA CELLULE : quatre états, quatre habillages ; le vrai angle mort reste le témoin négatif.
+    const celluleEteinte = techniqueCell(eteinteABrancher, 3);
+    exiger(celluleEteinte.classList.contains("eteinte") && !celluleEteinte.classList.contains("uncovered") && !celluleEteinte.classList.contains("attente"),
+      `(24g) la cellule à règle éteinte porte l'habillage du vide ou de l'attente : « ${celluleEteinte.className} »`);
+    exiger(/RÈGLE ÉTEINTE/.test(celluleEteinte.title || "") && (celluleEteinte.title || "").includes(fichierLivre),
+      `(24g) le survol de la cellule ne dit pas « règle éteinte » ou ne nomme pas le fichier à copier : « ${celluleEteinte.title} »`);
+    exiger(!celluleAveugle.classList.contains("eteinte") && !/RÈGLE ÉTEINTE/.test(celluleAveugle.title || ""),
+      `(24g) témoin négatif : un vrai angle mort porte l'habillage ou le mot du quatrième état : « ${celluleAveugle.className} / ${celluleAveugle.title} »`);
+
+    console.log(`[ATT&CK] une technique ouvre une porte : ses règles, ses détections (le pivot existant, aucune requête fabriquée) et le geste qui la couvrirait ; un angle mort le dit, met la création en avant et rend la sortie vide inerte avec son motif ; un lecteur voit la création inerte, motivée par le rôle. ET UN QUATRIÈME ÉTAT (règle existante, éteinte : nommée, cause rendue — à brancher d'abord ou à activer —, fichier à copier et destination nommés quand le démon les sert, sortie vers le panneau des règles mise en avant, ni création ni import proposés) À CÔTÉ DU TROISIÈME, lu de bout en bout (le démon sert le compte des règles en attente ET les sources qui manquent ; la console les rend) : une technique dont la règle EXISTE et est ACTIVÉE mais que rien ne nourrit n'est PLUS annoncée « aucune règle » — elle NOMME la source à brancher, la sortie vers la règle est praticable, mise en avant, et elle MÈNE ; « créer la règle qui la couvrira » et l'import Sigma, qui ne branchent aucun producteur, ne sont plus proposés ; et la cellule porte un habillage que le vrai angle mort ne porte pas, ce que le témoin négatif vérifie dans l'autre sens. CE QUE CE TÉMOIN NE TIENT PAS : l'encre réellement peinte (le simulacre ne lit aucun style calculé), et le fait qu'une règle en attente soit RETROUVÉE par la recherche du panneau des règles — il tient que la sortie l'appelle sur la technique, pas ce que ce panneau en fait.`);
   } finally {
     poserLesPortesDeTechnique({ regles: ouvrirLesReglesDeLaTechnique, creer: ouvrirLaCreationPourLaTechnique });
     S.AUTH = roleOrigine; location.hash = hashOrigine; globalThis.fetch = fetchOrigine; S.alertMitreFilter = "";

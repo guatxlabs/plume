@@ -223,7 +223,7 @@ pub(crate) fn consigner_evaluation_reussie(conn: &Connection, id: i64, now_ts: i
 // cécité à poser, et rien ne la distingue d'un hôte sain. La matrice ATT&CK, elle, LA COMPTAIT :
 // `handlers::alerts::build_attack_matrix` déclare une technique COUVERTE dès qu'une règle activée la
 // tague. Croire surveillée une technique que rien n'observe est un défaut de sécurité, pas un défaut
-// d'affichage. Ce qui alimente cette matrice est désormais `lire_la_couverture_des_regles_activees`
+// d'affichage. Ce qui alimente cette matrice est désormais `lire_la_couverture_des_regles`
 // (plus bas), et non plus une lecture nue des règles activées — et cette lecture rend TROIS états, parce
 // qu'une première correction qui n'en rendait que deux a fait retomber la règle affamée dans le seau de
 // « personne n'a jamais écrit de règle ».
@@ -485,6 +485,14 @@ pub(crate) fn sources_sans_producteur_livre(query: &str) -> Vec<String> {
 pub(crate) const ENONCE_TAGS_ACTIFS: &str =
     "SELECT mitre, COALESCE(query,'') FROM rule WHERE enabled=1 AND mitre IS NOT NULL AND mitre<>''";
 
+/// L'ÉNONCÉ DES RÈGLES ÉTEINTES QUI TAGUENT UNE TECHNIQUE, écrit une seule fois lui aussi, et lu par LA MÊME
+/// porte que l'énoncé des activées. Une règle éteinte ne couvre rien — mais elle EXISTE, et une technique
+/// qu'elle tague n'est pas une technique que personne n'a jamais portée : sur une installation fraîche, la
+/// règle Vault est semée éteinte faute de producteur, la règle YARA l'est par intention, et l'écran leur
+/// répondait « créer la règle », le mauvais geste dans les deux cas.
+pub(crate) const ENONCE_TAGS_ETEINTS: &str =
+    "SELECT mitre, COALESCE(query,''), id, name FROM rule WHERE enabled=0 AND mitre IS NOT NULL AND mitre<>''";
+
 /// UN PRODUCTEUR EXISTE-T-IL POUR CETTE SOURCE, SUR CETTE BASE ? Les deux dérivations du semis, plus celle
 /// que seule une base en service peut fournir : elle a REÇU des événements de cette source.
 pub(crate) fn producteur_present(source: &str, sources_observees: &[String]) -> bool {
@@ -511,7 +519,8 @@ pub(crate) fn sources_manquantes(query: &str, sources_observees: &[String]) -> V
     }
 }
 
-/// CE QU'UNE LECTURE DES RÈGLES ACTIVÉES REND — **TROIS ÉTATS, PAS DEUX**, ET C'EST TOUT L'OBJET.
+/// CE QU'UNE LECTURE DES RÈGLES REND — **TROIS ÉTATS, PAS DEUX**, ET C'EST TOUT L'OBJET ; puis un
+/// QUATRIÈME, ajouté le 2026-09-10 sur le trou que la clé nommait : les règles ÉTEINTES (voir `eteintes`).
 ///
 /// LE DÉFAUT QUE CETTE FORME FERME, ET IL A ÉTÉ INTRODUIT PAR LA CORRECTION PRÉCÉDENTE. Le premier
 /// remède rendait la seule liste `tirent` : une technique dont l'UNIQUE règle est activée mais que rien
@@ -532,9 +541,26 @@ pub(crate) struct LectureDeCouverture {
     /// Les règles activées qu'AUCUN producteur ne nourrit : leur tag MITRE, et LES SOURCES QUI MANQUENT.
     /// Ni couvertes (rien ne peut les déclencher), ni absentes (la règle existe et reste éditable).
     pub(crate) en_attente_de_source: Vec<(String, Vec<String>)>,
+    /// Les règles ÉTEINTES qui taguent une technique — le QUATRIÈME état, et il ne couvre rien non plus :
+    /// il dit qu'une règle EXISTE, désactivée, et si l'activer suffirait (`sources_manquantes` vide) ou
+    /// s'il faut d'abord brancher un producteur (`sources_manquantes` nomme lesquels).
+    pub(crate) eteintes: Vec<RegleEteinte>,
 }
 
-/// LA LECTURE DES RÈGLES ACTIVÉES — **LE POINT UNIQUE**. Toute surface qui annonce une technique
+/// UNE RÈGLE ÉTEINTE QUI TAGUE UNE TECHNIQUE : son tag, de quoi la nommer à l'écran, et ce qui lui manque
+/// sur cette base. Deux causes d'extinction se lisent dans `sources_manquantes` sans qu'aucune marque en
+/// base ne les distingue — c'est la même dérivation que le semis a appliquée pour l'éteindre, rejouée à
+/// la lecture : non vide = semée éteinte faute de producteur (l'activer ne ferait rien tirer), vide = éteinte
+/// par intention ou par l'exploitant (l'activer suffit).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RegleEteinte {
+    pub(crate) mitre: String,
+    pub(crate) id: i64,
+    pub(crate) nom: String,
+    pub(crate) sources_manquantes: Vec<String>,
+}
+
+/// LA LECTURE DES RÈGLES — ACTIVÉES ET ÉTEINTES — **LE POINT UNIQUE**. Toute surface qui annonce une technique
 /// couverte passe par ici ; la garde `aucune_surface_de_couverture_ne_lit_les_regles_actives_directement`
 /// DÉRIVE de ce fichier l'ensemble des portes admises (celles qui lisent `ENONCE_TAGS_ACTIFS`, et leurs
 /// projections dans ce module) et refuse qu'une seconde lecture des règles activées apparaisse ailleurs,
@@ -543,7 +569,7 @@ pub(crate) struct LectureDeCouverture {
 /// UNE LECTURE ÉCHOUÉE REND LES DEUX LISTES VIDES, et le sens est le bon dans les deux : une base
 /// illisible ne prouve aucune surveillance (rien n'est annoncé couvert), et elle n'établit non plus
 /// aucune RAISON (on n'accuse pas une règle sur une lecture qui n'a pas eu lieu).
-pub(crate) fn lire_la_couverture_des_regles_activees(conn: &Connection) -> LectureDeCouverture {
+pub(crate) fn lire_la_couverture_des_regles(conn: &Connection) -> LectureDeCouverture {
     let observees = crate::handlers::soql_meta::soql_known_sources(conn);
     let Ok(mut stmt) = conn.prepare(ENONCE_TAGS_ACTIFS) else { return LectureDeCouverture::default() };
     let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) else {
@@ -557,6 +583,19 @@ pub(crate) fn lire_la_couverture_des_regles_activees(conn: &Connection) -> Lectu
         } else {
             lecture.en_attente_de_source.push((mitre, manquantes));
         }
+    }
+    // LES ÉTEINTES, PAR LA MÊME PORTE. Une lecture échouée ici rend ce qui a été lu jusque-là, la liste des
+    // éteintes vide, et le sens reste le bon : on n'annonce pas « une règle existe » sur une lecture qui
+    // n'a pas eu lieu — la branche d'échec est écrite, pas avalée.
+    let Ok(mut stmt) = conn.prepare(ENONCE_TAGS_ETEINTS) else { return lecture };
+    let Ok(rows) = stmt.query_map([], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, String>(3)?))
+    }) else {
+        return lecture;
+    };
+    for (mitre, query, id, nom) in rows.flatten() {
+        let sources_manquantes = sources_manquantes(&query, &observees);
+        lecture.eteintes.push(RegleEteinte { mitre, id, nom, sources_manquantes });
     }
     lecture
 }

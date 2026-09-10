@@ -1107,13 +1107,13 @@ impl DeltaDImport {
 
 /// Compose les DEUX membres depuis LA MÊME base et par LE MÊME prédicat : `sources_manquantes` sur les sources
 /// que cette base produit ou a reçues. Le membre « avant » vient du point unique de la couverture
-/// (`detection_aveugle::lire_la_couverture_des_regles_activees`), le membre « importé » du même prédicat
+/// (`detection_aveugle::lire_la_couverture_des_regles`), le membre « importé » du même prédicat
 /// appliqué à la requête TRADUITE — la requête que l'ordonnanceur exécuterait, pas une paraphrase.
 pub(crate) fn delta_de_couverture_d_un_import(
     conn: &Connection,
     plan: &[(&SigmaTranslation, Option<i64>)],
 ) -> DeltaDImport {
-    let lecture = crate::detection_aveugle::lire_la_couverture_des_regles_activees(conn);
+    let lecture = crate::detection_aveugle::lire_la_couverture_des_regles(conn);
     let observees = crate::handlers::soql_meta::soql_known_sources(conn);
     let mut importes_qui_peuvent_tirer: Vec<String> = Vec::new();
     let mut sans_producteur: Vec<(String, String, Vec<String>)> = Vec::new();

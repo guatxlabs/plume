@@ -466,7 +466,7 @@
         let vrai_total: i64 = comptes.values().sum();
         assert_eq!(vrai_total, T, "instrument : toutes les alertes doivent être comptées, sinon « complet » ne veut rien dire");
         assert!(fin.cause().is_none(), "un parcours complet ne doit porter AUCUNE cause");
-        let matrice_nominale = corps_de_matrice_attack(build_attack_matrix(&[], &[], &comptes), &fin);
+        let matrice_nominale = corps_de_matrice_attack(build_attack_matrix(&[], &[], &[], &comptes), &fin);
         assert!(
             matrice_nominale.get("error").is_none(),
             "un aveu posé sur le chemin NOMINAL : un corps qui avoue toujours n'avoue rien — {}",
@@ -491,7 +491,7 @@
         );
         let sous_total: i64 = comptes.values().sum();
         assert!(sous_total < vrai_total, "le compte est STRICTEMENT trop bas : {sous_total} au lieu de {vrai_total}");
-        let matrice = corps_de_matrice_attack(build_attack_matrix(&[], &[], &comptes), &fin);
+        let matrice = corps_de_matrice_attack(build_attack_matrix(&[], &[], &[], &comptes), &fin);
         let aveu = matrice["error"]
             .as_str()
             .unwrap_or_else(|| panic!("sous-compte servi comme un compte : un `alerts: 0` s'y lit « rien n'a tiré » — {}", matrice["totals"]));

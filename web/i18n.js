@@ -394,6 +394,15 @@ const I18N_EN = {
   "règle activée, source manquante": "enabled rule, missing source",
   "RIEN NE PEUT LA DÉCLENCHER : la ou les règles qui portent cette technique sont ACTIVÉES, mais aucune source de cette base ne produit ce qu'elles interrogent. Brancher le producteur suffit — il n'y a pas de règle à écrire.": "NOTHING CAN TRIGGER IT: the rule or rules carrying this technique are ENABLED, but no source on this database produces what they query. Wiring the producer is enough — there is no rule to write.",
   "Voir les règles qui attendent leur source": "See the rules waiting for their source",
+  // P9.5-a (2026-09-10) — LE QUATRIÈME ÉTAT : une règle existe, ÉTEINTE. Deux phrases selon la cause (à
+  // brancher d'abord, ou à activer), et le geste nommé est de COCHER, pas d'écrire.
+  "règle éteinte": "disabled rule",
+  "règle éteinte (à activer)": "disabled rule (to enable)",
+  "UNE RÈGLE EXISTE, ÉTEINTE : elle a été semée désactivée parce qu'aucune source de cette base ne produit ce qu'elle interroge. Brancher le producteur, puis l'activer depuis le panneau des règles — il n'y a pas de règle à écrire.": "A RULE EXISTS, DISABLED: it was seeded disabled because no source on this database produces what it queries. Wire the producer, then enable it from the rule panel — there is no rule to write.",
+  "UNE RÈGLE EXISTE, ÉTEINTE : rien ne la détectera tant qu'elle reste désactivée. L'activer depuis le panneau des règles suffit — il n'y a pas de règle à écrire.": "A RULE EXISTS, DISABLED: nothing will detect it while it stays disabled. Enabling it from the rule panel is enough — there is no rule to write.",
+  "Voir les règles éteintes qui la portent": "See the disabled rules that carry it",
+  "Ouvre le panneau des règles, la recherche posée sur cette technique : la ou les règles existent, désactivées — c'est là qu'elles s'activent.": "Opens the rule panel with the search set to this technique: the rule or rules exist, disabled — that is where they get enabled.",
+  "Ouvre le formulaire de règle avec cette technique déjà renseignée. Une règle de plus ne remplace pas celle qui existe, éteinte : l'activer est le geste.": "Opens the rule form with this technique already filled in. One more rule does not replace the one that exists, disabled: enabling it is the gesture.",
   // … et son pendant côté import Sigma : ce que l'import ne ferme pas, avec le geste qui le fermerait.
   "Ces règles sont créées et resteront éditables : c'est leur SOURCE qui n'existe pas sur cette base. Elles ne comptent donc dans aucun des deux bouts du delta ci-dessus. Brancher le producteur leur donne de quoi tirer, une fois activées — il n'y a pas de règle à réécrire.": "These rules are created and stay editable: it is their SOURCE that does not exist on this database. They therefore count in neither end of the delta above. Wiring the producer gives them something to fire on, once enabled — there is no rule to rewrite.",
   "Source(s) à brancher": "Source(s) to wire",

@@ -22,9 +22,10 @@
 // routes collectent désormais `Result<Vec<_>, _>` : une ligne en erreur rend la LISTE non établie.
 // Ce témoin joue cette voie-là exactement (même connexion du pool, aucune sonde entre les deux pages).
 //
-// CE QUE CE LOT NE TIENT PAS : les autres routes de liste gardent leur `.flatten()` (famille `P10.7-f`),
-// et la console ne LIT pas encore cet aveu sur les deux routes qu'elle consulte (`dashboards.js` :
-// `|| []`), reste nommé sous `P11.21-h`.
+// CE QUE CE LOT NE TIENT PAS : les autres routes de liste gardent leur `.flatten()` (famille `P10.7-f`).
+// La console LIT cet aveu sur les deux fenêtres qui consultent ces listes depuis le lot 90 (`dashboards.js`,
+// scénario 85 du harnais pour la fenêtre de rattachement ; la première entrée de bibliothèque est corrigée
+// de la même main, sans témoin de harnais — reste dit).
 // =====================================================================================
 
 /// Le corps JSON d'une réponse `Response`.

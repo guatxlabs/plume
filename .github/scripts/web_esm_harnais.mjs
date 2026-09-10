@@ -11120,6 +11120,61 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   console.log("[representations] `P11.20-d` (tranche) : une seule liste de neuf représentations, posée dans l'éditeur, le sélecteur et les formulaires de panneau ; aucune copie en dur ne subsiste.");
 }
 
+// ---------------------------------------------------------------------------------------------
+// 85. LA CONSOLE LIT L'AVEU « LISTE NON LUE » LÀ OÙ ELLE CONSULTE UNE LISTE DE RÉGLAGE (`P10.7-z`, 2026-09-11).
+//     Le démon sert désormais `{ dashboards: [], error: … }` quand la lecture a échoué ; la fenêtre
+//     « nouveau tableau de bord » lisait `|| []` et faisait DISPARAÎTRE le choix « rattacher », exactement comme
+//     devant une liste vide. Ce témoin joue les deux corps par le geste de l'exploitant : liste lue et vide ->
+//     aucun choix (rien à rattacher, rien à avouer) ; liste NON LUE -> le choix existe et le dit.
+// ---------------------------------------------------------------------------------------------
+{
+  const modDash85 = await import(pathToFileURL(path.join(WEB, "dashboards.js")).href);
+  const { S: S85 } = await import(pathToFileURL(path.join(WEB, "state.js")).href);
+  const tic85 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser85 = async (n = 25) => { for (let i = 0; i < n; i++) await tic85(); };
+  const cueillir85 = (el, pred, acc) => { if (pred(el)) acc.push(el); (el.children || []).forEach((c) => cueillir85(c, pred, acc)); return acc; };
+  const fenetre85 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !c.classList.contains("out")).pop();
+  const boutonNouveau85 = new Element("button"), selecteurVue85 = new Element("select"), hoteVue85 = new Element("div");
+  const hotes85 = { "#dash-new": boutonNouveau85, "#view": selecteurVue85, "#dashview": hoteVue85 };
+  const qsOrigine85 = document.querySelector, fetchOrigine85 = globalThis.fetch;
+  const etatOrigine85 = { role: S85.viewsRole, me: S85.viewsMe, liste: S85.viewList, dash: S85.dashList };
+  let corpsDashboards85 = { dashboards: [], role: "admin" };
+  document.querySelector = (sel) => (Object.prototype.hasOwnProperty.call(hotes85, sel) ? hotes85[sel] : new Element("div"));
+  globalThis.fetch = async (u, o) => {
+    const url = String(u), methode = (o && o.method) || "GET";
+    if (methode !== "GET") return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, id: 99 }) };
+    if (url.includes("/api/views")) return { ok: true, status: 200, text: async () => JSON.stringify({ views: [], me: "hugo", role: "admin" }) };
+    if (url.includes("/api/dashboards")) return { ok: true, status: 200, text: async () => JSON.stringify(corpsDashboards85) };
+    return { ok: true, status: 200, text: async () => JSON.stringify({}) };
+  };
+  // Le geste : ouvrir la fenêtre « nouveau », lire le choix « rattacher » s'il existe, refermer.
+  const ouvrirNouveau85 = async () => {
+    boutonNouveau85.dispatchEvent({ type: "click" });
+    await laisser85();
+    const ov = fenetre85();
+    const sel = ov ? cueillir85(ov, (e) => e.getAttribute && e.getAttribute("data-n") === "existing", [])[0] : null;
+    const libelle = sel && sel.children && sel.children[0] ? String(sel.children[0].textContent) : "";
+    if (ov) { const annuler = cueillir85(ov, (e) => e.classList && e.classList.contains("m-cancel"), [])[0]; if (annuler && typeof annuler.onclick === "function") annuler.onclick(); }
+    await laisser85();
+    return { fenetre: !!ov, present: !!sel, libelle };
+  };
+  try {
+    modDash85.initDashboards();
+    await laisser85();
+    const lue = await ouvrirNouveau85();
+    exiger(lue.fenetre, "(85-instrument) la fenêtre « nouveau tableau de bord » ne s'ouvre pas : les deux verdicts ci-dessous ne porteraient sur rien");
+    exiger(!lue.present, "(85a) liste LUE et vide : aucun choix « rattacher » ne doit apparaître — rien à rattacher, rien à avouer");
+    corpsDashboards85 = { dashboards: [], role: "admin", error: "liste NON LUE : la lecture de cette liste a échoué." };
+    const nonLue = await ouvrirNouveau85();
+    exiger(nonLue.present && /NON LUE|NOT READ/.test(nonLue.libelle),
+      `(85b) liste NON LUE : la fenêtre doit le dire au lieu d'offrir « créer » comme devant une liste vide (choix présent : ${nonLue.present}, libellé : « ${nonLue.libelle} »)`);
+  } finally {
+    document.querySelector = qsOrigine85; globalThis.fetch = fetchOrigine85;
+    S85.viewsRole = etatOrigine85.role; S85.viewsMe = etatOrigine85.me; S85.viewList = etatOrigine85.liste; S85.dashList = etatOrigine85.dash;
+  }
+  console.log("[listes-non-lues] `P10.7-z` : la fenêtre de rattachement lit l'aveu « liste NON LUE » et le dit ; une liste lue et vide n'affiche rien");
+}
+
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;
 verdictRendu = true;
 if (echecs.length) {

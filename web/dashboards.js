@@ -148,9 +148,14 @@ function accesALexistant(relever) {
 // texte est ÉDITÉ — la nature déclarée ne vaut plus pour une requête qui n'est plus celle-là.
 async function createPanelModal(did, query = '', prefill = {}) {
   // #54 — LIBRARY PANELS : proposer de RÉFÉRENCER une définition réutilisable (édité une fois, à jour partout).
-  let libs = [];
-  try { libs = (await api('/library-panels')).library_panels || []; } catch (e) {}
-  const libOpts = [{ value: '', label: '— aucun (panneau autonome) —' }, ...libs.map(l => ({ value: String(l.id), label: l.name + ' (' + l.viz + ')' }))];
+  // `P10.7-z` — une bibliothèque NON LUE n'est pas une bibliothèque vide : la première entrée le dit, au lieu
+  // d'offrir « aucun » comme si l'inventaire avait été consulté. Une panne de réseau compte comme non lue.
+  let libs = [], bibliothequeNonLue = false;
+  try { const rep = await api('/library-panels'); libs = rep.library_panels || []; bibliothequeNonLue = !!rep.error; } catch (e) { bibliothequeNonLue = true; }
+  const aucun = bibliothequeNonLue
+    ? (LANG === 'en' ? '— library NOT READ (the read failed): standalone panel only —' : '— bibliothèque NON LUE (la lecture a échoué) : panneau autonome seulement —')
+    : '— aucun (panneau autonome) —';
+  const libOpts = [{ value: '', label: aucun }, ...libs.map(l => ({ value: String(l.id), label: l.name + ' (' + l.viz + ')' }))];
   // `P11.17-b` — l'accès à l'inventaire vit DANS cette fenêtre (voir `accesALexistant`). `saisie` reste
   // `null` tant qu'on n'y touche pas : c'est ce qui distingue un abandon de la fenêtre d'un détour vers
   // l'inventaire, deux sorties que la modale partagée rend toutes deux par `null`.
@@ -816,12 +821,14 @@ async function renderPanel(p, editable = true) {
 // Ajouter un dashboard a la vue : soit en RATTACHER un existant (select), soit en CREER un nouveau.
 async function addDashboardFlow() {
   const view = $('#view') ? $('#view').value : '';
-  let all = [];
-  try { all = (await api('/dashboards')).dashboards || []; } catch (e) {}
+  // `P10.7-z` — une liste NON LUE n'est pas une liste vide : le choix « rattacher » le dit au lieu de disparaître.
+  let all = [], listeNonLue = false;
+  try { const rep = await api('/dashboards'); all = rep.dashboards || []; listeNonLue = !!rep.error; } catch (e) { listeNonLue = true; }
   // dashboards editables pas deja dans cette vue (rattacher = deplacer ; le schema = 1 vue par dashboard)
   const attachable = view ? all.filter(d => d.editable !== false && String(d.view_id || '') !== String(view)) : [];
   const fields = [];
   if (attachable.length) fields.push({ name: 'existing', label: 'Rattacher un dashboard existant', type: 'select', value: '', options: [{ value: '', label: '+ Creer un nouveau dashboard' }, ...attachable.map(d => ({ value: String(d.id), label: d.name + (d.view_id ? ' (deplace depuis une autre vue)' : '') }))] });
+  else if (listeNonLue) fields.push({ name: 'existing', label: 'Rattacher un dashboard existant', type: 'select', value: '', options: [{ value: '', label: LANG === 'en' ? '— list NOT READ (the read failed): creation only —' : '— liste NON LUE (la lecture a échoué) : création seulement —' }] });
   fields.push({ name: 'name', label: attachable.length ? 'Nom (si nouveau)' : 'Nom', placeholder: 'ex: Plume vue d ensemble', value: '' });
   fields.push({ name: 'visibility', label: 'Visibilité (si nouveau)', type: 'select', value: 'private', options: [{ value: 'private', label: 'Privé (vous + admin)' }, { value: 'shared', label: 'Partagé (groupe)' }] });
   // `P11.20-p` — OÙ ARRIVE CE QUI VIENT D'ÊTRE CRÉÉ, DIT PAR LA FENÊTRE QUI LE CRÉE. Le mécanisme que la clé

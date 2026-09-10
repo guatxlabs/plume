@@ -87,6 +87,14 @@ const PIVOT_MOTS = {
   aucun: { fr: "Aucun pivot exact : le démon n'a servi AUCUNE fenêtre d'évaluation pour cette alerte, la console n'a donc pas la requête qui l'a comptée. Elle refuse d'en fabriquer une — chercher son libellé rendrait un vide qui ne prouverait rien. Elle ne peut pas davantage renvoyer vers ce qui FONDE l'alerte : rien de ce qui est servi ne le déclare, et la console ne le devinera pas.", en: 'No exact pivot: the daemon served NO evaluation window for this alert, so the console does not have the query that counted it. It refuses to make one up — searching its wording would return an emptiness that proves nothing. Nor can it point to what the alert is FOUNDED on: nothing that is served declares it, and the console will not guess.' },
 };
 const motDuPivot = (mode) => (LANG === 'en' ? PIVOT_MOTS[mode].en : PIVOT_MOTS[mode].fr);
+// P4.12-h — UN ÉPISODE OUVERT DIT DEPUIS QUAND : le démon sert `opened_at`, jamais écrasé par un
+// rafraîchissement ; la mention n'apparaît que si l'épisode a été rafraîchi au moins une fois
+// (`opened_at < ts`), donc dérivée de la donnée, sans seuil décoratif. Bilingue par construction.
+const DEPUIS = { fr: 'depuis', en: 'since' };
+function depuisQuand(a) {
+  if (!a.opened_at || !(a.opened_at < a.ts)) return '';
+  return ` <span class="muted alertdepuis">${LANG === 'en' ? DEPUIS.en : DEPUIS.fr} ${esc(fmtTs(a.opened_at))}</span>`;
+}
 function pivotDUneAlerte(a) {
   a = a || {};
   const lien = a.search_link && a.search_link.query ? a.search_link : null;
@@ -254,7 +262,7 @@ function alertRowHtml(a, i) {
     <div class="alert sev-${a.severity}">
       <span class="sev">${sev(a.severity)}</span>
       <span class="title"><span class="alertdrill" data-idx="${i}" data-pivot="${pivot.mode}"${pivot.mode === 'aucun' ? ' aria-disabled="true"' : ''} title="${esc(pivot.survol)}">${esc(a.title)}</span>${mt}${machineChipHtml(a)}</span>
-      <time>${fmtTs(a.ts)}</time>
+      <time>${fmtTs(a.ts)}</time>${depuisQuand(a)}
       <span class="alertact">${cas}${ban}${a.status === 'new' ? `<button data-ack="${a.id}" title="Acquitter : marquer comme vue (retire de la file active, sans la supprimer)">Acquitter</button>` : `<span class="ackdone" title="Acquittée${a.acked_at ? ' · ' + fmtTs(a.acked_at) : ''}${a.acked_by ? ' par ' + esc(a.acked_by) : ''}">${ic('check')} Acquittée</span>`}</span>
     </div>`;
 }

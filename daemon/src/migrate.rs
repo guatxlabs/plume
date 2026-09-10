@@ -90,7 +90,7 @@ impl Drop for MigrationLogSilencer {
 /// rien (toutes ses gardes `v < N` sont fausses) et OPÈRE À L'AVEUGLE sur un schéma qu'il ne connaît pas
 /// -> risque de corruption (survivable AUJOURD'HUI car migrations additives, mais non gardé). On REFUSE
 /// d'ouvrir : arrêt PROPRE (exit non-zéro), JAMAIS un panic, JAMAIS un « proceed » silencieux.
-pub(crate) const CODE_SCHEMA_MAX: i64 = 119;
+pub(crate) const CODE_SCHEMA_MAX: i64 = 120;
 
 /// Lit `meta.schema_version` (défaut 1 si table/lignes absentes ou illisibles) — MÊME lecture que `migrate()`.
 /// Une base NEUVE (pas encore de table meta) renvoie 1 -> jamais refusée par la garde.
@@ -818,6 +818,7 @@ fn migrate_chain(conn: &Connection) -> bool {
     if v < 117 && !migrate_step(conn, 117, migrate_v117) { return false; }
     if v < 118 && !migrate_step(conn, 118, migrate_v118) { return false; }
     if v < 119 && !migrate_step(conn, 119, migrate_v119) { return false; }
+    if v < 120 && !migrate_step(conn, 120, migrate_v120) { return false; }
     true
 }
 
@@ -1375,6 +1376,26 @@ fn migrate_v119(conn: &MigTx) {
     );
     let _ = conn.execute("UPDATE meta SET value='119' WHERE key='schema_version'", []);
     mig_log!("[migration] schéma -> v119 (P11.10-a : host_settings — ce qu'on ATTEND d'un hôte se déclare (signal attendu / silence attendu / retiré) avec son déclarant et sa date dans des colonnes propres ; une machine retirée sort du dénominateur, une machine au silence déclaré attendu sort de l'alerte « hôtes muets », qui dit désormais ce qu'elle ne couvre pas)");
+}
+
+/// v120 (`P4.12-h`) — UN ÉPISODE OUVERT GARDE SON INSTANT D'OUVERTURE ET RE-NOTIFIE QUAND IL CHANGE DE
+/// NATURE. Le rafraîchissement d'une alerte ouverte écrasait `ts` (l'instant d'ouverture était perdu :
+/// « chronique depuis quand » n'était lisible nulle part) et ne touchait jamais `notified` : une règle
+/// continuellement vraie (une passerelle qui concentre les échecs d'un service) ouvrait un épisode le
+/// matin par du bruit, et l'attaque réelle de l'après-midi ne produisait AUCUNE notification.
+/// Trois colonnes : `opened_at`, posé par le PREMIER rafraîchissement à partir du `ts` d'origine et
+/// jamais écrasé ensuite — NULL veut dire « jamais rafraîchie depuis cette version », l'ouverture est
+/// alors `ts`, et RIEN n'est inventé pour les alertes antérieures (leur ouverture réelle est perdue,
+/// leur `ts` n'est qu'une borne « depuis au moins ») ; `current_value`, la valeur courante de la règle,
+/// rafraîchie ; `notified_value`, la valeur au moment de la dernière notification, écrite par le
+/// notificateur. Le critère de re-notification vit dans `handlers/detection.rs`
+/// (`FACTEUR_DE_RENOTIFICATION`). MIROIR dans db/schema.sql.
+fn migrate_v120(conn: &MigTx) {
+    let _ = conn.execute("ALTER TABLE alert ADD COLUMN opened_at INTEGER", []);
+    let _ = conn.execute("ALTER TABLE alert ADD COLUMN current_value REAL", []);
+    let _ = conn.execute("ALTER TABLE alert ADD COLUMN notified_value REAL", []);
+    let _ = conn.execute("UPDATE meta SET value='120' WHERE key='schema_version'", []);
+    mig_log!("[migration] schéma -> v120 (P4.12-h : alert.opened_at / current_value / notified_value — un épisode ouvert garde son instant d'ouverture et re-notifie quand sa valeur a doublé depuis la dernière notification)");
 }
 
 /// v108 (PERF — RECHERCHE RAW HAUT-VOLUME source=X sur fenêtre longue). MARQUEUR PUR (aucune DDL lourde

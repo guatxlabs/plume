@@ -338,7 +338,7 @@ pub(crate) fn verifier_le_magasin_de_secrets(conn: &Connection, now_ts: i64) -> 
             // Épisode DÉJÀ ouvert : on rafraîchit le texte et l'horodatage SANS toucher `notified`
             // (pas de re-notification à chaque tick), exactement comme `detection_aveugle`.
             let _ = conn.execute(
-                "UPDATE alert SET ts=?1, title=?2, detail=?3, sources=?4 WHERE dedup=?5 AND status IN ('new','ack')",
+                "UPDATE alert SET opened_at=COALESCE(opened_at, ts), ts=?1, title=?2, detail=?3, sources=?4 WHERE dedup=?5 AND status IN ('new','ack')",
                 params![now_ts, titre, detail, sources, DEDUP_MAGASIN],
             );
         }

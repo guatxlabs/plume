@@ -269,7 +269,7 @@ pub(crate) fn dispatch_notifications(db: &Arc<Mutex<Connection>>) {
             }
         }
         let conn = db.lock();
-        let _ = conn.execute("UPDATE alert SET notified=1 WHERE id=?1", params![id]);
+        let _ = conn.execute("UPDATE alert SET notified=1, notified_value=current_value WHERE id=?1", params![id]); // `P4.12-h` : la barre de re-notification est reposée ici
     }
 }
 

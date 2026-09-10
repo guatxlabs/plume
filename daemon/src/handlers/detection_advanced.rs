@@ -320,7 +320,7 @@ pub(crate) fn run_correlations(db: &Arc<Mutex<Connection>>, db_path: &str) -> cr
                 params![now_ts, format!("corr.{}", ev.id), ev.severity, title, detail_full, dedup, ev.mitre, e_src, e_pid, e_host],
             );
             let _ = conn.execute(
-                "UPDATE alert SET ts=?1, title=?2, severity=?3, detail=?4 WHERE dedup=?5 AND status IN ('new','ack')",
+                "UPDATE alert SET opened_at=COALESCE(opened_at, ts), ts=?1, title=?2, severity=?3, detail=?4 WHERE dedup=?5 AND status IN ('new','ack')",
                 params![now_ts, title, ev.severity, detail_full, dedup],
             );
         }

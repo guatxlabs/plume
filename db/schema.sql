@@ -118,6 +118,11 @@ CREATE TABLE IF NOT EXISTS alert(
   severity INTEGER NOT NULL, title TEXT, detail TEXT,
   status TEXT NOT NULL DEFAULT 'new',        -- new | ack | closed
   acked_at INTEGER, acked_by TEXT, dedup TEXT,
+  -- v120 (P4.12-h) — L'INSTANT D'OUVERTURE d'un épisode, posé par le PREMIER rafraîchissement à partir du `ts`
+  -- d'origine et jamais écrasé ensuite (NULL = jamais rafraîchie : l'ouverture est alors `ts`) ; `current_value` =
+  -- valeur courante de la règle, rafraîchie ; `notified_value` = valeur au moment de la dernière notification,
+  -- écrite par le notificateur. Le critère de re-notification vit dans handlers/detection.rs. MIROIR de v120.
+  opened_at INTEGER, current_value REAL, notified_value REAL,
   env_id TEXT NOT NULL DEFAULT 'prod',       -- v66 : environnement intra-tenant (#2a-2a), INERTE en mode 0
   -- v75 (MODE ENGAGEMENT) — TAG engagement de l'alerte (fondation du rapport de couverture scopé
   -- `/api/coverage/detections?engagement=<id>`). DEFAULT '' = INERTE en mode 0/off. MIROIR de la migration v75.

@@ -151,7 +151,7 @@ pub(crate) fn alerts_query_page(conn: &Connection, f: &FiltreAlertes, group_col:
                 COALESCE(alert.mitre,''),r.window_s,\
                 COALESCE(alert.acked_at,0),COALESCE(alert.acked_by,''),\
                 COALESCE(alert.sources,''),COALESCE(r.is_soql,1),\
-                alert.host \
+                alert.host,COALESCE(alert.opened_at,alert.ts),alert.current_value \
                 FROM alert LEFT JOIN rule r ON ('rule.'||r.id)=alert.rule";
     // limit/offset = i64 déjà validés (clamp) -> injection impossible ; interpolés (pas de bind supplémentaire).
     let sql = format!("{base}{where_clause} ORDER BY alert.ts DESC LIMIT {limit} OFFSET {offset}");
@@ -178,6 +178,9 @@ pub(crate) fn alerts_query_page(conn: &Connection, f: &FiltreAlertes, group_col:
             "window_s": window_s,
             "search_link": search_link,
             "acked_at": r.get::<_, i64>(10)?, "acked_by": r.get::<_, String>(11)?,
+            // `P4.12-h` — l'instant d'OUVERTURE de l'épisode (jamais écrasé par un rafraîchissement ; égal à
+            // `ts` pour une alerte jamais rafraîchie) et la valeur courante de la règle (absente hors règle).
+            "opened_at": r.get::<_, i64>(15)?, "value": r.get::<_, Option<f64>>(16)?,
             // S7 — les sources auxquelles l'alerte est IMPUTÉE, telles qu'elles ont été DÉRIVÉES DE LA
             // DONNÉE à sa levée. Le front en a besoin pour le pivot « voir les N alertes de <source> »
             // depuis la cloche d'un feed : sans ce champ il refiltrerait le TEXTE de `detail` et

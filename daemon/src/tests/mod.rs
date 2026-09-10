@@ -125,3 +125,4 @@ include!("index_derive_reconstruit.rs"); // P8.10-m : un index DERIVE se rebatit
 include!("quarantaine_visible_et_vidable.rs"); // P4.1-v : la quarantaine se COMPTE et se VIDE, et laveu cesse de mentir quand lecart echoue
 include!("analyse_complete_rearmee_sur_la_taille.rs"); // P7.19-h : la passe d'analyse complète se réarme sur la TAILLE de la table, une base analysée vide ne fige plus ses zéros
 include!("partage_refuse_avec_la_raison.rs"); // P11.20-m : le partage d'un objet composé est REFUSÉ avec la raison tant qu'un élément est moins visible, et le refus nomme l'élément
+include!("alerte_chronique_renotifiee.rs"); // P4.12-h : un épisode ouvert garde son instant d'ouverture et re-notifie quand sa valeur a doublé (migration v120)

@@ -263,6 +263,13 @@ fn imputations_des_regles_qui_tirent(
 /// avant ; ce qui change est qu'elle est comptée — et, depuis `P3.9-a`, CONSIGNÉE PAR RÈGLE avec sa
 /// cause (`detection_aveugle`) : au seuil dérivé de son intervalle, une règle abandonnée à répétition
 /// lève une alerte de cécité, résolue à sa première évaluation réussie.
+/// `P4.12-h` — UN ÉPISODE OUVERT RE-NOTIFIE QUAND SA VALEUR A AU MOINS DOUBLÉ depuis la dernière
+/// notification : un état stable (la valeur oscille autour du seuil) ne re-notifie jamais, un épisode
+/// qui change de nature (le compte bondit) le fait, et le nombre de notifications d'un épisode est
+/// borné par le logarithme de sa croissance. La référence est la valeur retenue par le NOTIFICATEUR
+/// (`notified_value`), pas celle de l'ouverture : chaque notification repose la barre.
+pub(crate) const FACTEUR_DE_RENOTIFICATION: f64 = 2.0;
+
 pub(crate) fn run_due_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate::bilan_de_tick::BilanDeTick {
     let now_ts = now();
     let mut abandonnees = 0u32;
@@ -392,16 +399,21 @@ pub(crate) fn run_due_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
             // l'alerte hérite du tag MITRE de la règle -> /api/coverage/detections joint sur `mitre`.
             // no-op si une alerte ouverte porte déjà la clé -> plus de renotif à chaque fenêtre.
             let _ = conn.execute(
-                "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,mitre,sources) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
-                params![now_ts, format!("rule.{id}"), severity, title, query, dedup, mitre, sources],
+                "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,mitre,sources,current_value) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+                params![now_ts, format!("rule.{id}"), severity, title, query, dedup, mitre, sources, val],
             );
-            // rafraîchit l'affichage (ts/valeur/sévérité — utile pour les gauges type CPU dont la valeur bouge)
-            // SANS toucher `notified` -> pas de renotif. S7 : l'imputation est RAFRAÎCHIE ici aussi — sur un
-            // épisode déjà ouvert (l'INSERT ci-dessus est un no-op), une SECONDE source devenue muette
-            // doit faire basculer SA pastille sans attendre la résolution de l'épisode.
+            // rafraîchit l'affichage (ts/valeur/sévérité — utile pour les gauges type CPU dont la valeur bouge).
+            // `P4.12-h` : l'instant d'OUVERTURE est gardé (`opened_at` prend l'ancien `ts` une fois, puis
+            // ne bouge plus — SQLite évalue les membres droits sur la ligne AVANT la mise à jour), et
+            // `notified` n'est retouché QUE si la valeur a au moins doublé depuis la dernière notification :
+            // un état stable ne re-notifie pas, un épisode qui change de nature si. S7 : l'imputation est
+            // RAFRAÎCHIE ici aussi — sur un épisode déjà ouvert (l'INSERT ci-dessus est un no-op), une
+            // SECONDE source devenue muette doit faire basculer SA pastille sans attendre la résolution.
             let _ = conn.execute(
-                "UPDATE alert SET ts=?1, title=?2, severity=?3, sources=?5 WHERE dedup=?4 AND status IN ('new','ack')",
-                params![now_ts, title, severity, dedup, sources],
+                "UPDATE alert SET opened_at=COALESCE(opened_at, ts), ts=?1, title=?2, severity=?3, sources=?5, current_value=?6, \
+                 notified=CASE WHEN notified=1 AND notified_value IS NOT NULL AND ?6 >= ?7 * notified_value THEN 0 ELSE notified END \
+                 WHERE dedup=?4 AND status IN ('new','ack')",
+                params![now_ts, title, severity, dedup, sources, val, FACTEUR_DE_RENOTIFICATION],
             );
         } else {
             // retour SOUS le seuil -> résout l'alerte ouverte et libère la clé (ré-arme un futur épisode)

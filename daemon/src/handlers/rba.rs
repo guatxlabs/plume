@@ -364,7 +364,7 @@ fn risk_incidents_eval(conn: &Connection, conf: &HashMap<String, String>, n: i64
         );
         // rafraîchit l'affichage (ts/score/sévérité montent) SANS toucher `notified` -> pas de renotif.
         let _ = conn.execute(
-            "UPDATE alert SET ts=?1, title=?2, severity=?3, detail=?4 WHERE dedup=?5 AND status IN ('new','ack')",
+            "UPDATE alert SET opened_at=COALESCE(opened_at, ts), ts=?1, title=?2, severity=?3, detail=?4 WHERE dedup=?5 AND status IN ('new','ack')",
             params![n, title, sev, detail, dedup],
         );
     }

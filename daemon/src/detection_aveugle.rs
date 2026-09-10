@@ -195,7 +195,7 @@ pub(crate) fn consigner_abandon(
         params![now_ts, format!("{FAMILLE_ALERTE}.{id}"), severity, titre, detail, dedup, sources],
     );
     let _ = conn.execute(
-        "UPDATE alert SET ts=?1, title=?2, detail=?3 WHERE dedup=?4 AND status IN ('new','ack')",
+        "UPDATE alert SET opened_at=COALESCE(opened_at, ts), ts=?1, title=?2, detail=?3 WHERE dedup=?4 AND status IN ('new','ack')",
         params![now_ts, titre, detail, dedup],
     );
     Some(AbandonConsigne { consecutifs, seuil, alerte_posee: true })

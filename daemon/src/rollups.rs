@@ -1294,11 +1294,17 @@ pub(crate) fn retention_run_tenant(db: &Arc<Mutex<Connection>>, db_path: &str) {
     // LIT ces deux plafonds chacun chez lui et rougit le jour où l'un dépasse l'autre : la décision
     // devient alors fausse, et c'est elle qu'il faut reprendre — pas le test.
     //
-    // CE QUE CETTE DÉCISION NE FERME PAS, ET IL FAUT LE DIRE. Au-delà de `metric_days`, la série
-    // n'existe plus NULLE PART, et une console qui trace une courbe sur une fenêtre plus ancienne rend
-    // aujourd'hui une courbe VIDE au lieu de dire que l'horizon s'arrête là. C'est un constat OUVERT :
-    // il demande une surface de publication (`/api/query`) et un rendu (`web/`), qui ne relèvent pas
-    // de ce fichier.
+    // CE QUE CETTE DÉCISION LAISSAIT OUVERT, ET QUI EST FERMÉ (`P10.5-h`, 2026-09-11). Au-delà de
+    // `metric_days`, la série n'existe plus NULLE PART ; une console qui trace une courbe sur une fenêtre
+    // plus ancienne rendait une courbe VIDE au lieu de dire que l'horizon s'arrête là. L'aveu existe
+    // désormais : `panneau_avoue::FAMILLES_DE_RETENTION` porte `metric -> metric_raw_hours` et
+    // `metric_rollup -> metric_days`, donc `horizon_du_sql` pose `older_outside_window` + `retention_floor`
+    // (témoin `l_horizon_dit_ce_qu_une_fenetre_n_a_pas_pu_voir...`, `tests/panneau_avoue.rs`), et
+    // `web/dashboards.js` lit cet aveu et pose la phrase d'horizon SUR une courbe vide — plus de « aucune
+    // donnée » muet. C'est la surface du constat fondateur (les douze courbes de `P10.5-e` sont des
+    // PANNEAUX). RESTE, plus étroit et hors constat : une requête métrique BRUTE dans Explore (`/api/query`)
+    // n'attache pas encore `older_outside_window` (la parité a été retirée, cf. `handlers/query.rs`). Il n'y
+    // a de toute façon rien à faire dans CE fichier : la décision « pas de pré-agrégé froid » y est complète.
     // ==========================================================================================
     // métriques fines plus vieilles que raw_h -> moyenne/min/max horaire (un seul INSERT agrégé), PUIS purge du
     // raw. COR MED-1 (atomicité, v134) : l'INSERT de rollup ET la purge sont tenus sous UN SEUL verrou writer,

@@ -86,23 +86,61 @@ pub(crate) fn hotes_du_panneau_bornes(conn: &Connection, borne: i64) -> Result<(
 /// la rétention reste VISIBLE (son last_ts colle) — comportement VOULU pour une flotte (agent mort = visible).
 /// Le troisième champ rendu dit si la lecture des hôtes a ABOUTI (`P10.7-g`, lot 91) : faux quand `host_rollup` est
 /// illisible ou qu'une ligne l'est. L'enrôlement, lui, reste au mieux (absent = inventaire complet sans enrôlement).
-pub(crate) fn fleet_scan_all(conn: &Connection, now_ts: i64) -> (Vec<Value>, bool, bool) {
+/// `P10.7-g` (lot 100) — CE QUE LE BALAYAGE DE FLOTTE A LU, ET CE QU'IL N'A PAS LU. `hotes_lus` gate le cache depuis
+/// le lot 91 ; `non_lus` nomme les lectures d'ENRICHISSEMENT ratées (enrôlement, déclarations) : chaque hôte est alors
+/// traité comme non enrôlé / non déclaré — le sens SÛR (plus d'alertes, jamais moins) — mais ce n'est pas une
+/// observation, le corps le dit, et une flotte partiellement non lue n'est jamais mise en cache.
+pub(crate) struct FlotteLue {
+    pub(crate) hosts: Vec<Value>,
+    pub(crate) pipeline_fresh: bool,
+    pub(crate) hotes_lus: bool,
+    pub(crate) non_lus: Vec<&'static str>,
+}
+
+impl FlotteLue {
+    /// Le défaut servi quand AUCUNE lecture n'a eu lieu (pas de connexion, tâche interrompue).
+    pub(crate) fn non_lue() -> Self {
+        FlotteLue { hosts: Vec::new(), pipeline_fresh: false, hotes_lus: false, non_lus: vec!["hôtes"] }
+    }
+    /// Tout a été lu : la seule flotte qu'on met en cache.
+    pub(crate) fn lue(&self) -> bool {
+        self.hotes_lus && self.non_lus.is_empty()
+    }
+}
+
+pub(crate) fn fleet_scan_all(conn: &Connection, now_ts: i64) -> FlotteLue {
     let pipeline_fresh = pipeline_is_fresh(conn, now_ts);
     // ENRÔLEMENT (best-effort, mode 0) : host -> (name, created, last_used). token_hash JAMAIS lu (l'authorizer
     // read-pool le refuserait de toute façon). ORDER BY created DESC + or_insert -> on garde l'enrôlement le
     // PLUS RÉCENT quand un hôte a plusieurs tokens. Un échec de prepare (schéma mode 1 sans name/last_used)
     // laisse la map VIDE -> l'inventaire reste complet, l'enrôlement simplement absent (jamais d'erreur dure).
+    // `P10.7-g` (lot 100) — l'enrôlement est LU ou NON LU : une lecture ratée ne fait plus passer chaque hôte pour
+    // « non enrôlé » (`enrolled` reste `null`), et elle est nommée dans le corps servi.
+    let mut non_lus: Vec<&'static str> = Vec::new();
+    let enrolements: Result<Vec<(String, String, Option<i64>, Option<i64>)>, rusqlite::Error> = conn
+        .prepare("SELECT host, name, created, last_used FROM token WHERE host IS NOT NULL AND host<>'' ORDER BY created DESC")
+        .and_then(|mut s| {
+            s.query_map([], |r| Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                r.get::<_, Option<i64>>(2)?,
+                r.get::<_, Option<i64>>(3)?,
+            )))
+            .and_then(|rows| rows.collect())
+        });
     let mut enroll: std::collections::HashMap<String, (String, Option<i64>, Option<i64>)> = std::collections::HashMap::new();
-    if let Ok(mut s) = conn.prepare("SELECT host, name, created, last_used FROM token WHERE host IS NOT NULL AND host<>'' ORDER BY created DESC") {
-        if let Ok(rows) = s.query_map([], |r| Ok((
-            r.get::<_, String>(0)?,
-            r.get::<_, Option<String>>(1)?.unwrap_or_default(),
-            r.get::<_, Option<i64>>(2)?,
-            r.get::<_, Option<i64>>(3)?,
-        ))) {
-            for (h, n, c, l) in rows.flatten() { enroll.entry(h).or_insert((n, c, l)); }
+    let enrolement_lu = match enrolements {
+        Ok(lignes) => {
+            for (h, n, c, l) in lignes {
+                enroll.entry(h).or_insert((n, c, l));
+            }
+            true
         }
-    }
+        Err(_) => {
+            non_lus.push("enrôlement");
+            false
+        }
+    };
     // HÔTES (garanti) : dernier/premier signal + nb de signaux, lus du rollup pré-agrégé host_rollup (cf.
     // rollup_hosts) -> AUCUN scan de event∪metric∪snapshot. last_seen=MAX(last_ts), first_seen=MIN(first_ts),
     // signals=SUM(sig_total+sig_hot). GROUP BY host collapse les env (#2d ; mode 0 = tout 'prod' -> 1 ligne/hôte).
@@ -111,7 +149,13 @@ pub(crate) fn fleet_scan_all(conn: &Connection, now_ts: i64) -> (Vec<Value>, boo
     // DÉCLARÉES, pas le parc). Une table absente rend une carte VIDE : chaque machine retombe alors sur
     // « personne n'a rien dit », c'est-à-dire sur « le silence alerte » — une lecture impossible produit
     // PLUS d'alertes, jamais moins.
-    let marquages = marquages_dhotes(conn);
+    let marquages = match crate::handlers::hotes_declares::marquages_dhotes_lus(conn) {
+        Ok(m) => m,
+        Err(_) => {
+            non_lus.push("déclarations");
+            std::collections::HashMap::new()
+        }
+    };
     // `P10.7-g` (lot 91) — LA LECTURE DES HÔTES DIT SI ELLE A ABOUTI. Une table illisible laissait `hosts` VIDE et le
     // gestionnaire mettait cette flotte vide EN CACHE pour tout le TTL : « la flotte est vide » resservi trente
     // secondes. Le verdict rendu ici gate le cache et pose `error` dans le corps servi.
@@ -143,7 +187,7 @@ pub(crate) fn fleet_scan_all(conn: &Connection, now_ts: i64) -> (Vec<Value>, boo
                     "signals": n,
                     "age_s": age,
                     "status": status,
-                    "enrolled": e.is_some(),
+                    "enrolled": if enrolement_lu { json!(e.is_some()) } else { Value::Null },
                     "enroll_name": e.map(|x| x.0.clone()).unwrap_or_default(),
                     "enroll_created": e.and_then(|x| x.1),
                     "token_last_used": e.and_then(|x| x.2),
@@ -157,7 +201,7 @@ pub(crate) fn fleet_scan_all(conn: &Connection, now_ts: i64) -> (Vec<Value>, boo
             }
         }
     }
-    (hosts, pipeline_fresh, hotes_lus)
+    FlotteLue { hosts, pipeline_fresh, hotes_lus, non_lus }
 }
 
 /// P11.10-a — LES PARTS, ET ELLES S'ADDITIONNENT. Calculée sur la liste COMPLÈTE (jamais sur la page
@@ -222,7 +266,8 @@ pub(crate) fn fleet_sort_paginate(mut hosts: Vec<Value>, sort: &str, dir_desc: b
 /// n'appelle PAS ceci (il scanne via le cache SWR) ; conservé pour fleet_query_page(&conn, …) direct (tests).
 #[allow(dead_code)] // utilisé uniquement par les tests (le handler passe par fleet_scan_all + le cache SWR)
 pub(crate) fn fleet_query_page(conn: &Connection, now_ts: i64, sort: &str, dir_desc: bool, limit: i64, offset: i64) -> (Vec<Value>, i64, bool) {
-    let (hosts, pipeline_fresh, _) = fleet_scan_all(conn, now_ts);
+    let f = fleet_scan_all(conn, now_ts);
+    let (hosts, pipeline_fresh) = (f.hosts, f.pipeline_fresh);
     let (page, total) = fleet_sort_paginate(hosts, sort, dir_desc, limit, offset);
     (page, total, pipeline_fresh)
 }
@@ -289,15 +334,12 @@ pub(crate) async fn fleet(State(st): State<AppState>, Extension(au): Extension<A
                 // try_acquire (PAS await) : lane refresh saturée -> on renonce (le périmé reste servi).
                 if let Ok(_permit) = sem.try_acquire_owned() {
                     let ts2 = now();
-                    if let Ok((hosts_new, pf_new, done)) = tokio::task::spawn_blocking(move || {
-                        read_with_watchdog(db.as_str(), (Vec::<Value>::new(), false, false), move |conn| {
-                            let (h, p, lus) = fleet_scan_all(conn, ts2);
-                            (h, p, lus)
-                        })
+                    if let Ok(f) = tokio::task::spawn_blocking(move || {
+                        read_with_watchdog(db.as_str(), FlotteLue::non_lue(), move |conn| fleet_scan_all(conn, ts2))
                     })
                     .await
                     {
-                        if done { fleet_map().lock().insert(ck, (Instant::now(), (hosts_new, pf_new))); }
+                        if f.lue() { fleet_map().lock().insert(ck, (Instant::now(), (f.hosts, f.pipeline_fresh))); }
                     }
                 }
                 FLEET_REFRESHING.store(false, Ordering::Release);
@@ -313,21 +355,23 @@ pub(crate) async fn fleet(State(st): State<AppState>, Extension(au): Extension<A
     };
     let db2 = db_path.clone();
     let scan = tokio::task::spawn_blocking(move || {
-        read_with_watchdog(db2.as_str(), (Vec::<Value>::new(), false, false), move |conn| {
-            let (h, p, lus) = fleet_scan_all(conn, now_ts);
-            (h, p, lus)
-        })
+        read_with_watchdog(db2.as_str(), FlotteLue::non_lue(), move |conn| fleet_scan_all(conn, now_ts))
     })
     .await;
     match scan {
-        Ok((hosts_full, pf, done)) => {
-            if done {
-                fleet_map().lock().insert(ckey, (Instant::now(), (hosts_full.clone(), pf)));
+        Ok(f) => {
+            if f.lue() {
+                fleet_map().lock().insert(ckey, (Instant::now(), (f.hosts.clone(), f.pipeline_fresh)));
             }
-            let mut corps = fleet_response(&hosts_full, pf, &sort, dir_desc, limit, offset, now_ts);
-            if !done {
+            let mut corps = fleet_response(&f.hosts, f.pipeline_fresh, &sort, dir_desc, limit, offset, now_ts);
+            if !f.hotes_lus {
                 // `P10.7-g` (lot 91) — non lu (table illisible, ligne illisible ou garde-fou) : servi SANS cache, et DIT.
                 corps["error"] = json!(FLOTTE_NON_LUE);
+            } else if !f.non_lus.is_empty() {
+                // `P10.7-g` (lot 100) — hôtes lus, mais l'enrôlement ou les déclarations ne l'ont pas été : servi SANS
+                // cache, et DIT. Le sens est SÛR (non enrôlé / non déclaré : plus d'alertes, jamais moins), mais ce
+                // n'est pas une observation.
+                corps["error"] = json!(format!("flotte partiellement NON LUE : {} — traité comme non enrôlé / non déclaré (sens sûr), ce n'est pas une observation", f.non_lus.join(", ")));
             }
             Json(corps)
         }

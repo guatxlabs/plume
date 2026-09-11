@@ -11268,6 +11268,36 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   console.log("(88) OK — un inventaire non lu écrit sa cause et n'annonce aucune panne ; une panne lue reste dite");
 }
 
+// ---------------------------------------------------------------------------------------------
+// (89) `P10.7-g` (lot 100) — UN ENRÔLEMENT NON LU N'EST PAS « NON ENRÔLÉ ». Le démon sert `enrolled: null` quand
+//      il n'a pas pu lire les jetons d'agent, et la cause sous `error` ; la colonne l'écrit « enrôlement non
+//      lu » et le bandeau porte la cause. Un `enrolled: false` reste « non enrôlé ».
+// ---------------------------------------------------------------------------------------------
+{
+  const { renderFleetInventory } = await import(pathToFileURL(path.join(WEB, "fleet.js")).href);
+  const { S } = await import(pathToFileURL(path.join(WEB, "state.js")).href);
+  const tout89 = (el) => [el.textContent || "", ...((el.children || []).map(tout89))].join(" ").replace(/\s+/g, " ");
+  const hote89 = (host, enrolled) => ({ host, status: "fresh", last_seen: 999_900, age_s: 100, first_seen: 1, signals: 10, enrolled, enroll_name: "",
+    attente: "non_declare", attente_libelle: null, declaree_par: null, alerte_si_muet: true, dans_la_flotte: true });
+  const parc89 = { pipeline_fresh: true, now: 1_000_000, total: 2, repartition: { inventories: 2, flotte: 2, retires: 0, frais: 2, en_retard: 0, muet_attendu: 0, muet_inattendu: 0 },
+    hosts: [hote89("srv-nonlu", null), hote89("srv-nonenrole", false)],
+    error: "flotte partiellement NON LUE : enrôlement — traité comme non enrôlé / non déclaré (sens sûr), ce n'est pas une observation" };
+  const rendre89 = (d) => { const avant = S.AUTH; S.AUTH = { user: "u", role: "viewer" }; const w = document.createElement("div"); try { renderFleetInventory(w, d); } finally { S.AUTH = avant; } return w; };
+  const porteUnTableau89 = (el) => (el.tagName === "TABLE" || el.tagName === "THEAD") || (el.children || []).some(porteUnTableau89);
+  // (a) sous l'aveu servi : le bandeau porte la cause et la table n'est PAS peinte (la surface rend MOINS, `P10.7-d`) —
+  //     des verdicts par hôte dérivés d'une lecture ratée se liraient comme complets.
+  const wAveu89 = rendre89(parc89);
+  const texteAveu89 = tout89(wAveu89);
+  exiger(texteAveu89.includes("flotte partiellement NON LUE"), `(89) la cause servie est écrite dans le panneau : ${texteAveu89}`);
+  exiger(!porteUnTableau89(wAveu89), `(89) aucune table n'est peinte sous un aveu`);
+  // (b) la même charge SANS aveu (un démon d'une autre version pourrait la servir) : la colonne distingue les deux états.
+  const { error: _erreur89, ...sansAveu89 } = parc89;
+  const texteSans89 = tout89(rendre89(sansAveu89));
+  exiger(texteSans89.includes("enrôlement non lu"), `(89) l'enrôlement non lu est écrit tel quel : ${texteSans89}`);
+  exiger(texteSans89.includes("non enrôlé"), `(89) un enrolled:false reste « non enrôlé » : ${texteSans89}`);
+  console.log("(89) OK — un enrôlement non lu est écrit tel quel, distinct de « non enrôlé », et la cause servie est écrite");
+}
+
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;
 verdictRendu = true;
 if (echecs.length) {

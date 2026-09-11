@@ -233,13 +233,12 @@ pub(crate) fn attente_par_construction(enrol: Option<&(String, Option<i64>, Opti
 /// produit PLUS d'alertes, jamais moins. L'inverse — retomber sur « silence attendu » — éteindrait le
 /// dead-man's-switch du parc sur une erreur de lecture, exactement le défaut que `sonde_de_flotte.rs`
 /// ferme de son côté en refusant de résoudre ce qu'il n'a pas pu observer.
-pub(crate) fn marquages_dhotes(conn: &Connection) -> HashMap<String, MarquageHote> {
+/// `P10.7-g` (lot 100) — LES DÉCLARATIONS SONT LUES OU NON LUES : la flotte nomme une lecture ratée au lieu de faire
+/// passer chaque machine pour « personne n'a rien dit ».
+pub(crate) fn marquages_dhotes_lus(conn: &Connection) -> Result<HashMap<String, MarquageHote>, rusqlite::Error> {
     let mut out: HashMap<String, MarquageHote> = HashMap::new();
-    let Ok(mut s) = conn.prepare("SELECT host,attente,attente_motif,attente_par,attente_le FROM host_settings WHERE scope='global'")
-    else {
-        return out;
-    };
-    let Ok(rows) = s.query_map([], |r| {
+    let mut s = conn.prepare("SELECT host,attente,attente_motif,attente_par,attente_le FROM host_settings WHERE scope='global'")?;
+    let rows = s.query_map([], |r| {
         Ok((
             r.get::<_, String>(0)?,
             MarquageHote {
@@ -249,13 +248,19 @@ pub(crate) fn marquages_dhotes(conn: &Connection) -> HashMap<String, MarquageHot
                 le: r.get::<_, Option<i64>>(4)?,
             },
         ))
-    }) else {
-        return out;
-    };
-    for (h, m) in rows.flatten() {
+    })?;
+    for r in rows {
+        let (h, m) = r?;
         out.insert(h, m);
     }
-    out
+    Ok(out)
+}
+
+/// Lecture APLATIE — une table absente ou illisible rend une carte VIDE : chaque machine retombe sur « personne n'a
+/// rien dit », c'est-à-dire sur « le silence alerte » (sens sûr, `P11.10-a`). Gardée pour la sonde de parc et le
+/// risque ; la flotte passe par `marquages_dhotes_lus` et DIT la lecture ratée. Reste nommé de `P10.7-g`.
+pub(crate) fn marquages_dhotes(conn: &Connection) -> HashMap<String, MarquageHote> {
+    marquages_dhotes_lus(conn).unwrap_or_default()
 }
 
 /// LES MACHINES DONT LE SILENCE EST DÉCLARÉ ATTENDU, et celles qui sont RETIRÉES — la seule chose dont la

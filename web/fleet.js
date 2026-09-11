@@ -52,7 +52,9 @@ function fleetExportRow(h) {
   return {
     host: h.host || '', status: h.status || '', last_seen: h.last_seen ? fmtTs(h.last_seen) : '',
     signals: h.signals == null ? 0 : h.signals, first_seen: h.first_seen ? fmtTs(h.first_seen) : '',
-    enrolled: h.enrolled ? 'oui' : 'non', enroll_name: h.enroll_name || '',
+    // `P10.7-g` (lot 100) — enrôlement NON LU : cellule VIDE (le fichier n'a pas de bandeau ; une cellule vide n'affirme rien,
+    // « non » affirmerait « non enrôlé »).
+    enrolled: h.enrolled === null ? '' : (h.enrolled ? 'oui' : 'non'), enroll_name: h.enroll_name || '',
     enroll_created: h.enroll_created ? fmtTs(h.enroll_created) : '', token_last_used: h.token_last_used ? fmtTs(h.token_last_used) : '',
     attente: h.attente || '', attente_libelle: h.attente_libelle || '',
   };
@@ -202,6 +204,9 @@ function renderFleetInventory(wrap, d) {
       const sp = document.createElement('span'); sp.textContent = h.first_seen ? fmtTs(h.first_seen) : '—'; return sp;
     } },
     { key: 'enroll', label: 'Enrôlement', sortable: true, sortVal: h => h.enrolled ? (h.enroll_name || '~') : '', render: h => {
+      // `P10.7-g` (lot 100) — `enrolled: null` = le démon n'a PAS pu lire les jetons d'agent cette fois-ci : ce n'est
+      // pas « non enrôlé », et la cause est écrite dans le bandeau du panneau (`error`).
+      if (h.enrolled === null) { const sp = document.createElement('span'); sp.className = 'muted'; sp.textContent = 'enrôlement non lu'; sp.title = "Le démon n'a pas pu lire les jetons d'agent cette fois-ci : ce n'est pas « non enrôlé ». La cause est dans le bandeau."; return sp; }
       if (!h.enrolled) { const sp = document.createElement('span'); sp.className = 'muted'; sp.textContent = 'non enrôlé'; sp.title = "Aucun token d'agent lié à cet hôte (ingest via token partagé, ou hôte local)."; return sp; }
       const b = document.createElement('span'); b.className = 'badge'; b.textContent = h.enroll_name || 'agent';
       b.style.cssText = 'color:var(--ok);border-color:color-mix(in srgb,var(--ok) 40%,transparent)';

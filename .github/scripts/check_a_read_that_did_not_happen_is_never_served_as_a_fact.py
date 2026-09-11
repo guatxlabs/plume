@@ -443,8 +443,8 @@ PLANCHER_FICHIERS = 15
 # jambe dont l'ensemble est vide ne réclame rien — aucune rançon.
 SITES_ADMIS = {
     "A": {  # défaut NU servi : 3 accusations sur 2 sites (15 le 2026-09-10 ; douze défauts portent leur cause dans leur littéral depuis le lot 92)
-        # `fleet` ×2 : le défaut gardé est un TRIPLET typé ((hôtes, fraîcheur, lu) — cf. lot 91) et l'aveu `error` est posé
-        # dans le corps du gestionnaire quand `lu` est faux ; cet instrument juge le littéral du défaut, qui ne peut pas
+        # `fleet` ×2 : le défaut gardé est `FlotteLue::non_lue()` (lot 100 ; un triplet typé depuis le lot 91) et l'aveu `error`
+        # est posé dans le corps du gestionnaire quand la flotte n'est pas lue ; cet instrument juge le littéral du défaut, qui ne peut pas
         # porter la clé. Exemption gardée avec sa raison ; corps_rassurants_avouent.rs tient la propriété.
         ("daemon/src/handlers/fleet.rs", "fleet"): 2,
         # `compliance_posture` : le défaut des règles mappées est TYPÉ (`Err(())` au lot 92, `Err(String)` portant la cause
@@ -453,14 +453,15 @@ SITES_ADMIS = {
         # gardée avec sa raison ; defauts_gardes_avouent.rs tient la propriété.
         ("daemon/src/handlers/compliance.rs", "compliance_posture"): 1,
     },
-    "B": {  # closure SOURDE : 4 accusations sur 3 sites (6 après le lot 98 ; les règles mappées et le compte d'événements sont typés depuis le lot 99)
+    "B": {  # closure SOURDE : 2 accusations sur 2 sites (4 après le lot 99 ; la flotte type l'enrôlement et les déclarations depuis le lot 100) — les deux restantes sont des silences VOULUS, nommés ci-dessous avec leur raison
+        # `retention_settings_get` : `setting_days` est un RÉSOLVEUR (valeur écrite -> variable d'environnement -> configuration ->
+        # défaut) ; ce que la route sert est la valeur EFFECTIVE que la purge appliquera, résolue par le MÊME chemin — une
+        # ligne `setting` illisible rend donc ce qui sera réellement appliqué, pas un repli inventé. Silence voulu, raison écrite ;
+        # le reste nommé (`P10.7-g`) est de dire la PROVENANCE de chaque valeur (`resolved_from`), pas de changer la valeur.
         ("daemon/src/handlers/admin_ui.rs", "retention_settings_get"): 1,
-        # `fleet` ×2 : GUÉRIE depuis le lot 91 (verdict typé rendu par fleet_scan_all, cache gaté, `error` posé) mais l'aveu
-        # vit HORS de la closure, dans le corps du gestionnaire — cet instrument ne le voit pas. Exemption gardée avec
-        # sa raison plutôt que d'élargir la lecture ; le témoin de route (corps_rassurants_avouent.rs) tient la propriété.
-        ("daemon/src/handlers/fleet.rs", "fleet"): 2,
-        # `overview` : ses cinq comptes AVOUENT depuis le lot 91 (`error` + `non_etablis`) ; l'accusation qui reste est
-        # celle du compteur d'événements EN CACHE (`events_count_cached`, un niveau plus bas), reste nommé dans l'index.
+        # `search` : `search_cold_coverage` rend `None` quand `cold_seal` est absente ou illisible (« jamais d'alarme sur une
+        # incertitude », écrit dans le module) : la barre ne DÉCLARE alors rien sur la bande froide. Silence voulu, raison écrite ;
+        # le reste nommé (`P10.7-g`) est une note `reason: cold_coverage_unread` que la console saurait lire.
         ("daemon/src/handlers/search.rs", "search"): 1,
     },
     "Q": {  # cause JETÉE : 3 accusations sur 2 sites

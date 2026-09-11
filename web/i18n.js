@@ -903,6 +903,8 @@ const I18N_EN = {
   "enregistrée": "saved", "supprimée": "deleted",
   // P11.8-a — fleet.js
   "Aucun token d'agent lié à cet hôte (ingest via token partagé, ou hôte local).": "No agent token bound to this host (ingest through a shared token, or local host).",
+  "enrôlement non lu": "enrolment not read",
+  "Le démon n'a pas pu lire les jetons d'agent cette fois-ci : ce n'est pas « non enrôlé ». La cause est dans le bandeau.": "The daemon could not read the agent tokens this time: this is not “not enrolled”. The cause is in the banner.",
   "Dernier push agent": "Last agent push", "Dernier signal": "Last signal", "Enrôlement": "Enrolment", "Hôte": "Host",
   "Ingestion en panne — aucune donnée reçue récemment (tous les hôtes apparaîtront « en retard » / « muets »).": "Ingestion down — no data received recently (every host will appear “late” / “silent”).",
   "Non disponible (hôte non enrôlé, ou mode multi-tenant où le token ne suit pas le dernier push).": "Not available (host not enrolled, or multi-tenant mode where the token does not follow the last push).",

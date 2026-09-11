@@ -221,24 +221,36 @@ pub(crate) fn dispatch_notifications(db: &Arc<Mutex<Connection>>) {
     ) = {
         let conn = db.lock();
         // labels de routage : mitre / host / source(=rule) / env_id, en plus de ts/severity/title/detail.
-        let alerts: Vec<(i64, i64, i64, String, String, String, String, String)> = match conn.prepare(
-            "SELECT id,ts,severity,title,detail,COALESCE(host,''),COALESCE(mitre,''),COALESCE(rule,'') \
-             FROM alert WHERE notified=0 ORDER BY ts LIMIT 20",
-        ) {
-            Ok(mut s) => s.query_map([], |r| Ok((
+        // `P10.7-f` (lot 109) — la file des alertes à notifier est lue EN BLOC : une lecture ratée (ou une ligne
+        // en erreur) ne raccourcit plus la file en silence, le tour est refusé et COMPTÉ, le suivant relit.
+        let alerts: Vec<(i64, i64, i64, String, String, String, String, String)> = match conn
+            .prepare(
+                "SELECT id,ts,severity,title,detail,COALESCE(host,''),COALESCE(mitre,''),COALESCE(rule,'') \
+                 FROM alert WHERE notified=0 ORDER BY ts LIMIT 20",
+            )
+            .and_then(|mut s| s.query_map([], |r| Ok((
                 r.get(0)?, r.get(1)?, r.get(2)?,
                 r.get::<_, Option<String>>(3)?.unwrap_or_default(),
                 r.get::<_, Option<String>>(4)?.unwrap_or_default(),
                 r.get(5)?, r.get(6)?, r.get(7)?,
-            ))).map(|x| x.flatten().collect()).unwrap_or_default(),
-            Err(_) => return,
+            )))?.collect::<rusqlite::Result<Vec<_>>>())
+        {
+            Ok(v) => v,
+            Err(e) => { crate::metrics::compter_un_tick_aveugle("dispatch_alerts", &e.to_string()); return; }
         };
         if alerts.is_empty() {
             return;
         }
-        let notifiers: Vec<NotifierRef> = match conn.prepare("SELECT id,kind,url,min_severity,config FROM notifier WHERE enabled=1 ORDER BY id") {
-            Ok(mut s) => s.query_map([], |r| Ok(NotifierRef { id: r.get(0)?, kind: r.get(1)?, url: r.get(2)?, min_severity: r.get(3)?, config: r.get(4)? })).map(|x| x.flatten().collect()).unwrap_or_default(),
-            Err(_) => Vec::new(),
+        // `P10.7-f` (lot 109) — CRUCIAL : des canaux NON LUS ne rendent plus une liste VIDE. Avec une liste vide,
+        // la boucle ne dispatche rien MAIS l'alerte était quand même marquée `notified=1` en fin de tour — marquée
+        // envoyée, jamais dispatchée : une PERTE SILENCIEUSE. Sur lecture ratée, on saute le tour et on le compte ;
+        // aucune alerte n'est marquée, le tour suivant relit.
+        let notifiers: Vec<NotifierRef> = match conn
+            .prepare("SELECT id,kind,url,min_severity,config FROM notifier WHERE enabled=1 ORDER BY id")
+            .and_then(|mut s| s.query_map([], |r| Ok(NotifierRef { id: r.get(0)?, kind: r.get(1)?, url: r.get(2)?, min_severity: r.get(3)?, config: r.get(4)? }))?.collect::<rusqlite::Result<Vec<_>>>())
+        {
+            Ok(v) => v,
+            Err(e) => { crate::metrics::compter_un_tick_aveugle("dispatch_notifiers", &e.to_string()); return; }
         };
         let policies = load_policies(&conn);
         let silences = load_active_silences(&conn, now());

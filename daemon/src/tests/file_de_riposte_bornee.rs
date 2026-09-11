@@ -607,6 +607,11 @@ mod file_de_riposte_bornee_tests {
         // est prouvée par ses témoins ; le reconnaître ici est ce qui a vidé la famille (B) du cliquet.
         "liste_bornee::poser_la_sous_liste(",
         "aveu::poser_la_sous_liste(",
+        // `P10.7-g` (2026-09-12) — LA SŒUR QUI AVOUE AUSSI UNE LECTURE RATÉE : `poser_la_sous_liste_ou_avouer`
+        // pose les MÊMES trois voisines (`_served`/`_window`/`_truncated`) sur `Ok`, et un objet `non_lu` au
+        // lieu d'un `[]` sur `Err`. Le bundle de diagnostic (`system.rs`) l'appelle ; elle borne comme sa sœur.
+        "liste_bornee::poser_la_sous_liste_ou_avouer(",
+        "aveu::poser_la_sous_liste_ou_avouer(",
         "liste_bornee::couper_le_corps_a_la_borne(",
         "aveu::couper_le_corps_a_la_borne(",
         // `P11.22-e` a écrit le MÊME drapeau sous un autre mot, faute d'un fabricant où le nommer une

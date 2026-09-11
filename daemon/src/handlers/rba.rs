@@ -664,37 +664,53 @@ pub(crate) async fn risk_entity_timeline(
             },
         )
         .ok();
-    let timeline: Vec<Value> = match conn.prepare(
-        "SELECT (ts/3600)*3600 AS bucket, SUM(risk_score), COUNT(*) FROM risk_event \
-         WHERE entity_type=?1 AND entity=?2 AND ts>=?3 GROUP BY bucket ORDER BY bucket",
-    ) {
-        Ok(mut s) => s
-            .query_map(params![etype, entity, from], |r| Ok(json!({ "ts": r.get::<_, i64>(0)?, "score": r.get::<_, i64>(1)?, "contrib": r.get::<_, i64>(2)? })))
-            .map(|x| x.flatten().collect())
-            .unwrap_or_default(),
-        Err(_) => Vec::new(),
-    };
+    // `P10.7-g` (lot 107) — timeline et contributions lues EN BLOC : une lecture ratée n'est plus une liste
+    // vide muette, elle est rendue `null` avec sa cause (`timeline_error` / `contributions_error`).
+    let timeline_lue: rusqlite::Result<Vec<Value>> = conn
+        .prepare(
+            "SELECT (ts/3600)*3600 AS bucket, SUM(risk_score), COUNT(*) FROM risk_event \
+             WHERE entity_type=?1 AND entity=?2 AND ts>=?3 GROUP BY bucket ORDER BY bucket",
+        )
+        .and_then(|mut s| {
+            s.query_map(params![etype, entity, from], |r| Ok(json!({ "ts": r.get::<_, i64>(0)?, "score": r.get::<_, i64>(1)?, "contrib": r.get::<_, i64>(2)? })))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+        });
     // `P11.22-g` — la ligne de temps des contributions est lue avec sa ligne excédentaire et posée par la seconde
     // porte du fabricant : `contributions_served`, `contributions_window`, `contributions_truncated`.
-    let contributions: Vec<Value> = match conn.prepare(
-        "SELECT ts,risk_score,source,rule_id,reason,mitre,severity FROM risk_event \
-         WHERE entity_type=?1 AND entity=?2 ORDER BY ts DESC LIMIT ?3",
-    ) {
-        Ok(mut s) => s
-            .query_map(params![etype, entity, crate::handlers::liste_bornee::borne_avec_ligne_excedentaire(RISK_ENTITY_CONTRIBUTIONS_WINDOW)], |r| {
+    let contributions_lues: rusqlite::Result<Vec<Value>> = conn
+        .prepare(
+            "SELECT ts,risk_score,source,rule_id,reason,mitre,severity FROM risk_event \
+             WHERE entity_type=?1 AND entity=?2 ORDER BY ts DESC LIMIT ?3",
+        )
+        .and_then(|mut s| {
+            s.query_map(params![etype, entity, crate::handlers::liste_bornee::borne_avec_ligne_excedentaire(RISK_ENTITY_CONTRIBUTIONS_WINDOW)], |r| {
                 Ok(json!({
                     "ts": r.get::<_, i64>(0)?, "risk_score": r.get::<_, i64>(1)?, "source": r.get::<_, String>(2)?,
                     "rule_id": r.get::<_, Option<i64>>(3)?, "reason": r.get::<_, String>(4)?,
                     "mitre": r.get::<_, String>(5)?, "severity": r.get::<_, i64>(6)?
                 }))
-            })
-            .map(|x| x.flatten().collect())
-            .unwrap_or_default(),
-        Err(_) => Vec::new(),
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        });
+    let (timeline, timeline_error) = match timeline_lue {
+        Ok(v) => (Value::Array(v), None),
+        Err(e) => (Value::Null, Some(format!("ligne de temps du risque NON LUE : {e}"))),
     };
     let mut corps = json!({ "entity_type": etype, "entity": entity, "summary": summary, "timeline": timeline, "contributions": [] });
     if let Some(obj) = corps.as_object_mut() {
-        crate::handlers::liste_bornee::poser_la_sous_liste(obj, "contributions", contributions, RISK_ENTITY_CONTRIBUTIONS_WINDOW as usize);
+        if let Some(cause) = timeline_error {
+            obj.insert("timeline_error".into(), json!(cause));
+            obj.insert("lecture_non_faite".into(), json!(true));
+        }
+        match contributions_lues {
+            Ok(v) => crate::handlers::liste_bornee::poser_la_sous_liste(obj, "contributions", v, RISK_ENTITY_CONTRIBUTIONS_WINDOW as usize),
+            Err(e) => {
+                // Contributions NON LUES : `null` avec sa cause, jamais une sous-liste vide qui se lit « aucune ».
+                obj.insert("contributions".into(), Value::Null);
+                obj.insert("contributions_error".into(), json!(format!("contributions du risque NON LUES : {e}")));
+                obj.insert("lecture_non_faite".into(), json!(true));
+            }
+        }
     }
     Json(corps)
 }

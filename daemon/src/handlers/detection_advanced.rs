@@ -646,14 +646,21 @@ fn corr_row_json(r: &rusqlite::Row) -> rusqlite::Result<Value> {
 
 pub(crate) async fn correlations_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
     crate::req_conn!(st, au, conn);
-    let mut stmt = match conn.prepare(
-        "SELECT id,name,enabled,key_field,entity_type,steps,window_s,interval_s,severity,COALESCE(mitre,''),COALESCE(risk_score,0),last_run,last_fired,managed FROM correlation ORDER BY id",
-    ) {
-        Ok(s) => s,
-        Err(_) => return Json(json!({ "correlations": [] })),
-    };
-    let rows: Vec<Value> = stmt.query_map([], corr_row_json).map(|x| x.flatten().collect()).unwrap_or_default();
-    Json(json!({ "correlations": rows }))
+    // `P10.7-g` (lot 107) — une lecture RATÉE de la table des corrélations ne se sert plus comme « aucune
+    // corrélation » (l'ancien `Err(_) => []`) : la liste est lue EN BLOC ou refusée EN BLOC, et le refus est NOMMÉ.
+    let lues: rusqlite::Result<Vec<Value>> = conn
+        .prepare(
+            "SELECT id,name,enabled,key_field,entity_type,steps,window_s,interval_s,severity,COALESCE(mitre,''),COALESCE(risk_score,0),last_run,last_fired,managed FROM correlation ORDER BY id",
+        )
+        .and_then(|mut s| s.query_map([], corr_row_json)?.collect::<rusqlite::Result<Vec<_>>>());
+    match lues {
+        Ok(rows) => Json(json!({ "correlations": rows })),
+        Err(e) => Json(json!({
+            "correlations": null,
+            "error": format!("corrélations NON LUES : {e}"),
+            "lecture_non_faite": true,
+        })),
+    }
 }
 
 pub(crate) async fn correlation_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {

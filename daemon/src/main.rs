@@ -301,16 +301,23 @@ fn load_config() -> HashMap<String, String> {
     m
 }
 
-fn cfg(m: &HashMap<String, String>, key: &str, default: &str) -> String {
+/// `P10.7-g` (lot 101) — L'AIGUILLEUR DIT D'OÙ VIENT LA VALEUR (`environment`, `configuration`, `default`). C'est le site
+/// UNIQUE de lecture d'environnement à clé non littérale de ce fichier (`SITES_LECTURE_ENV_NON_LITTERALE`) : la
+/// provenance se lit ICI, jamais par une seconde lecture d'environnement ailleurs.
+fn cfg_lu(m: &HashMap<String, String>, key: &str, default: &str) -> (String, &'static str) {
     // Plume CANONICAL (PLUME_-only) : la clé est `PLUME_*`. Aucun fallback hérité.
     // Ordre : env PLUME_* > conf PLUME_* > défaut.
     if let Ok(v) = std::env::var(key) {
-        return v; // 1. env PLUME_*
+        return (v, "environment"); // 1. env PLUME_*
     }
     if let Some(v) = m.get(key) {
-        return v.clone(); // 2. conf PLUME_*
+        return (v.clone(), "configuration"); // 2. conf PLUME_*
     }
-    default.to_string() // 3. défaut
+    (default.to_string(), "default") // 3. défaut
+}
+
+fn cfg(m: &HashMap<String, String>, key: &str, default: &str) -> String {
+    cfg_lu(m, key, default).0
 }
 
 /// SECRET-PROVIDER PHASE 1 — lecture PURE et TESTABLE d'un secret depuis un FICHIER monté RO (secret mount),
@@ -568,12 +575,28 @@ const RETENTION_FIELDS: [(&str, &str, i64, i64, i64); 5] = [
 /// setting(scope='global',key) si présent&parsable -> sinon cfg (env PLUME_* > conf > défaut) -> clamp[plancher,plafond].
 /// Utilisé À LA FOIS par retention_run (la BDD gagne, hot-reload) ET par les GET/preview -> jamais un défaut
 /// codé en dur divergent (sinon une baisse destructive se déguiserait en hausse rassurante).
+/// `P10.7-g` (lot 101) — LE RÉSOLVEUR DIT D'OÙ VIENT LA VALEUR (`setting` écrite, `environment`, `configuration`,
+/// `default`) ET SI LA VALEUR ÉCRITE N'A PAS PU ÊTRE LUE. La valeur rendue est toujours celle que la purge
+/// appliquera (même chaîne) ; ce qui manquait était la provenance, et la différence entre « rien d'écrit » et
+/// « pas pu lire ce qui est écrit ».
+fn setting_days_lu(conn: &Connection, conf: &HashMap<String, String>, skey: &str, env_key: &str, d: i64, floor: i64, ceil: i64) -> (i64, &'static str, Option<String>) {
+    let ecrite: Result<Option<i64>, String> =
+        match conn.query_row("SELECT value FROM setting WHERE scope='global' AND key=?1", params![skey], |r| r.get::<_, String>(0)) {
+            Ok(s) => Ok(s.trim().parse::<i64>().ok()),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.to_string()),
+        };
+    if let Ok(Some(v)) = ecrite {
+        return (v.clamp(floor, ceil), "setting", None);
+    }
+    let illisible = ecrite.err();
+    let (brut_s, provenance) = cfg_lu(conf, env_key, &d.to_string());
+    let brut: i64 = brut_s.parse().unwrap_or(d);
+    (brut.clamp(floor, ceil), provenance, illisible)
+}
+
 fn setting_days(conn: &Connection, conf: &HashMap<String, String>, skey: &str, env_key: &str, d: i64, floor: i64, ceil: i64) -> i64 {
-    conn.query_row("SELECT value FROM setting WHERE scope='global' AND key=?1", params![skey], |r| r.get::<_, String>(0))
-        .ok()
-        .and_then(|s| s.trim().parse::<i64>().ok())
-        .unwrap_or_else(|| cfg(conf, env_key, &d.to_string()).parse().unwrap_or(d))
-        .clamp(floor, ceil)
+    setting_days_lu(conn, conf, skey, env_key, d, floor, ceil).0
 }
 
 /// Valeur effective d'une clé de rétention (via RETENTION_FIELDS + setting_days). 0 si clé inconnue.

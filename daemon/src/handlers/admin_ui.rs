@@ -21,12 +21,27 @@ pub(crate) async fn retention_settings_get(State(st): State<AppState>, Extension
     let mut obj = serde_json::Map::new();
     obj.insert("ok".into(), json!(true));
     let mut bounds = serde_json::Map::new();
+    // `P10.7-g` (lot 101) — chaque valeur dit sa PROVENANCE, et une valeur écrite qui n'a pas pu être lue est nommée :
+    // la valeur servie reste celle que la purge appliquera (même résolveur), mais ce n'est plus indiscernable de
+    // « rien d'écrit ».
+    let mut provenance = serde_json::Map::new();
+    let mut illisibles = serde_json::Map::new();
     for (skey, env_key, def, floor, ceil) in RETENTION_FIELDS {
-        obj.insert(skey.to_string(), json!(setting_days(&conn, &conf, skey, env_key, def, floor, ceil)));
+        let (valeur, prov, illisible) = setting_days_lu(&conn, &conf, skey, env_key, def, floor, ceil);
+        obj.insert(skey.to_string(), json!(valeur));
+        provenance.insert(skey.to_string(), json!(prov));
+        if let Some(cause) = illisible {
+            illisibles.insert(skey.to_string(), json!(cause));
+        }
         let unit = if skey == "metric_raw_hours" { "hours" } else { "days" };
         bounds.insert(skey.to_string(), json!({ "min": floor, "max": ceil, "default": def, "unit": unit }));
     }
     obj.insert("bounds".into(), Value::Object(bounds));
+    obj.insert("provenance".into(), Value::Object(provenance));
+    if !illisibles.is_empty() {
+        obj.insert("reglage_illisible".into(), Value::Object(illisibles));
+        obj.insert("error".into(), json!("réglage NON LU : la valeur écrite n'a pas pu être lue — la valeur servie est celle que la purge appliquera (environnement, configuration ou défaut), pas la valeur enregistrée"));
+    }
     Json(Value::Object(obj)).into_response()
     })
 }

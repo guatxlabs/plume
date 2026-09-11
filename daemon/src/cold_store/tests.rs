@@ -11767,3 +11767,46 @@ fn p10_5o_la_troncature_vectorisee_porte_son_origine() {
     assert_eq!((v["stats"]["truncated"].as_bool(), v["stats"]["truncated_origin"].as_str(), v["stats"]["rows"].as_u64()),
                (Some(true), Some("mesuree"), Some(cap as u64)), "la coupe de sortie est une mesure faite ici : {}", v["stats"]);
 }
+
+
+/// `P10.7-g` (lot 101) — UNE COUVERTURE FROIDE NON LUE EST DÉCLARÉE, JAMAIS TUE. Une lecture ratée de l'index des jours
+/// scellés rendait `None` (« rien à déclarer »), ce qui se lisait comme « tout a été cherché » ; elle rend une note nommée.
+/// Mesuré en route : la table n'existe pas sur une base jamais vieillie, et cette absence-là est un vrai « rien » ; il
+/// faut donc de l'histoire froide RÉELLE pour qu'une lecture puisse être coupée en vol.
+#[test]
+fn p10_7g_une_couverture_froide_non_lue_est_declaree_jamais_tue() {
+    let _lk = p4a_lock();
+    let root = tmp_root("search-cov-non-lue");
+    let db = mkdb(&root);
+    let dbp_s = dbp(&root);
+    let conf = conf_union(HOT_WIN);
+    // (a) Base jamais vieillie : la table des jours scellés n'existe pas, et cette absence est un vrai « rien ».
+    let b0 = union_boundary(&db, &conf);
+    {
+        let c = db.lock();
+        assert!(
+            crate::handlers::search::search_cold_coverage(&c, &conf, b0, 0).is_none(),
+            "instrument : sans histoire froide (table absente), rien à déclarer"
+        );
+    }
+    // (b) De l'histoire froide réelle : un jour ancien columnarisé.
+    let day = M - 10;
+    let base = day * SECS_PER_DAY;
+    for i in 0..40 {
+        insert_event(&db, &rich_row(base + i, i));
+    }
+    insert_recent_tail_holder(&db);
+    cold_age_run(&db, &dbp_s, &conf, n_now(), RET_DAYS);
+    let b = union_boundary(&db, &conf);
+    let c = db.lock();
+    let lisible = crate::handlers::search::search_cold_coverage(&c, &conf, b, 0).expect("instrument : froid présent et lisible -> note « chaud seulement »");
+    assert_eq!(lisible["reason"].as_str(), Some("fts_hot_only"), "instrument : {lisible}");
+    // (c) La lecture est COUPÉE en vol (rappel de progression qui interrompt chaque énoncé) : la forme qu'a un garde
+    //     de budget ou une annulation. Ce n'est plus un silence.
+    c.progress_handler(1, Some(|| true));
+    let cov = crate::handlers::search::search_cold_coverage(&c, &conf, b, 0).expect("lecture coupée -> DÉCLARÉ, jamais tu");
+    c.progress_handler(1, None::<fn() -> bool>);
+    assert_eq!(cov["reason"].as_str(), Some("cold_coverage_unread"), "la note NOMME la cause : {cov}");
+    assert!(cov["notice"].as_str().unwrap_or("").contains("/api/query"), "la note propose la voie qui lit le froid : {cov}");
+    assert_eq!(cov["searched_from"].as_i64(), Some(b), "la note dit à partir d'où la barre a cherché : {cov}");
+}

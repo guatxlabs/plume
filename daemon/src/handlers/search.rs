@@ -46,11 +46,24 @@ pub(crate) fn search_cold_coverage(conn: &Connection, conf: &HashMap<String, Str
         return None;
     }
     // Y a-t-il vraiment de l'histoire froide ? Sans seal, la barre couvre tout ce qui existe et une
-    // note serait du bruit. Table absente / illisible -> None (jamais d'alarme sur une incertitude).
-    let has_cold: bool = conn
-        .query_row("SELECT EXISTS(SELECT 1 FROM cold_seal WHERE day < ?1)", params![boundary / 86_400], |r| r.get::<_, i64>(0))
-        .map(|n| n == 1)
-        .unwrap_or(false);
+    // note serait du bruit. `P10.7-g` (lot 101) — une lecture RATÉE de l'index des jours scellés n'est plus un
+    // silence : une incertitude se DÉCLARE (`cold_coverage_unread`), parce que « rien à déclarer » se lirait
+    // comme « tout a été cherché ». MESURÉ en route : une base jamais vieillie n'a PAS encore la table — cette
+    // absence-là (forme inconnue) est « aucun jour scellé », pas une incertitude, et reste un silence.
+    let has_cold: bool = match conn.query_row("SELECT EXISTS(SELECT 1 FROM cold_seal WHERE day < ?1)", params![boundary / 86_400], |r| r.get::<_, i64>(0)) {
+        Ok(n) => n == 1,
+        Err(e) if crate::bilan_de_tick::cause_sql(&e) == crate::mesure_environnement::CAUSE_FORME_INCONNUE => false,
+        Err(e) => {
+            return Some(json!({
+                "searched_from": boundary,
+                "cold_boundary_ts": boundary,
+                "reason": "cold_coverage_unread",
+                "notice": format!("couverture froide NON ÉTABLIE : l'index des jours scellés (`cold_seal`) ne se lit pas ({e}) — la barre plein-texte \
+                                   n'a cherché que la fenêtre chaude et ne peut pas dire si un historique columnarisé plus ancien existe ; \
+                                   `/api/query` en GXQL lit le froid"),
+            }));
+        }
+    };
     if !has_cold {
         return None;
     }

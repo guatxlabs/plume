@@ -901,6 +901,9 @@ const I18N_EN = {
   "Effet par rôle (champ → action appliquée) :": "Effect per role (field → applied action):", "activée": "enabled",
   "aucune règle — clique « + Règle » pour masquer un champ (ex : src_user, email, message, src_ip) pour viewer/editor. Tant qu'aucune règle n'existe, toute lecture est inchangée (mode 0).": "no rule — click “+ Rule” to mask a field (e.g. src_user, email, message, src_ip) for viewer/editor. Until a rule exists, every read is unchanged (mode 0).",
   "enregistrée": "saved", "supprimée": "deleted",
+  // P10.7-g (lot 101) — retention.js
+  "valeur enregistrée": "stored value", "variable d'environnement": "environment variable", "fichier de configuration": "configuration file", "défaut du binaire": "binary default",
+  "La valeur affichée est celle que la purge appliquera (environnement, configuration ou défaut), pas la valeur enregistrée, qui n'a pas pu être lue.": "The value shown is the one the purge will apply (environment, configuration or default), not the stored value, which could not be read.",
   // P11.8-a — fleet.js
   "Aucun token d'agent lié à cet hôte (ingest via token partagé, ou hôte local).": "No agent token bound to this host (ingest through a shared token, or local host).",
   "enrôlement non lu": "enrolment not read",

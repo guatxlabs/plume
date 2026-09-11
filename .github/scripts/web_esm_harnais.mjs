@@ -11298,6 +11298,35 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   console.log("(89) OK — un enrôlement non lu est écrit tel quel, distinct de « non enrôlé », et la cause servie est écrite");
 }
 
+// ---------------------------------------------------------------------------------------------
+// (90) `P10.7-g` (lot 101) — LA PROVENANCE DE CHAQUE VALEUR DE RÉTENTION EST PEINTE, ET UNE VALEUR ÉCRITE NON LUE
+//      EST DITE. Le démon sert `provenance` par clé et `reglage_illisible` quand la table des réglages ne se lit
+//      pas ; le panneau écrit l'origine sous chaque champ et « réglage NON LU » à la place quand c'est le cas.
+// ---------------------------------------------------------------------------------------------
+{
+  const { loadRetention } = await import(pathToFileURL(path.join(WEB, "retention.js")).href);
+  const champs90 = new Element("div");
+  const querySelectorOrig90 = document.querySelector;
+  document.querySelector = (sel) => (sel === "#retention-fields" ? champs90 : (sel === "#retention-last" ? null : new Element("div")));
+  const reponse90 = (obj) => ({ ok: true, status: 200, text: async () => JSON.stringify(obj) });
+  // seules les FEUILLES portent du texte : le textContent d'un parent du simulacre concatène celui de ses enfants, et un
+  // marcheur qui lirait les deux compterait chaque libellé une fois par niveau.
+  const tout90 = (el) => ((el.children || []).length ? (el.children || []).map(tout90).join(" ") : (el.textContent || "")).replace(/\s+/g, " ");
+  const bornes90 = { min: 1, max: 3650, default: 30, unit: "days" };
+  const cles90 = ["retention_days", "snapshot_days", "alert_days", "metric_days", "metric_raw_hours"];
+  const corps90 = { ok: true, bounds: Object.fromEntries(cles90.map((k) => [k, bornes90])), provenance: { retention_days: "environment", snapshot_days: "setting", alert_days: "configuration", metric_days: "default", metric_raw_hours: "default" },
+    reglage_illisible: { metric_days: "no such table: setting" }, error: "réglage NON LU : …" };
+  for (const k of cles90) corps90[k] = 30;
+  globalThis.fetch = async () => reponse90(corps90);
+  await loadRetention();
+  const texte90 = tout90(champs90);
+  exiger(texte90.includes("variable d'environnement") && texte90.includes("valeur enregistrée") && texte90.includes("fichier de configuration"), `(90) chaque origine est écrite sous son champ : ${texte90}`);
+  exiger(texte90.includes("réglage NON LU : no such table: setting"), `(90) une valeur écrite non lue est dite à la place de son origine : ${texte90}`);
+  exiger((texte90.match(/défaut du binaire/g) || []).length === 1, `(90) le défaut n'est écrit que pour la clé lue en défaut, pas pour la clé non lue : ${texte90}`);
+  document.querySelector = querySelectorOrig90;
+  console.log("(90) OK — la provenance de chaque valeur de rétention est peinte, une valeur écrite non lue est dite");
+}
+
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;
 verdictRendu = true;
 if (echecs.length) {

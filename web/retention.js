@@ -36,7 +36,7 @@ async function loadRetention() {
   const wrap = $('#retention-fields'); if (!wrap) return;
   let d;
   try { d = await api('/retention'); } catch (e) { wrap.replaceChildren(muted('accès refusé ou erreur : ' + e.message)); return; }
-  S.RET_STATE = { values: {}, bounds: d.bounds || {} };
+  S.RET_STATE = { values: {}, bounds: d.bounds || {}, provenance: d.provenance || {}, reglage_illisible: d.reglage_illisible || {} };
   RET_KEYS.forEach(k => { S.RET_STATE.values[k] = Number(d[k]); });
   wrap.replaceChildren(...RET_KEYS.map(retentionField));
   loadRetentionLast();
@@ -49,7 +49,18 @@ function retentionField(k) {
   const lab = document.createElement('label'); lab.style.cssText = 'display:flex;flex-direction:column;gap:2px;min-width:210px';
   const strong = document.createElement('span'); strong.style.fontWeight = '600'; strong.textContent = RET_LABEL[k] || k;
   const sub = document.createElement('span'); sub.className = 'muted'; sub.style.cssText = 'font-size:11px;margin-top:0'; sub.textContent = RET_HINT[k] || '';
-  lab.append(strong, sub);
+  // `P10.7-g` (lot 101) — D'OÙ VIENT LA VALEUR AFFICHÉE (le démon la sert par clé), et si la valeur ÉCRITE n'a pas pu
+  // être lue : la valeur reste celle que la purge appliquera, mais elle n'est plus présentée comme la valeur enregistrée.
+  const prov = document.createElement('span'); prov.className = 'muted'; prov.style.cssText = 'font-size:11px;margin-top:0';
+  const origine = (S.RET_STATE.provenance || {})[k];
+  if (origine === 'setting') prov.textContent = 'valeur enregistrée';
+  else if (origine === 'environment') prov.textContent = "variable d'environnement";
+  else if (origine === 'configuration') prov.textContent = 'fichier de configuration';
+  else if (origine === 'default') prov.textContent = 'défaut du binaire';
+  else prov.textContent = '';
+  const illisible = (S.RET_STATE.reglage_illisible || {})[k];
+  if (illisible) { prov.className = 'bad'; prov.textContent = 'réglage NON LU : ' + String(illisible); prov.title = "La valeur affichée est celle que la purge appliquera (environnement, configuration ou défaut), pas la valeur enregistrée, qui n'a pas pu être lue."; }
+  lab.append(strong, sub, prov);
   const inp = document.createElement('input'); inp.type = 'number'; inp.dataset.key = k; inp.step = '1'; inp.className = 'field'; // P11.4-b : chrome partagé
   inp.value = String(S.RET_STATE.values[k]); inp.style.width = '110px';
   if (b.min != null) inp.min = String(b.min);

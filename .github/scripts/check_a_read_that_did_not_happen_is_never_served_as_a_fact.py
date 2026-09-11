@@ -453,16 +453,8 @@ SITES_ADMIS = {
         # gardée avec sa raison ; defauts_gardes_avouent.rs tient la propriété.
         ("daemon/src/handlers/compliance.rs", "compliance_posture"): 1,
     },
-    "B": {  # closure SOURDE : 2 accusations sur 2 sites (4 après le lot 99 ; la flotte type l'enrôlement et les déclarations depuis le lot 100) — les deux restantes sont des silences VOULUS, nommés ci-dessous avec leur raison
-        # `retention_settings_get` : `setting_days` est un RÉSOLVEUR (valeur écrite -> variable d'environnement -> configuration ->
-        # défaut) ; ce que la route sert est la valeur EFFECTIVE que la purge appliquera, résolue par le MÊME chemin — une
-        # ligne `setting` illisible rend donc ce qui sera réellement appliqué, pas un repli inventé. Silence voulu, raison écrite ;
-        # le reste nommé (`P10.7-g`) est de dire la PROVENANCE de chaque valeur (`resolved_from`), pas de changer la valeur.
-        ("daemon/src/handlers/admin_ui.rs", "retention_settings_get"): 1,
-        # `search` : `search_cold_coverage` rend `None` quand `cold_seal` est absente ou illisible (« jamais d'alarme sur une
-        # incertitude », écrit dans le module) : la barre ne DÉCLARE alors rien sur la bande froide. Silence voulu, raison écrite ;
-        # le reste nommé (`P10.7-g`) est une note `reason: cold_coverage_unread` que la console saurait lire.
-        ("daemon/src/handlers/search.rs", "search"): 1,
+    "B": {  # closure SOURDE : AUCUNE depuis le lot 101 (`P10.7-g`) — les deux derniers silences voulus (résolveur de rétention,
+        # couverture froide de la recherche) sont typés et disent leur lecture ratée. Un site neuf rougit ici (FORME NEUVE).
     },
     "Q": {  # cause JETÉE : 3 accusations sur 2 sites
         ("daemon/src/handlers/datasource.rs", "prom_labels"): 1,

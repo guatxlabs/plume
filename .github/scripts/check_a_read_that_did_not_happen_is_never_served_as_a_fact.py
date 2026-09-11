@@ -456,9 +456,8 @@ SITES_ADMIS = {
     "B": {  # closure SOURDE : AUCUNE depuis le lot 101 (`P10.7-g`) — les deux derniers silences voulus (résolveur de rétention,
         # couverture froide de la recherche) sont typés et disent leur lecture ratée. Un site neuf rougit ici (FORME NEUVE).
     },
-    "Q": {  # cause JETÉE : 3 accusations sur 2 sites
-        ("daemon/src/handlers/datasource.rs", "prom_labels"): 1,
-        ("daemon/src/handlers/query.rs", "query"): 2,
+    "Q": {  # cause JETÉE : AUCUNE depuis le lot 102 (`P10.7-g`) — le compte total porte `total_error` à côté de `-1`, et
+        # l'union des clés de labels dit qu'elle n'est pas établie quand l'échantillon ne se lit pas. Un site neuf rougit ici.
     },
 }
 PLAFOND_DEFAUT_NU = sum(SITES_ADMIS["A"].values())

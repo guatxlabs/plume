@@ -511,23 +511,33 @@ pub(crate) async fn prom_labels(State(st): State<AppState>, Extension(au): Exten
     // `P11.22-g` — l'échantillon est lu avec sa ligne excédentaire : si elle existe, l'union des clés n'a vu
     // que les blobs les plus RÉCENTS, et la réponse le dit (`warnings`) au lieu de présenter l'union comme totale.
     let mut echantillon_coupe = false;
-    if let Ok(Ok(v)) = res {
-        let empty: Vec<Value> = Vec::new();
-        let blobs: Vec<Value> = v.get("rows").and_then(|r| r.as_array()).unwrap_or(&empty).clone();
-        let (blobs, coupee) = crate::handlers::liste_bornee::couper_a_la_borne(blobs, PROM_LABELS_SAMPLE_WINDOW.max(0) as usize);
-        echantillon_coupe = coupee || v["stats"]["truncated"].as_bool().unwrap_or(false);
-        for row in blobs.iter() {
-            if let Some(blob) = row.as_array().and_then(|a| a.first()).and_then(|x| x.as_str()) {
-                if let Ok(Value::Object(m)) = serde_json::from_str::<Value>(blob) {
-                    for k in m.keys() {
-                        keys.insert(k.clone());
+    // `P10.7-g` (lot 102) — un échantillon NON LU (moteur refusé, budget, tâche interrompue) ne se sert plus comme
+    // l'union des clés : les clés fixes restent servies, et l'avertissement dit que l'union n'est pas établie.
+    let mut echantillon_non_lu: Option<String> = None;
+    match res {
+        Ok(Ok(v)) => {
+            let empty: Vec<Value> = Vec::new();
+            let blobs: Vec<Value> = v.get("rows").and_then(|r| r.as_array()).unwrap_or(&empty).clone();
+            let (blobs, coupee) = crate::handlers::liste_bornee::couper_a_la_borne(blobs, PROM_LABELS_SAMPLE_WINDOW.max(0) as usize);
+            echantillon_coupe = coupee || v["stats"]["truncated"].as_bool().unwrap_or(false);
+            for row in blobs.iter() {
+                if let Some(blob) = row.as_array().and_then(|a| a.first()).and_then(|x| x.as_str()) {
+                    if let Ok(Value::Object(m)) = serde_json::from_str::<Value>(blob) {
+                        for k in m.keys() {
+                            keys.insert(k.clone());
+                        }
                     }
                 }
             }
         }
+        Ok(Err(e)) => echantillon_non_lu = Some(format!("échantillon de labels NON LU : {e}")),
+        Err(e) => echantillon_non_lu = Some(format!("échantillon de labels NON LU : la tâche ne s'est pas terminée ({e})")),
     }
     // retire les clés masquées pour l'appelant (fail-closed : jamais exposer un champ masqué comme label).
     let data: Vec<Value> = keys.into_iter().filter(|k| k == "__name__" || masks.get(if k == "host" { "host" } else { k.as_str() }).is_none()).map(Value::String).collect();
+    if let Some(cause) = echantillon_non_lu {
+        return Json(json!({ "status": "success", "data": data, "warnings": [format!("{cause} — seules les clés fixes (__name__, host) sont servies, l'union des clés n'est pas établie")] })).into_response();
+    }
     prom_ok_borne(data, PROM_LABELS_SAMPLE_WINDOW.max(0) as usize, echantillon_coupe, format!(
         "union des clés calculée sur les {} blobs de labels les plus récents seulement : une clé portée par des points plus anciens peut manquer ici", PROM_LABELS_SAMPLE_WINDOW))
 }

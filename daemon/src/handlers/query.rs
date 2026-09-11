@@ -1010,6 +1010,20 @@ pub(crate) fn cold_keyset_vectorized_page(
 // Requête analytique (P3) : SQL ou soql, en LECTURE SEULE (spawn_blocking).
 // SQL BRUT = ADMIN : `au` sert à réserver le champ `sql` BRUT (is_soql=false) à l'admin ;
 // le chemin GXQL/search reste OUVERT à TOUS les rôles (viewer inclus).
+/// `P10.7-g` (lot 102) — LE COMPTE EST LU OU NON ÉTABLI, ET LA CAUSE VOYAGE. `-1` reste le mot du contrat (le SPA rend
+/// « ? » et un pager sans numéros), mais la cause du moteur — budget dépassé, annulation, SQL refusé, tâche interrompue —
+/// est servie sous `total_error` au lieu d'être jetée : « ? » sans cause se lisait comme « trop grand pour compter ».
+pub(crate) fn total_lu(res: Result<Result<Value, String>, tokio::task::JoinError>) -> (i64, Option<String>) {
+    match res {
+        Ok(Ok(v)) => match v.get("rows").and_then(|r| r.get(0)).and_then(|r0| r0.get(0)).and_then(|x| x.as_i64()) {
+            Some(n) => (n, None),
+            None => (-1, Some("total NON ÉTABLI : le compte n'a rendu aucune ligne — « -1 » n'est pas un compte".to_string())),
+        },
+        Ok(Err(e)) => (-1, Some(format!("total NON ÉTABLI : {e} — « -1 » n'est pas un compte"))),
+        Err(e) => (-1, Some(format!("total NON ÉTABLI : la tâche de comptage ne s'est pas terminée ({e}) — « -1 » n'est pas un compte"))),
+    }
+}
+
 pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(body): Json<Value>) -> Response {
     let _mt = crate::search_timer(); // #51 DAY-2 OPS : latence recherche (p50/p95) enregistrée à la sortie (Drop)
     // MÉTRIQUE HONNÊTE (cf. `query_timing`) — l'horloge démarre à l'ENTRÉE et ne sait rendre QUE le
@@ -1295,13 +1309,12 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
         let count_sql = format!("SELECT COUNT(*) AS n FROM (SELECT 1 FROM ({sql}))");
         let dbp = db_path.clone();
         let qidc = qid_owned.clone();
-        let total = tokio::task::spawn_blocking(move || run_query_ex(&dbp, &count_sql, budget_ms, qidc.as_deref()))
-            .await
-            .ok()
-            .and_then(|r| r.ok())
-            .and_then(|v| v.get("rows").and_then(|r| r.get(0)).and_then(|r0| r0.get(0)).and_then(|x| x.as_i64()))
-            .unwrap_or(-1);
-        return Json(json!({ "count_only": true, "total": total })).into_response();
+        let (total, cause) = total_lu(tokio::task::spawn_blocking(move || run_query_ex(&dbp, &count_sql, budget_ms, qidc.as_deref())).await);
+        let mut corps = json!({ "count_only": true, "total": total });
+        if let Some(c) = cause {
+            corps["total_error"] = json!(c);
+        }
+        return Json(corps).into_response();
     }
     // KEYSET (#28) — chemin browse par CURSEUR (parcours intégral, ZÉRO plafond de comptage). N'est actif que
     // sur le chemin GXQL (`from_soql` : la clé de tri `id` n'existe que via la compilation cursor_id). `cursor`
@@ -1649,10 +1662,7 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
         let page_fut = tokio::task::spawn_blocking(move || run_query_ex(&db_path, &off_page, budget_ms, qid2.as_deref()));
         let (count_res, page) = tokio::join!(count_fut, page_fut);
         // total best-effort : si le COUNT dépasse le watchdog (requête énorme), -1 -> UI ◀ ▶ sans numéros.
-        let raw_total = count_res
-            .ok().and_then(|r| r.ok())
-            .and_then(|v| v.get("rows").and_then(|r| r.get(0)).and_then(|r0| r0.get(0)).and_then(|x| x.as_i64()))
-            .unwrap_or(-1);
+        let (raw_total, cause_total) = total_lu(count_res);
         // COUNT BORNÉ : raw_total = min(vrai_total, CAP+1). > CAP -> capé (on renvoie CAP + total_capped) ; sinon
         // EXACT (petits résultats : dernière page + numéros justes). -1 (watchdog) N'est jamais > CAP -> intact.
         let total_capped = raw_total > PAGINATION_COUNT_CAP;
@@ -1662,6 +1672,9 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
                 match inner {
                     Ok(mut v) => {
                         v["total"] = json!(total);
+                        if let Some(c) = &cause_total {
+                            v["total_error"] = json!(c); // `P10.7-g` (lot 102) — « -1 » reste le mot du contrat, la cause n'est plus jetée
+                        }
                         if total_capped { v["total_capped"] = json!(true); }  // le SPA rend « … sur 10 000+ »
                         v["offset"] = json!(offset);
                         v["limit"] = json!(lim);

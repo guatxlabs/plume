@@ -452,7 +452,7 @@ SITES_ADMIS = {
         # gardée avec sa raison ; defauts_gardes_avouent.rs tient la propriété.
         ("daemon/src/handlers/compliance.rs", "compliance_posture"): 1,
     },
-    "B": {  # closure SOURDE : 7 accusations sur 6 sites (8 après le lot 96 ; le panneau des intégrations type ses quatre lectures depuis le lot 97)
+    "B": {  # closure SOURDE : 6 accusations sur 5 sites (7 après le lot 97 ; l'inventaire des sources type ses trois lectures depuis le lot 98)
         ("daemon/src/handlers/admin_ui.rs", "retention_settings_get"): 1,
         ("daemon/src/handlers/compliance.rs", "compliance_posture"): 1,
         # `fleet` ×2 : GUÉRIE depuis le lot 91 (verdict typé rendu par fleet_scan_all, cache gaté, `error` posé) mais l'aveu
@@ -463,7 +463,6 @@ SITES_ADMIS = {
         # celle du compteur d'événements EN CACHE (`events_count_cached`, un niveau plus bas), reste nommé dans l'index.
         ("daemon/src/handlers/overview.rs", "overview"): 1,
         ("daemon/src/handlers/search.rs", "search"): 1,
-        ("daemon/src/handlers/sources.rs", "sources_inventory"): 1,
     },
     "Q": {  # cause JETÉE : 3 accusations sur 2 sites
         ("daemon/src/handlers/datasource.rs", "prom_labels"): 1,

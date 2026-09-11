@@ -244,15 +244,15 @@ pub(crate) fn verdict_de_source(construction: Option<RaisonAttendue>, m: Option<
 /// LES DÉCLARATIONS DE L'EXPLOITANT, lues en UNE requête (`source -> MarquageSource`). Une table absente
 /// ou une colonne illisible rend une carte VIDE : l'inventaire retombe alors sur la seule construction,
 /// jamais sur une erreur qui masquerait tout.
-pub(crate) fn marquages_de_sources(conn: &Connection) -> HashMap<String, MarquageSource> {
+/// `P10.7-g` (lot 98) — LES DÉCLARATIONS SONT LUES OU NON LUES : une table `source_settings` illisible ne vaut plus
+/// « rien de déclaré » (ce qui rendait chaque source déclarée dormante invisible et toute source « inattendue »).
+pub(crate) fn marquages_de_sources_lus(conn: &Connection) -> Result<HashMap<String, MarquageSource>, rusqlite::Error> {
     let mut out: HashMap<String, MarquageSource> = HashMap::new();
-    let Ok(mut s) = conn.prepare(
+    let mut s = conn.prepare(
         "SELECT source,expected,label,note,category,updated_by,updated,expected_par,expected_le,cadence,cadence_interval_s,cadence_par,cadence_le \
          FROM source_settings WHERE scope='global'",
-    ) else {
-        return out;
-    };
-    let Ok(rows) = s.query_map([], |r| {
+    )?;
+    let rows = s.query_map([], |r| {
         Ok((
             r.get::<_, String>(0)?,
             MarquageSource {
@@ -272,13 +272,18 @@ pub(crate) fn marquages_de_sources(conn: &Connection) -> HashMap<String, Marquag
                 ),
             },
         ))
-    }) else {
-        return out;
-    };
-    for (src, m) in rows.flatten() {
+    })?;
+    for r in rows {
+        let (src, m) = r?;
         out.insert(src, m);
     }
-    out
+    Ok(out)
+}
+
+/// Lecture APLATIE pour la fraîcheur (`compute_freshness`), qui n'a pas encore de troisième état pour les
+/// déclarations : une lecture ratée y vaut « rien de déclaré ». Reste nommé de `P10.7-g`.
+pub(crate) fn marquages_de_sources(conn: &Connection) -> HashMap<String, MarquageSource> {
+    marquages_de_sources_lus(conn).unwrap_or_default()
 }
 
 /// Sources déclarées par les connecteurs CONFIGURÉS dans cette base (dérivation 4). `defender` écrit sous un
@@ -347,6 +352,19 @@ pub(crate) fn sources_attendues_sans_base() -> Vec<String> {
     out.into_iter().collect()
 }
 
+/// `P10.7-g` (lot 98) — LE CORPS D'UN INVENTAIRE NON LU. `ok: false`, aucune source, et surtout `pipeline_fresh: null` :
+/// avec la fraîcheur aplatie, une lecture ratée valait « pas frais » et la console peignait « Ingestion en panne —
+/// aucune donnée reçue récemment », une panne que personne n'avait observée. La cause est nommée.
+fn corps_inventaire_non_lu(now_ts: i64, cause: &str) -> Json<Value> {
+    Json(json!({
+        "ok": false,
+        "generated": now_ts,
+        "pipeline_fresh": Value::Null,
+        "sources": [],
+        "error": format!("inventaire NON LU : {cause} — aucune source n'est établie, et l'ingestion n'est pas dite en panne"),
+    }))
+}
+
 /// GET /api/sources -> INVENTAIRE read-only dérivé (join observé x attendu x métadonnées d'affichage). Observé =
 /// event_rollup GROUP BY source (budget : jamais `event`) ; attendu = `raison_attendue_par_construction` OU
 /// marquage persistant (`source_settings.expected`) ; `unexpected` = SIGNAL (ni l'un ni l'autre).
@@ -358,22 +376,38 @@ pub(crate) async fn sources_inventory(State(st): State<AppState>, Extension(au):
         read_with_watchdog(db_path.as_str(), Json(json!({ "ok": false, "sources": [], "generated": now_ts, "error": crate::query_exec::LECTURE_NON_FAITE_SANS_CONNEXION })), move |conn| {
             let d1 = now_ts - 86400;
             let cut7 = now_ts - FENETRE_INVENTAIRE_S;
-            let pipe_fresh = pipeline_is_fresh(conn, now_ts);
+            // `P10.7-g` (lot 98) — TROIS LECTURES TYPÉES (fraîcheur du pipeline, sources observées, déclarations) : la
+            // première qui échoue rend l'inventaire NON LU avec sa cause, au lieu d'une liste vide sous « ok »
+            // et d'une ingestion « en panne » jamais observée.
+            let pipe_fresh = match pipeline_est_frais(conn, now_ts) {
+                Ok(b) => b,
+                Err(e) => return corps_inventaire_non_lu(now_ts, &format!("pipeline : {e}")),
+            };
             // OBSERVÉ (event_rollup uniquement : ~ms, jamais un scan de `event`). source -> (last_seen, n_24h).
+            let observees: Result<Vec<(String, i64, i64)>, rusqlite::Error> = conn
+                .prepare(
+                    "SELECT source, COALESCE(NULLIF(MAX(last_ts),0), MAX(bucket)), SUM(CASE WHEN bucket>=?1 THEN n ELSE 0 END) \
+                     FROM event_rollup WHERE bucket>=?2 AND source<>'' GROUP BY source HAVING SUM(n)>=3",
+                )
+                .and_then(|mut s| {
+                    s.query_map(params![d1, cut7], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)))
+                        .and_then(|it| it.collect())
+                });
             let mut obs: std::collections::BTreeMap<String, (i64, i64)> = std::collections::BTreeMap::new();
-            if let Ok(mut s) = conn.prepare(
-                "SELECT source, COALESCE(NULLIF(MAX(last_ts),0), MAX(bucket)), SUM(CASE WHEN bucket>=?1 THEN n ELSE 0 END) \
-                 FROM event_rollup WHERE bucket>=?2 AND source<>'' GROUP BY source HAVING SUM(n)>=3",
-            ) {
-                if let Ok(rows) = s.query_map(params![d1, cut7], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))) {
-                    for (src, last, n) in rows.flatten() {
+            match observees {
+                Ok(lignes) => {
+                    for (src, last, n) in lignes {
                         obs.insert(src, (last, n));
                     }
                 }
+                Err(e) => return corps_inventaire_non_lu(now_ts, &format!("sources observées : {e}")),
             }
             // CE QUE L'EXPLOITANT A DÉCLARÉ (source_settings) : le cinquième déclarant, et la cadence des
             // sources qu'aucune sonde n'observe. Une source déclarée mais dormante reste listée (entry 0,0).
-            let meta = marquages_de_sources(conn);
+            let meta = match marquages_de_sources_lus(conn) {
+                Ok(m) => m,
+                Err(e) => return corps_inventaire_non_lu(now_ts, &format!("déclarations : {e}")),
+            };
             for src in meta.keys() {
                 obs.entry(src.clone()).or_insert((0, 0));
             }
@@ -424,7 +458,7 @@ pub(crate) async fn sources_inventory(State(st): State<AppState>, Extension(au):
         })
     })
     .await
-    .unwrap_or_else(|_| Json(json!({ "ok": false, "sources": [], "generated": now_ts })))
+    .unwrap_or_else(|_| Json(json!({ "ok": false, "sources": [], "generated": now_ts, "pipeline_fresh": Value::Null, "error": crate::query_exec::LECTURE_NON_FAITE_TACHE_INTERROMPUE })))
 }
 
 /// GET /api/sources/settings -> liste brute source_settings (métadonnées d'affichage). Lecture : tout rôle

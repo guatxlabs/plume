@@ -136,6 +136,18 @@ const raisonDUnDormant = () => (LANG === 'en'
 // RENDU PUR de l'inventaire à partir de la charge utile de /api/sources (exercé par le harnais ESM sur des
 // objets fabriqués ; `loadSourcesView` ne fait que l'appeler après le fetch).
 function renderSourcesInventory(wrap, d) {
+  // `P10.7-g` (lot 98) — UN INVENTAIRE NON LU N'EST PAS UNE INGESTION EN PANNE. Le démon sert `ok: false`,
+  // `pipeline_fresh: null` et la cause sous `error` : on écrit la cause, et rien d'autre — ni bandeau de panne,
+  // ni note de périmètre, ni tableau vide qui se lirait « aucune source ».
+  if (d && d.error) {
+    wrap.replaceChildren();
+    const aveu = document.createElement('div');
+    aveu.className = 'bad';
+    aveu.style.cssText = 'margin:0 0 9px;font-size:12px';
+    aveu.textContent = String(d.error);
+    wrap.appendChild(aveu);
+    return;
+  }
   const sources = (d.sources || []).slice();
   // tri INITIAL : inattendues d'abord (signal), puis par statut, puis nom. Le tri par colonne (clic
   // en-tête) prend ensuite le relais via pagedList (mode client).

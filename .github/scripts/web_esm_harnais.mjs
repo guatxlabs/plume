@@ -11246,6 +11246,28 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   console.log("(87) OK — un capteur non lu est compté à part, jamais comme jamais vu, et la cause servie est écrite");
 }
 
+// ---------------------------------------------------------------------------------------------
+// (88) `P10.7-g` (lot 98) — UN INVENTAIRE DE SOURCES NON LU N'EST PAS UNE INGESTION EN PANNE. Avec la
+//      fraîcheur aplatie, une lecture ratée valait « pas frais » et ce panneau peignait « Ingestion en
+//      panne — aucune donnée reçue récemment ». Sous un aveu servi, la console écrit la cause et rien
+//      d'autre ; une panne LUE (`pipeline_fresh: false` sans aveu) reste dite.
+// ---------------------------------------------------------------------------------------------
+{
+  const { renderSourcesInventory } = await import(pathToFileURL(path.join(WEB, "sources.js")).href);
+  const tout88 = (el) => [el.textContent || "", ...((el.children || []).map(tout88))].join(" ").replace(/\s+/g, " ");
+  const porteUnTableau88 = (el) => (el.tagName === "TABLE" || el.tagName === "THEAD") || (el.children || []).some(porteUnTableau88);
+  const wrap88 = new Element("div");
+  renderSourcesInventory(wrap88, { ok: false, pipeline_fresh: null, sources: [], error: "inventaire NON LU : sources observées : no such table: event_rollup — aucune source n'est établie, et l'ingestion n'est pas dite en panne" });
+  const avoue = tout88(wrap88);
+  exiger(avoue.includes("inventaire NON LU"), `(88) la cause servie est écrite : ${avoue}`);
+  exiger(!avoue.includes("en panne — aucune donnée"), `(88) aucune panne n'est annoncée sur une lecture ratée : ${avoue}`);
+  exiger(!porteUnTableau88(wrap88), `(88) aucun tableau vide n'est peint sous un aveu (il se lirait « aucune source »)`);
+  const wrapPanne = new Element("div");
+  renderSourcesInventory(wrapPanne, { ok: true, pipeline_fresh: false, sources: [] });
+  exiger(tout88(wrapPanne).includes("en panne"), `(88) instrument : une panne LUE reste dite : ${tout88(wrapPanne)}`);
+  console.log("(88) OK — un inventaire non lu écrit sa cause et n'annonce aucune panne ; une panne lue reste dite");
+}
+
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;
 verdictRendu = true;
 if (echecs.length) {

@@ -857,8 +857,13 @@ pub(crate) async fn engagement_end(State(st): State<AppState>, Extension(au): Ex
 // ---------- mode global + playbooks (SOAR-lite) ----------
 pub(crate) async fn mode_get(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
     with_write(&st, &au, |conn| {
-    let m: String = conn.query_row("SELECT value FROM meta WHERE key='plume_mode'", [], |r| r.get(0)).unwrap_or_else(|_| "observe".into());
-    Json(json!({ "mode": m }))
+        // `P10.7-g` (lot 94) — un mode NON LU n'est pas « observe » : le repli reste (c'est le mode le plus sûr, il
+        // n'arme rien), mais le corps dit que c'est un repli. Aucune ligne = mode jamais posé = « observe » établi.
+        match conn.query_row::<String, _, _>("SELECT value FROM meta WHERE key='plume_mode'", [], |r| r.get(0)) {
+            Ok(m) => Json(json!({ "mode": m })),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Json(json!({ "mode": "observe" })),
+            Err(e) => Json(json!({ "mode": "observe", "error": format!("mode NON LU : la lecture de plume_mode a échoué ({e}) — « observe » est un repli, pas la valeur enregistrée") })),
+        }
     })
 }
 pub(crate) async fn mode_set(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {

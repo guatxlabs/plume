@@ -302,6 +302,12 @@ pub(crate) fn ledger_page_sql(plan: &LedgerPlan) -> String {
 /// compté », ce qu'un `0` ne saurait pas dire). `entries` : MÊMES colonnes, MÊME ordre (`id` décroissant)
 /// qu'avant — la fenêtre de temps FILTRE, elle ne réordonne rien et ne touche pas à la chaîne de hash.
 pub(crate) fn ledger_page(conn: &Connection, ask: &LedgerAsk) -> Value {
+    // `P10.7-g` (lot 94) — LES TROIS LECTURES DE LA PAGE SONT TYPÉES. Un compte qui échouait servait 0, une page
+    // illisible servait « aucune entrée », une plus ancienne entrée illisible servait « rien hors de la fenêtre » :
+    // sur un journal d'AUDIT, chacun de ces zéros est le corps le plus rassurant possible. La première cause est
+    // retenue et le corps la porte (`ok: false`, `error`, `lecture_non_faite`) ; le gestionnaire en fait un 5xx
+    // nommé, comme pour l'absence de connexion.
+    let mut illisible: Option<String> = None;
     // (1) TOTAL BORNÉ : le balayage s'arrête à `CAP+1` lignes au lieu de lire toute la table. Sous le
     //     plafond le total est EXACT (pager numéroté juste) ; au plafond il est rendu plafonné AVEC
     //     `total_capped`, jamais présenté comme exact.
@@ -309,9 +315,16 @@ pub(crate) fn ledger_page(conn: &Connection, ask: &LedgerAsk) -> Value {
     //     est déjà connu du client, et le relire coûterait le plafond POUR RIEN. `null` dit « non compté »,
     //     ce qu'un `0` ne saurait pas dire.
     let (total, total_capped) = if ask.count {
-        let raw: i64 = conn.query_row(&ledger_total_sql(), params![ask.since, ask.until], |r| r.get(0)).unwrap_or(0);
-        let capped = raw > PAGINATION_COUNT_CAP;
-        (json!(if capped { PAGINATION_COUNT_CAP } else { raw }), json!(capped))
+        match conn.query_row(&ledger_total_sql(), params![ask.since, ask.until], |r| r.get::<_, i64>(0)) {
+            Ok(raw) => {
+                let capped = raw > PAGINATION_COUNT_CAP;
+                (json!(if capped { PAGINATION_COUNT_CAP } else { raw }), json!(capped))
+            }
+            Err(e) => {
+                illisible = Some(format!("compte : {e}"));
+                (Value::Null, Value::Null)
+            }
+        }
     } else {
         (Value::Null, Value::Null)
     };
@@ -319,24 +332,35 @@ pub(crate) fn ledger_page(conn: &Connection, ask: &LedgerAsk) -> Value {
     // (2) LA PLUS ANCIENNE ENTRÉE STOCKÉE — première ligne de la clé primaire, coût constant. C'est ce
     //     qui permet à la vue de DIRE que la fenêtre mord (des entrées existent hors du cadre) au lieu
     //     de laisser croire que le journal s'arrête là.
-    let oldest_ts: Option<i64> = conn.query_row("SELECT ts FROM ledger ORDER BY id LIMIT 1", [], |r| r.get(0)).ok();
+    let oldest_ts: Option<i64> = match conn.query_row("SELECT ts FROM ledger ORDER BY id LIMIT 1", [], |r| r.get(0)) {
+        Ok(t) => Some(t),
+        Err(rusqlite::Error::QueryReturnedNoRows) => None,
+        Err(e) => {
+            illisible = illisible.or(Some(format!("plus ancienne entrée : {e}")));
+            None
+        }
+    };
 
     // (3) LA PAGE, PAR CLÉ.
     let sql = ledger_page_sql(&ledger_plan(ask.cursor, ask.offset));
-    let entries: Vec<Value> = match conn.prepare(&sql) {
-        Ok(mut stmt) => stmt
-            .query_map(params![ask.since, ask.until, ask.limit], |r| {
-                Ok(json!({
-                    "id": r.get::<_, i64>(0)?,
-                    "ts": r.get::<_, i64>(1)?,
-                    "kind": r.get::<_, String>(2)?,
-                    "detail": r.get::<_, Option<String>>(3)?,
-                    "hash": r.get::<_, String>(4)?,
-                }))
-            })
-            .map(|it| it.flatten().collect())
-            .unwrap_or_default(),
-        Err(_) => Vec::new(),
+    let lues: Result<Vec<Value>, rusqlite::Error> = conn.prepare(&sql).and_then(|mut stmt| {
+        stmt.query_map(params![ask.since, ask.until, ask.limit], |r| {
+            Ok(json!({
+                "id": r.get::<_, i64>(0)?,
+                "ts": r.get::<_, i64>(1)?,
+                "kind": r.get::<_, String>(2)?,
+                "detail": r.get::<_, Option<String>>(3)?,
+                "hash": r.get::<_, String>(4)?,
+            }))
+        })
+        .and_then(|it| it.collect())
+    });
+    let entries: Vec<Value> = match lues {
+        Ok(v) => v,
+        Err(e) => {
+            illisible = illisible.or(Some(format!("page : {e}")));
+            Vec::new()
+        }
     };
 
     // (4) CONTRAT DE CONTINUATION, identique à `keyset_finalize` : EXACTEMENT `limit` lignes -> il reste
@@ -347,7 +371,7 @@ pub(crate) fn ledger_page(conn: &Connection, ask: &LedgerAsk) -> Value {
     } else {
         Value::Null
     };
-    json!({
+    let mut corps = json!({
         "ok": true,
         "entries": entries,
         "total": total,
@@ -363,7 +387,16 @@ pub(crate) fn ledger_page(conn: &Connection, ask: &LedgerAsk) -> Value {
         "has_more": !next_cursor.is_null(),
         "next_cursor": next_cursor,
         "limit": ask.limit,
-    })
+    });
+    match illisible {
+        Some(cause) => {
+            corps["ok"] = json!(false);
+            corps["error"] = json!(format!("journal NON LU : {cause} — aucune page n'est établie"));
+            corps["lecture_non_faite"] = json!(true);
+        }
+        None => {}
+    }
+    corps
 }
 
 /// GET /api/ledger?limit=<n>&window_days=<j>&until_ts=<epoch>&cursor=<id>&offset=<n>&count=<0|1> -> page

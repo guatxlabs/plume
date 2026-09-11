@@ -738,44 +738,53 @@ pub(crate) fn ti_coverage_json(conn: &Connection, now_ts: i64) -> Value {
     };
     let total = compte("SELECT COUNT(*) FROM ioc", &[]);
     let active = compte("SELECT COUNT(*) FROM ioc WHERE expires IS NULL OR expires > ?1", &[&now_ts]);
-    let by_type: Vec<Value> = conn
+    let by_type_lu: rusqlite::Result<Vec<Value>> = conn
         .prepare("SELECT type, COUNT(*) FROM ioc WHERE expires IS NULL OR expires > ?1 GROUP BY type ORDER BY 2 DESC")
         .and_then(|mut s| {
-            s.query_map(params![now_ts], |r| Ok(json!({ "type": r.get::<_, String>(0)?, "n": r.get::<_, i64>(1)? })))
-                .map(|rows| rows.flatten().collect())
-        })
-        .unwrap_or_default();
-    // `P11.22-f` — L'INVENTAIRE PAR SOURCE EST BORNÉ, ET IL LE DIT. Le geste est celui de `P11.22-e` :
-    // on demande UNE LIGNE DE PLUS que le rang de coupe, on en sert le rang de coupe, et l'EXISTENCE de
-    // la ligne excédentaire — jamais servie — fonde l'aveu. Un magasin qui porte PILE le rang de coupe
-    // n'est PAS écourté, et le lui faire dire serait un aveu inconditionnel, donc sans valeur.
-    let lues: Vec<Value> = conn
+            s.query_map(params![now_ts], |r| Ok(json!({ "type": r.get::<_, String>(0)?, "n": r.get::<_, i64>(1)? })))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+        });
+    // `P11.22-f` — l'inventaire par source est BORNÉ et le dit (une ligne de plus que le rang de coupe, dont
+    // l'EXISTENCE fonde l'aveu). `P10.7-g` (lot 108) : et une lecture RATÉE de l'une ou l'autre ventilation se
+    // sert `null` + cause, jamais une liste vide qui se lirait « aucun type/source » à côté d'un total ENTIER.
+    let lues_lu: rusqlite::Result<Vec<Value>> = conn
         .prepare(&format!(
             "SELECT source, COUNT(*) FROM ioc WHERE expires IS NULL OR expires > ?1 GROUP BY source ORDER BY 2 DESC LIMIT {}",
             TI_COVERAGE_SOURCES_MAX + 1
         ))
         .and_then(|mut s| {
-            s.query_map(params![now_ts], |r| Ok(json!({ "source": r.get::<_, String>(0)?, "n": r.get::<_, i64>(1)? })))
-                .map(|rows| rows.flatten().collect())
-        })
-        .unwrap_or_default();
-    let (by_source, by_source_capped) =
-        crate::handlers::liste_bornee::couper_a_la_borne(lues, TI_COVERAGE_SOURCES_MAX);
+            s.query_map(params![now_ts], |r| Ok(json!({ "source": r.get::<_, String>(0)?, "n": r.get::<_, i64>(1)? })))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+        });
+    let (by_type_v, by_type_err) = match by_type_lu {
+        Ok(v) => (json!(v), None),
+        Err(e) => (Value::Null, Some(format!("ventilation par type NON LUE : {e}"))),
+    };
+    let (by_source_v, by_source_window_v, by_source_capped_v, by_source_err) = match lues_lu {
+        Ok(lues) => {
+            let (by_source, by_source_capped) =
+                crate::handlers::liste_bornee::couper_a_la_borne(lues, TI_COVERAGE_SOURCES_MAX);
+            (json!(by_source), json!(TI_COVERAGE_SOURCES_MAX), json!(by_source_capped), None)
+        }
+        Err(e) => (Value::Null, Value::Null, Value::Null, Some(format!("ventilation par source NON LUE : {e}"))),
+    };
     let mut sortie = json!({
-        "by_type": by_type,
-        "by_source": by_source,
-        // `P11.22-f` — CE QUI MANQUAIT, ET POURQUOI C'ÉTAIT LE PLUS GRAVE DES VINGT-ET-UN. `total` et
-        // `active` comptent le magasin ENTIER : posés à côté d'une ventilation par source coupée en
-        // silence, ils la faisaient lire comme une COUVERTURE. Un exploitant qui n'y voit pas son flux
-        // en conclut « ce flux n'alimente pas le magasin » — le défaut même qui vient d'être fermé pour
-        // la liste voisine. Le rang de coupe est rendu À CÔTÉ de l'aveu : sans lui, la vue ne peut pas
-        // dire de combien, et un aveu sans son ampleur cesse d'être lu.
-        "by_source_window": TI_COVERAGE_SOURCES_MAX,
-        "by_source_capped": by_source_capped,
+        "by_type": by_type_v,
+        "by_source": by_source_v,
+        "by_source_window": by_source_window_v,
+        "by_source_capped": by_source_capped_v,
         // indice pour l'UI : les hits IOC dans le temps se requêtent en GXQL (aucun scan serveur ici).
         "hits_query": "search ti_match=1 | timechart count",
     });
     if let Some(o) = sortie.as_object_mut() {
+        if let Some(c) = by_type_err {
+            o.insert("by_type_error".to_string(), json!(c));
+            o.insert("lecture_non_faite".to_string(), json!(true));
+        }
+        if let Some(c) = by_source_err {
+            o.insert("by_source_error".to_string(), json!(c));
+            o.insert("lecture_non_faite".to_string(), json!(true));
+        }
         total.poser_dans(o, "total");
         active.poser_dans(o, "active");
         if let (Some(t), Some(a)) = (total.valeur(), active.valeur()) {

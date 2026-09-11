@@ -207,7 +207,7 @@ population sur l'arbre réel, la présence d'une clé témoin connue, et qu'aucu
 cliquet. Sans ces jambes, elle refuse de conclure (code 2), elle ne rend pas vert.
 
 Usage :  python3 .github/scripts/check_i18n_lexicon_covers_displayed_strings.py
-             [--mesure] [--trous MODULE] [--hors-regard MODULE] [--exces] [--noeuds]
+             [--mesure] [--trous MODULE] [--hors-regard MODULE] [--exces] [--noeuds] [--relever]
 Sortie :  0 = aucun module au-dessus de ses plafonds et aucune orpheline de trop ;
           1 = régression (trous, hors-regard, ou ORPHELINE PROUVÉE au-dessus du cliquet) ;
           2 = instrument invalide, module mesuré hors du cliquet, découpeur désynchronisé, ou compte
@@ -225,6 +225,7 @@ from __future__ import annotations
 import collections
 import html.parser
 import html
+import json
 import os
 import re
 import sys
@@ -401,7 +402,29 @@ PLAFOND_DE_TROUS = {
 # garde ne sait pas lire cette forme : rendre vert sur ce qu'on ne regarde pas est pire qu'une garde absente.
 # L'abaisser est le sens attendu (déplacer un libellé vers un puits reconnu, ou apprendre la forme à la
 # garde). Le relever exige une raison écrite ici, à côté du chiffre.
-PLAFOND_HORS_REGARD = {
+# `P8.27-g` (2026-09-11, lot 104) — LE COMPTE EST REMPLACÉ PAR UN ENSEMBLE NOMMÉ. Le plafond par module ci-dessous
+# est conservé comme HISTOIRE (chaque chiffre est un relevé daté) mais il n'est plus ce qui juge : le verdict lit le
+# RELEVÉ `lexique_hors_regard_releve.json` (module -> textes hors-regard du jour où il a été relevé) et le juge dans
+# les DEUX sens — un libellé hors-regard NEUF rougit même s'il en REMPLACE un autre (le trou mesuré par mutation le
+# 2026-08-29 et publié depuis à chaque exécution), et un libellé du relevé DISPARU rougit aussi (le relevé mesure un
+# état, il ne garde pas les fantômes). Le geste unique est `--relever`, à faire en connaissance de cause, après avoir
+# inscrit au lexique tout texte AFFICHÉ. Les plafonds effectifs sont DÉRIVÉS du relevé (`len`), jamais écrits ici.
+RELEVE_HORS_REGARD_FICHIER = os.path.join(os.path.dirname(os.path.realpath(__file__)), "lexique_hors_regard_releve.json")
+
+
+def releve_hors_regard() -> dict[str, list[str]] | None:
+    """Le relevé nommé des libellés hors-regard, module par module ; `None` s'il est absent ou illisible."""
+    try:
+        with open(RELEVE_HORS_REGARD_FICHIER, encoding="utf-8") as fh:
+            brut = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(brut, dict) or not all(isinstance(v, list) for v in brut.values()):
+        return None
+    return {m: [str(t) for t in v] for m, v in brut.items()}
+
+
+PLAFOND_HORS_REGARD_HISTORIQUE = {
     "admin_users.js": 14, "ai.js": 1, "alerting.js": 2, "alerts.js": 18, "app.js": 22, "attack.js": 6,
     "audit.js": 0, "cases.js": 68, "composer_depuis_lexistant.js": 6, "connectors.js": 26,
     "catalogue_attack.js": 6, "copie_et_selection.js": 3, "core.js": 15, "coupe_de_liste.js": 0, "dashboards.js": 22, "dataaccess.js": 11, "datamodels.js": 1,
@@ -2128,6 +2151,7 @@ def main(argv: list[str]) -> int:
     hors_de = None
     if "--hors-regard" in argv:
         hors_de = argv[argv.index("--hors-regard") + 1]
+    relever = "--relever" in argv
     liste_noeuds = "--noeuds" in argv
 
     errs = valider_instrument()
@@ -2147,7 +2171,13 @@ def main(argv: list[str]) -> int:
         return 2
     # Le module du registre est jugé au plafond zéro hors de la portée exempte (entrée dérivée, pas nommée).
     plafonds = {**PLAFOND_DE_TROUS, registre[0]: 0}
-    plafonds_hr = {**PLAFOND_HORS_REGARD, registre[0]: 0}
+    releve_hr = releve_hors_regard()
+    if releve_hr is None and not relever:
+        print(f"::error::le relevé des libellés hors-regard (`{os.path.basename(RELEVE_HORS_REGARD_FICHIER)}`) est absent ou "
+              f"illisible : la garde refuse de conclure. `--relever` l'écrit à partir de la mesure du jour (`P8.27-g`).")
+        return 2
+    releve_hr = releve_hr or {}
+    plafonds_hr = {**{m: len(v) for m, v in releve_hr.items()}, registre[0]: 0}
     resultats, cles, desynchronisations = mesurer(registre)
     if desynchronisations:
         for m, aveux in sorted(desynchronisations.items()):
@@ -2175,6 +2205,16 @@ def main(argv: list[str]) -> int:
               f"la garde refuse de conclure.")
         return 2
 
+    if relever:
+        # LE RELEVÉ EST ÉCRIT DEPUIS LA MESURE DU JOUR, jamais à la main : c'est le seul geste qui accepte un libellé
+        # hors-regard neuf ou en retire un disparu. Il se fait en connaissance de cause (`P8.27-g`).
+        contenu = {m: sorted(r["hors_regard"]) for m, r in sorted(resultats.items())}
+        with open(RELEVE_HORS_REGARD_FICHIER, "w", encoding="utf-8") as fh:
+            json.dump(contenu, fh, ensure_ascii=False, indent=1)
+            fh.write("\n")
+        print(f"relevé écrit : {len(contenu)} module(s), {sum(len(v) for v in contenu.values())} libellé(s) hors-regard "
+              f"-> {os.path.basename(RELEVE_HORS_REGARD_FICHIER)}")
+        return 0
     if trous_de:
         r = resultats.get(trous_de)
         if not r:
@@ -2444,7 +2484,26 @@ def main(argv: list[str]) -> int:
                 f"(couverture {r['taux']:.1f} %) — p. ex. {ex}. Inscrivez chaque chaîne affichée dans "
                 f"`web/i18n.js` (clé FR -> valeur EN) ; une chaîne dynamique se compose à partir de clés traduites."
             )
-        plafond_hr = plafonds_hr[m]
+        # `P8.27-g` (lot 104) — L'ENSEMBLE, DANS LES DEUX SENS. Un module absent du relevé a un ensemble attendu VIDE :
+        # chacun de ses libellés hors-regard est neuf, et rougit — un module neuf se relève, il ne se devine pas.
+        attendus = set(releve_hr.get(m, []))
+        neufs = [t for t in r["hors_regard"] if t not in attendus]
+        perimes = sorted(attendus - set(r["hors_regard"]))
+        if neufs:
+            ex = ", ".join(f"« {s} »" for s in neufs[:5])
+            regressions.append(
+                f"{m} : {len(neufs)} libellé(s) HORS-REGARD NEUF(S), absent(s) du relevé — {ex}. Un libellé neuf posé dans une "
+                f"forme que la garde ne lit pas ne passe plus en silence, même s'il en REMPLACE un autre : posez-le dans un "
+                f"puits reconnu (`textContent`, `label:`, `muted(`, littéral HTML…), ou, si la forme est voulue, inscrivez "
+                f"le texte affiché au lexique puis relevez-le en connaissance de cause (`--relever`)."
+            )
+        if perimes:
+            ex = ", ".join(f"« {s} »" for s in perimes[:5])
+            regressions.append(
+                f"{m} : {len(perimes)} libellé(s) du relevé DISPARU(S) — {ex}. Le relevé mesure un état, il ne garde pas "
+                f"les fantômes : `--relever` le remet au ras de la mesure."
+            )
+        plafond_hr = plafonds_hr.get(m, len(attendus))
         if len(r["hors_regard"]) > plafond_hr:
             ex = ", ".join(f"« {s} »" for s in r["hors_regard"][:5])
             regressions.append(

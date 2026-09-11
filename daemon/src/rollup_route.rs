@@ -344,6 +344,209 @@ fn build_merge_sql(
     )
 }
 
+// =====================================================================================
+// ROUTE C (timechart) — SÉRIE PAR SEAU depuis le pré-agrégé (P10.5-e, moitié 1 ; TRANCHE 1 : `count` seul).
+// -------------------------------------------------------------------------------------
+// `search [source=X] | timechart span=<n>h|<n>d count` : une COURBE TEMPORELLE (un compte par seau horaire ou
+// journalier). Avant cette route, AUCUNE voie — chaude ou froide — ne servait une courbe temporelle depuis un
+// pré-agrégé (le dépôt le testait) : la requête retombait sur un SCAN déchiffré d'`event`, VIDE sous la
+// frontière froide `B` (agé en Parquet) -> la bande froide dessinait une chute à zéro qui n'était qu'une
+// absence de lecture. ROUTE C réécrit la courbe vers `event_rollup ∪ cold_rollup ∪ raw-partiels`, EN
+// RÉUTILISANT la machinerie MERGE de la ROUTE A-multi (`plan_merge` + fragments corps/tête/queue/retardataires) :
+// la SEULE différence est la clé de group-by, le SEAU TEMPOREL `(t/span)*span` au lieu des dimensions.
+//
+// POURQUOI C'EST EXACT (== `compile_timechart` du cœur, `(ts/span)*span`) :
+//   - `span` est un MULTIPLE EXACT de 3600 (garanti par `timechart_span_horaire` : seules les unités `h`/`d`
+//     passent, tout le reste DÉCLINE). Le grain d'`event_rollup`/`cold_rollup` est horaire (`bucket` =
+//     plancher-heure de `ts`). Re-flooré à un multiple de l'heure, `(bucket/span)*span == (ts/span)*span` :
+//     une ligne de rollup tombe donc dans EXACTEMENT le seau qu'aurait produit le scan brut. Un span
+//     SOUS-HORAIRE (`15m`, `30s`) n'est PAS servable depuis un pré-agrégé horaire -> DÉCLINE (raw exact).
+//   - `SUM(n)` sur event_rollup/cold_rollup est EXACT EN SOMME (seul `src_ip` est cappé, mais son reste est
+//     lumpé '' puis RÉ-AGRÉGÉ -> aucune ligne perdue, cf. bandeau ROLLUP-ROUTE) -> le total par seau ==
+//     `count` brut par seau. La route ne porte donc AUCUN plafond (`Cap::Aucun`) : elle n'est JAMAIS à portée
+//     du plafond top-N (elle ne lit ni `event_dim_rollup`, ni une dim cappée) — l'invariant que P10.5-e exige.
+//   - Régions DISJOINTES (corps rollup `[body_lo,body_hi)`, tête `ts<body_lo`, queue `ts>=body_hi`,
+//     retardataires `id>at_id`) -> ni double comptage ni trou. Un même seau (ex. un seau-JOUR à cheval sur la
+//     frontière corps/queue) reçoit la somme de ses fragments par le `SUM(c) GROUP BY bucket` final.
+// COLD : partition à `B` IDENTIQUE à la ROUTE A-multi (hot lit event_rollup `bucket>=B`, froid lit cold_rollup
+//   `bucket<B`) -> le témoin `cold_route_a_ne_lit_jamais_event_rollup_sous_la_frontiere` reste tenu.
+// TRANCHE 1 (correction > couverture) : `count` seul, PAS de `by` (les 7 courbes d'événements du constat sont
+//   des `timechart span=1h count` sans ventilation). `by source|severity` et les autres agrégats sont des
+//   tranches suivantes ; toute forme non reconnue DÉCLINE -> scan raw (exact).
+// COLONNES DE SORTIE `bucket, "count"` DANS CET ORDRE == `ocols` de `compile_timechart` -> parité de forme.
+
+/// Span d'un `timechart` routable par le pré-agrégé : SEULES les durées EXACTEMENT multiples du grain horaire
+/// (3600 s) sont exactes depuis event_rollup/cold_rollup (bucket aligné-heure). On n'accepte que `<n>h` et
+/// `<n>d` (unités du cœur `soql_dur` : h=3600, d=86400 ; le cœur n'a pas de semaine), tous multiples de 3600
+/// par construction ; tout le reste (`<n>m`, `<n>s`, nombre nu, `span=0`, débordement) -> None -> la route
+/// DÉCLINE -> scan raw exact (fall-through). Le grain sous-horaire n'est JAMAIS servi depuis un pré-agrégé.
+pub(crate) fn timechart_span_horaire(s: &str) -> Option<i64> {
+    let split = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+    let (num, unit) = s.split_at(split);
+    let n: i64 = num.parse().ok()?;
+    let mult = match unit {
+        "h" => 3600,
+        "d" => 86400,
+        _ => return None,
+    };
+    let secs = n.checked_mul(mult)?;
+    // Défensif : le grain horaire exact EXIGE secs>0 ET multiple de 3600 (garanti par h/d, revérifié).
+    if secs <= 0 || secs % 3600 != 0 {
+        return None;
+    }
+    Some(secs)
+}
+
+/// Forme timechart routable en TRANCHE 1 : filtre `source=` optionnel + span horaire.
+pub(crate) struct TimechartShape {
+    pub(crate) source_filter: Option<String>,
+    /// Secondes, MULTIPLE EXACT de 3600 (garanti par `timechart_span_horaire`).
+    pub(crate) span: i64,
+}
+
+/// PARSE ULTRA-CONSERVATEUR de la SEULE forme timechart routable en TRANCHE 1 : `search [source=X] | timechart
+/// span=<n>h|<n>d count`, RIEN d'autre — pas de `by`, aucun agrégat autre que `count`, aucune étape en aval.
+/// `None` au moindre écart (fall-through vers le scan RAW ; correctness > vitesse). MÊME frontière d'injection
+/// que `parse_stats_by_shape` : seule une valeur `source` (charset restreint `rollup_source_ok`, échappée en
+/// aval par `merge_src_cond`) franchit la frontière ; le span ne devient QU'un littéral i64 validé.
+pub(crate) fn parse_timechart_shape(soql: &str) -> Option<TimechartShape> {
+    let stages = guatx_core::soql::soql_split_pipes(soql);
+    if stages.len() != 2 {
+        return None; // exactement `search … | timechart …` (tranche 1 : aucune étape en aval)
+    }
+    // --- STAGE 0 : `search` avec des filtres UNIQUEMENT `source=X` (identique à `parse_stats_by_shape`). ---
+    let f0 = stages[0].trim();
+    let body = if f0 == "search" {
+        ""
+    } else if let Some(r) = f0.strip_prefix("search ") {
+        r.trim()
+    } else {
+        return None;
+    };
+    let mut source_filter: Option<String> = None;
+    if !body.is_empty() {
+        let toks = guatx_core::soql::soql_tokenize(body);
+        let mut src_eq_count = 0usize;
+        for tok in &toks {
+            let val = match tok.strip_prefix("source=") {
+                Some(v) if !v.is_empty() && !v.starts_with('=') && !v.starts_with('~') && !v.contains('*') && rollup_source_ok(v) => v,
+                _ => return None,
+            };
+            src_eq_count += 1;
+            source_filter = Some(val.to_string());
+        }
+        if src_eq_count > 1 {
+            return None;
+        }
+    }
+    // --- STAGE 1 : `timechart span=<horaire> count` — pas de `by`, pas d'autre agrégat, rien en trop. ---
+    let toks: Vec<&str> = stages[1].split_whitespace().collect();
+    if toks.first() != Some(&"timechart") {
+        return None;
+    }
+    if toks.iter().any(|t| *t == "by") {
+        return None; // TRANCHE 1 : aucune ventilation (le `by` suit dans une tranche ultérieure)
+    }
+    let mut span: Option<i64> = None;
+    let mut count_seen = false;
+    for t in &toks[1..] {
+        if let Some(s) = t.strip_prefix("span=") {
+            span = Some(timechart_span_horaire(s)?); // span non-horaire -> décline (raw exact)
+        } else if t.contains('=') {
+            return None; // option inconnue (fail-closed, comme `compile_timechart`)
+        } else if *t == "count" {
+            if count_seen {
+                return None;
+            }
+            count_seen = true;
+        } else {
+            return None; // agrégat autre que `count` (tranche 1) ou jeton en trop
+        }
+    }
+    let span = span?;
+    if !count_seen {
+        return None; // `timechart span=1h` sans agrégat n'est pas notre forme
+    }
+    Some(TimechartShape { source_filter, span })
+}
+
+/// Construit le SQL du MERGE timechart (série par SEAU) : `SUM(c) GROUP BY bucket ORDER BY bucket` au-dessus
+/// d'un `UNION ALL` de fragments, chacun projetant `<seau> AS bucket, c`. MÊME structure que `build_merge_sql`
+/// (corps rollup ∪ tête ∪ queue ∪ retardataires), mais la clé de group-by est le SEAU TEMPOREL `(t/span)*span`
+/// au lieu des dims. `span` = multiple EXACT de 3600 (garanti par `timechart_span_horaire`) -> pour une ligne
+/// de rollup (`bucket` = plancher-heure) `(bucket/span)*span == (ts/span)*span` d'une ligne brute -> le seau
+/// routé est IDENTIQUE au seau du compilo RAW (`compile_timechart`). `SUM(n)` exact en somme -> total par seau
+/// == `count` brut. Colonnes `bucket, "count"` DANS CET ORDRE == `ocols` de `compile_timechart`. Appelé
+/// UNIQUEMENT si `split.has_body()`. `cold_boundary` : None = HOT ; Some(B) = COLD (corps disjoint à `B`).
+fn build_timechart_merge_sql(
+    span: i64,
+    src_cond: &[String],
+    env_cond: &[String],
+    split: &MergeSplit,
+    cold_boundary: Option<i64>,
+    late_floor_id: Option<i64>,
+) -> String {
+    let base_cond = |extra: &[String]| -> Vec<String> {
+        let mut c = src_cond.to_vec();
+        c.extend(env_cond.iter().cloned());
+        c.extend(extra.iter().cloned());
+        c
+    };
+    let mut parts: Vec<String> = Vec::new();
+    // --- CORPS ROLLUP : seau = (bucket/span)*span (bucket déjà aligné-heure). ---
+    let body_range = vec![format!("bucket >= {}", split.body_lo), format!("bucket < {}", split.body_hi)];
+    match cold_boundary {
+        None => {
+            let c = base_cond(&body_range);
+            parts.push(format!("SELECT (bucket/{span})*{span} AS bucket, SUM(n) AS c FROM event_rollup WHERE {} GROUP BY 1", c.join(" AND ")));
+        }
+        Some(b) => {
+            let mut hot = body_range.clone();
+            hot.push(format!("bucket >= {b}"));
+            let mut cold = body_range.clone();
+            cold.push(format!("bucket < {b}"));
+            let ch = base_cond(&hot);
+            let cc = base_cond(&cold);
+            parts.push(format!("SELECT (bucket/{span})*{span} AS bucket, SUM(n) AS c FROM event_rollup WHERE {} GROUP BY 1", ch.join(" AND ")));
+            parts.push(format!("SELECT (bucket/{span})*{span} AS bucket, SUM(n) AS c FROM cold_rollup WHERE {} GROUP BY 1", cc.join(" AND ")));
+        }
+    }
+    // --- TÊTE / QUEUE : scan BRUT d'`event`, seau = (ts/span)*span (exact, à jour ; borné par idx_event_ts). ---
+    let raw_part = |lo: i64, hi: i64, hi_incl: bool| -> String {
+        let mut tc: Vec<String> = Vec::new();
+        if lo > 0 {
+            tc.push(format!("ts >= {lo}"));
+        }
+        if hi > 0 {
+            tc.push(if hi_incl { format!("ts <= {hi}") } else { format!("ts < {hi}") });
+        }
+        let c = base_cond(&tc);
+        format!("SELECT (ts/{span})*{span} AS bucket, COUNT(*) AS c FROM event WHERE {} GROUP BY 1", c.join(" AND "))
+    };
+    if let Some((lo, hi)) = split.head {
+        parts.push(raw_part(lo, hi, false));
+    }
+    if let Some((lo, hi)) = split.tail {
+        parts.push(raw_part(lo, hi, true));
+    }
+    // --- RETARDATAIRES : `id > at_id` dans la plage du corps (identique à `build_merge_sql`, cf. sa doc). ---
+    if let Some(at_id) = late_floor_id {
+        let mut lc = vec![format!("id > {at_id}"), format!("ts < {}", split.body_hi)];
+        if split.body_lo > 0 {
+            lc.push(format!("ts >= {}", split.body_lo));
+        }
+        let c = base_cond(&lc);
+        parts.push(format!(
+            "SELECT (ts/{span})*{span} AS bucket, COUNT(*) AS c FROM event NOT INDEXED WHERE {} GROUP BY 1",
+            c.join(" AND ")
+        ));
+    }
+    format!(
+        "SELECT bucket, SUM(c) AS \"count\" FROM ({}) GROUP BY bucket ORDER BY bucket",
+        parts.join(" UNION ALL ")
+    )
+}
+
 /// Filtre `source='…'` (littéral validé `rollup_source_ok` + échappé) pour le MERGE, ou vide. Partagé HOT/COLD.
 fn merge_src_cond(source_filter: &Option<String>) -> Vec<String> {
     source_filter.as_ref().map(|s| vec![format!("source='{}'", guatx_core::soql::soql_esc(s))]).unwrap_or_default()
@@ -370,6 +573,21 @@ pub(crate) fn try_rollup_route(soql: &str, from: i64, to: i64, env: Option<&str>
 /// Cœur testable de `try_rollup_route` : `now_ts` injecté (recency guard QRY-1) pour tester le caveat de
 /// fraîcheur sans horloge murale. Voir `try_rollup_route` pour le contrat public (production = `now()`).
 pub(crate) fn try_rollup_route_at(soql: &str, from: i64, to: i64, env: Option<&str>, now_ts: i64, cov: RollupCoverage, dim_cov: DimRollupCoverage) -> Option<RollupRoute> {
+    // --- ROUTE C (timechart) HOT : `search [source=X] | timechart span=<horaire> count` -> série par SEAU
+    //     depuis `event_rollup ∪ raw-partiels`. MÊME merge que la ROUTE A-multi (corps rollup ∪ queue raw),
+    //     clé de group-by = seau temporel. HOT : event_floor = i64::MIN (event retient toute la fenêtre) ->
+    //     partiels TOUJOURS raw-servables -> EXACT & FRAIS (`approx:false`, note:none). `Cap::Aucun` (exact en
+    //     somme, jamais à portée du plafond). Cf. bandeau ROUTE C. Tenté AVANT `parse_stats_by_shape`.
+    if let Some(tc) = parse_timechart_shape(soql) {
+        let split = plan_merge(from, to, now_ts, i64::MIN, cov.covered_below());
+        if !split.has_body() {
+            return None; // aucun bucket définitif complet (ou couverture non établie) -> scan raw seul (exact)
+        }
+        let src_cond = merge_src_cond(&tc.source_filter);
+        let env_cond = merge_env_cond(env);
+        let sql = build_timechart_merge_sql(tc.span, &src_cond, &env_cond, &split, None, cov.late_floor_id());
+        return Some(RollupRoute { sql, approx: split.approx, cap: Cap::Aucun, note: None });
+    }
     let sh = parse_stats_by_shape(soql)?;
     let tconds = rollup_time_conds(from, to, env);
     let order = if sh.asc { "ASC" } else { "DESC" };
@@ -739,6 +957,25 @@ pub(crate) fn try_cold_rollup_route(soql: &str, from: i64, to: i64, env: Option<
 /// `cold_dim_rollup` est scellé sur la tranche columnarisée exacte, sa provenance n'est pas un watermark.
 #[cfg(feature = "cold_tier")]
 pub(crate) fn try_cold_rollup_route_at(soql: &str, from: i64, to: i64, env: Option<&str>, boundary: i64, now_ts: i64, cov: RollupCoverage, dim_cov: DimRollupCoverage) -> Option<RollupRoute> {
+    // --- ROUTE C (timechart) COLD : `search [source=X] | timechart span=<horaire> count` -> série par SEAU
+    //     depuis `event_rollup[bucket>=B] ∪ cold_rollup[bucket<B] ∪ raw-partiels`. Partition DISJOINTE à `B`
+    //     IDENTIQUE à la ROUTE A-multi COLD (hot ne lit event_rollup que >=B, le froid vient de cold_rollup <B
+    //     -> témoin `cold_route_a_ne_lit_jamais_event_rollup_sous_la_frontiere` tenu). RÉSIDU APPROX honnête :
+    //     tête deep-past sub-horaire (<B, agé) repliée sur le rollup -> `split.approx=true`+note ; sinon EXACT.
+    //     `Cap::Aucun` (exact en somme). Tenté AVANT `parse_stats_by_shape`. Cf. bandeau ROUTE C.
+    if let Some(tc) = parse_timechart_shape(soql) {
+        let split = plan_merge(from, to, now_ts, boundary, cov.covered_below());
+        if !split.has_body() {
+            return None; // aucun bucket définitif complet (ou couverture non établie) -> cold_union_query (exact)
+        }
+        let src_cond = merge_src_cond(&tc.source_filter);
+        let env_cond = merge_env_cond(env);
+        let sql = build_timechart_merge_sql(tc.span, &src_cond, &env_cond, &split, Some(boundary), cov.late_floor_id());
+        let note = split
+            .approx
+            .then(|| "rollup cold+hot + raw event (queue à jour) ; tête sub-horaire deep-past (<B, agé) repliée sur le rollup (approx bornée)".to_string());
+        return Some(RollupRoute { sql, approx: split.approx, cap: Cap::Aucun, note });
+    }
     let sh = parse_stats_by_shape(soql)?;
     let base_tconds = rollup_time_conds(from, to, env);
     let order = if sh.asc { "ASC" } else { "DESC" };

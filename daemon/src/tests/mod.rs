@@ -37,6 +37,7 @@ include!("rollup_b2b_adverse.rs"); // B2b (merge rollup ∪ raw) — ajout tests
 include!("rollup_parity_family.rs"); // parité route rapide == chemin brut, sur une FAMILLE dérivée (pas un cas nommé)
 include!("rollup_dim_coverage.rs"); // le JUMEAU : couverture du rollup PAR DIMENSION (trou mesuré, fermeture, garde)
 include!("topn_ampleur.rs"); // L'AMPLEUR du plafond top-N (ligne de reste, sonde, aveu) + la rétention qui ferme le résidu ROUTE A
+include!("serie_timechart_depuis_le_preagrege.rs"); // ROUTE C (timechart) — P10.5-e moitié 1 : courbe temporelle servie depuis le pré-agrégé
 include!("route_a_portes.rs"); // ROUTE A : par quelle porte le sur-compte s'atteindrait — la rétention la ferme, et on le prouve
 include!("backup_retention_adverse.rs"); // scheduler backup natif + rétention KEEP-N — tests-only
 include!("backup_streaming.rs"); // LE CLAIR SUR DISQUE : staging vide sous surveillance, RAM sous gros BLOB, taille/temps des deux formats

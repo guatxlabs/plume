@@ -447,21 +447,20 @@ SITES_ADMIS = {
         # dans le corps du gestionnaire quand `lu` est faux ; cet instrument juge le littéral du défaut, qui ne peut pas
         # porter la clé. Exemption gardée avec sa raison ; corps_rassurants_avouent.rs tient la propriété.
         ("daemon/src/handlers/fleet.rs", "fleet"): 2,
-        # `compliance_posture` : le défaut des règles mappées est TYPÉ (`Err(())`, lot 92) et la cause rejoint `error` par
+        # `compliance_posture` : le défaut des règles mappées est TYPÉ (`Err(())` au lot 92, `Err(String)` portant la cause
+        # depuis le lot 99, où la lecture ratée rejoint aussi la cause) et il atteint `error` par
         # `corps_de_lecture_non_faite` ; cet instrument juge le littéral du défaut, qui ne peut pas porter la clé. Exemption
         # gardée avec sa raison ; defauts_gardes_avouent.rs tient la propriété.
         ("daemon/src/handlers/compliance.rs", "compliance_posture"): 1,
     },
-    "B": {  # closure SOURDE : 6 accusations sur 5 sites (7 après le lot 97 ; l'inventaire des sources type ses trois lectures depuis le lot 98)
+    "B": {  # closure SOURDE : 4 accusations sur 3 sites (6 après le lot 98 ; les règles mappées et le compte d'événements sont typés depuis le lot 99)
         ("daemon/src/handlers/admin_ui.rs", "retention_settings_get"): 1,
-        ("daemon/src/handlers/compliance.rs", "compliance_posture"): 1,
         # `fleet` ×2 : GUÉRIE depuis le lot 91 (verdict typé rendu par fleet_scan_all, cache gaté, `error` posé) mais l'aveu
         # vit HORS de la closure, dans le corps du gestionnaire — cet instrument ne le voit pas. Exemption gardée avec
         # sa raison plutôt que d'élargir la lecture ; le témoin de route (corps_rassurants_avouent.rs) tient la propriété.
         ("daemon/src/handlers/fleet.rs", "fleet"): 2,
         # `overview` : ses cinq comptes AVOUENT depuis le lot 91 (`error` + `non_etablis`) ; l'accusation qui reste est
         # celle du compteur d'événements EN CACHE (`events_count_cached`, un niveau plus bas), reste nommé dans l'index.
-        ("daemon/src/handlers/overview.rs", "overview"): 1,
         ("daemon/src/handlers/search.rs", "search"): 1,
     },
     "Q": {  # cause JETÉE : 3 accusations sur 2 sites

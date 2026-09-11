@@ -188,23 +188,24 @@ where
 /// Lit la colonne `rule.compliance` (règles ACTIVÉES) -> map `cadre -> map(contrôle -> [noms de règles])`.
 /// "" = règle mappée au cadre sans contrôle précis (couverture cadre-générale). Lecture directe de la table
 /// `rule` (métadonnée de détection, viewer-visible comme `rule.mitre` dans coverage_attack) — pas la table event.
-fn rule_compliance_map(conn: &Connection) -> std::collections::BTreeMap<String, std::collections::BTreeMap<String, Vec<String>>> {
+/// `P10.7-g` (lot 99) — LES RÈGLES MAPPÉES SONT LUES OU NON LUES : une table `rule` illisible rendait une carte
+/// vide, « aucune règle ne couvre aucun contrôle », le corps le plus rassurant de la conformité.
+fn rule_compliance_map(conn: &Connection) -> Result<std::collections::BTreeMap<String, std::collections::BTreeMap<String, Vec<String>>>, rusqlite::Error> {
     let mut map: std::collections::BTreeMap<String, std::collections::BTreeMap<String, Vec<String>>> = std::collections::BTreeMap::new();
-    if let Ok(mut stmt) = conn.prepare(
+    let mut stmt = conn.prepare(
         "SELECT name, COALESCE(compliance,'') FROM rule WHERE enabled=1 AND compliance IS NOT NULL AND compliance<>''",
-    ) {
-        if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) {
-            for (name, comp) in rows.flatten() {
-                for (fw, ctrl) in compliance_pairs(&comp) {
-                    let e = map.entry(fw).or_default().entry(ctrl).or_default();
-                    if !e.contains(&name) {
-                        e.push(name.clone());
-                    }
-                }
+    )?;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+    for r in rows {
+        let (name, comp) = r?;
+        for (fw, ctrl) in compliance_pairs(&comp) {
+            let e = map.entry(fw).or_default().entry(ctrl).or_default();
+            if !e.contains(&name) {
+                e.push(name.clone());
             }
         }
     }
-    map
+    Ok(map)
 }
 
 /// GXQL (fixe, littéral) de lecture de la posture pour le rollup : contrôles SCA détaillés, projetés en
@@ -340,9 +341,12 @@ pub(crate) async fn compliance_posture(
         // (b) règles mappées.
         // `P10.7-g` (lot 92) — les règles mappées NON LUES rejoignent la cause : une carte vide se lisait « aucune
         // règle ne couvre aucun contrôle », le corps le plus rassurant de la conformité, servi sans connexion.
-        let (rules, cause) = match read_with_watchdog(&db_path, Err(()), |conn| Ok(rule_compliance_map(conn))) {
+        // `P10.7-g` (lot 99) — et une lecture RATÉE des règles (pas seulement une lecture non faite) rejoint la cause.
+        let (rules, cause) = match read_with_watchdog(&db_path, Err(crate::query_exec::LECTURE_NON_FAITE_SANS_CONNEXION.to_string()), |conn| {
+            rule_compliance_map(conn).map_err(|e| format!("règles mappées NON LUES : la lecture de `rule` a échoué ({e}) — une carte vide serait un repli, pas une mesure"))
+        }) {
             Ok(r) => (r, cause),
-            Err(()) => (std::collections::BTreeMap::new(), cause.or_else(|| Some(crate::query_exec::LECTURE_NON_FAITE_SANS_CONNEXION.to_string()))),
+            Err(c) => (std::collections::BTreeMap::new(), cause.or(Some(c))),
         };
         (agg, rules, res.get("rows").and_then(|r| r.as_array()).map(|a| a.len()).unwrap_or(0), cause)
     })

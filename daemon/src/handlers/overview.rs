@@ -10,20 +10,22 @@ pub(crate) const EVENTS_COUNT_TTL: Duration = Duration::from_secs(45);
 // MT-KEY: par db_path (R2). Chaque base (tenant) mémoïse SON propre COUNT(*) FROM event ; un tenant ne
 // sert jamais le compte d'un autre. TTL/SWR inchangés. En mono-tenant : une seule entrée -> identique.
 pub(crate) static EVENTS_COUNT_CACHE: std::sync::OnceLock<Mutex<HashMap<String, (Instant, i64)>>> = std::sync::OnceLock::new();
-pub(crate) fn events_count_cached(db_path: &str, conn: &Connection) -> i64 {
+/// `P10.7-g` (lot 99) — le compte est LU ou NON LU : un COUNT raté valait 0 ET se mettait en cache pour la durée du
+/// TTL, un zéro rassurant servi à tout le monde. `Err` n'est jamais mis en cache.
+pub(crate) fn events_count_cached(db_path: &str, conn: &Connection) -> Result<i64, rusqlite::Error> {
     let cell = EVENTS_COUNT_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     {
         let g = cell.lock();
         if let Some((t, v)) = g.get(db_path) {
             if t.elapsed() < EVENTS_COUNT_TTL {
-                return *v; // valeur fraîche : on évite le scan chiffré
+                return Ok(*v); // valeur fraîche : on évite le scan chiffré
             }
         }
     } // verrou relâché avant le recalcul (ne sérialise pas les lecteurs derrière un scan lent)
     // périmé/absent : recalcul HORS verrou puis republication. Deux recalculs concurrents = inoffensif.
-    let events: i64 = conn.query_row("SELECT COUNT(*) FROM event", [], |r| r.get(0)).unwrap_or(0);
+    let events: i64 = conn.query_row("SELECT COUNT(*) FROM event", [], |r| r.get(0))?;
     cell.lock().insert(db_path.to_string(), (Instant::now(), events));
-    events
+    Ok(events)
 }
 pub(crate) async fn overview(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
     // FILTRE ENVIRONNEMENT (#2d) : None (mode 0) -> chemin STRICTEMENT identique (compteur d'events CACHÉ
@@ -61,7 +63,7 @@ pub(crate) async fn overview(State(st): State<AppState>, Extension(au): Extensio
         // events : mode 0 -> compteur CACHÉ (inchangé) ; env fixé -> COUNT direct filtré (env-scopé, non caché).
         let events: i64 = match env.as_deref() {
             Some(e) => compte("events", conn.query_row("SELECT COUNT(*) FROM event WHERE env_id=?1", params![e], |r| r.get(0))),
-            None => events_count_cached(req_db_path(&st, &au).as_str(), conn),
+            None => compte("events", events_count_cached(req_db_path(&st, &au).as_str(), conn)),
         };
         let cases_open: i64 = compte("cases_open", conn.query_row(&format!("SELECT COUNT(*) FROM incident WHERE status<>'closed'{}", envp("incident")), [], |r| r.get(0)));
         let cases_closed: i64 = compte("cases_closed", conn.query_row(&format!("SELECT COUNT(*) FROM incident WHERE status='closed'{}", envp("incident")), [], |r| r.get(0)));

@@ -166,11 +166,45 @@ ROUTE_TEMOIN = ("POST", "/api/users/{id}")
 # CLIQUET DU SECOND SENS (`P11.13-b`) : routes que le démon AUDITE, que la console ATTEINT, et dont tous les
 # appelants ne confirment pas. 12 mesurées le 2026-08-24 ; ce nombre ne se relève pas sans raison écrite ici —
 # une route auditée appelée sans confirmation de plus est exactement le défaut que la garde doit attraper.
-PLAFOND_ASYMETRIE = 12
+# `P11.13-h` (2026-09-11, lot 105) — LE COMPTE EST REMPLACÉ PAR UN ENSEMBLE NOMMÉ, jugé dans les deux sens : une
+# asymétrie NEUVE (route auditée que la console atteint sans confirmer partout, absente d'ici) rougit ; une route
+# d'ici qui n'est plus asymétrique est une exemption SANS OBJET et rougit. Un compte laissait passer un ÉCHANGE
+# (une route guérie, une autre qui casse, total immobile) ; l'ensemble le voit. Relevé du 2026-09-11.
+ASYMETRIES_ADMISES = frozenset((
+    ("DELETE", "/api/bulletin"),
+    ("POST", "/api/bulletin"),
+    ("POST", "/api/datamodels"),
+    ("POST", "/api/datamodels/objects/{id}/fields"),
+    ("POST", "/api/datamodels/{id}/objects"),
+    ("POST", "/api/datasets"),
+    ("POST", "/api/lookups"),
+    ("POST", "/api/notification-policies"),
+    ("POST", "/api/processors"),
+    ("POST", "/api/sigma/import-bulk"),
+    ("POST", "/api/silences"),
+    ("POST", "/api/threat-intel/iocs"),
+))
+PLAFOND_ASYMETRIE = len(ASYMETRIES_ADMISES)  # dérivé de l'ensemble, jamais écrit à côté
 # PLANCHER DES ABANDONS (`P11.13-h` (b)) : appels mutants que la dérivation ne sait pas apparier (chemin
 # porté par une variable, méthode indéterminée). Chacun est un trou : la route qu'il atteint peut rester
 # « sans appelant web », et ce silence se lit comme une garantie. Il ne se relève JAMAIS.
-PLAFOND_ABANDONS = 11
+# `P11.13-h` (2026-09-11, lot 105) — MÊME REMPLACEMENT POUR LES ABANDONS : chacun est nommé par (module, cause,
+# extrait du chemin), sans numéro de ligne (volatil). Un abandon neuf rougit, un abandon disparu rougit (il a été
+# rendu dérivable, ou le site a changé : la liste se met à jour dans le même lot). Relevé du 2026-09-11.
+ABANDONS_ADMIS = frozenset((
+    ("app.js", "motif de chemin indérivable", "url"),
+    ("destinations.js", "motif de chemin indérivable", "url"),
+    ("detadv.js", "chemin en ternaire — non apprécié", "/api/correlations ou /api/correlations/*"),
+    ("detadv.js", "chemin en ternaire — non apprécié", "/api/baselines ou /api/baselines/*"),
+    ("detection_admin.js", "chemin en ternaire — non apprécié", "/api/rules/* ou /api/rules"),
+    ("detection_admin.js", "chemin en ternaire — non apprécié", "/api/notifiers/* ou /api/notifiers"),
+    ("detection_admin.js", "chemin en ternaire — non apprécié", "/api/parsers/* ou /api/parsers"),
+    ("detection_admin.js", "chemin en ternaire — non apprécié", "/api/playbooks/* ou /api/playbooks"),
+    ("multitenant.js", "motif de chemin indérivable", "path"),
+    ("runbooks.js", "motif de chemin indérivable", "path"),
+    ("threatintel.js", "motif de chemin indérivable", "path"),
+))
+PLAFOND_ABANDONS = len(ABANDONS_ADMIS)  # dérivé de l'ensemble, jamais écrit à côté
 # PLANCHER DES « CONFIRMÉE PAR APPELANT » (`P11.13-b`) : appels dont la confirmation n'est ni dans leur
 # propre portée ni dans une portée qui les CONTIENT, mais dans une portée qui les NOMME. Cette forme est la
 # plus faible : la portée qui confirme peut appartenir à un geste VOISIN — mesuré sur `web/destinations.js`,
@@ -1051,13 +1085,22 @@ def main():
     print(f"appels mutants laissés de côté par la dérivation : {len(abandons)} (plancher {PLAFOND_ABANDONS})")
     for f, ligne, motif, extrait in abandons:
         print(f"  abandon   {f}:{ligne} — {motif} : `{extrait}`")
-    if len(abandons) > PLAFOND_ABANDONS:
-        print(f"::error::{len(abandons)} appel(s) mutant(s) abandonné(s) par la dérivation, plancher {PLAFOND_ABANDONS} : "
-              "un appel de plus que la garde ne sait pas lire. Elle rendrait un verdict amputé sous la forme d'un vert — "
-              "écris le chemin de façon dérivable, ou apprends-le à la dérivation ; ce plancher ne se relève pas.")
+    # `P11.13-h` (lot 105) — l'ensemble nommé, dans les deux sens.
+    abandons_vus = {(f, motif, extrait) for f, _, motif, extrait in abandons}
+    abandons_neufs = sorted(abandons_vus - ABANDONS_ADMIS)
+    abandons_sans_objet = sorted(ABANDONS_ADMIS - abandons_vus)
+    if abandons_neufs:
+        print("::error::" + f"{len(abandons_neufs)} appel(s) mutant(s) abandonné(s) par la dérivation, hors de la liste admise "
+              "(`ABANDONS_ADMIS`) : " + ", ".join(f"{f} — {motif} : `{ex}`" for f, motif, ex in abandons_neufs)
+              + ". Un appel de plus que la garde ne sait pas lire : elle rendrait un verdict amputé sous la forme d'un vert — "
+              "écris le chemin de façon dérivable, ou apprends-le à la dérivation ; la liste ne s'allonge que par une raison écrite.")
         return 1
-    if len(abandons) < PLAFOND_ABANDONS:
-        print(f"note : le plancher des abandons peut descendre à {len(abandons)} (`PLAFOND_ABANDONS`).")
+    if abandons_sans_objet:
+        print("::error::" + f"{len(abandons_sans_objet)} abandon(s) de la liste admise (`ABANDONS_ADMIS`) ne sont plus mesurés : "
+              + ", ".join(f"{f} — {motif} : `{ex}`" for f, motif, ex in abandons_sans_objet)
+              + ". Chemin rendu dérivable, site réécrit ou disparu : retire-les de la liste dans le même lot — une exemption "
+              "sans objet est une liste morte.")
+        return 1
 
     # SECOND SENS (`P11.13-b`) : partir des surfaces et revenir au critère, AVANT de rendre le verdict habituel.
     signaux = signaux_des_surfaces(routes, handlers, readonly, appels)
@@ -1094,10 +1137,20 @@ def main():
           "la console confirme sans que le démon inscrive de changement — une ergonomie, pas une déclaration.")
     for verbe, path in asymetries:
         print(f"  asymétrie  {verbe:6} {path}")
-    if len(asymetries) > PLAFOND_ASYMETRIE:
-        print(f"::error::{len(asymetries)} route(s) auditée(s) par le démon sont appelées par la console sans que tous "
-              f"leurs appelants confirment, plafond {PLAFOND_ASYMETRIE} : une de plus que le cliquet. Faites passer "
-              "l'appelant par une confirmation partagée — ce cliquet ne se relève pas sans raison écrite dans la garde.")
+    # `P11.13-h` (lot 105) — l'ensemble nommé, dans les deux sens.
+    asymetries_vues = set(asymetries)
+    asymetries_neuves = sorted(asymetries_vues - ASYMETRIES_ADMISES)
+    asymetries_sans_objet = sorted(ASYMETRIES_ADMISES - asymetries_vues)
+    if asymetries_neuves:
+        print("::error::" + f"{len(asymetries_neuves)} route(s) auditée(s) par le démon appelée(s) par la console sans que tous "
+              "leurs appelants confirment, hors de la liste admise (`ASYMETRIES_ADMISES`) : "
+              + ", ".join(f"{v} {p}" for v, p in asymetries_neuves)
+              + ". Faites passer l'appelant par une confirmation partagée — la liste ne s'allonge que par une raison écrite.")
+        return 1
+    if asymetries_sans_objet:
+        print("::error::" + f"{len(asymetries_sans_objet)} route(s) de la liste admise (`ASYMETRIES_ADMISES`) ne sont plus "
+              "asymétriques : " + ", ".join(f"{v} {p}" for v, p in asymetries_sans_objet)
+              + ". Guérie, renommée ou retirée : retire-les de la liste dans le même lot — une exemption sans objet est une liste morte.")
         return 1
     # `P11.13-b` — CE QUE « CONFIRMÉE » VAUT AU JUSTE CESSE D'ÊTRE UNE PHRASE ET DEVIENT UN COMPTE TENU.
     # La limite était ÉCRITE dans l'en-tête avec un chiffre relevé un jour donné, que plus rien ne suivait.
@@ -1129,8 +1182,6 @@ def main():
               + ", ".join(f"{f} `{fn}`" for f, fn in sans_objet)
               + ". Retire-les de la dette dans le même lot : une exemption sans objet est une liste morte.")
         return 1
-    if len(asymetries) < PLAFOND_ASYMETRIE:
-        print(f"note : le cliquet peut descendre à {len(asymetries)} (`PLAFOND_ASYMETRIE`).")
     print(f"\nOK — {len(couverts)} route(s) sensible(s) confirmée(s) par la surface, {len(sans)} sans appelant web "
           f"(contrôle par API) ; confirmations partagées : {', '.join(confs)}.")
     return 0

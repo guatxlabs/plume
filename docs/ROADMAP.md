@@ -26,7 +26,7 @@ charges, où P10 désigne un tout autre sujet.
 
 Une clé ⬜ ou 🔵 que rien ne peut prendre **à cet instant** porte en tête de cellule la marque **⏸ cause**, dans un vocabulaire fermé — décision de l'exploitant · mesure hors du poste · porte à sens unique · hors de ce dépôt · dépend d'une autre clé — : le blocage est une propriété du moment, pas de la clé (une décision, une machine ou une clé voisine le lèvent sans que le constat change), et la marque tombe avec lui. La ligne qui suit est DÉRIVÉE et recomptée par `check_blocked_work_names_its_cause.py` (`P8.29-b`) :
 
-**Lecture dérivée du travail prenable : 14 clé(s) prenable(s) (⬜ 2, 🔵 12) ; 26 retenue(s) par une cause du moment (décision de l'exploitant 6 ; mesure hors du poste 10 ; porte à sens unique 1 ; hors de ce dépôt 3 ; dépend d'une autre clé 6).**
+**Lecture dérivée du travail prenable : 15 clé(s) prenable(s) (⬜ 2, 🔵 13) ; 26 retenue(s) par une cause du moment (décision de l'exploitant 6 ; mesure hors du poste 10 ; porte à sens unique 1 ; hors de ce dépôt 3 ; dépend d'une autre clé 6).**
 
 Une clé peut désigner un **thème** dont plusieurs constats relèvent ; l'index en donne alors une
 ligne unique et nomme le résidu dans la phrase. Quelques clés couvrent l'outillage de déploiement,

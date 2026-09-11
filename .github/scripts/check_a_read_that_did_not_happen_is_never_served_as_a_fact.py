@@ -452,13 +452,10 @@ SITES_ADMIS = {
         # gardée avec sa raison ; defauts_gardes_avouent.rs tient la propriété.
         ("daemon/src/handlers/compliance.rs", "compliance_posture"): 1,
     },
-    "B": {  # closure SOURDE : 13 accusations sur 12 sites (15 après le lot 93 ; le journal d'audit et le mode global avouent depuis le lot 94)
+    "B": {  # closure SOURDE : 10 accusations sur 9 sites (13 après le lot 94 ; le portail client et les métriques de dossiers avouent depuis le lot 95)
         ("daemon/src/handlers/admin_ui.rs", "retention_settings_get"): 1,
         ("daemon/src/handlers/alerts.rs", "alert_groups"): 1,
         ("daemon/src/handlers/alerts.rs", "alerts"): 1,
-        ("daemon/src/handlers/caseops.rs", "case_metrics"): 1,
-        ("daemon/src/handlers/caseops.rs", "client_case_get"): 1,
-        ("daemon/src/handlers/caseops.rs", "client_cases_list"): 1,
         ("daemon/src/handlers/compliance.rs", "compliance_posture"): 1,
         # `fleet` ×2 : GUÉRIE depuis le lot 91 (verdict typé rendu par fleet_scan_all, cache gaté, `error` posé) mais l'aveu
         # vit HORS de la closure, dans le corps du gestionnaire — cet instrument ne le voit pas. Exemption gardée avec

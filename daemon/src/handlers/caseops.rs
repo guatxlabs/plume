@@ -389,6 +389,12 @@ pub(crate) const CASE_METRICS_BY_SEVERITY_WINDOW: i64 = 20;
 pub(crate) fn case_metrics_json(conn: &Connection, from_in: i64, to_in: i64) -> Value {
     let to = if to_in > 0 { to_in } else { now() };
     let from = if from_in > 0 { from_in } else { to - 30 * 86400 };
+    // `P10.7-g` (lot 95) — HUIT LECTURES TYPÉES, AUCUN ZÉRO DE REPLI SERVI COMME UNE MESURE. L'échantillon,
+    // les cinq comptes et les deux ventilations rendaient 0 / vide sur toute lecture ratée, et le tableau de bord
+    // présentait « aucun dossier résolu, aucun retard, aucune violation » — le corps le plus rassurant qui soit.
+    // Chaque lecture qui échoue est NOMMÉE dans `non_etablis`, son compte est `null`, le corps porte `error`, et
+    // la console lit déjà la cause sous `error` (`web/cases.js`, `causeDuRefusServi`).
+    let mut non_etablis: Vec<&'static str> = Vec::new();
     // Valeurs individuelles (résolus dans la fenêtre) pour mean + p50 (Rust). Borné LIMIT (garde-fou mémoire).
     let mut mtta: Vec<i64> = Vec::new();
     let mut mttr: Vec<i64> = Vec::new();
@@ -397,14 +403,20 @@ pub(crate) fn case_metrics_json(conn: &Connection, from_in: i64, to_in: i64) -> 
     // comme la mesure de la fenêtre entière.
     use crate::handlers::liste_bornee as aveu;
     let mut echantillon_vu: i64 = 0;
-    if let Ok(mut stmt) = conn.prepare(
-        "SELECT first_response_ts, closed_ts, ts, COALESCE(sla_pause_accum,0) FROM incident \
-         WHERE closed_ts IS NOT NULL AND closed_ts>=?1 AND closed_ts<=?2 AND merged_into IS NULL LIMIT ?3",
-    ) {
-        if let Ok(rows) = stmt.query_map(params![from, to, aveu::borne_avec_ligne_excedentaire(CASE_METRICS_SAMPLE_WINDOW)], |r| {
-            Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?))
-        }) {
-            for (fr, closed, ts, pause) in rows.flatten() {
+    let echantillon: Result<Vec<(Option<i64>, i64, i64, i64)>, rusqlite::Error> = conn
+        .prepare(
+            "SELECT first_response_ts, closed_ts, ts, COALESCE(sla_pause_accum,0) FROM incident \
+             WHERE closed_ts IS NOT NULL AND closed_ts>=?1 AND closed_ts<=?2 AND merged_into IS NULL LIMIT ?3",
+        )
+        .and_then(|mut stmt| {
+            stmt.query_map(params![from, to, aveu::borne_avec_ligne_excedentaire(CASE_METRICS_SAMPLE_WINDOW)], |r| {
+                Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?))
+            })
+            .and_then(|it| it.collect())
+        });
+    match echantillon {
+        Ok(lignes) => {
+            for (fr, closed, ts, pause) in lignes {
                 echantillon_vu += 1;
                 if echantillon_vu > CASE_METRICS_SAMPLE_WINDOW { break; }
                 if let Some(fr) = fr {
@@ -418,24 +430,35 @@ pub(crate) fn case_metrics_json(conn: &Connection, from_in: i64, to_in: i64) -> 
                 }
             }
         }
+        Err(_) => non_etablis.push("sample"),
     }
     let mean = |v: &[i64]| -> Option<i64> {
         if v.is_empty() { None } else { Some(v.iter().sum::<i64>() / v.len() as i64) }
     };
-    let resolved: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM incident WHERE closed_ts IS NOT NULL AND closed_ts>=?1 AND closed_ts<=?2 AND merged_into IS NULL",
-        params![from, to], |r| r.get(0)).unwrap_or(0);
     let now_i = now();
-    let open_now: i64 = conn.query_row(
+    // Un compte qui n'a pas abouti est `null`, jamais 0, et il est nommé.
+    let mut compte = |nom: &'static str, lu: Result<i64, rusqlite::Error>| -> Value {
+        match lu {
+            Ok(n) => json!(n),
+            Err(_) => {
+                non_etablis.push(nom);
+                Value::Null
+            }
+        }
+    };
+    let resolved = compte("resolved", conn.query_row(
+        "SELECT COUNT(*) FROM incident WHERE closed_ts IS NOT NULL AND closed_ts>=?1 AND closed_ts<=?2 AND merged_into IS NULL",
+        params![from, to], |r| r.get(0)));
+    let open_now = compte("open_now", conn.query_row(
         "SELECT COUNT(*) FROM incident WHERE archived=0 AND merged_into IS NULL AND status NOT IN ('resolved','closed','contained')",
-        [], |r| r.get(0)).unwrap_or(0);
-    let overdue_now: i64 = conn.query_row(
+        [], |r| r.get(0)));
+    let overdue_now = compte("overdue_now", conn.query_row(
         "SELECT COUNT(*) FROM incident WHERE sla_due IS NOT NULL AND ?1>sla_due AND merged_into IS NULL AND status NOT IN ('resolved','closed','contained')",
-        params![now_i], |r| r.get(0)).unwrap_or(0);
-    let ack_breaches: i64 = conn.query_row("SELECT COUNT(*) FROM incident WHERE ack_breached=1 AND ts>=?1 AND ts<=?2", params![from, to], |r| r.get(0)).unwrap_or(0);
-    let resolve_breaches: i64 = conn.query_row("SELECT COUNT(*) FROM incident WHERE resolve_breached=1 AND ts>=?1 AND ts<=?2", params![from, to], |r| r.get(0)).unwrap_or(0);
+        params![now_i], |r| r.get(0)));
+    let ack_breaches = compte("ack_breaches", conn.query_row("SELECT COUNT(*) FROM incident WHERE ack_breached=1 AND ts>=?1 AND ts<=?2", params![from, to], |r| r.get(0)));
+    let resolve_breaches = compte("resolve_breaches", conn.query_row("SELECT COUNT(*) FROM incident WHERE resolve_breached=1 AND ts>=?1 AND ts<=?2", params![from, to], |r| r.get(0)));
     // by_assignee : mean MTTA/MTTR + résolus + breach (SQL agrégé ; mean SQL suffit par groupe).
-    let by_assignee: Vec<Value> = conn.prepare(
+    let by_assignee: Result<Vec<Value>, rusqlite::Error> = conn.prepare(
         "SELECT COALESCE(NULLIF(assignee,''),'(none)') AS who, COUNT(*), \
                 AVG(CASE WHEN first_response_ts IS NOT NULL AND first_response_ts>=ts THEN first_response_ts-ts END), \
                 AVG(CASE WHEN closed_ts-ts-COALESCE(sla_pause_accum,0)>=0 THEN closed_ts-ts-COALESCE(sla_pause_accum,0) END), \
@@ -447,8 +470,8 @@ pub(crate) fn case_metrics_json(conn: &Connection, from_in: i64, to_in: i64) -> 
                        "mtta_mean": r.get::<_,Option<f64>>(2)?.map(|x| x as i64),
                        "mttr_mean": r.get::<_,Option<f64>>(3)?.map(|x| x as i64),
                        "breach": r.get::<_,i64>(4)? }))
-        }).map(|x| x.flatten().collect())).unwrap_or_default();
-    let by_severity: Vec<Value> = conn.prepare(
+        }).and_then(|x| x.collect()));
+    let by_severity: Result<Vec<Value>, rusqlite::Error> = conn.prepare(
         "SELECT severity, COUNT(*), \
                 AVG(CASE WHEN first_response_ts IS NOT NULL AND first_response_ts>=ts THEN first_response_ts-ts END), \
                 AVG(CASE WHEN closed_ts-ts-COALESCE(sla_pause_accum,0)>=0 THEN closed_ts-ts-COALESCE(sla_pause_accum,0) END) \
@@ -458,7 +481,21 @@ pub(crate) fn case_metrics_json(conn: &Connection, from_in: i64, to_in: i64) -> 
             Ok(json!({ "severity": r.get::<_,i64>(0)?, "resolved": r.get::<_,i64>(1)?,
                        "mtta_mean": r.get::<_,Option<f64>>(2)?.map(|x| x as i64),
                        "mttr_mean": r.get::<_,Option<f64>>(3)?.map(|x| x as i64) }))
-        }).map(|x| x.flatten().collect())).unwrap_or_default();
+        }).and_then(|x| x.collect()));
+    let by_assignee: Vec<Value> = match by_assignee {
+        Ok(v) => v,
+        Err(_) => {
+            non_etablis.push("by_assignee");
+            Vec::new()
+        }
+    };
+    let by_severity: Vec<Value> = match by_severity {
+        Ok(v) => v,
+        Err(_) => {
+            non_etablis.push("by_severity");
+            Vec::new()
+        }
+    };
     let mut corps = json!({
         "window": { "from": from, "to": to },
         "overall": {
@@ -478,6 +515,10 @@ pub(crate) fn case_metrics_json(conn: &Connection, from_in: i64, to_in: i64) -> 
         obj.insert("sample_window".into(), json!(CASE_METRICS_SAMPLE_WINDOW));
         obj.insert("sample_size".into(), json!(echantillon_vu.min(CASE_METRICS_SAMPLE_WINDOW)));
         obj.insert("sample_truncated".into(), json!(echantillon_vu > CASE_METRICS_SAMPLE_WINDOW));
+        if !non_etablis.is_empty() {
+            obj.insert("error".into(), json!(format!("métriques NON ÉTABLIES : {} — les comptes manquants sont `null` et les listes vides des replis, pas des mesures", non_etablis.join(", "))));
+            obj.insert("non_etablis".into(), json!(non_etablis));
+        }
     }
     corps
 }
@@ -557,7 +598,9 @@ pub(crate) fn client_cases_list_json(conn: &Connection, db_path: &str, masks: &g
         _ => "",
     };
     let base = format!("FROM incident WHERE archived=0 AND merged_into IS NULL {where_state}");
-    let total: i64 = conn.query_row(&format!("SELECT COUNT(*) {base}"), [], |r| r.get(0)).unwrap_or(0);
+    // `P10.7-g` (lot 95) — le compte et les lignes sont typés : une lecture ratée rend la liste NON ÉTABLIE
+    // (`total: null`, cause de `P10.7-z`), jamais « aucun dossier ».
+    let total: Result<i64, rusqlite::Error> = conn.query_row(&format!("SELECT COUNT(*) {base}"), [], |r| r.get(0));
     // Part B : `is_incident`/`acknowledged` calculés en SQL comme BOOLÉENS (IS NOT NULL) -> le tier brut et le
     // timestamp MTTA ne sont JAMAIS matérialisés côté Rust. Allowlist fermée : deux colonnes bool ajoutées, rien d'autre.
     let sql = format!(
@@ -565,15 +608,17 @@ pub(crate) fn client_cases_list_json(conn: &Connection, db_path: &str, masks: &g
                 (sla_due IS NOT NULL AND ?1>sla_due AND status NOT IN ('resolved','closed','contained')) AS overdue, \
                 (incident_tier IS NOT NULL) AS is_incident, (first_response_ts IS NOT NULL) AS acknowledged \
          {base} ORDER BY updated DESC LIMIT ?2 OFFSET ?3");
-    let rows: Vec<Value> = conn
+    let lues: Result<Vec<Value>, rusqlite::Error> = conn
         .prepare(&sql)
         .and_then(|mut s| {
             s.query_map(params![now_i, limit, offset], |r| {
                 Ok(client_case_row(db_path, masks, r.get(0)?, r.get(1)?, r.get(2)?, &r.get::<_, String>(3)?, &r.get::<_, String>(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get::<_, i64>(8)? != 0, r.get::<_, i64>(9)? != 0, r.get::<_, i64>(10)? != 0))
-            }).map(|x| x.flatten().collect())
-        })
-        .unwrap_or_default();
-    json!({ "cases": rows, "total": total })
+            }).and_then(|x| x.collect())
+        });
+    match (total, lues) {
+        (Ok(total), Ok(rows)) => json!({ "cases": rows, "total": total }),
+        _ => crate::handlers::liste_bornee::corps_de_liste_illisible(json!({ "total": Value::Null }), "cases"),
+    }
 }
 
 /// DÉTAIL CLIENT d'un case : la projection fermée + une timeline RESTREINTE aux événements de CYCLE DE VIE
@@ -581,15 +626,21 @@ pub(crate) fn client_cases_list_json(conn: &Connection, db_path: &str, masks: &g
 /// Les auteurs analystes sont ANONYMISÉS ('SOC'). None si le case n'existe pas / est archivé / fusionné.
 /// Borne de la ligne de temps servie au portail client (`P11.22-g`).
 pub(crate) const CLIENT_CASE_TIMELINE_WINDOW: i64 = 500;
-pub(crate) fn client_case_get_json(conn: &Connection, db_path: &str, masks: &guatx_core::soql::FieldMaskSet, id: i64, now_i: i64) -> Option<Value> {
-    let mut c = conn.query_row(
+/// `P10.7-g` (lot 95) — la fiche est LUE ou NON LUE avant d'être présente ou absente : `Ok(None)` est une absence
+/// ÉTABLIE (404), `Err` une lecture ratée (5xx nommé par le gestionnaire), jamais « case introuvable ».
+pub(crate) fn client_case_get_lu(conn: &Connection, db_path: &str, masks: &guatx_core::soql::FieldMaskSet, id: i64, now_i: i64) -> Result<Option<Value>, rusqlite::Error> {
+    let mut c = match conn.query_row(
         "SELECT id,ts,updated,COALESCE(title,''),status,severity,priority,closed_ts, \
                 (sla_due IS NOT NULL AND ?2>sla_due AND status NOT IN ('resolved','closed','contained')), \
                 (incident_tier IS NOT NULL), (first_response_ts IS NOT NULL) \
          FROM incident WHERE id=?1 AND archived=0 AND merged_into IS NULL",
         params![id, now_i],
         |r| Ok(client_case_row(db_path, masks, r.get(0)?, r.get(1)?, r.get(2)?, &r.get::<_, String>(3)?, &r.get::<_, String>(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get::<_, i64>(8)? != 0, r.get::<_, i64>(9)? != 0, r.get::<_, i64>(10)? != 0)),
-    ).ok()?;
+    ) {
+        Ok(v) => v,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+        Err(e) => return Err(e),
+    };
     // Timeline CYCLE DE VIE uniquement (allowlist de kinds ; auteurs anonymisés ; body des notes/alertes EXCLU).
     // `P11.22-g` — LA LIGNE DE TEMPS D'UNE SURFACE EXTERNE dit sa coupe : lue avec sa ligne excédentaire,
     // posée par la seconde porte du fabricant (`timeline_served`, `timeline_window`, `timeline_truncated`).
@@ -599,12 +650,17 @@ pub(crate) fn client_case_get_json(conn: &Connection, db_path: &str, masks: &gua
         .and_then(|mut s| s.query_map(params![id, crate::handlers::liste_bornee::borne_avec_ligne_excedentaire(CLIENT_CASE_TIMELINE_WINDOW)], |r| {
             let kind: String = r.get(1)?;
             Ok(json!({ "ts": r.get::<_,i64>(0)?, "event": kind, "by": "SOC" }))
-        }).map(|x| x.flatten().collect()))
-        .unwrap_or_default();
+        }).and_then(|x| x.collect()))?;
     if let Some(obj) = c.as_object_mut() {
         crate::handlers::liste_bornee::poser_la_sous_liste(obj, "timeline", items, CLIENT_CASE_TIMELINE_WINDOW as usize);
     }
-    Some(c)
+    Ok(Some(c))
+}
+
+/// Lecture aplatie pour les témoins existants : `None` couvre l'absence ET l'échec, ce que le gestionnaire ne fait plus.
+#[cfg(test)]
+pub(crate) fn client_case_get_json(conn: &Connection, db_path: &str, masks: &guatx_core::soql::FieldMaskSet, id: i64, now_i: i64) -> Option<Value> {
+    client_case_get_lu(conn, db_path, masks, id, now_i).ok().flatten()
 }
 
 // ================================================================================================
@@ -915,7 +971,10 @@ pub(crate) async fn client_case_get(State(st): State<AppState>, Extension(au): E
         let dbp = db_path.clone();
         // `P10.7-g` (lot 92) — une lecture NON FAITE n'est pas une absence : « case introuvable » (404) ne se sert
         // que sur une lecture aboutie qui n'a rien trouvé ; sans connexion, ou tâche interrompue, c'est un 5xx qui le dit.
-        read_with_watchdog(&db_path, Some(json!({ "error": crate::query_exec::LECTURE_NON_FAITE_SANS_CONNEXION, "lecture_non_faite": true })), move |conn| client_case_get_json(conn, &dbp, &masks, id, now_i))
+        read_with_watchdog(&db_path, Some(json!({ "error": crate::query_exec::LECTURE_NON_FAITE_SANS_CONNEXION, "lecture_non_faite": true })), move |conn| match client_case_get_lu(conn, &dbp, &masks, id, now_i) {
+            Ok(v) => v,
+            Err(e) => Some(json!({ "error": format!("dossier NON LU : la lecture a échoué ({e}) — ce n'est pas une absence établie"), "lecture_non_faite": true })),
+        })
     })
     .await
     .unwrap_or_else(|_| Some(json!({ "error": crate::query_exec::LECTURE_NON_FAITE_TACHE_INTERROMPUE, "lecture_non_faite": true })));

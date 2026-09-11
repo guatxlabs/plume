@@ -60,24 +60,19 @@ pub(crate) fn host_inventory_simple(conn: &Connection) -> Vec<Value> {
 /// COMPTE sur le rollup (cardinalité de la flotte, sub-ms), rendu à côté pour que la vue rattache la
 /// liste à sa population au lieu de la deviner. `None` = comptage illisible, jamais un zéro.
 pub(crate) const BORNE_HOTES_DU_PANNEAU: i64 = 50;
-pub(crate) fn hotes_du_panneau_bornes(conn: &Connection, borne: i64) -> (Vec<Value>, bool, Option<i64>) {
-    let lues = match conn.prepare(
-        "SELECT host, MAX(last_ts) m FROM host_rollup WHERE host<>'' GROUP BY host ORDER BY m DESC LIMIT ?1",
-    ) {
-        Ok(mut stmt) => match stmt.query_map(
+/// `P10.7-g` (lot 97) — la page, sa coupe et son total sont LUS ou NON LUS : une lecture ratée ne rend plus
+/// « aucun hôte » ni un total absent sans cause.
+pub(crate) fn hotes_du_panneau_bornes(conn: &Connection, borne: i64) -> Result<(Vec<Value>, bool, i64), rusqlite::Error> {
+    let lues: Vec<Value> = conn
+        .prepare("SELECT host, MAX(last_ts) m FROM host_rollup WHERE host<>'' GROUP BY host ORDER BY m DESC LIMIT ?1")?
+        .query_map(
             params![crate::handlers::liste_bornee::borne_avec_ligne_excedentaire(borne)],
             |r| Ok(json!({ "host": r.get::<_, String>(0)?, "last_seen": r.get::<_, i64>(1)? })),
-        ) {
-            Ok(rows) => rows.flatten().collect::<Vec<Value>>(),
-            Err(_) => Vec::new(),
-        },
-        Err(_) => Vec::new(),
-    };
+        )?
+        .collect::<Result<Vec<Value>, _>>()?;
     let (servies, coupee) = crate::handlers::liste_bornee::couper_a_la_borne(lues, borne.max(0) as usize);
-    let total = conn
-        .query_row("SELECT COUNT(DISTINCT host) FROM host_rollup WHERE host<>''", [], |r| r.get::<_, i64>(0))
-        .ok();
-    (servies, coupee, total)
+    let total = conn.query_row("SELECT COUNT(DISTINCT host) FROM host_rollup WHERE host<>''", [], |r| r.get::<_, i64>(0))?;
+    Ok((servies, coupee, total))
 }
 
 /// FLOTTE — inventaire (fonction PURE sur &Connection). Renvoie la liste COMPLÈTE d'hôtes (non triée, non

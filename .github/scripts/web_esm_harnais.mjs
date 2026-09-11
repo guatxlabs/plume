@@ -11210,6 +11210,42 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   console.log("[posture] `P10.7-g` (lot 91) : la pastille dit « posture NON LUE » quand un compte n'est pas établi, et « OK » seulement sur des comptes lus");
 }
 
+// ---------------------------------------------------------------------------------------------
+// (87) `P10.7-g` (lot 97) — UN CAPTEUR « non_lu » EST COMPTÉ À PART, JAMAIS COMME « JAMAIS VU », ET LA CAUSE
+//      SERVIE EST ÉCRITE. Le démon sert un quatrième statut quand il n'a pas pu lire une sonde ; la rangée
+//      des capteurs le compte à part (« déclarés = branchés + muets + jamais vus + non lus »), et le corps
+//      `error` est écrit sous la rangée. Sans aveu servi, rien n'est écrit et la part vaut zéro.
+// ---------------------------------------------------------------------------------------------
+{
+  const { renderIntegrations } = await import(pathToFileURL(path.join(WEB, "freshness.js")).href);
+  const corps87 = new Element("div");
+  const querySelectorOrig87 = document.querySelector;
+  document.querySelector = (sel) => (sel === "#integrations .body" ? corps87 : new Element("div"));
+  const reponse87 = (obj) => ({ ok: true, status: 200, text: async () => JSON.stringify(obj) });
+  // un capteur MUET a par construction une dernière collecte (il a déjà parlé) ; sans elle la rangée le compterait aussi « jamais vu ».
+  const capteur87 = (id, status) => ({ id, label: id.toUpperCase(), interval_s: 60, last_seen: status === "muet" ? 1000 : null, status, event_based: false, portee: "par hôte" });
+  const nu87 = () => corps87.innerHTML.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
+  globalThis.fetch = async () => reponse87({
+    collectors: [capteur87("a", "non_lu"), capteur87("b", "inconnu"), capteur87("c", "muet")],
+    hosts: [], hosts_window: 50, hosts_served: 0, hosts_truncated: false, hosts_total: null, flotte: null,
+    error: "lectures NON FAITES : a : no such table: snapshot — « non_lu » n'est ni « jamais vu » ni « muet »",
+    non_lus: ["a : no such table: snapshot"],
+  });
+  await renderIntegrations();
+  const avoue = nu87();
+  exiger(/1\s*capteur\(s\) non lu\(s\)/.test(avoue), `(87) le capteur non lu est compté à part : ${avoue}`);
+  exiger(/1\s*capteur\(s\) jamais vu\(s\)/.test(avoue), `(87) le capteur jamais vu n'absorbe pas le non lu : ${avoue}`);
+  exiger(/1\s*capteur\(s\) muet\(s\)/.test(avoue), `(87) le capteur muet reste compté : ${avoue}`);
+  exiger(/0\s*capteur\(s\) branché\(s\)/.test(avoue), `(87) branchés = déclarés − jamais vus − muets − non lus : ${avoue}`);
+  exiger(avoue.includes("lectures NON FAITES"), `(87) la cause servie est écrite sous la rangée : ${avoue}`);
+  globalThis.fetch = async () => reponse87({ collectors: [capteur87("b", "inconnu")], hosts: [], hosts_window: 50, hosts_served: 0, hosts_truncated: false, hosts_total: 0, flotte: null });
+  await renderIntegrations();
+  const sain = nu87();
+  exiger(!sain.includes("lectures NON FAITES") && /0\s*capteur\(s\) non lu\(s\)/.test(sain), `(87) sans aveu servi, rien n'est écrit et la part vaut zéro : ${sain}`);
+  document.querySelector = querySelectorOrig87;
+  console.log("(87) OK — un capteur non lu est compté à part, jamais comme jamais vu, et la cause servie est écrite");
+}
+
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;
 verdictRendu = true;
 if (echecs.length) {

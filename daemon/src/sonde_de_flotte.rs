@@ -140,13 +140,14 @@ fn empreinte_fnv1a(octets: &[u8], depart: u64) -> u64 {
 /// (x4), ce coût ne bouge PAS d'un pas — c'est ce qui le distingue de la variante par hôte, qui suit le
 /// volume. Mémoire : `PLAFOND_NOMS` noms retenus, jamais la liste (l'ensemble muet ne fait que traverser
 /// une empreinte de 64 bits).
-pub(crate) fn flotte_muette(conn: &Connection, now_ts: i64) -> Option<FlotteMuette> {
+/// `P10.7-g` (lot 97) — `Err` = le parc n'a PAS été observé (table absente, ligne indécodable, interruption) : la
+/// cause voyage jusqu'aux deux surfaces au lieu d'un `None` muet.
+pub(crate) fn flotte_muette(conn: &Connection, now_ts: i64) -> Result<FlotteMuette, rusqlite::Error> {
     // ORDER BY host : l'empreinte doit être une fonction de l'ENSEMBLE, pas de l'ordre de restitution.
     // GROUP BY host collapse les environnements (comme `host_inventory_simple`) -> une ligne par machine.
     let mut st = conn
-        .prepare("SELECT host, MAX(last_ts) FROM host_rollup WHERE host<>'' GROUP BY host ORDER BY host")
-        .ok()?;
-    let mut lignes = st.query([]).ok()?;
+        .prepare("SELECT host, MAX(last_ts) FROM host_rollup WHERE host<>'' GROUP BY host ORDER BY host")?;
+    let mut lignes = st.query([])?;
     // P11.10-a — CE QUE QUELQU'UN A DÉCLARÉ. Deux ensembles, lus en UNE requête dont la cardinalité est
     // le nombre de machines DÉCLARÉES (jamais le parc). Une table absente ou illisible rend deux
     // ensembles VIDES : la sonde retombe alors sur son comportement d'avant cette clé — elle alerte sur
@@ -157,12 +158,12 @@ pub(crate) fn flotte_muette(conn: &Connection, now_ts: i64) -> Option<FlotteMuet
     let (mut attendus, mut muets, mut muets_declares_attendus) = (0usize, 0usize, 0usize);
     let mut empreinte = 0xcbf2_9ce4_8422_2325u64; // offset basis FNV-1a
     let mut pires: Vec<(String, i64)> = Vec::with_capacity(PLAFOND_NOMS + 1);
-    // `while let Some(row) = ... .ok()?` : une ligne ILLISIBLE interrompt la mesure (None) au lieu de
+    // `while let Some(row) = ... ?` : une ligne ILLISIBLE interrompt la mesure (Err, avec sa cause) au lieu de
     // se faire sauter en silence par un `flatten()` — sinon un parc partiellement illisible se
     // présenterait comme un parc partiellement sain.
-    while let Some(row) = lignes.next().ok()? {
-        let hote: String = row.get(0).ok()?;
-        let dernier: i64 = row.get(1).ok()?;
+    while let Some(row) = lignes.next()? {
+        let hote: String = row.get(0)?;
+        let dernier: i64 = row.get(1)?;
         // Une machine RETIRÉE du parc sort du dénominateur : « 19 sur 20 » ne veut plus rien dire si le
         // 20 compte des machines dont quelqu'un a dit qu'elles n'en font plus partie.
         if retires.contains(&hote) {
@@ -186,7 +187,7 @@ pub(crate) fn flotte_muette(conn: &Connection, now_ts: i64) -> Option<FlotteMuet
         pires.sort_by_key(|(_, t)| *t);
         pires.truncate(PLAFOND_NOMS);
     }
-    Some(FlotteMuette { attendus, muets, muets_declares_attendus, pires, empreinte })
+    Ok(FlotteMuette { attendus, muets, muets_declares_attendus, pires, empreinte })
 }
 
 /// LE TEXTE DE L'ALERTE, séparé de sa levée pour être éprouvable sans base : ce qu'un exploitant LIT

@@ -45,7 +45,7 @@
 
     /// La VALEUR rendue par une sonde (ce que l'opérateur voit), séparée de son coût.
     fn valeurs(conn: &Connection) -> Vec<(&'static str, Option<i64>)> {
-        COLLECTORS.iter().map(|(id, _, _, sonde, _)| (*id, sonde.derniere_collecte(conn))).collect()
+        COLLECTORS.iter().map(|(id, _, _, sonde, _)| (*id, sonde.derniere_collecte(conn).expect("lisible"))).collect()
     }
 
     /// BASE AU CAS PATHOLOGIQUE, à l'échelle `n`. Forme choisie pour que le défaut, s'il revient, se

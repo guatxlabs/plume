@@ -167,14 +167,18 @@ async function renderIntegrations() {
   // vs EN ATTENTE (déclarés, jamais vus = ex-'inconnu', ex. YARA). « capteur » = TYPE de sonde (≠ « source » :
   // un capteur peut se déployer en N sources). Dénominateur explicite (« N déclarés ») -> l'écart avec le nombre
   // de sources de Fraîcheur devient COMPRIS (granularité sonde vs source), pas contradictoire.
-  const waiting = collectors.filter(c => c.status === 'inconnu' || c.last_seen == null);
+  // `P10.7-g` (lot 97) — « non_lu » est un QUATRIÈME état : le démon n'a pas pu lire cette sonde cette fois-ci.
+  // Il n'est ni « jamais vu » (last_seen y est null aussi) ni « muet » : compté à part, nommé, et la cause servie
+  // sous `error` est écrite sous la rangée.
+  const nonLus = collectors.filter(c => c.status === 'non_lu');
+  const waiting = collectors.filter(c => c.status !== 'non_lu' && (c.status === 'inconnu' || c.last_seen == null));
   // ANTI-ANGLE-MORT : un capteur CONTINU (event_based=false : controls/web/kube-audit/resources…) qui décroche
   // INDIVIDUELLEMENT passe 'muet' (>3x son intervalle) MÊME si le pipeline global reste frais. Fraîcheur rend la
   // même observation « en retard » (P11.3-b, même seuil, dérivé de la même sonde). On garde une pastille muet
   // ROUGE ici : on ne réduit pas la visibilité (invariant opérateur). Compteurs additifs : déclarés = branchés +
   // muets + en attente.
   const mute = collectors.filter(c => c.status === 'muet');
-  const total = collectors.length, connected = total - waiting.length - mute.length;
+  const total = collectors.length, connected = total - waiting.length - mute.length - nonLus.length;
   // les noms tiennent DANS la vignette du compte qu'ils détaillent (P11.16-b) : hors d'elle, ils se
   // seraient glissés entre un nombre et le signe qui le relie au suivant.
   const withNames = (arr) => { const nm = arr.map(c => esc(c.label || c.id)).join(', '); return nm ? ` <span style="font-size:11px;color:var(--mut)">(${nm})</span>` : ''; };
@@ -197,6 +201,7 @@ async function renderIntegrations() {
   // MÊME fabrique : « déclarés = branchés + muets + en attente » se lisait déjà en commentaire ici, et
   // la portée « tous hôtes confondus » RECOUPE ces trois parts (une sonde de cette portée est déjà
   // comptée dans son état) sans jamais les partager.
+  const aveu = d.error ? `<div class="kv"><span class="muted">${esc(String(d.error))}</span></div>` : '';
   const capsum = `<div class="capsum">` + rangeeDeChiffres([
     { famille: 'total', valeur: total, libelle: LANG === 'en' ? 'declared sensors' : 'capteurs déclarés',
       titre: LANG === 'en' ? 'A sensor is a PROBE TYPE, not a source: the total is shared by the three terms joined by « + ». What follows « of which » is taken from the same population and is not part of the addition.' : 'Un capteur est un TYPE de sonde, pas une source : le total se partage entre les trois termes reliés par « + ». Ce qui suit « dont » est pris sur la même population et n\'entre pas dans l\'addition.' },
@@ -206,6 +211,8 @@ async function renderIntegrations() {
       titre: LANG === 'en' ? 'Connected then dropped out (continuous dead-man\'s-switch): to investigate.' : 'Branché puis décroché (dead-man\'s-switch continu) : à investiguer.' },
     { famille: 'part', valeur: waiting.length, dot: 'attente', libelle: LANG === 'en' ? 'never-seen sensor(s)' : 'capteur(s) jamais vu(s)', suite: withNames(waiting),
       titre: LANG === 'en' ? 'Declared, never seen: no data yet from this probe.' : 'Déclaré, jamais vu : aucune donnée de cette sonde à ce jour.' },
+    { famille: 'part', valeur: nonLus.length, dot: 'muet', libelle: LANG === 'en' ? 'unread sensor(s)' : 'capteur(s) non lu(s)', suite: withNames(nonLus),
+      titre: LANG === 'en' ? 'The daemon could not read this probe this time: neither never-seen nor mute. The cause is written under the row.' : 'Le démon n\'a pas pu lire cette sonde cette fois-ci : ni jamais vue, ni muette. La cause est écrite sous la rangée.' },
     { famille: 'recoupement', valeur: confondues, libelle: LANG === 'en' ? 'at « all hosts together » scope' : 'à portée « tous hôtes confondus »',
       titre: LANG === 'en' ? 'ALREADY counted in one of the terms above — this number crosses the distribution, it does not share it. These probes return the FRESHEST data of the estate: they stay green as long as a single machine still talks. Fully silent machines are counted separately (Hosts).' : 'DÉJÀ comptées dans l\'un des termes ci-dessus — ce nombre recoupe la répartition, il ne la partage pas. Ces sondes rendent la donnée la plus FRAÎCHE du parc : elles restent vertes tant qu\'une seule machine parle encore. Les machines entièrement muettes sont comptées à part (Hôtes).' },
   ]) +
@@ -289,7 +296,7 @@ async function renderIntegrations() {
   const cap = `<div class="muted intplug" style="font-size:11px">Capteurs = <b>couverture</b> (types de sondes déclarés ; un capteur mort est signalé <b>muet</b> ici) · Hôtes = <b>endpoints</b> (où les agents poussent). La santé fine par source (frais/calme/en retard/muet) vit dans Fraîcheur — « en retard » y désigne la même observation que « muet » ici, au même seuil.</div>`;
   // lien de découverte -> la Flotte (inventaire détaillé des hôtes : statut/enrôlement/dernier signal, paginé + export).
   const hostsHdr = `Hôtes (endpoints) ${renvoi('#fleet')}`;
-  b.innerHTML = `<div class="intgrid"><div><div class="fldname">Capteurs (couverture)</div>${capsum}</div><div><div class="fldname">${hostsHdr}</div>${flotteLigne}${hosts}</div></div>${cap}`;
+  b.innerHTML = `<div class="intgrid"><div><div class="fldname">Capteurs (couverture)</div>${capsum}${aveu}</div><div><div class="fldname">${hostsHdr}</div>${flotteLigne}${hosts}</div></div>${cap}`;
 }
 // fraîcheur PAR SOURCE : âge du dernier point + statut. « Est-ce live ? »
 /* state: freshnessRepollTimer -> S (state.js) */   // re-poll rapproché quand le serveur calcule encore (warming)

@@ -245,7 +245,7 @@
         snap_parc(&conn, "firewall", 50, now_ts - 7200, now_ts - 5);
 
         let sonde = Sonde::Instantane { kind: "firewall" };
-        let ls = sonde.derniere_collecte(&conn).expect("le parc a rapporté");
+        let ls = sonde.derniere_collecte(&conn).expect("lisible").expect("le parc a rapporté");
         assert!(
             now_ts - ls >= 7200,
             "âge déclaré {} s : la sonde doit rendre la machine la PLUS EN RETARD (7200 s), pas la plus \
@@ -335,11 +335,11 @@
                 .query_row(&format!("SELECT MAX(ts) FROM snapshot WHERE kind='{kind}'"), [], |r| r.get::<_, Option<i64>>(0))
                 .ok()
                 .flatten();
-            let nouvelle = Sonde::Instantane { kind }.derniere_collecte(&conn);
+            let nouvelle = Sonde::Instantane { kind }.derniere_collecte(&conn).expect("lisible");
             assert_eq!(nouvelle, ancienne, "mono-hôte : la sonde par-hôte == l'ancienne sonde globale ({kind})");
         }
         // Table VIDE pour un kind inconnu : `None` des deux côtés (statut « inconnu », jamais « muet »).
-        assert_eq!(Sonde::Instantane { kind: "jamais-vu" }.derniere_collecte(&conn), None);
+        assert_eq!(Sonde::Instantane { kind: "jamais-vu" }.derniere_collecte(&conn).expect("lisible"), None);
     }
 
     /// LA SÉRIE SANS HÔTE EXISTE ET RESTE À ELLE-MÊME. Un instantané qui décrit LE DÉPLOIEMENT (et non une

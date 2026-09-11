@@ -92,7 +92,7 @@
         // ---- ② L'ÉNONCÉ EST COUPÉ EN VOL. Rien d'autre ne change. ----
         // Le tir est CHERCHÉ, pas deviné : on veut la coupe APRÈS le COUNT (donc `total` établi) et
         // APRÈS au moins une ligne (donc un vrai préfixe, pas une page vide qui relèverait de P10.7-e).
-        let mut coupe: Option<(Vec<Value>, Option<i64>, FinDeParcours)> = None;
+        let mut coupe: Option<(Vec<Value>, crate::handlers::alerts::TotalDeListe, FinDeParcours)> = None;
         for tir in 1..400usize {
             tsb_couper_au_tir(&conn, tir);
             let r = alerts_query_page(&conn, &filtre, None, "", 200, 0, true);
@@ -339,7 +339,7 @@
         // population, jamais sur la présence de la cause. Chercher la cause ferait REFUSER DE CONCLURE
         // le jour où un correctif la rejette, au lieu d'ACCUSER : le témoin passerait de « il manque un
         // aveu » à « je n'ai rien pu montrer », et c'est un canal de détection rétréci, pas un rouge.
-        let mut coupe: Option<(Vec<Value>, Option<i64>, FinDeParcours)> = None;
+        let mut coupe: Option<(Vec<Value>, crate::handlers::alerts::TotalDeListe, FinDeParcours)> = None;
         for tir in 1..4000usize {
             tsb_couper_au_tir(&conn, tir);
             let r = alert_groups_query_page(&conn, "rule", &filtre, 500, 0);

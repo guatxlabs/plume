@@ -120,7 +120,7 @@
         let (mut confondues, mut par_hote_muettes) = (0usize, 0usize);
         for (id, _, interval, sonde, event_based) in COLLECTORS.iter() {
             let st = statut_capteur(
-                sonde.derniere_collecte(&conn),
+                sonde.derniere_collecte(&conn).expect("lisible"),
                 *interval,
                 *event_based,
                 pipe,
@@ -403,7 +403,7 @@
         {
             let conn = db.lock();
             conn.execute_batch("DROP TABLE host_rollup").unwrap();
-            assert!(flotte_muette(&conn, now_ts).is_none(), "inventaire absent -> AUCUN verdict rendu");
+            assert!(flotte_muette(&conn, now_ts).is_err(), "inventaire absent -> AUCUN verdict rendu, et la cause est portée");
         }
         check_heartbeats(&db);
 

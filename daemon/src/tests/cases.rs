@@ -982,15 +982,15 @@
             conn.execute("INSERT INTO host_rollup(host, env_id, last_ts, first_ts, sig_total, sig_hot, updated) VALUES(?1,'prod',?2,?2,1,0,?2)",
                          params![format!("h{i}"), 1_000 + i]).unwrap();
         }
-        let (servies, coupee, total) = hotes_du_panneau_bornes(&conn, 3);
+        let (servies, coupee, total) = hotes_du_panneau_bornes(&conn, 3).expect("host_rollup lisible");
         assert_eq!(servies.len(), 3, "pile la borne : tout est servi");
         assert!(!coupee, "pile la borne : AUCUNE coupe — l'aveu est mesuré par la ligne excédentaire, pas déduit de la longueur");
-        assert_eq!(total, Some(3));
+        assert_eq!(total, 3);
         conn.execute("INSERT INTO host_rollup(host, env_id, last_ts, first_ts, sig_total, sig_hot, updated) VALUES('h9','prod',2000,2000,1,0,2000)", []).unwrap();
-        let (servies, coupee, total) = hotes_du_panneau_bornes(&conn, 3);
+        let (servies, coupee, total) = hotes_du_panneau_bornes(&conn, 3).expect("host_rollup lisible");
         assert_eq!(servies.len(), 3, "au-dessus de la borne : `borne` lignes, pas une de plus");
         assert!(coupee, "au-dessus de la borne : la coupe est AVOUÉE");
-        assert_eq!(total, Some(4), "le total compte la population entière, pas la page");
+        assert_eq!(total, 4, "le total compte la population entière, pas la page");
         assert_eq!(servies[0]["host"], "h9", "les plus récents d'abord : la ligne coupée est la plus ancienne");
         // la liste complète reste disponible pour la Flotte : la borne ne touche pas `host_inventory_simple`
         assert_eq!(host_inventory_simple(&conn).len(), 4);

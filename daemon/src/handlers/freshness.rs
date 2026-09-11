@@ -49,6 +49,9 @@ pub(crate) enum StatutCapteur {
     Actif,
     /// Il a DÉJÀ parlé et s'est tu au-delà du tolérable — le seul verdict qui alerte.
     Muet,
+    /// `P10.7-g` (lot 97) — LE DÉMON N'A PAS PU REGARDER (lecture ratée) : ni « jamais vu » ni « muet ». N'alerte
+    /// pas (rien n'a été observé) et ne résout rien ; la surface le dit au lieu de le classer « inconnu ».
+    NonLu,
 }
 
 impl StatutCapteur {
@@ -57,6 +60,7 @@ impl StatutCapteur {
             StatutCapteur::Inconnu => "inconnu",
             StatutCapteur::Actif => "actif",
             StatutCapteur::Muet => "muet",
+            StatutCapteur::NonLu => "non_lu",
         }
     }
     /// LE SEUL verdict qui lève une alerte. Écrit ici plutôt qu'au site d'appel pour qu'une 3ᵉ
@@ -91,11 +95,19 @@ pub(crate) fn statut_capteur(
     }
 }
 
-pub(crate) fn pipeline_is_fresh(conn: &Connection, now_ts: i64) -> bool {
+/// `P10.7-g` (lot 97) — LA FRAÎCHEUR DU PIPELINE EST LUE OU NON LUE. Une lecture ratée valait « pas frais »,
+/// ce qui rendait MUET chaque capteur événementiel (et levait leurs alertes) sur une base qu'on n'avait pas lue.
+pub(crate) fn pipeline_est_frais(conn: &Connection, now_ts: i64) -> Result<bool, rusqlite::Error> {
     let global_last: Option<i64> = conn.query_row(
         "SELECT MAX(m) FROM (SELECT MAX(ts) m FROM event UNION ALL SELECT MAX(ts) FROM metric UNION ALL SELECT MAX(ts) FROM snapshot)",
-        [], |r| r.get::<_, Option<i64>>(0)).ok().flatten();
-    global_last.map(|m| now_ts - m < 600).unwrap_or(false)
+        [], |r| r.get::<_, Option<i64>>(0))?;
+    Ok(global_last.map(|m| now_ts - m < 600).unwrap_or(false))
+}
+
+/// Lecture APLATIE pour les trois appelants qui n'ont pas encore de troisième état (`metrics.rs`, `fleet.rs`,
+/// `sources.rs`) : une lecture ratée y vaut « pas frais ». Reste nommé de `P10.7-g`.
+pub(crate) fn pipeline_is_fresh(conn: &Connection, now_ts: i64) -> bool {
+    pipeline_est_frais(conn, now_ts).unwrap_or(false)
 }
 
 // ====================================================================================================
@@ -225,7 +237,13 @@ pub(crate) async fn integrations(State(st): State<AppState>, Extension(au): Exte
                 if let Ok(_permit) = sem.try_acquire_owned() {
                     let db2 = db.clone();
                     if let Ok(nv) = tokio::task::spawn_blocking(move || compute_integrations(&db2)).await {
-                        integrations_map().lock().insert(ck, (Instant::now(), nv));
+                        // `P10.7-g` (lot 97) — un corps qui avoue n'est jamais mis en cache, et il chasse le périmé : servir
+                        // encore un panneau sain pendant que la base ne se lit plus serait le même mensonge.
+                        if nv.get("error").is_none() {
+                            integrations_map().lock().insert(ck, (Instant::now(), nv));
+                        } else {
+                            integrations_map().lock().remove(&ck);
+                        }
                     }
                 }
                 INTEGRATIONS_REFRESHING.store(false, Ordering::Release);
@@ -239,8 +257,10 @@ pub(crate) async fn integrations(State(st): State<AppState>, Extension(au): Exte
     let dbp = db_path.clone();
     let nv = tokio::task::spawn_blocking(move || compute_integrations(&dbp))
         .await
-        .unwrap_or_else(|_| json!({ "collectors": [], "hosts": [], "flotte": null }));
-    integrations_map().lock().insert(ckey, (Instant::now(), nv.clone()));
+        .unwrap_or_else(|_| json!({ "collectors": [], "hosts": [], "flotte": null, "error": crate::query_exec::LECTURE_NON_FAITE_TACHE_INTERROMPUE }));
+    if nv.get("error").is_none() {
+        integrations_map().lock().insert(ckey, (Instant::now(), nv.clone()));
+    }
     Json(nv)
 }
 
@@ -250,29 +270,38 @@ pub(crate) async fn integrations(State(st): State<AppState>, Extension(au): Exte
 /// rollup pré-agrégé `host_rollup` (v77, cf. rollup_hosts) : AUCUN scan de event∪metric∪snapshot.
 pub(crate) fn compute_integrations(db_path: &str) -> Value {
     let now_ts = now();
-    read_with_watchdog(db_path, json!({ "collectors": [], "hosts": [], "flotte": null }), move |conn| {
+    read_with_watchdog(db_path, json!({ "collectors": [], "hosts": [], "flotte": null, "error": crate::query_exec::LECTURE_NON_FAITE_SANS_CONNEXION }), move |conn| {
+        // `P10.7-g` (lot 97) — QUATRE LECTURES TYPÉES : la fraîcheur du pipeline, la dernière collecte de chaque
+        // sonde, la page d'hôtes et le verdict de flotte. « Je n'ai pas pu regarder » n'est plus servi comme
+        // « jamais vu » (statut `non_lu`, quatrième état, qui n'alerte pas et ne se confond avec aucun autre), ni
+        // comme « aucun hôte » ni comme « pas de verdict » sans cause : chaque lecture ratée est nommée dans
+        // `non_lus` et le corps porte `error`. Un corps qui avoue n'est jamais mis en cache (cf. `integrations`).
+        let mut non_lus: Vec<String> = Vec::new();
         // FIX #2 — capteurs ÉVÉNEMENTIELS : leur statut suit la SANTÉ DU PIPELINE global, pas leur propre
         // intervalle (sinon hôte calme = faux MUET permanent). Calculé une fois pour tous les collecteurs.
-        let pipe_fresh = pipeline_is_fresh(conn, now_ts);
+        let pipe_fresh = pipeline_est_frais(conn, now_ts);
+        if let Err(e) = &pipe_fresh {
+            non_lus.push(format!("pipeline : {e}"));
+        }
         let collectors: Vec<Value> = COLLECTORS
             .iter()
             .map(|(id, label, interval, sonde, event_based)| {
                 // SONDE TYPÉE (cf. bandeau `Sonde` de main.rs) : le SQL est DÉRIVÉ de ce que la sonde
                 // observe. Pour un capteur d'INSTANTANÉ, `ls` est la machine la PLUS EN RETARD du parc —
                 // une seule machine encore vivante ne peut plus faire passer tout le parc pour frais.
-                let ls: Option<i64> = sonde.derniere_collecte(conn);
                 // VERDICT PARTAGÉ avec l'alerte (`statut_capteur`) : ces deux surfaces ne peuvent plus
                 // dire deux choses différentes de la même observation. Seul le nombre de cycles
-                // tolérés diffère, et il est nommé.
-                let status = statut_capteur(
-                    ls,
-                    *interval,
-                    *event_based,
-                    pipe_fresh,
-                    CYCLES_TOLERES_AFFICHAGE,
-                    now_ts,
-                )
-                .label();
+                // tolérés diffère, et il est nommé. Sans lecture (pipeline ou sonde), aucun verdict n'est
+                // fabriqué : `non_lu`, et `last_seen` reste `null` parce qu'il n'a pas été lu.
+                let (ls, status) = match (&pipe_fresh, sonde.derniere_collecte(conn)) {
+                    (Ok(pf), Ok(ls)) => (ls, statut_capteur(ls, *interval, *event_based, *pf, CYCLES_TOLERES_AFFICHAGE, now_ts)),
+                    (Err(_), _) => (None, StatutCapteur::NonLu),
+                    (Ok(_), Err(e)) => {
+                        non_lus.push(format!("{id} : {e}"));
+                        (None, StatutCapteur::NonLu)
+                    }
+                };
+                let status = status.label();
                 // P3.2-a — LA PORTÉE EST RENDUE, PAS DEVINÉE. `status: "actif"` ne veut pas dire la même
                 // chose selon que la sonde juge la machine la plus EN RETARD ou la plus FRAÎCHE du parc,
                 // et cet écart n'était lisible que dans le SQL dérivé. Champ ADDITIF : dérivé du même
@@ -283,25 +312,34 @@ pub(crate) fn compute_integrations(db_path: &str) -> Value {
         // INVENTAIRE d'hôtes = host_rollup pré-agrégé (cf. rollup_hosts) : AUCUN scan de event∪metric∪snapshot.
         // `P11.20-l` — BORNÉ à la page de Flotte, coupe mesurée, total compté : la vue rattache la liste
         // à sa population et renvoie à la Flotte pour le reste, au lieu de peindre un parc entier.
-        let (hosts, hosts_truncated, hosts_total) = hotes_du_panneau_bornes(conn, BORNE_HOTES_DU_PANNEAU);
+        let (hosts, hosts_truncated, hosts_total) = match hotes_du_panneau_bornes(conn, BORNE_HOTES_DU_PANNEAU) {
+            Ok((h, coupee, total)) => (h, coupee, json!(total)),
+            Err(e) => {
+                non_lus.push(format!("hôtes : {e}"));
+                (Vec::new(), false, Value::Null)
+            }
+        };
         let hosts_served = hosts.len();
         // P3.2-a — LE VERDICT DE FLOTTE, en COMPTE et non en série par hôte (cf. `sonde_de_flotte.rs`).
         // C'est le seul chiffre de ce panneau qui parle des machines MUETTES ; les 21 sondes à portée
-        // « tous hôtes confondus » ci-dessus ne peuvent pas le dire, par construction. `None` (lecture
-        // impossible) rend `null` — jamais un zéro rassurant fabriqué à la place d'une observation.
+        // « tous hôtes confondus » ci-dessus ne peuvent pas le dire, par construction. Une lecture ratée
+        // rend `null` ET sa cause — jamais un zéro rassurant fabriqué à la place d'une observation.
         let flotte = match flotte_muette(conn, now_ts) {
             // `muets_declares_attendus` accompagne le compte : sans lui, la carte dirait « aucun muet »
             // là où des machines muettes ont simplement été déclarées telles, ce qui est une autre
             // phrase (`P11.10-a`).
-            Some(f) => json!({
+            Ok(f) => json!({
                 "attendus": f.attendus,
                 "muets": f.muets,
                 "muets_declares_attendus": f.muets_declares_attendus,
                 "seuil_s": FLEET_STALE_S,
             }),
-            None => Value::Null,
+            Err(e) => {
+                non_lus.push(format!("flotte : {e}"));
+                Value::Null
+            }
         };
-        json!({
+        let mut corps = json!({
             "collectors": collectors,
             "hosts": hosts,
             "hosts_window": BORNE_HOTES_DU_PANNEAU,
@@ -309,7 +347,12 @@ pub(crate) fn compute_integrations(db_path: &str) -> Value {
             "hosts_truncated": hosts_truncated,
             "hosts_total": hosts_total,
             "flotte": flotte,
-        })
+        });
+        if !non_lus.is_empty() {
+            corps["error"] = json!(format!("lectures NON FAITES : {} — « non_lu » n'est ni « jamais vu » ni « muet », et les listes vides sont des replis", non_lus.join(" ; ")));
+            corps["non_lus"] = json!(non_lus);
+        }
+        corps
     })
 }
 /// Fraîcheur PAR SOURCE (data-driven, pas la liste figée des collecteurs) : pour chaque feed —
@@ -778,9 +821,33 @@ pub(crate) fn check_heartbeats(db: &Arc<Mutex<Connection>>) -> crate::bilan_de_t
     // (un hôte sans login serait un faux MUET permanent) mais sur la SANTÉ DU PIPELINE global : tant que la
     // donnée la plus récente, toutes sources confondues, est fraîche, l'auth n'est PAS muette (silence
     // normal). Les capteurs CONTINUS gardent leur logique 5x-intervalle (vraies alertes muet préservées).
-    let pipe_fresh = pipeline_is_fresh(&conn, now_ts);
-    for (id, label, interval, sonde, event_based) in COLLECTORS.iter() {
-        let ls: Option<i64> = sonde.derniere_collecte(&conn);
+    // `P10.7-g` (lot 97) — UN TICK QUI N'A PAS PU LIRE NE LÈVE NI NE RÉSOUT RIEN, ET LE DIT. Une fraîcheur de
+    // pipeline non lue valait « pas frais » et rendait muets tous les capteurs événementiels ; une dernière
+    // collecte non lue valait « jamais vu » et RÉSOLVAIT l'épisode ouvert d'un capteur réellement mort. Ce qui
+    // n'a pas été lu est retiré du jugement et versé au bilan du tick (`Mesure::Illisible`, première cause).
+    let mut capteurs_non_lus: Vec<String> = Vec::new();
+    let mut cause_aveugle: Option<&'static str> = None;
+    let pipe_fresh = match pipeline_est_frais(&conn, now_ts) {
+        Ok(pf) => Some(pf),
+        Err(e) => {
+            cause_aveugle = Some(crate::bilan_de_tick::cause_sql(&e));
+            capteurs_non_lus.push(format!("pipeline : {e}"));
+            None
+        }
+    };
+    // Sans fraîcheur lue, AUCUN capteur n'est jugé (la liste jugée est vide) : l'abandon est déjà COMPTÉ ci-dessus
+    // et versé au bilan plus bas ; `false` n'est alors jamais lu.
+    let juges = if pipe_fresh.is_some() { &COLLECTORS[..] } else { &COLLECTORS[..0] };
+    let pipe_fresh = pipe_fresh.unwrap_or(false);
+    for (id, label, interval, sonde, event_based) in juges.iter() {
+        let ls: Option<i64> = match sonde.derniere_collecte(&conn) {
+            Ok(ls) => ls,
+            Err(e) => {
+                cause_aveugle = cause_aveugle.or(Some(crate::bilan_de_tick::cause_sql(&e)));
+                capteurs_non_lus.push(format!("{id} : {e}"));
+                continue;
+            }
+        };
         let dedup = format!("hb-{id}"); // clé STABLE -> une seule alerte par épisode (zéro répétition horaire)
         // MUET ? Le MÊME verdict que celui affiché par le panneau (cf. `statut_capteur`), à ceci près
         // qu'on réveille quelqu'un deux cycles plus tard. `Inconnu` (jamais rien vu) n'alerte JAMAIS :
@@ -850,6 +917,12 @@ pub(crate) fn check_heartbeats(db: &Arc<Mutex<Connection>>) -> crate::bilan_de_t
     // bilans sont ABSORBÉS plutôt que l'un rendu à la place de l'autre — sans quoi une famille
     // aveugle serait masquée par une famille lisible, et le tick passerait pour calme.
     let mut b = crate::bilan_de_tick::BilanDuPlanificateur::default();
+    if !capteurs_non_lus.is_empty() {
+        b.absorber(crate::mesure_environnement::Mesure::Illisible {
+            cause: cause_aveugle.unwrap_or(crate::mesure_environnement::CAUSE_SOURCE_ILLISIBLE),
+            detail: format!("capteurs : {} — ni levée ni résolution pour ce qui n'a pas été lu", capteurs_non_lus.join(" ; ")),
+        });
+    }
     b.absorber(verifier_flotte_muette(&conn, now_ts));
     b.absorber(crate::sonde_du_magasin_de_secrets::verifier_le_magasin_de_secrets(&conn, now_ts));
     b.bilan_de_tick()
@@ -868,15 +941,18 @@ pub(crate) fn check_heartbeats(db: &Arc<Mutex<Connection>>) -> crate::bilan_de_t
 /// `host_rollup` garde muette pour toujours, cette table n'étant jamais prunée — laisserait une alerte
 /// ouverte qui avalerait en silence la mort de toutes les suivantes.
 fn verifier_flotte_muette(conn: &Connection, now_ts: i64) -> crate::bilan_de_tick::BilanDeTick {
-    // `None` = la lecture a ÉCHOUÉ. On ne lève rien ET on ne résout rien : résoudre serait affirmer un
+    // `Err` = la lecture a ÉCHOUÉ. On ne lève rien ET on ne résout rien : résoudre serait affirmer un
     // parc sain qu'on n'a pas observé, ce qui est exactement le défaut que ce chantier ferme. Et on le
     // DIT (`P4.1-r`) : un dead-man's-switch qui ne sait plus lire le parc est lui-même un signal — sans
     // cet aveu, il s'éteignait en silence et la santé « détection » restait verte.
-    let Some(f) = flotte_muette(conn, now_ts) else {
-        return crate::mesure_environnement::Mesure::Illisible {
-            cause: crate::mesure_environnement::CAUSE_SOURCE_ILLISIBLE,
-            detail: "flotte muette : `host_rollup` illisible (ou une ligne indécodable) — le parc n'a pas été observé ce tick".to_string(),
-        };
+    let f = match flotte_muette(conn, now_ts) {
+        Ok(f) => f,
+        Err(e) => {
+            return crate::mesure_environnement::Mesure::Illisible {
+                cause: crate::bilan_de_tick::cause_sql(&e),
+                detail: format!("flotte muette : `host_rollup` illisible ou une ligne indécodable ({e}) — le parc n'a pas été observé ce tick"),
+            };
+        }
     };
     let ouverte = f.cle_dedup();
     // RÉSOLUTION de tout épisode de la famille qui n'est PAS l'ensemble courant. Couvre les deux cas

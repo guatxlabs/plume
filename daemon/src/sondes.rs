@@ -312,20 +312,16 @@ impl Sonde {
     /// l'oublier, ni en dériver une variante sans hôte. `None` = jamais rien vu (statut « inconnu »),
     /// exactement comme un `MAX(ts)` sur table vide auparavant.
     ///
-    /// DETTE DÉCLARÉE (antérieure à P3.7-a, NON traitée ici — la traiter change la surface d'alerte et
-    /// mérite sa propre mesure) : `.ok()` CONFOND « la table n'a rien » et « je n'ai pas pu regarder »
-    /// (erreur SQL, verrou, interruption watchdog). Les deux rendent `None` -> `StatutCapteur::Inconnu`
-    /// -> AUCUNE alerte. C'est exactement l'invariant que la campagne défend ailleurs : une surface qui
-    /// n'a pas pu observer ne doit pas se taire comme si elle avait observé le vide. Fermer ça demande
-    /// un troisième état porté jusqu'aux deux surfaces (`check_heartbeats` ET `compute_integrations`),
-    /// pas un `unwrap_or` de plus ici.
-    pub(crate) fn derniere_collecte(&self, conn: &Connection) -> Option<i64> {
+    /// `P10.7-g` (lot 97) — LA DETTE DÉCLARÉE ICI EST FERMÉE : `.ok()` confondait « la table n'a rien » et « je n'ai
+    /// pas pu regarder » (erreur SQL, verrou, interruption du garde de budget), et les deux rendaient `None`
+    /// -> `StatutCapteur::Inconnu` -> aucune alerte. La lecture est typée : `Ok(None)` = jamais rien vu,
+    /// `Err` = pas pu regarder, et les deux surfaces (`compute_integrations`, `check_heartbeats`) portent le
+    /// troisième état (`StatutCapteur::NonLu`, tick aveugle).
+    pub(crate) fn derniere_collecte(&self, conn: &Connection) -> Result<Option<i64>, rusqlite::Error> {
         let r = self.requete();
         conn.query_row(r.sql(), rusqlite::params_from_iter(r.binds().iter()), |row| {
             row.get::<_, Option<i64>>(0)
         })
-        .ok()
-        .flatten()
     }
 
     /// Les machines dont la dernière collecte est ANTÉRIEURE à `avant_ts`, la plus en retard d'abord.

@@ -121,16 +121,22 @@ pub(crate) fn alert_where(f: &FiltreAlertes, group_col: Option<&str>, group_val:
 /// cf. la note M6 du gestionnaire), et l'idiome précédent (`.flatten()`) rendait alors un PRÉFIXE
 /// indiscernable d'une page complète. Un appelant ne peut plus prendre la liste sans que la question
 /// « est-ce la réponse ? » lui soit posée par le TYPE.
-pub(crate) fn alerts_query_page(conn: &Connection, f: &FiltreAlertes, group_col: Option<&str>, group_val: &str, limit: i64, offset: i64, want_total: bool) -> (Vec<Value>, Option<i64>, FinDeParcours) {
+pub(crate) fn alerts_query_page(conn: &Connection, f: &FiltreAlertes, group_col: Option<&str>, group_val: &str, limit: i64, offset: i64, want_total: bool) -> (Vec<Value>, TotalDeListe, FinDeParcours) {
     // WHERE + binds partagés COUNT/SELECT (mêmes conditions, même ordre) — cf. alert_where (chemin unique).
     let (where_clause, bind_vals) = alert_where(f, group_col, group_val);
     let binds: Vec<&dyn rusqlite::ToSql> = bind_vals.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
     // total : COUNT sous le même WHERE (COUNT(*) FROM alert — le WHERE ne touche que `alert.*`, pas besoin du JOIN).
+    // `P10.7-g` (lot 96) — le COUNT est le PREMIER énoncé exécuté et le plus lourd de la route : interrompu par le
+    // budget, il rendait `None`, indiscernable d'un total non demandé, et la console lisait « reste indéterminable »
+    // sans jamais savoir POURQUOI. Le total est typé : compté, non demandé, ou non établi AVEC sa cause.
     let total = if want_total {
         let csql = format!("SELECT COUNT(*) FROM alert{where_clause}");
-        conn.query_row(&csql, binds.as_slice(), |r| r.get::<_, i64>(0)).ok()
+        match conn.query_row(&csql, binds.as_slice(), |r| r.get::<_, i64>(0)) {
+            Ok(n) => TotalDeListe::Compte(n),
+            Err(e) => TotalDeListe::NonEtabli(e.to_string()),
+        }
     } else {
-        None
+        TotalDeListe::NonDemande
     };
     // FIX #4 — LEFT JOIN rule pour exposer `window_s` (la fenêtre d'évaluation EXACTE de la règle) au
     // front, qui centre le drilldown dessus. alert.rule = 'rule.{id}' (cf run_due_rules) -> join sur
@@ -227,17 +233,54 @@ pub(crate) const CAUSE_LISTE_D_ALERTES_TRONQUEE: &str = "LISTE D'ALERTES INCOMPL
      compte pris dessus, ou l'absence d'une alerte qu'on y cherchait, ne portent sur RIEN. Combien de \
      lignes manquent n'est pas connu. Cause : ";
 
+/// `P10.7-g` (lot 96) — LE TOTAL D'UNE LISTE D'ALERTES EST LU, NON DEMANDÉ, OU NON ÉTABLI — jamais un `None` qui
+/// confondrait les deux derniers. `NonEtabli` porte la cause du moteur ; le corps la sert sous `total_error` avec
+/// `total: null`, et la console, qui ne tient un total que s'il est un nombre, lit déjà ce `null` comme
+/// « reste indéterminable » (`web/alerts.js`, `motDeLAcquittement`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TotalDeListe {
+    NonDemande,
+    Compte(i64),
+    NonEtabli(String),
+}
+
+impl TotalDeListe {
+    /// Pose le total sur un corps : un compte est un nombre, un compte non établi est `null` AVEC sa cause,
+    /// un total non demandé n'écrit rien (le corps reste byte-identique à celui d'avant cette clé).
+    fn poser_sur(self, corps: &mut Value) {
+        match self {
+            TotalDeListe::Compte(t) => corps["total"] = json!(t),
+            TotalDeListe::NonEtabli(cause) => {
+                corps["total"] = Value::Null;
+                corps["total_error"] = json!(format!("total NON ÉTABLI : {cause} — la page est servie, la population de la liste ne l'est pas"));
+            }
+            TotalDeListe::NonDemande => {}
+        }
+    }
+}
+
+/// Les témoins comparent le total à ce qu'ils attendent : un compte vaut `Some(n)`, un total non demandé vaut
+/// `None`, et un total NON ÉTABLI ne vaut RIEN — ni un chiffre, ni l'absence de demande.
+#[cfg(test)]
+impl PartialEq<Option<i64>> for TotalDeListe {
+    fn eq(&self, autre: &Option<i64>) -> bool {
+        match (self, autre) {
+            (TotalDeListe::Compte(a), Some(b)) => a == b,
+            (TotalDeListe::NonDemande, None) => true,
+            _ => false,
+        }
+    }
+}
+
 /// LE CORPS SERVI PAR /api/alerts — voie unique, pour que l'aveu ne puisse pas être oublié par un
 /// futur appelant qui recomposerait le corps à la main.
 ///
 /// L'AJOUT EST STRICTEMENT CONDITIONNEL : `FinDeParcours::cause()` est la SEULE porte, et elle rend
 /// `None` sur un parcours complet. Un corps qui avouerait toujours n'avouerait rien — c'est la raison
 /// pour laquelle la fin de parcours voyage jusqu'ici au lieu d'être résumée à la source.
-pub(crate) fn corps_de_liste_d_alertes(alertes: Vec<Value>, total: Option<i64>, fin: &FinDeParcours) -> Value {
+pub(crate) fn corps_de_liste_d_alertes(alertes: Vec<Value>, total: TotalDeListe, fin: &FinDeParcours) -> Value {
     let mut corps = json!({ "alerts": alertes });
-    if let Some(t) = total {
-        corps["total"] = json!(t);
-    }
+    total.poser_sur(&mut corps);
     if let Some(cause) = fin.cause() {
         corps["error"] = json!(format!("{CAUSE_LISTE_D_ALERTES_TRONQUEE}{cause}"));
     }
@@ -260,11 +303,9 @@ pub(crate) const CAUSE_LISTE_DE_GROUPES_TRONQUEE: &str = "LISTE DE GROUPES INCOM
 ///
 /// STRICTEMENT CONDITIONNEL : `FinDeParcours::cause()` est la SEULE porte. Sur un parcours complet
 /// elle rend `None` et le corps est BYTE-IDENTIQUE à celui d'avant cette clé.
-pub(crate) fn corps_de_liste_de_groupes(groupes: Vec<Value>, total: Option<i64>, group_col: &str, fin: &FinDeParcours) -> Value {
+pub(crate) fn corps_de_liste_de_groupes(groupes: Vec<Value>, total: TotalDeListe, group_col: &str, fin: &FinDeParcours) -> Value {
     let mut corps = json!({ "groups": groupes, "group": group_col });
-    if let Some(t) = total {
-        corps["total"] = json!(t);
-    }
+    total.poser_sur(&mut corps);
     if let Some(cause) = fin.cause() {
         corps["error"] = json!(format!("{CAUSE_LISTE_DE_GROUPES_TRONQUEE}{cause}"));
     }
@@ -348,7 +389,7 @@ pub(crate) async fn alerts(State(st): State<AppState>, Extension(au): Extension<
 /// indiscernable d'une page complète — et un triage mené dessus conclut « ce groupe n'existe pas »
 /// sur un groupe qui existe. Le `total`, lui, vient d'un COUNT DISTINCT séparé : il reste un FAIT
 /// quand il aboutit, et c'est lui qui rend l'écart lisible.
-pub(crate) fn alert_groups_query_page(conn: &Connection, group_col: &str, f: &FiltreAlertes, limit: i64, offset: i64) -> (Vec<Value>, Option<i64>, FinDeParcours) {
+pub(crate) fn alert_groups_query_page(conn: &Connection, group_col: &str, f: &FiltreAlertes, limit: i64, offset: i64) -> (Vec<Value>, TotalDeListe, FinDeParcours) {
     let (where_clause, bind_vals) = alert_where(f, None, "");
     let binds: Vec<&dyn rusqlite::ToSql> = bind_vals.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
     // Expression de clé (COALESCE pour host/dedup nullables -> round-trip du groupe '' avec les lignes NULL,
@@ -357,7 +398,11 @@ pub(crate) fn alert_groups_query_page(conn: &Connection, group_col: &str, f: &Fi
     let g2expr = alert_group_expr_for(group_col, "a2"); // même expr côté sous-requête corrélée
     // total = nombre de GROUPES distincts sous le même WHERE (borne le pager serveur).
     let csql = format!("SELECT COUNT(DISTINCT {gexpr}) FROM alert{where_clause}");
-    let total = conn.query_row(&csql, binds.as_slice(), |r| r.get::<_, i64>(0)).ok();
+    // `P10.7-g` (lot 96) — même contrat que la liste plate : un COUNT DISTINCT interrompu est NON ÉTABLI, nommé.
+    let total = match conn.query_row(&csql, binds.as_slice(), |r| r.get::<_, i64>(0)) {
+        Ok(n) => TotalDeListe::Compte(n),
+        Err(e) => TotalDeListe::NonEtabli(e.to_string()),
+    };
     // COHÉRENCE D'APERÇU — l'aperçu échantillon est RE-SCOPÉ au MÊME filtre (statut/mitre/uncased/source)
     // que le groupe. Sinon en scope « Actives » un groupe dont la plus récente TOUS statuts est 'closed'
     // affichait ce titre closed à côté d'un last_ts/n qui, eux, ne reflètent que le set filtré (incohérent).

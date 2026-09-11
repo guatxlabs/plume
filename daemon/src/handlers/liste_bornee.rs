@@ -208,6 +208,37 @@ pub(crate) fn poser_la_sous_liste(corps: &mut serde_json::Map<String, Value>, cl
     corps.insert(cle.to_string(), Value::Array(servies));
 }
 
+/// LA SŒUR DE `poser_la_sous_liste` QUI AVOUE UNE LECTURE RATÉE (`P10.7-g`). L'appelant lit sa sous-liste
+/// par un `Result` — `prepare(..).and_then(query_map).and_then(collect)` — au lieu d'un `.flatten()` qui
+/// coule une préparation ou une exécution ratée dans un vecteur VIDE, indiscernable d'un « aucune ligne,
+/// c'est établi ». Sur `Ok`, elle est IDENTIQUE à `poser_la_sous_liste` (coupe mesurée par la ligne
+/// excédentaire, `<cle>_served`/`<cle>_window`/`<cle>_truncated`). Sur `Err`, `<cle>` n'est PAS un `[]` :
+/// c'est un objet `{ "non_lu": true, "cause": … }`, et ses trois voisines deviennent `null` — jamais
+/// `0`/`false`, exactement comme `TotalBorne::Illisible` rend `(null, null)` plutôt qu'un zéro rassurant.
+/// La distinction « vide » vs « illisible » vit donc SUR la liste elle-même, pas seulement dans un champ
+/// d'erreur qu'un lecteur peut ne pas ouvrir. Rend `true` quand la lecture a échoué, pour que l'appelant
+/// nomme la liste dans son aveu global (`non_lus`) et n'ait jamais un compte qui contredit une ventilation.
+pub(crate) fn poser_la_sous_liste_ou_avouer<E>(
+    corps: &mut serde_json::Map<String, Value>,
+    cle: &str,
+    lues: Result<Vec<Value>, E>,
+    borne: usize,
+) -> bool {
+    match lues {
+        Ok(v) => {
+            poser_la_sous_liste(corps, cle, v, borne);
+            false
+        }
+        Err(_) => {
+            corps.insert(format!("{cle}_served"), Value::Null);
+            corps.insert(format!("{cle}_window"), json!(borne));
+            corps.insert(format!("{cle}_truncated"), Value::Null);
+            corps.insert(cle.to_string(), json!({ "non_lu": true, "cause": CAUSE_LISTE_ILLISIBLE }));
+            true
+        }
+    }
+}
+
 /// LA COUPE D'UN CORPS DE REQUÊTE COMPILÉE — la troisième porte (`P11.22-g`). Trois surfaces enveloppent
 /// une requête DÉJÀ compilée (`SELECT * FROM ({compilee}) LIMIT n`) et n'ont aucune table à donner au
 /// comptage borné ; ce qu'elles peuvent faire, c'est lire `n + 1` lignes et laisser la ligne excédentaire

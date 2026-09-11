@@ -821,7 +821,14 @@ env:
   # sous `stats.coverage` sur chaque voie de succès (`avec_couverture`) — parité rendue aux panneaux, que
   # `viz.js` lit déjà. Le témoin n'est derrière AUCUN `cfg(feature)` -> le MÊME +1 sur `EXPECTED_COLD_TESTS`,
   # écart INCHANGÉ, mesuré par le script du dépôt, jamais d'une addition.
-  EXPECTED_TESTS: "1677"
+  # `P10.7-g` addendum (2026-09-12) : +3 — `le_bundle_diagnostic_avoue_une_lecture_non_faite` (3 tests). Le
+  # bundle `/api/system/diag` typait `[]`/`0` sur une lecture ratée (trois listes en `.flatten()`, huit
+  # comptes en `unwrap_or(0)`) : une préparation/exécution ratée était servie comme un fait, et le compte des
+  # non-classés pouvait contredire sa ventilation. Désormais chaque liste est lue EN BLOC (`Result`) et posée
+  # par `poser_la_sous_liste_ou_avouer` (aveu `non_lu`), chaque compte rend `null`. Les trois témoins ne sont
+  # derrière AUCUN `cfg(feature)` -> le MÊME +3 sur `EXPECTED_COLD_TESTS`, écart INCHANGÉ, mesuré par le
+  # script du dépôt, jamais d'une addition.
+  EXPECTED_TESTS: "1680"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -1287,7 +1294,10 @@ jobs:
           # `P10.5-s` (2026-09-11) : +1, le MÊME que sur `EXPECTED_TESTS`
           # (`api_query_porte_l_aveu_d_horizon_metrique_par_avec_couverture`) — pas de `cfg(feature)`, écart
           # INCHANGÉ. La dérivation est écrite auprès d'`EXPECTED_TESTS`, une seule fois.
-          EXPECTED_COLD_TESTS: "1932"
+          # `P10.7-g` addendum (2026-09-12) : +3, le MÊME que sur `EXPECTED_TESTS`
+          # (`le_bundle_diagnostic_avoue_une_lecture_non_faite`, 3 tests) — pas de `cfg(feature)`, écart
+          # INCHANGÉ. La dérivation est écrite auprès d'`EXPECTED_TESTS`, une seule fois.
+          EXPECTED_COLD_TESTS: "1935"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail

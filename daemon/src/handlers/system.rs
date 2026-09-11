@@ -138,61 +138,78 @@ pub(crate) fn diag_bundle_json(conn: &Connection, spool: &str, db_path: &str, wa
         }
         cfgmap.insert((*k).to_string(), json!(cfg(&conf, k, "")));
     }
+    // `P10.7-g` — AUCUNE DES QUATRE LECTURES CI-DESSOUS NE COULE UN ÉCHEC DANS UN FAIT. Avant, les trois
+    // listes s'aplatissaient par `.flatten()` et les comptes repliaient sur `unwrap_or(0)` : une préparation
+    // ou une exécution ratée posait `[]` ou `0` — indiscernable d'un vrai vide, servi comme un fait dans un
+    // bundle de support. Désormais chaque liste est lue par un `Result` (collect en BLOC) et posée par la
+    // sœur `poser_la_sous_liste_ou_avouer`, qui avoue `non_lu` au lieu de `[]` ; chaque compte rend `null` +
+    // son nom sur une lecture ratée. Tout ce qui n'a pas été lu rejoint `non_lus`, que le corps porte ensuite.
+    let mut non_lus: Vec<&'static str> = Vec::new();
     // Events opérationnels self (NON-PII) : santé disque + changements de config audités (source plume-config/
     // plume-disk, jamais plume-auth/plume-operator-access qui portent username/src_ip). Derniers 30.
-    let mut recent: Vec<Value> = Vec::new();
-    if let Ok(mut s) = conn.prepare(
-        "SELECT ts, source, severity, message FROM event \
-         WHERE source IN ('plume-disk','plume-config') ORDER BY ts DESC LIMIT ?1",
-    ) {
-        if let Ok(rows) = s.query_map(params![aveu::borne_avec_ligne_excedentaire(DIAG_RECENT_EVENTS_WINDOW)], |r| {
-            Ok(json!({ "ts": r.get::<_, i64>(0)?, "source": r.get::<_, String>(1)?, "severity": r.get::<_, i64>(2)?, "message": r.get::<_, String>(3)? }))
-        }) {
-            recent = rows.flatten().collect();
-        }
-    }
+    let recent: rusqlite::Result<Vec<Value>> = conn
+        .prepare(
+            "SELECT ts, source, severity, message FROM event \
+             WHERE source IN ('plume-disk','plume-config') ORDER BY ts DESC LIMIT ?1",
+        )
+        .and_then(|mut s| {
+            s.query_map(params![aveu::borne_avec_ligne_excedentaire(DIAG_RECENT_EVENTS_WINDOW)], |r| {
+                Ok(json!({ "ts": r.get::<_, i64>(0)?, "source": r.get::<_, String>(1)?, "severity": r.get::<_, i64>(2)?, "message": r.get::<_, String>(3)? }))
+            })
+            .and_then(|it| it.collect())
+        });
     // Alertes heartbeat (capteur muet) ouvertes — signal d'angle mort, NON-PII (rule=heartbeat.<id>).
-    let mut heartbeats: Vec<Value> = Vec::new();
-    if let Ok(mut s) = conn.prepare(
-        "SELECT ts, rule, title FROM alert WHERE rule LIKE 'heartbeat.%' AND status IN ('new','ack') ORDER BY ts DESC LIMIT ?1",
-    ) {
-        if let Ok(rows) = s.query_map(params![aveu::borne_avec_ligne_excedentaire(DIAG_HEARTBEAT_ALERTS_WINDOW)], |r| {
-            Ok(json!({ "ts": r.get::<_, i64>(0)?, "rule": r.get::<_, String>(1)?, "title": r.get::<_, String>(2)? }))
-        }) {
-            heartbeats = rows.flatten().collect();
+    let heartbeats: rusqlite::Result<Vec<Value>> = conn
+        .prepare(
+            "SELECT ts, rule, title FROM alert WHERE rule LIKE 'heartbeat.%' AND status IN ('new','ack') ORDER BY ts DESC LIMIT ?1",
+        )
+        .and_then(|mut s| {
+            s.query_map(params![aveu::borne_avec_ligne_excedentaire(DIAG_HEARTBEAT_ALERTS_WINDOW)], |r| {
+                Ok(json!({ "ts": r.get::<_, i64>(0)?, "rule": r.get::<_, String>(1)?, "title": r.get::<_, String>(2)? }))
+            })
+            .and_then(|it| it.collect())
+        });
+    // Comptes AGRÉGÉS (des NOMBRES, jamais des lignes) — donnent l'échelle sans exposer de contenu. Un compte
+    // qui n'aboutit pas est `null` (jamais 0) et son nom rejoint `non_lus` : un zéro rassurant n'est pas servi.
+    let mut compte = |nom: &'static str, sql: &str| -> Value {
+        match conn.query_row(sql, [], |r| r.get::<_, i64>(0)) {
+            Ok(n) => json!(n),
+            Err(_) => {
+                non_lus.push(nom);
+                Value::Null
+            }
         }
-    }
-    // Comptes AGRÉGÉS (des NOMBRES, jamais des lignes) — donnent l'échelle sans exposer de contenu.
-    let count = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).unwrap_or(0) };
+    };
     let counts = json!({
-        "rules_enabled": count("SELECT COUNT(*) FROM rule WHERE enabled=1"),
-        "rules_total": count("SELECT COUNT(*) FROM rule"),
-        "dashboards": count("SELECT COUNT(*) FROM dashboard"),
-        "users": count("SELECT COUNT(*) FROM user"),
-        "alerts_open": count("SELECT COUNT(*) FROM alert WHERE status='new'"),
-        "destinations": count("SELECT COUNT(*) FROM destination"),
-        "connectors": count("SELECT COUNT(*) FROM connector"),
+        "rules_enabled": compte("rules_enabled", "SELECT COUNT(*) FROM rule WHERE enabled=1"),
+        "rules_total": compte("rules_total", "SELECT COUNT(*) FROM rule"),
+        "dashboards": compte("dashboards", "SELECT COUNT(*) FROM dashboard"),
+        "users": compte("users", "SELECT COUNT(*) FROM user"),
+        "alerts_open": compte("alerts_open", "SELECT COUNT(*) FROM alert WHERE status='new'"),
+        "destinations": compte("destinations", "SELECT COUNT(*) FROM destination"),
+        "connectors": compte("connectors", "SELECT COUNT(*) FROM connector"),
         // TAXONOMIE — CE QUE PLUME N'A PAS CLASSÉ, MESURÉ SUR LES DONNÉES ET NON SUR UN COMPTEUR DE
         // PROCESSUS. Une ligne à `category` vide est invisible à TOUTE règle `category=…` (l'axe de
         // composition des détections, docs/CIM.md §2) et le produit n'en disait rien : ni refus, ni
         // repli, ni journal (mesuré le 2026-08-02 : 4 événements à catégorie vide -> 4 stockés, 0
         // ligne). Le compte est fait EN SQL, donc il survit aux redémarrages et décrit l'état RÉEL de
-        // la base — un compteur en mémoire n'aurait mesuré que la vie du process courant.
-        "events_without_category": count("SELECT COUNT(*) FROM event WHERE category IS NULL OR category=''"),
+        // la base — un compteur en mémoire n'aurait mesuré que la vie du process courant. Un COUNT raté
+        // rend désormais `null` (et non 0), ce qui le rend SOLIDAIRE de sa ventilation ci-dessous.
+        "events_without_category": compte("events_without_category", "SELECT COUNT(*) FROM event WHERE category IS NULL OR category=''"),
     });
     // Quel ÉMETTEUR n'a pas classé. Sans cette ventilation, le compte ci-dessus dit qu'il y a un trou
     // sans dire où le boucher. Borné à 20 sources (des NOMBRES et des noms de source, jamais de ligne).
-    let mut unclassified: Vec<Value> = Vec::new();
-    if let Ok(mut s) = conn.prepare(
-        "SELECT source, COUNT(*) n FROM event WHERE category IS NULL OR category='' \
-         GROUP BY source ORDER BY n DESC LIMIT ?1",
-    ) {
-        if let Ok(rows) = s.query_map(params![aveu::borne_avec_ligne_excedentaire(DIAG_UNCLASSIFIED_SOURCES_WINDOW)], |r| {
-            Ok(json!({ "source": r.get::<_, String>(0)?, "events": r.get::<_, i64>(1)? }))
-        }) {
-            unclassified = rows.flatten().collect();
-        }
-    }
+    let unclassified: rusqlite::Result<Vec<Value>> = conn
+        .prepare(
+            "SELECT source, COUNT(*) n FROM event WHERE category IS NULL OR category='' \
+             GROUP BY source ORDER BY n DESC LIMIT ?1",
+        )
+        .and_then(|mut s| {
+            s.query_map(params![aveu::borne_avec_ligne_excedentaire(DIAG_UNCLASSIFIED_SOURCES_WINDOW)], |r| {
+                Ok(json!({ "source": r.get::<_, String>(0)?, "events": r.get::<_, i64>(1)? }))
+            })
+            .and_then(|it| it.collect())
+        });
     let mut paquet = json!({
         "generated_at": now(),
         "kind": "plume-diagnostic-bundle",
@@ -206,11 +223,34 @@ pub(crate) fn diag_bundle_json(conn: &Connection, spool: &str, db_path: &str, wa
         "counts": counts,
         "unclassified_by_source": [],
     });
-    // `P11.22-g` — les trois listes sont posées par la seconde porte du fabricant, chacune avec sa coupe mesurée.
+    // `P11.22-g` (coupe) + `P10.7-g` (lecture) — chaque sous-liste est posée par la sœur du fabricant, avec
+    // sa coupe MESURÉE par la ligne excédentaire ET, si sa lecture a échoué, son aveu `non_lu` au lieu d'un
+    // `[]` établi. LA CONTRADICTION EST FERMÉE PAR CONSTRUCTION : `events_without_category` (un compte) rend
+    // `null` quand il n'est pas lu, et `unclassified_by_source` (sa ventilation) rend un objet `non_lu` quand
+    // elle ne l'est pas — jamais respectivement un nombre et un `[]`. Aucun corps ne peut donc afficher
+    // « N non classés » à côté de « aucune source n'en a » comme deux faits établis : soit les deux sont lus
+    // et cohérents (même prédicat sur `event`), soit celui qui a échoué s'annonce non lu.
     if let Some(obj) = paquet.as_object_mut() {
-        aveu::poser_la_sous_liste(obj, "recent_events", recent, DIAG_RECENT_EVENTS_WINDOW as usize);
-        aveu::poser_la_sous_liste(obj, "heartbeat_alerts", heartbeats, DIAG_HEARTBEAT_ALERTS_WINDOW as usize);
-        aveu::poser_la_sous_liste(obj, "unclassified_by_source", unclassified, DIAG_UNCLASSIFIED_SOURCES_WINDOW as usize);
+        if aveu::poser_la_sous_liste_ou_avouer(obj, "recent_events", recent, DIAG_RECENT_EVENTS_WINDOW as usize) {
+            non_lus.push("recent_events");
+        }
+        if aveu::poser_la_sous_liste_ou_avouer(obj, "heartbeat_alerts", heartbeats, DIAG_HEARTBEAT_ALERTS_WINDOW as usize) {
+            non_lus.push("heartbeat_alerts");
+        }
+        if aveu::poser_la_sous_liste_ou_avouer(obj, "unclassified_by_source", unclassified, DIAG_UNCLASSIFIED_SOURCES_WINDOW as usize) {
+            non_lus.push("unclassified_by_source");
+        }
+        if !non_lus.is_empty() {
+            obj.insert(
+                "error".into(),
+                json!(format!(
+                    "bundle PARTIELLEMENT NON LU : {} — les comptes manquants sont `null`, les listes non lues \
+                     portent `non_lu:true` ; aucun n'est une mesure établie",
+                    non_lus.join(", ")
+                )),
+            );
+            obj.insert("non_lus".into(), json!(non_lus));
+        }
     }
     paquet
 }

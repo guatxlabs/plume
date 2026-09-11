@@ -139,7 +139,7 @@ pub(crate) fn sla_multilevel_tick(db: &Arc<Mutex<Connection>>) {
         if has_policy == 0 {
             return;
         }
-        let ack_b: Vec<(i64, String, i64)> = conn
+        let ack_b: Vec<(i64, String, i64)> = match conn
             .prepare(
                 "SELECT id,COALESCE(title,''),priority FROM incident \
                  WHERE ack_due IS NOT NULL AND ack_breached=0 AND first_response_ts IS NULL \
@@ -147,9 +147,13 @@ pub(crate) fn sla_multilevel_tick(db: &Arc<Mutex<Connection>>) {
                    AND status NOT IN ('resolved','closed','contained') AND ?1 > ack_due \
                  ORDER BY ack_due LIMIT 20",
             )
-            .and_then(|mut s| s.query_map(params![now_i], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map(|x| x.flatten().collect()))
-            .unwrap_or_default();
-        let res_b: Vec<(i64, String, i64)> = conn
+            .and_then(|mut s| s.query_map(params![now_i], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<rusqlite::Result<Vec<_>>>())
+        {
+            Ok(v) => v,
+            // `P10.7-f` (lot 106) — lue EN BLOC : une ligne en erreur ne raccourcit plus la liste en silence.
+            Err(e) => { crate::metrics::compter_un_tick_aveugle("sla_multilevel", &e.to_string()); return; }
+        };
+        let res_b: Vec<(i64, String, i64)> = match conn
             .prepare(
                 "SELECT id,COALESCE(title,''),priority FROM incident \
                  WHERE resolve_due IS NOT NULL AND resolve_breached=0 \
@@ -157,15 +161,22 @@ pub(crate) fn sla_multilevel_tick(db: &Arc<Mutex<Connection>>) {
                    AND status NOT IN ('resolved','closed','contained') AND ?1 > resolve_due \
                  ORDER BY resolve_due LIMIT 20",
             )
-            .and_then(|mut s| s.query_map(params![now_i], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map(|x| x.flatten().collect()))
-            .unwrap_or_default();
+            .and_then(|mut s| s.query_map(params![now_i], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<rusqlite::Result<Vec<_>>>())
+        {
+            Ok(v) => v,
+            // `P10.7-f` (lot 106) — lue EN BLOC : une ligne en erreur ne raccourcit plus la liste en silence.
+            Err(e) => { crate::metrics::compter_un_tick_aveugle("sla_multilevel", &e.to_string()); return; }
+        };
         if ack_b.is_empty() && res_b.is_empty() {
             return;
         }
-        let notifiers: Vec<(String, String, i64, String)> = conn
+        let notifiers: Vec<(String, String, i64, String)> = match conn
             .prepare("SELECT kind,url,min_severity,config FROM notifier WHERE enabled=1")
-            .and_then(|mut s| s.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).map(|x| x.flatten().collect()))
-            .unwrap_or_default();
+            .and_then(|mut s| s.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?.collect::<rusqlite::Result<Vec<_>>>())
+        {
+            Ok(v) => v,
+            Err(e) => { crate::metrics::compter_un_tick_aveugle("sla_multilevel", &e.to_string()); return; }
+        };
         (ack_b, res_b, notifiers)
     };
     let fire = |db: &Arc<Mutex<Connection>>, id: i64, title: &str, priority: i64, col: &str, kind: &str, what: &str| {

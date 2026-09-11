@@ -398,12 +398,13 @@ pub(crate) fn engagement_new_id() -> Option<String> {
 /// survivent jamais à la fenêtre) et AUDITE la clôture (double-write ledger + event plume-engagement
 /// non-purgeable, fail-closed transactionnel PAR engagement). Renvoie le nb d'engagements expirés.
 pub(crate) fn expire_due_engagements_conn(conn: &Connection, now_i: i64) -> usize {
-    let due: Vec<(String, String)> = match conn.prepare(
-        "SELECT id, COALESCE(name,'') FROM engagement WHERE status='active' AND window_end < ?1 ORDER BY window_end LIMIT 50",
-    ) {
-        Ok(mut s) => s.query_map(params![now_i], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
-            .map(|m| m.flatten().collect()).unwrap_or_default(),
-        Err(_) => return 0,
+    let due: Vec<(String, String)> = match conn
+        .prepare("SELECT id, COALESCE(name,'') FROM engagement WHERE status='active' AND window_end < ?1 ORDER BY window_end LIMIT 50")
+        .and_then(|mut s| s.query_map(params![now_i], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>())
+    {
+        Ok(v) => v,
+        // `P10.7-f` (lot 106) — lue EN BLOC : une ligne en erreur ne raccourcit plus la liste en silence.
+        Err(e) => { crate::metrics::compter_un_tick_aveugle("engagement_expire_active", &e.to_string()); return 0; }
     };
     let mut n = 0usize;
     for (id, name) in &due {
@@ -439,12 +440,13 @@ pub(crate) fn expire_due_engagements_conn(conn: &Connection, now_i: i64) -> usiz
 /// Fail-closed transactionnel PAR engagement (comme expire_due_engagements_conn).
 pub(crate) fn activate_due_engagements_conn(conn: &Connection, now_i: i64) -> (usize, usize) {
     // (1) scheduled -> active : la fenêtre planifiée s'ouvre.
-    let to_activate: Vec<(String, String)> = match conn.prepare(
-        "SELECT id, COALESCE(name,'') FROM engagement WHERE status='scheduled' AND window_start <= ?1 AND window_end > ?1 ORDER BY window_start LIMIT 50",
-    ) {
-        Ok(mut s) => s.query_map(params![now_i], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
-            .map(|m| m.flatten().collect()).unwrap_or_default(),
-        Err(_) => Vec::new(),
+    let to_activate: Vec<(String, String)> = match conn
+        .prepare("SELECT id, COALESCE(name,'') FROM engagement WHERE status='scheduled' AND window_start <= ?1 AND window_end > ?1 ORDER BY window_start LIMIT 50")
+        .and_then(|mut s| s.query_map(params![now_i], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>())
+    {
+        Ok(v) => v,
+        // `P10.7-f` (lot 106) — lue EN BLOC ; refusée, ce balayage ne fait rien ce tour-ci et le dit.
+        Err(e) => { crate::metrics::compter_un_tick_aveugle("engagement_activate", &e.to_string()); Vec::new() }
     };
     let mut activated = 0usize;
     for (id, name) in &to_activate {
@@ -466,12 +468,12 @@ pub(crate) fn activate_due_engagements_conn(conn: &Connection, now_i: i64) -> (u
         }
     }
     // (2) scheduled -> expired : fenêtre écoulée SANS activation (mêmes effets que l'expiry d'un actif).
-    let stale: Vec<(String, String)> = match conn.prepare(
-        "SELECT id, COALESCE(name,'') FROM engagement WHERE status='scheduled' AND window_end < ?1 ORDER BY window_end LIMIT 50",
-    ) {
-        Ok(mut s) => s.query_map(params![now_i], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
-            .map(|m| m.flatten().collect()).unwrap_or_default(),
-        Err(_) => Vec::new(),
+    let stale: Vec<(String, String)> = match conn
+        .prepare("SELECT id, COALESCE(name,'') FROM engagement WHERE status='scheduled' AND window_end < ?1 ORDER BY window_end LIMIT 50")
+        .and_then(|mut s| s.query_map(params![now_i], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>())
+    {
+        Ok(v) => v,
+        Err(e) => { crate::metrics::compter_un_tick_aveugle("engagement_expire_scheduled", &e.to_string()); Vec::new() }
     };
     let mut expired = 0usize;
     for (id, name) in &stale {

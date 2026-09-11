@@ -66,6 +66,29 @@ pub(crate) fn compter_un_evenement_sans_adresse_source(source: &str) {
 pub(crate) fn sans_adresse_source_de(source: &str) -> Option<u64> {
     SOURCES_SANS_ADRESSE.lock().ok().and_then(|m| m.get(source).copied())
 }
+/// `P10.7-f` (lot 106) — UN BALAYAGE DE FOND QUI N'A PAS PU LIRE SA LISTE DE TRAVAIL LE DIT, PAR BALAYAGE.
+/// Les balayages périodiques (échéances de SLA, escalade des cases en retard, cycle de vie des engagements)
+/// lisaient leur liste par `query_map(..).flatten()` : une ligne en erreur — et « no such table » rendu au
+/// PREMIER pas sur une connexion au cache de schéma périmé en est une, comme une interruption de budget —
+/// disparaissait, et le balayage travaillait sur une liste PLUS COURTE, indiscernable d'une liste complète.
+/// La liste est désormais lue EN BLOC ou refusée en bloc : sur une lecture ratée le balayage ne fait RIEN
+/// ce tour-ci (le tour suivant relit), et le refus est compté ici, par balayage, avec la dernière cause.
+/// Cardinalité fermée : les noms sont des littéraux du code. Depuis le démarrage, jamais persisté.
+pub(crate) static TICKS_AVEUGLES_TOTAL: AtomicU64 = AtomicU64::new(0);
+pub(crate) static TICKS_AVEUGLES: std::sync::Mutex<std::collections::BTreeMap<String, (u64, String)>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+pub(crate) fn compter_un_tick_aveugle(balayage: &'static str, cause: &str) {
+    TICKS_AVEUGLES_TOTAL.fetch_add(1, Ordering::Relaxed);
+    eprintln!("[plume] balayage de fond AVEUGLE ({balayage}) : liste de travail NON LUE, aucun geste ce tour-ci : {cause}");
+    if let Ok(mut m) = TICKS_AVEUGLES.lock() {
+        let e = m.entry(balayage.to_string()).or_insert((0, String::new()));
+        e.0 += 1;
+        e.1 = cause.to_string();
+    }
+}
+/// Le compte et la dernière cause d'un balayage (`None` = jamais aveugle depuis le démarrage).
+pub(crate) fn tick_aveugle_de(balayage: &str) -> Option<(u64, String)> {
+    TICKS_AVEUGLES.lock().ok().and_then(|m| m.get(balayage).cloned())
+}
 /// `P3.10-a` — LIGNES D'EN-TÊTE D'UN EXPORT CSV rencontrées par une étape `csv` d'un parseur déclaratif : reconnues
 /// (cellules == colonnes déclarées), laissées SANS capture, et comptées ici. Un exploitant qui voit ce compte
 /// monter à chaque envoi sait que son export inclut l'en-tête et que la ligne est stockée telle quelle, non enrichie.
@@ -620,6 +643,15 @@ pub(crate) fn gather_json(conn: &Connection, spool: &str, db_path: &str, schema_
     scheduler.insert("rule_last_tick".into(), json!(SCHED_RULE_LAST_TS.load(Ordering::Relaxed)));
     scheduler.insert("rollup_ticks_total".into(), json!(SCHED_ROLLUP_TICKS.load(Ordering::Relaxed)));
     scheduler.insert("rollup_last_tick".into(), json!(SCHED_ROLLUP_LAST_TS.load(Ordering::Relaxed)));
+    // `P10.7-f` (lot 106) — les balayages de fond qui n'ont pas pu lire leur liste de travail, par balayage.
+    scheduler.insert("ticks_aveugles_total".into(), json!(TICKS_AVEUGLES_TOTAL.load(Ordering::Relaxed)));
+    scheduler.insert(
+        "ticks_aveugles".into(),
+        json!(TICKS_AVEUGLES
+            .lock()
+            .map(|m| m.iter().map(|(k, (n, c))| (k.clone(), json!({ "n": n, "derniere_cause": c }))).collect::<serde_json::Map<String, Value>>())
+            .unwrap_or_default()),
+    );
     // P10.7-x — LA TABLE PARCOURUE EST DÉRIVÉE DU REGISTRE (`boucles_publiees`), plus une liste écrite :
     // une passe qui publie est servie le jour où elle publie. Clés BRUTES ici ; c'est l'exposition
     // Prometheus qui les réduit à son alphabet.
@@ -722,6 +754,7 @@ pub(crate) fn gather_prom(conn: &Connection, spool: &str, db_path: &str, schema_
     o.push_str(&format!("plume_search_latency_ms{{quantile=\"0.95\"}} {p95}\n"));
     g(&mut o, "plume_scheduler_rule_ticks_total", "counter", "Ticks du scheduler de règles", "/scheduler/rule_ticks_total");
     g(&mut o, "plume_scheduler_rollup_ticks_total", "counter", "Ticks de la boucle de rollup", "/scheduler/rollup_ticks_total");
+    g(&mut o, "plume_scheduler_ticks_aveugles_total", "counter", "Balayages de fond qui n'ont pas pu lire leur liste de travail et n'ont rien fait ce tour-ci (P10.7-f ; ventilation par balayage avec la dernière cause dans /api/metrics scheduler.ticks_aveugles)", "/scheduler/ticks_aveugles_total");
     // P4.1-r — PAR BOUCLE DE FOND : les abandons du dernier tick (jauge, ABSENTE tant que la boucle n'a
     // pas tické, ou quand le tick a été AVEUGLE) et la lisibilité du bilan à côté, comme pour toute
     // mesure de `S32`. `g()` n'imprime que ce qu'il trouve : l'absence EST le message, la jauge

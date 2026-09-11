@@ -280,8 +280,10 @@ pub(crate) fn attach_runbook(conn: &Connection, id: i64, runbook_id: i64, author
     }
     let steps: Vec<(i64, i64, String, String, String, String, Option<String>, Option<String>)> = conn
         .prepare("SELECT id,ordinal,phase,title,guidance,step_kind,search_soql,action_kind FROM runbook_step WHERE runbook_id=?1 ORDER BY ordinal,id")
-        .and_then(|mut s| s.query_map(params![runbook_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?))).map(|x| x.flatten().collect()))
-        .unwrap_or_default();
+        .and_then(|mut s| s.query_map(params![runbook_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?)))?.collect::<rusqlite::Result<Vec<_>>>())
+        // `P10.7-f` (lot 106) — les étapes se lisent EN BLOC : une liste tronquée par une ligne en erreur
+        // attacherait un runbook AMPUTÉ en l'annonçant complet. La lecture ratée est un refus nommé.
+        .map_err(|e| format!("étapes du runbook NON LUES : {e}"))?;
     if steps.is_empty() {
         return Err("runbook sans étape".into());
     }

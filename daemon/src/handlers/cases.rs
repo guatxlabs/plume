@@ -411,19 +411,22 @@ pub(crate) fn escalate_overdue_cases(db: &Arc<Mutex<Connection>>) {
              WHERE sla_due IS NOT NULL AND escalated=0 \
                AND status NOT IN ('resolved','closed','contained') AND ?1 > sla_due \
              ORDER BY sla_due LIMIT 20",
-        ) {
-            Ok(mut s) => s
-                .query_map(params![now_i], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
-                .map(|x| x.flatten().collect())
-                .unwrap_or_default(),
-            Err(_) => return,
+        )
+        .and_then(|mut s| s.query_map(params![now_i], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?.collect::<rusqlite::Result<Vec<_>>>())
+        {
+            Ok(v) => v,
+            // `P10.7-f` (lot 106) — lue EN BLOC : une ligne en erreur ne raccourcit plus la liste en silence.
+            Err(e) => { crate::metrics::compter_un_tick_aveugle("escalate_overdue", &e.to_string()); return; }
         };
         if cases.is_empty() {
             return;
         }
-        let notifiers: Vec<(String, String, i64, String)> = match conn.prepare("SELECT kind,url,min_severity,config FROM notifier WHERE enabled=1") {
-            Ok(mut s) => s.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).map(|x| x.flatten().collect()).unwrap_or_default(),
-            Err(_) => Vec::new(),
+        let notifiers: Vec<(String, String, i64, String)> = match conn
+            .prepare("SELECT kind,url,min_severity,config FROM notifier WHERE enabled=1")
+            .and_then(|mut s| s.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?.collect::<rusqlite::Result<Vec<_>>>())
+        {
+            Ok(v) => v,
+            Err(e) => { crate::metrics::compter_un_tick_aveugle("escalate_overdue", &e.to_string()); return; }
         };
         (cases, notifiers)
     };

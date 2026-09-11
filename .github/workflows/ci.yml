@@ -810,7 +810,13 @@ env:
   # répertoire absent redevenu illisible, verdict non déclassé, détail écrasé au lieu d'ajouté, simulation
   # qui déplace, aveu qui redit « quarantaine » dans les trois cas — chacune rougit son témoin et LUI SEUL.
   # Le MÊME +5 sur `EXPECTED_COLD_TESTS`, écart **245** INCHANGÉ, mesuré par le script du dépôt.
-  EXPECTED_TESTS: "1675"
+  # `P10.5-e` tranche 3 (2026-09-11) : +1 — `serie_timechart_seau_automatique_parite_et_declin`. Un `timechart`
+  # SANS `span=` est désormais routé quand le seau AUTOMATIQUE dérivé de la fenêtre `(from,to)` tombe sur un
+  # multiple EXACT de 3600 (`timechart_auto_span`, copie verbatim de la formule du cœur `compile_timechart`) —
+  # parité SEAU PAR SEAU contre le scan brut (mêmes from/to des deux côtés), déclin sinon. Le témoin n'est
+  # derrière AUCUN `cfg(feature)` -> le MÊME +1 sur `EXPECTED_COLD_TESTS`, écart INCHANGÉ, mesuré par
+  # `.github/scripts/compter-les-tests.sh`, jamais d'une addition.
+  EXPECTED_TESTS: "1676"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -1269,7 +1275,11 @@ jobs:
           # `P11.20-n` et `P11.20-h` (2026-09-03) : +14, les MÊMES quatorze que sur `EXPECTED_TESTS` —
           # aucun derrière un `cfg(feature)`, et c'est l'ÉCART INCHANGÉ entre les deux profils (245 avant
           # comme après) qui l'établit. La dérivation est écrite auprès d'`EXPECTED_TESTS`, une seule fois.
-          EXPECTED_COLD_TESTS: "1930"
+          # `P10.5-e` tranche 3 (2026-09-11) : +1, le MÊME que sur `EXPECTED_TESTS`
+          # (`serie_timechart_seau_automatique_parite_et_declin`) — il n'est derrière AUCUN `cfg(feature)`, et
+          # c'est l'ÉCART INCHANGÉ entre les deux profils qui l'établit. La dérivation est écrite auprès
+          # d'`EXPECTED_TESTS`, une seule fois.
+          EXPECTED_COLD_TESTS: "1931"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail

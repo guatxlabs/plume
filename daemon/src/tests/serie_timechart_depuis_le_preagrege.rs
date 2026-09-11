@@ -124,7 +124,6 @@ fn serie_timechart_decline_hors_perimetre_routable() {
         "search | timechart span=1h sum(bytes) by source",  // agrégat≠count même ventilé
         "search | timechart span=1h count | head 5",        // étape en aval
         "search | timechart span=1h count by source | sort bucket",
-        "search | timechart count",                         // sans span -> bucket auto, non aligné au grain
         "search | timechart span=15m count by source",      // span sous-horaire même ventilé
         "metric plume_x | timechart span=1h avg(value)",     // base metric, pas search
     ] {
@@ -216,4 +215,55 @@ fn serie_timechart_cold_partition_disjointe_a_la_frontiere() {
     assert!(frag_cold.contains(&format!("bucket < {boundary}")), "cold_rollup borné SOUS B : {frag_cold}");
     assert!(!frag_cold.contains(&format!("bucket >= {boundary}")), "cold_rollup ne lit JAMAIS au-dessus de B : {frag_cold}");
     assert!(!rr.cap.plafonne(), "ROUTE C froide : Cap::Aucun (exact en somme)");
+}
+
+/// (8) TRANCHE 3 — SEAU AUTOMATIQUE : un `timechart count` SANS `span=` est RECONNU (là où la TRANCHE 1 le
+/// déclinait) ; le cœur dérive le seau de la fenêtre `(from,to)`. La route ne le sert QUE si ce seau auto tombe
+/// sur un multiple EXACT de 3600 ; sinon elle DÉCLINE (le cœur sert alors le grain fin par scan raw). Quand elle
+/// sert, la série est IDENTIQUE seau-par-seau au scan brut : le cœur et la route dérivent le MÊME span des MÊMES
+/// `from`/`to` (`body.i64_field` du handler -> les deux). `timechart_auto_span` est une COPIE VERBATIM de la
+/// formule du cœur ; cette parité la garde — un span dérivé faux décalerait les seaux (parité rouge) ou
+/// déclinerait à tort (`.expect` rouge). Bornes de routabilité éprouvées aux deux sens sans toucher la DB.
+#[test]
+fn serie_timechart_seau_automatique_parite_et_declin() {
+    let _g = VERROU_ENV_PROCESSUS.write();
+    std::env::remove_var("PLUME_ROLLUP_MULTIDIM");
+    let conn = test_db();
+    let n = now();
+    let cur = tc_cur();
+
+    // Le parseur RECONNAÎT désormais la forme sans span (seau AUTO) — TRANCHE 1 la déclinait au parse.
+    assert!(parse_timechart_shape("search | timechart count").is_some(), "no-span reconnu (seau auto)");
+    assert!(parse_timechart_shape("search source=web | timechart count").is_some(), "no-span + filtre reconnu");
+
+    // La FORMULE du cœur, reproduite (~120 seaux, arrondi à l'échelle fixe), éprouvée AUX DEUX SENS de la borne
+    // de routabilité (multiple de 3600) — pur calcul de fenêtre, sans DB.
+    assert_eq!(timechart_auto_span(n - 259200, n), Some(3600), "72 h -> seau auto 3600 (routable)");
+    assert_eq!(timechart_auto_span(n - 600000, n), Some(7200), "~166 h -> seau auto 7200 (routable, non hardcodé)");
+    assert_eq!(timechart_auto_span(n - 150000, n), None, "~41 h -> seau auto 1800 (sous-horaire -> décline)");
+    assert_eq!(timechart_auto_span(0, 0), None, "fenêtre non bornée -> seau auto 900 (sous-horaire -> décline)");
+
+    // PARITÉ quand le seau auto est horaire : heures définitives (corps rollup) + heure courante (queue raw).
+    b2adv_seed_at(&conn, cur - 5 * 3600, 3, "h5");
+    b2adv_seed_at(&conn, cur - 3 * 3600, 4, "h3");
+    b2adv_seed_at(&conn, n - 10, 2, "cur");
+    rollup_events(&conn);
+    let soql = "search | timechart count";
+    for (from, span_attendu) in [(n - 259200, 3600i64), (n - 600000, 7200)] {
+        let rr = try_rollup_route_at(soql, from, n, None, n, RollupCoverage::of(&conn), DimRollupCoverage::of(&conn))
+            .unwrap_or_else(|| panic!("no-span à seau auto horaire ({span_attendu}) DOIT router : fenêtre {from}..{n}"));
+        assert!(rr.sql.contains("FROM event_rollup"), "corps servi depuis le pré-agrégé : {}", rr.sql);
+        assert!(rr.sql.contains(&format!("/{span_attendu})*{span_attendu}")), "seau routé = ({span_attendu}) : {}", rr.sql);
+        assert!(!rr.cap.plafonne(), "Cap::Aucun (exact en somme)");
+        let raw = soql_to_sql_x(soql, from, n, None).unwrap();
+        assert_eq!(b2_map(&conn, &rr.sql), b2_map(&conn, &raw), "PARITÉ no-span routée == brute (seau auto {span_attendu})");
+    }
+
+    // DÉCLIN quand le seau auto est sous-horaire : la route retombe sur le scan raw (le cœur sert le grain fin).
+    for from in [n - 150000, n - 7200] {
+        assert!(
+            try_rollup_route_at(soql, from, n, None, n, RollupCoverage::of(&conn), DimRollupCoverage::of(&conn)).is_none(),
+            "no-span à seau auto sous-horaire DÉCLINE -> scan raw : fenêtre {from}..{n}"
+        );
+    }
 }

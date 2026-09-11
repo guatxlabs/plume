@@ -397,11 +397,40 @@ pub(crate) fn timechart_span_horaire(s: &str) -> Option<i64> {
     Some(secs)
 }
 
-/// Forme timechart routable : filtre `source=` optionnel + span horaire + ventilation optionnelle.
+/// Seau AUTOMATIQUE d'un `timechart` SANS `span=` (TRANCHE 3), dérivé de la fenêtre `(from,to)` — COPIE VERBATIM
+/// de la formule du cœur `compile_timechart` (core `src/soql/stages.rs`, branche `if span <= 0`) : vise ~120
+/// seaux (`range/120`, plancher 60 s) puis arrondit au pas SUPÉRIEUR d'une échelle fixe. Retourne `Some(span)`
+/// UNIQUEMENT si le span dérivé est un MULTIPLE EXACT de 3600 (routable depuis le pré-agrégé aligné-heure) ;
+/// les pas sous-horaires {60,300,900,1800} -> `None` -> la route DÉCLINE -> le cœur sert alors le grain fin par
+/// scan raw (exact par construction). Les `from`/`to` reçus sont les MÊMES i64 du corps de requête que le
+/// chemin raw passe à `compile_timechart` (handlers/query.rs : `body.i64_field` -> `try_rollup_route` ET
+/// `soql_to_sql_masked_x`) -> le span dérivé est IDENTIQUE des deux côtés, donc le seau routé
+/// `(bucket/span)*span` == le seau brut `(ts/span)*span` (span multiple de 3600) -> parité SEAU PAR SEAU.
+pub(crate) fn timechart_auto_span(from: i64, to: i64) -> Option<i64> {
+    // --- DÉBUT copie verbatim de core::compile_timechart (branche `span <= 0`). Toute dérive de cette formule
+    //     casserait la parité de seau -> un témoin de parité (fenêtre à span auto horaire) la garde. ---
+    let range = if to > from && from > 0 { to - from } else { 86400 };
+    let raw = (range / 120).max(60);
+    let steps = [60i64, 300, 900, 1800, 3600, 7200, 14400, 43200, 86400, 604800];
+    let span = *steps.iter().find(|&&s| s >= raw).unwrap_or(&604800);
+    // --- FIN copie verbatim. Filtre de ROUTABILITÉ (propre à la route) : seul un multiple de 3600 est exact. ---
+    (span % 3600 == 0).then_some(span)
+}
+
+/// Sélection du span d'un `timechart` routable.
+pub(crate) enum SpanSel {
+    /// `span=<n>h|<n>d` EXPLICITE, multiple EXACT de 3600 (TRANCHES 1/2).
+    Exact(i64),
+    /// AUCUN `span=` (TRANCHE 3) : le seau est dérivé de la fenêtre par `timechart_auto_span`, résolu au point
+    /// d'appel qui connaît `(from,to)`. Un `span=` explicite sous-horaire a déjà fait décliner le parseur.
+    Auto,
+}
+
+/// Forme timechart routable : filtre `source=` optionnel + span (explicite horaire OU auto) + ventilation optionnelle.
 pub(crate) struct TimechartShape {
     pub(crate) source_filter: Option<String>,
-    /// Secondes, MULTIPLE EXACT de 3600 (garanti par `timechart_span_horaire`).
-    pub(crate) span: i64,
+    /// Span EXPLICITE (multiple EXACT de 3600, garanti par `timechart_span_horaire`) ou AUTO (dérivé de la fenêtre).
+    pub(crate) span: SpanSel,
     /// Ventilation (TRANCHE 2) : sous-ensemble SANS DOUBLON du grain EXACT `ROLLUP_EXACT_DIMS`
     /// ({source,severity}), ou VIDE (courbe totale, TRANCHE 1). Toute autre dim a fait décliner le parseur.
     pub(crate) by_fields: Vec<String>,
@@ -442,7 +471,7 @@ pub(crate) fn parse_timechart_shape(soql: &str) -> Option<TimechartShape> {
             return None;
         }
     }
-    // --- STAGE 1 : `timechart span=<horaire> count [by source|severity]` — rien d'autre. ---
+    // --- STAGE 1 : `timechart [span=<horaire>] count [by source|severity]` — rien d'autre. ---
     // La tête (avant un éventuel `by`) doit être EXACTEMENT `span=<horaire>` + `count`. La ventilation
     // optionnelle (TRANCHE 2) est un sous-ensemble SANS DOUBLON du grain EXACT {source,severity} — les mêmes
     // dims NOT NULL nues que la ROUTE A-multi accélère (`ROLLUP_EXACT_DIMS`), donc exactes en somme et sans
@@ -469,10 +498,16 @@ pub(crate) fn parse_timechart_shape(soql: &str) -> Option<TimechartShape> {
             return None; // agrégat autre que `count` ou jeton en trop
         }
     }
-    let span = span?;
     if !count_seen {
-        return None; // `timechart span=1h` sans agrégat n'est pas notre forme
+        return None; // `timechart [span=…]` sans agrégat n'est pas notre forme
     }
+    // TRANCHE 3 : pas de `span=` explicite -> seau AUTOMATIQUE (dérivé de la fenêtre par `timechart_auto_span`,
+    // résolu par l'appelant qui connaît `(from,to)`). Un `span=` explicite sous-horaire a déjà fait décliner
+    // (`timechart_span_horaire?` -> `None`) -> `Exact` ne porte que des multiples de 3600.
+    let span = match span {
+        Some(s) => SpanSel::Exact(s),
+        None => SpanSel::Auto,
+    };
     // TRANCHE 2 : ventilation optionnelle. Découpe `by a,b` comme le compilo raw (join après `by`, split ',').
     let by_fields: Vec<String> = match byi {
         None => Vec::new(),
@@ -612,13 +647,20 @@ pub(crate) fn try_rollup_route_at(soql: &str, from: i64, to: i64, env: Option<&s
     //     partiels TOUJOURS raw-servables -> EXACT & FRAIS (`approx:false`, note:none). `Cap::Aucun` (exact en
     //     somme, jamais à portée du plafond). Cf. bandeau ROUTE C. Tenté AVANT `parse_stats_by_shape`.
     if let Some(tc) = parse_timechart_shape(soql) {
+        // TRANCHE 3 : span AUTO -> le résoudre depuis la fenêtre (MÊMES from/to que `compile_timechart` reçoit) ;
+        // un seau sous-horaire (non multiple de 3600) n'est pas exact depuis le pré-agrégé -> décline (le cœur
+        // sert alors le grain fin par scan raw, exact par construction).
+        let span = match tc.span {
+            SpanSel::Exact(s) => s,
+            SpanSel::Auto => timechart_auto_span(from, to)?,
+        };
         let split = plan_merge(from, to, now_ts, i64::MIN, cov.covered_below());
         if !split.has_body() {
             return None; // aucun bucket définitif complet (ou couverture non établie) -> scan raw seul (exact)
         }
         let src_cond = merge_src_cond(&tc.source_filter);
         let env_cond = merge_env_cond(env);
-        let sql = build_timechart_merge_sql(tc.span, &tc.by_fields, &src_cond, &env_cond, &split, None, cov.late_floor_id());
+        let sql = build_timechart_merge_sql(span, &tc.by_fields, &src_cond, &env_cond, &split, None, cov.late_floor_id());
         return Some(RollupRoute { sql, approx: split.approx, cap: Cap::Aucun, note: None });
     }
     let sh = parse_stats_by_shape(soql)?;
@@ -997,13 +1039,19 @@ pub(crate) fn try_cold_rollup_route_at(soql: &str, from: i64, to: i64, env: Opti
     //     tête deep-past sub-horaire (<B, agé) repliée sur le rollup -> `split.approx=true`+note ; sinon EXACT.
     //     `Cap::Aucun` (exact en somme). Tenté AVANT `parse_stats_by_shape`. Cf. bandeau ROUTE C.
     if let Some(tc) = parse_timechart_shape(soql) {
+        // TRANCHE 3 : span AUTO -> le résoudre depuis la fenêtre (MÊMES from/to que `compile_timechart` reçoit) ;
+        // un seau sous-horaire (non multiple de 3600) n'est pas exact depuis le pré-agrégé -> décline.
+        let span = match tc.span {
+            SpanSel::Exact(s) => s,
+            SpanSel::Auto => timechart_auto_span(from, to)?,
+        };
         let split = plan_merge(from, to, now_ts, boundary, cov.covered_below());
         if !split.has_body() {
             return None; // aucun bucket définitif complet (ou couverture non établie) -> cold_union_query (exact)
         }
         let src_cond = merge_src_cond(&tc.source_filter);
         let env_cond = merge_env_cond(env);
-        let sql = build_timechart_merge_sql(tc.span, &tc.by_fields, &src_cond, &env_cond, &split, Some(boundary), cov.late_floor_id());
+        let sql = build_timechart_merge_sql(span, &tc.by_fields, &src_cond, &env_cond, &split, Some(boundary), cov.late_floor_id());
         let note = split
             .approx
             .then(|| "rollup cold+hot + raw event (queue à jour) ; tête sub-horaire deep-past (<B, agé) repliée sur le rollup (approx bornée)".to_string());

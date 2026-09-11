@@ -100,6 +100,49 @@
     }
 
     // ------------------------------------------------------------------------------------------------
+    // `P10.5-s` — `/api/query` (Explore) PORTE LE MÊME AVEU D'HORIZON QUE LES PANNEAUX.
+    // Le défaut : une courbe métrique BRUTE tracée dans Explore sur une fenêtre plus ancienne que
+    // `metric_raw_hours`/`metric_days` rendait une courbe VIDE sans dire que l'horizon s'arrête là — la
+    // parité `older_outside_window`, que les panneaux portent (`horizon_du_sql`, lu par `viz.js`), avait été
+    // retirée de `/api/query`. Le handler la RÉTABLIT : il calcule la couverture UNE fois et l'attache par
+    // `avec_couverture` sur CHAQUE voie de succès. Ce témoin garde l'ATTACHEMENT (le handler async n'est pas
+    // unitaire ; ses cinq voies de succès sont vérifiées par construction) : sur la MÊME couverture métrique
+    // sous l'horizon qui vaut `true` au (1), `avec_couverture` la pose sous `stats.coverage` sans toucher au
+    // reste ; un helper qui rendrait `v` inchangé (la MUTATION) ferait rougir l'assertion.
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn api_query_porte_l_aveu_d_horizon_metrique_par_avec_couverture() {
+        let _env = VERROU_ENV_PROCESSUS.read();
+        let (path, conn) = pa_base("query-horizon");
+        let conf = pa_conf();
+        let q = pa_requete_metrique(&conn);
+        let now_s: i64 = 1_800_000_000;
+        pa_poser_retention(&conn, "metric_raw_hours", 720);
+        drop(conn);
+        let sql = pa_sql(&q, false, 0, 0);
+        let attendu = now_s - 720 * 3_600;
+        // La MÊME couverture que le (1) : une fenêtre métrique sous l'horizon avoue `older_outside_window`.
+        let from_vieux = attendu - 30 * 86_400;
+        let cov = panneau_avoue::horizon_du_sql(path.as_str(), &conf, &sql, from_vieux, now_s);
+        assert_eq!(cov["older_outside_window"], json!(true), "prérequis : la fenêtre métrique est sous l'horizon — {cov}");
+
+        // (a) Une réponse d'`/api/query` qui a DÉJÀ un `stats` reçoit `coverage` SANS perdre ses autres
+        //     champs — c'est ce que le handler fait juste avant `Json(...)`.
+        let reponse = json!({ "columns": ["bucket", "value"], "rows": [], "stats": { "served_from": "raw", "truncated": false } });
+        let avec = crate::handlers::query::avec_couverture(reponse, &cov);
+        assert_eq!(avec["stats"]["coverage"]["older_outside_window"], json!(true), "l'aveu d'horizon est attaché sous stats.coverage — {avec}");
+        assert_eq!(avec["stats"]["served_from"], json!("raw"), "les autres champs de stats sont intacts — {avec}");
+        assert_eq!(avec["stats"]["truncated"], json!(false), "…tous — {avec}");
+        assert_eq!(avec["columns"], json!(["bucket", "value"]), "columns/rows ne sont pas touchés — {avec}");
+
+        // (b) Une réponse SANS `stats` reçoit un `stats` neuf porteur de l'aveu : aucune voie de succès ne
+        //     peut rester muette faute d'objet `stats` à compléter.
+        let nu = json!({ "columns": [], "rows": [] });
+        let avec_nu = crate::handlers::query::avec_couverture(nu, &cov);
+        assert_eq!(avec_nu["stats"]["coverage"]["older_outside_window"], json!(true), "un corps sans stats reçoit l'aveu quand même — {avec_nu}");
+    }
+
+    // ------------------------------------------------------------------------------------------------
     // (1) L'HORIZON : LE TÉMOIN POSITIF SUR LA FAMILLE LA PLUS AMPUTÉE, ET LES TROIS NÉGATIFS.
     // ------------------------------------------------------------------------------------------------
 

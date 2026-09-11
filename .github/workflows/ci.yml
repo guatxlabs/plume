@@ -816,7 +816,12 @@ env:
   # parité SEAU PAR SEAU contre le scan brut (mêmes from/to des deux côtés), déclin sinon. Le témoin n'est
   # derrière AUCUN `cfg(feature)` -> le MÊME +1 sur `EXPECTED_COLD_TESTS`, écart INCHANGÉ, mesuré par
   # `.github/scripts/compter-les-tests.sh`, jamais d'une addition.
-  EXPECTED_TESTS: "1676"
+  # `P10.5-s` (2026-09-11) : +1 — `api_query_porte_l_aveu_d_horizon_metrique_par_avec_couverture`. `/api/query`
+  # (Explore) attache désormais l'aveu d'horizon de rétention (`older_outside_window`, via `horizon_du_sql`)
+  # sous `stats.coverage` sur chaque voie de succès (`avec_couverture`) — parité rendue aux panneaux, que
+  # `viz.js` lit déjà. Le témoin n'est derrière AUCUN `cfg(feature)` -> le MÊME +1 sur `EXPECTED_COLD_TESTS`,
+  # écart INCHANGÉ, mesuré par le script du dépôt, jamais d'une addition.
+  EXPECTED_TESTS: "1677"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -1279,7 +1284,10 @@ jobs:
           # (`serie_timechart_seau_automatique_parite_et_declin`) — il n'est derrière AUCUN `cfg(feature)`, et
           # c'est l'ÉCART INCHANGÉ entre les deux profils qui l'établit. La dérivation est écrite auprès
           # d'`EXPECTED_TESTS`, une seule fois.
-          EXPECTED_COLD_TESTS: "1931"
+          # `P10.5-s` (2026-09-11) : +1, le MÊME que sur `EXPECTED_TESTS`
+          # (`api_query_porte_l_aveu_d_horizon_metrique_par_avec_couverture`) — pas de `cfg(feature)`, écart
+          # INCHANGÉ. La dérivation est écrite auprès d'`EXPECTED_TESTS`, une seule fois.
+          EXPECTED_COLD_TESTS: "1932"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail

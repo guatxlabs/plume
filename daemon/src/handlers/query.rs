@@ -1024,6 +1024,25 @@ pub(crate) fn total_lu(res: Result<Result<Value, String>, tokio::task::JoinError
     }
 }
 
+/// `P10.5-s` — ATTACHE L'AVEU D'HORIZON À UNE RÉPONSE D'`/api/query`, comme les panneaux le portent déjà
+/// (`panneau_avoue::horizon_du_sql`, lu par `viz.js` `coverageBadge`). Une fenêtre plus ancienne que
+/// l'horizon de rétention (métrique OU event) rend une courbe/liste ÉCOURTÉE qui, sans cet aveu, se relit
+/// exactement comme une réponse complète. `cov` est calculé UNE fois par le handler (voir son site) ; ici on
+/// ne fait que le poser sous `stats.coverage`. Rend TOUJOURS un `stats` — un aveu conditionnel serait
+/// indiscernable d'un aveu oublié. Appelé sur CHAQUE voie de succès pour ne pas être honnête sur l'une et
+/// muet sur l'autre (l'anti-motif nommé par `P10.7-e`).
+pub(crate) fn avec_couverture(mut v: Value, cov: &Value) -> Value {
+    match v.get_mut("stats").and_then(|s| s.as_object_mut()) {
+        Some(stats) => {
+            stats.insert("coverage".to_string(), cov.clone());
+        }
+        None => {
+            v["stats"] = json!({ "coverage": cov.clone() });
+        }
+    }
+    v
+}
+
 pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(body): Json<Value>) -> Response {
     let _mt = crate::search_timer(); // #51 DAY-2 OPS : latence recherche (p50/p95) enregistrée à la sortie (Drop)
     // MÉTRIQUE HONNÊTE (cf. `query_timing`) — l'horloge démarre à l'ENTRÉE et ne sait rendre QUE le
@@ -1296,6 +1315,19 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
     };
     let sql_for_resp = sql.clone();
     let db_path = req_db_path(&st, &au); // #2a-2b : requête interactive routée vers la base du tenant courant
+    // `P10.5-s` — L'HORIZON DE RÉTENTION, CALCULÉ UNE FOIS, AVANT que `db_path`/`sql` ne partent dans les
+    // closures de pagination. `horizon_du_sql` DÉRIVE les clés de rétention du SQL (métrique ET event) et
+    // court-circuite sans lecture quand la requête ne nomme aucune table à rétention connue -> coût nul
+    // pour l'immense majorité ; une lecture MIN indexée sinon. Posé sous `stats.coverage` sur chaque voie de
+    // succès par `avec_couverture` -> une courbe Explore sous l'horizon dit qu'elle s'arrête là (viz.js le lit
+    // déjà), là où elle rendait une courbe vide indiscernable d'une réponse complète.
+    let couverture: Value = {
+        let cdbp = db_path.clone();
+        let csql = sql.clone();
+        tokio::task::spawn_blocking(move || crate::panneau_avoue::horizon_du_sql(&cdbp, &crate::load_config(), &csql, from, crate::now()))
+            .await
+            .unwrap_or_else(|_| json!({ "reason": "horizon_non_mesure", "notice": "l'horizon n'a PAS été mesuré (tâche interrompue) ; cette réponse ne dit rien de ce qu'elle a pu voir." }))
+    };
     // PAGINATION SERVEUR : si `limit` fourni ET pas de LIMIT déjà dans le SQL (raw search), on renvoie
     // UNE page (LIMIT/OFFSET) + le total (COUNT) -> le navigateur ne tient jamais qu'une page (scale 1M+).
     let limit = body.get("limit").and_then(|v| v.as_i64()).filter(|&n| n > 0 && n <= 10000);
@@ -1314,7 +1346,7 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
         if let Some(c) = cause {
             corps["total_error"] = json!(c);
         }
-        return Json(corps).into_response();
+        return Json(avec_couverture(corps, &couverture)).into_response();
     }
     // KEYSET (#28) — chemin browse par CURSEUR (parcours intégral, ZÉRO plafond de comptage). N'est actif que
     // sur le chemin GXQL (`from_soql` : la clé de tri `id` n'existe que via la compilation cursor_id). `cursor`
@@ -1564,7 +1596,7 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
                         v["stats"]["served_from"] = json!(mode);
                         // TRANSPARENCE : servi par le moteur colonnaire (pur-froid) ou le merge hot∪cold vectorisé.
                         v["stats"]["cold"] = json!({ "served_from": mode, "boundary_ts": boundary });
-                        return Json(v).into_response();
+                        return Json(avec_couverture(v, &couverture)).into_response();
                     }
                     Ok(Ok(None)) => { /* non vectorisable / non routable -> fallback cold_union_query ci-dessous */ }
                     Ok(Err(e)) => return bad_req(e), // corruption cold -> fail-closed (comme l'oracle)
@@ -1636,7 +1668,7 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
                     v["offset"] = json!(offset);
                     v["limit"] = json!(lim);
                 }
-                Json(value).into_response()
+                Json(avec_couverture(value, &couverture)).into_response()
             }
             Ok(Err(e)) => bad_req(e),
             Err(_) => server_err("exécution échouée"),
@@ -1683,7 +1715,7 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
                             v["compiled_sql"] = json!(sql_for_resp);
                             apply_rollup_stats(&mut v, &rollup_meta); // served_from/approx/truncated (transparence)
                         }
-                        Json(v).into_response()
+                        Json(avec_couverture(v, &couverture)).into_response()
                     }
                     Err(e) => bad_req(e),
                 }
@@ -1702,7 +1734,7 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
                         v["compiled_sql"] = json!(sql_for_resp);
                         apply_rollup_stats(&mut v, &rollup_meta); // served_from/approx/truncated (transparence)
                     }
-                    Json(v).into_response()
+                    Json(avec_couverture(v, &couverture)).into_response()
                 }
                 Err(e) => bad_req(e),
             }

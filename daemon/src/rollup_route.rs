@@ -397,11 +397,14 @@ pub(crate) fn timechart_span_horaire(s: &str) -> Option<i64> {
     Some(secs)
 }
 
-/// Forme timechart routable en TRANCHE 1 : filtre `source=` optionnel + span horaire.
+/// Forme timechart routable : filtre `source=` optionnel + span horaire + ventilation optionnelle.
 pub(crate) struct TimechartShape {
     pub(crate) source_filter: Option<String>,
     /// Secondes, MULTIPLE EXACT de 3600 (garanti par `timechart_span_horaire`).
     pub(crate) span: i64,
+    /// Ventilation (TRANCHE 2) : sous-ensemble SANS DOUBLON du grain EXACT `ROLLUP_EXACT_DIMS`
+    /// ({source,severity}), ou VIDE (courbe totale, TRANCHE 1). Toute autre dim a fait décliner le parseur.
+    pub(crate) by_fields: Vec<String>,
 }
 
 /// PARSE ULTRA-CONSERVATEUR de la SEULE forme timechart routable en TRANCHE 1 : `search [source=X] | timechart
@@ -439,17 +442,20 @@ pub(crate) fn parse_timechart_shape(soql: &str) -> Option<TimechartShape> {
             return None;
         }
     }
-    // --- STAGE 1 : `timechart span=<horaire> count` — pas de `by`, pas d'autre agrégat, rien en trop. ---
+    // --- STAGE 1 : `timechart span=<horaire> count [by source|severity]` — rien d'autre. ---
+    // La tête (avant un éventuel `by`) doit être EXACTEMENT `span=<horaire>` + `count`. La ventilation
+    // optionnelle (TRANCHE 2) est un sous-ensemble SANS DOUBLON du grain EXACT {source,severity} — les mêmes
+    // dims NOT NULL nues que la ROUTE A-multi accélère (`ROLLUP_EXACT_DIMS`), donc exactes en somme et sans
+    // divergence NULL/'' ; toute autre dim (`src_ip`/`host`/`action`/JSON) DÉCLINE -> scan raw exact.
     let toks: Vec<&str> = stages[1].split_whitespace().collect();
     if toks.first() != Some(&"timechart") {
         return None;
     }
-    if toks.iter().any(|t| *t == "by") {
-        return None; // TRANCHE 1 : aucune ventilation (le `by` suit dans une tranche ultérieure)
-    }
+    let byi = toks.iter().position(|t| *t == "by");
+    let head_end = byi.unwrap_or(toks.len());
     let mut span: Option<i64> = None;
     let mut count_seen = false;
-    for t in &toks[1..] {
+    for t in &toks[1..head_end] {
         if let Some(s) = t.strip_prefix("span=") {
             span = Some(timechart_span_horaire(s)?); // span non-horaire -> décline (raw exact)
         } else if t.contains('=') {
@@ -460,14 +466,32 @@ pub(crate) fn parse_timechart_shape(soql: &str) -> Option<TimechartShape> {
             }
             count_seen = true;
         } else {
-            return None; // agrégat autre que `count` (tranche 1) ou jeton en trop
+            return None; // agrégat autre que `count` ou jeton en trop
         }
     }
     let span = span?;
     if !count_seen {
         return None; // `timechart span=1h` sans agrégat n'est pas notre forme
     }
-    Some(TimechartShape { source_filter, span })
+    // TRANCHE 2 : ventilation optionnelle. Découpe `by a,b` comme le compilo raw (join après `by`, split ',').
+    let by_fields: Vec<String> = match byi {
+        None => Vec::new(),
+        Some(bi) => {
+            let fields: Vec<String> = toks[bi + 1..].join(" ").split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+            // non-vide, chaque champ ∈ grain EXACT (whitelist stricte -> sûr en position de colonne), sans doublon.
+            if fields.is_empty() || fields.iter().any(|f| !ROLLUP_EXACT_DIMS.contains(&f.as_str())) {
+                return None;
+            }
+            let mut seen = fields.clone();
+            seen.sort();
+            seen.dedup();
+            if seen.len() != fields.len() {
+                return None;
+            }
+            fields
+        }
+    };
+    Some(TimechartShape { source_filter, span, by_fields })
 }
 
 /// Construit le SQL du MERGE timechart (série par SEAU) : `SUM(c) GROUP BY bucket ORDER BY bucket` au-dessus
@@ -480,6 +504,7 @@ pub(crate) fn parse_timechart_shape(soql: &str) -> Option<TimechartShape> {
 /// UNIQUEMENT si `split.has_body()`. `cold_boundary` : None = HOT ; Some(B) = COLD (corps disjoint à `B`).
 fn build_timechart_merge_sql(
     span: i64,
+    by_fields: &[String],
     src_cond: &[String],
     env_cond: &[String],
     split: &MergeSplit,
@@ -492,13 +517,21 @@ fn build_timechart_merge_sql(
         c.extend(extra.iter().cloned());
         c
     };
+    // Ventilation (TRANCHE 2) : `by_fields ⊆ {source,severity}` (whitelist stricte -> sûr en position de
+    // colonne). `dcols` = colonnes NUES ajoutées au SELECT et au GROUP BY de CHAQUE fragment (`source` et
+    // `severity` sont des colonnes réelles d'event, event_rollup ET cold_rollup, exactes en somme, nues sans
+    // COALESCE -> mêmes valeurs que le compilo RAW). `dsel` = leur projection ALIASÉE (`f AS "f"`) au niveau
+    // externe -> mêmes NOMS de colonnes de sortie que `compile_timechart` (`bucket, <dims>, "count"`). Vides
+    // en TRANCHE 1 (courbe totale).
+    let dcols = if by_fields.is_empty() { String::new() } else { format!(", {}", by_fields.join(", ")) };
+    let dsel = if by_fields.is_empty() { String::new() } else { format!(", {}", multidim_select(by_fields)) };
     let mut parts: Vec<String> = Vec::new();
-    // --- CORPS ROLLUP : seau = (bucket/span)*span (bucket déjà aligné-heure). ---
+    // --- CORPS ROLLUP : seau = (bucket/span)*span (bucket déjà aligné-heure), ventilé par dims. ---
     let body_range = vec![format!("bucket >= {}", split.body_lo), format!("bucket < {}", split.body_hi)];
     match cold_boundary {
         None => {
             let c = base_cond(&body_range);
-            parts.push(format!("SELECT (bucket/{span})*{span} AS bucket, SUM(n) AS c FROM event_rollup WHERE {} GROUP BY 1", c.join(" AND ")));
+            parts.push(format!("SELECT (bucket/{span})*{span} AS bucket{dcols}, SUM(n) AS c FROM event_rollup WHERE {} GROUP BY 1{dcols}", c.join(" AND ")));
         }
         Some(b) => {
             let mut hot = body_range.clone();
@@ -507,8 +540,8 @@ fn build_timechart_merge_sql(
             cold.push(format!("bucket < {b}"));
             let ch = base_cond(&hot);
             let cc = base_cond(&cold);
-            parts.push(format!("SELECT (bucket/{span})*{span} AS bucket, SUM(n) AS c FROM event_rollup WHERE {} GROUP BY 1", ch.join(" AND ")));
-            parts.push(format!("SELECT (bucket/{span})*{span} AS bucket, SUM(n) AS c FROM cold_rollup WHERE {} GROUP BY 1", cc.join(" AND ")));
+            parts.push(format!("SELECT (bucket/{span})*{span} AS bucket{dcols}, SUM(n) AS c FROM event_rollup WHERE {} GROUP BY 1{dcols}", ch.join(" AND ")));
+            parts.push(format!("SELECT (bucket/{span})*{span} AS bucket{dcols}, SUM(n) AS c FROM cold_rollup WHERE {} GROUP BY 1{dcols}", cc.join(" AND ")));
         }
     }
     // --- TÊTE / QUEUE : scan BRUT d'`event`, seau = (ts/span)*span (exact, à jour ; borné par idx_event_ts). ---
@@ -521,7 +554,7 @@ fn build_timechart_merge_sql(
             tc.push(if hi_incl { format!("ts <= {hi}") } else { format!("ts < {hi}") });
         }
         let c = base_cond(&tc);
-        format!("SELECT (ts/{span})*{span} AS bucket, COUNT(*) AS c FROM event WHERE {} GROUP BY 1", c.join(" AND "))
+        format!("SELECT (ts/{span})*{span} AS bucket{dcols}, COUNT(*) AS c FROM event WHERE {} GROUP BY 1{dcols}", c.join(" AND "))
     };
     if let Some((lo, hi)) = split.head {
         parts.push(raw_part(lo, hi, false));
@@ -537,12 +570,12 @@ fn build_timechart_merge_sql(
         }
         let c = base_cond(&lc);
         parts.push(format!(
-            "SELECT (ts/{span})*{span} AS bucket, COUNT(*) AS c FROM event NOT INDEXED WHERE {} GROUP BY 1",
+            "SELECT (ts/{span})*{span} AS bucket{dcols}, COUNT(*) AS c FROM event NOT INDEXED WHERE {} GROUP BY 1{dcols}",
             c.join(" AND ")
         ));
     }
     format!(
-        "SELECT bucket, SUM(c) AS \"count\" FROM ({}) GROUP BY bucket ORDER BY bucket",
+        "SELECT bucket{dsel}, SUM(c) AS \"count\" FROM ({}) GROUP BY bucket{dcols} ORDER BY bucket",
         parts.join(" UNION ALL ")
     )
 }
@@ -585,7 +618,7 @@ pub(crate) fn try_rollup_route_at(soql: &str, from: i64, to: i64, env: Option<&s
         }
         let src_cond = merge_src_cond(&tc.source_filter);
         let env_cond = merge_env_cond(env);
-        let sql = build_timechart_merge_sql(tc.span, &src_cond, &env_cond, &split, None, cov.late_floor_id());
+        let sql = build_timechart_merge_sql(tc.span, &tc.by_fields, &src_cond, &env_cond, &split, None, cov.late_floor_id());
         return Some(RollupRoute { sql, approx: split.approx, cap: Cap::Aucun, note: None });
     }
     let sh = parse_stats_by_shape(soql)?;
@@ -970,7 +1003,7 @@ pub(crate) fn try_cold_rollup_route_at(soql: &str, from: i64, to: i64, env: Opti
         }
         let src_cond = merge_src_cond(&tc.source_filter);
         let env_cond = merge_env_cond(env);
-        let sql = build_timechart_merge_sql(tc.span, &src_cond, &env_cond, &split, Some(boundary), cov.late_floor_id());
+        let sql = build_timechart_merge_sql(tc.span, &tc.by_fields, &src_cond, &env_cond, &split, Some(boundary), cov.late_floor_id());
         let note = split
             .approx
             .then(|| "rollup cold+hot + raw event (queue à jour) ; tête sub-horaire deep-past (<B, agé) repliée sur le rollup (approx bornée)".to_string());

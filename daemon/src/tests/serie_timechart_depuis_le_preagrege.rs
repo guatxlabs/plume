@@ -109,29 +109,66 @@ fn serie_timechart_decline_span_sous_horaire() {
 /// Chaque forme non exacte DÉCLINE plutôt que de servir un faux — jamais un `by`/agrégat non pré-agrégé lu
 /// comme une série routée.
 #[test]
-fn serie_timechart_decline_hors_tranche_un() {
+fn serie_timechart_decline_hors_perimetre_routable() {
     let _g = VERROU_ENV_PROCESSUS.write();
     std::env::remove_var("PLUME_ROLLUP_MULTIDIM");
     for q in [
-        "search | timechart span=1h count by source",   // ventilation -> tranche ultérieure
-        "search | timechart span=1h count by severity",
-        "search | timechart span=1h avg(bytes)",        // agrégat autre que count
+        "search | timechart span=1h count by src_ip",       // dim cappée (top-N) -> sous-comptée -> décline
+        "search | timechart span=1h count by host",         // COALESCE '' à la matérialisation -> fusion NULL/''
+        "search | timechart span=1h count by action",       // clé JSON absente = NULL, COALESCE '' -> idem
+        "search | timechart span=1h count by source,src_ip", // un seul membre hors grain suffit à décliner
+        "search | timechart span=1h count by source,source", // doublon -> refus
+        "search | timechart span=1h count by path",         // dim hors grain
+        "search | timechart span=1h avg(bytes)",            // agrégat autre que count
         "search | timechart span=1h max(value)",
-        "search | timechart span=1h sum(bytes)",
-        "search | timechart span=1h count | head 5",    // étape en aval
-        "search | timechart span=1h count | sort bucket",
-        "search | timechart count",                     // sans span -> bucket auto, non aligné au grain
-        "metric plume_x | timechart span=1h avg(value)", // base metric, pas search
+        "search | timechart span=1h sum(bytes) by source",  // agrégat≠count même ventilé
+        "search | timechart span=1h count | head 5",        // étape en aval
+        "search | timechart span=1h count by source | sort bucket",
+        "search | timechart count",                         // sans span -> bucket auto, non aligné au grain
+        "search | timechart span=15m count by source",      // span sous-horaire même ventilé
+        "metric plume_x | timechart span=1h avg(value)",     // base metric, pas search
     ] {
-        assert!(parse_timechart_shape(q).is_none(), "forme hors tranche 1 NON reconnue : {q}");
+        assert!(parse_timechart_shape(q).is_none(), "forme hors périmètre NON reconnue : {q}");
         assert!(
             try_rollup_route_at(q, 0, 0, None, now(), RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX), DimRollupCoverage::all_asserted_by_the_test()).is_none(),
-            "forme hors tranche 1 DÉCLINE -> raw : {q}"
+            "forme hors périmètre DÉCLINE -> raw : {q}"
         );
     }
-    // Le filtre `source=X` optionnel est en revanche reconnu (partition unique exprimable).
+    // Le filtre `source=X` optionnel est reconnu (partition unique exprimable) ; combiné à une ventilation aussi.
     assert!(parse_timechart_shape("search source=web | timechart span=1h count").is_some(), "filtre source= reconnu");
+    assert!(parse_timechart_shape("search source=web | timechart span=1h count by severity").is_some(), "filtre + ventilation grain reconnus");
     assert!(parse_timechart_shape("search source=web status>=500 | timechart span=1h count").is_none(), "un 2e filtre non exprimable DÉCLINE");
+}
+
+/// (7) TRANCHE 2 — PARITÉ VENTILÉE : `timechart span=1h count by <dim⊆{source,severity}>` est servi depuis le
+/// pré-agrégé (une série par (seau, dim)) et IDENTIQUE, seau-dim par seau-dim, au scan brut. Les dims du grain
+/// EXACT {source,severity} sont NOT NULL nues -> `SUM(n) GROUP BY` == `count by` brut. `Cap::Aucun` conservé.
+#[test]
+fn serie_timechart_ventilee_parite_rollup_egale_raw() {
+    let _g = VERROU_ENV_PROCESSUS.write();
+    std::env::remove_var("PLUME_ROLLUP_MULTIDIM");
+    let conn = test_db();
+    let n = now();
+    let cur = tc_cur();
+    b2adv_seed_at(&conn, cur - 5 * 3600, 3, "h5");
+    b2adv_seed_at(&conn, cur - 3 * 3600, 4, "h3");
+    b2adv_seed_at(&conn, n - 10, 5, "cur");
+    rollup_events(&conn);
+    let from = cur - 6 * 3600;
+    for soql in [
+        "search | timechart span=1h count by source",
+        "search | timechart span=1h count by severity",
+        "search | timechart span=1h count by source,severity",
+        "search | timechart span=1h count by severity,source", // ordre inversé -> route aussi
+        "search source=web | timechart span=1h count by severity", // filtre + ventilation
+    ] {
+        let rr = try_rollup_route_at(soql, from, n, None, n, RollupCoverage::of(&conn), DimRollupCoverage::of(&conn))
+            .unwrap_or_else(|| panic!("courbe ventilée sur le grain exact DOIT router : {soql}"));
+        assert!(rr.sql.contains("FROM event_rollup"), "servie depuis le pré-agrégé : {soql}");
+        assert!(!rr.cap.plafonne(), "Cap::Aucun (exact en somme) : {soql}");
+        let raw = soql_to_sql_x(soql, from, n, None).unwrap();
+        assert_eq!(b2_map(&conn, &rr.sql), b2_map(&conn, &raw), "PARITÉ ventilée routée == brute pour `{soql}`");
+    }
 }
 
 /// (5) SPAN horaire, unité inconnue, débordement : `timechart_span_horaire` n'accepte QUE h/d et refuse le

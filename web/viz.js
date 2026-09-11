@@ -2512,6 +2512,10 @@ async function exploreCount(q, isSoql, from, to) {
     const r = await fetch('/api/query', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     if (!r.ok) return -1;
     const j = await r.json();
+    // `P10.7-g` (lot 103) — LA CAUSE D'UN TOTAL NON ÉTABLI EST LUE. Le démon sert `total_error` à côté de `-1`
+    // (budget, annulation, SQL refusé, tâche interrompue) : « total inconnu » sans cause se lisait comme « trop
+    // grand pour compter ». Gardée dans l'état de la requête, écrite dans la ligne d'état.
+    if (S.evState) S.evState.totalError = (typeof j.total_error === 'string' && j.total_error) ? j.total_error : null;
     return (typeof j.total === 'number') ? j.total : -1;
   } catch (e) { return -1; }
 }
@@ -2611,7 +2615,7 @@ async function evLoad() {
       // Une entrée au lexique serait une entrée MORTE — un vert sans traduction, le piège déjà nommé pour
       // les fragments de concaténation. Les trois autres états de `#qstats` (« Annulé », « exécution… »,
       // « Trop lourd… ») remplissent le nœud ENTIER : eux passent bien par le lexique.
-      const totTxt = S.evState.total >= 0 ? (S.evState.total + (S.evState.totalCapped ? '+' : '') + ' lignes') : (LANG === 'en' ? 'unknown total' : 'total inconnu');
+      const totTxt = S.evState.total >= 0 ? (S.evState.total + (S.evState.totalCapped ? '+' : '') + ' lignes') : ((LANG === 'en' ? 'unknown total' : 'total inconnu') + (S.evState.totalError ? ' — ' + S.evState.totalError : ''));
       $('#qstats').textContent = `page ${S.evState.page + 1}/${pages}${S.evState.totalCapped ? '+' : ''} · ${totTxt} · serveur ${srv} ms · total ${net} ms`;
     }
     if (S.evState.repriseAnnonce) {   // `P10.5-g` — la reprise se DIT : une page repartie de 1 sans un mot serait muette
@@ -2632,6 +2636,10 @@ async function evLoad() {
           rerenderExplorePager();
           const pg = Math.max(1, Math.ceil(tot / S.evState.pageSize));
           $('#qstats').textContent = `${tot.toLocaleString('fr-FR')} résultats · page ${S.evState.page + 1} / ${pg}`;
+        } else if (S.evState.q === cq && S.evState.totalError) {
+          // `P10.7-g` (lot 103) — le compte n'a pas abouti : la ligne d'état porte la cause servie, pas seulement « ? ».
+          const n = $('#qstats');
+          if (n && !n.textContent.includes(S.evState.totalError)) n.textContent = `${LANG === 'en' ? 'total not established' : 'total non établi'} — ${S.evState.totalError} · ${n.textContent}`;
         }
       });
     }
@@ -2707,7 +2715,7 @@ async function runQuery() {
     // désignait alors une AUTRE ligne, et la page suivante commençait ailleurs, en silence. Le démon
     // refuse désormais ce curseur (`cold_cursor_autre_numerotation`) au lieu de servir décalé ; ce qui
     // manquait ici, c'est de ne plus le lui présenter. Un parcours = une fenêtre, du début à la fin.
-    S.evState = { q, isSoql, keyset: useKeyset, cursors: [null], page: 0, pageSize: evPageSize(), total: useKeyset ? -1 : 0, shown: 0, totalCapped: false, countFired: false, win: { from: exploreFrom(), to: exploreTo() } };
+    S.evState = { q, isSoql, keyset: useKeyset, cursors: [null], page: 0, pageSize: evPageSize(), total: useKeyset ? -1 : 0, shown: 0, totalCapped: false, countFired: false, totalError: null, win: { from: exploreFrom(), to: exploreTo() } };
     await evLoad(); return;
   }
   // chemin agrégation : dédup / cancel-previous identique à evLoad (une seule requête explore en vol).
@@ -2744,3 +2752,5 @@ function showQExport(has) { const el = $('#qexport'); if (el) el.hidden = !has; 
 
 
 export { banIp, clearDrillCrumb, clearZoom, coldShareBadge, coverageBadge, coverageHorizonNodes, renderQBadge, provenanceBadge, currentFrom, currentTo, evLoad, exploreFrom, exploreTo, noeudsDeVizReglee, qHistGo, queryCount, refusDeReglage, reglageLu, renderViz, runQ, runQuery, setZoom, sondage, stopExplore, tableEl, updateZoomBadge, vizElement, vizSansPorte, refusDeRepresentation, truncationBadge };
+// `P10.7-g` (lot 103) — exporté pour le harnais ESM (scénario 91), qui lit la cause d'un total non établi.
+export { exploreCount };

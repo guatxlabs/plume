@@ -11327,6 +11327,27 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   console.log("(90) OK — la provenance de chaque valeur de rétention est peinte, une valeur écrite non lue est dite");
 }
 
+// ---------------------------------------------------------------------------------------------
+// (91) `P10.7-g` (lot 103) — LA CAUSE D'UN TOTAL NON ÉTABLI EST LUE PAR LA CONSOLE. Le démon sert `total_error`
+//      à côté de `-1` ; le compte asynchrone la garde dans l'état de la requête (et l'efface sur un compte lu).
+// ---------------------------------------------------------------------------------------------
+{
+  const { exploreCount } = await import(pathToFileURL(path.join(WEB, "viz.js")).href);
+  const { S } = await import(pathToFileURL(path.join(WEB, "state.js")).href);
+  const reponse91 = (obj) => ({ ok: true, status: 200, text: async () => JSON.stringify(obj), json: async () => obj });
+  const avant91 = S.evState;
+  S.evState = { q: "SELECT 1", total: -1, totalError: null };
+  globalThis.fetch = async () => reponse91({ count_only: true, total: -1, total_error: "total NON ÉTABLI : budget dépassé — « -1 » n'est pas un compte" });
+  const tot = await exploreCount("SELECT 1", false, 0, 0);
+  exiger(tot === -1, `(91) « -1 » reste le mot du contrat : ${tot}`);
+  exiger(typeof S.evState.totalError === "string" && S.evState.totalError.includes("budget dépassé"), `(91) la cause servie est gardée dans l'état : ${S.evState.totalError}`);
+  globalThis.fetch = async () => reponse91({ count_only: true, total: 42 });
+  const lu = await exploreCount("SELECT 1", false, 0, 0);
+  exiger(lu === 42 && S.evState.totalError === null, `(91) un compte lu efface la cause : ${lu} / ${S.evState.totalError}`);
+  S.evState = avant91;
+  console.log("(91) OK — la cause d'un total non établi est gardée dans l'état de la requête et effacée par un compte lu");
+}
+
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;
 verdictRendu = true;
 if (echecs.length) {

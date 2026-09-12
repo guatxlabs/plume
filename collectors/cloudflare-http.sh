@@ -1,5 +1,6 @@
 #!/bin/sh
 # plume-source: cloudflare-http
+# plume-emits: fields=
 # Capteur Plume (PLUGIN, OPT-IN) : requetes HTTP 4xx/5xx vues AU EDGE Cloudflare (httpRequestsAdaptiveGroups)
 # -> events source=cloudflare-http, category=web. Ferme l'angle mort du SCAN WEB (T1595.002) absorbe/servi
 # au edge que l'origine (Traefik/web.sh) ne voit pas forcement (404 sur des chemins qui n'atteignent jamais

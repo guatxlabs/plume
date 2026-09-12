@@ -1,5 +1,6 @@
 #!/bin/sh
 # plume-source: kube-rbac
+# plume-emits: fields=binding,role,subject
 # Capteur Plume (PLUGIN, OPT-IN) : RBAC Kubernetes (Varonis brique c) -> events source=kube-rbac.
 # QUI PEUT acceder a QUOI dans le cluster (les secrets k8s = donnees sensibles) : map des
 # (Cluster)RoleBindings -> sujet -> role -> scope, + flags risque (cluster-admin, roles donnant

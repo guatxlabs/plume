@@ -1,5 +1,6 @@
 #!/bin/sh
 # plume-source: cloudflare
+# plume-emits: fields=asn,cf_action,country,ray,ruleId
 # Capteur Plume (PLUGIN, OPT-IN) : firewall events Cloudflare (edge WAF / Bot / RateLimit)
 # -> events source=cloudflare. Ferme l'angle mort des attaques web stoppees AU EDGE par CF
 # (challenge/block) que l'origine (Traefik) ne voit jamais. Lecture seule : GraphQL

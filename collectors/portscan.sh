@@ -1,5 +1,6 @@
 #!/bin/sh
 # plume-source: nft, portscan
+# plume-emits: fields=max kind=metrics
 # Capteur Plume (PLUGIN, OPT-IN) : PORT-SCAN détecté par la table nft 'plume-portscan'.
 # La journalisation d'un pare-feu généraliste est en général rate-limitée et étouffe les scans lents
 # (peu ou pas de signal). Ici le SIGNAL EST DEJA "un scan détecté" :

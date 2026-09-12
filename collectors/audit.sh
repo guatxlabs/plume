@@ -1,5 +1,6 @@
 #!/bin/sh
 # plume-source: auditd
+# plume-emits: fields=
 # Capteur SOC : auditd (exec / élévation de privilège / accès fichiers sensibles) -> events.
 # Lit les NOUVEAUX enregistrements via le checkpoint d'ausearch. ROOT. auditd OPTIONNEL (skip si absent).
 set -eu

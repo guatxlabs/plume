@@ -2128,6 +2128,16 @@ jobs:
         continue-on-error: true
         run: python3 .github/scripts/check_a_producer_declares_the_values_it_emits.py
 
+      # `P11.19-a` VOLET 1 — CE QU'UN CAPTEUR ÉMET (ses CHAMPS) est déclaré en tête, `# plume-emits:
+      # fields=…`, MIROIR EXACT de `# plume-source:` (P11.16-a). Les champs sont DÉRIVÉS de
+      # `COLLECTED_EXTENDED_FIELDS` (l'autorité que `detection.rs` tient == l'extracteur, dans les deux
+      # sens) et tenus dans les deux sens : un champ émis non déclaré rougit, un champ déclaré non émis
+      # (fantôme) aussi. La garde ci-dessus tient le SENS/les valeurs ; celle-ci tient QUELS champs.
+      - name: Un capteur déclare les champs qu'il émet (P11.19-a, volet 1)
+        id: garde_66
+        continue-on-error: true
+        run: python3 .github/scripts/check_a_collector_declares_the_fields_it_emits.py
+
       # `P11.18-z` — LA RECHERCHE D'UNE LISTE SURVIT AU RENDU QUI DÉTRUIT SON CHAMP. La garde tient que
       # chaque liste cherchable déclare l'identité stable sans laquelle la mémoire ne peut pas s'armer :
       # sans elle, le mécanisme est posé mais la vue se comporte comme avant, en silence.
@@ -2602,6 +2612,7 @@ jobs:
           total=$((total+1)); o="${{ steps.garde_63.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_tmp_possede_copies_are_identical.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_64.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_ship_bounds_the_spool_and_says_its_losses.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_65.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_address_definitions_are_counted_by_a_written_criterion.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_66.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_collector_declares_the_fields_it_emits.py : $o"; }
           echo "gardes jouées : $total ; en échec : $rouges"
           exit $rc
   features:

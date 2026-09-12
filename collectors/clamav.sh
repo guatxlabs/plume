@@ -1,5 +1,6 @@
 #!/bin/sh
 # plume-source: clamav
+# plume-emits: fields=
 # Capteur SOC (PLUGIN) : antivirus ClamAV sur les fichiers NOUVEAUX de chemins surveilles
 # (pieces jointes mail, uploads, /tmp...) -> events source=clamav. Plugin : si clamscan/clamdscan
 # absent OU aucun chemin configure -> exit 0. Dependance = ClamAV uniquement (optionnel).

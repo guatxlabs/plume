@@ -1,5 +1,6 @@
 #!/bin/sh
 # plume-source: falco
+# plume-emits: fields=
 # Capteur SOC : ingère les détections eBPF de Falco (sortie JSON) -> events source=falco.
 # Falco est externe (falco.org) ; configure json_output + file_output vers $PLUME_FALCO_LOG.
 # Lecture incrémentale par offset. ROOT. Optionnel (skip si log absent).

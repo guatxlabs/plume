@@ -1,5 +1,6 @@
 #!/bin/sh
 # plume-source: resources
+# plume-emits: fields= kind=metrics
 # Capteur Plume : ressources/perf/réseau -> table metric (cpu/mem/swap/disque/temp/net).
 # ROOT (via plume-resources.service). Lecture seule (/proc, /sys). Rates cpu/net via état précédent.
 #

@@ -1,5 +1,6 @@
 #!/bin/sh
 # plume-source: update
+# plume-emits: fields=
 # Capteur SOC (PLUGIN) : MAJ d'image disponible = nouveau build pousse pour le MEME tag (digest-drift).
 # Via skopeo. Complete vuln.sh (CVE) -> remplit la colonne "Dispo" cote DETECTION (la PWA/ArgoCD pousse).
 # Plugin : si skopeo absent -> exit 0. Etat = dernier digest connu par image:tag (1er vu = baseline).

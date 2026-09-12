@@ -1,5 +1,6 @@
 #!/bin/sh
 # plume-source: ufw
+# plume-emits: fields= kind=metrics
 # Capteur Plume (PLUGIN, OPT-IN) : UFW — couche firewall HOTE distincte de nft/fail2ban/crowdsec
 # (longtemps un angle mort : un DROP UFW n'apparaissait NULLE PART -> on ne voyait pas pourquoi un
 # accès légitime était bloqué). Émet :

@@ -1,5 +1,6 @@
 #!/bin/sh
 # plume-source: suricata
+# plume-emits: fields=
 # Capteur SOC (PLUGIN) : ingere le eve.json de Suricata -> events source=suricata.
 # Donne la profondeur reseau "facon Fortigate" SANS MITM : alertes IDS, fichiers extraits
 # (telechargements), metadonnees TLS (SNI) / DNS. Plugin : si eve.json absent -> exit 0.

@@ -1,5 +1,6 @@
 #!/bin/sh
 # plume-source: integrity
+# plume-emits: fields=change,kind,sha256,unit,unit_dirs_from,unit_form
 # Capteur Plume : intégrité/persistance — FIM NATIF (aucune dépendance type AIDE/auditd).
 # Baseline + diff. DURCISSEMENT :
 #   (a) SHA256 des binaires SUID/SGID -> detecte la MODIF IN-PLACE (binaire systeme trojanise au MEME

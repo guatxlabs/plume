@@ -1,5 +1,6 @@
 #!/bin/sh
 # plume-source: auditd
+# plume-emits: fields=acct,addr,atype,audit_rules_loaded,carve_out,collector,exe,exec_drop_dropped_this_run,exec_drop_list_effective,exec_drop_list_tier1,exec_drop_list_tier2_recon,exec_rule_b32,exec_rule_b64,filters,note,res,success,syscall,uid
 # Capteur Plume (PLUGIN) : ingere le LOG auditd -> events source=auditd.
 # Dependance MINIMALE : lit uniquement le fichier que auditd ecrit deja. Skip si auditd absent.
 # CAPTURE LARGE par defaut (execve + auth + comptes + TAMPER) : on n'ecarte RIEN au collecteur. auid

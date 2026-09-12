@@ -1,5 +1,6 @@
 #!/bin/sh
 # plume-source: containerd
+# plume-emits: fields=
 # Capteur Plume (PLUGIN) : images tirees + conteneurs demarres via CRI (crictl) -> events source=containerd.
 # Repond a "docker/k3s pulls + lifecycle". Plugin : si crictl absent -> exit 0 (skip).
 # Dependance MINIMALE : les IMAGES (= les pulls, signal cle) se lisent en TABLE (sans jq) ;

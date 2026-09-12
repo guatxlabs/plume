@@ -868,6 +868,10 @@ pub(crate) async fn suppressions_get(State(st): State<AppState>, Extension(au): 
     // VISIBLE, le panneau ne peut plus être empoisonné en silence. Bornée par source (cardinalité collecteurs).
     let host_counts = hotes_par_source(&conn, now() - 14 * 86400);
     let mut collectors: Vec<Value> = Vec::new();
+    // `P10.7-f` — le scan des auto-reports collecteurs (JOIN sur `event`) DISTINGUE la fin normale de
+    // l'interruption de budget : un idiome aplati muet aurait servi une liste de collecteurs TRONQUEE
+    // comme complete si le quota de deversement coupait l'enonce en vol. `coll_fin` porte la cause.
+    let mut coll_fin = crate::query_exec::FinDeParcours::Complet;
     if let Ok(mut s) = conn.prepare(
         "SELECT e.source, e.ts, e.host, e.fields, e.message, e.origin FROM event e \
          JOIN (SELECT source, MAX(ts) mts FROM event WHERE category='config' AND origin<>'daemon' GROUP BY source) j \
@@ -884,7 +888,7 @@ pub(crate) async fn suppressions_get(State(st): State<AppState>, Extension(au): 
                 r.get::<_, String>(5)?,
             ))
         }) {
-            for (src, ts, host, fields, msg, origin) in rows.flatten() {
+            coll_fin = crate::query_exec::parcourir_chaque(rows, |(src, ts, host, fields, msg, origin): (String, i64, Option<String>, Option<String>, Option<String>, String)| {
                 let raw: Value = fields.as_deref().and_then(|x| serde_json::from_str(x).ok()).unwrap_or(Value::Null);
                 // le TYPE est DÉCLARÉ par le collecteur (champ `type` de ses fields) mais `editable` est
                 // TOUJOURS false ici (structurel) : la frontière hôte garde le CONTRÔLE, le panneau la VISIBILITÉ.
@@ -932,7 +936,7 @@ pub(crate) async fn suppressions_get(State(st): State<AppState>, Extension(au): 
                     }
                 }
                 collectors.push(entree);
-            }
+            });
         }
     }
     // (3) ÉTAT HÔTE/FIREWALL — dernier instantané kind=firewall, surfacé RO (nft sets / origin-fw / etc.),
@@ -956,6 +960,11 @@ pub(crate) async fn suppressions_get(State(st): State<AppState>, Extension(au): 
         "generated": now(),
         "daemon": daemon,
         "collectors": collectors,
+        // `P10.7-f` — si le scan des auto-reports collecteurs a ete coupe par le budget, le corps le DIT
+        // (`collectors_incomplets` + cause) : la liste ci-dessus est un PREFIXE, pas la reponse. Sans coupe,
+        // `collectors_incomplets` vaut `false` et la cause est nulle (un corps qui avoue toujours n'avoue rien).
+        "collectors_incomplets": coll_fin.cause().is_some(),
+        "collectors_cause": coll_fin.cause(),
         "firewall": firewall,
         "firewall_hosts": fw_json,
         "firewall_n_hosts": fw_json.len(),

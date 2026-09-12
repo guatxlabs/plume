@@ -130,4 +130,35 @@ mod reparse_interrompu_avoue {
             "plus de `.flatten()` muet sur le scan d'event de parser_reparse (il jetait l'erreur d'interruption)"
         );
     }
+
+    /// La ROUTE `suppressions_get` (`admin_ui.rs`) est durcie de la MÊME façon : son scan des
+    /// auto-reports collecteurs (un `JOIN` sur `event`) passe par `parcourir_chaque`, et la réponse
+    /// AVOUE `collectors_incomplets` (+ cause) quand le budget a coupé l'énoncé en vol, au lieu de
+    /// servir une liste de collecteurs tronquée comme complète. Garde de forme dérivée du source ;
+    /// la brique d'exécution (interruption distinguée sur un scan d'`event`) est tenue par le témoin
+    /// ci-dessus.
+    #[test]
+    fn la_route_suppressions_avoue_son_scan_interrompu() {
+        let src = include_str!("../handlers/admin_ui.rs");
+        let deb = src
+            .find("pub(crate) async fn suppressions_get")
+            .expect("suppressions_get existe");
+        let fin = deb
+            + src[deb..]
+                .find("\n/// POST|PUT /api/suppressions")
+                .expect("la doc de suppressions_edit borne le corps de suppressions_get");
+        let corps = &src[deb..fin];
+        assert!(
+            corps.contains("parcourir_chaque"),
+            "suppressions_get doit parcourir son scan de collecteurs en distinguant l'interruption"
+        );
+        assert!(
+            corps.contains("\"collectors_incomplets\"") && corps.contains("coll_fin"),
+            "la réponse de suppressions_get doit AVOUER un scan interrompu (collectors_incomplets + cause)"
+        );
+        assert!(
+            !corps.contains("rows.flatten()"),
+            "plus de scan aplati muet des auto-reports collecteurs dans suppressions_get"
+        );
+    }
 }

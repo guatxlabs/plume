@@ -1157,6 +1157,17 @@ pub(crate) async fn parser_delete(State(st): State<AppState>, Extension(au): Ext
         Err((code, msg)) => err_json(code, msg),
     }
 }
+/// `P10.7-f` — CE QUE L'ADMIN APPREND D'UN REPARSE DONT LE SCAN N'EST PAS ALLÉ AU BOUT. Le balayage
+/// lit la table `event` BRUTE sur une fenêtre (`days`, jusqu'à 3650 j) : c'est le plus long scan du
+/// dépôt sur la plus grande table, et le plafond mémoire (`hard_heap_limit`) comme le quota de
+/// déversement (armés sur la connexion writer) peuvent le couper EN VOL. La phrase dit que `scanned`
+/// et `matched` ne portent alors que sur le PRÉFIXE lu, jamais sur toute la fenêtre ; elle ne prétend
+/// pas savoir combien d'events restent (l'énoncé est tari, personne ne les a comptés).
+pub(crate) const CAUSE_REPARSE_INCOMPLET: &str = "REPARSE INCOMPLET : le parcours des events n'est \
+     pas allé au bout (budget mémoire ou déversement l'a coupé). `scanned` et `matched` ne portent QUE \
+     sur le préfixe lu, pas sur toute la fenêtre demandée ; combien d'events restent n'est pas connu. \
+     En écriture, les changements du préfixe ont bien été appliqués (enrichissement additif, sans \
+     perte) — relancer le reparse REPREND ce qu'il reste à faire. Cause : ";
 /// Réapplique les parsers ACTIFS aux events DÉJÀ stockés (rétroactif). RÉSERVÉ ADMIN.
 /// `dry_run:true` = compte seulement (validation UI avant d'écrire) ; `source`/`days` = portée
 /// (défaut : toutes sources, 30 j). Mono-connexion : on COLLECTE d'abord (curseur lecture ouvert),
@@ -1171,7 +1182,7 @@ pub(crate) async fn parser_reparse(State(st): State<AppState>, Extension(au): Ex
     const CAP: usize = 50000;
     let db = req_db(&st, &au);
     let db_path = req_db_path(&st, &au); // MT-KEY : parseurs de CE db_path pour le reparse
-    let out = tokio::task::spawn_blocking(move || -> (i64, i64, i64, String) {
+    let out = tokio::task::spawn_blocking(move || -> (i64, i64, i64, String, Option<String>) {
         let conn = db.lock();
         // H2 (#18 P1 TIER FROID) : quand le tier cold est ON, une donnée agée est IMMUABLE (columnarisée).
         // Un reparse dont la fenêtre `days` atteint un jour agé pourrait, pendant la columnarisation (verrou
@@ -1189,16 +1200,22 @@ pub(crate) async fn parser_reparse(State(st): State<AppState>, Extension(au): Ex
         let cut = crate::cold_store::reparse_lower_bound(&conn, &load_config(), now(), cut);
         let mut changes: Vec<(i64, Option<String>, Option<String>, Option<String>)> = Vec::new();
         let (mut scanned, mut would) = (0i64, 0i64);
+        // `P10.7-f` — le scan DISTINGUE la fin normale de l'interruption de budget. L'idiome aplati jetait
+        // le `Err` de `step()` (coupe mid-scan par le plafond mémoire / le quota de déversement) et gardait
+        // le préfixe déjà lu sans un mot. `parcourir_chaque` garde le MÊME flux ligne à ligne (rien de plus
+        // en mémoire qu'une cause) et rend la cause du moteur quand l'énoncé n'est pas allé au bout.
+        let fin: crate::query_exec::FinDeParcours;
         {
             let mut stmt = match conn.prepare(
                 "SELECT id,source,message,fields,src_ip,dst_ip FROM event WHERE ts>=?1 AND (?2 IS NULL OR source=?2) ORDER BY id"
-            ) { Ok(s) => s, Err(e) => return (0, 0, 0, format!("prepare: {e}")) };
+            ) { Ok(s) => s, Err(e) => return (0, 0, 0, format!("prepare: {e}"), None) };
             let rows = stmt.query_map(params![cut, source], |r| Ok((
                 r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?,
                 r.get::<_, Option<String>>(3)?, r.get::<_, Option<String>>(4)?, r.get::<_, Option<String>>(5)?,
             )));
-            if let Ok(it) = rows {
-                for row in it.flatten() {
+            fin = match rows {
+                Err(e) => crate::query_exec::FinDeParcours::NonCommence { cause: e.to_string() },
+                Ok(it) => crate::query_exec::parcourir_chaque(it, |row: (i64, String, String, Option<String>, Option<String>, Option<String>)| {
                     scanned += 1;
                     let (id, src, msg, fields, cur_src, cur_dst) = row;
                     let parsed = parsers_apply(&db_path, &src, &msg, fields.clone());
@@ -1219,10 +1236,13 @@ pub(crate) async fn parser_reparse(State(st): State<AppState>, Extension(au): Ex
                             changes.push((id, if f_changed { newf } else { None }, nsrc, ndst));
                         }
                     }
-                }
-            }
+                }),
+            };
         }
-        if dry { return (scanned, would, 0, String::new()); }
+        // `P10.7-f` — un scan interrompu par le budget ne sert plus `scanned`/`matched` comme un total :
+        // la cause du moteur est conservée telle qu'il l'a dite, jamais un nombre de lignes manquantes inventé.
+        let cause_scan = fin.cause().map(|c| format!("{CAUSE_REPARSE_INCOMPLET}{c}"));
+        if dry { return (scanned, would, 0, String::new(), cause_scan); }
         let _ = conn.execute_batch("BEGIN IMMEDIATE");
         for (id, f, s, d) in &changes {
             if let Some(f) = f { let _ = conn.execute("UPDATE event SET fields=?1 WHERE id=?2", params![f, id]); }
@@ -1230,10 +1250,15 @@ pub(crate) async fn parser_reparse(State(st): State<AppState>, Extension(au): Ex
             if let Some(d) = d { let _ = conn.execute("UPDATE event SET dst_ip=?1 WHERE id=?2 AND (dst_ip IS NULL OR dst_ip='')", params![d, id]); }
         }
         let _ = conn.execute_batch("COMMIT");
-        (scanned, would, changes.len() as i64, String::new())
-    }).await.unwrap_or((0, 0, 0, "join".into()));
+        (scanned, would, changes.len() as i64, String::new(), cause_scan)
+    }).await.unwrap_or((0, 0, 0, "join".into(), None));
     if !out.3.is_empty() { return Json(json!({ "error": out.3 })); }
-    Json(json!({ "scanned": out.0, "matched": out.1, "updated": out.2, "truncated": (out.1 as usize) > CAP, "dry_run": dry, "cap": CAP }))
+    let mut body = json!({ "scanned": out.0, "matched": out.1, "updated": out.2, "truncated": (out.1 as usize) > CAP, "dry_run": dry, "cap": CAP });
+    // `P10.7-f` — si le scan a été coupé par le budget, le corps le DIT (`interrompu` + `cause_scan`) :
+    // `scanned`/`matched` ne sont qu'un préfixe. Sans coupe, aucun de ces deux champs n'apparaît (un
+    // corps qui avoue TOUJOURS n'avoue rien).
+    if let Some(cause) = out.4 { body["interrompu"] = json!(true); body["cause_scan"] = json!(cause); }
+    Json(body)
 }
 pub(crate) async fn parser_test(Json(b): Json<Value>) -> Json<Value> {
     let pat = b.str_field("pattern");

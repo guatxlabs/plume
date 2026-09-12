@@ -376,7 +376,7 @@ MIN_CLES = 150
 # phrases de survol lui arrivent de l'appelant et sont jugées dans SON module (2 trous mesurés, comblés).
 PLAFOND_DE_TROUS = {
     "admin_users.js": 0, "ai.js": 0, "alerting.js": 0, "alerts.js": 0, "app.js": 0, "attack.js": 0,
-    "audit.js": 0, "cases.js": 0, "catalogue_attack.js": 0, "connectors.js": 0, "core.js": 0, "coupe_de_liste.js": 0, "dataaccess.js": 0, "dashboards.js": 0, "datamodels.js": 0, "destinations.js": 0,
+    "audit.js": 0, "cases.js": 0, "catalogue_attack.js": 0, "connectors.js": 0, "core.js": 0, "plage_de_dates.js": 0, "coupe_de_liste.js": 0, "dataaccess.js": 0, "dashboards.js": 0, "datamodels.js": 0, "destinations.js": 0,
     "detadv.js": 0, "detection_admin.js": 0, "fieldfilters.js": 0, "fleet.js": 0, "freshness.js": 0,
     "help.js": 0, "i18n_observer.js": 0, "idp.js": 0, "index.html": 0, "index_policies.js": 0, "keys.js": 0, "knowledge.js": 0, "login.js": 0, "lookups.js": 0,
     "composer_depuis_lexistant.js": 0,

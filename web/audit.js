@@ -18,7 +18,8 @@
 //   * LA PAGE SUIVANTE se prend PAR CLÉ (`cursor` = `id` de la dernière ligne rendue), comme le flux
 //     d'événements (#28) : un clic sur un NUMÉRO reste un saut par décalage, borné côté démon, et la
 //     page atterrie rend son curseur — le parcours séquentiel repart donc par clé.
-import { $, api, fmtTs, muted, pagedList, poserLaPlageSurLaCible, poserLeChoixDeDates, LANG } from './core.js';
+import { $, api, fmtTs, muted, pagedList, LANG } from './core.js';
+import { poserLaPlageSurLaCible, poserLeChoixDeDates } from './plage_de_dates.js';
 import { S } from './state.js';
 import { loadOperatorAudit } from './multitenant.js';
 
@@ -292,7 +293,7 @@ async function loadLedger() {
 
 
 // `P11.18-s` — CE QUE CETTE VUE EXPORTE POUR L'AUTRE, ET CE QU'ELLE N'EXPORTE PLUS. Le CHOIX DE
-// DATES n'est plus ici : il est au point commun (`web/core.js`), avec son lecteur pur, ses refus et
+// DATES n'est plus ici : il est au point commun (`web/plage_de_dates.js`), avec son lecteur pur, ses refus et
 // son écrivain, et il sert LES DEUX VUES QUI POSENT LA BARRE. Le chiffre « quatre » écrit ici comptait
 // la famille entière des gestes de plage, modale comprise ; rien ne le suivait. Ce qui part encore
 // d'ici est ce qui appartient vraiment à ces deux vues : la CIBLE où leur plage se pose — la valeur partagée — et les deux

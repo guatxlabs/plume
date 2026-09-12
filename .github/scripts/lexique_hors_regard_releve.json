@@ -474,6 +474,9 @@
   "#nav a",
   "#nav a[data-space]"
  ],
+ "plage_de_dates.js": [
+  "Escape"
+ ],
  "prefs.js": [],
  "processors.js": [
   "(sans nom)",

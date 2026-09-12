@@ -7312,7 +7312,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
 //     ni au panneau d'accès données, dont les contrôles vivent dans le même registre.
 // ---------------------------------------------------------------------------------------------
 {
-  const { poserLeChoixDeDates, poserLaPlageSurLaCible } = await import(pathToFileURL(path.join(WEB, "core.js")).href);
+  const { poserLeChoixDeDates, poserLaPlageSurLaCible } = await import(pathToFileURL(path.join(WEB, "plage_de_dates.js")).href);
   let plage52 = null;
   const cible52 = { grain: "jour", lire: () => plage52, poser: (p) => { plage52 = p; } };
   const porte52 = { borneHaute: true, refus: () => "REFUS-FABRIQUÉ-PAR-CE-BANC-52" };

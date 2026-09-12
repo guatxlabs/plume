@@ -81,7 +81,8 @@ PLAFOND_CONTROLES_NUS = {
     "cases.js": 5,
     "composer_depuis_lexistant.js": 1,
     "copie_et_selection.js": 1,
-    "core.js": 2,
+    "core.js": 1,
+    "plage_de_dates.js": 1,  # P7.18-a : le controle nu de la modale de plage a migre depuis core.js (deplacement pur, somme inchangee)
     "dashboards.js": 3,
     "datamodels.js": 1,
     "destinations.js": 4,

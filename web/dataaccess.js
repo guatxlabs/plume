@@ -1,11 +1,12 @@
 // Accès données (DLP, gouvernance d'accès en lecture seule) : cinq panneaux sur des requêtes GXQL existantes,
 // sélecteur de fenêtre d'analyse, note de périmètre, réordonnancement des cartes persisté localement. Extrait
 // d'`app.js` par déplacement pur ; le seul consommateur est la navigation (`showView`). N'importe pas `app.js`.
-import { $, ic, muted, poserLeChoixDeDates, toast, LANG } from './core.js';
+import { $, ic, muted, toast, LANG } from './core.js';
+import { poserLeChoixDeDates } from './plage_de_dates.js';
 import { S, lireLeStockageDuSite, ecrireDansLeStockageDuSite } from './state.js';
 import { runQ, tableEl, truncationBadge } from './viz.js';
 // `P11.18-s` — LE GESTE VIENT DU POINT COMMUN, LA VALEUR VIENT DE L'AUTRE VUE. Le choix de dates
-// lui-même (`poserLeChoixDeDates`) est dans `web/core.js` et sert CETTE vue et le journal d'audit — le
+// lui-même (`poserLeChoixDeDates`) est dans `web/plage_de_dates.js` et sert CETTE vue et le journal d'audit — le
 // chiffre qui vivait ici (« quatre consommateurs ») était celui de la FAMILLE de gestes de plage, pas
 // de ce geste-ci, que RIEN ne suivait, et la mesure du 2026-08-29 en donne DEUX. La CIBLE où
 // la plage se pose est celle du journal d'audit : le partage est celui de la VALEUR — une enquête

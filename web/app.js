@@ -2,9 +2,9 @@ import {
   $, CSSV, socTZ, LANG, LOC, tzOpts, fmtTs, SEV, sev, bool, esc, ICONS, ic, closeModals, withBusy, toast, showErr, modal, confirmModal, csvCell, downloadText, tsSlug, exportPDF, exportBar, closeMiniMenu, api, apiSend, muted, colComparator, pageNums, pagedList,
   setSocTZ,
   socIsAdmin, formMsg,
-  confirmWithConsequence, disclosure,
-  ouvrirLaModaleDePlage
+  confirmWithConsequence, disclosure
 } from './core.js';
+import { ouvrirLaModaleDePlage } from './plage_de_dates.js';
 import { installI18nObserver } from './i18n_observer.js';
 import { S, ecrireDansLeStockageDuSite, ecrireSansDireLeRefus, lireLeStockageDuSite, RAISONS_DE_SILENCE } from './state.js';
 import { banIp, clearDrillCrumb, clearZoom, evLoad, exploreFrom, exploreTo, qHistGo, renderViz, runQuery, setZoom, stopExplore, updateZoomBadge } from './viz.js';
@@ -771,7 +771,7 @@ function rangeLabel(sel) {
 function updateRangeBtn() { const el = $('#rangelbl'); if (el) el.textContent = rangeLabel('#range'); }
 // Explore : même picker que les Dashboards mais piloté par #qrange (état local) -> son propre libellé.
 function updateQRangeBtn() { const el = $('#qrangelbl'); if (el) el.textContent = rangeLabel('#qrange'); }
-// `P11.18-s` — LE GESTE EST LEVÉ AU POINT COMMUN (`ouvrirLaModaleDePlage`, `web/core.js`) ET IL SERT
+// `P11.18-s` — LE GESTE EST LEVÉ AU POINT COMMUN (`ouvrirLaModaleDePlage`, `web/plage_de_dates.js`) ET IL SERT
 // QUATRE VUES. Ce qui restait ici — un modal offrant paliers ET intervalle absolu, avec son propre
 // lecteur de saisie et ses deux refus — n'était pas exporté, si bien que le journal d'audit et la
 // prévention des fuites en avaient reçu un SECOND. Ce qui reste ICI est ce qui appartient VRAIMENT à

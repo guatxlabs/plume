@@ -426,8 +426,6 @@
   "La rétention 0 = hérite du global. Une valeur > 0 est planchée à 7 j (anti-effacement). Les plafonds gardent les events les PLUS RÉCENTS ; les events de contrôle du daemon ne sont jamais purgés.",
   "Mo",
   "To",
-  "aucune purge immédiate ; cette politique fixe le régime de purge propre à cet index (elle peut en retirer plus tard si elle est resserrée).",
-  "les événements de cet index au-delà de la rétention ou des plafonds seront PURGÉS au prochain cycle, sans retour possible.",
   "max lignes (0=∞)",
   "max octets (0=∞)",
   "rétention (j, 0=hérite)",
@@ -470,8 +468,6 @@
  ],
  "multitenant.js": [
   "DELETE",
-  "l'accès de ses utilisateurs et ses traitements de fond reprennent. Action auditée.",
-  "ses utilisateurs perdent l'accès immédiatement (fail-closed) et les traitements de fond de ce tenant sont ignorés jusqu'à réactivation. Action auditée.",
   "échec"
  ],
  "navigation.js": [

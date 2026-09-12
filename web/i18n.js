@@ -142,6 +142,13 @@ const I18N_EN = {
   "ces adresses ou vhosts disparaissent des panneaux « menace externe » (affichage seul : collecte, détection et never-ban inchangés). Action auditée.": "these addresses or vhosts disappear from the “external threat” panels (display only: collection, detection and never-ban unchanged). Audited action.",
   "retour à la valeur par défaut ou à celle de l'environnement : ce qui était exclu des panneaux y réapparaît. Action auditée.": "back to the default value or the environment's: what was excluded from the panels reappears there. Audited action.",
   "les alertes qui correspondent à ces matchers ne seront PLUS NOTIFIÉES jusqu'à l'expiration ; elles restent stockées et visibles dans la file. Action auditée.": "alerts matching these matchers will NO LONGER BE NOTIFIED until expiry; they remain stored and visible in the queue. Audited action.",
+  // `P11.8-c` (2026-09-12) — CONSÉQUENCES ASSEMBLÉES DANS UNE VARIABLE puis passées à confirmWithConsequence
+  // (`const consequence = cond ? … : …`). Deux gestes IRRÉVERSIBLES que la garde du lexique voit désormais
+  // par le flux local mono-saut : la purge d'un index (#49) et la suspension d'un tenant (fail-closed).
+  "les événements de cet index au-delà de la rétention ou des plafonds seront PURGÉS au prochain cycle, sans retour possible.": "the events of this index beyond the retention or the caps will be PURGED at the next cycle, with no way back.",
+  "aucune purge immédiate ; cette politique fixe le régime de purge propre à cet index (elle peut en retirer plus tard si elle est resserrée).": "no immediate purge; this policy sets the purge regime specific to this index (it may remove some later if it is tightened).",
+  "ses utilisateurs perdent l'accès immédiatement (fail-closed) et les traitements de fond de ce tenant sont ignorés jusqu'à réactivation. Action auditée.": "its users lose access immediately (fail-closed) and this tenant's background processing is skipped until reactivation. Audited action.",
+  "l'accès de ses utilisateurs et ses traitements de fond reprennent. Action auditée.": "its users' access and its background processing resume. Audited action.",
   "Rattacher un élément": "Attach an item", "Rattacher": "Attach", "Détacher": "Detach",
   "Événement": "Event", "Alerte": "Alert", "Action / observation": "Action / observation", "Description": "Description",
   "Élément rattaché": "Item attached", "Élément détaché": "Item detached", "case introuvable": "case not found",

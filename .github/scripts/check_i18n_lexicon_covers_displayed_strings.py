@@ -1074,15 +1074,73 @@ RE_SINK_APPEL_DANS = re.compile(r"\b(%s)\(" % "|".join(SINKS_APPEL))
 RE_CLE_AUTRE = re.compile(r"[{,]\s*([A-Za-z_]\w*)\s*:\s*$")
 RE_HTML = re.compile(r"<[a-zA-Z][^<>]*>|</[a-zA-Z]+>")
 
+# `P11.8-c` — LE FLUX LOCAL MONO-SAUT DE LA CONSÉQUENCE. Le second argument de `confirmWithConsequence(` est
+# un puits (lu dans `modal()`, `RE_SINK_APPEL_2E`) TANT QU'IL EST ÉCRIT SUR PLACE. Quand la conséquence est
+# d'abord ASSEMBLÉE DANS UNE VARIABLE (`const consequence = cond ? '…' : '…'`) puis passée, les littéraux
+# vivent à l'AFFECTATION — qui n'est pas un puits — et tombent hors-regard sans clé. Mesuré (2026-09-12) :
+# `web/index_policies.js` (purge d'index, irréversible) et `web/multitenant.js` (suspension de tenant,
+# fail-closed) portent chacun une paire de conséquences françaises hors-regard sous cette forme.
+# LA RECONNAISSANCE RESTE ÉTROITE, ET C'EST DÉLIBÉRÉ. Le suivi de flux GÉNÉRAL a été RÉFUTÉ pour sur-capture
+# (voir la note de `CLES_APPLICATIVES` : `{ name: 'admin' }` deviendrait une chaîne affichée, clé morte). On
+# ne suit donc QU'UN saut, DANS le même module, et keyé sur DEUX ancres exactes : le nom `confirmWithConsequence`
+# et l'IDENTIFIANT précis reçu en 2e argument. Une affectation `const <id> = …` n'est un puits de conséquence
+# que si `<id>` est LITTÉRALEMENT un nom passé en 2e argument à `confirmWithConsequence(` dans ce fichier.
+RE_IDENT_NU = re.compile(r"^[A-Za-z_$][\w$]*$")
+RE_AFFECT_LOCALE = re.compile(r"^\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=(?!=)")
 
-def _est_puits(avant: str, attribut: str = "") -> bool:
+
+def _second_argument(code: str, apres_paren: int) -> str | None:
+    """Le TEXTE du 2e argument de premier niveau d'un appel dont la `(` s'ouvre juste avant `apres_paren`
+    (donc `code[apres_paren]` est le premier caractère du 1er argument). `None` si l'appel n'a pas deux
+    arguments. Le code est RÉDUIT (chaînes et gabarits -> `""`), donc aucune virgule ne se cache dans un
+    littéral : le découpage en arguments de premier niveau est celui des parenthèses/accolades/crochets."""
+    profondeur = 0
+    rang = 0            # 0 = on parcourt le 1er argument, 1 = le 2e
+    debut = apres_paren
+    for i in range(apres_paren, len(code)):
+        c = code[i]
+        if c in "([{":
+            profondeur += 1
+        elif c in ")]}":
+            if profondeur == 0:                     # la `)` qui referme l'appel
+                return code[debut:i] if rang == 1 else None
+            profondeur -= 1
+        elif c == "," and profondeur == 0:
+            if rang == 1:
+                return code[debut:i]                # fin du 2e argument
+            rang, debut = 1, i + 1                   # fin du 1er : le 2e commence après la virgule
+    return None
+
+
+def identifiants_de_consequence(texte_code: str) -> frozenset[str]:
+    """Les IDENTIFIANTS NUS passés en 2e argument de `confirmWithConsequence(` dans ce module — le seul flux
+    local mono-saut que la garde suit (`P11.8-c`). Un 2e argument littéral (`""` dans le code réduit) ou une
+    expression (`f(c)`, `x.trim()`) N'EST PAS un identifiant nu : il n'entre pas ici. La liste sert de clé à
+    `_est_puits` pour ne reconnaître QUE l'affectation `const|let <ce nom> = …` de ce même fichier."""
+    ids = set()
+    for m in re.finditer(r"\bconfirmWithConsequence\s*\(", texte_code):
+        arg2 = _second_argument(texte_code, m.end())
+        if arg2 is not None and RE_IDENT_NU.match(arg2.strip()):
+            ids.add(arg2.strip())
+    return frozenset(ids)
+
+
+def _est_puits(avant: str, attribut: str = "", conseq_ids: frozenset[str] = frozenset()) -> bool:
     """`attribut` = le littéral qui précède immédiatement celui qu'on juge ; pour `setAttribute(` c'est le NOM
-    de l'attribut, et seul un attribut AFFICHÉ (`ATTRS_HTML`) fait de l'appel un puits."""
+    de l'attribut, et seul un attribut AFFICHÉ (`ATTRS_HTML`) fait de l'appel un puits. `conseq_ids` = les
+    noms de variable dont ce module fait une conséquence de `confirmWithConsequence` (flux local mono-saut)."""
     a = avant.rstrip()
     if RE_SINK_AFFECT.search(a) or RE_SINK_CLE.search(a) or RE_SINK_APPEL.search(a):
         return True
     if RE_SINK_APPEL_2E.search(a):
-        return True  # `P11.8-c` : la conséquence d'une confirmation, second argument
+        return True  # `P11.8-c` : la conséquence d'une confirmation, second argument écrit sur place
+    if conseq_ids:
+        # `P11.8-c` : la conséquence assemblée dans une variable locale puis passée en 2e argument. Ce test
+        # PRÉCÈDE celui du ternaire : l'affectation finit par `?`/`:` et serait sinon jugée « ternaire hors
+        # puits » (sa tête `const consequence = tightens` ne porte aucun puits) et rendue hors-regard.
+        m = RE_AFFECT_LOCALE.match(a)
+        if m and m.group(1) in conseq_ids:
+            return True
     if RE_SINK_SETATTR.search(a):
         return attribut.strip() in ATTRS_HTML
     if RE_CLE_LITTERALE.search(a):
@@ -1297,7 +1355,11 @@ def extraire_module(src: str, journal: list[tuple[str, int]] | None = None) -> t
     (texte, FORME dérivée du contexte) : c'est la forme qui nomme la prochaine à apprendre."""
     statiques, dynamiques, par_construction, hors_regard = [], [], [], []
     precedent = ""
-    for s, avant, apres, bloc_en, contexte in chaines_js(src, journal):
+    chaines = chaines_js(src, journal)
+    # Les noms de variable dont ce module fait une conséquence de `confirmWithConsequence` (`P11.8-c`). Le
+    # code réduit (littéraux -> `""`) est identique pour tous les littéraux : `contexte[0]` du premier suffit.
+    conseq_ids = identifiants_de_consequence(chaines[0][4][0]) if chaines else frozenset()
+    for s, avant, apres, bloc_en, contexte in chaines:
         # le littéral qui PRÉCÈDE : c'est le nom d'attribut d'un `setAttribute('x', 'valeur')`
         courant, attribut_precedent, precedent = s, precedent, s
         # CE QUI SE COLLE À CE LITTÉRAL DANS LE NŒUD RENDU (`P11.13-f`) — la MÊME lecture pour un littéral
@@ -1342,7 +1404,7 @@ def extraire_module(src: str, journal: list[tuple[str, int]] | None = None) -> t
         if candidat and SENTINELLE not in courant and _noeud_de_composition_html(gauche, droite):
             (par_construction if (bloc_en or RE_CHOIX_PAR_LANG.search(avant)) else statiques).append(courant)
             continue
-        if not _est_puits(avant, attribut_precedent):
+        if not _est_puits(avant, attribut_precedent, conseq_ids):
             # AUCUN puits reconnu : la garde ne regarde pas là. On le DIT au lieu de l'oublier.
             if (candidat and not _dynamique(courant, gauche, droite)
                     and not (bloc_en or RE_CHOIX_PAR_LANG.search(avant))
@@ -1817,6 +1879,9 @@ const dur = { storeKey: 'Sous une clé que le document ne connaît pas' };
 const fab = { emptyText: 'Affiché vingt', message: 'Affiché vingt et un', cancelText: 'Affiché vingt-deux' };
 confirmWithConsequence('Affiché vingt-trois', 'Affiché vingt-quatre');
 confirmWithConsequence(x, y, 'Troisieme position hors regard');
+const conseqTemoin = cond ? 'Affiché vingt-cinq' : 'Affiché vingt-six'; confirmWithConsequence(titreTemoin, conseqTemoin);
+const conseqFonc = calculeConseq(); confirmWithConsequence(titreFonc, conseqFonc);
+const varSansLien = cond ? 'Non capture sans lien' : 'z9';
 z1.innerHTML = '<span class="mtl">' + (cond ? 'Noeud entre balises' : 'z') + '</span>';
 z2.textContent = (cond ? 'Fragment colle a droite' : 'z') + ' suite du texte';
 """
@@ -1848,10 +1913,19 @@ x.textContent = 'Hors registre';
 # NÉGATIF : une position ultérieure n'est pas ce puits. Sans ces témoins, retirer une clé
 # de `CLES_APPLICATIVES` — ce qui est arrivé DEUX FOIS par simple divergence avec `core.js` — repasserait
 # sans bruit, et le module retomberait au vert en n'affichant plus rien de traduit.
+# « Affiché vingt-cinq » et « Affiché vingt-six » sont les TÉMOINS DU FLUX LOCAL MONO-SAUT (`P11.8-c`,
+# 2026-09-12) : la conséquence est assemblée dans `const conseqTemoin = cond ? … : …` PUIS passée en 2e
+# argument. Les littéraux vivent à l'affectation, qu'aucun puits ne porte — la garde les voit parce que
+# `conseqTemoin` est LITTÉRALEMENT le nom passé à `confirmWithConsequence(` dans ce module. LES NÉGATIFS QUI
+# BORNENT LA SUR-CAPTURE : `const conseqFonc = calculeConseq();` (le nom EST une conséquence, mais l'affectation
+# n'a AUCUN littéral — rien n'entre) et `const varSansLien = cond ? 'Non capture sans lien' : …` (même FORME
+# d'affectation, mais `varSansLien` n'est passé à AUCUN `confirmWithConsequence(` — « Non capture sans lien »
+# reste hors-regard). Sans eux, élargir la reconnaissance à toute affectation ternaire — le suivi de flux
+# général déjà réfuté — repasserait sans bruit.
 ATTENDUS_STATIQUES = {"aucun runbook", "nom et champ requis", "Affiché dix-sept",
                       "Affiché dix-huit", "Affiché dix-neuf", "Noeud entre balises",
                       "Affiché vingt", "Affiché vingt et un", "Affiché vingt-deux", "Affiché vingt-trois",
-                      "Affiché vingt-quatre",
+                      "Affiché vingt-quatre", "Affiché vingt-cinq", "Affiché vingt-six",
                       "Affiché un", "Affiché deux", "Affiché trois", "Affiché quatre", "Affiché cinq",
                       "Affiché six", "Affiché sept", "Affiché huit", "Affiché neuf", "Affiché dix",
                       "Affiché onze", "Affiché douze", "Affiché treize", "Affiché quatorze", "Affiché quinze",
@@ -1870,6 +1944,7 @@ ATTENDUS_DYNAMIQUES = 5
 # indécidable. Le choix se porte sur `storeKey:`, dont `identiteDeLaListe()` fait une identité de rangement
 # jamais rendue : un témoin négatif doit citer une clé dont on peut PROUVER qu'elle n'affiche rien.
 INTERDITS = {"Sous une clé que le document ne connaît pas", "Troisieme position hors regard",
+             "Non capture sans lien",
              "src_ip", "/api/v1/alerts", "count", "sort -count",
              "Fragment de ternaire", "Fragment HTML de bord :", "Fragment colle a droite",
              "Pas affiché", "pas-une-chaine affichée", "valeur_technique", "pas une chaîne", "T1110", "…", "x",

@@ -1145,4 +1145,53 @@ mod allegations_d_environnement_tests {
         let segment = b.split_once("— déversement").expect("segment de déversement").1;
         assert!(segment.contains("residus-en-clair=1") && segment.contains("etilqs_4f2a9c"), "{b}");
     }
+
+    // --------------------------------------------------------------------------------------------
+    // GARDE 16 — « une entrée scriptée est lue par `collectors/custom.sh` là où l'amorçage la pose »  (silence complet)
+    // --------------------------------------------------------------------------------------------
+
+    /// L'ALLÉGATION TENUE : `entrees_scriptees.rs` affirme qu'« une entrée scriptée est lue par
+    /// `collectors/custom.sh` depuis `/etc/plume/inputs.d/` ». La TABLE des entrées livrées est déjà
+    /// tenue par un miroir (`sources_attendues_et_cadence.rs`, `P9.5-a`) ; ce que PERSONNE ne tenait,
+    /// c'est que le répertoire où l'amorçage POSE le fichier et celui où le collecteur LIT ne
+    /// DIVERGENT pas. S'ils divergeaient, une entrée scriptée posée resterait muette — aucun
+    /// événement, un panneau vide, indistinguable d'une source qui n'a rien à dire (silence complet).
+    /// Le répertoire est DÉRIVÉ des DEUX côtés — la destination de `ENTREES_SCRIPTEES_LIVREES` et le
+    /// défaut EXÉCUTÉ de `custom.sh` — jamais recopié : bouger l'un sans l'autre rend rouge.
+    #[test]
+    fn une_entree_scriptee_est_lue_la_ou_l_amorcage_la_pose() {
+        // Répertoire où l'amorçage POSE : le parent COMMUN des destinations de la table livrée.
+        let repertoires: std::collections::BTreeSet<&str> = crate::entrees_scriptees::ENTREES_SCRIPTEES_LIVREES
+            .iter()
+            .map(|e| {
+                let d: &str = e.2;
+                &d[..d.rfind('/').expect("INSTRUMENT : une destination d'entrée scriptée sans `/`")]
+            })
+            .collect();
+        assert_eq!(
+            repertoires.len(),
+            1,
+            "INSTRUMENT : les entrées scriptées visent PLUSIEURS répertoires ({repertoires:?}) — dériver un répertoire unique n'a plus de sens, la garde refuse de conclure"
+        );
+        let repertoire = *repertoires.iter().next().unwrap(); // p.ex. `/etc/plume/inputs.d`
+
+        let brut = lire_du_depot("collectors/custom.sh");
+        let code = code_execute_shell(&brut);
+        // TÉMOIN NÉGATIF : l'en-tête CITE le répertoire en commentaire ; cette prose ne doit pas suffire.
+        assert!(
+            brut.lines().filter(|l| l.trim_start().starts_with('#') && l.contains(repertoire)).count() >= 1,
+            "INSTRUMENT : l'en-tête de `custom.sh` ne cite plus `{repertoire}` — témoin négatif disparu, la garde serait aveugle"
+        );
+        // Le défaut EXÉCUTÉ (`DIR=\"${{PLUME_INPUTS_DIR:-{repertoire}}}\"`) lit CE répertoire.
+        assert!(
+            code.lines().any(|l| l.contains("DIR=") && l.contains(repertoire)),
+            "`collectors/custom.sh` ne lit plus par défaut `{repertoire}`, le répertoire où `ENTREES_SCRIPTEES_LIVREES` pose : une entrée scriptée posée resterait MUETTE (panneau vide, indistinguable d'une source sans rien à dire)"
+        );
+        // et il itère bien sur `*.input` DANS ce répertoire (`$DIR`).
+        assert!(
+            code.lines().any(|l| l.contains("\"$DIR\"") && l.contains("*.input")),
+            "`collectors/custom.sh` n'itère plus sur `\"$DIR\"/*.input` : la forme de lecture des entrées scriptées a changé — la garde ne sait plus si elles sont lues"
+        );
+    }
+
 }

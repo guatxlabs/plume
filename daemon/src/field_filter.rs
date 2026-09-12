@@ -22,7 +22,12 @@ pub(crate) const PHYSICAL_EVENT_COLS: &[&str] = &[
 /// Champs STRUCTURELS jamais masquables (casseraient pagination/temps/anti-doublon/routage) : refusés à la
 /// création. `category`/`severity` sont des DIMENSIONS de détection mais le masquage est QUERY-TIME (n'altère
 /// pas la détection) -> autorisés (l'admin assume l'impact d'affichage).
-const STRUCTURAL_DENY: &[&str] = &["id", "ts", "env_id", "dedup", "origin", "engagement_id", "fields"];
+/// AUTORITÉ UNIQUE des champs structurels de la table `event` (jamais masquables/aliasables : casseraient
+/// pagination/temps/anti-doublon/routage). Référencée par `knowledge::validate_ko_ident` (`P11.19-a` second
+/// volet — le mécanisme d'exclusion n'est plus une liste littérale recopiée, dont deux copies pouvaient
+/// DÉRIVER et laisser un chemin aliaser ce qu'un autre refuse). `datamodels::DM_STRUCTURAL_DENY` reste un
+/// sous-ensemble DÉLIBÉRÉ (les contraintes peuvent filtrer sur `ts`), c'est documenté à son site.
+pub(crate) const STRUCTURAL_DENY: &[&str] = &["id", "ts", "env_id", "dedup", "origin", "engagement_id", "fields"];
 
 /// Une règle compilée (résolue de la table). `field` = nom CANONIQUE utilisé à la compilation GXQL (clé de
 /// masque), déjà normalisé (`fields.k` -> `k`). `role` = seuil (cf. `role_threshold`). `tenant`/`env` = ''=tous.

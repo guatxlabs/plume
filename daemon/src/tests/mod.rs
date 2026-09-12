@@ -151,7 +151,8 @@ include!("flotte_partiellement_non_lue_avoue.rs"); // P10.7-g (lot 100) : une fl
 include!("retention_provenance_avouee.rs"); // P10.7-g (lot 101) : chaque valeur de rétention dit sa provenance, une valeur écrite non lue est nommée
 include!("causes_du_moteur_avouees.rs");
 include!("balayages_aveugles_avouent.rs");
-include!("le_bundle_diagnostic_avoue_une_lecture_non_faite.rs"); // P10.7-g : le bundle /api/system/diag type ses trois listes et ses huit comptes — une lecture ratée est AVOUÉE `non_lu`/`null`, jamais servie comme `[]`/`0` ; le compte des non-classés et sa ventilation ne peuvent plus se contredire
+include!("le_bundle_diagnostic_avoue_une_lecture_non_faite.rs");
+include!("champs_structurels_source_unique.rs"); // P11.19-a second volet (groundwork) : STRUCTURAL_DENY a une source unique, plus de copie qui dérive // P10.7-g : le bundle /api/system/diag type ses trois listes et ses huit comptes — une lecture ratée est AVOUÉE `non_lu`/`null`, jamais servie comme `[]`/`0` ; le compte des non-classés et sa ventilation ne peuvent plus se contredire
 include!("correlations_et_timeline_risque_non_lues_avouent.rs");
 include!("couverture_ti_non_lue_avoue.rs");
 include!("dispatch_sans_canaux_lus_avoue.rs"); // P10.7-f (lot 109) : le dispatch de notifications ne marque plus une alerte envoyée sans canal lu // P10.7-g (lot 108) : la couverture threat-intel avoue une ventilation par type/source non lue // P10.7-g (lot 107) : deux routes servies de détection/risque avouent une lecture ratée au lieu de servir une liste vide // P10.7-f (lot 106) : un balayage de fond dont la liste de travail n'a pas été lue ne fait rien, le compte et le dit ; un runbook aux étapes non lues n'est pas attaché amputé // P10.7-g (lot 102) : une cause jetée par le moteur de requête n'est plus une absence (total_error, union de labels non établie)

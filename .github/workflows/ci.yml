@@ -828,7 +828,13 @@ env:
   # par `poser_la_sous_liste_ou_avouer` (aveu `non_lu`), chaque compte rend `null`. Les trois témoins ne sont
   # derrière AUCUN `cfg(feature)` -> le MÊME +3 sur `EXPECTED_COLD_TESTS`, écart INCHANGÉ, mesuré par le
   # script du dépôt, jamais d'une addition.
-  EXPECTED_TESTS: "1680"
+  # `P11.19-a` (second volet, groundwork) (2026-09-12) : +1 —
+  # `les_champs_structurels_de_l_autorite_sont_refuses_comme_objet_de_savoir`. `STRUCTURAL_DENY` (7 champs
+  # structurels jamais masquables/aliasables) était RECOPIÉ verbatim dans `field_filter.rs` et `knowledge.rs` ;
+  # la copie est retirée, `knowledge` lit l'autorité `field_filter::STRUCTURAL_DENY`, et le témoin refuse toute
+  # dérive future. Pas de `cfg(feature)` -> le MÊME +1 sur `EXPECTED_COLD_TESTS`, écart INCHANGÉ, mesuré par le
+  # script du dépôt, jamais d'une addition.
+  EXPECTED_TESTS: "1681"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -1297,7 +1303,10 @@ jobs:
           # `P10.7-g` addendum (2026-09-12) : +3, le MÊME que sur `EXPECTED_TESTS`
           # (`le_bundle_diagnostic_avoue_une_lecture_non_faite`, 3 tests) — pas de `cfg(feature)`, écart
           # INCHANGÉ. La dérivation est écrite auprès d'`EXPECTED_TESTS`, une seule fois.
-          EXPECTED_COLD_TESTS: "1935"
+          # `P11.19-a` (second volet, groundwork) (2026-09-12) : +1, le MÊME que sur `EXPECTED_TESTS`
+          # (`les_champs_structurels_de_l_autorite_sont_refuses_comme_objet_de_savoir`) — pas de `cfg(feature)`,
+          # écart INCHANGÉ. La dérivation est écrite auprès d'`EXPECTED_TESTS`, une seule fois.
+          EXPECTED_COLD_TESTS: "1936"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail

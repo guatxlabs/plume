@@ -32,10 +32,6 @@ fn knowledge_db_cell() -> &'static parking_lot::RwLock<String> {
     KNOWLEDGE_DB.get_or_init(|| parking_lot::RwLock::new(String::new()))
 }
 
-/// Champs STRUCTURELS jamais aliasables/tagables (casseraient pagination/temps/anti-doublon/routage) : un
-/// alias/calc/eventtype/tag ne doit pas RÉÉCRIRE ces noms. (`fields` = sac brut ; masqué séparément par #45.)
-const STRUCTURAL_DENY: &[&str] = &["id", "ts", "env_id", "dedup", "origin", "engagement_id", "fields"];
-
 /// Valide un NOM d'objet / champ KO : identifiant GXQL sûr (alphanumérique + '_'), non vide, hors denylist
 /// structurelle. Empêche toute interpolation SQL de nom (les valeurs, elles, sont échappées à la compilation).
 pub(crate) fn validate_ko_ident(raw: &str) -> Result<String, String> {
@@ -46,7 +42,7 @@ pub(crate) fn validate_ko_ident(raw: &str) -> Result<String, String> {
     if !f.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_') {
         return Err(format!("identifiant invalide (alphanumérique + '_' seulement) : {raw}"));
     }
-    if STRUCTURAL_DENY.contains(&f) {
+    if crate::field_filter::STRUCTURAL_DENY.contains(&f) {
         return Err(format!("champ structurel non utilisable comme objet de savoir : {f}"));
     }
     Ok(f.to_string())

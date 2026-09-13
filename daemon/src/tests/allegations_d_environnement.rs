@@ -1329,4 +1329,45 @@ mod allegations_d_environnement_tests {
         );
     }
 
+    // --------------------------------------------------------------------------------------------
+    // GARDE 19 — « `conntrack.sh` dérive le SENS et la PORTÉE que la règle de beaconing C2 interroge »  (silence complet)
+    // --------------------------------------------------------------------------------------------
+
+    /// L'ALLÉGATION TENUE : la règle livrée « beaconing C2 probable » (`DETECTION_RULES_V50`, T1071) ne
+    /// compte que les flux `source=conntrack dir=outbound scope=external`. Aucune garde ne tient que le
+    /// capteur DÉRIVE réellement le sens (`dir`, par un port en écoute) et la portée (`scope`, par la
+    /// classe de l'adresse). S'il cessait, cette règle et les tableaux d'égress tourneraient sur zéro
+    /// ligne et ne lèveraient plus — un canal de commande ou une exfiltration externe resterait
+    /// invisible, SOC muet (silence complet). Les deux valeurs sont DÉRIVÉES de la règle ; leur calcul
+    /// est LU dans le code exécuté du capteur ; jamais recopié. Le capteur AVOUE par ailleurs quand il
+    /// ne peut pas déterminer le sens (aucun port en écoute connu) — cette garde tient qu'il SAIT le
+    /// dériver, pas qu'il le devine toujours.
+    #[test]
+    fn le_capteur_conntrack_derive_le_sens_et_la_portee_que_la_regle_c2_interroge() {
+        let q = crate::DETECTION_RULES_V50
+            .iter()
+            .find(|r| r.1.contains("source=conntrack") && r.1.contains("dir=outbound") && r.1.contains("scope=external"))
+            .map(|r| r.1)
+            .expect("INSTRUMENT : la règle egress/C2 conntrack n'est plus dans DETECTION_RULES_V50 sous cette forme (source=conntrack dir=outbound scope=external)");
+        assert!(q.contains("dir=outbound") && q.contains("scope=external"), "INSTRUMENT : {q}");
+
+        let brut = lire_du_depot("collectors/conntrack.sh");
+        let code = code_execute_shell(&brut);
+        // TÉMOIN NÉGATIF : l'en-tête explique `scope`/`outbound` ; cette prose ne doit pas suffire.
+        assert!(
+            brut.lines().filter(|l| l.trim_start().starts_with('#') && (l.contains("scope") || l.contains("outbound"))).count() >= 1,
+            "INSTRUMENT : l'en-tête de `conntrack.sh` ne parle plus de scope/outbound — témoin négatif disparu"
+        );
+        // Le CODE dérive le SENS : `dir` vaut inbound ou outbound selon un port en écoute.
+        assert!(
+            code.lines().any(|l| l.contains("dir=") && l.contains("outbound") && l.contains("inbound")),
+            "`collectors/conntrack.sh` ne dérive plus `dir` (inbound/outbound) : la règle C2 `dir=outbound` ne verrait plus un seul flux sortant"
+        );
+        // Le CODE classe la PORTÉE et sait rendre `external`.
+        assert!(
+            code.contains("scopeof") && code.lines().any(|l| l.contains("external")),
+            "`collectors/conntrack.sh` ne classe plus la portée `external` (scopeof) : la règle `scope=external` ne verrait plus rien — un C2/exfil externe resterait invisible, SOC muet"
+        );
+    }
+
 }

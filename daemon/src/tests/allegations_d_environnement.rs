@@ -1246,4 +1246,87 @@ mod allegations_d_environnement_tests {
         }
     }
 
+    // --------------------------------------------------------------------------------------------
+    // GARDE 18 — « `integrity.sh` escalade la persistance et le SUID trojanisé que T1543/T1554 interrogent »  (silence complet)
+    // --------------------------------------------------------------------------------------------
+
+    /// L'ALLÉGATION TENUE : deux règles livrées (`DETECTION_RULES_V50`) lisent la sortie du capteur
+    /// d'intégrité — T1543 « vecteur de persistance ajouté » (`change=ajout severity>=<seuil>`) et
+    /// T1554 « SUID modifié in-place » (`kind=suid change=modif`). La garde du répertoire d'unités
+    /// voisine tient que ces chemins sont HACHÉS ; elle ne tient PAS l'ESCALADE de severity qui décide
+    /// si la règle voit le changement. Si `integrity.sh` cessait d'escalader ces genres au niveau du
+    /// seuil, la règle tournerait sur zéro ligne et ne lèverait PLUS JAMAIS — une persistance ajoutée
+    /// ou un SUID trojanisé resterait invisible, SOC muet (silence complet). Seuil DÉRIVÉ de la règle ;
+    /// escalade LUE dans le `case "$kind"` exécuté du capteur ; jamais recopié.
+    #[test]
+    fn le_capteur_d_integrite_escalade_la_persistance_et_le_suid_que_les_regles_interrogent() {
+        // Les deux règles, DÉRIVÉES de la const partagée.
+        let regle = |pred: &dyn Fn(&str) -> bool, quoi: &str| -> &'static str {
+            crate::DETECTION_RULES_V50
+                .iter()
+                .find(|r| r.1.contains("source=integrity") && pred(r.1))
+                .map(|r| r.1)
+                .unwrap_or_else(|| panic!("INSTRUMENT : la règle intégrité « {quoi} » n'est plus dans DETECTION_RULES_V50 sous cette forme"))
+        };
+        let q_persist = regle(&|q| q.contains("change=ajout") && q.contains("severity>="), "persistance T1543");
+        let _q_suid = regle(&|q| q.contains("kind=suid") && q.contains("change=modif"), "SUID modifié T1554");
+        // Le SEUIL de severity de la persistance, lu dans la règle T1543.
+        let seuil: i64 = q_persist
+            .split("severity>=")
+            .nth(1)
+            .map(|s| s.chars().take_while(|c| c.is_ascii_digit()).collect::<String>())
+            .and_then(|s| s.parse().ok())
+            .expect("INSTRUMENT : la règle T1543 ne porte plus `severity>=<n>` — seuil non dérivable");
+
+        let brut = lire_du_depot("collectors/integrity.sh");
+        let code = code_execute_shell(&brut);
+        // TÉMOIN NÉGATIF : l'en-tête explique le sens de `change` ; cette prose ne doit pas suffire.
+        assert!(
+            brut.lines().filter(|l| l.trim_start().starts_with('#') && l.contains("persistance")).count() >= 1,
+            "INSTRUMENT : l'en-tête de `integrity.sh` ne parle plus de persistance — témoin négatif disparu"
+        );
+        // Le capteur DÉCIDE ajout vs modif par comparaison à la baseline, et le CHAMP porte les deux.
+        assert!(
+            code.contains("change=modif") && code.contains("change=ajout"),
+            "`collectors/integrity.sh` ne distingue plus `ajout`/`modif` — les règles T1543/T1554 filtrent sur `change`"
+        );
+        assert!(
+            code.contains(r#"\"kind\""#) && code.contains(r#"\"change\""#),
+            "`collectors/integrity.sh` n'émet plus `kind`/`change` dans ses champs : les règles ne peuvent plus filtrer"
+        );
+
+        // La severity MINIMALE que chaque genre de PERSISTANCE peut émettre doit atteindre le seuil,
+        // sinon un `change=ajout` sur ce vecteur passerait SOUS le filtre de la règle. Lue sur la ligne
+        // `case` du genre (le minimum des `add_ev N` qui y figurent).
+        let sev_min_du_genre = |genre: &str| -> i64 {
+            let ligne = code
+                .lines()
+                .find(|l| l.trim_start().starts_with(&format!("{genre})")))
+                .unwrap_or_else(|| panic!("INSTRUMENT : le genre `{genre}` n'a plus de branche dans le `case` de `integrity.sh`"));
+            let sevs: Vec<i64> = ligne
+                .match_indices("add_ev ")
+                .filter_map(|(i, _)| ligne[i + 7..].chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse().ok())
+                .collect();
+            assert!(!sevs.is_empty(), "INSTRUMENT : la branche `{genre})` n'appelle plus `add_ev <n>` : {ligne}");
+            *sevs.iter().min().unwrap()
+        };
+        // Les vecteurs de persistance que le collecteur escalade (sev >= seuil garanti).
+        for genre in ["suid", "preload", "sudoersd", "pamd", "rclocal", "crond", "unit"] {
+            let sev = sev_min_du_genre(genre);
+            assert!(
+                sev >= seuil,
+                "`collectors/integrity.sh` : la branche `{genre})` peut émettre severity {sev} < {seuil} (seuil de T1543) — un `change=ajout` sur ce vecteur de persistance passerait SOUS le filtre de la règle, jamais levé, sabotage invisible"
+            );
+        }
+        // T1554 : le SUID réécrit in-place (change=modif) est escaladé au maximum (add_ev 4).
+        let ligne_suid = code
+            .lines()
+            .find(|l| l.trim_start().starts_with("suid)"))
+            .expect("INSTRUMENT : plus de branche `suid)`");
+        assert!(
+            ligne_suid.contains("modif") && ligne_suid.contains("add_ev 4"),
+            "`collectors/integrity.sh` n'escalade plus un SUID `change=modif` à `add_ev 4` : la règle T1554 (`kind=suid change=modif`) ne lèverait plus sur une trojanisation in-place : {ligne_suid}"
+        );
+    }
+
 }

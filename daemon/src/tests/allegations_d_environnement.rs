@@ -1370,4 +1370,48 @@ mod allegations_d_environnement_tests {
         );
     }
 
+    // --------------------------------------------------------------------------------------------
+    // GARDE 20 — « `auditd.sh` marque l'échec d'authentification que la règle de brute-force interroge »  (silence complet)
+    // --------------------------------------------------------------------------------------------
+
+    /// L'ALLÉGATION TENUE : la règle livrée de brute-force (`RISK_STARTER_RULES`, T1110) compte les
+    /// events `category=auth action=failure`. `auditd.sh` est un émetteur LIVRÉ de ce signal — un
+    /// `type=USER_AUTH res=failed` devient un event de catégorie `auth` avec `action=failure`. La garde
+    /// `execve` voisine ne tient que l'issue d'un appel `execve`, PAS l'échec d'AUTH. S'il cessait de le
+    /// marquer, un brute-force local (su/sudo/PAM vu par auditd) resterait invisible, un SOC muet a
+    /// l'apparence exacte d'un SOC sain (silence complet). Le filtre est DÉRIVÉ de la règle ; l'émission
+    /// est LUE dans le code exécuté du capteur ; jamais recopié.
+    #[test]
+    fn le_capteur_auditd_marque_l_echec_d_authentification_que_la_regle_de_brute_force_interroge() {
+        let q = crate::RISK_STARTER_RULES
+            .iter()
+            .find(|r| r.1.contains("category=auth") && r.1.contains("action=failure"))
+            .map(|r| r.1)
+            .expect("INSTRUMENT : la règle brute-force T1110 (category=auth action=failure) n'est plus dans RISK_STARTER_RULES sous cette forme");
+        assert!(q.contains("action=failure"), "INSTRUMENT : {q}");
+
+        let brut = lire_du_depot("collectors/auditd.sh");
+        let code = code_execute_shell(&brut);
+        // TÉMOIN NÉGATIF : l'en-tête parle d'`auth` ; cette prose ne doit pas suffire.
+        assert!(
+            brut.lines().filter(|l| l.trim_start().starts_with('#') && l.contains("auth")).count() >= 1,
+            "INSTRUMENT : l'en-tête de `auditd.sh` ne parle plus d'`auth` — témoin négatif disparu"
+        );
+        // Le CODE reconnaît un échec d'authentification (USER_AUTH res=failed)…
+        assert!(
+            code.lines().any(|l| l.contains("USER_AUTH") && l.contains("res=failed")),
+            "`collectors/auditd.sh` ne reconnaît plus un échec d'authentification (`type=USER_AUTH res=failed`)"
+        );
+        // …l'émet en catégorie `auth`…
+        assert!(
+            code.lines().any(|l| l.contains(r#"\tauth\t"#)),
+            "`collectors/auditd.sh` n'émet plus la catégorie `auth` : la règle brute-force T1110 ne verrait plus un échec d'auth"
+        );
+        // …et pose `action=failure` sur cet échec.
+        assert!(
+            code.lines().any(|l| l.contains("res") && l.contains("failed") && l.contains("action") && l.contains("failure")),
+            "`collectors/auditd.sh` ne pose plus `action=failure` sur un échec d'auth : le brute-force local resterait invisible, SOC muet"
+        );
+    }
+
 }

@@ -1194,4 +1194,56 @@ mod allegations_d_environnement_tests {
         );
     }
 
+    // --------------------------------------------------------------------------------------------
+    // GARDE 17 — « `auditd.sh` tague le sabotage d'un fichier sensible que la règle T1565 interroge »  (silence complet)
+    // --------------------------------------------------------------------------------------------
+
+    /// L'ALLÉGATION TENUE : la règle livrée « tamper fichier sensible » (`DETECTION_RULES_V50`, T1565)
+    /// compte les events `source=auditd category=tamper` dont la severity atteint son seuil ; son
+    /// commentaire de semis affirme que « le collecteur tague sev4 UNIQUEMENT sudoers/shadow/
+    /// ld.so.preload/creds/persist ». La garde `execve` voisine ne tient que l'ISSUE d'un appel — PAS
+    /// cette escalade. Si `auditd.sh` cessait d'escalader à ce niveau sur ces chemins, la règle
+    /// tournerait sur zéro ligne et ne lèverait PLUS JAMAIS : un sabotage de sudoers/shadow resterait
+    /// invisible, un SOC muet a l'apparence d'un SOC sain (silence complet). Le seuil est DÉRIVÉ de la
+    /// règle ; l'escalade, du CODE exécuté du capteur ; jamais recopié.
+    #[test]
+    fn le_capteur_auditd_tague_le_sabotage_de_fichier_sensible_que_la_regle_interroge() {
+        // La règle, DÉRIVÉE de la const partagée entre le seed et la migration (jamais un littéral recopié).
+        let query = crate::DETECTION_RULES_V50
+            .iter()
+            .find(|r| r.1.contains("source=auditd") && r.1.contains("category=tamper"))
+            .map(|r| r.1)
+            .expect("INSTRUMENT : la règle « tamper fichier sensible » n'est plus dans DETECTION_RULES_V50 sous cette forme (source=auditd category=tamper)");
+        // Le SEUIL de severity que la règle EXIGE, lu dans sa requête (`severity>=<n>`).
+        let seuil: i64 = query
+            .split("severity>=")
+            .nth(1)
+            .map(|s| s.chars().take_while(|c| c.is_ascii_digit()).collect::<String>())
+            .and_then(|s| s.parse().ok())
+            .expect("INSTRUMENT : la règle tamper ne porte plus `severity>=<n>` — le seuil n'est plus dérivable");
+        assert!(seuil >= 1, "INSTRUMENT : seuil de severity absurde ({seuil}) dans `{query}`");
+
+        let brut = lire_du_depot("collectors/auditd.sh");
+        let code = code_execute_shell(&brut);
+        // TÉMOIN NÉGATIF : l'en-tête EXPLIQUE `tamper` en commentaire ; cette prose ne doit pas suffire.
+        assert!(
+            brut.lines().filter(|l| l.trim_start().starts_with('#') && l.contains("tamper")).count() >= 1,
+            "INSTRUMENT : l'en-tête de `auditd.sh` ne parle plus de `tamper` — témoin négatif disparu, la garde serait aveugle"
+        );
+        // Le CODE émet bien la catégorie `tamper` (la règle ne compte QUE `category=tamper`).
+        assert!(
+            code.lines().any(|l| l.contains("tamper")),
+            "`collectors/auditd.sh` n'émet plus la catégorie `tamper` : la règle `{query}` ne lèvera plus jamais"
+        );
+        // Et il ESCALADE à `sev=<seuil>` sur les chemins sensibles que la règle vise — sinon la règle,
+        // qui filtre `severity>={seuil}`, ne verra jamais un sabotage de ces fichiers.
+        let escalade = format!("sev={seuil}");
+        for chemin_sensible in ["shadow", "sudoers"] {
+            assert!(
+                code.lines().any(|l| l.contains(&escalade) && l.contains(chemin_sensible)),
+                "`collectors/auditd.sh` n'escalade plus à `{escalade}` sur `{chemin_sensible}` : la règle tamper `severity>={seuil}` ne lèvera plus sur ce fichier sensible — sabotage invisible, SOC muet"
+            );
+        }
+    }
+
 }

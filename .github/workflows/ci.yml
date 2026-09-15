@@ -2147,6 +2147,19 @@ jobs:
         continue-on-error: true
         run: python3 .github/scripts/check_a_collector_declares_the_fields_it_emits.py
 
+      # `P10.7-f` — LA GARDE DE FAMILLE QUI MANQUAIT. La garde `P10.7-g` (garde_57) juge des VOIES nommées
+      # (cinq fonctions de lecture) ; celle-ci juge le GESTE : un itérateur de lignes rusqlite aplati
+      # (`.flatten()`, `filter_map(Result::ok)`…) sous ses quatre écritures — chaîne directe, closure
+      # enveloppante, variable liée, boucle `for` — partout dans `handlers/`, derrière `req_conn!` comme
+      # derrière une connexion passée en argument. Mesuré le 2026-09-16 : deux angles morts de FORME de
+      # la garde sœur (`.map(|x| x.flatten())`, `.flatten()` sur un nom lié) et cinquante-cinq défauts
+      # hors de sa population. L'ensemble nommé admet les défauts connus pour être câblé vert AUJOURD'HUI ;
+      # chaque correction doit retirer son entrée (« exemption sans objet »), une forme neuve rougit.
+      - name: Une liste tronquée n'est jamais servie comme complète (P10.7-f)
+        id: garde_67
+        continue-on-error: true
+        run: python3 .github/scripts/check_a_truncated_list_is_never_served_as_a_complete_one.py
+
       # `P11.18-z` — LA RECHERCHE D'UNE LISTE SURVIT AU RENDU QUI DÉTRUIT SON CHAMP. La garde tient que
       # chaque liste cherchable déclare l'identité stable sans laquelle la mémoire ne peut pas s'armer :
       # sans elle, le mécanisme est posé mais la vue se comporte comme avant, en silence.
@@ -2622,6 +2635,7 @@ jobs:
           total=$((total+1)); o="${{ steps.garde_64.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_ship_bounds_the_spool_and_says_its_losses.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_65.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_address_definitions_are_counted_by_a_written_criterion.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_66.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_collector_declares_the_fields_it_emits.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_67.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_truncated_list_is_never_served_as_a_complete_one.py : $o"; }
           echo "gardes jouées : $total ; en échec : $rouges"
           exit $rc
   features:

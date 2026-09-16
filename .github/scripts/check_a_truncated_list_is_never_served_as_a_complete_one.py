@@ -551,12 +551,35 @@ DEFAUTS_CONNUS = {c: n for lib, cl in CLASSES if lib.startswith("défaut") for c
 # ================================================================================================
 # LES LECTEURS DE FORME
 # ================================================================================================
+# Le littéral de CARACTÈRE, pour que `positions_de_coupe` ne prenne pas le guillemet d'un `'"'` pour
+# l'ouverture d'une chaîne. C'est le trou de `P10.20-c`, un cran plus bas : le lecteur partagé
+# `sans_commentaires_rust` a été corrigé le 2026-09-16, mais il RESTITUE le littéral tel quel, et ce
+# scanner-ci, qui lit sa sortie, y retombait. MESURÉ le 2026-09-16 sur la garde sœur de `P10.20-b` :
+# trois fichiers de `handlers/` portent le cas (`actions.rs:889`, `freshness.rs:496`,
+# `panneau_avoue.rs:237`), et la fausse chaîne ouverte par leur `'"'` avalait la fin du fichier.
+# ICI l'effet était BORNÉ — `positions_de_coupe` ne sert qu'à `debut_instruction`, donc au PRÉFIXE lu
+# par `liaisons` et à l'extrait imprimé ; un préfixe faux fait manquer une liaison, il n'en invente
+# pas. Le verdict de cette garde est IDENTIQUE avant et après (2 sites, 2 fichiers, mêmes écritures,
+# sortie octet pour octet identique). Il est corrigé quand même : une borne d'instruction fausse est
+# une borne d'instruction fausse, et le prochain lecteur qui s'appuiera dessus n'aura pas cette chance.
+# Une durée de vie (`'a`, `'static`) n'a pas de guillemet fermant après un caractère : elle ne matche
+# pas. LE TÉMOIN DE CETTE CORRECTION VIT DANS LA GARDE SŒUR
+# (`check_a_single_row_read_that_failed_is_never_served_as_a_fact.py`, « épreuve des LITTÉRAUX, accord
+# des deux lecteurs ») : elle IMPORTE `positions_de_coupe`, et la mutation qui retire ces trois lignes
+# la fait rougir.
+CARACTERE_LITTERAL = re.compile(r"'(?:\\(?:x[0-9A-Fa-f]{2}|u\{[0-9A-Fa-f]{1,6}\}|.)|[^\\'])'")
+
+
 def positions_de_coupe(code):
     """Indices des `;`, `{` et `}` HORS chaîne : les bornes d'instruction. Une accolade dans un
-    littéral SQL ne coupe rien."""
+    littéral SQL ne coupe rien, et un `'"'` n'ouvre pas de chaîne."""
     out, j, n = [], 0, len(code)
     while j < n:
         c = code[j]
+        car = CARACTERE_LITTERAL.match(code, j)
+        if car:
+            j = car.end()
+            continue
         if c == '"':
             j += 1
             while j < n and code[j] != '"':
@@ -1109,9 +1132,14 @@ def ce_qui_n_est_pas_tenu():
           "(`sla_policy_for`, repli silencieux sur le SLA legacy) et `panneau_avoue.rs:524` (`cache_lire`, "
           "un simple recalcul) ; QUATRE sont FAIL-CLOSED et ne servent aucun fait inventé, seulement une "
           "cause fausse — `dashboards.rs:200` et `users_lookups.rs:101` et `connectors/mod.rs:500` (et `:574`, même forme) rendent "
-          "404 « introuvable », `idp.rs:709` rend 400 « aucun enrôlement en cours ». ÉLARGIR RESTE UNE "
-          "DÉCISION À PRENDRE AILLEURS, et cette mesure en est le prix d'entrée : élargir sans mesurer est "
-          "exactement la faute que la garde sœur a payée deux fois.\n"
+          "404 « introuvable », `idp.rs:709` rend 400 « aucun enrôlement en cours ». LA DÉCISION EST PRISE, "
+          "ET ELLE N'EST PAS UN ÉLARGISSEMENT DE CELLE-CI : `P10.20-b` a donné à cette famille sa PROPRE "
+          "garde, `check_a_single_row_read_that_failed_is_never_served_as_a_fact.py`, le 2026-09-16 — "
+          "population par un geste VOISIN mais distinct (un `query_row(` dont la chaîne ABSORBE l'échec, "
+          "ce qui contient `.ok()` sans s'y réduire), ensemble nommé portant les FORMES et non des "
+          "comptes, verdict et planchers séparés pour qu'un refus de conclure de l'une ne fasse pas taire "
+          "l'autre. L'épreuve du RECEVEUR ci-dessus reste donc vraie et reste là : les deux populations "
+          "sont DISJOINTES par construction, et aucun site n'est compté deux fois.\n"
           "  * elle lit `daemon/src/handlers/` ET SES SOUS-RÉPERTOIRES depuis le 2026-09-16 (l'ancienne "
           "borne PLATE cachait `connectors/mod.rs`, corrigé le même jour), mais elle ne lit QUE cela. Les "
           "modules hors `handlers/` qui servent des corps ne sont toujours pas mesurés — un corps servi "

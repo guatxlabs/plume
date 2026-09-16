@@ -834,7 +834,7 @@ env:
   # la copie est retirée, `knowledge` lit l'autorité `field_filter::STRUCTURAL_DENY`, et le témoin refuse toute
   # dérive future. Pas de `cfg(feature)` -> le MÊME +1 sur `EXPECTED_COLD_TESTS`, écart INCHANGÉ, mesuré par le
   # script du dépôt, jamais d'une addition.
-  EXPECTED_TESTS: "1756"
+  EXPECTED_TESTS: "1761"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -1306,7 +1306,7 @@ jobs:
           # `P11.19-a` (second volet, groundwork) (2026-09-12) : +1, le MÊME que sur `EXPECTED_TESTS`
           # (`les_champs_structurels_de_l_autorite_sont_refuses_comme_objet_de_savoir`) — pas de `cfg(feature)`,
           # écart INCHANGÉ. La dérivation est écrite auprès d'`EXPECTED_TESTS`, une seule fois.
-          EXPECTED_COLD_TESTS: "2011"
+          EXPECTED_COLD_TESTS: "2016"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail
@@ -2159,6 +2159,14 @@ jobs:
         id: garde_67
         continue-on-error: true
         run: python3 .github/scripts/check_a_truncated_list_is_never_served_as_a_complete_one.py
+      # `P10.20-b` — UNE LECTURE DE LIGNE UNIQUE QUI A ÉCHOUÉ N'EST JAMAIS SERVIE COMME UN FAIT. Sœur de
+      # `garde_67` : geste voisin mais DISJOINT (un `query_row(` dont la chaîne ABSORBE l'échec — `.ok()`,
+      # `unwrap_or*`, `map_or*`, `is_ok`/`is_err`), ensemble nommé portant les FORMES et non des comptes,
+      # 90 sites admis avec leur rang le 2026-09-16, dont 3 qui ouvrent une porte et 18 qui servent un fait.
+      - name: Une lecture de ligne unique ratée n'est jamais servie comme un fait (P10.20-b)
+        id: garde_68
+        continue-on-error: true
+        run: python3 .github/scripts/check_a_single_row_read_that_failed_is_never_served_as_a_fact.py
 
       # `P11.18-z` — LA RECHERCHE D'UNE LISTE SURVIT AU RENDU QUI DÉTRUIT SON CHAMP. La garde tient que
       # chaque liste cherchable déclare l'identité stable sans laquelle la mémoire ne peut pas s'armer :
@@ -2636,6 +2644,7 @@ jobs:
           total=$((total+1)); o="${{ steps.garde_65.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_address_definitions_are_counted_by_a_written_criterion.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_66.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_collector_declares_the_fields_it_emits.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_67.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_truncated_list_is_never_served_as_a_complete_one.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_68.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_single_row_read_that_failed_is_never_served_as_a_fact.py : $o"; }
           echo "gardes jouées : $total ; en échec : $rouges"
           exit $rc
   features:

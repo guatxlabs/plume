@@ -763,38 +763,55 @@ pub(crate) async fn silence_delete(State(st): State<AppState>, Extension(au): Ex
 // 11) CHARGEMENTS pour le dispatch (politiques + silences actifs)
 // ======================================================================================
 
-/// Charge les politiques (vide si la table n'existe pas / est vide -> le dispatch retombe en fan-out plat).
-pub(crate) fn load_policies(conn: &Connection) -> Vec<Policy> {
-    let mut stmt = match conn.prepare("SELECT id,matchers,contact_points,continue_ FROM notification_policy WHERE enabled=1") {
-        Ok(s) => s,
-        Err(_) => return Vec::new(),
-    };
-    stmt.query_map([], |r| {
-        let matchers: String = r.get(1)?;
-        let contacts: String = r.get(2)?;
-        Ok(Policy {
-            id: r.get(0)?,
-            matchers: matchers_from_json(&matchers),
-            contacts: contacts.split(',').filter(|s| !s.is_empty()).filter_map(|s| s.parse::<i64>().ok()).collect(),
-            cont: r.get::<_, i64>(3)? != 0,
+/// Charge les politiques de routage. REND UN `Result` (`P10.7-f`, rang 2).
+///
+/// CE QUE LA SIGNATURE CHANGE, ET POURQUOI ELLE DEVAIT CHANGER. Avant : `Vec<Policy>`, une table absente ou
+/// une ligne illisible rendant `Vec::new()`. Or un vecteur VIDE a un SENS MÉTIER ici — c'est le « MODE 0 »
+/// documenté sur `dispatch_notifications` : aucune politique = fan-out PLAT vers TOUS les canaux activés.
+/// Une lecture ratée était donc traduite, mot pour mot, en « envoyez à tout le monde » : une alerte que
+/// l'exploitant avait routée vers une seule astreinte partait sur Slack, la liste email et PagerDuty à la
+/// fois. Un vecteur ne peut pas porter cette distinction ; `Result` le peut, et il OBLIGE chaque appelant à
+/// dire ce qu'il fait d'une lecture ratée. Le parcours est aussi soldé en bloc : une SEULE politique avalée
+/// suffit à aplatir le routage de tout ce qu'elle seule couvrait.
+pub(crate) fn load_policies(conn: &Connection) -> rusqlite::Result<Vec<Policy>> {
+    conn.prepare("SELECT id,matchers,contact_points,continue_ FROM notification_policy WHERE enabled=1")
+        .and_then(|mut stmt| {
+            stmt.query_map([], |r| {
+                let matchers: String = r.get(1)?;
+                let contacts: String = r.get(2)?;
+                Ok(Policy {
+                    id: r.get(0)?,
+                    matchers: matchers_from_json(&matchers),
+                    contacts: contacts.split(',').filter(|s| !s.is_empty()).filter_map(|s| s.parse::<i64>().ok()).collect(),
+                    cont: r.get::<_, i64>(3)? != 0,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
         })
-    })
-    .map(|x| x.flatten().collect())
-    .unwrap_or_default()
 }
 
-/// Charge les jeux de matchers des silences ACTIFS (expires_at>now) — un silence expiré est ignoré (auto-expiry).
-pub(crate) fn load_active_silences(conn: &Connection, now_ts: i64) -> Vec<Vec<(String, String)>> {
-    let mut stmt = match conn.prepare("SELECT matchers FROM silence WHERE expires_at>?1") {
-        Ok(s) => s,
-        Err(_) => return Vec::new(),
-    };
-    stmt.query_map(params![now_ts], |r| {
-        let m: String = r.get(0)?;
-        Ok(matchers_from_json(&m))
-    })
-    .map(|x| x.flatten().filter(|m| !m.is_empty()).collect())
-    .unwrap_or_default()
+/// Charge les jeux de matchers des silences ACTIFS (expires_at>now) — un silence expiré est ignoré
+/// (auto-expiry). REND UN `Result` (`P10.7-f`, rang 2).
+///
+/// LE DÉFAUT EST SYMÉTRIQUE ET PLUS DIRECT QUE CELUI DES POLITIQUES : un vecteur vide se lit « rien n'est
+/// muet », donc TOUT part. Un silence est posé par un humain PENDANT une maintenance ou un exercice rouge ;
+/// l'avaler, c'est réveiller une astreinte que quelqu'un avait explicitement dispensée, et c'est le genre de
+/// bruit qui apprend à l'astreinte à ignorer le canal. La ligne illisible est ici la voie la plus plausible :
+/// `matchers` est un blob JSON écrit par une version antérieure du schéma.
+///
+/// NOTER CE QUI N'EST PAS UN ÉCHEC : `.filter(|m| !m.is_empty())` reste, et il est INTACT. Un jeu de
+/// matchers VIDE est une ligne parfaitement lue dont le JSON ne porte aucun matcher — l'écarter est une
+/// décision de sûreté (un silence sans matcher muselerait TOUT), pas un avalement.
+pub(crate) fn load_active_silences(conn: &Connection, now_ts: i64) -> rusqlite::Result<Vec<Vec<(String, String)>>> {
+    conn.prepare("SELECT matchers FROM silence WHERE expires_at>?1")
+        .and_then(|mut stmt| {
+            stmt.query_map(params![now_ts], |r| {
+                let m: String = r.get(0)?;
+                Ok(matchers_from_json(&m))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .map(|v| v.into_iter().filter(|m: &Vec<(String, String)>| !m.is_empty()).collect())
 }
 
 // ======================================================================================
@@ -938,7 +955,7 @@ mod alerting_tests {
         // ledger d'un create (simule le handler)
         audit_config_change(&conn, "config.silence.create", "silence test", 3, "silence test", "{}").unwrap();
 
-        let active = load_active_silences(&conn, now_ts);
+        let active = load_active_silences(&conn, now_ts).expect("`P10.7-f` : la lecture des silences rend un `Result` — ici elle doit RÉUSSIR");
         assert_eq!(active.len(), 1, "seul le silence non expiré est actif (auto-expiry)");
         let l = alert_labels(3, "", "web-01", "", "");
         assert!(alert_is_silenced(&active, &l), "alerte host=web-01 mutée");

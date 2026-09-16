@@ -288,13 +288,23 @@ pub(crate) fn marquages_de_sources(conn: &Connection) -> HashMap<String, Marquag
 
 /// Sources déclarées par les connecteurs CONFIGURÉS dans cette base (dérivation 4). `defender` écrit sous un
 /// nom fixe ; `http_pull` sous `config.source` ou, à défaut, `http:<id>` (même repli que l'ingestion) ;
-/// `taxii2` n'émet pas d'événement (indicateurs), donc aucune source. Table absente -> rien.
-fn sources_declarees_par_connecteurs(conn: &Connection) -> Vec<(String, i64)> {
-    let Ok(mut s) = conn.prepare("SELECT id, type, config_json FROM connector") else { return Vec::new() };
-    let Ok(rows) = s.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))) else {
-        return Vec::new();
-    };
-    rows.flatten()
+/// `taxii2` n'émet pas d'événement (indicateurs), donc aucune source.
+///
+/// `P10.7-f` (rang 2) — REND UN `Result`. Avant : `Err(_) => Vec::new()` deux fois, puis `rows.flatten()`.
+/// Les trois rendaient « aucun connecteur ne déclare quoi que ce soit », qui est un FAIT PLAUSIBLE (une
+/// installation sans connecteur) et qui, ici, a une conséquence : la source retombe en `NonDeclaree`, donc
+/// `unexpected: true` dans l'inventaire. Un connecteur avalé transforme une source PARFAITEMENT attendue en
+/// signal — l'opérateur va enquêter sur un flux qu'il a lui-même configuré, et apprendre que les signaux de
+/// cette vue ne valent rien. « Non lu » et « aucun » devaient donc cesser d'avoir la même forme.
+fn sources_declarees_par_connecteurs(conn: &Connection) -> rusqlite::Result<Vec<(String, i64)>> {
+    let lignes: Vec<(i64, String, String)> = conn
+        .prepare("SELECT id, type, config_json FROM connector")
+        .and_then(|mut s| {
+            s.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+        })?;
+    Ok(lignes
+        .into_iter()
         .filter_map(|(id, ctype, cfg)| match ctype.as_str() {
             "defender" => Some(("defender".to_string(), id)),
             "http_pull" => {
@@ -306,32 +316,49 @@ fn sources_declarees_par_connecteurs(conn: &Connection) -> Vec<(String, i64)> {
             }
             _ => None,
         })
-        .collect()
+        .collect())
 }
 
-/// LA DÉRIVATION. `Some(raison)` si la source est attendue par construction, `None` sinon (signal).
+/// LA DÉRIVATION. `Ok(Some(raison))` si la source est attendue par construction, `Ok(None)` si aucune des
+/// quatre dérivations ne la déclare, `Err` si la QUATRIÈME (les connecteurs configurés) n'a pas pu être lue.
 /// L'ordre des dérivations fixe la raison RENDUE quand plusieurs s'appliquent (la plus directe d'abord) ;
 /// le verdict, lui, ne dépend pas de l'ordre.
-pub(crate) fn raison_attendue_par_construction(conn: &Connection, source: &str) -> Option<RaisonAttendue> {
+///
+/// `P10.7-f` (rang 2) — POURQUOI LE `Err` REMONTE JUSQU'ICI ET PAS PLUS HAUT. Les trois premières
+/// dérivations sont PURES (constantes du code, spécifications de rollup compilées) : elles ne peuvent pas
+/// échouer, et elles répondent AVANT la lecture. Une source livrée par ce dépôt reste donc déclarée même
+/// quand la table `connector` est illisible — c'est l'ordre des `return` qui le garantit, pas une
+/// précaution. Seule une source qu'AUCUNE des trois ne couvre dépend de la lecture, et pour celle-là le
+/// troisième état est le seul honnête.
+pub(crate) fn raison_attendue_par_construction(conn: &Connection, source: &str) -> rusqlite::Result<Option<RaisonAttendue>> {
     if let Some((_, fichier)) = SOURCES_LIVREES.iter().find(|(s, _)| *s == source) {
-        return Some(RaisonAttendue::Livree { fichier });
+        return Ok(Some(RaisonAttendue::Livree { fichier }));
     }
     for (id, _, _, sonde, _) in COLLECTORS.iter() {
         if *id == source || imputer_alerte_de_capteur(sonde).iter().any(|s| s == source) {
-            return Some(RaisonAttendue::Sonde { capteur: *id });
+            return Ok(Some(RaisonAttendue::Sonde { capteur: *id }));
         }
     }
     if dim_rollup_specs().iter().any(|(s, _)| s == source) {
-        return Some(RaisonAttendue::Agregee);
+        return Ok(Some(RaisonAttendue::Agregee));
     }
-    sources_declarees_par_connecteurs(conn)
+    Ok(sources_declarees_par_connecteurs(conn)?
         .into_iter()
         .find(|(s, _)| s == source)
-        .map(|(_, id)| RaisonAttendue::Connecteur { id })
+        .map(|(_, id)| RaisonAttendue::Connecteur { id }))
 }
 
-pub(crate) fn source_attendue_par_construction(conn: &Connection, source: &str) -> bool {
-    raison_attendue_par_construction(conn, source).is_some()
+/// `P10.7-f` (rang 2) — CE PRÉDICAT REND UN `Result`, PARCE QU'AUCUN DES DEUX BOOLÉENS N'EST HONNÊTE ICI.
+/// Son unique appelant de production est `source_settings_put`, qui s'en sert pour DEUX décisions écrites
+/// dans la base : la valeur `expected` avec laquelle la ligne `source_settings` NAÎT (upsert), et la
+/// SÉVÉRITÉ d'audit de `set_expected` (3 — bruyant — quand un humain reconnaît une source que rien ne
+/// déclare, parce que c'est étouffer un signal). Un `true` par défaut ferait naître la ligne « attendue »
+/// sans que personne ne l'ait dit — exactement le défaut que le doc-commentaire de `source_settings_put`
+/// déclare avoir fermé — et ferait retomber l'audit bruyant à 2. Un `false` par défaut ferait naître la
+/// ligne `expected=0`, que `verdict_de_source` lit `Retiree` : « quelqu'un a dit non », alors que personne
+/// n'a rien dit. Le troisième état est donc le seul disponible, et l'appelant REFUSE le geste.
+pub(crate) fn source_attendue_par_construction(conn: &Connection, source: &str) -> rusqlite::Result<bool> {
+    raison_attendue_par_construction(conn, source).map(|r| r.is_some())
 }
 
 /// L'ensemble des sources attendues par construction SANS connexion (dérivations 1 à 3), pour le registre
@@ -413,9 +440,20 @@ pub(crate) async fn sources_inventory(State(st): State<AppState>, Extension(au):
             }
             let mut sources: Vec<Value> = Vec::new();
             for (src, (last, n24)) in &obs {
+                // `P10.7-f` (rang 2) — UNE DÉCLARATION NON LUE REND LA SOURCE « INDÉTERMINÉE », JAMAIS
+                // « INATTENDUE ». `unexpected` est le SIGNAL de cette vue : c'est lui qu'un opérateur suit,
+                // et le suivre pour une source que ses propres connecteurs déclarent est le plus sûr moyen
+                // de lui apprendre à ne plus le suivre. Le troisième état n'est pas un `false` prudent : un
+                // `false` dirait « établi : elle n'est pas inattendue », ce qui est également faux. On sert
+                // donc `null` aux deux booléens dérivés, `indeterminee: true`, et une raison qui NOMME la
+                // lecture manquante. Les lignes voisines, elles, restent servies : la lecture échoue par
+                // source, et rendre l'inventaire entier non lu (la forme des trois lectures typées
+                // ci-dessus) perdrait les verdicts qui, eux, ont bien été établis.
                 let construction = raison_attendue_par_construction(conn, src);
                 let m = meta.get(src);
                 // UNE SEULE DÉRIVATION pour « attendue ? » et « déclarée par qui ? » (fonction pure).
+                let indeterminee = construction.is_err();
+                let construction = construction.unwrap_or(None);
                 let verdict = verdict_de_source(construction.clone(), m);
                 let expected = verdict.attendue();
                 let age = now_ts - last;
@@ -430,10 +468,14 @@ pub(crate) async fn sources_inventory(State(st): State<AppState>, Extension(au):
                 let mut entry = json!({
                     "source": src,
                     "in_collectors": construction.is_some(),
-                    "raison_attendue": verdict.libelle(),
-                    "declaree_par": verdict.provenance(),
-                    "expected": expected,
-                    "unexpected": !expected,
+                    "raison_attendue": if indeterminee {
+                        Some("déclaration par connecteur NON LUE — cette source n'est PAS classée inattendue : son verdict n'a pas pu être établi".to_string())
+                    } else { verdict.libelle() },
+                    "declaree_par": if indeterminee { None } else { verdict.provenance() },
+                    // `P10.7-f` (rang 2) : `null` sur les deux, jamais `false` sur l'un et `true` sur l'autre.
+                    "expected": if indeterminee { Value::Null } else { json!(expected) },
+                    "unexpected": if indeterminee { Value::Null } else { json!(!expected) },
+                    "indeterminee": indeterminee,
                     "marquage": m.map(|x| json!({ "expected": x.expected, "updated_by": x.expected_par, "updated": x.expected_le })),
                     "cadence_declarable": cadence_declarable,
                     "label": m.and_then(|x| x.label.clone()),
@@ -529,7 +571,18 @@ pub(crate) async fn source_settings_put(State(st): State<AppState>, Extension(au
         return (StatusCode::BAD_REQUEST, "action inconnue (enum fermé)").into_response();
     }
     crate::req_conn!(st, au, conn);
-    let attendue = source_attendue_par_construction(&conn, &source);
+    // `P10.7-f` (rang 2) — LE VERDICT DE CONSTRUCTION EST LU, OU LE GESTE EST REFUSÉ. Cette valeur entre
+    // DANS LA BASE (l'`expected` de la ligne qui naît) et DANS L'AUDIT (la sévérité 3 de `set_expected`) :
+    // une écriture faite sur un verdict non lu serait durable, signée du nom de l'exploitant, et
+    // indiscernable d'une décision. Refuser est réversible — l'exploitant réessaie —, écrire ne l'est pas.
+    let attendue = match source_attendue_par_construction(&conn, &source) {
+        Ok(v) => v,
+        Err(_) => return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "verdict de construction NON LU (déclarations des connecteurs) : le réglage n'est PAS écrit. \
+             Une ligne créée ici naîtrait avec un « attendu » que personne n'a décidé ; réessayer.",
+        ).into_response(),
+    };
     // DÉCLARATION DE CADENCE : validée ENTIÈREMENT avant d'ouvrir la transaction, et REFUSÉE là où une
     // sonde du démon déclare déjà — la préséance l'ignorerait, et une écriture acceptée puis ignorée est
     // exactement la famille de défauts que cette campagne poursuit. Rend `(valeur stockée, intervalle)`.

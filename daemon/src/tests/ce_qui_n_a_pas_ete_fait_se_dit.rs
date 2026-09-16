@@ -504,9 +504,13 @@
 
     /// (C4) CE QUE L'AVEU NE COUVRE PAS, ÉCRIT PLUTÔT QUE SUPPOSÉ. Un rollup ILLISIBLE rend une liste vide
     /// et `ecourtee=false` — délibérément : cette lecture n'a rien vu, donc elle ne sait pas qu'il en
-    /// existait davantage, et crier « écourté » y serait un second mensonge. Le type sépare « bornée » de
-    /// « complète » ; il ne sépare PAS « vide » de « illisible ». C'est le défaut de la section A, sur une
-    /// autre lecture, et il reste OUVERT ici.
+    /// existait davantage, et crier « écourté » y serait un second mensonge.
+    ///
+    /// `P10.7-f` (rang 2) — LA RÉSERVE QUE CE TÉMOIN PORTAIT EST FERMÉE, ET LA PHRASE EST CORRIGÉE PLUTÔT
+    /// QUE LAISSÉE. Il disait « le type ne sépare PAS vide de illisible … il reste OUVERT ici » : c'était
+    /// vrai le jour où il a été écrit, c'est FAUX depuis que `SourcesConnues::non_lue` existe. Les deux
+    /// asserts d'origine sont conservés TELS QUELS (ils tiennent toujours, et les retirer effacerait la
+    /// distinction « bornée vs complète » qu'ils gardent) ; le troisième est la fermeture.
     #[test]
     fn un_rollup_illisible_ne_s_avoue_pas_ecourte_et_c_est_dit() {
         let sans_rollup = Connection::open_in_memory().expect("base en mémoire");
@@ -515,6 +519,7 @@
 
         assert!(s.valeurs.is_empty(), "rien n'a pu être lu");
         assert!(!s.ecourtee, "une lecture qui n'a rien vu ne peut pas affirmer qu'il en existait plus");
+        assert!(s.non_lue, "`P10.7-f` : et ce vide n'est PAS un inventaire vide — il est NON LU, et le type le dit");
     }
 
     /// (C5) L'AVEU ATTEINT LE CLIENT. Mesurer la troncature sans la SERVIR ne corrigerait rien : c'est la
@@ -523,11 +528,11 @@
     /// FORME soit prouvable ici, et pas seulement sa mesure.
     #[test]
     fn la_route_de_schema_sert_l_aveu_de_troncature() {
-        let ecourtee = soql_schema_json(SourcesConnues { valeurs: vec!["a".into(), "b".into()], ecourtee: true });
+        let ecourtee = soql_schema_json(SourcesConnues { valeurs: vec!["a".into(), "b".into()], ecourtee: true, non_lue: false });
         assert_eq!(ecourtee["values"]["source"], json!(["a", "b"]), "la liste est servie telle quelle");
         assert_eq!(ecourtee["values"]["source_capped"], json!(true), "et la troncature est SERVIE : {ecourtee}");
 
-        let complete = soql_schema_json(SourcesConnues { valeurs: vec!["a".into()], ecourtee: false });
+        let complete = soql_schema_json(SourcesConnues { valeurs: vec!["a".into()], ecourtee: false, non_lue: false });
         assert_eq!(
             complete["values"]["source_capped"],
             json!(false),

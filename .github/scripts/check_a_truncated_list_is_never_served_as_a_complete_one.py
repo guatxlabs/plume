@@ -86,10 +86,17 @@ n'est pas une rançon.
 RELEVÉ APRÈS LE RANG UN (2026-09-16, même jour, lot suivant) : les huit sites de sécurité et
 d'administration sont ENTIÈRES OU AVOUÉES (collecte en bloc, `corps_de_liste_illisible`, cinq cents
 nommé pour le tableau nu des fournisseurs d'identité, cinq cent trois pour la remise d'actions, tick
-aveugle compté pour le responder local) et leurs entrées ont quitté l'ensemble : la garde rend
-désormais cinquante sites sur vingt-six fichiers, quarante-sept défauts connus. Les comptes des
-paragraphes ci-dessus sont le RELEVÉ DU MATIN, gardé tel quel comme point de départ ; les planchers
-ne montent jamais.
+aveugle compté pour le responder local) et leurs entrées ont quitté l'ensemble : la garde rendait
+alors cinquante sites sur vingt-six fichiers, quarante-sept défauts connus.
+
+RELEVÉ APRÈS LE RANG DEUX (2026-09-16, lot suivant) : les dix sites de DÉTECTION sont fermés à leur
+tour — cinq listes servies avouent (`rules_list`, `parsers_list`, `baselines_list`, `playbooks_list`,
+le vocabulaire de complétion, dont le cache SWR n'accueille plus un aveu), cinq lectures INTERNES
+rendent un `Result` et chaque appelant agit en connaissance (tour de dispatch sauté et compté sans
+marquer aucune alerte envoyée ; cache d'engagements CONSERVÉ et compté plutôt que vidé ; ligne de base
+« non évaluée » ; source « indéterminée » et jamais « inattendue »). La garde rend désormais QUARANTE
+sites sur vingt-deux fichiers, trente-sept défauts connus. Les comptes des paragraphes ci-dessus sont
+le RELEVÉ DU MATIN, gardés tels quels comme point de départ ; les planchers ne montent jamais.
 
 LES CINQUANTE-CINQ DÉFAUTS SONT ADMIS AUJOURD'HUI, ET C'EST UN AVEU, PAS UN ACQUITTEMENT
 ------------------------------------------------------------------------------------------
@@ -231,37 +238,28 @@ DEFAUTS_RANG_1_SECURITE = {}
 
 # RANG 2 — DÉTECTION : une ligne avalée n'est pas une ligne d'affichage en moins, c'est de la
 # DÉTECTION EN MOINS. Le produit continue de tourner, plus aveugle, et rien ne l'écrit.
-DEFAUTS_RANG_2_DETECTION = {
-    # Une règle de détection avalée disparaît de la liste servie à la console (et du décompte que
-    # l'opérateur lit comme l'état de SES règles). Geste : solder en bloc, poser `error`.
-    ("daemon/src/handlers/detection.rs", "rules_list"): 1,
-    # Une baseline avalée disparaît de la liste : un écart n'a plus de référence visible.
-    ("daemon/src/handlers/detection_advanced.rs", "baselines_list"): 1,
-    # Un analyseur (parser) avalé disparaît de la liste : un format qu'on croit couvert ne l'est plus
-    # dans la vue qui sert à le vérifier.
-    ("daemon/src/handlers/detection.rs", "parsers_list"): 1,
-    # Un playbook avalé disparaît de la liste, avec sa conséquence EFFECTIVE (observe/active).
-    ("daemon/src/handlers/playbooks.rs", "playbooks_list"): 1,
-    # LECTURE INTERNE : un silence avalé n'est pas appliqué — une alerte qu'on croit MUETTE part.
-    # Aucun corps n'est servi ici : le geste est de rendre un `Result` au moteur d'alerte, pas de
-    # poser un aveu. C'est la forme que le verdict nomme dans « ce qu'elle ne tient pas ».
-    ("daemon/src/handlers/alerting.rs", "load_active_silences"): 1,
-    # LECTURE INTERNE, symétrique : une politique d'alerte avalée n'est pas évaluée — une alerte qui
-    # devait partir ne part pas. Même geste, même absence de corps.
-    ("daemon/src/handlers/alerting.rs", "load_policies"): 1,
-    # LECTURE INTERNE : un engagement actif avalé sort du cache de portée, `action_valid_ctx` cesse de
-    # suspendre l'auto-ban, et plume bannit une cible de pentest AUTORISÉE. Même geste.
-    ("daemon/src/handlers/engagement.rs", "load_active_engagements"): 1,
-    # LECTURE INTERNE : l'échantillon de baseline est tronqué, donc l'écart est calculé contre une
-    # référence AMPUTÉE — le verdict d'anomalie est faux sans qu'aucune route ne mente. Même geste.
-    ("daemon/src/handlers/detection_advanced.rs", "eval_baseline"): 1,
-    # Le vocabulaire de complétion SOQL perd une source : l'analyste ne la voit pas et ne l'interroge
-    # pas. Aggravant : le résultat est MIS EN CACHE, donc une lecture tronquée se ressert.
-    ("daemon/src/handlers/soql_meta.rs", "soql_known_sources_bornees"): 1,
-    # Une source déclarée par un connecteur configuré est avalée : elle disparaît de l'inventaire des
-    # sources, donc des vues de fraîcheur qui en dérivent.
-    ("daemon/src/handlers/sources.rs", "sources_declarees_par_connecteurs"): 1,
-}
+#
+# RANG DEUX CLOS LE 2026-09-16 — DIX SITES, SEPT FICHIERS, PLUS UNE SEULE ENTRÉE. Les dix entrées qui
+# vivaient ici (`rules_list`, `parsers_list`, `baselines_list`, `playbooks_list`, `eval_baseline`,
+# `load_policies`, `load_active_silences`, `load_active_engagements`, `soql_known_sources_bornees`,
+# `sources_declarees_par_connecteurs`) sont RETIRÉES parce que leurs sites sont corrigés, pas amnistiés.
+# CINQ listes SERVIES soldent leur parcours en bloc et avouent sous la forme du dépôt
+# (`liste_bornee::corps_de_liste_illisible`) ; le vocabulaire de complétion y ajoute la distinction que
+# son type déclarait ne pas tenir (`SourcesConnues::non_lue`) et son cache SWR de deux minutes N'ACCUEILLE
+# PLUS un aveu — une lecture ratée ne se ressert pas. CINQ lectures INTERNES rendent désormais un `Result`,
+# et chaque appelant agit en connaissance : le dispatch de notifications SAUTE son tour en le comptant
+# (`dispatch_policies` / `dispatch_silences`) plutôt que de router à plat ou de notifier ce qu'un silence
+# non lu aurait tu, et il ne marque aucune alerte `notified=1` (le tour suivant relit) ; le cache de portée
+# des engagements GARDE sa valeur précédente et compte le tour (`engagement_scope_refresh`) plutôt que de
+# se vider — se vider arme l'auto-ban contre une cible de pentest autorisée —, la route `GET
+# /api/engagements/active` rendant un cinq cent trois nommé parce que son corps est un TABLEAU NU et que
+# son unique consommateur (`collectors/engagement-adapter.sh`) porte déjà un fail-closed gradué sur le
+# statut ; l'évaluation de ligne de base sur un historique non lu rend `ok=false` — « non évalué », ni
+# anomalie ni normalité — que `run_baselines` compte sans avancer `last_bucket` ; et une source dont la
+# déclaration par connecteur n'a pas pu être lue est servie `indeterminee`, jamais `unexpected`. Le
+# dictionnaire reste, VIDE : le rang est une classe de l'ensemble, et son vide est le seul état qui dise
+# « il n'y a plus rien à admettre ici ».
+DEFAUTS_RANG_2_DETECTION = {}
 
 # RANG 3 — DES COMPTES SERVIS COMME DES FAITS : ici la ligne avalée ne manque pas seulement dans une
 # liste, elle FAUSSE un nombre que le corps affirme (un total, un recensement, un cumul d'index).
@@ -794,10 +792,13 @@ def ce_qui_n_est_pas_tenu():
     print(f"\n[{ETIQUETTE}] CE QU'ELLE NE TIENT PAS :\n"
           "  * une LECTURE INTERNE sans corps servi est jugée comme les autres, et le geste qui la ferme "
           "n'est PAS le même : il faut rendre un `Result` à l'appelant, pas poser un aveu dans un corps "
-          "qui n'existe pas. SIX entrées de l'ensemble sont dans ce cas et le disent (`respond_run`, "
-          "`load_policies`, `load_active_silences`, `load_active_engagements`, `eval_baseline`, "
-          "`sla_recalcule_la_priorite_bornee`) ; la garde ne sait pas les distinguer toute seule, et le "
-          "rouge qu'elle y poserait ne se referme pas par le geste qu'elle nomme.\n"
+          "qui n'existe pas. Elles étaient SIX au relevé du matin (`respond_run`, `load_policies`, "
+          "`load_active_silences`, `load_active_engagements`, `eval_baseline`, "
+          "`sla_recalcule_la_priorite_bornee`) ; les rangs un et deux en ont fermé cinq, il en reste UNE "
+          "dans l'ensemble (`sla_recalcule_la_priorite_bornee`, rang 3). La phrase est corrigée plutôt que "
+          "gardée telle quelle : une garde qui énumère six entrées dont cinq n'existent plus enseigne un "
+          "arbre qui n'est pas celui qu'elle juge. La garde ne sait toujours pas les distinguer toute "
+          "seule, et le rouge qu'elle y poserait ne se refermerait pas par le geste qu'elle nomme.\n"
           "  * elle ne dit PAS si un aveu de région couvre la lecture accusée. Une fonction qui pose déjà "
           "`error` pour une AUTRE de ses lectures reste accusée pour celle-ci — c'est voulu (un aveu qui "
           "couvre tout ne couvre rien), mais cela veut dire que le rouge ne mesure pas la distance qui "

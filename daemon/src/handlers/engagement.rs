@@ -120,16 +120,25 @@ fn annoncer_refus_de_scope_une_fois(conn: &Connection, detail: &str) {
 /// rendait alors false, `action_valid_ctx` cessait de suspendre l'auto-ban, et plume bannissait une
 /// cible de pentest AUTORISÉE en pleine fenêtre, sans une ligne de journal. Les deux cas sont
 /// désormais dits, et le second — l'engagement qui SORT du cache — est dit à part.
-pub(crate) fn load_active_engagements(conn: &Connection, now_i: i64) -> Vec<ActiveEngagement> {
+///
+/// `P10.7-f` (rang 2) — ET LA LECTURE ELLE-MÊME REND UN `Result`. Le paragraphe ci-dessus décrit ce qui
+/// arrive quand un engagement SORT du cache : l'auto-ban cesse d'être suspendu et plume bannit une cible de
+/// pentest autorisée. Ce lot ferme la DERNIÈRE porte par laquelle il en sortait sans un mot : la table
+/// illisible (`Err(_) => return out`, un cache VIDE servi comme « aucun engagement n'est actif ») et la
+/// ligne illisible (`rows.flatten()`, un engagement retiré du cache pendant que sa fenêtre court). Le
+/// `Result` force `engagement_scope_refresh` à choisir, et il choisit de GARDER ce qu'il avait.
+pub(crate) fn load_active_engagements(conn: &Connection, now_i: i64) -> rusqlite::Result<Vec<ActiveEngagement>> {
     let mut out = Vec::new();
-    let mut stmt = match conn.prepare(
-        "SELECT id, scope, window_end, box, adapter FROM engagement WHERE status='active' AND window_end > ?1",
-    ) { Ok(s) => s, Err(_) => return out };
-    let rows = stmt.query_map(params![now_i], |r| Ok((
-        r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, String>(3)?, r.get::<_, String>(4)?,
-    )));
-    if let Ok(rows) = rows {
-        for (id, scope_json, wend, boxk, adapter) in rows.flatten() {
+    let lignes: Vec<(String, String, i64, String, String)> = conn
+        .prepare("SELECT id, scope, window_end, box, adapter FROM engagement WHERE status='active' AND window_end > ?1")
+        .and_then(|mut stmt| {
+            stmt.query_map(params![now_i], |r| Ok((
+                r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, String>(3)?, r.get::<_, String>(4)?,
+            )))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        })?;
+    {
+        for (id, scope_json, wend, boxk, adapter) in lignes {
             let scope: Vec<String> = serde_json::from_str(&scope_json).unwrap_or_default();
             // `P4.7-i` — MÊME analyseur que la denylist never-ban : un item que le produit ne sait pas
             // honorer est ÉCARTÉ (l'engagement perd cette ligne de scope), jamais accepté DÉFORMÉ —
@@ -156,18 +165,35 @@ pub(crate) fn load_active_engagements(conn: &Connection, now_i: i64) -> Vec<Acti
             out.push(ActiveEngagement { engagement_id: id, scope, matchers, window_end: wend, box_kind: boxk, adapter });
         }
     }
-    out
+    Ok(out)
 }
 
 /// Recompile l'index scope de CE db_path (appelé au tick 20 s + à la création/clôture pour effet immédiat).
 /// Off -> purge l'entrée (l'index reste VIDE -> ingest byte-identique).
+///
+/// `P10.7-f` (rang 2) — UNE LECTURE RATÉE GARDE LA VALEUR PRÉCÉDENTE ET LA COMPTE ; ELLE NE VIDE PAS LE
+/// CACHE. C'est le seul site de ce rang où « ne rien faire » n'est PAS le geste neutre, et il faut le dire :
+/// ce cache est une EXEMPTION, donc une défense volontairement baissée. Le vider n'est pas « perdre une
+/// information », c'est ARMER l'auto-ban contre une cible de pentest autorisée, en pleine fenêtre, sans
+/// qu'aucun corps ne soit servi à personne. Garder la valeur précédente est borné dans le temps par une
+/// propriété STRUCTURELLE et non par la cadence de ce rafraîchissement : `engagement_scope_match` revérifie
+/// `window_end <= now()` sur le CHEMIN CHAUD (self-expiry, cf. son commentaire), donc une entrée conservée
+/// cesse d'exempter à la seconde où sa fenêtre s'achève, même si plus aucun rafraîchissement ne réussit.
+/// La conservation ne peut donc pas prolonger une exemption au-delà de ce que l'exploitant a écrit.
+/// Le tour est compté (`compter_un_tick_aveugle("engagement_scope_refresh", ..)`), qui journalise la cause.
 pub(crate) fn engagement_scope_refresh(db_path: &str, conn: &Connection) {
     if !engagement_enabled() {
         let mut m = engagement_scope_map().write();
         m.remove(db_path);
         return;
     }
-    let list = load_active_engagements(conn, now());
+    let list = match load_active_engagements(conn, now()) {
+        Ok(l) => l,
+        Err(e) => {
+            crate::metrics::compter_un_tick_aveugle("engagement_scope_refresh", &e.to_string());
+            return; // l'entrée précédente reste EN PLACE — bornée par le self-expiry du chemin chaud.
+        }
+    };
     let mut m = engagement_scope_map().write();
     if list.is_empty() { m.remove(db_path); } else { m.insert(db_path.to_string(), list); }
 }
@@ -522,7 +548,24 @@ pub(crate) async fn engagements_active(State(st): State<AppState>, Extension(au)
         return Json(json!([])).into_response();
     }
     with_write(&st, &au, |conn| {
-    let list = load_active_engagements(&conn, now());
+    // `P10.7-f` (rang 2) — LA DÉCLARATION EST ENTIÈRE, OU C'EST UN REFUS NOMMÉ. Le corps nominal est un
+    // TABLEAU NU : il n'a aucune clé où poser un aveu (même contrainte que `idp_providers_list` au rang un),
+    // donc le refus prend le statut. MESURÉ SUR LE CONSOMMATEUR, qui est le seul : `collectors/engagement-
+    // adapter.sh:471-472` n'accepte que `http == 200` ET un corps de type `array`, et son `else` est un
+    // fail-closed GRADUÉ, déjà écrit, déjà gardé — HOLD (exemptions conservées, expiry seul appliqué) sous
+    // le seuil d'échecs, REVERT-ALL au-delà, chaque branche journalisée. Un 200 portant un tableau AMPUTÉ,
+    // lui, n'emprunte aucune de ces branches : l'adaptateur le prend pour la vérité et RÉVOQUE sur l'hôte
+    // les exemptions des engagements manquants — la défense se rearme contre une cible autorisée, en
+    // silence, et l'enforcer croit avoir réconcilié. Le refus explicite est donc ce que ce consommateur-là
+    // sait traiter, et la seule forme qui ne fabrique pas un ordre de révocation.
+    let list = match load_active_engagements(&conn, now()) {
+        Ok(l) => l,
+        Err(_) => return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "engagements actifs NON LUS : la lecture du registre des engagements a échoué. \
+                                   AUCUNE déclaration de portée n'est servie ce tour-ci — ce n'est pas « aucun engagement actif » ; réessayer." })),
+        ).into_response(),
+    };
     let out: Vec<Value> = list.iter().map(|e| json!({
         "engagement_id": e.engagement_id,
         "scope": e.scope,

@@ -862,15 +862,15 @@
         let conn = test_db();
         // les 10 feeds qu'une liste manuelle avait dû rattraper : attendus par dérivation.
         for s in ["minio-audit", "vault-audit", "cloudflare", "conntrack", "mail", "containerd", "minio", "k8s", "dataacl", "agent"] {
-            assert!(source_attendue_par_construction(&conn, s), "feed légitime '{s}' ne doit PLUS être flaggé inattendu");
+            assert!(source_attendue_par_construction(&conn, s).unwrap(), "feed légitime '{s}' ne doit PLUS être flaggé inattendu");
         }
         // ids de collecteurs + sources auth : toujours connus.
         for s in ["web", "kube-audit", "ufw", "crowdsec", "sshd", "auditd", "plume-config"] {
-            assert!(source_attendue_par_construction(&conn, s), "'{s}' doit rester connu");
+            assert!(source_attendue_par_construction(&conn, s).unwrap(), "'{s}' doit rester connu");
         }
         // une source réellement inconnue : le SIGNAL « inattendu » reste actif.
         for s in ["totally-new-thing", "attacker-c2", "unknown-src"] {
-            assert!(!source_attendue_par_construction(&conn, s), "'{s}' (vraiment inconnue) DOIT rester flaggée inattendue");
+            assert!(!source_attendue_par_construction(&conn, s).unwrap(), "'{s}' (vraiment inconnue) DOIT rester flaggée inattendue");
         }
     }
 

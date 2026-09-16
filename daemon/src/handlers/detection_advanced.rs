@@ -429,6 +429,10 @@ struct BaselineEval {
 /// Évalue une baseline pour le DERNIER bucket CLOS : calcule la valeur par entité sur [bstart,bend), puis le
 /// z-score vs les observations passées (déjà persistées). FAIL-CLOSED : requête en erreur / colonnes absentes
 /// -> ok=false (l'appelant N'écrit ni observation ni alerte et N'avance PAS last_bucket).
+///
+/// `P10.7-f` (rang 2) — LA LECTURE DE L'HISTORIQUE entre désormais sous le MÊME fail-closed : un historique
+/// non lu (ou amputé d'une ligne) déplace le z-score et fabrique le verdict dans les deux sens, donc il rend
+/// `ok=false` — « non évalué » — au lieu d'un silence qui ressemble à « rien d'anormal ».
 #[allow(clippy::too_many_arguments)]
 fn eval_baseline(
     conn: &Connection, db_path: &str, id: i64, name: &str, query: &str, entity_field: &str, value_field: &str,
@@ -477,13 +481,32 @@ fn eval_baseline(
         };
         out.observations.push((entity.clone(), value));
         // Historique = observations passées de CETTE entité dans la fenêtre (EXCLUT le bucket courant).
-        let hist: Vec<f64> = {
-            match conn.prepare(
+        //
+        // `P10.7-f` (rang 2) — UN HISTORIQUE NON LU NE REND NI ANOMALIE NI NORMALITÉ. Avant :
+        // `.map(|x| x.flatten().collect()).unwrap_or_default()` et `Err(_) => Vec::new()`. Un historique
+        // AMPUTÉ n'est pas une liste plus courte : il DÉPLACE la moyenne et l'écart-type, donc le z-score.
+        // Les deux verdicts sont faussés, dans les deux sens — une pointe réelle passe sous le seuil quand
+        // les valeurs hautes ont été avalées (anomalie MANQUÉE), un jour ordinaire le franchit quand ce sont
+        // les valeurs basses (anomalie INVENTÉE, qui réveille un analyste et consomme la confiance). Et un
+        // historique ENTIÈREMENT illisible rendait `hist` VIDE, que `baseline_anomaly` traite comme « pas
+        // assez d'échantillons » : silence total, indiscernable d'une base jeune. Aucune route ne ment ici,
+        // et c'est précisément ce qui rendait le défaut invisible.
+        //
+        // LE GESTE EST CELUI QUE LE CONTRAT DE CETTE FONCTION ÉCRIT DÉJÀ (doc-commentaire ci-dessus) :
+        // FAIL-CLOSED, `ok=false`, rendu tel quel. `run_baselines` (phase 3) le lit, COMPTE la ligne de base
+        // en `abandonnees` (elle entre dans le bilan du tick), n'écrit NI observation NI alerte, et
+        // N'AVANCE PAS `last_bucket` — donc le tick suivant réévaluera le MÊME bucket. « Non évalué » est un
+        // troisième état, distinct de « rien d'anormal » comme de « anomalie ».
+        let hist: Vec<f64> = match conn
+            .prepare(
                 "SELECT value FROM ueba_baseline_obs WHERE baseline_id=?1 AND entity=?2 AND bucket>=?3 AND bucket<?4 ORDER BY bucket",
-            ) {
-                Ok(mut st) => st.query_map(params![id, entity, min_bucket, closed], |r| r.get::<_, f64>(0)).map(|x| x.flatten().collect()).unwrap_or_default(),
-                Err(_) => Vec::new(),
-            }
+            )
+            .and_then(|mut st| {
+                st.query_map(params![id, entity, min_bucket, closed], |r| r.get::<_, f64>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            }) {
+            Ok(v) => v,
+            Err(_) => return out, // `out.ok` est encore FAUX : la ligne de base est NON ÉVALUÉE, et comptée.
         };
         if let Some(z) = baseline_anomaly(value, &hist, min_samples.max(2) as usize, z_threshold) {
             out.hits.push(BaselineHit { entity, value, z });
@@ -824,21 +847,30 @@ pub(crate) async fn correlation_test(State(st): State<AppState>, Extension(au): 
 
 pub(crate) async fn baselines_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
     crate::req_conn!(st, au, conn);
-    let mut stmt = match conn.prepare(
-        "SELECT id,name,enabled,query,entity_type,entity_field,value_field,bucket_s,min_samples,z_threshold,window_s,interval_s,severity,COALESCE(mitre,''),COALESCE(risk_score,0),last_run,last_bucket,managed FROM ueba_baseline ORDER BY id",
-    ) {
-        Ok(s) => s,
-        Err(_) => return Json(json!({ "baselines": [] })),
-    };
-    let rows: Vec<Value> = stmt.query_map([], |r| Ok(json!({
-        "id": r.get::<_, i64>(0)?, "name": r.get::<_, String>(1)?, "enabled": r.get::<_, i64>(2)? != 0,
-        "query": r.get::<_, String>(3)?, "entity_type": r.get::<_, String>(4)?, "entity_field": r.get::<_, String>(5)?,
-        "value_field": r.get::<_, String>(6)?, "bucket_s": r.get::<_, i64>(7)?, "min_samples": r.get::<_, i64>(8)?,
-        "z_threshold": r.get::<_, f64>(9)?, "window_s": r.get::<_, i64>(10)?, "interval_s": r.get::<_, i64>(11)?,
-        "severity": r.get::<_, i64>(12)?, "mitre": r.get::<_, String>(13)?, "risk_score": r.get::<_, i64>(14)?,
-        "last_run": r.get::<_, Option<i64>>(15)?, "last_bucket": r.get::<_, Option<i64>>(16)?, "managed": r.get::<_, i64>(17)?
-    }))).map(|x| x.flatten().collect()).unwrap_or_default();
-    Json(json!({ "baselines": rows }))
+    // `P10.7-f` (rang 2) — LA LISTE DES LIGNES DE BASE EST ENTIÈRE OU AVOUÉE. Avant : liste vide sur
+    // préparation ratée, et `.map(|x| x.flatten().collect()).unwrap_or_default()` pour la ligne illisible. Une
+    // ligne de base avalée fait disparaître la RÉFÉRENCE contre laquelle un écart se juge : l'opérateur qui
+    // cherche pourquoi telle entité n'est jamais signalée lit « aucune ligne de base ne la couvre » et va en
+    // écrire une seconde, en double. Soldé en bloc, aveu sous la forme du dépôt.
+    let lues: rusqlite::Result<Vec<Value>> = conn
+        .prepare(
+            "SELECT id,name,enabled,query,entity_type,entity_field,value_field,bucket_s,min_samples,z_threshold,window_s,interval_s,severity,COALESCE(mitre,''),COALESCE(risk_score,0),last_run,last_bucket,managed FROM ueba_baseline ORDER BY id",
+        )
+        .and_then(|mut stmt| {
+            stmt.query_map([], |r| Ok(json!({
+                "id": r.get::<_, i64>(0)?, "name": r.get::<_, String>(1)?, "enabled": r.get::<_, i64>(2)? != 0,
+                "query": r.get::<_, String>(3)?, "entity_type": r.get::<_, String>(4)?, "entity_field": r.get::<_, String>(5)?,
+                "value_field": r.get::<_, String>(6)?, "bucket_s": r.get::<_, i64>(7)?, "min_samples": r.get::<_, i64>(8)?,
+                "z_threshold": r.get::<_, f64>(9)?, "window_s": r.get::<_, i64>(10)?, "interval_s": r.get::<_, i64>(11)?,
+                "severity": r.get::<_, i64>(12)?, "mitre": r.get::<_, String>(13)?, "risk_score": r.get::<_, i64>(14)?,
+                "last_run": r.get::<_, Option<i64>>(15)?, "last_bucket": r.get::<_, Option<i64>>(16)?, "managed": r.get::<_, i64>(17)?
+            })))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        });
+    match lues {
+        Ok(rows) => Json(json!({ "baselines": rows })),
+        Err(_) => Json(crate::handlers::liste_bornee::corps_de_liste_illisible(json!({}), "baselines")),
+    }
 }
 
 /// Valide le contenu d'une baseline (fail-closed) : query GXQL non vide qui compile, champs = identifiants sûrs.

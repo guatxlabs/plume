@@ -252,8 +252,28 @@ pub(crate) fn dispatch_notifications(db: &Arc<Mutex<Connection>>) {
             Ok(v) => v,
             Err(e) => { crate::metrics::compter_un_tick_aveugle("dispatch_notifiers", &e.to_string()); return; }
         };
-        let policies = load_policies(&conn);
-        let silences = load_active_silences(&conn, now());
+        // `P10.7-f` (rang 2) — LE ROUTAGE ET LES SILENCES SONT LUS, OU LE TOUR EST SAUTÉ EN LE COMPTANT.
+        // Avant, `load_policies` et `load_active_silences` rendaient un `Vec` et une lecture ratée y valait
+        // un vecteur VIDE — c'est-à-dire, mot pour mot, le MODE 0 documenté vingt lignes plus haut :
+        //   * politiques non lues -> `plan_dispatch` retombe en FAN-OUT PLAT : l'alerte que l'exploitant
+        //     avait routée vers une seule astreinte part sur TOUS les canaux activés (et `notify_send` est
+        //     irréversible : on ne rappelle pas un SMS PagerDuty) ;
+        //   * silences non lus -> `plan.silenced` est faux pour tout le monde : l'alerte qu'un humain avait
+        //     explicitement muselée part quand même.
+        // Dans les deux cas l'alerte était ENSUITE marquée `notified=1` — donc le mauvais routage était
+        // définitif, et le tour suivant ne pouvait pas le rattraper. Le geste est celui du lot 109 sur cette
+        // même fonction : on compte un tour aveugle (`compter_un_tick_aveugle`, qui journalise aussi la
+        // cause sur la sortie d'erreur) et on SORT AVANT la boucle d'envoi. Rien n'est envoyé, et surtout
+        // rien n'est marqué : l'`UPDATE alert SET notified=1` vit dans la boucle qu'on n'atteint pas, donc
+        // les alertes de ce tour restent `notified=0` et redeviennent dispatchables au tour suivant.
+        let policies = match load_policies(&conn) {
+            Ok(v) => v,
+            Err(e) => { crate::metrics::compter_un_tick_aveugle("dispatch_policies", &e.to_string()); return; }
+        };
+        let silences = match load_active_silences(&conn, now()) {
+            Ok(v) => v,
+            Err(e) => { crate::metrics::compter_un_tick_aveugle("dispatch_silences", &e.to_string()); return; }
+        };
         (alerts, notifiers, policies, silences)
     };
     let enabled_ids: Vec<i64> = notifiers.iter().map(|n| n.id).collect();

@@ -185,9 +185,20 @@ pub(crate) struct SourcesConnues {
     ///
     /// UNE LECTURE QUI ÉCHOUE REND `false`, ET C'EST DÉLIBÉRÉ : elle n'a rien vu, donc elle ne sait pas
     /// qu'il en existait davantage. Prétendre « écourté » y serait un second mensonge par-dessus le
-    /// premier. Ce que le type NE tient pas est donc nommé ici : il distingue « bornée » de « complète »,
-    /// jamais « vide » de « illisible ».
+    /// premier. C'est `non_lue` qui porte ce fait-là.
     pub(crate) ecourtee: bool,
+    /// `P10.7-f` (rang 2) — LA TROISIÈME DISTINCTION, celle que ce type déclarait explicitement NE PAS
+    /// tenir : « vide » n'est plus « illisible ». Vrai quand la lecture du rollup n'a pas abouti — table
+    /// absente, cache de schéma du pool périmé, ligne dont le mappeur échoue. `valeurs` est alors VIDE, et
+    /// `ecourtee` FAUX, mais ni l'un ni l'autre n'est un fait établi : c'est ce booléen qui le dit.
+    pub(crate) non_lue: bool,
+}
+
+impl SourcesConnues {
+    /// L'AVEU : aucune lecture n'a abouti. Distinct de `default()`, qui veut dire « lu, et il n'y a rien ».
+    pub(crate) fn non_lue() -> Self {
+        SourcesConnues { valeurs: Vec::new(), ecourtee: false, non_lue: true }
+    }
 }
 
 /// SWR cache des `source` connues, keyé par db_path (comme FRESHNESS_CACHE). Valeur = (calculé, mesure).
@@ -207,15 +218,26 @@ const KNOWN_SOURCES_TTL: Duration = Duration::from_secs(120);
 /// la ligne excédentaire — jamais servie — est ce qui autorise à dire « il y en avait davantage ». C'est
 /// le même geste que le total borné de la page du journal (`PAGINATION_COUNT_CAP` -> `total_capped`) :
 /// une ligne de plus lue, un booléen de plus rendu, aucun comptage complet.
+///
+/// `P10.7-f` (rang 2) — ET « ILLISIBLE » N'EST PLUS « VIDE ». Avant, les trois portes de sortie rendaient le
+/// MÊME objet que celui d'une base sans aucune source : préparation ratée, exécution ratée, et
+/// `rows.flatten()` qui avalait une ligne dont le mappeur échoue. Un vocabulaire de complétion amputé ne
+/// jette pas d'erreur et ne fait rien tomber : il fait simplement que l'analyste NE VOIT PAS la source, donc
+/// ne l'interroge pas — et s'il ne l'interroge pas, il conclut qu'il n'y a rien à y voir. Le défaut est dans
+/// ce que l'analyste ne cherche pas.
 pub(crate) fn soql_known_sources_bornees(conn: &Connection) -> SourcesConnues {
     let mut out = SourcesConnues::default();
     let Ok(mut s) = conn.prepare("SELECT DISTINCT source FROM event_rollup WHERE source<>'' ORDER BY source LIMIT ?1") else {
-        return out;
+        return SourcesConnues::non_lue();
     };
     let Ok(rows) = s.query_map(params![SOQL_SOURCES_MAX as i64 + 1], |r| r.get::<_, String>(0)) else {
-        return out;
+        return SourcesConnues::non_lue();
     };
-    for src in rows.flatten() {
+    // Parcours SOLDÉ LIGNE À LIGNE plutôt que collecté en bloc : la borne `LIMIT MAX + 1` doit pouvoir être
+    // atteinte et la boucle rompue à `MAX`, ce qu'un `collect()` interdirait sans lire la ligne de trop pour
+    // rien. La différence avec `.flatten()` est qu'ICI une ligne en erreur ARRÊTE tout au lieu d'être jetée.
+    for ligne in rows {
+        let Ok(src) = ligne else { return SourcesConnues::non_lue() };
         if out.valeurs.len() >= SOQL_SOURCES_MAX {
             out.ecourtee = true; // la ligne EXCÉDENTAIRE : elle PROUVE le reste, elle n'est pas servie.
             break;
@@ -242,7 +264,21 @@ fn cached_known_sources(db_path: &str) -> SourcesConnues {
             return v.clone();
         }
     }
-    let sources = read_with_watchdog(db_path, SourcesConnues::default(), soql_known_sources_bornees);
+    // `P10.7-f` (rang 2) — LE REPLI DU CHIEN DE GARDE EST UN AVEU, PAS UN VOCABULAIRE VIDE. Une connexion
+    // qu'on n'obtient pas n'a vu aucune source ; `SourcesConnues::default()` aurait affirmé qu'il n'y en a
+    // aucune.
+    let sources = read_with_watchdog(db_path, SourcesConnues::non_lue(), soql_known_sources_bornees);
+    // `P10.7-f` (rang 2) — UN AVEU NE SE MET PAS EN CACHE COMME UN VOCABULAIRE, ET C'EST LE POINT DUR DE CE
+    // SITE. Le cache est un SWR à deux minutes : y écrire le résultat d'une lecture ratée faisait RESSERVIR
+    // un vocabulaire vide à tous les appels suivants pendant deux minutes, bien après que la cause a
+    // disparu — une lecture ratée se propageait donc dans le temps, et une seule suffisait. On ne l'écrit
+    // pas : l'aveu est rendu à CET appel seulement, l'entrée périmée qui pouvait exister reste en place
+    // (elle est déjà expirée, donc elle ne sera pas resservie), et le prochain appel RELIT. Le coût assumé
+    // est une relecture par appel tant que la base refuse — bornée par `read_with_watchdog`, et c'est le
+    // chemin d'erreur, pas le chemin nominal.
+    if sources.non_lue {
+        return sources;
+    }
     known_sources_cache()
         .lock()
         .insert(db_path.to_string(), (Instant::now(), sources.clone()));
@@ -268,7 +304,7 @@ pub(crate) fn soql_schema_json(sources: SourcesConnues) -> Value {
     .iter()
     .map(|(n, label)| json!({ "value": n, "label": label }))
     .collect();
-    json!({
+    let mut corps = json!({
         "base_keywords": SOQL_BASE_KEYWORDS,
         "commands": SOQL_PIPE_COMMANDS,
         "stats_functions": SOQL_STATS_FUNCTIONS,
@@ -295,6 +331,11 @@ pub(crate) fn soql_schema_json(sources: SourcesConnues) -> Value {
             // elle en cache le gros : la console avoue son propre écourtement, elle ne pouvait pas
             // avouer celui-ci. Même nommage que le `total_capped` de la page du journal.
             "source_capped": sources.ecourtee,
+            // `P10.7-f` (rang 2) — L'AVEU DE LA LECTURE. `source: []` avec `source_non_lue: true` se lit
+            // « je ne sais pas quelles sources existent », et non « il n'y en a aucune ». La clé est
+            // STRICTEMENT ADDITIVE : elle vaut `false` sur tout chemin nominal, y compris celui d'une base
+            // réellement sans source.
+            "source_non_lue": sources.non_lue,
         },
         // v130 DOC INLINE : description d'UNE LIGNE par item de vocabulaire (statique, curée). Le client
         // peuple le slot d'aide de la complétion. Coverage garanti par `soql_docs_cover_all_vocab`.
@@ -310,7 +351,15 @@ pub(crate) fn soql_schema_json(sources: SourcesConnues) -> Value {
             "extended": docs_object(DOC_HOT_FIELDS),
         },
         "cim_version": CIM_VERSION,
-    })
+    });
+    // `P10.7-f` (rang 2) — `error` AU MÊME ENDROIT QUE PARTOUT AILLEURS. `values.source_non_lue` sert le
+    // consommateur qui sait où regarder ; `error` sert celui qui teste la clé que tout le reste du dépôt
+    // pose (`corps_de_liste_illisible`, `portillon`, `bad_req`). Posée SEULEMENT sur lecture ratée : le
+    // chemin nominal reste MUET, sans quoi l'aveu serait inconditionnel donc sans valeur.
+    if sources.non_lue {
+        corps["error"] = json!(crate::handlers::liste_bornee::CAUSE_LISTE_ILLISIBLE);
+    }
+    corps
 }
 
 /// POST /api/soql/validate — VALIDATION « compile-as-you-type » : compile le GXQL fourni via le compilateur

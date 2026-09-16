@@ -29,22 +29,39 @@ pub(crate) fn action_consequence(kind: &str) -> String {
 
 pub(crate) async fn playbooks_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
     crate::req_conn!(st, au, conn);
-    let mut stmt = conn.prepare("SELECT id,name,enabled,query,is_soql,action_kind,interval_s,window_s,last_run,managed FROM playbook ORDER BY id").unwrap();
-    let rows = stmt.query_map([], |r| {
-        let action_kind = r.get::<_, String>(5)?;
-        Ok(json!({
-            "id": r.get::<_, i64>(0)?, "name": r.get::<_, String>(1)?, "enabled": r.get::<_, i64>(2)? != 0,
-            "query": r.get::<_, String>(3)?, "is_soql": r.get::<_, i64>(4)? != 0,
-            "consequence": action_consequence(&action_kind), "action_kind": action_kind,
-            "interval_s": r.get::<_, i64>(6)?, "window_s": r.get::<_, i64>(7)?, "last_run": r.get::<_, Option<i64>>(8)?,
-            "managed": r.get::<_, i64>(9)?
-        }))
-    }).unwrap();
-    let playbooks = rows.flatten().collect::<Vec<_>>();
+    // `P10.7-f` (rang 2) — LA LISTE DES PLAYBOOKS EST ENTIÈRE OU AVOUÉE. Avant : DEUX `unwrap()` (une panique
+    // n'est pas un aveu, et sur l'écrivain partagé elle se propage) puis `rows.flatten().collect()` — un
+    // playbook dont la ligne ne se décode pas DISPARAISSAIT de la liste, avec sa `consequence` EFFECTIVE
+    // (`observe` = propose / `active` = exécute). C'est la vue où l'on vérifie « qu'est-ce qui peut bannir
+    // tout seul ici » : un playbook `ban_ip` avalé se lit « aucune réponse automatique n'est armée » pendant
+    // qu'elle l'est. Soldé en bloc ; sur échec, l'aveu du dépôt (`corps_de_liste_illisible`) autour des deux
+    // champs qui ne DÉRIVENT PAS de cette lecture (`mode` a sa propre lecture, `ban_duration_s` est une
+    // constante) — les taire n'apprendrait rien et priverait la console de son bandeau de mode.
+    let lues: rusqlite::Result<Vec<Value>> = conn
+        .prepare("SELECT id,name,enabled,query,is_soql,action_kind,interval_s,window_s,last_run,managed FROM playbook ORDER BY id")
+        .and_then(|mut stmt| {
+            stmt.query_map([], |r| {
+                let action_kind = r.get::<_, String>(5)?;
+                Ok(json!({
+                    "id": r.get::<_, i64>(0)?, "name": r.get::<_, String>(1)?, "enabled": r.get::<_, i64>(2)? != 0,
+                    "query": r.get::<_, String>(3)?, "is_soql": r.get::<_, i64>(4)? != 0,
+                    "consequence": action_consequence(&action_kind), "action_kind": action_kind,
+                    "interval_s": r.get::<_, i64>(6)?, "window_s": r.get::<_, i64>(7)?, "last_run": r.get::<_, Option<i64>>(8)?,
+                    "managed": r.get::<_, i64>(9)?
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        });
     // Le mode global décide si un playbook ON exécute (active) ou propose (observe) : la liste le porte pour
     // que la ligne dise la conséquence EFFECTIVE sans une seconde requête.
     let mode: String = conn.query_row("SELECT value FROM meta WHERE key='plume_mode'", [], |r| r.get(0)).unwrap_or_else(|_| "observe".into());
-    Json(json!({ "playbooks": playbooks, "mode": mode, "ban_duration_s": NETBAN_ACTION_TTL_S }))
+    match lues {
+        Ok(playbooks) => Json(json!({ "playbooks": playbooks, "mode": mode, "ban_duration_s": NETBAN_ACTION_TTL_S })),
+        Err(_) => Json(crate::handlers::liste_bornee::corps_de_liste_illisible(
+            json!({ "mode": mode, "ban_duration_s": NETBAN_ACTION_TTL_S }),
+            "playbooks",
+        )),
+    }
 }
 pub(crate) async fn playbook_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
     let is_soql = b.bool_field("is_soql", true);

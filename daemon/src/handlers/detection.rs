@@ -439,15 +439,20 @@ pub(crate) fn run_due_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
 
 pub(crate) async fn rules_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
     crate::req_conn!(st, au, conn);
-    // MISC : dégrade proprement en liste vide sur erreur prepare/query (comme correlations_list/baselines_list),
-    // au lieu d'un .unwrap() qui panique -> 500 (et, sur l'écrivain partagé, risque de propagation de panic).
-    let mut stmt = match conn
+    // `P10.7-f` (rang 2) — LE CATALOGUE DES RÈGLES EST ENTIER OU AVOUÉ. Avant : `Err(_) => Json({"rules": []})`
+    // sur une préparation ratée, et `.map(|x| x.flatten().collect()).unwrap_or_default()` qui avalait une ligne
+    // dont le mappeur échoue (cache de schéma du pool périmé rendant « no such table » au PREMIER pas —
+    // `flatten-avale-no-such-table-au-premier-pas` —, colonne ajoutée par une migration que la connexion qui
+    // sert ne voit pas encore, `population_vue` corrompue). C'EST DE LA DÉTECTION EN MOINS : la console de
+    // détection est l'endroit où l'opérateur vérifie que SA règle existe et qu'elle est active ; une règle
+    // avalée s'y lit « elle n'est pas là », et rien ne le contredit. Soldé en bloc ; sur échec, l'aveu prend la
+    // forme du dépôt (`corps_de_liste_illisible`, `P10.7-z` : `rules` présente et VIDE, `error` nomme la cause)
+    // — le même geste que le rang un a posé sur `tokens_list` et `roles_list`. `avertissement_overlay` reste
+    // servi à côté : il est DÉRIVÉ du code, pas de la lecture, et le taire n'apprendrait rien de plus.
+    let lues: rusqlite::Result<Vec<Value>> = conn
         .prepare("SELECT id,name,enabled,query,is_soql,op,threshold,severity,interval_s,window_s,last_run,last_value,last_fired,COALESCE(mitre,''),managed,COALESCE(compliance,''),COALESCE(suppress_window_s,0),COALESCE(throttle_field,''),COALESCE(per_result,0),COALESCE(population,''),COALESCE(population_vue,'') FROM rule ORDER BY id")
-    {
-        Ok(s) => s,
-        Err(_) => return Json(json!({ "rules": [] })),
-    };
-    let rows: Vec<Value> = stmt
+        .and_then(|mut stmt| {
+        stmt
         .query_map([], |r| {
             Ok(json!({
                 "id": r.get::<_, i64>(0)?, "name": r.get::<_, String>(1)?, "enabled": r.get::<_, i64>(2)? != 0,
@@ -466,15 +471,22 @@ pub(crate) async fn rules_list(State(st): State<AppState>, Extension(au): Extens
                 // que la console n'ait rien à réécrire — et rendue à côté de `query`, jamais à sa place.
                 "query_reutilisable": requete_reutilisable_de_regle(&r.get::<_, String>(3)?, r.get::<_, i64>(4)? != 0)
             }))
-        })
-        .map(|x| x.flatten().collect())
-        .unwrap_or_default();
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        });
     // P11.5-d : L'AVERTISSEMENT D'OVERLAY EST SERVI ICI, UNE SEULE FOIS pour toute la liste — la console
     // ne le réécrit plus dans sa propre langue (les deux copies avaient déjà divergé, et c'est cette
     // copie-là qui affirmait « Seule la bascule actif/inactif survit »). Une fois par LISTE et non par
     // ligne : la phrase est identique pour toutes les règles managed=1, la répéter serait du poids réseau
     // pour rien.
-    Json(json!({ "rules": rows, "avertissement_overlay": avertissement_overlay("Cette règle", "rule", 1) }))
+    let avertissement = avertissement_overlay("Cette règle", "rule", 1);
+    match lues {
+        Ok(rows) => Json(json!({ "rules": rows, "avertissement_overlay": avertissement })),
+        Err(_) => Json(crate::handlers::liste_bornee::corps_de_liste_illisible(
+            json!({ "avertissement_overlay": avertissement }),
+            "rules",
+        )),
+    }
 }
 // PURPLE — normalise/valide une technique MITRE ATT&CK : trim + casse haute, format ^T\d{4}(\.\d{3})?$
 // (ex T1110, T1190.001). Vide -> Some("") (champ optionnel, non mappée). Format invalide -> None.
@@ -1038,17 +1050,25 @@ pub(crate) async fn rule_delete(State(st): State<AppState>, Extension(au): Exten
 // ---- Parsers (registre modulaire) : CRUD + test. Toute écriture -> parsers_reload (cache compilé). ----
 pub(crate) async fn parsers_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
     crate::req_conn!(st, au, conn);
-    // MISC : dégrade en liste vide sur erreur (parité correlations_list/baselines_list) au lieu de paniquer.
-    let mut stmt = match conn.prepare("SELECT id,name,source,pattern,enabled,builtin,managed FROM parser ORDER BY builtin DESC, source, id") {
-        Ok(s) => s,
-        Err(_) => return Json(json!({ "parsers": [] })),
-    };
-    let rows: Vec<Value> = stmt.query_map([], |r| Ok(json!({
-        "id": r.get::<_, i64>(0)?, "name": r.get::<_, String>(1)?, "source": r.get::<_, String>(2)?,
-        "pattern": r.get::<_, String>(3)?, "enabled": r.get::<_, i64>(4)? != 0, "builtin": r.get::<_, i64>(5)? != 0,
-        "managed": r.get::<_, i64>(6)?
-    }))).map(|x| x.flatten().collect()).unwrap_or_default();
-    Json(json!({ "parsers": rows }))
+    // `P10.7-f` (rang 2) — LE REGISTRE DES ANALYSEURS EST ENTIER OU AVOUÉ. Avant : liste vide sur préparation
+    // ratée, et `.map(|x| x.flatten().collect()).unwrap_or_default()` pour la ligne illisible. Cette vue est
+    // celle où l'on VÉRIFIE qu'un format est couvert : un analyseur avalé s'y lit « ce format n'est pas
+    // analysé », alors qu'il l'est — ou, pire, on en réécrit un second qui entrera en conflit. Soldé en bloc,
+    // aveu sous la forme du dépôt (`corps_de_liste_illisible`).
+    let lues: rusqlite::Result<Vec<Value>> = conn
+        .prepare("SELECT id,name,source,pattern,enabled,builtin,managed FROM parser ORDER BY builtin DESC, source, id")
+        .and_then(|mut stmt| {
+            stmt.query_map([], |r| Ok(json!({
+                "id": r.get::<_, i64>(0)?, "name": r.get::<_, String>(1)?, "source": r.get::<_, String>(2)?,
+                "pattern": r.get::<_, String>(3)?, "enabled": r.get::<_, i64>(4)? != 0, "builtin": r.get::<_, i64>(5)? != 0,
+                "managed": r.get::<_, i64>(6)?
+            })))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        });
+    match lues {
+        Ok(rows) => Json(json!({ "parsers": rows })),
+        Err(_) => Json(crate::handlers::liste_bornee::corps_de_liste_illisible(json!({}), "parsers")),
+    }
 }
 pub(crate) async fn parser_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
     let pat = b.str_field("pattern").to_string();

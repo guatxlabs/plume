@@ -289,28 +289,28 @@
     fn les_six_sources_livrees_du_constat_sont_attendues_et_la_septieme_reste_un_signal() {
         let conn = test_db();
         for s in ["cloudflare-http", "engagement-adapter", "nft", "origin-drop", "portprobe", "kube-rbac"] {
-            let r = raison_attendue_par_construction(&conn, s);
+            let r = raison_attendue_par_construction(&conn, s).unwrap();
             assert!(matches!(r, Some(RaisonAttendue::Livree { .. })), "`{s}` est émise par un collecteur livré : {r:?}");
         }
-        assert_eq!(raison_attendue_par_construction(&conn, "derive-deploiement"), None,
+        assert_eq!(raison_attendue_par_construction(&conn, "derive-deploiement").unwrap(), None,
             "`derive-deploiement` n'est émise par aucun fichier de ce dépôt : le signal est légitime, l'issue est le marquage");
         for s in ["minio-audit", "vault-audit", "cloudflare", "conntrack", "mail", "containerd", "minio", "k8s", "dataacl", "agent", "sshd", "auditd", "plume-config", "plume-auth"] {
-            assert!(source_attendue_par_construction(&conn, s), "`{s}` doit rester attendue par construction");
+            assert!(source_attendue_par_construction(&conn, s).unwrap(), "`{s}` doit rester attendue par construction");
         }
         // `vault-audit` n'est livrée par aucun collecteur : elle est attendue parce que le PRODUIT l'agrège.
-        assert_eq!(raison_attendue_par_construction(&conn, "vault-audit"), Some(RaisonAttendue::Agregee));
+        assert_eq!(raison_attendue_par_construction(&conn, "vault-audit").unwrap(), Some(RaisonAttendue::Agregee));
         // un identifiant de capteur sans source homonyme (`k8s-log-health`) reste attendu via la sonde.
-        assert!(matches!(raison_attendue_par_construction(&conn, "k8s-log-health"), Some(RaisonAttendue::Sonde { .. })));
+        assert!(matches!(raison_attendue_par_construction(&conn, "k8s-log-health").unwrap(), Some(RaisonAttendue::Sonde { .. })));
         for s in ["totally-new-thing", "attacker-c2", "unknown-src"] {
-            assert!(!source_attendue_par_construction(&conn, s), "`{s}` (vraiment inconnue) DOIT rester un signal");
+            assert!(!source_attendue_par_construction(&conn, s).unwrap(), "`{s}` (vraiment inconnue) DOIT rester un signal");
         }
         // DÉRIVATION 4 — un connecteur configuré déclare sa source ; un TAXII (indicateurs) n'en déclare aucune.
         conn.execute("INSERT INTO connector(id,type,name,enabled,config_json) VALUES(7,'http_pull','x',1,'{\"source\":\"okta\"}')", []).unwrap();
         conn.execute("INSERT INTO connector(id,type,name,enabled,config_json) VALUES(8,'http_pull','y',1,'{}')", []).unwrap();
         conn.execute("INSERT INTO connector(id,type,name,enabled,config_json) VALUES(9,'taxii2','z',1,'{\"source\":\"ioc-feed\"}')", []).unwrap();
-        assert_eq!(raison_attendue_par_construction(&conn, "okta"), Some(RaisonAttendue::Connecteur { id: 7 }));
-        assert_eq!(raison_attendue_par_construction(&conn, "http:8"), Some(RaisonAttendue::Connecteur { id: 8 }), "sans `source` déclarée, le repli de l'ingestion `http:<id>`");
-        assert_eq!(raison_attendue_par_construction(&conn, "ioc-feed"), None, "un connecteur TAXII n'émet pas d'événement");
+        assert_eq!(raison_attendue_par_construction(&conn, "okta").unwrap(), Some(RaisonAttendue::Connecteur { id: 7 }));
+        assert_eq!(raison_attendue_par_construction(&conn, "http:8").unwrap(), Some(RaisonAttendue::Connecteur { id: 8 }), "sans `source` déclarée, le repli de l'ingestion `http:<id>`");
+        assert_eq!(raison_attendue_par_construction(&conn, "ioc-feed").unwrap(), None, "un connecteur TAXII n'émet pas d'événement");
         // le registre d'exclusions rend la même dérivation (sans la partie base).
         let sans_base = sources_attendues_sans_base();
         assert!(sans_base.iter().any(|s| s == "portprobe") && sans_base.iter().any(|s| s == "vault-audit") && !sans_base.iter().any(|s| s == "okta"));

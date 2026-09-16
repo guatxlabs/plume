@@ -992,8 +992,18 @@
         assert!(coupee, "au-dessus de la borne : la coupe est AVOUÉE");
         assert_eq!(total, 4, "le total compte la population entière, pas la page");
         assert_eq!(servies[0]["host"], "h9", "les plus récents d'abord : la ligne coupée est la plus ancienne");
-        // la liste complète reste disponible pour la Flotte : la borne ne touche pas `host_inventory_simple`
-        assert_eq!(host_inventory_simple(&conn).len(), 4);
+        // `P10.7-f` (2026-09-16) — LA BORNE EST UN PARAMÈTRE, PAS UNE AMPUTATION DE LA POPULATION : la
+        // MÊME lecture, relue avec la borne de production, rend les QUATRE machines et n'avoue AUCUNE
+        // coupe. Cette ligne appelait `host_inventory_simple` jusqu'à ce jour ; cette fonction-là était
+        // du CODE MORT (aucun appelant de production, doc-commentaire « partagé par /api/integrations »
+        // faux depuis que `freshness.rs` passe par `hotes_du_panneau_bornes`) et elle a été RETIRÉE avec
+        // l'aplatissement d'itérateur de lignes qu'elle portait. Le témoin ne perd rien : il tenait
+        // « la borne ne touche pas la population entière », et c'est CE chemin-ci, le seul de
+        // production, qui le tient désormais.
+        let (toutes, coupee, total) = hotes_du_panneau_bornes(&conn, BORNE_HOTES_DU_PANNEAU).expect("host_rollup lisible");
+        assert_eq!(toutes.len(), 4, "sous la borne de production : la population ENTIÈRE est servie");
+        assert!(!coupee, "sous la borne de production : aucune coupe à avouer");
+        assert_eq!(total, 4, "le total est celui de la population, quelle que soit la borne");
     }
 
     /// HOST_ROLLUP (v77) — PREUVE que /api/fleet ET /api/integrations lisent le ROLLUP et NON un scan de
@@ -1009,9 +1019,14 @@
         rollup_hosts(&conn);
         // On PURGE les tables brutes : si les vues scannaient event/metric/snapshot elles renverraient 0 hôte.
         conn.execute_batch("DELETE FROM event; DELETE FROM metric; DELETE FROM snapshot;").unwrap();
-        // /api/integrations (host_inventory_simple) : l'hôte survit.
-        let simple = host_inventory_simple(&conn);
+        // /api/integrations : l'hôte survit. Le chemin lu est celui de la PRODUCTION
+        // (`hotes_du_panneau_bornes`, `P11.20-l`) et non plus `host_inventory_simple`, retiré le
+        // 2026-09-16 comme code mort (`P10.7-f`) — le témoin gagne au change, il jugeait jusque-là une
+        // fonction que la route n'appelait plus.
+        let (simple, coupee, total) = hotes_du_panneau_bornes(&conn, BORNE_HOTES_DU_PANNEAU).expect("host_rollup lisible");
         assert_eq!(simple.len(), 1, "integrations lit host_rollup (survivant à la purge des tables brutes)");
+        assert!(!coupee, "un seul hôte : rien à couper");
+        assert_eq!(total, 1, "le total du panneau compte le ROLLUP, pas les tables brutes purgées");
         assert_eq!(simple[0]["host"], "ghost");
         assert_eq!(simple[0]["last_seen"], now_ts - 30, "last_seen = MAX(last_ts) du rollup");
         // /api/fleet (fleet_scan_all) : idem, avec first_seen/signals du rollup.

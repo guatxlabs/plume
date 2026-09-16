@@ -1,6 +1,7 @@
 //! Flotte d'agents (P0 UI, lecture) : inventaire des hôtes qui remontent des données, avec statut
-//! frais/en-retard/muet (`fleet_status`/`fleet_status_rank`), inventaire simple `host_inventory_simple`,
-//! scan `fleet_scan_all`, tri/pagination `fleet_sort_paginate`, cache SWR `FLEET_CACHE`/`fleet_map`,
+//! frais/en-retard/muet (`fleet_status`/`fleet_status_rank`), liste bornée du panneau d'intégrations
+//! `hotes_du_panneau_bornes`, scan `fleet_scan_all`, tri/pagination `fleet_sort_paginate`, cache SWR
+//! `FLEET_CACHE`/`fleet_map`,
 //! et handler `fleet`. Extrait de main.rs (refactor split #25 — byte-identique).
 use crate::*;
 
@@ -35,24 +36,21 @@ pub(crate) fn fleet_sort_key(sort: &str) -> &'static str {
     match sort { "host" => "host", "first_seen" => "first_seen", "signals" => "signals", "status" => "status", _ => "last_seen" }
 }
 
-/// Inventaire d'hôtes SIMPLE ({host, last_seen}) lu du rollup pré-agrégé `host_rollup` (v77, cf. rollup_hosts) —
-/// partagé par /api/integrations. AUCUN scan de event∪metric∪snapshot (lecture sub-ms d'une table de cardinalité
-/// = taille de flotte) : le `SELECT host,MAX(ts) FROM (union) GROUP BY host` non borné qui tuait le watchdog 5 s
-/// est SUPPRIMÉ. GROUP BY host collapse les env (#2d ; mode 0 = tout 'prod' -> 1 ligne/hôte). Trié last_seen DESC.
-pub(crate) fn host_inventory_simple(conn: &Connection) -> Vec<Value> {
-    let mut hosts: Vec<Value> = Vec::new();
-    if let Ok(mut stmt) = conn.prepare(
-        "SELECT host, MAX(last_ts) m FROM host_rollup WHERE host<>'' GROUP BY host ORDER BY m DESC",
-    ) {
-        if let Ok(rows) = stmt.query_map([], |r| Ok(json!({ "host": r.get::<_, String>(0)?, "last_seen": r.get::<_, i64>(1)? }))) {
-            hosts = rows.flatten().collect();
-        }
-    }
-    hosts
-}
+// `P10.7-f` — L'INVENTAIRE SIMPLE D'HÔTES ÉTAIT DU CODE MORT, ET IL EST RETIRÉ. `host_inventory_simple`
+// rendait `Vec<Value>` en aplatissant son itérateur de lignes (`rows.flatten().collect()`) : une ligne
+// illisible — cache de schéma de pool périmé qui rend « no such table » au PREMIER pas, colonne de
+// migration que la connexion qui sert ne voit pas encore — sortait de la liste, et l'inventaire était
+// servi comme complet sans un mot. La garde de famille le portait comme son seul site INDÉCIDABLE :
+// code MORT, ou lecteur à REBRANCHER ? La question est tranchée par la MESURE, faite le 2026-09-16 :
+// son doc-commentaire disait « partagé par /api/integrations », et c'était FAUX depuis que
+// `freshness.rs` sert la liste du panneau par `hotes_du_panneau_bornes` (bornée, coupe prouvée, total
+// compté). Il ne restait AUCUN appelant de production — deux appels de témoin seulement. Le rebrancher
+// aurait ré-introduit une liste NON BORNÉE dans un panneau de synthèse, c'est-à-dire le défaut que
+// `P11.20-l` a fermé le 2026-09-03. La fonction est donc SUPPRIMÉE : le site se ferme parce qu'il n'y a
+// plus de site, et `hotes_du_panneau_bornes` reste le seul lecteur d'inventaire de ce module.
 
 /// `P11.20-l` — LA LISTE D'HÔTES DU PANNEAU D'INTÉGRATIONS EST BORNÉE, ET LA COUPE EST MESURÉE.
-/// Mesuré le 2026-09-03 : la vue d'ensemble rendait l'INTÉGRALITÉ de `host_inventory_simple` — sans
+/// Mesuré le 2026-09-03 : la vue d'ensemble rendait l'INTÉGRALITÉ de l'inventaire d'hôtes — sans
 /// pagination, sans coupe, sans aveu — là où la Flotte, sur le même parc, sert 50 lignes par page et
 /// plafonne à 500 côté route. Sur un parc de milliers de machines, un panneau de synthèse peignait des
 /// milliers de lignes. La borne est celle de la page de Flotte, et la coupe est PROUVÉE par la ligne

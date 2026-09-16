@@ -144,7 +144,7 @@ fn empreinte_fnv1a(octets: &[u8], depart: u64) -> u64 {
 /// cause voyage jusqu'aux deux surfaces au lieu d'un `None` muet.
 pub(crate) fn flotte_muette(conn: &Connection, now_ts: i64) -> Result<FlotteMuette, rusqlite::Error> {
     // ORDER BY host : l'empreinte doit être une fonction de l'ENSEMBLE, pas de l'ordre de restitution.
-    // GROUP BY host collapse les environnements (comme `host_inventory_simple`) -> une ligne par machine.
+    // GROUP BY host collapse les environnements (comme `fleet::hotes_du_panneau_bornes`) -> une ligne par machine.
     let mut st = conn
         .prepare("SELECT host, MAX(last_ts) FROM host_rollup WHERE host<>'' GROUP BY host ORDER BY host")?;
     let mut lignes = st.query([])?;

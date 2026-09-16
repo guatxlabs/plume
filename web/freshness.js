@@ -237,8 +237,9 @@ async function renderIntegrations() {
   //
   // CE QUI A ÉTÉ MESURÉ DANS LE DÉMON, ET QUI NE SE DEVINAIT PAS D'ICI. Les deux lectures de cette
   // colonne partent de la MÊME table et de la MÊME requête (`host_rollup`, `WHERE host<>'' GROUP BY
-  // host`) — et n'ont pourtant pas la même population. `host_inventory_simple`
-  // (`daemon/src/handlers/fleet.rs`) rend TOUTES les machines, c'est la liste rendue ci-dessous.
+  // host`) — et n'ont pourtant pas la même population. `hotes_du_panneau_bornes`
+  // (`daemon/src/handlers/fleet.rs`) rend les machines jusqu'à sa borne, coupe avouée — c'est la liste
+  // rendue ci-dessous (`host_inventory_simple`, non bornée, était du code mort : retirée le 2026-09-16, `P10.7-f`).
   // `flotte_muette` (`daemon/src/sonde_de_flotte.rs`) parcourt les mêmes lignes mais SAUTE celles
   // qu'un exploitant a déclarées retirées du parc, AVANT d'incrémenter `attendus` — parce qu'un
   // dénominateur qui compte des machines dont quelqu'un a dit qu'elles n'en font plus partie ne veut

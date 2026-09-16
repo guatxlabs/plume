@@ -99,6 +99,11 @@
 //     `Result` que `dominant_tactic_and_target` rend désormais, pas par une exécution ;
 //   * `liste_bornee::lire` et `datamodels::object_field_allow` restent des ARBITRAGES ASSUMÉS de
 //     l'ensemble nommé, et `fleet::host_inventory_simple` l'INDÉCIDABLE : ce lot n'y touche pas.
+//     ADDENDUM DU 2026-09-16 (lot des connecteurs, écrit ici pour qu'aucune phrase de ce fichier
+//     n'enseigne un arbre qui n'existe plus) : l'INDÉCIDABLE a depuis été TRANCHÉ — la fonction était
+//     du CODE MORT (aucun appelant de production) et elle est SUPPRIMÉE de `fleet.rs`, ses deux
+//     témoins rebranchés sur `hotes_du_panneau_bornes`. Les DEUX arbitrages assumés, eux, sont
+//     toujours là, et c'est toujours ce lot-ci qui n'y touche pas.
 // =====================================================================================
 
 /// L'état file-backed de cette vague : schéma + migrations complets, un admin. MÊME fixture que les

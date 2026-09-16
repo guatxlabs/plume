@@ -244,13 +244,40 @@ pub(crate) async fn connectors_list(State(st): State<AppState>, Extension(au): E
     // NB : `secret != ''` -> has_secret (booléen) ; la colonne secret n'est JAMAIS projetée dans la réponse.
     // P-HEC : `has_key` = une clé de livraison PUSH (Firehose OU Pub/Sub) est LIÉE à ce connecteur (jamais la clé
     // elle-même — seul son SHA-256 vit dans `token`). La colonne `secret` reste NON projetée (has_secret booléen).
-    let list: Vec<Value> = match conn.prepare(
-        "SELECT id,type,name,enabled,config_json,interval_s,env_id,watermark,last_run,last_ok,last_count,last_error,(secret != ''), \
-                EXISTS(SELECT 1 FROM token WHERE token.connector_id=connector.id AND token.kind IN ('firehose','gcp_pubsub')) \
-         FROM connector ORDER BY id",
-    ) {
-        Ok(mut stmt) => stmt
-            .query_map([], |r| {
+    //
+    // `P10.7-f` — LA LISTE DES CONNECTEURS EST ENTIÈRE OU REFUSÉE. Avant : `Err(_) => Vec::new()` sur la
+    // PRÉPARATION et `.map(|rows| rows.flatten().collect()).unwrap_or_default()` sur le parcours — DEUX
+    // voies de silence pour un seul corps. Un itérateur de lignes rusqlite rend des `Result` UNE LIGNE À
+    // LA FOIS : le mappeur peut échouer sur une seule ligne sans que la requête ait échoué (cache de
+    // schéma de pool périmé rendant « no such table » au PREMIER pas, colonne ajoutée par une migration
+    // que la connexion qui sert ne voit pas encore, `config_json` ou `last_error` non textuel), et
+    // l'aplatissement jetait CETTE ligne-là en rendant la suite sous un corps rigoureusement identique à
+    // celui d'une liste complète.
+    //
+    // CE QUE LA LIGNE AVALÉE COÛTAIT, ET C'EST PROPRE À CETTE LISTE : un connecteur absent se lit « cette
+    // source n'est pas branchée » — c'est même la phrase que la console PEINT quand le tableau est vide
+    // (`web/connectors.js:29` : « aucun connecteur … rien n'est collecté »). Or le connecteur avalé
+    // continue d'EXISTER et de TOURNER : `run_due_connectors` lit la table `connector`, pas cette vue, et
+    // il interroge le vendeur, ingère, avance son `watermark` sous son `env_id`. On en déclare donc un
+    // SECOND vers la même source, et les deux collectent en parallèle. Pire pour une surface d'EGRESS :
+    // son `last_error`, son `last_ok` et son `has_key` — la seule façon de voir qu'une clé de livraison
+    // PUSH est liée à ce connecteur — disparaissent avec lui, et c'est précisément ce qu'un
+    // administrateur vient lire ici.
+    //
+    // POURQUOI UN CINQ CENTS NOMMÉ ET NON `error` DANS LE CORPS : ce corps est un TABLEAU NU
+    // (`Json(Value::Array(..))`), il n'a aucune clé où poser l'aveu, et lui en donner une changerait le
+    // contrat. C'est la forme des fournisseurs d'identité (`idp_providers_list`, rang un) et des deux
+    // tableaux nus du rang quatre (`ai_providers_list`, `destinations_list`), reprise à la lettre :
+    // `server_err(CAUSE_LISTE_ILLISIBLE)`. Elle est LUE DE BOUT EN BOUT ici — `web/connectors.js:26`
+    // passe par `fetchInto`, qui écrit la cause dans le panneau sur tout non-2xx.
+    let lues: rusqlite::Result<Vec<Value>> = conn
+        .prepare(
+            "SELECT id,type,name,enabled,config_json,interval_s,env_id,watermark,last_run,last_ok,last_count,last_error,(secret != ''), \
+                    EXISTS(SELECT 1 FROM token WHERE token.connector_id=connector.id AND token.kind IN ('firehose','gcp_pubsub')) \
+             FROM connector ORDER BY id",
+        )
+        .and_then(|mut stmt| {
+            stmt.query_map([], |r| {
                 let cfg_json: String = r.get(4)?;
                 let last_error: Option<String> = r.get(11)?;
                 Ok(json!({
@@ -269,12 +296,13 @@ pub(crate) async fn connectors_list(State(st): State<AppState>, Extension(au): E
                     "has_secret": r.get::<_, i64>(12)? != 0,
                     "has_key": r.get::<_, i64>(13)? != 0, // P-HEC : clé de livraison push liée (jamais la clé)
                 }))
-            })
-            .map(|rows| rows.flatten().collect())
-            .unwrap_or_default(),
-        Err(_) => Vec::new(),
-    };
-    Json(Value::Array(list)).into_response()
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        });
+    match lues {
+        Ok(list) => Json(Value::Array(list)).into_response(),
+        Err(_) => server_err(crate::handlers::liste_bornee::CAUSE_LISTE_ILLISIBLE),
+    }
 }
 
 pub(crate) async fn connector_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {

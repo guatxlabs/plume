@@ -853,6 +853,81 @@
         assert_eq!(updated, "NEW_SECRET");
     }
 
+    /// `P10.7-f` — LA LISTE DES CONNECTEURS EST ENTIÈRE OU REFUSÉE, ET C'EST LE PREMIER SITE DE CETTE
+    /// FAMILLE HORS DU RÉPERTOIRE PLAT DES GESTIONNAIRES. La garde de famille
+    /// (`check_a_truncated_list_is_never_served_as_a_complete_one.py`) ne lisait que
+    /// `daemon/src/handlers/*.rs` À PLAT et le DISAIT dans son verdict ; en descendant dans
+    /// `handlers/connectors/`, elle voit `connectors_list`, qui portait la forme depuis le premier jour.
+    ///
+    /// CE QU'IL TIENT : les DEUX connecteurs de la fixture sont servis ; une LIGNE illisible comme une
+    /// TABLE retirée rendent un cinq cents qui NOMME sa cause et dont le corps N'EST PAS une liste — donc
+    /// aucune façon de le lire « aucune source n'est branchée ».
+    ///
+    /// CE QUE LA LIGNE AVALÉE COÛTAIT, ET C'EST PROPRE À CETTE LISTE-CI : `web/connectors.js:29` peint,
+    /// sur un tableau vide, « aucun connecteur … rien n'est collecté ». Or le connecteur avalé EXISTE et
+    /// TOURNE — `run_due_connectors` lit la table `connector`, pas cette vue : il interroge le vendeur,
+    /// ingère et avance son `watermark`. La conclusion « ce n'est pas branché » fait donc en déclarer un
+    /// SECOND vers la même source, et les deux collectent. Avec lui disparaissent aussi son `last_error`,
+    /// son `last_ok` et son `has_key` — la seule façon de voir qu'une clé de livraison PUSH (Firehose ou
+    /// Pub/Sub) est liée à ce connecteur.
+    ///
+    /// POURQUOI UN REFUS ET NON UN `error` DANS LE CORPS : le corps nominal est un TABLEAU NU
+    /// (`Json(Value::Array(..))`), sans aucune clé où poser l'aveu. Forme de `idp_providers_list` (rang
+    /// un), `ai_providers_list` et `destinations_list` (rang quatre, vague b) ; et elle est LUE DE BOUT EN
+    /// BOUT, `web/connectors.js:26` passant par `fetchInto`, qui écrit la cause dans le panneau sur tout
+    /// non-2xx.
+    ///
+    /// CE QU'IL NE TIENT PAS : il ne joue ni le poll, ni le dry-run, ni la non-projection du `secret`
+    /// (c'est le témoin voisin `connector_list_projection_hides_secret_and_empty_update_keeps`), et il ne
+    /// dit rien des DEUX autres lectures de ce fichier qui posent un `.ok()` sur un `query_row`
+    /// (`connector_test`, `connector_poll`) : c'est la famille VOISINE, que la garde déclare ne pas juger.
+    ///
+    /// LA MUTATION QUI LE FERAIT ROUGIR, ET ELLE A ÉTÉ JOUÉE : rétablir
+    /// `.map(|rows| rows.flatten().collect()).unwrap_or_default()` + `Err(_) => Vec::new()`. La voie de la
+    /// LIGNE ILLISIBLE rend alors 200 avec un tableau de DEUX connecteurs au lieu de trois — un refus
+    /// attendu, une liste courte servie — et la voie de la TABLE RETIRÉE rend 200 avec un tableau VIDE :
+    /// les deux appels à `lre_juger_le_refus` tombent sur le statut.
+    #[tokio::test]
+    async fn p10_7f_connectors_list_est_entiere_ou_refusee() {
+        let (st, au, _p) = lre_etat("connectors-list");
+        // Le contrôle positif se compte PAR RAPPORT à ce que la base porte déjà : un nombre écrit à la
+        // main vieillirait au premier semis ajouté par une migration.
+        let deja = lre_deja(&st, "connector");
+        lsa_ecrire(
+            &st,
+            "INSERT INTO connector(type,name,enabled,config_json,secret,interval_s,env_id,created) \
+               VALUES('defender','MDE production',1,'{}','LE_SECRET',300,'prod',10);\
+             INSERT INTO connector(type,name,enabled,config_json,secret,interval_s,env_id,created) \
+               VALUES('taxii2','Flux TAXII',0,'{}','',600,'prod',20);",
+        );
+
+        // (a) CONTRÔLE POSITIF — sans lui, un refus INCONDITIONNEL passerait pour un aveu.
+        let (statut, nominal) = lsa_corps(connectors_list(State(st.clone()), Extension(au.clone())).await).await;
+        assert_eq!(statut, 200);
+        assert_eq!(
+            nominal.as_array().map(Vec::len),
+            Some(deja + 2),
+            "contrôle positif : les deux connecteurs sont servis : {nominal}"
+        );
+
+        // (b) LA LIGNE ILLISIBLE — un BLOB dans `config_json`, colonne d'affinité TEXT : SQLite conserve
+        // le blob tel quel et `get::<String>` le refuse. La REQUÊTE reste saine ; seul le MAPPEUR échoue,
+        // sur UNE ligne. C'est LA voie que l'aplatissement avalait, et c'est elle qui tue la mutation.
+        lsa_ecrire(
+            &st,
+            "INSERT INTO connector(type,name,enabled,config_json,secret,interval_s,env_id,created) \
+               VALUES('http_pull','Ligne illisible',1,x'FF','',300,'prod',30);",
+        );
+        let (statut, refus) = lsa_corps(connectors_list(State(st.clone()), Extension(au.clone())).await).await;
+        lre_juger_le_refus(statut, &refus);
+
+        // (c) LA TABLE RETIRÉE — la PRÉPARATION échoue : la seconde voie de silence, qui rendait
+        // `Err(_) => Vec::new()`, c'est-à-dire un `[]` en 200, un fait établi.
+        lsa_retirer_la_table(&st, "connector");
+        let (statut, sans_table) = lsa_corps(connectors_list(State(st.clone()), Extension(au.clone())).await).await;
+        lre_juger_le_refus(statut, &sans_table);
+    }
+
     /// (D11) DÉBRUITAGE du flag « inattendu » : les 10 feeds LÉGITIMES additionnels (source ≠ id de collecteur)
     /// sont CONNUS -> plus flaggés. Les ids de COLLECTEURS et les sources auth restent connus. Une source
     /// GÉNUINEMENT inconnue reste flaggée (le signal fonctionne toujours pour les vraies nouveautés).

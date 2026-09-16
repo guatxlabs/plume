@@ -38,6 +38,31 @@ au `grep -n`, puis chaque occurrence relue dans son contexte) :
   * restent CINQUANTE-HUIT SITES de la famille, sur trente et un fichiers. TROIS sont admis pour une
     raison écrite (deux arbitrages ASSUMÉS, un INDÉCIDABLE) ; CINQUANTE-CINQ sont des défauts.
 
+CE RELEVÉ-LÀ A ÉTÉ FAIT SUR LE RÉPERTOIRE PLAT, ET LES HUIT HORS-FAMILLE ONT ÉTÉ RE-MESURÉS LE 2026-09-16
+(lot des connecteurs), parce qu'un lot précédent avait publié un sous-compte FAUX — « cinq `.ok().flatten()`
+sur l'arbre, dont deux sur un `query_row` ». Le sous-compte faux venait d'un `grep` d'UNE LIGNE : sur
+`daemon/src/handlers/dashboards.rs:554`, `rustfmt` coupe entre `.ok()` et `.flatten()`, et un motif
+mono-ligne ne le voit pas. Re-mesuré avec un motif qui tolère les blancs, commentaires dépouillés et
+modules de test coupés : SIX `.ok().flatten()` dans `daemon/src/handlers/`, dont TROIS sur un `query_row`
+(`dashboards.rs:554` — `panel_cache_ttl`, `freshness.rs:643` et `:759` — `compute_freshness`), DEUX sur une
+fonction rendant `Result<Option<_>>` sous `#[cfg(test)]` (`cases.rs:307`, `caseops.rs:687` : les deux
+lectures « gardées pour les témoins »), UNE sur un `.await` de tâche (`detection.rs:1317`). Avec le
+`ref_bib.a_ecrire().flatten()` de `dashboards.rs:312` (un `Option<Option<_>>` rendu par une fonction) et le
+`capture_names().flatten()` de `detection.rs:1290`, le compte des HORS-FAMILLE est bien HUIT, et la
+composition ci-dessus est EXACTE — c'est la re-mesure du lot précédent qui était fausse, pas la phrase
+d'origine. Le même motif rejoué sur l'arbre du matin (`git archive 693e475`) donne les MÊMES six : aucune
+de ces occurrences n'a bougé de la journée.
+
+CE QUE LE MÊME RELEVÉ DONNE AUJOURD'HUI, POUR QUE LA DESCENTE SE VÉRIFIE : `daemon/src/handlers/`, SOUS-
+RÉPERTOIRES COMPRIS, porte 69 occurrences BRUTES et ONZE dans le CODE au 2026-09-16 après ce lot (contre 81
+et 67 le matin, même mesure, même répertoire) — les 56 corrections de la journée ont converti des sites en
+COMMENTAIRES qui racontent le défaut fermé, et c'est pourquoi le compte brut ne bouge presque pas pendant
+que le code fond. Des ONZE : DEUX sont les sites de la famille encore admis, HUIT sont les hors-famille
+énumérées ci-dessus, et la ONZIÈME (`actions.rs:1173`) est un COMMENTAIRE que le dépouillement laisse
+passer — le lecteur partagé `sans_commentaires_rust` prend le littéral de caractère `'\"'` de
+`actions.rs:888` pour une ouverture de chaîne. Elle ne produit aucune accusation (aucun `query_map(` dans
+son expression) et le verdict le DIT plutôt que de laisser croire au dépouillement parfait qu'il annonce.
+
 CE QUE LES CINQUANTE-CINQ SERVENT, MESURÉ PAR UN CRITÈRE ÉCRIT (le type de retour de la fonction
 englobante, rejouable sur l'arbre) : QUARANTE-CINQ rendent DIRECTEMENT un type porteur de corps —
 `Response` 27, `Json<Value>` 11, `Value` 5, `Option<Value>` 1, `Vec<Value>` 1. QUATRE rendent un type
@@ -171,6 +196,26 @@ second appelant, `case_runbook_attach`, refuse en cinq cent trois nommé sans ri
 qu'attacher FIGE les étapes et que le geste est idempotent-refusant. La garde rend désormais TROIS sites
 sur TROIS fichiers, ZÉRO défaut connu.
 
+RELEVÉ APRÈS LE LOT DES CONNECTEURS (2026-09-16, lot suivant) — DEUX GESTES, ET LE SECOND CHANGE LA
+POPULATION. (1) L'INDÉCIDABLE EST TRANCHÉ : `fleet::host_inventory_simple` était du CODE MORT. La question
+que son entrée portait — code mort, ou lecteur à REBRANCHER ? — se tranche par la mesure : aucun appelant
+de production (deux appels de témoin seulement), un doc-commentaire « partagé par /api/integrations » faux
+depuis que `freshness.rs:315` passe par `hotes_du_panneau_bornes`, et un rebranchement qui ré-introduirait
+la liste NON BORNÉE que `P11.20-l` a fermée le 2026-09-03. La fonction est SUPPRIMÉE, ses deux témoins
+rebranchés sur le chemin de production (ils y gagnent : ils jugeaient une fonction que la route n'appelait
+plus), et la classe INDÉCIDABLE devient VIDE. (2) LE CORPUS DESCEND : cette garde ne lisait que le
+répertoire PLAT et le disait dans son verdict ; elle lit désormais `daemon/src/handlers/` ET SES
+SOUS-RÉPERTOIRES, en élaguant par le geste partagé (`parcours_des_sources`, `P11.8-m`). La descente fait
+entrer UN site que la borne plate cachait — `connectors/mod.rs:273`, `connectors_list` — et il est CORRIGÉ
+dans le même lot, pas admis : parcours soldé en bloc et cinq cents NOMMÉ, la forme du TABLEAU NU
+(`idp_providers_list` au rang un, `ai_providers_list` et `destinations_list` à la vague B). Ce site portait
+les DEUX voies de silence du rang quatre — `Err(_) => Vec::new()` sur la préparation, aplatissement sur le
+parcours — et ce qui lui est propre est mesuré : `web/connectors.js:29` peint « aucun connecteur … rien
+n'est collecté » sur un tableau vide, pendant que le connecteur avalé continue d'interroger son vendeur et
+d'ingérer (`run_due_connectors` lit la table, pas cette vue), et que son `last_error`, son `last_ok` et son
+`has_key` — la seule trace d'une clé de livraison PUSH liée — disparaissent avec lui. La garde rend
+désormais DEUX sites sur DEUX fichiers : EXACTEMENT les deux arbitrages ASSUMÉS, et plus rien d'autre.
+
 LES PLANCHERS SE RELISENT, AVEC LEUR DATE (2026-09-16, après la vague B du rang quatre). Ils valaient
 15/11 après la vague A, dérivés du relevé de ce moment-là (22 sites sur 17 fichiers) ; l'arbre porte
 maintenant 3 sites sur 3 fichiers pour de VRAIES corrections. La MÊME règle des deux tiers, réappliquée
@@ -224,6 +269,7 @@ elle n'a pas raccourci.
 import os
 import re
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 from check_every_help_trigger_has_a_section import sans_commentaires_rust  # noqa: E402
@@ -245,6 +291,12 @@ try:
         apparier, coupe_tests, fonctions)
 finally:
     sys.argv = _ARGV
+
+# L'ÉLAGAGE DU PARCOURS EST LE GESTE PARTAGÉ, JAMAIS UNE LISTE RECOPIÉE (`P11.8-m`, et
+# `check_no_guard_walks_the_tree_unpruned.py` juge la divergence). Ce module n'évalue AUCUNE racine à
+# l'import (`racine_designee()` n'y est appelée que dans un corps de fonction) : l'importer ne cherche pas
+# de dépôt git et ne peut pas juger un arbre différent de celui-ci.
+from check_every_style_selector_has_a_target import parcours_des_sources  # noqa: E402
 
 HANDLERS = os.path.join(RACINE, "daemon", "src", "handlers")
 DEMON = os.path.join(RACINE, "daemon", "src")
@@ -287,7 +339,7 @@ ECRITURES = {
 # la plus SPÉCIFIQUE gagne, et le site n'est jamais compté deux fois.
 RANG_ECRITURE = {"i": 0, "ii": 1, "iv": 2, "iii": 3}
 
-# --- PLANCHER DE NON-DÉGÉNÉRESCENCE (relu le 2026-09-16, après la vague B du rang quatre) ---------
+# --- PLANCHER DE NON-DÉGÉNÉRESCENCE (relu le 2026-09-16, après le LOT DES CONNECTEURS) -----------
 # Ils ne réclament PAS un volume de code : ils constatent qu'une LECTURE est cassée. Sous eux, rendre
 # vert serait rendre vert en étant aveugle, et c'est le défaut que cette garde nomme, appliqué à
 # elle-même : la découverte est cassée, pas le dépôt guéri.
@@ -313,8 +365,23 @@ RANG_ECRITURE = {"i": 0, "ii": 1, "iv": 2, "iii": 3}
 # SENS (l'un de ces trois sites cessant d'être vu devient une « exemption sans objet », rouge), et ce
 # filet-là ne dépend d'aucun volume. Le plancher n'est plus qu'un garde-fou grossier contre un
 # effondrement TOTAL du lecteur. Il ne monte jamais.
-PLANCHER_SITES = 2
-PLANCHER_FICHIERS = 2
+#
+# QUATRIÈME RELECTURE (2026-09-16, après le LOT DES CONNECTEURS). L'arbre porte 2 sites sur 2 fichiers :
+# l'INDÉCIDABLE a été tranché (code mort SUPPRIMÉ) et le site que la descente dans `handlers/connectors/`
+# a fait entrer a été CORRIGÉ dans le même lot. La règle des deux tiers, réappliquée au relevé DU JOUR :
+# 69 % de 2 = 1,38 -> 1, et 65 % de 2 = 1,30 -> 1 — cette fois troncature et arrondi S'ACCORDENT tous les
+# deux sur 1, donc la réserve écrite à la relecture précédente (« la règle ne discrimine plus, on retient
+# la plus haute ») ne s'applique pas ici : il n'y a plus de désaccord à arbitrer. D'où 1/1.
+#
+# ET IL Y A UNE RAISON DE DESCENDRE, PAS SEULEMENT UNE RÈGLE QUI LE PERMET. Laisser 2/2 au-dessus d'une
+# population de 2 ferait de ce plancher une RANÇON sur les deux arbitrages ASSUMÉS : le jour où
+# `liste_bornee::lire` rendra un `Result` par ligne — l'entrée dit elle-même qu'elle devra DISPARAÎTRE ce
+# jour-là — la garde tomberait sous le plancher et refuserait de conclure, en accusant la DÉCOUVERTE là
+# où le dépôt aurait guéri. C'est exactement le défaut que cette garde nomme, appliqué à elle-même dans
+# l'autre sens. À 1/1 elle ne refuse plus que sur un effondrement TOTAL du lecteur (zéro site), ce qui est
+# tout ce qu'un plancher peut encore séparer à cette magnitude. Il ne monte jamais.
+PLANCHER_SITES = 1
+PLANCHER_FICHIERS = 1
 
 # ================================================================================================
 # L'ENSEMBLE NOMMÉ — TROIS CLASSES, JUGÉES DANS LES DEUX SENS
@@ -338,14 +405,21 @@ SITES_ASSUMES = {
 
 # --- CLASSE 2 : L'INDÉCIDABLE. Ni défaut ni arbitrage tant que la question n'est pas tranchée ;
 # l'entrée porte la question, pas une excuse.
-SITE_INDECIDABLE = {
-    # AUCUN appelant de production. Le doc-commentaire `fleet.rs:39` dit « partagé par
-    # /api/integrations » et c'est FAUX depuis que `freshness.rs:315` passe par
-    # `hotes_du_panneau_bornes`. À trancher : code MORT (le supprimer ferme le site) ou lecteur à
-    # REBRANCHER (il redevient alors un défaut de rang 3, un inventaire d'hôtes servi comme complet).
-    # Tant que la question n'est pas tranchée, l'entrée reste et dit qu'elle ne l'est pas.
-    ("daemon/src/handlers/fleet.rs", "host_inventory_simple"): 1,
-}
+#
+# CLASSE TRANCHÉE ET VIDÉE LE 2026-09-16 — UN SITE, ET LA QUESTION AVAIT UNE RÉPONSE MESURABLE. L'entrée
+# qui vivait ici était `fleet::host_inventory_simple`, et elle portait la question « code MORT (le
+# supprimer ferme le site) ou lecteur à REBRANCHER (il redevient un défaut de rang 3) ? ». Trois mesures
+# l'ont tranchée : (a) `grep -rn host_inventory_simple` ne rendait, hors prose, QUE la définition et DEUX
+# appels de TÉMOIN — aucun appelant de production ; (b) son doc-commentaire disait « partagé par
+# /api/integrations », et c'était faux depuis que `freshness.rs:315` sert la liste du panneau par
+# `hotes_du_panneau_bornes` (bornée, coupe prouvée par la ligne excédentaire, total compté) ; (c) le
+# REBRANCHER aurait ré-introduit une liste NON BORNÉE dans un panneau de synthèse, c'est-à-dire le défaut
+# que `P11.20-l` a fermé le 2026-09-03. La fonction est donc SUPPRIMÉE de `fleet.rs`, et ses deux témoins
+# rebranchés sur `hotes_du_panneau_bornes` : ils jugeaient une fonction que la route n'appelait plus, ils
+# jugent maintenant le chemin de production. Le site ne se ferme pas par un aveu — il se ferme parce qu'il
+# n'y a plus de site. Le dictionnaire reste, VIDE : la classe est une classe de l'ensemble, et son vide
+# est le seul état qui dise « aucune question n'est en suspens ici ».
+SITE_INDECIDABLE = {}
 
 # --- CLASSE 3 : LES DÉFAUTS CONNUS, NON CORRIGÉS. Chaque entrée dit ce qui est servi tronqué et le
 # geste LOCAL qui la ferme. Trois gestes reviennent, et aucun ne demande de toucher à cette garde :
@@ -662,13 +736,32 @@ def analyser(chemin_relatif, texte, journal):
     return sites
 
 
-def fichiers_du_corpus():
-    """`daemon/src/handlers/*.rs` — le répertoire PLAT, et rien d'autre pour cette première forme.
-    Les sous-répertoires (`handlers/connectors/`) en sont dehors, et le verdict le dit."""
-    if not os.path.isdir(HANDLERS):
+def fichiers_du_corpus(racine=None):
+    """Tous les `.rs` de `daemon/src/handlers/`, SOUS-RÉPERTOIRES COMPRIS, artefacts ÉLAGUÉS.
+
+    LA PREMIÈRE FORME NE LISAIT QUE LE RÉPERTOIRE PLAT, et son verdict le disait — un site y vivait
+    pourtant (`connectors/mod.rs`, `connectors_list`), invisible à la garde qui existait pour le voir.
+    Une borne qui s'annonce n'est pas une borne innocente : elle dit exactement où écrire ce que la garde
+    ne verra pas. La descente est donc faite, et le site qu'elle a fait entrer a été CORRIGÉ le même jour.
+
+    L'ÉLAGAGE PASSE PAR `parcours_des_sources` (le geste partagé, `P11.8-m`) : il exclut PAR NOM, DANS la
+    descente (`dossiers[:] = …`, jamais un filtrage après coup qui aurait déjà LU le répertoire), et
+    porter une liste à la main ici serait la « copie divergente » que
+    `check_no_guard_walks_the_tree_unpruned.py` juge. Cette racine-ci DESCEND (`daemon/src/handlers`), elle
+    n'est donc pas DOMINANTE au sens de cette garde-là et n'aurait pas été accusée ; on élague quand même,
+    parce qu'un `vendor/` ou un `.venv` posé sous l'arbre n'est pas une impossibilité de principe, et que
+    le coût est d'une ligne.
+
+    `racine` n'est là que pour les ÉPREUVES INTERNES, qui doivent pouvoir soumettre un arbre FABRIQUÉ à ce
+    lecteur-ci sans toucher au dépôt."""
+    racine = HANDLERS if racine is None else racine
+    if not os.path.isdir(racine):
         return []
-    return [os.path.join(HANDLERS, n) for n in sorted(os.listdir(HANDLERS))
-            if n.endswith(".rs") and os.path.isfile(os.path.join(HANDLERS, n))]
+    trouves = []
+    for dossier, fichiers in parcours_des_sources(racine):
+        trouves += [os.path.join(dossier, n) for n in fichiers
+                    if n.endswith(".rs") and os.path.isfile(os.path.join(dossier, n))]
+    return sorted(trouves)
 
 
 def decouvrir():
@@ -798,6 +891,61 @@ EPREUVES = [
 ]
 
 
+# LA DESCENTE S'ÉPROUVE SUR UN ARBRE FABRIQUÉ, JAMAIS SUR `handlers/connectors/`. Adosser le témoin au
+# sous-répertoire réel en ferait une RANÇON : il rougirait le jour où ce répertoire est renommé, fusionné
+# ou vidé, et aucun geste local ne pourrait le refermer. C'est la même règle que pour les extraits Rust.
+SOURCE_FABRIQUEE = ('fn liste(conn: &Connection) -> Vec<i64> {\n'
+                    '    let mut s = conn.prepare("SELECT a FROM t").unwrap();\n'
+                    '    s.query_map([], |r| r.get(0)).unwrap().flatten().collect()\n}\n')
+# Les chemins du faux arbre : deux profondeurs de SOURCES (qui doivent être vues) et deux ARTEFACTS
+# d'outil (qui doivent être élagués DANS la descente).
+ARBRE_FABRIQUE = (("a_plat.rs",),
+                  ("sous_repertoire_fabrique", "mod.rs"),
+                  ("sous_repertoire_fabrique", "encore_dessous", "profond.rs"),
+                  ("target", "debug", "artefact_de_construction.rs"),
+                  ("__pycache__", "artefact_python.rs"))
+SOURCES_ATTENDUES = {"a_plat.rs", "sous_repertoire_fabrique/mod.rs",
+                     "sous_repertoire_fabrique/encore_dessous/profond.rs"}
+
+
+def epreuve_de_la_descente():
+    """Le CORPUS descend dans les sous-répertoires, et il élague — jugé DANS LES DEUX SENS.
+
+    Sans le sens POSITIF, la descente pourrait être débranchée sans qu'aucun témoin ne tombe, et la garde
+    redeviendrait plate en silence — exactement l'état où un site de `handlers/connectors/` a vécu depuis
+    le premier jour. Sans le sens NÉGATIF, un `target/` posé sous l'arbre entrerait dans le corpus et la
+    garde accuserait du code qu'aucun geste local ne referme (et se rendrait illisible : un répertoire de
+    construction porte des ordres de grandeur plus de fichiers que les sources dont il dérive).
+
+    Le troisième volet est le plus important : un fichier LISTÉ mais non ANALYSÉ ne prouve rien. Le site
+    du sous-répertoire doit ressortir d'`analyser`, avec son écriture."""
+    errs = []
+    with tempfile.TemporaryDirectory(prefix="plume-liste-tronquee-") as racine:
+        for rel in ARBRE_FABRIQUE:
+            chemin = os.path.join(racine, *rel)
+            os.makedirs(os.path.dirname(chemin), exist_ok=True)
+            with open(chemin, "w", encoding="utf-8") as fh:
+                fh.write(SOURCE_FABRIQUEE)
+        vus = {os.path.relpath(c, racine).replace(os.sep, "/") for c in fichiers_du_corpus(racine)}
+        manquants = sorted(SOURCES_ATTENDUES - vus)
+        if manquants:
+            errs.append(f"épreuve de la DESCENTE (positif) : {manquants} n'est pas dans le corpus — la "
+                        "découverte est redevenue PLATE, et un site écrit sous `handlers/connectors/` (ou "
+                        "sous n'importe quel sous-répertoire à venir) ne serait plus jamais vu")
+        artefacts = sorted(v for v in vus - SOURCES_ATTENDUES)
+        if artefacts:
+            errs.append(f"épreuve de la DESCENTE (élagage) : {artefacts} est entré dans le corpus — le "
+                        "parcours n'élague plus les artefacts d'outil par le geste partagé "
+                        "(`parcours_des_sources`), et la garde accuserait du code dérivé qu'aucun geste "
+                        "local ne referme")
+        sites = analyser("sous_repertoire_fabrique/mod.rs", SOURCE_FABRIQUEE, [])
+        if {e for _c, _l, _f, e, _x in sites} != {"i"}:
+            errs.append("épreuve de la DESCENTE (analyse) : le fichier d'un sous-répertoire est LISTÉ mais "
+                        "son site n'est pas ACCUSÉ — un corpus qui s'élargit sans que le lecteur suive ne "
+                        "vaut rien")
+    return errs
+
+
 def valider_instrument():
     """L'instrument s'éprouve AVANT de rendre un verdict, et dans les deux sens. Un instrument qui
     prétend mesurer ce qu'il n'atteint pas est pire qu'une garde absente.
@@ -878,6 +1026,9 @@ def valider_instrument():
                             "forme qu'elle existe pour voir — les deux sœurs sont aveugles au même "
                             "endroit, et le verdict ne vaut rien")
 
+    # --- LE CORPUS DESCEND, ET IL ÉLAGUE — sur un arbre FABRIQUÉ, dans les deux sens.
+    errs += epreuve_de_la_descente()
+
     # --- L'ENSEMBLE NOMMÉ EST JUGÉ DANS LES DEUX SENS, À SON PROPRE NIVEAU. Sans ces deux épreuves,
     # un `juger_contre_l_ensemble` débranché rendrait la garde verte quoi que l'arbre porte.
     faux_site = [("daemon/src/handlers/fabrique.rs", 7, "fn_fabriquee", "i", ".flatten()")]
@@ -922,12 +1073,34 @@ def ce_qui_n_est_pas_tenu():
           "(`check_a_refusal_is_not_rendered_as_an_absence.py`).\n"
           "  * elle ne tient pas les `.ok()` sur `query_row` — famille VOISINE, pas la même : là-bas c'est "
           "UNE ligne, et le défaut est de confondre « aucune ligne » (fait légitime) avec « pas lu » (fait "
-          "inventé). Trois occurrences de code sur l'arbre au 2026-09-16 ; à MESURER avant d'élargir, "
-          "parce qu'élargir sans mesurer est exactement la faute que la garde sœur a payée deux fois.\n"
-          "  * elle ne lit que `daemon/src/handlers/` À PLAT. Les modules hors handlers qui servent des "
-          "corps ne sont pas mesurés, et `handlers/connectors/` non plus (un site y porte la forme au "
-          "2026-09-16). Ce n'est pas un oubli, c'est la borne de cette première forme — mais un corps "
-          "servi peut naître ailleurs, et tant que la mesure n'est pas faite, le vert ne dit rien d'eux.\n"
+          "inventé). ELLE EST DÉSORMAIS MESURÉE, parce qu'un « trois occurrences » écrit ici sans mesure "
+          "était faux d'un ordre de grandeur : au 2026-09-16, `daemon/src/handlers/` (SOUS-RÉPERTOIRES "
+          "COMPRIS) porte CINQUANTE `.ok()` posés DIRECTEMENT sur un `query_row(`, sur VINGT fichiers et "
+          "QUARANTE-SIX fonctions — commentaires dépouillés et modules de test coupés, mêmes lecteurs que "
+          "cette garde. Le sous-compte « trois » ne décrivait que les `.ok().flatten()`, pas la famille. "
+          "CE QUE DIX SITES LUS DONNENT (échantillon, 2026-09-16) : QUATRE servent la valeur DANS UN CORPS "
+          "— `idp.rs:664` (`mfa_status` sert `enrolled:false`), `system.rs:16` (`schema_version` retombe à "
+          "`1` et part dans /healthz, /metrics et /api/system/metrics), `prefs.rs:17` (`prefs_read` rend "
+          "`{}`), `incidents.rs:197` (`runbook_meta_json`) ; DEUX sont INTERNES — `caseops.rs:49` "
+          "(`sla_policy_for`, repli silencieux sur le SLA legacy) et `panneau_avoue.rs:524` (`cache_lire`, "
+          "un simple recalcul) ; QUATRE sont FAIL-CLOSED et ne servent aucun fait inventé, seulement une "
+          "cause fausse — `dashboards.rs:200` et `users_lookups.rs:101` et `connectors/mod.rs:472` rendent "
+          "404 « introuvable », `idp.rs:709` rend 400 « aucun enrôlement en cours ». ÉLARGIR RESTE UNE "
+          "DÉCISION À PRENDRE AILLEURS, et cette mesure en est le prix d'entrée : élargir sans mesurer est "
+          "exactement la faute que la garde sœur a payée deux fois.\n"
+          "  * elle lit `daemon/src/handlers/` ET SES SOUS-RÉPERTOIRES depuis le 2026-09-16 (l'ancienne "
+          "borne PLATE cachait `connectors/mod.rs`, corrigé le même jour), mais elle ne lit QUE cela. Les "
+          "modules hors `handlers/` qui servent des corps ne sont toujours pas mesurés — un corps servi "
+          "peut naître ailleurs, et tant que la mesure n'est pas faite, le vert ne dit rien d'eux.\n"
+          "  * elle croit DÉPOUILLER les commentaires, et il y a UN endroit de l'arbre où c'est faux : "
+          "`sans_commentaires_rust` traite `'` comme une durée de vie, donc le littéral de caractère "
+          "`'\"'` de `daemon/src/handlers/actions.rs:888` (`SHELL_META`) ouvre une fausse chaîne et le "
+          "dépouillement repart de travers jusqu'au `\"` suivant. Mesuré le 2026-09-16 : UNE occurrence "
+          "d'aplatissement de ce fichier, `actions.rs:1173`, est en réalité un COMMENTAIRE que le lecteur "
+          "prend pour du code. Elle n'a produit AUCUNE accusation — il n'y a pas de `query_map(` dans la "
+          "même expression — mais le jour où un commentaire de cette zone en portera un, la garde "
+          "accusera une phrase. Le défaut est dans le lecteur PARTAGÉ, pas ici, et il est dit plutôt que "
+          "corrigé à la sauvette dans un lot qui ne l'a pas mesuré partout.\n"
           "  * elle ne suit pas la liaison à travers un APPEL. Un itérateur rendu par une fonction et "
           "aplati chez son appelant n'est relié à aucune lecture ; la portée d'un nom lié s'arrête à sa "
           "fonction, et c'est dit plutôt que sous-entendu.\n"
@@ -1032,12 +1205,13 @@ def main():
               "devenir un décor.")
     else:
         print(f"[{ETIQUETTE}] CE QUE LE VERT DIT, ET CE QU'IL NE DIT PAS : les TROIS classes de DÉFAUTS "
-              "CONNUS sont VIDES — plus aucun aplatissement de cette famille n'est admis comme un défaut "
-              "(58 accusations le matin du 2026-09-16, 55 fermées en cinq lots, aucune amnistiée). Ce qui "
-              "reste dans l'ensemble n'est pas une dette : DEUX arbitrages ASSUMÉS et UN INDÉCIDABLE, "
-              "trois positions écrites que seul un changement d'arbitrage ou une question tranchée "
-              "retirera. Le vert ne dit toujours rien de ce que cette garde ne sait pas voir : la liste "
-              "en suit.")
+              "CONNUS sont VIDES, et la classe INDÉCIDABLE aussi — plus aucun aplatissement de cette "
+              "famille n'est admis comme un défaut ni laissé en suspens (58 accusations le matin du "
+              "2026-09-16, 55 fermées en cinq lots, l'indécidable TRANCHÉ en code mort supprimé et le site "
+              "que la descente dans les sous-répertoires a fait entrer corrigé le même jour ; aucune "
+              "amnistiée). Ce qui reste dans l'ensemble n'est pas une dette : DEUX arbitrages ASSUMÉS, "
+              "deux positions écrites que seul un changement d'arbitrage retirera. Le vert ne dit "
+              "toujours rien de ce que cette garde ne sait pas voir : la liste en suit.")
     ce_qui_n_est_pas_tenu()
     return 0
 

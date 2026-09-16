@@ -30,6 +30,22 @@ export async function loadFieldFilters() {
     data = await r.json().catch(() => null);
   } catch (e) { wrap.replaceChildren(muted('erreur : ' + ((e && e.message) || e))); return; }
   if (!data) { wrap.replaceChildren(muted('erreur de chargement')); return; }
+  // `P10.7-f` — DES RÈGLES NON LUES NE SONT PAS « AUCUNE RÈGLE ». Le démon sert, en 200,
+  // `{rules: [], matrix: null, actions, roles, error: <cause>}` quand la table ne se lit pas
+  // (`corps_de_liste_illisible`, daemon/src/handlers/field_filters.rs). Le texte de vide rendu plus bas
+  // dit « Tant qu'aucune règle n'existe, toute lecture est inchangée (mode 0) » : sur une lecture RATÉE
+  // c'est la phrase la plus fausse que ce panneau puisse écrire — elle GARANTIT au lecteur que rien
+  // n'est masqué, alors que le masquage est appliqué par le démon DANS le SQL compilé, qu'il y ait ou
+  // non une règle dans ce corps. `matrix: null` n'est pas une matrice vide non plus : `|| {}` en ferait
+  // « en clair » sur toute la grille, rôle par rôle. La cause servie est écrite, et rien n'est peint.
+  if (data.error) {
+    const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:0;font-size:12px';
+    const dit = document.createElement('span');
+    dit.textContent = 'Règles de masquage NON LUES : le démon a refusé et en nomme la cause —';
+    aveu.append(dit, ' « ' + String(data.error).trim() + ' »');
+    wrap.replaceChildren(aveu);
+    return;
+  }
   LAST = { rules: data.rules || [], matrix: data.matrix || {}, actions: data.actions || ['mask', 'partial', 'hash', 'redact', 'deny'], roles: data.roles || ['', 'viewer', 'editor', 'admin'] };
   render(wrap);
 }

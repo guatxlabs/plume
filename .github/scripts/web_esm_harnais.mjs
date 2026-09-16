@@ -11348,6 +11348,107 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   console.log("(91) OK — la cause d'un total non établi est gardée dans l'état de la requête et effacée par un compte lu");
 }
 
+// ---------------------------------------------------------------------------------------------
+// (92) `P10.7-f` — LES TROIS LISTES DE SÉCURITÉ ET D'ADMINISTRATION LISENT L'AVEU DU DÉMON, ET NE PEIGNENT
+//      PLUS UNE ABSENCE RASSURANTE. `/api/tokens`, `/api/users` et `/api/field-filters` servent en 200 un
+//      corps de FORME INTACTE et toutes clés vides, plus la cause sous `error` (fabricant unique
+//      `corps_de_liste_illisible`, daemon/src/handlers/liste_bornee.rs). Mesuré le 2026-09-16 : la console
+//      n'en lisait aucun et peignait « aucun jeton — clique « + Nouveau jeton »… » sur l'inventaire des
+//      ACCÈS MACHINE, « 0 compte(s) · 0 admin … » sur l'inventaire des comptes, et « aucune règle — …
+//      Tant qu'aucune règle n'existe, toute lecture est inchangée » sur le masquage des champs — cette
+//      dernière étant une GARANTIE DE NON-MASQUAGE tirée d'une lecture jamais faite.
+//      Les trois surfaces sont rendues par LEUR chargeur réel. Sur l'aveu : la cause servie est écrite et
+//      AUCUNE des phrases d'absence n'atteint l'écran. Puis le CONTRÔLE POSITIF, sur le chemin nominal à
+//      deux lignes : deux lignes sont peintes et le mot « NON LU » est ABSENT — sans lui, une version qui
+//      dirait TOUJOURS « NON LU » passerait la première moitié brillamment.
+//      CE QUE CE TÉMOIN NE TIENT PAS : il ne juge ni la mise en page, ni la langue anglaise de ces phrases
+//      (c'est le témoin 10 et la garde du lexique), ni le corps que le démon sert VRAIMENT — il le
+//      FABRIQUE d'après la forme écrite dans `liste_bornee.rs`, et un démon qui changerait de clé le
+//      laisserait vert.
+// ---------------------------------------------------------------------------------------------
+{
+  const modAdmin92 = await import(pathToFileURL(path.join(WEB, "admin_users.js")).href);
+  const modFF92 = await import(pathToFileURL(path.join(WEB, "fieldfilters.js")).href);
+  const { S: S92 } = await import(pathToFileURL(path.join(WEB, "state.js")).href);
+  const tic92 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser92 = async (n = 20) => { for (let i = 0; i < n; i++) await tic92(); };
+  const cueillir92 = (el, pred, acc) => { if (pred(el)) acc.push(el); (el.children || []).forEach((c) => cueillir92(c, pred, acc)); return acc; };
+  const nu92 = (el) => String(el.textContent || "").replace(/\s+/g, " ");
+  // LA CAUSE EST CELLE DU DÉMON, RECOPIÉE DE `CAUSE_LISTE_ILLISIBLE` : un témoin qui inventerait sa propre
+  // cause prouverait qu'une chaîne traverse, pas que la cause SERVIE est écrite.
+  const CAUSE92 = "liste NON LUE : la lecture de cette liste a échoué. Ce corps n'en porte aucune ligne "
+    + "parce qu'AUCUNE n'a été lue — ce n'est pas une absence établie.";
+  const hotes92 = {};
+  ["#token-list", "#users", "#user-list", "#acces-list", "#field-filter-list", "#field-filter-form-host", "#field-filter-new"]
+    .forEach((sel) => { hotes92[sel] = new Element("div"); });
+  const qsOrigine92 = document.querySelector, fetchOrigine92 = globalThis.fetch;
+  const etatOrigine92 = { auth: S92.AUTH, admin: S92.isAdmin };
+  let corps92 = null, routeServie92 = "";
+  document.querySelector = (sel) => (Object.prototype.hasOwnProperty.call(hotes92, sel) ? hotes92[sel] : new Element("div"));
+  globalThis.fetch = async (u) => {
+    const url = String(u);
+    const obj = (routeServie92 && url.includes(routeServie92)) ? corps92 : {};
+    return { ok: true, status: 200, text: async () => JSON.stringify(obj), json: async () => obj };
+  };
+  // Les phrases d'absence sont recopiées du dépôt en MORCEAUX : le témoin cherche une sous-chaîne, de
+  // sorte qu'une reformulation du libellé ne le fasse pas taire par accident.
+  const surfaces92 = [
+    { nom: "jetons", route: "/api/tokens", hote: "#token-list", charger: () => modAdmin92.loadTokens(),
+      aveu: { tokens: [], error: CAUSE92 },
+      nominal: { tokens: [{ name: "agent-web-01", kind: "agent", host: "web-01", created: 100, last_used: 900 },
+                          { name: "hec-forwarder", kind: "hec", host: "", created: 300, last_used: 0 }] },
+      rassurant: ["aucun jeton", "+ Nouveau jeton"],
+      compter: (h) => cueillir92(h, (e) => e.tagName === "TR", []).filter((tr) => cueillir92(tr, (e) => e.tagName === "TD", []).length > 0).length },
+    { nom: "comptes", route: "/api/users", hote: "#user-list", charger: () => modAdmin92.loadUsers(),
+      aveu: { users: [], me: "hugo", acces: [], error: CAUSE92 },
+      nominal: { users: [{ id: 1, name: "hugo", role: "admin", created: 100 }, { id: 2, name: "ana", role: "viewer", created: 200 }], me: "hugo", acces: [] },
+      rassurant: ["0 compte(s)", "compte(s) ·"],
+      compter: (h) => cueillir92(h, (e) => e.classList && e.classList.contains("urow"), []).length },
+    { nom: "règles de masquage", route: "/api/field-filters", hote: "#field-filter-list", charger: () => modFF92.loadFieldFilters(),
+      aveu: { rules: [], matrix: null, actions: ["mask", "partial", "hash", "redact", "deny"], roles: ["", "viewer", "editor", "admin"], error: CAUSE92 },
+      nominal: { rules: [{ id: 1, name: "pii-courriel", field: "email", action: "mask", role: "", tenant: "", env: "", enabled: true, ord: 1, created: 1, updated: 2 },
+                         { id: 2, name: "pii-utilisateur", field: "src_user", action: "hash", role: "viewer", tenant: "", env: "", enabled: true, ord: 2, created: 1, updated: 2 }],
+                 matrix: { viewer: { email: "mask", src_user: "hash" }, editor: { email: "mask" }, admin: {} },
+                 actions: ["mask", "partial", "hash", "redact", "deny"], roles: ["", "viewer", "editor", "admin"] },
+      rassurant: ["aucune règle", "toute lecture est inchangée", "en clair"],
+      // UNE LIGNE DE RÈGLE = un enfant DIRECT de l'hôte qui porte un `<code>` (le champ masqué) et
+      // AUCUNE table : la matrice « effet par rôle », qui suit les lignes, en porte aussi — la compter
+      // ferait dire « 3 » à deux règles, et le `<b>` du nom ne suffit pas non plus (l'interrupteur
+      // partagé en pose un). Mesuré ici même le 2026-09-16 : le premier critère rendait 4.
+      compter: (h) => (h.children || []).filter((e) => cueillir92(e, (x) => x.tagName === "CODE", []).length > 0
+        && cueillir92(e, (x) => x.tagName === "TABLE", []).length === 0).length },
+  ];
+  try {
+    S92.AUTH = { user: "hugo", role: "admin" }; S92.isAdmin = true;
+    for (const s92 of surfaces92) {
+      const hote = hotes92[s92.hote];
+      // (a) SOUS L'AVEU : la cause servie est écrite, et aucune phrase d'absence ne l'est.
+      corps92 = s92.aveu; routeServie92 = s92.route;
+      hote.replaceChildren();
+      await s92.charger(); await laisser92();
+      const avoue = nu92(hote);
+      exiger(/NON LU/.test(avoue), `(92a) ${s92.nom} : l'aveu servi n'est pas dit — le texte peint ne porte pas « NON LU » : « ${avoue} »`);
+      exiger(avoue.includes("la lecture de cette liste a échoué"),
+        `(92a) ${s92.nom} : la CAUSE servie par le démon n'est pas collée telle quelle : « ${avoue} »`);
+      for (const mot of s92.rassurant) {
+        exiger(!avoue.includes(mot), `(92a) ${s92.nom} : « ${mot} » est peint sous un aveu — une absence RASSURANTE là où rien n'a été lu : « ${avoue} »`);
+      }
+      exiger(s92.compter(hote) === 0, `(92a) ${s92.nom} : ${s92.compter(hote)} ligne(s) peinte(s) sous un aveu — elles se liraient comme la liste`);
+      // (b) CONTRÔLE POSITIF : deux lignes servies -> deux lignes peintes, et aucun « NON LU ».
+      corps92 = s92.nominal;
+      hote.replaceChildren();
+      await s92.charger(); await laisser92();
+      const sain = nu92(hote);
+      exiger(s92.compter(hote) === 2, `(92b) ${s92.nom} : le chemin nominal peint ${s92.compter(hote)} ligne(s) au lieu de 2 — le verdict (92a) ne porterait sur rien : « ${sain} »`);
+      exiger(!/NON LU/.test(sain), `(92b) ${s92.nom} : « NON LU » est peint sur une lecture RÉUSSIE — un instrument qui le dit toujours ne mesure rien : « ${sain} »`);
+    }
+  } finally {
+    document.querySelector = qsOrigine92; globalThis.fetch = fetchOrigine92;
+    S92.AUTH = etatOrigine92.auth; S92.isAdmin = etatOrigine92.admin;
+  }
+  console.log("(92) OK — jetons, comptes et règles de masquage écrivent la cause servie au lieu d'une absence rassurante, et le chemin nominal reste muet");
+}
+
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;
 verdictRendu = true;
 if (echecs.length) {

@@ -908,6 +908,15 @@ const I18N_EN = {
   "Effet par rôle (champ → action appliquée) :": "Effect per role (field → applied action):", "activée": "enabled",
   "aucune règle — clique « + Règle » pour masquer un champ (ex : src_user, email, message, src_ip) pour viewer/editor. Tant qu'aucune règle n'existe, toute lecture est inchangée (mode 0).": "no rule — click “+ Rule” to mask a field (e.g. src_user, email, message, src_ip) for viewer/editor. Until a rule exists, every read is unchanged (mode 0).",
   "enregistrée": "saved", "supprimée": "deleted",
+  // `P10.7-f` — LES TROIS AVEUX DE LECTURE RATÉE DE L'ADMINISTRATION (admin_users.js, fieldfilters.js).
+  // Chacune de ces phrases est un nœud texte À ELLE SEULE, et c'est ce qui la rend traduisible : la cause
+  // servie par le démon est collée dans un SECOND nœud (« … »), jamais dans le même littéral. Une seule
+  // chaîne « phrase + cause » n'égalerait jamais une clé — `i18nWalk` ne remplace qu'un nœud ENTIER —
+  // et l'anglais serait perdu pour toujours sur l'écran même où la lecture a échoué. Le tiret final fait
+  // partie de la clé : c'est lui qui rattache la cause, et il se traduit avec la phrase.
+  "Jetons NON LUS : le démon a refusé et en nomme la cause —": "Tokens NOT READ: the daemon declined and names the cause —",
+  "Comptes NON LUS : le démon a refusé et en nomme la cause —": "Accounts NOT READ: the daemon declined and names the cause —",
+  "Règles de masquage NON LUES : le démon a refusé et en nomme la cause —": "Masking rules NOT READ: the daemon declined and names the cause —",
   // P10.7-g (lot 101) — retention.js
   "valeur enregistrée": "stored value", "variable d'environnement": "environment variable", "fichier de configuration": "configuration file", "défaut du binaire": "binary default",
   "La valeur affichée est celle que la purge appliquera (environnement, configuration ou défaut), pas la valeur enregistrée, qui n'a pas pu être lue.": "The value shown is the one the purge will apply (environment, configuration or default), not the stored value, which could not be read.",

@@ -21,6 +21,21 @@ async function loadUsers() {
   const { users, me } = d;
   renderAcces(d.acces);   // P11.5-c : QUI A ACCÈS — l'inventaire des comptes VUS, à côté des comptes gérés ici
   list.replaceChildren();
+  // `P10.7-f` — UNE LISTE DE COMPTES NON LUE N'EST PAS « ZÉRO COMPTE ». Le démon sert, en 200,
+  // `{users: [], me, acces, error: <cause>}` quand la lecture de la table a échoué
+  // (`corps_de_liste_illisible`, daemon/src/handlers/users_lookups.rs) : la forme est intacte et toutes
+  // ses clés sont vides. Le récapitulatif « 0 compte(s) · 0 admin · … » est un COMPTE, c'est-à-dire un
+  // fait — le peindre sur une lecture jamais faite affirme, sur l'inventaire des accès, que personne
+  // n'a de compte. La cause servie est écrite telle quelle, et rien d'autre n'est peint ici.
+  // `acces` ci-dessus, lui, est LU dans le même corps : c'est un constat, il reste rendu.
+  if (d.error) {
+    const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:0 0 10px;font-size:12px';
+    const dit = document.createElement('span');
+    dit.textContent = 'Comptes NON LUS : le démon a refusé et en nomme la cause —';
+    aveu.append(dit, ' « ' + String(d.error).trim() + ' »');
+    list.appendChild(aveu);
+    return;
+  }
   // #17 team — RÉCAPITULATIF ÉQUIPE : composition par rôle en un coup d'œil + raccourci vers le provisioning
   // de jetons (Administration → Jetons) pour équiper un coéquipier d'un agent/forwarder HEC.
   const uarr = users || [];
@@ -125,8 +140,24 @@ const TOK_HOST_RE = /^[A-Za-z0-9_.-]{1,253}$/;    // miroir de token_host_ok (ch
 const TOK_KIND_LABEL = { agent: 'agent', hec: 'HEC' };
 async function loadTokens() {
   const host = $('#token-list'); if (!host) return;
-  let tokens = [];
-  try { ({ tokens } = await api('/tokens')); } catch (e) { host.replaceChildren(muted('réservé admin (' + esc(e.message) + ')')); return; }
+  // `P10.7-f` — L'INVENTAIRE DES JETONS EST ENTIER OU AVOUÉ, ET LA CONSOLE LIT L'AVEU. Le démon sert, en
+  // 200, `{tokens: [], error: <cause>}` quand la lecture a échoué (`corps_de_liste_illisible`,
+  // daemon/src/handlers/tokens.rs) : le corps garde sa forme, et le texte de vide ci-dessous offrirait
+  // « + Nouveau jeton » comme remède à une absence que personne n'a établie — sur l'inventaire des ACCÈS
+  // MACHINE, c'est-à-dire là où un jeton qu'on ne voit pas est un jeton qu'on ne révoque pas.
+  // LA RÉPONSE EST LIÉE, ELLE N'EST PLUS DÉCONSTRUITE : `({tokens} = await api(…))` jetait le corps, et
+  // l'aveu partait avec lui — aucune ligne du module ne pouvait plus le lire.
+  let rep;
+  try { rep = await api('/tokens'); } catch (e) { host.replaceChildren(muted('réservé admin (' + esc(e.message) + ')')); return; }
+  if (rep.error) {
+    const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:0;font-size:12px';
+    const dit = document.createElement('span');
+    dit.textContent = 'Jetons NON LUS : le démon a refusé et en nomme la cause —';
+    aveu.append(dit, ' « ' + String(rep.error).trim() + ' »');
+    host.replaceChildren(aveu);
+    return;
+  }
+  const tokens = rep.tokens || [];
   const columns = [
     { key: 'name', label: 'Nom', sortable: true, render: t => { const b = document.createElement('b'); b.textContent = t.name; return b; } },
     { key: 'kind', label: 'Type', sortable: true, render: t => { const s = document.createElement('span'); s.className = 'badge'; s.textContent = TOK_KIND_LABEL[t.kind] || t.kind; return s; } },

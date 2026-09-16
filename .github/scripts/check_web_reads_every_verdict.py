@@ -106,14 +106,22 @@ def fichiers_du_demon():
                 yield os.path.join(dossier, nom)
 
 
-def deriver_cles(sources):
+def deriver_cles(sources, aveux=None):
     """`sources` : liste de (chemin, texte Rust). Rend ({clé: [sites]}, {suffixe: [sites]}, erreurs).
-    Une clé `OBJET` désigne un verdict posé sur l'objet entier (`insert("verdict")`)."""
+    Une clé `OBJET` désigne un verdict posé sur l'objet entier (`insert("verdict")`).
+    `aveux` (facultatif) recueille les pertes de synchronisation du lecteur RUST, PAR FICHIER, comme
+    `lecteurs_du_web` le fait pour le lecteur JavaScript (`P10.20-d`, 2026-09-16) : sans ce journal, un
+    fichier dont une région serait avalée cesserait de publier des clés EN SILENCE, et la garde rendrait
+    un plancher franchi par un démon qu'elle n'a pas lu."""
     cles, suffixes, erreurs = {}, {}, []
     boucles, table, publiees = {}, None, set()
     textes = []
     for chemin, texte in sources:
-        code = sans_commentaires_rust(texte)
+        journal = []
+        code = sans_commentaires_rust(texte, journal)
+        if journal and aveux is not None:
+            aveux[os.path.relpath(chemin, RACINE)] = [f"ligne {texte.count(chr(10), 0, o) + 1} : {m}"
+                                                      for m, o in journal]
         # Un module de test en ligne (`#[cfg(test)] mod …`) est coupé : tout ce qui suit est du test.
         coupe = code.find("#[cfg(test)]")
         if coupe >= 0:
@@ -297,7 +305,12 @@ def main():
             with open(os.path.join(WEB, nom), encoding="utf-8", errors="replace") as fh:
                 sources_js.append((os.path.join(WEB, nom), fh.read()))
 
-    cles, suffixes, derr = deriver_cles(sources_rs)
+    aveux_rust = {}
+    cles, suffixes, derr = deriver_cles(sources_rs, aveux_rust)
+    # L'AVEU DU LECTEUR RUST PASSE AVANT TOUT VERDICT (`P10.20-d`). Une région avalée produit d'abord des
+    # erreurs de dérivation trompeuses, puis un compte amputé : la cause se nomme ici, une seule fois.
+    if aveux_rust and refuser_sur_aveu("verdicts", aveux_rust, "Rust"):
+        return 2
     for e in derr:
         print(f"::error::{e}")
     if derr:

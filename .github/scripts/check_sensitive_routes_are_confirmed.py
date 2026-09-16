@@ -307,11 +307,19 @@ def corps_des_fonctions(code):
     return out
 
 
-def deriver_routes(sources):
-    """`sources` : [(chemin, texte Rust)]. Rend (routes, handlers, readonly_posts, armement, erreurs)."""
+def deriver_routes(sources, aveux=None):
+    """`sources` : [(chemin, texte Rust)]. Rend (routes, handlers, readonly_posts, armement, erreurs).
+    `aveux` (facultatif) recueille les pertes de synchronisation du lecteur RUST, PAR FICHIER, comme
+    `appelants_web` le fait pour le lecteur JavaScript (`P10.20-d`, 2026-09-16) : sans ce journal, un
+    fichier dont une région serait avalée perdrait ses routes EN SILENCE — et une route destructrice
+    non vue est exactement ce que cette garde existe pour attraper."""
     routes, handlers, readonly, armement, erreurs = [], {}, set(), {"mode": None, "enabled": None}, []
     for chemin, texte in sources:
-        code = sans_commentaires_rust(texte)
+        journal = []
+        code = sans_commentaires_rust(texte, journal)
+        if journal and aveux is not None:
+            aveux[os.path.relpath(chemin, RACINE)] = [f"ligne {texte.count(chr(10), 0, o) + 1} : {m}"
+                                                      for m, o in journal]
         # Un MODULE de test en ligne est coupé ; un simple item `#[cfg(test)] fn` au milieu d'un fichier de
         # production ne l'est pas (mesuré : soql_meta.rs et sigma.rs en portent, avant leurs handlers).
         coupe = re.search(r"#\[cfg\(test\)\]\s*(?:pub(?:\(crate\))?\s+)?mod\s", code)
@@ -1023,7 +1031,13 @@ def main():
     for chemin in fichiers_rust():
         with open(chemin, encoding="utf-8", errors="replace") as fh:
             sources_rs.append((chemin, fh.read()))
-    routes, handlers, readonly, armement, derr = deriver_routes(sources_rs)
+    aveux_rust = {}
+    routes, handlers, readonly, armement, derr = deriver_routes(sources_rs, aveux_rust)
+    # L'AVEU DU LECTEUR RUST PASSE AVANT TOUT VERDICT (`P10.20-d`) : une région avalée retire des routes
+    # de la population, et le plancher `MIN_ROUTES_SENSIBLES` accuserait la DÉRIVATION là où la cause
+    # est le LECTEUR. Elle se nomme ici, avec le fichier et la ligne.
+    if aveux_rust and refuser_sur_aveu("routes sensibles", aveux_rust, "Rust"):
+        return 2
     sensibles, cerr = classer(routes, handlers, readonly, armement)
     for e in derr + cerr:
         print(f"::error::{e}")

@@ -147,7 +147,8 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from check_every_help_trigger_has_a_section import sans_commentaires_rust  # noqa: E402
+from check_every_help_trigger_has_a_section import (  # noqa: E402  (source unique de vérité)
+    refuser_sur_aveu, sans_commentaires_rust, temoins_du_lecteur)
 
 RACINE = (sys.argv[1] if len(sys.argv) > 1
           else subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True,
@@ -554,11 +555,20 @@ def sources(rep):
 # ================================================================================================
 # CE QU'EST UN AVEU — DÉRIVÉ, JAMAIS ÉNUMÉRÉ
 # ================================================================================================
-def definitions(src):
-    """{nom: [(fichier, ligne, corps)]} pour tout `fn` du démon, hors tests."""
+def definitions(src, aveux_du_lecteur=None):
+    """{nom: [(fichier, ligne, corps)]} pour tout `fn` du démon, hors tests.
+    `aveux_du_lecteur` (facultatif) recueille les pertes de synchronisation du LECTEUR PARTAGÉ, par
+    fichier (`P10.20-d`, 2026-09-16). Sans ce journal, un fichier dont une région serait avalée perdrait
+    ses définitions EN SILENCE : les corps de fonction seraient tronqués, les aveux qu'ils portent
+    invisibles, et la garde ACCUSERAIT un démon qu'elle n'a pas lu."""
     out = {}
     for chemin, texte in src:
-        code = coupe_tests(sans_commentaires_rust(texte))
+        journal = []
+        brut = sans_commentaires_rust(texte, journal)
+        if journal and aveux_du_lecteur is not None:
+            aveux_du_lecteur[os.path.relpath(chemin, RACINE)] = [
+                f"ligne {texte.count(chr(10), 0, o) + 1} : {m}" for m, o in journal]
+        code = coupe_tests(brut)
         for nom, sig, b, f in fonctions(code):
             out.setdefault(nom, []).append((chemin, code.count("\n", 0, b) + 1, code[b:f + 1], sig))
     return out
@@ -1250,9 +1260,16 @@ def resumer_les_formes(fautives):
     return " · ".join(morceaux)
 
 
-def analyser(chemin, texte, defs, constructeurs, aveux):
-    """Rend (sites, accusations) pour UN fichier. `aveux` recueille les pertes de lecture."""
-    code = coupe_tests(sans_commentaires_rust(texte))
+def analyser(chemin, texte, defs, constructeurs, aveux, aveux_du_lecteur=None):
+    """Rend (sites, accusations) pour UN fichier. `aveux` recueille les pertes de lecture DE CETTE GARDE
+    (appel non apparié, portée introuvable) ; `aveux_du_lecteur` recueille celles du LECTEUR PARTAGÉ
+    (`P10.20-d`) — deux causes distinctes, deux remèdes distincts, jamais mélangées dans un même sac."""
+    journal = []
+    brut = sans_commentaires_rust(texte, journal)
+    if journal and aveux_du_lecteur is not None:
+        aveux_du_lecteur[os.path.relpath(chemin, RACINE)] = [
+            f"ligne {texte.count(chr(10), 0, o) + 1} : {m}" for m, o in journal]
+    code = coupe_tests(brut)
     fns = fonctions(code)
     sites, accusations = [], []
     for m in APPEL.finditer(code):
@@ -1728,6 +1745,19 @@ def ce_qui_n_est_pas_tenu(non_classes=0):
 
 
 def main():
+    # LE LECTEUR PARTAGÉ SE VALIDE AVANT DE SERVIR (`P10.20-d`, 2026-09-16). Il est IMPORTÉ, donc ses
+    # témoins ne tournent pas à l'import : sans cet appel, un lecteur amputé de sa reconnaissance des
+    # chaînes brutes ou des littéraux de caractère ne serait épinglé que par la garde qui le PORTE, et
+    # celle-ci rendrait un compte amputé en vert. Le coût est nul et il est MESURÉ : 0,34 ms, contre
+    # 1,62 s pour l'exécution complète de cette garde (0,02 %).
+    try:
+        temoins_du_lecteur()
+    except AssertionError as e:
+        print(f"::error::lecteur partagé (`sans_commentaires_rust`) : {e}")
+        print(f"\n[{ETIQUETTE}] l'INSTRUMENT est faux : aucun verdict n'est rendu.")
+        ce_qui_n_est_pas_tenu()
+        return 2
+
     src_demon = list(sources(DEMON))
     ancre = next((t for c, t in src_demon if c.endswith(os.path.join("daemon", "src", "query_exec.rs"))), "")
     manquantes = [v for v in VOIES_FERMETURE + VOIES_REQUETE if f"fn {v}" not in ancre]
@@ -1737,7 +1767,13 @@ def main():
         ce_qui_n_est_pas_tenu()
         return 2
 
-    defs = definitions(src_demon)
+    aveux_du_lecteur = {}
+    defs = definitions(src_demon, aveux_du_lecteur)
+    # L'AVEU DU LECTEUR PASSE AVANT L'INSTRUMENT ET AVANT TOUT VERDICT (`P10.20-d`) : une région avalée
+    # tronque les corps, et l'instrument accuserait alors la DÉRIVATION là où la cause est le LECTEUR.
+    if aveux_du_lecteur and refuser_sur_aveu(ETIQUETTE, aveux_du_lecteur, "Rust"):
+        ce_qui_n_est_pas_tenu()
+        return 2
     constructeurs = constructeurs_d_aveu(defs, src_demon)
 
     errs = valider_instrument(defs, constructeurs)
@@ -1751,12 +1787,21 @@ def main():
     sites, accusations, aveux = [], [], []
     fichiers = set()
     for chemin, texte in sources(HANDLERS):
-        s, a = analyser(chemin, texte, defs, constructeurs, aveux)
+        s, a = analyser(chemin, texte, defs, constructeurs, aveux, aveux_du_lecteur)
         if s:
             fichiers.add(os.path.relpath(chemin, RACINE))
         sites += s
         accusations += a
 
+    # LE SECOND JUGEMENT DU MÊME JOURNAL, ET CE QU'IL VAUT AUJOURD'HUI, DIT PLUTÔT QUE SOUS-ENTENDU :
+    # `analyser` relit les fichiers de `HANDLERS`, qui est un SOUS-ARBRE de `DEMON` filtré de la même
+    # façon — il ne peut donc rien ajouter au journal que la passe des définitions n'ait déjà vu, et ce
+    # contrôle ne peut pas rougir tant que cette inclusion tient. Il est là pour que la règle « chaque
+    # appel du lecteur passe son journal, chaque journal est jugé avant le verdict » ne dépende pas
+    # d'une inclusion qui peut changer d'un lot à l'autre.
+    if aveux_du_lecteur and refuser_sur_aveu(ETIQUETTE, aveux_du_lecteur, "Rust"):
+        ce_qui_n_est_pas_tenu()
+        return 2
     if aveux:
         for a in aveux:
             print(f"::error::{a}")

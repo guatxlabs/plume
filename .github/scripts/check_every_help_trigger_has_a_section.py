@@ -65,8 +65,14 @@ COMMENTAIRE lu comme du code (une accusation fabriquée), dans l'autre du CODE l
 `b'"'`, leurs séquences d'échappement (la liste exacte est écrite au-dessus de `RE_CARACTERE_RUST` — une
 chaîne Python ne peut pas les porter sans les interpréter), et les durées de vie et étiquettes de boucle
 `'a`, `'static`, `'_`, `'outer:` (témoins dans `temoins_du_lecteur`).
-CE QU'IL NE TIENT PAS, ÉCRIT ICI : les chaînes brutes
-`r#"…"#` (un `"` posé DEDANS ferme encore la chaîne trop tôt — inchangé par ce correctif), le corps des
+LES CHAÎNES BRUTES SONT TENUES DEPUIS LE 2026-09-16 (`P10.20-d`) : `r"…"`, `r#"…"#`, `r##"…"##` et les
+formes d'octets ou de chaîne C (`br#"…"#`, `cr#"…"#`) sont lues jusqu'au `"` suivi d'AUTANT de dièses que
+l'ouvrant en portait, puis rendues telles quelles ; un identifiant brut (`r#type`) n'en est pas une. Lues
+comme des chaînes ordinaires, elles fermaient sur le premier `"` posé dedans : DEUX fichiers du corpus
+(`agent/src/config.rs`, `collector-mail/src/url_extract.rs`) faisaient AVOUER le lecteur, et aucun de ses
+quatre consommateurs ne lui passait le `journal` qui porte cet aveu — il avouait dans le vide. Les quatre
+le passent désormais, et `refuser_sur_aveu` en fait un REFUS DE CONCLURE.
+CE QU'IL NE TIENT PAS, ÉCRIT ICI : le corps des
 MACROS (`macro_rules!` peut porter des apostrophes de fragment `$l:lifetime` et du texte qui n'est pas du
 Rust), les apostrophes d'un ATTRIBUT ou d'une chaîne de documentation `#[doc = "…'…"]` (elles sont dans
 une chaîne, donc sautées — mais rien ne vérifie l'attribut lui-même), et le CODE GÉNÉRÉ, que ce dépôt ne
@@ -152,6 +158,17 @@ CHAINES_JS, CHAINES_RUST = "\"'`", '"'
 # deux côtés : un littéral de caractère ne la franchit pas, et l'exclure empêche une apostrophe isolée
 # (`// don't`, déjà retiré par ailleurs) d'avaler la suite du fichier.
 RE_CARACTERE_RUST = re.compile(r"'(?:\\(?:x[0-9A-Fa-f]{2}|u\{[0-9A-Fa-f]{1,6}\}|[^\n])|[^\\'\n])'")
+# UNE CHAÎNE BRUTE RUST, ANCRÉE SUR SON PRÉFIXE (`P10.20-d`, mesuré le 2026-09-16) : `r"…"`, `r#"…"#`,
+# `r##"…"##`, et les formes d'octets `br#"…"#` ou de chaîne C `cr#"…"#`. IL N'Y A AUCUNE SÉQUENCE
+# D'ÉCHAPPEMENT DEDANS : elle se ferme au premier `"` suivi d'AUTANT de dièses que l'ouvrant en portait,
+# et un `"` seul — ou suivi de TROP PEU de dièses — n'y est qu'un caractère. Lue comme une chaîne
+# ordinaire, `Regex::new(r#"https?://[^\s<>"'\)\]\}]+"#)` (collector-mail/src/url_extract.rs:19) fermait
+# sur le `"` de sa classe de caractères, et le dépouillement repartait à contretemps jusqu'à la fin du
+# fichier : un AVEU que personne n'écoutait.
+# UN IDENTIFIANT BRUT (`r#type`, `r#fn`) N'EST PAS UNE CHAÎNE : le motif exige le guillemet APRÈS les
+# dièses, donc `r#type` n'apparie pas et le `r` repart dans le code. Et le préfixe ne vaut qu'en DÉBUT
+# DE JETON (`_prefixe_brut_rust`) : la fin d'un nom ne doit jamais ouvrir une chaîne.
+RE_OUVERTURE_BRUTE_RUST = re.compile(r'(?:b|c)?r(#*)"')
 
 
 def journaliser_perte(journal, motif, depart):
@@ -200,6 +217,35 @@ def saute_chaine(src, i, journal=None, multiligne=False):
     return n
 
 
+def _prefixe_brut_rust(src, i):
+    """`src[i]` peut-il ouvrir une chaîne brute ? Vrai pour `r`, `br`, `cr` EN DÉBUT DE JETON — le
+    caractère qui précède ne doit pas être un caractère d'identifiant, sinon la fin d'un nom ouvrirait
+    une fausse chaîne. Le filtre est là pour ne tenter l'appariement que là où il peut aboutir."""
+    if src[i] not in "rbc":
+        return False
+    if src[i] != "r" and not src.startswith("r", i + 1):
+        return False
+    return i == 0 or not (src[i - 1].isalnum() or src[i - 1] == "_")
+
+
+def saute_chaine_brute_rust(src, i, journal=None):
+    """`src[i]` est le premier caractère du PRÉFIXE d'une chaîne brute Rust : rend l'index APRÈS son
+    délimiteur fermant, ou None si ce n'en est pas une (le caractère repart alors dans le code — c'est
+    le cas d'un identifiant brut `r#type` et de tout `r` ordinaire). Le délimiteur fermant est `"`
+    suivi d'EXACTEMENT autant de dièses que l'ouvrant ; il n'y a pas d'échappement à respecter, le
+    premier qui apparaît ferme."""
+    m = RE_OUVERTURE_BRUTE_RUST.match(src, i)
+    if not m:
+        return None
+    ferme = '"' + m.group(1)
+    j = src.find(ferme, m.end())
+    if j < 0:
+        journaliser_perte(journal, f"une chaîne brute ouverte par `{m.group(0)}` atteint la fin du "
+                                   f"fichier sans son délimiteur fermant `{ferme}`", i)
+        return len(src)
+    return j + len(ferme)
+
+
 def saute_gabarit(src, i, journal=None):
     """`src[i]` est l'accent grave ouvrant : rend l'index APRÈS le fermant, EN SAUTANT LES
     INTERPOLATIONS `${…}` (accolades équilibrées, chaînes, gabarits ET littéraux d'expression régulière
@@ -238,7 +284,7 @@ def _blanc(texte):
     return re.sub(r"[^\n]", " ", texte)
 
 
-def _sans_commentaires(src, delimiteurs, regex_litterales, journal, caracteres_rust=False):
+def _sans_commentaires(src, delimiteurs, regex_litterales, journal, grammaire_rust=False):
     out, i, n, code = [], 0, len(src), []
     while i < n:
         c = src[i]
@@ -246,7 +292,14 @@ def _sans_commentaires(src, delimiteurs, regex_litterales, journal, caracteres_r
             f = saute_gabarit(src, i, journal) if c == "`" else \
                 saute_chaine(src, i, journal, multiligne=(delimiteurs == CHAINES_RUST))
             out.append(src[i:f]); code.append('""'); i = f; continue
-        if caracteres_rust and c == "'":
+        if grammaire_rust and _prefixe_brut_rust(src, i):
+            # La chaîne BRUTE se ferme sur son propre délimiteur, jamais sur un `"` posé dedans : elle
+            # est rendue telle quelle, comme une chaîne. Ce qui n'en est pas une (`r#type`, un `r`
+            # ordinaire) rend None et repart dans le code, sans rien ouvrir.
+            f = saute_chaine_brute_rust(src, i, journal)
+            if f is not None:
+                out.append(src[i:f]); code.append('""'); i = f; continue
+        if grammaire_rust and c == "'":
             # Le littéral de caractère est rendu TEL QUEL (comme une chaîne l'est) ; ce qui n'en est pas
             # un est une durée de vie, et l'apostrophe repart dans le code, seule, sans rien ouvrir.
             m = RE_CARACTERE_RUST.match(src, i)
@@ -277,13 +330,18 @@ def sans_commentaires_rust(src, journal=None):
     ligne, et `/` est toujours une division. L'APOSTROPHE EST DÉSAMBIGUÏSÉE (`P10.20-c`, 2026-09-16) :
     `'x'`, `b'"'` et les séquences d'échappement (liste au-dessus de `RE_CARACTERE_RUST`) sont des LITTÉRAUX
     DE CARACTÈRE rendus tels quels ; `'a`, `'static`, `'_`, `'outer:` sont des durées de vie et
-    étiquettes. Avant ce jour, le `"` de `'"'` ouvrait une fausse chaîne et
+    étiquettes. LA CHAÎNE BRUTE EST TENUE (`P10.20-d`, 2026-09-16) : `r"…"`, `r#"…"#`, `r##"…"##`,
+    `br#"…"#` et `cr#"…"#` sont lues jusqu'au `"` suivi d'AUTANT de dièses que l'ouvrant en portait, donc
+    un `"` ou un `"#` posé dedans ne ferme plus rien ; un identifiant brut `r#type` n'est pas une chaîne.
+    Avant ces deux correctifs, le `"` de `'"'` ou celui d'une chaîne brute ouvrait une fausse chaîne et
     tout ce qui suivait était lu à contretemps jusqu'au guillemet suivant : un commentaire redevenait du
     code (accusation fabriquée) et, de l'autre côté du guillemet, du code devenait un commentaire (cécité
-    muette). CE QUI RESTE NON COUVERT, ET C'EST DIT : la chaîne brute `r#"…"#` est lue comme une chaîne
-    ordinaire (un `"` posé dedans la ferme trop tôt), le corps des macros et le code généré ne sont pas
-    des grammaires que ce dépouilleur connaît."""
-    return _sans_commentaires(src, CHAINES_RUST, False, journal, caracteres_rust=True)
+    muette). CE QUI RESTE NON COUVERT, ET C'EST DIT : le corps des MACROS (`macro_rules!` porte des
+    apostrophes de fragment et du texte qui n'est pas du Rust), les apostrophes d'un ATTRIBUT et le CODE
+    GÉNÉRÉ ne sont pas des grammaires que ce dépouilleur connaît.
+    `journal` (facultatif) recueille les AVEUX de perte de synchronisation : le passer est ce qui
+    distingue un refus de conclure d'un compte amputé rendu en vert (`P10.20-d`)."""
+    return _sans_commentaires(src, CHAINES_RUST, False, journal, grammaire_rust=True)
 
 
 def aveugler_litteraux_js(src, journal=None):
@@ -316,20 +374,35 @@ def aveugler_litteraux_js(src, journal=None):
     return "".join(out)[:n]
 
 
-def refuser_sur_aveu(etiquette, aveux):
+# LA CAUSE LA PLUS FRÉQUENTE, PAR LANGAGE — la seule partie du refus qui diffère. Une seule phrase par
+# lecteur : écrite deux fois, elle finirait par nommer un remède que le lecteur n'applique plus.
+CAUSE_DE_DESYNCHRONISATION = {
+    "JavaScript": "un `/` que la règle de désambiguïsation (jeton précédent, cf. `RE_AVANT_REGEX`) a pris "
+                  "pour une division alors qu'il ouvrait une expression régulière — après `)` ou `]`, "
+                  "typiquement `if (x) /re/.test(y)`. Écrire `if (x) { return /re/.test(y); }` ou "
+                  "`new RegExp(…)`, ou apprendre la forme à `RE_AVANT_REGEX`.",
+    "Rust": "une grammaire que le dépouilleur ne connaît pas et qui pose un `\"` — le corps d'une MACRO, "
+            "une apostrophe d'ATTRIBUT, du code GÉNÉRÉ — ou une chaîne, brute ou non, qui n'est vraiment "
+            "jamais fermée. Les chaînes brutes `r\"…\"`, `r#\"…\"#`, `r##\"…\"##`, `br#\"…\"#` et les "
+            "littéraux de caractère `'\"'` sont tenus (`P10.20-c`, `P10.20-d`) ; ce qui reste hors "
+            "grammaire est écrit en tête de `sans_commentaires_rust`.",
+}
+
+
+def refuser_sur_aveu(etiquette, aveux, langage="JavaScript"):
     """L'AVEU RENDU À L'APPELANT. `aveux` = {fichier: ["ligne N : motif", …]}. Imprime chaque aveu et rend
     True — l'appelant SORT alors en code 2 sans verdict. Un lecteur qui a ouvert un littéral qui n'en était
     pas un a AVALÉ du code : tout ce qu'il a compté depuis est faux, et un compte amputé rendu en vert est
     pire qu'une garde absente. C'est ce qu'un `"` dans une expression régulière a fait pendant un jour sur
-    `web/viz.js` (118 littéraux perdus, `P11.8-e`)."""
+    `web/viz.js` (118 littéraux perdus, `P11.8-e`).
+    `langage` nomme le lecteur qui a avoué — le défaut de `JavaScript` garde la phrase des sept gardes qui
+    l'appelaient déjà ; les quatre consommateurs du lecteur RUST passent `"Rust"` (`P10.20-d`), sans quoi
+    le refus nommerait une cause qui n'existe pas dans le fichier accusé."""
     for fichier, lignes in sorted(aveux.items()):
         for ligne in lignes:
-            print(f"::error::{fichier}:{ligne} — le lecteur JavaScript a PERDU LA SYNCHRONISATION : il a "
+            print(f"::error::{fichier}:{ligne} — le lecteur {langage} a PERDU LA SYNCHRONISATION : il a "
                   f"ouvert un littéral qui n'en est pas un, et tout ce qu'il a lu depuis est faux. Cause la "
-                  f"plus fréquente : un `/` que la règle de désambiguïsation (jeton précédent, cf. "
-                  f"`RE_AVANT_REGEX`) a pris pour une division alors qu'il ouvrait une expression régulière "
-                  f"— après `)` ou `]`, typiquement `if (x) /re/.test(y)`. Écrire `if (x) {{ return "
-                  f"/re/.test(y); }}` ou `new RegExp(…)`, ou apprendre la forme à `RE_AVANT_REGEX`.")
+                  f"plus fréquente : {CAUSE_DE_DESYNCHRONISATION[langage]}")
     print(f"[{etiquette}] REFUS DE CONCLURE — le lecteur avoue avoir sauté une région ; il ne rend pas un "
           f"compte amputé en vert.")
     return True
@@ -562,8 +635,7 @@ def temoins_du_lecteur():
     assert "secret_bloc_rust" not in lu and "secret_ligne_rust" not in lu, "témoin inverse : un commentaire Rust n'est plus retiré"
     assert "let u = 6;" in lu and "let w = 7;" in lu, "témoin : le code autour d'un commentaire de bloc a disparu"
     # (i) UNE CHAÎNE BRUTE `r#"…"#` portant une apostrophe et un `//` : l'apostrophe y est DANS une
-    #     chaîne, elle n'ouvre rien. (Ce que la chaîne brute NE TIENT PAS — un `"` posé dedans — est écrit
-    #     dans la docstring de `sans_commentaires_rust` : ce témoin ne prétend pas le couvrir.)
+    #     chaîne, elle n'ouvre rien.
     lu = sans_commentaires_rust("let r = r#\"il n'y a pas de commentaire // ici\"#; // secret_brut\nlet s = 7;\n")
     assert "// ici" in lu, "témoin : le contenu d'une chaîne brute Rust a été mangé"
     assert "secret_brut" not in lu, "témoin : le commentaire qui suit une chaîne brute n'est plus retiré"
@@ -576,6 +648,65 @@ def temoins_du_lecteur():
     perdu = []
     sans_commentaires_rust("let s = \"pas fermee;\nlet t = 1;\n", perdu)
     assert perdu, "témoin : une chaîne Rust non fermée ne fait plus avouer le lecteur — il rendrait un compte amputé en silence"
+
+    # ================================================================================================
+    # (k) LA CHAÎNE BRUTE SE FERME SUR SES DIÈSES, PAS SUR UN `"` (`P10.20-d`, 2026-09-16)
+    # ================================================================================================
+    # Les six premiers sont EXTRAITS d'un fichier fabriqué que `rustc --edition 2021` compile : ce ne
+    # sont pas des formes inventées pour l'occasion. Sur le lecteur d'avant, (k1) rendait un commentaire
+    # comme du CODE (accusation fabriquée) et (k4) mangeait du CODE comme un commentaire (cécité muette).
+    # (k1) LA FORME DE L'ARBRE — un `"` ET un `//` dans le motif (collector-mail/src/url_extract.rs:19).
+    lu = sans_commentaires_rust("let motif = r#\"https?://[^\\s<>\"'\\)\\]\\}]+\"#; // secret_brut_guillemet\nlet n = 1;\n")
+    assert "secret_brut_guillemet" not in lu, "témoin : le `\"` d'une chaîne brute la ferme encore trop tôt (un commentaire reste lu comme du code)"
+    assert "https?://" in lu and "let n = 1;" in lu, f"témoin : le contenu d'une chaîne brute ou le code qui suit a disparu ({lu!r})"
+    # (k2) DEUX NIVEAUX DE DIÈSES, avec un `"` nu dedans. LE NOMBRE DE GUILLEMETS INTÉRIEURS EST IMPAIR
+    #      À DESSEIN : avec un nombre PAIR, le lecteur fautif s'apparie tout seul et se recale, et le
+    #      témoin ne discrimine plus rien (c'est la faute qu'a faite la première écriture de (k3)).
+    lu = sans_commentaires_rust("let d = r##\"un \"guillemet nu\"##; // secret_deux_dieses\nlet n = 2;\n")
+    assert "secret_deux_dieses" not in lu, "témoin : `r##\"…\"##` n'est pas lu jusqu'à ses deux dièses fermants"
+    assert "guillemet nu" in lu and "let n = 2;" in lu, f"témoin : le contenu de `r##\"…\"##` a été mangé ({lu!r})"
+    # (k3) LA CHAÎNE BRUTE D'OCTETS `br#"…"#` ET CELLE DE CHAÎNE C `cr#"…"#` — même forme, une lettre
+    #      devant. TÉMOIN RÉÉCRIT APRÈS UNE MUTATION SURVIVANTE, et c'est dit : sa première écriture
+    #      posait `br#"{"access_token":"T"}"#`, où les guillemets intérieurs sont en nombre PAIR — le
+    #      lecteur privé des préfixes `br`/`cr` s'y recalait seul et la mutation passait en vert.
+    for prefixe in ("br", "cr"):
+        lu = sans_commentaires_rust("let o = " + prefixe + "#\"a \" b\"#; // secret_" + prefixe + "\nlet n = 3;\n")
+        assert ("secret_" + prefixe) not in lu, f"témoin : `{prefixe}#\"…\"#` n'est pas reconnu comme une chaîne brute"
+        assert "let n = 3;" in lu, f"témoin : le code qui suit `{prefixe}#\"…\"#` a disparu ({lu!r})"
+    # (k4) LE PIÈGE DES DIÈSES : un `"#` DEDANS quand la fermeture en exige DEUX ne ferme pas. C'est le
+    #      sens muet — l'ancien lecteur fermait là et mangeait la fin de la ligne comme un commentaire.
+    lu = sans_commentaires_rust("let p = r##\"ceci \"# n'est pas la fin // ni un commentaire\"##; // secret_piege\nlet n = 4;\n")
+    assert "secret_piege" not in lu, "témoin : un `\"#` posé dans `r##\"…\"##` ferme encore la chaîne trop tôt"
+    assert "// ni un commentaire" in lu and "let n = 4;" in lu, f"témoin : du CODE a été mangé après un `\"#` intérieur ({lu!r})"
+    # (k5) LA FORME SANS DIÈSE `r"…"` : le premier `"` la ferme, et rien avant.
+    lu = sans_commentaires_rust("let s = r\"c:\\chemin\\sans\\echappement\"; // secret_brut_nu\nlet n = 5;\n")
+    assert "secret_brut_nu" not in lu, "témoin : `r\"…\"` n'est pas fermé par son premier guillemet"
+    assert "c:\\chemin" in lu and "let n = 5;" in lu, f"témoin : le contenu de `r\"…\"` a disparu ({lu!r})"
+    # (k6) TÉMOIN INVERSE — UN IDENTIFIANT BRUT N'EST PAS UNE CHAÎNE. `r#type` suivi d'un `"` ouvrirait
+    #      une chaîne courant jusqu'au guillemet suivant si le motif n'exigeait pas le `"` après les dièses.
+    lu = sans_commentaires_rust("let r#type = \"un type\"; // secret_identifiant_brut\nlet n = 6;\n")
+    assert "secret_identifiant_brut" not in lu, "témoin inverse : l'identifiant brut `r#type` ouvre une fausse chaîne"
+    assert "un type" in lu and "let n = 6;" in lu, f"témoin inverse : du code a disparu après un identifiant brut ({lu!r})"
+    # (k7) TÉMOIN INVERSE — LES FORMES QUI PARTAGENT LES LETTRES DU PRÉFIXE ET N'EN SONT PAS : la chaîne
+    #      d'OCTETS `b"…"`, la chaîne C `c"…"`, et un nom qui commence par `r`. Aucune n'ouvre de chaîne
+    #      brute, et le commentaire qui suit est retiré.
+    #      CE QUE CE TÉMOIN NE TUE PAS, ET C'EST DIT : retirer la condition « le préfixe est en DÉBUT DE
+    #      JETON » (`_prefixe_brut_rust`) est un MUTANT ÉQUIVALENT sur du Rust valide — pour qu'elle
+    #      morde, il faudrait un caractère d'identifiant collé devant un `r"`, ce qu'aucun Rust valide
+    #      n'écrit. La condition est gardée pour ce que le lecteur voit d'AUTRE (un fichier à moitié
+    #      écrit, une fixture), pas tuée par un témoin artificiel.
+    lu = sans_commentaires_rust("let b = b\"octets\"; let c = c\"zero\"; let rouge = 1; // secret_lettres_partagees\nlet n = 7;\n")
+    assert "secret_lettres_partagees" not in lu, "témoin inverse : `b\"…\"`, `c\"…\"` ou un nom en `r` ouvre une fausse chaîne brute"
+    assert "octets" in lu and "let n = 7;" in lu, f"témoin inverse : du code a disparu autour de `b\"…\"` ou `c\"…\"` ({lu!r})"
+    # (k8) L'AVEU, DANS LES DEUX SENS. Il se TAIT sur des chaînes brutes valides — c'est exactement ce
+    #      que `agent/src/config.rs` et `collector-mail/src/url_extract.rs` lui faisaient dire — et il
+    #      PARLE sur une chaîne brute dont le délimiteur fermant n'existe pas.
+    propre = []
+    sans_commentaires_rust("let a = r#\"\"#; let b = r##\"\"# \"##; let c = br#\"x\"#;\nlet d = r\"y\";\n", propre)
+    assert not propre, f"témoin inverse : le lecteur Rust avoue une perte sur des chaînes brutes valides ({propre})"
+    perdu = []
+    sans_commentaires_rust("let s = r##\"jamais refermee\"#;\nlet t = 1;\n", perdu)
+    assert perdu, "témoin : une chaîne brute non fermée ne fait plus avouer le lecteur — il rendrait un compte amputé en silence"
 
 
 def temoins():

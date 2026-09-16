@@ -63,8 +63,11 @@ pendant que le code fond. Des DIX : DEUX sont les sites de la famille encore adm
 `actions.rs:888` comme une durée de vie ouvrant une chaîne ; défaut du LECTEUR, fermé par `P10.20-c` le
 2026-09-16 (littéral apparié et rendu tel quel, dix témoins dans `temoins_du_lecteur`, neuf gardes re-mesurées
 avant/après à verdict identique). Elle n'avait produit aucune accusation (aucun `query_map(` dans son
-expression) ; ce qui est dit ici est la mesure, pas un dépouillement parfait : le lecteur ne tient ni les
-chaînes brutes ni les macros, et son aveu n'est pas branché par cette garde (`P10.20-d`).
+expression) ; ce qui est dit ici est la mesure, pas un dépouillement parfait. DEPUIS `P10.20-d` (même
+jour) le lecteur tient AUSSI les chaînes brutes (`r#"…"#`, `br#"…"#`, deux niveaux de dièses) et cette
+garde lui PASSE SON JOURNAL : un aveu vaut refus de conclure, plus un compte amputé rendu en vert. Ce
+qu'il ne tient toujours pas — le corps des macros, les apostrophes d'attribut, le code généré — est écrit
+en tête du lecteur.
 
 CE QUE LES CINQUANTE-CINQ SERVENT, MESURÉ PAR UN CRITÈRE ÉCRIT (le type de retour de la fonction
 englobante, rejouable sur l'arbre) : QUARANTE-CINQ rendent DIRECTEMENT un type porteur de corps —
@@ -275,7 +278,8 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
-from check_every_help_trigger_has_a_section import sans_commentaires_rust  # noqa: E402
+from check_every_help_trigger_has_a_section import (  # noqa: E402  (source unique de vérité)
+    refuser_sur_aveu, sans_commentaires_rust, temoins_du_lecteur)
 
 RACINE = (os.path.abspath(sys.argv[1]) if len(sys.argv) > 1
           else os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))))
@@ -679,10 +683,19 @@ def liaisons(code, coupes, debut_lecture, apres, fns):
 # ================================================================================================
 # LA DÉCOUVERTE — UN SITE EST UNE OCCURRENCE D'APLATISSEMENT, PAS UN APPEL
 # ================================================================================================
-def analyser(chemin_relatif, texte, journal):
-    """[(chemin, ligne, fonction, écriture, extrait)] pour UN fichier. `journal` recueille ce que le
-    lecteur avoue avoir perdu : un aveu vaut refus de conclure, jamais un compte amputé rendu vert."""
-    code = coupe_tests(sans_commentaires_rust(texte))
+def analyser(chemin_relatif, texte, journal, aveux_du_lecteur=None):
+    """[(chemin, ligne, fonction, écriture, extrait)] pour UN fichier. `journal` recueille ce que CETTE
+    GARDE avoue avoir perdu (une parenthèse non appariée) : un aveu vaut refus de conclure, jamais un
+    compte amputé rendu vert. `aveux_du_lecteur` recueille ce que le LECTEUR PARTAGÉ avoue (`P10.20-d`,
+    2026-09-16) — deux causes distinctes, deux remèdes distincts, jamais mélangées dans un même sac.
+    Sans ce second journal, une région avalée par le lecteur retirait des sites SANS UN MOT, et le
+    plancher de découverte accusait le dépôt là où la cause était l'instrument."""
+    journal_du_lecteur = []
+    brut = sans_commentaires_rust(texte, journal_du_lecteur)
+    if journal_du_lecteur and aveux_du_lecteur is not None:
+        aveux_du_lecteur[chemin_relatif] = [f"ligne {texte.count(chr(10), 0, o) + 1} : {m}"
+                                            for m, o in journal_du_lecteur]
+    code = coupe_tests(brut)
     fns = fonctions(code)
     coupes = positions_de_coupe(code)
     trouves = {}
@@ -768,12 +781,12 @@ def fichiers_du_corpus(racine=None):
 
 
 def decouvrir():
-    sites, journal = [], []
+    sites, journal, aveux_du_lecteur = [], [], {}
     for chemin in fichiers_du_corpus():
         with open(chemin, encoding="utf-8", errors="replace") as fh:
             texte = fh.read()
-        sites += analyser(os.path.relpath(chemin, RACINE), texte, journal)
-    return sites, journal
+        sites += analyser(os.path.relpath(chemin, RACINE), texte, journal, aveux_du_lecteur)
+    return sites, journal, aveux_du_lecteur
 
 
 # ================================================================================================
@@ -967,6 +980,14 @@ def valider_instrument():
     d'un `.ok()`), et la mutation est désormais tuée par un témoin qui LIE le `query_row` puis aplatit
     son nom, plus deux témoins au niveau du prédicat."""
     errs = []
+    # LE LECTEUR PARTAGÉ SE VALIDE AVANT DE SERVIR (`P10.20-d`, 2026-09-16). Il est IMPORTÉ, donc ses
+    # témoins ne tournent pas à l'import : sans cet appel, un lecteur amputé de sa reconnaissance des
+    # chaînes brutes ou des littéraux de caractère ne serait épinglé que par la garde qui le PORTE.
+    # Le coût est nul et il est MESURÉ : 0,34 ms, contre 0,58 s pour cette garde entière (0,06 %).
+    try:
+        temoins_du_lecteur()
+    except AssertionError as e:
+        errs.append(f"lecteur partagé (`sans_commentaires_rust`) : {e}")
     for nom, src, attendues in EPREUVES:
         journal = []
         sites = analyser("/epreuve.rs", src, journal)
@@ -1101,8 +1122,9 @@ def ce_qui_n_est_pas_tenu():
           "pour du code. Défaut du lecteur, fermé par `P10.20-c` le 2026-09-16 (littéral apparié, dix témoins, "
           "neuf gardes re-mesurées avant et après à verdict identique) ; ici le compte dans le code passe de onze "
           "à dix et aucune accusation ne bouge, parce que cette occurrence n'avait pas de `query_map(` dans son "
-          "expression. Ce que le lecteur ne tient toujours pas (chaînes brutes, macros) est écrit en tête du "
-          "lecteur, et son aveu n'est pas branché par cette garde (`P10.20-d`).\n"
+          "expression. Les CHAÎNES BRUTES sont tenues depuis `P10.20-d` (même jour) et cette garde PASSE "
+          "désormais le journal du lecteur : un aveu la fait refuser de conclure. Ce qu'il ne tient toujours "
+          "pas (corps des macros, apostrophes d'attribut, code généré) est écrit en tête du lecteur.\n"
           "  * elle ne suit pas la liaison à travers un APPEL. Un itérateur rendu par une fonction et "
           "aplati chez son appelant n'est relié à aucune lecture ; la portée d'un nom lié s'arrête à sa "
           "fonction, et c'est dit plutôt que sous-entendu.\n"
@@ -1146,7 +1168,12 @@ def main():
         ce_qui_n_est_pas_tenu()
         return 2
 
-    sites, journal = decouvrir()
+    sites, journal, aveux_du_lecteur = decouvrir()
+    # L'AVEU DU LECTEUR PASSE AVANT CELUI DE LA GARDE (`P10.20-d`) : une région avalée par le lecteur est
+    # la cause AMONT, et la nommer évite d'accuser une parenthèse que le lecteur a lui-même déplacée.
+    if aveux_du_lecteur and refuser_sur_aveu(ETIQUETTE, aveux_du_lecteur, "Rust"):
+        ce_qui_n_est_pas_tenu()
+        return 2
     if journal:
         for a in journal:
             print(f"::error::{a}")

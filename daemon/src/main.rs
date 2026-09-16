@@ -1997,7 +1997,7 @@ deux compare une PARTIE a un TOUT (mecanisme detaille dans db_ventilation.rs)."
         let conf = load_config();
         let db_path = cfg(&conf, "PLUME_DB", "/var/lib/plume/db/plume.db");
         // Ouverture STRICTEMENT read-only (SQLITE_OPEN_READ_ONLY) + clé SQLCipher si présente -> aucune
-        // écriture, aucun WAL-checkpoint, aucune migration. read_schema_version retombe sur 1 si meta illisible.
+        // écriture, aucun WAL-checkpoint, aucune migration.
         let conn = match Connection::open_with_flags(&db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY) {
             Ok(c) => {
                 apply_key(&c);
@@ -2009,7 +2009,24 @@ deux compare une PARTIE a un TOUT (mecanisme detaille dans db_ventilation.rs)."
             }
         };
         let _ = sqlite_plafond::armer(&conn);
-        let live = read_schema_version(&conn);
+        // `P10.20-f` — LA PORTE À SENS UNIQUE LIT LA MÊME VALEUR QUE LE DÉMON, donc elle a hérité du
+        // même repli : sur une base dont `meta` est illisible, cette sous-commande imprimait
+        // « schema LIVE=1 » et sortait 0. La DIRECTION était fail-safe par accident (0 = « fais le
+        // snapshot »), mais le chiffre était INVENTÉ et se lit « base très ancienne » — exactement ce
+        // qu'un opérateur ne peut pas reconnaître comme faux. Le code 2 est le slot que l'aide
+        // documente déjà pour « base illisible » : on le rend atteignable, et on ne publie aucun
+        // chiffre. Une base NEUVE et la forme legacy sans ligne restent en 0 (migration en attente).
+        let live = match lire_l_estampille_de_schema(&conn) {
+            EstampilleDeSchema::Lue(v) => v,
+            EstampilleDeSchema::BaseNeuve | EstampilleDeSchema::JamaisEstampillee => 1,
+            EstampilleDeSchema::NonLue(cause) => {
+                eprintln!(
+                    "[migrate-check] {cause} AUCUN chiffre n'est publié — l'appelant décide \
+                     (fail-safe : faire le snapshot pre-migrate) [exit 2]"
+                );
+                std::process::exit(2);
+            }
+        };
         if live < CODE_SCHEMA_MAX {
             eprintln!("[migrate-check] schema LIVE={live} < CODE_SCHEMA_MAX={CODE_SCHEMA_MAX} -> migration EN ATTENTE (snapshot pre-migrate REQUIS) [exit 0]");
             std::process::exit(0);

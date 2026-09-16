@@ -31,8 +31,10 @@
 //! Aucune liste d'appelants n'est tenue ici : c'est précisément ce qui a échoué trois tours de suite.
 //!
 //! CE QUE LA PORTE APPLIQUE, DANS CET ORDRE (et l'ordre est load-bearing) :
-//!   1. GARDE ANTI-DOWNGRADE (`schema_downgrade_guard`) — une LECTURE, AVANT toute écriture : une base
-//!      estampillée PLUS HAUT que `CODE_SCHEMA_MAX` n'est pas touchée. Elle ne s'appliquait qu'au
+//!   1. GARDE D'OUVERTURE (`schema_downgrade_guard`) — une LECTURE, AVANT toute écriture : une base
+//!      estampillée PLUS HAUT que `CODE_SCHEMA_MAX` n'est pas touchée, et (`P10.20-f`) une base dont
+//!      l'estampille n'a PAS PU ÊTRE LUE non plus — c'est cette valeur qui arbitre la chaîne de
+//!      migrations, et un repli sur « 1 » la faisait rejouer en entier sur une base à jour. Elle ne s'appliquait qu'au
 //!      daemon ; elle s'applique maintenant à tout ce qui écrit (le responder ROOT compris), et c'est
 //!      nécessaire à la propriété visée : sur une base v112, `prepare_schema` SEUL ne signale rien (un
 //!      sur-ensemble n'est pas un manque) et laisserait donc écrire à l'aveugle.
@@ -92,7 +94,7 @@ fn raw_keyed(path: &str, key: Option<&str>) -> rusqlite::Result<Connection> {
     Ok(conn)
 }
 
-/// Pourquoi la porte a refusé. Trois causes DISTINCTES parce que les appelants les traitent
+/// Pourquoi la porte a refusé. Quatre causes DISTINCTES parce que les appelants les traitent
 /// différemment (le daemon n'imprime pas le même message pour un rollback d'image et pour un schéma
 /// amputé), et parce qu'un appelant qui les confondrait serait illisible en exploitation.
 #[derive(Debug)]
@@ -101,6 +103,9 @@ pub(crate) enum DbOpenError {
     Ouverture(rusqlite::Error),
     /// Base estampillée PLUS HAUT que ce binaire (rollback d'image sur une base déjà migrée).
     PlusRecenteQueCeBinaire(i64),
+    /// `P10.20-f` — l'estampille de schéma n'a PAS pu être lue sur une base qui porte des objets. Cause
+    /// VERBATIM de `lire_l_estampille_de_schema` (elle dit laquelle des trois voies).
+    EstampilleNonLue(String),
     /// Le contrat de schéma a refusé — message VERBATIM de `prepare_schema` (il nomme l'élément).
     Contrat(String),
 }
@@ -115,6 +120,22 @@ impl std::fmt::Display for DbOpenError {
                 "base en schema_version={v} > CODE_SCHEMA_MAX={CODE_SCHEMA_MAX} — ce binaire est TROP \
                  ANCIEN pour cette base (probable rollback d'image sur une base déjà migrée par un \
                  binaire plus récent). Aucune écriture effectuée"
+            ),
+            // `P10.20-f` — le refus dit CE QU'IL A ÉVITÉ, puis la cause la plus fréquente AVANT de
+            // parler de restauration : une base SQLCipher ouverte sans sa clé rend exactement cette
+            // lecture ratée, et restaurer une sauvegarde n'y changerait rien.
+            DbOpenError::EstampilleNonLue(cause) => write!(
+                f,
+                "{cause} Ce binaire REFUSE d'ouvrir : c'est cette valeur qui arbitre la chaîne de \
+                 migrations, et une base déjà migrée dont l'estampille n'est pas lue était jusqu'ici \
+                 traitée comme une base en v1 — la chaîne se rejouait ENTIÈREMENT, et ses étapes \
+                 DÉTRUISENT (purges de sources one-time, `banned_ip` de source 'ufw', panneaux \
+                 retirés, `event_rollup` et `host_rollup` reconstruits à blanc). Aucune écriture \
+                 effectuée. D'ABORD : vérifier la clé au repos (`PLUME_DB_KEY` / `PLUME_DB_KEY_FILE`), \
+                 une base SQLCipher ouverte sans sa clé donne exactement cette lecture ratée. SINON : \
+                 restaurer une sauvegarde antérieure — `plume-daemon restore <plume-<TS>.db.age>` pour \
+                 une archive du scheduler natif, copie de fichier pour une copie `VACUUM INTO` du \
+                 timer hôte — puis redémarrer (runbook docs/DR-plume-restore.md)"
             ),
             DbOpenError::Contrat(e) => write!(f, "{e}"),
         }
@@ -216,8 +237,17 @@ impl PreparedDb {
     /// L'UNIQUE endroit où une `Connection` devient un `PreparedDb`. Tout ce qui est écrit dans la doc
     /// du module sur l'ORDRE se lit ici, en trois lignes.
     fn seal(conn: Connection, prelude: &dyn Fn(&Connection)) -> Result<Self, DbOpenError> {
-        if let Err(v) = schema_downgrade_guard(&conn) {
-            return Err(DbOpenError::PlusRecenteQueCeBinaire(v));
+        match schema_downgrade_guard(&conn) {
+            Ok(_) => {}
+            Err(RefusDOuverture::PlusRecenteQueCeBinaire(v)) => {
+                return Err(DbOpenError::PlusRecenteQueCeBinaire(v))
+            }
+            // `P10.20-f` — une estampille NON LUE arrête ici, AVANT `prepare_schema` : c'est
+            // `migrate_chain` qui rejouerait la chaîne sur un « 1 » fabriqué, et il n'est jamais
+            // atteint. Une base NEUVE (catalogue vide) et la forme legacy sans ligne passent, elles.
+            Err(RefusDOuverture::EstampilleNonLue(cause)) => {
+                return Err(DbOpenError::EstampilleNonLue(cause))
+            }
         }
         prelude(&conn);
         prepare_schema(&conn).map_err(DbOpenError::Contrat)?;

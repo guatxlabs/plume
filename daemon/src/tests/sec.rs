@@ -515,7 +515,7 @@ fn v105_downgrade_guard_refuses_newer_db() {
     // (d) v > max : base v103 ouverte par un binaire v102 -> Err(v) = REFUS (anti-corruption rollback).
     let newer = CODE_SCHEMA_MAX + 1; // v103 vs binaire v102
     conn.execute("UPDATE meta SET value=?1 WHERE key='schema_version'", params![newer.to_string()]).unwrap();
-    assert_eq!(schema_downgrade_guard(&conn), Err(newer),
+    assert_eq!(schema_downgrade_guard(&conn), Err(RefusDOuverture::PlusRecenteQueCeBinaire(newer)),
         "base v{newer} > CODE_SCHEMA_MAX REFUSÉE (un binaire ancien ne corrompt pas une base plus récente)");
 }
 

@@ -93,7 +93,13 @@ impl Drop for MigrationLogSilencer {
 pub(crate) const CODE_SCHEMA_MAX: i64 = 122;
 
 /// Lit `meta.schema_version` (défaut 1 si table/lignes absentes ou illisibles) — MÊME lecture que `migrate()`.
-/// Une base NEUVE (pas encore de table meta) renvoie 1 -> jamais refusée par la garde.
+///
+/// `P10.20-f` — CE REPLI EST CELUI DU MOTEUR DE MIGRATION, PAS CELUI DE LA PORTE. Il sert à
+/// FABRIQUER DES MESSAGES (`abort_step`, `report_step_anomalies`, `prepare_schema`) et à comparer la
+/// version à la cible d'une étape (`migrate_step`, `restore_schema_version`) : à ces endroits la
+/// valeur n'autorise rien, elle DÉCRIT, et une lecture ratée s'y lit comme une anomalie de plus dans
+/// un message déjà coupable. La lecture qui AUTORISE — celle de l'ouverture — ne passe plus par ici :
+/// elle passe par [`lire_l_estampille_de_schema`], qui refuse de fabriquer un « 1 ».
 pub(crate) fn read_schema_version(conn: &Connection) -> i64 {
     conn.query_row("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get::<_, String>(0))
         .ok()
@@ -101,12 +107,125 @@ pub(crate) fn read_schema_version(conn: &Connection) -> i64 {
         .unwrap_or(1)
 }
 
+// ─── `P10.20-f` — L'ESTAMPILLE DE SCHÉMA À L'OUVERTURE ────────────────────────────────────────────
+//
+// CE QUI ÉTAIT MESURÉ LE 2026-09-16, sur une base migrée à v122 et PEUPLÉE, rouverte par la porte
+// (`db_open::PreparedDb::open`) après avoir rendu `meta` illisible de deux façons — table RENOMMÉE, et
+// ligne portant un BLOB dans la colonne lue. Les deux fois, à l'identique : la lecture rendait « 1 »,
+// la garde anti-rétrogradation rendait `Ok(1)`, LA PORTE OUVRAIT, et `migrate_chain` rejouait la
+// chaîne ENTIÈRE de v2 à v122 sur une base qui les portait déjà. Ce que le rejeu a DÉTRUIT, compté
+// avant et après par le témoin : deux des trois `event` semés (les purges one-time de sources de v48
+// et v102/103), la ligne `banned_ip` de source 'ufw' (v59), le panneau « Sorties externes récentes »
+// (v58), la ligne `event_rollup` semée (v33 : `DROP TABLE` puis repopulation depuis `event`), et
+// `host_rollup` reconstruit à blanc (v77 : `DELETE` puis backfill). Sur la voie de la table renommée,
+// `db/schema.sql` recrée EN PLUS une table `meta` vide à côté de l'ancienne : tout ce que `meta`
+// portait — `session_epoch` (révocation des sessions), les watermarks de rollup, les drapeaux de
+// semis — est hors d'atteinte, et les semis re-tournent.
+//
+// POURQUOI « 1 » EST LA PIRE DES VALEURS. Ce n'est pas un chiffre faux parmi d'autres : c'est la
+// version d'une base FRAÎCHE, donc la seule pour laquelle la chaîne entière est faite pour se
+// rejouer. Un repli sur `CODE_SCHEMA_MAX` aurait fait ouvrir une base réellement en retard sans la
+// migrer ; le repli sur « 1 » fait REJOUER des étapes destructrices sur une base à jour.
+//
+// LA DISTINCTION QUE LE MESSAGE D'ERREUR NE DONNE PAS, ET QUE LE CATALOGUE DONNE. Mesuré le même
+// jour : une base NEUVE et une base MIGRÉE dont `meta` a disparu rendent le MÊME texte
+// (`no such table: meta`). Ce qui les sépare n'est pas la phrase du moteur, c'est ce que le fichier
+// PORTE : zéro objet au catalogue pour la base neuve, quatre-vingt-cinq tables pour la base migrée.
+// C'est donc le catalogue qui tranche, et la distinction est DÉRIVÉE du fichier — aucune liste de
+// noms n'est tenue ici.
+
+/// Phrase de tête de tout refus d'ouverture pour estampille non lue — une seule, pour que le
+/// message soit reconnaissable en exploitation comme dans un témoin.
+pub(crate) const CAUSE_ESTAMPILLE_DE_SCHEMA_NON_LUE: &str = "estampille de schéma NON LUE à l'ouverture.";
+
+/// CE QUE LA LECTURE D'OUVERTURE A OBTENU — quatre issues DISTINGUÉES À L'ÉCRIT, parce que la porte
+/// en tire trois conduites différentes et qu'un appelant qui les confondrait rouvrirait le défaut.
+pub(crate) enum EstampilleDeSchema {
+    /// La ligne a été LUE et porte un entier : c'est la version de cette base.
+    Lue(i64),
+    /// Le fichier ne porte AUCUN objet : une base NEUVE, que la porte va créer et migrer. Elle n'a pas
+    /// de table `meta` — et c'est le CATALOGUE, pas le message du moteur, qui la distingue d'une base
+    /// dont `meta` a disparu (les deux disent « no such table: meta », mesuré).
+    BaseNeuve,
+    /// `meta` existe et ne porte AUCUNE ligne `schema_version`. FORME D'ENTRÉE LEGACY, déjà couverte
+    /// par un témoin nommé (`legacy_meta_without_a_version_row_is_recovered_by_the_contract`) :
+    /// `db/schema.sql` repose la ligne à '1' et la chaîne repart de là. La porte l'OUVRE, exactement
+    /// comme avant ce lot. CE QUE ÇA COÛTE EST DIT, PAS CORRIGÉ : sur une base DÉJÀ MIGRÉE, ce
+    /// rattrapage rejoue la même chaîne destructrice que ci-dessus. Il n'est pas refermé ici parce que
+    /// ce n'est pas une lecture RATÉE — c'est une absence ÉTABLIE, et le dépôt a écrit qu'il la
+    /// rattrape. C'est un RESTE nommé, pas une décision de ce lot.
+    JamaisEstampillee,
+    /// La base porte des objets et son estampille n'a PAS pu être établie. La chaîne de migrations ne
+    /// peut plus être arbitrée : la porte REFUSE, et la phrase dit laquelle des causes.
+    NonLue(String),
+}
+
+/// Ce que le fichier porte, indépendamment de `meta` : le nombre d'objets du catalogue qui ne sont pas
+/// internes à SQLite. Zéro == le fichier est vierge.
+fn objets_au_catalogue(conn: &Connection) -> rusqlite::Result<i64> {
+    conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'", [], |r| r.get(0))
+}
+
+/// LA LECTURE QUI AUTORISE — celle dont la valeur décide si la chaîne de migrations se rejoue. Elle ne
+/// fabrique aucun nombre : une lecture qui n'a pas eu lieu sort en [`EstampilleDeSchema::NonLue`].
+pub(crate) fn lire_l_estampille_de_schema(conn: &Connection) -> EstampilleDeSchema {
+    use rusqlite::OptionalExtension as _;
+    match conn
+        .query_row("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get::<_, String>(0))
+        .optional()
+    {
+        Ok(Some(brut)) => match brut.parse::<i64>() {
+            Ok(v) => EstampilleDeSchema::Lue(v),
+            // La ligne a été lue et ne porte pas un entier : l'estampille n'est pas établie pour
+            // autant, et une chaîne de migrations ne s'arbitre pas sur une valeur qu'on ne sait pas
+            // comparer. Même refus que les autres, cause distincte à l'écrit.
+            Err(_) => EstampilleDeSchema::NonLue(format!(
+                "{CAUSE_ESTAMPILLE_DE_SCHEMA_NON_LUE} La ligne `meta.schema_version` existe et ne porte \
+                 pas un entier (valeur brute : {brut:?})."
+            )),
+        },
+        Ok(None) => EstampilleDeSchema::JamaisEstampillee,
+        // `meta` n'a pas répondu : table absente, base chiffrée ouverte sans sa clé, fichier abîmé,
+        // verrou. C'est le CATALOGUE qui dit lequel — et s'il ne répond pas non plus, rien de ce
+        // fichier n'est lisible, ce qui est la pire des trois et certainement pas une base neuve.
+        Err(e) => match objets_au_catalogue(conn) {
+            Ok(0) => EstampilleDeSchema::BaseNeuve,
+            Ok(n) => EstampilleDeSchema::NonLue(format!(
+                "{CAUSE_ESTAMPILLE_DE_SCHEMA_NON_LUE} `meta.schema_version` n'a pas pu être lue ({e}) \
+                 alors que ce fichier porte déjà {n} objet(s) de schéma : ce n'est donc PAS une base \
+                 neuve."
+            )),
+            Err(e2) => EstampilleDeSchema::NonLue(format!(
+                "{CAUSE_ESTAMPILLE_DE_SCHEMA_NON_LUE} Ni `meta.schema_version` ({e}) ni le catalogue de \
+                 la base ({e2}) n'ont pu être lus : rien de ce fichier n'est lisible."
+            )),
+        },
+    }
+}
+
+/// GARDE D'OUVERTURE — pourquoi elle a refusé. DEUX causes, et elles ne se soignent pas pareil : la
+/// première demande de remettre le binaire attendu, la seconde de rendre la base lisible.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum RefusDOuverture {
+    /// Base estampillée PLUS HAUT que ce binaire (rollback d'image sur une base déjà migrée).
+    PlusRecenteQueCeBinaire(i64),
+    /// Estampille NON LUE sur une base qui porte des objets — la phrase dit la cause.
+    EstampilleNonLue(String),
+}
+
 /// GARDE ANTI-DOWNGRADE (cœur testable, aucune I/O ni exit). `Ok(v)` sur le chemin NORMAL
-/// (`v <= CODE_SCHEMA_MAX` : v==max ouvre tel quel, v<max sera migré) ; `Err(v)` si la base est PLUS
-/// RÉCENTE que ce binaire (`v > CODE_SCHEMA_MAX`) -> l'appelant (open_and_migrate_db) refuse d'ouvrir.
-pub(crate) fn schema_downgrade_guard(conn: &Connection) -> Result<i64, i64> {
-    let v = read_schema_version(conn);
-    if v > CODE_SCHEMA_MAX { Err(v) } else { Ok(v) }
+/// (`v <= CODE_SCHEMA_MAX` : v==max ouvre tel quel, v<max sera migré, base neuve ou jamais estampillée
+/// == 1 donc jamais refusée) ; `Err(..)` si la base est PLUS RÉCENTE que ce binaire, ou si son
+/// estampille n'a PAS pu être lue -> l'appelant (`db_open::PreparedDb`) refuse d'ouvrir.
+pub(crate) fn schema_downgrade_guard(conn: &Connection) -> Result<i64, RefusDOuverture> {
+    match lire_l_estampille_de_schema(conn) {
+        EstampilleDeSchema::Lue(v) if v > CODE_SCHEMA_MAX => Err(RefusDOuverture::PlusRecenteQueCeBinaire(v)),
+        EstampilleDeSchema::Lue(v) => Ok(v),
+        // Les deux formes SANS estampille ouvrent en v1, comme avant ce lot : une base neuve doit être
+        // créée, et la forme legacy est rattrapée par `db/schema.sql`.
+        EstampilleDeSchema::BaseNeuve | EstampilleDeSchema::JamaisEstampillee => Ok(1),
+        EstampilleDeSchema::NonLue(cause) => Err(RefusDOuverture::EstampilleNonLue(cause)),
+    }
 }
 
 /// INTÉGRITÉ DE SCHÉMA — les `migrate_vN` ignorent volontairement le résultat de leurs DDL (`let _ =`)

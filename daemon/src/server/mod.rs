@@ -482,6 +482,15 @@ fn open_and_migrate_db(db_path: String, spool: String, conf: HashMap<String, Str
             );
             std::process::exit(1);
         }
+        // `P10.20-f` — REFUS D'OUVERTURE POUR ESTAMPILLE NON LUE. Le message de la porte porte déjà la
+        // cause, ce qui a été évité, la clé à vérifier d'abord et la sauvegarde à restaurer ensuite :
+        // il part VERBATIM, comme le refus de contrat juste en dessous.
+        Err(DbOpenError::EstampilleNonLue(e)) => {
+            eprintln!(
+                "[schema] REFUS D'OUVERTURE : {e}. Aucun seed, aucun bind. Arrêt propre."
+            );
+            std::process::exit(1);
+        }
         Err(DbOpenError::Ouverture(e)) => panic!("open db: {e}"),
         Err(DbOpenError::Contrat(e)) => {
             eprintln!(

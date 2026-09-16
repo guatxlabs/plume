@@ -39,6 +39,20 @@ async function loadRetention() {
   S.RET_STATE = { values: {}, bounds: d.bounds || {}, provenance: d.provenance || {}, reglage_illisible: d.reglage_illisible || {} };
   RET_KEYS.forEach(k => { S.RET_STATE.values[k] = Number(d[k]); });
   wrap.replaceChildren(...RET_KEYS.map(retentionField));
+  // `P10.20-a` — LA PHRASE DU DÉMON EST ÉCRITE, PAS RECOPIÉE À LA MAIN. `retention_settings_get`
+  // (daemon/src/handlers/admin_ui.rs) sert, en 200, la forme entière — chaque clé, ses bornes, sa
+  // provenance — et, quand au moins une valeur ÉCRITE n'a pas pu être lue, `reglage_illisible` PAR CLÉ
+  // plus la cause commune sous `error`. La ligne par champ, plus bas, dit bien QUELLE clé ; ce que seul
+  // `error` dit, c'est ce que la valeur affichée VAUT ALORS — celle que la purge appliquera, pas la valeur
+  // enregistrée. Cette phrase-là ne vivait ici que dans une infobulle recopiée, donc invisible et
+  // vieillissante. Les champs RESTENT peints : ils décrivent ce que la purge fera, ce qui est vrai.
+  if (d.error) {
+    const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:0 0 8px;font-size:12px';
+    const dit = document.createElement('span');
+    dit.textContent = 'Réglage de rétention NON LU : le démon a refusé et en nomme la cause —';
+    aveu.append(dit, ' « ' + String(d.error).trim() + ' »');
+    wrap.prepend(aveu);
+  }
   loadRetentionLast();
 }
 function retentionField(k) {
@@ -101,6 +115,19 @@ async function loadRetentionLast() {
   const el = $('#retention-last'); if (!el) return;
   let j;
   try { j = await api('/ledger?limit=50'); } catch (e) { el.textContent = ''; return; }
+  // `P10.20-a` — « AUCUN CHANGEMENT AUDITÉ » EST UN VERDICT, ET IL SE RENDAIT SUR UNE LECTURE RATÉE.
+  // `ledger_page` (daemon/src/handlers/admin_ui.rs) sert, en 200, la forme entière de la page avec
+  // `entries: []`, `ok: false`, `lecture_non_faite: true` et la cause sous `error` ; `api()` ne jette que
+  // sur `!r.ok`, donc `j.entries || []` en refaisait une absence et cette ligne écrivait « Aucun changement
+  // audité pour l'instant » — sur le panneau qui RÈGLE la purge des données, c'est affirmer que personne
+  // n'y a touché. La cause SERVIE est écrite à sa place, dans le ton de l'aveu.
+  if (j && j.error) {
+    el.replaceChildren();
+    const dit = document.createElement('span'); dit.className = 'bad';
+    dit.textContent = 'Journal d\'audit NON LU : le démon a refusé et en nomme la cause —';
+    el.append(dit, ' « ' + String(j.error).trim() + ' »');
+    return;
+  }
   const entries = j.entries || [];
   const ent = entries.find(x => /retention|config|setting/i.test(x.kind || '')) || entries[0];
   if (!ent) { el.textContent = 'Aucun changement audité pour l\'instant.'; return; }

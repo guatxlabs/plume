@@ -281,6 +281,14 @@ async function loadLedger() {
       let j;
       try { j = await api(url); }
       catch (e) { const n = ligneDeFenetre(); if (n) n.textContent = ''; throw e; }
+      // `P10.20-a` — UN JOURNAL NON LU N'EST PAS UN JOURNAL VIERGE. `ledger_page`
+      // (daemon/src/handlers/admin_ui.rs) sert, en 200, la forme ENTIÈRE de la page — `entries: []`,
+      // `has_more: false`, les bornes de fenêtre — et y AJOUTE `ok:false`, `lecture_non_faite:true` et la
+      // cause sous `error`. `api()` ne jette que sur `!r.ok` : la cause arrivait donc dans un corps lu comme
+      // un succès, `j.entries || []` en refaisait une absence, et la page rendait « aucune entrée d'audit »
+      // — sur un journal d'audit, la phrase la plus rassurante qui soit : aucun geste tracé. La cause remonte
+      // par le MÊME chemin qu'un rejet (la phrase de fenêtre effacée, l'erreur telle quelle au rendu partagé).
+      if (j && j.error) { const n = ligneDeFenetre(); if (n) n.textContent = ''; throw new Error(String(j.error).trim()); }
       curseurs[page + 1] = j.has_more ? j.next_cursor : null;
       direLaFenetre(j);
       // Total PLAFONNÉ -> `-1` : le pager partagé passe en « page N » avec des flèches fiables plutôt que

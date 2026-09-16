@@ -222,6 +222,21 @@ async function loadDashboards() {
   try {
     const view = $('#view') ? $('#view').value : '';
     const data = await api('/dashboards' + (view ? '?view=' + encodeURIComponent(view) : ''));
+    // `P10.20-a` — UNE LISTE DE TABLEAUX DE BORD NON LUE N'EST PAS UN ESPACE VIDE. Le démon sert, en 200,
+    // `{dashboards: [], me, role, error: <cause>}` quand la lecture échoue — par le constructeur partagé
+    // (`corps_de_liste_illisible`) comme par le défaut de `read_with` (daemon/src/handlers/dashboards.rs) —
+    // et `api()` ne jette que sur `!r.ok` : la cause arrivait donc dans un corps lu comme un succès, et
+    // `data.dashboards || []` en refaisait une absence. L'écran peignait alors « Aucun dashboard » sous un
+    // bouton « + Dashboard » : c'est affirmer que ce déploiement n'en porte aucun, et inviter à recréer
+    // par-dessus ceux que cette lecture n'a pas pu rendre. L'aveu passe AVANT : `S.dashList` n'est pas
+    // écrasée par une liste vide, `renderView()` n'est pas appelé, et aucun geste de création n'est peint.
+    if (data.error) {
+      const { aveu, dit } = boiteDAveu();
+      dit.textContent = 'Tableaux de bord NON LUS : le démon a refusé et en nomme la cause —';
+      aveu.append(' « ' + String(data.error).trim() + ' »');
+      wrap.replaceChildren(aveu);
+      return;
+    }
     S.dashList = data.dashboards || [];
     applyRoleClass(data.role); // reflète le rôle sur <body> -> le CSS masque les contrôles d'écriture
     renderView();

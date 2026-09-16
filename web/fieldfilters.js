@@ -2,7 +2,7 @@
 // Splunk ; PCI/PII). Additif : tant qu'aucune règle n'existe, toute lecture est inchangée (mode 0). La garde
 // réelle est SERVEUR (/api/field-filters admin-only ; le masque est émis DANS le SQL compilé). Anti-XSS : tout
 // texte via textContent/esc. La config CONTRAINT viewer/editor — l'admin voit en clair par défaut.
-import { $, apiSend, confirmWithConsequence, disclosure, esc, fmtTs, muted, toast, withBusy } from './core.js';
+import { $, apiSend, confirmWithConsequence, disclosure, esc, fetchInto, fmtTs, muted, toast, withBusy } from './core.js';
 import { enabledSwitch } from './producer_ui.js';
 import { uiIsAdmin } from './multitenant.js';
 
@@ -23,13 +23,15 @@ export async function loadFieldFilters() {
   const btn = $('#field-filter-new'); const fh = $('#field-filter-form-host');
   if (btn && fh && !btn.dataset.wired) { btn.dataset.wired = '1'; disclosure(btn, fh, { isOpen: () => !!fh.querySelector('#field-filter-form') && !fh.querySelector('#field-filter-form').dataset.editing, open: () => openForm(null), close: () => fh.replaceChildren() }); }
   if (!uiIsAdmin()) { wrap.replaceChildren(muted('réservé à l\'administrateur.')); return; }
-  let data = null;
-  try {
-    const r = await fetch('/api/field-filters', { headers: { Accept: 'application/json' } });
-    if (!r.ok) { wrap.replaceChildren(muted('erreur (' + r.status + ')')); return; }
-    data = await r.json().catch(() => null);
-  } catch (e) { wrap.replaceChildren(muted('erreur : ' + ((e && e.message) || e))); return; }
-  if (!data) { wrap.replaceChildren(muted('erreur de chargement')); return; }
+  // `P10.20-a` — CE PANNEAU LIT PAR LA VOIE COMMUNE, COMME TOUS LES AUTRES. Il lisait par un `fetch` NU,
+  // qui rend une RÉPONSE et non un corps, et recomposait à la main les trois sorties que `fetchInto` écrit
+  // déjà (statut, rejet, corps illisible). Deux choses s'y perdaient. (1) LA PHRASE : la voie commune
+  // attache à l'erreur la cause NOMMÉE par le démon (`avecLaCauseDuDemon`, web/core.js) ; ce `fetch`
+  // rendait « erreur (503) », un code sans un mot. (2) LA PREUVE : la garde « un refus n'est pas rendu
+  // comme une absence » ne juge que les appels qui rendent un CORPS — ce site restait donc HORS de sa
+  // population, et rien ne tenait, d'un lot à l'autre, le fait qu'il lise `data.error` (il le fait, juste
+  // en dessous, depuis `P10.7-f`). Une seule ligne, et il y rentre.
+  const data = await fetchInto(wrap, '/field-filters'); if (!data) return;
   // `P10.7-f` — DES RÈGLES NON LUES NE SONT PAS « AUCUNE RÈGLE ». Le démon sert, en 200,
   // `{rules: [], matrix: null, actions, roles, error: <cause>}` quand la table ne se lit pas
   // (`corps_de_liste_illisible`, daemon/src/handlers/field_filters.rs). Le texte de vide rendu plus bas

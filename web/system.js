@@ -365,6 +365,14 @@ function adminTools() {
   dbtn.onclick = async () => {
     try {
       const v = await api('/system/diag');
+      // `P10.20-a` — UN PAQUET PARTIELLEMENT NON LU PART QUAND MÊME, MAIS IL LE DIT À CELUI QUI L'ENVOIE.
+      // `diag_bundle_json` (daemon/src/handlers/system.rs) sert, en 200, la forme entière du paquet et
+      // AVOUE deux fois : chaque sous-liste ratée porte `non_lu: true` avec sa cause, et `error` NOMME les
+      // familles manquantes. Le fichier partait au support sans un mot : celui-ci y lisait des listes vides
+      // et en concluait « rien ne s'est passé sur cette machine », alors que personne n'avait pu les lire.
+      // Le téléchargement n'est PAS refusé — un paquet partiel vaut mieux que rien pour une reprise — mais
+      // la cause SERVIE est dite, telle quelle, au moment où le fichier part.
+      direLesListesNonLuesDuPaquet(v);
       downloadText('plume-diag-' + (v.generated_at || Math.floor(Date.now() / 1000)) + '.json', 'application/json', JSON.stringify(v, null, 2));
       direLaVersionDeSchemaDuPaquet(v);
     } catch (e) { toast('erreur : ' + e.message, 'bad'); }
@@ -379,6 +387,20 @@ function adminTools() {
 // téléchargement, personne ne le relit ici, et le support découvrirait seul un `schema_version: null`.
 // L'avis est une CHAÎNE (un avis n'a pas de nœud à deux morceaux) et la cause SERVIE y est collée telle
 // quelle. Rend `true` quand l'aveu a été dit — c'est ce que le harnais ESM juge.
+// `P10.20-a` — LE MÊME PAQUET DIT AUSSI QUELLES DE SES LISTES N'ONT PAS ÉTÉ LUES. `diag_bundle_json`
+// (daemon/src/handlers/system.rs) avoue DEUX fois quand une sous-lecture échoue : la sous-liste ratée
+// porte `non_lu: true` avec sa cause, et `error` NOMME les familles manquantes. Le fichier partait au
+// support sans un mot : celui-ci y lisait des listes vides et en concluait « rien ne s'est passé sur cette
+// machine », alors que personne n'avait pu les lire. Le téléchargement n'est PAS refusé — un paquet
+// partiel vaut mieux que rien pour une reprise d'incident — mais la cause SERVIE est dite, telle quelle,
+// au moment où le fichier part. Sœur exacte de `direLaVersionDeSchemaDuPaquet` : même forme, même retour,
+// et c'est ce retour que le harnais ESM juge.
+function direLesListesNonLuesDuPaquet(paquet) {
+  const cause = paquet && typeof paquet.error === 'string' ? paquet.error.trim() : '';
+  if (!cause) return false;
+  toast('Bundle de diagnostic PARTIELLEMENT NON LU : le démon a refusé une partie des lectures et en nomme la cause — « ' + cause + ' »', 'err', 9000);
+  return true;
+}
 function direLaVersionDeSchemaDuPaquet(paquet) {
   const cause = causeDeLaVersionDeSchemaNonEtablie(paquet);
   if (!cause) return false;
@@ -415,4 +437,4 @@ async function loadBulletin() {
 // `direLaVersionDeSchemaDuPaquet` est exposée pour le harnais ESM (témoin 96 : l'aveu dit à celui qui
 // envoie le paquet), au même titre que `rendreSysteme` ; elle n'a qu'un appelant applicatif, le bouton
 // « Télécharger le diagnostic ».
-export { loadSystemView, loadBulletin, rendreSysteme, lireMesure, componentRow, detailAvecSesReferences, direLaVersionDeSchemaDuPaquet };
+export { loadSystemView, loadBulletin, rendreSysteme, lireMesure, componentRow, detailAvecSesReferences, direLaVersionDeSchemaDuPaquet, direLesListesNonLuesDuPaquet };

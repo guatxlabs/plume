@@ -3454,7 +3454,12 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     // (b) un stock non lu est NOMMÉ, et les autres restent servis.
     globalThis.fetch = servir(["/api/rules"]);
     const partiel = await inventaireComposable();
-    exiger(partiel.absents.includes("règle de détection"), `(31b) un stock illisible disparaît en silence : ${JSON.stringify(partiel.absents)}`);
+    exiger(partiel.absents.some((a) => a.origine === "règle de détection"), `(31b) un stock illisible disparaît en silence : ${JSON.stringify(partiel.absents)}`);
+    // `P10.20-a` — UN STOCK « ABSENT » SANS SA CAUSE NE DIT RIEN DE PLUS QU'UNE ABSENCE. L'inventaire
+    // portait l'ORIGINE seule ; savoir si la lecture a été refusée, rejetée ou jamais partie est ce dont
+    // dépend la décision de composer quand même, et cela ne se devine pas depuis « règle de détection ».
+    exiger(partiel.absents.every((a) => typeof a.cause === "string" && a.cause.length > 0),
+      `(31b) un stock absent est nommé SANS la cause servie : ${JSON.stringify(partiel.absents)}`);
     exiger(partiel.items.length === 2, `(31b) l'échec d'un stock prive des autres : ${partiel.items.length} entrée(s)`);
 
     // (c) la recherche partagée : plusieurs mots, sans casse ni accents, sur le nom ET sur la requête.
@@ -13043,6 +13048,292 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     document.querySelectorAll(".modal-ov").forEach((o) => o.remove());
   }
   console.log("(97) OK — la santé du pipeline non lue, le flux non lu, la recommandation non établie, le runbook attaché non lu, la synthèse de risque et ses deux voisines, le bulletin d'exploitation et le refus nommé de la connexion écrivent la cause SERVIE au lieu d'une ingestion en panne, d'un parc calme, d'une absence, d'un bandeau caché ou d'un corps JSON tranché ; le geste d'attache d'un runbook et l'effacement d'un bulletin ne se présentent pas applicables sur un état que personne n'a lu, et les huit chemins nominaux restent muets");
+}
+
+
+// ---------------------------------------------------------------------------------------------
+// (98) `P10.20-a` — LES SURFACES QUE LA DÉRIVATION PAR FORME A RÉVÉLÉES SOURDES LISENT L'AVEU DU DÉMON.
+//
+// CE QUE CE TÉMOIN JUGE, ET POURQUOI IL EXISTE. La garde « un refus n'est pas rendu comme une absence »
+// dérivait sa population d'un POINT UNIQUE (`portillon::corps_de_refus`, quatorze chemins). En la dérivant
+// des FORMES par lesquelles le démon pose la clé `error` dans un corps SERVI EN 200 — la clé AJOUTÉE
+// (`corps["error"] = …`), la clé INSÉRÉE (`.insert("error", …)`) et la clé NÉE avec un corps qui garde sa
+// forme (`json!({ …, "error": … })`) —, la population passe à soixante-dix-sept chemins, et treize sites
+// de la console apparaissent SOURDS. Ils sont corrigés ici, et jugés comme le reste : la cause SERVIE est
+// écrite, aucune phrase d'absence ne l'est, aucune ligne n'est peinte dessous — et, dans l'autre sens, le
+// chemin nominal reste MUET. Une garde qui lit `error` ne prouve pas que la phrase rendue est honnête ;
+// c'est ce témoin qui le prouve, en EXERÇANT chaque chargeur sur le corps exact que le démon sert.
+{
+  const modDash98 = await import(pathToFileURL(path.join(WEB, "dashboards.js")).href);
+  const modDet98 = await import(pathToFileURL(path.join(WEB, "detection_admin.js")).href);
+  const modAdv98 = await import(pathToFileURL(path.join(WEB, "detadv.js")).href);
+  const modTi98 = await import(pathToFileURL(path.join(WEB, "threatintel.js")).href);
+  const modRet98 = await import(pathToFileURL(path.join(WEB, "retention.js")).href);
+  const modMt98 = await import(pathToFileURL(path.join(WEB, "multitenant.js")).href);
+  const modSys98 = await import(pathToFileURL(path.join(WEB, "system.js")).href);
+  const modComp98 = await import(pathToFileURL(path.join(WEB, "soql_complete.js")).href);
+  const modCompo98 = await import(pathToFileURL(path.join(WEB, "composer_depuis_lexistant.js")).href);
+  const { S: S98 } = await import(pathToFileURL(path.join(WEB, "state.js")).href);
+  const tic98 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser98 = async (n = 25) => { for (let i = 0; i < n; i++) await tic98(); };
+  const cueillir98 = (el, pred, acc) => { if (pred(el)) acc.push(el); (el.children || []).forEach((c) => cueillir98(c, pred, acc)); return acc; };
+  const nu98 = (el) => String(el.textContent || "").replace(/\s+/g, " ");
+  const aLaClasse98 = (e, c) => e.classList && e.classList.contains(c);
+  const lignesDeTable98 = (h) => cueillir98(h, (e) => e.tagName === "TR", []).filter((tr) => cueillir98(tr, (x) => x.tagName === "TD", []).length > 0);
+
+  // ── (0) L'INSTRUMENT : CHAQUE CAUSE FABRIQUÉE CI-DESSOUS EST LUE DANS L'ARBRE DU DÉMON ───────────
+  // Un témoin qui inventerait ses propres phrases prouverait qu'une chaîne traverse, pas que la cause
+  // SERVIE est écrite. Et si un de ces sites d'aveu disparaît côté démon, ce témoin REFUSE DE CONCLURE
+  // au lieu de rester vert sur une propriété devenue vide.
+  const lireRs98 = (f) => readFileSync(path.join(RACINE, "daemon", "src", "handlers", f), "utf8");
+  const srcListe98 = lireRs98("liste_bornee.rs");
+  const srcAdmin98 = lireRs98("admin_ui.rs");
+  const srcOverview98 = lireRs98("overview.rs");
+  const srcAdv98 = lireRs98("detection_advanced.rs");
+  const srcEngag98 = lireRs98("engagement.rs");
+  const srcSystem98 = lireRs98("system.rs");
+  const srcDash98 = lireRs98("dashboards.rs");
+  const srcTi98 = lireRs98("threat_intel.rs");
+  const srcActions98 = lireRs98("actions.rs");
+  const srcDetection98 = lireRs98("detection.rs");
+  // Un littéral Rust continué par `\` en fin de ligne perd le saut ET l'indentation qui suit.
+  const recomposer98 = (s) => s.replace(/\\\r?\n\s*/g, "");
+  const mCause98 = srcListe98.match(/CAUSE_LISTE_ILLISIBLE: &str = "([\s\S]*?)";/);
+  const CAUSE98 = mCause98 ? recomposer98(mCause98[1]) : "";
+  const mJournal98 = srcAdmin98.match(/corps\["error"\] = json!\(format!\("(journal NON LU[^"]*)"/);
+  const JOURNAL98 = mJournal98 ? mJournal98[1].replace("{cause}", "disk I/O error (témoin)") : "";
+  const mReglage98 = srcAdmin98.match(/insert\("error"\.into\(\), json!\("(réglage NON LU[^"]*)"\)\)/);
+  const REGLAGE98 = mReglage98 ? mReglage98[1] : "";
+  const mEnv98 = srcOverview98.match(/corps\["error"\] = json!\("(liste NON LUE : la lecture des environnements[^"]*)"\)/);
+  const ENV98 = mEnv98 ? mEnv98[1] : "";
+  const mCorr98 = srcAdv98.match(/"error": format!\("(corrélations NON LUES[^"]*)"\)/);
+  const CORR98 = mCorr98 ? mCorr98[1].replace("{e}", "no such table: correlation (témoin)") : "";
+  const mMode98 = srcEngag98.match(/"error": format!\("(mode NON LU[^"]*)"\)/);
+  const MODE98 = mMode98 ? mMode98[1].replace("{e}", "database is locked (témoin)") : "";
+  const mBundle98 = srcSystem98.match(/json!\(format!\(\s*\r?\n?\s*"(bundle PARTIELLEMENT NON LU[\s\S]*?)",/);
+  const BUNDLE98 = mBundle98 ? recomposer98(mBundle98[1]).replace("{}", "recent_events, heartbeat_alerts") : "";
+  exiger(CAUSE98.includes("NON LUE") && CAUSE98.length > 60,
+    `(98-instrument) \`CAUSE_LISTE_ILLISIBLE\` n'est plus lisible dans daemon/src/handlers/liste_bornee.rs — « ${CAUSE98} »`);
+  exiger(JOURNAL98.includes("aucune page n'est établie"),
+    `(98-instrument) \`/api/ledger\` ne pose plus « journal NON LU » dans daemon/src/handlers/admin_ui.rs — « ${JOURNAL98} »`);
+  exiger(REGLAGE98.includes("pas la valeur enregistrée"),
+    `(98-instrument) \`/api/retention\` ne pose plus « réglage NON LU » dans daemon/src/handlers/admin_ui.rs — « ${REGLAGE98} »`);
+  exiger(ENV98.includes("« prod » est un repli"),
+    `(98-instrument) \`/api/environments\` ne pose plus sa cause dans daemon/src/handlers/overview.rs — « ${ENV98} »`);
+  exiger(CORR98.startsWith("corrélations NON LUES"),
+    `(98-instrument) \`/api/correlations\` ne pose plus sa cause dans daemon/src/handlers/detection_advanced.rs — « ${CORR98} »`);
+  exiger(MODE98.includes("« observe » est un repli"),
+    `(98-instrument) \`/api/mode\` ne pose plus sa cause dans daemon/src/handlers/engagement.rs — « ${MODE98} »`);
+  exiger(BUNDLE98.includes("aucun n'est une mesure établie"),
+    `(98-instrument) \`/api/system/diag\` ne pose plus « bundle PARTIELLEMENT NON LU » dans daemon/src/handlers/system.rs — « ${BUNDLE98} »`);
+  exiger(/corps_de_liste_illisible\(json!\(\{ "me": &me, "role": &role \}\), "dashboards"\)/.test(srcDash98),
+    "(98-instrument) `/api/dashboards` ne sert plus l'aveu de liste illisible : le verdict sur la vue des tableaux de bord ne porterait sur rien");
+  exiger(/aveu::corps\("iocs"/.test(srcTi98),
+    "(98-instrument) `/api/threat-intel/iocs` ne passe plus par le corps de liste bornée : son aveu n'existe plus côté démon");
+  exiger(/aveu::corps\("actions"/.test(srcActions98),
+    "(98-instrument) `/api/actions` ne passe plus par le corps de liste bornée : son aveu n'existe plus côté démon");
+  exiger(/corps_de_liste_illisible/.test(srcDetection98),
+    "(98-instrument) `/api/rules` ne sert plus l'aveu de liste illisible : le stock non lu du composeur ne serait plus mesurable");
+
+  // ── (a) et (b) LES SEPT SURFACES PEINTES, PAR LEUR CHARGEUR RÉEL ────────────────────────────────
+  const hotes98 = {};
+  ["#dashview", "#act-list", "#detadv-corr-list", "#detadv-base-list", "#ti-ioc-list", "#ti-coverage",
+   "#retention-fields", "#retention-last", "#mode-badge", "#mode-toggle", "#envbox", "#env-switch",
+   "#view", "#toasts", "#ledger-body"].forEach((sel) => { hotes98[sel] = new Element(sel === "#env-switch" || sel === "#view" ? "select" : "div"); });
+  const qsOrigine98 = document.querySelector, fetchOrigine98 = globalThis.fetch;
+  const etatOrigine98 = { auth: S98.AUTH, admin: S98.isAdmin, env: S98.CURRENT_ENV, dash: S98.dashList };
+  let corps98 = null, routeServie98 = "";
+  document.querySelector = (sel) => (Object.prototype.hasOwnProperty.call(hotes98, sel) ? hotes98[sel] : new Element("div"));
+  globalThis.fetch = async (u) => {
+    const url = String(u).split("?")[0];
+    const obj = (routeServie98 && url === "/api" + routeServie98) ? corps98 : {};
+    return { ok: true, status: 200, text: async () => JSON.stringify(obj), json: async () => obj };
+  };
+  const surfaces98 = [
+    { nom: "tableaux de bord", route: "/dashboards", hote: "#dashview", charger: () => modDash98.loadDashboards(),
+      aveu: { dashboards: [], me: "hugo", role: "admin", error: CAUSE98 },
+      cause: CAUSE98,
+      nominal: { me: "hugo", role: "admin", dashboards: [
+        { id: 1, name: "Vue SSH", owner: "hugo", visibility: "private", view_id: null, panels: 0, cols: 2, height: 220, collapsed: true, position: 0, editable: true },
+        { id: 2, name: "Vue Web", owner: "hugo", visibility: "shared", view_id: null, panels: 0, cols: 2, height: 220, collapsed: true, position: 1, editable: true }] },
+      rassurant: ["Aucun dashboard", "+ Dashboard"],
+      compter: (h) => (h.children || []).filter((e) => aLaClasse98(e, "dashtile")).length },
+    { nom: "file d'actions", route: "/actions", hote: "#act-list", charger: () => modDet98.loadActions(),
+      aveu: { actions: [], served: 0, window: 200, total: null, total_capped: false, error: CAUSE98 },
+      cause: CAUSE98,
+      nominal: { served: 2, window: 200, total: 2, total_capped: false, actions: [
+        { id: 1, kind: "ban_ip", target: "10.0.0.1", status: "pending", rule: "SSH brute force", created: 100, done_ts: 0 },
+        { id: 2, kind: "ban_ip", target: "10.0.0.2", status: "approved", rule: "SSH brute force", created: 200, done_ts: 300 }] },
+      rassurant: ["aucune action"],
+      compter: (h) => cueillir98(h, (e) => aLaClasse98(e, "actst"), []).length },
+    { nom: "corrélations", route: "/correlations", hote: "#detadv-corr-list", charger: () => modAdv98.loadDetAdv(),
+      aveu: { correlations: null, error: CORR98, lecture_non_faite: true },
+      cause: CORR98,
+      nominal: { correlations: [
+        { id: 1, name: "Échec puis succès", enabled: 1, key_field: "src_ip", entity_type: "ip", steps: "[]", window_s: 300, interval_s: 60, severity: 3, mitre: "T1110", risk_score: 0, last_run: 0, last_fired: 0, managed: 0 },
+        { id: 2, name: "Exfiltration", enabled: 1, key_field: "src_user", entity_type: "user", steps: "[]", window_s: 600, interval_s: 60, severity: 4, mitre: "T1048", risk_score: 20, last_run: 0, last_fired: 0, managed: 0 }] },
+      rassurant: ["aucune corrélation définie"],
+      compter: (h) => lignesDeTable98(h).length },
+    { nom: "indicateurs de compromission", route: "/threat-intel/iocs", hote: "#ti-ioc-list", charger: () => modTi98.loadThreatIntel(),
+      aveu: { iocs: [], served: 0, window: 500, total: null, total_capped: false, error: CAUSE98 },
+      cause: CAUSE98,
+      nominal: { served: 2, window: 500, total: 2, total_capped: false, iocs: [
+        { id: 1, type: "ip", value: "203.0.113.4", source: "abuse.ch", confidence: 80, severity: 3, last_seen: 100, expires: 0 },
+        { id: 2, type: "domain", value: "bad.example", source: "abuse.ch", confidence: 60, severity: 2, last_seen: 200, expires: 0 }] },
+      rassurant: ["aucun indicateur"],
+      compter: (h) => lignesDeTable98(h).length },
+    { nom: "réglages de rétention", route: "/retention", hote: "#retention-fields", charger: () => modRet98.loadRetention(),
+      aveu: { retention_days: 30, snapshot_days: 30, alert_days: 90, metric_days: 30, metric_raw_hours: 48,
+              bounds: {}, provenance: { retention_days: "default" }, reglage_illisible: { retention_days: "no such table: setting (témoin)" }, error: REGLAGE98 },
+      cause: REGLAGE98, garderLesLignes: true,
+      nominal: { retention_days: 30, snapshot_days: 30, alert_days: 90, metric_days: 30, metric_raw_hours: 48,
+                 bounds: {}, provenance: { retention_days: "setting" } },
+      rassurant: [],
+      compter: (h) => cueillir98(h, (e) => e.tagName === "INPUT", []).length },
+  ];
+  try {
+    S98.AUTH = { user: "hugo", role: "admin" }; S98.isAdmin = true; S98.dashList = [];
+    for (const s98 of surfaces98) {
+      const hote = hotes98[s98.hote];
+      // (a) SOUS L'AVEU : la cause servie est écrite, et aucune phrase d'absence ne l'est.
+      corps98 = s98.aveu; routeServie98 = s98.route;
+      hote.replaceChildren();
+      await s98.charger(); await laisser98();
+      const avoue = nu98(hote);
+      exiger(/NON LU/i.test(avoue), `(98a) ${s98.nom} : l'aveu servi n'est pas dit — le texte peint ne porte pas « NON LU » : « ${avoue} »`);
+      exiger(avoue.includes(s98.cause), `(98a) ${s98.nom} : la CAUSE servie par le démon n'est pas collée telle quelle : « ${avoue} »`);
+      for (const mot of s98.rassurant) {
+        exiger(!avoue.includes(mot), `(98a) ${s98.nom} : « ${mot} » est peint sous un aveu — une absence RASSURANTE là où rien n'a été lu : « ${avoue} »`);
+      }
+      if (!s98.garderLesLignes) {
+        exiger(s98.compter(hote) === 0, `(98a) ${s98.nom} : ${s98.compter(hote)} ligne(s) peinte(s) sous un aveu — elles se liraient comme la liste`);
+      }
+      // (b) CONTRÔLE POSITIF : le chemin nominal peint DEUX lignes et ne dit pas un mot d'aveu.
+      corps98 = s98.nominal;
+      hote.replaceChildren();
+      await s98.charger(); await laisser98();
+      const sain = nu98(hote);
+      exiger(s98.compter(hote) >= 2, `(98b) ${s98.nom} : le chemin nominal peint ${s98.compter(hote)} ligne(s) au lieu de 2 ou plus — le verdict (98a) ne porterait sur rien : « ${sain} »`);
+      exiger(!/NON LU/i.test(sain), `(98b) ${s98.nom} : « NON LU » est peint sur une lecture RÉUSSIE — un instrument qui le dit toujours ne mesure rien : « ${sain} »`);
+    }
+
+    // ── (c) LE MODE DE RÉPONSE : « OBSERVATION » EST AUSSI LE REPLI DU DÉMON ────────────────────────
+    // C'est le site le plus coûteux des treize : sur une lecture ratée, `d.mode || 'observe'` peignait
+    // l'interrupteur en VERT, « Observation (sûr) », sur un déploiement qui peut être ARMÉ.
+    const badge98 = hotes98["#mode-badge"], inter98 = hotes98["#mode-toggle"];
+    corps98 = { mode: "observe", error: MODE98 }; routeServie98 = "/mode";
+    badge98.replaceChildren(); inter98.replaceChildren();
+    await modDet98.loadMode(); await laisser98();
+    const texteMode98 = nu98(badge98) + " " + nu98(inter98);
+    exiger(texteMode98.includes(MODE98), `(98c) le mode non lu n'écrit pas la cause SERVIE : « ${texteMode98} »`);
+    exiger(/NON LU/.test(nu98(badge98)), `(98c) le badge ne dit pas que le mode n'a pas été lu : « ${nu98(badge98)} »`);
+    exiger(!/Observation/.test(texteMode98), `(98c) « Observation » est peint sur un mode que personne n'a lu — l'état le plus rassurant des deux : « ${texteMode98} »`);
+    exiger(inter98.dataset.mode === "" && inter98.disabled === true,
+      `(98c) l'interrupteur reste armable sur un état non lu (data-mode « ${inter98.dataset.mode} », disabled ${inter98.disabled})`);
+    corps98 = { mode: "active" };
+    badge98.replaceChildren(); inter98.replaceChildren();
+    await modDet98.loadMode(); await laisser98();
+    exiger(inter98.dataset.mode === "active" && !/NON LU/.test(nu98(badge98)),
+      `(98c-négatif) un mode LU est rendu non lu — l'instrument le dirait toujours : data-mode « ${inter98.dataset.mode} », badge « ${nu98(badge98)} »`);
+
+    // ── (d) LES ENVIRONNEMENTS : UN INVENTAIRE NON LU SE LISAIT « CE TENANT N'EN A QU'UN » ──────────
+    const boite98 = hotes98["#envbox"], sel98 = hotes98["#env-switch"];
+    corps98 = { environments: [{ env: "prod", n: 0 }], current: null, error: ENV98 }; routeServie98 = "/environments";
+    boite98.replaceChildren(); boite98.hidden = true;
+    await modMt98.initEnvironments(false); await laisser98();
+    exiger(boite98.hidden === false, "(98d) la barre d'environnement reste CACHÉE sur un inventaire non lu : l'aveu ne serait lu par personne");
+    exiger(nu98(boite98).includes(ENV98), `(98d) la cause servie n'est pas écrite à côté du sélecteur : « ${nu98(boite98)} »`);
+    exiger(sel98.getAttribute("aria-disabled") === "true",
+      "(98d) le sélecteur reste armé sur un inventaire que personne n'a lu — filtrer y choisirait dans un ensemble inconnu");
+    corps98 = { environments: [{ env: "prod", n: 10 }, { env: "staging", n: 5 }], current: null };
+    boite98.replaceChildren(); boite98.hidden = true;
+    await modMt98.initEnvironments(false); await laisser98();
+    exiger(!/NON LUS/.test(nu98(boite98)) && sel98.getAttribute("aria-disabled") !== "true",
+      `(98d-négatif) un inventaire LU garde l'aveu et l'inertie — l'instrument les dirait toujours : « ${nu98(boite98)} »`);
+
+    // ── (e) LE JOURNAL D'AUDIT : « AUCUN CHANGEMENT AUDITÉ » EST UN VERDICT ─────────────────────────
+    // Rendu par le MÊME chargeur que les réglages (`loadRetention` appelle `loadRetentionLast`), sur la
+    // route `/api/ledger` : un journal d'audit qui se dit vierge est la phrase la plus rassurante qui soit.
+    const dernier98 = hotes98["#retention-last"];
+    corps98 = { entries: [], ok: false, lecture_non_faite: true, error: JOURNAL98 }; routeServie98 = "/ledger";
+    dernier98.replaceChildren();
+    await modRet98.loadRetention(); await laisser98();
+    const texteDernier98 = nu98(dernier98);
+    exiger(texteDernier98.includes(JOURNAL98), `(98e) le journal non lu n'écrit pas la cause SERVIE : « ${texteDernier98} »`);
+    exiger(!/Aucun changement audité/.test(texteDernier98),
+      `(98e) « Aucun changement audité » est peint sur un journal que personne n'a lu : « ${texteDernier98} »`);
+    corps98 = { entries: [{ kind: "config.retention", detail: "retention_days 30 -> 60", ts: 1000 }], ok: true };
+    dernier98.replaceChildren();
+    await modRet98.loadRetention(); await laisser98();
+    exiger(/config.retention/.test(nu98(dernier98)) && !/NON LU/.test(nu98(dernier98)),
+      `(98e-négatif) un journal LU est rendu non lu — l'instrument le dirait toujours : « ${nu98(dernier98)} »`);
+
+    // ── (f) LE PAQUET DE DIAGNOSTIC PART QUAND MÊME, MAIS IL LE DIT ─────────────────────────────────
+    // Le support lisait des sous-listes vides et en concluait « rien ne s'est passé sur cette machine ».
+    const avis98 = hotes98["#toasts"];
+    avis98.replaceChildren();
+    exiger(modSys98.direLesListesNonLuesDuPaquet({ generated_at: 1, recent_events: { non_lu: true }, error: BUNDLE98 }) === true,
+      "(98f) un paquet partiellement non lu part sans un mot : le support y lirait des listes vides comme des mesures");
+    exiger(nu98(avis98).includes(BUNDLE98), `(98f) la cause servie n'est pas collée telle quelle dans l'avis : « ${nu98(avis98)} »`);
+    avis98.replaceChildren();
+    exiger(modSys98.direLesListesNonLuesDuPaquet({ generated_at: 1, recent_events: [] }) === false && nu98(avis98) === "",
+      `(98f-négatif) un paquet ENTIÈREMENT lu déclenche l'aveu — un instrument qui avoue toujours ne mesure rien : « ${nu98(avis98)} »`);
+
+    // ── (f-bis) L'ONGLET AUDIT : LE MÊME JOURNAL, PAR SON PROPRE CHARGEUR PAGINÉ ───────────────────
+    // `web/audit.js` interroge `/api/ledger` par une page de `pagedList` et lisait `j.entries || []` :
+    // le tableau rendait « aucune entrée d'audit ». La cause remonte désormais par le chemin d'ÉCHEC
+    // que ce site avait déjà (la phrase de fenêtre effacée, l'erreur telle quelle au rendu partagé).
+    const modAudit98 = await import(pathToFileURL(path.join(WEB, "audit.js")).href);
+    const corpsAudit98 = hotes98["#ledger-body"];
+    corps98 = { entries: [], ok: false, lecture_non_faite: true, error: JOURNAL98, has_more: false, limit: 50 };
+    routeServie98 = "/ledger";
+    corpsAudit98.replaceChildren();
+    await modAudit98.loadLedger(); await laisser98(40);
+    const texteAudit98 = nu98(corpsAudit98);
+    exiger(texteAudit98.includes(JOURNAL98), `(98f-bis) l'onglet Audit n'écrit pas la cause SERVIE : « ${texteAudit98} »`);
+    exiger(!/aucune entrée d'audit/i.test(texteAudit98),
+      `(98f-bis) « aucune entrée d'audit » est peint sur un journal que personne n'a lu : « ${texteAudit98} »`);
+    exiger(lignesDeTable98(corpsAudit98).length === 0,
+      `(98f-bis) ${lignesDeTable98(corpsAudit98).length} ligne(s) peinte(s) sous un aveu — elles se liraient comme le journal`);
+    corps98 = { entries: [{ id: 1, ts: 1000, kind: "config.retention", actor: "hugo", detail: "30 -> 60", severity: 2 },
+                           { id: 2, ts: 900, kind: "auth.login", actor: "ana", detail: "ok", severity: 1 }],
+                ok: true, has_more: false, limit: 50, total: 2, total_capped: false };
+    corpsAudit98.replaceChildren();
+    await modAudit98.loadLedger(); await laisser98(40);
+    exiger(lignesDeTable98(corpsAudit98).length >= 2 && !/NON LU/.test(nu98(corpsAudit98)),
+      `(98f-bis-négatif) un journal LU rend ${lignesDeTable98(corpsAudit98).length} ligne(s) ou garde l'aveu : « ${nu98(corpsAudit98)} »`);
+
+    // ── (g) LE STOCK DE RÈGLES REFUSÉ EN 200 EST NOMMÉ ABSENT, AVEC SA CAUSE ───────────────────────
+    // Le composeur savait DÉJÀ nommer un stock qu'il n'avait pas pu lire — mais seulement sur un REJET.
+    // `rules_list` refuse EN 200 (`{rules: [], error}`), `api()` ne jette pas, et `(…).rules || []`
+    // rendait une liste vide que l'inventaire prenait pour un stock lu : la fenêtre se lisait « ce
+    // déploiement n'a aucune règle réutilisable » et l'aveu ne se déclenchait jamais.
+    const stocks98 = {
+      "/api/soql/templates": { templates: [{ id: "ssh", title: "Échecs SSH", keywords: [], soql: "search source=sshd" }] },
+      "/api/saved-queries": { queries: [{ id: 4, name: "Ma chasse", soql: "search source=portscan" }] },
+      "/api/rules": { rules: [], error: CAUSE98 },
+    };
+    globalThis.fetch = async (u) => {
+      const j = stocks98[String(u).split("?")[0]];
+      if (!j) throw new Error("chemin non servi : " + u);
+      return { ok: true, status: 200, text: async () => JSON.stringify(j), json: async () => j };
+    };
+    const inv98 = await modCompo98.inventaireComposable();
+    const regle98 = inv98.absents.find((a) => a.origine === "règle de détection");
+    exiger(!!regle98, `(98g) un stock refusé EN 200 disparaît en silence : ${JSON.stringify(inv98.absents)}`);
+    exiger(regle98.cause === CAUSE98, `(98g) le stock absent ne porte pas la cause SERVIE : « ${regle98.cause} »`);
+    exiger(inv98.items.length === 2, `(98g) le refus d'un stock prive des autres : ${inv98.items.length} entrée(s)`);
+    stocks98["/api/rules"] = { rules: [{ id: 1, name: "Brute-force SSH", query_reutilisable: "search source=sshd", is_soql: true, mitre: "T1110" }] };
+    const inv98b = await modCompo98.inventaireComposable();
+    exiger(inv98b.absents.length === 0 && inv98b.items.length === 3,
+      `(98g-négatif) trois stocks LUS et pourtant un aveu d'absence — un instrument qui avoue toujours ne mesure rien : ${JSON.stringify(inv98b.absents)}`);
+  } finally {
+    document.querySelector = qsOrigine98; globalThis.fetch = fetchOrigine98;
+    S98.AUTH = etatOrigine98.auth; S98.isAdmin = etatOrigine98.admin;
+    S98.CURRENT_ENV = etatOrigine98.env; S98.dashList = etatOrigine98.dash;
+    modComp98.primeCompletionMeta(null, []);
+  }
+  console.log("(98) OK — les tableaux de bord, la file d'actions, les corrélations, les indicateurs de compromission, les réglages de rétention, le mode de réponse, l'inventaire des environnements, le journal d'audit — par ses DEUX chargeurs, celui de la rétention et la page de l'onglet Audit — et le paquet de diagnostic écrivent la cause SERVIE au lieu d'un espace vide, d'une file calme, d'un « Observation (sûr) », d'un tenant mono-environnement ou d'un journal vierge ; les neuf chemins nominaux restent muets");
 }
 
 

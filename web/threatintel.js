@@ -79,6 +79,20 @@ async function loadCoverage() {
 async function loadIocs() {
   const host = $('#ti-ioc-list'); if (!host) return;
   const d = await fetchInto(host, '/threat-intel/iocs'); if (!d) return;
+  // `P10.20-a` — DES INDICATEURS NON LUS NE SONT PAS « AUCUN INDICATEUR ». La route passe par le corps de
+  // liste bornée partagé (`liste_bornee::corps`, daemon/src/handlers/threat_intel.rs) : sur lecture ratée
+  // elle sert, en 200, `{iocs: [], served: 0, window, total, error: <cause>}`. La FORME est intacte,
+  // `api()` ne jette que sur `!r.ok`, et `Array.isArray(d.iocs) ? ... : []` en refaisait une absence —
+  // sur du renseignement sur la menace, « aucun indicateur » se lit « rien à corréler », c'est-à-dire un
+  // verdict. L'aveu passe AVANT, et ni la liste ni ses gestes ne sont peints sous lui.
+  if (d.error) {
+    const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:0;font-size:12px';
+    const dit = document.createElement('span');
+    dit.textContent = 'Indicateurs de compromission NON LUS : le démon a refusé et en nomme la cause —';
+    aveu.append(dit, ' « ' + String(d.error).trim() + ' »');
+    host.replaceChildren(aveu);
+    return;
+  }
   _borneIocs = d;
   _allIocs = (d && Array.isArray(d.iocs)) ? d.iocs : [];
   renderIocList();

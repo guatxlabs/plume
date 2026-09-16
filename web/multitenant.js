@@ -111,12 +111,44 @@ async function reloadForTenant() {
 //     dans localStorage('plume_env') et restaurée SI l'env existe toujours dans ce tenant (sinon -> « Tous »).
 // reloadOnChange : quand true (boot), si la résolution change CURRENT_ENV (env persisté restauré), on recharge
 // la vue courante pour appliquer le filtre. Quand false (appelé depuis reloadForTenant), l'appelant recharge.
+// Le nœud d'aveu POSÉ à côté du sélecteur d'environnement, gardé pour être retiré à la lecture suivante :
+// sans cette référence, une base qui guérit laisserait sa phrase d'échec sous un sélecteur redevenu juste.
+let AVEU_DES_ENVIRONNEMENTS = null;
 async function initEnvironments(reloadOnChange = true) {
   const prev = S.CURRENT_ENV;
   let data = null;
   try { data = await api('/environments'); } catch (e) { data = null; }
   const envs = (data && Array.isArray(data.environments)) ? data.environments : [];
   const box = $('#envbox'), sel = $('#env-switch');
+  // `P10.20-a` — UN INVENTAIRE D'ENVIRONNEMENTS NON LU SE LISAIT « CE TENANT N'EN A QU'UN ». `environments`
+  // (daemon/src/handlers/overview.rs) sert, en 200, `{environments: [{env:"prod", n:0}], current, error:
+  // "liste NON LUE : … — « prod » est un repli, pas une mesure"}` quand le rollup ne se lit pas. Le repli
+  // « prod » est VOULU (le sélecteur veut une valeur), mais il fait exactement UNE entrée : la règle
+  // « <= 1 env -> sélecteur caché » plus bas prenait donc l'aveu pour un déploiement mono-environnement et
+  // CACHAIT la barre, sans une phrase nulle part. Le sélecteur reste inerte — filtrer sur un inventaire que
+  // personne n'a lu choisirait dans un ensemble inconnu — mais la boîte reste VISIBLE et porte la cause.
+  if (data && data.error) {
+    S.CURRENT_ENV = '';
+    if (sel) {
+      sel.onchange = null;
+      sel.setAttribute('aria-disabled', 'true');
+      sel.title = "Les environnements n'ont PAS été lus : filtrer sur un inventaire que cette lecture n'a pas pu rendre choisirait dans un ensemble inconnu. La vue reste NON FILTRÉE.";
+    }
+    if (box) {
+      box.hidden = false;
+      if (AVEU_DES_ENVIRONNEMENTS && AVEU_DES_ENVIRONNEMENTS.remove) AVEU_DES_ENVIRONNEMENTS.remove();
+      const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:0;font-size:12px';
+      const dit = document.createElement('span');
+      dit.textContent = 'Environnements NON LUS : le démon a refusé et en nomme la cause —';
+      aveu.append(dit, ' « ' + String(data.error).trim() + ' »');
+      AVEU_DES_ENVIRONNEMENTS = aveu;
+      box.appendChild(aveu);
+    }
+    if (reloadOnChange && prev !== '') refreshCurrentView();
+    return;
+  }
+  if (AVEU_DES_ENVIRONNEMENTS && AVEU_DES_ENVIRONNEMENTS.remove) { AVEU_DES_ENVIRONNEMENTS.remove(); AVEU_DES_ENVIRONNEMENTS = null; }
+  if (sel) sel.removeAttribute('aria-disabled');
   // mono-env (ou échec de résolution) : aucun sélecteur, aucun filtre, invariant préservé.
   if (envs.length <= 1) {
     S.CURRENT_ENV = '';

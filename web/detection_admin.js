@@ -770,6 +770,21 @@ let actionsChargees = null;
 async function loadActions() {
   const wrap = $('#act-list'); if (!wrap) return;
   const d = await fetchInto(wrap, '/actions'); if (!d) return;   // P11.14-a : la cause est écrite dans le panneau
+  // `P10.20-a` — UNE FILE D'ACTIONS NON LUE N'EST PAS UNE FILE VIDE. La route passe par le corps de liste
+  // bornée partagé (`liste_bornee::corps`, daemon/src/handlers/actions.rs) : sur lecture ratée elle sert,
+  // en 200, `{actions: [], served: 0, window, total, error: <cause>}`. `fetchInto` ne rend `null` que sur
+  // un rejet d'`api()`, c'est-à-dire sur `!r.ok` — la cause arrivait donc dans un corps lu comme un succès,
+  // et `d.actions || []` en refaisait une absence : la file des réponses EN ATTENTE D'APPROBATION se
+  // présentait vide, ce qui se lit « rien ne demande votre décision ». L'AVEU EST LU AVANT
+  // `actionsChargees` : une lecture ratée n'écrase pas la file réellement lue au chargement précédent.
+  if (d.error) {
+    const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:0;font-size:12px';
+    const dit = document.createElement('span');
+    dit.textContent = "File d'actions NON LUE : le démon a refusé et en nomme la cause —";
+    aveu.append(dit, ' « ' + String(d.error).trim() + ' »');
+    wrap.replaceChildren(aveu);
+    return;
+  }
   actionsChargees = d;
   dessinerLesActions();
 }
@@ -968,13 +983,28 @@ loadActions();
 // L'INTERRUPTEUR D'UN ÉTAT NON LU EST DÉSARMÉ : on n'arme pas ce qu'on ne sait pas lire, et une bascule
 // dont l'état courant est inconnu n'a pas de destination. `aria-checked="mixed"` est l'état indéterminé
 // que la norme donne à un `role="switch"` ; `data-mode` vide dit la même chose au gestionnaire de clic.
+// La cause SERVIE par le démon quand `/api/mode` refuse EN 200, gardée entre la lecture et la peinture.
+// Vide = aucun refus servi ; c'est le seul état qui laisse `fetchInto` écrire sa propre phrase de rejet.
+let CAUSE_DU_MODE_NON_LU = '';
 async function loadMode() {
   const b = $('#mode-badge'), tg = $('#mode-toggle'); if (!tg) return;
   let mode = null;                                    // null = NON LU, jamais replié sur 'observe'
   // Le badge est l'hôte de la cause : `fetchInto` l'y écrit et rend null. Sans badge dans le document, la
   // lecture reste la même et l'échec vaut toujours « non lu » — jamais une valeur par défaut.
-  if (b) { const d = await fetchInto(b, '/mode'); if (d) mode = d.mode || 'observe'; }
-  else { try { const d = await api('/mode'); mode = d.mode || 'observe'; } catch (e) { mode = null; } }
+  // `P10.20-a` — « OBSERVATION » EST AUSSI LE REPLI DU DÉMON, ET C'EST LE PLUS RASSURANT DES DEUX ÉTATS.
+  // `mode_get` (daemon/src/handlers/engagement.rs) sert, en 200, `{mode: "observe", error: "mode NON LU :
+  // … — « observe » est un repli, pas la valeur enregistrée"}` quand la lecture de `plume_mode` échoue.
+  // `d.mode || 'observe'` prenait ce repli pour une mesure : l'interrupteur se peignait VERT, « Observation
+  // (sûr) », sur un déploiement qui peut être ARMÉ — le commentaire au-dessus annonçait « null = NON LU,
+  // jamais replié sur observe », et c'est exactement ce qui se produisait. La cause SERVIE est lue, `mode`
+  // reste `null` (l'interrupteur est alors inerte et gris), et l'aveu est écrit dans le badge.
+  const lireLeMode = (d) => {
+    if (!d) return null;
+    if (d.error) { CAUSE_DU_MODE_NON_LU = String(d.error).trim(); return null; }
+    CAUSE_DU_MODE_NON_LU = ''; return d.mode || 'observe';
+  };
+  if (b) { const d = await fetchInto(b, '/mode'); mode = lireLeMode(d); }
+  else { try { const d = await api('/mode'); mode = lireLeMode(d); } catch (e) { mode = null; } }
   peindreLeMode(tg, b, mode);
 }
 // D13 — INTERRUPTEUR ON/OFF color-codé (piste + bouton), au lieu d'un bouton dont le libellé = la DESTINATION.
@@ -1021,8 +1051,19 @@ function peindreLeMode(tg, b, mode) {
   if (!b) return;
   // Le code couleur du badge suit le même partage : ni vert ni rouge quand rien n'a été lu.
   b.className = 'modestate' + (lu ? (active ? ' bad' : ' ok') : '');
-  // Non lu : `fetchInto` a DÉJÀ écrit la cause dans le badge — l'écraser la ferait disparaître.
-  if (!lu) return;
+  // Non lu : DEUX voies y mènent, et une seule écrit d'elle-même. Sur un REJET (`!r.ok`), `fetchInto` a déjà
+  // posé sa phrase dans le badge — l'écraser la ferait disparaître. Sur un REFUS SERVI EN 200, il n'a rien
+  // écrit : ce corps est un succès pour lui. La cause du démon est alors dans `CAUSE_DU_MODE_NON_LU`, et sans
+  // cette branche le badge restait VIDE à côté d'un interrupteur gris — un état non lu sans sa raison.
+  if (!lu) {
+    if (CAUSE_DU_MODE_NON_LU) {
+      const dit = document.createElement('span');
+      dit.textContent = 'Mode de réponse NON LU : le démon a refusé et en nomme la cause —';
+      b.className = 'modestate bad';
+      b.replaceChildren(dit, ' « ' + CAUSE_DU_MODE_NON_LU + ' »');
+    }
+    return;
+  }
   // libellé descriptif à côté de l'interrupteur (état COURANT + conséquence), même code couleur.
   b.innerHTML = `<span class="fdot ${active ? 'bad' : 'ok'}"></span>` + (active ? 'Actif — réponses automatiques' : 'Observation — propositions seulement');
 }

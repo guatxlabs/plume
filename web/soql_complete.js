@@ -26,7 +26,10 @@ let loadingMeta = null; // promesse de chargement (dédup)
 // appelant qui la détient déjà). Remplace ce que `ensureMeta` aurait chargé.
 export function primeCompletionMeta(schema, templates) {
   SCHEMA = schema || null;
-  VOCABULAIRE_DES_SOURCES_NON_LU = !!(schema && schema.values && schema.values.source_non_lue);
+  // `P10.20-a` — LES DEUX PORTES DU MÊME VOCABULAIRE LISENT LE MÊME AVEU. Celle-ci pose la métadonnée
+  // sans réseau ; `ensureMeta` la lit. Si l'une n'ouvrait l'aveu que sur le drapeau nommé et l'autre
+  // aussi sur `error`, ce que le harnais prouve par cette porte-ci ne dirait rien de celle qui lit.
+  VOCABULAIRE_DES_SOURCES_NON_LU = !!(schema && (schema.error || (schema.values && schema.values.source_non_lue)));
   TEMPLATES = Array.isArray(templates) ? templates : [];
 }
 
@@ -45,7 +48,14 @@ async function ensureMeta(relire) {
     try {
       const [sc, tp] = await Promise.all([api('/soql/schema'), api('/soql/templates')]);
       SCHEMA = sc || null;
-      VOCABULAIRE_DES_SOURCES_NON_LU = !!(sc && sc.values && sc.values.source_non_lue);
+      // `P10.20-a` — LA CAUSE EST LUE LÀ OÙ LE CORPS ARRIVE, ET PAS SEULEMENT LÀ OÙ IL EST PEINT.
+      // `soql_schema_json` (daemon/src/handlers/soql_meta.rs) pose DEUX choses quand le vocabulaire des
+      // sources n'a pas pu être lu : `values.source_non_lue`, pour le consommateur qui sait où regarder, et
+      // `error`, la clé que tout le reste du dépôt teste. Ce module ne lisait que la première : un refus qui
+      // poserait la cause SANS le drapeau nommé — c'est la clé partagée qui est le contrat, pas le drapeau —
+      // aurait laissé la complétion offrir un vocabulaire amputé sans un mot. Les deux ouvrent l'aveu ; la
+      // phrase rendue plus bas colle `SCHEMA.error` telle quelle, et reste donc celle du démon.
+      VOCABULAIRE_DES_SOURCES_NON_LU = !!(sc && (sc.error || (sc.values && sc.values.source_non_lue)));
       TEMPLATES = (tp && Array.isArray(tp.templates)) ? tp.templates : [];
       return !!SCHEMA;
     } catch { SCHEMA = null; VOCABULAIRE_DES_SOURCES_NON_LU = false; TEMPLATES = []; return false; }

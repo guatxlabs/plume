@@ -65,12 +65,23 @@ const STOCKS = [
     // `query_reutilisable` est DÉRIVÉE PAR LE DÉMON (étage scalaire terminal retiré en GXQL, brut intact
     // avec ses marqueurs de fenêtre). La console ne recompose pas la requête d'une règle : elle
     // n'aurait aucun moyen de savoir quel étage réduit la valeur à un nombre.
-    charger: async () => ((await api('/rules')).rules || [])
-      .filter(r => (r.query_reutilisable || '').trim())
-      .map(r => ({
-        cle: 'regle:' + r.id, origine: 'règle de détection', titre: r.name || ('#' + r.id),
-        requete: r.query_reutilisable, is_soql: !!r.is_soql, viz: 'table', detail: r.mitre || '',
-      })),
+    // `P10.20-a` — UN STOCK NON LU EST DÉJÀ NOMMÉ PAR CETTE FENÊTRE ; ENCORE FALLAIT-IL QU'IL LE SOIT.
+    // `rules_list` (daemon/src/handlers/detection.rs) refuse EN 200 par le constructeur partagé :
+    // `{rules: [], error: <cause>}`. `api()` ne jette que sur `!r.ok`, et `(…).rules || []` rendait donc une
+    // liste VIDE que `inventaireComposable` prenait pour un stock LU et complet : la fenêtre se lisait
+    // « ce déploiement n'a aucune règle réutilisable », et l'aveu « stock NON LU » qui vit dix lignes plus
+    // bas ne se déclenchait jamais. Le corps est LIÉ, sa cause LUE, et le refus emprunte le chemin d'échec
+    // que ce module a déjà — `charger` jette, l'inventaire nomme le stock absent AVEC la cause servie.
+    charger: async () => {
+      const rep = await api('/rules');
+      if (rep && rep.error) throw new Error(String(rep.error).trim());
+      return (rep.rules || [])
+        .filter(r => (r.query_reutilisable || '').trim())
+        .map(r => ({
+          cle: 'regle:' + r.id, origine: 'règle de détection', titre: r.name || ('#' + r.id),
+          requete: r.query_reutilisable, is_soql: !!r.is_soql, viz: 'table', detail: r.mitre || '',
+        }));
+    },
   },
 ];
 
@@ -86,7 +97,10 @@ async function inventaireComposable() {
   const items = [];
   const absents = [];
   for (const r of resultats) {
-    if (r.items === null) absents.push(r.stock.origine);
+    // Le stock absent est nommé AVEC la cause servie : « règle de détection » seul ne dit pas si la lecture
+    // a été refusée, rejetée ou jamais partie, et c'est ce que l'exploitant a besoin de savoir pour décider
+    // s'il compose quand même. La cause voyage donc à côté de l'origine, jamais fondue dedans.
+    if (r.items === null) absents.push({ origine: r.stock.origine, cause: String(r.err || '').trim() });
     else items.push(...r.items);
   }
   return { items, absents };
@@ -110,8 +124,13 @@ async function choisirDansLexistant(opts = {}) {
   const corps = document.createElement('div');
   corps.className = 'compo-choix';
   if (absents.length) {
+    // AVEU À DEUX NŒUDS : la phrase, écrite au puits et donc traduisible, puis les stocks et leurs causes
+    // SERVIES, composés — `i18nWalk` n'égale qu'un nœud texte ENTIER, et une chaîne « phrase + cause »
+    // n'égalerait jamais une clé de lexique.
     const aveu = document.createElement('div'); aveu.className = 'fwarn compo-absents'; aveu.style.cssText = 'font-size:11px;margin:0 0 6px';
-    aveu.textContent = 'Stock non lu, donc absent de cette liste : ' + absents.join(', ') + '. Ce n\'est pas « il n\'y en a aucun ».';
+    const dit = document.createElement('span');
+    dit.textContent = 'Stock NON LU, donc absent de cette liste — ce n\'est pas « il n\'y en a aucun ». Le démon en nomme la cause :';
+    aveu.append(dit, ' ' + absents.map(a => a.origine + (a.cause ? ' « ' + a.cause + ' »' : '')).join(' · '));
     corps.appendChild(aveu);
   }
   const champ = document.createElement('input');

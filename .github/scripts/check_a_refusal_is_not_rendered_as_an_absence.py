@@ -54,10 +54,22 @@ elle rendait donc vert sur `alerts.js`, `fleet.js`, `datamodels.js` et `attack.j
 portillon de concurrence CLOS rend un corps **200** qui garde la forme attendue et y AJOUTE sa cause
 sous `error`. `api()`/`apiSend()` ne jettent que sur `!r.ok` : la cause arrive donc dans un corps que le
 consommateur lit comme un succès, et un `j.alerts || []` en refait une absence.
-La JAMBE B ferme cet angle. Sa population est DÉRIVÉE du démon — les routes qui passent par le point
-unique d'aveu, l'indirection comprise — et jamais énumérée ; elle exige que le corps rendu par un tel
+La JAMBE B ferme cet angle. Sa population est DÉRIVÉE du démon — les routes qui servent un corps 200
+portant `error`, l'indirection comprise — et jamais énumérée ; elle exige que le corps rendu par un tel
 appel atteigne une lecture de `error`, DANS LA PORTÉE de l'appel. Voir son en-tête, plus bas, pour ce
-qu'elle ne tient pas et pour les deux fautes d'instrument mesurées en l'écrivant.
+qu'elle ne tient pas et pour les fautes d'instrument mesurées en l'écrivant.
+
+CE QUI A CHANGÉ LE 2026-09-16 (`P10.20-a`), ET CE QUE ÇA A COÛTÉ
+----------------------------------------------------------------
+La jambe B ancrait sa population sur UN NOM — `portillon::corps_de_refus` — soit quatorze chemins. Un nom
+posé n'est pas une propriété : le démon avoue par bien d'autres endroits, et la garde ne les voyait pas.
+La population est désormais dérivée de TROIS ÉCRITURES (la cause AJOUTÉE à un corps déjà formé, INSÉRÉE
+dans sa carte, ou NÉE avec un corps qui garde au moins une autre clé) : 84 sites d'aveu, 77 chemins, 69
+sites de la console — et TREIZE sites SOURDS révélés d'un coup, tous corrigés AVANT l'extension parce
+qu'un cliquet ne s'élargit pas. La couverture des écritures est elle-même jugée : toute occurrence du
+littéral `"error"` dans `daemon/src/handlers/` est classée, et une QUATRIÈME écriture fait rougir au lieu
+de rétrécir la population en silence. Le seul reste admis — les corps servis en 200 qui ne portent QUE la
+cause, sans forme de succès à imiter — est un ENSEMBLE NOMMÉ, jugé dans les deux sens.
 
 CE QUE CETTE GARDE NE PROUVE PAS
 --------------------------------
@@ -78,6 +90,17 @@ condition qui ne teste QUE l'échec, une qui ne teste QUE le vide, les deux SÉP
 successives, la forme écrite dans un commentaire, la forme écrite dans une chaîne). Puis un PLANCHER
 sur l'arbre réel : sous un nombre minimal de conditions d'échec réellement vues, c'est la lecture qui
 est cassée, et la garde REFUSE DE CONCLURE au lieu de rendre vert en étant aveugle.
+La DÉRIVATION de la jambe B se valide de même, sur un démon FABRIQUÉ : chaque écriture rend la fonction
+qu'elle doit et aucune autre, le dépouilleur Rust mange les commentaires sans manger le code, une
+écriture inconnue est vue comme telle, et un tableau d'attentes déconstruit lie bien chacun de ses corps.
+Six mutations d'instrument le prouvent — retirer une écriture, neutraliser le dépouilleur, vider le reste
+nommé ou aveugler le lecteur de la console rend la garde ROUGE par un témoin NOMMÉ, jamais par un silence.
+
+CE QUE CETTE GARDE NE TIENT PAS, RÉCAPITULÉ
+--------------------------------------------
+La phrase RENDUE ensuite (harnais ESM, témoins 16 et 92 à 98) ; un `.catch()` qui rendrait une absence ;
+les appels `fetch` NUS, qui rendent une RÉPONSE et non un corps ; les corps servis en 200 qui ne portent
+QUE la cause ; et les échecs qui rendent encore des corps vides NUS côté démon (`P10.7-e`).
 """
 import os
 import re
@@ -224,13 +247,48 @@ def temoins_de_la_lecture():
 # dans un corps que le consommateur lit comme un succès, et un `j.alerts || []` en fait une absence.
 #
 # LA POPULATION EST DÉRIVÉE DU DÉMON, EN TROIS PAS, ET N'EST ÉNUMÉRÉE NULLE PART :
-#   (1) les fonctions de `daemon/src/handlers/` qui appellent le point unique d'aveu du portillon
-#       (`portillon::corps_de_refus`, posé par `P10.7-c`) ;
+#   (1) les fonctions de `daemon/src/handlers/` qui posent la clé `error` dans un corps SERVI EN 200,
+#       par l'une des trois ÉCRITURES ci-dessous — et non par un NOM posé (voir juste après) ;
 #   (2) celles qui les APPELLENT, tant qu'elles ne sont pas routées — sans ce pas, `run_generated_soql`
 #       sortirait de l'ensemble et le Pivot avec lui ;
 #   (3) l'intersection avec la table de routage : les CHEMINS servis par ces fonctions.
-# Puis, côté console : tout appel de `api`/`apiSend`/`fetchInto`/`fetch` dont l'URL peut être l'un de ces
-# chemins. Une route qu'on ajoutera demain au point unique entre dans la population sans être nommée ici.
+# Puis, côté console : tout appel de `api`/`apiSend`/`fetchInto` dont l'URL peut être l'un de ces chemins.
+# Une route qu'on ajoutera demain à l'une des trois écritures entre dans la population sans être nommée ici.
+#
+# POURQUOI LA FORME A REMPLACÉ LE NOM, ET CE QUE ÇA A COÛTÉ DE LE MESURER (`P10.20-a`, 2026-09-16). La
+# population était ancrée sur UN point, `portillon::corps_de_refus` : quatorze chemins. Le démon avoue
+# pourtant par bien d'autres endroits — `liste_bornee::corps_de_liste_illisible` et son frère
+# `corps_de_listes_illisibles`, le corps de liste bornée `liste_bornee::corps`, et une quinzaine de sites
+# qui posent la cause à la main. Ce ne sont pas des NOMS à ajouter un par un : ce sont TROIS ÉCRITURES.
+#   * AJOUTÉE  — `corps["error"] = …` : un corps DÉJÀ formé reçoit la cause. 17 sites.
+#   * INSÉRÉE  — `.insert("error", …)` : la même chose sur une carte JSON. 4 sites.
+#   * NÉE      — `json!({ …, "error": … })` : le corps naît avec sa cause, ET GARDE AU MOINS UNE AUTRE
+#                CLÉ — c'est cette autre clé qui le rend lisible comme un succès. 63 sites.
+# 84 sites, 51 fonctions fabricantes, 77 chemins, 68 sites de `web/` — contre 14 et 14 par le nom seul.
+#
+# CE QUE LA DÉRIVATION PAR FORME A COÛTÉ EN INSTRUMENT, ÉCRIT PLUTÔT QUE TU :
+#   (a) ELLE LISAIT LES COMMENTAIRES COMME DU CODE. Le pas (2) cherche les appelants par le NOM de la
+#       fonction, et `liste_bornee::corps` s'appelle `corps` — un mot français. `daemon/src/handlers/
+#       detection.rs:818` porte « …OBLIGATOIRE du corps ({enabled:bool})… » dans un commentaire de
+#       documentation : `\bcorps\s*\(` y mordait, `set_content_enabled_tx` entrait dans la population,
+#       et avec lui SES TROIS APPELANTS — `/api/rules/{id}/enabled`, `/api/parsers/{id}/enabled`,
+#       `/api/playbooks/{id}/enabled`, trois routes dont l'échec passe par `err_json` et ne peut donc
+#       JAMAIS servir un 200 portant `error`. Trois accusations sans cause. Le démon est désormais lu
+#       SANS ses commentaires, et le témoin qui le prouve fabrique ce commentaire-là.
+#   (b) UN CORPS À STATUT N'EST PAS UN CORPS SERVI EN 200. `(StatusCode::INTERNAL_SERVER_ERROR,
+#       Json(json!({ "error": … })))` est un REJET : `api()`/`apiSend()` jettent sur `!r.ok`, et la cause
+#       y voyage par le porteur commun (`avecLaCauseDuDemon`, web/core.js, `P10.20-b`). Le confondre avec
+#       un aveu en 200 accusait `web/cases.js` deux fois. Un site dont l'INSTRUCTION porte `StatusCode::`
+#       est donc hors population, par construction et non par exemption.
+#   (c) UN CORPS QUI NE PORTE **QUE** `error` N'A PAS DE FORME DE SUCCÈS. `json!({ "error": "réservé
+#       admin" })` ne se lit pas comme une liste vide : un consommateur qui lit `j.rows` y trouve
+#       `undefined`, pas `[]`. C'est un autre défaut de rendu, et il n'est pas tenu ici. Ces sites-là
+#       sont le RESTE ADMIS, et il est NOMMÉ (`CORPS_A_CAUSE_SEULE`), jugé dans les deux sens.
+#
+# ET LA COUVERTURE DES FORMES EST ELLE-MÊME JUGÉE. Toute occurrence du littéral `"error"` dans
+# `daemon/src/handlers/` est CLASSÉE — l'une des trois écritures, une LECTURE (`get("error")`), ou une
+# VALEUR (`3 => "error"`). Une occurrence qu'aucune classe ne reçoit est une QUATRIÈME écriture, donc un
+# fabricant d'aveu que cette garde ne dérive pas : elle ROUGIT en la nommant, au lieu de l'ignorer.
 #
 # CE QUE LA GARDE EXIGE, ET POURQUOI LE CRITÈRE DIFFÈRE SELON L'APPEL. Ce que le consommateur doit lire
 # est le CORPS. `api`/`apiSend`/`fetchInto` rendent le corps DÉJÀ analysé : la valeur liée à l'appel EST
@@ -245,7 +303,11 @@ def temoins_de_la_lecture():
 # CE QUE CETTE JAMBE NE PROUVE PAS, ÉCRIT PLUTÔT QUE SOUS-ENTENDU :
 #   * que la phrase RENDUE soit honnête — lire `error` et le taire resterait vert ici. Cette part se
 #     tient en EXERÇANT le module (harnais ESM), jamais en le lisant ;
-#   * les appels `fetch` NUS ne sont pas jugés — ils rendent une réponse, pas un corps (voir plus haut) ;
+#   * les appels `fetch` NUS ne sont pas jugés — ils rendent une réponse, pas un corps (voir plus haut).
+#     Relevé le 2026-09-16 : il n'en reste qu'UN dans `web/` sur une route à aveu, et il a été porté sur
+#     la voie commune (`web/fieldfilters.js`, qui lisait pourtant DÉJÀ `data.error` — ce que rien ne
+#     tenait d'un lot à l'autre, faute qu'il soit dans la population) ;
+#   * un corps servi en 200 qui ne porte QUE `error` — le RESTE NOMMÉ ci-dessous ;
 #   * la correspondance d'URL est CONSERVATRICE : un segment inconnu (`'/cases/' + id`) n'apparie qu'un
 #     segment PARAMÈTRE de la route, et un segment mixte (`'/cases' + filtre`) n'apparie que le dernier
 #     segment, par son préfixe littéral. Une URL trop dynamique pour être appariée sort donc de la
@@ -266,7 +328,38 @@ def temoins_de_la_lecture():
 #     cause est pire qu'un silence : les chemins dérivés portent maintenant leur verbe, et l'appel le sien.
 
 DAEMON = os.path.join(RACINE, "daemon", "src")
-POINT_UNIQUE = "portillon::corps_de_refus"
+
+# LES TROIS ÉCRITURES D'UN AVEU DANS UN CORPS SERVI EN 200. Elles ne nomment aucune fonction : c'est la
+# FORME qui est reconnue, de sorte qu'un fabricant écrit demain entre dans la population sans être ajouté
+# ici. Voir l'en-tête pour ce que chacune vaut, et pour les trois fautes d'instrument qu'elles ont coûtées.
+FORME_AJOUTEE = re.compile(r'\[\s*"error"\s*\]\s*=')
+FORME_INSEREE = re.compile(r'insert\(\s*(?:String::from\(\s*)?"error"')
+DEBUT_JSON = re.compile(r"json!\s*\(\s*\{")
+CLE_JSON = re.compile(r'"([A-Za-z_]\w*)"\s*:')
+TOUT_ERROR = re.compile(r'"error"')
+ENTETE_FN = re.compile(r"^[ \t]*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z_]\w*)", re.M)
+
+# LE RESTE ADMIS, NOMMÉ ET JUGÉ DANS LES DEUX SENS. Ces fonctions servent, en 200, un corps qui ne porte
+# QUE `error` : un refus nu (« réservé admin », « motif vide », « exécution échouée »), sans forme de
+# succès à imiter. Un consommateur qui y lit une clé de données trouve `undefined`, jamais une liste vide
+# — le défaut que cette garde tient ne s'y produit pas, et c'est pourquoi elles en sortent. Un ENSEMBLE
+# plutôt qu'un compte : un compte se laisse compenser (une entrée neuve pour une retirée), un ensemble
+# non. Il est jugé dans les DEUX sens — une fonction qui se met à servir un tel corps sans être ici fait
+# ROUGIR (forme neuve non dérivée), et une entrée qui n'a plus de site fait rougir aussi (exemption sans
+# objet). Relevé le 2026-09-16 : 33 sites, 11 fonctions.
+CORPS_A_CAUSE_SEULE = {
+    ("actions.rs", "action_create"),
+    ("caseops.rs", "case_metrics"),
+    ("detection.rs", "parser_reparse"),
+    ("detection.rs", "parser_test"),
+    ("detection.rs", "rule_test"),
+    ("detection.rs", "rule_test_adhoc"),
+    ("detection_advanced.rs", "baseline_test"),
+    ("detection_advanced.rs", "correlation_test"),
+    ("notifiers.rs", "notifier_create"),
+    ("notifiers.rs", "notifier_test"),
+    ("playbooks.rs", "playbook_test"),
+}
 
 # LES TROIS APPELS QUI RENDENT UN CORPS, et l'index de l'argument qui porte l'URL + la MÉTHODE (None =
 # lue sur l'appel : `apiSend(chemin, methode, corps)`, défaut `POST`). Tous trois préfixent `/api`
@@ -278,22 +371,32 @@ POINT_UNIQUE = "portillon::corps_de_refus"
 # témoin 16 du harnais ESM pour la phrase rendue.
 APPELS_WEB = {"api": (0, "GET"), "apiSend": (0, None), "fetchInto": (1, "GET")}
 
-# PLANCHERS DE NON-DÉGÉNÉRESCENCE. Relevé le 2026-08-29 : 13 fonctions du démon passent par le point
-# unique, 14 chemins en sortent, et 14 sites de `web/` les interrogent. Sous ces planchers, c'est la
-# DÉRIVATION qui est cassée (point unique renommé, table de routage déplacée, appels de la console
-# réécrits) et la garde refuse de conclure plutôt que de rendre un vert aveugle.
+# PLANCHERS DE NON-DÉGÉNÉRESCENCE. Relevé le 2026-09-16, dérivation par FORME : 84 sites d'aveu dans
+# `daemon/src/handlers/`, 51 fonctions fabricantes, 77 chemins routés, 68 sites de `web/` qui les
+# interrogent. Sous ces planchers, c'est la DÉRIVATION qui est cassée (une écriture renommée, la table de
+# routage déplacée, les appels de la console réécrits) et la garde refuse de conclure plutôt que de rendre
+# un vert aveugle. Ils sont posés à environ soixante pour cent du relevé, comme les précédents : assez bas
+# pour qu'une refonte honnête passe, assez haut pour qu'un motif cassé — qui rend ZÉRO — soit vu.
 #
 # LE « 20 SITES » QUI ÉTAIT ÉCRIT ICI ÉTAIT FAUX, ET IL L'ÉTAIT DÉJÀ LE JOUR OÙ IL A ÉTÉ ÉCRIT. La garde
 # imprimait « 14 site(s) de web/ les interrogent » au MÊME commit où ce commentaire en annonçait 20 : un
-# chiffre recopié à la main à côté d'un chiffre dérivé, et c'est toujours le recopié qui vieillit. Il est
-# remis à ce que la garde mesure ; la valeur qui fait foi reste celle qu'elle imprime, jamais celle-ci.
-PLANCHER_CHEMINS_A_PORTILLON = 8
-PLANCHER_SITES_WEB = 10
+# chiffre recopié à la main à côté d'un chiffre dérivé, et c'est toujours le recopié qui vieillit. La
+# valeur qui fait foi reste celle que la garde IMPRIME, jamais celle-ci.
+PLANCHER_CHEMINS_A_AVEU = 45
+PLANCHER_SITES_WEB = 40
 
 # PLAFOND DE SITES SOURDS PAR MODULE — un CLIQUET, pas une exemption. Relevé le 2026-08-29 en fermant
 # `P10.7-d` : sur les 14 sites dérivés, PLUS AUCUN n'est sourd. La table est donc VIDE, et vide est sa
 # forme la plus forte : un module absent est jugé à ZÉRO, donc toute régression, dans n'importe quel
 # module de `web/`, est désormais un échec — il n'existe plus une seule case où un site sourd soit toléré.
+#
+# ELLE EST RESTÉE VIDE EN PASSANT DE 14 À 77 CHEMINS (`P10.20-a`, 2026-09-16), ET C'EST CE QUI A COÛTÉ LE
+# LOT. La dérivation par forme a révélé TREIZE sites sourds d'un coup — la liste des tableaux de bord qui
+# peignait « Aucun dashboard » sous un bouton « + Dashboard », la file des actions EN ATTENTE
+# D'APPROBATION qui se présentait vide, l'interrupteur de mode qui peignait « Observation (sûr) » sur le
+# repli du démon, le journal d'AUDIT qui se disait vierge, l'inventaire des environnements qui se lisait
+# « ce tenant n'en a qu'un ». Les treize ont été CORRIGÉS avant l'extension, et c'est le sens du cliquet :
+# élargir la population en s'accordant une case tolérée aurait rendu vert un dépôt plus sourd qu'avant.
 #
 # CE QUE LES DEUX DERNIÈRES ENTRÉES DISAIENT, ET CE QUI A ÉTÉ CORRIGÉ (mesuré en EXERÇANT les deux rendus
 # sur le corps exact que le démon sert, pas en les relisant) :
@@ -344,49 +447,174 @@ def _arguments(code, i):
     return args, j + 1
 
 
-def chemins_a_portillon(racine=None):
-    """LES CHEMINS QU'UN REFUS DU PORTILLON PEUT SERVIR — dérivés du démon, jamais énumérés."""
+def sans_commentaires_rs(src):
+    r"""Le texte Rust SANS ses commentaires, hauteur et offsets CONSERVÉS (chaque octet retiré devient une
+    espace). Les littéraux de chaîne sont gardés — c'est là que vivent les URL de routes et les causes.
+
+    POURQUOI CETTE FONCTION EXISTE, ET CE QU'ELLE A FERMÉ (mesuré le 2026-09-16). La dérivation cherche
+    les APPELANTS d'une fonction d'aveu par son NOM. `liste_bornee::corps` s'appelle `corps` — un mot
+    français, qui apparaît en toutes lettres dans la prose du dépôt. `daemon/src/handlers/detection.rs`
+    porte, en commentaire de documentation, « …le booléen `enabled` OBLIGATOIRE du corps ({enabled:bool}) »
+    : le motif `\bcorps\s*\(` y mordait, et `set_content_enabled_tx` — qui ne sert JAMAIS un 200 portant
+    `error`, son échec passant par `err_json` — entrait dans la population avec ses trois appelants. Trois
+    accusations sans cause, nées d'une phrase en français."""
+    out, i, n = [], 0, len(src)
+    while i < n:
+        c = src[i]
+        if c == '"':
+            j = i + 1
+            while j < n and src[j] != '"':
+                j += 2 if src[j] == "\\" else 1
+            out.append(src[i:j + 1])
+            i = j + 1
+        elif src.startswith("//", i):
+            j = src.find("\n", i)
+            j = n if j < 0 else j
+            out.append(" " * (j - i))
+            i = j
+        elif src.startswith("/*", i):
+            j = src.find("*/", i + 2)
+            j = n if j < 0 else j + 2
+            out.append("".join(ch if ch == "\n" else " " for ch in src[i:j]))
+            i = j
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
+def _objets_json(code):
+    """(début, fin) de chaque littéral d'objet `json!({ … })`, accolades APPARIÉES."""
+    for m in DEBUT_JSON.finditer(code):
+        i = code.index("{", m.end() - 1)
+        yield i, _bloc(code, i)
+
+
+def _cles_de_tete(bloc):
+    """Les clés de PREMIER niveau d'un littéral d'objet : ce que le consommateur lit directement. Les
+    sous-objets et sous-tableaux sont SAUTÉS — `json!({ "error": e, "a": { "b": 1 } })` a deux clés de
+    tête, pas trois, et c'est bien la présence d'`a` À CÔTÉ d'`error` qui donne au corps sa forme."""
+    out, i, n = [], 1, len(bloc) - 1
+    while i < n:
+        if bloc[i] in "{[(":
+            i = _bloc(bloc, i)
+            continue
+        m = CLE_JSON.match(bloc, i)
+        if m:
+            out.append(m.group(1))
+            i = m.end()
+            continue
+        i += 1
+    return out
+
+
+def _a_un_statut(code, debut):
+    """Le site est-il DANS une réponse à STATUT EXPLICITE ? On remonte au début de l'instruction (le
+    dernier `;`, `{` ou `}`) : `(StatusCode::…, Json(json!({ "error": … })))` est un REJET, que
+    `api()`/`apiSend()` voient par `!r.ok` et dont la cause voyage par le porteur commun."""
+    d = max(code.rfind(";", 0, debut), code.rfind("{", 0, debut), code.rfind("}", 0, debut))
+    return "StatusCode::" in code[d + 1:debut]
+
+
+def _fonction_de(debuts, position):
+    avant = [f for (p, f) in debuts if p < position]
+    return avant[-1] if avant else None
+
+
+def sites_d_aveu(textes):
+    """LES SITES OÙ LE DÉMON POSE SA CAUSE DANS UN CORPS SERVI EN 200, par FORME.
+
+    Rend `(sites, reste, inconnus)` :
+      * `sites`   — `(fichier, ligne, fonction, forme)` pour les trois écritures ;
+      * `reste`   — `(fichier, fonction)` des corps servis en 200 qui ne portent QUE `error` ;
+      * `inconnus`— les occurrences du littéral `"error"` qu'aucune classe ne reçoit : une QUATRIÈME
+                    écriture, donc un fabricant que cette garde ne dérive pas. Elle rougit dessus."""
+    sites, reste, inconnus = [], set(), []
+    for nom, code in sorted(textes.items()):
+        debuts = [(m.start(), m.group(1)) for m in ENTETE_FN.finditer(code)]
+        objets = list(_objets_json(code))
+        for mot, forme in ((FORME_AJOUTEE, "ajoutée"), (FORME_INSEREE, "insérée")):
+            for m in mot.finditer(code):
+                if _a_un_statut(code, m.start()):
+                    continue
+                f = _fonction_de(debuts, m.start())
+                if f:
+                    sites.append((nom, code.count("\n", 0, m.start()) + 1, f, forme))
+        for i, j in objets:
+            cles = _cles_de_tete(code[i:j])
+            if "error" not in cles or _a_un_statut(code, i):
+                continue
+            f = _fonction_de(debuts, i)
+            if not f:
+                continue
+            if len(set(cles)) >= 2:
+                sites.append((nom, code.count("\n", 0, i) + 1, f, "née"))
+            else:
+                reste.add((nom, f))
+        # LA COUVERTURE DES FORMES, JUGÉE : toute occurrence de `"error"` reçoit une classe, ou rougit.
+        for m in TOUT_ERROR.finditer(code):
+            q, ap = m.start(), code[m.end():m.end() + 8]
+            av = code[max(0, q - 60):q]
+            if re.search(r"\[\s*$", av) and re.match(r"\s*\]\s*=", ap):
+                continue                                    # AJOUTÉE
+            if re.search(r"insert\(\s*(?:String::from\(\s*)?$", av):
+                continue                                    # INSÉRÉE
+            if re.search(r"get(?:_mut)?\(\s*$", av):
+                continue                                    # une LECTURE, pas une écriture
+            if re.match(r"\s*:", ap):
+                if any(i < q < j for i, j in objets):
+                    continue                                # NÉE
+                inconnus.append((nom, code.count("\n", 0, q) + 1,
+                                 "la clé `error` est posée hors d'un littéral `json!({…})`"))
+                continue
+            continue                                        # `"error"` comme VALEUR (`3 => "error"`)
+    return sites, reste, inconnus
+
+
+def chemins_a_aveu(racine=None):
+    """LES CHEMINS QU'UN AVEU SERVI EN 200 PEUT ATTEINDRE — dérivés du démon, jamais énumérés.
+
+    Rend `(chemins, fabricantes, sites, reste, inconnus)`."""
     base = racine or DAEMON
     handlers = os.path.join(base, "handlers")
     if not os.path.isdir(handlers):
-        return [], set()
-    entete = re.compile(r"^[ \t]*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z_]\w*)", re.M)
-    rend_refus, textes = set(), {}
-    for nom in sorted(os.listdir(handlers)):
-        if not nom.endswith(".rs"):
-            continue
-        src = open(os.path.join(handlers, nom), encoding="utf-8").read()
-        textes[nom] = src
-        debuts = [(m.start(), m.group(1)) for m in entete.finditer(src)]
-        for m in re.finditer(re.escape(POINT_UNIQUE) + r"\s*\(", src):
-            avant = [f for (p, f) in debuts if p < m.start()]
-            if avant:
-                rend_refus.add(avant[-1])
+        return [], set(), [], set(), []
+    textes = {}
+    for dossier, _, fichiers in os.walk(handlers):
+        for nom in sorted(fichiers):
+            if not nom.endswith(".rs"):
+                continue
+            chemin = os.path.join(dossier, nom)
+            with open(chemin, encoding="utf-8") as fh:
+                textes[os.path.relpath(chemin, handlers)] = sans_commentaires_rs(fh.read())
+    sites, reste, inconnus = sites_d_aveu(textes)
+    fabricantes = {f for _, _, f, _ in sites}
     routes = []
     for dossier, _, fichiers in os.walk(base):
         for nom in sorted(fichiers):
             if not nom.endswith(".rs"):
                 continue
-            src = open(os.path.join(dossier, nom), encoding="utf-8").read()
-            for m in re.finditer(r'\.route\(\s*"([^"]+)"\s*,\s*([^\n]+)', src):
+            with open(os.path.join(dossier, nom), encoding="utf-8") as fh:
+                code = sans_commentaires_rs(fh.read())
+            for m in re.finditer(r'\.route\(\s*"([^"]+)"\s*,\s*([^\n]+)', code):
                 for v, f in re.findall(r"\b(get|post|put|delete|patch)\s*\(\s*([A-Za-z_]\w*)", m.group(2)):
                     routes.append((m.group(1), v.upper(), f))
     routees = {f for _, _, f in routes}
     # (2) l'INDIRECTION : une fonction d'aveu non routée est atteinte par celles qui l'appellent.
-    atteintes = set(rend_refus)
+    atteintes = set(fabricantes)
     for _ in range(4):
         neuves = set()
         for f in atteintes - routees:
-            for nom, src in textes.items():
-                debuts = [(m.start(), m.group(1)) for m in entete.finditer(src)]
-                for m in re.finditer(r"\b" + re.escape(f) + r"\s*\(", src):
-                    avant = [g for (p, g) in debuts if p < m.start()]
-                    if avant and avant[-1] != f:
-                        neuves.add(avant[-1])
+            for nom, code in textes.items():
+                debuts = [(m.start(), m.group(1)) for m in ENTETE_FN.finditer(code)]
+                for m in re.finditer(r"\b" + re.escape(f) + r"\s*\(", code):
+                    g = _fonction_de(debuts, m.start())
+                    if g and g != f:
+                        neuves.add(g)
         if neuves <= atteintes:
             break
         atteintes |= neuves
-    return sorted({(c, v) for c, v, f in routes if f in atteintes}), rend_refus
+    return sorted({(c, v) for c, v, f in routes if f in atteintes}), fabricantes, sites, reste, inconnus
 
 
 TROU = "\x00"
@@ -455,6 +683,41 @@ def _portees(code):
     return out
 
 
+DESTRUCTURATION_PROMISE_ALL = re.compile(
+    r"(?:const|let|var)\s*\[([^\]]*)\]\s*=\s*await\s+Promise\s*\.\s*all\s*\(\s*\[")
+
+
+def _noms_de_promise_all(code):
+    """`const [sc, tp] = await Promise.all([api(a), api(b)])` LIE chaque corps à un nom : le i-ième
+    élément du tableau au i-ième nom. La garde lisait cette forme comme « la réponse n'est liée à aucun
+    nom » et accusait `web/soql_complete.js`, qui lit pourtant la cause — c'est la faute d'instrument (2)
+    du 2026-08-29 retrouvée sous une autre forme, et une accusation sans cause est pire qu'un silence.
+    Rend `[(début, fin, nom)]`, une entrée par élément du tableau dont le nom est un identifiant."""
+    out = []
+    for m in DESTRUCTURATION_PROMISE_ALL.finditer(code):
+        noms = [n.strip() for n in m.group(1).split(",")]
+        i = m.end() - 1                       # la `[` du tableau d'attentes
+        fin = _bloc(code, i)
+        prof, j, deb, k = 1, i + 1, i + 1, 0
+        while j < fin:
+            c = code[j]
+            if c in "([{":
+                prof += 1
+            elif c in ")]}":
+                prof -= 1
+                if prof == 0:
+                    if k < len(noms):
+                        out.append((deb, j, noms[k]))
+                    break
+            elif c == "," and prof == 1:
+                if k < len(noms):
+                    out.append((deb, j, noms[k]))
+                k += 1
+                deb = j + 1
+            j += 1
+    return [(a, b, n) for (a, b, n) in out if re.fullmatch(r"[A-Za-z_$]\w*", n)]
+
+
 def sites_sourds_du_module(src, chemins):
     """Les sites de ce module qui interrogent une route à portillon SANS lire la cause qu'elle sert.
     Rend `(sites, sourds)` : le nombre de sites appariés, et la liste `(ligne, chemin, pourquoi)`."""
@@ -474,6 +737,7 @@ def sites_sourds_du_module(src, chemins):
         if p.startswith("/"):
             variables.setdefault(m.group(1), []).append((m.start(), p))
     portees = _portees(code)
+    destructurees = _noms_de_promise_all(code)
     sites, sourds = 0, []
     for m in re.finditer(r"(?<![\w.$])(api|apiSend|fetchInto)\s*\(", code):
         appel = m.group(1)
@@ -511,13 +775,16 @@ def sites_sourds_du_module(src, chemins):
         # `api`/`apiSend`/`fetchInto` rendent le CORPS : il doit être LIÉ, puis lu.
         amont = code[max(0, m.start() - 90):m.start()]
         lie = re.search(r"([A-Za-z_$]\w*)\s*=\s*(?:await\s+)?$", amont)
-        if not lie:
+        # Un tableau d'attentes déconstruit lie CHAQUE corps à son nom, positionnellement : le site n'est
+        # pas anonyme, et l'accuser de l'être serait une accusation sans cause.
+        par_tableau = next((n for (a, b, n) in destructurees if a <= m.start() < b), None)
+        if not lie and not par_tableau:
             if re.search(r"\{[^{}]*\}\s*=\s*(?:await\s+)?$", amont):
                 sourds.append((ligne, vise, "la réponse est DÉCONSTRUITE : le corps n'est pas lié, et l'aveu part avec lui"))
             else:
                 sourds.append((ligne, vise, "la réponse n'est liée à aucun nom : rien ne peut en lire la cause"))
             continue
-        nom = lie.group(1)
+        nom = lie.group(1) if lie else par_tableau
         vu = bool(re.search(r"\b" + re.escape(nom) + r"\s*\.\s*error\b", corps))
         for lecteur in lecteurs:
             if re.search(r"\b" + re.escape(lecteur) + r"\s*\([^;]{0,160}?\b" + re.escape(nom) + r"\b", corps):
@@ -525,6 +792,46 @@ def sites_sourds_du_module(src, chemins):
         if not vu:
             sourds.append((ligne, vise, "`" + nom + ".error` n'est lu nulle part, et `" + nom + "` n'est passé à aucune fonction qui le lise"))
     return sites, sourds
+
+
+def temoins_de_la_derivation():
+    """LA DÉRIVATION PAR FORME SE VALIDE DANS LES DEUX SENS, sur un démon FABRIQUÉ. Sans ces témoins,
+    une écriture qui cesserait d'être reconnue rendrait une population plus PETITE — donc un vert plus
+    facile — sans que rien ne le dise."""
+    # (a) le dépouilleur Rust : le code est lu, le commentaire ne l'est PAS. C'est la faute d'instrument
+    #     du 2026-09-16, reproduite ici mot pour mot sur le site qui l'a révélée.
+    avec_commentaire = ('/// Extrait le booléen `enabled` OBLIGATOIRE du corps ({enabled:bool}).\n'
+                        'fn body_enabled(b: &Value) -> Result<bool, Response> { bad_req("x") }\n')
+    nu = sans_commentaires_rs(avec_commentaire)
+    assert "corps (" not in nu, "témoin : un commentaire Rust est encore lu comme du code — la dérivation accusera par une phrase française"
+    assert nu.count("\n") == avec_commentaire.count("\n"), "témoin : le dépouilleur Rust ne conserve plus la hauteur — les numéros de ligne mentiraient"
+    assert 'bad_req("x")' in nu, "témoin INVERSE : le dépouilleur mange du CODE"
+    assert '"//pas-un-commentaire"' in sans_commentaires_rs('let s = "//pas-un-commentaire";'), \
+        "témoin INVERSE : une barre double DANS une chaîne est prise pour un commentaire"
+    # (b) les trois écritures, et ce que chacune rend — sur un démon FABRIQUÉ, jamais sur l'arbre réel.
+    faux = {"faux.rs": sans_commentaires_rs(
+        'pub(crate) async fn a_ajoutee() -> Json<Value> { let mut c = json!({ "rows": [] }); c["error"] = json!("x"); Json(c) }\n'
+        'pub(crate) async fn b_inseree() -> Json<Value> { let mut o = serde_json::Map::new(); o.insert("error".into(), json!("x")); Json(Value::Object(o)) }\n'
+        'pub(crate) async fn c_nee() -> Json<Value> { Json(json!({ "rows": [], "error": "x" })) }\n'
+        'pub(crate) async fn d_cause_seule() -> Json<Value> { Json(json!({ "error": "réservé admin" })) }\n'
+        'pub(crate) async fn e_a_statut() -> Response { (StatusCode::BAD_REQUEST, Json(json!({ "rows": [], "error": "x" }))).into_response() }\n'
+        'pub(crate) async fn f_lecture(v: &Value) -> bool { v.get("error").is_none() }\n'
+        'pub(crate) fn g_valeur(n: i64) -> &\'static str { match n { 3 => "error", _ => "info" } }\n'
+        '// pub(crate) async fn h_commentee() -> Json<Value> { Json(json!({ "rows": [], "error": "x" })) }\n')}
+    sites, reste, inconnus = sites_d_aveu(faux)
+    par_forme = {f: sorted(n for _, _, n, g in sites if g == f) for f in ("ajoutée", "insérée", "née")}
+    assert par_forme["ajoutée"] == ["a_ajoutee"], f"témoin : la forme AJOUTÉE ne rend pas ce qu'elle doit — {par_forme}"
+    assert par_forme["insérée"] == ["b_inseree"], f"témoin : la forme INSÉRÉE ne rend pas ce qu'elle doit — {par_forme}"
+    assert par_forme["née"] == ["c_nee"], f"témoin : la forme NÉE ne rend pas ce qu'elle doit — {par_forme}"
+    assert reste == {("faux.rs", "d_cause_seule")}, f"témoin : le RESTE (corps à cause seule) n'est pas celui attendu — {reste}"
+    assert not inconnus, f"témoin INVERSE : une occurrence classable est rendue INCONNUE — {inconnus}"
+    # (c) l'INCONNU : une clé `error` posée hors d'un littéral `json!` est une QUATRIÈME écriture.
+    _, _, quatrieme = sites_d_aveu({"faux.rs": 'struct R { }\nconst T: &str = "x";\nfn z() { let m = maplit!{ "error": 1, "rows": 2 }; }\n'})
+    assert quatrieme, "témoin : une écriture de `error` hors `json!` passe INAPERÇUE — une forme neuve rendrait la garde muette"
+    # (d) le lecteur de la console : un tableau d'attentes déconstruit LIE chaque corps.
+    d = _noms_de_promise_all("const [sc, tp] = await Promise.all([api('/a'), api('/b')]);")
+    assert [n for _, _, n in d] == ["sc", "tp"], f"témoin : un `Promise.all` déconstruit ne lie plus ses corps — {d}"
+    assert not _noms_de_promise_all("const x = await api('/a');"), "témoin INVERSE : un appel simple est lu comme un tableau d'attentes"
 
 
 def temoins_de_la_jambe_b():
@@ -558,6 +865,9 @@ def temoins_de_la_jambe_b():
         ("function cause(r){ return r.error ? String(r.error) : ''; }\nasync function f(){ const d = await api('/alerts'); const c = cause(d); if (c) return bad(c); }", "lecture par une fonction du module"),
         ("async function f(){ const r = await fetch('/api/query', {}); const j = JSON.parse(await r.text()); u(j.rows); }", "un `fetch` nu : hors population, il ne rend pas un corps"),
         ("async function f(){ const j = await apiSend('/cases', 'POST', b); u(j.id); }", "une MÉTHODE hors population (`POST /api/cases` crée, il n'a pas de portillon)"),
+        ("async function f(){ const [sc, tp] = await Promise.all([api('/alerts'), api('/cases')]);\n"
+         " if (sc.error) return bad(sc.error); if (tp.error) return bad(tp.error); u(sc.rows); }",
+         "un tableau d'attentes DÉCONSTRUIT, dont chaque corps est lié et lu"),
         ("const d = await api('/cases/' + id); u(d.title);", "route HORS population (`/api/cases/{id}` n'a pas de portillon)"),
         ("const s = \"const d = await api('/alerts'); u(d.rows);\";", "la forme fautive écrite dans une CHAÎNE"),
         ("async function a(){ const r = await api('/alerts'); if (r.error) return bad(r.error); }\n"
@@ -577,13 +887,40 @@ def temoins_de_la_jambe_b():
 
 
 def jambe_b(modules):
-    """Rend `(sites, sourds_par_module)` ou lève le verdict d'un refus de conclure."""
+    """Rend `(chemins, sites, sourds_par_module, sites_demon)` ou lève le verdict d'un refus de conclure."""
+    temoins_de_la_derivation()
     temoins_de_la_jambe_b()
-    chemins, fonctions = chemins_a_portillon()
-    if len(chemins) < PLANCHER_CHEMINS_A_PORTILLON:
-        print("::error::" + str(len(chemins)) + " chemin(s) à portillon dérivés du démon (par " + str(len(fonctions))
-              + " fonction(s) passant par `" + POINT_UNIQUE + "`), plancher " + str(PLANCHER_CHEMINS_A_PORTILLON)
-              + " : la dérivation est cassée, la garde refuse de conclure.")
+    chemins, fonctions, sites_demon, reste, inconnus = chemins_a_aveu()
+    # (i) UNE QUATRIÈME ÉCRITURE EST UN FABRICANT QUE CETTE GARDE NE DÉRIVE PAS. Elle le NOMME et rougit :
+    # taire une forme neuve, c'est rendre un vert dont la population a rétréci sans que rien ne le dise.
+    if inconnus:
+        for nom, ligne, pourquoi in sorted(inconnus):
+            print("::error file=daemon/src/handlers/" + nom + ",line=" + str(ligne) + "::" + pourquoi
+                  + " — c'est une QUATRIÈME écriture d'aveu, qu'aucune des trois formes de cette garde ne "
+                    "dérive. Tant qu'elle n'y entre pas, les routes qu'elle sert sortent de la population "
+                    "et aucun site de la console n'est jugé sur elles. Ajouter la forme, ou passer par un "
+                    "constructeur qui en emprunte une.")
+        print("[" + ETIQUETTE + "] " + str(len(inconnus)) + " écriture(s) d'aveu non dérivée(s).")
+        sys.exit(1)
+    # (ii) LE RESTE ADMIS EST UN ENSEMBLE NOMMÉ, JUGÉ DANS LES DEUX SENS.
+    neuves, perimees = sorted(reste - CORPS_A_CAUSE_SEULE), sorted(CORPS_A_CAUSE_SEULE - reste)
+    if neuves or perimees:
+        for nom, fn in neuves:
+            print("::error file=daemon/src/handlers/" + nom + "::`" + fn + "` sert, en 200, un corps qui "
+                  "ne porte QUE `error` — sans forme de succès à imiter, donc hors de la population de "
+                  "cette garde. Ce choix ne se fait pas en silence : l'ajouter à `CORPS_A_CAUSE_SEULE`, ou "
+                  "lui donner la forme attendue du consommateur pour qu'il entre dans la population.")
+        for nom, fn in perimees:
+            print("::error file=daemon/src/handlers/" + nom + "::`" + fn + "` est nommée dans "
+                  "`CORPS_A_CAUSE_SEULE` et n'y sert plus aucun corps à cause seule : une exemption SANS "
+                  "OBJET. La retirer — un reste qu'on n'a pas relu est un reste qu'on ne mesure plus.")
+        print("[" + ETIQUETTE + "] reste admis : " + str(len(neuves)) + " entrée(s) neuve(s), "
+              + str(len(perimees)) + " sans objet.")
+        sys.exit(1)
+    if len(chemins) < PLANCHER_CHEMINS_A_AVEU:
+        print("::error::" + str(len(chemins)) + " chemin(s) à aveu dérivés du démon (par " + str(len(fonctions))
+              + " fonction(s) fabricante(s), " + str(len(sites_demon)) + " site(s)), plancher "
+              + str(PLANCHER_CHEMINS_A_AVEU) + " : la dérivation est cassée, la garde refuse de conclure.")
         sys.exit(2)
     total, sourds = 0, {}
     for nom in modules:
@@ -593,10 +930,10 @@ def jambe_b(modules):
         if s:
             sourds[nom] = s
     if total < PLANCHER_SITES_WEB:
-        print("::error::" + str(total) + " site(s) de web/ interrogent une route à portillon, plancher "
+        print("::error::" + str(total) + " site(s) de web/ interrogent une route à aveu, plancher "
               + str(PLANCHER_SITES_WEB) + " : la lecture des appels est cassée, la garde refuse de conclure.")
         sys.exit(2)
-    return chemins, total, sourds
+    return chemins, total, sourds, sites_demon
 
 def main():
     temoins_du_lecteur()        # le dépouilleur partagé, dans les deux sens
@@ -632,7 +969,7 @@ def main():
               f"{PLANCHER_CONDITIONS_D_ECHEC} : la lecture est cassée, la garde refuse de conclure.")
         sys.exit(2)
 
-    chemins, sites, sourds = jambe_b(modules)
+    chemins, sites, sourds, sites_demon = jambe_b(modules)
     regressions = []
     for nom, liste in sorted(sourds.items()):
         if len(liste) > PLAFOND_SOURDS.get(nom, 0):
@@ -640,11 +977,11 @@ def main():
     for nom, liste in regressions:
         for ligne, chemin, pourquoi in liste:
             print(f"::error file=web/{nom},line={ligne}::ce module interroge `{chemin}`, une route qui peut "
-                  f"REFUSER en rendant un corps 200 portant sa cause sous `error` (`P10.7-c`, point unique "
-                  f"`daemon/src/handlers/portillon.rs`) — et {pourquoi}. Le corps garde la forme attendue et "
-                  f"toutes ses clés VIDES : le refus se rendra donc comme une absence ÉTABLIE, c'est-à-dire "
-                  f"comme un fait. Lire la cause et la rendre TELLE QUELLE, par un test SÉPARÉ de celui du "
-                  f"vide — c'est ce que fait `daRenduDeReponse` dans web/dataaccess.js.")
+                  f"REFUSER en rendant un corps 200 portant sa cause sous `error` — et {pourquoi}. Le corps "
+                  f"garde la forme attendue et ses clés de données VIDES : le refus se rendra donc comme une "
+                  f"absence ÉTABLIE, c'est-à-dire comme un fait. Lire la cause et la rendre TELLE QUELLE, par "
+                  f"un test SÉPARÉ de celui du vide — c'est ce que fait `daRenduDeReponse` dans "
+                  f"web/dataaccess.js, et ce que le harnais ESM exige ensuite de la phrase rendue.")
     for fichier, ligne, texte in fautes:
         print(f"::error file={fichier},line={ligne}::une SEULE condition y décide qu'une lecture a "
               f"ÉCHOUÉ et qu'elle est VIDE : `{texte}`. Après elle, la distinction n'existe plus dans "
@@ -666,8 +1003,13 @@ def main():
                  for nom, plafond in PLAFOND_SOURDS.items() if plafond > len(sourds.get(nom, [])))
     print(f"[{ETIQUETTE}] JAMBE A — {len(modules)} modules web lus, {vues} conditions d'échec vues, AUCUNE "
           f"ne décide aussi du vide : un refus ne peut plus se rendre comme une absence par cette voie.")
-    print(f"[{ETIQUETTE}] JAMBE B — {len(chemins)} chemin(s) à portillon DÉRIVÉS du démon "
-          f"({', '.join(v + ' ' + c for c, v in chemins)}), {sites} site(s) de web/ les interrogent ; "
+    par_forme = {}
+    for _, _, _, forme in sites_demon:
+        par_forme[forme] = par_forme.get(forme, 0) + 1
+    print(f"[{ETIQUETTE}] JAMBE B — {len(sites_demon)} site(s) d'aveu du démon DÉRIVÉS par leur FORME "
+          f"({', '.join(f + ' ' + str(n) for f, n in sorted(par_forme.items()))} ; reste admis, nommé et "
+          f"rejugé : {len(CORPS_A_CAUSE_SEULE)} fonction(s) dont le corps ne porte QUE la cause), "
+          f"{len(chemins)} chemin(s) routés, {sites} site(s) de web/ les interrogent ; "
           + (f"{sum(n for _, n in restants)} site(s) encore SOURDS, tous sous leur plafond : "
              + ', '.join(f'{n} {c}' for n, c in restants) if restants
              else "aucun site sourd") + ".")
@@ -675,11 +1017,13 @@ def main():
         print(f"[{ETIQUETTE}] JEU DU CLIQUET : {len(jeu)} plafond(s) au-dessus de leur relevé du jour "
               f"({', '.join(f'{n} +{c}' for n, c in jeu)}) — un cliquet REFUSE une hausse, il ne force pas "
               f"une descente ; le faire descendre au relevé est le seul mouvement qui ne se discute pas.")
-    print(f"[{ETIQUETTE}] CE QUE CETTE GARDE NE TIENT PAS : la phrase rendue ensuite (harnais ESM, témoin 16) "
-          f"— lire la cause et la taire resterait vert ici ; un `.catch()` qui rendrait une absence, un "
-          f"gestionnaire de rejet n'étant pas une condition ; et les échecs POSTÉRIEURS au portillon, qui "
-          f"rendent encore des corps vides NUS côté démon (`P10.7-e`) et qu'aucun consommateur ne peut donc "
-          f"distinguer d'une absence, quelque soin qu'il y mette.")
+    print(f"[{ETIQUETTE}] CE QUE CETTE GARDE NE TIENT PAS : la phrase rendue ensuite (harnais ESM, témoins 16 "
+          f"et 92 à 98) — lire la cause et la taire resterait vert ici ; un `.catch()` qui rendrait une "
+          f"absence, un gestionnaire de rejet n'étant pas une condition ; les corps servis en 200 qui ne "
+          f"portent QUE la cause, sans forme de succès à imiter (le reste NOMMÉ, jugé dans les deux sens) ; "
+          f"les appels `fetch` NUS, qui rendent une réponse et non un corps ; et les échecs qui rendent "
+          f"encore des corps vides NUS côté démon (`P10.7-e`), qu'aucun consommateur ne peut distinguer "
+          f"d'une absence, quelque soin qu'il y mette.")
 
 
 if __name__ == "__main__":

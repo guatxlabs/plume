@@ -29,6 +29,20 @@ function actionsCell(onTest, onEdit, onDel) {
 async function loadCorrelations() {
   const host = $('#detadv-corr-list'); if (!host) return;
   const d = await fetchInto(host, '/correlations'); if (!d) return;
+  // `P10.20-a` — DES CORRÉLATIONS NON LUES NE SONT PAS « AUCUNE CORRÉLATION ». `correlations_list`
+  // (daemon/src/handlers/detection_advanced.rs) sert, en 200, `{correlations: null, error: <cause>,
+  // lecture_non_faite: true}` quand la lecture échoue EN BLOC ; `api()` ne jette que sur `!r.ok`, et le
+  // repli `Array.isArray(...) ? ... : []` transformait exactement cet aveu en liste vide. Le texte de vide
+  // rendu plus bas invite alors à « créer une séquence » sur un moteur de corrélation dont personne ne sait
+  // s'il en porte déjà : la cause SERVIE est écrite à la place, et aucune ligne n'est peinte sous elle.
+  if (d.error) {
+    const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:0;font-size:12px';
+    const dit = document.createElement('span');
+    dit.textContent = 'Corrélations NON LUES : le démon a refusé et en nomme la cause —';
+    aveu.append(dit, ' « ' + String(d.error).trim() + ' »');
+    host.replaceChildren(aveu);
+    return;
+  }
   const rows = (d && Array.isArray(d.correlations)) ? d.correlations : [];
   const nowS = Math.floor(Date.now() / 1000);
   pagedList(host, {

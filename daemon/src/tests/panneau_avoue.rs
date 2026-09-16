@@ -730,7 +730,8 @@
             let did: i64 = conn.query_row("SELECT dashboard_id FROM panel WHERE id=?1", params![panel_id], |r| r.get(0)).unwrap();
             // LE SIXIÈME POINT D'EXÉCUTION, par sa condition RÉELLE : une capture d'instantané.
             let vide = guatx_core::soql::FieldMaskSet::new();
-            let data = capture_dashboard_data(&dbp, &conn, &pa_conf(), did, "D", 0, 0, None, &vide, &PorteeLecture::Proprietaire);
+            let data = capture_dashboard_data(&dbp, &conn, &pa_conf(), did, "D", 0, 0, None, &vide, &PorteeLecture::Proprietaire)
+                .expect("`P10.7-f` : la capture rend un `Result` — ici elle aboutit, et le test mesure l'aveu de panneau");
             let token = gen_snapshot_token().expect("entropie /dev/urandom dispo en test");
             conn.execute(
                 "INSERT INTO dashboard_snapshot(token,name,dashboard_id,data,created,created_by,role_at_capture) \

@@ -112,11 +112,37 @@ de l'ensemble, porte sa ligne illisible dans `manque` : la route ne rend plus `2
 au-dessus d'un dossier qu'elle n'a pas su lire. La garde rend désormais TRENTE-CINQ sites sur VINGT
 fichiers, trente-deux défauts connus — tous de rang quatre.
 
-LES PLANCHERS SE RELISENT, AVEC LEUR DATE (2026-09-16, après le rang trois). Ils valaient 40/20, dérivés
-du relevé du matin (58 sites sur 31 fichiers, soit 69 % et 65 %) ; l'arbre porte maintenant 35 sites sur
-20 fichiers pour de VRAIES corrections, et un plancher laissé à 40 rendrait la garde rouge sur le dépôt
-qu'elle vient d'aider à guérir. Ils sont re-dérivés du relevé DU JOUR par la même règle — 69 % de 35 = 24,
-65 % de 20 = 13 —, ils ne montent jamais, et ils se reliront de la même façon à la prochaine descente.
+RELEVÉ APRÈS LA VAGUE A DU RANG QUATRE (2026-09-16, lot suivant) : treize accusations de rang quatre
+tombent sur SIX fonctions de CONTENU ET DE MODÈLES. Trois listes servies avouent sous la forme du dépôt
+(`liste_bornee::corps_de_liste_illisible` : la clé existe, VIDE, et `error` nomme la cause) — le
+sélecteur de vues (`views_list`), les panneaux d'un tableau de bord (`dash_get`, qui PANIQUAIT sur deux
+`unwrap()` et dont le solde en bloc précède désormais le filtre de portée, pour qu'un échec de ligne ne
+puisse pas se cacher derrière « ce panneau était privé ») et la liste des datasets (`datasets_list`).
+Deux corps portent PLUSIEURS listes — SIX familles de savoir (`knowledge_list`) et les TROIS étages de
+l'arbre de modèles (`datamodels_list`) — et l'aveu y NOMME la lecture ratée
+(`liste_bornee::corps_de_listes_illisibles` : `non_lus` porte les clés concernées, chacune présente et
+vide, les autres restant servies), parce qu'un `error` global y suspecterait cinq familles honnêtes avec
+la sixième ; c'est la forme que `case_metrics_json` (`non_etablis`) et `freshness.rs` (`non_lus`)
+emploient déjà. Le SEUL site du lot qui REFUSE au lieu d'avouer dans son corps est la CAPTURE
+d'instantané (`capture_dashboard_data`, qui rend désormais un `rusqlite::Result`) : son produit n'est pas
+une page relue en ligne mais un artefact FIGÉ dans `dashboard_snapshot.data` et partageable par jeton à
+des tiers — un aveu embarqué y serait relu par quelqu'un qui ne peut plus rien recouper, donc
+`snapshot_create` rend un cinq cent trois nommé et n'écrit RIEN. La garde rend désormais VINGT-DEUX sites
+sur DIX-SEPT fichiers, dix-neuf défauts connus, tous de rang quatre.
+
+LES PLANCHERS SE RELISENT, AVEC LEUR DATE (2026-09-16, après la vague A du rang quatre). Ils valaient
+24/13 après le rang trois, re-dérivés alors du relevé de ce jour-là (35 sites sur 20 fichiers) ; l'arbre
+porte maintenant 22 sites sur 17 fichiers pour de VRAIES corrections, et un plancher laissé à 24 rougirait
+sur le dépôt que cette garde vient d'aider à guérir. La MÊME règle des deux tiers est réappliquée au relevé
+DU JOUR : 69 % de 22 = 15, 65 % de 17 = 11. Ils ne montent jamais, et le filet de l'ensemble nommé jugé
+dans les deux sens reste, lui, insensible au volume.
+
+CE QUE LA RELECTURE DES PLANCHERS VALAIT APRÈS LE RANG TROIS, GARDÉ POUR QUE LA RÈGLE SE VÉRIFIE SUR DEUX
+PASSAGES. Ils valaient alors 40/20, dérivés du relevé du matin (58 sites sur 31 fichiers, soit 69 % et
+65 %) ; l'arbre portait 35 sites sur 20 fichiers pour de VRAIES corrections, et un plancher laissé à 40
+aurait rendu la garde rouge sur le dépôt qu'elle venait d'aider à guérir. Ils ont été re-dérivés du relevé
+de ce jour-là par la même règle — 69 % de 35 = 24, 65 % de 20 = 13 —, ils ne montent jamais, et ils se
+relisent de la même façon à chaque descente.
 Ce n'est pas le seul filet : une découverte PARTIELLEMENT aveugle est déjà prise par le jugement de
 l'ensemble nommé dans les deux sens (chaque site qui cesse d'être vu sans que son entrée soit retirée
 devient une « exemption sans objet », rouge). Le plancher ne couvre que le cas où la découverte s'effondre
@@ -196,21 +222,23 @@ ECRITURES = {
 # la plus SPÉCIFIQUE gagne, et le site n'est jamais compté deux fois.
 RANG_ECRITURE = {"i": 0, "ii": 1, "iv": 2, "iii": 3}
 
-# --- PLANCHER DE NON-DÉGÉNÉRESCENCE (relu le 2026-09-16, après le rang trois) ---------------------
+# --- PLANCHER DE NON-DÉGÉNÉRESCENCE (relu le 2026-09-16, après la vague A du rang quatre) ---------
 # Ils ne réclament PAS un volume de code : ils constatent qu'une LECTURE est cassée. Sous eux, rendre
 # vert serait rendre vert en étant aveugle, et c'est le défaut que cette garde nomme, appliqué à
 # elle-même : la découverte est cassée, pas le dépôt guéri.
 #
 # PREMIÈRE ÉCRITURE (relevé du matin, 2026-09-16) : 58 sites sur 31 fichiers -> 40/20, soit 69 % et
-# 65 %. RELECTURE (même jour, après les rangs un, deux et trois) : l'arbre porte 35 sites sur 20
-# fichiers pour de VRAIES corrections — 23 entrées retirées de l'ensemble nommé, aucune amnistiée — et
-# un plancher laissé à 40 rougirait sur le dépôt que cette garde vient d'aider à guérir. La MÊME règle
-# est réappliquée au relevé DU JOUR : 69 % de 35 = 24, 65 % de 20 = 13. Les planchers ne montent
-# jamais ; à la prochaine descente pour de vraies corrections, ils se reliront de la même façon, avec
-# leur date. Et ils ne sont pas le seul filet : une découverte PARTIELLEMENT aveugle est prise par le
-# jugement de l'ensemble nommé (un site qui cesse d'être vu devient une « exemption sans objet »).
-PLANCHER_SITES = 24
-PLANCHER_FICHIERS = 13
+# 65 %. PREMIÈRE RELECTURE (même jour, après les rangs un, deux et trois) : 35 sites sur 20 fichiers
+# -> 24/13, par la même règle. SECONDE RELECTURE (même jour, après la VAGUE A du rang quatre) :
+# l'arbre porte 22 sites sur 17 fichiers pour de VRAIES corrections — 36 entrées retirées de l'ensemble
+# nommé depuis le matin, aucune amnistiée — et un plancher laissé à 24 rougirait sur le dépôt que cette
+# garde vient d'aider à guérir. La MÊME règle est réappliquée au relevé DU JOUR : 69 % de 22 = 15,
+# 65 % de 17 = 11. Les planchers ne montent jamais ; à la prochaine descente pour de vraies
+# corrections, ils se reliront de la même façon, avec leur date. Et ils ne sont pas le seul filet : une
+# découverte PARTIELLEMENT aveugle est prise par le jugement de l'ensemble nommé (un site qui cesse
+# d'être vu devient une « exemption sans objet »), et ce filet-là, lui, ne dépend d'aucun volume.
+PLANCHER_SITES = 15
+PLANCHER_FICHIERS = 11
 
 # ================================================================================================
 # L'ENSEMBLE NOMMÉ — TROIS CLASSES, JUGÉES DANS LES DEUX SENS
@@ -318,14 +346,18 @@ DEFAUTS_RANG_3_COMPTES = {}
 # RANG 4 — LISTES DE CONFIGURATION ET DE CONTENU : la ligne avalée fait disparaître un objet d'une
 # liste que l'opérateur lit comme exhaustive. Moins grave que les trois rangs précédents, jamais
 # anodin : c'est sur ces listes qu'on conclut « ce n'est pas configuré ».
+#
+# VAGUE A CLOSE LE 2026-09-16 — TREIZE ACCUSATIONS, SIX FONCTIONS, QUATRE FICHIERS. Les entrées de
+# `capture_dashboard_data`, `dash_get`, `views_list`, `knowledge_list` (SIX lectures), `datamodels_list`
+# (TROIS) et `datasets_list` sont RETIRÉES parce que leurs sites sont corrigés, pas amnistiés. Trois
+# listes servies soldent leur parcours en bloc et avouent par `liste_bornee::corps_de_liste_illisible` ;
+# les DEUX corps qui portent plusieurs listes avouent PAR LECTURE — `corps_de_listes_illisibles` pose
+# `non_lus` avec le NOM des familles non lues, chacune présente et vide, les autres restant servies,
+# parce qu'un aveu qui couvre tout ne couvre rien. La capture d'instantané, elle, REFUSE : elle rend un
+# `rusqlite::Result` et `snapshot_create` répond 503 sans rien écrire, parce que son produit est FIGÉ et
+# PARTAGEABLE PAR JETON — un aveu embarqué dans l'artefact serait relu par un tiers qui ne peut plus
+# rien recouper. Reste la VAGUE B : les dix-neuf entrées ci-dessous.
 DEFAUTS_RANG_4_CONFIGURATION = {
-    # Les panneaux capturés pour l'ergonomie du tableau de bord : un panneau avalé ne sera pas rendu.
-    ("daemon/src/handlers/dash_ergonomics.rs", "capture_dashboard_data"): 1,
-    # Le tableau de bord SERVI : un panneau dont la ligne ne se décode pas disparaît de la page, et
-    # la page a l'air complète. Geste : solder en bloc, poser `error` dans le corps déjà construit.
-    ("daemon/src/handlers/dashboards.rs", "dash_get"): 1,
-    # La liste des vues : une vue avalée disparaît du sélecteur.
-    ("daemon/src/handlers/dashboards.rs", "views_list"): 1,
     # Les liens d'un case : un lien avalé fait lire « ce case n'a pas ce lien ». Le corps est déjà
     # celui du fabricant borné (`liste_bornee::corps`) — la coupe s'y écrit sans changer de type.
     ("daemon/src/handlers/caseops.rs", "case_links_json"): 1,
@@ -341,11 +373,6 @@ DEFAUTS_RANG_4_CONFIGURATION = {
     ("daemon/src/handlers/ai.rs", "ai_providers_list"): 1,
     # La fiche d'un engagement : une ligne de portée avalée RÉTRÉCIT la portée affichée d'un pentest.
     ("daemon/src/handlers/engagement.rs", "engagement_get"): 1,
-    # TROIS lectures dans la même fonction (objets, champs, relations du modèle de données) : chacune
-    # peut rendre une liste courte, et le modèle se lit alors comme incomplet sans le dire.
-    ("daemon/src/handlers/datamodels.rs", "datamodels_list"): 3,
-    # La liste des datasets : un dataset avalé se lit « n'existe pas ».
-    ("daemon/src/handlers/datamodels.rs", "datasets_list"): 1,
     # Les rapports planifiés : un rapport avalé se lit « aucun rapport planifié » pour cette entrée.
     ("daemon/src/handlers/scheduled_reports.rs", "reports_list"): 1,
     # La tactique et la cible DOMINANTES d'un case sont dérivées d'un parcours aplati : une ligne
@@ -368,9 +395,6 @@ DEFAUTS_RANG_4_CONFIGURATION = {
     ("daemon/src/handlers/saved_queries.rs", "list_for_owner"): 1,
     # Les réglages d'une source : une ligne avalée se lit « ce réglage n'est pas posé ».
     ("daemon/src/handlers/sources.rs", "source_settings_get"): 1,
-    # SIX lectures dans la même fonction (les six familles de contenu de la base de connaissance) :
-    # six listes qui peuvent être courtes, servies dans le même corps, sans un mot.
-    ("daemon/src/handlers/knowledge.rs", "knowledge_list"): 6,
     # Les lookups : une table de correspondance avalée se lit « pas de lookup », et un enrichissement
     # qu'on croit absent est en fait invisible.
     ("daemon/src/handlers/users_lookups.rs", "lookups_list"): 1,

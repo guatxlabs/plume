@@ -225,24 +225,41 @@ pub(crate) async fn dash_get(State(st): State<AppState>, Extension(au): Extensio
     // elle n'est plus réécrite ici, et `build.rs` refuse de compiler toute réécriture ailleurs.
     // library_panel_id NULL (tout l'existant) -> retombe sur les colonnes du panneau -> JSON
     // byte-identique au mode 0 (+ `library_panel_id`:null).
-    let mut stmt = conn
+    // `P10.7-f` (rang 4) — LE TABLEAU DE BORD SERVI EST ENTIER OU AVOUÉ. Avant : DEUX `unwrap()` (table
+    // retirée -> panique, pas aveu) puis `.flatten()` entre la lecture et le filtre de portée — un panneau
+    // dont le mappeur échoue (cache de schéma du pool périmé rendant « no such table » au PREMIER pas,
+    // colonne de migration que la connexion qui sert ne voit pas encore, `viz` corrompue) DISPARAISSAIT
+    // de la page, et la page avait l'air complète : aucune clé ne changeait, aucun compte ne manquait. Un
+    // panneau absent d'un tableau de bord se lit « il n'a jamais été posé » — et c'est sur cette page que
+    // l'astreinte vérifie qu'un indicateur est bien surveillé. Soldé en bloc AVANT le filtre de portée :
+    // l'échec de ligne ne peut donc pas se cacher derrière « ce panneau était privé ». L'aveu est celui du
+    // dépôt (`corps_de_liste_illisible` : `panels` présente et VIDE, `error` nomme la cause) ; les
+    // métadonnées du dashboard sont conservées parce qu'elles viennent d'une AUTRE lecture, déjà faite.
+    let lues: rusqlite::Result<Vec<_>> = conn
         .prepare(&format!(
             "SELECT p.id,{t},{q},{s},{v},p.position,p.window_s,COALESCE(p.visibility,'shared'),COALESCE(p.query_private,0),COALESCE(p.cols,1),COALESCE(p.height,0),{d},p.library_panel_id \
              FROM {j} WHERE p.dashboard_id=?1 ORDER BY p.position,p.id",
             t = panneau_resolu::COL_TITRE, q = panneau_resolu::COL_QUERY, s = panneau_resolu::COL_IS_SOQL,
             v = panneau_resolu::COL_VIZ, d = panneau_resolu::COL_DRILL, j = panneau_resolu::JOINTURE,
         ))
-        .unwrap();
-    let panels: Vec<Value> = stmt
-        .query_map(params![id], |r| {
-            Ok((
-                r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)? != 0,
-                r.get::<_, String>(4)?, r.get::<_, i64>(5)?, r.get::<_, i64>(6)?, r.get::<_, String>(7)?, r.get::<_, i64>(8)? != 0,
-                r.get::<_, i64>(9)?, r.get::<_, i64>(10)?, r.get::<_, String>(11)?, r.get::<_, Option<i64>>(12)?,
-            ))
-        })
-        .unwrap()
-        .flatten()
+        .and_then(|mut stmt| {
+            stmt.query_map(params![id], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)? != 0,
+                    r.get::<_, String>(4)?, r.get::<_, i64>(5)?, r.get::<_, i64>(6)?, r.get::<_, String>(7)?, r.get::<_, i64>(8)? != 0,
+                    r.get::<_, i64>(9)?, r.get::<_, i64>(10)?, r.get::<_, String>(11)?, r.get::<_, Option<i64>>(12)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        });
+    let meta = json!({
+        "id": id, "name": name, "owner": owner, "visibility": vis, "view_id": view_id, "editable": editable,
+    });
+    let Ok(lignes) = lues else {
+        return Json(crate::handlers::liste_bornee::corps_de_liste_illisible(meta, "panels")).into_response();
+    };
+    let panels: Vec<Value> = lignes
+        .into_iter()
         .filter(|(_, _, _, _, _, _, _, pvis, _, _, _, _, _)| portee.voit(pvis)) // panneau privé -> proprio seulement
         .map(|(pid, title, query, is_soql, viz, position, window_s, pvis, qpriv, cols, height, drill, lib_id)| {
             let hide = qpriv && !owns; // requête privée masquée (et son drill)
@@ -255,11 +272,9 @@ pub(crate) async fn dash_get(State(st): State<AppState>, Extension(au): Extensio
             })
         })
         .collect();
-    Json(json!({
-        "id": id, "name": name, "owner": owner, "visibility": vis, "view_id": view_id, "editable": editable,
-        "panels": panels
-    }))
-    .into_response()
+    let mut corps = meta;
+    corps["panels"] = json!(panels);
+    Json(corps).into_response()
 }
 
 pub(crate) async fn dash_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> StatusCode {
@@ -1039,7 +1054,18 @@ async fn panel_data_masked_live(
 // ---------- vues (ensembles de dashboards) ----------
 pub(crate) async fn views_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
     crate::req_conn!(st, au, conn);
-    let mut stmt = conn
+    // #64 : autorité admin EFFECTIVE (rôle composable base=admin inclus) bindée en `?1` de visibilité.
+    let adm = if au.is_admin() { "admin" } else { "" };
+    // `P10.7-f` (rang 4) — LE SÉLECTEUR DE VUES EST ENTIER OU AVOUÉ. Avant : DEUX `unwrap()` (une table
+    // retirée sous les pieds du gestionnaire PANIQUAIT au lieu d'avouer) puis `rows.flatten().collect()`,
+    // qui jetait la ligne dont le mappeur échoue et servait le reste sous un corps rigoureusement
+    // identique à celui d'un sélecteur complet. Une vue avalée disparaît du menu déroulant, et la console
+    // s'en sert pour FILTRER la liste des dashboards : l'exploitant conclut « ce regroupement n'existe
+    // pas » et en refabrique un second, qui portera le même nom. Soldé en bloc ; sur échec, l'aveu prend
+    // la forme du dépôt (`corps_de_liste_illisible` : `views` présente et VIDE, `error` nomme la cause),
+    // `me` et `role` restant servis parce qu'ils ne DÉRIVENT PAS de cette lecture (ils viennent de
+    // l'identité de l'appelant, et les taire priverait la console de sa garde de partage).
+    let lues: rusqlite::Result<Vec<Value>> = conn
         .prepare(
             "SELECT id,name,COALESCE(owner,''),visibility,
                     (SELECT COUNT(*) FROM dashboard d WHERE d.view_id=view.id)
@@ -1047,19 +1073,23 @@ pub(crate) async fn views_list(State(st): State<AppState>, Extension(au): Extens
              WHERE ?1='admin' OR visibility='shared' OR owner=?2
              ORDER BY id",
         )
-        .unwrap();
-    // #64 : autorité admin EFFECTIVE (rôle composable base=admin inclus) bindée en `?1` de visibilité.
-    let adm = if au.is_admin() { "admin" } else { "" };
-    let rows = stmt
-        .query_map(params![adm, au.name], |r| {
-            Ok(json!({
-                "id": r.get::<_, i64>(0)?, "name": r.get::<_, String>(1)?,
-                "owner": r.get::<_, String>(2)?, "visibility": r.get::<_, String>(3)?,
-                "dashboards": r.get::<_, i64>(4)?
-            }))
-        })
-        .unwrap();
-    Json(json!({ "views": rows.flatten().collect::<Vec<_>>(), "me": au.name, "role": au.role }))
+        .and_then(|mut stmt| {
+            stmt.query_map(params![adm, au.name], |r| {
+                Ok(json!({
+                    "id": r.get::<_, i64>(0)?, "name": r.get::<_, String>(1)?,
+                    "owner": r.get::<_, String>(2)?, "visibility": r.get::<_, String>(3)?,
+                    "dashboards": r.get::<_, i64>(4)?
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        });
+    match lues {
+        Ok(rows) => Json(json!({ "views": rows, "me": au.name, "role": au.role })),
+        Err(_) => Json(crate::handlers::liste_bornee::corps_de_liste_illisible(
+            json!({ "me": au.name, "role": au.role }),
+            "views",
+        )),
+    }
 }
 
 pub(crate) async fn view_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Json<Value> {

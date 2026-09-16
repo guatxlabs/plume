@@ -31,42 +31,60 @@ fn dm_commit(conn: &Connection, outcome: rusqlite::Result<i64>, ok_val: Value) -
 // =================================================================================================
 // GET /api/datamodels — arbre complet (modèles -> objets -> champs). viewer+ (transparence).
 // =================================================================================================
+/// `P10.7-f` (rang 4) — LES TROIS ÉTAGES DE L'ARBRE SONT ENTIERS OU AVOUÉS, ET L'AVEU NOMME LEQUEL.
+/// Avant : TROIS `.map(|rows| rows.flatten().collect()).unwrap_or_default()` dans la même fonction,
+/// servis dans un seul corps. Les trois listes ne sont pas indépendantes — la console RECOMPOSE l'arbre
+/// en appariant `objects.model_id` puis `fields.object_id` —, si bien qu'un OBJET avalé emporte avec lui
+/// l'affichage de tous SES champs, pourtant lus : la vue se lit « ce modèle n'a pas cet objet », et
+/// l'éditeur en redéclare un second, homonyme. Un CHAMP avalé est pire que cosmétique : c'est sur les
+/// champs déclarés que le Pivot construit son allowlist, et l'opérateur conclut « ce champ n'est pas
+/// déclaré » alors qu'il l'est. Chaque lecture est soldée en bloc ; celle qui échoue est NOMMÉE
+/// (`non_lus`) et sa clé reste présente et VIDE, les autres restent servies. `field_types`,
+/// `stat_funcs` et `filter_ops` sont conservés : ce sont des constantes du code, pas des lectures.
 pub(crate) async fn datamodels_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Response {
     crate::req_conn!(st, au, conn);
-    let models: Vec<Value> = conn
+    let mut non_lus: Vec<&'static str> = Vec::new();
+    let mut servie = |nom: &'static str, lue: rusqlite::Result<Vec<Value>>| -> Vec<Value> {
+        match lue {
+            Ok(v) => v,
+            Err(_) => {
+                non_lus.push(nom);
+                Vec::new()
+            }
+        }
+    };
+    let models = servie("models", conn
         .prepare("SELECT id,name,title,description,category,enabled,managed,created,updated FROM data_model ORDER BY id")
         .and_then(|mut s| {
             s.query_map([], |r| {
                 Ok(json!({ "id": r.get::<_,i64>(0)?, "name": r.get::<_,String>(1)?, "title": r.get::<_,String>(2)?,
                     "description": r.get::<_,String>(3)?, "category": r.get::<_,String>(4)?, "enabled": r.get::<_,i64>(5)? != 0,
                     "managed": r.get::<_,i64>(6)?, "created": r.get::<_,i64>(7)?, "updated": r.get::<_,i64>(8)? }))
-            })
-            .map(|rows| rows.flatten().collect())
-        })
-        .unwrap_or_default();
-    let objects: Vec<Value> = conn
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        }));
+    let objects = servie("objects", conn
         .prepare("SELECT id,model_id,name,parent_id,constraint_soql,enabled,created,updated FROM data_model_object ORDER BY model_id, id")
         .and_then(|mut s| {
             s.query_map([], |r| {
                 Ok(json!({ "id": r.get::<_,i64>(0)?, "model_id": r.get::<_,i64>(1)?, "name": r.get::<_,String>(2)?,
                     "parent_id": r.get::<_,Option<i64>>(3)?, "constraint": r.get::<_,String>(4)?, "enabled": r.get::<_,i64>(5)? != 0,
                     "created": r.get::<_,i64>(6)?, "updated": r.get::<_,i64>(7)? }))
-            })
-            .map(|rows| rows.flatten().collect())
-        })
-        .unwrap_or_default();
-    let fields: Vec<Value> = conn
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        }));
+    let fields = servie("fields", conn
         .prepare("SELECT id,object_id,name,ftype,expr,created FROM data_model_field ORDER BY object_id, id")
         .and_then(|mut s| {
             s.query_map([], |r| {
                 Ok(json!({ "id": r.get::<_,i64>(0)?, "object_id": r.get::<_,i64>(1)?, "name": r.get::<_,String>(2)?,
                     "type": r.get::<_,String>(3)?, "expr": r.get::<_,String>(4)?, "created": r.get::<_,i64>(5)? }))
-            })
-            .map(|rows| rows.flatten().collect())
-        })
-        .unwrap_or_default();
-    Json(json!({ "models": models, "objects": objects, "fields": fields,
-        "field_types": DM_FIELD_TYPES, "stat_funcs": DM_STAT_FUNCS, "filter_ops": DM_FILTER_OPS })).into_response()
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        }));
+    let corps = json!({ "models": models, "objects": objects, "fields": fields,
+        "field_types": DM_FIELD_TYPES, "stat_funcs": DM_STAT_FUNCS, "filter_ops": DM_FILTER_OPS });
+    Json(crate::handlers::liste_bornee::corps_de_listes_illisibles(corps, &non_lus)).into_response()
 }
 
 // =================================================================================================
@@ -419,20 +437,28 @@ pub(crate) async fn pivot_run(State(st): State<AppState>, Extension(au): Extensi
 // =================================================================================================
 // DATASETS — résultats sauvegardés réutilisables (pivot enregistré / search enregistré)
 // =================================================================================================
+/// `P10.7-f` (rang 4) — LA LISTE DES DATASETS EST ENTIÈRE OU AVOUÉE. Avant : `.map(|rows|
+/// rows.flatten().collect()).unwrap_or_default()` — un dataset dont la ligne ne se décode pas
+/// disparaissait, et la console peint alors « aucun dataset — construisez un Pivot puis “Enregistrer
+/// comme dataset” » (`web/datamodels.js`, `emptyText`), c'est-à-dire l'invitation exacte à en
+/// refabriquer un qui portera le même nom et sera refusé par la contrainte d'unicité. Soldé en bloc ;
+/// sur échec, l'aveu du dépôt (`corps_de_liste_illisible` : `datasets` présente et VIDE, `error`).
 pub(crate) async fn datasets_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Response {
     crate::req_conn!(st, au, conn);
-    let items: Vec<Value> = conn
+    let lues: rusqlite::Result<Vec<Value>> = conn
         .prepare("SELECT id,name,kind,soql,object_id,spec,enabled,managed,created,updated FROM dataset ORDER BY id")
         .and_then(|mut s| {
             s.query_map([], |r| {
                 Ok(json!({ "id": r.get::<_,i64>(0)?, "name": r.get::<_,String>(1)?, "kind": r.get::<_,String>(2)?,
                     "soql": r.get::<_,String>(3)?, "object_id": r.get::<_,Option<i64>>(4)?, "spec": r.get::<_,String>(5)?,
                     "enabled": r.get::<_,i64>(6)? != 0, "managed": r.get::<_,i64>(7)?, "created": r.get::<_,i64>(8)?, "updated": r.get::<_,i64>(9)? }))
-            })
-            .map(|rows| rows.flatten().collect())
-        })
-        .unwrap_or_default();
-    Json(json!({ "datasets": items })).into_response()
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        });
+    match lues {
+        Ok(items) => Json(json!({ "datasets": items })).into_response(),
+        Err(_) => Json(crate::handlers::liste_bornee::corps_de_liste_illisible(json!({}), "datasets")).into_response(),
+    }
 }
 
 /// POST /api/datasets — enregistre un dataset. editor+.

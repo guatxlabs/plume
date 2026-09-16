@@ -429,7 +429,8 @@
         let vm = effective_masks(&path, "viewer", "default", None);
         assert!(!vm.is_empty(), "le viewer a un masque src_ip actif");
         let rconn = open_db(&path).unwrap();
-        let data = capture_dashboard_data(&path, &rconn, &HashMap::new(), did, "D", 0, 0, None, &vm, &PorteeLecture::Proprietaire);
+        let data = capture_dashboard_data(&path, &rconn, &HashMap::new(), did, "D", 0, 0, None, &vm, &PorteeLecture::Proprietaire)
+            .expect("`P10.7-f` : la capture rend un `Result` — ici la lecture des panneaux ABOUTIT, et ce test mesure les masques");
         let panels = data["panels"].as_array().unwrap();
         assert_eq!(panels.len(), 1, "1 panneau capturé");
         assert!(!panels[0]["rows"].as_array().unwrap().is_empty(), "le snapshot contient des lignes");
@@ -439,7 +440,8 @@
         assert!(!dump.contains("10.0.0.5") && !dump.contains("10.0.0.6"), "aucune IP en clair dans le snapshot viewer");
         // CONTRASTE ADMIN (rôle '' = seuil editor -> admin NON masqué) : IP en clair.
         let am = effective_masks(&path, "admin", "default", None);
-        let dadmin = serde_json::to_string(&capture_dashboard_data(&path, &rconn, &HashMap::new(), did, "D", 0, 0, None, &am, &PorteeLecture::Proprietaire)).unwrap();
+        let dadmin = serde_json::to_string(&capture_dashboard_data(&path, &rconn, &HashMap::new(), did, "D", 0, 0, None, &am, &PorteeLecture::Proprietaire)
+            .expect("`P10.7-f` : la capture aboutit ; le contraste mesuré est celui du RÔLE")).unwrap();
         assert!(dadmin.contains("10.0.0."), "admin (non masqué) -> IP en clair (le masquage dépend BIEN du rôle du créateur)");
 
         // TOKEN read-only : stockage + relecture PAR TOKEN renvoie les données FIGÉES & MASQUÉES (aucune re-exécution).
@@ -471,7 +473,8 @@
         }
         let empty = guatx_core::soql::FieldMaskSet::new();
         let rconn = open_db(&path).unwrap();
-        let data = capture_dashboard_data(&path, &rconn, &HashMap::new(), did, "D", 0, 0, None, &empty, &PorteeLecture::Proprietaire);
+        let data = capture_dashboard_data(&path, &rconn, &HashMap::new(), did, "D", 0, 0, None, &empty, &PorteeLecture::Proprietaire)
+            .expect("`P10.7-f` : la capture rend un `Result` — ici elle aboutit, et le test mesure l'absence de masque");
         let dump = serde_json::to_string(&data).unwrap();
         assert!(dump.contains("1.2.3.4"), "mode 0 (aucun masque) -> IP en clair dans le snapshot");
         assert!(!dump.contains("***"), "mode 0 -> aucun masquage fantôme");

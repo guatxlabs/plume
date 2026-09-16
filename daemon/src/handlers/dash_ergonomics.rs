@@ -290,26 +290,33 @@ pub(crate) fn gen_snapshot_token() -> Option<String> {
 /// discipline que `dashboards.rs` énonce en toutes lettres (« HORS LOCK : lecture config … AVANT de
 /// prendre le lock writer ») et que ce même lot invoque pour justifier son geste là-bas. L'appelant le
 /// fait donc AVANT de prendre le verrou, une seule fois, et le passe.
+///
+/// `P10.7-f` (rang 4) — UNE CAPTURE AMPUTÉE NE SE FIGE PLUS. Cette fonction rend un `rusqlite::Result`,
+/// et c'est le SEUL site du rang qui refuse au lieu d'avouer dans son corps : l'instantané n'est pas une
+/// page qu'on relit en ligne, c'est un ARTEFACT QUI VOYAGE — sérialisé dans `dashboard_snapshot.data`,
+/// partageable par jeton, relu des semaines plus tard par un TIERS hors de tout contexte. Un aveu posé
+/// dans le corps y serait figé avec lui et lu par quelqu'un qui n'a aucun moyen de refaire la lecture.
+/// Avant : une préparation ratée rendait `panels: []` — une capture VIDE présentée comme complète — et
+/// `.map(|it| it.flatten().collect()).unwrap_or_default()` faisait disparaître un panneau dont le
+/// mappeur échoue, sans un mot, dans un artefact que personne ne pourra plus recouper. `snapshot_create`
+/// REFUSE désormais la capture avec sa cause, et n'écrit RIEN : aucun instantané partiel n'est partagé.
 pub(crate) fn capture_dashboard_data(
     db_path: &str, conn: &Connection, conf: &HashMap<String, String>, dashboard_id: i64, dash_name: &str, from: i64, to: i64,
     env: Option<&str>, masks: &guatx_core::soql::FieldMaskSet, portee: &PorteeLecture,
-) -> Value {
+) -> rusqlite::Result<Value> {
     let mut panels_out: Vec<Value> = Vec::new();
-    let rows: Vec<(String, String, bool, String, String, String)> = {
-        let mut stmt = match conn.prepare(&format!(
+    let rows: Vec<(String, String, bool, String, String, String)> = conn
+        .prepare(&format!(
             "SELECT {t},{q},{s},{v},{d},COALESCE(p.visibility,'shared') FROM {j} WHERE p.dashboard_id=?1 ORDER BY p.position,p.id",
             t = panneau_resolu::COL_TITRE, q = panneau_resolu::COL_QUERY, s = panneau_resolu::COL_IS_SOQL,
             v = panneau_resolu::COL_VIZ, d = panneau_resolu::COL_DRILL, j = panneau_resolu::JOINTURE,
-        )) {
-            Ok(s) => s,
-            Err(_) => return json!({ "dashboard_id": dashboard_id, "name": dash_name, "captured_at": now(), "panels": [] }),
-        };
-        stmt.query_map(params![dashboard_id], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)? != 0, r.get::<_, String>(3)?, r.get::<_, String>(4)?, r.get::<_, String>(5)?))
-        })
-        .map(|it| it.flatten().collect())
-        .unwrap_or_default()
-    };
+        ))
+        .and_then(|mut stmt| {
+            stmt.query_map(params![dashboard_id], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)? != 0, r.get::<_, String>(3)?, r.get::<_, String>(4)?, r.get::<_, String>(5)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        })?;
     // P7.13-a — LA MÊME PORTÉE DE LECTURE QUE `dash_get`/`panel_access` : un panneau PRIVÉ d'un autre
     // propriétaire n'entre PAS dans la capture. MESURÉ AVANT (2026-08-03, `3256e4d`) : sur un dashboard
     // PARTAGÉ d'alice portant un panneau privé, un editor tiers avait `dash_get` -> `panels: []` et
@@ -351,7 +358,7 @@ pub(crate) fn capture_dashboard_data(
             Err(e) => panels_out.push(json!({ "title": title, "viz": viz, "error": e })),
         }
     }
-    json!({ "dashboard_id": dashboard_id, "name": dash_name, "captured_at": now(), "panels": panels_out })
+    Ok(json!({ "dashboard_id": dashboard_id, "name": dash_name, "captured_at": now(), "panels": panels_out }))
 }
 
 pub(crate) async fn snapshot_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
@@ -387,9 +394,24 @@ pub(crate) async fn snapshot_create(State(st): State<AppState>, Extension(au): E
     // HORS LOCK, ET UNE SEULE FOIS (`P10.5-i`) : `load_config()` fait un accès DISQUE non mémoïsé.
     // Le prendre SOUS le mutex writer bloquerait l'ingestion du tenant le temps d'une lecture de fichier.
     let conf = load_config();
-    let data = {
+    let capture = {
         crate::req_conn!(st, au, conn);
         capture_dashboard_data(&db_path, &conn, &conf, dashboard_id, &name, from, to, env, &masks, &portee)
+    };
+    // `P10.7-f` (rang 4) — UNE CAPTURE DONT UNE LECTURE A ÉCHOUÉ N'EST JAMAIS FIGÉE. La porte est ICI et
+    // pas dans le corps : ce que cette route écrit part vivre sa vie derrière un jeton de partage, et un
+    // `error` embarqué serait relu par un tiers qui ne peut plus rien recouper. Refuser en nommant la
+    // cause laisse la main à l'appelant — il peut réessayer —, et AUCUNE ligne n'entre dans
+    // `dashboard_snapshot` : pas de jeton, pas d'artefact partiel partageable.
+    let data = match capture {
+        Ok(v) => v,
+        Err(e) => {
+            return err_json(
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("instantané REFUSÉ : les panneaux de ce tableau de bord n'ont pas pu être lus ({e}) — \
+                         rien n'a été capturé ni partagé, car une capture amputée serait figée et partagée comme complète. RÉESSAYER"),
+            );
+        }
     };
     let payload = serde_json::to_string(&data).unwrap_or_else(|_| "{}".into());
     let token = match gen_snapshot_token() {

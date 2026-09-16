@@ -9,71 +9,92 @@ use crate::*;
 
 
 /// GET /api/knowledge — les 4 familles d'objets de savoir (viewer+). Rend la politique LISIBLE.
+///
+/// `P10.7-f` (rang 4) — LES SIX FAMILLES SONT ENTIÈRES OU AVOUÉES, ET L'AVEU NOMME LAQUELLE. Avant : SIX
+/// `.map(|rows| rows.flatten().collect()).unwrap_or_default()` dans la MÊME fonction, tous coulant dans
+/// un seul corps. Un objet de savoir avalé — parce que le cache de schéma du pool rend « no such table »
+/// au PREMIER pas (`flatten-avale-no-such-table-au-premier-pas`), parce qu'une migration a ajouté une
+/// colonne que la connexion qui sert ne voit pas encore, parce qu'une expression est corrompue — sortait
+/// de la liste sans un mot. C'est la page où l'on VÉRIFIE la politique : un alias absent s'y lit « ce
+/// champ n'est pas renommé » alors qu'il l'est pour TOUTE recherche du produit, un eventtype absent
+/// « cette catégorie n'existe pas », une macro absente « ce raccourci est libre » — et on en réécrit un
+/// second, qui entrera en conflit à l'insertion. Chaque lecture est soldée en bloc ; celles qui échouent
+/// sont NOMMÉES (`non_lus`) et leur clé reste présente et VIDE, les autres restent servies. Un `error`
+/// global qui ne dirait pas LAQUELLE ne couvrirait rien : cinq familles honnêtes seraient suspectées
+/// avec la sixième.
 pub(crate) async fn knowledge_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Response {
     crate::req_conn!(st, au, conn);
-    let aliases: Vec<Value> = conn
+    let mut non_lus: Vec<&'static str> = Vec::new();
+    // Une lecture ratée ne se traduit PAS en liste vide : elle entre dans `non_lus` et la clé de la
+    // famille reste vide — c'est `corps_de_listes_illisibles` qui pose l'aveu, une seule fois.
+    let mut servie = |nom: &'static str, lue: rusqlite::Result<Vec<Value>>| -> Vec<Value> {
+        match lue {
+            Ok(v) => v,
+            Err(_) => {
+                non_lus.push(nom);
+                Vec::new()
+            }
+        }
+    };
+    let aliases = servie("aliases", conn
         .prepare("SELECT id,canonical,source,enabled,managed,created,updated FROM knowledge_alias ORDER BY id")
         .and_then(|mut s| {
             s.query_map([], |r| {
                 Ok(json!({ "id": r.get::<_,i64>(0)?, "canonical": r.get::<_,String>(1)?, "source": r.get::<_,String>(2)?,
                     "enabled": r.get::<_,i64>(3)? != 0, "managed": r.get::<_,i64>(4)?, "created": r.get::<_,i64>(5)?, "updated": r.get::<_,i64>(6)? }))
-            })
-            .map(|rows| rows.flatten().collect())
-        })
-        .unwrap_or_default();
-    let calcs: Vec<Value> = conn
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        }));
+    let calcs = servie("calcs", conn
         .prepare("SELECT id,name,expr,enabled,ord,managed,created,updated FROM knowledge_calc ORDER BY ord, id")
         .and_then(|mut s| {
             s.query_map([], |r| {
                 Ok(json!({ "id": r.get::<_,i64>(0)?, "name": r.get::<_,String>(1)?, "expr": r.get::<_,String>(2)?,
                     "enabled": r.get::<_,i64>(3)? != 0, "ord": r.get::<_,i64>(4)?, "managed": r.get::<_,i64>(5)?, "created": r.get::<_,i64>(6)?, "updated": r.get::<_,i64>(7)? }))
-            })
-            .map(|rows| rows.flatten().collect())
-        })
-        .unwrap_or_default();
-    let eventtypes: Vec<Value> = conn
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        }));
+    let eventtypes = servie("eventtypes", conn
         .prepare("SELECT id,name,filter,enabled,managed,created,updated FROM knowledge_eventtype ORDER BY id")
         .and_then(|mut s| {
             s.query_map([], |r| {
                 Ok(json!({ "id": r.get::<_,i64>(0)?, "name": r.get::<_,String>(1)?, "filter": r.get::<_,String>(2)?,
                     "enabled": r.get::<_,i64>(3)? != 0, "managed": r.get::<_,i64>(4)?, "created": r.get::<_,i64>(5)?, "updated": r.get::<_,i64>(6)? }))
-            })
-            .map(|rows| rows.flatten().collect())
-        })
-        .unwrap_or_default();
-    let tags: Vec<Value> = conn
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        }));
+    let tags = servie("tags", conn
         .prepare("SELECT id,label,field,value,enabled,managed,created,updated FROM knowledge_tag ORDER BY label, id")
         .and_then(|mut s| {
             s.query_map([], |r| {
                 Ok(json!({ "id": r.get::<_,i64>(0)?, "label": r.get::<_,String>(1)?, "field": r.get::<_,String>(2)?, "value": r.get::<_,String>(3)?,
                     "enabled": r.get::<_,i64>(4)? != 0, "managed": r.get::<_,i64>(5)?, "created": r.get::<_,i64>(6)?, "updated": r.get::<_,i64>(7)? }))
-            })
-            .map(|rows| rows.flatten().collect())
-        })
-        .unwrap_or_default();
-    // #60 — MACROS + AUTO-LOOKUPS (FAIL-SAFE : tables absentes sur base pré-v97 -> listes vides).
-    let macros: Vec<Value> = conn
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        }));
+    // #60 — MACROS + AUTO-LOOKUPS. LE REPLI « base pré-v97 » EST CONSERVÉ MAIS IL N'EST PLUS MUET : une
+    // table absente reste une lecture qui n'a pas eu lieu, et le corps le dit au lieu de servir `[]`.
+    let macros = servie("macros", conn
         .prepare("SELECT id,name,params,body,enabled,managed,created,updated FROM macro_def ORDER BY name")
         .and_then(|mut s| {
             s.query_map([], |r| {
                 Ok(json!({ "id": r.get::<_,i64>(0)?, "name": r.get::<_,String>(1)?, "params": r.get::<_,String>(2)?, "body": r.get::<_,String>(3)?,
                     "enabled": r.get::<_,i64>(4)? != 0, "managed": r.get::<_,i64>(5)?, "created": r.get::<_,i64>(6)?, "updated": r.get::<_,i64>(7)? }))
-            })
-            .map(|rows| rows.flatten().collect())
-        })
-        .unwrap_or_default();
-    let auto_lookups: Vec<Value> = conn
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        }));
+    let auto_lookups = servie("auto_lookups", conn
         .prepare("SELECT id,name,key_field,out_cols,kind,enabled,managed,created,updated FROM auto_lookup ORDER BY id")
         .and_then(|mut s| {
             s.query_map([], |r| {
                 Ok(json!({ "id": r.get::<_,i64>(0)?, "name": r.get::<_,String>(1)?, "key_field": r.get::<_,String>(2)?, "out_cols": r.get::<_,String>(3)?,
                     "kind": r.get::<_,String>(4)?, "enabled": r.get::<_,i64>(5)? != 0, "managed": r.get::<_,i64>(6)?, "created": r.get::<_,i64>(7)?, "updated": r.get::<_,i64>(8)? }))
-            })
-            .map(|rows| rows.flatten().collect())
-        })
-        .unwrap_or_default();
-    Json(json!({ "aliases": aliases, "calcs": calcs, "eventtypes": eventtypes, "tags": tags,
-        "macros": macros, "auto_lookups": auto_lookups })).into_response()
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        }));
+    let corps = json!({ "aliases": aliases, "calcs": calcs, "eventtypes": eventtypes, "tags": tags,
+        "macros": macros, "auto_lookups": auto_lookups });
+    Json(crate::handlers::liste_bornee::corps_de_listes_illisibles(corps, &non_lus)).into_response()
 }
 
 /// Émet la réponse d'un create/delete audité + `knowledge_reload`. Factorise le squelette transactionnel.

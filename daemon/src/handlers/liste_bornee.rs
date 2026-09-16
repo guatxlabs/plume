@@ -164,6 +164,31 @@ pub(crate) fn corps_de_liste_illisible(mut corps: Value, cle: &str) -> Value {
     corps
 }
 
+/// LE CORPS QUI PORTE PLUSIEURS LISTES ET N'EN A PAS LU TOUTES (`P10.7-f`, rang 4). Deux routes servent
+/// SIX et TROIS listes dans un seul corps (`knowledge_list`, `datamodels_list`) : un `error` global y
+/// dirait « quelque chose n'a pas été lu » sans dire QUOI, et un aveu qui couvre tout ne couvre rien —
+/// le lecteur ne saurait pas laquelle de ses six familles est vide POUR DE BON. `non_lues` NOMME donc
+/// les lectures ratées, exactement comme `non_etablis` (`case_metrics_json`) et `non_lus`
+/// (`freshness.rs`, `fleet.rs`) le font déjà pour des comptes et des enrichissements.
+///
+/// La forme du corps est conservée : chaque clé nommée EXISTE et est VIDE (un client qui lit
+/// `j.<cle>.length` continue de fonctionner), `non_lus` porte leurs noms, et `error` s'ouvre sur
+/// `CAUSE_LISTE_ILLISIBLE` — la MÊME phrase que la porte à une seule liste, pour qu'un consommateur qui
+/// teste la cause la trouve ici aussi. Quand AUCUNE lecture n'a échoué, le corps ressort
+/// BYTE-IDENTIQUE : ni `error` ni `non_lus` n'apparaissent, et un aveu inconditionnel — qui ne
+/// vaudrait rien — est structurellement impossible.
+pub(crate) fn corps_de_listes_illisibles(mut corps: Value, non_lues: &[&'static str]) -> Value {
+    if non_lues.is_empty() {
+        return corps;
+    }
+    for cle in non_lues {
+        corps[*cle] = json!([]);
+    }
+    corps["non_lus"] = json!(non_lues);
+    corps["error"] = json!(format!("{CAUSE_LISTE_ILLISIBLE} Listes NON LUES : {}.", non_lues.join(", ")));
+    corps
+}
+
 pub(crate) fn corps(cle: &str, lignes: Lignes, borne: i64, total: TotalBorne) -> Value {
     let (total_json, capped_json) = total.en_json();
     let (rows, illisible) = match lignes {

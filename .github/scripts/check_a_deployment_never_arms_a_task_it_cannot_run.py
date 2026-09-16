@@ -55,6 +55,42 @@ CE QUE CETTE GARDE NE PROUVE PAS, ET C'EST ÉCRIT PLUTÔT QUE SOUS-ENTENDU
     valeur par DÉFAUT d'une substitution `${VAR:-…}`. C'est le bon niveau : un manifeste qui ne
     fonctionne qu'avec un fichier non livré doit le dire, pas le supposer.
 
+LE DÉPOUILLEUR RUST EST CELUI DU DÉPÔT, PLUS UN HOMONYME (`P10.20-e`, mesuré le 2026-09-16)
+------------------------------------------------------------------------------------------
+Cette garde portait son PROPRE lecteur de commentaires Rust — `sans_commentaire_rust`, contrat par
+LIGNE, bascule d'état sur chaque guillemet — que la garde sœur `P7.20-d` lui IMPORTAIT. Il portait la
+famille de défaut que `P10.20-c` et `P10.20-d` ont fermée dans le lecteur partagé, et DEUX FORMES DE
+PLUS — les quatre, dans l'ordre :
+  * un littéral de caractère guillemet (`let sep = '"';`) ouvrait une FAUSSE chaîne : le `//` qui
+    suivait n'était plus un commentaire et la ligne était rendue ENTIÈRE, directive commentée comprise.
+    LATENT : aucune des 57 lignes de `daemon/src` qui portent un `'"'` n'est suivie d'un commentaire
+    (mesuré à zéro le 2026-09-16) ;
+  * une chaîne brute `r#"… " …"#` était lue comme une chaîne ordinaire, et un guillemet posé dedans la
+    fermait trop tôt ;
+  * un commentaire de BLOC `/* … */` n'était PAS retiré du tout — il était lu comme du code ;
+  * une chaîne Rust qui FRANCHIT une fin de ligne était oubliée à chaque nouvelle ligne, si bien qu'un
+    `//` posé dans son contenu (une URL) COUPAIT la ligne : du code mangé, sans un mot.
+Les deux dernières ne sont pas latentes — elles mordent 6 lignes de 4 corps de `daemon/src`
+aujourd'hui, sans déplacer aucun verdict parce qu'aucune ne porte un gate, un refus ni une constante.
+
+LA QUESTION QUE `P10.20-e` POSAIT, TRANCHÉE PAR LA MESURE : le contrat PAR LIGNE n'était pas une
+propriété exploitée, c'était un ACCIDENT. Aucune des cinq lectures qui appelaient l'homonyme (trois
+ici, deux dans `P7.20-d`) n'apparie des lignes une à une ni ne rend un numéro de ligne : quatre
+rejoignent immédiatement les lignes en un seul texte pour y chercher un motif, la cinquième
+(`gates_du_corps`) travaille sur une FENÊTRE de six lignes — ce qui n'exige pas un dépouillement par
+ligne, mais seulement qu'il PRÉSERVE LA HAUTEUR. `sans_commentaires_rust` la préserve (un commentaire
+de bloc devient des blancs de même hauteur), et c'est VÉRIFIÉ, pas supposé : sur les 168 fichiers de
+production, aucun ne change de hauteur, et un témoin l'exige ici à chaque exécution. Il n'y a donc plus
+qu'un lecteur Rust sous cette garde et sous sa sœur.
+
+CE QUE LE RALLIEMENT N'APPORTE PAS, ET C'EST ÉCRIT : le corps des MACROS, les apostrophes d'ATTRIBUT et
+le code GÉNÉRÉ restent hors grammaire (dit en tête de `sans_commentaires_rust`) ; un gate écrit DANS
+une chaîne reste lu comme du code, car le dépouilleur rend les chaînes telles quelles au lieu de les
+aveugler ; et DEUX autres gardes du dépôt gardent chacune un dépouilleur Rust par ligne encore plus
+sommaire — `check_no_test_mutates_the_process_env_unlocked` coupe au premier `//` de la ligne,
+`check_retention_declare_ce_quelle_purge` par une substitution `//.*$` — toutes deux hors du périmètre
+de cette clé, qui ne porte que l'homonyme partagé par ces deux gardes-ci.
+
 L'INSTRUMENT SE VALIDE AVANT DE RENDRE UN VERDICT
 -------------------------------------------------
 Chaque lecture (gate, refus, manifeste, équivalence) est exercée DANS LES DEUX SENS sur un corpus de
@@ -71,6 +107,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from check_every_style_selector_has_a_target import (  # noqa: E402  (GESTES PARTAGÉS, source unique — `P11.8-m`, `P11.8-n`)
     parcours_des_sources, racine_designee)
+from check_every_help_trigger_has_a_section import (  # noqa: E402  (LE LECTEUR RUST DU DÉPÔT — `P10.20-e`)
+    refuser_sur_aveu, sans_commentaires_rust, temoins_du_lecteur)
 
 # ── LA RACINE EXAMINÉE — GESTE PARTAGÉ, PAS UNE QUATRIÈME COPIE (`P11.8-n`) ───────────────
 # LE DÉFAUT QUE CECI FERME, MESURÉ LE 2026-08-31. Cette garde ACCEPTAIT un argument — lui passer une
@@ -125,23 +163,6 @@ def refuse(msg):
 # LECTURES — chacune est une fonction PURE sur du texte, pour être exerçable dans les deux sens.
 # ================================================================================================
 
-def sans_commentaire_rust(ligne):
-    """Retire un `//` de fin de ligne hors chaîne. Une directive commentée n'est pas une directive."""
-    hors, echap, i = True, False, 0
-    while i < len(ligne):
-        c = ligne[i]
-        if echap:
-            echap = False
-        elif c == "\\":
-            echap = True
-        elif c == '"':
-            hors = not hors
-        elif hors and c == "/" and i + 1 < len(ligne) and ligne[i + 1] == "/":
-            return ligne[:i]
-        i += 1
-    return ligne
-
-
 def sans_commentaire_yaml(ligne):
     """Retire un `#` de fin de ligne hors chaîne (guillemets simples ou doubles)."""
     quote, i = None, 0
@@ -188,7 +209,7 @@ def appels_du_corps(corps, noms=None):
     """TOUS les appels de fonctions LIBRES d'un corps, en UNE passe (commentaires retirés). Le graphe
     d'appel est ainsi construit une fois pour toutes : le calculer par recherche de sous-chaîne à
     chaque itération du point fixe rend la garde inutilisable, donc contournée."""
-    code = "\n".join(sans_commentaire_rust(l) for l in corps.splitlines())
+    code = sans_commentaires_rust(corps)
     vus = {m.group(1) for m in APPEL_LIBRE.finditer(code)}
     return vus & noms if noms is not None else vus
 
@@ -199,7 +220,9 @@ GATE_LECTURE = re.compile(r"let\s+(\w+)\s*(?::[^=]+)?=\s*cfg\([^,]+,\s*\"(" + CL
 def gates_du_corps(corps):
     """LA FORME DU GATE : une variable lue par `cfg(…, "PLUME_X", "0")` dont la valeur 0 provoque un
     `return` immédiat. Rend les clés d'ARMEMENT trouvées dans ce corps."""
-    lignes = [sans_commentaire_rust(l) for l in corps.splitlines()]
+    # LA FENÊTRE DE SIX LIGNES EST TOUT CE QUE CETTE LECTURE DEMANDE À LA MISE EN PAGE, et le lecteur
+    # partagé PRÉSERVE LA HAUTEUR (`P10.20-e`) : un témoin l'exige avant tout verdict.
+    lignes = sans_commentaires_rust(corps).splitlines()
     trouves = []
     for i, l in enumerate(lignes):
         m = GATE_LECTURE.search(l)
@@ -221,7 +244,7 @@ REFUS_SI_VIDE = re.compile(r"\bif\s+([^\n{&|]*?\.is_empty\(\))\s*\{[^{}]*?return
 
 def preconditions_du_corps(corps):
     """Les clés `PLUME_*` NOMMÉES par un refus dont l'unique condition est une valeur VIDE."""
-    code = "\n".join(sans_commentaire_rust(l) for l in corps.splitlines())
+    code = sans_commentaires_rust(corps)
     cles = set()
     for rx in (REFUS_OPTION, REFUS_SI_VIDE):
         for m in rx.finditer(code):
@@ -359,6 +382,43 @@ def temoins_des_lectures():
     cls = equivalences(code)
     assert cls == [{"PLUME_DB_KEY_FILE", "PLUME_DB_KEY"}], f"témoin : la classe d'équivalence n'est pas dérivée ({cls})"
 
+    # --- LE DÉPOUILLEMENT (`P10.20-e`, 2026-09-16) ------------------------------------------------
+    # Les formes sur lesquelles l'homonyme par ligne se trompait, éprouvées À TRAVERS les lectures qui
+    # l'appelaient : c'est le verdict de la garde qui est tenu, pas seulement le texte rendu. Les cinq
+    # premiers ROUGISSENT si l'on remet l'homonyme ; les trois derniers sont de NON-RÉGRESSION et le
+    # disent — ils passaient déjà avec lui, et épinglent que le ralliement n'a pas rendu la lecture
+    # aveugle à ce qu'elle voyait juste.
+    litteral = '    let sep = \'"\'; // let x: u64 = cfg(&conf, "PLUME_FANTOME_INTERVAL", "0").parse().unwrap_or(0); if x == 0 { return; }\n'
+    assert gates_du_corps(litteral) == [], \
+        "témoin : après un littéral de caractère guillemet, le `//` qui suit n'est plus lu comme un commentaire"
+    refus_apres_litteral = '    let sep = \'"\'; // if d.is_empty() { return Err("PLUME_FANTOME_REQUISE requis".into()); }\n'
+    assert preconditions_du_corps(refus_apres_litteral) == set(), \
+        "témoin : après un littéral de caractère guillemet, un refus COMMENTÉ est lu comme une précondition"
+    brute = '    let m = r#"un " nu"#; // let x: u64 = cfg(&conf, "PLUME_BRUT_INTERVAL", "0").parse().unwrap_or(0); if x == 0 { return; }\n'
+    assert gates_du_corps(brute) == [], \
+        "témoin : après une chaîne brute portant un guillemet nu, le `//` qui suit n'est plus un commentaire"
+    bloc = '    /* provisoirement retiré :\n' \
+           '    let interval: u64 = cfg(&conf, "PLUME_BLOC_INTERVAL", "0").parse().unwrap_or(0);\n' \
+           '    if interval == 0 { return; }\n' \
+           '    */\n'
+    assert gates_du_corps(bloc) == [], "témoin : un gate écrit dans un commentaire de BLOC arme encore"
+    assert len(sans_commentaires_rust(bloc).splitlines()) == len(bloc.splitlines()), \
+        "témoin : le dépouillement ne préserve plus la HAUTEUR — la fenêtre de six lignes de `gates_du_corps` ne vaut plus"
+    multiligne = '    let aide = "voir\n' \
+                 '        https://exemple"; let interval: u64 = cfg(&conf, "PLUME_URL_INTERVAL", "0").parse().unwrap_or(0); if interval == 0 { return; }\n'
+    assert gates_du_corps(multiligne) == ["PLUME_URL_INTERVAL"], \
+        "témoin : un `//` d'URL dans une chaîne qui franchit la fin de ligne fait MANGER la fin de cette ligne"
+    vie = '    fn borne<\'a>(s: &\'a str) -> &\'a str { s }\n' \
+          '    let interval: u64 = cfg(&conf, "PLUME_VIE_INTERVAL", "0").parse().unwrap_or(0);\n' \
+          '    if interval == 0 { return; }\n'
+    assert gates_du_corps(vie) == ["PLUME_VIE_INTERVAL"], \
+        "témoin de NON-RÉGRESSION : une durée de vie `'a` n'ouvre rien, le gate qui la suit reste lu"
+    apres_brute = '    let m = r#"un " nu"#; let interval: u64 = cfg(&conf, "PLUME_SUITE_INTERVAL", "0").parse().unwrap_or(0); if interval == 0 { return; }\n'
+    assert gates_du_corps(apres_brute) == ["PLUME_SUITE_INTERVAL"], \
+        "témoin de NON-RÉGRESSION : une chaîne brute n'avale pas le gate qui la suit"
+    assert appelle('    let sep = \'"\'; scheduled_backup_cycle(a, b);', "scheduled_backup_cycle"), \
+        "témoin de NON-RÉGRESSION : un littéral de caractère n'avale pas l'appel qui le suit"
+
 
 # ================================================================================================
 def fichiers_rust(racine):
@@ -390,20 +450,38 @@ def main():
     RACINE = racine_designee(sys.argv if len(sys.argv) > 1 else [sys.argv[0], DEPOT_DE_CETTE_GARDE])
     SRC = os.path.join(RACINE, "daemon", "src")
 
+    temoins_du_lecteur()
     temoins_des_lectures()
 
     if not os.path.isdir(SRC):
         refuse(f"{SRC} introuvable — la dérivation est cassée, aucun verdict rendu")
 
-    # --- ① LA PRODUCTION, LUE UNE FOIS -----------------------------------------------------------
-    production, tout_le_code = [], []
+    # --- ① LA PRODUCTION, LUE ET DÉPOUILLÉE UNE FOIS ---------------------------------------------
+    # LE DÉPOUILLEMENT A LIEU ICI, où un NOM DE FICHIER existe : c'est ce qui permet à l'AVEU du lecteur
+    # d'être entendu plutôt que prononcé dans le vide (`P10.20-d`). Les unités et les tableaux de
+    # constantes sont donc dérivés du texte DÉPOUILLÉ : une `fn` ou une table `const` écrite dans un
+    # commentaire de bloc n'est plus une unité ni une classe d'équivalence. Mesuré le 2026-09-16 :
+    # 2391 unités et 2 classes des DEUX côtés — inerte sur cet arbre, pas sur celui qu'on écrira demain.
+    # Les lectures pures redépouillent leur fragment (le geste est IDEMPOTENT) : c'est ce qui les garde
+    # exerçables sur du texte BRUT, et c'est ce que prouvent leurs témoins « en COMMENTAIRE ».
+    production, tout_le_code, aveux = [], [], {}
     for f in fichiers_rust(SRC):
         # hors suites de tests : ce qui tourne en production est seul à armer et à refuser.
         if os.sep + "tests" + os.sep in f or os.path.basename(f) == "tests.rs":
             continue
-        src = open(f, encoding="utf-8").read()
+        texte = open(f, encoding="utf-8").read()
+        journal = []
+        src = sans_commentaires_rust(texte, journal)
+        if journal:
+            aveux[os.path.relpath(f, RACINE)] = [f"ligne {texte.count(chr(10), 0, o) + 1} : {m}"
+                                                 for m, o in journal]
         tout_le_code.append(src)
         production.extend(unites_rust(src))
+    if aveux:
+        # Un lecteur qui a ouvert un littéral qui n'en était pas un a AVALÉ du code : tout ce qu'il a
+        # lu depuis est faux, et un compte amputé rendu en vert est pire qu'une garde absente.
+        refuser_sur_aveu(ETIQUETTE, aveux, "Rust")
+        sys.exit(2)
     if len(production) < 200:
         refuse(f"{len(production)} unité(s) de production lues sous {SRC} : la découpe est cassée, la garde refuse de conclure")
 

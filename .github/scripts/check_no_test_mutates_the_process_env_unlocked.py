@@ -105,6 +105,63 @@ tout fichier atteint par un `mod` déclaré `#[cfg(test)]` (et les fichiers qu'i
 bloc `#[cfg(test)] mod … { … }` écrit dans un fichier de production. Un fichier de test créé demain
 entre par construction ; aucun nom n'est écrit ici.
 
+LE DÉPOUILLEUR RUST TIRE SA GRAMMAIRE DU LECTEUR DU DÉPÔT (`P10.20-h`, mesuré le 2026-09-16)
+---------------------------------------------------------------------------------------------
+Cette garde portait DEUX lecteurs de commentaires Rust. Le premier, `sans_commentaire(ligne)`, coupait
+une ligne au premier `//` — sans notion de chaîne, donc une adresse `"https://…"` aurait coupé la
+ligne. MESURE, ET ELLE RÉFUTE LE CONSTAT QUI OUVRAIT CETTE CLÉ : il n'était appelé que par `appelle()`,
+sur des corps DÉJÀ DÉPOUILLÉS — sur les 145 212 lignes de corps des 4 caisses, ZÉRO portait encore un
+`//`. C'était un geste MORT, pas un défaut mordant ; il est supprimé, et `appelle()` dit désormais que
+son entrée est du texte dépouillé.
+
+Le second, `depouiller_rust`, est le vrai lecteur de cette garde, et le constat ne le nommait pas. Il
+est complet (chaînes, chaînes brutes, littéraux de caractère, commentaires de bloc imbriqués) mais il
+était une QUATRIÈME grammaire Rust écrite à la main sous `.github/scripts/`. Sa GRAMMAIRE est
+désormais celle du lecteur du dépôt — `saute_chaine`, `saute_chaine_brute_rust`, `_prefixe_brut_rust`,
+`RE_CARACTERE_RUST`, importés de `check_every_help_trigger_has_a_section` —, éprouvée par `P10.20-c`,
+`P10.20-d` et `P10.20-e`, et son JOURNAL est branché : une chaîne jamais refermée fait REFUSER DE
+CONCLURE (code 2) en nommant la ligne, au lieu d'avaler la fin du fichier en silence. Mesuré le
+2026-09-16 sur l'arbre du dépôt, les 366 fichiers `src/` des 4 caisses (207 371 lignes) : 830 lignes étaient lues autrement par
+l'ancienne grammaire — 587 où elle EFFAÇAIT l'apostrophe d'une durée de vie (`&'static str`) et 243 où
+elle effaçait le préfixe `b` d'une chaîne d'octets. AUCUNE ne déplaçait ce que la garde cherche (ni
+mutation, ni verrou, ni accolade, ni en-tête) : le ralliement est INERTE sur cet arbre.
+
+ET IL FAUT LE DIRE DANS L'AUTRE SENS, PARCE QUE LA MESURE L'IMPOSE : l'ancienne grammaire n'était PAS
+la famille de défaut de `P10.20-c`/`-d`/`-e`. Sur les DIX-NEUF témoins fabriqués ci-dessous, elle en
+passe DIX-SEPT — littéral `'"'`, chaîne brute à guillemet nu, commentaire de bloc imbriqué, chaîne
+multiligne, accolade de gabarit : elle les tenait déjà. DEUX seulement la tuent, et ce sont les deux
+vrais acquis mesurables : l'apostrophe d'une durée de vie RENDUE plutôt qu'effacée, et l'AVEU — elle
+n'en avait aucun, donc une chaîne jamais refermée lui faisait blanchir la fin du fichier EN SILENCE.
+Les dix-sept autres sont des témoins de NON-RÉGRESSION, et ils le disent : ce lot rallie une grammaire
+à sa source unique, il ne répare pas un lecteur cassé, et prétendre l'inverse serait la faute que ce
+dépôt poursuit. Le troisième acquis n'est pas témoignable ici : une correction faite demain dans le
+lecteur partagé arrive désormais dans cette garde sans que personne ait à y penser.
+
+CE QUI RESTE LOCAL, ET POURQUOI — LE CONTRAT N'EST PAS CELUI DU LECTEUR PARTAGÉ. `sans_commentaires_rust`
+rend les littéraux TELS QUELS ; cette garde ne le peut pas. Elle compte les accolades pour borner le
+corps de chaque fonction, et une accolade écrite dans un gabarit (`format!("… {} …")`) déplacerait la
+fin de chaque corps ; un `set_var(` ou un `VERROU_ENV.write()` cité dans un message d'assertion
+compterait pour du code. Le contenu des littéraux est donc BLANCHI — hauteur ET longueur conservées.
+C'est l'équivalent Rust de `aveugler_litteraux_js`, que le module partagé n'expose pas ; ce qui est
+partagé est la GRAMMAIRE (où commence et où finit un littéral), c'est-à-dire exactement ce que la
+famille de défauts `P10.20-c`/`-d`/`-e` a corrigé. UNE SEULE DIVERGENCE SUBSISTE, ASSUMÉE ET DITE : les
+commentaires de BLOC sont lus IMBRIQUÉS ici (`/* a /* b */ c */`), comme Rust les définit, alors que le
+lecteur partagé s'arrête au premier `*/`. Aucun commentaire de bloc imbriqué sur les 366 fichiers
+(mesuré à zéro le 2026-09-16) ; la divergence est donc latente des deux côtés.
+
+LA FRONTIÈRE CÔTÉ TEST EST NOURRIE D'UN TEXTE SANS COMMENTAIRES, corrigée par CONSTRUCTION : un
+`#![cfg(test)]` ou un `#[cfg(test)] mod … {` écrit dans un commentaire de BLOC faisait basculer un
+fichier de PRODUCTION entier du côté test, et les mutations d'environnement du produit devenaient des
+infractions de test — une accusation FABRIQUÉE. Mesuré le 2026-09-16 : aucun fichier de l'arbre ne
+change de côté ni de plage, inerte ici, pas ailleurs.
+
+DEUX CONTRATS, UNE GRAMMAIRE — ET LA DIFFÉRENCE PORTE. La frontière lit `sans_commentaires_rust` (les
+littéraux RENDUS TELS QUELS) et non `depouiller_rust` (les littéraux BLANCHIS), parce que
+`include!("common.rs")` nomme son fichier par une CHAÎNE. Ce lot a commencé par lui donner le texte
+blanchi : le côté test du démon est tombé de 159 fichiers à 3, et c'est le PLANCHER de cette garde —
+pas une relecture — qui l'a dit, en REFUSANT DE CONCLURE plutôt qu'en acquittant 82 tests devenus
+invisibles. Un témoin fige désormais les deux sens, pour ne plus dépendre du plancher.
+
 CE QUE CETTE GARDE NE PROUVE PAS
 --------------------------------
 1. Elle tient le côté MUTATEUR. Le côté LECTEUR — « ce test dépend de l'environnement, il doit prendre
@@ -117,6 +174,9 @@ CE QUE CETTE GARDE NE PROUVE PAS
 3. Elle ne suit pas une indirection à travers un pointeur de fonction, une macro ou un trait objet.
    L'appel doit être écrit avec le nom (`nom(` ou `Type::nom(`). Une indirection plus profonde est
    INVISIBLE — donc elle produit un faux NÉGATIF, jamais une accusation à tort.
+4. Le corps des MACROS, les apostrophes d'ATTRIBUT et le code GÉNÉRÉ restent hors de la grammaire du
+   dépouilleur (dit en tête de `sans_commentaires_rust`). Et un commentaire de bloc JAMAIS refermé
+   blanchit la fin du fichier sans aveu : il n'invente aucune accusation, il en perd — dit, pas tu.
 
 L'INSTRUMENT SE VALIDE AVANT DE RENDRE UN VERDICT
 -------------------------------------------------
@@ -142,6 +202,16 @@ import os
 import re
 import sys
 from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# LA GRAMMAIRE RUST DU DÉPÔT, SOURCE UNIQUE (`P10.20-h`). Les quatre premiers noms DÉFINISSENT où
+# commence et où finit un littéral ; ils sont importés — et non recopiés — parce que c'est précisément
+# la recopie qui a fait vivre quatre grammaires divergentes sous `.github/scripts/` (`P10.20-c` à `-e`).
+# Le soulignement de tête dit « détail du lecteur », pas « privé au module » : il n'y a pas d'autre
+# façon d'avoir UNE grammaire sans la réécrire.
+from check_every_help_trigger_has_a_section import (  # noqa: E402
+    RE_CARACTERE_RUST, _blanc, _prefixe_brut_rust, refuser_sur_aveu, saute_chaine,
+    saute_chaine_brute_rust, sans_commentaires_rust, temoins_du_lecteur)
 
 ETIQUETTE = "verrou-env-processus"
 
@@ -174,19 +244,18 @@ MOD_FICHIER = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z0-9_]+)\s*
 INCLUDE = re.compile(r'include!\s*\(\s*"([^"]+)"\s*\)')
 
 
-def sans_commentaire(ligne: str) -> str:
-    """Retire un `//…` de fin de ligne. Une mutation citée en commentaire ne mute rien, et un nom de
-    test cité dans un message d'assertion ne doit pas compter pour un appel."""
-    i = ligne.find("//")
-    return ligne if i < 0 else ligne[:i]
-
-
 def appelle(corps: str, nom: str) -> bool:
     """APPEL de `nom`, pas simple occurrence : le caractère qui précède ne doit pas être un caractère de
-    nom (sinon `domain(` compterait pour un appel à `main`), et les commentaires sont retirés."""
+    nom (sinon `domain(` compterait pour un appel à `main`).
+
+    SON ENTRÉE EST DU TEXTE DÉJÀ DÉPOUILLÉ — c'est le contrat, et c'est une MESURE, pas un vœu : tous
+    les corps que cette garde lui passe sortent de `depouiller_rust`. Elle a longtemps recoupé chaque
+    ligne à son premier `//` par précaution ; sur l'arbre, dans les 145 212 lignes de corps des quatre caisses, ZÉRO
+    en portait encore un (`P10.20-h`, 2026-09-16). Ce geste mort est retiré plutôt qu'entretenu : un
+    second lecteur qui ne lit jamais rien finit par diverger du premier sans que personne le voie."""
     motif = nom + "("
     for ligne in corps.splitlines():
-        l = sans_commentaire(ligne)
+        l = ligne
         i = 0
         while True:
             i = l.find(motif, i)
@@ -213,84 +282,95 @@ class Unite:
         return f"{self.fichier}::{self.qualifie or self.nom}"
 
 
-def depouiller_rust(src: str) -> str:
-    """Le texte à LIRE : commentaires (ligne et bloc, imbriqués) et CONTENU des littéraux (chaînes,
-    chaînes brutes, littéraux d'octets, caractères) remplacés par des espaces, hauteur et longueur
-    CONSERVÉES. Sans cela, une accolade écrite dans un gabarit (`format!("… {} …")`) déplacerait la fin
-    de chaque corps de fonction, et un mot cité dans un message d'assertion compterait pour du code.
-    Une apostrophe qui n'ouvre pas un caractère (`'static`) reste une durée de vie, pas un littéral."""
-    out = list(src)
-    i, n = 0, len(src)
+def _fin_du_bloc_rust(src: str, depart: int) -> int:
+    """Index APRÈS le `*/` qui referme le commentaire de bloc ouvert en `depart` — IMBRICATION COMPRISE,
+    comme Rust la définit. C'est la SEULE divergence assumée avec le lecteur partagé, qui s'arrête au
+    premier `*/` ; aucun commentaire de bloc imbriqué sur les 366 fichiers des quatre caisses (mesuré à
+    zéro le 2026-09-16), la divergence est latente des deux côtés. Un bloc jamais refermé blanchit la
+    fin du fichier : il fait PERDRE des sites, il n'en invente aucun."""
+    prof, j, n = 0, depart, len(src)
+    while j < n:
+        if src.startswith("/*", j):
+            prof += 1
+            j += 2
+            continue
+        if src.startswith("*/", j):
+            prof -= 1
+            j += 2
+            if prof <= 0:
+                return j
+            continue
+        j += 1
+    return n
+
+
+def depouiller_rust(src: str, journal=None) -> str:
+    """Le texte à LIRE : commentaires (ligne et bloc, imbriqués) et littéraux (chaînes, chaînes brutes,
+    chaînes d'octets, caractères) remplacés par des espaces, hauteur ET longueur CONSERVÉES. Sans cela,
+    une accolade écrite dans un gabarit (`format!("… {} …")`) déplacerait la fin de chaque corps de
+    fonction, et un mot cité dans un message d'assertion compterait pour du code.
+
+    LA GRAMMAIRE EST CELLE DU DÉPÔT (`P10.20-h`, 2026-09-16) : où commence et où finit un littéral est
+    décidé par `saute_chaine`, `saute_chaine_brute_rust`, `_prefixe_brut_rust` et `RE_CARACTERE_RUST`,
+    importés du lecteur partagé et éprouvés par `P10.20-c`, `P10.20-d` et `P10.20-e`. Ce qui reste
+    local est le CONTRAT — blanchir au lieu de rendre tel quel —, parce que cette garde compte les
+    accolades. Une apostrophe qui n'ouvre pas un littéral de caractère (`'static`, `'a`, `'outer:`)
+    reste une durée de vie et RESTE DANS LE CODE ; le préfixe `b` de `b"…"` aussi.
+
+    `journal` recueille les AVEUX du lecteur (chaîne, chaîne brute ou littéral qui atteint la fin du
+    fichier sans son délimiteur fermant). Le passer est ce qui distingue un refus de conclure d'un
+    compte amputé rendu en vert (`P10.20-d`)."""
+    out, i, n = [], 0, len(src)
     while i < n:
         c = src[i]
-        if c == "/" and i + 1 < n and src[i + 1] == "/":
-            while i < n and src[i] != "\n":
-                out[i] = " "
-                i += 1
-        elif c == "/" and i + 1 < n and src[i + 1] == "*":
-            prof = 0
-            while i < n:
-                if src.startswith("/*", i):
-                    prof += 1
-                    out[i] = out[i + 1] = " "
-                    i += 2
-                    continue
-                if src.startswith("*/", i):
-                    prof -= 1
-                    out[i] = out[i + 1] = " "
-                    i += 2
-                    if prof == 0:
-                        break
-                    continue
-                if src[i] != "\n":
-                    out[i] = " "
-                i += 1
-        elif c in "rb" and (m := re.match(r'(?:b?r|rb)(#*)"', src[i:])):
-            diese = m.group(1)
-            j = src.find('"' + diese, i + m.end() - 1 + 1)
-            fin = (j + 1 + len(diese)) if j >= 0 else n
-            for k in range(i, min(fin, n)):
-                if src[k] != "\n":
-                    out[k] = " "
-            i = fin
-        elif c == '"' or (c == "b" and i + 1 < n and src[i + 1] == '"'):
-            j = i + (2 if c == "b" else 1)
-            while j < n:
-                if src[j] == "\\":
-                    j += 2
-                    continue
-                if src[j] == '"':
-                    j += 1
-                    break
-                j += 1
-            for k in range(i, min(j, n)):
-                if src[k] != "\n":
-                    out[k] = " "
-            i = j
-        elif c == "'":
-            # caractère (`'a'`, `'\n'`) vs durée de vie (`'static`) : seule la forme fermée est un littéral
-            if i + 1 < n and src[i + 1] == "\\":
-                j = i + 2
-                while j < n and src[j] != "'":
-                    j += 1
-                j += 1
-            elif i + 2 < n and src[i + 2] == "'":
-                j = i + 3
-            else:
-                out[i] = " " if src[i] != "\n" else out[i]
-                i += 1
+        if c == "/" and src.startswith("//", i):
+            j = src.find("\n", i)
+            f = n if j < 0 else j
+            out.append(_blanc(src[i:f]))
+            i = f
+            continue
+        if c == "/" and src.startswith("/*", i):
+            f = _fin_du_bloc_rust(src, i)
+            out.append(_blanc(src[i:f]))
+            i = f
+            continue
+        if _prefixe_brut_rust(src, i):
+            # `r"…"`, `r#"…"#`, `br#"…"#`, `cr#"…"#` — et ce qui n'en est pas une (`r#type`, un `r`
+            # ordinaire) rend None et repart dans le code, sans rien ouvrir.
+            f = saute_chaine_brute_rust(src, i, journal)
+            if f is not None:
+                out.append(_blanc(src[i:f]))
+                i = f
                 continue
-            for k in range(i, min(j, n)):
-                if src[k] != "\n":
-                    out[k] = " "
-            i = j
-        else:
+        if c == '"':
+            # La chaîne Rust a le droit de FRANCHIR une fin de ligne : `multiligne=True`.
+            f = saute_chaine(src, i, journal, multiligne=True)
+            out.append(_blanc(src[i:f]))
+            i = f
+            continue
+        if c == "'":
+            m = RE_CARACTERE_RUST.match(src, i)
+            if m:
+                out.append(_blanc(m.group(0)))
+                i = m.end()
+                continue
+            out.append(c)
             i += 1
+            continue
+        out.append(c)
+        i += 1
     return "".join(out)
 
 
-def unites(chemin_relatif: str, src: str) -> list[Unite]:
-    """Découpe un fichier en fonctions. Le corps d'une fonction va de son en-tête à l'accolade qui
+def unites(chemin_relatif: str, src: str, journal=None) -> list[Unite]:
+    """Dépouille PUIS découpe — le tout-venant, et ce que jouent les témoins sur du texte brut."""
+    return unites_du_texte_nu(chemin_relatif, depouiller_rust(src, journal))
+
+
+def unites_du_texte_nu(chemin_relatif: str, nu: str) -> list[Unite]:
+    """Découpe un texte DÉJÀ DÉPOUILLÉ en fonctions. Le dépouillement est séparé pour n'avoir lieu
+    qu'UNE FOIS par fichier, là où un NOM DE FICHIER existe : c'est ce qui permet à l'AVEU du lecteur
+    d'être entendu plutôt que prononcé dans le vide (`P10.20-d`, `P10.20-h`). Le corps d'une fonction va de son en-tête à l'accolade qui
     REFERME celle de son corps, comptée sur le texte DÉPOUILLÉ — pas à la première ligne qui ressemble à
     une fermeture. La différence n'est pas cosmétique : un corps d'une seule ligne
     (`fn kind_name(&self) -> &'static str { "all-true" }`) faisait, avec la règle d'indentation, avaler
@@ -298,14 +378,7 @@ def unites(chemin_relatif: str, src: str) -> list[Unite]:
     alors des mutations et des prises de verrou qui ne lui appartenaient pas. Une fonction IMBRIQUÉE est
     une unité de plus, ET reste incluse dans le corps de celle qui la contient : une mutation écrite
     dans une fonction imbriquée ne peut pas échapper au test qui la porte."""
-    nu = depouiller_rust(src)
-    lignes = src.split("\n")
     lignes_nues = nu.split("\n")
-    debut_de_ligne = []
-    pos = 0
-    for l in lignes_nues:
-        debut_de_ligne.append(pos)
-        pos += len(l) + 1
 
     def fin_du_corps(i: int) -> int:
         """Numéro (exclusif) de la dernière ligne du corps ouvert sur la ligne `i`."""
@@ -380,18 +453,36 @@ def porte_attribut_interne_cfg_test(lignes: list[str]) -> bool:
     return False
 
 
-def cote_test(repo: Path, chemins: list[Path]) -> set[Path]:
+def cote_test(repo: Path, chemins: list[Path], sans_com: dict = None) -> set[Path]:
     """LA FRONTIÈRE, LUE DANS LES SOURCES, SOUS SES DEUX FORMES. Un `mod X;` précédé de
     `#[cfg(test)]` rend `X.rs` (ou `X/mod.rs`) test-only, et les fichiers qu'il `include!` avec lui.
     ET un fichier qui porte l'attribut INTERNE `#![cfg(test)]` en tête est test-only par lui-même —
     son `mod` n'a alors aucune raison d'être annoté, et il ne l'est pas. Ne lire que la première
     forme laissait DEHORS, entièrement, `collector-mail/src/garde_lisibilite.rs` (six mutations
     d'environnement) et `agent/src/source/garde_lisibilite.rs` : un faux NÉGATIF muet, mesuré le
-    2026-08-30. Aucun nom n'est écrit ici."""
+    2026-08-30. Aucun nom n'est écrit ici.
+
+    LE TEXTE LU EST DÉPOUILLÉ DE SES COMMENTAIRES (`P10.20-h`) : un `#![cfg(test)]` ou un
+    `#[cfg(test)] mod …;` écrit dans un commentaire de BLOC faisait basculer un fichier de PRODUCTION
+    entier du côté test, et ses mutations d'environnement — le comportement du produit — devenaient des
+    infractions. C'est une accusation FABRIQUÉE, corrigée par construction ; inerte sur cet arbre
+    (aucun fichier ne change de côté, mesuré le 2026-09-16).
+
+    ET C'EST `sans_commentaires_rust` QU'ELLE LIT, PAS `depouiller_rust` — LA DIFFÉRENCE EST LOAD-BEARING,
+    et elle a été trouvée par le PLANCHER de cette garde, pas par une relecture : `include!("common.rs")`
+    nomme son fichier par une CHAÎNE, et le dépouilleur de cette garde BLANCHIT le contenu des chaînes.
+    Lui donner le texte blanchi faisait tomber le côté test du démon de 159 fichiers à 3 — la garde a
+    REFUSÉ DE CONCLURE au lieu d'acquitter 82 tests devenus invisibles. Les deux lecteurs partagent la
+    même grammaire et avouent les mêmes pertes ; seul leur contrat diffère (rendre les littéraux tels
+    quels, ou les blanchir), et chaque lecture prend celui dont elle a besoin."""
+    sans_com = sans_com or {}
     test_only: set[Path] = set()
     a_voir: list[Path] = []
     for p in chemins:
-        lignes = p.read_text(encoding="utf-8", errors="replace").split("\n")
+        texte = sans_com.get(p)
+        if texte is None:
+            texte = sans_commentaires_rust(p.read_text(encoding="utf-8", errors="replace"))
+        lignes = texte.split("\n")
         # SECONDE FORME : l'attribut INTERNE, lu par une fonction PURE pour être témoignable sans
         # toucher le disque.
         if porte_attribut_interne_cfg_test(lignes):
@@ -413,7 +504,9 @@ def cote_test(repo: Path, chemins: list[Path]) -> set[Path]:
         if p in test_only:
             continue
         test_only.add(p)
-        src = p.read_text(encoding="utf-8", errors="replace")
+        src = sans_com.get(p)
+        if src is None:
+            src = sans_commentaires_rust(p.read_text(encoding="utf-8", errors="replace"))
         for rel in INCLUDE.findall(src):
             cand = (p.parent / rel).resolve()
             if cand.exists():
@@ -423,7 +516,9 @@ def cote_test(repo: Path, chemins: list[Path]) -> set[Path]:
 
 def blocs_mod_test(src: str) -> list[tuple[int, int]]:
     """Les plages `#[cfg(test)] mod … { … }` écrites DANS un fichier de production : leurs fonctions
-    sont, elles aussi, du code de test."""
+    sont, elles aussi, du code de test. SON ENTRÉE EST LE TEXTE DÉPOUILLÉ (`P10.20-h`) : une plage
+    fabriquée depuis un commentaire de bloc ferait juger du code de PRODUCTION comme du code de test.
+    La fonction reste PURE sur le texte qu'on lui donne — ses témoins la jouent sur les deux."""
     lignes = src.split("\n")
     plages = []
     precede = False
@@ -466,6 +561,9 @@ def fermeture(depart: set[str], candidats: list[Unite], tours: int = 6) -> set[s
 
 def temoins():
     """L'INSTRUMENT DANS LES DEUX SENS, avant tout verdict sur l'arbre."""
+    # LE LECTEUR PARTAGÉ SE VALIDE AVANT DE SERVIR (`P10.20-d`, `P10.20-h`) : cette garde tire sa
+    # grammaire Rust de lui, et une garde qui sert un lecteur non éprouvé rend un compte amputé en vert.
+    temoins_du_lecteur()
     doit_accuser = [
         '    #[test]\n    fn t() {\n        std::env::set_var("PLUME_X", "1");\n    }\n',
         '    #[test]\n    fn t() {\n        env::remove_var("PLUME_X");\n    }\n',
@@ -557,6 +655,101 @@ def temoins():
     assert ARITE_OU_LA_PROPRIETE_MORD == 2, \
         "témoin : l'arité a bougé — à 1 la garde exige un verrou que rien ne peut avoir posé"
 
+    # --- LE DÉPOUILLEMENT (`P10.20-h`, 2026-09-16) -------------------------------------------------
+    # Les formes sur lesquelles une grammaire Rust écrite à la main se trompe, éprouvées À TRAVERS les
+    # lectures de cette garde : c'est son VERDICT qui est tenu, pas seulement le texte rendu. MESURÉ,
+    # un par un, contre l'ancienne grammaire locale : SEULS (f)-apostrophe-rendue et (i)-aveu-qui-parle
+    # rougissent ; les dix-sept autres sont de NON-RÉGRESSION et le disent. Ils ne sont pas pour autant
+    # décoratifs — ils épinglent que le ralliement à la grammaire du dépôt n'a rien rendu aveugle.
+    def mute_le_seul_corps(source):
+        us = unites("t.rs", source)
+        assert us, f"témoin : corps illisible — {source!r}"
+        return bool(MUTATION.search(us[0].corps))
+
+    # (a) Un littéral de caractère guillemet n'ouvre pas de chaîne : le `//` qui suit reste un
+    #     commentaire, et la mutation qu'il cite ne mute rien.
+    assert not mute_le_seul_corps(
+        '    #[test]\n    fn t() {\n        let sep = \'"\';'
+        ' // std::env::set_var("PLUME_X", "1");\n    }\n'), \
+        "témoin : après le littéral de caractère `\'\"\'`, un commentaire est lu comme du code"
+    # (b) SENS INVERSE, celui qui ne dit rien : une chaîne brute à guillemet nu n'avale pas la suite.
+    assert mute_le_seul_corps(
+        '    #[test]\n    fn t() {\n        let m = r#"un " nu"#;'
+        ' std::env::set_var("PLUME_X", "1");\n    }\n'), \
+        "témoin : une chaîne brute à guillemet nu avale la mutation qui la suit — cécité muette"
+    # (c) Un commentaire de BLOC sur plusieurs lignes ne mute rien, et la HAUTEUR est préservée.
+    bloc = ('    #[test]\n    fn t() {\n        /* provisoirement retiré :\n'
+            '        std::env::set_var("PLUME_X", "1");\n        */\n    }\n')
+    assert not mute_le_seul_corps(bloc), \
+        "témoin : une mutation écrite dans un commentaire de BLOC est comptée comme une mutation"
+    assert len(depouiller_rust(bloc).split("\n")) == len(bloc.split("\n")) \
+        and len(depouiller_rust(bloc)) == len(bloc), \
+        "témoin : le dépouillement ne préserve plus la hauteur ET la longueur — la découpe devient fausse"
+    # (d) Un commentaire de bloc IMBRIQUÉ se referme sur SON `*/`, comme Rust le définit : le code qui
+    #     suit le premier `*/` ne redevient pas du code.
+    assert not mute_le_seul_corps(
+        '    #[test]\n    fn t() {\n        /* a /* b */ std::env::set_var("PLUME_X", "1"); */\n    }\n'), \
+        "témoin : un commentaire de bloc IMBRIQUÉ se referme trop tôt — ce qu'il cache redevient du code"
+    # (e) Une chaîne qui FRANCHIT une fin de ligne : le `//` d'une adresse posée dedans ne coupe rien.
+    assert mute_le_seul_corps(
+        '    #[test]\n    fn t() {\n        let aide = "voir\n'
+        '            https://exemple"; std::env::set_var("PLUME_X", "1");\n    }\n'), \
+        "témoin : un `//` d\'URL dans une chaîne multiligne fait MANGER la fin de cette ligne"
+    # (f) NON-RÉGRESSION : une durée de vie n'ouvre rien, et elle RESTE dans le code.
+    vie = ('    #[test]\n    fn t() {\n        let s: &\'static str = nom();'
+           ' std::env::set_var("PLUME_X", "1");\n    }\n')
+    assert mute_le_seul_corps(vie), \
+        "témoin de NON-RÉGRESSION : une durée de vie `\'static` ouvre un littéral"
+    assert "&\'static str" in depouiller_rust(vie), \
+        "témoin : l\'apostrophe d\'une durée de vie est EFFACÉE — le lecteur ne rend plus le code tel qu\'il est"
+    # (g) LE CONTRAT QUI INTERDIT DE BRANCHER ICI LE LECTEUR PARTAGÉ TEL QUEL : le CONTENU des littéraux
+    #     est BLANCHI. Une mutation citée dans un message d'assertion ne mute pas, un verrou cité dans
+    #     une chaîne ne tient rien, et une accolade de gabarit ne déplace pas la fin du corps.
+    assert not mute_le_seul_corps(
+        '    #[test]\n    fn t() {\n        panic!("appelez std::env::set_var(k, v) ailleurs");\n    }\n'), \
+        "témoin : une mutation citée DANS UNE CHAÎNE est comptée comme une mutation"
+    assert not verrous_env(depouiller_rust('let m = "prendre VERROU_ENV_PROCESSUS.write() en tête";')), \
+        "témoin : un verrou cité DANS UNE CHAÎNE est compté comme un verrou pris — un test NU passerait vert"
+    us = unites("t.rs", 'fn f() {\n    let t = format!("… {} …", x);\n}\n'
+                        'fn ailleurs() {\n    std::env::set_var("A", "b");\n}\n')
+    assert not MUTATION.search(next(u for u in us if u.nom == "f").corps), \
+        "témoin : une accolade écrite dans un gabarit déplace la fin du corps — l'unité avale la suivante"
+    # (h) LA FRONTIÈRE CÔTÉ TEST NE SE FABRIQUE PAS DEPUIS UN COMMENTAIRE DE BLOC. Les deux formes,
+    #     jouées sur le texte DÉPOUILLÉ (ce que la garde lit) et sur le texte BRUT (ce qu'elle lisait).
+    faux_attribut = "/*\n#![cfg(test)]\n*/\nfn produit() { std::env::set_var(\"A\", \"b\"); }\n"
+    assert porte_attribut_interne_cfg_test(faux_attribut.split("\n")), \
+        "témoin de contrôle : le texte BRUT fait bien basculer tout le fichier — c'est le défaut"
+    assert not porte_attribut_interne_cfg_test(sans_commentaires_rust(faux_attribut).split("\n")), \
+        "témoin : un `#![cfg(test)]` écrit dans un commentaire de BLOC rend un fichier de PRODUCTION " \
+        "test-only — toutes ses mutations deviennent des infractions FABRIQUÉES"
+    faux_bloc = "/*\n#[cfg(test)]\nmod tests {\n}\n*/\nfn produit() { }\n"
+    assert blocs_mod_test(faux_bloc) and not blocs_mod_test(depouiller_rust(faux_bloc)), \
+        "témoin : une plage `#[cfg(test)] mod` est fabriquée depuis un commentaire de BLOC"
+    # (h bis) LE NOM DE FICHIER D'UN `include!` EST UNE CHAÎNE : la frontière doit lire un texte qui la
+    #     REND, pas un texte qui la blanchit. C'est le plancher de cette garde qui a attrapé l'inverse
+    #     (159 fichiers côté test tombés à 3) ; le témoin le fige plutôt que d'attendre le plancher.
+    inclus = '#![cfg(test)]\ninclude!("common.rs");\n// include!("fantome.rs");\n'
+    assert INCLUDE.findall(sans_commentaires_rust(inclus)) == ["common.rs"], \
+        "témoin : la frontière ne lit plus le nom de fichier d'un `include!` — le côté test s'effondre " \
+        "en silence, ou un `include!` COMMENTÉ est suivi"
+    assert INCLUDE.findall(depouiller_rust(inclus)) == [], \
+        "témoin de contrôle : le dépouilleur de cette garde BLANCHIT les chaînes — c'est pourquoi la " \
+        "frontière ne peut pas le lire, et ce témoin fige la raison"
+    # (i) L'AVEU, DANS LES DEUX SENS : muet sur du Rust valide, parlant sur une chaîne jamais refermée.
+    propre = []
+    depouiller_rust('fn f() {\n  let u = "https://h/x";\n  let c = \'"\';\n  let r = r#"a " b"#;\n}\n', propre)
+    assert not propre, f"témoin inverse : le lecteur avoue une perte sur du Rust valide ({propre})"
+    perdu = []
+    depouiller_rust('fn f() {\n  let x = "jamais refermee;\n  std::env::set_var("A", "b");\n}\n', perdu)
+    assert perdu, \
+        "témoin : le lecteur ne dit plus qu'il a perdu la synchronisation — il avalerait la fin du " \
+        "fichier et rendrait un compte amputé en vert"
+    # (j) `appelle` reçoit du texte DÉPOUILLÉ : un appel COMMENTÉ n'est pas un appel, et le geste qui
+    #     le garantit est le dépouillement, plus un second lecteur par ligne (`P10.20-h`).
+    us = unites("t.rs", 'fn t() {\n    // pose();\n    autre();\n}\n')
+    assert not appelle(us[0].corps, "pose") and appelle(us[0].corps, "autre"), \
+        "témoin : un appel CITÉ en commentaire compte pour un appel"
+
 
 def refuser(msg: str) -> int:
     print(f"::error::[{ETIQUETTE}] {msg}")
@@ -585,30 +778,53 @@ def caisses(repo: Path) -> list[str]:
 class Bilan:
     """Ce qu'une caisse rend : de quoi juger, et de quoi AVOUER ce qui n'est pas jugé."""
 
-    __slots__ = ("caisse", "fichiers", "cote_test", "tests", "mutateurs", "verrous", "mutants", "nus")
+    __slots__ = ("caisse", "fichiers", "cote_test", "tests", "mutateurs", "verrous", "mutants", "nus",
+                 "aveux")
 
-    def __init__(self, caisse, fichiers, cote_test, tests, mutateurs, verrous, mutants, nus):
+    def __init__(self, caisse, fichiers, cote_test, tests, mutateurs, verrous, mutants, nus, aveux):
         self.caisse, self.fichiers, self.cote_test = caisse, fichiers, cote_test
         self.tests, self.mutateurs, self.verrous = tests, mutateurs, verrous
         self.mutants, self.nus = mutants, nus
+        self.aveux = aveux
 
 
 def analyser_caisse(repo: Path, caisse: str) -> Bilan:
     """La MÊME dérivation qu'avant, appliquée à une caisse quelconque. Rien n'y est spécifique au
     démon : ni le nom du verrou (dérivé de la caisse), ni les noms d'utilitaires."""
     chemins = fichiers_rs(repo / caisse / "src")
-    test_only = cote_test(repo, chemins)
+
+    # LE DÉPOUILLEMENT A LIEU ICI, UNE FOIS PAR FICHIER, ET AVEC SON NOM : c'est ce qui permet à l'AVEU
+    # du lecteur d'être entendu plutôt que prononcé dans le vide (`P10.20-d`, `P10.20-h`). Tout ce qui
+    # suit — la frontière côté test, les plages `#[cfg(test)] mod`, la découpe en unités — est dérivé
+    # du texte DÉPOUILLÉ, jamais du texte brut.
+    # DEUX CONTRATS, UNE GRAMMAIRE : `depouiller_rust` BLANCHIT le contenu des littéraux (la découpe en
+    # unités compte les accolades), `sans_commentaires_rust` les rend TELS QUELS (la frontière côté test
+    # lit le nom de fichier d'un `include!("…")`, qui est une chaîne). Les deux tirent de la même source
+    # la question « où commence et où finit un littéral », donc ils avouent les mêmes pertes ; le journal
+    # est recueilli une fois, sur le premier.
+    nus: dict = {}
+    sans_com: dict = {}
+    aveux: dict = {}
+    for c in chemins:
+        texte = c.read_text(encoding="utf-8", errors="replace")
+        journal = []
+        nus[c] = depouiller_rust(texte, journal)
+        sans_com[c] = sans_commentaires_rust(texte)
+        if journal:
+            aveux[os.path.relpath(c, repo)] = [f"ligne {texte.count(chr(10), 0, o) + 1} : {m}"
+                                               for m, o in journal]
+    test_only = cote_test(repo, chemins, sans_com)
 
     unites_test_side: list[Unite] = []
     tests: list[Unite] = []
     for c in chemins:
         rel = os.path.relpath(c, repo)
-        src = c.read_text(encoding="utf-8", errors="replace")
-        us = unites(rel, src)
+        nu = nus[c]
+        us = unites_du_texte_nu(rel, nu)
         if c in test_only:
             unites_test_side.extend(us)
         else:
-            plages = blocs_mod_test(src)
+            plages = blocs_mod_test(nu)
             unites_test_side.extend(u for u in us if any(a <= u.ligne <= b for a, b in plages))
         tests.extend(u for u in us if u.test)
 
@@ -626,19 +842,20 @@ def analyser_caisse(repo: Path, caisse: str) -> Bilan:
 
     mutants = [u for u in tests if mute(u)]
 
-    nus: list[Unite] = []
+    nus_du_verrou: list[Unite] = []
     if len(verrous) == 1:
         ecriture = f"{next(iter(verrous))}.write()"
         porteurs = fermeture({u.qualifie or u.nom for u in unites_test_side
                               if not u.test and ecriture in u.corps}, unites_test_side)
-        nus = [u for u in mutants
-               if ecriture not in u.corps and not any(appelle(u.corps, n) for n in porteurs)]
+        nus_du_verrou = [u for u in mutants
+                         if ecriture not in u.corps and not any(appelle(u.corps, n) for n in porteurs)]
     else:
         # ZÉRO verrou : rien n'exclut personne. DEUX ou plus : « deux verrous pour une ressource,
         # c'est zéro verrou » — le défaut mesuré le 2026-08-25, avec NEUF verrous dans le démon.
-        nus = list(mutants)
+        nus_du_verrou = list(mutants)
 
-    return Bilan(caisse, len(chemins), len(test_only), tests, mutateurs, verrous, mutants, nus)
+    return Bilan(caisse, len(chemins), len(test_only), tests, mutateurs, verrous, mutants, nus_du_verrou,
+                 aveux)
 
 
 def main() -> int:
@@ -661,6 +878,16 @@ def main() -> int:
 
     bilans = [analyser_caisse(repo, n) for n in noms]
     par_nom = {b.caisse: b for b in bilans}
+
+    # --- L'AVEU DU LECTEUR, JUGÉ AVANT TOUT VERDICT (`P10.20-d`, `P10.20-h`) ----------------------
+    # Un lecteur qui a ouvert un littéral qui n'en était pas un a AVALÉ du code : tout ce qu'il a
+    # compté depuis est faux, et un compte amputé rendu en vert est pire qu'une garde absente.
+    aveux = {}
+    for b in bilans:
+        aveux.update(b.aveux)
+    if aveux:
+        refuser_sur_aveu(ETIQUETTE, aveux, "Rust")
+        return 2
 
     # --- CONTRÔLE POSITIF SUR LA CAISSE DE RÉFÉRENCE ----------------------------------------------
     # Les planchers ne sont pas des seuils de qualité : ce sont les valeurs sous lesquelles la

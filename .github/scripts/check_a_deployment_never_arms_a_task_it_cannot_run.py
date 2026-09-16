@@ -86,10 +86,10 @@ qu'un lecteur Rust sous cette garde et sous sa sœur.
 CE QUE LE RALLIEMENT N'APPORTE PAS, ET C'EST ÉCRIT : le corps des MACROS, les apostrophes d'ATTRIBUT et
 le code GÉNÉRÉ restent hors grammaire (dit en tête de `sans_commentaires_rust`) ; un gate écrit DANS
 une chaîne reste lu comme du code, car le dépouilleur rend les chaînes telles quelles au lieu de les
-aveugler ; et DEUX autres gardes du dépôt gardent chacune un dépouilleur Rust par ligne encore plus
-sommaire — `check_no_test_mutates_the_process_env_unlocked` coupe au premier `//` de la ligne,
-`check_retention_declare_ce_quelle_purge` par une substitution `//.*$` — toutes deux hors du périmètre
-de cette clé, qui ne porte que l'homonyme partagé par ces deux gardes-ci.
+aveugler ; et deux autres gardes du dépôt gardaient chacune une grammaire Rust à part
+(`check_no_test_mutates_the_process_env_unlocked`, `check_retention_declare_ce_quelle_purge`), ralliées
+au même lecteur le 2026-09-16 sous `P10.20-h` — hors du périmètre de cette clé-ci, qui ne portait que
+l'homonyme partagé par ces deux gardes-ci.
 
 L'INSTRUMENT SE VALIDE AVANT DE RENDRE UN VERDICT
 -------------------------------------------------

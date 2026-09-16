@@ -7,16 +7,21 @@ use crate::*;
 // ---------- comptes utilisateurs (réservé admin via auth_guard) ----------
 pub(crate) async fn users_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
     crate::req_conn!(st, au, conn);
-    let mut stmt = conn.prepare("SELECT id,name,role,created FROM user ORDER BY id").unwrap();
-    let rows = stmt
-        .query_map([], |r| {
-            Ok(json!({
-                "id": r.get::<_, i64>(0)?, "name": r.get::<_, String>(1)?,
-                "role": r.get::<_, String>(2)?, "created": r.get::<_, i64>(3)?
-            }))
-        })
-        .unwrap();
-    let locaux: Vec<Value> = rows.flatten().collect();
+    // `P10.7-f` (rang 1) — « QUI A ACCÈS » EST LU ENTIÈREMENT OU AVOUÉ. Avant : deux `unwrap()` (une
+    // panique n'est pas un aveu) puis `rows.flatten()` — un compte dont la ligne ne se décode pas
+    // disparaissait de la liste que l'AUDIT lit, sans un mot. Soldé en bloc ; sur échec, la liste n'est
+    // pas ÉTABLIE et le corps le dit par `error`, au lieu d'un inventaire d'accès rassurant.
+    let lues: rusqlite::Result<Vec<Value>> = conn
+        .prepare("SELECT id,name,role,created FROM user ORDER BY id")
+        .and_then(|mut stmt| {
+            stmt.query_map([], |r| {
+                Ok(json!({
+                    "id": r.get::<_, i64>(0)?, "name": r.get::<_, String>(1)?,
+                    "role": r.get::<_, String>(2)?, "created": r.get::<_, i64>(3)?
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        });
     // P11.5-c — QUI A ACCÈS. `user` ne porte QUE les comptes que le produit crée : un compte d'annuaire
     // externe (SSO d'en-têtes) accède sans jamais y avoir de ligne. `acces` est l'inventaire de CEUX QUI
     // ACCÈDENT, quelle que soit leur provenance, consigné au choke-point d'authentification. Rendu À CÔTÉ
@@ -24,7 +29,13 @@ pub(crate) async fn users_list(State(st): State<AppState>, Extension(au): Extens
     // `acces` est un CONSTAT, y compris pour des comptes que cette console ne peut pas administrer.
     // Aucun secret n'y figure — cf. `acces_observe`, la table n'en porte aucun.
     let acces = crate::acces_observe::inventaire_des_acces(&conn);
-    Json(json!({ "users": locaux, "me": au.name, "acces": acces }))
+    match lues {
+        Ok(locaux) => Json(json!({ "users": locaux, "me": au.name, "acces": acces })),
+        Err(_) => Json(crate::handlers::liste_bornee::corps_de_liste_illisible(
+            json!({ "me": au.name, "acces": acces }),
+            "users",
+        )),
+    }
 }
 
 pub(crate) async fn user_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {

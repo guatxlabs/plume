@@ -136,11 +136,16 @@ pub(crate) async fn tokens_list(State(st): State<AppState>, Extension(au): Exten
         return err_json(StatusCode::NOT_IMPLEMENTED, "provisioning de jetons via l'UI réservé au mode mono-tenant (control-plane : voir CLI)");
     }
     let conn = st.db.lock();
-    let mut stmt = conn
+    // `P10.7-f` (rang 1) — L'INVENTAIRE DES JETONS EST ENTIER OU AVOUÉ. Avant : `prepare(..).unwrap()`,
+    // `query_map(..).unwrap()` (une panique n'est pas un aveu) puis `rows.flatten()` — une ligne dont le
+    // mappeur échoue (cache de schéma du pool périmé qui rend « no such table » au PREMIER pas, colonne
+    // ajoutée par une migration, `name` corrompu) DISPARAISSAIT de l'inventaire, et l'admin ne révoque pas
+    // un jeton qu'il ne voit pas. Le parcours est SOLDÉ EN BLOC : une ligne en erreur rend la LISTE non
+    // établie, et le corps le dit par `error` (fabricant unique `corps_de_liste_illisible`, `P10.7-z`).
+    let lues: rusqlite::Result<Vec<Value>> = conn
         .prepare("SELECT id,name,kind,host,created,last_used,role FROM token ORDER BY id")
-        .unwrap();
-    let rows = stmt
-        .query_map([], |r| {
+        .and_then(|mut stmt| {
+            stmt.query_map([], |r| {
             let host: Option<String> = r.get(3)?;
             // kind NULL (jetons CLI historiques) -> 'agent' (défaut du CLI `plume-daemon token`).
             let kind: Option<String> = r.get(2)?;
@@ -162,9 +167,13 @@ pub(crate) async fn tokens_list(State(st): State<AppState>, Extension(au): Exten
                 "created": r.get::<_, Option<i64>>(4)?,
                 "last_used": r.get::<_, Option<i64>>(5)?,
             }))
-        })
-        .unwrap();
-    Json(json!({ "tokens": rows.flatten().collect::<Vec<_>>() })).into_response()
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        });
+    match lues {
+        Ok(tokens) => Json(json!({ "tokens": tokens })).into_response(),
+        Err(_) => Json(crate::handlers::liste_bornee::corps_de_liste_illisible(json!({}), "tokens")).into_response(),
+    }
 }
 
 /// POST /api/tokens {name, kind:agent|hec, host?} — mint un jeton. Stocke le SHA-256 (jamais le clair) ;

@@ -34,21 +34,35 @@ pub(crate) async fn field_filters_list(State(st): State<AppState>, Extension(au)
     }
     let db_path = req_db_path(&st, &au);
     crate::req_conn!(st, au, conn);
-    let rules: Vec<Value> = match conn.prepare(
-        "SELECT id,name,field,action,role,tenant,env,enabled,ord,created,updated FROM field_filter ORDER BY ord, id",
-    ) {
-        Ok(mut stmt) => stmt
-            .query_map([], |r| {
+    // `P10.7-f` (rang 1) — L'INVENTAIRE DES MASQUES EST ENTIER OU AVOUÉ. Avant : `.map(|rows| rows
+    // .flatten().collect()).unwrap_or_default()` et `Err(_) => Vec::new()` — une règle dont la ligne ne se
+    // décode pas disparaissait de la liste, et la MATRICE, qui est RECALCULÉE depuis `rules`, perdait la
+    // même ligne : la politique PII se lisait « ce champ n'est pas masqué » alors que le registre porte
+    // une règle qui le masque. Soldé en bloc ; sur échec, `error` dans le corps, et la matrice devient
+    // `null` — jamais un objet VIDE, qui se lirait « aucun champ n'est masqué, et c'est établi » (même
+    // règle que `TotalBorne::Illisible`, qui rend `null` plutôt qu'un zéro rassurant).
+    let lues: rusqlite::Result<Vec<Value>> = conn
+        .prepare("SELECT id,name,field,action,role,tenant,env,enabled,ord,created,updated FROM field_filter ORDER BY ord, id")
+        .and_then(|mut stmt| {
+            stmt.query_map([], |r| {
                 Ok(json!({
                     "id": r.get::<_, i64>(0)?, "name": r.get::<_, String>(1)?, "field": r.get::<_, String>(2)?,
                     "action": r.get::<_, String>(3)?, "role": r.get::<_, String>(4)?, "tenant": r.get::<_, String>(5)?,
                     "env": r.get::<_, String>(6)?, "enabled": r.get::<_, i64>(7)? != 0, "ord": r.get::<_, i64>(8)?,
                     "created": r.get::<_, i64>(9)?, "updated": r.get::<_, i64>(10)?
                 }))
-            })
-            .map(|rows| rows.flatten().collect())
-            .unwrap_or_default(),
-        Err(_) => Vec::new(),
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        });
+    let rules: Vec<Value> = match lues {
+        Ok(v) => v,
+        Err(_) => {
+            return Json(crate::handlers::liste_bornee::corps_de_liste_illisible(
+                json!({ "matrix": Value::Null, "actions": VALID_ACTIONS, "roles": VALID_ROLES }),
+                "rules",
+            ))
+            .into_response()
+        }
     };
     // MATRICE : pour chaque rôle, le jeu EFFECTIF de champs masqués (champ -> action). Rend la politique
     // LISIBLE (« src_user est HASH pour viewer, en clair pour admin »). Tenant/env = ceux de l'admin courant.

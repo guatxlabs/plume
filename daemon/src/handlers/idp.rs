@@ -99,12 +99,23 @@ pub(crate) async fn idp_providers_list(State(st): State<AppState>, Extension(au)
         return deny_multitenant();
     }
     let conn = st.db.lock();
-    // Le secret n'est JAMAIS projeté : seul le booléen (secret != '') sort.
-    let list: Vec<Value> = match conn.prepare(
-        "SELECT id,name,kind,enabled,config_json,created,updated,(secret != '') FROM idp_provider ORDER BY id",
-    ) {
-        Ok(mut stmt) => stmt
-            .query_map([], |r| {
+    // `P10.7-f` (rang 1) — LA LISTE SSO EST ENTIÈRE OU AVOUÉE. Avant : `.map(|rows| rows.flatten()
+    // .collect()).unwrap_or_default()` et `Err(_) => Vec::new()` — un fournisseur d'identité dont la ligne
+    // ne se décode pas disparaissait de la liste, et une voie d'authentification ACTIVE devenait invisible
+    // à celui qui la croyait fermée. Le parcours est soldé en bloc.
+    //
+    // POURQUOI UN 5xx NOMMÉ ET NON `error` DANS LE CORPS, comme les autres listes de ce lot : le corps de
+    // CETTE route est un TABLEAU NU (`Json(Value::Array(..))`), il n'a aucune clé où poser l'aveu, et lui
+    // en donner une changerait le contrat (`web/idp.js:23` reçoit et itère un tableau). La forme
+    // fail-closed du dépôt s'applique donc — celle de `client_case_get` et de `ledger_get` : un 5xx qui
+    // NOMME sa cause, jamais une absence inventée. `web/idp.js:24-28` la peint déjà (`api()` jette sur
+    // non-2xx et le module affiche « erreur : <statut> <corps> »), là où un `[]` en 200 se lirait
+    // « aucun fournisseur ».
+    let lues: rusqlite::Result<Vec<Value>> = conn
+        .prepare("SELECT id,name,kind,enabled,config_json,created,updated,(secret != '') FROM idp_provider ORDER BY id")
+        .and_then(|mut stmt| {
+            // Le secret n'est JAMAIS projeté : seul le booléen (secret != '') sort.
+            stmt.query_map([], |r| {
                 let cfg_json: String = r.get(4)?;
                 Ok(json!({
                     "id": r.get::<_, i64>(0)?,
@@ -116,12 +127,13 @@ pub(crate) async fn idp_providers_list(State(st): State<AppState>, Extension(au)
                     "updated": r.get::<_, i64>(6)?,
                     "has_secret": r.get::<_, i64>(7)? != 0,
                 }))
-            })
-            .map(|rows| rows.flatten().collect())
-            .unwrap_or_default(),
-        Err(_) => Vec::new(),
-    };
-    Json(Value::Array(list)).into_response()
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        });
+    match lues {
+        Ok(list) => Json(Value::Array(list)).into_response(),
+        Err(_) => server_err(crate::handlers::liste_bornee::CAUSE_LISTE_ILLISIBLE),
+    }
 }
 
 pub(crate) async fn idp_provider_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {

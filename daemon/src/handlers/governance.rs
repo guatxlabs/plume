@@ -405,21 +405,32 @@ pub(crate) async fn roles_list(State(st): State<AppState>, Extension(au): Extens
         Err(r) => return r,
     };
     let conn = cp.conn.lock();
-    let rows: Vec<Value> = match conn.prepare("SELECT name,base_role,deny_perms,description FROM role_def ORDER BY name") {
-        Ok(mut s) => s
-            .query_map([], |r| {
+    // `P10.7-f` (rang 1) — LE CATALOGUE RBAC EST ENTIER OU AVOUÉ. Avant : `.map(|it| it.flatten().collect())
+    // .unwrap_or_default()` et `Err(_) => Vec::new()` — un rôle dont la ligne ne se décode pas, ou un
+    // catalogue entièrement illisible, se servait `{"ok": true, "roles": []}` : une permission accordée
+    // cessait d'être visible, et `ok: true` affirmait que le catalogue avait été lu. Soldé en bloc ; sur
+    // échec, `ok: false` + `error` (la forme de `holds_list`/`sinks_list` du même fichier, `P10.7-z`).
+    let lues: rusqlite::Result<Vec<Value>> = conn
+        .prepare("SELECT name,base_role,deny_perms,description FROM role_def ORDER BY name")
+        .and_then(|mut s| {
+            s.query_map([], |r| {
                 Ok(json!({
                     "name": r.get::<_, String>(0)?,
                     "base_role": r.get::<_, String>(1)?,
                     "deny_perms": r.get::<_, String>(2)?.split(',').map(|x| x.trim()).filter(|x| !x.is_empty()).collect::<Vec<_>>(),
                     "description": r.get::<_, String>(3)?,
                 }))
-            })
-            .map(|it| it.flatten().collect())
-            .unwrap_or_default(),
-        Err(_) => Vec::new(),
-    };
-    Json(json!({ "ok": true, "roles": rows, "known_deny_perms": KNOWN_DENY_PERMS })).into_response()
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        });
+    match lues {
+        Ok(rows) => Json(json!({ "ok": true, "roles": rows, "known_deny_perms": KNOWN_DENY_PERMS })).into_response(),
+        Err(_) => Json(crate::handlers::liste_bornee::corps_de_liste_illisible(
+            json!({ "ok": false, "known_deny_perms": KNOWN_DENY_PERMS }),
+            "roles",
+        ))
+        .into_response(),
+    }
 }
 
 /// POST /api/roles — crée/met à jour un rôle composable (super-admin). Body {name, base_role, deny_perms[],

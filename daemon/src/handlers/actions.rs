@@ -469,15 +469,39 @@ pub(crate) async fn actions_pending(State(st): State<AppState>, Extension(au): E
     // cible explicite) -> réclamables par n'importe quel agent ; à la réclamation on les ASSIGNE à l'hôte
     // réclamant (cf plus bas) pour que action_result (AND host=?) puisse les clôturer + anti double-claim.
     // Anti-IDOR préservé : un agent ne voit JAMAIS une action ciblant un AUTRE hôte (host=<autre> exclu).
-    let rows: Vec<(i64, String, String, bool)> = match conn.prepare(
-        "SELECT id,kind,target,dry_run FROM action WHERE (host=?1 OR host IS NULL OR host='') AND status='approved' \
-         AND kind IN ('ban_ip','unban_ip') AND (claimed_ts IS NULL OR ?2-claimed_ts>?3) ORDER BY id LIMIT 100",
-    ) {
-        Ok(mut s) => s
-            .query_map(params![host, now_ts, STALE], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)? != 0)))
-            .map(|m| m.flatten().collect())
-            .unwrap_or_default(),
-        Err(_) => Vec::new(),
+    // `P10.7-f` (rang 1) — LA REMISE D'ACTIONS EST ENTIÈRE OU REFUSÉE. Avant : une préparation ratée
+    // rendait `Vec::new()` — donc un TSV VIDE en 200, que l'agent lit « rien à faire » et abandonne
+    // (`respond.sh:278` : `[ -n "$list" ] || exit 0`) — et `.map(|m| m.flatten().collect())` avalait une
+    // ligne illisible : l'action ne part pas dans ce TSV, et rien ne le dit. Soldé en bloc.
+    //
+    // POURQUOI UN STATUT NON-200 ET NON UNE LIGNE D'AVEU, MESURÉ SUR LE CONSOMMATEUR. Le seul lecteur de
+    // cette route est `collectors/respond.sh:277-289` : il appelle `curl -sS` SANS `--fail`, puis parse
+    // chaque ligne en TSV et SAUTE toute ligne dont le premier champ n'est pas numérique
+    // (`case "$id" in *[!0-9]*) continue`). Une « ligne d'aveu » y serait donc écartée EN SILENCE — un
+    // aveu qu'aucun lecteur ne lit. Le non-200, lui, porte la cause dans un corps que le même filtre
+    // écarte sans dégât (il ne commence pas par un chiffre : aucune action fantôme n'est fabriquée), il
+    // sort dans le journal du démon avec son identifiant (`err_json` trace tout 5xx sur stderr), et il
+    // laisse l'agent REVENIR au tour suivant : aucune action n'est réclamée ni marquée `claimed_ts`, donc
+    // rien n'est perdu ni exécuté à moitié. 503 nomme l'indisponibilité de la lecture, pas une faute de
+    // la requête de l'agent.
+    let lues: rusqlite::Result<Vec<(i64, String, String, bool)>> = conn
+        .prepare(
+            "SELECT id,kind,target,dry_run FROM action WHERE (host=?1 OR host IS NULL OR host='') AND status='approved' \
+             AND kind IN ('ban_ip','unban_ip') AND (claimed_ts IS NULL OR ?2-claimed_ts>?3) ORDER BY id LIMIT 100",
+        )
+        .and_then(|mut s| {
+            s.query_map(params![host, now_ts, STALE], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)? != 0)))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+        });
+    let rows: Vec<(i64, String, String, bool)> = match lues {
+        Ok(v) => v,
+        Err(_) => {
+            return err_json(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "file d'actions NON LUE : la lecture des actions approuvées de cet hôte a échoué. \
+                 AUCUNE action n'est remise ni réclamée ce tour-ci — ce n'est pas une file vide ; réessayer.",
+            )
+        }
     };
     let mut body = String::new();
     for (id, kind, target, dry) in &rows {
@@ -629,27 +653,43 @@ pub(crate) fn netban_validate_ip_ctx(ip: &str, db_path: &str, protection_declare
 pub(crate) async fn netban_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
     crate::req_conn!(st, au, conn);
     let now_ts = now();
-    let mut stmt = match conn.prepare(
-        "SELECT ip,reason,created_ts,expires_ts,created_by,env_id FROM net_ban ORDER BY created_ts DESC",
-    ) {
-        Ok(s) => s,
-        Err(_) => return Json(json!({ "bans": [], "active": 0 })),
+    // `P10.7-f` (rang 1) — LA LISTE DES BANS EST ENTIÈRE OU AVOUÉE, ET LE COMPTE AVEC ELLE. Avant : une
+    // préparation ratée rendait `{"bans": [], "active": 0}` — le corps le plus rassurant qui soit sur une
+    // surface de blocage — et `.map(|m| m.flatten().collect()).unwrap_or_default()` avalait une ligne
+    // illisible, dont `active` (DÉRIVÉ de la liste) héritait sans le dire. Soldé en bloc ; sur échec,
+    // `error` dans le corps et `active` à `null` : un compte DÉRIVÉ d'une liste non lue n'est pas un
+    // compte, et `0` se lirait « aucune adresse n'est bannie, c'est établi ».
+    let lues: rusqlite::Result<Vec<Value>> = conn
+        .prepare("SELECT ip,reason,created_ts,expires_ts,created_by,env_id FROM net_ban ORDER BY created_ts DESC")
+        .and_then(|mut stmt| {
+            stmt.query_map([], |r| {
+                let expires: Option<i64> = r.get(3)?;
+                Ok(json!({
+                    "ip": r.get::<_, String>(0)?,
+                    "reason": r.get::<_, Option<String>>(1)?,
+                    "created_ts": r.get::<_, Option<i64>>(2)?,
+                    "expires_ts": expires,
+                    "created_by": r.get::<_, Option<String>>(4)?,
+                    "env_id": r.get::<_, String>(5)?,
+                    "active": expires.map(|e| e > now_ts).unwrap_or(true),
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        });
+    let bans: Vec<Value> = match lues {
+        Ok(v) => v,
+        Err(_) => {
+            return Json(crate::handlers::liste_bornee::corps_de_liste_illisible(
+                json!({
+                    "active": Value::Null,
+                    "charges": netban_cache().read().len(),
+                    "cap": NETBAN_CACHE_CAP,
+                    "tronque": netban_store_tronque(),
+                }),
+                "bans",
+            ))
+        }
     };
-    let bans: Vec<Value> = stmt
-        .query_map([], |r| {
-            let expires: Option<i64> = r.get(3)?;
-            Ok(json!({
-                "ip": r.get::<_, String>(0)?,
-                "reason": r.get::<_, Option<String>>(1)?,
-                "created_ts": r.get::<_, Option<i64>>(2)?,
-                "expires_ts": expires,
-                "created_by": r.get::<_, Option<String>>(4)?,
-                "env_id": r.get::<_, String>(5)?,
-                "active": expires.map(|e| e > now_ts).unwrap_or(true),
-            }))
-        })
-        .map(|m| m.flatten().collect())
-        .unwrap_or_default();
     let active = bans.iter().filter(|b| b["active"].as_bool().unwrap_or(false)).count();
     // CE QUE LA BORNE MÉMOIRE FAIT, DIT ICI. `charges` = entrées réellement portées par le store live
     // (ce qui bloque), `cap` = son plafond, `tronque` = la base porte plus de bans que le cache n'en
@@ -1129,12 +1169,30 @@ pub(crate) fn respond_run() {
     // `plume_host_identity_lisible` porte la cause.
     let (me, identite_lue) =
         identite_pour_reclamation(&cfg(&conf, "PLUME_HOST_LABEL", ""), crate::maintenance::identite_hote());
-    let pending: Vec<(i64, String, String, bool)> = match conn.prepare(ACTIONS_A_RECLAMER_ICI) {
-        Ok(mut s) => s
-            .query_map(params![me, i64::from(identite_lue), now(), RECLAMATION_PERIMEE_S], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)? != 0)))
-            .map(|x| x.flatten().collect())
-            .unwrap_or_default(),
-        Err(_) => return,
+    // `P10.7-f` (rang 1) — LA LISTE DE TRAVAIL DU RESPONDER EST LUE EN ENTIER, OU LE TOUR EST SAUTÉ EN LE
+    // DISANT. Avant : `.map(|x| x.flatten().collect()).unwrap_or_default()` sur la liste des actions
+    // APPROUVÉES à réclamer ici — une ligne illisible (cache de schéma périmé rendant « no such table » au
+    // PREMIER pas, colonne absente, `target` corrompu) sortait de la liste, et l'action décidée par un
+    // analyste n'était JAMAIS exécutée pendant que la boucle se déclarait satisfaite. AUCUN CORPS N'EST
+    // SERVI ICI : le geste n'est pas de poser un aveu mais de ne RIEN faire de ce tour et de le compter,
+    // par le compteur de balayage aveugle du dépôt (`P10.7-f` lots 106/109 : `sla_multilevel`,
+    // `escalate_overdue`, `dispatch_alerts`, `dispatch_notifiers` l'emploient déjà). Une lecture ratée
+    // laisse TOUTES les actions en `approved` — rien n'est réclamé, rien n'est clos —, donc le tour
+    // suivant relit. RÉSERVE DITE : `respond_run` est une INVOCATION (sous-commande `respond`, un
+    // processus par déclenchement de la minuterie), pas une boucle du démon long ; le compteur
+    // `TICKS_AVEUGLES` meurt avec le processus et n'atteint pas `/metrics`. C'est la ligne de journal
+    // (stderr -> journald) qui est ici l'observable, et le compteur reste posé pour que la forme soit UNE.
+    let pending: Vec<(i64, String, String, bool)> = match conn
+        .prepare(ACTIONS_A_RECLAMER_ICI)
+        .and_then(|mut s| {
+            s.query_map(params![me, i64::from(identite_lue), now(), RECLAMATION_PERIMEE_S], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)? != 0)))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+        }) {
+        Ok(v) => v,
+        Err(e) => {
+            crate::metrics::compter_un_tick_aveugle("responder_local", &e.to_string());
+            return;
+        }
     };
     if pending.is_empty() {
         return;

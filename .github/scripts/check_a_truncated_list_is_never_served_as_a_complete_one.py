@@ -83,6 +83,14 @@ une LISTE DE SITES, jugée DANS LES DEUX SENS : une accusation hors ensemble est
 descendre, et zéro est atteignable — une garde dont l'ensemble serait vide ne réclame rien, donc elle
 n'est pas une rançon.
 
+RELEVÉ APRÈS LE RANG UN (2026-09-16, même jour, lot suivant) : les huit sites de sécurité et
+d'administration sont ENTIÈRES OU AVOUÉES (collecte en bloc, `corps_de_liste_illisible`, cinq cents
+nommé pour le tableau nu des fournisseurs d'identité, cinq cent trois pour la remise d'actions, tick
+aveugle compté pour le responder local) et leurs entrées ont quitté l'ensemble : la garde rend
+désormais cinquante sites sur vingt-six fichiers, quarante-sept défauts connus. Les comptes des
+paragraphes ci-dessus sont le RELEVÉ DU MATIN, gardé tel quel comme point de départ ; les planchers
+ne montent jamais.
+
 LES CINQUANTE-CINQ DÉFAUTS SONT ADMIS AUJOURD'HUI, ET C'EST UN AVEU, PAS UN ACQUITTEMENT
 ------------------------------------------------------------------------------------------
 Ils entrent dans l'ensemble pour que la garde puisse être câblée VERTE le jour où elle est écrite :
@@ -207,32 +215,19 @@ SITE_INDECIDABLE = {
 # RANG 1 — SÉCURITÉ ET ADMINISTRATION : une ligne avalée retire un accès, une règle de blocage ou une
 # action de la vue de celui qui décide. C'est la classe où « la liste est courte » se lit « il n'y a
 # rien de plus », et où cette lecture-là est une décision de sécurité.
-DEFAUTS_RANG_1_SECURITE = {
-    # Un jeton d'API dont la ligne ne se décode pas DISPARAÎT de la liste des jetons : l'admin ne le
-    # révoque pas parce qu'il ne le voit pas. Geste : solder le parcours en bloc et poser `error`.
-    ("daemon/src/handlers/tokens.rs", "tokens_list"): 1,
-    # Un compte local avalé disparaît de « qui a accès » — la liste que l'audit lit. Même geste.
-    ("daemon/src/handlers/users_lookups.rs", "users_list"): 1,
-    # Un rôle avalé disparaît de la gouvernance : une permission accordée cesse d'être visible.
-    ("daemon/src/handlers/governance.rs", "roles_list"): 1,
-    # Un fournisseur d'identité avalé disparaît de la liste SSO : une voie d'authentification active
-    # devient invisible à celui qui la croit fermée.
-    ("daemon/src/handlers/idp.rs", "idp_providers_list"): 1,
-    # Un bannissement réseau avalé disparaît de la liste des bans : l'opérateur croit l'adresse libre
-    # (ou croit un ban absent) et décide sur cette croyance.
-    ("daemon/src/handlers/actions.rs", "netban_list"): 1,
-    # Un filtre de champ avalé disparaît de la liste des masques : une donnée qu'on croit masquée
-    # n'apparaît plus comme telle dans l'inventaire des masques.
-    ("daemon/src/handlers/field_filters.rs", "field_filters_list"): 1,
-    # Une action en ATTENTE d'approbation qui s'avale ne sera jamais approuvée ni refusée : elle sort
-    # de la file sans que rien ne le dise. Geste : rendre un `Result` et poser la coupe dans le corps.
-    ("daemon/src/handlers/actions.rs", "actions_pending"): 1,
-    # LECTURE INTERNE, et la seule de rang 1 : la liste des actions APPROUVÉES à réclamer sur cet hôte
-    # est aplatie. Une ligne avalée = une action approuvée par un analyste qui n'est JAMAIS exécutée,
-    # et rien ne la compte. Aucun corps n'est servi ici : le geste est de rendre un `Result` (ou de
-    # compter l'abandon comme le démon compte déjà les siens), pas de poser un aveu.
-    ("daemon/src/handlers/actions.rs", "respond_run"): 1,
-}
+#
+# RANG UN CLOS LE 2026-09-16 — HUIT SITES, SIX FICHIERS, PLUS UNE SEULE ENTRÉE. Les huit entrées qui
+# vivaient ici (`tokens_list`, `users_list`, `roles_list`, `idp_providers_list`, `netban_list`,
+# `field_filters_list`, `actions_pending`, `respond_run`) sont RETIRÉES parce que leurs sites sont
+# corrigés, pas amnistiés : chaque parcours est soldé en bloc (`collect::<rusqlite::Result<Vec<_>>>()`)
+# et l'échec sort sous la forme que le dépôt emploie déjà — `error` dans le corps déjà construit
+# (`liste_bornee::corps_de_liste_illisible`) pour les cinq listes JSON, un 5xx nommé pour la liste SSO
+# (son corps est un TABLEAU NU, il n'a aucune clé où poser l'aveu), un 503 nommé pour la remise TSV aux
+# agents (son seul lecteur écarte toute ligne non numérique, donc une ligne d'aveu n'y serait lue par
+# personne), et un tour SAUTÉ ET COMPTÉ (`metrics::compter_un_tick_aveugle("responder_local", ..)`) pour
+# la seule lecture interne du rang, qui ne sert aucun corps. Le dictionnaire reste, VIDE : le rang est
+# une classe de l'ensemble, et son vide est le seul état qui dise « il n'y a plus rien à admettre ici ».
+DEFAUTS_RANG_1_SECURITE = {}
 
 # RANG 2 — DÉTECTION : une ligne avalée n'est pas une ligne d'affichage en moins, c'est de la
 # DÉTECTION EN MOINS. Le produit continue de tourner, plus aveugle, et rien ne l'écrit.

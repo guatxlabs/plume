@@ -27,6 +27,17 @@
 //! par `une_bibliotheque_passee_privee_apres_coup_reste_resolue`).
 
 use crate::*;
+use rusqlite::OptionalExtension;
+
+/// `P10.20-b` — LE REFUS D'UNE RÉSOLUTION QUI N'A PAS PU LIRE LA DÉFINITION DE BIBLIOTHÈQUE. 503 et non
+/// 403 : ce n'est pas un droit qui manque mais une lecture, et un refus réessayable ne doit pas
+/// s'apprendre à l'appelant comme une interdiction permanente. Le corps ne peut pas être plus bavard —
+/// `projetee` rend un couple (code, phrase) que ses deux appelants reversent tel quel.
+pub(crate) const CAUSE_DEFINITION_DE_BIBLIOTHEQUE_NON_LUE: &str =
+    "définition de bibliothèque NON LUE : la porte « SQL brut = admin » ne peut pas juger ce qui \
+     s'exécutera ; ce n'est PAS « aucune définition référencée ». Réessayez.";
+const ILLISIBLE: (StatusCode, &str) =
+    (StatusCode::SERVICE_UNAVAILABLE, CAUSE_DEFINITION_DE_BIBLIOTHEQUE_NON_LUE);
 
 // ---------------------------------------------------------------------------------------------
 // L'UNIQUE ÉCRITURE DE LA RÉSOLUTION — empruntée par TOUS les sites de lecture (panel_access,
@@ -243,27 +254,40 @@ impl DefinitionExecutee {
         const INACCESSIBLE: (StatusCode, &str) = (StatusCode::FORBIDDEN, "définition de bibliothèque inaccessible");
         if let RefBibliotheque::Vers(n) = demande {
             match Self::ligne_bibliotheque(conn, *n) {
-                Some((_, _, owner, vis)) if lisible_par(&owner, &vis, au) => {}
+                Err(_) => return Err(ILLISIBLE),
+                Ok(Some((_, _, owner, vis))) if lisible_par(&owner, &vis, au) => {}
                 _ => return Err(INACCESSIBLE), // privée d'autrui OU inexistante : même réponse
             }
         }
         // Référence PENDANTE héritée (la ligne n'existe plus) : la jointure ne matcherait pas -> le
         // panneau reprend la main. `resoudre` reproduit exactement ce cas avec `None`.
-        let bibliotheque = demande
-            .apres(bib_avant)
-            .and_then(|id| Self::ligne_bibliotheque(conn, id))
-            .map(|(q, s, _, _)| (q, s));
+        //
+        // `P10.20-b` — « LA LIGNE N'EXISTE PLUS » N'EST PAS « JE N'AI PAS PU LA LIRE », ET LA PORTE
+        // « SQL BRUT = ADMIN » SE JOUE ICI. Cette lecture était un `query_row(..).ok()` : une lecture
+        // RATÉE rendait `None`, `resoudre` retombait donc sur la définition DU PANNEAU, et c'est ELLE que
+        // `permise_pour` jugeait. Or à l'EXÉCUTION, `courante` relit la jointure : si la bibliothèque
+        // redevient lisible, c'est SA requête qui s'exécute. La porte pouvait ainsi juger un GXQL de
+        // panneau pendant que la bibliothèque référencée porte du SQL brut — exactement le contournement
+        // que `P7.13-a` avait fermé, rouvert par une panne de lecture. La branche `Inchangee` est la plus
+        // exposée : elle ne passe par AUCUNE des deux gardes ci-dessus. Une lecture non faite refuse.
+        let bibliotheque = match demande.apres(bib_avant) {
+            Some(id) => Self::ligne_bibliotheque(conn, id).map_err(|_| ILLISIBLE)?.map(|(q, s, _, _)| (q, s)),
+            None => None,
+        };
         Ok(Self::resoudre(bibliotheque, panneau_apres))
     }
 
-    /// (requête, is_soql, owner, visibility) d'une définition — `None` si la ligne n'existe pas.
-    fn ligne_bibliotheque(conn: &Connection, id: i64) -> Option<(String, bool, String, String)> {
+    /// (requête, is_soql, owner, visibility) d'une définition. `Ok(None)` si la ligne N'EXISTE PAS —
+    /// une absence ÉTABLIE, sur laquelle la résolution retombe légitimement sur le panneau. `Err(..)` si
+    /// la lecture N'A PAS EU LIEU : l'appelant refuse (`ILLISIBLE`), parce que confondre les deux fait
+    /// juger la porte « SQL brut = admin » sur une définition qui n'est pas celle qui s'exécutera.
+    fn ligne_bibliotheque(conn: &Connection, id: i64) -> rusqlite::Result<Option<(String, bool, String, String)>> {
         conn.query_row(
             "SELECT query,is_soql!=0,COALESCE(owner,''),COALESCE(visibility,'shared') FROM library_panel WHERE id=?1",
             params![id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
-        .ok()
+        .optional()
     }
 }
 

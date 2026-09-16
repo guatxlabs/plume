@@ -415,8 +415,17 @@ pub(crate) async fn login_post(
     // NE pose PAS de session : on renvoie un ticket signé court, à échanger contre un code sur /api/login/mfa.
     // INVARIANT MODE 0 : `user_mfa` VIDE (défaut) -> `mfa_enabled_for` renvoie false -> flux STRICTEMENT
     // inchangé (aucune session tant qu'aucun compte n'a volontairement activé la MFA). Mode 1 : sauté.
-    if !st.multi_tenant && mfa_enabled_for(&st, &name) {
-        return mfa_challenge_response(&st, &name, &role);
+    // `P10.20-b` — FAIL-CLOSED SUR LA LECTURE, PAS SEULEMENT SUR LE FACTEUR. `mfa_enabled_for` rendait
+    // `false` aussi bien pour « ce compte n'a pas de MFA » que pour « la ligne n'a pas été lue » : sur une
+    // panne de lecture de `user_mfa`, le mot de passe SEUL posait la session d'un compte dont le second
+    // facteur est ACTIF. Une lecture non faite REFUSE désormais la connexion (503 nommé, réessayable) :
+    // un refus se rattrape, un second facteur contourné non.
+    if !st.multi_tenant {
+        match mfa_enabled_for(&st, &name) {
+            Ok(true) => return mfa_challenge_response(&st, &name, &role),
+            Ok(false) => {}
+            Err(_) => return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_MFA_NON_LUE),
+        }
     }
     // L2 : le jeton est frappé avec l'epoch de session COURANT -> il reste valide après un logout/reset
     // ANTÉRIEUR (seuls les jetons émis avant le dernier bump sont révoqués).

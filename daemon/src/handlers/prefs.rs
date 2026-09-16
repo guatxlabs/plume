@@ -7,17 +7,45 @@
 //! renvoie `Read` pour `/api/prefs` (viewer+, section self-service, MIROIR de `/api/mfa/*`) — le PUT est
 //! `mutating` mais reste self-scoped -> ce n'est pas une surface admin ; le CSRF cookie s'applique au PUT.
 use crate::*;
+use rusqlite::OptionalExtension;
+
+/// `P10.20-b` — LA CAUSE NOMMÉE D'UNE LECTURE DE PRÉFÉRENCES QUI N'A PAS EU LIEU.
+///
+/// LE DÉFAUT MESURÉ LE 2026-09-16, ET IL DÉTRUIT DE L'ÉTAT DURABLE. `prefs_read` retombait sur `"{}"`
+/// par un `query_row(..).ok()`, donc une lecture RATÉE était servie en 200 comme « ce compte n'a aucune
+/// préférence ». Or le client (`web/prefs.js`) traite le blob du serveur comme la VÉRITÉ COMPLÈTE et
+/// inter-appareils — c'est écrit dans son en-tête, et c'est juste : le serveur ne garde aucun historique
+/// par clé, donc l'absence d'une clé y EST sa suppression. `prefsInit()` REMPLACE donc son miroir par ce
+/// qu'il reçoit ; sur un `{}` inventé, le miroir local est vidé, et le PREMIER réglage touché ensuite
+/// renvoie en PUT un blob vide qui ÉCRASE la ligne du compte. Une panne de lecture d'une seconde
+/// effaçait des colonnes, des favoris et des réglages de vue, définitivement.
+///
+/// CE QUI EST FAIT, ET POURQUOI C'EST UN REFUS ET NON UN CORPS QUI AVOUE. Un corps `{prefs:{}, error}`
+/// en 200 laisserait un client qui ne lit pas `error` — c'est-à-dire celui d'aujourd'hui — poursuivre
+/// exactement la même destruction. Un 503 nommé, lui, fait JETER `api('/prefs')` : la capture de
+/// `prefsInit()` garde alors le miroir local (« keep the mirror-seeded PREFS », déjà écrit là-bas), donc
+/// le PUT suivant reporte les VRAIES préférences. Le refus ferme la boucle sans qu'une ligne de console
+/// ait à changer. L'ÉCRITURE, elle, n'a jamais lu : le gestionnaire de PUT remplace le blob sans le
+/// relire — la séquence lire-puis-écraser est CLIENTE, et c'est là qu'elle se coupe.
+pub(crate) const CAUSE_PREFERENCES_NON_LUES: &str = "PRÉFÉRENCES NON LUES : la lecture de `user_pref` a \
+     échoué. Ce n'est PAS « aucune préférence enregistrée » — les vôtres existent peut-être. Servir un \
+     jeu VIDE ferait remplacer votre état local par du vide, puis ÉCRASER la ligne du compte au premier \
+     réglage touché. La lecture est donc refusée ; réessayez.";
 
 /// Plafond du blob de préférences SÉRIALISÉ (anti-abus de la table par-utilisateur). 64 KiB : très large
 /// pour de l'état d'UI (colonnes/favoris/réglages par vue), négligeable pour la base.
 pub(crate) const PREFS_MAX_BYTES: usize = 64 * 1024;
 
-/// Lecture SELF-SCOPED : blob JSON de `user` (objet ; "{}" si aucune ligne). Pure -> testable.
-fn prefs_read(conn: &Connection, user: &str) -> String {
-    conn.query_row("SELECT prefs FROM user_pref WHERE user=?1", params![user], |r| r.get::<_, String>(0))
-        .ok()
+/// Lecture SELF-SCOPED : blob JSON de `user`. `Ok("{}")` quand aucune ligne n'existe ou qu'elle est
+/// vide — une absence ÉTABLIE, qui est le cas nominal d'un compte neuf. `Err(..)` quand la lecture n'a
+/// PAS EU LIEU : l'appelant refuse au lieu de servir un jeu vide (voir `CAUSE_PREFERENCES_NON_LUES`).
+/// Pure -> testable.
+fn prefs_read(conn: &Connection, user: &str) -> rusqlite::Result<String> {
+    Ok(conn
+        .query_row("SELECT prefs FROM user_pref WHERE user=?1", params![user], |r| r.get::<_, String>(0))
+        .optional()?
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "{}".to_string())
+        .unwrap_or_else(|| "{}".to_string()))
 }
 
 /// Écriture SELF-SCOPED (upsert par `user`). Fail-closed : refuse un blob > PREFS_MAX_BYTES ou non-objet.
@@ -43,7 +71,11 @@ fn prefs_write(conn: &Connection, user: &str, blob: &str, ts: i64) -> Result<(),
 /// GET /api/prefs — renvoie `{prefs:{...}}` pour L'APPELANT (viewer+, self-scoped).
 pub(crate) async fn prefs_get(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Response {
     crate::req_conn!(st, au, conn);
-    let blob = prefs_read(&conn, &au.name);
+    // `P10.20-b` — UNE LECTURE RATÉE REFUSE, elle ne sert pas un jeu vide que le client prendrait pour la
+    // vérité complète et reporterait en écrasant la ligne du compte.
+    let Ok(blob) = prefs_read(&conn, &au.name) else {
+        return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_PREFERENCES_NON_LUES);
+    };
     let prefs: Value = serde_json::from_str(&blob).unwrap_or_else(|_| json!({}));
     Json(json!({ "prefs": prefs })).into_response()
 }
@@ -86,10 +118,10 @@ mod tests {
         let conn = mem();
         prefs_write(&conn, "alice", r#"{"theme":"dark","fav":[1,2]}"#, 100).unwrap();
         prefs_write(&conn, "bob", r#"{"theme":"light"}"#, 100).unwrap();
-        assert_eq!(prefs_read(&conn, "alice"), r#"{"theme":"dark","fav":[1,2]}"#);
-        assert_eq!(prefs_read(&conn, "bob"), r#"{"theme":"light"}"#);
+        assert_eq!(prefs_read(&conn, "alice").expect("lecture faite"), r#"{"theme":"dark","fav":[1,2]}"#);
+        assert_eq!(prefs_read(&conn, "bob").expect("lecture faite"), r#"{"theme":"light"}"#);
         // un user inconnu ne lit RIEN d'autrui -> objet vide (jamais la ligne d'un voisin).
-        assert_eq!(prefs_read(&conn, "carol"), "{}");
+        assert_eq!(prefs_read(&conn, "carol").expect("lecture faite"), "{}");
     }
 
     // PORTÉE D'UNE ÉCRITURE : exactement UNE ligne, et cette ligne REMPLACÉE EN ENTIER.
@@ -107,13 +139,13 @@ mod tests {
         prefs_write(&conn, "alice", r#"{"k":"a"}"#, 1).unwrap();
         prefs_write(&conn, "bob", r#"{"k":"b","z":1}"#, 2).unwrap();
         prefs_write(&conn, "bob", r#"{"k":"b2"}"#, 3).unwrap();
-        assert_eq!(prefs_read(&conn, "alice"), r#"{"k":"a"}"#);
+        assert_eq!(prefs_read(&conn, "alice").expect("lecture faite"), r#"{"k":"a"}"#);
         // REMPLACEMENT, pas fusion : `z` a DISPARU du blob de bob, sans rien aspirer chez alice.
-        assert_eq!(prefs_read(&conn, "bob"), r#"{"k":"b2"}"#);
+        assert_eq!(prefs_read(&conn, "bob").expect("lecture faite"), r#"{"k":"b2"}"#);
         // Un blob VIDE est un remplacement comme un autre : retirer la DERNIÈRE préférence est représentable.
         prefs_write(&conn, "bob", "{}", 4).unwrap();
-        assert_eq!(prefs_read(&conn, "bob"), "{}");
-        assert_eq!(prefs_read(&conn, "alice"), r#"{"k":"a"}"#);
+        assert_eq!(prefs_read(&conn, "bob").expect("lecture faite"), "{}");
+        assert_eq!(prefs_read(&conn, "alice").expect("lecture faite"), r#"{"k":"a"}"#);
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM user_pref", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 2);
     }
@@ -127,12 +159,12 @@ mod tests {
         let err = prefs_write(&conn, "alice", &big, 1).unwrap_err();
         assert!(err.starts_with("préférences trop"));
         // rien persisté -> lecture = "{}" (pas de ligne partielle).
-        assert_eq!(prefs_read(&conn, "alice"), "{}");
+        assert_eq!(prefs_read(&conn, "alice").expect("lecture faite"), "{}");
         // pile sous le plafond avec un objet valide -> accepté.
         let ok = format!("{{\"x\":\"{}\"}}", "a".repeat(PREFS_MAX_BYTES - 16));
         assert!(ok.len() <= PREFS_MAX_BYTES);
         prefs_write(&conn, "alice", &ok, 2).unwrap();
-        assert_eq!(prefs_read(&conn, "alice"), ok);
+        assert_eq!(prefs_read(&conn, "alice").expect("lecture faite"), ok);
     }
 
     // FORME : seul un OBJET JSON est accepté (ni scalaire ni tableau) -> borne la surface + merge client sain.
@@ -143,7 +175,7 @@ mod tests {
         assert!(prefs_write(&conn, "alice", "42", 1).is_err());
         assert!(prefs_write(&conn, "alice", "\"hi\"", 1).is_err());
         assert!(prefs_write(&conn, "alice", "not json", 1).is_err());
-        assert_eq!(prefs_read(&conn, "alice"), "{}"); // aucun rejet n'a persisté quoi que ce soit
+        assert_eq!(prefs_read(&conn, "alice").expect("lecture faite"), "{}"); // aucun rejet n'a persisté quoi que ce soit
         assert!(prefs_write(&conn, "alice", "{}", 1).is_ok());
     }
 
@@ -153,7 +185,7 @@ mod tests {
         let conn = mem();
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM user_pref", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 0);
-        assert_eq!(prefs_read(&conn, "anyone"), "{}");
+        assert_eq!(prefs_read(&conn, "anyone").expect("lecture faite"), "{}");
     }
 
     // RBAC : /api/prefs = viewer+ self-service (Read même en PUT) ; une mutation NON déclarée reste admin-only.

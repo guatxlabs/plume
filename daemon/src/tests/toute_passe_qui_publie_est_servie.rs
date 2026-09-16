@@ -86,12 +86,12 @@
 
         // ① CONTRÔLE NÉGATIF — avant toute publication, la surface ne connaît pas cette passe, et
         //    n'invente aucun zéro à sa place.
-        let j0 = gather_json(&c, spool, "", 1, 80);
+        let j0 = gather_json(&c, spool, "", &crate::handlers::system::VersionDeSchema::Lue(1), 80);
         assert!(
             j0["scheduler"].get(format!("{JAMAIS_DECLAREE}_abandons_verdict").as_str()).is_none(),
             "avant publication : aucune clé, et surtout pas un zéro — {}", j0["scheduler"]
         );
-        let p0 = gather_prom(&c, spool, "", 1, 80);
+        let p0 = gather_prom(&c, spool, "", &crate::handlers::system::VersionDeSchema::Lue(1), 80);
         assert!(!p0.contains(&serie), "avant publication : aucune série pour cette passe");
 
         // ② LA PUBLICATION EST LE SEUL GESTE. Aucune table n'est touchée, aucune constante ajoutée.
@@ -100,7 +100,7 @@
             Mesure::Illisible { cause: CAUSE_FORME_INCONNUE, detail: "liste des éléments dus : no such table".into() },
         );
 
-        let j = gather_json(&c, spool, "", 1, 80);
+        let j = gather_json(&c, spool, "", &crate::handlers::system::VersionDeSchema::Lue(1), 80);
         assert_eq!(
             j["scheduler"][format!("{JAMAIS_DECLAREE}_abandons_verdict").as_str()], VERDICT_ILLISIBLE,
             "le JSON du panneau porte l'aveu d'une passe que rien ne déclarait : {}", j["scheduler"]
@@ -111,7 +111,7 @@
             "STRUCTUREL : aucun nombre ne sort d'un aveu, donc aucune jauge ne peut publier « 0 abandon »"
         );
 
-        let p = gather_prom(&c, spool, "", 1, 80);
+        let p = gather_prom(&c, spool, "", &crate::handlers::system::VersionDeSchema::Lue(1), 80);
         assert!(
             p.contains(&format!("plume_scheduler_{serie}_bilan_lisible{{cause=\"{CAUSE_FORME_INCONNUE}\"}} 0")),
             "/metrics SERT l'aveu, avec sa cause en étiquette"
@@ -124,7 +124,7 @@
         // ③ LE MÊME REGISTRE, LU SAINEMENT : la valeur revient, l'aveu s'efface. Sans ce second sens,
         //    une exposition qui crierait toujours passerait aussi le point ②.
         crate::bilan_de_tick::publier(JAMAIS_DECLAREE, Mesure::Lue(7));
-        let p2 = gather_prom(&c, spool, "", 1, 80);
+        let p2 = gather_prom(&c, spool, "", &crate::handlers::system::VersionDeSchema::Lue(1), 80);
         assert!(p2.contains(&format!("\nplume_scheduler_{serie}_abandons 7\n")), "le compte est servi : {serie}");
         assert!(p2.contains(&format!("plume_scheduler_{serie}_bilan_lisible{{cause=\"aucune\"}} 1")));
 
@@ -285,7 +285,7 @@
         let (c, tmp) = tps_socle("p107x-nom-de-serie");
         let spool = tmp.to_str().unwrap();
         crate::bilan_de_tick::publier(AVEC_TIRETS, Mesure::Lue(1));
-        let prom = gather_prom(&c, spool, "", 1, 80);
+        let prom = gather_prom(&c, spool, "", &crate::handlers::system::VersionDeSchema::Lue(1), 80);
         // La PROPRIÉTÉ, pas la ligne : AUCUN nom de métrique du relevé ne sort de l'alphabet admis.
         for ligne in prom.lines().filter(|l| l.starts_with("# TYPE ")) {
             let nom = ligne.split_whitespace().nth(2).unwrap_or_default();
@@ -357,7 +357,7 @@
         crate::ioc_reload_etat().write().remove(dbp);
         let d0 = detection(&c, spool);
         assert!(d0.get("cache_indicateurs").is_none() && d0.get("cache_indicateurs_verdict").is_none(), "démarrage : rien n'est posé — {d0}");
-        let p0 = gather_prom(&c, spool, dbp, 1, 80);
+        let p0 = gather_prom(&c, spool, dbp, &crate::handlers::system::VersionDeSchema::Lue(1), 80);
         assert!(!p0.contains("plume_ioc_cache_lisible"), "aucune accusation portée à vide au démarrage");
 
         // ② RECHARGEMENT SAIN — le nombre est publié, l'axe de l'aveu reste MUET.
@@ -366,7 +366,7 @@
         assert_eq!(d1["cache_indicateurs"], 2, "la DÉTECTION tourne sur deux indicateurs : {d1}");
         assert_eq!(d1["cache_indicateurs_verdict"], VERDICT_LU);
         assert!(!d1["detail"].as_str().unwrap_or_default().contains("PÉRIMÉ"), "chemin sain MUET : {d1}");
-        let p1 = gather_prom(&c, spool, dbp, 1, 80);
+        let p1 = gather_prom(&c, spool, dbp, &crate::handlers::system::VersionDeSchema::Lue(1), 80);
         assert!(p1.contains("\nplume_ioc_cache_indicateurs 2\n"), "et /metrics sert le compte");
         assert!(p1.contains("plume_ioc_cache_lisible{cause=\"aucune\"} 1"));
 
@@ -382,10 +382,10 @@
         assert!(d2.get("cache_indicateurs").is_none(), "aucun nombre à lire quand la lecture a échoué : {d2}");
         assert_eq!(d2["cache_indicateurs_verdict"], VERDICT_ILLISIBLE);
         assert_eq!(d2["cache_indicateurs_cause"], CAUSE_FORME_INCONNUE);
-        let p2 = gather_prom(&c, spool, dbp, 1, 80);
+        let p2 = gather_prom(&c, spool, dbp, &crate::handlers::system::VersionDeSchema::Lue(1), 80);
         assert!(p2.contains(&format!("plume_ioc_cache_lisible{{cause=\"{CAUSE_FORME_INCONNUE}\"}} 0")), "/metrics porte l'aveu");
         assert!(!p2.contains("\nplume_ioc_cache_indicateurs "), "et AUCUN nombre à côté");
-        let j2 = gather_json(&c, spool, dbp, 1, 80);
+        let j2 = gather_json(&c, spool, dbp, &crate::handlers::system::VersionDeSchema::Lue(1), 80);
         assert_eq!(j2["detection"]["cache_indicateurs_verdict"], VERDICT_ILLISIBLE, "le panneau Système aussi : {}", j2["detection"]);
 
         // NETTOYAGE NOMMÉ.

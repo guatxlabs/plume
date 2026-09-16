@@ -22,6 +22,18 @@
 //! identifiants allowlistés, injection-safe — mêmes garanties que les règles GXQL, éditeur+). Aucun SQL brut,
 //! aucune surface d'exécution custom, aucun contrôle hôte.
 use crate::*;
+use rusqlite::OptionalExtension;
+
+/// `P10.20-b` — LA CAUSE NOMMÉE D'UN DRY-RUN REFUSÉ FAUTE D'AVOIR PU ARMER SA PORTE DE MASQUAGE.
+/// Cette route est EDITOR+ et RESTITUE les échantillons `(entité, valeur)` en clair ; la porte #45 est
+/// ce qui interdit d'y faire sortir un champ masqué pour le rôle appelant. Une porte qu'on n'a pas pu
+/// armer n'est pas une porte ouverte : c'est un refus. Le statut reste 200 parce que TOUS les refus de
+/// cette route vivent dans `error` (« ligne de base introuvable », « évaluation échouée ») et que sa
+/// signature ne porte pas de code — ce que le corps dit, lui, distingue les deux.
+pub(crate) const CAUSE_PORTE_DRYRUN_NON_ARMEE: &str = "DRY-RUN REFUSÉ : les champs de cette ligne de \
+     base n'ont pas pu être lus, donc la porte de masquage n'a pas pu être armée. Ce n'est PAS « aucun \
+     champ masqué » — exécuter sans la porte restituerait peut-être en clair un champ que votre rôle ne \
+     peut pas voir. Réessayez.";
 use std::collections::HashMap;
 
 // ============================================================================================
@@ -1025,13 +1037,26 @@ pub(crate) async fn baseline_test(State(st): State<AppState>, Extension(au): Ext
     // tenant-wide/non masqué (D7) -> on garde la SURFACE, pas l'évaluateur. Pré-lecture des seuls champs
     // nécessaires à la garde (la lecture complète reste DANS le bloc bloquant, inchangée).
     {
-        let pre: Option<(String, String, String, i64)> = {
+        // `P10.20-b` — LA PORTE #45 NE SE SAUTE PAS SUR UNE LECTURE RATÉE, ET C'EST LE SEUL DES QUATRE
+        // DRY-RUNS OÙ ELLE LE POUVAIT. `rule_test`, `correlation_test` et `playbook_test` REVIENNENT sur
+        // un `None` (« introuvable ») : leur porte n'est jamais atteinte. Ici la pré-lecture alimentait un
+        // `if let Some(..)`, donc un `.ok()` rendant `None` ENJAMBAIT la porte — et la lecture COMPLÈTE,
+        // plus bas, est une SECONDE lecture, sur une AUTRE connexion : elle peut réussir là où la
+        // pré-lecture a échoué. Le dry-run partait alors sans masque et RENDAIT les échantillons
+        // `(entité, valeur)` EN CLAIR à un rôle dont ces champs sont masqués — une exfiltration, pas un
+        // oracle. `.optional()` sépare « cette ligne de base n'existe pas » (la porte n'a rien à juger,
+        // la lecture complète dira « introuvable ») de « je n'ai pas pu lire » (on refuse).
+        let pre: rusqlite::Result<Option<(String, String, String, i64)>> = {
             crate::req_conn!(st, au, conn);
             conn.query_row(
                 "SELECT query,entity_field,value_field,window_s FROM ueba_baseline WHERE id=?1",
                 params![id],
                 |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?)),
-            ).ok()
+            ).optional()
+        };
+        let pre = match pre {
+            Ok(p) => p,
+            Err(_) => return Json(json!({ "error": CAUSE_PORTE_DRYRUN_NON_ARMEE })),
         };
         if let Some((q, ef, vf, ws)) = pre {
             if let Err(e) = caller_dryrun_guard(&st, &au, &[q.as_str()], &[&ef, &vf], ws) {

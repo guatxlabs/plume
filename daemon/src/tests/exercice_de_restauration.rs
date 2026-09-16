@@ -102,8 +102,11 @@
         assert_eq!(contenu.lignes, avant.values().sum::<i64>(), "le compte total relu == celui de la source");
         assert_eq!(contenu.plus_grande.as_ref().map(|(t, n)| (t.as_str(), *n)), Some(("event", N)),
             "la table la plus peuplée est `event`, avec ses {N} lignes");
+        // `P10.20-b` — la version est LUE ici (base saine) : `en_json()` rend le nombre, qu'on compare au
+        // texte relu de l'inventaire. Une version NON établie rendrait `null`, donc `None`, et l'égalité
+        // dirait alors que l'inventaire n'aurait pas dû porter de texte — ce qui est la bonne question.
         assert_eq!(contenu.schema_version.as_deref(),
-            Some(crate::schema_version(&open_db_keyed(&src, Some(cle)).unwrap()).to_string().as_str()),
+            crate::schema_version(&open_db_keyed(&src, Some(cle)).unwrap()).en_json().as_i64().map(|v| v.to_string()).as_deref(),
             "la version de schéma relue est celle de la source");
 
         // --- RESTAURER DANS UNE BASE NEUVE, PUIS COMPARER LE CONTENU ---------------------------
@@ -292,7 +295,7 @@
         assert!(comp["age_s"].is_null(), "aucun âge tant qu'aucun exercice n'a eu lieu");
         assert!(comp["last_success_ts"].is_null());
 
-        let prom = gather_prom(&c, "/nonexistent-spool", "", 1, 80);
+        let prom = gather_prom(&c, "/nonexistent-spool", "", &crate::handlers::system::VersionDeSchema::Lue(1), 80);
         assert!(prom.contains("plume_restore_drill_overdue 1"), "la jauge d'alerte vaut 1 : {prom}");
         assert!(!prom.contains("plume_restore_drill_age_seconds"),
             "l'âge est ABSENT tant qu'aucun exercice n'a eu lieu — publier 0 dirait « restauré à l'instant »");
@@ -313,7 +316,7 @@
         assert_eq!(comp["age_s"], 60);
         assert_eq!(comp["rows_restored"], 4242);
         assert_eq!(comp["encryption"], "asymmetric");
-        let prom = gather_prom(&c, "/nonexistent-spool", "", 1, 80);
+        let prom = gather_prom(&c, "/nonexistent-spool", "", &crate::handlers::system::VersionDeSchema::Lue(1), 80);
         assert!(prom.contains("plume_restore_drill_overdue 0"), "{prom}");
         assert!(prom.contains(&format!("plume_restore_drill_last_success_timestamp_seconds {t}")), "{prom}");
         assert!(prom.contains("plume_restore_drill_age_seconds"), "l'âge est publié dès qu'il existe : {prom}");

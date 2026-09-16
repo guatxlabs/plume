@@ -566,7 +566,10 @@ pub(crate) fn worst_state(components: &[Value]) -> &'static str {
 // ---------- exposition ----------
 /// Échantillon de self-métriques (valeurs numériques uniquement — jamais un secret/PII), factorisé pour
 /// /metrics (texte Prometheus) ET /api/system/metrics (JSON du panneau UI). Lecture SEULE, tables petites.
-pub(crate) fn gather_json(conn: &Connection, spool: &str, db_path: &str, schema_version: i64, disk_warn_pct: u8) -> Value {
+/// `P10.20-b` — LA VERSION DE SCHÉMA ENTRE ICI TELLE QU'ELLE A ÉTÉ OBTENUE, pas comme un entier. Un
+/// `i64` en paramètre ne laissait aucune place à « non établie » : l'appelant retombait sur `1` avant
+/// d'appeler, et l'exposition affirmait une version que personne n'avait lue.
+pub(crate) fn gather_json(conn: &Connection, spool: &str, db_path: &str, schema_version: &crate::handlers::system::VersionDeSchema, disk_warn_pct: u8) -> Value {
     let now_ts = now();
     // S32 — LE COUPLE PROCESSEUR/MÉMOIRE N'EST PLUS DÉPLIÉ SUR UN ZÉRO. `unwrap_or((0.0, 0))` publiait
     // « processus au repos, aucune mémoire résidente » quand `/proc` était illisible : les deux valeurs
@@ -666,10 +669,10 @@ pub(crate) fn gather_json(conn: &Connection, spool: &str, db_path: &str, schema_
     if let Some(m) = ioc_reload_dernier(db_path) {
         m.poser_dans(&mut detection, "cache_indicateurs");
     }
-    json!({
+    let mut sortie = json!({
         "ts": now_ts,
         "version": env!("CARGO_PKG_VERSION"),
-        "schema_version": schema_version,
+        "schema_version": schema_version.en_json(),
         "uptime_s": (now_ts - START_TS.load(Ordering::Relaxed)).max(0),
         "process": process,
         "http": {
@@ -685,7 +688,13 @@ pub(crate) fn gather_json(conn: &Connection, spool: &str, db_path: &str, schema_
         "alerts_open": alerts_open,
         "posture": posture,
         "components": components,
-    })
+    });
+    // `P10.20-b` — `schema_version` vaut `null` quand rien n'a été lu, et l'aveu NOMMÉ dit laquelle des
+    // trois causes. Rien n'est ajouté sur le chemin nominal : le corps y ressort byte-identique.
+    if let Some(obj) = sortie.as_object_mut() {
+        schema_version.poser_l_aveu(obj);
+    }
+    sortie
 }
 
 fn prom_line(out: &mut String, name: &str, typ: &str, help: &str, value: String) {
@@ -695,7 +704,7 @@ fn prom_line(out: &mut String, name: &str, typ: &str, help: &str, value: String)
 /// Exposition Prometheus TEXTE (content-type text/plain; version=0.0.4). Uniquement des compteurs/jauges —
 /// aucune étiquette porteuse de PII (les seules étiquettes sont des constantes : version/schema, composant,
 /// quantile). Dérivé de `gather_json` pour une source de vérité unique.
-pub(crate) fn gather_prom(conn: &Connection, spool: &str, db_path: &str, schema_version: i64, disk_warn_pct: u8) -> String {
+pub(crate) fn gather_prom(conn: &Connection, spool: &str, db_path: &str, schema_version: &crate::handlers::system::VersionDeSchema, disk_warn_pct: u8) -> String {
     let j = gather_json(conn, spool, db_path, schema_version, disk_warn_pct);
     let mut o = String::with_capacity(2048);
     prom_line(&mut o, "plume_up", "gauge", "1 si le daemon sert des requêtes", "1".into());
@@ -704,7 +713,7 @@ pub(crate) fn gather_prom(conn: &Connection, spool: &str, db_path: &str, schema_
     o.push_str("# TYPE plume_build_info gauge\n");
     o.push_str(&format!(
         "plume_build_info{{version=\"{}\",schema=\"{}\"}} 1\n",
-        env!("CARGO_PKG_VERSION"), schema_version
+        env!("CARGO_PKG_VERSION"), schema_version.etiquette_prometheus()
     ));
     let g = |o: &mut String, name: &str, typ: &str, help: &str, ptr: &str| {
         if let Some(v) = j.pointer(ptr) {

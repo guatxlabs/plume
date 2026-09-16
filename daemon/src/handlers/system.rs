@@ -10,24 +10,130 @@
 //!  - `/api/bulletin`       : MOTD/bandeau diffusé à tous — GET viewer+, POST/DELETE admin (setting row).
 //! ADDITIF : aucun bulletin posé -> aucun bandeau ; aucune écriture DB en lecture -> mode 0 byte-identique.
 use crate::*;
+use rusqlite::OptionalExtension;
 
-/// Version de schéma courante (meta) — lecture O(1). Défaut 1 (base neuve avant migrate, ne devrait pas arriver).
-pub(crate) fn schema_version(conn: &Connection) -> i64 {
-    conn.query_row("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get::<_, String>(0))
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(1)
+/// `P10.20-b` — LA CLÉ SOUS LAQUELLE UNE VERSION DE SCHÉMA NON ÉTABLIE S'AVOUE, la MÊME sur les quatre
+/// surfaces qui la servent (sonde de vivacité, exposition Prometheus, écran Système, paquet de
+/// diagnostic). Elle NOMME ce dont elle parle, indépendamment de la clé locale qui porte la valeur
+/// (`schema` pour la sonde, `schema_version` pour les trois autres). ABSENTE du chemin nominal : un
+/// aveu qui serait toujours là n'avouerait rien.
+pub(crate) const CLE_VERSION_DE_SCHEMA_NON_ETABLIE: &str = "schema_version_non_etablie";
+
+/// `P10.20-b` — L'OUVERTURE DE L'AVEU, commune aux trois causes distinguées ci-dessous.
+pub(crate) const CAUSE_VERSION_DE_SCHEMA_NON_ETABLIE: &str = "VERSION DE SCHÉMA NON ÉTABLIE : \
+     `meta.schema_version` n'a pas rendu de version exploitable. Ce n'est PAS « version 1 » — une base \
+     dont la table `meta` est illisible n'a pas la version un, elle n'en a AUCUNE d'établie.";
+
+/// `P10.20-b` — LA VERSION DE SCHÉMA TELLE QU'ELLE A ÉTÉ OBTENUE, sur le modèle de
+/// [`liste_bornee::TotalBorne`] : `Lue(v)` est un FAIT, `NonEtablie(cause)` n'en est pas un et porte
+/// POURQUOI.
+///
+/// LE DÉFAUT QUE CE TYPE REND NON-ÉCRIVABLE. La lecture retombait sur `1` — un `unwrap_or(1)` justifié
+/// en commentaire par « base neuve avant migrate, ne devrait pas arriver ». Ce repli couvrait TROIS
+/// situations que rien ne séparait : la base neuve (aucune ligne), la valeur illisible, et la table
+/// `meta` hors d'atteinte. Le `1` partait ensuite tel quel dans `/healthz` (UNAUTH, sonde k8s), dans
+/// `plume_build_info{schema="1"}` (Prometheus, donc dans les tableaux de bord et les alertes de
+/// l'exploitant), dans l'écran Système de la console et dans le paquet de diagnostic remis au
+/// support — quatre surfaces qui affirmaient une version de schéma que personne n'avait lue, et la
+/// seule version qu'un opérateur n'a AUCUNE chance de reconnaître comme fausse, puisque c'est celle
+/// d'une base fraîche.
+///
+/// LES TROIS CAUSES SONT DISTINGUÉES À L'ÉCRIT et se confondent à l'AFFICHAGE, délibérément : ce
+/// qu'une surface sert est `null` dans les trois cas — rien n'est établi — et la phrase dit laquelle.
+pub(crate) enum VersionDeSchema {
+    Lue(i64),
+    NonEtablie(String),
+}
+
+impl VersionDeSchema {
+    /// LA VALEUR SERVIE : le nombre LU, ou `null`. Jamais un repli qui a la forme d'une version.
+    pub(crate) fn en_json(&self) -> Value {
+        match self {
+            VersionDeSchema::Lue(v) => json!(v),
+            VersionDeSchema::NonEtablie(_) => Value::Null,
+        }
+    }
+
+    /// L'ÉTIQUETTE PROMETHEUS de `plume_build_info` : le nombre, ou un mot qu'aucune version ne peut
+    /// prendre. Une étiquette est une CHAÎNE pour Prometheus — `schema="non_etablie"` ne casse ni le
+    /// type de la jauge ni son ingestion, et une règle qui comparait `schema` à un numéro cesse de
+    /// matcher au lieu de matcher le mauvais.
+    pub(crate) fn etiquette_prometheus(&self) -> String {
+        match self {
+            VersionDeSchema::Lue(v) => v.to_string(),
+            VersionDeSchema::NonEtablie(_) => "non_etablie".to_string(),
+        }
+    }
+
+    /// POSE L'AVEU dans un corps déjà construit, et RIEN quand la version a été lue — la forme du
+    /// dépôt (`liste_bornee::corps_de_listes_illisibles`) : sur le chemin nominal le corps ressort
+    /// byte-identique, donc un aveu inconditionnel est structurellement impossible.
+    pub(crate) fn poser_l_aveu(&self, corps: &mut serde_json::Map<String, Value>) {
+        if let VersionDeSchema::NonEtablie(cause) = self {
+            corps.insert(CLE_VERSION_DE_SCHEMA_NON_ETABLIE.to_string(), json!(cause));
+        }
+    }
+}
+
+/// Version de schéma courante (meta) — lecture O(1). `NonEtablie` dès que la lecture ne rend pas un
+/// entier : aucune ligne (base neuve avant `migrate`), valeur non entière, ou lecture NON FAITE.
+pub(crate) fn schema_version(conn: &Connection) -> VersionDeSchema {
+    match conn
+        .query_row("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get::<_, String>(0))
+        .optional()
+    {
+        Ok(Some(brut)) => match brut.parse::<i64>() {
+            Ok(v) => VersionDeSchema::Lue(v),
+            Err(_) => VersionDeSchema::NonEtablie(format!(
+                "{CAUSE_VERSION_DE_SCHEMA_NON_ETABLIE} La ligne existe mais ne porte pas un entier."
+            )),
+        },
+        Ok(None) => VersionDeSchema::NonEtablie(format!(
+            "{CAUSE_VERSION_DE_SCHEMA_NON_ETABLIE} Aucune ligne `meta.schema_version` : cette base n'a \
+             pas encore été estampillée par une migration."
+        )),
+        Err(e) => VersionDeSchema::NonEtablie(format!(
+            "{CAUSE_VERSION_DE_SCHEMA_NON_ETABLIE} La lecture a échoué : {e}."
+        )),
+    }
 }
 
 /// LIVENESS — 200 tant que le process sert. UNAUTH (bypass host_guard + auth_guard). Ne révèle QUE
 /// ok/version/schema (aucun compte, aucun volume). k8s : `livenessProbe.httpGet { path: /healthz }`.
 pub(crate) async fn healthz(State(st): State<AppState>) -> Response {
     let schema = { let c = st.db.lock(); schema_version(&c) };
-    (StatusCode::OK, Json(json!({ "ok": true, "version": env!("CARGO_PKG_VERSION"), "schema": schema }))).into_response()
+    // `P10.20-b` — `schema` porte la version LUE ou `null`, et l'aveu NOMMÉ n'apparaît que dans le second
+    // cas. LE STATUT NE BOUGE PAS, ET C'EST UNE DÉCISION : cette sonde est la LIVENESS, celle dont un 503
+    // fait TUER puis redémarrer le pod. Un redémarrage ne rend pas `meta` lisible — il remettrait le démon
+    // en boucle de crash pour une ligne de métadonnée que le chemin chaud ne lit jamais. La sonde dit donc
+    // ce qu'elle sait (« le process sert ») et avoue ce qu'elle ignore, au lieu de servir un « 1 » inventé.
+    let mut corps = serde_json::Map::new();
+    corps.insert("ok".to_string(), json!(true));
+    corps.insert("version".to_string(), json!(env!("CARGO_PKG_VERSION")));
+    corps.insert("schema".to_string(), schema.en_json());
+    schema.poser_l_aveu(&mut corps);
+    (StatusCode::OK, Json(Value::Object(corps))).into_response()
 }
 
 /// READINESS — 200 si (migrations faites + port bindé = flag READY) ET la base est ouvrable (SELECT 1).
 /// Sinon 503 (le pod est retiré du service jusqu'à ce qu'il soit prêt). UNAUTH. k8s : `readinessProbe`.
+///
+/// `P10.20-b` — CETTE SONDE NE LIT PAS LA VERSION DE SCHÉMA, ET C'EST UNE DÉCISION ÉCRITE, PAS UN OUBLI.
+/// La question posée était : une version de schéma NON LUE doit-elle rendre la sonde NON PRÊTE ? Non,
+/// pour deux raisons mesurables sur ce code-ci.
+///   (1) LA PRÉMISSE EST ÉTABLIE AILLEURS, ET PLUS TÔT. « Migrations faites » n'est pas re-dérivé à
+///       chaque sonde : `READY` n'est posé qu'APRÈS `open_and_migrate_db`, dont la garde anti-downgrade
+///       REFUSE d'ouvrir une base plus récente que le binaire. Relire `meta` à chaque sonde ne
+///       revérifierait pas cette garde — elle a déjà statué — mais ajouterait une lecture sur un chemin
+///       appelé toutes les quelques secondes.
+///   (2) LE PRIX D'UN 503 ICI N'EST PAS UN AVEU, C'EST UN RETRAIT DE SERVICE. Un `readyz` rouge sort le
+///       pod du Service : l'ingest s'arrête et les recherches ne sont plus servies. Aveugler la collecte
+///       d'un SOC parce qu'une ligne de métadonnée ne se lit plus est le compromis exactement inverse de
+///       celui que ce dépôt tient ailleurs (`P10.17-a` : « la base d'un SOC ne doit pas geler pour une
+///       troncature refusée — on rapporte »).
+/// CE QUE CETTE DÉCISION NE TIENT PAS, ET IL FAUT LE LIRE : `SELECT 1` ne touche AUCUNE table, donc il
+/// reste vert sur une base dont les tables sont devenues illisibles. La version non établie est alors
+/// avouée par `/healthz`, `/metrics` et l'écran Système — pas par cette sonde-ci.
 pub(crate) async fn readyz(State(st): State<AppState>) -> Response {
     let ready_flag = crate::READY.load(std::sync::atomic::Ordering::Relaxed);
     // DB ouvrable MAINTENANT (pas seulement au boot) : un SELECT 1 sur le writer (cheap). Lock indisponible
@@ -58,7 +164,7 @@ pub(crate) async fn metrics_endpoint(State(st): State<AppState>) -> Response {
     let body = {
         let c = st.db.lock();
         let sv = schema_version(&c);
-        crate::gather_prom(&c, &spool, &db_path, sv, warn)
+        crate::gather_prom(&c, &spool, &db_path, &sv, warn)
     };
     (
         StatusCode::OK,
@@ -76,7 +182,7 @@ pub(crate) async fn system_metrics(State(st): State<AppState>, Extension(au): Ex
     let db = req_db(&st, &au);
     let c = db.lock();
     let sv = schema_version(&c);
-    Json(crate::gather_json(&c, &spool, &db_path, sv, warn))
+    Json(crate::gather_json(&c, &spool, &db_path, &sv, warn))
 }
 
 /// SANTÉ PAR COMPOSANT (R/J/V) + posture globale. viewer+. Base du tenant courant.
@@ -214,9 +320,9 @@ pub(crate) fn diag_bundle_json(conn: &Connection, spool: &str, db_path: &str, wa
         "generated_at": now(),
         "kind": "plume-diagnostic-bundle",
         "version": env!("CARGO_PKG_VERSION"),
-        "schema_version": sv,
+        "schema_version": sv.en_json(),
         "config": Value::Object(cfgmap),
-        "metrics": crate::gather_json(conn, spool, db_path, sv, warn),
+        "metrics": crate::gather_json(conn, spool, db_path, &sv, warn),
         "health": crate::component_health(conn, spool, db_path, warn),
         "recent_events": [],
         "heartbeat_alerts": [],
@@ -231,6 +337,10 @@ pub(crate) fn diag_bundle_json(conn: &Connection, spool: &str, db_path: &str, wa
     // « N non classés » à côté de « aucune source n'en a » comme deux faits établis : soit les deux sont lus
     // et cohérents (même prédicat sur `event`), soit celui qui a échoué s'annonce non lu.
     if let Some(obj) = paquet.as_object_mut() {
+        // `P10.20-b` — LE PAQUET REMIS AU SUPPORT DIT AUSSI QUAND SA VERSION DE SCHÉMA N'A PAS ÉTÉ LUE.
+        // C'est le premier chiffre qu'une reprise d'incident regarde ; un `1` inventé y enverrait le
+        // support chercher une base neuve. L'aveu NOMME sa clé et reste absent du chemin nominal.
+        sv.poser_l_aveu(obj);
         if aveu::poser_la_sous_liste_ou_avouer(obj, "recent_events", recent, DIAG_RECENT_EVENTS_WINDOW as usize) {
             non_lus.push("recent_events");
         }

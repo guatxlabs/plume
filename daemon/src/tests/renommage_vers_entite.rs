@@ -82,7 +82,7 @@
         ];
         ingest_events_batch(&conn, dbp, &events, 1, None, None).unwrap();
         assert_eq!(crate::metrics::sans_adresse_source_de(source), Some(2), "deux lignes écrites sans adresse, la troisième en porte une");
-        let m = crate::gather_json(&conn, "/spool", dbp, 0, 80);
+        let m = crate::gather_json(&conn, "/spool", dbp, &crate::handlers::system::VersionDeSchema::Lue(0), 80);
         assert!(m["ingest"]["events_without_src_ip_total"].as_u64().unwrap_or(0) >= 2, "le total est publié dans /api/metrics");
         assert_eq!(m["ingest"]["sources_without_src_ip"][source], 2, "la ventilation par source est publiée");
         // L'exposition Prometheus est une inscription statique : elle se lit dans le texte du module (le rendu

@@ -273,7 +273,7 @@ mod mesure_environnement_tests {
         let tmp = TmpPossede::neuf("s32-prom-illisible");
         let absent = tmp.join("spool-absent");
         let c = base_en_memoire();
-        let prom = gather_prom(&c, absent.to_str().unwrap(), "", 1, 80);
+        let prom = gather_prom(&c, absent.to_str().unwrap(), "", &crate::handlers::system::VersionDeSchema::Lue(1), 80);
         assert!(!prom.contains("plume_spool_queue_files"),
             "la profondeur de file est ABSENTE, jamais publiée à zéro : {prom}");
         assert!(prom.contains("plume_spool_queue_lisible{cause=\"source_absente\"} 0"),
@@ -287,7 +287,7 @@ mod mesure_environnement_tests {
     fn une_file_vide_publie_bien_zero_sur_metrics_avec_l_indicateur_leve() {
         let tmp = TmpPossede::neuf("s32-prom-vide");
         let c = base_en_memoire();
-        let prom = gather_prom(&c, tmp.to_str().unwrap(), "", 1, 80);
+        let prom = gather_prom(&c, tmp.to_str().unwrap(), "", &crate::handlers::system::VersionDeSchema::Lue(1), 80);
         assert!(prom.contains("plume_spool_queue_files 0"), "un vrai zéro se publie : {prom}");
         assert!(prom.contains("plume_spool_queue_lisible{cause=\"aucune\"} 1"), "{prom}");
     }
@@ -299,12 +299,12 @@ mod mesure_environnement_tests {
     fn le_json_du_panneau_omet_le_nombre_non_lu_et_publie_le_vrai_zero() {
         let c = base_en_memoire();
         let tmp = TmpPossede::neuf("s32-json");
-        let vide = gather_json(&c, tmp.to_str().unwrap(), "", 1, 80);
+        let vide = gather_json(&c, tmp.to_str().unwrap(), "", &crate::handlers::system::VersionDeSchema::Lue(1), 80);
         assert_eq!(vide.pointer("/ingest/queue_depth").and_then(|v| v.as_u64()), Some(0));
         assert_eq!(vide.pointer("/ingest/queue_depth_verdict").and_then(|v| v.as_str()), Some(VERDICT_LU));
 
         let absent = tmp.join("spool-absent");
-        let illisible = gather_json(&c, absent.to_str().unwrap(), "", 1, 80);
+        let illisible = gather_json(&c, absent.to_str().unwrap(), "", &crate::handlers::system::VersionDeSchema::Lue(1), 80);
         assert!(illisible.pointer("/ingest/queue_depth").is_none(),
             "aucun nombre : le champ est ABSENT, pas à zéro");
         assert_eq!(illisible.pointer("/ingest/queue_depth_verdict").and_then(|v| v.as_str()), Some(VERDICT_ILLISIBLE));
@@ -392,7 +392,7 @@ mod mesure_environnement_tests {
     fn l_indicateur_du_couple_processeur_memoire_accompagne_toujours_ses_series() {
         let c = base_en_memoire();
         let tmp = TmpPossede::neuf("s32-prom-proc");
-        let prom = gather_prom(&c, tmp.to_str().unwrap(), "", 1, 80);
+        let prom = gather_prom(&c, tmp.to_str().unwrap(), "", &crate::handlers::system::VersionDeSchema::Lue(1), 80);
         assert_eq!(prom.matches("plume_process_mesure_lisible{").count(), 1,
             "l'indicateur est publié dans les DEUX cas — une jauge absente quand tout va bien ne se \
              distinguerait pas d'un scrape manqué : {prom}");
@@ -525,12 +525,12 @@ mod mesure_environnement_tests {
     fn l_indicateur_de_l_identite_d_hote_porte_le_verdict_et_jamais_le_nom() {
         let c = base_en_memoire();
         let tmp = TmpPossede::neuf("s33-prom-identite");
-        let prom = gather_prom(&c, tmp.to_str().unwrap(), "", 1, 80);
+        let prom = gather_prom(&c, tmp.to_str().unwrap(), "", &crate::handlers::system::VersionDeSchema::Lue(1), 80);
         assert_eq!(prom.matches("plume_host_identity_lisible{").count(), 1,
             "l'indicateur est publié dans les deux cas : {prom}");
         assert!(!prom.contains("plume_host_identity_lisible{host="),
             "le nom d'hôte ne part JAMAIS en étiquette : {prom}");
-        let j = gather_json(&c, tmp.to_str().unwrap(), "", 1, 80);
+        let j = gather_json(&c, tmp.to_str().unwrap(), "", &crate::handlers::system::VersionDeSchema::Lue(1), 80);
         let hote = j.get("host").and_then(|h| h.as_object()).expect("l'objet `host` est publié");
         assert!(hote.contains_key("identity_verdict") && hote.contains_key("identity_cause"),
             "le verdict et sa cause sont là : {hote:?}");

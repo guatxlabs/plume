@@ -6,6 +6,39 @@
 //! (hors périmètre de cet incrément) -> ces routes renvoient 501, JAMAIS un chemin fédéré cross-tenant à
 //! moitié câblé. FAIL-CLOSED partout ; le cœur logique (validation JWT, bind, TOTP) est dans `idp.rs`.
 use crate::*;
+use rusqlite::OptionalExtension;
+
+// `P10.20-b` — LE STATUT DE DOUBLE AUTHENTIFICATION N'A PAS DE VALEUR PAR DÉFAUT.
+//
+// LE DÉFAUT MESURÉ LE 2026-09-16. Les six lectures de `user_mfa` de ce module passaient par
+// `query_row(..).ok()` (ou, pour la décision de connexion, `.map(..).unwrap_or(false)`), qui rend la
+// MÊME valeur pour « ce compte n'a pas de second facteur » et pour « la ligne n'a pas été lue ». Les
+// deux ne se valent pas : la première est un fait, la seconde est une ignorance. La cause n'est pas
+// exotique — un cache de schéma de pool périmé fait sortir « no such table » comme une erreur de
+// LIGNE (`flatten-avale-no-such-table-au-premier-pas`), une valeur corrompue ne se convertit pas.
+//
+// TROIS SITES FAISAIENT DE CETTE IGNORANCE UNE DÉCISION, ET LES TROIS PENCHAIENT DU MAUVAIS CÔTÉ :
+//   * `mfa_enabled_for` — la SEULE lecture qui décide si la connexion exige un second facteur
+//     (`session.rs`, `login_post`). Lecture ratée -> `false` -> le mot de passe SEUL posait la
+//     session sur un compte dont la MFA est ACTIVE. C'est le contournement complet du second facteur
+//     par une panne de lecture, et c'est fail-OPEN ;
+//   * `mfa_enroll` — sa garde « ne peut PAS écraser une MFA déjà active » lisait `enabled` de la même
+//     façon. Lecture ratée -> la garde ne voit pas la MFA active -> l'enrôlement ÉCRASE la graine et
+//     repose `enabled=0` : une panne de lecture DÉSARME le second facteur du compte ;
+//   * `mfa_status` — servait `{enrolled:false, enabled:false}` en 200, c'est-à-dire « ce compte n'a
+//     pas de double authentification », à une console qui le peint tel quel.
+//
+// CE QUI EST FAIT : la lecture rend `Result<Option<_>>` (`.optional()`), l'absence de ligne reste un
+// FAIT, et la lecture NON FAITE refuse — 503 nommé sur les trois routes, refus de connexion sur la
+// décision. Un refus se réessaie ; un second facteur contourné ne se rattrape pas.
+//
+// LES TROIS AUTRES LECTURES DE `user_mfa` (`mfa_verify`, `mfa_disable`, `login_mfa_post`) sont
+// laissées telles quelles À DESSEIN : leur repli REFUSE déjà (400, 404, 401) — elles n'inventent
+// aucun fait, seulement une cause inexacte. C'est le rang quatre de `P10.20-b`, pas celui-ci.
+pub(crate) const CAUSE_MFA_NON_LUE: &str = "STATUT DE DOUBLE AUTHENTIFICATION NON LU : la lecture de \
+     `user_mfa` a échoué. Ce n'est PAS « aucun second facteur sur ce compte » — un compte peut porter \
+     une MFA ACTIVE que cette lecture n'a pas vue. Toute décision qui en dépend est REFUSÉE ; \
+     réessayez.";
 
 // ---------- utilitaires locaux ----------
 
@@ -648,12 +681,20 @@ pub(crate) async fn ldap_login_post(State(st): State<AppState>, ConnectInfo(peer
 // MFA TOTP : enrôlement / vérif / désactivation (self-service authentifié) + challenge au login.
 // ================================================================================================
 
-/// True si `user` a une MFA ACTIVE (enabled=1). Mode 0 uniquement (table `user_mfa` dans st.db).
-pub(crate) fn mfa_enabled_for(st: &AppState, user: &str) -> bool {
+/// `P10.20-b` — CE COMPTE EXIGE-T-IL UN SECOND FACTEUR ? TROIS ISSUES, JAMAIS DEUX.
+///
+/// `Ok(true)` : MFA ACTIVE (`enabled` non nul). `Ok(false)` : AUCUNE ligne, ou une ligne à `enabled=0`
+/// — une absence ÉTABLIE, le mode 0 par défaut. `Err(..)` : la lecture N'A PAS EU LIEU, et l'appelant
+/// doit REFUSER au lieu de traiter ce compte comme un compte sans second facteur (c'était le défaut :
+/// `unwrap_or(false)` rendait une panne de lecture indiscernable de « pas de MFA », et le mot de passe
+/// seul posait la session). Mode 0 uniquement (table `user_mfa` dans st.db).
+pub(crate) fn mfa_enabled_for(st: &AppState, user: &str) -> rusqlite::Result<bool> {
     let conn = st.db.lock();
-    conn.query_row("SELECT enabled FROM user_mfa WHERE user=?1", params![user], |r| r.get::<_, i64>(0))
+    Ok(conn
+        .query_row("SELECT enabled FROM user_mfa WHERE user=?1", params![user], |r| r.get::<_, i64>(0))
+        .optional()?
         .map(|v| v != 0)
-        .unwrap_or(false)
+        .unwrap_or(false))
 }
 
 pub(crate) async fn mfa_status(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Response {
@@ -661,7 +702,14 @@ pub(crate) async fn mfa_status(State(st): State<AppState>, Extension(au): Extens
         return deny_multitenant();
     }
     let conn = st.db.lock();
-    let row: Option<i64> = conn.query_row("SELECT enabled FROM user_mfa WHERE user=?1", params![au.name], |r| r.get(0)).ok();
+    // `P10.20-b` — `.optional()` SÉPARE les deux : `Ok(None)` est l'absence ÉTABLIE (aucun enrôlement),
+    // `Err` est la lecture NON FAITE. Servir la seconde en `{enrolled:false, enabled:false}` disait à la
+    // console « ce compte n'a pas de double authentification » sur une panne de lecture.
+    let row: rusqlite::Result<Option<i64>> =
+        conn.query_row("SELECT enabled FROM user_mfa WHERE user=?1", params![au.name], |r| r.get(0)).optional();
+    let Ok(row) = row else {
+        return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_MFA_NON_LUE);
+    };
     Json(json!({ "enrolled": row.is_some(), "enabled": row.map(|v| v != 0).unwrap_or(false) })).into_response()
 }
 
@@ -673,7 +721,14 @@ pub(crate) async fn mfa_enroll(State(st): State<AppState>, Extension(au): Extens
     }
     {
         let conn = st.db.lock();
-        let en: Option<i64> = conn.query_row("SELECT enabled FROM user_mfa WHERE user=?1", params![au.name], |r| r.get(0)).ok();
+        // `P10.20-b` — LA GARDE ANTI-ÉCRASEMENT NE SE SAUTE PAS SUR UNE LECTURE RATÉE. L'écriture qui
+        // suit repose `secret=<neuf>, enabled=0` : la franchir sans avoir LU `enabled` désarme le second
+        // facteur d'un compte qui en a un. Une lecture non faite refuse ; elle ne conclut pas à zéro.
+        let en: rusqlite::Result<Option<i64>> =
+            conn.query_row("SELECT enabled FROM user_mfa WHERE user=?1", params![au.name], |r| r.get(0)).optional();
+        let Ok(en) = en else {
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_MFA_NON_LUE);
+        };
         if en == Some(1) {
             return err_json(StatusCode::CONFLICT, "MFA déjà active (désactivez-la d'abord)");
         }

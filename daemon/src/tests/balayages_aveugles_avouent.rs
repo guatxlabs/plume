@@ -78,7 +78,7 @@ fn p10_7f_un_runbook_dont_les_etapes_ne_sont_pas_lues_n_est_pas_attache_ampute()
     seed_runbooks(&conn);
     let id = case_create_row(&conn, "a", "exploit", 4, "", None, 2);
     link_alert(&conn, id, "T1190", Some("web-1"));
-    let rb = pick_runbook_id(&conn, Some("initial-access"), None).unwrap();
+    let rb = pick_runbook_id(&conn, Some("initial-access"), None).expect("lecture faite").expect("un runbook correspond");
     let etapes_attendues: i64 = conn.query_row("SELECT COUNT(*) FROM runbook_step WHERE runbook_id=?1", params![rb], |r| r.get(0)).unwrap();
     assert!(etapes_attendues >= 4, "instrument : le runbook livré a des étapes");
     // La table des ÉTAPES hors d'atteinte : `attach_runbook` lit d'abord l'existence de l'incident, la

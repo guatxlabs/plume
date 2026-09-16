@@ -173,7 +173,7 @@
         assert_eq!(tac.as_deref(), Some("initial-access"));
         assert_eq!(tech.as_deref(), Some("T1190"));
         assert_eq!(targets.host.as_deref(), Some("web-1"), "host best-effort pré-rempli = host de l'alerte");
-        let rb = pick_runbook_id(&conn, tac.as_deref(), None).unwrap();
+        let rb = pick_runbook_id(&conn, tac.as_deref(), None).expect("lecture faite").expect("un runbook correspond");
         let key: String = conn.query_row("SELECT key FROM runbook WHERE id=?1", params![rb], |r| r.get(0)).unwrap();
         assert_eq!(key, "initial-access-exploit");
         // (b) discovery (T1046 port-scan) -> runbook de reconnaissance (alias).
@@ -181,14 +181,14 @@
         link_alert(&conn, ds, "T1046", None);
         let (tac2, _, _) = dominant_tactic_and_target(&conn, ds).expect("les alertes liées sont lisibles");
         assert_eq!(tac2.as_deref(), Some("discovery"));
-        let rb2 = pick_runbook_id(&conn, tac2.as_deref(), None).unwrap();
+        let rb2 = pick_runbook_id(&conn, tac2.as_deref(), None).expect("lecture faite").expect("un runbook correspond");
         let key2: String = conn.query_row("SELECT key FROM runbook WHERE id=?1", params![rb2], |r| r.get(0)).unwrap();
         assert_eq!(key2, "recon-scan", "discovery route vers le runbook de reconnaissance");
         // (c) aucune alerte -> repli générique.
         let none = case_create_row(&conn, "a", "vide", 2, "", None, 3);
         let (tac3, _, _) = dominant_tactic_and_target(&conn, none).expect("les alertes liées sont lisibles");
         assert_eq!(tac3, None);
-        let rb3 = pick_runbook_id(&conn, tac3.as_deref(), None).unwrap();
+        let rb3 = pick_runbook_id(&conn, tac3.as_deref(), None).expect("lecture faite").expect("un runbook correspond");
         let key3: String = conn.query_row("SELECT key FROM runbook WHERE id=?1", params![rb3], |r| r.get(0)).unwrap();
         assert_eq!(key3, "generic-default");
     }
@@ -201,7 +201,7 @@
         seed_runbooks(&conn);
         let id = case_create_row(&conn, "a", "exploit", 4, "", None, 2);
         link_alert(&conn, id, "T1190", Some("web-1"));
-        let rb = pick_runbook_id(&conn, Some("initial-access"), None).unwrap();
+        let rb = pick_runbook_id(&conn, Some("initial-access"), None).expect("lecture faite").expect("un runbook correspond");
         let n = attach_runbook(&conn, id, rb, "bob", &PrefillTargets { host: Some("web-1".into()), ..Default::default() }).unwrap();
         assert!(n >= 4, "steps instanciées");
         let cnt: i64 = conn.query_row("SELECT COUNT(*) FROM case_step WHERE incident_id=?1", params![id], |r| r.get(0)).unwrap();
@@ -235,7 +235,7 @@
         // MTTA non encore figé.
         let fr0: Option<i64> = conn.query_row("SELECT first_response_ts FROM incident WHERE id=?1", params![id], |r| r.get(0)).unwrap();
         assert_eq!(fr0, None);
-        let rb = pick_runbook_id(&conn, Some("initial-access"), None).unwrap();
+        let rb = pick_runbook_id(&conn, Some("initial-access"), None).expect("lecture faite").expect("un runbook correspond");
         attach_runbook(&conn, id, rb, "bob", &PrefillTargets::default()).unwrap();
         let first_step: i64 = conn.query_row("SELECT id FROM case_step WHERE incident_id=?1 ORDER BY ordinal LIMIT 1", params![id], |r| r.get(0)).unwrap();
         assert!(step_advance(&conn, id, first_step, "done", "bob", None));
@@ -273,7 +273,7 @@
         seed_runbooks(&conn);
         let id = case_create_row(&conn, "a", "recon", 3, "", None, 3);
         link_alert(&conn, id, "T1595", Some("edge-1"));
-        let rb = pick_runbook_id(&conn, Some("reconnaissance"), None).unwrap();
+        let rb = pick_runbook_id(&conn, Some("reconnaissance"), None).expect("lecture faite").expect("un runbook correspond");
         attach_runbook(&conn, id, rb, "bob", &PrefillTargets { host: Some("203.0.113.7".into()), ..Default::default() }).unwrap();
         let search_step: i64 = conn.query_row("SELECT id FROM case_step WHERE incident_id=?1 AND step_kind='search' ORDER BY ordinal LIMIT 1", params![id], |r| r.get(0)).unwrap();
         // défaut = cible figée.
@@ -311,7 +311,7 @@
         assert!(js["runbook"].is_null());
         // ÉLÈVE + attache, puis vérifie que la projection CLIENT ne fuit toujours rien.
         incident_apply_tier(&conn, id, "bob", Some(1), Some("secret-type"), Some("secret-cmd"));
-        let rb = pick_runbook_id(&conn, None, None).unwrap();
+        let rb = pick_runbook_id(&conn, None, None).expect("lecture faite").expect("un runbook correspond");
         attach_runbook(&conn, id, rb, "bob", &PrefillTargets::default()).unwrap();
         let masks = guatx_core::soql::FieldMaskSet::new();
         let cv = client_case_get_json(&conn, ":memory:", &masks, id, now()).unwrap();
@@ -574,21 +574,21 @@
         seed_runbooks(&conn);
         let key_of = |rb: i64| -> String { conn.query_row("SELECT key FROM runbook WHERE id=?1", params![rb], |r| r.get(0)).unwrap() };
         // (1) T1110 : runbook TECHNIQUE gagne sur la tactique credential-access.
-        assert_eq!(key_of(pick_runbook_id(&conn, Some("credential-access"), Some("T1110")).unwrap()), "technique-bruteforce-t1110");
+        assert_eq!(key_of(pick_runbook_id(&conn, Some("credential-access"), Some("T1110")).expect("lecture faite").expect("un runbook correspond")), "technique-bruteforce-t1110");
         // sous-technique normalisée -> même runbook technique.
-        assert_eq!(key_of(pick_runbook_id(&conn, Some("credential-access"), Some("T1110.001")).unwrap()), "technique-bruteforce-t1110");
+        assert_eq!(key_of(pick_runbook_id(&conn, Some("credential-access"), Some("T1110.001")).expect("lecture faite").expect("un runbook correspond")), "technique-bruteforce-t1110");
         // (2) technique SANS runbook dédié -> repli TACTIQUE.
-        assert_eq!(key_of(pick_runbook_id(&conn, Some("credential-access"), Some("T9999")).unwrap()), "credential-access-bruteforce");
+        assert_eq!(key_of(pick_runbook_id(&conn, Some("credential-access"), Some("T9999")).expect("lecture faite").expect("un runbook correspond")), "credential-access-bruteforce");
         // (3) technique=None -> tactique (PARITÉ Phase 1, inchangé).
-        assert_eq!(key_of(pick_runbook_id(&conn, Some("credential-access"), None).unwrap()), "credential-access-bruteforce");
+        assert_eq!(key_of(pick_runbook_id(&conn, Some("credential-access"), None).expect("lecture faite").expect("un runbook correspond")), "credential-access-bruteforce");
         // (4) T1083 host-discovery : technique gagne ; l'alias discovery->recon reste pour le SCAN réseau (T1046).
-        assert_eq!(key_of(pick_runbook_id(&conn, Some("discovery"), Some("T1083")).unwrap()), "technique-host-discovery-t1083");
-        assert_eq!(key_of(pick_runbook_id(&conn, Some("discovery"), None).unwrap()), "recon-scan", "T1046/discovery route toujours vers recon (alias intact)");
+        assert_eq!(key_of(pick_runbook_id(&conn, Some("discovery"), Some("T1083")).expect("lecture faite").expect("un runbook correspond")), "technique-host-discovery-t1083");
+        assert_eq!(key_of(pick_runbook_id(&conn, Some("discovery"), None).expect("lecture faite").expect("un runbook correspond")), "recon-scan", "T1046/discovery route toujours vers recon (alias intact)");
         // (5) nouvelles tactiques managées.
-        assert_eq!(key_of(pick_runbook_id(&conn, Some("persistence"), None).unwrap()), "persistence-mechanism");
-        assert_eq!(key_of(pick_runbook_id(&conn, Some("exfiltration"), None).unwrap()), "exfiltration");
+        assert_eq!(key_of(pick_runbook_id(&conn, Some("persistence"), None).expect("lecture faite").expect("un runbook correspond")), "persistence-mechanism");
+        assert_eq!(key_of(pick_runbook_id(&conn, Some("exfiltration"), None).expect("lecture faite").expect("un runbook correspond")), "exfiltration");
         // (6) rien ne matche -> générique.
-        assert_eq!(key_of(pick_runbook_id(&conn, Some("resource-development"), Some("T9999")).unwrap()), "generic-default");
+        assert_eq!(key_of(pick_runbook_id(&conn, Some("resource-development"), Some("T9999")).expect("lecture faite").expect("un runbook correspond")), "generic-default");
     }
 
     /// GABARITS MANAGÉS SUPPLÉMENTAIRES : le seed pose >=15 runbooks managés dont >=2 niveau-technique ; tous les

@@ -142,6 +142,13 @@ pub(crate) const FENETRE_INVENTAIRE_S: i64 = 7 * 86400;
 // `CadenceDeclaree` / `cadence_declaree` vivent dans `sondes.rs` : la cadence attendue est une propriété
 // DÉCLARÉE de la table des sondes, pas une dérivation de cette surface.
 
+/// `P10.20-b` (rang 2) — LE MOT D'UN FLUX DONT LA SANTÉ DU PIPELINE N'A PAS ÉTÉ LUE, ou dont la lecture
+/// propre a échoué. C'est le MÊME mot que `StatutCapteur::NonLu` sert déjà au panneau Intégrations
+/// (`P10.7-g`) : une seule surface, un seul vocabulaire. Il n'est PAS un cinquième état de collecte —
+/// `statut_de_source` ne peut pas le rendre, parce qu'aucune de ses entrées ne dit « je n'ai pas lu » ;
+/// il est ce qui est servi À LA PLACE d'un verdict, quand il n'y a pas eu d'observation à juger.
+pub(crate) const STATUT_DE_SOURCE_NON_LU: &str = "non_lu";
+
 /// LE statut. Quatre mots, chacun avec UN sens : `muet` (plus rien n'arrive, toutes sources confondues),
 /// `en_retard` (cadence déclarée continue dépassée), `frais` (donnée < FRAIS_S), `calme` (collecte saine,
 /// source peu active). `None` pour la cadence = même verdict que `NonDeclaree`.
@@ -522,6 +529,22 @@ pub(crate) const CAUSE_IMPUTATION_NON_ETABLIE: &str = "PARTAGE DES ALERTES NON �
      ils portent sur MOINS d'alertes qu'il n'y en a d'actives — et les cloches par source qui en \
      dérivent sont des sous-comptes. Cause : ";
 
+/// `P10.20-b` (rang 2) — LA PHRASE DE RACINE DES LECTURES D'UNE SEULE LIGNE QUI N'ONT PAS EU LIEU. Elle
+/// n'est PAS celle de `CAUSE_FRAICHEUR_INCOMPLETE` : là-bas, ce qui est servi est un PRÉFIXE de ce qui
+/// existe ; ici, il manque un VERDICT — la santé du pipeline, dont dépend le mot de chaque flux, ou le
+/// dernier point d'un flux entier. Les deux peuvent tomber ensemble, et `error` les porte alors toutes
+/// les deux, séparées, parce qu'elles ne se corrigent pas de la même façon.
+pub(crate) const CAUSE_LIGNES_DE_FRAICHEUR_NON_LUES: &str = "LECTURES NON FAITES DANS CE RELEVÉ : une ou \
+     plusieurs lectures d'UNE SEULE LIGNE ont échoué. Ce qui en dépend n'est PAS servi comme un fait : un \
+     flux dont la santé du pipeline n'a pas été lue porte le statut `non_lu` (ni « muet » ni « frais »), et \
+     un flux dont la lecture propre a échoué est LISTÉ avec `non_lu: true` au lieu de disparaître. Non lu : ";
+
+/// `P10.20-b` (rang 2) — L'AVEU PORTÉ PAR LE FLUX LUI-MÊME, pour le consommateur qui parcourt `feeds` sans
+/// lire la racine. Même geste que `liste_bornee::poser_la_sous_liste_ou_avouer` : la distinction « vide » vs
+/// « non lu » vit SUR l'objet, pas seulement dans un champ d'erreur qu'un lecteur peut ne pas ouvrir.
+pub(crate) const CAUSE_FLUX_NON_LU: &str = "FLUX NON LU : le dernier point de ce flux n'a pas pu être lu. \
+     Ni son âge ni son volume ne sont établis, et ce flux n'est PAS muet — il n'a pas été observé. Cause : ";
+
 /// Le nom sous lequel le parcours des alertes actives est noté (et retrouvé pour l'aveu imbriqué).
 const PARCOURS_IMPUTATION: &str = "le partage des alertes actives";
 
@@ -640,10 +663,30 @@ pub(crate) fn compute_freshness(db_path: &str, env: Option<&str>) -> Value {
         // source arrive (<10 min), l'ingestion fonctionne. Si même la plus fraîche est vieille -> ingestion
         // en panne (réseau / corruption / collecte arrêtée) = le SEUL cas où on alerte ("muet"). Sinon l'âge
         // d'une source ne reflète QUE son activité (normal qu'une source rare soit "vieille") -> jamais "retard".
-        let global_last: Option<i64> = conn.query_row(
-            &format!("SELECT MAX(m) FROM (SELECT MAX(ts) m FROM event{wenv} UNION ALL SELECT MAX(ts) FROM metric{wenv} UNION ALL SELECT MAX(ts) FROM snapshot{wenv})"),
-            [], |r| r.get::<_, Option<i64>>(0)).ok().flatten();
-        let pipeline_fresh = global_last.map(|m| now_ts - m < 600).unwrap_or(false);
+        // `P10.20-b` (rang 2) — CETTE LECTURE-LÀ DÉCIDE DU MOT DE TOUS LES AUTRES, ET ELLE NE SE DEVINE PAS.
+        // Avant : `.ok().flatten()` puis `unwrap_or(false)`. Une lecture qui n'a PAS EU LIEU valait donc
+        // « rien n'est arrivé récemment », c'est-à-dire la conclusion la plus grave que cette surface sache
+        // former : `pipeline_fresh: false` allume la bannière « Ingestion en panne » de la console, et
+        // `statut_de_source` rend « muet » pour CHAQUE flux listé — un parc entier déclaré en panne sur une
+        // ligne qu'on n'a pas su lire. Le troisième état est celui que `pipeline_est_frais` (`P10.7-g`) a
+        // déjà posé pour le panneau Intégrations : `None` = NON LU, ni frais ni muet.
+        let pipeline_frais: rusqlite::Result<bool> = conn
+            .query_row(
+                &format!("SELECT MAX(m) FROM (SELECT MAX(ts) m FROM event{wenv} UNION ALL SELECT MAX(ts) FROM metric{wenv} UNION ALL SELECT MAX(ts) FROM snapshot{wenv})"),
+                [], |r| r.get::<_, Option<i64>>(0))
+            .map(|dernier| dernier.map(|m| now_ts - m < 600).unwrap_or(false));
+        // `P10.20-b` (rang 2) — LES LECTURES D'UNE SEULE LIGNE DE CE CORPS QUI N'ONT PAS EU LIEU. Vide sur le
+        // chemin nominal, donc le corps y ressort byte-identique. Distinct de `releve`, qui note les
+        // PARCOURS coupés (`P10.7-f`) : une ligne unique n'est pas un préfixe de liste, et les deux causes se
+        // lisent ensemble dans `error` sans se confondre.
+        let mut lignes_non_lues: Vec<String> = Vec::new();
+        let pipeline_fresh: Option<bool> = match pipeline_frais {
+            Ok(f) => Some(f),
+            Err(e) => {
+                lignes_non_lues.push(format!("la santé du pipeline : {e}"));
+                None
+            }
+        };
         // ALERTES ACTIVES (status='new') imputées à chaque SOURCE, pour que le front surligne les feeds
         // « chauds » — et, surtout, pour que la pastille de la source FAUTIVE bascule.
         //
@@ -698,7 +741,12 @@ pub(crate) fn compute_freshness(db_path: &str, env: Option<&str>) -> Value {
             } else {
                 cadence_declaree(kind, &name)
             };
-            let status = statut_de_source(age, pipeline_fresh, Some(&cadence));
+            // `P10.20-b` (rang 2) — SANS SANTÉ DE PIPELINE LUE, AUCUN MOT N'EST FORMÉ. `statut_de_source`
+            // prend un booléen et n'a pas de troisième état : lui passer `false` ferait dire « muet ».
+            let status = match pipeline_fresh {
+                Some(pf) => statut_de_source(age, pf, Some(&cadence)),
+                None => STATUT_DE_SOURCE_NON_LU,
+            };
             // active_alerts : nb d'alertes 'new' imputées à `name` (0 si aucune / feed non corrélable comme les
             // snapshots/métriques). Un COMPTE à côté du statut, jamais un statut. Calculé avant le move de `name`.
             let active_alerts = alert_counts.get(&name).copied().unwrap_or(0);
@@ -756,8 +804,29 @@ pub(crate) fn compute_freshness(db_path: &str, env: Option<&str>) -> Value {
             releve.noter("les flux d'instantanés", &fin);
         }
         // métriques : un feed agrégé (remote-write) + DÉTAIL par série (déplié dans l'UI sur clic)
-        let mlast: Option<i64> = conn.query_row(&format!("SELECT MAX(ts) FROM metric WHERE ts>?1{envp}"), params![cut7], |r| r.get::<_, Option<i64>>(0)).ok().flatten();
-        if let Some(m) = mlast {
+        // `P10.20-b` (rang 2) — UN FLUX NON LU EST LISTÉ AVEC SON AVEU, IL NE DISPARAÎT PAS. Avant :
+        // `.ok().flatten()` puis `if let Some(m)`. Une lecture ratée faisait donc sortir le flux « métriques »
+        // de `feeds` — et une source ABSENTE de cette liste ne se lit pas « je n'ai pas regardé », elle se lit
+        // « ce flux n'a rien remonté depuis sept jours », qui est l'affirmation exactement fausse sur une
+        // surface dont c'est le seul objet. `Ok(None)` reste une absence ÉTABLIE (aucune métrique dans la
+        // fenêtre) : le flux n'est pas listé, exactement comme avant, et le corps y est byte-identique.
+        let dernier_point_metrique = match conn.query_row(
+            &format!("SELECT MAX(ts) FROM metric WHERE ts>?1{envp}"), params![cut7], |r| r.get::<_, Option<i64>>(0)) {
+            Ok(v) => v,
+            Err(e) => {
+                lignes_non_lues.push(format!("le flux des métriques : {e}"));
+                // Ni `last_seen`, ni `age_s`, ni `n_24h`, ni cloche : rien de tout cela n'a été observé, et un
+                // zéro à la place d'une mesure absente est précisément ce que cette clé ferme. Le NOM ne porte
+                // pas non plus le compte de séries : il vient d'une autre lecture, qui n'a pas eu lieu.
+                feeds.push(json!({
+                    "kind": "metric", "name": "métriques", "last_seen": Value::Null, "age_s": Value::Null,
+                    "n_24h": Value::Null, "status": STATUT_DE_SOURCE_NON_LU, "active_alerts": Value::Null,
+                    "non_lu": true, "cause": format!("{CAUSE_FLUX_NON_LU}{e}"),
+                }));
+                None
+            }
+        };
+        if let Some(m) = dernier_point_metrique {
             let n: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM metric WHERE ts>?1{envp}"), params![d1], |r| r.get(0)).unwrap_or(0);
             let series: i64 = conn.query_row(&format!("SELECT COUNT(DISTINCT name) FROM metric WHERE ts>?1{envp}"), params![d1], |r| r.get(0)).unwrap_or(0);
             // liste des séries (nom + dernière donnée + statut) -> l'UI les déplie sous le feed agrégé.
@@ -766,7 +835,11 @@ pub(crate) fn compute_freshness(db_path: &str, env: Option<&str>) -> Value {
                 let fin = match s.query_map(params![d1, cut7], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))) {
                     Ok(rows) => parcourir_chaque(rows, |(nm, ls, n24): (String, i64, i64)| {
                         let age = now_ts - ls;
-                        let st = statut_de_source(age, pipeline_fresh, None);
+                        // `P10.20-b` (rang 2) — même règle pour une série de métriques que pour un flux.
+                        let st = match pipeline_fresh {
+                            Some(pf) => statut_de_source(age, pf, None),
+                            None => STATUT_DE_SOURCE_NON_LU,
+                        };
                         series_list.push(json!({ "name": nm, "last_seen": ls, "age_s": age, "n_24h": n24, "status": st }));
                     }),
                     Err(e) => FinDeParcours::NonCommence { cause: e.to_string() },
@@ -786,6 +859,9 @@ pub(crate) fn compute_freshness(db_path: &str, env: Option<&str>) -> Value {
         let mut corps = json!({
             "feeds": feeds,
             "ts": now_ts,
+            // `P10.20-b` (rang 2) — `true`, `false` ou `null` : la troisième valeur dit qu'AUCUNE des deux
+            // premières n'a été établie. `false` affirme que l'ingestion est en panne ; ce n'est pas ce
+            // qu'on sait quand la lecture a échoué.
             "pipeline_fresh": pipeline_fresh,
             "imputation_des_alertes": {
                 "actives": actives,
@@ -803,8 +879,19 @@ pub(crate) fn compute_freshness(db_path: &str, env: Option<&str>) -> Value {
         if let Some(cause) = releve.cause_de_l_imputation() {
             corps["imputation_des_alertes"]["error"] = json!(format!("{CAUSE_IMPUTATION_NON_ETABLIE}{cause}"));
         }
+        // `P10.20-b` (rang 2) — DEUX AVEUX, UNE SEULE CLÉ `error`, PARCE QUE C'EST ELLE QUE LA CONSOLE TESTE.
+        // Ils restent DISTINCTS dans la phrase : un parcours coupé rend un PRÉFIXE de liste, une ligne non lue
+        // retire un VERDICT. `non_lus` nomme les secondes à part, comme `compute_integrations` le fait déjà.
+        let mut aveux: Vec<String> = Vec::new();
         if let Some(phrase) = releve.aveu() {
-            corps["error"] = json!(phrase);
+            aveux.push(phrase);
+        }
+        if !lignes_non_lues.is_empty() {
+            aveux.push(format!("{CAUSE_LIGNES_DE_FRAICHEUR_NON_LUES}{}", lignes_non_lues.join(" ; ")));
+            corps["non_lus"] = json!(lignes_non_lues);
+        }
+        if !aveux.is_empty() {
+            corps["error"] = json!(aveux.join(" — "));
         }
         corps
     })

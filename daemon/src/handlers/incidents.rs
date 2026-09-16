@@ -13,6 +13,33 @@
 //! (tamper-evident, comme case.status/case.assign). Réutilise : case_add_item (timeline + MTTA), ledger_append,
 //! guatx_core::attack (technique->tactique), le compilateur GXQL FERMÉ, l'enum action_kind_valid.
 use crate::*;
+use rusqlite::OptionalExtension;
+
+/// `P10.20-b` (rang 2) — LA RECOMMANDATION N'EST PAS ÉTABLIE, ET CE N'EST PAS « AUCUN RUNBOOK NE CONVIENT ».
+///
+/// LE DÉFAUT MESURÉ LE 2026-09-16. `pick_runbook_id` essaie TROIS niveaux du plus spécifique au plus
+/// général — technique, tactique, générique `'*'` — et chaque essai finissait par `.ok()`. Une lecture
+/// RATÉE au niveau technique était donc indiscernable d'un « aucun runbook technique ne correspond », et la
+/// fonction PASSAIT AU NIVEAU SUIVANT : la console affichait « Recommandé : <procédure de tactique> » —
+/// une AUTRE procédure que celle qui était écrite pour cette technique-là, présentée avec l'aplomb d'un
+/// choix fondé, et pré-sélectionnée dans le sélecteur d'attache (`web/cases.js`). Au dernier niveau, la
+/// même lecture ratée rendait `recommended: null`, qui se lit « aucun runbook ne correspond à cet
+/// incident » — la phrase qui fait écrire une procédure à la main pendant un incident.
+pub(crate) const CAUSE_RECOMMANDATION_NON_ETABLIE: &str = "RECOMMANDATION DE RUNBOOK NON ÉTABLIE : la \
+     recherche du runbook à recommander n'a pas abouti. Ce n'est PAS « aucun runbook ne correspond », et \
+     aucune procédure d'un AUTRE niveau de correspondance n'est proposée à la place : un repli sur le \
+     niveau suivant ferait dérouler une autre procédure que celle qui était prévue. Cause : ";
+
+/// `P10.20-b` (rang 2) — LE RUNBOOK ATTACHÉ N'A PAS ÉTÉ LU, ET CE N'EST PAS « AUCUN RUNBOOK ATTACHÉ ».
+/// Deux surfaces servaient ce `null` : la fiche de dossier (`attached_runbook_id`) et l'en-tête de la
+/// checklist (`runbook`). Un analyste qui lit « aucun runbook attaché » sur un dossier qui en porte un
+/// ATTACHE le sien — `attach_runbook` refusera, parce qu'une progression existe déjà, et le refus se lira
+/// comme un défaut du produit plutôt que comme ce qu'il est. `P7.19-i` avait déjà fait rendre `null` à
+/// l'ensemble MULTIPLE (deux runbooks sur un même dossier) : c'est un refus de NOMMER, établi sur des
+/// lignes lues. Celui-ci ne l'était pas.
+pub(crate) const CAUSE_RUNBOOK_ATTACHE_NON_LU: &str = "RUNBOOK ATTACHÉ NON LU : la lecture des étapes \
+     figées de ce dossier a échoué. Ce n'est PAS « aucun runbook attaché » — il y en a peut-être un, et en \
+     attacher un second serait refusé. Cause : ";
 
 // ---------------------------------------------------------------------------------------------------------
 // CŒUR TESTABLE (fonctions pures sur &Connection, sans AppState).
@@ -158,49 +185,59 @@ pub(crate) fn dominant_tactic_and_target(conn: &Connection, id: i64) -> rusqlite
 ///   (2) match_kind='tactic' key=<tactique dominante> ; repli discovery->reconnaissance (port-scan T1046 = phase
 ///       de reconnaissance, même bucket produit) ;
 ///   (3) générique '*'.
-/// None si aucun runbook actif (tables vides / seed absent). Ne renvoie que des runbooks ACTIFS. Passer
-/// `technique=None` reproduit EXACTEMENT le comportement Phase 1 (repli tactique->générique) — parité.
-pub(crate) fn pick_runbook_id(conn: &Connection, tactic: Option<&str>, technique: Option<&str>) -> Option<i64> {
-    let try_match = |kind: &str, key: &str| -> Option<i64> {
+/// `Ok(None)` si aucun runbook actif ne correspond (tables vides / seed absent) — une absence ÉTABLIE. Ne
+/// renvoie que des runbooks ACTIFS. Passer `technique=None` reproduit EXACTEMENT le comportement Phase 1
+/// (repli tactique->générique) — parité.
+///
+/// `P10.20-b` (rang 2) — LE REPLI D'UN NIVEAU À L'AUTRE EST UNE DÉCISION DE PRÉCÉDENCE, PAS UN RATTRAPAGE
+/// D'ERREUR. Chaque niveau rend `Result<Option<i64>>` et la première lecture qui ÉCHOUE arrête la
+/// recherche : descendre d'un cran sur une panne de lecture reviendrait à recommander la procédure d'un
+/// niveau MOINS spécifique en la présentant comme le meilleur choix. `Ok(None)` — « ce niveau n'a pas de
+/// runbook » — continue de faire descendre, exactement comme avant.
+pub(crate) fn pick_runbook_id(conn: &Connection, tactic: Option<&str>, technique: Option<&str>) -> rusqlite::Result<Option<i64>> {
+    let try_match = |kind: &str, key: &str| -> rusqlite::Result<Option<i64>> {
         conn.query_row(
             "SELECT id FROM runbook WHERE active=1 AND match_kind=?1 AND match_key=?2 ORDER BY id LIMIT 1",
             params![kind, key],
             |r| r.get(0),
-        ).ok()
+        ).optional()
     };
     // (1) niveau TECHNIQUE (le plus spécifique) — normalise en technique parente (T1110.001 -> T1110).
     if let Some(tech) = technique {
         if let Some(pt) = guatx_core::attack::parent_technique(tech) {
-            if let Some(rb) = try_match("technique", &pt) {
-                return Some(rb);
+            if let Some(rb) = try_match("technique", &pt)? {
+                return Ok(Some(rb));
             }
         }
     }
     // (2) niveau TACTIQUE (repli).
     if let Some(tac) = tactic {
-        if let Some(rb) = try_match("tactic", tac) {
-            return Some(rb);
+        if let Some(rb) = try_match("tactic", tac)? {
+            return Ok(Some(rb));
         }
         // port-scan / énumération réseau (discovery) -> runbook de reconnaissance (même réponse produit).
         if tac == "discovery" {
-            if let Some(rb) = try_match("tactic", "reconnaissance") {
-                return Some(rb);
+            if let Some(rb) = try_match("tactic", "reconnaissance")? {
+                return Ok(Some(rb));
             }
         }
     }
     // (3) repli générique '*'.
-    conn.query_row("SELECT id FROM runbook WHERE active=1 AND match_kind='*' ORDER BY id LIMIT 1", [], |r| r.get(0)).ok()
+    conn.query_row("SELECT id FROM runbook WHERE active=1 AND match_kind='*' ORDER BY id LIMIT 1", [], |r| r.get(0)).optional()
 }
 
-/// Un runbook (métadonnées) en JSON.
-fn runbook_meta_json(conn: &Connection, rb_id: i64) -> Option<Value> {
+/// Un runbook (métadonnées) en JSON. `Ok(None)` = ce runbook n'existe pas (une absence ÉTABLIE) ;
+/// `Err` = la lecture n'a pas eu lieu — `P10.20-b` (rang 2) : servi `null`, ce runbook devenait une
+/// recommandation VIDE sur la fiche de dossier et un en-tête de checklist SANS nom, au-dessus d'étapes
+/// qui, elles, s'affichaient.
+fn runbook_meta_json(conn: &Connection, rb_id: i64) -> rusqlite::Result<Option<Value>> {
     conn.query_row(
         "SELECT id,key,name,match_kind,match_key,description,managed FROM runbook WHERE id=?1",
         params![rb_id],
         |r| Ok(json!({ "id": r.get::<_,i64>(0)?, "key": r.get::<_,String>(1)?, "name": r.get::<_,String>(2)?,
             "match_kind": r.get::<_,String>(3)?, "match_key": r.get::<_,String>(4)?,
             "description": r.get::<_,String>(5)?, "managed": r.get::<_,i64>(6)? })),
-    ).ok()
+    ).optional()
 }
 
 /// `P7.19-i` — LE RUNBOOK ATTACHÉ À UN CASE : LA SEULE LIGNE ADMISSIBLE, PAS LA PREMIÈRE VENUE.
@@ -225,7 +262,12 @@ fn runbook_meta_json(conn: &Connection, rb_id: i64) -> Option<Value> {
 /// sort. C'est la même loi que `P7.19-f` : refuser de publier vaut mieux que publier un nombre qu'on
 /// ne sait pas lire. Les étapes, elles, restent listées — `case_steps_json` ne perd rien, il cesse
 /// seulement de coiffer des étapes de DEUX runbooks du nom d'UN SEUL.
-fn runbook_attache(conn: &Connection, id: i64) -> Option<i64> {
+///
+/// `P10.20-b` (rang 2) — ET `Err` N'EST PAS CE `None`-LÀ. Le `None` ci-dessus est un refus de NOMMER
+/// ÉTABLI sur des lignes lues (l'ensemble est multiple) ; `.ok()` y versait aussi les lectures qui
+/// n'avaient pas eu lieu, si bien que deux phrases opposées — « ce dossier porte deux runbooks » et « je
+/// n'ai pas pu regarder » — sortaient par la même valeur, servie « aucun runbook attaché ».
+fn runbook_attache(conn: &Connection, id: i64) -> rusqlite::Result<Option<i64>> {
     conn.query_row(
         "SELECT cs.runbook_id FROM case_step cs WHERE cs.incident_id=?1 \
          GROUP BY cs.runbook_id \
@@ -233,7 +275,7 @@ fn runbook_attache(conn: &Connection, id: i64) -> Option<i64> {
         params![id],
         |r| r.get::<_, i64>(0),
     )
-    .ok()
+    .optional()
 }
 
 /// Projection incident + runbook recommandé + runbooks disponibles pour un case. INTERNE (jamais client-read).
@@ -268,12 +310,40 @@ pub(crate) fn case_runbooks_json(conn: &Connection, id: i64) -> Option<Value> {
             (None, None, PrefillTargets::default())
         }
     };
+    // `P10.20-b` (rang 2) — LA RECOMMANDATION EST ÉTABLIE, OU ELLE DIT QU'ELLE NE L'EST PAS. Deux lectures
+    // la composent — le CHOIX du runbook (`pick_runbook_id`) et sa FICHE (`runbook_meta_json`) —, et l'aveu
+    // les distingue : dans un cas aucun runbook n'a pu être retenu, dans l'autre un runbook a été retenu et
+    // c'est sa fiche qui manque. Le `null` servi est le MÊME ; ce qui change est la phrase posée à côté, et
+    // ce que l'exploitant doit aller regarder. Ni l'un ni l'autre ne pose `recommended` dans `non_lus` : ce
+    // champ est un OBJET, et `corps_de_listes_illisibles` y écrirait `[]` — une liste vide n'est pas la
+    // forme d'une recommandation absente.
+    let mut recommandation_non_etablie: Option<String> = None;
     let recommended = if non_lus.is_empty() {
-        pick_runbook_id(conn, tactic.as_deref(), technique.as_deref()).and_then(|rb| runbook_meta_json(conn, rb))
+        match pick_runbook_id(conn, tactic.as_deref(), technique.as_deref()) {
+            Ok(Some(rb)) => match runbook_meta_json(conn, rb) {
+                Ok(fiche) => fiche,
+                Err(e) => {
+                    recommandation_non_etablie =
+                        Some(format!("{CAUSE_RECOMMANDATION_NON_ETABLIE}un runbook a été retenu, sa fiche n'a pas été lue : {e}"));
+                    None
+                }
+            },
+            // AUCUN runbook actif ne correspond : une absence ÉTABLIE, le cas nominal d'une base sans seed.
+            Ok(None) => None,
+            Err(e) => {
+                recommandation_non_etablie = Some(format!("{CAUSE_RECOMMANDATION_NON_ETABLIE}{e}"));
+                None
+            }
+        }
     } else {
         None
     };
-    let attached: Option<i64> = runbook_attache(conn, id); // `P7.19-i` — LA seule ligne admissible, pas la première venue.
+    // `P7.19-i` — LA seule ligne admissible, pas la première venue. `P10.20-b` — et une lecture ratée
+    // n'est pas cette ligne-là non plus.
+    let (attached, attachement_non_lu) = match runbook_attache(conn, id) {
+        Ok(rb) => (rb, None),
+        Err(e) => (None, Some(format!("{CAUSE_RUNBOOK_ATTACHE_NON_LU}{e}"))),
+    };
     let disponibles: rusqlite::Result<Vec<Value>> = conn
         .prepare("SELECT id,key,name,match_kind,match_key,description,managed FROM runbook WHERE active=1 ORDER BY (match_kind='*'), id")
         .and_then(|mut s| {
@@ -290,7 +360,7 @@ pub(crate) fn case_runbooks_json(conn: &Connection, id: i64) -> Option<Value> {
             Vec::new()
         }
     };
-    let corps = json!({
+    let mut corps = json!({
         "incident_tier": tier, "incident_type": itype, "commander": commander,
         "dominant_tactic": tactic, "dominant_technique": technique,
         // `prefill_target` = host best-effort (rétrocompat UI Phase 1/2) ; #3 P3-A ajoute les cibles STRUCTURÉES
@@ -299,6 +369,17 @@ pub(crate) fn case_runbooks_json(conn: &Connection, id: i64) -> Option<Value> {
         "prefill_src_ip": targets.src_ip, "prefill_pid": targets.pid, "prefill_host": targets.host,
         "recommended": recommended, "attached_runbook_id": attached, "available": available,
     });
+    // `P10.20-b` (rang 2) — LES DEUX AVEUX SONT STRICTEMENT CONDITIONNELS : sur un corps dont les deux
+    // lectures ont abouti, aucune des deux clés n'existe, et la réponse est byte-identique à celle d'avant
+    // cette clé. Un aveu qui serait toujours là n'avouerait rien.
+    if let Some(o) = corps.as_object_mut() {
+        if let Some(cause) = recommandation_non_etablie {
+            o.insert("recommandation_non_etablie".to_string(), json!(cause));
+        }
+        if let Some(cause) = attachement_non_lu {
+            o.insert("runbook_attache_non_lu".to_string(), json!(cause));
+        }
+    }
     Some(crate::handlers::liste_bornee::corps_de_listes_illisibles(corps, &non_lus))
 }
 
@@ -396,21 +477,41 @@ pub(crate) fn case_steps_json(conn: &Connection, id: i64) -> Value {
             .collect::<rusqlite::Result<Vec<_>>>());
     // `P7.19-i` — LA seule ligne admissible (cf. `runbook_attache`) ; `null` si le case porte des
     // étapes de DEUX runbooks, plutôt qu'un en-tête tiré au sort au-dessus d'étapes mélangées.
-    let runbook = runbook_attache(conn, id).and_then(|rb| runbook_meta_json(conn, rb));
+    // `P10.20-b` (rang 2) — et `null` SANS un mot quand l'une des deux lectures n'a pas eu lieu était la
+    // pire forme sur cette surface : les ÉTAPES, elles, s'affichent (elles viennent d'une autre lecture),
+    // donc l'analyste voyait une checklist SANS nom de procédure et concluait qu'elle n'en avait pas.
+    let (runbook, runbook_non_lu) = match runbook_attache(conn, id)
+        .and_then(|rb| match rb {
+            Some(rb_id) => runbook_meta_json(conn, rb_id),
+            None => Ok(None),
+        }) {
+        Ok(fiche) => (fiche, None),
+        Err(e) => (None, Some(format!("{CAUSE_RUNBOOK_ATTACHE_NON_LU}{e}"))),
+    };
     let steps = match lues {
         Ok(v) => v,
         // LA LISTE N'A PAS ÉTÉ LUE : ni étapes, ni progression. Le corps garde sa forme et DIT pourquoi.
         Err(_) => {
-            return crate::handlers::liste_bornee::corps_de_liste_illisible(
+            let mut sans_etapes = crate::handlers::liste_bornee::corps_de_liste_illisible(
                 json!({ "progress": Value::Null, "runbook": runbook }),
                 "steps",
-            )
+            );
+            // Les DEUX lectures peuvent manquer à la fois, et elles ne se remplacent pas : `error` parle
+            // des ÉTAPES, `runbook_non_lu` de l'EN-TÊTE.
+            if let Some(cause) = runbook_non_lu {
+                sans_etapes["runbook_non_lu"] = json!(cause);
+            }
+            return sans_etapes;
         }
     };
     let total = steps.len() as i64;
     let done = steps.iter().filter(|s| s.get("status").and_then(|v| v.as_str()) == Some("done")).count() as i64;
     let skipped = steps.iter().filter(|s| s.get("status").and_then(|v| v.as_str()) == Some("skipped")).count() as i64;
-    json!({ "steps": steps, "progress": { "total": total, "done": done, "skipped": skipped }, "runbook": runbook })
+    let mut corps = json!({ "steps": steps, "progress": { "total": total, "done": done, "skipped": skipped }, "runbook": runbook });
+    if let Some(cause) = runbook_non_lu {
+        corps["runbook_non_lu"] = json!(cause);
+    }
+    corps
 }
 
 /// AVANCE une step (done/skipped/pending) d'un incident + trace timeline 'step' + ledger. Anti-IDOR : la step

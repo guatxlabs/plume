@@ -13,6 +13,7 @@
 //! n'est jamais émis -> `risk_rollup` vide -> AUCUNE alerte risk -> détection/ingest byte-identiques. RBA
 //! s'ACTIVE par la DONNÉE (une règle passée en mode risk, ou un IOC importé), jamais par un flag.
 use crate::*;
+use rusqlite::OptionalExtension;
 use std::collections::{HashMap, HashSet};
 
 // ============================================================================================
@@ -663,7 +664,14 @@ pub(crate) async fn risk_entity_timeline(
     let conf = load_config();
     let from = now() - risk_window_s(&conf);
     crate::req_conn!(st, au, conn);
-    let summary = conn
+    // `P10.20-b` (rang 2) — LE ROLLUP DE RISQUE EST LU, OU IL EST DIT NON LU. Avant : `.ok()`, donc
+    // `summary: null` — et sur CE panneau, `summary` absent se lit « cette entité n'a aucun risque cumulé »,
+    // c'est-à-dire l'affirmation exactement inverse de ce qu'une lecture ratée permet de dire. La ligne de
+    // temps et les contributions, juste dessous, avouent déjà les leurs (`P10.7-g` lot 107,
+    // `timeline_error` / `contributions_error`) : la synthèse était la dernière des trois à se taire, et
+    // c'est la seule qui porte le SCORE. `Ok(None)` reste une absence ÉTABLIE (aucune ligne de rollup pour
+    // cette entité), servie `null` sans un mot — le cas nominal d'une entité jamais vue.
+    let synthese = conn
         .query_row(
             "SELECT score,contrib,distinct_tactics,tactics,score_hot,contrib_hot,max_severity,first_ts,last_ts \
              FROM risk_rollup WHERE entity_type=?1 AND entity=?2",
@@ -677,7 +685,11 @@ pub(crate) async fn risk_entity_timeline(
                 }))
             },
         )
-        .ok();
+        .optional();
+    let (summary, summary_error) = match synthese {
+        Ok(v) => (v, None),
+        Err(e) => (None, Some(format!("synthèse de risque NON LUE : {e} — ce n'est PAS « aucun risque cumulé » pour cette entité"))),
+    };
     // `P10.7-g` (lot 107) — timeline et contributions lues EN BLOC : une lecture ratée n'est plus une liste
     // vide muette, elle est rendue `null` avec sa cause (`timeline_error` / `contributions_error`).
     let timeline_lue: rusqlite::Result<Vec<Value>> = conn
@@ -712,6 +724,12 @@ pub(crate) async fn risk_entity_timeline(
     };
     let mut corps = json!({ "entity_type": etype, "entity": entity, "summary": summary, "timeline": timeline, "contributions": [] });
     if let Some(obj) = corps.as_object_mut() {
+        // `P10.20-b` (rang 2) — MÊME FORME QUE SES DEUX VOISINES : la cause NOMMÉE à côté de la valeur
+        // `null`, et le drapeau partagé `lecture_non_faite` que ce corps porte déjà.
+        if let Some(cause) = summary_error {
+            obj.insert("summary_error".into(), json!(cause));
+            obj.insert("lecture_non_faite".into(), json!(true));
+        }
         if let Some(cause) = timeline_error {
             obj.insert("timeline_error".into(), json!(cause));
             obj.insert("lecture_non_faite".into(), json!(true));

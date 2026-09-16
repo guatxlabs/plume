@@ -687,7 +687,7 @@
     async fn day2_bulletin_show_and_clear() {
         let st = sso_test_state("plume-admin", "plume-editor", "admins");
         // mode 0 : aucun bulletin.
-        { let c = st.db.lock(); assert!(bulletin_read(&c).is_none(), "aucun bulletin -> pas de bandeau"); }
+        { let c = st.db.lock(); assert_eq!(bulletin_read(&c).en_json(), Value::Null, "aucun bulletin -> pas de bandeau"); }
         let (code, _v) = tok_resp_json(bulletin_get(State(st.clone()), Extension(tok_au("viewer"))).await).await;
         assert_eq!(code, StatusCode::OK);
         // pose (admin).
@@ -695,14 +695,14 @@
         assert_eq!(c1, StatusCode::OK);
         assert_eq!(v1["bulletin"]["message"], "maintenance 22h");
         assert_eq!(v1["bulletin"]["level"], "warn");
-        { let c = st.db.lock(); assert_eq!(bulletin_read(&c).unwrap()["message"], "maintenance 22h"); }
+        { let c = st.db.lock(); assert_eq!(bulletin_read(&c).en_json()["message"], "maintenance 22h"); }
         // un viewer NE peut PAS poser (403) — défense en profondeur (le gate RBAC est prouvé plus haut).
         let (cx, _vx) = tok_resp_json(bulletin_set(State(st.clone()), Extension(tok_au("viewer")), Json(json!({ "message": "pirate" }))).await).await;
         assert_eq!(cx, StatusCode::FORBIDDEN, "viewer -> 403 (re-check require_admin dans le handler)");
         // efface -> None.
         let (c2, _v2) = tok_resp_json(bulletin_clear(State(st.clone()), Extension(tok_au("admin"))).await).await;
         assert_eq!(c2, StatusCode::OK);
-        { let c = st.db.lock(); assert!(bulletin_read(&c).is_none(), "après clear -> aucun bandeau (retour mode 0)"); }
+        { let c = st.db.lock(); assert_eq!(bulletin_read(&c).en_json(), Value::Null, "après clear -> aucun bandeau (retour mode 0)"); }
         // niveau invalide -> replié sur info (enum fermé, anti-injection CSS).
         let (_c3, v3) = tok_resp_json(bulletin_set(State(st.clone()), Extension(tok_au("admin")), Json(json!({ "message": "x", "level": "<script>" }))).await).await;
         assert_eq!(v3["bulletin"]["level"], "info", "niveau non listé -> info");

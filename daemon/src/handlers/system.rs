@@ -395,19 +395,89 @@ fn bulletin_level_ok(l: &str) -> bool {
     matches!(l, "info" | "warn" | "critical")
 }
 
-/// Lit le bulletin courant (setting global). None si absent (mode 0 : aucun bandeau). Value {message,level,...}.
-pub(crate) fn bulletin_read(conn: &Connection) -> Option<Value> {
-    let raw: String = conn
-        .query_row("SELECT value FROM setting WHERE scope='global' AND key=?1", params![BULLETIN_KEY], |r| r.get(0))
-        .ok()?;
-    serde_json::from_str::<Value>(&raw).ok().filter(|v| v.get("message").and_then(|m| m.as_str()).map(|s| !s.is_empty()).unwrap_or(false))
+/// `P10.20-b` (rang 2) — LA CLÉ SOUS LAQUELLE UN BULLETIN NON ÉTABLI S'AVOUE, à côté de la valeur `null`.
+/// Même geste que `CLE_VERSION_DE_SCHEMA_NON_ETABLIE` dans ce même fichier : ABSENTE du chemin nominal.
+pub(crate) const CLE_BULLETIN_NON_ETABLI: &str = "bulletin_non_etabli";
+
+/// `P10.20-b` (rang 2) — L'OUVERTURE DE L'AVEU, commune aux deux causes distinguées ci-dessous.
+///
+/// LE DÉFAUT. `{bulletin: null}` se lit « aucun bandeau posé », et c'est ce que la console en fait : elle
+/// n'affiche RIEN. Or ce bandeau est le seul canal par lequel un exploitant parle à TOUS les comptes de
+/// l'instance à la fois — « maintenance en cours, ne touchez à rien », « incident majeur en cours, suivez
+/// la procédure X ». Une lecture ratée de la ligne `setting` faisait donc disparaître un message
+/// DÉLIBÉRÉMENT posé, sans que ni le lecteur ni celui qui l'a posé ne puisse s'en apercevoir : l'auteur,
+/// lui, voit son bulletin dans la réponse de son propre POST.
+pub(crate) const CAUSE_BULLETIN_NON_ETABLI: &str = "BULLETIN NON ÉTABLI : la ligne `setting` du bandeau \
+     n'a pas rendu de bulletin exploitable. Ce n'est PAS « aucun bandeau posé » — un message d'exploitation \
+     destiné à TOUS les comptes existe peut-être et n'est pas affiché.";
+
+/// `P10.20-b` (rang 2) — LE BULLETIN TEL QU'IL A ÉTÉ OBTENU, sur le modèle de [`VersionDeSchema`] écrit
+/// vingt lignes plus haut : `Aucun` et `Pose` sont des FAITS, `NonEtabli(cause)` n'en est pas un et porte
+/// POURQUOI. Les deux causes sont distinguées à l'écrit et se confondent à l'AFFICHAGE : ce qui est servi
+/// est `null` dans les deux cas — rien n'est établi — et la phrase dit laquelle.
+pub(crate) enum BulletinPose {
+    /// Aucun bandeau : pas de ligne, ou un message vide (ce que `bulletin_set` écrit pour effacer). Un
+    /// FAIT, et le cas nominal d'une instance qui n'a rien à annoncer.
+    Aucun,
+    /// Le bandeau courant, tel qu'il a été posé.
+    Pose(Value),
+    /// Rien n'est établi : la lecture n'a pas eu lieu, ou la valeur stockée ne se décode pas.
+    NonEtabli(String),
 }
 
-/// GET /api/bulletin — viewer+ (tous les rôles voient le MOTD). {bulletin: {...} | null}.
+impl BulletinPose {
+    /// LA VALEUR SERVIE : le bandeau, ou `null`. Jamais un repli qui a la forme d'une absence de bandeau.
+    pub(crate) fn en_json(&self) -> Value {
+        match self {
+            BulletinPose::Pose(v) => v.clone(),
+            BulletinPose::Aucun | BulletinPose::NonEtabli(_) => Value::Null,
+        }
+    }
+
+    /// POSE L'AVEU dans un corps déjà construit, et RIEN quand le bulletin est établi — donc le chemin
+    /// nominal ressort byte-identique et un aveu inconditionnel est structurellement impossible.
+    pub(crate) fn poser_l_aveu(&self, corps: &mut serde_json::Map<String, Value>) {
+        if let BulletinPose::NonEtabli(cause) = self {
+            corps.insert(CLE_BULLETIN_NON_ETABLI.to_string(), json!(cause));
+        }
+    }
+}
+
+/// Lit le bulletin courant (setting global). `Aucun` si absent (mode 0 : aucun bandeau) ; `Pose` porte
+/// {message,level,...} ; `NonEtabli` dès que la lecture ne rend pas un bulletin — lecture NON FAITE, ou
+/// valeur stockée non décodable.
+pub(crate) fn bulletin_read(conn: &Connection) -> BulletinPose {
+    let brut: Option<String> = match conn
+        .query_row("SELECT value FROM setting WHERE scope='global' AND key=?1", params![BULLETIN_KEY], |r| r.get(0))
+        .optional()
+    {
+        Ok(v) => v,
+        Err(e) => return BulletinPose::NonEtabli(format!("{CAUSE_BULLETIN_NON_ETABLI} La lecture a échoué : {e}.")),
+    };
+    let Some(brut) = brut else { return BulletinPose::Aucun };
+    match serde_json::from_str::<Value>(&brut) {
+        // Un message VIDE est la forme d'effacement écrite par `bulletin_set` : une absence ÉTABLIE.
+        Ok(v) => match v.get("message").and_then(|m| m.as_str()) {
+            Some(m) if !m.is_empty() => BulletinPose::Pose(v),
+            _ => BulletinPose::Aucun,
+        },
+        // LA LIGNE EXISTE ET NE SE DÉCODE PAS. Troisième voie, du même esprit que « la ligne existe et ne
+        // porte pas un entier » pour la version de schéma : quelqu'un a posé quelque chose, et servir
+        // « aucun bandeau » reviendrait à effacer son message en silence.
+        Err(e) => BulletinPose::NonEtabli(format!("{CAUSE_BULLETIN_NON_ETABLI} La ligne existe et ne se décode pas : {e}.")),
+    }
+}
+
+/// GET /api/bulletin — viewer+ (tous les rôles voient le MOTD). {bulletin: {...} | null}, plus
+/// `bulletin_non_etabli` quand — et seulement quand — rien n'a pu être établi (`P10.20-b`).
 pub(crate) async fn bulletin_get(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
     let db = req_db(&st, &au);
     let c = db.lock();
-    Json(json!({ "bulletin": bulletin_read(&c) }))
+    let pose = bulletin_read(&c);
+    let mut corps = serde_json::Map::new();
+    corps.insert("bulletin".to_string(), pose.en_json());
+    pose.poser_l_aveu(&mut corps);
+    Json(Value::Object(corps))
 }
 
 /// POST /api/bulletin — ADMIN-ONLY (route_min_role default-deny Admin + re-check). {message, level?}.

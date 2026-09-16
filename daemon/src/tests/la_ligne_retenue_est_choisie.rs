@@ -38,7 +38,7 @@ mod la_ligne_retenue_est_choisie {
     fn case_avec_runbook(conn: &Connection) -> (i64, i64, i64) {
         seed_runbooks(conn);
         let id = case_create_row(conn, "alice", "exploit", 4, "", None, 2);
-        let rb = pick_runbook_id(conn, Some("initial-access"), None).expect("un runbook actif seedé");
+        let rb = pick_runbook_id(conn, Some("initial-access"), None).expect("lecture faite").expect("un runbook actif seedé");
         let n = attach_runbook(conn, id, rb, "bob", &PrefillTargets::default()).expect("attache OK");
         (id, rb, n)
     }

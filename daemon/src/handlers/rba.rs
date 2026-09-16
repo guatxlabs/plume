@@ -537,9 +537,10 @@ pub(crate) fn risk_entities_window_sql() -> String {
 /// premières clés viennent du fabricant partagé `handlers::liste_bornee` (`P11.22-f`), la sixième est
 /// PROPRE à ce panneau et s'y ajoute. `served`
 /// est le nombre de lignes RENDUES et `window` le rang de coupe : leur égalité dit à la vue que la
-/// coupe MORD. `total`/`total_capped`/`over_threshold_total` valent `null` — jamais `0` — quand le
-/// recensement n'a pas pu être lu : « non recensé » et « aucune entité à risque » sont deux faits
-/// différents, et sur un panneau de posture l'écart va dans le sens dangereux. Quand `total_capped`
+/// coupe MORD. `total`/`total_capped`/`over_threshold_total`/`over_threshold_hors_parc` valent `null`
+/// — jamais `0` — quand le recensement n'a pas pu être lu, Y COMPRIS quand une SEULE de ses lignes
+/// n'a pas pu l'être (`P10.7-f` rang 3) : « non recensé » et « aucune entité à risque » sont deux
+/// faits différents, et sur un panneau de posture l'écart va dans le sens dangereux. Quand `total_capped`
 /// est vrai, `over_threshold_total` est lui aussi un PLANCHER : il n'a été compté que sur les lignes
 /// que le plafond a laissé lire.
 pub(crate) fn risk_entities_page(conn: &Connection, score_thr: i64, tactics_thr: i64, vel_thr: i64) -> Value {
@@ -577,29 +578,42 @@ pub(crate) fn risk_entities_page(conn: &Connection, score_thr: i64, tactics_thr:
     });
     // RECENSEMENT BORNÉ : une passe plafonnée rend le total ET le compte au-dessus d'un seuil, par le
     // MÊME prédicat que les lignes. Une lecture qui ÉCHOUE rend `null`, jamais un zéro rassurant.
+    //
+    // `P10.7-f` (rang 3) — LE PARCOURS EST SOLDÉ EN BLOC AVANT D'ÊTRE COMPTÉ, et c'est la seule raison
+    // pour laquelle les trois nombres ci-dessous méritent d'être lus. Il s'écrivait
+    // `.map(|rows| { … for … in rows.flatten() … })` : le `.ok()` du bas couvrait l'échec de la
+    // PRÉPARATION et celui de l'EXÉCUTION — les deux seulement —, tandis qu'une ligne dont le MAPPEUR
+    // échoue, la troisième façon d'échouer — un blob dans `entity_type`/`entity`,
+    // une colonne qu'une migration vient d'ajouter, un cache de schéma de pool périmé — était avalée
+    // en silence et faisait sortir `total`, `over_threshold_total` et `over_threshold_hors_parc` PLUS
+    // PETITS, servis comme des faits sur un panneau de posture. Un compte dont une ligne n'a pas pu
+    // être lue est « non établi », jamais un entier plus petit : le solde en bloc fait retomber les
+    // trois sur la branche `None`, donc sur `TotalBorne::sans_lecture()` et deux `null` — la règle que
+    // `liste_bornee` écrit pour lui-même (« jamais `(0, false)` », `liste_bornee.rs`, `en_json`).
     let recense: Option<(i64, i64, i64)> = conn
         .prepare(&risk_rollup_recensement_sql())
         .and_then(|mut s| {
             s.query_map([], |r| {
                 Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, String>(3)?, r.get::<_, String>(4)?))
-            })
-            .map(|rows| {
-                let mut n = 0i64;
-                let mut au_dessus = 0i64;
-                let mut hors_parc = 0i64;
-                for (score, dt, hot, etype, ent) in rows.flatten() {
-                    n += 1;
-                    if risk_over_threshold(score, dt, hot, score_thr, tactics_thr, vel_thr) {
-                        au_dessus += 1;
-                        // `P11.20-h` : le MÊME prédicat de seuil, un cran plus loin — jamais un
-                        // second `WHERE` qui réécrirait la règle.
-                        if entite_hors_parc(&marquages, &etype, &ent) {
-                            hors_parc += 1;
-                        }
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .map(|lignes| {
+            let mut n = 0i64;
+            let mut au_dessus = 0i64;
+            let mut hors_parc = 0i64;
+            for (score, dt, hot, etype, ent) in lignes {
+                n += 1;
+                if risk_over_threshold(score, dt, hot, score_thr, tactics_thr, vel_thr) {
+                    au_dessus += 1;
+                    // `P11.20-h` : le MÊME prédicat de seuil, un cran plus loin — jamais un
+                    // second `WHERE` qui réécrirait la règle.
+                    if entite_hors_parc(&marquages, &etype, &ent) {
+                        hors_parc += 1;
                     }
                 }
-                (n, au_dessus, hors_parc)
-            })
+            }
+            (n, au_dessus, hors_parc)
         })
         .ok();
     let (total, over_threshold_total, over_threshold_hors_parc) = match recense {

@@ -22,20 +22,30 @@ const EST_BYTES_PER_EVENT: i64 = 512;
 const MAX_UNMANAGED_SHOWN: usize = 200;
 
 /// Stats d'un index (env_id) depuis event_rollup : compte, plus ancien bucket, plus récent last_ts.
-fn index_stats(conn: &Connection) -> HashMap<String, (i64, Option<i64>, Option<i64>)> {
+///
+/// `P10.7-f` (rang 3) — REND UN `Result`, ET C'EST LE POINT. Cette lecture était TROIS FOIS avalée : un
+/// `if let Ok` sur la préparation, un `if let Ok` sur l'exécution, et un `rows.flatten()` sur les lignes.
+/// Les trois retombaient sur la MÊME valeur, une map VIDE, qu'`index_policies_list` sert ensuite comme
+/// un fait — et pas un fait quelconque : un index GÉRÉ s'y affiche « 0 event » (l'opérateur en conclut
+/// que le flux est mort, ou que sa rétention n'a plus rien à purger), et un index NON GÉRÉ DISPARAÎT
+/// entièrement de la liste, puisque la liste des non-gérés est dérivée des CLÉS de cette map. Une seule
+/// ligne illisible — un blob dans `event_rollup.env_id`, une colonne qu'une migration vient d'ajouter —
+/// suffisait à faire disparaître UN index, silencieusement, d'une vue qui pilote une purge DESTRUCTIVE.
+/// L'appelant est désormais obligé de trancher entre « lu » et « non lu » ; il avoue.
+fn index_stats(conn: &Connection) -> rusqlite::Result<HashMap<String, (i64, Option<i64>, Option<i64>)>> {
+    let lignes: Vec<(String, i64, Option<i64>, Option<i64>)> = conn
+        .prepare("SELECT env_id, COALESCE(SUM(n),0), MIN(bucket), NULLIF(MAX(last_ts),0) FROM event_rollup GROUP BY env_id")
+        .and_then(|mut st| {
+            st.query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, Option<i64>>(2)?, r.get::<_, Option<i64>>(3)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        })?;
     let mut m = HashMap::new();
-    if let Ok(mut st) = conn.prepare(
-        "SELECT env_id, COALESCE(SUM(n),0), MIN(bucket), NULLIF(MAX(last_ts),0) FROM event_rollup GROUP BY env_id",
-    ) {
-        if let Ok(rows) = st.query_map([], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, Option<i64>>(2)?, r.get::<_, Option<i64>>(3)?))
-        }) {
-            for (env, cnt, oldest, newest) in rows.flatten() {
-                m.insert(env, (cnt, oldest, newest));
-            }
-        }
+    for (env, cnt, oldest, newest) in lignes {
+        m.insert(env, (cnt, oldest, newest));
     }
-    m
+    Ok(m)
 }
 
 /// JSON d'un index (policy éventuelle + stats). `id`=NULL et `managed`=false pour un index NON géré (env_id
@@ -83,21 +93,47 @@ pub(crate) async fn index_policies_list(State(st): State<AppState>, Extension(au
     let conf = load_config();
     crate::req_conn!(st, au, conn);
     let global_days = retention_effective(&conn, &conf, "retention_days");
-    let stats = index_stats(&conn);
-    // policies (managées)
-    let mut policies: Vec<(String, (i64, i64, i64, i64, String, i64, i64))> = Vec::new();
-    if let Ok(mut s) = conn.prepare("SELECT id,name,retention_days,max_rows,max_bytes,description,enabled,managed FROM index_policy ORDER BY name") {
-        if let Ok(rows) = s.query_map([], |r| {
-            Ok((
-                r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?,
-                r.get::<_, i64>(4)?, r.get::<_, String>(5)?, r.get::<_, i64>(6)?, r.get::<_, i64>(7)?,
+    // `P10.7-f` (rang 3) — LES DEUX LECTURES QUI ALIMENTENT `indexes` SONT ENTIÈRES OU AVOUÉES. La
+    // seconde était aplatie comme la première : une politique dont le mappeur échoue (blob dans
+    // `index_policy.name`, colonne absente de la connexion qui sert) sortait de `policies`, donc de
+    // `managed_names`, et son index se réaffichait sous l'autre branche d'`index_json` — `has_policy:
+    // false`, `retention_days: 0`, c'est-à-dire « cet index n'a pas de politique, il HÉRITE DU GLOBAL ».
+    // Sur une vue qui pilote une purge DESTRUCTIVE, une politique perdue se lisait donc comme une
+    // rétention globale appliquée à un index qui en avait une à lui. Aucune des deux lectures ne peut
+    // plus se solder par un « fait » : l'échec sert l'aveu du dépôt.
+    let lectures: rusqlite::Result<(HashMap<String, (i64, Option<i64>, Option<i64>)>, Vec<(String, (i64, i64, i64, i64, String, i64, i64))>)> =
+        index_stats(&conn).and_then(|stats| {
+            let policies = conn
+                .prepare("SELECT id,name,retention_days,max_rows,max_bytes,description,enabled,managed FROM index_policy ORDER BY name")
+                .and_then(|mut s| {
+                    s.query_map([], |r| {
+                        Ok((
+                            r.get::<_, String>(1)?,
+                            (r.get::<_, i64>(0)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?, r.get::<_, i64>(4)?,
+                             r.get::<_, String>(5)?, r.get::<_, i64>(6)?, r.get::<_, i64>(7)?),
+                        ))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                })?;
+            Ok((stats, policies))
+        });
+    let (stats, policies) = match lectures {
+        Ok(v) => v,
+        // NI STATS NI POLITIQUES : `indexes` est VIDE et le DIT (`error`), et `ok` retombe à `false` —
+        // un inventaire d'index NON LU ne se sert pas avec `ok: true`, comme le catalogue des rôles du
+        // rang 1. `global_retention_days` et `bounds` viennent d'ailleurs et restent servis.
+        Err(_) => {
+            return Json(crate::handlers::liste_bornee::corps_de_liste_illisible(
+                json!({
+                    "ok": false,
+                    "global_retention_days": global_days,
+                    "bounds": { "retention_days": { "min_when_set": 7, "max": 3650, "inherit": 0 } },
+                }),
+                "indexes",
             ))
-        }) {
-            for (id, name, rd, mr, mb, desc, en, mg) in rows.flatten() {
-                policies.push((name, (id, rd, mr, mb, desc, en, mg)));
-            }
+            .into_response()
         }
-    }
+    };
     let managed_names: std::collections::HashSet<&str> = policies.iter().map(|(n, _)| n.as_str()).collect();
     let mut out: Vec<Value> = policies.iter().map(|(n, p)| index_json(n, Some(p), stats.get(n))).collect();
     // indexes NON gérés : env_id vus en donnée mais sans policy (hérite du global). Bornés (anti-explosion).

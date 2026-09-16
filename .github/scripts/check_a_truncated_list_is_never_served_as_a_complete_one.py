@@ -98,6 +98,30 @@ marquer aucune alerte envoyée ; cache d'engagements CONSERVÉ et compté plutô
 sites sur vingt-deux fichiers, trente-sept défauts connus. Les comptes des paragraphes ci-dessus sont
 le RELEVÉ DU MATIN, gardés tels quels comme point de départ ; les planchers ne montent jamais.
 
+RELEVÉ APRÈS LE RANG TROIS (2026-09-16, lot suivant) : les cinq sites où la ligne avalée FAUSSAIT UN
+NOMBRE sont fermés. Le recensement des entités à risque (`risk_entities_page`) solde sa passe bornée en
+bloc AVANT de compter, si bien que `total`, `over_threshold_total` et `over_threshold_hors_parc`
+retombent ENSEMBLE sur `TotalBorne::sans_lecture()` et deux `null` — un compte dont une ligne n'a pas pu
+être lue est « non établi », jamais un entier plus petit. La progression d'un case (`case_steps_json`),
+qui DÉRIVE de `steps.len()`, est `null` sous l'aveu plutôt que `0/0`. Les deux lectures qui alimentent
+`indexes` (`index_stats`, désormais porteuse d'un `rusqlite::Result`, et la liste des politiques) avouent
+ensemble : plus aucun index ne s'affiche « 0 event », plus aucun n'est absent de la liste, et aucune
+politique perdue ne se relit « hérite du global » (`ok` retombe à `false`, comme le catalogue des rôles
+du rang un). Le recalcul d'échéances SLA (`sla_recalcule_la_priorite_bornee`), dernière lecture INTERNE
+de l'ensemble, porte sa ligne illisible dans `manque` : la route ne rend plus `204` = « tout recalculé »
+au-dessus d'un dossier qu'elle n'a pas su lire. La garde rend désormais TRENTE-CINQ sites sur VINGT
+fichiers, trente-deux défauts connus — tous de rang quatre.
+
+LES PLANCHERS SE RELISENT, AVEC LEUR DATE (2026-09-16, après le rang trois). Ils valaient 40/20, dérivés
+du relevé du matin (58 sites sur 31 fichiers, soit 69 % et 65 %) ; l'arbre porte maintenant 35 sites sur
+20 fichiers pour de VRAIES corrections, et un plancher laissé à 40 rendrait la garde rouge sur le dépôt
+qu'elle vient d'aider à guérir. Ils sont re-dérivés du relevé DU JOUR par la même règle — 69 % de 35 = 24,
+65 % de 20 = 13 —, ils ne montent jamais, et ils se reliront de la même façon à la prochaine descente.
+Ce n'est pas le seul filet : une découverte PARTIELLEMENT aveugle est déjà prise par le jugement de
+l'ensemble nommé dans les deux sens (chaque site qui cesse d'être vu sans que son entrée soit retirée
+devient une « exemption sans objet », rouge). Le plancher ne couvre que le cas où la découverte s'effondre
+ASSEZ pour que le rouge de l'ensemble puisse être pris pour une guérison.
+
 LES CINQUANTE-CINQ DÉFAUTS SONT ADMIS AUJOURD'HUI, ET C'EST UN AVEU, PAS UN ACQUITTEMENT
 ------------------------------------------------------------------------------------------
 Ils entrent dans l'ensemble pour que la garde puisse être câblée VERTE le jour où elle est écrite :
@@ -172,15 +196,21 @@ ECRITURES = {
 # la plus SPÉCIFIQUE gagne, et le site n'est jamais compté deux fois.
 RANG_ECRITURE = {"i": 0, "ii": 1, "iv": 2, "iii": 3}
 
-# --- PLANCHER DE NON-DÉGÉNÉRESCENCE (dérivé du relevé du 2026-09-16) -----------------------------
-# La découverte du jour rend 58 sites sur 31 fichiers de `daemon/src/handlers/`. Les planchers en
-# gardent environ les deux tiers — 40/58 = 69 %, 20/31 = 65 % — et ils ne réclament PAS un volume de
-# code : ils constatent qu'une LECTURE est cassée. Sous eux, rendre vert serait rendre vert en étant
-# aveugle, et c'est le défaut que cette garde nomme, appliqué à elle-même : la découverte est cassée,
-# pas le dépôt guéri. Ils ne montent jamais ; le jour où l'arbre descend sous 40 sites pour de vraies
-# corrections, c'est le plancher qui se relit, avec sa date.
-PLANCHER_SITES = 40
-PLANCHER_FICHIERS = 20
+# --- PLANCHER DE NON-DÉGÉNÉRESCENCE (relu le 2026-09-16, après le rang trois) ---------------------
+# Ils ne réclament PAS un volume de code : ils constatent qu'une LECTURE est cassée. Sous eux, rendre
+# vert serait rendre vert en étant aveugle, et c'est le défaut que cette garde nomme, appliqué à
+# elle-même : la découverte est cassée, pas le dépôt guéri.
+#
+# PREMIÈRE ÉCRITURE (relevé du matin, 2026-09-16) : 58 sites sur 31 fichiers -> 40/20, soit 69 % et
+# 65 %. RELECTURE (même jour, après les rangs un, deux et trois) : l'arbre porte 35 sites sur 20
+# fichiers pour de VRAIES corrections — 23 entrées retirées de l'ensemble nommé, aucune amnistiée — et
+# un plancher laissé à 40 rougirait sur le dépôt que cette garde vient d'aider à guérir. La MÊME règle
+# est réappliquée au relevé DU JOUR : 69 % de 35 = 24, 65 % de 20 = 13. Les planchers ne montent
+# jamais ; à la prochaine descente pour de vraies corrections, ils se reliront de la même façon, avec
+# leur date. Et ils ne sont pas le seul filet : une découverte PARTIELLEMENT aveugle est prise par le
+# jugement de l'ensemble nommé (un site qui cesse d'être vu devient une « exemption sans objet »).
+PLANCHER_SITES = 24
+PLANCHER_FICHIERS = 13
 
 # ================================================================================================
 # L'ENSEMBLE NOMMÉ — TROIS CLASSES, JUGÉES DANS LES DEUX SENS
@@ -263,22 +293,27 @@ DEFAUTS_RANG_2_DETECTION = {}
 
 # RANG 3 — DES COMPTES SERVIS COMME DES FAITS : ici la ligne avalée ne manque pas seulement dans une
 # liste, elle FAUSSE un nombre que le corps affirme (un total, un recensement, un cumul d'index).
-DEFAUTS_RANG_3_COMPTES = {
-    # Le recensement des entités à risque (n, au-dessus du seuil, hors parc) est calculé EN BOUCLANT
-    # sur l'itérateur aplati : une ligne avalée fausse les trois nombres, servis sans réserve.
-    ("daemon/src/handlers/rba.rs", "risk_entities_page"): 1,
-    # Les étapes d'un case sont servies avec leur compte : une étape avalée fausse « n étapes sur m ».
-    ("daemon/src/handlers/incidents.rs", "case_steps_json"): 1,
-    # Les stats d'index (compte, plus ancien bucket, plus récent) sont agrégées depuis l'itérateur
-    # aplati : un env_id avalé sort de la map et son volume disparaît du total affiché.
-    ("daemon/src/handlers/index_policies.rs", "index_stats"): 1,
-    # La liste des politiques d'index est bornée ET comptée : une politique avalée fausse le compte
-    # de « gérés » face aux « non gérés », qui est précisément ce que cette vue sert à arbitrer.
-    ("daemon/src/handlers/index_policies.rs", "index_policies_list"): 1,
-    # LECTURE INTERNE : la liste bornée des cases à repriorer est aplatie ; un case avalé NE VOIT PAS
-    # sa priorité SLA recalculée, pendant que la route rend « fait ». Geste : rendre un `Result`.
-    ("daemon/src/handlers/caseops.rs", "sla_recalcule_la_priorite_bornee"): 1,
-}
+#
+# RANG TROIS CLOS LE 2026-09-16 — CINQ SITES, QUATRE FICHIERS, PLUS UNE SEULE ENTRÉE. Les cinq entrées
+# qui vivaient ici (`risk_entities_page`, `case_steps_json`, `index_stats`, `index_policies_list`,
+# `sla_recalcule_la_priorite_bornee`) sont RETIRÉES parce que leurs sites sont corrigés, pas amnistiés.
+# Le geste est le même qu'aux deux rangs précédents — solder le parcours en bloc
+# (`collect::<rusqlite::Result<Vec<_>>>()`) — mais la conséquence est propre à ce rang : c'est le NOMBRE
+# qui retombe, jamais un entier plus petit servi comme un fait. `risk_entities_page` compte APRÈS avoir
+# soldé sa passe bornée, donc `total`, `over_threshold_total` et `over_threshold_hors_parc` valent
+# ensemble `null` (`TotalBorne::sans_lecture()`, la règle « jamais (0, false) » que `liste_bornee` écrit
+# pour lui-même) ; `case_steps_json`, dont `progress.total` DÉRIVE de `steps.len()`, sert `steps: []`
+# avec `error` (`liste_bornee::corps_de_liste_illisible`) et `progress: null` plutôt qu'un `0/0` qui se
+# lirait « ce case n'a aucune étape, et c'est établi » ; les DEUX lectures qui alimentent `indexes`
+# avouent ensemble — `index_stats` rend désormais un `rusqlite::Result`, donc plus aucun index géré ne
+# s'affiche « 0 event » et plus aucun index non géré ne DISPARAÎT de la liste (elle était dérivée des
+# clés de cette map), et plus aucune politique perdue ne se relit « hérite du global », `ok` retombant
+# à `false` comme le catalogue des rôles du rang un ; `sla_recalcule_la_priorite_bornee`, la DERNIÈRE
+# lecture interne de l'ensemble, porte sa ligne illisible dans `manque`, de sorte que la route d'upsert
+# SLA ne rend plus `204` = « tout recalculé » au-dessus d'un dossier qu'elle n'a pas su lire. Le
+# dictionnaire reste, VIDE : le rang est une classe de l'ensemble, et son vide est le seul état qui
+# dise « il n'y a plus rien à admettre ici ».
+DEFAUTS_RANG_3_COMPTES = {}
 
 # RANG 4 — LISTES DE CONFIGURATION ET DE CONTENU : la ligne avalée fait disparaître un objet d'une
 # liste que l'opérateur lit comme exhaustive. Moins grave que les trois rangs précédents, jamais
@@ -794,11 +829,12 @@ def ce_qui_n_est_pas_tenu():
           "n'est PAS le même : il faut rendre un `Result` à l'appelant, pas poser un aveu dans un corps "
           "qui n'existe pas. Elles étaient SIX au relevé du matin (`respond_run`, `load_policies`, "
           "`load_active_silences`, `load_active_engagements`, `eval_baseline`, "
-          "`sla_recalcule_la_priorite_bornee`) ; les rangs un et deux en ont fermé cinq, il en reste UNE "
-          "dans l'ensemble (`sla_recalcule_la_priorite_bornee`, rang 3). La phrase est corrigée plutôt que "
-          "gardée telle quelle : une garde qui énumère six entrées dont cinq n'existent plus enseigne un "
-          "arbre qui n'est pas celui qu'elle juge. La garde ne sait toujours pas les distinguer toute "
-          "seule, et le rouge qu'elle y poserait ne se refermerait pas par le geste qu'elle nomme.\n"
+          "`sla_recalcule_la_priorite_bornee`) ; les rangs un, deux et trois les ont TOUTES SIX fermées, "
+          "et il n'en reste AUCUNE dans l'ensemble. La phrase est corrigée à chaque rang plutôt que gardée "
+          "telle quelle : une garde qui énumère des entrées qui n'existent plus enseigne un arbre qui "
+          "n'est pas celui qu'elle juge. Ce que la garde ne sait toujours pas faire n'a pas changé — elle "
+          "ne distingue pas une lecture interne d'une liste servie, et le rouge qu'elle poserait sur la "
+          "prochaine ne se refermerait pas par le geste qu'elle nomme.\n"
           "  * elle ne dit PAS si un aveu de région couvre la lecture accusée. Une fonction qui pose déjà "
           "`error` pour une AUTRE de ses lectures reste accusée pour celle-ci — c'est voulu (un aveu qui "
           "couvre tout ne couvre rien), mais cela veut dire que le rouge ne mesure pas la distance qui "
@@ -869,9 +905,11 @@ def main():
     fichiers = {c for c, _l, _f, _e, _x in sites}
     if len(sites) < PLANCHER_SITES or len(fichiers) < PLANCHER_FICHIERS:
         print(f"::error::{len(sites)} site(s) découvert(s) sur {len(fichiers)} fichier(s), planchers "
-              f"{PLANCHER_SITES}/{PLANCHER_FICHIERS} (dérivés du relevé du 2026-09-16 : 58 sites sur 31 "
-              "fichiers). La DÉCOUVERTE est cassée, pas le dépôt guéri : la garde REFUSE DE CONCLURE "
-              "plutôt que de rendre vert en étant aveugle.")
+              f"{PLANCHER_SITES}/{PLANCHER_FICHIERS} (relus le 2026-09-16 après le rang trois, aux deux "
+              "tiers du relevé de ce jour-là : 35 sites sur 20 fichiers). La DÉCOUVERTE est cassée, pas "
+              "le dépôt guéri : la garde REFUSE DE CONCLURE plutôt que de rendre vert en étant aveugle. "
+              "Si la descente est RÉELLE, ce sont les planchers qui se relisent, avec leur date — jamais "
+              "la découverte qu'on élargit pour les satisfaire.")
         ce_qui_n_est_pas_tenu()
         return 2
 

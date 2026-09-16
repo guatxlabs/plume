@@ -809,20 +809,32 @@ pub(crate) fn sla_recalcule_la_priorite(conn: &Connection, priority: i64) -> Rec
     sla_recalcule_la_priorite_bornee(conn, priority, SLA_RECOMPUTE_CAP)
 }
 
-/// LE RECALCUL, ET SON AVEU. Fonction PURE sur `&Connection` (aucun `AppState`) -> les DEUX façons de ne
+/// LE RECALCUL, ET SON AVEU. Fonction PURE sur `&Connection` (aucun `AppState`) -> les TROIS façons de ne
 /// pas tout faire sont jouables en test, ce qui n'était pas le cas tant qu'elles vivaient dans le handler :
 ///   · la liste ne se LIT pas (table absente, base illisible, verrou) -> ZÉRO échéance recalculée ;
+///   · UNE de ses lignes ne se DÉCODE pas (`P10.7-f` rang 3) -> même issue, et pour la même raison : un
+///     dossier qu'on n'a pas su lire ne se distingue pas d'un dossier qui n'existe pas ;
 ///   · elle se lit mais DÉPASSE `plafond` -> les cases au-delà gardent leur ancienne échéance.
 ///
 /// Le `plafond` est un paramètre pour que le témoin joue la borne sur trois lignes au lieu de cinq mille :
 /// la propriété testée est « la borne mord et le dit », pas la valeur 5000.
 pub(crate) fn sla_recalcule_la_priorite_bornee(conn: &Connection, priority: i64, plafond: i64) -> RecalculDesEcheances {
+    // `P10.7-f` (rang 3) — LE PARCOURS EST SOLDÉ EN BLOC. Il s'écrivait
+    // `.map(|x| x.flatten().collect())`, DEUX niveaux sous le `with_write` de l'appelant : l'aveu
+    // ci-dessous ne couvrait que l'échec de la PRÉPARATION ou de l'EXÉCUTION, et une ligne dont le
+    // mappeur échoue n'entrait ni dans `ids` ni dans `manque`. Le dossier sauté gardait son ANCIENNE
+    // échéance pendant que la route rendait `204` = « tout recalculé » — le mensonge exact que
+    // `RecalculDesEcheances` existe pour rendre impossible. Un dossier qu'on n'a pas su LIRE ne se
+    // distingue pas d'un dossier qui n'existe pas : on ne recalcule donc RIEN, et on le dit.
     let lecture: rusqlite::Result<Vec<i64>> = conn
         .prepare(
             "SELECT id FROM incident WHERE priority=?1 AND merged_into IS NULL \
                AND status NOT IN ('resolved','closed','contained') ORDER BY id LIMIT ?2",
         )
-        .and_then(|mut s| s.query_map(params![priority, plafond.max(0) + 1], |r| r.get(0)).map(|x| x.flatten().collect()));
+        .and_then(|mut s| {
+            s.query_map(params![priority, plafond.max(0) + 1], |r| r.get(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+        });
     let ids = match lecture {
         Ok(v) => v,
         // L'ANCIEN `unwrap_or_default()` EST ICI, ET C'EST TOUT CE QU'IL DISAIT : une liste vide. La

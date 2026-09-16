@@ -314,8 +314,23 @@ pub(crate) fn attach_runbook(conn: &Connection, id: i64, runbook_id: i64, author
 }
 
 /// Steps d'un incident + progression (par phase). INTERNE. `{steps, progress, runbook}` ; vide si aucun runbook.
+///
+/// `P10.7-f` (rang 3) — LA PROGRESSION MENTAIT AVEC LA LISTE, et c'est ce qui range ce site au rang des
+/// comptes servis comme des faits. `progress.total` est DÉRIVÉ de `steps.len()` : la lecture s'écrivait
+/// `.map(|x| x.flatten().collect()).unwrap_or_default()`, donc une étape dont le mappeur échoue (un blob
+/// dans `phase`/`title`, une colonne qu'une migration vient d'ajouter, un cache de schéma de pool
+/// périmé) disparaissait de `steps` ET du dénominateur — « 4 étapes sur 4, terminé » au-dessus d'une
+/// procédure de réponse à incident amputée d'une étape, la lecture la plus dangereuse que cette vue
+/// puisse produire. Une préparation ratée était pire encore : `unwrap_or_default()` rendait `0/0`.
+///
+/// DÉSORMAIS : le parcours est soldé en bloc (`collect::<rusqlite::Result<Vec<_>>>()`) et une lecture
+/// ratée sert l'aveu sous la forme du dépôt — `liste_bornee::corps_de_liste_illisible` pose `steps: []`
+/// (la clé EXISTE, vide : un client qui lit `j.steps.length` continue de fonctionner) et `error` nomme
+/// la cause. `progress` DÉRIVE de la liste non lue : il vaut `null`, JAMAIS `{total:0,done:0,skipped:0}`
+/// qui se lirait « ce case n'a aucune étape, et c'est établi » — exactement comme `netban.active` et
+/// `field-filters.matrix` du rang 1. `runbook` vient d'une AUTRE lecture et reste servi tel quel.
 pub(crate) fn case_steps_json(conn: &Connection, id: i64) -> Value {
-    let steps: Vec<Value> = conn
+    let lues: rusqlite::Result<Vec<Value>> = conn
         .prepare("SELECT id,step_id,ordinal,phase,title,guidance,step_kind,COALESCE(search_soql,''),COALESCE(action_kind,''),COALESCE(target,''),status,COALESCE(actor,''),ts,COALESCE(note,''),COALESCE(host,'') \
                   FROM case_step WHERE incident_id=?1 ORDER BY ordinal,id")
         .and_then(|mut s| s.query_map(params![id], |r| Ok(json!({
@@ -325,15 +340,24 @@ pub(crate) fn case_steps_json(conn: &Connection, id: i64) -> Value {
             "target": r.get::<_,String>(9)?, "status": r.get::<_,String>(10)?, "actor": r.get::<_,String>(11)?,
             "ts": r.get::<_,Option<i64>>(12)?, "note": r.get::<_,String>(13)?,
             // #3 P3-A — hôte d'exécution figé (kill_pid) ; "" quand non pertinent (parité).
-            "host": r.get::<_,String>(14)? })))
-            .map(|x| x.flatten().collect()))
-        .unwrap_or_default();
-    let total = steps.len() as i64;
-    let done = steps.iter().filter(|s| s.get("status").and_then(|v| v.as_str()) == Some("done")).count() as i64;
-    let skipped = steps.iter().filter(|s| s.get("status").and_then(|v| v.as_str()) == Some("skipped")).count() as i64;
+            "host": r.get::<_,String>(14)? })))?
+            .collect::<rusqlite::Result<Vec<_>>>());
     // `P7.19-i` — LA seule ligne admissible (cf. `runbook_attache`) ; `null` si le case porte des
     // étapes de DEUX runbooks, plutôt qu'un en-tête tiré au sort au-dessus d'étapes mélangées.
     let runbook = runbook_attache(conn, id).and_then(|rb| runbook_meta_json(conn, rb));
+    let steps = match lues {
+        Ok(v) => v,
+        // LA LISTE N'A PAS ÉTÉ LUE : ni étapes, ni progression. Le corps garde sa forme et DIT pourquoi.
+        Err(_) => {
+            return crate::handlers::liste_bornee::corps_de_liste_illisible(
+                json!({ "progress": Value::Null, "runbook": runbook }),
+                "steps",
+            )
+        }
+    };
+    let total = steps.len() as i64;
+    let done = steps.iter().filter(|s| s.get("status").and_then(|v| v.as_str()) == Some("done")).count() as i64;
+    let skipped = steps.iter().filter(|s| s.get("status").and_then(|v| v.as_str()) == Some("skipped")).count() as i64;
     json!({ "steps": steps, "progress": { "total": total, "done": done, "skipped": skipped }, "runbook": runbook })
 }
 

@@ -10,22 +10,34 @@ use crate::*;
 pub(crate) async fn processors_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
     let db_path = req_db_path(&st, &au);
     crate::req_conn!(st, au, conn);
-    let mut stmt = conn
+    // `P10.7-f` (rang 4, vague b) — LE PIPELINE D'INGESTION EST LU ENTIÈREMENT OU AVOUÉ. Avant : DEUX
+    // `unwrap()` (une table `ingest_rule` retirée PANIQUAIT) puis `rows.flatten().collect::<Vec<_>>()`.
+    // Une règle avalée disparaît de la seule vue qui dit CE QUI ARRIVE AUX ÉVÉNEMENTS avant indexation —
+    // et elle continue de s'appliquer, parce que le registre chaud est compilé ailleurs. « Cette
+    // transformation n'existe pas » est alors faux dans le sens le plus coûteux : une règle `drop` ou
+    // `mask` invisible explique une donnée absente ou caviardée que plus rien ne rattache à une décision.
+    // Les compteurs live servis à côté, eux, viennent d'une AUTRE source (le registre en mémoire de ce
+    // `db_path`) : ils restent servis, et le corps dit seulement que les RÈGLES n'ont pas été lues — le
+    // désaccord entre un compteur qui bouge et une liste vide devient ainsi lisible au lieu d'être muet.
+    let lues: rusqlite::Result<Vec<Value>> = conn
         .prepare("SELECT id,name,ord,match_field,match_op,match_value,action,action_arg,enabled,managed FROM ingest_rule ORDER BY ord, id")
-        .unwrap();
-    let rows = stmt
-        .query_map([], |r| {
-            Ok(json!({
-                "id": r.get::<_, i64>(0)?, "name": r.get::<_, String>(1)?, "ord": r.get::<_, i64>(2)?,
-                "match_field": r.get::<_, String>(3)?, "match_op": r.get::<_, String>(4)?,
-                "match_value": r.get::<_, String>(5)?, "action": r.get::<_, String>(6)?,
-                "action_arg": r.get::<_, String>(7)?, "enabled": r.get::<_, i64>(8)? != 0,
-                "managed": r.get::<_, i64>(9)?
-            }))
-        })
-        .unwrap();
-    let rules = rows.flatten().collect::<Vec<_>>();
-    Json(json!({ "rules": rules, "counters": processors_counters_json(&db_path) }))
+        .and_then(|mut stmt| {
+            stmt.query_map([], |r| {
+                Ok(json!({
+                    "id": r.get::<_, i64>(0)?, "name": r.get::<_, String>(1)?, "ord": r.get::<_, i64>(2)?,
+                    "match_field": r.get::<_, String>(3)?, "match_op": r.get::<_, String>(4)?,
+                    "match_value": r.get::<_, String>(5)?, "action": r.get::<_, String>(6)?,
+                    "action_arg": r.get::<_, String>(7)?, "enabled": r.get::<_, i64>(8)? != 0,
+                    "managed": r.get::<_, i64>(9)?
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        });
+    let counters = processors_counters_json(&db_path);
+    match lues {
+        Ok(rules) => Json(json!({ "rules": rules, "counters": counters })),
+        Err(_) => Json(crate::handlers::liste_bornee::corps_de_liste_illisible(json!({ "counters": counters }), "rules")),
+    }
 }
 
 /// Valide une règle proposée en la COMPILANT à blanc (mêmes contrôles que le chemin chaud) -> Err(400).

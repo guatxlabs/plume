@@ -311,25 +311,42 @@ pub(crate) fn dispatch_notifications(db: &Arc<Mutex<Connection>>) {
 pub(crate) async fn notifiers_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Response {
     if let Err(r) = require_admin(&au) { return r; }
     crate::req_conn!(st, au, conn);
-    let mut stmt = conn.prepare("SELECT id,name,kind,enabled,url,min_severity,config FROM notifier ORDER BY id").unwrap();
-    let rows = stmt.query_map([], |r| {
-        // has_auth = le canal porte un credential (token ntfy OU user/pass SMTP) non vide. Le blob `config`
-        // (secret) N'EST PAS renvoyé -> aucune fuite de token/mot de passe, même pour un admin (édition = re-saisie).
-        let cfg: String = r.get(6)?;
-        // #48 : la liste des clés-secrets s'étend aux nouveaux canaux (webhook Slack, routing key PagerDuty,
-        // en-tête d'auth du canal générique). AUCUNE n'est projetée -> `has_auth` booléen seul (défense en
-        // profondeur ; rbac_gate bloque déjà tout non-admin, GET compris).
-        let has_auth = serde_json::from_str::<Value>(&cfg)
-            .ok()
-            .map(|v| ["token", "user", "pass", "webhook_url", "routing_key", "auth_header"].iter().any(|k| v.get(*k).and_then(|x| x.as_str()).map(|s| !s.is_empty()).unwrap_or(false)))
-            .unwrap_or(false);
-        Ok(json!({
-            "id": r.get::<_, i64>(0)?, "name": r.get::<_, String>(1)?, "kind": r.get::<_, String>(2)?,
-            "enabled": r.get::<_, i64>(3)? != 0, "url": r.get::<_, String>(4)?,
-            "min_severity": r.get::<_, i64>(5)?, "has_auth": has_auth
-        }))
-    }).unwrap();
-    Json(json!({ "notifiers": rows.flatten().collect::<Vec<_>>() })).into_response()
+    // `P10.7-f` (rang 4, vague b) — LA LISTE DES CANAUX EST ENTIÈRE OU AVOUÉE. Avant : DEUX `unwrap()`
+    // (une table `notifier` retirée sous les pieds du gestionnaire PANIQUAIT — une panique n'est pas un
+    // aveu) puis `rows.flatten().collect::<Vec<_>>()`, qui jetait la ligne dont le mappeur échoue (`url`
+    // ou `config` corrompus, colonne de migration que la connexion qui sert ne voit pas encore) et servait
+    // le reste sous un corps rigoureusement identique à celui d'une liste complète. Un canal absent se lit
+    // « aucune notification n'est configurée là » : l'administrateur en crée un second vers la MÊME
+    // destination et l'astreinte reçoit tout en double — pendant que le canal invisible, lui, continue
+    // d'émettre, parce que le dispatch lit la table et non cette vue. L'aveu est celui du dépôt
+    // (`liste_bornee::corps_de_liste_illisible` : `notifiers` présente et VIDE, `error` nomme la cause) ;
+    // `web/detection_admin.js:533` teste déjà `Array.isArray(d.notifiers)`, donc la forme tient.
+    let lues: rusqlite::Result<Vec<Value>> = conn
+        .prepare("SELECT id,name,kind,enabled,url,min_severity,config FROM notifier ORDER BY id")
+        .and_then(|mut stmt| {
+            stmt.query_map([], |r| {
+                // has_auth = le canal porte un credential (token ntfy OU user/pass SMTP) non vide. Le blob `config`
+                // (secret) N'EST PAS renvoyé -> aucune fuite de token/mot de passe, même pour un admin (édition = re-saisie).
+                let cfg: String = r.get(6)?;
+                // #48 : la liste des clés-secrets s'étend aux nouveaux canaux (webhook Slack, routing key PagerDuty,
+                // en-tête d'auth du canal générique). AUCUNE n'est projetée -> `has_auth` booléen seul (défense en
+                // profondeur ; rbac_gate bloque déjà tout non-admin, GET compris).
+                let has_auth = serde_json::from_str::<Value>(&cfg)
+                    .ok()
+                    .map(|v| ["token", "user", "pass", "webhook_url", "routing_key", "auth_header"].iter().any(|k| v.get(*k).and_then(|x| x.as_str()).map(|s| !s.is_empty()).unwrap_or(false)))
+                    .unwrap_or(false);
+                Ok(json!({
+                    "id": r.get::<_, i64>(0)?, "name": r.get::<_, String>(1)?, "kind": r.get::<_, String>(2)?,
+                    "enabled": r.get::<_, i64>(3)? != 0, "url": r.get::<_, String>(4)?,
+                    "min_severity": r.get::<_, i64>(5)?, "has_auth": has_auth
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        });
+    match lues {
+        Ok(rows) => Json(json!({ "notifiers": rows })).into_response(),
+        Err(_) => Json(crate::handlers::liste_bornee::corps_de_liste_illisible(json!({}), "notifiers")).into_response(),
+    }
 }
 pub(crate) async fn notifier_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Json<Value> {
     if !au.is_admin() {

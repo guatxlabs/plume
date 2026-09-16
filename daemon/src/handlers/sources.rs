@@ -507,35 +507,45 @@ pub(crate) async fn sources_inventory(State(st): State<AppState>, Extension(au):
 /// (rien ici n'est secret — l'inventaire rend déjà ces colonnes) ; le path-guard RBAC applique la même règle.
 pub(crate) async fn source_settings_get(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Response {
     crate::req_conn!(st, au, conn);
-    let mut stmt = match conn.prepare(
-        "SELECT source,expected,label,note,category,updated,updated_by,expected_par,expected_le,cadence,cadence_interval_s,cadence_par,cadence_le \
-         FROM source_settings WHERE scope='global' ORDER BY source",
-    ) {
-        Ok(s) => s,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("source_settings indisponible: {e}")).into_response(),
-    };
-    let settings: Vec<Value> = stmt
-        .query_map([], |r| {
-            Ok(json!({
-                "source": r.get::<_, String>(0)?,
-                "expected": r.get::<_, i64>(1)? != 0,
-                "label": r.get::<_, Option<String>>(2)?,
-                "note": r.get::<_, Option<String>>(3)?,
-                "category": r.get::<_, Option<String>>(4)?,
-                "updated": r.get::<_, Option<i64>>(5)?,
-                "updated_by": r.get::<_, Option<String>>(6)?,
-                // La provenance PROPRE de chacune des deux déclarations — jamais le dernier geste de la ligne.
-                "expected_par": r.get::<_, Option<String>>(7)?,
-                "expected_le": r.get::<_, Option<i64>>(8)?,
-                "cadence": r.get::<_, Option<String>>(9)?,
-                "cadence_interval_s": r.get::<_, Option<i64>>(10)?,
-                "cadence_par": r.get::<_, Option<String>>(11)?,
-                "cadence_le": r.get::<_, Option<i64>>(12)?,
-            }))
-        })
-        .map(|it| it.flatten().collect())
-        .unwrap_or_default();
-    Json(json!({ "ok": true, "settings": settings })).into_response()
+    // `P10.7-f` (rang 4, vague b) — LES DÉCLARATIONS DE SOURCES SONT ENTIÈRES OU AVOUÉES. Même forme, et
+    // mêmes raisons, que les déclarations d'hôtes (`hotes_declares::host_settings_get`) : c'est la MÊME
+    // table de déclaration à deux colonnes-clés près, et les deux routes sont voisines jusque dans leur
+    // corps. Avant : `.map(|it| it.flatten().collect()).unwrap_or_default()` — une source dont la ligne ne
+    // se décode pas disparaissait, et l'absence de ligne ici se lit « rien n'est déclaré pour cette
+    // source » : `expected` retombe au défaut de colonne, la cadence déclarée par un humain s'évapore, et
+    // la source repasse « inattendue » dans l'inventaire et la fraîcheur — sans que personne n'ait rien dit.
+    // Le 500 de préparation cède la place au MÊME aveu que la ligne illisible (un seul fait, une seule
+    // forme à lire), `ok` retombant à `false`.
+    let lues: rusqlite::Result<Vec<Value>> = conn
+        .prepare(
+            "SELECT source,expected,label,note,category,updated,updated_by,expected_par,expected_le,cadence,cadence_interval_s,cadence_par,cadence_le \
+             FROM source_settings WHERE scope='global' ORDER BY source",
+        )
+        .and_then(|mut stmt| {
+            stmt.query_map([], |r| {
+                Ok(json!({
+                    "source": r.get::<_, String>(0)?,
+                    "expected": r.get::<_, i64>(1)? != 0,
+                    "label": r.get::<_, Option<String>>(2)?,
+                    "note": r.get::<_, Option<String>>(3)?,
+                    "category": r.get::<_, Option<String>>(4)?,
+                    "updated": r.get::<_, Option<i64>>(5)?,
+                    "updated_by": r.get::<_, Option<String>>(6)?,
+                    // La provenance PROPRE de chacune des deux déclarations — jamais le dernier geste de la ligne.
+                    "expected_par": r.get::<_, Option<String>>(7)?,
+                    "expected_le": r.get::<_, Option<i64>>(8)?,
+                    "cadence": r.get::<_, Option<String>>(9)?,
+                    "cadence_interval_s": r.get::<_, Option<i64>>(10)?,
+                    "cadence_par": r.get::<_, Option<String>>(11)?,
+                    "cadence_le": r.get::<_, Option<i64>>(12)?,
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        });
+    match lues {
+        Ok(settings) => Json(json!({ "ok": true, "settings": settings })).into_response(),
+        Err(_) => Json(crate::handlers::liste_bornee::corps_de_liste_illisible(json!({ "ok": false }), "settings")).into_response(),
+    }
 }
 
 /// POST|PUT /api/sources/settings {source, action, value?, interval_s?} -> DÉCLARATIONS et métadonnées

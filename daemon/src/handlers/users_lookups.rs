@@ -246,28 +246,41 @@ pub(crate) fn build_lookup_kv(key_field: &str, rows: &[Value]) -> (Vec<(String, 
 /// GET /api/lookups -> liste des lookups déclarés (depuis lookup_meta) + nombre de lignes par lookup.
 pub(crate) async fn lookups_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
     crate::req_conn!(st, au, conn);
-    let mut stmt = conn
+    // `P10.7-f` (rang 4, vague b) — L'INVENTAIRE DES LOOKUPS EST ENTIER OU AVOUÉ. Avant : DEUX `unwrap()`
+    // (une table `lookup_meta` retirée PANIQUAIT — une panique n'est pas un aveu) puis
+    // `rows.flatten().collect::<Vec<_>>()`, qui jetait la ligne dont le mappeur échoue (`name` corrompu,
+    // colonne de migration que la connexion qui sert ne voit pas encore) et servait le reste comme une
+    // liste complète. Un lookup absent d'ici se lit « ce lookup n'existe pas », et c'est la conclusion la
+    // plus trompeuse du rang : la commande `lookup <nom> …` de GXQL CONTINUE de fonctionner sur lui (elle
+    // lit `lookup_kv`, pas cette vue), donc un enrichissement qu'on croit absent est en réalité
+    // INVISIBLE — on le recharge par un upload qui REMPLACE intégralement son contenu, et l'ancien est
+    // perdu pour de bon. Même forme d'aveu que `users_list` dans ce fichier
+    // (`liste_bornee::corps_de_liste_illisible` : `lookups` présente et VIDE, `error` nomme la cause).
+    let lues: rusqlite::Result<Vec<Value>> = conn
         .prepare(
             "SELECT m.name, m.key_field, m.cols, m.updated, \
              (SELECT COUNT(*) FROM lookup_kv k WHERE k.name=m.name) \
              FROM lookup_meta m ORDER BY m.name",
         )
-        .unwrap();
-    let rows = stmt
-        .query_map([], |r| {
-            Ok(json!({
-                "name": r.get::<_, String>(0)?,
-                "key_field": r.get::<_, Option<String>>(1)?,
-                "cols": r.get::<_, Option<String>>(2)?,
-                "updated": r.get::<_, Option<i64>>(3)?,
-                "rows": r.get::<_, i64>(4)?,
-                // D12 — origine du contenu (badge managed, cohérent avec rule/parser/playbook). Les lookups
-                // n'ont ni seed builtin ni overlay config.d : tout lookup est créé via l'UI/API => 2 (perso).
-                "managed": 2,
-            }))
-        })
-        .unwrap();
-    Json(json!({ "lookups": rows.flatten().collect::<Vec<_>>() }))
+        .and_then(|mut stmt| {
+            stmt.query_map([], |r| {
+                Ok(json!({
+                    "name": r.get::<_, String>(0)?,
+                    "key_field": r.get::<_, Option<String>>(1)?,
+                    "cols": r.get::<_, Option<String>>(2)?,
+                    "updated": r.get::<_, Option<i64>>(3)?,
+                    "rows": r.get::<_, i64>(4)?,
+                    // D12 — origine du contenu (badge managed, cohérent avec rule/parser/playbook). Les lookups
+                    // n'ont ni seed builtin ni overlay config.d : tout lookup est créé via l'UI/API => 2 (perso).
+                    "managed": 2,
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        });
+    match lues {
+        Ok(rows) => Json(json!({ "lookups": rows })),
+        Err(_) => Json(crate::handlers::liste_bornee::corps_de_liste_illisible(json!({}), "lookups")),
+    }
 }
 
 /// POST /api/lookups {name, key_field, rows:[{...}]} -> REMPLACE intégralement le contenu du lookup

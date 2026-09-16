@@ -59,7 +59,17 @@ fn count_for_owner(conn: &Connection, owner: &str) -> i64 {
 }
 
 /// Liste OWNER-SCOPED : toutes les requêtes de `owner`, jamais d'autrui. Pure -> testable.
-fn list_for_owner(conn: &Connection, owner: &str) -> Vec<Value> {
+///
+/// `P10.7-f` (rang 4, vague b) — ELLE REND UN `rusqlite::Result`, ET C'EST LE GESTE QUE LA GARDE NOMME
+/// pour une lecture qui ne construit AUCUN corps : rendre le `Result` à l'appelant, qui, lui, en a un.
+/// Avant : `.map(|rows| rows.flatten().collect())` puis `.unwrap_or_default()` — une requête dont la
+/// ligne ne se décode pas (`soql` corrompu, colonne de migration que la connexion qui sert ne voit pas
+/// encore) disparaissait, et un vecteur VIDE sortait aussi bien d'une table absente que d'un compte sans
+/// requête. Cette liste est OWNER-SCOPED : son propriétaire est le SEUL à pouvoir constater le manque, et
+/// il le lit « je l'ai supprimée » — puis il la réécrit, ce qui consomme une part du plafond per-user que
+/// `count_for_owner` compte, lui, sur la table ENTIÈRE. Le trou se referme donc en rapprochant un plafond
+/// atteint d'une liste qui n'affiche rien.
+fn list_for_owner(conn: &Connection, owner: &str) -> rusqlite::Result<Vec<Value>> {
     conn.prepare("SELECT id,name,soql,created,updated FROM saved_query WHERE owner=?1 ORDER BY name COLLATE NOCASE, id")
         .and_then(|mut s| {
             s.query_map(params![owner], |r| {
@@ -70,10 +80,9 @@ fn list_for_owner(conn: &Connection, owner: &str) -> Vec<Value> {
                     "created": r.get::<_, i64>(3)?,
                     "updated": r.get::<_, i64>(4)?,
                 }))
-            })
-            .map(|rows| rows.flatten().collect())
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
         })
-        .unwrap_or_default()
 }
 
 /// Création OWNER-SCOPED (plafond appliqué). `owner` posé par le serveur. Pure (hors horloge) -> testable.
@@ -133,7 +142,13 @@ fn sq_err_resp(e: SqErr) -> Response {
 /// GET /api/saved-queries — liste MES requêtes (owner = appelant). viewer+, self-scoped.
 pub(crate) async fn saved_queries_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Response {
     crate::req_conn!(st, au, conn);
-    Json(json!({ "queries": list_for_owner(&conn, &au.name) })).into_response()
+    // `P10.7-f` (rang 4, vague b) — l'appelant est le seul à avoir un corps : c'est ici que l'aveu se pose,
+    // sous la forme du dépôt (`liste_bornee::corps_de_liste_illisible` : `queries` présente et VIDE,
+    // `error` nomme la cause). `web/savedqueries.js:121` teste déjà `Array.isArray(d.queries)`.
+    match list_for_owner(&conn, &au.name) {
+        Ok(queries) => Json(json!({ "queries": queries })).into_response(),
+        Err(_) => Json(crate::handlers::liste_bornee::corps_de_liste_illisible(json!({}), "queries")).into_response(),
+    }
 }
 
 /// POST /api/saved-queries {name, soql} — crée une requête pour L'APPELANT. Audit ledger `saved_query.create`.
@@ -195,21 +210,21 @@ mod tests {
     fn crud_roundtrip_owner_scoped() {
         let conn = mem();
         let id = create(&conn, "alice", "  errors last hour  ", "search severity>=4", 100).unwrap();
-        let rows = list_for_owner(&conn, "alice");
+        let rows = list_for_owner(&conn, "alice").expect("la table est lisible");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["name"], "errors last hour"); // trimmé
         assert_eq!(rows[0]["soql"], "search severity>=4");
         assert_eq!(rows[0]["created"], 100);
         // update
         update(&conn, "alice", id, "errors", "search severity>=5", 200).unwrap();
-        let rows = list_for_owner(&conn, "alice");
+        let rows = list_for_owner(&conn, "alice").expect("la table est lisible");
         assert_eq!(rows[0]["name"], "errors");
         assert_eq!(rows[0]["soql"], "search severity>=5");
         assert_eq!(rows[0]["updated"], 200);
         assert_eq!(rows[0]["created"], 100); // created NON modifié par l'update
         // delete
         delete(&conn, "alice", id).unwrap();
-        assert!(list_for_owner(&conn, "alice").is_empty());
+        assert!(list_for_owner(&conn, "alice").expect("la table est lisible").is_empty());
     }
 
     // (b) IDOR : bob ne peut NI voir, NI update, NI delete la requête d'alice (id seul insuffisant).
@@ -219,18 +234,18 @@ mod tests {
         let aid = create(&conn, "alice", "a-query", "search source=a", 1).unwrap();
         let _bid = create(&conn, "bob", "b-query", "search source=b", 1).unwrap();
         // LIST : bob ne voit QUE la sienne, jamais celle d'alice.
-        let blist = list_for_owner(&conn, "bob");
+        let blist = list_for_owner(&conn, "bob").expect("la table est lisible");
         assert_eq!(blist.len(), 1);
         assert_eq!(blist[0]["name"], "b-query");
-        assert!(list_for_owner(&conn, "bob").iter().all(|q| q["name"] != "a-query"));
+        assert!(list_for_owner(&conn, "bob").expect("la table est lisible").iter().all(|q| q["name"] != "a-query"));
         // UPDATE : bob tente de modifier la ligne d'alice par son id -> NotFound, ligne d'alice INTACTE.
         assert_eq!(update(&conn, "bob", aid, "hacked", "search source=evil", 2), Err(SqErr::NotFound));
-        let alist = list_for_owner(&conn, "alice");
+        let alist = list_for_owner(&conn, "alice").expect("la table est lisible");
         assert_eq!(alist[0]["name"], "a-query");
         assert_eq!(alist[0]["soql"], "search source=a"); // NON altéré
         // DELETE : bob tente de supprimer la ligne d'alice -> NotFound, ligne d'alice TOUJOURS là.
         assert_eq!(delete(&conn, "bob", aid), Err(SqErr::NotFound));
-        assert_eq!(list_for_owner(&conn, "alice").len(), 1);
+        assert_eq!(list_for_owner(&conn, "alice").expect("la table est lisible").len(), 1);
     }
 
     // (c) PLAFOND per-user : au-delà de SAVED_QUERY_MAX_PER_USER -> CapReached (rien de plus persisté).
@@ -263,7 +278,7 @@ mod tests {
     #[test]
     fn empty_by_default_no_seed() {
         let conn = mem();
-        assert!(list_for_owner(&conn, "anyone").is_empty());
+        assert!(list_for_owner(&conn, "anyone").expect("la table est lisible").is_empty());
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM saved_query", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 0);
     }

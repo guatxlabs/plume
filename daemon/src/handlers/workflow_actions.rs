@@ -36,17 +36,29 @@ pub(crate) fn value_scalar_ok(v: &str) -> bool {
 /// GET /api/workflow-actions — liste (viewer+ via section 6 ; ici défense en profondeur editor pour mutations).
 pub(crate) async fn workflow_actions_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Response {
     crate::req_conn!(st, au, conn);
-    let items: Vec<Value> = conn
+    // `P10.7-f` (rang 4, vague b) — LA LISTE DES ACTIONS DE WORKFLOW EST ENTIÈRE OU AVOUÉE. Avant :
+    // `.map(|rows| rows.flatten().collect())` puis `.unwrap_or_default()` — une action dont la ligne ne se
+    // décode pas (`target`, le gabarit `$field$`, corrompu ; colonne de migration que la connexion qui sert
+    // ne voit pas encore) disparaissait du menu contextuel que cette liste PEUPLE. L'analyste conclut que
+    // le pivot qu'il cherche n'a jamais été défini et le refabrique, alors que le nom est déjà pris
+    // (`name TEXT NOT NULL UNIQUE`) : la création sera refusée sans qu'il puisse voir pourquoi. L'aveu est
+    // celui du dépôt (`liste_bornee::corps_de_liste_illisible` : `workflow_actions` présente et VIDE,
+    // `error` nomme la cause) ; la RÉSOLUTION d'une action (`/resolve`) lit la ligne par son id et n'est
+    // pas concernée — ce lot tient l'INVENTAIRE servi, pas l'exécution.
+    let lues: rusqlite::Result<Vec<Value>> = conn
         .prepare("SELECT id,name,label,scope_field,kind,target,enabled,managed,created,updated FROM workflow_action ORDER BY id")
         .and_then(|mut s| {
             s.query_map([], |r| {
                 Ok(json!({ "id": r.get::<_,i64>(0)?, "name": r.get::<_,String>(1)?, "label": r.get::<_,String>(2)?,
                     "scope_field": r.get::<_,String>(3)?, "kind": r.get::<_,String>(4)?, "target": r.get::<_,String>(5)?,
                     "enabled": r.get::<_,i64>(6)? != 0, "managed": r.get::<_,i64>(7)?, "created": r.get::<_,i64>(8)?, "updated": r.get::<_,i64>(9)? }))
-            }).map(|rows| rows.flatten().collect())
-        })
-        .unwrap_or_default();
-    Json(json!({ "workflow_actions": items })).into_response()
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        });
+    match lues {
+        Ok(items) => Json(json!({ "workflow_actions": items })).into_response(),
+        Err(_) => Json(crate::handlers::liste_bornee::corps_de_liste_illisible(json!({}), "workflow_actions")).into_response(),
+    }
 }
 
 /// COMPILE-VÉRIFIE un gabarit selon son genre (fail-closed AVANT persistance). Renvoie l'erreur explicite.

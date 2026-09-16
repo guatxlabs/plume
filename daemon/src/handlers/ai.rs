@@ -217,11 +217,28 @@ pub(crate) async fn ai_providers_list(State(st): State<AppState>, Extension(au):
     }
     let conn = st.db.lock();
     // Le secret n'est JAMAIS projeté : seul le booléen (secret != '') sort (miroir idp).
-    let list: Vec<Value> = match conn.prepare(
-        "SELECT id,name,vendor,api_shape,endpoint,enabled,config_json,created,updated,(secret != '') FROM ai_provider ORDER BY id",
-    ) {
-        Ok(mut stmt) => stmt
-            .query_map([], |r| {
+    //
+    // `P10.7-f` (rang 4, vague b) — LA LISTE DES FOURNISSEURS D'IA EST ENTIÈRE OU AVOUÉE. Avant :
+    // `.map(|rows| rows.flatten().collect()).unwrap_or_default()` et `Err(_) => Vec::new()` — un
+    // fournisseur dont la ligne ne se décode pas (`config_json` corrompu, colonne de migration que la
+    // connexion qui sert ne voit pas encore) disparaissait, et un fournisseur absent de cette liste se lit
+    // « non configuré » : on en déclare un second, vers le même point de terminaison, et le déploiement
+    // porte alors deux routes de sortie là où l'administrateur en croit une. Sur une surface dont tout
+    // l'enjeu est de savoir CE QUI SORT du périmètre, une liste courte est le pire corps possible.
+    //
+    // POURQUOI UN 5xx NOMMÉ ET NON `error` DANS LE CORPS : ce corps-ci est un TABLEAU NU
+    // (`Json(Value::Array(..))`), il n'a aucune clé où poser l'aveu, et lui en donner une changerait le
+    // contrat. C'est EXACTEMENT la situation des fournisseurs d'identité au rang un
+    // (`idp_providers_list`), et la forme retenue est la sienne, à la lettre : `server_err` portant
+    // `CAUSE_LISTE_ILLISIBLE`. Aucun module de `web/` ne lit cette route au 2026-09-16 (`web/ai.js` ne
+    // parle qu'à `/ai/status` et `/ai/nl2soql`) — raison de plus pour ne pas inventer une clé d'aveu que
+    // personne ne réclame, et pour refuser en HTTP, qui se voit sans consommateur dédié.
+    let lues: rusqlite::Result<Vec<Value>> = conn
+        .prepare(
+            "SELECT id,name,vendor,api_shape,endpoint,enabled,config_json,created,updated,(secret != '') FROM ai_provider ORDER BY id",
+        )
+        .and_then(|mut stmt| {
+            stmt.query_map([], |r| {
                 let cfg_json: String = r.get(6)?;
                 let endpoint: String = r.get(4)?;
                 let cfg: Value = serde_json::from_str(&cfg_json).unwrap_or_else(|_| json!({}));
@@ -239,12 +256,13 @@ pub(crate) async fn ai_providers_list(State(st): State<AppState>, Extension(au):
                     "updated": r.get::<_, i64>(8)?,
                     "has_secret": r.get::<_, i64>(9)? != 0,
                 }))
-            })
-            .map(|rows| rows.flatten().collect())
-            .unwrap_or_default(),
-        Err(_) => Vec::new(),
-    };
-    Json(Value::Array(list)).into_response()
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        });
+    match lues {
+        Ok(list) => Json(Value::Array(list)).into_response(),
+        Err(_) => server_err(crate::handlers::liste_bornee::CAUSE_LISTE_ILLISIBLE),
+    }
 }
 
 pub(crate) async fn ai_provider_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {

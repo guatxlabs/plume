@@ -682,18 +682,35 @@ pub(crate) async fn engagement_get(State(st): State<AppState>, Extension(au): Ex
         Ok(v) => v,
         Err(_) => return not_found("engagement introuvable"),
     };
-    let grants: Vec<Value> = match conn.prepare(
-        "SELECT id,kind,ref,idp_adapter,issued_ts,revoked_ts,status FROM engagement_grant WHERE engagement_id=?1 ORDER BY id",
-    ) {
-        Ok(mut s) => s.query_map(params![id], |r| Ok(json!({
-            "id": r.get::<_, i64>(0)?, "kind": r.get::<_, String>(1)?, "ref": r.get::<_, String>(2)?,
-            "idp_adapter": r.get::<_, String>(3)?, "issued_ts": r.get::<_, Option<i64>>(4)?,
-            "revoked_ts": r.get::<_, Option<i64>>(5)?, "status": r.get::<_, String>(6)?,
-        }))).map(|m| m.flatten().collect()).unwrap_or_default(),
-        Err(_) => Vec::new(),
-    };
-    eng["grants"] = json!(grants);
-    Json(eng).into_response()
+    // `P10.7-f` (rang 4, vague b) — LA FICHE PORTE TOUS SES PERMIS, OU ELLE DIT QU'ELLE NE LES A PAS LUS.
+    // Avant : `.map(|m| m.flatten().collect()).unwrap_or_default()` et `Err(_) => Vec::new()` — un permis
+    // dont la ligne ne se décode pas (`ref` corrompu, colonne de migration que la connexion qui sert ne
+    // voit pas encore) disparaissait de `grants`, et la fiche restait d'aspect complet. C'est la seule vue
+    // où l'on relit CE QUI A ÉTÉ OCTROYÉ pour un pentest autorisé : un permis absent se lit « il n'a jamais
+    // été émis », donc on n'a rien à révoquer à la clôture — un accès minté par le provisioning survit
+    // alors à l'engagement, sans que personne ne le sache. L'aveu est celui du dépôt
+    // (`liste_bornee::corps_de_liste_illisible` : `grants` présente et VIDE, `error` nomme la cause) ; les
+    // champs de l'engagement viennent d'une AUTRE lecture, déjà faite, et restent servis — c'est
+    // exactement la règle de `views_list` (`me`/`role`) et de `dash_get` (métadonnées) au rang précédent.
+    let grants: rusqlite::Result<Vec<Value>> = conn
+        .prepare(
+            "SELECT id,kind,ref,idp_adapter,issued_ts,revoked_ts,status FROM engagement_grant WHERE engagement_id=?1 ORDER BY id",
+        )
+        .and_then(|mut s| {
+            s.query_map(params![id], |r| Ok(json!({
+                "id": r.get::<_, i64>(0)?, "kind": r.get::<_, String>(1)?, "ref": r.get::<_, String>(2)?,
+                "idp_adapter": r.get::<_, String>(3)?, "issued_ts": r.get::<_, Option<i64>>(4)?,
+                "revoked_ts": r.get::<_, Option<i64>>(5)?, "status": r.get::<_, String>(6)?,
+            })))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        });
+    match grants {
+        Ok(g) => {
+            eng["grants"] = json!(g);
+            Json(eng).into_response()
+        }
+        Err(_) => Json(crate::handlers::liste_bornee::corps_de_liste_illisible(eng, "grants")).into_response(),
+    }
 }
 
 /// POST /api/engagements — CRÉE un engagement (admin-only, break-glass, audité, transactionnel fail-closed).

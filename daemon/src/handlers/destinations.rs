@@ -544,12 +544,27 @@ pub(crate) async fn destinations_list(State(st): State<AppState>, Extension(au):
     crate::req_conn!(st, au, conn);
     // `config` (secret) JAMAIS projeté -> has_auth booléen (hec_token/auth_header non vide). `filter`
     // (non secret) est renvoyé (l'UI l'affiche/édite). watermark + error_count = observabilité du lag.
-    let list: Vec<Value> = match conn.prepare(
-        "SELECT id,type,name,enabled,endpoint,config,filter,batch_max,interval_s,watermark,last_run,last_ok,last_error,last_count,error_count \
-         FROM destination ORDER BY id",
-    ) {
-        Ok(mut stmt) => stmt
-            .query_map([], |r| {
+    //
+    // `P10.7-f` (rang 4, vague b) — LA LISTE DES DESTINATIONS EST ENTIÈRE OU AVOUÉE. Avant :
+    // `.map(|rows| rows.flatten().collect()).unwrap_or_default()` et `Err(_) => Vec::new()` — une
+    // destination dont la ligne ne se décode pas (`filter` corrompu, `last_error` non textuel, colonne de
+    // migration que la connexion qui sert ne voit pas encore) disparaissait. Une destination absente se
+    // lit « rien n'est exporté vers là », et c'est la lecture sur laquelle on décide qu'un flux n'existe
+    // pas : le forward CONTINUE pourtant (le balayage de sortie lit la table, pas cette vue), donc la
+    // console montrerait un périmètre de sortie plus petit que le réel — et son `watermark` et son
+    // `error_count`, qui sont l'observabilité du lag, deviendraient invisibles pour ce sink-là.
+    //
+    // POURQUOI UN 5xx NOMMÉ : le corps est un TABLEAU NU (`Json(Value::Array(..))`) — aucune clé où poser
+    // l'aveu, et `web/destinations.js:24` reçoit et itère un tableau (`fetchInto`, qui écrit la cause dans
+    // le panneau sur non-2xx). Forme identique à `idp_providers_list` (rang un) et à `ai_providers_list`
+    // ci-dessus : un refus qui NOMME sa cause, jamais un tableau court servi en 200.
+    let lues: rusqlite::Result<Vec<Value>> = conn
+        .prepare(
+            "SELECT id,type,name,enabled,endpoint,config,filter,batch_max,interval_s,watermark,last_run,last_ok,last_error,last_count,error_count \
+             FROM destination ORDER BY id",
+        )
+        .and_then(|mut stmt| {
+            stmt.query_map([], |r| {
                 let cfg: String = r.get(5)?;
                 let has_auth = serde_json::from_str::<Value>(&cfg).ok()
                     .map(|v| ["hec_token", "auth_header"].iter().any(|k| v.get(*k).and_then(|x| x.as_str()).map(|s| !s.is_empty()).unwrap_or(false)))
@@ -572,12 +587,13 @@ pub(crate) async fn destinations_list(State(st): State<AppState>, Extension(au):
                     "error_count": r.get::<_, i64>(14)?,
                     "has_auth": has_auth,
                 }))
-            })
-            .map(|rows| rows.flatten().collect())
-            .unwrap_or_default(),
-        Err(_) => Vec::new(),
-    };
-    Json(Value::Array(list)).into_response()
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        });
+    match lues {
+        Ok(list) => Json(Value::Array(list)).into_response(),
+        Err(_) => server_err(crate::handlers::liste_bornee::CAUSE_LISTE_ILLISIBLE),
+    }
 }
 
 /// L'endpoint tel qu'il peut ENTRER DANS UN JOURNAL — l'autorité privée de son userinfo.

@@ -31,7 +31,16 @@ pub(crate) fn resolve_run_as(requested: &str, creator_role: &str) -> Result<Stri
 /// GET /api/scheduled-reports — liste (editor+ ; secret notifier JAMAIS projeté, seulement l'id).
 pub(crate) async fn reports_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Response {
     crate::req_conn!(st, au, conn);
-    let items: Vec<Value> = conn
+    // `P10.7-f` (rang 4, vague b) — LA LISTE DES RAPPORTS PLANIFIÉS EST ENTIÈRE OU AVOUÉE. Avant :
+    // `.map(|rows| rows.flatten().collect())` puis `.unwrap_or_default()` — un rapport dont la ligne ne se
+    // décode pas (`last_error` non textuel après un échec d'envoi, `name` corrompu, colonne de migration
+    // que la connexion qui sert ne voit pas encore) disparaissait de la seule vue qui les recense. Un
+    // rapport absent se lit « rien n'est planifié » : on en crée un second, qui portera le même nom et sera
+    // refusé par la contrainte d'unicité — ou qui passera sous un autre nom et DOUBLERA l'envoi périodique
+    // vers le canal. Pire : le planificateur, lui, continue de l'exécuter sous son `run_as_role`, donc le
+    // rapport invisible garde son identité d'exécution. L'aveu est celui du dépôt
+    // (`liste_bornee::corps_de_liste_illisible` : `reports` présente et VIDE, `error` nomme la cause).
+    let lues: rusqlite::Result<Vec<Value>> = conn
         .prepare("SELECT id,name,dataset_id,notifier_id,run_as_role,interval_s,enabled,last_run,last_ok,last_error,last_count,created,created_by FROM scheduled_report ORDER BY id")
         .and_then(|mut s| {
             s.query_map([], |r| {
@@ -39,10 +48,13 @@ pub(crate) async fn reports_list(State(st): State<AppState>, Extension(au): Exte
                     "notifier_id": r.get::<_,i64>(3)?, "run_as_role": r.get::<_,String>(4)?, "interval_s": r.get::<_,i64>(5)?,
                     "enabled": r.get::<_,i64>(6)? != 0, "last_run": r.get::<_,i64>(7)?, "last_ok": r.get::<_,i64>(8)?,
                     "last_error": r.get::<_,Option<String>>(9)?, "last_count": r.get::<_,i64>(10)?, "created": r.get::<_,i64>(11)?, "created_by": r.get::<_,String>(12)? }))
-            }).map(|rows| rows.flatten().collect())
-        })
-        .unwrap_or_default();
-    Json(json!({ "reports": items })).into_response()
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        });
+    match lues {
+        Ok(items) => Json(json!({ "reports": items })).into_response(),
+        Err(_) => Json(crate::handlers::liste_bornee::corps_de_liste_illisible(json!({}), "reports")).into_response(),
+    }
 }
 
 /// POST /api/scheduled-reports — crée un rapport planifié. editor+ ; run_as PLAFONNÉ au rôle du créateur.

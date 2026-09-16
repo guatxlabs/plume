@@ -285,29 +285,45 @@ pub(crate) fn hotes_hors_alerte(conn: &Connection) -> (std::collections::HashSet
 /// l'inventaire de flotte rend déjà ces colonnes), même règle que `/api/sources/settings`.
 pub(crate) async fn host_settings_get(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Response {
     crate::req_conn!(st, au, conn);
-    let mut stmt = match conn.prepare(
-        "SELECT host,attente,attente_motif,attente_par,attente_le,updated,updated_by FROM host_settings \
-         WHERE scope='global' ORDER BY host",
-    ) {
-        Ok(s) => s,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("host_settings indisponible: {e}")).into_response(),
-    };
-    let settings: Vec<Value> = stmt
-        .query_map([], |r| {
-            Ok(json!({
-                "host": r.get::<_, String>(0)?,
-                "attente": r.get::<_, Option<String>>(1)?,
-                "attente_motif": r.get::<_, Option<String>>(2)?,
-                // La provenance PROPRE de la déclaration — jamais le dernier geste de la ligne.
-                "attente_par": r.get::<_, Option<String>>(3)?,
-                "attente_le": r.get::<_, Option<i64>>(4)?,
-                "updated": r.get::<_, Option<i64>>(5)?,
-                "updated_by": r.get::<_, Option<String>>(6)?,
-            }))
-        })
-        .map(|it| it.flatten().collect())
-        .unwrap_or_default();
-    Json(json!({ "ok": true, "settings": settings })).into_response()
+    // `P10.7-f` (rang 4, vague b) — LES DÉCLARATIONS D'HÔTES SONT ENTIÈRES OU AVOUÉES. Avant :
+    // `.map(|it| it.flatten().collect()).unwrap_or_default()` — un hôte dont la ligne ne se décode pas
+    // (cache de schéma du pool périmé qui rend « no such table » au PREMIER pas, colonne de migration que
+    // la connexion qui sert ne voit pas encore, `attente_motif` corrompu) disparaissait de la liste, et
+    // l'absence d'une ligne dans CETTE table se lit « rien n'est déclaré pour cet hôte » : la machine
+    // repasse comptée dans le dénominateur de parc et dans l'alerte « hôtes muets », ou l'inverse — le
+    // déclarant et sa date, eux, ne sont plus nulle part. Le geste de réparation est la déclaration
+    // suivante, écrite par-dessus une déclaration qu'on croyait absente.
+    //
+    // L'AVEU REMPLACE AUSSI LE 500 DE PRÉPARATION, et c'est délibéré : les deux voies disent le MÊME
+    // fait (« cette liste n'a pas été lue »), et les servir sous deux formes obligerait chaque
+    // consommateur à en connaître deux. La forme retenue est celle du dépôt pour une liste JSON —
+    // `liste_bornee::corps_de_liste_illisible` : `settings` existe et est VIDE, `error` porte la cause —
+    // avec `ok` retombé à `false`, comme le catalogue des rôles du rang un : un corps qui affirme `ok`
+    // au-dessus d'une lecture jamais faite est le mensonge exact que ce rang ferme.
+    let lues: rusqlite::Result<Vec<Value>> = conn
+        .prepare(
+            "SELECT host,attente,attente_motif,attente_par,attente_le,updated,updated_by FROM host_settings \
+             WHERE scope='global' ORDER BY host",
+        )
+        .and_then(|mut stmt| {
+            stmt.query_map([], |r| {
+                Ok(json!({
+                    "host": r.get::<_, String>(0)?,
+                    "attente": r.get::<_, Option<String>>(1)?,
+                    "attente_motif": r.get::<_, Option<String>>(2)?,
+                    // La provenance PROPRE de la déclaration — jamais le dernier geste de la ligne.
+                    "attente_par": r.get::<_, Option<String>>(3)?,
+                    "attente_le": r.get::<_, Option<i64>>(4)?,
+                    "updated": r.get::<_, Option<i64>>(5)?,
+                    "updated_by": r.get::<_, Option<String>>(6)?,
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        });
+    match lues {
+        Ok(settings) => Json(json!({ "ok": true, "settings": settings })).into_response(),
+        Err(_) => Json(crate::handlers::liste_bornee::corps_de_liste_illisible(json!({ "ok": false }), "settings")).into_response(),
+    }
 }
 
 /// POST|PUT /api/hosts/settings {host, action, value?, motif?} -> LA DÉCLARATION D'ATTENTE d'un hôte.

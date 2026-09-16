@@ -86,12 +86,12 @@
         // ÉGALITÉ 1-1 : discovery(T1046) vs initial-access(T1190). Attendu déterministe = plus petit nom.
         link_alert(&conn, id, "T1046", None); // discovery
         link_alert(&conn, id, "T1190", None); // initial-access
-        let (tac0, tech0, _) = dominant_tactic_and_target(&conn, id);
+        let (tac0, tech0, _) = dominant_tactic_and_target(&conn, id).expect("les alertes liées sont lisibles");
         assert_eq!(tac0.as_deref(), Some("discovery"), "tie -> tactique lexicographiquement min");
         assert_eq!(tech0.as_deref(), Some("T1046"), "tie -> technique lexicographiquement min");
         // stabilité : 64 appels (donc 64 HashMap distincts) rendent EXACTEMENT le même dominant.
         for _ in 0..64 {
-            let (tac, tech, _) = dominant_tactic_and_target(&conn, id);
+            let (tac, tech, _) = dominant_tactic_and_target(&conn, id).expect("les alertes liées sont lisibles");
             assert_eq!(tac, tac0, "tactique dominante STABLE entre appels (déterminisme)");
             assert_eq!(tech, tech0, "technique dominante STABLE entre appels");
         }
@@ -169,7 +169,7 @@
         link_alert(&conn, ia, "T1190", Some("web-1"));
         link_alert(&conn, ia, "T1190", None);
         link_alert(&conn, ia, "T1110", None); // minoritaire
-        let (tac, tech, targets) = dominant_tactic_and_target(&conn, ia);
+        let (tac, tech, targets) = dominant_tactic_and_target(&conn, ia).expect("les alertes liées sont lisibles");
         assert_eq!(tac.as_deref(), Some("initial-access"));
         assert_eq!(tech.as_deref(), Some("T1190"));
         assert_eq!(targets.host.as_deref(), Some("web-1"), "host best-effort pré-rempli = host de l'alerte");
@@ -179,14 +179,14 @@
         // (b) discovery (T1046 port-scan) -> runbook de reconnaissance (alias).
         let ds = case_create_row(&conn, "a", "portscan", 3, "", None, 3);
         link_alert(&conn, ds, "T1046", None);
-        let (tac2, _, _) = dominant_tactic_and_target(&conn, ds);
+        let (tac2, _, _) = dominant_tactic_and_target(&conn, ds).expect("les alertes liées sont lisibles");
         assert_eq!(tac2.as_deref(), Some("discovery"));
         let rb2 = pick_runbook_id(&conn, tac2.as_deref(), None).unwrap();
         let key2: String = conn.query_row("SELECT key FROM runbook WHERE id=?1", params![rb2], |r| r.get(0)).unwrap();
         assert_eq!(key2, "recon-scan", "discovery route vers le runbook de reconnaissance");
         // (c) aucune alerte -> repli générique.
         let none = case_create_row(&conn, "a", "vide", 2, "", None, 3);
-        let (tac3, _, _) = dominant_tactic_and_target(&conn, none);
+        let (tac3, _, _) = dominant_tactic_and_target(&conn, none).expect("les alertes liées sont lisibles");
         assert_eq!(tac3, None);
         let rb3 = pick_runbook_id(&conn, tac3.as_deref(), None).unwrap();
         let key3: String = conn.query_row("SELECT key FROM runbook WHERE id=?1", params![rb3], |r| r.get(0)).unwrap();
@@ -391,7 +391,7 @@
             let aid: i64 = c.query_row("SELECT id FROM alert", [], |r| r.get(0)).unwrap();
             let case_id = case_create_row(&c, "alice", "exploit", 4, "", None, 2);
             case_add_item(&c, case_id, now(), "alert", "sys", "liée", Some(&format!("alert:{aid}")));
-            let (_, _, targets) = dominant_tactic_and_target(&c, case_id);
+            let (_, _, targets) = dominant_tactic_and_target(&c, case_id).expect("les alertes liées sont lisibles");
             assert_eq!(targets.src_ip.as_deref(), Some("9.9.9.9"));
             let rb = attach_response_runbook(&c, case_id, "ban_ip", &targets);
             let _ = rb;
@@ -474,7 +474,7 @@
         let conn = test_db();
         let case_id = case_create_row(&conn, "alice", "process malveillant", 3, "", None, 2);
         link_alert_struct(&conn, case_id, "T1059", None, Some("4242"), Some("db-01"));
-        let (_, _, targets) = dominant_tactic_and_target(&conn, case_id);
+        let (_, _, targets) = dominant_tactic_and_target(&conn, case_id).expect("les alertes liées sont lisibles");
         assert_eq!(targets.pid.as_deref(), Some("4242"));
         assert_eq!(targets.host.as_deref(), Some("db-01"));
         attach_response_runbook(&conn, case_id, "kill_pid", &targets);
@@ -496,21 +496,21 @@
         // src_ip garbage.
         let c1 = case_create_row(&conn, "a", "x", 3, "", None, 3);
         link_alert_struct(&conn, c1, "T1190", Some("pas-une-ip"), None, None);
-        let (_, _, tg1) = dominant_tactic_and_target(&conn, c1);
+        let (_, _, tg1) = dominant_tactic_and_target(&conn, c1).expect("les alertes liées sont lisibles");
         attach_response_runbook(&conn, c1, "ban_ip", &tg1);
         let b1: String = conn.query_row("SELECT COALESCE(target,'') FROM case_step WHERE incident_id=?1 AND action_kind='ban_ip'", params![c1], |r| r.get(0)).unwrap();
         assert_eq!(b1, "", "src_ip invalide -> ban_ip blanc (anti-cible-trompeuse)");
         // pid trop bas.
         let c2 = case_create_row(&conn, "a", "y", 3, "", None, 3);
         link_alert_struct(&conn, c2, "T1059", None, Some("42"), Some("h"));
-        let (_, _, tg2) = dominant_tactic_and_target(&conn, c2);
+        let (_, _, tg2) = dominant_tactic_and_target(&conn, c2).expect("les alertes liées sont lisibles");
         attach_response_runbook(&conn, c2, "kill_pid", &tg2);
         let b2: String = conn.query_row("SELECT COALESCE(target,'') FROM case_step WHERE incident_id=?1 AND action_kind='kill_pid'", params![c2], |r| r.get(0)).unwrap();
         assert_eq!(b2, "", "pid<=300 rejeté par action_valid_ctx -> blanc");
         // src_ip VALIDE passe (contrôle positif).
         let c3 = case_create_row(&conn, "a", "z", 3, "", None, 3);
         link_alert_struct(&conn, c3, "T1190", Some("198.51.100.7"), None, None);
-        let (_, _, tg3) = dominant_tactic_and_target(&conn, c3);
+        let (_, _, tg3) = dominant_tactic_and_target(&conn, c3).expect("les alertes liées sont lisibles");
         attach_response_runbook(&conn, c3, "ban_ip", &tg3);
         let b3: String = conn.query_row("SELECT COALESCE(target,'') FROM case_step WHERE incident_id=?1 AND action_kind='ban_ip'", params![c3], |r| r.get(0)).unwrap();
         assert_eq!(b3, "198.51.100.7", "src_ip valide -> pré-remplie");
@@ -523,7 +523,7 @@
         let conn = test_db();
         let case_id = case_create_row(&conn, "a", "scan", 3, "", None, 3);
         link_alert(&conn, case_id, "T1190", None); // aucune colonne structurée (comme run_due_rules)
-        let (_, _, targets) = dominant_tactic_and_target(&conn, case_id);
+        let (_, _, targets) = dominant_tactic_and_target(&conn, case_id).expect("les alertes liées sont lisibles");
         assert_eq!(targets.src_ip, None);
         assert_eq!(targets.pid, None);
         attach_response_runbook(&conn, case_id, "ban_ip", &targets);
@@ -540,7 +540,7 @@
         link_alert_struct(&conn, case_id, "T1190", Some("203.0.113.99"), Some("31337"), Some("secret-host-01"));
         incident_apply_tier(&conn, case_id, "bob", Some(1), None, None);
         let rb = create_custom_runbook(&conn, "rb", "*", "", "", &[("containment".to_string(), "Ban".to_string(), "".to_string(), "response".to_string(), None, Some("ban_ip".to_string()))], true).unwrap();
-        let (_, _, targets) = dominant_tactic_and_target(&conn, case_id);
+        let (_, _, targets) = dominant_tactic_and_target(&conn, case_id).expect("les alertes liées sont lisibles");
         attach_runbook(&conn, case_id, rb, "bob", &targets).unwrap();
         let masks = guatx_core::soql::FieldMaskSet::new();
         let cv = client_case_get_json(&conn, ":memory:", &masks, case_id, now()).unwrap();

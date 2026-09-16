@@ -45,7 +45,12 @@ métier qui entre dans un corps servi un cran plus loin (`dominant_tactic_and_ta
 `soql_known_sources_bornees`, `sources_declarees_par_connecteurs`), soit QUARANTE-NEUF servis. Les SIX
 dernières ne servent AUCUN corps : `respond_run`, `load_policies`, `load_active_silences`,
 `load_active_engagements`, `eval_baseline`, `sla_recalcule_la_priorite_bornee` — et ce sont celles que
-cette garde sait le moins bien formuler, parce qu'il n'y existe aucun corps où poser un aveu.
+cette garde sait le moins bien formuler, parce qu'il n'y existe aucun corps où poser un aveu. LE CRITÈRE
+est mécanique et se rejoue ; LE CLASSEMENT ci-dessus, lui, est celui du MATIN. La campagne du jour a
+depuis changé le type de retour de plusieurs de ces fonctions — `index_stats` (rang trois) et
+`dominant_tactic_and_target` (rang quatre, vague B) rendent un `rusqlite::Result`, ce qui est
+précisément le geste que cette garde réclame pour une lecture sans corps — donc le rejouer aujourd'hui
+donnerait une autre répartition. Ce paragraphe décrit le POINT DE DÉPART, pas l'arbre courant.
 
 POURQUOI UNE SŒUR, ET NON UNE EXTENSION DE `P10.7-g`
 -----------------------------------------------------
@@ -58,11 +63,19 @@ la garde sœur dans les épreuves internes, et elle n'en rend AUCUN) :
 
   * `chaine_apres` ne lit que le jeton COLLÉ à la fermante de la lecture. Sur
     `query_map(…).map(|x| x.flatten().collect())`, ce jeton est `map(…)` — absent du vocabulaire
-    `AVALE` — et le `.flatten()` vit DANS l'argument, que ce lecteur-là n'ouvre pas. Sites prouvés :
-    `daemon/src/handlers/caseops.rs:323` et `:363` ;
-  * un aplatissement posé sur une VARIABLE LIÉE n'est relié à aucune lecture. Site prouvé :
-    `daemon/src/handlers/soql_meta.rs:218` (`let Ok(rows) = s.query_map(…) else { … }; for src in
-    rows.flatten()`).
+    `AVALE` — et le `.flatten()` vit DANS l'argument, que ce lecteur-là n'ouvre pas ;
+  * un aplatissement posé sur une VARIABLE LIÉE n'est relié à aucune lecture
+    (`let Ok(rows) = s.query_map(…) else { … }; for src in rows.flatten()`).
+
+LES DEUX EXTRAITS QUI PROUVENT CES ANGLES MORTS SONT FABRIQUÉS, ET PLUS ADOSSÉS À AUCUN SITE (relu le
+2026-09-16, après la vague B du rang quatre). Ils l'ont été : la chaîne enveloppée vivait en
+`daemon/src/handlers/caseops.rs:323` et `:363` (fermés par CE lot), la liaison en
+`daemon/src/handlers/soql_meta.rs:218` (fermée au rang deux). Les citer encore comme « sites prouvés »
+enseignerait un arbre qui n'existe plus. Et les épreuves elles-mêmes n'y ont JAMAIS été adossées — c'est
+la règle que ce fichier s'écrit pour tous ses témoins : un extrait pris sur l'arbre serait une RANÇON,
+qui rougirait le jour où le site est réparé. L'écriture (ii) n'a d'ailleurs plus AUCUN site sur l'arbre
+au 2026-09-16, et la garde continue de la voir — c'est exactement ce que des extraits fabriqués
+garantissent.
 
 Et la population des cinq voies laisse hors jugement tout ce qui vit derrière `req_conn!` ou derrière
 un `&Connection` passé en argument — c'est-à-dire la grande majorité des gestionnaires, et la
@@ -130,7 +143,51 @@ des tiers — un aveu embarqué y serait relu par quelqu'un qui ne peut plus rie
 `snapshot_create` rend un cinq cent trois nommé et n'écrit RIEN. La garde rend désormais VINGT-DEUX sites
 sur DIX-SEPT fichiers, dix-neuf défauts connus, tous de rang quatre.
 
-LES PLANCHERS SE RELISENT, AVEC LEUR DATE (2026-09-16, après la vague A du rang quatre). Ils valaient
+RELEVÉ APRÈS LA VAGUE B DU RANG QUATRE (2026-09-16, lot suivant) : les DIX-NEUF dernières accusations de
+rang quatre tombent, sur DIX-NEUF fonctions et QUATORZE fichiers, et la classe du rang quatre devient
+VIDE — l'ensemble nommé ne porte plus que les DEUX arbitrages assumés et l'INDÉCIDABLE. Ce sont les
+listes de RÉGLAGE, et ce qui leur est propre a été écrit plutôt que supposé : l'objet avalé continue
+d'EXISTER et d'AGIR (un canal de notification invisible émet quand même, un rapport planifié invisible
+s'exécute quand même sous son `run_as_role`, une règle d'ingestion invisible jette ou masque quand même,
+un lookup invisible enrichit quand même toute recherche GXQL, une destination invisible exporte quand
+même hors du périmètre), si bien que la conclusion « ce n'est pas configuré » fait fabriquer une SECONDE
+copie qui s'AJOUTE à la première. Le silence produisait donc du DOUBLON OPÉRANT, jamais un simple trou
+d'affichage. QUINZE routes servies soldent leur parcours en bloc et avouent par
+`liste_bornee::corps_de_liste_illisible` (clé présente et VIDE, `error` nommant la cause ; `ok` retombé à
+`false` pour les deux tables de déclaration ; métadonnées d'une AUTRE lecture conservées — fiche
+d'engagement, métadonnée de runbook, compteurs live d'ingestion) ; DEUX corps nominalement TABLEAU NU
+(`ai_providers_list`, `destinations_list`) rendent un cinq cents NOMMÉ, la forme des fournisseurs
+d'identité du rang un ; `case_runbooks_json`, qui porte DEUX lectures de lignes, avoue PAR LECTURE
+(`corps_de_listes_illisibles`, `non_lus`), l'autre restant servie ; les deux listes de `caseops.rs`
+avaient DÉJÀ la branche `Lignes::Illisible` du fabricant borné, et le solde en bloc y fait simplement
+tomber aussi l'erreur de LIGNE. TROIS sites PANIQUAIENT sur deux `unwrap()` (`notifiers_list`,
+`processors_list`, `lookups_list`) et QUATRE portaient DEUX voies de silence (un 500 ou un `[]` en 200
+sur la préparation, plus la ligne avalée) : les deux voies rendent désormais le même aveu. Enfin,
+`dominant_tactic_and_target` rend un `rusqlite::Result` parce que sa valeur ENTRE DANS UNE
+RECOMMANDATION — mesuré sous mutation : en avalant UNE alerte sur trois, la tactique dominante bascule de
+`initial-access` à `credential-access`, donc le runbook recommandé change —, et un échec TOTAL rendait le
+triplet vide, indiscernable d'« aucune alerte liée », le cas où le repli générique est LÉGITIME ; son
+second appelant, `case_runbook_attach`, refuse en cinq cent trois nommé sans rien écrire, parce
+qu'attacher FIGE les étapes et que le geste est idempotent-refusant. La garde rend désormais TROIS sites
+sur TROIS fichiers, ZÉRO défaut connu.
+
+LES PLANCHERS SE RELISENT, AVEC LEUR DATE (2026-09-16, après la vague B du rang quatre). Ils valaient
+15/11 après la vague A, dérivés du relevé de ce moment-là (22 sites sur 17 fichiers) ; l'arbre porte
+maintenant 3 sites sur 3 fichiers pour de VRAIES corrections. La MÊME règle des deux tiers, réappliquée
+au relevé DU JOUR, donne 69 % de 3 = 2,07 pour les sites — 2 — et 65 % de 3 = 1,95 pour les fichiers, où
+le plancher et l'arrondi NE DONNENT PLUS LA MÊME VALEUR (1 contre 2) : à cette magnitude la règle cesse
+de discriminer, et c'est la plus HAUTE des deux qui est retenue, parce qu'un plancher plus bas serait un
+filet plus lâche et que rien n'oblige à descendre plus qu'il ne faut. D'où 2/2. LA RÉSERVE, ET ELLE EST
+PLUS IMPORTANTE QUE LE CHIFFRE : la population restante est EXACTEMENT les deux arbitrages ASSUMÉS et
+l'INDÉCIDABLE. Aucun des trois ne se ferme par un lot de correction — les deux premiers ne partiraient
+que si leur arbitrage CHANGEAIT, le troisième que si sa question était TRANCHÉE. Le plancher ne sépare
+donc plus « descente réelle » de « découverte cassée » : il ne reste plus rien à faire descendre. Ce qui
+sépare encore, c'est le jugement de l'ensemble nommé DANS LES DEUX SENS — l'un de ces trois sites cessant
+d'être vu devient une « exemption sans objet », rouge —, et ce filet-là ne dépend d'aucun volume. Le
+plancher n'est plus qu'un garde-fou grossier contre un effondrement TOTAL du lecteur.
+
+CE QUE LA RELECTURE DES PLANCHERS VALAIT APRÈS LA VAGUE A, GARDÉ POUR QUE LA RÈGLE SE VÉRIFIE SUR TROIS
+PASSAGES. Ils valaient
 24/13 après le rang trois, re-dérivés alors du relevé de ce jour-là (35 sites sur 20 fichiers) ; l'arbre
 porte maintenant 22 sites sur 17 fichiers pour de VRAIES corrections, et un plancher laissé à 24 rougirait
 sur le dépôt que cette garde vient d'aider à guérir. La MÊME règle des deux tiers est réappliquée au relevé
@@ -148,13 +205,21 @@ l'ensemble nommé dans les deux sens (chaque site qui cesse d'être vu sans que 
 devient une « exemption sans objet », rouge). Le plancher ne couvre que le cas où la découverte s'effondre
 ASSEZ pour que le rouge de l'ensemble puisse être pris pour une guérison.
 
-LES CINQUANTE-CINQ DÉFAUTS SONT ADMIS AUJOURD'HUI, ET C'EST UN AVEU, PAS UN ACQUITTEMENT
+LES CINQUANTE-CINQ DÉFAUTS ÉTAIENT ADMIS LE JOUR DE L'ÉCRITURE — IL N'EN RESTE AUCUN
 ------------------------------------------------------------------------------------------
-Ils entrent dans l'ensemble pour que la garde puisse être câblée VERTE le jour où elle est écrite :
-une garde qui naît rouge sur cinquante-cinq sites ne se branche pas, et une garde qui ne se branche
-pas ne tient rien. Chaque entrée porte SA raison, en une ligne, qui dit ce qui est servi tronqué et
-le geste LOCAL qui la ferme. Corriger un site SANS retirer son entrée fait rougir la garde en
-« exemption sans objet » : c'est voulu, et c'est ce qui empêche l'ensemble de devenir un décor.
+Ils étaient entrés dans l'ensemble pour que la garde puisse être câblée VERTE le jour où elle est
+écrite : une garde qui naît rouge sur cinquante-cinq sites ne se branche pas, et une garde qui ne se
+branche pas ne tient rien. Chaque entrée portait SA raison, en une ligne, qui disait ce qui était servi
+tronqué et le geste LOCAL qui la fermait. Corriger un site SANS retirer son entrée fait rougir la garde
+en « exemption sans objet » : c'est voulu, et c'est ce qui a empêché l'ensemble de devenir un décor —
+c'est aussi ce qui l'a fait DESCENDRE, 58 -> 50 -> 40 -> 35 -> 22 -> 3, en cinq lots du 2026-09-16.
+
+CE QUE LE VERT DIT DÉSORMAIS, ET CE QU'IL NE DIT TOUJOURS PAS. Les trois classes de DÉFAUTS CONNUS sont
+VIDES : l'arbre ne porte plus aucun aplatissement de cette famille qui soit reconnu comme un défaut. Ce
+qui reste dans l'ensemble — deux arbitrages ASSUMÉS et un INDÉCIDABLE — n'est pas une dette à rembourser
+mais trois positions ÉCRITES, que seul un changement d'arbitrage ou une question tranchée retirera. Le
+vert ne dit rien de plus qu'avant sur ce que cette garde ne sait pas voir : la liste en est plus bas, et
+elle n'a pas raccourci.
 """
 import os
 import re
@@ -222,7 +287,7 @@ ECRITURES = {
 # la plus SPÉCIFIQUE gagne, et le site n'est jamais compté deux fois.
 RANG_ECRITURE = {"i": 0, "ii": 1, "iv": 2, "iii": 3}
 
-# --- PLANCHER DE NON-DÉGÉNÉRESCENCE (relu le 2026-09-16, après la vague A du rang quatre) ---------
+# --- PLANCHER DE NON-DÉGÉNÉRESCENCE (relu le 2026-09-16, après la vague B du rang quatre) ---------
 # Ils ne réclament PAS un volume de code : ils constatent qu'une LECTURE est cassée. Sous eux, rendre
 # vert serait rendre vert en étant aveugle, et c'est le défaut que cette garde nomme, appliqué à
 # elle-même : la découverte est cassée, pas le dépôt guéri.
@@ -230,15 +295,26 @@ RANG_ECRITURE = {"i": 0, "ii": 1, "iv": 2, "iii": 3}
 # PREMIÈRE ÉCRITURE (relevé du matin, 2026-09-16) : 58 sites sur 31 fichiers -> 40/20, soit 69 % et
 # 65 %. PREMIÈRE RELECTURE (même jour, après les rangs un, deux et trois) : 35 sites sur 20 fichiers
 # -> 24/13, par la même règle. SECONDE RELECTURE (même jour, après la VAGUE A du rang quatre) :
-# l'arbre porte 22 sites sur 17 fichiers pour de VRAIES corrections — 36 entrées retirées de l'ensemble
-# nommé depuis le matin, aucune amnistiée — et un plancher laissé à 24 rougirait sur le dépôt que cette
-# garde vient d'aider à guérir. La MÊME règle est réappliquée au relevé DU JOUR : 69 % de 22 = 15,
-# 65 % de 17 = 11. Les planchers ne montent jamais ; à la prochaine descente pour de vraies
-# corrections, ils se reliront de la même façon, avec leur date. Et ils ne sont pas le seul filet : une
-# découverte PARTIELLEMENT aveugle est prise par le jugement de l'ensemble nommé (un site qui cesse
-# d'être vu devient une « exemption sans objet »), et ce filet-là, lui, ne dépend d'aucun volume.
-PLANCHER_SITES = 15
-PLANCHER_FICHIERS = 11
+# 22 sites sur 17 fichiers -> 15/11. TROISIÈME RELECTURE (même jour, après la VAGUE B) : l'arbre porte
+# 3 sites sur 3 fichiers pour de VRAIES corrections — 55 entrées retirées de l'ensemble nommé depuis le
+# matin, aucune amnistiée — et un plancher laissé à 15 rougirait sur le dépôt que cette garde vient
+# d'aider à guérir.
+#
+# CE QUE LA RÈGLE DONNE À CETTE MAGNITUDE, ET OÙ ELLE CESSE DE DISCRIMINER. 69 % de 3 = 2,07 -> 2 pour
+# les sites (troncature et arrondi s'accordent). 65 % de 3 = 1,95 : la troncature donne 1, l'arrondi
+# donne 2 — la règle des deux tiers ne tranche plus. On retient la plus HAUTE (2), parce qu'un plancher
+# plus bas serait un filet plus lâche et que rien n'oblige à descendre plus qu'il ne faut. D'où 2/2.
+#
+# LA RÉSERVE, PLUS IMPORTANTE QUE LE CHIFFRE : la population restante est EXACTEMENT les deux
+# arbitrages ASSUMÉS et l'INDÉCIDABLE. Aucun des trois ne se ferme par un lot de correction — les deux
+# premiers ne partiraient que si leur arbitrage CHANGEAIT, le troisième que si sa question était
+# TRANCHÉE. Le plancher ne sépare donc plus « descente réelle » de « découverte cassée » : il ne reste
+# plus rien à faire descendre. Ce qui sépare encore, c'est le jugement de l'ensemble nommé DANS LES DEUX
+# SENS (l'un de ces trois sites cessant d'être vu devient une « exemption sans objet », rouge), et ce
+# filet-là ne dépend d'aucun volume. Le plancher n'est plus qu'un garde-fou grossier contre un
+# effondrement TOTAL du lecteur. Il ne monte jamais.
+PLANCHER_SITES = 2
+PLANCHER_FICHIERS = 2
 
 # ================================================================================================
 # L'ENSEMBLE NOMMÉ — TROIS CLASSES, JUGÉES DANS LES DEUX SENS
@@ -356,51 +432,25 @@ DEFAUTS_RANG_3_COMPTES = {}
 # parce qu'un aveu qui couvre tout ne couvre rien. La capture d'instantané, elle, REFUSE : elle rend un
 # `rusqlite::Result` et `snapshot_create` répond 503 sans rien écrire, parce que son produit est FIGÉ et
 # PARTAGEABLE PAR JETON — un aveu embarqué dans l'artefact serait relu par un tiers qui ne peut plus
-# rien recouper. Reste la VAGUE B : les dix-neuf entrées ci-dessous.
-DEFAUTS_RANG_4_CONFIGURATION = {
-    # Les liens d'un case : un lien avalé fait lire « ce case n'a pas ce lien ». Le corps est déjà
-    # celui du fabricant borné (`liste_bornee::corps`) — la coupe s'y écrit sans changer de type.
-    ("daemon/src/handlers/caseops.rs", "case_links_json"): 1,
-    # Les files par assigné : une file avalée retire un assigné de la vue qui existe pour le montrer.
-    ("daemon/src/handlers/caseops.rs", "case_queues_json"): 1,
-    # Les réglages d'hôtes déclarés : un hôte avalé se lit « pas de réglage pour cet hôte ».
-    ("daemon/src/handlers/hotes_declares.rs", "host_settings_get"): 1,
-    # La liste des politiques d'alerte SERVIE (distincte du chargement interne du rang 2).
-    ("daemon/src/handlers/alerting.rs", "policies_list"): 1,
-    # La liste des silences SERVIE : un silence avalé se lit « cette alerte n'est pas silencée ».
-    ("daemon/src/handlers/alerting.rs", "silences_list"): 1,
-    # Les fournisseurs d'IA configurés : un fournisseur avalé se lit « non configuré ».
-    ("daemon/src/handlers/ai.rs", "ai_providers_list"): 1,
-    # La fiche d'un engagement : une ligne de portée avalée RÉTRÉCIT la portée affichée d'un pentest.
-    ("daemon/src/handlers/engagement.rs", "engagement_get"): 1,
-    # Les rapports planifiés : un rapport avalé se lit « aucun rapport planifié » pour cette entrée.
-    ("daemon/src/handlers/scheduled_reports.rs", "reports_list"): 1,
-    # La tactique et la cible DOMINANTES d'un case sont dérivées d'un parcours aplati : une ligne
-    # avalée peut CHANGER le vainqueur, et le corps sert le résultat comme un fait.
-    ("daemon/src/handlers/incidents.rs", "dominant_tactic_and_target"): 1,
-    # Les runbooks attachés à un case : un runbook avalé se lit « pas de procédure ».
-    ("daemon/src/handlers/incidents.rs", "case_runbooks_json"): 1,
-    # La liste d'administration des runbooks : idem, côté admin.
-    ("daemon/src/handlers/incidents.rs", "runbooks_admin_list"): 1,
-    # La fiche d'un runbook : une étape avalée fait suivre une procédure AMPUTÉE.
-    ("daemon/src/handlers/incidents.rs", "runbook_get"): 1,
-    # Les notifieurs : un notifieur avalé se lit « aucune notification configurée sur ce canal ».
-    ("daemon/src/handlers/notifiers.rs", "notifiers_list"): 1,
-    # Les destinations d'export : une destination avalée se lit « rien n'est exporté vers là ».
-    ("daemon/src/handlers/destinations.rs", "destinations_list"): 1,
-    # Les processeurs d'ingestion : un processeur avalé se lit « cette transformation n'existe pas »,
-    # alors qu'elle s'applique bel et bien aux événements.
-    ("daemon/src/handlers/processors.rs", "processors_list"): 1,
-    # Les requêtes sauvegardées d'un propriétaire : une requête avalée se lit « supprimée ».
-    ("daemon/src/handlers/saved_queries.rs", "list_for_owner"): 1,
-    # Les réglages d'une source : une ligne avalée se lit « ce réglage n'est pas posé ».
-    ("daemon/src/handlers/sources.rs", "source_settings_get"): 1,
-    # Les lookups : une table de correspondance avalée se lit « pas de lookup », et un enrichissement
-    # qu'on croit absent est en fait invisible.
-    ("daemon/src/handlers/users_lookups.rs", "lookups_list"): 1,
-    # Les actions de workflow : une action avalée disparaît du workflow affiché.
-    ("daemon/src/handlers/workflow_actions.rs", "workflow_actions_list"): 1,
-}
+# rien recouper.
+#
+# VAGUE B CLOSE LE 2026-09-16 — DIX-NEUF ACCUSATIONS, DIX-NEUF FONCTIONS, QUATORZE FICHIERS. Les entrées
+# de `case_links_json`, `case_queues_json`, `host_settings_get`, `policies_list`, `silences_list`,
+# `ai_providers_list`, `engagement_get`, `reports_list`, `dominant_tactic_and_target`,
+# `case_runbooks_json`, `runbooks_admin_list`, `runbook_get`, `notifiers_list`, `destinations_list`,
+# `processors_list`, `list_for_owner`, `source_settings_get`, `lookups_list` et
+# `workflow_actions_list` sont RETIRÉES parce que leurs sites sont corrigés, pas amnistiés. QUINZE
+# listes servies soldent leur parcours en bloc et avouent par `liste_bornee::corps_de_liste_illisible` ;
+# DEUX corps nominalement TABLEAU NU rendent un cinq cents nommé (forme de `idp_providers_list`, rang
+# un) ; `case_runbooks_json`, qui porte DEUX lectures de lignes, avoue PAR LECTURE
+# (`corps_de_listes_illisibles` : `non_lus` NOMME la lecture ratée, l'autre restant servie) ; les deux
+# listes de `caseops.rs` avaient DÉJÀ la branche `Lignes::Illisible` du fabricant borné, et le solde en
+# bloc y fait tomber aussi l'erreur de LIGNE. `dominant_tactic_and_target`, seule lecture du rang qui ne
+# sert aucun corps, rend un `rusqlite::Result` — le geste que cette garde nomme pour ce cas —, parce que
+# sa valeur ENTRE DANS UNE RECOMMANDATION et qu'un échec TOTAL rendait le triplet vide, indiscernable
+# d'« aucune alerte liée ». Le dictionnaire reste, VIDE : le rang est une classe de l'ensemble, et son
+# vide est le seul état qui dise « il n'y a plus rien à admettre ici ».
+DEFAUTS_RANG_4_CONFIGURATION = {}
 
 CLASSES = (
     ("assumé", SITES_ASSUMES),
@@ -811,13 +861,17 @@ def valider_instrument():
                      's.query_map(params![id], |r| r.get(0)).map(|x| x.flatten().collect()));')
         liaison = ('let Ok(rows) = s.query_map(params![n], |r| r.get::<_, String>(0)) else { return out; };\n'
                    'for src in rows.flatten() { out.push(src); }')
-        for libelle, extrait, site in (("CHAÎNE ENVELOPPÉE", enveloppe, "caseops.rs:323/363"),
-                                       ("LIAISON", liaison, "soql_meta.rs:218")):
+        # Les deux extraits sont FABRIQUÉS et ne sont plus adossés à aucun site (relu le 2026-09-16,
+        # après la vague B du rang quatre) : `caseops.rs:323/363` portait la chaîne enveloppée,
+        # `soql_meta.rs:218` la liaison, et les deux sont fermés. `depuis` garde la trace de ce qu'ils
+        # reproduisent, sans prétendre que l'arbre le porte encore.
+        for libelle, extrait, depuis in (("CHAÎNE ENVELOPPÉE", enveloppe, "caseops.rs:323/363, fermé"),
+                                         ("LIAISON", liaison, "soql_meta.rs:218, fermé")):
             if lectures_avalees(extrait):
                 errs.append(f"épreuve des ANGLES MORTS ({libelle}) : la garde sœur VOIT désormais cette "
-                            f"forme (site prouvé {site}). Ce n'est pas une panne — c'est que la raison "
-                            "d'être de cette garde-ci a changé, et l'en-tête doit être re-mesuré avant "
-                            "que le verdict reprenne.")
+                            f"forme (extrait FABRIQUÉ, reproduit d'après {depuis}). Ce n'est pas une "
+                            "panne — c'est que la raison d'être de cette garde-ci a changé, et l'en-tête "
+                            "doit être re-mesuré avant que le verdict reprenne.")
             if not analyser("/angle_mort.rs", "fn a(conn: &Connection) -> Vec<Value> { let mut out = "
                             "Vec::new(); " + extrait + " out }", []):
                 errs.append(f"épreuve des ANGLES MORTS ({libelle}) : CETTE garde ne voit pas non plus la "
@@ -929,11 +983,14 @@ def main():
     fichiers = {c for c, _l, _f, _e, _x in sites}
     if len(sites) < PLANCHER_SITES or len(fichiers) < PLANCHER_FICHIERS:
         print(f"::error::{len(sites)} site(s) découvert(s) sur {len(fichiers)} fichier(s), planchers "
-              f"{PLANCHER_SITES}/{PLANCHER_FICHIERS} (relus le 2026-09-16 après le rang trois, aux deux "
-              "tiers du relevé de ce jour-là : 35 sites sur 20 fichiers). La DÉCOUVERTE est cassée, pas "
-              "le dépôt guéri : la garde REFUSE DE CONCLURE plutôt que de rendre vert en étant aveugle. "
-              "Si la descente est RÉELLE, ce sont les planchers qui se relisent, avec leur date — jamais "
-              "la découverte qu'on élargit pour les satisfaire.")
+              f"{PLANCHER_SITES}/{PLANCHER_FICHIERS} (relus le 2026-09-16 après la VAGUE B du rang "
+              "quatre, sur le relevé de ce moment-là : 3 sites sur 3 fichiers). La DÉCOUVERTE est "
+              "cassée, pas le dépôt guéri : la garde REFUSE DE CONCLURE plutôt que de rendre vert en "
+              "étant aveugle. ATTENTION, ces planchers-ci ne veulent plus dire ce qu'ils voulaient dire : "
+              "la population restante est EXACTEMENT les deux arbitrages assumés et l'indécidable, qu'aucun "
+              "lot de correction ne fermera. Une descente sous eux n'est donc PAS une guérison — c'est un "
+              "lecteur qui s'est effondré, ou un de ces trois sites qu'on a retiré sans retirer son entrée "
+              "(et l'ensemble nommé le dirait alors en « exemption sans objet »).")
         ce_qui_n_est_pas_tenu()
         return 2
 
@@ -965,12 +1022,22 @@ def main():
           + " · ".join(f"{lib} {sum(cl.values())}" for lib, cl in CLASSES) + ".")
     print(f"[{ETIQUETTE}] l'ensemble nommé est EXACTEMENT ce que l'arbre porte ({len(sites)} site(s)) — "
           "ni forme neuve, ni exemption sans objet.")
-    print(f"[{ETIQUETTE}] CE QUE LE VERT NE DIT PAS : les {sum(DEFAUTS_CONNUS.values())} accusations de "
-          "la classe (3) sont des DÉFAUTS CONNUS ET NON CORRIGÉS, admis pour que cette garde puisse être "
-          "câblée verte AUJOURD'HUI plutôt que d'attendre une campagne. Chacune sert une liste tronquée "
-          "comme complète. CHAQUE correction doit RETIRER son entrée de SITES_ADMIS, sous peine "
-          "d'« exemption sans objet » — c'est ce qui fait descendre la liste au lieu de la laisser "
-          "devenir un décor.")
+    restants = sum(DEFAUTS_CONNUS.values())
+    if restants:
+        print(f"[{ETIQUETTE}] CE QUE LE VERT NE DIT PAS : les {restants} accusations de "
+              "la classe (3) sont des DÉFAUTS CONNUS ET NON CORRIGÉS, admis pour que cette garde puisse être "
+              "câblée verte AUJOURD'HUI plutôt que d'attendre une campagne. Chacune sert une liste tronquée "
+              "comme complète. CHAQUE correction doit RETIRER son entrée de SITES_ADMIS, sous peine "
+              "d'« exemption sans objet » — c'est ce qui fait descendre la liste au lieu de la laisser "
+              "devenir un décor.")
+    else:
+        print(f"[{ETIQUETTE}] CE QUE LE VERT DIT, ET CE QU'IL NE DIT PAS : les TROIS classes de DÉFAUTS "
+              "CONNUS sont VIDES — plus aucun aplatissement de cette famille n'est admis comme un défaut "
+              "(58 accusations le matin du 2026-09-16, 55 fermées en cinq lots, aucune amnistiée). Ce qui "
+              "reste dans l'ensemble n'est pas une dette : DEUX arbitrages ASSUMÉS et UN INDÉCIDABLE, "
+              "trois positions écrites que seul un changement d'arbitrage ou une question tranchée "
+              "retirera. Le vert ne dit toujours rien de ce que cette garde ne sait pas voir : la liste "
+              "en suit.")
     ce_qui_n_est_pas_tenu()
     return 0
 

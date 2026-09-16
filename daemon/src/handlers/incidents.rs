@@ -92,7 +92,18 @@ fn valid_prefill<'a>(kind: &str, cand: Option<&'a str>) -> Option<&'a str> {
 /// `alert.mitre` -> tactique via guatx_core::attack (sous-techniques héritent). Les cibles pré-remplies sont
 /// lues des colonnes STRUCTURÉES de l'alerte dominante (`src_ip`/`pid`/`host`, #3 P3-A) — 1re valeur non-vide,
 /// prefill honnête « where available ». Renvoie (tactic, technique, targets).
-pub(crate) fn dominant_tactic_and_target(conn: &Connection, id: i64) -> (Option<String>, Option<String>, PrefillTargets) {
+///
+/// `P10.7-f` (rang 4, vague b) — ELLE REND UN `rusqlite::Result`, PARCE QUE SA VALEUR ENTRE DANS UNE
+/// RECOMMANDATION. Avant : `.map(|x| x.flatten().collect())` puis `.unwrap_or_default()`. Ici la ligne
+/// avalée ne manque pas dans une liste — elle change un VAINQUEUR : les tactiques et les techniques sont
+/// comptées sur ces lignes, et `max_by_key` élit la dominante. Perdre une alerte peut donc faire basculer
+/// la tactique, donc le runbook que `pick_runbook_id` recommande, donc la procédure que l'analyste
+/// déroule ; et une liste ENTIÈREMENT illisible rendait `(None, None, défaut)`, indiscernable d'« aucune
+/// alerte liée » — le cas où le repli générique `'*'` est LÉGITIME. Un `Result` sépare les deux : « aucune
+/// alerte » reste `Ok(vec![])` et garde son repli, « pas lu » remonte, et l'appelant refuse de recommander.
+/// Les cibles pré-remplies suivent le même sort : mieux vaut un champ blanc que la première valeur d'un
+/// échantillon amputé, présentée comme celle de l'alerte dominante.
+pub(crate) fn dominant_tactic_and_target(conn: &Connection, id: i64) -> rusqlite::Result<(Option<String>, Option<String>, PrefillTargets)> {
     // (mitre, host, src_ip, pid) des alertes liées (y compris via un case fusionné dedans, cf case_get_json).
     let rows: Vec<(String, Option<String>, Option<String>, Option<String>)> = conn
         .prepare(
@@ -101,10 +112,12 @@ pub(crate) fn dominant_tactic_and_target(conn: &Connection, id: i64) -> (Option<
              WHERE ii.kind='alert' AND ii.ref LIKE 'alert:%' \
                AND (ii.incident_id=?1 OR ii.incident_id IN (SELECT id FROM incident WHERE merged_into=?1))",
         )
-        .and_then(|mut s| s.query_map(params![id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, Option<String>>(3)?))).map(|x| x.flatten().collect()))
-        .unwrap_or_default();
+        .and_then(|mut s| {
+            s.query_map(params![id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, Option<String>>(3)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+        })?;
     if rows.is_empty() {
-        return (None, None, PrefillTargets::default());
+        return Ok((None, None, PrefillTargets::default()));
     }
     use std::collections::HashMap;
     let mut tac_count: HashMap<&'static str, i64> = HashMap::new();
@@ -135,7 +148,7 @@ pub(crate) fn dominant_tactic_and_target(conn: &Connection, id: i64) -> (Option<
     use std::cmp::Reverse;
     let tactic = tac_count.into_iter().max_by_key(|&(name, c)| (c, Reverse(name))).map(|(t, _)| t.to_string());
     let technique = tech_count.into_iter().max_by_key(|(name, c)| (*c, Reverse(name.clone()))).map(|(t, _)| t);
-    (tactic, technique, targets)
+    Ok((tactic, technique, targets))
 }
 
 /// Choisit le RUNBOOK recommandé pour un incident — ADAPTIVITÉ NIVEAU-TECHNIQUE (Phase 2). Ordre de priorité
@@ -228,18 +241,56 @@ pub(crate) fn case_runbooks_json(conn: &Connection, id: i64) -> Option<Value> {
     let (tier, itype, commander): (Option<i64>, Option<String>, Option<String>) = conn
         .query_row("SELECT incident_tier,incident_type,commander FROM incident WHERE id=?1", params![id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
         .ok()?;
-    let (tactic, technique, targets) = dominant_tactic_and_target(conn, id);
-    let recommended = pick_runbook_id(conn, tactic.as_deref(), technique.as_deref()).and_then(|rb| runbook_meta_json(conn, rb));
+    // `P10.7-f` (rang 4, vague b) — CE CORPS PORTE DEUX LECTURES DE LIGNES, ET L'AVEU NOMME CELLE QUI A
+    // ÉCHOUÉ. C'est la forme des corps multi-listes du dépôt (`liste_bornee::corps_de_listes_illisibles`,
+    // écrite à la vague A pour `knowledge_list` et `datamodels_list`, elle-même transposée du `non_etablis`
+    // de `case_metrics_json` et du `non_lus` de `freshness.rs`/`fleet.rs`) : un `error` global dirait
+    // « quelque chose n'a pas été lu » sans dire QUOI, et les deux moitiés de ce corps ne se remplacent pas
+    // — l'une recommande, l'autre propose un choix manuel.
+    //
+    //   * `alertes_liees` : les alertes du dossier, d'où sortent la tactique et la technique DOMINANTES.
+    //     Le nom apparaît UNIQUEMENT dans l'aveu, parce que cette liste n'est pas servie — ce sont ses
+    //     DÉRIVÉS qui le sont — et c'est précisément pour cela qu'il faut la nommer : sans elle,
+    //     `dominant_tactic: null` + `recommended: null` se relit « ce dossier n'a aucune alerte liée »,
+    //     qui est le cas où le repli générique est LÉGITIME. Quand elle n'est pas lue, AUCUN runbook n'est
+    //     recommandé : `pick_runbook_id` n'est même pas appelé, parce que recommander sur un décompte
+    //     amputé, c'est dérouler la mauvaise procédure avec l'aplomb d'une procédure lue ;
+    //   * `available` : le catalogue des runbooks actifs, le choix MANUEL. Un runbook avalé s'y lit
+    //     « cette procédure n'existe pas », et l'analyste en écrit une à la main pendant l'incident.
+    //
+    // Les deux sont indépendantes : celle qui a été lue reste servie, comptée, et le lecteur sait laquelle
+    // manque. Le chemin nominal ressort BYTE-IDENTIQUE (ni `error` ni `non_lus`).
+    let mut non_lus: Vec<&'static str> = Vec::new();
+    let (tactic, technique, targets) = match dominant_tactic_and_target(conn, id) {
+        Ok(t) => t,
+        Err(_) => {
+            non_lus.push("alertes_liees");
+            (None, None, PrefillTargets::default())
+        }
+    };
+    let recommended = if non_lus.is_empty() {
+        pick_runbook_id(conn, tactic.as_deref(), technique.as_deref()).and_then(|rb| runbook_meta_json(conn, rb))
+    } else {
+        None
+    };
     let attached: Option<i64> = runbook_attache(conn, id); // `P7.19-i` — LA seule ligne admissible, pas la première venue.
-    let available: Vec<Value> = conn
+    let disponibles: rusqlite::Result<Vec<Value>> = conn
         .prepare("SELECT id,key,name,match_kind,match_key,description,managed FROM runbook WHERE active=1 ORDER BY (match_kind='*'), id")
-        .and_then(|mut s| s.query_map([], |r| Ok(json!({
-            "id": r.get::<_,i64>(0)?, "key": r.get::<_,String>(1)?, "name": r.get::<_,String>(2)?,
-            "match_kind": r.get::<_,String>(3)?, "match_key": r.get::<_,String>(4)?, "description": r.get::<_,String>(5)?,
-            "managed": r.get::<_,i64>(6)? })))
-            .map(|x| x.flatten().collect()))
-        .unwrap_or_default();
-    Some(json!({
+        .and_then(|mut s| {
+            s.query_map([], |r| Ok(json!({
+                "id": r.get::<_,i64>(0)?, "key": r.get::<_,String>(1)?, "name": r.get::<_,String>(2)?,
+                "match_kind": r.get::<_,String>(3)?, "match_key": r.get::<_,String>(4)?, "description": r.get::<_,String>(5)?,
+                "managed": r.get::<_,i64>(6)? })))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+        });
+    let available = match disponibles {
+        Ok(v) => v,
+        Err(_) => {
+            non_lus.push("available");
+            Vec::new()
+        }
+    };
+    let corps = json!({
         "incident_tier": tier, "incident_type": itype, "commander": commander,
         "dominant_tactic": tactic, "dominant_technique": technique,
         // `prefill_target` = host best-effort (rétrocompat UI Phase 1/2) ; #3 P3-A ajoute les cibles STRUCTURÉES
@@ -247,7 +298,8 @@ pub(crate) fn case_runbooks_json(conn: &Connection, id: i64) -> Option<Value> {
         "prefill_target": targets.host,
         "prefill_src_ip": targets.src_ip, "prefill_pid": targets.pid, "prefill_host": targets.host,
         "recommended": recommended, "attached_runbook_id": attached, "available": available,
-    }))
+    });
+    Some(crate::handlers::liste_bornee::corps_de_listes_illisibles(corps, &non_lus))
 }
 
 /// INSTANCIE (fige) les steps d'un runbook en `case_step` pour un incident + pré-remplit la cible PAR ACTION
@@ -466,7 +518,22 @@ pub(crate) async fn case_runbook_attach(State(st): State<AppState>, Extension(au
         None => return bad_req("runbook_id requis"),
     };
     crate::req_conn!(st, au, conn);
-    let (_, _, targets) = dominant_tactic_and_target(&conn, id);
+    // `P10.7-f` (rang 4, vague b) — ON N'ATTACHE PAS UN RUNBOOK SUR DES ALERTES QU'ON N'A PAS LUES. Ce
+    // geste FIGE les étapes dans `case_step` et il est idempotent-REFUSANT : une progression existante
+    // n'est jamais écrasée, donc des cibles pré-remplies à partir d'un échantillon amputé ne se corrigent
+    // pas par un second essai. C'est le raisonnement de la capture d'instantané à la vague A — produit
+    // figé, donc refus plutôt qu'aveu embarqué —, et `attach_runbook` REFUSE déjà, dans ce même esprit,
+    // quand les étapes du runbook ne se lisent pas. Le refus est nommé et n'écrit RIEN ; l'appelant
+    // réessaie.
+    let targets = match dominant_tactic_and_target(&conn, id) {
+        Ok((_, _, t)) => t,
+        Err(_) => {
+            return err_json(
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("attachement REFUSÉ : {}", crate::handlers::liste_bornee::CAUSE_LISTE_ILLISIBLE),
+            )
+        }
+    };
     match attach_runbook(&conn, id, runbook_id, &au.name, &targets) {
         Ok(n) => Json(json!({ "attached": n })).into_response(),
         Err(e) => bad_req(e),
@@ -742,17 +809,28 @@ pub(crate) fn clone_runbook(conn: &Connection, src_id: i64, new_name: Option<&st
 pub(crate) async fn runbooks_admin_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Response {
     if let Err(r) = require_admin(&au) { return r; }
     crate::req_conn!(st, au, conn);
-    let items: Vec<Value> = conn
+    // `P10.7-f` (rang 4, vague b) — LE CATALOGUE D'AUTHORING EST ENTIER OU AVOUÉ. Avant :
+    // `.map(|x| x.flatten().collect())` puis `.unwrap_or_default()`. Un runbook avalé se lit ici « cette
+    // procédure n'existe pas » — et c'est la page où l'on en CRÉE : on en écrit une seconde, qui portera
+    // la même `key` (`TEXT NOT NULL UNIQUE`) et sera refusée, ou un autre nom et concurrencera la
+    // première au moment du `match_kind`/`match_key`. Le compte d'étapes servi à côté (`steps`) est un
+    // sous-`SELECT` de la MÊME ligne : il disparaît avec elle. L'aveu est celui du dépôt
+    // (`liste_bornee::corps_de_liste_illisible` : `runbooks` présente et VIDE, `error` nomme la cause).
+    let lues: rusqlite::Result<Vec<Value>> = conn
         .prepare("SELECT id,key,name,match_kind,match_key,description,managed,active,created,\
                   (SELECT COUNT(*) FROM runbook_step WHERE runbook_id=runbook.id) FROM runbook ORDER BY managed DESC, id")
-        .and_then(|mut s| s.query_map([], |r| Ok(json!({
-            "id": r.get::<_,i64>(0)?, "key": r.get::<_,String>(1)?, "name": r.get::<_,String>(2)?,
-            "match_kind": r.get::<_,String>(3)?, "match_key": r.get::<_,String>(4)?, "description": r.get::<_,String>(5)?,
-            "managed": r.get::<_,i64>(6)?, "active": r.get::<_,i64>(7)? != 0, "created": r.get::<_,i64>(8)?,
-            "steps": r.get::<_,i64>(9)? })))
-            .map(|x| x.flatten().collect()))
-        .unwrap_or_default();
-    Json(json!({ "runbooks": items })).into_response()
+        .and_then(|mut s| {
+            s.query_map([], |r| Ok(json!({
+                "id": r.get::<_,i64>(0)?, "key": r.get::<_,String>(1)?, "name": r.get::<_,String>(2)?,
+                "match_kind": r.get::<_,String>(3)?, "match_key": r.get::<_,String>(4)?, "description": r.get::<_,String>(5)?,
+                "managed": r.get::<_,i64>(6)?, "active": r.get::<_,i64>(7)? != 0, "created": r.get::<_,i64>(8)?,
+                "steps": r.get::<_,i64>(9)? })))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+        });
+    match lues {
+        Ok(items) => Json(json!({ "runbooks": items })).into_response(),
+        Err(_) => Json(crate::handlers::liste_bornee::corps_de_liste_illisible(json!({}), "runbooks")).into_response(),
+    }
 }
 
 /// GET /api/runbooks/{id} — un runbook + ses étapes (pour édition). ADMIN.
@@ -760,16 +838,31 @@ pub(crate) async fn runbook_get(State(st): State<AppState>, Extension(au): Exten
     if let Err(r) = require_admin(&au) { return r; }
     crate::req_conn!(st, au, conn);
     let Some(mut meta) = runbook_admin_json(&conn, id) else { return not_found("runbook introuvable"); };
-    let steps: Vec<Value> = conn
+    // `P10.7-f` (rang 4, vague b) — UNE PROCÉDURE EST ENTIÈRE, OU ELLE DIT QU'ELLE N'A PAS ÉTÉ LUE. Avant :
+    // `.map(|x| x.flatten().collect())` puis `.unwrap_or_default()` — une étape dont la ligne ne se décode
+    // pas (`guidance` corrompue, `search_soql`/`action_kind` non textuels) disparaissait de `step_list`,
+    // et c'est la LISTE QU'ON SUIT : sauter une étape de confinement au milieu d'un incident se fait alors
+    // sans que rien ne l'écrive, et le formulaire d'édition RÉENREGISTRE la procédure amputée (l'update
+    // remplace toutes les étapes) — la troncature de lecture devient une troncature PERSISTÉE. La
+    // métadonnée du runbook vient d'une AUTRE lecture, déjà faite, et reste servie ; l'aveu est celui du
+    // dépôt (`liste_bornee::corps_de_liste_illisible` : `step_list` présente et VIDE, `error` nomme la
+    // cause), comme `dash_get` conserve les siennes à la vague A.
+    let lues: rusqlite::Result<Vec<Value>> = conn
         .prepare("SELECT id,ordinal,phase,title,guidance,step_kind,COALESCE(search_soql,''),COALESCE(action_kind,'') FROM runbook_step WHERE runbook_id=?1 ORDER BY ordinal,id")
-        .and_then(|mut s| s.query_map(params![id], |r| Ok(json!({
-            "id": r.get::<_,i64>(0)?, "ordinal": r.get::<_,i64>(1)?, "phase": r.get::<_,String>(2)?,
-            "title": r.get::<_,String>(3)?, "guidance": r.get::<_,String>(4)?, "step_kind": r.get::<_,String>(5)?,
-            "search_soql": r.get::<_,String>(6)?, "action_kind": r.get::<_,String>(7)? })))
-            .map(|x| x.flatten().collect()))
-        .unwrap_or_default();
-    if let Some(o) = meta.as_object_mut() { o.insert("step_list".to_string(), json!(steps)); }
-    Json(meta).into_response()
+        .and_then(|mut s| {
+            s.query_map(params![id], |r| Ok(json!({
+                "id": r.get::<_,i64>(0)?, "ordinal": r.get::<_,i64>(1)?, "phase": r.get::<_,String>(2)?,
+                "title": r.get::<_,String>(3)?, "guidance": r.get::<_,String>(4)?, "step_kind": r.get::<_,String>(5)?,
+                "search_soql": r.get::<_,String>(6)?, "action_kind": r.get::<_,String>(7)? })))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+        });
+    match lues {
+        Ok(steps) => {
+            if let Some(o) = meta.as_object_mut() { o.insert("step_list".to_string(), json!(steps)); }
+            Json(meta).into_response()
+        }
+        Err(_) => Json(crate::handlers::liste_bornee::corps_de_liste_illisible(meta, "step_list")).into_response(),
+    }
 }
 
 /// POST /api/runbooks — CRÉE un runbook custom (managed=0). ADMIN. Body : {name, match_kind, match_key?,

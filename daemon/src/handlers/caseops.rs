@@ -315,12 +315,19 @@ pub(crate) fn case_links_json(conn: &Connection, id: i64) -> Value {
              FROM case_link l JOIN incident i ON i.id = (CASE WHEN l.src_id=?1 THEN l.dst_id ELSE l.src_id END) \
              WHERE l.src_id=?1 OR l.dst_id=?1 ORDER BY l.created DESC LIMIT ?2",
         )
+        // `P10.7-f` (rang 4, vague b) — LE PARCOURS EST SOLDÉ EN BLOC. Avant, `.map(|x| x.flatten()
+        // .collect())` jetait la ligne dont le mappeur échoue (cache de schéma du pool périmé rendant
+        // « no such table » au PREMIER pas, `kind`/`note`/`title` corrompus) et rendait la SUITE : la
+        // branche `Ok` servait alors un corps rigoureusement identique à celui d'un dossier qui n'a pas
+        // ce lien, `served`/`total` compris — le dossier lié DISPARAISSAIT de la seule vue qui le montre.
+        // La branche d'échec, elle, existait DÉJÀ (`Lignes::Illisible` + `TotalBorne::sans_lecture()`) :
+        // solder en bloc y fait simplement tomber aussi l'erreur de LIGNE, sans changer une seule clé.
         .and_then(|mut stmt| {
             stmt.query_map(params![id, aveu::borne_avec_ligne_excedentaire(CASE_LINKS_WINDOW)], |r| {
                 Ok(json!({ "id": r.get::<_,i64>(0)?, "kind": r.get::<_,String>(1)?, "note": r.get::<_,String>(2)?,
                            "title": r.get::<_,String>(3)?, "status": r.get::<_,String>(4)? }))
-            })
-            .map(|x| x.flatten().collect())
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
         });
     match lues {
         Ok(v) => {
@@ -356,11 +363,17 @@ pub(crate) fn case_queues_json(conn: &Connection, now_i: i64) -> Value {
     use crate::handlers::liste_bornee as aveu;
     let lues: Result<Vec<Value>, rusqlite::Error> = conn
         .prepare(sql)
+        // `P10.7-f` (rang 4, vague b) — MÊME SOLDE EN BLOC QUE LES LIENS, et le même raisonnement : la
+        // branche d'échec servait déjà l'aveu, seule la ligne illisible passait dessous. Ici la
+        // conséquence est propre à l'agrégat : chaque ligne EST un assigné, donc une ligne avalée retire
+        // une personne — avec toute sa charge, ses retards et ses violations — du bandeau qui existe pour
+        // répartir le travail, et le total qui l'accompagne le confirme comme un fait.
         .and_then(|mut s| {
             s.query_map(params![now_i, aveu::borne_avec_ligne_excedentaire(CASE_QUEUES_WINDOW)], |r| {
                 Ok(json!({ "assignee": r.get::<_,String>(0)?, "open": r.get::<_,i64>(1)?, "overdue": r.get::<_,i64>(2)?,
                            "ack_pending": r.get::<_,i64>(3)?, "breach": r.get::<_,i64>(4)?, "waiting": r.get::<_,i64>(5)? }))
-            }).map(|x| x.flatten().collect())
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
         });
     match lues {
         Ok(v) => {

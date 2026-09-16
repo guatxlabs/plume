@@ -470,26 +470,37 @@ pub(crate) fn run_advanced_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> 
 
 pub(crate) async fn policies_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
     crate::req_conn!(st, au, conn);
-    let mut stmt = match conn.prepare("SELECT id,matchers,contact_points,continue_,enabled,COALESCE(created_by,'') FROM notification_policy ORDER BY id") {
-        Ok(s) => s,
-        Err(_) => return Json(json!({ "policies": [] })),
-    };
-    let rows: Vec<Value> = stmt
-        .query_map([], |r| {
-            let matchers: String = r.get(1)?;
-            let contacts: String = r.get(2)?;
-            Ok(json!({
-                "id": r.get::<_, i64>(0)?,
-                "matchers": serde_json::from_str::<Value>(&matchers).unwrap_or_else(|_| json!({})),
-                "contact_points": contacts.split(',').filter(|s| !s.is_empty()).filter_map(|s| s.parse::<i64>().ok()).collect::<Vec<_>>(),
-                "continue": r.get::<_, i64>(3)? != 0,
-                "enabled": r.get::<_, i64>(4)? != 0,
-                "created_by": r.get::<_, String>(5)?,
-            }))
-        })
-        .map(|x| x.flatten().collect())
-        .unwrap_or_default();
-    Json(json!({ "policies": rows }))
+    // `P10.7-f` (rang 4, vague b) — L'ARBRE DE ROUTAGE SERVI EST ENTIER OU AVOUÉ. Cette route est la VUE
+    // des politiques ; le CHARGEMENT interne qu'en fait le dispatch (`load_policies`) a été fermé au rang
+    // deux, et le laisser fermé pendant que la vue ment serait pire qu'avant : l'administrateur y relit
+    // exactement la table sur laquelle le produit route. Avant, DEUX silences se cumulaient — la
+    // préparation ratée rendait `{"policies": []}` en 200, et `.map(|x| x.flatten().collect())` jetait la
+    // ligne dont le mappeur échoue (`matchers` corrompu, colonne de migration non vue par la connexion qui
+    // sert). Une politique absente de cette liste se lit « cette alerte n'est routée nulle part » : le geste
+    // suivant est d'en créer une SECONDE, et l'astreinte reçoit alors deux fois ce qu'une seule règle
+    // adressait. Les deux voies rendent désormais le MÊME aveu, celui du dépôt
+    // (`liste_bornee::corps_de_liste_illisible` : `policies` présente et VIDE, `error` nomme la cause).
+    let lues: rusqlite::Result<Vec<Value>> = conn
+        .prepare("SELECT id,matchers,contact_points,continue_,enabled,COALESCE(created_by,'') FROM notification_policy ORDER BY id")
+        .and_then(|mut stmt| {
+            stmt.query_map([], |r| {
+                let matchers: String = r.get(1)?;
+                let contacts: String = r.get(2)?;
+                Ok(json!({
+                    "id": r.get::<_, i64>(0)?,
+                    "matchers": serde_json::from_str::<Value>(&matchers).unwrap_or_else(|_| json!({})),
+                    "contact_points": contacts.split(',').filter(|s| !s.is_empty()).filter_map(|s| s.parse::<i64>().ok()).collect::<Vec<_>>(),
+                    "continue": r.get::<_, i64>(3)? != 0,
+                    "enabled": r.get::<_, i64>(4)? != 0,
+                    "created_by": r.get::<_, String>(5)?,
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        });
+    match lues {
+        Ok(rows) => Json(json!({ "policies": rows })),
+        Err(_) => Json(crate::handlers::liste_bornee::corps_de_liste_illisible(json!({}), "policies")),
+    }
 }
 
 /// Parse + valide {matchers, contact_points[], continue, enabled} -> (matchers_json, contacts_csv, cont, enabled).
@@ -602,27 +613,34 @@ pub(crate) async fn policy_delete(State(st): State<AppState>, Extension(au): Ext
 pub(crate) async fn silences_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
     crate::req_conn!(st, au, conn);
     let now_ts = now();
-    let mut stmt = match conn.prepare("SELECT id,matchers,expires_at,COALESCE(reason,''),created,COALESCE(created_by,'') FROM silence ORDER BY id DESC") {
-        Ok(s) => s,
-        Err(_) => return Json(json!({ "silences": [] })),
-    };
-    let rows: Vec<Value> = stmt
-        .query_map([], |r| {
-            let matchers: String = r.get(1)?;
-            let expires: i64 = r.get(2)?;
-            Ok(json!({
-                "id": r.get::<_, i64>(0)?,
-                "matchers": serde_json::from_str::<Value>(&matchers).unwrap_or_else(|_| json!({})),
-                "expires_at": expires,
-                "active": expires > now_ts,
-                "reason": r.get::<_, String>(3)?,
-                "created": r.get::<_, i64>(4)?,
-                "created_by": r.get::<_, String>(5)?,
-            }))
-        })
-        .map(|x| x.flatten().collect())
-        .unwrap_or_default();
-    Json(json!({ "silences": rows }))
+    // `P10.7-f` (rang 4, vague b) — LA LISTE DES SILENCES SERVIE EST ENTIÈRE OU AVOUÉE. Même geste et même
+    // cumul de silences que les politiques ci-dessus (préparation ratée rendue `{"silences": []}` en 200,
+    // plus la ligne avalée). La conséquence propre à cette liste : un silence absent se lit « cette alerte
+    // n'est PAS silencée », et c'est la lecture sur laquelle on décide de ne pas enquêter — ou d'en poser
+    // un second, qui prolongera d'autant l'étouffement du signal. Un silence est temporisé PAR
+    // CONSTRUCTION (plafond de TTL) ; un silence invisible, lui, ne se lève pas.
+    let lues: rusqlite::Result<Vec<Value>> = conn
+        .prepare("SELECT id,matchers,expires_at,COALESCE(reason,''),created,COALESCE(created_by,'') FROM silence ORDER BY id DESC")
+        .and_then(|mut stmt| {
+            stmt.query_map([], |r| {
+                let matchers: String = r.get(1)?;
+                let expires: i64 = r.get(2)?;
+                Ok(json!({
+                    "id": r.get::<_, i64>(0)?,
+                    "matchers": serde_json::from_str::<Value>(&matchers).unwrap_or_else(|_| json!({})),
+                    "expires_at": expires,
+                    "active": expires > now_ts,
+                    "reason": r.get::<_, String>(3)?,
+                    "created": r.get::<_, i64>(4)?,
+                    "created_by": r.get::<_, String>(5)?,
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        });
+    match lues {
+        Ok(rows) => Json(json!({ "silences": rows })),
+        Err(_) => Json(crate::handlers::liste_bornee::corps_de_liste_illisible(json!({}), "silences")),
+    }
 }
 
 pub(crate) async fn silence_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {

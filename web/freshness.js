@@ -337,6 +337,74 @@ function freshState(f) {
   const e = etatDeSource(f.status);
   return FSTATES.includes(e) ? e : 'calme';
 }
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// `P10.20-g` (2026-09-16) — UNE ENTRÉE DE FAMILLE N'EST PAS UNE SOURCE, ET LA COMPTER COMME TELLE
+// REND UN INVENTAIRE FAUX DANS LES DEUX SENS.
+//
+// CE QUE LE DÉMON SERT MAINTENANT. Quand l'énoncé qui LISTE une famille entière de flux ne démarre
+// pas (cache de schéma périmé, table hors d'atteinte), `daemon/src/handlers/freshness.rs` ne fait
+// plus disparaître la famille : il POSE dans `feeds` une entrée qui porte le nom du GROUPE (« flux
+// d'événements », « flux d'instantanés »), `non_lu: true`, sa cause, et un champ de plus —
+// `famille_non_lue` — dont le commentaire du démon dit l'objet en toutes lettres : « pour que la
+// console ne la compte pas comme une source ». C'est ce champ que ce module lit.
+//
+// POURQUOI UN COMPTE À PART ET NON UNE PART DE PLUS. La rangée de tête est une RÉPARTITION : un
+// total et des parts qui se le partagent (`P11.16-b`). Une famille non lue n'est ni un terme de ce
+// partage — elle n'est pas un flux — ni un recoupement de la même population — elle recouvre des flux
+// dont on ne connaît NI le nombre NI les noms. La glisser dans la rangée ferait « 13 flux observés »
+// là où douze ont été lus et où le treizième est l'aveu qu'on ignore combien il en manque : le total
+// cesserait d'être un compte de flux, ce que la clé `P11.21-j` vient précisément de fermer.
+//
+// ELLE SORT DONC DE LA POPULATION DES FLUX, PARTOUT : de la rangée, des groupes par état, du compte
+// « hors événement », et du nombre de flux SERVIS qui décide entre un refus et une lecture partielle.
+// Elle est rendue dans un bloc à elle, qui porte le MOT « groupe » — parce que la pastille de
+// `non_lu` est déjà celle de `muet` (il n'en reste aucune de libre) et que c'est donc la phrase qui
+// doit porter l'écart, comme la légende le fait déjà pour le sixième mot.
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+const estUneFamilleNonLue = (f) => !!(f && f.famille_non_lue);
+const fluxDeSources = (feeds) => (Array.isArray(feeds) ? feeds : []).filter(f => !estUneFamilleNonLue(f));
+const famillesNonLues = (feeds) => (Array.isArray(feeds) ? feeds : []).filter(estUneFamilleNonLue);
+// LE MOT QUI DIT QU'UNE LIGNE N'EST PAS UNE SOURCE. Il est posé sur la ligne elle-même, à côté du nom
+// du groupe : un lecteur qui parcourt la liste sans remonter au bloc de tête doit le voir là.
+function motDuGroupeDeSources() {
+  return LANG === 'en' ? 'GROUP of sources — not a source' : 'GROUPE de sources — pas une source';
+}
+// LE COMPTE À PART, écrit comme un compte et non comme une phrase de plus : il dit COMBIEN de groupes
+// n'ont pas été lus, et que ce nombre ne se retrouve dans aucun autre de cette vue.
+function motDesFamillesNonLues(n) {
+  return LANG === 'en'
+    ? n + ' whole feed FAMILY(IES) NOT READ — a GROUP of sources, never counted among the feeds below: neither their number nor their names are known, so nothing here says how many are missing.'
+    : n + " FAMILLE(S) ENTIÈRE(S) DE FLUX NON LUE(S) — un GROUPE de sources, jamais compté parmi les flux ci-dessous : ni leur nombre ni leurs noms ne sont connus, donc rien ici ne dit combien il en manque.";
+}
+// `P10.20-g` — LA SOUS-LISTE DES SÉRIES QUI N'A PAS ÉTÉ LUE. La cause SERVIE est collée telle quelle ;
+// ce qu'ajoute la console est ce que le démon ne peut pas savoir : que cette ligne-ci se déplie, et que
+// ce qui manque sous elle n'est pas une absence de séries.
+function motDesSeriesNonLues(cause) {
+  return LANG === 'en'
+    ? 'Metric series NOT READ: the daemon declined and names the cause — "' + cause
+      + '" This is NOT “no series”: the sub-list was never read, so nothing here establishes how many series this feed carries.'
+    : "Séries métriques NON LUES : le démon a refusé et en nomme la cause — « " + cause
+      + " » Ce n'est PAS « aucune série » : la sous-liste n'a jamais été lue, donc rien ici n'établit combien de séries ce flux porte.";
+}
+// `P10.20-g` — ET LA MARQUE SUR L'EN-TÊTE, parce que le corps où vit la phrase ci-dessus est REPLIÉ
+// par défaut (`S.freshCollapsed` n'a pas `metric-open` au premier chargement) : un aveu qu'il faut
+// déplier pour voir n'est pas un aveu. La marque est COURTE — elle dit l'état et où trouver la cause,
+// elle ne la recopie pas : la cause vit à UN seul endroit, dans le corps.
+function motDesSeriesNonLuesEnTete() {
+  return LANG === 'en' ? 'SERIES NOT READ — unfold for the cause' : 'SÉRIES NON LUES — déplier pour la cause';
+}
+// `P10.20-g` — LES COMPTES QUI N'ONT PAS ÉTÉ COMPTÉS. La liste de ce qui manque et les causes SERVIES
+// sont dérivées de la charge utile ; les causes sont DÉDOUBLONNÉES parce que le démon les fait tomber
+// ensemble aujourd'hui (une seule lecture rend les deux nombres) — mais le pluriel est rendu dès qu'il
+// y en a deux distinctes, sans que ce module ait à parier sur l'une ou l'autre forme.
+function motDesComptesNonLus(comptes) {
+  const quoi = comptes.map(c => c.quoi).join(', ');
+  const causes = [...new Set(comptes.map(c => c.cause))].join(' · ');
+  return LANG === 'en'
+    ? 'COUNTS NOT READ (' + quoi + '): no number is served rather than a zero — zero would be a measurement, and there was none. Cause — "' + causes + '"'
+    : 'COMPTES NON LUS (' + quoi + ') : aucun nombre n\'est servi plutôt qu\'un zéro — zéro serait une mesure, et il n\'y en a pas eu. Cause — « ' + causes + ' »';
+}
 const pastilleDEtat = (etat) => (ETAT_DE_SOURCE[etat] ? ETAT_DE_SOURCE[etat].dot : 'calme');
 const couleurDEtat = (etat) => (ETAT_DE_SOURCE[etat] ? ETAT_DE_SOURCE[etat].txt : 'bad');
 // libellé d'en-tête de groupe quand on regroupe PAR ÉTAT
@@ -370,9 +438,12 @@ function cadenceTitle(f) {
 // exactement un état, et c'est là toute la rangée de tête. `alertes` compte sur la MÊME population sans
 // la partager : il ne paraît plus dans cette rangée, mais dans la zone qui porte les nombres d'alertes
 // (`P11.18-d`) — sa place le dit, aucune phrase n'a plus à le dire.
+// `P10.20-g` — LE FILTRE EST POSÉ ICI, DANS LA FONCTION MÊME, ET NON CHEZ SES APPELANTS : c'est une
+// propriété de l'AGRÉGATION (« une entrée de famille n'est pas un flux »), pas une précaution que
+// chaque site aurait à répéter — et cette fonction est exportée, donc appelée depuis ailleurs.
 function countStates(feeds) {
   const scount = { non_lu: 0, muet: 0, en_retard: 0, attente: 0, frais: 0, calme: 0, alertes: 0 };
-  feeds.forEach(f => { scount[freshState(f)] += 1; if (Number(f.active_alerts) > 0) scount.alertes += 1; });
+  fluxDeSources(feeds).forEach(f => { scount[freshState(f)] += 1; if (Number(f.active_alerts) > 0) scount.alertes += 1; });
   return scount;
 }
 // LE LIBELLÉ COURT D'UN ÉTAT vient du vocabulaire canonique (`sources.js`) : c'est le MOT MÊME que la
@@ -542,10 +613,15 @@ function barreDOrdre(ordre) {
 // `check_a_refusal_is_not_rendered_as_an_absence.py` dérive ses lecteurs des fonctions du MÊME module
 // dont le corps PROPRE porte `.error`. Cette fonction en est une ; interposer une indirection de plus
 // l'aveuglerait, et la factorisation vers le point commun est interdite par la même forme.
+// `P10.20-g` — CE QUI EST COMPTÉ ICI, CE SONT LES FLUX SERVIS, ET UNE ENTRÉE DE FAMILLE N'EN EST PAS
+// UN. Sans ce filtre, un relevé où DEUX familles n'ont pas été lues et où aucun flux n'a pu l'être se
+// lirait « le démon a servi des flux ET en nomme la cause » — la phrase du relevé PARTIEL, sur un
+// relevé dont pas un seul flux n'est sorti. Avec lui, ce cas retombe sur la phrase du relevé NON LU,
+// qui est vraie, et la cause de racine y NOMME les familles manquantes (le démon note chaque parcours
+// non commencé dans `CAUSE_FRAICHEUR_INCOMPLETE`).
 function etatDuReleveServi(d) {
   const cause = (d && d.error != null) ? String(d.error).trim() : '';
-  const flux = (d && d.feeds) || null;
-  const servis = (flux && flux.length) ? flux.length : 0;
+  const servis = fluxDeSources(d && d.feeds).length;
   return { cause, servis, refus: !!cause && servis === 0, incomplet: !!cause && servis > 0 };
 }
 // La phrase du RELEVÉ NON LU. Bilingue par construction ; la cause du démon est collée telle quelle —
@@ -620,8 +696,33 @@ function bandeauDeSanteDuPipeline(d, motDeRepos) {
   return motDeRepos;
 }
 
+// `P10.20-g` — LE BLOC DES FAMILLES NON LUES, ÉCRIT UNE FOIS POUR LES DEUX VUES, comme le bandeau de
+// santé juste au-dessus. Il porte le COMPTE à part, puis une ligne par groupe : le nom du groupe, le
+// MOT qui dit que ce n'est pas une source, la cause SERVIE collée telle quelle, et le mot « non lu »
+// là où les autres lignes portent un âge. AUCUN nombre n'y est fabriqué — ni âge, ni volume, ni
+// cloche : rien de tout cela n'a été observé. Vide — donc byte-neutre — quand aucune famille ne manque.
+function blocDesFamillesNonLues(familles) {
+  if (!familles.length) return '';
+  const mot = LANG === 'en' ? 'not read' : 'non lu';
+  const survol = LANG === 'en'
+    ? 'The statement that LISTS this whole family of feeds did not start. This is not “no feed of this kind is reporting”: the list served carries NONE of them.'
+    : "L'énoncé qui LISTE cette famille entière de flux n'a pas démarré. Ce n'est pas « aucun flux de ce type ne remonte » : la liste servie n'en porte AUCUN.";
+  const lignes = familles.map(f => {
+    const cause = String(f.cause != null ? f.cause : '').trim();
+    return `<div class="kv" title="${esc(survol)}"><span><span class="fdot ${pastilleDEtat('non_lu')}"></span>${esc(f.name)}` +
+      ` <span class="muted fkind">${esc(motDuGroupeDeSources())}</span>` +
+      (cause ? ` <span class="muted fkind">${esc('« ' + cause + ' »')}</span>` : '') +
+      `</span><b class="${couleurDEtat('non_lu')}">${esc(mot)}</b></div>`;
+  }).join('');
+  return `<div class="bad" style="font-weight:600;margin-bottom:8px">${ic('warn')} ${esc(motDesFamillesNonLues(familles.length))}</div>${lignes}`;
+}
+
 function renderFreshnessDetail(d) {
-  const feeds = (d.feeds || []).slice();
+  // `P10.20-g` — LA POPULATION DES FLUX EST SÉPARÉE DE CELLE DES AVEUX DE FAMILLE DÈS L'ENTRÉE : tout
+  // ce qui suit (tri, groupes par état, rangée de tête, compte des flux d'un autre genre) porte sur les
+  // SOURCES, et les familles sont rendues dans leur propre bloc.
+  const feeds = fluxDeSources(d.feeds).slice();
+  const familles = famillesNonLues(d.feeds);
   // P11.16-a — COMBIEN de flux de cette liste ne sont PAS des sources d'événements : l'inventaire, qui
   // nomme les producteurs, ne porte que celles-là (voir la légende, plus bas). Dérivé des flux rendus.
   const horsEvenement = feeds.filter(f => f && f.kind !== 'event').length;
@@ -749,15 +850,46 @@ function renderFreshnessDetail(d) {
         `</span><b class="${couleurDEtat(st)}">${esc(mot)}</b></div>`;
     }
     if (f.kind === 'metric') {
-      const sList = f.series || [];
+      // `P10.20-g` (2026-09-16) — « METTRE À JOUR LE DAEMON » ÉTAIT UNE CAUSE FAUSSE, ET ELLE ACCUSAIT
+      // LA SEULE CHOSE QUI N'AVAIT RIEN À SE REPROCHER.
+      //
+      // CE QUI ÉTAIT FAUX. `const sList = f.series || []` fondait TROIS situations dans une seule
+      // branche vide : une version du démon qui ne publie pas ce champ, une fenêtre sans aucune série,
+      // et — depuis cette clé — `series: null` avec `series_non_lues` à côté, c'est-à-dire un énoncé
+      // qui n'a PAS DÉMARRÉ. La phrase servie dans les trois cas envoyait l'exploitant mettre à jour un
+      // démon parfaitement à jour, pendant que la vraie cause (« no such table », base verrouillée)
+      // était SERVIE, dans le corps, et jetée ici. Une cause fausse coûte plus qu'un silence : elle
+      // ferme l'enquête ailleurs.
+      //
+      // LES QUATRE CAS SONT MAINTENANT DISTINCTS, et chacun dit ce qu'il sait : la LECTURE non faite
+      // (avec la cause du démon), l'absence ÉTABLIE de série, la liste servie, et — seul cas où la
+      // phrase d'origine était vraie — un démon qui ne publie NI la liste NI la cause.
+      const causeDesSeries = String(f.series_non_lues != null ? f.series_non_lues : '').trim();
+      const sList = Array.isArray(f.series) ? f.series : null;
       const open = S.freshCollapsed.has('metric-open');
-      const body = sList.length
-        ? `<div class="fmetricbody">${sList.map(seriesRow).join('')}</div>`
+      const corpsDesSeries = causeDesSeries
+        ? `<div class="fmetricbody bad" style="padding:4px 0 0 18px">${esc(motDesSeriesNonLues(causeDesSeries))}</div>`
+        : sList && sList.length ? `<div class="fmetricbody">${sList.map(seriesRow).join('')}</div>`
+        : sList ? `<div class="fmetricbody muted" style="padding:4px 0 0 18px">${esc(LANG === 'en' ? 'no metric series over this window' : 'aucune série métrique sur cette fenêtre')}</div>`
         : `<div class="fmetricbody muted" style="padding:4px 0 0 18px">détail des séries indisponible (mettre à jour le daemon)</div>`;
+      // `P10.20-g` — LES DEUX COMPTES QUI NE SONT PAS SERVIS LE DISENT SUR LA LIGNE. Le nom du flux
+      // porte le nombre de séries QUAND il a été compté (« métriques · 12 séries ») ; sans lui, le nom
+      // se réduit à « métriques » et rien ne disait pourquoi — un lecteur y voit une version antérieure
+      // ou un flux sans série. Le volume sur 24 h, lui, ne paraît que par le rythme observé (au survol
+      // de la cadence), qui disparaissait en silence. Les deux sont lus SÉPARÉMENT, chacun sur sa
+      // propre clé : le démon les fait tomber ensemble aujourd'hui, ce module ne le suppose pas.
+      const comptesNonLus = [
+        { quoi: LANG === 'en' ? 'the number of series' : 'le nombre de séries', cause: String(f.nb_series_non_lu != null ? f.nb_series_non_lu : '').trim() },
+        { quoi: LANG === 'en' ? 'the 24 h volume' : 'le volume sur 24 h', cause: String(f.n_24h_non_lu != null ? f.n_24h_non_lu : '').trim() },
+      ].filter(c => c.cause);
+      const aveuDesComptes = comptesNonLus.length
+        ? ` <span class="muted fkind">${esc(motDesComptesNonLus(comptesNonLus))}</span>` : '';
+      const marqueDesSeries = causeDesSeries
+        ? ` <span class="fkind ${couleurDEtat('non_lu')}">${esc(motDesSeriesNonLuesEnTete())}</span>` : '';
       const hd = `<div class="kv fmetrichd" role="button" tabindex="0" aria-expanded="${open ? 'true' : 'false'}" title="Plier / déplier les séries métriques">` +
-        `<span><span class="fchev">${ic('chevright')}</span><span class="fdot ${pastilleDEtat(st)}"></span>${esc(f.name)} <span class="muted fkind" title="${esc(cadenceTitle(f))}">${esc(cadenceLabel(f))}</span></span>` +
+        `<span><span class="fchev">${ic('chevright')}</span><span class="fdot ${pastilleDEtat(st)}"></span>${esc(f.name)} <span class="muted fkind" title="${esc(cadenceTitle(f))}">${esc(cadenceLabel(f))}</span>${marqueDesSeries}${aveuDesComptes}</span>` +
         `<b class="${couleurDEtat(st)}">il y a ${age(f.age_s)}</b></div>`;
-      return `<div class="fmetric${open ? '' : ' collapsed'}">${hd}${body}</div>`;
+      return `<div class="fmetric${open ? '' : ' collapsed'}">${hd}${corpsDesSeries}</div>`;
     }
     const porteDesAlertes = Number(f.active_alerts) > 0;
     const badge = porteDesAlertes ? ` <span class="fhot" role="button" tabindex="0" data-src="${esc(f.name)}" title="${f.active_alerts} alerte(s) non acquittée(s) imputée(s) à ${esc(f.name)}, toutes dates (cases comprises) · cliquer pour les ouvrir dans Alertes">${ic('bell')} ${f.active_alerts}</span>` : '';
@@ -777,7 +909,10 @@ function renderFreshnessDetail(d) {
   const cats = [...groups.entries()].sort((a, c) => rangDEtatDeSource(a[0]) - rangDEtatDeSource(c[0]));
   const summaryLine = `<div class="capsum">${summaryPills(feeds, etatServi.incomplet)}${renvoi('#sources')}</div>`;
   const ordre = ordreDansUnEtat();
-  let html = aveuDeRacine + head0 + summaryLine + barreDOrdre(ordre);
+  // `P10.20-g` — LE BLOC DES FAMILLES PRÉCÈDE LA RANGÉE QU'IL QUALIFIE : posé après, il serait lu
+  // comme une remarque sur une répartition déjà admise ; posé ici, il dit AVANT le total que ce total
+  // ne porte pas sur tout. Même raison que l'aveu de racine, un cran plus bas (`P11.21-i`).
+  let html = aveuDeRacine + head0 + blocDesFamillesNonLues(familles) + summaryLine + barreDOrdre(ordre);
   for (const [cat, arr] of cats) {
     trierDansUnEtat(arr, ordre);
     const collapsed = S.freshCollapsed.has('cat:' + cat);
@@ -969,8 +1104,12 @@ async function renderFreshnessPulse() {
   const head = bandeauDeSanteDuPipeline(d, '');
   // `P11.21-j` — L'AVEU PRÉCÈDE LE COMPTE, ET LE COMPTE LE PORTE AUSSI : cette phrase-ci décrivait une
   // propriété que l'écran n'avait pas. Les pastilles du pulse comptent les flux LUS, et elles le DISENT.
-  b.innerHTML = bandeauDeReleveIncomplet(etat) + head +
-    `<div class="capsum">${summaryPills(feeds, etat.incomplet)}${renvoi('#freshness-view')}</div>`;
+  // `P10.20-g` — LE PULSE PORTE LE MÊME BLOC DE FAMILLES QUE LE DÉTAIL, ET POUR LA MÊME RAISON QUE LE
+  // BANDEAU : c'est la surface la plus souvent tirée de la console (charge VIVE de la vue d'arrivée),
+  // donc celle où une famille entière manquante serait le plus souvent ignorée. Les pastilles y comptent
+  // les SOURCES : une entrée de famille n'en est pas une, et elle est comptée à part, juste au-dessus.
+  b.innerHTML = bandeauDeReleveIncomplet(etat) + head + blocDesFamillesNonLues(famillesNonLues(feeds)) +
+    `<div class="capsum">${summaryPills(fluxDeSources(feeds), etat.incomplet)}${renvoi('#freshness-view')}</div>`;
 }
 
 // exports du module Fraîcheur/Intégrations (importés par app.js : refresh() + bouton #fresh-refresh).

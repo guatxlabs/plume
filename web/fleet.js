@@ -24,6 +24,13 @@ const FLEET_LBL  = { fresh: 'frais', stale: 'en retard', silent: 'muet' };
 
 const FLEET_RANK = { silent: 0, stale: 1, fresh: 2 };                    // tri : problèmes d'abord
 
+// `P10.20-g` — LE MOTIF QUI SÉPARE LES DEUX AVEUX QUE `/api/fleet` ÉCRIT DANS `error`. Il est posé AU
+// PUITS, en littéral, pour que le harnais le LISE ici et le confronte aux deux constantes du démon
+// (`FLOTTE_NON_LUE` et la phrase du partiel, daemon/src/handlers/fleet.rs) : il doit reconnaître
+// l'aveu PARTIEL et REFUSER le refus ENTIER. Ancré sur l'OUVERTURE de la phrase, parce que c'est le
+// seul morceau que le démon ne compose pas (la liste des lectures manquantes, elle, varie).
+const OUVERTURE_DE_LA_FLOTTE_PARTIELLEMENT_NON_LUE = /^flotte partiellement NON LUE\b/;
+
 // L'ATTENTE, RENDUE. Les jetons viennent du démon (`VerdictDHote::jeton`) et ne sont pas réécrits ici —
 // la console pivote dessus, elle ne recalcule pas le verdict (leçon de `P11.3-d`).
 const ATT_LBL = { signal_attendu: 'signal attendu', silence_attendu: 'silence attendu', retire: 'retirée du parc', non_declare: 'personne n\'a rien dit' };
@@ -99,8 +106,22 @@ function renderFleetInventory(wrap, d) {
   // DIRECTION DE L'ERREUR : le refus l'emporte sur ce qui serait servi à côté. Le corps du démon ne porte
   // aujourd'hui aucun hôte avec sa cause ; s'il en portait, ce serait un résultat INCOMPLET, et le rendre
   // en table le présenterait comme complet.
+  //
+  // `P10.20-g` (2026-09-16) — TOUT `error` N'EST PAS UN REFUS D'INVENTAIRE, ET LE CONFONDRE EFFACE UN
+  // PARC COMPLET. Le démon écrit DEUX phrases distinctes dans ce champ (daemon/src/handlers/fleet.rs) :
+  // `FLOTTE_NON_LUE` — la lecture des hôtes elle-même n'a pas abouti, la liste servie n'est pas un
+  // inventaire — et « flotte partiellement NON LUE : … », où les hôtes ONT été lus et sont complets,
+  // seul leur ENRICHISSEMENT (enrôlement, déclarations) manque. La branche ci-dessus prenait les deux :
+  // un enrôlement illisible faisait DISPARAÎTRE un inventaire juste, c'est-à-dire qu'elle rendait MOINS
+  // que ce qui est su — le défaut inverse de celui qu'elle ferme, et il était là depuis le lot 100.
+  // LE DISCRIMINANT EST TEXTUEL, ET C'EST ÉCRIT PLUTÔT QUE TU : ce corps ne porte ni code ni champ pour
+  // cette distinction (l'aveu partiel n'existe que dans la phrase). Le motif est donc posé AU PUITS, et
+  // le harnais (témoin 99) le confronte aux DEUX phrases de `fleet.rs` — il doit reconnaître l'aveu
+  // PARTIEL et refuser le refus ENTIER. Une reformulation côté démon fait REFUSER DE CONCLURE ce témoin ;
+  // elle ne fait jamais taire la console, qui retombe alors sur le refus entier, le sens sûr.
   const refusServi = (d && d.error != null) ? String(d.error).trim() : '';
-  if (refusServi) {
+  const enrichissementNonLu = (refusServi && OUVERTURE_DE_LA_FLOTTE_PARTIELLEMENT_NON_LUE.test(refusServi)) ? refusServi : '';
+  if (refusServi && !enrichissementNonLu) {
     wrap.replaceChildren();
     const bad = document.createElement('div');
     bad.className = 'bad';
@@ -114,12 +135,52 @@ function renderFleetInventory(wrap, d) {
   const hosts = (d.hosts || []).slice();
   const srvNow = d.now || Math.floor(Date.now() / 1000);
   wrap.replaceChildren();
+  // L'AVEU DE L'ENRICHISSEMENT PRÉCÈDE L'INVENTAIRE QU'IL QUALIFIE : posé plus bas, il serait rencontré
+  // APRÈS les lignes par un lecteur qui va de haut en bas. Aveu à DEUX NŒUDS (grammaire de `system.js`) :
+  // la phrase est un nœud texte ENTIER — la seule forme que le lexique sait traduire —, la cause SERVIE
+  // est collée dans un SECOND nœud, telle quelle. Elle nomme déjà ce qui n'a pas été lu et dit que le
+  // repli est un SENS SÛR ; ce module n'ajoute que ce que le démon ne peut pas savoir : quelles colonnes
+  // de CETTE vue en dépendent.
+  if (enrichissementNonLu) {
+    const aveu = document.createElement('div');
+    aveu.className = 'bad';
+    aveu.style.cssText = 'margin:0 0 9px;font-size:12px';
+    const dit = document.createElement('span');
+    dit.textContent = "Enrichissement de la flotte NON LU : les hôtes ci-dessous ONT été lus et la liste est complète — ce qui manque est ce qu'on sait D'EUX. Les colonnes « Enrôlement » et « Attendu de l'hôte » y portent alors un repli, pas une observation. Le démon en nomme la cause —";
+    aveu.append(dit, ' « ' + enrichissementNonLu + ' »');
+    wrap.appendChild(aveu);
+  }
+  // `P10.20-g` (2026-09-16) — TROIS VALEURS SUR `pipeline_fresh`, ET `null` EST LA TROISIÈME.
+  //
+  // CE QUI ÉTAIT FAUX, MESURÉ. Le test était `d.pipeline_fresh ? 'muted' : 'bad'`, et `null` vaut FAUX
+  // en JavaScript : « Ingestion en panne — aucune donnée reçue récemment » se peignait, mot pour mot,
+  // sur une ligne que PERSONNE n'avait lue. C'est l'affirmation la plus grave que cette vue sache
+  // former — une panne d'ingestion CONSTATÉE sur tout le parc —, et elle sortait précisément quand rien
+  // n'avait été observé. Le corps de refus, lui, ne portait même pas le champ : `undefined` y valait
+  // faux de la même façon (c'est ce que `P10.7-d` a fermé par la branche du refus, au-dessus).
+  //
+  // LA FORME EST CELLE DE `web/freshness.js` (`bandeauDeSanteDuPipeline`, `P10.20-b`) : chacune des
+  // trois valeurs est testée EXPLICITEMENT, aucune ne se fond dans une autre par sa seule fausseté. La
+  // CAUSE vient de `pipeline_fresh_non_lu`, la clé que le démon pose À CÔTÉ du `null` qu'elle explique
+  // — jamais de `error`, qui est lu ici comme un refus d'inventaire.
+  const santeDuPipelineNonLue = String(d.pipeline_fresh_non_lu != null ? d.pipeline_fresh_non_lu : '').trim();
   const banner = document.createElement('div');
-  banner.className = d.pipeline_fresh ? 'muted' : 'bad';
+  banner.className = d.pipeline_fresh === true ? 'muted' : 'bad';
   banner.style.cssText = 'margin:0 0 9px;font-size:12px';
-  banner.textContent = d.pipeline_fresh
-    ? "Une ligne par hôte/machine (endpoint où un agent pousse) — statut de l'agent, dernier signal, enrôlement, et ce qu'on ATTEND de la machine. Un hôte « muet » n'est un incident que si personne n'a déclaré le contraire : une machine de test ou décommissionnée se déclare, et cesse alors d'alerter. Affichage seul — aucune commande d'hôte depuis la console (version/OS de l'agent non transmis par le collecteur, non affichés). → Pour les sources par type de donnée, voir Inventaire des sources."
-    : 'Ingestion en panne — aucune donnée reçue récemment (tous les hôtes apparaîtront « en retard » / « muets »).';
+  if (d.pipeline_fresh === true) {
+    banner.textContent = "Une ligne par hôte/machine (endpoint où un agent pousse) — statut de l'agent, dernier signal, enrôlement, et ce qu'on ATTEND de la machine. Un hôte « muet » n'est un incident que si personne n'a déclaré le contraire : une machine de test ou décommissionnée se déclare, et cesse alors d'alerter. Affichage seul — aucune commande d'hôte depuis la console (version/OS de l'agent non transmis par le collecteur, non affichés). → Pour les sources par type de donnée, voir Inventaire des sources.";
+  } else if (d.pipeline_fresh === false) {
+    banner.textContent = 'Ingestion en panne — aucune donnée reçue récemment (tous les hôtes apparaîtront « en retard » / « muets »).';
+  } else if (santeDuPipelineNonLue) {
+    // Aveu à DEUX NŒUDS, comme celui de l'enrichissement juste au-dessus.
+    const dit = document.createElement('span');
+    dit.textContent = "Santé du pipeline NON LUE : le démon ne l'a pas lue et en nomme la cause —";
+    banner.append(dit, ' « ' + santeDuPipelineNonLue + ' »');
+  } else {
+    // Le `null` sans sa clé de cause : un démon antérieur à `P10.20-g`. On ne fabrique PAS la phrase
+    // qu'il n'a pas servie, et on ne retombe surtout pas sur « en panne » — c'est le défaut qu'on ferme.
+    banner.textContent = "Santé du pipeline NON LUE : le démon ne l'a pas lue, et cette réponse n'en nomme pas la cause. Ce n'est PAS « ingestion en panne » — rien n'a été observé, ni panne ni bonne santé ; l'inventaire d'hôtes ci-dessous, lui, n'est pas concerné par cette lecture.";
+  }
   wrap.appendChild(banner);
   if (!hosts.length) { wrap.appendChild(muted("aucun hôte distant n'a encore poussé de données — hôte local uniquement.")); return; }
   // EN-TÊTE : les parts viennent du DÉMON (`repartition`, calculée sur le PARC ENTIER) et elles

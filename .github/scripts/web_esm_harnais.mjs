@@ -11283,6 +11283,18 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
 // (89) `P10.7-g` (lot 100) — UN ENRÔLEMENT NON LU N'EST PAS « NON ENRÔLÉ ». Le démon sert `enrolled: null` quand
 //      il n'a pas pu lire les jetons d'agent, et la cause sous `error` ; la colonne l'écrit « enrôlement non
 //      lu » et le bandeau porte la cause. Un `enrolled: false` reste « non enrôlé ».
+//
+//      RÉVISÉ LE 2026-09-16 (`P10.20-g`) — SA JAMBE (a) CODIFIAIT UN DÉFAUT, ET IL FAUT LE DIRE EN
+//      TOUTES LETTRES. Elle exigeait qu'AUCUNE table ne soit peinte sous cet aveu-là, au nom de
+//      `P10.7-d` (« la surface rend MOINS »). Or l'aveu jugé ici n'est PAS celui de `P10.7-d` : la
+//      phrase du démon dit elle-même que la flotte est « partiellement » non lue, c'est-à-dire que les
+//      HÔTES ont été lus et que leur liste est complète — seul leur ENRICHISSEMENT manque. Jeter
+//      l'inventaire pour une lecture qui ne le concerne pas ne rend pas moins : ça rend FAUX. Un parc
+//      de deux cents machines disparaissait de l'écran parce qu'une table de jetons n'avait pas pu être
+//      ouverte, et l'exploitant y lisait ce qu'un refus lui fait lire : « je ne sais rien ». Le témoin
+//      juge donc désormais la propriété corrigée — l'inventaire LU reste peint, l'aveu s'affiche À CÔTÉ
+//      — et il garde, en (c), le refus ENTIER dont la table doit bien disparaître : les deux phrases du
+//      démon sont LUES dans `daemon/src/handlers/fleet.rs`, jamais recopiées ici.
 // ---------------------------------------------------------------------------------------------
 {
   const { renderFleetInventory } = await import(pathToFileURL(path.join(WEB, "fleet.js")).href);
@@ -11290,23 +11302,50 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   const tout89 = (el) => [el.textContent || "", ...((el.children || []).map(tout89))].join(" ").replace(/\s+/g, " ");
   const hote89 = (host, enrolled) => ({ host, status: "fresh", last_seen: 999_900, age_s: 100, first_seen: 1, signals: 10, enrolled, enroll_name: "",
     attente: "non_declare", attente_libelle: null, declaree_par: null, alerte_si_muet: true, dans_la_flotte: true });
+  // LES DEUX PHRASES SONT LUES DANS LE DÉMON, PAS ÉCRITES ICI : l'une ouvre l'aveu PARTIEL (les hôtes
+  // sont lus), l'autre est le refus ENTIER (`FLOTTE_NON_LUE`). Si l'une des deux cesse d'exister, ce
+  // témoin REFUSE DE CONCLURE au lieu de juger une distinction que le démon ne fait plus.
+  const srcFlotte89 = readFileSync(path.join(RACINE, "daemon", "src", "handlers", "fleet.rs"), "utf8");
+  const mPartiel89 = srcFlotte89.match(/aveux\.push\(format!\("(flotte partiellement NON LUE[^"]*)"/);
+  const mEntier89 = srcFlotte89.match(/const FLOTTE_NON_LUE: &str = "([^"]*)";/);
+  exiger(!!mPartiel89 && !!mEntier89,
+    "(89-instrument) daemon/src/handlers/fleet.rs n'écrit plus DEUX aveux distincts dans `error` : la distinction jugée ci-dessous n'existe plus côté démon, ce témoin REFUSE DE CONCLURE");
+  const CAUSE_PARTIELLE_89 = mPartiel89[1].replace("{}", "enrôlement");
+  const CAUSE_ENTIERE_89 = mEntier89[1];
   const parc89 = { pipeline_fresh: true, now: 1_000_000, total: 2, repartition: { inventories: 2, flotte: 2, retires: 0, frais: 2, en_retard: 0, muet_attendu: 0, muet_inattendu: 0 },
     hosts: [hote89("srv-nonlu", null), hote89("srv-nonenrole", false)],
-    error: "flotte partiellement NON LUE : enrôlement — traité comme non enrôlé / non déclaré (sens sûr), ce n'est pas une observation" };
+    error: CAUSE_PARTIELLE_89 };
   const rendre89 = (d) => { const avant = S.AUTH; S.AUTH = { user: "u", role: "viewer" }; const w = document.createElement("div"); try { renderFleetInventory(w, d); } finally { S.AUTH = avant; } return w; };
   const porteUnTableau89 = (el) => (el.tagName === "TABLE" || el.tagName === "THEAD") || (el.children || []).some(porteUnTableau89);
-  // (a) sous l'aveu servi : le bandeau porte la cause et la table n'est PAS peinte (la surface rend MOINS, `P10.7-d`) —
-  //     des verdicts par hôte dérivés d'une lecture ratée se liraient comme complets.
+  // (a) sous l'aveu PARTIEL : l'inventaire LU reste peint, et la cause s'affiche À CÔTÉ. Jeter la table
+  //     ici ne rendrait pas moins, ça rendrait faux — les hôtes ont bien été lus (cf. l'en-tête révisé).
   const wAveu89 = rendre89(parc89);
   const texteAveu89 = tout89(wAveu89);
-  exiger(texteAveu89.includes("flotte partiellement NON LUE"), `(89) la cause servie est écrite dans le panneau : ${texteAveu89}`);
-  exiger(!porteUnTableau89(wAveu89), `(89) aucune table n'est peinte sous un aveu`);
+  exiger(texteAveu89.includes(CAUSE_PARTIELLE_89), `(89a) la cause servie est écrite dans le panneau : ${texteAveu89}`);
+  exiger(porteUnTableau89(wAveu89),
+    `(89a) L'INVENTAIRE LU EST EFFACÉ PAR UNE LECTURE QUI NE LE CONCERNE PAS : le démon dit « partiellement » — les hôtes ONT été lus et la liste est complète —, et la vue rend un écran sans une seule machine. Rendu : ${texteAveu89}`);
+  exiger(texteAveu89.includes("srv-nonlu") && texteAveu89.includes("srv-nonenrole"),
+    `(89a) les hôtes servis n'atteignent pas le document sous l'aveu partiel : ${texteAveu89}`);
+  exiger(texteAveu89.includes("enrôlement non lu") && texteAveu89.includes("non enrôlé"),
+    `(89a) les deux états d'enrôlement ne se distinguent plus sous l'aveu : ${texteAveu89}`);
   // (b) la même charge SANS aveu (un démon d'une autre version pourrait la servir) : la colonne distingue les deux états.
   const { error: _erreur89, ...sansAveu89 } = parc89;
-  const texteSans89 = tout89(rendre89(sansAveu89));
-  exiger(texteSans89.includes("enrôlement non lu"), `(89) l'enrôlement non lu est écrit tel quel : ${texteSans89}`);
-  exiger(texteSans89.includes("non enrôlé"), `(89) un enrolled:false reste « non enrôlé » : ${texteSans89}`);
-  console.log("(89) OK — un enrôlement non lu est écrit tel quel, distinct de « non enrôlé », et la cause servie est écrite");
+  const wSans89 = rendre89(sansAveu89);
+  const texteSans89 = tout89(wSans89);
+  exiger(texteSans89.includes("enrôlement non lu"), `(89b) l'enrôlement non lu est écrit tel quel : ${texteSans89}`);
+  exiger(texteSans89.includes("non enrôlé"), `(89b) un enrolled:false reste « non enrôlé » : ${texteSans89}`);
+  exiger(!texteSans89.includes("Enrichissement de la flotte NON LU"),
+    `(89b-négatif) l'aveu d'enrichissement est peint sur un corps SANS cause — un instrument qui avoue toujours ne mesure rien : ${texteSans89}`);
+  // (c) LE REFUS ENTIER, LUI, FAIT BIEN DISPARAÎTRE LA TABLE (`P10.7-d`, témoin 51) : c'est le contrôle
+  //     qui empêche la correction de (a) d'être poussée trop loin — sans lui, « tout `error` peint la
+  //     table » passerait, et un inventaire NON LU se rendrait comme un inventaire.
+  const wRefus89 = rendre89({ ...parc89, error: CAUSE_ENTIERE_89 });
+  const texteRefus89 = tout89(wRefus89);
+  exiger(!porteUnTableau89(wRefus89) && texteRefus89.includes(CAUSE_ENTIERE_89),
+    `(89c) un refus ENTIER de lire la flotte peint quand même l'inventaire : des lignes d'hôtes que personne n'a lues se liraient comme un relevé. Rendu : ${texteRefus89}`);
+  exiger(!texteRefus89.includes("srv-nonlu"),
+    `(89c) une ligne d'hôte survit au refus entier : ${texteRefus89}`);
+  console.log("(89) OK — un enrôlement non lu est écrit tel quel, distinct de « non enrôlé » ; l'aveu PARTIEL (les hôtes sont lus) laisse l'inventaire peint et se dit à côté, le refus ENTIER le fait disparaître, et les deux phrases sont lues dans daemon/src/handlers/fleet.rs");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -13334,6 +13373,394 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     modComp98.primeCompletionMeta(null, []);
   }
   console.log("(98) OK — les tableaux de bord, la file d'actions, les corrélations, les indicateurs de compromission, les réglages de rétention, le mode de réponse, l'inventaire des environnements, le journal d'audit — par ses DEUX chargeurs, celui de la rétention et la page de l'onglet Audit — et le paquet de diagnostic écrivent la cause SERVIE au lieu d'un espace vide, d'une file calme, d'un « Observation (sûr) », d'un tenant mono-environnement ou d'un journal vierge ; les neuf chemins nominaux restent muets");
+}
+
+
+// ---------------------------------------------------------------------------------------------
+// (99) `P10.20-g` (2026-09-16) — LES SIX SURFACES CONSOLE QUE LA FERMETURE CÔTÉ DÉMON A LAISSÉES
+//      SOURDES, ET UNE SEPTIÈME QUE L'ÉNONCÉ N'AVAIT PAS VUE.
+//
+// CE QUE LE DÉMON SERT DEPUIS `P10.20-g`, ET QUI N'ATTEIGNAIT PERSONNE. Une préparation ratée ne fait
+// plus DISPARAÎTRE une famille entière de flux : `/api/freshness` LISTE une entrée qui porte le nom du
+// GROUPE (« flux d'événements », « flux d'instantanés »), `non_lu: true`, `famille_non_lue: true` et sa
+// cause ; les deux comptes du flux métrique servent `null` PLUS leur cause (`n_24h_non_lu`,
+// `nb_series_non_lu`) et la sous-liste des séries sert `null` PLUS `series_non_lues` ; `/api/fleet` type
+// `pipeline_fresh` en `Option<bool>` et pose sa cause sur `pipeline_fresh_non_lu`, JAMAIS dans `error` ;
+// et `component_health_avec` rend « santé du pipeline d'ingest NON LUE » en JAUNE avant le bras `idle`.
+//
+// CE QUE LA CONSOLE EN FAISAIT, MESURÉ LE 2026-09-16 SUR LES MODULES RÉELS :
+//   · `web/fleet.js` — `banner.className = d.pipeline_fresh ? 'muted' : 'bad'`, et `null` vaut FAUX :
+//     « Ingestion en panne — aucune donnée reçue récemment » se peignait, mot pour mot, sur une ligne
+//     que personne n'avait lue. C'est l'affirmation la plus grave que cette vue sache former.
+//   · `web/freshness.js` — l'entrée de famille était rendue par la branche du flux non lu, donc comptée
+//     comme UNE source : « 13 flux observés » là où douze avaient été lus et où le treizième était
+//     l'aveu qu'on ignore combien il en manque. Rien ne disait que cette ligne est un GROUPE.
+//   · `web/freshness.js` — `const sList = f.series || []` puis « détail des séries indisponible (mettre
+//     à jour le daemon) » : une CAUSE FAUSSE, servie pendant que la vraie (« no such table », base
+//     verrouillée) arrivait dans le corps et y était jetée. Une cause fausse ferme l'enquête ailleurs.
+//   · `web/freshness.js` — `nb_series_non_lu` et `n_24h_non_lu` n'étaient lus NULLE PART : l'en-tête
+//     « métriques » sans son nombre se lisait comme une version antérieure ou un flux sans série.
+//
+// CE QUI ÉTAIT FAUX DANS L'ÉNONCÉ DE CE LOT, ET MESURÉ ICI. (1) `web/system.js` NE TRONQUE PAS la
+// phrase longue en jaune, et la feuille non plus : `.sys-comp-d` a perdu `white-space: nowrap`,
+// `overflow: hidden` et `text-overflow: ellipsis` en fermant `P11.4-g`, la ligne `.sys-comp` s'enroule,
+// et le détail est rendu en NŒUDS entiers — la phrase d'ingest y arrive complète, dernier mot compris.
+// Ce qui manquait n'était pas un correctif, c'était un ANCRAGE : rien ne liait cette propriété à la
+// phrase que `metrics.rs` sert désormais, la plus longue de toutes. (2) La liste des surfaces ne citait
+// pas la SEPTIÈME, mesurée en écrivant ce témoin : `web/fleet.js` traitait TOUT `error` comme un refus
+// d'inventaire, alors que le démon en écrit DEUX — « flotte NON LUE » (les hôtes n'ont pas été lus) et
+// « flotte partiellement NON LUE » (les hôtes ONT été lus, seul leur ENRICHISSEMENT manque). Un parc de
+// deux cents machines disparaissait de l'écran parce qu'une table de jetons ne s'ouvrait pas. C'est le
+// défaut INVERSE de `P10.7-d` : rendre moins que ce qui est su, jusqu'à rendre faux — et le témoin 89
+// l'avait CODIFIÉ (il exigeait qu'aucune table ne soit peinte) ; il est révisé, et il le dit.
+//
+// L'ANCRAGE. Aucune cause n'est recopiée : les constantes, les noms de champs, les noms de famille et
+// la phrase d'ingest sont EXTRAITS de `daemon/src/handlers/freshness.rs`, `daemon/src/handlers/fleet.rs`
+// et `daemon/src/metrics.rs`, littéraux Rust recomposés à travers leurs continuations. Le DISCRIMINANT
+// que `web/fleet.js` écrit pour séparer les deux aveux d'`error` est LU dans ce module et confronté aux
+// DEUX phrases du démon : il doit reconnaître la première et REFUSER la seconde. Si une constante, un
+// champ ou une phrase cesse d'exister, ce témoin REFUSE DE CONCLURE au lieu de rester vert sur un corps
+// devenu étranger au démon.
+//
+// CE QUE CE TÉMOIN NE TIENT PAS : il ne rejoue aucune route du démon — il en DÉRIVE les mots et fabrique
+// les corps qui les portent ; il juge le TEXTE d'un arbre et la RÈGLE écrite dans la feuille, jamais
+// l'encre qu'un moteur de rendu peint (le simulacre ne calcule aucun style — c'est dit en section 0) ;
+// il ne dit rien de la langue anglaise de ces phrases (témoin 10 et garde du lexique) ; et il ne juge
+// pas la composition des détails de composant par la quarantaine ni par le bilan de tick, qui peuvent
+// AJOUTER du texte après la phrase d'ingest.
+// ---------------------------------------------------------------------------------------------
+{
+  const url99 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const modFraicheur99 = await import(url99("freshness.js"));
+  const modFlotte99 = await import(url99("fleet.js"));
+  const modSysteme99 = await import(url99("system.js"));
+  const { S: S99 } = await import(url99("state.js"));
+
+  const plat99 = (h) => String(h).replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/\s+/g, " ");
+  const nu99 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ");
+  const instrument99 = (vrai, quoi) => exiger(vrai, `(99-instrument) ${quoi} : le corps jugé ci-dessous n'existe plus côté démon, ce témoin REFUSE DE CONCLURE`);
+  // Un littéral Rust continué par `\` en fin de ligne perd le saut ET l'indentation qui suit : il est
+  // recomposé ici comme le compilateur le compose (même recomposition qu'aux témoins 93 à 97).
+  const recomposer99 = (t) => String(t).replace(/\\\r?\n\s*/g, "");
+  const litteralRust99 = (src, nom) => {
+    const m = src.match(new RegExp(nom + ': &str =\\s*"([\\s\\S]*?)";'));
+    return m ? recomposer99(m[1]) : "";
+  };
+
+  // ── (0) L'INSTRUMENT : TOUT CE QUI EST JUGÉ PLUS BAS EST LU DANS L'ARBRE DU DÉMON ──────────────
+  const srcFraicheur99 = readFileSync(path.join(RACINE, "daemon", "src", "handlers", "freshness.rs"), "utf8");
+  const srcFlotte99 = readFileSync(path.join(RACINE, "daemon", "src", "handlers", "fleet.rs"), "utf8");
+  const srcMetriques99 = readFileSync(path.join(RACINE, "daemon", "src", "metrics.rs"), "utf8");
+
+  const CAUSE_FAMILLE99 = litteralRust99(srcFraicheur99, "CAUSE_FAMILLE_DE_FLUX_NON_LUE");
+  const CAUSE_COMPTE99 = litteralRust99(srcFraicheur99, "CAUSE_COMPTE_NON_LU");
+  const STATUT_NON_LU99 = litteralRust99(srcFraicheur99, "STATUT_DE_SOURCE_NON_LU");
+  instrument99(CAUSE_FAMILLE99.includes("FAMILLE DE FLUX NON LUE") && CAUSE_FAMILLE99.length > 60,
+    "`CAUSE_FAMILLE_DE_FLUX_NON_LUE` n'est plus lisible dans daemon/src/handlers/freshness.rs");
+  instrument99(CAUSE_COMPTE99.includes("COMPTE NON LU") && CAUSE_COMPTE99.length > 60,
+    "`CAUSE_COMPTE_NON_LU` n'est plus lisible dans daemon/src/handlers/freshness.rs");
+  instrument99(STATUT_NON_LU99 === "non_lu",
+    `le mot posé sur un flux non lu n'est plus celui que la console range dans son vocabulaire — « ${STATUT_NON_LU99} »`);
+  // L'ENTRÉE DE FAMILLE : le champ qui la distingue d'une source, et les noms des DEUX familles servies.
+  instrument99(/"famille_non_lue": true,/.test(srcFraicheur99) && /"non_lu": true,/.test(srcFraicheur99),
+    "`flux_de_famille_non_lue` ne pose plus `famille_non_lue` à côté de `non_lu` (daemon/src/handlers/freshness.rs) : la console n'aurait plus rien pour distinguer un GROUPE d'une source");
+  const familles99 = [...srcFraicheur99.matchAll(/flux_de_famille_non_lue\("(\w+)", "([^"]+)", cause\)/g)].map((m) => ({ kind: m[1], nom: m[2] }));
+  instrument99(familles99.length === 2 && familles99.every((f) => f.nom.length > 5),
+    `le démon ne LISTE plus DEUX familles de flux avec leur aveu (daemon/src/handlers/freshness.rs) : ${JSON.stringify(familles99)}`);
+  // LES DEUX COMPTES ET LA SOUS-LISTE : `null` PLUS une clé qui avoue, jamais un zéro ni un tableau vide.
+  instrument99(/o\.insert\("series"\.into\(\), Value::Null\);/.test(srcFraicheur99)
+    && /o\.insert\("series_non_lues"\.into\(\), json!\(format!\("\{CAUSE_FAMILLE_DE_FLUX_NON_LUE\}\{cause\}"\)\)\);/.test(srcFraicheur99),
+    "la sous-liste des séries ne sert plus `null` PLUS `series_non_lues` (daemon/src/handlers/freshness.rs) : elle repartirait en tableau vide");
+  instrument99(/o\.insert\("n_24h_non_lu"\.into\(\), json!\(cause\)\);/.test(srcFraicheur99)
+    && /o\.insert\("nb_series"\.into\(\), Value::Null\);/.test(srcFraicheur99)
+    && /o\.insert\("nb_series_non_lu"\.into\(\), json!\(cause\)\);/.test(srcFraicheur99),
+    "les deux comptes du flux métrique ne servent plus `null` PLUS leur cause (daemon/src/handlers/freshness.rs)");
+
+  const CAUSE_SANTE99 = litteralRust99(srcFlotte99, "CAUSE_SANTE_DU_PIPELINE_NON_LUE");
+  const CAUSE_FLOTTE_ENTIERE99 = litteralRust99(srcFlotte99, "FLOTTE_NON_LUE");
+  const mPartiel99 = srcFlotte99.match(/aveux\.push\(format!\("(flotte partiellement NON LUE[^"]*)"/);
+  instrument99(CAUSE_SANTE99.includes("SANTÉ DU PIPELINE NON LUE") && CAUSE_SANTE99.length > 60,
+    "`CAUSE_SANTE_DU_PIPELINE_NON_LUE` n'est plus lisible dans daemon/src/handlers/fleet.rs");
+  instrument99(CAUSE_FLOTTE_ENTIERE99.includes("flotte NON LUE") && !!mPartiel99,
+    "daemon/src/handlers/fleet.rs n'écrit plus DEUX aveux distincts dans `error` : le discriminant jugé plus bas n'aurait plus d'objet");
+  const CAUSE_FLOTTE_PARTIELLE99 = mPartiel99[1].replace("{}", "enrôlement, déclarations");
+  instrument99(/pub\(crate\) pipeline_fresh: Option<bool>,/.test(srcFlotte99)
+    && /corps\["pipeline_fresh_non_lu"\] = json!\(CAUSE_SANTE_DU_PIPELINE_NON_LUE\);/.test(srcFlotte99),
+    "`/api/fleet` ne sert plus `pipeline_fresh` en TROIS valeurs avec sa cause invariante à côté (daemon/src/handlers/fleet.rs)");
+  // LA CAUSE DE LA SANTÉ DU PIPELINE N'ENTRE PAS DANS `error`, ET C'EST CE QUI PERMET À LA VUE DE RESTER
+  // PEINTE : si elle y retournait, la branche du refus d'inventaire la reprendrait et viderait l'écran.
+  instrument99(/if let Some\(cause\) = &f\.pipeline_non_lu \{\s*corps\["non_lus"\] = json!\(\[cause\]\);\s*corps\["pipeline_fresh_non_lu"\] = json!\(cause\);\s*\}/.test(srcFlotte99),
+    "la cause de la santé du pipeline ne vit plus sur sa propre clé dans `/api/fleet` (daemon/src/handlers/fleet.rs) : si elle repassait par `error`, la console viderait la vue");
+
+  const mIngest99 = srcMetriques99.match(/"(santé du pipeline d'ingest NON LUE \(\{\}\)[\s\S]*?)",/);
+  instrument99(!!mIngest99, "`component_health_avec` n'écrit plus « santé du pipeline d'ingest NON LUE » (daemon/src/metrics.rs)");
+  const PHRASE_INGEST99 = recomposer99(mIngest99[1]).replace("{}", "disk I/O error");
+  const iRate99 = srcMetriques99.indexOf("Some(_) if dernier_point.is_err()");
+  const iInactif99 = srcMetriques99.indexOf('Some(_) if had_data.is_none() => ("idle"');
+  instrument99(iRate99 > 0 && iInactif99 > 0 && iRate99 < iInactif99,
+    "le bras de la lecture NON FAITE ne passe plus AVANT le bras `idle` (daemon/src/metrics.rs) : une base illisible ressortirait « aucune donnée encore ingérée », l'état d'une installation NEUVE");
+  instrument99(/"yellow",\n\s*format!\(\n\s*"santé du pipeline d'ingest NON LUE/.test(srcMetriques99),
+    "la lecture non faite du pipeline d'ingest n'est plus rendue en JAUNE (daemon/src/metrics.rs)");
+  const mInactif99 = srcMetriques99.match(/Some\(_\) if had_data\.is_none\(\) => \("idle", "([^"]*)"\.to_string\(\)\),/);
+  instrument99(!!mInactif99 && mInactif99[1].length > 10,
+    "la phrase de l'installation NEUVE n'est plus lisible (daemon/src/metrics.rs) : le contrôle positif de (99g) n'aurait plus de référence");
+  const PHRASE_INACTIF99 = mInactif99[1];
+  // LA COMPARAISON SE FERA SUR DU BALISAGE POUR LA FRAÎCHEUR : `esc` (core.js) n'échappe que `& < > "`.
+  const sansEchappement99 = (t) => !/[&<>"]/.test(t);
+  instrument99(sansEchappement99(CAUSE_FAMILLE99) && sansEchappement99(CAUSE_COMPTE99),
+    "une cause de fraîcheur porte désormais un caractère que `esc` réécrit : la comparaison de ce témoin sur le balisage rendu ne vaudrait plus");
+
+  // LE DISCRIMINANT DE LA CONSOLE EST LU DANS LA CONSOLE, JAMAIS RECOPIÉ, ET JUGÉ DANS LES DEUX SENS.
+  const mMotifFlotte99 = readFileSync(path.join(WEB, "fleet.js"), "utf8")
+    .match(/const OUVERTURE_DE_LA_FLOTTE_PARTIELLEMENT_NON_LUE = \/([^\n]+?)\/;/);
+  instrument99(!!mMotifFlotte99,
+    "`web/fleet.js` n'écrit plus le motif qui sépare l'aveu PARTIEL du refus ENTIER : il n'y a plus rien à ancrer");
+  const motifFlotte99 = new RegExp(mMotifFlotte99[1]);
+  exiger(motifFlotte99.test(CAUSE_FLOTTE_PARTIELLE99),
+    `(99-instrument) le motif de \`web/fleet.js\` (${motifFlotte99}) ne reconnaît PLUS l'aveu partiel que le démon écrit — « ${CAUSE_FLOTTE_PARTIELLE99} »`);
+  exiger(!motifFlotte99.test(CAUSE_FLOTTE_ENTIERE99),
+    `(99-instrument) le motif de \`web/fleet.js\` (${motifFlotte99}) reconnaît AUSSI le refus ENTIER — un inventaire que PERSONNE n'a lu serait peint ligne à ligne : « ${CAUSE_FLOTTE_ENTIERE99} »`);
+
+  const fetchOrigine99 = globalThis.fetch;
+  const etatOrigine99 = { admin: S99.isAdmin, auth: S99.AUTH };
+  let reponsesServies99 = {};
+  globalThis.fetch = async (u) => {
+    const r = reponsesServies99[String(u).split("?")[0]];
+    if (!r) return { ok: true, status: 200, text: async () => "{}", json: async () => ({}), headers: { get: () => null } };
+    const texte = JSON.stringify(r);
+    return { ok: true, status: 200, text: async () => texte, json: async () => JSON.parse(texte), headers: { get: () => null } };
+  };
+  const laisser99 = async (n = 20) => { for (let i = 0; i < n; i++) await new Promise((r) => setTimeout(r, 0)); };
+
+  try {
+    S99.isAdmin = true;
+    S99.AUTH = { user: "hugo", role: "admin" };
+
+    // ══ (a) LA FAMILLE NON LUE EST UN GROUPE, ET ELLE N'EST PAS COMPTÉE COMME UNE SOURCE ═══════════
+    const causeDeLaFamille99 = CAUSE_FAMILLE99 + "no such table: event_rollup";
+    const source99 = (o) => Object.assign({
+      kind: "event", name: "sshd", last_seen: 900, age_s: 100, n_24h: 12, status: "frais", active_alerts: 0,
+      cadence_declaree: "non_declaree", cadence_interval_s: null, cadence_capteur: null, observed_interval_s: null,
+    }, o);
+    // L'ENTRÉE DE FAMILLE EST FABRIQUÉE COMME LE DÉMON LA FABRIQUE : le nom vient de `familles99`.
+    const entreeDeFamille99 = (i) => ({
+      kind: familles99[i].kind, name: familles99[i].nom, last_seen: null, age_s: null, n_24h: null,
+      status: STATUT_NON_LU99, active_alerts: null, non_lu: true, famille_non_lue: true, cause: causeDeLaFamille99,
+    });
+    const IMP99 = { actives: 0, avec_cloche: 0, sans_source_nommee: 0, sans_imputation: 0, jeton_sans_source: "(source indéterminée)" };
+    const releveAvecFamille99 = {
+      ts: 1000, pipeline_fresh: true, imputation_des_alertes: IMP99,
+      feeds: [source99({}), source99({ name: "auditd" }), entreeDeFamille99(0), entreeDeFamille99(1)],
+    };
+    const htmlFamille99 = modFraicheur99.renderFreshnessDetail(releveAvecFamille99);
+    const platFamille99 = plat99(htmlFamille99);
+    exiger(platFamille99.includes(familles99[0].nom) && platFamille99.includes(familles99[1].nom),
+      `(99a) une famille de flux NON LUE n'atteint pas l'écran : « ${platFamille99.slice(0, 400)} »`);
+    exiger(platFamille99.includes(causeDeLaFamille99),
+      `(99a) la cause SERVIE par le démon pour la famille n'est pas collée telle quelle : « ${platFamille99.slice(0, 500)} »`);
+    // LE MOT EST SUR LA LIGNE, PAS SEULEMENT DANS L'EN-TÊTE DU BLOC : un lecteur qui parcourt la liste
+    // ne remonte pas au bandeau, et c'est la ligne qu'il prend pour une source. Les blocs sont découpés
+    // sur l'ouverture de ligne que ce module écrit, et CHACUNE des deux lignes de famille doit le porter.
+    const blocsDeLigne99 = htmlFamille99.split('<div class="kv"').slice(1);
+    const lignesDeFamille99 = blocsDeLigne99.filter((b) => b.includes(familles99[0].nom) || b.includes(familles99[1].nom));
+    exiger(lignesDeFamille99.length === 2,
+      `(99a-instrument) ${lignesDeFamille99.length} ligne(s) de famille retrouvée(s) dans le balisage au lieu de deux : le découpage ne porte plus sur ce qu'il croit`);
+    exiger(lignesDeFamille99.every((b) => /GROUPE de sources/.test(b)),
+      `(99a) RIEN NE DIT, SUR LA LIGNE, QUE C'EST UN GROUPE : elle se lit comme une source de plus, qui porterait un nom que le démon n'a jamais lu. Rendu : « ${platFamille99.slice(0, 500)} »`);
+    exiger(!/il y a null/.test(platFamille99) && !/NaN/.test(platFamille99),
+      `(99a) un âge est fabriqué sur une ligne dont RIEN n'a été mesuré : « ${platFamille99.slice(0, 500)} »`);
+    // LE COMPTE : deux sources lues, deux familles — et la rangée ne compte QUE les sources.
+    exiger(/2 feed\(s\) observé\(s\)/.test(platFamille99),
+      `(99a) LA RANGÉE COMPTE UNE FAMILLE NON LUE COMME UNE SOURCE : le total cesse d'être un compte de flux, et « 4 flux observés » se lit comme un inventaire là où deux ont été lus. Rendu : « ${platFamille99.slice(0, 500)} »`);
+    exiger(/2 FAMILLE\(S\) ENTIÈRE\(S\) DE FLUX NON LUE\(S\)/.test(platFamille99),
+      `(99a) le compte des familles n'est pas rendu À PART : « ${platFamille99.slice(0, 500)} »`);
+    // L'AGRÉGATION ELLE-MÊME, jugée dans les deux sens sur la fonction exportée.
+    const comptesFamille99 = modFraicheur99.countStates(releveAvecFamille99.feeds);
+    exiger(comptesFamille99.frais === 2 && comptesFamille99.non_lu === 0,
+      `(99a) \`countStates\` range les entrées de famille parmi les états de collecte : ${JSON.stringify(comptesFamille99)}`);
+    const comptesFluxNonLu99 = modFraicheur99.countStates([source99({ status: STATUT_NON_LU99, non_lu: true })]);
+    exiger(comptesFluxNonLu99.non_lu === 1,
+      `(99a-négatif) un FLUX non lu (qui, lui, EST une source) cesse d'être compté : ${JSON.stringify(comptesFluxNonLu99)} — le filtre porterait sur « non_lu » au lieu de « famille_non_lue »`);
+    // L'ÉTAT DU RELEVÉ SERVI : deux familles et AUCUNE source, c'est un relevé NON LU, pas un partiel.
+    const etatSansSource99 = modFraicheur99.etatDuReleveServi({ feeds: [entreeDeFamille99(0)], error: "RELEVÉ DE FRAÎCHEUR INCOMPLET (fabriqué)" });
+    exiger(etatSansSource99.refus === true && etatSansSource99.incomplet === false && etatSansSource99.servis === 0,
+      `(99a) un relevé dont PAS UN FLUX n'est sorti se dit « partiellement lu » : ${JSON.stringify(etatSansSource99)}`);
+    const etatAvecSource99 = modFraicheur99.etatDuReleveServi({ feeds: [source99({}), entreeDeFamille99(0)], error: "RELEVÉ DE FRAÎCHEUR INCOMPLET (fabriqué)" });
+    exiger(etatAvecSource99.incomplet === true && etatAvecSource99.servis === 1,
+      `(99a-négatif) un relevé qui a SERVI un flux est rendu comme un refus entier : ${JSON.stringify(etatAvecSource99)}`);
+    // CONTRÔLE POSITIF : sans famille, rien de tout cela n'est peint.
+    const platSansFamille99 = plat99(modFraicheur99.renderFreshnessDetail({ ts: 1000, pipeline_fresh: true, imputation_des_alertes: IMP99, feeds: [source99({})] }));
+    exiger(!/GROUPE de sources/.test(platSansFamille99) && !/FAMILLE\(S\) ENTIÈRE\(S\)/.test(platSansFamille99),
+      `(99a-négatif) l'aveu de famille est peint sur un relevé qui n'en porte aucune — un instrument qui le dit toujours ne mesure rien : « ${platSansFamille99.slice(0, 300)} »`);
+
+    // ══ (b) LE PULSE — LA SURFACE LA PLUS SOUVENT TIRÉE — PORTE LE MÊME BLOC ═══════════════════════
+    const hotePulse99 = document.querySelector("#freshness .body");
+    exiger(!!hotePulse99, "(99-instrument) l'hôte du pulse de fraîcheur (#freshness .body) n'est pas monté : le verdict ne porterait sur rien");
+    reponsesServies99 = { "/api/freshness": releveAvecFamille99 };
+    await modFraicheur99.renderFreshnessPulse(); await laisser99();
+    const textePulse99 = nu99(hotePulse99);
+    exiger(/GROUPE de sources/.test(textePulse99) && textePulse99.includes(familles99[0].nom),
+      `(99b) le pulse tait une famille entière de flux non lue : « ${textePulse99.slice(0, 400)} »`);
+    exiger(/2 feed\(s\) observé\(s\)/.test(textePulse99),
+      `(99b) les pastilles du pulse comptent les familles parmi les flux : « ${textePulse99.slice(0, 400)} »`);
+    reponsesServies99 = { "/api/freshness": { ts: 1000, pipeline_fresh: true, imputation_des_alertes: IMP99, feeds: [source99({})] } };
+    await modFraicheur99.renderFreshnessPulse(); await laisser99();
+    exiger(!/GROUPE de sources/.test(nu99(hotePulse99)),
+      `(99b-négatif) le pulse avoue une famille sur un relevé entier : « ${nu99(hotePulse99).slice(0, 300)} »`);
+
+    // ══ (c) LES SÉRIES NON LUES, ET « METTRE À JOUR LE DAEMON » RENDU À SON SEUL CAS VRAI ══════════
+    const causeDesSeries99 = CAUSE_FAMILLE99 + "database is locked";
+    const metrique99 = (o) => Object.assign({
+      kind: "metric", name: "métriques", last_seen: 900, age_s: 100, n_24h: 4000, status: "frais", active_alerts: 0,
+      cadence_declaree: "non_declaree", cadence_interval_s: null, cadence_capteur: null, observed_interval_s: null,
+    }, o);
+    const htmlSeriesNonLues99 = modFraicheur99.renderFreshnessDetail({
+      ts: 1000, pipeline_fresh: true, imputation_des_alertes: IMP99,
+      feeds: [metrique99({ series: null, series_non_lues: causeDesSeries99 })],
+    });
+    const platSeriesNonLues99 = plat99(htmlSeriesNonLues99);
+    exiger(/Séries métriques NON LUES/.test(platSeriesNonLues99) && platSeriesNonLues99.includes(causeDesSeries99),
+      `(99c) la sous-liste des séries non lue ne dit ni son état ni la cause SERVIE : « ${platSeriesNonLues99.slice(0, 500)} »`);
+    // ET LA MARQUE EST SUR L'EN-TÊTE, PAS SEULEMENT DANS LE CORPS : celui-ci est REPLIÉ au premier
+    // chargement (`S.freshCollapsed` n'a pas `metric-open`), et un aveu qu'il faut déplier pour voir
+    // n'est pas un aveu. L'en-tête est découpé sur l'ouverture que ce module écrit pour lui.
+    const enTeteMetrique99 = (h) => (String(h).split('<div class="kv fmetrichd"')[1] || "").split("</div>")[0];
+    exiger(enTeteMetrique99(htmlSeriesNonLues99).length > 0,
+      "(99c-instrument) l'en-tête du flux métrique n'est pas retrouvé dans le balisage : le découpage ne porte plus sur ce qu'il croit");
+    exiger(/SÉRIES NON LUES/.test(enTeteMetrique99(htmlSeriesNonLues99)),
+      `(99c) L'AVEU DES SÉRIES VIT DANS UN CORPS REPLIÉ PAR DÉFAUT : personne ne le lit sans déplier — « ${enTeteMetrique99(htmlSeriesNonLues99)} »`);
+    exiger(!/mettre à jour le daemon/.test(platSeriesNonLues99),
+      `(99c) UNE CAUSE FAUSSE EST SERVIE À LA PLACE DE LA VRAIE : la console envoie mettre à jour un démon parfaitement à jour, pendant que « ${causeDesSeries99.slice(-40)} » arrive dans le corps et y est jeté. Rendu : « ${platSeriesNonLues99.slice(0, 500)} »`);
+    // LES TROIS AUTRES CAS, DISTINCTS : liste servie, absence ÉTABLIE, et le SEUL cas où la phrase
+    // d'origine est vraie — un démon qui ne publie NI la liste NI la cause.
+    const htmlSeriesServies99 = modFraicheur99.renderFreshnessDetail({
+      ts: 1000, pipeline_fresh: true, imputation_des_alertes: IMP99,
+      feeds: [metrique99({ name: "métriques · 2 séries", series: [{ name: "cpu", last_seen: 900, age_s: 100, n_24h: 10, status: "frais" }, { name: "mem", last_seen: 900, age_s: 100, n_24h: 10, status: "frais" }] })],
+    });
+    const platSeriesServies99 = plat99(htmlSeriesServies99);
+    exiger(!/SÉRIES NON LUES/.test(enTeteMetrique99(htmlSeriesServies99)),
+      `(99c-négatif) la marque est posée sur un en-tête dont les séries ont été SERVIES : « ${enTeteMetrique99(htmlSeriesServies99)} »`);
+    exiger(/cpu/.test(platSeriesServies99) && /mem/.test(platSeriesServies99) && !/NON LUES/.test(platSeriesServies99) && !/mettre à jour le daemon/.test(platSeriesServies99),
+      `(99c-négatif) une sous-liste SERVIE est rendue comme un aveu : « ${platSeriesServies99.slice(0, 400)} »`);
+    const platSeriesVides99 = plat99(modFraicheur99.renderFreshnessDetail({
+      ts: 1000, pipeline_fresh: true, imputation_des_alertes: IMP99, feeds: [metrique99({ series: [] })],
+    }));
+    exiger(/aucune série métrique sur cette fenêtre/.test(platSeriesVides99) && !/mettre à jour le daemon/.test(platSeriesVides99) && !/NON LUES/.test(platSeriesVides99),
+      `(99c-négatif) une absence ÉTABLIE de série est rendue comme une lecture ratée, ou renvoie encore à une mise à jour : « ${platSeriesVides99.slice(0, 400)} »`);
+    const platSeriesAbsentes99 = plat99(modFraicheur99.renderFreshnessDetail({
+      ts: 1000, pipeline_fresh: true, imputation_des_alertes: IMP99, feeds: [metrique99({})],
+    }));
+    exiger(/mettre à jour le daemon/.test(platSeriesAbsentes99),
+      `(99c-négatif) le SEUL cas où « mettre à jour le daemon » est vrai — ni liste ni cause publiées — ne le dit plus : « ${platSeriesAbsentes99.slice(0, 400)} »`);
+
+    // ══ (d) LES DEUX COMPTES NON LUS, LUS SÉPARÉMENT ═══════════════════════════════════════════════
+    const causeDesComptes99 = CAUSE_COMPTE99 + "disk I/O error";
+    const platComptes99 = plat99(modFraicheur99.renderFreshnessDetail({
+      ts: 1000, pipeline_fresh: true, imputation_des_alertes: IMP99,
+      feeds: [metrique99({ n_24h: null, n_24h_non_lu: causeDesComptes99, nb_series: null, nb_series_non_lu: causeDesComptes99, series: [] })],
+    }));
+    exiger(/COMPTES NON LUS/.test(platComptes99) && platComptes99.includes(causeDesComptes99),
+      `(99d) l'en-tête « métriques » sans son nombre ne dit toujours pas pourquoi : « ${platComptes99.slice(0, 500)} »`);
+    exiger(/le nombre de séries/.test(platComptes99) && /le volume sur 24 h/.test(platComptes99),
+      `(99d) les deux comptes non lus ne sont pas NOMMÉS : « ${platComptes99.slice(0, 500)} »`);
+    exiger((platComptes99.match(/COMPTE NON LU/g) || []).length === 1,
+      `(99d) la cause est recopiée une fois par compte alors qu'elle est la MÊME : la ligne devient illisible — « ${platComptes99.slice(0, 500)} »`);
+    // LUS SÉPARÉMENT : un seul des deux non lu ne fait pas parler de l'autre.
+    const platUnSeulCompte99 = plat99(modFraicheur99.renderFreshnessDetail({
+      ts: 1000, pipeline_fresh: true, imputation_des_alertes: IMP99,
+      feeds: [metrique99({ nb_series: null, nb_series_non_lu: causeDesComptes99, series: [] })],
+    }));
+    exiger(/le nombre de séries/.test(platUnSeulCompte99) && !/le volume sur 24 h/.test(platUnSeulCompte99),
+      `(99d) les deux comptes ne sont pas lus SÉPARÉMENT : un volume SERVI est déclaré non lu — « ${platUnSeulCompte99.slice(0, 500)} »`);
+    exiger(!/COMPTES NON LUS/.test(platSeriesServies99),
+      `(99d-négatif) l'aveu des comptes est peint sur un flux dont les deux nombres ont été comptés : « ${platSeriesServies99.slice(0, 400)} »`);
+
+    // ══ (e) LA FLOTTE : TROIS VALEURS SUR `pipeline_fresh`, ET `null` N'EST PAS UNE PANNE ══════════
+    const causeDeLaSante99 = CAUSE_SANTE99 + " Cause : disk I/O error";
+    const hote99 = (host) => ({ host, status: "fresh", last_seen: 999_900, age_s: 100, first_seen: 1, signals: 10,
+      enrolled: true, enroll_name: "agent-01", attente: "non_declare", attente_libelle: null, declaree_par: null,
+      alerte_si_muet: true, dans_la_flotte: true });
+    const parc99 = { now: 1_000_000, total: 1, repartition: { inventories: 1, flotte: 1, retires: 0, frais: 1, en_retard: 0, muet_attendu: 0, muet_inattendu: 0 }, hosts: [hote99("web-01")] };
+    const rendreFlotte99 = (d) => { const avant = S99.AUTH; S99.AUTH = { user: "u", role: "viewer" }; const w = new Element("div"); try { modFlotte99.renderFleetInventory(w, d); } finally { S99.AUTH = avant; } return w; };
+    const porteUnTableau99 = (el) => (el.tagName === "TABLE" || el.tagName === "THEAD") || (el.children || []).some(porteUnTableau99);
+    const wSanteNonLue99 = rendreFlotte99({ ...parc99, pipeline_fresh: null, pipeline_fresh_non_lu: causeDeLaSante99 });
+    const texteSanteNonLue99 = nu99(wSanteNonLue99);
+    exiger(/Santé du pipeline NON LUE/.test(texteSanteNonLue99) && texteSanteNonLue99.includes(causeDeLaSante99),
+      `(99e) la flotte ne dit pas que la santé du pipeline n'a pas été lue, avec la cause SERVIE : « ${texteSanteNonLue99.slice(0, 400)} »`);
+    exiger(!/Ingestion en panne/.test(texteSanteNonLue99),
+      `(99e) « INGESTION EN PANNE — AUCUNE DONNÉE REÇUE RÉCEMMENT » EST PEINT SUR UNE LIGNE QUE PERSONNE N'A LUE : c'est l'affirmation la plus grave de cette vue, servie précisément quand rien n'a été observé. Rendu : « ${texteSanteNonLue99.slice(0, 400)} »`);
+    exiger(porteUnTableau99(wSanteNonLue99) && texteSanteNonLue99.includes("web-01"),
+      `(99e) l'inventaire d'hôtes disparaît avec une lecture qui ne le concerne pas : « ${texteSanteNonLue99.slice(0, 400)} »`);
+    // LE TON EST JUGÉ PAR LA CLASSE POSÉE, ET PAR SA DIFFÉRENCE AVEC CELLE DU REPOS — le simulacre ne
+    // calcule aucun style, donc ce qui est mesuré est le registre déclaré, jamais l'encre peinte.
+    const bandeauDe99 = (w) => w.children.find((c) => c.className === "muted" || c.className === "bad");
+    exiger(bandeauDe99(wSanteNonLue99) && bandeauDe99(wSanteNonLue99).className !== bandeauDe99(rendreFlotte99({ ...parc99, pipeline_fresh: true })).className,
+      `(99e) l'aveu est posé dans le registre du repos : « ${bandeauDe99(wSanteNonLue99) && bandeauDe99(wSanteNonLue99).className} »`);
+    // LES DEUX AUTRES VALEURS RESTENT CE QU'ELLES ÉTAIENT.
+    const textePanne99 = nu99(rendreFlotte99({ ...parc99, pipeline_fresh: false }));
+    exiger(/Ingestion en panne/.test(textePanne99) && !/Santé du pipeline NON LUE/.test(textePanne99),
+      `(99e-négatif) une ingestion RÉELLEMENT en panne ne se dit plus, ou se dit comme une lecture non faite : « ${textePanne99.slice(0, 300)} »`);
+    const texteRepos99 = nu99(rendreFlotte99({ ...parc99, pipeline_fresh: true }));
+    exiger(!/Ingestion en panne/.test(texteRepos99) && !/Santé du pipeline NON LUE/.test(texteRepos99),
+      `(99e-négatif) le chemin nominal porte un aveu : « ${texteRepos99.slice(0, 300)} »`);
+    // `null` SANS la clé de cause (un démon antérieur) : toujours pas « en panne », et la phrase le dit.
+    const texteSansCause99 = nu99(rendreFlotte99({ ...parc99, pipeline_fresh: null }));
+    exiger(/Santé du pipeline NON LUE/.test(texteSansCause99) && !/Ingestion en panne/.test(texteSansCause99),
+      `(99e) un \`pipeline_fresh: null\` SANS cause retombe sur la panne constatée : « ${texteSansCause99.slice(0, 300)} »`);
+    // ET LE CHAMP ABSENT (le corps de refus du portillon) reste pris par la branche du refus d'inventaire.
+    const wRefusPortillon99 = rendreFlotte99({ hosts: [], error: "portillon CLOS (fabriqué pour ce banc)" });
+    exiger(wRefusPortillon99.children.length === 1 && !porteUnTableau99(wRefusPortillon99),
+      `(99e) un refus SANS phrase de partiel ne rend plus le seul aveu : ${wRefusPortillon99.children.length} nœud(s)`);
+
+    // ══ (f) L'AVEU PARTIEL LAISSE L'INVENTAIRE PEINT, LE REFUS ENTIER LE FAIT DISPARAÎTRE ══════════
+    const wPartiel99 = rendreFlotte99({ ...parc99, pipeline_fresh: true, error: CAUSE_FLOTTE_PARTIELLE99 });
+    const textePartiel99 = nu99(wPartiel99);
+    exiger(porteUnTableau99(wPartiel99) && textePartiel99.includes("web-01"),
+      `(99f) UN INVENTAIRE COMPLET EST EFFACÉ PARCE QUE SON ENRICHISSEMENT N'A PAS ÉTÉ LU : le démon dit « partiellement » — les hôtes ONT été lus —, et la vue rend un écran sans une seule machine. Rendu : « ${textePartiel99.slice(0, 400)} »`);
+    exiger(/Enrichissement de la flotte NON LU/.test(textePartiel99) && textePartiel99.includes(CAUSE_FLOTTE_PARTIELLE99),
+      `(99f) l'aveu d'enrichissement n'est pas dit À CÔTÉ de l'inventaire, avec la cause SERVIE : « ${textePartiel99.slice(0, 400)} »`);
+    exiger(wPartiel99.children[0] && /Enrichissement de la flotte NON LU/.test(nu99(wPartiel99.children[0])),
+      `(99f) l'aveu est posé APRÈS l'inventaire : un lecteur qui va de haut en bas le rencontre une fois les lignes admises — « ${nu99(wPartiel99.children[0]).slice(0, 200)} »`);
+    const wEntier99 = rendreFlotte99({ ...parc99, pipeline_fresh: true, error: CAUSE_FLOTTE_ENTIERE99 });
+    exiger(!porteUnTableau99(wEntier99) && nu99(wEntier99).includes(CAUSE_FLOTTE_ENTIERE99) && wEntier99.children.length === 1,
+      `(99f-négatif) le refus ENTIER peint l'inventaire : des lignes que personne n'a lues se liraient comme un relevé — ${wEntier99.children.length} nœud(s), « ${nu99(wEntier99).slice(0, 300)} »`);
+    exiger(!/Enrichissement de la flotte NON LU/.test(nu99(rendreFlotte99({ ...parc99, pipeline_fresh: true }))),
+      "(99f-négatif) l'aveu d'enrichissement est peint sur un corps SANS cause");
+
+    // ══ (g) LE COMPOSANT `ingest` : LA PHRASE DU DÉMON, ENTIÈRE, EN JAUNE ══════════════════════════
+    // CE QUI EST JUGÉ ICI N'EST PAS UN CORRECTIF DE CE LOT (rien n'a changé dans `web/system.js`) :
+    // c'est l'ANCRAGE de la propriété que `P11.4-g` a posée, sur la phrase que `metrics.rs` sert
+    // DEPUIS ce lot — la plus longue qu'un composant porte, et celle dont la troncature effacerait
+    // justement la moitié qui dit ce que l'état n'est PAS.
+    const css99 = readFileSync(path.join(WEB, "style.css"), "utf8");
+    const regleDeStyle99 = (sel) => (css99.match(new RegExp(`(^|\\n)${sel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\{([^}]*)\\}`)) || [])[2] || "";
+    const detailCss99 = regleDeStyle99(".sys-comp-d");
+    exiger(detailCss99.length > 0, "(99g-instrument) la règle `.sys-comp-d` est introuvable dans web/style.css : le témoin jugerait du vide");
+    exiger(!/text-overflow\s*:\s*ellipsis/.test(detailCss99) && !/white-space\s*:\s*nowrap/.test(detailCss99) && !/line-clamp/.test(detailCss99),
+      `(99g) le détail d'un composant est coupé par la feuille : la phrase d'ingest s'arrêterait avant la moitié qui dit ce que l'état n'est PAS — « ${detailCss99} »`);
+    const ligneIngest99 = modSysteme99.componentRow({ component: "ingest", state: "yellow", detail: PHRASE_INGEST99 });
+    const boiteIngest99 = ligneIngest99.children.find((c) => c.classList && c.classList.contains("sys-comp-d"));
+    exiger(!!boiteIngest99, "(99g-instrument) la boîte du détail n'est pas rendue : le verdict ne porterait sur rien");
+    exiger(nu99(boiteIngest99) === PHRASE_INGEST99.replace(/\s+/g, " "),
+      `(99g) LA PHRASE SERVIE N'ARRIVE PAS ENTIÈRE DANS LE DOCUMENT : ${nu99(boiteIngest99).length} caractère(s) rendus pour ${PHRASE_INGEST99.length} servis — « ${nu99(boiteIngest99)} »`);
+    exiger(nu99(boiteIngest99).includes("disk I/O error"),
+      `(99g) la cause exacte que le démon insère dans la phrase n'atteint pas l'écran : « ${nu99(boiteIngest99)} »`);
+    const badgeIngest99 = ligneIngest99.children.find((c) => c.classList && c.classList.contains("sys-comp-b"));
+    exiger(!!badgeIngest99 && badgeIngest99.classList.contains("sys-yellow"),
+      `(99g) l'état JAUNE du démon n'est pas porté par le badge : « ${badgeIngest99 && badgeIngest99.className} »`);
+    // CONTRÔLE POSITIF : l'état d'une installation NEUVE, celui qu'une base illisible rendait AVANT ce
+    // lot, garde sa phrase — et elle ne porte AUCUN aveu. Les deux ne se confondent plus.
+    const ligneInactif99 = modSysteme99.componentRow({ component: "ingest", state: "idle", detail: PHRASE_INACTIF99 });
+    const texteInactif99 = nu99(ligneInactif99);
+    exiger(texteInactif99.includes(PHRASE_INACTIF99) && !/NON LUE/.test(texteInactif99),
+      `(99g-négatif) l'état d'une installation NEUVE porte un aveu, ou a perdu sa phrase : « ${texteInactif99} »`);
+    exiger(nu99(ligneIngest99) !== texteInactif99,
+      "(99g) une base ILLISIBLE et une installation NEUVE rendent le même texte : c'est exactement la confusion que ce lot ferme côté démon");
+  } finally {
+    globalThis.fetch = fetchOrigine99;
+    S99.isAdmin = etatOrigine99.admin; S99.AUTH = etatOrigine99.auth;
+  }
+  console.log("(99) OK — une FAMILLE entière de flux non lue est peinte comme un GROUPE, comptée à part et jamais parmi les sources (détail ET pulse) ; la sous-liste des séries non lue dit la cause SERVIE au lieu d'envoyer mettre à jour un démon à jour, et les trois autres cas restent distincts ; les deux comptes non lus sont NOMMÉS et lus séparément ; la flotte distingue les TROIS valeurs de `pipeline_fresh` et ne peint plus « ingestion en panne » sur `null` ; un aveu d'ENRICHISSEMENT laisse l'inventaire lu à l'écran là où le refus ENTIER le fait disparaître ; et la phrase d'ingest non lue arrive entière, en jaune, distincte de l'installation neuve. Les causes, les noms de famille, les champs et le discriminant de la console sont LUS dans l'arbre du démon et jugés dans les deux sens ; les six chemins nominaux restent muets");
 }
 
 

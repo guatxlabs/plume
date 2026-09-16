@@ -24,10 +24,44 @@ function fmtTs(ts) {
   return d.toISOString().slice(0, 10);
 }
 
+// `P10.7-f` — L'INVENTAIRE D'INDEX A-T-IL ÉTÉ LU ? Le démon sert, en 200, `{ok: false, indexes: [],
+// error: <cause>, global_retention_days, bounds}` quand ni les statistiques ni les politiques ne se
+// lisent (`corps_de_liste_illisible`, daemon/src/handlers/index_policies.rs). Le drapeau est POSÉ par la
+// charge et LU par le formulaire, qui vit hors d'elle : c'est le seul lien entre la liste non lue et le
+// geste qui écrirait dessus.
+let INVENTAIRE_DINDEX_NON_LU = false;
+
 export async function loadIndexPolicies() {
   const wrap = $('#index-policy-list'); if (!wrap) return;
   if (!uiIsAdmin()) { wrap.replaceChildren(muted("réservé à l'administrateur.")); return; }
   const data = await fetchInto(wrap, '/index-policies'); if (!data) return;
+  // `P10.7-f` — UNE LISTE D'INDEX NON LUE N'EST PAS « AUCUN INDEX ». `fetchInto` ne capte qu'une EXCEPTION ;
+  // l'aveu arrive en 200, forme intacte, et `Array.isArray(data.indexes)` est VRAI sur un tableau vide.
+  // La phrase de vide rendue plus bas — « aucun index — la rétention globale s'applique à tout (mode 0) » —
+  // est, sur une lecture RATÉE, la plus fausse que ce panneau puisse écrire : il PILOTE UNE PURGE
+  // DESTRUCTIVE, et elle GARANTIT à l'exploitant qu'aucun index n'a de rétention propre, donc que tout
+  // tombe sous le global, au moment précis où l'on ignore ce que la table contient. `ok: false` est lu
+  // AUSSI : un inventaire avoué ne se sert jamais avec `ok: true`, et l'un sans l'autre serait un angle mort.
+  // LE GESTE D'ÉCRITURE SE RETIRE AVEC LA LISTE : le formulaire ouvert est refermé (son « Enregistrer »
+  // porterait sur une politique que cette vue n'a pas lue) et « + Index » porte la marque accessible de
+  // l'inertie avec sa raison ; le clic, lui, DIT le refus (cf. `openIndexPolicyForm`) au lieu de rester
+  // sans effet — la grammaire de `P11.4-l`, déjà livrée ailleurs dans ce dépôt.
+  if (data.error || data.ok === false) {
+    INVENTAIRE_DINDEX_NON_LU = true;
+    const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:0;font-size:12px';
+    const dit = document.createElement('span');
+    dit.textContent = 'Index NON LUS : le démon a refusé et en nomme la cause —';
+    aveu.append(dit, ' « ' + String(data.error || '').trim() + ' »');
+    wrap.replaceChildren(aveu);
+    const nouveau = $('#index-policy-new');
+    if (nouveau) { nouveau.setAttribute('aria-disabled', 'true'); nouveau.title = 'Les index n\'ont PAS été lus : définir ou éditer une politique ici armerait une purge de rétention sur un inventaire dont le contenu est inconnu — l\'index visé porte peut-être déjà une politique que cette lecture n\'a pas pu rendre.'; }
+    const formulaire = $('#index-policy-form');
+    if (formulaire) { formulaire.hidden = true; formulaire.replaceChildren(); delete formulaire.dataset.editing; }
+    return;
+  }
+  INVENTAIRE_DINDEX_NON_LU = false;
+  const nouveau = $('#index-policy-new');
+  if (nouveau) { nouveau.removeAttribute('aria-disabled'); nouveau.removeAttribute('title'); }
   const indexes = Array.isArray(data.indexes) ? data.indexes : [];
   const globalDays = num(data.global_retention_days);
 
@@ -105,6 +139,11 @@ function indexRow(r, globalDays) {
 // s'il vient d'un index découvert).
 export function openIndexPolicyForm(existing) {
   const host = $('#index-policy-form'); if (!host) return;
+  // `P10.7-f` — LE GESTE PROMIS EST REFUSÉ, ET IL LE DIT. « + Index » est câblé par le dépli partagé
+  // (`app.js`), hors de ce module : la marque d'inertie posée par la charge ne SUFFIT pas, seul ce point
+  // peut empêcher l'écriture. La MÊME phrase est écrite aux deux endroits, jamais deux formulations du
+  // même refus — l'une au survol, l'autre au clic.
+  if (INVENTAIRE_DINDEX_NON_LU) { toast('Les index n\'ont PAS été lus : définir ou éditer une politique ici armerait une purge de rétention sur un inventaire dont le contenu est inconnu — l\'index visé porte peut-être déjà une politique que cette lecture n\'a pas pu rendre.', 'bad', 9000); return; }
   const isEdit = !!(existing && existing.id != null);
   const prefillName = existing && existing.name ? String(existing.name) : '';
   // toggle-fermeture si on reclique « + Index » à vide.

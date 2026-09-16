@@ -760,6 +760,24 @@ async function renderWizardPanel(box, c, edit, hr) {
     const info = muted('Tactique dominante des alertes liées : ' + (rb.dominant_tactic || '—') + (rb.dominant_technique ? ' (' + rb.dominant_technique + ')' : ''));
     info.style.marginBottom = '6px'; sec.appendChild(info);
   }
+  // `P10.7-f` — DES ÉTAPES NON LUES NE SONT NI UN RUNBOOK SANS PROGRESSION, NI UNE PROGRESSION NULLE. Le
+  // démon sert, en 200, `{steps: [], progress: null, runbook, error: <cause>}` quand la lecture de
+  // `case_step` échoue (`corps_de_liste_illisible`, daemon/src/handlers/incidents.rs, `case_steps_json`) :
+  // la forme est intacte, `runbook` vient d'une AUTRE lecture et reste servi. Ce module ne lisait pas
+  // `error` et retombait sur `{total: 0, done: 0, skipped: 0}` : la tête écrivait « 0/0 traitées » et la
+  // barre se peignait VIDE — deux façons d'affirmer qu'aucune étape n'a été traitée sur un runbook dont
+  // l'analyste attend précisément de savoir où il en est. Et sans runbook attaché servi, la branche
+  // d'en dessous proposerait d'en ATTACHER un, ce que le démon refuse dès qu'une étape existe.
+  // L'AVEU PASSE AVANT LES DEUX : la ligne incident et la tactique dominante, elles, viennent de `rb`
+  // (lecture indépendante, aboutie) et restent peintes au-dessus.
+  if (steps && steps.error) {
+    const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:0;font-size:12px';
+    const dit = document.createElement('span');
+    dit.textContent = 'Étapes du runbook NON LUES : le démon a refusé et en nomme la cause —';
+    aveu.append(dit, ' « ' + String(steps.error).trim() + ' »');
+    sec.appendChild(aveu);
+    return;
+  }
   const hasRunbook = steps.runbook != null;
   if (!hasRunbook) {
     const pick = document.createElement('div'); pick.style.cssText = 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px';
@@ -905,4 +923,6 @@ async function prepareResponse(c, s) {
 // aussi, jugés par le témoin 21 (P11.11-a) — dépli d'une ligne et raison d'un état inerte.
 // `loadCaseOpsSummary` est exporté pour la même raison que `renderResults` de datamodels.js : le refus
 // du démon sur les deux routes du bandeau ne se prouve qu'en le RENDANT.
-export { addToCase, canEditCases, caseBtn, caseRow, createCase, loadCaseOpsSummary, loadCases, openCase, renderCaseDetail };
+// `renderWizardPanel` est exposé pour le harnais ESM (témoin 94 : l'aveu de lecture des étapes, rendu par SA
+// fabrique réelle et non par une copie) ; aucun usage applicatif hors de ce module.
+export { addToCase, canEditCases, caseBtn, caseRow, createCase, loadCaseOpsSummary, loadCases, openCase, renderCaseDetail, renderWizardPanel };

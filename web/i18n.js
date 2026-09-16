@@ -928,6 +928,19 @@ const I18N_EN = {
   "Sources NON LUES : le démon a refusé et en nomme la cause —": "Sources NOT READ: the daemon declined and names the cause —",
   "indéterminée": "undetermined",
   "Verdict NON ÉTABLI : la déclaration par connecteur n'a pas pu être lue. Ni « déclarée » ni « personne ne l'a déclarée » ne serait vrai ici, et cette source n'est PAS classée inattendue.": "Verdict NOT ESTABLISHED: the connector declaration could not be read. Neither “declared” nor “nobody declared it” would be true here, and this source is NOT classified as unexpected.",
+  // `P10.7-f` (rang 3) — LES TROIS SURFACES QUI RESTAIENT SOURDES À L'AVEU DU DÉMON : la progression d'un
+  // runbook (cases.js), l'inventaire des index (index_policies.js) et le classement des entités à risque
+  // (risk.js). MÊME FORME À DEUX NŒUDS que les huit clés ci-dessus — la phrase seule est un nœud texte
+  // ENTIER, la cause servie est collée dans un SECOND nœud —, la seule que `i18nWalk` sait traduire.
+  // Les deux clés suivantes ne portent PAS de cause : elles sont écrites en entier par la console, l'une
+  // au survol du bouton et au clic refusé (le MÊME littéral aux deux endroits, jamais deux formulations),
+  // l'autre à côté des deux comptes de risque dont elle reprend les mots exacts (« n'ont PAS pu être
+  // comptées — ce n'est pas un compte nul »).
+  "Étapes du runbook NON LUES : le démon a refusé et en nomme la cause —": "Runbook steps NOT READ: the daemon declined and names the cause —",
+  "Index NON LUS : le démon a refusé et en nomme la cause —": "Indexes NOT READ: the daemon declined and names the cause —",
+  "Classement des entités à risque NON LU : le démon a refusé et en nomme la cause —": "Risk entity ranking NOT READ: the daemon declined and names the cause —",
+  "Les index n'ont PAS été lus : définir ou éditer une politique ici armerait une purge de rétention sur un inventaire dont le contenu est inconnu — l'index visé porte peut-être déjà une politique que cette lecture n'a pas pu rendre.": "The indexes were NOT read: defining or editing a policy here would arm a retention purge over an inventory whose contents are unknown — the target index may already carry a policy that this read could not return.",
+  "Les entités au-dessus d'un seuil qui sont des machines déclarées HORS DU PARC n'ont PAS pu être comptées — ce n'est pas un compte nul.": "The entities above a threshold that are machines declared OUTSIDE THE ESTATE could NOT be counted — this is not a count of zero.",
   // P10.7-g (lot 101) — retention.js
   "valeur enregistrée": "stored value", "variable d'environnement": "environment variable", "fichier de configuration": "configuration file", "défaut du binaire": "binary default",
   "La valeur affichée est celle que la purge appliquera (environnement, configuration ou défaut), pas la valeur enregistrée, qui n'a pas pu être lue.": "The value shown is the one the purge will apply (environment, configuration or default), not the stored value, which could not be read.",

@@ -11680,6 +11680,195 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   console.log("(93) OK — règles, parseurs, playbooks, lignes de base, vocabulaire de complétion et sources indéterminées écrivent la cause SERVIE au lieu d'une absence rassurante, et les six chemins nominaux restent muets");
 }
 
+// ---------------------------------------------------------------------------------------------
+// (94) `P10.7-f` (rang 3) — LES TROIS DERNIÈRES SURFACES SOURDES DE LA CONSOLE LISENT L'AVEU, ET AUCUNE
+//      NE REND PLUS UN CHIFFRE NI UNE PHRASE QUE PERSONNE N'A ÉTABLIS. Le rang trois a soldé en bloc,
+//      côté démon, la progression d'un dossier, l'inventaire des index et le recensement des entités à
+//      risque : sur une lecture ratée les trois routes servent en 200 un corps de FORME INTACTE, la liste
+//      vide, les comptes à `null`, plus la cause. MESURÉ le 2026-09-16 : la console n'en lisait AUCUN.
+//        · `web/cases.js` retombait sur `steps.progress || {total: 0, done: 0, skipped: 0}` : la tête du
+//          runbook écrivait « 0/0 traitées » et la barre se peignait VIDE — deux façons d'affirmer qu'aucune
+//          étape n'a été traitée, sur le seul écran qui dit à l'analyste où en est sa réponse à incident.
+//        · `web/index_policies.js` peignait « aucun index — la rétention globale s'applique à tout
+//          (mode 0) » sur une liste vide, sans lire `error` ni `ok` : la phrase la plus rassurante du
+//          panneau qui PILOTE UNE PURGE DESTRUCTIVE, écrite au moment précis où l'on ignore ce que la
+//          table contient.
+//        · `web/risk.js` ne lisait ni `error` — sa liste vide se rendait « Aucune entité à risque — le
+//          moteur de risque (RBA) n'a pas encore attribué de contribution », c'est-à-dire une posture
+//          SAINE — ni `over_threshold_hors_parc`, la troisième grandeur du recensement, qui vaut `null`
+//          quand rien n'a été compté (zéro occurrence dans `web/` avant ce lot).
+//      LA CAUSE N'EST PAS RECOPIÉE : elle est EXTRAITE de `liste_bornee.rs` comme au témoin 93, et QUATRE
+//      assertions d'instrument lisent dans l'arbre du démon les clés mêmes que ce témoin fabrique
+//      (`progress` nul, `ok` faux, `over_threshold_hors_parc` nul, `error` posé par le fabricant de corps).
+//      Si l'une d'elles cesse d'exister, ce témoin REFUSE DE CONCLURE au lieu de rester vert sur un corps
+//      devenu étranger au démon.
+//      CE QUE CE TÉMOIN NE TIENT PAS : ni la mise en page, ni la langue anglaise de ces phrases (témoin 10
+//      et garde du lexique) ; il ne rejoue pas les routes du démon, il en dérive les MOTS et fabrique le
+//      corps qui les porte ; il ne mesure pas la DURÉE d'affichage d'un avis (les minuteries du clic refusé
+//      sont capturées, jamais jouées) ; et il ne juge pas le bouton « + Index », câblé hors de son module
+//      par le dépli partagé d'`app.js` — il juge la marque que la charge y pose et le REFUS du formulaire.
+// ---------------------------------------------------------------------------------------------
+{
+  const url94 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const modCas94 = await import(url94("cases.js"));
+  const modIdx94 = await import(url94("index_policies.js"));
+  const modRisk94 = await import(url94("risk.js"));
+  const { S: S94 } = await import(url94("state.js"));
+  const tic94 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser94 = async (n = 20) => { for (let i = 0; i < n; i++) await tic94(); };
+  const cueillir94 = (el, pred, acc) => { if (el && pred(el)) acc.push(el); ((el && el.children) || []).forEach((c) => cueillir94(c, pred, acc)); return acc; };
+  const nu94 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ");
+  const aLaClasse94 = (e, c) => e.classList && e.classList.contains(c);
+  const lignesDeTable94 = (h) => cueillir94(h, (e) => e.tagName === "TR", []).filter((tr) => cueillir94(tr, (x) => x.tagName === "TD", []).length > 0);
+  const boutons94 = (h) => cueillir94(h, (e) => e.tagName === "BUTTON", []);
+  const avis94 = () => document.querySelectorAll(".toast").map((t) => String(t.textContent));
+
+  // ── (0) L'INSTRUMENT : LA CAUSE ET LES TROIS CLÉS VIENNENT DE L'ARBRE DU DÉMON ──────────────────
+  const srcListe94 = readFileSync(path.join(RACINE, "daemon", "src", "handlers", "liste_bornee.rs"), "utf8");
+  const srcInc94 = readFileSync(path.join(RACINE, "daemon", "src", "handlers", "incidents.rs"), "utf8");
+  const srcIdx94 = readFileSync(path.join(RACINE, "daemon", "src", "handlers", "index_policies.rs"), "utf8");
+  const srcRba94 = readFileSync(path.join(RACINE, "daemon", "src", "handlers", "rba.rs"), "utf8");
+  // Un littéral Rust continué par `\` en fin de ligne perd le saut ET l'indentation qui suit : la chaîne
+  // est recomposée ici comme le compilateur la compose (même recomposition qu'au témoin 93).
+  const mCause94 = srcListe94.match(/CAUSE_LISTE_ILLISIBLE: &str = "([\s\S]*?)";/);
+  const CAUSE94 = mCause94 ? mCause94[1].replace(/\\\r?\n\s*/g, "") : "";
+  exiger(CAUSE94.includes("NON LUE") && CAUSE94.length > 60,
+    `(94-instrument) \`CAUSE_LISTE_ILLISIBLE\` n'est plus lisible dans daemon/src/handlers/liste_bornee.rs : la cause fabriquée ci-dessous ne dériverait plus du démon — « ${CAUSE94} »`);
+  exiger(/"progress": Value::Null/.test(srcInc94) && /corps_de_liste_illisible\([\s\S]{0,200}?"steps",/.test(srcInc94),
+    "(94-instrument) `/api/cases/{id}/steps` ne sert plus `progress` à `null` avec l'aveu de la liste `steps` (daemon/src/handlers/incidents.rs, `case_steps_json`) : la progression jugée ci-dessous n'existe plus côté démon");
+  exiger(/corps_de_liste_illisible\([\s\S]{0,400}?"ok": false/.test(srcIdx94) && /"indexes",/.test(srcIdx94),
+    "(94-instrument) `/api/index-policies` ne sert plus `ok: false` avec l'aveu de la liste `indexes` (daemon/src/handlers/index_policies.rs) : le corps jugé ci-dessous n'existe plus côté démon");
+  exiger(/None => \(aveu::TotalBorne::sans_lecture\(\), Value::Null, Value::Null\)/.test(srcRba94) && /sortie\["over_threshold_hors_parc"\] = over_threshold_hors_parc;/.test(srcRba94),
+    "(94-instrument) `/api/risk/entities` ne sert plus `over_threshold_hors_parc` à `null` sur un recensement non lu (daemon/src/handlers/rba.rs, `risk_entities_page`) : la grandeur jugée ci-dessous n'existe plus côté démon");
+  exiger(/sortie\.insert\(String::from\("error"\), json!\(CAUSE_LISTE_ILLISIBLE\)\);/.test(srcListe94) && /aveu::corps\("entities", entities,/.test(srcRba94),
+    "(94-instrument) le classement des entités ne passe plus par le fabricant de corps qui pose `error` (daemon/src/handlers/{liste_bornee,rba}.rs) : l'aveu jugé ci-dessous n'atteindrait plus la console");
+
+  const qsOrigine94 = document.querySelector, fetchOrigine94 = globalThis.fetch;
+  const etatOrigine94 = { admin: S94.isAdmin, auth: S94.AUTH };
+  const hoteDesAvis94 = new Element("div"); hoteDesAvis94.id = "toasts"; document.body.appendChild(hoteDesAvis94);
+  const listeIdx94 = new Element("div"), formIdx94 = new Element("div"), neufIdx94 = new Element("button");
+  const listeRisk94 = new Element("div"), detailRisk94 = new Element("div"), legendeRisk94 = new Element("div");
+  const hotes94 = {
+    "#toasts": hoteDesAvis94,
+    "#index-policy-list": listeIdx94, "#index-policy-form": formIdx94, "#index-policy-new": neufIdx94,
+    "#risk-list": listeRisk94, "#risk-detail": detailRisk94, "#risk-legend": legendeRisk94,
+  };
+  document.querySelector = (s) => (Object.prototype.hasOwnProperty.call(hotes94, s) ? hotes94[s] : new Element("div"));
+  let corpsServis94 = {};
+  globalThis.fetch = async (u) => {
+    const url = String(u);
+    const cle = Object.keys(corpsServis94).find((k) => url.includes(k));
+    const obj = cle ? corpsServis94[cle] : {};
+    return { ok: true, status: 200, text: async () => JSON.stringify(obj), json: async () => obj };
+  };
+
+  try {
+    S94.isAdmin = true;
+    S94.AUTH = { user: "hugo", role: "admin" };
+
+    // ── (a) LA PROGRESSION D'UN RUNBOOK : NI « 0/0 », NI BARRE VIDE, SOUS UN AVEU ──────────────────
+    const RUNBOOK94 = { id: 7, key: "compte-compromis", name: "Compte compromis", match_kind: "tactic", match_key: "TA0006", description: "", managed: 1 };
+    const etape94 = (id, titre, statut) => ({ id, step_id: id, ordinal: id, phase: "triage", title: titre, guidance: "", step_kind: "manual", search_soql: "", action_kind: "", target: "", status: statut, actor: statut === "pending" ? "" : "hugo", ts: statut === "pending" ? null : 1000, note: "", host: "" });
+    const RUNBOOKS94 = { incident_tier: 2, incident_type: "compromission", commander: "hugo", dominant_tactic: "TA0006", dominant_technique: "T1110", prefill_target: null, prefill_src_ip: null, prefill_pid: null, prefill_host: null, recommended: null, attached_runbook_id: 7, available: [] };
+    const rendreLeWizard94 = async (corpsDesEtapes) => {
+      corpsServis94 = { "/api/cases/9/runbooks": RUNBOOKS94, "/api/cases/9/steps": corpsDesEtapes };
+      const boite = new Element("div"), entete = new Element("span");
+      await modCas94.renderWizardPanel(boite, { id: 9, title: "Compte compromis" }, true, entete);
+      await laisser94();
+      return boite;
+    };
+    // SOUS L'AVEU : `runbook` vient d'une AUTRE lecture et reste SERVI — c'est précisément ce corps-là qui
+    // faisait peindre la progression, puisque la tête n'est rendue que lorsqu'un runbook est attaché.
+    const avoueCas94 = await rendreLeWizard94({ steps: [], progress: null, runbook: RUNBOOK94, error: CAUSE94 });
+    const texteAvoueCas94 = nu94(avoueCas94);
+    exiger(/NON LUES/.test(texteAvoueCas94), `(94a) la progression d'un dossier : l'aveu servi n'est pas dit — le texte peint ne porte pas « NON LUES » : « ${texteAvoueCas94} »`);
+    exiger(texteAvoueCas94.includes(CAUSE94), `(94a) la CAUSE servie par le démon n'est pas collée telle quelle dans le panneau de runbook : « ${texteAvoueCas94} »`);
+    exiger(!/0\/0/.test(texteAvoueCas94), `(94a) « 0/0 » est peint sous un aveu : une progression NULLE se lit « aucune étape traitée », ce qu'aucune lecture n'a établi : « ${texteAvoueCas94} »`);
+    exiger(!/traitées/.test(texteAvoueCas94), `(94a) la tête de progression est peinte sous un aveu — quel que soit son chiffre, elle affirme un état d'avancement que personne n'a lu : « ${texteAvoueCas94} »`);
+    exiger(!texteAvoueCas94.includes(RUNBOOK94.name), `(94a) le nom du runbook coiffe encore une progression sous un aveu : la tête est peinte : « ${texteAvoueCas94} »`);
+    exiger(!/Attacher le runbook/.test(texteAvoueCas94), `(94a) le panneau propose d'ATTACHER un runbook sous un aveu : le démon refuse dès qu'une étape existe, et ce case en porte peut-être : « ${texteAvoueCas94} »`);
+    // CONTRÔLE POSITIF : deux étapes servies -> deux étapes peintes, la progression exacte, aucun aveu.
+    const sainCas94 = await rendreLeWizard94({ steps: [etape94(1, "Isoler le compte", "done"), etape94(2, "Révoquer les jetons", "pending")], progress: { total: 2, done: 1, skipped: 0 }, runbook: RUNBOOK94 });
+    const texteSainCas94 = nu94(sainCas94);
+    exiger(/1\/2 traitées/.test(texteSainCas94), `(94b) le chemin nominal ne peint pas « 1/2 traitées » — le verdict (94a) ne porterait sur rien : « ${texteSainCas94} »`);
+    exiger(texteSainCas94.includes("Isoler le compte") && texteSainCas94.includes("Révoquer les jetons"), `(94b) le chemin nominal ne peint pas les deux étapes servies : « ${texteSainCas94} »`);
+    exiger(!/NON LUES/.test(texteSainCas94), `(94b) « NON LUES » est peint sur une lecture RÉUSSIE — un instrument qui le dit toujours ne mesure rien : « ${texteSainCas94} »`);
+
+    // ── (c) L'INVENTAIRE DES INDEX : NI « AUCUN INDEX », NI UN GESTE QUI ARMERAIT UNE PURGE ────────
+    const indexServi94 = (nom, avecPolitique) => ({ name: nom, id: avecPolitique ? 1 : null, events: 1000, oldest_ts: 1000, size_bytes_est: 4096, retention_days: avecPolitique ? 30 : 0, max_rows: 0, max_bytes: 0, has_policy: !!avecPolitique, enabled: true, description: "", managed: 0 });
+    const BORNES94 = { retention_days: { min_when_set: 7, max: 3650, inherit: 0 } };
+    const rendreLesIndex94 = async (corps) => {
+      corpsServis94 = { "/api/index-policies": corps };
+      listeIdx94.replaceChildren(); formIdx94.replaceChildren(); formIdx94.hidden = false;
+      neufIdx94.removeAttribute("aria-disabled"); neufIdx94.removeAttribute("title");
+      await modIdx94.loadIndexPolicies();
+      await laisser94();
+    };
+    await rendreLesIndex94({ ok: false, indexes: [], global_retention_days: 90, bounds: BORNES94, error: CAUSE94 });
+    const texteAvoueIdx94 = nu94(listeIdx94);
+    exiger(/NON LUS/.test(texteAvoueIdx94), `(94c) l'inventaire des index : l'aveu servi n'est pas dit — le texte peint ne porte pas « NON LUS » : « ${texteAvoueIdx94} »`);
+    exiger(texteAvoueIdx94.includes(CAUSE94), `(94c) la CAUSE servie par le démon n'est pas collée telle quelle dans le panneau des index : « ${texteAvoueIdx94} »`);
+    exiger(!/aucun index/i.test(texteAvoueIdx94), `(94c) « aucun index » est peint sous un aveu — une absence RASSURANTE sur la vue qui pilote la purge : « ${texteAvoueIdx94} »`);
+    exiger(!/la rétention globale s'applique/.test(texteAvoueIdx94), `(94c) « la rétention globale s'applique à tout (mode 0) » est peint sous un aveu : c'est GARANTIR qu'aucun index n'a de rétention propre, au moment où l'on ignore ce que la table contient : « ${texteAvoueIdx94} »`);
+    exiger(cueillir94(listeIdx94, (e) => aLaClasse94(e, "rulerow"), []).length === 0, "(94c) une ligne d'index est peinte sous un aveu — elle se lirait comme l'inventaire");
+    exiger(boutons94(listeIdx94).length === 0, `(94c) ${boutons94(listeIdx94).length} bouton(s) restent offerts dans une liste NON LUE : éditer ou supprimer une politique de purge s'y présenterait comme applicable`);
+    exiger(neufIdx94.getAttribute("aria-disabled") === "true", "(94c) « + Index » ne porte pas la marque d'inertie sous un aveu : le geste de création se présente comme applicable à une liste non lue");
+    exiger(String(neufIdx94.getAttribute("title") || "").includes("purge"), `(94c) la marque d'inertie de « + Index » ne DIT pas pourquoi : « ${neufIdx94.getAttribute("title")} »`);
+    exiger(formIdx94.hidden === true && nu94(formIdx94) === "", `(94c) un formulaire d'index ouvert survit à l'aveu : son « Enregistrer » porte sur une politique que cette vue n'a pas lue : « ${nu94(formIdx94)} »`);
+    // LE CLIC EST REFUSÉ, ET IL LE DIT. Le délai d'effacement d'un avis n'est pas mesuré ici, et une
+    // minuterie de neuf secondes posée par le DERNIER témoin du banc retiendrait le processus jusqu'à son
+    // échéance : les minuteries longues sont capturées, jamais jouées — leur COMPTE sert d'instrument.
+    const minuterieOrigine94 = globalThis.setTimeout;
+    let minuteriesRetenues94 = 0;
+    globalThis.setTimeout = (fn, ms) => { if (ms >= 1000) { minuteriesRetenues94++; return 0; } return minuterieOrigine94(fn, ms); };
+    const avisAvant94 = avis94().length;
+    try { modIdx94.openIndexPolicyForm({ name: "auth" }); } finally { globalThis.setTimeout = minuterieOrigine94; }
+    const ditsAuClic94 = avis94().slice(avisAvant94);
+    exiger(minuteriesRetenues94 === 1, `(94c-instrument) ${minuteriesRetenues94} minuterie(s) longue(s) capturée(s) au lieu d'une : l'avis attendu n'a pas été posé par le chemin qu'on croit mesurer`);
+    exiger(ditsAuClic94.length === 1 && /purge/.test(ditsAuClic94[0]), `(94c) le clic de « + Index » sur une liste NON LUE ne dit pas son refus : ${JSON.stringify(ditsAuClic94)}`);
+    exiger(nu94(formIdx94) === "", `(94c) le formulaire de création s'ouvre malgré tout sur une liste NON LUE : « ${nu94(formIdx94)} »`);
+    // CONTRÔLE POSITIF : deux index servis -> deux lignes, leurs gestes, et pas un mot d'aveu.
+    await rendreLesIndex94({ ok: true, indexes: [indexServi94("auth", true), indexServi94("web", false)], global_retention_days: 90, bounds: BORNES94 });
+    const texteSainIdx94 = nu94(listeIdx94);
+    exiger(cueillir94(listeIdx94, (e) => aLaClasse94(e, "rulerow"), []).length === 2, `(94d) l'inventaire nominal peint ${cueillir94(listeIdx94, (e) => aLaClasse94(e, "rulerow"), []).length} ligne(s) au lieu de 2 — le verdict (94c) ne porterait sur rien : « ${texteSainIdx94} »`);
+    exiger(boutons94(listeIdx94).length >= 2, `(94d) l'inventaire nominal n'offre que ${boutons94(listeIdx94).length} bouton(s) : le verdict « aucun bouton sous l'aveu » ne porterait sur rien`);
+    exiger(!/NON LUS/.test(texteSainIdx94), `(94d) « NON LUS » est peint sur une lecture RÉUSSIE — un instrument qui le dit toujours ne mesure rien : « ${texteSainIdx94} »`);
+    exiger(neufIdx94.getAttribute("aria-disabled") === null, "(94d) « + Index » reste inerte après une lecture RÉUSSIE : l'aveu d'hier interdirait le geste d'aujourd'hui");
+    modIdx94.openIndexPolicyForm({ name: "auth" });
+    exiger(nu94(formIdx94).includes("Créer"), `(94d) le formulaire de création ne s'ouvre PAS après une lecture réussie — le refus de (94c) ne porterait sur rien : « ${nu94(formIdx94)} »`);
+    formIdx94.replaceChildren(); formIdx94.hidden = true;
+
+    // ── (e) LE CLASSEMENT DES ENTITÉS À RISQUE : NI POSTURE SAINE, NI PART HORS PARC NULLE LUE ZÉRO ─
+    const SEUILS94 = { score: 50, distinct_tactics: 3, velocity: 5, window_s: 86400 };
+    const entite94 = (nom, score, seuil) => ({ entity_type: "host", entity: nom, env_id: "default", score, contrib: 3, distinct_tactics: 2, tactics: "TA0006", score_hot: 4, contrib_hot: 1, max_severity: 3, first_ts: 100, last_ts: 990, over_threshold: seuil, attente: null });
+    const rendreLeRisque94 = async (corps) => {
+      corpsServis94 = { "/api/risk/entities": corps };
+      listeRisk94.replaceChildren();
+      await modRisk94.loadRiskView();
+      await laisser94();
+    };
+    await rendreLeRisque94({ entities: [], served: 0, window: 500, total: null, total_capped: null, error: CAUSE94, over_threshold_total: null, over_threshold_hors_parc: null, thresholds: SEUILS94 });
+    const texteAvoueRisk94 = nu94(listeRisk94);
+    exiger(/NON LU/.test(texteAvoueRisk94), `(94e) le classement des entités : l'aveu servi n'est pas dit — le texte peint ne porte pas « NON LU » : « ${texteAvoueRisk94} »`);
+    exiger(texteAvoueRisk94.includes(CAUSE94), `(94e) la CAUSE servie par le démon n'est pas collée telle quelle dans le panneau Risque : « ${texteAvoueRisk94} »`);
+    exiger(!/Aucune entité à risque/.test(texteAvoueRisk94), `(94e) « Aucune entité à risque » est peint sous un aveu — c'est rendre une posture SAINE sur une lecture qui n'a pas eu lieu : « ${texteAvoueRisk94} »`);
+    exiger(/HORS DU PARC/.test(texteAvoueRisk94) && /n'ont PAS pu être comptées/.test(texteAvoueRisk94),
+      `(94e) la part des entités au-dessus d'un seuil DÉCLARÉES HORS DU PARC est servie à \`null\` et la vue n'en dit rien : un \`null\` qu'on affiche se lit ZÉRO, et « aucune machine retirée parmi elles » n'est pas « on ne sait pas » : « ${texteAvoueRisk94} »`);
+    exiger(lignesDeTable94(listeRisk94).length === 0, "(94e) une ligne d'entité est peinte sous un aveu — elle se lirait comme le classement");
+    // CONTRÔLE POSITIF : deux entités servies, recensement LU -> deux lignes, et pas un mot d'aveu.
+    await rendreLeRisque94({ entities: [entite94("web-01", 61, true), entite94("web-02", 22, false)], served: 2, window: 500, total: 2, total_capped: false, over_threshold_total: 1, over_threshold_hors_parc: 0, thresholds: SEUILS94 });
+    const texteSainRisk94 = nu94(listeRisk94);
+    exiger(lignesDeTable94(listeRisk94).length === 2, `(94f) le chemin nominal peint ${lignesDeTable94(listeRisk94).length} ligne(s) au lieu de 2 — le verdict (94e) ne porterait sur rien : « ${texteSainRisk94} »`);
+    exiger(!/NON LU/.test(texteSainRisk94), `(94f) « NON LU » est peint sur une lecture RÉUSSIE — un instrument qui le dit toujours ne mesure rien : « ${texteSainRisk94} »`);
+    exiger(!/HORS DU PARC/.test(texteSainRisk94), `(94f) la part hors parc est dite NON COMPTÉE alors que le démon l'a comptée (zéro ÉTABLI) : « ${texteSainRisk94} »`);
+  } finally {
+    document.querySelector = qsOrigine94; globalThis.fetch = fetchOrigine94;
+    S94.isAdmin = etatOrigine94.admin; S94.AUTH = etatOrigine94.auth;
+    hoteDesAvis94.remove();
+  }
+  console.log("(94) OK — la progression d'un dossier, l'inventaire des index et le classement des entités à risque écrivent la cause SERVIE au lieu d'un chiffre nul ou d'une absence rassurante, aucun geste de purge ne se présente sur une liste non lue, et les trois chemins nominaux restent muets");
+}
+
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;
 verdictRendu = true;
 if (echecs.length) {

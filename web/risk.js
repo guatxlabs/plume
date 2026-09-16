@@ -33,12 +33,38 @@ async function loadRiskView() {
     { key: 'last_ts', label: 'Dernier', sortable: true, sortVal: r => r.last_ts || 0, render: r => { const s = document.createElement('span'); s.textContent = r.last_ts ? 'il y a ' + humanAge(nowS - r.last_ts) : '—'; if (r.last_ts) s.title = fmtTs(r.last_ts); return s; } },
   ];
   host.replaceChildren();
+  // `P10.7-f` — LE CLASSEMENT LUI-MÊME A-T-IL ÉTÉ LU ? Le démon sert, en 200, `{entities: [], served: 0,
+  // window, total: null, total_capped: null, error: <cause>, …}` quand la fenêtre de `risk_rollup` ne se
+  // lit pas (`liste_bornee::corps`, daemon/src/handlers/rba.rs, `risk_entities_page`). `fetchInto` ne
+  // capte qu'une EXCEPTION : ce corps-là le traverse, et ce module ne lisait pas `error` du tout. Les deux
+  // phrases ci-dessous disent déjà ce qui n'a pas été COMPTÉ ; aucune ne disait que la LISTE elle-même
+  // n'avait pas été lue, et la cause servie n'était écrite nulle part.
+  if (d.error) {
+    const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:0 0 6px;font-size:12px';
+    const dit = document.createElement('span');
+    dit.textContent = 'Classement des entités à risque NON LU : le démon a refusé et en nomme la cause —';
+    aveu.append(dit, ' « ' + String(d.error).trim() + ' »');
+    host.appendChild(aveu);
+  }
   const phrase = document.createElement('div');
   phrase.className = 'muted';
   phrase.style.cssText = 'margin-bottom:6px;font-size:11px';
   phrase.appendChild(document.createTextNode(motDeLaCoupeDuClassement(d)));
   phrase.appendChild(document.createElement('br'));
   phrase.appendChild(document.createTextNode(motDesEntitesAuDessusDunSeuil(d)));
+  // `P10.7-f` — LA TROISIÈME GRANDEUR DU RECENSEMENT, QUE PERSONNE NE LISAIT. Le démon compte, sur le MÊME
+  // balayage borné et par le MÊME prédicat, combien des entités au-dessus d'un seuil sont des machines que
+  // l'exploitant a DÉCLARÉES HORS DU PARC (`over_threshold_hors_parc`, `P11.20-h`) — et il la rend `null`,
+  // jamais `0`, quand le recensement n'a pas pu être lu. Zéro occurrence dans `web/` avant ce lot : la
+  // valeur n'était ni affichée ni lue, donc son `null` ne mentait pas encore — mais la première ligne qui
+  // l'afficherait la lirait `0` par le même `Number(null)` qui a déjà coûté le rang des sources
+  // indéterminées. Elle est donc LUE ici, et son absence se dit avec les MOTS des deux comptes voisins.
+  if (typeof d.over_threshold_hors_parc !== 'number') {
+    const ditHorsParc = document.createElement('span');
+    ditHorsParc.textContent = "Les entités au-dessus d'un seuil qui sont des machines déclarées HORS DU PARC n'ont PAS pu être comptées — ce n'est pas un compte nul.";
+    phrase.appendChild(document.createElement('br'));
+    phrase.appendChild(ditHorsParc);
+  }
   host.appendChild(phrase);
   const liste = document.createElement('div');
   host.appendChild(liste);
@@ -49,7 +75,16 @@ async function loadRiskView() {
   // `P11.18-z` — IDENTITÉ DE CETTE LISTE (littérale, stable, propre à elle). CE PANNEAU NE PORTE AUCUN
   // GESTE D'ÉCRITURE, et c'est écrit plutôt que tu : sa mémoire ne sert pas un geste éditorial mais le
   // rafraîchissement (`#risk-refresh`) et le retour au panneau, qui refabriquent l'hôte de la même façon.
-  pagedList(liste, { mode: 'client', pageSize: 50, rows: entities, columns, sort: { key: 'score', dir: -1 }, emptyText: MOT_RISQUE_AUCUNE_ENTITE, onRowClick: r => openEntity(r.entity_type, r.entity), storeKey: 'soc_risk_entities', recherche: { fenetre: true } });
+  // `P10.7-f` — LE TEXTE DE VIDE NE SE PEINT PAS SOUS UN AVEU. `emptyText` dit « Aucune entité à risque —
+  // le moteur de risque (RBA) n'a pas encore attribué de contribution » : sur une lecture RATÉE, c'est
+  // affirmer qu'aucune entité ne porte de risque, exactement l'inverse de ce que l'aveu vient d'écrire.
+  // DEUX FAITS, DEUX TESTS, JAMAIS UN SEUL (`P10.7-d`) : le premier ne regarde QUE ce qui a été servi —
+  // des lignes reçues AVEC une cause se rendent, comme la matrice ATT&CK et la couverture des détections
+  // le font déjà —, le second ne regarde QUE la lecture. Une condition unique les fondrait, et après elle
+  // un refus, une réponse illisible et un vrai vide rendraient la même chose.
+  const optionsDuClassement = { mode: 'client', pageSize: 50, rows: entities, columns, sort: { key: 'score', dir: -1 }, emptyText: MOT_RISQUE_AUCUNE_ENTITE, onRowClick: r => openEntity(r.entity_type, r.entity), storeKey: 'soc_risk_entities', recherche: { fenetre: true } };
+  if (entities.length) pagedList(liste, optionsDuClassement);
+  else if (!d.error) pagedList(liste, optionsDuClassement);
   // légende des seuils courants (aide à lire « seuil »).
   const leg = $('#risk-legend');
   if (leg) {

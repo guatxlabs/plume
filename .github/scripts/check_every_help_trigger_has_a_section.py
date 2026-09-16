@@ -55,6 +55,22 @@ garde lit `web/` seulement : elle ne se lit pas elle-même, ni le harnais, qui c
 La dérivation du module du registre et de la PORTÉE de sa définition (`portee_du_registre`) est importée par
 `check_i18n_lexicon_covers_displayed_strings.py`, qui exempte cette portée seule — pas le module — de son
 plafond de trous (source unique : une règle écrite deux fois diverge).
+
+CE FICHIER HÉBERGE AUSSI LE LECTEUR RUST PARTAGÉ (`sans_commentaires_rust`, quatre gardes le lisent).
+LE DÉFAUT, VU LE 2026-09-16 (`P10.20-c`) : il prenait TOUTE apostrophe pour une durée de vie, donc le
+littéral de caractère `'"'` (métacaractères d'interpréteur, `daemon/src/handlers/actions.rs`) ouvrait une
+FAUSSE chaîne et le dépouillement repartait de travers jusqu'au guillemet suivant — dans un sens un
+COMMENTAIRE lu comme du code (une accusation fabriquée), dans l'autre du CODE lu comme un commentaire
+(une garde aveugle, sans un mot). CE QU'IL TIENT DÉSORMAIS : les littéraux de caractère `'x'` et d'octet
+`b'"'`, leurs séquences d'échappement (la liste exacte est écrite au-dessus de `RE_CARACTERE_RUST` — une
+chaîne Python ne peut pas les porter sans les interpréter), et les durées de vie et étiquettes de boucle
+`'a`, `'static`, `'_`, `'outer:` (témoins dans `temoins_du_lecteur`).
+CE QU'IL NE TIENT PAS, ÉCRIT ICI : les chaînes brutes
+`r#"…"#` (un `"` posé DEDANS ferme encore la chaîne trop tôt — inchangé par ce correctif), le corps des
+MACROS (`macro_rules!` peut porter des apostrophes de fragment `$l:lifetime` et du texte qui n'est pas du
+Rust), les apostrophes d'un ATTRIBUT ou d'une chaîne de documentation `#[doc = "…'…"]` (elles sont dans
+une chaîne, donc sautées — mais rien ne vérifie l'attribut lui-même), et le CODE GÉNÉRÉ, que ce dépôt ne
+relit pas. Ce lecteur reste un DÉPOUILLEUR, pas un analyseur syntaxique Rust.
 """
 import os, re, subprocess, sys
 
@@ -122,9 +138,20 @@ MOTIFS_DECLENCHEUR = [  # (motif, portée où il vaut — None : partout sous we
 # rendre un compte amputé en vert. Un instrument qui blanchit une région ne se plaint jamais : il rend un
 # chiffre plus petit, et rien ne le distingue d'un code plus propre.
 RE_AVANT_REGEX = re.compile(r"(?:^|[\(\[,=:!&|?{};+\-*%<>~^]|\breturn|\btypeof|\bcase)\s*$")
-# Délimiteurs de chaîne par langage. En Rust, `'` n'en est PAS un (c'est une durée de vie `&'static str`),
-# il n'y a pas de gabarit, et `/` est toujours une division : pas de littéral d'expression régulière.
+# Délimiteurs de chaîne par langage. En Rust, `'` n'ouvre PAS une chaîne : il ouvre soit une DURÉE DE VIE
+# (`&'static str`), soit un LITTÉRAL DE CARACTÈRE (`'"'`, `'\n'`, `b'"'`) — et le lire toujours comme le
+# premier est ce qui faisait dérailler le dépouillement (`P10.20-c`). Il n'y a pas de gabarit, et `/` est
+# toujours une division : pas de littéral d'expression régulière.
 CHAINES_JS, CHAINES_RUST = "\"'`", '"'
+# UN LITTÉRAL DE CARACTÈRE RUST, ANCRÉ SUR SON APOSTROPHE OUVRANTE (`P10.20-c`, mesuré le 2026-09-16) :
+# `'` + UN caractère, ou une séquence d'échappement (`\n`, `\'`, `\\`, `\"`, `\x41`, `\u{1F600}`), + `'`.
+# Un littéral d'OCTET `b'"'` est la même forme — l'apostrophe est au même endroit, le `b` qui précède est
+# du code ordinaire. Ce que ce motif N'APPARIE PAS est une durée de vie ou une étiquette de boucle (`'a`,
+# `'static`, `'_`, `'outer:`) : en Rust valide, aucune des deux n'est JAMAIS suivie d'une apostrophe, et
+# c'est ce qui rend la règle décidable avec un seul caractère d'avance. La fin de ligne est exclue des
+# deux côtés : un littéral de caractère ne la franchit pas, et l'exclure empêche une apostrophe isolée
+# (`// don't`, déjà retiré par ailleurs) d'avaler la suite du fichier.
+RE_CARACTERE_RUST = re.compile(r"'(?:\\(?:x[0-9A-Fa-f]{2}|u\{[0-9A-Fa-f]{1,6}\}|[^\n])|[^\\'\n])'")
 
 
 def journaliser_perte(journal, motif, depart):
@@ -211,7 +238,7 @@ def _blanc(texte):
     return re.sub(r"[^\n]", " ", texte)
 
 
-def _sans_commentaires(src, delimiteurs, regex_litterales, journal):
+def _sans_commentaires(src, delimiteurs, regex_litterales, journal, caracteres_rust=False):
     out, i, n, code = [], 0, len(src), []
     while i < n:
         c = src[i]
@@ -219,6 +246,13 @@ def _sans_commentaires(src, delimiteurs, regex_litterales, journal):
             f = saute_gabarit(src, i, journal) if c == "`" else \
                 saute_chaine(src, i, journal, multiligne=(delimiteurs == CHAINES_RUST))
             out.append(src[i:f]); code.append('""'); i = f; continue
+        if caracteres_rust and c == "'":
+            # Le littéral de caractère est rendu TEL QUEL (comme une chaîne l'est) ; ce qui n'en est pas
+            # un est une durée de vie, et l'apostrophe repart dans le code, seule, sans rien ouvrir.
+            m = RE_CARACTERE_RUST.match(src, i)
+            if m:
+                out.append(m.group(0)); code.append("'c'"); i = m.end(); continue
+            out.append(c); code.append(c); i += 1; continue
         if src.startswith("//", i):
             j = src.find("\n", i); i = n if j < 0 else j; continue
         if src.startswith("/*", i):
@@ -239,10 +273,17 @@ def sans_commentaires_js(src, journal=None):
 
 
 def sans_commentaires_rust(src, journal=None):
-    """Le même dépouillement pour du Rust : `"` seul délimite (un `'` est une durée de vie), une chaîne
-    peut franchir une fin de ligne, et `/` est toujours une division. Une chaîne brute `r#"…"#` est lue
-    comme une chaîne ordinaire — cas non couvert, et il est dit."""
-    return _sans_commentaires(src, CHAINES_RUST, False, journal)
+    """Le même dépouillement pour du Rust : `"` seul délimite une chaîne, elle peut franchir une fin de
+    ligne, et `/` est toujours une division. L'APOSTROPHE EST DÉSAMBIGUÏSÉE (`P10.20-c`, 2026-09-16) :
+    `'x'`, `b'"'` et les séquences d'échappement (liste au-dessus de `RE_CARACTERE_RUST`) sont des LITTÉRAUX
+    DE CARACTÈRE rendus tels quels ; `'a`, `'static`, `'_`, `'outer:` sont des durées de vie et
+    étiquettes. Avant ce jour, le `"` de `'"'` ouvrait une fausse chaîne et
+    tout ce qui suivait était lu à contretemps jusqu'au guillemet suivant : un commentaire redevenait du
+    code (accusation fabriquée) et, de l'autre côté du guillemet, du code devenait un commentaire (cécité
+    muette). CE QUI RESTE NON COUVERT, ET C'EST DIT : la chaîne brute `r#"…"#` est lue comme une chaîne
+    ordinaire (un `"` posé dedans la ferme trop tôt), le corps des macros et le code généré ne sont pas
+    des grammaires que ce dépouilleur connaît."""
+    return _sans_commentaires(src, CHAINES_RUST, False, journal, caracteres_rust=True)
 
 
 def aveugler_litteraux_js(src, journal=None):
@@ -474,6 +515,67 @@ def temoins_du_lecteur():
     assert 'function g() { }' in vu8, "témoin : l'aveuglement a blanchi du code après une expression régulière"
     assert aveugler_litteraux_js('const s = "{{{";').count("{") == 0, \
         "témoin inverse : les accolades d'une chaîne comptent encore dans l'appariement des blocs"
+
+    # ================================================================================================
+    # (10) LE LECTEUR RUST — UNE APOSTROPHE N'EST PAS TOUJOURS UNE DURÉE DE VIE (`P10.20-c`, 2026-09-16)
+    # ================================================================================================
+    # Le lecteur prenait TOUTE apostrophe pour une durée de vie : le `"` du littéral `'"'` ouvrait une
+    # FAUSSE chaîne et le dépouillement repartait à contretemps jusqu'au guillemet suivant. Les deux sens
+    # ont leur témoin, parce que les deux sont arrivés : un COMMENTAIRE rendu comme du code fabrique une
+    # accusation, du CODE rendu comme un commentaire rend la garde aveugle SANS UN MOT.
+    # (a) SENS « commentaire lu comme du code » : le commentaire qui SUIT le littéral est bien retiré.
+    lu = sans_commentaires_rust("const META: [char; 2] = [';', '\"'];\nlet x = 1; // data-help=\"fantome\"\nlet y = 2;\n")
+    assert "fantome" not in lu, "témoin : après le littéral de caractère `'\"'`, un commentaire n'est plus retiré (fausse chaîne ouverte)"
+    assert "let y = 2;" in lu, "témoin : après le littéral de caractère `'\"'`, le code qui suit a disparu"
+    # (b) SENS INVERSE, celui qui ne dit rien : la chaîne qui suit reste une CHAÎNE, son `//` n'est pas
+    #     un commentaire. Sans le correctif, `http://h/lecture_reelle` était mangé jusqu'à la fin de ligne.
+    lu = sans_commentaires_rust("let c = '\"';\nlet u = \"http://h/lecture_reelle\";\nlet n = 8;\n")
+    assert "lecture_reelle" in lu, "témoin : du CODE a été lu comme un commentaire après un littéral de caractère — la garde devient aveugle sans un mot"
+    assert "let n = 8;" in lu, "témoin : la fin du fichier a disparu après un littéral de caractère"
+    # (c) LA DURÉE DE VIE RESTE UNE DURÉE DE VIE, et un `//` d'URL dans une chaîne reste.
+    lu = sans_commentaires_rust("fn f<'a>(u: &'a str) -> &'a str { let v = \"http://h/garde\"; v } // secret_vie\n")
+    assert "http://h/garde" in lu, "témoin inverse : un `//` d'URL dans une chaîne Rust est pris pour un commentaire"
+    assert "secret_vie" not in lu, "témoin inverse : un vrai commentaire Rust n'est plus retiré"
+    assert lu.count("'a") == 3, f"témoin : {lu.count(chr(39) + 'a')} durée(s) de vie `'a` rendue(s) au lieu de 3"
+    # (d) UNE DURÉE DE VIE ET UN LITTÉRAL D'UN MÊME CARACTÈRE COHABITENT sur la même ligne.
+    lu = sans_commentaires_rust("fn g<'a>(c: char, s: &'a str) -> bool { c == 'a' && !s.is_empty() } // secret_ab\n")
+    assert "c == 'a'" in lu and "&'a str" in lu, f"témoin : `'a` durée de vie et `'a'` littéral ne sont plus distingués ({lu!r})"
+    assert "secret_ab" not in lu, "témoin : le commentaire qui suit `'a'` n'est plus retiré"
+    # (e) LES SÉQUENCES D'ÉCHAPPEMENT sont DANS le littéral : `'\''`, `'\n'`, `'\\'`, `'\"'`, `'\x41'`,
+    #     `'\u{1F600}'`. Le `"` échappé est celui qui mordait le plus loin (aucun guillemet après lui :
+    #     l'ancien lecteur ouvrait une chaîne qui courait jusqu'à la fin du fichier).
+    lu = sans_commentaires_rust("let a = '\\''; let b = '\\n'; let c = '\\\\'; let d = '\\\"'; let e = '\\x41'; let f = '\\u{1F600}'; // secret_echap\nlet z = 3;\n")
+    assert "secret_echap" not in lu, "témoin : après une séquence d'échappement, un commentaire n'est plus retiré"
+    assert "let z = 3;" in lu, "témoin : après une séquence d'échappement, le code qui suit a disparu"
+    # (f) LE LITTÉRAL D'OCTET `b'"'` est la même forme, l'apostrophe est au même endroit.
+    lu = sans_commentaires_rust("const GUILLEMET: u8 = b'\"';\nlet v = 4; // secret_octet\nlet w = 5;\n")
+    assert "secret_octet" not in lu, "témoin : le littéral d'OCTET `b'\"'` ouvre encore une fausse chaîne"
+    assert "let w = 5;" in lu, "témoin : le code qui suit un littéral d'octet a disparu"
+    # (g) `'static` ET LES ÉTIQUETTES DE BOUCLE (`'outer:`, `break 'outer`) ne sont pas des littéraux.
+    lu = sans_commentaires_rust("const S: &'static str = \"s\"; // secret_statique\nfn h() { 'outer: loop { break 'outer; } }\n")
+    assert "secret_statique" not in lu, "témoin : le commentaire qui suit `'static` n'est plus retiré"
+    assert "&'static str" in lu and "'outer: loop" in lu and "break 'outer;" in lu, \
+        f"témoin : `'static` ou une étiquette de boucle a été mangée comme un littéral ({lu!r})"
+    # (h) UN COMMENTAIRE DE BLOC portant une apostrophe et un littéral reste un commentaire ENTIER : la
+    #     règle de l'apostrophe ne doit pas s'appliquer À L'INTÉRIEUR de ce que le lecteur retire déjà.
+    lu = sans_commentaires_rust("/* l'idiome '\"' cité : let t = \"secret_bloc_rust\"; */\nlet u = 6; // secret_ligne_rust\nlet w = 7;\n")
+    assert "secret_bloc_rust" not in lu and "secret_ligne_rust" not in lu, "témoin inverse : un commentaire Rust n'est plus retiré"
+    assert "let u = 6;" in lu and "let w = 7;" in lu, "témoin : le code autour d'un commentaire de bloc a disparu"
+    # (i) UNE CHAÎNE BRUTE `r#"…"#` portant une apostrophe et un `//` : l'apostrophe y est DANS une
+    #     chaîne, elle n'ouvre rien. (Ce que la chaîne brute NE TIENT PAS — un `"` posé dedans — est écrit
+    #     dans la docstring de `sans_commentaires_rust` : ce témoin ne prétend pas le couvrir.)
+    lu = sans_commentaires_rust("let r = r#\"il n'y a pas de commentaire // ici\"#; // secret_brut\nlet s = 7;\n")
+    assert "// ici" in lu, "témoin : le contenu d'une chaîne brute Rust a été mangé"
+    assert "secret_brut" not in lu, "témoin : le commentaire qui suit une chaîne brute n'est plus retiré"
+    # (j) L'AVEU RUST, DANS LES DEUX SENS. Il se TAIT sur du Rust valide plein d'apostrophes — avant le
+    #     correctif, `'"'` lui faisait avouer une chaîne courant jusqu'à la fin du fichier — et il PARLE
+    #     encore sur une vraie chaîne non fermée, sinon un compte amputé passerait pour vert.
+    propre = []
+    sans_commentaires_rust("let c = '\"'; let d = '\\''; let s = \"ok\";\nfn i<'a>(x: &'a str) {}\n", propre)
+    assert not propre, f"témoin inverse : le lecteur Rust avoue une perte sur du code valide ({propre})"
+    perdu = []
+    sans_commentaires_rust("let s = \"pas fermee;\nlet t = 1;\n", perdu)
+    assert perdu, "témoin : une chaîne Rust non fermée ne fait plus avouer le lecteur — il rendrait un compte amputé en silence"
 
 
 def temoins():

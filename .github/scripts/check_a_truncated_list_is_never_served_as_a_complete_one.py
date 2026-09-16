@@ -54,14 +54,17 @@ d'origine. Le même motif rejoué sur l'arbre du matin (`git archive 693e475`) d
 de ces occurrences n'a bougé de la journée.
 
 CE QUE LE MÊME RELEVÉ DONNE AUJOURD'HUI, POUR QUE LA DESCENTE SE VÉRIFIE : `daemon/src/handlers/`, SOUS-
-RÉPERTOIRES COMPRIS, porte 69 occurrences BRUTES et ONZE dans le CODE au 2026-09-16 après ce lot (contre 81
-et 67 le matin, même mesure, même répertoire) — les 56 corrections de la journée ont converti des sites en
-COMMENTAIRES qui racontent le défaut fermé, et c'est pourquoi le compte brut ne bouge presque pas pendant
-que le code fond. Des ONZE : DEUX sont les sites de la famille encore admis, HUIT sont les hors-famille
-énumérées ci-dessus, et la ONZIÈME (`actions.rs:1173`) est un COMMENTAIRE que le dépouillement laisse
-passer — le lecteur partagé `sans_commentaires_rust` prend le littéral de caractère `'\"'` de
-`actions.rs:888` pour une ouverture de chaîne. Elle ne produit aucune accusation (aucun `query_map(` dans
-son expression) et le verdict le DIT plutôt que de laisser croire au dépouillement parfait qu'il annonce.
+RÉPERTOIRES COMPRIS, porte 69 occurrences BRUTES et DIX dans le CODE au 2026-09-16 après `P10.20-c` (contre 81
+et 67 le matin, même mesure, même répertoire ; ONZE juste avant `P10.20-c`) — les 56 corrections de la journée ont converti des
+sites en COMMENTAIRES qui racontent le défaut fermé, et c'est pourquoi le compte brut ne bouge presque pas
+pendant que le code fond. Des DIX : DEUX sont les sites de la famille encore admis, HUIT sont les hors-famille
+énumérées ci-dessus. La ONZIÈME d'avant (`actions.rs:1173`) était un COMMENTAIRE que le lecteur partagé
+`sans_commentaires_rust` prenait pour du code, parce qu'il lisait le littéral de caractère `'\"'` de
+`actions.rs:888` comme une durée de vie ouvrant une chaîne ; défaut du LECTEUR, fermé par `P10.20-c` le
+2026-09-16 (littéral apparié et rendu tel quel, dix témoins dans `temoins_du_lecteur`, neuf gardes re-mesurées
+avant/après à verdict identique). Elle n'avait produit aucune accusation (aucun `query_map(` dans son
+expression) ; ce qui est dit ici est la mesure, pas un dépouillement parfait : le lecteur ne tient ni les
+chaînes brutes ni les macros, et son aveu n'est pas branché par cette garde (`P10.20-d`).
 
 CE QUE LES CINQUANTE-CINQ SERVENT, MESURÉ PAR UN CRITÈRE ÉCRIT (le type de retour de la fonction
 englobante, rejouable sur l'arbre) : QUARANTE-CINQ rendent DIRECTEMENT un type porteur de corps —
@@ -1084,7 +1087,7 @@ def ce_qui_n_est_pas_tenu():
           "`{}`), `incidents.rs:197` (`runbook_meta_json`) ; DEUX sont INTERNES — `caseops.rs:49` "
           "(`sla_policy_for`, repli silencieux sur le SLA legacy) et `panneau_avoue.rs:524` (`cache_lire`, "
           "un simple recalcul) ; QUATRE sont FAIL-CLOSED et ne servent aucun fait inventé, seulement une "
-          "cause fausse — `dashboards.rs:200` et `users_lookups.rs:101` et `connectors/mod.rs:472` rendent "
+          "cause fausse — `dashboards.rs:200` et `users_lookups.rs:101` et `connectors/mod.rs:500` (et `:574`, même forme) rendent "
           "404 « introuvable », `idp.rs:709` rend 400 « aucun enrôlement en cours ». ÉLARGIR RESTE UNE "
           "DÉCISION À PRENDRE AILLEURS, et cette mesure en est le prix d'entrée : élargir sans mesurer est "
           "exactement la faute que la garde sœur a payée deux fois.\n"
@@ -1092,15 +1095,14 @@ def ce_qui_n_est_pas_tenu():
           "borne PLATE cachait `connectors/mod.rs`, corrigé le même jour), mais elle ne lit QUE cela. Les "
           "modules hors `handlers/` qui servent des corps ne sont toujours pas mesurés — un corps servi "
           "peut naître ailleurs, et tant que la mesure n'est pas faite, le vert ne dit rien d'eux.\n"
-          "  * elle croit DÉPOUILLER les commentaires, et il y a UN endroit de l'arbre où c'est faux : "
-          "`sans_commentaires_rust` traite `'` comme une durée de vie, donc le littéral de caractère "
-          "`'\"'` de `daemon/src/handlers/actions.rs:888` (`SHELL_META`) ouvre une fausse chaîne et le "
-          "dépouillement repart de travers jusqu'au `\"` suivant. Mesuré le 2026-09-16 : UNE occurrence "
-          "d'aplatissement de ce fichier, `actions.rs:1173`, est en réalité un COMMENTAIRE que le lecteur "
-          "prend pour du code. Elle n'a produit AUCUNE accusation — il n'y a pas de `query_map(` dans la "
-          "même expression — mais le jour où un commentaire de cette zone en portera un, la garde "
-          "accusera une phrase. Le défaut est dans le lecteur PARTAGÉ, pas ici, et il est dit plutôt que "
-          "corrigé à la sauvette dans un lot qui ne l'a pas mesuré partout.\n"
+          "  * elle DÉPOUILLE les commentaires par le lecteur partagé `sans_commentaires_rust`, qui prenait un "
+          "littéral de caractère pour une durée de vie : le `'\"'` de `daemon/src/handlers/actions.rs:888` "
+          "(`SHELL_META`) ouvrait une fausse chaîne et un commentaire de ce fichier (`actions.rs:1173`) passait "
+          "pour du code. Défaut du lecteur, fermé par `P10.20-c` le 2026-09-16 (littéral apparié, dix témoins, "
+          "neuf gardes re-mesurées avant et après à verdict identique) ; ici le compte dans le code passe de onze "
+          "à dix et aucune accusation ne bouge, parce que cette occurrence n'avait pas de `query_map(` dans son "
+          "expression. Ce que le lecteur ne tient toujours pas (chaînes brutes, macros) est écrit en tête du "
+          "lecteur, et son aveu n'est pas branché par cette garde (`P10.20-d`).\n"
           "  * elle ne suit pas la liaison à travers un APPEL. Un itérateur rendu par une fonction et "
           "aplati chez son appelant n'est relié à aucune lecture ; la portée d'un nom lié s'arrête à sa "
           "fonction, et c'est dit plutôt que sous-entendu.\n"

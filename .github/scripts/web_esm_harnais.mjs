@@ -11869,6 +11869,424 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   console.log("(94) OK — la progression d'un dossier, l'inventaire des index et le classement des entités à risque écrivent la cause SERVIE au lieu d'un chiffre nul ou d'une absence rassurante, aucun geste de purge ne se présente sur une liste non lue, et les trois chemins nominaux restent muets");
 }
 
+
+// ---------------------------------------------------------------------------------------------
+// (95) `P10.7-f` (rang 4) — LES QUINZE DERNIÈRES SURFACES SOURDES DE LA CONSOLE LISENT L'AVEU, ET AUCUNE
+//      NE REND PLUS UNE LISTE QUE PERSONNE N'A LUE COMME UNE LISTE QUI N'EXISTE PAS. Le rang quatre a soldé,
+//      côté démon, les listes de CONTENU (vague a) et de RÉGLAGE (vague b) : sur une lecture ratée, chaque
+//      route sert en 200 un corps de FORME INTACTE — la clé de liste présente et VIDE — plus `error` ; et les
+//      TROIS routes qui portent PLUSIEURS lectures (`/api/knowledge`, `/api/datamodels` et la fiche de
+//      runbooks d'un dossier) NOMMENT dans `non_lus` celles qui ont échoué, les autres restant SERVIES.
+//      MESURÉ le 2026-09-16 : la console n'en lisait AUCUN, et les phrases qu'elle peignait à la place sont
+//      celles sur lesquelles on conclut « ce n'est pas configuré » — après quoi on en FABRIQUE une seconde
+//      copie qui s'ajoute à la première, ou l'on croit qu'un envoi, une purge, un masquage n'ont pas lieu.
+//        · `web/knowledge.js` : `Array.isArray(d.aliases) ? … : []` QUATRE FOIS, ni `error` ni `non_lus` —
+//          « aucun alias », « aucun event type », « aucun tag » se lisent « ce champ n'est pas renommé »,
+//          « cette catégorie n'existe pas », sur des objets qui façonnent la recherche de TOUT LE MONDE.
+//        · `web/datamodels.js` : trois étages recomposés par APPARIEMENT, plus les datasets, dont le texte de
+//          vide est l'invitation exacte à réenregistrer un dataset que l'unicité refusera.
+//        · `web/dashboards.js` : « Dashboard vide. » avec son « + Ajouter un panneau », et un sélecteur de
+//          vues qui ne portait plus que « — Sans filtre de vue — ».
+//        · `web/cases.js` : les liens d'un dossier ne se peignaient même pas (la section DISPARAÎT), et la
+//          fiche de runbooks offrait un catalogue non lu comme le catalogue qui existe.
+//        · `web/alerting.js` : « aucune politique — fan-out plat vers TOUS les canaux » est la phrase la plus
+//          fausse de ce dépôt — elle GARANTIT un routage au moment où l'on ignore ce que la table contient.
+//        · `web/detection_admin.js`, `web/processors.js`, `web/lookups.js`, `web/savedqueries.js`,
+//          `web/runbooks.js` : « aucun canal — les alertes ne sont envoyées nulle part », « aucune règle —
+//          l'ingest est byte-identique », « aucun lookup », « aucun runbook », « aucune étape ».
+//      LA CAUSE N'EST PAS RECOPIÉE : elle est EXTRAITE de `liste_bornee.rs` comme aux témoins 93 et 94, et la
+//      cause des corps À PLUSIEURS LECTURES est RECOMPOSÉE par la MÊME formule que le démon (préfixe et
+//      séparateur lus dans son `format!`). DIX-NEUF assertions d'instrument lisent dans l'arbre du démon les
+//      clés mêmes que ce témoin fabrique — trois sur `liste_bornee.rs` (la cause, la formule multi-lectures,
+//      `non_lus`) et seize sur les routes elles-mêmes : si l'une d'elles cesse d'exister, ce témoin REFUSE DE
+//      CONCLURE au lieu de rester vert sur un corps devenu étranger au démon. Trois autres portent sur le banc
+//      lui-même (les hôtes de la page, le compte des minuteries d'avis).
+//      CE QUE CE TÉMOIN NE TIENT PAS : ni la mise en page, ni la langue anglaise de ces phrases (témoin 10 et
+//      garde du lexique) ; il ne rejoue pas les routes du démon, il en dérive les MOTS et fabrique le corps
+//      qui les porte ; il ne mesure pas la DURÉE d'affichage d'un avis (les minuteries longues sont capturées,
+//      jamais jouées) ; et il ne juge AUCUNE des deux familles de savoir que la console n'affiche pas
+//      (`macros`, `auto_lookups`) — le démon peut les nommer, aucun panneau ne les rend.
+// ---------------------------------------------------------------------------------------------
+{
+  const url95 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const modSavoir95 = await import(url95("knowledge.js"));
+  const modModeles95 = await import(url95("datamodels.js"));
+  const modTdb95 = await import(url95("dashboards.js"));
+  const modCas95 = await import(url95("cases.js"));
+  const modRoutage95 = await import(url95("alerting.js"));
+  const modDetAdmin95 = await import(url95("detection_admin.js"));
+  const modProc95 = await import(url95("processors.js"));
+  const modLookups95 = await import(url95("lookups.js"));
+  const modModeles2_95 = await import(url95("savedqueries.js"));
+  const modRb95 = await import(url95("runbooks.js"));
+  const { S: S95 } = await import(url95("state.js"));
+
+  const tic95 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser95 = async (n = 25) => { for (let i = 0; i < n; i++) await tic95(); };
+  const nu95 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ");
+  const $95 = (s) => document.querySelector(s);
+  const cueillir95 = (el, pred, acc) => { if (el && pred(el)) acc.push(el); ((el && el.children) || []).forEach((c) => cueillir95(c, pred, acc)); return acc; };
+  const boutons95 = (h) => cueillir95(h, (e) => e.tagName === "BUTTON", []);
+  const avis95 = () => document.querySelectorAll(".toast").map((t) => String(t.textContent));
+
+  // ── (0) L'INSTRUMENT : LA CAUSE ET LES CLÉS VIENNENT DE L'ARBRE DU DÉMON ─────────────────────────
+  const rs95 = (f) => readFileSync(path.join(RACINE, "daemon", "src", "handlers", f), "utf8");
+  const srcListe95 = rs95("liste_bornee.rs");
+  const srcSavoir95 = rs95("knowledge.rs"), srcModeles95 = rs95("datamodels.rs"), srcTdb95 = rs95("dashboards.rs");
+  const srcCaseops95 = rs95("caseops.rs"), srcInc95 = rs95("incidents.rs"), srcRoutage95 = rs95("alerting.rs");
+  const srcNotif95 = rs95("notifiers.rs"), srcProc95 = rs95("processors.rs"), srcLk95 = rs95("users_lookups.rs");
+  const srcSq95 = rs95("saved_queries.rs");
+  // Un littéral Rust continué par `\` en fin de ligne perd le saut ET l'indentation qui suit : la chaîne est
+  // recomposée ici comme le compilateur la compose (même recomposition qu'aux témoins 93 et 94).
+  const mCause95 = srcListe95.match(/CAUSE_LISTE_ILLISIBLE: &str = "([\s\S]*?)";/);
+  const CAUSE95 = mCause95 ? mCause95[1].replace(/\\\r?\n\s*/g, "") : "";
+  exiger(CAUSE95.includes("NON LUE") && CAUSE95.length > 60,
+    `(95-instrument) \`CAUSE_LISTE_ILLISIBLE\` n'est plus lisible dans daemon/src/handlers/liste_bornee.rs : la cause fabriquée ci-dessous ne dériverait plus du démon — « ${CAUSE95} »`);
+  // LA CAUSE D'UN CORPS À PLUSIEURS LECTURES EST RECOMPOSÉE, PAS RECOPIÉE : le préfixe et le séparateur sont
+  // lus dans le `format!` du démon. Un dépôt qui reformulerait cette phrase casserait la lecture, et ce
+  // témoin refuserait de conclure au lieu de comparer une chaîne qu'il aurait écrite lui-même.
+  const mMulti95 = srcListe95.match(/corps\["error"\] = json!\(format!\("\{CAUSE_LISTE_ILLISIBLE\} ([^"]*?)\{\}\.", non_lues\.join\("([^"]*)"\)\)\);/);
+  exiger(!!mMulti95 && /non lues/i.test(mMulti95[1]),
+    "(95-instrument) le fabricant de corps à PLUSIEURS listes (`corps_de_listes_illisibles`, daemon/src/handlers/liste_bornee.rs) n'écrit plus sa cause par un `format!` lisible : les corps multi-lectures jugés ci-dessous ne dériveraient plus du démon");
+  exiger(/corps\["non_lus"\] = json!\(non_lues\);/.test(srcListe95),
+    "(95-instrument) `corps_de_listes_illisibles` ne pose plus `non_lus` : l'aveu PAR SOUS-LISTE jugé ci-dessous n'existe plus côté démon");
+  const causeMulti95 = (noms) => CAUSE95 + " " + mMulti95[1] + noms.join(mMulti95[2]) + ".";
+
+  const instrument95 = (vrai, quoi) => exiger(vrai, `(95-instrument) ${quoi} : le corps jugé ci-dessous n'existe plus côté démon, ce témoin REFUSE DE CONCLURE`);
+  instrument95(["aliases", "calcs", "eventtypes", "tags"].every((f) => srcSavoir95.includes(`servie("${f}"`)) && /corps_de_listes_illisibles\(corps, &non_lus\)/.test(srcSavoir95),
+    "`/api/knowledge` ne nomme plus ses quatre familles affichées dans `non_lus` (daemon/src/handlers/knowledge.rs)");
+  instrument95(["models", "objects", "fields"].every((f) => srcModeles95.includes(`servie("${f}"`)) && /corps_de_listes_illisibles\(corps, &non_lus\)/.test(srcModeles95),
+    "`/api/datamodels` ne nomme plus ses trois étages dans `non_lus` (daemon/src/handlers/datamodels.rs)");
+  instrument95(/corps_de_liste_illisible\(json!\(\{\}\), "datasets"\)/.test(srcModeles95),
+    "`/api/datasets` ne sert plus `datasets` vide avec sa cause (daemon/src/handlers/datamodels.rs)");
+  instrument95(/corps_de_liste_illisible\(meta, "panels"\)/.test(srcTdb95),
+    "`/api/dashboard/{id}` ne sert plus `panels` vide avec sa cause, métadonnées conservées (daemon/src/handlers/dashboards.rs)");
+  instrument95(/corps_de_liste_illisible\(\s*json!\(\{ "me": au\.name, "role": au\.role \}\),\s*"views",\s*\)/.test(srcTdb95),
+    "`/api/views` ne sert plus `views` vide avec sa cause (daemon/src/handlers/dashboards.rs)");
+  instrument95(/aveu::corps\("links", aveu::Lignes::Illisible, CASE_LINKS_WINDOW, aveu::TotalBorne::sans_lecture\(\)\)/.test(srcCaseops95),
+    "`/api/cases/{id}/links` ne sert plus une liste ILLISIBLE distincte d'une liste vide (daemon/src/handlers/caseops.rs)");
+  instrument95(/non_lus\.push\("alertes_liees"\)/.test(srcInc95) && /non_lus\.push\("available"\)/.test(srcInc95) && /corps_de_listes_illisibles\(corps, &non_lus\)/.test(srcInc95),
+    "`/api/cases/{id}/runbooks` ne nomme plus laquelle de ses DEUX lectures a échoué (daemon/src/handlers/incidents.rs, `case_runbooks_json`)");
+  instrument95(/corps_de_liste_illisible\(json!\(\{\}\), "runbooks"\)/.test(srcInc95),
+    "`/api/runbooks` ne sert plus `runbooks` vide avec sa cause (daemon/src/handlers/incidents.rs)");
+  instrument95(/corps_de_liste_illisible\(meta, "step_list"\)/.test(srcInc95),
+    "`/api/runbooks/{id}` ne sert plus `step_list` vide avec sa cause, métadonnée conservée (daemon/src/handlers/incidents.rs)");
+  instrument95(/corps_de_liste_illisible\(json!\(\{\}\), "policies"\)/.test(srcRoutage95),
+    "`/api/notification-policies` ne sert plus `policies` vide avec sa cause (daemon/src/handlers/alerting.rs)");
+  instrument95(/corps_de_liste_illisible\(json!\(\{\}\), "silences"\)/.test(srcRoutage95),
+    "`/api/silences` ne sert plus `silences` vide avec sa cause (daemon/src/handlers/alerting.rs)");
+  instrument95(/corps_de_liste_illisible\(json!\(\{\}\), "notifiers"\)/.test(srcNotif95),
+    "`/api/notifiers` ne sert plus `notifiers` vide avec sa cause (daemon/src/handlers/notifiers.rs)");
+  instrument95(/corps_de_liste_illisible\(json!\(\{ "counters": counters \}\), "rules"\)/.test(srcProc95),
+    "`/api/processors` ne sert plus `rules` vide avec sa cause, COMPTEURS conservés (daemon/src/handlers/processors.rs)");
+  instrument95(/corps_de_liste_illisible\(json!\(\{\}\), "lookups"\)/.test(srcLk95),
+    "`/api/lookups` ne sert plus `lookups` vide avec sa cause (daemon/src/handlers/users_lookups.rs)");
+  instrument95(/corps_de_liste_illisible\(json!\(\{\}\), "queries"\)/.test(srcSq95),
+    "`/api/saved-queries` ne sert plus `queries` vide avec sa cause (daemon/src/handlers/saved_queries.rs)");
+  // LE POINT UNIQUE QUI POSE `error` SUR UNE LISTE À UNE SEULE LECTURE, ET LE POINT UNIQUE DE LA FORME BORNÉE.
+  instrument95(/corps\["error"\] = json!\(CAUSE_LISTE_ILLISIBLE\);/.test(srcListe95) && /sortie\.insert\(String::from\("error"\), json!\(CAUSE_LISTE_ILLISIBLE\)\);/.test(srcListe95),
+    "les deux fabricants de corps de `liste_bornee.rs` ne posent plus `error` sur la cause commune");
+
+  // ── LE SIMULACRE DE TRANSPORT. La page RÉELLE est déjà montée (section 1) : ces témoins rendent donc dans
+  //    les VRAIS hôtes d'`index.html`, et les formulaires jugés sont ceux que les modules ont câblés à leur
+  //    import. Seul le transport est fabriqué, et l'appariement est EXACT (jamais par sous-chaîne : `/api/
+  //    runbooks` et `/api/runbooks/7` sont deux routes, et un appariement lâche en confondrait les corps).
+  const fetchOrigine95 = globalThis.fetch;
+  const etatOrigine95 = { admin: S95.isAdmin, auth: S95.AUTH, vues: S95.viewList };
+  let corpsServis95 = {};
+  const vus95 = [];
+  globalThis.fetch = async (u) => {
+    const url = String(u);
+    vus95.push(url);
+    const obj = Object.prototype.hasOwnProperty.call(corpsServis95, url) ? corpsServis95[url] : {};
+    return { ok: true, status: 200, text: async () => JSON.stringify(obj), json: async () => obj };
+  };
+  const aEteDemande95 = (route) => vus95.includes(route);
+  // Les minuteries LONGUES d'un avis retiendraient le processus jusqu'à leur échéance : elles sont capturées,
+  // jamais jouées, et leur COMPTE sert d'instrument (même geste qu'au témoin 94).
+  const minuterieOrigine95 = globalThis.setTimeout;
+  let minuteriesRetenues95 = 0;
+  const sansMinuterieLongue95 = async (faire) => {
+    globalThis.setTimeout = (fn, ms) => { if (ms >= 1000) { minuteriesRetenues95++; return 0; } return minuterieOrigine95(fn, ms); };
+    try { return await faire(); } finally { globalThis.setTimeout = minuterieOrigine95; }
+  };
+  const ditAuGeste95 = async (faire) => {
+    const avant = avis95().length;
+    await sansMinuterieLongue95(faire);
+    return avis95().slice(avant);
+  };
+
+  try {
+    S95.isAdmin = true;
+    S95.AUTH = { user: "hugo", role: "admin" };
+
+    // ══ (a) LES SIX FAMILLES DE SAVOIR : L'AVEU NOMME LA FAMILLE, LES AUTRES RESTENT PEINTES ═══════
+    const ALIAS95 = { id: 1, canonical: "client_ip", source: "src_ip", enabled: true, managed: 0, created: 1, updated: 1 };
+    const CALC95 = { id: 2, name: "sev_up", expr: "upper(severity)", enabled: true, ord: 0, managed: 0, created: 1, updated: 1 };
+    const ETYPE95 = { id: 3, name: "web_attack", filter: "source=web", enabled: true, managed: 0, created: 1, updated: 1 };
+    const TAG95 = { id: 4, label: "pci", field: "category", value: "payment", enabled: true, managed: 0, created: 1, updated: 1 };
+    const rendreLeSavoir95 = async (corps) => {
+      corpsServis95 = { "/api/knowledge": corps };
+      await modSavoir95.loadKnowledge();
+      await laisser95();
+    };
+    await rendreLeSavoir95({
+      aliases: [], calcs: [CALC95], eventtypes: [ETYPE95], tags: [TAG95], macros: [], auto_lookups: [],
+      non_lus: ["aliases"], error: causeMulti95(["aliases"]),
+    });
+    exiger(aEteDemande95("/api/knowledge"), "(95a) la route des objets de savoir n'a pas été demandée : le verdict ne porterait sur rien");
+    const texteAlias95 = nu95($95("#ko-alias-list"));
+    exiger(/NON LUS/.test(texteAlias95), `(95a) la famille NOMMÉE dans \`non_lus\` ne dit pas qu'elle n'a pas été lue : « ${texteAlias95} »`);
+    exiger(texteAlias95.includes(CAUSE95), `(95a) la CAUSE servie n'est pas collée telle quelle dans le panneau des alias : « ${texteAlias95} »`);
+    exiger(!/aucun alias/i.test(texteAlias95), `(95a) « aucun alias » est peint sous un aveu — c'est affirmer qu'aucun champ n'est renommé, pour TOUTE recherche du produit : « ${texteAlias95} »`);
+    const texteCalcs95 = nu95($95("#ko-calc-list"));
+    exiger(texteCalcs95.includes("sev_up"), `(95a) la famille des champs calculés a été SERVIE et n'est plus peinte : un aveu qui couvre tout ne couvre rien : « ${texteCalcs95} »`);
+    exiger(!/NON LUS/.test(texteCalcs95), `(95a) une famille SERVIE porte l'aveu d'une AUTRE : « ${texteCalcs95} »`);
+    exiger(nu95($95("#ko-tag-list")).includes("pci") && nu95($95("#ko-eventtype-list")).includes("web_attack"),
+      "(95a) les deux autres familles servies ne sont pas peintes sous l'aveu de la première");
+    exiger($95("#ko-alias-new").getAttribute("aria-disabled") === "true",
+      "(95a) « + Alias » ne porte pas la marque d'inertie sous l'aveu de SA famille : le geste se présente comme applicable à une liste non lue");
+    exiger($95("#ko-calc-new").getAttribute("aria-disabled") === null,
+      "(95a) « + Champ calculé » est inerte alors que SA famille a été lue : l'aveu d'une famille gèlerait les cinq autres");
+    const ditAlias95 = await ditAuGeste95(() => modSavoir95.create("alias", "alias de champ", [], () => ({})));
+    exiger(ditAlias95.length === 1 && /unicité du nom|SECOND/.test(ditAlias95[0]),
+      `(95a) le geste de création sur une famille NON LUE ne dit pas son refus : ${JSON.stringify(ditAlias95)}`);
+    // CONTRÔLE POSITIF : les six familles servies -> quatre listes peintes, aucun aveu, aucune marque.
+    await rendreLeSavoir95({ aliases: [ALIAS95], calcs: [CALC95], eventtypes: [ETYPE95], tags: [TAG95], macros: [], auto_lookups: [] });
+    const sainAlias95 = nu95($95("#ko-alias-list"));
+    exiger(sainAlias95.includes("client_ip") && sainAlias95.includes("src_ip"), `(95b) le chemin nominal ne peint pas l'alias servi — le verdict (95a) ne porterait sur rien : « ${sainAlias95} »`);
+    exiger(!/NON LUS/.test(sainAlias95), `(95b) « NON LUS » est peint sur une lecture RÉUSSIE — un instrument qui le dit toujours ne mesure rien : « ${sainAlias95} »`);
+    exiger($95("#ko-alias-new").getAttribute("aria-disabled") === null, "(95b) « + Alias » reste inerte après une lecture RÉUSSIE : l'aveu d'hier interdirait le geste d'aujourd'hui");
+
+    // ══ (c) LES TROIS ÉTAGES DES MODÈLES : L'AVEU NOMME L'ÉTAGE ════════════════════════════════════
+    const MODELE95 = { id: 1, name: "authentication", title: "Authentification", description: "", category: "authentication", enabled: true, managed: 0, created: 1, updated: 1 };
+    const OBJET95 = { id: 5, model_id: 1, name: "failed_logins", parent_id: null, constraint: "action=failure", enabled: true, created: 1, updated: 1 };
+    const CHAMP95 = { id: 9, object_id: 5, name: "source_ip", type: "string", expr: "src_ip", created: 1 };
+    const CONSTANTES95 = { field_types: ["string"], stat_funcs: ["count"], filter_ops: ["="] };
+    const rendreLesModeles95 = async (corps) => {
+      corpsServis95 = { "/api/datamodels": corps };
+      await modModeles95.reload();
+      await laisser95();
+    };
+    await rendreLesModeles95({ models: [MODELE95], objects: [], fields: [CHAMP95], ...CONSTANTES95, non_lus: ["objects"], error: causeMulti95(["objects"]) });
+    const texteObjets95 = nu95($95("#dm-objects-list"));
+    exiger(/NON LUS/.test(texteObjets95) && texteObjets95.includes(CAUSE95), `(95c) l'étage NOMMÉ dans \`non_lus\` ne dit pas qu'il n'a pas été lu, avec sa cause : « ${texteObjets95} »`);
+    exiger(!/aucun objet/i.test(texteObjets95), `(95c) « aucun objet » est peint sous un aveu — l'éditeur en redéclarerait un homonyme : « ${texteObjets95} »`);
+    exiger(nu95($95("#dm-models-list")).includes("Authentification"), "(95c) l'étage des modèles a été SERVI et n'est plus peint : l'aveu d'un étage en emporte un autre");
+    exiger(!/NON LUS/.test(nu95($95("#dm-models-list"))), "(95c) l'étage des modèles, SERVI, porte l'aveu d'un autre");
+    exiger($95("#dm-obj-new").getAttribute("aria-disabled") === "true", "(95c) « + Objet » ne porte pas la marque d'inertie sous l'aveu de SON étage");
+    exiger($95("#dm-model-new").getAttribute("aria-disabled") === null, "(95c) « + Modèle » est inerte alors que SON étage a été lu");
+    const ditObjet95 = await ditAuGeste95(() => modModeles95.newObject());
+    exiger(ditObjet95.length === 1 && /allowlist du Pivot|homonyme/.test(ditObjet95[0]), `(95c) le geste de déclaration sur un étage NON LU ne dit pas son refus : ${JSON.stringify(ditObjet95)}`);
+    // CONTRÔLE POSITIF : les trois étages servis -> le modèle peint, aucun aveu, aucune marque.
+    await rendreLesModeles95({ models: [MODELE95], objects: [OBJET95], fields: [CHAMP95], ...CONSTANTES95 });
+    exiger(nu95($95("#dm-models-list")).includes("Authentification") && !/NON LUS/.test(nu95($95("#dm-models-list"))),
+      "(95d) le chemin nominal des modèles ne peint pas le modèle servi, ou peint un aveu — le verdict (95c) ne porterait sur rien");
+    exiger(!/NON LUS/.test(nu95($95("#dm-objects-list"))), "(95d) « NON LUS » est peint sur un étage LU — un instrument qui le dit toujours ne mesure rien");
+    exiger($95("#dm-obj-new").getAttribute("aria-disabled") === null, "(95d) « + Objet » reste inerte après une lecture RÉUSSIE");
+
+    // ══ (e) LES DATASETS ══════════════════════════════════════════════════════════════════════════
+    const DATASET95 = { id: 1, name: "logins_24h", kind: "pivot", soql: "search action=login", object_id: 5, spec: "{}", enabled: true, managed: 2, created: 1, updated: 1 };
+    corpsServis95 = { "/api/datasets": { datasets: [], error: CAUSE95 } };
+    await modModeles95.loadDatasets(); await laisser95();
+    const texteDatasets95 = nu95($95("#dm-datasets-list"));
+    exiger(/NON LUS/.test(texteDatasets95) && texteDatasets95.includes(CAUSE95), `(95e) la liste des datasets ne dit pas qu'elle n'a pas été lue, avec sa cause : « ${texteDatasets95} »`);
+    exiger(!/aucun dataset/i.test(texteDatasets95), `(95e) « aucun dataset — construisez un Pivot puis Enregistrer comme dataset » est peint sous un aveu : c'est l'invitation EXACTE à en réenregistrer un que l'unicité refusera : « ${texteDatasets95} »`);
+    corpsServis95 = { "/api/datasets": { datasets: [DATASET95] } };
+    await modModeles95.loadDatasets(); await laisser95();
+    const sainDatasets95 = nu95($95("#dm-datasets-list"));
+    exiger(sainDatasets95.includes("logins_24h"), `(95f) le chemin nominal ne peint pas le dataset servi — le verdict (95e) ne porterait sur rien : « ${sainDatasets95} »`);
+    exiger(!/NON LUS/.test(sainDatasets95), `(95f) « NON LUS » est peint sur une lecture RÉUSSIE : « ${sainDatasets95} »`);
+
+    // ══ (g) LES PANNEAUX D'UN TABLEAU DE BORD ═════════════════════════════════════════════════════
+    const PANNEAU95 = (id, titre) => ({ id, title: titre, query: "", is_soql: true, viz: "table", position: id, window_s: 3600, visibility: "shared", query_private: false, cols: 1, height: 0, drill: "", library_panel_id: null });
+    const grille95 = new Element("div");
+    corpsServis95 = { "/api/dashboard/3": { id: 3, name: "SOC", owner: "hugo", visibility: "shared", view_id: null, editable: true, panels: [], error: CAUSE95 } };
+    await modTdb95.loadPanelsInto(grille95, { id: 3 }); await laisser95();
+    const texteGrille95 = nu95(grille95);
+    exiger(/NON LUS/.test(texteGrille95) && texteGrille95.includes(CAUSE95), `(95g) les panneaux d'un tableau de bord ne disent pas qu'ils n'ont pas été lus, avec leur cause : « ${texteGrille95} »`);
+    exiger(!/Dashboard vide/.test(texteGrille95), `(95g) « Dashboard vide. » est peint sous un aveu : « ${texteGrille95} »`);
+    exiger(boutons95(grille95).length === 0, `(95g) ${boutons95(grille95).length} bouton(s) — dont « + Ajouter un panneau » — sont offerts sur des panneaux NON LUS : créer ici doublerait ce que la lecture n'a pas rendu`);
+    corpsServis95 = { "/api/dashboard/3": { id: 3, name: "SOC", owner: "hugo", visibility: "shared", view_id: null, editable: true, panels: [PANNEAU95(11, "Connexions"), PANNEAU95(12, "Échecs")] } };
+    await modTdb95.loadPanelsInto(grille95, { id: 3 }); await laisser95();
+    const sainGrille95 = nu95(grille95);
+    exiger(sainGrille95.includes("Connexions") && sainGrille95.includes("Échecs"), `(95h) le chemin nominal ne peint pas les deux panneaux servis — le verdict (95g) ne porterait sur rien : « ${sainGrille95} »`);
+    exiger(!/NON LUS/.test(sainGrille95), `(95h) « NON LUS » est peint sur une lecture RÉUSSIE : « ${sainGrille95} »`);
+
+    // ══ (i) LE SÉLECTEUR DE VUES ══════════════════════════════════════════════════════════════════
+    const selecteurDeVue95 = $95("#view"), boutonVueNeuve95 = $95("#view-new");
+    exiger(!!selecteurDeVue95 && !!selecteurDeVue95.parentNode && !!boutonVueNeuve95,
+      "(95i-instrument) le sélecteur de vues, son parent ou « + Vue » n'existent plus dans web/index.html : le verdict ne porterait sur rien");
+    corpsServis95 = { "/api/views": { me: "hugo", role: "admin", views: [], error: CAUSE95 } };
+    await modTdb95.loadViews(); await laisser95();
+    const texteBarreDeVue95 = nu95(selecteurDeVue95.parentNode);
+    exiger(/NON LUES/.test(texteBarreDeVue95) && texteBarreDeVue95.includes(CAUSE95), `(95i) le sélecteur de vues ne dit pas que la liste n'a pas été lue, avec sa cause : « ${texteBarreDeVue95} »`);
+    exiger(selecteurDeVue95.children.length === 1, `(95i) le sélecteur porte ${selecteurDeVue95.children.length} entrée(s) sur une liste NON LUE : au-delà de l'option neutre, il offrirait des vues que personne n'a lues`);
+    exiger(boutonVueNeuve95.getAttribute("aria-disabled") === "true", "(95i) « + Vue » ne porte pas la marque d'inertie sur une liste de vues NON LUE");
+    exiger(String(boutonVueNeuve95.getAttribute("title") || "").includes("homonyme"), `(95i) la marque d'inertie de « + Vue » ne DIT pas pourquoi : « ${boutonVueNeuve95.getAttribute("title")}»`);
+    corpsServis95 = { "/api/views": { me: "hugo", role: "admin", views: [{ id: 7, name: "NOC", owner: "hugo", visibility: "shared", dashboards: 2 }] } };
+    await modTdb95.loadViews(); await laisser95();
+    exiger(nu95(selecteurDeVue95).includes("NOC"), `(95j) le chemin nominal ne peint pas la vue servie — le verdict (95i) ne porterait sur rien : « ${nu95(selecteurDeVue95)} »`);
+    exiger(!/NON LUES/.test(nu95(selecteurDeVue95.parentNode)), `(95j) l'aveu d'hier survit à une lecture RÉUSSIE : « ${nu95(selecteurDeVue95.parentNode)} »`);
+    exiger(boutonVueNeuve95.getAttribute("aria-disabled") === null, "(95j) « + Vue » reste inerte après une lecture RÉUSSIE");
+
+    // ══ (k) LES LIENS D'UN DOSSIER, ET SA FICHE DE RUNBOOKS (DEUX LECTURES, UN AVEU QUI NOMME) ═════
+    const DOSSIER95 = { id: 12, title: "Compte compromis", status: "open", priority: 2, ts: 1000, owner: "hugo", assignee: "", items: [], archived: false, merged_into: null, summary: "" };
+    const RUNBOOK95 = { id: 7, key: "compte-compromis", name: "Compte compromis", match_kind: "tactic", match_key: "TA0006", description: "", managed: 1 };
+    const hoteDuDossier95 = new Element("div");
+    const rendreLeDossier95 = async (liens, fiche) => {
+      corpsServis95 = {
+        "/api/cases/12/links": liens,
+        "/api/cases/12/runbooks": fiche,
+        "/api/cases/12/steps": { steps: [], progress: { total: 0, done: 0, skipped: 0 }, runbook: null },
+      };
+      modCas95.renderCaseDetail(hoteDuDossier95, DOSSIER95);
+      await laisser95(40);
+    };
+    const FICHE_SAINE95 = { incident_tier: null, incident_type: null, commander: null, dominant_tactic: "TA0006", dominant_technique: "T1110", prefill_target: null, prefill_src_ip: null, prefill_pid: null, prefill_host: null, recommended: RUNBOOK95, attached_runbook_id: null, available: [RUNBOOK95] };
+    await rendreLeDossier95(
+      { links: [], served: 0, window: 200, total: null, total_capped: null, error: CAUSE95 },
+      { ...FICHE_SAINE95, dominant_tactic: null, dominant_technique: null, recommended: null, available: [], non_lus: ["alertes_liees", "available"], error: causeMulti95(["alertes_liees", "available"]) },
+    );
+    const texteDossier95 = nu95(hoteDuDossier95);
+    exiger(aEteDemande95("/api/cases/12/links") && aEteDemande95("/api/cases/12/runbooks"), "(95k) les deux routes du dossier n'ont pas été demandées : le verdict ne porterait sur rien");
+    exiger(/Liens du dossier NON LUS/.test(texteDossier95), `(95k) des liens NON LUS ne se disent pas — avant ce lot la section « Liens » DISPARAISSAIT, et le dossier se lisait isolé : « ${texteDossier95} »`);
+    exiger(/Alertes liées du dossier NON LUES/.test(texteDossier95), `(95k) la lecture NOMMÉE \`alertes_liees\` ne se dit pas : \`dominant_tactic: null\` + \`recommended: null\` se relit « ce dossier n'a aucune alerte liée » : « ${texteDossier95} »`);
+    exiger(/Catalogue de runbooks NON LU/.test(texteDossier95), `(95k) la lecture NOMMÉE \`available\` ne se dit pas : « ${texteDossier95} »`);
+    exiger(texteDossier95.includes(CAUSE95), `(95k) la CAUSE servie n'est pas collée telle quelle dans le détail du dossier : « ${texteDossier95} »`);
+    exiger(!/Attacher le runbook/.test(texteDossier95), `(95k) « Attacher le runbook » est offert sur un catalogue NON LU : le choix présenté se lirait comme le choix qui existe : « ${texteDossier95} »`);
+    exiger(!/aucun runbook disponible/.test(texteDossier95), `(95k) « aucun runbook disponible » est peint sur un catalogue NON LU — l'analyste écrirait une procédure à la main pendant l'incident : « ${texteDossier95} »`);
+    exiger(!/Recommandé/.test(texteDossier95), `(95k) une recommandation est offerte alors que les alertes dont elle se déduit n'ont pas été lues : « ${texteDossier95} »`);
+    exiger(!/Tactique dominante/.test(texteDossier95), `(95k) la tactique dominante est peinte alors que les alertes liées n'ont pas été lues : « ${texteDossier95} »`);
+    const ditLier95 = await ditAuGeste95(() => modCas95.linkCasePrompt(12));
+    exiger(ditLier95.length === 1 && /rattachement qui existe déjà/.test(ditLier95[0]), `(95k) le geste « Lier… » sur des liens NON LUS ne dit pas son refus : ${JSON.stringify(ditLier95)}`);
+    // CONTRÔLE POSITIF : liens servis et fiche entière -> un lien peint, la tactique, l'attache offerte, aucun aveu.
+    await rendreLeDossier95(
+      { links: [{ id: 21, kind: "related", note: "", title: "Phishing", status: "open" }], served: 1, window: 200, total: 1, total_capped: false },
+      FICHE_SAINE95,
+    );
+    const sainDossier95 = nu95(hoteDuDossier95);
+    exiger(sainDossier95.includes("#21") && /Liens/.test(sainDossier95), `(95l) le chemin nominal ne peint pas le lien servi — le verdict (95k) ne porterait sur rien : « ${sainDossier95} »`);
+    exiger(/Tactique dominante/.test(sainDossier95) && /Attacher le runbook/.test(sainDossier95), `(95l) le chemin nominal n'offre ni la tactique ni l'attache — les verdicts de (95k) ne porteraient sur rien : « ${sainDossier95} »`);
+    exiger(!/NON LU/.test(sainDossier95), `(95l) « NON LU » est peint sur deux lectures RÉUSSIES — un instrument qui le dit toujours ne mesure rien : « ${sainDossier95} »`);
+
+    // ══ (m) L'ARBRE DE ROUTAGE ET LES SILENCES ════════════════════════════════════════════════════
+    const corpsDuRoutage95 = $95("#policies-body"), formDuRoutage95 = $95("#policy-form");
+    const corpsDesSilences95 = $95("#silences-body"), formDesSilences95 = $95("#silence-form");
+    exiger(!!corpsDuRoutage95 && !!formDuRoutage95 && !!corpsDesSilences95 && !!formDesSilences95,
+      "(95m-instrument) les hôtes du routage ou leurs formulaires n'existent plus dans web/index.html : le verdict ne porterait sur rien");
+    const envoiDe95 = (form) => form.querySelector("button");
+    corpsServis95 = { "/api/notification-policies": { policies: [], error: CAUSE95 }, "/api/silences": { silences: [], error: CAUSE95 } };
+    await modRoutage95.loadRouting(); await laisser95();
+    const texteRoutage95 = nu95(corpsDuRoutage95), texteSilences95 = nu95(corpsDesSilences95);
+    exiger(/NON LUES/.test(texteRoutage95) && texteRoutage95.includes(CAUSE95), `(95m) l'arbre de routage ne dit pas qu'il n'a pas été lu, avec sa cause : « ${texteRoutage95} »`);
+    exiger(!/aucune politique/i.test(texteRoutage95) && !/fan-out plat/i.test(texteRoutage95),
+      `(95m) « aucune politique — fan-out plat vers TOUS les canaux » est peint sous un aveu : c'est GARANTIR à l'exploitant où partent ses alertes au moment où l'on ignore ce que la table de routage contient : « ${texteRoutage95} »`);
+    exiger(/NON LUS/.test(texteSilences95) && texteSilences95.includes(CAUSE95), `(95m) la liste des silences ne dit pas qu'elle n'a pas été lue, avec sa cause : « ${texteSilences95} »`);
+    exiger(!/aucun silence/i.test(texteSilences95), `(95m) « aucun silence. » est peint sous un aveu — c'est affirmer qu'AUCUNE alerte n'est muette : « ${texteSilences95} »`);
+    exiger(envoiDe95(formDuRoutage95).getAttribute("aria-disabled") === "true" && envoiDe95(formDesSilences95).getAttribute("aria-disabled") === "true",
+      "(95m) les deux boutons d'envoi ne portent pas la marque d'inertie sous l'aveu de LEUR liste");
+    const ditRoute95 = await ditAuGeste95(async () => { formDuRoutage95.dispatchEvent(new Evenement("submit", { bubbles: true })); await laisser95(5); });
+    exiger(ditRoute95.length === 1 && /vers quels canaux/.test(ditRoute95[0]), `(95m) l'envoi du formulaire de route sur un arbre NON LU ne dit pas son refus : ${JSON.stringify(ditRoute95)}`);
+    corpsServis95 = { "/api/notification-policies": { policies: [{ id: 1, matchers: { severity: "4" }, contact_points: [3], continue: false, enabled: true, created_by: "hugo" }] }, "/api/silences": { silences: [{ id: 2, matchers: { host: "web-01" }, expires_at: 9999999999, active: true, reason: "maintenance", created: 1, created_by: "hugo" }] } };
+    await modRoutage95.loadRouting(); await laisser95();
+    exiger(nu95(corpsDuRoutage95).includes("severity=4") && !/NON LUES/.test(nu95(corpsDuRoutage95)), `(95n) le chemin nominal du routage ne peint pas la route servie, ou peint un aveu : « ${nu95(corpsDuRoutage95)} »`);
+    exiger(nu95(corpsDesSilences95).includes("host=web-01") && !/NON LUS/.test(nu95(corpsDesSilences95)), `(95n) le chemin nominal des silences ne peint pas le silence servi, ou peint un aveu : « ${nu95(corpsDesSilences95)} »`);
+    exiger(envoiDe95(formDuRoutage95).getAttribute("aria-disabled") === null, "(95n) le bouton d'envoi reste inerte après une lecture RÉUSSIE");
+
+    // ══ (o) LES CANAUX DE NOTIFICATION ════════════════════════════════════════════════════════════
+    const listeDesCanaux95 = $95("#notif-list"), boutonCanalNeuf95 = $95("#notif-new");
+    corpsServis95 = { "/api/notifiers": { notifiers: [], error: CAUSE95 } };
+    await modDetAdmin95.loadNotifiers(); await laisser95();
+    const texteCanaux95 = nu95(listeDesCanaux95);
+    exiger(/NON LUS/.test(texteCanaux95) && texteCanaux95.includes(CAUSE95), `(95o) la liste des canaux ne dit pas qu'elle n'a pas été lue, avec sa cause : « ${texteCanaux95} »`);
+    exiger(!/aucun canal/i.test(texteCanaux95) && !/nulle part/.test(texteCanaux95),
+      `(95o) « aucun canal - les alertes ne sont envoyées nulle part » est peint sous un aveu, alors qu'un canal invisible continue d'émettre : « ${texteCanaux95} »`);
+    exiger(boutonCanalNeuf95.getAttribute("aria-disabled") === "true", "(95o) « + Nouveau canal » ne porte pas la marque d'inertie sur une liste NON LUE");
+    corpsServis95 = { "/api/notifiers": { notifiers: [{ id: 1, name: "astreinte", kind: "ntfy", enabled: true, url: "https://ntfy/x", min_severity: 3, has_auth: true }] } };
+    await modDetAdmin95.loadNotifiers(); await laisser95();
+    exiger(nu95(listeDesCanaux95).includes("astreinte") && !/NON LUS/.test(nu95(listeDesCanaux95)), `(95p) le chemin nominal des canaux ne peint pas le canal servi, ou peint un aveu : « ${nu95(listeDesCanaux95)} »`);
+    exiger(boutonCanalNeuf95.getAttribute("aria-disabled") === null, "(95p) « + Nouveau canal » reste inerte après une lecture RÉUSSIE");
+
+    // ══ (q) LES RÈGLES D'INGESTION ════════════════════════════════════════════════════════════════
+    const listeDesRegles95 = $95("#processor-list"), boutonRegleNeuve95 = $95("#processor-new");
+    const COMPTEURS95 = { per_rule: {}, totals: { not_indexed: 12, dropped: 9, masked: 3, routed: 0, sampled_out: 0, renamed: 0 }, reload_errors: 0 };
+    corpsServis95 = { "/api/processors": { counters: COMPTEURS95, rules: [], error: CAUSE95 } };
+    await modProc95.loadProcessors(); await laisser95();
+    const texteRegles95 = nu95(listeDesRegles95);
+    exiger(/NON LUES/.test(texteRegles95) && texteRegles95.includes(CAUSE95), `(95q) les règles d'ingestion ne disent pas qu'elles n'ont pas été lues, avec leur cause : « ${texteRegles95} »`);
+    exiger(!/aucune règle/i.test(texteRegles95) && !/byte-identique/.test(texteRegles95),
+      `(95q) « aucune règle — l'ingest est byte-identique (tout event est indexé) » est peint sous un aveu, alors qu'une règle DROP invisible continue de jeter : « ${texteRegles95} »`);
+    exiger(/12/.test(texteRegles95), `(95q) les COMPTEURS, qui viennent d'une AUTRE source que les règles, ne sont plus servis sous l'aveu : c'est précisément leur désaccord avec une liste vide qui se lit : « ${texteRegles95} »`);
+    exiger(boutonRegleNeuve95.getAttribute("aria-disabled") === "true", "(95q) « + Règle » ne porte pas la marque d'inertie sur une chaîne d'ingestion NON LUE");
+    const ditRegle95 = await ditAuGeste95(() => modProc95.openProcessorForm());
+    exiger(ditRegle95.length === 1 && /l'ordre de la chaîne/.test(ditRegle95[0]), `(95q) le geste « + Règle » sur une liste NON LUE ne dit pas son refus : ${JSON.stringify(ditRegle95)}`);
+    corpsServis95 = { "/api/processors": { counters: COMPTEURS95, rules: [{ id: 1, name: "drop debug", ord: 1, match_field: "severity", match_op: "eq", match_value: "0", action: "drop", action_arg: "", enabled: true, managed: 0 }] } };
+    await modProc95.loadProcessors(); await laisser95();
+    exiger(nu95(listeDesRegles95).includes("drop debug") && !/NON LUES/.test(nu95(listeDesRegles95)), `(95r) le chemin nominal des règles ne peint pas la règle servie, ou peint un aveu : « ${nu95(listeDesRegles95)} »`);
+    exiger(boutonRegleNeuve95.getAttribute("aria-disabled") === null, "(95r) « + Règle » reste inerte après une lecture RÉUSSIE");
+
+    // ══ (s) LES LOOKUPS ═══════════════════════════════════════════════════════════════════════════
+    const listeDesLookups95 = $95("#lookup-list"), boutonLookupNeuf95 = $95("#lookup-new");
+    corpsServis95 = { "/api/lookups": { lookups: [], error: CAUSE95 } };
+    await modLookups95.loadLookups(); await laisser95();
+    const texteLookups95 = nu95(listeDesLookups95);
+    exiger(/NON LUS/.test(texteLookups95) && texteLookups95.includes(CAUSE95), `(95s) la liste des lookups ne dit pas qu'elle n'a pas été lue, avec sa cause : « ${texteLookups95} »`);
+    exiger(!/aucun lookup/i.test(texteLookups95), `(95s) « aucun lookup » est peint sous un aveu, et le geste qu'il propose REMPLACE le contenu du lookup portant ce nom : « ${texteLookups95} »`);
+    exiger(boutonLookupNeuf95.getAttribute("aria-disabled") === "true", "(95s) « + Nouveau lookup » ne porte pas la marque d'inertie sur une liste NON LUE");
+    corpsServis95 = { "/api/lookups": { lookups: [{ name: "geoip", key_field: "src_ip", cols: "country,asn", updated: 1000, rows: 42, managed: 2 }] } };
+    await modLookups95.loadLookups(); await laisser95();
+    exiger(nu95(listeDesLookups95).includes("geoip") && !/NON LUS/.test(nu95(listeDesLookups95)), `(95t) le chemin nominal des lookups ne peint pas le lookup servi, ou peint un aveu : « ${nu95(listeDesLookups95)} »`);
+    exiger(boutonLookupNeuf95.getAttribute("aria-disabled") === null, "(95t) « + Nouveau lookup » reste inerte après une lecture RÉUSSIE");
+
+    // ══ (u) MES REQUÊTES SAUVEGARDÉES : « LA LECTURE N'A PAS EU LIEU » EST DÉJÀ DANS LE CONTRAT ════
+    corpsServis95 = { "/api/saved-queries": { queries: [], error: CAUSE95 } };
+    const ditModeles95 = await ditAuGeste95(async () => { const r = await modModeles2_95.fetchSaved(); exiger(r === null, `(95u) une lecture RATÉE de mes modèles rend \`[]\` — c'est-à-dire le FAIT « aucun modèle enregistré » — au lieu de \`null\`, que le contrat de cette fonction réserve à « la lecture n'a pas eu lieu » : ${JSON.stringify(r)}`); });
+    exiger(ditModeles95.length === 1 && ditModeles95[0].includes(CAUSE95) && /NON LUS/.test(ditModeles95[0]), `(95u) la cause SERVIE n'est pas dite au lecteur : ${JSON.stringify(ditModeles95)}`);
+    corpsServis95 = { "/api/saved-queries": { queries: [{ id: 1, name: "erreurs 4xx", soql: "search status>=400" }] } };
+    const sainModeles95 = await modModeles2_95.fetchSaved();
+    exiger(Array.isArray(sainModeles95) && sainModeles95.length === 1, `(95v) le chemin nominal ne rend pas le modèle servi — le verdict (95u) ne porterait sur rien : ${JSON.stringify(sainModeles95)}`);
+
+    // ══ (w) LE CATALOGUE DE RUNBOOKS ET LES ÉTAPES D'UNE PROCÉDURE ════════════════════════════════
+    const listeDesRunbooks95 = $95("#rb-list"), boutonRunbookNeuf95 = $95("#rb-new");
+    corpsServis95 = { "/api/runbooks": { runbooks: [], error: CAUSE95 } };
+    await modRb95.loadRunbooks(); await laisser95();
+    const texteRunbooks95 = nu95(listeDesRunbooks95);
+    exiger(/NON LU/.test(texteRunbooks95) && texteRunbooks95.includes(CAUSE95), `(95w) le catalogue de runbooks ne dit pas qu'il n'a pas été lu, avec sa cause : « ${texteRunbooks95} »`);
+    exiger(!/aucun runbook/i.test(texteRunbooks95), `(95w) « aucun runbook » est peint sous un aveu — la clé d'un runbook est UNIQUE, en réécrire un sera refusé ou lui fera concurrence : « ${texteRunbooks95} »`);
+    exiger(boutonRunbookNeuf95.getAttribute("aria-disabled") === "true", "(95w) « + Runbook » ne porte pas la marque d'inertie sur un catalogue NON LU");
+    const ditRunbook95 = await ditAuGeste95(() => modRb95.openEditor(null));
+    exiger(ditRunbook95.length === 1 && /la clé est unique/.test(ditRunbook95[0]), `(95w) l'ouverture de l'éditeur sur un catalogue NON LU ne dit pas son refus : ${JSON.stringify(ditRunbook95)}`);
+    // LES ÉTAPES D'UNE PROCÉDURE : la métadonnée vient d'une AUTRE lecture et reste servie.
+    const boiteDesEtapes95 = new Element("div");
+    corpsServis95 = { "/api/runbooks/7": { id: 7, key: "compte-compromis", name: "Compte compromis", description: "procédure livrée", match_kind: "tactic", match_key: "TA0006", managed: 1, active: true, step_list: [], error: CAUSE95 } };
+    await modRb95.remplirLesEtapes(boiteDesEtapes95, 7); await laisser95();
+    const texteEtapes95 = nu95(boiteDesEtapes95);
+    exiger(/NON LUES/.test(texteEtapes95) && texteEtapes95.includes(CAUSE95), `(95w) les étapes d'une procédure ne disent pas qu'elles n'ont pas été lues, avec leur cause : « ${texteEtapes95} »`);
+    exiger(!/aucune étape/i.test(texteEtapes95), `(95w) « aucune étape » est peint sous un aveu, au bas de LA LISTE QU'ON SUIT pendant un incident : « ${texteEtapes95} »`);
+    exiger(texteEtapes95.includes("procédure livrée"), `(95w) la métadonnée du runbook, qui vient d'une AUTRE lecture ABOUTIE, n'est plus servie sous l'aveu des étapes : « ${texteEtapes95} »`);
+    const ditEditeur95 = await ditAuGeste95(() => modRb95.openEditor(7));
+    exiger(ditEditeur95.length === 1 && /REMPLACE toutes les étapes/.test(ditEditeur95[0]), `(95w) l'éditeur s'ouvre sur une procédure dont les étapes n'ont pas été lues : l'enregistrement PERSISTERAIT la troncature : ${JSON.stringify(ditEditeur95)}`);
+    // CONTRÔLE POSITIF : catalogue servi, étapes servies.
+    corpsServis95 = { "/api/runbooks": { runbooks: [{ ...RUNBOOK95, active: true, created: 1, steps: 2 }] } };
+    await modRb95.loadRunbooks(); await laisser95();
+    exiger(nu95(listeDesRunbooks95).includes("Compte compromis") && !/NON LU/.test(nu95(listeDesRunbooks95)), `(95x) le chemin nominal du catalogue ne peint pas le runbook servi, ou peint un aveu : « ${nu95(listeDesRunbooks95)} »`);
+    exiger(boutonRunbookNeuf95.getAttribute("aria-disabled") === null, "(95x) « + Runbook » reste inerte après une lecture RÉUSSIE");
+    corpsServis95 = { "/api/runbooks/7": { id: 7, key: "compte-compromis", name: "Compte compromis", description: "procédure livrée", match_kind: "tactic", match_key: "TA0006", managed: 1, active: true, step_list: [{ id: 1, ordinal: 1, phase: "triage", title: "Isoler le compte", guidance: "", step_kind: "manual", search_soql: "", action_kind: "" }, { id: 2, ordinal: 2, phase: "containment", title: "Révoquer les jetons", guidance: "", step_kind: "manual", search_soql: "", action_kind: "" }] } };
+    boiteDesEtapes95.replaceChildren();
+    await modRb95.remplirLesEtapes(boiteDesEtapes95, 7); await laisser95();
+    const sainEtapes95 = nu95(boiteDesEtapes95);
+    exiger(sainEtapes95.includes("Isoler le compte") && sainEtapes95.includes("Révoquer les jetons"), `(95x) le chemin nominal ne peint pas les deux étapes servies — le verdict (95w) ne porterait sur rien : « ${sainEtapes95} »`);
+    exiger(!/NON LUES/.test(sainEtapes95), `(95x) « NON LUES » est peint sur une lecture RÉUSSIE : « ${sainEtapes95} »`);
+
+    exiger(minuteriesRetenues95 >= 7, `(95-instrument) ${minuteriesRetenues95} minuterie(s) longue(s) capturée(s) : les sept refus de geste jugés ci-dessus posent chacun un avis de neuf secondes, et un compte plus bas dirait qu'un refus n'a pas été prononcé par le chemin qu'on croit mesurer`);
+  } finally {
+    globalThis.fetch = fetchOrigine95; globalThis.setTimeout = minuterieOrigine95;
+    S95.isAdmin = etatOrigine95.admin; S95.AUTH = etatOrigine95.auth; S95.viewList = etatOrigine95.vues;
+  }
+  console.log("(95) OK — les six familles de savoir, les trois étages des modèles, les datasets, les panneaux d'un tableau de bord, le sélecteur de vues, les liens et la fiche de runbooks d'un dossier, l'arbre de routage, les silences, les canaux, les règles d'ingestion, les lookups, mes modèles, le catalogue de runbooks et les étapes d'une procédure écrivent la cause SERVIE au lieu d'une absence rassurante ; l'aveu d'un corps à PLUSIEURS lectures NOMME celle qui a échoué et laisse les autres peintes ; aucun geste de création ou d'attache ne se présente sur une liste non lue, et les quinze chemins nominaux restent muets");
+}
+
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;
 verdictRendu = true;
 if (echecs.length) {

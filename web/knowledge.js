@@ -9,6 +9,29 @@
 // nouvelle ni chemin de requête/masquage touché — pure UI sur des routes déjà en place.
 import { $, api, apiSend, muted, pagedList, toast, modal, confirmModal, managedBadge, gateDeleteBtn } from './core.js';
 
+// `P10.7-f` (rang 4) — LES SIX FAMILLES VIENNENT DANS UN SEUL CORPS, ET L'AVEU NOMME CELLES QUI N'ONT PAS
+// ÉTÉ LUES. `/api/knowledge` rend `{aliases, calcs, eventtypes, tags, macros, auto_lookups}` ; quand une
+// lecture échoue, `corps_de_listes_illisibles` (daemon/src/handlers/liste_bornee.rs) laisse SA clé présente
+// et VIDE, NOMME la famille dans `non_lus` et ouvre `error` sur la cause. Les autres familles restent
+// SERVIES : l'aveu se peint donc sur la famille NOMMÉE seulement — un aveu global suspecterait cinq familles
+// honnêtes avec la sixième, et c'est précisément ce que le démon a refusé d'écrire. Ce module ne consomme
+// que QUATRE des six (`macros` et `auto_lookups` n'ont aucun panneau ici) : une famille non lue qu'il
+// n'affiche pas ne se peint nulle part, et c'est dit plutôt que sous-entendu.
+const FAMILLES_DE_SAVOIR = [
+  { cle: 'aliases', kind: 'alias', liste: '#ko-alias-list', neuf: '#ko-alias-new',
+    textContent: 'Alias de champ NON LUS : le démon a refusé et en nomme la cause —' },
+  { cle: 'calcs', kind: 'calc', liste: '#ko-calc-list', neuf: '#ko-calc-new',
+    textContent: 'Champs calculés NON LUS : le démon a refusé et en nomme la cause —' },
+  { cle: 'eventtypes', kind: 'eventtype', liste: '#ko-eventtype-list', neuf: '#ko-eventtype-new',
+    textContent: 'Event types NON LUS : le démon a refusé et en nomme la cause —' },
+  { cle: 'tags', kind: 'tag', liste: '#ko-tag-list', neuf: '#ko-tag-new',
+    textContent: 'Tags NON LUS : le démon a refusé et en nomme la cause —' },
+];
+// Les familles que la DERNIÈRE lecture n'a pas rendues. Le drapeau est posé par la charge et LU par le geste
+// de création, qui vit hors d'elle : c'est le seul lien entre une famille non lue et l'objet qu'on écrirait
+// par-dessus (grammaire de `P11.4-l`, déjà livrée pour les politiques d'index).
+const FAMILLES_NON_LUES = new Set();
+
 // Cellule d'actions (Éditer masqué : les KO se recréent ; on n'expose que Suppr. gardé par « managed »).
 function delCell(managed, onDel) {
   const wrap = document.createElement('span'); wrap.className = 'row-actions';
@@ -30,6 +53,10 @@ async function del(kind, id, label, human) {
   catch (e) { toast('erreur : ' + ((e && e.message) || e), 'err', 6000); }
 }
 async function create(kind, human, fields, payloadFn) {
+  // `P10.7-f` — LE GESTE PROMIS EST REFUSÉ, ET IL LE DIT. Le bouton « + … » de cette famille porte déjà la
+  // marque accessible de l'inertie et sa raison ; seul ce point-ci peut EMPÊCHER l'écriture, et la MÊME
+  // phrase est écrite aux deux endroits, jamais deux formulations du même refus.
+  if (FAMILLES_NON_LUES.has(kind)) { toast("Cette famille d'objets de savoir n'a PAS été lue : en créer un ici, c'est peut-être en écrire un SECOND par-dessus celui que cette lecture n'a pas pu rendre — l'insertion sera refusée par l'unicité du nom, ou le doublon façonnera toute recherche du produit.", 'bad', 9000); return; }
   const v = await modal({ title: 'Nouvel objet — ' + human, okText: 'Créer', fields });
   if (!v) return;
   try { await apiSend('/knowledge/' + kind, 'POST', payloadFn(v)); toast(human + ' créé', 'ok'); loadKnowledge(); }
@@ -132,10 +159,35 @@ async function loadKnowledge() {
     ['#ko-alias-list', '#ko-calc-list', '#ko-eventtype-list', '#ko-tag-list'].forEach(s => { if ($(s)) $(s).replaceChildren(muted('erreur : ' + ((e && e.message) || e))); });
     return;
   }
-  renderAliases(Array.isArray(d.aliases) ? d.aliases : []);
-  renderCalcs(Array.isArray(d.calcs) ? d.calcs : []);
-  renderEventtypes(Array.isArray(d.eventtypes) ? d.eventtypes : []);
-  renderTags(Array.isArray(d.tags) ? d.tags : []);
+  // `P10.7-f` — UNE FAMILLE NON LUE N'EST PAS UNE FAMILLE VIDE. `api()` ne jette que sur `!r.ok` : l'aveu
+  // arrive en 200, forme intacte, et `Array.isArray([])` est VRAI sur la clé vidée. Les quatre phrases de
+  // vide rendues plus bas se lisent alors « ce champ n'est pas renommé », « cette catégorie n'existe pas »,
+  // « ce tag n'est pas posé » — sur des objets qui façonnent la recherche de TOUT LE MONDE et qu'on
+  // réécrira par-dessus. La famille nommée rend son aveu À SA PLACE ; les autres restent peintes.
+  const nonLus = Array.isArray(d.non_lus) ? d.non_lus.map(String) : [];
+  const RENDU = { aliases: renderAliases, calcs: renderCalcs, eventtypes: renderEventtypes, tags: renderTags };
+  FAMILLES_NON_LUES.clear();
+  FAMILLES_DE_SAVOIR.forEach(f => {
+    const bouton = $(f.neuf);
+    if (nonLus.includes(f.cle)) {
+      FAMILLES_NON_LUES.add(f.kind);
+      const hote = $(f.liste);
+      if (hote) {
+        const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:0;font-size:12px';
+        const dit = document.createElement('span');
+        dit.textContent = f.textContent;
+        aveu.append(dit, ' « ' + String(d.error || '').trim() + ' »');
+        hote.replaceChildren(aveu);
+      }
+      if (bouton) { bouton.setAttribute('aria-disabled', 'true'); bouton.title = "Cette famille d'objets de savoir n'a PAS été lue : en créer un ici, c'est peut-être en écrire un SECOND par-dessus celui que cette lecture n'a pas pu rendre — l'insertion sera refusée par l'unicité du nom, ou le doublon façonnera toute recherche du produit."; }
+      return;
+    }
+    if (bouton) { bouton.removeAttribute('aria-disabled'); bouton.removeAttribute('title'); }
+    RENDU[f.cle](Array.isArray(d[f.cle]) ? d[f.cle] : []);
+  });
 }
 
-export { loadKnowledge };
+// `loadKnowledge` et `create` sont exposés pour le harnais ESM (témoin 95 : l'aveu PAR FAMILLE et le refus
+// du geste de création, rendus par leur fabrique réelle et non par une copie) ; `create` n'a aucun usage
+// applicatif hors de ce module.
+export { create, loadKnowledge };

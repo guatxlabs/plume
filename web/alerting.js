@@ -24,6 +24,24 @@ function matchersText(obj) {
   return keys.sort().map(k => k + '=' + obj[k]).join(', ');
 }
 
+// `P10.7-f` (rang 4) — LES DEUX DRAPEAUX, posés par les charges et LUS par les deux formulaires, qui vivent
+// hors d'elles : la marque accessible de l'inertie se VOIT sur le bouton d'envoi, seul le point de
+// soumission EMPÊCHE l'écriture. LA PHRASE D'UN AVEU EST TOUJOURS ÉCRITE AU PUITS QUI LA REND (`dit.
+// textContent = …`, `envoi.title = …`) et jamais passée en argument : le lexique ne regarde que le puits,
+// et une phrase qui n'y est pas ne se traduit pas.
+let POLITIQUES_NON_LUES = false, SILENCES_NON_LUS = false;
+// Le bouton d'envoi d'un formulaire, pour y poser la marque d'inertie (grammaire de `P11.4-l`).
+function envoiDuFormulaire(selecteur) {
+  const form = $(selecteur);
+  // `button` seul : les deux formulaires n'en portent qu'UN, celui de l'envoi (index.html). Un sélecteur
+  // plus précis y écrirait un littéral que le lexique compte comme un libellé possible, sans en être un.
+  return form && form.querySelector('button');
+}
+function rendreLEnvoiVif(selecteur) {
+  const envoi = envoiDuFormulaire(selecteur);
+  if (envoi) { envoi.removeAttribute('aria-disabled'); envoi.removeAttribute('title'); }
+}
+
 async function loadRouting() {
   await loadPolicies();
   await loadSilences();
@@ -34,6 +52,25 @@ async function loadPolicies() {
   const wrap = $('#policies-body'); if (!wrap) return;
   wrap.replaceChildren(muted('chargement…'));
   const d = await fetchInto(wrap, '/notification-policies'); if (!d) return;
+  // `P10.7-f` — UN ARBRE DE ROUTAGE NON LU N'EST PAS « AUCUNE POLITIQUE ». Le démon sert, en 200,
+  // `{policies: [], error: <cause>}` (`corps_de_liste_illisible`, daemon/src/handlers/alerting.rs) ;
+  // `fetchInto` ne capte qu'une EXCEPTION et ce corps-là le traverse, `Array.isArray([])` étant VRAI. La
+  // phrase de vide rendue plus bas — « aucune politique — fan-out plat vers TOUS les canaux (mode par
+  // défaut) » — est la plus fausse que ce panneau puisse écrire : elle GARANTIT à l'exploitant que chaque
+  // alerte part vers TOUS ses canaux, au moment précis où l'on ignore ce que la table de routage contient.
+  if (d.error) {
+    POLITIQUES_NON_LUES = true;
+    const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:0;font-size:12px';
+    const dit = document.createElement('span');
+    dit.textContent = 'Politiques de notification NON LUES : le démon a refusé et en nomme la cause —';
+    aveu.append(dit, ' « ' + String(d.error).trim() + ' »');
+    wrap.replaceChildren(aveu);
+    const envoi = envoiDuFormulaire('#policy-form');
+    if (envoi) { envoi.setAttribute('aria-disabled', 'true'); envoi.title = "L'arbre de routage n'a PAS été lu : ajouter une route ici, c'est peut-être doubler une route que cette lecture n'a pas pu rendre — et rien n'établit ici vers quels canaux les alertes partent."; }
+    return;
+  }
+  POLITIQUES_NON_LUES = false;
+  rendreLEnvoiVif('#policy-form');
   const rows = Array.isArray(d.policies) ? d.policies : [];
   wrap.replaceChildren();
   if (!rows.length) { wrap.appendChild(muted('aucune politique — fan-out plat vers TOUS les canaux (mode par défaut).')); return; }
@@ -55,6 +92,22 @@ async function loadSilences() {
   const wrap = $('#silences-body'); if (!wrap) return;
   wrap.replaceChildren(muted('chargement…'));
   const d = await fetchInto(wrap, '/silences'); if (!d) return;
+  // `P10.7-f` — UNE LISTE DE SILENCES NON LUE N'EST PAS « AUCUN SILENCE ». Même corps, même fabrique
+  // (`corps_de_liste_illisible`, daemon/src/handlers/alerting.rs). « aucun silence. » affirme qu'AUCUNE
+  // alerte n'est muette — sur une console de sécurité, c'est la direction dangereuse de l'erreur.
+  if (d.error) {
+    SILENCES_NON_LUS = true;
+    const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:0;font-size:12px';
+    const dit = document.createElement('span');
+    dit.textContent = 'Silences NON LUS : le démon a refusé et en nomme la cause —';
+    aveu.append(dit, ' « ' + String(d.error).trim() + ' »');
+    wrap.replaceChildren(aveu);
+    const envoi = envoiDuFormulaire('#silence-form');
+    if (envoi) { envoi.setAttribute('aria-disabled', 'true'); envoi.title = "Les silences n'ont PAS été lus : en créer un ici, c'est peut-être doubler un silence déjà posé que cette lecture n'a pas pu rendre — et rien n'établit ici quelles alertes sont déjà muettes."; }
+    return;
+  }
+  SILENCES_NON_LUS = false;
+  rendreLEnvoiVif('#silence-form');
   const rows = Array.isArray(d.silences) ? d.silences : [];
   wrap.replaceChildren();
   if (!rows.length) { wrap.appendChild(muted('aucun silence.')); return; }
@@ -77,6 +130,8 @@ function wireAlertingForms() {
   const pf = $('#policy-form');
   if (pf) pf.addEventListener('submit', async e => {
     e.preventDefault();
+    // La MÊME phrase qu'au survol du bouton d'envoi, jamais deux formulations du même refus.
+    if (POLITIQUES_NON_LUES) { toast("L'arbre de routage n'a PAS été lu : ajouter une route ici, c'est peut-être doubler une route que cette lecture n'a pas pu rendre — et rien n'établit ici vers quels canaux les alertes partent.", 'bad', 9000); return; }
     let matchers;
     try { matchers = parseMatchers($('#pol-matchers').value); } catch (err) { $('#pol-result').textContent = err.message; return; }
     const contacts = $('#pol-contacts').value.split(',').map(s => Number(s.trim())).filter(n => Number.isInteger(n) && n > 0);
@@ -88,6 +143,7 @@ function wireAlertingForms() {
   const sf = $('#silence-form');
   if (sf) sf.addEventListener('submit', async e => {
     e.preventDefault();
+    if (SILENCES_NON_LUS) { toast("Les silences n'ont PAS été lus : en créer un ici, c'est peut-être doubler un silence déjà posé que cette lecture n'a pas pu rendre — et rien n'établit ici quelles alertes sont déjà muettes.", 'bad', 9000); return; }
     let matchers;
     try { matchers = parseMatchers($('#sil-matchers').value); } catch (err) { $('#sil-result').textContent = err.message; return; }
     if (!Object.keys(matchers).length) { $('#sil-result').textContent = 'au moins un matcher requis'; return; }

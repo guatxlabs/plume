@@ -118,7 +118,18 @@ function emptyRow(text) {
 // ============================ 1) MES MODÈLES (serveur, owner-scoped) ==========================
 // null = chargement échoué (déjà signalé par un toast) ; [] = aucun modèle personnel.
 export async function fetchSaved() {
-  try { const d = await api('/saved-queries'); return (d && Array.isArray(d.queries)) ? d.queries : []; }
+  // `P10.7-f` (rang 4) — UNE LISTE DE MODÈLES NON LUE N'EST PAS « AUCUN MODÈLE ». Le démon sert, en 200,
+  // `{queries: [], error: <cause>}` quand la lecture échoue (`corps_de_liste_illisible`,
+  // daemon/src/handlers/saved_queries.rs) ; `api()` ne jette que sur `!r.ok`, et `Array.isArray([])` est
+  // VRAI. Rendre `[]` ici, c'est rendre le fait « cet utilisateur n'a enregistré aucun modèle », et la
+  // palette proposerait d'en réenregistrer un sous un nom déjà pris. Le contrat de cette fonction sépare
+  // DÉJÀ les deux : `null` = la lecture n'a pas eu lieu, `[]` = elle a eu lieu et ne rend rien. L'aveu prend
+  // donc la branche `null`, et la cause SERVIE est dite — il n'y a pas de nœud à deux morceaux dans un avis.
+  try {
+    const d = await api('/saved-queries');
+    if (d && d.error) { toast('Mes modèles NON LUS : le démon a refusé et en nomme la cause — « ' + String(d.error).trim() + ' »', 'err', 9000); return null; }
+    return (d && Array.isArray(d.queries)) ? d.queries : [];
+  }
   catch (e) { toast('Chargement de mes modèles échoué : ' + e.message, 'err'); return null; }
 }
 

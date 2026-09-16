@@ -17,10 +17,42 @@ const ACTIONS = ['drop', 'mask', 'route', 'sample', 'rename']; // `P4.12-b` : re
 
 function num(v) { return typeof v === 'number' ? v : 0; }
 
+// `P10.7-f` — LE DRAPEAU EST POSÉ PAR LA CHARGE ET LU PAR LE FORMULAIRE, câblé par le dépli partagé
+// d'`app.js`, hors d'elle : la marque accessible de l'inertie se VOIT sur « + Règle », seul le point
+// d'ouverture EMPÊCHE l'écriture.
+let REGLES_DINGESTION_NON_LUES = false;
+
 export async function loadProcessors() {
   const wrap = $('#processor-list'); if (!wrap) return;
   if (!uiIsAdmin()) { wrap.replaceChildren(muted("réservé à l'administrateur.")); return; }
   const data = await fetchInto(wrap, '/processors'); if (!data) return;
+  // `P10.7-f` (rang 4) — DES RÈGLES D'INGESTION NON LUES NE SONT PAS « AUCUNE RÈGLE ». Le démon sert, en
+  // 200, `{counters, rules: [], error: <cause>}` quand la lecture échoue (`corps_de_liste_illisible`,
+  // daemon/src/handlers/processors.rs) : les COMPTEURS viennent d'une AUTRE source (le registre en mémoire)
+  // et restent servis, `fetchInto` ne capte qu'une EXCEPTION, et `Array.isArray([])` est VRAI. Le texte de
+  // vide rendu plus bas — « aucune règle — l'ingest est byte-identique (tout event est indexé) » — GARANTIT
+  // qu'aucun événement n'est jeté ni masqué à l'entrée, alors qu'une règle `drop` invisible continue de
+  // jeter et qu'une règle `mask` invisible continue de caviarder. Les compteurs restent affichés : le
+  // désaccord entre un compteur qui bouge et une liste avouée est précisément ce qu'il faut voir.
+  if (data.error) {
+    REGLES_DINGESTION_NON_LUES = true;
+    const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:0;font-size:12px';
+    const dit = document.createElement('span');
+    dit.textContent = "Règles d'ingestion NON LUES : le démon a refusé et en nomme la cause —";
+    aveu.append(dit, ' « ' + String(data.error).trim() + ' »');
+    const frag = document.createDocumentFragment();
+    frag.appendChild(totalsBar(data.counters || { per_rule: {}, totals: {}, reload_errors: 0 }));
+    frag.appendChild(aveu);
+    wrap.replaceChildren(frag);
+    const neuf = $('#processor-new');
+    if (neuf) { neuf.setAttribute('aria-disabled', 'true'); neuf.title = "Les règles d'ingestion n'ont PAS été lues : en ajouter une ici, c'est peut-être doubler une règle qui jette ou masque déjà et que cette lecture n'a pas pu rendre — et l'ordre de la chaîne décide de ce qui est indexé."; }
+    const form = $('#processor-form');
+    if (form) { form.hidden = true; form.replaceChildren(); }
+    return;
+  }
+  REGLES_DINGESTION_NON_LUES = false;
+  const neuf = $('#processor-new');
+  if (neuf) { neuf.removeAttribute('aria-disabled'); neuf.removeAttribute('title'); }
   const rules = Array.isArray(data.rules) ? data.rules : [];
   const counters = data.counters || { per_rule: {}, totals: {}, reload_errors: 0 };
 
@@ -110,6 +142,9 @@ function ruleRow(r, counters) {
 // Formulaire d'ajout (construit en JS -> pas de markup lourd en index.html). Révélé par « + Règle ».
 export function openProcessorForm() {
   const host = $('#processor-form'); if (!host) return;
+  // `P10.7-f` — LE GESTE PROMIS EST REFUSÉ, ET IL LE DIT. La MÊME phrase qu'au survol du bouton, jamais deux
+  // formulations du même refus.
+  if (REGLES_DINGESTION_NON_LUES) { toast("Les règles d'ingestion n'ont PAS été lues : en ajouter une ici, c'est peut-être doubler une règle qui jette ou masque déjà et que cette lecture n'a pas pu rendre — et l'ordre de la chaîne décide de ce qui est indexé.", 'bad', 9000); return; }
   if (!host.hidden) { host.hidden = true; host.replaceChildren(); return; }
   host.hidden = false;
   const mk = (tag, attrs = {}, txt) => { const e = document.createElement(tag); Object.assign(e, attrs); if (txt != null) e.textContent = txt; return e; };

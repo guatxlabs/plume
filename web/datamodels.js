@@ -18,6 +18,54 @@ import { phraseDeCoupe } from './coupe_de_liste.js'; // `P11.22-g` : le résulta
 
 // État module : cache du GET /api/datamodels + sélection courante (modèle -> objet).
 let DM = { models: [], objects: [], fields: [], field_types: [], stat_funcs: [], filter_ops: [] };
+
+// `P10.7-f` (rang 4) — LES TROIS ÉTAGES VIENNENT DANS UN SEUL CORPS, ET L'AVEU NOMME CELUI QUI N'A PAS ÉTÉ
+// LU. `/api/datamodels` rend `{models, objects, fields, …}` ; quand une lecture échoue,
+// `corps_de_listes_illisibles` (daemon/src/handlers/liste_bornee.rs) laisse SA clé présente et VIDE, NOMME
+// l'étage dans `non_lus` et ouvre `error` sur la cause. Les autres étages restent SERVIS.
+// CE MODULE RECOMPOSE L'ARBRE PAR APPARIEMENT (`objects.model_id`, puis `fields.object_id`) : un étage vidé
+// n'efface pas que lui — un OBJET manquant emporte l'affichage de tous SES champs, pourtant lus, et la vue
+// se lit « ce modèle n'a pas cet objet ». L'aveu se peint sur l'étage NOMMÉ seulement ; les étages qui en
+// DÉPENDENT retombent sur leur invite « sélectionnez … », qui reste VRAIE — la sélection est effectivement
+// vide, puisque `reload` annule toute sélection qui ne se retrouve plus dans ce que le démon a servi.
+const ETAGES_DE_MODELE = [
+  { cle: 'models', hote: '#dm-models-list', neuf: '#dm-model-new',
+    textContent: 'Modèles de données NON LUS : le démon a refusé et en nomme la cause —' },
+  { cle: 'objects', hote: '#dm-objects-list', neuf: '#dm-obj-new',
+    textContent: 'Objets de modèle NON LUS : le démon a refusé et en nomme la cause —' },
+  { cle: 'fields', hote: '#dm-fields-list', neuf: '#dm-field-new',
+    textContent: 'Champs de modèle NON LUS : le démon a refusé et en nomme la cause —' },
+];
+// L'étage non lu, et la cause servie. Posés par la charge, LUS par les trois fabriques de rendu (qui sont
+// rappelées à chaque sélection) et par les trois gestes de création, qui vivent hors d'elle.
+const ETAGES_NON_LUS = new Set();
+let CAUSE_DES_ETAGES = '';
+// L'aveu à deux nœuds, écrit une fois pour les quatre surfaces de ce module : la phrase seule est un nœud
+// texte ENTIER (la seule forme que `i18nWalk` sait traduire), la cause servie est collée dans un SECOND.
+// La phrase est lue dans la clé `textContent` du registre ci-dessus — une clé d'objet qui NOMME une
+// propriété d'affichage EST le même puits que l'affectation de cette propriété, et c'est là que le lexique
+// la voit. Passer une phrase LITTÉRALE en argument la rendrait invisible au lexique, donc intraduisible.
+function aveuDeLecture(phrase, cause) {
+  const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:0;font-size:12px';
+  const dit = document.createElement('span');
+  dit.textContent = phrase;
+  aveu.append(dit, ' « ' + String(cause || '').trim() + ' »');
+  return aveu;
+}
+// Un étage non lu peint son aveu À LA PLACE de sa liste, et rend `true` pour que la fabrique s'arrête avant
+// son texte de vide. Le geste de création de cet étage porte la marque accessible de l'inertie et sa raison.
+function etagePeintSonAveu(cle) {
+  const e = ETAGES_DE_MODELE.find(x => x.cle === cle);
+  const bouton = $(e.neuf);
+  if (!ETAGES_NON_LUS.has(cle)) {
+    if (bouton) { bouton.removeAttribute('aria-disabled'); bouton.removeAttribute('title'); }
+    return false;
+  }
+  const hote = $(e.hote);
+  if (hote) hote.replaceChildren(aveuDeLecture(e.textContent, CAUSE_DES_ETAGES));
+  if (bouton) { bouton.setAttribute('aria-disabled', 'true'); bouton.title = "Cet étage de l'arbre des modèles n'a PAS été lu : déclarer ici, c'est peut-être redéclarer un homonyme de ce que cette lecture n'a pas pu rendre — et sur les champs DÉCLARÉS se construit l'allowlist du Pivot."; }
+  return true;
+}
 let selModel = null, selObject = null;
 
 // Fenêtres temporelles du Pivot (le panneau est hors Explore : range propre, from glissant depuis maintenant).
@@ -51,6 +99,7 @@ function objectFieldOptions(objectId) {
 // ============================ MODÈLES ============================
 function renderModels() {
   const host = $('#dm-models-list'); if (!host) return;
+  if (etagePeintSonAveu('models')) return;
   pagedList(host, {
     mode: 'client', pageSize: 12, rows: DM.models, sort: { key: 'name', dir: 1 },
     columns: [
@@ -72,7 +121,15 @@ async function delModel(r) {
   try { await apiSend('/datamodels/' + r.id, 'DELETE'); toast('modèle supprimé', 'ok'); await reload(); }
   catch (e) { toast('erreur : ' + ((e && e.message) || e), 'err', 6000); }
 }
+// `P10.7-f` — LE GESTE PROMIS EST REFUSÉ, ET IL LE DIT. La marque d'inertie posée par la charge se VOIT ;
+// seul ce point-ci EMPÊCHE l'écriture. La MÊME phrase est écrite aux deux endroits, jamais deux formulations.
+function refusDeDeclarerSurUnEtageNonLu(cle) {
+  if (!ETAGES_NON_LUS.has(cle)) return false;
+  toast("Cet étage de l'arbre des modèles n'a PAS été lu : déclarer ici, c'est peut-être redéclarer un homonyme de ce que cette lecture n'a pas pu rendre — et sur les champs DÉCLARÉS se construit l'allowlist du Pivot.", 'bad', 9000);
+  return true;
+}
 async function newModel() {
+  if (refusDeDeclarerSurUnEtageNonLu('models')) return;
   const v = await modal({ title: 'Nouveau modèle de données', okText: 'Créer', fields: [
     { name: 'name', label: 'Nom (identifiant)', required: true, placeholder: 'authentication' },
     { name: 'title', label: 'Titre', placeholder: 'Authentification' },
@@ -90,6 +147,7 @@ async function newModel() {
 // ============================ OBJETS ============================
 function renderObjects() {
   const host = $('#dm-objects-list'); if (!host) return;
+  if (etagePeintSonAveu('objects')) return;
   const ctx = $('#dm-obj-ctx'); const model = DM.models.find(m => m.id === selModel);
   if (ctx) ctx.textContent = model ? '— ' + (model.title || model.name) : '(sélectionnez un modèle)';
   if (!selModel) { host.replaceChildren(muted('sélectionnez un modèle pour voir ses objets.')); return; }
@@ -115,6 +173,7 @@ async function delObject(r) {
   catch (e) { toast('erreur : ' + ((e && e.message) || e), 'err', 6000); }
 }
 async function newObject() {
+  if (refusDeDeclarerSurUnEtageNonLu('objects')) return;
   if (!selModel) return;
   const parents = DM.objects.filter(o => o.model_id === selModel);
   const v = await modal({ title: 'Nouvel objet', okText: 'Créer', fields: [
@@ -133,6 +192,7 @@ async function newObject() {
 // ============================ CHAMPS ============================
 function renderFields() {
   const host = $('#dm-fields-list'); if (!host) return;
+  if (etagePeintSonAveu('fields')) return;
   const ctx = $('#dm-field-ctx'); const obj = DM.objects.find(o => o.id === selObject);
   if (ctx) ctx.textContent = obj ? '— ' + obj.name : '(sélectionnez un objet)';
   if (!selObject) { host.replaceChildren(muted('sélectionnez un objet pour voir/ajouter ses champs.')); return; }
@@ -154,6 +214,7 @@ async function delField(r) {
   catch (e) { toast('erreur : ' + ((e && e.message) || e), 'err', 6000); }
 }
 async function newField() {
+  if (refusDeDeclarerSurUnEtageNonLu('fields')) return;
   if (!selObject) return;
   const v = await modal({ title: 'Nouveau champ', okText: 'Créer', fields: [
     { name: 'name', label: 'Nom public', required: true, placeholder: 'source_ip' },
@@ -308,6 +369,18 @@ function renderResults(host, d) {
 async function loadDatasets() {
   const host = $('#dm-datasets-list'); if (!host) return;
   const d = await fetchInto(host, '/datasets'); if (!d) return;
+  // `P10.7-f` — UNE LISTE DE DATASETS NON LUE N'EST PAS « AUCUN DATASET ». Le démon sert, en 200,
+  // `{datasets: [], error: <cause>}` (`corps_de_liste_illisible`, daemon/src/handlers/datamodels.rs) ;
+  // `fetchInto` ne capte qu'une EXCEPTION et ce corps-là le traverse. Le texte de vide rendu plus bas est
+  // l'invitation EXACTE à réenregistrer un dataset qui existe peut-être déjà — et que la contrainte
+  // d'unicité refusera, après que l'exploitant aura reconstruit son Pivot.
+  if (d.error) {
+    const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:0;font-size:12px';
+    const dit = document.createElement('span');
+    dit.textContent = 'Datasets NON LUS : le démon a refusé et en nomme la cause —';
+    aveu.append(dit, ' « ' + String(d.error).trim() + ' »');
+    host.replaceChildren(aveu); return;
+  }
   const rows = (d && Array.isArray(d.datasets)) ? d.datasets : [];
   pagedList(host, {
     mode: 'client', pageSize: 12, rows, sort: { key: 'name', dir: 1 },
@@ -365,6 +438,13 @@ async function reload() {
   let d;
   try { d = await api('/datamodels'); }
   catch (e) { const h = $('#dm-models-list'); if (h) h.replaceChildren(muted('erreur : ' + ((e && e.message) || e))); return; }
+  // `P10.7-f` — UN ÉTAGE NON LU N'EST PAS UN ÉTAGE VIDE. `api()` ne jette que sur `!r.ok` : l'aveu arrive en
+  // 200, forme intacte, et `Array.isArray([])` est VRAI sur la clé vidée. Les trois phrases de vide rendues
+  // plus bas affirmeraient alors qu'aucun modèle, aucun objet, aucun champ n'est déclaré — et l'éditeur en
+  // redéclarerait un homonyme. `non_lus` NOMME l'étage ; la cause est servie une fois pour les trois.
+  ETAGES_NON_LUS.clear();
+  (Array.isArray(d.non_lus) ? d.non_lus : []).forEach(n => ETAGES_NON_LUS.add(String(n)));
+  CAUSE_DES_ETAGES = String(d.error || '');
   DM = {
     models: Array.isArray(d.models) ? d.models : [], objects: Array.isArray(d.objects) ? d.objects : [], fields: Array.isArray(d.fields) ? d.fields : [],
     field_types: Array.isArray(d.field_types) ? d.field_types : ['string'], stat_funcs: Array.isArray(d.stat_funcs) ? d.stat_funcs : ['count'], filter_ops: Array.isArray(d.filter_ops) ? d.filter_ops : ['='],
@@ -390,4 +470,7 @@ function loadDataModels() { wireOnce(); reload(); loadDatasets(); }
 
 // `renderResults` est exporté pour être EXERCÉ sans navigateur : c'est le point unique où un refus du
 // démon et un résultat vide se séparent, et une propriété qu'on ne peut que LIRE n'est pas une preuve.
-export { loadDataModels, renderResults };
+// `loadDatasets`, `reload` et les trois fabriques de rendu sont exposées pour le harnais ESM (témoin 95 :
+// l'aveu PAR ÉTAGE et l'aveu des datasets, rendus par leur fabrique réelle) ; aucun usage applicatif hors
+// de ce module.
+export { loadDataModels, loadDatasets, newModel, newObject, newField, reload, renderResults };

@@ -31,6 +31,20 @@ function mkSelect(opts, val) {
 function mkInput(ph, val) { const i = document.createElement('input'); i.placeholder = ph || ''; i.value = val || ''; return i; }
 function mkLabel(text, ctl) { const l = document.createElement('label'); l.appendChild(document.createTextNode(text + ' ')); l.appendChild(ctl); return l; }
 
+// `P10.7-f` (rang 4) — LE SQUELETTE DE L'AVEU À DEUX NŒUDS, POUR LES TROIS SURFACES DE CE MODULE. La phrase
+// est écrite AU PUITS par chaque appelant (`dit.textContent = …`) et jamais passée ici en argument : le
+// lexique ne regarde que le puits, et une phrase qui n'y est pas ne se traduit pas. La cause SERVIE par le
+// démon est collée dans un SECOND nœud — `i18nWalk` n'égale qu'un nœud ENTIER.
+function boiteDAveu() {
+  const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:0;font-size:12px';
+  const dit = document.createElement('span');
+  aveu.appendChild(dit);
+  return { aveu, dit };
+}
+// Le drapeau du catalogue, posé par la charge et LU par « + Runbook », câblé hors d'elle : la marque
+// accessible de l'inertie se VOIT, seul le point de clic EMPÊCHE l'écriture (grammaire de `P11.4-l`).
+let CATALOGUE_NON_LU = false;
+
 async function loadRunbooks() {
   const panel = $('#runbooks-panel');
   const wrap = $('#rb-list');
@@ -38,8 +52,30 @@ async function loadRunbooks() {
   // ADMIN-only COSMÉTIQUE — la vraie garde est serveur (403). Un non-admin ne voit pas l'authoring.
   if (!socIsAdmin()) { if (panel) panel.style.display = 'none'; return; }
   if (panel) panel.style.display = '';
-  let runbooks = [];
-  try { ({ runbooks } = await api('/runbooks')); } catch (e) { wrap.replaceChildren(muted('runbooks indisponibles')); return; }
+  let runbooks = [], reponse = null;
+  // `P10.7-f` (rang 4) — LA RÉPONSE ENTIÈRE EST TENUE, PAS SEULEMENT LA CLÉ ATTENDUE. Le démon sert, en 200,
+  // `{runbooks: [], error: <cause>}` quand la lecture échoue (`corps_de_liste_illisible`,
+  // daemon/src/handlers/incidents.rs — ce site PANIQUAIT avant la vague b du rang quatre) ; `api()` ne jette
+  // que sur `!r.ok`, et la déconstruction `({ runbooks } = …)` jetait la cause servie à côté. Le texte de
+  // vide de la liste — « aucun runbook » — affirme alors qu'AUCUNE procédure n'est écrite, et « + Runbook »
+  // invite à en réécrire une : sa `key` est UNIQUE, l'insertion sera refusée ; sous un autre nom, les deux
+  // se disputeront la même correspondance `match_kind`/`match_key` au moment d'un incident.
+  try { reponse = await api('/runbooks'); runbooks = Array.isArray(reponse.runbooks) ? reponse.runbooks : []; }
+  catch (e) { wrap.replaceChildren(muted('runbooks indisponibles')); return; }
+  const neuf = $('#rb-new');
+  if (reponse.error) {
+    CATALOGUE_NON_LU = true;
+    const { aveu, dit } = boiteDAveu();
+    dit.textContent = 'Catalogue de runbooks NON LU : le démon a refusé et en nomme la cause —';
+    aveu.append(' « ' + String(reponse.error).trim() + ' »');
+    wrap.replaceChildren(aveu);
+    if (neuf) { neuf.setAttribute('aria-disabled', 'true'); neuf.title = "Le catalogue des runbooks n'a PAS été lu : en écrire un ici, c'est peut-être en écrire un SECOND par-dessus celui que cette lecture n'a pas pu rendre — la clé est unique et l'insertion sera refusée, ou les deux se disputeront la même correspondance pendant un incident."; }
+    const editeur = $('#rb-editor');
+    if (editeur) { editeur.replaceChildren(); editeur.classList.add('hidden'); }
+    return;
+  }
+  CATALOGUE_NON_LU = false;
+  if (neuf) { neuf.removeAttribute('aria-disabled'); neuf.removeAttribute('title'); }
   wrap.replaceChildren();
   const note = takePendingNote('runbooks'); if (note) wrap.appendChild(note); // P11.1-e : où arrive ce qui vient d'être créé
   // ═══════════════════════════════════════════════════════════════════════════════════════════════
@@ -159,7 +195,19 @@ async function remplirLesEtapes(box, id) {
   box.replaceChildren();
   let data;
   try { data = await api('/runbooks/' + id); } catch (e) { box.appendChild(muted('étapes indisponibles')); return; }
+  // `P10.7-f` (rang 4) — DES ÉTAPES NON LUES NE SONT PAS « AUCUNE ÉTAPE ». Le démon sert, en 200, la
+  // métadonnée du runbook (lecture indépendante, aboutie) plus `{step_list: [], error: <cause>}`
+  // (`corps_de_liste_illisible`, daemon/src/handlers/incidents.rs, `runbook_get`). C'est LA LISTE QU'ON SUIT
+  // pendant un incident : « aucune étape » au bas d'une procédure qui en porte se lit « il n'y a rien à
+  // faire ». La description, elle, vient de la métadonnée servie et reste peinte au-dessus.
   if (data.description) box.appendChild(muted(data.description));
+  if (data.error) {
+    const { aveu, dit } = boiteDAveu();
+    dit.textContent = 'Étapes de la procédure NON LUES : le démon a refusé et en nomme la cause —';
+    aveu.append(' « ' + String(data.error).trim() + ' »');
+    box.appendChild(aveu);
+    return;
+  }
   let lastPhase = null;
   (data.step_list || []).forEach(s => {
     if (s.phase !== lastPhase) { lastPhase = s.phase; const h = document.createElement('div'); h.className = 'muted rb-phase'; h.textContent = (PHASE_LABEL[s.phase] || s.phase).toUpperCase(); box.appendChild(h); }
@@ -177,8 +225,14 @@ async function remplirLesEtapes(box, id) {
 // Mêmes classes que le formulaire des playbooks (`.ruleform`, `.rf-row`, `.rf-actions`, submit = primaire).
 async function openEditor(id) {
   const box = $('#rb-editor'); if (!box) return;
+  // `P10.7-f` — ÉDITER UNE PROCÉDURE DONT LES ÉTAPES N'ONT PAS ÉTÉ LUES PERSISTERAIT LA TRONCATURE.
+  // L'enregistrement REMPLACE toutes les étapes du runbook : ouvrir l'éditeur sur un `step_list` vidé par
+  // un aveu, c'est proposer d'écrire une procédure amputée par-dessus celle qui existe. Le geste est donc
+  // refusé, et il le DIT. La création (`id == null`) est gardée par le drapeau du catalogue.
+  if (id == null && CATALOGUE_NON_LU) { toast("Le catalogue des runbooks n'a PAS été lu : en écrire un ici, c'est peut-être en écrire un SECOND par-dessus celui que cette lecture n'a pas pu rendre — la clé est unique et l'insertion sera refusée, ou les deux se disputeront la même correspondance pendant un incident.", 'bad', 9000); return; }
   let data = { name: '', match_kind: '*', match_key: '', description: '', step_list: [], active: true };
   if (id != null) { try { data = await api('/runbooks/' + id); } catch (e) { toast('chargement échoué', 'bad'); return; } }
+  if (data.error) { toast("Les étapes de cette procédure n'ont PAS été lues : l'éditeur REMPLACE toutes les étapes à l'enregistrement — l'ouvrir ici persisterait une procédure amputée de ce que cette lecture n'a pas pu rendre.", 'bad', 9000); return; }
   box.replaceChildren(); box.classList.remove('hidden');
   const form = document.createElement('form'); form.className = 'ruleform';
   form.appendChild(Object.assign(document.createElement('div'), { textContent: id != null ? 'Éditer le runbook (guide d\'incident)' : 'Nouveau runbook (guide d\'incident)', style: 'font-weight:700' }));
@@ -280,4 +334,7 @@ function readStep(el) {
 
 loadRunbooks();
 
-export { loadRunbooks, runbookRowModel, rbRow };
+// `remplirLesEtapes` et `openEditor` sont exposés pour le harnais ESM (témoin 95) : l'aveu des étapes et le
+// refus d'ouvrir l'éditeur sur une procédure non lue ne se prouvent qu'en les EXÉCUTANT. Aucun usage
+// applicatif hors de ce module.
+export { loadRunbooks, openEditor, remplirLesEtapes, runbookRowModel, rbRow };

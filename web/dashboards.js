@@ -393,9 +393,32 @@ function renderDashboard(d) {
   }
   return tile;
 }
+// `P10.7-f` (rang 4) — LE SQUELETTE DE L'AVEU À DEUX NŒUDS. La phrase, elle, est écrite AU PUITS par chaque
+// appelant (`dit.textContent = …`) et jamais passée ici en argument : le lexique ne regarde que le puits, et
+// une phrase qui n'y est pas ne se traduit pas. La cause SERVIE est collée dans un SECOND nœud, jamais dans
+// le même littéral — `i18nWalk` n'égale qu'un nœud ENTIER.
+function boiteDAveu() {
+  const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:0;font-size:12px';
+  const dit = document.createElement('span');
+  aveu.appendChild(dit);
+  return { aveu, dit };
+}
 async function loadPanelsInto(grid, d) {
   try {
     const j = await api('/dashboard/' + d.id);
+    // `P10.7-f` — DES PANNEAUX NON LUS NE SONT PAS UN TABLEAU DE BORD VIDE. Le démon sert, en 200,
+    // `{id, name, owner, visibility, view_id, editable, panels: [], error: <cause>}` quand la lecture des
+    // panneaux échoue (`corps_de_liste_illisible`, daemon/src/handlers/dashboards.rs) : la FORME est intacte,
+    // les métadonnées viennent d'une AUTRE lecture et restent servies, et `api()` ne jette que sur `!r.ok`.
+    // Ce module retombait sur `j.panels || []` et peignait « Dashboard vide. » avec « + Ajouter un panneau » :
+    // c'est affirmer qu'aucun panneau n'existe, et inviter à en recréer un par-dessus ceux que cette lecture
+    // n'a pas pu rendre. L'aveu PASSE AVANT, et aucun geste de création ne s'offre sous lui.
+    if (j.error) {
+      const { aveu, dit } = boiteDAveu();
+      dit.textContent = 'Panneaux du tableau de bord NON LUS : le démon a refusé et en nomme la cause —';
+      aveu.append(' « ' + String(j.error).trim() + ' »');
+      grid.replaceChildren(aveu); return;
+    }
     const panels = j.panels || [];
     if (!panels.length) {
       const es = document.createElement('div'); es.className = 'emptystate';
@@ -948,10 +971,22 @@ function playStop() {
 // pré-rempli avec la requête courante (voir les deux « Ajouter un panneau »).
 
 // --- vues (ensembles de dashboards) ---
+// `P10.7-f` — LE DRAPEAU EST POSÉ PAR LA CHARGE ET LU PAR LE GESTE DE CRÉATION, câblé par `initDashboards`
+// hors d'elle : la marque d'inertie se VOIT, seul le point de clic EMPÊCHE l'écriture.
+let VUES_NON_LUES = false;
 async function loadViews() {
   const sel = $('#view'); if (!sel) return;
   try {
-    const { views, role, me } = await api('/views');
+    // `P10.7-f` — LA RÉPONSE ENTIÈRE EST TENUE, PAS SEULEMENT LES TROIS CLÉS ATTENDUES. Le démon sert, en
+    // 200, `{me, role, views: [], error: <cause>}` quand la lecture des vues échoue
+    // (`corps_de_liste_illisible`, daemon/src/handlers/dashboards.rs). La déconstruction `{views, role, me}`
+    // jetait la cause servie à côté, `views || []` en refaisait une absence, et le sélecteur ne portait plus
+    // que « — Sans filtre de vue — » : un regroupement d'équipe qui EXISTE se lit alors « il n'y en a
+    // aucun », et « + Vue » invite à en créer un homonyme.
+    const reponse = await api('/views');
+    const { views, role, me } = reponse;
+    const aveuPrecedent = sel.parentNode && sel.parentNode.querySelector('[data-vue-non-lue]');
+    if (aveuPrecedent) aveuPrecedent.remove();
     S.viewList = views || [];
     if (role) { applyRoleClass(role); S.viewsRole = role; }
     if (me != null) S.viewsMe = me;   // #17 team — identité pour la garde de partage (bascule scope)
@@ -962,6 +997,23 @@ async function loadViews() {
     // voit d'un coup d'œil quels regroupements de dashboards sont communs.
     (views || []).forEach(v => { const o = document.createElement('option'); o.value = v.id; o.textContent = `${v.name}${v.visibility === 'shared' ? ' (équipe)' : ' (privé)'} (${v.dashboards})`; sel.appendChild(o); });
     if (cur) sel.value = cur;
+    // L'aveu se peint À CÔTÉ du sélecteur — il n'y a pas de nœud texte dans un `<select>` qui se traduise —
+    // et « + Vue » porte la marque accessible de l'inertie avec sa raison (grammaire de `P11.4-l`). Les trois
+    // voisins (renommer, partager, supprimer) sont DÉJÀ inertes par `refleterLesDroitsDeLaVue`, qui n'a
+    // aucune vue à trouver ; c'est le seul geste que rien ne retenait.
+    const neuve = $('#view-new');
+    if (reponse.error) {
+      VUES_NON_LUES = true;
+      const { aveu, dit } = boiteDAveu();
+      dit.textContent = 'Vues NON LUES : le démon a refusé et en nomme la cause —';
+      aveu.append(' « ' + String(reponse.error).trim() + ' »');
+      aveu.dataset.vueNonLue = '1';   // marque de POSE, pas de style : aucune règle CSS ne la vise
+      if (sel.parentNode) sel.parentNode.appendChild(aveu);
+      if (neuve) { neuve.setAttribute('aria-disabled', 'true'); neuve.title = "Les vues n'ont PAS été lues : en créer une ici, c'est peut-être en créer une homonyme de celle que cette lecture n'a pas pu rendre, et le filtre ci-contre ne porte sur rien."; }
+    } else {
+      VUES_NON_LUES = false;
+      if (neuve) { neuve.removeAttribute('aria-disabled'); neuve.title = 'Créer une vue : un regroupement indépendant et vide'; }
+    }
   } catch (e) {}
   refleterLesDroitsDeLaVue();
 }
@@ -1102,6 +1154,8 @@ function initDashboards() {
     toast(next === 'shared' ? 'Vue partagée avec l\'équipe' : 'Vue rendue privée', 'ok');
   });
   if ($('#view-new')) $('#view-new').addEventListener('click', async () => {
+    // La MÊME phrase qu'au survol, jamais deux formulations du même refus.
+    if (VUES_NON_LUES) { toast("Les vues n'ont PAS été lues : en créer une ici, c'est peut-être en créer une homonyme de celle que cette lecture n'a pas pu rendre, et le filtre ci-contre ne porte sur rien.", 'bad', 9000); return; }
     const r = await modal({
       title: 'Nouvelle vue', okText: 'Créer', fields: [
         { name: 'name', label: 'Nom', required: true, placeholder: 'ex: Production' },
@@ -1148,4 +1202,6 @@ function initDashboards() {
 // `corpsSansLigne` est exporté POUR LE HARNAIS, comme `renderDashboard` : la règle qu'il porte — un corps
 // sans ligne n'établit une absence que si le lecteur sait jusqu'où le panneau a regardé — se prouve en
 // l'EXÉCUTANT, pas en relisant le module.
-export { corpsSansLigne, initDashboards, loadDashboard, loadDashboards, refreshPanels, renderDashboard };
+// `loadPanelsInto` et `loadViews` sont exposées pour le harnais ESM (témoin 95) : l'aveu des panneaux et
+// celui des vues ne se prouvent qu'en les RENDANT. Aucun usage applicatif hors de ce module.
+export { corpsSansLigne, initDashboards, loadDashboard, loadDashboards, loadPanelsInto, loadViews, refreshPanels, renderDashboard };

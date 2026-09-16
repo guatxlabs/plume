@@ -941,6 +941,49 @@ const I18N_EN = {
   "Classement des entités à risque NON LU : le démon a refusé et en nomme la cause —": "Risk entity ranking NOT READ: the daemon declined and names the cause —",
   "Les index n'ont PAS été lus : définir ou éditer une politique ici armerait une purge de rétention sur un inventaire dont le contenu est inconnu — l'index visé porte peut-être déjà une politique que cette lecture n'a pas pu rendre.": "The indexes were NOT read: defining or editing a policy here would arm a retention purge over an inventory whose contents are unknown — the target index may already carry a policy that this read could not return.",
   "Les entités au-dessus d'un seuil qui sont des machines déclarées HORS DU PARC n'ont PAS pu être comptées — ce n'est pas un compte nul.": "The entities above a threshold that are machines declared OUTSIDE THE ESTATE could NOT be counted — this is not a count of zero.",
+  // `P10.7-f` (rang 4) — LES QUINZE DERNIÈRES SURFACES SOURDES : les six familles de savoir (knowledge.js),
+  // les trois étages des modèles et les datasets (datamodels.js), les panneaux d'un tableau de bord et le
+  // sélecteur de vues (dashboards.js), les liens et la fiche de runbooks d'un dossier (cases.js), l'arbre de
+  // routage et les silences (alerting.js), les canaux (detection_admin.js), les règles d'ingestion
+  // (processors.js), les lookups (lookups.js), le catalogue et les étapes d'une procédure (runbooks.js).
+  // MÊME FORME À DEUX NŒUDS que les onze clés ci-dessus — la phrase seule est un nœud texte ENTIER, la cause
+  // SERVIE par le démon est collée dans un SECOND nœud —, la seule que `i18nWalk` sait traduire.
+  // « Catalogue de runbooks NON LU » sert DEUX modules (le panneau d'authoring et la fiche d'un dossier) :
+  // une seule clé, parce que c'est la même liste et le même refus.
+  "Alias de champ NON LUS : le démon a refusé et en nomme la cause —": "Field aliases NOT READ: the daemon declined and names the cause —",
+  "Champs calculés NON LUS : le démon a refusé et en nomme la cause —": "Calculated fields NOT READ: the daemon declined and names the cause —",
+  "Event types NON LUS : le démon a refusé et en nomme la cause —": "Event types NOT READ: the daemon declined and names the cause —",
+  "Tags NON LUS : le démon a refusé et en nomme la cause —": "Tags NOT READ: the daemon declined and names the cause —",
+  "Modèles de données NON LUS : le démon a refusé et en nomme la cause —": "Data models NOT READ: the daemon declined and names the cause —",
+  "Objets de modèle NON LUS : le démon a refusé et en nomme la cause —": "Model objects NOT READ: the daemon declined and names the cause —",
+  "Champs de modèle NON LUS : le démon a refusé et en nomme la cause —": "Model fields NOT READ: the daemon declined and names the cause —",
+  "Datasets NON LUS : le démon a refusé et en nomme la cause —": "Datasets NOT READ: the daemon declined and names the cause —",
+  "Panneaux du tableau de bord NON LUS : le démon a refusé et en nomme la cause —": "Dashboard panels NOT READ: the daemon declined and names the cause —",
+  "Vues NON LUES : le démon a refusé et en nomme la cause —": "Views NOT READ: the daemon declined and names the cause —",
+  "Liens du dossier NON LUS : le démon a refusé et en nomme la cause —": "Case links NOT READ: the daemon declined and names the cause —",
+  "Alertes liées du dossier NON LUES : le démon a refusé et en nomme la cause —": "Alerts linked to the case NOT READ: the daemon declined and names the cause —",
+  "Catalogue de runbooks NON LU : le démon a refusé et en nomme la cause —": "Runbook catalogue NOT READ: the daemon declined and names the cause —",
+  "Étapes de la procédure NON LUES : le démon a refusé et en nomme la cause —": "Procedure steps NOT READ: the daemon declined and names the cause —",
+  "Politiques de notification NON LUES : le démon a refusé et en nomme la cause —": "Notification policies NOT READ: the daemon declined and names the cause —",
+  "Silences NON LUS : le démon a refusé et en nomme la cause —": "Silences NOT READ: the daemon declined and names the cause —",
+  "Canaux de notification NON LUS : le démon a refusé et en nomme la cause —": "Notification channels NOT READ: the daemon declined and names the cause —",
+  "Règles d'ingestion NON LUES : le démon a refusé et en nomme la cause —": "Ingest rules NOT READ: the daemon declined and names the cause —",
+  "Lookups NON LUS : le démon a refusé et en nomme la cause —": "Lookups NOT READ: the daemon declined and names the cause —",
+  // LES ONZE MOTIFS D'INERTIE. Ils ne portent PAS de cause : ils sont écrits en entier par la console, au
+  // survol du bouton refusé ET au clic qui dit le refus — le MÊME littéral aux deux endroits, jamais deux
+  // formulations d'un même refus. Chacun dit ce que le geste FERAIT sur une liste non lue, pas seulement
+  // qu'il est refusé.
+  "Cette famille d'objets de savoir n'a PAS été lue : en créer un ici, c'est peut-être en écrire un SECOND par-dessus celui que cette lecture n'a pas pu rendre — l'insertion sera refusée par l'unicité du nom, ou le doublon façonnera toute recherche du produit.": "This family of knowledge objects was NOT read: creating one here may write a SECOND object over the one this read could not return — the insert will be refused by the name uniqueness, or the duplicate will shape every search in the product.",
+  "Cet étage de l'arbre des modèles n'a PAS été lu : déclarer ici, c'est peut-être redéclarer un homonyme de ce que cette lecture n'a pas pu rendre — et sur les champs DÉCLARÉS se construit l'allowlist du Pivot.": "This level of the model tree was NOT read: declaring here may redeclare a namesake of what this read could not return — and the Pivot allowlist is built on the DECLARED fields.",
+  "Les vues n'ont PAS été lues : en créer une ici, c'est peut-être en créer une homonyme de celle que cette lecture n'a pas pu rendre, et le filtre ci-contre ne porte sur rien.": "The views were NOT read: creating one here may create a namesake of the one this read could not return, and the filter next to it applies to nothing.",
+  "Les liens de ce dossier n'ont PAS été lus : en ajouter un ici, c'est peut-être recréer un rattachement qui existe déjà et que cette lecture n'a pas pu rendre.": "This case's links were NOT read: adding one here may recreate a relation that already exists and that this read could not return.",
+  "L'arbre de routage n'a PAS été lu : ajouter une route ici, c'est peut-être doubler une route que cette lecture n'a pas pu rendre — et rien n'établit ici vers quels canaux les alertes partent.": "The routing tree was NOT read: adding a route here may duplicate a route this read could not return — and nothing here establishes which channels alerts go to.",
+  "Les silences n'ont PAS été lus : en créer un ici, c'est peut-être doubler un silence déjà posé que cette lecture n'a pas pu rendre — et rien n'établit ici quelles alertes sont déjà muettes.": "The silences were NOT read: creating one here may duplicate a silence already in place that this read could not return — and nothing here establishes which alerts are already muted.",
+  "Les canaux n'ont PAS été lus : en créer un ici, c'est peut-être en doubler un qui émet DÉJÀ et que cette lecture n'a pas pu rendre — chaque alerte partirait alors deux fois.": "The channels were NOT read: creating one here may duplicate a channel that ALREADY sends and that this read could not return — every alert would then go out twice.",
+  "Les règles d'ingestion n'ont PAS été lues : en ajouter une ici, c'est peut-être doubler une règle qui jette ou masque déjà et que cette lecture n'a pas pu rendre — et l'ordre de la chaîne décide de ce qui est indexé.": "The ingest rules were NOT read: adding one here may duplicate a rule that already drops or masks and that this read could not return — and the order of the chain decides what gets indexed.",
+  "Les lookups n'ont PAS été lus : « créer » ici REMPLACE intégralement le contenu du lookup portant ce nom — celui que cette lecture n'a pas pu rendre serait écrasé sans un mot.": "The lookups were NOT read: “creating” here REPLACES the whole content of the lookup bearing that name — the one this read could not return would be overwritten without a word.",
+  "Le catalogue des runbooks n'a PAS été lu : en écrire un ici, c'est peut-être en écrire un SECOND par-dessus celui que cette lecture n'a pas pu rendre — la clé est unique et l'insertion sera refusée, ou les deux se disputeront la même correspondance pendant un incident.": "The runbook catalogue was NOT read: writing one here may write a SECOND one over the one this read could not return — the key is unique and the insert will be refused, or the two will compete for the same match during an incident.",
+  "Les étapes de cette procédure n'ont PAS été lues : l'éditeur REMPLACE toutes les étapes à l'enregistrement — l'ouvrir ici persisterait une procédure amputée de ce que cette lecture n'a pas pu rendre.": "This procedure's steps were NOT read: the editor REPLACES every step on save — opening it here would persist a procedure truncated of what this read could not return.",
   // P10.7-g (lot 101) — retention.js
   "valeur enregistrée": "stored value", "variable d'environnement": "environment variable", "fichier de configuration": "configuration file", "défaut du binaire": "binary default",
   "La valeur affichée est celle que la purge appliquera (environnement, configuration ou défaut), pas la valeur enregistrée, qui n'a pas pu être lue.": "The value shown is the one the purge will apply (environment, configuration or default), not the stored value, which could not be read.",

@@ -13,6 +13,10 @@ import { $, api, apiSend, confirmModal, contentDelete, disclosure, fmtTs, ic, ma
 // API : GET /api/lookups -> {lookups:[{name,key_field,cols,updated,rows}]} ; POST {name,key_field,rows:[{...}]}
 // -> {name,rows,cols:[...]} (REMPLACE tout le lookup) ; DELETE /api/lookups/{name} -> {ok,deleted:true}.
 const LK_NAME_RE = /^[A-Za-z0-9_]+$/;   // miroir de soql_ident_ok côté daemon (alphanumérique + _, non vide)
+// `P10.7-f` — LE DRAPEAU EST POSÉ PAR LA CHARGE ET LU PAR LE FORMULAIRE, câblé par le dépli partagé, hors
+// d'elle : la marque accessible de l'inertie se VOIT sur « + Nouveau lookup », seul le point de soumission
+// EMPÊCHE le remplacement.
+let LOOKUPS_NON_LUS = false;
 // Import CSV (collage) -> tableau d'objets, en pendant du collage JSON. RFC 4180 simplifié : séparateur
 // virgule, guillemets doubles pour échapper virgule/retour-ligne/guillemet interne ("" -> "). La 1re ligne
 // non vide = en-têtes (= noms de colonnes) ; chaque ligne suivante -> {en-tête: valeur(string)}. Les valeurs
@@ -44,8 +48,29 @@ function parseCsvRows(text) {
 }
 async function loadLookups() {
   const wrap = $('#lookup-list'); if (!wrap) return;
-  let lookups = [];
-  try { ({ lookups } = await api('/lookups')); } catch (e) { return; } // 403 (non-admin) -> section masquée de toute façon
+  let lookups = [], reponse = null;
+  // `P10.7-f` (rang 4) — LA RÉPONSE ENTIÈRE EST TENUE, PAS SEULEMENT LA CLÉ ATTENDUE. Le démon sert, en 200,
+  // `{lookups: [], error: <cause>}` quand la lecture échoue (`corps_de_liste_illisible`,
+  // daemon/src/handlers/users_lookups.rs) ; `api()` ne jette que sur `!r.ok`, et la déconstruction
+  // `({ lookups } = …)` jetait la cause servie à côté. Le texte de vide rendu plus bas affirme qu'AUCUNE
+  // table d'enrichissement n'existe — et le geste qu'il propose REMPLACE intégralement le contenu du lookup
+  // portant ce nom : conclure « il n'y en a pas » puis en « créer » un écrase des données qui existent.
+  try { reponse = await api('/lookups'); lookups = Array.isArray(reponse.lookups) ? reponse.lookups : []; } catch (e) { return; } // 403 (non-admin) -> section masquée de toute façon
+  const neuf = $('#lookup-new');
+  if (reponse.error) {
+    LOOKUPS_NON_LUS = true;
+    const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:0;font-size:12px';
+    const dit = document.createElement('span');
+    dit.textContent = 'Lookups NON LUS : le démon a refusé et en nomme la cause —';
+    aveu.append(dit, ' « ' + String(reponse.error).trim() + ' »');
+    wrap.replaceChildren(aveu);
+    if (neuf) { neuf.setAttribute('aria-disabled', 'true'); neuf.title = "Les lookups n'ont PAS été lus : « créer » ici REMPLACE intégralement le contenu du lookup portant ce nom — celui que cette lecture n'a pas pu rendre serait écrasé sans un mot."; }
+    const form = $('#lookup-form');
+    if (form) form.classList.add('hidden');
+    return;
+  }
+  LOOKUPS_NON_LUS = false;
+  if (neuf) { neuf.removeAttribute('aria-disabled'); neuf.removeAttribute('title'); }
   wrap.replaceChildren();
   if (!lookups.length) { wrap.appendChild(muted('aucun lookup - clique " + Nouveau lookup " (tables d\'enrichissement : geoip, asn, threat-intel...).')); return; }
   lookups.forEach(l => wrap.appendChild(lookupRow(l)));
@@ -72,6 +97,8 @@ function initLookups() {
   if ($('#lk-cancel')) $('#lk-cancel').onclick = () => $('#lookup-form').classList.add('hidden');
   if ($('#lookup-form')) $('#lookup-form').addEventListener('submit', async e => {
     e.preventDefault();
+    // La MÊME phrase qu'au survol du bouton, jamais deux formulations du même refus.
+    if (LOOKUPS_NON_LUS) { toast("Les lookups n'ont PAS été lus : « créer » ici REMPLACE intégralement le contenu du lookup portant ce nom — celui que cette lecture n'a pas pu rendre serait écrasé sans un mot.", 'bad', 9000); return; }
     const res = $('#lk-result');
     const fail = m => { res.textContent = m; res.className = 'bad'; };
     const name = $('#lk-name').value.trim(), key = $('#lk-key').value.trim();

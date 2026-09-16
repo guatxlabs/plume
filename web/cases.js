@@ -388,6 +388,10 @@ function renderCaseDetail(host, c) {
     const linkBtn = caseBtn('Lier…', 'ghost');
     linkBtn.onclick = () => linkCasePrompt(c.id);
     bar.appendChild(linkBtn);
+    // `P10.7-f` — LA POIGNÉE SUR LE GESTE, POUR QUE `renderCaseLinks` PUISSE LE MARQUER. La barre est
+    // construite ici, la liste des liens est chargée plus bas (fetch séparé) : sans cette poignée, l'aveu
+    // de lecture ne pourrait pas poser sa marque sur le bouton qu'il concerne.
+    BOUTON_LIER.set(c.id, linkBtn);
     // #4a-bis — ARCHIVER / DÉSARCHIVER : ADMIN uniquement (action delete-like ; le daemon refuse aussi hors
     // admin via rbac_gate + re-check handler). Archiver MASQUE le case de la liste par défaut, l'historique
     // (timeline) est conservé et l'action est réversible.
@@ -603,6 +607,27 @@ async function renderCaseLinks(box, c) {
   }
   let links = [], reponseDesLiens = null;
   try { reponseDesLiens = await api('/cases/' + c.id + '/links'); links = reponseDesLiens.links || []; } catch (e) {}
+  // `P10.7-f` (rang 4) — DES LIENS NON LUS NE SONT PAS « CE DOSSIER N'EN A AUCUN ». Le démon sert, en 200,
+  // `{links: [], served: 0, window: 200, total: null, total_capped: null, error: <cause>}`
+  // (`liste_bornee::corps`, daemon/src/handlers/caseops.rs) : `api()` ne jette que sur `!r.ok`, et
+  // `reponseDesLiens.links || []` en refaisait une absence. Ici l'absence ne se PEINT même pas — la section
+  // « Liens » disparaît —, et un dossier fusionné, doublonné ou bloquant se lit isolé sur la SEULE vue qui
+  // montre ses rattachements. Le geste d'écriture se retire avec la liste : « Lier… » porte la marque
+  // accessible de l'inertie avec sa raison, et le clic DIT le refus (grammaire de `P11.4-l`).
+  const boutonLier = BOUTON_LIER.get(c.id);
+  if (reponseDesLiens && reponseDesLiens.error) {
+    LIENS_NON_LUS.add(c.id);
+    const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:6px 0;font-size:12px';
+    const dit = document.createElement('span');
+    dit.textContent = 'Liens du dossier NON LUS : le démon a refusé et en nomme la cause —';
+    aveu.append(dit, ' « ' + String(reponseDesLiens.error).trim() + ' »');
+    sec.appendChild(aveu);
+    if (boutonLier) { boutonLier.setAttribute('aria-disabled', 'true'); boutonLier.title = "Les liens de ce dossier n'ont PAS été lus : en ajouter un ici, c'est peut-être recréer un rattachement qui existe déjà et que cette lecture n'a pas pu rendre."; }
+    box.appendChild(sec);
+    return;
+  }
+  LIENS_NON_LUS.delete(c.id);
+  if (boutonLier) { boutonLier.removeAttribute('aria-disabled'); boutonLier.removeAttribute('title'); }
   if (links && links.length) {
     sec.appendChild(Object.assign(document.createElement('div'), { className: 'casesec', textContent: 'Liens' }));
     const wrap = document.createElement('div'); wrap.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px';
@@ -649,6 +674,8 @@ async function mergeCasePrompt(id) {
 
 // #39 — LIEN (association non destructive) entre le case courant et un autre. editor+.
 async function linkCasePrompt(id) {
+  // La MÊME phrase qu'au survol du bouton, jamais deux formulations du même refus.
+  if (LIENS_NON_LUS.has(id)) { toast("Les liens de ce dossier n'ont PAS été lus : en ajouter un ici, c'est peut-être recréer un rattachement qui existe déjà et que cette lecture n'a pas pu rendre.", 'bad', 9000); return; }
   let cases = [], refus = '';
   try { const j = await api('/cases?limit=200'); refus = causeDuRefusServi(j); cases = j.cases; } catch (e) {}
   if (refus) { toast('Cases NON LUS — ' + refus, 'bad', 8000); return; }   // `P10.7-d`, cf. mergeCasePrompt
@@ -728,6 +755,12 @@ async function addToCase(kind, body, ref) {
 // incident/runbook sont chargées PAR UN FETCH SÉPARÉ (hors case_get_json -> parité mode 0 côté détail).
 const PHASE_LABEL = { triage: 'Triage', investigation: 'Investigation', containment: 'Containment', eradication: 'Éradication', recovery: 'Rétablissement' };
 const STEP_MARK = { pending: '○', done: '✓', skipped: '⊘' };
+// `P10.7-f` (rang 4) — CE QU'UNE LECTURE RATÉE LAISSE DERRIÈRE ELLE, PAR DOSSIER. `LIENS_NON_LUS` est posé
+// par `renderCaseLinks` et LU par `linkCasePrompt`, qui vit hors d'elle : c'est le seul point qui EMPÊCHE
+// d'écrire un lien sur une liste non lue. `BOUTON_LIER` porte la poignée du geste, pour que la marque
+// accessible de l'inertie se pose sur le bouton que la barre a construit AVANT le chargement des liens.
+const LIENS_NON_LUS = new Set();
+const BOUTON_LIER = new Map();
 
 async function renderWizardPanel(box, c, edit, hr) {
   const sec = document.createElement('div');
@@ -755,6 +788,39 @@ async function renderWizardPanel(box, c, edit, hr) {
     if (edit) { const dec = caseBtn('Déclarer incident', 'ghost'); dec.onclick = () => incidentDeclare(c); inc.appendChild(dec); }
   }
   sec.appendChild(inc);
+  // `P10.7-f` (rang 4) — CE CORPS PORTE DEUX LECTURES DE LIGNES, ET L'AVEU NOMME CELLE QUI A ÉCHOUÉ. Le
+  // démon sert, en 200, `{…, non_lus: ["alertes_liees"|"available"], error: <cause>}`
+  // (`corps_de_listes_illisibles`, daemon/src/handlers/incidents.rs, `case_runbooks_json`). Les deux moitiés
+  // ne se remplacent pas :
+  //   · `alertes_liees` n'est PAS servie — ce sont ses DÉRIVÉS qui le sont. Non lue, `dominant_tactic`,
+  //     `dominant_technique` et `recommended` valent `null`, et la console n'écrivait alors RIEN : ni la
+  //     ligne de tactique (sa condition est fausse), ni la recommandation. Ce silence se lit « ce dossier
+  //     n'a aucune alerte liée », le cas EXACT où le repli générique est légitime. La recommandation ne doit
+  //     donc pas non plus être offerte comme établie : le démon n'en calcule aucune, et c'est dit.
+  //   · `available` est le catalogue, c'est-à-dire le choix MANUEL. Non lu, la console offrait un sélecteur
+  //     VIDE ou la phrase « aucun runbook disponible » — l'analyste en écrit alors une à la main, pendant
+  //     l'incident. Sous l'aveu, aucun geste d'attache ne s'offre.
+  // L'AVEU PASSE AVANT LES DEUX, comme celui des étapes : la ligne incident vient d'une lecture indépendante.
+  const rbNonLus = Array.isArray(rb.non_lus) ? rb.non_lus.map(String) : [];
+  // La phrase est écrite AU PUITS (`dit.textContent = …`), jamais passée en argument : le lexique ne regarde
+  // que le puits, et une phrase qui n'y est pas ne se traduit pas.
+  const boiteDAveuDuRunbook = () => {
+    const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:0 0 6px;font-size:12px';
+    const dit = document.createElement('span');
+    aveu.appendChild(dit);
+    sec.appendChild(aveu);
+    return { aveu, dit };
+  };
+  if (rbNonLus.includes('alertes_liees')) {
+    const { aveu, dit } = boiteDAveuDuRunbook();
+    dit.textContent = 'Alertes liées du dossier NON LUES : le démon a refusé et en nomme la cause —';
+    aveu.append(' « ' + String(rb.error || '').trim() + ' »');
+  }
+  if (rbNonLus.includes('available')) {
+    const { aveu, dit } = boiteDAveuDuRunbook();
+    dit.textContent = 'Catalogue de runbooks NON LU : le démon a refusé et en nomme la cause —';
+    aveu.append(' « ' + String(rb.error || '').trim() + ' »');
+  }
   // --- tactique dominante inférée + runbook recommandé / attach ---
   if (rb.dominant_tactic || rb.dominant_technique) {
     const info = muted('Tactique dominante des alertes liées : ' + (rb.dominant_tactic || '—') + (rb.dominant_technique ? ' (' + rb.dominant_technique + ')' : ''));
@@ -782,7 +848,10 @@ async function renderWizardPanel(box, c, edit, hr) {
   if (!hasRunbook) {
     const pick = document.createElement('div'); pick.style.cssText = 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px';
     if (rb.recommended) pick.appendChild(Object.assign(document.createElement('span'), { textContent: 'Recommandé : ' + rb.recommended.name, style: 'font-weight:600' }));
-    if (edit) {
+    // Le sélecteur et « Attacher le runbook » ne se présentent PAS sur un catalogue non lu : ils diraient
+    // que le choix offert est le choix qui existe. La phrase « aucun runbook disponible » ne s'écrit pas
+    // davantage — c'est une absence établie, et rien ne l'a établie.
+    if (edit && !rbNonLus.includes('available')) {
       const sel = document.createElement('select');
       // le picker liste custom + managés ACTIFS (les désactivés sont exclus serveur) ; recommandation NIVEAU-TECHNIQUE.
       (rb.available || []).forEach(r => { const o = document.createElement('option'); o.value = String(r.id); o.textContent = r.name + (r.managed ? '' : ' [custom]'); if (rb.recommended && r.id === rb.recommended.id) o.selected = true; sel.appendChild(o); });
@@ -925,4 +994,7 @@ async function prepareResponse(c, s) {
 // du démon sur les deux routes du bandeau ne se prouve qu'en le RENDANT.
 // `renderWizardPanel` est exposé pour le harnais ESM (témoin 94 : l'aveu de lecture des étapes, rendu par SA
 // fabrique réelle et non par une copie) ; aucun usage applicatif hors de ce module.
-export { addToCase, canEditCases, caseBtn, caseRow, createCase, loadCaseOpsSummary, loadCases, openCase, renderCaseDetail, renderWizardPanel };
+// `renderCaseLinks` et `linkCasePrompt` sont exposés pour le harnais ESM (témoin 95 : l'aveu de lecture des
+// liens et le refus du geste qui en ajouterait un, rendus par LEUR fabrique réelle) ; aucun usage applicatif
+// hors de ce module.
+export { addToCase, canEditCases, caseBtn, caseRow, createCase, linkCasePrompt, loadCaseOpsSummary, loadCases, openCase, renderCaseDetail, renderCaseLinks, renderWizardPanel };

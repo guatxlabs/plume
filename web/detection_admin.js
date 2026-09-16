@@ -523,6 +523,9 @@ initSigmaImport({ onImported: () => { loadRules(); renderCoverage(); loadAttackM
 
 // --- notifications multi-canal ---
 const NFK = { name: '#nf-name', kind: '#nf-kind', url: '#nf-url', sev: '#nf-sev', config: '#nf-config', enabled: '#nf-enabled' };
+// `P10.7-f` — LE DRAPEAU EST POSÉ PAR LA CHARGE ET LU PAR LE FORMULAIRE : la marque accessible de l'inertie
+// se VOIT sur « + Nouveau canal », seul le point d'ouverture EMPÊCHE l'écriture.
+let CANAUX_NON_LUS = false;
 /* state: editingNotif -> S (state.js) */
 async function loadNotifiers() {
   const wrap = $('#notif-list'); if (!wrap) return;
@@ -530,6 +533,27 @@ async function loadNotifiers() {
   // 403 {error} -> la cause est ÉCRITE dans le panneau (P11.14-a) et la liste n'est pas remplacée par
   // `undefined` ; un refus ne se lit plus comme « aucun canal ».
   const d = await fetchInto(wrap, '/notifiers'); if (!d) return;
+  // `P10.7-f` (rang 4) — UNE LISTE DE CANAUX NON LUE N'EST PAS « AUCUN CANAL ». Le démon sert, en 200,
+  // `{notifiers: [], error: <cause>}` quand la lecture échoue (`corps_de_liste_illisible`,
+  // daemon/src/handlers/notifiers.rs — ce site PANIQUAIT avant la vague b du rang quatre) : `fetchInto` ne
+  // capte qu'une EXCEPTION, ce corps-là le traverse et `Array.isArray([])` est VRAI. Le texte de vide rendu
+  // plus bas — « aucun canal - les alertes ne sont envoyées nulle part » — affirme que RIEN ne sort, alors
+  // qu'un canal invisible continue d'émettre vers son webhook ; et il invite à en créer un second, qui
+  // doublera les notifications de chaque alerte au lieu de les rétablir.
+  if (d.error) {
+    CANAUX_NON_LUS = true;
+    const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:0;font-size:12px';
+    const dit = document.createElement('span');
+    dit.textContent = 'Canaux de notification NON LUS : le démon a refusé et en nomme la cause —';
+    aveu.append(dit, ' « ' + String(d.error).trim() + ' »');
+    wrap.replaceChildren(aveu);
+    const neuf = $('#notif-new');
+    if (neuf) { neuf.setAttribute('aria-disabled', 'true'); neuf.title = "Les canaux n'ont PAS été lus : en créer un ici, c'est peut-être en doubler un qui émet DÉJÀ et que cette lecture n'a pas pu rendre — chaque alerte partirait alors deux fois."; }
+    return;
+  }
+  CANAUX_NON_LUS = false;
+  const neuf = $('#notif-new');
+  if (neuf) { neuf.removeAttribute('aria-disabled'); neuf.removeAttribute('title'); }
   const notifiers = Array.isArray(d.notifiers) ? d.notifiers : [];
   wrap.replaceChildren();
   if (!notifiers.length) { wrap.appendChild(muted('aucun canal - les alertes ne sont envoyées nulle part. Clique " + Nouveau canal ".')); return; }
@@ -560,6 +584,9 @@ function notifRow(n) {
   return row;
 }
 function openNotifForm(n) {
+  // La MÊME phrase qu'au survol du bouton, jamais deux formulations du même refus. Éditer un canal SERVI
+  // reste permis : cette ligne-là a été lue.
+  if (CANAUX_NON_LUS && !n) { toast("Les canaux n'ont PAS été lus : en créer un ici, c'est peut-être en doubler un qui émet DÉJÀ et que cette lecture n'a pas pu rendre — chaque alerte partirait alors deux fois.", 'bad', 9000); return; }
   S.editingNotif = n ? n.id : null;
   $('#notif-form').classList.remove('hidden');
   $(NFK.name).value = n ? n.name : '';

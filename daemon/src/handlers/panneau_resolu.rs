@@ -406,6 +406,27 @@ pub(crate) fn est_un_geste_de_partage(corps: &serde_json::Value, visibilite_cour
     corps.get("visibility").and_then(|v| v.as_str()) == Some("shared") && visibilite_courante != "shared"
 }
 
+/// `P10.20-k` (2026-09-16) — LA VISIBILITÉ COURANTE QU'ON N'A PAS PU LIRE NE SE DEVINE PAS.
+///
+/// `est_un_geste_de_partage` ci-dessus compare le corps reçu à la visibilité COURANTE. Un repli sur
+/// `shared` ne rend donc pas le geste douteux : il le fait DISPARAÎTRE (le prédicat exige
+/// `visibilite_courante != "shared"`), la porte de `P11.20-m` n'est jamais interrogée, et l'écriture
+/// qui publie suit. Un repli sur `private`, lui, invente un refus : le 409 nomme un élément moins
+/// visible, ce qui envoie l'appelant partager un élément quand il devrait réessayer. Les deux replis
+/// sont des CAUSES FAUSSES ; seul le refus nommé dit ce qui s'est passé.
+///
+/// 503 et non 403 ni 404 : ce n'est ni un droit qui manque ni une absence établie, c'est une lecture
+/// — et un refus réessayable ne s'apprend pas à l'appelant comme une interdiction permanente.
+pub(crate) const CAUSE_VISIBILITE_NON_LUE: &str =
+    "VISIBILITÉ COURANTE NON LUE : le geste de partage ne peut pas être jugé, donc rien n'a été \
+     écrit. Ce n'est PAS « cet objet est déjà partagé » ni « un élément le retient ». Réessayez.";
+
+/// Le refus de `CAUSE_VISIBILITE_NON_LUE`, écrit UNE fois pour les trois gestes de partage
+/// (`dash_update`, `panel_update`, `view_update`) : un site qui refuse autrement refuserait autre chose.
+pub(crate) fn refus_de_visibilite_non_lue() -> Response {
+    err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_VISIBILITE_NON_LUE)
+}
+
 /// La réponse du refus : 409 (l'état de l'objet contredit le geste) et la phrase en clair, que la
 /// console affiche telle quelle dans son message d'échec.
 pub(crate) fn refus_de_partage(element: &ElementMoinsVisible, contenant: &str) -> Response {

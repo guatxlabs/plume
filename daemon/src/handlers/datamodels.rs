@@ -275,17 +275,30 @@ fn object_constraint_chain(conn: &Connection, object_id: i64) -> Result<Vec<Stri
 /// Allowlist des champs déclarés de l'objet : le NOM SOURCE (expr si fournie, sinon name). C'est ce que le
 /// Pivot injecte réellement dans le GXQL (le `name` public peut renommer via `expr`). Un objet SANS champ
 /// déclaré -> allowlist vide -> Pivot ne peut rien split-by/agréger (fail-closed, force la déclaration).
-fn object_field_allow(conn: &Connection, object_id: i64) -> std::collections::HashSet<String> {
+///
+/// `P10.20-p` (2026-09-16) — « AUCUN CHAMP DÉCLARÉ » ET « JE N'AI PAS LU LES CHAMPS » NE SE DISENT PLUS
+/// PAREIL. Le fail-closed était réel et il le reste : une allowlist vide fait REFUSER le Pivot. Mais la
+/// préparation et la liaison étaient deux `if let Ok(..)` muets, et le refus servi disait alors « champ
+/// split-by non déclaré dans l'objet : <champ> » — une accusation portée contre la DÉCLARATION de
+/// l'exploitant, qui envoie déclarer un champ déjà déclaré, pendant que la vraie cause est une lecture
+/// qui n'a pas eu lieu. Pire : un Pivot qui ne cite AUCUN champ (un `count` seul) passait sans qu'on
+/// sache que l'allowlist n'avait pas été lue. La fonction rend donc un `Result` et l'appelant sert la
+/// cause. CE QUI RESTE UN ARBITRAGE ASSUMÉ, ET C'EST ÉCRIT : `rows.flatten()` — une LIGNE illisible
+/// ampute l'allowlist, et le champ correspondant est REFUSÉ (jamais inventé). C'est l'entrée
+/// `object_field_allow` de `SITES_ASSUMES` dans la garde de famille, et ce lot ne la change pas.
+fn object_field_allow(conn: &Connection, object_id: i64) -> Result<std::collections::HashSet<String>, String> {
+    const NON_LUS: &str = "champs déclarés de l'objet NON LUS : l'allowlist du Pivot n'a pas pu être \
+                           établie — ce n'est PAS « aucun champ déclaré ». Réessayez.";
     let mut set = std::collections::HashSet::new();
-    if let Ok(mut s) = conn.prepare("SELECT name, expr FROM data_model_field WHERE object_id=?1") {
-        if let Ok(rows) = s.query_map(params![object_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) {
-            for (name, expr) in rows.flatten() {
-                let src = if expr.trim().is_empty() { name } else { expr };
-                set.insert(src);
-            }
-        }
+    let mut s = conn.prepare("SELECT name, expr FROM data_model_field WHERE object_id=?1").map_err(|_| NON_LUS.to_string())?;
+    let rows = s
+        .query_map(params![object_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+        .map_err(|_| NON_LUS.to_string())?;
+    for (name, expr) in rows.flatten() {
+        let src = if expr.trim().is_empty() { name } else { expr };
+        set.insert(src);
     }
-    set
+    Ok(set)
 }
 
 /// Parse une `PivotSpec` depuis le corps JSON (report-builder ; aucune saisie GXQL/SPL libre).
@@ -309,12 +322,17 @@ fn parse_pivot_spec(b: &Value) -> PivotSpec {
 }
 
 /// Génère le GXQL d'un Pivot depuis le corps de requête (résout objet -> contraintes + allowlist).
-fn pivot_soql_from_body(conn: &Connection, b: &Value) -> Result<String, String> {
-    let object_id = b.get("object_id").and_then(|v| v.as_i64()).ok_or("object_id requis")?;
-    let constraints = object_constraint_chain(conn, object_id)?;
-    let allowed = object_field_allow(conn, object_id);
+///
+/// `P10.20-p` — L'ERREUR PORTE SON CODE. Tout ce qui est refusé ici est un défaut du CORPS reçu (400),
+/// SAUF un : l'allowlist non lue, qui n'est le défaut de personne et se réessaie (503). Servir ce
+/// refus-là en 400 apprendrait à l'appelant que sa demande est malformée — il la corrigerait sans fin.
+fn pivot_soql_from_body(conn: &Connection, b: &Value) -> Result<String, (StatusCode, String)> {
+    let mauvais = |e: String| (StatusCode::BAD_REQUEST, e);
+    let object_id = b.get("object_id").and_then(|v| v.as_i64()).ok_or_else(|| mauvais("object_id requis".to_string()))?;
+    let constraints = object_constraint_chain(conn, object_id).map_err(mauvais)?;
+    let allowed = object_field_allow(conn, object_id).map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, e))?;
     let spec = parse_pivot_spec(b);
-    pivot_to_soql(&constraints, &allowed, &spec)
+    pivot_to_soql(&constraints, &allowed, &spec).map_err(mauvais)
 }
 
 // =================================================================================================
@@ -325,7 +343,7 @@ pub(crate) async fn pivot_compile(State(st): State<AppState>, Extension(au): Ext
     let __rc = req_db(&st, &au);
     let soql = {
         let conn = __rc.lock();
-        match pivot_soql_from_body(&conn, &b) { Ok(s) => s, Err(e) => return bad_req(e) }
+        match pivot_soql_from_body(&conn, &b) { Ok(s) => s, Err((code, e)) => return err_json(code, e) }
     };
     Json(json!({ "soql": soql })).into_response()
 }
@@ -426,7 +444,7 @@ pub(crate) async fn pivot_run(State(st): State<AppState>, Extension(au): Extensi
     let __rc = req_db(&st, &au);
     let soql = {
         let conn = __rc.lock();
-        match pivot_soql_from_body(&conn, &b) { Ok(s) => s, Err(e) => return bad_req(e) }
+        match pivot_soql_from_body(&conn, &b) { Ok(s) => s, Err((code, e)) => return err_json(code, e) }
     };
     let from = b.i64_field("from", 0);
     let to = b.i64_field("to", 0);
@@ -481,7 +499,7 @@ pub(crate) async fn dataset_create(State(st): State<AppState>, Extension(au): Ex
             (soql, None, String::new())
         }
         "pivot" => {
-            let soql = match pivot_soql_from_body(&conn, &b) { Ok(s) => s, Err(e) => return bad_req(e) };
+            let soql = match pivot_soql_from_body(&conn, &b) { Ok(s) => s, Err((code, e)) => return err_json(code, e) };
             let object_id = b.get("object_id").and_then(|v| v.as_i64());
             let spec = b.get("spec").cloned().or_else(|| Some(json!({
                 "splitby": b.get("splitby"), "stats": b.get("stats"), "filters": b.get("filters"),

@@ -9,6 +9,7 @@
 //! point qui l'exécute — donc seul point qui estampe l'aveu de provenance et l'horizon. Ce module
 //! n'écrit plus une ligne de SQL nommant `panel_cache` (garde de build `cache_de_panneau`).
 use crate::*;
+use rusqlite::OptionalExtension;
 
 // ---------- dashboards (P3) ----------
 // Le compte peut-il modifier ce dashboard (et ses panneaux) ?
@@ -147,18 +148,28 @@ pub(crate) async fn dash_create(State(st): State<AppState>, Extension(au): Exten
 
 pub(crate) async fn dash_update(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
     crate::req_conn!(st, au, conn);
-    let exists: bool = conn.query_row("SELECT 1 FROM dashboard WHERE id=?1", params![id], |_| Ok(())).is_ok();
-    if !exists {
-        return StatusCode::NOT_FOUND.into_response();
-    }
+    // `P10.20-k` (2026-09-16) — L'EXISTENCE ET LA VISIBILITÉ COURANTE SE LISENT D'UN SEUL COUP, ET LES
+    // TROIS ISSUES SONT DISTINCTES. Avant : un `is_ok()` sur `SELECT 1` (lecture ratée -> 404
+    // « introuvable », cause fausse sur un objet qui existe), puis un `unwrap_or_else(|_| "shared")` sur
+    // la visibilité — et CELUI-LÀ ouvrait une porte. `panneau_resolu::est_un_geste_de_partage` exige
+    // `visibilite_courante != "shared"` : une lecture ratée déclarait le tableau de bord DÉJÀ partagé,
+    // le geste cessait d'être un partage, la porte `P11.20-m` — celle qui REFUSE de publier un
+    // contenant portant un élément moins visible — n'était pas interrogée, et l'écriture qui publie
+    // suivait. Désormais : ligne absente = 404 (une absence ÉTABLIE) ; lecture NON FAITE = 503 nommé,
+    // avant tout jugement de partage et avant toute écriture.
+    let visibilite: String = match conn
+        .query_row("SELECT COALESCE(visibility,'shared') FROM dashboard WHERE id=?1", params![id], |r| r.get::<_, String>(0))
+        .optional()
+    {
+        Ok(Some(v)) => v,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(_) => return panneau_resolu::refus_de_visibilite_non_lue(),
+    };
     if !dash_editable(&conn, &au, id) {
         return StatusCode::FORBIDDEN.into_response();
     }
     // `P11.20-m` — LE GESTE DE PARTAGE EST JUGÉ AVANT TOUTE ÉCRITURE : refusé avec la raison tant
     // qu'un élément du tableau de bord est moins visible ; rien du corps n'est appliqué sur un refus.
-    let visibilite: String = conn
-        .query_row("SELECT COALESCE(visibility,'shared') FROM dashboard WHERE id=?1", params![id], |r| r.get(0))
-        .unwrap_or_else(|_| "shared".into());
     if panneau_resolu::est_un_geste_de_partage(&b, &visibilite) {
         if let Some(element) = panneau_resolu::ElementMoinsVisible::d_un_tableau_de_bord(&conn, id) {
             return panneau_resolu::refus_de_partage(&element, "le tableau de bord");
@@ -341,22 +352,41 @@ pub(crate) async fn panel_update(State(st): State<AppState>, Extension(au): Exte
     crate::req_conn!(st, au, conn);
     // État courant du panneau : dashboard (droit d'édition) + ses colonnes propres + la référence de
     // bibliothèque qu'il porte AUJOURD'HUI (elle entre dans le calcul de ce qui s'exécutera).
-    let (did, cur_soql, cur_query, cur_bib) = match conn.query_row(
-        "SELECT dashboard_id, COALESCE(is_soql,1), COALESCE(query,''), library_panel_id FROM panel WHERE id=?1",
-        params![id],
-        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)? != 0, r.get::<_, String>(2)?, r.get::<_, Option<i64>>(3)?)),
-    ) {
-        Ok(x) => x,
-        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    // `P10.20-k` (2026-09-16) — LA VISIBILITÉ COURANTE ENTRE DANS CETTE LECTURE, ET LES TROIS ISSUES
+    // SONT DISTINCTES. Avant : cette lecture-ci confondait « pas de panneau » et « pas lu » en un 404,
+    // et la visibilité courante se lisait DEUX lignes plus bas par `unwrap_or_else(|_| "shared")` — une
+    // lecture ratée déclarait donc le panneau DÉJÀ partagé, `est_un_geste_de_partage` rendait `false`,
+    // et la porte `P11.20-m` (la définition de bibliothèque privée qu'il exécute le retient) n'était
+    // jamais interrogée avant l'écriture qui publie. Ligne absente = 404 ; lecture non faite = 503 nommé.
+    let (did, cur_soql, cur_query, cur_bib, visibilite) = match conn
+        .query_row(
+            "SELECT dashboard_id, COALESCE(is_soql,1), COALESCE(query,''), library_panel_id, COALESCE(visibility,'shared') FROM panel WHERE id=?1",
+            params![id],
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)? != 0,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, Option<i64>>(3)?,
+                    r.get::<_, String>(4)?,
+                ))
+            },
+        )
+        .optional()
+    {
+        Ok(Some(x)) => x,
+        Ok(None) => return not_found("panneau introuvable"),
+        Err(_) => return panneau_resolu::refus_de_visibilite_non_lue(),
     };
+    // `P10.20-k` — ET LES REFUS PORTENT ENFIN LEUR PHRASE. Écart de forme nommé sous `P10.20-b` : là où
+    // `panel_create` rend le motif du refus, `panel_update` rendait le CODE SEUL — la console peignait
+    // « 403 » nu, et le message de `DefinitionExecutee::projetee` (dont le 503 « définition de
+    // bibliothèque NON LUE ») était JETÉ sur le sol par un `Err((code, _))`.
     if !dash_editable(&conn, &au, did) {
-        return StatusCode::FORBIDDEN.into_response();
+        return forbidden("dashboard non modifiable");
     }
     // `P11.20-m` — le geste de partage d'un panneau est jugé AVANT toute écriture : la définition de
     // bibliothèque privée qu'il exécute le retient, et le refus la nomme avec son propriétaire.
-    let visibilite: String = conn
-        .query_row("SELECT COALESCE(visibility,'shared') FROM panel WHERE id=?1", params![id], |r| r.get(0))
-        .unwrap_or_else(|_| "shared".into());
     if panneau_resolu::est_un_geste_de_partage(&b, &visibilite) {
         if let Some(element) = panneau_resolu::ElementMoinsVisible::d_un_panneau(&conn, id) {
             return panneau_resolu::refus_de_partage(&element, "le panneau");
@@ -379,10 +409,10 @@ pub(crate) async fn panel_update(State(st): State<AppState>, Extension(au): Exte
     let eff_soql = b.get("is_soql").and_then(|v| v.as_bool()).unwrap_or(cur_soql);
     let def = match DefinitionExecutee::projetee(&conn, &au, cur_bib, &ref_bib, (eff_query, eff_soql)) {
         Ok(d) => d,
-        Err((code, _)) => return code.into_response(),
+        Err((code, msg)) => return (code, msg).into_response(),
     };
     if !def.permise_pour(&au.role) {
-        return StatusCode::FORBIDDEN.into_response();
+        return forbidden("SQL brut réservé à l'administrateur (utilisez GXQL)");
     }
     if let Some(viz) = b.get("viz").and_then(|v| v.as_str()) {
         let _ = conn.execute("UPDATE panel SET viz=?1 WHERE id=?2", params![viz, id]);
@@ -1119,21 +1149,29 @@ pub(crate) async fn view_delete(State(st): State<AppState>, Extension(au): Exten
 
 pub(crate) async fn view_update(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
     crate::req_conn!(st, au, conn);
-    match conn.query_row("SELECT COALESCE(owner,'') FROM view WHERE id=?1", params![id], |r| r.get::<_, String>(0)) {
-        Ok(owner) => {
-            // `P11.20-n` — SUPPRIMER EST UN GESTE DE PROPRIÉTAIRE, et une colonne vide n'octroie pas
-            // la propriété : l'objet SEMÉ (sans propriétaire) redevient admin-seul à la suppression.
-            if !panneau_resolu::autorite_de_proprietaire(&owner, &au) {
-                return StatusCode::FORBIDDEN.into_response();
-            }
-        }
-        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    // `P10.20-k` (2026-09-16) — RALLIÉ À LA FORME DE SES DEUX VOISINS, BIEN QUE SON REPLI SOIT SÛR.
+    // `"private"` fait JOUER la porte `P11.20-m` : aucune publication ne passait ici, et c'est ce site
+    // qui servait de CONTRÔLE POSITIF aux deux autres. Mais le refus alors servi est un 409 qui NOMME
+    // un élément moins visible — une cause FAUSSE pour une lecture qui n'a pas eu lieu, et une cause
+    // fausse n'est pas un fait ; l'appelant en déduit qu'il doit partager un élément, alors qu'il doit
+    // réessayer. Propriétaire et visibilité se lisent d'un coup, et la lecture non faite refuse.
+    let (owner, visibilite): (String, String) = match conn
+        .query_row("SELECT COALESCE(owner,''),COALESCE(visibility,'private') FROM view WHERE id=?1", params![id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })
+        .optional()
+    {
+        Ok(Some(x)) => x,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(_) => return panneau_resolu::refus_de_visibilite_non_lue(),
+    };
+    // `P11.20-n` — MODIFIER EST UN GESTE DE PROPRIÉTAIRE, et une colonne vide n'octroie pas la
+    // propriété : l'objet SEMÉ (sans propriétaire) redevient admin-seul.
+    if !panneau_resolu::autorite_de_proprietaire(&owner, &au) {
+        return StatusCode::FORBIDDEN.into_response();
     }
     // `P11.20-m` — le geste de partage d'une vue est jugé AVANT toute écriture : un tableau de bord
     // privé rangé dans la vue le retient, et le refus le nomme.
-    let visibilite: String = conn
-        .query_row("SELECT COALESCE(visibility,'private') FROM view WHERE id=?1", params![id], |r| r.get(0))
-        .unwrap_or_else(|_| "private".into());
     if panneau_resolu::est_un_geste_de_partage(&b, &visibilite) {
         if let Some(element) = panneau_resolu::ElementMoinsVisible::d_une_vue(&conn, id) {
             return panneau_resolu::refus_de_partage(&element, "la vue");

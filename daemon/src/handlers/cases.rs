@@ -4,6 +4,7 @@
 //! escalade `escalate_overdue_cases`), les handlers CRUD cases et `ack`/`ack_all`.
 //! Extrait de main.rs (refactor split #25 — byte-identique).
 use crate::*;
+use rusqlite::OptionalExtension;
 
 // ---------- gestion d'incident (cases) : table `incident` + `incident_item` (timeline) ----------
 // ---- #4a CASES FIRST-CLASS — cœur TESTABLE (fonctions pures / sur &Connection, sans AppState) ----------
@@ -80,30 +81,32 @@ pub(crate) fn disposition_valid(s: &str) -> bool {
 
 /// Résolution INVERSE d'une ref d'item de timeline ('alert:<id>' | 'event:<id>') -> (titre, sévérité), pour
 /// afficher un libellé lisible au lieu de la ref brute. Point-lookup par PK (JAMAIS de scan : budget 2 Go).
-/// (None, None) si ref vide/inconnue ou cible supprimée (rétention).
-pub(crate) fn resolve_case_ref(conn: &Connection, rf: &str) -> (Option<String>, Option<i64>) {
+/// `(None, None, false)` si ref vide/inconnue ou cible supprimée (rétention) ; le troisième membre est
+/// l'aveu « pas lu ».
+/// `P10.20-p` (2026-09-16) — LA CIBLE INTROUVABLE ET LA CIBLE NON LUE NE SE DISENT PLUS PAREIL. Les deux
+/// lectures étaient des `if let Ok(..)` sans branche d'échec : une lecture ratée rendait `(None, None)`,
+/// c'est-à-dire EXACTEMENT ce que rend une cible supprimée — et `web/cases.js` peint alors, en toutes
+/// lettres, « cible introuvable — supprimée ou expirée » sur une alerte qui existe. Le troisième membre
+/// dit « je n'ai pas lu » ; l'absence de ligne, elle, reste un FAIT (`false`).
+pub(crate) fn resolve_case_ref(conn: &Connection, rf: &str) -> (Option<String>, Option<i64>, bool) {
+    let lire = |sql: &str, id: i64| match conn
+        .query_row(sql, params![id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+        .optional()
+    {
+        Ok(Some((titre, sev))) => (Some(titre), Some(sev), false),
+        Ok(None) => (None, None, false),
+        Err(_) => (None, None, true),
+    };
     if let Some(ids) = rf.strip_prefix("alert:") {
         if let Ok(id) = ids.parse::<i64>() {
-            if let Ok(r) = conn.query_row(
-                "SELECT COALESCE(title,''),severity FROM alert WHERE id=?1",
-                params![id],
-                |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
-            ) {
-                return (Some(r.0), Some(r.1));
-            }
+            return lire("SELECT COALESCE(title,''),severity FROM alert WHERE id=?1", id);
         }
     } else if let Some(ids) = rf.strip_prefix("event:") {
         if let Ok(id) = ids.parse::<i64>() {
-            if let Ok(r) = conn.query_row(
-                "SELECT COALESCE(message,''),severity FROM event WHERE id=?1",
-                params![id],
-                |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
-            ) {
-                return (Some(r.0), Some(r.1));
-            }
+            return lire("SELECT COALESCE(message,''),severity FROM event WHERE id=?1", id);
         }
     }
-    (None, None)
+    (None, None, false)
 }
 
 /// Insère un item de timeline horodaté + auteur, bump `incident.updated`, et fige first_response_ts (MTTA) au
@@ -291,9 +294,18 @@ pub(crate) fn case_get_lu(conn: &Connection, id: i64, now_i: i64) -> Result<Opti
     let items: Vec<Value> = rows
         .into_iter()
         .map(|(iid, its, kind, author, body, rf)| {
-            let (ref_title, ref_severity) = resolve_case_ref(conn, &rf);
-            json!({ "id": iid, "ts": its, "kind": kind, "author": author, "body": body, "ref": rf,
-                    "ref_title": ref_title, "ref_severity": ref_severity })
+            let (ref_title, ref_severity, ref_non_lu) = resolve_case_ref(conn, &rf);
+            let mut item = json!({ "id": iid, "ts": its, "kind": kind, "author": author, "body": body, "ref": rf,
+                    "ref_title": ref_title, "ref_severity": ref_severity });
+            // `P10.20-p` — L'AVEU N'EST POSÉ QUE S'IL Y A QUELQUE CHOSE À AVOUER : sur le chemin nominal
+            // l'objet ressort BYTE-IDENTIQUE, et un aveu inconditionnel — qui ne vaudrait rien — est
+            // structurellement impossible.
+            if ref_non_lu {
+                if let Some(o) = item.as_object_mut() {
+                    o.insert("ref_non_lu".into(), json!(true));
+                }
+            }
+            item
         })
         .collect();
     c["items"] = json!(items);

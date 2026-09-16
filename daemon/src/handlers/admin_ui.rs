@@ -871,14 +871,24 @@ pub(crate) async fn suppressions_get(State(st): State<AppState>, Extension(au): 
     // `P10.7-f` — le scan des auto-reports collecteurs (JOIN sur `event`) DISTINGUE la fin normale de
     // l'interruption de budget : un idiome aplati muet aurait servi une liste de collecteurs TRONQUEE
     // comme complete si le quota de deversement coupait l'enonce en vol. `coll_fin` porte la cause.
+    // `P10.20-p` (2026-09-16) — LA PRÉPARATION AVOUE, ELLE AUSSI. Avant, ces deux étages étaient des
+    // `if let Ok(..)` SANS branche d'échec : la préparation ou la liaison refusée laissaient `coll_fin`
+    // sur `Complet`, c'est-à-dire que le corps AFFIRMAIT « le relevé des auto-reports collecteurs est
+    // entier » à côté d'une liste vide. Le panneau se lit alors « aucun collecteur n'a auto-reporté sa
+    // configuration » — l'affirmation exactement fausse, sur la surface dont l'objet est de montrer ce
+    // qui de-bruite la collecte, et l'aveu de parcours de `P10.7-f` posé JUSTE DESSOUS était enjambé
+    // par le seul étage qu'il ne couvrait pas. `NonCommence` était déjà le mot juste : il manquait de
+    // l'écrire pour la préparation. Aucun champ neuf — `collectors_incomplets` et `collectors_cause`,
+    // déjà servis, portent la cause.
     let mut coll_fin = crate::query_exec::FinDeParcours::Complet;
-    if let Ok(mut s) = conn.prepare(
+    match conn.prepare(
         "SELECT e.source, e.ts, e.host, e.fields, e.message, e.origin FROM event e \
          JOIN (SELECT source, MAX(ts) mts FROM event WHERE category='config' AND origin<>'daemon' GROUP BY source) j \
            ON e.source=j.source AND e.ts=j.mts \
          WHERE e.category='config' AND e.origin<>'daemon' ORDER BY e.source",
     ) {
-        if let Ok(rows) = s.query_map([], |r| {
+      Ok(mut s) => {
+        match s.query_map([], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, i64>(1)?,
@@ -888,7 +898,7 @@ pub(crate) async fn suppressions_get(State(st): State<AppState>, Extension(au): 
                 r.get::<_, String>(5)?,
             ))
         }) {
-            coll_fin = crate::query_exec::parcourir_chaque(rows, |(src, ts, host, fields, msg, origin): (String, i64, Option<String>, Option<String>, Option<String>, String)| {
+            Ok(rows) => coll_fin = crate::query_exec::parcourir_chaque(rows, |(src, ts, host, fields, msg, origin): (String, i64, Option<String>, Option<String>, Option<String>, String)| {
                 let raw: Value = fields.as_deref().and_then(|x| serde_json::from_str(x).ok()).unwrap_or(Value::Null);
                 // le TYPE est DÉCLARÉ par le collecteur (champ `type` de ses fields) mais `editable` est
                 // TOUJOURS false ici (structurel) : la frontière hôte garde le CONTRÔLE, le panneau la VISIBILITÉ.
@@ -936,8 +946,11 @@ pub(crate) async fn suppressions_get(State(st): State<AppState>, Extension(au): 
                     }
                 }
                 collectors.push(entree);
-            });
+            }),
+            Err(e) => coll_fin = crate::query_exec::FinDeParcours::NonCommence { cause: e.to_string() },
         }
+      }
+      Err(e) => coll_fin = crate::query_exec::FinDeParcours::NonCommence { cause: e.to_string() },
     }
     // (3) ÉTAT HÔTE/FIREWALL — dernier instantané kind=firewall, surfacé RO (nft sets / origin-fw / etc.),
     // PAR MACHINE. Ce site faisait `ORDER BY ts DESC LIMIT 1` : l'état d'UNE machine s'affichait comme

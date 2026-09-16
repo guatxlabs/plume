@@ -1278,8 +1278,8 @@
         let ei = items.iter().find(|i| i["kind"] == "event").unwrap();
         assert_eq!(ei["ref_title"], "login failed", "message event résolu");
         assert_eq!(ei["ref_severity"], 2);
-        assert_eq!(resolve_case_ref(&conn, "alert:999999"), (None, None), "cible absente -> null");
-        assert_eq!(resolve_case_ref(&conn, ""), (None, None), "ref vide -> null");
+        assert_eq!(resolve_case_ref(&conn, "alert:999999"), (None, None, false), "cible absente -> null, et c'est un FAIT (`P10.20-p`)");
+        assert_eq!(resolve_case_ref(&conn, ""), (None, None, false), "ref vide -> null, et c'est un FAIT");
     }
 
     /// DÉTACHEMENT : supprime l'item du case (borné à incident_id, anti-IDOR) + trace une note. false si l'item

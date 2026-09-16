@@ -140,6 +140,47 @@ Sous un nombre minimal de SITES DÉCOUVERTS, la lecture est cassée et la garde 
 ZÉRO : un témoin qui exigerait que le défaut survive serait une RANÇON, verte tant que le travail n'est
 pas fait et rouge le jour où il l'est. Les plafonds sont des CLIQUETS : ils ne montent jamais, et
 descendre est une note, pas un échec.
+
+CE FICHIER EST AUSSI LE PORTEUR DES LECTEURS DE FORME RUST (`P10.20-m`, `P10.20-r`, 2026-09-16)
+-------------------------------------------------------------------------------------------------
+`_saut_de_litteral_rust`, `apparier`, `arguments`, `_debut_du_corps`, `fonctions`, `bras_du_match`,
+`spans_de_chaines_rust` et `dans_une_chaine_rust` sont IMPORTÉS par deux autres gardes
+(`check_a_truncated_list_is_never_served_as_a_complete_one.py` directement,
+`check_a_single_row_read_that_failed_is_never_served_as_a_fact.py` par ré-import). Ils tiennent tous
+leur règle du littéral de caractère de `RE_CARACTERE_RUST`, importée du lecteur partagé et JAMAIS
+recopiée — c'est la recopie qui a fait vivre quatre grammaires divergentes sous `.github/scripts/`
+(`P10.20-c` à `-e`), et `spans_de_chaines_rust` est le cinquième exemplaire, rapatrié ici le
+2026-09-16 depuis la garde de forme des lectures uniques qui en portait sa propre copie.
+
+CE QUE `P10.20-r` A FERMÉ, ET CE QU'IL A RÉFUTÉ :
+  * `arguments` et `bras_du_match` découpaient par virgule en sautant les CHAÎNES mais pas les
+    LITTÉRAUX DE CARACTÈRE. Deux fautes en une : `','` coupait un argument ou un bras en deux, et
+    `'"'` ouvrait une fausse chaîne qui en fondait plusieurs. MESURE : sur `daemon/src/handlers/`,
+    61 appels sur 21 568 et 2 blocs de `match` sur 820 se découpent autrement selon que la règle est
+    connue. RÉFUTÉ EN CHEMIN, et c'est la mesure qui compte : AU NIVEAU DE LA CONSOMMATION RÉELLE,
+    l'écart est NUL — pendant une exécution complète, `arguments` est appelé 116 fois et
+    `bras_du_match` 67, et aucun de ces 183 appels ne change de résultat. Le défaut n'était pas
+    MORDANT, il était ARMÉ ; il est fermé parce qu'une découpe fausse est une découpe fausse, et que
+    le prochain appel de voie dont un argument porte `','` n'aurait pas eu cette chance.
+  * LES TÉMOINS DE CES LECTEURS SONT DÉSORMAIS APPELABLES (`temoins_des_lecteurs_de_forme`) ET JOUÉS
+    PAR LES TROIS GARDES. Avant, ils vivaient dans le `valider_instrument` d'ici, et un import
+    n'exécute aucun témoin : MESURÉ le 2026-09-16, sous une mutation qui retire la règle du littéral
+    à `_saut_de_litteral_rust`, la garde de famille restait VERTE À SORTIE IDENTIQUE OCTET POUR
+    OCTET. RÉFUTATION DE L'ÉNONCÉ DE `P10.20-r` : ce n'était vrai que d'UNE des deux consommatrices.
+    La garde de forme des lectures uniques, elle, tuait déjà cette mutation-là par son
+    `epreuve_du_litteral_d_octet` (code 2) — elle ne jouait pas LES témoins, mais elle n'était pas
+    sans filet. Elle les joue maintenant aussi, et pour les deux autres lecteurs (`arguments`,
+    `bras_du_match`) elle était, elle, entièrement aveugle.
+
+CE QUE CES LECTEURS NE TIENNENT TOUJOURS PAS : le `;` d'une déclaration GÉNÉRIQUE (`fn f<T>(x: T);`)
+n'est pas vu (aucune sur `daemon/src`, mesuré) ; les virgules de GÉNÉRIQUES (`HashMap<K, V>`) ne sont
+pas suivies par `arguments` ; une chaîne brute non refermée court jusqu'à la fin du texte ; et la
+JAMBE B de cette garde-ci ne voit que la liaison `if let Ok(<nom>)`, pas `if let Ok((a, b, c))` — le
+SEUL `if let Ok(..) = <lecture>` sans `else` de `daemon/src/handlers/` au 2026-09-16 est justement de
+cette forme (`action_approve`, actions.rs, `query_row`), il relève de `P10.20-q`, et élargir le motif
+ici déplacerait `PLAFOND_CLOSURE_SOURDE` sans qu'aucune mesure ne l'ait préparé. Le motif large
+existe (`MOTIF_LIANT_IF_LET_TOUT_MOTIF`) et il est OFFERT aux consommatrices qui partent d'un
+ensemble nommé VIDE.
 """
 import os
 import re
@@ -494,6 +535,64 @@ def _saut_de_litteral_rust(code, j):
     return None
 
 
+CHAINE_BRUTE_RUST = re.compile(r"(?:b?r)(#*)\"")
+
+
+def spans_de_chaines_rust(code):
+    """Les intervalles `[début, fin)` des littéraux de CHAÎNE, brutes comprises (`r"…"`, `r#"…"#`,
+    `b"…"`). Les littéraux de CARACTÈRE et d'OCTET (`'"'`, `b'"'`, `'\\''`) sont SAUTÉS et non rendus :
+    le guillemet qu'ils portent n'ouvre pas une chaîne, et une forme écrite juste après eux n'est pas
+    « dans une chaîne ».
+
+    POURQUOI ICI ET PAS DANS CHAQUE GARDE (`P10.20-r`, 2026-09-16) : ce lecteur existait en DOUBLE —
+    `spans_de_chaines` de `check_a_single_row_read_that_failed_is_never_served_as_a_fact.py` en était
+    une copie, avec sa propre grammaire du littéral de caractère. Deux grammaires jumelles finissent
+    par diverger, et c'est la recopie qui a fait vivre quatre grammaires divergentes sous
+    `.github/scripts/` (`P10.20-c` à `-e`). La règle du littéral est `RE_CARACTERE_RUST`, importée du
+    lecteur partagé, ici comme dans `_saut_de_litteral_rust`.
+
+    CE QU'IL NE TIENT PAS, ET C'EST DIT : une chaîne brute NON REFERMÉE court jusqu'à la fin du texte
+    (`k = n`), et le `#` de clôture n'est pas apparié autrement que par une recherche littérale."""
+    spans, j, n = [], 0, len(code)
+    while j < n:
+        if code[j] == "'":
+            c = RE_CARACTERE_RUST.match(code, j)
+            if c:
+                j = c.end()
+                continue
+        m = CHAINE_BRUTE_RUST.match(code, j)
+        if m:
+            cloture = '"' + m.group(1)
+            k = code.find(cloture, m.end())
+            k = n if k < 0 else k + len(cloture)
+            spans.append((j, k))
+            j = k
+            continue
+        if code[j] == '"':
+            k = j + 1
+            while k < n and code[k] != '"':
+                k += 2 if code[k] == "\\" else 1
+            spans.append((j, min(k + 1, n)))
+            j = min(k + 1, n)
+            continue
+        j += 1
+    return spans
+
+
+def dans_une_chaine_rust(spans, i):
+    """`i` tombe-t-il dans l'un des intervalles rendus par `spans_de_chaines_rust` ? (dichotomie)"""
+    bas, haut = 0, len(spans)
+    while bas < haut:
+        mil = (bas + haut) // 2
+        if spans[mil][1] <= i:
+            bas = mil + 1
+        elif spans[mil][0] > i:
+            haut = mil
+        else:
+            return True
+    return False
+
+
 def apparier(code, i):
     """Index de la fermante appariée de l'ouvrante en `i` (-1 si le texte s'épuise). Les chaînes Rust ET
     LES LITTÉRAUX DE CARACTÈRE OU D'OCTET sont sautés (`_saut_de_litteral_rust`, `P10.20-m`) : ni une
@@ -525,18 +624,37 @@ def apparier(code, i):
 def arguments(code, i):
     """Tranches `(début, fin)` des arguments de tête de l'appel dont la `(` est en `i`, et l'index de
     la `)` fermante. Les virgules de GÉNÉRIQUES (`HashMap<K, V>`) ne sont PAS suivies — c'est dit dans
-    « ce qu'elle ne tient pas » ; aucun site de l'arbre n'en porte en position d'argument."""
+    « ce qu'elle ne tient pas » ; aucun site de l'arbre n'en porte en position d'argument.
+
+    LA DÉCOUPE CONNAÎT LE LITTÉRAL DE CARACTÈRE DEPUIS `P10.20-r` (2026-09-16), PAR LA MÊME RÈGLE QUE
+    L'APPARIEMENT (`_saut_de_litteral_rust`, donc `RE_CARACTERE_RUST` IMPORTÉE) et jamais par une
+    recopie. Les BORNES de cette découpe étaient déjà justes — `apparier` saute les littéraux depuis
+    `P10.20-m` —, mais la boucle interne, elle, ne les sautait pas, et elle se trompait DEUX FOIS :
+      * `','` (une virgule ÉCRITE dans un littéral) coupait un argument en deux — `split(',')`,
+        `s.trim_matches(',')` ;
+      * `'"'` ouvrait une FAUSSE chaîne qui avalait le texte jusqu'au guillemet suivant, et les
+        virgules de cette région disparaissaient — un argument en absorbait plusieurs.
+    MESURÉ le 2026-09-16 sur `daemon/src/handlers/` : sur les 21 568 appels du corpus, 61 se découpent
+    autrement selon que la règle est connue ou non (`alerts.rs:580` porte `|c: char| c.is_whitespace()
+    || c == ',' || c == ';'`, `compliance.rs:38` un `split(',')`, `caseops.rs:147` un `IN
+    ('resolved','closed','contained')`). AU NIVEAU DE LA CONSOMMATION RÉELLE, en revanche, l'écart est
+    NUL AUJOURD'HUI et c'est dit plutôt que tu : pendant une exécution complète de cette garde,
+    `arguments` est appelé 116 fois et `bras_du_match` 67 fois, et AUCUN de ces 183 appels ne change de
+    résultat. Le défaut n'était donc pas MORDANT — il était ARMÉ, et il l'aurait été au premier appel
+    de voie dont un argument porte `','`."""
     f = apparier(code, i)
     if f < 0:
         return None, -1
     out, prof, deb, j = [], 0, i + 1, i + 1
     while j < f:
         c = code[j]
-        if c == '"':
-            j += 1
-            while j < f and code[j] != '"':
-                j += 2 if code[j] == "\\" else 1
-        elif c in "([{":
+        if c in "\"'":
+            saut = _saut_de_litteral_rust(code, j)
+            if saut is not None:
+                j = saut
+                continue
+            # une apostrophe qui n'ouvre pas de littéral est une durée de vie : elle repart seule.
+        if c in "([{":
             prof += 1
         elif c in ")]}":
             prof -= 1
@@ -761,18 +879,31 @@ def sort_des_enveloppes(code, deb, fin):
 
 
 def bras_du_match(code, ouvrante):
-    """[(motif, corps)] pour chaque bras de tête du bloc de `match` ouvert en `ouvrante`."""
+    """[(motif, corps)] pour chaque bras de tête du bloc de `match` ouvert en `ouvrante`.
+
+    LA DÉCOUPE CONNAÎT LE LITTÉRAL DE CARACTÈRE DEPUIS `P10.20-r` (2026-09-16), par la même règle
+    importée qu'`arguments` et `apparier` (`_saut_de_litteral_rust`). Un `match` sur un `char` — la
+    forme la plus banale qui soit — porte ses motifs EN LITTÉRAUX : `soql_glue.rs` a un bras `'"' =>
+    …`, `handlers/connectors/httppull.rs:49` un bras `'[' => …`. Sans la règle, le `"` d'un motif
+    ouvrait une fausse chaîne et les bras suivants FUSIONNAIENT dans un seul : un bras d'erreur qui
+    parle devenait invisible, exactement la faute que la coupure sur `}` a fermée le 2026-08-30 pour
+    une autre cause. MESURÉ sur `daemon/src/handlers/` : 2 blocs de `match` sur les 820 du corpus se
+    découpent autrement (`httppull.rs:49` — 2 bras au lieu de 3 —, `datasource.rs:201`, dont un bras
+    porte `s.ends_with('}')`). AU NIVEAU DE LA CONSOMMATION, l'écart est NUL aujourd'hui : aucun de
+    ces deux blocs n'est atteint par les 67 appels d'une exécution complète."""
     f = apparier(code, ouvrante)
     if f < 0:
         return []
     corps, out, prof, deb, j = code[ouvrante + 1:f], [], 0, 0, 0
     while j < len(corps):
         c = corps[j]
-        if c == '"':
-            j += 1
-            while j < len(corps) and corps[j] != '"':
-                j += 2 if corps[j] == "\\" else 1
-        elif c in "([{":
+        if c in "\"'":
+            saut = _saut_de_litteral_rust(corps, j)
+            if saut is not None:
+                j = saut
+                continue
+            # une apostrophe qui n'ouvre pas de littéral est une durée de vie : elle repart seule.
+        if c in "([{":
             prof += 1
         elif c in ")]}":
             prof -= 1
@@ -798,6 +929,114 @@ def bras_du_match(code, ouvrante):
         if i > 0:
             rendus.append((bras[:i], bras[i + 2:]))
     return rendus
+
+
+def temoins_des_lecteurs_de_forme():
+    """LES LECTEURS DE FORME RUST SE VALIDENT AVANT DE SERVIR — comme `temoins_du_lecteur` le fait pour
+    le dépouilleur de commentaires depuis `P10.20-d`, et POUR LA MÊME RAISON MESURÉE (`P10.20-r`,
+    2026-09-16).
+
+    `apparier`, `fonctions`, `arguments` et `bras_du_match` sont IMPORTÉS par deux autres gardes
+    (`check_a_truncated_list_is_never_served_as_a_complete_one.py` directement,
+    `check_a_single_row_read_that_failed_is_never_served_as_a_fact.py` par ré-import). Un import
+    n'exécute aucun témoin : tant que ces témoins vivaient dans le `valider_instrument` de CE fichier,
+    un lecteur amputé n'était épinglé que par la garde qui le PORTE. MESURÉ le 2026-09-16 : sous une
+    mutation qui retire la règle du littéral de caractère à `apparier`, la garde de famille restait
+    VERTE À SORTIE IDENTIQUE — un scanner amputé traversait deux gardes sans un mot. Ces témoins-ci
+    sont donc APPELABLES, et les deux consommatrices les jouent au départ de leur propre instrument.
+
+    ILS LÈVENT `AssertionError` plutôt que de rendre une liste : c'est la forme de `temoins_du_lecteur`,
+    et trois appelants qui traitent l'aveu de la même façon valent mieux que deux conventions.
+
+    CE QU'ILS NE TIENNENT PAS : ils jugent les lecteurs sur des extraits FABRIQUÉS, jamais sur l'arbre.
+    Un lecteur juste sur ces huit formes et faux sur une neuvième reste vert ici."""
+    # --- (1) LE LITTÉRAL DE CARACTÈRE, AU NIVEAU DU PRÉDICAT, DANS LES DEUX SENS.
+    assert _saut_de_litteral_rust("let s: &'static str = n();", 7) is None, \
+        "témoin de la DURÉE DE VIE (négatif) : `'static` est pris pour un littéral de caractère — le " \
+        "scanner sauterait du CODE, et toute portée qui le suit serait fausse"
+    assert _saut_de_litteral_rust("c == '\"' && x", 5) == 8, \
+        "témoin du LITTÉRAL (positif, au niveau du prédicat) : `'\"'` n'est plus sauté d'un bloc — sans " \
+        "lui tous les témoins qui suivent pourraient être verts par accident"
+    # --- (2) L'APPARIEMENT NE SE PERD PAS DANS UN LITTÉRAL.
+    assert apparier("f('\"', x)", 1) == 8, \
+        "témoin de l'APPARIEMENT : la fermante de `f('\"', x)` n'est plus trouvée — le `\"` d'un `'\"'` " \
+        "ouvre une fausse chaîne et l'expression est perdue jusqu'au guillemet suivant"
+    # --- (3) LES FONCTIONS, ET LEURS CORPS (`P10.20-m`). LE TEXTE EST FABRIQUÉ ICI, JAMAIS PRIS SUR
+    # L'ARBRE : adossé à `handlers/actions.rs`, ce témoin deviendrait une RANÇON — rouge le jour où
+    # quelqu'un réécrit ce fichier, et aucun geste ne le refermerait. Les FORMES, elles, sont celles de
+    # l'arbre (`actions.rs` `'"'`, `freshness.rs` `b'"'`, `panneau_avoue.rs` `'"'`, `ingest/store.rs`
+    # `'\u{1}'` et sa déclaration de `trait`). MESURE DU DÉFAUT sur `daemon/src` : 38 fonctions
+    # INVISIBLES dans 25 fichiers et 6 corps bornés au mauvais endroit. Une fonction invisible ne rougit
+    # jamais — elle n'est pas LUE : le lecteur ne fabrique pas d'accusation, il en PERD, en vert.
+    fabrique = ("const SHELL_META: [char; 3] = [';', '\"', '|'];\n"
+                "fn apres_le_litteral(c: char) -> bool { c == '\"' }\n"
+                "fn avec_duree_de_vie<'a>(s: &'a str) -> &'a str { s.trim_matches('\"') }\n"
+                "fn octet(b: u8) -> bool { b == b'\"' }\n"
+                "fn tableau(k: &[u8]) -> [u8; 4] { [0; 4] }\n"
+                "const SEP: char = '\\u{1}';\n"
+                "trait Sans { fn declaree(&self) -> bool; }\n"
+                "fn volee() -> bool { true }\n")
+    fab = coupe_tests(sans_commentaires_rust(fabrique))
+    attendues = ["apres_le_litteral", "avec_duree_de_vie", "octet", "tableau", "volee"]
+    vues = [n for n, _sig, _b, _f in fonctions(fab)]
+    assert vues == attendues, (
+        f"témoin du LITTÉRAL DE CARACTÈRE : fonctions vues {vues} au lieu de {attendues} — soit le `\"` "
+        "d'un `'\"'` (ou d'un `b'\"'`) ouvre encore une fausse chaîne et la fonction devient INVISIBLE, "
+        "soit l'accolade d'un `'\\u{1}'` est prise pour un corps, soit le `;` d'un type TABLEAU "
+        "(`-> [u8; 4]`) est lu comme la fin d'une déclaration (13 fonctions de `daemon/src` perdues "
+        "ainsi, mesuré par mutation le 2026-09-16), soit une DÉCLARATION de `trait` (`fn declaree(..);`) "
+        "vole le corps de la suivante")
+    corps_fab = {n: fab[b:f + 1] for n, _sig, b, f in fonctions(fab)}
+    assert corps_fab.get("volee", "").strip() == "{ true }", (
+        f"témoin du CORPS VOLÉ : le corps de `volee` est {corps_fab.get('volee')!r} au lieu de "
+        "`{ true }` — une fonction sans corps prend celui de sa voisine, et les DEUX entrées portent "
+        "alors le même texte (23 entrées fabriquées ainsi sur `daemon/src`)")
+    # --- (4) LA DÉCOUPE PAR VIRGULE DES ARGUMENTS CONNAÎT LE LITTÉRAL (`P10.20-r`), DANS LES DEUX SENS.
+    src = "separer(',', '\"', texte)"
+    tranches, _f = arguments(src, src.index("("))
+    lus = [src[a:b].strip() for a, b in (tranches or [])]
+    assert lus == ["','", "'\"'", "texte"], (
+        f"témoin des ARGUMENTS (littéral de caractère) : {lus} au lieu de [\"','\", \"'\\\"'\", "
+        "'texte'] — soit la virgule ÉCRITE dans `','` coupe encore un argument en deux, soit le `\"` de "
+        "`'\"'` ouvre une fausse chaîne qui avale les virgules suivantes et fond plusieurs arguments en "
+        "un. Les deux font dire au lecteur qu'une voie porte un nombre d'arguments qu'elle n'a pas, et "
+        "le troisième argument — la fermeture — devient alors le mauvais texte")
+    src_nu = "nouveau(&'static str, x)"
+    tr_nu, _f = arguments(src_nu, src_nu.index("("))
+    assert [src_nu[a:b].strip() for a, b in (tr_nu or [])] == ["&'static str", "x"], (
+        "témoin des ARGUMENTS (négatif, durée de vie) : `&'static str` n'est plus lu comme un argument "
+        "entier — une apostrophe qui n'ouvre AUCUN littéral fait sauter du code")
+    src_ch = 'appeler("a,b", c)'
+    tr_ch, _f = arguments(src_ch, src_ch.index("("))
+    assert len(tr_ch or []) == 2, (
+        f"témoin des ARGUMENTS (négatif, chaîne) : {len(tr_ch or [])} argument(s) au lieu de 2 — une "
+        "virgule ÉCRITE DANS une chaîne coupe désormais, et tout appel dont un littéral porte une "
+        "virgule serait lu de travers")
+    # --- (5) LA DÉCOUPE DES BRAS DE `match` CONNAÎT LE LITTÉRAL (`P10.20-r`), DANS LES DEUX SENS.
+    src_b = "match c { '\"' => 1, ',' => 2, _ => 3 }"
+    motifs = [m.strip() for m, _c in bras_du_match(src_b, src_b.index("{"))]
+    assert motifs == ["'\"'", "','", "_"], (
+        f"témoin des BRAS (littéral de caractère) : motifs {motifs} au lieu de [\"'\\\"'\", \"','\", "
+        "'_'] — un `match` sur un `char` (`soql_glue.rs` porte un bras `'\"' => …`) voit ses bras "
+        "FUSIONNER, et un bras d'erreur qui parle devient invisible")
+    src_bc = 'match s { "a,b" => 1, _ => 2 }'
+    assert len(bras_du_match(src_bc, src_bc.index("{"))) == 2, (
+        "témoin des BRAS (négatif, chaîne) : une virgule ÉCRITE DANS une chaîne coupe un bras en deux "
+        "— le motif rendu serait un fragment de littéral")
+    # --- (6) LES INTERVALLES DE CHAÎNE, DANS LES DEUX SENS (lecteur consommé par la garde de forme des
+    # lectures uniques ET par la famille des parcours muets).
+    fab_s = 'fn f() { let c = \'"\'; let s = "a;b{c}"; let t = r#"d;e{f}"#; }'
+    spans = spans_de_chaines_rust(fab_s)
+    assert len(spans) == 2 and fab_s[spans[0][0]:spans[0][1]] == '"a;b{c}"', (
+        f"témoin des LITTÉRAUX : {len(spans)} littéral(aux) vu(s) sur une source qui en porte DEUX (une "
+        "chaîne simple, une chaîne brute) précédés d'un littéral de CARACTÈRE — dans un sens une forme "
+        "CITÉE dans une phrase deviendrait un site fantôme ; dans l'autre un `'\"'` ouvrirait une fausse "
+        "chaîne qui avale la fin du fichier et fait DISPARAÎTRE des sites réels, en vert")
+    assert dans_une_chaine_rust(spans, fab_s.index("a;b{c}")), \
+        "témoin de l'APPARTENANCE (positif) : un index INTÉRIEUR à une chaîne est déclaré dehors"
+    assert not dans_une_chaine_rust(spans, fab_s.index("let c")), \
+        "témoin de l'APPARTENANCE (négatif) : un index de CODE est déclaré dans une chaîne, et tout " \
+        "site réel serait écarté comme un fantôme"
 
 
 # ================================================================================================
@@ -1019,6 +1258,15 @@ def bras_qui_avale(texte, deb, apres):
 # Q applique déjà à la même forme sur les voies de requête (`juger_la_cause`), et la faire diverger
 # ferait dire deux choses différentes à la même garde sur le même texte.
 MOTIF_LIANT_IF_LET = re.compile(r"^Ok\s*\(\s*(?:mut\s+)?[A-Za-z_][A-Za-z0-9_]*\s*\)$")
+# LE MÊME MOTIF, MAIS SANS EXIGER QUE LE LIÉ SOIT UN NOM SIMPLE : `Ok((kind, target, dry))` est une
+# liaison par TUPLE, et le motif étroit ci-dessus ne la voit pas. MESURÉ le 2026-09-16 sur
+# `daemon/src/handlers/` : `action_approve` (actions.rs:565) est le SEUL site du répertoire à porter un
+# `if let Ok(..) = <lecture>` sans `else`, et c'est exactement celui que le motif étroit manque — la
+# jambe B de cette garde-ci est donc aveugle à la liaison par tuple, et le dire vaut mieux que de
+# l'élargir dans le même geste (son plafond changerait sans qu'aucune mesure ne l'ait préparé ; le site
+# lui-même relève de `P10.20-q`). Le motif large est OFFERT aux consommatrices qui, elles, partent d'un
+# ensemble nommé VIDE et n'ont donc pas de plafond à déplacer.
+MOTIF_LIANT_IF_LET_TOUT_MOTIF = re.compile(r"^Ok\s*\(.*\)$", re.S)
 
 
 def egal_de_tete(texte):
@@ -1038,13 +1286,19 @@ def egal_de_tete(texte):
     return None
 
 
-def if_let_est_le_scrutateur(texte, deb):
+def if_let_est_le_scrutateur(texte, deb, motif=MOTIF_LIANT_IF_LET):
     """Le `if let Ok(<nom>) =` le plus proche EN AMONT lie-t-il la lecture qui commence en `deb` ?
 
     C'EST LA MÊME CONDITION QUI EMPÊCHE D'ACCUSER À TORT que pour le `match`, et pour la même raison :
     sans elle, il suffirait qu'un `if let` quelconque précède une lecture pour que celle-ci soit
     déclarée sans branche. Une ponctuation d'instruction (`;` `{` `}` `=`) ou un mot-clé entre le `=`
-    et la lecture prouve que ce `if let` porte sur autre chose, et le refus est alors NET."""
+    et la lecture prouve que ce `if let` porte sur autre chose, et le refus est alors NET.
+
+    `motif` est le motif de liaison accepté ; le DÉFAUT est le motif étroit que la jambe B de cette
+    garde juge depuis `P10.7-h` (un nom simple), et une consommatrice qui part d'un ensemble nommé VIDE
+    peut passer `MOTIF_LIANT_IF_LET_TOUT_MOTIF` pour voir aussi la liaison par TUPLE. Le paramètre
+    existe pour qu'il n'y ait QU'UN lecteur : la seule autre façon de voir le tuple était d'en recopier
+    un second, et ce dépôt paie cher les lecteurs jumeaux (`P10.20-c` à `-e`)."""
     mots = list(re.finditer(r"\bif\s+let\b", texte[:deb]))
     if not mots:
         return False
@@ -1052,7 +1306,7 @@ def if_let_est_le_scrutateur(texte, deb):
     eg = egal_de_tete(reste)
     if eg is None:
         return False
-    if not MOTIF_LIANT_IF_LET.match(reste[:eg].strip()):
+    if not motif.match(reste[:eg].strip()):
         return False
     entre = reste[eg + 1:]
     if not entre.strip() or re.search(r"[;{}=]|\b(?:if|while|let|for|return|match)\b", entre):
@@ -1068,10 +1322,12 @@ def if_let_est_le_scrutateur(texte, deb):
     return prof == 0
 
 
-def if_let_sans_branche(texte, deb, apres):
+def if_let_sans_branche(texte, deb, apres, motif=MOTIF_LIANT_IF_LET):
     """La lecture qui commence en `deb` est-elle liée par un `if let Ok(<nom>)` dont le bloc n'est
-    suivi d'AUCUN `else` ? Alors son échec n'a pas de branche : il n'est écrit nulle part."""
-    if not if_let_est_le_scrutateur(texte, deb):
+    suivi d'AUCUN `else` ? Alors son échec n'a pas de branche : il n'est écrit nulle part.
+
+    `motif` a le même sens que dans `if_let_est_le_scrutateur` et il est PASSÉ, jamais réinventé."""
+    if not if_let_est_le_scrutateur(texte, deb, motif):
         return None
     i = apres
     while i < len(texte) and texte[i] in " \t\n":
@@ -1674,48 +1930,12 @@ def valider_instrument(defs, constructeurs):
     if "corps_de_refus" not in constructeurs:
         errs.append("témoin d'ANCRAGE : `corps_de_refus` n'est plus dérivé comme constructeur d'aveu — "
                     "la dérivation ne lit plus `daemon/src/handlers/portillon.rs`")
-    # ============================================================================================
-    # LES DEUX SCANNERS DE CE FICHIER RELISENT LA SORTIE DU LECTEUR PARTAGÉ (`P10.20-m`, 2026-09-16)
-    # ============================================================================================
-    # `sans_commentaires_rust` RESTITUE les littéraux — c'est son contrat, `include!("…")` doit rester
-    # lisible. Le `"` d'un `'"'` est donc encore là quand `apparier` et `_debut_du_corps` relisent sa
-    # sortie, et le prendre pour une ouverture de chaîne fait avaler le texte jusqu'au guillemet
-    # suivant. MESURE DU DÉFAUT sur `daemon/src` : 38 fonctions INVISIBLES dans 25 fichiers et 6 corps
-    # bornés au mauvais endroit. Une fonction invisible ne rougit jamais — elle n'est pas LUE : le
-    # lecteur ne fabrique pas d'accusation, il en PERD, en vert et sans un mot.
-    # LE TEXTE EST FABRIQUÉ ICI, JAMAIS PRIS SUR L'ARBRE : adossé à `handlers/actions.rs`, ce témoin
-    # deviendrait une RANÇON — rouge le jour où quelqu'un réécrit ce fichier, et aucun geste ne le
-    # refermerait. Les formes, elles, sont celles de l'arbre (`actions.rs` `'"'`, `freshness.rs` `b'"'`,
-    # `panneau_avoue.rs` `'"'`, `ingest/store.rs` `'\u{1}'` et sa déclaration de `trait`).
-    fabrique = ("const SHELL_META: [char; 3] = [';', '\"', '|'];\n"
-                "fn apres_le_litteral(c: char) -> bool { c == '\"' }\n"
-                "fn avec_duree_de_vie<'a>(s: &'a str) -> &'a str { s.trim_matches('\"') }\n"
-                "fn octet(b: u8) -> bool { b == b'\"' }\n"
-                "fn tableau(k: &[u8]) -> [u8; 4] { [0; 4] }\n"
-                "const SEP: char = '\\u{1}';\n"
-                "trait Sans { fn declaree(&self) -> bool; }\n"
-                "fn volee() -> bool { true }\n")
-    fab = coupe_tests(sans_commentaires_rust(fabrique))
-    attendues = ["apres_le_litteral", "avec_duree_de_vie", "octet", "tableau", "volee"]
-    vues = [n for n, _sig, _b, _f in fonctions(fab)]
-    if vues != attendues:
-        errs.append(f"témoin du LITTÉRAL DE CARACTÈRE : fonctions vues {vues} au lieu de {attendues} — "
-                    "soit le `\"` d'un `'\"'` (ou d'un `b'\"'`) ouvre encore une fausse chaîne et la "
-                    "fonction devient INVISIBLE, soit l'accolade d'un `'\\u{1}'` est prise pour un corps, "
-                    "soit le `;` d'un type TABLEAU (`-> [u8; 4]`) est lu comme la fin d'une déclaration "
-                    "(13 fonctions de `daemon/src` perdues ainsi, mesuré par mutation le 2026-09-16), "
-                    "soit une DÉCLARATION de `trait` (`fn declaree(..);`) vole le corps de la suivante")
-    corps_fab = {n: fab[b:f + 1] for n, _sig, b, f in fonctions(fab)}
-    if corps_fab.get("volee", "").strip() != "{ true }":
-        errs.append(f"témoin du CORPS VOLÉ : le corps de `volee` est {corps_fab.get('volee')!r} au lieu "
-                    "de `{ true }` — une fonction sans corps prend celui de sa voisine, et les DEUX "
-                    "entrées portent alors le même texte (23 entrées fabriquées ainsi sur `daemon/src`)")
-    if _saut_de_litteral_rust("let s: &'static str = n();", 7) is not None:
-        errs.append("témoin de la DURÉE DE VIE (négatif) : `'static` est pris pour un littéral de "
-                    "caractère — le scanner sauterait du CODE, et toute portée qui le suit serait fausse")
-    if _saut_de_litteral_rust("c == '\"' && x", 5) != 8:
-        errs.append("témoin du LITTÉRAL (positif, au niveau du prédicat) : `'\"'` n'est plus sauté d'un "
-                    "bloc — sans lui les deux témoins ci-dessus pourraient être verts par accident")
+    # LES LECTEURS DE FORME RUST SE VALIDENT ICI COMME AILLEURS — LA MÊME FONCTION, PAS UNE COPIE.
+    try:
+        temoins_des_lecteurs_de_forme()
+    except AssertionError as e:
+        errs.append(f"lecteurs de forme Rust (`apparier`, `fonctions`, `arguments`, "
+                    f"`bras_du_match`) : {e}")
     return errs
 
 
@@ -1726,6 +1946,13 @@ def ce_qui_n_est_pas_tenu(non_classes=0):
           "sans objet. C'est le signal voulu ; la liste se corrige à la main, avec la raison.\n"
           "  * qu'un aveu soit VRAI. Elle juge qu'une cause atteint le corps servi, pas que la phrase "
           "qui l'accompagne dise quelque chose. Un `error: \"\"` la satisferait.\n"
+          "  * la LIAISON PAR TUPLE dans la jambe B. `MOTIF_LIANT_IF_LET` n'accepte qu'un nom simple : "
+          "`if let Ok((kind, target, dry)) = conn.query_row(..)` n'est PAS vu comme une lecture sans "
+          "branche. MESURÉ le 2026-09-16 : c'est le SEUL `if let Ok(..) = <lecture>` sans `else` de "
+          "`daemon/src/handlers/` (`action_approve`, actions.rs), et il relève de `P10.20-q`. Le motif "
+          "large existe (`MOTIF_LIANT_IF_LET_TOUT_MOTIF`) et il est consommé par la famille des "
+          "PARCOURS MUETS ; l'appliquer ICI déplacerait `PLAFOND_CLOSURE_SOURDE` sans mesure, et ce "
+          "n'est pas fait dans ce lot.\n"
           "  * la JAMBE EXÉCUTÉE. Rien ici ne lance le routeur sous un budget épuisé : la garde lit du "
           "texte. Ce qu'elle prouve, c'est qu'une forme est absente du dépôt, jamais qu'une réponse "
           "réelle avoue. Le levier EXISTE (`PLUME_QUERY_BUDGET_MS`, lu par `query_budget_ms`) et aucun "

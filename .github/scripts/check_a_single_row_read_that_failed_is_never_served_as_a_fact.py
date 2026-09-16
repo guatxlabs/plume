@@ -149,6 +149,27 @@ CE QUE CE VERT NE DIRA PAS
 Écrit ici parce qu'un vert qu'on ne sait pas lire est pire qu'un rouge : la liste complète est dans
 `ce_qui_n_est_pas_tenu()`, et son premier terme est le plus lourd — les 105 `query_row` dont la chaîne
 est NUE, dont le `match … { Err(_) => … }` qui est la même faute écrite autrement.
+
+TOUS LES LECTEURS DE FORME SONT IMPORTÉS, ET LEURS TÉMOINS SONT JOUÉS (`P10.20-r`, 2026-09-16)
+------------------------------------------------------------------------------------------------
+Ce fichier portait encore UN lecteur en propre : `spans_de_chaines`, avec sa propre grammaire du
+littéral de caractère. C'était le cinquième exemplaire de cette grammaire sous `.github/scripts/`, et
+c'est la recopie qui a fait vivre quatre grammaires divergentes (`P10.20-c` à `-e`). Il vit désormais
+dans `check_a_read_that_did_not_happen_is_never_served_as_a_fact.py` sous le nom
+`spans_de_chaines_rust`, à côté de `_saut_de_litteral_rust` dont il tient sa règle, et il est importé
+ici. COMPORTEMENT INCHANGÉ, vérifié par re-mesure avant/après sur instantané : sortie identique.
+
+ET LES TÉMOINS DE CES LECTEURS SONT APPELÉS (`temoins_des_lecteurs_de_forme`), au même endroit que
+`temoins_du_lecteur` : un import n'exécute aucun témoin. CE QUE LA MESURE A DIT, ET QUI NUANCE
+L'ÉNONCÉ DE `P10.20-r` : cette garde-ci n'était PAS sans filet sur `apparier` — sous une mutation qui
+retire la règle du littéral de caractère, son `epreuve_du_litteral_d_octet` la faisait déjà REFUSER DE
+CONCLURE (code 2, mesuré le 2026-09-16). L'appel ajouté ici ne la sauve donc pas d'un trou qu'elle
+avait ; il fait deux choses PLUS PETITES, et elles sont dites plutôt que gonflées : il nomme la cause
+au NIVEAU DU LECTEUR (le message dit « `'\"'` n'est plus sauté » au lieu de « je ne trouve plus le site
+d'`/angle_mort_octet.rs` »), et il couvre `arguments` et `bras_du_match` — que cette garde N'APPELLE
+PAS, ni directement ni par ses lecteurs importés. Ce dernier point est DÉFENSIF ET DÉCLARÉ TEL : son
+seul mérite est qu'aucun des trois points d'entrée ne peut plus charger un lecteur partagé régressé
+sans le dire, quelle que soit celle des trois gardes que la CI joue en premier.
 """
 import os
 import re
@@ -171,8 +192,9 @@ sys.argv = [_ARGV[0], RACINE]
 try:
     from check_a_truncated_list_is_never_served_as_a_complete_one import (  # noqa: E402
         ARBRE_FABRIQUE, SOURCES_ATTENDUES, apparier, chaine_detaillee, coupe_tests,
-        debut_instruction, fonctions, parcours_des_sources, portee_englobante, positions_de_coupe,
-        refuser_sur_aveu, sans_commentaires_rust, temoins_du_lecteur)
+        dans_une_chaine_rust, debut_instruction, fonctions, parcours_des_sources, portee_englobante,
+        positions_de_coupe, refuser_sur_aveu, sans_commentaires_rust, spans_de_chaines_rust,
+        temoins_des_lecteurs_de_forme, temoins_du_lecteur)
 finally:
     sys.argv = _ARGV
 
@@ -258,11 +280,15 @@ DEFAUTS_RANG_1_LE_REPLI_OUVRE = {
 # --- CLASSE 3 : RANG DEUX — LA VALEUR FABRIQUÉE EST SERVIE OU ÉCRITE. Un lecteur humain, une ligne de
 # registre ou le tour suivant la prennent pour un fait.
 DEFAUTS_RANG_2_FAIT_SERVI_OU_ECRIT = {
-    # Le statut CONSERVÉ d'une action déjà tranchée retombe à `""` et part dans le REGISTRE
-    # tamper-evident : « verdict `` déjà posé, conservé ». La trace non-purgeable porte alors un
-    # verdict vide qu'aucune relecture ne pourra recouper. GESTE : `.optional()?` et une ligne de
-    # registre qui dit que le verdict conservé n'a pas été relu.
-    ("daemon/src/handlers/actions.rs", "respond_run"): ("unwrap_or_default",),
+    # ENTRÉE RETIRÉE LE 2026-09-16 PAR `P10.20-q`. Elle disait : le statut CONSERVÉ d'une action déjà
+    # tranchée retombait à `""` par `unwrap_or_default()` et partait dans le REGISTRE tamper-evident
+    # (« verdict `` déjà posé, conservé »), donc la trace non purgeable portait un verdict vide
+    # qu'aucune relecture ne pouvait recouper — et « la ligne a DISPARU » s'y écrivait exactement
+    # comme « la ligne n'a PAS ÉTÉ LUE ». La relecture est désormais un énoncé typé,
+    # `verdict_conserve_relu` -> `VerdictConserve::{Lu, LigneDisparue, NonRelu}` : les trois issues
+    # ont leur phrase, et la lecture non faite porte son PROPRE `kind` de registre
+    # (`action.exec.verdict-non-relu`), donc elle se filtre dans la trace. La forme a disparu du
+    # site — la garder ferait rougir « exemption sans objet ».
     # CINQ lectures d'aperçu de rétention retombent sur `(0, None)`. L'opérateur lit « rien à purger »
     # sur cinq familles d'objets, juste avant de décider d'une purge. GESTE : solder les cinq en
     # `Result` et servir `null` + la cause, jamais un zéro.
@@ -451,68 +477,29 @@ DEFAUTS_CONNUS = {c: f for lib, cl in CLASSES if lib.startswith("défaut") for c
 
 
 # ================================================================================================
-# LE LECTEUR PROPRE À CETTE GARDE — LES LITTÉRAUX DE CHAÎNE
+# LE LECTEUR DES LITTÉRAUX DE CHAÎNE — IMPORTÉ, PLUS RECOPIÉ (`P10.20-r`, 2026-09-16)
 # ================================================================================================
-# CE N'EST PAS UN JUMEAU DE `positions_de_coupe`, ET LA DIFFÉRENCE EST DANS LA QUESTION POSÉE : là-bas
-# « où sont les bornes d'instruction », ici « où sont les littéraux ». Le besoin est réel et mesuré :
-# le motif `.query_row(` est cherché dans du TEXTE, et un `query_row(..).ok()` cité DANS une chaîne
-# (une phrase d'aveu, un gabarit de message, un extrait de doc SQL) deviendrait un site fantôme
-# qu'aucun geste local ne referme. Les deux lecteurs sont noués par une épreuve : aucune borne
-# d'instruction ne doit tomber DANS un littéral.
-CHAINE_BRUTE = re.compile(r"(?:b?r)(#*)\"")
-# LE LITTÉRAL DE CARACTÈRE, ET IL N'EST PAS DÉCORATIF. Il a coûté une accusation fausse à ce dépôt
-# sous `P10.20-c` : `sans_commentaires_rust` lisait le `'"'` de `actions.rs:889` (`SHELL_META`) comme
-# une durée de vie ouvrant une chaîne, et un commentaire passait pour du code. Le lecteur partagé est
-# corrigé DEPUIS, mais il RESTITUE le littéral tel quel — donc CE scanner-ci, qui lit sa sortie,
-# retombe dans le même trou s'il ne le connaît pas. MESURÉ le 2026-09-16 : sans cette ligne, le `'"'`
-# de `actions.rs:889`, le `b'"'` de `freshness.rs:496` et le `'"'` de `panneau_avoue.rs:237` ouvraient
-# une fausse chaîne qui avalait la fin du fichier — TROIS fichiers et QUATRE sites disparaissaient de
-# la population (88 au lieu de 92), en silence et en VERT. Une durée de vie (`'a`, `'static`) n'a pas
-# de guillemet fermant après un caractère : elle ne matche pas, et le scanner avance d'un cran.
-CARACTERE = re.compile(r"'(?:\\(?:x[0-9A-Fa-f]{2}|u\{[0-9A-Fa-f]{1,6}\}|.)|[^\\'])'")
-
-
-def spans_de_chaines(code):
-    """Les intervalles `[début, fin)` des littéraux de chaîne, brutes comprises (`r"…"`, `r#"…"#`).
-
-    Les littéraux de CARACTÈRE (`'"'`, `b'"'`, `'\\''`) sont sautés : le guillemet qu'ils portent
-    n'ouvre pas une chaîne."""
-    spans, j, n = [], 0, len(code)
-    while j < n:
-        c = CARACTERE.match(code, j)
-        if c:
-            j = c.end()
-            continue
-        m = CHAINE_BRUTE.match(code, j)
-        if m:
-            cloture = '"' + m.group(1)
-            k = code.find(cloture, m.end())
-            k = n if k < 0 else k + len(cloture)
-            spans.append((j, k))
-            j = k
-            continue
-        if code[j] == '"':
-            k = j + 1
-            while k < n and code[k] != '"':
-                k += 2 if code[k] == "\\" else 1
-            spans.append((j, min(k + 1, n)))
-            j = min(k + 1, n)
-            continue
-        j += 1
-    return spans
-
-
-def dans_une_chaine(spans, i):
-    bas, haut = 0, len(spans)
-    while bas < haut:
-        mil = (bas + haut) // 2
-        if spans[mil][1] <= i:
-            bas = mil + 1
-        elif spans[mil][0] > i:
-            haut = mil
-        else:
-            return True
-    return False
+# LE BESOIN EST RÉEL ET MESURÉ, ET IL N'A PAS CHANGÉ : le motif `.query_row(` est cherché dans du
+# TEXTE, et un `query_row(..).ok()` cité DANS une chaîne (une phrase d'aveu, un gabarit de message, un
+# extrait de doc SQL) deviendrait un site fantôme qu'aucun geste local ne referme. Ce lecteur-ci n'est
+# PAS un jumeau de `positions_de_coupe` — là-bas « où sont les bornes d'instruction », ici « où sont
+# les littéraux » — et les deux restent noués par une épreuve : aucune borne d'instruction ne doit
+# tomber DANS un littéral.
+#
+# CE QUI A CHANGÉ : jusqu'au 2026-09-16 ce fichier en portait sa PROPRE copie (`spans_de_chaines`,
+# `CHAINE_BRUTE`, `CARACTERE`), avec sa propre grammaire du littéral de caractère. C'était le
+# cinquième exemplaire de cette grammaire sous `.github/scripts/`, et la recopie est exactement ce qui
+# a fait vivre quatre grammaires divergentes (`P10.20-c` à `-e`). Le lecteur vit désormais dans
+# `check_a_read_that_did_not_happen_is_never_served_as_a_fact.py`, à côté de `_saut_de_litteral_rust`
+# et de `RE_CARACTERE_RUST` dont il tient sa règle, et il est IMPORTÉ ici par la garde de famille.
+# LE COMPORTEMENT EST LE MÊME (vérifié par les épreuves de ce fichier et par une re-mesure avant/après
+# sur instantané : sortie identique octet pour octet).
+#
+# ET LA PROPRIÉTÉ QU'IL TIENT VAUT TOUJOURS LA PEINE D'ÊTRE ÉCRITE : le littéral de caractère a coûté
+# une accusation fausse à ce dépôt sous `P10.20-c`, et MESURÉ le 2026-09-16, sans lui, le `'"'` de
+# `actions.rs:889`, le `b'"'` de `freshness.rs:496` et le `'"'` de `panneau_avoue.rs:237` ouvraient une
+# fausse chaîne qui avalait la fin du fichier — TROIS fichiers et QUATRE sites disparaissaient de la
+# population (88 au lieu de 92), en silence et en VERT.
 
 
 # ================================================================================================
@@ -560,10 +547,10 @@ def analyser(chemin_relatif, texte, journal, aveux_du_lecteur=None):
     code = coupe_tests(brut)
     fns = fonctions(code)
     coupes = positions_de_coupe(code)
-    spans = spans_de_chaines(code)
+    spans = spans_de_chaines_rust(code)
     sites = []
     for m in LECTURE_UNE_LIGNE.finditer(code):
-        if dans_une_chaine(spans, m.start()):
+        if dans_une_chaine_rust(spans, m.start()):
             continue
         ouvrante = m.end() - 1
         fin = apparier(code, ouvrante)
@@ -705,7 +692,7 @@ EPREUVES = [
      '    conn.query_row("SELECT a FROM t", [], |r| r.get(0)).optional().ok()\n}\n',
      {"optional.ok"}),
     # LE TROU DE `P10.20-c`, REJOUÉ SUR CE SCANNER-CI. Sans le littéral de caractère dans
-    # `spans_de_chaines`, ces deux témoins deviennent VERTS — c'est-à-dire que la garde cesse de voir
+    # `spans_de_chaines_rust`, ces deux témoins deviennent VERTS — c'est-à-dire que la garde cesse de voir
     # une lecture parfaitement visible, parce qu'un guillemet d'un tout autre littéral a ouvert une
     # fausse chaîne. Mesuré : trois fichiers de `handlers/` portent ce cas aujourd'hui.
     ("(11) la lecture suit un littéral de CARACTÈRE `'\"'` (le cas d'`actions.rs`)",
@@ -864,6 +851,17 @@ def valider_instrument():
         temoins_du_lecteur()
     except AssertionError as e:
         errs.append(f"lecteur partagé (`sans_commentaires_rust`) : {e}")
+    # LES LECTEURS DE FORME RUST AUSSI (`P10.20-r`, 2026-09-16), ET POUR LA MÊME RAISON MESURÉE :
+    # `apparier`, `fonctions`, `arguments`, `bras_du_match` et `spans_de_chaines_rust` sont IMPORTÉS
+    # (par ré-import à travers la garde de famille), donc leurs témoins ne tournent pas à l'import.
+    # Tant qu'ils vivaient dans le `valider_instrument` de la garde qui les PORTE, un `apparier`
+    # amputé de sa règle du littéral laissait CETTE garde-ci verte à sortie identique — mesuré. Le
+    # coût est de 0,23 ms, contre 1,3 s pour cette garde entière (0,02 %).
+    try:
+        temoins_des_lecteurs_de_forme()
+    except AssertionError as e:
+        errs.append(f"lecteurs de forme Rust (`apparier`, `fonctions`, `arguments`, "
+                    f"`bras_du_match`, `spans_de_chaines_rust`) : {e}")
 
     for nom, src, attendues in EPREUVES:
         journal = []
@@ -893,10 +891,10 @@ def valider_instrument():
                     "ensembles nommés compteraient alors les mêmes sites deux fois")
 
     # --- LES DEUX LECTEURS DE TEXTE SONT NOUÉS : aucune borne d'instruction ne tombe DANS un littéral.
-    # Sans cette épreuve, `spans_de_chaines` pourrait diverger de `positions_de_coupe` sans qu'aucun
+    # Sans cette épreuve, `spans_de_chaines_rust` pourrait diverger de `positions_de_coupe` sans qu'aucun
     # témoin ne tombe, et c'est exactement la dérive que les lecteurs jumeaux produisent.
     fabrique = 'fn f() { let c = \'"\'; let s = "a;b{c}"; let t = r#"d;e{f}"#; }'
-    spans = spans_de_chaines(fabrique)
+    spans = spans_de_chaines_rust(fabrique)
     if len(spans) != 2 or fabrique[spans[0][0]:spans[0][1]] != '"a;b{c}"':
         errs.append(f"épreuve des LITTÉRAUX : {len(spans)} littéral(aux) vu(s) sur une source qui en "
                     "porte DEUX (une chaîne simple, une chaîne brute) précédés d'un littéral de "
@@ -904,10 +902,10 @@ def valider_instrument():
                     "dans une phrase deviendrait un site fantôme ; dans l'autre (le cas mesuré) un "
                     "`'\"'` ouvrirait une fausse chaîne qui avale la fin du fichier et fait "
                     "DISPARAÎTRE des sites réels, en vert")
-    dedans = [c for c in positions_de_coupe(fabrique) if dans_une_chaine(spans, c)]
+    dedans = [c for c in positions_de_coupe(fabrique) if dans_une_chaine_rust(spans, c)]
     if dedans:
         errs.append(f"épreuve des LITTÉRAUX (accord des deux lecteurs) : {len(dedans)} borne(s) "
-                    "d'instruction tombe(nt) DANS un littéral — `spans_de_chaines` et "
+                    "d'instruction tombe(nt) DANS un littéral — `spans_de_chaines_rust` et "
                     "`positions_de_coupe` ne lisent plus le même texte, et l'un des deux ment")
 
     # --- L'ANGLE MORT DES LECTEURS PARTAGÉS SE SOLDE PAR UN AVEU, jamais par un site retiré.

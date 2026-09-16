@@ -17,6 +17,42 @@ La cause n'est pas exotique. Elle est banale : un cache de schéma de pool péri
 vue par la connexion qui sert, un `TEXT` corrompu ne se convertit pas. Dans les trois cas la route
 rend 200 et la liste est plus courte qu'elle ne devrait, SANS UN MOT.
 
+LA SECONDE FAMILLE — LE PARCOURS QUI N'A PAS LIEU (`P10.20-p`, ajoutée le 2026-09-16)
+--------------------------------------------------------------------------------------
+La première famille juge un parcours qui a LIEU et dont une ligne est avalée. La seconde juge un
+parcours qui N'A PAS LIEU DU TOUT : `if let Ok(mut s) = conn.prepare(..) { .. }` sans `else`, et le
+même `if let` posé sur `query_map`. Si la lecture rate, le bloc entier est SAUTÉ, la liste reste
+VIDE — et elle est servie comme complète. C'est la même phrase que le nom de ce fichier, poussée à
+son extrême : la troncature à ZÉRO. `P10.20-p` l'a mesurée sur trois sites (`suppressions_get`, qui
+servait « aucun collecteur n'a auto-reporté » et un parcours dit COMPLET alors que rien n'avait été
+lu ; `object_field_allow` ; `compute_freshness`), les a corrigés, et a laissé À TENIR le cliquet qui
+empêche la forme de revenir.
+
+CE CLIQUET EST À ZÉRO SITE NOMMÉ, et il l'est parce que l'arbre est à zéro : relevé le 2026-09-16 sur
+`daemon/src/handlers/`, sous-répertoires compris, commentaires dépouillés et `#[cfg(test)]` coupé, la
+forme n'existe plus — ni sur `prepare`, ni sur `query_map`. UN GREP NAÏF EN VERRAIT UN DE PLUS,
+`freshness.rs:840`, qui est la PROSE du correctif de `P10.20-g` citant la forme qu'il vient de
+retirer : tout cliquet de ce dépôt doit dépouiller les commentaires, sans quoi il accuse un texte qui
+raconte sa propre guérison.
+
+UN ZÉRO NE SE DÉFEND PAS PAR UN PLANCHER DE POPULATION — il n'y a rien à mesurer. Il se défend par
+les ÉPREUVES fabriquées jouées avant tout verdict (forme muette accusée, forme AVEC `else`
+innocentée, forme scrutée par un `match` qui parle innocentée, forme en commentaire, forme dans une
+chaîne, forme sous `cfg(test)`, `let ... else` innocenté, `query_row` laissé à la famille voisine) et
+par les mutations qui les tuent — vider le geste, débrancher le jugement de l'ensemble, débrancher
+l'exclusion des chaînes, poser une entrée bidon. Toutes jouées le 2026-09-16, toutes rouges.
+
+CE QUE LA SECONDE FAMILLE A COÛTÉ, MESURÉ : 0,75 s -> 0,97 s sur `daemon/src/handlers/` (+29 %), et
+non 0,75 s -> 1,50 s, parce que le dépouillement est PARTAGÉ entre les deux familles
+(`preparer_le_texte`). Elle n'a RIEN coûté en câblage : elle vit dans une garde déjà branchée.
+
+CE QU'ELLE PARTAGE ET CE QU'ELLE NE PARTAGE PAS AVEC LA PREMIÈRE. Elle partage les lecteurs, le
+corpus et l'aveu du lecteur — une région avalée les fausse toutes les deux pour la même cause. Elle
+NE partage PAS le plancher : le jugement des parcours muets est rendu AVANT le plancher de la
+première famille, pour qu'un effondrement de celui-ci ne transforme pas une accusation en refus de
+conclure. Et un site peut être accusé par les DEUX : ce sont deux fautes distinctes (le parcours peut
+ne pas avoir lieu, ET s'il a lieu ses lignes sont avalées), chacune dans son ensemble nommé.
+
 CE QUE L'ARBRE PORTE, MESURÉ LE 2026-09-16
 -------------------------------------------
 Relevé ligne par ligne sur `daemon/src/handlers/*.rs` (les quatre écritures d'aplatissement passées
@@ -284,18 +320,23 @@ from check_every_help_trigger_has_a_section import (  # noqa: E402  (source uniq
 RACINE = (os.path.abspath(sys.argv[1]) if len(sys.argv) > 1
           else os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))))
 
-# LA GARDE SŒUR EST IMPORTÉE POUR SES TROIS LECTEURS DE FORME (`apparier`, `coupe_tests`,
-# `fonctions`) : les recopier ferait deux appariements de parenthèses qui pourraient diverger, et ce
-# dépôt paie cher les lecteurs jumeaux. L'import est SAIN — il n'exécute qu'une compilation de
-# regexes (mesuré à 23 ms) — MAIS son module évalue sa propre `RACINE` À L'IMPORT, par un
-# `git rev-parse` quand aucun argument ne lui est passé. On lui passe donc la racine DÉJÀ calculée
-# ici : l'import ne cherche plus de dépôt git (une archive dépliée en est dépourvue) et ne peut pas
-# juger un arbre différent de celui que cette garde juge.
+# LA GARDE SŒUR EST IMPORTÉE POUR SES LECTEURS DE FORME (`apparier`, `coupe_tests`, `fonctions`, et
+# depuis `P10.20-p`/`P10.20-r` `if_let_sans_branche`, `spans_de_chaines_rust`, `dans_une_chaine_rust`,
+# `MOTIF_LIANT_IF_LET_TOUT_MOTIF`) : les recopier ferait deux appariements de parenthèses qui
+# pourraient diverger, et ce dépôt paie cher les lecteurs jumeaux. L'import est SAIN — il n'exécute
+# qu'une compilation de regexes (mesuré à 23 ms) — MAIS son module évalue sa propre `RACINE` À
+# L'IMPORT, par un `git rev-parse` quand aucun argument ne lui est passé. On lui passe donc la racine
+# DÉJÀ calculée ici : l'import ne cherche plus de dépôt git (une archive dépliée en est dépourvue) et
+# ne peut pas juger un arbre différent de celui que cette garde juge.
+# `temoins_des_lecteurs_de_forme` EST IMPORTÉ AVEC EUX ET JOUÉ (`P10.20-r`) : un import n'exécute aucun
+# témoin, et tant que ceux-ci vivaient dans le `valider_instrument` de la garde sœur, un `apparier`
+# amputé de sa règle du littéral laissait CETTE garde-ci VERTE À SORTIE IDENTIQUE — mesuré.
 _ARGV = sys.argv
 sys.argv = [_ARGV[0], RACINE]
 try:
     from check_a_read_that_did_not_happen_is_never_served_as_a_fact import (  # noqa: E402
-        apparier, coupe_tests, fonctions)
+        MOTIF_LIANT_IF_LET_TOUT_MOTIF, apparier, coupe_tests, dans_une_chaine_rust, fonctions,
+        if_let_sans_branche, spans_de_chaines_rust, temoins_des_lecteurs_de_forme)
 finally:
     sys.argv = _ARGV
 
@@ -345,6 +386,65 @@ ECRITURES = {
 # Une accusation par OCCURRENCE d'aplatissement : quand deux écritures désignent la MÊME occurrence,
 # la plus SPÉCIFIQUE gagne, et le site n'est jamais compté deux fois.
 RANG_ECRITURE = {"i": 0, "ii": 1, "iv": 2, "iii": 3}
+
+# ================================================================================================
+# LA SECONDE FAMILLE — LE PARCOURS QUI N'A PAS LIEU (`P10.20-p`, 2026-09-16)
+# ================================================================================================
+# CE QU'ELLE JUGE, ET POURQUOI C'EST LA MÊME PHRASE QUE LE NOM DU FICHIER. La première famille juge un
+# parcours qui a LIEU et dont une ligne est avalée : la liste servie est TRONQUÉE. Celle-ci juge un
+# parcours qui N'A PAS LIEU DU TOUT — `if let Ok(mut s) = conn.prepare(..) { .. }` sans `else`, ou le
+# même `if let` sur `query_map` : si la préparation rate (cache de schéma de pool périmé, table hors
+# d'atteinte, colonne qu'une migration vient d'ajouter), le bloc est SAUTÉ, la liste reste VIDE, et
+# elle est servie comme complète. C'est la troncature à ZÉRO, et c'est l'affirmation la plus grave
+# qu'un corps de liste sache porter : « il n'y a rien » au lieu de « je n'ai pas lu ».
+#
+# POURQUOI ICI ET NON DANS LA GARDE DE FORME DES LECTURES UNIQUES, MESURÉ ET DIT (`P10.20-p` laissait
+# le choix ouvert entre les deux fichiers) :
+#   * LE NOM. `check_a_single_row_read_that_failed_is_never_served_as_a_fact` dit ce qu'elle tient : UNE
+#     LIGNE. Une préparation ratée ne rend aucune ligne et `query_map` rend un ITÉRATEUR ; y loger cette
+#     famille rendrait ce nom faux pour un tiers de son contenu, et ce dépôt juge les noms. Ici le nom
+#     reste exact : une liste vide servie comme complète EST une liste tronquée servie comme complète.
+#   * LE CORPUS ET LES LECTEURS sont déjà les bons (`daemon/src/handlers/`, sous-répertoires compris,
+#     commentaires dépouillés, `#[cfg(test)]` coupé) : zéro ligne de découverte à réécrire.
+#   * LE COÛT, ET IL N'EST PAS NUL : `main()` d'ici REFUSE DE CONCLURE (code 2) quand le lecteur avoue
+#     ou quand le plancher de la PREMIÈRE famille est franchi, et ce refus TAIRAIT la seconde. Le
+#     jugement de la seconde famille est donc placé AVANT le plancher de la première — un effondrement
+#     du plancher de l'une n'efface pas les accusations de l'autre, il les laisse imprimées. Ce qui
+#     reste partagé (l'aveu du lecteur, les épreuves d'instrument) doit l'être : les deux familles lisent
+#     le même texte avec les mêmes lecteurs, et un lecteur faux les rend fausses toutes les deux.
+#   * CE QU'IL FAUDRAIT CÂBLER SI ELLE VIVAIT AILLEURS : une garde neuve coûterait un pas de `ci.yml` et
+#     une ligne d'agrégation, et resterait ROUGE dans
+#     `check_every_guard_written_is_a_guard_wired.py` jusqu'à ce que ce pas existe. Ici, RIEN À CÂBLER.
+#
+# CE QUE CETTE FAMILLE NE PARTAGE PAS AVEC LA PREMIÈRE : un site peut être accusé par les DEUX (une
+# préparation muette dont le parcours, quand il a lieu, aplatit ses lignes). Ce sont DEUX fautes
+# distinctes — le parcours peut ne pas avoir lieu, ET s'il a lieu ses lignes sont avalées — et chacune
+# a son ensemble nommé. Aucun site n'est jamais compté deux fois DANS LE MÊME ensemble.
+PREPARATION = re.compile(r"\.\s*(?:prepare|prepare_cached)\s*\(")
+# `query_row` N'ENTRE PAS : il rend UNE ligne, pas un parcours, et c'est la famille de la garde sœur.
+# MESURÉ le 2026-09-16 sur `daemon/src/handlers/` : le SEUL `if let Ok(..) = <lecture>` sans `else` du
+# répertoire est un `query_row` (`action_approve`, actions.rs:565, liaison par TUPLE), et il est laissé
+# HORS de cet ensemble À DESSEIN — il relève de `P10.20-q`, dont le remède touche le registre.
+PARCOURS_MUET = {"prepare": PREPARATION, "query_map": LECTURE_LIGNES}
+FORMES_MUETTES = {
+    "prepare": "préparation muette — `if let Ok(..) = <conn>.prepare(..) { .. }` sans `else`",
+    "query_map": "parcours muet — `if let Ok(..) = <stmt>.query_map(..) { .. }` sans `else`",
+}
+
+# L'ENSEMBLE NOMMÉ DE LA SECONDE FAMILLE — VIDE, ET JUGÉ DANS LES DEUX SENS.
+# Il part vide parce que l'arbre est à zéro : relevé le 2026-09-16 sur `daemon/src/handlers/`,
+# sous-répertoires compris, commentaires dépouillés et `#[cfg(test)]` coupé — ZÉRO `if let Ok(..) =
+# <conn>.prepare(` et ZÉRO sur `query_map` (un grep NAÏF en verrait un de plus : `freshness.rs:840`,
+# qui est la PROSE du correctif de `P10.20-g` citant la forme qu'il a retirée — tout cliquet doit
+# dépouiller les commentaires, sans quoi il accuse un texte qui raconte sa propre guérison).
+# LA CLÉ EST (fichier, fonction) ET LA VALEUR LE TUPLE DES FORMES, jamais un compte : un COMPTE se
+# laisse compenser, et réécrire une préparation muette en parcours muet laisserait le total immobile.
+# ZÉRO EST LA VALEUR ATTENDUE, ET C'EST UN CLIQUET, PAS UN CONSTAT : la non-dégénérescence ne peut PAS
+# venir d'un plancher de population (elle est nulle), elle vient des ÉPREUVES fabriquées jouées avant
+# tout verdict — forme muette accusée, forme avec `else` innocentée, forme dans un `match` qui parle
+# innocentée, forme en commentaire, forme dans une chaîne, forme sous `cfg(test)` — et de la mutation
+# qui les tue. Sans elles, ce zéro serait vert le jour où le geste cesserait de voir quoi que ce soit.
+PARCOURS_MUETS_ADMIS = {}
 
 # --- PLANCHER DE NON-DÉGÉNÉRESCENCE (relu le 2026-09-16, après le LOT DES CONNECTEURS) -----------
 # Ils ne réclament PAS un volume de code : ils constatent qu'une LECTURE est cassée. Sous eux, rendre
@@ -706,21 +806,35 @@ def liaisons(code, coupes, debut_lecture, apres, fns):
 # ================================================================================================
 # LA DÉCOUVERTE — UN SITE EST UNE OCCURRENCE D'APLATISSEMENT, PAS UN APPEL
 # ================================================================================================
-def analyser(chemin_relatif, texte, journal, aveux_du_lecteur=None):
-    """[(chemin, ligne, fonction, écriture, extrait)] pour UN fichier. `journal` recueille ce que CETTE
-    GARDE avoue avoir perdu (une parenthèse non appariée) : un aveu vaut refus de conclure, jamais un
-    compte amputé rendu vert. `aveux_du_lecteur` recueille ce que le LECTEUR PARTAGÉ avoue (`P10.20-d`,
-    2026-09-16) — deux causes distinctes, deux remèdes distincts, jamais mélangées dans un même sac.
-    Sans ce second journal, une région avalée par le lecteur retirait des sites SANS UN MOT, et le
-    plancher de découverte accusait le dépôt là où la cause était l'instrument."""
+def preparer_le_texte(chemin_relatif, texte, aveux_du_lecteur=None):
+    """`(code, fonctions, bornes d'instruction, intervalles de chaîne)` — LE DÉPOUILLEMENT, UNE FOIS.
+
+    Les DEUX familles de cette garde lisent le MÊME texte avec les MÊMES lecteurs. Le faire deux fois
+    par fichier DOUBLAIT le temps d'exécution (MESURÉ le 2026-09-16 sur `daemon/src/handlers/` :
+    0,75 s avant la seconde famille, 1,50 s en dépouillant deux fois, 0,97 s en dépouillant une seule).
+    La seconde famille coûte donc 0,22 s (+29 %) et non 0,75 s. `aveux_du_lecteur` recueille ce que le LECTEUR
+    PARTAGÉ avoue (`P10.20-d`) ; il est COMMUN aux deux familles, parce qu'une région avalée les
+    fausse toutes les deux pour la même cause."""
     journal_du_lecteur = []
     brut = sans_commentaires_rust(texte, journal_du_lecteur)
     if journal_du_lecteur and aveux_du_lecteur is not None:
         aveux_du_lecteur[chemin_relatif] = [f"ligne {texte.count(chr(10), 0, o) + 1} : {m}"
                                             for m, o in journal_du_lecteur]
     code = coupe_tests(brut)
-    fns = fonctions(code)
-    coupes = positions_de_coupe(code)
+    return code, fonctions(code), positions_de_coupe(code), spans_de_chaines_rust(code)
+
+
+def analyser(chemin_relatif, texte, journal, aveux_du_lecteur=None, prepare=None):
+    """[(chemin, ligne, fonction, écriture, extrait)] pour UN fichier. `journal` recueille ce que CETTE
+    GARDE avoue avoir perdu (une parenthèse non appariée) : un aveu vaut refus de conclure, jamais un
+    compte amputé rendu vert. `aveux_du_lecteur` recueille ce que le LECTEUR PARTAGÉ avoue (`P10.20-d`,
+    2026-09-16) — deux causes distinctes, deux remèdes distincts, jamais mélangées dans un même sac.
+    Sans ce second journal, une région avalée par le lecteur retirait des sites SANS UN MOT, et le
+    plancher de découverte accusait le dépôt là où la cause était l'instrument.
+
+    `prepare` est la sortie de `preparer_le_texte` quand l'appelant l'a déjà calculée pour l'autre
+    famille ; les ÉPREUVES, elles, passent un texte brut et la laissent se calculer."""
+    code, fns, coupes, _spans = prepare or preparer_le_texte(chemin_relatif, texte, aveux_du_lecteur)
     trouves = {}
 
     def poser(index, ecriture, extrait):
@@ -775,6 +889,97 @@ def analyser(chemin_relatif, texte, journal, aveux_du_lecteur=None):
     return sites
 
 
+def analyser_les_parcours_muets(chemin_relatif, texte, journal, aveux_du_lecteur=None, prepare=None):
+    """[(chemin, ligne, fonction, forme, extrait)] pour UN fichier — LA SECONDE FAMILLE (`P10.20-p`).
+
+    LE GESTE, EN UNE PHRASE : une préparation (`prepare`, `prepare_cached`) ou un parcours (`query_map`,
+    `query_and_then`) LIÉ par un `if let Ok(..)` dont le bloc n'est suivi d'AUCUN `else`. Le prédicat
+    est `if_let_sans_branche`, IMPORTÉ de la garde des lectures non faites et jamais recopié ; le motif
+    de liaison est le LARGE (`MOTIF_LIANT_IF_LET_TOUT_MOTIF`), qui voit aussi `Ok((a, b, c))` — le motif
+    étroit de la jambe B est aveugle au tuple, mesuré le 2026-09-16, et un ensemble qui part de ZÉRO
+    n'a aucun plafond à déplacer en voyant plus.
+
+    TROIS EXCLUSIONS, ET CHACUNE A SON ÉPREUVE : les commentaires sont DÉPOUILLÉS (sans quoi la prose du
+    correctif de `P10.20-g`, qui cite la forme qu'elle a retirée, serait un site), les modules
+    `#[cfg(test)]` sont COUPÉS (un test peut écrire n'importe quelle forme sans qu'une route la serve),
+    et les LITTÉRAUX DE CHAÎNE sont exclus (`spans_de_chaines_rust` : une forme citée dans un gabarit de
+    message ou dans un extrait de doc n'est pas du code, et `if let Ok(..) = x.prepare(y) { }` écrit
+    DANS une chaîne serait autrement accusé — mesuré en écrivant cette famille).
+
+    `prepare` a le même sens que dans `analyser` : le dépouillement est PARTAGÉ entre les deux
+    familles, jamais refait."""
+    code, fns, coupes, spans = prepare or preparer_le_texte(chemin_relatif, texte, aveux_du_lecteur)
+    trouves = {}
+    for forme, motif in PARCOURS_MUET.items():
+        for m in motif.finditer(code):
+            if dans_une_chaine_rust(spans, m.start()):
+                continue
+            ouvrante = m.end() - 1
+            fin = apparier(code, ouvrante)
+            if fin < 0:
+                ligne = code.count("\n", 0, m.start()) + 1
+                journal.append(f"{chemin_relatif}:{ligne} — parenthèse d'appel non appariée sur une "
+                               "préparation ou un parcours : le lecteur a perdu la fin de l'expression")
+                continue
+            _jetons, apres = chaine_detaillee(code, fin)
+            if not if_let_sans_branche(code, m.start(), apres, MOTIF_LIANT_IF_LET_TOUT_MOTIF):
+                continue
+            trouves[m.start()] = forme
+    sites = []
+    for index in sorted(trouves):
+        englobante = portee_englobante(fns, index)
+        if not englobante:
+            ligne = code.count("\n", 0, index) + 1
+            journal.append(f"{chemin_relatif}:{ligne} — préparation ou parcours muet HORS de toute "
+                           "fonction : la portée est introuvable, et un site sans fonction ne peut pas "
+                           "entrer dans l'ensemble")
+            continue
+        extrait = " ".join(code[debut_instruction(coupes, index):index + 60].split())[:110]
+        sites.append((chemin_relatif, code.count("\n", 0, index) + 1, englobante[0],
+                      trouves[index], extrait))
+    return sites
+
+
+def juger_les_parcours_muets(sites, admis):
+    """[(genre, fichier, phrase)] — le MÊME jugement dans les deux sens que la première famille, mais
+    sur les FORMES et non sur un compte : une préparation muette réécrite en parcours muet rougit des
+    DEUX côtés (forme neuve pour la nouvelle, exemption sans objet pour l'ancienne), ce qui est la
+    bonne lecture — ce n'est pas le même site."""
+    vus = {}
+    for chemin, ligne, fn, forme, _extrait in sites:
+        vus.setdefault((chemin, fn), []).append((forme, ligne))
+    ecarts = []
+    for cle in sorted(set(vus) | set(admis)):
+        chemin, fn = cle
+        formes_vues, formes_admises = {}, {}
+        for forme, ligne in vus.get(cle, []):
+            formes_vues.setdefault(forme, []).append(ligne)
+        for forme in admis.get(cle, ()):
+            formes_admises[forme] = formes_admises.get(forme, 0) + 1
+        for forme in sorted(set(formes_vues) | set(formes_admises)):
+            n_vu, n_admis = len(formes_vues.get(forme, [])), formes_admises.get(forme, 0)
+            if n_vu > n_admis:
+                lignes = ", ".join(str(x) for x in sorted(formes_vues[forme])[n_admis:])
+                ecarts.append(("forme neuve", chemin,
+                               f"FORME NEUVE — `{fn}` ({chemin}) porte la forme « "
+                               f"{FORMES_MUETTES[forme]} » {n_vu} fois pour {n_admis} admise(s) ; "
+                               f"ligne(s) en trop : {lignes}. Si "
+                               "la lecture rate, le bloc est SAUTÉ : la liste reste VIDE et elle est "
+                               "servie comme complète, sans un mot. La forme doit AVOUER (une fin de "
+                               "parcours non commencée, une cause « pas lu » portée par le corps), ou "
+                               "rendre un `Result` à l'appelant — sinon elle entre dans "
+                               "PARCOURS_MUETS_ADMIS AVEC sa raison, jamais en silence."))
+            if n_vu < n_admis:
+                ecarts.append(("exemption sans objet", chemin,
+                               f"EXEMPTION SANS OBJET — `{fn}` ({chemin}) est admis {n_admis} fois sous "
+                               f"la forme « {FORMES_MUETTES[forme]} » et n'est accusé que {n_vu} fois : "
+                               "le site avoue désormais, ou il a CHANGÉ DE FORME, ou il n'existe plus, "
+                               "ou cette garde a cessé de le voir. Dans les quatre cas l'entrée se "
+                               "retire à la main EN DISANT LEQUEL — un canal qui rétrécit ne doit pas "
+                               "passer pour un défaut fermé."))
+    return ecarts
+
+
 def fichiers_du_corpus(racine=None):
     """Tous les `.rs` de `daemon/src/handlers/`, SOUS-RÉPERTOIRES COMPRIS, artefacts ÉLAGUÉS.
 
@@ -804,12 +1009,19 @@ def fichiers_du_corpus(racine=None):
 
 
 def decouvrir():
-    sites, journal, aveux_du_lecteur = [], [], {}
+    """Les DEUX familles en UNE passe de lecture : chaque fichier n'est ouvert et dépouillé qu'une fois.
+
+    Le journal et les aveux du lecteur sont COMMUNS, et c'est voulu : une région avalée par le lecteur
+    fausse les deux familles pour la même cause, et deux sacs séparés laisseraient croire le contraire."""
+    sites, muets, journal, aveux_du_lecteur = [], [], [], {}
     for chemin in fichiers_du_corpus():
         with open(chemin, encoding="utf-8", errors="replace") as fh:
             texte = fh.read()
-        sites += analyser(os.path.relpath(chemin, RACINE), texte, journal, aveux_du_lecteur)
-    return sites, journal, aveux_du_lecteur
+        rel = os.path.relpath(chemin, RACINE)
+        prepare = preparer_le_texte(rel, texte, aveux_du_lecteur)
+        sites += analyser(rel, texte, journal, aveux_du_lecteur, prepare)
+        muets += analyser_les_parcours_muets(rel, texte, journal, aveux_du_lecteur, prepare)
+    return sites, muets, journal, aveux_du_lecteur
 
 
 # ================================================================================================
@@ -930,6 +1142,84 @@ EPREUVES = [
 ]
 
 
+# --- LES ÉPREUVES DE LA SECONDE FAMILLE (`P10.20-p`) : (nom, source Rust, formes attendues).
+# Les extraits sont FABRIQUÉS, jamais pris sur l'arbre — et ils ne PEUVENT pas l'être ici, puisque
+# l'arbre est à zéro. Adosser un témoin à `suppressions_get` ou à `compute_freshness`, qui portaient
+# ces formes le matin même, en ferait une RANÇON : il rougirait parce qu'ils sont RÉPARÉS.
+EPREUVES_DES_PARCOURS_MUETS = [
+    ("(1) la PRÉPARATION muette — la forme que `P10.20-p` nomme",
+     'fn m1(conn: &Connection) -> Vec<i64> {\n'
+     '    let mut o = Vec::new();\n'
+     '    if let Ok(mut s) = conn.prepare("SELECT a FROM t") {\n'
+     '        if let Ok(rows) = s.query_map([], |r| r.get(0)) {\n'
+     '            for a in rows { if let Ok(v) = a { o.push(v); } }\n'
+     '        } else { o.push(-1); }\n'
+     '    }\n    o\n}\n', {"prepare"}),
+    ("(2) le PARCOURS muet seul — la préparation, elle, propage",
+     'fn m2(conn: &Connection) -> rusqlite::Result<Vec<i64>> {\n'
+     '    let mut o = Vec::new();\n'
+     '    let mut s = conn.prepare("SELECT a FROM t")?;\n'
+     '    if let Ok(rows) = s.query_map([], |r| r.get(0)) {\n'
+     '        for a in rows { o.push(a?); }\n'
+     '    }\n    Ok(o)\n}\n', {"query_map"}),
+    ("(3) LES DEUX ÉTAGES muets — deux sites, pas un",
+     'fn m3(conn: &Connection) -> Vec<i64> {\n'
+     '    let mut o = Vec::new();\n'
+     '    if let Ok(mut s) = conn.prepare("SELECT a FROM t") {\n'
+     '        if let Ok(rows) = s.query_map([], |r| r.get(0)) {\n'
+     '            for a in rows { if let Ok(v) = a { o.push(v); } }\n'
+     '        }\n    }\n    o\n}\n', {"prepare", "query_map"}),
+    ("(4) témoin négatif : la MÊME forme AVEC `else` — c'est celle que la garde réclame",
+     'fn n1(conn: &Connection) -> Value {\n'
+     '    let mut o = Vec::new();\n'
+     '    let mut fin = FinDeParcours::Complet;\n'
+     '    if let Ok(mut s) = conn.prepare("SELECT a FROM t") {\n'
+     '        if let Ok(rows) = s.query_map([], |r| r.get::<_, i64>(0)) {\n'
+     '            for a in rows { match a { Ok(v) => o.push(v), Err(_) => fin = FinDeParcours::Partiel } }\n'
+     '        } else { fin = FinDeParcours::NonCommence; }\n'
+     '    } else { fin = FinDeParcours::NonCommence; }\n'
+     '    json!({ "rows": o, "fin": fin.mot() })\n}\n', set()),
+    ("(5) témoin négatif : le `match` qui PARLE — la lecture est scrutée, pas enjambée",
+     'fn n2(conn: &Connection) -> Value {\n'
+     '    let mut o: Vec<i64> = Vec::new();\n'
+     '    match conn.prepare("SELECT a FROM t") {\n'
+     '        Ok(mut s) => match s.query_map([], |r| r.get(0)) {\n'
+     '            Ok(rows) => for a in rows { if let Ok(v) = a { o.push(v); } },\n'
+     '            Err(e) => return json!({ "error": e.to_string() }),\n'
+     '        },\n'
+     '        Err(e) => return json!({ "error": e.to_string() }),\n'
+     '    }\n    json!({ "rows": o })\n}\n', set()),
+    ("(6) témoin négatif : la forme est dans un COMMENTAIRE (la prose du correctif de `P10.20-g`)",
+     'fn n3(conn: &Connection) -> rusqlite::Result<Vec<i64>> {\n'
+     '    // AVANT : `if let Ok(mut s) = conn.prepare(..)` SANS branche d\'échec — la famille quittait\n'
+     '    // le relevé sans qu\'un seul champ ne bouge. Remplacé par un `match` qui pose NonCommence.\n'
+     '    let mut s = conn.prepare("SELECT a FROM t")?;\n'
+     '    s.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<_>>>()\n}\n', set()),
+    ("(7) témoin négatif : la forme est dans une CHAÎNE (un gabarit de message, un extrait de doc)",
+     'fn n4() -> &\'static str {\n'
+     '    "corrigé : if let Ok(mut s) = conn.prepare(sql) { } ne dit pas que la lecture a raté"\n}\n',
+     set()),
+    ("(8) témoin négatif : la forme est dans un `#[cfg(test)] mod`",
+     'fn n5() -> i64 { 0 }\n'
+     '#[cfg(test)]\nmod tests {\n    use super::*;\n'
+     '    #[test]\n    fn t(conn: &Connection) {\n'
+     '        if let Ok(mut s) = conn.prepare("SELECT a FROM t") {\n'
+     '            if let Ok(rows) = s.query_map([], |r| r.get::<_, i64>(0)) { assert!(rows.count() >= 0); }\n'
+     '        }\n    }\n}\n', set()),
+    ("(9) témoin négatif : `query_row` — la famille VOISINE, qui ne rend PAS un parcours",
+     'fn n6(conn: &Connection) -> StatusCode {\n'
+     '    if let Ok((k, t, d)) = conn.query_row("SELECT k,t,d FROM a WHERE id=?1", params![id],\n'
+     '        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)? != 0))) {\n'
+     '        armer(&k, &t, d);\n'
+     '    }\n    StatusCode::NO_CONTENT\n}\n', set()),
+    ("(10) témoin négatif : `let ... else` — l'échec a une branche, elle est juste écrite autrement",
+     'fn n7(conn: &Connection) -> Vec<i64> {\n'
+     '    let Ok(mut s) = conn.prepare("SELECT a FROM t") else { return Vec::new() };\n'
+     '    let Ok(rows) = s.query_map([], |r| r.get(0)) else { return Vec::new() };\n'
+     '    rows.collect::<rusqlite::Result<Vec<_>>>().unwrap_or_default()\n}\n', set()),
+]
+
+
 # LA DESCENTE S'ÉPROUVE SUR UN ARBRE FABRIQUÉ, JAMAIS SUR `handlers/connectors/`. Adosser le témoin au
 # sous-répertoire réel en ferait une RANÇON : il rougirait le jour où ce répertoire est renommé, fusionné
 # ou vidé, et aucun geste local ne pourrait le refermer. C'est la même règle que pour les extraits Rust.
@@ -1011,6 +1301,16 @@ def valider_instrument():
         temoins_du_lecteur()
     except AssertionError as e:
         errs.append(f"lecteur partagé (`sans_commentaires_rust`) : {e}")
+    # LES LECTEURS DE FORME RUST AUSSI (`P10.20-r`, 2026-09-16). Ils sont IMPORTÉS de la garde sœur,
+    # donc leurs témoins ne tournent pas à l'import : sans cet appel, un `apparier` amputé de sa règle
+    # du littéral de caractère, ou un `arguments` qui coupe sur la virgule d'un `','`, n'était épinglé
+    # que par la garde qui les PORTE — et CETTE garde-ci restait VERTE À SORTIE IDENTIQUE sous la
+    # mutation, mesuré. Le coût est de 0,23 ms, contre 0,97 s pour cette garde entière (0,02 %).
+    try:
+        temoins_des_lecteurs_de_forme()
+    except AssertionError as e:
+        errs.append(f"lecteurs de forme Rust (`apparier`, `fonctions`, `arguments`, "
+                    f"`bras_du_match`) : {e}")
     for nom, src, attendues in EPREUVES:
         journal = []
         sites = analyser("/epreuve.rs", src, journal)
@@ -1093,6 +1393,75 @@ def valider_instrument():
     if juger_contre_l_ensemble(faux_site, {("daemon/src/handlers/fabrique.rs", "fn_fabriquee"): 1}):
         errs.append("épreuve de l'ENSEMBLE (accord) : un site EXACTEMENT admis produit un écart — la garde "
                     "serait rouge sur l'arbre qu'elle déclare elle-même admis")
+
+    # ============================================================================================
+    # LA SECONDE FAMILLE — LE PARCOURS QUI N'A PAS LIEU (`P10.20-p`)
+    # ============================================================================================
+    # ELLE N'A PAS DE PLANCHER DE POPULATION, ET ELLE NE PEUT PAS EN AVOIR : l'arbre est à ZÉRO. Sa
+    # non-dégénérescence tient ENTIÈREMENT à ces épreuves. Sans elles, le jour où `PREPARATION` cesse
+    # de matcher ou où `if_let_sans_branche` rend toujours `None`, le zéro resterait vert et la garde
+    # serait aveugle en annonçant qu'elle ne voit rien. MUTATION JOUÉE le 2026-09-16 : vider
+    # `PARCOURS_MUET` (la population par le geste) fait tomber les trois épreuves positives.
+    for nom, src, attendues in EPREUVES_DES_PARCOURS_MUETS:
+        journal = []
+        muets = analyser_les_parcours_muets("/muet.rs", src, journal)
+        vues = {f for _c, _l, _fn, f, _x in muets}
+        if journal:
+            errs.append(f"épreuve des PARCOURS MUETS « {nom} » : le lecteur avoue avoir perdu quelque "
+                        f"chose ({journal[0]})")
+        if attendues and vues != attendues:
+            errs.append(f"épreuve des PARCOURS MUETS « {nom} » : formes vues {sorted(vues) or 'aucune'}, "
+                        f"attendu {sorted(attendues)} — la garde ne voit plus la forme qu'elle nomme, ou "
+                        "elle l'étiquette autrement et l'ensemble nommé ne peut plus la reconnaître")
+        if not attendues and vues:
+            errs.append(f"épreuve des PARCOURS MUETS « {nom} » : accusée sous {sorted(vues)} alors "
+                        "qu'elle AVOUE, qu'elle propage, ou qu'elle n'est pas du code — la garde accuse "
+                        "une forme qu'aucun geste local ne referme")
+    # LE GRAIN : deux étages muets d'un même bloc font DEUX sites, sur deux lignes. L'extrait est
+    # retrouvé PAR SON NOM et non par son rang dans la liste — un témoin qu'un ré-ordonnancement ferait
+    # porter sur une autre source serait vert pour la mauvaise raison.
+    src_deux = next(s for n, s, _a in EPREUVES_DES_PARCOURS_MUETS if n.startswith("(3)"))
+    if len({(c, l) for c, l, _f, _fo, _x in analyser_les_parcours_muets("/deux.rs", src_deux, [])}) != 2:
+        errs.append("épreuve des PARCOURS MUETS (grain) : les DEUX étages muets d'un même bloc ne font "
+                    "pas deux sites — soit l'un est perdu, soit ils sont comptés sur la même ligne, et "
+                    "l'ensemble nommé ne pourrait plus en fermer un sans fermer l'autre")
+    # --- LE RECEVEUR DE LA SECONDE FAMILLE, À SON PROPRE NIVEAU ET DANS LES DEUX SENS.
+    if not PREPARATION.search("conn.prepare(sql)") or not PREPARATION.search("c\n    .prepare_cached(sql)"):
+        errs.append("épreuve du RECEVEUR MUET (positif) : `prepare`/`prepare_cached` n'est plus reconnu "
+                    "— la seconde famille est vide, et son zéro ne dit plus rien")
+    if PREPARATION.search("conn.query_row(sql, [], f)") or PREPARATION.search("s.query_map([], f)"):
+        errs.append("épreuve du RECEVEUR MUET (négatif) : `query_row` ou `query_map` est entré dans la "
+                    "PRÉPARATION — les deux formes de la seconde famille seraient confondues, et une "
+                    "entrée de l'ensemble nommé ne dirait plus quel étage est muet")
+    if "query_row" in PARCOURS_MUET:
+        errs.append("épreuve du RECEVEUR MUET (famille voisine) : `query_row` est entré dans la seconde "
+                    "famille. Il rend UNE ligne, pas un parcours : c'est la famille de "
+                    "`check_a_single_row_read_that_failed_is_never_served_as_a_fact.py`, et le seul site "
+                    "de `handlers/` qui porte cette forme (`action_approve`) relève de `P10.20-q`")
+    # --- L'ENSEMBLE NOMMÉ DE LA SECONDE FAMILLE, JUGÉ DANS LES DEUX SENS ET SUR LES FORMES.
+    faux_muet = [("daemon/src/handlers/fabrique.rs", 9, "fn_fabriquee", "prepare", "if let Ok(mut s)")]
+    genres = {g for g, _f, _p in juger_les_parcours_muets(faux_muet, {})}
+    if genres != {"forme neuve"}:
+        errs.append(f"épreuve de l'ENSEMBLE MUET (forme neuve) : genres {sorted(genres) or 'aucun'} au "
+                    "lieu de ['forme neuve'] — une préparation muette NEUVE ne rougit plus, et le "
+                    "cliquet à zéro ne serait plus qu'un décor")
+    genres = {g for g, _f, _p in juger_les_parcours_muets(
+        [], {("daemon/src/handlers/fabrique.rs", "fn_fantome"): ("prepare",)})}
+    if genres != {"exemption sans objet"}:
+        errs.append(f"épreuve de l'ENSEMBLE MUET (exemption sans objet) : genres "
+                    f"{sorted(genres) or 'aucun'} au lieu de ['exemption sans objet'] — une entrée bidon "
+                    "ne rougit plus, et l'ensemble cesserait de redescendre quand le dépôt guérit")
+    if juger_les_parcours_muets(faux_muet, {("daemon/src/handlers/fabrique.rs", "fn_fabriquee"): ("prepare",)}):
+        errs.append("épreuve de l'ENSEMBLE MUET (accord) : un site EXACTEMENT admis produit un écart — "
+                    "la garde serait rouge sur l'arbre qu'elle déclare elle-même admis")
+    mute = [("daemon/src/handlers/fabrique.rs", 9, "fn_fabriquee", "query_map", "if let Ok(rows)")]
+    genres = {g for g, _f, _p in juger_les_parcours_muets(
+        mute, {("daemon/src/handlers/fabrique.rs", "fn_fabriquee"): ("prepare",)})}
+    if genres != {"forme neuve", "exemption sans objet"}:
+        errs.append(f"épreuve de l'ENSEMBLE MUET (changement de FORME) : genres "
+                    f"{sorted(genres) or 'aucun'} au lieu des DEUX — une préparation muette admise qui "
+                    "devient un parcours muet passerait sans un mot. C'est pour ce cas que cet ensemble "
+                    "porte des FORMES et non des comptes")
     return errs
 
 
@@ -1153,6 +1522,22 @@ def ce_qui_n_est_pas_tenu():
           "expression. Les CHAÎNES BRUTES sont tenues depuis `P10.20-d` (même jour) et cette garde PASSE "
           "désormais le journal du lecteur : un aveu la fait refuser de conclure. Ce qu'il ne tient toujours "
           "pas (corps des macros, apostrophes d'attribut, code généré) est écrit en tête du lecteur.\n"
+          "  * LA SECONDE FAMILLE (parcours muets, `P10.20-p`) ne voit QUE le `if let Ok(..)` SANS "
+          "`else`. Un `match` dont les deux bras se taisent, un `while let Ok(..)`, un `if let` dont "
+          "le `else` existe mais ne dit RIEN (`else { }`) ne sont pas vus : le premier est la famille "
+          "de `check_a_read_that_did_not_happen_is_never_served_as_a_fact.py` (jambe Q), les deux "
+          "autres ne sont sur AUCUN site de `handlers/` au 2026-09-16 et les accuser poserait un rouge "
+          "que rien n'aurait mesuré.\n"
+          "  * LA SECONDE FAMILLE ne lit QUE `daemon/src/handlers/`. Le même geste sur `daemon/src` "
+          "ENTIER relève, au 2026-09-16, DIX-HUIT préparations muettes et DIX-HUIT parcours muets dans "
+          "DIX fichiers (`cold_store/reader.rs`, `cold_store/seal.rs`, `field_filter.rs`, "
+          "`governance.rs`, `knowledge.rs`, `parsers.rs`, `processors.rs`, `scim.rs` — de "
+          "l'authentification —, `seeds.rs`, `tenants.rs`). HORS PÉRIMÈTRE, ET DIT. (`docs/ROADMAP.md` "
+          "écrivait « neuf préparations muettes » sous `P10.20-p` : c'était un compte de FICHIERS, pas "
+          "de sites, et il en manquait un — `governance.rs::reload_custom_roles`.)\n"
+          "  * LA SECONDE FAMILLE ne dit rien du RANG. Un site neuf est accusé sans que la garde sache "
+          "si la liste vide ouvre une porte, est servie, ou refuse ; c'est à la lecture de le lui "
+          "donner en entrant dans `PARCOURS_MUETS_ADMIS`.\n"
           "  * elle ne suit pas la liaison à travers un APPEL. Un itérateur rendu par une fonction et "
           "aplati chez son appelant n'est relié à aucune lecture ; la portée d'un nom lié s'arrête à sa "
           "fonction, et c'est dit plutôt que sous-entendu.\n"
@@ -1196,7 +1581,7 @@ def main():
         ce_qui_n_est_pas_tenu()
         return 2
 
-    sites, journal, aveux_du_lecteur = decouvrir()
+    sites, muets, journal, aveux_du_lecteur = decouvrir()
     # L'AVEU DU LECTEUR PASSE AVANT CELUI DE LA GARDE (`P10.20-d`) : une région avalée par le lecteur est
     # la cause AMONT, et la nommer évite d'accuser une parenthèse que le lecteur a lui-même déplacée.
     if aveux_du_lecteur and refuser_sur_aveu(ETIQUETTE, aveux_du_lecteur, "Rust"):
@@ -1209,6 +1594,27 @@ def main():
               "rend pas un compte amputé en vert.")
         ce_qui_n_est_pas_tenu()
         return 2
+
+    # --- LA SECONDE FAMILLE EST JUGÉE ICI, AVANT LE PLANCHER DE LA PREMIÈRE, ET C'EST DÉLIBÉRÉ
+    # (`P10.20-p`). Le plancher ne mesure que la population de la PREMIÈRE famille ; le laisser
+    # s'exécuter d'abord ferait TAIRE une préparation muette neuve au motif qu'une liste tronquée a
+    # disparu, c'est-à-dire changer un verdict qui ACCUSE en un verdict qui REFUSE DE CONCLURE. Les
+    # accusations de la seconde famille sont donc imprimées quoi qu'il arrive au plancher de l'autre.
+    for chemin, ligne, fn, forme, extrait in sorted(muets):
+        print(f"::error file={chemin},line={ligne}::`{fn}` — {FORMES_MUETTES[forme]} : si la lecture "
+              f"rate, le bloc est SAUTÉ, la liste reste VIDE et elle est servie comme complète — "
+              f"`{extrait}`")
+    ecarts_muets = juger_les_parcours_muets(muets, PARCOURS_MUETS_ADMIS)
+    for _genre, chemin, phrase in ecarts_muets:
+        print(f"::error file={chemin}::{phrase}")
+    print(f"[{ETIQUETTE}] PARCOURS MUETS (`P10.20-p`) : {len(muets)} site(s) découvert(s), "
+          f"{len(PARCOURS_MUETS_ADMIS)} entrée(s) dans PARCOURS_MUETS_ADMIS, {len(ecarts_muets)} "
+          "écart(s). Le cliquet est à ZÉRO SITE NOMMÉ : toute préparation ou tout parcours lié par un "
+          "`if let Ok(..)` sans `else` sous `daemon/src/handlers/` est une forme neuve. HORS PÉRIMÈTRE "
+          "ET DIT : le même geste sur `daemon/src` ENTIER relève, au 2026-09-16, 18 préparations "
+          "muettes et 18 parcours muets dans DIX fichiers (`cold_store/reader.rs`, `cold_store/seal.rs`, "
+          "`field_filter.rs`, `governance.rs`, `knowledge.rs`, `parsers.rs`, `processors.rs`, `scim.rs` "
+          "— de l'authentification —, `seeds.rs`, `tenants.rs`), ni jugés ni classés.")
 
     fichiers = {c for c, _l, _f, _e, _x in sites}
     if len(sites) < PLANCHER_SITES or len(fichiers) < PLANCHER_FICHIERS:
@@ -1240,11 +1646,13 @@ def main():
             "ou écrite dans un `#[cfg(test)] mod` n'est jamais un site.")
 
     ecarts = juger_contre_l_ensemble(sites, SITES_ADMIS)
-    if ecarts:
+    if ecarts or ecarts_muets:
         for _genre, chemin, phrase in ecarts:
             print(f"::error file={chemin}::{phrase}")
-        print(f"::error::{len(ecarts)} écart(s) entre les accusations du jour et l'ensemble nommé. "
-              "L'ensemble se corrige à la main, AVEC la raison ; zéro reste atteignable.")
+        print(f"::error::{len(ecarts)} écart(s) sur les LISTES TRONQUÉES et {len(ecarts_muets)} sur les "
+              "PARCOURS MUETS, entre les accusations du jour et les ensembles nommés. Chaque ensemble se "
+              "corrige à la main, AVEC la raison ; zéro reste atteignable pour les deux — et il est DÉJÀ "
+              "atteint pour les parcours muets.")
         ce_qui_n_est_pas_tenu()
         return 1
 

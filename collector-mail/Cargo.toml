@@ -10,7 +10,7 @@ name = "plume-collector-mail"
 path = "src/main.rs"
 
 [dependencies]
-mail-parser = "0.10"
+mail-parser = "0.11"
 regex = "1"
 url = "2.5"
 scraper = "0.20"

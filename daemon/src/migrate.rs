@@ -147,13 +147,20 @@ pub(crate) enum EstampilleDeSchema {
     /// de table `meta` — et c'est le CATALOGUE, pas le message du moteur, qui la distingue d'une base
     /// dont `meta` a disparu (les deux disent « no such table: meta », mesuré).
     BaseNeuve,
-    /// `meta` existe et ne porte AUCUNE ligne `schema_version`. FORME D'ENTRÉE LEGACY, déjà couverte
-    /// par un témoin nommé (`legacy_meta_without_a_version_row_is_recovered_by_the_contract`) :
-    /// `db/schema.sql` repose la ligne à '1' et la chaîne repart de là. La porte l'OUVRE, exactement
-    /// comme avant ce lot. CE QUE ÇA COÛTE EST DIT, PAS CORRIGÉ : sur une base DÉJÀ MIGRÉE, ce
-    /// rattrapage rejoue la même chaîne destructrice que ci-dessus. Il n'est pas refermé ici parce que
-    /// ce n'est pas une lecture RATÉE — c'est une absence ÉTABLIE, et le dépôt a écrit qu'il la
-    /// rattrape. C'est un RESTE nommé, pas une décision de ce lot.
+    /// `meta` existe, ne porte AUCUNE ligne `schema_version`, et le fichier NE PORTE RIEN D'AUTRE —
+    /// il n'y a donc aucun schéma à détruire, et la chaîne peut repartir de la version un comme sur
+    /// une base fraîche. `db/schema.sql` repose la ligne à '1', le contrat migre, la porte OUVRE.
+    ///
+    /// `P10.20-i` — CE QUE CETTE VARIANTE NE COUVRE PLUS, ET POURQUOI (2026-09-16). Elle couvrait
+    /// AUSSI la même absence sur une base DÉJÀ MIGRÉE, au nom d'un rattrapage que le dépôt écrivait
+    /// (`legacy_meta_without_a_version_row_is_recovered_by_the_contract`). Mesuré : ce rattrapage
+    /// rejoue la chaîne ENTIÈRE sur une base à jour, c'est-à-dire exactement la destruction que
+    /// `P10.20-f` a chiffrée. Mesuré aussi : AUCUN contrat de ce dépôt ne PRODUIT cette forme —
+    /// `db/schema.sql` crée `meta` et pose la ligne dans le MÊME lot depuis la publication initiale,
+    /// et le seul `DELETE FROM meta WHERE key='schema_version'` de l'arbre est celui du témoin
+    /// ci-dessus. Un fichier qui porte un schéma et pas sa ligne est donc un fichier ABÎMÉ dont la
+    /// version est INCONNUE, et non une entrée legacy à rattraper : il tombe désormais en
+    /// [`EstampilleDeSchema::NonLue`]. Le catalogue est le discriminant, comme pour la base neuve.
     JamaisEstampillee,
     /// La base porte des objets et son estampille n'a PAS pu être établie. La chaîne de migrations ne
     /// peut plus être arbitrée : la porte REFUSE, et la phrase dit laquelle des causes.
@@ -184,7 +191,28 @@ pub(crate) fn lire_l_estampille_de_schema(conn: &Connection) -> EstampilleDeSche
                  pas un entier (valeur brute : {brut:?})."
             )),
         },
-        Ok(None) => EstampilleDeSchema::JamaisEstampillee,
+        // `P10.20-i` — L'ABSENCE DE LA LIGNE SE JUGE SUR CE QUE LE FICHIER PORTE, comme l'absence de
+        // la table. `meta` SEULE au catalogue : rien à détruire, la chaîne peut repartir de un, c'est
+        // la forme legacy et elle ouvre. `meta` À CÔTÉ D'UN SCHÉMA : la version de cette base n'est
+        // PAS établie, et la rattraper à « 1 » rejoue la chaîne sur une base à jour — la destruction
+        // que `P10.20-f` a chiffrée. Le refus est le même que pour une lecture ratée parce que la
+        // CONSÉQUENCE est la même : la chaîne ne peut pas être arbitrée. La cause, elle, est écrite à
+        // part — l'absence est ÉTABLIE, et le dire autrement enverrait chercher une panne de lecture.
+        Ok(None) => match objets_au_catalogue(conn) {
+            Ok(n) if n <= 1 => EstampilleDeSchema::JamaisEstampillee,
+            Ok(n) => EstampilleDeSchema::NonLue(format!(
+                "{CAUSE_ESTAMPILLE_DE_SCHEMA_NON_LUE} La table `meta` existe et ne porte AUCUNE ligne \
+                 `schema_version` alors que ce fichier porte déjà {n} objet(s) de schéma : la version \
+                 de cette base n'est donc PAS établie, et ce n'est PAS une base neuve. Aucun contrat \
+                 de ce binaire ne produit cet état — `db/schema.sql` crée `meta` et pose sa ligne \
+                 dans le même lot."
+            )),
+            Err(e2) => EstampilleDeSchema::NonLue(format!(
+                "{CAUSE_ESTAMPILLE_DE_SCHEMA_NON_LUE} La table `meta` ne porte aucune ligne \
+                 `schema_version` et le catalogue de la base n'a pas pu être lu ({e2}) : rien ne \
+                 permet d'établir ce que ce fichier porte."
+            )),
+        },
         // `meta` n'a pas répondu : table absente, base chiffrée ouverte sans sa clé, fichier abîmé,
         // verrou. C'est le CATALOGUE qui dit lequel — et s'il ne répond pas non plus, rien de ce
         // fichier n'est lisible, ce qui est la pire des trois et certainement pas une base neuve.
@@ -221,8 +249,9 @@ pub(crate) fn schema_downgrade_guard(conn: &Connection) -> Result<i64, RefusDOuv
     match lire_l_estampille_de_schema(conn) {
         EstampilleDeSchema::Lue(v) if v > CODE_SCHEMA_MAX => Err(RefusDOuverture::PlusRecenteQueCeBinaire(v)),
         EstampilleDeSchema::Lue(v) => Ok(v),
-        // Les deux formes SANS estampille ouvrent en v1, comme avant ce lot : une base neuve doit être
-        // créée, et la forme legacy est rattrapée par `db/schema.sql`.
+        // Les deux formes SANS estampille ouvrent en v1 : une base neuve doit être créée, et la forme
+        // legacy — `meta` SEULE au catalogue, depuis `P10.20-i` — est rattrapée par `db/schema.sql`.
+        // Dans les deux cas le fichier ne porte AUCUN schéma, donc rejouer la chaîne ne détruit rien.
         EstampilleDeSchema::BaseNeuve | EstampilleDeSchema::JamaisEstampillee => Ok(1),
         EstampilleDeSchema::NonLue(cause) => Err(RefusDOuverture::EstampilleNonLue(cause)),
     }
@@ -599,6 +628,12 @@ fn migrate(conn: &Connection) -> bool {
 /// ────────────────────────────────────────────────────────────────────────────────────────────────────
 #[must_use]
 fn migrate_chain(conn: &Connection) -> bool {
+    // `P10.20-f` / `P10.20-i` — COPIE INLINE DU REPLI, ET SON ATTEIGNABILITÉ, DITE. Ce `unwrap_or(1)`
+    // n'est PAS la lecture qui autorise : la porte (`db_open::PreparedDb::seal`) a déjà refusé toute
+    // base dont l'estampille n'est pas établie, et `prepare_schema` a rejoué `db/schema.sql`, qui
+    // repose la ligne. `P10.20-i` ne le rend pas atteignable — il RÉTRÉCIT au contraire ce qui
+    // l'atteint (une base migrée sans sa ligne n'arrive plus jusqu'ici). Il reste atteignable par les
+    // appels DIRECTS à `migrate()` hors de la porte, tous internes à la caisse de test.
     let v: i64 = conn
         .query_row("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get::<_, String>(0))
         .ok()
@@ -5323,10 +5358,30 @@ mod schema_contract_tests {
     /// FORME D'ENTRÉE LEGACY, ET PERSONNE NE L'A « VISÉE » : une base dont la table `meta` existe SANS
     /// sa ligne `schema_version`. `migrate()` SEUL s'y arrête à la première étape ; le contrat applique
     /// TOUJOURS `db/schema.sql` AVANT de migrer, et schema.sql repose la ligne.
+    ///
+    /// DOC-COMMENTAIRE RÉÉCRIT LE 2026-09-16 PAR `P10.20-i`, ET LE TÉMOIN EST GARDÉ. Ce qu'il mesure
+    /// reste VRAI et reste utile : le CONTRAT (`prepare_schema`), s'il est atteint, repose bien la
+    /// ligne et remonte la base jusqu'à la tête. Ce qui a changé est QUI L'ATTEINT. Sur une base qui
+    /// porte un schéma, la ligne manquante n'est plus une entrée legacy à rattraper : la version de
+    /// cette base n'est pas établie, le rattrapage à « 1 » rejouerait la chaîne ENTIÈRE (destruction
+    /// chiffrée par `P10.20-f`), et LA PORTE REFUSE AVANT — c'est la première assertion ci-dessous,
+    /// posée avant toute écriture. Le nom du témoin est CONSERVÉ tel quel parce qu'il énonce une
+    /// propriété du CONTRAT, qui n'a pas bougé, et parce que `docs/ROADMAP.md` le cite ; le renommer
+    /// rendrait cette citation muette.
+    ///
+    /// CE QU'IL NE TIENT PAS : il ne joue pas la porte de bout en bout (fichier sur disque, refus
+    /// complet, inventaire avant/après) — c'est le rôle de
+    /// `tests/meta_sans_ligne_de_version_sur_une_base_qui_porte_un_schema.rs`.
     #[test]
     fn legacy_meta_without_a_version_row_is_recovered_by_the_contract() {
         let conn = fresh_migrated();
         conn.execute("DELETE FROM meta WHERE key='schema_version'", []).unwrap();
+        // `P10.20-i` — LA PORTE NE ROUTE PLUS CETTE BASE-LÀ VERS LE CONTRAT : elle porte un schéma,
+        // donc son estampille n'est pas établie, et l'ouverture est refusée AVANT toute écriture.
+        assert!(
+            matches!(schema_downgrade_guard(&conn), Err(RefusDOuverture::EstampilleNonLue(_))),
+            "une base qui porte un schéma et pas sa ligne de version est REFUSÉE par la porte"
+        );
         assert!(!migrate(&conn), "migrate() seul : sans la ligne, la 1re étape ne peut pas estampiller");
         assert!(prepare_schema(&conn).is_ok(), "le contrat de boot repose la ligne, puis migre jusqu'au bout");
         assert_eq!(read_schema_version(&conn), CODE_SCHEMA_MAX);

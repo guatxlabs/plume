@@ -551,9 +551,93 @@ pub(crate) async fn action_result(State(st): State<AppState>, Extension(au): Ext
     }
     Json(json!({ "ok": n > 0 }))
 }
-pub(crate) async fn action_approve(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> StatusCode {
+// =================================================================================================
+// `P10.20-q` — UNE RIPOSTE QU'ON N'A PAS PU RELIRE N'EST PAS APPROUVÉE (2026-09-16).
+//
+// CE QUI ÉTAIT MESURÉ AVANT TOUT CORRECTIF, SUR CE SITE. `action_approve` écrivait le statut
+// `approved`, posait la ligne de registre `action.approved`, PUIS relisait `(kind, target, dry_run)`
+// par `if let Ok(..) = query_row(` — une forme SANS branche d'échec, donc muette par construction :
+// il n'y a aucun endroit où écrire ce qui n'a pas eu lieu. Sur une lecture ratée (cache de schéma de
+// pool périmé, `target` corrompu, table hors d'atteinte), le `if let` ne prenait pas, le miroir
+// `net_ban` n'était pas armé, et la route rendait 204. L'analyste lisait « approuvée » sur une
+// riposte que rien n'avait armée.
+//
+// CE QUE L'ÉNONCÉ DE LA CLÉ AVAIT DE FAUX, ET L'ERREUR VA DANS LE MAUVAIS SENS. Il écrit que « le
+// registre ne reçoit AUCUNE ligne ». Le registre reçoit `action.approved id=N`, écrite DEUX LIGNES
+// AVANT la lecture, donc toujours. Ce qu'il ne reçoit pas, c'est la seule ligne qui aurait dit que
+// l'armement n'a pas eu lieu. La trace non purgeable ATTESTE donc l'approbation d'une riposte
+// inerte : ce n'est pas un silence qu'on pourrait interroger, c'est une affirmation qui recouvre.
+//
+// ET UNE SECONDE ÉCRITURE ÉTAIT AVALÉE AU MÊME ENDROIT : `let _ = conn.execute("UPDATE action SET
+// status='approved' …")`. Table `action` hors d'atteinte et table `ledger` intacte — l'état ne
+// change pas, et la ligne de registre affirme quand même l'approbation. Les deux voies sont jouées
+// par le témoin (`daemon/src/tests/riposte_non_relue_n_est_pas_approuvee.rs`).
+//
+// LE GESTE : LA LECTURE D'ABORD, ET AVANT TOUTE ÉCRITURE. La relecture de la riposte remonte en tête
+// de fonction et se rend en `Result<Option<..>>` (`optional()`) : `Ok(Some(..))` est la riposte lue,
+// `Ok(None)` est une absence ÉTABLIE (404), `Err(..)` est une lecture NON FAITE et REFUSE par un 503
+// nommé — aucune écriture, ni statut ni registre. 503 et non 404 : ce n'est pas une absence, c'est
+// une panne, et un refus réessayable ne s'apprend pas comme une riposte qui n'existe pas. L'écriture
+// du statut, elle, cesse d'être avalée : son échec refuse AVANT la ligne de registre, pour que le
+// registre n'atteste jamais une approbation que la base n'a pas prise.
+//
+// CE QUE ÇA CHANGE POUR LE CHEMIN NOMINAL : rien, sauf une lecture de plus par approbation (geste
+// d'analyste, admin-only). ELLE EST INCONDITIONNELLE, ET C'EST VOULU : la faire dépendre de
+// `PLUME_NETBAN_FROM_ACTIONS` laisserait un drapeau de déploiement décider si une lecture ratée est
+// VUE. L'ARMEMENT, lui, reste opt-in comme avant.
+//
+// CE QUE LE LOT NE TIENT PAS ICI, ET C'EST MESURÉ : approuver une riposte déjà tranchée
+// (`cancelled`, `done`…) reste un 204 muet qui pose quand même `action.approved` — c'est le
+// comportement d'avant ce lot, il n'est pas la lecture ratée que cette clé nomme, et le refermer
+// changerait la sémantique d'idempotence de la route.
+// =================================================================================================
+
+/// La lecture de la riposte à approuver n'a PAS eu lieu — 503, et rien n'a été écrit.
+pub(crate) const CAUSE_RIPOSTE_NON_LUE: &str =
+    "RIPOSTE NON LUE : l'action à approuver n'a pas pu être relue, donc RIEN n'a été approuvé et \
+     RIEN n'a été armé — ni statut, ni ligne de registre. Ce n'est PAS « cette riposte n'existe \
+     pas » ni « elle est déjà tranchée » : la riposte reste en attente, telle quelle. Réessayez.";
+
+/// L'écriture du statut d'approbation n'a PAS eu lieu — 503, et le registre n'atteste rien.
+pub(crate) const CAUSE_APPROBATION_NON_ENREGISTREE: &str =
+    "APPROBATION NON ENREGISTRÉE : le statut de la riposte n'a pas pu être écrit, donc rien n'a été \
+     armé et le registre ne porte AUCUNE approbation pour ce geste. La riposte reste en attente. \
+     Réessayez.";
+
+/// L'identifiant ne désigne aucune riposte — absence ÉTABLIE (404), distincte de la lecture ratée.
+pub(crate) const CAUSE_RIPOSTE_INTROUVABLE: &str =
+    "riposte introuvable : aucune action ne porte cet identifiant — rien n'a été écrit.";
+
+pub(crate) async fn action_approve(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
+    use rusqlite::OptionalExtension as _;
     crate::req_conn!(st, au, conn);
-    let _ = conn.execute("UPDATE action SET status='approved' WHERE id=?1 AND status='pending'", params![id]);
+    // `P10.20-q` — LA RIPOSTE EST RELUE D'ABORD. Le statut COURANT est lu avec le reste : il remplace
+    // la clause `AND status='approved'` que l'ancienne relecture posait APRÈS l'écriture, et c'est lui
+    // qui dit si l'armement a lieu (ci-dessous).
+    let (kind, target, dry, statut_lu) = match conn
+        .query_row(
+            "SELECT kind, target, dry_run, COALESCE(status,'') FROM action WHERE id=?1",
+            params![id],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)? != 0,
+                    r.get::<_, String>(3)?,
+                ))
+            },
+        )
+        .optional()
+    {
+        Ok(Some(lue)) => lue,
+        Ok(None) => return err_json(StatusCode::NOT_FOUND, CAUSE_RIPOSTE_INTROUVABLE),
+        Err(e) => return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_RIPOSTE_NON_LUE} ({e})")),
+    };
+    // L'ÉCRITURE DU STATUT N'EST PLUS AVALÉE : un échec refuse AVANT la ligne de registre.
+    let approuvee_ici = match conn.execute("UPDATE action SET status='approved' WHERE id=?1 AND status='pending'", params![id]) {
+        Ok(n) => n == 1,
+        Err(e) => return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_APPROBATION_NON_ENREGISTREE} ({e})")),
+    };
     ledger_append(&conn, "action.approved", &format!("id={id}"));
     // BAN NATIF PLUME (chantier ② Phase 1) : l'approbation d'un `ban_ip` NON dry-run ARME AUSSI le blocage HTTP
     // in-process (`net_ban`) -> plume s'auto-enforce pour l'IP réelle, EN PLUS de la décision CrowdSec/nft de
@@ -561,49 +645,52 @@ pub(crate) async fn action_approve(State(st): State<AppState>, Extension(au): Ex
     // pipeline responder/agent existant NI le mode 0 (aucune action ban_ip -> aucun net_ban). TTL = mirror 4h
     // CrowdSec ; réversible via unban / DELETE /api/netban. Garde protected-IP redondante (déjà refusée à la
     // création par action_valid) mais défensive.
-    if netban_from_actions_enabled() {
-        if let Ok((kind, target, dry)) = conn.query_row(
-            "SELECT kind, target, dry_run FROM action WHERE id=?1 AND status='approved'",
-            params![id],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)? != 0)),
-        ) {
-            // REPRISE 2026-08-29 — LE `kind` EST REGARDÉ AVANT DE CANONICALISER. La
-            // canonicalisation était évaluée pour TOUTE action : approuver un `kill_pid 4242` ou un
-            // `stop_service nginx.service` écrivait une ligne `netban.forme` disant d'un PID ou d'un
-            // nom de service qu'il est une « forme non analysable — aucun miroir HTTP ». C'était
-            // FAUX (un PID n'a jamais eu de miroir HTTP) et cela noyait le SEUL signal que ce lot
-            // introduit : sur une flotte qui répond surtout par kill/stop, la ligne qui compte — une
-            // riposte `ban_ip` PERDUE — se perdait dans le bruit de routine. Le miroir `net_ban` ne
-            // concerne que les deux actions d'adresse ; rien d'autre n'a à être canonicalisé ici.
-            if kind != "ban_ip" && kind != "unban_ip" { return StatusCode::NO_CONTENT; }
-            // `P4.7-j` — UNE SEULE FORME CANONIQUE. `parse + to_string` NE REPLIE PAS la forme mappée
-            // (mesuré : `::ffff:cb00:7107` en ressort `::ffff:203.0.113.7`) : il CONVERGEAIT les
-            // écritures exotiques VERS celle qui traversait la protection. `ssrf_norm_ip` replie.
-            // SAUT FRANC sur l'inanalysable : le repli `unwrap_or_else(raw)` clé le store `net_ban`
-            // sur une chaîne que `real_client_ip` ne produira jamais — un ban qui ne bloque personne.
-            let canon = match ssrf_norm_ip(target.trim()) { Some(i) => i.to_string(), None => {
-                ledger_append(&conn, "netban.forme", &format!("{target} : forme non analysable — aucun miroir HTTP ({kind}, action {id})"));
-                return StatusCode::NO_CONTENT;
-            } };
-            if kind == "ban_ip" && !dry && !ip_is_protected(&canon) {
-                // REFUS SUR STORE PLEIN (`NETBAN_CACHE_CAP`) : tracé au ledger. L'action reste approuvée —
-                // l'enforcement réseau délégué (CrowdSec/fail2ban/nft) n'est pas concerné par ce plafond,
-                // qui ne borne que la banlist HTTP in-process.
-                if !netban_upsert(&conn, &canon, Some(now() + NETBAN_ACTION_TTL_S), "auto: action ban_ip", &au.name, "prod") {
-                    ledger_append(&conn, "netban.plafond", &format!("{canon} refusé : store live plein (action {id})"));
-                }
-            } else if kind == "unban_ip" {
-                // `P4.7-k` — une levée qui n'a rien retiré SE DIT (le `#[must_use]` de la pose est
-                // déplacé sur la levée : un ban qu'on croit levé est pire que pas de levée). REPRISE
-                // 2026-08-29 : un ÉCHEC de la suppression ne se lit plus comme « rien à retirer ».
-                match netban_remove(&conn, &canon) {
-                    Ok(retires) => ledger_append(&conn, "netban.remove", &format!("{canon} retirés={retires} (auto: action unban_ip)")),
-                    Err(e) => ledger_append(&conn, "netban.remove.echec", &format!("{canon} NON levé (auto: action unban_ip) : {e}")),
-                }
+    //
+    // `P10.20-q` — LA CONDITION D'ARMEMENT EST CELLE D'AVANT, DÉRIVÉE DE CE QUI A ÉTÉ LU PLUTÔT QUE
+    // D'UNE SECONDE LECTURE : l'ancienne relisait `WHERE id=?1 AND status='approved'`, donc elle
+    // armait quand ce geste venait d'approuver, et quand la riposte était DÉJÀ approuvée. C'est
+    // exactement ce que dit `approuvee_ici || statut_lu == "approved"`. La différence est une course
+    // d'un autre PROCESSUS entre la lecture et l'écriture (la connexion d'écriture est tenue pendant
+    // tout ce corps, donc aucune route de ce démon ne s'y glisse) : l'ancienne forme aurait armé une
+    // riposte approuvée entre-temps, celle-ci s'en abstient — le côté qui n'arme pas sur ce qu'on n'a
+    // pas lu.
+    if netban_from_actions_enabled() && (approuvee_ici || statut_lu == "approved") {
+        // REPRISE 2026-08-29 — LE `kind` EST REGARDÉ AVANT DE CANONICALISER. La
+        // canonicalisation était évaluée pour TOUTE action : approuver un `kill_pid 4242` ou un
+        // `stop_service nginx.service` écrivait une ligne `netban.forme` disant d'un PID ou d'un
+        // nom de service qu'il est une « forme non analysable — aucun miroir HTTP ». C'était
+        // FAUX (un PID n'a jamais eu de miroir HTTP) et cela noyait le SEUL signal que ce lot
+        // introduit : sur une flotte qui répond surtout par kill/stop, la ligne qui compte — une
+        // riposte `ban_ip` PERDUE — se perdait dans le bruit de routine. Le miroir `net_ban` ne
+        // concerne que les deux actions d'adresse ; rien d'autre n'a à être canonicalisé ici.
+        if kind != "ban_ip" && kind != "unban_ip" { return StatusCode::NO_CONTENT.into_response(); }
+        // `P4.7-j` — UNE SEULE FORME CANONIQUE. `parse + to_string` NE REPLIE PAS la forme mappée
+        // (mesuré : `::ffff:cb00:7107` en ressort `::ffff:203.0.113.7`) : il CONVERGEAIT les
+        // écritures exotiques VERS celle qui traversait la protection. `ssrf_norm_ip` replie.
+        // SAUT FRANC sur l'inanalysable : le repli `unwrap_or_else(raw)` clé le store `net_ban`
+        // sur une chaîne que `real_client_ip` ne produira jamais — un ban qui ne bloque personne.
+        let canon = match ssrf_norm_ip(target.trim()) { Some(i) => i.to_string(), None => {
+            ledger_append(&conn, "netban.forme", &format!("{target} : forme non analysable — aucun miroir HTTP ({kind}, action {id})"));
+            return StatusCode::NO_CONTENT.into_response();
+        } };
+        if kind == "ban_ip" && !dry && !ip_is_protected(&canon) {
+            // REFUS SUR STORE PLEIN (`NETBAN_CACHE_CAP`) : tracé au ledger. L'action reste approuvée —
+            // l'enforcement réseau délégué (CrowdSec/fail2ban/nft) n'est pas concerné par ce plafond,
+            // qui ne borne que la banlist HTTP in-process.
+            if !netban_upsert(&conn, &canon, Some(now() + NETBAN_ACTION_TTL_S), "auto: action ban_ip", &au.name, "prod") {
+                ledger_append(&conn, "netban.plafond", &format!("{canon} refusé : store live plein (action {id})"));
+            }
+        } else if kind == "unban_ip" {
+            // `P4.7-k` — une levée qui n'a rien retiré SE DIT (le `#[must_use]` de la pose est
+            // déplacé sur la levée : un ban qu'on croit levé est pire que pas de levée). REPRISE
+            // 2026-08-29 : un ÉCHEC de la suppression ne se lit plus comme « rien à retirer ».
+            match netban_remove(&conn, &canon) {
+                Ok(retires) => ledger_append(&conn, "netban.remove", &format!("{canon} retirés={retires} (auto: action unban_ip)")),
+                Err(e) => ledger_append(&conn, "netban.remove.echec", &format!("{canon} NON levé (auto: action unban_ip) : {e}")),
             }
         }
     }
-    StatusCode::NO_CONTENT
+    StatusCode::NO_CONTENT.into_response()
 }
 
 /// AUTO-INTÉGRATION action->net_ban OPT-IN (anti blast-radius). DÉFAUT **OFF** :
@@ -1101,6 +1188,35 @@ pub(crate) fn identite_pour_reclamation(
 }
 
 
+/// `P10.20-q` — CE QUE LA RELECTURE DU VERDICT CONSERVÉ A DONNÉ. Trois issues, parce que la ligne du
+/// registre tamper-evident les écrit différemment et qu'un appelant qui les confondrait y remettrait
+/// un fait fabriqué. `Lu` est un verdict établi ; `LigneDisparue` est une absence établie (la
+/// clôture a vu la ligne, la relecture ne la voit plus) ; `NonRelu` est une lecture qui N'A PAS EU
+/// LIEU — la seule des trois qui ne dit rien sur les données, et celle que `unwrap_or_default()`
+/// écrasait sur la précédente.
+pub(crate) enum VerdictConserve {
+    /// Le statut conservé a été lu.
+    Lu(String),
+    /// Aucune ligne ne porte cet identifiant : rien n'est conservé, et c'est un fait.
+    LigneDisparue,
+    /// La lecture a échoué — la cause, pour que le registre la porte.
+    NonRelu(String),
+}
+
+/// Relit le statut CONSERVÉ d'une action que la clôture gardée n'a pas écrite. Séparée de
+/// `respond_run` pour être exerçable sur une connexion abîmée sans faire tourner le responder root.
+pub(crate) fn verdict_conserve_relu(conn: &Connection, id: i64) -> VerdictConserve {
+    use rusqlite::OptionalExtension as _;
+    match conn
+        .query_row("SELECT COALESCE(status,'') FROM action WHERE id=?1", params![id], |r| r.get::<_, String>(0))
+        .optional()
+    {
+        Ok(Some(v)) => VerdictConserve::Lu(v),
+        Ok(None) => VerdictConserve::LigneDisparue,
+        Err(e) => VerdictConserve::NonRelu(e.to_string()),
+    }
+}
+
 /// Sous-commande `plume-daemon respond` (exécutée en ROOT par plume-respond) : n'exécute QUE les actions
 /// approuvées + allowlistées + validées ; dry-run -> aucune modif ; tout est journalisé dans `action`.
 pub(crate) fn respond_run() {
@@ -1256,10 +1372,24 @@ pub(crate) fn respond_run() {
             // `P4.7-f` — un verdict PLUS INFORMÉ est déjà posé (l'agent, qui lit la liste d'épargne, a répondu
             // entre la sélection et l'exécution) : il est CONSERVÉ, et le journal dit ce que ce responder
             // a obtenu de son côté au lieu de le faire passer pour le verdict du dossier.
-            let conserve: String = conn
-                .query_row("SELECT COALESCE(status,'') FROM action WHERE id=?1", params![id], |r| r.get(0))
-                .unwrap_or_default();
-            ledger_append(&conn, "action.exec.verdict-conserve", &format!("{kind} {target} : verdict `{conserve}` déjà posé, conservé ; ce responder avait obtenu `{status}` ({result})"));
+            //
+            // `P10.20-q` — ET LE VERDICT CONSERVÉ N'EST PLUS FABRIQUÉ. Le repli `unwrap_or_default()`
+            // rendait `""` : la ligne du registre tamper-evident disait « verdict `` déjà posé,
+            // conservé » aussi bien quand la ligne avait disparu que quand elle n'avait PAS ÉTÉ LUE,
+            // et aucune relecture ne pouvait plus recouper ce verdict vide. Trois issues, distinguées
+            // à l'écrit, et l'échec porte son propre `kind` pour être filtrable.
+            let (kind_de_registre, dit) = match verdict_conserve_relu(&conn, id) {
+                VerdictConserve::Lu(v) => ("action.exec.verdict-conserve", format!("verdict `{v}` déjà posé, conservé")),
+                VerdictConserve::LigneDisparue => (
+                    "action.exec.verdict-conserve",
+                    "la ligne a DISPARU de la table entre la clôture et sa relecture — aucun verdict à conserver".to_string(),
+                ),
+                VerdictConserve::NonRelu(e) => (
+                    "action.exec.verdict-non-relu",
+                    format!("verdict conservé NON RELU ({e}) — cette trace ne dit PAS lequel a été conservé"),
+                ),
+            };
+            ledger_append(&conn, kind_de_registre, &format!("{kind} {target} : {dit} ; ce responder avait obtenu `{status}` ({result})"));
             continue;
         }
         ledger_append(&conn, "action.exec", &format!("{kind} {target} -> {status}"));

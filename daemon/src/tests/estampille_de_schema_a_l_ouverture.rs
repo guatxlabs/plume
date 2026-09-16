@@ -29,12 +29,15 @@
 // NEUVE, une base SAINE et une base EN RETARD s'ouvrent toujours ; une base PLUS RÉCENTE garde son
 // refus PROPRE ; la porte à sens unique (`migrate-check`) cesse de publier un chiffre inventé.
 //
-// CE QU'ILS NE TIENNENT PAS, ET IL FAUT LE LIRE ICI : la forme legacy « `meta` existe SANS sa ligne
-// `schema_version` » continue d'OUVRIR — c'est une absence ÉTABLIE, pas une lecture ratée, et le
-// dépôt a écrit qu'il la rattrape (`legacy_meta_without_a_version_row_is_recovered_by_the_contract`).
-// Sur une base DÉJÀ MIGRÉE ce rattrapage rejoue la même chaîne destructrice : le témoin le MESURE et
-// le NOMME comme un reste, il ne le referme pas. Et aucun de ces témoins ne joue le code de sortie du
-// processus : `migrate-check` est jugé sur la lecture typée, pas sur son `exit`.
+// CE QU'ILS NE TIENNENT PAS, ET IL FAUT LE LIRE ICI : aucun de ces témoins ne joue le code de sortie
+// du processus — `migrate-check` est jugé sur la lecture typée, pas sur son `exit`.
+//
+// LE RESTE QUE CE FICHIER NOMMAIT EST FERMÉ (2026-09-16, `P10.20-i`) : la forme legacy « `meta`
+// existe SANS sa ligne `schema_version` » continuait d'OUVRIR, et sur une base DÉJÀ MIGRÉE ce
+// rattrapage rejouait la même chaîne destructrice — mesuré ici, chiffré, et laissé ouvert. Elle est
+// désormais REFUSÉE dès que le fichier porte un schéma, et n'ouvre plus que lorsque `meta` est SEULE
+// au catalogue (rien à détruire). Le témoin qui chiffrait ce prix a suivi la propriété : voir la
+// section (4) ci-dessous et `tests/meta_sans_ligne_de_version_sur_une_base_qui_porte_un_schema.rs`.
 // =====================================================================================
 
 /// Une base plume MIGRÉE par la porte, dans un répertoire possédé.
@@ -261,48 +264,22 @@ fn p10_20f_le_discriminant_est_le_catalogue_et_non_le_message_du_moteur() {
 }
 
 // -------------------------------------------------------------------------------------
-// (4) LA FORME LEGACY RESTE OUVERTE — ET CE QU'ELLE COÛTE EST MESURÉ, PAS TU
+// (4) LA FORME LEGACY — TÉMOIN DÉPLACÉ LE 2026-09-16, ET VOICI POURQUOI
 // -------------------------------------------------------------------------------------
-
-/// CE QU'IL TIENT : `meta` présente SANS sa ligne `schema_version` est une absence ÉTABLIE, pas une
-/// lecture ratée. Le dépôt a écrit qu'il la rattrape, et ce lot NE CHANGE RIEN : la porte ouvre.
-///
-/// CE QU'IL NE TIENT PAS, ET C'EST TOUT SON OBJET : sur une base DÉJÀ MIGRÉE et PEUPLÉE, ce
-/// rattrapage rejoue la chaîne et DÉTRUIT — le témoin le MESURE ligne par ligne pour que le reste
-/// soit chiffré et non annoncé. Si quelqu'un ferme cette voie un jour, c'est ce témoin qui dira ce
-/// qu'il a changé.
-#[test]
-fn p10_20f_la_forme_legacy_sans_ligne_reste_ouverte_et_son_prix_est_mesure() {
-    let (_t, p) = eso_base_migree("eso-legacy");
-    eso_semer(&p);
-    let avant = eso_inventaire(&p);
-    {
-        let c = crate::db_open::open_db(&p).unwrap();
-        c.execute("DELETE FROM meta WHERE key='schema_version'", []).unwrap();
-        assert!(
-            matches!(lire_l_estampille_de_schema(&c), EstampilleDeSchema::JamaisEstampillee),
-            "cette forme est une absence ÉTABLIE, pas une lecture ratée"
-        );
-        assert_eq!(schema_downgrade_guard(&c), Ok(1), "et la garde l'ouvre en v1, comme avant ce lot");
-    }
-    let db = crate::db_open::PreparedDb::open(&p).expect("forme legacy : la porte OUVRE, inchangée");
-    assert_eq!(read_schema_version(&db), CODE_SCHEMA_MAX, "le contrat repose la ligne et remonte à la tête");
-    drop(db);
-
-    // LE PRIX, CHIFFRÉ. La chaîne a bien été rejouée sur une base à jour.
-    let apres = eso_inventaire(&p);
-    let touchees: Vec<&str> = avant
-        .iter()
-        .zip(apres.iter())
-        .filter(|((_, a), (_, b))| a != b)
-        .map(|((n, _), _)| *n)
-        .collect();
-    assert!(
-        touchees.len() >= 5,
-        "RESTE ASSUMÉ : le rattrapage legacy rejoue la chaîne et touche l'inventaire — \
-         avant {avant:?} / après {apres:?} (touchées : {touchees:?})"
-    );
-}
+//
+// `p10_20f_la_forme_legacy_sans_ligne_reste_ouverte_et_son_prix_est_mesure` vivait ici. Il tenait
+// deux choses : que `meta` présente SANS sa ligne `schema_version` est une absence ÉTABLIE (donc
+// `EstampilleDeSchema::JamaisEstampillee` et non `NonLue`), et que la porte l'OUVRAIT — puis il
+// CHIFFRAIT ce que ce rattrapage détruit sur une base déjà migrée, pour que le reste de `P10.20-f`
+// soit mesuré et non annoncé.
+//
+// `P10.20-i` a refermé cette voie : sur un fichier qui porte un schéma, cette absence est désormais
+// REFUSÉE. La moitié « la porte ouvre » du témoin est donc devenue FAUSSE, et sa moitié « voici le
+// prix » reste la JUSTIFICATION du refus — elle doit continuer d'être jouée, sur le contrat cette
+// fois, puisque la porte n'y mène plus. Les deux moitiés sont reprises, ensemble, dans
+// `tests/meta_sans_ligne_de_version_sur_une_base_qui_porte_un_schema.rs` (préfixe `p10_20i_`), qui
+// emprunte les fixtures de CE fichier — elles n'ont pas été recopiées. Rien n'a été supprimé : le
+// témoin a changé de clé parce que la propriété qu'il tient a changé de propriétaire.
 
 // -------------------------------------------------------------------------------------
 // (5) LA PORTE À SENS UNIQUE LIT LA MÊME VALEUR — ET NE PUBLIE PLUS DE CHIFFRE INVENTÉ

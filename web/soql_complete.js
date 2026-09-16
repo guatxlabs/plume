@@ -11,6 +11,14 @@ import { api, apiSend, LANG } from './core.js';
 import { fetchSaved, saveCurrent, saveAsTemplate, editSaved, deleteSaved, loadIntoBar } from './savedqueries.js';
 
 let SCHEMA = null;      // { base_keywords, commands, stats_functions, eval_functions, operators, keywords, fields:{core,extended}, values:{category,action,severity,source}, docs:{commands,stats_functions,eval_functions,base_keywords,keywords,operators,fields} }
+// `P10.7-f` — LE VOCABULAIRE DES SOURCES A-T-IL ÉTÉ LU ? Le démon sert `values.source: []` avec
+// `values.source_non_lue: true` et `error` au niveau du corps quand la lecture du rollup a échoué
+// (daemon/src/handlers/soql_meta.rs) ; LUI ne met jamais cet aveu dans son cache SWR de deux minutes.
+// Ce module a SON propre cache — `SCHEMA`, posé une fois pour toute la vie de la page —, et il y écrivait
+// le vocabulaire vide comme un fait établi. Il reste écrit (le RESTE du vocabulaire, lui, est constant et
+// parfaitement valide : commandes, fonctions, champs), mais il PORTE SON AVEU : chaque proposition de
+// source le repeint, de sorte qu'aucune lecture ne peut prendre cette liste vide pour une population.
+let VOCABULAIRE_DES_SOURCES_NON_LU = false;
 let TEMPLATES = null;   // [{ id, title, keywords[], soql }] — modèles LIVRÉS (bibliothèque embarquée, lecture seule)
 let loadingMeta = null; // promesse de chargement (dédup)
 
@@ -18,21 +26,29 @@ let loadingMeta = null; // promesse de chargement (dédup)
 // appelant qui la détient déjà). Remplace ce que `ensureMeta` aurait chargé.
 export function primeCompletionMeta(schema, templates) {
   SCHEMA = schema || null;
+  VOCABULAIRE_DES_SOURCES_NON_LU = !!(schema && schema.values && schema.values.source_non_lue);
   TEMPLATES = Array.isArray(templates) ? templates : [];
 }
 
 // Chargement paresseux + caché de la métadonnée de complétion (une seule fois). Silencieux en cas d'échec
 // (la complétion se désactive proprement — la barre reste 100 % utilisable sans elle).
-async function ensureMeta() {
-  if (SCHEMA) return true;
+// `relire` — `P10.7-f` : RELIRE CE QUI N'AVAIT PAS ÉTÉ LU, SUR UN GESTE HUMAIN. Un vocabulaire posé sur un
+// aveu n'est pas une lecture close : la base peut guérir pendant la session, et sans cela l'analyste
+// resterait sans ses sources jusqu'au rechargement de la page. La relecture est donc offerte, mais SEULEMENT
+// à Ctrl/⌘+Espace — l'ouverture FORCÉE de la complétion, un geste délibéré et compté. La brancher sur
+// `input` relirait à chaque frappe, c'est-à-dire une lecture de base RATÉE par caractère tapé, sur une base
+// qui est déjà en train de refuser : le remède serait pire.
+async function ensureMeta(relire) {
+  if (SCHEMA && !(relire && VOCABULAIRE_DES_SOURCES_NON_LU)) return true;
   if (loadingMeta) return loadingMeta;
   loadingMeta = (async () => {
     try {
       const [sc, tp] = await Promise.all([api('/soql/schema'), api('/soql/templates')]);
       SCHEMA = sc || null;
+      VOCABULAIRE_DES_SOURCES_NON_LU = !!(sc && sc.values && sc.values.source_non_lue);
       TEMPLATES = (tp && Array.isArray(tp.templates)) ? tp.templates : [];
       return !!SCHEMA;
-    } catch { SCHEMA = null; TEMPLATES = []; return false; }
+    } catch { SCHEMA = null; VOCABULAIRE_DES_SOURCES_NON_LU = false; TEMPLATES = []; return false; }
     finally { loadingMeta = null; }
   })();
   return loadingMeta;
@@ -94,7 +110,7 @@ function analyze(text, pos) {
   const before2 = stage.slice(0, stage.length - partial.length); // étape sans le partiel
   const tokens = stage.trim().split(/\s+/).filter(Boolean);
 
-  const mk = (items, opts) => ({ items, replaceLen: (opts && opts.replaceLen != null) ? opts.replaceLen : partial.length, addSpace: !!(opts && opts.addSpace) });
+  const mk = (items, opts) => ({ items, replaceLen: (opts && opts.replaceLen != null) ? opts.replaceLen : partial.length, addSpace: !!(opts && opts.addSpace), aveuDesSources: !!(opts && opts.aveuDesSources) });
 
   // Détection field<op>value dans le partiel (base/where) -> valeurs connues.
   const opRe = /^([A-Za-z_][A-Za-z0-9_]*)(=~|>=|<=|!=|=|:|>|<)(.*)$/;
@@ -103,7 +119,11 @@ function analyze(text, pos) {
     if (om) {
       const [, field, , valPartial] = om;
       const vals = knownValuesFor(field);
-      if (vals) return mk(vals, { replaceLen: valPartial.length });
+      // `P10.7-f` — LÀ OÙ LES SOURCES SE PROPOSENT, UN VOCABULAIRE NON LU SE DIT. Sans ce drapeau, la liste
+      // des sources arrive VIDE, `trigger` referme la boîte, et l'analyste qui tape `source=` ne voit
+      // RIEN : aucune erreur, aucun signe — il en conclut que la source qu'il cherche n'existe pas, donc
+      // qu'il n'y a rien à y voir. Le défaut est dans ce qu'il ne cherche pas.
+      if (vals) return mk(vals, { replaceLen: valPartial.length, aveuDesSources: field === 'source' && VOCABULAIRE_DES_SOURCES_NON_LU });
       return null; // op déjà tapé mais champ sans valeurs connues -> rien à proposer
     }
     // Jeton = champ connu complet -> proposer les OPÉRATEURS (insère champ+op).
@@ -240,6 +260,9 @@ let box = null, active = -1, curItems = [], curReplaceLen = 0, curAddSpace = fal
 // la boîte, si bien que `box.children[active]` ne désigne plus la ligne active. Le lien index -> ligne
 // devient EXPLICITE au lieu de reposer sur une coïncidence de position.
 let curCorrespondances = 0, lignesRendues = [];
+// `P10.7-f` — l'aveu du vocabulaire de sources, porté du contexte jusqu'au rendu (et lui seul le remet à
+// faux) : la boîte peut s'ouvrir pour lui SANS une seule suggestion, ce qu'aucun autre chemin ne fait.
+let curAveuDesSources = false;
 
 function ensureBox() {
   if (box) return box;
@@ -251,7 +274,7 @@ function ensureBox() {
   return box;
 }
 
-function hide() { if (box) { box.hidden = true; box.innerHTML = ''; } active = -1; curItems = []; curCorrespondances = 0; lignesRendues = []; }
+function hide() { if (box) { box.hidden = true; box.innerHTML = ''; } active = -1; curItems = []; curCorrespondances = 0; lignesRendues = []; curAveuDesSources = false; }
 
 function positionBox() {
   const r = ta.getBoundingClientRect();
@@ -309,6 +332,22 @@ function render() {
   const defilementAvant = box.scrollTop;   // `P11.22-c` — relevé AVANT le vidage, qui le remet à zéro
   box.innerHTML = '';
   lignesRendues = [];
+  // `P10.7-f` — L'AVEU DE LECTURE PASSE MÊME DEVANT CELUI DE L'ÉCOURTEMENT, et pour la même raison qui met
+  // le second en tête : la tête est le seul endroit lu à coup sûr. DEUX NŒUDS — la phrase statique, puis la
+  // cause servie —, la seule forme traduisible : `i18nWalk` ne remplace qu'un nœud texte ENTIER, donc une
+  // chaîne « phrase + cause » n'égalerait jamais une clé de lexique.
+  if (curAveuDesSources) {
+    const aveuLecture = document.createElement('div');
+    aveuLecture.className = 'soql-ac-desc';
+    aveuLecture.style.padding = '4px 9px';
+    const dit = document.createElement('span');
+    dit.textContent = 'Sources NON LUES : le démon a refusé et en nomme la cause —';
+    aveuLecture.append(dit, ' « ' + String((SCHEMA && SCHEMA.error) || '').trim() + ' »');
+    // Comme l'aveu d'écourtement : ce n'est PAS une suggestion, et son clic ne doit pas sortir l'éditeur
+    // du focus — sans quoi l'aveu FERMERAIT la liste qu'il commente.
+    aveuLecture.addEventListener('mousedown', (e) => { e.preventDefault(); });
+    box.appendChild(aveuLecture);
+  }
   // `P11.22-d` — L'AVEU EST EN TÊTE, ET C'EST MESURÉ, PAS UN GOÛT. La boîte s'ouvre défilée à zéro avec
   // la première suggestion active : la tête est le seul endroit que l'exploitant regarde à coup sûr. En
   // PIED d'une liste écourtée — jusqu'à quatre-vingts lignes dans une boîte où quatre à huit tiennent —
@@ -344,7 +383,7 @@ function render() {
     lignesRendues.push(row);   // `P11.22-d` — le rang dans `curItems`, pas le rang dans la boîte
   });
   positionBox();
-  box.hidden = curItems.length === 0;
+  box.hidden = curItems.length === 0 && !curAveuDesSources;   // `P10.7-f` : la boîte s'ouvre pour l'aveu seul
   garderLaSuggestionActiveEnVue(defilementAvant);
 }
 
@@ -370,18 +409,27 @@ function trigger() {
   const pos = ta.selectionStart;
   if (pos !== ta.selectionEnd) return hide();     // sélection multi -> pas de complétion
   const ctx = analyze(ta.value, pos);
-  if (!ctx || !ctx.items || !ctx.items.length) return hide();
+  if (!ctx) return hide();
+  // `P10.7-f` — LES TROIS PORTES QUI REFERMAIENT LA BOÎTE SUR UN VOCABULAIRE NON LU. Un aveu de lecture
+  // arrive précisément avec ZÉRO suggestion : les trois replis ci-dessous — pas d'items, rien de visible,
+  // un seul item déjà tapé — sont exactement les chemins qu'il emprunte, et chacun rendait le silence.
+  const aveu = !!ctx.aveuDesSources;
+  if ((!ctx.items || !ctx.items.length) && !aveu) return hide();
   const partialForMatch = ctx._p != null ? ctx._p : ta.value.slice(pos - ctx.replaceLen, pos);
-  const { visibles, correspondances } = suggestionsRetenuesEtLeurCompte(ctx.items, partialForMatch, BORNE_DE_SUGGESTIONS_AFFICHEES);
-  if (!visibles.length) return hide();
+  const { visibles, correspondances } = suggestionsRetenuesEtLeurCompte(ctx.items || [], partialForMatch, BORNE_DE_SUGGESTIONS_AFFICHEES);
+  if (!visibles.length && !aveu) return hide();
   // Évite un dropdown à 1 item déjà tapé en entier (bruit).
-  if (visibles.length === 1 && visibles[0].label.toLowerCase() === (partialForMatch || '').toLowerCase()) return hide();
-  curItems = visibles; curCorrespondances = correspondances;
+  if (!aveu && visibles.length === 1 && visibles[0].label.toLowerCase() === (partialForMatch || '').toLowerCase()) return hide();
+  curItems = visibles; curCorrespondances = correspondances; curAveuDesSources = aveu;
   curReplaceLen = ctx.replaceLen; curAddSpace = !!ctx.addSpace; active = 0;
   render();
 }
 
 function onKeydown(e) {
+  // `P10.7-f` — UNE BOÎTE OUVERTE POUR LE SEUL AVEU SE FERME AUSSI. Le bloc ci-dessous exige des items
+  // (ses flèches font un modulo sur leur nombre) ; sans cette ligne, Échap ne rendrait rien sur le seul
+  // état où la boîte s'ouvre vide, et l'aveu resterait jusqu'au `blur`.
+  if (box && !box.hidden && !curItems.length && curAveuDesSources && e.key === 'Escape') { e.preventDefault(); hide(); return; }
   if (box && !box.hidden && curItems.length) {
     if (e.key === 'ArrowDown') { e.preventDefault(); active = (active + 1) % curItems.length; render(); return; }
     if (e.key === 'ArrowUp') { e.preventDefault(); active = (active - 1 + curItems.length) % curItems.length; render(); return; }
@@ -395,7 +443,7 @@ function onKeydown(e) {
     if (e.key === 'Escape') { e.preventDefault(); hide(); return; }
   }
   // Ctrl/Cmd+Espace : forcer l'ouverture.
-  if ((e.ctrlKey || e.metaKey) && e.key === ' ') { e.preventDefault(); ensureMeta().then(trigger); }
+  if ((e.ctrlKey || e.metaKey) && e.key === ' ') { e.preventDefault(); ensureMeta(true).then(trigger); }
 }
 
 // ── Palette « Modèles » : MES MODÈLES (per-user, éditables) + MODÈLES LIVRÉS (bibliothèque, lecture seule) ──

@@ -917,6 +917,17 @@ const I18N_EN = {
   "Jetons NON LUS : le démon a refusé et en nomme la cause —": "Tokens NOT READ: the daemon declined and names the cause —",
   "Comptes NON LUS : le démon a refusé et en nomme la cause —": "Accounts NOT READ: the daemon declined and names the cause —",
   "Règles de masquage NON LUES : le démon a refusé et en nomme la cause —": "Masking rules NOT READ: the daemon declined and names the cause —",
+  // `P10.7-f` (rang 2) — LES CINQ AVEUX DES LISTES DE DÉTECTION, MÊME FORME À DEUX NŒUDS (detection_admin.js
+  // règles/parseurs/playbooks, detadv.js lignes de base, soql_complete.js vocabulaire de sources). La sixième
+  // surface du lot — l'inventaire des sources — n'a PAS de phrase à elle : sa cause est SERVIE par le démon
+  // (`raison_attendue`), et seul le MOT de son badge est écrit ici.
+  "Règles de détection NON LUES : le démon a refusé et en nomme la cause —": "Detection rules NOT READ: the daemon declined and names the cause —",
+  "Parseurs NON LUS : le démon a refusé et en nomme la cause —": "Parsers NOT READ: the daemon declined and names the cause —",
+  "Playbooks NON LUS : le démon a refusé et en nomme la cause —": "Playbooks NOT READ: the daemon declined and names the cause —",
+  "Lignes de base NON LUES : le démon a refusé et en nomme la cause —": "Baselines NOT READ: the daemon declined and names the cause —",
+  "Sources NON LUES : le démon a refusé et en nomme la cause —": "Sources NOT READ: the daemon declined and names the cause —",
+  "indéterminée": "undetermined",
+  "Verdict NON ÉTABLI : la déclaration par connecteur n'a pas pu être lue. Ni « déclarée » ni « personne ne l'a déclarée » ne serait vrai ici, et cette source n'est PAS classée inattendue.": "Verdict NOT ESTABLISHED: the connector declaration could not be read. Neither “declared” nor “nobody declared it” would be true here, and this source is NOT classified as unexpected.",
   // P10.7-g (lot 101) — retention.js
   "valeur enregistrée": "stored value", "variable d'environnement": "environment variable", "fichier de configuration": "configuration file", "défaut du binaire": "binary default",
   "La valeur affichée est celle que la purge appliquera (environnement, configuration ou défaut), pas la valeur enregistrée, qui n'a pas pu être lue.": "The value shown is the one the purge will apply (environment, configuration or default), not the stored value, which could not be read.",

@@ -232,6 +232,21 @@ let avertissementOverlayRegle = '';
 async function loadRules() {
   const wrap = $('#rule-list'); if (!wrap) return;
   const d = await fetchInto(wrap, '/rules'); if (!d) return;
+  // `P10.7-f` — UN CATALOGUE DE RÈGLES NON LU N'EST PAS « AUCUNE RÈGLE ». `fetchInto` ne capte qu'une
+  // EXCEPTION ; l'aveu du démon, lui, arrive en 200 avec la forme intacte : `{rules: [], error: <cause>,
+  // avertissement_overlay}` (`corps_de_liste_illisible`, daemon/src/handlers/detection.rs). `d.rules || []`
+  // peignait alors « aucune règle - clique " + Nouvelle règle " » : sur le catalogue de DÉTECTION, c'est
+  // dire à l'exploitant que rien ne le surveille, et l'inviter à réécrire ce qui existe déjà.
+  // L'AVEU EST LU AVANT `reglesChargees` : une lecture ratée n'écrase pas les règles réellement lues
+  // au chargement précédent — le sélecteur de tri, qui rappelle `renderRules()` seul, les garde.
+  if (d.error) {
+    const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:0;font-size:12px';
+    const dit = document.createElement('span');
+    dit.textContent = 'Règles de détection NON LUES : le démon a refusé et en nomme la cause —';
+    aveu.append(dit, ' « ' + String(d.error).trim() + ' »');
+    wrap.replaceChildren(aveu);
+    return;
+  }
   reglesChargees = d.rules || [];
   avertissementOverlayRegle = d.avertissement_overlay || '';
   renderRules();
@@ -596,6 +611,18 @@ function openParserForm(p) {
 async function loadParsers() {
   const wrap = $('#parser-list'); if (!wrap) return;
   const d = await fetchInto(wrap, '/parsers'); if (!d) return;   // P11.14-a : la cause est écrite dans le panneau
+  // `P10.7-f` — MÊME AVEU, MÊME GESTE, SUR LES PARSEURS. Le démon sert `{parsers: [], error: <cause>}` en
+  // 200 (`corps_de_liste_illisible`, daemon/src/handlers/detection.rs) : `muted('aucun parser')` affirmerait
+  // qu'aucune source n'est découpée en champs, donc que les recherches par champ sont vides PARCE QU'IL N'Y
+  // A RIEN — alors que l'extraction, elle, tourne côté démon quoi que cette liste ait pu lire.
+  if (d.error) {
+    const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:0;font-size:12px';
+    const dit = document.createElement('span');
+    dit.textContent = 'Parseurs NON LUS : le démon a refusé et en nomme la cause —';
+    aveu.append(dit, ' « ' + String(d.error).trim() + ' »');
+    wrap.replaceChildren(aveu);
+    return;
+  }
   const parsers = d.parsers || [];
   if (S.parserSort === 'source') parsers.sort((a, b) => (a.source || '').localeCompare(b.source || '') || a.id - b.id);
   wrap.replaceChildren();
@@ -1010,6 +1037,21 @@ async function loadPlaybooks() {
   const d = await fetchInto(wrap, '/playbooks'); if (!d) return;   // P11.14-a : la cause est écrite dans le panneau
   const playbooks = d.playbooks || [], mode = d.mode || 'observe', ban_duration_s = d.ban_duration_s === undefined ? null : d.ban_duration_s;
   labelActionKindOptions(ban_duration_s);
+  // `P10.7-f` — LA LISTE EST AVOUÉE, LE MODE RESTE PEINT. Le démon sert `{playbooks: [], mode,
+  // ban_duration_s, error: <cause>}` : `mode` et la durée du ban NE DÉRIVENT PAS de la lecture qui a
+  // échoué (le mode a sa propre lecture, la durée est une constante), d'où l'appel ci-dessus, conservé —
+  // les options d'action gardent leur libellé exact. Ce qui n'est pas lu, c'est la LISTE, et
+  // `muted('aucun playbook')` dirait qu'aucune réponse automatique n'est armée : en mode Actif, c'est
+  // l'inverse même de ce que l'exploitant doit croire. L'aveu passe AVANT `takePendingNote`, qui CONSOMME
+  // la note du playbook qu'on vient de créer — la jeter ici perdrait un fait, lui, établi.
+  if (d.error) {
+    const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:0;font-size:12px';
+    const dit = document.createElement('span');
+    dit.textContent = 'Playbooks NON LUS : le démon a refusé et en nomme la cause —';
+    aveu.append(dit, ' « ' + String(d.error).trim() + ' »');
+    wrap.replaceChildren(aveu);
+    return;
+  }
   wrap.replaceChildren();
   const note = takePendingNote('playbooks'); if (note) wrap.appendChild(note); // P11.1-e
   if (!playbooks.length) { wrap.appendChild(muted('aucun playbook')); return; }

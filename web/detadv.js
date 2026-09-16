@@ -112,6 +112,21 @@ async function testCorrelation(c) {
 async function loadBaselines() {
   const host = $('#detadv-base-list'); if (!host) return;
   const d = await fetchInto(host, '/baselines'); if (!d) return;
+  // `P10.7-f` — DES LIGNES DE BASE NON LUES NE SONT PAS « AUCUNE LIGNE DE BASE DÉFINIE ». `fetchInto` ne
+  // capte qu'une EXCEPTION ; l'aveu du démon arrive en 200, forme intacte : `{baselines: [], error:
+  // <cause>}` (`corps_de_liste_illisible`, daemon/src/handlers/detection_advanced.rs). Le test
+  // `Array.isArray(d.baselines)` est VRAI sur ce corps-là — un tableau vide EST un tableau —, si bien que
+  // le repli ne se déclenchait même pas : la table se peignait avec son `emptyText`, « aucune baseline
+  // définie — crée une métrique par entité », c'est-à-dire une INVITATION À CRÉER ce qui existe peut-être
+  // déjà, sur la détection comportementale (UEBA) dont l'exploitant conclurait qu'elle ne tourne pas.
+  if (d.error) {
+    const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:0;font-size:12px';
+    const dit = document.createElement('span');
+    dit.textContent = 'Lignes de base NON LUES : le démon a refusé et en nomme la cause —';
+    aveu.append(dit, ' « ' + String(d.error).trim() + ' »');
+    host.replaceChildren(aveu);
+    return;
+  }
   const rows = (d && Array.isArray(d.baselines)) ? d.baselines : [];
   pagedList(host, {
     mode: 'client', pageSize: 25, rows, sort: { key: 'id', dir: 1 },
@@ -212,4 +227,6 @@ function loadDetAdv() {
   loadBaselines();
 }
 
-export { loadDetAdv };
+// `loadBaselines` est exposé pour le harnais ESM (témoin 93 : l'aveu de lecture de la liste, rendu par SON
+// chargeur réel et non par une copie) ; aucun usage applicatif hors de ce module.
+export { loadDetAdv, loadBaselines };

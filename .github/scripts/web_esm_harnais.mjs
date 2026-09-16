@@ -11449,6 +11449,237 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   console.log("(92) OK — jetons, comptes et règles de masquage écrivent la cause servie au lieu d'une absence rassurante, et le chemin nominal reste muet");
 }
 
+// ---------------------------------------------------------------------------------------------
+// (93) `P10.7-f` (rang 2) — LES SIX SURFACES DE DÉTECTION LISENT L'AVEU DU DÉMON, ET AUCUNE NE PEINT
+//      PLUS UNE ABSENCE RASSURANTE. Depuis le rang deux, `/api/rules`, `/api/parsers`, `/api/playbooks`,
+//      `/api/baselines`, `/api/soql/schema` et `/api/sources` servent en 200 un corps de FORME INTACTE,
+//      toutes clés vides, plus la cause. MESURÉ le 2026-09-16 : la console n'en lisait AUCUN.
+//      `fetchInto` (web/core.js) ne capte qu'une EXCEPTION — un 200 le traverse —, si bien que `d.rules
+//      || []` peignait « aucune règle - clique " + Nouvelle règle " » sur le catalogue de détection,
+//      « aucun parser » sur l'extraction de champs, « aucun playbook » sur les réponses automatiques
+//      (en mode Actif : l'inverse exact de ce qu'il faut croire), et « aucune baseline définie — crée
+//      une métrique » sur l'UEBA, c'est-à-dire une INVITATION À RECRÉER ce qui existe peut-être déjà.
+//      La complétion, elle, ne refermait même pas sur un mot : `values.source: []` vidait la boîte et
+//      l'analyste qui tape `source=` ne voyait RIEN — le défaut est dans ce qu'il ne cherche pas.
+//      Et l'inventaire des sources rangeait une INDÉTERMINÉE (`unexpected: null`) exactement comme une
+//      source dont il est ÉTABLI qu'elle n'est pas un signal : `Number(null)` vaut zéro.
+//      LA CAUSE N'EST PLUS RECOPIÉE — c'est ce que le témoin 92 déclarait ne pas tenir. Les trois
+//      textes servis sont DÉRIVÉS de l'arbre du démon (`liste_bornee.rs`, `sources.rs`, `soql_meta.rs`) :
+//      si l'un d'eux disparaît, ce témoin REFUSE DE CONCLURE au lieu de rester vert sur une chaîne
+//      devenue étrangère au démon.
+//      CE QUE CE TÉMOIN NE TIENT PAS : ni la mise en page ni la langue anglaise de ces phrases (témoin 10
+//      et garde du lexique) ; il ne rejoue pas les routes du démon, il en dérive les MOTS et fabrique le
+//      corps qui les porte ; et il ne juge pas le geste « déclarer attendue » offert sur une source
+//      indéterminée, que le démon refuse en 503.
+// ---------------------------------------------------------------------------------------------
+{
+  const modDet93 = await import(pathToFileURL(path.join(WEB, "detection_admin.js")).href);
+  const modAdv93 = await import(pathToFileURL(path.join(WEB, "detadv.js")).href);
+  const modSrc93 = await import(pathToFileURL(path.join(WEB, "sources.js")).href);
+  const modComp93 = await import(pathToFileURL(path.join(WEB, "soql_complete.js")).href);
+  const { S: S93 } = await import(pathToFileURL(path.join(WEB, "state.js")).href);
+  const tic93 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser93 = async (n = 20) => { for (let i = 0; i < n; i++) await tic93(); };
+  const cueillir93 = (el, pred, acc) => { if (pred(el)) acc.push(el); (el.children || []).forEach((c) => cueillir93(c, pred, acc)); return acc; };
+  const nu93 = (el) => String(el.textContent || "").replace(/\s+/g, " ");
+  const aLaClasse93 = (e, c) => e.classList && e.classList.contains(c);
+  const lignesDeTable93 = (h) => cueillir93(h, (e) => e.tagName === "TR", []).filter((tr) => cueillir93(tr, (x) => x.tagName === "TD", []).length > 0);
+
+  // (0) L'INSTRUMENT : LES TROIS TEXTES VIENNENT DE L'ARBRE DU DÉMON, PAS DE CE FICHIER.
+  const srcListe93 = readFileSync(path.join(RACINE, "daemon", "src", "handlers", "liste_bornee.rs"), "utf8");
+  const srcSources93 = readFileSync(path.join(RACINE, "daemon", "src", "handlers", "sources.rs"), "utf8");
+  const srcMeta93 = readFileSync(path.join(RACINE, "daemon", "src", "handlers", "soql_meta.rs"), "utf8");
+  // Un littéral Rust continué par `\` en fin de ligne perd le saut ET l'indentation qui suit : la chaîne
+  // est recomposée ici comme le compilateur la compose, sans quoi la cause dériverait d'un texte qui
+  // n'existe nulle part.
+  const mCause93 = srcListe93.match(/CAUSE_LISTE_ILLISIBLE: &str = "([\s\S]*?)";/);
+  const CAUSE93 = mCause93 ? mCause93[1].replace(/\\\r?\n\s*/g, "") : "";
+  const mRaison93 = srcSources93.match(/"(déclaration par connecteur NON LUE[^"]*)"/);
+  const RAISON93 = mRaison93 ? mRaison93[1] : "";
+  exiger(CAUSE93.includes("NON LUE") && CAUSE93.length > 60,
+    `(93-instrument) \`CAUSE_LISTE_ILLISIBLE\` n'est plus lisible dans daemon/src/handlers/liste_bornee.rs : la cause fabriquée ci-dessous ne dériverait plus du démon — « ${CAUSE93} »`);
+  exiger(RAISON93.includes("NON LUE") && RAISON93.includes("n'est PAS classée inattendue"),
+    `(93-instrument) la raison d'une source INDÉTERMINÉE n'est plus lisible dans daemon/src/handlers/sources.rs — « ${RAISON93} »`);
+  exiger(/"indeterminee": indeterminee/.test(srcSources93),
+    "(93-instrument) `/api/sources` ne sert plus `indeterminee` : la ligne jugée ci-dessous n'existe plus côté démon");
+  exiger(/"source_non_lue": sources\.non_lue/.test(srcMeta93),
+    "(93-instrument) `/api/soql/schema` ne sert plus `values.source_non_lue` : l'aveu du vocabulaire de complétion n'existe plus côté démon");
+  exiger(/corps\["error"\] = json!\(crate::handlers::liste_bornee::CAUSE_LISTE_ILLISIBLE\)/.test(srcMeta93),
+    "(93-instrument) `/api/soql/schema` ne pose plus `error` au niveau du corps : la cause écrite par la complétion ne serait plus celle du démon");
+
+  // ── (a) LES QUATRE LISTES DE PANNEAU, RENDUES PAR LEUR CHARGEUR RÉEL ────────────────────────────
+  const hotes93 = {};
+  ["#rule-list", "#parser-list", "#pb-list", "#detadv-base-list"].forEach((sel) => { hotes93[sel] = new Element("div"); });
+  const qsOrigine93 = document.querySelector, fetchOrigine93 = globalThis.fetch;
+  const etatOrigine93 = { auth: S93.AUTH, tri: S93.ruleSort, triP: S93.parserSort };
+  let corps93 = null, routeServie93 = "";
+  document.querySelector = (sel) => (Object.prototype.hasOwnProperty.call(hotes93, sel) ? hotes93[sel] : new Element("div"));
+  globalThis.fetch = async (u) => {
+    const url = String(u);
+    const obj = (routeServie93 && url.includes(routeServie93)) ? corps93 : {};
+    return { ok: true, status: 200, text: async () => JSON.stringify(obj), json: async () => obj };
+  };
+  const regle93 = (id, name, severity) => ({ id, name, query: "search source=sshd | stats count", mitre: "", severity, managed: 2, enabled: 1, op: ">", threshold: 5, risk_score: 0, last_value: null });
+  const parseur93 = (id, name) => ({ id, name, source: "sshd", pattern: "^(?<user>\\S+)", enabled: 1, managed: 2, builtin: 0 });
+  const playbook93 = (id, name) => ({ id, name, query: "search source=ufw | stats count by src_ip", is_soql: 1, action_kind: "ban_ip", interval_s: 300, window_s: 3600, enabled: 1, managed: 2, consequence: "-> bannit l'adresse" });
+  const ligneDeBase93 = (id, name) => ({ id, name, entity_type: "host", entity_field: "host", bucket_s: 3600, z_threshold: 3, min_samples: 5, mode: "alerte", risk_score: 0, mitre: "", enabled: 1 });
+  const surfaces93 = [
+    { nom: "règles de détection", route: "/api/rules", hote: "#rule-list", charger: () => modDet93.loadRules(),
+      aveu: { rules: [], avertissement_overlay: "", error: CAUSE93 },
+      nominal: { rules: [regle93(1, "Échecs SSH", 3), regle93(2, "Scan de ports", 3)], avertissement_overlay: "" },
+      rassurant: ["aucune règle", "Nouvelle règle"],
+      compter: (h) => cueillir93(h, (e) => aLaClasse93(e, "rulerow"), []).length },
+    { nom: "parseurs", route: "/api/parsers", hote: "#parser-list", charger: () => modDet93.loadParsers(),
+      aveu: { parsers: [], error: CAUSE93 },
+      nominal: { parsers: [parseur93(1, "sshd-auth"), parseur93(2, "ufw-block")] },
+      rassurant: ["aucun parser"],
+      compter: (h) => cueillir93(h, (e) => aLaClasse93(e, "rulerow"), []).length },
+    { nom: "playbooks", route: "/api/playbooks", hote: "#pb-list", charger: () => modDet93.loadPlaybooks(),
+      aveu: { playbooks: [], mode: "observe", ban_duration_s: 3600, error: CAUSE93 },
+      nominal: { playbooks: [playbook93(1, "ban-brute-force"), playbook93(2, "ban-scan")], mode: "observe", ban_duration_s: 3600 },
+      rassurant: ["aucun playbook"],
+      compter: (h) => cueillir93(h, (e) => aLaClasse93(e, "rulerow"), []).length },
+    { nom: "lignes de base", route: "/api/baselines", hote: "#detadv-base-list", charger: () => modAdv93.loadBaselines(),
+      aveu: { baselines: [], error: CAUSE93 },
+      nominal: { baselines: [ligneDeBase93(1, "volume auth par hôte"), ligneDeBase93(2, "octets sortants par hôte")] },
+      rassurant: ["aucune baseline définie", "crée une métrique"],
+      compter: (h) => lignesDeTable93(h).length },
+  ];
+  try {
+    S93.AUTH = { user: "hugo", role: "admin" };
+    S93.ruleSort = "id"; S93.parserSort = "default";
+    modDet93.poserLaRechercheDesRegles("");
+    // Les plis persistés d'une autre exécution replieraient un groupe, donc n'en bâtiraient PAS le corps :
+    // le contrôle positif compterait zéro ligne et accuserait le chargeur pour un état de stockage.
+    ["soc_rule_collapsed", "soc_parser_collapsed", "soc_pb_collapsed"].forEach((k) => { try { globalThis.localStorage.removeItem(k); } catch { /* le stockage peut refuser */ } });
+    for (const s93 of surfaces93) {
+      const hote = hotes93[s93.hote];
+      // SOUS L'AVEU : la cause servie est écrite, aucune phrase d'absence ne l'est, aucune ligne n'est peinte.
+      corps93 = s93.aveu; routeServie93 = s93.route;
+      hote.replaceChildren();
+      await s93.charger(); await laisser93();
+      const avoue = nu93(hote);
+      exiger(/NON LU/.test(avoue), `(93a) ${s93.nom} : l'aveu servi n'est pas dit — le texte peint ne porte pas « NON LU » : « ${avoue} »`);
+      exiger(avoue.includes(CAUSE93), `(93a) ${s93.nom} : la CAUSE servie par le démon n'est pas collée telle quelle : « ${avoue} »`);
+      for (const mot of s93.rassurant) {
+        exiger(!avoue.includes(mot), `(93a) ${s93.nom} : « ${mot} » est peint sous un aveu — une absence RASSURANTE là où rien n'a été lu : « ${avoue} »`);
+      }
+      exiger(s93.compter(hote) === 0, `(93a) ${s93.nom} : ${s93.compter(hote)} ligne(s) peinte(s) sous un aveu — elles se liraient comme la liste`);
+      // CONTRÔLE POSITIF : deux lignes servies -> deux lignes peintes, et aucun « NON LU ».
+      corps93 = s93.nominal;
+      hote.replaceChildren();
+      await s93.charger(); await laisser93();
+      const sain = nu93(hote);
+      exiger(s93.compter(hote) === 2, `(93b) ${s93.nom} : le chemin nominal peint ${s93.compter(hote)} ligne(s) au lieu de 2 — le verdict (93a) ne porterait sur rien : « ${sain} »`);
+      exiger(!/NON LU/.test(sain), `(93b) ${s93.nom} : « NON LU » est peint sur une lecture RÉUSSIE — un instrument qui le dit toujours ne mesure rien : « ${sain} »`);
+    }
+
+    // ── (c) L'INVENTAIRE DES SOURCES : UNE INDÉTERMINÉE N'EST NI « PERSONNE », NI UN ZÉRO ÉTABLI ────
+    const source93 = (o) => Object.assign({
+      source: "x", expected: true, unexpected: false, indeterminee: false, in_collectors: true, declaree_par: "ce dépôt",
+      raison_attendue: "émise par un fichier livré (collectors/portprobe.sh)", marquage: null,
+      cadence_declarable: false, cadence_declaree: "non_declaree", cadence_interval_s: null, cadence_capteur: null,
+      cadence_par: null, cadence_le: null, observed_interval_s: null, last_seen: 1000, age_s: 60, n_24h: 10, status: "frais",
+    }, o);
+    // LES NOMS SONT CHOISIS CONTRE LE DÉPARTAGE : à rang égal, le tri retombe sur le nom, donc
+    // « zzz-indeterminee » se rangerait APRÈS « aaa-declaree ». Son rang est la SEULE chose qui peut la
+    // faire remonter — un témoin dont l'ordre serait déjà celui de l'alphabet ne prouverait rien.
+    const inventaire93 = { ok: true, pipeline_fresh: true, sources: [
+      source93({ source: "aaa-declaree" }),
+      source93({ source: "mmm-inattendue", expected: false, unexpected: true, in_collectors: false, declaree_par: null, raison_attendue: null }),
+      source93({ source: "zzz-indeterminee", expected: null, unexpected: null, indeterminee: true, in_collectors: false, declaree_par: null, raison_attendue: RAISON93 }),
+    ] };
+    const hoteInv93 = new Element("div");
+    modSrc93.renderSourcesInventory(hoteInv93, inventaire93);
+    const rangs93 = lignesDeTable93(hoteInv93);
+    const textes93 = rangs93.map(nu93);
+    const ou93 = (nom) => textes93.findIndex((t) => t.includes(nom));
+    exiger(rangs93.length === 3, `(93c) instrument : l'inventaire peint ${rangs93.length} ligne(s) au lieu de 3 — l'ordre jugé ci-dessous ne porterait sur rien`);
+    const ligneInd93 = textes93[ou93("zzz-indeterminee")] || "";
+    // LE MOT SE LIT SUR LE BADGE DE LA COLONNE « Déclarée », PAS SUR LA LIGNE ENTIÈRE : la cellule de
+    // CADENCE porte elle aussi « personne ne l'a déclarée », qui est un constat VRAI et sans rapport
+    // (aucune cadence déclarée). Juger la ligne entière confondrait les deux et accuserait à tort.
+    const badgeInd93 = cueillir93(rangs93[ou93("zzz-indeterminee")] || new Element("div"), (e) => aLaClasse93(e, "srcbadge-expected"), [])[0];
+    exiger(!!badgeInd93, "(93c) instrument : la ligne indéterminée ne porte aucun badge de déclaration — le mot jugé ci-dessous n'existe pas");
+    exiger(badgeInd93 && String(badgeInd93.textContent) === "indéterminée",
+      `(93c) le badge de déclaration d'une source dont le verdict n'a PAS pu être établi dit « ${badgeInd93 && badgeInd93.textContent} » : « personne » AFFIRME qu'aucune des cinq voies ne la déclare, et « oui » nommerait un déclarant — la lecture ratée n'établit ni l'un ni l'autre`);
+    exiger(badgeInd93 && !/Personne ne l'a déclarée/.test(badgeInd93.title || ""),
+      `(93c) l'infobulle du badge affirme encore que personne n'a déclaré la source : « ${badgeInd93 && badgeInd93.title} »`);
+    exiger(ligneInd93.includes(RAISON93), `(93c) la RAISON servie par le démon n'est pas écrite sur la ligne indéterminée : « ${ligneInd93} »`);
+    exiger(!ligneInd93.includes("non déclarée"), `(93c) la source indéterminée porte le badge « non déclarée » : elle est classée signal alors que le démon refuse de la classer : « ${ligneInd93} »`);
+    exiger(ou93("mmm-inattendue") < ou93("zzz-indeterminee"),
+      `(93c) une source INATTENDUE — le signal établi — ne passe plus devant l'indéterminée : ${JSON.stringify(textes93.map((t) => t.slice(0, 24)))}`);
+    exiger(ou93("zzz-indeterminee") < ou93("aaa-declaree"),
+      `(93c) l'indéterminée est rangée APRÈS une source à zéro inattendu : \`Number(null)\` l'a traitée comme un zéro ÉTABLI, elle tombe au fond de la liste — ${JSON.stringify(textes93.map((t) => t.slice(0, 24)))}`);
+    // CONTRÔLE POSITIF : deux lignes ORDINAIRES — le mot et l'ordre ne sont pas rendus sur tout le monde.
+    const hoteSain93 = new Element("div");
+    modSrc93.renderSourcesInventory(hoteSain93, { ok: true, pipeline_fresh: true, sources: [
+      source93({ source: "aaa-declaree" }),
+      source93({ source: "mmm-inattendue", expected: false, unexpected: true, in_collectors: false, declaree_par: null, raison_attendue: null }),
+    ] });
+    const sainInv93 = nu93(hoteSain93);
+    exiger(lignesDeTable93(hoteSain93).length === 2, `(93d) l'inventaire nominal peint ${lignesDeTable93(hoteSain93).length} ligne(s) au lieu de 2`);
+    exiger(!sainInv93.includes("indéterminée"), `(93d) « indéterminée » est peint sur un inventaire entièrement jugé : « ${sainInv93.slice(0, 300)} »`);
+    exiger(!/NON LUE —/.test(sainInv93), `(93d) une raison de lecture manquante est peinte sur un inventaire entièrement jugé : « ${sainInv93.slice(0, 300)} »`);
+    const badgesSains93 = cueillir93(hoteSain93, (e) => aLaClasse93(e, "srcbadge-expected"), []).map((e) => String(e.textContent));
+    exiger(badgesSains93.includes("personne"), `(93d) instrument : aucun badge ne dit plus « personne » sur le chemin nominal — le verdict (93c) ne porterait sur rien : ${JSON.stringify(badgesSains93)}`);
+
+    // ── (e) LA COMPLÉTION : LÀ OÙ ELLE PROPOSE LES SOURCES, UN VOCABULAIRE NON LU SE DIT ────────────
+    class Editeur93 extends Element {
+      constructor() { super("textarea"); this.selectionStart = 0; this.selectionEnd = 0; this._handlers = {}; }
+      addEventListener(type, fn) { (this._handlers[type] = this._handlers[type] || []).push(fn); }
+      dispatchEvent(ev) { (this._handlers[ev.type] || []).forEach((f) => f(ev)); return true; }
+      setSelectionRange(a, b) { this.selectionStart = a; this.selectionEnd = b; }
+    }
+    const schema93 = (values, extra) => Object.assign({
+      base_keywords: ["search", "metric"], commands: ["where", "stats"], stats_functions: ["count"], eval_functions: ["if"],
+      operators: ["=", "!=", ">", "<"], fields: { core: ["ts", "host", "source", "message"], extended: [] }, values,
+    }, extra || {});
+    const getByIdOrigine93 = document.getElementById;
+    const boiteDeCompletion93 = () => (document.body.children || []).filter((e) => aLaClasse93(e, "soql-ac"));
+    const taperDans93 = async (ed, texte) => {
+      for (const ch of texte) {
+        const p = ed.selectionStart;
+        ed.value = ed.value.slice(0, p) + ch + ed.value.slice(p);
+        ed.setSelectionRange(p + 1, p + 1);
+        ed.dispatchEvent({ type: "input" });
+        await tic93();
+      }
+      await laisser93(5);
+    };
+    const proposerDesSources93 = async (schema) => {
+      modComp93.primeCompletionMeta(schema, []);
+      const ed = new Editeur93();
+      document.getElementById = (id) => (id === "sql" ? ed : new Element("div"));
+      try { modComp93.initSoqlComplete(); } finally { document.getElementById = getByIdOrigine93; }
+      await taperDans93(ed, "search source=");
+      const boites = boiteDeCompletion93();
+      return { boite: boites[boites.length - 1] || null, ed };
+    };
+    const avecAveu93 = await proposerDesSources93(schema93({ source: [], source_non_lue: true, severity: [] }, { error: CAUSE93 }));
+    exiger(!!avecAveu93.boite, "(93e) instrument : aucune boîte de complétion n'est posée dans le document — le verdict qui suit ne porterait sur rien");
+    const texteAveu93 = nu93(avecAveu93.boite);
+    exiger(avecAveu93.boite.hidden === false,
+      `(93e) la boîte se REFERME sur un vocabulaire de sources non lu : l'analyste tape « source= » et ne voit RIEN — aucune erreur, aucun signe, et il en conclut qu'il n'y a rien à y voir`);
+    exiger(/NON LUES/.test(texteAveu93), `(93e) la complétion ne dit pas que les sources n'ont pas été lues : « ${texteAveu93} »`);
+    exiger(texteAveu93.includes(CAUSE93), `(93e) la cause servie par le démon n'est pas écrite dans la boîte : « ${texteAveu93} »`);
+    exiger(!/aucune source/i.test(texteAveu93), `(93e) le vocabulaire proposé prétend « aucune source » alors qu'aucune n'a été lue : « ${texteAveu93} »`);
+    exiger(cueillir93(avecAveu93.boite, (e) => aLaClasse93(e, "soql-ac-item"), []).length === 0,
+      "(93e) une suggestion de source est proposée sous un aveu — elle se lirait comme le vocabulaire entier");
+    // CONTRÔLE POSITIF : deux sources LUES -> deux suggestions, et pas un mot d'aveu.
+    const sansAveu93 = await proposerDesSources93(schema93({ source: ["sshd", "web"], source_non_lue: false, severity: [] }));
+    const texteSain93 = nu93(sansAveu93.boite);
+    exiger(cueillir93(sansAveu93.boite, (e) => aLaClasse93(e, "soql-ac-item"), []).length === 2,
+      `(93f) le chemin nominal propose ${cueillir93(sansAveu93.boite, (e) => aLaClasse93(e, "soql-ac-item"), []).length} source(s) au lieu de 2 — le verdict (93e) ne porterait sur rien : « ${texteSain93} »`);
+    exiger(!/NON LUES/.test(texteSain93), `(93f) « NON LUES » est écrit sur un vocabulaire LU — un instrument qui l'écrit toujours ne mesure rien : « ${texteSain93} »`);
+    modComp93.primeCompletionMeta(null, []);
+  } finally {
+    document.querySelector = qsOrigine93; globalThis.fetch = fetchOrigine93;
+    S93.AUTH = etatOrigine93.auth; S93.ruleSort = etatOrigine93.tri; S93.parserSort = etatOrigine93.triP;
+  }
+  console.log("(93) OK — règles, parseurs, playbooks, lignes de base, vocabulaire de complétion et sources indéterminées écrivent la cause SERVIE au lieu d'une absence rassurante, et les six chemins nominaux restent muets");
+}
+
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;
 verdictRendu = true;
 if (echecs.length) {

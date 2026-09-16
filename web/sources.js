@@ -149,9 +149,15 @@ function renderSourcesInventory(wrap, d) {
     return;
   }
   const sources = (d.sources || []).slice();
+  // `P10.7-f` — UNE SOURCE INDÉTERMINÉE N'EST PAS UN ZÉRO ÉTABLI. Le démon sert `unexpected: null` (et
+  // `expected: null`) quand la déclaration par connecteur n'a pas été lue : `Number(null)` vaut 0, donc le
+  // tri initial la rangeait EXACTEMENT comme une source dont il est établi qu'elle n'est pas un signal —
+  // au fond de la liste, sous les lignes déjà jugées. Le rang est donc TROIS ÉTATS et non un booléen :
+  // inattendue (le signal) 2, indéterminée (le verdict manque, il faut le regarder) 1, jugée non-signal 0.
+  const rangDeSignalDeSource = (s) => (s && s.unexpected) ? 2 : ((s && s.indeterminee) ? 1 : 0);
   // tri INITIAL : inattendues d'abord (signal), puis par statut, puis nom. Le tri par colonne (clic
   // en-tête) prend ensuite le relais via pagedList (mode client).
-  sources.sort((a, c) => (Number(c.unexpected) - Number(a.unexpected))
+  sources.sort((a, c) => (rangDeSignalDeSource(c) - rangDeSignalDeSource(a))
     || (rangDeSource(a) - rangDeSource(c))
     || String(a.source).localeCompare(String(c.source)));
   wrap.replaceChildren();
@@ -241,12 +247,25 @@ function renderSourcesInventory(wrap, d) {
     { key: 'expected', label: 'Déclarée', sortable: true, sortVal: s => s.expected ? 1 : 0, render: s => {
       const f = document.createDocumentFragment();
       const exp = document.createElement('span'); exp.className = 'badge srcbadge-expected';
-      // « attendu » veut dire DÉCLARÉ PAR QUELQU'UN : le badge nomme le déclarant plutôt qu'un oui/non nu.
-      exp.textContent = s.expected ? (s.declaree_par || 'oui') : 'personne';
-      exp.style.color = s.expected ? 'var(--ok)' : 'var(--warn)';
-      exp.title = s.expected
-        ? 'Cette source est DÉCLARÉE : quelqu\'un l\'a voulue. Le détail dit qui.'
-        : 'Personne ne l\'a déclarée — ni ce dépôt, ni le démon, ni le produit, ni un connecteur, ni un humain de cette installation.';
+      // `P10.7-f` — LE TROISIÈME MOT, PARCE QU'AUCUN DES DEUX AUTRES N'EST VRAI. Le démon sert
+      // `indeterminee: true` avec `expected` ET `unexpected` à `null` quand la déclaration par connecteur
+      // n'a pas été lue (daemon/src/handlers/sources.rs) : « personne » — le mot que ce badge peignait par
+      // défaut, `null` étant faux — AFFIRME qu'aucune des cinq voies ne déclare la source, c'est-à-dire
+      // exactement ce que la lecture ratée n'a pas pu établir ; et « oui » nommerait un déclarant. La
+      // RAISON servie est déjà écrite par la cellule de dessous (`s.raison_attendue`), qui nomme la lecture
+      // manquante : ce badge n'en pose que le mot.
+      if (s.indeterminee) {
+        exp.textContent = 'indéterminée';
+        exp.style.color = 'var(--warn)';
+        exp.title = 'Verdict NON ÉTABLI : la déclaration par connecteur n\'a pas pu être lue. Ni « déclarée » ni « personne ne l\'a déclarée » ne serait vrai ici, et cette source n\'est PAS classée inattendue.';
+      } else {
+        // « attendu » veut dire DÉCLARÉ PAR QUELQU'UN : le badge nomme le déclarant plutôt qu'un oui/non nu.
+        exp.textContent = s.expected ? (s.declaree_par || 'oui') : 'personne';
+        exp.style.color = s.expected ? 'var(--ok)' : 'var(--warn)';
+        exp.title = s.expected
+          ? 'Cette source est DÉCLARÉE : quelqu\'un l\'a voulue. Le détail dit qui.'
+          : 'Personne ne l\'a déclarée — ni ce dépôt, ni le démon, ni le produit, ni un connecteur, ni un humain de cette installation.';
+      }
       f.appendChild(exp);
       // QUI l'a déclarée et QUAND : la provenance PROPRE du geste, jamais le dernier compte qui a touché
       // la ligne (le démon écrit `marquage.updated_by` seulement quand `set_expected` est joué).
@@ -258,7 +277,13 @@ function renderSourcesInventory(wrap, d) {
       const why = document.createElement('span'); why.className = 'muted srcwhy'; why.style.cssText = 'display:block;font-size:10px';
       const mark = s.marquage;
       const producteurSousLeNom = !!(s.in_collectors && s.expected);
-      if (mark && mark.updated_by && ((mark.expected && !s.in_collectors) || !mark.expected)) {
+      // `P10.7-f` — LA RAISON DE L'INDÉTERMINÉE PASSE AVANT LE GESTE HUMAIN. Un marquage posé sur la même
+      // source (lecture INDÉPENDANTE, qui, elle, a abouti) ferait écrire « déclarée NON attendue par … » à
+      // la place de la raison servie — un geste ancien rendu à la place du fait du jour, qui est que le
+      // verdict n'a pas pu être établi. Le mot du badge resterait seul, sans sa cause.
+      if (s.indeterminee) {
+        why.textContent = s.raison_attendue || '';
+      } else if (mark && mark.updated_by && ((mark.expected && !s.in_collectors) || !mark.expected)) {
         why.textContent = (mark.expected ? 'déclarée par ' : 'déclarée NON attendue par ') + mark.updated_by + (mark.updated ? ' le ' + fmtTs(mark.updated) : '');
       } else if (s.raison_attendue && !producteurSousLeNom) {
         why.textContent = s.raison_attendue;

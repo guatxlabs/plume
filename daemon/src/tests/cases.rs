@@ -893,7 +893,7 @@
 
         let (page, total, pipe) = fleet_query_page(&conn, now_ts, "", true, 50, 0);
         assert_eq!(total, 3, "3 hôtes nommés (host '' exclu)");
-        assert!(pipe, "pipeline frais (dernier signal < 600 s)");
+        assert_eq!(pipe, Some(true), "pipeline frais (dernier signal < 600 s), et LU — `P10.20-g` : `None` dirait « non lu »");
         // tri défaut = last_seen DESC -> h-fresh (dernier signal le plus récent) en tête.
         assert_eq!(page[0]["host"], "h-fresh");
         assert_eq!(page[0]["status"], "fresh");

@@ -273,8 +273,8 @@
 
         // La charge utile de la vue porte la répartition, et elle NE BOUGE PAS avec la pagination — sans
         // quoi on retomberait exactement dans le défaut mesuré (des parts de page sous un total de parc).
-        let page1 = fleet_response(&hosts, true, "host", false, 2, 0, now_ts);
-        let page2 = fleet_response(&hosts, true, "host", false, 2, 2, now_ts);
+        let page1 = fleet_response(&hosts, Some(true), "host", false, 2, 0, now_ts);
+        let page2 = fleet_response(&hosts, Some(true), "host", false, 2, 2, now_ts);
         assert_eq!(page1["hosts"].as_array().unwrap().len(), 2);
         assert_eq!(page1["repartition"], page2["repartition"], "la répartition est celle du parc, pas de la page");
         assert_eq!(page1["repartition"], r);

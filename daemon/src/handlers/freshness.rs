@@ -1,4 +1,4 @@
-//! Fraîcheur & heartbeats (P4) : santé pipeline `pipeline_is_fresh`, handler `integrations`, cache
+//! Fraîcheur & heartbeats (P4) : santé pipeline `pipeline_est_frais`, handler `integrations`, cache
 //! SWR `FRESHNESS_CACHE`/handler `freshness`, extraction de sources `extract_query_sources`, calcul
 //! par-source `compute_freshness`, et alerte capteur muet `check_heartbeats`.
 //! Extrait de main.rs (refactor split #25 — byte-identique).
@@ -95,17 +95,33 @@ pub(crate) fn statut_capteur(
     }
 }
 
+/// `P10.20-g` (2026-09-16) — LE DERNIER POINT DE DONNÉE, TOUTES SOURCES CONFONDUES, LU OU NON LU.
+/// `Ok(None)` = la base n'a JAMAIS rien reçu (un fait) ; `Err` = on n'a pas pu regarder. Les deux
+/// surfaces qui en dépendent (la fraîcheur du pipeline ci-dessous, l'état du composant d'ingest dans
+/// `metrics.rs`) partagent cette lecture au lieu de la refaire chacune de leur côté — c'était DEUX
+/// `MAX(ts)` sur la même union, dont un aplati par `.ok().flatten()`.
+pub(crate) fn dernier_point_de_donnee(conn: &Connection) -> Result<Option<i64>, rusqlite::Error> {
+    conn.query_row(
+        "SELECT MAX(m) FROM (SELECT MAX(ts) m FROM event UNION ALL SELECT MAX(ts) FROM metric UNION ALL SELECT MAX(ts) FROM snapshot)",
+        [], |r| r.get::<_, Option<i64>>(0))
+}
+
 /// `P10.7-g` (lot 97) — LA FRAÎCHEUR DU PIPELINE EST LUE OU NON LUE. Une lecture ratée valait « pas frais »,
 /// ce qui rendait MUET chaque capteur événementiel (et levait leurs alertes) sur une base qu'on n'avait pas lue.
 pub(crate) fn pipeline_est_frais(conn: &Connection, now_ts: i64) -> Result<bool, rusqlite::Error> {
-    let global_last: Option<i64> = conn.query_row(
-        "SELECT MAX(m) FROM (SELECT MAX(ts) m FROM event UNION ALL SELECT MAX(ts) FROM metric UNION ALL SELECT MAX(ts) FROM snapshot)",
-        [], |r| r.get::<_, Option<i64>>(0))?;
-    Ok(global_last.map(|m| now_ts - m < 600).unwrap_or(false))
+    Ok(dernier_point_de_donnee(conn)?.map(|m| now_ts - m < 600).unwrap_or(false))
 }
 
-/// Lecture APLATIE pour les trois appelants qui n'ont pas encore de troisième état (`metrics.rs`, `fleet.rs`,
-/// `sources.rs`) : une lecture ratée y vaut « pas frais ». Reste nommé de `P10.7-g`.
+/// LA FORME APLATIE — elle n'a PLUS AUCUN APPELANT DE PRODUCTION et c'est pour cela qu'elle est gated.
+///
+/// `P10.20-g` (2026-09-16) — CE QUE LA DOC DISAIT ICI ÉTAIT FAUX. Elle annonçait « les trois appelants
+/// qui n'ont pas encore de troisième état (`metrics.rs`, `fleet.rs`, `sources.rs`) » alors que
+/// `sources.rs` avait cessé de l'appeler au lot 98 (`P10.7-g`) : deux appelants, pas trois, et la phrase
+/// ne l'avait jamais rattrapé. Les deux derniers (`fleet.rs`, `metrics.rs`) sont passés au troisième état
+/// par cette clé. Ce qui reste ici est un ÉTALON pour les témoins qui MESURENT l'écart entre la forme
+/// aplatie et la forme typée (`hotes_muets.rs`) : `#[cfg(test)]` est ce qui garantit qu'aucune surface
+/// servie ne peut le reprendre par mégarde.
+#[cfg(test)]
 pub(crate) fn pipeline_is_fresh(conn: &Connection, now_ts: i64) -> bool {
     pipeline_est_frais(conn, now_ts).unwrap_or(false)
 }
@@ -171,8 +187,14 @@ pub(crate) fn statut_de_source(age_s: i64, pipeline_fresh: bool, cadence: Option
 /// Les champs de cadence d'un feed, tels que les deux surfaces les rendent : la déclaration (et la sonde
 /// qui la porte), et le rythme OBSERVÉ sur vingt-quatre heures — nommé pour ce qu'il est, jamais plus
 /// « attendu ».
-pub(crate) fn cadence_json(cadence: &CadenceDeclaree, n_24h: i64) -> Value {
-    let observed_interval_s = if n_24h > 0 { Some(86400 / n_24h) } else { None };
+///
+/// `P10.20-g` (2026-09-16) — `n_24h` EST UNE OPTION PARCE QUE LE VOLUME PEUT N'AVOIR PAS ÉTÉ LU. Un
+/// volume non lu rendait `0` (`unwrap_or(0)`), donc `observed_interval_s: null` par la MÊME porte que
+/// « aucun événement dans la fenêtre » : le rythme observé d'un flux silencieux et celui d'un flux qu'on
+/// n'a pas compté s'écrivaient pareil. `None` traverse désormais jusqu'au champ servi sans passer par un
+/// zéro qui se lit comme une mesure.
+pub(crate) fn cadence_json(cadence: &CadenceDeclaree, n_24h: Option<i64>) -> Value {
+    let observed_interval_s = n_24h.filter(|n| *n > 0).map(|n| 86400 / n);
     json!({
         "cadence_declaree": cadence.etiquette(),
         "cadence_interval_s": cadence.interval_s(),
@@ -545,6 +567,49 @@ pub(crate) const CAUSE_LIGNES_DE_FRAICHEUR_NON_LUES: &str = "LECTURES NON FAITES
 pub(crate) const CAUSE_FLUX_NON_LU: &str = "FLUX NON LU : le dernier point de ce flux n'a pas pu être lu. \
      Ni son âge ni son volume ne sont établis, et ce flux n'est PAS muet — il n'a pas été observé. Cause : ";
 
+/// `P10.20-g` (2026-09-16) — L'AVEU D'UNE FAMILLE ENTIÈRE DE FLUX QUI N'A PAS ÉTÉ LUE.
+///
+/// POURQUOI UNE ENTRÉE DE FAMILLE ET NON UNE ENTRÉE PAR FLUX ATTENDU, ET C'EST LA JUSTIFICATION ÉCRITE :
+/// les flux d'événements et d'instantanés ne sont PAS une liste connue d'avance. Ils sortent du
+/// `GROUP BY source` du rollup et du `GROUP BY kind` des instantanés — c'est la lecture elle-même qui
+/// dit lesquels existent. Quand l'énoncé ne démarre pas, on ne connaît ni leur nombre ni leurs noms :
+/// écrire une entrée par flux « attendu » supposerait une liste que ce corps n'a jamais eue, et la
+/// fabriquer serait le défaut qu'on ferme, à l'envers. On pose donc UNE entrée qui porte le nom de la
+/// FAMILLE, `non_lu: true` et sa cause — même forme servie que le flux `non_lu` de `P10.20-b`, avec un
+/// champ de plus (`famille_non_lue`) pour que la console ne la compte pas comme une source.
+pub(crate) const CAUSE_FAMILLE_DE_FLUX_NON_LUE: &str = "FAMILLE DE FLUX NON LUE : l'énoncé qui liste \
+     ces flux n'a pas démarré. Ce n'est PAS « aucun flux de ce type ne remonte » : ni le nombre de ces \
+     flux, ni leurs noms, ni leurs âges ne sont connus — la liste servie ne porte AUCUN d'entre eux. \
+     Cause : ";
+
+/// `P10.20-g` (2026-09-16) — L'AVEU D'UN COMPTE QUI N'A PAS ÉTÉ LU. Un compte manquant retombait sur
+/// ZÉRO (`unwrap_or(0)`), et zéro est une MESURE : « aucun point sur vingt-quatre heures », « aucune
+/// série ». Servi à côté d'un `last_seen` qui, lui, avait été lu, ce zéro se lit comme un flux qui vient
+/// de s'éteindre — l'exact contraire de ce qu'on sait.
+pub(crate) const CAUSE_COMPTE_NON_LU: &str = "COMPTE NON LU : ce nombre n'a pas pu être compté. Il est \
+     servi `null` et non zéro — zéro serait une mesure, et il n'y en a pas eu. Cause : ";
+
+/// `P10.20-g` (2026-09-16) — L'ENTRÉE QUI PREND LA PLACE D'UNE FAMILLE DE FLUX NON LUE, dans la MÊME
+/// liste que les flux. Elle porte exactement les champs d'un flux non lu (`P10.20-b`) pour qu'un
+/// consommateur qui parcourt `feeds` sans rien savoir de cette clé n'ait aucune valeur à inventer :
+/// `last_seen`, `age_s`, `n_24h` et la cloche d'alertes sont `null`, le statut est `non_lu`. Le champ
+/// `famille_non_lue` est le SEUL en plus : il dit que cette ligne n'est pas une source mais l'aveu d'un
+/// GROUPE de sources, pour qu'aucune surface ne la compte comme un flux de plus.
+pub(crate) fn flux_de_famille_non_lue(kind: &str, famille: &str, cause: &str) -> Value {
+    json!({
+        "kind": kind,
+        "name": famille,
+        "last_seen": Value::Null,
+        "age_s": Value::Null,
+        "n_24h": Value::Null,
+        "status": STATUT_DE_SOURCE_NON_LU,
+        "active_alerts": Value::Null,
+        "non_lu": true,
+        "famille_non_lue": true,
+        "cause": format!("{CAUSE_FAMILLE_DE_FLUX_NON_LUE}{cause}"),
+    })
+}
+
 /// Le nom sous lequel le parcours des alertes actives est noté (et retrouvé pour l'aveu imbriqué).
 const PARCOURS_IMPUTATION: &str = "le partage des alertes actives";
 
@@ -731,7 +796,7 @@ pub(crate) fn compute_freshness(db_path: &str, env: Option<&str>) -> Value {
         // clé de `source_settings` est un nom de SOURCE, et un `kind` d'instantané qui porterait le même
         // nom n'est pas la même chose — appliquer la déclaration aux deux ferait mentir l'une des deux.
         let declarations = crate::handlers::sources::marquages_de_sources(conn);
-        let mk = |kind: &str, name: String, last: i64, n24: i64| -> Value {
+        let mk = |kind: &str, name: String, last: i64, n24: Option<i64>| -> Value {
             let age = now_ts - last;
             // CADENCE DÉCLARÉE — par la sonde de COLLECTORS, sinon par l'exploitant -> STATUT (cf. bandeau
             // `statut_de_source`). Le rythme observé (86400 / n_24h) est rendu à part, sous son vrai nom :
@@ -769,40 +834,61 @@ pub(crate) fn compute_freshness(db_path: &str, env: Option<&str>) -> Value {
         // fallback sur le plancher horaire pour une source dont les buckets sont TOUS encore à 0 (anciens, pas
         // ré-agrégés depuis la migration) — jamais reforcée à « frais ». Lecture sur la PETITE table rollup
         // (qq ms, bien dans le budget 5 s) : AUCUN scan de `event`. (L'ancien correctif `SELECT source,MAX(ts)
-        // FROM event WHERE ts>=now-3600 GROUP BY source` full-scannait les 3,9 M lignes chiffrées en ~21 s
+        // FROM event WHERE ts>=now-3600 GROUP BY source` full-scannait toute la table `event` chiffrée, bien au-delà du budget,
         // faute d'index (source,ts) -> tué par le watchdog -> map vide -> retombait sur le plancher : RETIRÉ.)
-        if let Ok(mut s) = conn.prepare(&format!("SELECT source, COALESCE(NULLIF(MAX(last_ts),0), MAX(bucket)), SUM(CASE WHEN bucket>=?1 THEN n ELSE 0 END) FROM event_rollup WHERE bucket>=?2 AND source<>''{envp} GROUP BY source HAVING SUM(n)>=3")) {
-            let fin = match s.query_map(params![d1, cut7], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))) {
+        // `P10.20-g` (2026-09-16) — UNE PRÉPARATION RATÉE NE RETIRE PLUS LA FAMILLE DU RELEVÉ. Avant :
+        // `if let Ok(mut s) = conn.prepare(..)` SANS branche d'échec — un cache de schéma périmé, une table
+        // hors d'atteinte, et TOUS les flux d'événements quittaient `feeds` sans qu'un seul champ ne bouge.
+        // Sur une surface dont l'objet est de dire ce qui remonte, une famille absente se lit « plus rien ne
+        // vient de là », qui est l'affirmation la plus grave que ce corps sache porter, et personne ne
+        // pouvait la contredire. `FinDeParcours::NonCommence` était déjà le mot juste (`P10.7-f`) : il
+        // manquait qu'on l'écrive pour la préparation aussi, et qu'on LISTE la famille avec son aveu.
+        let fin = match conn.prepare(&format!("SELECT source, COALESCE(NULLIF(MAX(last_ts),0), MAX(bucket)), SUM(CASE WHEN bucket>=?1 THEN n ELSE 0 END) FROM event_rollup WHERE bucket>=?2 AND source<>''{envp} GROUP BY source HAVING SUM(n)>=3")) {
+            Ok(mut s) => match s.query_map(params![d1, cut7], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))) {
                 Ok(rows) => parcourir_chaque(rows, |(src, last, n): (String, i64, i64)| {
-                    feeds.push(mk("event", src, last, n));
+                    feeds.push(mk("event", src, last, Some(n)));
                 }),
                 Err(e) => FinDeParcours::NonCommence { cause: e.to_string() },
-            };
-            releve.noter("les flux d'événements", &fin);
+            },
+            Err(e) => FinDeParcours::NonCommence { cause: e.to_string() },
+        };
+        // L'ENTRÉE DE FAMILLE NE SE POSE QUE SUR UN ÉNONCÉ QUI N'A PAS DÉMARRÉ. Un parcours INTERROMPU a
+        // rendu un PRÉFIXE : des flux SONT listés, et c'est l'aveu de racine de `P10.7-f` qui dit qu'il en
+        // manque. Confondre les deux ferait apparaître une ligne « famille non lue » à côté de flux
+        // parfaitement lus — un aveu qui ment dans l'autre sens.
+        if let FinDeParcours::NonCommence { cause } = &fin {
+            feeds.push(flux_de_famille_non_lue("event", "flux d'événements", cause));
         }
+        releve.noter("les flux d'événements", &fin);
         // INSTANTANÉS — un feed par `kind`, mais dont la FRAÎCHEUR est celle de la machine la PLUS EN
         // RETARD (`MIN` sur les `MAX(ts)` par hôte), même dérivation que `Sonde::Instantane`. Avant :
         // `MAX(ts) … GROUP BY kind` = la machine la plus FRAÎCHE -> mesuré le 2026-08-02, un parc de 50
         // dont 49 muettes depuis 2 h affichait UN feed « frais ». Le volume (`n_24h`) est INCHANGÉ (somme
         // sur les hôtes) et `n_hosts` donne le dénominateur. Mono-hôte : un seul groupe -> valeurs
         // STRICTEMENT identiques à l'ancienne requête.
-        if let Ok(mut s) = conn.prepare(&format!(
+        // `P10.20-g` (2026-09-16) — MÊME GESTE QUE POUR LES ÉVÉNEMENTS, ET LA MÊME RAISON : la préparation
+        // avait une branche muette, la famille disparaissait en entier.
+        let fin = match conn.prepare(&format!(
             "SELECT kind, MIN(l), SUM(nn), COUNT(*) FROM (\
                SELECT kind, host, MAX(ts) AS l, SUM(CASE WHEN ts>?1 THEN 1 ELSE 0 END) AS nn \
                FROM snapshot WHERE ts>?2{envp} GROUP BY kind, host) GROUP BY kind"
         )) {
-            let fin = match s.query_map(params![d1, cut7], |r| {
+            Ok(mut s) => match s.query_map(params![d1, cut7], |r| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?))
             }) {
                 Ok(rows) => parcourir_chaque(rows, |(k, m, n, nh): (String, i64, i64, i64)| {
-                    let mut f = mk("snapshot", k, m, n);
+                    let mut f = mk("snapshot", k, m, Some(n));
                     if let Some(o) = f.as_object_mut() { o.insert("n_hosts".into(), json!(nh)); }
                     feeds.push(f);
                 }),
                 Err(e) => FinDeParcours::NonCommence { cause: e.to_string() },
-            };
-            releve.noter("les flux d'instantanés", &fin);
+            },
+            Err(e) => FinDeParcours::NonCommence { cause: e.to_string() },
+        };
+        if let FinDeParcours::NonCommence { cause } = &fin {
+            feeds.push(flux_de_famille_non_lue("snapshot", "flux d'instantanés", cause));
         }
+        releve.noter("les flux d'instantanés", &fin);
         // métriques : un feed agrégé (remote-write) + DÉTAIL par série (déplié dans l'UI sur clic)
         // `P10.20-b` (rang 2) — UN FLUX NON LU EST LISTÉ AVEC SON AVEU, IL NE DISPARAÎT PAS. Avant :
         // `.ok().flatten()` puis `if let Some(m)`. Une lecture ratée faisait donc sortir le flux « métriques »
@@ -827,12 +913,35 @@ pub(crate) fn compute_freshness(db_path: &str, env: Option<&str>) -> Value {
             }
         };
         if let Some(m) = dernier_point_metrique {
-            let n: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM metric WHERE ts>?1{envp}"), params![d1], |r| r.get(0)).unwrap_or(0);
-            let series: i64 = conn.query_row(&format!("SELECT COUNT(DISTINCT name) FROM metric WHERE ts>?1{envp}"), params![d1], |r| r.get(0)).unwrap_or(0);
+            // `P10.20-g` (2026-09-16) — DEUX COMPTES QUI RETOMBAIENT SUR ZÉRO PAR `unwrap_or(0)`. Le
+            // dernier point du flux, LUI, venait d'être lu : servir « 0 point sur vingt-quatre heures » et
+            // « 0 série » à côté d'un `last_seen` daté de trente secondes ne se lit pas « je n'ai pas
+            // compté », ça se lit « ce flux vient de s'arrêter net » — un incident FABRIQUÉ par un repli.
+            // Le zéro est d'autant plus indétectable qu'il est une valeur PARFAITEMENT plausible ici : une
+            // base sans remote-write depuis la veille rend vraiment 0. `None` ne se confond avec rien.
+            // LES DEUX COMPTES SONT LUS EN UN SEUL ÉNONCÉ, et ce n'est pas un raccourci d'écriture : ils
+            // portaient la MÊME table, la MÊME fenêtre et le MÊME prédicat d'environnement en deux
+            // parcours séparés de `metric` — la table la plus volumineuse de cette surface. Un seul
+            // parcours rend les deux nombres, et une seule cause les couvre quand il n'a pas lieu.
+            let (volume_24h, nombre_de_series, cause_des_comptes) = match conn.query_row(
+                &format!("SELECT COUNT(*), COUNT(DISTINCT name) FROM metric WHERE ts>?1{envp}"),
+                params![d1],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+            ) {
+                Ok((v, s)) => (Some(v), Some(s), None),
+                Err(e) => {
+                    lignes_non_lues.push(format!("les comptes du flux des métriques (volume sur 24 h et nombre de séries) : {e}"));
+                    (None, None, Some(format!("{CAUSE_COMPTE_NON_LU}{e}")))
+                }
+            };
             // liste des séries (nom + dernière donnée + statut) -> l'UI les déplie sous le feed agrégé.
             let mut series_list: Vec<Value> = Vec::new();
-            if let Ok(mut s) = conn.prepare(&format!("SELECT name, MAX(ts), SUM(CASE WHEN ts>?1 THEN 1 ELSE 0 END) FROM metric WHERE ts>?2{envp} GROUP BY name ORDER BY name")) {
-                let fin = match s.query_map(params![d1, cut7], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))) {
+            // `P10.20-g` — LA SOUS-LISTE AUSSI AVAIT UNE PRÉPARATION MUETTE : un tableau VIDE partait sous
+            // `series`, et un flux « métriques · 12 séries » dont la liste dépliée est vide se lit comme
+            // douze séries qui se sont tues d'un coup. Même geste que `poser_la_sous_liste_ou_avouer` :
+            // l'absence de LECTURE ne s'écrit pas comme une absence de LIGNES.
+            let fin = match conn.prepare(&format!("SELECT name, MAX(ts), SUM(CASE WHEN ts>?1 THEN 1 ELSE 0 END) FROM metric WHERE ts>?2{envp} GROUP BY name ORDER BY name")) {
+                Ok(mut s) => match s.query_map(params![d1, cut7], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))) {
                     Ok(rows) => parcourir_chaque(rows, |(nm, ls, n24): (String, i64, i64)| {
                         let age = now_ts - ls;
                         // `P10.20-b` (rang 2) — même règle pour une série de métriques que pour un flux.
@@ -843,11 +952,37 @@ pub(crate) fn compute_freshness(db_path: &str, env: Option<&str>) -> Value {
                         series_list.push(json!({ "name": nm, "last_seen": ls, "age_s": age, "n_24h": n24, "status": st }));
                     }),
                     Err(e) => FinDeParcours::NonCommence { cause: e.to_string() },
-                };
-                releve.noter("les séries de métriques", &fin);
+                },
+                Err(e) => FinDeParcours::NonCommence { cause: e.to_string() },
+            };
+            releve.noter("les séries de métriques", &fin);
+            // LE NOM NE PORTE UN NOMBRE QUE QUAND CE NOMBRE A ÉTÉ COMPTÉ. C'est le nom qu'un analyste lit
+            // en premier, avant tout champ : « métriques · 0 séries » y serait un verdict.
+            let nom = match nombre_de_series {
+                Some(k) => format!("métriques · {k} séries"),
+                None => "métriques".to_string(),
+            };
+            let mut mf = mk("metric", nom, m, volume_24h);
+            if let Some(o) = mf.as_object_mut() {
+                match &fin {
+                    FinDeParcours::NonCommence { cause } => {
+                        o.insert("series".into(), Value::Null);
+                        o.insert("series_non_lues".into(), json!(format!("{CAUSE_FAMILLE_DE_FLUX_NON_LUE}{cause}")));
+                    }
+                    _ => {
+                        o.insert("series".into(), json!(series_list));
+                    }
+                }
+                if let Some(cause) = cause_des_comptes {
+                    // `n_24h` est DÉJÀ nul (il traverse `mk` en `Option`) ; ce qui manquait était la CAUSE
+                    // à côté. `nb_series` n'existait pas comme champ — le nombre ne vivait que dans le nom,
+                    // qui ne peut pas porter un `null` : on le publie ici pour que l'absence soit lisible
+                    // autrement que par la forme d'une chaîne.
+                    o.insert("n_24h_non_lu".into(), json!(cause));
+                    o.insert("nb_series".into(), Value::Null);
+                    o.insert("nb_series_non_lu".into(), json!(cause));
+                }
             }
-            let mut mf = mk("metric", format!("métriques · {series} séries"), m, n);
-            if let Some(o) = mf.as_object_mut() { o.insert("series".into(), json!(series_list)); }
             feeds.push(mf);
         }
         // S7 + P11.3-d — LE PARTAGE DES ALERTES ACTIVES, publié MÊME À ZÉRO : une surface qui n'affiche un

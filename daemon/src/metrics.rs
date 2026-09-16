@@ -296,15 +296,19 @@ pub(crate) fn component_health_avec(
 
     // INGEST : santé du pipeline (fraîcheur globale) + backlog spool. Un silence n'est PAS une panne
     // (doctrine fraîcheur) -> stale = jaune (jamais rouge) ; backlog important = jaune (ingest en retard).
-    let fresh = pipeline_is_fresh(conn, now_ts);
+    // `P10.20-g` (2026-09-16) — UNE SEULE LECTURE TYPÉE, LÀ OÙ IL Y EN AVAIT DEUX DONT UNE APLATIE.
+    // Ce bloc lisait DEUX FOIS le même `MAX(ts)` sur l'union event∪metric∪snapshot : une fois par
+    // `pipeline_is_fresh` (qui rendait « pas frais » sur une lecture ratée) et une fois ici par
+    // `.ok().flatten()` (qui rendait « aucune donnée »). Les deux replis se composaient dans le PIRE
+    // sens : une base illisible sortait en `idle` — « aucune donnée encore ingérée » —, c'est-à-dire
+    // l'état d'une installation NEUVE, servi sur `/api/system/health`, sur le paquet de diagnostic et
+    // sur `/metrics`. Un exploitant qui voit « idle » cherche pourquoi ses collecteurs n'émettent pas ;
+    // il ne cherche pas pourquoi sa base ne se lit plus. La lecture est désormais UNE, et son échec est
+    // un troisième cas NOMMÉ, jamais un verdict.
+    let dernier_point = crate::handlers::freshness::dernier_point_de_donnee(conn);
+    let fresh = matches!(&dernier_point, Ok(Some(m)) if now_ts - m < 600);
     let queue = spool_queue_depth(spool);
-    let had_data: Option<i64> = conn
-        .query_row(
-            "SELECT MAX(m) FROM (SELECT MAX(ts) m FROM event UNION ALL SELECT MAX(ts) FROM metric UNION ALL SELECT MAX(ts) FROM snapshot)",
-            [], |r| r.get::<_, Option<i64>>(0),
-        )
-        .ok()
-        .flatten();
+    let had_data: Option<i64> = dernier_point.as_ref().ok().copied().flatten();
     // S32 — LE CAS ILLISIBLE EST TRAITÉ EN PREMIER, ET IL NE PEUT PAS ÊTRE VERT. Une file dont le
     // répertoire a disparu se lisait ici comme une file VIDE : le composant retombait sur la fraîcheur
     // et pouvait annoncer « données fraîches » alors que la voie spool était peut-être morte sans que
@@ -320,6 +324,19 @@ pub(crate) fn component_health_avec(
             ),
         ),
         Some(&n) if n > 500 => ("yellow", format!("backlog spool : {n} fichiers en attente")),
+        // `P10.20-g` — LA LECTURE NON FAITE PASSE AVANT « aucune donnée », parce que c'est exactement
+        // pour elle qu'on la prenait. JAUNE, comme la file non lisible juste au-dessus : la voie d'ingest
+        // n'est pas constatée en panne (elle n'a pas été regardée), et l'état qui appelle un regard est
+        // le seul honnête.
+        Some(_) if dernier_point.is_err() => (
+            "yellow",
+            format!(
+                "santé du pipeline d'ingest NON LUE ({}) : ce n'est PAS « aucune donnée ingérée » et ce \
+                 n'est pas « collecte arrêtée » — la dernière donnée reçue n'a pas pu être lue, donc ni \
+                 la fraîcheur ni l'existence de données ne sont établies ici.",
+                dernier_point.as_ref().err().map(|e| e.to_string()).unwrap_or_else(|| "cause non renseignée".into())
+            ),
+        ),
         Some(_) if had_data.is_none() => ("idle", "aucune donnée encore ingérée".to_string()),
         Some(_) if fresh => ("green", "données fraîches (< 10 min)".to_string()),
         Some(_) => ("yellow", "aucune donnée récente (source calme ou collecte arrêtée)".to_string()),

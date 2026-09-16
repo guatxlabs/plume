@@ -88,26 +88,48 @@ pub(crate) fn hotes_du_panneau_bornes(conn: &Connection, borne: i64) -> Result<(
 /// le lot 91 ; `non_lus` nomme les lectures d'ENRICHISSEMENT ratées (enrôlement, déclarations) : chaque hôte est alors
 /// traité comme non enrôlé / non déclaré — le sens SÛR (plus d'alertes, jamais moins) — mais ce n'est pas une
 /// observation, le corps le dit, et une flotte partiellement non lue n'est jamais mise en cache.
+/// `P10.20-g` (2026-09-16) — LA SANTÉ DU PIPELINE DE CETTE VUE EST LUE, OU ELLE EST NON LUE. Elle était
+/// un `bool` NU, rempli par la forme aplatie : une lecture ratée servait `pipeline_fresh: false`, et la
+/// console peint « ingestion en panne » sur cette valeur. Un `false` accuse la collecte de TOUTE la
+/// flotte ; il ne se distingue en rien d'une panne constatée, et rien dans le corps ne permettait de le
+/// soupçonner. La forme est celle que `/api/freshness` sert déjà depuis `P10.20-b` : `Option<bool>`,
+/// `null` plus une cause nommée.
 pub(crate) struct FlotteLue {
     pub(crate) hosts: Vec<Value>,
-    pub(crate) pipeline_fresh: bool,
+    pub(crate) pipeline_fresh: Option<bool>,
     pub(crate) hotes_lus: bool,
     pub(crate) non_lus: Vec<&'static str>,
+    /// La cause de la santé du pipeline non lue. PAS dans `non_lus` : la phrase servie pour celui-ci dit
+    /// « traité comme non enrôlé / non déclaré (sens sûr) », ce qui serait faux ici — il n'y a pas de sens
+    /// sûr à choisir, la valeur est simplement absente.
+    pub(crate) pipeline_non_lu: Option<String>,
 }
 
 impl FlotteLue {
     /// Le défaut servi quand AUCUNE lecture n'a eu lieu (pas de connexion, tâche interrompue).
     pub(crate) fn non_lue() -> Self {
-        FlotteLue { hosts: Vec::new(), pipeline_fresh: false, hotes_lus: false, non_lus: vec!["hôtes"] }
+        FlotteLue {
+            hosts: Vec::new(),
+            // Aucune lecture n'a eu lieu : `false` affirmerait une panne d'ingestion qu'on n'a pas observée.
+            pipeline_fresh: None,
+            hotes_lus: false,
+            non_lus: vec!["hôtes"],
+            pipeline_non_lu: Some(format!("{CAUSE_SANTE_DU_PIPELINE_NON_LUE} Cause : {}", crate::query_exec::LECTURE_NON_FAITE_SANS_CONNEXION)),
+        }
     }
-    /// Tout a été lu : la seule flotte qu'on met en cache.
+    /// Tout a été lu : la seule flotte qu'on met en cache. Une santé de pipeline non lue GATE le cache au
+    /// même titre que le reste — sans quoi un `null` figé serait resservi trente secondes après que la
+    /// base est redevenue lisible.
     pub(crate) fn lue(&self) -> bool {
-        self.hotes_lus && self.non_lus.is_empty()
+        self.hotes_lus && self.non_lus.is_empty() && self.pipeline_non_lu.is_none()
     }
 }
 
 pub(crate) fn fleet_scan_all(conn: &Connection, now_ts: i64) -> FlotteLue {
-    let pipeline_fresh = pipeline_is_fresh(conn, now_ts);
+    let (pipeline_fresh, pipeline_non_lu) = match pipeline_est_frais(conn, now_ts) {
+        Ok(b) => (Some(b), None),
+        Err(e) => (None, Some(format!("{CAUSE_SANTE_DU_PIPELINE_NON_LUE} Cause : {e}"))),
+    };
     // ENRÔLEMENT (best-effort, mode 0) : host -> (name, created, last_used). token_hash JAMAIS lu (l'authorizer
     // read-pool le refuserait de toute façon). ORDER BY created DESC + or_insert -> on garde l'enrôlement le
     // PLUS RÉCENT quand un hôte a plusieurs tokens. Un échec de prepare (schéma mode 1 sans name/last_used)
@@ -199,7 +221,7 @@ pub(crate) fn fleet_scan_all(conn: &Connection, now_ts: i64) -> FlotteLue {
             }
         }
     }
-    FlotteLue { hosts, pipeline_fresh, hotes_lus, non_lus }
+    FlotteLue { hosts, pipeline_fresh, hotes_lus, non_lus, pipeline_non_lu }
 }
 
 /// P11.10-a — LES PARTS, ET ELLES S'ADDITIONNENT. Calculée sur la liste COMPLÈTE (jamais sur la page
@@ -263,7 +285,7 @@ pub(crate) fn fleet_sort_paginate(mut hosts: Vec<Value>, sort: &str, dir_desc: b
 /// Wrapper (compat tests + chemin non-caché) : scan lourd + tri/pagination en une passe. Le handler `fleet`
 /// n'appelle PAS ceci (il scanne via le cache SWR) ; conservé pour fleet_query_page(&conn, …) direct (tests).
 #[allow(dead_code)] // utilisé uniquement par les tests (le handler passe par fleet_scan_all + le cache SWR)
-pub(crate) fn fleet_query_page(conn: &Connection, now_ts: i64, sort: &str, dir_desc: bool, limit: i64, offset: i64) -> (Vec<Value>, i64, bool) {
+pub(crate) fn fleet_query_page(conn: &Connection, now_ts: i64, sort: &str, dir_desc: bool, limit: i64, offset: i64) -> (Vec<Value>, i64, Option<bool>) {
     let f = fleet_scan_all(conn, now_ts);
     let (hosts, pipeline_fresh) = (f.hosts, f.pipeline_fresh);
     let (page, total) = fleet_sort_paginate(hosts, sort, dir_desc, limit, offset);
@@ -286,20 +308,47 @@ pub(crate) const FLEET_TTL: Duration = Duration::from_secs(30);
 /// L'aveu servi quand la flotte n'a pas pu être lue (`P10.7-g`, lot 91) : la liste vide n'est pas un inventaire, et
 /// elle n'est pas mise en cache.
 pub(crate) const FLOTTE_NON_LUE: &str = "flotte NON LUE : la lecture des hôtes n'a pas abouti — cette liste vide n'est pas un inventaire établi, et elle n'est pas mise en cache";
-// MT-KEY: cache par db_path. Valeur = (liste COMPLÈTE d'hôtes NON paginée, pipeline_fresh).
-pub(crate) static FLEET_CACHE: std::sync::OnceLock<Mutex<HashMap<String, (Instant, (Vec<Value>, bool))>>> = std::sync::OnceLock::new();
+/// `P10.20-g` (2026-09-16) — L'AVEU SERVI QUAND LA SANTÉ DU PIPELINE N'A PAS ÉTÉ LUE. Écrit ici plutôt
+/// que dans `freshness.rs` parce que c'est CETTE route qui le sert, et qu'un consommateur de `/api/fleet`
+/// doit pouvoir le reconnaître sans lire le vocabulaire d'une autre surface. Le mot est le même des deux
+/// côtés (`pipeline_fresh` à `null`), la phrase nomme la route.
+///
+/// ELLE NE VA PAS DANS `error`, ET C'EST MESURÉ SUR LE CONSOMMATEUR. `web/fleet.js` traite `error` comme
+/// un REFUS : il vide la vue, écrit « Inventaire de la flotte NON LU — aucun hôte n'a été lu » et rend la
+/// main. Or ici les hôtes ONT été lus, et leur liste est complète et juste. Poser cette cause dans `error`
+/// ferait donc DISPARAÎTRE un inventaire valide à cause d'une lecture qui ne le concerne pas — on
+/// remplacerait une valeur fausse par une vue vide, ce qui est pire. L'aveu vit sur sa propre clé
+/// (`pipeline_fresh_non_lu`, juste à côté du `null` qu'il explique) et dans `non_lus`, la forme de liste
+/// que `/api/freshness` sert déjà.
+pub(crate) const CAUSE_SANTE_DU_PIPELINE_NON_LUE: &str = "SANTÉ DU PIPELINE NON LUE : `pipeline_fresh` \
+     vaut `null` et non `false`. `false` voudrait dire « plus rien n'arrive, toutes sources confondues » \
+     — une panne d'ingestion CONSTATÉE, sur toute la flotte. Ici la dernière donnée reçue n'a pas pu être \
+     lue : rien n'a été observé, ni panne ni bonne santé. L'inventaire d'hôtes servi à côté, lui, n'est \
+     pas concerné par cette lecture.";
+// MT-KEY: cache par db_path. Valeur = (liste COMPLÈTE d'hôtes NON paginée, pipeline_fresh LU — le cache
+// ne reçoit qu'une flotte entièrement lue, donc jamais un `None`).
+pub(crate) static FLEET_CACHE: std::sync::OnceLock<Mutex<HashMap<String, (Instant, (Vec<Value>, Option<bool>))>>> = std::sync::OnceLock::new();
 // Gate anti-stampede GLOBAL (booléen, AUCUNE donnée tenant -> pas un vecteur de fuite) : UN refresh en vol.
 pub(crate) static FLEET_REFRESHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-pub(crate) fn fleet_map() -> &'static Mutex<HashMap<String, (Instant, (Vec<Value>, bool))>> {
+pub(crate) fn fleet_map() -> &'static Mutex<HashMap<String, (Instant, (Vec<Value>, Option<bool>))>> {
     FLEET_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 /// Tri + pagination de la liste complète (en cache) -> payload d'API stable {hosts,total,pipeline_fresh,now}.
-pub(crate) fn fleet_response(hosts_full: &[Value], pipeline_fresh: bool, sort: &str, dir_desc: bool, limit: i64, offset: i64, now_ts: i64) -> Value {
+/// `pipeline_fresh` est une OPTION (`P10.20-g`) : `null` quand la santé du pipeline n'a pas été lue.
+pub(crate) fn fleet_response(hosts_full: &[Value], pipeline_fresh: Option<bool>, sort: &str, dir_desc: bool, limit: i64, offset: i64, now_ts: i64) -> Value {
     // La répartition est calculée sur la liste COMPLÈTE, AVANT la pagination : elle ne bouge donc pas
     // quand l'exploitant tourne les pages ou change le tri (`P11.10-a`).
     let repartition = repartition_de_flotte(hosts_full);
     let (page, total) = fleet_sort_paginate(hosts_full.to_vec(), sort, dir_desc, limit, offset);
-    json!({ "hosts": page, "total": total, "repartition": repartition, "pipeline_fresh": pipeline_fresh, "now": now_ts })
+    let mut corps = json!({ "hosts": page, "total": total, "repartition": repartition, "pipeline_fresh": pipeline_fresh, "now": now_ts });
+    // `P10.20-g` — LE `null` NE VOYAGE JAMAIS SEUL. La phrase invariante est posée ICI, à côté du champ
+    // qu'elle explique, pour que TOUT chemin qui sert un `pipeline_fresh` non lu le dise — y compris ceux
+    // qui n'ont pas la cause du moteur sous la main. Le gestionnaire la complète avec la cause exacte
+    // quand il l'a. Rien n'est posé sur le chemin nominal : le corps y est byte-identique.
+    if pipeline_fresh.is_none() {
+        corps["pipeline_fresh_non_lu"] = json!(CAUSE_SANTE_DU_PIPELINE_NON_LUE);
+    }
+    corps
 }
 
 /// GET /api/fleet?limit=&offset=&sort=&dir= — inventaire de la flotte d'agents (viewer+ ; cf. bloc FLEET).
@@ -362,17 +411,36 @@ pub(crate) async fn fleet(State(st): State<AppState>, Extension(au): Extension<A
                 fleet_map().lock().insert(ckey, (Instant::now(), (f.hosts.clone(), f.pipeline_fresh)));
             }
             let mut corps = fleet_response(&f.hosts, f.pipeline_fresh, &sort, dir_desc, limit, offset, now_ts);
+            // `P10.20-g` — LES AVEUX S'ACCUMULENT, ILS NE S'ÉCRASENT PLUS. Les trois lectures de ce corps
+            // (hôtes, enrichissements, santé du pipeline) tombent séparément et peuvent tomber ENSEMBLE :
+            // une base hors d'atteinte les emporte toutes les trois. Écrire `error` par affectations
+            // successives ferait donc taire deux aveux sur trois, en commençant par celui que la console
+            // teste. `non_lus` porte en plus la forme de liste que `/api/freshness` sert déjà, pour qu'un
+            // consommateur puisse lire les deux routes avec le même geste.
+            let mut aveux: Vec<String> = Vec::new();
             if !f.hotes_lus {
                 // `P10.7-g` (lot 91) — non lu (table illisible, ligne illisible ou garde-fou) : servi SANS cache, et DIT.
-                corps["error"] = json!(FLOTTE_NON_LUE);
+                aveux.push(FLOTTE_NON_LUE.to_string());
             } else if !f.non_lus.is_empty() {
                 // `P10.7-g` (lot 100) — hôtes lus, mais l'enrôlement ou les déclarations ne l'ont pas été : servi SANS
                 // cache, et DIT. Le sens est SÛR (non enrôlé / non déclaré : plus d'alertes, jamais moins), mais ce
                 // n'est pas une observation.
-                corps["error"] = json!(format!("flotte partiellement NON LUE : {} — traité comme non enrôlé / non déclaré (sens sûr), ce n'est pas une observation", f.non_lus.join(", ")));
+                aveux.push(format!("flotte partiellement NON LUE : {} — traité comme non enrôlé / non déclaré (sens sûr), ce n'est pas une observation", f.non_lus.join(", ")));
+            }
+            // La santé du pipeline est nommée À PART, et JAMAIS dans `error` : elle ne dit rien des
+            // hôtes, la liste peut être complète et juste pendant que `pipeline_fresh` vaut `null`, et
+            // `error` est lu par la console comme un refus qui vide la vue (cf. la doc de la constante).
+            if let Some(cause) = &f.pipeline_non_lu {
+                corps["non_lus"] = json!([cause]);
+                corps["pipeline_fresh_non_lu"] = json!(cause);
+            }
+            if !aveux.is_empty() {
+                corps["error"] = json!(aveux.join(" — "));
             }
             Json(corps)
         }
-        Err(_) => Json(json!({ "hosts": [], "error": FLOTTE_NON_LUE })),
+        // `P10.20-g` — la tâche elle-même a échoué : `pipeline_fresh` est posé NUL et non absent. Un champ
+        // absent se lit `undefined` côté console, ce qui y vaut faux — c'est-à-dire « ingestion en panne ».
+        Err(_) => Json(json!({ "hosts": [], "pipeline_fresh": Value::Null, "pipeline_fresh_non_lu": CAUSE_SANTE_DU_PIPELINE_NON_LUE, "error": FLOTTE_NON_LUE })),
     }
 }

@@ -491,7 +491,10 @@ pub(crate) async fn sources_inventory(State(st): State<AppState>, Extension(au):
                     "n_24h": n24,
                     "status": status,
                 });
-                if let (Some(o), Value::Object(c)) = (entry.as_object_mut(), cadence_json(&cadence, *n24)) {
+                // `P10.20-g` — `Some` et non `None` : ce volume-là A ÉTÉ LU (l'inventaire refuse de conclure
+                // AVANT d'arriver ici quand sa lecture échoue, cf. `corps_inventaire_non_lu`). L'option ne
+                // dit pas « peut-être zéro », elle dit « peut-être pas compté » — et ici il l'a été.
+                if let (Some(o), Value::Object(c)) = (entry.as_object_mut(), cadence_json(&cadence, Some(*n24))) {
                     o.extend(c);
                 }
                 sources.push(entry);

@@ -77,6 +77,18 @@ MACROS (`macro_rules!` peut porter des apostrophes de fragment `$l:lifetime` et 
 Rust), les apostrophes d'un ATTRIBUT ou d'une chaîne de documentation `#[doc = "…'…"]` (elles sont dans
 une chaîne, donc sautées — mais rien ne vérifie l'attribut lui-même), et le CODE GÉNÉRÉ, que ce dépôt ne
 relit pas. Ce lecteur reste un DÉPOUILLEUR, pas un analyseur syntaxique Rust.
+LES COMMENTAIRES DE BLOC S'IMBRIQUENT DEPUIS LE 2026-09-16 (`P10.20-n`) : Rust DÉFINIT `/* a /* b */ c */`
+comme UN commentaire, et le lecteur s'arrêtait au premier `*/` — « c */ » redevenait du code. JavaScript,
+lui, N'IMBRIQUE PAS (spécification), et sa lecture est inchangée : les deux règles cohabitent derrière le
+drapeau `grammaire_rust`, chacune avec son témoin. Le défaut était LATENT, et c'est mesuré : sur les 367
+fichiers `.rs` des quatre caisses, AUCUN bloc imbriqué et AUCUN bloc jamais refermé — zéro ligne
+dépouillée autrement. Un bloc jamais refermé fait désormais AVOUER le lecteur, parce que blanchir la fin
+d'un fichier ne fabrique aucune accusation : ça rend AVEUGLE, en vert et sans un mot.
+ET LE MODULE EXPOSE ENFIN L'AVEUGLEMENT DES LITTÉRAUX RUST (`aveugler_litteraux_rust`, `P10.20-n`) à côté
+de `aveugler_litteraux_js`. Il manquait, donc la garde des mutations d'environnement en gardait un LOCAL :
+une cinquième grammaire Rust sous `.github/scripts/`, exactement ce que `P10.20-c` à `-e` ont payé. Les
+deux aveuglements ne rendent PAS la même chose, et la différence est voulue : la version Rust blanchit les
+DÉLIMITEURS aussi (sans quoi `include!("common.rs")` rendrait un nom de fichier fait d'espaces).
 """
 import os, re, subprocess, sys
 
@@ -284,6 +296,33 @@ def _blanc(texte):
     return re.sub(r"[^\n]", " ", texte)
 
 
+def _fin_du_bloc_rust(src, depart, journal=None):
+    """Index APRÈS le `*/` qui referme le commentaire de bloc ouvert en `depart`, IMBRICATION COMPRISE —
+    Rust DÉFINIT `/* a /* b */ c */` comme UN commentaire (`P10.20-n`, 2026-09-16). Le lecteur s'arrêtait
+    au PREMIER `*/` : « c */ » redevenait du CODE (un site commenté redevient un site, accusation
+    fabriquée) et le vrai `*/` devenait un jeton. LATENT sur cet arbre, et c'est mesuré : zéro bloc
+    imbriqué sur les 367 fichiers `.rs` des quatre caisses.
+    CE N'EST PAS LA RÈGLE DE JAVASCRIPT, où un commentaire de bloc se ferme au premier `*/` et où un `/*`
+    écrit dedans n'est qu'un caractère : les deux lectures divergent PARCE QUE les deux langages divergent,
+    et rallier l'une sur l'autre ferait mentir celle qu'on déplace. Un témoin fige chaque sens.
+    UN BLOC JAMAIS REFERMÉ blanchit la fin du fichier : il n'invente aucune accusation, il en PERD — d'où
+    l'AVEU (`journal`), que `refuser_sur_aveu` transforme en refus de conclure chez l'appelant qui
+    l'écoute. Sans lui, la cécité serait verte et muette."""
+    prof, j, n = 0, depart, len(src)
+    while j < n:
+        if src.startswith("/*", j):
+            prof += 1; j += 2; continue
+        if src.startswith("*/", j):
+            prof -= 1; j += 2
+            if prof <= 0:
+                return j
+            continue
+        j += 1
+    journaliser_perte(journal, f"un commentaire de bloc `/*` atteint la fin du fichier sans son `*/` "
+                               f"fermant ({prof} niveau(x) encore ouvert(s), imbrication comprise)", depart)
+    return n
+
+
 def _sans_commentaires(src, delimiteurs, regex_litterales, journal, grammaire_rust=False):
     out, i, n, code = [], 0, len(src), []
     while i < n:
@@ -309,7 +348,12 @@ def _sans_commentaires(src, delimiteurs, regex_litterales, journal, grammaire_ru
         if src.startswith("//", i):
             j = src.find("\n", i); i = n if j < 0 else j; continue
         if src.startswith("/*", i):
-            j = src.find("*/", i + 2); f = n if j < 0 else j + 2
+            # RUST IMBRIQUE SES BLOCS, JAVASCRIPT NON (`P10.20-n`) : la fermeture n'est pas la même règle,
+            # et c'est le langage qui la choisit — pas une préférence de ce fichier.
+            if grammaire_rust:
+                f = _fin_du_bloc_rust(src, i, journal)
+            else:
+                j = src.find("*/", i + 2); f = n if j < 0 else j + 2
             out.append(_blanc(src[i:f])); i = f; continue
         if regex_litterales and c == "/" and RE_AVANT_REGEX.search("".join(code[-40:])):
             f = saute_regex(src, i); out.append(src[i:f]); code.append("/re/"); i = f; continue
@@ -321,7 +365,10 @@ def sans_commentaires_js(src, journal=None):
     """Retire `//…` et `/*…*/` en respectant les chaînes ('', "", ``) ET les littéraux d'expression
     régulière : un `//` dans une URL reste, un `/*` ou un `"` dans un motif n'ouvre plus rien.
     Un commentaire de bloc devient des blancs de même hauteur ; les lignes rendues sont celles du
-    fichier. `journal` (facultatif) recueille les AVEUX de perte de synchronisation."""
+    fichier. IL NE S'IMBRIQUE PAS, et c'est la SPÉCIFICATION du langage : `/* a /* b */` se ferme sur son
+    premier `*/`, le `/*` intérieur n'est qu'un caractère. Le lecteur Rust, lui, imbrique (`P10.20-n`) ;
+    un témoin fige chacune des deux règles pour qu'un ralliement ne se fasse pas par distraction.
+    `journal` (facultatif) recueille les AVEUX de perte de synchronisation."""
     return _sans_commentaires(src, CHAINES_JS, True, journal)
 
 
@@ -339,6 +386,12 @@ def sans_commentaires_rust(src, journal=None):
     muette). CE QUI RESTE NON COUVERT, ET C'EST DIT : le corps des MACROS (`macro_rules!` porte des
     apostrophes de fragment et du texte qui n'est pas du Rust), les apostrophes d'un ATTRIBUT et le CODE
     GÉNÉRÉ ne sont pas des grammaires que ce dépouilleur connaît.
+    LES COMMENTAIRES DE BLOC S'IMBRIQUENT (`P10.20-n`, 2026-09-16, `_fin_du_bloc_rust`), comme Rust les
+    définit — et un bloc jamais refermé fait AVOUER le lecteur au lieu de blanchir la fin du fichier en
+    silence. LES LITTÉRAUX SONT RENDUS TELS QUELS : c'est le contrat de CE lecteur (`include!("…")` doit
+    rester lisible), et il a un prix — tout scanner qui relit sa sortie RETROUVE le `"` de `'"'` et doit
+    connaître le littéral de caractère à son tour (`P10.20-m`). Qui veut un texte où les littéraux ne
+    portent plus rien prend `aveugler_litteraux_rust`.
     `journal` (facultatif) recueille les AVEUX de perte de synchronisation : le passer est ce qui
     distingue un refus de conclure d'un compte amputé rendu en vert (`P10.20-d`)."""
     return _sans_commentaires(src, CHAINES_RUST, False, journal, grammaire_rust=True)
@@ -374,6 +427,57 @@ def aveugler_litteraux_js(src, journal=None):
     return "".join(out)[:n]
 
 
+def aveugler_litteraux_rust(src, journal=None):
+    """MÊME LONGUEUR ET MÊME HAUTEUR que `src`, les COMMENTAIRES (ligne et bloc, imbriqués) et les
+    LITTÉRAUX (chaînes, chaînes brutes, chaînes d'octets ou C, littéraux de caractère et d'octet)
+    remplacés par des blancs (`P10.20-n`, 2026-09-16). C'est le pendant Rust de `aveugler_litteraux_js`,
+    pour qui compte les ACCOLADES : une accolade écrite dans un gabarit (`format!("… {} …")`) déplacerait
+    la fin de chaque corps de fonction, et un `set_var(` cité dans un message d'assertion compterait pour
+    du code. Il manquait ici, donc la garde des mutations d'environnement en gardait un local — une
+    grammaire Rust de plus sous `.github/scripts/`, et c'est la recopie qui a fait vivre les défauts
+    `P10.20-c` à `-e`.
+
+    DEUX DIFFÉRENCES AVEC LA VERSION JS, TOUTES DEUX VOULUES ET TÉMOIGNÉES.
+      (1) Les DÉLIMITEURS sont blanchis eux aussi, pas seulement le contenu. Sans cela
+          `include!("common.rs")` rendrait `include!("        ")` et le motif qui lit le nom de fichier
+          suivrait un fichier dont le nom est fait d'espaces. La version JS garde ses délimiteurs parce
+          que son appelant apparie des blocs et a besoin de voir où un littéral commence.
+      (2) Les blocs de commentaire s'IMBRIQUENT, comme Rust les définit.
+    LA GRAMMAIRE EST CELLE DU LECTEUR (`saute_chaine`, `saute_chaine_brute_rust`, `_prefixe_brut_rust`,
+    `RE_CARACTERE_RUST`, `_fin_du_bloc_rust`) : ce qui change est le CONTRAT — blanchir au lieu de rendre
+    tel quel —, jamais où commence et où finit un littéral. Une apostrophe qui n'ouvre pas un littéral de
+    caractère (`'static`, `'a`, `'outer:`) est une DURÉE DE VIE et reste dans le code.
+    CE QUI RESTE HORS GRAMMAIRE est celui de `sans_commentaires_rust` : macros, attributs, code généré.
+    `journal` recueille les AVEUX (littéral, chaîne brute ou bloc qui atteint la fin du fichier sans sa
+    fermeture) ; le passer est ce qui distingue un refus de conclure d'un compte amputé rendu en vert."""
+    out, i, n = [], 0, len(src)
+    while i < n:
+        c = src[i]
+        if src.startswith("//", i):
+            j = src.find("\n", i); f = n if j < 0 else j
+            out.append(_blanc(src[i:f])); i = f; continue
+        if src.startswith("/*", i):
+            f = _fin_du_bloc_rust(src, i, journal)
+            out.append(_blanc(src[i:f])); i = f; continue
+        if _prefixe_brut_rust(src, i):
+            # `r"…"`, `r#"…"#`, `br#"…"#`, `cr#"…"#` — ce qui n'en est pas une (`r#type`, un `r`
+            # ordinaire) rend None et repart dans le code, sans rien ouvrir.
+            f = saute_chaine_brute_rust(src, i, journal)
+            if f is not None:
+                out.append(_blanc(src[i:f])); i = f; continue
+        if c == '"':
+            # La chaîne Rust a le droit de FRANCHIR une fin de ligne : `multiligne=True`.
+            f = saute_chaine(src, i, journal, multiligne=True)
+            out.append(_blanc(src[i:f])); i = f; continue
+        if c == "'":
+            m = RE_CARACTERE_RUST.match(src, i)
+            if m:
+                out.append(_blanc(m.group(0))); i = m.end(); continue
+            out.append(c); i += 1; continue
+        out.append(c); i += 1
+    return "".join(out)
+
+
 # LA CAUSE LA PLUS FRÉQUENTE, PAR LANGAGE — la seule partie du refus qui diffère. Une seule phrase par
 # lecteur : écrite deux fois, elle finirait par nommer un remède que le lecteur n'applique plus.
 CAUSE_DE_DESYNCHRONISATION = {
@@ -396,13 +500,18 @@ def refuser_sur_aveu(etiquette, aveux, langage="JavaScript"):
     pire qu'une garde absente. C'est ce qu'un `"` dans une expression régulière a fait pendant un jour sur
     `web/viz.js` (118 littéraux perdus, `P11.8-e`).
     `langage` nomme le lecteur qui a avoué — le défaut de `JavaScript` garde la phrase des sept gardes qui
-    l'appelaient déjà ; les quatre consommateurs du lecteur RUST passent `"Rust"` (`P10.20-d`), sans quoi
-    le refus nommerait une cause qui n'existe pas dans le fichier accusé."""
+    l'appelaient déjà ; les consommateurs du lecteur RUST passent `"Rust"` (`P10.20-d`), sans quoi le refus
+    nommerait une cause qui n'existe pas dans le fichier accusé.
+    LA PHRASE NE NOMME PLUS « UN LITTÉRAL » (`P10.20-n`, 2026-09-16) : depuis que le lecteur Rust avoue
+    aussi un COMMENTAIRE DE BLOC jamais refermé, la région perdue n'est plus toujours un littéral, et
+    c'est la ligne — qui porte le motif exact — qui dit laquelle. Aucun aveu ne se produit sur cet arbre :
+    ce changement de phrase ne déplace la sortie d'AUCUNE garde, il empêche une phrase FAUSSE le jour où
+    l'aveu parlera."""
     for fichier, lignes in sorted(aveux.items()):
         for ligne in lignes:
             print(f"::error::{fichier}:{ligne} — le lecteur {langage} a PERDU LA SYNCHRONISATION : il a "
-                  f"ouvert un littéral qui n'en est pas un, et tout ce qu'il a lu depuis est faux. Cause la "
-                  f"plus fréquente : {CAUSE_DE_DESYNCHRONISATION[langage]}")
+                  f"ouvert une région qui ne se referme pas — la ligne dit LAQUELLE —, et tout ce qu'il a "
+                  f"lu depuis est faux. Cause la plus fréquente : {CAUSE_DE_DESYNCHRONISATION[langage]}")
     print(f"[{etiquette}] REFUS DE CONCLURE — le lecteur avoue avoir sauté une région ; il ne rend pas un "
           f"compte amputé en vert.")
     return True
@@ -707,6 +816,79 @@ def temoins_du_lecteur():
     perdu = []
     sans_commentaires_rust("let s = r##\"jamais refermee\"#;\nlet t = 1;\n", perdu)
     assert perdu, "témoin : une chaîne brute non fermée ne fait plus avouer le lecteur — il rendrait un compte amputé en silence"
+
+    # ================================================================================================
+    # (l) LES BLOCS DE COMMENTAIRE S'IMBRIQUENT EN RUST, PAS EN JAVASCRIPT (`P10.20-n`, 2026-09-16)
+    # ================================================================================================
+    # Les quatre premiers sont EXTRAITS d'un fichier fabriqué que `rustc --edition 2021` compile. Le
+    # lecteur s'arrêtait au PREMIER `*/` : ce que le commentaire cache redevenait du CODE — une accusation
+    # fabriquée — et le `*/` du vrai bloc devenait un jeton. LATENT sur l'arbre, MESURÉ : zéro bloc
+    # imbriqué et zéro bloc non refermé sur les 367 fichiers `.rs` des quatre caisses. Un défaut latent se
+    # ferme quand même : il n'attend qu'un commentaire écrit demain.
+    # (l1) CE QUE LE BLOC CACHE RESTE CACHÉ jusqu'à SA fermeture, et le code d'après revient.
+    lu = sans_commentaires_rust("/* dehors /* dedans */ let t = \"secret_imbrique\"; */\nlet u = 9;\n")
+    assert "secret_imbrique" not in lu, \
+        "témoin : un commentaire de bloc IMBRIQUÉ se referme au premier `*/` — ce qu'il cache redevient du code"
+    assert "let u = 9;" in lu, "témoin : le code qui suit un commentaire de bloc imbriqué a disparu"
+    # (l2) LA HAUTEUR traverse l'imbrication : tout numéro de ligne rendu resterait faux sans ça.
+    src_l = "a;\n/* un /* deux\n   trois */ quatre */\nb;\n"
+    assert sans_commentaires_rust(src_l).count("\n") == src_l.count("\n"), \
+        "témoin : l'imbrication change le nombre de lignes rendues, tout numéro serait faux"
+    # (l3) TÉMOIN NÉGATIF — JAVASCRIPT N'IMBRIQUE PAS, ET C'EST SA SPÉCIFICATION. Rallier les deux
+    #      lectures ferait mentir celle qu'on déplace ; ce témoin fige la divergence dans le bon sens.
+    assert "code_js_apres" in sans_commentaires_js("/* a /* b */ const x = 'code_js_apres';\n"), \
+        "témoin : le lecteur JS imbrique désormais les blocs — ce n'est pas la règle de JavaScript"
+    # (l4) L'AVEU DU BLOC, DANS LES DEUX SENS : muet sur un bloc imbriqué VALIDE, parlant sur un bloc dont
+    #      une fermeture manque. Sans lui, la fin du fichier est blanchie EN VERT : la garde ne fabrique
+    #      rien, elle devient AVEUGLE, et rien ne la distingue d'un fichier propre.
+    propre = []
+    sans_commentaires_rust("/* a /* b */ c */\nlet x = 1;\n", propre)
+    assert not propre, f"témoin inverse : le lecteur avoue une perte sur un bloc imbriqué VALIDE ({propre})"
+    perdu = []
+    sans_commentaires_rust("/* a /* b */\nlet x = 1;\n", perdu)
+    assert perdu, "témoin : un bloc imbriqué jamais refermé ne fait plus avouer le lecteur — il blanchirait la fin du fichier en silence"
+
+    # ================================================================================================
+    # (m) L'AVEUGLEMENT DES LITTÉRAUX RUST (`aveugler_litteraux_rust`, `P10.20-n`, 2026-09-16)
+    # ================================================================================================
+    # Le pendant de (9) pour le Rust. Il manquait, donc la garde des mutations d'environnement en gardait
+    # un local : une grammaire de plus, et c'est la recopie qui a fait vivre `P10.20-c` à `-e`.
+    # LA HAUTEUR N'EST TÉMOIGNABLE QUE SUR UNE RÉGION BLANCHIE QUI PORTE UNE FIN DE LIGNE : une chaîne
+    # qui FRANCHIT une ligne et un bloc de commentaire sur DEUX lignes sont donc dans le texte. Sans eux,
+    # remplacer `_blanc` par des espaces nus est un mutant SURVIVANT — mesuré le 2026-09-16, il l'était.
+    src_m = ('fn f(v: &str) -> String {\n'
+             '    let sep = \'"\';\n'
+             '    let m = r#"un " nu { "#;\n'
+             '    let aide = "une chaîne qui franchit\n        une fin de ligne, avec un { dedans";\n'
+             '    /* un bloc /* imbriqué */\n       sur deux lignes, avec un { */\n'
+             '    format!("… {} … {}", v, sep)\n'
+             '}\nfn g() { }\n')
+    vu_m = aveugler_litteraux_rust(src_m)
+    assert len(vu_m) == len(src_m) and vu_m.count("\n") == src_m.count("\n"), \
+        "témoin : l'aveuglement Rust ne conserve plus la LONGUEUR et la HAUTEUR — offsets et numéros de ligne seraient faux"
+    assert vu_m.count("{") == 2 and vu_m.count("}") == 2, \
+        f"témoin : {vu_m.count(chr(123))} ouvrante(s) et {vu_m.count(chr(125))} fermante(s) lues au lieu de 2 et 2 — " \
+        f"un littéral ou un commentaire en fabrique ou en mange, et la fin de chaque corps devient fausse"
+    assert "fn g() { }" in vu_m, "témoin : l'aveuglement a blanchi du CODE après un commentaire de bloc imbriqué"
+    assert aveugler_litteraux_rust('let s = "{{{";').count("{") == 0, \
+        "témoin inverse : les accolades d'une chaîne Rust comptent encore dans l'appariement des blocs"
+    # (m2) LES DÉLIMITEURS SONT BLANCHIS EUX AUSSI — la divergence VOULUE avec la version JS, et elle
+    #      PORTE : sans elle `include!("common.rs")` rend `include!("        ")` et le motif du nom de
+    #      fichier suit un fichier dont le nom est fait d'espaces.
+    assert '"' not in aveugler_litteraux_rust('include!("common.rs");'), \
+        "témoin : l'aveuglement Rust garde les guillemets — un `include!` suivrait un nom fait d'espaces"
+    assert aveugler_litteraux_rust("let c = 'a'; let b = b'\"';").count("'") == 0, \
+        "témoin : un littéral de caractère ou d'OCTET n'est pas entièrement blanchi"
+    # (m3) TÉMOIN INVERSE — UNE DURÉE DE VIE N'EST PAS UN LITTÉRAL : elle RESTE dans le code aveuglé.
+    assert "&'static str" in aveugler_litteraux_rust("let s: &'static str = nom(); // x"), \
+        "témoin inverse : l'apostrophe d'une durée de vie est blanchie — le code rendu n'est plus celui du fichier"
+    # (m4) L'AVEU de l'aveuglement, dans les deux sens.
+    propre = []
+    aveugler_litteraux_rust('fn f() {\n  let u = "https://h/x";\n  let c = \'"\';\n  let r = r#"a " b"#;\n}\n', propre)
+    assert not propre, f"témoin inverse : l'aveuglement Rust avoue une perte sur du Rust valide ({propre})"
+    perdu = []
+    aveugler_litteraux_rust('fn f() {\n  let x = "jamais refermee;\n}\n', perdu)
+    assert perdu, "témoin : l'aveuglement Rust n'avoue plus une chaîne jamais refermée — il blanchirait la fin du fichier en vert"
 
 
 def temoins():

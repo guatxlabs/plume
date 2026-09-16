@@ -243,19 +243,16 @@ SITES_ASSUMES = {
 # la vérité, et elle entre dans une décision de sécurité. C'est la classe où « je n'ai pas lu » se
 # lit « rien ne s'y oppose ».
 DEFAUTS_RANG_1_LE_REPLI_OUVRE = {
-    # DEUX sites dans la même fonction, de SENS OPPOSÉS, et c'est pourquoi l'entrée les porte tous
-    # les deux. `is_ok` sur `SELECT 1 FROM dashboard` : lecture ratée -> 404, fail-closed, cause
-    # fausse. `unwrap_or_else(|_| "shared")` sur la visibilité COURANTE : lecture ratée -> `"shared"`,
-    # donc `est_un_geste_de_partage` rend `false` (il exige `visibilite_courante != "shared"`), donc
-    # la porte `P11.20-m` — celle qui REFUSE de publier un tableau de bord contenant un élément moins
-    # visible — n'est pas jouée, et l'écriture qui publie suit. LE GESTE QUI FERME : lire la
-    # visibilité par `.optional()?` et REFUSER (503 nommé) plutôt que de supposer le cas le plus
-    # partagé ; `view_update` du même fichier montre l'autre défaut (`"private"`), qui fait JOUER la
-    # porte, et c'est celui-là qui est correct.
-    ("daemon/src/handlers/dashboards.rs", "dash_update"): ("is_ok", "unwrap_or_else"),
-    # Même forme, même porte, sur le panneau : `panneau_resolu::ElementMoinsVisible::d_un_panneau`
-    # n'est jamais interrogé quand la visibilité courante n'a pas pu être lue.
-    ("daemon/src/handlers/dashboards.rs", "panel_update"): ("unwrap_or_else",),
+    # CLASSE VIDÉE LE 2026-09-16 PAR `P10.20-k`. Elle portait DEUX entrées, `dashboards.rs::dash_update`
+    # (`is_ok`, `unwrap_or_else`) et `dashboards.rs::panel_update` (`unwrap_or_else`) : la visibilité
+    # COURANTE lue par `unwrap_or_else(|_| "shared")` faisait rendre `false` à
+    # `est_un_geste_de_partage` (il exige `visibilite_courante != "shared"`), donc la porte `P11.20-m`
+    # — celle qui REFUSE de publier un contenant portant un élément moins visible — n'était pas jouée,
+    # et l'écriture qui publie suivait. LES DEUX SITES LISENT DÉSORMAIS L'EXISTENCE ET LA VISIBILITÉ EN
+    # UN SEUL ÉNONCÉ rendu en `Result<Option<_>>` : `Ok(None)` = 404, `Err(..)` = 503 nommé
+    # (`panneau_resolu::CAUSE_VISIBILITE_NON_LUE`) posé AVANT tout jugement de partage. Les entrées
+    # sont retirées parce que les formes ont disparu — les garder ferait rougir « exemption sans objet ».
+    # La classe reste déclarée : un rang un neuf s'y écrit sans qu'on ait à la ré-inventer.
 }
 
 # --- CLASSE 3 : RANG DEUX — LA VALEUR FABRIQUÉE EST SERVIE OU ÉCRITE. Un lecteur humain, une ligne de
@@ -379,9 +376,14 @@ DEFAUTS_RANG_4_FAIL_CLOSED = {
     # porte est bien fail-closed ; ce qui manque est la DISTINCTION entre « ce panneau n'existe pas »
     # et « je n'ai pas pu lire s'il existe ».
     ("daemon/src/handlers/dashboards.rs", "panel_access"): ("ok.?", "ok.?"),
-    # Le seul des trois `visibility` du fichier qui retombe du BON côté (`"private"`) : la porte de
-    # partage s'applique. Il est admis ici, et il sert de contrôle POSITIF au rang un ci-dessus.
-    ("daemon/src/handlers/dashboards.rs", "view_update"): ("unwrap_or_else",),
+    # `dashboards.rs::view_update` VIVAIT ICI, et son entrée est retirée le 2026-09-16 par `P10.20-k`.
+    # Elle disait vrai : son repli `"private"` retombait du BON côté, la porte de partage s'appliquait,
+    # et ce site servait de contrôle POSITIF au rang un. Il est pourtant RALLIÉ à la forme de ses deux
+    # voisins, parce que le refus qu'il servait alors était un 409 NOMMANT un élément moins visible —
+    # une cause FAUSSE pour une lecture qui n'a pas eu lieu, qui envoie l'appelant partager un élément
+    # quand il doit réessayer. La forme `unwrap_or_else` a disparu avec les deux autres ; laisser
+    # l'entrée ferait rougir « exemption sans objet ». CE QUE L'ÉNONCÉ DE `P10.20-k` N'AVAIT PAS VU :
+    # il demandait de rallier `view_update` ET de ne retirer que DEUX entrées — c'en fait trois.
     ("daemon/src/handlers/datamodels.rs", "field_create"): ("is_err",),
     ("daemon/src/handlers/datamodels.rs", "object_create"): ("is_err",),
     ("daemon/src/handlers/detection.rs", "rule_test"): ("ok",),
@@ -782,36 +784,33 @@ SOURCE_LITTERAL_D_OCTET = ('fn a3(conn: &Connection, bytes: &[u8], j: usize) -> 
 
 
 def epreuve_du_litteral_d_octet():
-    """UN ANGLE MORT QUI N'EST PAS LE NÔTRE, ET QUI SE SOLDE PAR UN AVEU — mesuré le 2026-09-16.
+    """UN ANCIEN ANGLE MORT DES LECTEURS PARTAGÉS, DEVENU UNE PROPRIÉTÉ TENUE — mesuré le 2026-09-16.
 
     `apparier` et `fonctions` sont les lecteurs PARTAGÉS de
-    `check_a_read_that_did_not_happen_is_never_served_as_a_fact.py`. `apparier` saute les chaînes mais
-    PAS les littéraux de caractère : sur `b'"'` il ouvre une fausse chaîne, perd des accolades, et
-    `fonctions` laisse tomber la portée. Ce fichier-ci a corrigé les DEUX scanners qu'il possède
-    (`spans_de_chaines` ici, `positions_de_coupe` dans la garde de famille) ; celui-là ne lui
-    appartient pas, et le corriger de l'extérieur serait un lecteur JUMEAU.
+    `check_a_read_that_did_not_happen_is_never_served_as_a_fact.py`. Jusqu'à `P10.20-m` (le même jour),
+    `apparier` sautait les chaînes mais PAS les littéraux de caractère : sur `b'"'` il ouvrait une fausse
+    chaîne, perdait des accolades, et `fonctions` laissait tomber la portée — la lecture tombait HORS de
+    toute fonction, `analyser` l'écrivait dans son JOURNAL et `main` REFUSAIT DE CONCLURE. Cette épreuve
+    tenait alors les deux moitiés de ce comportement fail-safe : aucun site, ET un aveu.
 
-    CE QUI COMPTE EST DONC LE COMPORTEMENT, ET IL EST FAIL-SAFE : la lecture tombe HORS de toute
-    fonction, `analyser` l'écrit dans son JOURNAL, et `main` REFUSE DE CONCLURE. Un site n'est jamais
-    retiré en silence. L'épreuve tient les deux moitiés : aucun site, ET un aveu.
-
-    SUR L'ARBRE, AUJOURD'HUI : trois fichiers de `handlers/` portent un tel littéral
-    (`actions.rs:889`, `freshness.rs:496`, `panneau_avoue.rs:237`) et AUCUN ne déclenche cet aveu —
-    `apparier` s'y re-synchronise sur le guillemet suivant, et les quatre-vingt-dix sites sont trouvés
-    (mesuré : journal vide). C'est une chance, pas une propriété, et c'est pour cela que l'épreuve est
-    ici : le jour où elle se retourne, la garde le DIT au lieu de rendre un compte amputé."""
+    DEPUIS `P10.20-m`, `apparier` saute les littéraux de caractère et d'octet (règle importée du module
+    partagé, `RE_CARACTERE_RUST`) et `fonctions` ne prend plus une déclaration pour un corps : la portée
+    est trouvée, le site est ACCUSÉ, et le journal est vide. L'épreuve tient donc désormais l'INVERSE :
+    le site DOIT être trouvé, et il ne DOIT y avoir aucun aveu. Si elle retombe (site perdu, ou aveu),
+    c'est que le lecteur partagé a régressé — la garde le DIT au lieu de rendre un compte amputé. La
+    propriété elle-même (littéral reconnu) est tenue par témoin et par mutation dans le fichier qui
+    possède ces lecteurs ; ici on tient seulement qu'elle est CONSOMMÉE."""
     errs = []
     journal = []
     sites = analyser("/angle_mort_octet.rs", SOURCE_LITTERAL_D_OCTET, journal)
-    if sites:
-        errs.append(f"épreuve du LITTÉRAL D'OCTET : la garde ACCUSE désormais un site que les lecteurs "
-                    f"partagés ne savaient pas situer ({sites}) — ce n'est pas une panne, c'est "
-                    "qu'`apparier` a appris les littéraux de caractère. La phrase de cet angle mort "
-                    "doit être re-mesurée avant que le verdict reprenne.")
-    if not journal:
-        errs.append("épreuve du LITTÉRAL D'OCTET : ni site ni AVEU — la lecture a disparu EN SILENCE. "
-                    "C'est le défaut que cette garde nomme, appliqué à elle-même : un compte amputé "
-                    "rendu vert. Le journal doit porter la portée introuvable.")
+    if not sites:
+        errs.append("épreuve du LITTÉRAL D'OCTET : la garde ne TROUVE plus le site qui suit un littéral "
+                    "d'octet — `apparier` ou `fonctions` a régressé sur les littéraux de caractère "
+                    "(`P10.20-m`). Un compte amputé serait rendu vert : la garde refuse de conclure.")
+    if journal:
+        errs.append(f"épreuve du LITTÉRAL D'OCTET : le lecteur partagé AVOUE une portée introuvable "
+                    f"({journal}) là où il doit la situer depuis `P10.20-m` — la propriété n'est plus "
+                    "consommée, la garde refuse de conclure.")
     return errs
 
 

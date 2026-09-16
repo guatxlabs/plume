@@ -116,11 +116,17 @@ son entrée est du texte dépouillé.
 
 Le second, `depouiller_rust`, est le vrai lecteur de cette garde, et le constat ne le nommait pas. Il
 est complet (chaînes, chaînes brutes, littéraux de caractère, commentaires de bloc imbriqués) mais il
-était une QUATRIÈME grammaire Rust écrite à la main sous `.github/scripts/`. Sa GRAMMAIRE est
-désormais celle du lecteur du dépôt — `saute_chaine`, `saute_chaine_brute_rust`, `_prefixe_brut_rust`,
-`RE_CARACTERE_RUST`, importés de `check_every_help_trigger_has_a_section` —, éprouvée par `P10.20-c`,
-`P10.20-d` et `P10.20-e`, et son JOURNAL est branché : une chaîne jamais refermée fait REFUSER DE
-CONCLURE (code 2) en nommant la ligne, au lieu d'avaler la fin du fichier en silence. Mesuré le
+était une QUATRIÈME grammaire Rust écrite à la main sous `.github/scripts/`. Sa GRAMMAIRE a d'abord été
+ralliée au lecteur du dépôt (`P10.20-h`), puis LE GESTE ENTIER l'a été le 2026-09-16 (`P10.20-n`) :
+`depouiller_rust` n'est plus qu'un NOM LOCAL pour `aveugler_litteraux_rust`, que le module partagé
+expose désormais à côté de `aveugler_litteraux_js`. Il ne restait pas une grammaire recopiée mais une
+BOUCLE recopiée, et une boucle recopiée diverge comme une règle recopiée : elle imbriquait les blocs de
+commentaire quand la source ne les imbriquait pas encore, et la divergence était écrite ici comme
+« assumée » — elle est FERMÉE, la source imbrique. Le ralliement est prouvé INERTE : sur les 367
+fichiers `.rs` des quatre caisses, `aveugler_litteraux_rust` rend le MÊME TEXTE et le MÊME JOURNAL,
+octet pour octet, que la boucle locale qu'il remplace. Son JOURNAL est branché : une chaîne — ou, depuis
+`P10.20-n`, un commentaire de bloc — jamais refermée fait REFUSER DE CONCLURE (code 2) en nommant la
+ligne, au lieu d'avaler la fin du fichier en silence. Mesuré le
 2026-09-16 sur l'arbre du dépôt, les 366 fichiers `src/` des 4 caisses (207 371 lignes) : 830 lignes étaient lues autrement par
 l'ancienne grammaire — 587 où elle EFFAÇAIT l'apostrophe d'une durée de vie (`&'static str`) et 243 où
 elle effaçait le préfixe `b` d'une chaîne d'octets. AUCUNE ne déplaçait ce que la garde cherche (ni
@@ -137,17 +143,20 @@ Les dix-sept autres sont des témoins de NON-RÉGRESSION, et ils le disent : ce 
 dépôt poursuit. Le troisième acquis n'est pas témoignable ici : une correction faite demain dans le
 lecteur partagé arrive désormais dans cette garde sans que personne ait à y penser.
 
-CE QUI RESTE LOCAL, ET POURQUOI — LE CONTRAT N'EST PAS CELUI DU LECTEUR PARTAGÉ. `sans_commentaires_rust`
-rend les littéraux TELS QUELS ; cette garde ne le peut pas. Elle compte les accolades pour borner le
-corps de chaque fonction, et une accolade écrite dans un gabarit (`format!("… {} …")`) déplacerait la
-fin de chaque corps ; un `set_var(` ou un `VERROU_ENV.write()` cité dans un message d'assertion
-compterait pour du code. Le contenu des littéraux est donc BLANCHI — hauteur ET longueur conservées.
-C'est l'équivalent Rust de `aveugler_litteraux_js`, que le module partagé n'expose pas ; ce qui est
-partagé est la GRAMMAIRE (où commence et où finit un littéral), c'est-à-dire exactement ce que la
-famille de défauts `P10.20-c`/`-d`/`-e` a corrigé. UNE SEULE DIVERGENCE SUBSISTE, ASSUMÉE ET DITE : les
-commentaires de BLOC sont lus IMBRIQUÉS ici (`/* a /* b */ c */`), comme Rust les définit, alors que le
-lecteur partagé s'arrête au premier `*/`. Aucun commentaire de bloc imbriqué sur les 366 fichiers
-(mesuré à zéro le 2026-09-16) ; la divergence est donc latente des deux côtés.
+DEUX CONTRATS, ET AUCUN N'EST LOCAL DEPUIS LE 2026-09-16 (`P10.20-n`). `sans_commentaires_rust` rend les
+littéraux TELS QUELS ; cette garde ne le peut pas. Elle compte les accolades pour borner le corps de
+chaque fonction, et une accolade écrite dans un gabarit (`format!("… {} …")`) déplacerait la fin de
+chaque corps ; un `set_var(` ou un `VERROU_ENV.write()` cité dans un message d'assertion compterait pour
+du code. Le contenu des littéraux est donc BLANCHI — hauteur ET longueur conservées —, et c'est
+`aveugler_litteraux_rust` du module partagé qui le fait, à côté de `aveugler_litteraux_js`. Le module ne
+l'exposait pas : cette garde en gardait une copie, et une copie est ce qui a fait vivre `P10.20-c` à
+`-e`. LA DIVERGENCE DES BLOCS EST FERMÉE, PAS ASSUMÉE : les commentaires de BLOC s'imbriquent maintenant
+des DEUX côtés (`/* a /* b */ c */`), comme Rust les définit — la source a appris la règle au lieu que
+la copie la garde pour elle. Zéro bloc imbriqué sur les 367 fichiers `.rs` des quatre caisses (mesuré le
+2026-09-16), le ralliement est donc inerte ici ; il ne l'aurait pas été le jour où quelqu'un en écrit un.
+LA SEULE DIFFÉRENCE QUI RESTE ENTRE LES DEUX AVEUGLEMENTS est dans le module, écrite à côté d'eux : la
+version Rust blanchit aussi les DÉLIMITEURS (voir le témoin (h bis) de l'`include!`), la version JS les
+garde parce que son appelant apparie des blocs.
 
 LA FRONTIÈRE CÔTÉ TEST EST NOURRIE D'UN TEXTE SANS COMMENTAIRES, corrigée par CONSTRUCTION : un
 `#![cfg(test)]` ou un `#[cfg(test)] mod … {` écrit dans un commentaire de BLOC faisait basculer un
@@ -175,8 +184,11 @@ CE QUE CETTE GARDE NE PROUVE PAS
    L'appel doit être écrit avec le nom (`nom(` ou `Type::nom(`). Une indirection plus profonde est
    INVISIBLE — donc elle produit un faux NÉGATIF, jamais une accusation à tort.
 4. Le corps des MACROS, les apostrophes d'ATTRIBUT et le code GÉNÉRÉ restent hors de la grammaire du
-   dépouilleur (dit en tête de `sans_commentaires_rust`). Et un commentaire de bloc JAMAIS refermé
-   blanchit la fin du fichier sans aveu : il n'invente aucune accusation, il en perd — dit, pas tu.
+   dépouilleur (dit en tête de `sans_commentaires_rust`). Un commentaire de bloc JAMAIS refermé, lui,
+   n'est plus muet depuis `P10.20-n` : il blanchit toujours la fin du fichier, mais il AVOUE, et l'aveu
+   fait refuser de conclure. Ce qui reste tu : une désynchronisation qui se RECALE avant la fin du
+   fichier — aucun mécanisme ne la voit, seule la comparaison de deux lecteurs la verrait (dit sous
+   `P10.20-d`, hors périmètre ici).
 
 L'INSTRUMENT SE VALIDE AVANT DE RENDRE UN VERDICT
 -------------------------------------------------
@@ -204,14 +216,13 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-# LA GRAMMAIRE RUST DU DÉPÔT, SOURCE UNIQUE (`P10.20-h`). Les quatre premiers noms DÉFINISSENT où
-# commence et où finit un littéral ; ils sont importés — et non recopiés — parce que c'est précisément
-# la recopie qui a fait vivre quatre grammaires divergentes sous `.github/scripts/` (`P10.20-c` à `-e`).
-# Le soulignement de tête dit « détail du lecteur », pas « privé au module » : il n'y a pas d'autre
-# façon d'avoir UNE grammaire sans la réécrire.
+# LE LECTEUR RUST DU DÉPÔT, SOURCE UNIQUE (`P10.20-h`, puis `P10.20-n` le 2026-09-16). La GRAMMAIRE
+# était déjà importée ; c'est le GESTE qui l'est depuis : `aveugler_litteraux_rust` remplace la boucle
+# locale, mot pour mot, et une boucle recopiée diverge comme une règle recopiée — elle avait déjà
+# divergé (l'imbrication des blocs). C'est la recopie qui a fait vivre quatre grammaires divergentes
+# sous `.github/scripts/` (`P10.20-c` à `-e`).
 from check_every_help_trigger_has_a_section import (  # noqa: E402
-    RE_CARACTERE_RUST, _blanc, _prefixe_brut_rust, refuser_sur_aveu, saute_chaine,
-    saute_chaine_brute_rust, sans_commentaires_rust, temoins_du_lecteur)
+    aveugler_litteraux_rust, refuser_sur_aveu, sans_commentaires_rust, temoins_du_lecteur)
 
 ETIQUETTE = "verrou-env-processus"
 
@@ -282,84 +293,28 @@ class Unite:
         return f"{self.fichier}::{self.qualifie or self.nom}"
 
 
-def _fin_du_bloc_rust(src: str, depart: int) -> int:
-    """Index APRÈS le `*/` qui referme le commentaire de bloc ouvert en `depart` — IMBRICATION COMPRISE,
-    comme Rust la définit. C'est la SEULE divergence assumée avec le lecteur partagé, qui s'arrête au
-    premier `*/` ; aucun commentaire de bloc imbriqué sur les 366 fichiers des quatre caisses (mesuré à
-    zéro le 2026-09-16), la divergence est latente des deux côtés. Un bloc jamais refermé blanchit la
-    fin du fichier : il fait PERDRE des sites, il n'en invente aucun."""
-    prof, j, n = 0, depart, len(src)
-    while j < n:
-        if src.startswith("/*", j):
-            prof += 1
-            j += 2
-            continue
-        if src.startswith("*/", j):
-            prof -= 1
-            j += 2
-            if prof <= 0:
-                return j
-            continue
-        j += 1
-    return n
-
-
 def depouiller_rust(src: str, journal=None) -> str:
-    """Le texte à LIRE : commentaires (ligne et bloc, imbriqués) et littéraux (chaînes, chaînes brutes,
+    """Le texte à LIRE : commentaires (ligne et bloc, IMBRIQUÉS) et littéraux (chaînes, chaînes brutes,
     chaînes d'octets, caractères) remplacés par des espaces, hauteur ET longueur CONSERVÉES. Sans cela,
     une accolade écrite dans un gabarit (`format!("… {} …")`) déplacerait la fin de chaque corps de
     fonction, et un mot cité dans un message d'assertion compterait pour du code.
 
-    LA GRAMMAIRE EST CELLE DU DÉPÔT (`P10.20-h`, 2026-09-16) : où commence et où finit un littéral est
-    décidé par `saute_chaine`, `saute_chaine_brute_rust`, `_prefixe_brut_rust` et `RE_CARACTERE_RUST`,
-    importés du lecteur partagé et éprouvés par `P10.20-c`, `P10.20-d` et `P10.20-e`. Ce qui reste
-    local est le CONTRAT — blanchir au lieu de rendre tel quel —, parce que cette garde compte les
-    accolades. Une apostrophe qui n'ouvre pas un littéral de caractère (`'static`, `'a`, `'outer:`)
-    reste une durée de vie et RESTE DANS LE CODE ; le préfixe `b` de `b"…"` aussi.
+    LE GESTE ENTIER EST CELUI DU DÉPÔT DEPUIS LE 2026-09-16 (`P10.20-n`) : ce nom est un ALIAS de
+    `aveugler_litteraux_rust`, que le module partagé expose à côté de `aveugler_litteraux_js`. La
+    GRAMMAIRE était déjà importée (`P10.20-h`) ; la BOUCLE ne l'était pas, et elle avait déjà divergé —
+    elle imbriquait les commentaires de bloc quand la source ne les imbriquait pas. Le ralliement est
+    prouvé INERTE : même texte et même journal, octet pour octet, sur les 367 fichiers `.rs` des quatre
+    caisses. Une apostrophe qui n'ouvre pas un littéral de caractère (`'static`, `'a`, `'outer:`) reste
+    une durée de vie et RESTE DANS LE CODE ; le préfixe `b` de `b"…"` aussi.
 
-    `journal` recueille les AVEUX du lecteur (chaîne, chaîne brute ou littéral qui atteint la fin du
-    fichier sans son délimiteur fermant). Le passer est ce qui distingue un refus de conclure d'un
-    compte amputé rendu en vert (`P10.20-d`)."""
-    out, i, n = [], 0, len(src)
-    while i < n:
-        c = src[i]
-        if c == "/" and src.startswith("//", i):
-            j = src.find("\n", i)
-            f = n if j < 0 else j
-            out.append(_blanc(src[i:f]))
-            i = f
-            continue
-        if c == "/" and src.startswith("/*", i):
-            f = _fin_du_bloc_rust(src, i)
-            out.append(_blanc(src[i:f]))
-            i = f
-            continue
-        if _prefixe_brut_rust(src, i):
-            # `r"…"`, `r#"…"#`, `br#"…"#`, `cr#"…"#` — et ce qui n'en est pas une (`r#type`, un `r`
-            # ordinaire) rend None et repart dans le code, sans rien ouvrir.
-            f = saute_chaine_brute_rust(src, i, journal)
-            if f is not None:
-                out.append(_blanc(src[i:f]))
-                i = f
-                continue
-        if c == '"':
-            # La chaîne Rust a le droit de FRANCHIR une fin de ligne : `multiligne=True`.
-            f = saute_chaine(src, i, journal, multiligne=True)
-            out.append(_blanc(src[i:f]))
-            i = f
-            continue
-        if c == "'":
-            m = RE_CARACTERE_RUST.match(src, i)
-            if m:
-                out.append(_blanc(m.group(0)))
-                i = m.end()
-                continue
-            out.append(c)
-            i += 1
-            continue
-        out.append(c)
-        i += 1
-    return "".join(out)
+    POURQUOI CE NOM SURVIT AU RALLIEMENT : il dit ce que CETTE garde attend de ce texte (le DÉPOUILLER
+    pour le découper), là où le nom partagé dit ce que le geste FAIT. Les témoins de cette garde le
+    jouent sous ce nom-là, et c'est son verdict qu'ils tiennent.
+
+    `journal` recueille les AVEUX du lecteur (chaîne, chaîne brute, littéral ou commentaire de bloc qui
+    atteint la fin du fichier sans sa fermeture). Le passer est ce qui distingue un refus de conclure
+    d'un compte amputé rendu en vert (`P10.20-d`)."""
+    return aveugler_litteraux_rust(src, journal)
 
 
 def unites(chemin_relatif: str, src: str, journal=None) -> list[Unite]:

@@ -148,7 +148,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from check_every_help_trigger_has_a_section import (  # noqa: E402  (source unique de vérité)
-    refuser_sur_aveu, sans_commentaires_rust, temoins_du_lecteur)
+    RE_CARACTERE_RUST, refuser_sur_aveu, sans_commentaires_rust, temoins_du_lecteur)
 
 RACINE = (sys.argv[1] if len(sys.argv) > 1
           else subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True,
@@ -466,20 +466,51 @@ PLAFOND_CLOSURE_SOURDE = sum(SITES_ADMIS["B"].values())
 PLAFOND_CAUSE_JETEE = sum(SITES_ADMIS["Q"].values())
 
 
+def _saut_de_litteral_rust(code, j):
+    """Index APRÈS le littéral qui commence en `j` — une CHAÎNE `"…"` (échappements compris) ou un
+    littéral de CARACTÈRE ou d'OCTET (`'x'`, `'\\n'`, `'\\u{1}'`, `b'"'`) —, ou None si `code[j]`
+    n'ouvre aucun littéral. L'apostrophe qui n'en ouvre pas un est une DURÉE DE VIE (`'a`, `'static`,
+    `'outer:`) : elle ne fait sauter personne. La règle du littéral de caractère est `RE_CARACTERE_RUST`,
+    IMPORTÉE du lecteur partagé et non recopiée — c'est la recopie qui a fait vivre quatre grammaires
+    divergentes sous `.github/scripts/` (`P10.20-c` à `-e`).
+
+    POURQUOI UN SCANNER DOIT ENCORE CONNAÎTRE LES LITTÉRAUX APRÈS LE LECTEUR PARTAGÉ (`P10.20-m`, mesuré
+    le 2026-09-16) : `sans_commentaires_rust` RESTITUE les littéraux tels quels, c'est son contrat. Le
+    `"` de `'"'` est donc toujours là quand ce fichier relit sa sortie, et le prendre pour une ouverture
+    de chaîne fait avaler le texte jusqu'au guillemet suivant. MESURE DU DÉFAUT, sur `daemon/src` : 38
+    fonctions rendues INVISIBLES (`apparier` rendait -1, donc `fonctions` les laissait tomber) dans 25
+    fichiers — `handlers/actions.rs` (`render_arg`, `render_vetted`), `handlers/freshness.rs`
+    (`extract_query_sources`), `handlers/panneau_avoue.rs` (`sql_sans_litteraux`), `handlers/query.rs`
+    (`csv_cell`), `main.rs` (`load_config`) — et 6 autres dont le corps s'arrêtait au mauvais endroit.
+    Une fonction invisible ne rougit jamais : la garde ne l'accuse pas, elle ne la LIT pas."""
+    if code[j] == '"':
+        k, n = j + 1, len(code)
+        while k < n and code[k] != '"':
+            k += 2 if code[k] == "\\" else 1
+        return k + 1
+    if code[j] == "'":
+        m = RE_CARACTERE_RUST.match(code, j)
+        return m.end() if m else None
+    return None
+
+
 def apparier(code, i):
-    """Index de la fermante appariée de l'ouvrante en `i` (-1 si le texte s'épuise). Les chaînes Rust
-    sont sautées : une parenthèse dans un littéral ne compte pas."""
+    """Index de la fermante appariée de l'ouvrante en `i` (-1 si le texte s'épuise). Les chaînes Rust ET
+    LES LITTÉRAUX DE CARACTÈRE OU D'OCTET sont sautés (`_saut_de_litteral_rust`, `P10.20-m`) : ni une
+    parenthèse écrite dans un littéral, ni le `"` d'un `'"'` ne comptent."""
     paires = {"(": ")", "[": "]", "{": "}"}
     if code[i] not in paires:
         return -1
     pile, j = [paires[code[i]]], i + 1
     while j < len(code):
         c = code[j]
-        if c == '"':
-            j += 1
-            while j < len(code) and code[j] != '"':
-                j += 2 if code[j] == "\\" else 1
-        elif c in paires:
+        if c in "\"'":
+            saut = _saut_de_litteral_rust(code, j)
+            if saut is not None:
+                j = saut
+                continue
+            # une apostrophe qui n'ouvre pas de littéral est une durée de vie : elle repart seule.
+        if c in paires:
             pile.append(paires[c])
         elif c in ")]}":
             if not pile or pile[-1] != c:
@@ -524,11 +555,55 @@ def coupe_tests(code):
     return code[:m.start()] if m else code
 
 
+def _debut_du_corps(code, ouvrante):
+    """Index de l'accolade qui ouvre le CORPS de la `fn` dont la signature commence en `ouvrante` (la `(`
+    de ses paramètres ou le `<` de ses génériques), ou -1 quand cette `fn` N'A PAS DE CORPS.
+    DEUX FAUTES FERMÉES ICI LE 2026-09-16 (`P10.20-m`), et la SECONDE n'était pas dans le constat.
+      (1) Le premier `{` du texte n'est pas forcément du CODE : `const DEDUP_SCOPE_SEP: char = '\\u{1}';`
+          (daemon/src/ingest/store.rs:195) en porte un DANS un littéral de caractère. Les littéraux sont
+          donc sautés, et les groupes `(…)` / `[…]` de la signature franchis d'un coup.
+      (2) UNE DÉCLARATION SANS CORPS — une méthode de `trait`, un `extern` — se termine par `;` ; le
+          premier `{` du texte est alors celui de la fonction SUIVANTE, et la déclaration lui VOLE son
+          corps. MESURÉ le 2026-09-16 sur `daemon/src` : 23 entrées fabriquées de cette façon — les
+          quatre `fn` du trait `JsonBody` (main.rs:988) portaient toutes le corps de la première méthode
+          de l'`impl` qui suit, les quatre de `SqlExec` (migrate.rs:271) aussi. Un `;` atteint avant
+          toute accolade rend donc -1 : la déclaration n'entre pas dans la population.
+    ET LES DEUX SONT LIÉES, C'EST POURQUOI ELLES SONT CORRIGÉES ENSEMBLE : apprendre le littéral SEUL
+    aggravait la faute — `query_soql` (store.rs:195), qui s'arrêtait sur le `{` du `'\\u{1}'` et ne
+    volait donc qu'un corps de deux caractères, serait allé prendre celui de `dedup_scoped_by_host`.
+    CE QUE CE GESTE NE TIENT PAS, ET C'EST DIT : le `;` d'une déclaration GÉNÉRIQUE (`fn f<T>(x: T);`)
+    n'est pas vu — `FN` s'arrête sur le `<` et le `>` qui le ferme n'est pas apparié (un `>` est aussi
+    une comparaison), donc le scan entre dans les génériques caractère par caractère. Une telle
+    déclaration vole encore le corps qui la suit ; il n'y en a AUCUNE sur `daemon/src` (mesuré)."""
+    j, n = ouvrante, len(code)
+    while j < n:
+        c = code[j]
+        if c in "\"'":
+            saut = _saut_de_litteral_rust(code, j)
+            if saut is not None:
+                j = saut
+                continue
+        if c in "([":
+            f = apparier(code, j)
+            if f < 0:
+                return -1
+            j = f + 1
+            continue
+        if c == ";":
+            return -1
+        if c == "{":
+            return j
+        j += 1
+    return -1
+
+
 def fonctions(code):
-    """[(nom, signature, début du corps, fin du corps)] pour chaque `fn`/`async fn`."""
+    """[(nom, signature, début du corps, fin du corps)] pour chaque `fn`/`async fn` QUI A UN CORPS — une
+    déclaration de `trait` n'en a pas, et elle ne vole plus celui de la fonction suivante (`P10.20-m`,
+    `_debut_du_corps`). La borne du corps est `apparier`, qui saute les littéraux de caractère."""
     out = []
     for m in FN.finditer(code):
-        i = code.find("{", m.end())
+        i = _debut_du_corps(code, m.end() - 1)
         if i < 0:
             continue
         f = apparier(code, i)
@@ -1599,6 +1674,48 @@ def valider_instrument(defs, constructeurs):
     if "corps_de_refus" not in constructeurs:
         errs.append("témoin d'ANCRAGE : `corps_de_refus` n'est plus dérivé comme constructeur d'aveu — "
                     "la dérivation ne lit plus `daemon/src/handlers/portillon.rs`")
+    # ============================================================================================
+    # LES DEUX SCANNERS DE CE FICHIER RELISENT LA SORTIE DU LECTEUR PARTAGÉ (`P10.20-m`, 2026-09-16)
+    # ============================================================================================
+    # `sans_commentaires_rust` RESTITUE les littéraux — c'est son contrat, `include!("…")` doit rester
+    # lisible. Le `"` d'un `'"'` est donc encore là quand `apparier` et `_debut_du_corps` relisent sa
+    # sortie, et le prendre pour une ouverture de chaîne fait avaler le texte jusqu'au guillemet
+    # suivant. MESURE DU DÉFAUT sur `daemon/src` : 38 fonctions INVISIBLES dans 25 fichiers et 6 corps
+    # bornés au mauvais endroit. Une fonction invisible ne rougit jamais — elle n'est pas LUE : le
+    # lecteur ne fabrique pas d'accusation, il en PERD, en vert et sans un mot.
+    # LE TEXTE EST FABRIQUÉ ICI, JAMAIS PRIS SUR L'ARBRE : adossé à `handlers/actions.rs`, ce témoin
+    # deviendrait une RANÇON — rouge le jour où quelqu'un réécrit ce fichier, et aucun geste ne le
+    # refermerait. Les formes, elles, sont celles de l'arbre (`actions.rs` `'"'`, `freshness.rs` `b'"'`,
+    # `panneau_avoue.rs` `'"'`, `ingest/store.rs` `'\u{1}'` et sa déclaration de `trait`).
+    fabrique = ("const SHELL_META: [char; 3] = [';', '\"', '|'];\n"
+                "fn apres_le_litteral(c: char) -> bool { c == '\"' }\n"
+                "fn avec_duree_de_vie<'a>(s: &'a str) -> &'a str { s.trim_matches('\"') }\n"
+                "fn octet(b: u8) -> bool { b == b'\"' }\n"
+                "fn tableau(k: &[u8]) -> [u8; 4] { [0; 4] }\n"
+                "const SEP: char = '\\u{1}';\n"
+                "trait Sans { fn declaree(&self) -> bool; }\n"
+                "fn volee() -> bool { true }\n")
+    fab = coupe_tests(sans_commentaires_rust(fabrique))
+    attendues = ["apres_le_litteral", "avec_duree_de_vie", "octet", "tableau", "volee"]
+    vues = [n for n, _sig, _b, _f in fonctions(fab)]
+    if vues != attendues:
+        errs.append(f"témoin du LITTÉRAL DE CARACTÈRE : fonctions vues {vues} au lieu de {attendues} — "
+                    "soit le `\"` d'un `'\"'` (ou d'un `b'\"'`) ouvre encore une fausse chaîne et la "
+                    "fonction devient INVISIBLE, soit l'accolade d'un `'\\u{1}'` est prise pour un corps, "
+                    "soit le `;` d'un type TABLEAU (`-> [u8; 4]`) est lu comme la fin d'une déclaration "
+                    "(13 fonctions de `daemon/src` perdues ainsi, mesuré par mutation le 2026-09-16), "
+                    "soit une DÉCLARATION de `trait` (`fn declaree(..);`) vole le corps de la suivante")
+    corps_fab = {n: fab[b:f + 1] for n, _sig, b, f in fonctions(fab)}
+    if corps_fab.get("volee", "").strip() != "{ true }":
+        errs.append(f"témoin du CORPS VOLÉ : le corps de `volee` est {corps_fab.get('volee')!r} au lieu "
+                    "de `{ true }` — une fonction sans corps prend celui de sa voisine, et les DEUX "
+                    "entrées portent alors le même texte (23 entrées fabriquées ainsi sur `daemon/src`)")
+    if _saut_de_litteral_rust("let s: &'static str = n();", 7) is not None:
+        errs.append("témoin de la DURÉE DE VIE (négatif) : `'static` est pris pour un littéral de "
+                    "caractère — le scanner sauterait du CODE, et toute portée qui le suit serait fausse")
+    if _saut_de_litteral_rust("c == '\"' && x", 5) != 8:
+        errs.append("témoin du LITTÉRAL (positif, au niveau du prédicat) : `'\"'` n'est plus sauté d'un "
+                    "bloc — sans lui les deux témoins ci-dessus pourraient être verts par accident")
     return errs
 
 

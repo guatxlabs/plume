@@ -30,9 +30,42 @@ import { $, LANG, apiSend, confirmModal, fetchInto, fmtTs, humanAge, ic, modal, 
 // console (pastille, couleur, rang de tri, mot court) ; `freshness.js` la LIT au lieu d'en tenir une
 // copie, et la légende nomme `dormant` pour ce qu'il est.
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-// muet(rouge) > en_retard(orange) > attente(gris) > frais(vert) > calme(bleu) ; `dormant` prend le ton
-// calme (la collecte n'est pas en cause) mais garde son mot, parce qu'il dit autre chose.
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// `P10.20-b` (rang 2) — LE SIXIÈME MOT : `non_lu`, ET IL N'EST PAS UN ÉTAT DE COLLECTE.
+//
+// CE QUE LE DÉMON SERT. `daemon/src/handlers/freshness.rs` rend `status: "non_lu"`
+// (`STATUT_DE_SOURCE_NON_LU`) pour CHAQUE flux quand la santé du pipeline n'a pas été lue — la lecture
+// dont dépend le mot de tous les autres — et pour le flux dont la lecture propre a échoué, qui porte en
+// plus `non_lu: true` et sa `cause`. C'est le MÊME mot que `StatutCapteur::NonLu` sert déjà au panneau
+// Intégrations (`P10.7-g`) : une console, un vocabulaire.
+//
+// CE QUI ÉTAIT FAUX, ET C'EST LE DÉFAUT LE PLUS GRAVE DE CE LOT. `etatDeSource` ne connaissait pas ce
+// mot, et son repli — écrit pour un mot INCONNU — est `calme`, c'est-à-dire le ton bleu de la
+// « collecte saine ». Un relevé dont AUCUNE ligne n'a pu être jugée se peignait donc comme un parc
+// entier en bonne santé : un verdict qui RASSURE, formé précisément quand rien n'a été observé.
+//
+// CE QUI SE VÉRIFIE EN LISANT LA ROUTE, ET QUI RÉFUTE UNE MOITIÉ DE L'ÉNONCÉ : `/api/sources` ne sert
+// JAMAIS ce mot. Sa lecture de la fraîcheur du pipeline est typée depuis `P10.7-g` (lot 98) et son
+// échec rend l'INVENTAIRE ENTIER non lu (`corps_inventaire_non_lu`, `pipeline_fresh: null`, aucune
+// source) — aucune ligne ne sort avec un statut. Le mot entre donc dans cette table parce qu'elle est
+// l'unique vocabulaire d'état de source de la console et que `freshness.js` la LIT, exactement comme
+// `dormant` y vit alors que la fraîcheur ne peut pas le rendre. La symétrie est assumée, pas subie.
+//
+// LE TON. Pastille et encre du plus grave — celles de `muet` —, JAMAIS celles de `calme` : c'est le
+// geste que la rangée d'Intégrations tient déjà pour ses « capteur(s) non lu(s) ». Le RANG, lui, est
+// distinct et le place AVANT `muet` : ce qui n'a pas été lu se regarde avant ce qui a été jugé. Le mot
+// court est bilingue par construction — il n'est pas posé dans un puits que le lexique regarde.
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// non_lu(rouge, hors collecte) > muet(rouge) > en_retard(orange) > attente(gris) > frais(vert) >
+// calme(bleu) ; `dormant` prend le ton calme (la collecte n'est pas en cause) mais garde son mot,
+// parce qu'il dit autre chose.
+// Le mot court de `non_lu` est DÉCLARÉ À PART, et non dans la table : un choix `LANG` posé DANS le
+// littéral d'objet range ses VOISINS du même côté aux yeux de la garde du lexique — `en retard` et
+// `en attente` cessaient d'être avoués hors-regard sans que rien n'ait changé pour eux. Un aveu qui
+// rétrécit parce qu'on a écrit à côté est un aveu faux.
+const MOT_COURT_DE_L_ETAT_NON_LU = LANG === 'en' ? 'not read' : 'non lu';
 const ETAT_DE_SOURCE = {
+  non_lu:    { dot: 'muet',    txt: 'bad',   rang: -1, court: MOT_COURT_DE_L_ETAT_NON_LU },
   muet:      { dot: 'muet',    txt: 'bad',   rang: 0, court: 'muet' },
   en_retard: { dot: 'warn',    txt: 'fwarn', rang: 1, court: 'en retard' },
   attente:   { dot: 'attente', txt: 'mut',   rang: 2, court: 'en attente' },

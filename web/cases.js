@@ -821,6 +821,53 @@ async function renderWizardPanel(box, c, edit, hr) {
     dit.textContent = 'Catalogue de runbooks NON LU : le démon a refusé et en nomme la cause —';
     aveu.append(' « ' + String(rb.error || '').trim() + ' »');
   }
+  // ═══════════════════════════════════════════════════════════════════════════════════════════════
+  // `P10.20-b` (rang 2) — LES DEUX LECTURES D'UNE SEULE LIGNE DE CE PANNEAU, ET CE QUE LEUR SILENCE
+  // DISAIT.
+  //
+  //   · LA RECOMMANDATION. `pick_runbook_id` essayait trois niveaux de correspondance en avalant
+  //     chaque échec ; le démon rend maintenant `recommended: null` PLUS `recommandation_non_etablie`
+  //     (daemon/src/handlers/incidents.rs). La console ne lisait que `rb.recommended` : un `null`
+  //     n'écrivait RIEN, ce qui se lit « aucun runbook ne correspond à cet incident » — la phrase qui
+  //     fait écrire une procédure à la main pendant un incident.
+  //   · L'ATTACHE. `runbook_attache` avalait de même ; le démon rend `attached_runbook_id: null` plus
+  //     `runbook_attache_non_lu` sur la fiche, et `runbook: null` plus `runbook_non_lu` sur la
+  //     checklist — c'est LA MÊME lecture, donc UNE seule phrase à l'écran. Le silence se lisait
+  //     « aucun runbook attaché », et le geste d'attache S'OFFRAIT : `attach_runbook` refuse dès
+  //     qu'une étape existe, et ce refus se lit comme un défaut du produit.
+  //
+  // CE QUI ÉTAIT PLUS GRAVE QUE L'ÉNONCÉ NE LE DISAIT, MESURÉ ICI : sur une attache non lue, la
+  // checklist n'avait pas « un en-tête vide » — elle N'ÉTAIT PAS RENDUE DU TOUT. `hasRunbook` valant
+  // faux, le panneau prenait la branche « aucun runbook attaché », y RETOURNAIT, et les étapes servies
+  // (lecture indépendante, aboutie) disparaissaient de l'écran avec leur progression.
+  // ═══════════════════════════════════════════════════════════════════════════════════════════════
+  const recommandationNonEtablie = String(rb.recommandation_non_etablie || '').trim();
+  const attacheNonLue = String(rb.runbook_attache_non_lu || (steps && steps.runbook_non_lu) || '').trim();
+  // LE MOTIF DU REFUS DE L'ATTACHE, écrit AU PUITS et au MÊME littéral aux deux endroits où il paraît
+  // (le survol du bouton inerte, et le clic qui dit son refus) : une phrase passée en argument d'un
+  // aide tomberait hors du regard de la garde du lexique, donc hors de l'anglais. Il dit ce que le
+  // geste FERAIT, pas seulement qu'il est refusé (grammaire `P11.4-l`).
+  const refuserLAttache = (bouton) => {
+    bouton.setAttribute('aria-disabled', 'true');
+    bouton.title = 'Le runbook attaché à ce dossier n\'a PAS été lu : en attacher un ici, c\'est peut-être poser une SECONDE procédure par-dessus celle que cette lecture n\'a pas pu rendre — le démon refuse l\'attache dès qu\'une étape existe, et ce bouton ne doit pas la promettre.';
+    bouton.onclick = () => toast('Le runbook attaché à ce dossier n\'a PAS été lu : en attacher un ici, c\'est peut-être poser une SECONDE procédure par-dessus celle que cette lecture n\'a pas pu rendre — le démon refuse l\'attache dès qu\'une étape existe, et ce bouton ne doit pas la promettre.', 'bad', 9000);
+  };
+  // L'AVEU DE L'ATTACHE, UNE SEULE RÉDACTION POUR SES TROIS SITES : sous des étapes illisibles, au-dessus
+  // du geste d'attache refusé, et EN TÊTE de la checklist à la place du nom de la procédure. La phrase
+  // est un nœud texte ENTIER (la seule forme que le lexique sait traduire), la cause SERVIE par le démon
+  // est collée dans un SECOND nœud.
+  const avouerLAttacheNonLue = (hote) => {
+    const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:0;font-size:12px';
+    const dit = document.createElement('span');
+    dit.textContent = 'Runbook attaché à ce dossier NON LU : le démon a refusé et en nomme la cause —';
+    aveu.append(dit, ' « ' + attacheNonLue + ' »');
+    hote.appendChild(aveu);
+  };
+  if (recommandationNonEtablie) {
+    const { aveu, dit } = boiteDAveuDuRunbook();
+    dit.textContent = 'Recommandation de runbook NON ÉTABLIE : le démon a refusé et en nomme la cause —';
+    aveu.append(' « ' + recommandationNonEtablie + ' »');
+  }
   // --- tactique dominante inférée + runbook recommandé / attach ---
   if (rb.dominant_tactic || rb.dominant_technique) {
     const info = muted('Tactique dominante des alertes liées : ' + (rb.dominant_tactic || '—') + (rb.dominant_technique ? ' (' + rb.dominant_technique + ')' : ''));
@@ -842,11 +889,21 @@ async function renderWizardPanel(box, c, edit, hr) {
     dit.textContent = 'Étapes du runbook NON LUES : le démon a refusé et en nomme la cause —';
     aveu.append(dit, ' « ' + String(steps.error).trim() + ' »');
     sec.appendChild(aveu);
+    // `P10.20-b` (rang 2) — LES DEUX LECTURES PEUVENT MANQUER À LA FOIS, et le démon les sert séparées
+    // pour cette raison (`error` parle des ÉTAPES, `runbook_non_lu` de l'EN-TÊTE) : la seconde ne se
+    // perd pas dans le retour anticipé de la première.
+    if (attacheNonLue) avouerLAttacheNonLue(sec);
     return;
   }
   const hasRunbook = steps.runbook != null;
-  if (!hasRunbook) {
+  // `P10.20-b` (rang 2) — LA CHECKLIST SE REND DÈS QU'IL Y A DES ÉTAPES, MÊME SANS EN-TÊTE ÉTABLI. Sans
+  // cette seconde condition, une attache non lue renvoyait l'analyste vers « attacher un runbook » et
+  // faisait disparaître les étapes SERVIES avec leur progression.
+  const etapesServies = (steps.steps || []).length > 0;
+  if (!hasRunbook && !(attacheNonLue && etapesServies)) {
     const pick = document.createElement('div'); pick.style.cssText = 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px';
+    // L'aveu PRÉCÈDE le geste : un bouton inerte rencontré avant sa raison se lit comme une panne.
+    if (attacheNonLue) avouerLAttacheNonLue(pick);
     if (rb.recommended) pick.appendChild(Object.assign(document.createElement('span'), { textContent: 'Recommandé : ' + rb.recommended.name, style: 'font-weight:600' }));
     // Le sélecteur et « Attacher le runbook » ne se présentent PAS sur un catalogue non lu : ils diraient
     // que le choix offert est le choix qui existe. La phrase « aucun runbook disponible » ne s'écrit pas
@@ -856,7 +913,11 @@ async function renderWizardPanel(box, c, edit, hr) {
       // le picker liste custom + managés ACTIFS (les désactivés sont exclus serveur) ; recommandation NIVEAU-TECHNIQUE.
       (rb.available || []).forEach(r => { const o = document.createElement('option'); o.value = String(r.id); o.textContent = r.name + (r.managed ? '' : ' [custom]'); if (rb.recommended && r.id === rb.recommended.id) o.selected = true; sel.appendChild(o); });
       const at = caseBtn('Attacher le runbook', 'primary');
-      at.onclick = () => withBusy(at, () => attachRunbook(c, Number(sel.value)));
+      // `P10.20-b` (rang 2) — LE GESTE RESTE OFFERT, INERTE ET MOTIVÉ (grammaire `P11.4-l`) : le retirer
+      // se lirait « ce dossier ne peut pas recevoir de runbook », qui est encore une affirmation que
+      // personne n'a établie. Seul ce point-ci peut EMPÊCHER l'appel.
+      if (attacheNonLue) refuserLAttache(at);
+      else at.onclick = () => withBusy(at, () => attachRunbook(c, Number(sel.value)));
       if (rb.available && rb.available.length) pick.append(sel, at); else pick.appendChild(muted('aucun runbook disponible'));
     }
     sec.appendChild(pick);
@@ -865,7 +926,11 @@ async function renderWizardPanel(box, c, edit, hr) {
   // --- runbook attaché : progression + checklist phasée ---
   const p = steps.progress || { total: 0, done: 0, skipped: 0 };
   const head = document.createElement('div'); head.style.cssText = 'display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:6px';
-  head.appendChild(Object.assign(document.createElement('span'), { textContent: steps.runbook.name, style: 'font-weight:600' }));
+  // `P10.20-b` (rang 2) — L'EN-TÊTE PORTE LE NOM DE LA PROCÉDURE, OU DIT QU'IL N'A PAS ÉTÉ LU. Un
+  // en-tête vide au-dessus d'une checklist se lit « cette checklist n'a pas de procédure », et c'est
+  // exactement ce que la lecture ratée n'a PAS établi.
+  if (hasRunbook) head.appendChild(Object.assign(document.createElement('span'), { textContent: steps.runbook.name, style: 'font-weight:600' }));
+  else avouerLAttacheNonLue(head);
   head.appendChild(muted((p.done + p.skipped) + '/' + p.total + ' traitées'));
   // barre de progression (done + skipped comptent comme traité ; done en accent).
   const bar = document.createElement('div'); bar.style.cssText = 'flex:1;min-width:120px;height:8px;border-radius:6px;background:var(--bd);overflow:hidden;display:flex';

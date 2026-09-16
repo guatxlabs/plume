@@ -325,7 +325,14 @@ async function renderIntegrations() {
 // CE QUE CETTE SURFACE GARDE EN PROPRE : les cinq états qu'elle peut RECEVOIR (le vocabulaire canonique
 // en porte un sixième, `dormant`, qu'un flux ne peut pas prendre — une source dormante n'a aucun flux),
 // et les libellés LONGS qui définissent chaque état pour un lecteur de cette vue.
-const FSTATES = ['muet', 'en_retard', 'attente', 'frais', 'calme'];
+//
+// `P10.20-b` (rang 2) — LE SIXIÈME MOT QU'UN FLUX PEUT RECEVOIR, ET LE SEUL QUI NE SOIT PAS UN VERDICT
+// DE COLLECTE. Le démon rend `non_lu` (`STATUT_DE_SOURCE_NON_LU`) pour chaque flux quand la santé du
+// pipeline n'a pas été lue, et pour un flux dont la lecture propre a échoué. Sans lui dans CE
+// vocabulaire fermé, `freshState` retombait sur son repli — `calme` — et un relevé dont rien n'avait
+// été jugé se peignait « collecte saine ». Le ton, le rang et le mot court viennent de la table
+// canonique (`sources.js`), comme pour les cinq autres.
+const FSTATES = ['non_lu', 'muet', 'en_retard', 'attente', 'frais', 'calme'];
 function freshState(f) {
   const e = etatDeSource(f.status);
   return FSTATES.includes(e) ? e : 'calme';
@@ -334,6 +341,15 @@ const pastilleDEtat = (etat) => (ETAT_DE_SOURCE[etat] ? ETAT_DE_SOURCE[etat].dot
 const couleurDEtat = (etat) => (ETAT_DE_SOURCE[etat] ? ETAT_DE_SOURCE[etat].txt : 'bad');
 // libellé d'en-tête de groupe quand on regroupe PAR ÉTAT
 const FSTATE_LBL = { muet: 'muet — plus rien n\'arrive, toutes sources confondues', en_retard: 'en retard — cadence déclarée dépassée', attente: 'en attente — déclaré, pas encore de donnée', frais: 'frais (donnée < 15 min)', calme: 'calme (collecte saine, source peu active)' };
+// `P10.20-b` (rang 2) — LE LIBELLÉ LONG DE `non_lu` VIT HORS DE LA TABLE, et c'est mesuré plutôt que
+// stylistique : posé DANS le littéral d'objet, son choix `LANG` faisait sortir ses CINQ voisins de la
+// colonne hors-regard de la garde du lexique — cinq libellés avoués depuis toujours cessaient de
+// l'être sans que rien n'ait changé pour eux. Il est bilingue par construction, ses voisins restent
+// jugés comme avant, et il DIT que ce mot n'est pas un état de collecte.
+const FSTATE_LBL_NON_LU = LANG === 'en'
+  ? 'NOT READ — the daemon could not judge this feed; this is not a collection state'
+  : 'NON LU — le démon n\'a pas pu juger ce flux ; ce n\'est pas un état de collecte';
+const libelleLongDEtat = (etat) => (etat === 'non_lu' ? FSTATE_LBL_NON_LU : (FSTATE_LBL[etat] || etat));
 // LE RANG DE TRI vient de la même table canonique : panne en haut ; puis en retard, en attente, frais, calme.
 const age = s => s < 90 ? s + ' s' : s < 5400 ? Math.round(s / 60) + ' min' : s < 172800 ? Math.round(s / 3600) + ' h' : Math.round(s / 86400) + ' j';
 // libellé de la cadence DÉCLARÉE d'un feed — par une sonde du démon OU par l'exploitant (P11.3-c) ; le
@@ -355,7 +371,7 @@ function cadenceTitle(f) {
 // la partager : il ne paraît plus dans cette rangée, mais dans la zone qui porte les nombres d'alertes
 // (`P11.18-d`) — sa place le dit, aucune phrase n'a plus à le dire.
 function countStates(feeds) {
-  const scount = { muet: 0, en_retard: 0, attente: 0, frais: 0, calme: 0, alertes: 0 };
+  const scount = { non_lu: 0, muet: 0, en_retard: 0, attente: 0, frais: 0, calme: 0, alertes: 0 };
   feeds.forEach(f => { scount[freshState(f)] += 1; if (Number(f.active_alerts) > 0) scount.alertes += 1; });
   return scount;
 }
@@ -366,7 +382,7 @@ function countStates(feeds) {
 // « (…) »), le court en est le premier segment ; sans séparateur, c'est le libellé entier qui est rendu
 // — trop long dans la rangée, donc VISIBLE, jamais silencieux.
 const libelleCourtDEtat = (etat) => (ETAT_DE_SOURCE[etat] && ETAT_DE_SOURCE[etat].court)
-  || String(FSTATE_LBL[etat] || etat).split(/ [—(]/)[0].trim();
+  || String(libelleLongDEtat(etat)).split(/ [—(]/)[0].trim();
 // L'ORDRE DE LECTURE des parts : du plus sain au plus grave, l'inverse exact du rang de tri du détail
 // (`SRANK`, la panne en haut). Une seule table de rang, lue dans les deux sens — pas une seconde liste.
 const ETATS_DE_LA_RANGEE = [...FSTATES].sort((a, b) => rangDEtatDeSource(b) - rangDEtatDeSource(a));
@@ -440,7 +456,7 @@ function summaryPills(feeds, releveIncomplet) {
   return rangeeDeChiffres([
     { famille: 'total', valeur: feeds.length, libelle: LANG === 'en' ? 'feed(s) observed' : 'feed(s) observé(s)', suite: aveuDuCompte,
       titre: LANG === 'en' ? 'The row recomposes: the total is the sum of the terms joined by « + », and this row holds nothing else.' : 'La rangée se recompose : le total est la somme des termes reliés par « + », et cette rangée ne porte rien d\'autre.' },
-    ...ETATS_DE_LA_RANGEE.map(e => ({ famille: 'part', valeur: sc[e], dot: pastilleDEtat(e), libelle: libelleCourtDEtat(e), titre: FSTATE_LBL[e] })),
+    ...ETATS_DE_LA_RANGEE.map(e => ({ famille: 'part', valeur: sc[e], dot: pastilleDEtat(e), libelle: libelleCourtDEtat(e), titre: libelleLongDEtat(e) })),
   ]);
 }
 
@@ -556,6 +572,54 @@ function bandeauDeReleveIncomplet(etat) {
   return etat.incomplet ? '<div class="bad">' + esc(motDuRelevePartiel(etat.cause)) + '</div>' : '';
 }
 
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// `P10.20-b` (rang 2) — « INGESTION EN PANNE » EST UN CONSTAT ; `null` N'EN EST PAS UN.
+//
+// CE QUI ÉTAIT FAUX, MESURÉ LE 2026-09-16. Les deux bandeaux de ce module testaient `!d.pipeline_fresh`.
+// Le démon sert désormais TROIS valeurs — `true`, `false`, et `null` quand la lecture d'une seule ligne
+// (`MAX(ts)` sur trois tables) n'a pas eu lieu —, et `null` est FAUX en JavaScript : la bannière
+// « Ingestion en panne — aucune donnée reçue récemment » restait donc allumée, mot pour mot, sur une
+// lecture ratée. C'est l'affirmation la plus grave que cette surface sache former, et elle était servie
+// précisément quand rien n'avait été observé. Le test devient EXPLICITE sur chacune des trois valeurs.
+//
+// LA CAUSE VIENT DE LA LISTE QUE LE DÉMON NOMME, PAS DE LA PHRASE DE RACINE. `error` porte l'union des
+// parcours coupés et des lignes non lues ; `non_lus` porte les SECONDES, une par une, dans la forme que
+// `daemon/src/handlers/freshness.rs` écrit (« la santé du pipeline : … », « le flux des métriques : … »).
+// Le motif ci-dessous est écrit AU PUITS, en littéral, et il DISCRIMINE : le harnais (témoin 97) le lit
+// dans ce module, le confronte aux DEUX ouvertures du démon et exige qu'il reconnaisse la première et
+// refuse la seconde. Repli sur `error` quand la liste ne nomme rien — un démon antérieur, ou un aveu
+// porté par la seule racine : ce qui est servi est collé tel quel, jamais complété.
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+const OUVERTURE_DE_LA_SANTE_DU_PIPELINE_NON_LUE = /^la santé du pipeline\b/;
+function causeDeLaSanteDuPipelineNonLue(d) {
+  if (!d || d.pipeline_fresh != null) return '';
+  const lignes = Array.isArray(d.non_lus) ? d.non_lus.map(s => String(s).trim()) : [];
+  const nommee = lignes.find(l => OUVERTURE_DE_LA_SANTE_DU_PIPELINE_NON_LUE.test(l));
+  return String(nommee || (d.error != null ? d.error : '')).trim();
+}
+// La phrase de la SANTÉ DU PIPELINE NON LUE. Bilingue par construction ; la cause servie est collée
+// telle quelle. Elle dit les deux choses qu'un lecteur doit savoir : ce n'est pas une panne constatée,
+// et le mot porté par chaque flux ci-dessous n'est pas un verdict de collecte.
+function motDeLaSanteDuPipelineNonLue(cause) {
+  return LANG === 'en'
+    ? 'Pipeline health NOT READ: the daemon declined and names the cause — "' + cause
+      + '" This is NOT “ingestion down”: nothing here establishes that data has stopped arriving, and every feed below carries « not read » instead of a collection verdict.'
+    : "Santé du pipeline NON LUE : le démon a refusé et en nomme la cause — « " + cause
+      + " » Ce n'est PAS « ingestion en panne » : rien ici n'établit que la donnée a cessé d'arriver, et chaque flux ci-dessous porte « non lu » à la place d'un verdict de collecte.";
+}
+// LE BANDEAU DE TÊTE DES DEUX VUES, ÉCRIT UNE FOIS. Trois valeurs, trois issues, aucune fondue :
+// `false` = la panne CONSTATÉE (phrase inchangée) ; `null` = l'aveu ; `true` = le mot de repos, que le
+// détail rend et que le pulse tait (il n'a pas la place d'une explication).
+function bandeauDeSanteDuPipeline(d, motDeRepos) {
+  if (d.pipeline_fresh === false) {
+    return `<div class="bad" style="font-weight:600;margin-bottom:8px">${ic('warn')} Ingestion en panne — aucune donnée reçue récemment</div>`;
+  }
+  if (d.pipeline_fresh == null) {
+    return `<div class="bad" style="font-weight:600;margin-bottom:8px">${ic('warn')} ${esc(motDeLaSanteDuPipelineNonLue(causeDeLaSanteDuPipelineNonLue(d)))}</div>`;
+  }
+  return motDeRepos;
+}
+
 function renderFreshnessDetail(d) {
   const feeds = (d.feeds || []).slice();
   // P11.16-a — COMBIEN de flux de cette liste ne sont PAS des sources d'événements : l'inventaire, qui
@@ -574,9 +638,9 @@ function renderFreshnessDetail(d) {
   // comme une population.
   const etatServi = etatDuReleveServi(d);
   const aveuDeRacine = bandeauDeReleveIncomplet(etatServi);
-  const head0 = !d.pipeline_fresh
-    ? `<div class="bad" style="font-weight:600;margin-bottom:8px">${ic('warn')} Ingestion en panne — aucune donnée reçue récemment</div>`
-    : `<div class="muted" style="margin-bottom:8px">Collecte OK. L'âge = temps depuis la dernière donnée. Il ne devient un retard que pour une source dont QUELQU'UN — une sonde du démon ou l'exploitant — DÉCLARE une cadence continue ; pour les autres, il ne dit que l'activité.</div>`;
+  // `P10.20-b` (rang 2) — TROIS VALEURS, TROIS ISSUES (cf. `bandeauDeSanteDuPipeline`) : `null` ne se
+  // fond plus dans « en panne » par la seule fausseté de la valeur.
+  const head0 = bandeauDeSanteDuPipeline(d, `<div class="muted" style="margin-bottom:8px">Collecte OK. L'âge = temps depuis la dernière donnée. Il ne devient un retard que pour une source dont QUELQU'UN — une sonde du démon ou l'exploitant — DÉCLARE une cadence continue ; pour les autres, il ne dit que l'activité.</div>`);
   // P11.3-d — CE QUE LA CLOCHE COUVRE, ET CE QU'ELLE NE COUVRE PAS.
   //
   // L'ancienne phrase (« N alerte(s) active(s) sans source déterminée — aucune cloche de source ne les
@@ -665,6 +729,25 @@ function renderFreshnessDetail(d) {
   // ═══════════════════════════════════════════════════════════════════════════════════════════════
   const rowOf = f => {
     const st = freshState(f);
+    // `P10.20-b` (rang 2) — UN FLUX NON LU PORTE SA CAUSE SUR SA PROPRE LIGNE, ET AUCUN NOMBRE.
+    //
+    // Le démon LISTE le flux dont la lecture propre a échoué plutôt que de le faire disparaître
+    // (`non_lu: true`, `cause`, et `last_seen` / `age_s` / `n_24h` à `null`) : une source ABSENTE de
+    // cette liste se lit « ce flux n'a rien remonté depuis sept jours ». Ce branchement vient AVANT
+    // celui des métriques, parce que le flux agrégé des métriques est justement celui que le démon
+    // sait rendre non lu — et l'en-tête des séries y aurait écrit « il y a null s » sur une ligne
+    // dont RIEN n'a été mesuré. La cause est collée telle quelle, sur la ligne, pour le lecteur qui
+    // parcourt la liste sans remonter au bandeau.
+    if (f.non_lu) {
+      const cause = String(f.cause != null ? f.cause : '').trim();
+      const mot = LANG === 'en' ? 'not read' : 'non lu';
+      const survol = LANG === 'en'
+        ? 'The daemon could not read this feed this time. Neither its age nor its volume is established, and this feed is NOT silent — it was not observed.'
+        : "Le démon n'a pas pu lire ce flux cette fois-ci. Ni son âge ni son volume ne sont établis, et ce flux n'est PAS muet — il n'a pas été observé.";
+      return `<div class="kv" title="${esc(survol)}"><span><span class="fdot ${pastilleDEtat(st)}"></span>${esc(f.name)}` +
+        (cause ? ` <span class="muted fkind">${esc('« ' + cause + ' »')}</span>` : '') +
+        `</span><b class="${couleurDEtat(st)}">${esc(mot)}</b></div>`;
+    }
     if (f.kind === 'metric') {
       const sList = f.series || [];
       const open = S.freshCollapsed.has('metric-open');
@@ -698,7 +781,7 @@ function renderFreshnessDetail(d) {
   for (const [cat, arr] of cats) {
     trierDansUnEtat(arr, ordre);
     const collapsed = S.freshCollapsed.has('cat:' + cat);
-    const lbl = FSTATE_LBL[cat] || cat;
+    const lbl = libelleLongDEtat(cat);
     html += `<div class="fgroup${collapsed ? ' collapsed' : ''}" data-cat="${esc(cat)}">` +
       `<button type="button" class="fgrouphd" aria-expanded="${collapsed ? 'false' : 'true'}" title="Plier / déplier ${esc(lbl)}">` +
       `${ic('chevdown')}<span class="fdot ${pastilleDEtat(cat)}"></span><span class="fglbl">${esc(lbl)}</span><span class="fgcount">${arr.length}</span></button>` +
@@ -712,6 +795,11 @@ function renderFreshnessDetail(d) {
   }
   html += zoneDesAlertes(countStates(feeds), bloc);
   html += `<div class="flegend"><span class="fdot frais"></span>frais (donnée &lt; 15 min) · <span class="fdot calme"></span>calme (collecte saine, source peu active) · <span class="fdot warn"></span>en retard (cadence déclarée dépassée) · <span class="fdot attente"></span>en attente (déclaré, pas de donnée) · <span class="fdot muet"></span>muet (plus rien n'arrive, toutes sources confondues)` +
+    // `P10.20-b` (rang 2) — LE SIXIÈME MOT EST NOMMÉ DANS SON PROPRE NŒUD, et la rangée de pastilles
+    // ci-dessus n'est pas touchée : elle énumère les CINQ états de collecte, et `non_lu` n'en est pas un.
+    // Le dire à côté plutôt que dans la même phrase est ce que la distinction demande — la pastille est
+    // la même que celle de `muet` (il n'en reste aucune de libre), donc la phrase doit porter l'écart.
+    `<div class="muted" style="margin-top:4px">${LANG === 'en' ? 'A sixth word can appear, which is not a collection state: “not read” (same red dot as “silent”, distinct word and line) means the daemon could not judge that feed — most often because pipeline health was not read. The banner at the top of this view then names the cause.' : 'Un sixième mot peut apparaître, et il n\'est pas un état de collecte : « non lu » (même pastille rouge que « muet », mot et ligne distincts) dit que le démon n\'a pas pu juger ce flux — le plus souvent parce que la santé du pipeline n\'a pas été lue. Le bandeau en tête de cette vue en nomme alors la cause.'}</div>` +
     `<div class="muted" style="margin-top:4px">${LANG === 'en' ? 'The expected cadence is the one a daemon probe or the operator DECLARES (shown next to the name, with its declarer on hover). An event-driven source, or one whose cadence nobody declared, is never “late”: its age only tells its activity, and that blank is not a fault — it is filled from the Source inventory (Data → Sources).' : 'La cadence attendue est celle qu\'une sonde du démon ou l\'exploitant DÉCLARE (affichée à côté du nom, avec son déclarant au survol). Une source événementielle, ou dont personne n\'a déclaré la cadence, n\'est jamais « en retard » : son âge ne dit que son activité, et ce blanc n\'est pas un défaut — il se comble depuis l\'Inventaire des sources (Données → Sources).'}</div>` +
     // P11.16-a — CE PANNEAU NE PEUT PAS NOMMER LE PRODUCTEUR : la charge utile de `/api/freshness` ne
     // porte que le NOM de la source (le rapprochement dérivé vit dans `/api/sources`). Plutôt que de
@@ -877,9 +965,8 @@ async function renderFreshnessPulse() {
   if (d.warming && !etat.cause && !feeds.length) { b.innerHTML = '<div class="muted">… mesure de la fraîcheur des sources en cours</div>'; return; }
   if (etat.refus) { b.innerHTML = '<div class="bad">' + esc(motDuReleveNonLu(etat.cause)) + '</div>'; return; }
   if (!feeds.length) { b.innerHTML = '<div class="muted">aucun feed récent</div>'; return; }
-  const head = !d.pipeline_fresh
-    ? `<div class="bad" style="font-weight:600;margin-bottom:8px">${ic('warn')} Ingestion en panne — aucune donnée reçue récemment</div>`
-    : '';
+  // `P10.20-b` (rang 2) — le pulse partage le bandeau des trois valeurs ; son mot de repos est vide.
+  const head = bandeauDeSanteDuPipeline(d, '');
   // `P11.21-j` — L'AVEU PRÉCÈDE LE COMPTE, ET LE COMPTE LE PORTE AUSSI : cette phrase-ci décrivait une
   // propriété que l'écran n'avait pas. Les pastilles du pulse comptent les flux LUS, et elles le DISENT.
   b.innerHTML = bandeauDeReleveIncomplet(etat) + head +

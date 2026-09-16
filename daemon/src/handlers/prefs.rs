@@ -23,10 +23,14 @@ use rusqlite::OptionalExtension;
 /// CE QUI EST FAIT, ET POURQUOI C'EST UN REFUS ET NON UN CORPS QUI AVOUE. Un corps `{prefs:{}, error}`
 /// en 200 laisserait un client qui ne lit pas `error` — c'est-à-dire celui d'aujourd'hui — poursuivre
 /// exactement la même destruction. Un 503 nommé, lui, fait JETER `api('/prefs')` : la capture de
-/// `prefsInit()` garde alors le miroir local (« keep the mirror-seeded PREFS », déjà écrit là-bas), donc
-/// le PUT suivant reporte les VRAIES préférences. Le refus ferme la boucle sans qu'une ligne de console
-/// ait à changer. L'ÉCRITURE, elle, n'a jamais lu : le gestionnaire de PUT remplace le blob sans le
-/// relire — la séquence lire-puis-écraser est CLIENTE, et c'est là qu'elle se coupe.
+/// `prefsInit()` garde alors le miroir local (« keep the mirror-seeded PREFS », déjà écrit là-bas).
+/// RÉFUTÉ le 2026-09-16 en faisant lire l'aveu à la console : cela ne suffisait PAS. Sur un appareil
+/// neuf, un navigateur nettoyé ou une fenêtre privée, le miroir local est VIDE ; la capture gardait `{}`
+/// et le premier réglage touché renvoyait ce `{}` en PUT, qui REMPLACE le blob entier du compte — le
+/// refus déplaçait la destruction sans la fermer. La console REFUSE donc l'enregistrement tant que la
+/// lecture n'est pas faite (drapeau `PREFERENCES_NON_LUES` dans web/prefs.js, motif écrit au puits,
+/// témoin 96 du harnais). L'ÉCRITURE, elle, n'a jamais lu : le gestionnaire de PUT remplace le blob sans
+/// le relire — la séquence lire-puis-écraser est CLIENTE, et c'est là qu'elle se coupe.
 pub(crate) const CAUSE_PREFERENCES_NON_LUES: &str = "PRÉFÉRENCES NON LUES : la lecture de `user_pref` a \
      échoué. Ce n'est PAS « aucune préférence enregistrée » — les vôtres existent peut-être. Servir un \
      jeu VIDE ferait remplacer votre état local par du vide, puis ÉCRASER la ligne du compte au premier \

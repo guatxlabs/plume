@@ -39,6 +39,48 @@ const CAUSE_LBL = {
 const VERDICT_LU = 'lu';
 const VERDICT_ILLISIBLE = 'illisible';
 
+// `P10.20-b` — LA VERSION DE SCHÉMA EST LA SEULE VALEUR QU'UN OPÉRATEUR NE PEUT PAS RECONNAÎTRE COMME
+// FAUSSE. Le démon ne sert plus « 1 » sur une lecture ratée : il sert `schema_version: null` et POSE À
+// CÔTÉ une clé nommée qui porte la cause (`CLE_VERSION_DE_SCHEMA_NON_ETABLIE`, daemon/src/handlers/
+// system.rs), absente du chemin nominal — donc sa PRÉSENCE est le fait, pas la nullité du nombre. Cette
+// clé est le point unique de lecture : l'en-tête du panneau écrivait « schéma v? » sur le `null`, ce qui
+// se lit « la console ne sait pas l'afficher » et non « personne ne l'a lue », et le paquet de diagnostic
+// partait au support sans un mot alors que c'est le PREMIER chiffre qu'une reprise d'incident regarde.
+const CLE_VERSION_DE_SCHEMA_NON_ETABLIE = 'schema_version_non_etablie';
+function causeDeLaVersionDeSchemaNonEtablie(corps) {
+  const cause = corps && corps[CLE_VERSION_DE_SCHEMA_NON_ETABLIE];
+  return typeof cause === 'string' ? cause.trim() : '';
+}
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// `P10.20-b` (rang 2) — UN BULLETIN QUI DISPARAÎT SANS UN MOT EST LE SEUL CANAL DE L'EXPLOITANT QUI SE
+// TAIT TOUT SEUL.
+//
+// LE DÉFAUT. Ce bandeau est le seul endroit par lequel un exploitant parle à TOUS les comptes de
+// l'instance à la fois — « maintenance en cours », « incident majeur, suivez la procédure X ». La
+// console le cachait sur `!b || !b.message`, c'est-à-dire sur « aucun bandeau posé » ET sur « la ligne
+// n'a pas pu être lue », qui ne sont pas le même fait. Un message DÉLIBÉRÉMENT posé s'effaçait donc de
+// tous les écrans sans que ni le lecteur, ni celui qui l'a posé, ne puisse s'en apercevoir — l'auteur,
+// lui, voit son bulletin dans la réponse de son propre POST. Le démon sert maintenant `bulletin: null`
+// PLUS une clé nommée qui porte la cause (`CLE_BULLETIN_NON_ETABLI`, daemon/src/handlers/system.rs),
+// ABSENTE du chemin nominal : sa PRÉSENCE est le fait, pas la nullité du bulletin.
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+const CLE_BULLETIN_NON_ETABLI = 'bulletin_non_etabli';
+function causeDuBulletinNonEtabli(corps) {
+  const cause = corps && corps[CLE_BULLETIN_NON_ETABLI];
+  return typeof cause === 'string' ? cause.trim() : '';
+}
+// L'aveu à DEUX NŒUDS du bulletin, écrit une seule fois pour ses deux surfaces : le bandeau que TOUS
+// les comptes voient, et l'éditeur que l'administrateur rouvre. La phrase est un nœud texte ENTIER (la
+// seule forme que le lexique sait traduire), la cause SERVIE est collée dans un SECOND nœud.
+function avouerLeBulletinNonEtabli(hote, cause) {
+  const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:0;font-size:12px';
+  const dit = document.createElement('span');
+  dit.textContent = 'Bulletin d\'exploitation NON ÉTABLI : le démon a refusé et en nomme la cause —';
+  aveu.append(dit, ' « ' + String(cause).trim() + ' »');
+  hote.appendChild(aveu);
+}
+
 // Le verdict est cherché d'abord PAR CLÉ (`queue_depth_verdict`), puis SUR L'OBJET (`verdict`) : une
 // même lecture peut porter plusieurs valeurs — le couple processeur/mémoire vient d'une seule lecture
 // de `/proc`, et son verdict est celui de l'objet entier.
@@ -216,9 +258,23 @@ function rendreSysteme(wrap, m, h) {
   const pdot = document.createElement('span'); pdot.className = 'fdot ' + (STATE_DOT[posture] || 'muet');
   const ptxt = document.createElement('b'); ptxt.textContent = 'Posture : ' + (STATE_LBL[posture] || posture);
   const pver = document.createElement('span'); pver.className = 'muted'; pver.style.marginLeft = 'auto';
-  pver.textContent = 'plume ' + (m.version || '?') + ' · schéma v' + (m.schema_version || '?') + ' · uptime ' + humanAge(m.uptime_s || 0);
+  // La version de schéma QUITTE l'en-tête quand elle n'est pas établie : « v? » y tiendrait la place d'un
+  // numéro, et un numéro manquant se lit comme un défaut d'affichage. L'aveu prend sa place, en dessous.
+  const causeDuSchema = causeDeLaVersionDeSchemaNonEtablie(m);
+  pver.textContent = causeDuSchema
+    ? 'plume ' + (m.version || '?') + ' · uptime ' + humanAge(m.uptime_s || 0)
+    : 'plume ' + (m.version || '?') + ' · schéma v' + (m.schema_version || '?') + ' · uptime ' + humanAge(m.uptime_s || 0);
   head.append(pdot, ptxt, pver);
   wrap.appendChild(head);
+  if (causeDuSchema) {
+    // Aveu à DEUX NŒUDS : la phrase est un nœud texte ENTIER (la seule forme que le lexique sait
+    // traduire), la cause SERVIE par le démon est collée dans un SECOND nœud, telle quelle.
+    const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:0;font-size:12px';
+    const dit = document.createElement('span');
+    dit.textContent = 'Version de schéma NON ÉTABLIE : le démon ne l\'a pas lue et en nomme la cause —';
+    aveu.append(dit, ' « ' + causeDuSchema + ' »');
+    wrap.appendChild(aveu);
+  }
 
   // santé par composant
   const comps = document.createElement('div'); comps.className = 'sys-comps';
@@ -275,7 +331,23 @@ function adminTools() {
   const rowb = document.createElement('div'); rowb.className = 'sys-bulletin-row'; rowb.append(lvl, save, clear);
   bl.append(lbl, ta, rowb);
   // pré-remplit avec le bulletin courant.
-  api('/bulletin').then(d => { if (d && d.bulletin) { ta.value = d.bulletin.message || ''; lvl.value = d.bulletin.level || 'info'; } }).catch(() => {});
+  // `P10.20-b` (rang 2) — L'ADMINISTRATEUR QUI ROUVRE L'ÉDITEUR APPREND CE QUE LA ZONE DE SAISIE NE
+  // PORTE PAS. Sur un bulletin non établi, le pré-remplissage laissait le champ VIDE et se taisait :
+  // celui qui vient d'ouvrir l'éditeur lisait « aucun bulletin posé » à l'endroit même où il aurait
+  // corrigé le sien. « Effacer » est en plus RENDU INERTE avec son motif (grammaire `P11.4-l`) : ce
+  // geste supprime la ligne `setting` — donc, ici, un message que personne n'a pu lire. « Publier »
+  // reste applicable : c'est une écriture délibérée d'un texte que l'administrateur vient de saisir.
+  api('/bulletin').then(d => {
+    const cause = causeDuBulletinNonEtabli(d);
+    if (cause) {
+      avouerLeBulletinNonEtabli(bl, cause);
+      clear.setAttribute('aria-disabled', 'true');
+      clear.title = 'Le bulletin courant n\'a PAS été lu : l\'effacer ici supprimerait la ligne d\'un message d\'exploitation que cette lecture n\'a pas pu rendre — un bandeau diffusé à TOUS les comptes disparaîtrait sans que personne ne l\'ait lu.';
+      clear.onclick = () => toast('Le bulletin courant n\'a PAS été lu : l\'effacer ici supprimerait la ligne d\'un message d\'exploitation que cette lecture n\'a pas pu rendre — un bandeau diffusé à TOUS les comptes disparaîtrait sans que personne ne l\'ait lu.', 'bad', 9000);
+      return;
+    }
+    if (d && d.bulletin) { ta.value = d.bulletin.message || ''; lvl.value = d.bulletin.level || 'info'; }
+  }).catch(() => {});
   save.onclick = async () => {
     try { await apiSend('/bulletin', 'POST', { message: ta.value.trim(), level: lvl.value }); toast('bulletin publié', 'ok'); loadBulletin(); }
     catch (e) { toast('erreur : ' + e.message, 'bad'); }
@@ -294,11 +366,24 @@ function adminTools() {
     try {
       const v = await api('/system/diag');
       downloadText('plume-diag-' + (v.generated_at || Math.floor(Date.now() / 1000)) + '.json', 'application/json', JSON.stringify(v, null, 2));
+      direLaVersionDeSchemaDuPaquet(v);
     } catch (e) { toast('erreur : ' + e.message, 'bad'); }
   };
   dl.append(dlbl, dbtn);
   box.appendChild(dl);
   return box;
+}
+
+// `P10.20-b` — LE PAQUET REMIS AU SUPPORT DIT AUSSI, À CELUI QUI L'ENVOIE, QUE SA VERSION DE SCHÉMA N'A
+// PAS ÉTÉ LUE. Le corps le dit déjà (le démon y pose la clé nommée) ; mais le fichier part par un
+// téléchargement, personne ne le relit ici, et le support découvrirait seul un `schema_version: null`.
+// L'avis est une CHAÎNE (un avis n'a pas de nœud à deux morceaux) et la cause SERVIE y est collée telle
+// quelle. Rend `true` quand l'aveu a été dit — c'est ce que le harnais ESM juge.
+function direLaVersionDeSchemaDuPaquet(paquet) {
+  const cause = causeDeLaVersionDeSchemaNonEtablie(paquet);
+  if (!cause) return false;
+  toast('Version de schéma NON ÉTABLIE dans ce paquet de diagnostic : le démon ne l\'a pas lue et en nomme la cause — « ' + cause + ' »', 'err', 9000);
+  return true;
 }
 
 // Bandeau MOTD (appelé au boot + après une mutation admin). Aucun bulletin -> caché (invariant mode 0).
@@ -307,6 +392,17 @@ async function loadBulletin() {
   let d;
   try { d = await api('/bulletin'); } catch { el.hidden = true; return; }
   const b = d && d.bulletin;
+  // `P10.20-b` (rang 2) — L'AVEU PASSE AVANT LE REPLI, ET LE BANDEAU RESTE VISIBLE. Le cacher serait
+  // rendre « rien n'a été annoncé » sur une lecture qui n'a pas eu lieu, sur le seul canal par lequel
+  // l'exploitation parle à tout le monde. Le ton est celui de l'alerte, jamais celui d'un « info ».
+  const causeDuBulletin = causeDuBulletinNonEtabli(d);
+  if (causeDuBulletin) {
+    el.className = 'bulletin-banner lvl-critical';
+    el.replaceChildren();
+    avouerLeBulletinNonEtabli(el, causeDuBulletin);
+    el.hidden = false;
+    return;
+  }
   if (!b || !b.message) { el.hidden = true; el.replaceChildren(); return; }
   el.className = 'bulletin-banner lvl-' + (b.level || 'info');
   el.replaceChildren();
@@ -316,4 +412,7 @@ async function loadBulletin() {
   el.hidden = false;
 }
 
-export { loadSystemView, loadBulletin, rendreSysteme, lireMesure, componentRow, detailAvecSesReferences };
+// `direLaVersionDeSchemaDuPaquet` est exposée pour le harnais ESM (témoin 96 : l'aveu dit à celui qui
+// envoie le paquet), au même titre que `rendreSysteme` ; elle n'a qu'un appelant applicatif, le bouton
+// « Télécharger le diagnostic ».
+export { loadSystemView, loadBulletin, rendreSysteme, lireMesure, componentRow, detailAvecSesReferences, direLaVersionDeSchemaDuPaquet };

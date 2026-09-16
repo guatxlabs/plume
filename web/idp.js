@@ -179,14 +179,53 @@ function openIdpForm(existing) {
 // MFA TOTP self-service — tout compte authentifié (opère sur au.name côté serveur).
 // ---------------------------------------------------------------------------------------------------
 
+// `P10.20-b` — LE STATUT DU SECOND FACTEUR N'A PAS ÉTÉ LU, ET AUCUN GESTE NE S'Y APPUIE. Depuis que
+// `mfa_status` et `mfa_enroll` refusent en 503 nommé au lieu de servir `{enrolled:false, enabled:false}`
+// (daemon/src/handlers/idp.rs), la console ne peut plus lire « inactive » sur une panne de lecture — mais
+// « erreur : <message> » ne le disait pas non plus, et laissait « Activer la MFA » cliquable. Le drapeau
+// est posé par la charge et LU par le geste d'enrôlement, qui vit hors d'elle : c'est le seul lien entre
+// un statut non lu et l'écriture qu'on poserait par-dessus (grammaire de `P11.4-l`).
+let STATUT_MFA_NON_LU = false;
+// LE MOTIF DU REFUS EST ÉCRIT DEUX FOIS, EN TOUTES LETTRES, AU SURVOL DU BOUTON ET AU CLIC REFUSÉ — le
+// MÊME littéral aux deux endroits, jamais deux formulations d'un même refus. Il est écrit AU PUITS et non
+// derrière une constante : une phrase passée en argument d'un aide tombe hors du regard de la garde du
+// lexique, donc hors de l'anglais. Il dit ce que le geste FERAIT, pas seulement qu'il est refusé.
+
+// L'aveu à deux nœuds du statut : la phrase est un nœud texte ENTIER (donc traduisible), la cause SERVIE
+// par le démon est collée dans un SECOND nœud. `hote` est `#mfa-status` à la charge, `#mfa-enroll` au
+// geste refusé — le même aveu, jamais deux rédactions.
+function avouerLeStatutMfaNonLu(hote, cause) {
+  const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:0;font-size:12px';
+  const dit = document.createElement('span');
+  dit.textContent = 'Statut de double authentification NON LU : le démon a refusé et en nomme la cause —';
+  aveu.append(dit, ' « ' + String(cause || '').trim() + ' »');
+  hote.replaceChildren(aveu);
+}
+
 export async function loadMfa() {
   const status = $('#mfa-status'); const actions = $('#mfa-actions'); const enroll = $('#mfa-enroll');
   if (!status || !actions) return;
   actions.replaceChildren(); if (enroll) { enroll.hidden = true; enroll.replaceChildren(); }
+  STATUT_MFA_NON_LU = false;
   let st;
   try { st = await api('/mfa/status'); }
   catch (e) {
     if (String((e && e.message) || '').startsWith('501')) { status.textContent = 'MFA réservée au mode mono-tenant.'; return; }
+    // `P10.20-b` — LE REFUS NOMMÉ EST RENDU COMME UN REFUS NOMMÉ. `api()` porte la phrase du démon à côté
+    // de son message (`causeDuDemon`, core.js) : sans elle, un 503 se peignait « Service momentanément
+    // indisponible », c'est-à-dire une panne de passerelle là où le démon dit précisément QUOI n'a pas été
+    // lu. Le bouton d'enrôlement reste offert mais INERTE et motivé : l'absence du bouton se lirait comme
+    // « ce compte ne peut pas enrôler », qui est encore une affirmation que personne n'a établie.
+    const cause = (e && e.causeDuDemon) || '';
+    if (cause) {
+      STATUT_MFA_NON_LU = true;
+      avouerLeStatutMfaNonLu(status, cause);
+      const refuse = mkBtn('Activer la MFA', () => startEnroll());
+      refuse.setAttribute('aria-disabled', 'true');
+      refuse.title = "Le statut de double authentification de ce compte n'a PAS été lu : lancer un enrôlement ici reposerait une graine TOTP neuve avec le second facteur désarmé, par-dessus la MFA peut-être ACTIVE que cette lecture n'a pas pu rendre — le démon refuse déjà l'écriture, et ce bouton ne doit pas la promettre.";
+      actions.replaceChildren(refuse);
+      return;
+    }
     status.textContent = 'erreur : ' + ((e && e.message) || e); return;
   }
   if (st && st.enabled) {
@@ -202,9 +241,26 @@ export async function loadMfa() {
 
 async function startEnroll() {
   const enroll = $('#mfa-enroll'); if (!enroll) return;
+  // `P10.20-b` — LE GESTE PROMIS EST REFUSÉ, ET IL LE DIT. Le bouton porte déjà la marque accessible de
+  // l'inertie et sa raison ; seul ce point-ci peut EMPÊCHER l'appel, et la MÊME phrase est écrite aux deux
+  // endroits. Le démon refuserait de toute façon (503 nommé) : ce qui se joue ici est de ne pas présenter
+  // comme applicable un geste qui désarmerait un second facteur si la garde tombait.
+  if (STATUT_MFA_NON_LU) { toast("Le statut de double authentification de ce compte n'a PAS été lu : lancer un enrôlement ici reposerait une graine TOTP neuve avec le second facteur désarmé, par-dessus la MFA peut-être ACTIVE que cette lecture n'a pas pu rendre — le démon refuse déjà l'écriture, et ce bouton ne doit pas la promettre.", 'bad', 9000); return; }
   let data;
   try { data = await apiSend('/mfa/enroll', 'POST', {}); }
-  catch (e) { toast('erreur : ' + e.message, 'bad'); return; }
+  catch (e) {
+    // L'enrôlement refusé par une lecture ratée s'écrit DANS le panneau, pas dans un avis qui s'efface :
+    // la cause dit pourquoi le second facteur n'a pas été touché, et elle doit rester lisible le temps de
+    // la lire. Le drapeau est posé ici aussi — la garde du démon peut tomber entre la charge et le clic.
+    const cause = (e && e.causeDuDemon) || '';
+    if (cause) {
+      STATUT_MFA_NON_LU = true;
+      enroll.hidden = false;
+      avouerLeStatutMfaNonLu(enroll, cause);
+      return;
+    }
+    toast('erreur : ' + e.message, 'bad'); return;
+  }
   enroll.hidden = false;
   // La carte reprend le chrome .ruleform (comme openIdpForm) -> l'input #mfa-code et le panneau
   // sont stylés au lieu des défauts navigateur.
@@ -256,3 +312,8 @@ async function disableMfa() {
   try { await apiSend('/mfa/disable', 'POST', { code: code.trim() }); toast('MFA désactivée', 'ok'); loadMfa(); }
   catch (e) { toast('erreur : ' + e.message, 'bad'); }
 }
+
+// `startEnroll` est exposé pour le harnais ESM (témoin 96 : le refus du geste d'enrôlement et l'aveu écrit
+// dans le panneau, rendus par leur fabrique réelle et non par une copie) ; il n'a aucun usage applicatif
+// hors de ce module, où seul le bouton « Activer la MFA » l'appelle.
+export { startEnroll };

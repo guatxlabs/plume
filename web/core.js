@@ -294,6 +294,29 @@ function transientGatewayMsg(status, body) {
   return null;
 }
 
+// `P10.20-b` — LA CAUSE QUE LE DÉMON NOMME DANS UN REFUS NE SE PERD PAS EN CHEMIN. `err_json`
+// (daemon/src/main.rs) rend TOUT refus en `{"error": <phrase>, "id": …}` ; une panne de passerelle, elle,
+// rend du HTML ou rien. Le message composé par `api()` sur `!r.ok` COUPE le corps à 200 caractères, et le
+// repli « transitoire » d'un 503 le REMPLACE entièrement : dans les deux cas la phrase que le démon a
+// écrite pour être lue n'atteint pas l'écran. Elle est donc extraite ici et portée À CÔTÉ du message
+// (`causeDuDemon`), sans rien changer au message lui-même — les surfaces qui ne la lisent pas se
+// comportent exactement comme avant. Rend '' quand le corps n'est pas un objet JSON qui nomme sa cause.
+// Les refus de forme sont écrits UN PAR UN, jamais fondus en une condition : un corps vide, un corps qui
+// n'est pas un objet et un objet qui ne nomme rien ne sont pas le même fait, et une garde du dépôt
+// (`check_a_refusal_is_not_rendered_as_an_absence.py`) refuse précisément qu'on les confonde.
+function causeNommeeParLeDemon(corps) {
+  if (!corps) return '';
+  let o; try { o = JSON.parse(corps); } catch { return ''; }
+  if (!o) return '';
+  if (typeof o !== 'object') return '';
+  if (Array.isArray(o)) return '';
+  if (typeof o.error !== 'string') return '';
+  return o.error.trim();
+}
+// Attache la cause nommée à une erreur déjà formée : un seul point d'écriture pour les deux sorties
+// d'`api()` qui peuvent porter un refus du démon (le repli transitoire, et le rejet `!r.ok`).
+function avecLaCauseDuDemon(err, cause) { if (cause) err.causeDuDemon = cause; return err; }
+
 async function api(path) {
   // Sur panne transitoire de passerelle -> réessais GET-only (idempotents) ~400ms puis ~800ms, sinon
   // message propre. Toute autre erreur garde EXACTEMENT le comportement d'avant (statut+corps / vide / non-JSON).
@@ -301,12 +324,18 @@ async function api(path) {
   for (let attempt = 0; ; attempt++) {
     const r = await fetch('/api' + path, { headers: { Accept: 'application/json' } });
     const body = await r.text().catch(() => '');   // lit en texte d'abord -> gère réponse vide/tronquée
+    // `P10.20-b` — LE REFUS NOMMÉ EST LU AVANT TOUTE MISE EN FORME, ET IL NE CHANGE AUCUN AIGUILLAGE.
+    // Un 503 qui nomme sa cause reste traité comme transitoire — c'est délibéré : la saturation du
+    // portillon de requêtes (`daemon/src/handlers/query.rs`) en est un, les deux réessais sont sa
+    // respiration, et la cause des refus de lecture dit elle-même « réessayez ». Seul CHANGE le fait
+    // que la phrase survive au message de passerelle.
+    const cause = r.ok ? '' : causeNommeeParLeDemon(body);
     const tg = transientGatewayMsg(r.status, r.ok ? '' : body);   // ok=200 -> corps vérifié plus bas (cas HTML servi en 200)
     if (tg) {
       if (attempt < backoffs.length) { await new Promise(res => setTimeout(res, backoffs[attempt])); continue; }
-      throw new Error(tg);
+      throw avecLaCauseDuDemon(new Error(tg), cause);
     }
-    if (!r.ok) throw new Error(r.status + (body ? ' ' + body.slice(0, 200) : ''));
+    if (!r.ok) throw avecLaCauseDuDemon(new Error(r.status + (body ? ' ' + body.slice(0, 200) : '')), cause);
     if (!body) throw new Error('réponse vide du serveur (timeout proxy ou requête trop lourde ?)');
     try { return JSON.parse(body); }
     catch {
@@ -328,7 +357,10 @@ async function apiSend(path, method = 'POST', body) {
   if (body !== undefined) { init.headers = { 'Content-Type': 'application/json' }; init.body = JSON.stringify(body); }
   const r = await fetch('/api' + path, init);
   const text = await r.text().catch(() => '');   // texte d'abord -> corps d'erreur dispo + gère réponse vide
-  if (!r.ok) throw new Error(r.status + (text ? ' ' + text.slice(0, 200) : ''));
+  // `P10.20-b` — MÊME PORTAGE QUE DANS `api()` : la coupe à 200 caractères tronque les phrases longues que
+  // le démon écrit pour être lues (un refus de lecture en fait 250 et plus), et le JSON brut n'est pas un
+  // texte d'écran. Le message ne bouge pas ; la cause voyage à côté.
+  if (!r.ok) throw avecLaCauseDuDemon(new Error(r.status + (text ? ' ' + text.slice(0, 200) : '')), causeNommeeParLeDemon(text));
   if (!text) return null;
   try { return JSON.parse(text); } catch { return null; }
 }
@@ -1669,4 +1701,10 @@ export {
   $, CSSV, socTZ, LANG, LOC, tzOpts, fmtTs, SEV, sev, bool, esc, ICONS, ic, flashStopped, stopBtn, closeModals, withBusy, toast, showErr, modal, confirmModal, csvCell, toCSV, downloadText, tsSlug, exportPDF, exportBar, closeMiniMenu, miniMenu, api, apiSend, transientGatewayMsg, muted, fetchInto, colComparator, makePager, pageNums, pagedList,
   socRole, socIsAdmin, applyRoleClass, controleDEcritureSous, motiverLeRefusAuLecteur, roleSansEcriturePartagee, managedBadge, gateDeleteBtn, formMsg, contentSubmit, contentDelete, SEVCOL, lsSet, collapsibleGroup, humanAge,
   confirmWithConsequence, disclosure, marquerLesCellulesTronquees, celluleDeborde,
+  // `P10.20-b` (rang 2) — LE LECTEUR DE CAUSE EST EXPOSÉ, PAS RECOPIÉ. `api()` et `apiSend()` attachent
+  // déjà la cause à l'erreur jetée ; l'écran de connexion, lui, ne peut passer par aucun des deux (la
+  // route `/api/login` est publique, exemptée de CSRF, et son 429 se lit dans un EN-TÊTE que ces deux
+  // fabriques ne rendent pas), et il tient sa propre requête. Lui faire réécrire l'extraction ferait
+  // deux lecteurs d'un même contrat de refus, qui dériveraient l'un de l'autre.
+  causeNommeeParLeDemon,
 };

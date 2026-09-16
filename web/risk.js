@@ -216,6 +216,41 @@ async function openEntity(etype, entity) {
   const back = document.createElement('button'); back.type = 'button'; back.className = 'picon'; back.textContent = 'Fermer';
   back.onclick = () => det.replaceChildren();
   head.append(h, back); det.appendChild(head);
+  // ═══════════════════════════════════════════════════════════════════════════════════════════════
+  // `P10.20-b` (rang 2) — LES TROIS LECTURES DE CETTE VUE DISENT LAQUELLE N'A PAS EU LIEU.
+  //
+  // LA SYNTHÈSE est celle que l'énoncé nomme : `risk_entity_timeline` avalait sa lecture de
+  // `risk_rollup` et rendait `summary: null`, que ce module peignait « aucune synthèse (entité hors
+  // rollup) » — c'est-à-dire « aucun risque cumulé pour cette entité », sur la vue même où l'on vient
+  // vérifier si une entité est chaude. Le démon sert désormais la cause à côté (`summary_error`, plus
+  // le drapeau partagé `lecture_non_faite`).
+  //
+  // CE QUE L'ÉNONCÉ NE DISAIT PAS, ET QUI EST LA MÊME FAUTE SUR LA MÊME FONCTION : les DEUX voisines
+  // de la synthèse avouent depuis `P10.7-g` (lot 107) — `timeline_error`, `contributions_error` —
+  // et ce module ne lisait NI l'une NI l'autre. `timeline: null` ne rendait aucune barre (une absence
+  // muette), et `contributions: null` retombait sur le texte de liste vide de la fabrique partagée,
+  // « aucune contribution enregistrée pour cette entité ». Les trois aveux sont lus ici, chacun à la
+  // place de ce qu'il remplace, et les trois phrases sont écrites AU PUITS.
+  //
+  // CE QUI N'EST PAS TOUCHÉ : le texte de liste vide reste celui de la fabrique — une entité SANS
+  // contribution est un fait, et c'est ce texte qui le dit. L'aveu prend la place de la table entière,
+  // il ne se glisse pas dans sa cellule vide.
+  // ═══════════════════════════════════════════════════════════════════════════════════════════════
+  // L'aveu à deux nœuds de cette vue : la phrase est un nœud texte ENTIER (la seule forme que le
+  // lexique sait traduire), la cause SERVIE par le démon est collée dans un SECOND nœud, telle quelle.
+  // LA PHRASE EST ÉCRITE AU PUITS, chez l'appelant, jamais passée en argument de cette fabrique : une
+  // phrase qui voyage dans un paramètre tombe hors du regard de la garde du lexique — donc hors de
+  // l'anglais. La fabrique ne rend que la boîte et le nœud à remplir (geste de `web/cases.js`).
+  const boiteDAveuDuRisque = () => {
+    const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:6px 0 10px;font-size:12px';
+    const dit = document.createElement('span');
+    aveu.appendChild(dit);
+    det.appendChild(aveu);
+    return { aveu, dit };
+  };
+  const causeDeLaSynthese = String(d.summary_error || '').trim();
+  const causeDeLaLigneDeTemps = String(d.timeline_error || '').trim();
+  const causeDesContributions = String(d.contributions_error || '').trim();
   // synthèse (tuiles) depuis le rollup.
   const sm = d.summary;
   if (sm) {
@@ -234,12 +269,20 @@ async function openEntity(etype, entity) {
       + (sm.first_ts ? ' · première : ' + fmtTs(sm.first_ts) : '')
       + (sm.last_ts ? ' · dernière : ' + fmtTs(sm.last_ts) : '');
     det.appendChild(meta);
+  } else if (causeDeLaSynthese) {
+    const { aveu, dit } = boiteDAveuDuRisque();
+    dit.textContent = 'Synthèse de risque de cette entité NON LUE : le démon a refusé et en nomme la cause —';
+    aveu.append(' « ' + causeDeLaSynthese + ' »');
   } else {
     det.appendChild(muted('aucune synthèse (entité hors rollup).'));
   }
   // timeline horaire (mini barres) — score cumulé par bucket d'1 h.
   const tl = Array.isArray(d.timeline) ? d.timeline : [];
-  if (tl.length) {
+  if (causeDeLaLigneDeTemps) {
+    const { aveu, dit } = boiteDAveuDuRisque();
+    dit.textContent = 'Ligne de temps du risque NON LUE : le démon a refusé et en nomme la cause —';
+    aveu.append(' « ' + causeDeLaLigneDeTemps + ' »');
+  } else if (tl.length) {
     const tlh = document.createElement('div'); tlh.className = 'fldname'; tlh.style.cssText = 'margin:10px 0 4px'; tlh.textContent = 'Timeline (score / heure)';
     det.appendChild(tlh);
     const max = Math.max(1, ...tl.map(p => p.score || 0));
@@ -257,6 +300,15 @@ async function openEntity(etype, entity) {
   const ch = document.createElement('div'); ch.className = 'fldname'; ch.style.cssText = 'margin:12px 0 4px'; ch.textContent = 'Contributions récentes';
   det.appendChild(ch);
   const clist = document.createElement('div'); det.appendChild(clist);
+  // `P10.20-b` (rang 2) — LA TABLE NE SE REND PAS SUR UNE LECTURE QUI N'A PAS EU LIEU : son texte de
+  // liste vide dirait « aucune contribution enregistrée pour cette entité », qui est le fait qu'on
+  // vient précisément de ne pas établir.
+  if (causeDesContributions) {
+    const { aveu, dit } = boiteDAveuDuRisque();
+    dit.textContent = 'Contributions au risque NON LUES : le démon a refusé et en nomme la cause —';
+    aveu.append(' « ' + causeDesContributions + ' »');
+    return;
+  }
   // `P11.22-g` — la ligne de temps des contributions est bornée ; quand la borne mord, c'est dit sous la table.
   const coupe = phraseDeCoupe(d, 'contributions');
   if (coupe) { const c = document.createElement('div'); c.className = 'muted coupe-de-liste'; c.style.cssText = 'font-size:12px;margin-top:4px'; c.textContent = coupe; det.appendChild(c); }
@@ -287,4 +339,7 @@ async function openEntity(etype, entity) {
   });
 }
 
-export { loadRiskView };
+// `openEntity` est exposée pour le harnais ESM (témoin 97 : les trois aveux de cette vue, rendus par
+// leur fabrique réelle et non par une copie) ; elle n'a d'autre appelant que la ligne de la table des
+// entités, dans ce module.
+export { loadRiskView, openEntity };

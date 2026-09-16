@@ -3,7 +3,7 @@
 // entre l'application et l'overlay — est exposée par `initAuthGate()`, appelée par `app.js` au point où ce bloc
 // vivait (un module s'exécute à l'import, avant l'enveloppe `fetch` d'`app.js` qui pose CSRF et tenant).
 // `multitenant.js` continue de lire `fetchMe` / `setAuthUI` via le ré-export d'`app.js`. N'importe pas `app.js`.
-import { $, api, apiSend, applyRoleClass, confirmModal } from './core.js';
+import { $, api, apiSend, applyRoleClass, causeNommeeParLeDemon, confirmModal } from './core.js';
 import { S } from './state.js';
 import { initAiAssist } from './ai.js';
 import { initEnvironments, initTenants } from './multitenant.js';
@@ -65,13 +65,47 @@ async function doLogin(user, pass) {
     return { ok: false, status: 429, retry: Number.isFinite(ra) && ra > 0 ? ra : 0 };
   }
   if (r.status === 401) return { ok: false, status: 401 };
-  let msg = ''; try { msg = (await r.text()).slice(0, 160); } catch (e) {}
-  return { ok: false, status: r.status, msg };
+  // ═══════════════════════════════════════════════════════════════════════════════════════════════
+  // `P10.20-b` — UN REFUS QUE LE DÉMON NOMME N'EST PAS UN « ÉCHEC DE CONNEXION » ANONYME.
+  //
+  // CE QUE LE DÉMON FAIT MAINTENANT. `login_post` (daemon/src/session.rs) REFUSE la connexion en cinq
+  // cent trois, `error` = `CAUSE_MFA_NON_LUE`, quand la ligne `user_mfa` du compte n'a pas été lue :
+  // avant cette clé, le mot de passe SEUL posait la session d'un compte à MFA peut-être ACTIVE. Ce
+  // refus est RÉESSAYABLE, et c'est précisément ce que la personne devant l'écran doit apprendre.
+  //
+  // CE QUI ÉTAIT FAUX DANS L'ÉNONCÉ, MESURÉ ICI : cet écran ne montrait PAS le message de passerelle.
+  // Il n'emprunte ni `api()` ni `apiSend()` — c'est sa propre requête, `fetch` nu —, donc le repli
+  // « Service momentanément indisponible » de `core.js` ne l'atteint jamais. Ce qu'il montrait est
+  // autre chose, et pas meilleur : « Échec de connexion : » suivi du CORPS JSON BRUT coupé à 160
+  // caractères, c'est-à-dire `{"error":"STATUT DE DOUBLE AUTHENTIFICATION NON LU : la lecture de…` —
+  // une phrase tranchée au milieu, dans une syntaxe de machine, sous un titre qui dit « échec » là où
+  // le démon dit « refus, réessayez ».
+  //
+  // CE QUI EST SERVI, ET RIEN D'AUTRE. La cause est extraite par le lecteur PARTAGÉ de `core.js`
+  // (`causeNommeeParLeDemon`), qui rend '' dès que le corps n'est pas un objet JSON nommant sa cause :
+  // une vraie panne de passerelle (HTML, corps vide) retombe donc mot pour mot sur l'ancien message.
+  // Cet écran ne compose aucune phrase sur l'état du compte — il colle ce que le démon a écrit.
+  // ═══════════════════════════════════════════════════════════════════════════════════════════════
+  let corps = ''; try { corps = await r.text(); } catch (e) {}
+  const cause = causeNommeeParLeDemon(corps);
+  if (cause) return { ok: false, status: r.status, cause };
+  return { ok: false, status: r.status, msg: corps.slice(0, 160) };
 }
 function bindLoginForm() {
   const f = $('#login-form'); if (!f || f._bound) return; f._bound = true;
   const err = $('#login-err'), btn = $('#login-submit');
   const fail = m => { if (err) { err.textContent = m; err.hidden = false; } };
+  // `P10.20-b` — L'AVEU À DEUX NŒUDS DE CET ÉCRAN. La phrase est un nœud texte ENTIER (la seule forme
+  // que le lexique sait traduire), la cause SERVIE par le démon est collée dans un SECOND nœud, telle
+  // quelle : c'est la grammaire des quatre aveux du rang un, et elle ne s'écrit pas autrement ici sous
+  // prétexte que la boîte est celle d'un message d'erreur.
+  const avouerLeRefusNomme = cause => {
+    if (!err) return;
+    const dit = document.createElement('span');
+    dit.textContent = 'Connexion REFUSÉE : le démon n\'a pas lu ce dont la décision dépend, et il en nomme la cause —';
+    err.replaceChildren(dit, document.createTextNode(' « ' + String(cause).trim() + ' »'));
+    err.hidden = false;
+  };
   f.addEventListener('submit', async e => {
     e.preventDefault();
     if (err) err.hidden = true;
@@ -91,6 +125,9 @@ function bindLoginForm() {
     }
     if (res.status === 429) fail(res.retry ? `Trop de tentatives, réessaie dans ${res.retry}s.` : 'Trop de tentatives, réessaie plus tard.');
     else if (res.status === 401) fail('Identifiants invalides.');
+    // `P10.20-b` — le refus NOMMÉ passe avant le message générique : les deux autres issues ci-dessus
+    // sont des faits ÉTABLIS (trop de tentatives, identifiants faux), celle-ci ne l'est pas.
+    else if (res.cause) avouerLeRefusNomme(res.cause);
     else fail('Échec de connexion' + (res.msg ? ' : ' + res.msg : '') + (res.status ? ' (' + res.status + ')' : ''));
     const p = $('#login-pass'); if (p) { p.value = ''; try { p.focus(); } catch (e) {} }
   });
@@ -124,4 +161,8 @@ function initAuthGate() {
     });
 }
 
-export { initAuthGate, fetchMe, setAuthUI, showLogin };
+// `bindLoginForm` est exposée pour le harnais ESM (témoin 97 : le refus nommé du second facteur rendu
+// par le chemin RÉEL de l'écran — le formulaire d'`index.html`, `doLogin`, et la boîte `#login-err` —
+// et non par une copie). Elle est idempotente (`f._bound`) et n'a d'autre appelant applicatif
+// qu'`initAuthGate`, juste au-dessus.
+export { initAuthGate, bindLoginForm, fetchMe, setAuthUI, showLogin };

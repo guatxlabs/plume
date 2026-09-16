@@ -7590,8 +7590,14 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     "(55-instrument) `corps_de_matrice_attack` n'ajoute plus une cause CONDITIONNELLE à une matrice servie — la propriété que ce témoin tient n'a plus d'objet, mettez-le à jour au lieu de le laisser vert");
   exiger(voieConditionnelle(srcAlertes55, "corps_de_couverture_des_detections"),
     "(55-instrument) `corps_de_couverture_des_detections` n'ajoute plus une cause CONDITIONNELLE à des détections servies");
-  exiger(/if let Some\(phrase\) = releve\.aveu\(\)/.test(srcFrais55) && /corps\["error"\] = json!\(phrase\)/.test(srcFrais55),
-    "(55-instrument) `compute_freshness` ne pose plus l'aveu de racine du relevé : la vue de fraîcheur n'a plus de cause à lire");
+  // LA RACINE PEUT PORTER PLUSIEURS AVEUX SOUS LA MÊME CLÉ, ET C'EST LA CLÉ `error` QUE LA CONSOLE TESTE.
+  // Ce qui est tenu ici n'est donc plus la forme `json!(phrase)` — le démon COMPOSE ses aveux de racine
+  // avant de les poser, et une forme figée ferait rougir ce témoin sur une propriété qui tient toujours —
+  // mais la CHAÎNE : l'aveu du relevé est LU, il alimente ce qui est posé, et la pose reste SOUS CONDITION
+  // (sur un parcours complet le corps ressort byte-identique). La borne de distance est ce qui empêche la
+  // lecture de rapprocher deux sites étrangers l'un à l'autre.
+  exiger(/if let Some\(phrase\) = releve\.aveu\(\)\s*\{[\s\S]{0,200}?\bphrase\b[\s\S]{0,600}?\n\s*if [^\n]*\{\n\s*corps\["error"\] = json!\(/.test(srcFrais55),
+    "(55-instrument) `compute_freshness` ne pose plus, SOUS CONDITION, un aveu de racine alimenté par celui du relevé : la vue de fraîcheur n'a plus de cause à lire");
   exiger(/corps\["imputation_des_alertes"\]\["error"\]/.test(srcFrais55),
     "(55-instrument) l'aveu IMBRIQUÉ du partage des alertes a disparu du démon : la moitié du témoin jugerait le vide");
 
@@ -12286,6 +12292,759 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   }
   console.log("(95) OK — les six familles de savoir, les trois étages des modèles, les datasets, les panneaux d'un tableau de bord, le sélecteur de vues, les liens et la fiche de runbooks d'un dossier, l'arbre de routage, les silences, les canaux, les règles d'ingestion, les lookups, mes modèles, le catalogue de runbooks et les étapes d'une procédure écrivent la cause SERVIE au lieu d'une absence rassurante ; l'aveu d'un corps à PLUSIEURS lectures NOMME celle qui a échoué et laisse les autres peintes ; aucun geste de création ou d'attache ne se présente sur une liste non lue, et les quinze chemins nominaux restent muets");
 }
+
+// ---------------------------------------------------------------------------------------------
+// (96) `P10.20-b` (rang 1) — LES QUATRE SURFACES DE LA CONSOLE QUI RESTAIENT SOURDES AUX AVEUX NEUFS
+//      LISENT LA CAUSE, ET AUCUN GESTE NE S'APPUIE PLUS SUR UN ÉTAT QUE PERSONNE N'A LU. Le rang un a
+//      soldé, côté démon, les lectures d'UNE SEULE LIGNE qui décidaient : `mfa_status` et `mfa_enroll`
+//      refusent en 503 nommé (`CAUSE_MFA_NON_LUE`), `prefs_get` aussi (`CAUSE_PREFERENCES_NON_LUES`), la
+//      version de schéma sert `null` plus une clé d'aveu NOMMÉE (`schema_version_non_etablie`), et le
+//      dry-run d'une ligne de base refuse en 200 par `CAUSE_PORTE_DRYRUN_NON_ARMEE` — sa route ne porte
+//      aucun code. MESURÉ le 2026-09-16 : la console n'en peignait AUCUN, et deux de ces surfaces ne
+//      pouvaient même pas voir la cause.
+//        · `web/idp.js` : « erreur : <message> » sur le statut, et « Activer la MFA » restait cliquable —
+//          le geste qui, côté démon, reposerait une graine TOTP par-dessus une MFA peut-être ACTIVE.
+//        · `web/prefs.js` : la capture gardait le miroir (correct) EN SILENCE ; sur un appareil au miroir
+//          VIDE, le premier réglage touché renvoyait `{}` au démon et un PUT REMPLACE le blob entier.
+//        · `web/system.js` : « schéma v? » dans l'en-tête — un numéro manquant se lit comme un défaut
+//          d'affichage, pas comme « personne ne l'a lue » — et le paquet de diagnostic partait au support
+//          sans un mot sur la version qu'il ne porte pas.
+//        · `web/detadv.js` : « échec : <cause> » dans un avis de six secondes, indistinct d'un
+//          « introuvable », là où le refus est celui d'une PORTE DE MASQUAGE.
+//      CE QUI ÉTAIT FAUX DANS L'ÉNONCÉ, ET MESURÉ ICI : deux de ces aveux n'atteignaient PAS la console.
+//      `api()` traite tout 502/503/504 comme une panne de passerelle — il réessaie deux fois puis REMPLACE
+//      le corps par « Service momentanément indisponible » —, si bien que `CAUSE_MFA_NON_LUE` et
+//      `CAUSE_PREFERENCES_NON_LUES` étaient perdues AVANT d'arriver au module ; et la coupe à 200 caractères
+//      d'`apiSend` tronquait la phrase de l'enrôlement. Le correctif porte la cause À CÔTÉ du message
+//      (`causeDuDemon`, web/core.js) sans toucher à l'aiguillage : les réessais restent la respiration du
+//      portillon de requêtes, et ce témoin les TRAVERSE (leur compte est un instrument).
+//      LES CAUSES NE SONT PAS RECOPIÉES : elles sont EXTRAITES de l'arbre du démon comme aux témoins 93 à
+//      95, et le MOTIF qui distingue, côté console, une porte non armée d'une ligne de base absente est LU
+//      dans `web/detadv.js` puis confronté aux DEUX phrases du démon — il doit reconnaître la première et
+//      refuser la seconde. ONZE assertions d'instrument tiennent l'ancrage : si une constante, une route ou
+//      la clé d'aveu cesse d'exister, ce témoin REFUSE DE CONCLURE au lieu de rester vert sur un corps
+//      devenu étranger au démon.
+//      CE QUE CE TÉMOIN NE TIENT PAS : ni la mise en page, ni la langue anglaise de ces phrases (témoin 10
+//      et garde du lexique) ; il ne rejoue pas les routes du démon, il en dérive les MOTS et fabrique les
+//      réponses qui les portent ; il ne mesure pas la DURÉE d'affichage d'un avis (les minuteries longues
+//      sont capturées, jamais jouées, et celles des réessais sont RACCOURCIES) ; il ne juge pas la sonde
+//      `/healthz` ni l'étiquette Prometheus `schema="non_etablie"`, qu'aucune surface de la console ne
+//      rend ; et il ne prouve pas que le fichier de diagnostic TÉLÉCHARGÉ porte l'aveu — il juge ce que la
+//      console DIT à celui qui l'envoie.
+// ---------------------------------------------------------------------------------------------
+{
+  const url96 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const modIdp96 = await import(url96("idp.js"));
+  const modPrefs96 = await import(url96("prefs.js"));
+  const modSysteme96 = await import(url96("system.js"));
+  const modDetAdv96 = await import(url96("detadv.js"));
+  const { S: S96 } = await import(url96("state.js"));
+
+  const tic96 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser96 = async (n = 30) => { for (let i = 0; i < n; i++) await tic96(); };
+  const nu96 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ");
+  const $96 = (s) => document.querySelector(s);
+  const cueillir96 = (el, pred, acc) => { if (el && pred(el)) acc.push(el); ((el && el.children) || []).forEach((c) => cueillir96(c, pred, acc)); return acc; };
+  const boutons96 = (h) => cueillir96(h, (e) => e.tagName === "BUTTON", []);
+  const avis96 = () => document.querySelectorAll(".toast").map((t) => String(t.textContent));
+  const modales96 = () => document.querySelectorAll(".modal-ov").map((o) => String(o.textContent).replace(/\s+/g, " "));
+
+  // ── (0) L'INSTRUMENT : LES QUATRE CAUSES ET LA CLÉ D'AVEU VIENNENT DE L'ARBRE DU DÉMON ──────────
+  const rs96 = (f) => readFileSync(path.join(RACINE, "daemon", "src", "handlers", f), "utf8");
+  const srcIdp96 = rs96("idp.rs"), srcPrefs96 = rs96("prefs.rs"), srcSys96 = rs96("system.rs"), srcDetAdv96 = rs96("detection_advanced.rs");
+  // Un littéral Rust continué par `\` en fin de ligne perd le saut ET l'indentation qui suit : la chaîne
+  // est recomposée ici comme le compilateur la compose (même recomposition qu'aux témoins 93 à 95).
+  const litteralRust96 = (src, nom) => {
+    const m = src.match(new RegExp(nom + ': &str =\\s*"([\\s\\S]*?)";'));
+    return m ? m[1].replace(/\\\r?\n\s*/g, "") : "";
+  };
+  const CAUSE_MFA96 = litteralRust96(srcIdp96, "CAUSE_MFA_NON_LUE");
+  const CAUSE_PREFS96 = litteralRust96(srcPrefs96, "CAUSE_PREFERENCES_NON_LUES");
+  const CAUSE_DRYRUN96 = litteralRust96(srcDetAdv96, "CAUSE_PORTE_DRYRUN_NON_ARMEE");
+  const CLE_SCHEMA96 = litteralRust96(srcSys96, "CLE_VERSION_DE_SCHEMA_NON_ETABLIE");
+  const CAUSE_SCHEMA96 = litteralRust96(srcSys96, "CAUSE_VERSION_DE_SCHEMA_NON_ETABLIE");
+  const instrument96 = (vrai, quoi) => exiger(vrai, `(96-instrument) ${quoi} : le corps jugé ci-dessous n'existe plus côté démon, ce témoin REFUSE DE CONCLURE`);
+  instrument96(CAUSE_MFA96.includes("NON LU") && CAUSE_MFA96.length > 60,
+    "`CAUSE_MFA_NON_LUE` n'est plus lisible dans daemon/src/handlers/idp.rs");
+  instrument96(CAUSE_PREFS96.includes("NON LUES") && CAUSE_PREFS96.length > 60,
+    "`CAUSE_PREFERENCES_NON_LUES` n'est plus lisible dans daemon/src/handlers/prefs.rs");
+  instrument96(CAUSE_DRYRUN96.includes("REFUS") && CAUSE_DRYRUN96.length > 60,
+    "`CAUSE_PORTE_DRYRUN_NON_ARMEE` n'est plus lisible dans daemon/src/handlers/detection_advanced.rs");
+  instrument96(CLE_SCHEMA96 === "schema_version_non_etablie",
+    `la clé d'aveu de la version de schéma n'est plus celle que la console lit (daemon/src/handlers/system.rs) — « ${CLE_SCHEMA96} »`);
+  instrument96(CAUSE_SCHEMA96.includes("NON ÉTABLIE") && CAUSE_SCHEMA96.length > 60,
+    "`CAUSE_VERSION_DE_SCHEMA_NON_ETABLIE` n'est plus lisible dans daemon/src/handlers/system.rs");
+  // LES ROUTES ELLES-MÊMES : la cause doit encore SORTIR, et par le code que la console suppose.
+  instrument96((srcIdp96.match(/err_json\(StatusCode::SERVICE_UNAVAILABLE, CAUSE_MFA_NON_LUE\)/g) || []).length >= 2,
+    "`mfa_status` et `mfa_enroll` ne refusent plus TOUS DEUX en 503 nommé (daemon/src/handlers/idp.rs)");
+  instrument96(/err_json\(StatusCode::SERVICE_UNAVAILABLE, CAUSE_PREFERENCES_NON_LUES\)/.test(srcPrefs96),
+    "`prefs_get` ne refuse plus en 503 nommé (daemon/src/handlers/prefs.rs)");
+  instrument96(/Json\(json!\(\{ "error": CAUSE_PORTE_DRYRUN_NON_ARMEE \}\)\)/.test(srcDetAdv96),
+    "le dry-run d'une ligne de base ne sert plus sa cause de porte dans `error` à 200 (daemon/src/handlers/detection_advanced.rs)");
+  instrument96(/corps\.insert\(CLE_VERSION_DE_SCHEMA_NON_ETABLIE\.to_string\(\), json!\(cause\)\)/.test(srcSys96)
+    && /VersionDeSchema::NonEtablie\(_\) => Value::Null/.test(srcSys96),
+    "la version de schéma ne sert plus `null` PLUS une clé d'aveu nommée (daemon/src/handlers/system.rs)");
+  // LE DISCRIMINANT DE LA CONSOLE EST LU DANS LA CONSOLE, JAMAIS RECOPIÉ, ET JUGÉ DANS LES DEUX SENS : il
+  // doit reconnaître la phrase de la PORTE et refuser celle de l'ABSENCE, toutes deux extraites du démon.
+  const mIntrouvable96 = srcDetAdv96.match(/return json!\(\{ "error": "([^"]*introuvable[^"]*)" \}\)/);
+  instrument96(!!mIntrouvable96, "`baseline_test` ne rend plus « introuvable » sur une ligne de base absente (daemon/src/handlers/detection_advanced.rs) : le sens qu'il faut NE PAS confondre n'existe plus");
+  const mMotif96 = readFileSync(path.join(WEB, "detadv.js"), "utf8").match(/const OUVERTURE_DU_REFUS_DE_LA_PORTE_DRYRUN = \/([^\n]+?)\/;/);
+  instrument96(!!mMotif96, "`web/detadv.js` n'écrit plus le motif qui distingue une porte non armée d'une ligne de base absente : il n'y a plus rien à ancrer");
+  const motifConsole96 = new RegExp(mMotif96[1]);
+  exiger(motifConsole96.test(CAUSE_DRYRUN96),
+    `(96-instrument) le motif de \`web/detadv.js\` (${motifConsole96}) ne reconnaît PLUS la cause que le démon écrit : la console reclasserait un refus de PORTE DE MASQUAGE en échec ordinaire — « ${CAUSE_DRYRUN96.slice(0, 60)} »`);
+  exiger(!motifConsole96.test(mIntrouvable96[1]),
+    `(96-instrument) le motif de \`web/detadv.js\` (${motifConsole96}) reconnaît AUSSI « ${mIntrouvable96[1]} » : le discriminant ne discrimine plus`);
+
+  // ── LE SIMULACRE DE TRANSPORT. La page RÉELLE est déjà montée (section 1) : les hôtes MFA sont ceux
+  //    d'`index.html`. L'appariement est EXACT sur « <MÉTHODE> <chemin> » — un 503 sur la LECTURE et un 200
+  //    sur l'ÉCRITURE de la même route sont deux cas distincts, et une correspondance lâche les confondrait.
+  const fetchOrigine96 = globalThis.fetch;
+  const minuterieOrigine96 = globalThis.setTimeout;
+  const etatOrigine96 = { admin: S96.isAdmin, auth: S96.AUTH };
+  let reponsesServies96 = {};
+  const appels96 = [];
+  globalThis.fetch = async (u, init) => {
+    const chemin = String(u).split("?")[0];
+    const methode = ((init && init.method) || "GET").toUpperCase();
+    appels96.push(methode + " " + chemin);
+    const r = reponsesServies96[methode + " " + chemin];
+    if (!r) return { ok: true, status: 200, text: async () => "{}", json: async () => ({}) };
+    const texte = typeof r.corps === "string" ? r.corps : JSON.stringify(r.corps);
+    return { ok: (r.statut || 200) < 400, status: r.statut || 200, text: async () => texte, json: async () => JSON.parse(texte) };
+  };
+  const aEteAppele96 = (s) => appels96.includes(s);
+  // DEUX SORTES DE MINUTERIES, DEUX TRAITEMENTS. Un avis pose 6 000 ou 9 000 ms : le jouer retiendrait le
+  // processus jusqu'à son échéance, donc il est capturé et son COMPTE sert d'instrument (geste des témoins
+  // 94 et 95). La temporisation de reprise d'`api()` (400 puis 800 ms), elle, DOIT s'écouler — c'est le
+  // chemin même que ce témoin traverse —, donc elle est RACCOURCIE à zéro, et comptée aussi.
+  let minuteriesRetenues96 = 0, reprisesRaccourcies96 = 0;
+  globalThis.setTimeout = (fn, ms) => {
+    if (ms >= 1000) { minuteriesRetenues96++; return 0; }
+    if (ms >= 100) { reprisesRaccourcies96++; return minuterieOrigine96(fn, 0); }
+    return minuterieOrigine96(fn, ms);
+  };
+  const ditAuGeste96 = async (faire) => {
+    const avant = avis96().length;
+    await faire();
+    await laisser96(5);
+    return avis96().slice(avant);
+  };
+
+  try {
+    S96.isAdmin = true;
+    S96.AUTH = { user: "hugo", role: "admin" };
+    const statut96 = $96("#mfa-status"), actions96 = $96("#mfa-actions"), enrolement96 = $96("#mfa-enroll");
+    exiger(!!statut96 && !!actions96 && !!enrolement96,
+      "(96-instrument) les trois hôtes du bloc MFA d'`index.html` (#mfa-status, #mfa-actions, #mfa-enroll) ne sont pas montés : les verdicts ci-dessous ne porteraient sur rien");
+
+    // ══ (a) LE STATUT DU SECOND FACTEUR N'A PAS ÉTÉ LU : LA CAUSE EST ÉCRITE, LE GESTE EST INERTE ═══
+    const appelsAvantMfa96 = appels96.length;
+    reponsesServies96 = { "GET /api/mfa/status": { statut: 503, corps: { error: CAUSE_MFA96, id: "plume-e1-0" } } };
+    await modIdp96.loadMfa(); await laisser96();
+    exiger(aEteAppele96("GET /api/mfa/status"), "(96a) la route du statut MFA n'a pas été demandée : le verdict ne porterait sur rien");
+    // L'INSTRUMENT COMPTE LES REQUÊTES, PAS LES MINUTERIES. Un 503 est traité comme une panne de passerelle :
+    // `api()` réessaie DEUX fois avant de rendre la main, et c'est ce repli-là qui EFFAÇAIT la cause. Trois
+    // appels prouvent qu'il a été traversé. Le compte des minuteries, lui, mesurait aussi celles que d'autres
+    // témoins laissent derrière eux — il rendait un verdict qui dépendait de l'ordre du banc, pas du code.
+    exiger(appels96.slice(appelsAvantMfa96).filter((a) => a === "GET /api/mfa/status").length === 3,
+      `(96a-instrument) ${appels96.slice(appelsAvantMfa96).filter((a) => a === "GET /api/mfa/status").length} appel(s) au lieu de 3 : ce témoin croit traverser le repli « passerelle transitoire » d'\`api()\`, celui-là même qui EFFAÇAIT la cause, et il ne le traverse pas`);
+    const texteStatut96 = nu96(statut96);
+    exiger(/NON LU/.test(texteStatut96), `(96a) le statut de double authentification ne dit pas qu'il n'a pas été lu : « ${texteStatut96} »`);
+    exiger(texteStatut96.includes(CAUSE_MFA96), `(96a) la CAUSE servie par le démon n'est pas collée telle quelle dans le bloc MFA : « ${texteStatut96} »`);
+    exiger(!/Service momentanément indisponible/.test(texteStatut96),
+      `(96a) le refus NOMMÉ du démon est peint comme une panne de passerelle : « ${texteStatut96} »`);
+    exiger(!/inactive/i.test(texteStatut96), `(96a) « Double authentification inactive » est peint sous un aveu — c'est affirmer qu'aucun second facteur ne protège ce compte : « ${texteStatut96} »`);
+    const gestes96 = boutons96(actions96);
+    exiger(gestes96.length === 1, `(96a) ${gestes96.length} geste(s) offerts sous un aveu au lieu du seul enrôlement rendu INERTE`);
+    exiger(gestes96[0].getAttribute("aria-disabled") === "true", "(96a) « Activer la MFA » ne porte pas la marque d'inertie sous un aveu : le geste se présente comme applicable à un statut non lu");
+    exiger(String(gestes96[0].getAttribute("title") || "").includes("désarmé"),
+      `(96a) la marque d'inertie de « Activer la MFA » ne DIT pas ce que le geste ferait : « ${gestes96[0].getAttribute("title")} »`);
+    const appelsAvantClic96 = appels96.length;
+    const ditAuClic96 = await ditAuGeste96(() => gestes96[0].onclick());
+    exiger(ditAuClic96.length === 1 && /désarmé/.test(ditAuClic96[0]), `(96a) le clic d'enrôlement sur un statut NON LU ne dit pas son refus : ${JSON.stringify(ditAuClic96)}`);
+    exiger(!appels96.slice(appelsAvantClic96).some((a) => a === "POST /api/mfa/enroll"),
+      "(96a) le clic refusé a tout de même POSTÉ l'enrôlement : c'est l'écriture qui reposerait une graine neuve par-dessus une MFA peut-être active");
+
+    // ══ (b) CONTRÔLE POSITIF : UN STATUT LU REND SA PHRASE, ET LE GESTE REDEVIENT APPLICABLE ════════
+    reponsesServies96 = { "GET /api/mfa/status": { corps: { enrolled: false, enabled: false } } };
+    await modIdp96.loadMfa(); await laisser96();
+    const sainStatut96 = nu96(statut96);
+    exiger(/inactive/i.test(sainStatut96), `(96b) le chemin nominal ne peint pas l'état LU du second facteur — le verdict (96a) ne porterait sur rien : « ${sainStatut96} »`);
+    exiger(!/NON LU/.test(sainStatut96), `(96b) « NON LU » est peint sur une lecture RÉUSSIE — un instrument qui le dit toujours ne mesure rien : « ${sainStatut96} »`);
+    const gesteSain96 = boutons96(actions96)[0];
+    exiger(gesteSain96 && gesteSain96.getAttribute("aria-disabled") === null, "(96b) « Activer la MFA » reste inerte après une lecture RÉUSSIE : l'aveu d'hier interdirait le geste d'aujourd'hui");
+
+    // ══ (c) L'ENRÔLEMENT REFUSÉ : L'AVEU S'ÉCRIT DANS LE PANNEAU, PAS DANS UN AVIS QUI S'EFFACE ═════
+    reponsesServies96 = {
+      "GET /api/mfa/status": { corps: { enrolled: false, enabled: false } },
+      "POST /api/mfa/enroll": { statut: 503, corps: { error: CAUSE_MFA96, id: "plume-e1-1" } },
+    };
+    await gesteSain96.onclick(); await laisser96();
+    const texteEnrolement96 = nu96(enrolement96);
+    exiger(enrolement96.hidden === false, "(96c) le panneau d'enrôlement reste caché sur un refus : l'aveu ne serait lu par personne");
+    exiger(/NON LU/.test(texteEnrolement96) && texteEnrolement96.includes(CAUSE_MFA96),
+      `(96c) l'enrôlement refusé n'écrit pas la cause SERVIE dans le panneau : « ${texteEnrolement96} »`);
+    exiger(!/[0-9]{3} \{/.test(texteEnrolement96), `(96c) le corps JSON brut du démon est peint tel quel : « ${texteEnrolement96} »`);
+    // LE REFUS SE RETIENT. La garde du démon peut tomber ENTRE la charge du panneau et le clic : le geste
+    // qui vient d'apprendre que le statut n'est pas lu ne doit pas repartir au démon au clic suivant.
+    const appelsAvantSecondClic96 = appels96.length;
+    const ditAuSecondClic96 = await ditAuGeste96(() => gesteSain96.onclick());
+    exiger(!appels96.slice(appelsAvantSecondClic96).some((a) => a === "POST /api/mfa/enroll"),
+      "(96c) un second clic REPART au démon après un refus nommé : le bouton avait été peint avant que la lecture cesse d'aboutir");
+    exiger(ditAuSecondClic96.length === 1 && /désarmé/.test(ditAuSecondClic96[0]), `(96c) le second clic ne dit pas son refus : ${JSON.stringify(ditAuSecondClic96)}`);
+
+    // ══ (d) CONTRÔLE POSITIF DE L'ENRÔLEMENT : UNE GRAINE SERVIE SE PEINT ═══════════════════════════
+    reponsesServies96 = {
+      "GET /api/mfa/status": { corps: { enrolled: false, enabled: false } },
+      "POST /api/mfa/enroll": { corps: { secret: "JBSWY3DPEHPK3PXP", otpauth_uri: "otpauth://totp/plume:hugo?secret=JBSWY3DPEHPK3PXP" } },
+    };
+    await modIdp96.loadMfa(); await laisser96();          // le statut REDEVIENT lisible : le drapeau retombe
+    await boutons96(actions96)[0].onclick(); await laisser96();
+    const sainEnrolement96 = nu96(enrolement96);
+    exiger(sainEnrolement96.includes("JBSWY3DPEHPK3PXP"), `(96d) le chemin nominal ne peint pas la graine servie — le verdict (96c) ne porterait sur rien : « ${sainEnrolement96} »`);
+    exiger(!/NON LU/.test(sainEnrolement96), `(96d) « NON LU » est peint sur un enrôlement ABOUTI : « ${sainEnrolement96} »`);
+    await modIdp96.loadMfa(); await laisser96();   // repli du panneau : l'état du banc ne fuit pas vers la suite
+
+    // ══ (e) LES PRÉFÉRENCES NON LUES : LA PERSONNE L'APPREND, ET LE MIROIR NE PART PAS AU DÉMON ═════
+    const appelsAvantPrefs96 = appels96.length;
+    reponsesServies96 = { "GET /api/prefs": { statut: 503, corps: { error: CAUSE_PREFS96, id: "plume-e1-2" } } };
+    const ditALaLecture96 = await ditAuGeste96(async () => { await modPrefs96.prefsInit(); await laisser96(); });
+    exiger(appels96.slice(appelsAvantPrefs96).filter((a) => a === "GET /api/prefs").length === 3,
+      `(96e-instrument) ${appels96.slice(appelsAvantPrefs96).filter((a) => a === "GET /api/prefs").length} appel(s) au lieu de 3 : le repli « passerelle transitoire » d'\`api()\` n'a pas été traversé`);
+    exiger(ditALaLecture96.length === 1, `(96e) la lecture refusée des préférences reste SILENCIEUSE, ou se dit plusieurs fois : ${JSON.stringify(ditALaLecture96)}`);
+    exiger(/NON LUES/.test(ditALaLecture96[0]) && ditALaLecture96[0].includes(CAUSE_PREFS96),
+      `(96e) l'avis ne dit pas que les préférences n'ont pas été lues, avec la cause SERVIE : « ${ditALaLecture96[0]} »`);
+    const appelsAvantEnvoi96 = appels96.length;
+    const ditAEnvoi96 = await ditAuGeste96(() => modPrefs96.flushPrefs());
+    exiger(!appels96.slice(appelsAvantEnvoi96).some((a) => a === "PUT /api/prefs"),
+      "(96e) le miroir de CET appareil est renvoyé au démon alors que la ligne du compte n'a pas été lue : un enregistrement REMPLACE le blob entier, et ce qui n'a pas pu être lu serait écrasé sans un mot");
+    exiger(ditAEnvoi96.length === 1 && /REMPLACE/.test(ditAEnvoi96[0]), `(96e) l'enregistrement refusé ne dit pas ce qu'il aurait fait : ${JSON.stringify(ditAEnvoi96)}`);
+
+    // ══ (f) CONTRÔLE POSITIF : DES PRÉFÉRENCES LUES S'ENREGISTRENT, EN SILENCE ══════════════════════
+    reponsesServies96 = { "GET /api/prefs": { corps: { prefs: { theme: "dark" } } } };
+    const ditALaLectureSaine96 = await ditAuGeste96(async () => { await modPrefs96.prefsInit(); await laisser96(); });
+    exiger(ditALaLectureSaine96.length === 0, `(96f) une lecture RÉUSSIE des préférences pose un avis — un instrument qui le dit toujours ne mesure rien : ${JSON.stringify(ditALaLectureSaine96)}`);
+    const appelsAvantEnvoiSain96 = appels96.length;
+    await modPrefs96.flushPrefs(); await laisser96();
+    exiger(appels96.slice(appelsAvantEnvoiSain96).includes("PUT /api/prefs"),
+      "(96f) l'enregistrement ne part PAS après une lecture réussie — le refus de (96e) ne porterait sur rien");
+
+    // ══ (g) LA VERSION DE SCHÉMA NON ÉTABLIE : NI « v? », NI UN NUMÉRO QUE PERSONNE N'A LU ══════════
+    const SANTE96 = { posture: "green", components: [] };
+    const metriques96 = (extra) => Object.assign({
+      ts: 1000, version: "1.4.2", uptime_s: 3600, process: {}, ingest: {}, search: {}, scheduler: {}, db: {}, host: {}, alerts_open: 0, http: {},
+    }, extra);
+    const causeSchemaServie96 = CAUSE_SCHEMA96 + " La lecture a échoué : disk I/O error.";
+    const boiteSysteme96 = new Element("div");
+    modSysteme96.rendreSysteme(boiteSysteme96, metriques96({ schema_version: null, [CLE_SCHEMA96]: causeSchemaServie96 }), SANTE96);
+    await laisser96(5);
+    const texteSysteme96 = nu96(boiteSysteme96);
+    exiger(/NON ÉTABLIE/.test(texteSysteme96), `(96g) l'écran Système ne dit pas que la version de schéma n'est pas établie : « ${texteSysteme96.slice(0, 300)} »`);
+    exiger(texteSysteme96.includes(causeSchemaServie96), `(96g) la CAUSE servie par le démon n'est pas collée telle quelle dans l'écran Système : « ${texteSysteme96.slice(0, 300)} »`);
+    exiger(!/schéma v/.test(texteSysteme96), `(96g) « schéma v? » tient encore la place d'un numéro sous un aveu — un numéro manquant se lit comme un défaut d'affichage : « ${texteSysteme96.slice(0, 300)} »`);
+    // CONTRÔLE POSITIF : une version LUE s'affiche, et pas un mot d'aveu.
+    const boiteSaine96 = new Element("div");
+    modSysteme96.rendreSysteme(boiteSaine96, metriques96({ schema_version: 42 }), SANTE96);
+    await laisser96(5);
+    const texteSain96 = nu96(boiteSaine96);
+    exiger(/schéma v42/.test(texteSain96), `(96h) le chemin nominal ne peint pas la version LUE — le verdict (96g) ne porterait sur rien : « ${texteSain96.slice(0, 300)} »`);
+    exiger(!/NON ÉTABLIE/.test(texteSain96), `(96h) « NON ÉTABLIE » est peint sur une version LUE : « ${texteSain96.slice(0, 300)} »`);
+    // LE PAQUET DE DIAGNOSTIC : celui qui l'envoie au support apprend ce que le paquet ne porte pas.
+    const ditAuPaquet96 = await ditAuGeste96(async () => {
+      exiger(modSysteme96.direLaVersionDeSchemaDuPaquet({ generated_at: 1, schema_version: null, [CLE_SCHEMA96]: causeSchemaServie96 }) === true,
+        "(96i) le paquet de diagnostic à version NON ÉTABLIE part au support sans un mot");
+    });
+    exiger(ditAuPaquet96.length === 1 && /NON ÉTABLIE/.test(ditAuPaquet96[0]) && ditAuPaquet96[0].includes(causeSchemaServie96),
+      `(96i) l'avis du paquet de diagnostic ne dit pas la cause SERVIE : ${JSON.stringify(ditAuPaquet96)}`);
+    const ditAuPaquetSain96 = await ditAuGeste96(async () => {
+      exiger(modSysteme96.direLaVersionDeSchemaDuPaquet({ generated_at: 1, schema_version: 42 }) === false,
+        "(96j) un paquet dont la version EST établie pose tout de même l'aveu — un instrument qui le dit toujours ne mesure rien");
+    });
+    exiger(ditAuPaquetSain96.length === 0, `(96j) un avis est posé sur un paquet dont la version est LUE : ${JSON.stringify(ditAuPaquetSain96)}`);
+
+    // ══ (k) LE DRY-RUN D'UNE LIGNE DE BASE : LA PORTE NON ARMÉE N'EST PAS UN « INTROUVABLE » ════════
+    const LIGNE_DE_BASE96 = { id: 7, name: "volume auth par hôte" };
+    const modalesAvant96 = modales96().length;
+    reponsesServies96 = { "POST /api/baselines/7/test": { corps: { error: CAUSE_DRYRUN96 } } };
+    const ditAuDryRun96 = await ditAuGeste96(async () => { await modDetAdv96.testBaseline(LIGNE_DE_BASE96); await laisser96(); });
+    const modalesApres96 = modales96();
+    exiger(modalesApres96.length === modalesAvant96 + 1,
+      `(96k) le refus de la PORTE DE MASQUAGE ne prend pas la place de l'aperçu : ${modalesApres96.length - modalesAvant96} modale(s) au lieu d'une`);
+    const texteDryRun96 = modalesApres96[modalesApres96.length - 1];
+    exiger(/REFUSÉ/.test(texteDryRun96) && /porte de masquage/.test(texteDryRun96),
+      `(96k) le refus ne nomme pas la porte de masquage : « ${texteDryRun96} »`);
+    exiger(texteDryRun96.includes(CAUSE_DRYRUN96), `(96k) la CAUSE servie par le démon n'est pas collée telle quelle dans la modale : « ${texteDryRun96} »`);
+    exiger(ditAuDryRun96.length === 0, `(96k) le refus de la porte est AUSSI jeté dans un avis de six secondes, comme un échec ordinaire : ${JSON.stringify(ditAuDryRun96)}`);
+    // L'AUTRE SENS : une ligne de base ABSENTE reste ce qu'elle est — un avis, pas une modale de refus.
+    const modalesAvantAbsence96 = modales96().length;
+    reponsesServies96 = { "POST /api/baselines/7/test": { corps: { error: mIntrouvable96[1] } } };
+    const ditAAbsence96 = await ditAuGeste96(async () => { await modDetAdv96.testBaseline(LIGNE_DE_BASE96); await laisser96(); });
+    exiger(modales96().length === modalesAvantAbsence96,
+      "(96l) une ligne de base ABSENTE ouvre la modale du refus de PORTE : les deux issues se confondent de nouveau");
+    exiger(ditAAbsence96.length === 1 && ditAAbsence96[0].includes(mIntrouvable96[1]),
+      `(96l) une ligne de base absente ne dit plus sa cause : ${JSON.stringify(ditAAbsence96)}`);
+    // CONTRÔLE POSITIF : un aperçu ABOUTI rend son bucket, sans un mot de refus.
+    const modalesAvantApercu96 = modales96().length;
+    reponsesServies96 = { "POST /api/baselines/7/test": { corps: { ok: true, bucket: 1700000000, observed: 3, anomalies: 1, samples: [], hits: [{ entity: "web-01", value: 42, z: 3.4 }] } } };
+    await modDetAdv96.testBaseline(LIGNE_DE_BASE96); await laisser96();
+    const modalesApercu96 = modales96();
+    exiger(modalesApercu96.length === modalesAvantApercu96 + 1, "(96m) l'aperçu ABOUTI n'ouvre aucune modale — les verdicts (96k) et (96l) ne porteraient sur rien");
+    const texteApercu96 = modalesApercu96[modalesApercu96.length - 1];
+    exiger(/entité\(s\) observée\(s\)/.test(texteApercu96) && /web-01/.test(texteApercu96), `(96m) l'aperçu ABOUTI ne rend pas son bucket ni ses anomalies : « ${texteApercu96} »`);
+    exiger(!/REFUSÉ/.test(texteApercu96), `(96m) « REFUSÉ » est peint sur un aperçu ABOUTI : « ${texteApercu96} »`);
+
+    exiger(reprisesRaccourcies96 >= 4, `(96-instrument) ${reprisesRaccourcies96} temporisation(s) de reprise raccourcie(s) : les deux lectures refusées ci-dessus en traversent deux chacune, et un compte plus bas dirait que le repli de passerelle n'a pas été joué`);
+    exiger(minuteriesRetenues96 >= 4, `(96-instrument) ${minuteriesRetenues96} minuterie(s) longue(s) capturée(s) : les quatre refus dits par un avis ci-dessus en posent chacun une, et un compte plus bas dirait qu'un refus n'a pas été prononcé par le chemin qu'on croit mesurer`);
+  } finally {
+    globalThis.fetch = fetchOrigine96; globalThis.setTimeout = minuterieOrigine96;
+    S96.isAdmin = etatOrigine96.admin; S96.AUTH = etatOrigine96.auth;
+    document.querySelectorAll(".modal-ov").forEach((o) => o.remove());
+  }
+  console.log("(96) OK — le statut du second facteur, les préférences, la version de schéma et la porte de masquage d'un dry-run écrivent la cause SERVIE au lieu d'un message de passerelle, d'un silence, d'un « v? » ou d'un échec indistinct ; l'enrôlement ne se présente pas sur un statut non lu et le miroir d'un appareil ne part pas sur une ligne de compte non lue, et les six chemins nominaux restent muets");
+}
+
+// (97) `P10.20-b` (rang 2) — LES SIX SURFACES QUI RENDAIENT ENCORE UN AVEU DU DÉMON COMME UN FAIT :
+//      UNE INGESTION EN PANNE, UNE COLLECTE SAINE, UNE ABSENCE DE RECOMMANDATION, UNE ABSENCE DE
+//      RUNBOOK, UNE ABSENCE DE RISQUE, UNE ABSENCE DE BULLETIN, UN ÉCHEC DE CONNEXION ANONYME. Le rang
+//      deux a soldé, côté démon, les lectures d'UNE SEULE LIGNE qui se SERVENT (celles qui DÉCIDENT
+//      étaient le rang un, témoin 96) : `/api/freshness` rend `pipeline_fresh: null` — jamais `false` —
+//      et LISTE le flux qu'il n'a pas lu (`status: "non_lu"`, `non_lu: true`, `cause`) ;
+//      `/api/cases/{id}/runbooks` rend `recommandation_non_etablie` et `runbook_attache_non_lu` ;
+//      `/api/cases/{id}/steps` rend `runbook_non_lu` ; `/api/risk/entity/{t}/{e}` rend `summary_error`
+//      (et, depuis `P10.7-g` lot 107, `timeline_error` et `contributions_error`) ; `/api/bulletin` rend
+//      `bulletin_non_etabli` ; et `login_post` refuse en cinq cent trois nommé sur un statut MFA non lu.
+//      MESURÉ le 2026-09-16 : la console en peignait ZÉRO, et trois de ces silences RASSURAIENT.
+//        · `web/freshness.js` : `!d.pipeline_fresh` — `null` étant faux, la bannière « Ingestion en
+//          panne — aucune donnée reçue récemment » restait allumée, mot pour mot, sur une lecture qui
+//          n'avait pas eu lieu. Et `etatDeSource` ne connaissait pas `non_lu` : son repli, écrit pour un
+//          mot INCONNU, est `calme` — le ton bleu de la « collecte saine ». Un relevé dont AUCUNE ligne
+//          n'avait pu être jugée se peignait donc en parc sain. C'est le pire défaut de ce lot.
+//        · `web/cases.js` : `if (rb.recommended)` et `steps.runbook != null` — le silence se lisait
+//          « aucune recommandation » et « aucun runbook attaché », et le geste d'attache S'OFFRAIT.
+//        · `web/risk.js` : `const sm = d.summary; if (sm)` — pas de tuiles, et « aucune synthèse
+//          (entité hors rollup) », c'est-à-dire « aucun risque cumulé », sur la vue où l'on vient
+//          vérifier si une entité est chaude.
+//        · `web/system.js` : bandeau CACHÉ sur `!b || !b.message` — un message d'exploitation posé,
+//          le seul canal vers TOUS les comptes, disparaissait sans un mot, y compris de l'éditeur.
+//        · `web/login.js` : un refus nommé rendu « Échec de connexion : … (503) ».
+//      CE QUI ÉTAIT FAUX DANS L'ÉNONCÉ, ET MESURÉ ICI. (1) `web/login.js` ne montrait PAS le message de
+//      passerelle : cet écran n'emprunte ni `api()` ni `apiSend()` — sa requête est un `fetch` nu, parce
+//      que la route est publique, exemptée de CSRF, et que son 429 se lit dans un EN-TÊTE —, donc le
+//      repli « Service momentanément indisponible » ne l'atteint jamais. Il rendait le CORPS JSON BRUT
+//      coupé à 160 caractères, une phrase tranchée au milieu dans une syntaxe de machine. (2) Sur une
+//      attache non lue, la checklist n'avait pas « un en-tête vide » : elle N'ÉTAIT PAS RENDUE DU TOUT
+//      — `hasRunbook` valant faux, le panneau prenait la branche « aucun runbook attaché » et Y
+//      RETOURNAIT, emportant les étapes SERVIES et leur progression. (3) `/api/sources` ne sert JAMAIS
+//      `non_lu` : sa lecture de fraîcheur est typée depuis `P10.7-g` (lot 98) et son échec rend
+//      l'inventaire ENTIER non lu, sans aucune ligne — le mot entre dans `ETAT_DE_SOURCE` parce que
+//      cette table est l'unique vocabulaire de la console et que `freshness.js` la LIT, pas parce que
+//      l'inventaire le rendrait. (4) `web/risk.js` ne lisait pas davantage `timeline_error` ni
+//      `contributions_error`, servis depuis un lot antérieur : la même faute, deux fois, sur la même
+//      fonction — « aucune contribution enregistrée pour cette entité » est le texte que la fabrique
+//      partagée peignait sur une lecture ratée.
+//      LES CAUSES NE SONT PAS RECOPIÉES : elles sont EXTRAITES de l'arbre du démon comme aux témoins 93
+//      à 96, constantes ET phrases de `format!`. Le MOTIF qui distingue, côté console, la ligne de
+//      `non_lus` qui NOMME la santé du pipeline de celle qui nomme le flux des métriques est LU dans
+//      `web/freshness.js` puis confronté aux DEUX ouvertures du démon — il doit reconnaître la première
+//      et refuser la seconde. TRENTE ET UNE assertions d'instrument tiennent l'ancrage : si une constante, un
+//      nom de champ ou une route cesse d'exister, ce témoin REFUSE DE CONCLURE au lieu de rester vert
+//      sur un corps devenu étranger au démon.
+//      CE QUE CE TÉMOIN NE TIENT PAS : ni la mise en page, ni la langue anglaise de ces phrases (témoin
+//      10 et garde du lexique) ; il ne rejoue aucune route du démon, il en dérive les MOTS et fabrique
+//      les réponses qui les portent ; il ne mesure pas la DURÉE d'affichage d'un avis (les minuteries
+//      longues sont capturées, jamais jouées) ; il ne juge pas le TON peint par la feuille de style (le
+//      simulacre ne calcule aucun style) — il juge la classe posée et le fait qu'elle DIFFÈRE de celle
+//      du calme ; et il ne dit rien du bandeau de fraîcheur de la vue d'ensemble au-delà de son texte.
+// ---------------------------------------------------------------------------------------------
+{
+  const url97 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const modFraicheur97 = await import(url97("freshness.js"));
+  const modSources97 = await import(url97("sources.js"));
+  const modCas97 = await import(url97("cases.js"));
+  const modRisque97 = await import(url97("risk.js"));
+  const modSysteme97 = await import(url97("system.js"));
+  const modConnexion97 = await import(url97("login.js"));
+  const { S: S97 } = await import(url97("state.js"));
+
+  const tic97 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser97 = async (n = 30) => { for (let i = 0; i < n; i++) await tic97(); };
+  const nu97 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ");
+  const $97 = (s) => document.querySelector(s);
+  const cueillir97 = (el, pred, acc) => { if (el && pred(el)) acc.push(el); ((el && el.children) || []).forEach((c) => cueillir97(c, pred, acc)); return acc; };
+  const boutons97 = (h) => cueillir97(h, (e) => e.tagName === "BUTTON", []);
+  const avis97 = () => document.querySelectorAll(".toast").map((t) => String(t.textContent));
+  const platHtml97 = (h) => String(h).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
+
+  // ── (0) L'INSTRUMENT : LES CAUSES, LES MOTS ET LES NOMS DE CHAMPS VIENNENT DE L'ARBRE DU DÉMON ───
+  const rs97 = (f) => readFileSync(path.join(RACINE, "daemon", "src", "handlers", f), "utf8");
+  const srcFraicheur97 = rs97("freshness.rs"), srcIncidents97 = rs97("incidents.rs");
+  const srcRisque97 = rs97("rba.rs"), srcSysteme97 = rs97("system.rs"), srcIdp97 = rs97("idp.rs");
+  const srcSession97 = readFileSync(path.join(RACINE, "daemon", "src", "session.rs"), "utf8");
+  // Un littéral Rust continué par `\` en fin de ligne perd le saut ET l'indentation qui suit : la chaîne
+  // est recomposée ici comme le compilateur la compose (même recomposition qu'aux témoins 93 à 96).
+  const litteralRust97 = (src, nom) => {
+    const m = src.match(new RegExp(nom + ': &str =\\s*"([\\s\\S]*?)";'));
+    return m ? m[1].replace(/\\\r?\n\s*/g, "") : "";
+  };
+  const instrument97 = (vrai, quoi) => exiger(vrai, `(97-instrument) ${quoi} : le corps jugé ci-dessous n'existe plus côté démon, ce témoin REFUSE DE CONCLURE`);
+
+  const CAUSE_FLUX_NON_LU97 = litteralRust97(srcFraicheur97, "CAUSE_FLUX_NON_LU");
+  const CAUSE_LIGNES97 = litteralRust97(srcFraicheur97, "CAUSE_LIGNES_DE_FRAICHEUR_NON_LUES");
+  const STATUT_NON_LU97 = litteralRust97(srcFraicheur97, "STATUT_DE_SOURCE_NON_LU");
+  instrument97(CAUSE_FLUX_NON_LU97.includes("FLUX NON LU") && CAUSE_FLUX_NON_LU97.length > 60,
+    "`CAUSE_FLUX_NON_LU` n'est plus lisible dans daemon/src/handlers/freshness.rs");
+  instrument97(CAUSE_LIGNES97.includes("LECTURES NON FAITES") && CAUSE_LIGNES97.length > 60,
+    "`CAUSE_LIGNES_DE_FRAICHEUR_NON_LUES` n'est plus lisible dans daemon/src/handlers/freshness.rs");
+  instrument97(STATUT_NON_LU97 === "non_lu",
+    `le mot que le démon pose sur un flux non lu n'est plus celui que la console range dans son vocabulaire (daemon/src/handlers/freshness.rs) — « ${STATUT_NON_LU97} »`);
+  // LA ROUTE ELLE-MÊME : la troisième valeur doit encore SORTIR, et le flux non lu rester LISTÉ.
+  instrument97(/let pipeline_fresh: Option<bool>/.test(srcFraicheur97) && /"pipeline_fresh": pipeline_fresh,/.test(srcFraicheur97),
+    "`/api/freshness` ne sert plus `pipeline_fresh` en TROIS valeurs (daemon/src/handlers/freshness.rs)");
+  instrument97(/"non_lu": true, "cause": format!\("\{CAUSE_FLUX_NON_LU\}\{e\}"\),/.test(srcFraicheur97),
+    "le flux dont la lecture a échoué n'est plus LISTÉ avec son aveu (daemon/src/handlers/freshness.rs) : il redisparaîtrait de `feeds`");
+  instrument97(/corps\["non_lus"\] = json!\(lignes_non_lues\);/.test(srcFraicheur97),
+    "`/api/freshness` ne nomme plus ses lignes non lues une par une (daemon/src/handlers/freshness.rs)");
+  instrument97(/None => STATUT_DE_SOURCE_NON_LU,/.test(srcFraicheur97),
+    "un flux sans santé de pipeline lue ne porte plus `non_lu` (daemon/src/handlers/freshness.rs) : il reprendrait un verdict de collecte");
+  // LES DEUX OUVERTURES QUE LE DÉMON POUSSE DANS `non_lus`, DÉRIVÉES ET NON RECOPIÉES : c'est sur elles
+  // que le discriminant de la console est jugé, dans les deux sens.
+  const ouvertures97 = [...srcFraicheur97.matchAll(/lignes_non_lues\.push\(format!\("([^"]*?)\{e\}"\)\);/g)].map((m) => m[1]);
+  instrument97(ouvertures97.length >= 2, `le démon ne pousse plus DEUX lignes distinctes dans \`non_lus\` (daemon/src/handlers/freshness.rs) : ${ouvertures97.length} trouvée(s), il n'y a plus de discriminant à juger`);
+  const OUVERTURE_PIPELINE97 = ouvertures97.find((o) => /pipeline/.test(o)) || "";
+  const OUVERTURE_METRIQUES97 = ouvertures97.find((o) => !/pipeline/.test(o)) || "";
+  instrument97(!!OUVERTURE_PIPELINE97 && !!OUVERTURE_METRIQUES97,
+    `les deux lignes non lues de \`/api/freshness\` ne se distinguent plus l'une de l'autre — « ${OUVERTURE_PIPELINE97} » / « ${OUVERTURE_METRIQUES97} »`);
+  // LE DISCRIMINANT DE LA CONSOLE EST LU DANS LA CONSOLE, JAMAIS RECOPIÉ, ET JUGÉ DANS LES DEUX SENS.
+  const mMotifPipeline97 = readFileSync(path.join(WEB, "freshness.js"), "utf8").match(/const OUVERTURE_DE_LA_SANTE_DU_PIPELINE_NON_LUE = \/([^\n]+?)\/;/);
+  instrument97(!!mMotifPipeline97, "`web/freshness.js` n'écrit plus le motif qui NOMME, dans `non_lus`, la lecture de la santé du pipeline : il n'y a plus rien à ancrer");
+  const motifPipeline97 = new RegExp(mMotifPipeline97[1]);
+  exiger(motifPipeline97.test(OUVERTURE_PIPELINE97),
+    `(97-instrument) le motif de \`web/freshness.js\` (${motifPipeline97}) ne reconnaît PLUS la ligne que le démon écrit pour la santé du pipeline — « ${OUVERTURE_PIPELINE97} »`);
+  exiger(!motifPipeline97.test(OUVERTURE_METRIQUES97),
+    `(97-instrument) le motif de \`web/freshness.js\` (${motifPipeline97}) reconnaît AUSSI « ${OUVERTURE_METRIQUES97} » : la cause d'un flux serait servie pour celle du pipeline`);
+  // LA COMPARAISON SE FERA SUR DU BALISAGE : `esc` (core.js) n'échappe que `& < > "`, donc une cause qui
+  // n'en porte aucun se retrouve TELLE QUELLE dans le HTML. Si le démon en introduisait un, la
+  // comparaison ci-dessous deviendrait fausse en silence — elle est donc gardée.
+  const sansEchappement97 = (t) => !/[&<>"]/.test(t);
+  instrument97(sansEchappement97(CAUSE_FLUX_NON_LU97) && sansEchappement97(OUVERTURE_PIPELINE97) && sansEchappement97(CAUSE_LIGNES97),
+    "une cause de fraîcheur porte désormais un caractère que `esc` réécrit : la comparaison de ce témoin sur le balisage rendu ne vaudrait plus");
+
+  const CAUSE_RECO97 = litteralRust97(srcIncidents97, "CAUSE_RECOMMANDATION_NON_ETABLIE");
+  const CAUSE_ATTACHE97 = litteralRust97(srcIncidents97, "CAUSE_RUNBOOK_ATTACHE_NON_LU");
+  instrument97(CAUSE_RECO97.includes("NON ÉTABLIE") && CAUSE_RECO97.length > 60,
+    "`CAUSE_RECOMMANDATION_NON_ETABLIE` n'est plus lisible dans daemon/src/handlers/incidents.rs");
+  instrument97(CAUSE_ATTACHE97.includes("NON LU") && CAUSE_ATTACHE97.length > 60,
+    "`CAUSE_RUNBOOK_ATTACHE_NON_LU` n'est plus lisible dans daemon/src/handlers/incidents.rs");
+  instrument97(/o\.insert\("recommandation_non_etablie"\.to_string\(\), json!\(cause\)\)/.test(srcIncidents97),
+    "`case_runbooks_json` ne pose plus `recommandation_non_etablie` (daemon/src/handlers/incidents.rs)");
+  instrument97(/o\.insert\("runbook_attache_non_lu"\.to_string\(\), json!\(cause\)\)/.test(srcIncidents97),
+    "`case_runbooks_json` ne pose plus `runbook_attache_non_lu` (daemon/src/handlers/incidents.rs)");
+  instrument97(/corps\["runbook_non_lu"\] = json!\(cause\);/.test(srcIncidents97),
+    "`case_steps_json` ne pose plus `runbook_non_lu` (daemon/src/handlers/incidents.rs)");
+
+  // LES TROIS PHRASES DE `risk_entity_timeline` SONT ÉCRITES EN `format!`, PAS EN CONSTANTES : elles
+  // sont extraites telles quelles, et la cause fabriquée plus bas est composée comme le démon la compose.
+  const mSynthese97 = srcRisque97.match(/Some\(format!\("(synthèse de risque NON LUE : )\{e\}( —[^"]*)"\)\)/);
+  const mLigneDeTemps97 = srcRisque97.match(/Some\(format!\("(ligne de temps du risque NON LUE : )\{e\}"\)\)/);
+  const mContributions97 = srcRisque97.match(/json!\(format!\("(contributions du risque NON LUES : )\{e\}"\)\)/);
+  instrument97(!!mSynthese97 && !!mLigneDeTemps97 && !!mContributions97,
+    "les trois aveux de `risk_entity_timeline` ne s'écrivent plus en `format!` lisibles (daemon/src/handlers/rba.rs)");
+  instrument97(/obj\.insert\("summary_error"\.into\(\), json!\(cause\)\)/.test(srcRisque97)
+    && /obj\.insert\("lecture_non_faite"\.into\(\), json!\(true\)\)/.test(srcRisque97),
+    "`/api/risk/entity/{t}/{e}` ne sert plus `summary_error` avec son drapeau (daemon/src/handlers/rba.rs)");
+  const causeSynthese97 = mSynthese97[1] + "disk I/O error" + mSynthese97[2];
+  const causeLigneDeTemps97 = mLigneDeTemps97[1] + "database is locked";
+  const causeContributions97 = mContributions97[1] + "no such table: risk_event";
+
+  const CLE_BULLETIN97 = litteralRust97(srcSysteme97, "CLE_BULLETIN_NON_ETABLI");
+  const CAUSE_BULLETIN97 = litteralRust97(srcSysteme97, "CAUSE_BULLETIN_NON_ETABLI");
+  instrument97(CLE_BULLETIN97 === "bulletin_non_etabli",
+    `la clé d'aveu du bulletin n'est plus celle que la console lit (daemon/src/handlers/system.rs) — « ${CLE_BULLETIN97} »`);
+  instrument97(CAUSE_BULLETIN97.includes("NON ÉTABLI") && CAUSE_BULLETIN97.length > 60,
+    "`CAUSE_BULLETIN_NON_ETABLI` n'est plus lisible dans daemon/src/handlers/system.rs");
+  instrument97(/corps\.insert\(CLE_BULLETIN_NON_ETABLI\.to_string\(\), json!\(cause\)\)/.test(srcSysteme97)
+    && /BulletinPose::Aucun \| BulletinPose::NonEtabli\(_\) => Value::Null/.test(srcSysteme97),
+    "`/api/bulletin` ne sert plus `null` PLUS une clé d'aveu nommée (daemon/src/handlers/system.rs)");
+  const causeBulletinServie97 = CAUSE_BULLETIN97 + " La lecture a échoué : disk I/O error.";
+
+  const CAUSE_MFA97 = litteralRust97(srcIdp97, "CAUSE_MFA_NON_LUE");
+  instrument97(CAUSE_MFA97.includes("NON LU") && CAUSE_MFA97.length > 60,
+    "`CAUSE_MFA_NON_LUE` n'est plus lisible dans daemon/src/handlers/idp.rs");
+  instrument97(/Err\(_\) => return err_json\(StatusCode::SERVICE_UNAVAILABLE, CAUSE_MFA_NON_LUE\),/.test(srcSession97),
+    "`login_post` ne REFUSE plus la connexion sur un statut MFA non lu (daemon/src/session.rs) : le mot de passe seul reposerait la session");
+
+  // ── LE SIMULACRE DE TRANSPORT. Appariement EXACT sur « <MÉTHODE> <chemin> » : un aveu servi en 200 et
+  //    un refus servi en 503 sont deux cas distincts, et une correspondance lâche les confondrait.
+  const fetchOrigine97 = globalThis.fetch;
+  const minuterieOrigine97 = globalThis.setTimeout;
+  const etatOrigine97 = { admin: S97.isAdmin, auth: S97.AUTH };
+  let reponsesServies97 = {};
+  const appels97 = [];
+  globalThis.fetch = async (u, init) => {
+    const chemin = String(u).split("?")[0];
+    const methode = ((init && init.method) || "GET").toUpperCase();
+    appels97.push(methode + " " + chemin);
+    const r = reponsesServies97[methode + " " + chemin];
+    if (!r) return { ok: true, status: 200, text: async () => "{}", json: async () => ({}), headers: { get: () => null } };
+    const texte = typeof r.corps === "string" ? r.corps : JSON.stringify(r.corps);
+    return { ok: (r.statut || 200) < 400, status: r.statut || 200, text: async () => texte, json: async () => JSON.parse(texte), headers: { get: () => null } };
+  };
+  // Un avis pose 6 000 ou 9 000 ms : le jouer retiendrait le processus jusqu'à son échéance, donc il est
+  // capturé et son COMPTE sert d'instrument (geste des témoins 94 à 96).
+  let minuteriesRetenues97 = 0;
+  globalThis.setTimeout = (fn, ms) => {
+    if (ms >= 1000) { minuteriesRetenues97++; return 0; }
+    return minuterieOrigine97(fn, ms);
+  };
+  const ditAuGeste97 = async (faire) => {
+    const avant = avis97().length;
+    await faire();
+    await laisser97(5);
+    return avis97().slice(avant);
+  };
+
+  try {
+    S97.isAdmin = true;
+    S97.AUTH = { user: "hugo", role: "admin" };
+
+    // ══ (a) LA SANTÉ DU PIPELINE N'A PAS ÉTÉ LUE : NI « EN PANNE », NI UN PARC CALME ════════════════
+    const causeDuPipeline97 = OUVERTURE_PIPELINE97 + "disk I/O error";
+    const causeDuFluxMetrique97 = CAUSE_FLUX_NON_LU97 + "database is locked";
+    const fluxJuge97 = (o) => Object.assign({
+      kind: "event", name: "sshd", last_seen: 900, age_s: 100, n_24h: 12, active_alerts: 0,
+      cadence_declaree: "non_declaree", cadence_interval_s: null, cadence_capteur: null, observed_interval_s: null,
+    }, o);
+    const releveNonLu97 = {
+      ts: 1000,
+      pipeline_fresh: null,
+      feeds: [
+        fluxJuge97({ status: STATUT_NON_LU97 }),
+        { kind: "metric", name: "métriques", last_seen: null, age_s: null, n_24h: null, status: STATUT_NON_LU97, active_alerts: null, non_lu: true, cause: causeDuFluxMetrique97 },
+      ],
+      non_lus: [causeDuPipeline97, OUVERTURE_METRIQUES97 + "database is locked"],
+      error: CAUSE_LIGNES97 + causeDuPipeline97,
+      imputation_des_alertes: { actives: 0, avec_cloche: 0, sans_source_nommee: 0, sans_imputation: 0, jeton_sans_source: "(source indéterminée)" },
+    };
+    const htmlNonLu97 = modFraicheur97.renderFreshnessDetail(releveNonLu97);
+    const platNonLu97 = platHtml97(htmlNonLu97);
+    exiger(/Santé du pipeline NON LUE/.test(platNonLu97), `(97a) la fraîcheur ne dit pas que la santé du pipeline n'a pas été lue : « ${platNonLu97.slice(0, 300)} »`);
+    exiger(platNonLu97.includes(causeDuPipeline97), `(97a) la CAUSE servie par le démon pour la santé du pipeline n'est pas collée telle quelle : « ${platNonLu97.slice(0, 300)} »`);
+    exiger(!/Ingestion en panne/.test(platNonLu97),
+      `(97a) « Ingestion en panne — aucune donnée reçue récemment » est peint sur une lecture qui n'a PAS eu lieu : « ${platNonLu97.slice(0, 300)} »`);
+    // LE MOT DE CHAQUE FLUX, ET SON TON. Le repli `calme` était le verdict le plus rassurant que cette
+    // surface sache former, et il était servi quand rien n'avait été observé.
+    exiger(modFraicheur97.freshState({ status: STATUT_NON_LU97 }) === "non_lu",
+      `(97a) le mot « ${STATUT_NON_LU97} » du démon n'entre pas dans le vocabulaire de la fraîcheur : « ${modFraicheur97.freshState({ status: STATUT_NON_LU97 })} »`);
+    exiger(modSources97.etatDeSource(STATUT_NON_LU97) !== "calme",
+      "(97a) le vocabulaire canonique range encore un flux NON LU sous « calme » — le ton de la collecte saine, sur ce que personne n'a jugé");
+    exiger(modSources97.ETAT_DE_SOURCE.non_lu && modSources97.ETAT_DE_SOURCE.non_lu.txt !== modSources97.ETAT_DE_SOURCE.calme.txt
+      && modSources97.ETAT_DE_SOURCE.non_lu.dot !== modSources97.ETAT_DE_SOURCE.calme.dot,
+      "(97a) l'état NON LU porte la pastille ou l'encre du calme : le ton dirait le contraire du mot");
+    exiger(modSources97.rangDEtatDeSource("non_lu") < modSources97.rangDEtatDeSource("muet"),
+      "(97a) ce qui n'a pas été lu ne passe pas AVANT ce qui a été jugé dans le tri des états");
+    const comptes97 = modFraicheur97.countStates(releveNonLu97.feeds);
+    exiger(comptes97.non_lu === 2 && comptes97.calme === 0,
+      `(97a) la rangée compte les flux non lus comme des flux calmes : ${JSON.stringify(comptes97)}`);
+    // LA LIGNE DU FLUX QUE LE DÉMON N'A PAS PU LIRE : sa cause, et AUCUN nombre fabriqué.
+    exiger(platNonLu97.includes(causeDuFluxMetrique97), `(97a) la cause portée PAR LE FLUX non lu n'est pas écrite sur sa ligne : « ${platNonLu97.slice(0, 400)} »`);
+    exiger(!/il y a null/.test(platNonLu97) && !/NaN/.test(platNonLu97),
+      `(97a) un âge est fabriqué à partir d'une mesure qui n'existe pas : « ${platNonLu97.slice(0, 400)} »`);
+
+    // ══ (b) CONTRÔLES POSITIFS : LES DEUX AUTRES VALEURS RESTENT CE QU'ELLES ÉTAIENT ════════════════
+    const releveSain97 = { ts: 1000, pipeline_fresh: true, feeds: [fluxJuge97({ status: "frais" })], imputation_des_alertes: releveNonLu97.imputation_des_alertes };
+    const platSain97 = platHtml97(modFraicheur97.renderFreshnessDetail(releveSain97));
+    exiger(/Collecte OK/.test(platSain97), `(97b) le chemin nominal ne peint plus l'état de repos — le verdict (97a) ne porterait sur rien : « ${platSain97.slice(0, 200)} »`);
+    exiger(!/Santé du pipeline NON LUE/.test(platSain97), `(97b) l'aveu est peint sur une santé de pipeline LUE — un instrument qui le dit toujours ne mesure rien : « ${platSain97.slice(0, 200)} »`);
+    const releveEnPanne97 = { ts: 1000, pipeline_fresh: false, feeds: [fluxJuge97({ status: "muet" })], imputation_des_alertes: releveNonLu97.imputation_des_alertes };
+    const platEnPanne97 = platHtml97(modFraicheur97.renderFreshnessDetail(releveEnPanne97));
+    exiger(/Ingestion en panne/.test(platEnPanne97), `(97b) une ingestion RÉELLEMENT en panne ne se dit plus : « ${platEnPanne97.slice(0, 200)} »`);
+    exiger(!/Santé du pipeline NON LUE/.test(platEnPanne97), `(97b) l'aveu est peint sur une panne CONSTATÉE : « ${platEnPanne97.slice(0, 200)} »`);
+
+    // ══ (c) LE PULSE DE LA VUE D'ENSEMBLE PORTE LE MÊME BANDEAU (c'est la surface la plus tirée) ════
+    const hotePulse97 = $97("#freshness .body");
+    exiger(!!hotePulse97, "(97-instrument) l'hôte du pulse de fraîcheur (#freshness .body) n'est pas monté : le verdict ne porterait sur rien");
+    reponsesServies97 = { "GET /api/freshness": { corps: releveNonLu97 } };
+    await modFraicheur97.renderFreshnessPulse(); await laisser97();
+    const textePulse97 = nu97(hotePulse97);
+    exiger(/Santé du pipeline NON LUE/.test(textePulse97) && textePulse97.includes(causeDuPipeline97),
+      `(97c) le pulse ne dit pas que la santé du pipeline n'a pas été lue, avec la cause SERVIE : « ${textePulse97.slice(0, 300)} »`);
+    exiger(!/Ingestion en panne/.test(textePulse97), `(97c) le pulse peint la panne sur une lecture non faite : « ${textePulse97.slice(0, 300)} »`);
+    reponsesServies97 = { "GET /api/freshness": { corps: releveEnPanne97 } };
+    await modFraicheur97.renderFreshnessPulse(); await laisser97();
+    exiger(/Ingestion en panne/.test(nu97(hotePulse97)) && !/Santé du pipeline NON LUE/.test(nu97(hotePulse97)),
+      `(97c) le pulse ne distingue plus la panne constatée de la lecture non faite : « ${nu97(hotePulse97).slice(0, 300)} »`);
+
+    // ══ (d) LE RUNBOOK D'UN DOSSIER : RECOMMANDATION NON ÉTABLIE, ATTACHE NON LUE, ÉTAPES SERVIES ═══
+    const causeReco97 = CAUSE_RECO97 + "disk I/O error";
+    const causeAttache97 = CAUSE_ATTACHE97 + "database is locked";
+    const etapeServie97 = { id: 1, step_id: 11, ordinal: 1, phase: "triage", title: "Isoler la machine", guidance: "", step_kind: "manual", search_soql: "", action_kind: "", target: "", status: "pending", actor: "", ts: null, note: "", host: "" };
+    const boiteCas97 = new Element("div");
+    reponsesServies97 = {
+      "GET /api/cases/7/runbooks": { corps: { incident_tier: null, incident_type: "", commander: "", dominant_tactic: null, dominant_technique: null, recommended: null, attached_runbook_id: null, available: [{ id: 3, key: "rb", name: "Compromission de compte", match_kind: "*", match_key: "*", description: "", managed: 1 }], recommandation_non_etablie: causeReco97, runbook_attache_non_lu: causeAttache97 } },
+      "GET /api/cases/7/steps": { corps: { steps: [etapeServie97], progress: { total: 1, done: 0, skipped: 0 }, runbook: null, runbook_non_lu: causeAttache97 } },
+    };
+    await modCas97.renderWizardPanel(boiteCas97, { id: 7 }, true, null); await laisser97();
+    const texteCas97 = nu97(boiteCas97);
+    exiger(/Recommandation de runbook NON ÉTABLIE/.test(texteCas97) && texteCas97.includes(causeReco97),
+      `(97d) la recommandation non établie ne se dit pas avec la cause SERVIE : « ${texteCas97.slice(0, 400)} »`);
+    exiger(/Runbook attaché à ce dossier NON LU/.test(texteCas97) && texteCas97.includes(causeAttache97),
+      `(97d) l'attache non lue ne se dit pas avec la cause SERVIE : « ${texteCas97.slice(0, 400)} »`);
+    exiger(!/Recommandé :/.test(texteCas97), `(97d) une recommandation est présentée alors que le démon dit ne pas l'avoir établie : « ${texteCas97.slice(0, 400)} »`);
+    // LA CHECKLIST EST RENDUE : les étapes viennent d'une AUTRE lecture, qui a abouti.
+    exiger(texteCas97.includes("Isoler la machine"),
+      `(97d) les étapes SERVIES disparaissent de l'écran sous une attache non lue — c'est la branche « aucun runbook attaché » qui a été prise : « ${texteCas97.slice(0, 400)} »`);
+    exiger(!/aucun runbook disponible/.test(texteCas97), `(97d) « aucun runbook disponible » est peint sur un catalogue SERVI : « ${texteCas97.slice(0, 400)} »`);
+
+    // ══ (e) CONTRÔLE POSITIF DU RUNBOOK : UNE FICHE LUE REND SON NOM, SANS UN MOT D'AVEU ════════════
+    const boiteCasSaine97 = new Element("div");
+    reponsesServies97 = {
+      "GET /api/cases/7/runbooks": { corps: { incident_tier: null, incident_type: "", commander: "", dominant_tactic: "TA0001", dominant_technique: "T1078", recommended: { id: 3, name: "Compromission de compte" }, attached_runbook_id: 3, available: [] } },
+      "GET /api/cases/7/steps": { corps: { steps: [etapeServie97], progress: { total: 1, done: 0, skipped: 0 }, runbook: { id: 3, name: "Compromission de compte" } } },
+    };
+    await modCas97.renderWizardPanel(boiteCasSaine97, { id: 7 }, true, null); await laisser97();
+    const texteCasSain97 = nu97(boiteCasSaine97);
+    exiger(texteCasSain97.includes("Compromission de compte") && texteCasSain97.includes("Isoler la machine"),
+      `(97e) le chemin nominal ne peint pas la procédure attachée — les verdicts (97d) ne porteraient sur rien : « ${texteCasSain97.slice(0, 300)} »`);
+    exiger(!/NON LU/.test(texteCasSain97) && !/NON ÉTABLIE/.test(texteCasSain97),
+      `(97e) un aveu est peint sur deux lectures ABOUTIES : « ${texteCasSain97.slice(0, 300)} »`);
+
+    // ══ (f) LE GESTE D'ATTACHE EST REFUSÉ TANT QUE L'ATTACHE N'EST PAS LUE (grammaire `P11.4-l`) ════
+    const boiteAttache97 = new Element("div");
+    reponsesServies97 = {
+      "GET /api/cases/7/runbooks": { corps: { incident_tier: null, incident_type: "", commander: "", dominant_tactic: null, dominant_technique: null, recommended: null, attached_runbook_id: null, available: [{ id: 3, key: "rb", name: "Compromission de compte", match_kind: "*", match_key: "*", description: "", managed: 1 }], runbook_attache_non_lu: causeAttache97 } },
+      "GET /api/cases/7/steps": { corps: { steps: [], progress: { total: 0, done: 0, skipped: 0 }, runbook: null, runbook_non_lu: causeAttache97 } },
+    };
+    await modCas97.renderWizardPanel(boiteAttache97, { id: 7 }, true, null); await laisser97();
+    const attacher97 = boutons97(boiteAttache97).find((b) => /Attacher le runbook/.test(nu97(b)));
+    exiger(!!attacher97, "(97f) le geste d'attache n'est plus offert du tout sous un aveu : son absence se lirait « ce dossier ne peut pas recevoir de runbook »");
+    exiger(attacher97.getAttribute("aria-disabled") === "true",
+      "(97f) « Attacher le runbook » ne porte pas la marque d'inertie sous une attache non lue : le geste se présente comme applicable");
+    exiger(String(attacher97.getAttribute("title") || "").includes("SECONDE procédure"),
+      `(97f) la marque d'inertie de « Attacher le runbook » ne DIT pas ce que le geste ferait : « ${attacher97.getAttribute("title")} »`);
+    const appelsAvantAttache97 = appels97.length;
+    const ditAuClicDAttache97 = await ditAuGeste97(() => attacher97.onclick());
+    exiger(ditAuClicDAttache97.length === 1 && /SECONDE procédure/.test(ditAuClicDAttache97[0]), `(97f) le clic refusé ne dit pas son refus : ${JSON.stringify(ditAuClicDAttache97)}`);
+    exiger(!appels97.slice(appelsAvantAttache97).some((a) => /POST \/api\/cases\/7\/runbook/.test(a)),
+      "(97f) le clic refusé a tout de même POSTÉ l'attache : c'est l'écriture que le démon refuse dès qu'une étape existe");
+
+    // ══ (g) LA SYNTHÈSE DE RISQUE, SA LIGNE DE TEMPS ET SES CONTRIBUTIONS ═══════════════════════════
+    const detailRisque97 = $97("#risk-detail");
+    exiger(!!detailRisque97, "(97-instrument) l'hôte du détail de risque (#risk-detail) n'est pas monté : les verdicts ci-dessous ne porteraient sur rien");
+    reponsesServies97 = { "GET /api/risk/entity/host/srv1": { corps: { entity_type: "host", entity: "srv1", summary: null, timeline: null, contributions: null, summary_error: causeSynthese97, timeline_error: causeLigneDeTemps97, contributions_error: causeContributions97, lecture_non_faite: true } } };
+    await modRisque97.openEntity("host", "srv1"); await laisser97();
+    const texteRisque97 = nu97(detailRisque97);
+    exiger(/Synthèse de risque de cette entité NON LUE/.test(texteRisque97) && texteRisque97.includes(causeSynthese97),
+      `(97g) la synthèse non lue ne se dit pas avec la cause SERVIE : « ${texteRisque97.slice(0, 400)} »`);
+    exiger(!/aucune synthèse/.test(texteRisque97), `(97g) « aucune synthèse (entité hors rollup) » est peint sous un aveu — c'est affirmer qu'aucun risque n'est cumulé : « ${texteRisque97.slice(0, 400)} »`);
+    exiger(/Ligne de temps du risque NON LUE/.test(texteRisque97) && texteRisque97.includes(causeLigneDeTemps97),
+      `(97g) la ligne de temps non lue reste SILENCIEUSE : « ${texteRisque97.slice(0, 400)} »`);
+    exiger(/Contributions au risque NON LUES/.test(texteRisque97) && texteRisque97.includes(causeContributions97),
+      `(97g) les contributions non lues ne se disent pas avec la cause SERVIE : « ${texteRisque97.slice(0, 400)} »`);
+    exiger(!/aucune contribution enregistrée/.test(texteRisque97),
+      `(97g) le texte de liste vide de la fabrique partagée est peint sur une lecture qui n'a pas eu lieu : « ${texteRisque97.slice(0, 400)} »`);
+    // CONTRÔLE POSITIF : une fiche LUE rend ses tuiles et son tableau, sans un mot d'aveu.
+    reponsesServies97 = { "GET /api/risk/entity/host/srv1": { corps: { entity_type: "host", entity: "srv1", summary: { score: 90, contrib: 2, distinct_tactics: 1, tactics: "TA0001", score_hot: 10, contrib_hot: 1, max_severity: 3, first_ts: 1735689000, last_ts: 1735689600 }, timeline: [{ ts: 1735689600, score: 90, contrib: 2 }], contributions: [{ ts: 1735689600, risk_score: 50, source: "rule", rule_id: 42, reason: "connexion inhabituelle", mitre: "T1078", severity: 3 }] } } };
+    await modRisque97.openEntity("host", "srv1"); await laisser97();
+    const texteRisqueSain97 = nu97(detailRisque97);
+    exiger(/Score/.test(texteRisqueSain97) && texteRisqueSain97.includes("connexion inhabituelle"),
+      `(97h) le chemin nominal ne peint pas la synthèse LUE — les verdicts (97g) ne porteraient sur rien : « ${texteRisqueSain97.slice(0, 300)} »`);
+    exiger(!/NON LUE/.test(texteRisqueSain97) && !/NON LUES/.test(texteRisqueSain97),
+      `(97h) un aveu est peint sur trois lectures ABOUTIES : « ${texteRisqueSain97.slice(0, 300)} »`);
+    detailRisque97.replaceChildren();
+
+    // ══ (i) LE BULLETIN D'EXPLOITATION : LE BANDEAU RESTE VISIBLE ET DIT CE QU'IL NE PORTE PAS ══════
+    const bandeau97 = $97("#bulletin-banner");
+    exiger(!!bandeau97, "(97-instrument) l'hôte du bandeau (#bulletin-banner) n'est pas monté : les verdicts ci-dessous ne porteraient sur rien");
+    reponsesServies97 = { "GET /api/bulletin": { corps: { bulletin: null, [CLE_BULLETIN97]: causeBulletinServie97 } } };
+    await modSysteme97.loadBulletin(); await laisser97();
+    exiger(bandeau97.hidden === false, "(97i) le bandeau est CACHÉ sur un bulletin non établi : un message d'exploitation posé disparaîtrait sans un mot");
+    const texteBandeau97 = nu97(bandeau97);
+    exiger(/Bulletin d'exploitation NON ÉTABLI/.test(texteBandeau97) && texteBandeau97.includes(causeBulletinServie97),
+      `(97i) le bandeau ne dit pas que le bulletin n'est pas établi, avec la cause SERVIE : « ${texteBandeau97}  »`);
+    // CONTRÔLES POSITIFS : un bulletin POSÉ se peint, une absence ÉTABLIE reste cachée.
+    reponsesServies97 = { "GET /api/bulletin": { corps: { bulletin: { message: "maintenance 22h-23h", level: "warn", updated_by: "hugo", updated: 1000 } } } };
+    await modSysteme97.loadBulletin(); await laisser97();
+    exiger(bandeau97.hidden === false && nu97(bandeau97).includes("maintenance 22h-23h"),
+      `(97j) un bulletin POSÉ ne se peint plus — le verdict (97i) ne porterait sur rien : « ${nu97(bandeau97)} »`);
+    exiger(!/NON ÉTABLI/.test(nu97(bandeau97)), `(97j) l'aveu est peint sur un bulletin LU : « ${nu97(bandeau97)} »`);
+    reponsesServies97 = { "GET /api/bulletin": { corps: { bulletin: null } } };
+    await modSysteme97.loadBulletin(); await laisser97();
+    exiger(bandeau97.hidden === true, "(97j) une absence ÉTABLIE de bulletin allume le bandeau : l'invariant du mode 0 est perdu");
+
+    // ══ (k) L'ÉDITEUR DE L'ADMINISTRATEUR : L'AVEU, ET « EFFACER » RENDU INERTE ═════════════════════
+    const SANTE97 = { posture: "green", components: [] };
+    const metriques97 = { ts: 1000, version: "1.4.2", schema_version: 42, uptime_s: 3600, process: {}, ingest: {}, search: {}, scheduler: {}, db: {}, host: {}, alerts_open: 0, http: {} };
+    reponsesServies97 = { "GET /api/bulletin": { corps: { bulletin: null, [CLE_BULLETIN97]: causeBulletinServie97 } } };
+    const boiteEditeur97 = new Element("div");
+    modSysteme97.rendreSysteme(boiteEditeur97, metriques97, SANTE97);
+    await laisser97();
+    const texteEditeur97 = nu97(boiteEditeur97);
+    exiger(/Bulletin d'exploitation NON ÉTABLI/.test(texteEditeur97) && texteEditeur97.includes(causeBulletinServie97),
+      `(97k) l'administrateur qui rouvre l'éditeur n'apprend pas que le bulletin courant n'a pas été lu : « ${texteEditeur97.slice(0, 400)} »`);
+    const effacer97 = boutons97(boiteEditeur97).find((b) => nu97(b) === "Effacer");
+    exiger(!!effacer97, "(97-instrument) le bouton « Effacer » du bulletin n'existe plus : le verdict ci-dessous ne porterait sur rien");
+    exiger(effacer97.getAttribute("aria-disabled") === "true",
+      "(97k) « Effacer » reste applicable sur un bulletin NON LU : il supprimerait la ligne d'un message que personne n'a pu lire");
+    exiger(String(effacer97.getAttribute("title") || "").includes("TOUS les comptes"),
+      `(97k) la marque d'inertie de « Effacer » ne DIT pas ce que le geste ferait : « ${effacer97.getAttribute("title")} »`);
+    const appelsAvantEffacer97 = appels97.length;
+    const ditAuClicDEffacer97 = await ditAuGeste97(() => effacer97.onclick());
+    exiger(ditAuClicDEffacer97.length === 1 && /TOUS les comptes/.test(ditAuClicDEffacer97[0]), `(97k) le clic refusé ne dit pas son refus : ${JSON.stringify(ditAuClicDEffacer97)}`);
+    exiger(!appels97.slice(appelsAvantEffacer97).some((a) => a === "DELETE /api/bulletin"),
+      "(97k) le clic refusé a tout de même DEMANDÉ l'effacement du bulletin");
+    // CONTRÔLE POSITIF : sur un bulletin LU, l'éditeur se pré-remplit et « Effacer » reste applicable.
+    reponsesServies97 = { "GET /api/bulletin": { corps: { bulletin: { message: "maintenance 22h-23h", level: "warn" } } } };
+    const boiteEditeurSain97 = new Element("div");
+    modSysteme97.rendreSysteme(boiteEditeurSain97, metriques97, SANTE97);
+    await laisser97();
+    const effacerSain97 = boutons97(boiteEditeurSain97).find((b) => nu97(b) === "Effacer");
+    exiger(effacerSain97 && effacerSain97.getAttribute("aria-disabled") === null,
+      "(97l) « Effacer » reste inerte après une lecture RÉUSSIE : l'aveu d'hier interdirait le geste d'aujourd'hui");
+    exiger(!/NON ÉTABLI/.test(nu97(boiteEditeurSain97)), `(97l) l'aveu est peint dans un éditeur dont le bulletin est LU : « ${nu97(boiteEditeurSain97).slice(0, 300)} »`);
+
+    // ══ (m) L'ÉCRAN DE CONNEXION : LA CAUSE NOMMÉE, PAS UN CORPS JSON TRANCHÉ ═══════════════════════
+    const formulaire97 = $97("#login-form"), erreur97 = $97("#login-err");
+    const champUtilisateur97 = $97("#login-user"), champMotDePasse97 = $97("#login-pass");
+    exiger(!!formulaire97 && !!erreur97 && !!champUtilisateur97 && !!champMotDePasse97,
+      "(97-instrument) les hôtes de l'écran de connexion d'`index.html` (#login-form, #login-err, #login-user, #login-pass) ne sont pas montés : les verdicts ci-dessous ne porteraient sur rien");
+    modConnexion97.bindLoginForm();
+    const soumettre97 = async () => {
+      champUtilisateur97.value = "hugo"; champMotDePasse97.value = "motdepasse";
+      formulaire97.dispatchEvent(new Evenement("submit", { bubbles: true }));
+      await laisser97(20);
+    };
+    const appelsAvantConnexion97 = appels97.length;
+    reponsesServies97 = { "POST /api/login": { statut: 503, corps: { error: CAUSE_MFA97, id: "plume-e1-7" } } };
+    await soumettre97();
+    exiger(appels97.slice(appelsAvantConnexion97).includes("POST /api/login"),
+      "(97m) la route de connexion n'a pas été demandée : le verdict ne porterait sur rien");
+    const texteErreur97 = nu97(erreur97);
+    exiger(erreur97.hidden === false, "(97m) la boîte d'erreur reste cachée sur un refus nommé : l'aveu ne serait lu par personne");
+    exiger(/Connexion REFUSÉE/.test(texteErreur97), `(97m) l'écran de connexion ne dit pas que le démon a REFUSÉ : « ${texteErreur97} »`);
+    exiger(texteErreur97.includes(CAUSE_MFA97), `(97m) la CAUSE servie par le démon n'est pas collée telle quelle : « ${texteErreur97} »`);
+    exiger(!/Échec de connexion/.test(texteErreur97), `(97m) le refus NOMMÉ est rendu comme un échec anonyme : « ${texteErreur97} »`);
+    exiger(!/\{"error"/.test(texteErreur97) && !/\(503\)/.test(texteErreur97),
+      `(97m) le corps JSON brut du démon est peint tel quel, avec son code : « ${texteErreur97} »`);
+    // CONTRÔLES POSITIFS : un identifiant faux et une panne SANS cause nommée gardent leurs phrases.
+    reponsesServies97 = { "POST /api/login": { statut: 401, corps: { error: "identifiants invalides" } } };
+    await soumettre97();
+    exiger(nu97(erreur97) === "Identifiants invalides.", `(97n) un identifiant faux ne rend plus sa phrase — un instrument qui avoue toujours ne mesure rien : « ${nu97(erreur97)} »`);
+    reponsesServies97 = { "POST /api/login": { statut: 502, corps: "<html><body>no available server</body></html>" } };
+    await soumettre97();
+    exiger(/Échec de connexion/.test(nu97(erreur97)) && !/Connexion REFUSÉE/.test(nu97(erreur97)),
+      `(97n) une panne de passerelle SANS cause nommée est rendue comme un refus nommé : « ${nu97(erreur97)} »`);
+    erreur97.hidden = true; erreur97.replaceChildren();
+
+    exiger(minuteriesRetenues97 >= 2, `(97-instrument) ${minuteriesRetenues97} minuterie(s) longue(s) capturée(s) : les deux gestes refusés ci-dessus en posent chacun une, et un compte plus bas dirait qu'un refus n'a pas été prononcé par le chemin qu'on croit mesurer`);
+  } finally {
+    globalThis.fetch = fetchOrigine97; globalThis.setTimeout = minuterieOrigine97;
+    S97.isAdmin = etatOrigine97.admin; S97.AUTH = etatOrigine97.auth;
+    document.querySelectorAll(".modal-ov").forEach((o) => o.remove());
+  }
+  console.log("(97) OK — la santé du pipeline non lue, le flux non lu, la recommandation non établie, le runbook attaché non lu, la synthèse de risque et ses deux voisines, le bulletin d'exploitation et le refus nommé de la connexion écrivent la cause SERVIE au lieu d'une ingestion en panne, d'un parc calme, d'une absence, d'un bandeau caché ou d'un corps JSON tranché ; le geste d'attache d'un runbook et l'effacement d'un bulletin ne se présentent pas applicables sur un état que personne n'a lu, et les huit chemins nominaux restent muets");
+}
+
 
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;
 verdictRendu = true;

@@ -984,6 +984,40 @@ const I18N_EN = {
   "Les lookups n'ont PAS été lus : « créer » ici REMPLACE intégralement le contenu du lookup portant ce nom — celui que cette lecture n'a pas pu rendre serait écrasé sans un mot.": "The lookups were NOT read: “creating” here REPLACES the whole content of the lookup bearing that name — the one this read could not return would be overwritten without a word.",
   "Le catalogue des runbooks n'a PAS été lu : en écrire un ici, c'est peut-être en écrire un SECOND par-dessus celui que cette lecture n'a pas pu rendre — la clé est unique et l'insertion sera refusée, ou les deux se disputeront la même correspondance pendant un incident.": "The runbook catalogue was NOT read: writing one here may write a SECOND one over the one this read could not return — the key is unique and the insert will be refused, or the two will compete for the same match during an incident.",
   "Les étapes de cette procédure n'ont PAS été lues : l'éditeur REMPLACE toutes les étapes à l'enregistrement — l'ouvrir ici persisterait une procédure amputée de ce que cette lecture n'a pas pu rendre.": "This procedure's steps were NOT read: the editor REPLACES every step on save — opening it here would persist a procedure truncated of what this read could not return.",
+  // `P10.20-b` — LES QUATRE AVEUX DE LA FAMILLE « UNE LECTURE D'UNE SEULE LIGNE QUI N'A PAS EU LIEU » :
+  // le statut du second facteur (idp.js, à la charge du panneau ET au geste d'enrôlement refusé), la version
+  // de schéma (system.js), et la porte de masquage d'un dry-run (detadv.js). MÊME FORME À DEUX NŒUDS que les
+  // clés ci-dessus — la phrase seule est un nœud texte ENTIER, la cause SERVIE par le démon est collée dans
+  // un SECOND nœud —, la seule que `i18nWalk` sait traduire. Les deux aveux qui passent par un AVIS (les
+  // préférences non lues, la version de schéma du paquet de diagnostic) n'ont pas de clé : un avis est une
+  // chaîne unique, la cause s'y colle, et aucune clé n'égalerait jamais le nœud composé.
+  "Statut de double authentification NON LU : le démon a refusé et en nomme la cause —": "Two-factor status NOT READ: the daemon declined and names the cause —",
+  "Version de schéma NON ÉTABLIE : le démon ne l'a pas lue et en nomme la cause —": "Schema version NOT ESTABLISHED: the daemon did not read it and names the cause —",
+  "Aperçu de ligne de base REFUSÉ : la porte de masquage n'a pas pu être armée, et le démon en nomme la cause —": "Baseline preview REFUSED: the masking gate could not be armed, and the daemon names the cause —",
+  // LES DEUX MOTIFS D'INERTIE DE CE LOT. Ils ne portent PAS de cause : ils sont écrits en entier par la
+  // console, au survol du bouton refusé ET au geste qui dit le refus — le MÊME littéral aux deux endroits.
+  // Chacun dit ce que le geste FERAIT sur un état non lu, pas seulement qu'il est refusé.
+  "Le statut de double authentification de ce compte n'a PAS été lu : lancer un enrôlement ici reposerait une graine TOTP neuve avec le second facteur désarmé, par-dessus la MFA peut-être ACTIVE que cette lecture n'a pas pu rendre — le démon refuse déjà l'écriture, et ce bouton ne doit pas la promettre.": "This account's two-factor status was NOT read: starting an enrolment here would lay down a fresh TOTP seed with the second factor disarmed, over the possibly ACTIVE MFA that this read could not return — the daemon already refuses the write, and this button must not promise it.",
+  "Vos préférences n'ont PAS été lues : les enregistrer maintenant renverrait au démon le seul miroir de cet appareil, et un enregistrement REMPLACE d'un bloc la ligne du compte — celle que cette lecture n'a pas pu rendre serait écrasée sans un mot. Ce réglage reste appliqué ici, il n'est pas synchronisé ; rechargez la page quand la lecture repassera.": "Your preferences were NOT read: saving them now would send the daemon this device's mirror alone, and a save REPLACES the account row wholesale — the one this read could not return would be overwritten without a word. This setting stays applied here, it is not synchronised; reload the page once the read succeeds again.",
+  // `P10.20-b` (rang 2) — LES SEPT AVEUX DE LA MÊME FAMILLE, UN RANG PLUS BAS : ce ne sont plus des
+  // lectures qui DÉCIDENT, ce sont des lectures qui se SERVENT — la recommandation et l'attache d'un
+  // runbook (cases.js), les trois lectures de la fiche de risque d'une entité (risk.js), le bulletin
+  // d'exploitation (system.js) et le refus nommé de l'écran de connexion (login.js). MÊME FORME À DEUX
+  // NŒUDS que les clés ci-dessus : la phrase seule est un nœud texte ENTIER, la cause SERVIE par le
+  // démon est collée dans un SECOND nœud. Les aveux de la fraîcheur des sources n'ont PAS de clé : ce
+  // module-là rend du balisage et écrit ses deux langues côte à côte, sous `LANG`.
+  "Recommandation de runbook NON ÉTABLIE : le démon a refusé et en nomme la cause —": "Runbook recommendation NOT ESTABLISHED: the daemon declined and names the cause —",
+  "Runbook attaché à ce dossier NON LU : le démon a refusé et en nomme la cause —": "Runbook attached to this case NOT READ: the daemon declined and names the cause —",
+  "Synthèse de risque de cette entité NON LUE : le démon a refusé et en nomme la cause —": "Risk summary for this entity NOT READ: the daemon declined and names the cause —",
+  "Ligne de temps du risque NON LUE : le démon a refusé et en nomme la cause —": "Risk timeline NOT READ: the daemon declined and names the cause —",
+  "Contributions au risque NON LUES : le démon a refusé et en nomme la cause —": "Risk contributions NOT READ: the daemon declined and names the cause —",
+  "Bulletin d'exploitation NON ÉTABLI : le démon a refusé et en nomme la cause —": "Operations bulletin NOT ESTABLISHED: the daemon declined and names the cause —",
+  "Connexion REFUSÉE : le démon n'a pas lu ce dont la décision dépend, et il en nomme la cause —": "Sign-in REFUSED: the daemon did not read what the decision depends on, and it names the cause —",
+  // LES DEUX MOTIFS D'INERTIE DE CE RANG. Comme ceux du rang un, ils ne portent PAS de cause : ils sont
+  // écrits en entier par la console, au survol du geste refusé ET au clic qui dit le refus — le MÊME
+  // littéral aux deux endroits —, et chacun dit ce que le geste FERAIT, pas seulement qu'il est refusé.
+  "Le runbook attaché à ce dossier n'a PAS été lu : en attacher un ici, c'est peut-être poser une SECONDE procédure par-dessus celle que cette lecture n'a pas pu rendre — le démon refuse l'attache dès qu'une étape existe, et ce bouton ne doit pas la promettre.": "The runbook attached to this case was NOT read: attaching one here may lay a SECOND procedure over the one this read could not return — the daemon refuses the attachment as soon as a step exists, and this button must not promise it.",
+  "Le bulletin courant n'a PAS été lu : l'effacer ici supprimerait la ligne d'un message d'exploitation que cette lecture n'a pas pu rendre — un bandeau diffusé à TOUS les comptes disparaîtrait sans que personne ne l'ait lu.": "The current bulletin was NOT read: clearing it here would delete the row of an operations message this read could not return — a banner broadcast to EVERY account would vanish without anyone having read it.",
   // P10.7-g (lot 101) — retention.js
   "valeur enregistrée": "stored value", "variable d'environnement": "environment variable", "fichier de configuration": "configuration file", "défaut du binaire": "binary default",
   "La valeur affichée est celle que la purge appliquera (environnement, configuration ou défaut), pas la valeur enregistrée, qui n'a pas pu être lue.": "The value shown is the one the purge will apply (environment, configuration or default), not the stored value, which could not be read.",

@@ -188,10 +188,36 @@ async function deleteBaseline(b) {
   try { await apiSend('/baselines/' + b.id, 'DELETE'); toast('baseline supprimée', 'ok'); loadBaselines(); }
   catch (e) { toast('erreur : ' + ((e && e.message) || e), 'err', 6000); }
 }
+// `P10.20-b` — CE QUI DISTINGUE UNE PORTE NON ARMÉE D'UNE LIGNE DE BASE ABSENTE, ET CE QUE ÇA COÛTE. La
+// route du dry-run ne porte AUCUN code : tous ses refus vivent dans `error` à 200 (« baseline introuvable »,
+// « évaluation échouée », et depuis `P10.20-b` la porte de masquage qu'une pré-lecture ratée n'a pas pu
+// armer — daemon/src/handlers/detection_advanced.rs, `CAUSE_PORTE_DRYRUN_NON_ARMEE`). Elle n'offre pas non
+// plus de CHAMP qui les sépare : le seul discriminant est l'OUVERTURE de la phrase servie, et c'est dit
+// plutôt que caché. Le témoin 96 du harnais ESM ANCRE ce motif dans l'arbre du démon — il extrait la
+// constante Rust et exige qu'elle s'ouvre ainsi ; une reformulation côté démon fait REFUSER DE CONCLURE au
+// lieu de laisser cette console reclasser un refus de sécurité en « introuvable ».
+const OUVERTURE_DU_REFUS_DE_LA_PORTE_DRYRUN = /^DRY-RUN\s+REFUS/;
+
 async function testBaseline(b) {
   let d;
   try { d = await apiSend('/baselines/' + b.id + '/test', 'POST', {}); } catch (e) { toast('erreur : ' + ((e && e.message) || e), 'err', 6000); return; }
-  if (!d || d.error) { toast('échec : ' + ((d && d.error) || 'inconnu'), 'err', 6000); return; }
+  const causeServie = (d && typeof d.error === 'string') ? d.error.trim() : '';
+  if (OUVERTURE_DU_REFUS_DE_LA_PORTE_DRYRUN.test(causeServie)) {
+    // LE REFUS DE LA PORTE NE S'EFFACE PAS AU BOUT DE SIX SECONDES. Ce n'est pas un échec d'évaluation :
+    // c'est la garde qui interdit de restituer en clair des échantillons (entité, valeur) que le rôle
+    // appelant n'a peut-être pas le droit de voir. Il prend la place de l'aperçu, dans la MÊME modale, et
+    // il porte l'aveu à DEUX NŒUDS — la phrase seule est un nœud texte entier (donc traduisible), la cause
+    // SERVIE est collée dans un second nœud, telle quelle.
+    const boite = document.createElement('div');
+    const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:0;font-size:12px';
+    const dit = document.createElement('span');
+    dit.textContent = 'Aperçu de ligne de base REFUSÉ : la porte de masquage n\'a pas pu être armée, et le démon en nomme la cause —';
+    aveu.append(dit, ' « ' + causeServie + ' »');
+    boite.appendChild(aveu);
+    showResultModal('Aperçu baseline — ' + b.name, boite);
+    return;
+  }
+  if (!d || causeServie) { toast('échec : ' + (causeServie || 'inconnu'), 'err', 6000); return; }
   const hits = Array.isArray(d.hits) ? d.hits : [];
   const body = document.createElement('div');
   const h = document.createElement('p'); h.textContent = 'Bucket ' + d.bucket + ' — ' + d.observed + ' entité(s) observée(s), ' + d.anomalies + ' anomalie(s) (aucune écriture).'; body.appendChild(h);
@@ -229,4 +255,7 @@ function loadDetAdv() {
 
 // `loadBaselines` est exposé pour le harnais ESM (témoin 93 : l'aveu de lecture de la liste, rendu par SON
 // chargeur réel et non par une copie) ; aucun usage applicatif hors de ce module.
-export { loadDetAdv, loadBaselines };
+// `testBaseline` est exposée pour le harnais ESM (témoin 96 : le refus de la porte de masquage rendu par
+// sa fabrique réelle, distinct d'un « introuvable ») ; son seul appelant applicatif est le bouton « Test »
+// d'une ligne de la table des lignes de base.
+export { loadDetAdv, loadBaselines, testBaseline };

@@ -22,8 +22,18 @@
 //
 // SECURITY: the endpoint is self-scoped server-side (keyed by the authenticated identity; the client never
 // sends a user id). We never store secrets here — only UI state.
-import { api, apiSend, brancherLeMagasinDeLargeurs } from './core.js';
+import { api, apiSend, brancherLeMagasinDeLargeurs, toast } from './core.js';
 import { ecrireSansDireLeRefus, RAISONS_DE_SILENCE } from './state.js';
+
+// `P10.20-b` — LES PRÉFÉRENCES N'ONT PAS ÉTÉ LUES, ET CE SILENCE-LÀ COÛTE LA LIGNE DU COMPTE. Depuis que
+// `prefs_get` refuse en 503 nommé au lieu de servir `{}` (daemon/src/handlers/prefs.rs), la capture de
+// `prefsInit()` garde le miroir local — ce qui est correct et suffit quand le miroir porte VRAIMENT l'état
+// du compte. Il ne le porte pas toujours : un appareil neuf, un navigateur nettoyé, une session privée
+// partent d'un miroir VIDE. Le premier réglage touché programme alors un PUT, et le PUT REMPLACE le blob
+// entier (`DO UPDATE SET prefs=excluded.prefs`) : les préférences du compte — celles que la lecture n'a
+// justement pas pu rendre — seraient écrasées par le vide, sans un mot. Deux choses manquaient donc, et
+// aucune n'était dans le démon : que la personne l'APPRENNE, et que l'écriture soit REFUSÉE.
+let PREFERENCES_NON_LUES = false;
 
 const LS_KEY = 'plume_prefs';
 const LS_PENDING = 'plume_prefs_pending';   // key NAMES only — never values; the values live in the mirror
@@ -84,6 +94,13 @@ function schedulePut() {
 // flushPrefs() — immediately PUT the current blob (used by the debounce + a page-hide flush). Best-effort:
 // a failure leaves the durable mirror intact and will retry on the next prefSet.
 export async function flushPrefs() {
+  // `P10.20-b` — L'ENREGISTREMENT EST REFUSÉ TANT QUE LA LECTURE N'A PAS EU LIEU, ET IL LE DIT. C'est le
+  // SEUL point qui émet le blob : le refus s'y tient une fois, pour la rafale entière que la temporisation
+  // de 800 ms a regroupée, au lieu d'un avis par touche de réglage. Les intentions restent dans `PENDING`
+  // et le miroir reste intact : rien n'est perdu ici, seule la DESTRUCTION de la ligne du compte l'est.
+  // Le motif est écrit AU PUITS, en toutes lettres : une phrase passée en argument d'un aide tombe hors
+  // du regard de la garde du lexique, donc hors de l'anglais. Il dit ce que le geste FERAIT.
+  if (PREFERENCES_NON_LUES) { toast("Vos préférences n'ont PAS été lues : les enregistrer maintenant renverrait au démon le seul miroir de cet appareil, et un enregistrement REMPLACE d'un bloc la ligne du compte — celle que cette lecture n'a pas pu rendre serait écrasée sans un mot. Ce réglage reste appliqué ici, il n'est pas synchronisé ; rechargez la page quand la lecture repassera.", 'bad', 9000); return; }
   // Snapshot what THIS round is about to carry, BEFORE the send: apiSend serializes the body synchronously,
   // so a key written while the request is in flight is NOT in it and must stay unacknowledged.
   const sent = [...PENDING];
@@ -99,6 +116,7 @@ export async function flushPrefs() {
 // key missing from it is a DELETION, not a silence); only this device's UNACKNOWLEDGED writes are re-applied
 // on top. See the RECONCILING note in the header for why a merge could never carry a removal.
 export async function prefsInit() {
+  PREFERENCES_NON_LUES = false;
   try {
     const d = await api('/prefs');
     if (d && d.prefs && typeof d.prefs === 'object' && !Array.isArray(d.prefs)) {
@@ -114,7 +132,18 @@ export async function prefsInit() {
       // relied on "the next successful PUT re-syncs", which never came if the user only read.
       if (PENDING.size) schedulePut();
     }
-  } catch (e) { /* keep the mirror-seeded PREFS */ }
+  } catch (e) {
+    // `P10.20-b` — LA CAPTURE GARDE LE MIROIR (c'est correct), ET ELLE CESSE D'ÊTRE MUETTE. `api()` porte
+    // la phrase du démon à côté de son message (`causeDuDemon`, core.js) ; sans elle, un 503 se peignait
+    // « Service momentanément indisponible » — quand il se peignait, ce qui n'était pas le cas ici.
+    // L'avis ne porte PAS de nœud à deux morceaux : un avis est une chaîne, et ce module n'a aucun hôte à
+    // lui dans le document. La cause SERVIE y est collée telle quelle, jamais reformulée.
+    const cause = (e && e.causeDuDemon) || '';
+    if (cause) {
+      PREFERENCES_NON_LUES = true;
+      toast('Préférences NON LUES : le démon a refusé et en nomme la cause — « ' + cause + ' »', 'err', 9000);
+    }
+  }
   loaded = true;
   readyCbs.splice(0).forEach(cb => { try { cb(PREFS); } catch (e) {} });
 }

@@ -445,6 +445,24 @@ function renderCaseDetail(host, c) {
   host.appendChild(box);
 }
 
+// `P10.20-p` (2026-09-16) — UNE CIBLE NON LUE N'EST PAS UNE CIBLE SUPPRIMÉE, ET CETTE LIGNE LE DISAIT.
+// `resolve_case_ref` (daemon/src/handlers/cases.rs) rendait `(None, None)` dans les DEUX cas — la ligne
+// n'existe plus, ou la lecture n'a pas eu lieu — et cette vue peignait alors, en toutes lettres,
+// « (cible introuvable — supprimée ou expirée) » sur une alerte qui EXISTE : l'analyste en déduit que la
+// rétention a emporté sa preuve, et il cesse de chercher. Depuis `P10.20-p` le démon pose `ref_non_lu:
+// true` sur l'élément — et SEULEMENT quand il y a quelque chose à avouer (chemin nominal byte-identique).
+// CE QUE CE MOT NE PORTE PAS, ET C'EST LE DÉMON QUI NE LE SERT PAS : la CAUSE. `case_get_lu` insère un
+// booléen, rien d'autre — l'erreur `rusqlite` est perdue dans `Err(_) => (None, None, true)`. Le second
+// nœud de l'aveu ne peut donc rien citer ici : ce qui est dit, c'est que la lecture n'a PAS eu lieu, et
+// que ce n'est PAS l'absence. Inventer une cause serait exactement le défaut qu'on ferme.
+const CIBLE_DE_CHRONOLOGIE_MOTS = {
+  non_lue: { fr: 'cible NON LUE', en: 'target NOT READ' },
+  non_lue_detail: {
+    fr: "Cible NON LUE : le démon n'a PAS pu lire cet élément de chronologie — ce n'est PAS « supprimée ou expirée », et l'alerte ou l'événement visé existe peut-être. Cette route ne sert pas la cause ; rouvrez la cible par sa référence.",
+    en: 'Target NOT READ: the daemon could NOT read this timeline item — this is NOT “deleted or expired”, and the alert or event may well exist. This route does not serve the cause; reopen the target by its reference.' },
+  absente: { fr: '(cible introuvable — supprimée ou expirée)', en: '(target not found — deleted or expired)' },
+};
+const motDeLaCibleDeChronologie = (cle) => (LANG === 'en' ? CIBLE_DE_CHRONOLOGIE_MOTS[cle].en : CIBLE_DE_CHRONOLOGIE_MOTS[cle].fr);
 function caseItemEl(caseId, it, edit) {
   const el = document.createElement('div'); el.className = 'caseitem k-' + (it.kind || 'note');
   el.appendChild(Object.assign(document.createElement('time'), { textContent: fmtTs(it.ts) }));
@@ -452,12 +470,22 @@ function caseItemEl(caseId, it, edit) {
   el.appendChild(Object.assign(document.createElement('span'), { className: 'kind', textContent: CASE_KIND[it.kind] || it.kind }));
   const body = document.createElement('span'); body.className = 'body';
   if (it.ref) {
+    const nonLue = it.ref_non_lu === true;
     const chip = document.createElement('span'); chip.className = 'casechip';
     chip.textContent = it.ref_title ? (it.ref + ' · ' + it.ref_title) : it.ref;
-    chip.title = it.ref_title || '(cible introuvable — supprimée ou expirée)';
+    chip.title = it.ref_title || (nonLue ? motDeLaCibleDeChronologie('non_lue_detail') : motDeLaCibleDeChronologie('absente'));
     if (!it.ref_title) chip.style.opacity = '.7';
     if (it.ref_severity != null) chip.title += ' — ' + sev(it.ref_severity);
     body.appendChild(chip);
+    // L'AVEU EST UN NŒUD, PAS SEULEMENT UNE INFOBULLE : une infobulle ne se lit qu'au survol, et c'est
+    // précisément la ligne qu'un analyste parcourt sans s'arrêter. Le mot est posé au puits (le lexique
+    // ne voit qu'un nœud texte ENTIER), à côté de la pastille dont il qualifie la référence.
+    if (nonLue) {
+      const dit = document.createElement('span'); dit.className = 'bad'; dit.style.cssText = 'margin-left:6px;font-size:11px';
+      dit.textContent = motDeLaCibleDeChronologie('non_lue');
+      dit.title = motDeLaCibleDeChronologie('non_lue_detail');
+      body.appendChild(dit);
+    }
     if (it.body && it.body !== it.ref_title) { body.appendChild(document.createTextNode(' ')); body.appendChild(Object.assign(document.createElement('span'), { textContent: it.body })); }
   } else {
     body.textContent = it.body || '';
@@ -1062,4 +1090,7 @@ async function prepareResponse(c, s) {
 // `renderCaseLinks` et `linkCasePrompt` sont exposés pour le harnais ESM (témoin 95 : l'aveu de lecture des
 // liens et le refus du geste qui en ajouterait un, rendus par LEUR fabrique réelle) ; aucun usage applicatif
 // hors de ce module.
-export { addToCase, canEditCases, caseBtn, caseRow, createCase, linkCasePrompt, loadCaseOpsSummary, loadCases, openCase, renderCaseDetail, renderCaseLinks, renderWizardPanel };
+// `P10.20-p` — `caseItemEl` est exposé pour le harnais ESM (témoin 100) : « cible NON LUE » et « cible
+// introuvable » ne se distinguent qu'en RENDANT les deux éléments par LEUR fabrique réelle, sur la même
+// référence. Aucun usage applicatif hors de ce module.
+export { addToCase, canEditCases, caseBtn, caseItemEl, caseRow, createCase, linkCasePrompt, loadCaseOpsSummary, loadCases, openCase, renderCaseDetail, renderCaseLinks, renderWizardPanel };

@@ -1,8 +1,31 @@
 // suppressions.js — panneau « Suppressions & whitelists actives » (administration). Extrait de retention.js
 // (déplacement pur du panneau), puis complété : les SILENCES d'alertes y reçoivent les trois gestes de
 // l'administrateur (créer, modifier, supprimer), chacun audité côté démon.
-import { $, muted, api, apiSend, fetchInto, fmtTs, humanAge, confirmWithConsequence, toast, modal, pagedList, ic } from './core.js';
+import { $, muted, api, apiSend, fetchInto, fmtTs, humanAge, confirmWithConsequence, toast, modal, pagedList, ic, LANG } from './core.js';
 import { uiIsAdmin } from './multitenant.js';
+
+// `P10.20-p` (2026-09-16) — LES MOTS DU RELEVÉ DES AUTO-REPORTS COLLECTEURS, FR et EN côte à côte : le
+// lexique n'a pas à les porter, et aucune des deux langues ne peut partir sans l'autre.
+const RELEVE_DES_COLLECTEURS_MOTS = {
+  releve_non_commence: {
+    fr: "Relevé des auto-reports collecteurs NON COMMENCÉ : le démon a refusé et en nomme la cause —",
+    en: 'Collector self-report survey NOT STARTED: the daemon refused and names the cause —' },
+  releve_interrompu: {
+    fr: "Relevé des auto-reports collecteurs INTERROMPU : les lignes ci-dessous sont un PRÉFIXE, le démon nomme la cause —",
+    en: 'Collector self-report survey INTERRUPTED: the rows below are a PREFIX, the daemon names the cause —' },
+  sous_titre_non_commence: { fr: 'relevé NON COMMENCÉ — aucun collecteur n’a été lu', en: 'survey NOT STARTED — no collector was read' },
+  sous_titre_interrompu: { fr: 'relevé INTERROMPU — on ignore combien il en manque', en: 'survey INTERRUPTED — how many are missing is unknown' },
+};
+const motDuReleveDesCollecteurs = (cle) => (LANG === 'en' ? RELEVE_DES_COLLECTEURS_MOTS[cle].en : RELEVE_DES_COLLECTEURS_MOTS[cle].fr);
+// L'aveu à deux nœuds (grammaire de `P10.7-f`) : la phrase est posée AU PUITS par l'appelant
+// (`dit.textContent = …`) — c'est là que `i18nWalk` la voit —, la cause SERVIE est collée dans un SECOND
+// nœud, jamais dans le même littéral, un nœud texte ne s'égalant à une clé que s'il est ENTIER.
+function boiteDAveuDeSuppressions() {
+  const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:6px 0;font-size:12px';
+  const dit = document.createElement('span');
+  aveu.appendChild(dit);
+  return { aveu, dit };
+}
 
 // =================================================================================================
 // SUPPRESSIONS & WHITELISTS ACTIVES (chantier « whitelists → webui ») — panneau READ-ONLY agrégeant
@@ -209,9 +232,36 @@ async function loadSuppressions() {
   silencesSection(wrap, silences);
   if (silences && silences.error) wrap.appendChild(muted('silences indisponibles : ' + silences.error));
   // ---- (2) COLLECTEURS HÔTE — auto-report config (category=config) ----
-  wrap.appendChild(suppSectionTitle('Collecteurs hôte — filtres auto-reportés', (d.collectors || []).length + ' collecteurs (read-only)'));
-  if (!(d.collectors || []).length) {
-    wrap.appendChild(muted("aucun collecteur n'a encore auto-reporté sa configuration (event source=<collecteur> category=config). Les filtres apparaîtront dès le prochain passage des collecteurs instrumentés."));
+  // `P10.20-p` (2026-09-16) — LE RELEVÉ QUI N'A PAS COMMENCÉ N'EST PAS UN PARC SANS COLLECTEUR.
+  // `suppressions_get` (daemon/src/handlers/admin_ui.rs) posait `FinDeParcours::Complet` quand la
+  // préparation ou la liaison de l'énoncé était refusée : le corps AFFIRMAIT un relevé entier à côté
+  // d'une liste vide. Depuis `P10.20-p` il pose `NonCommence` aux deux étages et sert la cause dans les
+  // champs qui existaient déjà — `collectors_incomplets` et `collectors_cause`. CETTE VUE NE LES LISAIT
+  // NI L'UN NI L'AUTRE : elle peignait « aucun collecteur n'a encore auto-reporté sa configuration » et
+  // invitait à attendre « le prochain passage des collecteurs instrumentés », c'est-à-dire l'affirmation
+  // exactement fausse, sur la surface dont l'objet est de montrer ce qui de-bruite la collecte.
+  // LES DEUX FINS DE PARCOURS SE DISENT AUTREMENT, ET C'EST DÉRIVÉ DE CE QUI EST SERVI : `cause()` du
+  // démon rend la même clé pour un relevé NON COMMENCÉ et pour un relevé INTERROMPU en vol — la console
+  // ne peut donc pas les distinguer par un champ. Elle les distingue par ce qu'elle A REÇU : aucune ligne
+  // sous un aveu = rien n'a été lu ; des lignes sous un aveu = la liste est un PRÉFIXE.
+  const collecteurs = (d && Array.isArray(d.collectors)) ? d.collectors : [];
+  const collecteursNonLus = !!(d && d.collectors_incomplets);
+  const causeDesCollecteurs = (d && d.collectors_cause != null) ? String(d.collectors_cause).trim() : '';
+  wrap.appendChild(suppSectionTitle('Collecteurs hôte — filtres auto-reportés',
+    collecteursNonLus ? motDuReleveDesCollecteurs(collecteurs.length ? 'sous_titre_interrompu' : 'sous_titre_non_commence')
+                      : collecteurs.length + ' collecteurs (read-only)'));
+  if (collecteursNonLus) {
+    const { aveu, dit } = boiteDAveuDeSuppressions();
+    dit.textContent = motDuReleveDesCollecteurs(collecteurs.length ? 'releve_interrompu' : 'releve_non_commence');
+    aveu.append(' « ' + causeDesCollecteurs + ' »');
+    wrap.appendChild(aveu);
+  }
+  if (!collecteurs.length) {
+    // L'INVITATION À ATTENDRE N'EST SERVIE QUE SUR UNE LECTURE FAITE : c'est elle, et non l'aveu, qui
+    // affirme quelque chose sur le parc.
+    if (!collecteursNonLus) {
+      wrap.appendChild(muted("aucun collecteur n'a encore auto-reporté sa configuration (event source=<collecteur> category=config). Les filtres apparaîtront dès le prochain passage des collecteurs instrumentés."));
+    }
   } else {
     const ct = document.createElement('div'); wrap.appendChild(ct);
     const ccols = [
@@ -249,7 +299,7 @@ async function loadSuppressions() {
     // DÉCLARE, et par le mot d'alerte que porte une provenance non attestée ou contestée.
     // `P11.18-z` — identité PROPRE aux collecteurs : cette liste est rechargée par les gestes des DEUX
     // autres (un seul `loadSuppressions()` les refabrique toutes), et sa recherche doit rester la sienne.
-    pagedList(ct, { mode: 'client', pageSize: 50, rows: d.collectors, columns: ccols, emptyText: 'aucun', storeKey: 'soc_collector_suppressions', recherche: true });
+    pagedList(ct, { mode: 'client', pageSize: 50, rows: collecteurs, columns: ccols, emptyText: 'aucun', storeKey: 'soc_collector_suppressions', recherche: true });
   }
   // ---- (3) ÉTAT FIREWALL (hôte) ----
   if (d.firewall && d.firewall.data != null) {

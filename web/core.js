@@ -317,6 +317,34 @@ function causeNommeeParLeDemon(corps) {
 // d'`api()` qui peuvent porter un refus du démon (le repli transitoire, et le rejet `!r.ok`).
 function avecLaCauseDuDemon(err, cause) { if (cause) err.causeDuDemon = cause; return err; }
 
+// `P10.20-k` (2026-09-16) — LA PHRASE D'UN REFUS, QUEL QUE SOIT LE MOULE OÙ LE DÉMON L'A COULÉE.
+// `causeNommeeParLeDemon` ci-dessus ne lit qu'UNE forme : le corps JSON `{"error": …}` d'`err_json`.
+// Or les refus d'un même handler n'ont PAS tous ce moule, et `panel_update` le montre : ses quatre refus
+// partent en DEUX formes distinctes — trois par `err_json` (`not_found("panneau introuvable")`,
+// `forbidden("dashboard non modifiable")`, `forbidden("SQL brut réservé à l'administrateur (utilisez
+// GXQL)")`), qui donnent un objet JSON ; et le quatrième par `(code, msg).into_response()` sur le couple
+// que rend `DefinitionExecutee::projetee`, qui donne du TEXTE BRUT. Sur la seconde forme, `causeDuDemon`
+// reste vide et le seul porteur de la phrase est le message composé par `api()`/`apiSend()` :
+// « <code> <corps> ». Une surface qui ne lit que `causeDuDemon` peint alors un vide là où le démon a
+// écrit une phrase ; une surface qui ne lit que `message` peint du JSON brut, qui n'est pas un texte
+// d'écran. CE LECTEUR REND LA PHRASE DANS LES DEUX CAS, et il est écrit ICI, une fois, pour que les
+// surfaces ne se fabriquent pas chacune leur extraction — elles dériveraient.
+// CE QU'IL NE FAIT PAS : il n'invente rien. Quand il ne reconnaît ni l'une ni l'autre forme (un corps
+// vide, un message sans code), il rend le message TEL QUEL — moins lisible, jamais faux.
+function phraseDuRefusDuDemon(e) {
+  const nommee = (e && e.causeDuDemon) ? String(e.causeDuDemon).trim() : '';
+  if (nommee) return nommee;
+  const brut = String((e && e.message) || e || '').trim();
+  const m = brut.match(/^\d{3}\s+([\s\S]+)$/);
+  if (!m) return brut;
+  const corps = m[1].trim();
+  // Un corps qui COMMENCE par une accolade ou un crochet est du JSON que `causeNommeeParLeDemon` n'a pas
+  // su nommer (objet sans `error`, tableau, JSON tronqué par la coupe à 200 caractères) : le rendre
+  // écrirait de la syntaxe à l'écran. On garde alors le message entier, qui dit au moins le code.
+  if (corps.startsWith('{') || corps.startsWith('[')) return brut;
+  return corps;
+}
+
 async function api(path) {
   // Sur panne transitoire de passerelle -> réessais GET-only (idempotents) ~400ms puis ~800ms, sinon
   // message propre. Toute autre erreur garde EXACTEMENT le comportement d'avant (statut+corps / vide / non-JSON).
@@ -1707,4 +1735,8 @@ export {
   // fabriques ne rendent pas), et il tient sa propre requête. Lui faire réécrire l'extraction ferait
   // deux lecteurs d'un même contrat de refus, qui dériveraient l'un de l'autre.
   causeNommeeParLeDemon,
+  // `P10.20-k` — ET LE LECTEUR QUI TIENT LES DEUX MOULES DE REFUS (JSON `error` et texte brut) : les
+  // tableaux de bord et les modèles de données le PARTAGENT, faute de quoi chacun écrirait son
+  // extraction et l'un des deux finirait par ne plus reconnaître la forme que l'autre lit.
+  phraseDuRefusDuDemon,
 };

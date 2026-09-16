@@ -13,7 +13,7 @@
 //   GET    /api/datasets  |  POST /api/datasets  (editor+)  |  POST /api/datasets/{id}/run  (viewer+)
 //   DELETE /api/datasets/{id}                                            (editor+)
 // SÉCU UI : tout en textContent/esc (anti-XSS). Mutations via apiSend (jeton CSRF auto).
-import { $, api, apiSend, fetchInto, LANG, muted, pagedList, toast, modal, confirmModal, managedBadge, gateDeleteBtn } from './core.js';
+import { $, api, apiSend, fetchInto, LANG, muted, pagedList, phraseDuRefusDuDemon, toast, modal, confirmModal, managedBadge, gateDeleteBtn } from './core.js';
 import { phraseDeCoupe } from './coupe_de_liste.js'; // `P11.22-g` : le résultat borné du Pivot dit sa coupe
 
 // État module : cache du GET /api/datamodels + sélection courante (modèle -> objet).
@@ -288,11 +288,53 @@ function collectSpec() {
 }
 function rangeFromTo() { const w = Number($('#dm-pivot-range').value) || 0; const now = Math.floor(Date.now() / 1000); return { from: w > 0 ? now - w : 0, to: 0 }; }
 
+// =================================================================================================
+// `P10.20-p` (2026-09-16) — « JE N'AI PAS LU LES CHAMPS DÉCLARÉS » N'EST PAS « TON PIVOT EST MAL FORMÉ ».
+//
+// `pivot_soql_from_body` (daemon/src/handlers/datamodels.rs) sert depuis ce lot DEUX codes distincts sur
+// ses TROIS appelants — `/api/pivot/compile`, `/api/pivot/run` et `/api/datasets` (dataset de genre
+// `pivot`) : quatre cents pour un défaut du CORPS reçu (`object_id` manquant, champ non déclaré, chaîne
+// de contraintes illisible) et cinq cent trois pour l'allowlist NON LUE, qui n'est le défaut de personne
+// et se réessaie. AVANT ce lot, `object_field_allow` était muet : une préparation ratée rendait une
+// allowlist VIDE, et le refus servi accusait alors la DÉCLARATION de l'exploitant — « champ split-by non
+// déclaré dans l'objet : <champ> » —, ce qui envoie déclarer un champ déjà déclaré.
+// CE QUE CETTE VUE EN FAISAIT : les trois gestes peignaient `e.message`, c'est-à-dire « <code> <corps> ».
+// Le 503 et le 400 s'y lisaient PAREIL — un échec indistinct, dans un avis de six secondes —, et le
+// corps JSON moulé par `err_json` arrivait à l'écran en syntaxe.
+// LE DISCRIMINANT EST ÉCRIT ICI ET CONFRONTÉ AU DÉMON PAR LE HARNAIS (témoin 100), DANS LES DEUX SENS :
+// il doit reconnaître la phrase de l'allowlist non lue et REFUSER celle du champ non déclaré.
+// =================================================================================================
+const OUVERTURE_DU_REFUS_D_ALLOWLIST_NON_LUE = /champs déclarés de l'objet NON LUS/;
+const REFUS_DE_PIVOT_MOTS = {
+  allowlist_non_lue: {
+    fr: "Champs déclarés de l'objet NON LUS : le démon a refusé et en nomme la cause —",
+    en: 'Declared fields of the object NOT READ: the daemon refused and names the cause —' },
+  compilation: { fr: 'Pivot NON COMPILÉ — le démon refuse le corps reçu : ', en: 'Pivot NOT COMPILED — the daemon refuses the body it received: ' },
+  execution: { fr: 'Pivot NON EXÉCUTÉ — le démon refuse le corps reçu : ', en: 'Pivot NOT RUN — the daemon refuses the body it received: ' },
+  enregistrement: { fr: 'Dataset NON ENREGISTRÉ — le démon refuse le corps reçu : ', en: 'Dataset NOT SAVED — the daemon refuses the body it received: ' },
+};
+const motDuRefusDePivot = (cle) => (LANG === 'en' ? REFUS_DE_PIVOT_MOTS[cle].en : REFUS_DE_PIVOT_MOTS[cle].fr);
+function allowlistNonLue(e) { return OUVERTURE_DU_REFUS_D_ALLOWLIST_NON_LUE.test(phraseDuRefusDuDemon(e)); }
+// L'aveu de l'allowlist non lue est peint DANS l'hôte du geste (deux nœuds, la cause SERVIE dans le
+// second) ; un défaut du corps reste un avis, avec la phrase du démon entière. Les deux ne se confondent
+// plus, et aucun des deux ne rend de JSON.
+function avouerLeRefusDuPivot(hote, geste, e) {
+  if (allowlistNonLue(e)) {
+    const aveu = aveuDeLecture(motDuRefusDePivot('allowlist_non_lue'), phraseDuRefusDuDemon(e));
+    if (hote) hote.replaceChildren(aveu);
+    toast(motDuRefusDePivot('allowlist_non_lue') + ' « ' + phraseDuRefusDuDemon(e) + ' »', 'err', 9000);
+    return;
+  }
+  const dit = motDuRefusDePivot(geste) + phraseDuRefusDuDemon(e);
+  if (hote) hote.replaceChildren(muted(dit));
+  toast(dit, 'err', 6000);
+}
+
 async function pivotCompile() {
   try {
     const d = await apiSend('/pivot/compile', 'POST', collectSpec());
     const el = $('#dm-pivot-soql'); el.hidden = false; el.textContent = d && d.soql ? d.soql : '(vide)';
-  } catch (e) { toast('compilation : ' + ((e && e.message) || e), 'err', 6000); }
+  } catch (e) { avouerLeRefusDuPivot($('#dm-pivot-result'), 'compilation', e); }
 }
 async function pivotRun() {
   const { from, to } = rangeFromTo();
@@ -303,13 +345,16 @@ async function pivotRun() {
     // `P11.22-g` — la borne du Pivot est lue avec sa ligne excédentaire et dite ici quand elle mord.
     const coupe = phraseDeCoupe(d, '');
     if (coupe) { const c = document.createElement('div'); c.className = 'muted coupe-de-liste'; c.style.cssText = 'font-size:12px;margin-top:4px'; c.textContent = coupe; $('#dm-pivot-result').appendChild(c); }
-  } catch (e) { toast('exécution : ' + ((e && e.message) || e), 'err', 6000); $('#dm-pivot-result').replaceChildren(muted('erreur : ' + ((e && e.message) || e))); }
+  } catch (e) { avouerLeRefusDuPivot($('#dm-pivot-result'), 'execution', e); }
 }
 async function pivotSave() {
   const v = await modal({ title: 'Enregistrer comme dataset', okText: 'Enregistrer', fields: [{ name: 'name', label: 'Nom du dataset', required: true, placeholder: 'echecs_auth_par_ip' }] });
   if (!v) return;
   try { await apiSend('/datasets', 'POST', Object.assign(collectSpec(), { kind: 'pivot', name: (v.name || '').trim() })); toast('dataset enregistré', 'ok'); loadDatasets(); }
-  catch (e) { toast('erreur : ' + ((e && e.message) || e), 'err', 6000); }
+  // LE TROISIÈME APPELANT, QUE L'ÉNONCÉ DE CE LOT NE CITAIT PAS : `dataset_create` passe par le MÊME
+  // `pivot_soql_from_body` et sert donc le MÊME 503. Son hôte est la liste des datasets — le formulaire
+  // est refermé par la modale —, et la phrase part aussi à l'avis.
+  catch (e) { avouerLeRefusDuPivot($('#dm-datasets-list'), 'enregistrement', e); }
 }
 
 // Rend un résultat {columns:[], rows:[[…]], stats} en table paginée (colonnes dynamiques).
@@ -473,4 +518,7 @@ function loadDataModels() { wireOnce(); reload(); loadDatasets(); }
 // `loadDatasets`, `reload` et les trois fabriques de rendu sont exposées pour le harnais ESM (témoin 95 :
 // l'aveu PAR ÉTAGE et l'aveu des datasets, rendus par leur fabrique réelle) ; aucun usage applicatif hors
 // de ce module.
-export { loadDataModels, loadDatasets, newModel, newObject, newField, reload, renderResults };
+// `P10.20-p` — `avouerLeRefusDuPivot` est exposé pour le harnais ESM (témoin 100) : la séparation du cinq
+// cent trois « champs déclarés NON LUS » et du quatre cents « défaut du corps » ne se prouve qu'en
+// RENDANT les deux refus par LEUR écrivain réel. Aucun usage applicatif hors de ce module.
+export { avouerLeRefusDuPivot, loadDataModels, loadDatasets, newModel, newObject, newField, reload, renderResults };

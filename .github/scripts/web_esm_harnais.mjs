@@ -13764,6 +13764,503 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
 }
 
 
+// ---------------------------------------------------------------------------------------------
+// (100) `P10.20-k` et `P10.20-p` (2026-09-16) — LES QUATRE SURFACES CONSOLE QUE LA FERMETURE CÔTÉ
+//       DÉMON A LAISSÉES SOURDES, ET DEUX CHOSES QUE L'ÉNONCÉ DE CE LOT DISAIT DE TRAVERS.
+//
+// CE QUE LE DÉMON SERT DEPUIS `25cbf78`, ET QUI N'ATTEIGNAIT AUCUN NŒUD.
+//   · `dash_update`, `panel_update` et `view_update` lisent existence ET visibilité courante en UNE
+//     lecture typée : ligne absente -> 404 ; lecture NON FAITE -> 503 `CAUSE_VISIBILITE_NON_LUE`, AVANT
+//     tout jugement de partage et avant toute écriture. Les quatre refus de `panel_update` portent
+//     désormais leur phrase, dont le couple `(code, msg)` de `projetee` qui la JETAIT.
+//   · `suppressions_get` pose `FinDeParcours::NonCommence` aux deux étages et sert la cause dans
+//     `collectors_incomplets` / `collectors_cause`.
+//   · `case_get_lu` pose `ref_non_lu: true` sur un élément de chronologie dont la cible n'a pas pu être lue.
+//   · `pivot_soql_from_body` distingue le 400 (défaut du corps) du 503 « champs déclarés de l'objet NON
+//     LUS » sur ses TROIS appelants.
+//
+// CE QUE LA CONSOLE EN FAISAIT, MESURÉ LE 2026-09-16 SUR LES MODULES RÉELS :
+//   · `web/dashboards.js` — la bascule de partage d'une vue peignait « Changement de partage refusé
+//     (503 {"error": …}) » : le code ET la SYNTAXE du corps, pas la phrase ; le bouton restait offert,
+//     donc le clic suivant repartait vers la même lecture manquante. L'enregistrement d'un panneau
+//     peignait de même. Et les CINQ persistances d'un tableau de bord (plier, renommer, largeur,
+//     hauteur, position) partaient sans `catch` : le refus repartait en rejet non traité — RIEN à
+//     l'écran, la tuile gardant l'état que le démon venait de refuser d'écrire.
+//   · `web/suppressions.js` — ni `collectors_incomplets` ni `collectors_cause` n'étaient lus : le
+//     panneau peignait « aucun collecteur n'a encore auto-reporté sa configuration » et invitait à
+//     attendre « le prochain passage des collecteurs instrumentés », sur la surface dont l'objet même
+//     est de montrer ce qui de-bruite la collecte.
+//   · `web/cases.js` — « (cible introuvable — supprimée ou expirée) » sur une alerte qui EXISTE.
+//   · `web/datamodels.js` — le 503 et le 400 se lisaient PAREIL, dans un avis de six secondes.
+//
+// CE QUI ÉTAIT FAUX DANS L'ÉNONCÉ DE CE LOT, ET MESURÉ ICI. (1) « les quatre refus de `panel_update` en
+// TEXTE BRUT, aligné sur `panel_create` » : NON — TROIS des quatre passent par `err_json` (`not_found`,
+// deux `forbidden`) et arrivent moulés en JSON `{"error": …}` ; SEUL le couple `(code, msg)` de
+// `projetee` est du texte brut. Les deux moules coexistent dans le MÊME handler, et une console qui n'en
+// lit qu'un peint un vide ou du JSON selon le refus reçu — d'où le lecteur unique `phraseDuRefusDuDemon`
+// (web/core.js), jugé ici sur les DEUX moules. (2) « le geste de partage d'un tableau de bord » n'existe
+// pas dans cette console : `visibility` n'entre dans un corps que par la CRÉATION, jamais par
+// `patchDash` — ce que le 503 emporte là, c'est l'écriture elle-même, et l'inertie n'a pas d'objet.
+// (3) Le pivot a TROIS appelants côté console, pas deux : `dataset_create` passe par le même
+// `pivot_soql_from_body`. (4) L'aveu de chronologie ne peut PAS être à deux nœuds : `case_get_lu` insère
+// un booléen et AUCUNE cause — l'erreur est perdue dans `Err(_) => (None, None, true)`. Ce qui est peint
+// est donc le mot et le démenti, jamais une cause inventée.
+//
+// L'ANCRAGE. Aucune phrase n'est recopiée : les constantes, les quatre refus de `panel_update`, les deux
+// champs des collecteurs, la clé `ref_non_lu` et la phrase d'allowlist sont EXTRAITS de l'arbre du démon,
+// littéraux Rust recomposés à travers leurs continuations. LES DEUX DISCRIMINANTS que la console écrit —
+// celui qui sépare la visibilité non lue des phrases voisines, celui qui sépare l'allowlist non lue du
+// champ non déclaré — sont exercés par leur fonction RÉELLE et confrontés aux littéraux du démon DANS LES
+// DEUX SENS : chacun doit reconnaître le sien et REFUSER les autres. Si une constante, un champ ou une
+// forme de refus cesse d'exister, ce témoin REFUSE DE CONCLURE au lieu de rester vert sur un corps devenu
+// étranger au démon.
+//
+// CE QUE CE TÉMOIN NE TIENT PAS : il ne rejoue aucune route du démon — il en DÉRIVE les mots et fabrique
+// les corps qui les portent ; il juge le TEXTE et les attributs d'un arbre, jamais l'encre qu'un moteur
+// de rendu peint (section 0) ; il ne dit rien de la langue anglaise de ces phrases (témoin 10 et garde du
+// lexique) ; il ne mesure pas la DURÉE d'affichage d'un avis (les minuteries longues sont capturées, pas
+// jouées) ; et il ne prouve rien des refus que le démon rend encore en corps VIDE (`dash_editable` rend
+// un 403 à chaîne nue sur la MÊME panne, reste écrit sous `P10.20-l`) : aucune console ne peut les lire.
+// ---------------------------------------------------------------------------------------------
+{
+  const url100 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const modTdb100 = await import(url100("dashboards.js"));
+  const modSupp100 = await import(url100("suppressions.js"));
+  const modDossiers100 = await import(url100("cases.js"));
+  const modModeles100 = await import(url100("datamodels.js"));
+  const modNoyau100 = await import(url100("core.js"));
+  const { S: S100 } = await import(url100("state.js"));
+
+  const tic100 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser100 = async (n = 30) => { for (let i = 0; i < n; i++) await tic100(); };
+  const nu100 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ");
+  const cueillir100 = (el, pred, acc) => { if (el && pred(el)) acc.push(el); ((el && el.children) || []).forEach((c) => cueillir100(c, pred, acc)); return acc; };
+  const parClasse100 = (racine, cl) => cueillir100(racine, (e) => e.classList && e.classList.contains(cl), []);
+  const avis100 = () => document.querySelectorAll(".toast").map((t) => String(t.textContent).replace(/\s+/g, " "));
+  const instrument100 = (vrai, quoi) => exiger(vrai, `(100-instrument) ${quoi} : le corps jugé ci-dessous n'existe plus côté démon, ce témoin REFUSE DE CONCLURE`);
+
+  // ── (0) L'INSTRUMENT : TOUT CE QUI EST JUGÉ PLUS BAS EST LU DANS L'ARBRE DU DÉMON ──────────────
+  const rsh100 = (f) => readFileSync(path.join(RACINE, "daemon", "src", "handlers", f), "utf8");
+  const srcPanneau100 = rsh100("panneau_resolu.rs");
+  const srcTdb100 = rsh100("dashboards.rs");
+  const srcAdmin100 = rsh100("admin_ui.rs");
+  const srcDossiers100 = rsh100("cases.rs");
+  const srcModelesH100 = rsh100("datamodels.rs");
+  const srcPivot100 = readFileSync(path.join(RACINE, "daemon", "src", "datamodels.rs"), "utf8");
+  const srcPrincipal100 = readFileSync(path.join(RACINE, "daemon", "src", "main.rs"), "utf8");
+  // Un littéral Rust continué par `\` en fin de ligne perd le saut ET l'indentation qui suit : il est
+  // recomposé ici comme le compilateur le compose (même recomposition qu'aux témoins 93 à 99).
+  const recomposer100 = (t) => String(t).replace(/\\\r?\n\s*/g, "");
+  const litteralRust100 = (src, nom) => {
+    const m = src.match(new RegExp(nom + ': &str =\\s*"([\\s\\S]*?)";'));
+    return m ? recomposer100(m[1]) : "";
+  };
+
+  // (0.a) LES DEUX CAUSES VOISINES DE `panneau_resolu.rs` — l'une est celle que la console doit
+  //       reconnaître, l'autre celle qu'elle doit REFUSER de confondre avec elle.
+  const CAUSE_VISIBILITE100 = litteralRust100(srcPanneau100, "CAUSE_VISIBILITE_NON_LUE");
+  const CAUSE_BIBLIOTHEQUE100 = litteralRust100(srcPanneau100, "CAUSE_DEFINITION_DE_BIBLIOTHEQUE_NON_LUE");
+  instrument100(CAUSE_VISIBILITE100.includes("VISIBILITÉ COURANTE NON LUE") && CAUSE_VISIBILITE100.length > 100,
+    "`CAUSE_VISIBILITE_NON_LUE` n'est plus lisible dans daemon/src/handlers/panneau_resolu.rs");
+  instrument100(CAUSE_BIBLIOTHEQUE100.includes("définition de bibliothèque NON LUE") && CAUSE_BIBLIOTHEQUE100.length > 60,
+    "`CAUSE_DEFINITION_DE_BIBLIOTHEQUE_NON_LUE` n'est plus lisible dans daemon/src/handlers/panneau_resolu.rs : le sens qu'il ne faut PAS confondre n'existe plus");
+  const mPartageRefuse100 = srcPanneau100.match(/"(Partage refusé : [^"]*)"/);
+  instrument100(!!mPartageRefuse100,
+    "`ElementMoinsVisible::phrase_de_refus` n'écrit plus « Partage refusé : … » (daemon/src/handlers/panneau_resolu.rs) : le second sens à ne pas confondre n'existe plus");
+  const PHRASE_PARTAGE_REFUSE100 = mPartageRefuse100[1].replace("{}", "le panneau").replace("{a_qui}", "").replace("{autres}", "").replace("{contenant}", "le tableau de bord");
+  instrument100(/pub\(crate\) fn refus_de_visibilite_non_lue\(\) -> Response \{\s*err_json\(StatusCode::SERVICE_UNAVAILABLE, CAUSE_VISIBILITE_NON_LUE\)/.test(srcPanneau100),
+    "le refus de visibilité non lue ne part plus en 503 NOMMÉ par `err_json` (daemon/src/handlers/panneau_resolu.rs)");
+  instrument100((srcTdb100.match(/panneau_resolu::refus_de_visibilite_non_lue\(\)/g) || []).length === 3,
+    `les TROIS écritures de tableau de bord ne refusent plus par le même fabricant (daemon/src/handlers/dashboards.rs) : ${(srcTdb100.match(/panneau_resolu::refus_de_visibilite_non_lue\(\)/g) || []).length} site(s)`);
+
+  // (0.b) LES QUATRE REFUS DE `panel_update`, ET LEURS DEUX MOULES — c'est la RÉFUTATION de l'énoncé.
+  const corpsDeFonction100 = (src, entete) => {
+    const i = src.indexOf(entete);
+    if (i < 0) return "";
+    const j = src.indexOf("\npub(crate) async fn ", i + entete.length);
+    return src.slice(i, j < 0 ? src.length : j);
+  };
+  const corpsPanelUpdate100 = corpsDeFonction100(srcTdb100, "pub(crate) async fn panel_update");
+  instrument100(corpsPanelUpdate100.length > 800, "`panel_update` n'est plus lisible dans daemon/src/handlers/dashboards.rs");
+  const mIntrouvable100 = corpsPanelUpdate100.match(/return not_found\("([^"]+)"\)/);
+  const refusInterdits100 = [...corpsPanelUpdate100.matchAll(/return forbidden\("([^"]+)"\)/g)].map((m) => m[1]);
+  instrument100(!!mIntrouvable100 && refusInterdits100.length === 2,
+    `les trois refus MOULÉS de \`panel_update\` ne sont plus là (daemon/src/handlers/dashboards.rs) : ${JSON.stringify([mIntrouvable100 && mIntrouvable100[1], refusInterdits100])}`);
+  instrument100(/Err\(\(code, msg\)\) => return \(code, msg\)\.into_response\(\)/.test(corpsPanelUpdate100),
+    "le quatrième refus de `panel_update` ne reverse plus le couple (code, phrase) de `projetee` (daemon/src/handlers/dashboards.rs) : la cause de bibliothèque non lue serait de nouveau JETÉE sur le sol");
+  // LE MOULE : `not_found`/`forbidden` passent par `err_json`, qui rend du JSON `{"error": …}` ; le couple
+  // `(code, msg)` d'axum rend du TEXTE BRUT. Les deux vivent dans le MÊME handler, et c'est exactement ce
+  // que l'énoncé de ce lot disait de travers.
+  instrument100(/fn forbidden\(msg: impl Into<String>\) -> Response \{ err_json\(StatusCode::FORBIDDEN, msg\) \}/.test(srcPrincipal100)
+    && /fn not_found\(msg: impl Into<String>\) -> Response \{ err_json\(StatusCode::NOT_FOUND, msg\) \}/.test(srcPrincipal100)
+    && /\(code, Json\(json!\(\{ "error": msg \}\)\)\)\.into_response\(\)/.test(srcPrincipal100),
+    "`forbidden`/`not_found` ne moulent plus le refus en JSON `{\"error\": …}` (daemon/src/main.rs) : la RÉFUTATION jugée ici — deux moules dans un même handler — n'aurait plus d'objet");
+  const PHRASE_INTROUVABLE100 = mIntrouvable100[1];
+  const PHRASE_NON_MODIFIABLE100 = refusInterdits100[0];
+  const PHRASE_SQL_BRUT100 = refusInterdits100[1];
+  const mInaccessible100 = srcPanneau100.match(/const INACCESSIBLE: \(StatusCode, &str\) = \(StatusCode::FORBIDDEN, "([^"]+)"\)/);
+  instrument100(!!mInaccessible100,
+    "`projetee` ne rend plus « définition de bibliothèque inaccessible » (daemon/src/handlers/panneau_resolu.rs) : le refus en TEXTE BRUT jugé plus bas n'existe plus");
+  const PHRASE_INACCESSIBLE100 = mInaccessible100[1];
+
+  // (0.c) LES DEUX CHAMPS DES AUTO-REPORTS COLLECTEURS, ET L'AVEU DE PARCOURS QUI LES REMPLIT.
+  instrument100(/"collectors_incomplets": coll_fin\.cause\(\)\.is_some\(\),/.test(srcAdmin100)
+    && /"collectors_cause": coll_fin\.cause\(\),/.test(srcAdmin100),
+    "`suppressions_get` ne sert plus `collectors_incomplets` ET `collectors_cause` (daemon/src/handlers/admin_ui.rs)");
+  instrument100((srcAdmin100.match(/coll_fin = crate::query_exec::FinDeParcours::NonCommence \{ cause: e\.to_string\(\) \}/g) || []).length === 2,
+    "les DEUX étages du relevé des collecteurs ne posent plus `NonCommence` avec leur cause (daemon/src/handlers/admin_ui.rs) : la préparation ou la liaison ratée repasserait pour un relevé COMPLET");
+  // ET LA LIMITE, LUE DANS LE DÉMON : `cause()` rend la MÊME clé pour `NonCommence` et pour `Interrompu`.
+  // La console ne peut donc pas les séparer par un champ — elle les sépare par ce qu'elle a REÇU.
+  const srcParcours100 = readFileSync(path.join(RACINE, "daemon", "src", "query_exec.rs"), "utf8");
+  instrument100(/FinDeParcours::Interrompu \{ cause, \.\. \} \| FinDeParcours::NonCommence \{ cause \} => Some\(cause\.as_str\(\)\)/.test(srcParcours100),
+    "`FinDeParcours::cause` ne fond plus les deux fins en une seule clé (daemon/src/query_exec.rs) : la règle de séparation écrite dans web/suppressions.js n'aurait plus sa raison");
+
+  // (0.d) LA CLÉ D'AVEU DE LA CHRONOLOGIE — et le fait qu'elle est POSÉE SOUS CONDITION (un aveu
+  //       inconditionnel n'avouerait rien), et qu'elle NE PORTE AUCUNE CAUSE.
+  instrument100(/if ref_non_lu \{\s*if let Some\(o\) = item\.as_object_mut\(\) \{\s*o\.insert\("ref_non_lu"\.into\(\), json!\(true\)\);/.test(srcDossiers100),
+    "`case_get_lu` ne pose plus `ref_non_lu` SOUS CONDITION (daemon/src/handlers/cases.rs)");
+  instrument100(/Err\(_\) => \(None, None, true\),/.test(srcDossiers100),
+    "`resolve_case_ref` ne distingue plus la cible NON LUE de la cible ABSENTE (daemon/src/handlers/cases.rs)");
+  instrument100(!/o\.insert\("ref_non_lu_cause"/.test(srcDossiers100),
+    "`case_get_lu` sert désormais une CAUSE à côté de `ref_non_lu` : la limite écrite dans web/cases.js (« cette route ne sert pas la cause ») est périmée et l'aveu doit passer à deux nœuds");
+
+  // (0.e) LA PHRASE D'ALLOWLIST NON LUE, SON CODE, ET LA PHRASE DU QUATRE CENTS À NE PAS CONFONDRE.
+  const CAUSE_ALLOWLIST100 = litteralRust100(srcModelesH100, "NON_LUS");
+  instrument100(CAUSE_ALLOWLIST100.includes("champs déclarés de l'objet NON LUS") && CAUSE_ALLOWLIST100.length > 60,
+    "`object_field_allow` n'écrit plus « champs déclarés de l'objet NON LUS » (daemon/src/handlers/datamodels.rs)");
+  instrument100(/object_field_allow\(conn, object_id\)\.map_err\(\|e\| \(StatusCode::SERVICE_UNAVAILABLE, e\)\)\?/.test(srcModelesH100),
+    "l'allowlist non lue ne part plus en CINQ CENT TROIS distinct du quatre cents (daemon/src/handlers/datamodels.rs)");
+  instrument100((srcModelesH100.match(/Err\(\(code, e\)\) => return err_json\(code, e\)/g) || []).length === 3,
+    `les TROIS appelants du pivot ne reversent plus le code servi (daemon/src/handlers/datamodels.rs) : ${(srcModelesH100.match(/Err\(\(code, e\)\) => return err_json\(code, e\)/g) || []).length} site(s) — l'énoncé de ce lot n'en citait que deux`);
+  const mSplitBy100 = srcPivot100.match(/return Err\(format!\("(champ split-by non déclaré dans l'objet : )\{field\}"\)\)/);
+  instrument100(!!mSplitBy100,
+    "`pivot_to_soql` n'accuse plus un champ non déclaré (daemon/src/datamodels.rs) : le sens qu'il ne faut PAS confondre avec « pas lu » n'existe plus");
+  const PHRASE_CHAMP_NON_DECLARE100 = mSplitBy100[1] + "src_ip";
+
+  // ── (0.f) LE LECTEUR DE PHRASE, JUGÉ SUR LES DEUX MOULES DU MÊME HANDLER ───────────────────────
+  const phrase100 = modNoyau100.phraseDuRefusDuDemon;
+  exiger(typeof phrase100 === "function", "(100-instrument) `phraseDuRefusDuDemon` n'est plus exporté par web/core.js : les deux moules de refus n'ont plus de lecteur unique");
+  exiger(phrase100({ message: '403 {"error":"' + PHRASE_NON_MODIFIABLE100 + '"}', causeDuDemon: PHRASE_NON_MODIFIABLE100 }) === PHRASE_NON_MODIFIABLE100,
+    "(100-0f) le moule JSON d'`err_json` ne rend pas la phrase seule : la console peindrait de la syntaxe");
+  exiger(phrase100({ message: "403 " + PHRASE_INACCESSIBLE100 }) === PHRASE_INACCESSIBLE100,
+    `(100-0f) le moule TEXTE BRUT du couple (code, msg) ne rend pas la phrase seule : « ${phrase100({ message: "403 " + PHRASE_INACCESSIBLE100 })} » — c'est le refus que la console peignait « 403 » nu`);
+  exiger(!/[{}]/.test(phrase100({ message: '403 {"error":"' + PHRASE_NON_MODIFIABLE100 + '"}', causeDuDemon: PHRASE_NON_MODIFIABLE100 })),
+    "(100-0f) une accolade survit dans la phrase rendue : le corps JSON arriverait tel quel à l'écran");
+  exiger(phrase100({ message: '500 {"nimporte":1}' }) === '500 {"nimporte":1}',
+    "(100-0f-négatif) un corps JSON que le démon ne NOMME pas est décapité de son code : le lecteur inventerait une phrase là où il n'y en a pas");
+
+  // ── (0.g) LES DEUX DISCRIMINANTS DE LA CONSOLE, JUGÉS DANS LES DEUX SENS ───────────────────────
+  const visNonLue100 = modTdb100.visibiliteCouranteNonLue;
+  exiger(typeof visNonLue100 === "function", "(100-instrument) `visibiliteCouranteNonLue` n'est plus exporté par web/dashboards.js : il n'y a plus rien à ancrer");
+  exiger(visNonLue100({ causeDuDemon: CAUSE_VISIBILITE100 }),
+    `(100-0g) le discriminant de web/dashboards.js ne reconnaît PLUS la cause que le démon écrit : la console reclasserait un refus de LECTURE en échec ordinaire — « ${CAUSE_VISIBILITE100.slice(0, 70)} »`);
+  exiger(visNonLue100({ message: "503 " + CAUSE_VISIBILITE100 }),
+    "(100-0g) le discriminant ne voit la cause que dans le moule JSON : servie en texte brut, la même phrase lui échapperait");
+  exiger(!visNonLue100({ causeDuDemon: CAUSE_BIBLIOTHEQUE100 }),
+    `(100-0g-négatif) le discriminant reconnaît AUSSI « définition de bibliothèque NON LUE » : deux lectures DIFFÉRENTES seraient peintes comme la même, et le geste de partage serait retenu par une panne qui ne le concerne pas`);
+  exiger(!visNonLue100({ message: "409 " + PHRASE_PARTAGE_REFUSE100 }),
+    "(100-0g-négatif) le discriminant reconnaît AUSSI le refus de partage de « P11.20-m » : un ÉTAT de l'objet serait peint comme une lecture manquée");
+  exiger(!visNonLue100({ causeDuDemon: PHRASE_NON_MODIFIABLE100 }) && !visNonLue100({ causeDuDemon: PHRASE_SQL_BRUT100 }) && !visNonLue100({ causeDuDemon: PHRASE_INTROUVABLE100 }),
+    "(100-0g-négatif) le discriminant reconnaît un des trois AUTRES refus de `panel_update` : le sélecteur de visibilité serait retenu par un droit manquant");
+
+  // ── LE SIMULACRE DE TRANSPORT. L'appariement est EXACT sur « <MÉTHODE> <chemin> » : un 200 sur la
+  //    LECTURE et un 503 sur l'ÉCRITURE de la même route sont deux cas distincts, et une correspondance
+  //    lâche les confondrait. Le corps peut être un OBJET (moulé en JSON) ou une CHAÎNE (texte brut) —
+  //    c'est ce qui permet de servir les deux moules du même handler.
+  const fetchOrigine100 = globalThis.fetch;
+  const minuterieOrigine100 = globalThis.setTimeout;
+  const qsOrigine100 = document.querySelector;
+  // L'HÔTE DES AVIS EST CAPTURÉ AVANT TOUT DÉTOURNEMENT DE `querySelector` : `toast` le demande par
+  // `$('#toasts')`, et un détournement qui lui rendrait un nœud détaché ferait disparaître les avis du
+  // document — un témoin qui lit alors « aucun avis » mesurerait son propre simulacre.
+  let hoteDesAvis100 = document.querySelector("#toasts");
+  if (!hoteDesAvis100) { hoteDesAvis100 = document.createElement("div"); hoteDesAvis100.id = "toasts"; document.body.appendChild(hoteDesAvis100); }
+  const etatOrigine100 = { admin: S100.isAdmin, auth: S100.AUTH, role: S100.viewsRole, me: S100.viewsMe, liste: S100.viewList, dash: S100.dashList };
+  let servis100 = {};
+  const appels100 = [];
+  globalThis.fetch = async (u, init) => {
+    const chemin = String(u).split("?")[0];
+    const methode = ((init && init.method) || "GET").toUpperCase();
+    appels100.push(methode + " " + chemin);
+    const r = servis100[methode + " " + chemin];
+    if (!r) return { ok: true, status: 200, text: async () => "{}", json: async () => ({}) };
+    const texte = typeof r.corps === "string" ? r.corps : JSON.stringify(r.corps === undefined ? {} : r.corps);
+    return { ok: (r.statut || 200) < 400, status: r.statut || 200, text: async () => texte, json: async () => JSON.parse(texte) };
+  };
+  // Un avis pose 6 000 ou 9 000 ms : le jouer retiendrait le processus jusqu'à son échéance, donc il est
+  // capturé (geste des témoins 94 à 99). La temporisation de reprise d'`api()` (400 puis 800 ms) DOIT
+  // s'écouler — un 503 la traverse — et elle est RACCOURCIE à zéro.
+  let minuteriesRetenues100 = 0;
+  globalThis.setTimeout = (fn, ms) => {
+    if (ms >= 1000) { minuteriesRetenues100++; return 0; }
+    if (ms >= 100) return minuterieOrigine100(fn, 0);
+    return minuterieOrigine100(fn, ms);
+  };
+
+  try {
+    S100.isAdmin = true;
+    S100.AUTH = { user: "hugo", role: "admin" };
+
+    // ══ (a) LE PANNEAU : LES QUATRE REFUS PEINTS ENTIERS, ET LE PARTAGE RETENU ══════════════════
+    const PANNEAU100 = { id: 11, title: "Connexions", query: "search action=login", is_soql: true, viz: "table", position: 0, window_s: 0, visibility: "private", query_private: false, cols: 1, height: 0, drill: "", library_panel_id: null };
+    const rendreLaGrille100 = async () => {
+      const grille = new Element("div");
+      servis100["GET /api/dashboard/3"] = { corps: { id: 3, name: "SOC", owner: "hugo", visibility: "shared", view_id: null, editable: true, panels: [PANNEAU100] } };
+      await modTdb100.loadPanelsInto(grille, { id: 3 });
+      await laisser100();
+      const form = cueillir100(grille, (e) => e.tagName === "FORM", [])[0];
+      return { grille, form };
+    };
+    const envoyer100 = async (form, reponse) => {
+      servis100["POST /api/panels/11"] = reponse;
+      servis100["GET /api/dashboards"] = { corps: { dashboards: [], role: "admin" } };
+      const avant = avis100().length;
+      form.onsubmit({ preventDefault() {} });
+      await laisser100();
+      const aveu = cueillir100(form, (e) => e.getAttribute && e.getAttribute("data-refus-de-panneau") === "1", [])[0];
+      return { aveu, texte: nu100(aveu), avis: avis100().slice(avant) };
+    };
+
+    const { form: formPanneau100 } = await rendreLaGrille100();
+    exiger(!!formPanneau100 && !!formPanneau100.querySelector(".pe-vis"),
+      "(100a-instrument) le formulaire d'édition d'un panneau ou son sélecteur de visibilité ne sont pas rendus : les verdicts ci-dessous ne porteraient sur rien");
+
+    // (a1) LA VISIBILITÉ NON LUE : l'aveu à deux nœuds, et le geste de partage retiré.
+    const r1100 = await envoyer100(formPanneau100, { statut: 503, corps: { error: CAUSE_VISIBILITE100, id: "plume-e1-0" } });
+    exiger(!!r1100.aveu, "(100a1) LE REFUS DU DÉMON NE PEINT AUCUN NŒUD dans le formulaire : l'exploitant croit son panneau enregistré");
+    exiger(/NON LUE/.test(r1100.texte) && r1100.texte.includes(CAUSE_VISIBILITE100),
+      `(100a1) l'aveu ne dit pas que la visibilité n'a pas été lue AVEC la cause servie : « ${r1100.texte.slice(0, 300)} »`);
+    exiger(!/[{}]/.test(r1100.texte) && !/Service momentanément indisponible/.test(r1100.texte),
+      `(100a1) le corps JSON ou le message de passerelle atteint l'écran à la place de la phrase : « ${r1100.texte.slice(0, 300)} »`);
+    exiger(r1100.aveu.children.length >= 1 && nu100(r1100.aveu.children[0]).length > 20 && !nu100(r1100.aveu.children[0]).includes(CAUSE_VISIBILITE100),
+      `(100a1) l'aveu n'est pas à DEUX nœuds — la phrase et la cause sont fondues dans un seul littéral, que le lexique ne peut plus égaler : « ${nu100(r1100.aveu.children[0])} »`);
+    const visPanneau100 = formPanneau100.querySelector(".pe-vis");
+    exiger(visPanneau100.getAttribute("aria-disabled") === "true",
+      "(100a1) le sélecteur de visibilité ne porte pas la marque d'inertie sous un aveu : le geste de partage se présente comme applicable à une visibilité que personne n'a lue");
+    exiger(String(visPanneau100.getAttribute("title") || "").length > 40,
+      `(100a1) la marque d'inertie ne DIT pas ce que le geste ferait : « ${visPanneau100.getAttribute("title")} »`);
+    exiger(visPanneau100.value === PANNEAU100.visibility,
+      `(100a1) le geste de partage reste ARMÉ sur le sélecteur (« ${visPanneau100.value} ») : le prochain envoi repartirait publier ce que le démon n'a pas su juger`);
+    const avantClic100 = avis100().length;
+    visPanneau100.value = "shared";
+    visPanneau100.onchange();
+    await laisser100();
+    exiger(visPanneau100.value === PANNEAU100.visibility && avis100().length > avantClic100,
+      `(100a1) le changement de visibilité sous un aveu reste sans effet ET sans un mot : ${JSON.stringify(avis100().slice(avantClic100))}`);
+
+    // (a2) LES TROIS AUTRES REFUS : la phrase entière, et le partage qui N'EST PAS retenu.
+    const r2100 = await envoyer100(formPanneau100, { statut: 404, corps: { error: PHRASE_INTROUVABLE100 } });
+    exiger(r2100.texte.includes(PHRASE_INTROUVABLE100) && !/NON LUE/.test(r2100.texte),
+      `(100a2) le quatre cent quatre de « panel_update » n'arrive pas avec sa phrase, ou se peint comme une lecture manquée : « ${r2100.texte.slice(0, 300)} »`);
+    exiger(formPanneau100.querySelector(".pe-vis").getAttribute("aria-disabled") === null,
+      "(100a2-négatif) le sélecteur de visibilité reste inerte sous un refus qui ne dit RIEN de la lecture : une marque posée toujours ne mesure rien");
+    const r3100 = await envoyer100(formPanneau100, { statut: 403, corps: { error: PHRASE_NON_MODIFIABLE100 } });
+    exiger(r3100.texte.includes(PHRASE_NON_MODIFIABLE100) && !/[{}]/.test(r3100.texte),
+      `(100a2) le quatre cent trois « dashboard non modifiable » n'arrive pas entier : « ${r3100.texte.slice(0, 300)} »`);
+    const r4100 = await envoyer100(formPanneau100, { statut: 403, corps: PHRASE_INACCESSIBLE100 });
+    exiger(r4100.texte.includes(PHRASE_INACCESSIBLE100) && !/\b403\b/.test(r4100.texte),
+      `(100a2) LE REFUS EN TEXTE BRUT — celui que la console peignait « 403 » nu — n'arrive toujours pas avec sa phrase : « ${r4100.texte.slice(0, 300)} »`);
+    const r5100 = await envoyer100(formPanneau100, { statut: 503, corps: CAUSE_BIBLIOTHEQUE100 });
+    exiger(r5100.texte.includes(CAUSE_BIBLIOTHEQUE100),
+      `(100a2) la cause de bibliothèque non lue, reversée en texte brut par « projetee », n'atteint pas l'écran : « ${r5100.texte.slice(0, 300)} »`);
+    exiger(!/VISIBILIT/i.test(r5100.texte) && formPanneau100.querySelector(".pe-vis").getAttribute("aria-disabled") === null,
+      `(100a2-négatif) une AUTRE lecture manquée est peinte comme la visibilité courante, et retient le partage : « ${r5100.texte.slice(0, 300)} »`);
+
+    // (a3) CONTRÔLE POSITIF : une écriture qui PASSE ne peint aucun aveu et rouvre le geste.
+    await envoyer100(formPanneau100, { statut: 503, corps: { error: CAUSE_VISIBILITE100 } });
+    const r6100 = await envoyer100(formPanneau100, { statut: 204, corps: "" });
+    exiger(!r6100.aveu, `(100a3) un aveu est peint sur une écriture RÉUSSIE — un instrument qui le dit toujours ne mesure rien : « ${r6100.texte} »`);
+    exiger(formPanneau100.querySelector(".pe-vis").getAttribute("aria-disabled") === null,
+      "(100a3) le sélecteur de visibilité reste inerte après une écriture RÉUSSIE : l'aveu d'hier interdirait le geste d'aujourd'hui");
+
+    // ══ (b) LA TUILE DE TABLEAU DE BORD : LE REFUS N'EST PLUS UN REJET NON TRAITÉ ═══════════════
+    const TDB100 = { id: 5, name: "SOC", panels: 2, cols: 2, collapsed: true, height: 0, visibility: "shared", editable: true };
+    const tuile100 = modTdb100.renderDashboard(TDB100);
+    await laisser100();
+    const largeur100 = cueillir100(tuile100, (e) => e.tagName === "SELECT", [])[0];
+    exiger(!!largeur100 && typeof largeur100.onchange === "function",
+      "(100b-instrument) le sélecteur de largeur de la tuile n'est pas rendu : la persistance jugée ici ne partirait pas");
+    servis100["POST /api/dashboard/5"] = { statut: 503, corps: { error: CAUSE_VISIBILITE100, id: "plume-e2-0" } };
+    largeur100.value = "3";
+    largeur100.onchange();
+    await laisser100();
+    const aveuTuile100 = cueillir100(tuile100, (e) => e.getAttribute && e.getAttribute("data-refus-de-tableau-de-bord") === "1", [])[0];
+    exiger(!!aveuTuile100,
+      "(100b) UNE PERSISTANCE DE TABLEAU DE BORD REFUSÉE NE PEINT TOUJOURS RIEN : la tuile garde à l'écran la largeur que le démon a refusé d'écrire, et le refus repart en rejet non traité");
+    exiger(/NON LUE/.test(nu100(aveuTuile100)) && nu100(aveuTuile100).includes(CAUSE_VISIBILITE100) && !/[{}]/.test(nu100(aveuTuile100)),
+      `(100b) l'aveu de la tuile ne dit pas la lecture manquée AVEC la cause servie, sans syntaxe : « ${nu100(aveuTuile100).slice(0, 300)} »`);
+    exiger(tuile100.children.indexOf(aveuTuile100) === 1,
+      `(100b) l'aveu n'est pas posé JUSTE SOUS l'en-tête (rang ${tuile100.children.indexOf(aveuTuile100)}) : un lecteur qui va de haut en bas le rencontrerait après la grille qu'il ne qualifie pas`);
+    servis100["POST /api/dashboard/5"] = { statut: 200, corps: {} };
+    largeur100.value = "1";
+    largeur100.onchange();
+    await laisser100();
+    exiger(cueillir100(tuile100, (e) => e.getAttribute && e.getAttribute("data-refus-de-tableau-de-bord") === "1", []).length === 0,
+      "(100b-négatif) l'aveu survit à une écriture RÉUSSIE : il décrirait une panne qui n'a plus lieu");
+
+    // ══ (c) LA VUE : LA BASCULE DE PARTAGE ET LE RENOMMAGE RETENUS, LA SUPPRESSION NON ══════════
+    const VUE100 = { id: 7, name: "Production", owner: "hugo", visibility: "private", dashboards: 2 };
+    const selecteurVue100 = new Element("select"), barreVue100 = new Element("div");
+    const boutonPartage100 = new Element("button"), boutonRenommer100 = new Element("button"), boutonSupprimer100 = new Element("button"), boutonVueNeuve100 = new Element("button");
+    barreVue100.appendChild(selecteurVue100);
+    const hotes100 = { "#view": selecteurVue100, "#view-share": boutonPartage100, "#view-rename": boutonRenommer100, "#view-del": boutonSupprimer100, "#view-new": boutonVueNeuve100, "#toasts": hoteDesAvis100 };
+    document.querySelector = (sel) => (Object.prototype.hasOwnProperty.call(hotes100, sel) ? hotes100[sel] : new Element("div"));
+    const fenetre100 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !c.classList.contains("out")).pop();
+    const confirmer100 = async () => {
+      const ov = fenetre100();
+      const form = ov && ov.children[0] ? ov.children[0].children[0] : null;
+      if (form && typeof form.onsubmit === "function") form.onsubmit({ preventDefault() {} });
+      await laisser100();
+    };
+    document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
+    servis100["GET /api/views"] = { corps: { views: [VUE100], me: "hugo", role: "admin" } };
+    servis100["GET /api/dashboards"] = { corps: { dashboards: [], role: "admin" } };
+    modTdb100.initDashboards();
+    await laisser100();
+    selecteurVue100.value = "7";
+    selecteurVue100.dispatchEvent({ type: "change" });
+    await laisser100();
+    exiger(boutonPartage100.getAttribute("aria-disabled") === null,
+      "(100c-instrument) la bascule de partage est DÉJÀ inerte avant tout refus : le verdict ci-dessous serait vrai par vacuité");
+
+    servis100["POST /api/views/7"] = { statut: 503, corps: { error: CAUSE_VISIBILITE100, id: "plume-e3-0" } };
+    const postsAvant100 = appels100.filter((a) => a === "POST /api/views/7").length;
+    boutonPartage100.click();
+    await laisser100();
+    await confirmer100();
+    exiger(appels100.filter((a) => a === "POST /api/views/7").length === postsAvant100 + 1,
+      "(100c-instrument) la bascule de partage n'a rien envoyé : le refus jugé ci-dessous n'aurait pas eu lieu");
+    const aveuVue100 = cueillir100(barreVue100, (e) => e.getAttribute && e.getAttribute("data-visibilite-de-vue-non-lue") === "1", [])[0];
+    exiger(!!aveuVue100 && /NON LUE/.test(nu100(aveuVue100)) && nu100(aveuVue100).includes(CAUSE_VISIBILITE100),
+      `(100c) le refus de la bascule de partage ne peint pas d'aveu à côté du sélecteur, avec la cause servie : « ${nu100(aveuVue100)} »`);
+    exiger(!/[{}]/.test(nu100(aveuVue100)), `(100c) le corps JSON atteint l'écran : « ${nu100(aveuVue100)} »`);
+    exiger(boutonPartage100.getAttribute("aria-disabled") === "true" && String(boutonPartage100.getAttribute("title") || "").includes(CAUSE_VISIBILITE100),
+      `(100c) LA BASCULE DE PARTAGE RESTE OFFERTE APRÈS UN REFUS DE LECTURE, ou sa raison ne porte pas la cause du démon : « ${boutonPartage100.getAttribute("title")} »`);
+    exiger(boutonRenommer100.getAttribute("aria-disabled") === "true",
+      "(100c) le renommage reste offert : il passe par le MÊME `view_update`, donc par la MÊME lecture qui vient de manquer");
+    exiger(boutonSupprimer100.getAttribute("aria-disabled") === null,
+      "(100c-négatif) la SUPPRESSION d'une vue est retenue elle aussi : elle passe par `view_delete`, un autre handler, qui ne lit pas la visibilité — sur-refuser est un défaut du même genre que sous-refuser");
+
+    // (c2) LE CLIC RETENU DIT LE REFUS, N'ÉCRIT RIEN, ET REDEMANDE LA LECTURE.
+    const postsAvantInerte100 = appels100.filter((a) => a === "POST /api/views/7").length;
+    const lecturesAvant100 = appels100.filter((a) => a === "GET /api/views").length;
+    const avisAvant100 = avis100().length;
+    boutonPartage100.click();
+    await laisser100();
+    exiger(appels100.filter((a) => a === "POST /api/views/7").length === postsAvantInerte100,
+      "(100c2) le clic sur un geste RETENU a tout de même POSTÉ la bascule : la marque d'inertie ne serait qu'un décor");
+    exiger(avis100().slice(avisAvant100).some((t) => /NON LUE|visibilité courante/i.test(t)),
+      `(100c2) le clic retenu ne DIT pas son refus : ${JSON.stringify(avis100().slice(avisAvant100))}`);
+    exiger(appels100.filter((a) => a === "GET /api/views").length > lecturesAvant100,
+      "(100c2) le clic retenu ne REDEMANDE pas la lecture : le démon prescrit « Réessayez » et la console n'offrirait aucune sortie — la marque d'inertie serait un piège");
+    exiger(cueillir100(barreVue100, (e) => e.getAttribute && e.getAttribute("data-visibilite-de-vue-non-lue") === "1", []).length === 0,
+      "(100c2) une liste de vues LUE ne lève pas la rétention : la table qui vient de rendre est celle dont la lecture avait manqué");
+    exiger(boutonPartage100.getAttribute("aria-disabled") === null && boutonRenommer100.getAttribute("aria-disabled") === null,
+      "(100c2) les deux gestes restent retenus après une lecture RÉUSSIE de la même table : l'aveu d'hier interdirait le geste d'aujourd'hui");
+    document.querySelector = qsOrigine100;
+
+    // ══ (d) LES AUTO-REPORTS COLLECTEURS : « RELEVÉ NON COMMENCÉ », PAS « AUCUN COLLECTEUR » ════
+    const CAUSE_COLLECTEURS100 = "no such table: event (fabriquée pour ce banc)";
+    const hoteSupp100 = new Element("div");
+    const hotesSupp100 = { "#suppressions-body": hoteSupp100, "#toasts": hoteDesAvis100 };
+    document.querySelector = (sel) => (Object.prototype.hasOwnProperty.call(hotesSupp100, sel) ? hotesSupp100[sel] : new Element("div"));
+    const rendreSuppressions100 = async (corps) => {
+      servis100["GET /api/suppressions"] = { corps };
+      servis100["GET /api/silences"] = { corps: { silences: [] } };
+      await modSupp100.loadSuppressions();
+      await laisser100();
+      return nu100(hoteSupp100);
+    };
+    const COLLECTEUR100 = { source: "auditd", type: "collection-reducing", ts: 1758000000, host: "web-01", fields: { filters: { exclude: ["cron"] } }, attested: true, contested: false };
+    const texteNonCommence100 = await rendreSuppressions100({ daemon: [], collectors: [], collectors_incomplets: true, collectors_cause: CAUSE_COLLECTEURS100, generated: 1758000100 });
+    exiger(/NON COMMENCÉ/.test(texteNonCommence100) && texteNonCommence100.includes(CAUSE_COLLECTEURS100),
+      `(100d) le relevé des auto-reports collecteurs ne dit pas qu'il n'a PAS COMMENCÉ, avec la cause servie : « ${texteNonCommence100.slice(0, 400)} »`);
+    exiger(!/aucun collecteur n'a encore auto-reporté/.test(texteNonCommence100),
+      `(100d) « AUCUN COLLECTEUR N'A ENCORE AUTO-REPORTÉ SA CONFIGURATION » EST PEINT SUR UN RELEVÉ QUE PERSONNE N'A COMMENCÉ : c'est l'affirmation exactement fausse, sur la surface dont l'objet est de montrer ce qui de-bruite la collecte. Rendu : « ${texteNonCommence100.slice(0, 400)} »`);
+    exiger(!/prochain passage des collecteurs instrumentés/.test(texteNonCommence100),
+      `(100d) l'invitation à ATTENDRE est servie sous un aveu : elle envoie patienter là où il faut relire : « ${texteNonCommence100.slice(0, 400)} »`);
+    exiger(!/0 collecteurs/.test(texteNonCommence100),
+      `(100d) le sous-titre compte « 0 collecteurs » sur un relevé non commencé : un dénombrement de ce qui n'a pas été lu est un fait inventé : « ${texteNonCommence100.slice(0, 400)} »`);
+    // L'AUTRE FIN DE PARCOURS, QUE LE DÉMON NE SÉPARE PAS DE LA PREMIÈRE : des lignes SOUS un aveu.
+    const texteInterrompu100 = await rendreSuppressions100({ daemon: [], collectors: [COLLECTEUR100], collectors_incomplets: true, collectors_cause: CAUSE_COLLECTEURS100, generated: 1758000100 });
+    exiger(/INTERROMPU/.test(texteInterrompu100) && texteInterrompu100.includes(CAUSE_COLLECTEURS100) && texteInterrompu100.includes("auditd"),
+      `(100d) un relevé qui a RENDU des lignes et s'est interrompu se dit comme un relevé non commencé, ou perd ses lignes : « ${texteInterrompu100.slice(0, 400)} »`);
+    exiger(!/NON COMMENCÉ/.test(texteInterrompu100),
+      `(100d-négatif) « NON COMMENCÉ » est peint sur un relevé qui a rendu une ligne : « ${texteInterrompu100.slice(0, 400)} »`);
+    // CONTRÔLE POSITIF : un relevé COMPLET et vide garde son invitation, et n'avoue rien.
+    const texteVide100 = await rendreSuppressions100({ daemon: [], collectors: [], collectors_incomplets: false, collectors_cause: null, generated: 1758000100 });
+    exiger(/aucun collecteur n'a encore auto-reporté/.test(texteVide100) && !/NON COMMENCÉ|INTERROMPU/.test(texteVide100),
+      `(100d-négatif) un relevé LU et vide perd son invitation, ou porte un aveu — un instrument qui avoue toujours n'avoue rien : « ${texteVide100.slice(0, 400)} »`);
+    const texteSain100 = await rendreSuppressions100({ daemon: [], collectors: [COLLECTEUR100], collectors_incomplets: false, collectors_cause: null, generated: 1758000100 });
+    exiger(texteSain100.includes("auditd") && !/NON COMMENCÉ|INTERROMPU/.test(texteSain100),
+      `(100d-négatif) le chemin nominal des collecteurs porte un aveu : « ${texteSain100.slice(0, 400)} »`);
+    document.querySelector = qsOrigine100;
+
+    // ══ (e) LA CHRONOLOGIE D'UN DOSSIER : « CIBLE NON LUE », PAS « SUPPRIMÉE OU EXPIRÉE » ═══════
+    const elementNonLu100 = modDossiers100.caseItemEl(4, { id: 1, ts: 1758000000, kind: "alert", author: "hugo", body: "", ref: "alert:42", ref_title: null, ref_severity: null, ref_non_lu: true }, false);
+    const texteNonLu100 = nu100(elementNonLu100);
+    const titresNonLu100 = cueillir100(elementNonLu100, () => true, []).map((e) => String(e.getAttribute && e.getAttribute("title") || "")).join(" | ");
+    exiger(/cible NON LUE/.test(texteNonLu100),
+      `(100e) l'aveu n'est pas un NŒUD : il ne vivrait que dans une infobulle, sur la ligne même qu'un analyste parcourt sans s'arrêter — « ${texteNonLu100} »`);
+    exiger(!/introuvable/.test(texteNonLu100) && !/introuvable/.test(titresNonLu100),
+      `(100e) « CIBLE INTROUVABLE — SUPPRIMÉE OU EXPIRÉE » EST ÉCRIT SUR UNE ALERTE QUI EXISTE : l'analyste en déduit que la rétention a emporté sa preuve et cesse de chercher — texte « ${texteNonLu100} », infobulles « ${titresNonLu100} »`);
+    exiger(/n'a PAS pu lire/.test(titresNonLu100) && /supprimée ou expirée/.test(titresNonLu100),
+      `(100e) le détail ne DÉMENT pas la lecture que la ligne appelait jusqu'ici : « ${titresNonLu100} »`);
+    exiger(texteNonLu100.includes("alert:42"),
+      `(100e) la référence elle-même disparaît sous l'aveu : elle est le seul moyen de rouvrir la cible à la main — « ${texteNonLu100} »`);
+    // CONTRÔLE POSITIF — LES DEUX AUTRES ISSUES, SUR LA MÊME RÉFÉRENCE, RESTENT CE QU'ELLES ÉTAIENT.
+    const elementAbsent100 = modDossiers100.caseItemEl(4, { id: 2, ts: 1758000000, kind: "alert", author: "hugo", body: "", ref: "alert:42", ref_title: null, ref_severity: null }, false);
+    const titresAbsent100 = cueillir100(elementAbsent100, () => true, []).map((e) => String(e.getAttribute && e.getAttribute("title") || "")).join(" | ");
+    exiger(/introuvable/.test(titresAbsent100) && !/NON LUE/.test(nu100(elementAbsent100)),
+      `(100e-négatif) une cible réellement ABSENTE se dit désormais « NON LUE », ou a perdu sa phrase : texte « ${nu100(elementAbsent100)} », infobulles « ${titresAbsent100} »`);
+    const elementLu100 = modDossiers100.caseItemEl(4, { id: 3, ts: 1758000000, kind: "alert", author: "hugo", body: "", ref: "alert:42", ref_title: "Force brute SSH", ref_severity: 2 }, false);
+    exiger(nu100(elementLu100).includes("Force brute SSH") && !/NON LUE|introuvable/.test(nu100(elementLu100)),
+      `(100e-négatif) le chemin nominal porte un aveu — un instrument qui le dit toujours ne mesure rien : « ${nu100(elementLu100)} »`);
+
+    // ══ (f) LE PIVOT : LE CINQ CENT TROIS D'ALLOWLIST DISTINCT DU QUATRE CENTS ══════════════════
+    const hotePivot100 = new Element("div");
+    const refus503Pivot100 = { causeDuDemon: CAUSE_ALLOWLIST100, message: "503 " + JSON.stringify({ error: CAUSE_ALLOWLIST100, id: "plume-e4-0" }) };
+    const refus400Pivot100 = { causeDuDemon: PHRASE_CHAMP_NON_DECLARE100, message: '400 {"error":"' + PHRASE_CHAMP_NON_DECLARE100 + '"}' };
+    modModeles100.avouerLeRefusDuPivot(hotePivot100, "execution", refus503Pivot100);
+    const texte503Pivot100 = nu100(hotePivot100);
+    const noeud503Pivot100 = hotePivot100.children[0];
+    exiger(/NON LUS/.test(texte503Pivot100) && texte503Pivot100.includes(CAUSE_ALLOWLIST100),
+      `(100f) le cinq cent trois du Pivot ne se peint pas comme un aveu d'allowlist NON LUE, avec la cause servie : « ${texte503Pivot100.slice(0, 300)} »`);
+    exiger(!/[{}]/.test(texte503Pivot100) && !/\b503\b/.test(texte503Pivot100),
+      `(100f) le code ou le corps JSON atteint l'écran à la place de la phrase : « ${texte503Pivot100.slice(0, 300)} »`);
+    exiger(!/non déclaré/.test(texte503Pivot100),
+      `(100f) L'AVEU ACCUSE LA DÉCLARATION DE L'EXPLOITANT : il enverrait déclarer un champ déjà déclaré pendant que la vraie cause est une lecture qui n'a pas eu lieu — « ${texte503Pivot100.slice(0, 300)} »`);
+    // LE DISCRIMINANT EST DANS LA FORME AUTANT QUE DANS LES MOTS, et c'est ce qui sépare vraiment les
+    // deux refus : « le démon refuse le corps reçu » est une ACCUSATION portée contre la demande, et la
+    // servir sur une lecture qui n'a pas eu lieu envoie corriger un Pivot qui n'a rien de faux. Un
+    // verdict qui ne jugerait que la présence de la cause resterait vert sur exactement ce défaut —
+    // mesuré : la cause SERVIE contient elle-même les mots « NON LUS », donc les chercher dans le rendu
+    // ne prouve rien sur ce que la console en a fait.
+    exiger(!/refuse le corps reçu/.test(texte503Pivot100),
+      `(100f) LE CINQ CENT TROIS EST PEINT COMME UN DÉFAUT DU CORPS REÇU : « ${texte503Pivot100.slice(0, 300)} »`);
+    exiger(!!noeud503Pivot100 && noeud503Pivot100.className === "bad" && noeud503Pivot100.children.length >= 1
+      && /NON LUS/.test(nu100(noeud503Pivot100.children[0])) && !nu100(noeud503Pivot100.children[0]).includes(CAUSE_ALLOWLIST100),
+      `(100f) l'aveu du Pivot n'est pas l'aveu à DEUX nœuds du dépôt — phrase au puits, cause SERVIE à côté : « ${noeud503Pivot100 && noeud503Pivot100.className} » / « ${nu100(noeud503Pivot100 && noeud503Pivot100.children[0])} »`);
+    modModeles100.avouerLeRefusDuPivot(hotePivot100, "execution", refus400Pivot100);
+    const texte400Pivot100 = nu100(hotePivot100);
+    const noeud400Pivot100 = hotePivot100.children[0];
+    exiger(texte400Pivot100.includes(PHRASE_CHAMP_NON_DECLARE100) && !/NON LUS/.test(texte400Pivot100),
+      `(100f-négatif) le quatre cents « champ non déclaré » se peint comme une lecture manquée, ou perd sa phrase : les DEUX refus seraient de nouveau indistincts — « ${texte400Pivot100.slice(0, 300)} »`);
+    exiger(/refuse le corps reçu/.test(texte400Pivot100) && noeud400Pivot100 && noeud400Pivot100.className !== "bad",
+      `(100f-négatif) un défaut du CORPS est peint dans le registre d'un aveu de lecture : les deux refus se confondraient dans l'autre sens — « ${noeud400Pivot100 && noeud400Pivot100.className} » / « ${texte400Pivot100.slice(0, 300)} »`);
+    exiger(nu100(hotePivot100) !== texte503Pivot100,
+      "(100f) les deux refus du Pivot rendent le MÊME texte : c'est exactement la confusion que ce lot ferme côté démon");
+  } finally {
+    globalThis.fetch = fetchOrigine100;
+    globalThis.setTimeout = minuterieOrigine100;
+    document.querySelector = qsOrigine100;
+    S100.isAdmin = etatOrigine100.admin; S100.AUTH = etatOrigine100.auth;
+    S100.viewsRole = etatOrigine100.role; S100.viewsMe = etatOrigine100.me; S100.viewList = etatOrigine100.liste; S100.dashList = etatOrigine100.dash;
+    document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
+  }
+  console.log("(100) OK — les quatre refus de `panel_update` arrivent ENTIERS dans les DEUX moules du même handler (JSON d'`err_json` et texte brut du couple de `projetee`), la visibilité courante non lue se peint en aveu à deux nœuds sur le panneau, la tuile et la vue là où la console rendait de la syntaxe ou RIEN DU TOUT, le geste de partage d'un panneau et ceux d'une vue se retirent avec leur raison SANS retenir la suppression — qui passe par un autre handler — et le clic retenu redemande la lecture au lieu de piéger l'exploitant ; le relevé des auto-reports collecteurs dit « NON COMMENCÉ » ou « INTERROMPU » avec sa cause au lieu d'affirmer qu'aucun collecteur n'a jamais reporté ; une cible de chronologie non lue se dit telle et DÉMENT « supprimée ou expirée » ; et le cinq cent trois d'allowlist non lue cesse d'accuser la déclaration de l'exploitant. Les deux discriminants de la console sont LUS dans l'arbre du démon et jugés dans les deux sens ; les six chemins nominaux restent muets");
+}
+
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;
 verdictRendu = true;
 if (echecs.length) {

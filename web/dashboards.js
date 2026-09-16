@@ -4,7 +4,7 @@
 // au point où ce bloc vivait (un module s'exécute à l'import, avant l'enveloppe `fetch` d'`app.js`). Les seams
 // (`viz.js`, `multitenant.js`) continuent de lire `loadDashboard` / `refreshPanels` via le ré-export d'`app.js`.
 // `renderDashboard` est exporté pour le harnais. N'importe pas `app.js`.
-import { $, ic, flashStopped, stopBtn, toast, modal, confirmModal, confirmWithConsequence, toCSV, downloadText, tsSlug, exportPDF, miniMenu, api, apiSend, transientGatewayMsg, makePager, socIsAdmin, applyRoleClass, roleSansEcriturePartagee, LANG } from './core.js';
+import { $, ic, flashStopped, stopBtn, toast, modal, confirmModal, confirmWithConsequence, toCSV, downloadText, tsSlug, exportPDF, miniMenu, api, apiSend, phraseDuRefusDuDemon, transientGatewayMsg, makePager, socIsAdmin, applyRoleClass, roleSansEcriturePartagee, LANG } from './core.js';
 import { S } from './state.js';
 import { coldShareBadge, coverageBadge, coverageHorizonNodes, provenanceBadge, currentFrom, currentTo, noeudsDeVizReglee, queryCount, runQuery, tableEl, vizElement } from './viz.js'; // `P10.5-q` : l'aveu de part froide que les panneaux reçoivent est LU
 // P11.4-h : LE geste de copie de la console (mécanisme partagé).
@@ -361,19 +361,36 @@ function renderDashboard(d) {
   // un dashboard REPLIÉ ne charge même pas sa liste de panneaux : différé jusqu'à la 1re expansion.
   if (!d.collapsed) loadPanelsInto(grid, d);
   else grid._deferredLoad = () => { grid._deferredLoad = null; loadPanelsInto(grid, d); };
+  // `P10.20-k` — LES CINQ PERSISTANCES DE CETTE TUILE PASSENT PAR UN SEUL ENVOI, ET IL EST ENTOURÉ.
+  // Elles partaient toutes sans `catch` : un refus du démon repartait en rejet non traité — rien à
+  // l'écran, et la tuile gardant l'état qu'il venait de refuser d'écrire. Rend `true` si l'écriture a eu
+  // lieu, pour que le renommage ne recharge la liste que sur un succès.
+  const persisterLeTableauDeBord = async (corps) => {
+    try {
+      await patchDash(d.id, corps);
+      // L'AVEU NE SURVIT PAS À LA PANNE QU'IL DÉCRIT : une écriture qui passe le retire.
+      const ancien = tile.querySelector('[data-refus-de-tableau-de-bord]');
+      if (ancien) ancien.remove();
+      return true;
+    }
+    catch (err) { avouerLeRefusDuTableauDeBord(tile, err); return false; }
+  };
   chev.onclick = () => {
     const c = !tile.classList.contains('collapsed');
     tile.classList.toggle('collapsed', c); chev.innerHTML = ic(c ? 'chevright' : 'chevdown');
     d.collapsed = c; // garde dashList a jour -> les re-render ne reviennent pas a l'ancien etat
     if (!c && grid._deferredLoad) grid._deferredLoad(); // expansion -> charge les panneaux (1re fois)
-    if (editable) patchDash(d.id, { collapsed: c });
+    if (editable) persisterLeTableauDeBord({ collapsed: c });
   };
   addp.onclick = () => createPanelModal(d.id, ($('#sql') && $('#sql').value.trim()) || '');
   ren.onclick = async () => {
     const r = await modal({ title: 'Renommer le dashboard', okText: 'Enregistrer', fields: [{ name: 'name', label: 'Nom', required: true, value: d.name }], validate: v => S.dashList.some(x => x.id !== d.id && x.name === v.name.trim()) ? 'Un dashboard porte deja ce nom.' : null });
-    if (!r) return; await patchDash(d.id, { name: r.name.trim() }); loadDashboards();
+    if (!r) return;
+    // UN RECHARGEMENT APRÈS UN REFUS EFFACERAIT L'AVEU qu'on vient de peindre, et reposerait à l'écran
+    // l'ancien nom sans un mot : la liste ne se relit que si l'écriture a eu lieu.
+    if (await persisterLeTableauDeBord({ name: r.name.trim() })) loadDashboards();
   };
-  wsel.onchange = () => { const n = Number(wsel.value); d.cols = n; tile.style.flexBasis = tileBasis(n); patchDash(d.id, { cols: n }); };
+  wsel.onchange = () => { const n = Number(wsel.value); d.cols = n; tile.style.flexBasis = tileBasis(n); persisterLeTableauDeBord({ cols: n }); };
   del.onclick = async () => { if (await confirmModal('Supprimer ce dashboard et ses panneaux ?', { danger: true })) { await apiSend('/dashboard/' + d.id, 'DELETE'); loadDashboards(); } };
   if (editable) {
     // coin de redimensionnement : hauteur px + largeur 1-4 col (calee sur le quart de ligne = garde-fou)
@@ -390,7 +407,7 @@ function renderDashboard(d) {
         ncols = Math.max(1, Math.min(4, Math.round((ev.clientX - left) / slot)));
         tile.style.flexBasis = tileBasis(ncols); wsel.value = String(ncols);
       };
-      const up = () => { document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); d.cols = ncols; d.height = Math.round(nh); patchDash(d.id, { cols: ncols, height: Math.round(nh) }); };
+      const up = () => { document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); d.cols = ncols; d.height = Math.round(nh); persisterLeTableauDeBord({ cols: ncols, height: Math.round(nh) }); };
       document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up);
     };
     // glisser-deposer pour reordonner (uniquement en mode edition ; poignee = en-tete)
@@ -417,6 +434,130 @@ function boiteDAveu() {
   const dit = document.createElement('span');
   aveu.appendChild(dit);
   return { aveu, dit };
+}
+
+// =================================================================================================
+// `P10.20-k` (2026-09-16) — LES TROIS ÉCRITURES DE CETTE VUE LISENT LE REFUS NOMMÉ DU DÉMON.
+//
+// CE QUE LE DÉMON SERT DEPUIS `25cbf78`, ET QUI N'ATTEIGNAIT AUCUN NŒUD. `dash_update`, `panel_update`
+// et `view_update` lisent l'existence ET la visibilité courante en UNE lecture typée : ligne absente ->
+// 404 (une absence ÉTABLIE) ; lecture NON FAITE -> 503 portant `CAUSE_VISIBILITE_NON_LUE`, posé AVANT
+// que le geste de partage ne soit jugé et avant toute écriture. Le corps de ce 503 nomme sa cause, et
+// `api()`/`apiSend()` la portent depuis `P10.20-b` sur `causeDuDemon` — mais AUCUNE des trois surfaces
+// ne la lisait : la bascule de partage d'une vue peignait « Changement de partage refusé (503 {"error":
+// …}) », l'enregistrement d'un panneau « Panneau non enregistré : 503 {"error": …} », et la persistance
+// d'un tableau de bord ne peignait RIEN DU TOUT — `patchDash` part sans `catch` sur cinq gestes (plier,
+// renommer, largeur, hauteur, position), si bien qu'un refus repartait en rejet non traité pendant que
+// la tuile gardait à l'écran l'état que le démon venait de REFUSER d'écrire.
+//
+// CE QU'UNE PHRASE DE REFUS N'EST PAS : un code nu, ni un corps JSON recopié. Les quatre refus de
+// `panel_update` portent chacun leur phrase depuis `P10.20-k` ; elles sont peintes ENTIÈRES ici.
+//
+// CE QUI EST INERTE, ET CE QUI NE L'EST PAS. Le 503 dit que la visibilité COURANTE n'a pas été lue :
+// le geste de PARTAGE ne peut donc pas être jugé, et il est le seul à porter la marque d'inertie — le
+// panneau reverrouille son sélecteur de visibilité sur la valeur SERVIE, la vue reverrouille sa bascule
+// et son renommage (les deux passent par `view_update`, donc par la même lecture). La SUPPRESSION d'une
+// vue, elle, n'y passe pas (`view_delete` est un autre handler) : elle reste offerte. Sur-refuser est
+// un défaut du même genre que sous-refuser.
+// =================================================================================================
+
+// LE DISCRIMINANT, ÉCRIT ICI ET CONFRONTÉ AU DÉMON PAR LE HARNAIS (témoin 100) : il doit reconnaître
+// `CAUSE_VISIBILITE_NON_LUE` et REFUSER les phrases voisines — « définition de bibliothèque NON LUE »
+// (`P10.20-b`, une AUTRE lecture) et le refus de partage de `P11.20-m` (« … est privé »), qui n'est pas
+// une lecture manquée mais un état de l'objet.
+const OUVERTURE_DU_REFUS_DE_VISIBILITE_NON_LUE = /VISIBILIT[ÉE] COURANTE NON LUE/;
+function visibiliteCouranteNonLue(e) { return OUVERTURE_DU_REFUS_DE_VISIBILITE_NON_LUE.test(phraseDuRefusDuDemon(e)); }
+
+// Les phrases de cette vue, FR et EN côte à côte comme les deux registres voisins de ce module : le
+// lexique n'a pas à les porter, et aucune des deux langues ne peut partir sans l'autre.
+const REFUS_D_ECRITURE_MOTS = {
+  visibilite_de_tableau_de_bord: {
+    fr: 'Visibilité courante du tableau de bord NON LUE : le démon a refusé et en nomme la cause —',
+    en: 'Dashboard current visibility NOT READ: the daemon refused and names the cause —' },
+  tableau_de_bord_non_enregistre: {
+    fr: 'Tableau de bord NON ENREGISTRÉ : le démon a refusé et en nomme la cause —',
+    en: 'Dashboard NOT SAVED: the daemon refused and names the cause —' },
+  visibilite_de_panneau: {
+    fr: 'Visibilité courante du panneau NON LUE : le démon a refusé et en nomme la cause —',
+    en: 'Panel current visibility NOT READ: the daemon refused and names the cause —' },
+  panneau_non_enregistre: {
+    fr: 'Panneau NON ENREGISTRÉ : le démon a refusé et en nomme la cause —',
+    en: 'Panel NOT SAVED: the daemon refused and names the cause —' },
+  visibilite_de_vue: {
+    fr: 'Visibilité courante de la vue NON LUE : le démon a refusé et en nomme la cause —',
+    en: 'View current visibility NOT READ: the daemon refused and names the cause —' },
+  partage_non_juge: {
+    fr: "Le démon n'a PAS pu lire la visibilité courante : tant qu'elle n'est pas lue, le partage ne peut pas être jugé et rien n'est écrit. Ce n'est NI « déjà partagé » NI « un élément le retient » — réessayez.",
+    en: 'The daemon could NOT read the current visibility: until it is read, sharing cannot be judged and nothing is written. This is NEITHER “already shared” NOR “an item holds it back” — retry.' },
+};
+const motDuRefusDEcriture = (cle) => (LANG === 'en' ? REFUS_D_ECRITURE_MOTS[cle].en : REFUS_D_ECRITURE_MOTS[cle].fr);
+
+// L'aveu à deux nœuds d'un refus d'ÉCRITURE : la phrase est posée au puits (`dit.textContent = …`),
+// jamais passée en argument — c'est là, et seulement là, que le lexique et `i18nWalk` la voient —, et la
+// phrase SERVIE par le démon est collée dans un SECOND nœud.
+function aveuDeRefusDEcriture(cle, e) {
+  const { aveu, dit } = boiteDAveu();
+  dit.textContent = motDuRefusDEcriture(cle);
+  aveu.append(' « ' + phraseDuRefusDuDemon(e) + ' »');
+  return aveu;
+}
+
+// LE REFUS D'UNE PERSISTANCE DE TABLEAU DE BORD, PEINT DANS LA TUILE QUI LE SUBIT. Un avis fugace ne
+// suffirait pas : le geste refusé (plier, renommer, largeur, hauteur, position) a laissé la tuile dans
+// l'état que le démon a précisément REFUSÉ d'écrire, et ce désaccord se relit tant que la page tient.
+// L'aveu est posé JUSTE SOUS l'en-tête, avant la grille — un lecteur qui va de haut en bas le rencontre
+// avant les panneaux dont il ne dit rien. Un seul aveu à la fois : le suivant remplace le précédent.
+// AUCUN GESTE DE PARTAGE N'EST RENDU INERTE ICI, et c'est mesuré, pas oublié : cette console n'offre
+// AUCUNE bascule de visibilité de tableau de bord — `visibility` n'entre dans un corps que par la
+// CRÉATION (`/api/dashboards`), jamais par `patchDash`. Il n'y a donc pas de geste de partage à retenir ;
+// ce que le 503 emporte ici, c'est l'écriture elle-même.
+function avouerLeRefusDuTableauDeBord(tile, e) {
+  const cle = visibiliteCouranteNonLue(e) ? 'visibilite_de_tableau_de_bord' : 'tableau_de_bord_non_enregistre';
+  if (!tile) { toast(motDuRefusDEcriture(cle) + ' « ' + phraseDuRefusDuDemon(e) + ' »', 'bad', 9000); return; }
+  const ancien = tile.querySelector('[data-refus-de-tableau-de-bord]');
+  if (ancien) ancien.remove();
+  const aveu = aveuDeRefusDEcriture(cle, e);
+  aveu.dataset.refusDeTableauDeBord = '1';   // marque de POSE, pas de style : aucune règle CSS ne la vise
+  aveu.style.cssText = 'margin:4px 0;font-size:12px';
+  tile.insertBefore(aveu, tile.children[1] || null);
+}
+// LE REFUS D'UN ENREGISTREMENT DE PANNEAU, PEINT DANS LE FORMULAIRE QUI L'A ENVOYÉ — il reste ouvert sur
+// la saisie refusée, donc c'est là que la phrase doit se lire. Les quatre refus de `panel_update`
+// arrivent entiers : les trois que `err_json` moule en JSON comme celui que `projetee` rend en texte brut
+// (`phraseDuRefusDuDemon`, core.js). ET LE GESTE DE PARTAGE SE RETIRE quand la visibilité n'a pas été
+// lue : le sélecteur revient à la valeur SERVIE, porte la marque accessible de l'inertie avec sa raison,
+// et son changement DIT le refus au lieu de rester sans effet (grammaire de `P11.4-l`).
+function avouerLeRefusDuPanneau(ef, p, e) {
+  if (!ef) return;
+  const ancien = ef.querySelector('[data-refus-de-panneau]');
+  if (ancien) ancien.remove();
+  const nonLue = visibiliteCouranteNonLue(e);
+  const aveu = aveuDeRefusDEcriture(nonLue ? 'visibilite_de_panneau' : 'panneau_non_enregistre', e);
+  aveu.dataset.refusDePanneau = '1';
+  aveu.style.cssText = 'margin:4px 0;font-size:12px';
+  const actions = ef.querySelector('.rf-actions');
+  if (actions) ef.insertBefore(aveu, actions); else ef.appendChild(aveu);
+  const vis = ef.querySelector('.pe-vis');
+  if (!vis) return;
+  // UN REFUS QUI NE DIT RIEN DE LA LECTURE NE RETIENT PAS LE PARTAGE, et il LÈVE la rétention d'avant :
+  // le démon a jugé le geste cette fois-ci (il l'a refusé pour une autre raison), donc la visibilité a
+  // été lue. Une marque qui resterait posée refuserait au nom d'une panne qui n'a plus lieu.
+  if (!nonLue) { vis.removeAttribute('aria-disabled'); vis.onchange = null; vis.onclick = null; return; }
+  const motif = motDuRefusDEcriture('partage_non_juge');
+  vis.value = p.visibility || 'shared';      // le geste est DÉFAIT : rien ne reste armé pour le prochain envoi
+  vis.setAttribute('aria-disabled', 'true');
+  vis.title = motif;
+  vis.onchange = () => { vis.value = p.visibility || 'shared'; toast(motif, 'bad', 9000); };
+  vis.onclick = () => toast(motif, 'bad', 9000);
+}
+// L'AVEU NE SURVIT PAS À LA PANNE QU'IL DÉCRIT, ET LE GESTE RETENU SE ROUVRE. Une écriture qui passe
+// prouve que la lecture se fait de nouveau : garder la marque d'inertie en ferait un piège.
+function effacerLAveuDuPanneau(ef) {
+  if (!ef) return;
+  const ancien = ef.querySelector('[data-refus-de-panneau]');
+  if (ancien) ancien.remove();
+  const vis = ef.querySelector('.pe-vis');
+  if (vis) { vis.removeAttribute('aria-disabled'); vis.onchange = null; vis.onclick = null; }
 }
 async function loadPanelsInto(grid, d) {
   try {
@@ -459,10 +600,24 @@ function reorderDash(fromId, targetId) {
   const [m] = arr.splice(fi, 1);
   const ti = arr.findIndex(x => x.id === targetId);
   arr.splice(ti < 0 ? arr.length : ti, 0, m);
-  arr.forEach((x, i) => { if (x.position !== i) { x.position = i; patchDash(x.id, { position: i }); } });
+  // `P10.20-k` — UN RÉORDONNANCEMENT TOUCHE PLUSIEURS TUILES ET `renderView()` LES REFABRIQUE JUSTE
+  // APRÈS : un aveu posé dans l'une d'elles serait effacé avant d'être lu. Le refus part donc à l'avis,
+  // avec la phrase du démon entière — c'est le seul des six sites de persistance qui n'a pas de tuile
+  // survivante où écrire, et `avouerLeRefusDuTableauDeBord` le dit lui-même quand la tuile manque.
+  arr.forEach((x, i) => { if (x.position !== i) { x.position = i; Promise.resolve(patchDash(x.id, { position: i })).catch(err => avouerLeRefusDuTableauDeBord(null, err)); } });
   S.dashList = arr; renderView();
 }
 function patchPanel(id, body) { return roleSansEcriturePartagee() ? Promise.resolve(null) : apiSend('/panels/' + id, 'POST', body); }
+// `P10.20-k` — LES QUATRE PERSISTANCES DE PANNEAU QUI NE PASSENT PAS PAR LE FORMULAIRE (visualisation,
+// largeur, hauteur, position) PARTAIENT SANS `catch` : un refus s'y perdait en rejet non traité, la
+// carte gardant l'aspect que le démon a refusé d'écrire. Elles n'ont pas de nœud survivant où peindre —
+// un panneau se refabrique au moindre rechargement, et le réordonnancement en touche plusieurs —, donc
+// la phrase du démon part ENTIÈRE à l'avis, jamais sous la forme d'un code ni d'un corps JSON.
+function avisDuRefusDuPanneau(e) {
+  const cle = visibiliteCouranteNonLue(e) ? 'visibilite_de_panneau' : 'panneau_non_enregistre';
+  toast(motDuRefusDEcriture(cle) + ' « ' + phraseDuRefusDuDemon(e) + ' »', 'bad', 9000);
+}
+const persisterLePanneau = (id, corps) => Promise.resolve(patchPanel(id, corps)).catch(avisDuRefusDuPanneau);
 // reordonne les PANNEAUX dans une grille de dashboard (place `from` avant `target`) et persiste position
 function reorderPanels(grid, fromId, targetId, after) {
   const panels = () => [...grid.children].filter(c => c.classList && c.classList.contains('panel'));
@@ -470,7 +625,7 @@ function reorderPanels(grid, fromId, targetId, after) {
   const fromCard = cards.find(c => c._panelId === fromId), targetCard = cards.find(c => c._panelId === targetId);
   if (!fromCard || !targetCard || fromCard === targetCard) return;
   grid.insertBefore(fromCard, after ? targetCard.nextSibling : targetCard); // avant/apres selon le curseur
-  panels().forEach((c, i) => patchPanel(c._panelId, { position: i }));
+  panels().forEach((c, i) => persisterLePanneau(c._panelId, { position: i }));
 }
 // EXPORT PANNEAU : menu CSV/JSON sur les données courantes du panneau (result = {columns, rows}).
 function panelExport(anchor, p, result) {
@@ -499,7 +654,7 @@ async function renderPanel(p, editable = true) {
     if (m === curViz) b.classList.add('on');
     b.onclick = () => {
       curViz = m; Object.values(btns).forEach(x => x.classList.remove('on')); b.classList.add('on'); draw();
-      if (editable) patchPanel(p.id, { viz: m });
+      if (editable) persisterLePanneau(p.id, { viz: m });
     };
     btns[m] = b; seg.appendChild(b);
   });
@@ -514,7 +669,7 @@ async function renderPanel(p, editable = true) {
   const wsel = document.createElement('select'); wsel.className = 'picon editonly crud-btn'; wsel.title = 'Largeur (colonnes)';
   [1, 2, 3, 4].forEach(n => { const o = document.createElement('option'); o.value = n; o.textContent = n + ' col'; wsel.appendChild(o); });
   wsel.value = String(p.cols || 1);
-  wsel.onchange = () => { const n = Number(wsel.value); card.style.flexBasis = tileBasis(n); patchPanel(p.id, { cols: n }); };
+  wsel.onchange = () => { const n = Number(wsel.value); card.style.flexBasis = tileBasis(n); persisterLePanneau(p.id, { cols: n }); };
   tools.appendChild(seg);
   // refresh + STOP par panneau (non editonly : un viewer peut rafraîchir / arrêter SON chargement)
   const pref = document.createElement('button'); pref.type = 'button'; pref.className = 'picon'; pref.innerHTML = ic('refresh'); pref.title = 'Rafraîchir ce panneau'; pref.onclick = () => load();
@@ -574,7 +729,14 @@ async function renderPanel(p, editable = true) {
     // Le refus du serveur doit être VU (P7.13-a) : depuis que la porte « SQL brut = admin » juge la
     // définition RÉELLEMENT EXÉCUTÉE, éditer un panneau qui exécute une définition de bibliothèque en
     // SQL brut répond 403 — sans ce catch, l'enregistrement se perdait en rejet non traité.
-    try { await patchPanel(p.id, upd); } catch (e) { toast('Panneau non enregistré : ' + ((e && e.message) || e), 'bad'); return; }
+    // `P10.20-k` — LE REFUS DU DÉMON EST PEINT, ET SA PHRASE EST PEINTE ENTIÈRE. Cet avis rendait
+    // `e.message`, c'est-à-dire « <code> <corps> » : depuis que les quatre refus de `panel_update`
+    // portent leur phrase, trois d'entre eux arrivent moulés en JSON et le lecteur lisait la SYNTAXE
+    // (`403 {"error":"dashboard non modifiable"}`). L'aveu à deux nœuds prend sa place, dans le
+    // formulaire resté ouvert sur la saisie refusée — et le geste de partage se retire quand la
+    // visibilité courante n'a pas été lue.
+    try { await patchPanel(p.id, upd); } catch (err) { avouerLeRefusDuPanneau(ef, p, err); return; }
+    effacerLAveuDuPanneau(ef);   // l'aveu ne survit pas à la panne qu'il décrit
     loadDashboards();
   };
   card.appendChild(ef);
@@ -586,7 +748,7 @@ async function renderPanel(p, editable = true) {
     new ResizeObserver(() => {
       if (!S.editing) return; // ne persiste qu'en mode édition
       const h = Math.round(body.clientHeight);
-      if (h && Math.abs(h - lastH) > 8) { lastH = h; clearTimeout(body._t); body._t = setTimeout(() => patchPanel(p.id, { height: h }), 500); }
+      if (h && Math.abs(h - lastH) > 8) { lastH = h; clearTimeout(body._t); body._t = setTimeout(() => persisterLePanneau(p.id, { height: h }), 500); }
     }).observe(body);
   }
   // P7 : poignee de coin -> resize LIBRE (hauteur en px + largeur calee sur la grille, 1-4 col)
@@ -608,7 +770,7 @@ async function renderPanel(p, editable = true) {
         document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up);
         const ncols = Number(card.dataset.cols) || (p.cols || 1);
         if (wsel) wsel.value = String(ncols);
-        patchPanel(p.id, { cols: ncols }); // hauteur sauvee par le ResizeObserver
+        persisterLePanneau(p.id, { cols: ncols }); // hauteur sauvee par le ResizeObserver
       };
       document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up);
     };
@@ -1027,6 +1189,11 @@ async function loadViews() {
       if (neuve) { neuve.setAttribute('aria-disabled', 'true'); neuve.title = "Les vues n'ont PAS été lues : en créer une ici, c'est peut-être en créer une homonyme de celle que cette lecture n'a pas pu rendre, et le filtre ci-contre ne porte sur rien."; }
     } else {
       VUES_NON_LUES = false;
+      // `P10.20-k` — LA LISTE DES VUES VIENT DE LA MÊME TABLE QUE LA VISIBILITÉ COURANTE. Qu'elle RENDE
+      // est la preuve fraîche que la lecture qui avait manqué se fait de nouveau : le geste retenu se
+      // rouvre. Sans cette levée, la marque d'inertie posée sur une panne RÉESSAYABLE serait un piège —
+      // le démon dit « Réessayez » et la console interdirait d'essayer.
+      if (VISIBILITE_DE_VUE_NON_LUE) { VISIBILITE_DE_VUE_NON_LUE = ''; peindreLAveuDeVisibiliteDeVue(); }
       if (neuve) { neuve.removeAttribute('aria-disabled'); neuve.title = 'Créer une vue : un regroupement indépendant et vide'; }
     }
   } catch (e) {}
@@ -1060,20 +1227,67 @@ const REFUS_DE_VUE_MOTS = {
   pas_proprietaire: { fr: "Vue d'un autre : seuls son propriétaire et un administrateur peuvent la partager, la renommer ou la supprimer (le serveur le refuse aussi).", en: 'Someone else’s view: only its owner and an administrator may share, rename or delete it (the server refuses it too).' },
 };
 const motDuRefusDeVue = (cause) => (LANG === 'en' ? REFUS_DE_VUE_MOTS[cause].en : REFUS_DE_VUE_MOTS[cause].fr);
+// `P10.20-k` — LA CAUSE SERVIE PAR LE DERNIER `view_update` QUI N'A PAS PU LIRE LA VISIBILITÉ COURANTE,
+// ou '' quand la dernière écriture a eu lieu. Elle est portée ici, hors des fabriques de rendu, parce
+// qu'elle survit au repeint du bandeau : `refleterLesDroitsDeLaVue` est rappelé à chaque changement de
+// sélection, et un aveu qu'il effacerait serait un aveu qu'on ne lit jamais.
+// ELLE RETIENT DEUX GESTES, PAS TROIS. Partager et renommer passent tous deux par `view_update`, donc par
+// la lecture qui a échoué ; SUPPRIMER passe par `view_delete`, un autre handler, qui ne la fait pas —
+// l'inerter serait refuser au nom d'une panne qui ne le concerne pas.
+let VISIBILITE_DE_VUE_NON_LUE = '';
+const GESTES_DE_VUE_QUI_LISENT_LA_VISIBILITE = new Set(['partage', 'renommage']);
 // LE REFUS DU SERVEUR, RENDU AU LIEU D'ÊTRE AVALÉ — le geste est nommé ici, la cause vient du démon telle
 // qu'il l'a écrite. Le bouton de partage entourait déjà son envoi ; ses deux voisins ne le faisaient pas.
 const GESTE_DE_VUE_MOTS = {
   suppression: { fr: 'Suppression de la vue refusée par le serveur', en: 'View deletion refused by the server' },
   renommage: { fr: 'Renommage de la vue refusé par le serveur', en: 'View rename refused by the server' },
 };
-const motDuRefusServeurDeVue = (geste, e) => (LANG === 'en' ? GESTE_DE_VUE_MOTS[geste].en : GESTE_DE_VUE_MOTS[geste].fr) + ' (' + (e && e.message ? e.message : e) + ')';
+// `P10.20-k` — LA PHRASE DU DÉMON, PAS SON ENVELOPPE. `e.message` vaut « <code> <corps> » : depuis que
+// les refus portent leur phrase dans un corps JSON, ce libellé rendait de la syntaxe à l'écran.
+const motDuRefusServeurDeVue = (geste, e) => (LANG === 'en' ? GESTE_DE_VUE_MOTS[geste].en : GESTE_DE_VUE_MOTS[geste].fr) + ' (' + phraseDuRefusDuDemon(e) + ')';
 function viewCanShare(v) { return !!v && (S.viewsRole === 'admin' || !v.owner || v.owner === S.viewsMe); }
 // La raison de refuser CETTE vue, ou '' si rien ne la refuse. UN SEUL LECTEUR pour les trois contrôles :
 // deux formulations du même refus divergeraient, et le démon n'en porte qu'une.
-function motDuRefusDeLaVue(v) {
+// `P10.20-k` — LA LECTURE QUI N'A PAS EU LIEU PASSE AVANT LE DROIT. Un compte peut être propriétaire de
+// la vue ET recevoir ce 503 : le refus qui s'applique est celui que le démon vient d'écrire, pas celui
+// qu'on aurait deviné. La phrase du démon est collée à la nôtre — l'infobulle est le seul endroit où ce
+// contrôle peut la porter, un bouton d'icône n'ayant pas de nœud texte.
+function motDuRefusDeLaVue(v, geste) {
+  if (VISIBILITE_DE_VUE_NON_LUE && GESTES_DE_VUE_QUI_LISENT_LA_VISIBILITE.has(geste || 'partage')) {
+    return motDuRefusDEcriture('partage_non_juge') + ' « ' + VISIBILITE_DE_VUE_NON_LUE + ' »';
+  }
   if (!v) return motDuRefusDeVue('aucune_vue');
   if (!viewCanShare(v)) return motDuRefusDeVue('pas_proprietaire');
   return '';
+}
+// L'AVEU DE LA VUE, PEINT À CÔTÉ DU SÉLECTEUR — au même endroit que celui de `loadViews`, parce qu'il
+// parle du même objet et qu'un lecteur ne doit pas avoir deux endroits à surveiller. Posé sur un refus,
+// retiré dès qu'une écriture passe : il ne survit jamais à la panne qu'il décrit.
+function peindreLAveuDeVisibiliteDeVue() {
+  const sel = $('#view'); if (!sel || !sel.parentNode) return;
+  const ancien = sel.parentNode.querySelector('[data-visibilite-de-vue-non-lue]');
+  if (ancien) ancien.remove();
+  if (!VISIBILITE_DE_VUE_NON_LUE) return;
+  const { aveu, dit } = boiteDAveu();
+  dit.textContent = motDuRefusDEcriture('visibilite_de_vue');
+  aveu.append(' « ' + VISIBILITE_DE_VUE_NON_LUE + ' »');
+  aveu.dataset.visibiliteDeVueNonLue = '1';   // marque de POSE, pas de style : aucune règle CSS ne la vise
+  sel.parentNode.appendChild(aveu);
+}
+// Le geste est-il retenu par une LECTURE manquante — et non par un droit ? Les deux se rendent pareil à
+// l'écran (inerte, avec sa raison) et ne se traitent pas pareil au clic : un droit manquant ne se
+// réessaie pas, une lecture manquante ne fait que ça.
+function refusDeVueRetenuParUneLectureManquante(geste) {
+  return !!VISIBILITE_DE_VUE_NON_LUE && GESTES_DE_VUE_QUI_LISENT_LA_VISIBILITE.has(geste);
+}
+// L'ISSUE D'UN `view_update` : la cause est retenue quand la visibilité n'a pas été lue, effacée quand
+// l'écriture a eu lieu. Un refus d'une AUTRE nature (droit manquant, vue absente) ne touche pas cette
+// mémoire — il ne dit rien de la lecture.
+function noterLIssueDUnViewUpdate(e) {
+  if (e === null) { VISIBILITE_DE_VUE_NON_LUE = ''; }
+  else if (visibiliteCouranteNonLue(e)) { VISIBILITE_DE_VUE_NON_LUE = phraseDuRefusDuDemon(e); }
+  peindreLAveuDeVisibiliteDeVue();
+  refleterLesDroitsDeLaVue();
 }
 // Pose le refus SUR le contrôle (grammaire de `P11.4-l`) : il reste VISIBLE, il porte la marque
 // accessible, et son infobulle DIT pourquoi. Idempotent. Rend true si un refus a été posé.
@@ -1089,7 +1303,7 @@ function updateViewShareBtn() {
   const btn = $('#view-share'), sel = $('#view'); if (!btn || !sel) return;
   const v = S.viewList.find(x => String(x.id) === String(sel.value));
   btn.innerHTML = ic('users');
-  const motif = motDuRefusDeLaVue(v);
+  const motif = motDuRefusDeLaVue(v, 'partage');
   if (rendreInerteAvecSonMotif(btn, motif)) { btn.classList.remove('on'); btn.removeAttribute('aria-pressed'); return; }
   const shared = v.visibility === 'shared';
   btn.classList.toggle('on', shared);
@@ -1101,18 +1315,19 @@ function updateViewShareBtn() {
 // LES DEUX VOISINS, PAR LE MÊME PRÉDICAT ET LA MÊME GRAMMAIRE. Leur survol PERMIS est celui que la page
 // leur a écrit : le reposer ici efface la raison du refus quand elle cesse de s'appliquer, sans quoi une
 // vue redevenue accessible garderait le motif d'une autre.
+// `P10.20-k` — CHAQUE VOISIN DIT PAR QUEL HANDLER IL PASSE : le renommage par `view_update` (donc par la
+// lecture de visibilité qui peut manquer), la suppression par `view_delete` (qui ne la fait pas).
 const SURVOL_PERMIS_DE_VUE = {
-  'view-rename': { fr: 'Renommer la vue', en: 'Rename the view' },
-  'view-del': { fr: 'Supprimer la vue (les dashboards sont conservés)', en: 'Delete the view (its dashboards are kept)' },
+  'view-rename': { geste: 'renommage', fr: 'Renommer la vue', en: 'Rename the view' },
+  'view-del': { geste: 'suppression', fr: 'Supprimer la vue (les dashboards sont conservés)', en: 'Delete the view (its dashboards are kept)' },
 };
 function refleterLesDroitsDeLaVue() {
   updateViewShareBtn();
   const sel = $('#view'); if (!sel) return;
   const v = S.viewList.find(x => String(x.id) === String(sel.value));
-  const motif = motDuRefusDeLaVue(v);
   Object.keys(SURVOL_PERMIS_DE_VUE).forEach(id => {
     const permis = SURVOL_PERMIS_DE_VUE[id];
-    rendreInerteAvecSonMotif($('#' + id), motif, LANG === 'en' ? permis.en : permis.fr);
+    rendreInerteAvecSonMotif($('#' + id), motDuRefusDeLaVue(v, permis.geste), LANG === 'en' ? permis.en : permis.fr);
   });
 }
 
@@ -1136,8 +1351,10 @@ function initDashboards() {
     const v = S.viewList.find(x => String(x.id) === String(id));
     // `P11.20-o` — LE CLIC DIT EXACTEMENT CE QUE LE SURVOL ANNONÇAIT : une seule écriture des deux
     // refus, pour qu'ils ne puissent pas diverger. Le rendu du refus, lui, existait déjà.
-    const motif = motDuRefusDeLaVue(v);
-    if (motif) { toast(motif, 'bad', 6000); return; }
+    const motif = motDuRefusDeLaVue(v, 'partage');
+    // `P10.20-k` — LE CLIC RETENU PAR UNE LECTURE MANQUANTE DIT LE REFUS **ET** REDEMANDE LA LECTURE :
+    // c'est la seule sortie qu'un exploitant ait, et elle est celle que le démon prescrit (« Réessayez »).
+    if (motif) { toast(motif, 'bad', 9000); if (refusDeVueRetenuParUneLectureManquante('partage')) loadViews(); return; }
     const next = v.visibility === 'shared' ? 'private' : 'shared';
     // `P11.13-b` — CE GESTE CHANGE QUI PEUT LIRE, ET IL PARTAIT SANS RIEN DEMANDER. Un clic sur une
     // icône basculait une vue privée en vue d'équipe (et l'inverse) : aucune conséquence n'était
@@ -1163,8 +1380,14 @@ function initDashboards() {
         ? 'La vue « ' + v.name + ' » apparaîtra dans la liste de tout le monde, et les tableaux de bord PARTAGÉS qu’elle porte se lisent alors depuis elle. Les tableaux de bord privés restent privés.'
         : 'La vue « ' + v.name + ' » disparaît de la liste des autres — seuls vous et un administrateur la gardez. Les tableaux de bord qu’elle porte ne changent pas de visibilité.');
     if (!await confirmWithConsequence(geste, consequence)) return;
+    // `P10.20-k` — LE 503 QUI NOMME SA CAUSE EST LU, PEINT, ET IL RETIENT LE GESTE. Cet avis rendait
+    // `e.message` — « 503 {"error": …} », de la syntaxe —, et le bouton restait offert comme si rien
+    // n'avait été refusé : le clic suivant repartait vers la même lecture manquante. La cause du démon
+    // est retenue, l'aveu est peint à côté du sélecteur, et partager comme renommer deviennent inertes
+    // AVEC leur raison jusqu'à ce qu'une écriture passe.
     try { await apiSend('/views/' + id, 'POST', { visibility: next }); }
-    catch (e) { toast('Changement de partage refusé (' + (e && e.message ? e.message : e) + ')', 'bad'); return; }
+    catch (e) { noterLIssueDUnViewUpdate(e); toast(motDuRefusDEcriture('visibilite_de_vue') + ' « ' + phraseDuRefusDuDemon(e) + ' »', 'bad', 9000); return; }
+    noterLIssueDUnViewUpdate(null);
     await loadViews(); sel.value = id; refleterLesDroitsDeLaVue();
     toast(next === 'shared' ? 'Vue partagée avec l\'équipe' : 'Vue rendue privée', 'ok');
   });
@@ -1185,7 +1408,7 @@ function initDashboards() {
     const sel = $('#view');
     // `P11.20-o` — MÊME PRÉDICAT, MÊME PHRASE que le partage : `view_delete` porte la MÊME clause
     // d'appartenance que `view_update`, et ce bouton n'en miroitait aucune.
-    const motif = motDuRefusDeLaVue(S.viewList.find(x => String(x.id) === String(sel && sel.value)));
+    const motif = motDuRefusDeLaVue(S.viewList.find(x => String(x.id) === String(sel && sel.value)), 'suppression');
     if (motif) { toast(motif, 'bad', 6000); return; }
     if (!await confirmModal('Supprimer cette vue ? Les dashboards sont conservés (détachés de la vue).', { danger: true })) return;
     // ... ET L'ENVOI EST ENTOURÉ : un refus du démon partait dans un rejet que personne ne traitait, si
@@ -1201,12 +1424,17 @@ function initDashboards() {
       const v = S.viewList.find(x => String(x.id) === String(id));
       // `P11.20-o` — `view_update` sert le renommage ET le partage, et porte pour les deux la MÊME clause
       // d'appartenance. Ce bouton ne miroitait que l'absence de choix, jamais le droit.
-      const motif = motDuRefusDeLaVue(v);
-      if (motif) { toast(motif, 'bad', 6000); return; }
+      const motif = motDuRefusDeLaVue(v, 'renommage');
+      if (motif) { toast(motif, 'bad', 9000); if (refusDeVueRetenuParUneLectureManquante('renommage')) loadViews(); return; }
       const r = await modal({ title: 'Renommer la vue', okText: 'Enregistrer', fields: [{ name: 'name', label: 'Nom', required: true, value: v ? v.name : '' }], validate: x => S.viewList.some(y => String(y.id) !== String(id) && y.name === x.name.trim()) ? 'Une vue porte déjà ce nom.' : null });
       if (!r) return;
+      // `P10.20-k` — MÊME HANDLER, MÊME LECTURE, MÊME MÉMOIRE : `view_update` lit la visibilité courante
+      // AVANT de juger quoi que ce soit, y compris un simple renommage. La phrase du démon est rendue
+      // entière (elle partait derrière `e.message`, donc en JSON brut quand le corps est moulé par
+      // `err_json`), et la cause est retenue pour retirer le geste.
       try { await apiSend('/views/' + id, 'POST', { name: r.name.trim() }); }
-      catch (e) { toast(motDuRefusServeurDeVue('renommage', e), 'bad', 6000); return; }
+      catch (e) { noterLIssueDUnViewUpdate(e); toast(motDuRefusServeurDeVue('renommage', e), 'bad', 9000); return; }
+      noterLIssueDUnViewUpdate(null);
       await loadViews(); $('#view').value = id; toast('Vue renommée', 'ok');
     });
   }
@@ -1219,4 +1447,9 @@ function initDashboards() {
 // l'EXÉCUTANT, pas en relisant le module.
 // `loadPanelsInto` et `loadViews` sont exposées pour le harnais ESM (témoin 95) : l'aveu des panneaux et
 // celui des vues ne se prouvent qu'en les RENDANT. Aucun usage applicatif hors de ce module.
-export { corpsSansLigne, initDashboards, loadDashboard, loadDashboards, loadPanelsInto, loadViews, refreshPanels, renderDashboard };
+// `P10.20-k` — `visibiliteCouranteNonLue` est exposée pour le témoin 100 : le discriminant qui sépare la
+// visibilité NON LUE des phrases voisines du démon (« définition de bibliothèque NON LUE », le refus de
+// partage de `P11.20-m`) doit être CONFRONTÉ aux littéraux de l'arbre du démon, dans les deux sens. Le
+// relire dans le texte du module prouverait qu'il est écrit, pas qu'il discrimine. Aucun usage applicatif
+// hors de ce module.
+export { corpsSansLigne, initDashboards, loadDashboard, loadDashboards, loadPanelsInto, loadViews, refreshPanels, renderDashboard, visibiliteCouranteNonLue };

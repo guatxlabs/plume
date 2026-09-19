@@ -14261,6 +14261,595 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   console.log("(100) OK — les quatre refus de `panel_update` arrivent ENTIERS dans les DEUX moules du même handler (JSON d'`err_json` et texte brut du couple de `projetee`), la visibilité courante non lue se peint en aveu à deux nœuds sur le panneau, la tuile et la vue là où la console rendait de la syntaxe ou RIEN DU TOUT, le geste de partage d'un panneau et ceux d'une vue se retirent avec leur raison SANS retenir la suppression — qui passe par un autre handler — et le clic retenu redemande la lecture au lieu de piéger l'exploitant ; le relevé des auto-reports collecteurs dit « NON COMMENCÉ » ou « INTERROMPU » avec sa cause au lieu d'affirmer qu'aucun collecteur n'a jamais reporté ; une cible de chronologie non lue se dit telle et DÉMENT « supprimée ou expirée » ; et le cinq cent trois d'allowlist non lue cesse d'accuser la déclaration de l'exploitant. Les deux discriminants de la console sont LUS dans l'arbre du démon et jugés dans les deux sens ; les six chemins nominaux restent muets");
 }
 
+
+
+// ---------------------------------------------------------------------------------------------
+// (101) `P10.20-q` (2026-09-19) — LES DEUX SURFACES CONSOLE QUE LA FERMETURE CÔTÉ DÉMON A LAISSÉES
+//       SOURDES, ET QUATRE CHOSES QUE L'ÉNONCÉ DE CE LOT DISAIT DE TRAVERS.
+//
+// CE QUE LE DÉMON SERT DEPUIS LA FERMETURE DE `P10.20-q`, ET QUI N'ATTEIGNAIT AUCUN NŒUD.
+//   · `action_approve` (daemon/src/handlers/actions.rs) relit la riposte AVANT toute écriture, en
+//     `Result<Option<..>>` : lecture NON FAITE -> 503 `CAUSE_RIPOSTE_NON_LUE`, ni statut ni ligne de
+//     registre ni ban armé ; absence ÉTABLIE -> 404 `CAUSE_RIPOSTE_INTROUVABLE` ; échec de l'écriture
+//     du statut -> 503 `CAUSE_APPROBATION_NON_ENREGISTREE`, posé AVANT la ligne de registre.
+//   · `respond_run` type le verdict conservé et le registre tamper-evident reçoit un genre DISTINCT,
+//     `action.exec.verdict-non-relu`, là où `unwrap_or_default()` écrivait « verdict `` déjà posé ».
+//
+// CE QUE LA CONSOLE EN FAISAIT, MESURÉ SUR LES MODULES RÉELS.
+//   · `web/detection_admin.js` — approuver et annuler partaient SANS `catch`. `apiSend` REJETTE sur
+//     `!r.ok` : chacun de ces trois refus repartait donc en rejet non traité, et `loadActions()`,
+//     écrit APRÈS l'`await`, n'était même pas atteint. Rien à l'écran, et la file gardait l'état
+//     d'avant le geste — une riposte encore « pending » que l'analyste lit comme approuvée, sur la
+//     seule surface où l'on arme un ban.
+//   · `web/audit.js` — la colonne « Type » rendait le genre TEL QUEL. Le seul genre que le démon ait
+//     créé pour dire qu'il ne sait pas arrivait à l'écran comme un jeton parmi d'autres, à un
+//     caractère de son voisin `action.exec.verdict-conserve`, qui lui établit un verdict.
+//
+// CE QUI ÉTAIT FAUX DANS L'ÉNONCÉ DE CE LOT, ET MESURÉ ICI. (1) « annuler : un cinq cent trois ou un
+// quatre cent quatre est un no-op silencieux » — `action_cancel` ne rend qu'un `StatusCode`, et ce
+// `StatusCode` est TOUJOURS `NO_CONTENT` : la route ne relit rien, ne refuse rien, et n'a aucune cause
+// nommée. Ce que le `catch` de l'annulation couvre n'est donc pas un refus de riposte mais ce qui
+// arrive AVANT le handler. (2) « le corps JSON est `{"error": …}` » — sur un 5xx, `err_json`
+// (daemon/src/main.rs) y ajoute `id`, et c'est la forme que la console reçoit des DEUX 503 de cette
+// clé. (3) « l'aveu sur la ligne de l'action concernée si elle survit au rechargement » — sur la voie
+// même que cette clé nomme (une ligne illisible), elle n'y survit PAS : `liste_bornee` laisse tomber
+// une ligne dont le mappeur échoue EN SILENCE et la liste se déclare quand même lue. L'avis n'est donc
+// pas un repli marginal, c'est le chemin ORDINAIRE de ce refus-là. (4) « l'écran du registre filtre
+// par kind » — il ne filtre pas : sa seule sélection est une recherche sur la page servie, dérivée du
+// TEXTE des cellules rendues. Le genre distinct reste donc cherchable, pas filtrable, et c'est
+// pourquoi le jeton du démon reste peint à côté de la phrase.
+//
+// L'ANCRAGE. Aucune phrase du démon n'est recopiée : les trois causes, les deux genres de registre et
+// les deux causes VOISINES qui portent elles aussi les mots « NON LUE » (`CAUSE_LISTE_ILLISIBLE` du
+// corps de liste bornée — l'aveu que ce panneau peint déjà juste au-dessus — et
+// `CAUSE_VISIBILITE_NON_LUE`) sont EXTRAITS de l'arbre du démon, littéraux Rust recomposés à travers
+// leurs continuations. LE DISCRIMINANT que la console écrit est exercé par sa fonction RÉELLE et
+// confronté à ces littéraux DANS LES DEUX SENS : il doit reconnaître chacun des trois refus et REFUSER
+// les deux voisins. Si une constante, un genre ou une forme de refus cesse d'exister, ce témoin REFUSE
+// DE CONCLURE au lieu de rester vert sur un corps devenu étranger au démon. Les corps structurels sont
+// cherchés dans TOUT `daemon/src/handlers/` et non dans un fichier nommé : déplacer `action_approve`
+// dans un module voisin ne doit pas faire taire ce témoin.
+//
+// LA FORME EST JUGÉE AUTANT QUE LES MOTS, et c'est ce que le lot 100 a payé pour apprendre : la cause
+// SERVIE par le démon contient elle-même « RIPOSTE NON LUE », « ni statut, ni ligne de registre » et
+// « introuvable » — les chercher dans le texte rendu ne prouve donc RIEN sur ce que la console en a
+// fait. Chaque verdict de mots porte ici sur le PREMIER nœud de l'aveu, celui que la console écrit, et
+// il exige en plus que ce nœud ne contienne PAS la cause.
+//
+// CE QUE CE TÉMOIN NE TIENT PAS : il ne rejoue aucune route du démon — il en DÉRIVE les mots et
+// fabrique les corps qui les portent ; il juge le TEXTE et les attributs d'un arbre, jamais l'encre
+// qu'un moteur de rendu peint (section 0) ; il ne dit rien de la langue anglaise de ces phrases
+// (témoin 10 et garde du lexique) — il vérifie seulement que les deux faces existent ; il ne mesure
+// pas la DURÉE d'affichage d'un avis (les minuteries longues sont capturées, pas jouées) ; et il ne
+// dit rien d'une ligne rendue dans un groupe REPLIÉ, que la fabrique de liste ne construit pas.
+// ---------------------------------------------------------------------------------------------
+{
+  const url101 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const modDet101 = await import(url101("detection_admin.js"));
+  const modAudit101 = await import(url101("audit.js"));
+  const modNoyau101 = await import(url101("core.js"));
+  const { S: S101 } = await import(url101("state.js"));
+  // `P11.21-f` : la seconde instance du module de détection REPOSE les portes de technique dans le
+  // registre partagé. Elles sont rendues telles quelles à la fin, pour qu'aucun témoin ultérieur
+  // n'hérite des fonctions d'une instance fabriquée ici.
+  const { PORTES_DE_TECHNIQUE } = await import(url101("registres.js"));
+
+  const tic101 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser101 = async (n = 30) => { for (let i = 0; i < n; i++) await tic101(); };
+  const nu101 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ");
+  const cueillir101 = (el, pred, acc) => { if (el && pred(el)) acc.push(el); ((el && el.children) || []).forEach((c) => cueillir101(c, pred, acc)); return acc; };
+  const avis101 = () => document.querySelectorAll(".toast").map((t) => String(t.textContent).replace(/\s+/g, " "));
+  const instrument101 = (vrai, quoi) => exiger(vrai, `(101-instrument) ${quoi} : le corps jugé ci-dessous n'existe plus côté démon, ce témoin REFUSE DE CONCLURE`);
+
+  // ── (0) L'INSTRUMENT : TOUT CE QUI EST JUGÉ PLUS BAS EST LU DANS L'ARBRE DU DÉMON ──────────────
+  const DOSSIER_HANDLERS101 = path.join(RACINE, "daemon", "src", "handlers");
+  const rsh101 = (f) => readFileSync(path.join(DOSSIER_HANDLERS101, f), "utf8");
+  // Les corps STRUCTURELS sont cherchés dans tout le dossier : un handler qui déménage dans un module
+  // voisin ne doit ni faire rougir ce témoin ni le faire taire.
+  const HANDLERS101 = readdirSync(DOSSIER_HANDLERS101).filter((f) => f.endsWith(".rs")).map((f) => rsh101(f)).join("\n");
+  const srcActions101 = rsh101("actions.rs");
+  const srcListe101 = rsh101("liste_bornee.rs");
+  const srcPanneau101 = rsh101("panneau_resolu.rs");
+  const srcPrincipal101 = readFileSync(path.join(RACINE, "daemon", "src", "main.rs"), "utf8");
+  // Un littéral Rust continué par `\` en fin de ligne perd le saut ET l'indentation qui suit : il est
+  // recomposé ici comme le compilateur le compose (même recomposition qu'aux témoins 93 à 100).
+  const recomposer101 = (t) => String(t).replace(/\\\r?\n\s*/g, "");
+  const litteralRust101 = (src, nom) => {
+    const m = src.match(new RegExp(nom + ': &str =\\s*"([\\s\\S]*?)";'));
+    return m ? recomposer101(m[1]) : "";
+  };
+
+  // (0.a) LES TROIS CAUSES DE `action_approve`.
+  const CAUSE_NON_LUE101 = litteralRust101(HANDLERS101, "CAUSE_RIPOSTE_NON_LUE");
+  const CAUSE_NON_ENREGISTREE101 = litteralRust101(HANDLERS101, "CAUSE_APPROBATION_NON_ENREGISTREE");
+  const CAUSE_INTROUVABLE101 = litteralRust101(HANDLERS101, "CAUSE_RIPOSTE_INTROUVABLE");
+  instrument101(CAUSE_NON_LUE101.startsWith("RIPOSTE NON LUE") && CAUSE_NON_LUE101.length > 150,
+    "`CAUSE_RIPOSTE_NON_LUE` n'est plus lisible dans daemon/src/handlers/");
+  instrument101(CAUSE_NON_ENREGISTREE101.startsWith("APPROBATION NON ENREGISTRÉE") && CAUSE_NON_ENREGISTREE101.length > 120,
+    "`CAUSE_APPROBATION_NON_ENREGISTREE` n'est plus lisible dans daemon/src/handlers/");
+  instrument101(CAUSE_INTROUVABLE101.startsWith("riposte introuvable") && CAUSE_INTROUVABLE101.length > 40,
+    "`CAUSE_RIPOSTE_INTROUVABLE` n'est plus lisible dans daemon/src/handlers/");
+  instrument101(CAUSE_NON_LUE101 !== CAUSE_NON_ENREGISTREE101 && CAUSE_NON_LUE101 !== CAUSE_INTROUVABLE101,
+    "deux des trois causes de `action_approve` sont devenues la MÊME phrase : les verdicts ci-dessous ne sépareraient plus rien");
+
+  // (0.b) LA LECTURE D'ABORD, ET LES TROIS ISSUES ÉCRITES SÉPARÉMENT.
+  instrument101(/Ok\(None\) => return err_json\(StatusCode::NOT_FOUND, CAUSE_RIPOSTE_INTROUVABLE\)/.test(HANDLERS101),
+    "`action_approve` ne refuse plus l'absence par un 404 nommé");
+  instrument101(/Err\(e\) => return err_json\(StatusCode::SERVICE_UNAVAILABLE, format!\("\{CAUSE_RIPOSTE_NON_LUE\} \(\{e\}\)"\)\)/.test(HANDLERS101),
+    "`action_approve` ne refuse plus la lecture NON FAITE par un 503 nommé portant son détail");
+  instrument101(/Err\(e\) => return err_json\(StatusCode::SERVICE_UNAVAILABLE, format!\("\{CAUSE_APPROBATION_NON_ENREGISTREE\} \(\{e\}\)"\)\)/.test(HANDLERS101),
+    "l'échec d'écriture du statut n'a plus son propre 503 nommé");
+  // LE MOULE DU CORPS. Un 5xx porte `error` ET `id` ; les autres refus n'ont que `error`. C'est la
+  // forme que `causeNommeeParLeDemon` (web/core.js) sait nommer, et les corps fabriqués plus bas la
+  // reprennent — s'ils divergeaient du démon, tout ce témoin jugerait un transport imaginaire.
+  instrument101(/\(code, Json\(json!\(\{ "error": msg, "id": id \}\)\)\)\.into_response\(\)/.test(srcPrincipal101)
+    && /\(code, Json\(json!\(\{ "error": msg \}\)\)\)\.into_response\(\)/.test(srcPrincipal101),
+    "`err_json` ne moule plus ses refus en `{error}` (plus `id` sur un 5xx) dans daemon/src/main.rs");
+
+  // (0.c) LA RÉFUTATION MESURÉE : `action_cancel` NE SERT NI 503 NI 404.
+  const mAnnuler101 = srcActions101.match(/pub\(crate\) async fn action_cancel\([\s\S]*?\) -> (\w+) \{([\s\S]*?)\n\}/);
+  instrument101(!!mAnnuler101, "`action_cancel` n'est plus lisible dans daemon/src/handlers/actions.rs");
+  instrument101(!!mAnnuler101 && mAnnuler101[1] === "StatusCode" && /StatusCode::NO_CONTENT/.test(mAnnuler101[2])
+    && !/err_json|CAUSE_|StatusCode::(NOT_FOUND|SERVICE_UNAVAILABLE)/.test(mAnnuler101[2]),
+    "`action_cancel` rend désormais autre chose qu'un `StatusCode` toujours égal à `NO_CONTENT` : l'énoncé de ce lot lui prêtait un 503 et un 404 qu'il n'a jamais eus, et cette réfutation demande à être refaite");
+
+  // (0.d) LES DEUX GENRES DE REGISTRE, ET CE QUI LES SÉPARE.
+  const GENRE_NON_RELU101 = (HANDLERS101.match(/"(action\.exec\.verdict-non-relu)"/) || [])[1] || "";
+  const GENRE_CONSERVE101 = (HANDLERS101.match(/"(action\.exec\.verdict-conserve)"/) || [])[1] || "";
+  instrument101(GENRE_NON_RELU101 === "action.exec.verdict-non-relu" && GENRE_CONSERVE101 === "action.exec.verdict-conserve",
+    "les deux genres de registre du verdict conservé n'existent plus sous ces noms dans daemon/src/handlers/");
+  instrument101(/VerdictConserve::NonRelu\(e\) => \(\s*"action\.exec\.verdict-non-relu",/.test(HANDLERS101),
+    "le genre distinct n'est plus posé sur la lecture NON FAITE du verdict conservé");
+  instrument101(/VerdictConserve::Lu\(v\) => \("action\.exec\.verdict-conserve",/.test(HANDLERS101),
+    "le genre d'un verdict LU n'existe plus : le sens qu'il ne faut PAS confondre avec l'autre a disparu");
+
+  // (0.e) POURQUOI L'AVEU DOIT SAVOIR PARTIR À L'AVIS : une ligne dont le mappeur échoue est laissée
+  //       tomber EN SILENCE par la lecture bornée, et la liste se déclare quand même lue.
+  instrument101(/Ok\(rows\) => Lignes::Lues\(rows\.flatten\(\)\.collect\(\)\)/.test(srcListe101),
+    "`liste_bornee::lire` ne laisse plus tomber une ligne illisible en silence : le chemin ORDINAIRE de l'aveu sans ligne a changé et demande à être remesuré");
+
+  // (0.f) LES DEUX CAUSES VOISINES QUI PORTENT ELLES AUSSI « NON LUE » — celles que le discriminant
+  //       de la console doit REFUSER de confondre avec la sienne.
+  const CAUSE_LISTE101 = litteralRust101(srcListe101, "CAUSE_LISTE_ILLISIBLE");
+  const CAUSE_VISIBILITE101 = litteralRust101(srcPanneau101, "CAUSE_VISIBILITE_NON_LUE");
+  instrument101(CAUSE_LISTE101.includes("liste NON LUE") && CAUSE_LISTE101.length > 60,
+    "`CAUSE_LISTE_ILLISIBLE` n'est plus lisible : le voisin le plus proche — l'aveu que CE panneau peint déjà au-dessus de sa file — n'existe plus");
+  instrument101(CAUSE_VISIBILITE101.includes("VISIBILITÉ COURANTE NON LUE") && CAUSE_VISIBILITE101.length > 100,
+    "`CAUSE_VISIBILITE_NON_LUE` n'est plus lisible : le second sens à ne pas confondre a disparu");
+
+  // (0.g-bis) `P10.20-t` — LE REFUS DE LA MISE EN FILE, celui que les DEUX surfaces de CRÉATION
+  //           reçoivent. `action_create` posait `action.queued` INCONDITIONNELLEMENT après un INSERT
+  //           avalé et rendait l'identifiant d'une AUTRE ligne ; il refuse désormais par un 503 nommé,
+  //           AVANT toute ligne de registre.
+  const CAUSE_NON_MISE_EN_FILE101 = litteralRust101(HANDLERS101, "CAUSE_RIPOSTE_NON_MISE_EN_FILE");
+  instrument101(CAUSE_NON_MISE_EN_FILE101.startsWith("RIPOSTE NON MISE EN FILE") && CAUSE_NON_MISE_EN_FILE101.length > 150,
+    "`CAUSE_RIPOSTE_NON_MISE_EN_FILE` n'est plus lisible dans daemon/src/handlers/");
+  instrument101(/RiposteMiseEnFile::NonEcrite\(cause\) => \{\s*return err_json\(StatusCode::SERVICE_UNAVAILABLE, format!\("\{CAUSE_RIPOSTE_NON_MISE_EN_FILE\} \(\{cause\}\)"\)\)/.test(HANDLERS101),
+    "`action_create` ne refuse plus l'écriture manquée de la ligne par un 503 nommé portant son détail");
+  const iRefusFile101 = HANDLERS101.indexOf("CAUSE_RIPOSTE_NON_MISE_EN_FILE} ({cause})");
+  const iRegistreFile101 = HANDLERS101.indexOf('ledger_append(&conn, "action.queued"');
+  instrument101(iRefusFile101 > 0 && iRegistreFile101 > iRefusFile101,
+    "la ligne de registre `action.queued` n'est plus posée APRÈS le refus : l'ordre que cette clé a corrigé côté démon n'existe plus, et l'aveu console porterait sur un fait disparu");
+  instrument101(CAUSE_NON_MISE_EN_FILE101 !== CAUSE_NON_LUE101 && !CAUSE_NON_MISE_EN_FILE101.startsWith("RIPOSTE NON LUE"),
+    "les causes de la MISE EN FILE et de la RELECTURE d'une riposte ont la même ouverture : deux refus de gestes différents deviendraient indistincts");
+
+  // ── (0.g) LE DISCRIMINANT DE LA CONSOLE, JUGÉ DANS LES DEUX SENS ───────────────────────────────
+  const cle101 = modDet101.cleDuRefusDeRiposte;
+  const mot101 = modDet101.motDuRefusDeRiposte;
+  exiger(typeof cle101 === "function" && typeof mot101 === "function",
+    "(101-instrument) `cleDuRefusDeRiposte` ou `motDuRefusDeRiposte` n'est plus exporté par web/detection_admin.js : il n'y a plus rien à ancrer");
+  exiger(typeof modNoyau101.phraseDuRefusDuDemon === "function",
+    "(101-instrument) `phraseDuRefusDuDemon` n'est plus exporté par web/core.js : les deux moules de refus n'ont plus de lecteur unique");
+  // Les DEUX moules du même refus : le corps JSON d'`err_json` (avec `id` sur un 5xx) et le texte brut.
+  const refusMoule101 = (code, cause, detail) => {
+    const servie = cause + (detail ? " (" + detail + ")" : "");
+    const corps = code >= 500 ? { error: servie, id: "plume-e1-0" } : { error: servie };
+    return { causeDuDemon: servie, message: code + " " + JSON.stringify(corps) };
+  };
+  const refusBrut101 = (code, cause) => ({ message: code + " " + cause });
+  exiger(cle101("approuver", refusMoule101(503, CAUSE_NON_LUE101, "database is locked")) === "riposte_non_lue",
+    `(101-0g) le discriminant ne reconnaît PLUS la cause que le démon écrit sur une lecture NON FAITE — « ${CAUSE_NON_LUE101.slice(0, 70)} »`);
+  exiger(cle101("approuver", refusBrut101(503, CAUSE_NON_LUE101)) === "riposte_non_lue",
+    "(101-0g) le discriminant ne voit la cause que dans le moule JSON : servie en texte brut, la même phrase lui échapperait");
+  exiger(cle101("approuver", refusMoule101(503, CAUSE_NON_ENREGISTREE101, "disk I/O error")) === "approbation_non_enregistree",
+    `(101-0g) l'échec d'ÉCRITURE du statut n'est plus reconnu pour ce qu'il est — « ${CAUSE_NON_ENREGISTREE101.slice(0, 70)} »`);
+  exiger(cle101("approuver", refusMoule101(404, CAUSE_INTROUVABLE101, "")) === "riposte_introuvable",
+    `(101-0g) l'absence ÉTABLIE n'est plus reconnue — « ${CAUSE_INTROUVABLE101.slice(0, 70)} »`);
+  exiger(cle101("approuver", refusMoule101(503, CAUSE_LISTE101, "")) === "approbation_refusee",
+    "(101-0g-négatif) le discriminant reconnaît AUSSI « liste NON LUE » — la cause que ce MÊME panneau peint déjà au-dessus de sa file : une lecture de LISTE serait peinte comme la relecture d'UNE riposte, et le geste d'approbation serait retenu par une panne qui ne le concerne pas");
+  exiger(cle101("approuver", refusMoule101(503, CAUSE_VISIBILITE101, "")) === "approbation_refusee",
+    "(101-0g-négatif) le discriminant reconnaît AUSSI « VISIBILITÉ COURANTE NON LUE » : deux lectures DIFFÉRENTES seraient peintes comme la même");
+  exiger(cle101("approuver", refusBrut101(403, "rôle administrateur requis")) === "approbation_refusee"
+    && cle101("annuler", refusBrut101(403, "rôle administrateur requis")) === "annulation_refusee",
+    "(101-0g-négatif) un refus qui n'est AUCUN des trois ne dit plus quel geste il refuse : l'exploitant lirait « approbation » sur une annulation");
+  // LES PHRASES ELLES-MÊMES, DANS LES DEUX SENS. Le 404 doit dire « introuvable » et JAMAIS « non
+  // lue » : c'est exactement la confusion que le démon a fermée de son côté.
+  exiger(/INTROUVABLE/.test(mot101("riposte_introuvable")) && !/NON LUE|NON RELUE/i.test(mot101("riposte_introuvable")),
+    `(101-0g) la phrase du quatre cent quatre dit une lecture manquée au lieu d'une absence établie : « ${mot101("riposte_introuvable")} »`);
+  exiger(/registre/i.test(mot101("approbation_non_enregistree")) && /AUCUNE approbation/.test(mot101("approbation_non_enregistree")),
+    `(101-0g) la phrase d'une approbation non enregistrée ne dit PAS que le registre n'a rien reçu — c'est la moitié qui manquait au démon : « ${mot101("approbation_non_enregistree")} »`);
+  exiger(!mot101("riposte_non_lue").includes(CAUSE_NON_LUE101) && !mot101("approbation_non_enregistree").includes(CAUSE_NON_ENREGISTREE101),
+    "(101-0g) une phrase de la console recopie la cause du démon : la cause servie cesserait d'être un SECOND nœud, et le lexique ne pourrait plus égaler la phrase");
+  // LE SECOND DISCRIMINANT — celui de la CRÉATION — vit au point commun (`web/core.js`) parce que ses
+  // deux surfaces ne peuvent pas s'importer l'une l'autre : MESURÉ, l'arête `viz.js -> detection_admin.js`
+  // fait JETER la porte d'entrée `attack.js` (zone morte temporelle sur `PORTES`), la famille de défauts
+  // que `P11.21-f` a fermée. Il est jugé ici dans les DEUX sens, comme le premier.
+  const nonMiseEnFile101 = modNoyau101.laRiposteNAPasEteMiseEnFile;
+  const motCreation101 = modNoyau101.motDuRefusDeCreationDeRiposte;
+  exiger(typeof nonMiseEnFile101 === "function" && typeof motCreation101 === "function",
+    "(101-instrument) `laRiposteNAPasEteMiseEnFile` ou `motDuRefusDeCreationDeRiposte` n'est plus exporté par web/core.js : le refus de mise en file n'a plus de lecteur partagé");
+  exiger(nonMiseEnFile101(refusMoule101(503, CAUSE_NON_MISE_EN_FILE101, "database or disk is full")),
+    `(101-0g) le discriminant de la CRÉATION ne reconnaît PLUS la cause que le démon écrit — « ${CAUSE_NON_MISE_EN_FILE101.slice(0, 70)} »`);
+  exiger(nonMiseEnFile101(refusBrut101(503, CAUSE_NON_MISE_EN_FILE101)),
+    "(101-0g) le discriminant de la CRÉATION ne voit la cause que dans le moule JSON : servie en texte brut, la même phrase lui échapperait");
+  exiger(!nonMiseEnFile101(refusMoule101(503, CAUSE_NON_LUE101, "")) && !nonMiseEnFile101(refusMoule101(503, CAUSE_LISTE101, ""))
+    && !nonMiseEnFile101(refusMoule101(503, CAUSE_VISIBILITE101, "")) && !nonMiseEnFile101(refusBrut101(403, "rôle administrateur requis")),
+    "(101-0g-négatif) le discriminant de la CRÉATION reconnaît AUSSI une AUTRE lecture manquée ou un droit refusé : l'exploitant lirait « aucune riposte n'attend d'approbation » là où une riposte est bien en file");
+  exiger(motCreation101(refusMoule101(503, CAUSE_NON_MISE_EN_FILE101, "")) !== motCreation101(refusBrut101(403, "rôle administrateur requis")),
+    "(101-0g-négatif) les deux refus de création rendent la MÊME phrase : un droit manquant se lirait « rien n'a été écrit »");
+  const motFile101 = motCreation101(refusMoule101(503, CAUSE_NON_MISE_EN_FILE101, ""));
+  exiger(/AUCUNE riposte n'attend d'approbation/.test(motFile101) && /aucun identifiant/.test(motFile101) && !motFile101.includes(CAUSE_NON_MISE_EN_FILE101),
+    `(101-0g) la phrase de la mise en file manquée ne dit pas ce qui n'existe PAS — ni la file, ni la trace, ni l'identifiant —, ou elle recopie la cause du démon : « ${motFile101.slice(0, 300)} »`);
+
+  // LES DEUX FACES DE CHAQUE PHRASE. Aucune langue ne peut partir sans l'autre.
+  const srcDet101 = (CORPUS_WEB.find(([f]) => f === "detection_admin.js") || [])[1] || "";
+  const srcAudit101 = (CORPUS_WEB.find(([f]) => f === "audit.js") || [])[1] || "";
+  const tableRiposte101 = (srcDet101.match(/const REFUS_DE_RIPOSTE_MOTS = \{[\s\S]*?\n\};/) || [""])[0];
+  const clesRiposte101 = (tableRiposte101.match(/^ {2}\w+: \{$/gm) || []).length;
+  exiger(clesRiposte101 >= 6 && (tableRiposte101.match(/^ {4}fr: /gm) || []).length === clesRiposte101
+    && (tableRiposte101.match(/^ {4}en: /gm) || []).length === clesRiposte101,
+    `(101) le vocabulaire des refus de riposte n'a pas ses DEUX faces sur chacune de ses ${clesRiposte101} entrées : une langue partirait sans l'autre`);
+  const tableGenre101 = (srcAudit101.match(/const GENRES_DE_REGISTRE_MOTS = \{[\s\S]*?\n\};/) || [""])[0];
+  exiger(/\bfr: /.test(tableGenre101) && /\ben: /.test(tableGenre101),
+    "(101) le vocabulaire des genres de registre n'a plus ses deux faces : une langue partirait sans l'autre");
+
+  // ── LE SIMULACRE DE TRANSPORT. L'appariement est EXACT sur « <MÉTHODE> <chemin> » : la LECTURE de
+  //    la file et l'ÉCRITURE d'une approbation sont deux cas distincts, et une correspondance lâche
+  //    les confondrait. Le corps peut être un OBJET (moulé en JSON) ou une CHAÎNE (texte brut).
+  const fetchOrigine101 = globalThis.fetch;
+  const minuterieOrigine101 = globalThis.setTimeout;
+  const qsOrigine101 = document.querySelector;
+  // L'HÔTE DES AVIS EST CAPTURÉ AVANT TOUT DÉTOURNEMENT DE `querySelector`, et il vit DANS le corps du
+  // document : `querySelectorAll` cherche depuis `document.body`, et un hôte détaché ferait lire
+  // « aucun avis » à un témoin qui mesurerait alors son propre simulacre.
+  let hoteDesAvis101 = document.querySelector("#toasts");
+  if (!hoteDesAvis101 || !hoteDesAvis101.isConnected) { hoteDesAvis101 = document.createElement("div"); hoteDesAvis101.id = "toasts"; document.body.appendChild(hoteDesAvis101); }
+  const listeDesActions101 = document.createElement("div"); listeDesActions101.id = "act-list";
+  document.body.appendChild(listeDesActions101);
+  const hotes101 = { "#act-list": listeDesActions101, "#toasts": hoteDesAvis101 };
+  const etatOrigine101 = { admin: S101.isAdmin, auth: S101.AUTH };
+  const portesAvant101 = { regles: PORTES_DE_TECHNIQUE.regles, creer: PORTES_DE_TECHNIQUE.creer };
+  let servis101 = {};
+  const appels101 = [];
+  globalThis.fetch = async (u, init) => {
+    const chemin = String(u).split("?")[0];
+    const methode = ((init && init.method) || "GET").toUpperCase();
+    appels101.push(methode + " " + chemin);
+    const r = servis101[methode + " " + chemin];
+    if (!r) return { ok: true, status: 200, text: async () => "{}", json: async () => ({}) };
+    const texte = typeof r.corps === "string" ? r.corps : JSON.stringify(r.corps === undefined ? {} : r.corps);
+    return { ok: (r.statut || 200) < 400, status: r.statut || 200, text: async () => texte, json: async () => JSON.parse(texte) };
+  };
+  // Un avis pose 9 000 ms : le jouer retiendrait le processus jusqu'à son échéance, donc il est capturé
+  // (geste des témoins 94 à 100). Les temporisations courtes — la fermeture d'une modale, la reprise
+  // d'`api()` — DOIVENT s'écouler, et elles sont raccourcies à zéro.
+  let minuteriesRetenues101 = 0;
+  globalThis.setTimeout = (fn, ms) => {
+    if (ms >= 1000) { minuteriesRetenues101++; return 0; }
+    if (ms >= 100) return minuterieOrigine101(fn, 0);
+    return minuterieOrigine101(fn, ms);
+  };
+
+  try {
+    S101.isAdmin = true;
+    S101.AUTH = { user: "hugo", role: "admin" };
+    document.querySelector = (sel) => (Object.prototype.hasOwnProperty.call(hotes101, sel) ? hotes101[sel] : new Element("div"));
+
+    // ══ (a) LA FILE DE RIPOSTE : LES TROIS REFUS PEINTS, LE GESTE RETENU, LA FILE RECHARGÉE ══════
+    const RIPOSTE101 = { id: 42, ts: 1758000000, kind: "ban_ip", target: "203.0.113.7", status: "pending", dry_run: false, reason: "Force brute SSH", result: "", done_ts: 0, host: "web-01" };
+    const fileDe101 = (lignes) => ({ corps: { actions: lignes, served: lignes.length, window: 200, total: lignes.length, total_capped: false } });
+    const servirLaFile101 = (lignes) => { servis101["GET /api/actions"] = fileDe101(lignes); };
+    const rendreLaFile101 = async (lignes) => {
+      servirLaFile101(lignes);
+      listeDesActions101.replaceChildren();
+      await modDet101.loadActions();
+      await laisser101();
+    };
+    const boutonNomme101 = (texte) => cueillir101(listeDesActions101, (e) => e.tagName === "BUTTON" && nu101(e) === texte, [])[0];
+    const aveuDeLigne101 = () => cueillir101(listeDesActions101, (e) => e.getAttribute && e.getAttribute("data-refus-de-riposte") === "1", [])[0];
+    const fenetre101 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !c.classList.contains("out")).pop();
+    const confirmer101 = async () => {
+      const ov = fenetre101();
+      const form = ov && ov.children[0] ? ov.children[0].children[0] : null;
+      if (form && typeof form.onsubmit === "function") form.onsubmit({ preventDefault() {} });
+      await laisser101();
+    };
+    // Un geste d'écriture : le clic, la confirmation quand il y en a une, puis le rechargement.
+    const geste101 = async (bouton) => { const p = bouton.onclick(); await confirmer101(); await p; await laisser101(60); };
+
+    await rendreLaFile101([RIPOSTE101]);
+    const approuverDepart101 = boutonNomme101("Approuver");
+    exiger(!!approuverDepart101 && !!boutonNomme101("Annuler"),
+      "(101a-instrument) la file ne rend ni « Approuver » ni « Annuler » : les verdicts ci-dessous ne porteraient sur rien");
+    exiger(approuverDepart101.getAttribute("aria-disabled") === null && !aveuDeLigne101(),
+      "(101a-instrument) le geste d'approbation est DÉJÀ inerte, ou un aveu est DÉJÀ peint, avant tout refus : les verdicts seraient vrais par vacuité");
+    const appelsAuDepart101 = appels101.length;
+
+    // (a1) LA LECTURE QUI N'A PAS EU LIEU : aveu à deux nœuds sur la ligne, geste retenu, file rechargée.
+    servis101["POST /api/actions/42/approve"] = { statut: 503, corps: { error: CAUSE_NON_LUE101 + " (database is locked)", id: "plume-e1-0" } };
+    await geste101(approuverDepart101);
+    const aveuA1 = aveuDeLigne101();
+    exiger(!!aveuA1,
+      "(101a1) LE REFUS DU DÉMON NE PEINT AUCUN NŒUD dans la file : l'analyste lit une riposte encore EN ATTENTE comme une riposte approuvée, sur la seule surface où l'on arme un ban");
+    const texteA1 = nu101(aveuA1);
+    exiger(texteA1.includes(CAUSE_NON_LUE101),
+      `(101a1) la cause SERVIE par le démon n'est pas collée telle quelle : « ${texteA1.slice(0, 300)} »`);
+    exiger(!/[{}]/.test(texteA1) && !/\b503\b/.test(texteA1) && !/Service momentanément indisponible/.test(texteA1),
+      `(101a1) le code, le corps JSON ou le message de passerelle atteint l'écran à la place de la phrase : « ${texteA1.slice(0, 300)} »`);
+    exiger(aveuA1.className === "bad",
+      `(101a1) l'aveu n'est pas rendu dans le registre de l'alarme : « ${aveuA1.className} »`);
+    const ditA1 = nu101(aveuA1.children[0]);
+    exiger(aveuA1.children.length >= 1 && ditA1.length > 40 && !ditA1.includes(CAUSE_NON_LUE101),
+      `(101a1) l'aveu n'est pas à DEUX nœuds — la phrase et la cause sont fondues dans un seul littéral, que le lexique ne peut plus égaler : « ${ditA1.slice(0, 300)} »`);
+    exiger(/NON RELUE/.test(ditA1) && /ni statut, ni ligne de registre/.test(ditA1) && /reste en attente/.test(ditA1),
+      `(101a1) LA PHRASE DE LA CONSOLE NE DIT PAS CE QUI N'A PAS EU LIEU — et la chercher dans le texte ENTIER ne prouverait rien, la cause servie portant elle-même ces mots : « ${ditA1.slice(0, 300)} »`);
+    exiger(appels101.slice(appelsAuDepart101).filter((a) => a === "GET /api/actions").length === 1,
+      `(101a1) la file n'est PAS rechargée après un refus : l'écran garde l'état d'avant un geste qui n'a pas eu lieu — ${JSON.stringify(appels101.slice(appelsAuDepart101))}`);
+    const approuverRetenu101 = boutonNomme101("Approuver");
+    exiger(!!approuverRetenu101 && approuverRetenu101.getAttribute("aria-disabled") === "true",
+      "(101a1) le geste d'approbation de CETTE ligne reste ARMÉ sous une lecture qui n'a pas eu lieu : le clic suivant repart écrire sur une riposte que le démon n'a pas su relire");
+    const survolA1 = String(approuverRetenu101.getAttribute("title") || "");
+    exiger(survolA1.includes(CAUSE_NON_LUE101),
+      `(101a1) la marque d'inertie ne PORTE pas la cause servie : « ${survolA1.slice(0, 200)} »`);
+    exiger(survolA1.length > CAUSE_NON_LUE101.length + 80 && /n'arme aucun ban/.test(survolA1),
+      `(101a1) la marque d'inertie ne DIT pas ce que le geste ferait — elle ne fait que recopier la cause : « ${survolA1.slice(0, 200)} »`);
+    // LE CLIC RETENU DIT LE REFUS, NE REPART PAS APPROUVER, ET REDEMANDE LA LECTURE.
+    const avisAvantClic101 = avis101().length;
+    const appelsAvantClic101 = appels101.length;
+    approuverRetenu101.onclick();
+    await laisser101(60);
+    const depuisLeClic101 = appels101.slice(appelsAvantClic101);
+    exiger(avis101().length > avisAvantClic101,
+      "(101a1) le clic retenu ne DIT rien : un geste sans effet et sans un mot, ce que la grammaire de `P11.4-l` refuse précisément");
+    exiger(!depuisLeClic101.includes("POST /api/actions/42/approve"),
+      `(101a1) le clic retenu repart quand même approuver : la marque d'inertie ne retient RIEN — ${JSON.stringify(depuisLeClic101)}`);
+    exiger(depuisLeClic101.includes("GET /api/actions"),
+      `(101a1) le clic retenu ne redemande pas la file : le geste ne pourrait plus se rouvrir et la marque serait un piège, là où le démon écrit « Réessayez » — ${JSON.stringify(depuisLeClic101)}`);
+    const approuverRouvert101 = boutonNomme101("Approuver");
+    exiger(!!approuverRouvert101 && approuverRouvert101.getAttribute("aria-disabled") === null,
+      "(101a1) la marque d'inertie SURVIT à une lecture de la file qui a RENDU cette ligne — donc qui l'a relue avec les quatre colonnes que l'approbation relit : la console interdirait d'essayer ce que le démon dit réessayable");
+    exiger(!!aveuDeLigne101(),
+      "(101a1) l'aveu disparaît avec la marque : ce qui vient de se passer cesserait d'être lisible à l'écran");
+
+    // (a2) L'ÉCRITURE DU STATUT QUI N'A PAS EU LIEU : le registre n'a rien reçu, et RIEN n'est retenu.
+    servis101["POST /api/actions/42/approve"] = { statut: 503, corps: { error: CAUSE_NON_ENREGISTREE101 + " (attempt to write a readonly database)", id: "plume-e1-1" } };
+    await geste101(boutonNomme101("Approuver"));
+    const ditA2 = nu101(aveuDeLigne101() && aveuDeLigne101().children[0]);
+    exiger(nu101(aveuDeLigne101()).includes(CAUSE_NON_ENREGISTREE101),
+      `(101a2) la cause servie par l'échec d'ÉCRITURE n'atteint pas l'écran : « ${nu101(aveuDeLigne101()).slice(0, 300)} »`);
+    exiger(/NON ENREGISTRÉE/.test(ditA2) && /AUCUNE approbation/.test(ditA2) && !ditA2.includes(CAUSE_NON_ENREGISTREE101),
+      `(101a2) la phrase ne dit pas que le REGISTRE n'a rien reçu, ou elle fond la cause du démon dans son propre nœud : « ${ditA2.slice(0, 300)} »`);
+    exiger(!/NON RELUE/.test(ditA2),
+      `(101a2-négatif) un échec d'ÉCRITURE est peint comme une lecture manquée : la lecture, elle, a bien eu lieu — « ${ditA2.slice(0, 300)} »`);
+    exiger(boutonNomme101("Approuver") && boutonNomme101("Approuver").getAttribute("aria-disabled") === null,
+      "(101a2-négatif) le geste reste retenu sous un refus qui ne dit RIEN de la lecture : une marque posée toujours ne mesure rien");
+
+    // (a3) L'ABSENCE ÉTABLIE : « introuvable », jamais « non lue », et l'aveu part à l'AVIS parce que
+    //      la ligne a disparu de la file.
+    servis101["POST /api/actions/42/approve"] = { statut: 404, corps: { error: CAUSE_INTROUVABLE101 } };
+    servirLaFile101([]);
+    const avisAvantA3 = avis101().length;
+    await geste101(boutonNomme101("Approuver"));
+    const avisA3 = avis101().slice(avisAvantA3).join(" | ");
+    exiger(avisA3.includes(mot101("riposte_introuvable")) && avisA3.includes(CAUSE_INTROUVABLE101),
+      `(101a3) l'aveu n'a trouvé aucune ligne et ne part PAS à l'avis : le refus reste invisible — « ${avisA3.slice(0, 300)} »`);
+    exiger(!/NON LUE|NON RELUE/i.test(avisA3),
+      `(101a3) le quatre cent quatre se peint comme une lecture manquée : l'exploitant réessaierait indéfiniment une riposte qui n'existe pas — « ${avisA3.slice(0, 300)} »`);
+    exiger(!aveuDeLigne101() && !boutonNomme101("Approuver"),
+      "(101a3-négatif) un aveu ou un geste est peint sur une ligne que la file ne rend plus");
+
+    // (a4) L'ANNULATION : elle n'a aucun refus NOMMÉ côté démon, mais elle a un transport. Le moule
+    //      TEXTE BRUT est joué ici, et le geste refusé nomme l'annulation, pas l'approbation.
+    await rendreLaFile101([RIPOSTE101]);
+    servis101["POST /api/actions/42/cancel"] = { statut: 403, corps: "rôle administrateur requis" };
+    await geste101(boutonNomme101("Annuler"));
+    const ditA4 = nu101(aveuDeLigne101() && aveuDeLigne101().children[0]);
+    exiger(nu101(aveuDeLigne101()).includes("rôle administrateur requis"),
+      `(101a4) le refus en TEXTE BRUT n'arrive pas avec sa phrase : l'annulation était un no-op muet — « ${nu101(aveuDeLigne101()).slice(0, 300)} »`);
+    exiger(/Annulation/.test(ditA4) && !/Approbation/.test(ditA4) && !/\b403\b/.test(nu101(aveuDeLigne101())),
+      `(101a4) le refus d'une annulation se peint comme un refus d'approbation, ou le code nu atteint l'écran : « ${ditA4.slice(0, 300)} »`);
+    exiger(boutonNomme101("Approuver") && boutonNomme101("Approuver").getAttribute("aria-disabled") === null,
+      "(101a4-négatif) une annulation refusée retient le geste d'APPROBATION : `action_cancel` ne relit rien, il n'y a aucune lecture manquée à opposer");
+
+    // (a5) CONTRÔLE POSITIF — UNE APPROBATION QUI PASSE N'AVOUE RIEN ET NE DIT RIEN.
+    servis101["POST /api/actions/42/approve"] = { statut: 204, corps: "" };
+    servirLaFile101([{ ...RIPOSTE101, status: "approved" }]);
+    const avisAvantA5 = avis101().length;
+    await geste101(boutonNomme101("Approuver"));
+    exiger(!aveuDeLigne101(),
+      `(101a5) un aveu est peint sur une écriture RÉUSSIE — un instrument qui avoue toujours ne mesure rien : « ${nu101(listeDesActions101).slice(0, 300)} »`);
+    exiger(avis101().length === avisAvantA5,
+      `(101a5) un avis part sur une écriture RÉUSSIE : ${JSON.stringify(avis101().slice(avisAvantA5))}`);
+    exiger(!boutonNomme101("Approuver") && !!boutonNomme101("Annuler"),
+      "(101a5) la file n'a pas été relue après le succès : la ligne resterait « en attente » à l'écran");
+
+    // (a6) CONTRÔLE POSITIF — UNE ANNULATION QUI PASSE, SUR LA LIGNE QUI PORTAIT DÉJÀ UN AVEU.
+    servis101["POST /api/actions/42/cancel"] = { statut: 403, corps: "rôle administrateur requis" };
+    await geste101(boutonNomme101("Annuler"));
+    exiger(!!aveuDeLigne101(), "(101a6-instrument) aucun aveu à effacer : le verdict suivant serait vrai par vacuité");
+    servis101["POST /api/actions/42/cancel"] = { statut: 204, corps: "" };
+    servirLaFile101([{ ...RIPOSTE101, status: "cancelled" }]);
+    const avisAvantA6 = avis101().length;
+    await geste101(boutonNomme101("Annuler"));
+    exiger(!aveuDeLigne101() && avis101().length === avisAvantA6,
+      `(101a6) l'aveu du refus précédent survit à une annulation qui PASSE, ou un avis part sur un succès : « ${nu101(listeDesActions101).slice(0, 300)} »`);
+
+    // ══ (b) LE REGISTRE : UN VERDICT NON RELU N'EST PAS UN VERDICT ══════════════════════════════
+    const motGenre101 = modAudit101.motDuGenreDeRegistre;
+    const cellule101 = modAudit101.celluleDeGenre;
+    exiger(typeof motGenre101 === "function" && typeof cellule101 === "function",
+      "(101-instrument) `motDuGenreDeRegistre` ou `celluleDeGenre` n'est plus exporté par web/audit.js : il n'y a plus rien à ancrer");
+    const phraseGenre101 = motGenre101(GENRE_NON_RELU101);
+    exiger(phraseGenre101.length > 30 && !phraseGenre101.includes(GENRE_NON_RELU101),
+      `(101b) le seul genre que le démon ait créé pour dire qu'il NE SAIT PAS n'a aucune phrase à l'écran, ou sa « phrase » est le jeton brut recopié : « ${phraseGenre101} »`);
+    exiger(/NON RELU/.test(phraseGenre101) && /ne dit PAS/.test(phraseGenre101),
+      `(101b) la phrase n'avoue pas que cette ligne n'établit AUCUN verdict : « ${phraseGenre101} »`);
+    const celluleNonRelu101 = cellule101(GENRE_NON_RELU101);
+    exiger(celluleNonRelu101.className === "bad",
+      `(101b) la cellule d'un verdict NON RELU ne se distingue pas de celle d'un verdict lu : « ${celluleNonRelu101.className} »`);
+    exiger(celluleNonRelu101.children.length >= 2 && nu101(celluleNonRelu101.children[0]) === phraseGenre101
+      && !nu101(celluleNonRelu101.children[0]).includes(GENRE_NON_RELU101),
+      `(101b) la cellule n'est pas à DEUX nœuds — la phrase au puits, le jeton du démon à côté : « ${nu101(celluleNonRelu101).slice(0, 200)} »`);
+    exiger(nu101(celluleNonRelu101).includes(GENRE_NON_RELU101),
+      "(101b) le jeton du démon disparaît de la cellule : la recherche de cette liste dérive son texte des cellules RENDUES, et la ligne cesserait d'être retrouvable par son genre — la seule sélection que cet écran offre");
+    // NÉGATIF : LE GENRE VOISIN, CELUI D'UN VERDICT ÉTABLI, RESTE CE QU'IL ÉTAIT.
+    const celluleConserve101 = cellule101(GENRE_CONSERVE101);
+    exiger(nu101(celluleConserve101) === GENRE_CONSERVE101 && celluleConserve101.className !== "bad",
+      `(101b-négatif) le verdict CONSERVÉ est peint comme une lecture manquée : les deux genres se confondraient dans l'autre sens — « ${nu101(celluleConserve101)} » / « ${celluleConserve101.className} »`);
+    exiger(motGenre101(GENRE_CONSERVE101) === "" && motGenre101("action.approved") === "" && motGenre101("action.exec") === "" && motGenre101("") === "",
+      "(101b-négatif) un genre que cette vue ne sait pas nommer reçoit quand même une phrase : elle serait inventée");
+
+    // ══ (b-bis) LE MÊME GENRE, PAR LE CHARGEUR RÉEL DE L'ONGLET AUDIT ═══════════════════════════
+    // MESURÉ : sans cette section, remettre `ledgerCell` à la place de `celluleDeGenre` dans la
+    // COLONNE laissait ce témoin VERT — la fabrique de cellule était jugée, son BRANCHEMENT ne
+    // l'était pas. Un verdict qui n'exerce que la fonction qu'il a écrite mesure le témoin, pas la vue.
+    const corpsDuRegistre101 = document.createElement("div"); corpsDuRegistre101.id = "ledger-body";
+    document.body.appendChild(corpsDuRegistre101);
+    hotes101["#ledger-body"] = corpsDuRegistre101;
+    servis101["GET /api/ledger"] = { corps: { entries: [
+      { id: 9, ts: 1758000900, kind: GENRE_NON_RELU101, actor: "plume-respond", detail: "ban_ip 203.0.113.7 : verdict conservé NON RELU", hash: "a1b2c3d4e5f60718" },
+      { id: 8, ts: 1758000800, kind: GENRE_CONSERVE101, actor: "plume-respond", detail: "ban_ip 203.0.113.8 : verdict `failed` déjà posé, conservé", hash: "0718a1b2c3d4e5f6" },
+    ], ok: true, has_more: false, limit: 50, total: 2, total_capped: false } };
+    corpsDuRegistre101.replaceChildren();
+    await modAudit101.loadLedger();
+    await laisser101(40);
+    const lignesDuRegistre101 = cueillir101(corpsDuRegistre101, (e) => e.tagName === "TR", []).filter((tr) => cueillir101(tr, (e) => e.tagName === "TD", []).length);
+    exiger(lignesDuRegistre101.length === 2,
+      `(101b-bis-instrument) l'onglet Audit ne rend pas les deux lignes servies (${lignesDuRegistre101.length}) : les verdicts ci-dessous ne porteraient sur rien`);
+    const celluleDuGenre101 = (tr) => cueillir101(tr, (e) => e.tagName === "TD", [])[2];
+    const celluleNonRelue101 = celluleDuGenre101(lignesDuRegistre101[0]);
+    const celluleConservee101 = celluleDuGenre101(lignesDuRegistre101[1]);
+    exiger(nu101(celluleNonRelue101).includes(phraseGenre101),
+      `(101b-bis) LA COLONNE « Type » NE PASSE PAS PAR LA FABRIQUE : le genre que le démon a créé pour dire qu'il ne sait pas arrive à l'écran comme un jeton parmi d'autres — « ${nu101(celluleNonRelue101)} »`);
+    exiger(nu101(celluleNonRelue101).trim() !== GENRE_NON_RELU101,
+      `(101b-bis) la cellule ne porte QUE le jeton brut : « ${nu101(celluleNonRelue101)} »`);
+    exiger(nu101(celluleNonRelue101).includes(GENRE_NON_RELU101),
+      "(101b-bis) le jeton du démon a disparu de la ligne rendue : la recherche de cette liste dérive son texte des cellules RENDUES, et la ligne cesserait d'être retrouvable par son genre");
+    exiger(cueillir101(celluleNonRelue101, (e) => e.classList && e.classList.contains("bad"), []).length === 1,
+      `(101b-bis) la ligne d'un verdict NON RELU n'est pas marquée dans le registre de l'alarme : ${cueillir101(celluleNonRelue101, (e) => e.classList && e.classList.contains("bad"), []).length} nœud(s) marqué(s)`);
+    exiger(nu101(celluleConservee101).trim() === GENRE_CONSERVE101
+      && cueillir101(celluleConservee101, (e) => e.classList && e.classList.contains("bad"), []).length === 0,
+      `(101b-bis-négatif) la ligne d'un verdict CONSERVÉ est peinte comme une lecture manquée — un marquage posé toujours ne mesure rien : « ${nu101(celluleConservee101)} »`);
+    corpsDuRegistre101.remove(); delete hotes101["#ledger-body"];
+
+    // ══ (d) LE FORMULAIRE DE MISE EN FILE : UN REJET N'EST PLUS UN FORMULAIRE FIGÉ ══════════════
+    // `apiSend` LÈVE sur tout statut non-2xx : `j.error` n'était JAMAIS atteint sur ce chemin, et le
+    // 503 neuf laissait le formulaire ouvert, sans un mot. LE CÂBLAGE EST DE PREMIER NIVEAU, sur les
+    // nœuds que `querySelector` rend AU CHARGEMENT : une SECONDE instance du module est donc chargée
+    // avec les hôtes de ce témoin en place. Le suffixe n'est pas celui de la langue, il n'est donc pas
+    // propagé aux imports — `core.js` et les autres restent l'instance partagée, seul le câblage de
+    // premier niveau de ce module est rejoué.
+    const formulaire101 = document.createElement("form"); formulaire101.id = "act-form";
+    const champGeste101 = document.createElement("select"); champGeste101.value = "ban_ip";
+    const champCible101 = document.createElement("input"); champCible101.value = "203.0.113.9";
+    const champSimulation101 = document.createElement("input"); champSimulation101.checked = true;
+    const champMotif101 = document.createElement("input"); champMotif101.value = "témoin";
+    const resultat101 = document.createElement("span"); resultat101.id = "af-result";
+    Object.assign(hotes101, { "#act-form": formulaire101, "#af-kind": champGeste101, "#af-target": champCible101,
+      "#af-dry": champSimulation101, "#af-reason": champMotif101, "#af-result": resultat101 });
+    servirLaFile101([RIPOSTE101]);
+    await import(url101("detection_admin.js") + "?p10-20-t");
+    await laisser101(40);
+    exiger(typeof formulaire101._ecouteurs === "object" && (formulaire101._ecouteurs || []).some((e) => e.type === "submit"),
+      "(101d-instrument) le formulaire de mise en file n'a pas reçu son câblage : les verdicts ci-dessous ne porteraient sur rien");
+    const soumettre101 = async () => { resultat101.replaceChildren(); formulaire101.dispatchEvent({ type: "submit" }); await laisser101(60); };
+    servis101["POST /api/actions"] = { statut: 503, corps: { error: CAUSE_NON_MISE_EN_FILE101 + " (database or disk is full)", id: "plume-e2-0" } };
+    formulaire101.classList.remove("hidden");
+    await soumettre101();
+    const texteD101 = nu101(resultat101);
+    exiger(texteD101.length > 0,
+      "(101d) LE REFUS DE MISE EN FILE NE PEINT RIEN : le formulaire reste ouvert et figé, l'exploitant recommence, et chaque tentative est une riposte qu'il croit avoir mise en file");
+    exiger(texteD101.includes(CAUSE_NON_MISE_EN_FILE101),
+      `(101d) la cause SERVIE n'est pas collée telle quelle : « ${texteD101.slice(0, 300)} »`);
+    exiger(!/[{}]/.test(texteD101) && !/\b503\b/.test(texteD101),
+      `(101d) le code ou le corps JSON atteint l'écran à la place de la phrase : « ${texteD101.slice(0, 300)} »`);
+    const aveuD101 = cueillir101(resultat101, (e) => e.getAttribute && e.getAttribute("data-refus-de-riposte") === "1", [])[0];
+    exiger(!!aveuD101 && aveuD101.className === "bad" && aveuD101.children.length >= 1
+      && nu101(aveuD101.children[0]).length > 40 && !nu101(aveuD101.children[0]).includes(CAUSE_NON_MISE_EN_FILE101),
+      `(101d) l'aveu du formulaire n'est pas à DEUX nœuds dans le registre de l'alarme : « ${aveuD101 && aveuD101.className} » / « ${nu101(aveuD101 && aveuD101.children[0]).slice(0, 200)} »`);
+    exiger(/NON MISE EN FILE/.test(nu101(aveuD101.children[0])) && /aucun identifiant/.test(nu101(aveuD101.children[0])),
+      `(101d) LA PHRASE DE LA CONSOLE NE DIT PAS CE QUI N'EXISTE PAS — et la chercher dans le texte ENTIER ne prouverait rien, la cause servie portant elle-même ces mots : « ${nu101(aveuD101.children[0]).slice(0, 300)} »`);
+    exiger(!formulaire101.classList.contains("hidden"),
+      "(101d) le formulaire se REFERME sur un refus : la saisie disparaît avec lui, et l'aveu qu'il porte avec elle");
+    // CONTRÔLE POSITIF — UNE MISE EN FILE QUI PASSE N'AVOUE RIEN, et le formulaire se referme.
+    servis101["POST /api/actions"] = { statut: 200, corps: { id: 77 } };
+    await soumettre101();
+    exiger(nu101(resultat101) === "" && formulaire101.classList.contains("hidden"),
+      `(101d-négatif) un aveu est peint sur une mise en file RÉUSSIE, ou le formulaire reste ouvert — un instrument qui avoue toujours ne mesure rien : « ${nu101(resultat101)} »`);
+
+    // ══ (e) LE GESTE « BANNIR » D'UNE LIGNE DE RÉSULTATS : L'AVEU PART À L'AVIS ══════════════════
+    // Ce geste n'a aucun puits ouvert où poser deux nœuds — il part d'une ligne de résultats. Sa phrase
+    // est celle du formulaire, écrite au MÊME endroit : deux rédactions du même refus divergeraient.
+    const modViz101 = await import(url101("viz.js"));
+    exiger(typeof modViz101.banIp === "function",
+      "(101e-instrument) `banIp` n'est plus exporté par web/viz.js : le second consommateur de la mise en file n'est plus joignable");
+    servis101["POST /api/actions"] = { statut: 503, corps: { error: CAUSE_NON_MISE_EN_FILE101 + " (attempt to write a readonly database)", id: "plume-e2-1" } };
+    const avisAvantE101 = avis101().length;
+    const appelsAvantE101 = appels101.length;
+    const pE101 = modViz101.banIp("203.0.113.11", "web-01");
+    await confirmer101();
+    await pE101;
+    await laisser101(60);
+    const avisE101 = avis101().slice(avisAvantE101).join(" | ");
+    exiger(avisE101.includes(CAUSE_NON_MISE_EN_FILE101),
+      `(101e) LE REFUS NE DIT RIEN sur un geste de bannissement : le silence se lit « c'est parti » — « ${avisE101.slice(0, 300)} »`);
+    exiger(avisE101.includes(motFile101),
+      `(101e) l'avis ne porte pas la phrase du point commun : les deux surfaces de création auraient deux rédactions du même refus — « ${avisE101.slice(0, 300)} »`);
+    exiger(!/Action créée/.test(avisE101) && !/[{}]/.test(avisE101) && !/\b503\b/.test(avisE101),
+      `(101e) le succès est ANNONCÉ sur un refus, ou le corps JSON atteint l'écran : « ${avisE101.slice(0, 300)} »`);
+    exiger(!appels101.slice(appelsAvantE101).includes("GET /api/actions"),
+      `(101e) la file est rechargée après un refus de CRÉATION : elle donnerait à voir une file qui n'a rien reçu comme la confirmation du geste — ${JSON.stringify(appels101.slice(appelsAvantE101))}`);
+    // CONTRÔLE POSITIF — UNE CRÉATION QUI PASSE ANNONCE LE SUCCÈS ET N'AVOUE RIEN.
+    servis101["POST /api/actions"] = { statut: 200, corps: { id: 78 } };
+    const avisAvantE2101 = avis101().length;
+    const pE2101 = modViz101.banIp("203.0.113.12");
+    await confirmer101();
+    await pE2101;
+    await laisser101(60);
+    const avisE2101 = avis101().slice(avisAvantE2101).join(" | ");
+    exiger(/Action créée/.test(avisE2101) && !/NON MISE EN FILE/.test(avisE2101),
+      `(101e-négatif) une création RÉUSSIE avoue un refus, ou n'annonce plus rien — un instrument qui avoue toujours ne mesure rien : « ${avisE2101.slice(0, 300)} »`);
+
+    // ══ (c) LE RELEVÉ DES SURFACES — un ENSEMBLE NOMMÉ, pas un compte, parce qu'un compte se laisse
+    //        compenser : une surface neuve qui en remplacerait une autre passerait inaperçue.
+    const surfacesDuGeste101 = CORPUS_WEB.filter(([f, src]) => f.endsWith(".js") && /'\/actions\/'[^\n]*'\/(approve|cancel)'/.test(src)).map(([f]) => f);
+    exiger(surfacesDuGeste101.length === 1 && surfacesDuGeste101[0] === "detection_admin.js",
+      `(101c) l'ensemble des surfaces qui consomment les gestes de riposte n'est plus celui que ce lot a jugé : ${JSON.stringify(surfacesDuGeste101)}`);
+    const surfacesDuGenre101 = CORPUS_WEB.filter(([f, src]) => f.endsWith(".js") && src.includes("action.exec.")).map(([f]) => f);
+    exiger(surfacesDuGenre101.length === 1 && surfacesDuGenre101[0] === "audit.js",
+      `(101c) l'ensemble des surfaces qui lisent les genres « action.exec.* » n'est plus celui que ce lot a jugé : ${JSON.stringify(surfacesDuGenre101)}`);
+    const surfacesDeCreation101 = CORPUS_WEB.filter(([f, src]) => f.endsWith(".js") && /apiSend\('\/actions', 'POST'/.test(src)).map(([f]) => f).sort();
+    exiger(surfacesDeCreation101.join(",") === "cases.js,detection_admin.js,viz.js",
+      `(101c) l'ensemble des surfaces qui METTENT EN FILE une riposte n'est plus celui que ce lot a relevé : ${JSON.stringify(surfacesDeCreation101)}`);
+    // LE RESTE EST NOMMÉ, ET IL EST JUGÉ. La troisième surface de mise en file LIT bien son refus, mais
+    // elle en peint le MESSAGE composé — « 403 {"error": …} », le corps JSON coupé à deux cents
+    // caractères —, pas la phrase. Ce lot ne la corrige pas ; ce verdict rougit le jour où elle bouge,
+    // pour que le reste ne se perde pas en silence.
+    const srcDossiers101 = (CORPUS_WEB.find(([f]) => f === "cases.js") || [])[1] || "";
+    exiger(/catch \(e\) \{ toast\('Action refusée : ' \+ \(\(e && e\.message\) \|\| e\), 'bad'\); return; \}/.test(srcDossiers101),
+      "(101c) `prepareResponse` (web/cases.js) n'écrit plus son refus par `e.message` : le reste NOMMÉ de ce lot — elle peint le corps JSON et non la phrase — a changé et demande à être remesuré");
+  } finally {
+    globalThis.fetch = fetchOrigine101;
+    globalThis.setTimeout = minuterieOrigine101;
+    document.querySelector = qsOrigine101;
+    S101.isAdmin = etatOrigine101.admin; S101.AUTH = etatOrigine101.auth;
+    document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
+    listeDesActions101.remove();
+    PORTES_DE_TECHNIQUE.regles = portesAvant101.regles; PORTES_DE_TECHNIQUE.creer = portesAvant101.creer;
+  }
+  console.log("(101) OK — les trois refus que `action_approve` NOMME arrivent entiers à l'écran là où chacun repartait en rejet non traité : la lecture qui n'a pas eu lieu se peint en aveu à deux nœuds SUR la ligne et retient le geste d'approbation de CETTE ligne — marque accessible, raison portée, clic qui DIT le refus et redemande la file, rétention levée dès que la file rend de nouveau la ligne —, l'échec d'ÉCRITURE dit que le registre n'a reçu AUCUNE approbation sans rien retenir, l'absence établie dit « introuvable » et JAMAIS « non lue » et part à l'avis parce que la ligne a disparu, l'annulation — qui n'a aucun refus nommé côté démon, mesuré ici — nomme son propre geste sur le moule TEXTE BRUT, et la file est rechargée MÊME sur refus ; le registre rend le genre `action.exec.verdict-non-relu` par une PHRASE dans le registre de l'alarme, distincte d'un verdict conservé, en gardant le jeton du démon cherchable à côté. Le discriminant de la console est LU dans l'arbre du démon et jugé dans les deux sens contre les deux causes voisines qui portent elles aussi « NON LUE » ; les quatre chemins nominaux restent muets ; ET LES DEUX SURFACES QUI METTENT UNE RIPOSTE EN FILE lisent le 503 neuf de `action_create` — le formulaire du panneau peint un aveu à deux nœuds SANS se refermer sur la saisie refusée, le geste « bannir » d'une ligne de résultats le DIT à l'avis au lieu d'annoncer « Action créée », aucun des deux ne recharge la file sur un refus, et leur phrase vient du point commun parce que l'arête directe entre leurs deux modules fait JETER une porte d'entrée du graphe, mesuré ; les deux chemins nominaux de création restent, eux, ce qu'ils étaient");
+}
+
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;
 verdictRendu = true;
 if (echecs.length) {

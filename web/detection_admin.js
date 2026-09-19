@@ -4,7 +4,7 @@
 // PURE MOVE : corps de fonctions IDENTIQUES au monolithe, seuls les import/export sont ajoutes.
 // Le cycle app<->module est benin : les fonctions importees d'app.js ne sont appelees qu'a
 // l'EXECUTION (handlers/async apres await), jamais a l'evaluation du module.
-import { $, LANG, esc, sev, fmtTs, ic, muted, api, apiSend, confirmModal, toast, pagedList, managedBadge, gateDeleteBtn, contentSubmit, contentDelete, fetchInto, formMsg, socIsAdmin, lsSet, collapsibleGroup, disclosure } from './core.js';
+import { $, LANG, esc, sev, fmtTs, ic, muted, api, apiSend, confirmModal, toast, pagedList, managedBadge, gateDeleteBtn, contentSubmit, contentDelete, fetchInto, formMsg, phraseDuRefusDuDemon, aveuDeLaCreationDeRiposte, socIsAdmin, lsSet, collapsibleGroup, disclosure } from './core.js';
 import { libelleDeTechnique, nomDeTechnique } from './catalogue_attack.js'; // `P11.6-c` : nom dérivé du catalogue servi, ou motif de son absence
 import { S, lireLeStockageDuSite, ecrireDansLeStockageDuSite, ecrireSansDireLeRefus, RAISONS_DE_SILENCE } from './state.js';
 import { initSigmaImport } from './sigmaimport.js';
@@ -829,6 +829,10 @@ function dessinerLesActions() {
   // des lignes retenues.
   const requete = rechercheDesActions();
   const trouvees = requete ? filtrerParRecherche(actions, requete, texteCherchableDUneAction) : actions;
+  // `P10.20-q` — LES REFUS RETENUS SONT RAPPORTÉS AUX LIGNES QUE CE DESSIN VA RENDRE, pas à celles que
+  // la route a servies : une ligne que la recherche écarte n'est pas à l'écran, et y poser un aveu
+  // reviendrait à le taire.
+  reposerLesRefusDeRiposte(trouvees);
   if (requete) {
     // Une liste qui cache des lignes le DIT ; et quand elle ne trouve rien, elle nomme ce qu'elle a cherché
     // ET jusqu'où elle a cherché.
@@ -912,6 +916,136 @@ const MOT_RECHERCHE_ACTIONS_ETIQUETTE = LANG === 'en' ? 'Search an action' : 'Re
 const MOT_RECHERCHE_ACTIONS_AIDE = LANG === 'en'
   ? 'Searches the kind, target, host, status, reason and result of each SERVED action; it composes with the grouping. Esc clears the search.'
   : "Cherche dans le geste, la cible, l'hôte, l'état, le motif et le résultat de chaque action SERVIE ; se combine avec le regroupement. Échap efface la recherche.";
+// =================================================================================================
+// `P10.20-q` — CE QUE LE DÉMON REFUSE SUR UNE RIPOSTE ATTEINT L'ÉCRAN.
+//
+// CE QUE LE DÉMON SERT. `action_approve` (daemon/src/handlers/actions.rs) relit la riposte AVANT toute
+// écriture : une lecture NON FAITE refuse par un 503 `CAUSE_RIPOSTE_NON_LUE` — ni statut, ni ligne de
+// registre, ni ban armé — ; une absence ÉTABLIE refuse par un 404 `CAUSE_RIPOSTE_INTROUVABLE` ; et un
+// échec de l'écriture du statut refuse par un 503 `CAUSE_APPROBATION_NON_ENREGISTREE`, posé AVANT la
+// ligne de registre, pour que le registre n'atteste jamais une approbation que la base n'a pas prise.
+//
+// CE QUE CETTE VUE EN FAISAIT. Les deux envois partaient SANS `catch` : `apiSend` REJETTE sur `!r.ok`,
+// donc chacun de ces trois refus repartait en rejet non traité. Rien à l'écran, et `loadActions()` —
+// écrit APRÈS l'`await` — n'était même pas atteint : la file gardait l'état d'avant le geste, où la
+// riposte figure encore « pending ». L'analyste lisait donc l'écran d'une approbation qui n'a pas eu
+// lieu, sur la seule surface où l'on arme un ban.
+//
+// CE QUI EST INERTE, ET CE QUI NE L'EST PAS. Seul `CAUSE_RIPOSTE_NON_LUE` retient un geste, et seulement
+// celui de SA ligne : tant que la riposte n'est pas relue, l'approuver n'écrit rien et n'arme rien. Un
+// 404 ne retient rien (il n'y a plus de ligne), un échec d'écriture non plus (la lecture, elle, a eu
+// lieu). L'annulation n'est jamais retenue : `action_cancel` ne fait aucune lecture typée.
+//
+// CE QUE LE REMÈDE NE TIENT PAS, ET C'EST MESURÉ. La ligne d'une riposte que le démon n'a pas pu relire
+// ne revient PAS toujours dans la file : `liste_bornee` (daemon/src/handlers/liste_bornee.rs) écrit
+// qu'une ligne dont le mappeur échoue est laissée tomber EN SILENCE et que la liste se déclare quand
+// même lue. L'aveu part alors à l'avis, faute de ligne où se poser.
+// =================================================================================================
+
+// LES TROIS REFUS QUE `action_approve` NOMME, RECONNUS PAR L'OUVERTURE DE LA PHRASE SERVIE. Le corps
+// porte `<cause> (<détail>)` : la cause est donc en TÊTE, et l'ancrage `^` suffit à la reconnaître. Un
+// motif large (`/NON LUE/`) confondrait au moins trois phrases voisines que cette console lit déjà —
+// « File d'actions NON LUE » (juste au-dessus), « liste NON LUE » du corps de liste bornée, et la
+// visibilité courante non lue des tableaux de bord — dont aucune ne dit ce que celle-ci dit.
+const OUVERTURE_DE_LA_RIPOSTE_NON_LUE = /^RIPOSTE NON LUE\b/;
+const OUVERTURE_DE_L_APPROBATION_NON_ENREGISTREE = /^APPROBATION NON ENREGISTRÉE\b/;
+const OUVERTURE_DE_LA_RIPOSTE_INTROUVABLE = /^riposte introuvable\b/;
+// LE DISCRIMINANT, exercé par le harnais (témoin 101) sur les littéraux LUS dans l'arbre du démon et
+// jugé dans les DEUX sens : il doit reconnaître chacun des trois refus et REFUSER les phrases voisines.
+// `geste` nomme ce que l'exploitant a demandé, pour que le refus qui n'est aucun des trois dise au moins
+// lequel des deux gestes il refuse.
+function cleDuRefusDeRiposte(geste, e) {
+  const phrase = phraseDuRefusDuDemon(e);
+  if (OUVERTURE_DE_LA_RIPOSTE_NON_LUE.test(phrase)) return 'riposte_non_lue';
+  if (OUVERTURE_DE_L_APPROBATION_NON_ENREGISTREE.test(phrase)) return 'approbation_non_enregistree';
+  if (OUVERTURE_DE_LA_RIPOSTE_INTROUVABLE.test(phrase)) return 'riposte_introuvable';
+  return geste === 'annuler' ? 'annulation_refusee' : 'approbation_refusee';
+}
+// Les phrases de cette vue, FR et EN côte à côte comme le vocabulaire de la borne juste au-dessus : le
+// lexique n'a pas à les porter, et aucune des deux langues ne peut partir sans l'autre. Chacune dit ce
+// que le démon a fait ET ce qu'il n'a PAS fait — un refus qui ne dit pas ce qui reste en base envoie
+// recommencer un geste peut-être déjà pris.
+const REFUS_DE_RIPOSTE_MOTS = {
+  riposte_non_lue: {
+    fr: "Riposte NON RELUE : le démon n'a pas pu relire cette action, donc il n'a RIEN approuvé et RIEN armé — ni statut, ni ligne de registre. La riposte reste en attente. Il en nomme la cause —",
+    en: 'Response NOT RE-READ: the daemon could not re-read this action, so it approved NOTHING and armed NOTHING — neither status nor ledger line. The response stays pending. It names the cause —' },
+  approbation_non_enregistree: {
+    fr: "Approbation NON ENREGISTRÉE : le statut n'a pas pu être écrit, le registre n'a donc reçu AUCUNE approbation pour ce geste et rien n'a été armé. La riposte reste en attente. Le démon en nomme la cause —",
+    en: 'Approval NOT RECORDED: the status could not be written, so the ledger received NO approval for this gesture and nothing was armed. The response stays pending. The daemon names the cause —' },
+  riposte_introuvable: {
+    fr: "Riposte INTROUVABLE : aucune action ne porte cet identifiant et rien n'a été écrit — ce n'est pas une lecture manquée, c'est une absence établie. Le démon en nomme la cause —",
+    en: 'Response NOT FOUND: no action carries this identifier and nothing was written — this is not a failed read, it is an established absence. The daemon names the cause —' },
+  approbation_refusee: {
+    fr: "Approbation REFUSÉE : le démon a refusé ce geste et en nomme la cause —",
+    en: 'Approval REFUSED: the daemon refused this gesture and names the cause —' },
+  annulation_refusee: {
+    fr: "Annulation REFUSÉE : le démon a refusé ce geste et en nomme la cause —",
+    en: 'Cancellation REFUSED: the daemon refused this gesture and names the cause —' },
+  approbation_retenue: {
+    fr: "Le démon n'a PAS pu relire cette riposte : tant qu'elle n'est pas relue, l'approuver n'écrit ni statut ni ligne de registre et n'arme aucun ban. Ce n'est NI « cette riposte n'existe pas » NI « elle est déjà tranchée ». Ce clic redemande la file : si la ligne en revient, le geste se rouvre.",
+    en: 'The daemon could NOT re-read this response: until it is re-read, approving it writes neither status nor ledger line and arms no ban. This is NEITHER “this response does not exist” NOR “it is already settled”. This click asks the queue again: if the line comes back, the gesture reopens.' },
+};
+const motDuRefusDeRiposte = (cle) => (LANG === 'en' ? REFUS_DE_RIPOSTE_MOTS[cle].en : REFUS_DE_RIPOSTE_MOTS[cle].fr);
+
+// CE QUE LE DÉMON A REFUSÉ SUR UNE RIPOSTE, RETENU PAR IDENTIFIANT D'ACTION. La file est REDESSINÉE à
+// chaque geste : un aveu posé sur le nœud de la ligne partirait avec elle au rechargement, et c'est
+// précisément le rechargement qui montre si le geste a pris. L'aveu est donc retenu ici et reposé au
+// dessin suivant, sur la ligne s'il en reste une.
+const refusParRiposte = new Map();
+function noterLeRefusDeRiposte(id, geste, e) {
+  const cle = cleDuRefusDeRiposte(geste, e);
+  // `retenir` : le geste de CETTE ligne devient inerte. `peint` : le dessin qui a posé la marque ; le
+  // dessin d'APRÈS la lève. `surLaLigne` : la dernière lecture de la file a-t-elle rendu cette ligne.
+  refusParRiposte.set(id, { cle, cause: phraseDuRefusDuDemon(e), retenir: cle === 'riposte_non_lue', peint: false, surLaLigne: false });
+}
+// L'aveu à DEUX nœuds : la phrase est posée au puits (`dit.textContent = …`) — c'est là, et seulement
+// là, que le lexique et `i18nWalk` la voient —, et la phrase SERVIE par le démon est collée dans un
+// SECOND nœud. Les fondre en un seul littéral rendrait la phrase intraduisible ET ferait passer la cause
+// du démon pour un texte de la console.
+function aveuDuRefusDeRiposte(refus) {
+  const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:0;font-size:12px;flex-basis:100%';
+  const dit = document.createElement('span');
+  dit.textContent = motDuRefusDeRiposte(refus.cle);
+  aveu.append(dit, ' « ' + refus.cause + ' »');
+  aveu.dataset.refusDeRiposte = '1';   // marque de POSE, pas de style : aucune règle CSS ne la vise
+  return aveu;
+}
+// LE GESTE D'APPROBATION DE CETTE LIGNE, RETENU (grammaire de `P11.4-l`). Il reste VISIBLE et porte la
+// marque accessible de l'inertie avec sa raison — `aria-disabled` et non `disabled`, qui couperait le
+// survol et rendrait l'infobulle illisible. Le clic DIT le refus au lieu de rester sans effet, et
+// REDEMANDE la file : c'est la seule lecture que cette console sache relancer, et une marque posée sur
+// une panne que le démon déclare réessayable serait sinon un piège.
+function retenirLApprobation(bouton, refus) {
+  const motif = motDuRefusDeRiposte('approbation_retenue') + ' « ' + refus.cause + ' »';
+  bouton.setAttribute('aria-disabled', 'true');
+  bouton.title = motif;
+  bouton.onclick = () => { toast(motif, 'bad', 9000); loadActions(); };
+}
+// CE QUE LE DESSIN SUIVANT FAIT DES REFUS RETENUS. Une ligne RENDUE par la file a été relue avec les
+// quatre colonnes que l'approbation relit (`actions_page`, daemon/src/handlers/actions.rs, lit `kind`,
+// `target`, `status` et `dry_run` de la même table) : la marque d'inertie posée au dessin PRÉCÉDENT
+// n'a donc plus d'objet. Elle est posée UNE fois, puis levée par le dessin d'après — le clic retenu
+// redemandant la file, un seul clic suffit à rouvrir le geste dès que la lecture repasse.
+function reposerLesRefusDeRiposte(lignes) {
+  const rendues = new Set((lignes || []).map(a => a.id));
+  refusParRiposte.forEach((refus) => { refus.surLaLigne = false; });
+  rendues.forEach((id) => {
+    const refus = refusParRiposte.get(id); if (!refus) return;
+    refus.surLaLigne = true;
+    if (!refus.retenir) return;
+    if (refus.peint) refus.retenir = false; else refus.peint = true;
+  });
+}
+// L'AVEU QUI N'A TROUVÉ AUCUNE LIGNE PART À L'AVIS. Une riposte introuvable a disparu de la file ; une
+// ligne illisible en est retirée SANS un mot par la lecture bornée ; une recherche posée peut la cacher.
+// Dans ces trois cas le dessin n'a aucune ligne où poser la phrase, et se taire rendrait le refus
+// invisible — le défaut même que cette clé ferme.
+function direLeRefusQueAucuneLigneNaPris(id) {
+  const refus = refusParRiposte.get(id);
+  if (!refus || refus.surLaLigne) return;
+  toast(motDuRefusDeRiposte(refus.cle) + ' « ' + refus.cause + ' »', 'bad', 9000);
+}
+
 function actionRow(a) {
   const row = document.createElement('div'); row.className = 'rulerow';
   const st = document.createElement('span'); st.className = 'actst act-' + a.status; st.textContent = a.status;
@@ -922,16 +1056,41 @@ function actionRow(a) {
   const meta = document.createElement('span'); meta.className = 'rulemeta muted';
   meta.textContent = (a.reason ? a.reason + ' - ' : '') + (a.result || ''); if (a.done_ts) meta.title = fmtTs(a.done_ts);
   row.append(st, k, hostEl, dry, meta);
+  const refus = refusParRiposte.get(a.id);
   if (a.status === 'pending') {
     const ap = document.createElement('button'); ap.textContent = 'Approuver';
-    ap.onclick = async () => { if (await confirmModal(`Approuver : ${a.kind} ${a.target}${a.dry_run ? ' (dry-run)' : ' - REEL'} ?`, { okText: 'Approuver', danger: !a.dry_run })) { await apiSend('/actions/' + a.id + '/approve'); loadActions(); } };
+    // `P10.20-q` — LA CONFIRMATION RESTE, ET L'ENVOI EST ENTOURÉ. La route arme un ban natif : la
+    // fenêtre de confirmation lui est exigée par la garde des routes sensibles, et elle vit dans CETTE
+    // portée avec l'envoi qu'elle garde. Ce qui change est l'après : le rejet est LU, la file est
+    // rechargée MÊME sur refus — sans quoi l'écran garde l'état d'avant un geste qui n'a pas eu lieu —
+    // et un aveu qu'aucune ligne n'a pris part à l'avis.
+    ap.onclick = async () => {
+      if (!await confirmModal(`Approuver : ${a.kind} ${a.target}${a.dry_run ? ' (dry-run)' : ' - REEL'} ?`, { okText: 'Approuver', danger: !a.dry_run })) return;
+      try { await apiSend('/actions/' + a.id + '/approve'); refusParRiposte.delete(a.id); }
+      catch (e) { noterLeRefusDeRiposte(a.id, 'approuver', e); }
+      await loadActions();
+      direLeRefusQueAucuneLigneNaPris(a.id);
+    };
+    if (refus && refus.retenir) retenirLApprobation(ap, refus);
     row.append(ap);
   }
   if (a.status === 'pending' || a.status === 'approved') {
     const ca = document.createElement('button'); ca.textContent = 'Annuler';
-    ca.onclick = async () => { await apiSend('/actions/' + a.id + '/cancel'); loadActions(); };
+    // `action_cancel` ne rend qu'un 204 — il ne relit rien et n'a aucun refus nommé. Ce `catch` ne
+    // couvre donc pas un refus de riposte mais ce qui arrive AVANT le handler : une session tombée, un
+    // jeton anti-CSRF rejeté, une passerelle en panne. Sans lui, l'annulation était un no-op muet, et
+    // l'exploitant lisait une riposte encore en attente comme une riposte annulée.
+    ca.onclick = async () => {
+      try { await apiSend('/actions/' + a.id + '/cancel'); refusParRiposte.delete(a.id); }
+      catch (e) { noterLeRefusDeRiposte(a.id, 'annuler', e); }
+      await loadActions();
+      direLeRefusQueAucuneLigneNaPris(a.id);
+    };
     row.append(ca);
   }
+  // L'aveu FERME la ligne : un lecteur qui la parcourt de gauche à droite rencontre d'abord l'état et
+  // les gestes, puis ce que le démon en a dit.
+  if (refus) row.append(aveuDuRefusDeRiposte(refus));
   return row;
 }
 if ($('#act-new')) $('#act-new').onclick = () => { $('#act-form').classList.remove('hidden'); $('#af-target').focus(); };
@@ -940,8 +1099,15 @@ if ($('#act-form')) $('#act-form').addEventListener('submit', async e => {
   e.preventDefault();
   const body = { kind: $('#af-kind').value, target: $('#af-target').value.trim(), dry_run: $('#af-dry').checked, reason: $('#af-reason').value.trim() };
   if (!body.target) { $('#af-result').textContent = 'cible requise'; return; }
-  const j = await apiSend('/actions', 'POST', body);
-  if (j.error) { $('#af-result').textContent = '' + j.error; return; }
+  // `P10.20-t` — LE REFUS DE MISE EN FILE ARRIVE PAR UN REJET, PAS DANS LE CORPS. `apiSend` LÈVE sur
+  // tout statut non-2xx (web/core.js) : `j.error` ne pouvait donc JAMAIS être lu sur ce chemin, et le
+  // 503 que `action_create` rend désormais quand la ligne n'a pas pu être écrite laissait le
+  // formulaire OUVERT, figé, sans un mot. L'exploitant recommence — et chaque tentative est une
+  // riposte qu'il croit avoir mise en file. La lecture du corps reste, pour un refus servi en 200.
+  let j;
+  try { j = await apiSend('/actions', 'POST', body); }
+  catch (err) { $('#af-result').replaceChildren(aveuDeLaCreationDeRiposte(err)); return; }
+  if (j && j.error) { $('#af-result').replaceChildren(aveuDeLaCreationDeRiposte({ causeDuDemon: String(j.error).trim() })); return; }
   $('#act-form').classList.add('hidden'); $('#af-target').value = ''; $('#af-reason').value = ''; $('#af-result').textContent = '';
   apresCreationDUneAction();   // `P11.18-h` : la ligne qu'on vient d'écrire n'a aucune raison de porter la recherche posée
 });
@@ -1189,4 +1355,7 @@ if ($('#pb-form')) $('#pb-form').addEventListener('submit', async e => {
 loadPlaybooks();
 loadMode();
 
-export { renderCoverage, loadRules, renderRules, peindreLeMode, poserLaRechercheDesRegles, apresEnregistrementDUneRegle, ouvrirLesReglesDeLaTechnique, ouvrirLaCreationPourLaTechnique, loadNotifiers, loadParsers, loadActions, dessinerLesActions, poserLaRechercheDesActions, apresCreationDUneAction, texteCherchableDUneAction, laFenetreBorneLeRegistre, loadMode, loadPlaybooks, motDeLaBorneDesActions, ruleRowModel, ruleRow, texteCherchableDUneRegle, playbookRowModel, pbRow, actionKindOptionLabel };
+// `P10.20-q` : le DISCRIMINANT des trois refus de `action_approve` et le vocabulaire qui les peint
+// partent pour être confrontés aux littéraux LUS dans l'arbre du démon, dans les DEUX sens (harnais
+// ESM, témoin 101) — un motif élargi doit faire rougir un verdict négatif, pas passer inaperçu.
+export { cleDuRefusDeRiposte, motDuRefusDeRiposte, renderCoverage, loadRules, renderRules, peindreLeMode, poserLaRechercheDesRegles, apresEnregistrementDUneRegle, ouvrirLesReglesDeLaTechnique, ouvrirLaCreationPourLaTechnique, loadNotifiers, loadParsers, loadActions, dessinerLesActions, poserLaRechercheDesActions, apresCreationDUneAction, texteCherchableDUneAction, laFenetreBorneLeRegistre, loadMode, loadPlaybooks, motDeLaBorneDesActions, ruleRowModel, ruleRow, texteCherchableDUneRegle, playbookRowModel, pbRow, actionKindOptionLabel };

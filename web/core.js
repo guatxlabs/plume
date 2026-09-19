@@ -345,6 +345,55 @@ function phraseDuRefusDuDemon(e) {
   return corps;
 }
 
+// `P10.20-t` — LE REFUS D'UNE MISE EN FILE DE RIPOSTE, LU AU POINT COMMUN DE SES DEUX SURFACES.
+//
+// POURQUOI CE LECTEUR VIT ICI, ET PAS DANS LE MODULE DE LA FILE DE RIPOSTE — C'EST MESURÉ. Les deux
+// surfaces qui CRÉENT une riposte envoient le MÊME corps à la MÊME route : le formulaire du panneau
+// Réponse (`web/detection_admin.js`) et le geste « bannir » d'une ligne de résultats (`web/viz.js`).
+// Écrire la phrase deux fois la laisserait diverger. La faire venir de `detection_admin.js` a été
+// ESSAYÉ et REFUSÉ par le harnais : l'arête `viz.js -> detection_admin.js` change l'ordre d'évaluation
+// du graphe, et la porte d'entrée `attack.js` se met à JETER (`ReferenceError: Cannot access 'PORTES'
+// before initialization`, site de premier niveau `web/detection_admin.js`) — la famille de défauts que
+// `P11.21-f` a fermée, et qui rend l'écran VIDE. Ce module-ci n'importe aucun module de vue et les deux
+// surfaces l'importent déjà ; c'est aussi là que vivent les trois autres lecteurs d'un refus du démon.
+//
+// LE DISCRIMINANT est ancré sur l'OUVERTURE du littéral que le démon écrit (`CAUSE_RIPOSTE_NON_MISE_EN_FILE`,
+// daemon/src/handlers/actions.rs) : le corps servi est `<cause> (<détail>)`, la cause est donc en tête.
+// Un motif large confondrait ce refus avec les autres phrases de riposte que cette console lit déjà.
+const OUVERTURE_DE_LA_RIPOSTE_NON_MISE_EN_FILE = /^RIPOSTE NON MISE EN FILE\b/;
+function laRiposteNAPasEteMiseEnFile(e) { return OUVERTURE_DE_LA_RIPOSTE_NON_MISE_EN_FILE.test(phraseDuRefusDuDemon(e)); }
+// Les deux phrases, FR et EN côte à côte : aucune des deux langues ne peut partir sans l'autre. Chacune
+// dit ce que le démon N'A PAS fait — sans quoi l'exploitant recommence un geste peut-être déjà pris.
+const MOTS_DE_LA_CREATION_DE_RIPOSTE = {
+  riposte_non_mise_en_file: {
+    fr: "Riposte NON MISE EN FILE : la ligne n'a pas pu être écrite, donc AUCUNE riposte n'attend d'approbation, le registre n'en porte aucune trace et aucun identifiant n'est rendu. Rien n'a été fait. Le démon en nomme la cause —",
+    en: 'Response NOT QUEUED: the line could not be written, so NO response is awaiting approval, the ledger carries no trace of it and no identifier is returned. Nothing was done. The daemon names the cause —' },
+  creation_refusee: {
+    fr: "Création de la riposte REFUSÉE : le démon a refusé ce geste et en nomme la cause —",
+    en: 'Response creation REFUSED: the daemon refused this gesture and names the cause —' },
+};
+function motDuRefusDeCreationDeRiposte(e) {
+  const mots = MOTS_DE_LA_CREATION_DE_RIPOSTE[laRiposteNAPasEteMiseEnFile(e) ? 'riposte_non_mise_en_file' : 'creation_refusee'];
+  return LANG === 'en' ? mots.en : mots.fr;
+}
+// L'aveu à DEUX nœuds : la phrase posée au puits (`dit.textContent = …`) — c'est là, et seulement là,
+// que le lexique la voit —, la cause SERVIE par le démon collée dans un SECOND nœud. Rendu en `span` :
+// ses deux surfaces l'accrochent dans une ligne de formulaire, pas dans un bloc.
+function aveuDeLaCreationDeRiposte(e) {
+  const aveu = document.createElement('span'); aveu.className = 'bad';
+  const dit = document.createElement('span');
+  dit.textContent = motDuRefusDeCreationDeRiposte(e);
+  aveu.append(dit, ' \u00ab ' + phraseDuRefusDuDemon(e) + ' \u00bb');
+  aveu.dataset.refusDeRiposte = '1';   // marque de POSE, pas de style : aucune règle CSS ne la vise
+  return aveu;
+}
+// LA MÊME PHRASE QUAND AUCUN NŒUD NE PEUT LA PORTER. Un avis est une CHAÎNE : la surface qui n'a pas de
+// puits ouvert — le geste « bannir » part d'une ligne de résultats — reçoit la phrase et la cause dans
+// un seul nœud. C'est le repli déjà livré ailleurs pour un aveu sans hôte, pas une seconde grammaire.
+function phraseDeLaCreationDeRiposteRefusee(e) {
+  return motDuRefusDeCreationDeRiposte(e) + ' \u00ab ' + phraseDuRefusDuDemon(e) + ' \u00bb';
+}
+
 async function api(path) {
   // Sur panne transitoire de passerelle -> réessais GET-only (idempotents) ~400ms puis ~800ms, sinon
   // message propre. Toute autre erreur garde EXACTEMENT le comportement d'avant (statut+corps / vide / non-JSON).
@@ -1734,7 +1783,7 @@ export {
   // route `/api/login` est publique, exemptée de CSRF, et son 429 se lit dans un EN-TÊTE que ces deux
   // fabriques ne rendent pas), et il tient sa propre requête. Lui faire réécrire l'extraction ferait
   // deux lecteurs d'un même contrat de refus, qui dériveraient l'un de l'autre.
-  causeNommeeParLeDemon,
+  causeNommeeParLeDemon, laRiposteNAPasEteMiseEnFile, motDuRefusDeCreationDeRiposte, aveuDeLaCreationDeRiposte, phraseDeLaCreationDeRiposteRefusee,
   // `P10.20-k` — ET LE LECTEUR QUI TIENT LES DEUX MOULES DE REFUS (JSON `error` et texte brut) : les
   // tableaux de bord et les modèles de données le PARTAGENT, faute de quoi chacun écrirait son
   // extraction et l'un des deux finirait par ne plus reconnaître la forme que l'autre lit.

@@ -1,6 +1,6 @@
 // viz.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // Explore + viz/charts: drilldown, fenetre glissante, requete interactive, rendu table/graphes (partages avec dashboards).
-import { $, CSSV, LANG, LOC, SEV, api, apiSend, bornerLePopoverSousSonAncre, colComparator, largeursDeColonnes, confirmModal, esc, flashStopped, fmtTs, ic, makePager, muted, sev, socIsAdmin, toast, tzOpts } from './core.js';
+import { $, CSSV, LANG, LOC, SEV, api, apiSend, bornerLePopoverSousSonAncre, colComparator, largeursDeColonnes, confirmModal, esc, flashStopped, fmtTs, ic, makePager, muted, phraseDeLaCreationDeRiposteRefusee, sev, socIsAdmin, toast, tzOpts } from './core.js';
 import { S } from './state.js';
 // P11.4-h : LE clic qui respecte une sélection (mécanisme partagé, `copie_et_selection.js`).
 import { clicQuiRespecteLaSelection } from './copie_et_selection.js';
@@ -271,9 +271,20 @@ async function banIp(ip, host) {
   if (!ip || !(await confirmModal(`Créer une action ban_ip ${ip} ?${host ? ' (hôte ' + host + ')' : ''} (en attente d'approbation, dry-run)`, { okText: 'Créer' }))) return;
   const body = { kind: 'ban_ip', target: ip, dry_run: true, reason: 'depuis la recherche' };
   if (host) body.host = host;
-  const j = await apiSend('/actions', 'POST', body);
-  toast(j.error ? ('Erreur : ' + j.error) : "Action créée (en attente) - onglet Réponse pour l'approuver.", j.error ? 'bad' : 'ok');
-  if (!j.error && typeof loadActions === 'function') loadActions();
+  // `P10.20-t` — CE GESTE ÉTAIT SOURD AU SEUL REFUS QUI LE CONCERNE. `action_create` rend désormais un
+  // 503 nommé quand la ligne de la riposte n'a pas pu être écrite : aucune riposte n'attend alors
+  // d'approbation, le registre n'en porte aucune trace, et l'identifiant qui était servi ici pouvait
+  // désigner une TOUTE AUTRE ligne. Or `apiSend` LÈVE sur un statut non-2xx : `j.error` n'était jamais
+  // atteint, le rejet repartait non traité, et RIEN n'était peint — ni le succès, ni le refus. Sur un
+  // bannissement lancé depuis une ligne de résultats, le silence se lit « c'est parti ». L'aveu part à
+  // l'AVIS : ce geste n'a aucun puits ouvert où poser deux nœuds. La lecture du corps reste, pour un
+  // refus qui serait servi en 200.
+  let j;
+  try { j = await apiSend('/actions', 'POST', body); }
+  catch (e) { toast(phraseDeLaCreationDeRiposteRefusee(e), 'bad', 9000); return; }
+  if (j && j.error) { toast(phraseDeLaCreationDeRiposteRefusee({ causeDuDemon: String(j.error).trim() }), 'bad', 9000); return; }
+  toast("Action créée (en attente) - onglet Réponse pour l'approuver.", 'ok');
+  if (typeof loadActions === 'function') loadActions();
 }
 
 // body-fetch mail : lit le corps COMPLET d'un message (admin + audite cote serveur), rendu isole.

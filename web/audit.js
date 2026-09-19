@@ -41,6 +41,53 @@ let plafondDeComptage = null;
 function ledgerCell(txt, title) { const s = document.createElement('span'); s.textContent = txt; if (title) s.title = title; return s; }
 
 // =================================================================================================
+// `P10.20-q` — LE REGISTRE DISTINGUE UN VERDICT CONSERVÉ D'UN VERDICT QU'IL N'A PAS RELU.
+//
+// CE QUE LE DÉMON ÉCRIT. Quand la clôture gardée d'une action n'a rien écrit, `respond_run`
+// (daemon/src/handlers/actions.rs) relit le verdict CONSERVÉ et pose une ligne de registre. Le repli
+// `unwrap_or_default()` rendait `""` : la ligne disait « verdict `` déjà posé, conservé » aussi bien
+// pour une ligne DISPARUE que pour une lecture qui N'AVAIT PAS EU LIEU. La relecture est désormais
+// typée, et la lecture non faite porte son PROPRE genre, `action.exec.verdict-non-relu`, distinct du
+// `action.exec.verdict-conserve` d'un verdict établi.
+//
+// CE QUE CETTE VUE EN FAISAIT. La colonne « Type » rendait le genre TEL QUEL. Le seul genre que le
+// démon ait créé pour dire qu'il ne sait pas arrivait donc à l'écran comme un jeton parmi d'autres, à
+// un caractère de son voisin — et un jeton de machine n'est pas une phrase : rien ne disait que cette
+// ligne-là, seule de tout le registre, n'établit AUCUN verdict.
+//
+// CE QUE LA VUE EN FAIT MAINTENANT, ET CE QU'ELLE GARDE. Le genre est rendu par sa PHRASE, dans le
+// registre de l'alarme, et le jeton brut reste À CÔTÉ : la recherche de cette liste dérive son texte
+// des cellules RENDUES (`pagedList`, web/core.js), donc le jeton reste ce qu'on tape pour retrouver
+// ces lignes, et c'est aussi lui qu'on recopie dans un rapport. Tout autre genre est rendu tel quel.
+//
+// CE QUE CETTE VUE NE TIENT PAS : elle ne FILTRE pas par genre — sa seule sélection est la recherche
+// de la page servie, et la porter à la route a été mesuré et refusé (voir `loadLedger`). Le genre
+// distinct reste donc cherchable, pas filtrable.
+// =================================================================================================
+const GENRES_DE_REGISTRE_MOTS = {
+  'action.exec.verdict-non-relu': {
+    fr: "Verdict conservé NON RELU — cette ligne ne dit PAS lequel a été conservé",
+    en: 'Kept verdict NOT RE-READ — this line does NOT say which one was kept' },
+};
+// Fonction PURE (un genre -> une phrase, ou rien), pour être éprouvée sans document ni réseau.
+function motDuGenreDeRegistre(kind) {
+  const mots = GENRES_DE_REGISTRE_MOTS[kind];
+  if (!mots) return '';
+  return LANG === 'en' ? mots.en : mots.fr;
+}
+// La cellule du genre : deux nœuds quand la vue sait le nommer — la phrase posée au puits, le jeton du
+// démon à côté —, un seul nœud sinon, exactement comme avant.
+function celluleDeGenre(kind) {
+  const phrase = motDuGenreDeRegistre(kind);
+  if (!phrase) return ledgerCell(kind);
+  const cellule = document.createElement('span'); cellule.className = 'bad';
+  const dit = document.createElement('span'); dit.textContent = phrase;
+  const jeton = document.createElement('code'); jeton.className = 'muted'; jeton.textContent = kind;
+  cellule.append(dit, ' ', jeton);
+  return cellule;
+}
+
+// =================================================================================================
 // `P11.18-c` — UN CHOIX DE DATES, PARTAGÉ PAR LES VUES QUI BORNENT LE TEMPS.
 //
 // LE CONSTAT. Les paliers ci-dessus (7 / 30 / 90 / 365 jours) et ceux de la prévention des fuites
@@ -263,7 +310,7 @@ async function loadLedger() {
     columns: [
       { key: 'id', label: '#', render: en => String(en.id) },
       { key: 'ts', label: 'Horodatage', render: en => ledgerCell(fmtTs(en.ts), en.ts ? String(en.ts) : '') },
-      { key: 'kind', label: 'Type', render: en => ledgerCell(en.kind || '') },
+      { key: 'kind', label: 'Type', render: en => celluleDeGenre(en.kind || '') },
       { key: 'detail', label: 'Détail', render: en => ledgerCell(en.detail || '', en.detail || '') },
       { key: 'hash', label: 'Empreinte', render: en => { const h = en.hash || ''; return ledgerCell(h ? h.slice(0, 16) + '…' : '', h); } },
     ],
@@ -308,4 +355,7 @@ async function loadLedger() {
 // gestes qui la lisent et l'écrivent. `joursPourLeJournal` reste PURE et exportée pour être éprouvée
 // sans document ni réseau : c'est la traduction que la route de CETTE vue impose, elle n'appartient
 // donc à aucune autre.
-export { loadLedger, CIBLE_DE_PLAGE, joursPourLeJournal, plageActive, poserLaPlage };
+// `P10.20-q` : `motDuGenreDeRegistre` et `celluleDeGenre` partent pour être éprouvés sur les littéraux
+// LUS dans l'arbre du démon (harnais ESM, témoin 101) — la phrase d'un genre distinct et le jeton qui
+// reste cherchable ne se mesurent pas depuis une page chargée.
+export { loadLedger, CIBLE_DE_PLAGE, joursPourLeJournal, plageActive, poserLaPlage, motDuGenreDeRegistre, celluleDeGenre };

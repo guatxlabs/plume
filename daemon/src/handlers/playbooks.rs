@@ -231,9 +231,11 @@ pub(crate) fn playbook_cell(c: &Value) -> String {
 /// REND SON BILAN (`P4.1-r`, même contrat que `run_due_rules`) : `Illisible` si la liste des playbooks dus
 /// n'a pas pu être lue, `Lue(n)` = ce que ce tick a ABANDONNÉ, à quelque granularité que ce soit —
 /// playbook non évalué (ligne indécodable, compilation refusée, requête de sélection des cibles en
-/// échec), hôte d'exécution illisible, déduplication illisible, et (`P4.7-d`) CIBLE DONT LA FORME
+/// échec), hôte d'exécution illisible, déduplication illisible, (`P4.7-d`) CIBLE DONT LA FORME
 /// N'EST PAS PORTABLE PAR CE PRODUIT (une `src_ip` IPv6 pour un `ban_ip`, un PID sous le plancher de
-/// sûreté) — ce dernier cas était jeté en silence et publiait un tick à « 0 abandon ».
+/// sûreté) — ce dernier cas était jeté en silence et publiait un tick à « 0 abandon » — et
+/// (`P10.20-t`) RIPOSTE DONT LA LIGNE N'A PAS PU ÊTRE ÉCRITE : l'`INSERT` était avalé, et le miroir
+/// de ban HTTP s'armait quand même sur une action qui n'existait pas.
 /// CE QUE `Lue(n)` NE COMPTE PAS, ET C'EST DÉLIBÉRÉ : une cible BIEN FORMÉE que la POLITIQUE refuse
 /// (IP protégée, engagement actif). Ce refus-là est écrit, la détection continue, rien n'est perdu.
 pub(crate) fn run_playbooks(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate::bilan_de_tick::BilanDeTick {
@@ -372,10 +374,22 @@ pub(crate) fn run_playbooks(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
                 // active ET playbook admin-authored. Un playbook editor résiduel reste pending/dry même en actif
                 // (fix HIGH : `/api/mode active` seul ne suffit JAMAIS à exécuter une action posée par un editor).
                 let (status, dry) = if mode == "active" && admin_authored { ("approved", 0) } else { ("pending", 1) };
-                let _ = conn.execute(
-                    "INSERT INTO action(ts,kind,target,host,status,dry_run,reason) VALUES(?1,?2,?3,?4,?5,?6,?7)",
-                    params![now_ts, kind, target, host, status, dry, format!("playbook:{name}")],
-                );
+                // `P10.20-t` — LA RIPOSTE EST POSÉE AVANT TOUT ARMEMENT, ET L'ÉCRITURE QUI N'A PAS EU
+                // LIEU SE COMPTE. L'ancienne forme avalait cet `INSERT` (`let _ = conn.execute(..)`)
+                // puis armait le miroir `net_ban` sur `status`/`dry`, deux variables LOCALES que
+                // l'écriture n'avait jamais confirmées : une adresse pouvait être bloquée au niveau
+                // HTTP sans qu'AUCUNE ligne n'existe pour l'exécuteur d'hôte, et le tick publiait
+                // « 0 abandon » sur une riposte évaporée. La perte entre désormais dans `abandonnes`,
+                // au même titre qu'un hôte illisible ou qu'une déduplication non lue (`P4.1-s`) : elle
+                // sera re-tentée au prochain tick, et le bilan la DIT.
+                if let crate::handlers::mise_en_file_de_riposte::RiposteMiseEnFile::NonEcrite(_) =
+                    crate::handlers::mise_en_file_de_riposte::mettre_une_riposte_en_file(
+                        &conn, now_ts, &kind, &target, status, dry, None, &format!("playbook:{name}"), host.as_deref(),
+                    )
+                {
+                    abandonnes += 1;
+                    continue;
+                }
                 // BAN NATIF PLUME (chantier ② Phase 1) : une réponse ban_ip AUTO-APPROUVÉE (mode actif + playbook
                 // admin-authored) ARME AUSSI le blocage HTTP in-process (net_ban) — indépendamment de l'exécuteur
                 // (responder local OU agent distant k3s). unban_ip le retire. `action_valid` a déjà écarté les IP

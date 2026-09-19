@@ -17,6 +17,9 @@ pub(crate) mod portillon; // P10.7-c : L'AVEU DU PORTILLON de concurrence, écri
 pub(crate) mod liste_bornee; // P11.22-f : L'AVEU D'UNE LISTE BORNÉE, écrit UNE fois — `served`/`window`/
                              // `total`/`total_capped` étaient recopiés quatre fois ; une cinquième copie
                              // aurait converti un défaut de silence en un défaut de divergence
+pub(crate) mod mise_en_file_de_riposte; // P10.20-t : une riposte n'est EN FILE que si la ligne a été
+                                        // écrite — l'identifiant se lit APRÈS une écriture comptée, et
+                                        // jamais après un `let _ =` qui rendait la ligne d'une autre table
 pub(crate) mod panneau_resolu; // P7.13-a : LE COFFRE de la résolution « bibliothèque sinon panneau » — la porte SQL brut l'emprunte
 pub(crate) mod datasource; // #52 plume-as-a-datasource : surfaces de LECTURE (GXQL-HTTP + Prometheus + stub Loki)
 pub(crate) mod destinations; // #50 outputs/destinations : forward des events normalisés vers un sink externe (syslog/hec/webhook)

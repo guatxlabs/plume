@@ -345,12 +345,18 @@ pub(crate) fn action_kind_destructive(kind: &str) -> bool {
     matches!(kind, "ban_ip" | "unban_ip" | "kill_pid" | "stop_service")
 }
 
-pub(crate) async fn action_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Json<Value> {
+/// La ligne de la riposte n'a PAS été écrite — 503, et ni registre ni identifiant.
+pub(crate) const CAUSE_RIPOSTE_NON_MISE_EN_FILE: &str =
+    "RIPOSTE NON MISE EN FILE : la ligne n'a pas pu être écrite, donc AUCUNE riposte n'attend \
+     d'approbation, le registre n'en porte AUCUNE trace, et aucun identifiant n'est rendu — celui \
+     qui était servi ici pouvait désigner une TOUTE AUTRE ligne. Rien n'a été fait. Réessayez.";
+
+pub(crate) async fn action_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
     let kind = b.str_field("kind").to_string();
     let target = b.trimmed("target");
     // db_path du tenant acteur -> le guard Arm A ne consulte que le scope d'engagement de CE tenant.
     if let Err(e) = action_valid(&kind, &target, &req_db_path(&st, &au)) {
-        return Json(json!({ "error": e }));
+        return Json(json!({ "error": e })).into_response();
     }
     let dry = b.bool_field("dry_run", true) as i64;
     let alert_id = b.get("alert_id").and_then(|v| v.as_i64());
@@ -359,13 +365,21 @@ pub(crate) async fn action_create(State(st): State<AppState>, Extension(au): Ext
     // action NON assignée, réclamée par l'agent du 1er hôte qui poll (cf actions_pending).
     let host = b.get("host").and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty());
     crate::req_conn!(st, au, conn);
-    let _ = conn.execute(
-        "INSERT INTO action(ts,kind,target,status,dry_run,alert_id,reason,host) VALUES(?1,?2,?3,'pending',?4,?5,?6,?7)",
-        params![now(), kind, target, dry, alert_id, reason, host],
-    );
-    let id = conn.last_insert_rowid();
+    // `P10.20-t` — L'ÉCRITURE N'EST PLUS AVALÉE, ET L'IDENTIFIANT VIENT D'ELLE. L'ancienne forme
+    // (`let _ = conn.execute(..)` puis `conn.last_insert_rowid()`) rendait, l'écriture ratée, le
+    // dernier identifiant inséré sur CETTE connexion — celui d'une ligne du registre, d'un événement,
+    // ou `0` — et la ligne `action.queued` partait quand même : la trace non purgeable attestait une
+    // riposte qui n'existait pas, et la console affichait cet identifiant à l'analyste. Un refus
+    // nommé remplace les deux, et il est posé AVANT le registre.
+    use crate::handlers::mise_en_file_de_riposte::{mettre_une_riposte_en_file, RiposteMiseEnFile};
+    let id = match mettre_une_riposte_en_file(&conn, now(), &kind, &target, "pending", dry, alert_id, reason, host) {
+        RiposteMiseEnFile::Posee(id) => id,
+        RiposteMiseEnFile::NonEcrite(cause) => {
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_RIPOSTE_NON_MISE_EN_FILE} ({cause})"))
+        }
+    };
     ledger_append(&conn, "action.queued", &format!("{kind} {target} dry={dry}"));
-    Json(json!({ "id": id }))
+    Json(json!({ "id": id })).into_response()
 }
 // =================================================================================================
 // `P11.17-e` — LA FILE DE RIPOSTE DIT CE QU'ELLE SERT, ET CE QU'ELLE NE SERT PAS.

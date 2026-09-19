@@ -4,8 +4,16 @@
 // PURE MOVE : corps de fonctions IDENTIQUES au monolithe, seuls les import/export sont ajoutes.
 // Le cycle app<->module est benin : les fonctions importees d'app.js ne sont appelees qu'a
 // l'EXECUTION (handlers/async apres await), jamais a l'evaluation du module.
-import { $, muted, api, apiSend, fmtTs, confirmWithConsequence, toast, LOC, tzOpts } from './core.js';
+import { $, muted, api, apiSend, fmtTs, confirmWithConsequence, toast, LANG, LOC, tzOpts } from './core.js';
 import { S } from './state.js';
+// `P10.20-y` — LE GENRE D'UNE LIGNE DE REGISTRE SE REND PAR LA FABRIQUE DE L'ONGLET AUDIT, pas par une
+// seconde. Les deux seules vues qui lisent `GET /api/ledger` sont celle-ci et `web/audit.js` ; écrire ici
+// une deuxième traduction des genres les laisserait diverger, et c'est celle-ci qui vieillirait, faute
+// d'être la vue du registre. L'ARÊTE A ÉTÉ MESURÉE AVANT D'ÊTRE POSÉE (famille `P11.21-f`, l'écran mort
+// d'une porte d'entrée qui jette) : le harnais ESM ouvre le graphe par CHACUN de ses modules dans un
+// processus neuf, et le relevé est le MÊME avec et sans cet import — une seule porte jette, la même
+// qu'avant. `audit.js` n'exécute rien à son premier niveau, il n'y a donc aucun câblage à rejouer.
+import { celluleDeGenre } from './audit.js';
 
 const fmtDate = ts => ts ? new Date(ts * 1000).toLocaleDateString(LOC, tzOpts()) : '—';
 
@@ -110,6 +118,46 @@ function retPreviewText(p) {
   const when = p.oldest ? ` (les plus anciens depuis ${fmtDate(p.oldest)})` : '';
   return `supprimera ${approx}${p.deleted} ${kind}${when}`;
 }
+// =================================================================================================
+// `P10.20-y` — CE PANNEAU DISAIT « DERNIER CHANGEMENT AUDITÉ » D'UNE LIGNE QUI N'EN ÉTAIT PAS UN.
+//
+// CE QUE LE DÉMON ÉCRIT. Un changement de rétention laisse au registre un genre et un seul :
+// `config.retention.<clé>` (`retention_settings_put`, daemon/src/handlers/admin_ui.rs, une ligne par
+// clé changée). Rien d'autre du produit n'écrit ce préfixe.
+//
+// CE QUE CETTE VUE EN FAISAIT. Elle cherchait par un motif LARGE — `/retention|config|setting/i` —,
+// qui attrape TOUT genre de configuration : `config.mode`, `config.user.create`, `config.overlay.*`,
+// `config.sigma.import`, et jusqu'à `config.purge.events` — le DÉROULEMENT d'une purge, qui n'est pas un
+// changement du réglage et que ce panneau annonçait pourtant comme tel ; et, ne trouvant rien, elle
+// prenait la PREMIÈRE entrée servie, quelle qu'elle soit, pour l'annoncer sous le titre « Dernier
+// changement audité » du panneau de rétention. Cinquante
+// entrées se remplissent vite sur un registre vivant : le cas ordinaire n'est pas celui où la ligne
+// trouvée est la bonne, c'est celui où il n'y en a aucune. L'exploitant lisait alors un acquittement
+// d'alerte, ou un `action.exec.verdict-non-relu` — le seul genre que le démon ait créé pour dire qu'il
+// NE SAIT PAS —, rendu en jeton nu et gras, comme si quelqu'un venait de changer la purge.
+//
+// CE QUE LA VUE EN FAIT MAINTENANT. Le discriminant est ANCRÉ sur l'ouverture du genre que le démon
+// écrit. La ligne trouvée est annoncée pour ce qu'elle est ; SANS ligne trouvée, la phrase DIT qu'il
+// n'y a aucun changement de rétention dans les entrées relues, en les comptant, et ce qui suit est
+// présenté comme la dernière entrée du registre, tous genres confondus. Le genre lui-même passe par la
+// fabrique de l'onglet Audit : un genre que la console sait nommer y rend sa phrase dans le registre de
+// l'alarme, le jeton du démon gardé à côté ; tout autre genre reste le jeton, tel quel, comme avant.
+// =================================================================================================
+const OUVERTURE_DU_CHANGEMENT_DE_RETENTION = /^config\.retention\./;
+// Les deux faces côte à côte : aucune langue ne peut partir sans l'autre. `{nombre}` est la borne de ce
+// qui a été RELU — la vue ne demande que les cinquante dernières entrées, et une phrase qui tairait ce
+// nombre affirmerait de TOUT le registre ce qui n'est vrai que de sa dernière page.
+const MOTS_DU_DERNIER_CHANGEMENT_AUDITE = {
+  changement_de_retention: {
+    fr: 'Dernier changement de rétention audité : ',
+    en: 'Last audited retention change: ' },
+  aucun_changement_de_retention: {
+    fr: "AUCUN changement de rétention parmi les {nombre} dernières entrées du registre ; ci-dessous la dernière entrée, tous genres confondus, qui ne règle PAS la purge : ",
+    en: 'NO retention change among the last {nombre} ledger entries; below is the latest entry, all kinds included, which does NOT set the purge: ' },
+};
+const motDuDernierChangementAudite = (cle, nombre) =>
+  (LANG === 'en' ? MOTS_DU_DERNIER_CHANGEMENT_AUDITE[cle].en : MOTS_DU_DERNIER_CHANGEMENT_AUDITE[cle].fr).replace('{nombre}', String(nombre));
+
 // dernier changement audité (rend l'audit visible côté rétention) — lu dans le ledger, textContent (B7)
 async function loadRetentionLast() {
   const el = $('#retention-last'); if (!el) return;
@@ -129,14 +177,20 @@ async function loadRetentionLast() {
     return;
   }
   const entries = j.entries || [];
-  const ent = entries.find(x => /retention|config|setting/i.test(x.kind || '')) || entries[0];
-  if (!ent) { el.textContent = 'Aucun changement audité pour l\'instant.'; return; }
+  if (!entries.length) { el.textContent = 'Aucun changement audité pour l\'instant.'; return; }
+  // Le repli sur la PREMIÈRE entrée est conservé — il porte une information vraie, la dernière ligne
+  // écrite au registre — mais il ne parle plus sous le titre de ce panneau : ce qu'il montre alors
+  // n'est PAS un changement de rétention, et l'annoncer comme tel envoyait chercher une purge là où
+  // quelqu'un venait d'acquitter une alerte.
+  const ent = entries.find(x => OUVERTURE_DU_CHANGEMENT_DE_RETENTION.test(x.kind || ''));
+  const dernier = ent || entries[0];
   el.replaceChildren();
-  const pre = document.createElement('span'); pre.className = 'muted'; pre.textContent = 'Dernier changement audité : ';
-  const kind = document.createElement('b'); kind.textContent = ent.kind || '?';
+  const pre = document.createElement('span'); pre.className = 'muted';
+  pre.textContent = ent ? motDuDernierChangementAudite('changement_de_retention', entries.length)
+    : motDuDernierChangementAudite('aucun_changement_de_retention', entries.length);
   const rest = document.createElement('span'); rest.className = 'muted';
-  rest.textContent = (ent.detail ? ' — ' + ent.detail : '') + ' · ' + fmtTs(ent.ts) + ' (voir onglet Audit)';
-  el.append(pre, kind, rest);
+  rest.textContent = (dernier.detail ? ' — ' + dernier.detail : '') + ' · ' + fmtTs(dernier.ts) + ' (voir onglet Audit)';
+  el.append(pre, celluleDeGenre(dernier.kind || ''), rest);
 }
 if ($('#retention-refresh')) $('#retention-refresh').onclick = loadRetention;
 if ($('#retention-form')) $('#retention-form').addEventListener('submit', async e => {
@@ -174,4 +228,7 @@ if ($('#retention-form')) $('#retention-form').addEventListener('submit', async 
   loadRetention();
 });
 
-export { loadRetention };
+// `P10.20-y` — `loadRetentionLast` et son vocabulaire partent pour le harnais ESM (témoin 102) : ce que
+// ce panneau ANNONCE d'une ligne de registre ne se mesure qu'en le faisant RENDRE une page servie, et le
+// discriminant du genre de rétention se juge dans les deux sens sur le littéral LU dans l'arbre du démon.
+export { loadRetention, loadRetentionLast, motDuDernierChangementAudite, OUVERTURE_DU_CHANGEMENT_DE_RETENTION };

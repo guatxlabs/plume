@@ -1,6 +1,6 @@
 // cases.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // Cases (gestion d'incident, first-class #4a): liste/detail/CRUD + rattachement d'items.
-import { $, api, apiSend, confirmModal, confirmWithConsequence, disclosure, downloadText, exportPDF, fmtTs, ic, LANG, modal, muted, pagedList, sev, toCSV, toast, tsSlug, withBusy, socIsAdmin, socRole } from './core.js';
+import { $, api, apiSend, confirmModal, confirmWithConsequence, disclosure, downloadText, exportPDF, fmtTs, ic, LANG, modal, muted, pagedList, phraseDeLaCreationDeRiposteRefusee, sev, toCSV, toast, tsSlug, withBusy, socIsAdmin, socRole } from './core.js';
 import { phraseDAffichagePartiel, phraseDEchantillonCoupe, phraseDeCoupe } from './coupe_de_liste.js'; // `P11.22-g` : une liste bornée dit sa coupe
 import { S } from './state.js';
 import { refresh } from './app.js';
@@ -1063,6 +1063,82 @@ async function runStepSearch(c, s) {
   if ($('#sql')) { $('#sql').value = j.soql; runQuery(); }
 }
 
+// =================================================================================================
+// `P10.20-y` — LA TROISIÈME SURFACE QUI MET UNE RIPOSTE EN FILE LIT SON REFUS COMME LES DEUX AUTRES.
+//
+// CE QUE LE DÉMON SERT. `action_create` (daemon/src/handlers/actions.rs) refuse de DEUX façons, et
+// elles n'arrivent pas par le même chemin : la ligne qui n'a pas pu être écrite part en 503 nommé
+// (`CAUSE_RIPOSTE_NON_MISE_EN_FILE`), qu'`apiSend` transforme en REJET ; une saisie que `action_valid`
+// écarte part, elle, en 200 avec un corps `{error}`, qui se lit donc dans le corps. Les deux existent,
+// et l'une ne couvre pas l'autre.
+//
+// CE QUE CETTE ÉTAPE EN FAISAIT. Le rejet était bien capté, mais peint par `e.message` : le message
+// composé par `apiSend` est « <code> <corps coupé à deux cents caractères> », donc l'exploitant lisait
+// « Action refusée : 503 {"error":"RIPOSTE NON MISE EN FILE …","id":"plume-e2-0"} » — de la syntaxe, un
+// identifiant d'incident, et une phrase tronquée en son milieu. C'est le défaut que `P10.20-k` a fermé
+// ailleurs, et la phrase existe déjà au point commun : elle est LUE, pas réécrite.
+//
+// L'AVEU PART À L'AVIS, ET C'EST MESURÉ. Cette étape n'a aucun puits ouvert où poser deux nœuds : la
+// modale de saisie s'est refermée en rendant ses valeurs, et la ligne de l'étape est sur le point
+// d'être redessinée par la relecture du dossier. C'est le même repli que le geste « bannir » d'une
+// ligne de résultats (`web/viz.js`), avec la même phrase et la même fabrique.
+// =================================================================================================
+
+// L'IDENTIFIANT N'EST PEINT QUE QUAND LE DÉMON EN SERT UN. `apiSend` rend `null` sur un corps vide ou
+// illisible, et la concaténation d'avant écrivait alors « Action mise en file (#null) » : un numéro
+// qu'aucune ligne ne porte, que l'analyste ira chercher dans l'onglet Réponse. Le refus de la clé
+// `P10.20-t` vient précisément de là — le démon rendait l'identifiant d'une AUTRE ligne —, et une
+// console qui invente le sien referait le défaut d'un cran plus loin.
+const MOTS_DE_LA_RIPOSTE_MISE_EN_FILE = {
+  identifiant_servi: {
+    fr: 'Action mise en file (#{identifiant}) — approbation requise',
+    en: 'Action queued (#{identifiant}) — approval required' },
+  identifiant_absent: {
+    fr: "Action mise en file — approbation requise. Le démon n'a rendu AUCUN identifiant : cette riposte ne peut pas être désignée par un numéro, elle se retrouve dans l'onglet Réponse par son geste et sa cible.",
+    en: 'Action queued — approval required. The daemon returned NO identifier: this response cannot be designated by a number, it is found in the Response tab by its gesture and target.' },
+};
+function motDeLaRiposteMiseEnFile(j) {
+  const identifiant = j && j.id;
+  const mots = MOTS_DE_LA_RIPOSTE_MISE_EN_FILE[identifiant ? 'identifiant_servi' : 'identifiant_absent'];
+  return (LANG === 'en' ? mots.en : mots.fr).replace('{identifiant}', String(identifiant));
+}
+
+// `P10.20-v`, lu ici sous `P10.20-y` — LE GESTE A EU LIEU, ET SA TRACE MANQUE : LES DEUX SE DISENT.
+//
+// CE QUE LE DÉMON SERT. Depuis que `ledger_append` (daemon/src/ledger.rs) rend l'issue de son écriture
+// au lieu de l'avaler, `action_create` pose la riposte, constate que le registre tamper-evident n'a pas
+// pris la ligne `action.queued`, et le DIT dans son corps de SUCCÈS sous la clé partagée
+// `registre_sans_maillon` — l'identifiant reste servi, parce que la ligne de riposte, elle, existe.
+// Refuser serait faux ; se taire laisserait un geste de riposte hors de la trace non purgeable.
+//
+// POURQUOI L'AVEU N'EST PAS UN AVIS ICI. Un avis s'efface, et celui-ci demande une action humaine que
+// le démon nomme lui-même : faire vérifier le journal d'intégrité. Il est donc posé DANS le dossier,
+// après sa relecture — la relecture remplace les enfants de l'hôte, un aveu posé avant partirait avec
+// eux. Il y reste jusqu'au dessin suivant. Quand ce dossier n'est pas à l'écran — la relecture ne
+// redessine que le dossier SÉLECTIONNÉ —, il n'y a aucun puits et l'aveu part à l'avis : c'est le repli
+// déjà livré pour un aveu sans hôte, pas une seconde grammaire.
+//
+// CE QUE CET AVEU NE COUVRE PAS, ET C'EST NOMMÉ : les deux AUTRES surfaces qui mettent une riposte en
+// file par la même route (le formulaire du panneau Réponse et le geste « bannir » d'une ligne de
+// résultats) reçoivent la même clé et la laissent tomber. Un lecteur partagé n'a pas lieu d'être tant
+// qu'une seule surface le lit — il dériverait d'un seul usage ; le jour où la deuxième le lit, il part
+// au point commun comme le refus de mise en file y est parti.
+const MOTS_DE_LA_TRACE_MANQUANTE = {
+  fr: "Riposte EN FILE, mais SANS TRACE D'AUDIT : la ligne est écrite et attend son approbation — ne recommencez PAS, vous en poseriez une seconde. Ce qui manque est la ligne du registre tamper-evident qui l'atteste. Le démon en nomme la cause —",
+  en: 'Response QUEUED, but WITHOUT AUDIT TRACE: the line is written and awaits approval — do NOT start over, you would queue a second one. What is missing is the tamper-evident ledger line attesting it. The daemon names the cause —',
+};
+const motDeLaTraceManquante = () => (LANG === 'en' ? MOTS_DE_LA_TRACE_MANQUANTE.en : MOTS_DE_LA_TRACE_MANQUANTE.fr);
+function avouerLaTraceManquante(cause) {
+  const hote = $('#case-detail');
+  if (!hote) { toast(motDeLaTraceManquante() + ' « ' + cause + ' »', 'bad', 9000); return; }
+  const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:6px 0;font-size:12px';
+  const dit = document.createElement('span');
+  dit.textContent = motDeLaTraceManquante();
+  aveu.append(dit, ' « ' + cause + ' »');
+  aveu.dataset.traceManquante = '1';   // marque de POSE, pas de style : aucune règle CSS ne la vise
+  hote.append(aveu);
+}
+
 // Step 'response' : PRÉPARE l'action existante. Ouvre un modal (kind figé + cible éditable + dry-run) et POST
 // vers /api/actions EXISTANT — admin-gated, arm/approbation/ledger/allowlist root INCHANGÉS. AUCUN auto-exec :
 // l'action est créée en 'pending' et reste soumise à approbation (console actions). La step peut être marquée
@@ -1075,10 +1151,15 @@ async function prepareResponse(c, s) {
   if (!r || !(r.target || '').trim()) return;
   let j;
   try { j = await apiSend('/actions', 'POST', { kind: s.action_kind, target: r.target.trim(), dry_run: r.dry_run === '1', reason: 'runbook step #' + s.id + ' (case #' + c.id + ')' }); }
-  catch (e) { toast('Action refusée : ' + ((e && e.message) || e), 'bad'); return; }
-  if (j && j.error) { toast('Action refusée : ' + j.error, 'bad'); return; }
-  toast('Action mise en file (#' + (j && j.id) + ') — approbation requise', 'ok');
+  catch (e) { toast(phraseDeLaCreationDeRiposteRefusee(e), 'bad', 9000); return; }
+  // `action_valid` (daemon/src/handlers/actions.rs) refuse la SAISIE par un corps `{error}` servi en 200 :
+  // ce chemin-là, contrairement au 503, n'est pas un rejet et il faut le lire dans le corps. La cause est
+  // passée au lecteur commun sous le nom qu'il attend, pour que les deux refus rendent la même grammaire.
+  if (j && j.error) { toast(phraseDeLaCreationDeRiposteRefusee({ causeDuDemon: String(j.error).trim() }), 'bad', 9000); return; }
+  toast(motDeLaRiposteMiseEnFile(j), j && j.id ? 'ok' : 'info');
   await refreshCaseDetail(c.id);
+  // APRÈS la relecture : elle remplace les enfants de l'hôte, et l'aveu posé avant partirait avec eux.
+  if (j && j.registre_sans_maillon) avouerLaTraceManquante(String(j.registre_sans_maillon).trim());
 }
 
 // caseBtn : rendu pur, jugé par le harnais ESM (P11.4-b). caseRow / renderCaseDetail : rendus purs eux
@@ -1093,4 +1174,8 @@ async function prepareResponse(c, s) {
 // `P10.20-p` — `caseItemEl` est exposé pour le harnais ESM (témoin 100) : « cible NON LUE » et « cible
 // introuvable » ne se distinguent qu'en RENDANT les deux éléments par LEUR fabrique réelle, sur la même
 // référence. Aucun usage applicatif hors de ce module.
-export { addToCase, canEditCases, caseBtn, caseItemEl, caseRow, createCase, linkCasePrompt, loadCaseOpsSummary, loadCases, openCase, renderCaseDetail, renderCaseLinks, renderWizardPanel };
+// `P10.20-y` — `prepareResponse`, `motDeLaRiposteMiseEnFile` et `motDeLaTraceManquante` partent pour le harnais ESM (témoin 102) :
+// le refus de mise en file d'une étape de runbook ne se mesure qu'en JOUANT le geste — la modale, l'envoi,
+// l'avis —, et l'identifiant peint ou tu ne se juge que sur la fonction qui décide. Aucun usage applicatif
+// hors de ce module.
+export { addToCase, canEditCases, caseBtn, caseItemEl, caseRow, createCase, linkCasePrompt, loadCaseOpsSummary, loadCases, motDeLaRiposteMiseEnFile, motDeLaTraceManquante, openCase, prepareResponse, renderCaseDetail, renderCaseLinks, renderWizardPanel };

@@ -950,6 +950,20 @@ const MOT_RECHERCHE_ACTIONS_AIDE = LANG === 'en'
 const OUVERTURE_DE_LA_RIPOSTE_NON_LUE = /^RIPOSTE NON LUE\b/;
 const OUVERTURE_DE_L_APPROBATION_NON_ENREGISTREE = /^APPROBATION NON ENREGISTRÉE\b/;
 const OUVERTURE_DE_LA_RIPOSTE_INTROUVABLE = /^riposte introuvable\b/;
+// `P10.20-v`, lu ici sous `P10.20-y` — LES DEUX REFUS QUE L'APPROBATION A GAGNÉS QUAND LE REGISTRE ET
+// LE BLOCAGE ONT CESSÉ D'AVALER LEUR ÉCHEC. Leurs ouvertures sont VOISINES de celles d'au-dessus, et
+// c'est pour cela qu'elles sont ancrées mot pour mot : « APPROBATION SANS TRACE » n'est pas
+// « APPROBATION NON ENREGISTRÉE » — dans le premier cas le statut EST écrit, dans le second non —, et
+// un motif qui se contenterait de `/APPROBATION/` rendrait les deux phrases interchangeables alors
+// qu'elles disent de la base des choses opposées.
+// LA BORNE DE MOT NE SE POSE PAS APRÈS UNE LETTRE ACCENTUÉE, ET C'EST MESURÉ. `\b` compte sur la
+// classe `[A-Za-z0-9_]` : entre le « É » de « ARMÉ » et l'espace qui suit, il n'y a AUCUNE frontière
+// au sens de cette classe, et `/^BAN NON ARMÉ\b/` ne reconnaît donc JAMAIS la phrase que le démon
+// écrit. Les quatre ouvertures posées jusqu'ici finissent toutes sur une lettre ASCII, ce qui masquait
+// le piège. La borne est donc écrite en toutes lettres : ce qui suit doit être la fin ou un signe qui
+// n'est ni lettre ni chiffre — aussi étroit que `\b`, et vrai pour tout l'alphabet.
+const OUVERTURE_DE_L_APPROBATION_SANS_TRACE = /^APPROBATION SANS TRACE(?![\p{L}\p{N}])/u;
+const OUVERTURE_DU_BAN_NON_ARME = /^BAN NON ARMÉ(?![\p{L}\p{N}])/u;
 // LE DISCRIMINANT, exercé par le harnais (témoin 101) sur les littéraux LUS dans l'arbre du démon et
 // jugé dans les DEUX sens : il doit reconnaître chacun des trois refus et REFUSER les phrases voisines.
 // `geste` nomme ce que l'exploitant a demandé, pour que le refus qui n'est aucun des trois dise au moins
@@ -958,6 +972,8 @@ function cleDuRefusDeRiposte(geste, e) {
   const phrase = phraseDuRefusDuDemon(e);
   if (OUVERTURE_DE_LA_RIPOSTE_NON_LUE.test(phrase)) return 'riposte_non_lue';
   if (OUVERTURE_DE_L_APPROBATION_NON_ENREGISTREE.test(phrase)) return 'approbation_non_enregistree';
+  if (OUVERTURE_DE_L_APPROBATION_SANS_TRACE.test(phrase)) return 'approbation_sans_trace';
+  if (OUVERTURE_DU_BAN_NON_ARME.test(phrase)) return 'ban_non_arme';
   if (OUVERTURE_DE_LA_RIPOSTE_INTROUVABLE.test(phrase)) return 'riposte_introuvable';
   return geste === 'annuler' ? 'annulation_refusee' : 'approbation_refusee';
 }
@@ -972,6 +988,16 @@ const REFUS_DE_RIPOSTE_MOTS = {
   approbation_non_enregistree: {
     fr: "Approbation NON ENREGISTRÉE : le statut n'a pas pu être écrit, le registre n'a donc reçu AUCUNE approbation pour ce geste et rien n'a été armé. La riposte reste en attente. Le démon en nomme la cause —",
     en: 'Approval NOT RECORDED: the status could not be written, so the ledger received NO approval for this gesture and nothing was armed. The response stays pending. The daemon names the cause —' },
+  // `P10.20-v` — CES DEUX-LÀ DISENT CHACUNE JUSQU'OÙ LE GESTE EST ALLÉ, et c'est ce qui les sépare :
+  // dans l'une le statut est écrit et la TRACE manque, dans l'autre la trace est prise et le BLOCAGE
+  // manque. Chacune dit donc ce qui reste en base, et ce que refaire le geste ferait — sans quoi
+  // l'exploitant renonce sur un refus rejouable, ou rejoue là où rien ne changerait.
+  approbation_sans_trace: {
+    fr: "Approbation SANS TRACE : le statut de la riposte EST écrit, mais le registre tamper-evident n'a pas pris la ligne qui dit qui l'a approuvée — rien n'a donc été armé. Ce geste est REJOUABLE : approuver de nouveau ne réécrit pas le statut, cela réinscrit la trace puis arme. Le démon en nomme la cause —",
+    en: 'Approval WITHOUT TRACE: the response status IS written, but the tamper-evident ledger did not take the line saying who approved it — so nothing was armed. This gesture is REPLAYABLE: approving again does not rewrite the status, it re-inscribes the trace then arms. The daemon names the cause —' },
+  ban_non_arme: {
+    fr: "Ban NON ARMÉ : l'approbation est enregistrée et tracée, mais la ligne du blocage n'a pas pu être écrite — AUCUNE adresse n'est bloquée et la riposte n'est PAS en place. Ce n'est pas « le store est plein ». Approuver de nouveau réessaie l'armement. Le démon en nomme la cause —",
+    en: 'Ban NOT ARMED: the approval is recorded and traced, but the block line could not be written — NO address is blocked and the response is NOT in place. This is not “the store is full”. Approving again retries the arming. The daemon names the cause —' },
   riposte_introuvable: {
     fr: "Riposte INTROUVABLE : aucune action ne porte cet identifiant et rien n'a été écrit — ce n'est pas une lecture manquée, c'est une absence établie. Le démon en nomme la cause —",
     en: 'Response NOT FOUND: no action carries this identifier and nothing was written — this is not a failed read, it is an established absence. The daemon names the cause —' },
@@ -996,6 +1022,11 @@ function noterLeRefusDeRiposte(id, geste, e) {
   const cle = cleDuRefusDeRiposte(geste, e);
   // `retenir` : le geste de CETTE ligne devient inerte. `peint` : le dessin qui a posé la marque ; le
   // dessin d'APRÈS la lève. `surLaLigne` : la dernière lecture de la file a-t-elle rendu cette ligne.
+  // `P10.20-v` — LES DEUX REFUS NEUFS NE RETIENNENT RIEN, et c'est la même règle qu'au premier jour :
+  // seul un refus qui rend le geste SANS EFFET le retient. Tant que la riposte n'est pas relue,
+  // l'approuver n'écrit ni statut ni ligne et n'arme rien — le clic serait vide. Une approbation sans
+  // trace et un ban non armé sont l'inverse : le geste rejoué RÉINSCRIT la trace, puis arme. Le
+  // retenir enfermerait l'exploitant hors du seul geste qui répare.
   refusParRiposte.set(id, { cle, cause: phraseDuRefusDuDemon(e), retenir: cle === 'riposte_non_lue', peint: false, surLaLigne: false });
 }
 // L'aveu à DEUX nœuds : la phrase est posée au puits (`dit.textContent = …`) — c'est là, et seulement
@@ -1358,4 +1389,9 @@ loadMode();
 // `P10.20-q` : le DISCRIMINANT des trois refus de `action_approve` et le vocabulaire qui les peint
 // partent pour être confrontés aux littéraux LUS dans l'arbre du démon, dans les DEUX sens (harnais
 // ESM, témoin 101) — un motif élargi doit faire rougir un verdict négatif, pas passer inaperçu.
-export { cleDuRefusDeRiposte, motDuRefusDeRiposte, renderCoverage, loadRules, renderRules, peindreLeMode, poserLaRechercheDesRegles, apresEnregistrementDUneRegle, ouvrirLesReglesDeLaTechnique, ouvrirLaCreationPourLaTechnique, loadNotifiers, loadParsers, loadActions, dessinerLesActions, poserLaRechercheDesActions, apresCreationDUneAction, texteCherchableDUneAction, laFenetreBorneLeRegistre, loadMode, loadPlaybooks, motDeLaBorneDesActions, ruleRowModel, ruleRow, texteCherchableDUneRegle, playbookRowModel, pbRow, actionKindOptionLabel };
+// `P10.20-y` : les DEUX ouvertures neuves partent NUES, en plus de la clé qui les emploie (témoin 102).
+// MESURÉ : jugées seulement à travers `cleDuRefusDeRiposte`, elles sont ABRITÉES par les branches qui
+// les précèdent — élargir celle de l'approbation sans trace jusqu'à `/APPROBATION/` ne changeait aucun
+// verdict, sa voisine étant reconnue un cran plus haut. Un discriminant dont l'élargissement ne se voit
+// pas n'est pas gardé ; il est donc confronté aux littéraux du démon SANS passer par l'aiguillage.
+export { cleDuRefusDeRiposte, motDuRefusDeRiposte, OUVERTURE_DE_L_APPROBATION_SANS_TRACE, OUVERTURE_DU_BAN_NON_ARME, renderCoverage, loadRules, renderRules, peindreLeMode, poserLaRechercheDesRegles, apresEnregistrementDUneRegle, ouvrirLesReglesDeLaTechnique, ouvrirLaCreationPourLaTechnique, loadNotifiers, loadParsers, loadActions, dessinerLesActions, poserLaRechercheDesActions, apresCreationDUneAction, texteCherchableDUneAction, laFenetreBorneLeRegistre, loadMode, loadPlaybooks, motDeLaBorneDesActions, ruleRowModel, ruleRow, texteCherchableDUneRegle, playbookRowModel, pbRow, actionKindOptionLabel };

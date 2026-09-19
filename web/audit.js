@@ -64,10 +64,19 @@ function ledgerCell(txt, title) { const s = document.createElement('span'); s.te
 // de la page servie, et la porter à la route a été mesuré et refusé (voir `loadLedger`). Le genre
 // distinct reste donc cherchable, pas filtrable.
 // =================================================================================================
+// `P10.20-v`, lu ici sous `P10.20-y` — LE SECOND GENRE QUI DIT QU'UN FAIT ANNONCÉ N'A PAS EU LIEU.
+// `netban.non-arme` est posé par `action_approve` et par le responder (daemon/src/handlers/actions.rs)
+// ainsi que par la boucle de playbooks (daemon/src/handlers/playbooks.rs) quand l'écriture de la ligne
+// de blocage a ÉCHOUÉ. C'est le seul genre du registre qui dise qu'un blocage ANNONCÉ n'existe pas :
+// à un tiret de `netban.add`, qui dit l'inverse, et lu sur la vue où l'on vient vérifier qu'une adresse
+// est bien bloquée. Rendu en jeton, il se confondait avec la ligne d'un ban posé.
 const GENRES_DE_REGISTRE_MOTS = {
   'action.exec.verdict-non-relu': {
     fr: "Verdict conservé NON RELU — cette ligne ne dit PAS lequel a été conservé",
     en: 'Kept verdict NOT RE-READ — this line does NOT say which one was kept' },
+  'netban.non-arme': {
+    fr: "Blocage NON ARMÉ — l'adresse de cette ligne n'est PAS bloquée : la ligne du ban n'a pas pu être écrite, et rien ne la bloque",
+    en: 'Block NOT ARMED — the address on this line is NOT blocked: the ban line could not be written, and nothing blocks it' },
 };
 // Fonction PURE (un genre -> une phrase, ou rien), pour être éprouvée sans document ni réseau.
 function motDuGenreDeRegistre(kind) {

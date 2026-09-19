@@ -744,7 +744,11 @@ const I18N_EN = {
   "inventaire →": "inventory →", "santé des sources →": "source health →", "voir l'inventaire →": "see the inventory →", "voir le détail →": "see the detail →",
   "… mesure de la fraîcheur des sources en cours": "… measuring source freshness",
   // P11.8-a — retention.js
-  "Aucun changement audité pour l'instant.": "No audited change yet.", "Dernier changement audité :": "Last audited change:",
+  // `P10.20-y` — « Dernier changement audité : » est RETIRÉE : ce panneau ne pose plus cette phrase. Elle
+  // annonçait sous le titre de la rétention une ligne de registre qui n'en était pas un changement, et les
+  // deux phrases qui la remplacent portent leurs deux faces au module (`MOTS_DU_DERNIER_CHANGEMENT_AUDITE`,
+  // web/retention.js) parce que l'une nomme le nombre d'entrées relues et ne peut donc pas être une clé.
+  "Aucun changement audité pour l'instant.": "No audited change yet.",
   "Réduire (destructif)": "Reduce (destructive)", "aperçu indisponible": "preview unavailable", "calcul de l'aperçu…": "computing the preview…", "inchangé": "unchanged",
   // P11.8-a — admin_users.js
   "Aller à Administration → Jetons": "Go to Administration → Tokens", "Appliquer": "Apply",

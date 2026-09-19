@@ -158,6 +158,48 @@ const MOTS_DU_DERNIER_CHANGEMENT_AUDITE = {
 const motDuDernierChangementAudite = (cle, nombre) =>
   (LANG === 'en' ? MOTS_DU_DERNIER_CHANGEMENT_AUDITE[cle].en : MOTS_DU_DERNIER_CHANGEMENT_AUDITE[cle].fr).replace('{nombre}', String(nombre));
 
+// =================================================================================================
+// `P10.21-a` — CE PANNEAU NOMMAIT SA BORNE PAR LE SEUL NOMBRE D'ENTRÉES RELUES.
+//
+// CE QUE LE DÉMON SERT, ET CE QUE ÇA VEUT DIRE EXACTEMENT. `ledger_page`
+// (daemon/src/handlers/admin_ui.rs) pose `next_cursor` quand la page rend EXACTEMENT autant de lignes
+// qu'elle en demandait, et `has_more` vaut alors `!next_cursor.is_null()` — « la page est PLEINE et un
+// curseur de suite est servi », ce que le démon écrit lui-même « il reste PROBABLEMENT des lignes ».
+// CE N'EST DONC PAS « d'autres entrées EXISTENT » : un registre de cinquante entrées exactement rend
+// `has_more` vrai sans qu'aucune ligne ne soit derrière. La phrase ci-dessous dit ce que la clé dit, et
+// pas un mot de plus — affirmer l'existence ferait chercher ce qui n'est peut-être pas là.
+//
+// CE QUE CETTE VUE EN FAISAIT. Elle ne lisait pas la clé du tout : « AUCUN changement de rétention
+// parmi les {nombre} dernières entrées » se lisait comme une absence bornée à un nombre, sans dire si
+// ce nombre était TOUT le registre ou seulement sa première page. Les deux se lisent pareil, et
+// l'ordinaire du registre vivant est le second.
+//
+// LES TROIS ISSUES SONT DISTINCTES, ET LE SILENCE EN EST UNE, ÉCRITE. La clé absente n'est pas « c'est
+// tout » : elle est avouée, parce qu'une console qui prend un silence pour une fin refait ici le défaut
+// que `P10.20-a` a fermé une ligne plus haut sur la lecture ratée.
+// CETTE BORNE NE SE DIT QUE SOUS L'ABSENCE. Quand un changement de rétention EST trouvé, la page est
+// rendue par identifiant DÉCROISSANT : ce qui est derrière est plus ANCIEN, donc la ligne trouvée est
+// bien la dernière, et la suite du registre ne change rien à ce qui est annoncé.
+// =================================================================================================
+function cleDeLaSuiteDuRegistre(j) {
+  if (!j || typeof j.has_more !== 'boolean') return 'suite_non_dite';
+  return j.has_more ? 'il_en_existe_peut_etre_d_autres' : 'aucune_suite';
+}
+const MOTS_DE_LA_SUITE_DU_REGISTRE = {
+  il_en_existe_peut_etre_d_autres: {
+    fr: " Ces {nombre} entrées REMPLISSENT la page demandée et le démon sert un curseur de suite : rien n'établit que le registre s'arrête là, et un changement de rétention plus ancien peut exister sans être atteignable depuis ce panneau — l'onglet Audit, lui, le parcourt en entier.",
+    en: ' These {nombre} entries FILL the requested page and the daemon serves a continuation cursor: nothing establishes that the ledger stops there, and an older retention change may exist without being reachable from this panel — the Audit tab does walk it in full.' },
+  // RIEN N'EST DIT quand le démon dit qu'il n'y a pas de suite : la page n'était pas pleine, donc ces
+  // entrées sont TOUT ce que le registre porte, et la phrase d'absence au-dessus se suffit. Les deux
+  // faces sont vides À DESSEIN — l'entrée existe pour que ce silence soit un choix écrit, pas un oubli.
+  aucune_suite: { fr: '', en: '' },
+  suite_non_dite: {
+    fr: " Le démon n'a PAS dit s'il existe d'autres entrées au-delà de ces {nombre} : l'absence ci-dessus ne vaut donc que pour elles, et rien ici n'établit qu'il n'y en a pas d'autres.",
+    en: ' The daemon did NOT say whether entries exist beyond these {nombre}: the absence above therefore holds for them only, and nothing here establishes that there are no others.' },
+};
+const motDeLaSuiteDuRegistre = (cle, nombre) =>
+  (LANG === 'en' ? MOTS_DE_LA_SUITE_DU_REGISTRE[cle].en : MOTS_DE_LA_SUITE_DU_REGISTRE[cle].fr).replace('{nombre}', String(nombre));
+
 // dernier changement audité (rend l'audit visible côté rétention) — lu dans le ledger, textContent (B7)
 async function loadRetentionLast() {
   const el = $('#retention-last'); if (!el) return;
@@ -191,6 +233,19 @@ async function loadRetentionLast() {
   const rest = document.createElement('span'); rest.className = 'muted';
   rest.textContent = (dernier.detail ? ' — ' + dernier.detail : '') + ' · ' + fmtTs(dernier.ts) + ' (voir onglet Audit)';
   el.append(pre, celluleDeGenre(dernier.kind || ''), rest);
+  // `P10.21-a` — SOUS UNE ABSENCE, LA BORNE DE LA PAGE SE DIT. La phrase est posée au puits
+  // (`textContent`), dans le registre de l'alarme quand c'est un aveu : un silence du démon sur la
+  // suite ne doit pas se lire comme la fin du registre.
+  if (!ent) {
+    const cleDeLaSuite = cleDeLaSuiteDuRegistre(j);
+    const motDeLaSuite = motDeLaSuiteDuRegistre(cleDeLaSuite, entries.length);
+    if (motDeLaSuite) {
+      const suite = document.createElement('span');
+      suite.className = cleDeLaSuite === 'suite_non_dite' ? 'bad' : 'muted';
+      suite.textContent = motDeLaSuite;
+      el.append(suite);
+    }
+  }
 }
 if ($('#retention-refresh')) $('#retention-refresh').onclick = loadRetention;
 if ($('#retention-form')) $('#retention-form').addEventListener('submit', async e => {
@@ -231,4 +286,7 @@ if ($('#retention-form')) $('#retention-form').addEventListener('submit', async 
 // `P10.20-y` — `loadRetentionLast` et son vocabulaire partent pour le harnais ESM (témoin 102) : ce que
 // ce panneau ANNONCE d'une ligne de registre ne se mesure qu'en le faisant RENDRE une page servie, et le
 // discriminant du genre de rétention se juge dans les deux sens sur le littéral LU dans l'arbre du démon.
-export { loadRetention, loadRetentionLast, motDuDernierChangementAudite, OUVERTURE_DU_CHANGEMENT_DE_RETENTION };
+// `P10.21-a` — le discriminant de la SUITE et son vocabulaire partent nus (témoin 103) : « la page est
+// pleine », « la page ne l'est pas » et « le démon n'a rien dit » sont trois issues, et elles ne se
+// distinguent qu'en jugeant la fonction qui les sépare sur les trois corps que la route peut servir.
+export { cleDeLaSuiteDuRegistre, loadRetention, loadRetentionLast, motDeLaSuiteDuRegistre, motDuDernierChangementAudite, OUVERTURE_DU_CHANGEMENT_DE_RETENTION };

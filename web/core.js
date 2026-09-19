@@ -394,6 +394,61 @@ function phraseDeLaCreationDeRiposteRefusee(e) {
   return motDuRefusDeCreationDeRiposte(e) + ' \u00ab ' + phraseDuRefusDuDemon(e) + ' \u00bb';
 }
 
+// `P10.21-a` \u2014 LE GESTE A EU LIEU ET SA TRACE MANQUE : LE LECTEUR PART AU POINT COMMUN, \u00c0 DEUX USAGES.
+//
+// CE QUE LE D\u00c9MON SERT. Depuis que `ledger_append` (daemon/src/ledger.rs) rend l'issue de son \u00e9criture
+// au lieu de l'avaler, `action_create` (daemon/src/handlers/actions.rs) pose la riposte, constate que le
+// registre tamper-evident n'a pas pris la ligne, et le DIT dans son corps de SUCC\u00c8S sous la cl\u00e9
+// `registre_sans_maillon` \u2014 l'identifiant reste servi, parce que la ligne de riposte, elle, existe.
+// Refuser serait faux ; se taire laisserait un geste de riposte hors de la trace non purgeable.
+//
+// POURQUOI CE LECTEUR VIT ICI MAINTENANT, ET PAS AVANT. `P10.20-y` l'a \u00e9crit dans `web/cases.js` en
+// posant la r\u00e8gle : un lecteur qui n'a qu'un usage D\u00c9RIVE de cet usage, et il attend la deuxi\u00e8me
+// surface pour partir au point commun. Les TROIS surfaces qui mettent une riposte en file par
+// `POST /api/actions` re\u00e7oivent la m\u00eame cl\u00e9 ; deux de plus la lisent, donc le lecteur part \u2014 m\u00eame
+// route, m\u00eame cl\u00e9, m\u00eame phrase, et le NOM de la cl\u00e9 \u00e9crit \u00e0 UN seul endroit. C'est le chemin d\u00e9j\u00e0 pris
+// par le refus de mise en file juste au-dessus, pour la m\u00eame raison et vers le m\u00eame module : celui-ci
+// n'importe aucun module de vue, et les trois surfaces l'importent d\u00e9j\u00e0.
+// D\u00c9PLACEMENT PUR : la table des deux faces et sa fabrique de phrase viennent de `web/cases.js` mot
+// pour mot ; ce qui s'y ajoute est le lecteur de la cl\u00e9, la fabrique du n\u0153ud et le repli en cha\u00eene \u2014
+// les trois formes que les surfaces r\u00e9\u00e9criraient chacune de son c\u00f4t\u00e9.
+const CLE_DU_REGISTRE_SANS_MAILLON = 'registre_sans_maillon';
+// LE NOM DE LA CL\u00c9 N'EST \u00c9CRIT QU'ICI. Une surface qui lirait `j.registre_sans_maillon` \u00e0 la main
+// l'\u00e9crirait une fois de plus, et le jour o\u00f9 ce nom change il en resterait des muettes \u2014 sans un mot,
+// puisque l'aveu se rend sur un corps de SUCC\u00c8S. Rend la cause SERVIE, ou la cha\u00eene vide : un corps
+// sans la cl\u00e9 n'a rien \u00e0 avouer.
+function causeDeLaTraceManquante(j) {
+  const cause = j && j[CLE_DU_REGISTRE_SANS_MAILLON];
+  return cause ? String(cause).trim() : '';
+}
+// Les deux faces c\u00f4te \u00e0 c\u00f4te : aucune des deux langues ne peut partir sans l'autre. La phrase dit ce
+// qui EXISTE quand m\u00eame (la riposte est en file), ce qui MANQUE (la ligne du registre), et ce qu'un
+// second geste ferait \u2014 sans quoi l'exploitant recommence et pose une seconde riposte.
+const MOTS_DE_LA_TRACE_MANQUANTE = {
+  fr: "Riposte EN FILE, mais SANS TRACE D'AUDIT : la ligne est \u00e9crite et attend son approbation \u2014 ne recommencez PAS, vous en poseriez une seconde. Ce qui manque est la ligne du registre tamper-evident qui l'atteste. Le d\u00e9mon en nomme la cause \u2014",
+  en: 'Response QUEUED, but WITHOUT AUDIT TRACE: the line is written and awaits approval \u2014 do NOT start over, you would queue a second one. What is missing is the tamper-evident ledger line attesting it. The daemon names the cause \u2014',
+};
+const motDeLaTraceManquante = () => (LANG === 'en' ? MOTS_DE_LA_TRACE_MANQUANTE.en : MOTS_DE_LA_TRACE_MANQUANTE.fr);
+// L'aveu \u00e0 DEUX n\u0153uds : la phrase pos\u00e9e au puits (`dit.textContent = \u2026`) \u2014 c'est l\u00e0, et seulement l\u00e0,
+// que le lexique et `i18nWalk` la voient \u2014, la cause SERVIE par le d\u00e9mon coll\u00e9e dans un SECOND n\u0153ud.
+// LA BALISE EST CELLE DU PUITS QUI L'ACCUEILLE, et c'est la seule chose qui diff\u00e8re d'une surface \u00e0
+// l'autre : un bloc dans le d\u00e9tail d'un dossier, une ligne dans une barre de formulaire. Le style reste
+// au site : ce module ne sait pas dans quoi il est accroch\u00e9.
+function aveuDeLaTraceManquante(cause, balise) {
+  const aveu = document.createElement(balise || 'div'); aveu.className = 'bad';
+  const dit = document.createElement('span');
+  dit.textContent = motDeLaTraceManquante();
+  aveu.append(dit, ' \u00ab ' + cause + ' \u00bb');
+  aveu.dataset.traceManquante = '1';   // marque de POSE, pas de style : aucune r\u00e8gle CSS ne la vise
+  return aveu;
+}
+// LA M\u00caME PHRASE QUAND AUCUN N\u0152UD NE PEUT LA PORTER. Un avis est une CHA\u00ceNE : la surface sans puits
+// ouvert \u2014 le geste \u00ab bannir \u00bb d'une ligne de r\u00e9sultats, un dossier qui n'est pas celui affich\u00e9 \u2014
+// re\u00e7oit la phrase et la cause dans un seul n\u0153ud. Repli d\u00e9j\u00e0 livr\u00e9 ailleurs, pas une seconde grammaire.
+function phraseDeLaTraceManquante(cause) {
+  return motDeLaTraceManquante() + ' \u00ab ' + cause + ' \u00bb';
+}
+
 async function api(path) {
   // Sur panne transitoire de passerelle -> réessais GET-only (idempotents) ~400ms puis ~800ms, sinon
   // message propre. Toute autre erreur garde EXACTEMENT le comportement d'avant (statut+corps / vide / non-JSON).
@@ -1784,6 +1839,10 @@ export {
   // fabriques ne rendent pas), et il tient sa propre requête. Lui faire réécrire l'extraction ferait
   // deux lecteurs d'un même contrat de refus, qui dériveraient l'un de l'autre.
   causeNommeeParLeDemon, laRiposteNAPasEteMiseEnFile, motDuRefusDeCreationDeRiposte, aveuDeLaCreationDeRiposte, phraseDeLaCreationDeRiposteRefusee,
+  // `P10.21-a` — ET LE LECTEUR DE L'AVEU QUE LE SUCCÈS DE LA MÊME ROUTE PORTE : les trois surfaces de
+  // mise en file le partagent, faute de quoi chacune écrirait le nom de la clé et sa propre phrase, et
+  // l'une d'elles finirait par avouer autre chose que les deux autres sur le même fait.
+  CLE_DU_REGISTRE_SANS_MAILLON, causeDeLaTraceManquante, motDeLaTraceManquante, aveuDeLaTraceManquante, phraseDeLaTraceManquante,
   // `P10.20-k` — ET LE LECTEUR QUI TIENT LES DEUX MOULES DE REFUS (JSON `error` et texte brut) : les
   // tableaux de bord et les modèles de données le PARTAGENT, faute de quoi chacun écrirait son
   // extraction et l'un des deux finirait par ne plus reconnaître la forme que l'autre lit.

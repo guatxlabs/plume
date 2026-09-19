@@ -1,6 +1,6 @@
 // cases.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // Cases (gestion d'incident, first-class #4a): liste/detail/CRUD + rattachement d'items.
-import { $, api, apiSend, confirmModal, confirmWithConsequence, disclosure, downloadText, exportPDF, fmtTs, ic, LANG, modal, muted, pagedList, phraseDeLaCreationDeRiposteRefusee, sev, toCSV, toast, tsSlug, withBusy, socIsAdmin, socRole } from './core.js';
+import { $, api, apiSend, aveuDeLaTraceManquante, causeDeLaTraceManquante, confirmModal, confirmWithConsequence, disclosure, downloadText, exportPDF, fmtTs, ic, LANG, modal, motDeLaTraceManquante, muted, pagedList, phraseDeLaCreationDeRiposteRefusee, phraseDeLaTraceManquante, sev, toCSV, toast, tsSlug, withBusy, socIsAdmin, socRole } from './core.js';
 import { phraseDAffichagePartiel, phraseDEchantillonCoupe, phraseDeCoupe } from './coupe_de_liste.js'; // `P11.22-g` : une liste bornée dit sa coupe
 import { S } from './state.js';
 import { refresh } from './app.js';
@@ -618,6 +618,51 @@ async function loadCaseOpsSummary() {
   if (echantillon) { const e = document.createElement('div'); e.className = 'muted coupe-de-liste'; e.style.cssText = 'font-size:12px;margin-top:4px'; e.textContent = echantillon; host.appendChild(e); }
 }
 
+// =================================================================================================
+// `P10.21-a` — LE TYPE D'UN LIEN DE DOSSIER EST DIT, PAS RECOPIÉ.
+//
+// CE QUE LE DÉMON ÉCRIT, MESURÉ AVANT D'ÊTRE DIT. `case_link_handler` (daemon/src/handlers/caseops.rs)
+// prend le `kind` du corps TEL QUEL et le passe à `case_link_add` — qui, lui, le RAMÈNE à
+// `duplicate | blocks | related`, tout autre mot devenant `related` avant l'INSERT. Le vocabulaire
+// ÉCRIT par la route est donc CLOS, et c'est exactement celui que le formulaire « Lier… » de cette vue
+// propose. La colonne, elle, reste ouverte (`kind TEXT NOT NULL DEFAULT 'related'`, aucun `CHECK`, cf.
+// daemon/src/migrate.rs) : une ligne posée par un binaire plus ancien ou par une écriture directe peut
+// porter autre chose, et `case_links_json` la SERT telle quelle.
+//
+// CE QUE CETTE VUE EN FAISAIT. Elle peignait le jeton nu entre parenthèses — « #12 (blocks) » : un mot
+// de machine, en anglais, là où le reste de la puce est une phrase, et rien ne disait si ce mot venait
+// du vocabulaire connu ou d'une valeur qu'aucun formulaire ne propose. Les deux cas se lisaient pareil.
+//
+// CE QU'ELLE EN FAIT. Les trois valeurs connues rendent leur phrase dans la langue de l'écran ; toute
+// autre est rendue comme un jeton DIT LIBRE, gardé entre guillemets — le mot du démon reste lisible et
+// recopiable, et sa nature de valeur hors vocabulaire est écrite à côté. Un type SERVI VIDE a sa propre
+// phrase : le démon ne le produit pas (la colonne est `NOT NULL` et la normalisation le remplirait),
+// mais un nœud vide se lirait comme un lien sans type plutôt que comme un type sans valeur.
+// LES PARENTHÈSES ONT DISPARU DE LA PUCE et c'est la phrase libre qui les emporte : elle en porte
+// elle-même, et « (lien de type « x » (valeur libre)) » se lirait comme une incise dans une incise.
+// AUCUN CHANGEMENT AU DÉMON n'est demandé par cette clé : le vocabulaire est déjà clos à l'écriture.
+// =================================================================================================
+const MOTS_DU_GENRE_DE_LIEN = {
+  related: { fr: 'Relié', en: 'Related' },
+  duplicate: { fr: 'Doublon', en: 'Duplicate' },
+  blocks: { fr: 'Bloque', en: 'Blocks' },
+};
+const MOTS_DU_GENRE_DE_LIEN_HORS_VOCABULAIRE = {
+  jeton_libre: {
+    fr: 'lien de type « {jeton} » (valeur libre)',
+    en: 'link of type “{jeton}” (free value)' },
+  jeton_absent: {
+    fr: 'lien SANS type servi (aucune valeur rendue pour ce lien)',
+    en: 'link with NO type served (no value returned for this link)' },
+};
+function motDuGenreDeLien(genre) {
+  const jeton = String(genre == null ? '' : genre).trim();
+  const connu = Object.prototype.hasOwnProperty.call(MOTS_DU_GENRE_DE_LIEN, jeton) ? MOTS_DU_GENRE_DE_LIEN[jeton] : null;
+  if (connu) return LANG === 'en' ? connu.en : connu.fr;
+  const mots = MOTS_DU_GENRE_DE_LIEN_HORS_VOCABULAIRE[jeton ? 'jeton_libre' : 'jeton_absent'];
+  return (LANG === 'en' ? mots.en : mots.fr).replace('{jeton}', jeton);
+}
+
 // #39 — section LIENS & FUSION du détail : "fusionné dans #N" (+ dé-fusion editor) + chips de liens (cliquables).
 async function renderCaseLinks(box, c) {
   const sec = document.createElement('div');
@@ -661,7 +706,7 @@ async function renderCaseLinks(box, c) {
     const wrap = document.createElement('div'); wrap.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px';
     links.forEach(l => {
       const chip = document.createElement('span'); chip.className = 'casechip'; chip.style.cursor = 'pointer';
-      chip.textContent = '#' + l.id + ' (' + l.kind + ') · ' + l.title; chip.title = l.note || '';
+      chip.textContent = '#' + l.id + ' · ' + motDuGenreDeLien(l.kind) + ' · ' + l.title; chip.title = l.note || '';
       chip.onclick = () => showCaseDetail(l.id);
       if (canEditCases()) {
         const x = document.createElement('button'); x.type = 'button'; x.className = 'casebtn'; x.title = 'Retirer le lien'; x.style.marginLeft = '4px'; x.innerHTML = ic('x');
@@ -711,8 +756,11 @@ async function linkCasePrompt(id) {
   if (!opts.length) { toast('Aucune autre case à lier', 'bad'); return; }
   const r = await modal({ title: 'Lier le case #' + id, okText: 'Lier', fields: [
     { name: 'to', label: 'Case à lier', type: 'select', options: opts },
-    { name: 'kind', label: 'Type de lien', type: 'select', value: 'related', options: [
-      { value: 'related', label: 'Relié' }, { value: 'duplicate', label: 'Doublon' }, { value: 'blocks', label: 'Bloque' }] },
+    // `P10.21-a` — LES TROIS TYPES OFFERTS SONT CEUX QUE LA PUCE SAIT DIRE, et ils viennent de la MÊME
+    // table : deux listes du même vocabulaire finiraient par ne plus se répondre, et un type qu'on peut
+    // choisir sans savoir le rendre se relirait en jeton libre le lendemain.
+    { name: 'kind', label: 'Type de lien', type: 'select', value: 'related',
+      options: Object.keys(MOTS_DU_GENRE_DE_LIEN).map(g => ({ value: g, label: motDuGenreDeLien(g) })) },
     { name: 'note', label: 'Note (optionnel)' },
   ] });
   if (!r) return;
@@ -1118,24 +1166,17 @@ function motDeLaRiposteMiseEnFile(j) {
 // redessine que le dossier SÉLECTIONNÉ —, il n'y a aucun puits et l'aveu part à l'avis : c'est le repli
 // déjà livré pour un aveu sans hôte, pas une seconde grammaire.
 //
-// CE QUE CET AVEU NE COUVRE PAS, ET C'EST NOMMÉ : les deux AUTRES surfaces qui mettent une riposte en
-// file par la même route (le formulaire du panneau Réponse et le geste « bannir » d'une ligne de
-// résultats) reçoivent la même clé et la laissent tomber. Un lecteur partagé n'a pas lieu d'être tant
-// qu'une seule surface le lit — il dériverait d'un seul usage ; le jour où la deuxième le lit, il part
-// au point commun comme le refus de mise en file y est parti.
-const MOTS_DE_LA_TRACE_MANQUANTE = {
-  fr: "Riposte EN FILE, mais SANS TRACE D'AUDIT : la ligne est écrite et attend son approbation — ne recommencez PAS, vous en poseriez une seconde. Ce qui manque est la ligne du registre tamper-evident qui l'atteste. Le démon en nomme la cause —",
-  en: 'Response QUEUED, but WITHOUT AUDIT TRACE: the line is written and awaits approval — do NOT start over, you would queue a second one. What is missing is the tamper-evident ledger line attesting it. The daemon names the cause —',
-};
-const motDeLaTraceManquante = () => (LANG === 'en' ? MOTS_DE_LA_TRACE_MANQUANTE.en : MOTS_DE_LA_TRACE_MANQUANTE.fr);
+// CE QUE CET AVEU NE COUVRAIT PAS, ET QUI EST FERMÉ PAR `P10.21-a` : les deux AUTRES surfaces qui
+// mettent une riposte en file par la même route (le formulaire du panneau Réponse et le geste
+// « bannir » d'une ligne de résultats) recevaient la même clé et la laissaient tomber. Le lecteur
+// n'avait alors qu'UN usage et serait parti de cet usage ; il en a trois, il vit donc au point commun
+// (`web/core.js`) — la clé nommée une fois, la phrase écrite une fois, la fabrique du nœud une fois.
+// CE QUI RESTE ICI est ce qui appartient à CETTE surface : le PUITS où l'aveu se pose, et le moment.
 function avouerLaTraceManquante(cause) {
   const hote = $('#case-detail');
-  if (!hote) { toast(motDeLaTraceManquante() + ' « ' + cause + ' »', 'bad', 9000); return; }
-  const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:6px 0;font-size:12px';
-  const dit = document.createElement('span');
-  dit.textContent = motDeLaTraceManquante();
-  aveu.append(dit, ' « ' + cause + ' »');
-  aveu.dataset.traceManquante = '1';   // marque de POSE, pas de style : aucune règle CSS ne la vise
+  if (!hote) { toast(phraseDeLaTraceManquante(cause), 'bad', 9000); return; }
+  const aveu = aveuDeLaTraceManquante(cause);
+  aveu.style.cssText = 'margin:6px 0;font-size:12px';   // le style appartient au site, pas au point commun
   hote.append(aveu);
 }
 
@@ -1159,7 +1200,9 @@ async function prepareResponse(c, s) {
   toast(motDeLaRiposteMiseEnFile(j), j && j.id ? 'ok' : 'info');
   await refreshCaseDetail(c.id);
   // APRÈS la relecture : elle remplace les enfants de l'hôte, et l'aveu posé avant partirait avec eux.
-  if (j && j.registre_sans_maillon) avouerLaTraceManquante(String(j.registre_sans_maillon).trim());
+  // La clé est lue par le lecteur commun (`P10.21-a`) : son nom n'est plus écrit dans cette vue.
+  const sansMaillon = causeDeLaTraceManquante(j);
+  if (sansMaillon) avouerLaTraceManquante(sansMaillon);
 }
 
 // caseBtn : rendu pur, jugé par le harnais ESM (P11.4-b). caseRow / renderCaseDetail : rendus purs eux
@@ -1177,5 +1220,9 @@ async function prepareResponse(c, s) {
 // `P10.20-y` — `prepareResponse`, `motDeLaRiposteMiseEnFile` et `motDeLaTraceManquante` partent pour le harnais ESM (témoin 102) :
 // le refus de mise en file d'une étape de runbook ne se mesure qu'en JOUANT le geste — la modale, l'envoi,
 // l'avis —, et l'identifiant peint ou tu ne se juge que sur la fonction qui décide. Aucun usage applicatif
-// hors de ce module.
-export { addToCase, canEditCases, caseBtn, caseItemEl, caseRow, createCase, linkCasePrompt, loadCaseOpsSummary, loadCases, motDeLaRiposteMiseEnFile, motDeLaTraceManquante, openCase, prepareResponse, renderCaseDetail, renderCaseLinks, renderWizardPanel };
+// hors de ce module. `P10.21-a` : `motDeLaTraceManquante` vient désormais du point commun et n'est plus
+// que RÉÉMIS ici — le témoin qui l'y lisait mesure ainsi la phrase que cette surface rend VRAIMENT, et il
+// rougirait si elle cessait de venir du lecteur partagé.
+// `P10.21-a` — `motDuGenreDeLien` part nu (témoin 103) : le vocabulaire des liens de dossier se juge dans
+// les DEUX sens — les trois valeurs que le démon écrit, et le jeton qu'aucune allowlist ne produit plus.
+export { addToCase, canEditCases, caseBtn, caseItemEl, caseRow, createCase, linkCasePrompt, loadCaseOpsSummary, loadCases, motDeLaRiposteMiseEnFile, motDeLaTraceManquante, motDuGenreDeLien, openCase, prepareResponse, renderCaseDetail, renderCaseLinks, renderWizardPanel };

@@ -4,7 +4,7 @@
 // PURE MOVE : corps de fonctions IDENTIQUES au monolithe, seuls les import/export sont ajoutes.
 // Le cycle app<->module est benin : les fonctions importees d'app.js ne sont appelees qu'a
 // l'EXECUTION (handlers/async apres await), jamais a l'evaluation du module.
-import { $, LANG, esc, sev, fmtTs, ic, muted, api, apiSend, confirmModal, toast, pagedList, managedBadge, gateDeleteBtn, contentSubmit, contentDelete, fetchInto, formMsg, phraseDuRefusDuDemon, aveuDeLaCreationDeRiposte, socIsAdmin, lsSet, collapsibleGroup, disclosure } from './core.js';
+import { $, LANG, esc, sev, fmtTs, ic, muted, api, apiSend, confirmModal, toast, pagedList, managedBadge, gateDeleteBtn, contentSubmit, contentDelete, fetchInto, formMsg, phraseDuRefusDuDemon, aveuDeLaCreationDeRiposte, aveuDeLaTraceManquante, causeDeLaTraceManquante, socIsAdmin, lsSet, collapsibleGroup, disclosure } from './core.js';
 import { libelleDeTechnique, nomDeTechnique } from './catalogue_attack.js'; // `P11.6-c` : nom dérivé du catalogue servi, ou motif de son absence
 import { S, lireLeStockageDuSite, ecrireDansLeStockageDuSite, ecrireSansDireLeRefus, RAISONS_DE_SILENCE } from './state.js';
 import { initSigmaImport } from './sigmaimport.js';
@@ -947,9 +947,23 @@ const MOT_RECHERCHE_ACTIONS_AIDE = LANG === 'en'
 // motif large (`/NON LUE/`) confondrait au moins trois phrases voisines que cette console lit déjà —
 // « File d'actions NON LUE » (juste au-dessus), « liste NON LUE » du corps de liste bornée, et la
 // visibilité courante non lue des tableaux de bord — dont aucune ne dit ce que celle-ci dit.
-const OUVERTURE_DE_LA_RIPOSTE_NON_LUE = /^RIPOSTE NON LUE\b/;
-const OUVERTURE_DE_L_APPROBATION_NON_ENREGISTREE = /^APPROBATION NON ENREGISTRÉE\b/;
-const OUVERTURE_DE_LA_RIPOSTE_INTROUVABLE = /^riposte introuvable\b/;
+// `P10.21-a` — CES TROIS OUVERTURES SONT MAINTENANT EXPORTÉES NUES, ET LEUR BORNE EST CELLE DES DEUX
+// AUTRES. Deux choses ont été mesurées ici, et elles ne sont pas la même :
+//   · L'ABRI. Jugées à travers `cleDuRefusDeRiposte` seulement, elles étaient couvertes par l'ORDRE des
+//     branches — la première reconnue gagne, et une ouverture élargie ne déplace aucun verdict tant
+//     qu'une voisine est reconnue plus haut. Le lot 102 l'a payé sur ses propres ouvertures. Un ordre
+//     de branches n'est pas une garde : il se réécrit, et le défaut revient sans qu'une ligne de témoin
+//     ait bougé. Elles partent donc nues, confrontées aux littéraux du démon dans les DEUX sens.
+//   · LA BORNE. `\b` compte sur la classe ASCII `[A-Za-z0-9_]`. Le piège payé par `P10.20-y` — aucune
+//     frontière après le « É » de « ARMÉ » — NE MORD PAS ces trois-là : « LUE », « ENREGISTRÉE » et
+//     « introuvable » finissent toutes sur une lettre ASCII. La borne Unicode est reprise pour une
+//     autre raison, écrite ici : `\b` accepte une lettre ACCENTUÉE juste après (elle n'est pas de sa
+//     classe), donc `/^RIPOSTE NON LUE\b/` reconnaîtrait une phrase neuve « RIPOSTE NON LUEÉ… » ;
+//     `(?![\p{L}\p{N}])` la refuse. Le seul sens où elle est plus large est le souligné `_`, qu'aucune
+//     cause du démon ne porte — et les cinq ouvertures de cette vue ont enfin la MÊME borne.
+const OUVERTURE_DE_LA_RIPOSTE_NON_LUE = /^RIPOSTE NON LUE(?![\p{L}\p{N}])/u;
+const OUVERTURE_DE_L_APPROBATION_NON_ENREGISTREE = /^APPROBATION NON ENREGISTRÉE(?![\p{L}\p{N}])/u;
+const OUVERTURE_DE_LA_RIPOSTE_INTROUVABLE = /^riposte introuvable(?![\p{L}\p{N}])/u;
 // `P10.20-v`, lu ici sous `P10.20-y` — LES DEUX REFUS QUE L'APPROBATION A GAGNÉS QUAND LE REGISTRE ET
 // LE BLOCAGE ONT CESSÉ D'AVALER LEUR ÉCHEC. Leurs ouvertures sont VOISINES de celles d'au-dessus, et
 // c'est pour cela qu'elles sont ancrées mot pour mot : « APPROBATION SANS TRACE » n'est pas
@@ -964,6 +978,18 @@ const OUVERTURE_DE_LA_RIPOSTE_INTROUVABLE = /^riposte introuvable\b/;
 // n'est ni lettre ni chiffre — aussi étroit que `\b`, et vrai pour tout l'alphabet.
 const OUVERTURE_DE_L_APPROBATION_SANS_TRACE = /^APPROBATION SANS TRACE(?![\p{L}\p{N}])/u;
 const OUVERTURE_DU_BAN_NON_ARME = /^BAN NON ARMÉ(?![\p{L}\p{N}])/u;
+// `P10.20-w`, lu ici sous `P10.21-a` — LES DEUX REFUS QUE L'ANNULATION A GAGNÉS QUAND SON `UPDATE` A
+// CESSÉ D'ÊTRE AVALÉ. `action_cancel` (daemon/src/handlers/actions.rs) rendait `204` quoi qu'il
+// arrive : la console retirait la riposte de l'écran, l'exploitant la lisait « annulée », et elle
+// restait en file — donc approuvable, donc exécutable par un responder. Les trois issues sont
+// séparées, et deux d'entre elles sont des refus NOMMÉS. Leurs ouvertures sont VOISINES de celles
+// d'au-dessus, et c'est pour cela qu'elles sont ancrées mot pour mot : « ANNULATION NON ENREGISTRÉE »
+// n'est pas « APPROBATION NON ENREGISTRÉE » (l'une laisse la riposte VIVANTE, l'autre la laisse en
+// attente d'une approbation qui n'a pas pris), et « riposte non annulable » n'est pas « riposte
+// introuvable » (la première ligne peut exister et être déjà tranchée). Même borne que les cinq
+// autres, pour la même raison.
+const OUVERTURE_DE_L_ANNULATION_NON_ENREGISTREE = /^ANNULATION NON ENREGISTRÉE(?![\p{L}\p{N}])/u;
+const OUVERTURE_DE_LA_RIPOSTE_NON_ANNULABLE = /^riposte non annulable(?![\p{L}\p{N}])/u;
 // LE DISCRIMINANT, exercé par le harnais (témoin 101) sur les littéraux LUS dans l'arbre du démon et
 // jugé dans les DEUX sens : il doit reconnaître chacun des trois refus et REFUSER les phrases voisines.
 // `geste` nomme ce que l'exploitant a demandé, pour que le refus qui n'est aucun des trois dise au moins
@@ -975,6 +1001,8 @@ function cleDuRefusDeRiposte(geste, e) {
   if (OUVERTURE_DE_L_APPROBATION_SANS_TRACE.test(phrase)) return 'approbation_sans_trace';
   if (OUVERTURE_DU_BAN_NON_ARME.test(phrase)) return 'ban_non_arme';
   if (OUVERTURE_DE_LA_RIPOSTE_INTROUVABLE.test(phrase)) return 'riposte_introuvable';
+  if (OUVERTURE_DE_L_ANNULATION_NON_ENREGISTREE.test(phrase)) return 'annulation_non_enregistree';
+  if (OUVERTURE_DE_LA_RIPOSTE_NON_ANNULABLE.test(phrase)) return 'riposte_non_annulable';
   return geste === 'annuler' ? 'annulation_refusee' : 'approbation_refusee';
 }
 // Les phrases de cette vue, FR et EN côte à côte comme le vocabulaire de la borne juste au-dessus : le
@@ -1001,6 +1029,16 @@ const REFUS_DE_RIPOSTE_MOTS = {
   riposte_introuvable: {
     fr: "Riposte INTROUVABLE : aucune action ne porte cet identifiant et rien n'a été écrit — ce n'est pas une lecture manquée, c'est une absence établie. Le démon en nomme la cause —",
     en: 'Response NOT FOUND: no action carries this identifier and nothing was written — this is not a failed read, it is an established absence. The daemon names the cause —' },
+  // `P10.20-w` — CES DEUX-LÀ DISENT CE QUE L'ANNULATION A LAISSÉ EN BASE, et c'est ce qui les sépare :
+  // dans l'une la riposte est TOUJOURS VIVANTE — approuvable, exécutable — et le geste se rejoue ;
+  // dans l'autre il n'y a plus rien à annuler, et rejouer ne changerait rien. Un refus qui tairait cela
+  // ferait renoncer devant une riposte encore en file, ou chercher une panne là où le travail est fait.
+  annulation_non_enregistree: {
+    fr: "Annulation NON ENREGISTRÉE : le statut n'a pas pu être écrit, donc la riposte est TOUJOURS en file — elle reste approuvable, et un exécuteur d'hôte peut encore l'appliquer. Ce n'est PAS « elle était déjà tranchée ». Rejouer l'annulation est le geste qui la retire. Le démon en nomme la cause —",
+    en: 'Cancellation NOT RECORDED: the status could not be written, so the response is STILL queued — it remains approvable, and a host executor can still apply it. This is NOT “it was already settled”. Replaying the cancellation is the gesture that removes it. The daemon names the cause —' },
+  riposte_non_annulable: {
+    fr: "Riposte NON ANNULABLE : aucune action en attente ou approuvée ne porte cet identifiant — elle n'existe pas, ou elle est DÉJÀ tranchée — et rien n'a été écrit. Annuler deux fois la même riposte donne ce refus : la première annulation, elle, a bien eu lieu. Le démon en nomme la cause —",
+    en: 'Response NOT CANCELLABLE: no pending or approved action carries this identifier — it does not exist, or it is ALREADY settled — and nothing was written. Cancelling the same response twice gives this refusal: the first cancellation did take place. The daemon names the cause —' },
   approbation_refusee: {
     fr: "Approbation REFUSÉE : le démon a refusé ce geste et en nomme la cause —",
     en: 'Approval REFUSED: the daemon refused this gesture and names the cause —' },
@@ -1106,11 +1144,19 @@ function actionRow(a) {
     row.append(ap);
   }
   if (a.status === 'pending' || a.status === 'approved') {
+    // `P10.20-w`, lu sous `P10.21-a` — CE `catch` COUVRE DÉSORMAIS DEUX REFUS NOMMÉS. Il fut écrit
+    // pour ce qui arrive AVANT le handler — une session tombée, un jeton anti-CSRF rejeté, une
+    // passerelle en panne — parce qu'`action_cancel` rendait alors 204 quoi qu'il arrive, son `UPDATE`
+    // avalé : la riposte restait en file et l'exploitant la lisait annulée. La route sépare maintenant
+    // ses trois issues, et deux d'entre elles sont des refus que le démon NOMME (404 « riposte non
+    // annulable », 503 « annulation non enregistrée »). Ils passent par le même aiguillage que les
+    // refus d'approbation, donc par la PHRASE du démon et non par le message composé, et chacun dit ce
+    // qui reste en base. AUCUN des deux ne retient le geste : l'un se rejoue pour retirer une riposte
+    // encore vivante, l'autre porte sur une ligne qu'il n'y a plus lieu d'annuler.
+    // CE QUI CHANGE POUR L'EXPLOITANT, ET C'EST DIT : annuler DEUX fois la même riposte rend
+    // maintenant un 404 nommé là où le second appel rendait 204 — la phrase le dit pour que ce refus
+    // ne se lise pas comme une panne.
     const ca = document.createElement('button'); ca.textContent = 'Annuler';
-    // `action_cancel` ne rend qu'un 204 — il ne relit rien et n'a aucun refus nommé. Ce `catch` ne
-    // couvre donc pas un refus de riposte mais ce qui arrive AVANT le handler : une session tombée, un
-    // jeton anti-CSRF rejeté, une passerelle en panne. Sans lui, l'annulation était un no-op muet, et
-    // l'exploitant lisait une riposte encore en attente comme une riposte annulée.
     ca.onclick = async () => {
       try { await apiSend('/actions/' + a.id + '/cancel'); refusParRiposte.delete(a.id); }
       catch (e) { noterLeRefusDeRiposte(a.id, 'annuler', e); }
@@ -1139,7 +1185,18 @@ if ($('#act-form')) $('#act-form').addEventListener('submit', async e => {
   try { j = await apiSend('/actions', 'POST', body); }
   catch (err) { $('#af-result').replaceChildren(aveuDeLaCreationDeRiposte(err)); return; }
   if (j && j.error) { $('#af-result').replaceChildren(aveuDeLaCreationDeRiposte({ causeDuDemon: String(j.error).trim() })); return; }
-  $('#act-form').classList.add('hidden'); $('#af-target').value = ''; $('#af-reason').value = ''; $('#af-result').textContent = '';
+  // `P10.21-a` — LA RIPOSTE EST EN FILE ET SA TRACE MANQUE : LES DEUX SE DISENT, AU MÊME PUITS QUE LE
+  // REFUS. `action_create` sert alors l'identifiant ET l'aveu, sous la clé que le lecteur commun
+  // nomme ; jusqu'ici ce formulaire effaçait `#af-result` et refermait sa vue sur un succès muet.
+  // POURQUOI LE FORMULAIRE RESTE OUVERT, ET C'EST MESURÉ : `#af-result` vit DANS `#act-form`
+  // (web/index.html), et replier le formulaire emporterait l'aveu avec lui — deux nœuds posés dans un
+  // conteneur masqué ne sont pas un aveu, c'est un silence. LES CHAMPS SONT VIDÉS quand même : la
+  // phrase dit de ne PAS recommencer, et un formulaire rempli met le second clic à portée de main —
+  // vidé, le geste rejoué s'arrête sur « cible requise » au lieu de poser une seconde riposte.
+  const sansMaillon = causeDeLaTraceManquante(j);
+  $('#af-target').value = ''; $('#af-reason').value = '';
+  if (sansMaillon) $('#af-result').replaceChildren(aveuDeLaTraceManquante(sansMaillon, 'span'));
+  else { $('#act-form').classList.add('hidden'); $('#af-result').textContent = ''; }
   apresCreationDUneAction();   // `P11.18-h` : la ligne qu'on vient d'écrire n'a aucune raison de porter la recherche posée
 });
 // `P11.18-h` — LE CHAMP DE RECHERCHE DE LA FILE DE RIPOSTE, POSÉ PAR LE MÉCANISME PARTAGÉ. Il REDESSINE
@@ -1394,4 +1451,10 @@ loadMode();
 // les précèdent — élargir celle de l'approbation sans trace jusqu'à `/APPROBATION/` ne changeait aucun
 // verdict, sa voisine étant reconnue un cran plus haut. Un discriminant dont l'élargissement ne se voit
 // pas n'est pas gardé ; il est donc confronté aux littéraux du démon SANS passer par l'aiguillage.
-export { cleDuRefusDeRiposte, motDuRefusDeRiposte, OUVERTURE_DE_L_APPROBATION_SANS_TRACE, OUVERTURE_DU_BAN_NON_ARME, renderCoverage, loadRules, renderRules, peindreLeMode, poserLaRechercheDesRegles, apresEnregistrementDUneRegle, ouvrirLesReglesDeLaTechnique, ouvrirLaCreationPourLaTechnique, loadNotifiers, loadParsers, loadActions, dessinerLesActions, poserLaRechercheDesActions, apresCreationDUneAction, texteCherchableDUneAction, laFenetreBorneLeRegistre, loadMode, loadPlaybooks, motDeLaBorneDesActions, ruleRowModel, ruleRow, texteCherchableDUneRegle, playbookRowModel, pbRow, actionKindOptionLabel };
+export { cleDuRefusDeRiposte, motDuRefusDeRiposte, OUVERTURE_DE_L_APPROBATION_SANS_TRACE, OUVERTURE_DU_BAN_NON_ARME,
+  // `P10.21-a` — les TROIS ouvertures du lot 101 rejoignent les deux du lot 102 : nues, pour que le
+  // témoin les confronte aux littéraux du démon sans passer par l'aiguillage qui les abritait.
+  OUVERTURE_DE_LA_RIPOSTE_NON_LUE, OUVERTURE_DE_L_APPROBATION_NON_ENREGISTREE, OUVERTURE_DE_LA_RIPOSTE_INTROUVABLE,
+  // `P10.20-w` — et les deux de l'ANNULATION, nues elles aussi : chacune a une voisine dont elle ne
+  // diffère que par un mot, et l'ordre des branches ne prouverait rien de cette différence-là.
+  OUVERTURE_DE_L_ANNULATION_NON_ENREGISTREE, OUVERTURE_DE_LA_RIPOSTE_NON_ANNULABLE, renderCoverage, loadRules, renderRules, peindreLeMode, poserLaRechercheDesRegles, apresEnregistrementDUneRegle, ouvrirLesReglesDeLaTechnique, ouvrirLaCreationPourLaTechnique, loadNotifiers, loadParsers, loadActions, dessinerLesActions, poserLaRechercheDesActions, apresCreationDUneAction, texteCherchableDUneAction, laFenetreBorneLeRegistre, loadMode, loadPlaybooks, motDeLaBorneDesActions, ruleRowModel, ruleRow, texteCherchableDUneRegle, playbookRowModel, pbRow, actionKindOptionLabel };

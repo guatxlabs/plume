@@ -14286,10 +14286,13 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
 //     caractère de son voisin `action.exec.verdict-conserve`, qui lui établit un verdict.
 //
 // CE QUI ÉTAIT FAUX DANS L'ÉNONCÉ DE CE LOT, ET MESURÉ ICI. (1) « annuler : un cinq cent trois ou un
-// quatre cent quatre est un no-op silencieux » — `action_cancel` ne rend qu'un `StatusCode`, et ce
-// `StatusCode` est TOUJOURS `NO_CONTENT` : la route ne relit rien, ne refuse rien, et n'a aucune cause
-// nommée. Ce que le `catch` de l'annulation couvre n'est donc pas un refus de riposte mais ce qui
-// arrive AVANT le handler. (2) « le corps JSON est `{"error": …}` » — sur un 5xx, `err_json`
+// quatre cent quatre est un no-op silencieux » — AU JOUR DE CE LOT, `action_cancel` ne rendait qu'un
+// `StatusCode` TOUJOURS égal à `NO_CONTENT` : la route ne relisait rien, ne refusait rien, et n'avait
+// aucune cause nommée ; ce que le `catch` de l'annulation couvrait n'était donc pas un refus de riposte
+// mais ce qui arrive AVANT le handler. `P10.20-w` a depuis séparé les trois issues de cette route et
+// lui a donné exactement les deux refus nommés que l'énoncé lui prêtait à tort — la réfutation est
+// périmée par un correctif, pas retirée : l'instrument (0.c) ancre désormais la vérité neuve, et
+// `P10.21-a` fait peindre à la console une phrase PAR cause. (2) « le corps JSON est `{"error": …}` » — sur un 5xx, `err_json`
 // (daemon/src/main.rs) y ajoute `id`, et c'est la forme que la console reçoit des DEUX 503 de cette
 // clé. (3) « l'aveu sur la ligne de l'action concernée si elle survit au rechargement » — sur la voie
 // même que cette clé nomme (une ligne illisible), elle n'y survit PAS : `liste_bornee` laisse tomber
@@ -14386,12 +14389,29 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     && /\(code, Json\(json!\(\{ "error": msg \}\)\)\)\.into_response\(\)/.test(srcPrincipal101),
     "`err_json` ne moule plus ses refus en `{error}` (plus `id` sur un 5xx) dans daemon/src/main.rs");
 
-  // (0.c) LA RÉFUTATION MESURÉE : `action_cancel` NE SERT NI 503 NI 404.
+  // (0.c) `P10.20-w` — CE QUE `action_cancel` REFUSE, ET LA RÉFUTATION QU'IL A PÉRIMÉE.
+  // AU LOT 101, LA MESURE ÉTAIT : la route ne relisait rien, avalait son `UPDATE` (`let _ =
+  // conn.execute(..)`) et rendait `NO_CONTENT` quoi qu'il arrive — l'énoncé d'alors lui prêtait un 503
+  // et un 404 qu'elle n'avait pas, et le `catch` de la console ne couvrait que ce qui arrive AVANT le
+  // handler. `P10.20-w` a séparé les trois issues : le 204 n'est plus inconditionnel, une ligne qu'on
+  // ne peut plus annuler part en 404 nommé et une écriture ratée en 503 nommé. La réfutation d'alors
+  // reste VRAIE DE SON JOUR et FAUSSE DU JOUR MÊME où ce lot a livré : elle est donc refaite ici, sur
+  // ce que la route sert maintenant, et le contrat qui change avec est nommé — annuler DEUX fois la
+  // même riposte rend un 404 là où le second appel rendait 204.
   const mAnnuler101 = srcActions101.match(/pub\(crate\) async fn action_cancel\([\s\S]*?\) -> (\w+) \{([\s\S]*?)\n\}/);
   instrument101(!!mAnnuler101, "`action_cancel` n'est plus lisible dans daemon/src/handlers/actions.rs");
-  instrument101(!!mAnnuler101 && mAnnuler101[1] === "StatusCode" && /StatusCode::NO_CONTENT/.test(mAnnuler101[2])
-    && !/err_json|CAUSE_|StatusCode::(NOT_FOUND|SERVICE_UNAVAILABLE)/.test(mAnnuler101[2]),
-    "`action_cancel` rend désormais autre chose qu'un `StatusCode` toujours égal à `NO_CONTENT` : l'énoncé de ce lot lui prêtait un 503 et un 404 qu'il n'a jamais eus, et cette réfutation demande à être refaite");
+  const CAUSE_ANNULATION_NON_ENREGISTREE101 = litteralRust101(srcActions101, "CAUSE_ANNULATION_NON_ENREGISTREE");
+  const CAUSE_NON_ANNULABLE101 = litteralRust101(srcActions101, "CAUSE_RIPOSTE_NON_ANNULABLE");
+  instrument101(CAUSE_ANNULATION_NON_ENREGISTREE101.startsWith("ANNULATION NON ENREGISTRÉE") && CAUSE_ANNULATION_NON_ENREGISTREE101.length > 120
+    && CAUSE_NON_ANNULABLE101.startsWith("riposte non annulable") && CAUSE_NON_ANNULABLE101.length > 60,
+    "les deux causes que `action_cancel` nomme ne sont plus lisibles dans daemon/src/handlers/actions.rs");
+  instrument101(!!mAnnuler101 && mAnnuler101[1] === "Response"
+    && /Ok\(0\) => err_json\(StatusCode::NOT_FOUND, CAUSE_RIPOSTE_NON_ANNULABLE\),/.test(mAnnuler101[2])
+    && /Err\(e\) => err_json\(StatusCode::SERVICE_UNAVAILABLE, format!\("\{CAUSE_ANNULATION_NON_ENREGISTREE\} \(\{e\}\)"\)\),/.test(mAnnuler101[2])
+    && /Ok\(_\) => StatusCode::NO_CONTENT\.into_response\(\),/.test(mAnnuler101[2]),
+    "`action_cancel` ne sépare plus ses TROIS issues — le 404 nommé d'une ligne qu'on ne peut plus annuler, le 503 nommé d'une écriture ratée, le 204 d'une annulation FAITE : ce que la console peint de ce geste porterait sur une route qui n'existe plus");
+  instrument101(CAUSE_NON_ANNULABLE101 !== CAUSE_INTROUVABLE101 && CAUSE_ANNULATION_NON_ENREGISTREE101 !== CAUSE_NON_ENREGISTREE101,
+    "une cause d'ANNULATION est devenue le littéral d'une cause d'APPROBATION : les deux ouvertures que la console tient dans les deux sens jugeraient la même phrase");
 
   // (0.d) LES DEUX GENRES DE REGISTRE, ET CE QUI LES SÉPARE.
   const GENRE_NON_RELU101 = (HANDLERS101.match(/"(action\.exec\.verdict-non-relu)"/) || [])[1] || "";
@@ -15426,18 +15446,32 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     exiger(appelantsDuBanDirect102.length === 0,
       `(102c) un module de web/ met désormais un ban en place PAR LA ROUTE DIRECTE : il reçoit « ${CLE_SANS_MAILLON102} » dans son succès et doit le lire comme l'étape de runbook le lit — ${JSON.stringify(appelantsDuBanDirect102)}`);
     // LE RESTE EST NOMMÉ, ET IL EST DATÉ. Les trois surfaces qui mettent une riposte en file reçoivent
-    // toutes la clé ; une seule la lit aujourd'hui, et un lecteur partagé n'a pas lieu d'être tant
-    // qu'il n'a qu'un usage — il dériverait d'un seul appelant. L'INCLUSION est le « au plus » des
-    // ensembles : une surface qui se met à la lire est un reste FERMÉ et laisse ce verdict vert, une
-    // surface NEUVE qui l'ignore le fait rougir en la nommant. Ce relevé se remesure et se réécrit ;
-    // il n'exige jamais que le défaut survive.
-    const SOURDES_A_LA_TRACE_MANQUANTE_AU_2026_09_19 = ["detection_admin.js", "viz.js"];
+    // toutes la clé. L'INCLUSION est le « au plus » des ensembles : une surface qui se met à la lire est
+    // un reste FERMÉ et laisse ce verdict vert, une surface NEUVE qui l'ignore le fait rougir en la
+    // nommant. Ce relevé se remesure et se réécrit ; il n'exige jamais que le défaut survive.
+    // `P10.21-a` — LE RELEVÉ EST DESCENDU À VIDE, et la mesure a changé avec lui. Elle cherchait le NOM
+    // DE LA CLÉ dans la source du module : ce critère comptait pour lecture une simple MENTION en
+    // commentaire, et il rendait AVEUGLE au remède attendu — les trois surfaces font maintenant venir
+    // la clé du lecteur commun de `web/core.js`, où le nom est écrit UNE fois, et aucune ne porte plus
+    // le littéral. Une surface LIT donc l'aveu quand elle importe ce lecteur ET l'appelle sur un corps.
+    const SOURDES_A_LA_TRACE_MANQUANTE_AU_2026_09_19 = [];
     const surfacesDeCreation102 = CORPUS_WEB.filter(([f, src]) => f.endsWith(".js") && /apiSend\('\/actions', 'POST'/.test(src)).map(([f]) => f).sort();
     exiger(surfacesDeCreation102.join(",") === "cases.js,detection_admin.js,viz.js",
       `(102c-instrument) l'ensemble des surfaces qui METTENT EN FILE une riposte n'est plus celui que ce lot a relevé : le reste nommé juste en dessous porterait sur une population qui a changé — ${JSON.stringify(surfacesDeCreation102)}`);
-    const sourdesALaTrace102 = surfacesDeCreation102.filter((f) => !((CORPUS_WEB.find(([g]) => g === f) || [])[1] || "").includes(CLE_SANS_MAILLON102));
+    const litLaTraceManquante102 = (f) => {
+      const src = (CORPUS_WEB.find(([g]) => g === f) || [])[1] || "";
+      return /import \{[^}]*\bcauseDeLaTraceManquante\b[^}]*\} from '\.\/core\.js';/.test(src) && /=\s*causeDeLaTraceManquante\(/.test(src);
+    };
+    const sourdesALaTrace102 = surfacesDeCreation102.filter((f) => !litLaTraceManquante102(f));
     exiger(sourdesALaTrace102.every((f) => SOURDES_A_LA_TRACE_MANQUANTE_AU_2026_09_19.includes(f)),
-      `(102c) une surface de mise en file IGNORE l'aveu « ${CLE_SANS_MAILLON102} » que son succès porte, et elle n'est pas au relevé du 2026-09-19 (${JSON.stringify(SOURDES_A_LA_TRACE_MANQUANTE_AU_2026_09_19)}) : un geste de riposte resterait hors de la trace non purgeable sans que personne ne le sache — ${JSON.stringify(sourdesALaTrace102)}`);
+      `(102c) une surface de mise en file IGNORE l'aveu « ${CLE_SANS_MAILLON102} » que son succès porte, et elle n'est pas au relevé — vide depuis \`P10.21-a\` — (${JSON.stringify(SOURDES_A_LA_TRACE_MANQUANTE_AU_2026_09_19)}) : un geste de riposte resterait hors de la trace non purgeable sans que personne ne le sache — ${JSON.stringify(sourdesALaTrace102)}`);
+    // ET LE NOM DE LA CLÉ N'EST ÉCRIT QU'À UN ENDROIT — un ENSEMBLE nommé, pas un compte : une surface
+    // qui se remettrait à lire `j.registre_sans_maillon` à la main rougirait ici même en étant nommée,
+    // et le jour où le démon renomme la clé, une seule ligne de `web/` est à changer.
+    const porteursDeLaCle102 = CORPUS_WEB.filter(([f, src]) => f.endsWith(".js")
+      && new RegExp("['\"]" + CLE_SANS_MAILLON102 + "['\"]").test(src)).map(([f]) => f).sort();
+    exiger(porteursDeLaCle102.join(",") === "core.js",
+      `(102c) le nom de la clé de la trace manquante est écrit AILLEURS qu'au point commun : chaque site en serait un lecteur de plus à corriger le jour où elle change — ${JSON.stringify(porteursDeLaCle102)}`);
   } finally {
     globalThis.fetch = fetchOrigine102;
     globalThis.setTimeout = minuterieOrigine102;
@@ -15448,6 +15482,554 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     [detailDuDossier102, champsDeRetention102, dernierChangement102].forEach((n) => n.remove());
   }
   console.log("(102) OK — les deux surfaces que le lot précédent avait NOMMÉES sans les tenir lisent ce que le démon refuse : l'étape « Réponse » d'un runbook — la troisième et dernière surface qui met une riposte en file — rend la PHRASE du point commun au lieu du message composé « <code> <corps JSON coupé à deux cents caractères> », sur les DEUX portes de refus de `action_create` (le 503 nommé qui arrive en REJET, et la saisie écartée servie en 200 DANS le corps, qu'un `catch` seul ne voit jamais) avec une phrase DIFFÉRENTE pour chacune, ne relit pas le dossier sur un refus, et ne peint un identifiant que lorsque le démon en SERT un — « (#null) » n'atteint plus l'écran, et la console dit alors comment retrouver la riposte sans numéro ; le panneau de rétention n'annonce plus « dernier changement audité » d'une ligne qui n'en est pas un : son discriminant est ANCRÉ sur le genre que `retention_settings_put` écrit, il refuse les deux voisins que le motif large confondait — un changement de mode et le DÉROULEMENT d'une purge —, il RETROUVE le changement de rétention derrière des entrées plus récentes, et quand il n'y en a aucun il DIT sur combien d'entrées il a cherché et que ce qu'il montre est d'un autre genre ; le genre lui-même passe par la fabrique de l'onglet Audit — phrase dans le registre de l'alarme, jeton du démon gardé cherchable à côté, plus aucune graisse —, jugé sur les nœuds que le CHARGEUR RÉEL rend et non sur la seule fabrique ; un registre vide reste une absence établie et une lecture refusée reste un refus ; et les deux seules vues de la console qui lisent le registre passent toutes deux par la fabrique partagée. ET LES TROIS AVEUX QUE LE DÉMON A GAGNÉS EN CESSANT D'AVALER SES ÉCRITURES SONT LUS : une riposte dont la ligne est écrite et dont le registre tamper-evident n'a PAS pris la trace se dit À CÔTÉ du succès — deux nœuds posés DANS le dossier, après sa relecture, l'identifiant toujours annoncé, la phrase disant de ne PAS recommencer sous peine d'en poser une seconde, et l'avis en repli quand aucun puits n'est ouvert —, tandis qu'un succès sans cette clé ne peint rien ; le genre `netban.non-arme` — le seul du registre qui dise qu'un blocage ANNONCÉ n'existe pas, à un tiret de `netban.add` qui dit l'inverse — rend sa phrase dans le registre de l'alarme avec son jeton gardé à côté, jugé sur les cellules que le chargeur de l'onglet Audit sert ; et les deux cinq cent trois neufs de l'approbation portent chacun SA phrase — l'une disant que le statut EST écrit, que rien n'est armé et que le geste est REJOUABLE, l'autre que l'approbation est tracée mais qu'AUCUNE adresse n'est bloquée —, distinctes de leur voisine « APPROBATION NON ENREGISTRÉE » dans les deux sens, peintes à deux nœuds sur la ligne, et sans jamais retenir le geste : seul un refus qui rend le clic SANS EFFET le retient, et ces deux-là se réparent en le rejouant.");
+}
+
+// ---------------------------------------------------------------------------------------------
+// (103) `P10.21-a` — LES DEUX DERNIÈRES SURFACES DE MISE EN FILE LISENT L'AVEU D'UNE TRACE
+//       MANQUANTE, LES TROIS DISCRIMINANTS DU LOT 101 SORTENT DE L'ABRI DE L'AIGUILLAGE, LE PANNEAU
+//       DE RÉTENTION DIT LA BORNE DE SA PAGE, ET LE TYPE D'UN LIEN DE DOSSIER EST DIT.
+//
+// CE QUE LE DÉMON SERT. (1) `action_create` (daemon/src/handlers/actions.rs) pose la riposte, constate
+// que le registre tamper-evident n'a pas pris la ligne, et le dit DANS SON CORPS DE SUCCÈS sous la clé
+// partagée `registre_sans_maillon` (daemon/src/ledger.rs) : l'identifiant reste servi, la riposte
+// existe, seule sa trace manque. (2) `action_approve` refuse par cinq causes nommées, dont trois que la
+// console reconnaît depuis le lot 101. (3) `ledger_page` (daemon/src/handlers/admin_ui.rs) sert
+// `has_more`. (4) `case_link_add` (daemon/src/handlers/caseops.rs) écrit le type d'un lien de dossier.
+//
+// CE QUE LA CONSOLE EN FAISAIT, MESURÉ SUR LES MODULES RÉELS.
+//   · Le formulaire de riposte (`web/detection_admin.js`) et le geste « bannir » d'une ligne de
+//     résultats (`web/viz.js`) recevaient la clé de la trace manquante et la laissaient tomber : la
+//     riposte partait en file, le registre n'en portait rien, et l'écran disait « créée » tout court.
+//   · Les trois ouvertures du lot 101 n'étaient jugées qu'À TRAVERS `cleDuRefusDeRiposte`, donc
+//     ABRITÉES par l'ordre de ses branches.
+//   · Le panneau de rétention nommait sa borne par le seul nombre d'entrées relues, sans lire
+//     `has_more` : « AUCUN changement parmi les 50 dernières » ne disait pas si ces cinquante étaient
+//     tout le registre ou sa première page.
+//   · La puce d'un lien de dossier peignait le jeton nu entre parenthèses — « #12 (blocks) ».
+//
+// CE QUI ÉTAIT FAUX DANS L'ÉNONCÉ DE CE LOT, ET MESURÉ ICI. (1) « le `kind` d'un lien est libre côté
+// démon, AUCUNE allowlist » — `case_link_handler` prend bien le mot tel quel, mais `case_link_add` le
+// RAMÈNE à `duplicate | blocks | related` avant l'INSERT : le vocabulaire ÉCRIT est CLOS, et c'est
+// celui que le formulaire de cette console propose déjà. Ce qui reste ouvert est la COLONNE (`kind
+// TEXT NOT NULL DEFAULT 'related'`, aucun `CHECK`) : une ligne posée autrement est SERVIE telle quelle,
+// et c'est elle que le jeton dit libre couvre. (2) « la borne de mot après une lettre accentuée » — le
+// piège NE MORD PAS les trois ouvertures de ce lot : « LUE », « ENREGISTRÉE » et « introuvable »
+// finissent toutes sur une lettre ASCII. La borne Unicode est reprise pour l'effet INVERSE, qui n'avait
+// pas été nommé : `\b` accepte une lettre accentuée juste APRÈS, donc il reconnaissait « RIPOSTE NON
+// LUEÉ… ». (3) « dire qu'il en existe d'autres quand `has_more` l'affirme » — `has_more` n'affirme PAS
+// l'existence : il vaut `!next_cursor.is_null()`, et le curseur n'est posé que lorsque la page rend
+// EXACTEMENT autant de lignes qu'elle en demandait ; le démon écrit lui-même « il reste PROBABLEMENT
+// des lignes ». Un registre de cinquante entrées exactement le rend vrai sans qu'aucune ligne ne soit
+// derrière, et la phrase de la console dit donc la page pleine et le curseur, pas l'existence.
+//
+// L'ANCRAGE. Aucune phrase du démon n'est recopiée : la clé et la cause de la trace manquante, les cinq
+// causes de riposte, les deux causes VOISINES d'autres familles (liste illisible, visibilité non lue),
+// le calcul de `has_more` et l'allowlist des types de lien sont EXTRAITS de l'arbre du démon. Les
+// discriminants de la console sont exercés NUS et confrontés à ces littéraux DANS LES DEUX SENS. Si
+// l'un d'eux cesse d'exister, ce témoin REFUSE DE CONCLURE.
+//
+// CE QUE CE TÉMOIN NE TIENT PAS : il ne rejoue aucune route du démon — il en DÉRIVE les mots et
+// fabrique les corps qui les portent ; il juge le TEXTE et les attributs d'un arbre, jamais l'encre
+// qu'un moteur de rendu peint (le formulaire de riposte reste OUVERT pour porter son aveu, et ce témoin
+// mesure l'absence de la classe `hidden`, pas la visibilité réelle) ; il ne dit rien de la langue
+// anglaise de ces phrases — il vérifie seulement que les deux faces existent ; et il ne mesure pas la
+// durée d'affichage d'un avis (les minuteries longues sont capturées, pas jouées).
+// ---------------------------------------------------------------------------------------------
+{
+  const url103 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const modNoyau103 = await import(url103("core.js"));
+  const modDet103 = await import(url103("detection_admin.js"));
+  const modViz103 = await import(url103("viz.js"));
+  const modRetention103 = await import(url103("retention.js"));
+  const modDossiers103 = await import(url103("cases.js"));
+  const { S: S103 } = await import(url103("state.js"));
+  // L'INSTANCE ANGLAISE DU POINT COMMUN. Un module chargé sous une adresse de langue est un module
+  // DISTINCT (mesuré par le témoin 68) : la page réelle porte donc DEUX câblages du formulaire de
+  // riposte, un par instance, et c'est la dernière reprise après l'attente du réseau qui peint. Les
+  // deux faces de la MÊME table sont donc lues ici, et l'aveu peint doit être l'une d'elles — un
+  // module qui réécrirait la phrase de son côté rougirait quelle que soit l'instance qui a peint.
+  const langueOrigine103 = localStorage.getItem("soc_lang");
+  localStorage.setItem("soc_lang", "en");
+  const modNoyauEn103 = await import(url103("core.js") + SUFFIXE_LANGUE);
+  if (langueOrigine103 === null) localStorage.removeItem("soc_lang"); else localStorage.setItem("soc_lang", langueOrigine103);
+
+  const tic103 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser103 = async (n = 30) => { for (let i = 0; i < n; i++) await tic103(); };
+  const nu103 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ");
+  const cueillir103 = (el, pred, acc) => { if (el && pred(el)) acc.push(el); ((el && el.children) || []).forEach((c) => cueillir103(c, pred, acc)); return acc; };
+  const avis103 = () => document.querySelectorAll(".toast").map((t) => String(t.textContent).replace(/\s+/g, " "));
+  const instrument103 = (vrai, quoi) => exiger(vrai, `(103-instrument) ${quoi} : le corps jugé ci-dessous n'existe plus côté démon, ce témoin REFUSE DE CONCLURE`);
+
+  // ── (0) L'INSTRUMENT : TOUT CE QUI EST JUGÉ PLUS BAS EST LU DANS L'ARBRE DU DÉMON ──────────────
+  const DOSSIER_HANDLERS103 = path.join(RACINE, "daemon", "src", "handlers");
+  const HANDLERS103 = readdirSync(DOSSIER_HANDLERS103).filter((f) => f.endsWith(".rs"))
+    .map((f) => readFileSync(path.join(DOSSIER_HANDLERS103, f), "utf8")).join("\n");
+  const DOSSIER_DEMON103 = path.join(RACINE, "daemon", "src");
+  const DEMON103 = HANDLERS103 + "\n" + readdirSync(DOSSIER_DEMON103).filter((f) => f.endsWith(".rs"))
+    .map((f) => readFileSync(path.join(DOSSIER_DEMON103, f), "utf8")).join("\n");
+  const recomposer103 = (t) => String(t).replace(/\\\r?\n\s*/g, "");
+  const litteralRust103 = (src, nom) => {
+    const m = src.match(new RegExp(nom + ': &str =\\s*"([\\s\\S]*?)";'));
+    return m ? recomposer103(m[1]) : "";
+  };
+
+  // (0.a) LA CLÉ SOUS LAQUELLE UN SUCCÈS AVOUE QUE SA TRACE MANQUE, ET LA CAUSE QU'IL SERT AVEC.
+  const CLE_SANS_MAILLON103 = litteralRust103(DEMON103, "CLE_REGISTRE_SANS_MAILLON");
+  const CAUSE_SANS_TRACE103 = litteralRust103(DEMON103, "CAUSE_GESTE_SANS_TRACE");
+  instrument103(CLE_SANS_MAILLON103 === "registre_sans_maillon" && CAUSE_SANS_TRACE103.startsWith("TRACE MANQUANTE") && CAUSE_SANS_TRACE103.length > 150,
+    "`CLE_REGISTRE_SANS_MAILLON` ou `CAUSE_GESTE_SANS_TRACE` n'est plus lisible dans daemon/src/");
+  instrument103(new RegExp("corps\\[CLE_REGISTRE_SANS_MAILLON\\] = json!\\(format!\\(\"\\{CAUSE_GESTE_SANS_TRACE\\} \\(\\{cause\\}\\)\"\\)\\);").test(HANDLERS103),
+    "aucun handler ne pose plus l'aveu de trace manquante À CÔTÉ de son succès");
+  instrument103(/let mut corps = json!\(\{ "id": id \}\);/.test(HANDLERS103) && /Json\(corps\)\.into_response\(\)/.test(HANDLERS103),
+    "la mise en file ne sert plus un corps où l'identifiant et l'aveu tiennent ENSEMBLE");
+
+  // (0.b) LES CINQ CAUSES DE RIPOSTE, ET LES DEUX VOISINES D'AUTRES FAMILLES QUE LA CONSOLE LIT AUSSI.
+  const CAUSE_NON_LUE103 = litteralRust103(HANDLERS103, "CAUSE_RIPOSTE_NON_LUE");
+  const CAUSE_NON_ENREGISTREE103 = litteralRust103(HANDLERS103, "CAUSE_APPROBATION_NON_ENREGISTREE");
+  const CAUSE_INTROUVABLE103 = litteralRust103(HANDLERS103, "CAUSE_RIPOSTE_INTROUVABLE");
+  const CAUSE_APPRO_SANS_TRACE103 = litteralRust103(HANDLERS103, "CAUSE_APPROBATION_SANS_TRACE");
+  const CAUSE_BAN_NON_ARME103 = litteralRust103(HANDLERS103, "CAUSE_BAN_NON_ARME");
+  const CAUSE_NON_MISE_EN_FILE103 = litteralRust103(HANDLERS103, "CAUSE_RIPOSTE_NON_MISE_EN_FILE");
+  const CAUSE_LISTE103 = litteralRust103(HANDLERS103, "CAUSE_LISTE_ILLISIBLE");
+  const CAUSE_VISIBILITE103 = litteralRust103(HANDLERS103, "CAUSE_VISIBILITE_NON_LUE");
+  instrument103(CAUSE_NON_LUE103.startsWith("RIPOSTE NON LUE") && CAUSE_NON_LUE103.length > 150,
+    "`CAUSE_RIPOSTE_NON_LUE` n'est plus lisible dans daemon/src/handlers/");
+  instrument103(CAUSE_NON_ENREGISTREE103.startsWith("APPROBATION NON ENREGISTRÉE") && CAUSE_NON_ENREGISTREE103.length > 120,
+    "`CAUSE_APPROBATION_NON_ENREGISTREE` n'est plus lisible dans daemon/src/handlers/");
+  instrument103(CAUSE_INTROUVABLE103.startsWith("riposte introuvable") && CAUSE_INTROUVABLE103.length > 40,
+    "`CAUSE_RIPOSTE_INTROUVABLE` n'est plus lisible dans daemon/src/handlers/");
+  instrument103(CAUSE_APPRO_SANS_TRACE103.startsWith("APPROBATION SANS TRACE") && CAUSE_BAN_NON_ARME103.startsWith("BAN NON ARMÉ"),
+    "les deux causes voisines de `P10.20-v` ne sont plus lisibles dans daemon/src/handlers/");
+  instrument103(CAUSE_NON_MISE_EN_FILE103.startsWith("RIPOSTE NON MISE EN FILE") && CAUSE_NON_MISE_EN_FILE103.length > 150,
+    "`CAUSE_RIPOSTE_NON_MISE_EN_FILE` n'est plus lisible dans daemon/src/handlers/");
+  instrument103(CAUSE_LISTE103.includes("liste NON LUE") && CAUSE_VISIBILITE103.includes("VISIBILITÉ COURANTE NON LUE"),
+    "les deux phrases VOISINES d'autres familles ne sont plus lisibles : les verdicts négatifs ci-dessous porteraient sur des chaînes vides");
+  instrument103(/Err\(e\) => return err_json\(StatusCode::SERVICE_UNAVAILABLE, format!\("\{CAUSE_RIPOSTE_NON_LUE\} \(\{e\}\)"\)\)/.test(HANDLERS103)
+    && /Ok\(None\) => return err_json\(StatusCode::NOT_FOUND, CAUSE_RIPOSTE_INTROUVABLE\)/.test(HANDLERS103),
+    "l'approbation ne refuse plus par les causes que ces ouvertures reconnaissent, ou plus dans le moule `<cause> (<détail>)`");
+
+  // (0.c) CE QUE `has_more` DIT EXACTEMENT, LU DANS LE FABRICANT DE LA PAGE DU JOURNAL.
+  instrument103(/"has_more": !next_cursor\.is_null\(\),/.test(HANDLERS103),
+    "`has_more` n'est plus « un curseur de suite est servi » dans daemon/src/handlers/");
+  instrument103(/let next_cursor = if entries\.len\(\) as i64 == ask\.limit \{/.test(HANDLERS103),
+    "le curseur de suite n'est plus posé sur une page PLEINE : la phrase de la console affirmerait autre chose que la clé");
+
+  // (0.d) LE VOCABULAIRE DES TYPES DE LIEN, LU DANS L'ÉCRIVAIN LUI-MÊME. L'ÉNONCÉ DISAIT « AUCUNE
+  //       ALLOWLIST » ; elle est ici, et c'est elle qui ferme le vocabulaire ÉCRIT.
+  const allowlistDesLiens103 = HANDLERS103.match(/let kind = match kind \{\s*((?:"[a-z_]+" \| )*"[a-z_]+") => kind,\s*_ => "([a-z_]+)",/);
+  instrument103(!!allowlistDesLiens103,
+    "l'allowlist des types de lien de dossier n'est plus lisible dans daemon/src/handlers/ (`case_link_add`)");
+  const GENRES_DE_LIEN103 = allowlistDesLiens103 ? [...allowlistDesLiens103[1].matchAll(/"([a-z_]+)"/g)].map((m) => m[1]).sort() : [];
+  instrument103(GENRES_DE_LIEN103.join(",") === "blocks,duplicate,related",
+    `le vocabulaire des types de lien ÉCRIT par le démon a changé — la console en nommerait un de moins, ou un de trop : ${JSON.stringify(GENRES_DE_LIEN103)}`);
+  instrument103(!!allowlistDesLiens103 && allowlistDesLiens103[2] === "related" && /b\.get\("kind"\)\.and_then\(\|v\| v\.as_str\(\)\)\.unwrap_or\("related"\)/.test(HANDLERS103),
+    "le repli du type de lien n'est plus `related` : la valeur par défaut rendue à l'écran ne serait plus celle que le démon écrit");
+  const ddlDuLien103 = (readFileSync(path.join(RACINE, "daemon", "src", "migrate.rs"), "utf8")
+    .match(/CREATE TABLE IF NOT EXISTS case_link\(([\s\S]*?)\);/) || [])[1] || "";
+  instrument103(/kind TEXT NOT NULL DEFAULT 'related',/.test(ddlDuLien103) && !/CHECK/.test(ddlDuLien103),
+    "la colonne `case_link.kind` a gagné une contrainte, ou perdu son défaut : le jeton DIT libre couvrirait un cas que le schéma interdit désormais");
+
+  // ── (1) LE LECTEUR PARTAGÉ DE L'AVEU : UN SEUL NOM DE CLÉ, UNE SEULE PHRASE ────────────────────
+  const causeDeLaTrace103 = modNoyau103.causeDeLaTraceManquante;
+  const phraseDeLaTrace103 = modNoyau103.phraseDeLaTraceManquante;
+  const aveuDeLaTrace103 = modNoyau103.aveuDeLaTraceManquante;
+  const motDeLaTrace103 = modNoyau103.motDeLaTraceManquante;
+  exiger(typeof causeDeLaTrace103 === "function" && typeof phraseDeLaTrace103 === "function"
+    && typeof aveuDeLaTrace103 === "function" && typeof motDeLaTrace103 === "function",
+    "(103-instrument) le lecteur commun de la trace manquante n'est pas exporté par web/core.js : il n'y a plus de point commun à juger");
+  exiger(modNoyau103.CLE_DU_REGISTRE_SANS_MAILLON === CLE_SANS_MAILLON103,
+    `(103-1) le point commun ne nomme plus la clé que le démon sert : « ${modNoyau103.CLE_DU_REGISTRE_SANS_MAILLON} » contre « ${CLE_SANS_MAILLON103} »`);
+  const CAUSE_SERVIE103 = CAUSE_SANS_TRACE103 + " (disk I/O error)";
+  exiger(causeDeLaTrace103({ id: 1, [CLE_SANS_MAILLON103]: "  " + CAUSE_SERVIE103 + "  " }) === CAUSE_SERVIE103,
+    "(103-1) le lecteur commun ne rend pas la cause SERVIE telle quelle, débarrassée de ses seuls blancs");
+  exiger(causeDeLaTrace103({ id: 1 }) === "" && causeDeLaTrace103(null) === "" && causeDeLaTrace103({}) === ""
+    && causeDeLaTrace103({ [CLE_SANS_MAILLON103]: "" }) === "",
+    "(103-1-négatif) le lecteur commun rend une cause là où le démon n'en sert AUCUNE : chaque mise en file réussie traînerait un aveu vide");
+  exiger(motDeLaTrace103().length > 100 && /EN FILE/.test(motDeLaTrace103()) && /ne recommencez PAS|do NOT start over/.test(motDeLaTrace103()),
+    `(103-1) la phrase du point commun ne dit plus ce qui existe quand même, ni ce qu'un second geste ferait : « ${motDeLaTrace103().slice(0, 200)} »`);
+  exiger(!motDeLaTrace103().includes(CAUSE_SANS_TRACE103) && phraseDeLaTrace103(CAUSE_SERVIE103).includes(motDeLaTrace103())
+    && phraseDeLaTrace103(CAUSE_SERVIE103).includes(CAUSE_SERVIE103),
+    "(103-1) le repli en chaîne ne porte pas la phrase ET la cause, ou la phrase recopie la cause du démon — le lexique ne pourrait plus l'égaler");
+  exiger(modDossiers103.motDeLaTraceManquante() === motDeLaTrace103(),
+    "(103-1) l'étape de runbook ne rend plus LA MÊME phrase que le point commun : les trois surfaces avoueraient le même fait avec des mots différents");
+  const FACES_DE_LA_TRACE103 = [motDeLaTrace103(), modNoyauEn103.motDeLaTraceManquante()];
+  instrument103(FACES_DE_LA_TRACE103[0] !== FACES_DE_LA_TRACE103[1] && FACES_DE_LA_TRACE103.every((f) => f.length > 100),
+    "les deux faces de la phrase de la trace manquante ne se distinguent plus : le verdict sur le nœud peint serait vrai pour n'importe laquelle des deux");
+  const aveuHorsLigne103 = aveuDeLaTrace103(CAUSE_SERVIE103);
+  exiger(aveuHorsLigne103.tagName === "DIV" && aveuDeLaTrace103(CAUSE_SERVIE103, "span").tagName === "SPAN",
+    "(103-1) la fabrique du point commun ne rend plus la balise que le puits demande : un bloc dans une barre de formulaire casserait la ligne");
+  exiger(aveuHorsLigne103.className === "bad" && aveuHorsLigne103.getAttribute("data-trace-manquante") === "1"
+    && aveuHorsLigne103.children.length >= 1 && nu103(aveuHorsLigne103.children[0]) === motDeLaTrace103()
+    && !nu103(aveuHorsLigne103.children[0]).includes(CAUSE_SERVIE103) && nu103(aveuHorsLigne103).includes(CAUSE_SERVIE103),
+    "(103-1) l'aveu du point commun n'est pas à DEUX nœuds dans le registre de l'alarme, ou il a perdu sa marque de pose");
+
+  // ── (2) LES TROIS OUVERTURES DU LOT 101, NUES, CONFRONTÉES AUX LITTÉRAUX DANS LES DEUX SENS ────
+  // MESURÉ : jugées à travers `cleDuRefusDeRiposte` seulement, elles sont ABRITÉES par l'ordre des
+  // branches — une ouverture élargie ne déplace aucun verdict tant qu'une voisine est reconnue plus
+  // haut. Un ordre de branches n'est pas une garde : il se réécrit.
+  const ouvertureNonLue103 = modDet103.OUVERTURE_DE_LA_RIPOSTE_NON_LUE;
+  const ouvertureNonEnregistree103 = modDet103.OUVERTURE_DE_L_APPROBATION_NON_ENREGISTREE;
+  const ouvertureIntrouvable103 = modDet103.OUVERTURE_DE_LA_RIPOSTE_INTROUVABLE;
+  exiger(ouvertureNonLue103 instanceof RegExp && ouvertureNonEnregistree103 instanceof RegExp && ouvertureIntrouvable103 instanceof RegExp,
+    "(103-instrument) les trois ouvertures du lot 101 ne sont pas exportées NUES par web/detection_admin.js : elles resteraient jugées à travers l'aiguillage qui les abrite");
+  exiger(ouvertureNonLue103.test(CAUSE_NON_LUE103) && ouvertureNonEnregistree103.test(CAUSE_NON_ENREGISTREE103)
+    && ouvertureIntrouvable103.test(CAUSE_INTROUVABLE103),
+    "(103-2) une ouverture ne reconnaît PLUS la phrase que le démon écrit : le refus tomberait dans le fourre-tout « geste refusé »");
+  exiger(!ouvertureNonLue103.test(CAUSE_LISTE103) && !ouvertureNonLue103.test(CAUSE_VISIBILITE103)
+    && !ouvertureNonLue103.test(CAUSE_NON_MISE_EN_FILE103) && !ouvertureNonLue103.test(CAUSE_NON_ENREGISTREE103)
+    && !ouvertureNonLue103.test(CAUSE_APPRO_SANS_TRACE103) && !ouvertureNonLue103.test(CAUSE_BAN_NON_ARME103)
+    && !ouvertureNonLue103.test(CAUSE_INTROUVABLE103),
+    "(103-2-négatif) l'ouverture de la RIPOSTE NON LUE reconnaît une phrase voisine : une liste illisible, une visibilité non lue ou une ligne jamais écrite se peindraient « la riposte reste en attente, réessayez » — un geste à refaire là où il n'y a rien à refaire");
+  exiger(!ouvertureNonEnregistree103.test(CAUSE_APPRO_SANS_TRACE103) && !ouvertureNonEnregistree103.test(CAUSE_BAN_NON_ARME103)
+    && !ouvertureNonEnregistree103.test(CAUSE_NON_LUE103) && !ouvertureNonEnregistree103.test(CAUSE_LISTE103)
+    && !ouvertureNonEnregistree103.test(CAUSE_VISIBILITE103) && !ouvertureNonEnregistree103.test(CAUSE_NON_MISE_EN_FILE103),
+    "(103-2-négatif) l'ouverture de l'APPROBATION NON ENREGISTRÉE reconnaît sa voisine « APPROBATION SANS TRACE » : dans l'une le statut EST écrit, dans l'autre non, et l'exploitant lirait « rien n'a été pris » sur une riposte approuvée");
+  exiger(!ouvertureIntrouvable103.test(CAUSE_NON_LUE103) && !ouvertureIntrouvable103.test(CAUSE_NON_ENREGISTREE103)
+    && !ouvertureIntrouvable103.test(CAUSE_LISTE103) && !ouvertureIntrouvable103.test(CAUSE_VISIBILITE103)
+    && !ouvertureIntrouvable103.test(CAUSE_NON_MISE_EN_FILE103),
+    "(103-2-négatif) l'ouverture de la RIPOSTE INTROUVABLE reconnaît une lecture RATÉE : une absence ÉTABLIE et une lecture qui n'a pas eu lieu se liraient pareil");
+  exiger(!ouvertureNonLue103.test("RIPOSTE NON LUES : trois ripostes n'ont pas pu être relues")
+    && !ouvertureNonEnregistree103.test("APPROBATION NON ENREGISTRÉES : deux approbations perdues")
+    && !ouvertureIntrouvable103.test("riposte introuvables : aucune action ne porte ces identifiants"),
+    "(103-2-négatif) une ouverture mord sur un mot PLUS LONG que le sien : une phrase neuve du démon serait peinte avec les mots d'une autre");
+  exiger(!ouvertureNonLue103.test("RIPOSTE NON LUEÉ : une phrase neuve") && !ouvertureIntrouvable103.test("riposte introuvablé : une phrase neuve"),
+    "(103-2-négatif) la borne de mot est restée ASCII (`\\b`) : elle accepte une lettre ACCENTUÉE juste après l'ouverture, donc une phrase neuve du démon qui la prolonge est prise pour elle");
+  exiger(!ouvertureNonLue103.test(CAUSE_NON_ENREGISTREE103 + " " + CAUSE_NON_LUE103)
+    && !ouvertureIntrouvable103.test("approbation refusée : riposte introuvable citée dans le détail"),
+    "(103-2-négatif) une ouverture reconnaît sa phrase AILLEURS qu'en TÊTE du corps servi : le démon sert `<cause> (<détail>)`, et une cause citée dans le détail d'une autre serait prise pour elle");
+  // ET L'AIGUILLAGE REND TOUJOURS LA MÊME CLÉ : les ouvertures nues ne sont pas une seconde lecture.
+  const refusMoule103 = (code, cause, detail) => {
+    const servie = cause + (detail ? " (" + detail + ")" : "");
+    const corps = code >= 500 ? { error: servie, id: "plume-e5-0" } : { error: servie };
+    return { causeDuDemon: servie, message: code + " " + JSON.stringify(corps) };
+  };
+  const cle103 = modDet103.cleDuRefusDeRiposte;
+  exiger(cle103("approuver", refusMoule103(503, CAUSE_NON_LUE103, "database is locked")) === "riposte_non_lue"
+    && cle103("approuver", refusMoule103(503, CAUSE_NON_ENREGISTREE103, "disk full")) === "approbation_non_enregistree"
+    && cle103("approuver", refusMoule103(404, CAUSE_INTROUVABLE103, "")) === "riposte_introuvable",
+    "(103-2) l'aiguillage ne rend plus la clé de l'une des trois causes du lot 101 : les ouvertures nues et l'usage ont divergé");
+  exiger(cle103("approuver", refusMoule103(503, CAUSE_LISTE103, "no such table")) === "approbation_refusee"
+    && cle103("annuler", refusMoule103(503, CAUSE_VISIBILITE103, "")) === "annulation_refusee",
+    "(103-2-négatif) une phrase d'une AUTRE famille reçoit la clé d'un refus de riposte : le fourre-tout nommé est le seul endroit juste pour elle");
+
+  // ── LE SIMULACRE DE TRANSPORT. Appariement EXACT sur « <MÉTHODE> <chemin> » ; corps en OBJET ou en
+  //    CHAÎNE, parce que les deux formes existent côté démon et qu'une seule ne prouverait rien.
+  const fetchOrigine103 = globalThis.fetch;
+  const minuterieOrigine103 = globalThis.setTimeout;
+  let hoteDesAvis103 = document.querySelector("#toasts");
+  if (!hoteDesAvis103 || !hoteDesAvis103.isConnected) { hoteDesAvis103 = document.createElement("div"); hoteDesAvis103.id = "toasts"; document.body.appendChild(hoteDesAvis103); }
+  const etatOrigine103 = { admin: S103.isAdmin, auth: S103.AUTH, dossier: S103.caseSelectedId, retention: S103.RET_STATE };
+  let servis103 = {};
+  const appels103 = [];
+  globalThis.fetch = async (u, init) => {
+    const chemin = String(u).split("?")[0];
+    const methode = ((init && init.method) || "GET").toUpperCase();
+    appels103.push(methode + " " + chemin);
+    const r = servis103[methode + " " + chemin];
+    if (!r) return { ok: true, status: 200, text: async () => "{}", json: async () => ({}) };
+    const texte = typeof r.corps === "string" ? r.corps : JSON.stringify(r.corps === undefined ? {} : r.corps);
+    return { ok: (r.statut || 200) < 400, status: r.statut || 200, text: async () => texte, json: async () => JSON.parse(texte) };
+  };
+  // Un avis pose 9 000 ms : le jouer retiendrait le processus jusqu'à son échéance, donc il est capturé.
+  globalThis.setTimeout = (fn, ms) => {
+    if (ms >= 1000) return 0;
+    if (ms >= 100) return minuterieOrigine103(fn, 0);
+    return minuterieOrigine103(fn, ms);
+  };
+
+  try {
+    S103.isAdmin = true;
+    S103.AUTH = { user: "hugo", role: "admin" };
+    // La file est relue après chaque création : elle est servie VIDE pour que ce rechargement ne peigne
+    // ni avis ni ligne qui brouillerait les avis comptés plus bas.
+    servis103["GET /api/actions"] = { corps: { actions: [], served: 0, window: 200, total: 0, total_capped: false } };
+
+    // ══ (a) LE FORMULAIRE DE RIPOSTE : L'AVEU SE POSE AU PUITS DU RÉSULTAT, EN DEUX NŒUDS ════════
+    // JUGÉ SUR LES NŒUDS QUE LE CÂBLAGE RÉEL REND : le gestionnaire de soumission est posé AU
+    // CHARGEMENT du module, sur les nœuds d'`index.html` que ce harnais a construits — fabriquer ici
+    // un formulaire de remplacement le brancherait à rien, et tout ce qui suit serait vrai par vacuité.
+    const formulaire103 = document.querySelector("#act-form");
+    const resultat103 = document.querySelector("#af-result");
+    const cible103 = document.querySelector("#af-target");
+    const raison103 = document.querySelector("#af-reason");
+    const cablagesDuFormulaire103 = ((formulaire103 && formulaire103._ecouteurs) || []).filter((e) => e.type === "submit").length;
+    instrument103(cablagesDuFormulaire103 >= 1,
+      "le formulaire de riposte d'`index.html` ne porte AUCUN écouteur de soumission : le geste jugé ci-dessous n'atteindrait jamais la route");
+    const soumettre103 = async () => {
+      formulaire103.classList.remove("hidden");   // ce que fait « + Nouvelle action »
+      cible103.value = "203.0.113.77"; raison103.value = "force brute SSH";
+      formulaire103.dispatchEvent(new Evenement("submit", { bubbles: false }));
+      await laisser103(60);
+    };
+    const aveuDeTrace103 = (hote) => cueillir103(hote, (e) => e.getAttribute && e.getAttribute("data-trace-manquante") === "1", [])[0];
+    const aveuDeRefus103 = (hote) => cueillir103(hote, (e) => e.getAttribute && e.getAttribute("data-refus-de-riposte") === "1", [])[0];
+
+    // (a1) LA MISE EN FILE PASSE ET LA TRACE MANQUE : les deux se disent, et le formulaire reste ouvert.
+    servis103["POST /api/actions"] = { statut: 200, corps: { id: 4301, [CLE_SANS_MAILLON103]: CAUSE_SERVIE103 } };
+    const appelsAvantA1 = appels103.length;
+    await soumettre103();
+    exiger(appels103.slice(appelsAvantA1).includes("POST /api/actions"),
+      `(103a-instrument) la soumission du formulaire n'atteint pas la route de mise en file : les verdicts ci-dessous ne porteraient sur rien — ${JSON.stringify(appels103.slice(appelsAvantA1))}`);
+    const aveuA1 = aveuDeTrace103(resultat103);
+    exiger(!!aveuA1,
+      `(103a1) LA TRACE MANQUANTE NE PEINT AUCUN NŒUD sur le formulaire de riposte : la riposte part en file, le registre tamper-evident n'en porte rien, et l'écran dit « créée » tout court — « ${nu103(resultat103).slice(0, 300)} »`);
+    exiger(aveuA1.className === "bad" && aveuA1.children.length >= 1 && FACES_DE_LA_TRACE103.includes(nu103(aveuA1.children[0]))
+      && !nu103(aveuA1.children[0]).includes(CAUSE_SERVIE103) && nu103(aveuA1).includes(CAUSE_SERVIE103),
+      `(103a1) l'aveu n'est pas à DEUX nœuds — la phrase du POINT COMMUN au puits, la cause SERVIE à côté : « ${nu103(aveuA1).slice(0, 300)} »`);
+    exiger(!formulaire103.classList.contains("hidden"),
+      "(103a1) LE FORMULAIRE SE REFERME SUR SON AVEU : `#af-result` vit DANS `#act-form` (web/index.html), et replier le formulaire emporte les deux nœuds — un aveu dans un conteneur masqué est un silence");
+    exiger(cible103.value === "" && raison103.value === "",
+      "(103a1) les champs gardent la saisie sous une phrase qui dit de NE PAS recommencer : le second clic poserait une seconde riposte, à portée de main");
+    // NÉGATIF — UN SUCCÈS SANS LA CLÉ NE PEINT RIEN, ET LE FORMULAIRE SE REFERME COMME AVANT.
+    servis103["POST /api/actions"] = { statut: 200, corps: { id: 4302 } };
+    await soumettre103();
+    exiger(!aveuDeTrace103(resultat103) && nu103(resultat103) === "",
+      `(103a1-négatif) un aveu de trace manquante est peint sur une mise en file dont le registre a PRIS la ligne — un instrument qui avoue toujours ne mesure rien : « ${nu103(resultat103).slice(0, 200)} »`);
+    exiger(formulaire103.classList.contains("hidden"),
+      "(103a1-négatif) le formulaire reste OUVERT sur un succès entier : la vue ne se replierait plus jamais, et le repli conditionnel ne mesurerait rien");
+    // NÉGATIF — UN REFUS RESTE UN REFUS : l'aveu neuf ne prend la place ni du 503 nommé ni du corps `{error}`.
+    servis103["POST /api/actions"] = { statut: 503, corps: { error: CAUSE_NON_MISE_EN_FILE103 + " (database or disk is full)", id: "plume-e5-1" } };
+    await soumettre103();
+    exiger(!!aveuDeRefus103(resultat103) && !aveuDeTrace103(resultat103) && nu103(resultat103).includes(CAUSE_NON_MISE_EN_FILE103),
+      `(103a1-négatif) un refus de mise en file se peint comme une trace manquante, ou ne se peint plus du tout : « ${nu103(resultat103).slice(0, 300)} »`);
+    exiger(!formulaire103.classList.contains("hidden"),
+      "(103a1-négatif) le formulaire se referme sur un REFUS : l'exploitant perdrait sa saisie et le motif du refus");
+    servis103["POST /api/actions"] = { statut: 200, corps: { error: "cible invalide pour ban_ip" } };
+    await soumettre103();
+    exiger(!!aveuDeRefus103(resultat103) && !aveuDeTrace103(resultat103) && nu103(resultat103).includes("cible invalide pour ban_ip"),
+      `(103a1-négatif) une saisie écartée, servie en 200 dans le corps, n'est plus lue depuis que le corps porte aussi un aveu : « ${nu103(resultat103).slice(0, 300)} »`);
+    resultat103.replaceChildren(); formulaire103.classList.add("hidden");
+
+    // ══ (b) LE GESTE « BANNIR » D'UNE LIGNE DE RÉSULTATS : L'AVEU PART À L'AVIS ══════════════════
+    const fenetre103 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !c.classList.contains("out")).pop();
+    const confirmer103 = async () => {
+      const ov = fenetre103();
+      const form = ov && ov.children[0] ? ov.children[0].children[0] : null;
+      if (form && typeof form.onsubmit === "function") form.onsubmit({ preventDefault() {} });
+      await laisser103();
+    };
+    const bannir103 = async () => { const p = modViz103.banIp("203.0.113.9"); await laisser103(); await confirmer103(); await p; await laisser103(60); };
+    servis103["POST /api/actions"] = { statut: 200, corps: { id: 4303, [CLE_SANS_MAILLON103]: CAUSE_SERVIE103 } };
+    const avisAvantB1 = avis103().length;
+    await bannir103();
+    const avisB1 = avis103().slice(avisAvantB1);
+    exiger(avisB1.length >= 1,
+      "(103b-instrument) le geste « bannir » ne rend AUCUN avis : les verdicts ci-dessous seraient vrais par vacuité");
+    const dit103 = avisB1.join(" | ");
+    exiger(dit103.includes(motDeLaTrace103()) && dit103.includes(CAUSE_SERVIE103),
+      `(103b1) LA TRACE MANQUANTE NE DIT RIEN sur un bannissement lancé depuis une ligne de résultats : le silence s'y lit « c'est parti » — « ${dit103.slice(0, 300)} »`);
+    exiger(avisB1.some((a) => a.includes(phraseDeLaTrace103(CAUSE_SERVIE103))),
+      `(103b1) l'avis ne porte pas la phrase du POINT COMMUN, cause comprise : cette surface aurait sa propre rédaction du même aveu — « ${dit103.slice(0, 300)} »`);
+    exiger(avisB1.some((a) => /Action créée/.test(a)),
+      `(103b1) l'avis de SUCCÈS a disparu : la riposte EST en file, et seule sa trace manque — « ${dit103.slice(0, 300)} »`);
+    servis103["POST /api/actions"] = { statut: 200, corps: { id: 4304 } };
+    const avisAvantB2 = avis103().length;
+    await bannir103();
+    exiger(!avis103().slice(avisAvantB2).join(" | ").includes(motDeLaTrace103()),
+      `(103b1-négatif) l'aveu de trace manquante part sur une mise en file dont le registre a PRIS la ligne : ${JSON.stringify(avis103().slice(avisAvantB2))}`);
+
+    // ══ (c) LE PANNEAU DE RÉTENTION : LA BORNE DE LA PAGE EST DITE, ET LE SILENCE DU DÉMON AVOUÉ ══
+    const cleDeLaSuite103 = modRetention103.cleDeLaSuiteDuRegistre;
+    const motDeLaSuite103 = modRetention103.motDeLaSuiteDuRegistre;
+    exiger(typeof cleDeLaSuite103 === "function" && typeof motDeLaSuite103 === "function",
+      "(103-instrument) le discriminant de la suite du registre n'est pas exporté par web/retention.js : il n'y aurait rien à juger dans les deux sens");
+    exiger(cleDeLaSuite103({ has_more: true }) === "il_en_existe_peut_etre_d_autres" && cleDeLaSuite103({ has_more: false }) === "aucune_suite",
+      "(103c) le discriminant ne sépare plus les deux valeurs que le démon sert");
+    exiger(cleDeLaSuite103({}) === "suite_non_dite" && cleDeLaSuite103(null) === "suite_non_dite"
+      && cleDeLaSuite103({ has_more: "true" }) === "suite_non_dite" && cleDeLaSuite103({ has_more: null }) === "suite_non_dite",
+      "(103c-négatif) une clé ABSENTE ou d'un autre type est prise pour « il n'y en a pas d'autres » : un silence se lirait comme une fin de registre");
+    exiger(motDeLaSuite103("aucune_suite", 12) === "",
+      `(103c-négatif) le panneau dit quelque chose là où le démon a dit qu'il n'y a pas de suite : la page n'était pas pleine, ces entrées sont tout le registre — « ${motDeLaSuite103("aucune_suite", 12)} »`);
+    exiger(motDeLaSuite103("il_en_existe_peut_etre_d_autres", 50).includes("50") && !motDeLaSuite103("il_en_existe_peut_etre_d_autres", 50).includes("{nombre}"),
+      "(103c) la borne annoncée est FIGÉE ou son gabarit atteint l'écran");
+    exiger(!/\bexistent\b|\bil en existe\b|\bthere are more\b/i.test(motDeLaSuite103("il_en_existe_peut_etre_d_autres", 50)),
+      `(103c-négatif) la phrase AFFIRME que d'autres entrées existent : \`has_more\` ne dit que « la page est pleine et un curseur est servi », et un registre de cinquante entrées exactement le rend vrai sans qu'aucune ligne ne soit derrière — « ${motDeLaSuite103("il_en_existe_peut_etre_d_autres", 50)} »`);
+    const dernierChangement103 = document.querySelector("#retention-last");
+    instrument103(!!dernierChangement103 && dernierChangement103.isConnected,
+      "le puits du dernier changement audité n'est plus dans `index.html` : le chargeur réel n'aurait nulle part où peindre");
+    const ACQUITTEMENT103 = { id: 91, ts: 1758001100, kind: "alert.ack", detail: "alerte #12 acquittée", hash: "aaaa1111bbbb2222" };
+    const PREFIXE_RETENTION103 = (HANDLERS103.match(/audit_config_change\(\s*&conn,\s*&format!\("(config\.retention\.)\{skey\}"\),/) || [])[1] || "";
+    instrument103(PREFIXE_RETENTION103 === "config.retention.",
+      "`retention_settings_put` n'écrit plus le genre `config.retention.<clé>` au registre : le cas « un changement TROUVÉ » ci-dessous ne porterait sur rien");
+    const CHANGEMENT103 = { id: 12, ts: 1758000100, kind: PREFIXE_RETENTION103 + "retention_days", detail: "30->7 par hugo", hash: "eeee5555ffff6666" };
+    const registreDe103 = (entrees, suite) => {
+      const corps = { entries: entrees, ok: true, limit: 50, total: entrees.length, total_capped: false };
+      if (suite !== undefined) corps.has_more = suite;
+      servis103["GET /api/ledger"] = { corps };
+    };
+    const peindre103 = async () => { dernierChangement103.replaceChildren(); await modRetention103.loadRetentionLast(); await laisser103(40); };
+    // (c1) PAGE PLEINE : la borne est dite.
+    registreDe103([ACQUITTEMENT103], true);
+    await peindre103();
+    const texteC1 = nu103(dernierChangement103);
+    exiger(texteC1.includes(motDeLaSuite103("il_en_existe_peut_etre_d_autres", 1)),
+      `(103c1) LE PANNEAU NOMME SA BORNE PAR LE SEUL NOMBRE D'ENTRÉES RELUES : il ne dit pas que la page est pleine et qu'un changement plus ancien peut exister hors de sa portée — « ${texteC1.slice(0, 400)} »`);
+    exiger(/AUCUN changement de rétention/.test(texteC1),
+      `(103c1) la phrase d'absence a disparu sous la borne : « ${texteC1.slice(0, 300)} »`);
+    // (c2) PAGE NON PLEINE : rien n'est dit de plus.
+    registreDe103([ACQUITTEMENT103], false);
+    await peindre103();
+    const texteC2 = nu103(dernierChangement103);
+    exiger(/AUCUN changement de rétention/.test(texteC2) && !texteC2.includes(motDeLaSuite103("il_en_existe_peut_etre_d_autres", 1)),
+      `(103c2-négatif) le panneau annonce une suite là où le démon dit qu'il n'y en a pas : l'exploitant chercherait plus bas ce qui n'existe pas — « ${texteC2.slice(0, 300)} »`);
+    exiger(!texteC2.includes(motDeLaSuite103("suite_non_dite", 1)),
+      `(103c2-négatif) le panneau avoue un silence que le démon n'a pas gardé : l'aveu se poserait sur toute page — « ${texteC2.slice(0, 300)} »`);
+    // (c3) CLÉ ABSENTE : le silence est avoué, jamais pris pour une fin.
+    registreDe103([ACQUITTEMENT103], undefined);
+    await peindre103();
+    const texteC3 = nu103(dernierChangement103);
+    exiger(texteC3.includes(motDeLaSuite103("suite_non_dite", 1)),
+      `(103c3) LE DÉMON N'A RIEN DIT DE LA SUITE ET LE PANNEAU SE TAIT : son absence se lirait comme « c'est tout le registre » — « ${texteC3.slice(0, 400)} »`);
+    exiger(cueillir103(dernierChangement103, (e) => e.classList && e.classList.contains("bad"), []).length >= 1,
+      "(103c3) l'aveu d'un silence du démon n'est pas dans le registre de l'alarme : il se lirait comme une précision de plus");
+    // (c4) UN CHANGEMENT TROUVÉ : la borne ne parle pas — la page est rendue par identifiant DÉCROISSANT,
+    //      donc ce qui est derrière est plus ANCIEN et ne change rien à « le dernier ».
+    registreDe103([ACQUITTEMENT103, CHANGEMENT103], true);
+    await peindre103();
+    const texteC4 = nu103(dernierChangement103);
+    exiger(/Dernier changement de rétention audité/.test(texteC4) && !texteC4.includes(motDeLaSuite103("il_en_existe_peut_etre_d_autres", 2)),
+      `(103c4-négatif) la borne de page est annoncée alors qu'un changement de rétention EST trouvé : elle jetterait un doute sur une ligne que l'ordre décroissant établit — « ${texteC4.slice(0, 300)} »`);
+
+    // ══ (d) LE TYPE D'UN LIEN DE DOSSIER : DIT POUR LES TROIS CONNUS, JETON LIBRE POUR LE RESTE ═══
+    const motDuGenreDeLien103 = modDossiers103.motDuGenreDeLien;
+    exiger(typeof motDuGenreDeLien103 === "function",
+      "(103-instrument) `motDuGenreDeLien` n'est pas exporté par web/cases.js : le vocabulaire des liens ne serait jugé que par le rendu");
+    for (const genre of GENRES_DE_LIEN103) {
+      const mot = motDuGenreDeLien103(genre);
+      exiger(mot.length > 2 && !mot.includes(genre) && !/valeur libre|free value/.test(mot),
+        `(103d) le type « ${genre} » — que le démon ÉCRIT — n'a pas de phrase à l'écran, ou il y arrive en jeton de machine : « ${mot} »`);
+    }
+    exiger(new Set(GENRES_DE_LIEN103.map((g) => motDuGenreDeLien103(g))).size === GENRES_DE_LIEN103.length,
+      "(103d) deux types de lien rendent la MÊME phrase : « ce dossier en double » et « ce dossier en bloque un autre » deviendraient indistincts");
+    const motLibre103 = motDuGenreDeLien103("suspecte-le-meme-acteur");
+    exiger(motLibre103.includes("suspecte-le-meme-acteur") && /valeur libre|free value/.test(motLibre103),
+      `(103d) une valeur hors vocabulaire est rendue NUE, ou son jeton est perdu : l'écran ne dirait pas d'où vient ce mot — « ${motLibre103} »`);
+    exiger(/aucune valeur rendue|no value returned/.test(motDuGenreDeLien103("")) && /aucune valeur rendue|no value returned/.test(motDuGenreDeLien103(null)),
+      `(103d) un type SERVI VIDE rend un nœud vide ou un jeton vide entre guillemets : « ${motDuGenreDeLien103("")} » / « ${motDuGenreDeLien103(null)} »`);
+    // PUIS LA VUE : les puces que la fabrique réelle rend, servies par le transport.
+    const boiteDesLiens103 = document.createElement("div");
+    servis103["GET /api/cases/7/links"] = { corps: { links: [
+      { id: 21, kind: "duplicate", note: "", title: "Même adresse", status: "open" },
+      { id: 22, kind: "suspecte-le-meme-acteur", note: "", title: "Même acteur", status: "open" },
+    ], served: 2, window: 200, total: 2, total_capped: false } };
+    await modDossiers103.renderCaseLinks(boiteDesLiens103, { id: 7 });
+    await laisser103(40);
+    const puces103 = cueillir103(boiteDesLiens103, (e) => e.classList && e.classList.contains("casechip"), []);
+    exiger(puces103.length === 2,
+      `(103d-instrument) la section des liens ne rend pas les deux liens servis (${puces103.length}) : les verdicts ci-dessous ne porteraient sur rien`);
+    exiger(nu103(puces103[0]).includes(motDuGenreDeLien103("duplicate")) && !nu103(puces103[0]).includes("(duplicate)"),
+      `(103d) la puce d'un type CONNU peint encore le jeton nu entre parenthèses : « ${nu103(puces103[0])} »`);
+    exiger(nu103(puces103[1]).includes("suspecte-le-meme-acteur") && /valeur libre|free value/.test(nu103(puces103[1])),
+      `(103d) la puce d'un type hors vocabulaire ne DIT pas que ce mot est une valeur libre : « ${nu103(puces103[1])} »`);
+    exiger(nu103(puces103[0]).includes("Même adresse") && nu103(puces103[1]).includes("#22"),
+      `(103d-négatif) la puce a perdu son identifiant ou son titre en gagnant sa phrase : « ${nu103(puces103[0])} » / « ${nu103(puces103[1])} »`);
+
+    // ══ (f) L'ANNULATION : DEUX REFUS NEUFS, DEUX PHRASES, ET AUCUN GESTE RETENU ═══════════════
+    // `P10.20-w` a séparé les trois issues de `action_cancel` : le 204 n'est plus inconditionnel.
+    // Les deux refus qu'il a gagnés sont VOISINS de deux refus d'approbation à un mot près, et c'est
+    // ce mot qui dit si la riposte est encore VIVANTE.
+    const CAUSE_ANNULATION_NON_ENREGISTREE103 = litteralRust103(HANDLERS103, "CAUSE_ANNULATION_NON_ENREGISTREE");
+    const CAUSE_NON_ANNULABLE103 = litteralRust103(HANDLERS103, "CAUSE_RIPOSTE_NON_ANNULABLE");
+    instrument103(CAUSE_ANNULATION_NON_ENREGISTREE103.startsWith("ANNULATION NON ENREGISTRÉE") && CAUSE_ANNULATION_NON_ENREGISTREE103.length > 120
+      && CAUSE_NON_ANNULABLE103.startsWith("riposte non annulable") && CAUSE_NON_ANNULABLE103.length > 60,
+      "les deux causes de `action_cancel` ne sont plus lisibles dans daemon/src/handlers/");
+    instrument103(/Ok\(0\) => err_json\(StatusCode::NOT_FOUND, CAUSE_RIPOSTE_NON_ANNULABLE\),/.test(HANDLERS103)
+      && /Err\(e\) => err_json\(StatusCode::SERVICE_UNAVAILABLE, format!\("\{CAUSE_ANNULATION_NON_ENREGISTREE\} \(\{e\}\)"\)\),/.test(HANDLERS103),
+      "l'annulation ne refuse plus par ces deux causes, ou plus dans les moules que la console lit (`<cause>` nue en 404, `<cause> (<détail>)` en 503)");
+    const motRiposte103b = modDet103.motDuRefusDeRiposte;
+    exiger(typeof motRiposte103b === "function",
+      "(103-instrument) `motDuRefusDeRiposte` n'est plus exporté par web/detection_admin.js : les phrases jugées ci-dessous ne seraient plus joignables");
+    const ouvertureAnnulationNonEnregistree103 = modDet103.OUVERTURE_DE_L_ANNULATION_NON_ENREGISTREE;
+    const ouvertureNonAnnulable103 = modDet103.OUVERTURE_DE_LA_RIPOSTE_NON_ANNULABLE;
+    exiger(ouvertureAnnulationNonEnregistree103 instanceof RegExp && ouvertureNonAnnulable103 instanceof RegExp,
+      "(103-instrument) les deux ouvertures de l'annulation ne sont pas exportées NUES par web/detection_admin.js : elles ne seraient jugées qu'à travers l'aiguillage qui les abrite");
+    exiger(ouvertureAnnulationNonEnregistree103.test(CAUSE_ANNULATION_NON_ENREGISTREE103) && ouvertureNonAnnulable103.test(CAUSE_NON_ANNULABLE103),
+      "(103f) une ouverture de l'annulation ne reconnaît PLUS la phrase que le démon écrit : le refus tomberait dans le fourre-tout « annulation refusée »");
+    exiger(!ouvertureAnnulationNonEnregistree103.test(CAUSE_NON_ENREGISTREE103) && !ouvertureNonEnregistree103.test(CAUSE_ANNULATION_NON_ENREGISTREE103),
+      "(103f-négatif) « ANNULATION NON ENREGISTRÉE » et « APPROBATION NON ENREGISTRÉE » sont devenues la même chose : l'une laisse la riposte VIVANTE et rejouable, l'autre la laisse en attente d'une approbation qui n'a pas pris");
+    exiger(!ouvertureNonAnnulable103.test(CAUSE_INTROUVABLE103) && !ouvertureIntrouvable103.test(CAUSE_NON_ANNULABLE103),
+      "(103f-négatif) « riposte non annulable » et « riposte introuvable » sont devenues la même chose : la première ligne peut exister et être DÉJÀ tranchée, l'autre n'existe pas");
+    exiger(!ouvertureAnnulationNonEnregistree103.test(CAUSE_NON_LUE103) && !ouvertureAnnulationNonEnregistree103.test(CAUSE_APPRO_SANS_TRACE103)
+      && !ouvertureNonAnnulable103.test(CAUSE_NON_LUE103) && !ouvertureNonAnnulable103.test(CAUSE_LISTE103),
+      "(103f-négatif) une ouverture de l'annulation reconnaît une phrase d'une autre famille");
+    exiger(!ouvertureAnnulationNonEnregistree103.test("ANNULATION NON ENREGISTRÉES : deux annulations perdues")
+      && !ouvertureNonAnnulable103.test("riposte non annulables : deux ripostes déjà tranchées")
+      && !ouvertureAnnulationNonEnregistree103.test("ANNULATION NON ENREGISTRÉEÉ : une phrase neuve"),
+      "(103f-négatif) une ouverture de l'annulation mord sur un mot PLUS LONG que le sien, accent compris : une phrase neuve du démon serait peinte avec les mots d'une autre");
+    exiger(!ouvertureAnnulationNonEnregistree103.test(CAUSE_NON_LUE103 + " " + CAUSE_ANNULATION_NON_ENREGISTREE103)
+      && !ouvertureNonAnnulable103.test("approbation refusée : riposte non annulable citée dans le détail"),
+      "(103f-négatif) une ouverture de l'annulation reconnaît sa phrase AILLEURS qu'en TÊTE du corps servi");
+    exiger(cle103("annuler", refusMoule103(503, CAUSE_ANNULATION_NON_ENREGISTREE103, "database is locked")) === "annulation_non_enregistree"
+      && cle103("annuler", refusMoule103(404, CAUSE_NON_ANNULABLE103, "")) === "riposte_non_annulable",
+      "(103f) l'aiguillage ne rend pas la clé des deux refus de l'annulation : le geste se peindrait « le démon a refusé » sans dire ce qui reste en base");
+    exiger(cle103("approuver", refusMoule103(503, CAUSE_NON_ENREGISTREE103, "disk full")) === "approbation_non_enregistree"
+      && cle103("approuver", refusMoule103(404, CAUSE_INTROUVABLE103, "")) === "riposte_introuvable",
+      "(103f-négatif) les deux branches neuves ont VOLÉ les clés de leurs voisines d'approbation : un discriminant qui gagne une branche ne doit pas en perdre une");
+    const motAnnulationNonEnregistree103 = motRiposte103b("annulation_non_enregistree");
+    const motNonAnnulable103 = motRiposte103b("riposte_non_annulable");
+    exiger(/TOUJOURS en file|STILL queued/.test(motAnnulationNonEnregistree103) && /approuvable|approvable/.test(motAnnulationNonEnregistree103),
+      `(103f) la phrase d'une annulation non enregistrée ne dit PAS que la riposte est encore VIVANTE — l'exploitant la croirait retirée : « ${motAnnulationNonEnregistree103} »`);
+    exiger(/DÉJÀ tranchée|ALREADY settled/.test(motNonAnnulable103) && /deux fois|twice/.test(motNonAnnulable103),
+      `(103f) la phrase d'une riposte non annulable ne dit PAS qu'annuler deux fois donne ce refus — le contrat que \`P10.20-w\` a changé se lirait comme une panne : « ${motNonAnnulable103} »`);
+    exiger(motAnnulationNonEnregistree103 !== motNonAnnulable103 && motAnnulationNonEnregistree103 !== motRiposte103b("annulation_refusee")
+      && !motAnnulationNonEnregistree103.includes(CAUSE_ANNULATION_NON_ENREGISTREE103) && !motNonAnnulable103.includes(CAUSE_NON_ANNULABLE103),
+      "(103f) les deux phrases se confondent, ou l'une recopie la cause du démon : la cause servie cesserait d'être un SECOND nœud, et le lexique ne pourrait plus égaler la phrase");
+    // PUIS LA VUE : le geste réel, sur la ligne que le chargeur rend.
+    const listeDesActions103 = document.querySelector("#act-list");
+    instrument103(!!listeDesActions103 && listeDesActions103.isConnected,
+      "la file de riposte d'`index.html` n'a plus de puits : le geste jugé ci-dessous n'aurait nulle part où se peindre");
+    // UNE LIGNE QUE LE TÉMOIN PRÉCÉDENT N'A PAS TOUCHÉE. Les refus sont retenus PAR IDENTIFIANT dans la
+    // portée du module (`refusParRiposte`), et le témoin 102 a laissé un aveu sur la riposte 55 : rejouer
+    // ce numéro ferait juger l'aveu d'un autre lot. L'identifiant est donc propre à cette section.
+    const RIPOSTE103 = { id: 56, ts: 1758002200, kind: "ban_ip", target: "203.0.113.56", status: "pending", dry_run: false, reason: "Force brute SSH", result: "", done_ts: 0, host: "web-01" };
+    servis103["GET /api/actions"] = { corps: { actions: [RIPOSTE103], served: 1, window: 200, total: 1, total_capped: false } };
+    const boutonNomme103 = (texte) => cueillir103(listeDesActions103, (e) => e.tagName === "BUTTON" && nu103(e) === texte, [])[0];
+    const aveuDeLigne103 = () => cueillir103(listeDesActions103, (e) => e.getAttribute && e.getAttribute("data-refus-de-riposte") === "1", [])[0];
+    const annuler103 = async () => { const b = boutonNomme103("Annuler"); const p = b.onclick(); await p; await laisser103(60); };
+    listeDesActions103.replaceChildren();
+    await modDet103.loadActions();
+    await laisser103(40);
+    instrument103(!!boutonNomme103("Annuler") && !aveuDeLigne103(),
+      "la file ne rend pas « Annuler », ou un aveu y est DÉJÀ peint : les verdicts ci-dessous seraient vrais par vacuité");
+    for (const [etiquette, code, cause, mot] of [
+      ["annulation non enregistrée", 503, CAUSE_ANNULATION_NON_ENREGISTREE103 + " (database is locked)", motAnnulationNonEnregistree103],
+      ["riposte non annulable", 404, CAUSE_NON_ANNULABLE103, motNonAnnulable103]]) {
+      servis103["POST /api/actions/56/cancel"] = { statut: code, corps: code >= 500 ? { error: cause, id: "plume-e6-0" } : { error: cause } };
+      await annuler103();
+      const aveu = aveuDeLigne103();
+      exiger(!!aveu && aveu.className === "bad" && aveu.children.length >= 1
+        && nu103(aveu.children[0]) === mot && nu103(aveu).includes(cause),
+        `(103f) le refus « ${etiquette} » n'arrive pas entier sur la ligne, en DEUX nœuds — la phrase de la console au puits, la cause servie à côté : « ${nu103(aveu).slice(0, 300)} »`);
+      exiger(!/[{}]/.test(nu103(aveu)) && !new RegExp("\\b" + code + "\\b").test(nu103(aveu)) && !/plume-e6-0/.test(nu103(aveu)),
+        `(103f) le code, le corps JSON ou l'identifiant d'incident atteint l'écran à la place de la phrase — le message composé « <code> <corps> » au lieu de la phrase du démon : « ${nu103(aveu).slice(0, 300)} »`);
+      const bouton = boutonNomme103("Annuler");
+      exiger(!!bouton && bouton.getAttribute("aria-disabled") === null,
+        `(103f-négatif) le geste d'annulation est RETENU sur « ${etiquette} » : l'un se rejoue pour retirer une riposte encore vivante, l'autre porte sur une ligne qu'il n'y a plus lieu d'annuler — la marque d'inertie enfermerait l'exploitant hors du seul clic qui répare`);
+    }
+    // NÉGATIF — UNE ANNULATION QUI PASSE NE PEINT AUCUN AVEU.
+    servis103["POST /api/actions/56/cancel"] = { statut: 204, corps: "" };
+    await annuler103();
+    exiger(!aveuDeLigne103(),
+      `(103f-négatif) un aveu est peint sur une annulation qui a PRIS — un instrument qui avoue toujours ne mesure rien : « ${nu103(listeDesActions103).slice(0, 200)} »`);
+    listeDesActions103.replaceChildren();
+
+    // ══ (e) LE RELEVÉ DES LECTEURS — DES ENSEMBLES NOMMÉS, PAS DES COMPTES ═══════════════════════
+    const lecteursDeLaSuite103 = CORPUS_WEB.filter(([f, src]) => f.endsWith(".js") && /\bj\.has_more\b|\bhas_more\b/.test(src.replace(/\/\/[^\n]*/g, ""))).map(([f]) => f).sort();
+    exiger(lecteursDeLaSuite103.join(",") === "audit.js,retention.js,viz.js",
+      `(103e) l'ensemble des vues qui LISENT \`has_more\` n'est plus celui que ce lot a relevé — une vue neuve peut en tirer une borne sans la dire : ${JSON.stringify(lecteursDeLaSuite103)}`);
+    const surfacesQuiLisentLaTrace103 = CORPUS_WEB.filter(([f, src]) => f.endsWith(".js") && /=\s*causeDeLaTraceManquante\(/.test(src)).map(([f]) => f).sort();
+    exiger(surfacesQuiLisentLaTrace103.join(",") === "cases.js,detection_admin.js,viz.js",
+      `(103e) l'ensemble des surfaces qui LISENT l'aveu de trace manquante n'est plus celui des trois surfaces de mise en file : ${JSON.stringify(surfacesQuiLisentLaTrace103)}`);
+  } finally {
+    globalThis.fetch = fetchOrigine103;
+    globalThis.setTimeout = minuterieOrigine103;
+    S103.isAdmin = etatOrigine103.admin; S103.AUTH = etatOrigine103.auth;
+    S103.caseSelectedId = etatOrigine103.dossier; S103.RET_STATE = etatOrigine103.retention;
+    document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
+    const resteAvantRetention = document.querySelector("#retention-last"); if (resteAvantRetention) resteAvantRetention.replaceChildren();
+    const resteDuFormulaire = document.querySelector("#af-result"); if (resteDuFormulaire) resteDuFormulaire.replaceChildren();
+  }
+  console.log("(103) OK — les DEUX dernières surfaces qui mettent une riposte en file lisent l'aveu que leur succès porte : le formulaire du panneau Réponse pose les DEUX nœuds dans son puits de résultat et RESTE OUVERT pour les montrer — `#af-result` vit dans `#act-form`, le replier serait un silence — en vidant ses champs pour que le second clic ne pose pas une seconde riposte ; le geste « bannir » d'une ligne de résultats, qui n'a aucun puits, DIT la même phrase à l'avis, après son avis de succès ; et la phrase, la cause et le nom même de la clé viennent du POINT COMMUN — `web/core.js` —, où le lecteur est parti dès qu'il a eu trois usages, si bien qu'aucune vue n'écrit plus « registre_sans_maillon ». LES TROIS DISCRIMINANTS DU LOT 101 SORTENT DE L'ABRI : exportés nus, ils reconnaissent chacun la phrase que le démon écrit et refusent les six voisines — la liste illisible, la visibilité non lue, la ligne jamais écrite, l'approbation sans trace, le ban non armé, l'absence établie —, refusent un mot plus long que le leur, refusent une lettre ACCENTUÉE juste après leur ouverture (ce que `\\b`, qui est ASCII, acceptait) et refusent leur propre phrase citée dans le détail d'une autre, pendant que l'aiguillage rend toujours les mêmes clés. LE PANNEAU DE RÉTENTION DIT LA BORNE DE SA PAGE : quand `has_more` est vrai il annonce que la page est PLEINE et qu'un curseur de suite est servi — jamais que d'autres entrées EXISTENT, ce que cette clé ne dit pas —, quand il est faux il n'ajoute rien, et quand la clé MANQUE il l'avoue dans le registre de l'alarme au lieu de laisser un silence se lire « c'est tout le registre » ; sous un changement de rétention TROUVÉ, la borne se tait, l'ordre décroissant l'établissant déjà. ENFIN LE TYPE D'UN LIEN DE DOSSIER EST DIT : les trois valeurs que `case_link_add` ÉCRIT — l'énoncé les croyait libres, une allowlist les ferme — rendent chacune sa phrase bilingue, distincte des deux autres, et toute autre valeur, que seule la colonne ouverte peut porter, arrive comme un jeton DIT libre, jamais nu. ET L'ANNULATION DIT SES DEUX REFUS NEUFS : depuis que `action_cancel` ne rend plus 204 quoi qu'il arrive, une annulation NON ENREGISTRÉE dit que la riposte est TOUJOURS en file — approuvable, exécutable, et que rejouer le geste la retire — tandis qu'une riposte NON ANNULABLE dit qu'elle est DÉJÀ tranchée et qu'annuler deux fois donne précisément ce refus ; les deux ouvertures sont nues, chacune refuse sa voisine d'approbation dont un seul mot la sépare, l'aveu arrive à DEUX nœuds sur la ligne sans code ni corps JSON, et aucun des deux ne retient le geste.");
 }
 
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;

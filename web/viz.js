@@ -1,6 +1,6 @@
 // viz.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // Explore + viz/charts: drilldown, fenetre glissante, requete interactive, rendu table/graphes (partages avec dashboards).
-import { $, CSSV, LANG, LOC, SEV, api, apiSend, bornerLePopoverSousSonAncre, colComparator, largeursDeColonnes, confirmModal, esc, flashStopped, fmtTs, ic, makePager, muted, phraseDeLaCreationDeRiposteRefusee, sev, socIsAdmin, toast, tzOpts } from './core.js';
+import { $, CSSV, LANG, LOC, SEV, api, apiSend, bornerLePopoverSousSonAncre, causeDeLaTraceManquante, colComparator, largeursDeColonnes, confirmModal, esc, flashStopped, fmtTs, ic, makePager, muted, phraseDeLaCreationDeRiposteRefusee, phraseDeLaTraceManquante, sev, socIsAdmin, toast, tzOpts } from './core.js';
 import { S } from './state.js';
 // P11.4-h : LE clic qui respecte une sélection (mécanisme partagé, `copie_et_selection.js`).
 import { clicQuiRespecteLaSelection } from './copie_et_selection.js';
@@ -284,6 +284,15 @@ async function banIp(ip, host) {
   catch (e) { toast(phraseDeLaCreationDeRiposteRefusee(e), 'bad', 9000); return; }
   if (j && j.error) { toast(phraseDeLaCreationDeRiposteRefusee({ causeDuDemon: String(j.error).trim() }), 'bad', 9000); return; }
   toast("Action créée (en attente) - onglet Réponse pour l'approuver.", 'ok');
+  // `P10.21-a` — LA RIPOSTE EST EN FILE ET SA TRACE MANQUE : ce geste le recevait et le laissait
+  // tomber. `action_create` sert l'aveu À CÔTÉ du succès, sous la clé que le lecteur commun nomme :
+  // annoncer la mise en file sans lui, c'est laisser un geste de riposte hors de la trace non
+  // purgeable sans que personne ne le sache. L'AVEU PART À L'AVIS, comme le refus juste au-dessus :
+  // ce geste part d'une ligne de résultats et n'a aucun puits ouvert où poser deux nœuds — repli déjà
+  // livré ici même, pas une seconde grammaire. Il est dit APRÈS l'avis de succès : les deux faits sont
+  // vrais, et celui qui demande une action humaine se lit en dernier.
+  const sansMaillon = causeDeLaTraceManquante(j);
+  if (sansMaillon) toast(phraseDeLaTraceManquante(sansMaillon), 'bad', 9000);
   if (typeof loadActions === 'function') loadActions();
 }
 

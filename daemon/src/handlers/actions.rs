@@ -378,8 +378,16 @@ pub(crate) async fn action_create(State(st): State<AppState>, Extension(au): Ext
             return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_RIPOSTE_NON_MISE_EN_FILE} ({cause})"))
         }
     };
-    ledger_append(&conn, "action.queued", &format!("{kind} {target} dry={dry}"));
-    Json(json!({ "id": id })).into_response()
+    // `P10.20-v` — LA RIPOSTE EST EN FILE, ET SI SA TRACE MANQUE LA RÉPONSE LE DIT. Refuser ici
+    // serait FAUX — la ligne existe, et un analyste qui rejoue en poserait une SECONDE ; se taire
+    // laisserait un geste de riposte hors de la trace non purgeable. L'identifiant reste donc servi,
+    // et l'aveu voyage à côté de lui, sous la clé que les autres gestes emploient.
+    let maillon = ledger_append(&conn, "action.queued", &format!("{kind} {target} dry={dry}"));
+    let mut corps = json!({ "id": id });
+    if let Some(cause) = maillon.cause_de_non_inscription() {
+        corps[CLE_REGISTRE_SANS_MAILLON] = json!(format!("{CAUSE_GESTE_SANS_TRACE} ({cause})"));
+    }
+    Json(corps).into_response()
 }
 // =================================================================================================
 // `P11.17-e` — LA FILE DE RIPOSTE DIT CE QU'ELLE SERT, ET CE QU'ELLE NE SERT PAS.
@@ -622,6 +630,18 @@ pub(crate) const CAUSE_APPROBATION_NON_ENREGISTREE: &str =
 pub(crate) const CAUSE_RIPOSTE_INTROUVABLE: &str =
     "riposte introuvable : aucune action ne porte cet identifiant — rien n'a été écrit.";
 
+/// `P10.20-v` — le registre n'a pas pris la ligne d'approbation : 503, et RIEN n'est armé.
+pub(crate) const CAUSE_APPROBATION_SANS_TRACE: &str =
+    "APPROBATION SANS TRACE : le statut de la riposte est écrit, mais le registre tamper-evident n'a \
+     pas pris la ligne qui dit QUI l'a approuvée — rien n'a donc été armé. Approuver de nouveau cette \
+     riposte ne la réécrit pas : le geste réinscrit la trace puis arme. Réessayez.";
+
+/// `P10.20-v` — la ligne du ban n'a pas pu être écrite : 503, et aucun blocage n'existe.
+pub(crate) const CAUSE_BAN_NON_ARME: &str =
+    "BAN NON ARMÉ : la ligne du blocage HTTP n'a pas pu être écrite, donc AUCUNE adresse n'est \
+     bloquée et le store n'en porte aucune trace. Ce n'est PAS « le store est plein » : rien n'a été \
+     fait. Réessayez.";
+
 pub(crate) async fn action_approve(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     use rusqlite::OptionalExtension as _;
     crate::req_conn!(st, au, conn);
@@ -652,7 +672,16 @@ pub(crate) async fn action_approve(State(st): State<AppState>, Extension(au): Ex
         Ok(n) => n == 1,
         Err(e) => return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_APPROBATION_NON_ENREGISTREE} ({e})")),
     };
-    ledger_append(&conn, "action.approved", &format!("id={id}"));
+    // `P10.20-v` — LE MAILLON DU REGISTRE EST RENDU, ET IL PRÉCÈDE L'ARMEMENT. La trace non
+    // purgeable de QUI a approuvé est la pièce sur laquelle tout ce qui suit s'appuie : armer un
+    // blocage que le registre n'atteste pas, c'est poser un fait sans sa trace — la famille même de
+    // `P10.20-q`. Le statut, lui, est déjà écrit : la route le DIT au lieu de rendre un deux cent
+    // quatre muet, et le geste est rejouable — une seconde approbation ne réécrit rien, réinscrit le
+    // maillon, puis arme.
+    let maillon = ledger_append(&conn, "action.approved", &format!("id={id}"));
+    if let Some(cause) = maillon.cause_de_non_inscription() {
+        return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_APPROBATION_SANS_TRACE} ({cause})"));
+    }
     // BAN NATIF PLUME (chantier ② Phase 1) : l'approbation d'un `ban_ip` NON dry-run ARME AUSSI le blocage HTTP
     // in-process (`net_ban`) -> plume s'auto-enforce pour l'IP réelle, EN PLUS de la décision CrowdSec/nft de
     // l'hôte (exécutée ensuite par le responder/agent). `unban_ip` retire le blocage. Additif : n'altère NI le
@@ -691,17 +720,33 @@ pub(crate) async fn action_approve(State(st): State<AppState>, Extension(au): Ex
             // REFUS SUR STORE PLEIN (`NETBAN_CACHE_CAP`) : tracé au ledger. L'action reste approuvée —
             // l'enforcement réseau délégué (CrowdSec/fail2ban/nft) n'est pas concerné par ce plafond,
             // qui ne borne que la banlist HTTP in-process.
-            if !netban_upsert(&conn, &canon, Some(now() + NETBAN_ACTION_TTL_S), "auto: action ban_ip", &au.name, "prod") {
-                ledger_append(&conn, "netban.plafond", &format!("{canon} refusé : store live plein (action {id})"));
+            //
+            // `P10.20-v` — L'ÉCRITURE QUI N'A PAS EU LIEU EST DITE À PART, ET ELLE REFUSE. Le plafond
+            // est une décision de la borne : l'approbation tient, seul le miroir HTTP manque, et le
+            // deux cent quatre reste juste. Une écriture ratée, elle, n'est décidée par personne — la
+            // route la NOMME plutôt que de rendre « approuvée » sur un blocage inexistant, et le
+            // geste est rejouable (le statut est déjà `approved`, une seconde approbation arme).
+            match netban_upsert(&conn, &canon, Some(now() + NETBAN_ACTION_TTL_S), "auto: action ban_ip", &au.name, "prod") {
+                PoseDeBan::Arme => {}
+                PoseDeBan::RefuseParLePlafond => {
+                    ledger_append(&conn, "netban.plafond", &format!("{canon} refusé : store live plein (action {id})"));
+                }
+                PoseDeBan::NonEcrit(cause) => {
+                    ledger_append(&conn, "netban.non-arme", &format!("{canon} NON armé (action {id}) : {cause}"));
+                    return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_BAN_NON_ARME} ({cause})"));
+                }
             }
         } else if kind == "unban_ip" {
             // `P4.7-k` — une levée qui n'a rien retiré SE DIT (le `#[must_use]` de la pose est
             // déplacé sur la levée : un ban qu'on croit levé est pire que pas de levée). REPRISE
             // 2026-08-29 : un ÉCHEC de la suppression ne se lit plus comme « rien à retirer ».
+            // `P10.20-v` — l'issue du maillon est RENDUE depuis ce lot ; cette levée-ci ne la
+            // consomme pas (la perte part sur la sortie d'erreur de la primitive). Classé, pas
+            // sous-entendu : la famille couverte par cette clé est la POSE, pas la levée.
             match netban_remove(&conn, &canon) {
                 Ok(retires) => ledger_append(&conn, "netban.remove", &format!("{canon} retirés={retires} (auto: action unban_ip)")),
                 Err(e) => ledger_append(&conn, "netban.remove.echec", &format!("{canon} NON levé (auto: action unban_ip) : {e}")),
-            }
+            };
         }
     }
     StatusCode::NO_CONTENT.into_response()
@@ -820,15 +865,33 @@ pub(crate) async fn netban_add(State(st): State<AppState>, Extension(au): Extens
     crate::req_conn!(st, au, conn);
     // STORE PLEIN -> REFUS EXPLICITE, jamais un 200 sur un ban qui ne bloquera rien. 507 (Insufficient
     // Storage) nomme la ressource épuisée : c'est le plafond du store live, pas la requête qui est fautive.
-    if !netban_upsert(&conn, &ip, expires, reason, &au.name, "prod") {
-        ledger_append(&conn, "netban.plafond", &format!("{ip} refusé : store live plein by={}", au.name));
-        return err_json(
-            StatusCode::INSUFFICIENT_STORAGE,
-            format!("store de bans plein ({NETBAN_CACHE_CAP} IP) — libérer par DELETE /api/netban/{{ip}}, ou bloquer en amont (pare-feu/CDN)"),
-        );
+    //
+    // `P10.20-v` — ET UNE ÉCRITURE QUI N'A PAS EU LIEU N'EST PLUS UN `ok: true`. C'était le site le
+    // plus lourd de la primitive : la pose rendait « armé » quoi qu'il arrive, la route répondait
+    // « fait » et posait `netban.add` au registre tamper-evident — un blocage inexistant ATTESTÉ dans
+    // une trace non purgeable, sur la route même par laquelle un exploitant croit se protéger. Le
+    // cinq cent trois nomme la cause et la distingue du plafond, qui lui reste un cinq cent sept.
+    match netban_upsert(&conn, &ip, expires, reason, &au.name, "prod") {
+        PoseDeBan::Arme => {}
+        PoseDeBan::RefuseParLePlafond => {
+            ledger_append(&conn, "netban.plafond", &format!("{ip} refusé : store live plein by={}", au.name));
+            return err_json(
+                StatusCode::INSUFFICIENT_STORAGE,
+                format!("store de bans plein ({NETBAN_CACHE_CAP} IP) — libérer par DELETE /api/netban/{{ip}}, ou bloquer en amont (pare-feu/CDN)"),
+            );
+        }
+        PoseDeBan::NonEcrit(cause) => {
+            ledger_append(&conn, "netban.non-arme", &format!("{ip} NON armé by={} : {cause}", au.name));
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_BAN_NON_ARME} ({cause})"));
+        }
     }
-    ledger_append(&conn, "netban.add", &format!("{ip} ttl={} by={}", ttl.map(|t| t.to_string()).unwrap_or_else(|| "permanent".into()), au.name));
-    Json(json!({ "ok": true, "ip": ip, "expires_ts": expires })).into_response()
+    // Le ban EST armé : l'aveu d'une trace manquante voyage à côté du succès, jamais à sa place.
+    let maillon = ledger_append(&conn, "netban.add", &format!("{ip} ttl={} by={}", ttl.map(|t| t.to_string()).unwrap_or_else(|| "permanent".into()), au.name));
+    let mut corps = json!({ "ok": true, "ip": ip, "expires_ts": expires });
+    if let Some(cause) = maillon.cause_de_non_inscription() {
+        corps[CLE_REGISTRE_SANS_MAILLON] = json!(format!("{CAUSE_GESTE_SANS_TRACE} ({cause})"));
+    }
+    Json(corps).into_response()
 }
 
 /// DELETE /api/netban/{ip} — retire un ban HTTP (réversibilité). Idempotent (retirer une IP absente = ok).
@@ -1406,7 +1469,14 @@ pub(crate) fn respond_run() {
             ledger_append(&conn, kind_de_registre, &format!("{kind} {target} : {dit} ; ce responder avait obtenu `{status}` ({result})"));
             continue;
         }
-        ledger_append(&conn, "action.exec", &format!("{kind} {target} -> {status}"));
+        // `P10.20-v` — LE RESPONDER N'A NI RÉPONSE À SERVIR NI BILAN DE TICK À TENIR : sa seule
+        // consommation possible de l'issue est un aveu à SON site, et il porte ce que la primitive
+        // ne peut pas porter — l'action visée. L'aveu de la primitive ne dit que le `kind`, parce
+        // que le `detail` nomme une cible ; ici le seul identifiant sort, pas l'adresse.
+        let maillon = ledger_append(&conn, "action.exec", &format!("{kind} {target} -> {status}"));
+        if let Some(cause) = maillon.cause_de_non_inscription() {
+            eprintln!("[responder] WARN action {id} exécutée : le registre n'a PAS pris son verdict ({cause})");
+        }
         // BAN NATIF PLUME (chantier ② Phase 1) : quand le RESPONDER local exécute réellement un ban_ip/unban_ip,
         // synchronise AUSSI le store `net_ban` (blocage HTTP). Sur ce chemin (processus responder SÉPARÉ), le
         // reload ne rafraîchit que le cache de CE processus ; le daemon LIVE, lui, re-lit la table au tick de
@@ -1424,15 +1494,27 @@ pub(crate) fn respond_run() {
             if kind == "ban_ip" && !ip_is_protected(&canon) {
                 // REFUS SUR STORE PLEIN : tracé au ledger. L'enforcement RÉSEAU vient d'aboutir (`done`) —
                 // seul le miroir HTTP manque, et c'est précisément ce que l'exploitant doit pouvoir lire.
-                if !netban_upsert(&conn, &canon, Some(now() + NETBAN_ACTION_TTL_S), "auto: responder ban_ip", "responder", "prod") {
-                    ledger_append(&conn, "netban.plafond", &format!("{canon} refusé : store live plein (responder, action {id})"));
+                //
+                // `P10.20-v` — L'ÉCRITURE RATÉE A SON PROPRE GENRE, DONC ELLE SE FILTRE. Elle ne
+                // rejoue PAS l'action : l'enforcement réseau a abouti, et ce responder ne repasse
+                // pas sur une action close. Ce qui manque est le miroir HTTP, et c'est dit.
+                match netban_upsert(&conn, &canon, Some(now() + NETBAN_ACTION_TTL_S), "auto: responder ban_ip", "responder", "prod") {
+                    PoseDeBan::Arme => {}
+                    PoseDeBan::RefuseParLePlafond => {
+                        ledger_append(&conn, "netban.plafond", &format!("{canon} refusé : store live plein (responder, action {id})"));
+                    }
+                    PoseDeBan::NonEcrit(cause) => {
+                        ledger_append(&conn, "netban.non-arme", &format!("{canon} NON armé (responder, action {id}) : {cause}"));
+                    }
                 }
             } else if kind == "unban_ip" {
                 // `P4.7-k` — le compte de la levée est DIT, jamais avalé (et son ÉCHEC aussi).
+                // `P10.20-v` — même position qu'au site jumeau d'`action_approve` : l'issue du
+                // maillon est rendue, cette levée-ci ne la consomme pas, et c'est classé.
                 match netban_remove(&conn, &canon) {
                     Ok(retires) => ledger_append(&conn, "netban.remove", &format!("{canon} retirés={retires} (auto: responder unban_ip)")),
                     Err(e) => ledger_append(&conn, "netban.remove.echec", &format!("{canon} NON levé (auto: responder unban_ip) : {e}")),
-                }
+                };
             }
         }
     }

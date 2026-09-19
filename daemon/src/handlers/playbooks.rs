@@ -402,15 +402,32 @@ pub(crate) fn run_playbooks(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
                     if kind == "ban_ip" && !canon.is_empty() && !ip_is_protected(&canon) {
                         // REFUS SUR STORE PLEIN : tracé au ledger (tamper-evident). Un chemin automatique qui
                         // avale un refus laisserait croire à un blocage qui n'existe pas.
-                        if !netban_upsert(&conn, &canon, Some(now() + NETBAN_ACTION_TTL_S), "auto: playbook ban_ip", "playbook", "prod") {
-                            ledger_append(&conn, "netban.plafond", &format!("{canon} refusé : store live plein (playbook:{name})"));
+                        //
+                        // `P10.20-v` — ET UNE ÉCRITURE QUI N'A PAS EU LIEU N'EST PAS UN PLAFOND. La pose
+                        // rendait « armé » quoi qu'il arrive : ce tick pouvait publier « 0 abandon » sur un
+                        // miroir HTTP inexistant. L'écriture ratée porte son propre genre de registre, donc
+                        // elle se filtre, et elle entre dans `abandonnes` — le compte du tick est la seule
+                        // grandeur que la surface d'état lit de ce chemin.
+                        match netban_upsert(&conn, &canon, Some(now() + NETBAN_ACTION_TTL_S), "auto: playbook ban_ip", "playbook", "prod") {
+                            PoseDeBan::Arme => {}
+                            PoseDeBan::RefuseParLePlafond => {
+                                let maillon = ledger_append(&conn, "netban.plafond", &format!("{canon} refusé : store live plein (playbook:{name})"));
+                                abandonnes += u32::from(maillon.cause_de_non_inscription().is_some());
+                            }
+                            PoseDeBan::NonEcrit(cause) => {
+                                ledger_append(&conn, "netban.non-arme", &format!("{canon} NON armé (playbook:{name}) : {cause}"));
+                                abandonnes += 1;
+                            }
                         }
                     } else if kind == "unban_ip" && !canon.is_empty() {
                         // `P4.7-k` — le compte de la levée est DIT, jamais avalé (et son ÉCHEC aussi).
-                        match netban_remove(&conn, &canon) {
+                        // `P10.20-v` — et l'aveu qui n'est pas ENTRÉ au registre est lui-même un abandon :
+                        // sans cela, la seule trace d'une levée ratée pourrait manquer sans que rien ne le dise.
+                        let maillon = match netban_remove(&conn, &canon) {
                             Ok(retires) => ledger_append(&conn, "netban.remove", &format!("{canon} retirés={retires} (auto: playbook {name} unban_ip)")),
                             Err(e) => ledger_append(&conn, "netban.remove.echec", &format!("{canon} NON levé (auto: playbook {name} unban_ip) : {e}")),
-                        }
+                        };
+                        abandonnes += u32::from(maillon.cause_de_non_inscription().is_some());
                     }
                 }
             }

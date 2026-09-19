@@ -1228,12 +1228,19 @@ pub(crate) fn convertir_la_base_au_repos(
         "base chiffrée au repos ({objets} objets de schéma comparés, {tables} tables de données, \
          {lignes} lignes, {entrees} entrées de journal revérifiées) — archive vérifiée : {archive}"
     );
-    match open_db_keyed_without_schema_contract(db_path, Some(&key)) {
-        Ok(c) => ledger_append(&c, "at_rest.converted", &detail),
-        Err(e) => eprintln!(
+    // `P10.20-v` — LA SECONDE VOIE DE LA MÊME PERTE EST DITE PAR LA MÊME PHRASE. L'ouverture ratée
+    // était avouée ; l'écriture ratée, elle, était avalée par la primitive et ne laissait rien.
+    // Depuis que `ledger_append` rend son issue, les deux mènent au même aveu, et pas à deux silences
+    // inégaux sur une conversion qui, dans les deux cas, EST faite et n'est PAS consignée.
+    let raison_sans_trace = match open_db_keyed_without_schema_contract(db_path, Some(&key)) {
+        Ok(c) => ledger_append(&c, "at_rest.converted", &detail).cause_de_non_inscription().map(str::to_string),
+        Err(e) => Some(e.to_string()),
+    };
+    if let Some(raison) = raison_sans_trace {
+        eprintln!(
             "[chiffrement] la base est CONVERTIE et servable, mais la trace au journal inaltérable n'a \
-             pas pu être écrite ({e}) — la conversion est faite, elle n'est pas consignée."
-        ),
+             pas pu être écrite ({raison}) — la conversion est faite, elle n'est pas consignée."
+        );
     }
 
     // ── ⑩ LA COPIE EN CLAIR NE RESTE PAS SUR LE VOLUME ────────────────────────────────────────────

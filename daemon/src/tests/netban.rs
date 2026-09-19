@@ -193,7 +193,7 @@
         netban_cache().write().clear();
         let c = test_db();
         let ip = "198.51.100.42";
-        assert!(netban_upsert(&c, ip, None, "test", "op", "prod"), "store non plein -> ban posé");
+        assert!(matches!(netban_upsert(&c, ip, None, "test", "op", "prod"), PoseDeBan::Arme), "store non plein -> ban posé");
         assert!(net_ban_is_blocked(ip, now()), "après upsert -> bloqué (cache cohérent)");
         assert_eq!(netban_remove(&c, ip).expect("la levée est EXÉCUTABLE (un échec SQL n'est plus lu comme « rien à retirer »)"), 1,
                    "la levée DIT ce qu'elle a retiré (`P4.7-k`)");
@@ -283,7 +283,7 @@
         let _g = NETBAN_TEST_LOCK.lock();
         netban_cache().write().clear();
         let c = test_db();
-        assert!(netban_upsert(&c, "198.51.100.77", None, "t", "op", "prod"), "ban posé"); // remplit table + cache
+        assert!(matches!(netban_upsert(&c, "198.51.100.77", None, "t", "op", "prod"), PoseDeBan::Arme), "ban posé"); // remplit table + cache
         assert!(net_ban_is_blocked("198.51.100.77", now()));
         c.execute("DROP TABLE net_ban", []).unwrap(); // la prochaine lecture ÉCHOUERA (prepare Err)
         netban_reload(&c); // try_load -> None -> cache CONSERVÉ (fail-static)
@@ -545,15 +545,16 @@
         let c = test_db();
         netban_remplir_le_cache(NETBAN_CACHE_CAP);
         let neuve = "203.0.113.210";
-        assert!(!netban_upsert(&c, neuve, None, "plein", "op", "prod"), "store plein -> ban REFUSÉ");
+        assert!(matches!(netban_upsert(&c, neuve, None, "plein", "op", "prod"), PoseDeBan::RefuseParLePlafond),
+                "store plein -> ban REFUSÉ, et le refus se DISTINGUE d'une écriture ratée (`P10.20-v`)");
         let n: i64 = c.query_row("SELECT COUNT(*) FROM net_ban WHERE ip=?1", params![neuve], |r| r.get(0)).unwrap();
         assert_eq!(n, 0, "un ban refusé n'écrit RIEN en base (pas de ligne qui ne bloque personne)");
         // Une IP DÉJÀ portée par le cache : le rafraîchissement passe (aucune entrée créée).
         let deja = format!("2001:db8::{:x}", NETBAN_CACHE_CAP / 2);
-        assert!(netban_upsert(&c, &deja, Some(now() + 60), "refresh", "op", "prod"), "refresh d'une IP déjà bannie -> accepté");
+        assert!(matches!(netban_upsert(&c, &deja, Some(now() + 60), "refresh", "op", "prod"), PoseDeBan::Arme), "refresh d'une IP déjà bannie -> accepté");
         // Une place libérée rend la pose possible : la borne freine, elle ne condamne pas.
         netban_remplir_le_cache(NETBAN_CACHE_CAP - 1);
-        assert!(netban_upsert(&c, neuve, None, "place libre", "op", "prod"), "sous le plafond -> ban accepté");
+        assert!(matches!(netban_upsert(&c, neuve, None, "place libre", "op", "prod"), PoseDeBan::Arme), "sous le plafond -> ban accepté");
         let _ = netban_remove(&c, neuve); // nettoyage de fixture : le compte n'est pas la propriété mesurée ici
         netban_cache().write().clear();
     }

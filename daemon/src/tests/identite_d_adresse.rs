@@ -328,7 +328,7 @@ fn la_levee_de_ban_dit_ce_qu_elle_a_retire() {
     // La POSE canonicalise par l'unique canonicaliseur : la forme mappée se replie sur la valeur.
     let canon = ssrf_norm_ip("::FFFF:203.0.113.7").expect("forme mappée analysable").to_string();
     assert_eq!(canon, "203.0.113.7", "`ssrf_norm_ip` REPLIE la forme mappée (`parse + to_string` NON)");
-    assert!(netban_upsert(&c, &canon, None, "témoin P4.7-k", "op", "prod"), "ban posé");
+    assert!(matches!(netban_upsert(&c, &canon, None, "témoin P4.7-k", "op", "prod"), PoseDeBan::Arme), "ban posé");
     assert!(net_ban_is_blocked(&canon, now()), "le ban bloque");
 
     // AVANT : LE CORPS D'ALORS, RECOPIÉ ICI À DESSEIN (point de comparaison, pas une définition).

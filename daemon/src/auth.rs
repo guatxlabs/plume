@@ -512,30 +512,65 @@ fn net_ban_exempt_path(p: &str) -> bool {
     p == "/api/netban" || p.starts_with("/api/netban/") || matches!(p, "/healthz" | "/readyz" | "/metrics")
 }
 
+/// `P10.20-v` — CE QU'UNE POSE DE BAN REND. Le booléen d'avant portait `false` pour le SEUL refus de
+/// plafond et `true` pour TOUT le reste — donc « armé » pour une écriture qui n'avait pas eu lieu,
+/// sous un `#[must_use]` qui promettait qu'un ban refusé serait rapporté. Trois issues nommées le
+/// remplacent, et aucune ne se replie sur un booléen : `if !netban_upsert(..)` ne compile plus, de
+/// sorte que le compilateur conduit à rejuger CHAQUE appelant au lieu d'en laisser un derrière.
+///
+/// POURQUOI UN TYPE NOMMÉ PLUTÔT QU'UN `Result` — même arbitrage que `RiposteMiseEnFile`
+/// (`handlers/mise_en_file_de_riposte.rs`), et il pèse plus lourd ici. Un `Result<bool, String>`
+/// offre `.ok()`, `.unwrap_or(true)` et `.is_ok()` ; `.is_ok()` vaudrait VRAI sur un ban refusé par
+/// le plafond, c'est-à-dire fabriquerait exactement l'armement affirmé que ce type ferme. Et
+/// « plein » n'est pas une erreur : c'est une décision de la borne mémoire, qui a sa propre trace et
+/// sa propre réponse, là où l'écriture ratée en a d'autres — les fondre dans un `Err` reperdrait la
+/// distinction que la borne a coûté.
+#[must_use = "une pose de ban REFUSÉE (store plein) ou NON ÉCRITE doit être rapportée à l'appelant, jamais avalée"]
+pub(crate) enum PoseDeBan {
+    /// La ligne est ÉCRITE dans `net_ban` et le cache in-process a été rechargé.
+    Arme,
+    /// Le store live est PLEIN (`NETBAN_CACHE_CAP`) et l'adresse n'y est pas déjà : rien n'a été
+    /// écrit. C'est une décision de la borne, pas une panne — elle a sa propre réponse.
+    RefuseParLePlafond,
+    /// L'écriture n'a pas eu lieu (ou n'a pas posé exactement une ligne) : la cause est portée, et
+    /// rien — réponse servie, ligne de registre, bilan de tick — ne doit dire qu'un ban est armé.
+    NonEcrit(String),
+}
+
 /// Upsert d'un ban live (`net_ban`) + refresh du cache in-process. `expires` None = permanent. `env` défaut
 /// 'prod'. Ne JAMAIS bannir une IP protégée : les appelants valident en amont (`action_valid`/`ip_is_protected`).
 ///
-/// Rend `false` quand le ban est REFUSÉ parce que le store live est plein (`NETBAN_CACHE_CAP`) : la borne
-/// mémoire est tenue À L'ÉCRITURE, sur l'UNIQUE voie de pose, et pas seulement au chargement — sinon la
-/// base grossirait indéfiniment pendant que le cache, lui, plafonnerait, et l'écart (des bans posés qui ne
-/// bloquent rien) ne se verrait nulle part. RAFRAÎCHIR un ban DÉJÀ posé reste toujours permis : cela ne
-/// fait pas croître la map. L'appelant DOIT rendre le refus visible (réponse HTTP, ledger) — un ban qu'on
-/// croit posé et qui ne bloque pas est pire que pas de ban.
-#[must_use = "un ban REFUSÉ (store plein) doit être rapporté à l'appelant, jamais avalé"]
-pub(crate) fn netban_upsert(conn: &Connection, ip: &str, expires: Option<i64>, reason: &str, by: &str, env: &str) -> bool {
+/// Rend `RefuseParLePlafond` quand le ban est REFUSÉ parce que le store live est plein
+/// (`NETBAN_CACHE_CAP`) : la borne mémoire est tenue À L'ÉCRITURE, sur l'UNIQUE voie de pose, et pas
+/// seulement au chargement — sinon la base grossirait indéfiniment pendant que le cache, lui,
+/// plafonnerait, et l'écart (des bans posés qui ne bloquent rien) ne se verrait nulle part.
+/// RAFRAÎCHIR un ban DÉJÀ posé reste toujours permis : cela ne fait pas croître la map. L'appelant
+/// DOIT rendre le refus visible (réponse HTTP, ledger) — un ban qu'on croit posé et qui ne bloque
+/// pas est pire que pas de ban.
+#[must_use = "une pose de ban REFUSÉE (store plein) ou NON ÉCRITE doit être rapportée à l'appelant, jamais avalée"]
+pub(crate) fn netban_upsert(conn: &Connection, ip: &str, expires: Option<i64>, reason: &str, by: &str, env: &str) -> PoseDeBan {
     {
         let c = netban_cache().read();
         if c.len() >= NETBAN_CACHE_CAP && !c.contains_key(ip) {
-            return false;
+            return PoseDeBan::RefuseParLePlafond;
         }
     }
-    let _ = conn.execute(
+    // `P10.20-v` — L'ÉCRITURE EST COMPTÉE, ET LE CACHE N'EST RECHARGÉ QUE SI ELLE A EU LIEU.
+    // L'upsert pose ou rafraîchit EXACTEMENT une ligne ; tout autre compte, comme toute erreur, est
+    // une pose qui n'a PAS eu lieu. Recharger sur une écriture absente ferait passer pour une
+    // convergence ce qui n'est qu'une relecture de l'état d'avant.
+    match conn.execute(
         "INSERT INTO net_ban(ip,reason,created_ts,expires_ts,created_by,env_id) VALUES(?1,?2,?3,?4,?5,?6) \
          ON CONFLICT(ip,env_id) DO UPDATE SET reason=?2, expires_ts=?4, created_by=?5",
         params![ip, reason, now(), expires, by, env],
-    );
-    netban_reload(conn);
-    true
+    ) {
+        Ok(1) => {
+            netban_reload(conn);
+            PoseDeBan::Arme
+        }
+        Ok(n) => PoseDeBan::NonEcrit(format!("{n} ligne(s) écrite(s) au lieu d'une")),
+        Err(e) => PoseDeBan::NonEcrit(e.to_string()),
+    }
 }
 
 /// Retire un ban live (TOUS les env_id de l'IP -> l'unban est GLOBAL en Phase 1) + refresh du cache.

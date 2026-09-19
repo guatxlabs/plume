@@ -36,21 +36,82 @@ pub(crate) fn ledger_prev_hash(conn: &Connection) -> rusqlite::Result<String> {
         autre => autre,                                                // lu, ou illisible — jamais confondus
     }
 }
+/// `P10.20-v` — CE QU'UNE INSCRIPTION AU REGISTRE REND, POUR QUE L'APPELANT CESSE DE LA SUPPOSER.
+///
+/// DEUX VOIES MÈNENT À L'ABSENCE D'UN MAILLON, ET ELLES ONT LA MÊME CONSÉQUENCE POUR L'APPELANT : le
+/// hachage précédent ILLISIBLE (s'y accrocher romprait la chaîne, donc on refuse d'écrire) et
+/// l'`INSERT` qui n'a pas eu lieu. Dans les deux cas la trace non purgeable NE CONTIENT PAS ce que
+/// l'appelant croit y avoir posé. Une seule issue les porte donc, et sa cause nomme laquelle.
+///
+/// POURQUOI UN TYPE NOMMÉ PLUTÔT QU'UN `Result<(), String>` — même arbitrage que `RiposteMiseEnFile`
+/// (`handlers/mise_en_file_de_riposte.rs`) : un `Result` offre `.ok()`, `.unwrap_or_default()` et
+/// surtout `.is_ok()`, les raccourcis par lesquels une issue se perd sans qu'aucune branche d'échec
+/// ne soit écrite. On ne tire pas « inscrit » de ce type sans avoir nommé l'autre cas.
+#[derive(Debug)]
+pub(crate) enum MaillonDeRegistre {
+    /// La ligne est écrite : le registre porte ce maillon.
+    Inscrit,
+    /// Le maillon N'EST PAS au registre, et la cause est portée. Rien — réponse servie, bilan de
+    /// tick, geste qui suit — ne doit affirmer que la trace existe.
+    NonInscrit(String),
+}
+
+impl MaillonDeRegistre {
+    /// La cause, quand le maillon n'est pas entré : `None` sur le chemin nominal. C'est la seule
+    /// sortie du type, et elle oblige à écrire la branche d'échec pour en tirer quoi que ce soit.
+    pub(crate) fn cause_de_non_inscription(&self) -> Option<&str> {
+        match self {
+            Self::Inscrit => None,
+            Self::NonInscrit(cause) => Some(cause),
+        }
+    }
+}
+
+/// `P10.20-v` — LA CLÉ SOUS LAQUELLE UNE RÉPONSE AVOUE QUE SA TRACE MANQUE. Une seule, pour qu'une
+/// surface n'ait qu'un nom à chercher quel que soit le geste qui l'a posée.
+pub(crate) const CLE_REGISTRE_SANS_MAILLON: &str = "registre_sans_maillon";
+
+/// `P10.20-v` — CE QU'UNE RÉPONSE DIT QUAND LE GESTE A EU LIEU ET QUE SA TRACE MANQUE. Elle ne
+/// propose PAS de recommencer : refaire le geste ne comble pas le trou du registre, et pour une
+/// riposte cela en poserait une seconde. Une seule phrase, partagée par les gestes qui la servent.
+pub(crate) const CAUSE_GESTE_SANS_TRACE: &str =
+    "TRACE MANQUANTE : le geste a bien eu lieu, mais le registre tamper-evident n'a pas pris la ligne \
+     qui l'atteste — cet enregistrement-là restera sans preuve d'audit. Refaire le geste ne comble pas \
+     ce trou : signalez-le et faites vérifier le journal d'intégrité.";
+
 /// Ajoute une entrée au journal d'intégrité (chaîne de hash, append-only, tamper-evident).
-pub(crate) fn ledger_append(conn: &Connection, kind: &str, detail: &str) {
+///
+/// `P10.20-v` — L'`INSERT` N'EST PLUS AVALÉ, ET L'ISSUE EST RENDUE. La forme `let _ =
+/// conn.execute(..)` n'a aucune branche d'échec : une ligne de registre pouvait manquer EN SILENCE
+/// pendant que l'appelant servait le fait qu'elle devait attester. L'aveu sur la sortie d'erreur
+/// couvre les appelants qui ne prennent pas l'issue, et il ne porte que le `kind` : le `detail` peut
+/// nommer un compte ou une cible.
+pub(crate) fn ledger_append(conn: &Connection, kind: &str, detail: &str) -> MaillonDeRegistre {
     let ts = now();
     // REFUS D'ÉCRIRE plutôt qu'un maillon ORPHELIN (cf. `ledger_prev_hash`) : une entrée manquante vaut
-    // mieux qu'une chaîne rompue en silence. L'aveu est CONDITIONNEL — le chemin nominal ne dit rien — et
-    // il ne porte que le `kind` : le `detail` peut nommer un compte ou une cible.
+    // mieux qu'une chaîne rompue en silence.
     let prev = match ledger_prev_hash(conn) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("[ledger] WARN maillon '{kind}' NON écrit : hachage précédent ILLISIBLE ({e}) — l'écrire romprait la chaîne");
-            return;
+            return MaillonDeRegistre::NonInscrit(format!("hachage précédent ILLISIBLE ({e}) — l'écrire romprait la chaîne"));
         }
     };
     let hash = sha256_hex(format!("{prev}|{ts}|{kind}|{detail}").as_bytes());
-    let _ = conn.execute("INSERT INTO ledger(ts,kind,detail,prev_hash,hash) VALUES(?1,?2,?3,?4,?5)", params![ts, kind, detail, prev, hash]);
+    // L'ÉCRITURE EST COMPTÉE : cet énoncé n'a aucune clause de conflit, il pose UNE ligne ou il
+    // échoue. La branche du compte inattendu existe pour que le jour où l'énoncé en gagnerait une,
+    // le silence ne soit pas le comportement par défaut.
+    match conn.execute("INSERT INTO ledger(ts,kind,detail,prev_hash,hash) VALUES(?1,?2,?3,?4,?5)", params![ts, kind, detail, prev, hash]) {
+        Ok(1) => MaillonDeRegistre::Inscrit,
+        Ok(n) => {
+            eprintln!("[ledger] WARN maillon '{kind}' NON inscrit : {n} ligne(s) écrite(s) au lieu d'une");
+            MaillonDeRegistre::NonInscrit(format!("{n} ligne(s) écrite(s) au lieu d'une"))
+        }
+        Err(e) => {
+            eprintln!("[ledger] WARN maillon '{kind}' NON inscrit : l'écriture n'a pas eu lieu ({e})");
+            MaillonDeRegistre::NonInscrit(e.to_string())
+        }
+    }
 }
 /// Double-audit d'une mutation de config (#1b), DANS la transaction courante (correctif M5, fail-closed) :
 /// (1) ledger append-only tamper-evident ; (2) event source='plume-config' category='config' SOC-visible ET

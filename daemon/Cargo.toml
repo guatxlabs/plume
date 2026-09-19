@@ -27,7 +27,7 @@ flate2 = "1"
 serde_json = "1"
 bcrypt = "0.15"
 argon2 = { version = "0.5", features = ["std"] }
-base64 = "0.22"
+base64 = "0.23"
 sha2 = "0.10"
 # NATIVE IdP (#44) — validation JWT id_token OIDC (RS256/ES256) via JWKS. `jsonwebtoken` est pure-Rust
 # (ring, DÉJÀ dans l'arbre via rustls ; + serde/simple_asn1/pem). AUCUNE dépendance native/OpenSSL

@@ -174,13 +174,34 @@ CE QUE `P10.20-r` A FERMÉ, ET CE QU'IL A RÉFUTÉ :
 
 CE QUE CES LECTEURS NE TIENNENT TOUJOURS PAS : le `;` d'une déclaration GÉNÉRIQUE (`fn f<T>(x: T);`)
 n'est pas vu (aucune sur `daemon/src`, mesuré) ; les virgules de GÉNÉRIQUES (`HashMap<K, V>`) ne sont
-pas suivies par `arguments` ; une chaîne brute non refermée court jusqu'à la fin du texte ; et la
-JAMBE B de cette garde-ci ne voit que la liaison `if let Ok(<nom>)`, pas `if let Ok((a, b, c))` — le
-SEUL `if let Ok(..) = <lecture>` sans `else` de `daemon/src/handlers/` au 2026-09-16 est justement de
-cette forme (`action_approve`, actions.rs, `query_row`), il relève de `P10.20-q`, et élargir le motif
-ici déplacerait `PLAFOND_CLOSURE_SOURDE` sans qu'aucune mesure ne l'ait préparé. Le motif large
-existe (`MOTIF_LIANT_IF_LET_TOUT_MOTIF`) et il est OFFERT aux consommatrices qui partent d'un
-ensemble nommé VIDE.
+pas suivies par `arguments` ; une chaîne brute non refermée court jusqu'à la fin du texte.
+
+LA JAMBE B LIT DÉSORMAIS TOUTE LIAISON `if let Ok(..)` (`P10.20-s`, 2026-09-19)
+-------------------------------------------------------------------------------
+Il n'existe plus qu'UN motif de liaison dans ce fichier — `MOTIF_LIANT_IF_LET_TOUT_MOTIF` —, et c'est
+une garantie STRUCTURELLE : le motif étroit (`Ok(<nom simple>)`) est SUPPRIMÉ, donc aucune jambe ne
+peut se re-rétrécir en silence. Le tuple (`Ok((kind, target, dry))`) et le motif imbriqué
+(`Ok(Some(t))`) sont vus comme le nom simple l'était.
+
+CE QUE L'ÉLARGISSEMENT A COÛTÉ, MESURÉ AVANT DE L'APPLIQUER, sur l'arbre du 2026-09-19 : ZÉRO. Ni
+site ni closure sourde de plus, jambe B à zéro accusation avant comme après, `SITES_ADMIS["B"]` VIDE
+et `PLAFOND_CLOSURE_SOURDE` inchangé à zéro. Le plafond n'avait d'ailleurs RIEN à déplacer : depuis
+`P10.7-y` il n'est plus un chiffre, il est DÉRIVÉ d'un ensemble nommé jugé dans les deux sens — un
+site neuf y rougit comme FORME NEUVE, il ne consomme pas une marge.
+
+ET LE SITE QUI MOTIVAIT L'ÉLARGISSEMENT N'AURAIT JAMAIS ÉTÉ VU PAR LUI. Ce fichier a écrit que le
+tuple de `action_approve` (actions.rs) échappait à la jambe B faute d'un motif assez large. La cause
+était AILLEURS, et elle est mesurée : sur l'arbre qui portait encore ce tuple, le motif large fait
+passer la population BRUTE de la forme sous `daemon/src/handlers/` de zéro à UN site — et la jambe B,
+elle, reste à zéro accusation. `action_approve` lit derrière `req_conn!`, une voie que la POPULATION
+de cette garde ne nomme pas (c'est écrit depuis `P10.7-j`, et c'est toujours vrai) : sa région ne
+s'ouvre pas, donc son texte n'est jamais lu, quel que soit le motif. Un motif élargi sur une
+population amputée reste aveugle — la même leçon que `read_with` a coûtée, sur un quatrième axe.
+
+CE QUE LE MOTIF LARGE NE VOIT TOUJOURS PAS, et c'est nommé pour être vu : `if let Some(x) = <lecture>`
+(pas d'enveloppe `Ok`), `while let`, et `if let Ok(..) = <lecture> { .. } else { .. }` dont le `else`
+NE PARLE PAS — la présence de la branche suffit à innocenter, comme la jambe Q le fait déjà sur la
+même forme. Aucune de ces trois n'existe sous `daemon/src/handlers/` au 2026-09-19 (mesuré).
 """
 import os
 import re
@@ -497,6 +518,11 @@ SITES_ADMIS = {
     },
     "B": {  # closure SOURDE : AUCUNE depuis le lot 101 (`P10.7-g`) — les deux derniers silences voulus (résolveur de rétention,
         # couverture froide de la recherche) sont typés et disent leur lecture ratée. Un site neuf rougit ici (FORME NEUVE).
+        # `P10.20-s` (2026-09-19) A ÉLARGI LE MOTIF DE LIAISON DE CETTE JAMBE SANS Y AJOUTER UNE SEULE ENTRÉE, et c'est la
+        # mesure qui l'autorise : sur l'arbre du jour, le motif large (tuple et motif imbriqué compris) accuse EXACTEMENT
+        # autant que l'étroit — zéro. Aucun reste n'a donc eu à être admis, cet ensemble reste VIDE, et
+        # `PLAFOND_CLOSURE_SOURDE` reste à zéro. Un plafond DÉRIVÉ d'un ensemble nommé n'a d'ailleurs aucune marge à
+        # consommer : un site neuf y rougit, il n'y entre pas en silence.
     },
     "Q": {  # cause JETÉE : AUCUNE depuis le lot 102 (`P10.7-g`) — le compte total porte `total_error` à côté de `-1`, et
         # l'union des clés de labels dit qu'elle n'est pas établie quand l'échantillon ne se lit pas. Un site neuf rougit ici.
@@ -1250,22 +1276,28 @@ def bras_qui_avale(texte, deb, apres):
     return None
 
 
-# --- LA TROISIÈME ÉCRITURE : `if let Ok(<nom>) = <lecture> { .. }` SANS `else` (`P10.7-h`) --------
-# Le motif LIANT est le même que celui des bras (`Ok(<nom>)`, `mut` compris) : ce n'est pas une
-# commodité, c'est la MÊME limite, écrite au même endroit, et elle est déclarée dans « ce que cette
-# garde ne tient pas ». `if let` AVEC `else` n'est PAS jugé ici : une branche existe, et ce qu'elle
-# fait relève du reconnaisseur d'aveu au niveau de la région — c'est EXACTEMENT la règle que la jambe
-# Q applique déjà à la même forme sur les voies de requête (`juger_la_cause`), et la faire diverger
-# ferait dire deux choses différentes à la même garde sur le même texte.
-MOTIF_LIANT_IF_LET = re.compile(r"^Ok\s*\(\s*(?:mut\s+)?[A-Za-z_][A-Za-z0-9_]*\s*\)$")
-# LE MÊME MOTIF, MAIS SANS EXIGER QUE LE LIÉ SOIT UN NOM SIMPLE : `Ok((kind, target, dry))` est une
-# liaison par TUPLE, et le motif étroit ci-dessus ne la voit pas. MESURÉ le 2026-09-16 sur
-# `daemon/src/handlers/` : `action_approve` (actions.rs:565) est le SEUL site du répertoire à porter un
-# `if let Ok(..) = <lecture>` sans `else`, et c'est exactement celui que le motif étroit manque — la
-# jambe B de cette garde-ci est donc aveugle à la liaison par tuple, et le dire vaut mieux que de
-# l'élargir dans le même geste (son plafond changerait sans qu'aucune mesure ne l'ait préparé ; le site
-# lui-même relève de `P10.20-q`). Le motif large est OFFERT aux consommatrices qui, elles, partent d'un
-# ensemble nommé VIDE et n'ont donc pas de plafond à déplacer.
+# --- LA TROISIÈME ÉCRITURE : `if let Ok(..) = <lecture> { .. }` SANS `else` (`P10.7-h`) -----------
+# `if let` AVEC `else` n'est PAS jugé ici : une branche existe, et ce qu'elle fait relève du
+# reconnaisseur d'aveu au niveau de la région — c'est EXACTEMENT la règle que la jambe Q applique déjà
+# à la même forme sur les voies de requête (`juger_la_cause`), et la faire diverger ferait dire deux
+# choses différentes à la même garde sur le même texte.
+#
+# IL N'Y A PLUS QU'UN MOTIF DE LIAISON (`P10.20-s`, 2026-09-19), ET C'EST UNE PROPRIÉTÉ STRUCTURELLE,
+# PAS UN RÉGLAGE. Le motif ÉTROIT (`Ok(<nom simple>)`, `mut` compris) vivait ici à côté du large et
+# servait de DÉFAUT à la jambe B : le tuple (`Ok((kind, target, dry))`) et le motif imbriqué
+# (`Ok(Some(t))`) lui échappaient. Il est SUPPRIMÉ plutôt que laissé en défaut, parce qu'un motif
+# étroit encore écrit est un rétrécissement qu'une mutation d'une ligne rétablit sans que rien ne le
+# dise. Ce qui reste est un seul objet, partagé par la jambe B d'ici et par la famille des PARCOURS
+# MUETS de `check_a_truncated_list_is_never_served_as_a_complete_one.py`, qui le passe explicitement.
+#
+# CE QUE L'ÉLARGISSEMENT A COÛTÉ, MESURÉ AVANT DE L'APPLIQUER, sur l'arbre du 2026-09-19 : ZÉRO
+# accusation de plus jambe B, zéro site de plus dans la population BRUTE de la forme sous
+# `daemon/src/handlers/`. Sur l'arbre qui portait encore le tuple de `action_approve`, le motif large
+# fait passer cette population brute de zéro à UN — et la jambe B y reste à ZÉRO : ce site lit
+# derrière `req_conn!`, une voie hors population, donc sa région ne s'ouvre pas et son texte n'est
+# jamais lu. Élargir le motif ne l'aurait PAS rendu visible ; ce qui manquait était la population.
+# Hors `handlers/`, sur tout `daemon/src`, le large ajoute UN site au strict (`rollups.rs`,
+# `rollup_events`, forme `Ok(Some(t))`) — hors population lui aussi, et nommé ici pour être vu.
 MOTIF_LIANT_IF_LET_TOUT_MOTIF = re.compile(r"^Ok\s*\(.*\)$", re.S)
 
 
@@ -1286,19 +1318,20 @@ def egal_de_tete(texte):
     return None
 
 
-def if_let_est_le_scrutateur(texte, deb, motif=MOTIF_LIANT_IF_LET):
-    """Le `if let Ok(<nom>) =` le plus proche EN AMONT lie-t-il la lecture qui commence en `deb` ?
+def if_let_est_le_scrutateur(texte, deb, motif=MOTIF_LIANT_IF_LET_TOUT_MOTIF):
+    """Le `if let Ok(..) =` le plus proche EN AMONT lie-t-il la lecture qui commence en `deb` ?
 
     C'EST LA MÊME CONDITION QUI EMPÊCHE D'ACCUSER À TORT que pour le `match`, et pour la même raison :
     sans elle, il suffirait qu'un `if let` quelconque précède une lecture pour que celle-ci soit
     déclarée sans branche. Une ponctuation d'instruction (`;` `{` `}` `=`) ou un mot-clé entre le `=`
     et la lecture prouve que ce `if let` porte sur autre chose, et le refus est alors NET.
 
-    `motif` est le motif de liaison accepté ; le DÉFAUT est le motif étroit que la jambe B de cette
-    garde juge depuis `P10.7-h` (un nom simple), et une consommatrice qui part d'un ensemble nommé VIDE
-    peut passer `MOTIF_LIANT_IF_LET_TOUT_MOTIF` pour voir aussi la liaison par TUPLE. Le paramètre
-    existe pour qu'il n'y ait QU'UN lecteur : la seule autre façon de voir le tuple était d'en recopier
-    un second, et ce dépôt paie cher les lecteurs jumeaux (`P10.20-c` à `-e`)."""
+    `motif` est le motif de liaison accepté. Depuis `P10.20-s` il n'en existe plus qu'UN
+    (`MOTIF_LIANT_IF_LET_TOUT_MOTIF`), et c'est aussi le DÉFAUT : la liaison par TUPLE et le motif
+    IMBRIQUÉ sont vus comme le nom simple. Le paramètre survit parce qu'une consommatrice le passe
+    explicitement, et parce qu'il garantit qu'il n'y a QU'UN lecteur de cette forme : la seule autre
+    façon de la lire autrement serait d'en recopier un second, et ce dépôt paie cher les lecteurs
+    jumeaux (`P10.20-c` à `-e`)."""
     mots = list(re.finditer(r"\bif\s+let\b", texte[:deb]))
     if not mots:
         return False
@@ -1322,8 +1355,8 @@ def if_let_est_le_scrutateur(texte, deb, motif=MOTIF_LIANT_IF_LET):
     return prof == 0
 
 
-def if_let_sans_branche(texte, deb, apres, motif=MOTIF_LIANT_IF_LET):
-    """La lecture qui commence en `deb` est-elle liée par un `if let Ok(<nom>)` dont le bloc n'est
+def if_let_sans_branche(texte, deb, apres, motif=MOTIF_LIANT_IF_LET_TOUT_MOTIF):
+    """La lecture qui commence en `deb` est-elle liée par un `if let Ok(..)` dont le bloc n'est
     suivi d'AUCUN `else` ? Alors son échec n'a pas de branche : il n'est écrit nulle part.
 
     `motif` a le même sens que dans `if_let_est_le_scrutateur` et il est PASSÉ, jamais réinventé."""
@@ -1348,9 +1381,29 @@ def lectures_avalees(texte):
     sans elle, une écriture qui en précède une autre dans le fichier ferait TAIRE la seconde dans la
     phrase imprimée — le site resterait accusé, mais une cause vraie cesserait d'être nommée, et ce
     dépôt tient qu'un canal de détection qui rétrécit est une perte même quand le verdict ne bouge pas.
-    Les trois branches s'excluent (`continue`) : une lecture ne compte JAMAIS deux fois."""
+    Les trois branches s'excluent (`continue`) : une lecture ne compte JAMAIS deux fois.
+
+    UNE FORME CITÉE DANS UN LITTÉRAL DE CHAÎNE N'EST PAS UNE LECTURE (`P10.20-s`, 2026-09-19). Le
+    COMMENTAIRE était déjà écarté — `analyser` dépouille le texte avant d'arriver ici — mais la CHAÎNE
+    ne l'était pas, et `sans_commentaires_rust` restitue les littéraux tels quels, c'est son contrat.
+    Les trois écritures étaient donc accusables depuis une phrase d'aide, un gabarit SQL ou un message
+    d'erreur qui cite la forme fautive : ÉPROUVÉ sur corpus fabriqué, une closure dont le seul contenu
+    est `let aide = "… if let Ok(rows) = conn.query_map(…) { } sans else";` était accusée. Le défaut
+    n'était pas MORDANT — sur l'arbre du 2026-09-19, ZÉRO des 468 appariements de `LECTURE` sous
+    `daemon/src/handlers/` (et zéro des 831 de tout `daemon/src`) tombe dans un littéral de chaîne — il
+    était ARMÉ, et il s'arme d'autant plus que le motif de liaison s'élargit. L'exclusion est celle que
+    la famille des listes tronquées applique déjà, avec le MÊME lecteur (`spans_de_chaines_rust`),
+    jamais une copie.
+
+    CE QU'ELLE NE TIENT PAS : les intervalles sont calculés sur le FRAGMENT reçu (région de fermeture,
+    corps de fonction). Un fragment qui commencerait À L'INTÉRIEUR d'un littéral serait lu à l'envers ;
+    les fragments que `corps_de_la_closure` rend commencent tous à une frontière de jeton (début du
+    troisième argument, début d'un corps de fonction), et c'est cette propriété-là qui le garantit."""
     out = []
+    spans = spans_de_chaines_rust(texte)
     for r in LECTURE.finditer(texte):
+        if dans_une_chaine_rust(spans, r.start()):
+            continue
         fin = apparier(texte, r.end() - 1)
         if fin < 0:
             continue
@@ -1565,6 +1618,65 @@ MUTANTS = [
     ("18. LA MÊME fermeture servant un corps, mais qui AVOUE", ECRITURE_QUI_AVOUE, None),
     ("19. UNE ÉCRITURE dont la fermeture ne cache RIEN : le deuxième argument est `&au`, pas un défaut",
      ECRITURE_PROPRE, None),
+    # --- LES SIX SUIVANTS TIENNENT L'ÉLARGISSEMENT DU MOTIF DE LIAISON (`P10.20-s`, 2026-09-19). Le
+    # numéro 20 n'est pas libre : c'est le témoin de l'ASYMÉTRIE DES JAMBES, écrit dans
+    # `valider_instrument` et cité deux fois plus haut ; la suite reprend donc à 21.
+    # Le 21 et le 22 sont une PAIRE DISCRIMINANTE — le `if let` y lie le MÊME tuple sur la MÊME
+    # lecture, seule la présence de l'`else` change, et le verdict doit s'inverser. Le 24 tient le
+    # COMMENTAIRE, le 25 tient l'exclusion qui manquait (le LITTÉRAL DE CHAÎNE), et le 26 tient le
+    # motif IMBRIQUÉ, la seule forme que l'arbre porte réellement hors de la population (`rollups.rs`).
+    # LE 23 EST DÉCLARÉ NON PROUVÉ, et il est gardé pour ce qu'il DIT plutôt que pour ce qu'il tue :
+    # aucune des mutations jouées sur ce lot ne le fait rougir, parce qu'un tuple écrit dans un BRAS
+    # n'est de toute façon pas suivi (`BRAS_LIANT` reste étroit, c'est déclaré plus bas) et parce que
+    # son bras d'erreur pose la clé d'aveu. Il est ici pour qu'un `match` qui PARLE reste, par écrit,
+    # une forme que cette garde n'accuse pas ; un instrument qui prétend éprouver ce qu'il n'atteint
+    # pas est pire que rien, et c'est pourquoi la limite est dite au lieu d'être comptée.
+    ("21. UNE LIAISON PAR TUPLE sans `else` sur une lecture : le motif étroit ne la voyait pas",
+     'pub(crate) async fn r21() -> Json<Value> {\n'
+     '    let v = read_with_watchdog(&db, json!({ "rows": [], "error": "x" }), move |conn| {\n'
+     '        let mut out = json!({ "rows": [] });\n'
+     '        if let Ok((kind, target, dry)) = conn.query_row("SELECT kind, target, dry_run FROM action WHERE id=?1",\n'
+     '            params![id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)? != 0))) {\n'
+     '            out = json!({ "kind": kind, "target": target, "dry": dry });\n'
+     '        }\n'
+     '        out\n    });\n    Json(v)\n}\n', "B"),
+    ("22. LE MÊME TUPLE, AVEC son `else` : la branche existe, et elle seule inverse le verdict",
+     'pub(crate) async fn r22() -> Json<Value> {\n'
+     '    let v = read_with_watchdog(&db, json!({ "rows": [], "error": "x" }), move |conn| {\n'
+     '        let mut out = json!({ "rows": [] });\n'
+     '        if let Ok((kind, target, dry)) = conn.query_row("SELECT kind, target, dry_run FROM action WHERE id=?1",\n'
+     '            params![id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)? != 0))) {\n'
+     '            out = json!({ "kind": kind, "target": target, "dry": dry });\n'
+     '        } else { out = json!({ "coupe": "riposte NON RELUE" }); }\n'
+     '        out\n    });\n    Json(v)\n}\n', None),
+    ("23. LE MÊME TUPLE sous un `match` dont le bras d'erreur PARLE",
+     'pub(crate) async fn r23() -> Json<Value> {\n'
+     '    let v = read_with_watchdog(&db, json!({ "rows": [], "error": "x" }), move |conn| {\n'
+     '        match conn.query_row("SELECT kind, target FROM action WHERE id=?1", params![id],\n'
+     '            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) {\n'
+     '            Ok((kind, target)) => json!({ "kind": kind, "target": target }),\n'
+     '            Err(e) => json!({ "error": format!("riposte NON LUE : {e}") }),\n'
+     '        }\n    });\n    Json(v)\n}\n', None),
+    ("24. LE MÊME TUPLE, EN COMMENTAIRE — il ne doit JAMAIS compter",
+     'pub(crate) async fn r24() -> Json<Value> {\n'
+     '    let v = read_with_watchdog(&db, json!({ "rows": [], "error": "x" }), move |conn| {\n'
+     '        // if let Ok((kind, target, dry)) = conn.query_row("SELECT k, t, d FROM action", params![id], f) {\n'
+     '        //     out = json!({ "kind": kind });\n'
+     '        // }\n'
+     '        json!({ "ok": true })\n    });\n    Json(v)\n}\n', None),
+    ("25. LE MÊME TUPLE, DANS UN LITTÉRAL DE CHAÎNE — une forme CITÉE n'est pas une lecture",
+     'pub(crate) async fn r25() -> Json<Value> {\n'
+     '    let v = read_with_watchdog(&db, json!({ "rows": [], "error": "x" }), move |conn| {\n'
+     '        let aide = "forme fautive : if let Ok((a, b)) = conn.query_row(SELECT a, b FROM t) { .. } sans else";\n'
+     '        json!({ "aide": aide })\n    });\n    Json(v)\n}\n', None),
+    ("26. UN MOTIF IMBRIQUÉ `Ok(Some(t))` sans `else` — la seule forme que l'arbre porte vraiment",
+     'pub(crate) async fn r26() -> Json<Value> {\n'
+     '    let v = read_with_watchdog(&db, json!({ "rows": [], "error": "x" }), move |conn| {\n'
+     '        let mut out = json!({ "rows": [] });\n'
+     '        if let Ok(Some(t)) = conn.query_row("SELECT MIN(ts) FROM event", [], |r| r.get::<_, Option<i64>>(0)) {\n'
+     '            out = json!({ "depuis": t });\n'
+     '        }\n'
+     '        out\n    });\n    Json(v)\n}\n', "B"),
 ]
 
 # La dernière ligne est du COMMENTAIRE Rust, et l'arbre en porte une du même genre
@@ -1690,6 +1802,44 @@ def analyser(chemin, texte, defs, constructeurs, aveux, aveux_du_lecteur=None):
             elif verdict == NON_CLASSE:
                 accusations.append(("?", ou, nom_fn, raison))
     return sites, accusations
+
+
+def ecarts_contre_les_ensembles(a_par_jambe, admis_par_jambe=None):
+    """Les écarts entre les accusations du jour et les ensembles nommés, JUGÉS DANS LES DEUX SENS —
+    rendus comme des phrases, jamais imprimés ici.
+
+    POURQUOI CE JUGEMENT EST UNE FONCTION ET NON UNE BOUCLE DANS `main` (`P10.20-s`, 2026-09-19) :
+    tant qu'il vivait dans `main`, RIEN ne l'éprouvait. Sur un arbre où les accusations coïncident
+    exactement avec les ensembles — c'est le cas depuis le lot 102 —, le débrancher entièrement laisse
+    la garde VERTE À SORTIE IDENTIQUE, et le canal qui refuse les formes neuves disparaîtrait sans
+    qu'aucun code de sortie ne le dise. Extrait, il est appelé par deux témoins fabriqués (une
+    accusation hors de l'ensemble, une entrée sans accusation) qui le tuent dans les deux sens.
+
+    `admis_par_jambe` est l'ensemble jugé ; il est PASSÉ pour que les témoins n'aient pas à toucher au
+    `SITES_ADMIS` réel, et le défaut reste celui de ce fichier."""
+    if admis_par_jambe is None:
+        admis_par_jambe = SITES_ADMIS
+    messages = []
+    for jambe in ("A", "B", "Q"):
+        vus = {}
+        for ou, fn, _raison in a_par_jambe.get(jambe, []):
+            cle = (ou.rsplit(":", 1)[0], fn)
+            vus[cle] = vus.get(cle, 0) + 1
+        admis = admis_par_jambe[jambe]
+        for (fichier, fn), n in sorted(vus.items()):
+            if n > admis.get((fichier, fn), 0):
+                messages.append(
+                    f"::error file={fichier}::[{jambe}] FORME NEUVE — `{fn}` porte {n} accusation(s) pour "
+                    f"{admis.get((fichier, fn), 0)} admise(s) dans SITES_ADMIS[\"{jambe}\"]. La forme doit "
+                    "avouer, ou entrer dans l'ensemble AVEC sa raison — jamais en silence.")
+        for (fichier, fn), n in sorted(admis.items()):
+            if vus.get((fichier, fn), 0) < n:
+                messages.append(
+                    f"::error file={fichier}::[{jambe}] EXEMPTION SANS OBJET — `{fn}` est admis {n} fois dans "
+                    f"SITES_ADMIS[\"{jambe}\"] et n'est accusé que {vus.get((fichier, fn), 0)} fois : le site "
+                    "avoue désormais, ou n'existe plus, ou cette garde a cessé de le voir. Dans les trois cas, "
+                    "retirer l'entrée en disant lequel — un canal qui rétrécit ne doit pas passer pour un défaut fermé.")
+    return messages
 
 
 def valider_instrument(defs, constructeurs):
@@ -1930,6 +2080,23 @@ def valider_instrument(defs, constructeurs):
     if "corps_de_refus" not in constructeurs:
         errs.append("témoin d'ANCRAGE : `corps_de_refus` n'est plus dérivé comme constructeur d'aveu — "
                     "la dérivation ne lit plus `daemon/src/handlers/portillon.rs`")
+    # LE JUGEMENT CONTRE LES ENSEMBLES NOMMÉS S'ÉPROUVE À SON PROPRE NIVEAU (`P10.20-s`, 2026-09-19).
+    # Il vivait dans `main` et RIEN ne l'atteignait : sur un arbre où les accusations coïncident avec
+    # les ensembles, le débrancher laisse la garde VERTE à sortie identique. Les deux témoins sont
+    # SYMÉTRIQUES, et c'est le point — un seul des deux sens laisserait l'autre s'éteindre en silence.
+    fab_acc = {"B": [("daemon/src/handlers/fabrique.rs:1", "lit_tout", "tuple lié sans `else`")]}
+    neuve = ecarts_contre_les_ensembles(fab_acc, {"A": {}, "B": {}, "Q": {}})
+    if len(neuve) != 1 or "FORME NEUVE" not in neuve[0] or "lit_tout" not in neuve[0]:
+        errs.append("témoin du JUGEMENT (forme neuve) : une accusation hors de l'ensemble nommé ne rend "
+                    f"pas un écart qui NOMME le site — rendu {neuve}")
+    sans_objet = ecarts_contre_les_ensembles(
+        {}, {"A": {}, "B": {("daemon/src/handlers/fabrique.rs", "lit_tout"): 1}, "Q": {}})
+    if len(sans_objet) != 1 or "EXEMPTION SANS OBJET" not in sans_objet[0]:
+        errs.append("témoin du JUGEMENT (exemption sans objet) : une entrée de l'ensemble nommé que rien "
+                    f"n'accuse ne rend pas d'écart — rendu {sans_objet}")
+    if ecarts_contre_les_ensembles(fab_acc, {"A": {}, "B": {("daemon/src/handlers/fabrique.rs", "lit_tout"): 1}, "Q": {}}):
+        errs.append("témoin du JUGEMENT (négatif) : une accusation EXACTEMENT admise rend un écart — le "
+                    "jugement accuse ce que l'ensemble nomme, et l'exemption ne servirait plus à rien")
     # LES LECTEURS DE FORME RUST SE VALIDENT ICI COMME AILLEURS — LA MÊME FONCTION, PAS UNE COPIE.
     try:
         temoins_des_lecteurs_de_forme()
@@ -1946,13 +2113,22 @@ def ce_qui_n_est_pas_tenu(non_classes=0):
           "sans objet. C'est le signal voulu ; la liste se corrige à la main, avec la raison.\n"
           "  * qu'un aveu soit VRAI. Elle juge qu'une cause atteint le corps servi, pas que la phrase "
           "qui l'accompagne dise quelque chose. Un `error: \"\"` la satisferait.\n"
-          "  * la LIAISON PAR TUPLE dans la jambe B. `MOTIF_LIANT_IF_LET` n'accepte qu'un nom simple : "
-          "`if let Ok((kind, target, dry)) = conn.query_row(..)` n'est PAS vu comme une lecture sans "
-          "branche. MESURÉ le 2026-09-16 : c'est le SEUL `if let Ok(..) = <lecture>` sans `else` de "
-          "`daemon/src/handlers/` (`action_approve`, actions.rs), et il relève de `P10.20-q`. Le motif "
-          "large existe (`MOTIF_LIANT_IF_LET_TOUT_MOTIF`) et il est consommé par la famille des "
-          "PARCOURS MUETS ; l'appliquer ICI déplacerait `PLAFOND_CLOSURE_SOURDE` sans mesure, et ce "
-          "n'est pas fait dans ce lot.\n"
+          "  * la liaison par TUPLE et le motif IMBRIQUÉ SONT LUS depuis `P10.20-s` (2026-09-19) : il "
+          "n'existe plus qu'un motif de liaison (`MOTIF_LIANT_IF_LET_TOUT_MOTIF`), le même que la "
+          "famille des PARCOURS MUETS consomme. CE QUI RESTE HORS DE PORTÉE, et c'est nommé pour être "
+          "vu : `if let Some(x) = <lecture>` (aucune enveloppe `Ok`), `while let`, et `if let Ok(..) = "
+          "<lecture> { .. } else { .. }` dont l'`else` NE PARLE PAS — la présence de la branche suffit "
+          "à innocenter, comme la jambe Q le fait déjà sur la même forme. Aucune des trois n'existe "
+          "sous `daemon/src/handlers/` au 2026-09-19, mesuré.\n"
+          "  * CE QUE L'ÉLARGISSEMENT DE CE MOTIF N'A PAS RÉPARÉ, ET C'EST LA LEÇON DU LOT. Ce fichier "
+          "a écrit que le tuple de `action_approve` (actions.rs) échappait à la jambe B faute d'un "
+          "motif assez large ; la cause était AILLEURS. Sur l'arbre qui portait encore ce tuple, le "
+          "motif large fait passer la population BRUTE de la forme sous `daemon/src/handlers/` de zéro "
+          "à UN site, et la jambe B y reste à ZÉRO accusation : ce site lit derrière `req_conn!`, une "
+          "voie que la POPULATION ne nomme pas, donc sa région ne s'ouvre pas et son texte n'est "
+          "jamais lu. Un motif élargi sur une population amputée reste aveugle — la même leçon que "
+          "`read_with` a coûtée, sur un quatrième axe après les bras de `match`, les `if let` sans "
+          "branche et la fermeture écrite en chemin nu.\n"
           "  * la JAMBE EXÉCUTÉE. Rien ici ne lance le routeur sous un budget épuisé : la garde lit du "
           "texte. Ce qu'elle prouve, c'est qu'une forme est absente du dépôt, jamais qu'une réponse "
           "réelle avoue. Le levier EXISTE (`PLUME_QUERY_BUDGET_MS`, lu par `query_budget_ms`) et aucun "
@@ -2065,12 +2241,31 @@ def ce_qui_n_est_pas_tenu(non_classes=0):
           "innocenté parce qu'il pose `corps[\"error\"]` pour ses PARCOURS. C'est un choix — le "
           "resserrer accuserait la surface la plus consciencieuse de l'arbre — mais ce n'en est pas "
           "moins un trou, et il est ici pour être vu.\n"
-          "  * le `if let` n'est suivi que s'il lie par `Ok(<nom>)`, comme le bras : `Ok((a, b))`, "
-          "`Some(x)` et `while let` ne le sont pas. Un `if let` AVEC `else` n'est PAS jugé sur ce que "
-          "son `else` fait — la branche existe, et c'est tout ce que cette jambe constate ; c'est la "
-          "règle que la jambe Q applique déjà à la même forme.\n"
+          "  * le `if let` n'est suivi que s'il lie par `Ok(..)` : `Some(x)` et `while let` ne le sont "
+          "pas. Un `if let` AVEC `else` n'est PAS jugé sur ce que son `else` fait — la branche existe, "
+          "et c'est tout ce que cette jambe constate ; c'est la règle que la jambe Q applique déjà à "
+          "la même forme.\n"
+          "  * UNE FORME CITÉE DANS UN LITTÉRAL DE CHAÎNE n'est plus comptée depuis `P10.20-s` — elle "
+          "l'était, sur les TROIS écritures de l'avalement, et le commentaire seul était écarté. Le "
+          "défaut n'était pas MORDANT (zéro appariement de lecture dans un littéral sur "
+          "`daemon/src/handlers/` comme sur tout `daemon/src` au 2026-09-19) ; il était ARMÉ, et il "
+          "s'arme d'autant plus que le motif de liaison s'élargit. Ce qui reste : les intervalles sont "
+          "calculés sur le FRAGMENT reçu, et un fragment qui commencerait à l'intérieur d'un littéral "
+          "serait lu à l'envers — les fragments rendus commencent tous à une frontière de jeton.\n"
           "  * le bras n'est suivi que s'il lie par `Ok(<nom>)` : `Ok((a, b))`, `Some(x)` et un bras "
-          "fourre-tout `_ =>` ne le sont pas.\n"
+          "fourre-tout `_ =>` ne le sont pas. C'EST LE TROU SYMÉTRIQUE DE CELUI QUE `P10.20-s` A "
+          "FERMÉ SUR LE `if let`, ET IL EST LE PLUS GRAND DES DEUX — MESURÉ sur l'arbre du "
+          "2026-09-19 : sur `daemon/src/handlers/`, 140 bras de `match` scrutant une lecture lient "
+          "par un nom simple et sont suivis, 14 lient par un motif que `BRAS_LIANT` ne suit pas "
+          "(tuples `Ok((owner, vis))`, `Ok((n, s))`, `Ok((v, s))`, `Ok((name, did, data, created, "
+          "by, role))` ; imbriqués `Ok(Some(..))` ; un bras gardé `Ok(d) if ..` ; un littéral "
+          "`Ok(0)`), soit 18 sur tout `daemon/src`. CE QUE CE TROU COÛTE AUJOURD'HUI, mesuré aussi : "
+          "UN seul de ces 14 bras porte un avalement dans son corps (`dash_ergonomics.rs`, "
+          "`snapshot_get`), et c'est une analyse JSON (`serde_json::from_str(..).unwrap_or_else(..)`), "
+          "pas une lecture de lignes. Le fermer demande d'extraire les noms liés d'un motif composé, "
+          "pas d'élargir une expression rationnelle — `bras_qui_avale` suit la chaîne DEPUIS LE NOM "
+          "LIÉ, et un tuple n'en a pas un seul. Ce n'est donc pas fait ici, et le compte est écrit "
+          "pour que le lot qui le fera parte d'une mesure.\n"
           "  * la chaîne d'un bras est suivie DEPUIS LE NOM LIÉ. Un avalement écrit dans une closure "
           "INTERNE au bras (`Ok(r) => r.filter_map(|x| x.ok()).collect()`) lui échappe ; aucun site de "
           "l'arbre n'en porte au 2026-08-30, et le jour où il y en aura un, c'est cette ligne-ci qu'il "
@@ -2204,28 +2399,12 @@ def main():
           f"{nq}/{PLAFOND_CAUSE_JETEE} · non classés {nc}.")
 
     # `P10.7-y` — JUGEMENT DANS LES DEUX SENS, site par site, contre l'ensemble nommé de chaque jambe.
-    ecarts = 0
-    for jambe in ("A", "B", "Q"):
-        vus = {}
-        for ou, fn, _raison in a_par_jambe.get(jambe, []):
-            cle = (ou.rsplit(":", 1)[0], fn)
-            vus[cle] = vus.get(cle, 0) + 1
-        admis = SITES_ADMIS[jambe]
-        for (fichier, fn), n in sorted(vus.items()):
-            if n > admis.get((fichier, fn), 0):
-                ecarts += 1
-                print(f"::error file={fichier}::[{jambe}] FORME NEUVE — `{fn}` porte {n} accusation(s) pour "
-                      f"{admis.get((fichier, fn), 0)} admise(s) dans SITES_ADMIS[\"{jambe}\"]. La forme doit "
-                      "avouer, ou entrer dans l'ensemble AVEC sa raison — jamais en silence.")
-        for (fichier, fn), n in sorted(admis.items()):
-            if vus.get((fichier, fn), 0) < n:
-                ecarts += 1
-                print(f"::error file={fichier}::[{jambe}] EXEMPTION SANS OBJET — `{fn}` est admis {n} fois dans "
-                      f"SITES_ADMIS[\"{jambe}\"] et n'est accusé que {vus.get((fichier, fn), 0)} fois : le site "
-                      "avoue désormais, ou n'existe plus, ou cette garde a cessé de le voir. Dans les trois cas, "
-                      "retirer l'entrée en disant lequel — un canal qui rétrécit ne doit pas passer pour un défaut fermé.")
-    if ecarts:
-        print(f"::error::{ecarts} écart(s) entre les accusations du jour et les ensembles nommés. L'ensemble se "
+    # Le jugement lui-même vit dans `ecarts_contre_les_ensembles`, qui est éprouvé par deux témoins.
+    messages = ecarts_contre_les_ensembles(a_par_jambe)
+    for m in messages:
+        print(m)
+    if messages:
+        print(f"::error::{len(messages)} écart(s) entre les accusations du jour et les ensembles nommés. L'ensemble se "
               "corrige à la main, avec la raison ; ZÉRO reste atteignable jambe par jambe.")
         ce_qui_n_est_pas_tenu(nc)
         return 1

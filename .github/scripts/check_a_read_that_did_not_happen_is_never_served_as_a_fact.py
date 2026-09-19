@@ -202,6 +202,43 @@ CE QUE LE MOTIF LARGE NE VOIT TOUJOURS PAS, et c'est nommé pour être vu : `if 
 (pas d'enveloppe `Ok`), `while let`, et `if let Ok(..) = <lecture> { .. } else { .. }` dont le `else`
 NE PARLE PAS — la présence de la branche suffit à innocenter, comme la jambe Q le fait déjà sur la
 même forme. Aucune de ces trois n'existe sous `daemon/src/handlers/` au 2026-09-19 (mesuré).
+
+LE BRAS DE `match` LIT DÉSORMAIS TOUT MOTIF `Ok(..)` (`P10.20-x`, 2026-09-19)
+-----------------------------------------------------------------------------
+C'était le trou SYMÉTRIQUE de celui que `P10.20-s` a fermé sur le `if let`, et il se ferme de la même
+façon : par une garantie STRUCTURELLE. L'expression rationnelle de liaison (`Ok(<nom simple>)`) est
+SUPPRIMÉE, remplacée par une EXTRACTION (`noms_lies_du_bras`) qui prive le motif de sa GARDE puis
+relève ses noms liants un par un, et `bras_qui_avale` suit la chaîne depuis CHACUN d'eux. Un tuple, un
+motif imbriqué, un bras gardé et un motif de structure lient comme le nom simple liait.
+
+CE QUE L'ÉNONCÉ DE DÉPART DISAIT, ET CE QUE LA MESURE EN A GARDÉ (instantané `83097fc` et arbre, même
+chiffre à l'unité près sur les deux). Il annonçait « quatorze bras sous `handlers/` » en en détaillant
+TREIZE ; la re-mesure en trouve QUINZE : cinq tuples, HUIT motifs `Ok(Some(..))` (pas six), DEUX bras
+gardés (pas un). Le `Ok(0)` qu'il rangeait sous `handlers/` n'y est pas — il est dans
+`daemon/src/governance.rs`, et il y en a DEUX. Sur tout `daemon/src` : dix-sept bras entrent dans le
+suivi, pas dix-huit. Population des bras suivis, au niveau du LECTEUR : 140 -> 153 sous `handlers/`,
+167 -> 178 sur `daemon/src`.
+
+DEUX CORRECTIONS QUE L'ÉNONCÉ NE PRÉVOYAIT PAS, ET ELLES VONT EN SENS INVERSE :
+  * `Ok(_)` N'ÉTAIT PAS UN BRAS SUIVI, C'ÉTAIT UN BRAS MAL SUIVI. Le motif étroit relevait `_` comme
+    un NOM (`[A-Za-z_][A-Za-z0-9_]*` accepte le souligné seul), et la chaîne partait donc de chaque
+    `_` du corps du bras. Six bras de `daemon/src` sont dans ce cas au 2026-09-19 (deux sous
+    `handlers/`). Aucun n'avalait — le défaut était ARMÉ, pas mordant — mais c'est une accusation
+    FAUSSE qui attendait son corps, et l'extraction la ferme : `_` ne lie rien, et le dit ;
+  * LE COÛT ANNONCÉ N'EST PAS ATTEIGNABLE PAR LE GESTE QU'IL PRESCRIT. L'énoncé donnait un seul
+    avalement pour ces bras (`dash_ergonomics.rs`, `snapshot_get`, `serde_json::from_str(&data)
+    .unwrap_or_else(..)`) en le disant hors famille parce que c'est une analyse JSON. La vraie raison
+    est plus simple et elle tient à l'instrument : le nom lié `data` y est un ARGUMENT, pas le
+    RECEVEUR de la chaîne, et une chaîne suivie depuis le nom lié ne le voit pas. S'y ajoute que
+    `snapshot_get` lit derrière `req_conn!`, une voie HORS POPULATION : sa région ne s'ouvre jamais.
+    Le suivi élargi accuse donc ZÉRO site de plus, sur l'instantané comme sur l'arbre.
+
+AU NIVEAU DE LA CONSOMMATION RÉELLE, L'ÉCART EST DE DEUX BRAS, et c'est la mesure qui compte — la même
+leçon que `P10.20-r` avait tirée de sa découpe. Pendant une exécution complète, `bras_qui_avale` est
+appelé 151 fois, ouvre 48 blocs de `match` et y lit 104 bras : 46 étaient suivis, 48 le sont. Les deux
+qui entrent sont `Ok((v, s))` (`handlers/freshness.rs`, `compute_freshness`) et le tuple du témoin 23,
+qui cesse ainsi d'être invisible. Les régions que cette garde ouvre ne contiennent PAS les treize
+autres : ils vivent derrière `req_conn!` ou hors des closures jugées.
 """
 import os
 import re
@@ -523,6 +560,9 @@ SITES_ADMIS = {
         # autant que l'étroit — zéro. Aucun reste n'a donc eu à être admis, cet ensemble reste VIDE, et
         # `PLAFOND_CLOSURE_SOURDE` reste à zéro. Un plafond DÉRIVÉ d'un ensemble nommé n'a d'ailleurs aucune marge à
         # consommer : un site neuf y rougit, il n'y entre pas en silence.
+        # `P10.20-x` (2026-09-19) A FAIT LE MÊME CONSTAT SUR LE BRAS DE `match` : treize bras de plus sont suivis
+        # sous `handlers/` (dix-sept sur `daemon/src`), et AUCUN ne porte d'avalement. Rien à admettre, rien à
+        # relever : cet ensemble reste VIDE.
     },
     "Q": {  # cause JETÉE : AUCUNE depuis le lot 102 (`P10.7-g`) — le compte total porte `total_error` à côté de `-1`, et
         # l'union des clés de labels dit qu'elle n'est pas établie quand l'échantillon ne se lit pas. Un site neuf rougit ici.
@@ -1208,9 +1248,85 @@ def suivre_la_liaison(code, nom, depuis, portee_deb, portee_fin, constructeurs, 
 # Les noms de méthode qui SONT la lecture. Rencontrés en suivant un nom lié par un bras, ils rendent
 # la main à la détection DIRECTE — sans quoi le MÊME avalement serait compté deux fois.
 NOM_LECTURE = re.compile(r"^(?:query_row|query_map|query|prepare|prepare_cached)$")
-# Un bras qui LIE ce que la lecture a rendu : `Ok(r) =>`, `Ok(mut s) =>`. Le bras d'erreur ne lie pas
-# une lecture réussie ; c'est la jambe Q qui juge son sort, et seulement pour les voies de requête.
-BRAS_LIANT = re.compile(r"^\s*Ok\s*\(\s*(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*$")
+# CE QU'UN BRAS `Ok(..)` LIE — DES NOMS, JAMAIS UN NOM (`P10.20-x`, 2026-09-19). Le bras d'erreur ne
+# lie pas une lecture réussie ; c'est la jambe Q qui juge son sort, et seulement pour les voies de
+# requête. Un bras FOURRE-TOUT (`_ =>`, ou un nom nu `autre =>`) ne lie pas davantage la valeur lue :
+# il lie le `Result` entier, et le suivre ferait juger la voie d'échec avec le vocabulaire de la voie
+# de succès. Les deux restent donc hors de cette jambe, et c'est dit plutôt que sous-entendu.
+#
+# IL N'Y A PLUS D'EXPRESSION RATIONNELLE DE LIAISON ICI, ET C'EST LA MÊME GARANTIE STRUCTURELLE QUE
+# `P10.20-s` A POSÉE SUR LE `if let` : le motif étroit (`Ok(<nom simple>)`) est SUPPRIMÉ, pas laissé
+# en défaut, parce qu'un motif étroit encore écrit est un rétrécissement qu'une mutation d'une ligne
+# rétablit sans que rien ne le dise. Ce qui le remplace est une EXTRACTION : le motif est privé de sa
+# garde, puis ses noms LIANTS sont relevés un par un.
+NON_LIANT = frozenset(("mut", "ref", "_"))
+IDENTIFIANT_RUST = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _motif_sans_sa_garde(motif):
+    """Le motif d'un bras privé de sa GARDE : `Ok(d) if dash_editable(&conn, &au, d)` -> `Ok(d) `.
+
+    LA GARDE N'EST PAS UNE LIAISON, ET LA CONFONDRE ACCUSERAIT À TORT. Ses identifiants sont des noms
+    DÉJÀ liés ailleurs (`conn`, `au`) ou le nom lié lui-même ; les relever comme des liaisons ferait
+    suivre, depuis le corps du bras, des noms que ce bras n'a jamais liés — deux bras gardés existent
+    sous `daemon/src/handlers/` au 2026-09-19 (`dashboards.rs`, `datamodels.rs`), et l'énoncé qui a
+    ouvert `P10.20-x` n'en comptait qu'un."""
+    prof, i = 0, 0
+    while i < len(motif):
+        c = motif[i]
+        if c in "\"'":
+            saut = _saut_de_litteral_rust(motif, i)
+            if saut is not None:
+                i = saut
+                continue
+        if c in "([{":
+            prof += 1
+        elif c in ")]}":
+            prof -= 1
+        elif prof == 0 and re.match(r"if\b", motif[i:]) and not (i and (motif[i - 1].isalnum() or motif[i - 1] == "_")):
+            return motif[:i]
+        i += 1
+    return motif
+
+
+def noms_lies_du_bras(motif):
+    """Les noms qu'un bras `Ok(..)` LIE, `None` si ce bras ne lie pas une lecture réussie.
+
+    Rend une LISTE VIDE pour un motif qui ne lie RIEN : `Ok(0)` (deux bras de ce genre sur
+    `daemon/src/governance.rs` au 2026-09-19), `Ok(())`, `Ok(_)`. Un littéral n'a pas de nom depuis
+    lequel suivre une chaîne, et le dire est plus juste que de le ranger avec les bras d'erreur : le
+    bras EST celui de la lecture réussie, il n'y a simplement rien à suivre.
+
+    CE QUI N'EST PAS UNE LIAISON, dans l'ordre où le scanner les écarte : `mut`/`ref`, un nom suivi
+    d'une parenthèse ou d'une accolade (`Some(..)`, `Ligne { .. }` — un CONSTRUCTEUR), un segment de
+    chemin (`rusqlite::Error`), et un nom de CHAMP en position `champ: liaison`. Ce qui reste lie."""
+    tete = _motif_sans_sa_garde(motif).strip()
+    if not tete.startswith("Ok"):
+        return None
+    reste = tete[2:].lstrip()
+    if not reste.startswith("("):
+        return None
+    f = apparier(reste, 0)
+    if f < 0 or reste[f + 1:].strip():
+        return None
+    interne, noms, i = reste[1:f], [], 0
+    while i < len(interne):
+        if interne[i] in "\"'":
+            saut = _saut_de_litteral_rust(interne, i)
+            if saut is not None:
+                i = saut
+                continue
+        m = IDENTIFIANT_RUST.match(interne, i)
+        if not m:
+            i += 1
+            continue
+        nom, suite = m.group(0), interne[m.end():].lstrip()
+        avant = interne[:m.start()].rstrip()
+        if not (nom in NON_LIANT or suite[:1] in ("(", "{") or suite[:2] == "::"
+                or avant.endswith("::") or (suite[:1] == ":" and suite[:2] != "::")) and nom not in noms:
+            noms.append(nom)
+        i = m.end()
+    return noms
 
 
 def scrutateur_est_la_lecture(texte, deb):
@@ -1249,7 +1365,9 @@ def bras_qui_avale(texte, deb, apres):
     sur l'accolade des bras et rend une chaîne VIDE. C'était l'idiome de trois des sites fermés ce
     jour-là, d'où un cliquet qui n'avait baissé que d'une unité pour quatre fermetures.
 
-    LA CHAÎNE EST SUIVIE DEPUIS LE NOM LIÉ, ET ELLE S'ARRÊTE À LA PREMIÈRE LECTURE RENCONTRÉE.
+    LA CHAÎNE EST SUIVIE DEPUIS CHAQUE NOM LIÉ (`P10.20-x`, 2026-09-19 — un tuple en lie plusieurs,
+    et l'avalement peut porter sur n'importe lequel), ET ELLE S'ARRÊTE À LA PREMIÈRE LECTURE
+    RENCONTRÉE.
     `Ok(mut s) => s.query_map(..).unwrap_or_default()` avale le PARCOURS, pas l'énoncé préparé, et la
     détection DIRECTE le voit déjà sur `query_map` ; sans cet arrêt, un seul avalement serait compté
     deux fois et le cliquet monterait sans qu'aucun défaut neuf n'existe."""
@@ -1261,18 +1379,15 @@ def bras_qui_avale(texte, deb, apres):
     if i >= len(texte) or texte[i] != "{":
         return None
     for motif, corps in bras_du_match(texte, i):
-        m = BRAS_LIANT.match(motif)
-        if not m:
-            continue
-        nom = m.group(1)
-        for oc in re.finditer(r"(?<![\w.])" + re.escape(nom) + r"\b", corps):
-            jetons, _ = chaine_apres(corps, oc.start() + len(nom) - 1)
-            for j in jetons:
-                base = j.split("(")[0]
-                if NOM_LECTURE.match(base):
-                    break
-                if AVALE.match(base):
-                    return f"{motif.strip()} => {'.'.join(jetons)}"
+        for nom in noms_lies_du_bras(motif) or ():
+            for oc in re.finditer(r"(?<![\w.])" + re.escape(nom) + r"\b", corps):
+                jetons, _ = chaine_apres(corps, oc.start() + len(nom) - 1)
+                for j in jetons:
+                    base = j.split("(")[0]
+                    if NOM_LECTURE.match(base):
+                        break
+                    if AVALE.match(base):
+                        return f"{motif.strip()} => {nom}.{'.'.join(jetons)}"
     return None
 
 
@@ -1625,12 +1740,23 @@ MUTANTS = [
     # lecture, seule la présence de l'`else` change, et le verdict doit s'inverser. Le 24 tient le
     # COMMENTAIRE, le 25 tient l'exclusion qui manquait (le LITTÉRAL DE CHAÎNE), et le 26 tient le
     # motif IMBRIQUÉ, la seule forme que l'arbre porte réellement hors de la population (`rollups.rs`).
-    # LE 23 EST DÉCLARÉ NON PROUVÉ, et il est gardé pour ce qu'il DIT plutôt que pour ce qu'il tue :
-    # aucune des mutations jouées sur ce lot ne le fait rougir, parce qu'un tuple écrit dans un BRAS
-    # n'est de toute façon pas suivi (`BRAS_LIANT` reste étroit, c'est déclaré plus bas) et parce que
-    # son bras d'erreur pose la clé d'aveu. Il est ici pour qu'un `match` qui PARLE reste, par écrit,
-    # une forme que cette garde n'accuse pas ; un instrument qui prétend éprouver ce qu'il n'atteint
-    # pas est pire que rien, et c'est pourquoi la limite est dite au lieu d'être comptée.
+    # LE 23 RESTE DÉCLARÉ NON PROUVÉ, MAIS SA RAISON A CHANGÉ (`P10.20-x`, 2026-09-19). Elle était :
+    # « un tuple écrit dans un BRAS n'est de toute façon pas suivi ». Ce n'est plus vrai — son tuple
+    # EST suivi, et il est l'un des DEUX seuls bras composés qu'une exécution complète atteigne (le
+    # second, `Ok((v, s))`, est sur l'arbre, dans `handlers/freshness.rs`). Ce qui l'innocente est
+    # désormais DOUBLE, et chacun des deux suffit : son bras ne porte aucun avalement, et son bras
+    # d'erreur pose la clé d'aveu, qui innocente toute la région. Aucune mutation de ce lot ne le fait
+    # donc rougir ; il est gardé pour ce qu'il DIT — un `match` qui PARLE reste, par écrit, une forme
+    # que cette garde n'accuse pas. Les témoins 27 à 34, eux, sont TUÉS par les mutations.
+    #
+    # --- LES HUIT SUIVANTS TIENNENT L'EXTRACTION DES NOMS LIÉS D'UN BRAS (`P10.20-x`, 2026-09-19).
+    # Le 27 et le 28 sont une PAIRE DISCRIMINANTE : le bras y lie le MÊME tuple sur la MÊME lecture,
+    # seul l'avalement du SECOND nom change, et le verdict doit s'inverser — restreindre le suivi au
+    # PREMIER nom lié rend le 27 vert, et c'est l'une des mutations qui l'ont éprouvé. Le 30 et le 31
+    # sont la seconde paire : le nom lié y est le même, mais l'avalement du 31 porte sur un nom qui
+    # n'apparaît QUE DANS LA GARDE — prendre la garde pour une liaison le rendrait rouge. Le 32 tient
+    # le LITTÉRAL (`Ok(0)` ne lie rien, et le nom voisin que son corps avale n'est pas à lui), le 33
+    # le COMMENTAIRE et le 34 le LITTÉRAL DE CHAÎNE.
     ("21. UNE LIAISON PAR TUPLE sans `else` sur une lecture : le motif étroit ne la voyait pas",
      'pub(crate) async fn r21() -> Json<Value> {\n'
      '    let v = read_with_watchdog(&db, json!({ "rows": [], "error": "x" }), move |conn| {\n'
@@ -1677,6 +1803,70 @@ MUTANTS = [
      '            out = json!({ "depuis": t });\n'
      '        }\n'
      '        out\n    });\n    Json(v)\n}\n', "B"),
+    ("27. UN BRAS QUI LIE UN TUPLE et dont le SECOND nom est avalé : l'étroit ne le suivait pas",
+     'pub(crate) async fn r27() -> Json<Value> {\n'
+     '    let v = read_with_watchdog(&db, json!({ "rows": [], "error": "x" }), move |conn| {\n'
+     '        let corps = match conn.query_row("SELECT n, brut FROM t WHERE id=?1", params![id],\n'
+     '            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))) {\n'
+     '            Ok((n, brut)) => json!({ "n": n, "detail": brut.unwrap_or_default() }),\n'
+     '            Err(_) => json!({ "n": 0 }),\n'
+     '        };\n        corps\n    });\n    Json(v)\n}\n', "B"),
+    ("28. LE MÊME TUPLE dont RIEN n'est avalé : seul l'avalement sépare les deux verdicts",
+     'pub(crate) async fn r28() -> Json<Value> {\n'
+     '    let v = read_with_watchdog(&db, json!({ "rows": [], "error": "x" }), move |conn| {\n'
+     '        let corps = match conn.query_row("SELECT n, brut FROM t WHERE id=?1", params![id],\n'
+     '            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))) {\n'
+     '            Ok((n, brut)) => json!({ "n": n, "detail": brut }),\n'
+     '            Err(_) => json!({ "n": 0 }),\n'
+     '        };\n        corps\n    });\n    Json(v)\n}\n', None),
+    ("29. UN BRAS QUI LIE PAR MOTIF IMBRIQUÉ `Ok(Some(..))` et dont le nom lié est avalé",
+     'pub(crate) async fn r29() -> Json<Value> {\n'
+     '    let v = read_with_watchdog(&db, json!({ "rows": [], "error": "x" }), move |conn| {\n'
+     '        let detail = match conn.query_row("SELECT data FROM t WHERE id=?1", params![id],\n'
+     '            |r| r.get::<_, Option<String>>(0)) {\n'
+     '            Ok(Some(data)) => data.parse().unwrap_or_default(),\n'
+     '            _ => Detail::default(),\n'
+     '        };\n        json!({ "detail": detail })\n    });\n    Json(v)\n}\n', "B"),
+    ("30. UN BRAS GARDÉ `Ok(n) if ..` dont le nom LIÉ est avalé",
+     'pub(crate) async fn r30() -> Json<Value> {\n'
+     '    let v = read_with_watchdog(&db, json!({ "rows": [], "error": "x" }), move |conn| {\n'
+     '        let reste = match conn.query_row("SELECT n FROM t WHERE id=?1", params![id],\n'
+     '            |r| r.get::<_, i64>(0)) {\n'
+     '            Ok(n) if n > 0 => n.checked_sub(1).unwrap_or_default(),\n'
+     '            _ => 0,\n'
+     '        };\n        json!({ "reste": reste })\n    });\n    Json(v)\n}\n', "B"),
+    ("31. LE MÊME BRAS GARDÉ dont l'avalement porte sur un nom QUI N'EST QUE DANS LA GARDE",
+     'pub(crate) async fn r31() -> Json<Value> {\n'
+     '    let v = read_with_watchdog(&db, json!({ "rows": [], "error": "x" }), move |conn| {\n'
+     '        let bornes = bornes_du_tenant(conn);\n'
+     '        let corps = match conn.query_row("SELECT n FROM t WHERE id=?1", params![id],\n'
+     '            |r| r.get::<_, i64>(0)) {\n'
+     '            Ok(n) if bornes.contient(n) => json!({ "n": n, "max": bornes.max().unwrap_or_default() }),\n'
+     '            _ => json!({ "n": 0 }),\n'
+     '        };\n        corps\n    });\n    Json(v)\n}\n', None),
+    ("32. UN BRAS LITTÉRAL `Ok(0)` — il ne lie RIEN, et le nom voisin que son corps avale n'est pas à lui",
+     'pub(crate) async fn r32() -> Json<Value> {\n'
+     '    let v = read_with_watchdog(&db, json!({ "rows": [], "error": "x" }), move |conn| {\n'
+     '        let total = total_du_cache(conn);\n'
+     '        let corps = match conn.query_row("SELECT COUNT(*) FROM t", [], |r| r.get::<_, i64>(0)) {\n'
+     '            Ok(0) => json!({ "total": total.unwrap_or_default() }),\n'
+     '            Ok(n) => json!({ "total": n }),\n'
+     '            Err(_) => json!({ "total": 0 }),\n'
+     '        };\n        corps\n    });\n    Json(v)\n}\n', None),
+    ("33. LE MÊME BRAS TUPLE QUI AVALE, EN COMMENTAIRE — il ne doit JAMAIS compter",
+     'pub(crate) async fn r33() -> Json<Value> {\n'
+     '    let v = read_with_watchdog(&db, json!({ "rows": [], "error": "x" }), move |conn| {\n'
+     '        // match conn.query_row("SELECT n, brut FROM t", params![id], f) {\n'
+     '        //     Ok((n, brut)) => json!({ "n": n, "detail": brut.unwrap_or_default() }),\n'
+     '        //     Err(_) => json!({ "n": 0 }),\n'
+     '        // }\n'
+     '        json!({ "ok": true })\n    });\n    Json(v)\n}\n', None),
+    ("34. LE MÊME BRAS TUPLE QUI AVALE, DANS UN LITTÉRAL DE CHAÎNE — une forme CITÉE n'est pas une lecture",
+     'pub(crate) async fn r34() -> Json<Value> {\n'
+     '    let v = read_with_watchdog(&db, json!({ "rows": [], "error": "x" }), move |conn| {\n'
+     '        let aide = "forme fautive : match conn.query_row(SELECT n, brut FROM t) '
+     '{ Ok((n, brut)) => brut.unwrap_or_default(), Err(_) => 0 }";\n'
+     '        json!({ "aide": aide })\n    });\n    Json(v)\n}\n', None),
 ]
 
 # La dernière ligne est du COMMENTAIRE Rust, et l'arbre en porte une du même genre
@@ -1908,6 +2098,34 @@ def valider_instrument(defs, constructeurs):
     if lectures_avalees(bras.replace("r.flatten().collect()", "r.collect::<Result<Vec<_>>>()?")):
         errs.append("témoin du BRAS (négatif) : un bras qui SOLDE son parcours est compté comme un "
                     "avalement — la jambe B accuserait la forme même qu'elle réclame")
+    # L'EXTRACTION DES NOMS LIÉS, À SON PROPRE NIVEAU ET DANS LES DEUX SENS (`P10.20-x`, 2026-09-19).
+    # Les mutants 27 à 34 passent par la RÉGION et par les constructeurs d'aveu ; ces lignes-ci
+    # n'interrogent que l'extraction, et elles distinguent les TROIS réponses qu'elle peut faire —
+    # une liste de noms, une liste VIDE (le motif est bien celui de la lecture réussie, mais il ne lie
+    # rien : `Ok(0)`, `Ok(_)`), et `None` (le bras ne lie pas une lecture réussie : bras d'erreur,
+    # bras fourre-tout nommé ou non). Confondre les deux dernières ferait suivre, depuis le corps d'un
+    # bras d'erreur, des noms que la voie de succès n'a jamais liés.
+    for motif, attendu in (("Ok(r)", ["r"]), ("  Ok(mut s) ", ["s"]), ("Ok((owner, vis))", ["owner", "vis"]),
+                           ("Ok(Some(t))", ["t"]), ("Ok(Some((titre, sev)))", ["titre", "sev"]),
+                           ("Ok(d) if dash_editable(&conn, &au, d)", ["d"]),
+                           ("Ok(0)", []), ("Ok(_)", []), ("Ok(rusqlite::Error::X)", []),
+                           ("Err(e)", None), ("Err(rusqlite::Error::QueryReturnedNoRows)", None),
+                           ("_", None), ("autre", None)):
+        rendu = noms_lies_du_bras(motif)
+        if rendu != attendu:
+            errs.append(f"témoin de l'EXTRACTION « {motif.strip()} » : noms liés {rendu} au lieu de "
+                        f"{attendu} — le bras de `match` ne lie plus ce que le motif dit qu'il lie")
+    # ET LA MÊME PAIRE AU NIVEAU DU LECTEUR DE CHAÎNES, parce que l'extraction peut être juste et le
+    # SUIVI n'en tirer qu'un nom : l'avalement porte ici sur le SECOND nom du tuple.
+    bras_t = ('let v = match conn.query_row(sql, params![id], f) { Ok((n, brut)) => '
+              'json!({ "n": n, "d": brut.unwrap_or_default() }), Err(_) => json!({}) };')
+    if not lectures_avalees(bras_t):
+        errs.append("témoin du BRAS TUPLE (direct) : `match ..query_row(..) { Ok((n, brut)) => "
+                    "brut.unwrap_or_default() .. }` n'est pas vu comme un avalement — le trou "
+                    "symétrique que `P10.20-x` a fermé est rouvert")
+    if lectures_avalees(bras_t.replace("brut.unwrap_or_default()", "brut")):
+        errs.append("témoin du BRAS TUPLE (négatif) : le MÊME bras, qui ne fait que SERVIR ce qu'il a "
+                    "lié, est compté comme un avalement — la jambe B accuserait tout bras à tuple")
     # UN SEUL AVALEMENT NE PEUT PAS ÊTRE COMPTÉ DEUX FOIS. `Ok(mut s) => s.query_map(..).unwrap_or_
     # default()` est déjà vu par la chaîne DIRECTE sur `query_map` ; si le bras le recomptait, le
     # cliquet monterait sans qu'aucun défaut neuf n'existe — une hausse qui n'apprendrait rien.
@@ -2252,29 +2470,50 @@ def ce_qui_n_est_pas_tenu(non_classes=0):
           "s'arme d'autant plus que le motif de liaison s'élargit. Ce qui reste : les intervalles sont "
           "calculés sur le FRAGMENT reçu, et un fragment qui commencerait à l'intérieur d'un littéral "
           "serait lu à l'envers — les fragments rendus commencent tous à une frontière de jeton.\n"
-          "  * le bras n'est suivi que s'il lie par `Ok(<nom>)` : `Ok((a, b))`, `Some(x)` et un bras "
-          "fourre-tout `_ =>` ne le sont pas. C'EST LE TROU SYMÉTRIQUE DE CELUI QUE `P10.20-s` A "
-          "FERMÉ SUR LE `if let`, ET IL EST LE PLUS GRAND DES DEUX — MESURÉ sur l'arbre du "
-          "2026-09-19 : sur `daemon/src/handlers/`, 140 bras de `match` scrutant une lecture lient "
-          "par un nom simple et sont suivis, 14 lient par un motif que `BRAS_LIANT` ne suit pas "
-          "(tuples `Ok((owner, vis))`, `Ok((n, s))`, `Ok((v, s))`, `Ok((name, did, data, created, "
-          "by, role))` ; imbriqués `Ok(Some(..))` ; un bras gardé `Ok(d) if ..` ; un littéral "
-          "`Ok(0)`), soit 18 sur tout `daemon/src`. CE QUE CE TROU COÛTE AUJOURD'HUI, mesuré aussi : "
-          "UN seul de ces 14 bras porte un avalement dans son corps (`dash_ergonomics.rs`, "
-          "`snapshot_get`), et c'est une analyse JSON (`serde_json::from_str(..).unwrap_or_else(..)`), "
-          "pas une lecture de lignes. Le fermer demande d'extraire les noms liés d'un motif composé, "
-          "pas d'élargir une expression rationnelle — `bras_qui_avale` suit la chaîne DEPUIS LE NOM "
-          "LIÉ, et un tuple n'en a pas un seul. Ce n'est donc pas fait ici, et le compte est écrit "
-          "pour que le lot qui le fera parte d'une mesure.\n"
+          "  * TOUT MOTIF `Ok(..)` D'UN BRAS EST SUIVI DEPUIS `P10.20-x` (2026-09-19) : tuple, motif "
+          "imbriqué, bras gardé et motif de structure lient comme le nom simple liait, et un littéral "
+          "(`Ok(0)`) ne lie rien, ce que l'extraction DIT au lieu de le confondre avec un bras "
+          "d'erreur. CE QUI RESTE HORS DE PORTÉE, et c'est nommé pour être vu : le bras d'ERREUR "
+          "(`Err(e)`) et le bras FOURRE-TOUT, nommé (`autre =>`, deux sur `daemon/src`) ou non "
+          "(`_ =>`) — ils lient le `Result` entier, pas la valeur lue, et les suivre ferait juger la "
+          "voie d'échec avec le vocabulaire de la voie de succès. MESURE DE L'ÉLARGISSEMENT, "
+          "instantané `83097fc` et arbre, même chiffre : au niveau du LECTEUR, les bras suivis "
+          "passent de 140 à 153 sous `daemon/src/handlers/` et de 167 à 178 sur `daemon/src` ; au "
+          "niveau de la CONSOMMATION RÉELLE, de 46 à 48 sur les 104 bras qu'une exécution complète "
+          "lit. ZÉRO accusation de plus : aucun des bras qui entrent ne porte d'avalement. Le seul "
+          "que l'énoncé de `P10.20-x` donnait pour coûteux (`dash_ergonomics.rs`, `snapshot_get`) "
+          "n'est PAS atteignable par ce geste — son nom lié y est un ARGUMENT de "
+          "`serde_json::from_str`, pas le RECEVEUR d'une chaîne —, et sa région ne s'ouvre de toute "
+          "façon pas (`req_conn!`, voie hors population).\n"
+          "  * la chaîne part de CHAQUE occurrence du nom lié dans le corps du bras, y compris d'une "
+          "occurrence que ce corps a RELIÉE entre-temps (`Ok((v, s)) => { let s = ailleurs(); "
+          "s.ok() }` serait accusé au nom du `s` du tuple). Aucun bras de l'arbre n'est dans ce cas "
+          "au 2026-09-19 ; l'exposition croît avec le nombre de noms liés, et elle est ici pour être "
+          "vue.\n"
           "  * la chaîne d'un bras est suivie DEPUIS LE NOM LIÉ. Un avalement écrit dans une closure "
           "INTERNE au bras (`Ok(r) => r.filter_map(|x| x.ok()).collect()`) lui échappe ; aucun site de "
           "l'arbre n'en porte au 2026-08-30, et le jour où il y en aura un, c'est cette ligne-ci qu'il "
           "faudra tenir, pas le compte.\n"
-          "  * les virgules de GÉNÉRIQUES en position d'argument (`HashMap<K, V>` non tourné en "
-          "turbofish) découperaient mal un appel. Aucun site de l'arbre n'en porte ; le jour où il y en "
-          "aura un, c'est un aveu de lecture qu'il faudra poser, pas un compte amputé rendu en vert.\n"
+          "  * les virgules de GÉNÉRIQUES ne sont suivies NI par `arguments` NI par `bras_du_match`, "
+          "qui ne comptent en profondeur que `(`, `[` et `{`. Pour `arguments`, aucun site de l'arbre "
+          "n'en porte. POUR LES BRAS, C'EST FAUX, ET C'EST UNE RE-MESURE DE `P10.20-x` "
+          "(2026-09-19) : `handlers/dashboards.rs:105` (`dash_list`) écrit "
+          "`Ok(r) => match r.collect::<Result<Vec<Value>, _>>() { .. }`, et la virgule du turbofish "
+          "coupe le bras en deux — le second morceau devient un motif qui ne veut rien dire "
+          "(`_>>() { Ok(v)`), et le corps du premier est TRONQUÉ avant son bras d'erreur. Le défaut "
+          "n'est pas MORDANT ici (la chaîne suivie depuis `r` n'y porte aucun avalement, découpe "
+          "juste ou fausse), il est ARMÉ ; il n'est pas corrigé par ce lot parce que la profondeur "
+          "des génériques est une propriété du LECTEUR PARTAGÉ, que trois autres gardes consomment, "
+          "et qu'elle demande sa propre mesure.\n"
           "  * ce que l'ANALYSTE voit. Le démon avoue ; qu'une console lise `error` se juge ailleurs "
           "(`check_a_refusal_is_not_rendered_as_an_absence.py`).\n"
+          "  * UNE EXEMPTION CLASSÉE SOUS UNE JAMBE QUI N'EXISTE PAS EST SILENCIEUSEMENT IGNORÉE. "
+          "Le jugement contre les ensembles nommés ne parcourt que les jambes qu'il connaît : une "
+          "entrée déposée sous une clé mal orthographiée ne rend ni forme neuve, ni exemption sans "
+          "objet. TROUVÉ PAR MUTATION le 2026-09-19 en fermant `P10.20-x` — la même mutation déposée "
+          "dans `SITES_ADMIS[\"B\"]` rend bien une exemption sans objet (code 1), déposée sous une "
+          "jambe `Z` elle laisse la garde VERTE. Ce n'est pas corrigé ici : l'ensemble nommé est la "
+          "matière d'un autre lot, et le dire vaut mieux que le corriger en passant.\n"
           "  * un ÉCHANGE. Les cliquets portent sur un COMPTE : rendre un site honnête et en casser un "
           "autre laisse le compte immobile et le verdict vert. C'est pourquoi CHAQUE site accusé est "
           "imprimé à chaque exécution — l'échange est visible dans le journal, il n'est pas refusé par "

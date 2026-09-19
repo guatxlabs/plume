@@ -60,7 +60,8 @@ mod verdict_de_dossier_conserve {
     }
 
     /// GARDE DÉRIVÉE : dans le responder local, AUCUNE écriture de statut ne se fait sans la garde
-    /// `status='approved'` — une clôture nue réintroduirait l'écrasement.
+    /// `status='approved'` — une clôture nue réintroduirait l'écrasement. La clôture finale, elle,
+    /// passe par son fabricant gardé (`P10.20-w`), dont le corps est lu ici aussi.
     #[test]
     fn aucune_cloture_du_responder_local_n_est_nue() {
         let src = std::fs::read_to_string(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/handlers/actions.rs")).unwrap();
@@ -71,7 +72,23 @@ mod verdict_de_dossier_conserve {
         assert!(ecritures.len() >= 4, "instrument : {} écriture(s) de statut vue(s), la population attendue est d'au moins quatre", ecritures.len());
         let nues: Vec<&&str> = ecritures.iter().filter(|l| !l.contains("status='approved'")).collect();
         assert!(nues.is_empty(), "clôtures NUES (sans garde `status='approved'`) dans respond_run :\n{}", nues.iter().map(|l| l.trim()).collect::<Vec<_>>().join("\n"));
-        assert!(corps.contains("SQL_CLORE_UNE_ACTION_APPROUVEE") && corps.contains("action.exec.verdict-conserve"), "la clôture finale passe par la constante gardée et dit ce qu'elle conserve");
+        // `P10.20-w` — LA CLÔTURE FINALE A ÉTÉ EXTRAITE POUR ÊTRE EXERÇABLE SUR UNE CONNEXION ABÎMÉE
+        // (`clore_une_action_approuvee`, qui compte les lignes écrites et sépare « la base n'a rien
+        // pris » de « un verdict plus informé est déjà posé »). LA PROPRIÉTÉ EST SUIVIE PLUTÔT
+        // QU'ABANDONNÉE : le responder doit passer par ce fabricant, et c'est le corps du FABRICANT
+        // qui doit porter la constante gardée. Une clôture qui le contournerait par un `UPDATE action
+        // SET status` nu reste prise par l'assertion précédente, et un fabricant qui recopierait
+        // l'énoncé au lieu d'employer la constante est pris par celle qui suit.
+        assert!(
+            corps.contains("clore_une_action_approuvee(") && corps.contains("action.exec.verdict-conserve"),
+            "la clôture finale passe par le fabricant gardé et dit ce qu'elle conserve"
+        );
+        let debut_fabricant = src.find("pub(crate) fn clore_une_action_approuvee(").expect("le fabricant de clôture existe");
+        let fin_fabricant = src[debut_fabricant..].find("\n}\n").map(|x| debut_fabricant + x + 3).unwrap_or(src.len());
+        assert!(
+            src[debut_fabricant..fin_fabricant].contains("SQL_CLORE_UNE_ACTION_APPROUVEE"),
+            "le fabricant de clôture écrit par la constante gardée, jamais par un énoncé recopié"
+        );
     }
 
     /// LA QUESTION NON MESURÉE, MESURÉE : le vocabulaire des statuts qu'un dossier peut porter est FERMÉ

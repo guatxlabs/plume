@@ -37,7 +37,7 @@ mod la_ligne_retenue_est_choisie {
     /// (id_du_case, id_du_runbook, nombre_d_etapes).
     fn case_avec_runbook(conn: &Connection) -> (i64, i64, i64) {
         seed_runbooks(conn);
-        let id = case_create_row(conn, "alice", "exploit", 4, "", None, 2);
+        let id = dossier_seme(conn, "alice", "exploit", 4, "", None, 2);
         let rb = pick_runbook_id(conn, Some("initial-access"), None).expect("lecture faite").expect("un runbook actif seedé");
         let n = attach_runbook(conn, id, rb, "bob", &PrefillTargets::default()).expect("attache OK");
         (id, rb, n)
@@ -140,8 +140,8 @@ mod la_ligne_retenue_est_choisie {
             )
             .unwrap();
             let aid = conn.last_insert_rowid();
-            let ancien = case_create_row(&conn, "alice", "case ANCIEN", 2, "", None, 3);
-            let recent = case_create_row(&conn, "alice", "case RÉCENT", 2, "", None, 3);
+            let ancien = dossier_seme(&conn, "alice", "case ANCIEN", 2, "", None, 3);
+            let recent = dossier_seme(&conn, "alice", "case RÉCENT", 2, "", None, 3);
 
             // (a) CONTRÔLE POSITIF — un seul lien : la route nomme CE case.
             case_add_item(&conn, ancien, t - 100, "alert", "sys", "lien 1", Some(&format!("alert:{aid}")));
@@ -190,7 +190,7 @@ mod la_ligne_retenue_est_choisie {
             //     même seconde — un analyste qui lie une alerte à deux cases d'affilée — portent le
             //     MÊME `ts`. Sans départage TOTAL, « le plus récent » redevient « le premier venu ».
             //     Le troisième lien porte l'horodatage du deuxième et doit gagner par son `id`.
-            let troisieme = case_create_row(&conn, "alice", "case SIMULTANÉ", 2, "", None, 3);
+            let troisieme = dossier_seme(&conn, "alice", "case SIMULTANÉ", 2, "", None, 3);
             case_add_item(&conn, troisieme, t, "alert", "sys", "lien 3", Some(&format!("alert:{aid}")));
             let (page, _, _) = alerts_query_page(&conn, &FiltreAlertes::default(), None, "", 50, 0, false);
             assert_eq!(

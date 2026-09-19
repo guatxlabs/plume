@@ -26,7 +26,7 @@ async fn p10_7g_une_fiche_de_dossier_non_lue_est_un_5xx_nomme_et_une_absence_res
     use axum::response::IntoResponse;
     let (st, _p) = sp_state("dn-fiche");
     let au = sp_au("adm", "admin");
-    let id = with_write(&st, &au, |conn| case_create_row(conn, "adm", "Dossier lu", 2, "", None, 3));
+    let id = with_write(&st, &au, |conn| dossier_seme(conn, "adm", "Dossier lu", 2, "", None, 3));
     let (statut, corps) = dn_corps(case_get(State(st.clone()), Extension(au.clone()), Path(id)).await.into_response()).await;
     assert_eq!(statut, 200, "dossier réel, tables présentes : servi : {corps}");
     assert_eq!(corps["title"], json!("Dossier lu"));
@@ -43,7 +43,7 @@ async fn p10_7g_une_liste_de_dossiers_non_lue_est_dite_non_etablie() {
     use axum::response::IntoResponse;
     let (st, _p) = sp_state("dn-liste");
     let au = sp_au("adm", "admin");
-    with_write(&st, &au, |conn| { case_create_row(conn, "adm", "Dossier compté", 2, "", None, 3); });
+    with_write(&st, &au, |conn| { dossier_seme(conn, "adm", "Dossier compté", 2, "", None, 3); });
     let q = || Query(std::collections::HashMap::<String, String>::new());
     let (_, avant) = dn_corps(cases_list(State(st.clone()), Extension(au.clone()), q()).await.into_response()).await;
     assert!(avant.get("error").is_none(), "table présente : rien à avouer : {avant}");

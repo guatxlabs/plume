@@ -132,6 +132,22 @@
         conn
     }
 
+    /// SÈME UN DOSSIER POUR UN TÉMOIN, et rend son identifiant (`P10.20-w`).
+    ///
+    /// `case_create_row` rend désormais `DossierOuvert` : l'identifiant n'existe que si la ligne a
+    /// été écrite, et il n'y a aucun chemin qui en tire un nombre sans avoir nommé l'échec. Les
+    /// témoins qui se contentent de SEMER un dossier passent par ici — l'échec y fait échouer le
+    /// témoin en nommant sa cause, au lieu de laisser une fixture muette fabriquer un identifiant.
+    /// Ceux qui JUGENT l'ouverture appellent `case_create_row` et lisent l'issue eux-mêmes.
+    fn dossier_seme(conn: &Connection, author: &str, title: &str, sev: i64, summary: &str, assignee: Option<&str>, priority: i64) -> i64 {
+        match case_create_row(conn, author, title, sev, summary, assignee, priority) {
+            crate::handlers::cases::DossierOuvert::Ouvert(id) => id,
+            crate::handlers::cases::DossierOuvert::NonOuvert(cause) => {
+                panic!("fixture : l'ouverture du dossier « {title} » doit réussir ({cause})")
+            }
+        }
+    }
+
     /// La clé `event.dedup` telle qu'elle est STOCKÉE : le store la CLOISONNE par l'hôte de la ligne
     /// (cf. `ingest::store::dedup_scoped_by_host` — deux machines ne peuvent plus se voler leurs
     /// événements). Un test qui INGÈRE avec une clé d'émetteur puis relit `WHERE dedup=…` doit donc

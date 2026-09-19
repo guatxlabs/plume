@@ -538,9 +538,19 @@ pub(crate) async fn actions_pending(State(st): State<AppState>, Extension(au): E
 /// Idempotent (n'agit que sur une action encore 'approved'). status: done | failed | dryrun.
 /// SÉCURITÉ : ne clôt QUE les actions de l'hôte LIÉ au token (`AND host=?`) -> un agent ne peut pas
 /// clôturer/injecter le résultat d'une action d'un autre hôte. `result` borné + nettoyé (anti-injection log).
-pub(crate) async fn action_result(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Json<Value> {
+/// `P10.20-w` — LE VERDICT DE L'AGENT N'A PAS PU ÊTRE ÉCRIT : 503 nommé, et le registre n'atteste rien.
+/// Distinct du zéro d'absence (`ok: false`, 200) : là, la base a répondu et AUCUNE ligne ne correspondait
+/// — riposte déjà close, ou ciblée sur un autre hôte. Ici, la base n'a rien pris, et la riposte reste
+/// OUVERTE : l'agent doit revenir, alors que `ok: false` lui dit de passer à la suivante.
+pub(crate) const CAUSE_RESULTAT_NON_ENREGISTRE: &str =
+    "RÉSULTAT NON ENREGISTRÉ : le verdict remonté par l'agent n'a pas pu être écrit, donc la riposte \
+     reste OUVERTE — ni statut, ni horodatage de clôture, et le registre n'en porte AUCUNE trace. Ce \
+     n'est PAS « cette riposte était déjà close, ou ciblée sur un autre hôte » : rien n'a été fait. \
+     Réessayez.";
+
+pub(crate) async fn action_result(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
     if au.role != "agent" || au.name.is_empty() {
-        return Json(json!({ "ok": false, "error": "token agent lié à un hôte requis" }));
+        return Json(json!({ "ok": false, "error": "token agent lié à un hôte requis" })).into_response();
     }
     let host = au.name.clone();
     let id = b.i64_field("id", 0);
@@ -559,19 +569,25 @@ pub(crate) async fn action_result(State(st): State<AppState>, Extension(au): Ext
         .take(500)
         .collect();
     if id == 0 {
-        return Json(json!({ "ok": false, "error": "id requis" }));
+        return Json(json!({ "ok": false, "error": "id requis" })).into_response();
     }
     crate::req_conn!(st, au, conn);
-    let n = conn
-        .execute(
-            "UPDATE action SET status=?2, result=?3, done_ts=?4 WHERE id=?1 AND status='approved' AND host=?5",
-            params![id, status, result, now(), host],
-        )
-        .unwrap_or(0);
+    // `P10.20-w` — LES DEUX ZÉROS SONT SÉPARÉS. `unwrap_or(0)` les confondait : « la base n'a pas pris
+    // l'écriture » et « aucune ligne ne correspondait » sortaient tous deux en `{"ok": false}` sous un
+    // 200, et l'agent — qui ne relit rien — passait à la riposte suivante en laissant celle-ci ouverte
+    // sans que personne ne sache pourquoi. Le chemin nominal est INCHANGÉ (une ligne écrite -> registre
+    // puis `ok: true` ; aucune ligne -> `ok: false`), seule l'écriture RATÉE change de sortie.
+    let n = match conn.execute(
+        "UPDATE action SET status=?2, result=?3, done_ts=?4 WHERE id=?1 AND status='approved' AND host=?5",
+        params![id, status, result, now(), host],
+    ) {
+        Ok(n) => n,
+        Err(e) => return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_RESULTAT_NON_ENREGISTRE} ({e})")),
+    };
     if n > 0 {
         ledger_append(&conn, "action.remote", &format!("#{id}@{host} -> {status} : {result}"));
     }
-    Json(json!({ "ok": n > 0 }))
+    Json(json!({ "ok": n > 0 })).into_response()
 }
 // =================================================================================================
 // `P10.20-q` — UNE RIPOSTE QU'ON N'A PAS PU RELIRE N'EST PAS APPROUVÉE (2026-09-16).
@@ -641,6 +657,13 @@ pub(crate) const CAUSE_BAN_NON_ARME: &str =
     "BAN NON ARMÉ : la ligne du blocage HTTP n'a pas pu être écrite, donc AUCUNE adresse n'est \
      bloquée et le store n'en porte aucune trace. Ce n'est PAS « le store est plein » : rien n'a été \
      fait. Réessayez.";
+
+/// `P10.20-w` — le verdict d'exécution du responder n'a PAS pu être écrit : l'action reste ouverte.
+pub(crate) const CAUSE_VERDICT_NON_ECRIT: &str =
+    "VERDICT NON ÉCRIT : la clôture de l'action n'a pas pu être écrite. L'effet système a bien eu \
+     lieu, mais la file la porte TOUJOURS comme approuvée et aucun miroir de blocage n'a été \
+     synchronisé sur ce tour. Ce n'est PAS « un verdict plus informé était déjà posé » : personne \
+     n'a tranché, la base n'a rien pris.";
 
 pub(crate) async fn action_approve(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     use rusqlite::OptionalExtension as _;
@@ -945,10 +968,33 @@ pub(crate) async fn netban_delete(State(st): State<AppState>, Extension(au): Ext
     ledger_append(&conn, "netban.remove", &format!("{saisie} canon={} retirés={retires} by={}", canon.as_deref().unwrap_or("(non analysable)"), au.name));
     Json(json!({ "ok": true, "ip": saisie, "canon": canon, "retires": retires })).into_response()
 }
-pub(crate) async fn action_cancel(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> StatusCode {
+/// `P10.20-w` — l'annulation n'a PAS pu être écrite : 503 nommé, et la riposte reste VIVANTE.
+pub(crate) const CAUSE_ANNULATION_NON_ENREGISTREE: &str =
+    "ANNULATION NON ENREGISTRÉE : le statut de la riposte n'a pas pu être écrit, donc elle est \
+     TOUJOURS en file — elle reste approuvable, et un exécuteur d'hôte peut encore l'appliquer. Ce \
+     n'est PAS « elle était déjà tranchée » : rien n'a été fait. Réessayez.";
+
+/// L'identifiant ne désigne aucune riposte ENCORE annulable — absence ÉTABLIE (404).
+pub(crate) const CAUSE_RIPOSTE_NON_ANNULABLE: &str =
+    "riposte non annulable : aucune action en attente ou approuvée ne porte cet identifiant (elle \
+     n'existe pas, ou elle est déjà tranchée) — rien n'a été écrit.";
+
+/// `P10.20-w` — LE DEUX CENT QUATRE N'EST PLUS INCONDITIONNEL. L'ancienne forme avalait l'`UPDATE`
+/// (`let _ = conn.execute(..)`) et rendait 204 quoi qu'il arrive : la console retirait la riposte de
+/// l'écran, l'exploitant la lisait « annulée », et elle restait `pending` — donc approuvable, donc
+/// exécutable par un responder. Aucun registre n'était touché, mais le succès affirmé à l'écran EST le
+/// fait fabriqué. Les trois issues sont désormais SÉPARÉES, et le contrat de la route change avec :
+/// annuler DEUX fois la même riposte rend un 404 nommé là où le second appel rendait 204. C'est la
+/// perte d'une idempotence qui reposait sur une écriture non comptée — « rien n'a changé » y avait la
+/// même réponse que « la riposte est annulée ». La console attrape déjà ce refus (`web/detection_admin.js`
+/// enveloppe ce geste d'un `catch`).
+pub(crate) async fn action_cancel(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     crate::req_conn!(st, au, conn);
-    let _ = conn.execute("UPDATE action SET status='cancelled' WHERE id=?1 AND status IN ('pending','approved')", params![id]);
-    StatusCode::NO_CONTENT
+    match conn.execute("UPDATE action SET status='cancelled' WHERE id=?1 AND status IN ('pending','approved')", params![id]) {
+        Ok(0) => err_json(StatusCode::NOT_FOUND, CAUSE_RIPOSTE_NON_ANNULABLE),
+        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_ANNULATION_NON_ENREGISTREE} ({e})")),
+    }
 }
 
 /// Un exécutable est-il dans le PATH ? (pour déléguer aux enforcers existants).
@@ -1280,6 +1326,29 @@ pub(crate) enum VerdictConserve {
     NonRelu(String),
 }
 
+/// `P10.20-w` — CE QUE LA CLÔTURE GARDÉE D'UNE ACTION REND. Trois issues, parce que `unwrap_or(0)`
+/// en confondait deux : « aucune ligne n'était encore `approved` » — un verdict plus informé est
+/// déjà posé, et le conserver est juste — et « la base n'a pas pris l'écriture », où personne n'a
+/// tranché quoi que ce soit. Séparée de `respond_run` pour la même raison que `verdict_conserve_relu`
+/// juste en dessous : elle s'exerce sur une connexion abîmée sans faire tourner le responder root.
+pub(crate) enum ClotureDeRiposte {
+    /// La ligne est écrite : ce responder a posé le verdict.
+    Posee,
+    /// Aucune ligne n'était encore `approved` : un verdict PLUS INFORMÉ est déjà posé, il est conservé.
+    VerdictDejaPose,
+    /// L'écriture n'a pas eu lieu — la cause est portée. L'action reste telle qu'elle était.
+    NonEcrite(String),
+}
+
+/// Clôt une action encore `approved` avec le verdict de ce responder, et COMPTE les lignes écrites.
+pub(crate) fn clore_une_action_approuvee(conn: &Connection, id: i64, status: &str, result: &str) -> ClotureDeRiposte {
+    match conn.execute(SQL_CLORE_UNE_ACTION_APPROUVEE, params![id, status, result, now()]) {
+        Ok(0) => ClotureDeRiposte::VerdictDejaPose,
+        Ok(_) => ClotureDeRiposte::Posee,
+        Err(e) => ClotureDeRiposte::NonEcrite(e.to_string()),
+    }
+}
+
 /// Relit le statut CONSERVÉ d'une action que la clôture gardée n'a pas écrite. Séparée de
 /// `respond_run` pour être exerçable sur une connexion abîmée sans faire tourner le responder root.
 pub(crate) fn verdict_conserve_relu(conn: &Connection, id: i64) -> VerdictConserve {
@@ -1444,8 +1513,28 @@ pub(crate) fn respond_run() {
             }
             Err(e) => ("failed", format!("exec: {e}")),
         };
-        let clos = conn.execute(SQL_CLORE_UNE_ACTION_APPROUVEE, params![id, status, result, now()]).unwrap_or(0);
-        if clos == 0 {
+        // `P10.20-w` — L'ÉCRITURE DU VERDICT EST COMPTÉE, ET SON ÉCHEC NE SE DÉGUISE PLUS EN
+        // « quelqu'un a tranché avant moi ». `unwrap_or(0)` rendait `0` sur une base qui n'avait RIEN
+        // pris, et le bloc ci-dessous — écrit pour le cas où un agent a répondu entre la sélection et
+        // l'exécution — relisait le statut, le trouvait INCHANGÉ (`approved`, puisque rien n'avait été
+        // écrit) et posait au registre tamper-evident « verdict `approved` déjà posé, conservé ». La
+        // trace non purgeable attribuait donc à un AUTRE acteur un verdict que personne n'avait rendu,
+        // sur une action que ce responder venait pourtant d'exécuter pour de vrai.
+        let cloture = clore_une_action_approuvee(&conn, id, status, &result);
+        if let ClotureDeRiposte::NonEcrite(cause) = &cloture {
+            // LE REFUS EST NOMMÉ AVANT TOUT FAIT : aucun miroir `net_ban` n'est touché sur ce tour (le
+            // `continue` ci-dessous), et la ligne du registre porte son PROPRE genre — elle dit ce qui
+            // n'a pas eu lieu, elle n'affirme pas une clôture. L'action reste `approved`, donc le tour
+            // suivant la reprendra ; l'effet système, lui, a déjà eu lieu et c'est écrit tel quel.
+            ledger_append(
+                &conn,
+                "action.exec.verdict-non-ecrit",
+                &format!("{kind} {target} : {CAUSE_VERDICT_NON_ECRIT} ({cause}) ; ce responder avait obtenu `{status}` ({result})"),
+            );
+            eprintln!("[responder] action {id} : {CAUSE_VERDICT_NON_ECRIT} ({cause})");
+            continue;
+        }
+        if matches!(cloture, ClotureDeRiposte::VerdictDejaPose) {
             // `P4.7-f` — un verdict PLUS INFORMÉ est déjà posé (l'agent, qui lit la liste d'épargne, a répondu
             // entre la sélection et l'exécution) : il est CONSERVÉ, et le journal dit ce que ce responder
             // a obtenu de son côté au lieu de le faire passer pour le verdict du dossier.

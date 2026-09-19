@@ -225,8 +225,8 @@ fn lre_runbook(st: &AppState, cle: &str) -> i64 {
 fn p10_7f_listes_de_reglage_les_liens_et_les_files_dun_dossier_sont_entiers_ou_avoues() {
     let conn = test_db();
     // CONTRÔLE POSITIF (liens) : deux dossiers liés, le lien visible depuis le premier.
-    let a = case_create_row(&conn, "adm", "dossier A", 3, "", None, 2);
-    let b = case_create_row(&conn, "adm", "dossier B", 3, "", None, 2);
+    let a = dossier_seme(&conn, "adm", "dossier A", 3, "", None, 2);
+    let b = dossier_seme(&conn, "adm", "dossier B", 3, "", None, 2);
     conn.execute(
         "INSERT INTO case_link(src_id,dst_id,kind,note,created,created_by) VALUES(?1,?2,'related','lié par le témoin',1000,'adm')",
         params![a, b],
@@ -253,8 +253,8 @@ fn p10_7f_listes_de_reglage_les_liens_et_les_files_dun_dossier_sont_entiers_ou_a
 
     // CONTRÔLE POSITIF (files) : deux assignés distincts -> deux seaux.
     let conn2 = test_db();
-    case_create_row(&conn2, "adm", "ouvert 1", 3, "", Some("alice"), 2);
-    case_create_row(&conn2, "adm", "ouvert 2", 3, "", Some("bob"), 2);
+    dossier_seme(&conn2, "adm", "ouvert 1", 3, "", Some("alice"), 2);
+    dossier_seme(&conn2, "adm", "ouvert 2", 3, "", Some("bob"), 2);
     let files = case_queues_json(&conn2, now());
     assert_eq!(files["queues"].as_array().map(Vec::len), Some(2), "contrôle positif : les deux files sont servies : {files}");
     assert_eq!(files["total"], json!(2), "contrôle positif : le total borné est MESURÉ : {files}");
@@ -635,7 +635,7 @@ async fn p10_7f_listes_de_reglage_les_rapports_planifies_sont_entiers_ou_avoues(
 #[test]
 fn p10_7f_listes_de_reglage_la_tactique_dominante_nest_pas_elue_sur_des_alertes_non_lues() {
     let conn = test_db();
-    let id = case_create_row(&conn, "adm", "intrusion", 4, "", None, 2);
+    let id = dossier_seme(&conn, "adm", "intrusion", 4, "", None, 2);
     link_alert(&conn, id, "T1190", Some("web-1"));
     link_alert(&conn, id, "T1190", None);
     link_alert(&conn, id, "T1110", None);
@@ -648,7 +648,7 @@ fn p10_7f_listes_de_reglage_la_tactique_dominante_nest_pas_elue_sur_des_alertes_
 
     // CONTRÔLE POSITIF (le second, et c'est lui qui donne son sens à l'aveu) : AUCUNE alerte liée est un
     // FAIT, pas un aveu — le triplet vide reste `Ok`, et c'est le cas où le repli générique est légitime.
-    let vide = case_create_row(&conn, "adm", "sans alerte", 2, "", None, 3);
+    let vide = dossier_seme(&conn, "adm", "sans alerte", 2, "", None, 3);
     let (tac_vide, tech_vide, _) = dominant_tactic_and_target(&conn, vide).expect("aucune alerte liée est un fait LU");
     assert_eq!((tac_vide, tech_vide), (None, None), "aucune alerte liée -> triplet vide, mais LU");
 
@@ -698,7 +698,7 @@ fn p10_7f_listes_de_reglage_la_tactique_dominante_nest_pas_elue_sur_des_alertes_
 #[test]
 fn p10_7f_listes_de_reglage_la_fiche_de_runbooks_dun_dossier_nomme_la_lecture_ratee() {
     let conn = test_db();
-    let id = case_create_row(&conn, "adm", "intrusion", 4, "", None, 2);
+    let id = dossier_seme(&conn, "adm", "intrusion", 4, "", None, 2);
     link_alert(&conn, id, "T1190", Some("web-1"));
     link_alert(&conn, id, "T1190", None);
     conn.execute(

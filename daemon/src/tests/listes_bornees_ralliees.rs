@@ -17,7 +17,7 @@
     fn p11_22g_la_ligne_de_temps_du_portail_client_dit_sa_coupe() {
         use crate::handlers::caseops::{client_case_get_json, CLIENT_CASE_TIMELINE_WINDOW};
         let conn = test_db();
-        let id = case_create_row(&conn, "alice", "Portail", 2, "", None, 3);
+        let id = dossier_seme(&conn, "alice", "Portail", 2, "", None, 3);
         let masks = guatx_core::soql::FieldMaskSet::new();
         let borne = CLIENT_CASE_TIMELINE_WINDOW as usize;
         // La population de la ligne de temps servie : les items dont le `kind` est dans l'allowlist du portail.
@@ -47,7 +47,7 @@
         let conn = test_db();
         let borne = CASE_QUEUES_WINDOW as usize;
         for n in 0..(borne + 1) {
-            case_create_row(&conn, "alice", &format!("Q{n}"), 2, "", Some(&format!("a{n:04}")), 3);
+            dossier_seme(&conn, "alice", &format!("Q{n}"), 2, "", Some(&format!("a{n:04}")), 3);
         }
         let q = case_queues_json(&conn, now());
         assert_eq!(q["queues"].as_array().unwrap().len(), borne, "les files sont servies à la borne");
@@ -65,13 +65,13 @@
 
     #[test]
     fn p11_22g_les_liens_d_un_dossier_disent_leur_coupe() {
-        use crate::handlers::caseops::{case_link_add, case_links_json, CASE_LINKS_WINDOW};
+        use crate::handlers::caseops::{case_link_add, case_links_json, LienDeDossier, CASE_LINKS_WINDOW};
         let conn = test_db();
         let borne = CASE_LINKS_WINDOW as usize;
-        let a = case_create_row(&conn, "alice", "A", 2, "", None, 3);
+        let a = dossier_seme(&conn, "alice", "A", 2, "", None, 3);
         for n in 0..(borne + 1) {
-            let b = case_create_row(&conn, "alice", &format!("B{n}"), 2, "", None, 3);
-            assert!(case_link_add(&conn, a, b, "related", "", "bob"));
+            let b = dossier_seme(&conn, "alice", &format!("B{n}"), 2, "", None, 3);
+            assert!(matches!(case_link_add(&conn, a, b, "related", "", "bob"), LienDeDossier::Pose));
         }
         let l = case_links_json(&conn, a);
         assert_eq!(l["links"].as_array().unwrap().len(), borne);
@@ -86,7 +86,7 @@
         use crate::handlers::caseops::{case_metrics_json, CASE_METRICS_BY_ASSIGNEE_WINDOW, CASE_METRICS_BY_SEVERITY_WINDOW, CASE_METRICS_SAMPLE_WINDOW};
         let conn = test_db();
         let base = now();
-        let c1 = case_create_row(&conn, "alice", "Q1", 3, "", Some("alice"), 2);
+        let c1 = dossier_seme(&conn, "alice", "Q1", 3, "", Some("alice"), 2);
         conn.execute("UPDATE incident SET ts=?1, first_response_ts=?2, closed_ts=?3, status='resolved' WHERE id=?4", params![base - 1000, base - 950, base - 800, c1]).unwrap();
         let m = case_metrics_json(&conn, base - 2000, base);
         assert_eq!(m["overall"]["mtta_mean"], 50, "la mesure elle-même est inchangée");
@@ -101,7 +101,7 @@
         assert!(m["by_assignee"].is_array() && m["by_severity"].is_array(), "les deux ventilations restent des tableaux");
         // Une ventilation par assigné qui dépasse sa borne est coupée ET dite.
         for n in 0..(CASE_METRICS_BY_ASSIGNEE_WINDOW as usize) {
-            let c = case_create_row(&conn, "alice", &format!("R{n}"), 2, "", Some(&format!("r{n:04}")), 3);
+            let c = dossier_seme(&conn, "alice", &format!("R{n}"), 2, "", Some(&format!("r{n:04}")), 3);
             conn.execute("UPDATE incident SET ts=?1, closed_ts=?2, status='resolved' WHERE id=?3", params![base - 900, base - 700, c]).unwrap();
         }
         let m = case_metrics_json(&conn, base - 2000, base);

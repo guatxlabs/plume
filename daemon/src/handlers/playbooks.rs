@@ -215,6 +215,41 @@ pub(crate) async fn playbook_test(State(st): State<AppState>, Extension(au): Ext
     }
 }
 
+/// `P10.20-w` — CE QUE L'ÉCRITURE DU MARQUEUR DE PASSAGE REND. Le marqueur `last_run` n'est pas une
+/// note : il est la SEULE chose qui retire un playbook de la sélection des dus
+/// (`WHERE enabled=1 AND (last_run IS NULL OR ?1-last_run>=interval_s)`). Non écrit, le playbook
+/// reste dû, et le tour suivant le réévalue — requête de sélection des cibles comprise.
+///
+/// POURQUOI UN TYPE NOMMÉ PLUTÔT QU'UN `Result<usize, _>` — même arbitrage que `RiposteMiseEnFile`
+/// (`handlers/mise_en_file_de_riposte.rs`) : un `Result` offre `.ok()` et `.unwrap_or(0)`, et c'est
+/// précisément le repli qui a fait passer « la base n'a rien pris » pour « le marqueur est posé ».
+/// Les trois issues ne se confondent pas, et aucune ne se tire du type sans avoir été nommée.
+pub(crate) enum PassageDuPlaybook {
+    /// Le marqueur est écrit : ce playbook ne sera pas resélectionné avant son intervalle.
+    Marque,
+    /// Aucune ligne ne porte cet identifiant — le playbook a été supprimé entre la sélection des dus
+    /// et la pose du marqueur. Absence ÉTABLIE : rien n'est perdu, il n'y a plus rien à exécuter.
+    PlaybookDisparu,
+    /// L'écriture n'a pas eu lieu — la cause est portée. Le playbook reste dû AVEC son état d'avant.
+    NonMarque(String),
+}
+
+/// Marque le passage d'un playbook, et compte les lignes écrites avant de conclure quoi que ce soit.
+pub(crate) fn marquer_le_passage_du_playbook(conn: &Connection, id: i64, now_ts: i64) -> PassageDuPlaybook {
+    match conn.execute("UPDATE playbook SET last_run=?1 WHERE id=?2", params![now_ts, id]) {
+        Ok(0) => PassageDuPlaybook::PlaybookDisparu,
+        Ok(_) => PassageDuPlaybook::Marque,
+        Err(e) => PassageDuPlaybook::NonMarque(e.to_string()),
+    }
+}
+
+/// `P10.20-w` — ce que la surface lit quand le marqueur de passage n'a pas été écrit.
+pub(crate) const CAUSE_MARQUEUR_DE_PASSAGE_NON_ECRIT: &str =
+    "MARQUEUR DE PASSAGE NON ÉCRIT : le playbook reste DÛ avec son état d'avant, donc le tour suivant \
+     le réévaluera. Aucune riposte n'est posée ni aucun blocage armé sur ce tour-ci : la même \
+     évaluation, rejouée, en poserait une SECONDE dès que la fenêtre de déduplication du playbook est \
+     plus courte que l'écart entre deux tours.";
+
 /// Extrait la cible d'une cellule (1re colonne d'une ligne de playbook) : string ou nombre.
 pub(crate) fn playbook_cell(c: &Value) -> String {
     if let Some(s) = c.as_str() {
@@ -235,7 +270,8 @@ pub(crate) fn playbook_cell(c: &Value) -> String {
 /// N'EST PAS PORTABLE PAR CE PRODUIT (une `src_ip` IPv6 pour un `ban_ip`, un PID sous le plancher de
 /// sûreté) — ce dernier cas était jeté en silence et publiait un tick à « 0 abandon » — et
 /// (`P10.20-t`) RIPOSTE DONT LA LIGNE N'A PAS PU ÊTRE ÉCRITE : l'`INSERT` était avalé, et le miroir
-/// de ban HTTP s'armait quand même sur une action qui n'existait pas.
+/// de ban HTTP s'armait quand même sur une action qui n'existait pas — et (`P10.20-w`) PLAYBOOK DONT
+/// LE MARQUEUR DE PASSAGE N'A PAS PU ÊTRE ÉCRIT : le tour est refusé pour ce playbook, qui reste dû.
 /// CE QUE `Lue(n)` NE COMPTE PAS, ET C'EST DÉLIBÉRÉ : une cible BIEN FORMÉE que la POLITIQUE refuse
 /// (IP protégée, engagement actif). Ce refus-là est écrit, la détection continue, rien n'est perdu.
 pub(crate) fn run_playbooks(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate::bilan_de_tick::BilanDeTick {
@@ -278,7 +314,14 @@ pub(crate) fn run_playbooks(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
             Err(_) => {
                 abandonnes += 1;
                 let c = db.lock();
-                let _ = c.execute("UPDATE playbook SET last_run=?1 WHERE id=?2", params![now_ts, id]);
+                // Le marqueur passe par le MÊME fabricant que le site nominal : un playbook dont la
+                // compilation est refusée et dont le marqueur n'entre pas serait recompilé — et
+                // recompté — à chaque tour, sans que rien ne le dise. L'abandon est DÉJÀ compté pour
+                // la compilation ; seule la cause du marqueur s'ajoute, sous son propre genre.
+                if let PassageDuPlaybook::NonMarque(cause) = marquer_le_passage_du_playbook(&c, id, now_ts) {
+                    ledger_append(&c, "playbook.marqueur-non-ecrit",
+                        &format!("playbook:{name} (#{id}) : {CAUSE_MARQUEUR_DE_PASSAGE_NON_ECRIT} ({cause})"));
+                }
                 continue;
             }
         };
@@ -287,7 +330,30 @@ pub(crate) fn run_playbooks(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
         // Les écritures légitimes (table `action`) se font ensuite sur la connexion principale, hors éval.
         let res = run_query(db_path, &sql);
         let conn = db.lock();
-        let _ = conn.execute("UPDATE playbook SET last_run=?1 WHERE id=?2", params![now_ts, id]);
+        // `P10.20-w` — LE MARQUEUR DE PASSAGE EST ÉCRIT AVANT TOUT, ET SON ÉCHEC REFUSE LE TOUR. Ce
+        // marqueur n'affirme rien des ripostes qui suivent : il commande la SÉLECTION des playbooks
+        // dus. Avalé, il laissait ce playbook dû indéfiniment — donc réévalué à chaque tour, requête
+        // de cibles comprise — pendant que le bilan du tick publiait « 0 abandon ». La seule chose
+        // qui empêchait alors une SECONDE riposte et un SECOND armement était la déduplication, dont
+        // la fenêtre est la colonne `window_s` de CE playbook : rien ne l'oblige à couvrir l'écart
+        // entre deux tours. Le tour est donc refusé, la perte comptée, et la réévaluation gardée pour
+        // le tour suivant — un état d'ordonnancement qu'on n'a pas su écrire n'arme rien.
+        match marquer_le_passage_du_playbook(&conn, id, now_ts) {
+            PassageDuPlaybook::Marque => {}
+            PassageDuPlaybook::PlaybookDisparu => {
+                // Le playbook a été supprimé entre la sélection et la marque : il n'y a plus rien à
+                // exécuter, et rien n'est perdu — l'abandon ne se compte pas, la trace le dit.
+                ledger_append(&conn, "playbook.disparu",
+                    &format!("playbook:{name} (#{id}) retiré entre la sélection des dus et la pose du marqueur — aucune riposte posée"));
+                continue;
+            }
+            PassageDuPlaybook::NonMarque(cause) => {
+                abandonnes += 1;
+                ledger_append(&conn, "playbook.marqueur-non-ecrit",
+                    &format!("playbook:{name} (#{id}) : {CAUSE_MARQUEUR_DE_PASSAGE_NON_ECRIT} ({cause})"));
+                continue;
+            }
+        }
         // Une sélection de cibles en ÉCHEC n'est pas « aucune cible » : le playbook n'a pas été évalué, compté.
         let rows = match &res {
             Ok(v) => v.get("rows").and_then(|r| r.as_array()).cloned().unwrap_or_default(),

@@ -31,7 +31,7 @@ async fn p10_7g_une_liste_client_non_lue_est_dite_non_etablie() {
     use crate::handlers::caseops::client_cases_list;
     let (st, _p) = sp_state("dc-liste");
     let au = sp_au("adm", "admin");
-    with_write(&st, &au, |conn| { case_create_row(conn, "adm", "Dossier client", 2, "", None, 3); });
+    with_write(&st, &au, |conn| { dossier_seme(conn, "adm", "Dossier client", 2, "", None, 3); });
     let (_, avant) = dc_corps(client_cases_list(State(st.clone()), Extension(au.clone()), dc_q()).await.into_response()).await;
     assert!(avant.get("error").is_none(), "table présente : rien à avouer : {avant}");
     assert_eq!(avant["total"], json!(1), "un dossier compté : {avant}");
@@ -48,7 +48,7 @@ async fn p10_7g_une_fiche_client_non_lue_est_un_5xx_nomme_et_une_absence_reste_u
     use crate::handlers::caseops::client_case_get;
     let (st, _p) = sp_state("dc-fiche");
     let au = sp_au("adm", "admin");
-    let id = with_write(&st, &au, |conn| case_create_row(conn, "adm", "Dossier client lu", 2, "", None, 3));
+    let id = with_write(&st, &au, |conn| dossier_seme(conn, "adm", "Dossier client lu", 2, "", None, 3));
     let (statut, corps) = dc_corps(client_case_get(State(st.clone()), Extension(au.clone()), Path(id)).await.into_response()).await;
     assert_eq!(statut, 200, "dossier réel, tables présentes : servi : {corps}");
     assert!(corps.is_object() && corps.get("error").is_none(), "une fiche lue ne porte aucun aveu : {corps}");
@@ -66,7 +66,7 @@ async fn p10_7g_des_metriques_de_dossiers_non_lues_sont_dites_non_etablies() {
     use crate::handlers::caseops::case_metrics;
     let (st, _p) = sp_state("dc-metriques");
     let au = sp_au("adm", "admin");
-    with_write(&st, &au, |conn| { case_create_row(conn, "adm", "Dossier mesuré", 2, "", None, 3); });
+    with_write(&st, &au, |conn| { dossier_seme(conn, "adm", "Dossier mesuré", 2, "", None, 3); });
     let (_, avant) = dc_corps(case_metrics(State(st.clone()), Extension(au.clone()), dc_q()).await.into_response()).await;
     assert!(avant.get("error").is_none() && avant.get("non_etablis").is_none(), "tables présentes : rien à avouer : {avant}");
     assert_eq!(avant["overall"]["open_now"], json!(1), "un dossier ouvert compté : {avant}");

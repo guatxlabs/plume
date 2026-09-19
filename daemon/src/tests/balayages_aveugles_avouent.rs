@@ -50,7 +50,7 @@ fn p10_7f_le_balayage_des_echeances_sla_hors_d_atteinte_est_compte_et_ne_marque_
     let conn = test_db();
     let avant = crate::metrics::tick_aveugle_de("sla_multilevel").map(|(n, _)| n).unwrap_or(0);
     conn.execute("INSERT INTO sla_policy(name,priority,ack_target_s,resolve_target_s,enabled,created,created_by,updated) VALUES('P1',1,60,600,1,0,'root',0)", []).unwrap();
-    let id = case_create_row(&conn, "alice", "Crit", 4, "", None, 1);
+    let id = dossier_seme(&conn, "alice", "Crit", 4, "", None, 1);
     conn.execute("UPDATE incident SET ack_due=?1, resolve_due=?1 WHERE id=?2", params![now() - 10, id]).unwrap();
     // La table des notificateurs hors d'atteinte : la liste des dépassements se lit, celle des canaux non.
     conn.execute_batch("ALTER TABLE notifier RENAME TO notifier_hors_d_atteinte;").unwrap();
@@ -76,7 +76,7 @@ fn p10_7f_le_balayage_des_echeances_sla_hors_d_atteinte_est_compte_et_ne_marque_
 fn p10_7f_un_runbook_dont_les_etapes_ne_sont_pas_lues_n_est_pas_attache_ampute() {
     let conn = test_db();
     seed_runbooks(&conn);
-    let id = case_create_row(&conn, "a", "exploit", 4, "", None, 2);
+    let id = dossier_seme(&conn, "a", "exploit", 4, "", None, 2);
     link_alert(&conn, id, "T1190", Some("web-1"));
     let rb = pick_runbook_id(&conn, Some("initial-access"), None).expect("lecture faite").expect("un runbook correspond");
     let etapes_attendues: i64 = conn.query_row("SELECT COUNT(*) FROM runbook_step WHERE runbook_id=?1", params![rb], |r| r.get(0)).unwrap();

@@ -265,7 +265,7 @@ fn lqd_id_illisible_pour(conn: &Connection, match_kind: &str) {
 #[test]
 fn p10_20b_un_niveau_de_runbook_non_lu_ne_fait_pas_recommander_celui_du_dessous() {
     let conn = test_db();
-    let id = case_create_row(&conn, "adm", "bruteforce", 4, "", None, 2);
+    let id = dossier_seme(&conn, "adm", "bruteforce", 4, "", None, 2);
     link_alert(&conn, id, "T1110", Some("web-1"));
     link_alert(&conn, id, "T1110", None);
     lqd_deux_niveaux_de_runbook(&conn);
@@ -328,7 +328,7 @@ fn p10_20b_un_niveau_de_runbook_non_lu_ne_fait_pas_recommander_celui_du_dessous(
 /// lignes de `case_step` sont donc celles que la production écrit, pas une fixture qui pourrait en
 /// dériver en silence. Rend l'identifiant du dossier et celui du runbook.
 fn lqd_dossier_avec_runbook_attache(conn: &Connection) -> (i64, i64) {
-    let id = case_create_row(&conn, "adm", "intrusion", 4, "", None, 2);
+    let id = dossier_seme(&conn, "adm", "intrusion", 4, "", None, 2);
     conn.execute(
         "INSERT INTO runbook(key,name,match_kind,match_key,description,managed,active,created) \
          VALUES('temoin-attache','Procédure attachée','*','','',0,1,1000)",

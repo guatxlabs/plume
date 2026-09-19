@@ -75,7 +75,7 @@
     #[test]
     fn case_first_class_workflow() {
         let conn = test_db();
-        let id = case_create_row(&conn, "alice", "Intrusion SSH", 3, "brute force", None, 2);
+        let id = dossier_seme(&conn, "alice", "Intrusion SSH", 3, "brute force", None, 2);
         let c = case_get_json(&conn, id, now()).unwrap();
         assert_eq!(c["status"], "new");
         assert_eq!(c["priority"], 2);
@@ -115,8 +115,8 @@
     fn case_overdue_and_filters() {
         let conn = test_db();
         let base = now();
-        let a = case_create_row(&conn, "alice", "A", 4, "", Some("carol"), 1);
-        let b = case_create_row(&conn, "alice", "B", 2, "", None, 3);
+        let a = dossier_seme(&conn, "alice", "A", 4, "", Some("carol"), 1);
+        let b = dossier_seme(&conn, "alice", "B", 2, "", None, 3);
         conn.execute("UPDATE incident SET sla_due=?1 WHERE id=?2", params![base - 100, a]).unwrap();
         assert_eq!(case_get_json(&conn, a, now()).unwrap()["overdue"], true, "A overdue (sla passé, non terminal)");
         assert_eq!(case_get_json(&conn, b, now()).unwrap()["overdue"], false, "B dans les temps");
@@ -191,7 +191,7 @@
     #[test]
     fn disposition_set_get_roundtrip_audit_and_failclosed() {
         let conn = test_db();
-        let id = case_create_row(&conn, "alice", "A", 3, "", None, 2);
+        let id = dossier_seme(&conn, "alice", "A", 3, "", None, 2);
         // SET valide (accompagne une clôture, comme en prod).
         assert!(case_apply_update(&conn, id, "bob", &json!({ "status": "closed", "disposition": "false_positive" })));
         let c = case_get_json(&conn, id, now()).unwrap();
@@ -218,7 +218,7 @@
     #[tokio::test]
     async fn disposition_bad_value_rejected_at_api_400() {
         let st = sso_test_state("plume-admin", "plume-editor", "admins");
-        let id = { let g = st.db.lock(); case_create_row(&g, "alice", "A", 3, "", None, 2) };
+        let id = { let g = st.db.lock(); dossier_seme(&g, "alice", "A", 3, "", None, 2) };
         // (a) valeur invalide -> 400, rien écrit.
         let code = case_update(State(st.clone()), Extension(tok_au("editor")), Path(id), Json(json!({ "disposition": "not_a_verdict" }))).await;
         assert_eq!(code, StatusCode::BAD_REQUEST, "verdict hors allowlist -> 400");
@@ -243,7 +243,7 @@
         conn.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
         let _ = migrate(&conn);
         let masks = effective_masks(&path, "client", "default", None);
-        let id = case_create_row(&conn, "analyst_alice", "T", 3, "", None, 2);
+        let id = dossier_seme(&conn, "analyst_alice", "T", 3, "", None, 2);
         assert!(case_apply_update(&conn, id, "bob", &json!({ "disposition": "true_positive" })));
         assert_eq!(case_get_json(&conn, id, now()).unwrap()["disposition"], "true_positive", "verdict bien posé côté interne");
         let list = serde_json::to_string(&client_cases_list_json(&conn, &path, &masks, now(), "", 100, 0)).unwrap();
@@ -264,7 +264,7 @@
         // 5 cases, priorités et updated distincts pour tester le tri.
         let mut ids = Vec::new();
         for i in 0..5 {
-            let id = case_create_row(&conn, "alice", &format!("C{i}"), 2, "", None, ((i % 4) + 1) as i64);
+            let id = dossier_seme(&conn, "alice", &format!("C{i}"), 2, "", None, ((i % 4) + 1) as i64);
             conn.execute("UPDATE incident SET updated=?1 WHERE id=?2", params![1000 + i as i64, id]).unwrap();
             ids.push(id);
         }
@@ -1266,7 +1266,7 @@
         let aid = conn.last_insert_rowid();
         conn.execute("INSERT INTO event(ts,source,severity,message) VALUES(?1,'sshd',2,'login failed')", params![now()]).unwrap();
         let eid = conn.last_insert_rowid();
-        let id = case_create_row(&conn, "alice", "Case", 2, "", None, 3);
+        let id = dossier_seme(&conn, "alice", "Case", 2, "", None, 3);
         case_add_item(&conn, id, now(), "alert", "alice", "rattachée", Some(&format!("alert:{aid}")));
         case_add_item(&conn, id, now(), "event", "alice", "rattaché", Some(&format!("event:{eid}")));
         let c = case_get_json(&conn, id, now()).unwrap();
@@ -1287,7 +1287,7 @@
     #[test]
     fn case_detach_item_test() {
         let conn = test_db();
-        let id = case_create_row(&conn, "alice", "Case", 2, "", None, 3);
+        let id = dossier_seme(&conn, "alice", "Case", 2, "", None, 3);
         case_add_item(&conn, id, now(), "alert", "alice", "rattachée", Some("alert:5"));
         let item_id: i64 = conn.query_row("SELECT id FROM incident_item WHERE incident_id=?1 AND kind='alert'", params![id], |r| r.get(0)).unwrap();
         assert!(case_detach_item(&conn, id, item_id, "bob"));
@@ -1295,7 +1295,7 @@
         assert_eq!(conn.query_row::<i64, _, _>("SELECT COUNT(*) FROM incident_item WHERE incident_id=?1 AND kind='alert'", params![id], |r| r.get(0)).unwrap(), 0, "item alerte détaché");
         assert_eq!(conn.query_row::<i64, _, _>("SELECT COUNT(*) FROM incident_item WHERE incident_id=?1 AND kind='note' AND body LIKE 'détaché%'", params![id], |r| r.get(0)).unwrap(), 1, "note de détachement tracée");
         assert!(!case_detach_item(&conn, id, 999999, "bob"), "item inexistant -> false");
-        let other = case_create_row(&conn, "alice", "Other", 2, "", None, 3);
+        let other = dossier_seme(&conn, "alice", "Other", 2, "", None, 3);
         case_add_item(&conn, other, now(), "note", "alice", "x", None);
         let other_item: i64 = conn.query_row("SELECT id FROM incident_item WHERE incident_id=?1 AND kind='note'", params![other], |r| r.get(0)).unwrap();
         assert!(!case_detach_item(&conn, id, other_item, "bob"), "ne détache pas l'item d'un AUTRE case (anti-IDOR)");
@@ -1307,7 +1307,7 @@
     fn case_escalate_overdue_test() {
         let conn = test_db();
         let base = now();
-        let id = case_create_row(&conn, "alice", "Overdue", 4, "", None, 1);
+        let id = dossier_seme(&conn, "alice", "Overdue", 4, "", None, 1);
         conn.execute("UPDATE incident SET sla_due=?1 WHERE id=?2", params![base - 100, id]).unwrap();
         let db = Arc::new(Mutex::new(conn));
         escalate_overdue_cases(&db);
@@ -1322,7 +1322,7 @@
             let c = db.lock();
             assert_eq!(c.query_row::<i64, _, _>("SELECT COUNT(*) FROM incident_item WHERE incident_id=?1 AND kind='sla'", params![id], |r| r.get(0)).unwrap(), 1, "pas de re-notification");
         }
-        let fresh = { let c = db.lock(); case_create_row(&c, "alice", "Fresh", 2, "", None, 3) };
+        let fresh = { let c = db.lock(); dossier_seme(&c, "alice", "Fresh", 2, "", None, 3) };
         escalate_overdue_cases(&db);
         {
             let c = db.lock();
@@ -1350,8 +1350,8 @@
     #[test]
     fn case_archive_soft_delete() {
         let conn = test_db();
-        let a = case_create_row(&conn, "alice", "Actif", 3, "", None, 2);
-        let z = case_create_row(&conn, "alice", "ZZ_DEPLOY_VERIFY_4a", 2, "résidu", None, 3);
+        let a = dossier_seme(&conn, "alice", "Actif", 3, "", None, 2);
+        let z = dossier_seme(&conn, "alice", "ZZ_DEPLOY_VERIFY_4a", 2, "résidu", None, 3);
         // pré-condition : les 2 cases sont visibles par défaut, 0 archive.
         assert_eq!(cases_list_json(&conn, now(), "", "", 0, false, false)["cases"].as_array().unwrap().len(), 2, "2 cases actifs avant archive (mode 0 inchangé)");
         assert_eq!(cases_list_json(&conn, now(), "", "", 0, false, true)["cases"].as_array().unwrap().len(), 0, "aucune archive avant");
@@ -1558,7 +1558,7 @@
     #[test]
     fn caseops_mode0_inert() {
         let conn = test_db();
-        let id = case_create_row(&conn, "alice", "C", 3, "", None, 1);
+        let id = dossier_seme(&conn, "alice", "C", 3, "", None, 1);
         let (ack, res, pol): (Option<i64>, Option<i64>, Option<i64>) = conn
             .query_row("SELECT ack_due, resolve_due, sla_policy_id FROM incident WHERE id=?1", params![id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
             .unwrap();
@@ -1580,7 +1580,7 @@
     fn caseops_sla_multilevel_breach_immutable() {
         let conn = test_db();
         conn.execute("INSERT INTO sla_policy(name,priority,ack_target_s,resolve_target_s,enabled,created,created_by,updated) VALUES('P1',1,60,600,1,0,'root',0)", []).unwrap();
-        let id = case_create_row(&conn, "alice", "Crit", 4, "", None, 1);
+        let id = dossier_seme(&conn, "alice", "Crit", 4, "", None, 1);
         let ts: i64 = conn.query_row("SELECT ts FROM incident WHERE id=?1", params![id], |r| r.get(0)).unwrap();
         let (ack, res, pol): (i64, i64, i64) = conn.query_row("SELECT ack_due, resolve_due, sla_policy_id FROM incident WHERE id=?1", params![id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
         assert_eq!(ack, ts + 60, "ack_due = ts(immuable) + cible ack");
@@ -1607,7 +1607,7 @@
     fn caseops_sla_pause_resume() {
         let conn = test_db();
         conn.execute("INSERT INTO sla_policy(name,priority,ack_target_s,resolve_target_s,enabled,created,created_by,updated) VALUES('P2',2,120,1200,1,0,'root',0)", []).unwrap();
-        let id = case_create_row(&conn, "alice", "H", 3, "", None, 2);
+        let id = dossier_seme(&conn, "alice", "H", 3, "", None, 2);
         let res0: i64 = conn.query_row("SELECT resolve_due FROM incident WHERE id=?1", params![id], |r| r.get(0)).unwrap();
         assert!(case_apply_update(&conn, id, "alice", &json!({ "status": "waiting" })));
         let paused: Option<i64> = conn.query_row("SELECT sla_paused_since FROM incident WHERE id=?1", params![id], |r| r.get(0)).unwrap();
@@ -1627,8 +1627,8 @@
     #[test]
     fn caseops_merge_ledgered_nondestructive() {
         let conn = test_db();
-        let src = case_create_row(&conn, "alice", "Dup", 2, "", None, 3);
-        let dst = case_create_row(&conn, "alice", "Main", 3, "", None, 2);
+        let src = dossier_seme(&conn, "alice", "Dup", 2, "", None, 3);
+        let dst = dossier_seme(&conn, "alice", "Main", 3, "", None, 2);
         case_add_item(&conn, src, now(), "note", "alice", "indice source", None);
         let items_before: i64 = conn.query_row("SELECT COUNT(*) FROM incident_item WHERE incident_id=?1", params![src], |r| r.get(0)).unwrap();
         assert!(case_merge(&conn, src, dst, "bob"));
@@ -1655,9 +1655,9 @@
     #[test]
     fn merge_cycle_multi_node_rejected() {
         let conn = test_db();
-        let a = case_create_row(&conn, "alice", "A", 3, "", None, 2);
-        let b = case_create_row(&conn, "alice", "B", 3, "", None, 2);
-        let c = case_create_row(&conn, "alice", "C", 3, "", None, 2);
+        let a = dossier_seme(&conn, "alice", "A", 3, "", None, 2);
+        let b = dossier_seme(&conn, "alice", "B", 3, "", None, 2);
+        let c = dossier_seme(&conn, "alice", "C", 3, "", None, 2);
         assert!(case_merge(&conn, a, b, "op"), "A->B OK");
         assert!(case_merge(&conn, b, c, "op"), "B->C OK");
         // 3e fusion C->A : src=C est EN AMONT de dst=A (chaîne A->B->C) -> refus (fermerait le cycle).
@@ -1668,8 +1668,8 @@
         let ids: Vec<i64> = lst["cases"].as_array().unwrap().iter().map(|x| x["id"].as_i64().unwrap()).collect();
         assert!(ids.contains(&c), "au moins la destination racine (C) reste visible");
         // contre-épreuve : le 2-cycle direct reste refusé lui aussi (merge(A,B) déjà fait ; merge(B,A) via chaîne).
-        let d = case_create_row(&conn, "alice", "D", 3, "", None, 2);
-        let e = case_create_row(&conn, "alice", "E", 3, "", None, 2);
+        let d = dossier_seme(&conn, "alice", "D", 3, "", None, 2);
+        let e = dossier_seme(&conn, "alice", "E", 3, "", None, 2);
         assert!(case_merge(&conn, d, e, "op"), "D->E OK");
         assert!(!case_merge(&conn, e, d, "op"), "E->D (2-cycle direct) -> REFUSÉ");
     }
@@ -1679,16 +1679,20 @@
     #[test]
     fn caseops_link_nondestructive() {
         let conn = test_db();
-        let a = case_create_row(&conn, "alice", "A", 2, "", None, 3);
-        let b = case_create_row(&conn, "alice", "B", 2, "", None, 3);
-        assert!(case_link_add(&conn, a, b, "related", "same actor", "bob"));
-        assert!(case_link_add(&conn, a, b, "related", "", "bob"), "idempotent (dédup)");
+        let a = dossier_seme(&conn, "alice", "A", 2, "", None, 3);
+        let b = dossier_seme(&conn, "alice", "B", 2, "", None, 3);
+        use crate::handlers::caseops::{LienDeDossier, LienRetire};
+        assert!(matches!(case_link_add(&conn, a, b, "related", "same actor", "bob"), LienDeDossier::Pose));
+        assert!(
+            matches!(case_link_add(&conn, a, b, "related", "", "bob"), LienDeDossier::DejaLie),
+            "idempotent (dédup) — et `P10.20-w` sépare ce zéro-là de l'écriture qui n'a pas eu lieu"
+        );
         assert_eq!(conn.query_row::<i64, _, _>("SELECT COUNT(*) FROM case_link", [], |r| r.get(0)).unwrap(), 1, "dédup : un seul lien");
         assert_eq!(case_links_json(&conn, a)["links"].as_array().unwrap().len(), 1);
         assert_eq!(case_links_json(&conn, b)["links"].as_array().unwrap().len(), 1, "visible des deux côtés");
         assert_eq!(case_links_json(&conn, a)["links"][0]["id"].as_i64().unwrap(), b);
         assert_eq!(conn.query_row::<i64, _, _>("SELECT COUNT(*) FROM ledger WHERE kind='case.link'", [], |r| r.get(0)).unwrap(), 1);
-        assert!(case_link_remove(&conn, b, a, "bob"), "unlink des deux sens");
+        assert!(matches!(case_link_remove(&conn, b, a, "bob"), LienRetire::Retire), "unlink des deux sens");
         assert_eq!(case_links_json(&conn, a)["links"].as_array().unwrap().len(), 0);
         assert!(case_get_json(&conn, a, now()).is_some() && case_get_json(&conn, b, now()).is_some(), "cases intacts");
     }
@@ -1699,8 +1703,8 @@
     fn caseops_queues_and_metrics() {
         let conn = test_db();
         let base = now();
-        let c1 = case_create_row(&conn, "alice", "Q1", 3, "", Some("alice"), 2);
-        let _c2 = case_create_row(&conn, "alice", "Q2", 3, "", Some("bob"), 3);
+        let c1 = dossier_seme(&conn, "alice", "Q1", 3, "", Some("alice"), 2);
+        let _c2 = dossier_seme(&conn, "alice", "Q2", 3, "", Some("bob"), 3);
         conn.execute("UPDATE incident SET ts=?1, first_response_ts=?2, closed_ts=?3, status='resolved' WHERE id=?4", params![base - 1000, base - 950, base - 800, c1]).unwrap();
         let q = case_queues_json(&conn, now());
         let queues = q["queues"].as_array().unwrap();
@@ -1821,7 +1825,7 @@
         field_filters_reload(&conn, &path);
         let masks = effective_masks(&path, "client", "default", None);
         assert!(!masks.is_empty(), "le client hérite du masque (rank 0)");
-        let id = case_create_row(&conn, "analyst_alice", "Secret Title", 3, "resume interne confidentiel", Some("analyst_bob"), 2);
+        let id = dossier_seme(&conn, "analyst_alice", "Secret Title", 3, "resume interne confidentiel", Some("analyst_bob"), 2);
         case_add_item(&conn, id, now(), "note", "analyst_bob", "note interne sensible", None);
         case_add_item(&conn, id, now(), "alert", "analyst_bob", "", Some("alert:99"));
         let v = client_cases_list_json(&conn, &path, &masks, now(), "", 100, 0);
@@ -1836,9 +1840,9 @@
         assert!(!db.contains("note interne sensible"), "note interne EXCLUE de la vue client");
         assert!(!db.contains("analyst_bob"), "auteur anonymisé");
         assert!(db.contains("SOC"), "auteurs client-facing = SOC");
-        let arch = case_create_row(&conn, "x", "ArchMe", 2, "", None, 3);
+        let arch = dossier_seme(&conn, "x", "ArchMe", 2, "", None, 3);
         case_set_archived(&conn, arch, "root", true);
-        let merged = case_create_row(&conn, "x", "MergeMe", 2, "", None, 3);
+        let merged = dossier_seme(&conn, "x", "MergeMe", 2, "", None, 3);
         case_merge(&conn, merged, id, "root");
         let v2 = client_cases_list_json(&conn, &path, &masks, now(), "", 100, 0);
         let ids: Vec<i64> = v2["cases"].as_array().unwrap().iter().map(|c| c["id"].as_i64().unwrap()).collect();

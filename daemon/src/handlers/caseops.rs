@@ -257,11 +257,29 @@ pub(crate) fn case_unmerge(conn: &Connection, src_id: i64, author: &str) -> bool
     true
 }
 
+/// `P10.20-w` — CE QUE LA POSE D'UN LIEN REND. Le `bool` d'avant portait DEUX zéros sous le même
+/// `false` — non, il en portait un de plus : `.unwrap_or(0)` rendait `0` aussi bien quand la base
+/// refusait l'écriture que quand le lien existait déjà, et ce `0`-là était lu « déjà lié
+/// (idempotent) », donc rendu 204 « fait » à la console sur un lien qui n'existe pas. Les issues sont
+/// séparées, et aucune ne se tire du type sans avoir été nommée.
+pub(crate) enum LienDeDossier {
+    /// Le lien est posé : les deux timelines et le registre le portent.
+    Pose,
+    /// Les deux dossiers étaient DÉJÀ liés sous ce genre — aucune ligne écrite, aucune trace doublée,
+    /// et la demande est honorée (l'énoncé porte `OR IGNORE`).
+    DejaLie,
+    /// Un des deux dossiers n'existe pas, ou les deux identifiants sont le même — absence ÉTABLIE.
+    DossierAbsent,
+    /// L'écriture n'a pas eu lieu : la cause est portée, et rien — ni timeline, ni registre, ni
+    /// réponse — ne doit dire que les deux dossiers sont liés.
+    NonPose(String),
+}
+
 /// LIEN NON DESTRUCTIF #39 : associe deux cases (kind ∈ related|duplicate|blocks) sans les fusionner. Dédup par
-/// UNIQUE(src,dst,kind). Trace item 'link' des deux côtés + ledger. false si un case manque ou src==dst.
-pub(crate) fn case_link_add(conn: &Connection, src_id: i64, dst_id: i64, kind: &str, note: &str, author: &str) -> bool {
+/// UNIQUE(src,dst,kind). Trace item 'link' des deux côtés + ledger.
+pub(crate) fn case_link_add(conn: &Connection, src_id: i64, dst_id: i64, kind: &str, note: &str, author: &str) -> LienDeDossier {
     if src_id == dst_id {
-        return false;
+        return LienDeDossier::DossierAbsent;
     }
     let kind = match kind {
         "duplicate" | "blocks" | "related" => kind,
@@ -269,35 +287,55 @@ pub(crate) fn case_link_add(conn: &Connection, src_id: i64, dst_id: i64, kind: &
     };
     for cid in [src_id, dst_id] {
         if conn.query_row("SELECT 1 FROM incident WHERE id=?1", params![cid], |_| Ok(())).is_err() {
-            return false;
+            return LienDeDossier::DossierAbsent;
         }
     }
     let t = now();
-    let n = conn.execute(
+    // L'ÉCRITURE EST COMPTÉE AVANT TOUTE TRACE : `OR IGNORE` rend légitimement zéro ligne quand le
+    // lien existe déjà, et c'est le SEUL zéro que cette clause produise — un échec de la base n'en
+    // est pas un.
+    match conn.execute(
         "INSERT OR IGNORE INTO case_link(src_id,dst_id,kind,note,created,created_by) VALUES(?1,?2,?3,?4,?5,?6)",
         params![src_id, dst_id, kind, note, t, author],
-    ).unwrap_or(0);
-    if n == 0 {
-        return true; // déjà lié (idempotent) — pas de double trace
+    ) {
+        Ok(0) => return LienDeDossier::DejaLie, // déjà lié (idempotent) — pas de double trace
+        Ok(_) => {}
+        Err(e) => return LienDeDossier::NonPose(e.to_string()),
     }
     case_add_item(conn, src_id, t, "link", author, &format!("lié à #{dst_id} ({kind})"), Some(&format!("case:{dst_id}")));
     case_add_item(conn, dst_id, t, "link", author, &format!("lié à #{src_id} ({kind})"), Some(&format!("case:{src_id}")));
     ledger_append(conn, "case.link", &format!("#{src_id} <-{kind}-> #{dst_id} by {author}"));
-    true
+    LienDeDossier::Pose
+}
+
+/// `P10.20-w` — CE QUE LE RETRAIT D'UN LIEN REND. `.unwrap_or(0)` faisait dire « aucun lien ne
+/// reliait ces deux dossiers » (404) à une suppression que la base n'avait pas prise : le lien est
+/// TOUJOURS là, et l'exploitant lit qu'il n'a jamais existé.
+pub(crate) enum LienRetire {
+    /// Le lien est retiré : au moins une ligne a été effacée, et le registre en porte le COMPTE
+    /// exact (l'énoncé vise les deux sens, il peut en effacer plus d'une).
+    Retire,
+    /// Aucun lien ne reliait ces deux dossiers : absence ÉTABLIE, rien à défaire.
+    AucunLien,
+    /// La suppression n'a pas eu lieu : la cause est portée, et le lien EST toujours là.
+    NonRetire(String),
 }
 
 /// Supprime un lien (les deux sens) entre deux cases. Trace + ledger. Le lien est une pure ASSOCIATION -> sa
-/// suppression ne détruit AUCUNE donnée de case. false si aucun lien.
-pub(crate) fn case_link_remove(conn: &Connection, a: i64, b: i64, author: &str) -> bool {
-    let n = conn.execute(
+/// suppression ne détruit AUCUNE donnée de case.
+pub(crate) fn case_link_remove(conn: &Connection, a: i64, b: i64, author: &str) -> LienRetire {
+    let n = match conn.execute(
         "DELETE FROM case_link WHERE (src_id=?1 AND dst_id=?2) OR (src_id=?2 AND dst_id=?1)",
         params![a, b],
-    ).unwrap_or(0);
-    if n == 0 {
-        return false;
-    }
-    ledger_append(conn, "case.unlink", &format!("#{a} x #{b} by {author}"));
-    true
+    ) {
+        Ok(0) => return LienRetire::AucunLien,
+        Ok(n) => n,
+        Err(e) => return LienRetire::NonRetire(e.to_string()),
+    };
+    // Le COMPTE est dit, jamais avalé : l'énoncé vise les deux sens, et savoir combien de lignes il a
+    // réellement effacées est ce qui sépare un lien retiré d'un doublon nettoyé au passage.
+    ledger_append(conn, "case.unlink", &format!("#{a} x #{b} retirés={n} by {author}"));
+    LienRetire::Retire
 }
 
 /// Borne des liens d'un dossier (`P11.22-g`) : nommée, rendue avec la liste, lue avec sa ligne excédentaire.
@@ -749,21 +787,38 @@ pub(crate) async fn case_links_get(State(st): State<AppState>, Extension(au): Ex
     Json(res)
 }
 
-pub(crate) async fn case_link_handler(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> StatusCode {
+/// `P10.20-w` — la ligne du lien n'a PAS pu être écrite : 503 nommé, et rien n'atteste le lien.
+pub(crate) const CAUSE_LIEN_NON_POSE: &str =
+    "LIEN NON POSÉ : la ligne n'a pas pu être écrite, donc les deux dossiers NE SONT PAS liés, leurs \
+     timelines n'en portent rien et le registre non plus. Ce n'est PAS « ils étaient déjà liés » ni \
+     « un des deux dossiers n'existe pas » : rien n'a été fait. Réessayez.";
+
+/// `P10.20-w` — la suppression du lien n'a PAS eu lieu : 503 nommé, et le lien est TOUJOURS là.
+pub(crate) const CAUSE_LIEN_NON_RETIRE: &str =
+    "LIEN NON RETIRÉ : la suppression n'a pas pu être écrite, donc les deux dossiers sont TOUJOURS \
+     liés. Ce n'est PAS « aucun lien ne les reliait » : rien n'a été fait. Réessayez.";
+
+pub(crate) async fn case_link_handler(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
     let to = b.get("to").and_then(|v| v.as_i64()).unwrap_or(0);
     let kind = b.get("kind").and_then(|v| v.as_str()).unwrap_or("related").to_string();
     let note = b.get("note").and_then(|v| v.as_str()).unwrap_or("").to_string();
     if to <= 0 {
-        return StatusCode::BAD_REQUEST;
+        return StatusCode::BAD_REQUEST.into_response();
     }
-    with_write(&st, &au, |conn| {
-        if case_link_add(&conn, id, to, &kind, &note, &au.name) { StatusCode::NO_CONTENT } else { StatusCode::NOT_FOUND }
+    // Le chemin nominal est INCHANGÉ — lien posé ou déjà posé : 204 ; dossier absent : 404 nu, comme
+    // avant. Seule l'écriture RATÉE, qui sortait en 404 « aucun de ces dossiers », est nommée.
+    with_write(&st, &au, |conn| match case_link_add(conn, id, to, &kind, &note, &au.name) {
+        LienDeDossier::Pose | LienDeDossier::DejaLie => StatusCode::NO_CONTENT.into_response(),
+        LienDeDossier::DossierAbsent => StatusCode::NOT_FOUND.into_response(),
+        LienDeDossier::NonPose(cause) => err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_LIEN_NON_POSE} ({cause})")),
     })
 }
 
-pub(crate) async fn case_unlink_handler(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path((id, other)): Path<(i64, i64)>) -> StatusCode {
-    with_write(&st, &au, |conn| {
-        if case_link_remove(&conn, id, other, &au.name) { StatusCode::NO_CONTENT } else { StatusCode::NOT_FOUND }
+pub(crate) async fn case_unlink_handler(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path((id, other)): Path<(i64, i64)>) -> Response {
+    with_write(&st, &au, |conn| match case_link_remove(conn, id, other, &au.name) {
+        LienRetire::Retire => StatusCode::NO_CONTENT.into_response(),
+        LienRetire::AucunLien => StatusCode::NOT_FOUND.into_response(),
+        LienRetire::NonRetire(cause) => err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_LIEN_NON_RETIRE} ({cause})")),
     })
 }
 
@@ -953,18 +1008,31 @@ pub(crate) async fn sla_policy_upsert(State(st): State<AppState>, Extension(au):
     })
 }
 
+/// `P10.20-w` — la politique n'a PAS pu être supprimée : 503 nommé, et elle gouverne toujours.
+pub(crate) const CAUSE_POLITIQUE_NON_SUPPRIMEE: &str =
+    "POLITIQUE SLA NON SUPPRIMÉE : la suppression n'a pas pu être écrite, donc la politique GOUVERNE \
+     TOUJOURS les échéances de sa priorité et le registre n'en porte aucune suppression. Ce n'est PAS \
+     « aucune politique ne porte cet identifiant » : rien n'a été fait. Réessayez.";
+
 /// DELETE /api/sla-policies/{id} — supprime une politique. ADMIN-ONLY (config gouvernante) : re-check handler.
-pub(crate) async fn sla_policy_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> StatusCode {
+///
+/// `P10.20-w` — le chemin nominal est INCHANGÉ (204 sur suppression, 404 nu sur absence) ; l'écriture
+/// RATÉE, qui sortait en 404 — « cette politique n'existe pas » sur une politique bien vivante —, est
+/// nommée par un 503.
+pub(crate) async fn sla_policy_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     if !au.is_admin() {
-        return StatusCode::FORBIDDEN;
+        return StatusCode::FORBIDDEN.into_response();
     }
     with_write(&st, &au, |conn| {
-        let n = conn.execute("DELETE FROM sla_policy WHERE id=?1", params![id]).unwrap_or(0);
-        if n == 0 {
-            return StatusCode::NOT_FOUND;
+        match conn.execute("DELETE FROM sla_policy WHERE id=?1", params![id]) {
+            Ok(0) => return StatusCode::NOT_FOUND.into_response(),
+            Ok(_) => {}
+            Err(e) => {
+                return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_POLITIQUE_NON_SUPPRIMEE} ({e})"))
+            }
         }
-        ledger_append(&conn, "sla_policy.delete", &format!("#{id} by {}", au.name));
-        StatusCode::NO_CONTENT
+        ledger_append(conn, "sla_policy.delete", &format!("#{id} by {}", au.name));
+        StatusCode::NO_CONTENT.into_response()
     })
 }
 

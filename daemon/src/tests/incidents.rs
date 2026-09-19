@@ -56,7 +56,7 @@
     #[test]
     fn incident_elevate_and_demote() {
         let conn = test_db();
-        let id = case_create_row(&conn, "alice", "Scan suspect", 3, "", None, 3);
+        let id = dossier_seme(&conn, "alice", "Scan suspect", 3, "", None, 3);
         // ordinaire : tier NULL.
         let tier0: Option<i64> = conn.query_row("SELECT incident_tier FROM incident WHERE id=?1", params![id], |r| r.get(0)).unwrap();
         assert_eq!(tier0, None, "case ordinaire : tier NULL");
@@ -82,7 +82,7 @@
     #[test]
     fn dominant_tactic_tie_break_is_deterministic() {
         let conn = test_db();
-        let id = case_create_row(&conn, "a", "tie", 3, "", None, 3);
+        let id = dossier_seme(&conn, "a", "tie", 3, "", None, 3);
         // ÉGALITÉ 1-1 : discovery(T1046) vs initial-access(T1190). Attendu déterministe = plus petit nom.
         link_alert(&conn, id, "T1046", None); // discovery
         link_alert(&conn, id, "T1190", None); // initial-access
@@ -102,7 +102,7 @@
     #[test]
     fn incident_label_no_dangling_when_value_empty() {
         let conn = test_db();
-        let id = case_create_row(&conn, "a", "lbl", 3, "", None, 3);
+        let id = dossier_seme(&conn, "a", "lbl", 3, "", None, 3);
         // type=espaces, pilote=vide -> AUCUN label additionnel.
         assert!(incident_apply_tier(&conn, id, "bob", Some(2), Some("  "), Some("")));
         let body: String = conn.query_row(
@@ -165,7 +165,7 @@
         let conn = test_db();
         seed_runbooks(&conn);
         // (a) case avec T1190 (initial-access) dominant.
-        let ia = case_create_row(&conn, "a", "exploit", 4, "", None, 2);
+        let ia = dossier_seme(&conn, "a", "exploit", 4, "", None, 2);
         link_alert(&conn, ia, "T1190", Some("web-1"));
         link_alert(&conn, ia, "T1190", None);
         link_alert(&conn, ia, "T1110", None); // minoritaire
@@ -177,7 +177,7 @@
         let key: String = conn.query_row("SELECT key FROM runbook WHERE id=?1", params![rb], |r| r.get(0)).unwrap();
         assert_eq!(key, "initial-access-exploit");
         // (b) discovery (T1046 port-scan) -> runbook de reconnaissance (alias).
-        let ds = case_create_row(&conn, "a", "portscan", 3, "", None, 3);
+        let ds = dossier_seme(&conn, "a", "portscan", 3, "", None, 3);
         link_alert(&conn, ds, "T1046", None);
         let (tac2, _, _) = dominant_tactic_and_target(&conn, ds).expect("les alertes liées sont lisibles");
         assert_eq!(tac2.as_deref(), Some("discovery"));
@@ -185,7 +185,7 @@
         let key2: String = conn.query_row("SELECT key FROM runbook WHERE id=?1", params![rb2], |r| r.get(0)).unwrap();
         assert_eq!(key2, "recon-scan", "discovery route vers le runbook de reconnaissance");
         // (c) aucune alerte -> repli générique.
-        let none = case_create_row(&conn, "a", "vide", 2, "", None, 3);
+        let none = dossier_seme(&conn, "a", "vide", 2, "", None, 3);
         let (tac3, _, _) = dominant_tactic_and_target(&conn, none).expect("les alertes liées sont lisibles");
         assert_eq!(tac3, None);
         let rb3 = pick_runbook_id(&conn, tac3.as_deref(), None).expect("lecture faite").expect("un runbook correspond");
@@ -199,7 +199,7 @@
     fn attach_runbook_instantiates_steps() {
         let conn = test_db();
         seed_runbooks(&conn);
-        let id = case_create_row(&conn, "a", "exploit", 4, "", None, 2);
+        let id = dossier_seme(&conn, "a", "exploit", 4, "", None, 2);
         link_alert(&conn, id, "T1190", Some("web-1"));
         let rb = pick_runbook_id(&conn, Some("initial-access"), None).expect("lecture faite").expect("un runbook correspond");
         let n = attach_runbook(&conn, id, rb, "bob", &PrefillTargets { host: Some("web-1".into()), ..Default::default() }).unwrap();
@@ -231,7 +231,7 @@
     fn step_advance_writes_timeline_ledger_and_mtta() {
         let conn = test_db();
         seed_runbooks(&conn);
-        let id = case_create_row(&conn, "a", "exploit", 4, "", None, 2);
+        let id = dossier_seme(&conn, "a", "exploit", 4, "", None, 2);
         // MTTA non encore figé.
         let fr0: Option<i64> = conn.query_row("SELECT first_response_ts FROM incident WHERE id=?1", params![id], |r| r.get(0)).unwrap();
         assert_eq!(fr0, None);
@@ -259,7 +259,7 @@
         let fr1: Option<i64> = conn.query_row("SELECT first_response_ts FROM incident WHERE id=?1", params![id], |r| r.get(0)).unwrap();
         assert!(fr1.is_some(), "first_response_ts figé (MTTA)");
         // anti-IDOR : la step d'un AUTRE case ne peut être avancée via cet id.
-        let other = case_create_row(&conn, "a", "autre", 2, "", None, 3);
+        let other = dossier_seme(&conn, "a", "autre", 2, "", None, 3);
         assert!(!step_advance(&conn, other, first_step, "done", "eve", None), "step d'un autre case refusée");
         // statut invalide refusé.
         assert!(!step_advance(&conn, id, first_step, "bogus", "bob", None));
@@ -271,7 +271,7 @@
     fn step_search_resolve_reuses_closed_compiler() {
         let conn = test_db();
         seed_runbooks(&conn);
-        let id = case_create_row(&conn, "a", "recon", 3, "", None, 3);
+        let id = dossier_seme(&conn, "a", "recon", 3, "", None, 3);
         link_alert(&conn, id, "T1595", Some("edge-1"));
         let rb = pick_runbook_id(&conn, Some("reconnaissance"), None).expect("lecture faite").expect("un runbook correspond");
         attach_runbook(&conn, id, rb, "bob", &PrefillTargets { host: Some("203.0.113.7".into()), ..Default::default() }).unwrap();
@@ -297,7 +297,7 @@
     fn mode0_parity_and_client_projection_no_leak() {
         let conn = test_db();
         seed_runbooks(&conn); // seed présent mais AUCUN runbook attaché
-        let id = case_create_row(&conn, "alice", "ordinaire", 2, "rien", None, 3);
+        let id = dossier_seme(&conn, "alice", "ordinaire", 2, "rien", None, 3);
         // aucune step, tier NULL.
         let cs: i64 = conn.query_row("SELECT COUNT(*) FROM case_step WHERE incident_id=?1", params![id], |r| r.get(0)).unwrap();
         assert_eq!(cs, 0);
@@ -389,7 +389,7 @@
             assert_eq!(sip.as_deref(), Some("9.9.9.9"), "alert.src_ip capturé depuis le champ de throttle");
             // WIZARD : lie l'alerte à un case, attache un runbook ban_ip -> la step ban_ip pré-remplit l'IP.
             let aid: i64 = c.query_row("SELECT id FROM alert", [], |r| r.get(0)).unwrap();
-            let case_id = case_create_row(&c, "alice", "exploit", 4, "", None, 2);
+            let case_id = dossier_seme(&c, "alice", "exploit", 4, "", None, 2);
             case_add_item(&c, case_id, now(), "alert", "sys", "liée", Some(&format!("alert:{aid}")));
             let (_, _, targets) = dominant_tactic_and_target(&c, case_id).expect("les alertes liées sont lisibles");
             assert_eq!(targets.src_ip.as_deref(), Some("9.9.9.9"));
@@ -472,7 +472,7 @@
     #[test]
     fn p3a_wizard_kill_pid_prefills_pid_and_host() {
         let conn = test_db();
-        let case_id = case_create_row(&conn, "alice", "process malveillant", 3, "", None, 2);
+        let case_id = dossier_seme(&conn, "alice", "process malveillant", 3, "", None, 2);
         link_alert_struct(&conn, case_id, "T1059", None, Some("4242"), Some("db-01"));
         let (_, _, targets) = dominant_tactic_and_target(&conn, case_id).expect("les alertes liées sont lisibles");
         assert_eq!(targets.pid.as_deref(), Some("4242"));
@@ -494,21 +494,21 @@
     fn p3a_prefill_rejects_invalid_target_blank() {
         let conn = test_db();
         // src_ip garbage.
-        let c1 = case_create_row(&conn, "a", "x", 3, "", None, 3);
+        let c1 = dossier_seme(&conn, "a", "x", 3, "", None, 3);
         link_alert_struct(&conn, c1, "T1190", Some("pas-une-ip"), None, None);
         let (_, _, tg1) = dominant_tactic_and_target(&conn, c1).expect("les alertes liées sont lisibles");
         attach_response_runbook(&conn, c1, "ban_ip", &tg1);
         let b1: String = conn.query_row("SELECT COALESCE(target,'') FROM case_step WHERE incident_id=?1 AND action_kind='ban_ip'", params![c1], |r| r.get(0)).unwrap();
         assert_eq!(b1, "", "src_ip invalide -> ban_ip blanc (anti-cible-trompeuse)");
         // pid trop bas.
-        let c2 = case_create_row(&conn, "a", "y", 3, "", None, 3);
+        let c2 = dossier_seme(&conn, "a", "y", 3, "", None, 3);
         link_alert_struct(&conn, c2, "T1059", None, Some("42"), Some("h"));
         let (_, _, tg2) = dominant_tactic_and_target(&conn, c2).expect("les alertes liées sont lisibles");
         attach_response_runbook(&conn, c2, "kill_pid", &tg2);
         let b2: String = conn.query_row("SELECT COALESCE(target,'') FROM case_step WHERE incident_id=?1 AND action_kind='kill_pid'", params![c2], |r| r.get(0)).unwrap();
         assert_eq!(b2, "", "pid<=300 rejeté par action_valid_ctx -> blanc");
         // src_ip VALIDE passe (contrôle positif).
-        let c3 = case_create_row(&conn, "a", "z", 3, "", None, 3);
+        let c3 = dossier_seme(&conn, "a", "z", 3, "", None, 3);
         link_alert_struct(&conn, c3, "T1190", Some("198.51.100.7"), None, None);
         let (_, _, tg3) = dominant_tactic_and_target(&conn, c3).expect("les alertes liées sont lisibles");
         attach_response_runbook(&conn, c3, "ban_ip", &tg3);
@@ -521,7 +521,7 @@
     #[test]
     fn p3a_basic_scalar_alert_blank_prefill_parity() {
         let conn = test_db();
-        let case_id = case_create_row(&conn, "a", "scan", 3, "", None, 3);
+        let case_id = dossier_seme(&conn, "a", "scan", 3, "", None, 3);
         link_alert(&conn, case_id, "T1190", None); // aucune colonne structurée (comme run_due_rules)
         let (_, _, targets) = dominant_tactic_and_target(&conn, case_id).expect("les alertes liées sont lisibles");
         assert_eq!(targets.src_ip, None);
@@ -536,7 +536,7 @@
     #[test]
     fn p3a_client_projection_excludes_src_ip_pid() {
         let conn = test_db();
-        let case_id = case_create_row(&conn, "alice", "case", 3, "", None, 3);
+        let case_id = dossier_seme(&conn, "alice", "case", 3, "", None, 3);
         link_alert_struct(&conn, case_id, "T1190", Some("203.0.113.99"), Some("31337"), Some("secret-host-01"));
         incident_apply_tier(&conn, case_id, "bob", Some(1), None, None);
         let rb = create_custom_runbook(&conn, "rb", "*", "", "", &[("containment".to_string(), "Ban".to_string(), "".to_string(), "response".to_string(), None, Some("ban_ip".to_string()))], true).unwrap();
@@ -767,7 +767,7 @@
     #[test]
     fn custom_runbook_client_projection_no_leak() {
         let conn = test_db();
-        let id = case_create_row(&conn, "alice", "case", 3, "", None, 3);
+        let id = dossier_seme(&conn, "alice", "case", 3, "", None, 3);
         let secret_steps = vec![("triage".to_string(), "SECRET-STEP-TITLE".to_string(), "SECRET-GUIDE".to_string(), "manual".to_string(), None, None)];
         let rb = create_custom_runbook(&conn, "SECRET-CUSTOM-RB", "*", "", "", &secret_steps, true).unwrap();
         incident_apply_tier(&conn, id, "bob", Some(1), None, None);
@@ -796,7 +796,7 @@
         let masks = guatx_core::soql::FieldMaskSet::new();
         // (1) case ORDINAIRE (jamais élevé) : is_incident=false, phase coarse DÉGRADE proprement (status 'new'->ouvert),
         //     acknowledged=false. Parité mode 0 : rien d'autre ne change.
-        let ord = case_create_row(&conn, "alice", "case ordinaire", 2, "resume", None, 3);
+        let ord = dossier_seme(&conn, "alice", "case ordinaire", 2, "resume", None, 3);
         let ov = client_case_get_json(&conn, ":memory:", &masks, ord, now()).unwrap();
         assert_eq!(ov["is_incident"], json!(false), "case ordinaire -> is_incident=false");
         assert_eq!(ov["phase"], json!("ouvert"), "phase coarse dégrade sur un case ordinaire");
@@ -807,7 +807,7 @@
 
         // (2) INCIDENT : élève (tier + type/commander SECRETS) + runbook CUSTOM (nom secret) avec step SECRET +
         //     action de réponse ; host secret pré-rempli. Marque acknowledged (first_response_ts).
-        let id = case_create_row(&conn, "analyst_alice", "case incident", 3, "resume interne", Some("analyst_bob"), 1);
+        let id = dossier_seme(&conn, "analyst_alice", "case incident", 3, "resume interne", Some("analyst_bob"), 1);
         incident_apply_tier(&conn, id, "analyst_bob", Some(2), Some("SECRET-INCIDENT-TYPE"), Some("SECRET-COMMANDER"));
         let secret_steps: Vec<NewStep> = vec![
             ("triage".into(), "SECRET-STEP-TITLE".into(), "SECRET-GUIDE".into(), "search".into(), Some("search src_ip=$target$ | stats count by source".into()), None),
@@ -856,7 +856,7 @@
     fn p3b_coarse_phase_from_status_only() {
         let conn = test_db();
         let masks = guatx_core::soql::FieldMaskSet::new();
-        let id = case_create_row(&conn, "a", "c", 3, "", None, 2);
+        let id = dossier_seme(&conn, "a", "c", 3, "", None, 2);
         let phase_now = |c: &Connection| client_case_get_json(c, ":memory:", &masks, id, now()).unwrap()["phase"].as_str().unwrap().to_string();
         for (st, want) in [("new", "ouvert"), ("triage", "ouvert"), ("in_progress", "en cours de traitement"),
                            ("waiting", "en attente"), ("contained", "contenu"), ("resolved", "résolu"), ("closed", "clôturé")] {
@@ -880,7 +880,7 @@
         let ca = mkdb(&pa);
         let cb = mkdb(&pb);
         // tenant A : un incident acquitté.
-        let id = case_create_row(&ca, "alice", "incident tenant A", 3, "", None, 1);
+        let id = dossier_seme(&ca, "alice", "incident tenant A", 3, "", None, 1);
         incident_apply_tier(&ca, id, "alice", Some(1), Some("A-TYPE"), Some("A-CMD"));
         ca.execute("UPDATE incident SET first_response_ts=?1 WHERE id=?2", params![now(), id]).unwrap();
         let masks = guatx_core::soql::FieldMaskSet::new();

@@ -128,24 +128,60 @@ pub(crate) fn case_add_item(conn: &Connection, incident_id: i64, t: i64, kind: &
     }
 }
 
+/// `P10.20-w` — CE QU'UNE CRÉATION DE DOSSIER REND, POUR QUE PERSONNE N'EN SUPPOSE L'IDENTIFIANT.
+///
+/// LE GESTE EST CELUI D'`action_create` MOT POUR MOT (`P10.20-t`), SUR UN AUTRE OBJET : l'`INSERT`
+/// était avalé (`let _ = conn.execute(..)`), `last_insert_rowid()` lu juste après — et cette fonction
+/// rend le dernier identifiant inséré SUR LA CONNEXION, toutes tables confondues, donc un maillon du
+/// registre, un événement, ou `0` —, puis la ligne `case.create` partait au registre tamper-evident
+/// et l'identifiant au client. Un dossier inexistant se retrouvait attesté dans la trace non
+/// purgeable ET ouvert à l'écran, avec le numéro d'une AUTRE ligne : les gestes suivants — note,
+/// assignation, clôture, fusion — visaient cet objet-là.
+///
+/// POURQUOI UN TYPE À LUI, ET PAS LE FABRICANT DE LA RIPOSTE. Un fabricant partagé « écriture comptée
+/// puis identifiant » devrait prendre l'ÉNONCÉ en paramètre, donc faire voyager du SQL comme une
+/// donnée — et c'est exactement la propriété que `mise_en_file_de_riposte` existe pour tenir : UN
+/// énoncé, UNE table, AUCUN autre chemin vers un identifiant de riposte. Deux domaines, deux tables,
+/// deux vocabulaires ; le même GESTE, écrit deux fois, mais aucune des deux fonctions n'offre `.ok()`
+/// ni `.unwrap_or(0)`. Le jour où les identifiants servis SANS registre (tableaux, panneaux, vues,
+/// listes de lecture, instantanés) seront fermés à leur tour, l'extraction se rejugera sur la
+/// population de ce moment-là, pas sur deux usages.
+pub(crate) enum DossierOuvert {
+    /// La ligne est écrite, et l'identifiant est celui de CETTE ligne.
+    Ouvert(i64),
+    /// L'écriture n'a pas eu lieu (ou n'a pas posé exactement une ligne) : la cause est portée, et
+    /// aucun identifiant n'existe — ni pour le registre, ni pour la timeline, ni pour la console.
+    NonOuvert(String),
+}
+
 /// Crée un case first-class : statut canonique 'new', priorité bornée 1..4, sla_due = ts + cible(priority),
-/// item 'created', audit ledger (case.create). owner = créateur (immuable ensuite). Renvoie l'id. #4a.
-pub(crate) fn case_create_row(conn: &Connection, author: &str, title: &str, sev: i64, summary: &str, assignee: Option<&str>, priority: i64) -> i64 {
+/// item 'created', audit ledger (case.create). owner = créateur (immuable ensuite). #4a.
+///
+/// `P10.20-w` — L'IDENTIFIANT NE SE LIT QU'APRÈS UNE ÉCRITURE COMPTÉE, et le refus précède TOUT fait :
+/// pas de ligne de timeline, pas de ligne de registre, pas d'échéance SLA, aucun numéro rendu.
+/// `conn` est tenue par l'appelant pendant tout le geste — c'est ce qui fait de `last_insert_rowid()`
+/// l'identifiant de la ligne qu'on vient d'écrire et d'aucune autre.
+pub(crate) fn case_create_row(conn: &Connection, author: &str, title: &str, sev: i64, summary: &str, assignee: Option<&str>, priority: i64) -> DossierOuvert {
     let t = now();
     let pr = priority.clamp(1, 4);
     let sla_due = t + sla_target_s(pr);
-    let _ = conn.execute(
+    let id = match conn.execute(
         "INSERT INTO incident(ts,updated,title,status,severity,owner,summary,priority,assignee,sla_due) \
          VALUES(?1,?1,?2,'new',?3,?4,?5,?6,?7,?8)",
         params![t, title, sev, author, summary, pr, assignee, sla_due],
-    );
-    let id = conn.last_insert_rowid();
+    ) {
+        Ok(1) => conn.last_insert_rowid(),
+        // Un `INSERT` sans clause de conflit écrit une ligne ou échoue ; la branche existe pour que le
+        // jour où l'énoncé en gagne une, le silence ne soit pas le comportement par défaut.
+        Ok(n) => return DossierOuvert::NonOuvert(format!("{n} ligne(s) écrite(s) au lieu d'une")),
+        Err(e) => return DossierOuvert::NonOuvert(e.to_string()),
+    };
     case_add_item(conn, id, t, "created", author, "Incident créé", None);
     ledger_append(conn, "case.create", &format!("#{id} '{title}' by {author}"));
     // #39 — pose les échéances SLA MULTI-NIVEAU (ack_due/resolve_due) si une politique gouverne cette priorité.
     // INERTE si `sla_policy` VIDE (mode 0 : sla_apply_policy retourne sans écrire -> SLA legacy sla_due inchangé).
     sla_apply_policy(conn, id);
-    id
+    DossierOuvert::Ouvert(id)
 }
 
 /// Applique un patch de case (title/severity/owner/summary/priority/assignee/status). Chaque changement
@@ -491,17 +527,32 @@ pub(crate) async fn cases_list(State(st): State<AppState>, Extension(au): Extens
     Json(res)
 }
 
+/// `P10.20-w` — la ligne du dossier n'a PAS été écrite : 503, et ni registre ni identifiant.
+pub(crate) const CAUSE_DOSSIER_NON_OUVERT: &str =
+    "DOSSIER NON OUVERT : la ligne n'a pas pu être écrite, donc AUCUN dossier n'existe, le registre \
+     n'en porte AUCUNE trace, aucune échéance n'est posée, et aucun identifiant n'est rendu — celui \
+     qui était servi ici pouvait désigner une TOUTE AUTRE ligne. Rien n'a été fait. Réessayez.";
+
 /// POST /api/cases — crée un case first-class (status='new', priorité, sla_due). Mutating (editor/admin). #4a.
-pub(crate) async fn case_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Json<Value> {
+///
+/// `P10.20-w` — LE CONTRAT DE CETTE ROUTE CHANGE, ET C'EST ASSUMÉ : elle rendait un 200 portant un
+/// identifiant EMPRUNTÉ quand la base ne prenait pas l'écriture ; elle rend désormais un 503 nommé,
+/// posé AVANT le registre. Même geste, même arbitrage et même forme de refus qu'`action_create`.
+pub(crate) async fn case_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
     let title = b.get("title").and_then(|v| v.as_str()).unwrap_or("Incident").trim().to_string();
     let sev = b.i64_field("severity", 2);
     let summary = b.str_field("summary");
     let assignee = b.get("assignee").and_then(|v| v.as_str()).map(|s| s.trim()).filter(|s| !s.is_empty());
     let priority = b.get("priority").and_then(parse_priority).unwrap_or(3);
     crate::req_conn!(st, au, conn);
-    let id = case_create_row(&conn, &au.name, &title, sev, summary, assignee, priority);
+    let id = match case_create_row(&conn, &au.name, &title, sev, summary, assignee, priority) {
+        DossierOuvert::Ouvert(id) => id,
+        DossierOuvert::NonOuvert(cause) => {
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_DOSSIER_NON_OUVERT} ({cause})"))
+        }
+    };
     let sla_due: Option<i64> = conn.query_row("SELECT sla_due FROM incident WHERE id=?1", params![id], |r| r.get(0)).unwrap_or(None);
-    Json(json!({ "id": id, "status": "new", "priority": priority, "priority_label": priority_label(priority), "sla_due": sla_due }))
+    Json(json!({ "id": id, "status": "new", "priority": priority, "priority_label": priority_label(priority), "sla_due": sla_due })).into_response()
 }
 
 /// GET /api/cases/{id} — métadonnées + timeline (refs résolues) + overdue calculé. Lecture (viewer OK). #4a.
@@ -659,12 +710,27 @@ pub(crate) async fn ack(State(st): State<AppState>, Extension(au): Extension<Aut
     }
 }
 
+/// `P10.20-w` — l'acquittement en masse n'a PAS été écrit : 503, et le registre n'atteste rien.
+pub(crate) const CAUSE_ACQUITTEMENT_NON_ENREGISTRE: &str =
+    "ACQUITTEMENT NON ENREGISTRÉ : la file des alertes actives n'a pas pu être écrite, donc AUCUNE \
+     alerte n'est acquittée et le registre n'en porte AUCUNE trace. Ce n'est PAS « il n'y avait \
+     aucune alerte active » : rien n'a été fait, la file est intacte. Réessayez.";
+
 // Acquitte d'un coup toutes les alertes encore « new » (vide la file après un afflux).
-pub(crate) async fn ack_all(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
+//
+// `P10.20-w` — CE SITE N'ÉTAIT PAS FAIL-CLOSED, CONTRAIREMENT À SON CLASSEMENT. La ligne de registre
+// était INCONDITIONNELLE : `unwrap_or(0)` rendait `0` sur une écriture ratée et `alert.ack_all 0
+// alertes` entrait quand même dans la trace non purgeable, pendant que la route servait `{"acked":
+// 0}` sous un 200 — que la console rend comme « aucune alerte à acquitter ». Un geste d'analyste
+// attesté sans avoir eu lieu, et un écran qui dit que la file est vide alors qu'elle est pleine.
+// Les deux zéros sont séparés : l'écriture ratée refuse AVANT le registre, l'absence reste un 200 à
+// zéro (et le registre la note, comme avant, parce que le geste a bien été exercé).
+pub(crate) async fn ack_all(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Response {
     crate::req_conn!(st, au, conn);
-    let n = conn
-        .execute("UPDATE alert SET status='ack', acked_at=?1, acked_by=?2 WHERE status='new'", params![now(), au.name])
-        .unwrap_or(0);
+    let n = match conn.execute("UPDATE alert SET status='ack', acked_at=?1, acked_by=?2 WHERE status='new'", params![now(), au.name]) {
+        Ok(n) => n,
+        Err(e) => return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_ACQUITTEMENT_NON_ENREGISTRE} ({e})")),
+    };
     ledger_append(&conn, "alert.ack_all", &format!("{n} alertes by {}", au.name));
-    Json(json!({ "acked": n }))
+    Json(json!({ "acked": n })).into_response()
 }

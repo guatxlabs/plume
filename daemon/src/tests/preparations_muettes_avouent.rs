@@ -192,7 +192,7 @@ async fn p10_20p_une_allowlist_de_pivot_non_lue_ne_se_dit_pas_aucun_champ_declar
 
 fn pma_dossier_avec_ref(st: &AppState, rf: &str) -> i64 {
     let conn = st.db.lock();
-    let id = case_create_row(&conn, "alice", "intrusion", 3, "", None, 2);
+    let id = dossier_seme(&conn, "alice", "intrusion", 3, "", None, 2);
     case_add_item(&conn, id, now(), "link", "alice", "pièce jointe", Some(rf));
     id
 }

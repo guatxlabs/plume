@@ -212,29 +212,25 @@ PLANCHER_FICHIERS = 8
 
 # --- CLASSE 1 : L'ÉCRITURE AVALÉE PRÉCÈDE UN ARMEMENT. C'est le rang le plus haut : une riposte dont
 # la ligne n'a peut-être pas été écrite fait poser un BLOCAGE RÉSEAU, et la trace l'atteste.
-SITES_QUI_ARMENT = {
-    # `P4.7-f` — la clôture de l'action est comptée par `unwrap_or(0)` : `0` se lit « un verdict plus
-    # informé est déjà posé » et le registre écrit ce récit-là, alors que `0` peut vouloir dire « la
-    # base n'a pas répondu ». Le miroir `net_ban` s'arme ensuite dans le même bloc.
-    ("daemon/src/handlers/actions.rs", "respond_run"):
-        ("unwrap_or -> ledger_append+netban_remove+netban_upsert",),
-    # Le tick de playbooks marque `last_run` sans scruter, puis le corps de la boucle arme le miroir
-    # `net_ban` et pose ses lignes de registre. `P10.20-t` a fermé l'INSERT d'action de cette
-    # fonction ; ce site-ci est l'UPDATE du marqueur de passage, et il reste.
-    ("daemon/src/handlers/playbooks.rs", "run_playbooks"):
-        ("let _ -> ledger_append+netban_remove+netban_upsert",),
-}
+# VIDE depuis `P10.20-w` : les deux entrées sont RETIRÉES parce que les deux écritures sont désormais
+# scrutées, et la raison est écrite à chaque site.
+#   * `actions.rs::respond_run` — la clôture de l'action passe par un `match` : `Err` pose son propre
+#     genre de registre (`action.exec.verdict-non-ecrit`) et `continue`, donc aucun miroir `net_ban`
+#     n'est touché. Ce que l'entrée disait de l'armement était d'ailleurs FAUX sur ce site : le `0`
+#     d'`unwrap_or` menait au bloc « verdict conservé », qui se terminait par un `continue` — l'écriture
+#     ratée n'armait rien, elle FABRIQUAIT un verdict dans la trace non purgeable ;
+#   * `playbooks.rs::run_playbooks` — le marqueur `last_run` passe par `marquer_le_passage_du_playbook`,
+#     qui compte les lignes ; un marqueur non écrit refuse le tour de CE playbook (aucune riposte
+#     posée, aucun ban armé) et entre dans le bilan du tick.
+SITES_QUI_ARMENT = {}
 
 # --- CLASSE 2 : L'IDENTIFIANT EMPRUNTÉ EST RENDU **ET** LE REGISTRE L'AFFIRME. Un seul site, et c'est
 # le geste d'`action_create` mot pour mot — celui que `P10.20-t` a fermé sur la riposte.
-SITES_IDENTIFIANT_ET_REGISTRE = {
-    # `case_create_row` avale l'INSERT, lit `last_insert_rowid()` — qui rend le dernier identifiant de
-    # la CONNEXION, toutes tables confondues, donc le maillon de registre semé juste avant —, pose
-    # `case.create` au registre et rend l'identifiant au client. GESTE ATTENDU : compter les lignes
-    # écrites AVANT de lire l'identifiant, refuser avant le registre.
-    ("daemon/src/handlers/cases.rs", "case_create_row"):
-        ("let _ -> last_insert_rowid+ledger_append",),
-}
+# VIDE depuis `P10.20-w` : l'entrée de `cases.rs::case_create_row` est RETIRÉE parce que l'écriture est
+# comptée et que `last_insert_rowid()` n'est plus interrogé que sur la branche à UNE ligne écrite. La
+# fonction rend `DossierOuvert`, le refus est nommé AVANT la timeline, le registre et l'identifiant, et
+# le contrat de `case_create` change avec (503 nommé là où un 200 servait un identifiant emprunté).
+SITES_IDENTIFIANT_ET_REGISTRE = {}
 
 # --- CLASSE 3 : L'ÉCRITURE AVALÉE PRÉCÈDE UNE LIGNE DE REGISTRE OU D'AUDIT. La trace non purgeable
 # affirme une mutation qui n'a peut-être pas eu lieu. Aucun identifiant n'est emprunté ici.
@@ -284,13 +280,13 @@ SITES_IDENTIFIANT_SERVI_SANS_REGISTRE = {
 # suit lui est CONDITIONNÉ : aucun fait n'est fabriqué sur une écriture ratée. Ce qui reste faux est la
 # CAUSE — « l'écriture n'a pas eu lieu » et « aucune ligne ne correspondait » deviennent le même zéro,
 # donc le même refus, et la phrase servie désigne la mauvaise.
-SITES_DEGRADES_MAIS_FAIL_CLOSED = {
-    ("daemon/src/handlers/actions.rs", "action_result"): ("unwrap_or -> ledger_append",),
-    ("daemon/src/handlers/caseops.rs", "case_link_add"): ("unwrap_or -> ledger_append",),
-    ("daemon/src/handlers/caseops.rs", "case_link_remove"): ("unwrap_or -> ledger_append",),
-    ("daemon/src/handlers/caseops.rs", "sla_policy_delete"): ("unwrap_or -> ledger_append",),
-    ("daemon/src/handlers/cases.rs", "ack_all"): ("unwrap_or -> ledger_append",),
-}
+# VIDE depuis `P10.20-w` : les cinq entrées sont RETIRÉES parce que les cinq écritures sont comptées par
+# un `match`, et que les deux zéros y sont séparés — « la base n'a pas pris l'écriture » rend un 503
+# NOMMÉ, « aucune ligne ne correspondait » garde EXACTEMENT sa sortie d'avant (404 nu, `ok: false`, ou
+# 204). Le classement de cette classe était FAUX sur `cases.rs::ack_all` : son `ledger_append` n'était
+# pas conditionné au compte, il posait `alert.ack_all 0 alertes` sur une écriture qui n'avait pas eu
+# lieu — un fait FABRIQUÉ dans la trace non purgeable, donc un site de rang trois et non de rang cinq.
+SITES_DEGRADES_MAIS_FAIL_CLOSED = {}
 
 # --- CLASSE 6 : AMORÇAGE, HORS CHEMIN DE REQUÊTE. Semis de démonstration et chargement d'overlays :
 # aucun client ne reçoit ces identifiants, mais un semis partiel construit un arbre d'objets

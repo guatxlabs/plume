@@ -348,24 +348,21 @@ SITES_REGISTRE_APRES_ECRITURE_AVALEE = {
     ("daemon/src/handlers/cases.rs", "escalate_overdue_cases"): ("let _ -> ledger_append",),
     ("daemon/src/handlers/cases.rs", "case_set_archived"):
         ("let _ -> ledger_append", "let _ -> ledger_append"),
-    # Le registre atteste « MFA TOTP désactivée » et la route rend `ok` sur un DELETE avalé : le
-    # second facteur d'un compte peut rester en place pendant que la trace dit le contraire.
-    ("daemon/src/handlers/idp.rs", "mfa_disable"): ("let _ -> ledger_append",),
-    # `P10.21-o` — ENTRÉ PAR LA LECTURE DU BLOC ANCÊTRE, et nommé dès `P10.20-w` comme manqué : la
-    # consommation du pas TOTP anti-rejeu (`UPDATE user_mfa SET last_step`) est avalée dans son `if let`,
-    # et le registre « login MFA validé » suit dans un bloc de verrou. Un pas non consommé laisse le même
-    # code TOTP rejouable dans sa fenêtre pendant que la trace atteste un login ordinaire. NON CORRIGÉ ici
-    # (hors périmètre SCIM de la clé), confié à une clé neuve.
-    ("daemon/src/handlers/idp.rs", "login_mfa_post"): ("let _ -> ledger_append",),
-    # `P10.21-o` — ENTRÉ PAR LA LECTURE DU BLOC ANCÊTRE, et nommé dès `P10.20-w` comme manqué :
-    # l'`INSERT` de chaque étape est avalé dans la boucle, `n += 1` compte quand même, et le registre
-    # annonce `steps={n}` APRÈS la boucle — un runbook attaché amputé est attesté entier. Clé neuve.
-    ("daemon/src/handlers/incidents.rs", "attach_runbook"): ("let _ -> ledger_append",),
-    # TROIS sites, pas un : `P10.21-o` fait entrer les deux écritures CONDITIONNELLES (type et pilote,
-    # chacune dans son `if let`) que le registre `case.incident` et l'élément de chronologie — qui NOMMENT
-    # le type et le pilote — affirment depuis le bloc ancêtre. La première (le palier) y était déjà.
-    ("daemon/src/handlers/incidents.rs", "incident_apply_tier"):
-        ("let _ -> ledger_append", "let _ -> ledger_append", "let _ -> ledger_append"),
+    # `P10.21-s` — LES DEUX SITES D'`idp.rs` SONT RETIRÉS, parce que les deux écritures sont COMPTÉES avant
+    # le fait. `login_mfa_post` : la consommation du pas TOTP passe par `consommer_le_pas_totp`, un
+    # compare-et-pose (`last_step < ?`) qui rend `ConsommationDuFacteur` ; une écriture refusée rend un 503
+    # NOMMÉ AVANT la session et le registre, un pas consommé entre-temps par une requête concurrente est un
+    # rejeu refusé (401). Mesuré sur la forme d'avant : écriture refusée -> 200, cookie, « login local MFA
+    # validé », et le MÊME code ouvrait une seconde session la base revenue ; le code de secours avait le même
+    # geste dans `recovery_consume` (`let _ = …; true`), hors population faute de fait après l'écriture.
+    # `mfa_disable` : le `DELETE` est compté, un refus rend un 503 nommé sans « désactivée » au registre.
+    # `P10.21-t` — `attach_runbook` et `incident_apply_tier` SONT RETIRÉS. Les étapes s'écrivent dans UNE
+    # transaction, chacune comptée, et le registre ne suit que la validation (mesuré sur la forme d'avant :
+    # deux étapes sur quatre en base, `steps=4` au registre, et le nouvel essai REFUSÉ — l'amputation était
+    # définitive, ce que l'énoncé ne disait pas). Palier, type et pilote s'écrivent en UN énoncé compté (les
+    # trois sites de la fonction sortent ensemble). CE QUI ÉTAIT IMPRÉCIS : le registre `case.incident` ne
+    # nomme QUE le palier (`#id tier=2 by …`) ; c'est l'élément de CHRONOLOGIE qui nommait le type et le pilote
+    # — et il le faisait sur un type refusé (« type intrusion » en chronologie, `incident_type` NULL en base).
     ("daemon/src/handlers/incidents.rs", "step_advance"): ("let _ -> ledger_append",),
     # DEUX écritures ET l'audit avalés, avec un corps de succès : le bulletin d'accueil peut n'avoir
     # jamais été posé pendant que l'audit de configuration dit qu'il l'a été.
@@ -413,14 +410,15 @@ SITES_DEGRADES_MAIS_FAIL_CLOSED = {}
 # de semis précèdent un audit de configuration.
 SITES_AMORCAGE = {
     ("daemon/src/overlays_oac.rs", "load_overlay_dashboards"): ("let _ -> last_insert_rowid",),
-    # SIX sites depuis `P10.21-o` (quatre avant) : la lecture du bloc ancêtre fait entrer les `INSERT`
-    # d'événements (boucle `while`) et d'alertes (boucle `for`) de démonstration. Ce n'est pas une fausse
-    # accusation : `last_insert_rowid()` lit le DERNIER identifiant inséré sur la connexion, donc si
-    # l'`INSERT` du dossier qui le précède échoue, c'est l'identifiant de la dernière alerte de CETTE boucle
-    # qui est emprunté. Démonstration seulement (`PLUME_DEMO=1`), rang d'amorçage inchangé.
-    ("daemon/src/seeds.rs", "seed_demo"):
-        ("let _ -> last_insert_rowid", "let _ -> last_insert_rowid", "let _ -> last_insert_rowid",
-         "let _ -> last_insert_rowid", "let _ -> last_insert_rowid", "let _ -> last_insert_rowid"),
+    # `P10.21-t` — LES SIX SITES DE `seed_demo` SONT RETIRÉS ENSEMBLE : le semis de démonstration s'écrit dans
+    # UNE transaction (`semer_la_demonstration`), drapeau `seeded_demo` compris, chaque écriture PROPAGÉE (`?`),
+    # et l'identifiant d'un dossier n'est lu qu'après l'`INSERT` réussi de CE dossier ; un refus annule tout et
+    # le semis est retenté au démarrage suivant. CE QUI ÉTAIT FAUX dans la raison d'entrée écrite ici par
+    # `P10.21-o` (« c'est l'identifiant de la dernière alerte de CETTE boucle qui est emprunté ») : MESURÉ, un
+    # `INSERT` de dossier refusé faisait emprunter l'identifiant de l'ÉVÉNEMENT narratif posé juste avant par la
+    # fermeture `ev` (`democase-b3`), invisible de cette garde ; dix éléments de chronologie orphelins, et le
+    # drapeau posé avant les données interdisait tout nouveau semis. Les deux `INSERT` de boucle n'avaient
+    # AUCUN lien avec l'identifiant emprunté : la garde les appariait sans lire l'objet (angle mort écrit).
     ("daemon/src/seeds.rs", "seed_dashboard_head"): ("let _ -> last_insert_rowid",),
     ("daemon/src/seeds.rs", "seed_default_dashboard"): ("let _ -> last_insert_rowid",),
     ("daemon/src/seeds.rs", "seed_obs_dashboard"): ("let _ -> last_insert_rowid",),

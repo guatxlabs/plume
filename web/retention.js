@@ -4,7 +4,7 @@
 // PURE MOVE : corps de fonctions IDENTIQUES au monolithe, seuls les import/export sont ajoutes.
 // Le cycle app<->module est benin : les fonctions importees d'app.js ne sont appelees qu'a
 // l'EXECUTION (handlers/async apres await), jamais a l'evaluation du module.
-import { $, muted, api, apiSend, fmtTs, confirmWithConsequence, toast, LANG, LOC, tzOpts } from './core.js';
+import { $, muted, api, apiSend, cleDeLaSuiteDuRegistre, fmtTs, confirmWithConsequence, toast, LANG, LOC, tzOpts } from './core.js';
 import { S } from './state.js';
 // `P10.20-y` — LE GENRE D'UNE LIGNE DE REGISTRE SE REND PAR LA FABRIQUE DE L'ONGLET AUDIT, pas par une
 // seconde. Les deux seules vues qui lisent `GET /api/ledger` sont celle-ci et `web/audit.js` ; écrire ici
@@ -181,10 +181,8 @@ const motDuDernierChangementAudite = (cle, nombre) =>
 // rendue par identifiant DÉCROISSANT : ce qui est derrière est plus ANCIEN, donc la ligne trouvée est
 // bien la dernière, et la suite du registre ne change rien à ce qui est annoncé.
 // =================================================================================================
-function cleDeLaSuiteDuRegistre(j) {
-  if (!j || typeof j.has_more !== 'boolean') return 'suite_non_dite';
-  return j.has_more ? 'il_en_existe_peut_etre_d_autres' : 'aucune_suite';
-}
+// LE DISCRIMINANT DE CES TROIS ISSUES EST AU POINT COMMUN (`web/core.js`, `cleDeLaSuiteDuRegistre`) depuis
+// `P10.21-x` : le fabricant de pager le lit pour armer sa flèche, et il ne pouvait pas l'importer d'ici.
 const MOTS_DE_LA_SUITE_DU_REGISTRE = {
   il_en_existe_peut_etre_d_autres: {
     fr: " Ces {nombre} entrées REMPLISSENT la page demandée et le démon sert un curseur de suite : rien n'établit que le registre s'arrête là, et un changement de rétention plus ancien peut exister sans être atteignable depuis ce panneau — l'onglet Audit, lui, le parcourt en entier.",
@@ -286,7 +284,8 @@ if ($('#retention-form')) $('#retention-form').addEventListener('submit', async 
 // `P10.20-y` — `loadRetentionLast` et son vocabulaire partent pour le harnais ESM (témoin 102) : ce que
 // ce panneau ANNONCE d'une ligne de registre ne se mesure qu'en le faisant RENDRE une page servie, et le
 // discriminant du genre de rétention se juge dans les deux sens sur le littéral LU dans l'arbre du démon.
-// `P10.21-a` — le discriminant de la SUITE et son vocabulaire partent nus (témoin 103) : « la page est
-// pleine », « la page ne l'est pas » et « le démon n'a rien dit » sont trois issues, et elles ne se
-// distinguent qu'en jugeant la fonction qui les sépare sur les trois corps que la route peut servir.
-export { cleDeLaSuiteDuRegistre, loadRetention, loadRetentionLast, motDeLaSuiteDuRegistre, motDuDernierChangementAudite, OUVERTURE_DU_CHANGEMENT_DE_RETENTION };
+// `P10.21-a` — le vocabulaire de la SUITE part nu (témoin 103) : « la page est pleine », « la page ne
+// l'est pas » et « le démon n'a rien dit » sont trois issues, et elles ne se distinguent qu'en jugeant
+// la fonction qui les sépare sur les trois corps que la route peut servir. Cette fonction-là vit au point
+// commun depuis `P10.21-x` et s'importe de `web/core.js`.
+export { loadRetention, loadRetentionLast, motDeLaSuiteDuRegistre, motDuDernierChangementAudite, OUVERTURE_DU_CHANGEMENT_DE_RETENTION };

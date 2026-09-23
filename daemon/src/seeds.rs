@@ -12,8 +12,41 @@ pub(crate) fn seed_demo(conn: &Connection) {
     // Plume CANONICAL (PLUME_-only) : PLUME_DEMO uniquement.
     let demo = std::env::var("PLUME_DEMO").ok();
     if demo.as_deref() != Some("1") { return; }
+    semer_la_demonstration(conn);
+}
+
+/// `P10.21-t` — LE SEMIS DE DÉMONSTRATION EST ENTIER OU N'EST PAS. Chemin de DÉMONSTRATION seulement
+/// (`PLUME_DEMO=1`, absent des manifestes de production, `0` par défaut dans `docker-compose.yml`) : aucun
+/// client ne reçoit ces identifiants et aucune trace non purgeable n'en dépend, d'où un aveu sur la sortie
+/// d'erreur plutôt qu'un compteur. Mais le défaut était réel, et mesuré : le drapeau `seeded_demo` était posé
+/// HORS transaction et AVANT les données, `BEGIN`/`COMMIT` et chaque `INSERT` étaient avalés, et
+/// `last_insert_rowid()` suivait l'`INSERT` d'un dossier — un dossier refusé laissait sa chronologie (dix
+/// éléments) rattachée à l'identifiant de l'ÉVÉNEMENT narratif qui le précède, et le drapeau interdisait tout
+/// nouveau semis. Désormais : UNE transaction, le drapeau dedans, chaque écriture propagée ; la moindre
+/// écriture refusée annule tout, le dit, et le semis est retenté au démarrage suivant.
+pub(crate) fn semer_la_demonstration(conn: &Connection) {
     if conn.query_row("SELECT value FROM meta WHERE key='seeded_demo'", [], |r| r.get::<_, String>(0)).is_ok() { return; }
-    let _ = conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('seeded_demo','1')", []);
+    let txn = match Txn::begin(conn) {
+        Ok(txn) => txn,
+        Err(e) => {
+            eprintln!("[demo] données de démo NON semées : transaction refusée ({e}) — rien n'est écrit, le semis sera retenté au prochain démarrage");
+            return;
+        }
+    };
+    // Un échec abandonne `txn` (son `Drop` annule tout) ; un `COMMIT` refusé aussi.
+    match ecrire_les_donnees_de_demonstration(conn).and_then(|()| txn.commit()) {
+        Ok(()) => eprintln!("[demo] données de démo seedées (PLUME_DEMO=1) — désactive PLUME_DEMO en prod"),
+        Err(e) => eprintln!(
+            "[demo] données de démo NON semées : une écriture a été refusée ({e}) — RIEN n'est conservé (ni données, ni drapeau \
+             `seeded_demo`), le semis sera retenté au prochain démarrage"
+        ),
+    }
+}
+
+/// Le contenu du semis, écrit dans la transaction de `semer_la_demonstration` : chaque écriture est PROPAGÉE,
+/// et un identifiant de dossier n'est lu qu'après l'`INSERT` réussi de CE dossier.
+fn ecrire_les_donnees_de_demonstration(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('seeded_demo','1')", [])?;
     let now_ts = now();
     let ips = ["203.0.113.7", "198.51.100.42", "192.0.2.9", "192.0.2.18", "192.0.2.4", "192.0.2.10"];
     let host = "demo-host";
@@ -28,7 +61,6 @@ pub(crate) fn seed_demo(conn: &Connection) {
         ("auditd", "exec", 2, "execve /usr/bin/wget by uid=0 (key=exec_tracking)", false),
         ("k8s-log", "k8s", 3, "authentik: authentication failed for user admin", false),
     ];
-    let _ = conn.execute_batch("BEGIN IMMEDIATE");
     let (mut t, mut k) = (now_ts - 86400, 0usize);
     while t < now_ts {
         let (src, cat, sev, msg, has_ip) = tpl[k % tpl.len()];
@@ -39,10 +71,10 @@ pub(crate) fn seed_demo(conn: &Connection) {
         // CLOISONNEMENT PAR HÔTE : ce chemin écrit `event.dedup` en SQL direct, il applique donc la MÊME
         // fonction que le store — AUCUNE exception, sinon la garde `event_dedup_toujours_cloisonne` rougit
         // (et une exception « ce n'est que la démo » est exactement par où la règle se serait perdue).
-        let _ = conn.execute(
+        conn.execute(
             "INSERT OR IGNORE INTO event(ts,source,category,severity,message,host,src_ip,dedup) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
             params![t, src, cat, sev, msg.replace("{ip}", ip), host, sip, dedup_scoped_by_host(Some(host), Some(&format!("demo-{k}")))],
-        );
+        )?;
         k += 1;
         t += 130 + (k as i64 % 7) * 40;   // ~2-7 min, varié
     }
@@ -51,17 +83,17 @@ pub(crate) fn seed_demo(conn: &Connection) {
         let vals = [("cpu_pct", 15.0 + (i % 30) as f64 * 1.7), ("mem_pct", 40.0 + (i % 12) as f64 * 2.0),
                     ("load1", 0.4 + (i % 10) as f64 * 0.15), ("net_rx_bps", 1000.0 + (i % 50) as f64 * 800.0),
                     ("net_tx_bps", 600.0 + (i % 40) as f64 * 500.0)];
-        for (n, v) in vals { let _ = store().insert_metric(conn, &MetricRow { ts: t, name: n.to_string(), labels: None, value: v, host: Some(host.to_string()) }); }
+        for (n, v) in vals { store().insert_metric(conn, &MetricRow { ts: t, name: n.to_string(), labels: None, value: v, host: Some(host.to_string()) })?; }
         i += 1; t += 300;
     }
     for (rule, sev, title, detail) in [
         ("demo.bruteforce", 3, "Pic d'échecs SSH", "12 échecs depuis 203.0.113.7 en 5 min"),
         ("demo.scan", 2, "Scan de ports", "198.51.100.42 sonde 3389 / 445 / 22"),
     ] {
-        let _ = conn.execute(
+        conn.execute(
             "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,host,basis) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
             params![now_ts - 600, rule, sev, title, detail, format!("demo-{rule}"), host, crate::fondement::Fondement::Regle.mot()],
-        );
+        )?;
     }
     // ---- CASES de démo (PLUME_DEMO=1) : 2 incidents SYNTHÉTIQUES pour illustrer la vue case-detail (README).
     // 100% synthétiques : host `demo-host`, IPs déjà dans `ips` (RFC-5737/TEST-NET), aucun agent réel. Events
@@ -69,87 +101,91 @@ pub(crate) fn seed_demo(conn: &Connection) {
     // flag `seeded_demo` déjà posé -> idempotent (une seule fois). JAMAIS hors démo (n'active pas PLUME_DEMO).
     // L'id de l'événement narratif est rendu `None` quand la relecture échoue (`P4.1-s`) : l'élément de
     // timeline part alors SANS référence plutôt qu'avec `event:0`, qui pointe sur rien et se lit comme un lien.
-    let ev = |ts: i64, src: &str, cat: &str, sev: i64, msg: &str, ip: Option<&str>, dk: &str| -> Option<i64> {
+    let ev = |ts: i64, src: &str, cat: &str, sev: i64, msg: &str, ip: Option<&str>, dk: &str| -> rusqlite::Result<Option<i64>> {
         // CLOISONNEMENT PAR HÔTE (cf. ci-dessus) : la clé STOCKÉE est cloisonnée, DONC la relecture qui
         // résout l'id de l'event narratif l'est aussi — sinon la timeline de la case de démo casserait.
         let dks = dedup_scoped_by_host(Some(host), Some(dk));
-        let _ = conn.execute(
+        conn.execute(
             "INSERT OR IGNORE INTO event(ts,source,category,severity,message,host,src_ip,dedup) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
             params![ts, src, cat, sev, msg, host, ip, dks],
-        );
-        conn.query_row("SELECT id FROM event WHERE dedup=?1", params![dks], |r| r.get::<_, i64>(0)).ok()
+        )?;
+        Ok(conn.query_row("SELECT id FROM event WHERE dedup=?1", params![dks], |r| r.get::<_, i64>(0)).ok())
     };
     let alert_id = |dk: &str| -> Option<i64> {
         conn.query_row("SELECT id FROM alert WHERE dedup=?1", params![dk], |r| r.get::<_, i64>(0)).ok()
     };
-    let item = |iid: i64, ts: i64, kind: &str, author: &str, body: &str, rf: Option<String>| {
-        let _ = conn.execute(
+    let item = |iid: i64, ts: i64, kind: &str, author: &str, body: &str, rf: Option<String>| -> rusqlite::Result<()> {
+        conn.execute(
             "INSERT INTO incident_item(incident_id,ts,kind,author,body,ref) VALUES(?1,?2,?3,?4,?5,?6)",
             params![iid, ts, kind, author, body, rf],
-        );
+        )?;
+        Ok(())
     };
 
     // Case A — brute-force SSH puis accès (192.0.2.18), P2 haute, in_progress, sévérité 3.
     let ipa = ips[3]; // 192.0.2.18
-    let a1 = ev(now_ts - 21600, "sshd", "auth", 3, &format!("Failed password for invalid user admin from {ipa} port 50122 ssh2"), Some(ipa), "democase-a1");
-    let a2 = ev(now_ts - 21540, "sshd", "auth", 3, &format!("Failed password for root from {ipa} port 50140 ssh2"), Some(ipa), "democase-a2");
-    let a3 = ev(now_ts - 21000, "sshd", "auth", 0, &format!("Accepted publickey for deploy from {ipa} port 39920 ssh2"), Some(ipa), "democase-a3");
+    let a1 = ev(now_ts - 21600, "sshd", "auth", 3, &format!("Failed password for invalid user admin from {ipa} port 50122 ssh2"), Some(ipa), "democase-a1")?;
+    let a2 = ev(now_ts - 21540, "sshd", "auth", 3, &format!("Failed password for root from {ipa} port 50140 ssh2"), Some(ipa), "democase-a2")?;
+    let a3 = ev(now_ts - 21000, "sshd", "auth", 0, &format!("Accepted publickey for deploy from {ipa} port 39920 ssh2"), Some(ipa), "democase-a3")?;
     let a_ts = now_ts - 21600;
-    let _ = conn.execute(
+    conn.execute(
         "INSERT INTO incident(ts,updated,title,status,severity,owner,summary,priority,assignee,sla_due,first_response_ts) \
          VALUES(?1,?2,?3,'in_progress',3,'demo',?4,2,'analyste',?5,?6)",
         params![a_ts, now_ts - 600, format!("Brute-force SSH puis accès — {ipa}"),
             "Pic d'échecs d'authentification SSH depuis 192.0.2.18 (TEST-NET), suivi d'une connexion par clé publique acceptée pour le compte « deploy ». Corrélation brute-force → accès en cours d'investigation.",
             a_ts + 14400, now_ts - 21000],
-    );
+    )?;
+    // L'`INSERT` ci-dessus n'a aucune clause de conflit et son échec est PROPAGÉ : l'identifiant lu ici est
+    // celui de CE dossier, jamais celui d'une ligne voisine (`P10.21-t`).
     let ca = conn.last_insert_rowid();
-    item(ca, a_ts, "created", "demo", "Incident créé (corrélation détection demo.bruteforce)", None);
-    item(ca, a_ts + 60, "note", "analyste", "Triage : source 192.0.2.18 (TEST-NET), rafale d'échecs sur admin/root en < 5 min.", None);
-    item(ca, now_ts - 21300, "event", "analyste", "Échec d'authentification", a1.map(|id| format!("event:{id}")));
-    item(ca, now_ts - 21290, "event", "analyste", "Échec d'authentification (root)", a2.map(|id| format!("event:{id}")));
-    item(ca, now_ts - 21000, "event", "analyste", "Accès accepté après la rafale — pivot probable", a3.map(|id| format!("event:{id}")));
+    item(ca, a_ts, "created", "demo", "Incident créé (corrélation détection demo.bruteforce)", None)?;
+    item(ca, a_ts + 60, "note", "analyste", "Triage : source 192.0.2.18 (TEST-NET), rafale d'échecs sur admin/root en < 5 min.", None)?;
+    item(ca, now_ts - 21300, "event", "analyste", "Échec d'authentification", a1.map(|id| format!("event:{id}")))?;
+    item(ca, now_ts - 21290, "event", "analyste", "Échec d'authentification (root)", a2.map(|id| format!("event:{id}")))?;
+    item(ca, now_ts - 21000, "event", "analyste", "Accès accepté après la rafale — pivot probable", a3.map(|id| format!("event:{id}")))?;
     // L'entrée de chronologie existe dans les DEUX cas : avec son lien si l'alerte de démo a été posée, et
     // SANS lien (en le disant) sinon — une chronologie où l'entrée manque se lirait « pas d'alerte ».
     match alert_id("demo-demo.bruteforce") {
-        Some(al) => item(ca, now_ts - 20990, "alert", "analyste", "Alerte de détection rattachée", Some(format!("alert:{al}"))),
-        None => item(ca, now_ts - 20990, "alert", "analyste", "Alerte de détection rattachée (alerte de démo absente : lien non posé)", None),
+        Some(al) => item(ca, now_ts - 20990, "alert", "analyste", "Alerte de détection rattachée", Some(format!("alert:{al}")))?,
+        None => item(ca, now_ts - 20990, "alert", "analyste", "Alerte de détection rattachée (alerte de démo absente : lien non posé)", None)?,
     }
-    item(ca, now_ts - 20980, "priority", "analyste", "priorité -> P2 (high)", None);
-    item(ca, now_ts - 20970, "assign", "analyste", "assigné à analyste", None);
-    item(ca, now_ts - 20960, "status", "analyste", "statut -> in_progress", None);
-    item(ca, now_ts - 20000, "action", "analyste", "Bannissement de 192.0.2.18 (UFW) — cible src_ip proposée, en attente de validation.", None);
-    item(ca, now_ts - 600, "note", "analyste", "Clé « deploy » à faire tourner ; audit des commandes post-login en cours.", None);
+    item(ca, now_ts - 20980, "priority", "analyste", "priorité -> P2 (high)", None)?;
+    item(ca, now_ts - 20970, "assign", "analyste", "assigné à analyste", None)?;
+    item(ca, now_ts - 20960, "status", "analyste", "statut -> in_progress", None)?;
+    item(ca, now_ts - 20000, "action", "analyste", "Bannissement de 192.0.2.18 (UFW) — cible src_ip proposée, en attente de validation.", None)?;
+    item(ca, now_ts - 600, "note", "analyste", "Clé « deploy » à faire tourner ; audit des commandes post-login en cours.", None)?;
 
     // Case B — scan de ports entrant bloqué (192.0.2.9), P3 moyenne, résolu, verdict bénin.
     let ipb = ips[2]; // 192.0.2.9
-    let b1 = ev(now_ts - 8000, "ufw", "firewall", 1, &format!("UFW BLOCK [inbound] {ipb} -> :3389/TCP"), Some(ipb), "democase-b1");
-    let b2 = ev(now_ts - 7980, "ufw", "firewall", 1, &format!("UFW BLOCK [inbound] {ipb} -> :445/TCP"), Some(ipb), "democase-b2");
-    let b3 = ev(now_ts - 7960, "ufw", "firewall", 1, &format!("UFW BLOCK [inbound] {ipb} -> :22/TCP"), Some(ipb), "democase-b3");
+    let b1 = ev(now_ts - 8000, "ufw", "firewall", 1, &format!("UFW BLOCK [inbound] {ipb} -> :3389/TCP"), Some(ipb), "democase-b1")?;
+    let b2 = ev(now_ts - 7980, "ufw", "firewall", 1, &format!("UFW BLOCK [inbound] {ipb} -> :445/TCP"), Some(ipb), "democase-b2")?;
+    let b3 = ev(now_ts - 7960, "ufw", "firewall", 1, &format!("UFW BLOCK [inbound] {ipb} -> :22/TCP"), Some(ipb), "democase-b3")?;
     let b_ts = now_ts - 8000;
-    let _ = conn.execute(
+    conn.execute(
         "INSERT INTO incident(ts,updated,title,status,severity,owner,summary,priority,assignee,sla_due,first_response_ts,closed_ts,disposition,disposition_ts,disposition_by) \
          VALUES(?1,?2,?3,'resolved',2,'demo',?4,3,'analyste',?5,?6,?7,'benign',?7,'analyste')",
         params![b_ts, now_ts - 300, format!("Scan de ports entrant bloqué (UFW) — {ipb}"),
             "Sonde TCP entrante sur 3389/445/22 depuis 192.0.2.9, intégralement bloquée par UFW en périmètre. Aucun paquet n'a atteint un service ; classé bruit de fond Internet.",
             b_ts + 86400, now_ts - 7000, now_ts - 300],
-    );
+    )?;
+    // L'`INSERT` ci-dessus n'a aucune clause de conflit et son échec est PROPAGÉ : l'identifiant lu ici est
+    // celui de CE dossier, jamais celui d'une ligne voisine (`P10.21-t`).
     let cb = conn.last_insert_rowid();
-    item(cb, b_ts, "created", "demo", "Incident créé (corrélation détection demo.scan)", None);
-    item(cb, b_ts + 40, "note", "analyste", "Triage : balayage de ports classique (RDP/SMB/SSH), tout bloqué en entrée par UFW.", None);
-    item(cb, now_ts - 7990, "event", "analyste", "Blocage UFW — 3389/TCP", b1.map(|id| format!("event:{id}")));
-    item(cb, now_ts - 7975, "event", "analyste", "Blocage UFW — 445/TCP", b2.map(|id| format!("event:{id}")));
-    item(cb, now_ts - 7955, "event", "analyste", "Blocage UFW — 22/TCP", b3.map(|id| format!("event:{id}")));
+    item(cb, b_ts, "created", "demo", "Incident créé (corrélation détection demo.scan)", None)?;
+    item(cb, b_ts + 40, "note", "analyste", "Triage : balayage de ports classique (RDP/SMB/SSH), tout bloqué en entrée par UFW.", None)?;
+    item(cb, now_ts - 7990, "event", "analyste", "Blocage UFW — 3389/TCP", b1.map(|id| format!("event:{id}")))?;
+    item(cb, now_ts - 7975, "event", "analyste", "Blocage UFW — 445/TCP", b2.map(|id| format!("event:{id}")))?;
+    item(cb, now_ts - 7955, "event", "analyste", "Blocage UFW — 22/TCP", b3.map(|id| format!("event:{id}")))?;
     match alert_id("demo-demo.scan") {
-        Some(al) => item(cb, now_ts - 7950, "alert", "analyste", "Alerte de détection rattachée", Some(format!("alert:{al}"))),
-        None => item(cb, now_ts - 7950, "alert", "analyste", "Alerte de détection rattachée (alerte de démo absente : lien non posé)", None),
+        Some(al) => item(cb, now_ts - 7950, "alert", "analyste", "Alerte de détection rattachée", Some(format!("alert:{al}")))?,
+        None => item(cb, now_ts - 7950, "alert", "analyste", "Alerte de détection rattachée (alerte de démo absente : lien non posé)", None)?,
     }
-    item(cb, now_ts - 7000, "status", "analyste", "statut -> triage", None);
-    item(cb, now_ts - 400, "disposition", "analyste", "verdict -> benign", None);
-    item(cb, now_ts - 300, "status", "analyste", "statut -> resolved", None);
-    item(cb, now_ts - 300, "note", "analyste", "Aucune action requise : trafic absorbé par le pare-feu périmétrique. Clôturé bénin.", None);
+    item(cb, now_ts - 7000, "status", "analyste", "statut -> triage", None)?;
+    item(cb, now_ts - 400, "disposition", "analyste", "verdict -> benign", None)?;
+    item(cb, now_ts - 300, "status", "analyste", "statut -> resolved", None)?;
+    item(cb, now_ts - 300, "note", "analyste", "Aucune action requise : trafic absorbé par le pare-feu périmétrique. Clôturé bénin.", None)?;
 
-    let _ = conn.execute_batch("COMMIT");
-    eprintln!("[demo] données de démo seedées (PLUME_DEMO=1) — désactive PLUME_DEMO en prod");
+    Ok(())
 }
 /// Trouve une vue partagée par son nom, ou la crée (INSERT INTO view(name) seulement si absente) ->
 /// renvoie son id (None si l'INSERT échoue). DRY entre les seeds `seed_*_dashboard` (parité PVC neuf)

@@ -41,6 +41,23 @@ pub(crate) const CAUSE_RUNBOOK_ATTACHE_NON_LU: &str = "RUNBOOK ATTACHÉ NON LU :
      figées de ce dossier a échoué. Ce n'est PAS « aucun runbook attaché » — il y en a peut-être un, et en \
      attacher un second serait refusé. Cause : ";
 
+/// `P10.21-t` — LA DÉCLARATION QUE LA BASE N'A PAS PRISE N'EST NI SERVIE NI ATTESTÉE. Le palier, le
+/// type et le pilote s'écrivaient en trois `UPDATE` avalés ; la chronologie NOMMAIT le type et le pilote
+/// et le registre attestait le palier, quoi que la base ait pris. Ils s'écrivent désormais en UN énoncé,
+/// compté : tout ou rien, et rien d'attesté sur le rien.
+pub(crate) const CAUSE_DECLARATION_D_INCIDENT_NON_ECRITE: &str = "DÉCLARATION D'INCIDENT NON \
+     ENREGISTRÉE, RIEN N'A CHANGÉ : la base n'a pas pris l'écriture du palier, du type et du pilote. Le \
+     dossier garde la déclaration qu'il avait avant la demande ; ni la chronologie ni le registre n'en \
+     portent trace. Réessayez.";
+
+/// `P10.21-t` — LE RUNBOOK DONT TOUTES LES ÉTAPES N'ONT PAS ÉTÉ ÉCRITES N'EST PAS ATTACHÉ. L'attache
+/// est idempotente-REFUSANTE (une progression existante n'est jamais écrasée) : une attache amputée
+/// était donc DÉFINITIVE, et le registre l'annonçait entière (`steps={n}` compté sur des `INSERT` avalés).
+pub(crate) const CAUSE_ETAPES_DU_RUNBOOK_NON_ECRITES: &str = "RUNBOOK NON ATTACHÉ : la base n'a pas pris \
+     l'écriture de toutes ses étapes, donc AUCUNE n'est posée — l'attache est entière ou n'est pas. Le \
+     dossier n'a pas de progression, ni la chronologie ni le registre n'en portent trace, et un nouvel \
+     essai reste possible. Cause : ";
+
 // ---------------------------------------------------------------------------------------------------------
 // CŒUR TESTABLE (fonctions pures sur &Connection, sans AppState).
 // ---------------------------------------------------------------------------------------------------------
@@ -55,24 +72,43 @@ pub(crate) fn norm_step_status(v: &str) -> Option<&'static str> {
     }
 }
 
+/// `P10.21-t` — CE QU'UNE DÉCLARATION D'INCIDENT REND. Le booléen d'avant rendait `true` sur trois `UPDATE`
+/// avalés ; « posée », « aucun dossier » et « la base n'a rien pris » sont trois issues distinctes.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum DeclarationDIncident {
+    /// Palier, type et pilote sont écrits ; la chronologie et le registre les attestent.
+    Posee,
+    /// Aucun dossier sous cet identifiant : rien n'est écrit (le `404` d'avant, inchangé).
+    DossierIntrouvable,
+    /// La base n'a pas pris l'écriture : RIEN n'est posé — ni palier, ni type, ni pilote — et rien n'est
+    /// attesté. La cause du moteur est portée.
+    NonEcrite(String),
+}
+
 /// ÉLÈVE (tier non-NULL) ou RÉTROGRADE (tier NULL) un case en incident + pose type/commander optionnels. Écrit
-/// un item de timeline 'incident' + ledger. false si le case n'existe pas. Un `demote` (tier NULL) N'EFFACE PAS
+/// un item de timeline 'incident' + ledger. Un `demote` (tier NULL) N'EFFACE PAS
 /// les steps déjà instanciées ni le type/commander (trace conservée) — il retire seulement la déclaration.
-pub(crate) fn incident_apply_tier(conn: &Connection, id: i64, author: &str, tier: Option<i64>, itype: Option<&str>, commander: Option<&str>) -> bool {
+pub(crate) fn incident_apply_tier(conn: &Connection, id: i64, author: &str, tier: Option<i64>, itype: Option<&str>, commander: Option<&str>) -> DeclarationDIncident {
     if conn.query_row("SELECT 1 FROM incident WHERE id=?1", params![id], |_| Ok(())).is_err() {
-        return false;
+        return DeclarationDIncident::DossierIntrouvable;
     }
     let t = now();
-    let _ = conn.execute("UPDATE incident SET incident_tier=?1 WHERE id=?2", params![tier, id]);
-    if let Some(ty) = itype {
-        let ty = ty.trim();
-        let stored: Option<&str> = if ty.is_empty() { None } else { Some(ty) };
-        let _ = conn.execute("UPDATE incident SET incident_type=?1 WHERE id=?2", params![stored, id]);
-    }
-    if let Some(cm) = commander {
-        let cm = cm.trim();
-        let stored: Option<&str> = if cm.is_empty() { None } else { Some(cm) };
-        let _ = conn.execute("UPDATE incident SET commander=?1 WHERE id=?2", params![stored, id]);
+    // `P10.21-t` — UN SEUL ÉNONCÉ, COMPTÉ, AVANT LA CHRONOLOGIE ET LE REGISTRE. Palier, type et pilote
+    // s'écrivaient en trois `UPDATE` avalés : un type refusé laissait le palier et le pilote posés, un `204`,
+    // et une chronologie qui NOMMAIT le type (mesuré). Un énoncé unique est tout ou rien ; un type ou un pilote
+    // NON FOURNI (`None`) garde sa valeur (`CASE … ELSE`), un type ou un pilote BLANC l'efface — comme avant.
+    let type_fourni = itype.map(str::trim).map(|ty| if ty.is_empty() { None } else { Some(ty) });
+    let pilote_fourni = commander.map(str::trim).map(|cm| if cm.is_empty() { None } else { Some(cm) });
+    match conn.execute(
+        "UPDATE incident SET incident_tier=?1, \
+         incident_type=CASE WHEN ?2 THEN ?3 ELSE incident_type END, \
+         commander=CASE WHEN ?4 THEN ?5 ELSE commander END WHERE id=?6",
+        params![tier, type_fourni.is_some(), type_fourni.flatten(), pilote_fourni.is_some(), pilote_fourni.flatten(), id],
+    ) {
+        Ok(1) => {}
+        Ok(0) => return DeclarationDIncident::DossierIntrouvable,
+        Ok(n) => return DeclarationDIncident::NonEcrite(format!("{n} ligne(s) écrite(s) au lieu d'une")),
+        Err(e) => return DeclarationDIncident::NonEcrite(e.to_string()),
     }
     let body = match tier {
         // MISC (off-by-one) : on teste la VALEUR trimée non-vide, pas la longueur de la chaîne préfixée (", type "
@@ -86,7 +122,7 @@ pub(crate) fn incident_apply_tier(conn: &Connection, id: i64, author: &str, tier
     };
     case_add_item(conn, id, t, "incident", author, &body, None);
     ledger_append(conn, "case.incident", &format!("#{id} tier={} by {author}", tier.map(|t| t.to_string()).unwrap_or_else(|| "none".into())));
-    true
+    DeclarationDIncident::Posee
 }
 
 /// #3 PHASE 3 — Part A : les cibles pré-remplies STRUCTURÉES de l'alerte dominante (au lieu du seul `host`
@@ -383,6 +419,40 @@ pub(crate) fn case_runbooks_json(conn: &Connection, id: i64) -> Option<Value> {
     Some(crate::handlers::liste_bornee::corps_de_listes_illisibles(corps, &non_lus))
 }
 
+/// `P10.21-t` — CE QU'UN REFUS D'ATTACHE PORTE. Une chaîne unique rendait tous les refus en `400`, et
+/// l'écriture ratée d'une étape n'en était pas un : elle était avalée. Deux genres, parce que l'appelant ne
+/// répond pas la même chose à « ce qui a été lu interdit l'attache » et à « la base n'a pas pris l'écriture ».
+#[derive(Debug)]
+pub(crate) enum RefusDAttache {
+    /// Refus sur ce qui a été LU (dossier ou runbook introuvable, progression existante, runbook inactif ou sans
+    /// étape, étapes non lues) : rien n'est écrit — le `400` d'avant, inchangé.
+    Refuse(String),
+    /// La base n'a pas pris l'écriture d'une étape (ou la transaction) : tout est annulé, AUCUNE étape n'est
+    /// posée, rien n'est attesté, et l'attache reste possible.
+    EtapesNonEcrites(String),
+}
+
+impl From<&str> for RefusDAttache {
+    fn from(raison: &str) -> Self {
+        RefusDAttache::Refuse(raison.to_string())
+    }
+}
+
+impl From<String> for RefusDAttache {
+    fn from(raison: String) -> Self {
+        RefusDAttache::Refuse(raison)
+    }
+}
+
+impl std::fmt::Display for RefusDAttache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RefusDAttache::Refuse(raison) => f.write_str(raison),
+            RefusDAttache::EtapesNonEcrites(cause) => write!(f, "{CAUSE_ETAPES_DU_RUNBOOK_NON_ECRITES}{cause}"),
+        }
+    }
+}
+
 /// INSTANCIE (fige) les steps d'un runbook en `case_step` pour un incident + pré-remplit la cible PAR ACTION
 /// (#3 P3-A). Idempotent-refusant : si des steps existent DÉJÀ pour ce case (un runbook déjà attaché), renvoie
 /// false (on n'écrase pas une progression en cours ; le détacher/ré-attacher serait une action explicite future).
@@ -397,7 +467,14 @@ pub(crate) fn case_runbooks_json(conn: &Connection, id: i64) -> Option<Value> {
 /// Le prefill n'est qu'une SUGGESTION : l'analyste confirme/édite, et l'exécution reste /api/actions (arm +
 /// approbation + admin-gate + ledger + allowlist root + observe/active + re-validation `action_valid_ctx`). Une
 /// cible NULL/invalide ne s'auto-joue JAMAIS et est re-validée à la porte -> aucune nouvelle surface d'exécution.
-pub(crate) fn attach_runbook(conn: &Connection, id: i64, runbook_id: i64, author: &str, targets: &PrefillTargets) -> Result<i64, String> {
+///
+/// `P10.21-t` — L'ATTACHE EST ENTIÈRE OU N'EST PAS. Les étapes s'écrivaient en autocommit sous `let _ =`, et
+/// `n` comptait les tentatives : une étape refusée laissait les précédentes en base, `{"attached": n}` servi et
+/// `steps={n}` au registre — et comme l'attache refuse toute progression existante, l'amputation était
+/// DÉFINITIVE (mesuré : 2 étapes sur 4 en base, le registre en annonçant 4, le nouvel essai refusé). Les
+/// étapes s'écrivent désormais dans UNE transaction, chacune comptée ; la chronologie et le registre ne
+/// suivent que la validation, et comptent les étapes ÉCRITES.
+pub(crate) fn attach_runbook(conn: &Connection, id: i64, runbook_id: i64, author: &str, targets: &PrefillTargets) -> Result<i64, RefusDAttache> {
     if conn.query_row("SELECT 1 FROM incident WHERE id=?1", params![id], |_| Ok(())).is_err() {
         return Err("incident introuvable".into());
     }
@@ -421,6 +498,7 @@ pub(crate) fn attach_runbook(conn: &Connection, id: i64, runbook_id: i64, author
         return Err("runbook sans étape".into());
     }
     let host = targets.host.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let txn = Txn::begin(conn).map_err(|e| RefusDAttache::EtapesNonEcrites(format!("transaction refusée ({e})")))?;
     let mut n = 0i64;
     for (step_id, ordinal, phase, title, guidance, step_kind, soql, act) in &steps {
         // #3 P3-A — cible + hôte PAR action_kind (validés ; blanc plutôt qu'une cible invalide/trompeuse).
@@ -434,13 +512,18 @@ pub(crate) fn attach_runbook(conn: &Connection, id: i64, runbook_id: i64, author
             // search / manual : host best-effort (résout $target$ au mieux ; PARITÉ Phase 1/2).
             (host, None)
         };
-        let _ = conn.execute(
+        // Un retour anticipé abandonne `txn` : son `Drop` annule TOUTES les étapes déjà écrites.
+        match conn.execute(
             "INSERT INTO case_step(incident_id,runbook_id,step_id,ordinal,phase,title,guidance,step_kind,search_soql,action_kind,target,host,status) \
              VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'pending')",
             params![id, runbook_id, step_id, ordinal, phase, title, guidance, step_kind, soql, act, step_target, step_host],
-        );
-        n += 1;
+        ) {
+            Ok(1) => n += 1,
+            Ok(k) => return Err(RefusDAttache::EtapesNonEcrites(format!("étape {step_id} : {k} ligne(s) écrite(s) au lieu d'une"))),
+            Err(e) => return Err(RefusDAttache::EtapesNonEcrites(format!("étape {step_id} : {e}"))),
+        }
     }
+    txn.commit().map_err(|e| RefusDAttache::EtapesNonEcrites(format!("validation refusée ({e})")))?;
     case_add_item(conn, id, now(), "runbook", author, &format!("runbook « {rb_name} » attaché ({n} étapes)"), None);
     ledger_append(conn, "case.runbook_attach", &format!("#{id} runbook={runbook_id} '{rb_name}' steps={n} by {author}"));
     Ok(n)
@@ -583,7 +666,9 @@ pub(crate) fn resolve_step_search(conn: &Connection, id: i64, step_id: i64, valu
 
 /// POST /api/cases/{id}/incident — DÉCLARE (tier) / RÉTROGRADE (demote) un case en incident + type/commander.
 /// editor+ (miroir du statut/assignation d'un case). Body : {tier?, incident_type?, commander?, demote?}.
-pub(crate) async fn incident_set(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> StatusCode {
+///
+/// `P10.21-t` — le contrat gagne un `503` nommé : la déclaration que la base n'a pas prise n'est plus un `204`.
+pub(crate) async fn incident_set(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
     let demote = b.get("demote").and_then(|v| v.as_bool()).unwrap_or(false);
     let tier: Option<i64> = if demote {
         None
@@ -593,11 +678,11 @@ pub(crate) async fn incident_set(State(st): State<AppState>, Extension(au): Exte
     };
     let itype = b.get("incident_type").and_then(|v| v.as_str());
     let commander = b.get("commander").and_then(|v| v.as_str());
-    with_write(&st, &au, |conn| {
-        if incident_apply_tier(&conn, id, &au.name, tier, itype, commander) {
-            StatusCode::NO_CONTENT
-        } else {
-            StatusCode::NOT_FOUND
+    with_write(&st, &au, |conn| match incident_apply_tier(&conn, id, &au.name, tier, itype, commander) {
+        DeclarationDIncident::Posee => StatusCode::NO_CONTENT.into_response(),
+        DeclarationDIncident::DossierIntrouvable => StatusCode::NOT_FOUND.into_response(),
+        DeclarationDIncident::NonEcrite(cause) => {
+            err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_DECLARATION_D_INCIDENT_NON_ECRITE} ({cause})"))
         }
     })
 }
@@ -637,7 +722,9 @@ pub(crate) async fn case_runbook_attach(State(st): State<AppState>, Extension(au
     };
     match attach_runbook(&conn, id, runbook_id, &au.name, &targets) {
         Ok(n) => Json(json!({ "attached": n })).into_response(),
-        Err(e) => bad_req(e),
+        Err(RefusDAttache::Refuse(raison)) => bad_req(raison),
+        // `P10.21-t` — une étape non écrite n'est pas une demande invalide : `503`, et rien n'est posé.
+        Err(refus @ RefusDAttache::EtapesNonEcrites(_)) => err_json(StatusCode::SERVICE_UNAVAILABLE, refus.to_string()),
     }
 }
 

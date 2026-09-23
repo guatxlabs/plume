@@ -18,19 +18,17 @@
 //   * LA PAGE SUIVANTE se prend PAR CLÉ (`cursor` = `id` de la dernière ligne rendue), comme le flux
 //     d'événements (#28) : un clic sur un NUMÉRO reste un saut par décalage, borné côté démon, et la
 //     page atterrie rend son curseur — le parcours séquentiel repart donc par clé.
-import { $, api, fmtTs, muted, pagedList, LANG } from './core.js';
-import { poserLaPlageSurLaCible, poserLeChoixDeDates } from './plage_de_dates.js';
-import { S } from './state.js';
-import { loadOperatorAudit } from './multitenant.js';
 // `P10.21-c` — LA SUITE D'UNE PAGE DU JOURNAL SE LIT PAR LE DISCRIMINANT DU PANNEAU DE RÉTENTION, pas par
 // un second. Les deux seules vues qui lisent `GET /api/ledger` sont celle-ci et `web/retention.js` : la
 // même clé du démon y a les MÊMES trois issues, et deux lecteurs écrits à part divergeraient sur le seul
-// cas qui compte, la clé absente. L'ARÊTE NE FAIT ENTRER AUCUN MODULE NEUF DANS CE GRAPHE : `retention.js`
-// y est déjà, par `multitenant.js` → `app.js` → `navigation.js` ; elle ferme un cycle direct avec
-// l'import inverse (`celluleDeGenre`), bénin parce que les deux modules n'appellent ce qu'ils importent
-// l'un de l'autre qu'à l'EXÉCUTION — le relevé des portes d'entrée du harnais ESM, qui ouvre le graphe
-// par chaque module dans un processus neuf, le juge.
-import { cleDeLaSuiteDuRegistre } from './retention.js';
+// cas qui compte, la clé absente. `P10.21-x` — ce discriminant vit désormais au point commun
+// (`web/core.js`), que les deux vues importaient déjà : l'arête `audit.js` → `retention.js`, qui fermait un
+// cycle direct avec l'import inverse (`celluleDeGenre`), n'existe plus, et aucun module n'entre ni ne
+// sort de la fermeture des imports (`retention.js` y reste par `navigation.js`).
+import { $, api, cleDeLaSuiteDuRegistre, fmtTs, muted, pagedList, LANG } from './core.js';
+import { poserLaPlageSurLaCible, poserLeChoixDeDates } from './plage_de_dates.js';
+import { S } from './state.js';
+import { loadOperatorAudit } from './multitenant.js';
 
 // Fenêtres offertes, en jours ; `0` = tout l'historique. Le défaut est 30 jours : c'est la rétention
 // par défaut des événements, donc la période que l'exploitant a déjà en tête en ouvrant l'audit.
@@ -403,12 +401,17 @@ async function loadLedger() {
       if (j && j.error) { const n = ligneDeFenetre(); if (n) n.textContent = ''; throw new Error(String(j.error).trim()); }
       // Le curseur suit la MÊME lecture que la phrase : une valeur que la vue n'avouerait pas comme une
       // suite ne décide pas non plus de la page suivante (pour un booléen, rien ne change).
-      curseurs[page + 1] = cleDeLaSuiteDuRegistre(j) === 'il_en_existe_peut_etre_d_autres' ? j.next_cursor : null;
+      const cleDeLaSuite = cleDeLaSuiteDuRegistre(j);
+      curseurs[page + 1] = cleDeLaSuite === 'il_en_existe_peut_etre_d_autres' ? j.next_cursor : null;
       direLaFenetre(j);
       // Total PLAFONNÉ -> `-1` : le pager partagé passe en « page N » avec des flèches fiables plutôt que
       // de numéroter jusqu'à un dernier numéro qui rendrait les pages suivantes inatteignables.
       if (typeof j.total === 'number') totalDeLaFenetre = j.total_capped ? -1 : j.total;
-      return { rows: j.entries || [], total: totalDeLaFenetre === null ? 0 : totalDeLaFenetre };
+      // `P10.21-x` — UN TOTAL NON SERVI N'EST PLUS RENDU COMME ZÉRO. Le `0` d'avant faisait de la page une
+      // page UNIQUE pour le pager partagé : aucune flèche, alors que la ligne de fenêtre venait de dire
+      // qu'un curseur de suite était servi. `null` dit « non compté », et la SUITE part avec la page pour
+      // que la flèche la suive.
+      return { rows: j.entries || [], total: totalDeLaFenetre, suite: cleDeLaSuite };
     },
   });
 }

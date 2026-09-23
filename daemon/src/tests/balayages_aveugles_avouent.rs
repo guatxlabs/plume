@@ -88,7 +88,7 @@ fn p10_7f_un_runbook_dont_les_etapes_ne_sont_pas_lues_n_est_pas_attache_ampute()
     conn.execute_batch("ALTER TABLE runbook_step RENAME TO runbook_step_hors_d_atteinte;").unwrap();
     let refus = attach_runbook(&conn, id, rb, "bob", &PrefillTargets::default())
         .expect_err("une lecture d'étapes ratée est un REFUS, jamais un runbook amputé");
-    assert!(refus.contains("étapes du runbook NON LUES"), "le refus nomme ce qui n'a pas été lu : {refus}");
+    assert!(refus.to_string().contains("étapes du runbook NON LUES"), "le refus nomme ce qui n'a pas été lu : {refus}");
     let ecrites: i64 = conn.query_row("SELECT COUNT(*) FROM case_step WHERE incident_id=?1", params![id], |r| r.get(0)).unwrap();
     assert_eq!(ecrites, 0, "aucune étape n'est instanciée sur une lecture refusée");
     conn.execute_batch("ALTER TABLE runbook_step_hors_d_atteinte RENAME TO runbook_step;").unwrap();

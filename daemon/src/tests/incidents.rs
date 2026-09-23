@@ -61,7 +61,7 @@
         let tier0: Option<i64> = conn.query_row("SELECT incident_tier FROM incident WHERE id=?1", params![id], |r| r.get(0)).unwrap();
         assert_eq!(tier0, None, "case ordinaire : tier NULL");
         // élévation.
-        assert!(incident_apply_tier(&conn, id, "bob", Some(2), Some("intrusion"), Some("carol")));
+        assert_eq!(incident_apply_tier(&conn, id, "bob", Some(2), Some("intrusion"), Some("carol")), DeclarationDIncident::Posee);
         let (tier, ty, cmd): (Option<i64>, Option<String>, Option<String>) = conn.query_row("SELECT incident_tier,incident_type,commander FROM incident WHERE id=?1", params![id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
         assert_eq!((tier, ty.as_deref(), cmd.as_deref()), (Some(2), Some("intrusion"), Some("carol")));
         let tl: i64 = conn.query_row("SELECT COUNT(*) FROM incident_item WHERE incident_id=?1 AND kind='incident'", params![id], |r| r.get(0)).unwrap();
@@ -69,11 +69,11 @@
         let lg: i64 = conn.query_row("SELECT COUNT(*) FROM ledger WHERE kind='case.incident'", [], |r| r.get(0)).unwrap();
         assert_eq!(lg, 1, "ledger case.incident");
         // rétrogradation -> tier NULL (type/commander conservés = trace).
-        assert!(incident_apply_tier(&conn, id, "bob", None, None, None));
+        assert_eq!(incident_apply_tier(&conn, id, "bob", None, None, None), DeclarationDIncident::Posee);
         let tier2: Option<i64> = conn.query_row("SELECT incident_tier FROM incident WHERE id=?1", params![id], |r| r.get(0)).unwrap();
         assert_eq!(tier2, None, "demote -> tier NULL");
-        // case inexistant -> false.
-        assert!(!incident_apply_tier(&conn, 9999, "bob", Some(1), None, None));
+        // case inexistant -> introuvable.
+        assert_eq!(incident_apply_tier(&conn, 9999, "bob", Some(1), None, None), DeclarationDIncident::DossierIntrouvable);
     }
 
     /// INC-2 : tie-break DÉTERMINISTE de la tactique/technique dominante. std HashMap a un ordre d'itération
@@ -104,13 +104,13 @@
         let conn = test_db();
         let id = dossier_seme(&conn, "a", "lbl", 3, "", None, 3);
         // type=espaces, pilote=vide -> AUCUN label additionnel.
-        assert!(incident_apply_tier(&conn, id, "bob", Some(2), Some("  "), Some("")));
+        assert_eq!(incident_apply_tier(&conn, id, "bob", Some(2), Some("  "), Some("")), DeclarationDIncident::Posee);
         let body: String = conn.query_row(
             "SELECT body FROM incident_item WHERE incident_id=?1 AND kind='incident' ORDER BY id DESC LIMIT 1",
             params![id], |r| r.get(0)).unwrap();
         assert_eq!(body, "incident DÉCLARÉ (tier 2)", "valeurs vides -> pas de label pendouillant ; body={body}");
         // valeurs NON vides -> les deux labels apparaissent (trimés).
-        assert!(incident_apply_tier(&conn, id, "bob", Some(1), Some(" intrusion "), Some(" carol ")));
+        assert_eq!(incident_apply_tier(&conn, id, "bob", Some(1), Some(" intrusion "), Some(" carol ")), DeclarationDIncident::Posee);
         let body2: String = conn.query_row(
             "SELECT body FROM incident_item WHERE incident_id=?1 AND kind='incident' ORDER BY id DESC LIMIT 1",
             params![id], |r| r.get(0)).unwrap();

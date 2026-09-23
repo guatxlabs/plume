@@ -40,6 +40,29 @@ pub(crate) const CAUSE_MFA_NON_LUE: &str = "STATUT DE DOUBLE AUTHENTIFICATION NO
      une MFA ACTIVE que cette lecture n'a pas vue. Toute décision qui en dépend est REFUSÉE ; \
      réessayez.";
 
+/// `P10.21-s` — LE PAS TOTP QUE LA BASE N'A PAS CONSOMMÉ N'OUVRE AUCUNE SESSION. Le code est juste,
+/// mais l'écriture qui le rend inutilisable une seconde fois (`user_mfa.last_step`, anti-rejeu) n'a
+/// pas eu lieu : l'accepter laisserait CE MÊME code ouvrir une autre session pendant sa fenêtre.
+pub(crate) const CAUSE_PAS_TOTP_NON_CONSOMME: &str = "SECOND FACTEUR NON CONSOMMÉ, CONNEXION REFUSÉE : \
+     le code TOTP est juste, mais la base n'a pas pris l'écriture qui l'empêche de servir une seconde \
+     fois (anti-rejeu). L'accepter laisserait ce même code ouvrir une autre session pendant sa fenêtre \
+     de validité : aucune session n'est posée, le registre n'atteste aucune connexion, et le code \
+     n'est PAS brûlé. Réessayez.";
+
+/// `P10.21-s` — LE CODE DE SECOURS QUE LA BASE N'A PAS RETIRÉ N'OUVRE AUCUNE SESSION. Même geste que
+/// le pas TOTP, sur le facteur à usage unique : un code accepté et resté dans la liste resservirait.
+pub(crate) const CAUSE_CODE_DE_SECOURS_NON_CONSOMME: &str = "CODE DE SECOURS NON CONSOMMÉ, CONNEXION \
+     REFUSÉE : le code de secours est juste, mais la base n'a pas pris l'écriture qui le retire de la \
+     liste (usage unique). L'accepter le laisserait valable pour une autre connexion : aucune session \
+     n'est posée, le registre n'atteste aucune connexion, et le code reste utilisable. Réessayez.";
+
+/// `P10.21-s` — LA DÉSACTIVATION QUE LA BASE N'A PAS PRISE N'EST NI SERVIE NI ATTESTÉE. La route
+/// rendait `ok` et le registre posait « MFA TOTP désactivée » sur un `DELETE` avalé : le compte
+/// exigeait TOUJOURS son second facteur pendant que la trace non purgeable disait le contraire.
+pub(crate) const CAUSE_MFA_NON_DESACTIVEE: &str = "DOUBLE AUTHENTIFICATION TOUJOURS ACTIVE : la base \
+     n'a pas pris la suppression du second facteur. Le compte exige TOUJOURS un code à la connexion, et \
+     le registre n'atteste aucune désactivation. Réessayez.";
+
 // ---------- utilitaires locaux ----------
 
 /// Nom de provider valide (segment d'URL sûr) : alphanumérique + `. _ -`, non vide, <= 64.
@@ -815,10 +838,53 @@ pub(crate) async fn mfa_disable(State(st): State<AppState>, Extension(au): Exten
     }
     {
         let conn = st.db.lock();
-        let _ = conn.execute("DELETE FROM user_mfa WHERE user=?1", params![au.name]);
+        // `P10.21-s` — LE `DELETE` EST COMPTÉ AVANT LE REGISTRE. Avalé, il laissait la route rendre `ok` et le
+        // registre attester « désactivée » pendant que le compte exigeait TOUJOURS son second facteur. Zéro
+        // ligne : la ligne lue plus haut a disparu entre-temps (une désactivation concurrente) — l'absence
+        // d'avant, `404`, sans rien attester.
+        match conn.execute("DELETE FROM user_mfa WHERE user=?1", params![au.name]) {
+            Ok(0) => return not_found("aucune MFA enrôlée"),
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("[mfa] WARN désactivation de '{}' NON écrite : {e}", au.name);
+                return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_MFA_NON_DESACTIVEE);
+            }
+        }
         ledger_append(&conn, "mfa", &format!("MFA TOTP désactivée pour '{}'", au.name));
     }
     Json(json!({ "ok": true })).into_response()
+}
+
+/// `P10.21-s` — CE QUE LA CONSOMMATION D'UN FACTEUR À USAGE UNIQUE REND (pas TOTP, code de secours). Un
+/// booléen confondait « rien à consommer » et « la base n'a pas pris l'écriture » : `recovery_consume` rendait
+/// `true` sur un `UPDATE` avalé, et le pas TOTP n'avait même pas de retour. Trois issues, jamais deux.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ConsommationDuFacteur {
+    /// L'écriture a eu lieu, sur UNE ligne : ce facteur ne servira plus.
+    Consomme,
+    /// Rien à consommer : le code ne désigne aucun facteur encore valable (déjà consommé — y compris ENTRE la
+    /// lecture et l'écriture, par une requête concurrente —, jamais émis, ou MFA plus active). Refus
+    /// d'AUTHENTIFICATION, comme un code faux.
+    Refuse,
+    /// La base n'a pas pris l'écriture : le facteur est juste et RESTE utilisable. Refus NOMMÉ, jamais une
+    /// session. La cause du moteur est portée pour la sortie d'erreur, jamais servie à l'appelant public.
+    NonEcrite(String),
+}
+
+/// `P10.21-s` — LA CONSOMMATION DU PAS TOTP EST UN COMPARE-ET-POSE EN BASE. La fraîcheur (`step >
+/// last_step`) était jugée sur une lecture faite sous un AUTRE verrou que l'écriture : deux soumissions
+/// concurrentes du même code passaient toutes deux la lecture, et l'écriture ne rejugeait rien. La clause
+/// `last_step < ?1` rejuge la fraîcheur DANS l'écriture, et le compte de lignes tranche.
+pub(crate) fn consommer_le_pas_totp(conn: &Connection, user: &str, step: i64) -> ConsommationDuFacteur {
+    match conn.execute(
+        "UPDATE user_mfa SET last_step=?1, updated=?2 WHERE user=?3 AND enabled=1 AND last_step<?1",
+        params![step, now(), user],
+    ) {
+        Ok(1) => ConsommationDuFacteur::Consomme,
+        Ok(0) => ConsommationDuFacteur::Refuse,
+        Ok(n) => ConsommationDuFacteur::NonEcrite(format!("{n} ligne(s) écrite(s) au lieu d'une")),
+        Err(e) => ConsommationDuFacteur::NonEcrite(e.to_string()),
+    }
 }
 
 /// Un code de secours (clair) figure-t-il dans la liste des SHA-256 persistés ? (comparaison des hash.)
@@ -829,21 +895,29 @@ fn recovery_contains(recovery_json: &str, code: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Consomme (usage unique) un code de secours : le retire de la liste persistée s'il matche. True si consommé.
-fn recovery_consume(st: &AppState, user: &str, code: &str) -> bool {
+/// Consomme (usage unique) un code de secours : le retire de la liste persistée s'il matche.
+///
+/// `P10.21-s` — CONSOMMÉ SEULEMENT SI L'ÉCRITURE A EU LIEU. L'`UPDATE` était avalé et la fonction rendait
+/// `true` : un code de secours accepté pouvait rester dans la liste et ouvrir une autre session. La lecture et
+/// l'écriture sont sous le MÊME verrou (`st.db`), donc aucune requête ne s'intercale : le compte suffit.
+fn recovery_consume(st: &AppState, user: &str, code: &str) -> ConsommationDuFacteur {
     let want = sha256_hex(code.as_bytes());
     let conn = st.db.lock();
     let Ok(rec): rusqlite::Result<String> = conn.query_row("SELECT recovery FROM user_mfa WHERE user=?1", params![user], |r| r.get(0)) else {
-        return false;
+        return ConsommationDuFacteur::Refuse;
     };
     let mut list: Vec<String> = serde_json::from_str(&rec).unwrap_or_default();
     let before = list.len();
     list.retain(|h| !ct_eq(h.as_bytes(), want.as_bytes()));
     if list.len() == before {
-        return false; // aucun code consommé
+        return ConsommationDuFacteur::Refuse; // aucun code ne correspond
     }
-    let _ = conn.execute("UPDATE user_mfa SET recovery=?1, updated=?2 WHERE user=?3", params![json!(list).to_string(), now(), user]);
-    true
+    match conn.execute("UPDATE user_mfa SET recovery=?1, updated=?2 WHERE user=?3", params![json!(list).to_string(), now(), user]) {
+        Ok(1) => ConsommationDuFacteur::Consomme,
+        Ok(0) => ConsommationDuFacteur::Refuse,
+        Ok(n) => ConsommationDuFacteur::NonEcrite(format!("{n} ligne(s) écrite(s) au lieu d'une")),
+        Err(e) => ConsommationDuFacteur::NonEcrite(e.to_string()),
+    }
 }
 
 /// POST /api/login/mfa {ticket, code} — 2e facteur du login local : consomme le ticket signé émis par
@@ -872,15 +946,40 @@ pub(crate) async fn login_mfa_post(State(st): State<AppState>, ConnectInfo(peer)
     // un code de secours (matched.is_some()) -> pas de repli recovery sur un TOTP rejoué.
     let matched = totp_verify_step(&secret, &code, now(), 30, 6, 1);
     let totp_fresh = matched.map_or(false, |s| s > last_step);
-    let rec_ok = matched.is_none() && !code.is_empty() && recovery_consume(&st, &user, &code);
+    // `P10.21-s` — UN FACTEUR N'EST ACCEPTÉ QUE CONSOMMÉ, ET SA CONSOMMATION REFUSÉE EST UN REFUS NOMMÉ AVANT
+    // TOUTE SESSION ET TOUTE TRACE. Les deux écritures (code de secours retiré, pas TOTP posé) étaient avalées :
+    // la session et « login MFA validé » suivaient, et le facteur restait rejouable (mesuré : le même code
+    // ouvrait une seconde session une fois la base revenue).
+    let secours = if matched.is_none() && !code.is_empty() {
+        recovery_consume(&st, &user, &code)
+    } else {
+        ConsommationDuFacteur::Refuse
+    };
+    if let ConsommationDuFacteur::NonEcrite(cause) = &secours {
+        eprintln!("[mfa] WARN code de secours de '{user}' NON consommé : {cause}");
+        return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_CODE_DE_SECOURS_NON_CONSOMME);
+    }
+    let rec_ok = secours == ConsommationDuFacteur::Consomme;
     if !totp_fresh && !rec_ok {
         let _ = auth_record_failure(&st, &user, &ip);
         return err_json(StatusCode::UNAUTHORIZED, "code MFA invalide");
     }
     if let Some(step) = matched.filter(|_| totp_fresh) {
-        // consomme le pas TOTP (anti-rejeu) AVANT de poser la session.
-        let conn = st.db.lock();
-        let _ = conn.execute("UPDATE user_mfa SET last_step=?1, updated=?2 WHERE user=?3", params![step, now(), user]);
+        // consomme le pas TOTP (anti-rejeu) AVANT de poser la session — compté, et rejugé en base.
+        let consommation = consommer_le_pas_totp(&st.db.lock(), &user, step);
+        match consommation {
+            ConsommationDuFacteur::Consomme => {}
+            // un autre a consommé ce pas entre la lecture et l'écriture : c'est un REJEU, refusé comme le rejeu
+            // séquentiel (même statut, même phrase, même échec compté).
+            ConsommationDuFacteur::Refuse => {
+                let _ = auth_record_failure(&st, &user, &ip);
+                return err_json(StatusCode::UNAUTHORIZED, "code MFA invalide");
+            }
+            ConsommationDuFacteur::NonEcrite(cause) => {
+                eprintln!("[mfa] WARN pas TOTP de '{user}' NON consommé : {cause}");
+                return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_PAS_TOTP_NON_CONSOMME);
+            }
+        }
     }
     auth_record_success(&st, &user, &ip);
     {

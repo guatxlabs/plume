@@ -10883,7 +10883,10 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     `(80a) instrument : sur un corpus fabriqué, le tokeniseur rend ${JSON.stringify(vus80)} — attendu cinq replis (nombre, chaîne, tableau, objet, gabarit), ni le commentaire, ni la chaîne, ni les deux replis qui appellent, ni l'identifiant`);
 
   // (b) LA POPULATION DU MODULE, EXACTEMENT CELLE DE L'AVEU.
-  const REPLIS_AVOUES80 = 48;
+  // `P10.21-x` (lot 107) : 48 -> 47. Le repli `j.next_cursor || null` du parcours par curseur est retiré :
+  // le curseur de la page suivante suit désormais la lecture de la suite servie (le discriminant partagé),
+  // et une valeur que la ligne d'état n'avoue pas comme une suite ne le décide plus.
+  const REPLIS_AVOUES80 = 47;
   const srcViz80 = readFileSync(path.join(WEB, "viz.js"), "utf8");
   const sites80 = replis80(srcViz80);
   exiger(sites80.length === REPLIS_AVOUES80,
@@ -15829,10 +15832,12 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
       `(103b1-négatif) l'aveu de trace manquante part sur une mise en file dont le registre a PRIS la ligne : ${JSON.stringify(avis103().slice(avisAvantB2))}`);
 
     // ══ (c) LE PANNEAU DE RÉTENTION : LA BORNE DE LA PAGE EST DITE, ET LE SILENCE DU DÉMON AVOUÉ ══
-    const cleDeLaSuite103 = modRetention103.cleDeLaSuiteDuRegistre;
+    // `P10.21-x` (lot 107) : le discriminant est parti au POINT COMMUN (web/core.js), où le fabricant de
+    // pager le lit ; son vocabulaire reste celui du panneau.
+    const cleDeLaSuite103 = modNoyau103.cleDeLaSuiteDuRegistre;
     const motDeLaSuite103 = modRetention103.motDeLaSuiteDuRegistre;
     exiger(typeof cleDeLaSuite103 === "function" && typeof motDeLaSuite103 === "function",
-      "(103-instrument) le discriminant de la suite du registre n'est pas exporté par web/retention.js : il n'y aurait rien à juger dans les deux sens");
+      "(103-instrument) le discriminant de la suite n'est pas exporté par web/core.js, ou son vocabulaire par web/retention.js : il n'y aurait rien à juger dans les deux sens");
     exiger(cleDeLaSuite103({ has_more: true }) === "il_en_existe_peut_etre_d_autres" && cleDeLaSuite103({ has_more: false }) === "aucune_suite",
       "(103c) le discriminant ne sépare plus les deux valeurs que le démon sert");
     exiger(cleDeLaSuite103({}) === "suite_non_dite" && cleDeLaSuite103(null) === "suite_non_dite"
@@ -16017,8 +16022,10 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     // `P10.21-c` (lot 106) : `audit.js` lit la clé PAR LE DISCRIMINANT de `retention.js`, sans plus en écrire
     // le nom ; un appel de ce discriminant est donc une lecture, au même titre que le littéral. La partition
     // fine (qui lit par le littéral, qui par le discriminant) est jugée au témoin 106.
+    // `P10.21-x` (lot 107) : le discriminant vit au point commun, qui porte donc le SEUL littéral ; les
+    // trois vues restent lectrices, par lui.
     const lecteursDeLaSuite103 = CORPUS_WEB.filter(([f, src]) => f.endsWith(".js") && /\bj\.has_more\b|\bhas_more\b|\bcleDeLaSuiteDuRegistre\(/.test(src.replace(/\/\/[^\n]*/g, ""))).map(([f]) => f).sort();
-    exiger(lecteursDeLaSuite103.join(",") === "audit.js,retention.js,viz.js",
+    exiger(lecteursDeLaSuite103.join(",") === "audit.js,core.js,retention.js,viz.js",
       `(103e) l'ensemble des vues qui LISENT \`has_more\` n'est plus celui que ce lot a relevé — une vue neuve peut en tirer une borne sans la dire : ${JSON.stringify(lecteursDeLaSuite103)}`);
     const surfacesQuiLisentLaTrace103 = CORPUS_WEB.filter(([f, src]) => f.endsWith(".js") && /=\s*causeDeLaTraceManquante\(/.test(src)).map(([f]) => f).sort();
     // `P10.21-h` (lot 105) : la surface du PLAN DE CONTRÔLE rejoint l'ensemble — `multitenant.js`, qui lit la
@@ -16782,7 +16789,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
 {
   const url106 = (f) => pathToFileURL(path.join(WEB, f)).href;
   const modAudit106 = await import(url106("audit.js"));
-  const modRetention106 = await import(url106("retention.js"));
+  const modNoyau106 = await import(url106("core.js"));
   const modViz106 = await import(url106("viz.js"));
   const { S: S106 } = await import(url106("state.js"));
   // L'INSTANCE ANGLAISE : un module chargé sous l'adresse de langue est un module DISTINCT, et le crochet
@@ -16814,9 +16821,10 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   const motEn106 = modAuditEn106.motDeLaSuiteDuJournal;
   instrument106(typeof mot106 === "function" && typeof motEn106 === "function",
     "`motDeLaSuiteDuJournal` n'est pas exporté par web/audit.js : les trois issues ne seraient jugées que par le rendu");
-  const cleDeLaSuite106 = modRetention106.cleDeLaSuiteDuRegistre;
+  // `P10.21-x` (lot 107) : le discriminant est lu au point commun, où il a été déplacé.
+  const cleDeLaSuite106 = modNoyau106.cleDeLaSuiteDuRegistre;
   instrument106(typeof cleDeLaSuite106 === "function",
-    "`cleDeLaSuiteDuRegistre` n'est plus exporté par web/retention.js : la lecture partagée n'aurait plus de point commun");
+    "`cleDeLaSuiteDuRegistre` n'est plus exporté par web/core.js : la lecture partagée n'aurait plus de point commun");
 
   // ── (a) LES FACES : UNE ENTRÉE PAR ISSUE DU DISCRIMINANT, DEUX LANGUES, ET PAS UN MOT DE PLUS QUE LA CLÉ ──
   const ISSUES106 = [...new Set([{ has_more: true }, { has_more: false }, {}].map((j) => cleDeLaSuite106(j)))].sort();
@@ -16847,12 +16855,16 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   // ── (b) LA LECTURE EST CELLE DU PANNEAU DE RÉTENTION — DES ENSEMBLES NOMMÉS, PAS DES COMPTES ─────
   const sansCommentaires106 = (src) => String(src).replace(/\/\/[^\n]*/g, "");
   const srcDe106 = (f) => ((CORPUS_WEB.find(([g]) => g === f) || [])[1]) || "";
-  exiger(/^import \{ cleDeLaSuiteDuRegistre \} from '\.\/retention\.js';$/m.test(srcDe106("audit.js")),
-    "(106b) web/audit.js n'importe plus le discriminant du panneau de rétention : les deux vues du journal pourraient lire la même clé de deux façons");
+  // `P10.21-x` (lot 107) : le discriminant a quitté `retention.js` pour le point commun ; les TROIS vues
+  // l'importent de là, et le seul littéral restant est sa définition. La ligne d'état de l'Explore
+  // (`viz.js`), qui lisait la clé à sa façon, passe du côté du discriminant.
+  const importeDuPointCommun106 = (f) => /^import \{[^}\n]*\bcleDeLaSuiteDuRegistre\b[^}\n]*\} from '\.\/core\.js';$/m.test(srcDe106(f));
+  exiger(["audit.js", "retention.js", "viz.js"].every(importeDuPointCommun106),
+    `(106b) une vue n'importe plus le discriminant du point commun (${["audit.js", "retention.js", "viz.js"].filter((f) => !importeDuPointCommun106(f)).join(",")}) : deux vues pourraient lire la même clé de deux façons`);
   const parLeLitteral106 = CORPUS_WEB.filter(([f, src]) => f.endsWith(".js") && /\bhas_more\b/.test(sansCommentaires106(src))).map(([f]) => f).sort().join(",");
   const parLeDiscriminant106 = CORPUS_WEB.filter(([f, src]) => f.endsWith(".js") && /\bcleDeLaSuiteDuRegistre\(/.test(sansCommentaires106(src))).map(([f]) => f).sort().join(",");
-  exiger(parLeLitteral106 === "retention.js,viz.js" && parLeDiscriminant106 === "audit.js,retention.js",
-    `(106b) la partition des lecteurs de \`has_more\` a changé — par le littéral : ${parLeLitteral106} (attendu retention.js,viz.js) ; par le discriminant : ${parLeDiscriminant106} (attendu audit.js,retention.js). Une vue qui relit la clé à sa façon peut prendre un silence pour une fin`);
+  exiger(parLeLitteral106 === "core.js" && parLeDiscriminant106 === "audit.js,core.js,retention.js,viz.js",
+    `(106b) la partition des lecteurs de \`has_more\` a changé — par le littéral : ${parLeLitteral106} (attendu core.js, la seule définition) ; par le discriminant : ${parLeDiscriminant106} (attendu audit.js,core.js,retention.js,viz.js). Une vue qui relit la clé à sa façon peut prendre un silence pour une fin`);
 
   // ── LE SIMULACRE DE TRANSPORT : « MÉTHODE chemin », l'adresse ENTIÈRE gardée pour juger le curseur ──
   const fetchOrigine106 = globalThis.fetch;
@@ -16968,7 +16980,9 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     const motFr106 = modViz106.motDuBannissementMisEnFile, motEnBan106 = modVizEn106.motDuBannissementMisEnFile;
     instrument106(typeof motFr106 === "function" && typeof motEnBan106 === "function" && typeof modVizEn106.banIp === "function",
       "`motDuBannissementMisEnFile` ou `banIp` n'est plus exporté par web/viz.js : l'avis jugé ci-dessous serait hors d'atteinte");
-    const FACE_FR106 = typeof motFr106 === "function" ? motFr106() : "", FACE_EN106 = typeof motEnBan106 === "function" ? motEnBan106() : "";
+    // `P10.21-y` (lot 107) : l'avis lit désormais le corps SERVI (identifiant servi ou absent) ; le corps que
+    // ce témoin sert porte `id: 4401`, et c'est donc sa face « identifiant servi » qui est attendue.
+    const FACE_FR106 = typeof motFr106 === "function" ? motFr106({ id: 4401 }, "203.0.113.66") : "", FACE_EN106 = typeof motEnBan106 === "function" ? motEnBan106({ id: 4401 }, "203.0.113.66") : "";
     exiger(FACE_FR106.length > 20 && FACE_EN106.length > 20 && FACE_FR106 !== FACE_EN106 && /Action créée/.test(FACE_FR106) && /Action created/.test(FACE_EN106),
       `(106d) l'avis de succès n'a pas DEUX faces distinctes côte à côte : « ${FACE_FR106} » / « ${FACE_EN106} »`);
     servis106["GET /api/actions"] = { corps: { actions: [], served: 0, window: 200, total: 0, total_capped: false } };
@@ -17005,6 +17019,372 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     const listeDesActions106 = document.querySelector("#act-list"); if (listeDesActions106) listeDesActions106.replaceChildren();
   }
   console.log("(106) OK — l'onglet Audit DIT la suite d'une page du journal par les trois issues du panneau de rétention, et par SON discriminant — importé, appelé, plus aucun littéral : une page PLEINE annonce qu'un curseur de suite est servi et que d'autres entrées peuvent suivre, sans jamais affirmer qu'elles existent ; une page non pleine n'ajoute rien ; une clé ABSENTE ou d'un autre type est avouée dans le registre de l'alarme au lieu de laisser la fin du tableau se lire comme la fin du journal, et ne décide pas non plus du curseur ; la phrase vit dans la ligne de fenêtre, réécrite à chaque page sans s'empiler, effacée par une lecture refusée, et l'instance anglaise peint sa face anglaise. L'avis de succès du geste « bannir » choisit sa langue là où il est écrit, comme le refus et l'aveu voisins : deux faces côte à côte, la française sous `LANG='fr'`, l'anglaise sous `LANG='en'` sans l'observateur du lexique, aucune sur un refus, et plus de clé morte au lexique. CE QUI ÉTAIT FAUX : l'avis n'était pas servi en français sous `LANG='en'` — le lexique le traduisait déjà ; et la flèche du pager ne lisait pas `has_more`.");
+}
+
+// ---------------------------------------------------------------------------------------------
+// (107) `P10.21-x` — LA LIGNE D'ÉTAT DU PARCOURS PAR CURSEUR DIT LA SUITE PAR LE DISCRIMINANT PARTAGÉ,
+//       DANS LES DEUX LANGUES, ET LA FLÈCHE « SUIVANT » SUIT LA SUITE SERVIE QUAND LE TOTAL MANQUE ;
+//       `P10.21-y` — L'AVIS DU GESTE « BANNIR » DISTINGUE UN IDENTIFIANT SERVI D'UN IDENTIFIANT ABSENT.
+//
+// CE QUE LE DÉMON SERT. `keyset_finalize` (daemon/src/handlers/query.rs) : `has_more` = « page pleine OU
+// tronquée au plafond, ET curseur formé ». FAUX sur une page non pleine, mais AUSSI sur une page pleine
+// dont le curseur n'a pas pu être formé ; ABSENT quand la compilation du curseur a échoué et que la page
+// est servie par décalage. `action_create` (daemon/src/handlers/actions.rs) ne rend un succès qu'avec son
+// `id` ; un deux cents à corps vide, ou à corps qui n'est pas du JSON (une page de passerelle), n'est pas
+// servi par lui, et `apiSend` le rend `null`.
+//
+// CE QUE LA CONSOLE EN FAISAIT, MESURÉ SUR LES MODULES RÉELS AVANT CE LOT.
+//   · la ligne d'état écrivait « plus de résultats → » sur `true`, et « · fin » sur `false` ET sur la clé
+//     absente, en français sous `LANG='en'` ;
+//   · sans total, la flèche « suivant » suivait la seule page pleine : une page tronquée sous sa taille
+//     dont le démon sert la suite n'avait pas de flèche, une page pleine sans curseur en avait une ;
+//   · `pagedList` (web/core.js) prenait un total non servi pour « autant que de lignes servies » : une
+//     page unique, AUCUN pager — et l'onglet Audit rendait ce total comme `0`, même effet ;
+//   · `banIp` annonçait « Action créée (en attente) » sur un deux cents à corps vide, sans jamais nommer
+//     l'identifiant qu'il recevait quand il en recevait un.
+//
+// CE QUI ÉTAIT FAUX OU IMPRÉCIS DANS L'ÉNONCÉ, ET MESURÉ. (1) « · fin quand la clé est fausse » : sur une
+// page NON pleine, `false` EST une fin établie (moins de lignes que demandé, pas de troncature) et « · fin »
+// y reste juste ; la faute est `false` sur une page PLEINE — le curseur n'a pas pu être formé —, que ce lot
+// dit à part. (2) « une page pleine désormais DITE n'est pas atteignable » : avec le démon d'aujourd'hui,
+// `ledger_page` compte TOUJOURS en première page d'un parcours (`count` vaut vrai par défaut) et refuse la
+// lecture si le compte échoue — l'onglet Audit a donc toujours un total ou un refus. Le défaut est celui du
+// FABRICANT partagé, qui ne sait rendre aucune flèche sans total ; il est jugé ici sur un corps sans total.
+//
+// L'ANCRAGE. Les calculs de `has_more`, du repli par décalage et du corps de succès de la mise en file sont
+// relus dans l'arbre du démon ; s'ils changent, ce témoin REFUSE DE CONCLURE.
+//
+// CE QUE CE TÉMOIN NE TIENT PAS : il ne rejoue aucune route du démon ; il juge le TEXTE et les attributs
+// d'un arbre, jamais l'encre ; les autres états de la ligne du parcours (saut trop lourd, saut partiel,
+// reprise sans curseur) et la ligne du parcours par décalage restent en français et ne sont pas jugés ; et
+// l'étape de runbook, qui affirme encore « Action mise en file » sur le même corps vide, n'est pas jugée.
+// ---------------------------------------------------------------------------------------------
+{
+  const url107 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const modNoyau107 = await import(url107("core.js"));
+  const modViz107 = await import(url107("viz.js"));
+  const modAudit107 = await import(url107("audit.js"));
+  const modDossiers107 = await import(url107("cases.js"));
+  const { S: S107 } = await import(url107("state.js"));
+  const langueOrigine107 = localStorage.getItem("soc_lang");
+  localStorage.setItem("soc_lang", "en");
+  const modNoyauEn107 = await import(adresseSousLaLangue("core.js"));
+  const modVizEn107 = await import(adresseSousLaLangue("viz.js"));
+  const { S: SEn107 } = await import(adresseSousLaLangue("state.js"));
+  if (langueOrigine107 === null) localStorage.removeItem("soc_lang"); else localStorage.setItem("soc_lang", langueOrigine107);
+
+  const tic107 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser107 = async (n = 30) => { for (let i = 0; i < n; i++) await tic107(); };
+  const nu107 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ");
+  const cueillir107 = (el, pred, acc) => { if (el && pred(el)) acc.push(el); ((el && el.children) || []).forEach((c) => cueillir107(c, pred, acc)); return acc; };
+  const fleches107 = (hote) => cueillir107(hote, (e) => e.tagName === "BUTTON" && e.className === "evnext", []);
+  const instrument107 = (vrai, quoi) => exiger(vrai, `(107-instrument) ${quoi} : ce témoin REFUSE DE CONCLURE`);
+  const essayer107 = (f) => { try { return f(); } catch (e) { return e; } };
+  const sansCommentaires107 = (src) => String(src).replace(/\/\/[^\n]*/g, "");
+  const srcDe107 = (f) => ((CORPUS_WEB.find(([g]) => g === f) || [])[1]) || "";
+
+  // ── (0) L'INSTRUMENT ─────────────────────────────────────────────────────────────────────────────
+  const DOSSIER_HANDLERS107 = path.join(RACINE, "daemon", "src", "handlers");
+  const REQUETE107 = readFileSync(path.join(DOSSIER_HANDLERS107, "query.rs"), "utf8");
+  const RIPOSTES107 = readFileSync(path.join(DOSSIER_HANDLERS107, "actions.rs"), "utf8");
+  instrument107(/let more = truncated \|\| n == lim;/.test(REQUETE107) && /v\["has_more"\] = json!\(more && !next\.is_null\(\)\);/.test(REQUETE107),
+    "`keyset_finalize` ne calcule plus `has_more` comme « page pleine ou tronquée, ET curseur formé » : les faces jugées ci-dessous diraient autre chose que la clé");
+  instrument107(/let do_keyset = keyset && from_soql && !keyset_compile_failed;/.test(REQUETE107),
+    "le repli par décalage d'une compilation de curseur ratée n'existe plus : la clé ABSENTE jugée ci-dessous ne serait plus un corps que le démon sert");
+  instrument107(/let mut corps = json!\(\{ "id": id \}\);/.test(RIPOSTES107) && /return Json\(json!\(\{ "error": e \}\)\)\.into_response\(\);/.test(RIPOSTES107),
+    "`action_create` ne rend plus son succès avec l'identifiant, ni son refus de saisie en `{error}` : la distinction jugée ci-dessous porterait sur autre chose");
+  instrument107(modNoyauEn107.LANG === "en",
+    `l'instance anglaise du point commun porte « ${modNoyauEn107.LANG} » : toutes les faces jugées ci-dessous seraient françaises`);
+  const cleDeLaSuite107 = modNoyau107.cleDeLaSuiteDuRegistre;
+  const laFlecheEstOfferte107 = modNoyau107.laSuiteOffreLaPageSuivante;
+  const cleDuParcours107 = modViz107.cleDeLaSuiteDuParcours;
+  const motDuParcours107 = modViz107.motDeLaSuiteDuParcours, motDuParcoursEn107 = modVizEn107.motDeLaSuiteDuParcours;
+  const motDuBan107 = modViz107.motDuBannissementMisEnFile, motDuBanEn107 = modVizEn107.motDuBannissementMisEnFile;
+  const cleDeLIdentifiant107 = modViz107.cleDeLIdentifiantDeRiposte;
+  const motDeLEtape107 = modDossiers107.motDeLaRiposteMiseEnFile;
+  instrument107([cleDeLaSuite107, laFlecheEstOfferte107, cleDuParcours107, motDuParcours107, motDuParcoursEn107, motDuBan107, motDuBanEn107, cleDeLIdentifiant107, motDeLEtape107, modViz107.evLoad, modViz107.banIp, modNoyau107.pagedList].every((f) => typeof f === "function"),
+    "un des symboles jugés ci-dessous n'est plus exporté (point commun, web/viz.js ou web/cases.js)");
+
+  // ── (a) LES FACES DE LA SUITE DU PARCOURS : UNE PAR ISSUE, DEUX LANGUES, PAS UN MOT DE PLUS QUE LA CLÉ ──
+  const ISSUES107 = [...new Set([{ has_more: true }, { has_more: false }, {}].map((j) => cleDeLaSuite107(j)))].sort();
+  instrument107(ISSUES107.join(",") === "aucune_suite,il_en_existe_peut_etre_d_autres,suite_non_dite",
+    `le discriminant partagé ne rend plus trois issues : ${JSON.stringify(ISSUES107)}`);
+  const CLES107 = [...ISSUES107, "page_pleine_sans_curseur"];
+  const facesSures107 = CLES107.every((c) => typeof essayer107(() => motDuParcours107(c)) === "string" && typeof essayer107(() => motDuParcoursEn107(c)) === "string");
+  exiger(facesSures107,
+    "(107a) une issue du parcours n'a pas d'entrée dans la table de la ligne d'état : la ligne JETTERAIT sur cette issue, et la page ne se peindrait pas");
+  const FACE107 = {}, FACE_EN107 = {};
+  if (facesSures107) CLES107.forEach((c) => { FACE107[c] = motDuParcours107(c); FACE_EN107[c] = motDuParcoursEn107(c); });
+  if (facesSures107) {
+    exiger(CLES107.every((c) => FACE107[c].trim().length > 2 && FACE107[c] !== FACE_EN107[c]),
+      `(107a) une issue n'a pas DEUX faces distinctes : ${JSON.stringify(CLES107.filter((c) => !(FACE107[c].trim().length > 2 && FACE107[c] !== FACE_EN107[c])))}`);
+    exiger(/curseur/.test(FACE107.il_en_existe_peut_etre_d_autres) && /cursor/.test(FACE_EN107.il_en_existe_peut_etre_d_autres)
+      && /PEUVENT/.test(FACE107.il_en_existe_peut_etre_d_autres) && /MAY/.test(FACE_EN107.il_en_existe_peut_etre_d_autres),
+      `(107a) la suite servie ne se dit pas « un curseur est servi, d'autres résultats PEUVENT suivre » : « ${FACE107.il_en_existe_peut_etre_d_autres} » / « ${FACE_EN107.il_en_existe_peut_etre_d_autres} »`);
+    exiger(!CLES107.some((c) => /plus de résultats|\bexistent\b|il en existe|there are more|more results|results exist/i.test(FACE107[c] + " " + FACE_EN107[c])),
+      `(107a-négatif) une face AFFIRME que d'autres résultats existent : \`has_more\` ne dit que « page pleine ou tronquée, curseur formé », et la dernière page d'un résultat de cent lignes exactement le rend vrai sans rien derrière — ${JSON.stringify(CLES107.map((c) => FACE107[c]))}`);
+    exiger(/\bfin\b/.test(FACE107.aucune_suite) && /\bend\b/.test(FACE_EN107.aucune_suite),
+      `(107a) la fin que le démon établit ne se dit plus : « ${FACE107.aucune_suite} » / « ${FACE_EN107.aucune_suite} »`);
+    exiger(/PLEINE/.test(FACE107.page_pleine_sans_curseur) && /FULL/.test(FACE_EN107.page_pleine_sans_curseur)
+      && /n'est pas établie/.test(FACE107.page_pleine_sans_curseur) && /not established/.test(FACE_EN107.page_pleine_sans_curseur)
+      && FACE107.page_pleine_sans_curseur !== FACE107.aucune_suite,
+      `(107a) une page PLEINE sans curseur se dit comme une fin : « ${FACE107.page_pleine_sans_curseur} »`);
+    exiger(/n'a PAS dit/.test(FACE107.suite_non_dite) && /did NOT say/.test(FACE_EN107.suite_non_dite)
+      && !/c'est tout|that is all/i.test(FACE107.suite_non_dite + " " + FACE_EN107.suite_non_dite) && FACE107.suite_non_dite !== FACE107.aucune_suite,
+      `(107a) le silence du démon n'est pas AVOUÉ comme tel, ou conclut à la fin : « ${FACE107.suite_non_dite} » / « ${FACE_EN107.suite_non_dite} »`);
+  }
+  // LE RAFFINEMENT NE TOUCHE QUE LE « PAS DE SUITE » SUR UNE PAGE PLEINE — et il appelle le discriminant partagé.
+  const partition107 = [[{ has_more: true }, 3], [{ has_more: true }, 2], [{ has_more: false }, 2], [{ has_more: false }, 3], [{}, 3], [{ has_more: "true" }, 3], [null, 3]]
+    .map(([j, n]) => cleDuParcours107(j, n, 3)).join(",");
+  exiger(partition107 === "il_en_existe_peut_etre_d_autres,il_en_existe_peut_etre_d_autres,aucune_suite,page_pleine_sans_curseur,suite_non_dite,suite_non_dite,suite_non_dite",
+    `(107a) la clé du parcours ne sépare plus les corps servis comme le démon les produit : ${partition107}`);
+  exiger(/function cleDeLaSuiteDuParcours\([^)]*\) \{\n\s*const cle = cleDeLaSuiteDuRegistre\(j\);/.test(srcDe107("viz.js")),
+    "(107a) la clé du parcours ne part plus du discriminant partagé : la ligne d'état relirait `has_more` à sa façon");
+
+  // ── (b) LA RÈGLE DE LA FLÈCHE, NUE ───────────────────────────────────────────────────────────────
+  const regle107 = [["il_en_existe_peut_etre_d_autres", 0], ["il_en_existe_peut_etre_d_autres", 2], ["aucune_suite", 3], ["suite_non_dite", 3], ["suite_non_dite", 2], [undefined, 3], [undefined, 2]]
+    .map(([s, n]) => laFlecheEstOfferte107(s, n, 3)).join(",");
+  exiger(regle107 === "true,true,false,true,false,true,false",
+    `(107b) la flèche « suivant » d'un parcours sans total ne suit plus la suite servie (servie : offerte, même tronquée ; aucune : retirée, même pleine ; non dite ou absente : la page pleine) : ${regle107}`);
+
+  // ── LE SIMULACRE DE TRANSPORT ────────────────────────────────────────────────────────────────────
+  const fetchOrigine107 = globalThis.fetch;
+  const minuterieOrigine107 = globalThis.setTimeout;
+  const qsize107 = document.querySelector("#qsize");
+  const tailleOrigine107 = qsize107 ? qsize107.value : "";
+  const etatOrigine107 = { fr: S107.evState, en: SEn107.evState, vol: S107.exploreInflight, volEn: SEn107.exploreInflight, limite: S107.LEDGER_LIMIT };
+  let hoteDesAvis107 = document.querySelector("#toasts");
+  if (!hoteDesAvis107 || !hoteDesAvis107.isConnected) { hoteDesAvis107 = document.createElement("div"); hoteDesAvis107.id = "toasts"; document.body.appendChild(hoteDesAvis107); }
+  const servis107 = {};
+  const appels107 = [];
+  globalThis.fetch = async (u, init) => {
+    const adresse = String(u);
+    const chemin = adresse.split("?")[0];
+    const methode = ((init && init.method) || "GET").toUpperCase();
+    appels107.push(methode + " " + adresse);
+    const r = servis107[methode + " " + chemin];
+    if (!r) return { ok: true, status: 200, text: async () => "{}", json: async () => ({}) };
+    const texte = typeof r.corps === "string" ? r.corps : JSON.stringify(r.corps === undefined ? {} : r.corps);
+    return { ok: (r.statut || 200) < 400, status: r.statut || 200, text: async () => texte, json: async () => JSON.parse(texte) };
+  };
+  globalThis.setTimeout = (fn, ms) => {
+    if (ms >= 1000) return 0;
+    if (ms >= 100) return minuterieOrigine107(fn, 0);
+    return minuterieOrigine107(fn, ms);
+  };
+
+  try {
+    // ══ (c) CE QUE LA LIGNE D'ÉTAT DE L'EXPLORE PEINT, PAR SON CHARGEUR RÉEL ══════════════════════
+    const ligne107 = document.querySelector("#qstats"), resultat107 = document.querySelector("#qresult");
+    instrument107(!!ligne107 && !!resultat107 && !!qsize107,
+      "`#qstats`, `#qresult` ou `#qsize` n'est plus dans `index.html` : la ligne d'état n'aurait nulle part où se poser");
+    if (qsize107) qsize107.value = "3";
+    const LIGNES107 = (n) => Array.from({ length: n }, (_, i) => [1758000000 - i, "sshd", "ligne " + i]);
+    const parcours107 = (S, plus = {}) => { S.exploreInflight = null; S.evState = { q: "search sshd", isSoql: true, keyset: true, cursors: [null], page: 0, pageSize: 3, total: -1, shown: 0, totalCapped: false, countFired: true, realTotal: false, totalError: null, win: { from: 1000, to: 2000 }, ...plus }; };
+    const servirLaPage107 = (n, suite, plus = {}) => {
+      const corps = { columns: ["ts", "source", "message"], rows: LIGNES107(n), stats: { elapsed_ms: 1 }, next_cursor: suite === true ? { ts: 1758000000 - n + 1, id: 900 + n } : null, limit: 3, ...plus };
+      if (suite !== undefined) corps.has_more = suite;
+      servis107["POST /api/query"] = { corps };
+    };
+    const charger107 = async (mod = modViz107, S = S107, plus = {}) => { parcours107(S, plus); resultat107.replaceChildren(); await mod.evLoad(); await laisser107(10); return nu107(ligne107); };
+    const flecheOfferte107 = () => { const f = fleches107(resultat107); return f.length ? !f[0].disabled : null; };
+
+    // (c1) SUITE SERVIE SUR UNE PAGE PLEINE : dite sans affirmer, flèche offerte, curseur retenu.
+    servirLaPage107(3, true);
+    const c1107 = await charger107();
+    instrument107(/^page 1\b/.test(c1107.trim()),
+      `la ligne d'état n'est pas peinte par le chargeur réel en parcours par curseur : les verdicts ci-dessous seraient vrais par vacuité — « ${c1107.slice(0, 200)} »`);
+    exiger(facesSures107 && c1107.includes(FACE107.il_en_existe_peut_etre_d_autres.trim()) && !/plus de résultats/.test(c1107),
+      `(107c1) SUR UNE PAGE PLEINE DONT LE DÉMON SERT LA SUITE, LA LIGNE D'ÉTAT AFFIRME UNE EXISTENCE ou ne dit pas la suite par le discriminant partagé — « ${c1107.slice(0, 300)} »`);
+    exiger(flecheOfferte107() === true,
+      `(107c1) la flèche « suivant » n'est pas offerte sur une page dont le démon sert la suite (${flecheOfferte107()})`);
+    exiger(JSON.stringify(S107.evState.cursors[1]) === JSON.stringify({ ts: 1757999998, id: 903 }),
+      `(107c1) le curseur servi n'est plus retenu pour la page suivante : ${JSON.stringify(S107.evState.cursors)}`);
+
+    // (c2) SUITE SERVIE SUR UNE PAGE TRONQUÉE SOUS SA TAILLE : la flèche suit la suite, pas la page pleine.
+    servirLaPage107(2, true, { stats: { elapsed_ms: 1, truncated: true } });
+    const c2107 = await charger107();
+    exiger(facesSures107 && c2107.includes(FACE107.il_en_existe_peut_etre_d_autres.trim()) && flecheOfferte107() === true,
+      `(107c2) SUR UNE PAGE TRONQUÉE PAR LE PLAFOND DONT LE DÉMON SERT LA SUITE, AUCUNE FLÈCHE N'EST OFFERTE : la flèche suivait la seule page pleine, et la suite servie n'était pas atteignable — flèche ${flecheOfferte107()}, « ${c2107.slice(0, 300)} »`);
+
+    // (c3) PAS DE SUITE SUR UNE PAGE NON PLEINE : la fin est établie, et dite.
+    servirLaPage107(2, false);
+    const c3107 = await charger107();
+    exiger(facesSures107 && c3107.includes("page 1" + FACE107.aucune_suite + " · ") && flecheOfferte107() === false,
+      `(107c3) une fin ÉTABLIE (page non pleine, pas de suite) ne se dit plus « fin », ou garde une flèche : flèche ${flecheOfferte107()}, « ${c3107.slice(0, 300)} »`);
+
+    // (c4) PAS DE SUITE SUR UNE PAGE PLEINE : un curseur que le démon n'a pas pu former, pas une fin.
+    servirLaPage107(3, false);
+    const c4107 = await charger107();
+    exiger(facesSures107 && c4107.includes(FACE107.page_pleine_sans_curseur.trim()) && !c4107.includes("page 1" + FACE107.aucune_suite + " · ") && flecheOfferte107() === false,
+      `(107c4) UNE PAGE PLEINE SANS CURSEUR SE LIT « FIN » : le démon dit qu'il n'a pas pu former de curseur, pas que le résultat s'arrête là — flèche ${flecheOfferte107()}, « ${c4107.slice(0, 300)} »`);
+
+    // (c5) CLÉ ABSENTE (le repli par décalage d'une compilation ratée) : le silence est AVOUÉ, jamais « fin ».
+    servirLaPage107(2, undefined, { total: 2, offset: 0 });
+    const c5107 = await charger107();
+    exiger(facesSures107 && c5107.includes(FACE107.suite_non_dite.trim()) && !c5107.includes(FACE107.aucune_suite + " · "),
+      `(107c5) LE DÉMON N'A RIEN DIT DE LA SUITE ET LA LIGNE D'ÉTAT ÉCRIT « FIN » : un silence se lit comme la fin du résultat — « ${c5107.slice(0, 300)} »`);
+
+    // (c6) UNE VALEUR D'UN AUTRE TYPE N'EST NI UNE SUITE NI UNE FIN — ET ELLE NE DÉCIDE PAS DU CURSEUR.
+    servirLaPage107(3, "true", { next_cursor: { ts: 1, id: 2 } });
+    const c6107 = await charger107();
+    exiger(facesSures107 && c6107.includes(FACE107.suite_non_dite.trim()) && S107.evState.cursors[1] === null,
+      `(107c6-négatif) \`has_more: "true"\` est lu comme une suite (curseur ${JSON.stringify(S107.evState.cursors[1])}) ou comme une fin — « ${c6107.slice(0, 300)} »`);
+    exiger(flecheOfferte107() === true,
+      `(107c6) sur un silence du démon, la page PLEINE reste le seul indice et la flèche doit rester offerte : sans elle la suite ne serait pas atteignable (${flecheOfferte107()})`);
+
+    // (c7) TOTAL CONNU : la ligne numérote, et ne dit plus la suite.
+    servirLaPage107(3, true);
+    const c7107 = await charger107(modViz107, S107, { total: 9, realTotal: true });
+    exiger(/^9 résultats · page 1 \/ 3 · serveur /.test(c7107.trim()) && !CLES107.some((c) => facesSures107 && c7107.includes(FACE107[c].trim())),
+      `(107c7-négatif) avec un total servi, la ligne ne numérote plus, ou dit encore la suite : « ${c7107.slice(0, 300)} »`);
+
+    // (c8) L'INSTANCE ANGLAISE PEINT LA FACE ANGLAISE, ET LA LIGNE ENTIÈRE EST ANGLAISE.
+    servirLaPage107(2, undefined, { total: 2, offset: 0 });
+    const c8107 = await charger107(modVizEn107, SEn107);
+    exiger(facesSures107 && c8107.includes(FACE_EN107.suite_non_dite.trim()) && !c8107.includes(FACE107.suite_non_dite.trim()) && / · server \d/.test(c8107) && !/serveur|résultats/.test(c8107),
+      `(107c8) SOUS \`LANG='en'\`, LA LIGNE D'ÉTAT DU PARCOURS RESTE FRANÇAISE, en tout ou en partie : « ${c8107.slice(0, 300)} »`);
+    servirLaPage107(3, true);
+    const c8bis107 = await charger107(modVizEn107, SEn107, { total: 9, realTotal: true });
+    exiger(/^9 results · page 1 \/ 3 · server /.test(c8bis107.trim()),
+      `(107c8) sous \`LANG='en'\`, le total du parcours n'est pas dit en anglais : « ${c8bis107.slice(0, 200)} »`);
+    resultat107.replaceChildren(); ligne107.textContent = "";
+
+    // ══ (d) LE FABRICANT PARTAGÉ, SANS TOTAL SERVI ════════════════════════════════════════════════
+    const hote107 = document.createElement("div"); document.body.appendChild(hote107);
+    const decalages107 = [];
+    let pageServie107 = null;
+    const liste107 = async () => {
+      hote107.replaceChildren(); decalages107.length = 0;
+      modNoyau107.pagedList(hote107, { mode: "server", pageSize: 3, emptyText: "rien", renderRow: (r) => Object.assign(document.createElement("div"), { textContent: String(r) }),
+        fetchPage: async ({ offset }) => { decalages107.push(offset); return pageServie107(offset); } });
+      await laisser107(10);
+    };
+    // (d1) SUITE SERVIE, PAS DE TOTAL : une flèche offerte, et elle atteint la page suivante.
+    pageServie107 = (offset) => (offset === 0 ? { rows: [1, 2, 3], suite: "il_en_existe_peut_etre_d_autres" } : { rows: [4], suite: "aucune_suite" });
+    await liste107();
+    const d1107 = fleches107(hote107);
+    exiger(d1107.length >= 1 && !d1107[0].disabled,
+      `(107d1) SANS TOTAL SERVI, LE FABRICANT PARTAGÉ NE REND AUCUNE FLÈCHE sur une page dont la suite est servie : la page pleine que la vue DIT n'est pas atteignable (${d1107.length} flèche(s))`);
+    if (d1107.length && typeof d1107[0].onclick === "function") { d1107[0].onclick(); await laisser107(10); }
+    exiger(decalages107.join(",") === "0,3" && nu107(hote107).includes("4"),
+      `(107d1) la flèche offerte n'atteint pas la page suivante : décalages ${decalages107.join(",")}`);
+    const d1bis107 = fleches107(hote107);
+    exiger(d1bis107.length >= 1 && d1bis107[0].disabled === true,
+      `(107d1) sur la page suivante, un « pas de suite » laisse la flèche offerte, ou le pager disparaît au lieu de garder le retour (${d1bis107.length} flèche(s))`);
+    // (d2) PAS DE SUITE, UNE PAGE : aucun pager mort n'est peint.
+    pageServie107 = () => ({ rows: [1, 2, 3], suite: "aucune_suite" });
+    await liste107();
+    exiger(fleches107(hote107).length === 0,
+      "(107d2-négatif) une page unique sans suite rend un pager dont aucune flèche ne mène nulle part");
+    // (d3) VUE QUI NE SERT AUCUNE SUITE : la règle d'avant, inchangée.
+    pageServie107 = () => ({ rows: [1, 2, 3] });
+    await liste107();
+    exiger(fleches107(hote107).length === 0,
+      "(107d3-négatif) une liste qui ne sert ni total ni suite a changé de comportement : ce lot ne devait toucher qu'aux vues qui servent une suite");
+    // (d4) SILENCE DU DÉMON SUR UNE PAGE PLEINE : la page pleine reste le seul indice.
+    pageServie107 = () => ({ rows: [1, 2, 3], suite: "suite_non_dite" });
+    await liste107();
+    exiger(fleches107(hote107).length >= 1 && !fleches107(hote107)[0].disabled,
+      "(107d4) sur un silence du démon et une page pleine, aucune flèche n'est offerte : la suite ne serait atteignable par aucun geste");
+    // (d5) UN TOTAL SERVI L'EMPORTE : pager numéroté, la suite n'y change rien.
+    pageServie107 = () => ({ rows: [1, 2, 3], total: 3, suite: "il_en_existe_peut_etre_d_autres" });
+    await liste107();
+    exiger(fleches107(hote107).length === 0,
+      "(107d5-négatif) un total servi d'une seule page ne suffit plus à retirer le pager : la suite servie a pris le pas sur le total");
+    hote107.remove();
+
+    // ══ (e) L'ONGLET AUDIT, PAR SON CHARGEUR RÉEL, SUR UNE PAGE SANS TOTAL ════════════════════════
+    const corpsDuJournal107 = document.querySelector("#ledger-body");
+    instrument107(!!corpsDuJournal107 && corpsDuJournal107.isConnected,
+      "le puits `#ledger-body` n'est plus dans `index.html` : l'onglet Audit n'aurait nulle part où peindre");
+    S107.LEDGER_LIMIT = 3;
+    const ENTREE107 = (id) => ({ id, ts: 1758003000 + id, kind: "alert.ack", detail: "alerte #" + id + " acquittée", hash: "abcd" + id + "ef0123456789" });
+    const journal107 = (ids, suite) => { servis107["GET /api/ledger"] = { corps: { ok: true, entries: ids.map(ENTREE107), total: null, total_capped: null, window_days: 30, since: 1757000000, until_ts: null, oldest_ts: 1756000000, older_outside_window: false, has_more: suite, next_cursor: suite ? ids[ids.length - 1] : null, limit: 3 } }; };
+    journal107([9, 8, 7], true);
+    corpsDuJournal107.replaceChildren(); await modAudit107.loadLedger(); await laisser107(40);
+    const e1107 = fleches107(corpsDuJournal107);
+    exiger(e1107.length >= 1 && !e1107[0].disabled,
+      `(107e) SANS TOTAL SERVI, L'ONGLET AUDIT NE REND AUCUNE FLÈCHE sur une page pleine dont il DIT qu'un curseur de suite est servi : le total non servi y était rendu comme ZÉRO — « ${nu107(corpsDuJournal107).slice(0, 200)} »`);
+    journal107([6, 5], false);
+    const avant107 = appels107.length;
+    if (e1107.length && typeof e1107[0].onclick === "function") { e1107[0].onclick(); await laisser107(40); }
+    exiger(appels107.slice(avant107).some((a) => a.startsWith("GET /api/ledger") && /[?&]cursor=7(&|$)/.test(a)),
+      `(107e) la flèche offerte ne prend pas la page suivante PAR CLÉ avec le curseur servi : ${JSON.stringify(appels107.slice(avant107))}`);
+    journal107([9, 8], false);
+    corpsDuJournal107.replaceChildren(); await modAudit107.loadLedger(); await laisser107(40);
+    exiger(fleches107(corpsDuJournal107).length === 0 && !/aucune entrée d'audit/.test(nu107(corpsDuJournal107)),
+      `(107e-négatif) une page unique sans total rend un pager mort, ou se dit vide alors qu'elle porte des entrées — « ${nu107(corpsDuJournal107).slice(0, 200)} »`);
+    corpsDuJournal107.replaceChildren();
+    const note107 = document.querySelector("#ledger-window-note"); if (note107) note107.replaceChildren();
+
+    // ══ (f) L'AVIS DU GESTE « BANNIR » : IDENTIFIANT SERVI OU ABSENT ════════════════════════════════
+    const SERVI107 = motDuBan107({ id: 4401 }, "203.0.113.77"), SERVI_EN107 = motDuBanEn107({ id: 4401 }, "203.0.113.77");
+    exiger(SERVI107.includes("#4401") && SERVI_EN107.includes("#4401") && /Action créée/.test(SERVI107) && /Action created/.test(SERVI_EN107) && SERVI107 !== SERVI_EN107,
+      `(107f) l'identifiant SERVI n'est pas nommé dans l'avis, dans ses deux langues : « ${SERVI107} » / « ${SERVI_EN107} »`);
+    const CORPS_SANS_ID107 = [null, {}, { id: 0 }, { id: "" }, { id: null }];
+    const absents107 = CORPS_SANS_ID107.map((j) => [motDuBan107(j, "203.0.113.77"), motDuBanEn107(j, "203.0.113.77")]);
+    exiger(absents107.every(([fr, en]) => /AUCUN identifiant/.test(fr) && /ANY identifier/.test(en) && fr.includes("203.0.113.77") && en.includes("203.0.113.77") && /onglet Réponse/.test(fr) && /Response tab/.test(en)),
+      `(107f) un corps SANS identifiant ne se dit pas comme tel, ou ne dit pas comment retrouver la riposte : ${JSON.stringify(absents107[0])}`);
+    exiger(!absents107.some(([fr, en]) => /#(null|undefined|NaN|0\b)|\{identifiant\}|\{cible\}/.test(fr + " " + en)),
+      `(107f-négatif) un identifiant INVENTÉ, ou un gabarit, atteint l'écran : ${JSON.stringify(absents107.map(([fr]) => fr.slice(0, 60)))}`);
+    exiger(!absents107.some(([fr, en]) => /Action créée|Action created/.test(fr + " " + en)),
+      `(107f-négatif) L'AVIS AFFIRME LA CRÉATION SUR UN CORPS QUI NE L'ÉTABLIT PAS : un deux cents vide ou une page de passerelle n'est pas un succès du démon — « ${absents107[0][0]} »`);
+    // LA MÊME DISTINCTION QUE L'ÉTAPE DE RUNBOOK, SUR LES MÊMES CORPS (un ensemble, pas un compte).
+    const CORPS107 = [{ id: 4401 }, { id: "x9" }, ...CORPS_SANS_ID107];
+    const divergents107 = CORPS107.filter((j) => (cleDeLIdentifiant107(j) === "identifiant_servi") !== /#/.test(motDeLEtape107(j)));
+    exiger(divergents107.length === 0,
+      `(107f) le geste « bannir » et l'étape de runbook ne tranchent pas pareil « identifiant servi / absent » sur ${JSON.stringify(divergents107)}`);
+    // PAR LE GESTE RÉEL, DANS LES DEUX INSTANCES.
+    servis107["GET /api/actions"] = { corps: { actions: [], served: 0, window: 200, total: 0, total_capped: false } };
+    const fenetre107 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !c.classList.contains("out")).pop();
+    const confirmer107 = async () => {
+      const ov = fenetre107();
+      const form = ov && ov.children[0] ? ov.children[0].children[0] : null;
+      if (form && typeof form.onsubmit === "function") form.onsubmit({ preventDefault() {} });
+      await laisser107();
+    };
+    const avisPoses107 = () => document.querySelectorAll(".toast");
+    const bannir107 = async (mod) => { const avant = avisPoses107().length; const p = mod.banIp("203.0.113.77"); await laisser107(); await confirmer107(); await p; await laisser107(60); return avisPoses107().slice(avant).map((t) => ({ texte: String(t.textContent).replace(/\s+/g, " "), genre: t.className })); };
+    servis107["POST /api/actions"] = { statut: 200, corps: "" };
+    const vide107 = await bannir107(modViz107);
+    exiger(vide107.length === 1 && vide107[0].texte === motDuBan107(null, "203.0.113.77") && /\binfo\b/.test(vide107[0].genre),
+      `(107f) SUR UN DEUX CENTS À CORPS VIDE, LE GESTE « BANNIR » ANNONCE UNE CRÉATION au lieu de dire que le démon n'a rendu AUCUN identifiant : ${JSON.stringify(vide107)}`);
+    servis107["POST /api/actions"] = { statut: 200, corps: "<html><body>no available server</body></html>" };
+    const passerelle107 = await bannir107(modViz107);
+    exiger(passerelle107.length === 1 && passerelle107[0].texte === motDuBan107(null, "203.0.113.77"),
+      `(107f) sur une page de passerelle servie en deux cents, l'avis affirme encore une création : ${JSON.stringify(passerelle107)}`);
+    servis107["POST /api/actions"] = { statut: 200, corps: { id: 4402 } };
+    const servi107 = await bannir107(modViz107);
+    exiger(servi107.length === 1 && servi107[0].texte === motDuBan107({ id: 4402 }, "203.0.113.77") && servi107[0].texte.includes("#4402") && /\bok\b/.test(servi107[0].genre),
+      `(107f-négatif) une création RÉUSSIE ne nomme pas son identifiant, ou n'est plus annoncée comme un succès : ${JSON.stringify(servi107)}`);
+    servis107["POST /api/actions"] = { statut: 200, corps: "" };
+    const videEn107 = await bannir107(modVizEn107);
+    exiger(videEn107.length === 1 && videEn107[0].texte === motDuBanEn107(null, "203.0.113.77") && videEn107[0].texte !== motDuBan107(null, "203.0.113.77"),
+      `(107f) SOUS \`LANG='en'\`, l'absence d'identifiant n'est pas dite en anglais : ${JSON.stringify(videEn107)}`);
+
+    // ══ (g) LE RELEVÉ : plus aucune phrase d'existence, deux faces sur chaque entrée ══════════════
+    const srcViz107 = sansCommentaires107(srcDe107("viz.js"));
+    exiger(!/plus de résultats/.test(srcViz107) && !/has_more \?/.test(srcViz107),
+      "(107g) web/viz.js écrit encore « plus de résultats », ou relit `has_more` en ternaire : la ligne d'état affirmerait une existence que la clé ne dit pas");
+    const deuxFaces107 = (src, nom) => {
+      const table = (src.match(new RegExp("const " + nom + " = \\{[\\s\\S]*?\\n\\};")) || [""])[0];
+      const cles = (table.match(/^ {2}\w+: \{$/gm) || []).length;
+      return cles >= 2 && (table.match(/^ {4}fr: /gm) || []).length === cles && (table.match(/^ {4}en: /gm) || []).length === cles;
+    };
+    exiger(deuxFaces107(srcDe107("viz.js"), "MOTS_DE_LA_SUITE_DU_PARCOURS") && deuxFaces107(srcDe107("viz.js"), "MOTS_DU_BANNISSEMENT_MIS_EN_FILE"),
+      "(107g) une table de la ligne d'état ou de l'avis du bannissement n'a pas ses DEUX faces sur chacune de ses entrées : une langue partirait sans l'autre");
+  } finally {
+    globalThis.fetch = fetchOrigine107;
+    globalThis.setTimeout = minuterieOrigine107;
+    if (qsize107) qsize107.value = tailleOrigine107;
+    S107.evState = etatOrigine107.fr; SEn107.evState = etatOrigine107.en;
+    S107.exploreInflight = etatOrigine107.vol; SEn107.exploreInflight = etatOrigine107.volEn;
+    S107.LEDGER_LIMIT = etatOrigine107.limite;
+    document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
+    const listeDesActions107 = document.querySelector("#act-list"); if (listeDesActions107) listeDesActions107.replaceChildren();
+  }
+  console.log("(107) OK — la ligne d'état du parcours par curseur de l'Explore dit la suite d'une page par le discriminant PARTAGÉ, déplacé au point commun où le fabricant de pager le lit : une suite servie annonce qu'un curseur est servi et que d'autres résultats PEUVENT suivre, sans jamais affirmer qu'ils existent ; une fin établie se dit « fin » ; une page PLEINE sans curseur se dit telle, et plus « fin » ; une clé ABSENTE — le repli par décalage d'une compilation ratée — ou d'un autre type est avouée comme un silence et ne décide pas du curseur ; la ligne est entière dans sa langue, résultats et serveur compris. Sans total, la flèche « suivant » suit la suite servie — offerte sur une page tronquée dont la suite est servie, retirée sur une page pleine sans curseur, la page pleine restant l'indice d'un silence — et le fabricant partagé rend enfin un pager quand une suite est servie sans total : l'onglet Audit n'y rend plus un total manquant comme zéro, et sa page pleine DITE est atteignable par clé ; une page unique sans suite ne peint aucun pager mort, et une vue qui ne sert aucune suite garde la règle d'avant. L'avis du geste « bannir » nomme l'identifiant servi et, sur un deux cents vide ou une page de passerelle, dit que le démon n'a rendu AUCUN identifiant sans affirmer la création — la même partition que l'étape de runbook, dans les deux langues. CE QUI ÉTAIT FAUX : « · fin » sur `false` est juste sur une page non pleine ; et l'onglet Audit a toujours un total ou un refus avec le démon d'aujourd'hui — le défaut était celui du fabricant partagé.");
 }
 
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;

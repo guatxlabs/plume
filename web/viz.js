@@ -1,6 +1,6 @@
 // viz.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // Explore + viz/charts: drilldown, fenetre glissante, requete interactive, rendu table/graphes (partages avec dashboards).
-import { $, CSSV, LANG, LOC, SEV, api, apiSend, bornerLePopoverSousSonAncre, causeDeLaTraceManquante, colComparator, largeursDeColonnes, confirmModal, esc, flashStopped, fmtTs, ic, makePager, muted, phraseDeLaCreationDeRiposteRefusee, phraseDeLaTraceManquante, sev, socIsAdmin, toast, tzOpts } from './core.js';
+import { $, CSSV, LANG, LOC, SEV, api, apiSend, bornerLePopoverSousSonAncre, causeDeLaTraceManquante, cleDeLaSuiteDuRegistre, colComparator, largeursDeColonnes, confirmModal, esc, flashStopped, fmtTs, ic, makePager, muted, phraseDeLaCreationDeRiposteRefusee, phraseDeLaTraceManquante, sev, socIsAdmin, toast, tzOpts } from './core.js';
 import { S } from './state.js';
 // P11.4-h : LE clic qui respecte une sélection (mécanisme partagé, `copie_et_selection.js`).
 import { clicQuiRespecteLaSelection } from './copie_et_selection.js';
@@ -274,13 +274,30 @@ function timelineEl(results) {
 // et d'une égalité EXACTE — un identifiant ajouté au message aurait fait taire l'anglais sans qu'aucune
 // garde ne rougisse (la garde du lexique compte une chaîne composée à part, hors de ses trous). Les deux
 // faces sont donc côte à côte, ici, et l'entrée du lexique qui ne traduisait plus rien est retirée.
-// `motDuBannissementMisEnFile` est exporté pour le harnais ESM (témoin 106), qui juge les deux faces et
-// l'avis que le geste peint sous chacune des deux instances de langue.
+// `motDuBannissementMisEnFile` est exporté pour le harnais ESM (témoins 106 et 107), qui juge les faces
+// et l'avis que le geste peint sous chacune des deux instances de langue.
+//
+// `P10.21-y` — L'AVIS DISTINGUE UN IDENTIFIANT SERVI D'UN IDENTIFIANT ABSENT, COMME L'ÉTAPE DE RUNBOOK.
+// `apiSend` (web/core.js) rend `null` sur un deux cents dont le corps est VIDE ou n'est pas du JSON — une
+// page de passerelle servie en deux cents en est un, et la requête n'a alors peut-être jamais atteint le
+// démon. `action_create` (daemon/src/handlers/actions.rs), lui, ne rend un succès qu'avec son `id`. Ce
+// geste annonçait pourtant « Action créée » sur ces deux formes à la fois, sans jamais nommer l'identifiant
+// qu'il recevait. L'étape « réponse » d'un runbook (`motDeLaRiposteMiseEnFile`, web/cases.js) faisait déjà
+// la distinction ; elle est reprise ici, avec la MÊME lecture (un identifiant est servi quand `j.id` est
+// vrai) et deux faces par issue. La face « absent » N'AFFIRME PAS la création — rien ne l'établit — et dit
+// de retrouver la riposte avant d'en rejouer le geste, qui en poserait une seconde.
 const MOTS_DU_BANNISSEMENT_MIS_EN_FILE = {
-  fr: "Action créée (en attente) - onglet Réponse pour l'approuver.",
-  en: 'Action created (pending) - approve it in the Response tab.' };
-function motDuBannissementMisEnFile() {
-  return LANG === 'en' ? MOTS_DU_BANNISSEMENT_MIS_EN_FILE.en : MOTS_DU_BANNISSEMENT_MIS_EN_FILE.fr;
+  identifiant_servi: {
+    fr: "Action créée (#{identifiant}, en attente) - onglet Réponse pour l'approuver.",
+    en: 'Action created (#{identifiant}, pending) - approve it in the Response tab.' },
+  identifiant_absent: {
+    fr: "Le démon a répondu sans rendre AUCUN identifiant : rien ici n'établit que l'action ban_ip {cible} a été créée. Elle ne peut pas être désignée par un numéro — la chercher dans l'onglet Réponse par son geste et sa cible avant de l'approuver, ou avant de rejouer ce geste, qui en poserait une seconde.",
+    en: 'The daemon answered without returning ANY identifier: nothing here establishes that the ban_ip {cible} action was created. It cannot be designated by a number — look for it in the Response tab by its gesture and target before approving it, or before replaying this gesture, which would queue a second one.' },
+};
+const cleDeLIdentifiantDeRiposte = (j) => (j && j.id ? 'identifiant_servi' : 'identifiant_absent');
+function motDuBannissementMisEnFile(j, cible) {
+  const mots = MOTS_DU_BANNISSEMENT_MIS_EN_FILE[cleDeLIdentifiantDeRiposte(j)];
+  return (LANG === 'en' ? mots.en : mots.fr).replace('{identifiant}', String(j && j.id)).replace('{cible}', String(cible));
 }
 
 // crée une action ban_ip (en attente d'approbation, dry-run). host optionnel = cible l'agent de cet
@@ -301,7 +318,10 @@ async function banIp(ip, host) {
   try { j = await apiSend('/actions', 'POST', body); }
   catch (e) { toast(phraseDeLaCreationDeRiposteRefusee(e), 'bad', 9000); return; }
   if (j && j.error) { toast(phraseDeLaCreationDeRiposteRefusee({ causeDuDemon: String(j.error).trim() }), 'bad', 9000); return; }
-  toast(motDuBannissementMisEnFile(), 'ok');
+  // `P10.21-y` — un identifiant servi se nomme, dans le registre du succès ; son absence se dit dans celui
+  // de l'information, et assez longtemps pour être lue (même partage que l'étape de runbook).
+  if (cleDeLIdentifiantDeRiposte(j) === 'identifiant_servi') toast(motDuBannissementMisEnFile(j, ip), 'ok');
+  else toast(motDuBannissementMisEnFile(j, ip), 'info', 9000);
   // `P10.21-a` — LA RIPOSTE EST EN FILE ET SA TRACE MANQUE : ce geste le recevait et le laissait
   // tomber. `action_create` sert l'aveu À CÔTÉ du succès, sous la clé que le lecteur commun nomme :
   // annoncer la mise en file sans lui, c'est laisser un geste de riposte hors de la trace non
@@ -2580,6 +2600,54 @@ function rerenderExplorePager() {
   else renderEvents($('#qresult'), S.evState.lastCols, S.evState.lastRows);
 }
 
+// =================================================================================================
+// `P10.21-x` — LA LIGNE D'ÉTAT DU PARCOURS PAR CURSEUR DIT LA SUITE PAR LE DISCRIMINANT PARTAGÉ.
+//
+// CE QUE LE DÉMON SERT (`keyset_finalize`, daemon/src/handlers/query.rs). `has_more` vaut « page pleine
+// OU tronquée au plafond, ET curseur formé » : c'est un « une suite PEUT venir », jamais « d'autres
+// résultats existent » — la dernière page d'un résultat de cent lignes exactement le rend vrai sans rien
+// derrière. Il est FAUX sur une page NON pleine (vraie fin) mais AUSSI sur une page pleine dont le curseur
+// n'a pas pu être formé (le démon préfère s'arrêter que boucler) ; et il est ABSENT quand la compilation
+// du curseur a échoué et que la page est servie par décalage (`keyset_compile_failed`).
+//
+// CE QUE CETTE LIGNE EN FAISAIT. « plus de résultats → » sur `true` — une existence que la clé n'affirme
+// pas —, et « · fin » sur tout le reste : la clé fausse, et la clé ABSENTE, si bien qu'un silence du
+// démon se lisait comme la fin du résultat. Les deux fragments étaient français sous `LANG='en'` : pris
+// dans un nœud composé, le lexique ne pouvait pas les atteindre.
+//
+// CE QU'ELLE DIT. Les trois issues de `cleDeLaSuiteDuRegistre` (web/core.js, le même discriminant que le
+// panneau de rétention et l'onglet Audit) et UN raffinement que seule cette route rend nécessaire : un
+// « pas de suite » sur une page PLEINE n'est pas une fin établie — c'est un curseur que le démon n'a pas
+// pu former. Les deux faces sont côte à côte, choisies par `LANG` au moment d'écrire.
+// =================================================================================================
+const MOTS_DE_LA_SUITE_DU_PARCOURS = {
+  il_en_existe_peut_etre_d_autres: {
+    fr: " · le démon sert un curseur de suite : d'autres résultats PEUVENT suivre (▶), sans garantie qu'il y en ait",
+    en: ' · the daemon serves a continuation cursor: further results MAY follow (▶), with no guarantee that any do' },
+  aucune_suite: {
+    fr: ' · fin',
+    en: ' · end' },
+  page_pleine_sans_curseur: {
+    fr: " · page PLEINE sans curseur de suite : le démon n'a pas pu en former un, la fin du résultat n'est pas établie",
+    en: ' · FULL page without a continuation cursor: the daemon could not form one, the end of the result is not established' },
+  suite_non_dite: {
+    fr: " · le démon n'a PAS dit si une suite existe : rien n'établit que ces résultats sont les derniers",
+    en: ' · the daemon did NOT say whether a continuation exists: nothing establishes that these results are the last' },
+};
+function cleDeLaSuiteDuParcours(j, lignesServies, taillePage) {
+  const cle = cleDeLaSuiteDuRegistre(j);
+  return (cle === 'aucune_suite' && lignesServies >= taillePage) ? 'page_pleine_sans_curseur' : cle;
+}
+function motDeLaSuiteDuParcours(cle) {
+  return LANG === 'en' ? MOTS_DE_LA_SUITE_DU_PARCOURS[cle].en : MOTS_DE_LA_SUITE_DU_PARCOURS[cle].fr;
+}
+// Les deux autres mots de la même ligne, pour qu'une ligne anglaise ne le soit pas qu'à moitié.
+const MOTS_DE_LA_LIGNE_DU_PARCOURS = {
+  resultats: { fr: 'résultats', en: 'results' },
+  serveur: { fr: 'serveur', en: 'server' },
+};
+const motDeLaLigneDuParcours = (cle) => (LANG === 'en' ? MOTS_DE_LA_LIGNE_DU_PARCOURS[cle].en : MOTS_DE_LA_LIGNE_DU_PARCOURS[cle].fr);
+
 // charge UNE page d'events depuis le SERVEUR (curseur keyset ou LIMIT/OFFSET) — re-fetch à chaque changement de page/taille
 async function evLoad() {
   S.evState.pageSize = evPageSize();
@@ -2621,7 +2689,11 @@ async function evLoad() {
       // le total connu, avec saut à une page via OFFSET puis re-collage au curseur.
       S.evState.totalCapped = false;
       if (!S.evState.cursors) S.evState.cursors = [null];
-      S.evState.cursors[S.evState.page + 1] = j.next_cursor || null;
+      // `P10.21-x` — LA SUITE SERVIE ARME LA FLÈCHE du pager tant que le total n'est pas connu, et le
+      // curseur suit la MÊME lecture : une valeur que la ligne n'avoue pas comme une suite ne décide pas
+      // non plus de la page suivante (pour un booléen servi avec son curseur, rien ne change).
+      S.evState.suite = cleDeLaSuiteDuRegistre(j);
+      S.evState.cursors[S.evState.page + 1] = S.evState.suite === 'il_en_existe_peut_etre_d_autres' ? j.next_cursor : null;
     } else if (!S.evState.realTotal) {   // total inline (capé 10k) pour l'affichage IMMÉDIAT, tant que le COUNT async n'a pas donné le VRAI total
       S.evState.total = (typeof j.total === 'number') ? j.total : rows.length;
       S.evState.totalCapped = !!j.total_capped;   // COUNT borné serveur : plafonné -> le COUNT async le remplace par le vrai (| table inclus)
@@ -2639,9 +2711,9 @@ async function evLoad() {
     const net = Math.round(performance.now() - t0);
     if (keyset) {
       const kp = S.evState.total >= 0 ? Math.max(1, Math.ceil(S.evState.total / S.evState.pageSize)) : null;
-      const ktot = S.evState.total >= 0 ? `${S.evState.total.toLocaleString('fr-FR')} résultats · ` : '';
-      const kpg = kp ? `page ${S.evState.page + 1} / ${kp}` : `page ${S.evState.page + 1}${j.has_more ? ' · plus de résultats →' : ' · fin'}`;
-      $('#qstats').textContent = `${ktot}${kpg} · serveur ${srv} ms · total ${net} ms`;
+      const ktot = S.evState.total >= 0 ? `${S.evState.total.toLocaleString(LOC)} ${motDeLaLigneDuParcours('resultats')} · ` : '';
+      const kpg = kp ? `page ${S.evState.page + 1} / ${kp}` : `page ${S.evState.page + 1}${motDeLaSuiteDuParcours(cleDeLaSuiteDuParcours(j, rows.length, limit))}`;
+      $('#qstats').textContent = `${ktot}${kpg} · ${motDeLaLigneDuParcours('serveur')} ${srv} ms · total ${net} ms`;
       if (heavyJump) $('#qstats').textContent = `${ktot}page ${S.evState.page + 1} lointaine trop lourde (budget dépassé) — utilise ◀ / ▶ pour un parcours fiable, ou affine la requête`;
       // P11.9-c — une page sautée servie PARTIELLE le dit dans la ligne d'état, pas seulement dans un badge.
       else if (jumpOff > 0 && j.stats && j.stats.truncated) $('#qstats').textContent = `${ktot}page ${S.evState.page + 1} atteinte par saut direct : contenu partiel (plafond serveur) — ◀ / ▶ parcourent le résultat complet par curseur`;
@@ -2673,7 +2745,7 @@ async function evLoad() {
           S.evState.total = tot; S.evState.totalCapped = false; S.evState.realTotal = true;
           rerenderExplorePager();
           const pg = Math.max(1, Math.ceil(tot / S.evState.pageSize));
-          $('#qstats').textContent = `${tot.toLocaleString('fr-FR')} résultats · page ${S.evState.page + 1} / ${pg}`;
+          $('#qstats').textContent = `${tot.toLocaleString(LOC)} ${motDeLaLigneDuParcours('resultats')} · page ${S.evState.page + 1} / ${pg}`;
         } else if (S.evState.q === cq && S.evState.totalError) {
           // `P10.7-g` (lot 103) — le compte n'a pas abouti : la ligne d'état porte la cause servie, pas seulement « ? ».
           const n = $('#qstats');
@@ -2789,6 +2861,6 @@ async function runQuery() {
 function showQExport(has) { const el = $('#qexport'); if (el) el.hidden = !has; }
 
 
-export { banIp, motDuBannissementMisEnFile, clearDrillCrumb, clearZoom, coldShareBadge, coverageBadge, coverageHorizonNodes, renderQBadge, provenanceBadge, currentFrom, currentTo, evLoad, exploreFrom, exploreTo, noeudsDeVizReglee, qHistGo, queryCount, refusDeReglage, reglageLu, renderViz, runQ, runQuery, setZoom, sondage, stopExplore, tableEl, updateZoomBadge, vizElement, vizSansPorte, refusDeRepresentation, truncationBadge };
+export { banIp, cleDeLIdentifiantDeRiposte, cleDeLaSuiteDuParcours, motDeLaSuiteDuParcours, motDuBannissementMisEnFile, clearDrillCrumb, clearZoom, coldShareBadge, coverageBadge, coverageHorizonNodes, renderQBadge, provenanceBadge, currentFrom, currentTo, evLoad, exploreFrom, exploreTo, noeudsDeVizReglee, qHistGo, queryCount, refusDeReglage, reglageLu, renderViz, runQ, runQuery, setZoom, sondage, stopExplore, tableEl, updateZoomBadge, vizElement, vizSansPorte, refusDeRepresentation, truncationBadge };
 // `P10.7-g` (lot 103) — exporté pour le harnais ESM (scénario 91), qui lit la cause d'un total non établi.
 export { exploreCount };

@@ -533,6 +533,42 @@ function colComparator(rows, get) {
   };
 }
 
+// =================================================================================================
+// `P10.21-a`, déplacé ici par `P10.21-x` — LA SUITE D'UNE PAGE SERVIE, LUE UNE FOIS POUR TOUTE LA CONSOLE.
+//
+// CE QUE LE DÉMON SERT. Deux routes posent `has_more`, et aucune ne dit « d'autres lignes EXISTENT » :
+//   · `ledger_page` (daemon/src/handlers/admin_ui.rs) : `has_more` vaut `!next_cursor.is_null()`, et le
+//     curseur n'est servi que sur une page PLEINE — un registre de cinquante entrées exactement le rend
+//     vrai sans qu'aucune ligne ne soit derrière ;
+//   · `keyset_finalize` (daemon/src/handlers/query.rs), pour le parcours par curseur de l'Explore :
+//     `has_more` vaut « page pleine OU tronquée au plafond, ET curseur formé ». Il est FAUX sur une page
+//     pleine dont le curseur n'a pas pu être formé (colonnes `ts`/`id` absentes : le démon préfère
+//     s'arrêter que boucler), et il est ABSENT quand la compilation du curseur a échoué et que la page
+//     est servie par décalage (`keyset_compile_failed`).
+// Ce qui se lit en commun, et seulement ça : trois issues — une suite PEUT venir, le démon dit qu'il n'y
+// en a pas, le démon n'a rien dit. Une valeur d'un autre type n'est ni une suite ni une fin.
+//
+// POURQUOI ICI, ET PLUS DANS `web/retention.js`. Le fabricant de pager, juste en dessous, lit désormais
+// ces issues pour armer sa flèche « suivant » quand aucun total n'est servi ; or ce module ne peut pas
+// importer `retention.js` — c'est la racine du graphe, que `retention.js` importe lui-même. Garder le
+// discriminant là-bas aurait obligé à RÉÉCRIRE ses clés ici, c'est-à-dire à tenir deux fois le même
+// vocabulaire. Le nom est conservé tel quel : il est cité par la roadmap et par le harnais ESM.
+// =================================================================================================
+function cleDeLaSuiteDuRegistre(j) {
+  if (!j || typeof j.has_more !== 'boolean') return 'suite_non_dite';
+  return j.has_more ? 'il_en_existe_peut_etre_d_autres' : 'aucune_suite';
+}
+// LA FLÈCHE « SUIVANT » D'UN PARCOURS SANS TOTAL, PILOTÉE PAR LA SUITE SERVIE. Une suite servie l'offre,
+// même sur une page que le plafond du démon a tronquée sous sa taille ; un « pas de suite » la retire,
+// même sur une page pleine dont le curseur n'a pas pu être formé. Quand le démon n'a rien dit — ou
+// qu'une vue ne sert aucune suite (alertes, tableaux de bord) —, la page pleine reste le seul indice, et
+// c'est la règle d'avant, inchangée pour ces vues.
+function laSuiteOffreLaPageSuivante(suite, servies, taille) {
+  if (suite === 'il_en_existe_peut_etre_d_autres') return true;
+  if (suite === 'aucune_suite') return false;
+  return servies >= taille;
+}
+
 function makePager(state, onGo) {
   const PS = state.pageSize, total = state.total, numbered = total >= 0;
   const pages = numbered ? Math.max(1, Math.ceil(total / PS)) : state.page + (state.shown >= PS ? 2 : 1);
@@ -551,7 +587,10 @@ function makePager(state, onGo) {
     const s = document.createElement('span'); s.className = 'evdots'; s.textContent = 'page ' + (state.page + 1); wrap.appendChild(s);
   }
   const next = document.createElement('button'); next.type = 'button'; next.className = 'evnext'; next.title = 'suivant'; next.textContent = '▶';
-  next.disabled = numbered ? state.page >= pages - 1 : state.shown < PS;
+  // `P10.21-x` — sans total, la flèche suit la suite SERVIE (`state.suite`, une clé de
+  // `cleDeLaSuiteDuRegistre`) et non plus la seule page pleine ; une vue qui n'en pose aucune garde la
+  // règle d'avant.
+  next.disabled = numbered ? state.page >= pages - 1 : !laSuiteOffreLaPageSuivante(state.suite, state.shown, PS);
   next.onclick = () => onGo(state.page + 1);
   wrap.appendChild(next);
   const tot = document.createElement('span'); tot.className = 'evtot';
@@ -817,8 +856,9 @@ function poserLaRechercheDeLaListe(host, opts) {
 // dans-carte). Deux modes :
 //   - 'client' : `rows` complet fourni ; tri (colComparator) + slice EN JS, re-slice au changement de
 //     page/tri (aucun fetch). Petit/moyen volume déjà chargé.
-//   - 'server' : `fetchPage({limit,offset,sort,dir})` -> {rows,total} ; page/tri => re-fetch (le navigateur
-//     ne tient qu'une page). Grand volume.
+//   - 'server' : `fetchPage({limit,offset,sort,dir})` -> {rows,total,suite?} ; page/tri => re-fetch (le
+//     navigateur ne tient qu'une page). Grand volume. `suite` (facultatif, `P10.21-x`) = la clé que
+//     `cleDeLaSuiteDuRegistre` rend du corps servi : elle arme la flèche « suivant » quand `total` manque.
 // opts.columns=[{key,label,sortable,align:'l|c|r',render:(row)=>Node|string,sortVal:(row)=>v}] (rendu en
 // <table.qtable>) OU opts.renderRow:(row)=>Node (liste libre, ex. lignes badge/action). `render`/`renderRow`
 // renvoient des NŒUDS -> badges & boutons d'action survivent. opts: {mode,pageSize=50,rows,fetchPage,columns,
@@ -993,7 +1033,16 @@ function pagedList(host, opts) {
     try { r = await opts.fetchPage({ limit: state.pageSize, offset: state.page * state.pageSize, sort: sort ? sort.key : '', dir: sort ? (sort.dir > 0 ? 'asc' : 'desc') : '' }); }
     catch (e) { cible.replaceChildren(muted('erreur : ' + (e && e.message ? e.message : e))); return; }
     const rows = (r && r.rows) || [];
-    state.total = (r && typeof r.total === 'number') ? r.total : rows.length;
+    // `P10.21-x` — SANS TOTAL SERVI, LA SUITE SERVIE DÉCIDE S'IL Y A UNE PAGE SUIVANTE. Le repli d'avant
+    // (`total` = lignes servies) faisait de toute page une page UNIQUE : aucun pager n'était rendu, et une
+    // page pleine que la vue venait de DIRE (« un curseur de suite est servi ») n'était pas atteignable.
+    // Une vue qui rend `suite` (une clé de `cleDeLaSuiteDuRegistre`) passe donc en pager NON NUMÉROTÉ
+    // (`total` = -1, « inconnu ») dès qu'une page suivante est offerte ou qu'on n'est plus sur la première ;
+    // sinon — une seule page, ou une vue qui ne sert aucune suite — la règle d'avant tient.
+    state.suite = (r && typeof r.suite === 'string') ? r.suite : undefined;
+    if (r && typeof r.total === 'number') state.total = r.total;
+    else if (state.suite !== undefined && (state.page > 0 || laSuiteOffreLaPageSuivante(state.suite, rows.length, state.pageSize))) state.total = -1;
+    else state.total = rows.length;
     // LE PAGINATEUR DIT LA PAGE, LA RECHERCHE DIT CE QU'ELLE MONTRE DEDANS. `shown` reste le nombre de
     // lignes SERVIES : c'est lui qui borne « 1–50 » et qui arme le bouton suivant, et le faire varier avec
     // la recherche ferait mentir le paginateur sur la page où l'on se trouve.
@@ -1837,6 +1886,9 @@ const humanAge = s => { s = Number(s) || 0; return s < 90 ? s + ' s' : s < 5400 
 export function setSocTZ(v) { socTZ = v; }
 export {
   $, CSSV, socTZ, LANG, LOC, tzOpts, fmtTs, SEV, sev, bool, esc, ICONS, ic, flashStopped, stopBtn, closeModals, withBusy, toast, showErr, modal, confirmModal, csvCell, toCSV, downloadText, tsSlug, exportPDF, exportBar, closeMiniMenu, miniMenu, api, apiSend, transientGatewayMsg, muted, fetchInto, colComparator, makePager, pageNums, pagedList,
+  // `P10.21-x` — le discriminant de la suite d'une page et la règle de la flèche qu'il arme : lus par le
+  // panneau de rétention, l'onglet Audit et la ligne d'état de l'Explore, jugés par le harnais ESM.
+  cleDeLaSuiteDuRegistre, laSuiteOffreLaPageSuivante,
   socRole, socIsAdmin, applyRoleClass, controleDEcritureSous, motiverLeRefusAuLecteur, roleSansEcriturePartagee, managedBadge, gateDeleteBtn, formMsg, contentSubmit, contentDelete, SEVCOL, lsSet, collapsibleGroup, humanAge,
   confirmWithConsequence, disclosure, marquerLesCellulesTronquees, celluleDeborde,
   // `P10.20-b` (rang 2) — LE LECTEUR DE CAUSE EST EXPOSÉ, PAS RECOPIÉ. `api()` et `apiSend()` attachent

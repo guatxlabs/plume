@@ -63,6 +63,35 @@ pub(crate) const CAUSE_MFA_NON_DESACTIVEE: &str = "DOUBLE AUTHENTIFICATION TOUJO
      n'a pas pris la suppression du second facteur. Le compte exige TOUJOURS un code à la connexion, et \
      le registre n'atteste aucune désactivation. Réessayez.";
 
+/// `P10.22-r` — UNE LISTE DE CODES DE SECOURS QUI N'A PAS ÉTÉ LUE N'ACCUSE PERSONNE. Une lecture refusée ou
+/// un contenu corrompu rendait « code MFA invalide » (401) : un refus, mais une FAUSSE cause, qui accusait
+/// l'utilisateur d'un code peut-être juste — et le comptait comme un échec d'authentification.
+pub(crate) const CAUSE_CODES_DE_SECOURS_ILLISIBLES: &str = "CODES DE SECOURS NON LUS, CODE NI ACCEPTÉ NI \
+     REFUSÉ : la liste des codes de secours de ce compte n'a pas pu être lue (lecture refusée ou contenu \
+     corrompu). On ne sait donc pas si le code présenté est juste : il n'est PAS déclaré invalide, il n'est \
+     compté comme aucun échec, aucune session n'est posée et rien n'est modifié. Réessayez, ou présentez un \
+     code TOTP.";
+
+/// `P10.22-l` — L'ACTIVATION QUE LA BASE N'A PAS PRISE NE SERT AUCUN CODE DE SECOURS. La route rendait un
+/// 500 anonyme (« activation MFA échouée ») ; elle NOMME désormais ce qui est vrai après le refus.
+pub(crate) const CAUSE_MFA_NON_ACTIVEE: &str = "DOUBLE AUTHENTIFICATION NON ACTIVÉE : la base n'a pas pris \
+     l'écriture qui active le second facteur. Le compte reste SANS second facteur, aucun code de secours \
+     n'est servi (aucun n'a été enregistré), et le registre n'atteste aucune activation. Réessayez.";
+
+/// `P10.22-l` — DEUX ACTIVATIONS NE SE RECOUVRENT PAS. La lecture de l'enrôlement et l'écriture qui l'active
+/// n'étaient pas liées : entre les deux, une autre requête a activé ce même enrôlement, ou l'a remplacé par
+/// une graine neuve, ou l'a supprimé. Cette requête n'active RIEN et ne sert aucun code.
+pub(crate) const CAUSE_ENROLEMENT_CHANGE_PENDANT_LA_VERIFICATION: &str = "ENRÔLEMENT CHANGÉ PENDANT LA \
+     VÉRIFICATION : entre la lecture de l'enrôlement et son activation, une autre requête l'a activé, \
+     remplacé par une graine neuve ou supprimé. Cette requête n'active rien et ne sert aucun code de \
+     secours ; rechargez l'état de la double authentification.";
+
+/// `P10.22-m` — LE SECOND FACTEUR SE FREINE PAR COMPTE. Voir `second_facteur_freine`.
+pub(crate) const CAUSE_SECOND_FACTEUR_FREINE: &str = "TROP D'ÉCHECS DU SECOND FACTEUR SUR CE COMPTE : les \
+     codes sont refusés SANS être examinés jusqu'à la fin du délai (en-tête Retry-After), quelle que soit \
+     l'adresse d'où ils viennent et quel que soit le ticket. Un code juste accepté remet le compte à zéro ; \
+     une connexion par mot de passe, non.";
+
 // ---------- utilitaires locaux ----------
 
 /// Nom de provider valide (segment d'URL sûr) : alphanumérique + `. _ -`, non vide, <= 64.
@@ -704,6 +733,129 @@ pub(crate) async fn ldap_login_post(State(st): State<AppState>, ConnectInfo(peer
 // MFA TOTP : enrôlement / vérif / désactivation (self-service authentifié) + challenge au login.
 // ================================================================================================
 
+// `P10.22-m` — LE SECOND FACTEUR SE FREINE PAR COMPTE, PAS PAR COUPLE (COMPTE, ADRESSE).
+//
+// CE QUI A ÉTÉ MESURÉ LE 2026-09-23, SUR LA FORME D'AVANT (un attaquant qui tient le mot de passe, donc un
+// ticket ; seuil 10, les défauts du produit) :
+//   * une adresse, un ticket : 10 codes faux, puis 429 — le verrou par couple (compte, adresse) tient SEUL ;
+//   * vingt adresses, UN SEUL ticket rejoué : 200 codes faux sans autre frein que dix par adresse, et le code
+//     juste présenté depuis une vingt-et-unième adresse avec le MÊME ticket ouvrait la session ;
+//   * UNE SEULE adresse, reconnexion par le mot de passe toutes les neuf erreurs : 180 codes faux, ZÉRO 429 —
+//     la connexion réussie par mot de passe (`login_post` -> `auth_record_success`) REMET À ZÉRO le compteur
+//     du couple que les échecs du second facteur alimentent. L'énoncé (« ne vaut que par couple ») sous-
+//     comptait : même par couple, il ne valait rien contre qui tient le mot de passe ;
+//   * désactivation (`mfa_disable`) et activation (`mfa_verify`), session tenue : 100 codes faux chacune,
+//     AUCUN échec compté nulle part.
+// Au débit que laisse le budget d'authentification par adresse (120 requêtes / 10 s), la troisième voie seule
+// fait ~10 codes par seconde depuis UNE adresse, soit ~33 000 s d'espérance pour tomber sur l'un des trois
+// codes valides d'une fenêtre (1 sur ~333 000) — calcul, pas mesure.
+//
+// L'ARBITRAGE : PAR COMPTE, ET SEULEMENT DERRIÈRE LE PREMIER FACTEUR. Un compteur d'échecs PAR COMPTE sur le
+// MOT DE PASSE serait un déni de service trivial : n'importe qui verrouillerait l'administrateur en tapant
+// son nom. Celui-ci n'est atteignable QU'AVEC un ticket signé (donc le mot de passe) ou une session du
+// compte : sans le premier facteur, on ne peut ni l'incrémenter ni le déclencher (le témoin le joue avec des
+// tickets forgés). Celui qui tient le mot de passe peut, lui, geler l'étape du code pour le titulaire — au
+// plus `lock_max_s` à chaque fois ; c'est le prix assumé : l'alternative est de le laisser DEVINER le second
+// facteur, et la parade au gel est celle d'une compromission du mot de passe (le changer : plus de ticket
+// neuf, ceux déjà émis expirent en cinq minutes). Le premier facteur n'est PAS freiné par ce compte : le
+// titulaire obtient toujours son ticket.
+//
+// POURQUOI PAS PAR TICKET : le ticket se réémet à volonté avec le mot de passe ; borner ses échecs ne borne
+// pas ceux du compte. Il reste sans état (il sert cinq minutes, rejouable) — ce n'est plus un levier de
+// devinette, puisque le compteur ne dépend ni du ticket ni de l'adresse.
+//
+// CE QUE LE FREIN REPREND DU VERROU EXISTANT, ET CE QU'IL EN CHANGE. Mêmes réglages (`lock_threshold`,
+// `lock_base_s`, `lock_max_s` ; seuil 0 = tous les verrous coupés, par décision de l'exploitant) et même
+// progression exponentielle bornée. Deux différences, voulues : (1) seul un code juste ACCEPTÉ le remet à
+// zéro, jamais le mot de passe ; (2) il oublie après UN JOUR sans échec, pas quinze minutes — avec un oubli
+// de 900 s égal au plafond de 900 s, attendre la fin du plus long verrou suffisait à rendre dix essais neufs.
+//
+// OÙ IL VIT : un état de processus (comme le cache anti-rejeu SAML de `idp/saml.rs`), clé (base, compte). Sa
+// taille est bornée par le nombre de comptes RÉELS dont on tient le premier facteur (le ticket est signé : on
+// n'y fabrique pas de nom), et il est purgé au-delà d'`AUTH_FAIL_CAP`. Il ne survit pas à un redémarrage.
+struct EchecsDuSecondFacteur {
+    consecutifs: u32,
+    freine_jusqu_a: Option<Instant>,
+    dernier: Instant,
+}
+
+/// Un jour sans échec efface le compte des échecs consécutifs du second facteur (`P10.22-m`).
+const MEMOIRE_DES_ECHECS_DU_SECOND_FACTEUR: Duration = Duration::from_secs(24 * 3600);
+
+fn echecs_du_second_facteur() -> &'static parking_lot::Mutex<HashMap<(String, String), EchecsDuSecondFacteur>> {
+    static S: std::sync::OnceLock<parking_lot::Mutex<HashMap<(String, String), EchecsDuSecondFacteur>>> = std::sync::OnceLock::new();
+    S.get_or_init(|| parking_lot::Mutex::new(HashMap::new()))
+}
+
+/// La clé du frein : le COMPTE, dans la base qui le porte — jamais l'adresse, jamais le ticket.
+fn cle_du_frein_du_second_facteur(st: &AppState, user: &str) -> (String, String) {
+    (st.db_path.as_str().to_string(), user.to_string())
+}
+
+/// `P10.22-m` — ce compte est-il freiné au second facteur ? `Some(secondes restantes)` si oui. Consulté AVANT
+/// d'examiner le code, par les trois routes qui jugent un code : `login_mfa_post`, `mfa_disable`, `mfa_verify`.
+pub(crate) fn second_facteur_freine(st: &AppState, user: &str) -> Option<u64> {
+    if st.lock_threshold == 0 {
+        return None;
+    }
+    let g = echecs_du_second_facteur().lock();
+    let jusqu_a = g.get(&cle_du_frein_du_second_facteur(st, user))?.freine_jusqu_a?;
+    let maintenant = Instant::now();
+    (maintenant < jusqu_a).then(|| (jusqu_a - maintenant).as_secs().max(1))
+}
+
+/// `P10.22-m` — un code présenté et REFUSÉ (faux, ou pas déjà consommé). Au seuil, le compte est freiné.
+fn compter_un_echec_du_second_facteur(st: &AppState, user: &str) {
+    if st.lock_threshold == 0 {
+        return;
+    }
+    let maintenant = Instant::now();
+    let mut g = echecs_du_second_facteur().lock();
+    if g.len() > AUTH_FAIL_CAP {
+        g.retain(|_, e| e.dernier.elapsed() < MEMOIRE_DES_ECHECS_DU_SECOND_FACTEUR);
+    }
+    let e = g
+        .entry(cle_du_frein_du_second_facteur(st, user))
+        .or_insert(EchecsDuSecondFacteur { consecutifs: 0, freine_jusqu_a: None, dernier: maintenant });
+    if e.dernier.elapsed() > MEMOIRE_DES_ECHECS_DU_SECOND_FACTEUR {
+        e.consecutifs = 0;
+        e.freine_jusqu_a = None;
+    }
+    e.consecutifs = e.consecutifs.saturating_add(1);
+    e.dernier = maintenant;
+    if e.consecutifs >= st.lock_threshold {
+        // même progression que le verrou par couple : base * 2^(échecs au-delà du seuil), plafonnée.
+        let au_dela = (e.consecutifs - st.lock_threshold).min(20);
+        let secondes = st.lock_base_s.saturating_mul(1u64 << au_dela).min(st.lock_max_s);
+        e.freine_jusqu_a = Some(maintenant + Duration::from_secs(secondes));
+    }
+}
+
+/// `P10.22-m` — un code juste ACCEPTÉ (session posée, MFA activée ou désactivée) remet le compte à zéro. Le
+/// mot de passe, lui, ne le touche pas : c'est ce qui rendait la devinette illimitée.
+fn remettre_le_second_facteur_a_zero(st: &AppState, user: &str) {
+    if st.lock_threshold == 0 {
+        return;
+    }
+    echecs_du_second_facteur().lock().remove(&cle_du_frein_du_second_facteur(st, user));
+}
+
+/// TÉMOINS SEULEMENT — les échecs consécutifs comptés au second facteur de ce compte : ce qui permet de
+/// prouver qu'un refus NOMMÉ (503) ou un refus AVANT examen (409) ne compte rien.
+#[cfg(test)]
+pub(crate) fn echecs_consecutifs_du_second_facteur(st: &AppState, user: &str) -> u32 {
+    echecs_du_second_facteur().lock().get(&cle_du_frein_du_second_facteur(st, user)).map_or(0, |e| e.consecutifs)
+}
+
+fn refus_du_frein_du_second_facteur(attente: u64) -> Response {
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        [(header::RETRY_AFTER, attente.to_string())],
+        Json(json!({ "error": CAUSE_SECOND_FACTEUR_FREINE })),
+    )
+        .into_response()
+}
+
 /// `P10.20-b` — CE COMPTE EXIGE-T-IL UN SECOND FACTEUR ? TROIS ISSUES, JAMAIS DEUX.
 ///
 /// `Ok(true)` : MFA ACTIVE (`enabled` non nul). `Ok(false)` : AUCUNE ligne, ou une ligne à `enabled=0`
@@ -782,19 +934,33 @@ pub(crate) async fn mfa_verify(State(st): State<AppState>, Extension(au): Extens
         return deny_multitenant();
     }
     let code = b.trimmed("code");
-    let row: Option<(String, i64)> = {
+    let row: Option<(String, i64, i64)> = {
         let conn = st.db.lock();
-        conn.query_row("SELECT secret,last_step FROM user_mfa WHERE user=?1", params![au.name], |r| Ok((r.get(0)?, r.get(1)?))).ok()
+        conn.query_row("SELECT secret,enabled,last_step FROM user_mfa WHERE user=?1", params![au.name], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).ok()
     };
-    let Some((secret, last_step)) = row.filter(|(s, _)| !s.is_empty()) else {
+    let Some((secret, enabled, last_step)) = row.filter(|(s, _, _)| !s.is_empty()) else {
         return bad_req("aucun enrôlement en cours (appelez /api/mfa/enroll d'abord)");
     };
+    // `P10.22-l` — L'ACTIVATION EST LA TRANSITION 0 -> 1, ET ELLE SE REFUSE AVANT D'EXAMINER LE CODE. Mesuré le
+    // 2026-09-23 : sur une MFA DÉJÀ ACTIVE, un code frais rendait 200, remplaçait la liste des codes de secours
+    // du titulaire par dix codes neufs SERVIS EN CLAIR à l'appelant, et reposait « activée » au registre ; un
+    // code faux rendait 401 — un oracle sans aucun frein. Une session volée pouvait donc deviner le TOTP par
+    // cette route et repartir avec dix codes de secours. Le refus vient AVANT l'examen du code : juste ou faux,
+    // la réponse est la même.
+    if enabled != 0 {
+        return err_json(StatusCode::CONFLICT, "MFA déjà active (désactivez-la d'abord)");
+    }
+    if let Some(attente) = second_facteur_freine(&st, &au.name) {
+        return refus_du_frein_du_second_facteur(attente);
+    }
     // ANTI-REJEU : le pas TOTP matché doit être STRICTEMENT postérieur au dernier pas consommé (last_step=-1
     // à l'enrôlement -> tout pas réel passe ; un code déjà utilisé serait <= last_step -> refusé).
     let Some(step) = totp_verify_step(&secret, &code, now(), 30, 6, 1) else {
+        compter_un_echec_du_second_facteur(&st, &au.name);
         return err_json(StatusCode::UNAUTHORIZED, "code TOTP invalide");
     };
     if step <= last_step {
+        compter_un_echec_du_second_facteur(&st, &au.name);
         return err_json(StatusCode::UNAUTHORIZED, "code TOTP déjà utilisé (anti-rejeu)");
     }
     let Some((clear, hashes)) = gen_recovery_codes(10) else {
@@ -802,14 +968,37 @@ pub(crate) async fn mfa_verify(State(st): State<AppState>, Extension(au): Extens
     };
     {
         let conn = st.db.lock();
-        if conn.execute(
-            "UPDATE user_mfa SET enabled=1, recovery=?1, last_step=?2, updated=?3 WHERE user=?4",
-            params![json!(hashes).to_string(), step, now(), au.name],
-        ).is_err() {
-            return server_err("activation MFA échouée");
+        // `P10.22-l` — L'ACTIVATION EST UN COMPARE-ET-POSE SUR L'ENRÔLEMENT QUI A ÉTÉ LU. La lecture et
+        // l'écriture sont sous deux verrous distincts ; l'écriture ne rejugeait rien (`WHERE user=?`). Mesuré
+        // sur deux connexions : deux activations simultanées du même code -> deux 200, deux jeux de codes de
+        // secours servis, UN SEUL enregistré, « activée » deux fois au registre ; et une graine RÉENRÔLÉE
+        // entre la lecture et l'écriture était activée — une graine que le code présenté n'a jamais prouvée.
+        //
+        // LES DEUX CLAUSES QUI FERMENT LA COURSE, ET CELLE DE L'ÉNONCÉ QUI NE LA FERMAIT PAS. `enabled=0` :
+        // une seule requête franchit la transition. `secret=?5` : ce qui s'active est la graine que le code a
+        // prouvée. La clause que l'énoncé prescrivait, `last_step < ?`, ne ferme PAS le réenrôlement (il remet
+        // `last_step` à -1 : mutation jouée, le témoin du réenrôlement rougit sous elle seule) et ne ferme la
+        // double activation que si les deux présentent le MÊME pas — aux pas p puis p+1, la seconde passe
+        // (raisonné, non joué ; le témoin joue le même code, où `last_step` et `enabled=0` suffisent chacun).
+        match conn.execute(
+            "UPDATE user_mfa SET enabled=1, recovery=?1, last_step=?2, updated=?3 WHERE user=?4 AND enabled=0 AND secret=?5",
+            params![json!(hashes).to_string(), step, now(), au.name, secret],
+        ) {
+            Ok(1) => {}
+            // L'enrôlement lu n'est plus là tel quel : une autre requête a gagné. Rien n'est activé ICI.
+            Ok(0) => return err_json(StatusCode::CONFLICT, CAUSE_ENROLEMENT_CHANGE_PENDANT_LA_VERIFICATION),
+            Ok(n) => {
+                eprintln!("[mfa] WARN activation de '{}' : {n} ligne(s) écrite(s) au lieu d'une", au.name);
+                return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_MFA_NON_ACTIVEE);
+            }
+            Err(e) => {
+                eprintln!("[mfa] WARN activation de '{}' NON écrite : {e}", au.name);
+                return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_MFA_NON_ACTIVEE);
+            }
         }
         ledger_append(&conn, "mfa", &format!("MFA TOTP activée pour '{}'", au.name));
     }
+    remettre_le_second_facteur_a_zero(&st, &au.name);
     // SHOW-ONCE : les codes de secours CLAIRS ne sont renvoyés QU'ICI (seuls leurs SHA-256 sont persistés).
     Json(json!({ "ok": true, "recovery_codes": clear })).into_response()
 }
@@ -821,43 +1010,131 @@ pub(crate) async fn mfa_disable(State(st): State<AppState>, Extension(au): Exten
         return deny_multitenant();
     }
     let code = b.trimmed("code");
-    let row: Option<(String, i64, String)> = {
-        let conn = st.db.lock();
-        conn.query_row("SELECT secret,enabled,recovery FROM user_mfa WHERE user=?1", params![au.name], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).ok()
-    };
-    let Some((secret, enabled, recovery)) = row else {
-        return not_found("aucune MFA enrôlée");
-    };
-    if enabled == 1 {
-        // exige un facteur valide pour désactiver (TOTP ou code de secours).
-        let totp_ok = totp_verify(&secret, &code, now(), 30, 6, 1);
-        let rec_ok = !code.is_empty() && recovery_contains(&recovery, &code);
-        if !totp_ok && !rec_ok {
-            return err_json(StatusCode::UNAUTHORIZED, "code MFA requis pour désactiver");
-        }
+    let conn = st.db.lock();
+    // `P10.22-k` — LE FACTEUR EST JUGÉ, CONSOMMÉ ET LA LIGNE SUPPRIMÉE DANS UNE SEULE TRANSACTION. Un refus de la
+    // suppression annule la consommation : le code n'est pas brûlé (même contrat que la connexion, `P10.21-s`).
+    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
+        return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_MFA_NON_DESACTIVEE);
     }
-    {
-        let conn = st.db.lock();
-        // `P10.21-s` — LE `DELETE` EST COMPTÉ AVANT LE REGISTRE. Avalé, il laissait la route rendre `ok` et le
-        // registre attester « désactivée » pendant que le compte exigeait TOUJOURS son second facteur. Zéro
-        // ligne : la ligne lue plus haut a disparu entre-temps (une désactivation concurrente) — l'absence
-        // d'avant, `404`, sans rien attester.
-        match conn.execute("DELETE FROM user_mfa WHERE user=?1", params![au.name]) {
-            Ok(0) => return not_found("aucune MFA enrôlée"),
-            Ok(_) => {}
-            Err(e) => {
-                eprintln!("[mfa] WARN désactivation de '{}' NON écrite : {e}", au.name);
+    // Lue sous le MÊME verrou et dans la MÊME transaction que la consommation et la suppression. Son repli
+    // (`.ok()` -> 404) est le rang quatre de `P10.20-b`, laissé tel quel ici (voir l'en-tête du module).
+    let row: Option<(String, i64, String)> = conn
+        .query_row("SELECT secret,enabled,recovery FROM user_mfa WHERE user=?1", params![au.name], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .ok();
+    match desactiver_le_second_facteur(&st, &conn, &au.name, &code, row) {
+        Ok(()) => {
+            if let Err(e) = conn.execute_batch("COMMIT") {
+                let _ = conn.execute_batch("ROLLBACK");
+                eprintln!("[mfa] WARN désactivation de '{}' NON validée : {e}", au.name);
                 return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_MFA_NON_DESACTIVEE);
             }
+            ledger_append(&conn, "mfa", &format!("MFA TOTP désactivée pour '{}'", au.name));
+            drop(conn);
+            remettre_le_second_facteur_a_zero(&st, &au.name);
+            Json(json!({ "ok": true })).into_response()
         }
-        ledger_append(&conn, "mfa", &format!("MFA TOTP désactivée pour '{}'", au.name));
+        Err(refus) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            drop(conn);
+            match refus {
+                RefusDeLaDesactivation::Absente => not_found("aucune MFA enrôlée"),
+                RefusDeLaDesactivation::Freinee(attente) => refus_du_frein_du_second_facteur(attente),
+                RefusDeLaDesactivation::CodeRefuse => {
+                    compter_un_echec_du_second_facteur(&st, &au.name);
+                    err_json(StatusCode::UNAUTHORIZED, "code MFA requis pour désactiver")
+                }
+                RefusDeLaDesactivation::CodesDeSecoursIllisibles(cause) => {
+                    eprintln!("[mfa] WARN codes de secours de '{}' NON lus : {cause}", au.name);
+                    err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_CODES_DE_SECOURS_ILLISIBLES)
+                }
+                RefusDeLaDesactivation::NonEcrite(cause) => {
+                    eprintln!("[mfa] WARN désactivation de '{}' NON écrite : {cause}", au.name);
+                    err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_MFA_NON_DESACTIVEE)
+                }
+            }
+        }
     }
-    Json(json!({ "ok": true })).into_response()
+}
+
+/// `P10.22-k` — POURQUOI UNE DÉSACTIVATION N'A PAS LIEU. `Ok(())` de `desactiver_le_second_facteur` : le facteur
+/// est juste ET consommé, la ligne est supprimée, dans la transaction encore ouverte ; tout le reste est ici,
+/// et la transaction est alors ANNULÉE.
+enum RefusDeLaDesactivation {
+    /// Aucune ligne `user_mfa` (lue absente, ou disparue avant la suppression) : `404`, rien d'attesté.
+    Absente,
+    /// Le compte est freiné (`P10.22-m`) : le code n'est pas examiné.
+    Freinee(u64),
+    /// Le code est faux, ou c'est un pas DÉJÀ consommé (à la connexion, ou par une requête concurrente).
+    CodeRefuse,
+    /// `P10.22-r` — la liste des codes de secours n'a pas été lue : ni accepté, ni refusé.
+    CodesDeSecoursIllisibles(String),
+    /// La base n'a pas pris une écriture (consommation du pas ou suppression).
+    NonEcrite(String),
+}
+
+/// `P10.22-k` — UN PAS DÉJÀ CONSOMMÉ NE DÉSACTIVE PAS LE SECOND FACTEUR. Mesuré le 2026-09-23 : connexion avec le
+/// pas p, puis désactivation avec le MÊME code -> 200, MFA supprimée. La route jugeait le code par un booléen
+/// sans pas (`totp_verify`), sous une justification fausse (voir `idp/totp.rs`).
+///
+/// POURQUOI LA DÉSACTIVATION CONSOMME LE PAS, ET NE SE CONTENTE PAS DE LE COMPARER À `last_step`. Comparer
+/// suffirait en séquence ; en concurrence, non : la connexion qui consomme ce même pas et la désactivation
+/// peuvent se croiser entre la lecture de `last_step` et le `DELETE`. `consommer_le_pas_totp` rejuge la
+/// fraîcheur DANS l'écriture (`enabled=1 AND last_step<?`) : c'est la même définition de « frais » que celle de
+/// la connexion, écrite une seule fois, et le compte de lignes tranche. La consommation vit dans la même
+/// transaction que le `DELETE` : validée, la ligne n'existe plus (la consommation n'a laissé aucune trace à
+/// part la suppression) ; annulée, le code n'est pas brûlé. La ligne `row` est lue par `mfa_disable` sous le
+/// même verrou et dans la même transaction, donc un code de secours retiré par une connexion concurrente n'est
+/// plus dans la liste lue.
+fn desactiver_le_second_facteur(
+    st: &AppState,
+    conn: &Connection,
+    user: &str,
+    code: &str,
+    row: Option<(String, i64, String)>,
+) -> Result<(), RefusDeLaDesactivation> {
+    let Some((secret, enabled, recovery)) = row else {
+        return Err(RefusDeLaDesactivation::Absente);
+    };
+    if enabled == 1 {
+        // exige un facteur valide ET FRAIS pour désactiver (TOTP non consommé, ou code de secours).
+        if let Some(attente) = second_facteur_freine(st, user) {
+            return Err(RefusDeLaDesactivation::Freinee(attente));
+        }
+        if a_la_forme_d_un_code_totp(code) {
+            let Some(step) = totp_verify_step(&secret, code, now(), 30, 6, 1) else {
+                return Err(RefusDeLaDesactivation::CodeRefuse);
+            };
+            match consommer_le_pas_totp(conn, user, step) {
+                ConsommationDuFacteur::Consomme => {}
+                ConsommationDuFacteur::Refuse => return Err(RefusDeLaDesactivation::CodeRefuse),
+                ConsommationDuFacteur::NonEcrite(cause) | ConsommationDuFacteur::Illisible(cause) => {
+                    return Err(RefusDeLaDesactivation::NonEcrite(cause))
+                }
+            }
+        } else if code.is_empty() {
+            return Err(RefusDeLaDesactivation::CodeRefuse);
+        } else {
+            match recovery_contains(&recovery, code) {
+                Ok(true) => {}
+                Ok(false) => return Err(RefusDeLaDesactivation::CodeRefuse),
+                Err(cause) => return Err(RefusDeLaDesactivation::CodesDeSecoursIllisibles(cause)),
+            }
+        }
+    }
+    // `P10.21-s` — LE `DELETE` EST COMPTÉ AVANT LE REGISTRE. Avalé, il laissait la route rendre `ok` et le
+    // registre attester « désactivée » pendant que le compte exigeait TOUJOURS son second facteur. Zéro ligne :
+    // la ligne lue a disparu entre-temps — l'absence d'avant, `404`, sans rien attester.
+    match conn.execute("DELETE FROM user_mfa WHERE user=?1", params![user]) {
+        Ok(0) => Err(RefusDeLaDesactivation::Absente),
+        Ok(_) => Ok(()),
+        Err(e) => Err(RefusDeLaDesactivation::NonEcrite(e.to_string())),
+    }
 }
 
 /// `P10.21-s` — CE QUE LA CONSOMMATION D'UN FACTEUR À USAGE UNIQUE REND (pas TOTP, code de secours). Un
 /// booléen confondait « rien à consommer » et « la base n'a pas pris l'écriture » : `recovery_consume` rendait
-/// `true` sur un `UPDATE` avalé, et le pas TOTP n'avait même pas de retour. Trois issues, jamais deux.
+/// `true` sur un `UPDATE` avalé, et le pas TOTP n'avait même pas de retour. Trois issues, jamais deux — et une
+/// quatrième depuis `P10.22-r` : la liste des facteurs qu'on n'a pas pu LIRE.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ConsommationDuFacteur {
     /// L'écriture a eu lieu, sur UNE ligne : ce facteur ne servira plus.
@@ -869,6 +1146,10 @@ pub(crate) enum ConsommationDuFacteur {
     /// La base n'a pas pris l'écriture : le facteur est juste et RESTE utilisable. Refus NOMMÉ, jamais une
     /// session. La cause du moteur est portée pour la sortie d'erreur, jamais servie à l'appelant public.
     NonEcrite(String),
+    /// `P10.22-r` — La liste des facteurs n'a pas été LUE (lecture refusée, contenu corrompu) : on ne sait PAS
+    /// si le code est juste. Refus NOMMÉ, jamais une accusation, jamais un échec compté. Seul
+    /// `recovery_consume` le rend ; le compare-et-pose du pas TOTP ne lit rien.
+    Illisible(String),
 }
 
 /// `P10.21-s` — LA CONSOMMATION DU PAS TOTP EST UN COMPARE-ET-POSE EN BASE. La fraîcheur (`step >
@@ -887,12 +1168,28 @@ pub(crate) fn consommer_le_pas_totp(conn: &Connection, user: &str, step: i64) ->
     }
 }
 
+/// `P10.22-r` — LA LISTE DES CODES DE SECOURS EST LUE OU AVOUÉE ILLISIBLE, JAMAIS VIDE PAR DÉFAUT. Le
+/// `unwrap_or_default()`/`unwrap_or(false)` d'avant faisait d'un contenu corrompu une liste VIDE, donc de tout
+/// code de secours un code « invalide » (401), et comptait l'échec à l'utilisateur.
+fn lire_les_codes_de_secours(recovery_json: &str) -> Result<Vec<String>, String> {
+    serde_json::from_str::<Vec<String>>(recovery_json).map_err(|e| format!("liste des codes de secours corrompue : {e}"))
+}
+
 /// Un code de secours (clair) figure-t-il dans la liste des SHA-256 persistés ? (comparaison des hash.)
-fn recovery_contains(recovery_json: &str, code: &str) -> bool {
+/// `Err` : la liste n'a pas été lue — ni oui, ni non (`P10.22-r`).
+fn recovery_contains(recovery_json: &str, code: &str) -> Result<bool, String> {
     let want = sha256_hex(code.as_bytes());
-    serde_json::from_str::<Vec<String>>(recovery_json)
-        .map(|v| v.iter().any(|h| ct_eq(h.as_bytes(), want.as_bytes())))
-        .unwrap_or(false)
+    Ok(lire_les_codes_de_secours(recovery_json)?.iter().any(|h| ct_eq(h.as_bytes(), want.as_bytes())))
+}
+
+/// `P10.22-r` — UN CODE À LA FORME D'UN CODE TOTP N'EST JUGÉ QUE COMME UN CODE TOTP. Les codes de secours ont
+/// la forme `xxxx-xxxxxx` — dix chiffres hexadécimaux, un tiret après le quatrième (`gen_recovery_codes`, dont
+/// le commentaire dit « `xxxx-xxxx` », à tort) : six chiffres n'en sont jamais un, la liste n'a donc rien à
+/// dire sur eux. SANS CETTE RÈGLE, LE `503` DE `P10.22-r` OUVRAIT UNE VOIE : tant que la liste est illisible,
+/// chaque code TOTP faux, repassé par la liste, rendait `503` — refus qui ne compte AUCUN échec —, et le frein
+/// de `P10.22-m` ne voyait plus rien passer. Six chiffres faux restent un `401` compté, liste lisible ou non.
+fn a_la_forme_d_un_code_totp(code: &str) -> bool {
+    code.len() == 6 && code.bytes().all(|b| b.is_ascii_digit())
 }
 
 /// Consomme (usage unique) un code de secours : le retire de la liste persistée s'il matche.
@@ -903,10 +1200,18 @@ fn recovery_contains(recovery_json: &str, code: &str) -> bool {
 fn recovery_consume(st: &AppState, user: &str, code: &str) -> ConsommationDuFacteur {
     let want = sha256_hex(code.as_bytes());
     let conn = st.db.lock();
-    let Ok(rec): rusqlite::Result<String> = conn.query_row("SELECT recovery FROM user_mfa WHERE user=?1", params![user], |r| r.get(0)) else {
-        return ConsommationDuFacteur::Refuse;
+    // `P10.22-r` — TROIS ISSUES DE LECTURE, JAMAIS DEUX. Aucune ligne : la MFA a disparu (désactivation
+    // concurrente), une absence ÉTABLIE -> refus d'authentification. Lecture ratée ou contenu corrompu : on ne
+    // sait pas -> `Illisible`, refus NOMMÉ. Les deux rendaient `Refuse`, donc « code MFA invalide ».
+    let rec: String = match conn.query_row("SELECT recovery FROM user_mfa WHERE user=?1", params![user], |r| r.get(0)).optional() {
+        Ok(Some(rec)) => rec,
+        Ok(None) => return ConsommationDuFacteur::Refuse,
+        Err(e) => return ConsommationDuFacteur::Illisible(e.to_string()),
     };
-    let mut list: Vec<String> = serde_json::from_str(&rec).unwrap_or_default();
+    let mut list: Vec<String> = match lire_les_codes_de_secours(&rec) {
+        Ok(list) => list,
+        Err(cause) => return ConsommationDuFacteur::Illisible(cause),
+    };
     let before = list.len();
     list.retain(|h| !ct_eq(h.as_bytes(), want.as_bytes()));
     if list.len() == before {
@@ -932,6 +1237,11 @@ pub(crate) async fn login_mfa_post(State(st): State<AppState>, ConnectInfo(peer)
     if let Some(retry) = auth_lock_check(&st, &user, &ip) {
         return (StatusCode::TOO_MANY_REQUESTS, [(header::RETRY_AFTER, retry.to_string())], Json(json!({ "error": "trop d'échecs — réessayez plus tard" }))).into_response();
     }
+    // `P10.22-m` — LE FREIN DU COMPTE, AVANT TOUT EXAMEN DU CODE : un code juste présenté pendant le frein est
+    // refusé comme un faux, sinon le frein ne retiendrait que les mauvaises réponses.
+    if let Some(attente) = second_facteur_freine(&st, &user) {
+        return refus_du_frein_du_second_facteur(attente);
+    }
     // Rôle re-résolu LIVE (le ticket n'est qu'un plancher : un changement de rôle entre les 2 facteurs est pris en compte).
     let live_role = live_role_for(&st, &user).unwrap_or(role);
     let row: Option<(String, i64)> = {
@@ -942,26 +1252,37 @@ pub(crate) async fn login_mfa_post(State(st): State<AppState>, ConnectInfo(peer)
         return err_json(StatusCode::UNAUTHORIZED, "aucune MFA active pour ce compte");
     };
     // ANTI-REJEU TOTP : un pas matché est « frais » seulement s'il est > last_step (un code capté et rejoué
-    // dans sa fenêtre de ~90 s a un pas <= last_step -> refusé). Un code déjà consommé n'est PAS traité comme
-    // un code de secours (matched.is_some()) -> pas de repli recovery sur un TOTP rejoué.
+    // dans sa fenêtre de ~90 s a un pas <= last_step -> refusé). Un code à la forme TOTP n'est JAMAIS traité
+    // comme un code de secours -> pas de repli recovery sur un TOTP rejoué ni sur un TOTP faux.
     let matched = totp_verify_step(&secret, &code, now(), 30, 6, 1);
     let totp_fresh = matched.map_or(false, |s| s > last_step);
     // `P10.21-s` — UN FACTEUR N'EST ACCEPTÉ QUE CONSOMMÉ, ET SA CONSOMMATION REFUSÉE EST UN REFUS NOMMÉ AVANT
     // TOUTE SESSION ET TOUTE TRACE. Les deux écritures (code de secours retiré, pas TOTP posé) étaient avalées :
     // la session et « login MFA validé » suivaient, et le facteur restait rejouable (mesuré : le même code
     // ouvrait une seconde session une fois la base revenue).
-    let secours = if matched.is_none() && !code.is_empty() {
+    // `P10.22-r` — seul un code qui N'A PAS la forme d'un code TOTP est cherché dans la liste de secours (voir
+    // `a_la_forme_d_un_code_totp`) : un code TOTP faux reste un échec COMPTÉ même quand la liste est illisible.
+    let secours = if !code.is_empty() && !a_la_forme_d_un_code_totp(&code) {
         recovery_consume(&st, &user, &code)
     } else {
         ConsommationDuFacteur::Refuse
     };
-    if let ConsommationDuFacteur::NonEcrite(cause) = &secours {
-        eprintln!("[mfa] WARN code de secours de '{user}' NON consommé : {cause}");
-        return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_CODE_DE_SECOURS_NON_CONSOMME);
+    match &secours {
+        ConsommationDuFacteur::NonEcrite(cause) => {
+            eprintln!("[mfa] WARN code de secours de '{user}' NON consommé : {cause}");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_CODE_DE_SECOURS_NON_CONSOMME);
+        }
+        // `P10.22-r` — la liste n'a pas été lue : ni acceptation ni accusation, et AUCUN échec compté.
+        ConsommationDuFacteur::Illisible(cause) => {
+            eprintln!("[mfa] WARN codes de secours de '{user}' NON lus : {cause}");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_CODES_DE_SECOURS_ILLISIBLES);
+        }
+        ConsommationDuFacteur::Consomme | ConsommationDuFacteur::Refuse => {}
     }
     let rec_ok = secours == ConsommationDuFacteur::Consomme;
     if !totp_fresh && !rec_ok {
         let _ = auth_record_failure(&st, &user, &ip);
+        compter_un_echec_du_second_facteur(&st, &user);
         return err_json(StatusCode::UNAUTHORIZED, "code MFA invalide");
     }
     if let Some(step) = matched.filter(|_| totp_fresh) {
@@ -973,15 +1294,17 @@ pub(crate) async fn login_mfa_post(State(st): State<AppState>, ConnectInfo(peer)
             // séquentiel (même statut, même phrase, même échec compté).
             ConsommationDuFacteur::Refuse => {
                 let _ = auth_record_failure(&st, &user, &ip);
+                compter_un_echec_du_second_facteur(&st, &user);
                 return err_json(StatusCode::UNAUTHORIZED, "code MFA invalide");
             }
-            ConsommationDuFacteur::NonEcrite(cause) => {
+            ConsommationDuFacteur::NonEcrite(cause) | ConsommationDuFacteur::Illisible(cause) => {
                 eprintln!("[mfa] WARN pas TOTP de '{user}' NON consommé : {cause}");
                 return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_PAS_TOTP_NON_CONSOMME);
             }
         }
     }
     auth_record_success(&st, &user, &ip);
+    remettre_le_second_facteur_a_zero(&st, &user);
     {
         let conn = st.db.lock();
         ledger_append(&conn, "login", &format!("login local MFA validé pour '{user}'{}", if rec_ok { " (code de secours)" } else { "" }));
@@ -1023,10 +1346,12 @@ mod tests {
     fn recovery_contains_matches_hash_only() {
         let (clear, hashes) = gen_recovery_codes(3).unwrap();
         let rec = json!(hashes).to_string();
-        assert!(recovery_contains(&rec, &clear[0]));
-        assert!(!recovery_contains(&rec, "0000-0000"));
+        assert_eq!(recovery_contains(&rec, &clear[0]), Ok(true));
+        assert_eq!(recovery_contains(&rec, "0000-0000"), Ok(false));
         // la liste persistée ne contient QUE des hash (jamais le clair).
         assert!(!rec.contains(&clear[0]));
+        // `P10.22-r` — une liste illisible n'est ni un oui ni un non.
+        assert!(recovery_contains("{pas une liste", &clear[0]).is_err());
     }
 
     #[test]

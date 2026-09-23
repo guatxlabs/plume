@@ -111,8 +111,19 @@ pub(crate) fn totp_verify_step(secret_b32: &str, code: &str, time: i64, step: i6
     matched
 }
 
-/// Vérifie un code TOTP (booléen). Wrapper de `totp_verify_step` (sans anti-rejeu ; pour les chemins qui
-/// n'ont pas d'état persistant, ex. la désactivation qui supprime la ligne de toute façon).
+/// Vérifie un code TOTP (booléen), SANS juger son pas : RÉSERVÉ AUX TÉMOINS DE LA RFC 6238 (fenêtre de
+/// dérive, format), d'où le `#[cfg(test)]` — un build de production qui l'appellerait ne compile plus.
+///
+/// `P10.22-k` — LA JUSTIFICATION QUI FIGURAIT ICI ÉTAIT FAUSSE, ET ELLE A COUVERT UN CONTOURNEMENT MESURÉ.
+/// Elle disait ce booléen fait « pour les chemins qui n'ont pas d'état persistant, ex. la désactivation qui
+/// supprime la ligne de toute façon ». Les deux moitiés sont fausses : (1) la désactivation A un état
+/// persistant — `user_mfa.last_step` vit dans la ligne même qu'elle lit ; (2) supprimer la ligne ne rend
+/// pas le rejeu inoffensif, c'est le rejeu qui AUTORISE la suppression. Mesuré le 2026-09-23 : connexion
+/// avec le pas p, puis désactivation avec le MÊME code -> 200, MFA supprimée. Aucun chemin de production
+/// n'a légitimement besoin d'un code dont on ignore le pas : tout code TOTP présenté à `plume` est jugé par
+/// `totp_verify_step`, puis son pas est posé par un compare-et-pose — `consommer_le_pas_totp` à la connexion
+/// et à la désactivation, l'`UPDATE` d'activation de `mfa_verify` (qui pose `last_step`) à l'activation.
+#[cfg(test)]
 pub(crate) fn totp_verify(secret_b32: &str, code: &str, time: i64, step: i64, digits: u32, skew: i64) -> bool {
     totp_verify_step(secret_b32, code, time, step, digits, skew).is_some()
 }

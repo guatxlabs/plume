@@ -350,13 +350,15 @@ mod ecritures_de_controle_comptees {
     /// Contrôle positif en tête : sur des bases saines, les deux traces entrent et aucun compteur ne bouge.
     ///
     /// CE QU'IL NE TIENT PAS : le compteur est global au processus (égalités sous l'hypothèse qu'aucun
-    /// autre témoin ne perd une trace d'accès opérateur, aucun ne le fait) ; et l'accès n'est PAS refusé —
-    /// décision d'exploitation, posée à l'exploitant.
+    /// autre témoin ne perd une trace d'accès opérateur, aucun ne le fait) ; le refus d'un accès dont
+    /// AUCUNE trace n'entre est tenu ailleurs (`acces_operateur_sans_trace_refuse.rs`, `P10.21-p`) — ici
+    /// chaque accès garde au moins une trace, et l'issue le dit.
     ///
     /// LA MUTATION QUI LE FERAIT ROUGIR : remettre `let _ =` sur l'`INSERT` de l'événement — la perte
     /// redevient muette ; ou retirer l'oubli de la fenêtre — la troisième lecture n'écrit rien.
     #[test]
     fn ecc_un_acces_operateur_dont_la_trace_manque_est_compte_sans_identite() {
+        let _verrou = acces_operateur_sans_trace_refuse::VERROU_DES_TRACES_D_ACCES_OPERATEUR.lock();
         let (cp, _cptmp) = mk_test_control();
         let chemin = mk_tmp_path("ecc-visite.db");
         {
@@ -392,33 +394,33 @@ mod ecritures_de_controle_comptees {
         // CONTRÔLE POSITIF — bases saines : un maillon et un événement, aucun compteur ne bouge. Un autre
         // opérateur que celui des lectures ci-dessous : un break-glass arme la fenêtre de debounce de son
         // couple, et la première lecture de ce couple serait débouncée sans rien tenter.
-        emit_operator_access(&st, "op-ecc-positif", "ecc-visite", true, Some("incident-ecc"));
+        assert!(matches!(emit_operator_access(&st, "op-ecc-positif", "ecc-visite", true, Some("incident-ecc")), TraceDAccesOperateur::AuMoinsUneTrace), "une trace au moins porte cet accès");
         assert_eq!(evenements("event"), 1, "l'événement break-glass est écrit");
         assert_eq!(ecc_maillons(&st, "superadmin.write"), 1, "le maillon est écrit");
         assert_eq!((0..4).map(delta).sum::<u64>(), 0, "une trace écrite n'est pas comptée comme perdue");
 
         // L'ÉVÉNEMENT DU TENANT, VUE TEMPORAIRE — lecture refusée, puis réessai dans la fenêtre.
         base_du_tenant.lock().execute_batch(&ecc_vue_sur("event")).expect("fixture : vue posée");
-        emit_operator_access(&st, "op-ecc", "ecc-visite", false, None);
+        assert!(matches!(emit_operator_access(&st, "op-ecc", "ecc-visite", false, None), TraceDAccesOperateur::AuMoinsUneTrace), "une trace au moins porte cet accès");
         assert_eq!(delta(2), 1, "la lecture dont l'événement est refusé est COMPTÉE");
-        emit_operator_access(&st, "op-ecc", "ecc-visite", false, None);
+        assert!(matches!(emit_operator_access(&st, "op-ecc", "ecc-visite", false, None), TraceDAccesOperateur::AuMoinsUneTrace), "une trace au moins porte cet accès");
         assert_eq!(delta(2), 2, "la fenêtre de debounce est OUBLIÉE sur une perte : la lecture suivante réessaie");
         assert_eq!(evenements("event_source"), 1, "AUCUNE ligne de lecture n'est entrée");
         base_du_tenant.lock().execute_batch(&ecc_vue_retiree("event")).expect("fixture : vue retirée");
-        emit_operator_access(&st, "op-ecc", "ecc-visite", false, None);
+        assert!(matches!(emit_operator_access(&st, "op-ecc", "ecc-visite", false, None), TraceDAccesOperateur::AuMoinsUneTrace), "une trace au moins porte cet accès");
         assert_eq!(evenements("event"), 2, "la lecture suivante ÉCRIT : le tenant voit la consultation");
         assert_eq!(delta(2), 2, "et rien de plus n'est compté");
         assert_eq!(ecc_maillons(&st, "superadmin.read"), 3, "le journal de contrôle, lui, a pris les trois lectures");
 
         // L'ÉVÉNEMENT DU TENANT, TABLE RETIRÉE — break-glass.
         base_du_tenant.lock().execute_batch("ALTER TABLE event RENAME TO event_hors_d_atteinte;").expect("fixture : table retirée");
-        emit_operator_access(&st, "op-ecc", "ecc-visite", true, Some("incident-ecc"));
+        assert!(matches!(emit_operator_access(&st, "op-ecc", "ecc-visite", true, Some("incident-ecc")), TraceDAccesOperateur::AuMoinsUneTrace), "une trace au moins porte cet accès");
         assert_eq!(delta(3), 1, "le break-glass dont l'événement est perdu est COMPTÉ");
         base_du_tenant.lock().execute_batch("ALTER TABLE event_hors_d_atteinte RENAME TO event;").expect("fixture : table remise");
 
         // LE MAILLON DE CONTRÔLE, VUE TEMPORAIRE — break-glass : le maillon manque, l'événement entre.
         ecc_plan_de_controle(&st, &ecc_vue_sur("control_ledger"));
-        emit_operator_access(&st, "op-ecc", "ecc-visite", true, Some("incident-ecc"));
+        assert!(matches!(emit_operator_access(&st, "op-ecc", "ecc-visite", true, Some("incident-ecc")), TraceDAccesOperateur::AuMoinsUneTrace), "une trace au moins porte cet accès");
         ecc_plan_de_controle(&st, &ecc_vue_retiree("control_ledger"));
         assert_eq!(delta(1), 1, "le maillon break-glass non inscrit est COMPTÉ");
         assert_eq!(ecc_maillons(&st, "superadmin.write"), 2, "fixture : deux maillons sur trois break-glass");

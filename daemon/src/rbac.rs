@@ -1,7 +1,7 @@
 //! Autorisation (default-deny) & gouvernance multi-tenant : ordre des rôles (`role_rank`/`role_satisfies`/
 //! `MinRole`/`route_min_role`/`rbac_gate`), grants SSO/per-tenant (`sso_grants`/`grant_role_for`/
 //! `default_grant`/`platform_user_is_superadmin`), résolution d'accès (`TenantAccess`/`resolve_tenant_access`),
-//! marqueur opérateur cross-tenant (`OPERATOR_ACCESS_*`/`operator_access_should_emit`/`emit_operator_access`/
+//! marqueur opérateur cross-tenant (`OPERATOR_ACCESS_*`/`operator_access_should_emit`/`emit_operator_access`/`TraceDAccesOperateur`/
 //! `control_ledger_prev_hash`/`control_ledger_append`/`control_ledger_verify_conn`), garde de gestion tenant (`mgmt_*`/`tenant_mgmt_gate`/`can_manage_grants`/
 //! `valid_grant_role`/`platform_user_name_ok`/`gen_control_id`/`ensure_platform_user`/`tenant_admin_grant_count`)
 //! et l'audit (`audit_tenant_event`/`tenant_db_path`). Extrait de main.rs (refactor split #25 — byte-identique).
@@ -571,7 +571,8 @@ pub(crate) fn control_ledger_prev_hash(conn: &Connection) -> rusqlite::Result<St
 ///  - et pour les `kind` les plus sensibles (`superadmin.read`/`superadmin.write`), `emit_operator_access`
 ///    tient un SECOND journal DANS la base du tenant visité. Ce second journal ne remplace pas le premier :
 ///    il est DÉBOUNCÉ en lecture. Depuis `P10.21-g` son `INSERT` est compté, et la perte de l'un ou
-///    l'autre journal monte `acces_operateur_non_traces` (`metrics.rs`).
+///    l'autre journal monte `acces_operateur_non_traces` (`metrics.rs`) ; depuis `P10.21-p`, un accès
+///    dont AUCUN des deux journaux n'a pris la trace est refusé avant d'être servi.
 ///
 /// `P10.20-z` — L'`INSERT` N'EST PLUS AVALÉ, ET L'ISSUE EST RENDUE. Jusque-là il s'écrivait sous
 /// `let _ =`, la forme SANS branche d'échec : un changement de rôle, de grant ou de tenant était confirmé
@@ -773,13 +774,15 @@ pub(crate) fn control_ledger_verify_conn(conn: &Connection) -> Result<(usize, Op
 ///  (b) event `source='plume-operator-access'` DANS la base du tenant VISITÉ (le client le voit lui-même) —
 ///      NON DÉSACTIVABLE. Lecture : DEBOUNCÉ (1 / OPERATOR_ACCESS_DEBOUNCE_S par (superadmin,tenant)) pour ne
 ///      pas flooder ; break-glass (write) : FORCÉ + sévérité élevée. La donnée reste tenant-locale (isolation).
-pub(crate) fn emit_operator_access(st: &AppState, superadmin: &str, tenant: &str, write: bool, reason: Option<&str>) {
+///
+/// `P10.21-p` — LES DEUX ÉCRITURES ONT LIEU AVANT LE GESTIONNAIRE, et l'issue dit si l'accès en garde au
+/// moins une preuve. Le garde d'authentification REFUSE l'accès quand il n'en garde aucune (décision
+/// d'exploitation : un accès aux données d'un autre tenant sans aucune trace est indétectable après coup) ;
+/// la perte d'une seule des deux reste comptée (`acces_operateur_non_traces`) et l'accès passe.
+#[must_use = "un accès cross-tenant sans AUCUNE trace doit être refusé par l'appelant avant d'être servi"]
+pub(crate) fn emit_operator_access(st: &AppState, superadmin: &str, tenant: &str, write: bool, reason: Option<&str>) -> TraceDAccesOperateur {
     let reason = reason.map(str::trim).filter(|r| !r.is_empty()).unwrap_or("");
-    // (a) 1er ledger : control_ledger, à CHAQUE accès.
-    // `P10.20-z` — AUCUNE RÉPONSE N'AFFIRME CETTE TRACE : c'est le point de passage de TOUTE requête
-    // cross-tenant, il ne sert rien sur le journal. Refuser l'accès quand le maillon n'entre pas serait
-    // une décision d'exploitation (fail-closed du break-glass), pas un correctif : elle n'est pas prise ici.
-    // `P10.21-g` — la perte n'est plus laissée à la seule sortie d'erreur : elle est COMPTÉE, par trace.
+    // (a) 1er ledger : control_ledger, à CHAQUE accès. `P10.21-g` : la perte est COMPTÉE, par trace.
     let maillon = control_ledger_append(st, if write { "superadmin.write" } else { "superadmin.read" }, superadmin, tenant, reason);
     if let Some(cause) = maillon.cause_de_non_inscription().filter(|c| *c != CAUSE_SANS_PLAN_DE_CONTROLE) {
         crate::metrics::compter_un_acces_operateur_non_trace(
@@ -788,14 +791,77 @@ pub(crate) fn emit_operator_access(st: &AppState, superadmin: &str, tenant: &str
         );
     }
     // (b) 2e ledger : event NON-DÉSACTIVABLE dans la base du tenant (debounce en lecture, forcé en write).
+    let evenement = poser_l_evenement_du_tenant(st, superadmin, tenant, write, reason);
+    match (maillon, evenement) {
+        (MaillonDeRegistre::Inscrit, _) | (_, EvenementDuTenant::Ecrit | EvenementDuTenant::CouvertParLaFenetre) => {
+            TraceDAccesOperateur::AuMoinsUneTrace
+        }
+        (MaillonDeRegistre::NonInscrit(cause_du_maillon), EvenementDuTenant::Perdu(cause_de_l_evenement)) => {
+            TraceDAccesOperateur::AucuneTrace { cause_du_maillon, cause_de_l_evenement }
+        }
+    }
+}
+
+/// `P10.21-p` — CE QU'UN ACCÈS OPÉRATEUR CROSS-TENANT LAISSE COMME PREUVE, connu AVANT que la requête ne
+/// soit servie. Deux issues et pas quatre : la décision ne dépend que de « au moins une trace » ; laquelle
+/// manque est déjà comptée par trace (`acces_operateur_non_traces`).
+#[derive(Debug)]
+pub(crate) enum TraceDAccesOperateur {
+    /// Le maillon du journal de contrôle est inscrit, ou l'événement du tenant visité est écrit (ou couvert
+    /// par celui déjà écrit dans la fenêtre de debounce) : l'accès peut passer.
+    AuMoinsUneTrace,
+    /// Ni l'un ni l'autre : servir cet accès le rendrait indétectable. Les causes du moteur sont portées
+    /// pour la sortie d'erreur, jamais pour la réponse.
+    AucuneTrace { cause_du_maillon: String, cause_de_l_evenement: String },
+}
+
+/// `P10.21-p` — LA PHRASE DU REFUS D'UN ACCÈS CROSS-TENANT QUI N'A PU ÊTRE TRACÉ NULLE PART. Écrite une
+/// fois ; elle ne nomme ni le compte, ni le tenant, ni la cause du moteur.
+pub(crate) const CAUSE_ACCES_OPERATEUR_SANS_TRACE: &str =
+    "ACCÈS REFUSÉ : cet accès cross-tenant n'a pas pu être tracé — ni le journal du plan de contrôle ni la \
+     base du tenant visité n'ont pris la trace qui l'atteste — et il est refusé pour cette raison : aucune \
+     donnée n'a été lue ni écrite. Réessayez quand l'une des deux bases accepte de nouveau les écritures, \
+     et signalez-le.";
+
+impl TraceDAccesOperateur {
+    /// Le refus à servir AVANT le gestionnaire quand aucune trace ne porte l'accès ; `None` sinon. 503 : la
+    /// cause est une indisponibilité des journaux, pas un défaut de droit. La sortie d'erreur porte les deux
+    /// causes du moteur, sans compte, tenant ni jeton.
+    pub(crate) fn refus_si_aucune_trace(&self) -> Option<Response> {
+        match self {
+            Self::AuMoinsUneTrace => None,
+            Self::AucuneTrace { cause_du_maillon, cause_de_l_evenement } => {
+                eprintln!(
+                    "[operator_access] REFUS : accès cross-tenant sans aucune trace (maillon de contrôle : {cause_du_maillon} ; événement du tenant : {cause_de_l_evenement})"
+                );
+                Some(err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_ACCES_OPERATEUR_SANS_TRACE))
+            }
+        }
+    }
+}
+
+/// `P10.21-p` — CE QUE LE SECOND JOURNAL A FAIT POUR CET ACCÈS.
+enum EvenementDuTenant {
+    /// La ligne est écrite dans la base du tenant visité.
+    Ecrit,
+    /// Lecture débouncée : un événement de ce couple (opérateur, tenant) a été ÉCRIT dans la fenêtre — la
+    /// fenêtre n'est armée que par une écriture réussie (`perdre_la_trace_du_tenant` l'oublie sinon) —
+    /// et c'est lui qui atteste les lectures de la fenêtre auprès du tenant.
+    CouvertParLaFenetre,
+    /// Rien n'est entré ; la cause est portée, la perte comptée et la fenêtre oubliée.
+    Perdu(String),
+}
+
+/// (b) L'événement NON-DÉSACTIVABLE posé dans la base du tenant visité. Extrait d'`emit_operator_access`
+/// pour que son issue se lise en un seul type.
+fn poser_l_evenement_du_tenant(st: &AppState, superadmin: &str, tenant: &str, write: bool, reason: &str) -> EvenementDuTenant {
     let now_i = now();
     if !operator_access_should_emit(superadmin, tenant, now_i, write) {
-        return;
+        return EvenementDuTenant::CouvertParLaFenetre;
     }
     let trace_du_tenant = if write { TRACE_OPERATEUR_TENANT_ECRITURE } else { TRACE_OPERATEUR_TENANT_LECTURE };
     let Some(handle) = st.tenants.handle_for(tenant) else {
-        perdre_la_trace_du_tenant(superadmin, tenant, trace_du_tenant, "base du tenant non résoluble au moment de l'écriture");
-        return;
+        return perdre_la_trace_du_tenant(superadmin, tenant, trace_du_tenant, "base du tenant non résoluble au moment de l'écriture");
     };
     let conn = handle.lock();
     let (sev, action, msg) = if write {
@@ -811,7 +877,7 @@ pub(crate) fn emit_operator_access(st: &AppState, superadmin: &str, tenant: &str
          VALUES(?1,'plume-operator-access','audit',?2,?3,'plume-daemon',?4,'daemon')",
         params![now_i, sev, msg, fields],
     ) {
-        Ok(1) => {}
+        Ok(1) => EvenementDuTenant::Ecrit,
         Ok(n) => perdre_la_trace_du_tenant(superadmin, tenant, trace_du_tenant, &format!("{n} ligne(s) écrite(s) au lieu d'une")),
         Err(e) => perdre_la_trace_du_tenant(superadmin, tenant, trace_du_tenant, &e.to_string()),
     }
@@ -829,11 +895,12 @@ pub(crate) const TRACE_OPERATEUR_TENANT_ECRITURE: &str = "tenant.plume-operator-
 /// la fenêtre de debounce de ce couple est OUBLIÉE. Sans cet oubli, une lecture dont l'événement a été
 /// refusé aurait consommé la fenêtre : les lectures suivantes de la même fenêtre ne réessaieraient pas,
 /// et le tenant ne verrait aucune de ces consultations.
-fn perdre_la_trace_du_tenant(superadmin: &str, tenant: &str, trace: &'static str, cause: &str) {
+fn perdre_la_trace_du_tenant(superadmin: &str, tenant: &str, trace: &'static str, cause: &str) -> EvenementDuTenant {
     crate::metrics::compter_un_acces_operateur_non_trace(trace, cause);
     if let Some(cell) = OPERATOR_ACCESS_LAST.get() {
         cell.lock().remove(&(superadmin.to_string(), tenant.to_string()));
     }
+    EvenementDuTenant::Perdu(cause.to_string())
 }
 
 /// (#2c) Le tenant dont le RÔLE PER-TENANT compte pour l'autorisation d'une route de gestion : UNIQUEMENT

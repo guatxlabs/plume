@@ -1391,8 +1391,12 @@ pub(crate) async fn auth_guard(State(st): State<AppState>, mut req: Request, nex
     // tenant dont il n'est PAS membre. Émis ICI (choke-point unique, JAMAIS un handler séparé) -> impossible
     // à contourner : (a) control_ledger à CHAQUE accès ; (b) event `plume-operator-access` NON-DÉSACTIVABLE
     // dans la base du tenant visité (le client le voit), DEBOUNCÉ en lecture, FORCÉ + sev élevée en break-glass.
+    // `P10.21-p` — un accès dont AUCUNE des deux traces n'a été écrite est REFUSÉ ici, en 503 nommé, avant
+    // le gestionnaire : rien n'est lu ni écrit. Une seule trace perdue laisse passer (perte comptée).
     if cross_tenant {
-        emit_operator_access(&st, &name, &tenant, mutating, breakglass.as_deref());
+        if let Some(refus) = emit_operator_access(&st, &name, &tenant, mutating, breakglass.as_deref()).refus_si_aucune_trace() {
+            return refus;
+        }
     }
     // FILTRE ENVIRONNEMENT (#2d) : l'en-tête `X-Plume-Env` sélectionne un environnement intra-tenant à
     // FILTRER dans le READ PATH. INVARIANT ABSOLU mode 0 : `st.multi_tenant=false` -> IGNORÉ (env=None,

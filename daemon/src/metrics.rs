@@ -118,15 +118,17 @@ pub(crate) fn evenement_d_acces_non_ecrit_de(genre: &str) -> Option<(u64, String
 /// voisin de `evenements_d_acces_non_ecrits`, et pas le même compteur : ce qui est perdu n'est pas la
 /// matière d'une détection mais la preuve qu'un super-admin a lu ou écrit les données d'un tenant — le
 /// maillon du journal de contrôle, ou l'événement que le tenant visité voit dans sa propre base (vocabulaire
-/// FERMÉ, `rbac::TRACE_OPERATEUR_*`). L'accès, lui, a eu lieu : le refuser quand sa trace manque est une
-/// décision d'exploitation qui n'est pas prise ici. La dernière cause est celle du moteur, jamais un
-/// compte ni un tenant. Depuis le démarrage, jamais persisté.
+/// FERMÉ, `rbac::TRACE_OPERATEUR_*`). `P10.21-p` : l'accès n'est servi que si l'AUTRE trace est écrite ;
+/// quand aucune ne l'est, le garde d'authentification le refuse — les deux pertes restent comptées ici.
+/// La dernière cause est celle du moteur, jamais un compte ni un tenant. Depuis le démarrage, jamais
+/// persisté.
 pub(crate) static ACCES_OPERATEUR_NON_TRACES_TOTAL: AtomicU64 = AtomicU64::new(0);
 pub(crate) static ACCES_OPERATEUR_NON_TRACES: std::sync::Mutex<std::collections::BTreeMap<String, (u64, String)>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
 pub(crate) fn compter_un_acces_operateur_non_trace(trace: &'static str, cause: &str) {
     ACCES_OPERATEUR_NON_TRACES_TOTAL.fetch_add(1, Ordering::Relaxed);
-    eprintln!("[plume] accès opérateur cross-tenant SANS sa trace '{trace}' : l'accès a eu lieu, sa preuve manque : {cause}");
+    // `P10.21-p` — l'accès passe si l'AUTRE trace est écrite ; si aucune ne l'est, le garde le refuse.
+    eprintln!("[plume] accès opérateur cross-tenant SANS sa trace '{trace}' (l'accès n'est servi que si l'autre trace est écrite) : {cause}");
     if let Ok(mut m) = ACCES_OPERATEUR_NON_TRACES.lock() {
         let e = m.entry(trace.to_string()).or_insert((0, String::new()));
         e.0 += 1;
@@ -838,7 +840,7 @@ pub(crate) fn gather_prom(conn: &Connection, spool: &str, db_path: &str, schema_
     // n'est plus adossé à une barrière — le seul signal disponible sur les quatre surfaces à contrat
     // étranger, dont le corps de réponse ne peut pas porter de champ `durable`.
     g(&mut o, "plume_ingest_evenements_d_acces_non_ecrits_total", "counter", "Événements d'accès auto-ingérés (échec d'authentification, verrouillage, refus d'autorisation) que la base n'a PAS pris : la détection ne les verra pas (P10.20-z ; ventilation par genre avec la dernière cause dans /api/metrics ingest.evenements_d_acces_non_ecrits)", "/ingest/evenements_d_acces_non_ecrits_total");
-    g(&mut o, "plume_acces_operateur_non_traces_total", "counter", "Accès opérateur cross-tenant (lecture ou break-glass) dont le maillon du journal de contrôle ou l'événement posé dans la base du tenant visité n'a PAS été écrit : l'accès a eu lieu, sa preuve manque (P10.21-g ; ventilation par trace avec la dernière cause dans /api/metrics ingest.acces_operateur_non_traces)", "/ingest/acces_operateur_non_traces_total");
+    g(&mut o, "plume_acces_operateur_non_traces_total", "counter", "Accès opérateur cross-tenant (lecture ou break-glass) dont le maillon du journal de contrôle ou l'événement posé dans la base du tenant visité n'a PAS été écrit ; l'accès n'est servi que si l'autre trace l'est, sinon il est refusé (P10.21-g, P10.21-p ; ventilation par trace avec la dernière cause dans /api/metrics ingest.acces_operateur_non_traces)", "/ingest/acces_operateur_non_traces_total");
     g(&mut o, "plume_spool_barriere_fichier_total", "counter", "Barrières fsync(fichier) prises avant le renommage du spool", "/ingest/spool_barriere_fichier_total");
     g(&mut o, "plume_spool_barriere_repertoire_total", "counter", "Barrières fsync(répertoire) prises après le renommage du spool", "/ingest/spool_barriere_repertoire_total");
     g(&mut o, "plume_spool_barriere_echec_total", "counter", "Barrières de durabilité du spool REFUSÉES par le noyau", "/ingest/spool_barriere_echec_total");

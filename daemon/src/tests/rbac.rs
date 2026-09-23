@@ -104,8 +104,8 @@
 
         // (2) marqueur STRUCTUREL émis 2x (comme auth_guard le fait à chaque requête). control_ledger = 1
         //     entrée PAR accès ; l'event tenant-visible est DEBOUNCÉ (1 seul dans la fenêtre) mais garanti.
-        emit_operator_access(&st, "op-reader", "opread", false, None);
-        emit_operator_access(&st, "op-reader", "opread", false, None);
+        assert!(matches!(emit_operator_access(&st, "op-reader", "opread", false, None), TraceDAccesOperateur::AuMoinsUneTrace), "une trace au moins porte cet accès");
+        assert!(matches!(emit_operator_access(&st, "op-reader", "opread", false, None), TraceDAccesOperateur::AuMoinsUneTrace), "une trace au moins porte cet accès");
         let ledger: i64 = st.tenants.control.as_ref().unwrap().conn.lock()
             .query_row("SELECT COUNT(*) FROM control_ledger WHERE kind='superadmin.read' AND tenant='opread'", [], |r| r.get(0)).unwrap();
         assert_eq!(ledger, 2, "control_ledger : 1 entrée par accès (à CHAQUE accès)");
@@ -150,7 +150,7 @@
                    StatusCode::FORBIDDEN, "non-superadmin : écriture cross-tenant refusée malgré le flag");
 
         // (4) marqueur break-glass : DEUX ledgers (control + tenant), event forcé + sévérité élevée.
-        emit_operator_access(&st, "op-writer", "opwrite", true, Some("incident-77"));
+        assert!(matches!(emit_operator_access(&st, "op-writer", "opwrite", true, Some("incident-77")), TraceDAccesOperateur::AuMoinsUneTrace), "une trace au moins porte cet accès");
         let ledger: i64 = st.tenants.control.as_ref().unwrap().conn.lock()
             .query_row("SELECT COUNT(*) FROM control_ledger WHERE kind='superadmin.write' AND tenant='opwrite'", [], |r| r.get(0)).unwrap();
         assert_eq!(ledger, 1, "1er ledger : control_ledger (superadmin.write)");

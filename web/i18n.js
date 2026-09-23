@@ -105,11 +105,9 @@ const I18N_EN = {
   "Nom (ex: SSH bruteforce -> ban)": "Name (e.g. SSH bruteforce -> ban)", "Action": "Action",
   "+ Nouvelle action": "+ New action", "Cible": "Target", "raison (optionnel)": "reason (optional)",
   "Créer (en attente d'approbation)": "Create (pending approval)", "Créer": "Create",
-  // P11.8-e — l'accusé de la file de riposte, posé par `toast(` depuis la vue des résultats. Il était
-  // affiché sans clé depuis toujours : le découpeur de la garde du lexique avalait la région du module qui
-  // le porte (un `"` dans un littéral d'expression régulière ouvrait une fausse chaîne), donc rien ne le
-  // signalait. « Réponse » est le nom de l'onglet, déjà traduit « Response » plus haut.
-  "Action créée (en attente) - onglet Réponse pour l'approuver.": "Action created (pending) - approve it in the Response tab.",
+  // `P10.21-c` — l'accusé de la file de riposte posé par `banIp` (web/viz.js) n'est plus au lexique : ses
+  // deux faces sont côte à côte dans le module qui l'écrit, choisies par `LANG` comme le refus et l'aveu
+  // voisins. L'entrée d'ici (`P11.8-e`) ne traduisait plus rien.
   // cases
   "Filtre statut": "Status filter", "Ouverts": "Open", "En cours": "In progress",
   "Clos": "Closed", "+ Case": "+ Case",

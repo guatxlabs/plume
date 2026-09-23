@@ -593,8 +593,12 @@ pub(crate) async fn grant_set(State(st): State<AppState>, Extension(au): Extensi
     // rôle SANS autorité admin laisserait 0 admin. Le NOUVEAU rôle garde-t-il l'autorité admin ? -> pas une
     // rétrogradation (ré-assigner un rôle composable base=admin reste admin). L'ANCIEN grant est-il effective-admin
     // (littéral OU custom base=admin) ? Sinon rien à protéger.
+    // `P10.21-o` — LES DEUX LECTURES DE L'ANTI-LOCKOUT REFUSENT QUAND ELLES N'ONT PAS EU LIEU. `unwrap_or(false)`
+    // lisait un rôle illisible comme « pas administrateur » : l'écriture qui suit passait, et le dernier
+    // administrateur du tenant était rétrogradé ; un compte non lu valait zéro, donc « dernier administrateur ».
     if !au.is_superadmin && effective_base_role(&role) != "admin" {
-        let was_admin = {
+        use rusqlite::OptionalExtension as _;
+        let ancien_role: rusqlite::Result<Option<String>> = {
             let conn = cp.conn.lock();
             conn.query_row(
                 "SELECT g.role FROM \"grant\" g JOIN platform_user p ON p.id=g.user_id \
@@ -602,11 +606,18 @@ pub(crate) async fn grant_set(State(st): State<AppState>, Extension(au): Extensi
                 params![id, user],
                 |r| r.get::<_, String>(0),
             )
-            .map(|r| effective_base_role(&r) == "admin")
-            .unwrap_or(false)
+            .optional()
         };
-        if was_admin && tenant_admin_grant_count(cp, &id) <= 1 {
-            return (StatusCode::BAD_REQUEST, "dernier administrateur du tenant — rétrogradation refusée").into_response();
+        let was_admin = match ancien_role {
+            Ok(r) => r.is_some_and(|r| effective_base_role(&r) == "admin"),
+            Err(e) => return refuser_le_geste_sans_anti_verrouillage_lu(&e.to_string()),
+        };
+        if was_admin {
+            match tenant_admin_grant_count(cp, &id) {
+                Ok(n) if n <= 1 => return (StatusCode::BAD_REQUEST, "dernier administrateur du tenant — rétrogradation refusée").into_response(),
+                Ok(_) => {}
+                Err(e) => return refuser_le_geste_sans_anti_verrouillage_lu(&e.to_string()),
+            }
         }
     }
     let Some(uid) = ensure_platform_user(cp, &user) else {
@@ -671,8 +682,14 @@ pub(crate) async fn grant_delete(State(st): State<AppState>, Extension(au): Exte
     };
     // #64 : autorité admin EFFECTIVE (littéral OU rôle composable base=admin) -> cohérent avec l'anti-lockout
     // de scim.rs/grant demote ; retirer le dernier `gov-admin` d'un tenant serait sinon un lockout DoS.
-    if !au.is_superadmin && effective_base_role(&existing_role) == "admin" && tenant_admin_grant_count(cp, &id) <= 1 {
-        return (StatusCode::BAD_REQUEST, "dernier administrateur du tenant — retrait refusé").into_response();
+    // `P10.21-o` — un compte d'administrateurs non lu refuse en 503 nommé : il ne vaut plus zéro, donc il ne
+    // fait plus dire « dernier administrateur » à un tenant dont personne n'a lu les droits.
+    if !au.is_superadmin && effective_base_role(&existing_role) == "admin" {
+        match tenant_admin_grant_count(cp, &id) {
+            Ok(n) if n <= 1 => return (StatusCode::BAD_REQUEST, "dernier administrateur du tenant — retrait refusé").into_response(),
+            Ok(_) => {}
+            Err(e) => return refuser_le_geste_sans_anti_verrouillage_lu(&e.to_string()),
+        }
     }
     // `P10.21-g` — LE RETRAIT EST COMPTÉ AVANT D'ÊTRE ATTESTÉ. Avalé, un retrait refusé par la base
     // laissait le droit EN PLACE pendant que le journal de contrôle, l'événement du tenant et la réponse

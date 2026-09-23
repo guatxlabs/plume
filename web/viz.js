@@ -265,6 +265,24 @@ function timelineEl(results) {
   return svg;
 }
 
+// `P10.21-c` — L'AVIS DE SUCCÈS CHOISIT SA LANGUE LÀ OÙ IL EST ÉCRIT, COMME SES DEUX VOISINS.
+// CE QUI EN ÉTAIT DIT, ET QUI ÉTAIT FAUX DANS SON EFFET : « une chaîne française nue ». Sous `LANG='en'`,
+// cet avis arrivait bien en anglais — le lexique (`web/i18n.js`) en portait la traduction, et l'observateur
+// (`web/i18n_observer.js`) remplace un nœud texte dont la valeur ENTIÈRE égale une clé ; `toast` pose le
+// message en un seul nœud, donc l'égalité tenait. CE QUI ÉTAIT VRAI : le refus et l'aveu posés à côté
+// choisissent leur langue par `LANG` au moment d'écrire, l'avis de succès seul dépendait d'un observateur
+// et d'une égalité EXACTE — un identifiant ajouté au message aurait fait taire l'anglais sans qu'aucune
+// garde ne rougisse (la garde du lexique compte une chaîne composée à part, hors de ses trous). Les deux
+// faces sont donc côte à côte, ici, et l'entrée du lexique qui ne traduisait plus rien est retirée.
+// `motDuBannissementMisEnFile` est exporté pour le harnais ESM (témoin 106), qui juge les deux faces et
+// l'avis que le geste peint sous chacune des deux instances de langue.
+const MOTS_DU_BANNISSEMENT_MIS_EN_FILE = {
+  fr: "Action créée (en attente) - onglet Réponse pour l'approuver.",
+  en: 'Action created (pending) - approve it in the Response tab.' };
+function motDuBannissementMisEnFile() {
+  return LANG === 'en' ? MOTS_DU_BANNISSEMENT_MIS_EN_FILE.en : MOTS_DU_BANNISSEMENT_MIS_EN_FILE.fr;
+}
+
 // crée une action ban_ip (en attente d'approbation, dry-run). host optionnel = cible l'agent de cet
 // hôte (sinon action non assignée, réclamée par le 1er agent qui poll). cf actions_pending côté daemon.
 async function banIp(ip, host) {
@@ -283,7 +301,7 @@ async function banIp(ip, host) {
   try { j = await apiSend('/actions', 'POST', body); }
   catch (e) { toast(phraseDeLaCreationDeRiposteRefusee(e), 'bad', 9000); return; }
   if (j && j.error) { toast(phraseDeLaCreationDeRiposteRefusee({ causeDuDemon: String(j.error).trim() }), 'bad', 9000); return; }
-  toast("Action créée (en attente) - onglet Réponse pour l'approuver.", 'ok');
+  toast(motDuBannissementMisEnFile(), 'ok');
   // `P10.21-a` — LA RIPOSTE EST EN FILE ET SA TRACE MANQUE : ce geste le recevait et le laissait
   // tomber. `action_create` sert l'aveu À CÔTÉ du succès, sous la clé que le lecteur commun nomme :
   // annoncer la mise en file sans lui, c'est laisser un geste de riposte hors de la trace non
@@ -2771,6 +2789,6 @@ async function runQuery() {
 function showQExport(has) { const el = $('#qexport'); if (el) el.hidden = !has; }
 
 
-export { banIp, clearDrillCrumb, clearZoom, coldShareBadge, coverageBadge, coverageHorizonNodes, renderQBadge, provenanceBadge, currentFrom, currentTo, evLoad, exploreFrom, exploreTo, noeudsDeVizReglee, qHistGo, queryCount, refusDeReglage, reglageLu, renderViz, runQ, runQuery, setZoom, sondage, stopExplore, tableEl, updateZoomBadge, vizElement, vizSansPorte, refusDeRepresentation, truncationBadge };
+export { banIp, motDuBannissementMisEnFile, clearDrillCrumb, clearZoom, coldShareBadge, coverageBadge, coverageHorizonNodes, renderQBadge, provenanceBadge, currentFrom, currentTo, evLoad, exploreFrom, exploreTo, noeudsDeVizReglee, qHistGo, queryCount, refusDeReglage, reglageLu, renderViz, runQ, runQuery, setZoom, sondage, stopExplore, tableEl, updateZoomBadge, vizElement, vizSansPorte, refusDeRepresentation, truncationBadge };
 // `P10.7-g` (lot 103) — exporté pour le harnais ESM (scénario 91), qui lit la cause d'un total non établi.
 export { exploreCount };

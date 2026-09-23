@@ -1014,25 +1014,41 @@ pub(crate) fn ensure_platform_user(cp: &ControlPlane, name: &str) -> Option<Stri
 /// `admin` OU rôle composable base=admin. SQL ne connaît pas `effective_base_role` -> on ÉNUMÈRE les rôles de
 /// grant et on filtre en Rust. Sépare le comptage du verrouillage pour un usage sous-lock (SCIM group PATCH
 /// tient déjà `cp.conn` -> pas de re-lock/deadlock). Mode-0 / rôles de base -> identique à `COUNT(role='admin')`.
-pub(crate) fn effective_admin_grant_count_conn(conn: &Connection, tid: &str) -> i64 {
-    let mut stmt = match conn.prepare("SELECT role FROM \"grant\" WHERE tenant_id=?1") {
-        Ok(s) => s,
-        Err(_) => return 0,
-    };
-    let roles: Vec<String> = stmt
-        .query_map(params![tid], |r| r.get::<_, String>(0))
-        .map(|m| m.flatten().collect())
-        .unwrap_or_default();
-    roles.iter().filter(|r| effective_base_role(r) == "admin").count() as i64
+///
+/// `P10.21-o` — UN COMPTE NON LU N'EST PAS ZÉRO. Une préparation ratée rendait `0`, une ligne illisible
+/// était retirée du compte (`.flatten()`) : tous les appelants comparent à `<= 1`, donc l'échec FERMAIT —
+/// mais en affirmant « dernier administrateur du tenant », un fait que personne n'avait lu (et une ligne
+/// illisible, retirée, pouvait être celle d'un administrateur). Toute ligne compte ou le compte échoue :
+/// l'appelant refuse en nommant la cause (`CAUSE_DERNIER_ADMINISTRATEUR_NON_ETABLI` et sa sœur SCIM).
+pub(crate) fn effective_admin_grant_count_conn(conn: &Connection, tid: &str) -> rusqlite::Result<i64> {
+    let mut stmt = conn.prepare("SELECT role FROM \"grant\" WHERE tenant_id=?1")?;
+    let roles = stmt.query_map(params![tid], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<String>>>()?;
+    Ok(roles.iter().filter(|r| effective_base_role(r) == "admin").count() as i64)
 }
 
 /// (#2c/#64) Compte les grants à autorité admin EFFECTIVE d'un tenant (anti-lockout : ne pas retirer/rétrograder
 /// le DERNIER admin d'un tenant via l'API, sauf super-admin qui peut toujours re-granter). Depuis #64 un rôle
 /// composable base=admin COMPTE comme admin (sinon un tenant dont le seul admin est un rôle custom pourrait être
-/// orphelin -> lockout DoS).
-pub(crate) fn tenant_admin_grant_count(cp: &ControlPlane, tid: &str) -> i64 {
+/// orphelin -> lockout DoS). `P10.21-o` : `Err` = compte NON LU, jamais servi comme un zéro.
+pub(crate) fn tenant_admin_grant_count(cp: &ControlPlane, tid: &str) -> rusqlite::Result<i64> {
     let conn = cp.conn.lock();
     effective_admin_grant_count_conn(&conn, tid)
+}
+
+/// `P10.21-o` — L'ANTI-VERROUILLAGE QUI N'A PAS PU LIRE REFUSE, ET LE DIT. Retirer ou rétrograder un droit
+/// d'administration demande deux lectures (le droit visé est-il administrateur ? combien en reste-t-il ?).
+/// Lues comme « pas administrateur » (`unwrap_or(false)`, `is_ok()`), elles OUVRAIENT la garde sur une
+/// lecture ratée suivie d'une écriture qui passe : le dernier administrateur partait. Une lecture ratée
+/// REFUSE désormais le geste, en 503, avant toute écriture — ni « permis », ni « dernier administrateur ».
+pub(crate) const CAUSE_DERNIER_ADMINISTRATEUR_NON_ETABLI: &str =
+    "DERNIER ADMINISTRATEUR NON ÉTABLI : le plan de contrôle n'a pas pu lire les droits d'administration \
+     de ce tenant — ce geste pourrait lui retirer son dernier administrateur, il est REFUSÉ plutôt que \
+     deviné. Rien n'est modifié ni tracé ; réessayez une fois le plan de contrôle de nouveau lisible.";
+
+/// `P10.21-o` — LE REFUS D'UN GESTE D'ADMINISTRATION DONT L'ANTI-VERROUILLAGE N'A PAS PU LIRE : 503, la
+/// cause du geste d'abord, celle du moteur entre parenthèses (même forme que `refuser_le_geste_non_ecrit`).
+pub(crate) fn refuser_le_geste_sans_anti_verrouillage_lu(cause_du_moteur: &str) -> Response {
+    err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_DERNIER_ADMINISTRATEUR_NON_ETABLI} ({cause_du_moteur})"))
 }
 
 /// (#2c) AUDIT : écrit un event `source='plume-tenant-admin'` DANS la base du tenant visé (visible du client,

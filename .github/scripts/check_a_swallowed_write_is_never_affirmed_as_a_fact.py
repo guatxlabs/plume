@@ -112,7 +112,7 @@ raisons, et aucune n'est le vocabulaire :
     « introuvable » sur une écriture refusée — absent de l'énoncé), `scim_user_replace` et
     `scim_user_delete`. AUCUN des 35 sites d'avant n'a bougé : la règle n'a rien ajouté ailleurs ;
   * les deux autres n'ont PAS de conjonction : le premier administrateur de `tenant_create` écrit dans
-    un `if let` et le fait vit dans le bloc ANCÊTRE (le manque écrit plus bas, épreuve `a5`), et
+    un `if let` et le fait vit dans le bloc ANCÊTRE (angle mort `a5` alors, lu depuis `P10.21-o`), et
     `emit_operator_access` pose sa ligne de contrôle AVANT l'écriture avalée — rien ne l'affirme
     ensuite, il la perd.
 Les quatre gestes de la clé sont corrigés par le même lot et sortent de l'ensemble (41 sur
@@ -124,11 +124,31 @@ Les deux déprovisionnements SCIM sortent de l'ensemble : leur `DELETE` est clas
 (`EcritureDuPlanDeControle`) avant la ligne de contrôle, un refus rend l'erreur SCIM en 503. La
 population passe de 37 à 35 sur l'arbre ; les planchers, dérivés de 43, restent sous elle.
 Le même fichier portait DEUX écritures de droits de la même famille que la garde ne voyait pas, et la
-raison est celle de l'angle mort écrit (`a5`), pas le vocabulaire : dans `scim_group_patch`, le retrait
+raison est celle de l'angle mort écrit (`a5`, lu depuis `P10.21-o`), pas le vocabulaire : dans `scim_group_patch`, le retrait
 d'un membre (`unwrap_or(0)`) et l'ajout (`let _ =`) vivent dans les bras d'un `match` imbriqué dans deux
 boucles, et la ligne `scim.group.patch` est posée dans le corps de la fonction, bloc ANCÊTRE ; dans
 `scim_user_create`, l'`INSERT` des droits vit sous `for`/`if let`/`if`, la ligne `scim.user.provision`
 dans l'ancêtre. Les trois sont corrigés par le même lot ; aucun n'a jamais été dans l'ensemble.
+
+CE QUE `P10.21-o` A MESURÉ EN LISANT LE BLOC ANCÊTRE ET LE RECEVEUR-APPEL (2026-09-23)
+-------------------------------------------------------------------------------------
+L'énoncé de la clé : la garde « ne voit ni un fait posé dans un bloc ANCÊTRE (retrait par PATCH, ajout,
+création) ni un `let _` dont le receveur est un appel ». Les deux sont vrais, et MESURÉS par
+réintroduction des formes d'avant dans `scim.rs` sur l'arbre : l'ajout de membre par `PATCH` en `let _`,
+le retrait par `PATCH` en `unwrap_or(0)`, le droit de `POST /Users` en `let _`, et le `DELETE` en
+`let _ = cp.conn.lock().execute(…)` laissent la garde de `HEAD` VERTE (quatre fois `rc=0`) ; celle-ci
+les accuse tous les quatre, sous leur fonction et leur forme. Ce qui était IMPRÉCIS :
+  * « lire le bloc ancêtre » n'est pas une règle, ce sont TROIS (voir `faits_dans_la_portee`) : arrêter à
+    une sortie, sauter les autres bras d'un `match`, ne lire que le NIVEAU de l'ancêtre. Chacune porte
+    ses propres fausses accusations sur l'arbre, et une quatrième écrite pour la chaîne `else` n'en
+    portait aucune (retirée, raison au site) ;
+  * le receveur-appel ne change AUCUN verdict aujourd'hui : aucun site hors tests n'a cette forme.
+POPULATION, avant -> après, sur l'arbre : 35 -> 41 sites, 11 fichiers des deux côtés, AUCUN site sorti.
+Les six entrants sont des accusations VRAIES, admises avec leur rang et leur raison, NON corrigées
+(hors périmètre SCIM de la clé) : `idp.rs::login_mfa_post` (le pas TOTP anti-rejeu), `incidents.rs::
+attach_runbook` et deux écritures conditionnelles d'`incidents.rs::incident_apply_tier` — les quatre
+que le relevé de `P10.20-w` nommait déjà comme manqués — et deux `INSERT` en boucle de
+`seeds.rs::seed_demo` dont `last_insert_rowid()` emprunte l'identifiant.
 
 POURQUOI UN ENSEMBLE NOMMÉ, ET POURQUOI LA FORME PORTE LE FAIT
 ---------------------------------------------------------------
@@ -211,10 +231,52 @@ TRAVERSANTS = ("map", "and_then", "map_err", "or_else", "inspect", "inspect_err"
 PROPAGATEURS = ("?", "unwrap", "expect")
 
 # LA LIAISON SOURDE — `let _ = <receveur>.execute(…)`. Le `_` jette le `Result` sans même le nommer.
-# Le receveur doit être un CHEMIN (mesuré le 2026-09-19 sur l'arbre : `conn`, `c`, `rconn`,
-# `self.conn`, et rien d'autre) : exiger l'absence de parenthèse écarte `let _ = envelopper(
-# conn.execute(…))`, où le `_` porte sur l'enveloppe et non sur l'écriture.
-LIAISON_SOURDE = re.compile(r"\A\s*let\s+_\s*(?::\s*[^=]*?)?=\s*[&*\s]*[A-Za-z_][\w:.\[\]\s]*\Z")
+# Le receveur était un CHEMIN (mesuré le 2026-09-19 sur l'arbre : `conn`, `c`, `rconn`, `self.conn`, et
+# rien d'autre), et l'exiger sans parenthèse écartait `let _ = envelopper(conn.execute(…))`, où le `_`
+# porte sur l'enveloppe et non sur l'écriture.
+#
+# `P10.21-o` — LE RECEVEUR-APPEL. Ce critère « aucune parenthèse » écartait AUSSI `let _ =
+# cp.conn.lock().execute(…)` : le `_` y porte bien sur l'écriture, et la forme est la plus naturelle sous
+# un verrou pris à la volée. Ce qui sépare l'enveloppe du receveur n'est pas la PRÉSENCE d'une parenthèse,
+# c'est son APPARIEMENT : dans `envelopper(conn.execute(`, la parenthèse ouverte avant l'écriture se ferme
+# APRÈS elle — l'écriture est un argument ; dans `cp.conn.lock().execute(`, chaque parenthèse du receveur
+# se ferme AVANT. `liaison_sourde` lit donc le receveur segment par segment (chemin, `.champ`, appel ou
+# index APPARIÉ par le lecteur partagé `apparier`, `?`) et refuse dès qu'une ouvrante ne se ferme pas
+# avant l'écriture. MESURÉ le 2026-09-23 sur l'arbre : AUCUN site hors tests n'a cette forme aujourd'hui
+# (706 liaisons sourdes, receveurs `conn` 695, `c` 9, `self` 1, `rconn` 1) — la règle ne change aucun
+# verdict, elle ferme la porte à la forme que `P10.21-l` avait dû tenir par ses seuls témoins `dsa_`.
+TETE_DE_LIAISON_SOURDE = re.compile(r"\A\s*let\s+_\s*(?::\s*[^=]*?)?=\s*[&*\s]*")
+CHEMIN_DE_RECEVEUR = re.compile(r"[A-Za-z_]\w*(?:\s*::\s*[A-Za-z_]\w*)*")
+CHAMP_OU_METHODE = re.compile(r"\.\s*[A-Za-z_]\w*")
+
+
+def liaison_sourde(prefixe):
+    """Vrai quand le préfixe d'instruction qui précède `.execute(` est `let _ = <receveur>` : un chemin
+    suivi de champs, d'appels et d'index TOUS FERMÉS avant l'écriture (voir `TETE_DE_LIAISON_SOURDE`)."""
+    tete = TETE_DE_LIAISON_SOURDE.match(prefixe)
+    if not tete:
+        return False
+    chemin = CHEMIN_DE_RECEVEUR.match(prefixe, tete.end())
+    if not chemin:
+        return False
+    j = chemin.end()
+    while j < len(prefixe):
+        c = prefixe[j]
+        if c.isspace() or c == "?":
+            j += 1
+            continue
+        champ = CHAMP_OU_METHODE.match(prefixe, j)
+        if champ:
+            j = champ.end()
+            continue
+        if c in "([":
+            fermante = apparier(prefixe, j)
+            if fermante < 0:
+                return False  # l'ouvrante se ferme APRÈS l'écriture : l'écriture est un ARGUMENT
+            j = fermante + 1
+            continue
+        return False
+    return True
 
 # --- LE GESTE, MOITIÉ DEUX : LE FAIT QUI AFFIRME L'ÉCRITURE ---------------------------------------
 # Chacun est nommé parce qu'il pose un fait que personne ne peut plus recouper : une trace non
@@ -289,7 +351,21 @@ SITES_REGISTRE_APRES_ECRITURE_AVALEE = {
     # Le registre atteste « MFA TOTP désactivée » et la route rend `ok` sur un DELETE avalé : le
     # second facteur d'un compte peut rester en place pendant que la trace dit le contraire.
     ("daemon/src/handlers/idp.rs", "mfa_disable"): ("let _ -> ledger_append",),
-    ("daemon/src/handlers/incidents.rs", "incident_apply_tier"): ("let _ -> ledger_append",),
+    # `P10.21-o` — ENTRÉ PAR LA LECTURE DU BLOC ANCÊTRE, et nommé dès `P10.20-w` comme manqué : la
+    # consommation du pas TOTP anti-rejeu (`UPDATE user_mfa SET last_step`) est avalée dans son `if let`,
+    # et le registre « login MFA validé » suit dans un bloc de verrou. Un pas non consommé laisse le même
+    # code TOTP rejouable dans sa fenêtre pendant que la trace atteste un login ordinaire. NON CORRIGÉ ici
+    # (hors périmètre SCIM de la clé), confié à une clé neuve.
+    ("daemon/src/handlers/idp.rs", "login_mfa_post"): ("let _ -> ledger_append",),
+    # `P10.21-o` — ENTRÉ PAR LA LECTURE DU BLOC ANCÊTRE, et nommé dès `P10.20-w` comme manqué :
+    # l'`INSERT` de chaque étape est avalé dans la boucle, `n += 1` compte quand même, et le registre
+    # annonce `steps={n}` APRÈS la boucle — un runbook attaché amputé est attesté entier. Clé neuve.
+    ("daemon/src/handlers/incidents.rs", "attach_runbook"): ("let _ -> ledger_append",),
+    # TROIS sites, pas un : `P10.21-o` fait entrer les deux écritures CONDITIONNELLES (type et pilote,
+    # chacune dans son `if let`) que le registre `case.incident` et l'élément de chronologie — qui NOMMENT
+    # le type et le pilote — affirment depuis le bloc ancêtre. La première (le palier) y était déjà.
+    ("daemon/src/handlers/incidents.rs", "incident_apply_tier"):
+        ("let _ -> ledger_append", "let _ -> ledger_append", "let _ -> ledger_append"),
     ("daemon/src/handlers/incidents.rs", "step_advance"): ("let _ -> ledger_append",),
     # DEUX écritures ET l'audit avalés, avec un corps de succès : le bulletin d'accueil peut n'avoir
     # jamais été posé pendant que l'audit de configuration dit qu'il l'a été.
@@ -337,9 +413,14 @@ SITES_DEGRADES_MAIS_FAIL_CLOSED = {}
 # de semis précèdent un audit de configuration.
 SITES_AMORCAGE = {
     ("daemon/src/overlays_oac.rs", "load_overlay_dashboards"): ("let _ -> last_insert_rowid",),
+    # SIX sites depuis `P10.21-o` (quatre avant) : la lecture du bloc ancêtre fait entrer les `INSERT`
+    # d'événements (boucle `while`) et d'alertes (boucle `for`) de démonstration. Ce n'est pas une fausse
+    # accusation : `last_insert_rowid()` lit le DERNIER identifiant inséré sur la connexion, donc si
+    # l'`INSERT` du dossier qui le précède échoue, c'est l'identifiant de la dernière alerte de CETTE boucle
+    # qui est emprunté. Démonstration seulement (`PLUME_DEMO=1`), rang d'amorçage inchangé.
     ("daemon/src/seeds.rs", "seed_demo"):
         ("let _ -> last_insert_rowid", "let _ -> last_insert_rowid", "let _ -> last_insert_rowid",
-         "let _ -> last_insert_rowid"),
+         "let _ -> last_insert_rowid", "let _ -> last_insert_rowid", "let _ -> last_insert_rowid"),
     ("daemon/src/seeds.rs", "seed_dashboard_head"): ("let _ -> last_insert_rowid",),
     ("daemon/src/seeds.rs", "seed_default_dashboard"): ("let _ -> last_insert_rowid",),
     ("daemon/src/seeds.rs", "seed_obs_dashboard"): ("let _ -> last_insert_rowid",),
@@ -416,69 +497,117 @@ def bloc_nu(code, ouvrante):
     return code[k] == "=" and (k == 0 or code[k - 1] not in "=<>!")
 
 
+# `P10.21-o` — LES MOTS QUI SORTENT D'UN BLOC SANS RETOMBER DANS SON PARENT. Ils ne comptent qu'en TÊTE
+# D'INSTRUCTION (après `;`, `{`, `}`) et au NIVEAU COURANT : un `return` dans un bras de `match`, dans un
+# `if` ou dans une fermeture vit dans un bloc imbriqué, et c'est la pile des genres qui le dit conditionnel.
+MOTS_QUI_SORTENT = re.compile(r"\b(return|continue|break)\b")
+
+
+def genre_du_bloc(code, coupes, ouvrante):
+    """Ce que gouverne l'accolade en `ouvrante`, lu dans la tête d'instruction qui la précède :
+    `nu` (voir `bloc_nu`, et `unsafe {`), `bras` (`… => {`), `fermeture` (`|…| {`, `move {`, `async {`),
+    `boucle` (`for`/`while`/`loop`), `condition` (`if`/`else`), `match` (le corps du `match`), et
+    `inconnu` — corps de fonction, littéral de structure, argument de macro. Le genre décide de ce que
+    devient la lecture quand ce bloc se FERME (voir `faits_dans_la_portee`)."""
+    if bloc_nu(code, ouvrante):
+        return "nu"
+    tete = " ".join(code[debut_instruction(coupes, ouvrante):ouvrante].split())
+    if tete.endswith("=>"):
+        return "bras"
+    if re.search(r"\|\s*(?:->[^|{]*)?\Z", tete) or re.search(r"\b(?:async|move)\Z", tete):
+        return "fermeture"
+    if re.search(r"(?:\A|=\s*|\breturn\s+)(?:'\w+\s*:\s*)?(?:for|while|loop)\b", tete):
+        return "boucle"
+    if re.search(r"(?:\A|=\s*|\breturn\s+)if\b", tete) or re.match(r"else\b", tete):
+        return "condition"
+    if re.search(r"(?:\A|=\s*|\breturn\s+)match\b", tete):
+        return "match"
+    return "nu" if tete == "unsafe" else "inconnu"
+
+
 def faits_dans_la_portee(code, coupes, spans, depart, fin_fonction):
-    """Les faits qui AFFIRMENT l'écriture qui se termine en `depart` : ceux du MÊME BLOC, ou d'un bloc
-    ouvert APRÈS elle. Rendu `[(nom du fait, position)]`.
+    """Les faits qui AFFIRMENT l'écriture qui se termine en `depart`. Rendu `[(nom du fait, position)]`.
 
-    LE CRITÈRE EST STRUCTUREL, ET IL REMPLACE UNE FENÊTRE DE LIGNES. On suit la profondeur d'accolades
-    depuis la fin de l'écriture ; dès qu'elle passe SOUS zéro, le bloc qui portait l'écriture est
-    refermé et ce qui suit appartient à un frère ou à un ancêtre : l'appariement s'arrête là. Deux
-    conséquences MESURÉES le 2026-09-19 sur l'arbre, et elles vont en sens contraire :
+    LE CRITÈRE EST STRUCTUREL, ET IL REMPLACE UNE FENÊTRE DE LIGNES (`P10.20-w`). On suit les blocs depuis la
+    fin de l'écriture. DANS LE BLOC de l'écriture — et dans le parent d'un BLOC NU qui la portait (`P10.21-g`,
+    le bloc de verrou) —, tout fait qui suit est pris, même dans un bloc ouvert après elle (épreuve (8)).
 
-      * il ÉVITE cinq fausses accusations dans `cases.rs::case_apply_update`, où quatre écritures
-        vivent dans des `if let Some(v) = b.get(…)` sans registre pendant que les `ledger_append` de
-        l'assignation, du statut et du verdict vivent dans des blocs FRÈRES ;
-      * il MANQUE quatre sites où le fait est posé dans un bloc ANCÊTRE, après la fermeture de celui
-        de l'écriture : `incidents.rs::attach_runbook` (l'INSERT d'étape est dans la boucle, le
-        registre annonce le nombre d'étapes APRÈS la boucle), `incidents.rs::incident_apply_tier`
-        (deux écritures conditionnelles, registre après) et `idp.rs::login_mfa_post` (la consommation
-        du pas TOTP anti-rejeu est avalée dans son `if let`, le registre « login MFA validé » suit
-        dans un bloc de verrou frère). Les prendre demanderait d'admettre les blocs ancêtres, ce qui
-        ajouterait CINQ fausses accusations dans `actions.rs::respond_run`, où chaque écriture avalée
-        est suivie d'un `continue` qui rend le registre inatteignable. Le choix est le moindre des
-        deux, il est mesuré, et le manque est écrit dans « ce qu'elle ne tient pas ».
-    """
-    # L'OUVRANTE DE CHAQUE FERMANTE, pour savoir si le bloc que l'on quitte est NU (voir `bloc_nu`).
-    ouvrantes, pile = {}, []
+    `P10.21-o` — LE BLOC ANCÊTRE EST LU, À TROIS CONDITIONS. Jusqu'ici la lecture S'ARRÊTAIT à la fermante du
+    premier bloc non nu : un fait posé dans l'ancêtre — la ligne `scim.group.patch` après les boucles du
+    PATCH, `scim.user.provision` après le `for` des droits, le registre qui annonce N étapes après la boucle
+    qui les insère — n'était jamais apparié (angle mort `a5`). Désormais, quand le bloc de l'écriture se
+    ferme, la lecture REMONTE dans son parent, et la montée ne peut accuser que ce que l'écriture ATTEINT :
+      1. RIEN N'EST LU APRÈS UNE SORTIE. Un `return`, `continue` ou `break` au NIVEAU COURANT (pas dans un bloc
+         imbriqué) arrête la lecture : c'est ce qui garde `actions.rs::respond_run` hors de la population,
+         où chaque écriture avalée est suivie d'un `continue` et le registre vit plus bas dans la boucle
+         (les cinq fausses accusations mesurées sous `P10.20-w`, épreuve négative `n15`). L'arrêt est
+         CONSERVATEUR : après un `continue`/`break`, le code qui suit la BOUCLE reste atteignable, et il
+         n'est pas lu (angle mort écrit, épreuve `a6`) ;
+      2. LES AUTRES BRAS NE SONT PAS DES SUITES. Quitter un bras de `match` (ou un bloc posé dans un bras)
+         saute le reste du `match` : un bras SANS accolades (`None => conn.last_insert_rowid(),`) vit au
+         niveau du corps du `match`, et la règle 3 ne le verrait pas (épreuve `n19`). La chaîne `else` d'un
+         `if`, elle, n'a PAS de règle propre, et c'est mesuré : un `else` porte TOUJOURS des accolades, donc
+         la règle 3 l'écarte déjà — une règle de saut écrite pour lui ne faisait rougir aucune épreuve et
+         ne changeait aucun site de l'arbre (mutation jouée le 2026-09-23) ; elle est retirée, `n18` tient
+         le cas ;
+      3. DANS L'ANCÊTRE, SEUL LE NIVEAU COMPTE. Un fait posé dans un bloc CONDITIONNEL ouvert après la
+         remontée (un `if` frère, une boucle, une fermeture) n'est pas pris : c'est le bloc FRÈRE de
+         `case_apply_update` (épreuve `n3`), qui parle d'autre chose. Seuls le niveau de l'ancêtre et ses
+         blocs nus sont lus.
+    Une FERMETURE, un bloc `async` et un bloc au genre inconnu (corps de fonction, littéral) restent des
+    bornes : leur corps peut ne jamais s'exécuter, ou s'exécuter ailleurs (épreuve `n16`)."""
+    ouvrantes, fermantes, parents, ouverts = {}, {}, {}, []
     for c in coupes:
         if code[c] == "{":
-            pile.append(c)
-        elif code[c] == "}" and pile:
-            ouvrantes[c] = pile.pop()
-    profondeur, plancher, bornes = 0, 0, []
-    for c in coupes:
-        # `c < depart`, PAS `c <= depart`, ET C'EST UN DÉFAUT MESURÉ (2026-09-19, mutation `is_err`
-        # rejouée sur cette garde) : `depart` est l'index du PREMIER caractère qui suit l'expression
-        # d'écriture, et cet index EST parfois une accolade ouvrante — `if conn.execute(…).is_err() {`.
-        # L'exclure faisait compter la fermante SANS son ouvrante, la profondeur tombait à -1 dès le
-        # premier bloc, et TOUT le reste de la fonction passait pour « hors du bloc ». Le site
-        # disparaissait alors de la population EN VERT.
-        if c < depart:
+            parents[c] = ouverts[-1] if ouverts else -1
+            ouverts.append(c)
+        elif code[c] == "}" and ouverts:
+            o = ouverts.pop()
+            ouvrantes[c], fermantes[o] = o, c
+    # `c < depart` EST EXCLU, `c == depart` EST LU, ET C'EST UN DÉFAUT MESURÉ (2026-09-19, mutation `is_err`
+    # rejouée sur cette garde) : `depart` est l'index du PREMIER caractère qui suit l'expression d'écriture,
+    # et cet index EST parfois une accolade ouvrante — `match conn.execute(…).ok() {` (épreuve (9)).
+    # L'exclure faisait compter la fermante SANS son ouvrante : tout le reste de la fonction passait pour
+    # « hors du bloc », et le site disparaissait EN VERT.
+    evenements = [(c, code[c], "") for c in coupes if depart <= c < fin_fonction]
+    for m in MOTS_QUI_SORTENT.finditer(code, depart, fin_fonction):
+        if dans_une_chaine_rust(spans, m.start()):
             continue
-        if c >= fin_fonction:
-            break
-        if code[c] == "{":
-            profondeur += 1
-        elif code[c] == "}":
-            profondeur -= 1
-            # SORTIR D'UN BLOC NU QUI PORTAIT L'ÉCRITURE N'EST PAS EN SORTIR : on retombe dans le parent,
-            # au même niveau. La règle ne vaut que tant qu'aucune borne non nue n'a été franchie.
-            if profondeur < 0 and plancher >= 0 and bloc_nu(code, ouvrantes.get(c, -1)):
-                profondeur = 0
-            plancher = min(plancher, profondeur)
-        bornes.append((c, plancher))
-    trouves = []
+        k = m.start() - 1
+        while k >= 0 and code[k].isspace():
+            k -= 1
+        if k < 0 or code[k] in ";{}":
+            evenements.append((m.start(), "sortie", m.group(1)))
     for nom, motif in FAITS_QUI_AFFIRMENT:
         for m in motif.finditer(code, depart, fin_fonction):
-            if dans_une_chaine_rust(spans, m.start()):
-                continue
-            sorti = False
-            for borne, plancher_ici in bornes:
-                if borne >= m.start():
+            if not dans_une_chaine_rust(spans, m.start()):
+                evenements.append((m.start(), "fait", nom))
+    evenements.sort(key=lambda e: e[0])
+    trouves, pile, dans_l_ancetre, saut = [], [], False, -1
+    for position, quoi, nom in evenements:
+        if position <= saut:
+            continue
+        if quoi == "{":
+            pile.append(genre_du_bloc(code, coupes, position))
+        elif quoi == "}" and pile:
+            pile.pop()
+        elif quoi == "}":
+            # LE BLOC QUI PORTAIT LA LECTURE SE FERME : on remonte dans son parent, ou on s'arrête.
+            ouvrante = ouvrantes.get(position, -1)
+            genre = genre_du_bloc(code, coupes, ouvrante) if ouvrante >= 0 else "inconnu"
+            if genre in ("fermeture", "inconnu"):
+                break
+            dans_l_ancetre = dans_l_ancetre or genre != "nu"
+            parent = parents.get(ouvrante, -1)
+            if parent >= 0 and genre_du_bloc(code, coupes, parent) == "match":
+                if parent not in fermantes:
                     break
-                sorti = plancher_ici < 0
-            if not sorti:
-                trouves.append((nom, m.start()))
+                saut = fermantes[parent] - 1
+        elif quoi == "sortie":
+            if all(g == "nu" for g in pile):
+                break
+        elif quoi == "fait" and (not dans_l_ancetre or all(g == "nu" for g in pile)):
+            trouves.append((nom, position))
     return trouves
 
 
@@ -516,7 +645,7 @@ def analyser(chemin_relatif, texte, journal, aveux_du_lecteur=None):
         jetons, apres = chaine_detaillee(code, fin)
         genre, chaine = verdict_de_la_chaine(jetons)
         debut = debut_instruction(coupes, m.start())
-        sourde = bool(LIAISON_SOURDE.match(code[debut:m.start()]))
+        sourde = liaison_sourde(code[debut:m.start()])
         if genre == "absorbe":
             forme_chaine = f"let _.{chaine}" if sourde else chaine
         elif genre == "nu" and sourde:
@@ -698,6 +827,100 @@ EPREUVES = [
      '    };\n'
      '    control_ledger_append(st, "role.delete", "op", "", nom);\n'
      '    ok_json()\n}\n', {"unwrap_or -> control_ledger_append"}),
+    # --- `P10.21-o` — LE BLOC ANCÊTRE, LU. (12) est l'ancien angle mort `a5`, devenu une accusation : c'est
+    # la forme de `tenant_create` avant `P10.21-g`, et celle des deux gestes SCIM (`scim_user_create`,
+    # `scim_group_patch`) avant `P10.21-l`. Chaque positif ci-dessous rougit si la remontée est débranchée.
+    ("(12) l'écriture dans un bloc CONDITIONNEL, le fait dans le bloc ANCÊTRE — l'ancien angle mort `a5`",
+     'fn e12(st: &AppState, cp: &ControlPlane, admin: Option<&str>) -> Response {\n'
+     '    if let Some(a) = admin {\n'
+     '        let conn = cp.conn.lock();\n'
+     '        let _ = conn.execute("INSERT INTO g(u) VALUES(?1)", params![a]);\n'
+     '    }\n'
+     '    control_ledger_append(st, "tenant.create", "op", "t", "{}");\n'
+     '    ok_json()\n}\n', {"let _ -> control_ledger_append"}),
+    ("(13) l'écriture dans une BOUCLE, le fait APRÈS la boucle — `incidents.rs::attach_runbook`",
+     'fn e13(conn: &Connection, id: i64, etapes: &[String]) -> usize {\n'
+     '    let mut n = 0;\n'
+     '    for e in etapes {\n'
+     '        let _ = conn.execute("INSERT INTO step(i,t) VALUES(?1,?2)", params![id, e]);\n'
+     '        n += 1;\n'
+     '    }\n'
+     '    ledger_append(conn, "runbook.attach", &format!("#{id} steps={n}"));\n'
+     '    n\n}\n', {"let _ -> ledger_append"}),
+    ("(14) l'écriture dans un BRAS de `match`, le fait APRÈS le `match`",
+     'fn e14(conn: &Connection, id: i64, k: Option<&str>) -> bool {\n'
+     '    match k {\n'
+     '        Some(v) => {\n'
+     '            let _ = conn.execute("UPDATE t SET a=?1 WHERE id=?2", params![v, id]);\n'
+     '        }\n'
+     '        None => {}\n'
+     '    }\n'
+     '    ledger_append(conn, "t.maj", &format!("#{id}"));\n'
+     '    true\n}\n', {"let _ -> ledger_append"}),
+    ("(15) DEUX niveaux de remontée (`for` puis `if`), et une sortie CONDITIONNELLE qui ne coupe rien",
+     'fn e15(conn: &Connection, ids: &[i64]) -> bool {\n'
+     '    for id in ids {\n'
+     '        if *id > 0 {\n'
+     '            let _ = conn.execute("UPDATE t SET a=1 WHERE id=?1", params![id]);\n'
+     '        }\n'
+     '        if *id > 9 {\n'
+     '            continue;\n'
+     '        }\n'
+     '    }\n'
+     '    ledger_append(conn, "t.maj", "lot");\n'
+     '    true\n}\n', {"let _ -> ledger_append"}),
+    # `P10.21-o` — LE RECEVEUR-APPEL : le verrou pris à la volée. La forme que `P10.21-l` ne pouvait tenir
+    # que par ses témoins `dsa_` ; elle rougit si `liaison_sourde` retombe sur « aucune parenthèse ».
+    ("(16) le RECEVEUR est un appel — `let _ = cp.conn.lock().execute(…)`",
+     'fn e16(st: &AppState, cp: &ControlPlane, id: &str) -> Response {\n'
+     '    let _ = cp.conn.lock().execute("DELETE FROM g WHERE u=?1", params![id]);\n'
+     '    control_ledger_append(st, "g.remove", "op", id, "{}");\n'
+     '    ok_json()\n}\n', {"let _ -> control_ledger_append"}),
+    # --- `P10.21-o` — CE QUE LA REMONTÉE NE DOIT PAS ACCUSER. Chacun rougit si la condition qu'il nomme est
+    # débranchée (mutations jouées le 2026-09-23, consignées dans `valider_instrument`).
+    ("témoin négatif : un `return` au niveau du bloc de l'écriture — l'ancêtre n'est pas atteint",
+     'fn n17(conn: &Connection, id: i64, a: bool) -> Response {\n'
+     '    if a {\n'
+     '        let _ = conn.execute("UPDATE t SET a=1 WHERE id=?1", params![id]);\n'
+     '        return refus("a");\n'
+     '    }\n'
+     '    ledger_append(conn, "t.maj", &format!("#{id}"));\n'
+     '    ok_json()\n}\n', set()),
+    ("témoin négatif : le fait vit dans le `else` — une ALTERNATIVE, pas une suite",
+     'fn n18(conn: &Connection, id: i64, a: bool) {\n'
+     '    if a {\n'
+     '        let _ = conn.execute("UPDATE t SET a=1 WHERE id=?1", params![id]);\n'
+     '    } else if id > 3 {\n'
+     '        ledger_append(conn, "t.autre", "b");\n'
+     '    } else {\n'
+     '        ledger_append(conn, "t.autre", "c");\n'
+     '    }\n}\n', set()),
+    ("témoin négatif : le fait vit dans un AUTRE BRAS du `match`, à accolades ou non",
+     'fn n19(conn: &Connection, id: i64, k: Option<&str>) -> i64 {\n'
+     '    match k {\n'
+     '        Some(v) => {\n'
+     '            let _ = conn.execute("UPDATE t SET a=?1 WHERE id=?2", params![v, id]);\n'
+     '            0\n'
+     '        }\n'
+     '        None if id > 1 => { ledger_append(conn, "t.rien", "b"); 1 }\n'
+     '        None => conn.last_insert_rowid(),\n'
+     '    }\n}\n', set()),
+    ("témoin négatif : après la remontée, le fait vit dans un `if` FRÈRE ou dans une FERMETURE",
+     'fn n20(conn: &Connection, id: i64, a: bool, b: bool) {\n'
+     '    if a {\n'
+     '        let _ = conn.execute("UPDATE t SET a=1 WHERE id=?1", params![id]);\n'
+     '    }\n'
+     '    if b {\n'
+     '        ledger_append(conn, "t.autre", "b");\n'
+     '    }\n'
+     '    let plus_tard = || {\n'
+     '        ledger_append(conn, "t.autre", "c");\n'
+     '    };\n'
+     '    drop(plus_tard);\n}\n', set()),
+    ("témoin négatif : `let _ = envelopper(cp.conn.lock().execute(…))` — l'ENVELOPPE devant un receveur-appel",
+     'fn n21(st: &AppState, cp: &ControlPlane, id: &str) {\n'
+     '    let _ = journaliser(cp.conn.lock().execute("DELETE FROM g WHERE u=?1", params![id]));\n'
+     '    control_ledger_append(st, "g.remove", "op", id, "{}");\n}\n', set()),
     # --- LES TÉMOINS NÉGATIFS : chacun est une forme que la garde DOIT laisser passer.
     ("témoin négatif : l'écriture avalée SANS aucun fait après elle (la population des centaines)",
      'fn n1(conn: &Connection, id: i64) {\n'
@@ -806,15 +1029,15 @@ EPREUVES = [
      '    drop(ecrit);\n'
      '    ledger_append(conn, "t.maj", &format!("#{id}"));\n'
      '    true\n}\n', set()),
-    ("angle mort ÉCRIT : l'écriture dans un bloc CONDITIONNEL, le fait dans le bloc ANCÊTRE — "
-     "`tenant_create` avant `P10.21-g` (premier administrateur)",
-     'fn a5(st: &AppState, cp: &ControlPlane, admin: Option<&str>) -> Response {\n'
-     '    if let Some(a) = admin {\n'
-     '        let conn = cp.conn.lock();\n'
-     '        let _ = conn.execute("INSERT INTO g(u) VALUES(?1)", params![a]);\n'
+    ("angle mort ÉCRIT (`P10.21-o`) : un `continue` arrête la lecture, même quand le fait suit la BOUCLE",
+     'fn a6(conn: &Connection, ids: &[i64]) {\n'
+     '    for id in ids {\n'
+     '        if *id > 0 {\n'
+     '            let _ = conn.execute("UPDATE t SET a=1 WHERE id=?1", params![id]);\n'
+     '            continue;\n'
+     '        }\n'
      '    }\n'
-     '    control_ledger_append(st, "tenant.create", "op", "t", "{}");\n'
-     '    ok_json()\n}\n', set()),
+     '    ledger_append(conn, "t.maj", "lot");\n}\n', set()),
     ("angle mort ÉCRIT : le fait est posé par une FONCTION APPELÉE, pas par un jeton connu",
      'fn a3(conn: &Connection, id: i64) -> bool {\n'
      '    let _ = conn.execute("UPDATE t SET a=1 WHERE id=?1", params![id]);\n'
@@ -950,7 +1173,12 @@ def valider_instrument():
     nommé, y ajouter une entrée bidon, et débrancher le jugement de l'ensemble. Et le 2026-09-23
     (`P10.21-g`) : `bloc_nu` qui ne reconnaît plus rien fait tomber les épreuves (10) et (11) ; `bloc_nu`
     qui reconnaît tout fait tomber les deux négatifs neufs, l'angle mort `a5` et la borne de bloc ;
-    retirer `control_ledger_append` du vocabulaire fait tomber (10) et (11)."""
+    retirer `control_ledger_append` du vocabulaire fait tomber (10) et (11). Et le 2026-09-23 (`P10.21-o`) :
+    ne plus remonter hors d'un bloc non nu fait tomber (12) à (15) ; ignorer les sorties fait tomber `n15`,
+    `n17` et l'angle mort `a6` ; ne plus sauter les autres bras fait tomber `n19` ; accepter un fait à toute
+    profondeur dans l'ancêtre fait tomber `n18` et `n20` ; traverser une fermeture fait tomber `n16` ;
+    refuser le receveur-appel fait tomber (16) et quatre positifs de la liaison sourde ; ignorer
+    l'appariement fait tomber `n12`, `n21` et trois négatifs de la liaison sourde."""
     errs = []
     # LES LECTEURS PARTAGÉS SE VALIDENT AVANT DE SERVIR (`P10.20-d`, `P10.20-r`). Ils sont IMPORTÉS,
     # donc leurs témoins ne tournent pas à l'import : sans ces deux appels, un lecteur amputé de sa
@@ -1001,14 +1229,20 @@ def valider_instrument():
                     "pour les sept nommés (registre, journal de contrôle, deux audits, deux armements, "
                     "identifiant servi) — la conjonction ne peut plus se former, et le vert ne dirait rien")
 
-    # --- LA LIAISON SOURDE, DANS LES DEUX SENS.
-    for exemple in ("let _ = conn", "let _ = c", "let _ = self.conn", "let _: () = conn"):
-        if not LIAISON_SOURDE.match(exemple):
+    # --- LA LIAISON SOURDE, DANS LES DEUX SENS. `P10.21-o` : le RECEVEUR-APPEL (`cp.conn.lock()`, un
+    # index, un `?` sur le verrou) est une liaison sourde ; une ouvrante qui ne se ferme pas AVANT
+    # l'écriture — `journaliser(`, y compris devant un receveur-appel — est une ENVELOPPE.
+    for exemple in ("let _ = conn", "let _ = c", "let _ = self.conn", "let _: () = conn",
+                    "let _ = cp.conn.lock()", "let _ = self.db.lock()", "let _ = pool[i].get()?",
+                    "let _ = crate::db::ouvrir(&chemin)"):
+        if not liaison_sourde(exemple):
             errs.append(f"épreuve de la LIAISON SOURDE (positif) : `{exemple}.execute(…)` n'est plus "
-                        "reconnu comme une écriture jetée — la forme la plus répandue du dépôt "
-                        "disparaîtrait de la population")
-    for contre in ("let n = conn", "let _ = journaliser(conn", "removed += conn"):
-        if LIAISON_SOURDE.match(contre):
+                        "reconnu comme une écriture jetée — la forme la plus répandue du dépôt, ou le "
+                        "receveur-appel de `P10.21-o`, disparaîtrait de la population")
+    for contre in ("let n = conn", "let _ = journaliser(conn", "removed += conn",
+                   "let _ = journaliser(cp.conn.lock()", "let _ = (conn", "let _ = xs.iter().map(|c| c",
+                   "let _ = cp.conn.lock() + conn"):
+        if liaison_sourde(contre):
             errs.append(f"épreuve de la LIAISON SOURDE (négatif) : `{contre}.execute(…)` est pris pour "
                         "une écriture jetée alors que le résultat est LIÉ, COMPTÉ ou ENVELOPPÉ")
 
@@ -1076,18 +1310,15 @@ def ce_qui_n_est_pas_tenu():
           "lire le BRAS `Err` — décider si son corps propage ou se tait — et tant que ce n'est pas "
           "fait, un site neuf peut s'écrire en `match` sans rougir. Un `Result` LIÉ à un nom puis "
           "jeté plus bas est dans le même trou.\n"
-          "  * SON CRITÈRE DE PORTÉE A DES MANQUES MESURÉS, et ils sont nommés : le fait doit être dans "
-          "le MÊME BLOC que l'écriture, dans un bloc ouvert APRÈS elle, ou après un BLOC NU qui la "
-          "portait (règle de `P10.21-g` : un bloc de verrou retombe toujours dans son parent). Quatre sites où le fait est "
-          "posé dans un bloc ANCÊTRE lui échappent sur l'arbre du 2026-09-19 — "
-          "`incidents.rs::attach_runbook` (le registre annonce le nombre d'étapes APRÈS la boucle qui "
-          "les insère), `incidents.rs::incident_apply_tier` (deux écritures conditionnelles), et "
-          "`idp.rs::login_mfa_post` (la consommation du pas TOTP anti-rejeu est avalée, le registre "
-          "« login MFA validé » suit dans un bloc frère). Admettre les blocs ancêtres les prendrait et "
-          "ajouterait CINQ fausses accusations dans `actions.rs::respond_run`, où chaque écriture "
-          "avalée est suivie d'un `continue`. Le choix est le moindre des deux, pas une absence de "
-          "défaut. La forme de `tenant_create` avant `P10.21-g` (écriture dans un `if let`, ligne de "
-          "contrôle dans l'ancêtre) est de ce trou, épreuve `a5`.\n"
+          "  * SON CRITÈRE DE PORTÉE LIT LE BLOC ANCÊTRE DEPUIS `P10.21-o`, ET IL S'ARRÊTE PAR PRUDENCE : "
+          "un `return`, `continue` ou `break` au niveau courant coupe TOUTE la suite, alors que le code "
+          "qui suit la BOUCLE reste atteignable après un `continue`/`break` (épreuve `a6`). Un fait "
+          "posé dans l'ancêtre mais dans un bloc CONDITIONNEL (un `if` frère, une boucle, une fermeture) "
+          "n'est pas lu non plus : c'est ce qui écarte les blocs frères de `case_apply_update`, et c'est "
+          "aussi un manque possible. Mesuré sur l'arbre du 2026-09-23 : sans l'arrêt, CINQ fausses "
+          "accusations dans `actions.rs::respond_run` (chaque écriture est suivie d'un `continue`) ; "
+          "sans la lecture au seul niveau, SEPT (les cinq blocs frères de `case_apply_update`, deux "
+          "bras `COMMIT`/`ROLLBACK` d'`engagement.rs::activate_due_engagements_conn`).\n"
           "  * elle ne juge PAS `is_ok()`/`is_err()` sur une écriture. Ils TESTENT l'échec et la route "
           "refuse — mais ils perdent le COMPTE de lignes, donc « aucune ligne ne correspondait » y "
           "reste indiscernable d'un succès sans effet. C'est la famille de `P10.20-b` côté écriture, "

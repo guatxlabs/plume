@@ -17,7 +17,8 @@
 // CE QUE CES TÉMOINS NE TIENNENT PAS : une base réellement en lecture seule (le chemin refusé est le
 // même) ; la course « présent à la lecture, absent à l'écriture » (le `404` sans trace qui la couvre
 // n'est pas fabriqué ici) ; le rejeu effectif par un fournisseur d'identité réel ; et la lecture de
-// l'anti-lockout (`scim_would_orphan_last_admin`), qui lit un échec comme « pas administrateur ».
+// l'anti-lockout (`scim_would_orphan_last_admin`), qui lisait un échec comme « pas administrateur » —
+// tenue depuis par `P10.21-o` (témoins `pafv_`).
 // =====================================================================================
 mod deprovisionnement_scim_avoue {
     use super::*;

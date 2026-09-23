@@ -22,6 +22,15 @@ import { $, api, fmtTs, muted, pagedList, LANG } from './core.js';
 import { poserLaPlageSurLaCible, poserLeChoixDeDates } from './plage_de_dates.js';
 import { S } from './state.js';
 import { loadOperatorAudit } from './multitenant.js';
+// `P10.21-c` — LA SUITE D'UNE PAGE DU JOURNAL SE LIT PAR LE DISCRIMINANT DU PANNEAU DE RÉTENTION, pas par
+// un second. Les deux seules vues qui lisent `GET /api/ledger` sont celle-ci et `web/retention.js` : la
+// même clé du démon y a les MÊMES trois issues, et deux lecteurs écrits à part divergeraient sur le seul
+// cas qui compte, la clé absente. L'ARÊTE NE FAIT ENTRER AUCUN MODULE NEUF DANS CE GRAPHE : `retention.js`
+// y est déjà, par `multitenant.js` → `app.js` → `navigation.js` ; elle ferme un cycle direct avec
+// l'import inverse (`celluleDeGenre`), bénin parce que les deux modules n'appellent ce qu'ils importent
+// l'un de l'autre qu'à l'EXÉCUTION — le relevé des portes d'entrée du harnais ESM, qui ouvre le graphe
+// par chaque module dans un processus neuf, le juge.
+import { cleDeLaSuiteDuRegistre } from './retention.js';
 
 // Fenêtres offertes, en jours ; `0` = tout l'historique. Le défaut est 30 jours : c'est la rétention
 // par défaut des événements, donc la période que l'exploitant a déjà en tête en ouvrant l'audit.
@@ -237,9 +246,44 @@ function ligneDeFenetre() {
   return n;
 }
 
-// Ce que la vue DIT d'elle-même, à partir de ce que le démon a répondu. Trois faits, chacun rendu à part :
+// =================================================================================================
+// `P10.21-c` — CETTE VUE SE SERVAIT DE `has_more` SANS JAMAIS DIRE EN MOTS QU'UNE SUITE EXISTE PEUT-ÊTRE.
+//
+// CE QUE LE DÉMON SERT, ET CE QUE ÇA VEUT DIRE EXACTEMENT. `ledger_page` (daemon/src/handlers/admin_ui.rs)
+// pose `next_cursor` quand la page rend EXACTEMENT autant de lignes qu'elle en demandait, et `has_more`
+// vaut `!next_cursor.is_null()` : « la page est PLEINE et un curseur de suite est servi ». Ce n'est PAS
+// « d'autres entrées existent » — une fenêtre dont le nombre d'entrées est un multiple exact de la taille
+// de page le rend vrai sur sa dernière page. La phrase ci-dessous dit ce que la clé dit, et pas un mot de plus.
+//
+// CE QUE LA VUE EN FAISAIT. La clé ne décidait que du CURSEUR de la page suivante (par clé plutôt que
+// par décalage). La flèche « suivant » du pager partagé ne la lit pas : elle suit le TOTAL quand il est
+// exact, la page PLEINE quand il est plafonné — et, sans total servi, `pagedList` ne rend AUCUN pager,
+// page pleine ou non. Rien, à l'écran, ne distinguait donc « le démon dit qu'une suite peut venir », « il
+// dit qu'il n'y en a pas » et « il n'a rien dit ».
+//
+// LES TROIS ISSUES, CELLES DU PANNEAU DE RÉTENTION. Le discriminant est le sien (importé plus haut) ; les
+// MOTS sont ceux de cette vue, parce qu'ils parlent d'une page du journal et non d'un changement de
+// rétention. « Aucune suite » est un silence ÉCRIT : la page n'était pas pleine, le pager et la phrase de
+// fenêtre suffisent. La clé ABSENTE ou d'un autre type est AVOUÉE, dans le registre de l'alarme : un
+// silence du démon ne se lit pas comme la fin du journal.
+// =================================================================================================
+const MOTS_DE_LA_SUITE_DU_JOURNAL = {
+  il_en_existe_peut_etre_d_autres: {
+    fr: " Cette page est PLEINE — {nombre} entrées, autant que demandé — et le démon sert un curseur de suite : d'autres entrées de cette fenêtre peuvent la suivre. Ce curseur ne dit pas qu'il y en a ; il dit que la page n'a pas pu en montrer davantage.",
+    en: ' This page is FULL — {nombre} entries, as many as requested — and the daemon serves a continuation cursor: more entries of this window may follow it. That cursor does not say there are any; it says the page could not show more.' },
+  // Les deux faces sont vides À DESSEIN : l'entrée existe pour que ce silence soit un choix écrit.
+  aucune_suite: { fr: '', en: '' },
+  suite_non_dite: {
+    fr: " Le démon n'a PAS dit si d'autres entrées suivent cette page : la fin du tableau n'établit donc pas la fin du journal dans cette fenêtre.",
+    en: ' The daemon did NOT say whether more entries follow this page: the end of the table therefore does not establish the end of the journal within this window.' },
+};
+const motDeLaSuiteDuJournal = (cle, nombre) =>
+  (LANG === 'en' ? MOTS_DE_LA_SUITE_DU_JOURNAL[cle].en : MOTS_DE_LA_SUITE_DU_JOURNAL[cle].fr).replace('{nombre}', String(nombre));
+
+// Ce que la vue DIT d'elle-même, à partir de ce que le démon a répondu. Quatre faits, chacun rendu à part :
 // la fenêtre regardée ; le fait qu'elle MORD (des entrées existent hors du cadre) ; le fait que le total
-// est PLAFONNÉ. Aucun n'est déduit d'un vide : un journal vide et une fenêtre qui coupe sont deux choses.
+// est PLAFONNÉ ; et ce que le démon dit de la SUITE de cette page. Aucun n'est déduit d'un vide : un
+// journal vide et une fenêtre qui coupe sont deux choses.
 function direLaFenetre(j) {
   const n = ligneDeFenetre();
   if (!n) return;
@@ -293,6 +337,18 @@ function direLaFenetre(j) {
         : " entrées (plafond de comptage du serveur) : la pagination passe aux flèches, qui parcourent toute la fenêtre."));
   }
   n.textContent = parts.join(' ');
+  // `P10.21-c` — LA SUITE DE LA PAGE, POSÉE AU PUITS (`textContent`) APRÈS LA PHRASE DE FENÊTRE. Elle vit
+  // dans la même ligne, hors de `#ledger-body` que la liste paginée remplace ; l'affectation ci-dessus
+  // retire celle de la page précédente, donc rien ne s'empile d'une page à l'autre.
+  const cleDeLaSuite = cleDeLaSuiteDuRegistre(j);
+  const motDeLaSuite = motDeLaSuiteDuJournal(cleDeLaSuite, (j.entries || []).length);
+  if (motDeLaSuite) {
+    const suite = document.createElement('span');
+    suite.className = cleDeLaSuite === 'suite_non_dite' ? 'bad' : 'muted';
+    suite.dataset.suiteDuJournal = cleDeLaSuite;
+    suite.textContent = motDeLaSuite;
+    n.append(suite);
+  }
 }
 
 async function loadLedger() {
@@ -345,7 +401,9 @@ async function loadLedger() {
       // — sur un journal d'audit, la phrase la plus rassurante qui soit : aucun geste tracé. La cause remonte
       // par le MÊME chemin qu'un rejet (la phrase de fenêtre effacée, l'erreur telle quelle au rendu partagé).
       if (j && j.error) { const n = ligneDeFenetre(); if (n) n.textContent = ''; throw new Error(String(j.error).trim()); }
-      curseurs[page + 1] = j.has_more ? j.next_cursor : null;
+      // Le curseur suit la MÊME lecture que la phrase : une valeur que la vue n'avouerait pas comme une
+      // suite ne décide pas non plus de la page suivante (pour un booléen, rien ne change).
+      curseurs[page + 1] = cleDeLaSuiteDuRegistre(j) === 'il_en_existe_peut_etre_d_autres' ? j.next_cursor : null;
       direLaFenetre(j);
       // Total PLAFONNÉ -> `-1` : le pager partagé passe en « page N » avec des flèches fiables plutôt que
       // de numéroter jusqu'à un dernier numéro qui rendrait les pages suivantes inatteignables.
@@ -367,4 +425,6 @@ async function loadLedger() {
 // `P10.20-q` : `motDuGenreDeRegistre` et `celluleDeGenre` partent pour être éprouvés sur les littéraux
 // LUS dans l'arbre du démon (harnais ESM, témoin 101) — la phrase d'un genre distinct et le jeton qui
 // reste cherchable ne se mesurent pas depuis une page chargée.
-export { loadLedger, CIBLE_DE_PLAGE, joursPourLeJournal, plageActive, poserLaPlage, motDuGenreDeRegistre, celluleDeGenre };
+// `P10.21-c` : `motDeLaSuiteDuJournal` part pour le harnais ESM (témoin 106) — les trois issues ne se
+// distinguent qu'en jugeant, face par face, ce que la vue peint sur les trois corps que la route peut servir.
+export { loadLedger, CIBLE_DE_PLAGE, joursPourLeJournal, plageActive, poserLaPlage, motDuGenreDeRegistre, celluleDeGenre, motDeLaSuiteDuJournal };

@@ -16014,7 +16014,10 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     listeDesActions103.replaceChildren();
 
     // ══ (e) LE RELEVÉ DES LECTEURS — DES ENSEMBLES NOMMÉS, PAS DES COMPTES ═══════════════════════
-    const lecteursDeLaSuite103 = CORPUS_WEB.filter(([f, src]) => f.endsWith(".js") && /\bj\.has_more\b|\bhas_more\b/.test(src.replace(/\/\/[^\n]*/g, ""))).map(([f]) => f).sort();
+    // `P10.21-c` (lot 106) : `audit.js` lit la clé PAR LE DISCRIMINANT de `retention.js`, sans plus en écrire
+    // le nom ; un appel de ce discriminant est donc une lecture, au même titre que le littéral. La partition
+    // fine (qui lit par le littéral, qui par le discriminant) est jugée au témoin 106.
+    const lecteursDeLaSuite103 = CORPUS_WEB.filter(([f, src]) => f.endsWith(".js") && /\bj\.has_more\b|\bhas_more\b|\bcleDeLaSuiteDuRegistre\(/.test(src.replace(/\/\/[^\n]*/g, ""))).map(([f]) => f).sort();
     exiger(lecteursDeLaSuite103.join(",") === "audit.js,retention.js,viz.js",
       `(103e) l'ensemble des vues qui LISENT \`has_more\` n'est plus celui que ce lot a relevé — une vue neuve peut en tirer une borne sans la dire : ${JSON.stringify(lecteursDeLaSuite103)}`);
     const surfacesQuiLisentLaTrace103 = CORPUS_WEB.filter(([f, src]) => f.endsWith(".js") && /=\s*causeDeLaTraceManquante\(/.test(src)).map(([f]) => f).sort();
@@ -16741,6 +16744,267 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     cueillir105(document.querySelector("#tenants-panel"), (e) => e.getAttribute && (e.getAttribute("data-trace-manquante") || e.getAttribute("data-refus-du-plan-de-controle")), []).forEach((e) => e.remove());
   }
   console.log("(105) OK — les gestes d'administration des tenants lisent ce que leur succès porte : suspension, réactivation et provisionnement avouent une trace manquante à DEUX nœuds dans le puits du panneau, avec la phrase de LEUR geste et la cause servie, un succès entier retirant l'aveu précédent ; la pose et le retrait d'un droit l'avouent sous la liste repeinte, et le retrait lit ses DEUX formes de succès — deux cent quatre nu, deux cents avec aveu ; la destruction refusée avant de détruire dit que le tenant est intact, la bascule non enregistrée qu'il est INCHANGÉ, le retrait non enregistré que l'accès est TOUJOURS en place — jamais « retiré » —, par trois ouvertures nues qui refusent leurs voisines (le retrait de rôle compris), et un autre refus garde sa cause ; un tenant créé sans son premier administrateur le dit à côté de la trace manquante, sans annoncer d'administrateur. Le panneau Système dit les événements d'accès perdus par genre et les accès opérateur sans trace par trace — les genres et les traces du démon, un genre neuf dit tel —, avoue leur dernière cause, distingue le vrai zéro, le compteur non publié et le total sans ventilation ; aucune surface n'appelle les rôles. Le rattachement d'un élément à un dossier dit son refus sans ouvrir de dossier : quatre cent quatre nu sans cause inventée, refus nommé avec sa cause, dossier neuf dit existant ; corps en objet ET en chaîne.");
+}
+
+// ---------------------------------------------------------------------------------------------
+// (106) `P10.21-c` — LE JOURNAL D'AUDIT DIT EN MOTS CE QUE `has_more` DIT DE LA SUITE D'UNE PAGE, ET
+//       L'AVIS DE SUCCÈS DU GESTE « BANNIR » CHOISIT SA LANGUE LÀ OÙ IL EST ÉCRIT.
+//
+// CE QUE LE DÉMON SERT. `ledger_page` (daemon/src/handlers/admin_ui.rs) pose `next_cursor` sur une page
+// PLEINE, et `has_more` vaut `!next_cursor.is_null()` — « page pleine, curseur servi », jamais « d'autres
+// entrées existent ». Le total n'est compté qu'en première page d'un parcours (`count=0` rend `null`).
+//
+// CE QUE LA CONSOLE EN FAISAIT, MESURÉ SUR LES MODULES RÉELS AVANT CE LOT.
+//   · `web/audit.js` ne lisait `has_more` que pour choisir le CURSEUR de la page suivante. La flèche
+//     « suivant » du pager partagé ne la lit pas — elle suit le total exact, ou la page pleine sous
+//     plafond —, et sans total servi `pagedList` ne rend AUCUN pager. Aucune des trois issues (suite
+//     possible, aucune suite, rien de dit) ne se lisait en mots.
+//   · `banIp` (web/viz.js) écrivait son avis de succès en français et s'en remettait au lexique, là où
+//     le refus et l'aveu voisins choisissent leur langue par `LANG` au moment d'écrire.
+//
+// CE QUI ÉTAIT FAUX OU IMPRÉCIS DANS L'ÉNONCÉ, ET MESURÉ. (1) « une chaîne française nue » : sous
+// `LANG='en'`, le vrai `i18nWalk` rendait DÉJÀ cet avis en anglais — la clé était au lexique depuis
+// `P11.8-e`, et `toast` pose le message en UN nœud texte que l'observateur égale. Ce qui était vrai :
+// seul des trois avis du geste, il dépendait de l'observateur et d'une égalité EXACTE, donc son anglais
+// n'était jugeable qu'en rejouant l'observateur, et un identifiant ajouté au message l'aurait fait taire
+// sans qu'aucune garde rougisse. (2) « la continuation n'est portée que par la flèche du pager » : la
+// flèche ne lit PAS `has_more`, et sans total servi il n'y a pas de flèche du tout.
+//
+// L'ANCRAGE. Le calcul de `has_more` est relu dans l'arbre du démon ; s'il change, ce témoin REFUSE DE
+// CONCLURE. Le discriminant est celui du panneau de rétention, jugé dans les deux sens au témoin 103 :
+// ce témoin juge qu'`audit.js` le LIT (import et appel, plus aucun littéral) et ce qu'il PEINT.
+//
+// CE QUE CE TÉMOIN NE TIENT PAS : il ne rejoue aucune route du démon ; il juge le TEXTE et les attributs
+// d'un arbre, jamais l'encre ; il ne juge pas l'annonce de la zone `role="status"` par une technologie
+// d'assistance ; et la ligne d'état de l'Explore (`web/viz.js`, parcours par curseur), qui lit la même
+// famille de clé, n'est pas jugée ici.
+// ---------------------------------------------------------------------------------------------
+{
+  const url106 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const modAudit106 = await import(url106("audit.js"));
+  const modRetention106 = await import(url106("retention.js"));
+  const modViz106 = await import(url106("viz.js"));
+  const { S: S106 } = await import(url106("state.js"));
+  // L'INSTANCE ANGLAISE : un module chargé sous l'adresse de langue est un module DISTINCT, et le crochet
+  // du préambule propage l'adresse à ses imports relatifs (éprouvé au témoin 10).
+  const langueOrigine106 = localStorage.getItem("soc_lang");
+  localStorage.setItem("soc_lang", "en");
+  const modNoyauEn106 = await import(adresseSousLaLangue("core.js"));
+  const modAuditEn106 = await import(adresseSousLaLangue("audit.js"));
+  const modVizEn106 = await import(adresseSousLaLangue("viz.js"));
+  if (langueOrigine106 === null) localStorage.removeItem("soc_lang"); else localStorage.setItem("soc_lang", langueOrigine106);
+
+  const tic106 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser106 = async (n = 30) => { for (let i = 0; i < n; i++) await tic106(); };
+  const nu106 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ");
+  const cueillir106 = (el, pred, acc) => { if (el && pred(el)) acc.push(el); ((el && el.children) || []).forEach((c) => cueillir106(c, pred, acc)); return acc; };
+  const avis106 = () => document.querySelectorAll(".toast").map((t) => String(t.textContent).replace(/\s+/g, " "));
+  const instrument106 = (vrai, quoi) => exiger(vrai, `(106-instrument) ${quoi} : ce témoin REFUSE DE CONCLURE`);
+  const essayer106 = (f) => { try { return f(); } catch (e) { return e; } };
+
+  // ── (0) L'INSTRUMENT ─────────────────────────────────────────────────────────────────────────────
+  const DOSSIER_HANDLERS106 = path.join(RACINE, "daemon", "src", "handlers");
+  const HANDLERS106 = readdirSync(DOSSIER_HANDLERS106).filter((f) => f.endsWith(".rs"))
+    .map((f) => readFileSync(path.join(DOSSIER_HANDLERS106, f), "utf8")).join("\n");
+  instrument106(/"has_more": !next_cursor\.is_null\(\),/.test(HANDLERS106) && /let next_cursor = if entries\.len\(\) as i64 == ask\.limit \{/.test(HANDLERS106),
+    "`has_more` n'est plus « page pleine, curseur servi » dans daemon/src/handlers/ (`ledger_page`) : la phrase de la vue affirmerait autre chose que la clé");
+  instrument106(modNoyauEn106.LANG === "en",
+    `l'instance anglaise du point commun porte « ${modNoyauEn106.LANG} » : toutes les faces jugées ci-dessous seraient françaises`);
+  const mot106 = modAudit106.motDeLaSuiteDuJournal;
+  const motEn106 = modAuditEn106.motDeLaSuiteDuJournal;
+  instrument106(typeof mot106 === "function" && typeof motEn106 === "function",
+    "`motDeLaSuiteDuJournal` n'est pas exporté par web/audit.js : les trois issues ne seraient jugées que par le rendu");
+  const cleDeLaSuite106 = modRetention106.cleDeLaSuiteDuRegistre;
+  instrument106(typeof cleDeLaSuite106 === "function",
+    "`cleDeLaSuiteDuRegistre` n'est plus exporté par web/retention.js : la lecture partagée n'aurait plus de point commun");
+
+  // ── (a) LES FACES : UNE ENTRÉE PAR ISSUE DU DISCRIMINANT, DEUX LANGUES, ET PAS UN MOT DE PLUS QUE LA CLÉ ──
+  const ISSUES106 = [...new Set([{ has_more: true }, { has_more: false }, {}].map((j) => cleDeLaSuite106(j)))].sort();
+  instrument106(ISSUES106.join(",") === "aucune_suite,il_en_existe_peut_etre_d_autres,suite_non_dite",
+    `le discriminant partagé ne rend plus trois issues : ${JSON.stringify(ISSUES106)}`);
+  const facesSures106 = ISSUES106.every((c) => typeof essayer106(() => mot106(c, 3)) === "string" && typeof essayer106(() => motEn106(c, 3)) === "string");
+  exiger(facesSures106,
+    "(106a) une issue du discriminant partagé n'a pas d'entrée dans la table de la vue : la vue JETTERAIT sur cette issue, et la page du journal ne se peindrait pas");
+  if (facesSures106) {
+    const PLEINE_FR106 = mot106("il_en_existe_peut_etre_d_autres", 3), PLEINE_EN106 = motEn106("il_en_existe_peut_etre_d_autres", 3);
+    const NON_DITE_FR106 = mot106("suite_non_dite", 3), NON_DITE_EN106 = motEn106("suite_non_dite", 3);
+    exiger(PLEINE_FR106.length > 60 && PLEINE_EN106.length > 60 && PLEINE_FR106 !== PLEINE_EN106 && /PLEINE/.test(PLEINE_FR106) && /FULL/.test(PLEINE_EN106)
+      && /curseur/.test(PLEINE_FR106) && /cursor/.test(PLEINE_EN106),
+      `(106a) la page pleine ne se dit pas — page PLEINE et curseur servi — dans ses deux langues distinctes : « ${PLEINE_FR106} » / « ${PLEINE_EN106} »`);
+    exiger(PLEINE_FR106.includes("3") && PLEINE_EN106.includes("3") && !/\{nombre\}/.test(PLEINE_FR106 + PLEINE_EN106),
+      "(106a) le nombre d'entrées de la page est FIGÉ, ou son gabarit atteint l'écran");
+    exiger(!/\bexistent\b|\bil en existe\b|\bthere are more\b|\bthere are other\b/i.test(PLEINE_FR106 + " " + PLEINE_EN106),
+      `(106a-négatif) la phrase AFFIRME que d'autres entrées existent : \`has_more\` ne dit que « page pleine, curseur servi », et la dernière page d'une fenêtre de trois entrées exactement le rend vrai sans rien derrière — « ${PLEINE_FR106} »`);
+    exiger(NON_DITE_FR106.length > 40 && NON_DITE_EN106.length > 40 && NON_DITE_FR106 !== NON_DITE_EN106
+      && /n'a PAS dit/.test(NON_DITE_FR106) && /did NOT say/.test(NON_DITE_EN106) && NON_DITE_FR106 !== PLEINE_FR106,
+      `(106a) le silence du démon n'est pas AVOUÉ comme tel dans ses deux langues : « ${NON_DITE_FR106} » / « ${NON_DITE_EN106} »`);
+    exiger(!/c'est tout|aucune autre entrée|no other entr|that is all/i.test(NON_DITE_FR106 + " " + NON_DITE_EN106),
+      `(106a-négatif) l'aveu d'un silence conclut à la FIN du journal, ce que le démon n'a pas dit : « ${NON_DITE_FR106} »`);
+    exiger(mot106("aucune_suite", 3) === "" && motEn106("aucune_suite", 3) === "",
+      `(106a-négatif) la vue dit quelque chose là où le démon dit qu'il n'y a pas de suite : « ${mot106("aucune_suite", 3)} »`);
+  }
+
+  // ── (b) LA LECTURE EST CELLE DU PANNEAU DE RÉTENTION — DES ENSEMBLES NOMMÉS, PAS DES COMPTES ─────
+  const sansCommentaires106 = (src) => String(src).replace(/\/\/[^\n]*/g, "");
+  const srcDe106 = (f) => ((CORPUS_WEB.find(([g]) => g === f) || [])[1]) || "";
+  exiger(/^import \{ cleDeLaSuiteDuRegistre \} from '\.\/retention\.js';$/m.test(srcDe106("audit.js")),
+    "(106b) web/audit.js n'importe plus le discriminant du panneau de rétention : les deux vues du journal pourraient lire la même clé de deux façons");
+  const parLeLitteral106 = CORPUS_WEB.filter(([f, src]) => f.endsWith(".js") && /\bhas_more\b/.test(sansCommentaires106(src))).map(([f]) => f).sort().join(",");
+  const parLeDiscriminant106 = CORPUS_WEB.filter(([f, src]) => f.endsWith(".js") && /\bcleDeLaSuiteDuRegistre\(/.test(sansCommentaires106(src))).map(([f]) => f).sort().join(",");
+  exiger(parLeLitteral106 === "retention.js,viz.js" && parLeDiscriminant106 === "audit.js,retention.js",
+    `(106b) la partition des lecteurs de \`has_more\` a changé — par le littéral : ${parLeLitteral106} (attendu retention.js,viz.js) ; par le discriminant : ${parLeDiscriminant106} (attendu audit.js,retention.js). Une vue qui relit la clé à sa façon peut prendre un silence pour une fin`);
+
+  // ── LE SIMULACRE DE TRANSPORT : « MÉTHODE chemin », l'adresse ENTIÈRE gardée pour juger le curseur ──
+  const fetchOrigine106 = globalThis.fetch;
+  const minuterieOrigine106 = globalThis.setTimeout;
+  let hoteDesAvis106 = document.querySelector("#toasts");
+  if (!hoteDesAvis106 || !hoteDesAvis106.isConnected) { hoteDesAvis106 = document.createElement("div"); hoteDesAvis106.id = "toasts"; document.body.appendChild(hoteDesAvis106); }
+  const limiteOrigine106 = S106.LEDGER_LIMIT;
+  const servis106 = {};
+  const appels106 = [];
+  globalThis.fetch = async (u, init) => {
+    const adresse = String(u);
+    const chemin = adresse.split("?")[0];
+    const methode = ((init && init.method) || "GET").toUpperCase();
+    appels106.push(methode + " " + adresse);
+    const r = servis106[methode + " " + chemin];
+    if (!r) return { ok: true, status: 200, text: async () => "{}", json: async () => ({}) };
+    const texte = typeof r.corps === "string" ? r.corps : JSON.stringify(r.corps === undefined ? {} : r.corps);
+    return { ok: (r.statut || 200) < 400, status: r.statut || 200, text: async () => texte, json: async () => JSON.parse(texte) };
+  };
+  globalThis.setTimeout = (fn, ms) => {
+    if (ms >= 1000) return 0;
+    if (ms >= 100) return minuterieOrigine106(fn, 0);
+    return minuterieOrigine106(fn, ms);
+  };
+
+  try {
+    // ══ (c) CE QUE L'ONGLET AUDIT PEINT, PAR SON CHARGEUR RÉEL, SUR LES NŒUDS D'`index.html` ══════
+    const corpsDuJournal106 = document.querySelector("#ledger-body");
+    instrument106(!!corpsDuJournal106 && corpsDuJournal106.isConnected && !!corpsDuJournal106.parentNode,
+      "le puits `#ledger-body` n'est plus dans `index.html` : la ligne de fenêtre n'aurait nulle part où se poser");
+    S106.LEDGER_LIMIT = 3;
+    const ENTREE106 = (id) => ({ id, ts: 1758003000 + id, kind: "alert.ack", detail: "alerte #" + id + " acquittée", hash: "abcd" + id + "ef0123456789" });
+    const servirLaPage106 = (ids, suite, plus = {}) => {
+      const corps = { ok: true, entries: ids.map(ENTREE106), total: 9, total_capped: false, window_days: 30, since: 1757000000,
+        until_ts: null, oldest_ts: 1756000000, older_outside_window: false, next_cursor: suite === true ? ids[ids.length - 1] : null, limit: 3, ...plus };
+      if (suite !== undefined) corps.has_more = suite;
+      servis106["GET /api/ledger"] = { corps };
+    };
+    const note106 = () => document.querySelector("#ledger-window-note");
+    const suites106 = () => cueillir106(note106(), (e) => e.getAttribute && e.getAttribute("data-suite-du-journal") !== null, []);
+    const charger106 = async (mod = modAudit106) => { corpsDuJournal106.replaceChildren(); await mod.loadLedger(); await laisser106(40); };
+    const suivant106 = async () => {
+      const b = cueillir106(corpsDuJournal106, (e) => e.tagName === "BUTTON" && e.className === "evnext", [])[0];
+      const avant = appels106.length;
+      if (b && typeof b.onclick === "function") { b.onclick(); await laisser106(40); }
+      return { bouton: !!b, adresses: appels106.slice(avant).filter((a) => a.startsWith("GET /api/ledger")) };
+    };
+
+    // (c1) PAGE PLEINE : la suite possible est DITE, dans la même ligne que la fenêtre.
+    servirLaPage106([9, 8, 7], true);
+    await charger106();
+    instrument106(!!note106() && /Fenêtre/.test(nu106(note106())),
+      `la ligne de fenêtre n'est pas peinte par le chargeur réel : les verdicts ci-dessous seraient vrais par vacuité — « ${nu106(note106()).slice(0, 200)} »`);
+    const c1106 = suites106();
+    exiger(c1106.length === 1 && nu106(c1106[0]).trim() === mot106("il_en_existe_peut_etre_d_autres", 3).trim()
+      && c1106[0].getAttribute("data-suite-du-journal") === "il_en_existe_peut_etre_d_autres" && c1106[0].className === "muted",
+      `(106c1) SUR UNE PAGE PLEINE, LE JOURNAL NE DIT PAS EN MOTS QU'UNE SUITE PEUT VENIR : la continuation ne se lisait qu'à la flèche du pager, qui ne lit pas la clé — « ${nu106(note106()).slice(0, 400)} »`);
+    // LE CURSEUR SERVI DÉCIDE TOUJOURS DE LA PAGE SUIVANTE, et la ligne est RÉÉCRITE, jamais empilée.
+    servirLaPage106([6, 5, 4], true, { total: null, total_capped: null });
+    const c1bis106 = await suivant106();
+    instrument106(c1bis106.bouton && c1bis106.adresses.length >= 1,
+      `le pager ne rend pas de flèche « suivant » sur un total de neuf par pages de trois, ou elle n'atteint pas la route : ${JSON.stringify(c1bis106.adresses)}`);
+    exiger(c1bis106.adresses.some((a) => /[?&]cursor=7(&|$)/.test(a) && /[?&]count=0(&|$)/.test(a)),
+      `(106c1) la page suivante n'est plus prise PAR CLÉ avec le curseur servi : ${JSON.stringify(c1bis106.adresses)}`);
+    exiger(suites106().length === 1,
+      `(106c1-négatif) après la page suivante, la ligne de fenêtre porte ${suites106().length} phrase(s) de suite au lieu d'UNE : plus, elle S'EMPILE d'une page à l'autre ; zéro, elle se PERD au changement de page`);
+
+    // (c2) PAGE NON PLEINE : aucune suite, rien n'est ajouté.
+    servirLaPage106([9, 8], false);
+    await charger106();
+    exiger(suites106().length === 0 && facesSures106 && !nu106(note106()).includes(mot106("il_en_existe_peut_etre_d_autres", 2).trim()) && !nu106(note106()).includes(mot106("suite_non_dite", 2).trim()),
+      `(106c2-négatif) le journal annonce une suite, ou avoue un silence, là où le démon dit qu'il n'y en a pas : « ${nu106(note106()).slice(0, 300)} »`);
+
+    // (c3) CLÉ ABSENTE : le silence est AVOUÉ, dans le registre de l'alarme.
+    servirLaPage106([9, 8], undefined);
+    await charger106();
+    const c3106 = suites106();
+    exiger(c3106.length === 1 && nu106(c3106[0]).trim() === mot106("suite_non_dite", 2).trim() && c3106[0].className === "bad",
+      `(106c3) LE DÉMON N'A RIEN DIT DE LA SUITE ET LE JOURNAL SE TAIT, ou le dit hors du registre de l'alarme : la fin du tableau se lirait comme la fin du journal — « ${nu106(note106()).slice(0, 400)} »`);
+    // UNE VALEUR D'UN AUTRE TYPE N'EST NI UNE SUITE NI UNE FIN — ET ELLE NE DÉCIDE PAS DU CURSEUR.
+    for (const valeur of ["true", null, 1]) {
+      servirLaPage106([9, 8, 7], valeur, { next_cursor: 7 });
+      await charger106();
+      const s = suites106();
+      exiger(s.length === 1 && s[0].getAttribute("data-suite-du-journal") === "suite_non_dite",
+        `(106c3-négatif) \`has_more: ${JSON.stringify(valeur)}\` est lu comme une suite ou comme une fin au lieu d'un silence : ${JSON.stringify(s.map((e) => e.getAttribute("data-suite-du-journal")))}`);
+      if (valeur === "true") {
+        servirLaPage106([6, 5, 4], valeur, { next_cursor: 4, total: null, total_capped: null });
+        const pas = await suivant106();
+        exiger(pas.adresses.length >= 1 && pas.adresses.every((a) => !/[?&]cursor=/.test(a)) && pas.adresses.some((a) => /[?&]offset=3(&|$)/.test(a)),
+          `(106c3-négatif) une valeur que la vue n'avoue pas comme une suite décide pourtant du CURSEUR — les mots et la navigation liraient la clé de deux façons : ${JSON.stringify(pas.adresses)}`);
+      }
+    }
+
+    // (c4) UNE LECTURE REFUSÉE EFFACE LA PHRASE DE LA PAGE PRÉCÉDENTE : elle décrirait des données qu'on n'a pas.
+    servirLaPage106([9, 8], undefined);
+    await charger106();
+    servis106["GET /api/ledger"] = { corps: { ok: false, lecture_non_faite: true, entries: [], has_more: false, error: "journal NON LU : page : disk I/O error — aucune page n'est établie" } };
+    await charger106();
+    exiger(suites106().length === 0 && nu106(note106()).trim() === "",
+      `(106c4-négatif) l'aveu de suite d'une page précédente SURVIT à une lecture refusée : « ${nu106(note106()).slice(0, 300)} »`);
+
+    // (c5) L'INSTANCE ANGLAISE PEINT LA FACE ANGLAISE, par son propre chargeur.
+    servirLaPage106([9, 8], undefined);
+    await charger106(modAuditEn106);
+    const c5106 = suites106();
+    exiger(facesSures106 && c5106.length === 1 && nu106(c5106[0]).trim() === motEn106("suite_non_dite", 2).trim() && nu106(c5106[0]).trim() !== mot106("suite_non_dite", 2).trim(),
+      `(106c5) sous \`LANG='en'\`, l'aveu du silence du démon n'est pas peint dans SA langue : « ${nu106(note106()).slice(0, 300)} »`);
+    const noteFinale106 = note106(); if (noteFinale106) noteFinale106.replaceChildren();
+    corpsDuJournal106.replaceChildren();
+
+    // ══ (d) L'AVIS DE SUCCÈS DU GESTE « BANNIR », DANS LES DEUX INSTANCES DE LANGUE ═══════════════
+    const motFr106 = modViz106.motDuBannissementMisEnFile, motEnBan106 = modVizEn106.motDuBannissementMisEnFile;
+    instrument106(typeof motFr106 === "function" && typeof motEnBan106 === "function" && typeof modVizEn106.banIp === "function",
+      "`motDuBannissementMisEnFile` ou `banIp` n'est plus exporté par web/viz.js : l'avis jugé ci-dessous serait hors d'atteinte");
+    const FACE_FR106 = typeof motFr106 === "function" ? motFr106() : "", FACE_EN106 = typeof motEnBan106 === "function" ? motEnBan106() : "";
+    exiger(FACE_FR106.length > 20 && FACE_EN106.length > 20 && FACE_FR106 !== FACE_EN106 && /Action créée/.test(FACE_FR106) && /Action created/.test(FACE_EN106),
+      `(106d) l'avis de succès n'a pas DEUX faces distinctes côte à côte : « ${FACE_FR106} » / « ${FACE_EN106} »`);
+    servis106["GET /api/actions"] = { corps: { actions: [], served: 0, window: 200, total: 0, total_capped: false } };
+    const fenetre106 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !c.classList.contains("out")).pop();
+    const confirmer106 = async () => {
+      const ov = fenetre106();
+      const form = ov && ov.children[0] ? ov.children[0].children[0] : null;
+      if (form && typeof form.onsubmit === "function") form.onsubmit({ preventDefault() {} });
+      await laisser106();
+    };
+    const bannir106 = async (mod) => { const avant = avis106().length; const p = mod.banIp("203.0.113.66"); await laisser106(); await confirmer106(); await p; await laisser106(60); return avis106().slice(avant); };
+    servis106["POST /api/actions"] = { statut: 200, corps: { id: 4401 } };
+    const avisFr106 = await bannir106(modViz106);
+    exiger(avisFr106.length === 1 && avisFr106[0] === FACE_FR106,
+      `(106d) sous \`LANG='fr'\`, le geste « bannir » ne rend pas la face française de son avis de succès, ou en rend d'autres : ${JSON.stringify(avisFr106)}`);
+    const avisEn106 = await bannir106(modVizEn106);
+    exiger(avisEn106.length === 1 && avisEn106[0] === FACE_EN106 && avisEn106[0] !== FACE_FR106,
+      `(106d) SOUS \`LANG='en'\`, L'AVIS DE SUCCÈS DU GESTE « BANNIR » N'EST PAS ÉCRIT EN ANGLAIS PAR LE MODULE : il dépend encore de l'observateur du lexique et d'une égalité exacte, là où le refus et l'aveu voisins choisissent leur langue — ${JSON.stringify(avisEn106)}`);
+    // NÉGATIF — UN REFUS N'ANNONCE AUCUN SUCCÈS, DANS AUCUNE LANGUE.
+    servis106["POST /api/actions"] = { statut: 503, corps: { error: "RIPOSTE NON MISE EN FILE : la ligne n'a pas pu être écrite (disk full)", id: "plume-e9-0" } };
+    const refus106 = await bannir106(modViz106);
+    exiger(refus106.length === 1 && !refus106.includes(FACE_FR106) && !refus106.includes(FACE_EN106),
+      `(106d-négatif) un avis de SUCCÈS part sur un refus de mise en file : ${JSON.stringify(refus106)}`);
+    // LE RELEVÉ : plus aucun littéral français passé à `toast(` pour ce succès, plus aucune clé morte au lexique.
+    exiger(!/toast\(\s*["']Action créée/.test(sansCommentaires106(srcDe106("viz.js"))),
+      "(106d) web/viz.js passe encore un littéral français à `toast(` pour ce succès : son anglais redépendrait de l'observateur");
+    exiger(!readFileSync(path.join(WEB, "i18n.js"), "utf8").includes('"' + FACE_FR106 + '":'),
+      "(106d-négatif) le lexique porte encore une entrée pour cet avis : une clé qui ne traduit plus rien, et une seconde source de son anglais");
+  } finally {
+    globalThis.fetch = fetchOrigine106;
+    globalThis.setTimeout = minuterieOrigine106;
+    S106.LEDGER_LIMIT = limiteOrigine106;
+    document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
+    const listeDesActions106 = document.querySelector("#act-list"); if (listeDesActions106) listeDesActions106.replaceChildren();
+  }
+  console.log("(106) OK — l'onglet Audit DIT la suite d'une page du journal par les trois issues du panneau de rétention, et par SON discriminant — importé, appelé, plus aucun littéral : une page PLEINE annonce qu'un curseur de suite est servi et que d'autres entrées peuvent suivre, sans jamais affirmer qu'elles existent ; une page non pleine n'ajoute rien ; une clé ABSENTE ou d'un autre type est avouée dans le registre de l'alarme au lieu de laisser la fin du tableau se lire comme la fin du journal, et ne décide pas non plus du curseur ; la phrase vit dans la ligne de fenêtre, réécrite à chaque page sans s'empiler, effacée par une lecture refusée, et l'instance anglaise peint sa face anglaise. L'avis de succès du geste « bannir » choisit sa langue là où il est écrit, comme le refus et l'aveu voisins : deux faces côte à côte, la française sous `LANG='fr'`, l'anglaise sous `LANG='en'` sans l'observateur du lexique, aucune sur un refus, et plus de clé morte au lexique. CE QUI ÉTAIT FAUX : l'avis n'était pas servi en français sous `LANG='en'` — le lexique le traduisait déjà ; et la flèche du pager ne lisait pas `has_more`.");
 }
 
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;

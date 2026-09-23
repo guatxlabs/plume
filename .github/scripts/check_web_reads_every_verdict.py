@@ -77,6 +77,8 @@ CONST_BOUCLE = re.compile(r'const\s+((?:BOUCLE|PASSE)_[A-Z0-9_]+)\s*:\s*&str\s*=
 # parfaitement déclarée, au motif qu'elle ne porte pas le nom d'un mécanisme qu'elle n'a pas.
 PUBLIE = re.compile(r"(?:crate::)?bilan_de_tick::publier\(\s*(?:crate::)?(?:[a-z_][a-z0-9_]*::)*([A-Z][A-Z0-9_]{3,})\s*,")
 TABLE_BOUCLES = re.compile(r'const\s+BOUCLES\s*:\s*\[&str;\s*\d+\]\s*=\s*\[([^\]]*)\]')
+# Un `#[cfg(test)]` qui ouvre un MODULE (attributs intercalés et visibilité admis), jamais un élément isolé.
+MODULE_DE_TEST = re.compile(r"#\[cfg\(test\)\]\s*(?:#\[[^\]]*\]\s*)*(?:pub(?:\([^)]*\))?\s+)?mod\b")
 
 # Marqueur d'une clé de gabarit : `{boucle}_abandons` -> clés `regles_abandons`… + suffixe `_abandons`.
 OBJET = "<objet>"
@@ -123,9 +125,12 @@ def deriver_cles(sources, aveux=None):
             aveux[os.path.relpath(chemin, RACINE)] = [f"ligne {texte.count(chr(10), 0, o) + 1} : {m}"
                                                       for m, o in journal]
         # Un module de test en ligne (`#[cfg(test)] mod …`) est coupé : tout ce qui suit est du test.
-        coupe = code.find("#[cfg(test)]")
-        if coupe >= 0:
-            code = code[:coupe]
+        # SEUL UN MODULE coupe (`P10.21-i`, 2026-09-23) : couper au premier `#[cfg(test)]` venu faisait
+        # d'une simple FONCTION de témoin posée en tête de `metrics.rs` la fin du fichier, et les dix clés
+        # publiées après elle disparaissaient — la garde refusait de conclure sur un démon intact.
+        m_test = MODULE_DE_TEST.search(code)
+        if m_test:
+            code = code[:m_test.start()]
         textes.append((chemin, code))
         for m in CONST_BOUCLE.finditer(code):
             boucles[m.group(1)] = m.group(2)
@@ -241,11 +246,13 @@ def valider_instrument():
          'pub(crate) const BOUCLE_REGLES: &str = "regles";\n'
          'pub(crate) const BOUCLE_RISQUE: &str = "risque";\n'
          'pub(crate) const BOUCLES: [&str; 2] = [BOUCLE_REGLES, BOUCLE_RISQUE];\n'
+         '#[cfg(test)]\npub(crate) fn aide_de_temoin() -> u8 { 0 }\n'
+         'y.poser_dans(&mut z, "apres_fonction_de_test");\n'
          '#[cfg(test)]\nmod tests { fn t() { x.poser_dans(&mut y, "fictive_test"); } }\n'),
     ]
     cles, suffixes, derr = deriver_cles(rust)
     attendu = {"queue_depth", "identity", "abandons_dernier_tick", "regles_abandons", "risque_abandons",
-               OBJET, "main_verdict", "apres_url", "apres_duree_de_vie"}
+               OBJET, "main_verdict", "apres_url", "apres_duree_de_vie", "apres_fonction_de_test"}
     # `main_verdict` : le littéral `"main_verdict"` n'est pas `"<clé>_verdict"`… il l'est : clé `main`.
     attendu = (attendu - {"main_verdict"}) | {"main", "json"}
     if derr:

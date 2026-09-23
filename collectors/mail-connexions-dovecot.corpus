@@ -1,0 +1,82 @@
+# =================================================================================================
+# LES LIGNES DE CONNEXION DOVECOT QUE `collectors/mail.sh` DOIT CLASSER — `P10.22-j`
+#
+# POURQUOI CE FICHIER EXISTE. Mesuré le 2026-09-23 sur un pod d'essai docker-mailserver 16.0.1
+# (Dovecot 2.4.1) : une connexion réussie s'y journalise `imap-login: Logged in: user=<…>`, là où
+# la production (Dovecot 2.3.19.1) écrit `imap-login: Login: user=<…>`. Le capteur ne reconnaissait
+# que la seconde forme : après la montée, plus AUCUNE connexion réussie à la messagerie n'aurait été
+# émise, et rien ne l'aurait dit. Ce corpus porte les deux versions côte à côte, et son témoin
+# (`.github/scripts/check_mail_sensor_classifies_dovecot_logins_of_both_versions.py`) exécute le
+# capteur LIVRÉ sur chaque ligne — jamais une copie de ses motifs.
+#
+# LA RÈGLE QUE CE CORPUS TIENT : LA PARITÉ ENTRE VERSIONS, PAS UN JUGEMENT NEUF.
+# Une ligne 2.4 est classée comme son homologue 2.3 l'était. Correspondances LUES dans les sources
+# (dovecot/core 2.3.19.1 et 2.4.1, `src/login-common/` ; pigeonhole 0.5.19 et 2.4.1) :
+#   succès                    2.3 `Login:`                              2.4 `Logged in:`
+#   fermeture de connexion    2.3 `Disconnected: Connection closed (…)` 2.4 `Login aborted: Connection closed (…) (<code>)`
+#   déconnexion demandée      2.3 `Disconnected: Aborted login by logging out (…)`
+#                             2.4 `Login aborted: Logged out (…) (<code>)`
+# « Login aborted » n'est JAMAIS un succès ; ce n'est un ÉCHEC D'AUTHENTIFICATION que s'il porte une
+# tentative refusée (`auth failed`) ou s'il est l'homologue d'une ligne que 2.3 comptait déjà comme
+# échec (la déconnexion demandée, bras `Aborted login` du capteur). Une fermeture SANS tentative
+# (`no auth attempts`) n'est comptée ni en 2.3 ni en 2.4 : chaque sonde TCP qui ouvre puis ferme le
+# port en produit une, et la compter alimenterait la règle de force brute avec des sondes de santé.
+#
+# FORMAT : `verdict <TAB> user <TAB> src_ip <TAB> provenance <TAB> ligne`. `#` en colonne zéro =
+# commentaire, ligne vide ignorée.
+#   verdict    : `succes` -> un événement `auth`/`success` ; `echec` -> `auth`/`failure` ;
+#                `aucun`  -> AUCUN événement pour cette ligne
+#   user       : le champ `user` attendu (`-` = vide)
+#   src_ip     : le `src_ip` attendu (`-` pour une ligne `aucun`)
+#   provenance : d'où vient la FORME de la ligne — vocabulaire fermé, relu par le témoin :
+#     mesuree-2.4.1     relevée sur le pod d'essai docker-mailserver 16.0.1 le 2026-09-23
+#     mesuree-2.3.19.1  relevée sur la production (Dovecot 2.3.19.1) le 2026-09-23
+#     enonce-2.3        forme d'échec 2.3 donnée par le constat, NON relue sur la production par ce
+#                       lot — les sources 2.3.19.1 écrivent `Disconnected: Connection closed (…)` ;
+#                       la forme sans deux-points est celle des sources 2.3.4.1 et 2.3.13 (le
+#                       préfixe `Disconnected: ` est lu dans 2.3.16)
+#     sources-2.4.1     forme DÉRIVÉE des sources 2.4.1, NON MESURÉE
+#     sources-2.3.19.1  forme DÉRIVÉE des sources 2.3.19.1, NON MESURÉE
+#     fabriquee-2.4     forme 2.4.1 impossible avec la configuration par défaut (voir la ligne)
+#     fabriquee-2.3     forme 2.3.19.1 impossible avec la configuration par défaut (voir la ligne)
+# Seule la FORME est relevée : utilisateurs (`example.test`), adresses (plages de documentation
+# RFC 5737), identifiants de session, `mpid` et noms d'hôte sont SUBSTITUÉS. Le témoin refuse une
+# adresse hors des plages de documentation et un utilisateur hors de `example.test`.
+# =================================================================================================
+
+# --- Dovecot 2.4.1 : les deux lignes MESURÉES du constat ------------------------------------------
+succes	alice@example.test	203.0.113.10	mesuree-2.4.1	2026-09-23T19:16:02.123456+02:00 dms16-essai dovecot: imap-login: Logged in: user=<alice@example.test>, method=PLAIN, rip=203.0.113.10, lip=127.0.0.1, mpid=2520, TLS, session=<Zml4dHVyZTI0aW1h>
+echec	bob@example.test	203.0.113.11	mesuree-2.4.1	2026-09-23T19:16:10.123456+02:00 dms16-essai dovecot: imap-login: Login aborted: Connection closed (auth failed, 1 attempts in 6 secs) (auth_failed): user=<bob@example.test>, method=PLAIN, rip=203.0.113.11, lip=127.0.0.1, session=<Zml4dHVyZTI0ZWNo>
+
+# --- Dovecot 2.4.1 : les autres services de connexion. Le succès est émis par `login-common`
+# (`client_destroy_success(client, "Logged in")`), partagé par imap-, pop3-, submission-login et
+# par managesieve-login (pigeonhole 2.4.1, `login_binary` de `login-common`) -----------------------
+succes	carol@example.test	203.0.113.12	sources-2.4.1	2026-09-23T19:16:20.123456+02:00 dms16-essai dovecot: pop3-login: Logged in: user=<carol@example.test>, method=PLAIN, rip=203.0.113.12, lip=127.0.0.1, mpid=2521, TLS, session=<Zml4dHVyZTI0cG9w>
+succes	dave@example.test	203.0.113.13	sources-2.4.1	2026-09-23T19:16:21.123456+02:00 dms16-essai dovecot: submission-login: Logged in: user=<dave@example.test>, method=PLAIN, rip=203.0.113.13, lip=127.0.0.1, mpid=2522, TLS, session=<Zml4dHVyZTI0c3Vi>
+succes	erin@example.test	203.0.113.14	sources-2.4.1	2026-09-23T19:16:22.123456+02:00 dms16-essai dovecot: managesieve-login: Logged in: user=<erin@example.test>, method=PLAIN, rip=203.0.113.14, lip=127.0.0.1, mpid=2523, TLS, session=<Zml4dHVyZTI0c2l2>
+
+# --- Dovecot 2.4.1 : la déconnexion DEMANDÉE après un refus (homologue du bras `Aborted login`) et
+# la fermeture sans tentative (homologue d'une ligne 2.3 que le capteur ne comptait pas). Le couple
+# `no auth attempts` compté en échec sur `Logged out` est la PARITÉ, pas un jugement : 2.3 le compte.
+echec	frank@example.test	203.0.113.15	sources-2.4.1	2026-09-23T19:16:30.123456+02:00 dms16-essai dovecot: imap-login: Login aborted: Logged out (user disabled, 1 attempts in 2 secs) (user_disabled): user=<frank@example.test>, method=PLAIN, rip=203.0.113.15, lip=127.0.0.1, TLS, session=<Zml4dHVyZTI0b3V0>
+echec	-	203.0.113.18	sources-2.4.1	2026-09-23T19:16:31.123456+02:00 dms16-essai dovecot: pop3-login: Login aborted: Logged out (no auth attempts in 0 secs) (no_auth_attempts): user=<>, rip=203.0.113.18, lip=127.0.0.1, TLS, session=<Zml4dHVyZTI0cXVp>
+aucun	-	-	sources-2.4.1	2026-09-23T19:16:32.123456+02:00 dms16-essai dovecot: imap-login: Login aborted: Connection closed (no auth attempts in 0 secs) (no_auth_attempts): user=<>, rip=203.0.113.16, lip=127.0.0.1, TLS, session=<Zml4dHVyZTI0c29u>
+
+# --- Dovecot 2.3.19.1 : la ligne MESURÉE du constat, et les formes d'échec -------------------------
+succes	alice@example.test	192.0.2.10	mesuree-2.3.19.1	2026-09-23T19:15:02.123456+02:00 mailserver dovecot: imap-login: Login: user=<alice@example.test>, method=PLAIN, rip=192.0.2.10, lip=127.0.0.1, mpid=14263, TLS, session=<Zml4dHVyZTIzaW1h>
+echec	bob@example.test	192.0.2.11	enonce-2.3	2026-09-23T19:15:10.123456+02:00 mailserver dovecot: imap-login: Disconnected (auth failed, 1 attempts in 2 secs): user=<bob@example.test>, method=PLAIN, rip=192.0.2.11, lip=127.0.0.1, TLS, session=<Zml4dHVyZTIzZWNo>
+echec	bob@example.test	192.0.2.12	sources-2.3.19.1	2026-09-23T19:15:11.123456+02:00 mailserver dovecot: imap-login: Disconnected: Connection closed (auth failed, 1 attempts in 2 secs): user=<bob@example.test>, method=PLAIN, rip=192.0.2.12, lip=127.0.0.1, TLS, session=<Zml4dHVyZTIzY2xv>
+succes	carol@example.test	192.0.2.13	sources-2.3.19.1	2026-09-23T19:15:20.123456+02:00 mailserver dovecot: pop3-login: Login: user=<carol@example.test>, method=PLAIN, rip=192.0.2.13, lip=127.0.0.1, mpid=14264, TLS, session=<Zml4dHVyZTIzcG9w>
+succes	erin@example.test	192.0.2.14	sources-2.3.19.1	2026-09-23T19:15:22.123456+02:00 mailserver dovecot: managesieve-login: Login: user=<erin@example.test>, method=PLAIN, rip=192.0.2.14, lip=127.0.0.1, mpid=14265, TLS, session=<Zml4dHVyZTIzc2l2>
+echec	frank@example.test	192.0.2.15	sources-2.3.19.1	2026-09-23T19:15:30.123456+02:00 mailserver dovecot: imap-login: Disconnected: Aborted login by logging out (user disabled): user=<frank@example.test>, method=PLAIN, rip=192.0.2.15, lip=127.0.0.1, TLS, session=<Zml4dHVyZTIzb3V0>
+echec	-	192.0.2.18	sources-2.3.19.1	2026-09-23T19:15:31.123456+02:00 mailserver dovecot: pop3-login: Disconnected: Aborted login by logging out (no auth attempts in 0 secs): user=<>, rip=192.0.2.18, lip=127.0.0.1, TLS, session=<Zml4dHVyZTIzcXVp>
+aucun	-	-	sources-2.3.19.1	2026-09-23T19:15:32.123456+02:00 mailserver dovecot: imap-login: Disconnected: Connection closed (no auth attempts in 0 secs): user=<>, rip=192.0.2.16, lip=127.0.0.1, TLS, session=<Zml4dHVyZTIzc29u>
+
+# --- L'ANCRAGE : le motif de succès se lit à l'EN-TÊTE du message, jamais dans un champ fourni par le
+# client. FABRIQUÉES : un nom d'utilisateur qui contient `: ` et des espaces est refusé par le
+# serveur d'authentification avec `auth_username_chars` par défaut (lettres, chiffres, `.-_@` —
+# `src/auth/auth-settings.c`, 2.3.19.1 comme 2.4.1) ; ces lignes n'existent que si l'exploitant vide
+# ce réglage. Sans l'ancrage, elles transformaient un ÉCHEC en SUCCÈS, et la force brute qui les
+# porte sortait du compte de la règle `action=failure`.
+echec	x imap-login: Logged in: y	203.0.113.17	fabriquee-2.4	2026-09-23T19:16:40.123456+02:00 dms16-essai dovecot: imap-login: Login aborted: Connection closed (auth failed, 1 attempts in 2 secs) (auth_failed): user=<x imap-login: Logged in: y>, method=PLAIN, rip=203.0.113.17, lip=127.0.0.1, session=<Zml4dHVyZTI0aW5q>
+echec	x imap-login: Login: y	192.0.2.17	fabriquee-2.3	2026-09-23T19:15:40.123456+02:00 mailserver dovecot: imap-login: Disconnected: Connection closed (auth failed, 1 attempts in 2 secs): user=<x imap-login: Login: y>, method=PLAIN, rip=192.0.2.17, lip=127.0.0.1, TLS, session=<Zml4dHVyZTIzaW5q>

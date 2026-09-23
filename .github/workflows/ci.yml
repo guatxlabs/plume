@@ -2180,6 +2180,16 @@ jobs:
         continue-on-error: true
         run: python3 .github/scripts/check_a_swallowed_write_is_never_affirmed_as_a_fact.py
 
+      # `P10.22-j` — Dovecot 2.4 journalise une connexion réussie `Logged in:` (2.3 : `Login:`) et un
+      # abandon `Login aborted: Logged out` (2.3 : `Disconnected: Aborted login`). Le capteur mail est
+      # JOUÉ dans un bac, sous chaque awk présent (gawk, mawk), sur un corpus 2.3 + 2.4 dont chaque
+      # ligne porte sa provenance ; « Login aborted » n'est jamais un succès, le succès est ancré après
+      # l'étiquette `dovecot:`. La garde valide son corpus et son propre juge avant de conclure.
+      - name: Le capteur mail classe les connexions Dovecot 2.3 et 2.4 (P10.22-j)
+        id: garde_70
+        continue-on-error: true
+        run: python3 .github/scripts/check_mail_sensor_classifies_dovecot_logins_of_both_versions.py
+
       # `P11.18-z` — LA RECHERCHE D'UNE LISTE SURVIT AU RENDU QUI DÉTRUIT SON CHAMP. La garde tient que
       # chaque liste cherchable déclare l'identité stable sans laquelle la mémoire ne peut pas s'armer :
       # sans elle, le mécanisme est posé mais la vue se comporte comme avant, en silence.
@@ -2658,6 +2668,7 @@ jobs:
           total=$((total+1)); o="${{ steps.garde_67.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_truncated_list_is_never_served_as_a_complete_one.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_68.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_single_row_read_that_failed_is_never_served_as_a_fact.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_69.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_swallowed_write_is_never_affirmed_as_a_fact.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_70.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_mail_sensor_classifies_dovecot_logins_of_both_versions.py : $o"; }
           echo "gardes jouées : $total ; en échec : $rouges"
           exit $rc
   features:

@@ -72,8 +72,17 @@ BEGIN{ n=0; buf=""; maxts=last+0 }
   ip=""; if (match($0,/rip=[0-9.]+/)) ip=substr($0,RSTART+4,RLENGTH-4); else if (match($0,/\[[0-9]+(\.[0-9]+)+\]/)) ip=substr($0,RSTART+1,RLENGTH-2)  # exige des points -> exclut le PID [1457]
   usr=""; if (match($0,/user=<[^>]*>/)) usr=substr($0,RSTART+6,RLENGTH-7)
   svc="postfix"; if ($0 ~ /dovecot/) svc="dovecot"; else if ($0 ~ /postscreen/) svc="postscreen"
-  if ($0 ~ /(imap|pop3|submission)-login: Login:/) emit("auth","success",1,ip,usr,svc)
-  else if ($0 ~ /authentication failed|auth failed|Aborted login/) emit("auth","failure",2,ip,usr,svc)
+  # P10.22-j — connexions Dovecot, 2.3 ET 2.4 (témoin : collectors/mail-connexions-dovecot.corpus).
+  # Succès : 2.3 `Login:`, 2.4 `Logged in:` (émis par login-common, donc aussi par managesieve-login).
+  # Lu en TÊTE du message, juste après son étiquette `dovecot:`, et nulle part ailleurs dans la ligne :
+  # le `user=<…>` qui suit est fourni par le client. Le deux-points fait partie du motif : 2.4 écrit
+  # `Login aborted:` pour une connexion qui N A PAS abouti, et `Login` en est le préfixe.
+  # Échec : `auth failed` couvre les deux versions ; `Login aborted: Logged out` est le pendant 2.4
+  # du bras `Aborted login` (2.3 : `Aborted login by logging out`), et rien de plus : une fermeture
+  # sans tentative (`Login aborted: Connection closed (no auth attempts…)`) ne compte pas, comme en 2.3.
+  dvc=""; if (match($0,/ dovecot(\[[0-9]+\])?: /)) dvc=substr($0,RSTART+RLENGTH)
+  if (dvc ~ /^(imap|pop3|submission|managesieve)-login: (Login|Logged in): /) emit("auth","success",1,ip,usr,svc)
+  else if ($0 ~ /authentication failed|auth failed|Aborted login/ || dvc ~ /^(imap|pop3|submission|managesieve)-login: Login aborted: Logged out /) emit("auth","failure",2,ip,usr,svc)
   else if ($0 ~ /postscreen.*(PREGREET|DNSBL|BLACKLISTED|COMMAND (PIPELINING|TIME|COUNT)|BARE NEWLINE|NON-SMTP)/) emit("postscreen","blocked",2,ip,usr,"postscreen")  # HANGUP exclu = bruit (probes node)
   else if ($0 ~ /NOQUEUE: reject|reject: RCPT/) emit("reject","blocked",2,ip,usr,svc)
   else if ($0 ~ /amavis\[[0-9]+\]:.*(Passed|Blocked) [A-Z]/) {  # verdict amavis (IronPort-like : flux + verdicts)

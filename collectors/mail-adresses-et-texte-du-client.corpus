@@ -1,0 +1,94 @@
+# =================================================================================================
+# L'ADRESSE ET L'AUTEUR D'UNE LIGNE DE JOURNAL MAIL — `P10.22-s` et `P10.22-v`
+#
+# Corpus frère de `collectors/mail-connexions-dovecot.corpus`, joué par le même témoin
+# (`.github/scripts/check_mail_sensor_classifies_dovecot_logins_of_both_versions.py`), qui exécute le
+# capteur LIVRÉ sur chaque ligne — jamais une copie de ses motifs.
+#
+# CE QUE CE CORPUS TIENT
+#   `P10.22-s` — l'adresse source est une ADRESSE, entière : IPv4, IPv6, et la forme mappée
+#   `::ffff:a.b.c.d` rendue en IPv4 (Postfix la replie déjà à la source, le démon la replie pour ses
+#   bans ; une même machine ne porte qu'une clé). Mesuré sur le capteur d'avant : `rip=2001:db8::5`
+#   rendait `2001` ; `rip=::ffff:192.0.2.40` rendait une adresse vide et l'échec était jeté ; un
+#   échec SASL Postfix venu d'un client IPv6 était jeté ; un rejet venu d'un client IPv6 portait
+#   l'adresse que le CLIENT avait écrite dans son `helo=<[…]>`.
+#   `P10.22-v` — un texte choisi par le client n'est jamais un verdict d'authentification. Postfix
+#   recopie dans son journal le HELO (`helo=<…>`, arguments recollés avec leurs espaces), l'expéditeur,
+#   une commande non SMTP, le texte envoyé avant la salutation ou en rafale — lignes que n'importe
+#   quel client produit, SANS s'authentifier. Mesuré sur le capteur d'avant : chacune portant
+#   `auth failed`, `authentication failed` ou `Aborted login` devenait un ÉCHEC D'AUTHENTIFICATION ;
+#   un `rip=` et un `user=<…>` écrits par le client remplaçaient l'adresse et le compte réels ; et une
+#   étiquette ` dovecot: imap-login: Logged in: ` écrite par le client fabriquait une connexion
+#   RÉUSSIE. L'échec SASL de notre propre relais sortant était imputé à l'adresse du relais.
+#   Les VRAIS échecs restent comptés : `SASL … authentication failed` du serveur smtpd de Postfix
+#   (ici), `auth failed` de Dovecot 2.3 et 2.4 (corpus frère).
+#
+# FORMAT : `verdict <TAB> user <TAB> src_ip <TAB> provenance <TAB> ligne`. `#` en colonne zéro =
+# commentaire, ligne vide ignorée.
+#   verdict    : `succes` -> `auth`/`success` ; `echec` -> `auth`/`failure` ; `rejet` ->
+#                `reject`/`blocked` ; `postscreen` -> `postscreen`/`blocked` ; `aucun` -> AUCUN
+#                événement pour cette ligne
+#   user       : le champ `user` attendu (`-` = vide). Toujours `-` sur une ligne Postfix : le capteur
+#                ne lit un utilisateur QUE dans un message Dovecot
+#   src_ip     : le `src_ip` attendu, sous sa forme rendue (`-` pour une ligne `aucun`)
+#   provenance : d'où vient la FORME de la ligne — vocabulaire fermé, relu par le témoin :
+#     sources-2.3.19.1           forme DÉRIVÉE des sources Dovecot 2.3.19.1, NON MESURÉE
+#     sources-2.4.1              forme DÉRIVÉE des sources Dovecot 2.4.1, NON MESURÉE
+#     fabriquee-2.4              forme 2.4.1 impossible avec `auth_username_chars` par défaut
+#     enonce-P10.22-s            valeur donnée par le constat ; que Dovecot écrive une adresse mappée
+#                                dépend d'une écoute double pile, NON MESURÉ
+#     sources-postfix            forme lue dans les sources Postfix (branche principale, lue le
+#                                2026-09-23 : `smtpd_sasl_glue.c`, `smtpd.c`, `smtpd_peer.c`,
+#                                `postscreen_early.c`, `postscreen_smtpd.c`, `smtp_sasl_glue.c`,
+#                                `unescape.c`), NON MESURÉE
+#     sources-postfix-avant-3.9  la même, sans le suffixe `, sasl_username=` : ajouté le 20231006
+#                                (fichier HISTORY de Postfix), il n'est publié qu'à partir de 3.9
+#     client-postfix             forme `sources-postfix` dont un champ porte un texte CHOISI par le
+#                                client ; ne peut JAMAIS être `succes` ni `echec`
+# Seule la FORME est relevée : utilisateurs et domaines (`example.test`, `example.net`), adresses
+# (plages de documentation RFC 5737 et RFC 3849), identifiants, PID, ports et noms d'hôte sont
+# SUBSTITUÉS. Le témoin refuse une adresse hors de ces plages.
+# =================================================================================================
+
+# --- P10.22-s : Dovecot, adresse IPv6 et forme mappée ----------------------------------------------
+succes	alice@example.test	2001:db8::5	sources-2.3.19.1	2026-09-23T19:30:01.123456+02:00 mailserver dovecot: imap-login: Login: user=<alice@example.test>, method=PLAIN, rip=2001:db8::5, lip=2001:db8::1, mpid=14270, TLS, session=<Zml4dHVyZTZpbWE2>
+succes	carol@example.test	2001:db8:0:1::25	sources-2.4.1	2026-09-23T19:30:02.123456+02:00 dms16-essai dovecot: submission-login: Logged in: user=<carol@example.test>, method=PLAIN, rip=2001:db8:0:1::25, lip=2001:db8::1, mpid=2530, TLS, session=<Zml4dHVyZTZzdWI2>
+echec	frank@example.test	2001:db8::15	sources-2.4.1	2026-09-23T19:30:03.123456+02:00 dms16-essai dovecot: imap-login: Login aborted: Logged out (user disabled, 1 attempts in 2 secs) (user_disabled): user=<frank@example.test>, method=PLAIN, rip=2001:db8::15, lip=2001:db8::1, TLS, session=<Zml4dHVyZTZvdXQ2>
+echec	bob@example.test	192.0.2.40	enonce-P10.22-s	2026-09-23T19:30:04.123456+02:00 mailserver dovecot: imap-login: Disconnected: Connection closed (auth failed, 1 attempts in 2 secs): user=<bob@example.test>, method=PLAIN, rip=::ffff:192.0.2.40, lip=::ffff:192.0.2.1, TLS, session=<Zml4dHVyZTZtYXA2>
+
+# Le DERNIER `rip=` est celui du serveur : ce qui le précède (`user=<…>`) vient du client. FABRIQUÉE :
+# `,` `=` et l'espace sont refusés par `auth_username_chars` par défaut.
+echec	x, rip=198.51.100.66	203.0.113.30	fabriquee-2.4	2026-09-23T19:30:05.123456+02:00 dms16-essai dovecot: imap-login: Login aborted: Connection closed (auth failed, 1 attempts in 2 secs) (auth_failed): user=<x, rip=198.51.100.66>, method=PLAIN, rip=203.0.113.30, lip=127.0.0.1, session=<Zml4dHVyZTZyaXA2>
+
+# --- P10.22-s : Postfix. Le client s'écrit `nom[adresse]` (smtpd) ou `[adresse]:port` (postscreen),
+# SANS préfixe `IPv6:` (`smtpd_peer.c` : ce préfixe est réservé aux en-têtes `Received:`), et AVANT
+# tout texte venu du client. Le port reste hors de l'adresse ; le PID n'en est jamais une. -----------
+echec	-	192.0.2.70	sources-postfix	2026-09-23T19:30:10.123456+02:00 mailserver postfix/submission/smtpd[2010]: warning: unknown[192.0.2.70]: SASL LOGIN authentication failed: UGFzc3dvcmQ6, sasl_username=dave@example.test
+echec	-	2001:db8::70	sources-postfix	2026-09-23T19:30:11.123456+02:00 mailserver postfix/smtpd[2011]: warning: unknown[2001:db8::70]: SASL PLAIN authentication failed: (reason unavailable), sasl_username=(unavailable)
+echec	-	192.0.2.71	sources-postfix-avant-3.9	2026-09-23T19:30:12.123456+02:00 mailserver postfix/smtps/smtpd[2012]: warning: mail.example.test[192.0.2.71]:54321: SASL CRAM-MD5 authentication failed: authentication failure
+postscreen	-	2001:db8::62	sources-postfix	2026-09-23T19:30:13.123456+02:00 mailserver postfix/postscreen[2015]: PREGREET 11 after 0.07 from [2001:db8::62]:40001: EHLO x\r\n
+# Un octet non imprimable est journalisé en octal (`unescape.c`) : `\026\003\001` est le début d'une
+# poignée de main TLS envoyée en clair. Sous mawk 1.3.4 20200120, l'échappement JSON d'avant laissait
+# passer `\0`, et l'enveloppe ENTIÈRE devenait illisible.
+postscreen	-	192.0.2.80	sources-postfix	2026-09-23T19:30:14.123456+02:00 mailserver postfix/postscreen[2016]: PREGREET 3 after 0 from [192.0.2.80]:40003: \026\003\001
+# Un littéral d'adresse écrit par le CLIENT dans son HELO n'est jamais l'adresse source.
+rejet	-	2001:db8::61	client-postfix	2026-09-23T19:30:15.123456+02:00 mailserver postfix/smtpd[2013]: NOQUEUE: reject: RCPT from unknown[2001:db8::61]: 554 5.7.1 <b@example.test>: Relay access denied; from=<a@example.test> to=<b@example.test> proto=ESMTP helo=<[198.51.100.9]>
+rejet	-	192.0.2.68	client-postfix	2026-09-23T19:30:16.123456+02:00 mailserver postfix/smtpd[2014]: NOQUEUE: reject: RCPT from unknown[192.0.2.68]: 554 5.7.1 <b@example.test>: Relay access denied; from=<a@example.test> to=<b@example.test> proto=ESMTP helo=<[IPv6:2001:db8::99]>
+
+# --- P10.22-v : le texte du client n'est jamais un verdict d'authentification --------------------
+rejet	-	192.0.2.61	client-postfix	2026-09-23T19:30:20.123456+02:00 mailserver postfix/smtpd[2017]: NOQUEUE: reject: RCPT from unknown[192.0.2.61]: 554 5.7.1 <b@example.test>: Relay access denied; from=<a@example.test> to=<b@example.test> proto=ESMTP helo=<auth failed>
+rejet	-	192.0.2.62	client-postfix	2026-09-23T19:30:21.123456+02:00 mailserver postfix/smtpd[2018]: NOQUEUE: reject: RCPT from unknown[192.0.2.62]: 554 5.7.1 <b@example.test>: Relay access denied; from=<a@example.test> to=<b@example.test> proto=ESMTP helo=<auth failed user=<ceo@example.test> rip=198.51.100.7>
+rejet	-	192.0.2.69	client-postfix	2026-09-23T19:30:22.123456+02:00 mailserver postfix/smtpd[2019]: NOQUEUE: reject: RCPT from unknown[192.0.2.69]: 554 5.7.1 <b@example.test>: Relay access denied; from=<"authentication failed"@example.test> to=<b@example.test> proto=ESMTP helo=<mx.example.test>
+rejet	-	192.0.2.67	client-postfix	2026-09-23T19:30:23.123456+02:00 mailserver postfix/smtpd[2020]: NOQUEUE: reject: RCPT from unknown[192.0.2.67]: 554 5.7.1 <b@example.test>: Relay access denied; from=<a@example.test> to=<b@example.test> proto=ESMTP helo=<Aborted login>
+aucun	-	-	client-postfix	2026-09-23T19:30:24.123456+02:00 mailserver postfix/submission/smtpd[2021]: warning: non-SMTP command from unknown[192.0.2.63]: GET /auth failed HTTP/1.1
+postscreen	-	192.0.2.64	client-postfix	2026-09-23T19:30:25.123456+02:00 mailserver postfix/postscreen[2022]: PREGREET 40 after 0.01 from [192.0.2.64]:40002: EHLO auth failed rip=198.51.100.8\r\n
+postscreen	-	192.0.2.83	client-postfix	2026-09-23T19:30:26.123456+02:00 mailserver postfix/postscreen[2023]: NON-SMTP COMMAND from [192.0.2.83]:40005 after CONNECT: GET /auth failed HTTP/1.1
+# L'étiquette `dovecot:` n'est lue qu'en tête de ligne, là où syslog l'écrit : écrite par un client
+# dans un HELO, un texte en rafale ou une pré-salutation, elle fabriquait une connexion RÉUSSIE. Le
+# `rip=` forgé y est suivi d'une virgule, comme dans une vraie ligne Dovecot : il se valide.
+rejet	-	192.0.2.65	client-postfix	2026-09-23T19:30:27.123456+02:00 mailserver postfix/smtpd[2024]: NOQUEUE: reject: RCPT from unknown[192.0.2.65]: 554 5.7.1 <b@example.test>: Relay access denied; from=<a@example.test> to=<b@example.test> proto=ESMTP helo=<x dovecot: imap-login: Logged in: user=<ceo@example.test>, rip=198.51.100.10, lip=192.0.2.1>
+aucun	-	-	client-postfix	2026-09-23T19:30:28.123456+02:00 mailserver postfix/submission/smtpd[2025]: improper command pipelining after CONNECT from unknown[192.0.2.66]: x dovecot: imap-login: Login: user=<ceo@example.test>, rip=198.51.100.11, lip=192.0.2.1\r\n
+postscreen	-	192.0.2.82	client-postfix	2026-09-23T19:30:29.123456+02:00 mailserver postfix/postscreen[2026]: PREGREET 80 after 0.02 from [192.0.2.82]:40004: x dovecot: imap-login: Logged in: user=<ceo@example.test>, rip=198.51.100.12, lip=192.0.2.1\r\n
+# L'échec SASL de NOTRE client smtp auprès d'un relais : ni une attaque, ni une tentative venue de
+# l'adresse du relais.
+aucun	-	-	sources-postfix	2026-09-23T19:30:30.123456+02:00 mailserver postfix/smtp[2027]: 4ABCDEF123: to=<c@example.net>, relay=relay.example.net[198.51.100.20]:587, delay=1.2, delays=0.1/0/1/0, dsn=4.7.8, status=deferred (SASL authentication failed; server relay.example.net[198.51.100.20] said: 535 5.7.8 Error: authentication failed: authentication failure)

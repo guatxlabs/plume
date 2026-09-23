@@ -51,7 +51,66 @@ now=$(date +%s)
 umask 027
 tmp=$(mktemp "$SPOOL/.mail.XXXXXX")
 newwm=$(printf '%s\n' "$raw" | TZ=UTC awk -v last="$last" -v host="$host" -v now="$now" -v out="$tmp" -v skipip="$SKIPIP" '
-function jesc(s){ gsub(/\\/,"\\\\",s); gsub(/"/,"\\\"",s); gsub(/\r/,"",s); gsub(/\t/," ",s); return s }
+# L’antislash se double par `&&` (le texte trouvé, deux fois) et non par "\\\\" : mawk 1.3.4 20200120
+# (l’awk par défaut de Debian 12 et d’Ubuntu 22.04) lit cette chaîne comme UN antislash et ne double
+# rien — une seule ligne portant `\026` (octet échappé par Postfix) rendait l’enveloppe entière
+# illisible comme JSON, vrais échecs d’authentification compris.
+function jesc(s){ gsub(/\\/,"&&",s); gsub(/"/,"\\\"",s); gsub(/\r/,"",s); gsub(/\t/," ",s); return s }
+# P10.22-s — UNE ADRESSE, ET RIEN D’AUTRE. IPv4 pointée ou IPv6 (témoin :
+# collectors/mail-adresses-et-texte-du-client.corpus), validée ENTIÈRE : une valeur qui n’en est pas une
+# rend "" et la ligne n’est pas émise, plutôt qu’un préfixe (`rip=2001:db8::5` rendait `2001`). La forme
+# mappée `::ffff:a.b.c.d` est rendue en IPv4 : Postfix la replie déjà à la source
+# (`sane_sockaddr_to_hostaddr`), le démon la replie pour ses bans et sa liste d’épargne
+# (`ssrf_norm_ip`), et la veille compare du TEXTE — sans ce repli, une même machine porterait deux clés
+# et ne rencontrerait jamais un indicateur IPv4. Aucun intervalle `{n,m}` dans ces motifs : mawk
+# 1.3.4 20200120 les lit comme des caractères.
+# CANONICALISATION HORS DÉMON (`P4.7-j`) — divergence avec `ssrf_norm_ip`, nommée : seule la forme
+# mappée ÉCRITE PAR inet_ntop (`::ffff:a.b.c.d`) est repliée ; `::ffff:c000:228`, la forme non
+# compressée et une IPv6 en majuscules ressortent telles qu’écrites, là où le démon les replie ou
+# les récrit. Dovecot et Postfix n’écrivent aucune de ces trois formes. Comme le démon : zéro de tête
+# d’un octet IPv4 refusé, zone `%…` refusée.
+function est_ipv4(s,   o, i){
+  if (s !~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) return 0
+  split(s, o, ".")
+  for (i = 1; i <= 4; i++) if (length(o[i]) > 3 || o[i] + 0 > 255 || o[i] ~ /^0[0-9]/) return 0
+  return 1
+}
+function est_ipv6(s,   t, doubles, g, n, i, groupes){
+  if (s !~ /^[0-9A-Fa-f:.]+$/ || index(s, ":") == 0 || index(s, ":::") > 0) return 0
+  if ((s ~ /^:/ && s !~ /^::/) || (s ~ /:$/ && s !~ /::$/)) return 0
+  t = s; doubles = gsub(/::/, "", t); if (doubles > 1) return 0
+  n = split(s, g, ":"); groupes = 0
+  for (i = 1; i <= n; i++) {
+    if (g[i] == "") continue
+    if (i == n && index(g[i], ".") > 0) { if (!est_ipv4(g[i])) return 0; groupes += 2; continue }
+    if (g[i] !~ /^[0-9A-Fa-f]+$/ || length(g[i]) > 4) return 0
+    groupes++
+  }
+  return doubles ? (groupes <= 7) : (groupes == 8)
+}
+function adresse(s){
+  if (est_ipv4(s)) return s
+  if (!est_ipv6(s)) return ""
+  if (s ~ /^::ffff:[0-9.]+$/) return substr(s, 8)
+  return s
+}
+# Dovecot : le DERNIER champ `rip=` du message. Ceux qui le précèdent (`user=<…>`) sont fournis par le
+# client ; ceux qui le suivent (`lip=`, `mpid=`, sécurité, `session=`) sont écrits par le serveur.
+function rip_de_dovecot(m,   v){
+  v = ""
+  while (match(m, /[,:] rip=[^, ]*/)) { v = substr(m, RSTART + 6, RLENGTH - 6); m = substr(m, RSTART + RLENGTH) }
+  return v
+}
+# Postfix, postscreen, amavis : le PREMIER crochet du message qui ressemble à une adresse — Postfix écrit
+# le client `nom[adresse]` (ou `[adresse]:port`) AVANT tout texte venu du client (`helo=<…>`, texte de
+# pré-salutation, commande non SMTP). S’il ne se valide pas, aucune adresse : on ne va JAMAIS chercher
+# plus loin, là où le client écrit. Le PID (`smtpd[1457]`) n’a ni point ni deux-points, le port est
+# hors du crochet ; `[IPv6:…]` n’est pas une forme de journal (Postfix la réserve aux en-têtes
+# `Received:`) : c’est celle qu’un CLIENT écrit dans son HELO, elle ne se valide donc pas.
+function crochet_du_client(m){
+  if (!match(m, /\[[0-9A-Za-z:.%_-]*[.:][0-9A-Za-z:.%_-]*\]/)) return ""
+  return substr(m, RSTART + 1, RLENGTH - 2)
+}
 function emit(cat,act,sev,ip,usr,svc,extra,dk,   dd){
   # malware/banned/av_error/mailflow = signaux amavis/clamav : emis MEME sans src_ip (le verdict
   # amavis ne porte pas toujours une IP relais) ; les autres exigent une src_ip (respect de skipip).
@@ -69,20 +128,37 @@ BEGIN{ n=0; buf=""; maxts=last+0 }
   et=base-off
   if (et <= last) next
   if (et > maxts) maxts=et
-  ip=""; if (match($0,/rip=[0-9.]+/)) ip=substr($0,RSTART+4,RLENGTH-4); else if (match($0,/\[[0-9]+(\.[0-9]+)+\]/)) ip=substr($0,RSTART+1,RLENGTH-2)  # exige des points -> exclut le PID [1457]
-  usr=""; if (match($0,/user=<[^>]*>/)) usr=substr($0,RSTART+6,RLENGTH-7)
-  svc="postfix"; if ($0 ~ /dovecot/) svc="dovecot"; else if ($0 ~ /postscreen/) svc="postscreen"
+  # P10.22-v — L’ÉTIQUETTE EST CELLE DE L’EN-TÊTE SYSLOG, PAS UN MOT DE LA LIGNE. Le journal est
+  # `<horodatage> <hôte> <étiquette>: <message>` ; `dovecot:` (ou `postfix/…/smtpd[pid]:`) n’est lu
+  # qu’en TROISIÈME champ. Cherchée partout, l’étiquette `dovecot:` se trouvait aussi dans un `helo=<…>`
+  # ou un texte de pré-salutation Postfix : n’importe quel client fabriquait une connexion RÉUSSIE, à
+  # l’utilisateur et à l’adresse de son choix. `user=<…>` n’est lu que dans un message Dovecot : dans
+  # une ligne Postfix, il ne peut venir que du client.
+  dvc=""; if (match($0,/^[^ ]+ [^ ]+ dovecot(\[[0-9]+\])?: /)) dvc=substr($0,RSTART+RLENGTH)
+  psd=""; if (match($0,/^[^ ]+ [^ ]+ postfix(\/[A-Za-z0-9_.-]+)*\/smtpd\[[0-9]+\]: /)) psd=substr($0,RSTART+RLENGTH)
+  msg=""; if (match($0,/^[^ ]+ [^ ]+ [^ ]+ /)) msg=substr($0,RSTART+RLENGTH)
+  ip=""; if (dvc != "") ip=adresse(rip_de_dovecot(dvc)); else ip=adresse(crochet_du_client(msg))
+  usr=""; if (dvc != "" && match(dvc,/user=<[^>]*>/)) usr=substr(dvc,RSTART+6,RLENGTH-7)
+  svc="postfix"; if (dvc != "") svc="dovecot"; else if ($0 ~ /^[^ ]+ [^ ]+ postfix\/postscreen\[/) svc="postscreen"
   # P10.22-j — connexions Dovecot, 2.3 ET 2.4 (témoin : collectors/mail-connexions-dovecot.corpus).
   # Succès : 2.3 `Login:`, 2.4 `Logged in:` (émis par login-common, donc aussi par managesieve-login).
-  # Lu en TÊTE du message, juste après son étiquette `dovecot:`, et nulle part ailleurs dans la ligne :
-  # le `user=<…>` qui suit est fourni par le client. Le deux-points fait partie du motif : 2.4 écrit
-  # `Login aborted:` pour une connexion qui N A PAS abouti, et `Login` en est le préfixe.
-  # Échec : `auth failed` couvre les deux versions ; `Login aborted: Logged out` est le pendant 2.4
-  # du bras `Aborted login` (2.3 : `Aborted login by logging out`), et rien de plus : une fermeture
-  # sans tentative (`Login aborted: Connection closed (no auth attempts…)`) ne compte pas, comme en 2.3.
-  dvc=""; if (match($0,/ dovecot(\[[0-9]+\])?: /)) dvc=substr($0,RSTART+RLENGTH)
+  # Lu en TÊTE du message Dovecot, et nulle part ailleurs : le `user=<…>` qui suit est fourni par le
+  # client. Le deux-points fait partie du motif : 2.4 écrit `Login aborted:` pour une connexion qui
+  # N A PAS abouti, et `Login` en est le préfixe.
+  # Échec, ANCRÉ COMME LE SUCCÈS (P10.22-v) — trois formes et aucune autre :
+  #   Dovecot, en tête du message et AVANT le premier champ (`[^<=]*` : ni `user=<` ni `rip=` encore) :
+  #     `(auth failed, …)` (2.3 et 2.4) ; `Aborted login` (2.3 : `Disconnected: Aborted login by
+  #     logging out`) ; `Login aborted: Logged out`, son pendant 2.4. Une fermeture sans tentative
+  #     (`Login aborted: Connection closed (no auth attempts…)`) ne compte pas, comme en 2.3.
+  #   Postfix, serveur smtpd seulement : `warning: nom[adresse]: SASL <mécanisme> authentication failed`.
+  # Cherché partout, le bras comptait en échec d’authentification un `helo=<auth failed>`, un expéditeur,
+  # une commande HTTP envoyée au port de soumission, un texte de pré-salutation — et l’échec de NOTRE
+  # relais sortant, imputé à l’adresse du relais.
   if (dvc ~ /^(imap|pop3|submission|managesieve)-login: (Login|Logged in): /) emit("auth","success",1,ip,usr,svc)
-  else if ($0 ~ /authentication failed|auth failed|Aborted login/ || dvc ~ /^(imap|pop3|submission|managesieve)-login: Login aborted: Logged out /) emit("auth","failure",2,ip,usr,svc)
+  else if (dvc ~ /^(imap|pop3|submission|managesieve)-login: [^<=]*\(auth failed[,)]/ ||
+           dvc ~ /^(imap|pop3|submission|managesieve)-login: (Disconnected: )?Aborted login[ (]/ ||
+           dvc ~ /^(imap|pop3|submission|managesieve)-login: Login aborted: Logged out / ||
+           psd ~ /^warning: [A-Za-z0-9._-]+\[[0-9A-Fa-f:.]+\](:[0-9]+)?: SASL [A-Za-z0-9_-]+ authentication failed/) emit("auth","failure",2,ip,usr,svc)
   else if ($0 ~ /postscreen.*(PREGREET|DNSBL|BLACKLISTED|COMMAND (PIPELINING|TIME|COUNT)|BARE NEWLINE|NON-SMTP)/) emit("postscreen","blocked",2,ip,usr,"postscreen")  # HANGUP exclu = bruit (probes node)
   else if ($0 ~ /NOQUEUE: reject|reject: RCPT/) emit("reject","blocked",2,ip,usr,svc)
   else if ($0 ~ /amavis\[[0-9]+\]:.*(Passed|Blocked) [A-Z]/) {  # verdict amavis (IronPort-like : flux + verdicts)

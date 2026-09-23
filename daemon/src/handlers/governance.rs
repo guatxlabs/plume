@@ -476,9 +476,13 @@ pub(crate) async fn role_create(State(st): State<AppState>, Extension(au): Exten
         );
     }
     // AUDIT control-plane (tamper-evident) + rafraîchit le cache process pour un effet immédiat.
-    control_ledger_append(&st, "role.upsert", &au.name, "", &format!("role '{name}' base={base} deny=[{deny_csv}]"));
+    // `P10.20-z` — LE RÔLE EST ÉCRIT ; SI SA LIGNE MANQUE AU JOURNAL DE CONTRÔLE, LA RÉPONSE LE DIT à côté
+    // du succès. Refuser serait faux : le rôle existe déjà, et le rejeu ne comblerait pas le trou.
+    let maillon = control_ledger_append(&st, "role.upsert", &au.name, "", &format!("role '{name}' base={base} deny=[{deny_csv}]"));
     reload_custom_roles(cp);
-    Json(json!({ "ok": true, "name": name, "base_role": base, "deny_perms": deny })).into_response()
+    let mut corps = json!({ "ok": true, "name": name, "base_role": base, "deny_perms": deny });
+    avouer_le_maillon_de_controle_manquant(&mut corps, &maillon);
+    Json(corps).into_response()
 }
 
 /// DELETE /api/roles/{name} — retire un rôle composable (super-admin). Rafraîchit le cache. NB : les grants
@@ -495,7 +499,10 @@ pub(crate) async fn role_delete(State(st): State<AppState>, Extension(au): Exten
             return not_found("rôle introuvable");
         }
     }
-    control_ledger_append(&st, "role.delete", &au.name, "", &format!("role '{name}' supprimé"));
+    // `P10.20-z` — même contrat que `role_upsert` : le rôle est retiré, l'aveu voyage à côté du succès.
+    let maillon = control_ledger_append(&st, "role.delete", &au.name, "", &format!("role '{name}' supprimé"));
     reload_custom_roles(cp);
-    Json(json!({ "ok": true, "name": name })).into_response()
+    let mut corps = json!({ "ok": true, "name": name });
+    avouer_le_maillon_de_controle_manquant(&mut corps, &maillon);
+    Json(corps).into_response()
 }

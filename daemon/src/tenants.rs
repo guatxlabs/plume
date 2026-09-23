@@ -321,7 +321,9 @@ pub(crate) async fn tenant_create(State(st): State<AppState>, Extension(au): Ext
             }
         }
     }
-    control_ledger_append(
+    // `P10.20-z` — LE TENANT EST PROVISIONNÉ ; SI SA LIGNE MANQUE AU JOURNAL DE CONTRÔLE, LA RÉPONSE LE
+    // DIT à côté du succès. Refuser serait faux : la base existe, et un rejeu rendrait « existe déjà ».
+    let maillon = control_ledger_append(
         &st,
         "tenant.create",
         &au.name,
@@ -336,7 +338,9 @@ pub(crate) async fn tenant_create(State(st): State<AppState>, Extension(au): Ext
         &format!("tenant '{id}' provisionné par l'opérateur plateforme '{}'", au.name),
         json!({ "operator": au.name, "name": name, "first_admin": first_admin }),
     );
-    (StatusCode::CREATED, Json(json!({ "ok": true, "id": id, "name": name, "first_admin": first_admin }))).into_response()
+    let mut corps = json!({ "ok": true, "id": id, "name": name, "first_admin": first_admin });
+    avouer_le_maillon_de_controle_manquant(&mut corps, &maillon);
+    (StatusCode::CREATED, Json(corps)).into_response()
 }
 
 /// POST /api/tenants/{id}/suspend | /unsuspend — bascule le flag `suspended` (SUPER-ADMIN only). Un tenant
@@ -387,9 +391,19 @@ pub(crate) async fn tenant_set_suspended(st: &AppState, au: &AuthUser, id: &str,
         // event APRÈS réactivation (la base redevient résoluble).
         audit_tenant_event(st, id, kind, sev, &format!("tenant '{id}' {verb} par '{}'", au.name), json!({ "operator": au.name }));
     }
-    control_ledger_append(st, kind, &au.name, id, &json!({ "operator": au.name }).to_string());
-    Json(json!({ "ok": true, "id": id, "suspended": suspend })).into_response()
+    // `P10.20-z` — la bascule est faite ; une ligne manquante au journal de contrôle est dite à côté.
+    let maillon = control_ledger_append(st, kind, &au.name, id, &json!({ "operator": au.name }).to_string());
+    let mut corps = json!({ "ok": true, "id": id, "suspended": suspend });
+    avouer_le_maillon_de_controle_manquant(&mut corps, &maillon);
+    Json(corps).into_response()
 }
+
+/// `P10.20-z` — LA DESTRUCTION D'UN TENANT EST REFUSÉE QUAND SA LIGNE N'ENTRE PAS AU JOURNAL DE CONTRÔLE :
+/// 503, et rien n'est détruit. Le geste est rejouable tel quel.
+pub(crate) const CAUSE_DESTRUCTION_SANS_TRACE: &str =
+    "DESTRUCTION REFUSÉE, RIEN N'EST DÉTRUIT : le journal du plan de contrôle n'a pas pris la ligne qui \
+     atteste cette destruction, et après elle ce journal serait la seule preuve qu'elle a eu lieu. Le \
+     tenant et sa base sont intacts ; réessayez une fois le journal de contrôle de nouveau écrivable.";
 
 /// DELETE /api/tenants/{id} — DESTRUCTION CRYPTO (SUPER-ADMIN only, DESTRUCTIF). Exige une confirmation forte
 /// (body {confirm:<name>} == nom du tenant). `default` INTERDIT (protégé aussi par tenant_destroy). Audit
@@ -420,13 +434,22 @@ pub(crate) async fn tenant_delete(State(st): State<AppState>, Extension(au): Ext
         return (StatusCode::BAD_REQUEST, "confirmation invalide : `confirm` doit égaler EXACTEMENT le nom du tenant").into_response();
     }
     // Audit AVANT destruction (la base + son ledger disparaissent) — niveau break-glass (opération destructive).
-    control_ledger_append(
+    //
+    // `P10.20-z` — LA TRACE PRÉCÈDE LA DESTRUCTION, OU LA DESTRUCTION N'A PAS LIEU. La destruction est
+    // IRRÉVERSIBLE et emporte le journal du tenant : après elle, la ligne de contrôle est la SEULE preuve
+    // qu'elle a eu lieu et de qui l'a faite. Rien n'est encore détruit à ce point, donc le refus ne perd
+    // rien et le geste est rejouable — c'est le contrat de l'approbation d'une riposte (`P10.20-v`).
+    if let Some(cause) = control_ledger_append(
         &st,
         "tenant.destroy",
         &au.name,
         &id,
         &json!({ "operator": au.name, "name": name, "level": "break-glass", "destructive": true }).to_string(),
-    );
+    )
+    .cause_de_non_inscription()
+    {
+        return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_DESTRUCTION_SANS_TRACE} ({cause})"));
+    }
     let mgr = st.tenants.clone();
     let tid = id.clone();
     let destroy = tokio::task::spawn_blocking(move || tenant_destroy(&mgr, &tid))
@@ -525,7 +548,8 @@ pub(crate) async fn grant_set(State(st): State<AppState>, Extension(au): Extensi
             return (StatusCode::INTERNAL_SERVER_ERROR, format!("échec du grant: {e}")).into_response();
         }
     }
-    control_ledger_append(&st, "grant.set", &au.name, &id, &json!({ "user": user, "role": role, "by": au.name }).to_string());
+    // `P10.20-z` — le grant est écrit ; une ligne manquante au journal de contrôle est dite à côté du succès.
+    let maillon = control_ledger_append(&st, "grant.set", &au.name, &id, &json!({ "user": user, "role": role, "by": au.name }).to_string());
     audit_tenant_event(
         &st,
         &id,
@@ -534,7 +558,9 @@ pub(crate) async fn grant_set(State(st): State<AppState>, Extension(au): Extensi
         &format!("grant {role} accordé à '{user}' par '{}'", au.name),
         json!({ "user": user, "role": role, "by": au.name }),
     );
-    Json(json!({ "ok": true, "tenant": id, "user": user, "role": role })).into_response()
+    let mut corps = json!({ "ok": true, "tenant": id, "user": user, "role": role });
+    avouer_le_maillon_de_controle_manquant(&mut corps, &maillon);
+    Json(corps).into_response()
 }
 
 /// DELETE /api/tenants/{id}/grants/{user} — retire un grant. SUPER-ADMIN (tout tenant) OU admin de CE tenant.
@@ -575,7 +601,7 @@ pub(crate) async fn grant_delete(State(st): State<AppState>, Extension(au): Exte
             params![id, user],
         );
     }
-    control_ledger_append(&st, "grant.remove", &au.name, &id, &json!({ "user": user, "by": au.name }).to_string());
+    let maillon = control_ledger_append(&st, "grant.remove", &au.name, &id, &json!({ "user": user, "by": au.name }).to_string());
     audit_tenant_event(
         &st,
         &id,
@@ -584,5 +610,13 @@ pub(crate) async fn grant_delete(State(st): State<AppState>, Extension(au): Exte
         &format!("grant de '{user}' retiré par '{}'", au.name),
         json!({ "user": user, "by": au.name }),
     );
-    StatusCode::NO_CONTENT.into_response()
+    // `P10.20-z` — LE CHEMIN NOMINAL RESTE UN 204 SANS CORPS, byte-identique. Un 204 ne peut porter aucun
+    // aveu : quand la ligne manque au journal de contrôle, la réponse devient un 200 dont le corps DIT le
+    // retrait ET le trou. Refuser serait faux : le grant est déjà retiré.
+    if maillon.cause_de_non_inscription().is_none() {
+        return StatusCode::NO_CONTENT.into_response();
+    }
+    let mut corps = json!({ "ok": true, "tenant": id, "user": user, "removed": true });
+    avouer_le_maillon_de_controle_manquant(&mut corps, &maillon);
+    Json(corps).into_response()
 }

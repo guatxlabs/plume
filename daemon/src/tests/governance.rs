@@ -905,7 +905,7 @@ detection:
         let (cp, _tmp) = mk_test_control();
         let st = tenant_test_state("adm-cl", "edi-cl", "sa-cl", Some(cp));
         for i in 0..5 {
-            control_ledger_append(&st, "test.kind", "sa-cl", "tenant-x", &format!("entrée {i}"));
+            assert!(control_ledger_append(&st, "test.kind", "sa-cl", "tenant-x", &format!("entrée {i}")).cause_de_non_inscription().is_none(), "fixture : le maillon nominal est inscrit");
         }
         let cp = st.tenants.control.as_ref().expect("plan de contrôle présent");
         let conn = cp.conn.lock();

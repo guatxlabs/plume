@@ -185,7 +185,11 @@ pub(crate) async fn scim_user_create(State(st): State<AppState>, Extension(ctx):
             }
         }
     }
-    control_ledger_append(&st, "scim.user.provision", "scim", &ctx.tenant, &format!("user '{username}' (id={id}) grants=[{}]", applied.join(",")));
+    // `P10.20-z` — LE CONTRAT DE CETTE RÉPONSE EST ÉTRANGER (SCIM 2.0, lu par un fournisseur d'identité, pas
+    // par un exploitant) : il n'a aucun champ où porter un aveu. Un maillon manquant reste à l'aveu de la
+    // primitive, sur la sortie d'erreur. Même classement pour les trois autres gestes SCIM de ce fichier.
+    control_ledger_append(&st, "scim.user.provision", "scim", &ctx.tenant, &format!("user '{username}' (id={id}) grants=[{}]", applied.join(",")))
+        .laisser_a_l_aveu_de_la_primitive();
     (StatusCode::CREATED, [(header::CONTENT_TYPE, "application/scim+json")], scim_user_resource(cp, &ctx.tenant, &id, &username).to_string()).into_response()
 }
 
@@ -222,7 +226,8 @@ pub(crate) async fn scim_user_replace(State(st): State<AppState>, Extension(ctx)
         let conn = cp.conn.lock();
         let _ = conn.execute("DELETE FROM \"grant\" WHERE user_id=?1 AND tenant_id=?2", params![id, ctx.tenant]);
         drop(conn);
-        control_ledger_append(&st, "scim.user.deprovision", "scim", &ctx.tenant, &format!("user '{name}' (id={id}) désactivé -> grants retirés"));
+        control_ledger_append(&st, "scim.user.deprovision", "scim", &ctx.tenant, &format!("user '{name}' (id={id}) désactivé -> grants retirés"))
+            .laisser_a_l_aveu_de_la_primitive();
     }
     (StatusCode::OK, [(header::CONTENT_TYPE, "application/scim+json")], scim_user_resource(cp, &ctx.tenant, &id, &name).to_string()).into_response()
 }
@@ -256,7 +261,8 @@ pub(crate) async fn scim_user_delete(State(st): State<AppState>, Extension(ctx):
         let conn = cp.conn.lock();
         let _ = conn.execute("DELETE FROM \"grant\" WHERE user_id=?1 AND tenant_id=?2", params![id, ctx.tenant]);
     }
-    control_ledger_append(&st, "scim.user.deprovision", "scim", &ctx.tenant, &format!("user id={id} deprovisionné (DELETE)"));
+    control_ledger_append(&st, "scim.user.deprovision", "scim", &ctx.tenant, &format!("user id={id} deprovisionné (DELETE)"))
+        .laisser_a_l_aveu_de_la_primitive();
     StatusCode::NO_CONTENT.into_response()
 }
 
@@ -338,6 +344,7 @@ pub(crate) async fn scim_group_patch(State(st): State<AppState>, Extension(ctx):
         }
     }
     drop(conn);
-    control_ledger_append(&st, "scim.group.patch", "scim", &ctx.tenant, &format!("role '{role}' +{added}/-{removed} membres"));
+    control_ledger_append(&st, "scim.group.patch", "scim", &ctx.tenant, &format!("role '{role}' +{added}/-{removed} membres"))
+        .laisser_a_l_aveu_de_la_primitive();
     (StatusCode::OK, [(header::CONTENT_TYPE, "application/scim+json")], json!({ "schemas": ["urn:ietf:params:scim:schemas:core:2.0:Group"], "id": role, "displayName": role }).to_string()).into_response()
 }

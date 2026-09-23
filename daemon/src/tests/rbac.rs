@@ -1488,7 +1488,7 @@ fn premiere_rupture_de_la_chaine_de_controle(st: &AppState) -> Option<i64> {
 fn la_premiere_ecriture_du_journal_de_controle_vierge_reussit_et_reste_muette() {
     let (st, _cptmp) = un_control_plane_au_journal_vierge();
 
-    control_ledger_append(&st, "superadmin.read", "op-reader", "acme", "");
+    assert!(control_ledger_append(&st, "superadmin.read", "op-reader", "acme", "").cause_de_non_inscription().is_none(), "fixture : le maillon nominal est inscrit");
 
     assert_eq!(
         compter_les_maillons_de_controle(&st), 1,
@@ -1506,7 +1506,7 @@ fn la_premiere_ecriture_du_journal_de_controle_vierge_reussit_et_reste_muette() 
 
     // Et la chaîne se POURSUIT : le 2e maillon s'accroche au 1er (sans quoi « prev_hash vide » serait
     // vrai partout et ce témoin ne distinguerait pas une origine d'un orphelin).
-    control_ledger_append(&st, "superadmin.write", "op-writer", "acme", "raison du break-glass");
+    assert!(control_ledger_append(&st, "superadmin.write", "op-writer", "acme", "raison du break-glass").cause_de_non_inscription().is_none(), "fixture : le maillon nominal est inscrit");
     assert_eq!(compter_les_maillons_de_controle(&st), 2, "le 2e accès s'écrit aussi");
     let prev2: String = st.tenants.control.as_ref().unwrap().conn.lock()
         .query_row("SELECT prev_hash FROM control_ledger ORDER BY id DESC LIMIT 1", [], |r| r.get(0))
@@ -1529,7 +1529,7 @@ fn le_lecteur_du_maillon_de_controle_separe_le_journal_vierge_de_l_illisible() {
         );
     }
 
-    control_ledger_append(&st, "tenant.create", "op", "acme", "");
+    assert!(control_ledger_append(&st, "tenant.create", "op", "acme", "").cause_de_non_inscription().is_none(), "fixture : le maillon nominal est inscrit");
     {
         let conn = st.tenants.control.as_ref().unwrap().conn.lock();
         let pose = control_ledger_prev_hash(&conn).expect("journal lisible");
@@ -1556,12 +1556,15 @@ fn le_lecteur_du_maillon_de_controle_separe_le_journal_vierge_de_l_illisible() {
 #[test]
 fn un_hachage_de_controle_precedent_illisible_fait_refuser_l_ecriture_du_maillon() {
     let (st, _cptmp) = un_control_plane_au_journal_vierge();
-    control_ledger_append(&st, "superadmin.read", "op-reader", "acme", "");
+    assert!(control_ledger_append(&st, "superadmin.read", "op-reader", "acme", "").cause_de_non_inscription().is_none(), "fixture : le maillon nominal est inscrit");
     rendre_le_maillon_de_controle_precedent_illisible(&st);
     let avant = compter_les_maillons_de_controle(&st);
 
     // L'accès cross-tenant le plus sensible du produit, sur un journal dont la tête est illisible.
-    control_ledger_append(&st, "superadmin.write", "op-writer", "acme", "break-glass");
+    assert!(
+        control_ledger_append(&st, "superadmin.write", "op-writer", "acme", "break-glass").cause_de_non_inscription().is_some_and(|c| c.contains("ILLISIBLE")),
+        "`P10.20-z` : la tête illisible est RENDUE à l'appelant, pas seulement écrite sur la sortie d'erreur"
+    );
 
     assert_eq!(
         compter_les_maillons_de_controle(&st), avant,
@@ -1583,7 +1586,7 @@ fn un_hachage_de_controle_precedent_illisible_fait_refuser_l_ecriture_du_maillon
         .execute("DELETE FROM control_ledger WHERE kind IN ('poison','sonde')", [])
         .expect("poison retiré");
     let avant = compter_les_maillons_de_controle(&st);
-    control_ledger_append(&st, "superadmin.write", "op-writer", "acme", "break-glass");
+    assert!(control_ledger_append(&st, "superadmin.write", "op-writer", "acme", "break-glass").cause_de_non_inscription().is_none(), "fixture : le maillon nominal est inscrit");
     assert_eq!(compter_les_maillons_de_controle(&st), avant + 1, "la lecture redevenue possible, l'écriture reprend");
     assert!(
         premiere_rupture_de_la_chaine_de_controle(&st).is_none(),
@@ -1619,9 +1622,9 @@ fn un_hachage_de_controle_precedent_illisible_fait_refuser_l_ecriture_du_maillon
 /// de départ, saine, de tous les témoins ci-dessous.
 fn un_journal_de_controle_de_trois_acces() -> (AppState, crate::tmp_possede::TmpDb) {
     let (st, cptmp) = un_control_plane_au_journal_vierge();
-    control_ledger_append(&st, "superadmin.read", "op-reader", "acme", "");
-    control_ledger_append(&st, "superadmin.write", "op-writer", "acme", "break-glass incident 4412");
-    control_ledger_append(&st, "tenant.create", "op-admin", "beta", "");
+    assert!(control_ledger_append(&st, "superadmin.read", "op-reader", "acme", "").cause_de_non_inscription().is_none(), "fixture : le maillon nominal est inscrit");
+    assert!(control_ledger_append(&st, "superadmin.write", "op-writer", "acme", "break-glass incident 4412").cause_de_non_inscription().is_none(), "fixture : le maillon nominal est inscrit");
+    assert!(control_ledger_append(&st, "tenant.create", "op-admin", "beta", "").cause_de_non_inscription().is_none(), "fixture : le maillon nominal est inscrit");
     assert_eq!(compter_les_maillons_de_controle(&st), 3, "fixture : trois maillons nominaux");
     (st, cptmp)
 }
@@ -1704,9 +1707,9 @@ fn une_chaine_de_controle_intacte_est_declaree_verifiee_et_comptee() {
     let (st, _cptmp) = un_control_plane_au_journal_vierge();
     assert_eq!(verdict_de_controle(&st), Ok((0, None)), "un journal VIERGE est intègre : zéro maillon, zéro rupture");
 
-    control_ledger_append(&st, "superadmin.read", "op-reader", "acme", "");
-    control_ledger_append(&st, "superadmin.write", "op-writer", "acme", "break-glass incident 4412");
-    control_ledger_append(&st, "tenant.create", "op-admin", "beta", "");
+    assert!(control_ledger_append(&st, "superadmin.read", "op-reader", "acme", "").cause_de_non_inscription().is_none(), "fixture : le maillon nominal est inscrit");
+    assert!(control_ledger_append(&st, "superadmin.write", "op-writer", "acme", "break-glass incident 4412").cause_de_non_inscription().is_none(), "fixture : le maillon nominal est inscrit");
+    assert!(control_ledger_append(&st, "tenant.create", "op-admin", "beta", "").cause_de_non_inscription().is_none(), "fixture : le maillon nominal est inscrit");
 
     assert_eq!(
         verdict_de_controle(&st), Ok((3, None)),
@@ -1843,7 +1846,7 @@ fn le_verificateur_de_controle_refuse_de_conclure_sur_un_maillon_illisible() {
     let sql = format!("DELETE FROM control_ledger WHERE id={}", ids[2]);
     assert_eq!(muter_le_journal_de_controle(&st, &sql), 1, "poison retiré");
     assert_eq!(verdict_de_controle(&st), Ok((2, None)), "la chaîne restante est LUE ENTIÈREMENT et intègre");
-    control_ledger_append(&st, "tenant.create", "op-admin", "beta", "");
+    assert!(control_ledger_append(&st, "tenant.create", "op-admin", "beta", "").cause_de_non_inscription().is_none(), "fixture : le maillon nominal est inscrit");
     assert_eq!(verdict_de_controle(&st), Ok((3, None)), "et la voie nominale la prolonge sans rupture");
 
     // (3) UNE TABLE ABSENTE N'EST PAS UNE CHAÎNE VIDE. Le journal vierge rendait `Ok((0, None))` ; ici

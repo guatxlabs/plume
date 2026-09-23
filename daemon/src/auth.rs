@@ -740,8 +740,10 @@ pub(crate) fn ingest_auth_event(st: &AppState, action: &str, user: &str, ip: &st
     };
     let fields = json!({ "action": action, "username": user, "src_ip": ip, "fails": count }).to_string();
     let ipc: Option<&str> = if ip.is_empty() { None } else { Some(ip) };
+    // `P10.20-z` — le genre est un LITTÉRAL (cardinalité fermée du compteur), jamais la valeur reçue.
+    let genre = if action == "lockout" { "plume-auth.lockout" } else { "plume-auth.failure" };
     let conn = st.db.lock();
-    let _ = conn.execute(
+    let ecriture = conn.execute(
         // origin='daemon' (v72) : event d'auth AUTO-INGÉRÉ par le daemon lui-même (self-detection brute-force).
         // Marqué 'daemon' par cohérence sémantique (écrit en direct, jamais via l'ingest) ; plume-auth n'est PAS
         // dans l'exclusion de rétention -> purgé normalement comme tout event SIEM.
@@ -749,6 +751,20 @@ pub(crate) fn ingest_auth_event(st: &AppState, action: &str, user: &str, ip: &st
          VALUES(?1,'plume-auth','auth',?2,?3,'plume-daemon',?4,?5,'daemon')",
         params![ts, sev, msg, ipc, fields],
     );
+    compter_l_evenement_d_acces_s_il_n_est_pas_ecrit(genre, ecriture);
+}
+
+/// `P10.20-z` — UN ÉVÉNEMENT D'ACCÈS AUTO-INGÉRÉ QUI N'EST PAS ÉCRIT EST COMPTÉ ET AVOUÉ. Ces deux
+/// ingestions restent best-effort — un échec d'authentification ne doit jamais se transformer en panne
+/// de la route qui le constate —, mais leur perte n'est plus muette : elle monte
+/// `ingest.evenements_d_acces_non_ecrits` et sort sur la sortie d'erreur. L'aveu ne porte que le genre
+/// et la cause du moteur : jamais le compte visé, jamais l'adresse, jamais la route.
+fn compter_l_evenement_d_acces_s_il_n_est_pas_ecrit(genre: &'static str, ecriture: rusqlite::Result<usize>) {
+    match ecriture {
+        Ok(1) => {}
+        Ok(n) => crate::metrics::compter_un_evenement_d_acces_non_ecrit(genre, &format!("{n} ligne(s) écrite(s) au lieu d'une")),
+        Err(e) => crate::metrics::compter_un_evenement_d_acces_non_ecrit(genre, &e.to_string()),
+    }
 }
 
 /// AUTO-INGEST : un déni RBAC sur une route MUTANTE (un principal martèle une route
@@ -760,11 +776,12 @@ pub(crate) fn ingest_authz_denied(st: &AppState, principal: &str, role: &str, pa
     let msg = format!("déni RBAC : '{principal}' (rôle {role}) -> {method} {path}");
     let fields = json!({ "action": "denied", "principal": principal, "role": role, "route": path, "method": method }).to_string();
     let conn = st.db.lock();
-    let _ = conn.execute(
+    let ecriture = conn.execute(
         "INSERT INTO event(ts,source,category,severity,message,host,fields,origin) \
          VALUES(?1,'plume-authz','authz',3,?2,'plume-daemon',?3,'daemon')",
         params![ts, msg, fields],
     );
+    compter_l_evenement_d_acces_s_il_n_est_pas_ecrit("plume-authz.denied", ecriture);
 }
 
 /// Hôtes d'origine de confiance (PLUME_TRUSTED_ORIGINS, CSV) pour la défense CSRF des sessions

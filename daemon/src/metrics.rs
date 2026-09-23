@@ -89,6 +89,31 @@ pub(crate) fn compter_un_tick_aveugle(balayage: &'static str, cause: &str) {
 pub(crate) fn tick_aveugle_de(balayage: &str) -> Option<(u64, String)> {
     TICKS_AVEUGLES.lock().ok().and_then(|m| m.get(balayage).cloned())
 }
+/// `P10.20-z` — UN ÉVÉNEMENT D'ACCÈS AUTO-INGÉRÉ QUE LA BASE N'A PAS PRIS, COMPTÉ PAR GENRE. Les échecs
+/// d'authentification, les verrouillages et les refus d'autorisation sont écrits DIRECTEMENT dans `event`
+/// par le démon (`auth::ingest_auth_event`, `auth::ingest_authz_denied`) : c'est la matière première de
+/// la détection de force brute et de reconnaissance. Leur `INSERT` était avalé — une base qui refuse
+/// l'écriture rendait la détection aveugle à ses propres attaques sans qu'aucun compteur ne bouge.
+/// Cardinalité FERMÉE (les genres sont des littéraux du code) ; la dernière cause est celle du moteur,
+/// jamais un compte ni une adresse. Depuis le démarrage, jamais persisté.
+pub(crate) static EVENEMENTS_D_ACCES_NON_ECRITS_TOTAL: AtomicU64 = AtomicU64::new(0);
+pub(crate) static EVENEMENTS_D_ACCES_NON_ECRITS: std::sync::Mutex<std::collections::BTreeMap<String, (u64, String)>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+pub(crate) fn compter_un_evenement_d_acces_non_ecrit(genre: &'static str, cause: &str) {
+    EVENEMENTS_D_ACCES_NON_ECRITS_TOTAL.fetch_add(1, Ordering::Relaxed);
+    eprintln!("[plume] événement d'accès '{genre}' NON écrit : la détection ne le verra pas : {cause}");
+    if let Ok(mut m) = EVENEMENTS_D_ACCES_NON_ECRITS.lock() {
+        let e = m.entry(genre.to_string()).or_insert((0, String::new()));
+        e.0 += 1;
+        e.1 = cause.to_string();
+    }
+}
+/// Le compte et la dernière cause d'un genre (`None` = aucune perte depuis le démarrage). Lu par les
+/// témoins seulement : la production sert la table entière par `gather_json`.
+#[cfg(test)]
+pub(crate) fn evenement_d_acces_non_ecrit_de(genre: &str) -> Option<(u64, String)> {
+    EVENEMENTS_D_ACCES_NON_ECRITS.lock().ok().and_then(|m| m.get(genre).cloned())
+}
 /// `P3.10-a` — LIGNES D'EN-TÊTE D'UN EXPORT CSV rencontrées par une étape `csv` d'un parseur déclaratif : reconnues
 /// (cellules == colonnes déclarées), laissées SANS capture, et comptées ici. Un exploitant qui voit ce compte
 /// monter à chaque envoi sait que son export inclut l'en-tête et que la ligne est stockée telle quelle, non enrichie.
@@ -641,6 +666,15 @@ pub(crate) fn gather_json(conn: &Connection, spool: &str, db_path: &str, schema_
     ingest.insert("spool_barriere_fichier_total".into(), json!(SPOOL_BARRIERE_FICHIER_TOTAL.load(Ordering::Relaxed)));
     ingest.insert("spool_barriere_repertoire_total".into(), json!(SPOOL_BARRIERE_REPERTOIRE_TOTAL.load(Ordering::Relaxed)));
     ingest.insert("spool_barriere_echec_total".into(), json!(SPOOL_BARRIERE_ECHEC_TOTAL.load(Ordering::Relaxed)));
+    // `P10.20-z` — les événements d'accès auto-ingérés que la base n'a pas pris, et par quel genre.
+    ingest.insert("evenements_d_acces_non_ecrits_total".into(), json!(EVENEMENTS_D_ACCES_NON_ECRITS_TOTAL.load(Ordering::Relaxed)));
+    ingest.insert(
+        "evenements_d_acces_non_ecrits".into(),
+        json!(EVENEMENTS_D_ACCES_NON_ECRITS
+            .lock()
+            .map(|m| m.iter().map(|(k, (n, c))| (k.clone(), json!({ "n": n, "derniere_cause": c }))).collect::<serde_json::Map<String, Value>>())
+            .unwrap_or_default()),
+    );
     ingest.insert("pubsub_ackdrop_total".into(), json!(pubsub_ackdrop_total));
     ingest.insert("pubsub_ackdrop_par_raison".into(), Value::Object(pubsub_ackdrop_par_raison));
     // S33 — L'IDENTITÉ DE L'HÔTE PORTE SON VERDICT, PAS SA VALEUR. Elle décide quelles actions de
@@ -769,6 +803,7 @@ pub(crate) fn gather_prom(conn: &Connection, spool: &str, db_path: &str, schema_
     // durable en prend une de chaque) ; un écart entre elles, ou `echec` qui grimpe, signale un 2xx qui
     // n'est plus adossé à une barrière — le seul signal disponible sur les quatre surfaces à contrat
     // étranger, dont le corps de réponse ne peut pas porter de champ `durable`.
+    g(&mut o, "plume_ingest_evenements_d_acces_non_ecrits_total", "counter", "Événements d'accès auto-ingérés (échec d'authentification, verrouillage, refus d'autorisation) que la base n'a PAS pris : la détection ne les verra pas (P10.20-z ; ventilation par genre avec la dernière cause dans /api/metrics ingest.evenements_d_acces_non_ecrits)", "/ingest/evenements_d_acces_non_ecrits_total");
     g(&mut o, "plume_spool_barriere_fichier_total", "counter", "Barrières fsync(fichier) prises avant le renommage du spool", "/ingest/spool_barriere_fichier_total");
     g(&mut o, "plume_spool_barriere_repertoire_total", "counter", "Barrières fsync(répertoire) prises après le renommage du spool", "/ingest/spool_barriere_repertoire_total");
     g(&mut o, "plume_spool_barriere_echec_total", "counter", "Barrières de durabilité du spool REFUSÉES par le noyau", "/ingest/spool_barriere_echec_total");

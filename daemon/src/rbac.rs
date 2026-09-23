@@ -566,19 +566,35 @@ pub(crate) fn control_ledger_prev_hash(conn: &Connection) -> rusqlite::Result<St
 ///  - « marquer la rupture » coûterait une colonne, donc une MIGRATION du control-plane, et « déclarer
 ///    une chaîne neuve » demanderait aux deux ancrages d'apprendre à laisser passer un chaînon vide —
 ///    c'est-à-dire de créer le chemin par lequel une chaîne rompue devient verte ;
-///  - le coût du refus est celui qu'on payait déjà : l'`INSERT` ci-dessous est `let _ =`, et dans presque
-///    tous les modes d'échec de la lecture il échouerait lui aussi — l'entrée était DÉJÀ perdue, en
-///    silence. Refuser perd la même entrée et le DIT ;
+///  - le coût du refus est celui qu'on payait déjà : dans presque tous les modes d'échec de la lecture,
+///    l'`INSERT` échouerait lui aussi — l'entrée était DÉJÀ perdue. Refuser perd la même entrée et le DIT ;
 ///  - et pour les `kind` les plus sensibles (`superadmin.read`/`superadmin.write`), `emit_operator_access`
-///    tient un SECOND journal non-désactivable DANS la base du tenant visité : refuser ce maillon-ci
-///    n'aveugle pas l'audit.
+///    tient un SECOND journal DANS la base du tenant visité. Ce second journal ne remplace pas le premier :
+///    il est DÉBOUNCÉ en lecture, et son propre `INSERT` n'est pas scruté.
+///
+/// `P10.20-z` — L'`INSERT` N'EST PLUS AVALÉ, ET L'ISSUE EST RENDUE. Jusque-là il s'écrivait sous
+/// `let _ =`, la forme SANS branche d'échec : un changement de rôle, de grant ou de tenant était confirmé
+/// à l'exploitant pendant que sa ligne manquait au journal, et rien ne le disait. L'issue est
+/// `MaillonDeRegistre` — le type du journal voisin, et c'est le MÊME sens : un maillon d'une chaîne de
+/// hachage tamper-evident est inscrit, ou il ne l'est pas et la cause est portée. Un type propre ne
+/// distinguerait rien de plus : l'absence de plan de contrôle (mode 0) est elle aussi « aucun maillon
+/// inscrit », avec sa cause nommée, et aucun appelant de production ne l'atteint (chacun a déjà exigé le
+/// plan de contrôle pour faire son geste).
+///
+/// CE QUE LE VÉRIFICATEUR NE RATTRAPERA PAS — mesuré par témoin (`jae_`) : quatre appels, trois lignes,
+/// `control_ledger_verify_conn` rend « trois maillons intègres, aucune rupture », le verdict d'un journal
+/// complet. Le maillon suivant s'accroche au dernier PRÉSENT, et l'identifiant ne saute pas (clé primaire
+/// sans `AUTOINCREMENT`). L'aveu À L'ÉCRITURE est donc le seul endroit où la perte se voit.
 ///
 /// L'AVEU NE PORTE QUE LE `kind` — vocabulaire fermé (`superadmin.*`, `tenant.*`, `grant.*`, `scim.*`,
 /// `role.*`). `actor` nomme un compte, `tenant` une cible, `detail` la raison d'un break-glass : aucun
 /// des trois ne sort sur stderr.
-pub(crate) fn control_ledger_append(st: &AppState, kind: &str, actor: &str, tenant: &str, detail: &str) {
+#[must_use = "un maillon du journal de contrôle NON INSCRIT doit être avoué par l'appelant qui affirme le geste, ou laissé nommément à l'aveu de la primitive"]
+pub(crate) fn control_ledger_append(st: &AppState, kind: &str, actor: &str, tenant: &str, detail: &str) -> MaillonDeRegistre {
     let Some(cp) = st.tenants.control.as_ref() else {
-        return;
+        // Mode 0 : il n'y a pas de journal de contrôle. Rien n'est perdu, rien n'est inscrit non plus —
+        // l'issue le dit sans rien écrire sur la sortie d'erreur.
+        return MaillonDeRegistre::NonInscrit(CAUSE_SANS_PLAN_DE_CONTROLE.to_string());
     };
     let conn = cp.conn.lock();
     let ts = now();
@@ -586,14 +602,47 @@ pub(crate) fn control_ledger_append(st: &AppState, kind: &str, actor: &str, tena
         Ok(p) => p,
         Err(e) => {
             eprintln!("[control_ledger] WARN maillon '{kind}' NON écrit : hachage précédent ILLISIBLE ({e}) — l'écrire romprait la chaîne");
-            return;
+            return MaillonDeRegistre::NonInscrit(format!("hachage précédent ILLISIBLE ({e}) — l'écrire romprait la chaîne"));
         }
     };
     let hash = sha256_hex(format!("{prev}|{ts}|{kind}|{actor}|{tenant}|{detail}").as_bytes());
-    let _ = conn.execute(
+    // L'ÉCRITURE EST COMPTÉE, comme celle du journal voisin : l'énoncé n'a aucune clause de conflit, il
+    // pose UNE ligne ou il échoue. Le bras du compte inattendu existe pour que le silence ne redevienne
+    // pas le comportement par défaut le jour où l'énoncé en gagnerait une.
+    match conn.execute(
         "INSERT INTO control_ledger(ts,kind,actor,tenant,detail,prev_hash,hash) VALUES(?1,?2,?3,?4,?5,?6,?7)",
         params![ts, kind, actor, tenant, detail, prev, hash],
-    );
+    ) {
+        Ok(1) => MaillonDeRegistre::Inscrit,
+        Ok(n) => {
+            eprintln!("[control_ledger] WARN maillon '{kind}' NON inscrit : {n} ligne(s) écrite(s) au lieu d'une");
+            MaillonDeRegistre::NonInscrit(format!("{n} ligne(s) écrite(s) au lieu d'une"))
+        }
+        Err(e) => {
+            eprintln!("[control_ledger] WARN maillon '{kind}' NON inscrit : l'écriture n'a pas eu lieu ({e})");
+            MaillonDeRegistre::NonInscrit(e.to_string())
+        }
+    }
+}
+
+/// `P10.20-z` — LA CAUSE D'UN MAILLON QUI NE PEUT PAS ÊTRE INSCRIT FAUTE DE JOURNAL (mode 0).
+pub(crate) const CAUSE_SANS_PLAN_DE_CONTROLE: &str = "aucun plan de contrôle : mode mono-tenant, le journal de contrôle n'existe pas";
+
+/// `P10.20-z` — CE QU'UNE RÉPONSE DIT QUAND LE GESTE D'ADMINISTRATION A EU LIEU ET QUE SA LIGNE MANQUE
+/// AU JOURNAL DE CONTRÔLE. Elle ne propose pas de recommencer : refaire le geste ne comble pas le trou,
+/// et la vérification de la chaîne ne le verra pas (le maillon suivant s'accroche au dernier présent).
+pub(crate) const CAUSE_GESTE_SANS_TRACE_DE_CONTROLE: &str =
+    "TRACE MANQUANTE : le geste d'administration a bien eu lieu, mais le journal du plan de contrôle n'a \
+     pas pris la ligne qui l'atteste — ce changement restera sans preuve d'audit, et la vérification de la \
+     chaîne ne signalera pas ce trou. Refaire le geste ne le comble pas : signalez-le.";
+
+/// `P10.20-z` — POSE L'AVEU D'UN MAILLON DE CONTRÔLE MANQUANT À CÔTÉ D'UN SUCCÈS, sous la clé que les
+/// gestes du journal voisin emploient déjà (`registre_sans_maillon`) : une surface n'a qu'un nom à
+/// chercher. Rien n'est ajouté sur le chemin nominal — le corps y ressort byte-identique.
+pub(crate) fn avouer_le_maillon_de_controle_manquant(corps: &mut Value, maillon: &MaillonDeRegistre) {
+    if let Some(cause) = maillon.cause_de_non_inscription() {
+        corps[CLE_REGISTRE_SANS_MAILLON] = json!(format!("{CAUSE_GESTE_SANS_TRACE_DE_CONTROLE} ({cause})"));
+    }
 }
 
 /// `P10.7-p` — LE VÉRIFICATEUR DE LA CHAÎNE DU JOURNAL DU CONTROL-PLANE : la moitié LECTURE, celle qui
@@ -686,7 +735,12 @@ pub(crate) fn control_ledger_verify_conn(conn: &Connection) -> Result<(usize, Op
 pub(crate) fn emit_operator_access(st: &AppState, superadmin: &str, tenant: &str, write: bool, reason: Option<&str>) {
     let reason = reason.map(str::trim).filter(|r| !r.is_empty()).unwrap_or("");
     // (a) 1er ledger : control_ledger, à CHAQUE accès.
-    control_ledger_append(st, if write { "superadmin.write" } else { "superadmin.read" }, superadmin, tenant, reason);
+    // `P10.20-z` — AUCUNE RÉPONSE N'AFFIRME CETTE TRACE : c'est le point de passage de TOUTE requête
+    // cross-tenant, il ne sert rien sur le journal. La perte reste donc à l'aveu de la primitive. Refuser
+    // l'accès quand le maillon n'entre pas serait une décision d'exploitation (fail-closed du break-glass),
+    // pas un correctif : elle n'est pas prise ici.
+    control_ledger_append(st, if write { "superadmin.write" } else { "superadmin.read" }, superadmin, tenant, reason)
+        .laisser_a_l_aveu_de_la_primitive();
     // (b) 2e ledger : event NON-DÉSACTIVABLE dans la base du tenant (debounce en lecture, forcé en write).
     let now_i = now();
     if !operator_access_should_emit(superadmin, tenant, now_i, write) {

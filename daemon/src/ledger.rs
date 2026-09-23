@@ -65,6 +65,13 @@ impl MaillonDeRegistre {
             Self::NonInscrit(cause) => Some(cause),
         }
     }
+
+    /// `P10.20-z` — L'APPELANT QUI N'A AUCUNE SURFACE OÙ PORTER L'AVEU LE DIT ICI, NOMMÉMENT, au lieu
+    /// de jeter l'issue par `let _ =`. La primitive a déjà avoué la perte sur la sortie d'erreur ; ce
+    /// geste la laisse à cet aveu-là et rend le choix CHERCHABLE : chaque site qui l'emploie est un site
+    /// où l'exploitant n'apprend la perte que par le journal du processus. Réservé aux réponses dont le
+    /// contrat est étranger (SCIM) et aux points de passage qui ne servent aucun fait sur la trace.
+    pub(crate) fn laisser_a_l_aveu_de_la_primitive(self) {}
 }
 
 /// `P10.20-v` — LA CLÉ SOUS LAQUELLE UNE RÉPONSE AVOUE QUE SA TRACE MANQUE. Une seule, pour qu'une

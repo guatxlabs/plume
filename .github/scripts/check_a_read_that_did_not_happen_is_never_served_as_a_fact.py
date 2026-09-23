@@ -173,8 +173,8 @@ CE QUE `P10.20-r` A FERMÉ, ET CE QU'IL A RÉFUTÉ :
     `bras_du_match`) elle était, elle, entièrement aveugle.
 
 CE QUE CES LECTEURS NE TIENNENT TOUJOURS PAS : le `;` d'une déclaration GÉNÉRIQUE (`fn f<T>(x: T);`)
-n'est pas vu (aucune sur `daemon/src`, mesuré) ; les virgules de GÉNÉRIQUES (`HashMap<K, V>`) ne sont
-pas suivies par `arguments` ; une chaîne brute non refermée court jusqu'à la fin du texte.
+n'est pas vu (aucune sur `daemon/src`, mesuré) ; une chaîne brute non refermée court jusqu'à la fin du
+texte. Les virgules de GÉNÉRIQUES sont suivies depuis `P10.21-b` (plus bas).
 
 LA JAMBE B LIT DÉSORMAIS TOUTE LIAISON `if let Ok(..)` (`P10.20-s`, 2026-09-19)
 -------------------------------------------------------------------------------
@@ -239,6 +239,48 @@ appelé 151 fois, ouvre 48 blocs de `match` et y lit 104 bras : 46 étaient suiv
 qui entrent sont `Ok((v, s))` (`handlers/freshness.rs`, `compute_freshness`) et le tuple du témoin 23,
 qui cesse ainsi d'être invisible. Les régions que cette garde ouvre ne contiennent PAS les treize
 autres : ils vivent derrière `req_conn!` ou hors des closures jugées.
+
+LES DÉCOUPES SUIVENT LES CHEVRONS, ET LES JAMBES DE L'ENSEMBLE SONT DÉRIVÉES (`P10.21-b`, 2026-09-23)
+---------------------------------------------------------------------------------------------------
+DEUX FAUTES D'INSTRUMENT, TOUTES DEUX ARMÉES ET NON MORDANTES, ET LA MESURE A CORRIGÉ L'ÉNONCÉ SUR
+CHACUNE. Chiffres relevés le 2026-09-23 sur l'instantané `f132bf3` puis sur l'arbre ; quand les deux
+diffèrent, les deux sont écrits.
+
+  * LA VIRGULE D'UN GÉNÉRIQUE. `bras_du_match` et `arguments` ne comptaient en profondeur que `(`, `[`
+    et `{` : `r.collect::<Result<Vec<Value>, _>>()` coupait sur sa virgule. Ils sautent désormais une
+    liste de génériques d'un bloc (`_saut_de_generique`), par une règle tirée de l'arbre et vérifiée
+    sur son contenu (sa docstring dit laquelle, et pourquoi la comparaison est le vrai piège).
+    Sur les blocs de `match` de `daemon/src` hors tests en ligne (1 798 sur l'instantané, 1 800 sur
+    l'arbre), UN SEUL se découpe autrement — `dash_list` (`handlers/dashboards.rs`), trois bras dont
+    un fantôme (`_>>() { Ok(v)`) devenus deux. L'énoncé avait raison sur ce site et sur son unicité.
+    IL SOUS-COMPTAIT `arguments` : ce fichier écrivait qu'« aucun site de l'arbre n'en porte en
+    position d'argument », et 383 appels ou signatures de `daemon/src` sur 54 720 se découpent
+    autrement (384 sur 54 812 sur l'arbre ; 154 sous `handlers/` sur les deux), l'idiome dominant
+    étant la fermeture de lecture `|r| r.get::<_, i64>(0)`, lue comme DEUX arguments.
+    CE QUE LES BRAS PORTENT, au niveau des bras (profondeur 0 du bloc), instantané : l'opérateur y est
+    partout ESPACÉ — 14 `<` de comparaison, 14 `>>`, 14 `>=`, 8 `<=`, aucun `->` ; le `>` seul (41)
+    mêle comparaisons et fermetures de générique. Sur tout `daemon/src`, les 6 967 `<` COLLÉS à ce qui
+    les précède (6 973 sur l'arbre) sont tous des génériques — types, turbofish, déclarations de
+    fonction génériques — et la règle les accepte tous après vérification de leur contenu. Aucun
+    chemin qualifié `<T as Trait>` n'existe sur `daemon/src`.
+    AU NIVEAU DE LA CONSOMMATION RÉELLE, pendant une exécution complète de cette garde : `arguments`
+    est appelé 133 fois et ne change sur AUCUN appel ; `bras_du_match` est appelé 78 fois et change sur
+    UN — `dash_list`, bien ATTEINT par la jambe B. « Non mordant » reste vrai : la chaîne suivie depuis
+    `r` ne porte aucun avalement, découpe juste ou fausse, et les accusations sont identiques.
+    L'ÉNONCÉ SUR-COMPTAIT LES CONSOMMATRICES : il disait `bras_du_match` « consommé par trois gardes ».
+    Mesuré en enveloppant le lecteur pendant l'exécution de chacune : la garde des listes tronquées, la
+    garde de forme des lectures uniques et la garde des écritures avalées ne l'appellent (ni
+    `arguments`) QUE dans `temoins_des_lecteurs_de_forme` — zéro appel sur leur verdict. Leurs sorties
+    ne pouvaient changer que par ces témoins, et elles sont identiques octet pour octet sur
+    l'instantané.
+  * LA JAMBE INCONNUE. Le jugement contre les ensembles nommés parcourait `("A", "B", "Q")`, écrit à la
+    main : une entrée de `SITES_ADMIS` posée sous `"Z"` n'était jamais lue, et la garde restait VERTE.
+    Les jambes jugées sont désormais DÉRIVÉES de ce que l'instrument ÉMET sur ses mutants
+    (`jambes_que_la_garde_juge`), et une clé de l'ensemble hors de ces jambes est un REFUS DE CONCLURE
+    (code 2) qui nomme la jambe et ses entrées. NON DIT PAR L'ÉNONCÉ, et trouvé en le mutant : la faute
+    avait un JUMEAU dans l'autre sens — une jambe jugée RETIRÉE de l'ensemble faisait tomber la garde
+    sur une `KeyError`, code 1 d'une trace Python, qui se lit comme une VIOLATION alors que rien n'a été
+    jugé. Une jambe jugée absente de l'ensemble vaut désormais un ensemble vide.
 """
 import os
 import re
@@ -568,9 +610,9 @@ SITES_ADMIS = {
         # l'union des clés de labels dit qu'elle n'est pas établie quand l'échantillon ne se lit pas. Un site neuf rougit ici.
     },
 }
-PLAFOND_DEFAUT_NU = sum(SITES_ADMIS["A"].values())
-PLAFOND_CLOSURE_SOURDE = sum(SITES_ADMIS["B"].values())
-PLAFOND_CAUSE_JETEE = sum(SITES_ADMIS["Q"].values())
+PLAFOND_DEFAUT_NU = sum(SITES_ADMIS.get("A", {}).values())
+PLAFOND_CLOSURE_SOURDE = sum(SITES_ADMIS.get("B", {}).values())
+PLAFOND_CAUSE_JETEE = sum(SITES_ADMIS.get("Q", {}).values())
 
 
 def _saut_de_litteral_rust(code, j):
@@ -598,6 +640,92 @@ def _saut_de_litteral_rust(code, j):
     if code[j] == "'":
         m = RE_CARACTERE_RUST.match(code, j)
         return m.end() if m else None
+    return None
+
+
+# CE QUI PEUT S'ÉCRIRE ENTRE LES CHEVRONS D'UN GÉNÉRIQUE, ET RIEN D'AUTRE : identifiants, chemins,
+# durées de vie, références, pointeurs, tuples, tableaux, bornes (`+`), types associés (`Item = T`),
+# signatures de fermeture (`Fn(i64) -> i64`), et `?Sized`. Un `.`, un `{`, un `}` ou une chaîne n'y
+# vivent jamais : les rencontrer prouve que le `<` était une comparaison.
+_CONTENU_DE_GENERIQUE = re.compile(r"[A-Za-z0-9_:\s,&*+()\[\];'?=<>!-]")
+# Un OPÉRATEUR à deux caractères n'est jamais dans un générique — `a<b && c>d`, `x<y || z>w`, et le
+# `=>` d'un bras suivant. `->` y vit (signature de fermeture), il est sauté à part ; `&&` aussi quand
+# il suit une ouvrante ou une virgule (`Vec<&&Regle>`, `daemon/src/handlers/alerts.rs`, trouvé par la
+# mesure du 2026-09-23 : c'était le SEUL `<` collé de `daemon/src` que la règle rejetait à tort).
+_OPERATEUR_HORS_GENERIQUE = re.compile(r"&&|\|\||==|!=|=>|<=|>=|<<=|>>=")
+
+
+def _saut_de_generique(code, j):
+    """Index APRÈS le `>` qui ferme la liste de GÉNÉRIQUES ouverte par le `<` en `j`, ou None quand ce
+    `<` n'ouvre pas de générique (`P10.21-b`, 2026-09-23).
+
+    POURQUOI UN LECTEUR QUI COUPE SUR LA VIRGULE DOIT CONNAÎTRE LE CHEVRON : `r.collect::<Result<Vec<
+    Value>, _>>()` porte une virgule qui n'est ni dans une parenthèse, ni dans un crochet, ni dans une
+    accolade. `bras_du_match` et `arguments` ne comptaient en profondeur que ces trois-là, et cette
+    virgule coupait donc un bras (`dash_list`, `handlers/dashboards.rs`) ou un argument en deux.
+
+    LE VRAI PIÈGE EST LA COMPARAISON, ET LA RÈGLE EST TIRÉE DE L'ARBRE, PAS DE LA GRAMMAIRE. Le même
+    caractère est un chevron (`Vec<Value>`), un opérateur (`a < b`, `n > 0`), la moitié d'un décalage
+    (`x >> 2`, `1 << n`), d'une flèche (`->`, `=>`) ou d'une comparaison large (`<=`, `>=`). Ouvrir
+    sur chacun ferait avaler le texte jusqu'à un `>` lointain, et fondre des bras qui parlent. Le `<`
+    n'ouvre donc un générique QUE s'il est COLLÉ à ce qui le précède — `::<` (turbofish) ou un
+    identifiant (`Vec<`, `HashMap<`) — et n'est pas lui-même le début de `<=` ou `<<`. Une comparaison
+    s'écrit ESPACÉE dans tout le démon (le format de l'arbre l'impose) ; mesuré le 2026-09-23 sur
+    l'arbre, dans les blocs de `match` de `daemon/src` hors tests en ligne, AUCUN `<` collé à un
+    identifiant n'est une comparaison.
+
+    ET LA RÈGLE N'EST PAS CRUE SUR PAROLE : le contenu est ENSUITE vérifié. La fermante est cherchée
+    en appariant chevrons, parenthèses et crochets ; le saut est ABANDONNÉ (None) au premier caractère
+    qui ne peut pas vivre dans un générique (`.`, `{`, `}`, chaîne, littéral de caractère), au premier
+    opérateur à deux caractères (`&&`, `||`, `==`, `!=`, `=>`, `<=`, `>=`), et quand le `>` fermant est
+    COLLÉ à un identifiant ou un littéral (`x<y, z>w` : un générique fermé n'est jamais suivi d'un nom
+    sans espace). Une comparaison écrite collée par mégarde ne fait donc sauter du texte que si TOUT
+    ce qui la suit jusqu'au `>` a la forme d'un type — et rien d'une frontière de bras n'a cette forme.
+
+    CE QU'ELLE NE TIENT PAS, ET C'EST DIT : le chemin qualifié `<T as Trait>::f` (le `<` n'est pas
+    collé) n'est pas sauté — ses virgules éventuelles restent des coupures ; aucun sur `daemon/src` au
+    2026-09-23 (mesuré)."""
+    if code[j] != "<":
+        return None
+    colle = code[j - 2:j] == "::" or (j > 0 and (code[j - 1].isalnum() or code[j - 1] == "_"))
+    if not colle or code[j + 1:j + 2] in ("=", "<"):
+        return None
+    chevrons, prof, k, n = 1, 0, j + 1, len(code)
+    while k < n:
+        c = code[k]
+        if c == "-" and code[k + 1:k + 2] == ">":
+            k += 2
+            continue
+        if c == "&" and code[k + 1:k + 2] == "&" and code[j + 1:k].rstrip()[-1:] in ("", "<", "(", ",", "[", "&"):
+            k += 2  # double référence DE TYPE (`Vec<&&Regle>`) : elle suit une ouvrante ou une virgule
+            continue
+        if _OPERATEUR_HORS_GENERIQUE.match(code, k) and not (c == ">" and code[k + 1:k + 2] == ">"):
+            return None
+        if c == "'":
+            if RE_CARACTERE_RUST.match(code, k):
+                return None
+            k += 1  # durée de vie : `&'a str`, `'_`
+            continue
+        if not _CONTENU_DE_GENERIQUE.match(c):
+            return None
+        if c in "([":
+            prof += 1
+        elif c in ")]":
+            prof -= 1
+            if prof < 0:
+                return None
+        elif c == ";" and prof == 0:
+            return None
+        elif c == "<":
+            chevrons += 1
+        elif c == ">":
+            chevrons -= 1
+            if chevrons == 0:
+                suite = code[k + 1:k + 2]
+                if suite and (suite.isalnum() or suite in "_\"'"):
+                    return None
+                return k + 1
+        k += 1
     return None
 
 
@@ -689,8 +817,11 @@ def apparier(code, i):
 
 def arguments(code, i):
     """Tranches `(début, fin)` des arguments de tête de l'appel dont la `(` est en `i`, et l'index de
-    la `)` fermante. Les virgules de GÉNÉRIQUES (`HashMap<K, V>`) ne sont PAS suivies — c'est dit dans
-    « ce qu'elle ne tient pas » ; aucun site de l'arbre n'en porte en position d'argument.
+    la `)` fermante. Une liste de GÉNÉRIQUES (`r.get::<_, i64>(0)`, `HashMap<String, String>`) est
+    sautée d'un bloc depuis `P10.21-b` (`_saut_de_generique`) : sa virgule ne coupe plus. Ce fichier
+    écrivait qu'aucun site de l'arbre n'en portait en position d'argument ; mesuré le 2026-09-23 sur
+    l'arbre, 383 appels ou signatures de `daemon/src` se découpaient autrement — aucun des 133 appels
+    d'une exécution complète de cette garde, en revanche.
 
     LA DÉCOUPE CONNAÎT LE LITTÉRAL DE CARACTÈRE DEPUIS `P10.20-r` (2026-09-16), PAR LA MÊME RÈGLE QUE
     L'APPARIEMENT (`_saut_de_litteral_rust`, donc `RE_CARACTERE_RUST` IMPORTÉE) et jamais par une
@@ -720,6 +851,11 @@ def arguments(code, i):
                 j = saut
                 continue
             # une apostrophe qui n'ouvre pas de littéral est une durée de vie : elle repart seule.
+        if c == "<":
+            saut = _saut_de_generique(code, j)
+            if saut is not None:
+                j = saut
+                continue
         if c in "([{":
             prof += 1
         elif c in ")]}":
@@ -955,8 +1091,16 @@ def bras_du_match(code, ouvrante):
     parle devenait invisible, exactement la faute que la coupure sur `}` a fermée le 2026-08-30 pour
     une autre cause. MESURÉ sur `daemon/src/handlers/` : 2 blocs de `match` sur les 820 du corpus se
     découpent autrement (`httppull.rs:49` — 2 bras au lieu de 3 —, `datasource.rs:201`, dont un bras
-    porte `s.ends_with('}')`). AU NIVEAU DE LA CONSOMMATION, l'écart est NUL aujourd'hui : aucun de
-    ces deux blocs n'est atteint par les 67 appels d'une exécution complète."""
+    porte `s.ends_with('}')`). AU NIVEAU DE LA CONSOMMATION, l'écart était NUL le 2026-09-16 : aucun
+    de ces deux blocs n'était atteint par les 67 appels d'une exécution complète.
+
+    LA DÉCOUPE SAUTE UNE LISTE DE GÉNÉRIQUES DEPUIS `P10.21-b` (2026-09-23), par `_saut_de_generique`,
+    le même geste qu'`arguments`. `Ok(r) => match r.collect::<Result<Vec<Value>, _>>() { .. }` (forme
+    de `dash_list`, `handlers/dashboards.rs`) était coupé sur la virgule du turbofish : un motif
+    fantôme (`_>>() { Ok(v)`) et un corps tronqué avant son bras d'erreur. C'est le SEUL bloc des 1 798
+    de `daemon/src` à changer (mesuré le 2026-09-23 sur l'arbre), et il est atteint par la jambe B —
+    sans changer son verdict. Une COMPARAISON dans un bras ne peut pas faire fondre deux bras : le `<`
+    espacé n'ouvre rien, et un `<` collé par mégarde voit son saut abandonné au `=>` du bras suivant."""
     f = apparier(code, ouvrante)
     if f < 0:
         return []
@@ -969,6 +1113,11 @@ def bras_du_match(code, ouvrante):
                 j = saut
                 continue
             # une apostrophe qui n'ouvre pas de littéral est une durée de vie : elle repart seule.
+        if c == "<":
+            saut = _saut_de_generique(corps, j)
+            if saut is not None:
+                j = saut
+                continue
         if c in "([{":
             prof += 1
         elif c in ")]}":
@@ -1015,7 +1164,9 @@ def temoins_des_lecteurs_de_forme():
     et trois appelants qui traitent l'aveu de la même façon valent mieux que deux conventions.
 
     CE QU'ILS NE TIENNENT PAS : ils jugent les lecteurs sur des extraits FABRIQUÉS, jamais sur l'arbre.
-    Un lecteur juste sur ces huit formes et faux sur une neuvième reste vert ici."""
+    Un lecteur juste sur ces formes et faux sur une autre reste vert ici. Les chevrons (`P10.21-b`) y
+    sont tenus dans les deux sens : un générique apparié, et cinq façons pour un `<` ou un `>` de NE
+    PAS en être un (comparaison espacée ou collée, décalage, comparaison large, flèche)."""
     # --- (1) LE LITTÉRAL DE CARACTÈRE, AU NIVEAU DU PRÉDICAT, DANS LES DEUX SENS.
     assert _saut_de_litteral_rust("let s: &'static str = n();", 7) is None, \
         "témoin de la DURÉE DE VIE (négatif) : `'static` est pris pour un littéral de caractère — le " \
@@ -1103,6 +1254,46 @@ def temoins_des_lecteurs_de_forme():
     assert not dans_une_chaine_rust(spans, fab_s.index("let c")), \
         "témoin de l'APPARTENANCE (négatif) : un index de CODE est déclaré dans une chaîne, et tout " \
         "site réel serait écarté comme un fantôme"
+    # --- (7) LA VIRGULE D'UN GÉNÉRIQUE NE COUPE NI UN BRAS NI UN ARGUMENT (`P10.21-b`, 2026-09-23). Les
+    # extraits sont FABRIQUÉS ; la FORME est celle de `dash_list` (`handlers/dashboards.rs`), seul bloc
+    # de `match` de `daemon/src` sur 1 798 à se découper autrement (mesuré le 2026-09-23 sur l'arbre).
+    src_g = ("match lu { Ok(r) => match r.collect::<Result<Vec<Value>, _>>() { Ok(v) => v, "
+             "Err(_) => vide() }, Err(_) => vide() }")
+    bras_g = bras_du_match(src_g, src_g.index("{"))
+    motifs_g = [m.strip() for m, _c in bras_g]
+    assert motifs_g == ["Ok(r)", "Err(_)"] and "Err(_) => vide()" in bras_g[0][1], (
+        f"témoin des BRAS (générique) : motifs {motifs_g} au lieu de ['Ok(r)', 'Err(_)'] — la virgule de "
+        "`Result<Vec<Value>, _>` coupe le bras en deux : un motif qui ne veut rien dire (`_>>() { Ok(v)`), "
+        "et un corps TRONQUÉ avant son bras d'erreur")
+    src_ga = "lit(sql, [], |r| r.get::<_, i64>(0))"
+    assert len(arguments(src_ga, src_ga.index("("))[0] or []) == 3, (
+        "témoin des ARGUMENTS (générique) : `|r| r.get::<_, i64>(0)` est lu comme DEUX arguments — la "
+        "fermeture d'une lecture devient le mauvais texte (383 appels ou signatures de `daemon/src` se "
+        "découpent autrement selon que le chevron est apparié, mesuré le 2026-09-23 sur l'arbre)")
+    # --- (8) LE VRAI PIÈGE : UN `<` QUI N'EST PAS UN CHEVRON, DANS LES DEUX LECTEURS, SOUS CINQ FORMES.
+    # Chacune tue une mutation distincte de `_saut_de_generique` : ouvrir sur un `<` ESPACÉ (comparaison
+    # écrite au format de l'arbre), laisser passer un opérateur à deux caractères (`=>` du bras suivant),
+    # accepter un `>` fermant COLLÉ à un nom (`c>d`), et ne pas sauter la flèche d'une signature de
+    # fermeture (`Fn() -> i64`), qui ferme alors le générique trop tôt.
+    for src_c, attendus in (("f(a < b, c > d)", 2), ("f(a<b, c>d)", 2), ("f(x >> 2, y << 3, z <= w)", 3),
+                            ("f(h::<Box<dyn Fn() -> i64>, u8>(), y)", 2),
+                            ("f(v::<HashMap<&&str, u8>>(), y)", 2)):
+        lus_c = [src_c[a:b].strip() for a, b in (arguments(src_c, src_c.index("("))[0] or [])]
+        assert len(lus_c) == attendus, (
+            f"témoin des ARGUMENTS (chevron ou opérateur) : `{src_c}` lu comme {lus_c}, {attendus} "
+            "argument(s) attendus — soit une comparaison, un décalage ou une comparaison large est pris pour "
+            "un chevron et fond des arguments, soit un générique (flèche de fermeture, double référence) "
+            "n'est plus apparié et coupe sur sa virgule")
+    for src_c, attendus in (("match t { A => k<n, B => m>p }", ["A", "B"]),
+                            ("match t { A if k < n => 1, B if k > n => 2, _ => 3 }", ["A if k < n", "B if k > n", "_"]),
+                            ("match t { A => x >> 2, B => 1 << n, C => |x| -> i64 { x } }", ["A", "B", "C"])):
+        motifs_c = [m.strip() for m, _c in bras_du_match(src_c, src_c.index("{"))]
+        assert motifs_c == attendus, (
+            f"témoin des BRAS (comparaison, décalage, flèche) : `{src_c}` rend les motifs {motifs_c} au lieu "
+            f"de {attendus} — un `<` d'opérateur est pris pour un chevron, et des bras qui parlent FUSIONNENT")
+    assert _saut_de_generique("a < b", 2) is None and _saut_de_generique("Vec<u8>", 3) == 7, (
+        "témoin du CHEVRON (au niveau du prédicat, dans les deux sens) : une comparaison espacée ouvre un "
+        "générique, ou `Vec<u8>` n'en ouvre plus")
 
 
 # ================================================================================================
@@ -1994,7 +2185,46 @@ def analyser(chemin, texte, defs, constructeurs, aveux, aveux_du_lecteur=None):
     return sites, accusations
 
 
-def ecarts_contre_les_ensembles(a_par_jambe, admis_par_jambe=None):
+def jambes_que_la_garde_juge(defs, constructeurs, mutants=None):
+    """Les jambes que cette garde JUGE RÉELLEMENT : celles sous lesquelles `analyser` a rendu une
+    accusation en jouant les mutants fabriqués (`MUTANTS` par défaut). DÉRIVÉES de ce que l'instrument
+    émet, jamais recopiées (`P10.21-b`, 2026-09-23).
+
+    POURQUOI : le jugement contre les ensembles nommés parcourait une liste écrite à la main
+    (`("A", "B", "Q")`). Une entrée de `SITES_ADMIS` posée sous une autre clé n'était donc JAMAIS lue —
+    trouvé par mutation le 2026-09-19 : déposée sous `"Z"`, une exemption qui rend « exemption sans
+    objet » sous `"B"` laissait la garde VERTE. Une exemption mal classée ne comptait ni ne rougissait.
+    La liste des jambes vient désormais de l'instrument lui-même, et une clé que l'instrument ne
+    produit pas est un REFUS DE CONCLURE (`jambes_admises_inconnues`).
+
+    `mutants` est PASSÉ pour qu'un témoin puisse prouver que la dérivation lit les ÉMISSIONS de
+    l'instrument, et non les clés de l'ensemble ou une liste écrite : sur un seul mutant de jambe A,
+    elle doit rendre `{"A"}` et rien d'autre. La marque `?` (sort non classé) n'est pas une jambe : elle
+    n'a pas d'ensemble nommé, et elle est imprimée à part."""
+    jambes = set()
+    for _nom, src, _attendu in (MUTANTS if mutants is None else mutants):
+        _s, acc = analyser("/mutant.rs", src, defs, constructeurs, [])
+        jambes.update(j for j, *_ in acc if j != "?")
+    return frozenset(jambes)
+
+
+def jambes_admises_inconnues(admis_par_jambe, jambes_jugees):
+    """Les clés d'un ensemble nommé que la garde NE JUGE PAS, rendues comme des phrases qui NOMMENT la
+    jambe et ses entrées. Une telle clé n'est ni une forme neuve ni une exemption sans objet : c'est un
+    ensemble qu'AUCUN jugement ne lit, donc un REFUS DE CONCLURE (code 2), pas une violation — ce qui
+    est faux est la matière de la garde, pas le démon."""
+    messages = []
+    for jambe in sorted(set(admis_par_jambe) - set(jambes_jugees)):
+        entrees = ", ".join(f"`{fn}` ({fichier})" for fichier, fn in sorted(admis_par_jambe[jambe])) or "aucune entrée"
+        messages.append(
+            f"::error::SITES_ADMIS[\"{jambe}\"] : la jambe `{jambe}` n'est PAS une jambe que cette garde juge "
+            f"(jambes jugées, dérivées de l'instrument : {', '.join(sorted(jambes_jugees)) or 'aucune'}). "
+            f"Ses entrées ne seraient JAMAIS lues — {entrees}. Reclasser l'entrée sous sa vraie jambe, ou la "
+            "retirer en disant pourquoi.")
+    return messages
+
+
+def ecarts_contre_les_ensembles(a_par_jambe, admis_par_jambe=None, jambes_jugees=None):
     """Les écarts entre les accusations du jour et les ensembles nommés, JUGÉS DANS LES DEUX SENS —
     rendus comme des phrases, jamais imprimés ici.
 
@@ -2006,16 +2236,25 @@ def ecarts_contre_les_ensembles(a_par_jambe, admis_par_jambe=None):
     accusation hors de l'ensemble, une entrée sans accusation) qui le tuent dans les deux sens.
 
     `admis_par_jambe` est l'ensemble jugé ; il est PASSÉ pour que les témoins n'aient pas à toucher au
-    `SITES_ADMIS` réel, et le défaut reste celui de ce fichier."""
+    `SITES_ADMIS` réel, et le défaut reste celui de ce fichier.
+
+    LES JAMBES PARCOURUES SONT CELLES QUE LA GARDE JUGE (`jambes_que_la_garde_juge`, `P10.21-b`), PLUS
+    toute jambe sous laquelle une accusation du jour est rangée : ni une clé de l'ensemble, ni une liste
+    écrite ici. Une jambe jugée SANS entrée dans l'ensemble vaut un ensemble VIDE — zéro reste
+    atteignable, aucune rançon — et ne fait plus tomber la garde sur une `KeyError` (code 1 d'une trace
+    Python, qui se serait lu comme une violation). Une clé de l'ensemble que la garde ne juge pas n'est
+    PAS traitée ici : elle est refusée avant, par `jambes_admises_inconnues`."""
     if admis_par_jambe is None:
         admis_par_jambe = SITES_ADMIS
+    if jambes_jugees is None:
+        jambes_jugees = ()
     messages = []
-    for jambe in ("A", "B", "Q"):
+    for jambe in sorted(set(jambes_jugees) | {j for j in a_par_jambe if j != "?"}):
         vus = {}
         for ou, fn, _raison in a_par_jambe.get(jambe, []):
             cle = (ou.rsplit(":", 1)[0], fn)
             vus[cle] = vus.get(cle, 0) + 1
-        admis = admis_par_jambe[jambe]
+        admis = admis_par_jambe.get(jambe, {})
         for (fichier, fn), n in sorted(vus.items()):
             if n > admis.get((fichier, fn), 0):
                 messages.append(
@@ -2032,7 +2271,9 @@ def ecarts_contre_les_ensembles(a_par_jambe, admis_par_jambe=None):
     return messages
 
 
-def valider_instrument(defs, constructeurs):
+def valider_instrument(defs, constructeurs, jugees=None):
+    """`jugees` : les jambes dérivées par `jambes_que_la_garde_juge`, PASSÉES par `main` qui les a déjà
+    calculées — les dériver deux fois rejouerait tous les mutants une fois de plus pour rien."""
     errs = []
     for nom, src, attendu in MUTANTS:
         _s, acc = analyser("/mutant.rs", src, defs, constructeurs, [])
@@ -2302,19 +2543,48 @@ def valider_instrument(defs, constructeurs):
     # Il vivait dans `main` et RIEN ne l'atteignait : sur un arbre où les accusations coïncident avec
     # les ensembles, le débrancher laisse la garde VERTE à sortie identique. Les deux témoins sont
     # SYMÉTRIQUES, et c'est le point — un seul des deux sens laisserait l'autre s'éteindre en silence.
+    if jugees is None:
+        jugees = jambes_que_la_garde_juge(defs, constructeurs)
     fab_acc = {"B": [("daemon/src/handlers/fabrique.rs:1", "lit_tout", "tuple lié sans `else`")]}
-    neuve = ecarts_contre_les_ensembles(fab_acc, {"A": {}, "B": {}, "Q": {}})
+    neuve = ecarts_contre_les_ensembles(fab_acc, {"A": {}, "B": {}, "Q": {}}, jugees)
     if len(neuve) != 1 or "FORME NEUVE" not in neuve[0] or "lit_tout" not in neuve[0]:
         errs.append("témoin du JUGEMENT (forme neuve) : une accusation hors de l'ensemble nommé ne rend "
                     f"pas un écart qui NOMME le site — rendu {neuve}")
     sans_objet = ecarts_contre_les_ensembles(
-        {}, {"A": {}, "B": {("daemon/src/handlers/fabrique.rs", "lit_tout"): 1}, "Q": {}})
+        {}, {"A": {}, "B": {("daemon/src/handlers/fabrique.rs", "lit_tout"): 1}, "Q": {}}, jugees)
     if len(sans_objet) != 1 or "EXEMPTION SANS OBJET" not in sans_objet[0]:
         errs.append("témoin du JUGEMENT (exemption sans objet) : une entrée de l'ensemble nommé que rien "
                     f"n'accuse ne rend pas d'écart — rendu {sans_objet}")
-    if ecarts_contre_les_ensembles(fab_acc, {"A": {}, "B": {("daemon/src/handlers/fabrique.rs", "lit_tout"): 1}, "Q": {}}):
+    if ecarts_contre_les_ensembles(fab_acc, {"A": {}, "B": {("daemon/src/handlers/fabrique.rs", "lit_tout"): 1}, "Q": {}},
+                                   jugees):
         errs.append("témoin du JUGEMENT (négatif) : une accusation EXACTEMENT admise rend un écart — le "
                     "jugement accuse ce que l'ensemble nomme, et l'exemption ne servirait plus à rien")
+    # LES JAMBES DE L'ENSEMBLE SONT JUGÉES CONTRE CELLES QUE L'INSTRUMENT ÉMET (`P10.21-b`, 2026-09-23),
+    # ET LES TROIS TÉMOINS QUI SUIVENT TUENT CHACUN UNE FAÇON DISTINCTE DE PERDRE CE CONTRÔLE.
+    #   (1) La DÉRIVATION lit les émissions : sur un seul mutant de jambe A, elle rend `{"A"}`. Une
+    #       dérivation remplacée par les clés de `SITES_ADMIS` ou par une liste écrite rend `{A, B, Q}`
+    #       et rougit ici — c'est la seule des trois mutations qu'aucun autre témoin ne voit, puisque
+    #       l'arbre et les deux témoins suivants ne portent que des jambes réelles.
+    #   (2) Une entrée sous une jambe INCONNUE est refusée EN LA NOMMANT (la mutation qui a ouvert la
+    #       clé : une entrée sous `"Z"`, que le jugement ne lisait pas).
+    #   (3) Et une entrée sous une jambe CONNUE n'est pas refusée — un refus qui porterait sur toute
+    #       entrée ferait tomber la garde sur ses propres exemptions légitimes.
+    seul_a = [m for m in MUTANTS if m[2] == "A"][:1]
+    derivees = jambes_que_la_garde_juge(defs, constructeurs, seul_a)
+    if derivees != {"A"}:
+        errs.append(f"témoin de la DÉRIVATION des jambes : {sorted(derivees)} sur un seul mutant de jambe A, au lieu "
+                    "de ['A'] — les jambes jugées ne viennent plus de ce que l'instrument ÉMET (liste écrite, ou clés "
+                    "de l'ensemble relues), et une exemption mal classée redeviendrait silencieuse")
+    if jugees != {"A", "B", "Q"}:
+        errs.append(f"témoin des JAMBES JUGÉES : {sorted(jugees)} au lieu de ['A', 'B', 'Q'] — une jambe a cessé "
+                    "d'être émise sur les mutants (ou une jambe neuve est apparue sans que ce témoin la nomme)")
+    inconnue = jambes_admises_inconnues({"A": {}, "Z": {("daemon/src/handlers/fabrique.rs", "lit_tout"): 1}}, jugees)
+    if len(inconnue) != 1 or "`Z`" not in inconnue[0] or "lit_tout" not in inconnue[0]:
+        errs.append(f"témoin de la JAMBE INCONNUE : une entrée sous `Z` rend {inconnue} au lieu d'un refus qui "
+                    "nomme la jambe et l'entrée — une exemption mal classée ne compte ni ne rougit")
+    if jambes_admises_inconnues({"B": {("daemon/src/handlers/fabrique.rs", "lit_tout"): 1}}, jugees):
+        errs.append("témoin de la JAMBE CONNUE (négatif) : une entrée sous `B` est refusée comme inconnue — la "
+                    "garde refuserait de conclure sur ses propres exemptions légitimes")
     # LES LECTEURS DE FORME RUST SE VALIDENT ICI COMME AILLEURS — LA MÊME FONCTION, PAS UNE COPIE.
     try:
         temoins_des_lecteurs_de_forme()
@@ -2494,26 +2764,27 @@ def ce_qui_n_est_pas_tenu(non_classes=0):
           "INTERNE au bras (`Ok(r) => r.filter_map(|x| x.ok()).collect()`) lui échappe ; aucun site de "
           "l'arbre n'en porte au 2026-08-30, et le jour où il y en aura un, c'est cette ligne-ci qu'il "
           "faudra tenir, pas le compte.\n"
-          "  * les virgules de GÉNÉRIQUES ne sont suivies NI par `arguments` NI par `bras_du_match`, "
-          "qui ne comptent en profondeur que `(`, `[` et `{`. Pour `arguments`, aucun site de l'arbre "
-          "n'en porte. POUR LES BRAS, C'EST FAUX, ET C'EST UNE RE-MESURE DE `P10.20-x` "
-          "(2026-09-19) : `handlers/dashboards.rs:105` (`dash_list`) écrit "
-          "`Ok(r) => match r.collect::<Result<Vec<Value>, _>>() { .. }`, et la virgule du turbofish "
-          "coupe le bras en deux — le second morceau devient un motif qui ne veut rien dire "
-          "(`_>>() { Ok(v)`), et le corps du premier est TRONQUÉ avant son bras d'erreur. Le défaut "
-          "n'est pas MORDANT ici (la chaîne suivie depuis `r` n'y porte aucun avalement, découpe "
-          "juste ou fausse), il est ARMÉ ; il n'est pas corrigé par ce lot parce que la profondeur "
-          "des génériques est une propriété du LECTEUR PARTAGÉ, que trois autres gardes consomment, "
-          "et qu'elle demande sa propre mesure.\n"
+          "  * les virgules de GÉNÉRIQUES sont suivies par `arguments` et `bras_du_match` depuis "
+          "`P10.21-b` (2026-09-23) : une liste de génériques est sautée d'un bloc quand son `<` est COLLÉ "
+          "à ce qui le précède (`::<`, `Vec<`) et que son contenu a la forme d'un type. CE QUI RESTE : un "
+          "chemin qualifié `<T as Trait>::f` (le `<` n'est pas collé) garde ses virgules comme coupures "
+          "(aucun sur `daemon/src` au 2026-09-23, mesuré) ; une comparaison écrite COLLÉE (`a<b`), "
+          "contraire au format de l'arbre, ferait sauter du texte si tout ce qui la suit jusqu'à un `>` "
+          "avait la forme d'un type — le `=>` d'un bras, `&&`, `||`, `.`, `{` et un `>` collé à un nom "
+          "arrêtent le saut ; aucune n'existe sur `daemon/src` (les 6 967 `<` collés sont des génériques, "
+          "mesuré). Et d'autres lecteurs Rust de `.github/scripts/` coupent encore sur la virgule sans "
+          "connaître le chevron — `arguments` de `check_a_test_that_declines_to_conclude_says_so.py` (une "
+          "RECOPIE), le découpeur de `check_a_counted_property_is_never_asserted_through_a_clock.py` et "
+          "celui de `check_an_ingestion_envelope_never_copies_its_batch.py` — ; ils ne sont pas mesurés "
+          "ici.\n"
           "  * ce que l'ANALYSTE voit. Le démon avoue ; qu'une console lise `error` se juge ailleurs "
           "(`check_a_refusal_is_not_rendered_as_an_absence.py`).\n"
-          "  * UNE EXEMPTION CLASSÉE SOUS UNE JAMBE QUI N'EXISTE PAS EST SILENCIEUSEMENT IGNORÉE. "
-          "Le jugement contre les ensembles nommés ne parcourt que les jambes qu'il connaît : une "
-          "entrée déposée sous une clé mal orthographiée ne rend ni forme neuve, ni exemption sans "
-          "objet. TROUVÉ PAR MUTATION le 2026-09-19 en fermant `P10.20-x` — la même mutation déposée "
-          "dans `SITES_ADMIS[\"B\"]` rend bien une exemption sans objet (code 1), déposée sous une "
-          "jambe `Z` elle laisse la garde VERTE. Ce n'est pas corrigé ici : l'ensemble nommé est la "
-          "matière d'un autre lot, et le dire vaut mieux que le corriger en passant.\n"
+          "  * les jambes de `SITES_ADMIS` sont jugées depuis `P10.21-b` (2026-09-23) contre celles que "
+          "l'instrument ÉMET sur ses mutants : une clé inconnue est un REFUS DE CONCLURE qui la nomme, "
+          "une jambe jugée absente vaut un ensemble vide. CE QUI RESTE : la dérivation ne voit que les "
+          "jambes qu'un mutant fait émettre — une jambe neuve ajoutée à `analyser` sans mutant fait "
+          "REFUSER DE CONCLURE dès qu'elle accuse sur l'arbre, et son ensemble est refusé comme inconnu, "
+          "tant qu'un mutant ne la prouve pas ; c'est voulu, et c'est dit.\n"
           "  * un ÉCHANGE. Les cliquets portent sur un COMPTE : rendre un site honnête et en casser un "
           "autre laisse le compte immobile et le verdict vert. C'est pourquoi CHAQUE site accusé est "
           "imprimé à chaque exécution — l'échange est visible dans le journal, il n'est pas refusé par "
@@ -2554,11 +2825,25 @@ def main():
         return 2
     constructeurs = constructeurs_d_aveu(defs, src_demon)
 
-    errs = valider_instrument(defs, constructeurs)
+    # LES JAMBES JUGÉES SONT DÉRIVÉES UNE FOIS, AVANT L'INSTRUMENT QUI LES ÉPROUVE (`P10.21-b`).
+    jambes_jugees = jambes_que_la_garde_juge(defs, constructeurs)
+    errs = valider_instrument(defs, constructeurs, jambes_jugees)
     if errs:
         for e in errs:
             print(f"::error::{e}")
         print(f"\n[{ETIQUETTE}] l'INSTRUMENT est faux : aucun verdict n'est rendu.")
+        ce_qui_n_est_pas_tenu()
+        return 2
+
+    # LES JAMBES DE L'ENSEMBLE NOMMÉ SONT JUGÉES AVANT TOUT VERDICT (`P10.21-b`) : une clé que
+    # l'instrument n'émet pas porte des entrées qu'aucun jugement ne lit, et rendre vert par-dessus
+    # serait rendre vert en étant aveugle.
+    inconnues = jambes_admises_inconnues(SITES_ADMIS, jambes_jugees)
+    if inconnues:
+        for m in inconnues:
+            print(m)
+        print(f"\n[{ETIQUETTE}] REFUS DE CONCLURE — {len(inconnues)} jambe(s) de SITES_ADMIS que cette garde ne juge "
+              "pas : leurs entrées ne compteraient ni ne rougiraient.")
         ce_qui_n_est_pas_tenu()
         return 2
 
@@ -2619,7 +2904,7 @@ def main():
         ce_qui_n_est_pas_tenu()
         return 2
 
-    for jambe in ("A", "B", "Q"):
+    for jambe in sorted(jambes_jugees):
         for ou, fn, raison in a_par_jambe.get(jambe, []):
             fichier, ligne = ou.rsplit(":", 1)
             print(f"::error file={fichier},line={ligne}::[{jambe}] `{fn}` — {raison}")
@@ -2639,7 +2924,13 @@ def main():
 
     # `P10.7-y` — JUGEMENT DANS LES DEUX SENS, site par site, contre l'ensemble nommé de chaque jambe.
     # Le jugement lui-même vit dans `ecarts_contre_les_ensembles`, qui est éprouvé par deux témoins.
-    messages = ecarts_contre_les_ensembles(a_par_jambe)
+    emises = sorted({j for j in a_par_jambe if j != "?"} - jambes_jugees)
+    if emises:
+        print(f"::error::jambe(s) {emises} émise(s) sur l'arbre et JAMAIS sur les mutants : l'instrument accuse "
+              "sous une jambe qu'il ne prouve pas. La garde REFUSE DE CONCLURE.")
+        ce_qui_n_est_pas_tenu()
+        return 2
+    messages = ecarts_contre_les_ensembles(a_par_jambe, SITES_ADMIS, jambes_jugees)
     for m in messages:
         print(m)
     if messages:

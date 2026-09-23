@@ -42,6 +42,65 @@ fn scim_err(code: StatusCode, detail: &str) -> Response {
         .into_response()
 }
 
+// `P10.21-l` — UN DROIT SCIM SE COMPTE AVANT QUE LE JOURNAL DE CONTRÔLE OU L'IdP NE L'APPRENNENT.
+// Les écritures de droits de ce fichier passaient sous `let _ =` (ou `unwrap_or(0)`) : un retrait que la
+// base refusait laissait l'accès EN PLACE pendant que la ligne `scim.user.deprovision` l'attestait et que
+// l'IdP recevait un succès — il ne rejoue jamais un succès. Chaque écriture de `"grant"` est désormais
+// classée (`EcritureDuPlanDeControle`) avant toute trace ; un refus de la base rend le corps d'erreur
+// SCIM 2.0 (RFC 7644 §3.12) avec le statut `503`, sans rien attester. La RFC fixe le CORPS, pas la
+// politique de rejeu : `503` est l'indisponibilité PASSAGÈRE de HTTP (RFC 9110 §15.6.4), le seul statut
+// qui dise « rien n'a eu lieu, recommencez ». Que le fournisseur en service rejoue réellement un `503`
+// est une question d'exploitation, ouverte sous la clé : aucun code de ce dépôt ne peut y répondre.
+//
+// CE QUE L'IdP REÇOIT, ET CE QU'IL NE REÇOIT PAS : la cause du GESTE, dite pour l'exploitant de l'IdP ;
+// la cause du MOTEUR (noms de tables internes) part sur la sortie d'erreur du démon, avec le seul genre
+// du geste — ni utilisateur, ni tenant, ni jeton.
+
+pub(crate) const CAUSE_SCIM_RETRAIT_DES_DROITS_NON_ECRIT: &str =
+    "RETRAIT DES DROITS NON ÉCRIT : la base du plan de contrôle n'a pas pris le retrait — l'accès de cet \
+     utilisateur à ce tenant est TOUJOURS EN PLACE. Rien n'est attesté ; la même demande peut être rejouée \
+     telle quelle.";
+pub(crate) const CAUSE_SCIM_DROITS_DEMANDES_NON_ECRITS: &str =
+    "DROITS NON ÉCRITS : la base du plan de contrôle n'a pas pris l'écriture d'un droit — l'utilisateur \
+     existe, les droits demandés ne sont PAS en place. Rien n'est attesté ; la même demande peut être \
+     rejouée telle quelle.";
+pub(crate) const CAUSE_SCIM_OPERATION_DE_GROUPE_NON_ECRITE: &str =
+    "OPÉRATION DE GROUPE NON ÉCRITE : la base du plan de contrôle n'a pas pris l'ajout ou le retrait d'un \
+     membre — un retrait demandé n'a PAS eu lieu, l'accès de ce membre est TOUJOURS EN PLACE. Les \
+     opérations précédentes de la même demande ont pu être appliquées ; chacune est idempotente, la \
+     demande entière peut être rejouée telle quelle. Rien n'est attesté.";
+pub(crate) const CAUSE_SCIM_UTILISATEUR_ILLISIBLE: &str =
+    "UTILISATEUR ILLISIBLE : la base du plan de contrôle n'a pas pu lire l'utilisateur visé — ni sa \
+     présence ni son absence n'est affirmée, et rien n'est modifié. La même demande peut être rejouée \
+     telle quelle.";
+
+/// Le refus d'un geste SCIM que la base n'a pas pris (ou pas pu lire) : `503` au format d'erreur SCIM 2.0,
+/// rien d'attesté — l'IdP rejoue.
+fn scim_refuser_a_rejouer(genre: &str, cause_du_geste: &str, cause_du_moteur: &str) -> Response {
+    eprintln!("[scim] WARN geste '{genre}' refusé en 503, rien n'est attesté : {cause_du_moteur}");
+    scim_err(StatusCode::SERVICE_UNAVAILABLE, cause_du_geste)
+}
+
+/// Le nom de l'utilisateur `id` s'il porte un droit dans `tenant`. TROIS issues : `Ok(Some)` présent,
+/// `Ok(None)` absent (le `404` de la RFC 7644 §3.6), `Err` illisible — jamais servi comme une absence, car
+/// un `404` sur une suppression est lu par l'IdP comme « déjà déprovisionné ».
+///
+/// `P7.19-i` — `LIMIT 1` sans ordre, et sans arbitraire : `"grant"` a pour clé primaire
+/// `(user_id, tenant_id)` et `platform_user.id` est clé primaire, donc ce prédicat lié sur les DEUX
+/// colonnes de la clé ne peut joindre qu'AU PLUS UNE ligne. Le singleton vient du SCHÉMA.
+fn scim_nom_dans_le_tenant(cp: &ControlPlane, tenant: &str, id: &str) -> rusqlite::Result<Option<String>> {
+    use rusqlite::OptionalExtension as _;
+    cp.conn
+        .lock()
+        .query_row(
+            "SELECT p.name FROM platform_user p JOIN \"grant\" g ON g.user_id=p.id \
+             WHERE p.id=?1 AND g.tenant_id=?2 LIMIT 1",
+            params![id, tenant],
+            |r| r.get(0),
+        )
+        .optional()
+}
+
 /// Représentation SCIM d'un platform_user (+ ses grants dans `tenant` -> `groups`).
 fn scim_user_resource(cp: &ControlPlane, tenant: &str, id: &str, name: &str) -> Value {
     let conn = cp.conn.lock();
@@ -114,22 +173,10 @@ pub(crate) async fn scim_user_get(State(st): State<AppState>, Extension(ctx): Ex
     };
     // HIGH #59 — TENANT-SCOPING : un GET pour un id qui n'a AUCUN grant dans le tenant du token -> 404
     // (identité d'un autre tenant JAMAIS révélée), même si le platform_user existe globalement.
-    let name: Option<String> = {
-        let conn = cp.conn.lock();
-        // `P7.19-i` — `LIMIT 1` sans ordre, et sans arbitraire : `"grant"` a pour clé primaire
-        // `(user_id, tenant_id)` et `platform_user.id` est clé primaire, donc ce prédicat lié sur les
-        // DEUX colonnes de la clé ne peut joindre qu'AU PLUS UNE ligne. Le singleton vient du SCHÉMA.
-        conn.query_row(
-            "SELECT p.name FROM platform_user p JOIN \"grant\" g ON g.user_id=p.id \
-             WHERE p.id=?1 AND g.tenant_id=?2 LIMIT 1",
-            params![id, ctx.tenant],
-            |r| r.get(0),
-        )
-        .ok()
-    };
-    match name {
-        Some(n) => (StatusCode::OK, [(header::CONTENT_TYPE, "application/scim+json")], scim_user_resource(cp, &ctx.tenant, &id, &n).to_string()).into_response(),
-        None => scim_err(StatusCode::NOT_FOUND, "User introuvable"),
+    match scim_nom_dans_le_tenant(cp, &ctx.tenant, &id) {
+        Ok(Some(n)) => (StatusCode::OK, [(header::CONTENT_TYPE, "application/scim+json")], scim_user_resource(cp, &ctx.tenant, &id, &n).to_string()).into_response(),
+        Ok(None) => scim_err(StatusCode::NOT_FOUND, "User introuvable"),
+        Err(e) => scim_refuser_a_rejouer("scim.user.get", CAUSE_SCIM_UTILISATEUR_ILLISIBLE, &e.to_string()),
     }
 }
 
@@ -169,18 +216,26 @@ pub(crate) async fn scim_user_create(State(st): State<AppState>, Extension(ctx):
     };
     // Grants optionnels : le body peut porter des groups (value=role). On applique via valid_grant_role
     // (enum fermé + rôles composables définis) dans le tenant du token. Un rôle inconnu est IGNORÉ (default-deny).
+    // `P10.21-l` — un droit n'entre dans `applied` (donc au journal de contrôle) que s'il est ÉCRIT ; un
+    // refus de la base rend le `503` avant toute trace. L'utilisateur, lui, reste créé : le rejeu du même
+    // POST le retrouve par son nom (`ensure_platform_user`) et repose les droits (upsert).
     let mut applied: Vec<String> = Vec::new();
     if let Some(groups) = b.get("groups").and_then(|g| g.as_array()) {
         let conn = cp.conn.lock();
         for g in groups {
             if let Some(role) = g.get("value").and_then(|v| v.as_str()) {
                 if valid_grant_role(role) {
-                    let _ = conn.execute(
+                    match EcritureDuPlanDeControle::from(conn.execute(
                         "INSERT INTO \"grant\"(user_id,tenant_id,role) VALUES(?1,?2,?3) \
                          ON CONFLICT(user_id,tenant_id) DO UPDATE SET role=excluded.role",
                         params![id, ctx.tenant, role],
-                    );
-                    applied.push(role.to_string());
+                    )) {
+                        EcritureDuPlanDeControle::Ecrite => applied.push(role.to_string()),
+                        EcritureDuPlanDeControle::AucuneLigne => {}
+                        EcritureDuPlanDeControle::Refusee(cause) => {
+                            return scim_refuser_a_rejouer("scim.user.provision", CAUSE_SCIM_DROITS_DEMANDES_NON_ECRITS, &cause)
+                        }
+                    }
                 }
             }
         }
@@ -201,20 +256,10 @@ pub(crate) async fn scim_user_replace(State(st): State<AppState>, Extension(ctx)
     };
     // #59 — TENANT-SCOPING de l'existence (mirroir du GET) : un id sans AUCUN grant dans le tenant
     // du token -> 404, même si le platform_user existe globalement (pas d'oracle d'existence cross-tenant).
-    let name: Option<String> = {
-        let conn = cp.conn.lock();
-        // `P7.19-i` — `LIMIT 1` sans ordre, et sans arbitraire : `"grant"` a pour clé primaire
-        // `(user_id, tenant_id)` et `platform_user.id` est clé primaire, donc ce prédicat lié sur les
-        // DEUX colonnes de la clé ne peut joindre qu'AU PLUS UNE ligne. Le singleton vient du SCHÉMA.
-        conn.query_row(
-            "SELECT p.name FROM platform_user p JOIN \"grant\" g ON g.user_id=p.id \
-             WHERE p.id=?1 AND g.tenant_id=?2 LIMIT 1",
-            params![id, ctx.tenant],
-            |r| r.get(0),
-        ).ok()
-    };
-    let Some(name) = name else {
-        return scim_err(StatusCode::NOT_FOUND, "User introuvable");
+    let name = match scim_nom_dans_le_tenant(cp, &ctx.tenant, &id) {
+        Ok(Some(n)) => n,
+        Ok(None) => return scim_err(StatusCode::NOT_FOUND, "User introuvable"),
+        Err(e) => return scim_refuser_a_rejouer("scim.user.replace", CAUSE_SCIM_UTILISATEUR_ILLISIBLE, &e.to_string()),
     };
     let active = b.get("active").and_then(|v| v.as_bool()).unwrap_or(true);
     if !active {
@@ -223,9 +268,24 @@ pub(crate) async fn scim_user_replace(State(st): State<AppState>, Extension(ctx)
         if scim_would_orphan_last_admin(cp, &ctx.tenant, &id) {
             return scim_err(StatusCode::CONFLICT, "dernier administrateur du tenant — désactivation refusée (anti-lockout)");
         }
-        let conn = cp.conn.lock();
-        let _ = conn.execute("DELETE FROM \"grant\" WHERE user_id=?1 AND tenant_id=?2", params![id, ctx.tenant]);
-        drop(conn);
+        // `P10.21-l` — LE RETRAIT EST COMPTÉ AVANT D'ÊTRE ATTESTÉ. L'énoncé reste écrit ICI, au site qui
+        // atteste, sur un verrou LIÉ à un nom : la rechute vers la forme d'avant (`let _ = conn.execute(…)`
+        // dans ce bloc) est vue par la garde des écritures avalées. Elle ne verrait PAS `let _ =
+        // cp.conn.lock().execute(…)` — un receveur qui n'est pas un chemin sort de sa liaison sourde, par
+        // construction ; seuls les témoins `dsa_` tiennent cette forme-là.
+        let retrait = {
+            let conn = cp.conn.lock();
+            EcritureDuPlanDeControle::from(conn.execute("DELETE FROM \"grant\" WHERE user_id=?1 AND tenant_id=?2", params![id, ctx.tenant]))
+        };
+        match retrait {
+            EcritureDuPlanDeControle::Ecrite => {}
+            // Présent à la lecture, absent à l'écriture : déprovisionné entre-temps. Rien n'est retiré par
+            // CE geste, rien n'est attesté ; la RFC 7644 §3.6 veut un 404 sur une ressource déjà supprimée.
+            EcritureDuPlanDeControle::AucuneLigne => return scim_err(StatusCode::NOT_FOUND, "User introuvable"),
+            EcritureDuPlanDeControle::Refusee(cause) => {
+                return scim_refuser_a_rejouer("scim.user.deprovision", CAUSE_SCIM_RETRAIT_DES_DROITS_NON_ECRIT, &cause)
+            }
+        }
         control_ledger_append(&st, "scim.user.deprovision", "scim", &ctx.tenant, &format!("user '{name}' (id={id}) désactivé -> grants retirés"))
             .laisser_a_l_aveu_de_la_primitive();
     }
@@ -239,27 +299,29 @@ pub(crate) async fn scim_user_delete(State(st): State<AppState>, Extension(ctx):
     let Some(cp) = st.tenants.control.as_ref() else {
         return scim_err(StatusCode::NOT_FOUND, "SCIM indisponible");
     };
-    {
-        // #59 — existence TENANT-SCOPÉE (mirroir du GET/PUT) : id sans grant dans ce tenant -> 404.
-        let conn = cp.conn.lock();
-        // `P7.19-i` — même singleton de SCHÉMA que le GET/PUT, et la projection est en outre la
-        // constante `1` lue par `.is_err()` : deux raisons indépendantes pour que l'ordre ne décide rien.
-        if conn.query_row(
-            "SELECT 1 FROM platform_user p JOIN \"grant\" g ON g.user_id=p.id \
-             WHERE p.id=?1 AND g.tenant_id=?2 LIMIT 1",
-            params![id, ctx.tenant], |r| r.get::<_, i64>(0),
-        ).is_err() {
-            return scim_err(StatusCode::NOT_FOUND, "User introuvable");
-        }
+    // #59 — existence TENANT-SCOPÉE (mirroir du GET/PUT) : id sans grant dans ce tenant -> 404. `P10.21-l` —
+    // une lecture RATÉE n'est plus ce 404 : l'IdP lit un 404 sur un DELETE comme « déjà déprovisionné ».
+    match scim_nom_dans_le_tenant(cp, &ctx.tenant, &id) {
+        Ok(Some(_)) => {}
+        Ok(None) => return scim_err(StatusCode::NOT_FOUND, "User introuvable"),
+        Err(e) => return scim_refuser_a_rejouer("scim.user.delete", CAUSE_SCIM_UTILISATEUR_ILLISIBLE, &e.to_string()),
     }
     // ANTI-LOCKOUT (HIGH #59) : le DELETE retire les grants du user dans ce tenant — refuser s'il viderait le
     // dernier admin (mirroir de tenants.rs/grant_delete). Vérifié HORS lock (tenant_admin_grant_count verrouille).
     if scim_would_orphan_last_admin(cp, &ctx.tenant, &id) {
         return scim_err(StatusCode::CONFLICT, "dernier administrateur du tenant — deprovisioning refusé (anti-lockout)");
     }
-    {
+    // `P10.21-l` — même comptage que le PUT `active=false`, écrit au site pour la même raison.
+    let retrait = {
         let conn = cp.conn.lock();
-        let _ = conn.execute("DELETE FROM \"grant\" WHERE user_id=?1 AND tenant_id=?2", params![id, ctx.tenant]);
+        EcritureDuPlanDeControle::from(conn.execute("DELETE FROM \"grant\" WHERE user_id=?1 AND tenant_id=?2", params![id, ctx.tenant]))
+    };
+    match retrait {
+        EcritureDuPlanDeControle::Ecrite => {}
+        EcritureDuPlanDeControle::AucuneLigne => return scim_err(StatusCode::NOT_FOUND, "User introuvable"),
+        EcritureDuPlanDeControle::Refusee(cause) => {
+            return scim_refuser_a_rejouer("scim.user.deprovision", CAUSE_SCIM_RETRAIT_DES_DROITS_NON_ECRIT, &cause)
+        }
     }
     control_ledger_append(&st, "scim.user.deprovision", "scim", &ctx.tenant, &format!("user id={id} deprovisionné (DELETE)"))
         .laisser_a_l_aveu_de_la_primitive();
@@ -309,17 +371,27 @@ pub(crate) async fn scim_group_patch(State(st): State<AppState>, Extension(ctx):
             .map(|a| a.iter().filter_map(|m| m.get("value").and_then(|x| x.as_str()).map(String::from)).collect())
             .unwrap_or_default();
         for uid in members {
-            // le user doit exister (identité plateforme) — jamais de grant fantôme.
-            if conn.query_row("SELECT 1 FROM platform_user WHERE id=?1", params![uid], |r| r.get::<_, i64>(0)).is_err() {
-                continue;
+            // le user doit exister (identité plateforme) — jamais de grant fantôme. `P10.21-l` — une lecture
+            // RATÉE n'est pas une absence : sautée, elle laissait en place le membre qu'un `remove` retirait.
+            match conn.query_row("SELECT 1 FROM platform_user WHERE id=?1", params![uid], |r| r.get::<_, i64>(0)) {
+                Ok(_) => {}
+                Err(rusqlite::Error::QueryReturnedNoRows) => continue,
+                Err(e) => return scim_refuser_a_rejouer("scim.group.patch", CAUSE_SCIM_UTILISATEUR_ILLISIBLE, &e.to_string()),
             }
+            // `P10.21-l` — chaque écriture est COMPTÉE : un membre n'entre dans `added`/`removed` (donc au
+            // journal de contrôle) que si sa ligne est écrite ; un refus rend le 503 avant toute trace.
             match action.as_str() {
                 "add" | "replace" => {
-                    let _ = conn.execute(
+                    match EcritureDuPlanDeControle::from(conn.execute(
                         "INSERT INTO \"grant\"(user_id,tenant_id,role) VALUES(?1,?2,?3) ON CONFLICT(user_id,tenant_id) DO UPDATE SET role=excluded.role",
                         params![uid, ctx.tenant, role],
-                    );
-                    added += 1;
+                    )) {
+                        EcritureDuPlanDeControle::Ecrite => added += 1,
+                        EcritureDuPlanDeControle::AucuneLigne => {}
+                        EcritureDuPlanDeControle::Refusee(cause) => {
+                            return scim_refuser_a_rejouer("scim.group.patch", CAUSE_SCIM_OPERATION_DE_GROUPE_NON_ECRITE, &cause)
+                        }
+                    }
                 }
                 "remove" => {
                     // ANTI-LOCKOUT (HIGH #59, #64) : ne JAMAIS retirer le DERNIER grant à AUTORITÉ ADMIN EFFECTIVE
@@ -337,7 +409,17 @@ pub(crate) async fn scim_group_patch(State(st): State<AppState>, Extension(ctx):
                             return scim_err(StatusCode::CONFLICT, "dernier administrateur du tenant — retrait de membre refusé (anti-lockout)");
                         }
                     }
-                    removed += conn.execute("DELETE FROM \"grant\" WHERE user_id=?1 AND tenant_id=?2 AND role=?3", params![uid, ctx.tenant, role]).unwrap_or(0) as i64;
+                    // Un membre qui ne portait pas ce rôle n'est pas un échec (aucune ligne) : l'état demandé
+                    // est atteint, rien n'est compté. Un refus de la base, lui, laisse l'accès en place.
+                    match EcritureDuPlanDeControle::from(
+                        conn.execute("DELETE FROM \"grant\" WHERE user_id=?1 AND tenant_id=?2 AND role=?3", params![uid, ctx.tenant, role]),
+                    ) {
+                        EcritureDuPlanDeControle::Ecrite => removed += 1,
+                        EcritureDuPlanDeControle::AucuneLigne => {}
+                        EcritureDuPlanDeControle::Refusee(cause) => {
+                            return scim_refuser_a_rejouer("scim.group.patch", CAUSE_SCIM_OPERATION_DE_GROUPE_NON_ECRITE, &cause)
+                        }
+                    }
                 }
                 _ => {}
             }

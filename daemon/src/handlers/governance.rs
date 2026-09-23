@@ -433,6 +433,19 @@ pub(crate) async fn roles_list(State(st): State<AppState>, Extension(au): Extens
     }
 }
 
+/// `P10.21-g` — LE RÔLE QUE LA BASE N'A PAS PRIS EST REFUSÉ : 503, rien au journal de contrôle, le cache
+/// des rôles n'est pas rechargé. Le rôle garde la définition qu'il avait (ou n'existe toujours pas).
+pub(crate) const CAUSE_ROLE_NON_ECRIT: &str =
+    "RÔLE NON ENREGISTRÉ, RIEN N'A CHANGÉ : le plan de contrôle n'a pas pris l'écriture de ce rôle ; sa \
+     définition est celle d'avant la demande, et aucune trace ne dit le contraire. Réessayez une fois le \
+     plan de contrôle de nouveau écrivable.";
+
+/// `P10.21-g` — LE RETRAIT DE RÔLE QUE LA BASE N'A PAS PRIS EST REFUSÉ : 503 et non plus « introuvable ».
+pub(crate) const CAUSE_RETRAIT_DE_ROLE_NON_ECRIT: &str =
+    "RETRAIT NON ENREGISTRÉ, LE RÔLE EST TOUJOURS EN PLACE : le plan de contrôle n'a pas pris la \
+     suppression de ce rôle ; les droits qui le portent gardent ses permissions, et aucune trace ne dit \
+     le contraire. Réessayez une fois le plan de contrôle de nouveau écrivable.";
+
 /// POST /api/roles — crée/met à jour un rôle composable (super-admin). Body {name, base_role, deny_perms[],
 /// description?}. base_role ∈ {viewer,editor,admin} (JAMAIS is_superadmin -> aucune escalade). deny_perms
 /// filtré sur KNOWN_DENY_PERMS. Un nom qui collisionne un rôle intégré est REFUSÉ. Rafraîchit le cache.
@@ -467,13 +480,21 @@ pub(crate) async fn role_create(State(st): State<AppState>, Extension(au): Exten
         .map(|a| a.iter().filter_map(|x| x.as_str()).map(|s| s.trim().to_string()).filter(|s| KNOWN_DENY_PERMS.contains(&s.as_str())).collect())
         .unwrap_or_default();
     let deny_csv = deny.join(",");
-    {
+    // `P10.21-g` — LE RÔLE EST COMPTÉ AVANT D'ÊTRE ATTESTÉ. Avalé, un `INSERT` refusé rendait `ok` et
+    // posait `role.upsert` au journal de contrôle pour un rôle qui n'existait pas (ou gardait ses anciens
+    // refus de permission). Un upsert sans clause `WHERE` écrit toujours une ligne : zéro est un refus.
+    let ecriture = {
         let conn = cp.conn.lock();
-        let _ = conn.execute(
+        EcritureDuPlanDeControle::from(conn.execute(
             "INSERT INTO role_def(name,base_role,deny_perms,description,created) VALUES(?1,?2,?3,?4,?5) \
              ON CONFLICT(name) DO UPDATE SET base_role=excluded.base_role, deny_perms=excluded.deny_perms, description=excluded.description",
             params![name, base, deny_csv, desc, now()],
-        );
+        ))
+    };
+    match ecriture {
+        EcritureDuPlanDeControle::Ecrite => {}
+        EcritureDuPlanDeControle::AucuneLigne => return refuser_le_geste_non_ecrit(CAUSE_ROLE_NON_ECRIT, "aucune ligne écrite"),
+        EcritureDuPlanDeControle::Refusee(cause) => return refuser_le_geste_non_ecrit(CAUSE_ROLE_NON_ECRIT, &cause),
     }
     // AUDIT control-plane (tamper-evident) + rafraîchit le cache process pour un effet immédiat.
     // `P10.20-z` — LE RÔLE EST ÉCRIT ; SI SA LIGNE MANQUE AU JOURNAL DE CONTRÔLE, LA RÉPONSE LE DIT à côté
@@ -492,12 +513,16 @@ pub(crate) async fn role_delete(State(st): State<AppState>, Extension(au): Exten
         Ok(cp) => cp,
         Err(r) => return r,
     };
-    {
+    // `P10.21-g` — « introuvable » et « la base a refusé » sont deux faits. `unwrap_or(0)` les confondait :
+    // un retrait refusé rendait un 404 « rôle introuvable » pour un rôle toujours en place.
+    let retrait = {
         let conn = cp.conn.lock();
-        let affected = conn.execute("DELETE FROM role_def WHERE name=?1", params![name]).unwrap_or(0);
-        if affected == 0 {
-            return not_found("rôle introuvable");
-        }
+        EcritureDuPlanDeControle::from(conn.execute("DELETE FROM role_def WHERE name=?1", params![name]))
+    };
+    match retrait {
+        EcritureDuPlanDeControle::Ecrite => {}
+        EcritureDuPlanDeControle::AucuneLigne => return not_found("rôle introuvable"),
+        EcritureDuPlanDeControle::Refusee(cause) => return refuser_le_geste_non_ecrit(CAUSE_RETRAIT_DE_ROLE_NON_ECRIT, &cause),
     }
     // `P10.20-z` — même contrat que `role_upsert` : le rôle est retiré, l'aveu voyage à côté du succès.
     let maillon = control_ledger_append(&st, "role.delete", &au.name, "", &format!("role '{name}' supprimé"));

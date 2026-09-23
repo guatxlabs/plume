@@ -14,6 +14,8 @@ Le geste n'est pas grave en lui-même. Il le devient quand la ligne SUIVANTE AFF
   * `ledger_append(…)` / `audit_config_change(…)` / `audit_source_change(…)` posent le fait dans une
     trace TAMPER-EVIDENT et NON PURGEABLE — « MFA TOTP désactivée », « dossier archivé », « bulletin
     posé ». Le registre est exactement l'objet qu'on relit quand on doute du reste ;
+  * `control_ledger_append(…)` pose le même genre de fait dans le journal du PLAN DE CONTRÔLE —
+    « tenant suspendu », « droit retiré », « utilisateur déprovisionné » (depuis `P10.21-g`) ;
   * `netban_upsert(…)` / `netban_remove(…)` ARMENT un blocage réseau sur une riposte dont la ligne
     n'a peut-être jamais été écrite ;
   * `last_insert_rowid()` rend le dernier identifiant inséré sur LA CONNEXION, toutes tables
@@ -93,6 +95,40 @@ corrections en cours sur `auth.rs`, `ledger.rs`, `actions.rs` et `playbooks.rs` 
 aucun site de conjonction au moment de l'écriture — seules DEUX lignes d'accusation ont bougé dans
 `actions.rs`, et rien d'autre. Le nombre total d'écritures avalées, lui, diffère (735 sur
 l'instantané, 733 sur l'arbre) : il n'entre dans aucun verdict, et il bougera encore.
+
+CE QUE `P10.21-g` A MESURÉ EN ÉLARGISSANT LE VOCABULAIRE (2026-09-23)
+---------------------------------------------------------------------
+L'énoncé de la clé : cinq écritures du plan de contrôle avalées puis affirmées, que cette garde « ne
+voit pas faute de `control_ledger_append` dans son vocabulaire ». Mesuré sur l'instantané `69284b7`
+exporté ET sur l'arbre (identiques avant correctif) : AJOUTER LE FAIT SEUL fait passer la population
+de 35 à 36, et le seul site neuf est `scim.rs::scim_user_replace` — AUCUN des cinq nommés. Deux
+raisons, et aucune n'est le vocabulaire :
+  * trois des cinq gestes nommés (`tenant_set_suspended`, `grant_delete`, `role_create`) — et
+    `role_delete`, que l'énoncé ne nommait pas — écrivent dans un BLOC NU de verrou (`{ let conn = cp.conn.lock(); let _ = …;
+    }`) et posent la ligne de contrôle APRÈS l'accolade fermante, dans le parent : l'appariement
+    s'arrêtait à cette accolade. Un bloc nu retombe TOUJOURS dans son parent ; il est désormais
+    traversé (`bloc_nu`). Avec le fait ET la règle : 41 sites, les six neufs étant
+    `tenant_set_suspended`, `grant_delete`, `role_create`, `role_delete` (un `unwrap_or(0)` qui rendait
+    « introuvable » sur une écriture refusée — absent de l'énoncé), `scim_user_replace` et
+    `scim_user_delete`. AUCUN des 35 sites d'avant n'a bougé : la règle n'a rien ajouté ailleurs ;
+  * les deux autres n'ont PAS de conjonction : le premier administrateur de `tenant_create` écrit dans
+    un `if let` et le fait vit dans le bloc ANCÊTRE (le manque écrit plus bas, épreuve `a5`), et
+    `emit_operator_access` pose sa ligne de contrôle AVANT l'écriture avalée — rien ne l'affirme
+    ensuite, il la perd.
+Les quatre gestes de la clé sont corrigés par le même lot et sortent de l'ensemble (41 sur
+l'instantané, 37 sur l'arbre) ; les deux SCIM y entrent, hors périmètre, avec leur raison.
+
+CE QUE `P10.21-l` A RETIRÉ, ET CE QUE CETTE GARDE NE VOYAIT PAS DANS LE MÊME FICHIER (2026-09-23)
+-----------------------------------------------------------------------------------------------
+Les deux déprovisionnements SCIM sortent de l'ensemble : leur `DELETE` est classé
+(`EcritureDuPlanDeControle`) avant la ligne de contrôle, un refus rend l'erreur SCIM en 503. La
+population passe de 37 à 35 sur l'arbre ; les planchers, dérivés de 43, restent sous elle.
+Le même fichier portait DEUX écritures de droits de la même famille que la garde ne voyait pas, et la
+raison est celle de l'angle mort écrit (`a5`), pas le vocabulaire : dans `scim_group_patch`, le retrait
+d'un membre (`unwrap_or(0)`) et l'ajout (`let _ =`) vivent dans les bras d'un `match` imbriqué dans deux
+boucles, et la ligne `scim.group.patch` est posée dans le corps de la fonction, bloc ANCÊTRE ; dans
+`scim_user_create`, l'`INSERT` des droits vit sous `for`/`if let`/`if`, la ligne `scim.user.provision`
+dans l'ancêtre. Les trois sont corrigés par le même lot ; aucun n'a jamais été dans l'ensemble.
 
 POURQUOI UN ENSEMBLE NOMMÉ, ET POURQUOI LA FORME PORTE LE FAIT
 ---------------------------------------------------------------
@@ -190,6 +226,10 @@ FAITS_QUI_AFFIRMENT = (
     ("netban_upsert", re.compile(r"\bnetban_upsert\s*\(")),
     ("netban_remove", re.compile(r"\bnetban_remove\s*\(")),
     ("last_insert_rowid", re.compile(r"\blast_insert_rowid\s*\(")),
+    # `P10.21-g` — LA LIGNE DU JOURNAL DU PLAN DE CONTRÔLE est une trace tamper-evident au même titre que
+    # le registre du tenant : elle atteste une suspension, un retrait de droit, un rôle. `\bledger_append`
+    # ne la prenait pas (le `_` qui précède `ledger` est un caractère de mot, donc pas de frontière).
+    ("control_ledger_append", re.compile(r"\bcontrol_ledger_append\s*\(")),
 )
 
 # --- PLANCHER DE NON-DÉGÉNÉRESCENCE (première écriture, 2026-09-19) -------------------------------
@@ -256,6 +296,9 @@ SITES_REGISTRE_APRES_ECRITURE_AVALEE = {
     ("daemon/src/handlers/system.rs", "bulletin_set"):
         ("let _ -> audit_config_change", "let _ -> audit_config_change"),
     ("daemon/src/handlers/system.rs", "bulletin_clear"): ("let _ -> audit_config_change",),
+    # `P10.21-l` — LES DEUX DÉPROVISIONNEMENTS SCIM (`scim_user_replace`, `scim_user_delete`), entrés par
+    # `P10.21-g`, sont RETIRÉS : le `DELETE` des droits est compté avant la ligne `scim.user.deprovision`,
+    # et un refus de la base rend à l'IdP l'erreur SCIM en 503 sans rien attester.
 }
 
 # --- CLASSE 4 : L'IDENTIFIANT EST SERVI, SANS REGISTRE. Rien n'entre dans la trace, mais la console
@@ -350,6 +393,29 @@ def verdict_de_la_chaine(jetons):
     return ("nu", "") if not jetons else ("propage", ".".join(j[0] for j in jetons[:4]))
 
 
+def bloc_nu(code, ouvrante):
+    """Vrai quand l'accolade en `ouvrante` ouvre un BLOC NU : un bloc en position d'instruction (après
+    `;`, `{` ou `}`) ou lié par `let x = {`. Un tel bloc n'a ni condition, ni boucle, ni fermeture : il
+    s'exécute une fois et RETOMBE TOUJOURS dans son parent, sauf s'il sort lui-même (`return`, `?`,
+    `continue`) — et alors le fait qui suit est conditionné, la forme `e4` que la garde accuse déjà.
+
+    C'EST LE BLOC DE VERROU, ET IL CACHAIT DES SITES (`P10.21-g`, mesuré le 2026-09-23) : `{ let conn =
+    cp.conn.lock(); let _ = conn.execute(…); }` puis la ligne de contrôle dans le parent. Tout ce qui
+    n'est PAS un bloc nu (`if`, `else`, `for`, `while`, `loop`, `match`, bras `=>`, fermeture `|| {`,
+    `async {`, littéral de structure) reste une borne : c'est ce qui garde `respond_run` hors de la
+    population (ses écritures vivent dans des `if … { …; continue; }`)."""
+    if ouvrante < 0:
+        return False
+    k = ouvrante - 1
+    while k >= 0 and code[k].isspace():
+        k -= 1
+    if k < 0:
+        return False
+    if code[k] in ";{}":
+        return True
+    return code[k] == "=" and (k == 0 or code[k - 1] not in "=<>!")
+
+
 def faits_dans_la_portee(code, coupes, spans, depart, fin_fonction):
     """Les faits qui AFFIRMENT l'écriture qui se termine en `depart` : ceux du MÊME BLOC, ou d'un bloc
     ouvert APRÈS elle. Rendu `[(nom du fait, position)]`.
@@ -372,6 +438,13 @@ def faits_dans_la_portee(code, coupes, spans, depart, fin_fonction):
         est suivie d'un `continue` qui rend le registre inatteignable. Le choix est le moindre des
         deux, il est mesuré, et le manque est écrit dans « ce qu'elle ne tient pas ».
     """
+    # L'OUVRANTE DE CHAQUE FERMANTE, pour savoir si le bloc que l'on quitte est NU (voir `bloc_nu`).
+    ouvrantes, pile = {}, []
+    for c in coupes:
+        if code[c] == "{":
+            pile.append(c)
+        elif code[c] == "}" and pile:
+            ouvrantes[c] = pile.pop()
     profondeur, plancher, bornes = 0, 0, []
     for c in coupes:
         # `c < depart`, PAS `c <= depart`, ET C'EST UN DÉFAUT MESURÉ (2026-09-19, mutation `is_err`
@@ -388,6 +461,10 @@ def faits_dans_la_portee(code, coupes, spans, depart, fin_fonction):
             profondeur += 1
         elif code[c] == "}":
             profondeur -= 1
+            # SORTIR D'UN BLOC NU QUI PORTAIT L'ÉCRITURE N'EST PAS EN SORTIR : on retombe dans le parent,
+            # au même niveau. La règle ne vaut que tant qu'aucune borne non nue n'a été franchie.
+            if profondeur < 0 and plancher >= 0 and bloc_nu(code, ouvrantes.get(c, -1)):
+                profondeur = 0
             plancher = min(plancher, profondeur)
         bornes.append((c, plancher))
     trouves = []
@@ -602,6 +679,25 @@ EPREUVES = [
      '    }\n'
      '    ledger_append(conn, "t.maj", &format!("#{id}"));\n'
      '    true\n}\n', {"ok -> ledger_append"}),
+    # --- `P10.21-g` — LE BLOC NU DE VERROU, ET LE FAIT DU PLAN DE CONTRÔLE. La forme exacte de
+    # `tenant_set_suspended`, `grant_delete` et `role_create` avant correction : sans la règle du bloc nu,
+    # l'appariement s'arrêtait à l'accolade fermante du verrou et le site disparaissait EN VERT.
+    ("(10) l'écriture dans un BLOC NU de verrou, la ligne de contrôle APRÈS l'accolade",
+     'fn e10(st: &AppState, cp: &ControlPlane, id: &str) -> Response {\n'
+     '    {\n'
+     '        let conn = cp.conn.lock();\n'
+     '        let _ = conn.execute("UPDATE tenant SET suspended=1 WHERE id=?1", params![id]);\n'
+     '    }\n'
+     '    let maillon = control_ledger_append(st, "tenant.suspend", "op", id, "{}");\n'
+     '    ok_json()\n}\n', {"let _ -> control_ledger_append"}),
+    ("(11) le bloc nu LIÉ (`let x = { … };`), et un compte absorbé dedans — `role_delete`",
+     'fn e11(st: &AppState, cp: &ControlPlane, nom: &str) -> Response {\n'
+     '    let n = {\n'
+     '        let conn = cp.conn.lock();\n'
+     '        conn.execute("DELETE FROM role_def WHERE name=?1", params![nom]).unwrap_or(0)\n'
+     '    };\n'
+     '    control_ledger_append(st, "role.delete", "op", "", nom);\n'
+     '    ok_json()\n}\n', {"unwrap_or -> control_ledger_append"}),
     # --- LES TÉMOINS NÉGATIFS : chacun est une forme que la garde DOIT laisser passer.
     ("témoin négatif : l'écriture avalée SANS aucun fait après elle (la population des centaines)",
      'fn n1(conn: &Connection, id: i64) {\n'
@@ -676,6 +772,22 @@ EPREUVES = [
      'fn n12(conn: &Connection, id: i64) {\n'
      '    let _ = journaliser(conn.execute("UPDATE t SET a=1 WHERE id=?1", params![id]));\n'
      '    ledger_append(conn, "t.maj", &format!("#{id}"));\n}\n', set()),
+    ("témoin négatif : un bloc CONDITIONNEL qui sort (`continue`) n'est pas un bloc nu — `respond_run`",
+     'fn n15(conn: &Connection, ids: &[i64]) {\n'
+     '    for id in ids {\n'
+     '        if *id > 0 {\n'
+     '            let _ = conn.execute("UPDATE t SET a=1 WHERE id=?1", params![id]);\n'
+     '            continue;\n'
+     '        }\n'
+     '        ledger_append(conn, "t.maj", &format!("#{id}"));\n'
+     '    }\n}\n', set()),
+    ("témoin négatif : une FERMETURE n'est pas un bloc nu — elle peut ne jamais s'exécuter",
+     'fn n16(conn: &Connection, id: i64) {\n'
+     '    let plus_tard = || {\n'
+     '        let _ = conn.execute("UPDATE t SET a=1 WHERE id=?1", params![id]);\n'
+     '    };\n'
+     '    control_ledger_append(st, "t.maj", "op", "", "");\n'
+     '    drop(plus_tard);\n}\n', set()),
     # --- L'ANGLE MORT EST PROUVÉ, PAS ALLÉGUÉ. Ce témoin est DÉFENSIF dans un seul sens : il rougit
     # si la garde se met à voir le `match` muet, ce qui veut dire que le paragraphe « ce que ce vert
     # ne dit pas » doit être réécrit AVANT que le verdict reprenne. Il n'exige jamais qu'un défaut
@@ -694,6 +806,15 @@ EPREUVES = [
      '    drop(ecrit);\n'
      '    ledger_append(conn, "t.maj", &format!("#{id}"));\n'
      '    true\n}\n', set()),
+    ("angle mort ÉCRIT : l'écriture dans un bloc CONDITIONNEL, le fait dans le bloc ANCÊTRE — "
+     "`tenant_create` avant `P10.21-g` (premier administrateur)",
+     'fn a5(st: &AppState, cp: &ControlPlane, admin: Option<&str>) -> Response {\n'
+     '    if let Some(a) = admin {\n'
+     '        let conn = cp.conn.lock();\n'
+     '        let _ = conn.execute("INSERT INTO g(u) VALUES(?1)", params![a]);\n'
+     '    }\n'
+     '    control_ledger_append(st, "tenant.create", "op", "t", "{}");\n'
+     '    ok_json()\n}\n', set()),
     ("angle mort ÉCRIT : le fait est posé par une FONCTION APPELÉE, pas par un jeton connu",
      'fn a3(conn: &Connection, id: i64) -> bool {\n'
      '    let _ = conn.execute("UPDATE t SET a=1 WHERE id=?1", params![id]);\n'
@@ -826,7 +947,10 @@ def valider_instrument():
     vider `ABSORBANTS`, retirer la liaison sourde, vider `FAITS_QUI_AFFIRMENT`, débrancher la borne de
     bloc, débrancher la borne de fonction, débrancher l'exclusion des chaînes, débrancher `coupe_tests`,
     débrancher le dépouillement des commentaires, faire de `is_err` un absorbant, vider l'ensemble
-    nommé, y ajouter une entrée bidon, et débrancher le jugement de l'ensemble."""
+    nommé, y ajouter une entrée bidon, et débrancher le jugement de l'ensemble. Et le 2026-09-23
+    (`P10.21-g`) : `bloc_nu` qui ne reconnaît plus rien fait tomber les épreuves (10) et (11) ; `bloc_nu`
+    qui reconnaît tout fait tomber les deux négatifs neufs, l'angle mort `a5` et la borne de bloc ;
+    retirer `control_ledger_append` du vocabulaire fait tomber (10) et (11)."""
     errs = []
     # LES LECTEURS PARTAGÉS SE VALIDENT AVANT DE SERVIR (`P10.20-d`, `P10.20-r`). Ils sont IMPORTÉS,
     # donc leurs témoins ne tournent pas à l'import : sans ces deux appels, un lecteur amputé de sa
@@ -874,8 +998,8 @@ def valider_instrument():
     # impossible et la garde serait verte quoi que l'arbre porte.
     if len(FAITS_QUI_AFFIRMENT) < 4:
         errs.append(f"épreuve du VOCABULAIRE DU FAIT : {len(FAITS_QUI_AFFIRMENT)} fait(s) déclaré(s) "
-                    "pour les six que la clé nomme (registre, deux audits, deux armements, identifiant "
-                    "servi) — la conjonction ne peut plus se former, et le vert ne dirait rien")
+                    "pour les sept nommés (registre, journal de contrôle, deux audits, deux armements, "
+                    "identifiant servi) — la conjonction ne peut plus se former, et le vert ne dirait rien")
 
     # --- LA LIAISON SOURDE, DANS LES DEUX SENS.
     for exemple in ("let _ = conn", "let _ = c", "let _ = self.conn", "let _: () = conn"):
@@ -953,7 +1077,8 @@ def ce_qui_n_est_pas_tenu():
           "fait, un site neuf peut s'écrire en `match` sans rougir. Un `Result` LIÉ à un nom puis "
           "jeté plus bas est dans le même trou.\n"
           "  * SON CRITÈRE DE PORTÉE A DES MANQUES MESURÉS, et ils sont nommés : le fait doit être dans "
-          "le MÊME BLOC que l'écriture ou dans un bloc ouvert APRÈS elle. Quatre sites où le fait est "
+          "le MÊME BLOC que l'écriture, dans un bloc ouvert APRÈS elle, ou après un BLOC NU qui la "
+          "portait (règle de `P10.21-g` : un bloc de verrou retombe toujours dans son parent). Quatre sites où le fait est "
           "posé dans un bloc ANCÊTRE lui échappent sur l'arbre du 2026-09-19 — "
           "`incidents.rs::attach_runbook` (le registre annonce le nombre d'étapes APRÈS la boucle qui "
           "les insère), `incidents.rs::incident_apply_tier` (deux écritures conditionnelles), et "
@@ -961,7 +1086,8 @@ def ce_qui_n_est_pas_tenu():
           "« login MFA validé » suit dans un bloc frère). Admettre les blocs ancêtres les prendrait et "
           "ajouterait CINQ fausses accusations dans `actions.rs::respond_run`, où chaque écriture "
           "avalée est suivie d'un `continue`. Le choix est le moindre des deux, pas une absence de "
-          "défaut.\n"
+          "défaut. La forme de `tenant_create` avant `P10.21-g` (écriture dans un `if let`, ligne de "
+          "contrôle dans l'ancêtre) est de ce trou, épreuve `a5`.\n"
           "  * elle ne juge PAS `is_ok()`/`is_err()` sur une écriture. Ils TESTENT l'échec et la route "
           "refuse — mais ils perdent le COMPTE de lignes, donc « aucune ligne ne correspondait » y "
           "reste indiscernable d'un succès sans effet. C'est la famille de `P10.20-b` côté écriture, "
@@ -970,7 +1096,10 @@ def ce_qui_n_est_pas_tenu():
           "`netban_upsert` (auth.rs), où l'écriture avalée EST le fait au lieu de le précéder : il n'y "
           "a rien après elles dans leur corps, donc aucune conjonction à former. Elles sont suivies "
           "sous `P10.20-v`, et ce vert-ci ne dit rien d'elles.\n"
-          "  * elle ne reconnaît que SIX noms de fait. Un fait posé par une fonction intermédiaire — "
+          "  * elle ne voit pas un fait posé AVANT l'écriture qu'il atteste puis une écriture avalée : "
+          "`emit_operator_access` inscrivait sa ligne de contrôle puis avalait l'événement du tenant — "
+          "une perte, pas une conjonction (corrigé par `P10.21-g`, jamais vu d'ici).\n"
+          "  * elle ne reconnaît que SEPT noms de fait. Un fait posé par une fonction intermédiaire — "
           "un enrobage qui appelle le registre — n'est pas vu, et un témoin de ce fichier le "
           "reproduit. Élargir le vocabulaire est un geste à MESURER, pas à deviner.\n"
           "  * elle ne dit RIEN du rang. Les six classes de `SITES_ADMIS` portent un rang et une raison "

@@ -570,7 +570,8 @@ pub(crate) fn control_ledger_prev_hash(conn: &Connection) -> rusqlite::Result<St
 ///    l'`INSERT` échouerait lui aussi — l'entrée était DÉJÀ perdue. Refuser perd la même entrée et le DIT ;
 ///  - et pour les `kind` les plus sensibles (`superadmin.read`/`superadmin.write`), `emit_operator_access`
 ///    tient un SECOND journal DANS la base du tenant visité. Ce second journal ne remplace pas le premier :
-///    il est DÉBOUNCÉ en lecture, et son propre `INSERT` n'est pas scruté.
+///    il est DÉBOUNCÉ en lecture. Depuis `P10.21-g` son `INSERT` est compté, et la perte de l'un ou
+///    l'autre journal monte `acces_operateur_non_traces` (`metrics.rs`).
 ///
 /// `P10.20-z` — L'`INSERT` N'EST PLUS AVALÉ, ET L'ISSUE EST RENDUE. Jusque-là il s'écrivait sous
 /// `let _ =`, la forme SANS branche d'échec : un changement de rôle, de grant ou de tenant était confirmé
@@ -643,6 +644,46 @@ pub(crate) fn avouer_le_maillon_de_controle_manquant(corps: &mut Value, maillon:
     if let Some(cause) = maillon.cause_de_non_inscription() {
         corps[CLE_REGISTRE_SANS_MAILLON] = json!(format!("{CAUSE_GESTE_SANS_TRACE_DE_CONTROLE} ({cause})"));
     }
+}
+
+/// `P10.21-g` — CE QU'UNE ÉCRITURE DU PLAN DE CONTRÔLE A FAIT, LU AVANT QU'UNE LIGNE DE CONTRÔLE NE
+/// L'AFFIRME. Les gestes d'administration (bascule de suspension, retrait de droit, pose et retrait de
+/// rôle, premier administrateur d'un tenant) écrivaient sous `let _ =` puis posaient au journal de
+/// contrôle une ligne qui attestait l'écriture : une base qui refusait l'`UPDATE` laissait le tenant
+/// actif, le droit en place ou le rôle absent, pendant que la trace tamper-evident disait le contraire
+/// et que la réponse confirmait le geste.
+///
+/// TROIS ISSUES, PAS DEUX. `execute` rend un compte de lignes : « la base a refusé » et « aucune ligne
+/// ne correspondait » ne sont PAS le même fait, et les confondre (`unwrap_or(0)`) désigne la mauvaise
+/// cause à l'exploitant — un rôle « introuvable » alors que la base était en lecture seule.
+///
+/// Un classement du `Result`, et rien d'autre : l'énoncé SQL reste écrit au site, jamais transporté
+/// comme une donnée (l'arbitrage de `P10.20-w` contre un fabricant partagé « écriture puis fait »).
+#[derive(Debug)]
+pub(crate) enum EcritureDuPlanDeControle {
+    /// Au moins une ligne est écrite.
+    Ecrite,
+    /// L'énoncé a été exécuté et n'a touché aucune ligne : la cible n'existe pas (ou plus).
+    AucuneLigne,
+    /// La base n'a pas pris l'écriture ; la cause du moteur est portée.
+    Refusee(String),
+}
+
+impl From<rusqlite::Result<usize>> for EcritureDuPlanDeControle {
+    fn from(ecriture: rusqlite::Result<usize>) -> Self {
+        match ecriture {
+            Ok(0) => Self::AucuneLigne,
+            Ok(_) => Self::Ecrite,
+            Err(e) => Self::Refusee(e.to_string()),
+        }
+    }
+}
+
+/// `P10.21-g` — LE REFUS D'UN GESTE D'ADMINISTRATION DONT L'ÉCRITURE N'A PAS EU LIEU : 503, la cause du
+/// geste d'abord, celle du moteur entre parenthèses. Rien n'est posé au journal de contrôle ni dans la
+/// base du tenant, et le geste est rejouable tel quel.
+pub(crate) fn refuser_le_geste_non_ecrit(cause_du_geste: &str, cause_du_moteur: &str) -> Response {
+    err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{cause_du_geste} ({cause_du_moteur})"))
 }
 
 /// `P10.7-p` — LE VÉRIFICATEUR DE LA CHAÎNE DU JOURNAL DU CONTROL-PLANE : la moitié LECTURE, celle qui
@@ -736,17 +777,24 @@ pub(crate) fn emit_operator_access(st: &AppState, superadmin: &str, tenant: &str
     let reason = reason.map(str::trim).filter(|r| !r.is_empty()).unwrap_or("");
     // (a) 1er ledger : control_ledger, à CHAQUE accès.
     // `P10.20-z` — AUCUNE RÉPONSE N'AFFIRME CETTE TRACE : c'est le point de passage de TOUTE requête
-    // cross-tenant, il ne sert rien sur le journal. La perte reste donc à l'aveu de la primitive. Refuser
-    // l'accès quand le maillon n'entre pas serait une décision d'exploitation (fail-closed du break-glass),
-    // pas un correctif : elle n'est pas prise ici.
-    control_ledger_append(st, if write { "superadmin.write" } else { "superadmin.read" }, superadmin, tenant, reason)
-        .laisser_a_l_aveu_de_la_primitive();
+    // cross-tenant, il ne sert rien sur le journal. Refuser l'accès quand le maillon n'entre pas serait
+    // une décision d'exploitation (fail-closed du break-glass), pas un correctif : elle n'est pas prise ici.
+    // `P10.21-g` — la perte n'est plus laissée à la seule sortie d'erreur : elle est COMPTÉE, par trace.
+    let maillon = control_ledger_append(st, if write { "superadmin.write" } else { "superadmin.read" }, superadmin, tenant, reason);
+    if let Some(cause) = maillon.cause_de_non_inscription().filter(|c| *c != CAUSE_SANS_PLAN_DE_CONTROLE) {
+        crate::metrics::compter_un_acces_operateur_non_trace(
+            if write { TRACE_OPERATEUR_CONTROLE_ECRITURE } else { TRACE_OPERATEUR_CONTROLE_LECTURE },
+            cause,
+        );
+    }
     // (b) 2e ledger : event NON-DÉSACTIVABLE dans la base du tenant (debounce en lecture, forcé en write).
     let now_i = now();
     if !operator_access_should_emit(superadmin, tenant, now_i, write) {
         return;
     }
+    let trace_du_tenant = if write { TRACE_OPERATEUR_TENANT_ECRITURE } else { TRACE_OPERATEUR_TENANT_LECTURE };
     let Some(handle) = st.tenants.handle_for(tenant) else {
+        perdre_la_trace_du_tenant(superadmin, tenant, trace_du_tenant, "base du tenant non résoluble au moment de l'écriture");
         return;
     };
     let conn = handle.lock();
@@ -756,12 +804,36 @@ pub(crate) fn emit_operator_access(st: &AppState, superadmin: &str, tenant: &str
         (2, "read", format!("l'opérateur plateforme '{superadmin}' a consulté vos données (lecture cross-tenant)"))
     };
     let fields = json!({ "operator": superadmin, "access": action, "reason": reason }).to_string();
-    let _ = conn.execute(
+    // `P10.21-g` — L'ÉCRITURE EST COMPTÉE : une ligne, ou la perte est comptée et le debounce OUBLIÉ.
+    match conn.execute(
         // origin='daemon' (v72/M4) : marqueur d'accès opérateur NON-purgeable et NON-forgeable (cf. retention_run).
         "INSERT INTO event(ts,source,category,severity,message,host,fields,origin) \
          VALUES(?1,'plume-operator-access','audit',?2,?3,'plume-daemon',?4,'daemon')",
         params![now_i, sev, msg, fields],
-    );
+    ) {
+        Ok(1) => {}
+        Ok(n) => perdre_la_trace_du_tenant(superadmin, tenant, trace_du_tenant, &format!("{n} ligne(s) écrite(s) au lieu d'une")),
+        Err(e) => perdre_la_trace_du_tenant(superadmin, tenant, trace_du_tenant, &e.to_string()),
+    }
+}
+
+/// `P10.21-g` — LES QUATRE TRACES D'UN ACCÈS OPÉRATEUR CROSS-TENANT, vocabulaire FERMÉ du compteur
+/// `acces_operateur_non_traces` : le maillon du journal de contrôle et l'événement posé dans la base du
+/// tenant visité, en lecture et en écriture (break-glass). Aucun ne porte le compte ni le tenant.
+pub(crate) const TRACE_OPERATEUR_CONTROLE_LECTURE: &str = "control_ledger.superadmin.read";
+pub(crate) const TRACE_OPERATEUR_CONTROLE_ECRITURE: &str = "control_ledger.superadmin.write";
+pub(crate) const TRACE_OPERATEUR_TENANT_LECTURE: &str = "tenant.plume-operator-access.read";
+pub(crate) const TRACE_OPERATEUR_TENANT_ECRITURE: &str = "tenant.plume-operator-access.write";
+
+/// `P10.21-g` — L'ÉVÉNEMENT D'ACCÈS N'EST PAS ENTRÉ DANS LA BASE DU TENANT : la perte est comptée, et
+/// la fenêtre de debounce de ce couple est OUBLIÉE. Sans cet oubli, une lecture dont l'événement a été
+/// refusé aurait consommé la fenêtre : les lectures suivantes de la même fenêtre ne réessaieraient pas,
+/// et le tenant ne verrait aucune de ces consultations.
+fn perdre_la_trace_du_tenant(superadmin: &str, tenant: &str, trace: &'static str, cause: &str) {
+    crate::metrics::compter_un_acces_operateur_non_trace(trace, cause);
+    if let Some(cell) = OPERATOR_ACCESS_LAST.get() {
+        cell.lock().remove(&(superadmin.to_string(), tenant.to_string()));
+    }
 }
 
 /// (#2c) Le tenant dont le RÔLE PER-TENANT compte pour l'autorisation d'une route de gestion : UNIQUEMENT
@@ -902,6 +974,14 @@ pub(crate) fn audit_tenant_event(st: &AppState, tenant: &str, action: &str, sev:
     let Some(handle) = st.tenants.handle_for(tenant) else {
         return;
     };
+    audit_tenant_event_sur(&handle, action, sev, msg, detail);
+}
+
+/// `P10.21-g` — LA MÊME ÉCRITURE, SUR UNE POIGNÉE DÉJÀ RÉSOLUE. La suspension en a besoin : l'événement
+/// doit suivre la bascule écrite (jamais la précéder, sinon le tenant lit « suspendu » sur une bascule
+/// refusée), et après la bascule la base du tenant ne se résout plus. La poignée est donc prise AVANT,
+/// l'événement écrit APRÈS.
+pub(crate) fn audit_tenant_event_sur(handle: &Mutex<Connection>, action: &str, sev: i64, msg: &str, detail: Value) {
     let mut fields = serde_json::Map::new();
     fields.insert("action".into(), json!(action));
     if let Value::Object(m) = detail {

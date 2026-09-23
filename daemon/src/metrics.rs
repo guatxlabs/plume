@@ -114,6 +114,31 @@ pub(crate) fn compter_un_evenement_d_acces_non_ecrit(genre: &'static str, cause:
 pub(crate) fn evenement_d_acces_non_ecrit_de(genre: &str) -> Option<(u64, String)> {
     EVENEMENTS_D_ACCES_NON_ECRITS.lock().ok().and_then(|m| m.get(genre).cloned())
 }
+/// `P10.21-g` — UN ACCÈS OPÉRATEUR CROSS-TENANT DONT UNE TRACE N'A PAS ÉTÉ ÉCRITE, COMPTÉ PAR TRACE. Le
+/// voisin de `evenements_d_acces_non_ecrits`, et pas le même compteur : ce qui est perdu n'est pas la
+/// matière d'une détection mais la preuve qu'un super-admin a lu ou écrit les données d'un tenant — le
+/// maillon du journal de contrôle, ou l'événement que le tenant visité voit dans sa propre base (vocabulaire
+/// FERMÉ, `rbac::TRACE_OPERATEUR_*`). L'accès, lui, a eu lieu : le refuser quand sa trace manque est une
+/// décision d'exploitation qui n'est pas prise ici. La dernière cause est celle du moteur, jamais un
+/// compte ni un tenant. Depuis le démarrage, jamais persisté.
+pub(crate) static ACCES_OPERATEUR_NON_TRACES_TOTAL: AtomicU64 = AtomicU64::new(0);
+pub(crate) static ACCES_OPERATEUR_NON_TRACES: std::sync::Mutex<std::collections::BTreeMap<String, (u64, String)>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+pub(crate) fn compter_un_acces_operateur_non_trace(trace: &'static str, cause: &str) {
+    ACCES_OPERATEUR_NON_TRACES_TOTAL.fetch_add(1, Ordering::Relaxed);
+    eprintln!("[plume] accès opérateur cross-tenant SANS sa trace '{trace}' : l'accès a eu lieu, sa preuve manque : {cause}");
+    if let Ok(mut m) = ACCES_OPERATEUR_NON_TRACES.lock() {
+        let e = m.entry(trace.to_string()).or_insert((0, String::new()));
+        e.0 += 1;
+        e.1 = cause.to_string();
+    }
+}
+/// Le compte et la dernière cause d'une trace (`None` = aucune perte depuis le démarrage). Lu par les
+/// témoins seulement : la production sert la table entière par `gather_json`.
+#[cfg(test)]
+pub(crate) fn acces_operateur_non_trace_de(trace: &str) -> Option<(u64, String)> {
+    ACCES_OPERATEUR_NON_TRACES.lock().ok().and_then(|m| m.get(trace).cloned())
+}
 /// `P3.10-a` — LIGNES D'EN-TÊTE D'UN EXPORT CSV rencontrées par une étape `csv` d'un parseur déclaratif : reconnues
 /// (cellules == colonnes déclarées), laissées SANS capture, et comptées ici. Un exploitant qui voit ce compte
 /// monter à chaque envoi sait que son export inclut l'en-tête et que la ligne est stockée telle quelle, non enrichie.
@@ -675,6 +700,15 @@ pub(crate) fn gather_json(conn: &Connection, spool: &str, db_path: &str, schema_
             .map(|m| m.iter().map(|(k, (n, c))| (k.clone(), json!({ "n": n, "derniere_cause": c }))).collect::<serde_json::Map<String, Value>>())
             .unwrap_or_default()),
     );
+    // `P10.21-g` — les accès opérateur cross-tenant dont une trace n'a pas été écrite, et laquelle.
+    ingest.insert("acces_operateur_non_traces_total".into(), json!(ACCES_OPERATEUR_NON_TRACES_TOTAL.load(Ordering::Relaxed)));
+    ingest.insert(
+        "acces_operateur_non_traces".into(),
+        json!(ACCES_OPERATEUR_NON_TRACES
+            .lock()
+            .map(|m| m.iter().map(|(k, (n, c))| (k.clone(), json!({ "n": n, "derniere_cause": c }))).collect::<serde_json::Map<String, Value>>())
+            .unwrap_or_default()),
+    );
     ingest.insert("pubsub_ackdrop_total".into(), json!(pubsub_ackdrop_total));
     ingest.insert("pubsub_ackdrop_par_raison".into(), Value::Object(pubsub_ackdrop_par_raison));
     // S33 — L'IDENTITÉ DE L'HÔTE PORTE SON VERDICT, PAS SA VALEUR. Elle décide quelles actions de
@@ -804,6 +838,7 @@ pub(crate) fn gather_prom(conn: &Connection, spool: &str, db_path: &str, schema_
     // n'est plus adossé à une barrière — le seul signal disponible sur les quatre surfaces à contrat
     // étranger, dont le corps de réponse ne peut pas porter de champ `durable`.
     g(&mut o, "plume_ingest_evenements_d_acces_non_ecrits_total", "counter", "Événements d'accès auto-ingérés (échec d'authentification, verrouillage, refus d'autorisation) que la base n'a PAS pris : la détection ne les verra pas (P10.20-z ; ventilation par genre avec la dernière cause dans /api/metrics ingest.evenements_d_acces_non_ecrits)", "/ingest/evenements_d_acces_non_ecrits_total");
+    g(&mut o, "plume_acces_operateur_non_traces_total", "counter", "Accès opérateur cross-tenant (lecture ou break-glass) dont le maillon du journal de contrôle ou l'événement posé dans la base du tenant visité n'a PAS été écrit : l'accès a eu lieu, sa preuve manque (P10.21-g ; ventilation par trace avec la dernière cause dans /api/metrics ingest.acces_operateur_non_traces)", "/ingest/acces_operateur_non_traces_total");
     g(&mut o, "plume_spool_barriere_fichier_total", "counter", "Barrières fsync(fichier) prises avant le renommage du spool", "/ingest/spool_barriere_fichier_total");
     g(&mut o, "plume_spool_barriere_repertoire_total", "counter", "Barrières fsync(répertoire) prises après le renommage du spool", "/ingest/spool_barriere_repertoire_total");
     g(&mut o, "plume_spool_barriere_echec_total", "counter", "Barrières de durabilité du spool REFUSÉES par le noyau", "/ingest/spool_barriere_echec_total");

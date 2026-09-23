@@ -306,30 +306,19 @@ pub(crate) async fn tenant_create(State(st): State<AppState>, Extension(au): Ext
         return (code, e).into_response();
     }
     // 1er grant admin OPTIONNEL : matérialise le platform_user + grant admin sur le nouveau tenant.
-    let mut first_admin: Option<String> = None;
-    if let Some(admin) = b.get("admin").and_then(|v| v.as_str()).map(|s| s.trim()).filter(|s| !s.is_empty()) {
-        if platform_user_name_ok(admin) {
-            if let Some(cp) = st.tenants.control.as_ref() {
-                if let Some(uid) = ensure_platform_user(cp, admin) {
-                    let conn = cp.conn.lock();
-                    let _ = conn.execute(
-                        "INSERT OR REPLACE INTO \"grant\"(user_id,tenant_id,role) VALUES(?1,?2,'admin')",
-                        params![uid, id],
-                    );
-                    first_admin = Some(admin.to_string());
-                }
-            }
-        }
-    }
+    // `P10.21-g` — le grant est COMPTÉ avant que le journal de contrôle ou la réponse ne le nomment.
+    let premier_administrateur = poser_le_premier_administrateur(&st, &id, b.get("admin").and_then(|v| v.as_str()));
+    let first_admin = premier_administrateur.pose().map(str::to_string);
+    let premier_administrateur_non_pose = premier_administrateur.cause_de_non_pose();
     // `P10.20-z` — LE TENANT EST PROVISIONNÉ ; SI SA LIGNE MANQUE AU JOURNAL DE CONTRÔLE, LA RÉPONSE LE
     // DIT à côté du succès. Refuser serait faux : la base existe, et un rejeu rendrait « existe déjà ».
-    let maillon = control_ledger_append(
-        &st,
-        "tenant.create",
-        &au.name,
-        &id,
-        &json!({ "name": name, "db_path": db_path, "first_admin": first_admin }).to_string(),
-    );
+    // La ligne de contrôle dit aussi qu'un administrateur DEMANDÉ manque ; rien n'est ajouté au détail
+    // sur le chemin nominal (le maillon y est haché sur le même texte qu'avant).
+    let mut detail = json!({ "name": name, "db_path": db_path, "first_admin": first_admin });
+    if premier_administrateur_non_pose.is_some() {
+        detail["first_admin_non_pose"] = json!(true);
+    }
+    let maillon = control_ledger_append(&st, "tenant.create", &au.name, &id, &detail.to_string());
     audit_tenant_event(
         &st,
         &id,
@@ -340,7 +329,74 @@ pub(crate) async fn tenant_create(State(st): State<AppState>, Extension(au): Ext
     );
     let mut corps = json!({ "ok": true, "id": id, "name": name, "first_admin": first_admin });
     avouer_le_maillon_de_controle_manquant(&mut corps, &maillon);
+    if let Some(cause) = premier_administrateur_non_pose {
+        corps[CLE_PREMIER_ADMINISTRATEUR_NON_POSE] = json!(format!("{CAUSE_PREMIER_ADMINISTRATEUR_NON_POSE} ({cause})"));
+    }
     (StatusCode::CREATED, Json(corps)).into_response()
+}
+
+/// `P10.21-g` — LA CLÉ SOUS LAQUELLE LA CRÉATION D'UN TENANT AVOUE QUE LE PREMIER ADMINISTRATEUR DEMANDÉ
+/// N'A PAS ÉTÉ POSÉ. Absente sur le chemin nominal et quand aucun administrateur n'est demandé : le corps
+/// y ressort byte-identique.
+pub(crate) const CLE_PREMIER_ADMINISTRATEUR_NON_POSE: &str = "premier_administrateur_non_pose";
+
+/// `P10.21-g` — CE QUE DIT UNE CRÉATION DE TENANT DONT LE PREMIER ADMINISTRATEUR N'EST PAS POSÉ. Le tenant
+/// EST créé (201) : refuser mentirait, la base existe et un rejeu rendrait « existe déjà ». La phrase dit
+/// donc ce qui manque et le geste qui le comble.
+pub(crate) const CAUSE_PREMIER_ADMINISTRATEUR_NON_POSE: &str =
+    "PREMIER ADMINISTRATEUR NON POSÉ : le tenant est créé, mais le droit d'administration demandé n'a pas \
+     été écrit — personne n'administre encore ce tenant. Posez-le par la gestion des droits du tenant.";
+
+/// `P10.21-g` — L'ISSUE DU PREMIER ADMINISTRATEUR D'UN TENANT NEUF. `NonPose` porte la cause : l'appelant
+/// ne peut pas nommer un administrateur sans avoir écrit l'autre branche.
+pub(crate) enum PremierAdministrateur {
+    NonDemande,
+    Pose(String),
+    NonPose(String),
+}
+
+impl PremierAdministrateur {
+    pub(crate) fn pose(&self) -> Option<&str> {
+        match self {
+            Self::Pose(nom) => Some(nom),
+            Self::NonDemande | Self::NonPose(_) => None,
+        }
+    }
+
+    pub(crate) fn cause_de_non_pose(&self) -> Option<String> {
+        match self {
+            Self::NonPose(cause) => Some(cause.clone()),
+            Self::NonDemande | Self::Pose(_) => None,
+        }
+    }
+}
+
+/// `P10.21-g` — POSE LE PREMIER ADMINISTRATEUR DEMANDÉ, ET NE LE NOMME QUE SI LE DROIT EST ÉCRIT. Les
+/// trois voies d'échec étaient muettes : un nom invalide et un compte plateforme non matérialisé
+/// rendaient `first_admin: null` sans cause, et un `INSERT` avalé rendait le nom comme s'il était posé
+/// — la réponse ET le journal de contrôle attestaient un administrateur qui n'existait pas.
+pub(crate) fn poser_le_premier_administrateur(st: &AppState, tenant: &str, demande: Option<&str>) -> PremierAdministrateur {
+    let Some(admin) = demande.map(str::trim).filter(|s| !s.is_empty()) else {
+        return PremierAdministrateur::NonDemande;
+    };
+    if !platform_user_name_ok(admin) {
+        return PremierAdministrateur::NonPose("nom de compte invalide (alphanumérique, . _ - uniquement)".into());
+    }
+    let Some(cp) = st.tenants.control.as_ref() else {
+        return PremierAdministrateur::NonPose("plan de contrôle indisponible".into());
+    };
+    let Some(uid) = ensure_platform_user(cp, admin) else {
+        return PremierAdministrateur::NonPose("le compte plateforme n'a pas pu être matérialisé".into());
+    };
+    let conn = cp.conn.lock();
+    match EcritureDuPlanDeControle::from(conn.execute(
+        "INSERT OR REPLACE INTO \"grant\"(user_id,tenant_id,role) VALUES(?1,?2,'admin')",
+        params![uid, tenant],
+    )) {
+        EcritureDuPlanDeControle::Ecrite => PremierAdministrateur::Pose(admin.to_string()),
+        EcritureDuPlanDeControle::AucuneLigne => PremierAdministrateur::NonPose("aucune ligne écrite".into()),
+        EcritureDuPlanDeControle::Refusee(cause) => PremierAdministrateur::NonPose(cause),
+    }
 }
 
 /// POST /api/tenants/{id}/suspend | /unsuspend — bascule le flag `suspended` (SUPER-ADMIN only). Un tenant
@@ -379,17 +435,27 @@ pub(crate) async fn tenant_set_suspended(st: &AppState, au: &AuthUser, id: &str,
     } else {
         ("tenant.unsuspend", 2, "réactivé")
     };
-    if suspend {
-        // event tant que la base est encore active (après flip, handle_for pourra ne plus résoudre).
-        audit_tenant_event(st, id, kind, sev, &format!("tenant '{id}' {verb} par '{}'", au.name), json!({ "operator": au.name }));
-    }
-    {
+    // `P10.21-g` — LA POIGNÉE AVANT, L'ÉVÉNEMENT APRÈS. À la suspension, la base du tenant doit être
+    // résolue tant qu'elle est active (après la bascule elle ne se résout plus) ; mais l'événement ne
+    // s'écrit qu'une fois la bascule ÉCRITE : posé avant, il disait « suspendu » au tenant sur une
+    // bascule que la base pouvait refuser.
+    let poignee_avant_suspension = if suspend { st.tenants.handle_for(id) } else { None };
+    let bascule = {
         let conn = cp.conn.lock();
-        let _ = conn.execute("UPDATE tenant SET suspended=?1 WHERE id=?2", params![i64::from(suspend), id]);
+        EcritureDuPlanDeControle::from(conn.execute("UPDATE tenant SET suspended=?1 WHERE id=?2", params![i64::from(suspend), id]))
+    };
+    match bascule {
+        EcritureDuPlanDeControle::Ecrite => {}
+        // Le tenant existait à la lecture ci-dessus et n'existe plus : détruit entre-temps.
+        EcritureDuPlanDeControle::AucuneLigne => return (StatusCode::NOT_FOUND, "tenant inconnu").into_response(),
+        EcritureDuPlanDeControle::Refusee(cause) => return refuser_le_geste_non_ecrit(CAUSE_BASCULE_DE_SUSPENSION_NON_ECRITE, &cause),
     }
-    if !suspend {
-        // event APRÈS réactivation (la base redevient résoluble).
-        audit_tenant_event(st, id, kind, sev, &format!("tenant '{id}' {verb} par '{}'", au.name), json!({ "operator": au.name }));
+    let message = format!("tenant '{id}' {verb} par '{}'", au.name);
+    match poignee_avant_suspension {
+        Some(poignee) => audit_tenant_event_sur(&poignee, kind, sev, &message, json!({ "operator": au.name })),
+        // Réactivation : la base redevient résoluble APRÈS la bascule. Suspension d'un tenant dont la
+        // base ne se résolvait déjà pas : l'appel ne trouve rien, comme avant.
+        None => audit_tenant_event(st, id, kind, sev, &message, json!({ "operator": au.name })),
     }
     // `P10.20-z` — la bascule est faite ; une ligne manquante au journal de contrôle est dite à côté.
     let maillon = control_ledger_append(st, kind, &au.name, id, &json!({ "operator": au.name }).to_string());
@@ -397,6 +463,13 @@ pub(crate) async fn tenant_set_suspended(st: &AppState, au: &AuthUser, id: &str,
     avouer_le_maillon_de_controle_manquant(&mut corps, &maillon);
     Json(corps).into_response()
 }
+
+/// `P10.21-g` — LA BASCULE DE SUSPENSION QUE LA BASE N'A PAS PRISE EST REFUSÉE : 503, et rien n'est posé
+/// — ni au journal de contrôle, ni dans la base du tenant. L'état du tenant est celui d'avant la demande.
+pub(crate) const CAUSE_BASCULE_DE_SUSPENSION_NON_ECRITE: &str =
+    "BASCULE NON ENREGISTRÉE, RIEN N'A CHANGÉ : le plan de contrôle n'a pas pris l'écriture de la \
+     suspension (ou de la réactivation) ; le tenant garde l'état qu'il avait, et aucune trace ne dit le \
+     contraire. Réessayez une fois le plan de contrôle de nouveau écrivable.";
 
 /// `P10.20-z` — LA DESTRUCTION D'UN TENANT EST REFUSÉE QUAND SA LIGNE N'ENTRE PAS AU JOURNAL DE CONTRÔLE :
 /// 503, et rien n'est détruit. Le geste est rejouable tel quel.
@@ -563,6 +636,13 @@ pub(crate) async fn grant_set(State(st): State<AppState>, Extension(au): Extensi
     Json(corps).into_response()
 }
 
+/// `P10.21-g` — LE RETRAIT DE DROIT QUE LA BASE N'A PAS PRIS EST REFUSÉ : 503, et l'accès N'EST PAS
+/// retiré. La phrase le dit en tête, parce que c'est la lecture qui compte pour un retrait d'accès.
+pub(crate) const CAUSE_RETRAIT_DE_DROIT_NON_ECRIT: &str =
+    "RETRAIT NON ENREGISTRÉ, L'ACCÈS EST TOUJOURS EN PLACE : le plan de contrôle n'a pas pris la \
+     suppression de ce droit ; le compte garde son rôle sur ce tenant, et aucune trace ne dit le \
+     contraire. Réessayez une fois le plan de contrôle de nouveau écrivable.";
+
 /// DELETE /api/tenants/{id}/grants/{user} — retire un grant. SUPER-ADMIN (tout tenant) OU admin de CE tenant.
 /// Anti-lockout : un non-superadmin ne peut pas retirer le DERNIER admin. Audit control_ledger + event.
 pub(crate) async fn grant_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path((id, user)): Path<(String, String)>) -> Response {
@@ -594,12 +674,21 @@ pub(crate) async fn grant_delete(State(st): State<AppState>, Extension(au): Exte
     if !au.is_superadmin && effective_base_role(&existing_role) == "admin" && tenant_admin_grant_count(cp, &id) <= 1 {
         return (StatusCode::BAD_REQUEST, "dernier administrateur du tenant — retrait refusé").into_response();
     }
-    {
+    // `P10.21-g` — LE RETRAIT EST COMPTÉ AVANT D'ÊTRE ATTESTÉ. Avalé, un retrait refusé par la base
+    // laissait le droit EN PLACE pendant que le journal de contrôle, l'événement du tenant et la réponse
+    // (204) disaient l'accès retiré.
+    let retrait = {
         let conn = cp.conn.lock();
-        let _ = conn.execute(
+        EcritureDuPlanDeControle::from(conn.execute(
             "DELETE FROM \"grant\" WHERE tenant_id=?1 AND user_id=(SELECT id FROM platform_user WHERE name=?2)",
             params![id, user],
-        );
+        ))
+    };
+    match retrait {
+        EcritureDuPlanDeControle::Ecrite => {}
+        // Le droit existait à la lecture ci-dessus et n'existe plus : retiré entre-temps.
+        EcritureDuPlanDeControle::AucuneLigne => return (StatusCode::NOT_FOUND, "grant inconnu").into_response(),
+        EcritureDuPlanDeControle::Refusee(cause) => return refuser_le_geste_non_ecrit(CAUSE_RETRAIT_DE_DROIT_NON_ECRIT, &cause),
     }
     let maillon = control_ledger_append(&st, "grant.remove", &au.name, &id, &json!({ "user": user, "by": au.name }).to_string());
     audit_tenant_event(

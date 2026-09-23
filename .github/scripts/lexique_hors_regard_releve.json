@@ -448,11 +448,7 @@
  ],
  "login.js": [
   "Content-Type",
-  "Identifiants invalides.",
-  "Renseigne identifiant et mot de passe.",
-  "Retry-After",
-  "Se connecter",
-  "Trop de tentatives, réessaie plus tard."
+  "Retry-After"
  ],
  "lookups.js": [
   "CSV : les en-têtes de colonnes ne peuvent pas être vides",

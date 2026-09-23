@@ -1,6 +1,6 @@
 // cases.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // Cases (gestion d'incident, first-class #4a): liste/detail/CRUD + rattachement d'items.
-import { $, api, apiSend, phraseDuRefusDuDemon, aveuDeLaTraceManquante, causeDeLaTraceManquante, cleDeLIdentifiantDeRiposte, confirmModal, confirmWithConsequence, disclosure, downloadText, exportPDF, fmtTs, ic, LANG, modal, motDeLaRiposteSansIdentifiant, motDeLaTraceManquante, muted, pagedList, phraseDeLaCreationDeRiposteRefusee, phraseDeLaTraceManquante, sev, toCSV, toast, tsSlug, withBusy, socIsAdmin, socRole } from './core.js';
+import { $, api, apiSend, unDeuxCentsSansCorpsLisible, phraseDuRefusDuDemon, aveuDeLaTraceManquante, causeDeLaTraceManquante, cleDeLIdentifiantDeRiposte, confirmModal, confirmWithConsequence, disclosure, downloadText, exportPDF, fmtTs, ic, LANG, modal, motDeLaRiposteSansIdentifiant, motDeLaTraceManquante, muted, pagedList, phraseDeLaCreationDeRiposteRefusee, phraseDeLaTraceManquante, sev, toCSV, toast, tsSlug, withBusy, socIsAdmin, socRole } from './core.js';
 import { phraseDAffichagePartiel, phraseDEchantillonCoupe, phraseDeCoupe } from './coupe_de_liste.js'; // `P11.22-g` : une liste bornée dit sa coupe
 import { S } from './state.js';
 import { refresh } from './app.js';
@@ -1288,7 +1288,12 @@ async function attachRunbook(c, runbookId) {
   if (!runbookId) return;
   let j;
   try { j = await apiSend('/cases/' + c.id + '/runbook', 'POST', { runbook_id: runbookId }); }
-  catch (e) { toast(phraseDuRefusDIncident('attacher', e), 'bad', 9000); return; }
+  catch (e) {
+    // `P10.22-b` — un deux cents sans corps lisible n'est pas un refus : la face « non établie » ci-dessous est
+    // la juste, le cadre du refus l'écrirait « REFUSÉ ».
+    if (!unDeuxCentsSansCorpsLisible(e)) { toast(phraseDuRefusDIncident('attacher', e), 'bad', 9000); return; }
+    j = null;
+  }
   // `P10.22-n` — le succès n'est annoncé que sur le corps de succès que la route sert.
   if (!(j && Number.isInteger(j.attached))) { toast(motDuRefusDIncident('attache_non_etablie'), 'info', 9000); await refreshCaseDetail(c.id); return; }
   toast('Runbook attaché', 'ok'); await refreshCaseDetail(c.id);
@@ -1406,7 +1411,11 @@ async function prepareResponse(c, s) {
   if (!r || !(r.target || '').trim()) return;
   let j;
   try { j = await apiSend('/actions', 'POST', { kind: s.action_kind, target: r.target.trim(), dry_run: r.dry_run === '1', reason: 'runbook step #' + s.id + ' (case #' + c.id + ')' }); }
-  catch (e) { toast(phraseDeLaCreationDeRiposteRefusee(e), 'bad', 9000); return; }
+  catch (e) {
+    // `P10.22-b` — sur un deux cents sans corps lisible, la face « absent » ci-dessous, et non « le démon a refusé ».
+    if (!unDeuxCentsSansCorpsLisible(e)) { toast(phraseDeLaCreationDeRiposteRefusee(e), 'bad', 9000); return; }
+    j = null;
+  }
   // `action_valid` (daemon/src/handlers/actions.rs) refuse la SAISIE par un corps `{error}` servi en 200 :
   // ce chemin-là, contrairement au 503, n'est pas un rejet et il faut le lire dans le corps. La cause est
   // passée au lecteur commun sous le nom qu'il attend, pour que les deux refus rendent la même grammaire.

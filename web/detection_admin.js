@@ -4,7 +4,7 @@
 // PURE MOVE : corps de fonctions IDENTIQUES au monolithe, seuls les import/export sont ajoutes.
 // Le cycle app<->module est benin : les fonctions importees d'app.js ne sont appelees qu'a
 // l'EXECUTION (handlers/async apres await), jamais a l'evaluation du module.
-import { $, LANG, esc, sev, fmtTs, ic, muted, api, apiSend, confirmModal, toast, pagedList, managedBadge, gateDeleteBtn, contentSubmit, contentDelete, fetchInto, formMsg, phraseDuRefusDuDemon, aveuDeLaCreationDeRiposte, aveuDeLaTraceManquante, causeDeLaTraceManquante, cleDeLIdentifiantDeRiposte, motDeLaRiposteSansIdentifiant, socIsAdmin, lsSet, collapsibleGroup, disclosure } from './core.js';
+import { $, LANG, esc, sev, fmtTs, ic, muted, api, apiSend, unDeuxCentsSansCorpsLisible, confirmModal, toast, pagedList, managedBadge, gateDeleteBtn, contentSubmit, contentDelete, fetchInto, formMsg, phraseDuRefusDuDemon, aveuDeLaCreationDeRiposte, aveuDeLaTraceManquante, causeDeLaTraceManquante, cleDeLIdentifiantDeRiposte, motDeLaRiposteSansIdentifiant, socIsAdmin, lsSet, collapsibleGroup, disclosure } from './core.js';
 import { libelleDeTechnique, nomDeTechnique } from './catalogue_attack.js'; // `P11.6-c` : nom dérivé du catalogue servi, ou motif de son absence
 import { S, lireLeStockageDuSite, ecrireDansLeStockageDuSite, ecrireSansDireLeRefus, RAISONS_DE_SILENCE } from './state.js';
 import { initSigmaImport } from './sigmaimport.js';
@@ -1183,7 +1183,11 @@ if ($('#act-form')) $('#act-form').addEventListener('submit', async e => {
   // riposte qu'il croit avoir mise en file. La lecture du corps reste, pour un refus servi en 200.
   let j;
   try { j = await apiSend('/actions', 'POST', body); }
-  catch (err) { $('#af-result').replaceChildren(aveuDeLaCreationDeRiposte(err)); return; }
+  catch (err) {
+    // `P10.22-b` — sur un deux cents sans corps lisible, la face « absent » ci-dessous, et non « le démon a refusé ».
+    if (!unDeuxCentsSansCorpsLisible(err)) { $('#af-result').replaceChildren(aveuDeLaCreationDeRiposte(err)); return; }
+    j = null;
+  }
   if (j && j.error) { $('#af-result').replaceChildren(aveuDeLaCreationDeRiposte({ causeDuDemon: String(j.error).trim() })); return; }
   // `P10.21-a` — LA RIPOSTE EST EN FILE ET SA TRACE MANQUE : LES DEUX SE DISENT, AU MÊME PUITS QUE LE
   // REFUS. `action_create` sert alors l'identifiant ET l'aveu, sous la clé que le lecteur commun

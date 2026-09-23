@@ -12394,6 +12394,17 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   const cueillir96 = (el, pred, acc) => { if (el && pred(el)) acc.push(el); ((el && el.children) || []).forEach((c) => cueillir96(c, pred, acc)); return acc; };
   const boutons96 = (h) => cueillir96(h, (e) => e.tagName === "BUTTON", []);
   const avis96 = () => document.querySelectorAll(".toast").map((t) => String(t.textContent));
+  // `P10.23-b` (démon) — l'enrôlement DEMANDE le mot de passe du compte dans la modale partagée avant de poster :
+  // le geste est lancé, la modale reçoit le mot de passe et se valide, puis le geste est attendu.
+  const enrolerAvecLeMotDePasse96 = async (bouton) => {
+    const p = bouton.onclick(); await laisser96();
+    const ov = document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !c.classList.contains("out")).pop();
+    const form = ov && ov.children[0] ? ov.children[0].children[0] : null;
+    const champ = form ? form.querySelector("input[type=password]") : null;
+    if (champ) champ.value = "motdepasse-96";
+    if (form && typeof form.onsubmit === "function") form.onsubmit({ preventDefault() {} });
+    await p; await laisser96();
+  };
   const modales96 = () => document.querySelectorAll(".modal-ov").map((o) => String(o.textContent).replace(/\s+/g, " "));
 
   // ── (0) L'INSTRUMENT : LES QUATRE CAUSES ET LA CLÉ D'AVEU VIENNENT DE L'ARBRE DU DÉMON ──────────
@@ -12527,7 +12538,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
       "GET /api/mfa/status": { corps: { enrolled: false, enabled: false } },
       "POST /api/mfa/enroll": { statut: 503, corps: { error: CAUSE_MFA96, id: "plume-e1-1" } },
     };
-    await gesteSain96.onclick(); await laisser96();
+    await enrolerAvecLeMotDePasse96(gesteSain96);
     const texteEnrolement96 = nu96(enrolement96);
     exiger(enrolement96.hidden === false, "(96c) le panneau d'enrôlement reste caché sur un refus : l'aveu ne serait lu par personne");
     exiger(/NON LU/.test(texteEnrolement96) && texteEnrolement96.includes(CAUSE_MFA96),
@@ -12547,7 +12558,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
       "POST /api/mfa/enroll": { corps: { secret: "JBSWY3DPEHPK3PXP", otpauth_uri: "otpauth://totp/plume:hugo?secret=JBSWY3DPEHPK3PXP" } },
     };
     await modIdp96.loadMfa(); await laisser96();          // le statut REDEVIENT lisible : le drapeau retombe
-    await boutons96(actions96)[0].onclick(); await laisser96();
+    await enrolerAvecLeMotDePasse96(boutons96(actions96)[0]);
     const sainEnrolement96 = nu96(enrolement96);
     exiger(sainEnrolement96.includes("JBSWY3DPEHPK3PXP"), `(96d) le chemin nominal ne peint pas la graine servie — le verdict (96c) ne porterait sur rien : « ${sainEnrolement96} »`);
     exiger(!/NON LU/.test(sainEnrolement96), `(96d) « NON LU » est peint sur un enrôlement ABOUTI : « ${sainEnrolement96} »`);
@@ -13079,7 +13090,10 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     exiger(nu97(erreur97) === "Identifiants invalides.", `(97n) un identifiant faux ne rend plus sa phrase — un instrument qui avoue toujours ne mesure rien : « ${nu97(erreur97)} »`);
     reponsesServies97 = { "POST /api/login": { statut: 502, corps: "<html><body>no available server</body></html>" } };
     await soumettre97();
-    exiger(/Échec de connexion/.test(nu97(erreur97)) && !/Connexion REFUSÉE/.test(nu97(erreur97)),
+    // `P10.22-b` — ce contrôle épinglait « Échec de connexion » suivi du HTML de la passerelle, coupé à cent
+    // soixante caractères : c'était le défaut. La panne sans cause nommée se dit désormais « NON ÉTABLIE » par
+    // une passerelle (témoin 109) ; ce que ce contrôle garde est son objet — elle n'est pas un refus NOMMÉ.
+    exiger(/NON ÉTABLIE/.test(nu97(erreur97)) && !/Connexion REFUSÉE/.test(nu97(erreur97)) && !/<html/.test(nu97(erreur97)),
       `(97n) une panne de passerelle SANS cause nommée est rendue comme un refus nommé : « ${nu97(erreur97)} »`);
     erreur97.hidden = true; erreur97.replaceChildren();
 
@@ -17629,6 +17643,12 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     if (ms >= 100) return minuterieOrigine108(fn, 0);
     return minuterieOrigine108(fn, ms);
   };
+  // `P10.23-d` — l'étape du code arme un décompte d'une seconde (`setInterval`) : sous l'horloge réelle, celle que
+  // (f9) laisse ouverte battrait après ce témoin et fermerait l'étape sous les pieds du suivant. Les minuteries
+  // d'intervalle sont donc retenues, jamais armées ; le témoin 109 juge leur vie.
+  const intervalleOrigine108 = globalThis.setInterval, finIntervalleOrigine108 = globalThis.clearInterval;
+  globalThis.setInterval = () => 0;
+  globalThis.clearInterval = () => {};
   const fenetre108 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !c.classList.contains("out")).pop();
   const valider108 = async (champs = {}) => {
     const ov = fenetre108();
@@ -17855,7 +17875,13 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
       servis108["GET /api/mfa/status"] = { corps: { enrolled: false, enabled: false } };
       servis108["POST /api/mfa/enroll"] = { corps: { secret: "JBSWY3DPEHPK3PXP", otpauth_uri: "otpauth://totp/plume:hugo?secret=JBSWY3DPEHPK3PXP" } };
       await mod.loadMfa(); await laisser108();
-      await mod.startEnroll(); await laisser108();
+      // `P10.23-b` (démon) — l'enrôlement demande d'abord le mot de passe du compte (modale partagée).
+      const pEnrolement = mod.startEnroll(); await laisser108();
+      const ovMotDePasse = fenetre108(); const formMotDePasse = ovMotDePasse && ovMotDePasse.children[0] ? ovMotDePasse.children[0].children[0] : null;
+      const champMotDePasse = formMotDePasse ? formMotDePasse.querySelector("input[type=password]") : null;
+      if (champMotDePasse) champMotDePasse.value = "motdepasse-108";
+      if (formMotDePasse && typeof formMotDePasse.onsubmit === "function") formMotDePasse.onsubmit({ preventDefault() {} });
+      await pEnrolement; await laisser108();
       const champ = document.querySelector("#mfa-code");
       const bouton = (enrolement108.querySelectorAll("button") || []).find((b) => nu108(b) === "Vérifier & activer");
       const carte = enrolement108.children[0];
@@ -18038,6 +18064,10 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
       utilisateur108.disabled = false; motDePasse108.disabled = false;
       if (blocDuCode108) blocDuCode108.style.display = "none";
       if (champDuCode108) champDuCode108.value = "";
+      // `P10.23-d` — (f9) laisse l'étape ouverte : son échéance et son bouton de retour se referment ici aussi.
+      const echeanceConnexion108 = document.querySelector("#login-code-echeance"), retourConnexion108 = document.querySelector("#login-code-retour");
+      if (echeanceConnexion108) { echeanceConnexion108.hidden = true; echeanceConnexion108.textContent = ""; }
+      if (retourConnexion108) retourConnexion108.hidden = true;
       erreurConnexion108.hidden = true; erreurConnexion108.replaceChildren();
     }
 
@@ -18057,6 +18087,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   } finally {
     globalThis.fetch = fetchOrigine108;
     globalThis.setTimeout = minuterieOrigine108;
+    globalThis.setInterval = intervalleOrigine108; globalThis.clearInterval = finIntervalleOrigine108;
     globalThis.location.reload = rechargementOrigine108;
     S108.isAdmin = etatOrigine108.admin; S108.AUTH = etatOrigine108.auth; SEn108.isAdmin = etatOrigine108.adminEn; SEn108.AUTH = etatOrigine108.authEn;
     document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
@@ -18065,6 +18096,596 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     const puitsDeRiposte108 = document.querySelector("#af-result"); if (puitsDeRiposte108) puitsDeRiposte108.textContent = "";
   }
   console.log("(108) OK — les refus neufs de la déclaration d'incident, de l'attache d'un runbook et de la désactivation de la MFA sont peints par la cause que le démon sert, ENTIÈRE et dans les deux langues, au lieu du message composé « <code> <corps JSON coupé> » : un cinq cent trois qui n'a rien écrit dit ce qui reste en base, un quatre cent quatre nu le dit sans cause, un refus de saisie reste un refus de saisie, les succès restent des succès, et un deux cents sans `{attached}` n'est plus une attache. La désactivation sépare le code refusé (quatre cent un, qui l'accuse), la base refusée et la liste de secours illisible (deux cinq cent trois de faits différents, séparés par la CAUSE, aucun n'accusant le code) et le frein par compte (avec son délai servi), et n'annonce plus « MFA désactivée » sur un deux cents sans `{ok}` ; l'activation fait de même pour le code, la MFA déjà active, la course, l'écriture refusée et le frein, et n'annonce plus « MFA activée » sans codes de secours ; chaque cause que les trois routes servent est RECONNUE par le lecteur du point commun, relue dans le démon. L'écran de connexion DEMANDE enfin le second facteur — il prenait `{mfa_required, ticket}` pour une session et rechargeait —, échange le code et le ticket sur `/api/login/mfa`, garde le code sur un cinq cent trois « juste mais non consommé » ou « liste illisible », repart du mot de passe sur un code refusé ou un frein — qu'il dit tel, délai compris. L'étape de runbook et le formulaire du panneau Réponse lisent la partition identifiant servi / absent et sa face « absent » au POINT COMMUN, déplacées de `web/viz.js` qui les réémet : sur un deux cents vide ou une page de passerelle, aucune n'affirme plus de mise en file, et le formulaire reste ouvert sur la phrase. CE QUI ÉTAIT FAUX : aucune surface n'affichait de succès sur ces refus — le défaut était la phrase ; et l'écran de connexion n'appelait pas `/api/login/mfa` du tout.");
+}
+
+
+// ---------------------------------------------------------------------------------------------
+// (109) `P10.23-c` — L'ÉCRAN DE CONNEXION PARLE LES DEUX LANGUES : ses phrases propres ont leurs faces {fr, en} ;
+//       `P10.23-d` — L'ÉTAPE DU CODE OFFRE LE RETOUR AU MOT DE PASSE ET DIT L'ÉCHÉANCE DU TICKET AVANT QU'ELLE NE
+//       MORDE, SANS MINUTERIE QUI SURVIVE À L'ÉTAPE ;
+//       `P10.22-b` — `apiSend` NE PREND PLUS UN DEUX CENTS NON JSON POUR UN SUCCÈS, ET NE COLLE PLUS LE HTML D'UNE
+//       PASSERELLE COMME CAUSE ; l'écran de connexion, qui tient sa propre requête, non plus ;
+//       `P10.23-b` et `P10.22-x` (lot du démon voisin) — L'ENRÔLEMENT DEMANDE LE MOT DE PASSE DU COMPTE ET DIT CHACUN
+//       DE SES REFUS ; LE TICKET REFUSÉ DE LA CONNEXION N'EST PLUS UN « CODE REFUSÉ ».
+//
+// CE QUE LE DÉMON SERT, RELU ICI ET NON RECOPIÉ. `mfa_challenge_response` signe le ticket pour une durée que ce
+// témoin LIT (trois cents secondes au jour de l'écriture) ; `login_post` et `login_mfa_post` ne servent un succès
+// qu'avec `{ok: true}` (ou `{mfa_required, ticket}`). Aux mutations : un succès JSON ou un corps VIDE — les routes à
+// deux cent quatre sont DÉRIVÉES de `groupes_de_routes.rs` et de leurs gestionnaires —, un refus `{error}` ou en
+// texte brut, jamais de HTML, jamais un cinq cent deux ni un cinq cent quatre sans cause nommée.
+//
+// CE QUE LA CONSOLE EN FAISAIT, MESURÉ SUR LES MODULES RÉELS AVANT CE LOT (sonde jouée sur un miroir de HEAD) :
+//   · `apiSend` rendait `null` sur un deux cents à page HTML, à « no available server » ou à JSON tronqué — comme
+//     sur un deux cent quatre — : la déclaration d'incident servie par une passerelle en deux cents peignait
+//     « Incident déclaré » ; un cinq cent deux HTML jetait « 502 <!DOCTYPE html>… », et la surface le collait
+//     ENTIER entre guillemets (« Déclaration de l'incident REFUSÉE … « <!DOCTYPE html><html>… » ») ;
+//   · sous `LANG='en'`, l'écran de connexion disait « Renseigne identifiant et mot de passe. », « Identifiants
+//     invalides. », « Trop de tentatives, réessaie dans 7s. », « Trop de tentatives, réessaie plus tard. » et
+//     « Échec de connexion : … (400) » — QUATRE phrases françaises, dont la dernière, composée, qu'aucun relevé
+//     du lexique ne portait ; un cinq cent deux HTML y collait la page entière ;
+//   · un deux cents HTML ou `{}` à `/api/login` RECHARGEAIT l'écran (qui revenait vide) ; à `/api/login/mfa`
+//     aussi, sans même lire le corps ;
+//   · l'étape du code n'avait ni retour au mot de passe ni échéance : aucune minuterie, aucun bouton ;
+//   · (lot voisin) `mfa_enroll` exige désormais `{password}` : la console envoyait `{}` et peignait TOUT refus nommé
+//     — mot de passe exigé, refusé, freiné, compte fédéré, compte non lu — comme « Statut de double authentification
+//     NON LU », en posant le drapeau qui interdit le geste suivant ; et le ticket refusé (quatre cent un nommé)
+//     tombait sous « Code REFUSÉ ».
+//
+// CE QUI ÉTAIT FAUX OU IMPRÉCIS DANS LES ÉNONCÉS, ET MESURÉ. (1) `P10.23-c` comptait TROIS phrases : il y en a
+// quatre (« Échec de connexion : … »), et « Trop de tentatives » a deux formes dont un gabarit invisible au
+// relevé. (2) « cinq minutes » : le démon tient le ticket pour expiré dès que `now() >= exp`, `now()` en secondes
+// entières — la durée réelle va de deux cent quatre-vingt-dix-neuf à trois cents secondes, et un décompte de
+// trois cents secondes depuis la RÉCEPTION promettrait du temps qui n'existe pas. (3) `P10.22-b` bornait le défaut
+// à `apiSend` : l'écran de connexion, qui tient sa propre requête, avait le même (deux cents non JSON rechargé,
+// HTML collé). (4) « l'expiration n'est dite qu'à la soumission » : elle y était dite par « Code REFUSÉ », qui
+// accusait le CODE d'un ticket périmé.
+//
+// L'ANCRAGE. La durée du ticket, les corps de succès de la connexion, l'absence de HTML et de cinq cent deux ou
+// quatre non nommés, et les routes à deux cent quatre sont lus dans l'arbre du démon ; s'ils changent, ce témoin
+// REFUSE DE CONCLURE ou rougit, au lieu de rester vert sur un contrat qui n'est plus.
+//
+// CE QUE CE TÉMOIN NE TIENT PAS : il ne rejoue aucune route du démon ; l'horloge et les minuteries sont celles
+// d'un simulacre (il juge qu'une SEULE minuterie vit pendant l'étape et AUCUNE après, pas la cadence réelle d'un
+// onglet endormi) ; les cadres « REFUSÉ … le démon a répondu — » que les surfaces posent autour d'une réponse de
+// passerelle ne sont jugés que sur la déclaration d'incident, où ils restent imprécis (voir le rapport du lot).
+// ---------------------------------------------------------------------------------------------
+{
+  const url109 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const modNoyau109 = await import(url109("core.js"));
+  const modConnexion109 = await import(url109("login.js"));
+  const modDossiers109 = await import(url109("cases.js"));
+  const modIdp109 = await import(url109("idp.js"));
+  const { S: S109 } = await import(url109("state.js"));
+  const langueOrigine109 = localStorage.getItem("soc_lang");
+  localStorage.setItem("soc_lang", "en");
+  const modNoyauEn109 = await import(adresseSousLaLangue("core.js"));
+  const modConnexionEn109 = await import(adresseSousLaLangue("login.js"));
+  const modIdpEn109 = await import(adresseSousLaLangue("idp.js"));
+  if (langueOrigine109 === null) localStorage.removeItem("soc_lang"); else localStorage.setItem("soc_lang", langueOrigine109);
+
+  const tic109 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser109 = async (n = 30) => { for (let i = 0; i < n; i++) await tic109(); };
+  const nu109 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ").trim();
+  const instrument109 = (vrai, quoi) => exiger(vrai, `(109-instrument) ${quoi} : ce témoin REFUSE DE CONCLURE`);
+  const sansCommentaires109 = (src) => String(src).replace(/\/\/[^\n]*/g, "");
+  const srcDe109 = (f) => ((CORPUS_WEB.find(([g]) => g === f) || [])[1]) || "";
+  const corpsDeFonction109 = (src, entete) => { const i = src.indexOf(entete); if (i < 0) return ""; const j = src.indexOf("\n}\n", i); return j < 0 ? "" : src.slice(i, j + 2); };
+
+  // ── (0) L'INSTRUMENT : CE QUE LE DÉMON SERT, LU DANS SON ARBRE ────────────────────────────────────
+  const SRC_DU_DEMON109 = path.join(RACINE, "daemon", "src");
+  const fichiersDuDemon109 = readdirSync(SRC_DU_DEMON109, { recursive: true }).map(String)
+    .filter((f) => f.endsWith(".rs") && !f.split(path.sep).includes("tests"));
+  const textesDuDemon109 = fichiersDuDemon109.map((f) => readFileSync(path.join(SRC_DU_DEMON109, f), "utf8"));
+  instrument109(fichiersDuDemon109.length >= 40, `${fichiersDuDemon109.length} fichier(s) Rust lus sous daemon/src : l'arbre du démon n'est pas celui qu'on croit lire`);
+  const IDP109 = readFileSync(path.join(SRC_DU_DEMON109, "handlers", "idp.rs"), "utf8");
+  const SESSION109 = readFileSync(path.join(SRC_DU_DEMON109, "session.rs"), "utf8");
+  const defi109 = corpsDeFonction109(IDP109, "pub(crate) fn mfa_challenge_response(");
+  const DUREE109 = Number((defi109.match(/mfa_ticket_sign\(\s*st\.session_secret\.as_slice\(\),\s*user,\s*role,\s*(\d+)\s*[,)]/) || [])[1] || NaN);
+  instrument109(Number.isInteger(DUREE109) && DUREE109 >= 60 && /"mfa_required": true, "ticket": ticket/.test(defi109),
+    "la durée du ticket MFA n'est plus lisible dans `mfa_challenge_response` (daemon/src/handlers/idp.rs), ou la route ne sert plus `{mfa_required, ticket}` : l'échéance jugée ci-dessous porterait sur un nombre inventé");
+  instrument109(/if now\(\) >= exp \{\s*return None;/.test(IDP109),
+    "la vérification du ticket ne le tient plus pour expiré dès `now() >= exp` : la seconde que l'écran retire à la durée ne serait plus fondée");
+  const connexionMfa109 = corpsDeFonction109(IDP109, "pub(crate) async fn login_mfa_post(");
+  const connexion109 = corpsDeFonction109(SESSION109, "pub(crate) async fn login_post(");
+  instrument109(/Json\(json!\(\{ "ok": true, "user": user, "role": live_role \}\)\)/.test(connexionMfa109) && /Json\(json!\(\{ "ok": true, "user": name, "role": role \}\)\)/.test(connexion109),
+    "`login_post` ou `login_mfa_post` ne sert plus son succès sous `{ok: true, user, role}` : le succès que l'écran exige ne serait plus celui du démon");
+  // LA PRÉMISSE DU CLASSEMENT : le démon ne sert jamais de HTML, ni de cinq cent deux ou quatre sans cause nommée.
+  const passerellesDuDemon109 = textesDuDemon109.flatMap((t) => t.split("\n").filter((l) => /StatusCode::(BAD_GATEWAY|GATEWAY_TIMEOUT)\b/.test(l) && !/err_json\(StatusCode::BAD_GATEWAY/.test(l)));
+  const htmlDuDemon109 = textesDuDemon109.filter((t) => /text\/html|\bHtml\(/.test(t)).length;
+  instrument109(passerellesDuDemon109.length === 0 && htmlDuDemon109 === 0,
+    `le démon sert désormais du HTML (${htmlDuDemon109} fichier(s)) ou un cinq cent deux / cinq cent quatre sans cause nommée (${JSON.stringify(passerellesDuDemon109.slice(0, 3))}) : la « page de passerelle » que la console reconnaît pourrait être le démon`);
+  // LES ROUTES À DEUX CENT QUATRE, DÉRIVÉES : chaque route mutante dont le gestionnaire sert `NO_CONTENT`.
+  const ROUTES109 = readFileSync(path.join(SRC_DU_DEMON109, "server", "groupes_de_routes.rs"), "utf8");
+  const corpsDuGestionnaire109 = (nom) => { for (const t of textesDuDemon109) { const c = corpsDeFonction109(t, "async fn " + nom + "("); if (c) return c; } return ""; };
+  const routesA204109 = [];
+  for (const [, chemin, chaine] of ROUTES109.matchAll(/\.route\("(\/api[^"]*)",\s*([^\n]*)/g)) {
+    for (const [, methode, nom] of chaine.matchAll(/\b(post|put|delete)\((\w+)\)/g)) {
+      if (/StatusCode::NO_CONTENT/.test(corpsDuGestionnaire109(nom))) routesA204109.push(methode.toUpperCase() + " " + chemin + " (" + nom + ")");
+    }
+  }
+  instrument109(routesA204109.length >= 20 && routesA204109.some((r) => r.startsWith("POST /api/cases/{id}/incident ")),
+    `${routesA204109.length} route(s) mutante(s) à deux cent quatre dérivées du démon, dont la déclaration d'incident ? La dérivation ne lit plus l'arbre : ${JSON.stringify(routesA204109.slice(0, 5))}`);
+  instrument109([modNoyau109.natureDeLaReponseHorsDemon, modNoyau109.motDeLaReponseHorsDemon, modNoyau109.unDeuxCentsSansCorpsLisible, modNoyau109.natureDuRefusDuSecondFacteur,
+    modConnexion109.motDeLaConnexion, modConnexion109.motDuSecondFacteur, modConnexion109.bindLoginForm, modConnexionEn109.motDeLaConnexion, modDossiers109.incidentDeclare,
+    modIdp109.disableMfa, modIdp109.startEnroll, modIdp109.loadMfa, modIdp109.cleDuRefusDEnrolement, modIdp109.motDeLEnrolementMfa, modIdpEn109.startEnroll, modIdpEn109.motDeLEnrolementMfa]
+    .every((f) => typeof f === "function") && modNoyauEn109.LANG === "en" && modNoyau109.LANG !== "en",
+    "un des symboles jugés ici n'est plus exporté (web/core.js, web/login.js, web/cases.js, web/idp.js), ou une instance ne porte pas sa langue");
+  // `P10.23-b` et `P10.22-x` (démon) — L'ENRÔLEMENT EXIGE LE MOT DE PASSE, ET LE TICKET DE LA CONNEXION A SA CAUSE. Les
+  // causes sont RELUES dans `mfa_enroll` et `login_mfa_post`, statut par statut ; jamais recopiées.
+  const enrolement109 = corpsDeFonction109(IDP109, "pub(crate) async fn mfa_enroll(");
+  const constante109 = (src, nom) => { const m = src.match(new RegExp("const " + nom + ": &str = \"((?:[^\"\\\\]|\\\\[\\s\\S])*)\";")); return m ? m[1].replace(/\\\n\s*/g, "").replace(/\\"/g, "\"") : ""; };
+  const causesDe109 = (corps, statut) => [...new Set([...corps.matchAll(new RegExp("err_json\\(StatusCode::" + statut + ", (CAUSE_\\w+)\\)", "g"))].map((m) => m[1]))];
+  const CAUSES_D_ENROLEMENT109 = {
+    403: causesDe109(enrolement109, "FORBIDDEN"), 503: causesDe109(enrolement109, "SERVICE_UNAVAILABLE"),
+    429: [...new Set([...enrolement109.matchAll(/"error": (CAUSE_\w+)/g)].map((m) => m[1]))],
+  };
+  instrument109(/b\.str_field\("password"\)/.test(enrolement109) && CAUSES_D_ENROLEMENT109[403].length >= 3 && CAUSES_D_ENROLEMENT109[503].length >= 2 && CAUSES_D_ENROLEMENT109[429].length === 1
+    && /StatusCode::TOO_MANY_REQUESTS/.test(enrolement109) && /header::RETRY_AFTER/.test(enrolement109) && /err_json\(StatusCode::CONFLICT, "MFA déjà active/.test(enrolement109)
+    && Object.values(CAUSES_D_ENROLEMENT109).flat().every((n) => !!constante109(IDP109, n)),
+    `\`mfa_enroll\` ne lit plus \`{password}\`, ou ne sert plus ses refus nommés (trois quatre cent trois, deux cinq cent trois, un quatre cent vingt-neuf avec délai, un quatre cent neuf) : ${JSON.stringify(CAUSES_D_ENROLEMENT109)}`);
+  const CAUSE_TICKET109 = constante109(IDP109, (connexionMfa109.match(/err_json\(StatusCode::UNAUTHORIZED, (CAUSE_\w+)\)/) || [])[1] || "");
+  instrument109(!!CAUSE_TICKET109 && /TICKET/.test(CAUSE_TICKET109) && /err_json\(StatusCode::UNAUTHORIZED, "code MFA invalide"\)/.test(connexionMfa109),
+    "`login_mfa_post` ne refuse plus le ticket en quatre cent un NOMMÉ, distinct du code refusé : l'écran ne pourrait pas séparer les deux");
+
+  // ── LE SIMULACRE : TRANSPORT, HORLOGE, MINUTERIES ────────────────────────────────────────────────
+  const fetchOrigine109 = globalThis.fetch, minuterieOrigine109 = globalThis.setTimeout;
+  const intervalleOrigine109 = globalThis.setInterval, finIntervalleOrigine109 = globalThis.clearInterval;
+  const horlogeOrigine109 = Date.now, rechargementOrigine109 = globalThis.location.reload;
+  let maintenant109 = 1_800_000_000_000;
+  let rechargements109 = 0;
+  const minuteries109 = new Map(); let prochaineMinuterie109 = 1;
+  const battre109 = () => { for (const m of [...minuteries109.values()]) m.fn(); };
+  const servis109 = {}, appels109 = [], corpsEnvoyes109 = [];
+  let reseauCoupe109 = false;
+  const etatOrigine109 = { admin: S109.isAdmin, auth: S109.AUTH };
+  const HTML109 = "<!DOCTYPE html><html><head><title>502 Bad Gateway</title></head><body><center>nginx</center></body></html>";
+  try {
+    Date.now = () => maintenant109;
+    globalThis.location.reload = () => { rechargements109++; };
+    globalThis.setInterval = (fn, ms) => { const id = prochaineMinuterie109++; minuteries109.set(id, { fn, ms }); return id; };
+    globalThis.clearInterval = (id) => { minuteries109.delete(id); };
+    globalThis.setTimeout = (fn, ms) => (ms >= 1000 ? 0 : minuterieOrigine109(fn, ms >= 100 ? 0 : ms));
+    globalThis.fetch = async (u, init) => {
+      const chemin = String(u).split("?")[0];
+      const methode = ((init && init.method) || "GET").toUpperCase();
+      appels109.push(methode + " " + chemin); corpsEnvoyes109.push([methode + " " + chemin, init && init.body]);
+      if (reseauCoupe109) throw new TypeError("Failed to fetch");
+      const r = servis109[methode + " " + chemin] || servis109["*"];
+      if (!r) return { ok: true, status: 200, headers: { get: () => null }, text: async () => "{}" };
+      if (r.latence) maintenant109 += r.latence;
+      const texte = typeof r.corps === "string" ? r.corps : JSON.stringify(r.corps === undefined ? {} : r.corps);
+      const statut = r.statut || 200;
+      return { ok: statut >= 200 && statut < 300, status: statut, headers: { get: (h) => (/retry-after/i.test(h) ? (r.reessai || null) : null) }, text: async () => texte };
+    };
+    S109.isAdmin = true; S109.AUTH = { user: "hugo", role: "admin" };
+
+    // ══ (a) `apiSend` : LE CONTRAT, CAS PAR CAS, SUR LES DEUX INSTANCES DE LANGUE ════════════════════
+    const jouerApiSend109 = async (mod, statut, corps) => {
+      servis109["POST /api/sonde-109"] = { statut, corps };
+      try { return { rendu: await mod.apiSend("/sonde-109", "POST", {}) }; } catch (e) { return { jete: e }; }
+    };
+    const PASSERELLE109 = modNoyau109.motDeLaReponseHorsDemon("page_de_passerelle"), ILLISIBLE109 = modNoyau109.motDeLaReponseHorsDemon("corps_illisible");
+    exiger(/PASSERELLE/.test(PASSERELLE109) && /Rien ici n'établit/.test(PASSERELLE109) && /ILLISIBLE/.test(ILLISIBLE109) && /Rien ici n'établit/.test(ILLISIBLE109)
+      && /GATEWAY/.test(modNoyauEn109.motDeLaReponseHorsDemon("page_de_passerelle")) && /Nothing here establishes/.test(modNoyauEn109.motDeLaReponseHorsDemon("corps_illisible"))
+      // La face anglaise ne porte AUCUN mot de la française : une face « traduite » à moitié passerait sinon.
+      && !["page_de_passerelle", "corps_illisible"].some((n) => /PASSERELLE|ILLISIBLE|démon|Rien ici|vérifie|réponse|Réponse/.test(modNoyauEn109.motDeLaReponseHorsDemon(n)))
+      && ![PASSERELLE109, ILLISIBLE109].some((t) => /[<>{}]|\b50[234]\b/.test(t)),
+      `(109a) les faces d'une réponse hors démon ne disent pas, dans leurs deux langues, ce que la console ne sait pas — ou elles portent du balisage ou un code : « ${PASSERELLE109} » / « ${ILLISIBLE109} »`);
+    const CAS109 = [
+      // [statut, corps, attendu] — attendu : "null", "objet", une nature hors démon, ou "brut:<phrase>" (refus du démon en texte, gardé), ou "nomme"
+      [204, "", "null"], [200, "", "null"], [200, "  \n", "null"], [200, '{"attached":3}', "objet"],
+      [200, HTML109, "page_de_passerelle"], [200, "no available server", "page_de_passerelle"], [200, '{"id":12', "corps_illisible"], [200, "ok", "corps_illisible"],
+      [502, HTML109, "page_de_passerelle"], [502, "Bad Gateway", "page_de_passerelle"], [504, "", "page_de_passerelle"], [503, "", "page_de_passerelle"], [503, "no available server", "page_de_passerelle"],
+      [403, "<html><body>Just a moment...</body></html>", "page_de_passerelle"],
+      [503, "verdict de construction NON LU : le réglage n'est PAS écrit ; réessayer.", "brut:verdict de construction NON LU : le réglage n'est PAS écrit ; réessayer."],
+      [503, { error: "DÉCLARATION NON ENREGISTRÉE (disk I/O error)" }, "nomme"], [502, { error: "découverte OIDC échouée: x" }, "nomme"], [400, "requête mal formée", "brut:requête mal formée"],
+    ];
+    const ecartsA109 = [];
+    for (const [statut, corps, attendu] of CAS109) {
+      const r = await jouerApiSend109(modNoyau109, statut, corps);
+      const e = r.jete;
+      let vu;
+      if (!e) vu = r.rendu === null ? "null" : (typeof r.rendu === "object" ? "objet" : "autre:" + JSON.stringify(r.rendu));
+      else if (e.reponseHorsDemon) vu = e.reponseHorsDemon + (e.message === modNoyau109.motDeLaReponseHorsDemon(e.reponseHorsDemon) && e.statutDuRefus === statut && !e.causeDuDemon ? "" : "(message, statut ou cause faux : " + e.message.slice(0, 60) + ")");
+      else if (e.causeDuDemon) vu = "nomme";
+      else vu = "brut:" + modNoyau109.phraseDuRefusDuDemon(e);
+      if (vu !== attendu) ecartsA109.push(`${statut} ${JSON.stringify(corps).slice(0, 36)} : attendu « ${attendu} », vu « ${vu} »`);
+    }
+    exiger(ecartsA109.length === 0,
+      `(109a) \`apiSend\` NE SÉPARE PLUS le corps vide légitime (deux cent quatre), le deux cents non JSON (refus NOMMÉ, jamais un succès), la page de passerelle (sans son HTML) et le refus du démon en texte brut (sa phrase gardée) : ${JSON.stringify(ecartsA109)}`);
+    const en109 = await jouerApiSend109(modNoyauEn109, 200, HTML109);
+    exiger(!!en109.jete && en109.jete.message === modNoyauEn109.motDeLaReponseHorsDemon("page_de_passerelle") && /GATEWAY/.test(en109.jete.message),
+      `(109a) SOUS \`LANG='en'\`, la page de passerelle n'est pas dite en anglais : « ${en109.jete && en109.jete.message} »`);
+    // LES ROUTES À DEUX CENT QUATRE : chacune rend `null`, aucune ne jette.
+    const casseurs204109 = [];
+    for (const route of routesA204109) {
+      const [methode, gabarit] = route.split(" ");
+      servis109["*"] = { statut: 204, corps: "" };
+      try { const v = await modNoyau109.apiSend(gabarit.replace(/^\/api/, "").replace(/\{[^}]+\}/g, "7"), methode); if (v !== null) casseurs204109.push(route + " -> " + JSON.stringify(v)); }
+      catch (e) { casseurs204109.push(route + " -> JETTE " + e.message); }
+    }
+    delete servis109["*"];
+    exiger(casseurs204109.length === 0, `(109a-négatif) une route qui sert DEUX CENT QUATRE — son succès — ne rend plus \`null\` : ${JSON.stringify(casseurs204109)}`);
+    // LE PRÉDICAT DES SIX GESTES QUI LISENT LEUR CORPS DE SUCCÈS : vrai sur un deux cents sans corps lisible, faux
+    // sur un cinq cents de passerelle, sur un refus nommé et sur ce qui n'est pas un refus d'`apiSend`.
+    const refusDe109 = async (statut, corps) => { servis109["POST /api/sonde-109"] = { statut, corps }; try { await modNoyau109.apiSend("/sonde-109", "POST", {}); return null; } catch (e) { return e; } };
+    const predicat109 = [await refusDe109(200, HTML109), await refusDe109(200, '{"id":1'), await refusDe109(502, HTML109), await refusDe109(503, { error: "x" }), new Error("réseau"), null]
+      .map((e) => modNoyau109.unDeuxCentsSansCorpsLisible(e)).join(",");
+    exiger(predicat109 === "true,true,false,false,false,false",
+      `(109a) le prédicat « deux cents sans corps lisible » ne sépare plus ce que les six gestes prennent pour une ABSENCE de ce qui reste un refus : ${predicat109}`);
+    // L'ENSEMBLE NOMMÉ DES GESTES QUI LE LISENT, chacun désigné par la route de l'`apiSend` qui le précède : un geste de
+    // plus qui prendrait un deux cents non JSON pour une absence doit être une décision, pas une dérive.
+    const gestesDuPredicat109 = CORPUS_WEB.filter(([f]) => f.endsWith(".js") && f !== "core.js").flatMap(([f, src]) => {
+      const code = sansCommentaires109(src);
+      return [...code.matchAll(/unDeuxCentsSansCorpsLisible\(/g)].filter((m) => !/import \{[^}]*$/.test(code.slice(Math.max(0, m.index - 400), m.index)))
+        .map((m) => { const avant = [...code.slice(0, m.index).matchAll(/apiSend\('([^']+)'/g)].pop(); return f + ":" + (avant ? avant[1] : "?"); });
+    }).sort();
+    exiger(gestesDuPredicat109.join(",") === "cases.js:/actions,cases.js:/cases/,detection_admin.js:/actions,idp.js:/mfa/disable,idp.js:/mfa/enroll,idp.js:/mfa/verify,viz.js:/actions",
+      `(109a) l'ensemble des gestes qui prennent un deux cents sans corps lisible pour une ABSENCE n'est plus celui que ce lot a relevé : ${JSON.stringify(gestesDuPredicat109)}`);
+
+    // ══ (b) LES SURFACES RÉELLES ══════════════════════════════════════════════════════════════════
+    const fenetre109 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !c.classList.contains("out")).pop();
+    const valider109 = async () => {
+      const ov = fenetre109();
+      const form = ov && ov.children[0] ? ov.children[0].children[0] : null;
+      if (form && typeof form.onsubmit === "function") form.onsubmit({ preventDefault() {} });
+      await laisser109();
+      return !!form;
+    };
+    const avis109 = () => document.querySelectorAll(".toast");
+    const declarer109 = async () => {
+      const avant = avis109().length;
+      const p = modDossiers109.incidentDeclare({ id: 8109 }); await laisser109();
+      const valide = await valider109();
+      await p; await laisser109(40);
+      return { valide, avis: avis109().slice(avant).map((t) => String(t.textContent).replace(/\s+/g, " ")) };
+    };
+    // L'EXEMPLE DE L'ÉNONCÉ : une page de passerelle servie en deux cents n'est plus « Incident déclaré ».
+    servis109["POST /api/cases/8109/incident"] = { statut: 200, corps: HTML109 };
+    const b1109 = await declarer109();
+    instrument109(b1109.valide && appels109.includes("POST /api/cases/8109/incident"), "la déclaration d'incident n'atteint pas sa route : les verdicts ci-dessous ne porteraient sur rien");
+    exiger(b1109.avis.length === 1 && !/Incident déclaré/.test(b1109.avis[0]) && b1109.avis[0].includes(PASSERELLE109) && !/<|\b502\b/.test(b1109.avis[0]),
+      `(109b) UNE PAGE DE PASSERELLE SERVIE EN DEUX CENTS EST ANNONCÉE COMME UNE DÉCLARATION RÉUSSIE, ou la réponse n'est pas nommée : ${JSON.stringify(b1109.avis)}`);
+    servis109["POST /api/cases/8109/incident"] = { statut: 502, corps: HTML109 };
+    const b2109 = await declarer109();
+    exiger(b2109.avis.length === 1 && b2109.avis[0].includes(PASSERELLE109) && !/<!DOCTYPE|<html|nginx/i.test(b2109.avis[0]),
+      `(109b) UN CINQ CENT DEUX DE PASSERELLE COLLE ENCORE SON HTML COMME CAUSE : ${JSON.stringify(b2109.avis).slice(0, 300)}`);
+    servis109["POST /api/cases/8109/incident"] = { statut: 204, corps: "" };
+    const b3109 = await declarer109();
+    exiger(b3109.avis.length === 1 && b3109.avis[0] === "Incident déclaré",
+      `(109b-négatif) le deux cent quatre LÉGITIME de la déclaration n'est plus un succès : ${JSON.stringify(b3109.avis)}`);
+    document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
+    // LES GESTES QUI LISENT LEUR CORPS DE SUCCÈS GARDENT LEUR FACE « NON ÉTABLIE » SUR UNE PAGE DE PASSERELLE EN
+    // DEUX CENTS — la désactivation et l'activation de la MFA (le runbook et les trois ripostes sont jugés en 107
+    // et 108 sur la même page).
+    const enrolement109 = document.querySelector("#mfa-enroll");
+    instrument109(!!enrolement109, "l'hôte du bloc MFA d'`index.html` (#mfa-enroll) n'est pas monté");
+    servis109["GET /api/mfa/status"] = { corps: { enrolled: true, enabled: true } };
+    servis109["POST /api/mfa/disable"] = { statut: 200, corps: HTML109 };
+    enrolement109.hidden = true; enrolement109.replaceChildren();
+    const avantB4109 = avis109().length;
+    const pB4109 = modIdp109.disableMfa(); await laisser109();
+    await valider109();
+    const ovCode109 = fenetre109(); const formCode109 = ovCode109 && ovCode109.children[0] ? ovCode109.children[0].children[0] : null;
+    if (formCode109) { formCode109.querySelectorAll("[data-n]").forEach((e) => { if (e.dataset.n === "code") e.value = "123456"; }); if (typeof formCode109.onsubmit === "function") formCode109.onsubmit({ preventDefault() {} }); }
+    let jeteB4109 = null; try { await pB4109; } catch (e) { jeteB4109 = e; }
+    await laisser109(40);
+    const aveuB4109 = [enrolement109, ...enrolement109.children, ...(enrolement109.querySelectorAll ? enrolement109.querySelectorAll("div") : [])].find((n) => n && n.getAttribute && n.getAttribute("data-refus-de-desactivation"));
+    exiger(!jeteB4109 && !!aveuB4109 && aveuB4109.getAttribute("data-refus-de-desactivation") === "desactivation_non_etablie" && !avis109().slice(avantB4109).some((t) => /MFA désactivée/.test(t.textContent)),
+      `(109b) SUR UNE PAGE DE PASSERELLE EN DEUX CENTS, LA DÉSACTIVATION N'EST PLUS DITE « NON ÉTABLIE » — elle se dit refusée, ou le geste jette (${jeteB4109 && jeteB4109.message}) : « ${nu109(enrolement109).slice(0, 200)} »`);
+    document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
+    servis109["GET /api/mfa/status"] = { corps: { enrolled: false, enabled: false } };
+    servis109["POST /api/mfa/enroll"] = { corps: { secret: "JBSWY3DPEHPK3PXP", otpauth_uri: "otpauth://totp/plume:hugo?secret=JBSWY3DPEHPK3PXP" } };
+    await modIdp109.loadMfa(); await laisser109();
+    // L'enrôlement demande d'abord le mot de passe du compte (modale partagée) — voir (e).
+    const pCarte109 = modIdp109.startEnroll(); await laisser109();
+    const ovCarte109 = fenetre109(); const formCarte109 = ovCarte109 && ovCarte109.children[0] ? ovCarte109.children[0].children[0] : null;
+    const champCarte109 = formCarte109 ? formCarte109.querySelector("input[type=password]") : null;
+    if (champCarte109) champCarte109.value = "motdepasse-109-carte";
+    if (formCarte109 && typeof formCarte109.onsubmit === "function") formCarte109.onsubmit({ preventDefault() {} });
+    await pCarte109; await laisser109();
+    const boutonVerifier109 = (enrolement109.querySelectorAll("button") || []).find((b) => nu109(b) === "Vérifier & activer");
+    instrument109(!!boutonVerifier109 && !!document.querySelector("#mfa-code"), "la carte d'enrôlement n'a pas de bouton « Vérifier & activer » ou de champ de code");
+    servis109["POST /api/mfa/verify"] = { statut: 200, corps: HTML109 };
+    document.querySelector("#mfa-code").value = "123456";
+    const avantB5109 = avis109().length;
+    let jeteB5109 = null;
+    if (boutonVerifier109 && typeof boutonVerifier109.onclick === "function") { try { await boutonVerifier109.onclick(); } catch (e) { jeteB5109 = e; } }
+    await laisser109(40);
+    const aveuB5109 = [enrolement109, ...enrolement109.children, ...(enrolement109.querySelectorAll ? enrolement109.querySelectorAll("div") : [])].find((n) => n && n.getAttribute && n.getAttribute("data-refus-d-activation"));
+    exiger(!jeteB5109 && !!aveuB5109 && aveuB5109.getAttribute("data-refus-d-activation") === "activation_non_etablie" && !avis109().slice(avantB5109).some((t) => /MFA activée/.test(t.textContent)),
+      `(109b) SUR UNE PAGE DE PASSERELLE EN DEUX CENTS, L'ACTIVATION N'EST PLUS DITE « NON ÉTABLIE » (jet : ${jeteB5109 && jeteB5109.message}) : « ${nu109(enrolement109).slice(0, 200)} »`);
+    enrolement109.hidden = true; enrolement109.replaceChildren();
+
+    // ══ (e) L'ENRÔLEMENT EXIGE LE MOT DE PASSE (`P10.23-b`, démon), ET CHACUN DE SES REFUS SE DIT ══════════
+    // LE LECTEUR DU POINT COMMUN RECONNAÎT CHAQUE CAUSE SERVIE, sous la nature que le panneau attend pour son statut.
+    const NATURES_D_ENROLEMENT109 = { 403: ["mot_de_passe_exige", "mot_de_passe_refuse", "sans_mot_de_passe_local"], 503: ["statut_mfa_non_lu", "compte_non_lu"], 429: ["mot_de_passe_verrouille"] };
+    const naturesVues109 = {}, nonReconnues109 = [];
+    for (const [statut, noms] of Object.entries(CAUSES_D_ENROLEMENT109)) for (const n of noms) {
+      const nature = modNoyau109.natureDuRefusDuSecondFacteur(constante109(IDP109, n));
+      if (!NATURES_D_ENROLEMENT109[statut].includes(nature)) nonReconnues109.push(statut + " " + n + " -> « " + nature + " »");
+      (naturesVues109[statut] = naturesVues109[statut] || []).push(nature);
+    }
+    const naturesOrphelines109 = Object.entries(NATURES_D_ENROLEMENT109).flatMap(([st, ns]) => ns.filter((x) => !(naturesVues109[st] || []).includes(x)).map((x) => st + " " + x));
+    if (modNoyau109.natureDuRefusDuSecondFacteur(CAUSE_TICKET109) !== "ticket_refuse") nonReconnues109.push("401 ticket -> « " + modNoyau109.natureDuRefusDuSecondFacteur(CAUSE_TICKET109) + " »");
+    exiger(nonReconnues109.length === 0 && naturesOrphelines109.length === 0,
+      `(109e) UNE CAUSE D'ENRÔLEMENT OU DE TICKET QUE LE DÉMON SERT N'EST PAS RECONNUE (ou une nature attendue n'est plus servie) : ${JSON.stringify({ nonReconnues109, naturesOrphelines109 })}`);
+    exiger(["code MFA invalide", "MFA déjà active (désactivez-la d'abord)", "mot de passe refusé", "TICKET MFA REFUSÉE", "TROP D'ÉCHECS DU MOT DE PASSES", "LE TICKET MFA REFUSÉ"].every((t) => modNoyau109.natureDuRefusDuSecondFacteur(t) === ""),
+      "(109e-négatif) le lecteur reconnaît une phrase qui n'ouvre sur AUCUNE cause d'enrôlement ou de ticket (casse, ouverture prolongée, cause qui n'est pas en tête)");
+    exiger(sansCommentaires109(srcDe109("login.js") + srcDe109("idp.js")).match(/TICKET MFA REFUSÉ|MOT DE PASSE EXIGÉ|MOT DE PASSE REFUSÉ, AUCUNE|TROP D'ÉCHECS DU MOT DE PASSE|N'A PAS DE MOT DE PASSE LOCAL|COMPTE NON LU, ENRÔLEMENT|STATUT DE DOUBLE AUTHENTIFICATION NON LU/g) === null,
+      "(109e) un écran RECOPIE une ouverture de cause au lieu de la lire au point commun");
+    // LE GESTE RÉEL : la modale demande le mot de passe, le corps l'envoie, le champ est VIDÉ, et le refus se peint.
+    const MOT_DE_PASSE109 = "motdepasse-109-secret";
+    const enroler109 = async (mod, reponse, { motDePasse = MOT_DE_PASSE109, annuler = false } = {}) => {
+      servis109["GET /api/mfa/status"] = { corps: { enrolled: false, enabled: false } };
+      await mod.loadMfa(); await laisser109();
+      if (reponse) servis109["POST /api/mfa/enroll"] = reponse;
+      const avantAppels = appels109.length, avantCorps = corpsEnvoyes109.length, avantAvis = avis109().length;
+      const p = mod.startEnroll(); await laisser109();
+      const ov = fenetre109(); const form = ov && ov.children[0] ? ov.children[0].children[0] : null;
+      const champ = form ? form.querySelector("input[type=password]") : null;
+      if (champ) champ.value = motDePasse;
+      if (annuler && form) { const b = form.querySelector(".m-cancel"); if (b && typeof b.onclick === "function") b.onclick(); }
+      else if (form && typeof form.onsubmit === "function") form.onsubmit({ preventDefault() {} });
+      let jete = null; try { await p; } catch (e) { jete = e; }
+      await laisser109(40);
+      const envoi = corpsEnvoyes109.slice(avantCorps).find(([k]) => k === "POST /api/mfa/enroll");
+      const aveu = [enrolement109, ...enrolement109.children, ...enrolement109.querySelectorAll("div")].find((n) => n && n.getAttribute && n.getAttribute("data-refus-d-enrolement")) || null;
+      return { champ, jete, envoi, aveu, appels: appels109.slice(avantAppels), avis: avis109().slice(avantAvis).map((t) => String(t.textContent)), texte: nu109(enrolement109) };
+    };
+    const fuite109 = () => { const vus = []; for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (String(localStorage.getItem(k)).includes(MOT_DE_PASSE109)) vus.push(k); } if (nu109(document.body).includes(MOT_DE_PASSE109)) vus.push("<texte du document>"); return vus; };
+    const refusServis109 = [];
+    for (const [statut, noms] of Object.entries(CAUSES_D_ENROLEMENT109)) for (const n of noms) refusServis109.push([Number(statut), constante109(IDP109, n)]);
+    const ecartsE109 = [];
+    for (const [statut, cause] of refusServis109) {
+      const r = await enroler109(modIdp109, { statut, corps: { error: cause, id: "plume-e9-109" }, reessai: statut === 429 ? "42" : undefined });
+      const nature = modNoyau109.natureDuRefusDuSecondFacteur(cause);
+      const corpsEnvoye = r.envoi ? String(r.envoi[1]) : "";
+      if (corpsEnvoye !== JSON.stringify({ password: MOT_DE_PASSE109 })) ecartsE109.push(`${statut} ${nature} : corps envoyé ${JSON.stringify(corpsEnvoye)}`);
+      if (!r.champ || r.champ.value !== "") ecartsE109.push(`${statut} ${nature} : le champ du mot de passe n'est pas vidé`);
+      if (r.jete) ecartsE109.push(`${statut} ${nature} : le geste JETTE ${r.jete.message}`);
+      if (nature === "statut_mfa_non_lu") {
+        if (!/NON LU/.test(r.texte) || !r.texte.includes(cause.trim())) ecartsE109.push(`${statut} ${nature} : l'aveu du statut non lu n'est pas peint : « ${r.texte.slice(0, 120)} »`);
+        continue;
+      }
+      const cle = nature;
+      const attendu = modIdp109.motDeLEnrolementMfa(cle, statut === 429 ? 42 : 0) + " « " + cause.trim() + " »";
+      if (!r.aveu || r.aveu.getAttribute("data-refus-d-enrolement") !== cle || nu109(r.aveu) !== attendu) ecartsE109.push(`${statut} ${nature} : aveu « ${r.aveu ? r.aveu.getAttribute("data-refus-d-enrolement") + " / " + nu109(r.aveu).slice(0, 120) : "(aucun)"} »`);
+      if (/NON LU/.test(r.texte) && !/COMPTE NON LU/.test(r.texte)) ecartsE109.push(`${statut} ${nature} : peint comme « Statut … NON LU » : « ${r.texte.slice(0, 160)} »`);
+      if (cle === "sans_mot_de_passe_local" && /REFUSÉ/.test(nu109(r.aveu && r.aveu.children[0]))) ecartsE109.push("le compte sans mot de passe local est ACCUSÉ d'un refus");
+      if (cle === "mot_de_passe_verrouille" && !/\b42 s\b/.test(r.texte)) ecartsE109.push("le verrou du mot de passe ne dit pas son délai servi");
+      // Le refus ne pose AUCUN drapeau : le geste suivant redemande le mot de passe (la modale s'ouvre).
+      const suivant = modIdp109.startEnroll(); await laisser109();
+      const ovSuivant = fenetre109();
+      if (!ovSuivant) ecartsE109.push(`${statut} ${nature} : le geste suivant ne redemande pas le mot de passe (drapeau du statut non lu posé à tort ?)`);
+      else { const b = ovSuivant.children[0].children[0].querySelector(".m-cancel"); if (b) b.onclick(); }
+      await suivant; await laisser109();
+    }
+    exiger(refusServis109.length >= 6 && ecartsE109.length === 0,
+      `(109e) L'ENRÔLEMENT NE DEMANDE PAS LE MOT DE PASSE, NE LE VIDE PAS, OU PEINT UN REFUS DE LA PREUVE DU PREMIER FACTEUR COMME AUTRE CHOSE (souvent « Statut … NON LU ») : ${JSON.stringify(ecartsE109)}`);
+    exiger(fuite109().length === 0, `(109e) LE MOT DE PASSE SURVIT AU GESTE — dans le stockage du site ou le texte du document : ${JSON.stringify(fuite109())}`);
+    // LE QUATRE CENT NEUF : la MFA est déjà active (ou l'est devenue pendant l'enrôlement) — le statut est RELU.
+    const e409 = await enroler109(modIdp109, { statut: 409, corps: { error: "MFA déjà active (désactivez-la d'abord)" } });
+    exiger(!!e409.aveu && e409.aveu.getAttribute("data-refus-d-enrolement") === "deja_active" && e409.appels.filter((a) => a === "GET /api/mfa/status").length >= 1,
+      `(109e) la MFA déjà active à l'enrôlement ne se dit pas comme telle, ou le statut n'est pas relu : « ${e409.texte.slice(0, 200)} »`);
+    // UN MOT DE PASSE VIDE NE PART PAS ; UNE MODALE ANNULÉE NON PLUS.
+    const eVide = await enroler109(modIdp109, null, { motDePasse: "" });
+    exiger(!eVide.appels.includes("POST /api/mfa/enroll") && !!eVide.aveu && eVide.aveu.getAttribute("data-refus-d-enrolement") === "mot_de_passe_manquant",
+      `(109e) un mot de passe VIDE part au démon, ou le manque n'est pas dit : ${JSON.stringify(eVide.appels)} « ${eVide.texte.slice(0, 160)} »`);
+    const eAnnule = await enroler109(modIdp109, null, { annuler: true });
+    exiger(!eAnnule.appels.includes("POST /api/mfa/enroll") && !eAnnule.aveu && eAnnule.champ && eAnnule.champ.value === "",
+      `(109e) une modale ANNULÉE poste l'enrôlement, peint un refus, ou garde le mot de passe dans son champ`);
+    // LE SUCCÈS OUVRE LA CARTE ; UN DEUX CENTS SANS GRAINE NE L'OUVRE PAS.
+    const eSucces = await enroler109(modIdp109, { corps: { secret: "JBSWY3DPEHPK3PXP", otpauth_uri: "otpauth://totp/plume:hugo?secret=JBSWY3DPEHPK3PXP" } });
+    exiger(!eSucces.aveu && eSucces.texte.includes("JBSWY3DPEHPK3PXP") && !!document.querySelector("#mfa-code") && String(eSucces.envoi && eSucces.envoi[1]) === JSON.stringify({ password: MOT_DE_PASSE109 }),
+      `(109e-négatif) l'enrôlement ACCEPTÉ n'ouvre plus la carte, ou avoue un refus — un instrument qui avoue toujours ne mesure rien : « ${eSucces.texte.slice(0, 160)} »`);
+    for (const corps of [{}, HTML109]) {
+      const eSansGraine = await enroler109(modIdp109, { statut: 200, corps });
+      exiger(!eSansGraine.jete && !!eSansGraine.aveu && eSansGraine.aveu.getAttribute("data-refus-d-enrolement") === "enrolement_non_etabli" && !document.querySelector("#mfa-code"),
+        `(109e) UN DEUX CENTS SANS GRAINE (${typeof corps === "string" ? "page de passerelle" : "{}"}) ouvre une carte vide, fait JETER le geste (${eSansGraine.jete && eSansGraine.jete.message}), ou n'est pas dit : « ${eSansGraine.texte.slice(0, 160)} »`);
+    }
+    // L'INSTANCE ANGLAISE PEINT LA FACE ANGLAISE.
+    const causeRefusee109 = constante109(IDP109, CAUSES_D_ENROLEMENT109[403].find((n) => modNoyau109.natureDuRefusDuSecondFacteur(constante109(IDP109, n)) === "mot_de_passe_refuse") || "");
+    const eEn109 = await enroler109(modIdpEn109, { statut: 403, corps: { error: causeRefusee109 } });
+    exiger(!!eEn109.aveu && nu109(eEn109.aveu) === modIdpEn109.motDeLEnrolementMfa("mot_de_passe_refuse", 0) + " « " + causeRefusee109.trim() + " »" && /Password REFUSED/.test(nu109(eEn109.aveu)),
+      `(109e) SOUS \`LANG='en'\`, le mot de passe refusé à l'enrôlement n'est pas dit en anglais : « ${eEn109.texte.slice(0, 200)} »`);
+    exiger(fuite109().length === 0, `(109e) LE MOT DE PASSE SURVIT AUX GESTES : ${JSON.stringify(fuite109())}`);
+    const tableEnrolement109 = (srcDe109("idp.js").match(/const MOTS_DE_L_ENROLEMENT_MFA = \{[\s\S]*?\n\};/) || [""])[0];
+    const clesEnrolement109 = (tableEnrolement109.match(/^ {2}\w+: \{$/gm) || []).length;
+    exiger(clesEnrolement109 >= 9 && (tableEnrolement109.match(/^ {4}fr: /gm) || []).length === clesEnrolement109 && (tableEnrolement109.match(/^ {4}en: /gm) || []).length === clesEnrolement109,
+      "(109e) la table des refus d'enrôlement n'a pas ses DEUX faces sur chacune de ses entrées");
+    enrolement109.hidden = true; enrolement109.replaceChildren();
+    servis109["GET /api/mfa/status"] = { corps: { enrolled: false, enabled: false } };
+    await modIdp109.loadMfa(); await laisser109();
+    enrolement109.hidden = true; enrolement109.replaceChildren();
+
+    // ══ (c) ET (d) L'ÉCRAN DE CONNEXION, PAR LE FORMULAIRE RÉEL ═════════════════════════════════════
+    const formulaire109 = document.querySelector("#login-form"), erreur109 = document.querySelector("#login-err");
+    const utilisateur109 = document.querySelector("#login-user"), motDePasse109 = document.querySelector("#login-pass");
+    const blocDuCode109 = document.querySelector("#login-code-lbl"), champDuCode109 = document.querySelector("#login-code");
+    const echeance109 = document.querySelector("#login-code-echeance"), retour109 = document.querySelector("#login-code-retour");
+    instrument109(!!formulaire109 && !!erreur109 && !!utilisateur109 && !!motDePasse109 && !!blocDuCode109 && !!champDuCode109,
+      "les hôtes de l'écran de connexion d'`index.html` ne sont pas montés");
+    // L'état de départ se lit dans le BALISAGE servi : l'arbre du simulacre a déjà été parcouru par les témoins d'avant.
+    const balisage109 = srcDe109("index.html");
+    exiger(!!echeance109 && !!retour109 && /<div id="login-code-echeance"[^>]*\bhidden\b[^>]*>/.test(balisage109) && /<button id="login-code-retour" type="button"[^>]*\bhidden\b[^>]*>/.test(balisage109)
+      && echeance109.hidden === true && retour109.hidden === true && retour109.getAttribute("type") === "button",
+      "(109d) L'ÉCRAN DE CONNEXION N'A AUCUN PUITS POUR L'ÉCHÉANCE DU TICKET NI BOUTON DE RETOUR AU MOT DE PASSE (#login-code-echeance, #login-code-retour, cachés au départ, le bouton de type « button » pour ne pas soumettre)");
+    const cablageOrigine109 = { ecouteurs: formulaire109._ecouteurs, lie: formulaire109._bound, retour: retour109 && retour109.onclick };
+    const cabler109 = (mod) => { formulaire109._ecouteurs = []; formulaire109._bound = false; mod.bindLoginForm(); };
+    const soumettre109 = async () => { formulaire109.dispatchEvent(new Evenement("submit", { bubbles: true })); await laisser109(30); };
+    const etapeDuCode109 = () => blocDuCode109.style.display === "" && utilisateur109.disabled === true && motDePasse109.disabled === true && retour109.hidden === false;
+    const etapeDuMotDePasse109 = () => blocDuCode109.style.display === "none" && !utilisateur109.disabled && !motDePasse109.disabled && retour109.hidden === true && echeance109.hidden === true;
+    const ouvrirLEtape109 = async (latence = 0) => {
+      utilisateur109.disabled = false; motDePasse109.disabled = false;
+      utilisateur109.value = "hugo"; motDePasse109.value = "motdepasse";
+      servis109["POST /api/login"] = { statut: 200, corps: { mfa_required: true, ticket: "ticket-109" }, latence };
+      await soumettre109();
+    };
+    const resteAttendu109 = (s) => (Math.floor(s / 60) > 0 ? Math.floor(s / 60) + " min " + String(s % 60).padStart(2, "0") + " s" : (s % 60) + " s");
+    const tableDeConnexion109 = (src) => (src.match(/const MOTS_DE_LA_CONNEXION = \{[\s\S]*?\n\};/) || [""])[0];
+    try {
+      // ── (c) `P10.23-c` : CHAQUE PHRASE DE L'ÉCRAN, DANS SA LANGUE ────────────────────────────────
+      const PHRASES_FR109 = ["Renseigne identifiant et mot de passe.", "Identifiants invalides.", "Trop de tentatives", "Échec de connexion"];
+      for (const [langue, mod] of [["fr", modConnexion109], ["en", modConnexionEn109]]) {
+        cabler109(mod);
+        const mot = (cle, valeurs) => mod.motDeLaConnexion(cle, valeurs);
+        const vus = [];
+        const jouer = async (quoi, prep) => { erreur109.hidden = true; erreur109.replaceChildren(); utilisateur109.disabled = false; motDePasse109.disabled = false; prep(); const r0 = rechargements109; await soumettre109(); vus.push([quoi, nu109(erreur109), rechargements109 - r0, erreur109.hidden]); };
+        await jouer("vide", () => { utilisateur109.value = ""; motDePasse109.value = ""; });
+        await jouer("401", () => { utilisateur109.value = "hugo"; motDePasse109.value = "x"; servis109["POST /api/login"] = { statut: 401, corps: { error: "identifiants invalides" } }; });
+        await jouer("429+7", () => { motDePasse109.value = "x"; servis109["POST /api/login"] = { statut: 429, reessai: "7", corps: { error: "trop d'échecs d'authentification — réessayez plus tard" } }; });
+        await jouer("429", () => { motDePasse109.value = "x"; servis109["POST /api/login"] = { statut: 429, corps: { error: "trop" } }; });
+        await jouer("400 texte", () => { motDePasse109.value = "x"; servis109["POST /api/login"] = { statut: 400, corps: "requête mal formée" }; });
+        await jouer("réseau", () => { motDePasse109.value = "x"; reseauCoupe109 = true; });
+        reseauCoupe109 = false;
+        await jouer("502 HTML", () => { motDePasse109.value = "x"; servis109["POST /api/login"] = { statut: 502, corps: HTML109 }; });
+        await jouer("200 HTML", () => { motDePasse109.value = "x"; servis109["POST /api/login"] = { statut: 200, corps: HTML109 }; });
+        await jouer("200 {}", () => { motDePasse109.value = "x"; servis109["POST /api/login"] = { statut: 200, corps: {} }; });
+        await jouer("200 ok", () => { motDePasse109.value = "x"; servis109["POST /api/login"] = { statut: 200, corps: { ok: true, user: "hugo", role: "admin" } }; });
+        const attendus = {
+          "vide": [mot("identifiants_manquants"), 0], "401": [mot("identifiants_invalides"), 0], "429+7": [mot("trop_de_tentatives", { delai: 7 }), 0],
+          "429": [mot("trop_de_tentatives_sans_delai"), 0], "400 texte": [mot("echec_de_connexion_detaille", { detail: "requête mal formée" }) + " (400)", 0],
+          "réseau": [mot("echec_de_connexion_detaille", { detail: "Failed to fetch" }), 0],
+          "502 HTML": [mot("connexion_par_une_passerelle"), 0], "200 HTML": [mot("connexion_par_une_passerelle"), 0], "200 {}": [mot("connexion_sans_reponse_lisible"), 0],
+        };
+        const ecarts = vus.filter(([quoi, texte, recharges]) => quoi !== "200 ok" && (texte !== attendus[quoi][0] || recharges !== attendus[quoi][1]));
+        exiger(ecarts.length === 0,
+          `(109c) [${langue}] L'ÉCRAN DE CONNEXION NE PEINT PAS LA FACE DE SA LANGUE, colle un corps, ou RECHARGE sur une réponse sans succès : ${JSON.stringify(ecarts)}`);
+        const succes = vus.find(([quoi]) => quoi === "200 ok");
+        exiger(!!succes && succes[2] === 1, `(109c-négatif) [${langue}] le succès \`{ok: true}\` ne recharge plus l'écran — un instrument qui refuse toujours ne mesure rien : ${JSON.stringify(succes)}`);
+        if (langue === "en") {
+          const francais = vus.filter(([, texte]) => PHRASES_FR109.some((p) => texte.includes(p)) || /réessaie|Connexion NON/.test(texte));
+          exiger(francais.length === 0, `(109c) SOUS \`LANG='en'\`, L'ÉCRAN DE CONNEXION PARLE ENCORE FRANÇAIS : ${JSON.stringify(francais)}`);
+        } else {
+          exiger(vus.find(([q]) => q === "429+7")[1] === "Trop de tentatives, réessaie dans 7s." && vus.find(([q]) => q === "401")[1] === "Identifiants invalides.",
+            `(109c-négatif) la face française a changé de mots — les témoins 97 et 108 la lisent telle quelle : ${JSON.stringify(vus.slice(1, 3))}`);
+        }
+        exiger(!vus.some(([, texte]) => /<|nginx/i.test(texte)), `(109c) [${langue}] un corps HTML atteint la boîte d'erreur : ${JSON.stringify(vus.filter(([, t]) => /<|nginx/i.test(t)))}`);
+      }
+      const tableConnexion109 = tableDeConnexion109(srcDe109("login.js"));
+      const clesConnexion109 = (tableConnexion109.match(/^ {2}\w+: \{$/gm) || []).length;
+      exiger(clesConnexion109 >= 10 && (tableConnexion109.match(/^ {4}fr: /gm) || []).length === clesConnexion109 && (tableConnexion109.match(/^ {4}en: /gm) || []).length === clesConnexion109,
+        `(109c) la table des phrases de l'écran de connexion n'a pas ses DEUX faces sur chacune de ses ${clesConnexion109} entrées : une langue partirait sans l'autre`);
+      // LES FACES ANGLAISES DE LA TABLE, LUES DANS LA SOURCE : aucune ne porte de diacritique français, aucune
+      // n'égale sa face française — une face recopiée ou traduite à moitié rougit ici même si aucun geste ne la peint.
+      const litteral109 = (l) => l.replace(/\s*\},?\s*$/, "").replace(/,\s*$/, "");
+      const facesEn109 = [...tableConnexion109.matchAll(/^ {4}en: (.+)$/gm)].map((m) => litteral109(m[1]));
+      const facesFr109 = [...tableConnexion109.matchAll(/^ {4}fr: (.+)$/gm)].map((m) => litteral109(m[1]));
+      const facesMal109 = facesEn109.filter((t, i) => /[éèêàçùâîôûÉÈÀ]/.test(t) || t === facesFr109[i]);
+      exiger(facesEn109.length === clesConnexion109 && facesMal109.length === 0,
+        `(109c) une face ANGLAISE de l'écran de connexion est française, ou recopiée de sa face française : ${JSON.stringify(facesMal109)}`);
+      const horsTable109 = PHRASES_FR109.filter((p) => sansCommentaires109(srcDe109("login.js").replace(tableConnexion109, "")).includes(p));
+      exiger(horsTable109.length === 0, `(109c) une phrase française de l'écran est encore écrite HORS de sa table {fr, en} : ${JSON.stringify(horsTable109)}`);
+
+      // ── (d) `P10.23-d` : L'ÉCHÉANCE, LE RETOUR, ET AUCUNE MINUTERIE QUI SURVIVE ──────────────────
+      cabler109(modConnexion109);
+      const TENUE109 = (DUREE109 - 1) * 1000;
+      // (d1) L'ÉTAPE S'OUVRE SUR L'ÉCHÉANCE, comptée depuis l'ENVOI du mot de passe (deux secondes de latence).
+      erreur109.hidden = true; erreur109.replaceChildren();
+      const envoi109 = maintenant109;
+      await ouvrirLEtape109(2000);
+      exiger(etapeDuCode109() && echeance109.hidden === false && nu109(echeance109) === modConnexion109.motDeLaConnexion("echeance_du_ticket", { reste: resteAttendu109(DUREE109 - 1 - 2) }),
+        `(109d1) L'ÉTAPE DU CODE NE DIT PAS L'ÉCHÉANCE DU TICKET, ou la compte depuis la RÉCEPTION (elle promettrait du temps qui n'existe pas) — attendu « ${resteAttendu109(DUREE109 - 1 - 2)} », vu « ${nu109(echeance109)} »`);
+      exiger(minuteries109.size === 1, `(109d1) ${minuteries109.size} minuterie(s) armée(s) pendant l'étape du code : il en faut UNE, qui dise le décompte`);
+      // (d2) LE DÉCOMPTE BAT, ET L'ÉCHÉANCE MORD À `(durée − 1) s` APRÈS L'ENVOI, PAS PLUS TARD.
+      maintenant109 = envoi109 + TENUE109 - 1; battre109(); await laisser109(3);
+      exiger(etapeDuCode109() && nu109(echeance109) === modConnexion109.motDeLaConnexion("echeance_du_ticket", { reste: "1 s" }),
+        `(109d2) une milliseconde avant l'échéance, l'étape est fermée ou ne dit pas « 1 s » : « ${nu109(echeance109)} »`);
+      maintenant109 = envoi109 + TENUE109; battre109(); await laisser109(3);
+      exiger(etapeDuMotDePasse109() && nu109(erreur109) === modConnexion109.motDeLaConnexion("ticket_expire") && erreur109.hidden === false && motDePasse109.value === "" && champDuCode109.value === "" && utilisateur109.value === "hugo",
+        `(109d2) À L'ÉCHÉANCE, L'ÉTAPE DU CODE NE SE REFERME PAS D'ELLE-MÊME, ou ne le dit pas : « ${nu109(erreur109)} » — étape du mot de passe ${etapeDuMotDePasse109()}`);
+      exiger(minuteries109.size === 0, `(109d2) ${minuteries109.size} minuterie(s) SURVIVENT à l'échéance`);
+      // (d3) UNE ÉCHÉANCE PASSÉE SANS BATTEMENT (onglet endormi) NE PART PAS AU DÉMON.
+      erreur109.hidden = true; erreur109.replaceChildren();
+      const envoiD3109 = maintenant109;
+      await ouvrirLEtape109();
+      maintenant109 = envoiD3109 + TENUE109 + 60_000;
+      champDuCode109.value = "123456";
+      const appelsAvantD3109 = appels109.length;
+      await soumettre109();
+      exiger(!appels109.slice(appelsAvantD3109).includes("POST /api/login/mfa") && etapeDuMotDePasse109() && nu109(erreur109) === modConnexion109.motDeLaConnexion("ticket_expire") && minuteries109.size === 0,
+        `(109d3) UN CODE PRÉSENTÉ APRÈS L'ÉCHÉANCE PART AU DÉMON — qui répondrait « Code REFUSÉ », accusant le code d'un ticket périmé — ou l'expiration n'est pas dite : « ${nu109(erreur109)} » ${JSON.stringify(appels109.slice(appelsAvantD3109))}`);
+      // (d4) LE RETOUR EXPLICITE AU MOT DE PASSE.
+      erreur109.hidden = true; erreur109.replaceChildren();
+      await ouvrirLEtape109();
+      champDuCode109.value = "12";
+      retour109.click(); await laisser109(3);
+      exiger(etapeDuMotDePasse109() && erreur109.hidden === true && motDePasse109.value === "" && champDuCode109.value === "" && utilisateur109.value === "hugo" && minuteries109.size === 0,
+        `(109d4) LE BOUTON DE RETOUR NE RAMÈNE PAS AU MOT DE PASSE, laisse un champ ou une minuterie derrière lui — étape du mot de passe ${etapeDuMotDePasse109()}, ${minuteries109.size} minuterie(s)`);
+      motDePasse109.value = "motdepasse";
+      servis109["POST /api/login"] = { statut: 401, corps: { error: "identifiants invalides" } };
+      const appelsAvantD4109 = appels109.length;
+      await soumettre109();
+      exiger(appels109.slice(appelsAvantD4109).includes("POST /api/login") && !appels109.slice(appelsAvantD4109).includes("POST /api/login/mfa"),
+        `(109d4) après le retour, le geste suivant renvoie encore un code avec le ticket abandonné : ${JSON.stringify(appels109.slice(appelsAvantD4109))}`);
+      // (d5) UN NOUVEAU TICKET NE DOUBLE PAS LA MINUTERIE.
+      await ouvrirLEtape109(); retour109.click(); await laisser109(3); await ouvrirLEtape109();
+      exiger(minuteries109.size === 1 && etapeDuCode109(), `(109d5) rouvrir l'étape arme ${minuteries109.size} minuterie(s) au lieu d'UNE`);
+      // (d6) UNE RÉPONSE QUI NE VIENT PAS DU DÉMON N'ACCUSE PAS LE CODE, NE RECHARGE PAS, ET GARDE L'ÉTAPE (le ticket vaut encore).
+      for (const [statut, corps, face] of [[200, HTML109, "connexion_par_une_passerelle"], [502, HTML109, "connexion_par_une_passerelle"], [200, {}, "connexion_sans_reponse_lisible"]]) {
+        champDuCode109.value = "123456";
+        servis109["POST /api/login/mfa"] = { statut, corps };
+        const r0 = rechargements109;
+        await soumettre109();
+        exiger(rechargements109 === r0 && etapeDuCode109() && nu109(erreur109) === modConnexion109.motDeLaConnexion(face) && champDuCode109.value === "123456" && minuteries109.size === 1,
+          `(109d6) LE SECOND FACTEUR SERVI ${statut} ${typeof corps === "string" ? "HTML" : JSON.stringify(corps)} RECHARGE (${rechargements109 - r0}), quitte l'étape, colle son corps ou n'est pas nommé : « ${nu109(erreur109).slice(0, 200)} »`);
+      }
+      // (d7) LE SUCCÈS RECHARGE, ET ARRÊTE LE DÉCOMPTE AVANT.
+      servis109["POST /api/login/mfa"] = { statut: 200, corps: { ok: true, user: "hugo", role: "admin" } };
+      const r7109 = rechargements109;
+      await soumettre109();
+      exiger(rechargements109 === r7109 + 1 && minuteries109.size === 0,
+        `(109d7) LE SECOND FACTEUR ACCEPTÉ laisse ${minuteries109.size} minuterie(s) derrière lui, ou ne recharge pas (${rechargements109 - r7109}) : le décompte fuirait après la connexion`);
+      // (d8) LE REFUS QUI RAMÈNE AU MOT DE PASSE ARRÊTE LE DÉCOMPTE ; CELUI QUI GARDE L'ÉTAPE LE GARDE.
+      cabler109(modConnexion109);
+      utilisateur109.disabled = false; motDePasse109.disabled = false; blocDuCode109.style.display = "none"; retour109.hidden = true; echeance109.hidden = true;
+      await ouvrirLEtape109();
+      champDuCode109.value = "000000";
+      servis109["POST /api/login/mfa"] = { statut: 401, corps: { error: "code MFA invalide" } };
+      await soumettre109();
+      exiger(etapeDuMotDePasse109() && minuteries109.size === 0, `(109d8) le code refusé ramène au mot de passe mais laisse ${minuteries109.size} minuterie(s), ou garde l'échéance affichée`);
+      // (d8b) LE TICKET REFUSÉ (`P10.22-x`, démon) : même statut que le code refusé, autre fait — la phrase
+      //       n'accuse PAS le code, et la connexion reprend au mot de passe.
+      await ouvrirLEtape109();
+      champDuCode109.value = "123456";
+      servis109["POST /api/login/mfa"] = { statut: 401, corps: { error: CAUSE_TICKET109 } };
+      await soumettre109();
+      exiger(nu109(erreur109) === modConnexion109.motDuSecondFacteur("ticket_refuse") + " « " + CAUSE_TICKET109.trim() + " »" && !/Code REFUSÉ/.test(nu109(erreur109.children[0]))
+        && /PAS en cause/.test(nu109(erreur109.children[0])) && etapeDuMotDePasse109() && minuteries109.size === 0,
+        `(109d8b) LE TICKET REFUSÉ SE DIT « CODE REFUSÉ » — il accuse le code d'un ticket révoqué ou périmé —, ou l'écran reste sur l'étape : « ${nu109(erreur109).slice(0, 300)} »`);
+      const tableTicket109 = [{ status: 401, cause: CAUSE_TICKET109 }, { status: 401, cause: "code MFA invalide" }, { status: 401 }, { status: 503, cause: CAUSE_TICKET109 }].map((r) => modConnexion109.cleDuRefusDuSecondFacteur(r)).join(",");
+      exiger(tableTicket109 === "ticket_refuse,code_refuse,code_refuse,second_facteur_refuse",
+        `(109d8b) le discriminant ne sépare plus le ticket refusé du code refusé par la CAUSE sous le même statut : ${tableTicket109}`);
+      // (d9) L'INSTANCE ANGLAISE DIT L'ÉCHÉANCE ET L'EXPIRATION EN ANGLAIS.
+      cabler109(modConnexionEn109);
+      const envoiD9109 = maintenant109;
+      await ouvrirLEtape109();
+      const echeanceEn109 = nu109(echeance109);
+      maintenant109 = envoiD9109 + TENUE109; battre109(); await laisser109(3);
+      exiger(echeanceEn109 === modConnexionEn109.motDeLaConnexion("echeance_du_ticket", { reste: resteAttendu109(DUREE109 - 1) }) && /expires in/.test(echeanceEn109)
+        && nu109(erreur109) === modConnexionEn109.motDeLaConnexion("ticket_expire") && /EXPIRED/.test(nu109(erreur109)) && minuteries109.size === 0
+        && ![echeanceEn109, nu109(erreur109)].some((t) => /[éèêàçù]/.test(t)),
+        `(109d9) SOUS \`LANG='en'\`, l'échéance ou l'expiration n'est pas dite en anglais : « ${echeanceEn109} » / « ${nu109(erreur109)} »`);
+    } finally {
+      formulaire109._ecouteurs = cablageOrigine109.ecouteurs; formulaire109._bound = cablageOrigine109.lie;
+      if (retour109) { retour109.onclick = cablageOrigine109.retour; retour109.hidden = true; }
+      if (echeance109) { echeance109.hidden = true; echeance109.textContent = ""; }
+      utilisateur109.disabled = false; motDePasse109.disabled = false; utilisateur109.value = ""; motDePasse109.value = "";
+      if (blocDuCode109) blocDuCode109.style.display = "none";
+      if (champDuCode109) champDuCode109.value = "";
+      erreur109.hidden = true; erreur109.replaceChildren();
+    }
+    exiger(/\nconst MOTS_DE_LA_REPONSE_HORS_DEMON = \{\n {2}page_de_passerelle: \{\n {4}fr: [^\n]+\n {4}en: [^\n]+\n {2}corps_illisible: \{\n {4}fr: [^\n]+\n {4}en: [^\n]+\n\};/.test(srcDe109("core.js")),
+      "(109a) la table des faces d'une réponse hors démon n'a pas ses DEUX faces sur chacune de ses deux entrées");
+  } finally {
+    globalThis.fetch = fetchOrigine109; globalThis.setTimeout = minuterieOrigine109;
+    globalThis.setInterval = intervalleOrigine109; globalThis.clearInterval = finIntervalleOrigine109;
+    Date.now = horlogeOrigine109; globalThis.location.reload = rechargementOrigine109;
+    S109.isAdmin = etatOrigine109.admin; S109.AUTH = etatOrigine109.auth;
+    document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
+  }
+  console.log(`(109) OK — \`apiSend\` sépare le corps VIDE légitime (les ${routesA204109.length} routes mutantes à deux cent quatre, dérivées du démon, rendent toujours \`null\`), le deux cents non JSON (page de passerelle ou corps illisible : un refus NOMMÉ, jamais un succès) et la page de passerelle en cinq cents (sa phrase, sans son HTML), et garde la phrase d'un refus du démon en texte brut ; une page de passerelle servie en deux cents n'est plus « Incident déclaré », et les six gestes qui lisent leur corps de succès gardent leur face « non établie ». L'écran de connexion parle les deux langues — identifiants manquants, invalides, trop de tentatives (avec et sans délai), échec, passerelle, réponse sans succès — et ne recharge plus que sur \`{ok: true}\`. L'étape du code dit l'échéance du ticket (${DUREE109} s au démon, tenue à ${DUREE109 - 1} s depuis l'ENVOI), se referme d'elle-même en le disant, ne laisse partir aucun code après elle, offre le retour au mot de passe, et n'arme qu'UNE minuterie, arrêtée à toute sortie de l'étape ; le ticket refusé s'y dit sans accuser le code. L'enrôlement demande le mot de passe du compte dans la modale partagée, l'envoie une fois et VIDE son champ ; chacun des refus nommés que \`mfa_enroll\` sert (${Object.values(CAUSES_D_ENROLEMENT109).flat().length} causes relues dans le démon, plus le quatre cent neuf) a sa face, et aucun n'est plus peint « statut NON LU ». CE QUI ÉTAIT FAUX : quatre phrases et non trois ; une durée réelle de ${DUREE109 - 1} à ${DUREE109} s ; et l'écran de connexion avait le défaut d'\`apiSend\`.`);
 }
 
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;

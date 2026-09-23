@@ -1,6 +1,6 @@
 // viz.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // Explore + viz/charts: drilldown, fenetre glissante, requete interactive, rendu table/graphes (partages avec dashboards).
-import { $, CSSV, LANG, LOC, SEV, api, apiSend, bornerLePopoverSousSonAncre, causeDeLaTraceManquante, cleDeLaSuiteDuRegistre, cleDeLIdentifiantDeRiposte, colComparator, largeursDeColonnes, confirmModal, esc, flashStopped, fmtTs, ic, makePager, motDeLaRiposteSansIdentifiant, muted, phraseDeLaCreationDeRiposteRefusee, phraseDeLaTraceManquante, sev, socIsAdmin, toast, tzOpts } from './core.js';
+import { $, CSSV, LANG, LOC, SEV, api, apiSend, unDeuxCentsSansCorpsLisible, bornerLePopoverSousSonAncre, causeDeLaTraceManquante, cleDeLaSuiteDuRegistre, cleDeLIdentifiantDeRiposte, colComparator, largeursDeColonnes, confirmModal, esc, flashStopped, fmtTs, ic, makePager, motDeLaRiposteSansIdentifiant, muted, phraseDeLaCreationDeRiposteRefusee, phraseDeLaTraceManquante, sev, socIsAdmin, toast, tzOpts } from './core.js';
 import { S } from './state.js';
 // P11.4-h : LE clic qui respecte une sélection (mécanisme partagé, `copie_et_selection.js`).
 import { clicQuiRespecteLaSelection } from './copie_et_selection.js';
@@ -317,7 +317,11 @@ async function banIp(ip, host) {
   // refus qui serait servi en 200.
   let j;
   try { j = await apiSend('/actions', 'POST', body); }
-  catch (e) { toast(phraseDeLaCreationDeRiposteRefusee(e), 'bad', 9000); return; }
+  catch (e) {
+    // `P10.22-b` — sur un deux cents sans corps lisible, la face « absent » ci-dessous, et non « le démon a refusé ».
+    if (!unDeuxCentsSansCorpsLisible(e)) { toast(phraseDeLaCreationDeRiposteRefusee(e), 'bad', 9000); return; }
+    j = null;
+  }
   if (j && j.error) { toast(phraseDeLaCreationDeRiposteRefusee({ causeDuDemon: String(j.error).trim() }), 'bad', 9000); return; }
   // `P10.21-y` — un identifiant servi se nomme, dans le registre du succès ; son absence se dit dans celui
   // de l'information, et assez longtemps pour être lue (même partage que l'étape de runbook).

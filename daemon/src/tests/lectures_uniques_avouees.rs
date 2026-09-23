@@ -125,6 +125,15 @@ async fn p10_20b_le_statut_de_double_authentification_est_lu_ou_avoue() {
 // (2) LA GARDE ANTI-ÉCRASEMENT DE L'ENRÔLEMENT
 // -------------------------------------------------------------------------------------
 
+/// `P10.23-b` — l'enrôlement exige le mot de passe du compte et l'adresse du client (verrou de la connexion) :
+/// ce témoin juge la garde de LECTURE, il présente donc la preuve juste pour que seule elle puisse refuser.
+fn lqo_pair() -> ConnectInfo<std::net::SocketAddr> {
+    ConnectInfo("10.30.0.1:45454".parse().expect("adresse de test"))
+}
+fn lqo_avec_le_mot_de_passe() -> Json<Value> {
+    Json(json!({ "password": "motdepasse12345" }))
+}
+
 /// CE QU'IL TIENT : `mfa_enroll` refuse en 409 quand une MFA est ACTIVE (contrôle positif), et REFUSE
 /// en 503 quand il n'a pas pu LIRE `enabled` — au lieu de franchir sa garde et de reposer
 /// `secret=<neuf>, enabled=0`, c'est-à-dire de DÉSARMER le second facteur du compte sur une panne de
@@ -143,12 +152,12 @@ async fn p10_20b_l_enrolement_mfa_ne_franchit_pas_sa_garde_sur_une_lecture_ratee
                      VALUES('adm','SEED',1,'[]',-1,0,0);");
 
     // CONTRÔLE POSITIF — la garde VOIT la MFA active et refuse en 409.
-    let (statut, conflit) = lqo_corps(mfa_enroll(State(st.clone()), Extension(au.clone())).await).await;
+    let (statut, conflit) = lqo_corps(mfa_enroll(State(st.clone()), lqo_pair(), Extension(au.clone()), lqo_avec_le_mot_de_passe()).await).await;
     assert_eq!(statut, 409, "MFA active : l'enrôlement est refusé : {conflit}");
 
     // UNE LIGNE ILLISIBLE : la garde ne peut plus LIRE `enabled`.
     lqo_ecrire(&st, "UPDATE user_mfa SET enabled=x'FF' WHERE user='adm';");
-    let (statut, avoue) = lqo_corps(mfa_enroll(State(st.clone()), Extension(au.clone())).await).await;
+    let (statut, avoue) = lqo_corps(mfa_enroll(State(st.clone()), lqo_pair(), Extension(au.clone()), lqo_avec_le_mot_de_passe()).await).await;
     assert_eq!(statut, 503, "lecture non faite : l'enrôlement REFUSE, il ne franchit pas sa garde : {avoue}");
     assert_eq!(avoue["error"], json!(CAUSE_MFA_NON_LUE));
     let reste: String = {
@@ -159,7 +168,7 @@ async fn p10_20b_l_enrolement_mfa_ne_franchit_pas_sa_garde_sur_une_lecture_ratee
 
     // LA TABLE RETIRÉE : même refus, par l'autre voie.
     lqo_retirer_la_table(&st, "user_mfa");
-    let (statut, sans_table) = lqo_corps(mfa_enroll(State(st.clone()), Extension(au.clone())).await).await;
+    let (statut, sans_table) = lqo_corps(mfa_enroll(State(st.clone()), lqo_pair(), Extension(au.clone()), lqo_avec_le_mot_de_passe()).await).await;
     assert_eq!(statut, 503, "table hors d'atteinte : même refus : {sans_table}");
 }
 

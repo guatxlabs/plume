@@ -3,7 +3,7 @@
 // change côté auth. Anti-XSS : tout texte via textContent/esc ; le secret (client_secret / bind pw) est un
 // champ password, JAMAIS réaffiché, ré-envoyé UNIQUEMENT s'il est re-saisi (omis = conservé côté serveur).
 // La vraie garde reste SERVEUR (/api/idp/* admin-only ; /api/mfa/* borné à au.name).
-import { $, LANG, api, apiSend, confirmWithConsequence, disclosure, esc, fmtTs, modal, motDuRefusDuSecondFacteur, muted, natureDuRefusDuSecondFacteur, phraseDuRefusDuDemon, toast, withBusy } from './core.js';
+import { $, LANG, api, apiSend, unDeuxCentsSansCorpsLisible, confirmWithConsequence, disclosure, esc, fmtTs, modal, motDuRefusDuSecondFacteur, muted, natureDuRefusDuSecondFacteur, phraseDuRefusDuDemon, toast, withBusy } from './core.js';
 import { enabledSwitch } from './producer_ui.js';
 import { uiIsAdmin } from './multitenant.js';
 
@@ -246,21 +246,40 @@ async function startEnroll() {
   // endroits. Le démon refuserait de toute façon (503 nommé) : ce qui se joue ici est de ne pas présenter
   // comme applicable un geste qui désarmerait un second facteur si la garde tombait.
   if (STATUT_MFA_NON_LU) { toast("Le statut de double authentification de ce compte n'a PAS été lu : lancer un enrôlement ici reposerait une graine TOTP neuve avec le second facteur désarmé, par-dessus la MFA peut-être ACTIVE que cette lecture n'a pas pu rendre — le démon refuse déjà l'écriture, et ce bouton ne doit pas la promettre.", 'bad', 9000); return; }
+  // `P10.23-b` (démon) — LE MOT DE PASSE DU COMPTE, DEMANDÉ AVANT TOUTE GRAINE, ET JAMAIS GARDÉ. `mfa_enroll`
+  // (daemon/src/handlers/idp.rs) exige `{password}` : une session ouverte ne prouve pas que c'est le titulaire qui
+  // enrôle, et une graine activée verrouille la connexion du compte derrière elle. Cette console envoyait `{}`, et
+  // peignait TOUT refus nommé comme « Statut de double authentification NON LU » — le mot de passe exigé, refusé,
+  // freiné, le compte sans mot de passe local et le compte non lu compris. Le champ est CELUI DE CE GESTE (posé
+  // dans la modale partagée, lu puis VIDÉ dès qu'elle se referme) ; la valeur ne vit que dans cette fonction, le
+  // temps de la requête, et n'atteint ni un état du module ni le stockage du site.
+  const champ = document.createElement('input');
+  champ.type = 'password'; champ.autocomplete = 'current-password'; champ.required = true;
+  champ.dataset.motDePasseDEnrolement = '1';   // marque de POSE (harnais) : aucune règle CSS ne la vise
+  const etiquette = document.createElement('label'); etiquette.className = 'modal-f';
+  const libelle = document.createElement('span'); libelle.textContent = 'Mot de passe du compte';
+  etiquette.append(libelle, champ);
+  const choix = await modal({ title: 'Enrôler un second facteur', message: "Le démon exige le mot de passe de ce compte avant de poser une graine TOTP : une session ouverte ne prouve pas que c'est son titulaire qui enrôle.", okText: 'Continuer', body: etiquette });
+  let motDePasse = champ.value;
+  champ.value = '';
+  if (choix === null) return;
+  if (!motDePasse) { await avouerLeRefusDEnrolement('mot_de_passe_manquant', '', 0); return; }
   let data;
-  try { data = await apiSend('/mfa/enroll', 'POST', {}); }
+  try { data = await apiSend('/mfa/enroll', 'POST', { password: motDePasse }); }
   catch (e) {
-    // L'enrôlement refusé par une lecture ratée s'écrit DANS le panneau, pas dans un avis qui s'efface :
-    // la cause dit pourquoi le second facteur n'a pas été touché, et elle doit rester lisible le temps de
-    // la lire. Le drapeau est posé ici aussi — la garde du démon peut tomber entre la charge et le clic.
-    const cause = (e && e.causeDuDemon) || '';
-    if (cause) {
-      STATUT_MFA_NON_LU = true;
-      enroll.hidden = false;
-      avouerLeStatutMfaNonLu(enroll, cause);
+    // L'enrôlement refusé s'écrit DANS le panneau, pas dans un avis qui s'efface : la cause dit pourquoi le
+    // second facteur n'a pas été touché. Le statut non lu garde son aveu et son drapeau — la garde du démon peut
+    // tomber entre la charge et le clic — ; les cinq refus de la preuve du mot de passe ont chacun leur face.
+    if (unDeuxCentsSansCorpsLisible(e)) data = null;
+    else {
+      const cle = cleDuRefusDEnrolement(e);
+      if (cle === 'statut_mfa_non_lu') { STATUT_MFA_NON_LU = true; enroll.hidden = false; avouerLeStatutMfaNonLu(enroll, e.causeDuDemon); return; }
+      await avouerLeRefusDEnrolement(cle, phraseDuRefusDuDemon(e), e.delaiDuRefus);
       return;
     }
-    toast('erreur : ' + e.message, 'bad'); return;
-  }
+  } finally { motDePasse = ''; }
+  // Un deux cents sans la graine n'ouvre pas de carte vide : il se dit, après relecture du statut.
+  if (!(data && typeof data.secret === 'string' && data.secret && typeof data.otpauth_uri === 'string')) { await avouerLeRefusDEnrolement('enrolement_non_etabli', '', 0); return; }
   enroll.hidden = false;
   // La carte reprend le chrome .ruleform (comme openIdpForm) -> l'input #mfa-code et le panneau
   // sont stylés au lieu des défauts navigateur.
@@ -282,7 +301,11 @@ async function startEnroll() {
     const code = inp.value.trim();
     let r;
     try { r = await apiSend('/mfa/verify', 'POST', { code }); }
-    catch (e) { await avouerLeRefusDActivation(cleDuRefusDActivation(e), phraseDuRefusDuDemon(e), e.delaiDuRefus, resultat); return; }
+    catch (e) {
+      // `P10.22-b` — un deux cents sans corps lisible n'est pas un refus : « activation non établie », ci-dessous.
+      if (!unDeuxCentsSansCorpsLisible(e)) { await avouerLeRefusDActivation(cleDuRefusDActivation(e), phraseDuRefusDuDemon(e), e.delaiDuRefus, resultat); return; }
+      r = null;
+    }
     if (!(r && r.ok === true && Array.isArray(r.recovery_codes))) { await avouerLeRefusDActivation('activation_non_etablie', '', 0, resultat); return; }
     toast('MFA activée', 'ok');
     showRecovery(enroll, r.recovery_codes);
@@ -381,6 +404,80 @@ function avouerLaDesactivation(cle, cause, delai) {
   hote.replaceChildren(aveu);
 }
 
+// `P10.23-b` (démon) — L'ENRÔLEMENT ET LA PREUVE DU PREMIER FACTEUR : UNE FACE PAR FAIT. `mfa_enroll` refuse en
+// quatre cent trois le mot de passe absent (`CAUSE_MOT_DE_PASSE_EXIGE_POUR_ENROLER`), refusé
+// (`CAUSE_MOT_DE_PASSE_REFUSE_A_L_ENROLEMENT`, échec COMPTÉ au verrou de la connexion) et le compte sans mot de
+// passe local (`CAUSE_ENROLEMENT_SANS_MOT_DE_PASSE_LOCAL` : fédéré ou SSO — rien à accuser, son second facteur est
+// celui de son fournisseur) ; en quatre cent vingt-neuf, avec son délai, le verrou du mot de passe
+// (`CAUSE_MOT_DE_PASSE_VERROUILLE_A_L_ENROLEMENT`) ; en cinq cent trois le compte non lu
+// (`CAUSE_COMPTE_NON_LU_A_L_ENROLEMENT`, ni accepté ni refusé) et le statut non lu (`CAUSE_MFA_NON_LUE`) ; en
+// quatre cent neuf la MFA déjà active — lue avant, ou devenue active PENDANT l'enrôlement. Les causes sont lues
+// au point commun (`natureDuRefusDuSecondFacteur`) ; le témoin 109 les relit dans le démon.
+const MOTS_DE_L_ENROLEMENT_MFA = {
+  mot_de_passe_manquant: {
+    fr: "Enrôlement NON LANCÉ : le mot de passe du compte est requis, et rien n'a été envoyé au démon.",
+    en: 'Enrollment NOT STARTED: the account password is required, and nothing was sent to the daemon.' },
+  mot_de_passe_exige: {
+    fr: "Enrôlement REFUSÉ : le démon n'a reçu aucun mot de passe. Aucune graine n'est posée, aucun échec n'est compté. Le démon en nomme la cause —",
+    en: 'Enrollment REFUSED: the daemon received no password. No seed is set, no failure is counted. The daemon names the cause —' },
+  mot_de_passe_refuse: {
+    fr: "Mot de passe REFUSÉ : aucune graine n'est enrôlée, et l'échec est compté comme à la connexion. Le démon en nomme la cause —",
+    en: 'Password REFUSED: no seed is enrolled, and the failure is counted as at sign-in. The daemon names the cause —' },
+  mot_de_passe_verrouille: {
+    fr: "Enrôlement FREINÉ : trop d'échecs du mot de passe sur ce compte depuis cette adresse — réessaie dans {delai} s. Le mot de passe n'a pas été examiné, aucune graine n'est posée. Le démon en nomme la cause —",
+    en: 'Enrollment THROTTLED: too many password failures on this account from this address — try again in {delai} s. The password was not examined, no seed is set. The daemon names the cause —' },
+  mot_de_passe_verrouille_sans_delai: {
+    fr: "Enrôlement FREINÉ : trop d'échecs du mot de passe sur ce compte depuis cette adresse, jusqu'à la fin du délai. Le mot de passe n'a pas été examiné, aucune graine n'est posée. Le démon en nomme la cause —",
+    en: 'Enrollment THROTTLED: too many password failures on this account from this address, until the delay ends. The password was not examined, no seed is set. The daemon names the cause —' },
+  sans_mot_de_passe_local: {
+    fr: "Pas de double authentification plume pour ce compte : il n'a pas de mot de passe local (compte fédéré ou SSO), et son second facteur est celui de son fournisseur d'identité. Rien n'est posé. Le démon en nomme la cause —",
+    en: 'No plume two-factor authentication for this account: it has no local password (federated or SSO account), and its second factor is the one of its identity provider. Nothing is set. The daemon names the cause —' },
+  compte_non_lu: {
+    fr: "Enrôlement ni accepté ni refusé : le compte n'a pas pu être lu. Aucune graine n'est posée, aucun échec n'est compté — réessaie. Le démon en nomme la cause —",
+    en: 'Enrollment neither accepted nor refused: the account could not be read. No seed is set, no failure is counted — try again. The daemon names the cause —' },
+  deja_active: {
+    fr: "Rien n'est enrôlé : la double authentification est DÉJÀ ACTIVE sur ce compte (elle a pu l'être pendant l'enrôlement). Son statut, relu, est affiché ci-dessus. Le démon a répondu —",
+    en: 'Nothing is enrolled: two-factor authentication is ALREADY ACTIVE on this account (it may have become so during the enrollment). Its status, read again, is shown above. The daemon answered —' },
+  enrolement_refuse: {
+    fr: "Enrôlement REFUSÉ : le démon ne l'a pas confirmé. Il a répondu —",
+    en: 'Enrollment REFUSED: the daemon did not confirm it. It answered —' },
+  enrolement_non_etabli: {
+    fr: "Le démon a répondu sans servir de graine : rien ici n'établit qu'un enrôlement est en attente. Son statut, relu, est affiché ci-dessus.",
+    en: 'The daemon answered without serving a seed: nothing here establishes that an enrollment is pending. Its status, read again, is shown above.' },
+};
+// LE STATUT D'ABORD, LA CAUSE ENSUITE — la forme des deux discriminants voisins. `statut_mfa_non_lu` n'a pas de
+// face ici : il garde l'aveu et le drapeau du statut non lu (`avouerLeStatutMfaNonLu`).
+function cleDuRefusDEnrolement(e) {
+  const statut = e && e.statutDuRefus;
+  const nature = natureDuRefusDuSecondFacteur(e && e.causeDuDemon);
+  if (statut === 503 && nature === 'statut_mfa_non_lu') return 'statut_mfa_non_lu';
+  if (statut === 503 && nature === 'compte_non_lu') return 'compte_non_lu';
+  if (statut === 403 && nature === 'mot_de_passe_exige') return 'mot_de_passe_exige';
+  if (statut === 403 && nature === 'mot_de_passe_refuse') return 'mot_de_passe_refuse';
+  if (statut === 403 && nature === 'sans_mot_de_passe_local') return 'sans_mot_de_passe_local';
+  if (statut === 429 && nature === 'mot_de_passe_verrouille') return 'mot_de_passe_verrouille';
+  if (statut === 409) return 'deja_active';
+  return 'enrolement_refuse';
+}
+function motDeLEnrolementMfa(cle, delai) {
+  const cleServie = cle === 'mot_de_passe_verrouille' && !(delai > 0) ? 'mot_de_passe_verrouille_sans_delai' : cle;
+  const mots = MOTS_DE_L_ENROLEMENT_MFA[cleServie];
+  return (LANG === 'en' ? mots.en : mots.fr).replace('{delai}', String(delai));
+}
+// Au puits du geste (`#mfa-enroll`). La MFA déjà active et l'enrôlement non établi décrivent un état qui n'est
+// pas celui du panneau : le statut est RELU d'abord — la relecture vide le panneau —, l'aveu posé ensuite.
+const ENROLEMENT_A_RELIRE = new Set(['deja_active', 'enrolement_non_etabli']);
+async function avouerLeRefusDEnrolement(cle, cause, delai) {
+  const mot = motDeLEnrolementMfa(cle, delai);
+  if (ENROLEMENT_A_RELIRE.has(cle)) await loadMfa();
+  const hote = $('#mfa-enroll');
+  if (!hote) { toast(cause ? mot + ' « ' + cause + ' »' : mot, 'bad', 9000); return; }
+  const aveu = aveuDuPanneau(mot, cause);
+  aveu.dataset.refusDEnrolement = cle;
+  hote.hidden = false;
+  hote.replaceChildren(aveu);
+}
+
 // `P10.22-n` — L'ACTIVATION (`/api/mfa/verify`) LIT SES REFUS NEUFS (`P10.22-l`, `-m`). Le démon refuse une
 // MFA DÉJÀ ACTIVE en quatre cent neuf AVANT tout examen du code, et un enrôlement changé pendant la
 // vérification en quatre cent neuf nommé (`CAUSE_ENROLEMENT_CHANGE_PENDANT_LA_VERIFICATION`) ; l'écriture
@@ -447,7 +544,11 @@ async function disableMfa() {
   const code = String(r.code || '');
   let j;
   try { j = await apiSend('/mfa/disable', 'POST', { code: code.trim() }); }
-  catch (e) { avouerLaDesactivation(cleDuRefusDeDesactivation(e), phraseDuRefusDuDemon(e), e.delaiDuRefus); return; }
+  catch (e) {
+    // `P10.22-b` — un deux cents sans corps lisible n'est pas un refus : « désactivation non établie », ci-dessous.
+    if (!unDeuxCentsSansCorpsLisible(e)) { avouerLaDesactivation(cleDuRefusDeDesactivation(e), phraseDuRefusDuDemon(e), e.delaiDuRefus); return; }
+    j = null;
+  }
   if (j && j.ok === true) { toast('MFA désactivée', 'ok'); loadMfa(); return; }
   // Un deux cents qui ne porte pas le succès de la route : le statut est RELU d'abord — la relecture vide
   // le puits —, l'aveu est posé ensuite.
@@ -462,4 +563,5 @@ async function disableMfa() {
 // et `motDeLActivationMfa` partent pour le même harnais (témoin 108) : les refus de désactiver et d'activer
 // se mesurent en JOUANT les gestes, modales comprises, et les discriminants se jugent dans les deux sens sur
 // les statuts et les causes que le démon sert. Aucun usage applicatif hors de ce module.
-export { startEnroll, disableMfa, cleDuRefusDeDesactivation, motDeLaDesactivationMfa, cleDuRefusDActivation, motDeLActivationMfa };
+// `P10.23-b` — `cleDuRefusDEnrolement` et `motDeLEnrolementMfa` partent pour le témoin 109, au même titre.
+export { startEnroll, disableMfa, cleDuRefusDeDesactivation, motDeLaDesactivationMfa, cleDuRefusDActivation, motDeLActivationMfa, cleDuRefusDEnrolement, motDeLEnrolementMfa };

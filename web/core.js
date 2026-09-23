@@ -288,9 +288,11 @@ function miniMenu(anchor, items) {
 // PANNE TRANSITOIRE DE PASSERELLE : détecte un 502/503/504 de reverse-proxy (ou un corps HTML « no available
 // server » servi pendant la fenêtre de rollout) et renvoie un message propre — au lieu de surfacer le corps brut
 // (« réponse non-JSON … no available server »). null = ce n'est PAS transitoire (comportement inchangé).
+// `P10.22-b` — la reconnaissance d'une page de passerelle est PARTAGÉE avec `apiSend` (plus bas) : un seul motif.
+const RESSEMBLE_A_UNE_PAGE_DE_PASSERELLE = /no available server|<!doctype|<html/i;
 function transientGatewayMsg(status, body) {
   if (status === 502 || status === 503 || status === 504) return 'Service momentanément indisponible, réessaie dans un instant.';
-  if (body && /no available server|<!doctype|<html/i.test(body)) return 'Service momentanément indisponible, réessaie dans un instant.';
+  if (body && RESSEMBLE_A_UNE_PAGE_DE_PASSERELLE.test(body)) return 'Service momentanément indisponible, réessaie dans un instant.';
   return null;
 }
 
@@ -459,9 +461,9 @@ function phraseDeLaTraceManquante(cause) {
 // POINT COMMUN, PARCE QU'ELLES ONT TROIS USAGES.
 //
 // CE QUE LE DÉMON SERT. `action_create` (daemon/src/handlers/actions.rs) ne rend un succès qu'avec son
-// `id`. `apiSend`, plus bas, rend `null` sur un deux cents dont le corps est VIDE ou n'est pas du JSON — une
-// page de passerelle servie en deux cents en est un, et la requête n'a alors peut-être jamais atteint le
-// démon. Rien, sur ces deux formes, n'établit qu'une riposte a été créée.
+// `id`. Un deux cents dont le corps est VIDE ou n'est pas du JSON — une page de passerelle servie en deux cents
+// en est un, et la requête n'a alors peut-être jamais atteint le démon — arrive aux surfaces comme `null`
+// (`apiSend`, ou `unDeuxCentsSansCorpsLisible` dans leur `catch`, plus bas). Rien, sur ces deux formes, n'établit qu'une riposte a été créée.
 //
 // POURQUOI ICI. `P10.21-y` a écrit la partition dans `web/viz.js` pour le geste « bannir », seul usage
 // alors. Les deux autres surfaces qui créent une riposte par la même route la lisent désormais : l'étape
@@ -507,6 +509,17 @@ const OUVERTURES_DES_REFUS_DU_SECOND_FACTEUR = [
   ['mfa_non_desactivee', /^DOUBLE AUTHENTIFICATION TOUJOURS ACTIVE(?![\p{L}\p{N}])/u],
   ['mfa_non_activee', /^DOUBLE AUTHENTIFICATION NON ACTIVÉE(?![\p{L}\p{N}])/u],
   ['enrolement_change', /^ENRÔLEMENT CHANGÉ PENDANT LA VÉRIFICATION(?![\p{L}\p{N}])/u],
+  // `P10.22-x` (démon) — le ticket de la connexion refusé, expiré ou RÉVOQUÉ (il suit désormais la révocation des
+  // sessions) : quatre cent un comme le code refusé, mais le code n'y est PAS examiné. Lu par l'écran de connexion.
+  ['ticket_refuse', /^TICKET MFA REFUSÉ(?![\p{L}\p{N}])/u],
+  // `P10.20-b` — le statut du second facteur non lu (`mfa_status`, `mfa_enroll`) ; et `P10.23-b` (démon) — la preuve
+  // du premier facteur exigée à l'ENRÔLEMENT : ses cinq refus nommés, lus par le panneau MFA (`web/idp.js`).
+  ['statut_mfa_non_lu', /^STATUT DE DOUBLE AUTHENTIFICATION NON LU(?![\p{L}\p{N}])/u],
+  ['mot_de_passe_exige', /^MOT DE PASSE EXIGÉ POUR ENRÔLER(?![\p{L}\p{N}])/u],
+  ['mot_de_passe_refuse', /^MOT DE PASSE REFUSÉ, AUCUNE GRAINE ENRÔLÉE(?![\p{L}\p{N}])/u],
+  ['mot_de_passe_verrouille', /^TROP D'ÉCHECS DU MOT DE PASSE(?![\p{L}\p{N}])/u],
+  ['sans_mot_de_passe_local', /^ENRÔLEMENT REFUSÉ, CE COMPTE N'A PAS DE MOT DE PASSE LOCAL(?![\p{L}\p{N}])/u],
+  ['compte_non_lu', /^COMPTE NON LU, ENRÔLEMENT NI ACCEPTÉ NI REFUSÉ(?![\p{L}\p{N}])/u],
 ];
 // Rend la nature du refus, ou '' quand la phrase n'ouvre sur aucune cause connue — l'appelant retombe alors
 // sur son refus générique, qui colle la phrase sans rien en affirmer.
@@ -562,17 +575,76 @@ async function api(path) {
   }
 }
 
+// `P10.22-b` — UNE RÉPONSE QUI NE VIENT PAS (LISIBLEMENT) DU DÉMON SE NOMME, AU POINT COMMUN.
+//
+// CE QUE LE DÉMON SERT À UNE MUTATION, RELU GESTIONNAIRE PAR GESTIONNAIRE (daemon/src/server/groupes_de_routes.rs,
+// puis chaque gestionnaire POST/PUT/DELETE ; le témoin 109 refait la dérivation) : un succès est un corps JSON,
+// ou un corps VIDE (deux cent quatre — `incident_set`, `case_update`, `ack`, `view_update`… ) ; un refus est un
+// objet JSON `{error}` (`err_json`) ou, sur quelques gestionnaires, du TEXTE BRUT (`sources.rs`, `tenants.rs`,
+// le filtre d'hôte d'`auth.rs`). JAMAIS de HTML, et jamais un cinq cent deux ni un cinq cent quatre sans cause
+// nommée — le seul cinq cent deux du démon passe par `err_json`. Ce qui sort de ces formes vient d'un
+// INTERMÉDIAIRE (passerelle, page d'accès, proxy qui coupe), ou a été abîmé en route.
+//
+// DEUX NATURES, ET RIEN D'AUTRE :
+//   · `page_de_passerelle` — un corps HTML ou « no available server », QUEL QUE SOIT le statut ; un cinq cent
+//     deux ou un cinq cent quatre qui ne nomme aucune cause ; un cinq cent trois à corps VIDE ;
+//   · `corps_illisible` — un deux cents dont le corps non vide n'est pas du JSON (tronqué en route ?).
+// Rend '' pour tout le reste — un refus nommé, un refus du démon en texte brut (sa phrase reste la cause), un
+// succès JSON, un corps vide — : ce qui n'est pas reconnu garde exactement le chemin d'avant.
+// CE QU'ELLE NE SAIT PAS DIRE : si le démon a PRIS la demande. Un cinq cent quatre peut suivre une écriture
+// faite ; une page d'accès servie en deux cents ne l'a sans doute jamais laissée passer. Les faces le disent :
+// rien ici ne l'établit.
+function natureDeLaReponseHorsDemon(statut, corps) {
+  const texte = String(corps || '');
+  const vide = !texte.trim();
+  if (statut >= 200 && statut < 300) {
+    if (vide) return '';
+    try { JSON.parse(texte); return ''; } catch { /* rangé ci-dessous */ }
+    return RESSEMBLE_A_UNE_PAGE_DE_PASSERELLE.test(texte) ? 'page_de_passerelle' : 'corps_illisible';
+  }
+  if (causeNommeeParLeDemon(texte)) return '';
+  if (RESSEMBLE_A_UNE_PAGE_DE_PASSERELLE.test(texte)) return 'page_de_passerelle';
+  if (statut === 502 || statut === 504) return 'page_de_passerelle';
+  if (statut === 503 && vide) return 'page_de_passerelle';
+  return '';
+}
+// Les deux faces, FR et EN côte à côte. Aucune ne colle le corps reçu : du HTML n'est pas un texte d'écran, et un
+// corps tronqué ne dit rien de sûr. Chacune dit ce que la console NE SAIT PAS, et le geste prudent qui en découle.
+const MOTS_DE_LA_REPONSE_HORS_DEMON = {
+  page_de_passerelle: {
+    fr: "Réponse d'une PASSERELLE, pas du démon : le service est peut-être momentanément injoignable, ou un intermédiaire a répondu à sa place. Rien ici n'établit ce que le démon a fait de cette demande — vérifie son effet avant de la rejouer.",
+    en: 'Answer from a GATEWAY, not from the daemon: the service may be momentarily unreachable, or an intermediary answered in its place. Nothing here establishes what the daemon did with this request — check its effect before replaying it.' },
+  corps_illisible: {
+    fr: "Réponse ILLISIBLE : un statut de succès est arrivé, mais son corps n'est pas du JSON (tronqué en route ?). Rien ici n'établit ce que le démon a fait de cette demande — vérifie son effet avant de la rejouer.",
+    en: 'UNREADABLE answer: a success status arrived, but its body is not JSON (truncated on the way?). Nothing here establishes what the daemon did with this request — check its effect before replaying it.' },
+};
+const motDeLaReponseHorsDemon = (nature) => (LANG === 'en' ? MOTS_DE_LA_REPONSE_HORS_DEMON[nature].en : MOTS_DE_LA_REPONSE_HORS_DEMON[nature].fr);
+// Le refus porte sa nature (`reponseHorsDemon`) à côté du statut : une surface qui sait dire l'absence de son
+// corps de succès la reconnaît sans relire un message que ce module fabrique pour être lu.
+function refusHorsDemon(nature, statut) {
+  const refus = new Error(motDeLaReponseHorsDemon(nature));
+  refus.reponseHorsDemon = nature;
+  refus.statutDuRefus = statut;
+  return refus;
+}
+
 // apiSend — sœur MUTANTE de api() (POST/PUT/DELETE vers /api, corps JSON optionnel). MÊME forme de requête
 // que les sites inline qu'elle remplace : on ne pose QUE Content-Type quand il y a un corps ; le X-CSRF-Token
 // (+ X-Plume-Tenant/Env) est ajouté AUTOMATIQUEMENT par le wrapper window.fetch global -> requête byte-identique.
 // Erreur lisible IDENTIQUE à api() sur !ok (statut + jusqu'à 200 car. du corps serveur). Corps vide (204 /
 // StatusCode sans JSON, ex panel_update) -> null : une mutation renvoie souvent un corps vide, on ne JETTE PAS
-// comme api() (qui, lui, sert des GET toujours-JSON). Corps non-JSON inattendu en succès -> null (best-effort).
+// comme api() (qui, lui, sert des GET toujours-JSON).
+// `P10.22-b` — UN DEUX CENTS NON JSON N'EST PLUS UN SUCCÈS. Il rendait `null`, comme un corps vide légitime, et
+// toute surface qui ne lit pas le corps annonçait son succès sur une page de passerelle (« Incident déclaré »,
+// « supprimé », « rétention mise à jour », la préférence tenue pour acquittée…). Il JETTE désormais un refus
+// NOMMÉ (`refusHorsDemon`) ; le cinq cents de passerelle aussi, au lieu de coller son HTML comme cause. Le corps
+// VIDE, lui, reste `null` : c'est le succès des routes à deux cent quatre.
 async function apiSend(path, method = 'POST', body) {
   const init = { method };
   if (body !== undefined) { init.headers = { 'Content-Type': 'application/json' }; init.body = JSON.stringify(body); }
   const r = await fetch('/api' + path, init);
   const text = await r.text().catch(() => '');   // texte d'abord -> corps d'erreur dispo + gère réponse vide
+  const horsDemon = natureDeLaReponseHorsDemon(r.status, text);
   // `P10.20-b` — MÊME PORTAGE QUE DANS `api()` : la coupe à 200 caractères tronque les phrases longues que
   // le démon écrit pour être lues (un refus de lecture en fait 250 et plus), et le JSON brut n'est pas un
   // texte d'écran. Le message ne bouge pas ; la cause voyage à côté.
@@ -583,14 +655,29 @@ async function apiSend(path, method = 'POST', body) {
   // Le délai d'un refus freiné (en-tête de nouvel essai, en secondes) voyage de même : le second facteur
   // freiné le sert, et « réessaie plus tard » ne dit pas quand.
   if (!r.ok) {
-    const refus = avecLaCauseDuDemon(new Error(r.status + (text ? ' ' + text.slice(0, 200) : '')), causeNommeeParLeDemon(text));
+    const refus = horsDemon ? refusHorsDemon(horsDemon, r.status)
+      : avecLaCauseDuDemon(new Error(r.status + (text ? ' ' + text.slice(0, 200) : '')), causeNommeeParLeDemon(text));
     refus.statutDuRefus = r.status;
     const delai = r.headers && typeof r.headers.get === 'function' ? parseInt(r.headers.get('retry-after') || '', 10) : NaN;
     if (Number.isFinite(delai) && delai > 0) refus.delaiDuRefus = delai;
     throw refus;
   }
-  if (!text) return null;
-  try { return JSON.parse(text); } catch { return null; }
+  if (horsDemon) throw refusHorsDemon(horsDemon, r.status);
+  if (!text.trim()) return null;
+  return JSON.parse(text);   // lisible : `natureDeLaReponseHorsDemon` vient de l'établir
+}
+
+// `P10.22-b` — LES SURFACES QUI LISENT LE CORPS DE SUCCÈS DE LEUR ROUTE ET SAVENT DIRE SON ABSENCE. Six gestes lisent
+// le seul corps de succès que leur route sert (`{attached}`, `{id}`, `{ok}`, `{ok, recovery_codes}`) et portent
+// déjà une face « rien ici n'établit » pour un deux cents qui ne le porte pas : l'attache d'un runbook et l'étape
+// « réponse » (`web/cases.js`), le formulaire du panneau Réponse (`web/detection_admin.js`), le geste « bannir »
+// (`web/viz.js`), l'activation et la désactivation de la MFA (`web/idp.js`). Pour eux, un deux cents sans corps
+// lisible n'est pas un refus — le démon a pu prendre le geste — et le cadre de leur refus l'écrirait « REFUSÉ » ou
+// « le démon a refusé ce geste ». Ce prédicat le reconnaît dans leur `catch`, qui retombe alors sur la face
+// « non établie » ; tout autre refus (cinq cents de passerelle compris) garde son chemin. L'appel reste un
+// `apiSend('<chemin>', '<méthode>', …)` LITTÉRAL : la garde des routes sensibles le dérive à son site.
+function unDeuxCentsSansCorpsLisible(e) {
+  return !!(e && e.reponseHorsDemon && e.statutDuRefus >= 200 && e.statutDuRefus < 300);
 }
 
 function muted(t) { return Object.assign(document.createElement('div'), { className: 'muted', textContent: t }); }
@@ -1996,6 +2083,10 @@ export {
   cleDeLIdentifiantDeRiposte, motDeLaRiposteSansIdentifiant,
   // `P10.22-n` — la nature d'un refus du second facteur et les deux faces communes à ses deux écrans.
   natureDuRefusDuSecondFacteur, motDuRefusDuSecondFacteur,
+  // `P10.22-b` — la nature d'une réponse qui ne vient pas lisiblement du démon (lue aussi par l'écran de
+  // connexion, qui tient sa propre requête), ses deux faces, et le prédicat des six gestes qui lisent leur
+  // corps de succès.
+  natureDeLaReponseHorsDemon, motDeLaReponseHorsDemon, unDeuxCentsSansCorpsLisible,
   // `P10.20-k` — ET LE LECTEUR QUI TIENT LES DEUX MOULES DE REFUS (JSON `error` et texte brut) : les
   // tableaux de bord et les modèles de données le PARTAGENT, faute de quoi chacun écrirait son
   // extraction et l'un des deux finirait par ne plus reconnaître la forme que l'autre lit.

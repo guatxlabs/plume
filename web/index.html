@@ -91,8 +91,12 @@
     <label for="login-code" id="login-code-lbl" style="display:none">Code de double authentification
       <input id="login-code" name="one-time-code" type="text" inputmode="numeric" autocomplete="one-time-code" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="code à 6 chiffres ou code de secours">
     </label>
+    <!-- P10.23-d : l'échéance du ticket, dite pendant l'étape du code (décompte posé par login.js), et le retour
+         explicite au mot de passe. Cachés hors de l'étape ; `[hidden]` l'emporte sur tout `display`. -->
+    <div id="login-code-echeance" class="muted" hidden></div>
     <div id="login-err" class="login-err" role="alert" hidden></div>
     <button id="login-submit" type="submit">Se connecter</button>
+    <button id="login-code-retour" type="button" class="btn btn-sm" hidden>Revenir au mot de passe</button>
   </form>
 </div>
 <header>

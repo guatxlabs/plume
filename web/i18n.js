@@ -272,6 +272,12 @@ const I18N_EN = {
   "Fenêtre": "Window", "Format": "Format", "Méthode": "Method", "Ressource": "Resource", "Pagination": "Pagination", "Préfixe": "Prefix", "Nom d'en-tête": "Header name",
   "Identifiant": "Identifier", "Utilisateur": "User", "Mot de passe": "Password", "Connexion": "Sign in", "Se connecter": "Sign in", "Se déconnecter": "Sign out",
   "Code de double authentification": "Two-factor code",
+  // P10.23-d — le retour explicite au mot de passe, offert pendant l'étape du code.
+  "Revenir au mot de passe": "Back to password",
+  // P10.23-b (démon) — l'enrôlement d'un second facteur exige le mot de passe du compte : la modale qui le demande.
+  "Enrôler un second facteur": "Enrol a second factor", "Mot de passe du compte": "Account password", "Continuer": "Continue",
+  "Le démon exige le mot de passe de ce compte avant de poser une graine TOTP : une session ouverte ne prouve pas que c'est son titulaire qui enrôle.":
+    "The daemon requires this account's password before setting a TOTP seed: an open session does not prove that its holder is the one enrolling.",
   "Utilisateur connecté": "Signed-in user", "Environnement": "Environment", "Environnement courant": "Current environment", "Tenant courant": "Current tenant",
   "Tenants": "Tenants", "Conformité": "Compliance", "Couverture": "Coverage", "Données": "Data", "Défaut": "Default", "Sévérité ↓": "Severity ↓",
   "Observation": "Observation", "Objet :": "Object:", "Sens IP :": "IP direction:", "Quand ?": "When?", "Champ-clé": "Key field", "Collection (id)": "Collection (id)",

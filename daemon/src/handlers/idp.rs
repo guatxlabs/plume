@@ -92,6 +92,44 @@ pub(crate) const CAUSE_SECOND_FACTEUR_FREINE: &str = "TROP D'ÉCHECS DU SECOND F
      l'adresse d'où ils viennent et quel que soit le ticket. Un code juste accepté remet le compte à zéro ; \
      une connexion par mot de passe, non.";
 
+/// `P10.23-b` — UNE SESSION SEULE N'ENRÔLE PAS DE GRAINE. Voir `prouver_le_premier_facteur`. Le champ
+/// `password` est absent ou vide : rien n'est examiné, rien n'est compté.
+pub(crate) const CAUSE_MOT_DE_PASSE_EXIGE_POUR_ENROLER: &str = "MOT DE PASSE EXIGÉ POUR ENRÔLER : une graine \
+     TOTP enrôlée puis activée verrouille la connexion de ce compte derrière elle, et une session seule ne \
+     prouve pas qu'elle est tenue par le titulaire. Présentez le mot de passe du compte (champ `password`). \
+     Aucune graine n'est posée, l'enrôlement en attente éventuel est intact, aucun échec n'est compté.";
+
+/// `P10.23-b` — le mot de passe présenté à l'enrôlement n'est pas celui du compte.
+pub(crate) const CAUSE_MOT_DE_PASSE_REFUSE_A_L_ENROLEMENT: &str = "MOT DE PASSE REFUSÉ, AUCUNE GRAINE ENRÔLÉE : \
+     le mot de passe présenté n'est pas celui du compte. L'échec est compté au MÊME verrou que la connexion \
+     (compte, adresse) et inscrit au registre ; aucune graine n'est posée et l'enrôlement en attente éventuel \
+     est intact.";
+
+/// `P10.23-b` — le verrou (compte, adresse) de la connexion est posé : le mot de passe n'est pas examiné.
+pub(crate) const CAUSE_MOT_DE_PASSE_VERROUILLE_A_L_ENROLEMENT: &str = "TROP D'ÉCHECS DU MOT DE PASSE SUR CE \
+     COMPTE DEPUIS CETTE ADRESSE : le verrou est celui de la connexion (en-tête Retry-After) ; le mot de passe \
+     n'est pas examiné et aucune graine n'est posée.";
+
+/// `P10.23-b` — un compte sans mot de passe local (fédéré, ou identité SSO par en-têtes) n'enrôle pas de graine.
+pub(crate) const CAUSE_ENROLEMENT_SANS_MOT_DE_PASSE_LOCAL: &str = "ENRÔLEMENT REFUSÉ, CE COMPTE N'A PAS DE MOT \
+     DE PASSE LOCAL (compte fédéré OIDC, SAML ou LDAP, ou identité SSO par en-têtes) : le second facteur de \
+     plume n'est demandé qu'à la connexion par mot de passe local, que ce compte n'emprunte pas — l'y enrôler \
+     ne protégerait rien, et aucun mot de passe ne peut prouver que c'est son titulaire qui l'enrôle. Le second \
+     facteur de ce compte est celui de son fournisseur d'identité. Rien n'est posé ni compté.";
+
+/// `P10.23-b` — la lecture qui dit si le compte a un mot de passe local a échoué.
+pub(crate) const CAUSE_COMPTE_NON_LU_A_L_ENROLEMENT: &str = "COMPTE NON LU, ENRÔLEMENT NI ACCEPTÉ NI REFUSÉ : \
+     la lecture du compte a échoué, on ne sait donc pas s'il a un mot de passe local à prouver. Aucune graine \
+     n'est posée, aucun échec n'est compté. Réessayez.";
+
+/// `P10.22-x` — LE TICKET SUIT LA RÉVOCATION DES SESSIONS. Voir `mfa_ticket_sign`. Les trois causes (signature,
+/// expiration, époque révolue) partagent CETTE phrase à dessein : dire laquelle renseignerait le porteur d'un
+/// vieux ticket sur ce qui s'est passé depuis, sans rien apprendre au titulaire qui recommence de toute façon.
+pub(crate) const CAUSE_TICKET_MFA_INVALIDE_EXPIRE_OU_REVOQUE: &str = "TICKET MFA REFUSÉ, RECOMMENCEZ LA \
+     CONNEXION PAR LE MOT DE PASSE : il est invalide, expiré (cinq minutes), ou révoqué depuis son émission — \
+     un ticket en attente suit la révocation des sessions (déconnexion, changement du mot de passe \
+     administrateur). Aucune session n'est posée, aucun échec n'est compté.";
+
 // ---------- utilitaires locaux ----------
 
 /// Nom de provider valide (segment d'URL sûr) : alphanumérique + `. _ -`, non vide, <= 64.
@@ -143,17 +181,43 @@ fn attach_session_cookies(st: &AppState, resp: &mut Response, name: &str, role: 
 /// `login_post` quand le 1er facteur réussit ET que l'utilisateur a une MFA active ; consommé par
 /// `login_mfa_post`. Stateless, non forgeable, borné dans le temps. Le préfixe de domaine `mfa` empêche
 /// toute confusion avec un jeton de session/state OIDC.
-fn mfa_ticket_sign(secret: &[u8], user: &str, role: &str, ttl_s: i64) -> String {
+///
+/// `P10.22-x` — LE TICKET EST SIGNÉ AVEC L'ÉPOQUE DE SESSION, COMME LA SESSION QU'IL DEVIENDRA. Mesuré le
+/// 2026-09-23 sur la forme d'avant (signature sur le seul payload) : un ticket émis AVANT un changement du mot de
+/// passe administrateur (`password_post`, époque 0 -> 1), ou avant une déconnexion (`logout_post`, 0 -> 1), ouvrait
+/// encore une session (200, cookie) — et cette session, frappée à l'époque COURANTE par `login_mfa_post`, était
+/// valide APRÈS la révocation : le ticket faisait passer une session à travers elle. L'époque n'est pas dans le
+/// payload lisible ; la vérification la réinjecte depuis `AppState` (`verify_session` fait de même), donc tout ce
+/// qui révoque les sessions révoque les tickets en attente, et rien d'autre.
+///
+/// POURQUOI L'ÉPOQUE, ET NI L'EMPREINTE DU MOT DE PASSE NI L'USAGE UNIQUE. L'époque ne coûte aucune lecture, aucun
+/// état et aucun refus neuf (c'est un entier en mémoire, persisté par `bump_session_epoch`) ; elle fait du ticket
+/// ce qu'il est — une session en attente — soumise à la MÊME révocation, en UN point. L'empreinte du mot de passe
+/// aurait couvert en plus la réinitialisation par un administrateur (`user_update`), qui ne touche pas l'époque :
+/// mais cette réinitialisation laisse AUSSI vivre les sessions déjà ouvertes (mesuré : la session d'avant reste
+/// valide), défaut plus lourd que cinq minutes de ticket et qui se ferme au même point pour les deux (une clé
+/// neuve, hors de ce module) ; l'empreinte ajoutait une lecture à chaque ticket et un cinq cent trois neuf quand
+/// elle rate. L'usage unique exigerait un état serveur (les tickets consommés jusqu'à leur expiration, perdu au
+/// redémarrage) pour ne rien retirer : rejouer un ticket, c'est encore devoir présenter un code frais, que le pas
+/// consommé et le frein par compte (`P10.22-m`) bornent — le ticket vaut le mot de passe pendant cinq minutes,
+/// pas davantage.
+///
+/// LE DOMAINE DU MESSAGE SIGNÉ EST SÉPARÉ DE CELUI DE LA SESSION. `mint_session` signe `<payload>|<époque>` ; signer
+/// ici la même forme ferait passer un ticket pour un cookie de session (utilisateur `mfa|<nom>`). Le préfixe
+/// `mfa-ticket|` en tête, suivi d'un entier, ne peut égaler aucun message de session (dont la tête est du base64,
+/// sans barre verticale avant l'époque).
+fn mfa_ticket_sign(secret: &[u8], user: &str, role: &str, ttl_s: i64, epoch: i64) -> String {
     let exp = now() + ttl_s.max(1);
     let payload = format!("mfa|{user}|{role}|{exp}");
     let p_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload.as_bytes());
-    let sig = hmac_sha256(secret, p_b64.as_bytes());
+    let sig = hmac_sha256(secret, format!("mfa-ticket|{epoch}|{p_b64}").as_bytes());
     format!("{p_b64}.{}", hex_encode(&sig))
 }
 
-fn mfa_ticket_verify(secret: &[u8], blob: &str) -> Option<(String, String)> {
+/// `P10.22-x` — `epoch` est l'époque de session COURANTE : un ticket signé sous une époque révolue est refusé.
+fn mfa_ticket_verify(secret: &[u8], blob: &str, epoch: i64) -> Option<(String, String)> {
     let (p_b64, sig_hex) = blob.split_once('.')?;
-    let expect = hmac_sha256(secret, p_b64.as_bytes());
+    let expect = hmac_sha256(secret, format!("mfa-ticket|{epoch}|{p_b64}").as_bytes());
     if !ct_eq(&hex_decode(sig_hex)?, &expect) {
         return None;
     }
@@ -757,12 +821,14 @@ pub(crate) async fn ldap_login_post(State(st): State<AppState>, ConnectInfo(peer
 // tickets forgés). Celui qui tient le mot de passe peut, lui, geler l'étape du code pour le titulaire — au
 // plus `lock_max_s` à chaque fois ; c'est le prix assumé : l'alternative est de le laisser DEVINER le second
 // facteur, et la parade au gel est celle d'une compromission du mot de passe (le changer : plus de ticket
-// neuf, ceux déjà émis expirent en cinq minutes). Le premier facteur n'est PAS freiné par ce compte : le
-// titulaire obtient toujours son ticket.
+// neuf ; ceux déjà émis tombent avec l'époque de session quand le changement la fait avancer — `P10.22-x` —,
+// sinon ils expirent en cinq minutes). Le premier facteur n'est PAS freiné par ce compte : le titulaire
+// obtient toujours son ticket.
 //
 // POURQUOI PAS PAR TICKET : le ticket se réémet à volonté avec le mot de passe ; borner ses échecs ne borne
-// pas ceux du compte. Il reste sans état (il sert cinq minutes, rejouable) — ce n'est plus un levier de
-// devinette, puisque le compteur ne dépend ni du ticket ni de l'adresse.
+// pas ceux du compte. Il reste sans état serveur (il sert cinq minutes, rejouable tant que l'époque de session
+// ne change pas) — ce n'est plus un levier de devinette, puisque le compteur ne dépend ni du ticket ni de
+// l'adresse.
 //
 // CE QUE LE FREIN REPREND DU VERROU EXISTANT, ET CE QU'IL EN CHANGE. Mêmes réglages (`lock_threshold`,
 // `lock_base_s`, `lock_max_s` ; seuil 0 = tous les verrous coupés, par décision de l'exploitant) et même
@@ -888,9 +954,101 @@ pub(crate) async fn mfa_status(State(st): State<AppState>, Extension(au): Extens
     Json(json!({ "enrolled": row.is_some(), "enabled": row.map(|v| v != 0).unwrap_or(false) })).into_response()
 }
 
-/// POST /api/mfa/enroll — génère une graine TOTP (base32) + l'URI otpauth (show-once) ; enregistre en
+/// `P10.23-b` — CE COMPTE A-T-IL UN MOT DE PASSE LOCAL À PROUVER ? TROIS ISSUES, JAMAIS DEUX.
+///
+/// Même préséance que `authenticate` (la table `user` fait autorité ; à défaut, l'administrateur de l'assistant,
+/// puis celui de la configuration). Un hachage vide ou la sentinelle des comptes fédérés (`IDP_HASH_SENTINEL`)
+/// n'est PAS un mot de passe : `verify_pw` le refuse toujours. Une identité SSO par en-têtes sans ligne locale n'en
+/// a pas non plus. `Err` : la lecture n'a pas eu lieu — l'appelant refuse sans rien conclure.
+fn le_compte_a_un_mot_de_passe_local(st: &AppState, user: &str) -> rusqlite::Result<bool> {
+    let hash: Option<String> =
+        st.db.lock().query_row("SELECT hash FROM user WHERE name=?1", params![user], |r| r.get(0)).optional()?;
+    Ok(match hash {
+        Some(h) => !h.is_empty() && h != IDP_HASH_SENTINEL,
+        None => {
+            st.admin.lock().as_ref().is_some_and(|(nom, _)| nom == user) || (!st.pass_hash.is_empty() && st.user.as_str() == user)
+        }
+    })
+}
+
+/// `P10.23-b` — CE QUE REND LA PREUVE DU PREMIER FACTEUR EXIGÉE À L'ENRÔLEMENT.
+enum PreuveDuPremierFacteur {
+    /// Le mot de passe présenté est celui du compte.
+    Prouvee,
+    /// Aucun mot de passe présenté : rien n'est examiné ni compté.
+    Absente,
+    /// Le mot de passe présenté n'est pas celui du compte : compté au verrou de la connexion.
+    Refusee,
+    /// Le verrou (compte, adresse) de la connexion est posé : le mot de passe n'est pas examiné.
+    Verrouillee(u64),
+    /// Le compte n'a pas de mot de passe local (fédéré, SSO par en-têtes).
+    SansMotDePasseLocal,
+    /// La lecture du compte a échoué.
+    CompteNonLu(String),
+}
+
+/// `P10.23-b` — LE PREMIER FACTEUR, RE-PROUVÉ À L'ENRÔLEMENT PAR LE MOT DE PASSE RE-SAISI.
+///
+/// LE DÉFAUT, MESURÉ LE 2026-09-23 SUR LA FORME D'AVANT. Une session SEULE (le voleur ne connaît pas le mot de
+/// passe) : `mfa_enroll` -> 200 et une graine ; `mfa_verify` avec un code de cette graine -> 200 et DIX codes de
+/// secours ; puis la connexion du titulaire, avec son VRAI mot de passe, rend un ticket et demande un code que
+/// seul le voleur sait produire — le titulaire est enfermé hors de son compte. Et un enrôlement EN ATTENTE du
+/// titulaire était écrasé (graine remplacée) ; le code de SA graine rendait 401, compté à son frein.
+///
+/// POURQUOI LE MOT DE PASSE RE-SAISI, ET NON UNE SESSION « FRAÎCHE ». La session ne porte pas son heure
+/// d'émission (payload `user|role|exp`) : la déduire de `exp - session_ttl_s` est faux dès que le TTL configuré
+/// change entre l'émission et la vérification — et faux dans le mauvais sens quand il raccourcit (une session de
+/// onze heures paraît neuve) ; l'y ajouter changerait le format du jeton et déconnecterait toutes les sessions au
+/// déploiement. Surtout, une session fraîche VOLÉE passerait encore pendant la fenêtre, alors que le mot de passe
+/// est exactement ce que le voleur de session n'a pas. Et la preuve est toujours disponible là où le défaut
+/// mord : `login_post` est la SEULE lecture de `user_mfa` qui décide d'une connexion, et elle ne sert que les
+/// comptes à mot de passe local.
+///
+/// LES COMPTES SANS MOT DE PASSE LOCAL (sessions posées par `oidc_callback`, `saml_acs`, `ldap_login_post` — des
+/// cookies `auth_method = "cookie"` indiscernables d'une connexion par mot de passe, le compte provisionné avec
+/// `IDP_HASH_SENTINEL` ; et les identités SSO par en-têtes, `auth_method = "sso"`, sans ligne locale) : REFUS NOMMÉ.
+/// Ni OIDC, ni SAML, ni LDAP, ni les en-têtes SSO ne lisent `user_mfa` : une graine enrôlée sur ces comptes n'est
+/// JAMAIS demandée, et la console affichait pourtant « Double authentification ACTIVE ». Leur connexion et leur
+/// usage ne changent pas ; seul l'enrôlement d'un second facteur qui ne protégeait rien est refusé, avec la cause.
+///
+/// LE FREIN : LE VERROU (COMPTE, ADRESSE) DE LA CONNEXION, PARTAGÉ. Un mot de passe faux est compté par
+/// `auth_record_failure` sur la même clé que `login_post` (et y produit le même événement d'accès pour le SIEM) :
+/// cette route n'offre donc AUCUN essai de plus que `/api/login`, que n'importe qui atteint sans session.
+fn prouver_le_premier_facteur(st: &AppState, user: &str, ip: &str, mot_de_passe: &str) -> PreuveDuPremierFacteur {
+    match le_compte_a_un_mot_de_passe_local(st, user) {
+        Err(e) => return PreuveDuPremierFacteur::CompteNonLu(e.to_string()),
+        Ok(false) => return PreuveDuPremierFacteur::SansMotDePasseLocal,
+        Ok(true) => {}
+    }
+    if mot_de_passe.is_empty() {
+        return PreuveDuPremierFacteur::Absente;
+    }
+    if let Some(attente) = auth_lock_check(st, user, ip) {
+        return PreuveDuPremierFacteur::Verrouillee(attente);
+    }
+    // MÊME résolution que `login_post` (en-tête Basic synthétique) : aucun chemin de vérification divergent.
+    let synth = format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(format!("{user}:{mot_de_passe}")));
+    match authenticate(st, &synth) {
+        Some((nom, _)) if nom == user => {
+            auth_record_success(st, user, ip);
+            PreuveDuPremierFacteur::Prouvee
+        }
+        _ => {
+            let _ = auth_record_failure(st, user, ip);
+            PreuveDuPremierFacteur::Refusee
+        }
+    }
+}
+
+/// POST /api/mfa/enroll {password} — génère une graine TOTP (base32) + l'URI otpauth (show-once) ; enregistre en
 /// `enabled=0` (en attente de vérification). Ne PEUT PAS écraser une MFA déjà active (409 : désactiver d'abord).
-pub(crate) async fn mfa_enroll(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Response {
+/// `P10.23-b` : exige le mot de passe du compte (voir `prouver_le_premier_facteur`).
+pub(crate) async fn mfa_enroll(
+    State(st): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
+    Extension(au): Extension<AuthUser>,
+    Json(b): Json<Value>,
+) -> Response {
     if st.multi_tenant {
         return deny_multitenant();
     }
@@ -908,19 +1066,52 @@ pub(crate) async fn mfa_enroll(State(st): State<AppState>, Extension(au): Extens
             return err_json(StatusCode::CONFLICT, "MFA déjà active (désactivez-la d'abord)");
         }
     }
+    // `P10.23-b` — LA PREUVE DU PREMIER FACTEUR, APRÈS le refus qui ne dépend pas d'elle (MFA déjà active : le mot
+    // de passe n'y est ni examiné ni compté) et AVANT toute graine.
+    let ip = peer.ip().to_string();
+    match prouver_le_premier_facteur(&st, &au.name, &ip, b.str_field("password")) {
+        PreuveDuPremierFacteur::Prouvee => {}
+        PreuveDuPremierFacteur::Absente => return err_json(StatusCode::FORBIDDEN, CAUSE_MOT_DE_PASSE_EXIGE_POUR_ENROLER),
+        PreuveDuPremierFacteur::Refusee => {
+            ledger_append(&st.db.lock(), "mfa", &format!("enrôlement MFA refusé pour '{}' : mot de passe re-saisi refusé", au.name));
+            return err_json(StatusCode::FORBIDDEN, CAUSE_MOT_DE_PASSE_REFUSE_A_L_ENROLEMENT);
+        }
+        PreuveDuPremierFacteur::Verrouillee(attente) => {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                [(header::RETRY_AFTER, attente.to_string())],
+                Json(json!({ "error": CAUSE_MOT_DE_PASSE_VERROUILLE_A_L_ENROLEMENT })),
+            )
+                .into_response();
+        }
+        PreuveDuPremierFacteur::SansMotDePasseLocal => return err_json(StatusCode::FORBIDDEN, CAUSE_ENROLEMENT_SANS_MOT_DE_PASSE_LOCAL),
+        PreuveDuPremierFacteur::CompteNonLu(cause) => {
+            eprintln!("[mfa] WARN compte '{}' NON lu à l'enrôlement : {cause}", au.name);
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_COMPTE_NON_LU_A_L_ENROLEMENT);
+        }
+    }
     let Some(seed) = rand_bytes(20) else {
         return server_err("entropie noyau indisponible");
     };
     let secret_b32 = base32_encode(&seed);
     {
         let conn = st.db.lock();
-        if conn.execute(
+        // `P10.23-b` — L'ENRÔLEMENT NE DÉSARME JAMAIS UNE MFA ACTIVÉE ENTRE SA LECTURE ET SON ÉCRITURE. La garde
+        // ci-dessus lit `enabled` sous un verrou, l'écriture le reposait à 0 sous un autre, et la preuve du mot de
+        // passe (argon2) élargit la fenêtre entre les deux. Mesuré par un banc à trois connexions : une activation
+        // validée pendant ce temps était ÉCRASÉE (graine neuve, `enabled=0`, 200) — le second facteur du compte
+        // désarmé par un enrôlement. La clause `WHERE user_mfa.enabled=0` rejuge dans l'écriture, et le compte de
+        // lignes tranche : zéro, c'est la MFA devenue active entre-temps -> 409, comme la garde.
+        match conn.execute(
             // last_step=-1 : un ré-enrôlement repart d'une graine neuve -> compteur anti-rejeu réinitialisé.
             "INSERT INTO user_mfa(user,secret,enabled,recovery,last_step,created,updated) VALUES(?1,?2,0,'[]',-1,?3,?3) \
-             ON CONFLICT(user) DO UPDATE SET secret=excluded.secret, enabled=0, recovery='[]', last_step=-1, updated=excluded.updated",
+             ON CONFLICT(user) DO UPDATE SET secret=excluded.secret, enabled=0, recovery='[]', last_step=-1, updated=excluded.updated \
+             WHERE user_mfa.enabled=0",
             params![au.name, secret_b32, now()],
-        ).is_err() {
-            return server_err("enregistrement de l'enrôlement échoué");
+        ) {
+            Ok(1) => {}
+            Ok(0) => return err_json(StatusCode::CONFLICT, "MFA déjà active (désactivez-la d'abord)"),
+            Ok(_) | Err(_) => return server_err("enregistrement de l'enrôlement échoué"),
         }
     }
     let uri = totp_uri("Plume", &au.name, &secret_b32);
@@ -1231,8 +1422,11 @@ pub(crate) async fn login_mfa_post(State(st): State<AppState>, ConnectInfo(peer)
     let ticket = b.trimmed("ticket");
     let code = b.trimmed("code");
     let ip = peer.ip().to_string();
-    let Some((user, role)) = mfa_ticket_verify(st.session_secret.as_slice(), &ticket) else {
-        return err_json(StatusCode::UNAUTHORIZED, "ticket MFA invalide ou expiré (recommencez la connexion)");
+    // `P10.22-x` — jugé à l'époque de session COURANTE : un ticket émis avant une révocation est refusé ici, avant
+    // tout examen du code et sans rien compter (le porteur recommence par le mot de passe).
+    let epoch = st.session_epoch.load(std::sync::atomic::Ordering::SeqCst);
+    let Some((user, role)) = mfa_ticket_verify(st.session_secret.as_slice(), &ticket, epoch) else {
+        return err_json(StatusCode::UNAUTHORIZED, CAUSE_TICKET_MFA_INVALIDE_EXPIRE_OU_REVOQUE);
     };
     if let Some(retry) = auth_lock_check(&st, &user, &ip) {
         return (StatusCode::TOO_MANY_REQUESTS, [(header::RETRY_AFTER, retry.to_string())], Json(json!({ "error": "trop d'échecs — réessayez plus tard" }))).into_response();
@@ -1315,9 +1509,10 @@ pub(crate) async fn login_mfa_post(State(st): State<AppState>, ConnectInfo(peer)
 }
 
 /// Émet un ticket MFA (2e facteur en attente) — appelé par `login_post` (session.rs) quand le 1er facteur
-/// réussit et que le compte a une MFA active. TTL court (5 min).
+/// réussit et que le compte a une MFA active. TTL court (5 min), signé à l'époque de session courante (`P10.22-x`).
 pub(crate) fn mfa_challenge_response(st: &AppState, user: &str, role: &str) -> Response {
-    let ticket = mfa_ticket_sign(st.session_secret.as_slice(), user, role, 300);
+    let epoch = st.session_epoch.load(std::sync::atomic::Ordering::SeqCst);
+    let ticket = mfa_ticket_sign(st.session_secret.as_slice(), user, role, 300, epoch);
     Json(json!({ "mfa_required": true, "ticket": ticket })).into_response()
 }
 
@@ -1328,18 +1523,22 @@ mod tests {
     #[test]
     fn mfa_ticket_roundtrip_and_tamper() {
         let s = b"ticket-secret";
-        let t = mfa_ticket_sign(s, "bob", "editor", 300);
-        assert_eq!(mfa_ticket_verify(s, &t), Some(("bob".into(), "editor".into())));
-        assert!(mfa_ticket_verify(b"autre", &t).is_none());
+        let t = mfa_ticket_sign(s, "bob", "editor", 300, 0);
+        assert_eq!(mfa_ticket_verify(s, &t, 0), Some(("bob".into(), "editor".into())));
+        assert!(mfa_ticket_verify(b"autre", &t, 0).is_none());
+        // `P10.22-x` — une époque révolue (sessions révoquées depuis l'émission) refuse le ticket.
+        assert!(mfa_ticket_verify(s, &t, 1).is_none());
         // ticket déjà expiré forgé à la main (sign clampe le TTL >= 1s) -> rejeté.
         let past = now() - 100;
         let payload = format!("mfa|bob|editor|{past}");
         let p_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload.as_bytes());
-        let expired = format!("{p_b64}.{}", hex_encode(&hmac_sha256(s, p_b64.as_bytes())));
-        assert!(mfa_ticket_verify(s, &expired).is_none());
+        let expired = format!("{p_b64}.{}", hex_encode(&hmac_sha256(s, format!("mfa-ticket|0|{p_b64}").as_bytes())));
+        assert!(mfa_ticket_verify(s, &expired, 0).is_none());
         // un ticket de session (préfixe différent) ne doit pas passer pour un ticket MFA.
         let sess = mint_session(s, "bob", "editor", 300, 0);
-        assert!(mfa_ticket_verify(s, &sess).is_none());
+        assert!(mfa_ticket_verify(s, &sess, 0).is_none());
+        // `P10.22-x` — et l'inverse : un ticket ne passe pas pour une session, à la même époque.
+        assert!(verify_session(s, &t, 0).is_none());
     }
 
     #[test]

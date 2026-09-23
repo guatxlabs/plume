@@ -466,8 +466,7 @@
   "échec"
  ],
  "multitenant.js": [
-  "DELETE",
-  "échec"
+  "DELETE"
  ],
  "navigation.js": [
   "#nav a",

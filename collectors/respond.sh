@@ -270,12 +270,9 @@ enforce() {              # kind target -> applique ; renvoie 0/!=0, sortie dans 
   esac
 }
 
-# --- recupere la liste (TSV: id  kind  target  dry_run), 1 action/ligne ---
 # P5.5-a : auth par l'ENTRÉE STANDARD (`-K -`), jamais en argument -> rien dans /proc/<pid>/cmdline.
+# La meme authentification sert la liste, la remise et le rejeu : elle est exigee ici, une fois.
 if [ -z "${PLUME_TOKEN:-}" ]; then : "${PLUME_USER:?}" "${PLUME_PASS:?}"; fi
-# shellcheck disable=SC2086  ($HH = 0 ou 2 tokens, expansion voulue)
-list=$(resp_curl_auth_stdin | curl -K - $HH $TLS -sS --max-time 15 "$CENTRAL/api/actions/pending?host=$HOSTN" 2>/dev/null) || exit 0
-[ -n "$list" ] || exit 0
 
 # ================================================================================================
 # `P10.21-d` — LA REMISE DU VERDICT EST LUE : UN REFUS DU CENTRAL N EST PLUS UN SUCCES MUET.
@@ -289,58 +286,227 @@ list=$(resp_curl_auth_stdin | curl -K - $HH $TLS -sS --max-time 15 "$CENTRAL/api
 # CE QUI EST FAIT, PAR STATUT HTTP (lu par `-w`, jamais devine du corps) :
 #   2xx                  remis ; un `"ok":false` est dit sur la sortie d erreur, sans reessai.
 #   503, 502, 504, 000   passager (ecriture ratee, passerelle, central injoignable) : reessaye
-#                        RESULTAT_ESSAIS fois au plus, attente doublee a chaque fois, puis AVOUE.
+#                        RESULTAT_ESSAIS fois au plus, attente doublee a chaque fois, puis AVOUE et
+#                        RETENU pour le rejeu du tour suivant (`P10.21-j`, plus bas).
 #                        Reessayer est sur : la route ne clot qu une riposte encore `approved`, une
 #                        seconde remise d un verdict deja pris rend l absence, jamais une double cloture.
-#   tout autre code      refus definitif (400, 401, 403, 404...) : AVOUE aussitot, sans reessai.
-#   aucun code lu        AVOUE comme illisible, sans reessai : rien ne dit ce qui s est passe.
+#   tout autre code      refus definitif (400, 401, 403, 404...) : AVOUE aussitot, sans reessai ni rejeu.
+#   aucun code lu        AVOUE comme illisible, sans reessai, et RETENU pour le rejeu.
 # L AVEU PART SUR LA SORTIE D ERREUR, qui est le journal de l unite (systemd, `plume-respond-agent`) :
 # identifiant de riposte, statut, nombre d essais et reponse du central bornee et privee de ses
 # caracteres de controle. JAMAIS l en-tete d authentification ni le jeton : ils ne passent que par
 # l entree standard de curl et ne sont ecrits nulle part. La boucle CONTINUE dans tous les cas : une
 # riposte dont le verdict n a pas ete remis ne doit pas bloquer l application des suivantes.
-# CE QUE CECI NE TIENT PAS : la riposte reste ouverte au central apres un aveu ; rien ici ne la
-# rejoue au passage suivant (`/api/actions/pending` ne sert que les `approved`, et le ban, lui, est
-# deja pose). Un central qui rend cinq cent trois a chaque remise coute au plus
-# RESULTAT_ESSAIS * 15 s + les attentes par riposte, dans un passage que le minuteur ne double pas.
 RESULTAT_ESSAIS=3
 RESULTAT_ATTENTE=2
 
-# Reponse du central rendue lisible au journal : une ligne, sans caractere de controle, bornee.
-reponse_bornee() { printf '%s' "$1" | tr '\000-\037' ' ' | sed 's/^\(.\{300\}\).*/\1 [...]/'; }
+# ================================================================================================
+# `P10.21-j` — LA REPONSE DU CENTRAL EST LUE BORNEE, ET COUPEE SUR UNE FRONTIERE DE CARACTERE.
+# ------------------------------------------------------------------------------------------------
+# FORME PRECEDENTE : `_pr_rep=$(curl ... -w '\n%{http_code}')` — le corps ENTIER dans une variable,
+# sans borne, puis `sed 's/^\(.\{300\}\).*/…/'`. Sous la locale C (celle d une unite systemd sans
+# `LANG`), `.` est un OCTET : la coupe tombait au milieu d un caractere multi-octet (« É », « — »), et
+# le journal recevait une sequence UTF-8 invalide. Sous une locale UTF-8, la meme ligne coupait a 300
+# CARACTERES, jusqu a 1 200 octets : la borne dependait de l environnement.
+# CE QUI EST FAIT : le corps va dans un fichier temporaire (curl l abandonne au-dela de
+# RESULTAT_CORPS_FICHIER octets), seuls RESULTAT_CORPS_LU octets en sont lus, et toute coupe passe par
+# `sans_caractere_entame`, qui retire une sequence UTF-8 laissee incomplete EN FIN de texte — jamais
+# un caractere complet. La locale est forcee a C pour la coupe : la borne est en OCTETS, partout.
+# CE QUE CECI NE TIENT PAS : `--max-filesize` n arrete un corps sans longueur annoncee qu a partir de
+# curl 8.4 ; avant, seul `--max-time` borne ce qui atterrit dans le fichier (la variable, elle, reste
+# bornee par la lecture).
+RESULTAT_CORPS_FICHIER=65536
+RESULTAT_CORPS_LU=4096
+RESULTAT_CORPS_JOURNAL=300
+
+# Octets de tete d une sequence UTF-8 (2, 3, 4 octets) et octets de suite, ecrits une fois en octal.
+UTF8_SUITE=$(printf '\200-\277'); UTF8_TETE2=$(printf '\302-\337'); UTF8_TETE3=$(printf '\340-\357'); UTF8_TETE4=$(printf '\360-\364')
+# stdin -> stdout : retire une sequence incomplete EN FIN de ligne (une tete seule, une tete de trois
+# octets suivie d au plus un octet de suite, une tete de quatre suivie d au plus deux). Un caractere
+# complet n est jamais touche : sa tete n est pas a la place que ces motifs exigent.
+sans_caractere_entame() {
+  LC_ALL=C sed -e "s/[$UTF8_TETE2]\$//" -e "s/[$UTF8_TETE3][$UTF8_SUITE]\{0,1\}\$//" -e "s/[$UTF8_TETE4][$UTF8_SUITE]\{0,2\}\$//"
+}
+# <octets> : stdin (une ligne) -> au plus N octets, jamais un caractere coupe.
+coupe_sur_caractere() { LC_ALL=C cut -b "1-$1" | sans_caractere_entame; }
+
+# Reponse du central rendue lisible au journal : une ligne, sans caractere de controle, bornee en octets.
+reponse_bornee() {
+  _rb_entier=$(printf '%s' "$1" | tr '\000-\037' ' ')
+  _rb_coupe=$(printf '%s\n' "$_rb_entier" | coupe_sur_caractere "$RESULTAT_CORPS_JOURNAL")
+  if [ "$_rb_coupe" = "$_rb_entier" ]; then printf '%s' "$_rb_coupe"; else printf '%s [...]' "$_rb_coupe"; fi
+}
+
+# remettre_une_fois <corps-json> — UNE remise, rend `_rv_code` (statut HTTP lu, vide si aucun),
+# `_rv_corps` (au plus RESULTAT_CORPS_LU octets, une ligne) et `_rv_tronque` (1 si le corps depassait).
+remettre_une_fois() {
+  _rv_code=""; _rv_corps=""; _rv_tronque=0
+  _rv_fichier=$(mktemp 2>/dev/null) || _rv_fichier=""
+  if [ -z "$_rv_fichier" ]; then
+    # Sans fichier temporaire, le statut est lu et la reponse ne l est pas — c est dit, pas devine.
+    echo "respond: remise du verdict sans fichier temporaire (mktemp refuse) : la reponse du central n est pas lue, son statut l est" >&2
+    # shellcheck disable=SC2086  ($HH = 0 ou 2 tokens, expansion voulue)
+    _rv_code=$(resp_curl_auth_stdin | curl -K - $HH $TLS -sS --max-time 15 -o /dev/null -w '%{http_code}' \
+      -H 'Content-Type: application/json' --data-binary "$1" "$CENTRAL/api/actions/result" 2>/dev/null) || :
+    return 0
+  fi
+  # shellcheck disable=SC2086  ($HH = 0 ou 2 tokens, expansion voulue)
+  _rv_code=$(resp_curl_auth_stdin | curl -K - $HH $TLS -sS --max-time 15 --max-filesize "$RESULTAT_CORPS_FICHIER" \
+    -o "$_rv_fichier" -w '%{http_code}' \
+    -H 'Content-Type: application/json' --data-binary "$1" "$CENTRAL/api/actions/result" 2>/dev/null) || :
+  _rv_corps=$(dd if="$_rv_fichier" bs="$RESULTAT_CORPS_LU" count=1 2>/dev/null | tr '\000-\037' ' ' | sans_caractere_entame) || _rv_corps=""
+  _rv_suite=$(dd if="$_rv_fichier" bs="$RESULTAT_CORPS_LU" skip=1 count=1 2>/dev/null | tr '\000-\037' ' ') || _rv_suite=""
+  [ -n "$_rv_suite" ] && _rv_tronque=1
+  rm -f "$_rv_fichier"
+  return 0
+}
+
+# ================================================================================================
+# `P10.21-j` — UN VERDICT QUE LE CENTRAL N A PAS ENREGISTRE EST REJOUE, BORNE, AU TOUR SUIVANT.
+# ------------------------------------------------------------------------------------------------
+# CE QUI SE PASSAIT, MESURE DANS L ARBRE DU DEMON. Apres l aveu de `P10.21-d`, la riposte restait
+# `approved` au central. `actions_pending` (daemon/src/handlers/actions.rs) la RE-SERT une fois sa
+# reclamation perimee (`RECLAMATION_PERIMEE_S`, trois cents secondes) : l agent ne rejouait pas le
+# VERDICT, il REEXECUTAIT la riposte — un second ban pose, et un second verdict qui peut differer du
+# premier. Rien ne rejouait le verdict d origine, celui de l action reellement appliquee.
+# CE QUI EST FAIT. Un verdict non remis (passager epuise, ou statut illisible) est RETENU dans un
+# fichier d etat LOCAL de l agent, une ligne par riposte : `<id> TAB <tours> TAB <corps json>`. Le corps
+# ne contient que l identifiant, le statut et le resultat — JAMAIS le jeton, l en-tete ni l hote :
+# l authentification ne passe que par l entree standard de curl. Repertoire 0700, fichier 0600.
+# Au debut de CHAQUE tour, avant la liste, chaque verdict retenu est remis UNE fois :
+#   2xx                 remis (ou absence dite), la ligne part ;
+#   passager / illisible  garde avec un tour de plus ; au REJEU_TOURS-ieme, ABANDONNE et avoue — la
+#                       riposte sera alors re-servie par le central, et reexecutee ;
+#   tout autre code     refus definitif, avoue, la ligne part.
+# Le premier echec passager ARRETE le rejeu de ce tour (le central ne repond pas : essayer les
+# suivants coute quinze secondes chacun pour rien) ; les lignes non tentees gardent leur compte.
+# Une riposte dont le verdict attend sa remise n est PAS reexecutee si le central la re-sert.
+# BORNES : REJEU_LIGNES lignes au plus (au-dela, le verdict n est PAS retenu, et c est avoue), un
+# resultat de REJEU_RESULTAT_OCTETS octets au plus par ligne (coupe sur un caractere).
+# Le repertoire suit le levier d etat DEJA documente des collecteurs (`PLUME_STATE`, README) : un
+# sous-repertoire a lui, 0700, que l unite (`ProtectSystem=full`) laisse inscriptible.
+REJEU_DIR="${PLUME_STATE:-/var/lib/plume/state}/responder"
+REJEU_FICHIER="$REJEU_DIR/verdicts-a-remettre"
+REJEU_TOURS=5
+REJEU_LIGNES=64
+REJEU_RESULTAT_OCTETS=400
+
+etat_de_rejeu_pret() {
+  [ -d "$REJEU_DIR" ] || (umask 077 && mkdir -p "$REJEU_DIR") 2>/dev/null || return 1
+  chmod 700 "$REJEU_DIR" 2>/dev/null || return 1
+  [ -w "$REJEU_DIR" ] || return 1
+  return 0
+}
+
+verdict_en_attente_de_remise() {   # <id> -> 0 si un verdict de cette riposte attend sa remise
+  [ -f "$REJEU_FICHIER" ] || return 1
+  grep -q "^$1	" "$REJEU_FICHIER" 2>/dev/null
+}
+
+retenir_pour_rejeu() {   # <id> <status> <result>
+  if ! etat_de_rejeu_pret; then
+    echo "respond: #$1 verdict NON RETENU pour rejeu : etat local $REJEU_DIR non inscriptible — le central re-servira la riposte apres sa fenetre de reclamation, et elle sera REEXECUTEE" >&2
+    return 0
+  fi
+  verdict_en_attente_de_remise "$1" && return 0
+  _rr_n=0; [ -f "$REJEU_FICHIER" ] && _rr_n=$(grep -c '' "$REJEU_FICHIER" 2>/dev/null || :)
+  if [ "${_rr_n:-0}" -ge "$REJEU_LIGNES" ]; then
+    echo "respond: #$1 verdict NON RETENU pour rejeu : la file de rejeu est PLEINE ($REJEU_LIGNES verdicts en attente dans $REJEU_FICHIER) — le central re-servira la riposte, et elle sera REEXECUTEE" >&2
+    return 0
+  fi
+  _rr_resultat=$(printf '%s' "$3" | tr '\000-\037' ' ' | coupe_sur_caractere "$REJEU_RESULTAT_OCTETS")
+  if ! (umask 077 && printf '%s\t0\t{"id":%s,"status":"%s","result":"%s"}\n' "$1" "$1" "$2" "$(esc "$_rr_resultat")" >> "$REJEU_FICHIER") 2>/dev/null; then
+    echo "respond: #$1 verdict NON RETENU pour rejeu : ecriture refusee dans $REJEU_FICHIER" >&2
+    return 0
+  fi
+  chmod 600 "$REJEU_FICHIER" 2>/dev/null || :
+  echo "respond: #$1 verdict RETENU pour rejeu au tour suivant ($REJEU_FICHIER, $REJEU_TOURS tours au plus)" >&2
+}
+
+rejouer_les_verdicts_retenus() {
+  [ -s "$REJEU_FICHIER" ] || return 0
+  if ! etat_de_rejeu_pret; then
+    echo "respond: rejeu IMPOSSIBLE : etat local $REJEU_DIR non inscriptible, les verdicts retenus restent en attente" >&2
+    return 0
+  fi
+  _rj_nouveau="$REJEU_FICHIER.nouveau"
+  if ! (umask 077 && : > "$_rj_nouveau") 2>/dev/null; then
+    echo "respond: rejeu IMPOSSIBLE : $_rj_nouveau non inscriptible, les verdicts retenus restent en attente" >&2
+    return 0
+  fi
+  _rj_muet=0
+  while IFS='	' read -r _rj_id _rj_tours _rj_corps || [ -n "${_rj_id:-}" ]; do
+    case "$_rj_id" in ''|*[!0-9]*) echo "respond: rejeu : ligne illisible ecartee de $REJEU_FICHIER" >&2; continue ;; esac
+    case "$_rj_tours" in ''|*[!0-9]*) echo "respond: #$_rj_id rejeu : compte de tours illisible, ligne ecartee" >&2; continue ;; esac
+    case "$_rj_corps" in "{\"id\":$_rj_id,"*) ;; *) echo "respond: #$_rj_id rejeu : corps illisible, ligne ecartee" >&2; continue ;; esac
+    if [ "$_rj_muet" = 1 ]; then printf '%s\t%s\t%s\n' "$_rj_id" "$_rj_tours" "$_rj_corps" >> "$_rj_nouveau"; continue; fi
+    _rj_tours=$((_rj_tours + 1))
+    remettre_une_fois "$_rj_corps"
+    case "$_rv_code" in
+      2[0-9][0-9])
+        case "$_rv_corps" in
+          *'"ok":false'*) echo "respond: #$_rj_id verdict REJOUE mais NON RETENU par le central (riposte deja close, ou d un autre hote) : $(reponse_bornee "$_rv_corps")" >&2 ;;
+          *) echo "respond: #$_rj_id verdict REJOUE et remis au tour $_rj_tours" >&2 ;;
+        esac ;;
+      503|502|504|000|'')
+        _rj_muet=1
+        if [ "$_rj_tours" -ge "$REJEU_TOURS" ]; then
+          echo "respond: #$_rj_id verdict ABANDONNE apres $_rj_tours tours de rejeu (dernier HTTP ${_rv_code:-illisible}) : la riposte reste OUVERTE au central, qui la re-servira et elle sera REEXECUTEE : $(reponse_bornee "$_rv_corps")" >&2
+        else
+          printf '%s\t%s\t%s\n' "$_rj_id" "$_rj_tours" "$_rj_corps" >> "$_rj_nouveau"
+          echo "respond: #$_rj_id verdict toujours NON REMIS au tour $_rj_tours/$REJEU_TOURS (HTTP ${_rv_code:-illisible}), garde pour le tour suivant" >&2
+        fi ;;
+      *) echo "respond: #$_rj_id verdict REJOUE et REFUSE par le central (HTTP $_rv_code), abandonne : $(reponse_bornee "$_rv_corps")" >&2 ;;
+    esac
+  done < "$REJEU_FICHIER"
+  mv "$_rj_nouveau" "$REJEU_FICHIER" 2>/dev/null || echo "respond: rejeu : $REJEU_FICHIER non remplace, les verdicts deja remis seront rejoues (le central rendra leur absence)" >&2
+}
 
 post_result() {          # id status result (auth par stdin, jamais en argv)
   body="{\"id\":$1,\"status\":\"$2\",\"result\":\"$(esc "$3")\"}"
   _pr_essai=1; _pr_attente=$RESULTAT_ATTENTE
   while :; do
-    # shellcheck disable=SC2086  ($HH = 0 ou 2 tokens, expansion voulue)
-    _pr_rep=$(resp_curl_auth_stdin | curl -K - $HH $TLS -sS --max-time 15 -w '\n%{http_code}' \
-      -H 'Content-Type: application/json' --data-binary "$body" "$CENTRAL/api/actions/result" 2>/dev/null) || :
-    _pr_code=$(printf '%s\n' "$_pr_rep" | sed -n '$p')
-    _pr_corps=$(printf '%s\n' "$_pr_rep" | sed '$d')
-    case "$_pr_code" in
+    remettre_une_fois "$body"
+    case "$_rv_code" in
       2[0-9][0-9])
-        case "$_pr_corps" in
-          *'"ok":false'*) echo "respond: #$1 verdict NON RETENU par le central (riposte deja close, ou d un autre hote) : $(reponse_bornee "$_pr_corps")" >&2 ;;
+        [ "$_rv_tronque" = 1 ] && echo "respond: #$1 reponse du central de plus de $RESULTAT_CORPS_LU octets : seuls les $RESULTAT_CORPS_LU premiers sont lus" >&2
+        case "$_rv_corps" in
+          *'"ok":false'*) echo "respond: #$1 verdict NON RETENU par le central (riposte deja close, ou d un autre hote) : $(reponse_bornee "$_rv_corps")" >&2 ;;
         esac
         return 0 ;;
       503|502|504|000) ;;
-      '') echo "respond: #$1 remise du verdict ILLISIBLE : aucun statut HTTP lu, la riposte peut rester ouverte au central" >&2; return 0 ;;
-      *) echo "respond: #$1 verdict REFUSE par le central (HTTP $_pr_code), non reessaye : $(reponse_bornee "$_pr_corps")" >&2; return 0 ;;
+      '') echo "respond: #$1 remise du verdict ILLISIBLE : aucun statut HTTP lu, la riposte peut rester ouverte au central" >&2
+          retenir_pour_rejeu "$1" "$2" "$3"; return 0 ;;
+      *) echo "respond: #$1 verdict REFUSE par le central (HTTP $_rv_code), non reessaye : $(reponse_bornee "$_rv_corps")" >&2; return 0 ;;
     esac
     if [ "$_pr_essai" -ge "$RESULTAT_ESSAIS" ]; then
-      echo "respond: #$1 verdict NON REMIS apres $_pr_essai essais (dernier HTTP $_pr_code) : la riposte reste OUVERTE au central : $(reponse_bornee "$_pr_corps")" >&2
+      echo "respond: #$1 verdict NON REMIS apres $_pr_essai essais (dernier HTTP $_rv_code) : la riposte reste OUVERTE au central : $(reponse_bornee "$_rv_corps")" >&2
+      retenir_pour_rejeu "$1" "$2" "$3"
       return 0
     fi
-    echo "respond: #$1 remise du verdict en HTTP $_pr_code, essai $_pr_essai/$RESULTAT_ESSAIS, nouvel essai dans ${_pr_attente} s" >&2
+    echo "respond: #$1 remise du verdict en HTTP $_rv_code, essai $_pr_essai/$RESULTAT_ESSAIS, nouvel essai dans ${_pr_attente} s" >&2
     sleep "$_pr_attente" 2>/dev/null || :
     _pr_essai=$((_pr_essai + 1)); _pr_attente=$((_pr_attente * 2))
   done
 }
 
+# --- le rejeu passe AVANT la liste : une liste vide ou injoignable n empeche pas de remettre ---
+rejouer_les_verdicts_retenus
+
+# --- recupere la liste (TSV: id  kind  target  dry_run), 1 action/ligne ---
+# shellcheck disable=SC2086  ($HH = 0 ou 2 tokens, expansion voulue)
+list=$(resp_curl_auth_stdin | curl -K - $HH $TLS -sS --max-time 15 "$CENTRAL/api/actions/pending?host=$HOSTN" 2>/dev/null) || exit 0
+[ -n "$list" ] || exit 0
+
 printf '%s\n' "$list" | while IFS='	' read -r id kind target dry; do
   [ -n "${id:-}" ] || continue
   case "$id" in *[!0-9]*) continue ;; esac          # id doit etre numerique
+  # `P10.21-j` — l action a deja ete appliquee, seul son verdict manque au central : la reexecuter
+  # poserait un second ban et remonterait un second verdict. Le rejeu la remettra.
+  if verdict_en_attente_de_remise "$id"; then
+    echo "respond: #$id NON reexecutee : son verdict attend deja sa remise ($REJEU_FICHIER)" >&2
+    continue
+  fi
   if ! is_ip "$target"; then post_result "$id" failed "cible non-IP: $target"; continue; fi
   if protected "$target"; then post_result "$id" failed "IP protegee (reservee/centrale): $target"; continue; fi
   verdict=$(verdict_liste_epargne "$ALLOWFILE" "$ALLOW_CONFIGUREE" "$target")

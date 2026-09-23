@@ -158,6 +158,87 @@ function bilansDeTicks(sc) {
   return box;
 }
 
+// `P10.21-h` — CE QUE LA BASE N'A PAS PRIS, PAR GENRE : DEUX COMPTEURS, UNE MÊME LECTURE.
+// CE QUE LE DÉMON SERT (daemon/src/metrics.rs, `gather_json`), sous `ingest` :
+//   · `evenements_d_acces_non_ecrits[_total]` (`P10.20-z`) — l'auto-ingestion d'un échec
+//     d'authentification, d'un verrouillage, d'un refus d'autorisation (daemon/src/auth.rs) que la base n'a
+//     pas pris : la MATIÈRE d'une détection qui manque ;
+//   · `acces_operateur_non_traces[_total]` (`P10.21-g`) — un accès cross-tenant d'un super-admin dont le
+//     maillon du journal de contrôle ou l'événement posé chez le tenant visité (daemon/src/rbac.rs,
+//     `TRACE_OPERATEUR_*`) n'a pas été écrit : l'accès a eu lieu, sa PREUVE manque.
+// Chacun est un total et un objet `{ <genre>: { n, derniere_cause } }`. Rien ne les lisait.
+// LES GENRES SONT DES ENSEMBLES FERMÉS écrits par le démon ; le harnais relit leurs littéraux dans son
+// arbre. Un genre que cette console ne connaît pas est RENDU quand même, sous son nom brut et dit tel :
+// jamais écarté. LE COMPTE EST CELUI DU PROCESSUS — il repart de zéro au redémarrage, et c'est écrit.
+const GENRES_D_ACCES = {
+  'plume-auth.failure': { fr: "échecs d'authentification", en: 'authentication failures' },
+  'plume-auth.lockout': { fr: 'verrouillages de compte', en: 'account lockouts' },
+  'plume-authz.denied': { fr: "refus d'autorisation", en: 'authorization denials' },
+};
+const TRACES_D_ACCES_OPERATEUR = {
+  'control_ledger.superadmin.read': { fr: 'lectures cross-tenant sans maillon au journal de contrôle', en: 'cross-tenant reads without a control-ledger link' },
+  'control_ledger.superadmin.write': { fr: 'écritures cross-tenant sans maillon au journal de contrôle', en: 'cross-tenant writes without a control-ledger link' },
+  'tenant.plume-operator-access.read': { fr: "lectures cross-tenant sans événement chez le tenant visité", en: 'cross-tenant reads without an event in the visited tenant' },
+  'tenant.plume-operator-access.write': { fr: "écritures cross-tenant sans événement chez le tenant visité", en: 'cross-tenant writes without an event in the visited tenant' },
+};
+const MOTS_DES_PERTES_PAR_GENRE = {
+  titre_acces: { fr: "Événements d'accès que la base n'a PAS pris, depuis le démarrage du démon", en: 'Access events the database did NOT take, since the daemon started' },
+  aucun_acces: { fr: "aucun : chaque échec d'authentification, verrouillage et refus d'autorisation a été écrit", en: 'none: every authentication failure, lockout and authorization denial was written' },
+  consequence_acces: { fr: "La détection ne verra jamais ces événements. Dernière cause servie —", en: 'Detection will never see these events. Last cause served —' },
+  titre_operateur: { fr: "Accès opérateur cross-tenant dont une trace n'a PAS été écrite, depuis le démarrage du démon", en: 'Cross-tenant operator accesses with a trace NOT written, since the daemon started' },
+  aucun_operateur: { fr: 'aucun : chaque accès opérateur cross-tenant a laissé ses deux traces', en: 'none: every cross-tenant operator access left both of its traces' },
+  consequence_operateur: { fr: "L'accès a eu lieu, sa preuve manque. Dernière cause servie —", en: 'The access happened, its proof is missing. Last cause served —' },
+  non_publie: { fr: 'non publié par ce démon : la perte ne peut pas être dite ici', en: 'not published by this daemon: the loss cannot be shown here' },
+  genre_inconnu: { fr: 'genre non nommé par cette console', en: 'kind not named by this console' },
+  sans_ventilation: { fr: "pertes comptées, mais le démon n'en a pas servi la ventilation par genre :", en: 'losses counted, but the daemon did not serve their breakdown by kind:' },
+};
+const motDesPertesParGenre = (cle) => (LANG === 'en' ? MOTS_DES_PERTES_PAR_GENRE[cle].en : MOTS_DES_PERTES_PAR_GENRE[cle].fr);
+// Les deux familles, décrites une fois : la clé servie, ses noms, et les mots qui lui sont propres.
+const FAMILLES_DE_PERTES = [
+  { cle: 'evenements_d_acces_non_ecrits', noms: GENRES_D_ACCES, titre: 'titre_acces', aucun: 'aucun_acces', consequence: 'consequence_acces' },
+  { cle: 'acces_operateur_non_traces', noms: TRACES_D_ACCES_OPERATEUR, titre: 'titre_operateur', aucun: 'aucun_operateur', consequence: 'consequence_operateur' },
+];
+function ligneDePerte(nomAffiche, n) {
+  const row = document.createElement('div'); row.className = 'kv';
+  const val = document.createElement('b'); val.className = 'warn'; val.textContent = String(n);
+  row.append(nomAffiche, val);
+  return row;
+}
+function pertesParGenre(ing, famille) {
+  const box = document.createElement('div'); box.className = 'sys-bilans';
+  box.dataset.pertesParGenre = famille.cle;   // marque de POSE pour le harnais, aucune règle CSS ne la vise
+  const h = document.createElement('div'); h.className = 'sys-tile-l'; h.textContent = motDesPertesParGenre(famille.titre); box.appendChild(h);
+  const total = ing[famille.cle + '_total'];
+  if (typeof total !== 'number') { box.appendChild(muted(motDesPertesParGenre('non_publie'))); return box; }
+  const servi = ing[famille.cle];
+  const parGenre = (servi && typeof servi === 'object') ? servi : {};
+  const genres = Object.keys(parGenre).sort();
+  if (!total && !genres.length) { box.appendChild(muted(motDesPertesParGenre(famille.aucun))); return box; }
+  // Un total sans ventilation (le verrou de la table par genre a échoué côté démon) n'est pas un zéro.
+  if (!genres.length) {
+    const nom = document.createElement('span'); nom.textContent = motDesPertesParGenre('sans_ventilation');
+    box.appendChild(ligneDePerte(nom, total));
+    return box;
+  }
+  for (const g of genres) {
+    const v = parGenre[g] || {};
+    const connu = famille.noms[g];
+    const nom = document.createElement('span');
+    nom.textContent = connu ? (LANG === 'en' ? connu.en : connu.fr) : g;
+    if (!connu) { const inconnu = document.createElement('span'); inconnu.className = 'muted'; inconnu.textContent = motDesPertesParGenre('genre_inconnu'); nom.append(' ', inconnu); }
+    box.appendChild(ligneDePerte(nom, Number(v.n) || 0));
+    // L'aveu à DEUX nœuds : la conséquence au puits, la cause SERVIE collée à côté, telle quelle.
+    if (v.derniere_cause) {
+      const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:0;font-size:12px';
+      const dit = document.createElement('span');
+      dit.textContent = motDesPertesParGenre(famille.consequence);
+      aveu.append(dit, ' « ' + String(v.derniere_cause).trim() + ' »');
+      box.appendChild(aveu);
+    }
+  }
+  return box;
+}
+
 // S37 — CE QU'UN COMPOSANT PORTE À CÔTÉ DE SON ÉTAT : toute grandeur à verdict posée sur l'objet
 // (`<clé>_verdict`) est lue ; une grandeur NON LISIBLE ou des abandons > 0 sont dits à côté de la
 // pastille, même quand l'état du composant ne les reflète pas (la taille de la base n'entre pas dans
@@ -307,6 +388,7 @@ function rendreSysteme(wrap, m, h) {
   );
   wrap.appendChild(grid);
   wrap.appendChild(bilansDeTicks(sc));
+  FAMILLES_DE_PERTES.forEach(famille => wrap.appendChild(pertesParGenre(ing, famille)));
 
   // ADMIN : bulletin/MOTD + bundle de diagnostic.
   if (socIsAdmin()) {
@@ -437,4 +519,4 @@ async function loadBulletin() {
 // `direLaVersionDeSchemaDuPaquet` est exposée pour le harnais ESM (témoin 96 : l'aveu dit à celui qui
 // envoie le paquet), au même titre que `rendreSysteme` ; elle n'a qu'un appelant applicatif, le bouton
 // « Télécharger le diagnostic ».
-export { loadSystemView, loadBulletin, rendreSysteme, lireMesure, componentRow, detailAvecSesReferences, direLaVersionDeSchemaDuPaquet, direLesListesNonLuesDuPaquet };
+export { GENRES_D_ACCES, TRACES_D_ACCES_OPERATEUR, loadSystemView, loadBulletin, rendreSysteme, lireMesure, componentRow, detailAvecSesReferences, direLaVersionDeSchemaDuPaquet, direLesListesNonLuesDuPaquet, motDesPertesParGenre };

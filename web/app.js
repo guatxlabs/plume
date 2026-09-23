@@ -2,7 +2,7 @@ import {
   $, CSSV, socTZ, LANG, LOC, tzOpts, fmtTs, SEV, sev, bool, esc, ICONS, ic, closeModals, withBusy, toast, showErr, modal, confirmModal, csvCell, downloadText, tsSlug, exportPDF, exportBar, closeMiniMenu, api, apiSend, muted, colComparator, pageNums, pagedList,
   setSocTZ,
   socIsAdmin, formMsg,
-  confirmWithConsequence, disclosure
+  confirmWithConsequence, disclosure, phraseDuRefusDuDemon
 } from './core.js';
 import { ouvrirLaModaleDePlage } from './plage_de_dates.js';
 import { installI18nObserver } from './i18n_observer.js';
@@ -26,7 +26,7 @@ import { loadDetAdv } from './detadv.js';
 import { loadAttackMatrix } from './attack.js';
 import { poserLesRepresentations } from './representations.js'; // `P11.20-d` : l'éditeur offre les neuf représentations, depuis la liste unique
 import { initSigmaImport } from './sigmaimport.js';
-import { loadOperatorAudit, loadTenantsView } from './multitenant.js';
+import { avouerLeProvisionnement, loadOperatorAudit, loadTenantsView } from './multitenant.js';
 import { addToCase, canEditCases, createCase, loadCases, openCase } from './cases.js';
 import { prefGet, prefSet, prefsReady } from './prefs.js'; // #62 — préférences utilisateur self-scoped (favoris, réglages par vue, plage par défaut)
 import { initKeyboardNav } from './keys.js'; // #62 — navigation clavier (/, g+touche, j/k, ?) non-intrusive
@@ -565,12 +565,17 @@ if ($('#tenant-form')) $('#tenant-form').addEventListener('submit', async e => {
   if (!await confirmWithConsequence('Provisionner le tenant « ' + id + ' »', 'une base chiffrée dédiée est créée avec sa clé' + (admin ? ', et « ' + admin + ' » en devient administrateur (accès complet à ce tenant)' : '') + '. Action auditée.', { okText: 'Provisionner', danger: !!admin })) { if (res) res.textContent = ''; return; }
   let out;
   try { out = await apiSend('/tenants', 'POST', body); }
-  catch (err) { if (res) { res.textContent = (err && err.message) || 'échec'; res.className = 'bad'; } return; }
+  catch (err) { if (res) { res.textContent = phraseDuRefusDuDemon(err) || 'échec'; res.className = 'bad'; } return; }
   out = out || {};
+  // `P10.21-h` — le succès peut porter DEUX aveux : la ligne manquante au journal de contrôle
+  // (`registre_sans_maillon`) et le premier administrateur demandé mais non posé (`P10.21-g`). Le tenant
+  // EXISTE dans les deux cas ; le formulaire se replie, les aveux se posent dans le puits du panneau, et
+  // aucun administrateur n'est annoncé quand `first_admin` est nul.
   if (res) { res.textContent = 'tenant créé' + (out.first_admin ? ' — 1er admin : ' + out.first_admin : ''); res.className = 'muted'; }
   ['#tf-id', '#tf-name', '#tf-admin', '#tf-key'].forEach(s => { const el = $(s); if (el) el.value = ''; });
   const f = $('#tenant-form'); if (f) f.classList.add('hidden');
   toast('tenant « ' + (out.name || id) + ' » provisionné', 'ok');
+  avouerLeProvisionnement(out);
   loadTenantsView();
 });
 if ($('#opaccess-refresh')) $('#opaccess-refresh').onclick = loadOperatorAudit;

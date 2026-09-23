@@ -16018,8 +16018,10 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     exiger(lecteursDeLaSuite103.join(",") === "audit.js,retention.js,viz.js",
       `(103e) l'ensemble des vues qui LISENT \`has_more\` n'est plus celui que ce lot a relevé — une vue neuve peut en tirer une borne sans la dire : ${JSON.stringify(lecteursDeLaSuite103)}`);
     const surfacesQuiLisentLaTrace103 = CORPUS_WEB.filter(([f, src]) => f.endsWith(".js") && /=\s*causeDeLaTraceManquante\(/.test(src)).map(([f]) => f).sort();
-    exiger(surfacesQuiLisentLaTrace103.join(",") === "cases.js,detection_admin.js,viz.js",
-      `(103e) l'ensemble des surfaces qui LISENT l'aveu de trace manquante n'est plus celui des trois surfaces de mise en file : ${JSON.stringify(surfacesQuiLisentLaTrace103)}`);
+    // `P10.21-h` (lot 105) : la surface du PLAN DE CONTRÔLE rejoint l'ensemble — `multitenant.js`, qui lit la
+    // même clé sur un autre journal, pour ses gestes ET pour le provisionnement dont le formulaire vit dans `app.js`.
+    exiger(surfacesQuiLisentLaTrace103.join(",") === "cases.js,detection_admin.js,multitenant.js,viz.js",
+      `(103e) l'ensemble des surfaces qui LISENT l'aveu de trace manquante n'est plus celui des trois surfaces de mise en file et de celle du plan de contrôle : ${JSON.stringify(surfacesQuiLisentLaTrace103)}`);
   } finally {
     globalThis.fetch = fetchOrigine103;
     globalThis.setTimeout = minuterieOrigine103;
@@ -16326,6 +16328,419 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
   }
   console.log("(104) OK — les refus neufs de `P10.20-w` atteignent l'écran : l'acquittement en masse refusé en cinq cent trois dit que la file est INTACTE, avec la cause servie, sans code ni JSON, et ne sort plus du geste en rejet ; le vrai zéro reste un compte ; un autre refus garde sa cause sans prendre ces mots ; l'acquittement un à un arrêté par un cinq cents nu dit combien sont passées sur combien, sans inventer de cause. Les deux créations de dossier disent le refus d'ouverture et ne naviguent vers aucun dossier ; un succès sans identifiant ne rattache rien. La pose refusée dit la phrase du démon, son quatre cent quatre NU se dit sans cause ; le retrait refusé est avoué à DEUX nœuds dans la section rendue par le chargeur réel, le quatre cent quatre nu remplaçant l'aveu précédent. Les quatre ouvertures sont nues, bornées par Unicode — `\\b` ne reconnaîtrait pas deux des quatre phrases servies, mesuré —, reconnaissent leur phrase, refusent les sept autres, un mot plus long, une lettre accentuée après, et leur phrase citée ailleurs qu'en tête ; corps en objet ET en chaîne.");
+}
+
+// ---------------------------------------------------------------------------------------------
+// (105) `P10.21-h` et `P10.21-j` (partie console) — LES GESTES D'ADMINISTRATION DES TENANTS LISENT
+//       L'AVEU DE LEUR JOURNAL, LA DESTRUCTION REFUSÉE DIT SA PHRASE, LES ÉVÉNEMENTS D'ACCÈS PERDUS SE
+//       LISENT AU PANNEAU SYSTÈME, ET LE RATTACHEMENT D'UN ÉLÉMENT À UN DOSSIER DIT SON REFUS.
+//
+// CE QUE LE DÉMON SERT. `P10.21-g` y ajoute trois refus et une clé : bascule de suspension et retrait de
+// droit que la base n'a pas pris refusés en cinq cent trois nommé (l'accès retiré est alors TOUJOURS en
+// place), création sans le premier administrateur demandé servie deux cent un avec `first_admin: null` et
+// `premier_administrateur_non_pose` ; et un second compteur, `ingest.acces_operateur_non_traces`.
+// `P10.20-z` : cinq gestes du plan de contrôle (daemon/src/tenants.rs) servent
+// leur succès avec la clé `registre_sans_maillon` quand leur ligne manque au journal ; le retrait d'un
+// droit passe alors d'un deux cent quatre nu à un deux cents qui porte l'aveu ; la destruction est
+// refusée en cinq cent trois `CAUSE_DESTRUCTION_SANS_TRACE` ; l'auto-ingestion des accès compte sa perte
+// par genre (`ingest.evenements_d_acces_non_ecrits`, daemon/src/metrics.rs). `case_item_add`
+// (daemon/src/handlers/cases.rs) ne sert qu'un quatre cent quatre nu ou un deux cent quatre.
+//
+// CE QUE LA CONSOLE EN FAISAIT, MESURÉ AVANT CE LOT : aucun des cinq gestes ne lisait le corps de son
+// succès ; la destruction refusée peignait `e.message` (code et JSON coupés) ; aucun module ne lisait le
+// compteur ; `addToCase` postait l'élément SANS `catch` — le refus sortait du geste sans un mot.
+//
+// CE QUI ÉTAIT IMPRÉCIS DANS L'ÉNONCÉ, ET MESURÉ ICI. (1) « affiche “Action auditée” sur une suspension
+// dont la trace manque » : ces mots sont ceux de la CONFIRMATION, avant le geste ; après, la console
+// disait « tenant suspendu » et rien d'autre. (2) « suppose qu'un retrait rend toujours deux cent
+// quatre » : elle ignorait le corps, quel qu'il soit — un deux cents avec aveu se lisait comme un succès
+// nu. (3) « le compteur servi par `/api/metrics` » : la console lit `/api/system/metrics`, que le même
+// `gather_json` rend ; c'est le panneau Système qui le dit désormais.
+//
+// CE QUE CE TÉMOIN NE TIENT PAS : aucune route du démon n'est rejouée ; la face anglaise des phrases
+// n'est pas jugée (tables `{fr, en}`, reconnues par la garde du lexique) ; la santé de composant
+// (`component_health`, côté démon) ne réagit toujours pas au compteur, et ce témoin ne le mesure pas ;
+// le formulaire de provisionnement est exercé par l'écouteur de l'instance FRANÇAISE d'`app.js` seule.
+// ---------------------------------------------------------------------------------------------
+{
+  const url105 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const modTenants105 = await import(url105("multitenant.js"));
+  const modSysteme105 = await import(url105("system.js"));
+  const modDossiers105 = await import(url105("cases.js"));
+  const { S: S105 } = await import(url105("state.js"));
+  await import(url105("app.js"));   // l'écouteur du formulaire de provisionnement vit à son top-level
+
+  const tic105 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser105 = async (n = 30) => { for (let i = 0; i < n; i++) await tic105(); };
+  const nu105 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ");
+  const cueillir105 = (el, pred, acc) => { if (el && pred(el)) acc.push(el); ((el && el.children) || []).forEach((c) => cueillir105(c, pred, acc)); return acc; };
+  const avis105 = () => document.querySelectorAll(".toast").map((t) => String(t.textContent).replace(/\s+/g, " "));
+  const instrument105 = (vrai, quoi) => exiger(vrai, `(105-instrument) ${quoi} : le corps jugé ci-dessous n'existe plus côté démon, ce témoin REFUSE DE CONCLURE`);
+
+  // ── (0) L'INSTRUMENT : CE QUI EST JUGÉ PLUS BAS EST LU DANS L'ARBRE DU DÉMON ────────────────────
+  const src105 = (f) => { try { return readFileSync(path.join(RACINE, "daemon", "src", ...f.split("/")), "utf8"); } catch { return ""; } };
+  const TENANTS105 = src105("tenants.rs"), RBAC105 = src105("rbac.rs"), LEDGER105 = src105("ledger.rs");
+  const AUTH105 = src105("auth.rs"), METRIQUES105 = src105("metrics.rs"), DOSSIERS105 = src105("handlers/cases.rs");
+  const ACTIONS105 = src105("handlers/actions.rs"), LIENS105 = src105("handlers/caseops.rs");
+  const litteral105 = (src, nom) => {
+    const m = src.match(new RegExp(nom + ': &str =\\s*"([\\s\\S]*?)";'));
+    return m ? String(m[1]).replace(/\\\r?\n\s*/g, "") : "";
+  };
+  const CAUSE_DESTRUCTION105 = litteral105(TENANTS105, "CAUSE_DESTRUCTION_SANS_TRACE");
+  const CAUSE_GESTE105 = litteral105(RBAC105, "CAUSE_GESTE_SANS_TRACE_DE_CONTROLE");
+  const CLE105 = litteral105(LEDGER105, "CLE_REGISTRE_SANS_MAILLON");
+  const GOUVERNANCE105 = src105("handlers/governance.rs");
+  const CAUSE_BASCULE105 = litteral105(TENANTS105, "CAUSE_BASCULE_DE_SUSPENSION_NON_ECRITE");
+  const CAUSE_RETRAIT_DROIT105 = litteral105(TENANTS105, "CAUSE_RETRAIT_DE_DROIT_NON_ECRIT");
+  const CAUSE_PREMIER_ADMIN105 = litteral105(TENANTS105, "CAUSE_PREMIER_ADMINISTRATEUR_NON_POSE");
+  const CLE_PREMIER_ADMIN105 = litteral105(TENANTS105, "CLE_PREMIER_ADMINISTRATEUR_NON_POSE");
+  const CAUSE_ROLE105 = litteral105(GOUVERNANCE105, "CAUSE_ROLE_NON_ECRIT");
+  const CAUSE_RETRAIT_ROLE105 = litteral105(GOUVERNANCE105, "CAUSE_RETRAIT_DE_ROLE_NON_ECRIT");
+  const VOISINES105 = [litteral105(ACTIONS105, "CAUSE_RESULTAT_NON_ENREGISTRE"), litteral105(LIENS105, "CAUSE_LIEN_NON_POSE"), CAUSE_GESTE105, CAUSE_ROLE105, CAUSE_RETRAIT_ROLE105, CAUSE_PREMIER_ADMIN105];
+  instrument105(CAUSE_BASCULE105.startsWith("BASCULE NON ENREGISTRÉE, RIEN N'A CHANGÉ") && CAUSE_RETRAIT_DROIT105.startsWith("RETRAIT NON ENREGISTRÉ, L'ACCÈS EST TOUJOURS EN PLACE")
+    && CAUSE_RETRAIT_ROLE105.startsWith("RETRAIT NON ENREGISTRÉ, LE RÔLE") && CAUSE_ROLE105.length > 100 && CAUSE_PREMIER_ADMIN105.startsWith("PREMIER ADMINISTRATEUR NON POSÉ")
+    && CLE_PREMIER_ADMIN105 === "premier_administrateur_non_pose",
+    "une cause de `P10.21-g` (bascule, retrait de droit, rôle, retrait de rôle, premier administrateur) ou sa clé n'est plus lisible dans daemon/src/");
+  instrument105(/pub\(crate\) fn refuser_le_geste_non_ecrit\(cause_du_geste: &str, cause_du_moteur: &str\) -> Response \{\s*err_json\(StatusCode::SERVICE_UNAVAILABLE, format!\("\{cause_du_geste\} \(\{cause_du_moteur\}\)"\)\)/.test(RBAC105)
+    && /EcritureDuPlanDeControle::Refusee\(cause\) => return refuser_le_geste_non_ecrit\(CAUSE_BASCULE_DE_SUSPENSION_NON_ECRITE, &cause\),/.test(TENANTS105)
+    && /EcritureDuPlanDeControle::Refusee\(cause\) => return refuser_le_geste_non_ecrit\(CAUSE_RETRAIT_DE_DROIT_NON_ECRIT, &cause\),/.test(TENANTS105),
+    "la bascule ou le retrait de droit non écrits ne sont plus refusés en cinq cent trois `<cause> (<moteur>)`");
+  instrument105(/corps\[CLE_PREMIER_ADMINISTRATEUR_NON_POSE\] = json!\(format!\("\{CAUSE_PREMIER_ADMINISTRATEUR_NON_POSE\} \(\{cause\}\)"\)\);/.test(TENANTS105)
+    && /let first_admin = premier_administrateur\.pose\(\)\.map\(str::to_string\);/.test(TENANTS105),
+    "la création de tenant ne sert plus `premier_administrateur_non_pose` à côté d'un `first_admin` nul");
+  const TRACES_DU_DEMON105 = [...RBAC105.matchAll(/pub\(crate\) const TRACE_OPERATEUR_[A-Z_]+: &str = "([^"]+)";/g)].map((m) => m[1]).sort();
+  instrument105(TRACES_DU_DEMON105.length === 4 && /ingest\.insert\("acces_operateur_non_traces_total"\.into\(\)/.test(METRIQUES105) && /"acces_operateur_non_traces"\.into\(\),/.test(METRIQUES105),
+    `\`ingest.acces_operateur_non_traces[_total]\` ou les quatre \`TRACE_OPERATEUR_*\` de daemon/src/rbac.rs ne sont plus lisibles (lues : ${TRACES_DU_DEMON105.join(",")})`);
+  instrument105(CAUSE_DESTRUCTION105.startsWith("DESTRUCTION REFUSÉE, RIEN N'EST DÉTRUIT") && CAUSE_DESTRUCTION105.length > 150,
+    "`CAUSE_DESTRUCTION_SANS_TRACE` n'est plus lisible dans daemon/src/tenants.rs");
+  instrument105(/return err_json\(StatusCode::SERVICE_UNAVAILABLE, format!\("\{CAUSE_DESTRUCTION_SANS_TRACE\} \(\{cause\}\)"\)\);/.test(TENANTS105),
+    "la destruction refusée n'est plus servie en cinq cent trois `<cause> (<détail>)`");
+  instrument105(CAUSE_GESTE105.startsWith("TRACE MANQUANTE : le geste d'administration") && CLE105 === "registre_sans_maillon"
+    && /corps\[CLE_REGISTRE_SANS_MAILLON\] = json!\(format!\("\{CAUSE_GESTE_SANS_TRACE_DE_CONTROLE\} \(\{cause\}\)"\)\);/.test(RBAC105),
+    "l'aveu du journal de contrôle (`registre_sans_maillon`, `CAUSE_GESTE_SANS_TRACE_DE_CONTROLE`) n'est plus posé dans daemon/src/rbac.rs");
+  instrument105((TENANTS105.match(/avouer_le_maillon_de_controle_manquant\(&mut corps, &maillon\);/g) || []).length === 4,
+    "les QUATRE gestes de tenants.rs qui avouent (provisionnement, suspension, pose, retrait) ne sont plus quatre");
+  instrument105(/if maillon\.cause_de_non_inscription\(\)\.is_none\(\) \{\s*return StatusCode::NO_CONTENT\.into_response\(\);\s*\}\s*let mut corps = json!\(\{ "ok": true, "tenant": id, "user": user, "removed": true \}\);/.test(TENANTS105),
+    "le retrait d'un droit ne sert plus ses DEUX formes de succès (deux cent quatre nu, deux cents avec aveu)");
+  const GENRES_DU_DEMON105 = [...new Set([...AUTH105.matchAll(/"(plume-auth\.[a-z]+|plume-authz\.[a-z]+)"/g)].map((m) => m[1]))].sort();
+  instrument105(GENRES_DU_DEMON105.join(",") === "plume-auth.failure,plume-auth.lockout,plume-authz.denied"
+    && /compter_l_evenement_d_acces_s_il_n_est_pas_ecrit\("plume-authz\.denied", ecriture\);/.test(AUTH105),
+    `les genres d'accès comptés ne sont plus les trois littéraux de daemon/src/auth.rs (lus : ${GENRES_DU_DEMON105.join(",")})`);
+  instrument105(/ingest\.insert\("evenements_d_acces_non_ecrits_total"\.into\(\)/.test(METRIQUES105)
+    && /"evenements_d_acces_non_ecrits"\.into\(\),/.test(METRIQUES105) && /json!\(\{ "n": n, "derniere_cause": c \}\)/.test(METRIQUES105),
+    "`gather_json` ne sert plus `ingest.evenements_d_acces_non_ecrits[_total]` sous la forme `{ n, derniere_cause }`");
+  const mItem105 = DOSSIERS105.match(/pub\(crate\) async fn case_item_add\([\s\S]*?\) -> StatusCode \{([\s\S]*?)\n\}/);
+  instrument105(!!mItem105 && (mItem105[1].match(/StatusCode::[A-Z_]+/g) || []).sort().join(",") === "StatusCode::NOT_FOUND,StatusCode::NO_CONTENT",
+    "`case_item_add` ne sert plus QUE son quatre cent quatre nu et son deux cent quatre");
+
+  // ── (1) L'OUVERTURE DE LA DESTRUCTION SANS TRACE, NUE, DANS LES DEUX SENS ───────────────────────
+  const O105 = modTenants105.OUVERTURE_DE_LA_DESTRUCTION_SANS_TRACE;
+  const mot105 = modTenants105.motDuPlanDeControle;
+  const OUVERTURES105 = [
+    ["destruction", O105, CAUSE_DESTRUCTION105],
+    ["bascule", modTenants105.OUVERTURE_DE_LA_BASCULE_NON_ECRITE, CAUSE_BASCULE105],
+    ["retrait de droit", modTenants105.OUVERTURE_DU_RETRAIT_DE_DROIT_NON_ECRIT, CAUSE_RETRAIT_DROIT105],
+  ];
+  const toutes105 = [CAUSE_DESTRUCTION105, CAUSE_BASCULE105, CAUSE_RETRAIT_DROIT105, ...VOISINES105];
+  for (const [nom, o, cause] of OUVERTURES105) {
+    exiger(o instanceof RegExp, `(105-instrument) l'ouverture « ${nom} » n'est pas exportée NUE par web/multitenant.js`);
+    if (!(o instanceof RegExp)) continue;
+    exiger(o.test(cause) && o.test(cause + " (database is locked)"), `(105-1) l'ouverture « ${nom} » ne reconnaît PLUS la phrase que le démon écrit`);
+    const voisines = toutes105.filter((c) => c !== cause && o.test(c));
+    exiger(voisines.length === 0 && toutes105.every((c) => c.length > 60), `(105-1-négatif) l'ouverture « ${nom} » reconnaît une phrase VOISINE, ou une voisine est illisible : ${JSON.stringify(voisines.map((c) => c.slice(0, 40)))}`);
+    const tete = cause.split(" :")[0];
+    exiger(!o.test(tete + "S : x") && !o.test(tete + "É : x") && !o.test(tete + "e : x") && !o.test(VOISINES105[0] + " " + cause),
+      `(105-1-négatif) l'ouverture « ${nom} » mord sur un mot plus long, une lettre accentuée, ou sa phrase citée ailleurs qu'en tête`);
+  }
+  exiger(O105 instanceof RegExp && typeof mot105 === "function",
+    "(105-instrument) l'ouverture ou `motDuPlanDeControle` n'est pas exportée NUE par web/multitenant.js");
+  if (O105 instanceof RegExp) {
+    exiger(O105.test(CAUSE_DESTRUCTION105) && O105.test(CAUSE_DESTRUCTION105 + " (disk I/O error)"),
+      "(105-1) l'ouverture ne reconnaît PLUS la phrase que le démon écrit");
+    exiger(VOISINES105.every((v) => v.length > 60 && !O105.test(v)),
+      "(105-1-négatif) l'ouverture reconnaît une phrase VOISINE, ou une voisine est illisible");
+    exiger(!O105.test("DESTRUCTION REFUSÉE, RIEN N'EST DÉTRUITE : une phrase neuve") && !O105.test("DESTRUCTION REFUSÉE, RIEN N'EST DÉTRUITÉ : x")
+      && !O105.test(VOISINES105[0] + " " + CAUSE_DESTRUCTION105) && !O105.test("DESTRUCTION REFUSÉE : autre chose"),
+      "(105-1-négatif) l'ouverture mord sur un mot plus long, une lettre accentuée, une phrase citée ailleurs qu'en tête, ou une tête tronquée");
+  }
+
+  // ── LE SIMULACRE DE TRANSPORT : « MÉTHODE chemin », corps en OBJET ou en CHAÎNE ──────────────────
+  const fetchOrigine105 = globalThis.fetch, minuterieOrigine105 = globalThis.setTimeout;
+  let hoteDesAvis105 = document.querySelector("#toasts");
+  if (!hoteDesAvis105 || !hoteDesAvis105.isConnected) { hoteDesAvis105 = document.createElement("div"); hoteDesAvis105.id = "toasts"; document.body.appendChild(hoteDesAvis105); }
+  const etatOrigine105 = { admin: S105.isAdmin, auth: S105.AUTH, mes: S105.MY_TENANTS, courant: S105.CURRENT_TENANT };
+  let servis105 = {};
+  const appels105 = [];
+  globalThis.fetch = async (u, init) => {
+    const chemin = String(u).split("?")[0];
+    const methode = ((init && init.method) || "GET").toUpperCase();
+    appels105.push(methode + " " + chemin);
+    const r = servis105[methode + " " + chemin];
+    if (!r) return { ok: true, status: 200, text: async () => "{}", json: async () => ({}) };
+    const texte = typeof r.corps === "string" ? r.corps : JSON.stringify(r.corps === undefined ? {} : r.corps);
+    return { ok: (r.statut || 200) < 400, status: r.statut || 200, text: async () => texte, json: async () => JSON.parse(texte) };
+  };
+  globalThis.setTimeout = (fn, ms) => { if (ms >= 1000) return 0; if (ms >= 100) return minuterieOrigine105(fn, 0); return minuterieOrigine105(fn, ms); };
+  const fenetre105 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !c.classList.contains("out")).pop();
+  const valider105 = async (champs = {}) => {
+    const ov = fenetre105();
+    const form = ov && ov.children[0] ? ov.children[0].children[0] : null;
+    if (form) for (const el of form.querySelectorAll("[data-n]")) if (Object.prototype.hasOwnProperty.call(champs, el.dataset.n)) el.value = champs[el.dataset.n];
+    if (form && typeof form.onsubmit === "function") form.onsubmit({ preventDefault() {} });
+    await laisser105();
+  };
+  const geste105 = async (lancer, champs) => {
+    const avant = avis105().length, appelsAvant = appels105.length;
+    let rejet = null;
+    const p = Promise.resolve().then(lancer).then(() => {}, (e) => { rejet = e; });
+    await laisser105(); await valider105(champs); await p; await laisser105(40);
+    return { avis: avis105().slice(avant), appels: appels105.slice(appelsAvant), rejet };
+  };
+  const sansCodeNiJson105 = (t) => !/[{}]/.test(t) && !/\b(50[0-9]|40[0-9]|20[0-9])\b/.test(t) && !/plume-e/.test(t);
+  const avec105 = (corps, enChaine) => (enChaine ? JSON.stringify(corps) : corps);
+  const panneau105 = () => document.querySelector("#tenants-panel");
+  const aveuxDuPanneau105 = () => cueillir105(panneau105(), (e) => e.getAttribute && (e.getAttribute("data-trace-manquante") || e.getAttribute("data-refus-du-plan-de-controle")), [])
+    .filter((e) => !cueillir105(document.querySelector("#tenant-list"), (x) => x === e, []).length);
+  const bouton105 = (hote, texte) => cueillir105(hote, (e) => e.tagName === "BUTTON" && nu105(e).trim() === texte, [])[0];
+
+  try {
+    instrument105(!!panneau105() && !!document.querySelector("#tenant-list") && !!document.querySelector("#tenant-form"),
+      "`#tenants-panel`, `#tenant-list` ou `#tenant-form` est absent d'index.html : le puits jugé ci-dessous n'existe pas");
+    S105.isAdmin = true;
+    S105.AUTH = { user: "hugo", role: "admin", is_superadmin: true, tenant: "default" };
+    S105.MY_TENANTS = [{ id: "default" }, { id: "acme", name: "Acme" }];
+    const liste105 = (suspendu) => { servis105["GET /api/tenants"] = { corps: { tenants: [{ id: "acme", name: "Acme", suspended: suspendu, created: 1, nb_users: 1 }] } }; };
+    const charger105 = async (suspendu) => { liste105(suspendu); await modTenants105.loadTenantsView(); await laisser105(); return document.querySelector("#tenant-list"); };
+
+    // ══ (a) SUSPENSION ET RÉACTIVATION : L'AVEU DANS LE PUITS DU PANNEAU, PHRASE DU GESTE ═══════════
+    for (const [suspendu, texteBouton, geste, route] of [[false, "Suspendre", "suspension", "suspend"], [true, "Réactiver", "reactivation", "unsuspend"]]) {
+      for (const enChaine of [false, true]) {
+        const liste = await charger105(suspendu);
+        instrument105(!!bouton105(liste, texteBouton), `le chargeur réel ne rend pas le bouton « ${texteBouton} » : le geste jugé ci-dessous est hors d'atteinte`);
+        servis105[`POST /api/tenants/acme/${route}`] = { corps: avec105({ ok: true, id: "acme", suspended: !suspendu, [CLE105]: CAUSE_GESTE105 + " (database is locked)" }, enChaine) };
+        const g = await geste105(() => bouton105(liste, texteBouton).onclick());
+        const aveux = aveuxDuPanneau105();
+        exiger(g.appels.includes(`POST /api/tenants/acme/${route}`),
+          `(105a-instrument) le geste n'atteint pas sa route : ${JSON.stringify(g.appels)}`);
+        exiger(aveux.length === 1 && aveux[0].getAttribute("data-trace-manquante") === "1" && nu105(aveux[0].children[0]) === mot105(geste)
+          && nu105(aveux[0]).includes(CAUSE_GESTE105 + " (database is locked)") && !nu105(aveux[0].children[0]).includes(CAUSE_GESTE105)
+          && sansCodeNiJson105(nu105(aveux[0])),
+          `(105a) « ${geste} » ne pose pas l'aveu à DEUX nœuds dans le puits du panneau (corps en ${enChaine ? "chaîne" : "objet"}) : « ${aveux.map(nu105).join(" | ").slice(0, 300)} »`);
+        exiger(g.rejet === null && g.avis.some((a) => /tenant (suspendu|réactivé)/.test(a)),
+          `(105a) le succès n'est plus dit, ou le geste sort en rejet : ${JSON.stringify(g.avis)}`);
+      }
+      // NÉGATIF : un succès entier retire l'aveu précédent et n'en pose aucun.
+      const liste = await charger105(suspendu);
+      servis105[`POST /api/tenants/acme/${route}`] = { corps: { ok: true, id: "acme", suspended: !suspendu } };
+      await geste105(() => bouton105(liste, texteBouton).onclick());
+      exiger(aveuxDuPanneau105().length === 0, `(105a-négatif) « ${geste} » entier laisse un aveu dans le panneau`);
+    }
+    // UN AUTRE REFUS : l'avis cite ce que le démon a répondu, sans code.
+    {
+      const liste = await charger105(false);
+      servis105["POST /api/tenants/acme/suspend"] = { statut: 403, corps: "réservé au super-admin plateforme" };
+      const g = await geste105(() => bouton105(liste, "Suspendre").onclick());
+      exiger(g.avis.length === 1 && g.avis[0] === mot105("geste_refuse") + " « réservé au super-admin plateforme »" && aveuxDuPanneau105().length === 0,
+        `(105a) un refus de suspension ne se dit pas par la phrase du geste refusé, ou peint encore le code : ${JSON.stringify(g.avis)}`);
+    }
+
+    // LA BASCULE QUE LA BASE N'A PAS PRISE (`P10.21-g`) : le tenant est INCHANGÉ, avoué au panneau, sans succès.
+    for (const [suspendu, texteBouton, route] of [[false, "Suspendre", "suspend"], [true, "Réactiver", "unsuspend"]]) {
+      for (const enChaine of [false, true]) {
+        const liste = await charger105(suspendu);
+        servis105[`POST /api/tenants/acme/${route}`] = { statut: 503, corps: avec105({ error: CAUSE_BASCULE105 + " (database is locked)", id: "plume-e4-0" }, enChaine) };
+        const g = await geste105(() => bouton105(liste, texteBouton).onclick());
+        const aveux = aveuxDuPanneau105();
+        exiger(aveux.length === 1 && aveux[0].getAttribute("data-refus-du-plan-de-controle") === "bascule_non_ecrite" && nu105(aveux[0].children[0]) === mot105("bascule_non_ecrite")
+          && nu105(aveux[0]).includes(CAUSE_BASCULE105 + " (database is locked)") && sansCodeNiJson105(nu105(aveux[0])),
+          `(105a) la bascule « ${texteBouton} » non enregistrée n'est pas avouée à DEUX nœuds (corps en ${enChaine ? "chaîne" : "objet"}) : « ${aveux.map(nu105).join(" | ").slice(0, 300)} »`);
+        exiger(!g.avis.some((a) => /tenant (suspendu|réactivé)/.test(a)) && g.rejet === null,
+          `(105a-négatif) un avis de SUCCÈS part sur une bascule refusée : ${JSON.stringify(g.avis)}`);
+      }
+    }
+
+    // ══ (b) DESTRUCTION REFUSÉE AVANT DE DÉTRUIRE ══════════════════════════════════════════════════
+    for (const enChaine of [false, true]) {
+      const liste = await charger105(false);
+      servis105["DELETE /api/tenants/acme"] = { statut: 503, corps: avec105({ error: CAUSE_DESTRUCTION105 + " (disk I/O error)", id: "plume-e3-0" }, enChaine) };
+      const g = await geste105(() => bouton105(liste, "Supprimer").onclick(), { confirm: "Acme" });
+      const aveux = aveuxDuPanneau105();
+      exiger(g.appels.includes("DELETE /api/tenants/acme"), `(105b-instrument) la destruction n'atteint pas sa route : ${JSON.stringify(g.appels)}`);
+      exiger(aveux.length === 1 && aveux[0].getAttribute("data-refus-du-plan-de-controle") === "destruction_sans_trace" && nu105(aveux[0].children[0]) === mot105("destruction_sans_trace")
+        && nu105(aveux[0]).includes(CAUSE_DESTRUCTION105 + " (disk I/O error)") && sansCodeNiJson105(nu105(aveux[0])),
+        `(105b) la destruction refusée n'est pas avouée à DEUX nœuds avec la phrase du démon (corps en ${enChaine ? "chaîne" : "objet"}) : « ${aveux.map(nu105).join(" | ").slice(0, 300)} »`);
+      exiger(!g.avis.some((a) => /tenant détruit/.test(a)) && g.rejet === null,
+        `(105b-négatif) un avis de destruction part sur un refus : ${JSON.stringify(g.avis)}`);
+    }
+    {
+      const liste = await charger105(false);
+      servis105["DELETE /api/tenants/acme"] = { statut: 400, corps: "confirmation invalide : `confirm` doit égaler EXACTEMENT le nom du tenant" };
+      const g = await geste105(() => bouton105(liste, "Supprimer").onclick(), { confirm: "Acme" });
+      exiger(g.avis.length === 1 && g.avis[0].startsWith(mot105("destruction_refusee")) && g.avis[0].includes("confirmation invalide") && aveuxDuPanneau105().length === 0,
+        `(105b-négatif) un autre refus prend les mots de la destruction sans trace, ou perd sa cause : ${JSON.stringify(g.avis)}`);
+    }
+
+    // ══ (c) POSE ET RETRAIT D'UN DROIT : L'AVEU SOUS LA LISTE REPEINTE, LES DEUX FORMES DE SUCCÈS ════
+    servis105["GET /api/tenants/acme/grants"] = { corps: { tenant: "acme", grants: [{ user: "bob", role: "viewer" }] } };
+    const ouvrirLesAcces105 = async () => {
+      const liste = await charger105(false);
+      await geste105(() => bouton105(liste, "Accès").onclick());
+      return cueillir105(liste, (e) => e.className === "tnt-grants", [])[0];
+    };
+    const aveuxDesAcces105 = (hote) => cueillir105(hote, (e) => e.getAttribute && e.getAttribute("data-trace-manquante"), []);
+    for (const [avecAveu, enChaine] of [[true, false], [true, true], [false, false]]) {
+      const hote = await ouvrirLesAcces105();
+      instrument105(!!hote && !!cueillir105(hote, (e) => e.tagName === "FORM", [])[0], "le chargeur réel ne rend pas le formulaire des accès");
+      const form = cueillir105(hote, (e) => e.tagName === "FORM", [])[0];
+      cueillir105(form, (e) => e.tagName === "INPUT", [])[0].value = "carol";
+      servis105["POST /api/tenants/acme/grants"] = { corps: avec105(Object.assign({ ok: true, tenant: "acme", user: "carol", role: "viewer" }, avecAveu ? { [CLE105]: CAUSE_GESTE105 + " (disk full)" } : {}), enChaine) };
+      const g = await geste105(() => form.onsubmit({ preventDefault() {} }));
+      const aveux = aveuxDesAcces105(hote);
+      exiger(g.appels.includes("POST /api/tenants/acme/grants"), `(105c-instrument) la pose n'atteint pas sa route : ${JSON.stringify(g.appels)}`);
+      if (avecAveu) exiger(aveux.length === 1 && nu105(aveux[0].children[0]) === mot105("pose_de_droit") && nu105(aveux[0]).includes(CAUSE_GESTE105 + " (disk full)") && g.appels.includes("GET /api/tenants/acme/grants"),
+        `(105c) la pose sans trace n'est pas avouée sous la liste REPEINTE (corps en ${enChaine ? "chaîne" : "objet"}) : « ${aveux.map(nu105).join(" | ").slice(0, 300)} »`);
+      else exiger(aveux.length === 0 && g.avis.includes("accès accordé"), `(105c-négatif) une pose entière porte un aveu, ou perd son avis : ${JSON.stringify(g.avis)}`);
+    }
+    for (const [statut, corps, aveuAttendu] of [[204, "", false], [200, { ok: true, tenant: "acme", user: "bob", removed: true, [CLE105]: CAUSE_GESTE105 + " (database is locked)" }, true], [200, JSON.stringify({ ok: true, tenant: "acme", user: "bob", removed: true, [CLE105]: CAUSE_GESTE105 + " (x)" }), true]]) {
+      const hote = await ouvrirLesAcces105();
+      const croix = cueillir105(hote, (e) => e.tagName === "BUTTON" && e.title === "Retirer l'accès", [])[0];
+      instrument105(!!croix, "le chargeur réel ne rend pas le bouton de retrait d'un accès");
+      servis105["DELETE /api/tenants/acme/grants/bob"] = { statut, corps };
+      const g = await geste105(() => croix.onclick());
+      const aveux = aveuxDesAcces105(hote);
+      exiger(g.appels.includes("DELETE /api/tenants/acme/grants/bob") && g.avis.includes("accès retiré"),
+        `(105c) un retrait en ${statut} n'est plus dit comme un retrait : ${JSON.stringify(g.avis)} ${JSON.stringify(g.appels)}`);
+      exiger(aveuAttendu ? (aveux.length === 1 && nu105(aveux[0].children[0]) === mot105("retrait_de_droit") && nu105(aveux[0]).includes(CAUSE_GESTE105)) : aveux.length === 0,
+        `(105c) le retrait en ${statut} ${aveuAttendu ? "ne porte pas son aveu" : "porte un aveu qu'aucun corps ne sert"} : « ${aveux.map(nu105).join(" | ").slice(0, 300)} »`);
+    }
+
+    // LE RETRAIT QUE LA BASE N'A PAS PRIS (`P10.21-g`) : l'accès est TOUJOURS en place — jamais « retiré ».
+    for (const enChaine of [false, true]) {
+      const hote = await ouvrirLesAcces105();
+      const croix = cueillir105(hote, (e) => e.tagName === "BUTTON" && e.title === "Retirer l'accès", [])[0];
+      servis105["DELETE /api/tenants/acme/grants/bob"] = { statut: 503, corps: avec105({ error: CAUSE_RETRAIT_DROIT105 + " (disk I/O error)", id: "plume-e5-0" }, enChaine) };
+      const g = await geste105(() => croix.onclick());
+      const aveux = cueillir105(hote, (e) => e.getAttribute && e.getAttribute("data-refus-du-plan-de-controle") === "retrait_de_droit_non_ecrit", []);
+      exiger(aveux.length === 1 && nu105(aveux[0].children[0]) === mot105("retrait_de_droit_non_ecrit") && nu105(aveux[0]).includes(CAUSE_RETRAIT_DROIT105 + " (disk I/O error)") && sansCodeNiJson105(nu105(aveux[0])),
+        `(105c) le retrait non enregistré n'est pas avoué à DEUX nœuds sous la liste (corps en ${enChaine ? "chaîne" : "objet"}) : « ${aveux.map(nu105).join(" | ").slice(0, 300)} »`);
+      exiger(!g.avis.some((a) => /retiré/.test(a)) && !nu105(hote).includes("accès retiré") && nu105(hote).includes("bob"),
+        `(105c-négatif) la console dit « retiré » d'un accès TOUJOURS en place, ou le fait disparaître de la liste : ${JSON.stringify(g.avis)}`);
+    }
+
+    // ══ (d) PROVISIONNEMENT (app.js) : LE SUCCÈS PORTE L'AVEU, IL SE POSE DANS LE PUITS DU PANNEAU ══
+    {
+      const form = document.querySelector("#tenant-form");
+      const ecouteurs = ((form && form._ecouteurs) || []).filter((e) => e.type === "submit");
+      instrument105(ecouteurs.length >= 1, "`#tenant-form` ne porte aucun écouteur de soumission : app.js ne câble plus le provisionnement");
+      for (const [avecAveu, enChaine] of [[true, false], [true, true], [false, false]]) {
+        document.querySelector("#tf-id").value = "globex";
+        servis105["POST /api/tenants"] = { statut: 201, corps: avec105(Object.assign({ ok: true, id: "globex", name: "globex", first_admin: null }, avecAveu ? { [CLE105]: CAUSE_GESTE105 + " (disk I/O error)" } : {}), enChaine) };
+        const g = await geste105(() => ecouteurs[0].rappel({ preventDefault() {}, target: form, type: "submit" }));
+        const aveux = aveuxDuPanneau105();
+        exiger(g.appels.includes("POST /api/tenants"), `(105d-instrument) le provisionnement n'atteint pas sa route : ${JSON.stringify(g.appels)}`);
+        if (avecAveu) exiger(aveux.length === 1 && nu105(aveux[0].children[0]) === mot105("provisionnement") && nu105(aveux[0]).includes(CAUSE_GESTE105 + " (disk I/O error)"),
+          `(105d) le provisionnement sans trace n'est pas avoué dans le puits du panneau (corps en ${enChaine ? "chaîne" : "objet"}) : « ${aveux.map(nu105).join(" | ").slice(0, 300)} »`);
+        else exiger(aveux.length === 0, "(105d-négatif) un provisionnement entier laisse l'aveu précédent dans le panneau");
+      }
+      // LE PREMIER ADMINISTRATEUR DEMANDÉ ET NON POSÉ : deux cent un, `first_admin: null`, et les DEUX aveux.
+      for (const enChaine of [false, true]) {
+        document.querySelector("#tf-id").value = "initech"; document.querySelector("#tf-admin").value = "dana";
+        servis105["POST /api/tenants"] = { statut: 201, corps: avec105({ ok: true, id: "initech", name: "initech", first_admin: null, [CLE105]: CAUSE_GESTE105 + " (x)", [CLE_PREMIER_ADMIN105]: CAUSE_PREMIER_ADMIN105 + " (UNIQUE constraint failed)" }, enChaine) };
+        const g = await geste105(() => ecouteurs[0].rappel({ preventDefault() {}, target: form, type: "submit" }));
+        const aveux = aveuxDuPanneau105();
+        const admin = aveux.filter((a) => a.getAttribute("data-refus-du-plan-de-controle") === "premier_administrateur_non_pose");
+        exiger(aveux.length === 2 && admin.length === 1 && nu105(admin[0].children[0]) === mot105("premier_administrateur_non_pose") && nu105(admin[0]).includes(CAUSE_PREMIER_ADMIN105 + " (UNIQUE constraint failed)"),
+          `(105d) le premier administrateur non posé n'est pas avoué à côté de la trace manquante (corps en ${enChaine ? "chaîne" : "objet"}) : « ${aveux.map(nu105).join(" | ").slice(0, 300)} »`);
+        exiger(!nu105(document.querySelector("#tf-result")).includes("dana") && !g.avis.some((a) => a.includes("dana")),
+          `(105d-négatif) la console annonce un administrateur qui n'existe pas : ${nu105(document.querySelector("#tf-result"))} ${JSON.stringify(g.avis)}`);
+      }
+      document.querySelector("#tf-admin").value = "";
+    }
+
+    // ══ (e) LE PANNEAU SYSTÈME DIT LES ÉVÉNEMENTS D'ACCÈS PERDUS, PAR GENRE ════════════════════════
+    {
+      const GENRES = modSysteme105.GENRES_D_ACCES, TRACES = modSysteme105.TRACES_D_ACCES_OPERATEUR, motAcces = modSysteme105.motDesPertesParGenre;
+      exiger(!!TRACES && Object.keys(TRACES).sort().join(",") === TRACES_DU_DEMON105.join(","),
+        `(105e) les traces opérateur nommées par la console ne sont pas EXACTEMENT celles du démon : ${Object.keys(TRACES || {}).join(",")} / ${TRACES_DU_DEMON105.join(",")}`);
+      exiger(!!GENRES && Object.keys(GENRES).sort().join(",") === GENRES_DU_DEMON105.join(","),
+        `(105e) les genres nommés par la console ne sont pas EXACTEMENT ceux du démon : ${Object.keys(GENRES || {}).join(",")} / ${GENRES_DU_DEMON105.join(",")}`);
+      const rendre = (ingest) => { const w = document.createElement("div"); modSysteme105.rendreSysteme(w, { ingest, process: {}, search: {}, scheduler: {}, db: {}, host: {} }, { posture: "green", components: [] }); return cueillir105(w, (e) => e.getAttribute && e.getAttribute("data-pertes-par-genre") === "evenements_d_acces_non_ecrits", [])[0]; };
+      const perdu = rendre({ evenements_d_acces_non_ecrits_total: 4, evenements_d_acces_non_ecrits: {
+        "plume-auth.failure": { n: 2, derniere_cause: "database is locked" }, "plume-authz.denied": { n: 1, derniere_cause: "no such table: event" }, "plume-auth.neuf": { n: 1, derniere_cause: "disk full" } } });
+      const lignes = perdu ? cueillir105(perdu, (e) => e.className === "kv", []) : [];
+      const aveux = perdu ? cueillir105(perdu, (e) => e.className === "bad", []) : [];
+      exiger(!!perdu && lignes.length === 3 && lignes.some((l) => nu105(l).includes(GENRES["plume-auth.failure"].fr) && nu105(l).endsWith("2"))
+        && lignes.some((l) => nu105(l).includes(GENRES["plume-authz.denied"].fr) && nu105(l).endsWith("1"))
+        && lignes.some((l) => nu105(l).includes("plume-auth.neuf") && nu105(l).includes(motAcces("genre_inconnu"))),
+        `(105e) les pertes ne se lisent pas par genre, un genre inconnu est écarté ou rendu sans le dire : « ${lignes.map(nu105).join(" | ")} »`);
+      exiger(aveux.length === 3 && aveux.every((a) => nu105(a.children[0]) === motAcces("consequence_acces")) && aveux.some((a) => nu105(a).includes("« database is locked »")),
+        `(105e) la dernière cause servie n'est pas avouée à DEUX nœuds : « ${aveux.map(nu105).join(" | ").slice(0, 300)} »`);
+      const zero = rendre({ evenements_d_acces_non_ecrits_total: 0, evenements_d_acces_non_ecrits: {} });
+      exiger(!!zero && nu105(zero).includes(motAcces("aucun_acces")) && cueillir105(zero, (e) => e.className === "kv", []).length === 0,
+        `(105e-négatif) un vrai zéro ne se dit pas comme tel : « ${nu105(zero)} »`);
+      const absent = rendre({});
+      exiger(!!absent && nu105(absent).includes(motAcces("non_publie")) && !nu105(absent).includes(motAcces("aucun_acces")),
+        `(105e-négatif) un compteur NON PUBLIÉ se lit comme un zéro : « ${nu105(absent)} »`);
+      const sansVentilation = rendre({ evenements_d_acces_non_ecrits_total: 5, evenements_d_acces_non_ecrits: {} });
+      exiger(!!sansVentilation && nu105(sansVentilation).includes(motAcces("sans_ventilation")) && nu105(sansVentilation).endsWith("5"),
+        `(105e) un total sans ventilation se tait ou se lit comme un zéro : « ${nu105(sansVentilation)} »`);
+      // LA SECONDE FAMILLE, SUR LA MÊME SURFACE : les accès opérateur cross-tenant sans leur trace.
+      const operateur = (ingest) => { const w = document.createElement("div"); modSysteme105.rendreSysteme(w, { ingest, process: {}, search: {}, scheduler: {}, db: {}, host: {} }, { posture: "green", components: [] }); return cueillir105(w, (e) => e.getAttribute && e.getAttribute("data-pertes-par-genre") === "acces_operateur_non_traces", [])[0]; };
+      const trace = TRACES_DU_DEMON105[0];
+      const op = operateur({ acces_operateur_non_traces_total: 2, acces_operateur_non_traces: { [trace]: { n: 2, derniere_cause: "database is locked" } } });
+      const opLignes = op ? cueillir105(op, (e) => e.className === "kv", []) : [];
+      const opAveux = op ? cueillir105(op, (e) => e.className === "bad", []) : [];
+      exiger(!!op && opLignes.length === 1 && nu105(opLignes[0]).includes(TRACES[trace] ? TRACES[trace].fr : "\u0000") && nu105(opLignes[0]).endsWith("2")
+        && opAveux.length === 1 && nu105(opAveux[0].children[0]) === motAcces("consequence_operateur") && nu105(opAveux[0]).includes("« database is locked »"),
+        `(105e) les accès opérateur sans trace ne se lisent pas par trace avec leur cause : « ${op ? nu105(op) : "(bloc absent)"} »`);
+      const opZero = operateur({ acces_operateur_non_traces_total: 0, acces_operateur_non_traces: {} });
+      const opAbsent = operateur({});
+      exiger(!!opZero && nu105(opZero).includes(motAcces("aucun_operateur")) && !!opAbsent && nu105(opAbsent).includes(motAcces("non_publie")),
+        `(105e-négatif) le vrai zéro ou le compteur non publié des accès opérateur ne se distinguent pas : « ${opZero ? nu105(opZero) : ""} » / « ${opAbsent ? nu105(opAbsent) : ""} »`);
+    }
+
+    // ══ (f) LE RATTACHEMENT D'UN ÉLÉMENT À UN DOSSIER DIT SON REFUS, ET RIEN NE S'OUVRE ════════════
+    {
+      const motDossier = modDossiers105.motDuRefusDeDossier;
+      servis105["GET /api/cases"] = { corps: { cases: [{ id: 7, title: "A", status: "new" }], total: 1 } };
+      const ouvre = (appels) => appels.filter((a) => /^GET \/api\/cases\/\d+$/.test(a));
+      servis105["POST /api/cases/7/items"] = { statut: 404, corps: "" };
+      const nu = await geste105(() => modDossiers105.addToCase("alert", "x", "alert:5"), { cid: "7" });
+      exiger(nu.appels.includes("POST /api/cases/7/items"), `(105f-instrument) l'ajout n'atteint pas sa route : ${JSON.stringify(nu.appels)}`);
+      exiger(nu.rejet === null && nu.avis.length === 1 && nu.avis[0] === motDossier("element_introuvable_sans_cause") && ouvre(nu.appels).length === 0,
+        `(105f) le quatre cent quatre NU ne se dit pas sans cause, sort en rejet ou ouvre un dossier : ${JSON.stringify(nu.avis)} ${nu.rejet && nu.rejet.message}`);
+      for (const enChaine of [false, true]) {
+        servis105["POST /api/cases/7/items"] = { statut: 403, corps: avec105({ error: "rôle insuffisant pour ce geste" }, enChaine) };
+        const g = await geste105(() => modDossiers105.addToCase("alert", "x", "alert:5"), { cid: "7" });
+        exiger(g.rejet === null && g.avis.length === 1 && g.avis[0] === motDossier("element_refuse") + " « rôle insuffisant pour ce geste »" && sansCodeNiJson105(g.avis[0]),
+          `(105f) un refus nommé ne se dit pas avec sa cause (corps en ${enChaine ? "chaîne" : "objet"}) : ${JSON.stringify(g.avis)}`);
+      }
+      servis105["POST /api/cases"] = { corps: { id: 900, status: "new" } };
+      servis105["POST /api/cases/900/items"] = { statut: 502, corps: "" };
+      const neuf = await geste105(() => modDossiers105.addToCase("alert", "x", "alert:5"), { cid: "new" });
+      exiger(neuf.appels.includes("POST /api/cases/900/items") && neuf.avis.length === 1 && neuf.avis[0].startsWith(motDossier("element_refuse_dossier_neuf")) && ouvre(neuf.appels).length === 0,
+        `(105f) un dossier ouvert par ce geste, élément refusé, n'est pas dit EXISTANT : ${JSON.stringify(neuf.avis)}`);
+      servis105["POST /api/cases/7/items"] = { statut: 204, corps: "" };
+      const pris = await geste105(() => modDossiers105.addToCase("alert", "x", "alert:5"), { cid: "7" });
+      exiger(pris.avis.includes("Ajouté au case #7") && pris.appels.includes("GET /api/cases/7"),
+        `(105f-négatif) un rattachement pris ne rend plus son avis de succès, ou n'ouvre plus le dossier : ${JSON.stringify(pris.avis)}`);
+    }
+
+    // ══ (g) LE RELEVÉ DES APPELANTS — DES ENSEMBLES NOMMÉS ══════════════════════════════════════
+    const appelants105 = (motif) => CORPUS_WEB.filter(([f, src]) => f.endsWith(".js") && motif.test(src.replace(/\/\/[^\n]*/g, ""))).map(([f]) => f).sort().join(",");
+    exiger(appelants105(/apiSend\('\/tenants/) === "app.js,multitenant.js" && appelants105(/\/items'/) === "cases.js"
+      && appelants105(/evenements_d_acces_non_ecrits/) === "system.js" && appelants105(/acces_operateur_non_traces/) === "system.js"
+      && appelants105(/registre_sans_maillon/) === "core.js" && appelants105(/premier_administrateur_non_pose/) === "multitenant.js"
+      && appelants105(/['"`]\/roles/) === "",
+      "(105g) l'ensemble des appelants des routes de ce lot a changé, une vue écrit une clé à la main, ou une surface appelle désormais `/roles` (aucune ne le faisait : ses deux refus neufs seraient sourds)");
+  } finally {
+    globalThis.fetch = fetchOrigine105;
+    globalThis.setTimeout = minuterieOrigine105;
+    S105.isAdmin = etatOrigine105.admin; S105.AUTH = etatOrigine105.auth; S105.MY_TENANTS = etatOrigine105.mes; S105.CURRENT_TENANT = etatOrigine105.courant;
+    document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
+    cueillir105(document.querySelector("#tenants-panel"), (e) => e.getAttribute && (e.getAttribute("data-trace-manquante") || e.getAttribute("data-refus-du-plan-de-controle")), []).forEach((e) => e.remove());
+  }
+  console.log("(105) OK — les gestes d'administration des tenants lisent ce que leur succès porte : suspension, réactivation et provisionnement avouent une trace manquante à DEUX nœuds dans le puits du panneau, avec la phrase de LEUR geste et la cause servie, un succès entier retirant l'aveu précédent ; la pose et le retrait d'un droit l'avouent sous la liste repeinte, et le retrait lit ses DEUX formes de succès — deux cent quatre nu, deux cents avec aveu ; la destruction refusée avant de détruire dit que le tenant est intact, la bascule non enregistrée qu'il est INCHANGÉ, le retrait non enregistré que l'accès est TOUJOURS en place — jamais « retiré » —, par trois ouvertures nues qui refusent leurs voisines (le retrait de rôle compris), et un autre refus garde sa cause ; un tenant créé sans son premier administrateur le dit à côté de la trace manquante, sans annoncer d'administrateur. Le panneau Système dit les événements d'accès perdus par genre et les accès opérateur sans trace par trace — les genres et les traces du démon, un genre neuf dit tel —, avoue leur dernière cause, distingue le vrai zéro, le compteur non publié et le total sans ventilation ; aucune surface n'appelle les rôles. Le rattachement d'un élément à un dossier dit son refus sans ouvrir de dossier : quatre cent quatre nu sans cause inventée, refus nommé avec sa cause, dossier neuf dit existant ; corps en objet ET en chaîne.");
 }
 
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;

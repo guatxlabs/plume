@@ -1,6 +1,6 @@
 // multitenant.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // #2c multi-tenant : switcher tenant/env (header) + vue Tenants + grants + audit acces operateur.
-import { $, LANG, LOC, api, apiSend, applyRoleClass, confirmWithConsequence, fmtTs, ic, muted, pagedList, toast } from './core.js';
+import { $, LANG, LOC, api, apiSend, applyRoleClass, aveuDUneTraceManquante, causeDeLaTraceManquante, confirmWithConsequence, fmtTs, ic, muted, pagedList, phraseDuRefusDuDemon, toast } from './core.js';
 import { S, ecrireDansLeStockageDuSite, ecrireSansDireLeRefus, lireLeStockageDuSite, RAISONS_DE_SILENCE } from './state.js';
 import { runQ, tableEl } from './viz.js';
 import { ROLE_LABEL, currentTab, fetchMe, loadUsers, refresh, refreshCurrentView, refreshPanels, renderNav, route, setAuthUI } from './app.js';
@@ -203,6 +203,129 @@ async function switchEnv(env) {
   const sel = $('#env-switch'); if (sel && sel.value !== v) sel.value = v;
 }
 
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// `P10.21-h` — UN GESTE D'ADMINISTRATION DONT LA TRACE MANQUE SE DIT À CÔTÉ DE SON SUCCÈS.
+//
+// CE QUE LE DÉMON SERT. Depuis `P10.20-z`, `control_ledger_append` (daemon/src/rbac.rs) rend l'issue de
+// son écriture. Cinq gestes de ce panneau la consomment : le provisionnement, la suspension et la
+// réactivation d'un tenant, la pose et le retrait d'un droit (daemon/src/tenants.rs). Quand la ligne du
+// journal du plan de contrôle manque, ils répondent QUAND MÊME leur succès — le geste a eu lieu — et
+// posent à côté la clé `registre_sans_maillon` (même nom que les ripostes : un seul lecteur,
+// `causeDeLaTraceManquante`, core.js). Le retrait d'un droit ne peut pas porter d'aveu dans un deux cent
+// quatre : il répond alors deux cents, corps `{ok, tenant, user, removed}` plus la clé. La DESTRUCTION,
+// elle, est irréversible et emporte le journal du tenant : le démon la REFUSE en cinq cent trois
+// (`CAUSE_DESTRUCTION_SANS_TRACE`) avant de détruire quoi que ce soit.
+//
+// CE QUE CE PANNEAU EN FAISAIT, MESURÉ. Suspension, réactivation, pose et retrait rendaient « tenant
+// suspendu » ou « accès accordé » sans lire le corps ; la destruction refusée peignait `e.message`,
+// c'est-à-dire « 503 {"error":"DESTRUCTION REFUSÉE… » coupé à deux cents caractères.
+//
+// LA PHRASE EST CELLE DU GESTE, PAS CELLE DES RIPOSTES. `aveuDeLaTraceManquante` dit « Riposte EN FILE » :
+// ici ce serait faux. La fabrique du nœud est partagée (`aveuDUneTraceManquante`), la phrase vit ici.
+// Chaque phrase dit ce qui EXISTE (le geste a eu lieu), ce qui MANQUE (la ligne qui l'atteste), et
+// qu'un second geste ne comblerait rien — la cause du démon le dit aussi, dans le second nœud.
+const MOTS_DU_PLAN_DE_CONTROLE = {
+  suspension: {
+    fr: "Tenant SUSPENDU, mais SANS TRACE AU JOURNAL DU PLAN DE CONTRÔLE : la suspension a bien eu lieu, la refaire ne comblerait pas le trou. Ce qui manque est la ligne qui l'atteste. Le démon en nomme la cause —",
+    en: 'Tenant SUSPENDED, but WITHOUT A TRACE IN THE CONTROL-PLANE LEDGER: the suspension did happen, doing it again would not fill the gap. What is missing is the line attesting it. The daemon names the cause —' },
+  reactivation: {
+    fr: "Tenant RÉACTIVÉ, mais SANS TRACE AU JOURNAL DU PLAN DE CONTRÔLE : la réactivation a bien eu lieu, la refaire ne comblerait pas le trou. Ce qui manque est la ligne qui l'atteste. Le démon en nomme la cause —",
+    en: 'Tenant REACTIVATED, but WITHOUT A TRACE IN THE CONTROL-PLANE LEDGER: the reactivation did happen, doing it again would not fill the gap. What is missing is the line attesting it. The daemon names the cause —' },
+  provisionnement: {
+    fr: "Tenant PROVISIONNÉ, mais SANS TRACE AU JOURNAL DU PLAN DE CONTRÔLE : sa base existe, un second provisionnement serait refusé comme « existe déjà ». Ce qui manque est la ligne qui l'atteste. Le démon en nomme la cause —",
+    en: 'Tenant PROVISIONED, but WITHOUT A TRACE IN THE CONTROL-PLANE LEDGER: its database exists, a second provisioning would be refused as "already exists". What is missing is the line attesting it. The daemon names the cause —' },
+  pose_de_droit: {
+    fr: "Accès ACCORDÉ, mais SANS TRACE AU JOURNAL DU PLAN DE CONTRÔLE : le droit est en place, le reposer ne comblerait pas le trou. Ce qui manque est la ligne qui l'atteste. Le démon en nomme la cause —",
+    en: 'Access GRANTED, but WITHOUT A TRACE IN THE CONTROL-PLANE LEDGER: the grant is in place, setting it again would not fill the gap. What is missing is the line attesting it. The daemon names the cause —' },
+  retrait_de_droit: {
+    fr: "Accès RETIRÉ, mais SANS TRACE AU JOURNAL DU PLAN DE CONTRÔLE : le droit n'existe plus, rien ne reste à retirer. Ce qui manque est la ligne qui l'atteste. Le démon en nomme la cause —",
+    en: 'Access REMOVED, but WITHOUT A TRACE IN THE CONTROL-PLANE LEDGER: the grant no longer exists, nothing is left to remove. What is missing is the line attesting it. The daemon names the cause —' },
+  destruction_sans_trace: {
+    fr: "Tenant NON DÉTRUIT : le démon a refusé AVANT de détruire, parce que le journal du plan de contrôle n'a pas pris la ligne qui atteste la destruction. Le tenant et sa base sont intacts, le geste peut être rejoué. Le démon en nomme la cause —",
+    en: 'Tenant NOT DESTROYED: the daemon refused BEFORE destroying anything, because the control-plane ledger did not take the line attesting the destruction. The tenant and its database are intact, the gesture can be replayed. The daemon names the cause —' },
+  destruction_refusee: {
+    fr: "Destruction du tenant REFUSÉE : le démon a répondu —",
+    en: 'Tenant destruction REFUSED: the daemon answered —' },
+  geste_refuse: {
+    fr: "Geste REFUSÉ par le démon, rien n'a changé. Il a répondu —",
+    en: 'Gesture REFUSED by the daemon, nothing changed. It answered —' },
+  // `P10.21-g` (servi par le démon), `P10.21-h` (lu ici) — TROIS FAITS NEUFS. Une bascule de suspension et
+  // un retrait de droit que la base n'a pas pris sont REFUSÉS en cinq cent trois ; un tenant créé sans le
+  // premier administrateur demandé répond deux cent un, `first_admin: null`, et le dit sous sa propre clé.
+  bascule_non_ecrite: {
+    fr: "Tenant INCHANGÉ : la bascule n'a pas été enregistrée, le tenant garde l'état qu'il avait et aucune trace ne dit le contraire. Le geste peut être rejoué. Le démon en nomme la cause —",
+    en: 'Tenant UNCHANGED: the switch was not recorded, the tenant keeps the state it had and no trace says otherwise. The gesture can be replayed. The daemon names the cause —' },
+  retrait_de_droit_non_ecrit: {
+    fr: "Accès NON RETIRÉ : le retrait n'a pas été enregistré, l'accès est TOUJOURS EN PLACE — ce compte garde son rôle sur ce tenant. Le geste peut être rejoué. Le démon en nomme la cause —",
+    en: 'Access NOT REMOVED: the removal was not recorded, the access is STILL IN PLACE — this account keeps its role on this tenant. The gesture can be replayed. The daemon names the cause —' },
+  premier_administrateur_non_pose: {
+    fr: "Tenant CRÉÉ, mais SANS ADMINISTRATEUR : le droit d'administration demandé n'a pas été écrit, personne n'administre encore ce tenant. Posez-le par « Accès » sur sa carte ; ne le recréez pas. Le démon en nomme la cause —",
+    en: 'Tenant CREATED, but WITHOUT AN ADMINISTRATOR: the requested administration grant was not written, nobody administers this tenant yet. Set it through « Accès » on its card; do not create it again. The daemon names the cause —' },
+};
+const motDuPlanDeControle = (cle) => (LANG === 'en' ? MOTS_DU_PLAN_DE_CONTROLE[cle].en : MOTS_DU_PLAN_DE_CONTROLE[cle].fr);
+// LE DISCRIMINANT de la destruction refusée, ancré sur l'OUVERTURE du littéral du démon
+// (`CAUSE_DESTRUCTION_SANS_TRACE`, daemon/src/tenants.rs), servi `<cause> (<détail>)`. La borne est
+// Unicode : la phrase finit sur « T », mais une lettre accentuée qui suivrait passerait `\b`.
+const OUVERTURE_DE_LA_DESTRUCTION_SANS_TRACE = /^DESTRUCTION REFUSÉE, RIEN N'EST DÉTRUIT(?![\p{L}\p{N}])/u;
+// Les deux refus neufs de `P10.21-g` (`CAUSE_BASCULE_DE_SUSPENSION_NON_ECRITE`, daemon/src/tenants.rs ;
+// `CAUSE_RETRAIT_DE_DROIT_NON_ECRIT`, même fichier). Le second est ancré JUSQU'À « L'ACCÈS » : son voisin
+// `CAUSE_RETRAIT_DE_ROLE_NON_ECRIT` (governance.rs) ouvre sur les mêmes trois mots, puis « LE RÔLE ».
+const OUVERTURE_DE_LA_BASCULE_NON_ECRITE = /^BASCULE NON ENREGISTRÉE, RIEN N'A CHANGÉ(?![\p{L}\p{N}])/u;
+const OUVERTURE_DU_RETRAIT_DE_DROIT_NON_ECRIT = /^RETRAIT NON ENREGISTRÉ, L'ACCÈS EST TOUJOURS EN PLACE(?![\p{L}\p{N}])/u;
+// LA CLÉ du premier administrateur non posé (`CLE_PREMIER_ADMINISTRATEUR_NON_POSE`, daemon/src/tenants.rs),
+// écrite ICI seulement : absente du chemin nominal, sa PRÉSENCE est le fait.
+const CLE_DU_PREMIER_ADMINISTRATEUR_NON_POSE = 'premier_administrateur_non_pose';
+function causeDuPremierAdministrateurNonPose(j) {
+  const cause = j && j[CLE_DU_PREMIER_ADMINISTRATEUR_NON_POSE];
+  return cause ? String(cause).trim() : '';
+}
+// LE PUITS DU PANNEAU. Le rendu des cartes REMPLACE `#tenant-list` à chaque rechargement : un aveu posé
+// dans une carte disparaîtrait avec elle. Il se pose donc JUSTE AVANT la liste, et le geste suivant du
+// panneau le retire — il parle du dernier geste, jamais d'un geste plus ancien que la carte a oublié.
+// Un geste peut en porter DEUX (le provisionnement : trace manquante ET administrateur non posé).
+let AVEUX_DU_PANNEAU_DES_TENANTS = [];
+function retirerLAveuDuPanneauDesTenants() {
+  AVEUX_DU_PANNEAU_DES_TENANTS.forEach(a => a && a.remove && a.remove());
+  AVEUX_DU_PANNEAU_DES_TENANTS = [];
+}
+// `aveux` : paires [nœud, repli en phrase] ; le repli part à l'avis quand le panneau n'est pas là.
+function poserLesAveuxDuPanneauDesTenants(aveux) {
+  retirerLAveuDuPanneauDesTenants();
+  const list = $('#tenant-list');
+  for (const [aveu, repliEnPhrase] of aveux) {
+    if (!list || !list.parentNode) { toast(repliEnPhrase, 'bad', 9000); continue; }
+    list.parentNode.insertBefore(aveu, list);
+    AVEUX_DU_PANNEAU_DES_TENANTS.push(aveu);
+  }
+}
+// Le geste a eu lieu, sa ligne manque : l'aveu à DEUX nœuds (phrase du geste au puits, cause servie à côté).
+const aveuDuGesteSansTrace = (geste, cause) => [aveuDUneTraceManquante(motDuPlanDeControle(geste), cause), motDuPlanDeControle(geste) + ' « ' + cause + ' »'];
+function avouerLeGesteSansTrace(geste, cause) {
+  poserLesAveuxDuPanneauDesTenants(cause ? [aveuDuGesteSansTrace(geste, cause)] : []);
+}
+// Un refus NOMMÉ du plan de contrôle, à DEUX nœuds : la phrase de la console au puits, la phrase SERVIE à
+// côté. La marque dit lequel ; aucune règle CSS ne la vise.
+function aveuDuRefusDuPlanDeControle(cle, phrase) {
+  const aveu = document.createElement('div'); aveu.className = 'bad';
+  const dit = document.createElement('span');
+  dit.textContent = motDuPlanDeControle(cle);
+  aveu.append(dit, ' « ' + phrase + ' »');
+  aveu.dataset.refusDuPlanDeControle = cle;
+  return aveu;
+}
+// LE PROVISIONNEMENT, lu ici pour le formulaire d'`app.js` : ses deux aveux possibles, ou aucun — et alors
+// l'aveu d'un geste précédent quitte le panneau.
+function avouerLeProvisionnement(j) {
+  const aveux = [];
+  const sansMaillon = causeDeLaTraceManquante(j);
+  if (sansMaillon) aveux.push(aveuDuGesteSansTrace('provisionnement', sansMaillon));
+  const sansAdministrateur = causeDuPremierAdministrateurNonPose(j);
+  if (sansAdministrateur) aveux.push([aveuDuRefusDuPlanDeControle('premier_administrateur_non_pose', sansAdministrateur), motDuPlanDeControle('premier_administrateur_non_pose') + ' « ' + sansAdministrateur + ' »']);
+  poserLesAveuxDuPanneauDesTenants(aveux);
+}
+// Un refus qui n'est pas celui de la destruction sans trace : l'avis cite ce que le démon a répondu.
+const phraseDuGesteRefuse = (e) => motDuPlanDeControle('geste_refuse') + ' « ' + phraseDuRefusDuDemon(e) + ' »';
+
 // --- Vue « Tenants » (Administration) : liste + CRUD (super-admin) OU accès de son tenant (admin de tenant) --
 async function loadTenantsView() {
   const sec = $('#tenants-panel'); if (!sec) return;
@@ -282,9 +405,20 @@ async function toggleSuspend(t) {
     : `l'accès de ses utilisateurs et ses traitements de fond reprennent. Action auditée.`;
   if (!await confirmWithConsequence(`${suspend ? 'Suspendre' : 'Réactiver'} le tenant « ${t.name || t.id} »`, consequence, { okText: suspend ? 'Suspendre' : 'Réactiver', danger: suspend })) return;
   const path = '/tenants/' + encodeURIComponent(t.id) + (suspend ? '/suspend' : '/unsuspend');
-  try { await apiSend(path, 'POST'); }
-  catch (e) { toast((e && e.message) || 'échec', 'bad'); return; }
+  retirerLAveuDuPanneauDesTenants();
+  let j;
+  try { j = await apiSend(path, 'POST'); }
+  catch (e) {
+    // `P10.21-g` — la bascule que la base n'a pas prise : le tenant est INCHANGÉ, et c'est avoué au panneau.
+    const phrase = phraseDuRefusDuDemon(e);
+    if (OUVERTURE_DE_LA_BASCULE_NON_ECRITE.test(phrase)) poserLesAveuxDuPanneauDesTenants([[aveuDuRefusDuPlanDeControle('bascule_non_ecrite', phrase), motDuPlanDeControle('bascule_non_ecrite') + ' « ' + phrase + ' »']]);
+    else toast(phraseDuGesteRefuse(e), 'bad', 9000);
+    return;
+  }
   toast('tenant ' + (suspend ? 'suspendu' : 'réactivé'), 'ok');
+  // `P10.21-h` — le succès peut porter l'aveu du journal de contrôle : il est lu, et dit.
+  const sansMaillon = causeDeLaTraceManquante(j);
+  if (sansMaillon) avouerLeGesteSansTrace(suspend ? 'suspension' : 'reactivation', sansMaillon);
   loadTenantsView();
 }
 
@@ -298,8 +432,9 @@ async function destroyTenant(t) {
     validate: v => (String(v.confirm || '').trim() !== (t.name || t.id)) ? 'Le nom saisi ne correspond pas.' : null,
   });
   if (!r) return;
+  retirerLAveuDuPanneauDesTenants();
   try { await apiSend('/tenants/' + encodeURIComponent(t.id), 'DELETE', { confirm: String(r.confirm || '').trim() }); }
-  catch (e) { toast((e && e.message) || 'échec', 'bad'); return; }
+  catch (e) { direLaDestructionRefusee(e); return; }
   toast('tenant détruit', 'ok');
   // si le tenant courant vient d'être détruit : bascule sur un tenant encore accessible.
   if (S.CURRENT_TENANT === t.id) {
@@ -312,6 +447,18 @@ async function destroyTenant(t) {
     S.CURRENT_TENANT = fallback; ecrireSansDireLeRefus('plume_tenant', fallback, RAISONS_DE_SILENCE.CONVENANCE_PAR_NAVIGATEUR);
   }
   loadTenantsView();
+}
+
+// `P10.21-h` — LA DESTRUCTION REFUSÉE DIT SA PHRASE. Le cinq cent trois `CAUSE_DESTRUCTION_SANS_TRACE` est
+// avoué à DEUX nœuds dans le puits du panneau (le tenant est intact, le geste rejouable) ; tout autre refus
+// part à l'avis avec ce que le démon a répondu, jamais avec le code et le JSON coupés.
+function direLaDestructionRefusee(e) {
+  const phrase = phraseDuRefusDuDemon(e);
+  if (!OUVERTURE_DE_LA_DESTRUCTION_SANS_TRACE.test(phrase)) {
+    toast(motDuPlanDeControle('destruction_refusee') + ' « ' + phrase + ' »', 'bad', 9000);
+    return;
+  }
+  poserLesAveuxDuPanneauDesTenants([[aveuDuRefusDuPlanDeControle('destruction_sans_trace', phrase), motDuPlanDeControle('destruction_sans_trace') + ' « ' + phrase + ' »']]);
 }
 
 // --- gestion des grants d'un tenant (super-admin : tous ; admin de tenant : le sien) — le serveur enforce ---
@@ -352,19 +499,43 @@ async function loadGrants(tid, host) {
     // P11.5-b : un grant ÉLÈVE un droit (accès à un tenant avec un rôle) -> confirmation partagée.
     if (!await confirmWithConsequence(`Accorder l'accès au tenant ${tid}`, `« ${user} » obtient le rôle ${role} sur ce tenant` + (role === 'admin' ? ' — accès complet à sa configuration, ses secrets et ses suppressions' : '') + '.', { okText: 'Accorder', danger: role === 'admin' })) return;
     res.textContent = '…'; res.className = 'muted';
-    try { await apiSend('/tenants/' + encodeURIComponent(tid) + '/grants', 'POST', { user, role }); }
-    catch (err) { res.textContent = (err && err.message) || 'échec'; res.className = 'bad'; return; }
+    let j;
+    try { j = await apiSend('/tenants/' + encodeURIComponent(tid) + '/grants', 'POST', { user, role }); }
+    catch (err) { res.textContent = phraseDuGesteRefuse(err); res.className = 'bad'; return; }
     uinp.value = ''; res.textContent = ''; res.className = 'muted'; toast('accès accordé', 'ok');
-    loadGrants(tid, host);
+    await rechargerLesAccesAvecLAveu(tid, host, 'pose_de_droit', causeDeLaTraceManquante(j));
   };
   host.appendChild(form);
 }
 
 async function removeGrant(tid, user, host) {
   if (!await confirmWithConsequence(`Retirer l'accès de « ${user} » au tenant ${tid}`, 'cet utilisateur ne pourra plus ouvrir ce tenant ni y lire quoi que ce soit dès sa prochaine requête.', { okText: 'Retirer' })) return;
-  try { await apiSend('/tenants/' + encodeURIComponent(tid) + '/grants/' + encodeURIComponent(user), 'DELETE'); }  // 204 -> null
-  catch (e) { toast((e && e.message) || 'échec', 'bad'); return; }
-  toast('accès retiré', 'ok'); loadGrants(tid, host);
+  // `P10.21-h` — DEUX FORMES DE SUCCÈS. Le chemin nominal est un deux cent quatre sans corps (`apiSend`
+  // rend `null`) ; quand la ligne manque au journal de contrôle, c'est un deux cents dont le corps DIT le
+  // retrait ET le trou. Les deux sont un retrait : seul le second porte un aveu.
+  // `P10.21-g` : un retrait que la base n'a pas pris est REFUSÉ, l'accès est TOUJOURS en place — l'aveu se
+  // pose sous la liste des accès, qui le montre encore ; jamais « retiré ».
+  cueillirLesAveuxDeRetrait(host).forEach(a => a.remove());
+  let j;
+  try { j = await apiSend('/tenants/' + encodeURIComponent(tid) + '/grants/' + encodeURIComponent(user), 'DELETE'); }
+  catch (e) {
+    const phrase = phraseDuRefusDuDemon(e);
+    if (OUVERTURE_DU_RETRAIT_DE_DROIT_NON_ECRIT.test(phrase)) host.appendChild(aveuDuRefusDuPlanDeControle('retrait_de_droit_non_ecrit', phrase));
+    else toast(phraseDuGesteRefuse(e), 'bad', 9000);
+    return;
+  }
+  toast('accès retiré', 'ok');
+  await rechargerLesAccesAvecLAveu(tid, host, 'retrait_de_droit', causeDeLaTraceManquante(j));
+}
+
+// Les aveux de retrait refusé déjà posés dans cette liste : un nouveau geste les remplace.
+const cueillirLesAveuxDeRetrait = (host) => Array.from(host.children || []).filter(c => c.dataset && c.dataset.refusDuPlanDeControle === 'retrait_de_droit_non_ecrit');
+
+// La liste des accès est REPEINTE après un geste : l'aveu se pose APRÈS la repeinte, sous la liste qu'il
+// commente, sans quoi le rechargement l'effacerait avant qu'on l'ait lu.
+async function rechargerLesAccesAvecLAveu(tid, host, geste, cause) {
+  await loadGrants(tid, host);
+  if (cause) host.appendChild(aveuDUneTraceManquante(motDuPlanDeControle(geste), cause));
 }
 
 // --- Audit accès opérateur (item 4) : événements plume-operator-access / plume-tenant-admin du tenant courant.
@@ -386,4 +557,4 @@ async function loadOperatorAudit() {
 }
 
 
-export { initEnvironments, initTenants, loadOperatorAudit, loadTenantsView, multiTenantMode, uiIsAdmin };
+export { CLE_DU_PREMIER_ADMINISTRATEUR_NON_POSE, OUVERTURE_DE_LA_BASCULE_NON_ECRITE, OUVERTURE_DE_LA_DESTRUCTION_SANS_TRACE, OUVERTURE_DU_RETRAIT_DE_DROIT_NON_ECRIT, avouerLeProvisionnement, initEnvironments, initTenants, loadOperatorAudit, loadTenantsView, motDuPlanDeControle, multiTenantMode, uiIsAdmin };

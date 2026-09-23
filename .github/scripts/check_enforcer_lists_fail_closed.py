@@ -59,6 +59,8 @@ ET UN PAS DE PLUS SUR LE MÊME BANC (`P10.21-d`) : la REMISE du verdict de `resp
 Le bac à sable, les bouchons et le script livré sont les mêmes ; la propriété est voisine — un refus
 du central ne doit pas se lire comme un succès —, et c'est pourquoi elle est jugée ici plutôt que
 dans une garde que rien ne lancerait. Voir la section « ENFORCER 1 bis ».
+`P10.21-j` y ajoute le REJEU persistant et borné d'un verdict non remis, et la lecture BORNÉE de la
+réponse du central, coupée sur une frontière de caractère (section « ENFORCER 1 ter »).
 """
 
 import os
@@ -79,7 +81,9 @@ CAUSES = {"source_absente", "source_refusee", "source_illisible", "forme_inconnu
 # Utilitaires autorisés dans le `PATH` fabriqué. Tout ce qui n'y est pas est ABSENT pour l'enforcer,
 # quelle que soit la machine : c'est ce qui rend le verdict reproductible (pas de `cscli` ni de
 # `fail2ban-client` qui traîneraient sur un poste et changeraient de levier en cours de route).
-OUTILS = ["cat", "sed", "tr", "grep", "date", "mkdir", "touch", "mktemp", "chmod", "mv", "rm"]
+# `P10.21-j` : `dd` (lecture bornée du corps de la réponse) et `cut` (coupe en octets) rejoignent la liste ;
+# ce sont des utilitaires POSIX que le script livré appelle, pas des commodités du banc.
+OUTILS = ["cat", "sed", "tr", "grep", "date", "mkdir", "touch", "mktemp", "chmod", "mv", "rm", "dd", "cut"]
 
 ERREURS = []
 
@@ -127,17 +131,23 @@ def lancer(interpreteur, script, env, args=()):
 # remise du verdict se lisent, un par appel, dans `$STATUTS_DE_REMISE` (une ligne par remise, consommée) ;
 # sans fichier, ou une fois le fichier vide, la remise est un deux cents `{"ok":true}`. Le corps de
 # chaque statut est dérivé par la garde (`CORPS_503` porte la cause lue dans l'arbre du démon).
+# `P10.21-j` : `-o <fichier>` y reçoit le corps et `-w` rend alors le statut SEUL, comme curl ; un statut
+# suffixé `g` (`404g`, `200g`) sert le corps GRAND lu dans `$CORPS_GRAND_FICHIER` ; chaque remise écrit
+# une ligne dans `$ENTREES_CURL` qui dit si la configuration d'auth est bien arrivée par l'entrée standard.
 BOUCHON_CURL = r"""#!/bin/sh
-cat >/dev/null 2>&1                       # consomme la config d'auth passee sur l'entree standard
-corps=""; url=""; format=""
+entree=$(cat 2>/dev/null)                 # consomme la config d'auth passee sur l'entree standard
+corps=""; url=""; format=""; sortie=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --data-binary) corps="$2"; shift ;;
     -w) format="$2"; shift ;;
+    -o) sortie="$2"; shift ;;
+    --max-filesize|--max-time) shift ;;
     http*) url="$1" ;;
   esac
   shift
 done
+[ -n "${ENTREES_CURL:-}" ] && case "$entree" in *Authorization*) echo auth-par-stdin >> "$ENTREES_CURL" ;; *) echo auth-absente >> "$ENTREES_CURL" ;; esac
 case "$url" in
   *"/api/actions/pending"*) printf '%s\n' "$PENDING_TSV" ;;
   *"/api/actions/result"*)
@@ -151,10 +161,16 @@ case "$url" in
       200)  reponse='{"ok":true}' ;;
       200f) reponse='{"ok":false}'; statut=200 ;;
       503)  reponse="$CORPS_503" ;;
+      *g)   reponse=$(cat "$CORPS_GRAND_FICHIER"); statut=${statut%g} ;;
       *)    reponse='' ;;
     esac
-    printf '%s' "$reponse"
-    [ -n "$format" ] && printf '\n%s' "$statut" ;;
+    if [ -n "$sortie" ]; then
+      printf '%s' "$reponse" > "$sortie"
+      [ -n "$format" ] && printf '%s' "$statut"
+    else
+      printf '%s' "$reponse"
+      [ -n "$format" ] && printf '\n%s' "$statut"
+    fi ;;
 esac
 exit 0
 """
@@ -195,6 +211,8 @@ def scenario_respond(nom, prepare_liste, attendu, cible="203.0.113.7"):
             "PENDING_TSV": f"1\tban_ip\t{cible}\t0",
             "RESULTATS": resultats,
             "NFT_TRACE": trace_nft,
+            # `P10.21-j` : l'état de rejeu vit dans le bac à sable, jamais sous /var/lib de la machine.
+            "PLUME_STATE": tmp,
         }
         if liste is not None:
             env["PLUME_RESPONDER_ALLOW"] = liste
@@ -491,6 +509,7 @@ def scenario_remise(nom, statuts, cause):
             "RESULTATS": resultats, "NFT_TRACE": os.path.join(tmp, "nft.trace"),
             "STATUTS_DE_REMISE": fichier_statuts, "ATTENTES": attentes,
             "CORPS_503": '{"error":"' + cause + ' (database is locked)","id":"plume-e1-0"}',
+            "PLUME_STATE": tmp,
         }
         p = lancer("sh", "collectors/respond.sh", env)
         if p is None:
@@ -560,6 +579,250 @@ def temoins_de_la_remise_du_verdict():
     if len(jugements) != 5:
         echec(f"remise (instrument) : {len(jugements)} scénario(s) jugé(s) sur 5 — cette garde REFUSE "
               f"DE CONCLURE sur la remise du verdict.")
+
+
+# =============================================================================
+# ENFORCER 1 ter — `collectors/respond.sh` : LE REJEU ET LA LECTURE BORNÉE (`P10.21-j`)
+# =============================================================================
+# CE QUI ÉTAIT MESURÉ AVANT CE LOT. Un verdict avoué « NON REMIS » n'était gardé nulle part : la riposte
+# restait `approved`, et le central la RE-SERVAIT après sa fenêtre de réclamation (`RECLAMATION_PERIMEE_S`,
+# daemon/src/handlers/actions.rs) — l'agent la RÉEXÉCUTAIT alors, second ban compris, au lieu de remettre
+# le verdict de l'action réellement appliquée. Et la réponse du central était lue ENTIÈRE dans une
+# variable, puis coupée à trois cents « points » de `sed` : des OCTETS sous la locale C, d'où un caractère
+# multi-octet coupé en deux dans le journal.
+# CE QUI EST EXIGÉ, SUR LE SCRIPT LIVRÉ, DANS LE MÊME PATH FABRIQUÉ, DEUX TOURS SUR UN MÊME ÉTAT :
+#   (J1) un verdict non remis est RETENU (répertoire 0700, fichier 0600, une ligne, ni jeton ni en-tête),
+#        et REJOUÉ en tête du tour suivant avec son corps d'origine, avant la liste ; la ligne part ;
+#   (J2) au REJEU_TOURS-ième tour sans remise, il est ABANDONNÉ et avoué ; un tour plus tôt, gardé (négatif) ;
+#   (J3) la file est BORNÉE : pleine, un verdict neuf n'est pas retenu et c'est avoué ; un central muet
+#        n'est tenté qu'UNE fois par tour, les lignes non tentées gardent leur compte ;
+#   (J4) une riposte dont le verdict attend sa remise n'est PAS réexécutée quand le central la re-sert ;
+#   (J5) la citation du journal est bornée en octets et coupée sur un caractère (deux, trois et quatre
+#        octets), sans jamais retirer un caractère complet (négatif) ; un corps plus long que la lecture
+#        bornée est DIT tronqué.
+# Les bornes (REJEU_TOURS, REJEU_LIGNES, RESULTAT_CORPS_JOURNAL, RESULTAT_CORPS_LU) sont LUES dans le
+# script, jamais recopiées : si l'une disparaît, ce témoin REFUSE DE CONCLURE.
+# CE QUE CE TÉMOIN NE TIENT PAS : `--max-filesize` du vrai curl n'est pas exercé (le bouchon l'ignore) ; la
+# durée d'un tour contre un central muet non plus ; ni `dash` ni `busybox` (absents du poste de mesure).
+
+
+def borne_du_script(nom):
+    src = open(os.path.join(RACINE, "collectors", "respond.sh"), encoding="utf-8").read()
+    m = re.search(r"^" + nom + r"=(\d+)$", src, re.M)
+    if not m:
+        echec(f"rejeu/instrument : `{nom}` n'est plus lisible dans collectors/respond.sh — cette garde "
+              f"REFUSE DE CONCLURE sur le rejeu et la lecture bornée.")
+        return None
+    return int(m.group(1))
+
+
+def tour_de_l_agent(tmp, statuts, pending, grand=None):
+    """Un tour de `respond.sh` sur l'état `tmp/responder` (persistant d'un tour à l'autre).
+    Rend (remises [(id, corps)], appels nft, stderr en OCTETS, code, entrées curl).
+    L'état est `tmp/responder` : `PLUME_STATE` pointe le bac à sable, jamais /var/lib de la machine."""
+    resultats = os.path.join(tmp, "resultats.jsonl")
+    trace_nft = os.path.join(tmp, "nft.trace")
+    fichier_statuts = os.path.join(tmp, "statuts")
+    entrees = os.path.join(tmp, "entrees-curl")
+    liste = os.path.join(tmp, "liste-vide.allow")
+    for f, contenu in ((resultats, ""), (trace_nft, ""), (entrees, ""), (os.path.join(tmp, "attentes"), ""),
+                       (fichier_statuts, "".join(f"{x}\n" for x in statuts)), (liste, "# aucune IP epargnee\n")):
+        with open(f, "w", encoding="utf-8") as h:
+            h.write(contenu)
+    grand_fichier = os.path.join(tmp, "corps-grand")
+    with open(grand_fichier, "wb") as h:
+        h.write(grand or b"")
+    binaire = bac_a_sable(tmp, {"curl": BOUCHON_CURL, "nft": BOUCHON_NFT, "sleep": BOUCHON_SLEEP})
+    if binaire is None:
+        return None
+    env = {
+        "PATH": binaire, "PLUME_RESPONDER": "1", "PLUME_RESPONDER_APPLY": "1",
+        "PLUME_CENTRAL": "http://central.invalid", "PLUME_HOST_LABEL": "hote-de-garde",
+        "PLUME_TOKEN": JETON_DE_GARDE, "PLUME_BAN_BACKEND": "auto", "PLUME_RESPONDER_ALLOW": liste,
+        "PENDING_TSV": pending, "RESULTATS": resultats, "NFT_TRACE": trace_nft,
+        "STATUTS_DE_REMISE": fichier_statuts, "ATTENTES": os.path.join(tmp, "attentes"),
+        "CORPS_503": '{"error":"RESULTAT NON ENREGISTRE (database is locked)"}',
+        "CORPS_GRAND_FICHIER": grand_fichier, "ENTREES_CURL": entrees, "TMPDIR": tmp,
+        "PLUME_STATE": tmp,
+    }
+    interpreteur = shutil.which("sh")
+    if not interpreteur:
+        echec("rejeu/instrument : interpréteur `sh` introuvable — la garde refuse de conclure.")
+        return None
+    p = subprocess.run([interpreteur, os.path.join(RACINE, "collectors", "respond.sh")],
+                       capture_output=True, env=env, timeout=120)
+    remises = []
+    for ligne in open(resultats, encoding="utf-8").read().splitlines():
+        m = re.match(r'\{"id":(\d+),', ligne)
+        if m:
+            remises.append((m.group(1), ligne))
+    return remises, open(trace_nft, encoding="utf-8").read(), p.stderr, p.returncode, \
+        open(entrees, encoding="utf-8").read().split()
+
+
+def etat_du_rejeu(tmp):
+    chemin = os.path.join(tmp, "responder", "verdicts-a-remettre")
+    if not os.path.exists(chemin):
+        return None, []
+    with open(chemin, "rb") as h:
+        brut = h.read()
+    return chemin, brut.decode("utf-8").splitlines()
+
+
+def temoins_du_rejeu_et_de_la_lecture_bornee():
+    tours_max = borne_du_script("REJEU_TOURS")
+    lignes_max = borne_du_script("REJEU_LIGNES")
+    octets_journal = borne_du_script("RESULTAT_CORPS_JOURNAL")
+    octets_lus = borne_du_script("RESULTAT_CORPS_LU")
+    if None in (tours_max, lignes_max, octets_journal, octets_lus):
+        return
+    jugements = []
+    corps_de = lambda i: '{"id":%d,"status":"done","result":"deja applique"}' % i  # noqa: E731
+
+    def texte(err):
+        return err.decode("utf-8", errors="replace")
+
+    def jeton_absent(nom, err, tmp):
+        _, lignes = etat_du_rejeu(tmp)
+        if JETON_DE_GARDE in texte(err) or any(JETON_DE_GARDE in l or "Authorization" in l for l in lignes):
+            echec(f"rejeu/{nom} : le JETON atteint le journal ou le fichier d'état du rejeu.")
+
+    # (J1) RETENU puis REJOUÉ au tour suivant, avec son corps d'origine, avant la liste.
+    with tempfile.TemporaryDirectory() as tmp:
+        r1 = tour_de_l_agent(tmp, ["503", "503", "503", "200"], "1\tban_ip\t203.0.113.7\t0\n2\tban_ip\t203.0.113.8\t0")
+        if r1 is not None:
+            remises1, _, err1, code1, entrees1 = r1
+            chemin, lignes = etat_du_rejeu(tmp)
+            corps_origine = [c for i, c in remises1 if i == "1"]
+            if chemin is None or len(lignes) != 1 or not lignes[0].startswith("1\t0\t{\"id\":1,\"status\":\"done\""):
+                echec(f"rejeu/J1 : le verdict non remis n'est PAS retenu en une ligne `1<TAB>0<TAB>corps` — "
+                      f"état={lignes!r} stderr={texte(err1).strip()[-300:]}")
+            else:
+                mode_f = os.stat(chemin).st_mode & 0o777
+                mode_d = os.stat(os.path.dirname(chemin)).st_mode & 0o777
+                if mode_f != 0o600 or mode_d != 0o700:
+                    echec(f"rejeu/J1 : l'état du rejeu n'est pas privé (fichier {oct(mode_f)}, répertoire "
+                          f"{oct(mode_d)} au lieu de 0o600 et 0o700).")
+                if corps_origine and lignes[0].split("\t", 2)[2] != corps_origine[-1]:
+                    echec(f"rejeu/J1 : la ligne retenue n'est pas le corps REMIS au central : "
+                          f"{lignes[0][:200]!r} / {corps_origine[-1][:200]!r}")
+            if "#1 verdict RETENU pour rejeu" not in texte(err1) or code1 != 0:
+                echec(f"rejeu/J1 : la retenue n'est pas dite, ou la boucle s'arrête (code {code1}) : "
+                      f"{texte(err1).strip()[-300:]}")
+            if set(entrees1) != {"auth-par-stdin"}:
+                echec(f"rejeu/J1 (instrument) : une remise n'a pas reçu l'authentification par l'entrée "
+                      f"standard : {entrees1}")
+            jeton_absent("J1", err1, tmp)
+            r2 = tour_de_l_agent(tmp, [], "3\tban_ip\t203.0.113.9\t0")
+            if r2 is not None:
+                remises2, nft2, err2, code2, _ = r2
+                _, apres = etat_du_rejeu(tmp)
+                if not remises2 or remises2[0][0] != "1" or (corps_origine and remises2[0][1] != corps_origine[-1]):
+                    echec(f"rejeu/J1 : le verdict retenu n'est pas REJOUÉ en tête du tour suivant avec son "
+                          f"corps d'origine : {remises2[:2]!r}")
+                if apres:
+                    echec(f"rejeu/J1 : le verdict rejoué et remis reste dans l'état : {apres!r}")
+                if "#1 verdict REJOUE et remis au tour 1" not in texte(err2) or "203.0.113.9" not in nft2 or code2 != 0:
+                    echec(f"rejeu/J1 : le rejeu ne se dit pas, ou la liste du tour n'est plus traitée : "
+                          f"{texte(err2).strip()[-300:]}")
+                jugements.append("J1")
+
+    # (J2) ABANDON au dernier tour, GARDE un tour plus tôt.
+    for tours_deja, abandon in ((tours_max - 1, True), (tours_max - 2, False)):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "responder"), mode=0o700)
+            with open(os.path.join(tmp, "responder", "verdicts-a-remettre"), "w", encoding="utf-8") as h:
+                h.write(f"1\t{tours_deja}\t{corps_de(1)}\n")
+            r = tour_de_l_agent(tmp, ["503"], "2\tban_ip\t203.0.113.8\t0")
+            if r is None:
+                continue
+            _, _, err, code, _ = r
+            _, lignes = etat_du_rejeu(tmp)
+            dit = f"#1 verdict ABANDONNE apres {tours_max} tours" in texte(err)
+            if abandon and (not dit or lignes):
+                echec(f"rejeu/J2 : au tour {tours_max}, le verdict n'est pas ABANDONNÉ avec aveu : état={lignes!r} "
+                      f"stderr={texte(err).strip()[-300:]}")
+            if not abandon and (dit or lignes != [f"1\t{tours_max - 1}\t{corps_de(1)}"]):
+                echec(f"rejeu/J2-négatif : un tour plus tôt, le verdict est abandonné ou son compte ne monte "
+                      f"pas : état={lignes!r}")
+            if code != 0:
+                echec(f"rejeu/J2 : l'agent s'arrête en {code}")
+        jugements.append("J2" + ("" if abandon else "-négatif"))
+
+    # (J3) BORNE de la file, et UNE tentative par tour contre un central muet.
+    with tempfile.TemporaryDirectory() as tmp:
+        os.makedirs(os.path.join(tmp, "responder"), mode=0o700)
+        with open(os.path.join(tmp, "responder", "verdicts-a-remettre"), "w", encoding="utf-8") as h:
+            h.write("".join(f"{100 + i}\t0\t{corps_de(100 + i)}\n" for i in range(lignes_max)))
+        r = tour_de_l_agent(tmp, ["503"] * 4, "1\tban_ip\t203.0.113.7\t0\n2\tban_ip\t203.0.113.8\t0")
+        if r is not None:
+            remises, _, err, code, _ = r
+            _, lignes = etat_du_rejeu(tmp)
+            tentes = [i for i, _ in remises if int(i) >= 100]
+            if tentes != ["100"]:
+                echec(f"rejeu/J3 : contre un central muet, le rejeu tente {len(tentes)} verdicts au lieu d'UN : {tentes[:5]}")
+            if len(lignes) != lignes_max or "#1 verdict NON RETENU pour rejeu : la file de rejeu est PLEINE" not in texte(err):
+                echec(f"rejeu/J3 : la file dépasse sa borne ({len(lignes)} lignes pour {lignes_max}) ou le refus "
+                      f"de retenir n'est pas dit : {texte(err).strip()[-300:]}")
+            if lignes and (not lignes[0].startswith("100\t1\t") or not lignes[1].startswith("101\t0\t")):
+                echec(f"rejeu/J3 : la ligne tentée ne compte pas son tour, ou une ligne non tentée le compte : {lignes[:2]!r}")
+            if code != 0:
+                echec(f"rejeu/J3 : l'agent s'arrête en {code}")
+            jugements.append("J3")
+
+    # (J4) PAS DE RÉEXÉCUTION d'une riposte dont le verdict attend sa remise.
+    with tempfile.TemporaryDirectory() as tmp:
+        os.makedirs(os.path.join(tmp, "responder"), mode=0o700)
+        with open(os.path.join(tmp, "responder", "verdicts-a-remettre"), "w", encoding="utf-8") as h:
+            h.write(f"1\t0\t{corps_de(1)}\n")
+        r = tour_de_l_agent(tmp, ["503"], "1\tban_ip\t203.0.113.7\t0\n2\tban_ip\t203.0.113.8\t0")
+        if r is not None:
+            _, nft, err, code, _ = r
+            if "203.0.113.7" in nft or "#1 NON reexecutee" not in texte(err):
+                echec(f"rejeu/J4 : une riposte dont le verdict attend sa remise est RÉEXÉCUTÉE, ou le refus "
+                      f"n'est pas dit : nft={nft.strip()[:200]!r} stderr={texte(err).strip()[-300:]}")
+            if "203.0.113.8" not in nft or code != 0:
+                echec(f"rejeu/J4-négatif : la riposte voisine n'est plus appliquée (code {code})")
+            jugements.append("J4")
+
+    # (J5) LA COUPE SUR UN CARACTÈRE, trois longueurs de caractère, et le témoin négatif.
+    for nom, prefixe, caractere, reste_attendu in (
+            ("deux-octets", b"x" * (octets_journal - 1), "é", b"x" * (octets_journal - 1)),
+            ("trois-octets", b"x" * (octets_journal - 2), "—", b"x" * (octets_journal - 2)),
+            ("quatre-octets", b"x" * (octets_journal - 3), "😀", b"x" * (octets_journal - 3)),
+            ("caractere-complet-garde", b"x" * (octets_journal - 2), "é", b"x" * (octets_journal - 2) + "é".encode())):
+        with tempfile.TemporaryDirectory() as tmp:
+            grand = prefixe + caractere.encode("utf-8") + b"y" * 50
+            r = tour_de_l_agent(tmp, ["404g"], "1\tban_ip\t203.0.113.7\t0", grand=grand)
+            if r is None:
+                continue
+            _, _, err, _, _ = r
+            try:
+                err.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                echec(f"rejeu/J5-{nom} : le journal reçoit une séquence UTF-8 INVALIDE ({exc}) — un caractère "
+                      f"coupé en deux.")
+                continue
+            marque = b"verdict REFUSE par le central (HTTP 404), non reessaye : "
+            ligne = next((l for l in err.split(b"\n") if marque in l), b"")
+            cite = ligne.split(marque, 1)[1] if ligne else b""
+            if cite != reste_attendu + b" [...]":
+                echec(f"rejeu/J5-{nom} : la citation n'est pas coupée à {octets_journal} octets sur un caractère "
+                      f"— rendu {cite[-12:]!r} ({len(cite)} octets)")
+        jugements.append("J5-" + nom)
+    with tempfile.TemporaryDirectory() as tmp:
+        r = tour_de_l_agent(tmp, ["200g"], "1\tban_ip\t203.0.113.7\t0", grand=b'{"ok":true,"x":"' + b"z" * (octets_lus + 10) + b'"}')
+        if r is not None:
+            _, _, err, _, _ = r
+            if f"reponse du central de plus de {octets_lus} octets" not in texte(err):
+                echec(f"rejeu/J5 : un corps plus long que la lecture bornée ({octets_lus} octets) n'est pas DIT tronqué : "
+                      f"{texte(err).strip()[-300:]}")
+            jugements.append("J5-lecture-bornee")
+
+    attendus = 1 + 2 + 1 + 1 + 4 + 1
+    if len(jugements) != attendus:
+        echec(f"rejeu (instrument) : {len(jugements)} scénario(s) jugé(s) sur {attendus} ({jugements}) — cette "
+              f"garde REFUSE DE CONCLURE sur le rejeu et la lecture bornée.")
 
 
 # =============================================================================
@@ -983,6 +1246,7 @@ def main():
     if "collectors/respond.sh" in ENFORCERS:
         temoins_du_corpus_partage()
         temoins_de_la_remise_du_verdict()   # `P10.21-d`
+        temoins_du_rejeu_et_de_la_lecture_bornee()   # `P10.21-j`
 
     if ERREURS:
         for e in ERREURS:
@@ -993,7 +1257,10 @@ def main():
     print(f"{len(ENFORCERS)} enforcers : liste illisible -> refus NOMMÉ ; liste lisible et vide -> "
           f"comportement normal. `respond.sh` lit la remise de son verdict : passager réessayé "
           f"(borné, attentes croissantes) puis avoué avec la cause du démon, refus définitif avoué "
-          f"sans réessai, absence dite, jeton jamais écrit — 5 scénarios.")
+          f"sans réessai, absence dite, jeton jamais écrit — 5 scénarios ; un verdict non remis est "
+          f"retenu (état privé, sans jeton), rejoué au tour suivant, abandonné avec aveu au dernier tour, "
+          f"jamais réexécuté pendant qu'il attend, dans une file bornée ; la réponse du central est lue "
+          f"bornée et citée coupée sur un caractère — 10 scénarios.")
     return 0
 
 

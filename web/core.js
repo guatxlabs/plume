@@ -434,14 +434,20 @@ const motDeLaTraceManquante = () => (LANG === 'en' ? MOTS_DE_LA_TRACE_MANQUANTE.
 // LA BALISE EST CELLE DU PUITS QUI L'ACCUEILLE, et c'est la seule chose qui diff\u00e8re d'une surface \u00e0
 // l'autre : un bloc dans le d\u00e9tail d'un dossier, une ligne dans une barre de formulaire. Le style reste
 // au site : ce module ne sait pas dans quoi il est accroch\u00e9.
-function aveuDeLaTraceManquante(cause, balise) {
+// `P10.21-h` \u2014 LA FABRIQUE DU N\u0152UD SORT DE SON USAGE, LA PHRASE Y RESTE. Le journal du plan de contr\u00f4le
+// (`registre_sans_maillon` sur les gestes d'administration des tenants) porte la m\u00eame cl\u00e9 et la m\u00eame
+// forme d'aveu, mais pas la m\u00eame phrase : \u00ab Riposte EN FILE \u00bb y serait faux. D\u00c9PLACEMENT PUR : le corps
+// ci-dessous est celui d'`aveuDeLaTraceManquante`, la phrase en param\u00e8tre ; ce module ne sait toujours
+// pas quel geste il avoue.
+function aveuDUneTraceManquante(mot, cause, balise) {
   const aveu = document.createElement(balise || 'div'); aveu.className = 'bad';
   const dit = document.createElement('span');
-  dit.textContent = motDeLaTraceManquante();
+  dit.textContent = mot;
   aveu.append(dit, ' \u00ab ' + cause + ' \u00bb');
   aveu.dataset.traceManquante = '1';   // marque de POSE, pas de style : aucune r\u00e8gle CSS ne la vise
   return aveu;
 }
+function aveuDeLaTraceManquante(cause, balise) { return aveuDUneTraceManquante(motDeLaTraceManquante(), cause, balise); }
 // LA M\u00caME PHRASE QUAND AUCUN N\u0152UD NE PEUT LA PORTER. Un avis est une CHA\u00ceNE : la surface sans puits
 // ouvert \u2014 le geste \u00ab bannir \u00bb d'une ligne de r\u00e9sultats, un dossier qui n'est pas celui affich\u00e9 \u2014
 // re\u00e7oit la phrase et la cause dans un seul n\u0153ud. Repli d\u00e9j\u00e0 livr\u00e9 ailleurs, pas une seconde grammaire.
@@ -1842,7 +1848,7 @@ export {
   // `P10.21-a` — ET LE LECTEUR DE L'AVEU QUE LE SUCCÈS DE LA MÊME ROUTE PORTE : les trois surfaces de
   // mise en file le partagent, faute de quoi chacune écrirait le nom de la clé et sa propre phrase, et
   // l'une d'elles finirait par avouer autre chose que les deux autres sur le même fait.
-  CLE_DU_REGISTRE_SANS_MAILLON, causeDeLaTraceManquante, motDeLaTraceManquante, aveuDeLaTraceManquante, phraseDeLaTraceManquante,
+  CLE_DU_REGISTRE_SANS_MAILLON, causeDeLaTraceManquante, motDeLaTraceManquante, aveuDUneTraceManquante, aveuDeLaTraceManquante, phraseDeLaTraceManquante,
   // `P10.20-k` — ET LE LECTEUR QUI TIENT LES DEUX MOULES DE REFUS (JSON `error` et texte brut) : les
   // tableaux de bord et les modèles de données le PARTAGENT, faute de quoi chacun écrirait son
   // extraction et l'un des deux finirait par ne plus reconnaître la forme que l'autre lit.

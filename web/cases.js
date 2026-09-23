@@ -720,6 +720,18 @@ const MOTS_DES_REFUS_DE_DOSSIER = {
   retrait_refuse: {
     fr: "Retrait du lien REFUSÉ : le démon n'a pas confirmé la suppression. Il a répondu —",
     en: 'Link removal REFUSED: the daemon did not confirm the deletion. It answered —' },
+  // `P10.21-j` — L'AJOUT D'UN ÉLÉMENT À UN DOSSIER. `case_item_add` (daemon/src/handlers/cases.rs) ne sert
+  // qu'un quatre cent quatre NU (dossier introuvable) ou un deux cent quatre ; tout autre refus vient d'une
+  // couche commune (rôle, passerelle). Quand le dossier vient d'être ouvert par ce geste, il EXISTE, vide.
+  element_introuvable_sans_cause: {
+    fr: "Élément NON RATTACHÉ : le démon a répondu « introuvable » (404) sans nommer de cause. Rien n'a été ajouté au dossier.",
+    en: 'Item NOT ATTACHED: the daemon answered "not found" (404) without naming a cause. Nothing was added to the case.' },
+  element_refuse: {
+    fr: "Élément NON RATTACHÉ : le démon a refusé l'ajout, rien n'a été ajouté au dossier. Il a répondu —",
+    en: 'Item NOT ATTACHED: the daemon refused the addition, nothing was added to the case. It answered —' },
+  element_refuse_dossier_neuf: {
+    fr: "Dossier OUVERT, mais l'élément n'y est PAS RATTACHÉ : le dossier existe, vide — ne le recréez pas, ajoutez-y l'élément. Le démon a répondu —",
+    en: 'Case OPENED, but the item is NOT ATTACHED to it: the case exists, empty — do not create it again, add the item to it. The daemon answered —' },
 };
 const motDuRefusDeDossier = (cle) => (LANG === 'en' ? MOTS_DES_REFUS_DE_DOSSIER[cle].en : MOTS_DES_REFUS_DE_DOSSIER[cle].fr);
 // LE DISCRIMINANT, un par geste, jugé par le harnais dans les deux sens sur les littéraux du démon.
@@ -903,6 +915,16 @@ async function createCase() {
 
 // ajoute un element (alerte/event) a un case existant OU nouveau. ref facultative (event depuis l'Explore =
 // sans id -> item 'event' libre ; alerte -> ref='alert:ID').
+// La phrase du rattachement refusé : un quatre cent quatre NU ne reçoit aucune cause inventée ; tout autre
+// refus cite ce que le démon a répondu ; un dossier ouvert par CE geste est dit existant.
+function cleDuRattachementRefuse(e, dossierNeuf) {
+  if (refusNu(e) && phraseDuRefusDuDemon(e) === '404' && !dossierNeuf) return 'element_introuvable_sans_cause';
+  return dossierNeuf ? 'element_refuse_dossier_neuf' : 'element_refuse';
+}
+function phraseDuRattachementRefuse(e, dossierNeuf) {
+  const cle = cleDuRattachementRefuse(e, dossierNeuf);
+  return /_sans_cause$/.test(cle) ? motDuRefusDeDossier(cle) : motDuRefusDeDossier(cle) + ' « ' + phraseDuRefusDuDemon(e) + ' »';
+}
 async function addToCase(kind, body, ref) {
   let cases = [], refus = '';
   try { const j = await api('/cases'); refus = causeDuRefusServi(j); cases = j.cases; } catch (e) {}
@@ -929,7 +951,10 @@ async function addToCase(kind, body, ref) {
     id = j.id;
   }
   const payload = { kind, body }; if (ref) payload.ref = ref;
-  await apiSend('/cases/' + id + '/items', 'POST', payload);
+  // `P10.21-j` — LE RATTACHEMENT REFUSÉ SE DIT, ET RIEN NE S'OUVRE. Le rejet sortait du geste sans un mot :
+  // la modale fermée, l'écran d'avant, et l'analyste croyait l'élément rattaché.
+  try { await apiSend('/cases/' + id + '/items', 'POST', payload); }
+  catch (e) { toast(phraseDuRattachementRefuse(e, r.cid === 'new'), 'bad', 9000); return; }
   toast('Ajouté au case #' + id, 'ok');
   if (typeof refresh === 'function') refresh(); // ré-affiche les alertes -> la pastille "case #N" apparait
   openCase(id); // bascule sur Cases + ouvre le détail (timeline avec l'élément rattaché)
@@ -1338,4 +1363,4 @@ async function prepareResponse(c, s) {
 // rougirait si elle cessait de venir du lecteur partagé.
 // `P10.21-a` — `motDuGenreDeLien` part nu (témoin 103) : le vocabulaire des liens de dossier se juge dans
 // les DEUX sens — les trois valeurs que le démon écrit, et le jeton qu'aucune allowlist ne produit plus.
-export { OUVERTURE_DU_DOSSIER_NON_OUVERT, OUVERTURE_DU_LIEN_NON_POSE, OUVERTURE_DU_LIEN_NON_RETIRE, cleDuRefusDeDossier, motDuRefusDeDossier, phraseDuRefusDeDossier, addToCase, canEditCases, caseBtn, caseItemEl, caseRow, createCase, linkCasePrompt, loadCaseOpsSummary, loadCases, motDeLaRiposteMiseEnFile, motDeLaTraceManquante, motDuGenreDeLien, openCase, prepareResponse, renderCaseDetail, renderCaseLinks, renderWizardPanel };
+export { OUVERTURE_DU_DOSSIER_NON_OUVERT, OUVERTURE_DU_LIEN_NON_POSE, OUVERTURE_DU_LIEN_NON_RETIRE, cleDuRattachementRefuse, cleDuRefusDeDossier, motDuRefusDeDossier, phraseDuRefusDeDossier, addToCase, canEditCases, caseBtn, caseItemEl, caseRow, createCase, linkCasePrompt, loadCaseOpsSummary, loadCases, motDeLaRiposteMiseEnFile, motDeLaTraceManquante, motDuGenreDeLien, openCase, prepareResponse, renderCaseDetail, renderCaseLinks, renderWizardPanel };

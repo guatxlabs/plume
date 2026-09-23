@@ -42,6 +42,21 @@ ICI = os.path.dirname(os.path.abspath(__file__))
 RACINE = os.path.realpath(os.path.join(ICI, "..", ".."))
 SOURCE = os.path.join(RACINE, "daemon", "src")
 
+# LA DÉCOUPE PAR VIRGULE EST CELLE DU LECTEUR PARTAGÉ, IMPORTÉE ET JAMAIS RECOPIÉE (`P10.21-f`) : ce
+# fichier coupait le corps de la macro sur la virgule d'un GÉNÉRIQUE, et le premier argument d'un
+# `.insert(` par un `split(",")` qui ne connaissait AUCUNE profondeur. Le module importé évalue sa
+# propre racine À L'IMPORT (un `git rev-parse` sans argument) : on lui passe celle de cette garde, pour
+# qu'il ne cherche aucun dépôt git. Ses témoins sont JOUÉS par `epreuves()` : un import n'exécute
+# aucun témoin.
+sys.path.insert(0, ICI)
+_ARGV = sys.argv
+sys.argv = [_ARGV[0], RACINE]
+try:
+    from check_a_read_that_did_not_happen_is_never_served_as_a_fact import (  # noqa: E402
+        arguments, temoins_des_lecteurs_de_forme)
+finally:
+    sys.argv = _ARGV
+
 # Le point de publication du spool : ce qui FAIT d'un fichier une surface de spool.
 POINT_DE_PUBLICATION = re.compile(r"\bspool\s*::\s*publier\b")
 # La macro de sérialisation de serde_json, nommée sans être recopiée en exemple.
@@ -151,36 +166,28 @@ def groupe_equilibre(src, debut):
 
 
 def paires(interieur):
-    """Rend les couples (clé, expression de valeur) au niveau SUPÉRIEUR d'un corps d'objet."""
+    """Rend les couples (clé, expression de valeur) au niveau SUPÉRIEUR d'un corps d'objet.
+
+    Les morceaux sont découpés par `arguments`, le lecteur PARTAGÉ, sur le corps remis entre
+    parenthèses : une virgule écrite dans une chaîne, un littéral de caractère ou une liste de
+    GÉNÉRIQUES ne coupe pas une valeur. MESURÉ le 2026-09-23 sur l'instantané 69284b7 : 74 des 2 364
+    macros d'objet de `daemon/src` se découpaient autrement pour un chevron (`"n": r.get::<_, i64>(0)`
+    lu `r.get::<_`), aucune dans une surface de spool, et aucun refus ne change même si CHAQUE fichier
+    de `daemon/src` était jugé comme une surface. Armé, et incapable de mordre sur ce verdict-ci : la
+    valeur tronquée garde son `<` et ne passe jamais pour un NOM, et le morceau coupé ne commence pas
+    par un guillemet, il ne fabrique aucune clé. La découpe est ralliée pour qu'une valeur lue soit
+    une valeur ENTIÈRE, pas pour un verdict."""
     txt = interieur.strip()
     if txt.startswith("{"):
         fin = groupe_equilibre(txt, 0)
         if fin is None:
             return []
         txt = txt[1:fin - 1]
-    morceaux, prof, debut, i, n = [], 0, 0, 0, len(txt)
-    while i < n:
-        c = txt[i]
-        if c == '"':
-            i += 1
-            while i < n:
-                if txt[i] == "\\":
-                    i += 2
-                    continue
-                if txt[i] == '"':
-                    break
-                i += 1
-            i += 1
-            continue
-        if c in OUVRANTS:
-            prof += 1
-        elif c in FERMANTS:
-            prof -= 1
-        elif c == "," and prof == 0:
-            morceaux.append(txt[debut:i])
-            debut = i + 1
-        i += 1
-    morceaux.append(txt[debut:])
+    code = "(" + txt + ")"
+    tranches, _fermante = arguments(code, 0)
+    if tranches is None:
+        return []
+    morceaux = [code[deb:fin] for deb, fin in tranches]
     out = []
     for m in morceaux:
         s = m.strip()
@@ -224,12 +231,23 @@ def refus_du_fichier(src):
         fin = groupe_equilibre(src, m.end() - 1)
         if fin is None:
             continue
-        arg = src[m.end():fin - 1]
-        if f'"{CLE_LOT}"' not in arg.split(",")[0]:
+        # LA CLÉ EST LE PREMIER ARGUMENT, LA VALEUR CE QUI LE SUIT, découpés par le lecteur partagé
+        # (`P10.21-f`). La découpe d'origine prenait `arg.split(",")[0]` : sans profondeur, une clé
+        # calculée (`format!("{}", "events")`) était coupée avant son littéral et le lot DUPLIQUÉ passait
+        # (défaut MANQUÉ) ; et la duplication était cherchée dans TOUS les arguments, clé comprise, si
+        # bien qu'une clé écrite `"events".to_owned()` accusait un lot DÉPLACÉ. MESURÉ le 2026-09-23 sur
+        # l'instantané 69284b7 : 3 des 610 `.insert(` de `daemon/src` avaient un premier argument lu
+        # autrement, aucun dans une surface, aucun refus changé ; aucune clé `"events"` n'y porte de
+        # duplication. Armé dans les deux sens, pas mordant ; deux témoins fabriqués le tiennent.
+        tranches, fermante = arguments(src, m.end() - 1)
+        if not tranches:
             continue
-        if DUPLICATION.search(arg):
+        cle, valeur = src[tranches[0][0]:tranches[0][1]], src[tranches[0][1]:fermante]
+        if f'"{CLE_LOT}"' not in cle:
+            continue
+        if DUPLICATION.search(valeur):
             trouves.append((m.start(), "le champ du lot est alimenté par une DUPLICATION explicite"))
-        elif CONVERSION_EMPRUNTANTE.search(arg):
+        elif CONVERSION_EMPRUNTANTE.search(valeur):
             trouves.append((m.start(), "le champ du lot repasse par la conversion EMPRUNTANTE de serde_json"))
     return trouves
 
@@ -289,8 +307,26 @@ _CHAINE_AVEC_DEUX_BARRES = '''fn surface() {
 }
 '''
 
+# LA DÉCOUPE (`P10.21-f`) : une clé CALCULÉE dont la virgule précède le littéral, une clé qui porte
+# elle-même un geste de duplication, et une valeur à GÉNÉRIQUE.
+_CLE_CALCULEE_DUPLIQUE = '''fn surface() {
+''' + _PUBLIE + '''    e.insert(format!("{}", "events"), Value::Array(lot.clone()));
+}
+'''
+_CLE_POSSEDEE_DEPLACE = '''fn surface() {
+''' + _PUBLIE + '''    e.insert("events".to_owned(), Value::Array(lot));
+}
+'''
+_VALEUR_A_GENERIQUE = '''fn surface() {
+''' + _PUBLIE + '''    let e = ''' + 'json' + '''!({ "n": r.get::<_, i64>(0), "kind": "events", "events": lot });
+}
+'''
+
 EPREUVES = [
     ("déplacement (forme visée)", _DEPLACE, True, 0),
+    ("clé calculée, lot dupliqué", _CLE_CALCULEE_DUPLIQUE, True, 1),
+    ("clé possédée par `to_owned`, lot déplacé", _CLE_POSSEDEE_DEPLACE, True, 0),
+    ("valeur à générique avant le lot nommé", _VALEUR_A_GENERIQUE, True, 1),
     ("macro + lot nommé", _MACRO_LOT_NOMME, True, 1),
     ("macro + lot emprunté", _MACRO_LOT_EMPRUNTE, True, 1),
     ("duplication explicite", _DUPLIQUE, True, 1),
@@ -304,6 +340,15 @@ EPREUVES = [
 
 
 def epreuves():
+    # LES LECTEURS PARTAGÉS D'ABORD : `arguments` est importé, et ses témoins ne vivent pas ici.
+    try:
+        temoins_des_lecteurs_de_forme()
+    except AssertionError as e:
+        return f"lecteurs de forme Rust partagés (`arguments`, `apparier`) : {e}"
+    valeurs = dict(paires('{ "n": r.get::<_, i64>(0), "c": \',\', "s": "a,b" }'))
+    if valeurs != {"n": "r.get::<_, i64>(0)", "c": "\',\'", "s": '"a,b"'}:
+        return (f"témoin de DÉCOUPE : les valeurs lues sont {valeurs} — une virgule de générique, de "
+                "littéral de caractère ou de chaîne coupe une valeur, qui n'est plus lue ENTIÈRE")
     for nom, texte, dans_population, attendu in EPREUVES:
         neutre = sans_commentaires(texte)
         if len(neutre) != len(texte):

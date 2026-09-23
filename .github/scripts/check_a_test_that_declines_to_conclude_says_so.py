@@ -92,6 +92,22 @@ ICI = os.path.dirname(os.path.abspath(__file__))
 RACINE = os.path.realpath(os.path.join(ICI, "..", ".."))
 CANAL = os.path.join(RACINE, "daemon", "src", "tests", "canal_de_refus.rs")
 
+# LA DÉCOUPE DES ARGUMENTS EST CELLE DU LECTEUR PARTAGÉ, IMPORTÉE ET JAMAIS RECOPIÉE (`P10.21-f`).
+# Ce fichier en portait une COPIE, restée en arrière quand le lecteur a appris le littéral de
+# caractère (`P10.20-r`) puis le chevron (`P10.21-b`) : elle coupait sur la virgule d'une CHAÎNE et
+# sur celle d'un GÉNÉRIQUE. Le module importé évalue sa propre racine À L'IMPORT (un `git rev-parse`
+# quand aucun argument ne lui est passé) : on lui passe celle de cette garde, pour qu'il ne cherche
+# aucun dépôt git (une archive dépliée en est dépourvue). Ses témoins sont JOUÉS par `temoins()` : un
+# import n'exécute aucun témoin, et un lecteur amputé traverserait cette garde sans un mot.
+sys.path.insert(0, ICI)
+_ARGV = sys.argv
+sys.argv = [_ARGV[0], RACINE]
+try:
+    from check_a_read_that_did_not_happen_is_never_served_as_a_fact import (  # noqa: E402
+        arguments, temoins_des_lecteurs_de_forme)
+finally:
+    sys.argv = _ARGV
+
 CODE_TENU = 0
 CODE_VIOLE = 1
 CODE_INSTRUMENT = 2
@@ -261,35 +277,32 @@ def ouvrante_du_bloc(net, deb, pos):
     return pile[-1] if pile else deb
 
 
-def arguments(brut, apres_parenthese):
-    """Les arguments d'un appel, découpés aux virgules de PROFONDEUR 0. `apres_parenthese` pointe
-    juste après la `(` ouvrante. Rend None si les parenthèses ne ferment pas."""
-    prof, args, courant = 0, [], []
-    i = apres_parenthese
-    while i < len(brut):
-        c = brut[i]
-        if c in "([{":
-            prof += 1
-        elif c in ")]}":
-            if prof == 0:
-                args.append("".join(courant).strip())
-                return [a for a in args if a != ""]
-            prof -= 1
-        elif c == "," and prof == 0:
-            args.append("".join(courant).strip())
-            courant = []
-            i += 1
-            continue
-        courant.append(c)
-        i += 1
-    return None
+def arguments_de_l_appel(brut, parenthese):
+    """Les arguments NON VIDES de l'appel dont la `(` est en `parenthese`, lus dans le texte brut
+    (les littéraux y sont intacts : le nom du test se compare à son `"…"`), ou None si l'appel ne se
+    referme pas. Découpés par `arguments`, le lecteur PARTAGÉ : une virgule écrite dans une chaîne ou
+    dans un générique ne coupe pas.
+
+    CE QUE LA COPIE D'ORIGINE COUPAIT AUTREMENT, MESURÉ le 2026-09-23 sur l'instantané 69284b7 : sur
+    les 21 appels au canal de `daemon/src`, CINQ se découpaient autrement, tous pour une virgule
+    ÉCRITE DANS la cause (`tests/sec.rs`, `tests/vieillissement_serie.rs`) — quatre ou cinq
+    arguments lus au lieu de trois ; AUCUN pour un chevron. Verdict inchangé sur les cinq : la garde
+    ne juge que le compte (au moins trois) et les deux premiers arguments, et une coupure en trop ne
+    fait que MULTIPLIER les morceaux de la cause. Armé, pas mordant : la copie ne pouvait pas faire
+    passer un appel fautif, mais sur un deuxième argument qui porte une virgule (chaîne ou générique)
+    elle citait dans l'accusation un FRAGMENT (`nom_de::<A`) au lieu de dire qu'il manque un
+    argument — les témoins fabriqués tiennent les deux formes."""
+    tranches, _fermante = arguments(brut, parenthese)
+    if tranches is None:
+        return None
+    return [a for a in (brut[deb:fin].strip() for deb, fin in tranches) if a != ""]
 
 
 def faute_des_arguments(brut, trouve, nom):
     """L'appel trouvé à l'offset `trouve` porte-t-il ses trois arguments, et nomme-t-il SON test ?
     Rend la faute, ou None. Une seule rédaction pour les deux familles."""
     par = brut.find("(", trouve + len(APPEL))
-    args = arguments(brut, par + 1) if par != -1 else None
+    args = arguments_de_l_appel(brut, par) if par != -1 else None
     if args is None or len(args) < 3:
         return ("l'appel au canal n'a pas ses trois arguments "
                 "(`module_path!()`, le nom du test, la cause).")
@@ -447,6 +460,11 @@ def analyser(brut, chemin="<fabriqué>"):
 # =================================================================================================
 def temoins():
     """Rend None si l'instrument est sain, sinon la faute constatée."""
+    # LES LECTEURS PARTAGÉS D'ABORD : `arguments` est importé, et ses témoins ne vivent pas ici.
+    try:
+        temoins_des_lecteurs_de_forme()
+    except AssertionError as e:
+        return f"lecteurs de forme Rust partagés (`arguments`, `apparier`) : {e}"
     A = 'crate::tests::canal_de_refus::refuser_de_conclure'
     cas = []
 
@@ -662,6 +680,41 @@ def temoins():
             }
         }
     """ % A, [("t_jumelle_mal_nommee", True)]))
+
+    # ── LA DÉCOUPE DES ARGUMENTS (`P10.21-f`) : une virgule de CHAÎNE ou de GÉNÉRIQUE dans le
+    #    DEUXIÈME argument ne fait pas un troisième argument. La copie d'origine en faisait un, et
+    #    l'accusation citait alors un fragment (`"t_frag` ou `nom_de::<A`) au lieu de dire ce qui
+    #    manque. Les formes sont fabriquées ; la CLOSURE DE LECTURE tient le cas neutre : ses virgules
+    #    de générique ne blanchissent ni n'accusent un appel juste.
+    FAUTE_DU_COMPTE = "l'appel au canal n'a pas ses trois arguments"
+    for nom, appel in (("virgule dans la chaîne du nom", '"t_frag, suite"'),
+                       ("virgule d'un générique", "nom_de::<A, B>()")):
+        sites, _ = analyser("""
+        #[test]
+        fn t_frag() {
+            if a {
+                %s(module_path!(), %s);
+                return;
+            }
+        }
+    """ % (A, appel), "<témoin>")
+        fautes = [s["faute"] or "" for s in sites]
+        if len(fautes) != 1 or not fautes[0].startswith(FAUTE_DU_COMPTE):
+            return (f"témoin de DÉCOUPE « {nom} » : l'analyseur rend {fautes}, attendu une faute qui dit "
+                    f"« {FAUTE_DU_COMPTE} » — la virgule d'une chaîne ou d'un générique coupe encore un "
+                    "argument, et l'accusation cite un FRAGMENT")
+    sites, _ = analyser("""
+        #[test]
+        fn t_cause_a_generique() {
+            if a {
+                %s(module_path!(), "t_cause_a_generique", &format!("{}", r.get::<_, i64>(0)));
+                return;
+            }
+        }
+    """ % A, "<témoin>")
+    if [s["faute"] for s in sites] != [None]:
+        return (f"témoin de DÉCOUPE « cause portant une closure de lecture » : {[s['faute'] for s in sites]} "
+                "au lieu d'un site conforme")
 
     for nom, source, attendu in cas:
         sites, _ = analyser(source, "<témoin>")

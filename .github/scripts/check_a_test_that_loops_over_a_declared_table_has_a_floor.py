@@ -274,7 +274,9 @@ def analyser(brut, chemin, macro, g):
                     idx = c["params"].index(base)
                     for q in appels(c):
                         par = net.find("(", q + len(c["nom"]))
-                        args = g.arguments(brut, par + 1) if par != -1 else None
+                        # Découpe par le lecteur PARTAGÉ, via la garde sœur (`P10.21-f` a supprimé sa copie
+                        # d'`arguments`, qui rendait des chaînes à partir de la position APRÈS la parenthèse).
+                        args = g.arguments_de_l_appel(brut, par) if par != -1 else None
                         if args and len(args) > idx:
                             resolue = True
                             arg = _plat(args[idx])

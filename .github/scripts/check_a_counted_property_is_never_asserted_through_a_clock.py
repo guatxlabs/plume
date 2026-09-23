@@ -78,8 +78,9 @@ CE QU'ELLE NE TIENT PAS, ÉCRIT POUR ÊTRE OPPOSABLE
 L'INSTRUMENT SE VALIDE AVANT DE RENDRE UN VERDICT, SUR DES ENTRÉES FABRIQUÉES ICI — jamais sur
 l'état de l'arbre. Aucun plancher du type « au moins N occurrences dans le dépôt » : ce plancher
 rougirait le jour où le travail est FINI, et une garde qui exige que le défaut survive est une
-rançon, pas une garde. Les témoins sont donc six sources Rust construites en mémoire : une que la
-garde DOIT accuser, cinq qu'elle NE DOIT PAS accuser.
+rançon, pas une garde. Les témoins sont donc huit sources Rust construites en mémoire : deux que la
+garde DOIT accuser, six qu'elle NE DOIT PAS accuser — dont une de chaque sens pour la découpe des
+arguments (`P10.21-f`), qui est celle du lecteur partagé et dont les témoins sont joués aussi.
 
 Codes de sortie :
   0  la propriété est tenue
@@ -94,6 +95,20 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from check_every_style_selector_has_a_target import (  # noqa: E402  (GESTES PARTAGÉS, source unique — `P11.8-m`, `P11.8-n`)
     parcours_des_sources, racine_designee)
+
+# LA DÉCOUPE DES ARGUMENTS EST CELLE DU LECTEUR PARTAGÉ, IMPORTÉE ET JAMAIS RECOPIÉE (`P10.21-f`) : ce
+# fichier coupait sur la virgule d'un GÉNÉRIQUE (`conn.query_row::<i64, _, _>(…)`) et d'un littéral de
+# caractère. Le module importé évalue sa propre racine À L'IMPORT (un `git rev-parse` sans argument) :
+# on lui passe le dépôt de cette garde, pour qu'il ne cherche aucun dépôt git — la racine JUGÉE, elle,
+# reste celle que `main()` désigne, et le lecteur n'en lit aucune. Ses témoins sont JOUÉS par
+# `auto_epreuve()` : un import n'exécute aucun témoin.
+_ARGV = sys.argv
+sys.argv = [_ARGV[0], os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))]
+try:
+    from check_a_read_that_did_not_happen_is_never_served_as_a_fact import (  # noqa: E402
+        arguments, temoins_des_lecteurs_de_forme)
+finally:
+    sys.argv = _ARGV
 
 # LA RACINE PAR DÉFAUT est celle de CE fichier, DÉSIGNÉE à la fonction partagée plutôt que devinée
 # par elle : `jouer-la-batterie-de-gardes.sh` lance chaque garde SANS se placer dans le dépôt, et la
@@ -171,44 +186,31 @@ def grandeurs_chronometrees(corps):
 
 
 def arguments_de_macro(texte):
-    """Les arguments de premier niveau d'une invocation de macro, à partir de son `!`.
+    """Les arguments de premier niveau d'une invocation de macro, à partir de son `!`, découpés par
+    `arguments`, le lecteur PARTAGÉ : une virgule écrite dans une chaîne, un littéral de caractère ou
+    une liste de GÉNÉRIQUES ne coupe pas.
 
     Rend `None` si l'invocation n'est pas refermée dans la fenêtre reçue — un argument tronqué serait
-    lu de travers, et on préfère ne rien dire."""
+    lu de travers, et on préfère ne rien dire.
+
+    CE QUE LA DÉCOUPE D'ORIGINE (une boucle de ce fichier, qui ne connaissait que la chaîne) FAISAIT
+    AUTREMENT, MESURÉ le 2026-09-23 sur l'instantané 69284b7 : sur les 12 296 assertions de la racine,
+    57 se découpaient autrement pour un chevron (`conn.query_row::<i64, _, _>(…)`,
+    `tests/cases.rs`) et 3 pour un littéral de caractère ; sur les 71 que la garde JUGE (une horloge
+    dans la fonction), AUCUNE, et aucun verdict ne change. Armé dans les DEUX sens, et c'est ce qui
+    rendait le défaut sérieux : la coupure en trop RACCOURCIT l'expression comparée et renvoie sa fin
+    dans le message — une grandeur chronométrée écrite en second argument d'un `assert_eq!` sortait
+    de la comparaison (défaut MANQUÉ), et un identifiant de la fin (`lectures`) devenait de la prose
+    qui annonce un compte (témoin ACCUSÉ À TORT). Deux témoins fabriqués de `auto_epreuve` tiennent
+    ces deux sens."""
     debut = texte.index("!")
     ouvrant = texte.find("(", debut)
     if ouvrant < 0:
         return None
-    prof, args, courant, chaine, echappe = 0, [], [], False, False
-    for c in texte[ouvrant:]:
-        if chaine:
-            if echappe:
-                echappe = False
-            elif c == "\\":
-                echappe = True
-            elif c == '"':
-                chaine = False
-            courant.append(c)
-            continue
-        if c == '"':
-            chaine = True
-            courant.append(c)
-            continue
-        if c in "([{":
-            prof += 1
-            if prof == 1:
-                continue
-        elif c in ")]}":
-            prof -= 1
-            if prof == 0:
-                args.append("".join(courant))
-                return args
-        if c == "," and prof == 1:
-            args.append("".join(courant))
-            courant = []
-            continue
-        courant.append(c)
-    return None
+    tranches, _fermante = arguments(texte, ouvrant)
+    if tranches is None:
+        return None
+    return [texte[deb:fin] for deb, fin in tranches]
 
 
 def docs_des_constantes(corps, expression):
@@ -259,7 +261,7 @@ def sites_accuses(chemin, source):
     return trouves
 
 
-# ── L'AUTO-ÉPREUVE — six sources FABRIQUÉES ICI, jamais l'état de l'arbre ──────────────────────
+# ── L'AUTO-ÉPREUVE — huit sources FABRIQUÉES ICI, jamais l'état de l'arbre ──────────────────────
 POSITIF = '''
 fn un_temoin_qui_annonce_un_compte_et_chronometre() {
     /// Le nombre d'opérations atomiques que fait UNE observation.
@@ -311,6 +313,15 @@ fn un_fichier_qui_decrit_le_defaut_sans_le_commettre() {
     assert_eq!(vue.ajouts, 4, "quatre ajouts");
 }
 '''),
+    # LA DÉCOUPE (`P10.21-f`), SENS « ACCUSÉ À TORT » : sans le chevron, la comparaison s'arrêtait à
+    # `f::<_` et sa fin — dont l'identifiant `lectures` — était lue comme la prose du message.
+    ("la fin d'une comparaison à générique n'est pas de la prose", '''
+fn une_duree_par_lecture_sous_un_budget() {
+    let t = Instant::now();
+    let d = t.elapsed();
+    assert!(d.as_nanos() as f64 / par::<_, u64>(lectures) <= BUDGET_NS, "le budget de latence tient");
+}
+'''),
     ("un mot composé n'est pas un compte d'opérations", '''
 fn la_composition_ne_double_compte_pas() {
     let mural = Instant::now();
@@ -321,8 +332,30 @@ fn la_composition_ne_double_compte_pas() {
 ]
 
 
+# LA DÉCOUPE (`P10.21-f`), SENS « DÉFAUT MANQUÉ » : un générique dans le PREMIER argument d'un
+# `assert_eq!` coupait l'expression comparée en deux, la grandeur chronométrée écrite en SECOND argument
+# passait dans le message, et la garde ne voyait plus aucune horloge comparée.
+POSITIF_A_GENERIQUE = '''
+fn un_compte_chronometre_derriere_un_generique() {
+    let t = Instant::now();
+    let rapport = t.elapsed().as_secs_f64();
+    assert_eq!(v.get::<_, f64>(0), rapport, "six opérations atomiques par observation");
+}
+'''
+
+
 def auto_epreuve():
     """Rend la première faute constatée sur les témoins fabriqués, ou `None`."""
+    # LES LECTEURS PARTAGÉS D'ABORD : `arguments` est importé, et ses témoins ne vivent pas ici.
+    try:
+        temoins_des_lecteurs_de_forme()
+    except AssertionError as e:
+        return f"lecteurs de forme Rust partagés (`arguments`, `apparier`) : {e}"
+    vus = sites_accuses("<positif à générique>", POSITIF_A_GENERIQUE)
+    if len(vus) != 1 or vus[0][3] != ["rapport"]:
+        return (f"témoin POSITIF À GÉNÉRIQUE : {vus} au lieu d'une accusation nommant `rapport` — la "
+                "virgule de `v.get::<_, f64>(0)` coupe la comparaison, et la grandeur chronométrée "
+                "écrite en second argument sort de ce que la garde juge")
     vus = sites_accuses("<positif>", POSITIF)
     if len(vus) != 1:
         return (f"témoin POSITIF : {len(vus)} accusation(s) au lieu d'une — la garde ne reconnaît plus "

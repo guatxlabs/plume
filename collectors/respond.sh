@@ -277,11 +277,65 @@ if [ -z "${PLUME_TOKEN:-}" ]; then : "${PLUME_USER:?}" "${PLUME_PASS:?}"; fi
 list=$(resp_curl_auth_stdin | curl -K - $HH $TLS -sS --max-time 15 "$CENTRAL/api/actions/pending?host=$HOSTN" 2>/dev/null) || exit 0
 [ -n "$list" ] || exit 0
 
+# ================================================================================================
+# `P10.21-d` — LA REMISE DU VERDICT EST LUE : UN REFUS DU CENTRAL N EST PLUS UN SUCCES MUET.
+# ------------------------------------------------------------------------------------------------
+# FORME PRECEDENTE : `curl ... -o /dev/null ... || true`. La reponse etait jetee et le code de sortie
+# avale : quoi que le central reponde, l agent passait a la riposte suivante. Or `action_result`
+# (daemon/src/handlers/actions.rs) distingue desormais l ecriture ratee (cinq cent trois nomme,
+# `CAUSE_RESULTAT_NON_ENREGISTRE` : la riposte reste OUVERTE, l agent doit revenir) de l absence
+# (deux cents `{"ok":false}` : riposte deja close ou d un autre hote, passer a la suivante). Jeter la
+# reponse confondait les deux, et laissait des ripostes ouvertes sans que personne sache pourquoi.
+# CE QUI EST FAIT, PAR STATUT HTTP (lu par `-w`, jamais devine du corps) :
+#   2xx                  remis ; un `"ok":false` est dit sur la sortie d erreur, sans reessai.
+#   503, 502, 504, 000   passager (ecriture ratee, passerelle, central injoignable) : reessaye
+#                        RESULTAT_ESSAIS fois au plus, attente doublee a chaque fois, puis AVOUE.
+#                        Reessayer est sur : la route ne clot qu une riposte encore `approved`, une
+#                        seconde remise d un verdict deja pris rend l absence, jamais une double cloture.
+#   tout autre code      refus definitif (400, 401, 403, 404...) : AVOUE aussitot, sans reessai.
+#   aucun code lu        AVOUE comme illisible, sans reessai : rien ne dit ce qui s est passe.
+# L AVEU PART SUR LA SORTIE D ERREUR, qui est le journal de l unite (systemd, `plume-respond-agent`) :
+# identifiant de riposte, statut, nombre d essais et reponse du central bornee et privee de ses
+# caracteres de controle. JAMAIS l en-tete d authentification ni le jeton : ils ne passent que par
+# l entree standard de curl et ne sont ecrits nulle part. La boucle CONTINUE dans tous les cas : une
+# riposte dont le verdict n a pas ete remis ne doit pas bloquer l application des suivantes.
+# CE QUE CECI NE TIENT PAS : la riposte reste ouverte au central apres un aveu ; rien ici ne la
+# rejoue au passage suivant (`/api/actions/pending` ne sert que les `approved`, et le ban, lui, est
+# deja pose). Un central qui rend cinq cent trois a chaque remise coute au plus
+# RESULTAT_ESSAIS * 15 s + les attentes par riposte, dans un passage que le minuteur ne double pas.
+RESULTAT_ESSAIS=3
+RESULTAT_ATTENTE=2
+
+# Reponse du central rendue lisible au journal : une ligne, sans caractere de controle, bornee.
+reponse_bornee() { printf '%s' "$1" | tr '\000-\037' ' ' | sed 's/^\(.\{300\}\).*/\1 [...]/'; }
+
 post_result() {          # id status result (auth par stdin, jamais en argv)
   body="{\"id\":$1,\"status\":\"$2\",\"result\":\"$(esc "$3")\"}"
-  # shellcheck disable=SC2086  ($HH = 0 ou 2 tokens, expansion voulue)
-  resp_curl_auth_stdin | curl -K - $HH $TLS -sS --max-time 15 -o /dev/null \
-    -H 'Content-Type: application/json' --data-binary "$body" "$CENTRAL/api/actions/result" 2>/dev/null || true
+  _pr_essai=1; _pr_attente=$RESULTAT_ATTENTE
+  while :; do
+    # shellcheck disable=SC2086  ($HH = 0 ou 2 tokens, expansion voulue)
+    _pr_rep=$(resp_curl_auth_stdin | curl -K - $HH $TLS -sS --max-time 15 -w '\n%{http_code}' \
+      -H 'Content-Type: application/json' --data-binary "$body" "$CENTRAL/api/actions/result" 2>/dev/null) || :
+    _pr_code=$(printf '%s\n' "$_pr_rep" | sed -n '$p')
+    _pr_corps=$(printf '%s\n' "$_pr_rep" | sed '$d')
+    case "$_pr_code" in
+      2[0-9][0-9])
+        case "$_pr_corps" in
+          *'"ok":false'*) echo "respond: #$1 verdict NON RETENU par le central (riposte deja close, ou d un autre hote) : $(reponse_bornee "$_pr_corps")" >&2 ;;
+        esac
+        return 0 ;;
+      503|502|504|000) ;;
+      '') echo "respond: #$1 remise du verdict ILLISIBLE : aucun statut HTTP lu, la riposte peut rester ouverte au central" >&2; return 0 ;;
+      *) echo "respond: #$1 verdict REFUSE par le central (HTTP $_pr_code), non reessaye : $(reponse_bornee "$_pr_corps")" >&2; return 0 ;;
+    esac
+    if [ "$_pr_essai" -ge "$RESULTAT_ESSAIS" ]; then
+      echo "respond: #$1 verdict NON REMIS apres $_pr_essai essais (dernier HTTP $_pr_code) : la riposte reste OUVERTE au central : $(reponse_bornee "$_pr_corps")" >&2
+      return 0
+    fi
+    echo "respond: #$1 remise du verdict en HTTP $_pr_code, essai $_pr_essai/$RESULTAT_ESSAIS, nouvel essai dans ${_pr_attente} s" >&2
+    sleep "$_pr_attente" 2>/dev/null || :
+    _pr_essai=$((_pr_essai + 1)); _pr_attente=$((_pr_attente * 2))
+  done
 }
 
 printf '%s\n' "$list" | while IFS='	' read -r id kind target dry; do

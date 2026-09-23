@@ -1,6 +1,6 @@
 // cases.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // Cases (gestion d'incident, first-class #4a): liste/detail/CRUD + rattachement d'items.
-import { $, api, apiSend, aveuDeLaTraceManquante, causeDeLaTraceManquante, confirmModal, confirmWithConsequence, disclosure, downloadText, exportPDF, fmtTs, ic, LANG, modal, motDeLaTraceManquante, muted, pagedList, phraseDeLaCreationDeRiposteRefusee, phraseDeLaTraceManquante, sev, toCSV, toast, tsSlug, withBusy, socIsAdmin, socRole } from './core.js';
+import { $, api, apiSend, phraseDuRefusDuDemon, aveuDeLaTraceManquante, causeDeLaTraceManquante, confirmModal, confirmWithConsequence, disclosure, downloadText, exportPDF, fmtTs, ic, LANG, modal, motDeLaTraceManquante, muted, pagedList, phraseDeLaCreationDeRiposteRefusee, phraseDeLaTraceManquante, sev, toCSV, toast, tsSlug, withBusy, socIsAdmin, socRole } from './core.js';
 import { phraseDAffichagePartiel, phraseDEchantillonCoupe, phraseDeCoupe } from './coupe_de_liste.js'; // `P11.22-g` : une liste bornée dit sa coupe
 import { S } from './state.js';
 import { refresh } from './app.js';
@@ -663,6 +663,108 @@ function motDuGenreDeLien(genre) {
   return (LANG === 'en' ? mots.en : mots.fr).replace('{jeton}', jeton);
 }
 
+// =================================================================================================
+// `P10.21-d` — LES REFUS NEUFS D'OUVERTURE DE DOSSIER ET DE LIEN, LUS SUR LA PHRASE DU DÉMON.
+//
+// CE QUE LE DÉMON SERT. `case_create` (daemon/src/handlers/cases.rs) refuse en cinq cent trois
+// `CAUSE_DOSSIER_NON_OUVERT` AVANT tout registre et tout identifiant ; `case_link_handler` et
+// `case_unlink_handler` (daemon/src/handlers/caseops.rs) séparent l'écriture ratée — cinq cent trois
+// `CAUSE_LIEN_NON_POSE` / `CAUSE_LIEN_NON_RETIRE`, servis `<cause> (<détail>)` — du quatre cent quatre,
+// resté NU à dessein : aucun corps, aucune cause. Sur la pose, ce quatre cent quatre couvre trois faits
+// que le démon ne sépare pas (un dossier absent, un lien d'un dossier vers lui-même, une relecture du
+// dossier qui échoue) ; sur le retrait, un seul (aucun lien entre les deux). La console ne choisit donc
+// pas entre eux : elle dit le code et qu'aucune cause n'est nommée.
+//
+// CE QUE LA CONSOLE EN FAISAIT, MESURÉ. Les deux créations de dossier n'avaient AUCUN `catch` : le rejet
+// sortait du geste sans un mot. La pose et le retrait captaient le rejet, mais peignaient `e.message` —
+// « 503 {"error":"LIEN NON POSÉ : la ligne n'a pas pu… » coupé à deux cents caractères — et, sur le
+// quatre cent quatre nu, le seul mot « 404 ».
+//
+// LES OUVERTURES S'ANCRENT EN TÊTE, BORNÉES PAR UNICODE. Deux des trois finissent sur « É », hors de
+// la classe ASCII de `\b` : `/^LIEN NON POSÉ\b/` ne reconnaîtrait JAMAIS la phrase servie (aucune
+// frontière entre « É » et l'espace), et accepterait « LIEN NON POSÉE ». La troisième finit sur une
+// lettre ASCII, où `\b` accepterait encore une lettre accentuée juste après ; même borne pour les trois.
+const OUVERTURE_DU_DOSSIER_NON_OUVERT = /^DOSSIER NON OUVERT(?![\p{L}\p{N}])/u;
+const OUVERTURE_DU_LIEN_NON_POSE = /^LIEN NON POSÉ(?![\p{L}\p{N}])/u;
+const OUVERTURE_DU_LIEN_NON_RETIRE = /^LIEN NON RETIRÉ(?![\p{L}\p{N}])/u;
+// Un refus SANS corps : `apiSend` compose alors un message qui n'est que le code. C'est le seul cas où
+// la console sait que le démon n'a RIEN nommé — et donc le seul où elle doit le dire au lieu de citer.
+const refusNu = (e) => !(e && e.causeDuDemon) && /^\d{3}$/.test(String((e && e.message) || '').trim());
+// Chaque phrase dit ce qui reste en base — sans quoi l'exploitant recommence un geste pris, ou renonce
+// à un geste rejouable. Celles qui citent se terminent par un tiret : la cause suit, dans un second nœud.
+const MOTS_DES_REFUS_DE_DOSSIER = {
+  dossier_non_ouvert: {
+    fr: "Dossier NON OUVERT : la ligne n'a pas pu être écrite, donc AUCUN dossier n'existe, rien n'y est rattaché et aucun identifiant n'est rendu. Le geste peut être rejoué. Le démon en nomme la cause —",
+    en: 'Case NOT OPENED: the line could not be written, so NO case exists, nothing is attached to it and no identifier is returned. The gesture can be replayed. The daemon names the cause —' },
+  creation_refusee: {
+    fr: "Création du dossier REFUSÉE : aucun identifiant n'est rendu, rien n'est rattaché. Le démon a répondu —",
+    en: 'Case creation REFUSED: no identifier is returned, nothing is attached. The daemon answered —' },
+  dossier_sans_identifiant: {
+    fr: "Dossier : le démon a accepté la création sans rendre d'identifiant — la console ne sait pas quel dossier ouvrir, et n'y rattache rien.",
+    en: 'Case: the daemon accepted the creation without returning an identifier — the console does not know which case to open, and attaches nothing to it.' },
+  lien_non_pose: {
+    fr: "Lien NON POSÉ : les deux dossiers ne sont PAS liés et rien n'en garde trace — ce n'est pas « déjà liés ». Le geste peut être rejoué. Le démon en nomme la cause —",
+    en: 'Link NOT SET: the two cases are NOT linked and nothing keeps a trace of it — this is not "already linked". The gesture can be replayed. The daemon names the cause —' },
+  lien_introuvable_sans_cause: {
+    fr: "Lien NON POSÉ : le démon a répondu « introuvable » (404) sans nommer de cause. Rien n'a été lié.",
+    en: 'Link NOT SET: the daemon answered "not found" (404) without naming a cause. Nothing was linked.' },
+  lien_refuse: {
+    fr: "Lien REFUSÉ : le démon n'a pas confirmé la pose. Il a répondu —",
+    en: 'Link REFUSED: the daemon did not confirm it. It answered —' },
+  lien_non_retire: {
+    fr: "Lien NON RETIRÉ : la suppression n'a pas pu être écrite, les deux dossiers sont TOUJOURS liés. Le geste peut être rejoué. Le démon en nomme la cause —",
+    en: 'Link NOT REMOVED: the deletion could not be written, the two cases are STILL linked. The gesture can be replayed. The daemon names the cause —' },
+  retrait_introuvable_sans_cause: {
+    fr: "Retrait sans effet : le démon a répondu « introuvable » (404) sans nommer de cause. Rien n'a été retiré.",
+    en: 'Removal without effect: the daemon answered "not found" (404) without naming a cause. Nothing was removed.' },
+  retrait_refuse: {
+    fr: "Retrait du lien REFUSÉ : le démon n'a pas confirmé la suppression. Il a répondu —",
+    en: 'Link removal REFUSED: the daemon did not confirm the deletion. It answered —' },
+};
+const motDuRefusDeDossier = (cle) => (LANG === 'en' ? MOTS_DES_REFUS_DE_DOSSIER[cle].en : MOTS_DES_REFUS_DE_DOSSIER[cle].fr);
+// LE DISCRIMINANT, un par geste, jugé par le harnais dans les deux sens sur les littéraux du démon.
+// `geste` : 'ouvrir' (création de dossier), 'lier' (pose), 'delier' (retrait).
+function cleDuRefusDeDossier(geste, e) {
+  const phrase = phraseDuRefusDuDemon(e);
+  if (geste === 'ouvrir') return OUVERTURE_DU_DOSSIER_NON_OUVERT.test(phrase) ? 'dossier_non_ouvert' : 'creation_refusee';
+  if (geste === 'lier') {
+    if (OUVERTURE_DU_LIEN_NON_POSE.test(phrase)) return 'lien_non_pose';
+    return refusNu(e) && phrase === '404' ? 'lien_introuvable_sans_cause' : 'lien_refuse';
+  }
+  if (OUVERTURE_DU_LIEN_NON_RETIRE.test(phrase)) return 'lien_non_retire';
+  return refusNu(e) && phrase === '404' ? 'retrait_introuvable_sans_cause' : 'retrait_refuse';
+}
+// La phrase et la cause SÉPARÉES : la cause est ce que le démon a servi, ou rien quand la phrase de la
+// console dit déjà qu'il n'a rien nommé — citer « 404 » après « a répondu 404 » serait un bégaiement.
+function refusDeDossier(geste, e) {
+  const cle = cleDuRefusDeDossier(geste, e);
+  return { cle, mot: motDuRefusDeDossier(cle), cause: /_sans_cause$/.test(cle) ? '' : phraseDuRefusDuDemon(e) };
+}
+// L'avis, pour les gestes dont la modale s'est refermée : phrase et cause dans une seule chaîne.
+function phraseDuRefusDeDossier(geste, e) {
+  const r = refusDeDossier(geste, e);
+  return r.cause ? r.mot + ' « ' + r.cause + ' »' : r.mot;
+}
+// L'aveu à DEUX nœuds, là où un puits reste ouvert : la phrase au puits (`dit.textContent = …`), la
+// cause servie dans un second nœud. La marque de pose sert au harnais, aucune règle CSS ne la vise.
+function aveuDuRefusDeDossier(geste, e) {
+  const r = refusDeDossier(geste, e);
+  const aveu = document.createElement('div'); aveu.className = 'bad';
+  const dit = document.createElement('span');
+  dit.textContent = r.mot;
+  aveu.append(dit);
+  if (r.cause) aveu.append(' « ' + r.cause + ' »');
+  aveu.dataset.refusDeDossier = r.cle;
+  return aveu;
+}
+// Le retrait part d'une puce de la section des liens, qui reste affichée : l'aveu s'y pose, en
+// remplaçant celui d'un retrait précédent — deux refus empilés se liraient comme deux liens en panne.
+function poserLAveuDuRetrait(sec, e) {
+  const avant = sec.querySelector('[data-refus-de-dossier]');
+  if (avant) avant.remove();
+  sec.appendChild(aveuDuRefusDeDossier('delier', e));
+}
+
 // #39 — section LIENS & FUSION du détail : "fusionné dans #N" (+ dé-fusion editor) + chips de liens (cliquables).
 async function renderCaseLinks(box, c) {
   const sec = document.createElement('div');
@@ -710,7 +812,7 @@ async function renderCaseLinks(box, c) {
       chip.onclick = () => showCaseDetail(l.id);
       if (canEditCases()) {
         const x = document.createElement('button'); x.type = 'button'; x.className = 'casebtn'; x.title = 'Retirer le lien'; x.style.marginLeft = '4px'; x.innerHTML = ic('x');
-        x.onclick = e => { e.stopPropagation(); withBusy(x, async () => { if (!await confirmWithConsequence(`Retirer le lien vers #${l.id}`, 'les deux cas ne seront plus rattachés ; le lien se recrée à la main, sans son historique.', { okText: 'Retirer', danger: true })) return; try { await apiSend('/cases/' + c.id + '/links/' + l.id, 'DELETE'); } catch (err) { toast('Retrait refusé : ' + ((err && err.message) || err), 'bad'); return; } toast('Lien retiré', 'ok'); refreshCaseDetail(c.id); }); };
+        x.onclick = e => { e.stopPropagation(); withBusy(x, async () => { if (!await confirmWithConsequence(`Retirer le lien vers #${l.id}`, 'les deux cas ne seront plus rattachés ; le lien se recrée à la main, sans son historique.', { okText: 'Retirer', danger: true })) return; try { await apiSend('/cases/' + c.id + '/links/' + l.id, 'DELETE'); } catch (err) { poserLAveuDuRetrait(sec, err); return; } toast('Lien retiré', 'ok'); refreshCaseDetail(c.id); }); };
         chip.appendChild(x);
       }
       wrap.appendChild(chip);
@@ -764,8 +866,9 @@ async function linkCasePrompt(id) {
     { name: 'note', label: 'Note (optionnel)' },
   ] });
   if (!r) return;
+  // `P10.21-d` — la modale est refermée : un avis, phrase du refus et cause servie ensemble.
   try { await apiSend('/cases/' + id + '/links', 'POST', { to: Number(r.to), kind: r.kind, note: r.note || '' }); }
-  catch (e) { toast('Lien refusé : ' + ((e && e.message) || e), 'bad'); return; }
+  catch (e) { toast(phraseDuRefusDeDossier('lier', e), 'bad', 9000); return; }
   toast('Cases liés', 'ok');
   await refreshCaseDetail(id);
 }
@@ -789,9 +892,13 @@ async function createCase() {
   const body = { title: r.title.trim(), severity: Number(r.severity), priority: Number(r.priority) };
   if (r.assignee && r.assignee.trim()) body.assignee = r.assignee.trim();
   if (r.summary && r.summary.trim()) body.summary = r.summary.trim();
-  const j = await apiSend('/cases', 'POST', body);
+  // `P10.21-d` — un refus d'ouverture est DIT, et rien n'est ouvert : aucun identifiant n'existe.
+  let j;
+  try { j = await apiSend('/cases', 'POST', body); }
+  catch (e) { toast(phraseDuRefusDeDossier('ouvrir', e), 'bad', 9000); return; }
   await loadCases();
-  if (j.id) showCaseDetail(j.id);
+  if (j && j.id) showCaseDetail(j.id);
+  else toast(motDuRefusDeDossier('dossier_sans_identifiant'), 'bad', 9000);
 }
 
 // ajoute un element (alerte/event) a un case existant OU nouveau. ref facultative (event depuis l'Explore =
@@ -812,7 +919,13 @@ async function addToCase(kind, body, ref) {
   if (!r) return;
   let id = r.cid;
   if (id === 'new') {
-    const j = await apiSend('/cases', 'POST', { title: (r.newtitle || body).trim() || 'Incident', severity: 2 });
+    // `P10.21-d` — SANS DOSSIER OUVERT, RIEN N'EST RATTACHÉ. Le refus sortait en rejet muet ; et un
+    // succès sans identifiant (corps vide, qu'`apiSend` rend `null`) aurait posté l'élément sous
+    // `/cases/undefined/items`. Les deux s'arrêtent ici, et se disent.
+    let j;
+    try { j = await apiSend('/cases', 'POST', { title: (r.newtitle || body).trim() || 'Incident', severity: 2 }); }
+    catch (e) { toast(phraseDuRefusDeDossier('ouvrir', e), 'bad', 9000); return; }
+    if (!(j && j.id)) { toast(motDuRefusDeDossier('dossier_sans_identifiant'), 'bad', 9000); return; }
     id = j.id;
   }
   const payload = { kind, body }; if (ref) payload.ref = ref;
@@ -1225,4 +1338,4 @@ async function prepareResponse(c, s) {
 // rougirait si elle cessait de venir du lecteur partagé.
 // `P10.21-a` — `motDuGenreDeLien` part nu (témoin 103) : le vocabulaire des liens de dossier se juge dans
 // les DEUX sens — les trois valeurs que le démon écrit, et le jeton qu'aucune allowlist ne produit plus.
-export { addToCase, canEditCases, caseBtn, caseItemEl, caseRow, createCase, linkCasePrompt, loadCaseOpsSummary, loadCases, motDeLaRiposteMiseEnFile, motDeLaTraceManquante, motDuGenreDeLien, openCase, prepareResponse, renderCaseDetail, renderCaseLinks, renderWizardPanel };
+export { OUVERTURE_DU_DOSSIER_NON_OUVERT, OUVERTURE_DU_LIEN_NON_POSE, OUVERTURE_DU_LIEN_NON_RETIRE, cleDuRefusDeDossier, motDuRefusDeDossier, phraseDuRefusDeDossier, addToCase, canEditCases, caseBtn, caseItemEl, caseRow, createCase, linkCasePrompt, loadCaseOpsSummary, loadCases, motDeLaRiposteMiseEnFile, motDeLaTraceManquante, motDuGenreDeLien, openCase, prepareResponse, renderCaseDetail, renderCaseLinks, renderWizardPanel };

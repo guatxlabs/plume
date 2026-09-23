@@ -16032,6 +16032,302 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   console.log("(103) OK — les DEUX dernières surfaces qui mettent une riposte en file lisent l'aveu que leur succès porte : le formulaire du panneau Réponse pose les DEUX nœuds dans son puits de résultat et RESTE OUVERT pour les montrer — `#af-result` vit dans `#act-form`, le replier serait un silence — en vidant ses champs pour que le second clic ne pose pas une seconde riposte ; le geste « bannir » d'une ligne de résultats, qui n'a aucun puits, DIT la même phrase à l'avis, après son avis de succès ; et la phrase, la cause et le nom même de la clé viennent du POINT COMMUN — `web/core.js` —, où le lecteur est parti dès qu'il a eu trois usages, si bien qu'aucune vue n'écrit plus « registre_sans_maillon ». LES TROIS DISCRIMINANTS DU LOT 101 SORTENT DE L'ABRI : exportés nus, ils reconnaissent chacun la phrase que le démon écrit et refusent les six voisines — la liste illisible, la visibilité non lue, la ligne jamais écrite, l'approbation sans trace, le ban non armé, l'absence établie —, refusent un mot plus long que le leur, refusent une lettre ACCENTUÉE juste après leur ouverture (ce que `\\b`, qui est ASCII, acceptait) et refusent leur propre phrase citée dans le détail d'une autre, pendant que l'aiguillage rend toujours les mêmes clés. LE PANNEAU DE RÉTENTION DIT LA BORNE DE SA PAGE : quand `has_more` est vrai il annonce que la page est PLEINE et qu'un curseur de suite est servi — jamais que d'autres entrées EXISTENT, ce que cette clé ne dit pas —, quand il est faux il n'ajoute rien, et quand la clé MANQUE il l'avoue dans le registre de l'alarme au lieu de laisser un silence se lire « c'est tout le registre » ; sous un changement de rétention TROUVÉ, la borne se tait, l'ordre décroissant l'établissant déjà. ENFIN LE TYPE D'UN LIEN DE DOSSIER EST DIT : les trois valeurs que `case_link_add` ÉCRIT — l'énoncé les croyait libres, une allowlist les ferme — rendent chacune sa phrase bilingue, distincte des deux autres, et toute autre valeur, que seule la colonne ouverte peut porter, arrive comme un jeton DIT libre, jamais nu. ET L'ANNULATION DIT SES DEUX REFUS NEUFS : depuis que `action_cancel` ne rend plus 204 quoi qu'il arrive, une annulation NON ENREGISTRÉE dit que la riposte est TOUJOURS en file — approuvable, exécutable, et que rejouer le geste la retire — tandis qu'une riposte NON ANNULABLE dit qu'elle est DÉJÀ tranchée et qu'annuler deux fois donne précisément ce refus ; les deux ouvertures sont nues, chacune refuse sa voisine d'approbation dont un seul mot la sépare, l'aveu arrive à DEUX nœuds sur la ligne sans code ni corps JSON, et aucun des deux ne retient le geste.");
 }
 
+// ---------------------------------------------------------------------------------------------
+// (104) `P10.21-d` — LES REFUS NEUFS D'ACQUITTEMENT EN MASSE, D'OUVERTURE DE DOSSIER, DE POSE ET DE
+//       RETRAIT DE LIEN ATTEIGNENT L'ÉCRAN AVEC LA PHRASE DU DÉMON.
+//
+// CE QUE LE DÉMON SERT. `ack_all` et `case_create` (daemon/src/handlers/cases.rs), `case_link_handler`
+// et `case_unlink_handler` (daemon/src/handlers/caseops.rs) refusent une écriture ratée en cinq cent
+// trois nommé, servi `<cause> (<détail>)` ; les deux gestes de lien gardent leur quatre cent quatre NU,
+// à dessein, sans corps ni cause.
+//
+// CE QUE LA CONSOLE EN FAISAIT, MESURÉ SUR LES MODULES RÉELS AVANT CE LOT. `acquitter` (web/alerts.js)
+// et les deux créations de dossier (web/cases.js) n'avaient AUCUN `catch` : le rejet d'`apiSend` sortait
+// du geste sans un mot — `withBusy` rendait le bouton, et l'écran restait celui d'avant le clic. La pose
+// et le retrait captaient le rejet, mais peignaient `e.message` : un code, une accolade, et la phrase
+// coupée à deux cents caractères — ou le seul mot « 404 ».
+//
+// CE QUI ÉTAIT FAUX DANS L'ÉNONCÉ DE CE LOT, ET MESURÉ ICI. (1) « la surface où l'exploitant lisait
+// “aucune alerte à acquitter” sur une file pleine » : aucune phrase de `web/` ne dit cela — avant le
+// démon de `P10.20-w`, le deux cents `{"acked": 0}` d'une écriture ratée se lisait « 0 alerte(s)
+// acquittée(s). » ; depuis, le refus était un SILENCE. (2) « l'une lit ensuite `j.id` qui n'arrivera
+// jamais » : sur un refus, le rejet sort AVANT la lecture ; l'identifiant qui n'arrive pas est celui
+// d'un deux cents à corps vide, qu'`apiSend` rend `null` — `addToCase` aurait alors posté l'élément sous
+// `/cases/undefined/items`. (3) « le quatre cent quatre nu du démon (dossier absent) » : sur la pose,
+// ce quatre cent quatre couvre trois faits que le démon ne sépare pas (dossier absent, lien d'un dossier
+// vers lui-même, relecture du dossier en échec) ; la console dit le code et qu'aucune cause n'est nommée.
+//
+// L'ANCRAGE. Les quatre causes, leurs quatre voisines d'autres familles et les formes de refus sont LUES
+// dans l'arbre du démon ; si l'une cesse d'exister, ce témoin REFUSE DE CONCLURE.
+//
+// CE QUE CE TÉMOIN NE TIENT PAS : il ne rejoue aucune route du démon ; il ne juge que la face FRANÇAISE
+// des phrases peintes (la table `{fr, en}` porte les deux, la garde du lexique la reconnaît, aucune
+// instance anglaise de ces deux modules n'est chargée ici) ; il ne mesure ni l'encre ni la durée d'un
+// avis ; et le collecteur `respond.sh`, qui lit la cinquième cause, est jugé par
+// `check_enforcer_lists_fail_closed.py`, pas ici.
+// ---------------------------------------------------------------------------------------------
+{
+  const url104 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const modAlertes104 = await import(url104("alerts.js"));
+  const modDossiers104 = await import(url104("cases.js"));
+  const { S: S104 } = await import(url104("state.js"));
+
+  const tic104 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser104 = async (n = 30) => { for (let i = 0; i < n; i++) await tic104(); };
+  const nu104 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ");
+  const cueillir104 = (el, pred, acc) => { if (el && pred(el)) acc.push(el); ((el && el.children) || []).forEach((c) => cueillir104(c, pred, acc)); return acc; };
+  const avis104 = () => document.querySelectorAll(".toast").map((t) => String(t.textContent).replace(/\s+/g, " "));
+  const instrument104 = (vrai, quoi) => exiger(vrai, `(104-instrument) ${quoi} : le corps jugé ci-dessous n'existe plus côté démon, ce témoin REFUSE DE CONCLURE`);
+
+  // ── (0) L'INSTRUMENT : CE QUI EST JUGÉ PLUS BAS EST LU DANS L'ARBRE DU DÉMON ────────────────────
+  const DOSSIER_HANDLERS104 = path.join(RACINE, "daemon", "src", "handlers");
+  const HANDLERS104 = readdirSync(DOSSIER_HANDLERS104).filter((f) => f.endsWith(".rs"))
+    .map((f) => readFileSync(path.join(DOSSIER_HANDLERS104, f), "utf8")).join("\n");
+  const litteral104 = (nom) => {
+    const m = HANDLERS104.match(new RegExp(nom + ': &str =\\s*"([\\s\\S]*?)";'));
+    return m ? String(m[1]).replace(/\\\r?\n\s*/g, "") : "";
+  };
+  const CAUSE_ACQ104 = litteral104("CAUSE_ACQUITTEMENT_NON_ENREGISTRE");
+  const CAUSE_DOSSIER104 = litteral104("CAUSE_DOSSIER_NON_OUVERT");
+  const CAUSE_POSE104 = litteral104("CAUSE_LIEN_NON_POSE");
+  const CAUSE_RETRAIT104 = litteral104("CAUSE_LIEN_NON_RETIRE");
+  const VOISINES104 = ["CAUSE_RESULTAT_NON_ENREGISTRE", "CAUSE_POLITIQUE_NON_SUPPRIMEE", "CAUSE_ANNULATION_NON_ENREGISTREE", "CAUSE_RIPOSTE_NON_MISE_EN_FILE"].map(litteral104);
+  instrument104(CAUSE_ACQ104.startsWith("ACQUITTEMENT NON ENREGISTRÉ :") && CAUSE_ACQ104.length > 120,
+    "`CAUSE_ACQUITTEMENT_NON_ENREGISTRE` n'est plus lisible dans daemon/src/handlers/");
+  instrument104(CAUSE_DOSSIER104.startsWith("DOSSIER NON OUVERT :") && CAUSE_DOSSIER104.length > 120,
+    "`CAUSE_DOSSIER_NON_OUVERT` n'est plus lisible dans daemon/src/handlers/");
+  instrument104(CAUSE_POSE104.startsWith("LIEN NON POSÉ :") && CAUSE_RETRAIT104.startsWith("LIEN NON RETIRÉ :") && CAUSE_POSE104.length > 100 && CAUSE_RETRAIT104.length > 80,
+    "`CAUSE_LIEN_NON_POSE` ou `CAUSE_LIEN_NON_RETIRE` n'est plus lisible dans daemon/src/handlers/");
+  instrument104(VOISINES104.every((v) => v.length > 60),
+    "une des quatre causes VOISINES n'est plus lisible : les verdicts négatifs ci-dessous porteraient sur des chaînes vides");
+  instrument104(/Err\(e\) => return err_json\(StatusCode::SERVICE_UNAVAILABLE, format!\("\{CAUSE_ACQUITTEMENT_NON_ENREGISTRE\} \(\{e\}\)"\)\),/.test(HANDLERS104)
+    && /Json\(json!\(\{ "acked": n \}\)\)\.into_response\(\)/.test(HANDLERS104),
+    "`ack_all` ne sépare plus l'écriture ratée (cinq cent trois nommé) du vrai zéro (`{\"acked\": n}`)");
+  instrument104(/DossierOuvert::NonOuvert\(cause\) => \{\s*return err_json\(StatusCode::SERVICE_UNAVAILABLE, format!\("\{CAUSE_DOSSIER_NON_OUVERT\} \(\{cause\}\)"\)\)/.test(HANDLERS104),
+    "`case_create` ne refuse plus par `CAUSE_DOSSIER_NON_OUVERT` dans le moule `<cause> (<détail>)`");
+  instrument104(/LienDeDossier::DossierAbsent => StatusCode::NOT_FOUND\.into_response\(\),/.test(HANDLERS104)
+    && /LienDeDossier::NonPose\(cause\) => err_json\(StatusCode::SERVICE_UNAVAILABLE, format!\("\{CAUSE_LIEN_NON_POSE\} \(\{cause\}\)"\)\),/.test(HANDLERS104),
+    "la pose d'un lien ne sert plus son quatre cent quatre NU ou son cinq cent trois nommé");
+  instrument104(/LienRetire::AucunLien => StatusCode::NOT_FOUND\.into_response\(\),/.test(HANDLERS104)
+    && /LienRetire::NonRetire\(cause\) => err_json\(StatusCode::SERVICE_UNAVAILABLE, format!\("\{CAUSE_LIEN_NON_RETIRE\} \(\{cause\}\)"\)\),/.test(HANDLERS104),
+    "le retrait d'un lien ne sert plus son quatre cent quatre NU ou son cinq cent trois nommé");
+  // LE PIÈGE DE LA BORNE, MESURÉ ET NON SUPPOSÉ : une ouverture bornée par `\b` ne reconnaîtrait JAMAIS
+  // deux des quatre phrases servies. Si ce fait cesse d'être vrai, la borne Unicode n'est plus prouvée.
+  instrument104(!/^ACQUITTEMENT NON ENREGISTRÉ\b/.test(CAUSE_ACQ104) && !/^LIEN NON POSÉ\b/.test(CAUSE_POSE104),
+    "`\\b` reconnaît désormais une phrase qui finit sur « É » : le piège que ce témoin exerce n'existe plus");
+
+  // ── (1) LES QUATRE OUVERTURES, NUES, DANS LES DEUX SENS ─────────────────────────────────────────
+  const OUVERTURES104 = [
+    ["acquittement", modAlertes104.OUVERTURE_DE_L_ACQUITTEMENT_NON_ENREGISTRE, CAUSE_ACQ104],
+    ["dossier", modDossiers104.OUVERTURE_DU_DOSSIER_NON_OUVERT, CAUSE_DOSSIER104],
+    ["pose", modDossiers104.OUVERTURE_DU_LIEN_NON_POSE, CAUSE_POSE104],
+    ["retrait", modDossiers104.OUVERTURE_DU_LIEN_NON_RETIRE, CAUSE_RETRAIT104],
+  ];
+  exiger(OUVERTURES104.every(([, o]) => o instanceof RegExp),
+    "(104-instrument) une des quatre ouvertures n'est pas exportée NUE par web/alerts.js ou web/cases.js");
+  const toutesLesCauses104 = [CAUSE_ACQ104, CAUSE_DOSSIER104, CAUSE_POSE104, CAUSE_RETRAIT104, ...VOISINES104];
+  for (const [nom, o, cause] of OUVERTURES104) {
+    if (!(o instanceof RegExp)) continue;
+    exiger(o.test(cause) && o.test(cause + " (database is locked)"),
+      `(104-1) l'ouverture « ${nom} » ne reconnaît PLUS la phrase que le démon écrit : le refus tomberait dans le fourre-tout`);
+    const voisinesReconnues = toutesLesCauses104.filter((c) => c !== cause && o.test(c));
+    exiger(voisinesReconnues.length === 0,
+      `(104-1-négatif) l'ouverture « ${nom} » reconnaît une phrase VOISINE : ${JSON.stringify(voisinesReconnues.map((c) => c.slice(0, 40)))}`);
+    const tete = cause.split(" :")[0];
+    exiger(!o.test(tete + "S : une phrase neuve") && !o.test(tete + "É : une phrase neuve") && !o.test(tete + "e : une phrase neuve"),
+      `(104-1-négatif) l'ouverture « ${nom} » mord sur un mot PLUS LONG que le sien, accent compris`);
+    exiger(!o.test(VOISINES104[0] + " " + cause),
+      `(104-1-négatif) l'ouverture « ${nom} » reconnaît sa phrase AILLEURS qu'en TÊTE du corps servi`);
+  }
+
+  // ── LE SIMULACRE DE TRANSPORT : « MÉTHODE chemin », corps en OBJET ou en CHAÎNE ──────────────────
+  const fetchOrigine104 = globalThis.fetch;
+  const minuterieOrigine104 = globalThis.setTimeout;
+  let hoteDesAvis104 = document.querySelector("#toasts");
+  if (!hoteDesAvis104 || !hoteDesAvis104.isConnected) { hoteDesAvis104 = document.createElement("div"); hoteDesAvis104.id = "toasts"; document.body.appendChild(hoteDesAvis104); }
+  const etatOrigine104 = { admin: S104.isAdmin, auth: S104.AUTH, dossier: S104.caseSelectedId };
+  let servis104 = {};
+  const appels104 = [];
+  globalThis.fetch = async (u, init) => {
+    const chemin = String(u).split("?")[0];
+    const methode = ((init && init.method) || "GET").toUpperCase();
+    appels104.push(methode + " " + chemin);
+    const r = servis104[methode + " " + chemin];
+    if (!r) return { ok: true, status: 200, text: async () => "{}", json: async () => ({}) };
+    const texte = typeof r.corps === "string" ? r.corps : JSON.stringify(r.corps === undefined ? {} : r.corps);
+    return { ok: (r.statut || 200) < 400, status: r.statut || 200, text: async () => texte, json: async () => JSON.parse(texte) };
+  };
+  globalThis.setTimeout = (fn, ms) => {
+    if (ms >= 1000) return 0;
+    if (ms >= 100) return minuterieOrigine104(fn, 0);
+    return minuterieOrigine104(fn, ms);
+  };
+  const fenetre104 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !c.classList.contains("out")).pop();
+  const valider104 = async (champs = {}) => {
+    const ov = fenetre104();
+    const form = ov && ov.children[0] ? ov.children[0].children[0] : null;
+    if (form) for (const el of form.querySelectorAll("[data-n]")) if (Object.prototype.hasOwnProperty.call(champs, el.dataset.n)) el.value = champs[el.dataset.n];
+    if (form && typeof form.onsubmit === "function") form.onsubmit({ preventDefault() {} });
+    await laisser104();
+  };
+  const geste104 = async (lancer, champs) => {
+    const avant = avis104().length, appelsAvant = appels104.length;
+    let rejet = null, valeur;
+    const p = Promise.resolve().then(lancer).then((v) => { valeur = v; }, (e) => { rejet = e; });
+    await laisser104(); await valider104(champs); await p; await laisser104(40);
+    return { avis: avis104().slice(avant), appels: appels104.slice(appelsAvant), rejet, valeur };
+  };
+  const sansCodeNiJson104 = (t) => !/[{}]/.test(t) && !/\b50[0-9]\b/.test(t) && !/plume-e/.test(t);
+  const corps503 = (cause, detail, enChaine) => {
+    const o = { error: cause + " (" + detail + ")", id: "plume-e7-0" };
+    return enChaine ? JSON.stringify(o) : o;
+  };
+
+  try {
+    S104.isAdmin = true;
+    S104.AUTH = { user: "hugo", role: "admin" };
+    const motAcq104 = modAlertes104.motDeLAcquittement;
+    const motDossier104 = modDossiers104.motDuRefusDeDossier;
+    exiger(typeof modAlertes104.acquitter === "function" && typeof motAcq104 === "function" && typeof motDossier104 === "function",
+      "(104-instrument) `acquitter`, `motDeLAcquittement` ou `motDuRefusDeDossier` n'est plus exporté : les gestes jugés ci-dessous seraient hors d'atteinte");
+
+    // ══ (a) L'ACQUITTEMENT EN MASSE ═════════════════════════════════════════════════════════════
+    for (const enChaine of [false, true]) {
+      servis104["POST /api/alerts/ack-all"] = { statut: 503, corps: corps503(CAUSE_ACQ104, "disk I/O error", enChaine) };
+      const g = await geste104(() => modAlertes104.acquitter({ toutes: true, phrase: "Acquitter TOUTES les alertes actives ?" }));
+      const dit = g.avis.join(" | ");
+      exiger(g.appels.includes("POST /api/alerts/ack-all"),
+        `(104a-instrument) le geste n'atteint pas la route d'acquittement en masse : ${JSON.stringify(g.appels)}`);
+      exiger(g.rejet === null,
+        `(104a) le refus d'acquittement SORT DU GESTE en rejet non traité (corps en ${enChaine ? "chaîne" : "objet"}) : ${g.rejet && g.rejet.message}`);
+      exiger(g.avis.length === 1 && dit.startsWith(motAcq104("acquittement_non_enregistre")) && dit.includes(CAUSE_ACQ104 + " (disk I/O error)"),
+        `(104a) le cinq cent trois nommé ne se dit pas avec la phrase de la console PUIS la cause servie (corps en ${enChaine ? "chaîne" : "objet"}) : « ${dit.slice(0, 300)} »`);
+      exiger(sansCodeNiJson104(dit),
+        `(104a) le code, une accolade ou l'identifiant d'incident atteint l'avis : « ${dit.slice(0, 300)} »`);
+      exiger(!/acquittée\(s\)\.|Acquittement effectué/.test(dit),
+        `(104a-négatif) un avis de SUCCÈS part sur un refus — la file intacte se lirait vidée : « ${dit.slice(0, 200)} »`);
+    }
+    // NÉGATIF — LE VRAI ZÉRO RESTE UN ZÉRO : aucune phrase de refus sur un deux cents `{"acked": 0}`.
+    servis104["POST /api/alerts/ack-all"] = { statut: 200, corps: { acked: 0 } };
+    const zero104 = await geste104(() => modAlertes104.acquitter({ toutes: true, phrase: "Q ?" }));
+    exiger(zero104.avis.length === 1 && zero104.avis[0] === modAlertes104.phraseDuCompteAcquitte({ toutes: true }, { acked: 0 }),
+      `(104a-négatif) un vrai zéro servi en deux cents n'est plus dit comme un compte : ${JSON.stringify(zero104.avis)}`);
+    // UN AUTRE REFUS NE SE PEINT PAS « NON ENREGISTRÉ ».
+    servis104["POST /api/alerts/ack-all"] = { statut: 403, corps: { error: "rôle insuffisant pour ce geste" } };
+    const autre104 = await geste104(() => modAlertes104.acquitter({ toutes: true, phrase: "Q ?" }));
+    exiger(autre104.avis.length === 1 && autre104.avis[0].startsWith(motAcq104("acquittement_refuse")) && autre104.avis[0].includes("rôle insuffisant pour ce geste")
+      && !autre104.avis[0].includes(motAcq104("acquittement_non_enregistre")),
+      `(104a-négatif) un refus d'une autre nature prend les mots de la file intacte, ou perd sa cause : ${JSON.stringify(autre104.avis)}`);
+    // L'ACQUITTEMENT UN À UN, ARRÊTÉ EN ROUTE PAR UN CINQ CENTS NU : ce qui est passé est compté.
+    servis104["POST /api/alerts/11/ack"] = { statut: 204, corps: "" };
+    servis104["POST /api/alerts/12/ack"] = { statut: 500, corps: "" };
+    const route104 = await geste104(() => modAlertes104.acquitter({ ids: [11, 12, 13], phrase: "Q ?" }));
+    exiger(route104.rejet === null && route104.appels.includes("POST /api/alerts/12/ack") && !route104.appels.includes("POST /api/alerts/13/ack"),
+      `(104a) l'acquittement un à un ne s'arrête pas au refus, ou le rejet sort du geste : ${JSON.stringify(route104.appels)}`);
+    exiger(route104.avis.length === 1 && route104.avis[0].startsWith(motAcq104("acquittement_interrompu", { n: 1, total: 3 })) && route104.avis[0].endsWith("« 500 »"),
+      `(104a) l'interruption ne dit pas combien sont passées sur combien, ou invente une cause au cinq cents nu : ${JSON.stringify(route104.avis)}`);
+
+    // ══ (b) L'OUVERTURE D'UN DOSSIER — DEUX SITES ═══════════════════════════════════════════════
+    servis104["GET /api/cases"] = { corps: { cases: [], total: 0 } };
+    const navigue104 = (appels) => appels.filter((a) => /^GET \/api\/cases\/\d+$/.test(a) || /\/items$/.test(a));
+    for (const enChaine of [false, true]) {
+      servis104["POST /api/cases"] = { statut: 503, corps: corps503(CAUSE_DOSSIER104, "database or disk is full", enChaine) };
+      S104.caseSelectedId = 4242;
+      const g = await geste104(() => modDossiers104.createCase(), { title: "Force brute SSH" });
+      exiger(g.appels.includes("POST /api/cases"),
+        `(104b-instrument) la création n'atteint pas la route : ${JSON.stringify(g.appels)}`);
+      exiger(g.rejet === null && g.avis.length === 1 && g.avis[0].startsWith(motDossier104("dossier_non_ouvert")) && g.avis[0].includes(CAUSE_DOSSIER104 + " (database or disk is full)") && sansCodeNiJson104(g.avis[0]),
+        `(104b) le refus d'ouverture ne se dit pas, ou sort du geste en rejet : rejet=${g.rejet && g.rejet.message} avis=${JSON.stringify(g.avis)}`);
+      exiger(navigue104(g.appels).length === 0 && S104.caseSelectedId === 4242,
+        `(104b-négatif) la console NAVIGUE vers un dossier qui n'existe pas : ${JSON.stringify(g.appels)} / sélection ${S104.caseSelectedId}`);
+      const ajout = await geste104(() => modDossiers104.addToCase("alert", "Force brute SSH", "alert:5"));
+      exiger(ajout.appels.includes("POST /api/cases") && ajout.rejet === null && ajout.avis.length === 1 && ajout.avis[0].startsWith(motDossier104("dossier_non_ouvert")),
+        `(104b) « ajouter à un nouveau dossier » ne dit pas le refus d'ouverture : ${JSON.stringify(ajout.avis)} ${ajout.rejet && ajout.rejet.message}`);
+      exiger(navigue104(ajout.appels).length === 0,
+        `(104b-négatif) un élément est rattaché, ou un détail ouvert, sous un dossier jamais créé : ${JSON.stringify(ajout.appels)}`);
+    }
+    // UN DEUX CENTS SANS IDENTIFIANT : rien n'est rattaché à `/cases/undefined`.
+    servis104["POST /api/cases"] = { statut: 200, corps: "" };
+    const vide104 = await geste104(() => modDossiers104.addToCase("alert", "x", "alert:6"));
+    exiger(vide104.avis.length === 1 && vide104.avis[0] === motDossier104("dossier_sans_identifiant") && navigue104(vide104.appels).length === 0,
+      `(104b) un succès sans identifiant rattache quand même, ou se tait : ${JSON.stringify(vide104.appels)} ${JSON.stringify(vide104.avis)}`);
+    // NÉGATIF — UN DOSSIER OUVERT S'OUVRE, SANS AVIS DE REFUS.
+    servis104["POST /api/cases"] = { statut: 200, corps: { id: 777, status: "new", priority: 3 } };
+    const ouvert104 = await geste104(() => modDossiers104.createCase(), { title: "Force brute SSH" });
+    exiger(ouvert104.appels.includes("GET /api/cases/777") && S104.caseSelectedId === 777 && ouvert104.avis.length === 0,
+      `(104b-négatif) un dossier réellement ouvert n'est plus affiché, ou un avis de refus part sur un succès : ${JSON.stringify(ouvert104.appels)} ${JSON.stringify(ouvert104.avis)}`);
+
+    // ══ (c) LA POSE D'UN LIEN ═══════════════════════════════════════════════════════════════════
+    servis104["GET /api/cases"] = { corps: { cases: [{ id: 7, title: "A", status: "new" }, { id: 8, title: "B", status: "new" }], total: 2 } };
+    for (const enChaine of [false, true]) {
+      servis104["POST /api/cases/7/links"] = { statut: 503, corps: corps503(CAUSE_POSE104, "disk full", enChaine) };
+      const g = await geste104(() => modDossiers104.linkCasePrompt(7));
+      exiger(g.appels.includes("POST /api/cases/7/links"),
+        `(104c-instrument) la pose n'atteint pas la route : ${JSON.stringify(g.appels)}`);
+      exiger(g.avis.length === 1 && g.avis[0].startsWith(motDossier104("lien_non_pose")) && g.avis[0].includes(CAUSE_POSE104 + " (disk full)") && sansCodeNiJson104(g.avis[0]),
+        `(104c) la pose refusée ne dit pas la phrase du démon, ou peint encore le code et le JSON : ${JSON.stringify(g.avis)}`);
+    }
+    servis104["POST /api/cases/7/links"] = { statut: 404, corps: "" };
+    const pose404 = await geste104(() => modDossiers104.linkCasePrompt(7));
+    exiger(pose404.avis.length === 1 && pose404.avis[0] === motDossier104("lien_introuvable_sans_cause"),
+      `(104c) le quatre cent quatre NU ne se dit pas comme tel, ou une cause est inventée : ${JSON.stringify(pose404.avis)}`);
+    exiger(!pose404.avis[0].includes("« 404 »") && !/absent|n'existe pas|lui-même/.test(pose404.avis[0]),
+      `(104c-négatif) le quatre cent quatre nu reçoit une cause que le démon n'a pas nommée : « ${pose404.avis[0]} »`);
+    servis104["POST /api/cases/7/links"] = { statut: 204, corps: "" };
+    const pose204 = await geste104(() => modDossiers104.linkCasePrompt(7));
+    exiger(pose204.avis.length === 1 && pose204.avis[0] === "Cases liés",
+      `(104c-négatif) une pose qui a PRIS ne rend plus son avis de succès : ${JSON.stringify(pose204.avis)}`);
+
+    // ══ (d) LE RETRAIT D'UN LIEN — L'AVEU À DEUX NŒUDS DANS LA SECTION QUE LE CHARGEUR RÉEL REND ═════
+    const boite104 = document.createElement("div");
+    servis104["GET /api/cases/7/links"] = { corps: { links: [{ id: 21, kind: "duplicate", note: "", title: "Même adresse", status: "open" }], served: 1, window: 200, total: 1, total_capped: false } };
+    await modDossiers104.renderCaseLinks(boite104, { id: 7 });
+    await laisser104(40);
+    const croix104 = () => cueillir104(boite104, (e) => e.tagName === "BUTTON" && e.className === "casebtn" && e.title === "Retirer le lien", [])[0];
+    const aveux104 = () => cueillir104(boite104, (e) => e.getAttribute && e.getAttribute("data-refus-de-dossier"), []);
+    instrument104(!!croix104() && aveux104().length === 0,
+      "la section des liens ne rend pas le bouton de retrait, ou un aveu y est DÉJÀ peint : les verdicts ci-dessous seraient vrais par vacuité");
+    const retirer104 = () => geste104(() => croix104().onclick({ stopPropagation() {} }));
+    for (const enChaine of [false, true]) {
+      servis104["DELETE /api/cases/7/links/21"] = { statut: 503, corps: corps503(CAUSE_RETRAIT104, "database is locked", enChaine) };
+      const g = await retirer104();
+      const aveu = aveux104();
+      exiger(g.appels.includes("DELETE /api/cases/7/links/21"),
+        `(104d-instrument) le retrait n'atteint pas la route : ${JSON.stringify(g.appels)}`);
+      exiger(aveu.length === 1 && aveu[0].getAttribute("data-refus-de-dossier") === "lien_non_retire" && aveu[0].className === "bad"
+        && nu104(aveu[0].children[0]) === motDossier104("lien_non_retire") && nu104(aveu[0]).includes(CAUSE_RETRAIT104 + " (database is locked)")
+        && !nu104(aveu[0].children[0]).includes(CAUSE_RETRAIT104),
+        `(104d) le retrait refusé n'est pas avoué à DEUX nœuds dans la section — phrase au puits, cause servie à côté : « ${aveu.map(nu104).join(" | ").slice(0, 300)} »`);
+      exiger(sansCodeNiJson104(nu104(aveu[0])) && g.avis.length === 0,
+        `(104d) le code ou le JSON atteint l'aveu, ou un avis double l'aveu : ${JSON.stringify(g.avis)}`);
+    }
+    servis104["DELETE /api/cases/7/links/21"] = { statut: 404, corps: "" };
+    await retirer104();
+    const aveu404 = aveux104();
+    exiger(aveu404.length === 1 && aveu404[0].getAttribute("data-refus-de-dossier") === "retrait_introuvable_sans_cause"
+      && nu104(aveu404[0]) === motDossier104("retrait_introuvable_sans_cause"),
+      `(104d) le quatre cent quatre NU du retrait ne remplace pas l'aveu précédent, ou reçoit une cause : « ${aveu404.map(nu104).join(" | ").slice(0, 300)} »`);
+    servis104["DELETE /api/cases/7/links/21"] = { statut: 204, corps: "" };
+    const retrait204 = await retirer104();
+    exiger(retrait204.avis.includes("Lien retiré"),
+      `(104d-négatif) un retrait qui a PRIS ne rend plus son avis de succès : ${JSON.stringify(retrait204.avis)}`);
+
+    // ══ (e) LE RELEVÉ DES APPELANTS — DES ENSEMBLES NOMMÉS ══════════════════════════════════════
+    const appelants104 = (motif) => CORPUS_WEB.filter(([f, src]) => f.endsWith(".js") && motif.test(src.replace(/\/\/[^\n]*/g, ""))).map(([f]) => f).sort().join(",");
+    exiger(appelants104(/apiSend\('\/alerts\/ack-all'/) === "alerts.js"
+      && appelants104(/apiSend\('\/cases', 'POST'/) === "cases.js"
+      && appelants104(/apiSend\('\/cases\/' \+ [a-z.]+ \+ '\/links/) === "cases.js"
+      && appelants104(/actions\/result|sla-policies/) === "",
+      "(104e) l'ensemble des appelants web des routes de ce lot a changé : un appelant neuf peut être SOURD à leurs refus");
+  } finally {
+    globalThis.fetch = fetchOrigine104;
+    globalThis.setTimeout = minuterieOrigine104;
+    S104.isAdmin = etatOrigine104.admin; S104.AUTH = etatOrigine104.auth; S104.caseSelectedId = etatOrigine104.dossier;
+    document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
+  }
+  console.log("(104) OK — les refus neufs de `P10.20-w` atteignent l'écran : l'acquittement en masse refusé en cinq cent trois dit que la file est INTACTE, avec la cause servie, sans code ni JSON, et ne sort plus du geste en rejet ; le vrai zéro reste un compte ; un autre refus garde sa cause sans prendre ces mots ; l'acquittement un à un arrêté par un cinq cents nu dit combien sont passées sur combien, sans inventer de cause. Les deux créations de dossier disent le refus d'ouverture et ne naviguent vers aucun dossier ; un succès sans identifiant ne rattache rien. La pose refusée dit la phrase du démon, son quatre cent quatre NU se dit sans cause ; le retrait refusé est avoué à DEUX nœuds dans la section rendue par le chargeur réel, le quatre cent quatre nu remplaçant l'aveu précédent. Les quatre ouvertures sont nues, bornées par Unicode — `\\b` ne reconnaîtrait pas deux des quatre phrases servies, mesuré —, reconnaissent leur phrase, refusent les sept autres, un mot plus long, une lettre accentuée après, et leur phrase citée ailleurs qu'en tête ; corps en objet ET en chaîne.");
+}
+
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;
 verdictRendu = true;
 if (echecs.length) {

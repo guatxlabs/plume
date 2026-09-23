@@ -54,6 +54,11 @@ LA LISTE DES ENFORCERS N'EST PAS ÉCRITE ICI — elle est DÉRIVÉE de la garde 
 `check_collector_exit_is_classified.py`, dont le critère est objectif et déjà auto-invalidant.
 Un troisième enforcer ajouté là-bas fait ROUGIR cette garde tant qu'il n'a pas ses deux témoins :
 une couverture qu'on ne peut pas oublier d'étendre.
+
+ET UN PAS DE PLUS SUR LE MÊME BANC (`P10.21-d`) : la REMISE du verdict de `respond.sh` au central.
+Le bac à sable, les bouchons et le script livré sont les mêmes ; la propriété est voisine — un refus
+du central ne doit pas se lire comme un succès —, et c'est pourquoi elle est jugée ici plutôt que
+dans une garde que rien ne lancerait. Voir la section « ENFORCER 1 bis ».
 """
 
 import os
@@ -118,20 +123,44 @@ def lancer(interpreteur, script, env, args=()):
 # =============================================================================
 # ENFORCER 1 — `collectors/respond.sh` : la LISTE D'ÉPARGNE (« ne bannir JAMAIS »)
 # =============================================================================
+# `P10.21-d` — LE BOUCHON REND UN STATUT QUAND ON LE LUI DEMANDE (`-w`), comme curl. Les statuts de la
+# remise du verdict se lisent, un par appel, dans `$STATUTS_DE_REMISE` (une ligne par remise, consommée) ;
+# sans fichier, ou une fois le fichier vide, la remise est un deux cents `{"ok":true}`. Le corps de
+# chaque statut est dérivé par la garde (`CORPS_503` porte la cause lue dans l'arbre du démon).
 BOUCHON_CURL = r"""#!/bin/sh
 cat >/dev/null 2>&1                       # consomme la config d'auth passee sur l'entree standard
-corps=""; url=""
+corps=""; url=""; format=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --data-binary) corps="$2"; shift ;;
+    -w) format="$2"; shift ;;
     http*) url="$1" ;;
   esac
   shift
 done
 case "$url" in
   *"/api/actions/pending"*) printf '%s\n' "$PENDING_TSV" ;;
-  *"/api/actions/result"*)  printf '%s\n' "$corps" >> "$RESULTATS" ;;
+  *"/api/actions/result"*)
+    printf '%s\n' "$corps" >> "$RESULTATS"
+    statut=200
+    if [ -n "${STATUTS_DE_REMISE:-}" ] && [ -s "$STATUTS_DE_REMISE" ]; then
+      statut=$(sed -n '1p' "$STATUTS_DE_REMISE")
+      sed '1d' "$STATUTS_DE_REMISE" > "$STATUTS_DE_REMISE.reste" && mv "$STATUTS_DE_REMISE.reste" "$STATUTS_DE_REMISE"
+    fi
+    case "$statut" in
+      200)  reponse='{"ok":true}' ;;
+      200f) reponse='{"ok":false}'; statut=200 ;;
+      503)  reponse="$CORPS_503" ;;
+      *)    reponse='' ;;
+    esac
+    printf '%s' "$reponse"
+    [ -n "$format" ] && printf '\n%s' "$statut" ;;
 esac
+exit 0
+"""
+
+BOUCHON_SLEEP = r"""#!/bin/sh
+printf '%s\n' "$*" >> "$ATTENTES"
 exit 0
 """
 
@@ -398,6 +427,139 @@ def temoins_respond():
         scenario_respond(nom, prepare, ("applique",))
     # (3) la liste sert encore à ce pour quoi elle existe
     scenario_respond("ip-dans-la-liste", liste_avec_ip, ("epargnee",))
+
+
+# =============================================================================
+# ENFORCER 1 bis — `collectors/respond.sh` : LA REMISE DU VERDICT EST LUE (`P10.21-d`)
+# =============================================================================
+# CE QUE LE DÉMON SERT, LU ICI ET JAMAIS RECOPIÉ. `action_result` (daemon/src/handlers/actions.rs)
+# rend un cinq cent trois nommé `CAUSE_RESULTAT_NON_ENREGISTRE` quand la base n'a pas pris le verdict
+# — la riposte reste OUVERTE — et un deux cents `{"ok": false}` quand aucune ligne ne correspondait.
+# `respond.sh` jetait la réponse (`-o /dev/null … || true`) : les deux sortaient pareil, et l'agent
+# passait à la riposte suivante. CE QUI EST EXIGÉ, SUR LE SCRIPT LIVRÉ, DANS UN PATH FABRIQUÉ :
+#   (R1) un cinq cent trois suivi d'un deux cents -> la MÊME riposte est remise deux fois, une attente
+#        est demandée entre les deux, et la suite n'avoue rien ;
+#   (R2) des cinq cent trois jusqu'à l'épuisement -> remises BORNÉES, attentes croissantes, aveu sur la
+#        sortie d'erreur qui porte la cause du démon, et la riposte SUIVANTE est quand même traitée ;
+#   (R3) un quatre cent quatre, un quatre cents -> UNE remise, aucune attente, refus avoué, suite traitée ;
+#   (R4, négatif) deux cents `ok:true` -> une remise par riposte, aucune attente, aucun aveu ;
+#   (R5) deux cents `ok:false` -> une remise, aucune attente, l'absence est dite, sans réessai.
+# Et sur la sortie d'erreur, JAMAIS le jeton passé à curl.
+# CE QUE CE TÉMOIN NE TIENT PAS : le bouchon rend le statut que curl rendrait par `-w` ; que le vrai
+# curl le rende sous cette forme n'est pas joué ici (il l'a été à la main contre un serveur local), et
+# la durée réelle des attentes non plus — le bouchon `sleep` enregistre ce qui est demandé.
+JETON_DE_GARDE = "jeton-de-garde"
+
+
+def cause_du_resultat_non_enregistre():
+    src = open(os.path.join(RACINE, "daemon", "src", "handlers", "actions.rs"), encoding="utf-8").read()
+    m = re.search(r'CAUSE_RESULTAT_NON_ENREGISTRE: &str =\s*"((?:[^"\\]|\\.)*)";', src, re.S)
+    cause = re.sub(r'\\\r?\n\s*', '', m.group(1)) if m else ""
+    sert_503 = re.search(r'Err\(e\) => return err_json\(StatusCode::SERVICE_UNAVAILABLE, '
+                         r'format!\("\{CAUSE_RESULTAT_NON_ENREGISTRE\} \(\{e\}\)"\)\)', src)
+    sert_absence = 'Json(json!({ "ok": n > 0 })).into_response()' in src
+    if not (cause.startswith("RÉSULTAT NON ENREGISTRÉ") and len(cause) > 120 and sert_503 and sert_absence):
+        echec("remise/instrument : `CAUSE_RESULTAT_NON_ENREGISTRE`, son cinq cent trois ou la réponse "
+              "d'absence `{\"ok\": n > 0}` ne sont plus lisibles dans daemon/src/handlers/actions.rs — "
+              "les verdicts de la remise porteraient sur un contrat qui n'existe plus, cette garde "
+              "REFUSE DE CONCLURE.")
+        return ""
+    return cause
+
+
+def scenario_remise(nom, statuts, cause):
+    """Rend (remises par identifiant, attentes demandées, sortie d'erreur, code de sortie)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        resultats = os.path.join(tmp, "resultats.jsonl")
+        attentes = os.path.join(tmp, "attentes")
+        fichier_statuts = os.path.join(tmp, "statuts")
+        liste = os.path.join(tmp, "liste-vide.allow")
+        for f, contenu in ((resultats, ""), (attentes, ""), (os.path.join(tmp, "nft.trace"), ""),
+                           (fichier_statuts, "".join(f"{x}\n" for x in statuts)),
+                           (liste, "# aucune IP epargnee\n")):
+            with open(f, "w", encoding="utf-8") as h:
+                h.write(contenu)
+        binaire = bac_a_sable(tmp, {"curl": BOUCHON_CURL, "nft": BOUCHON_NFT, "sleep": BOUCHON_SLEEP})
+        if binaire is None:
+            return None
+        env = {
+            "PATH": binaire, "PLUME_RESPONDER": "1", "PLUME_RESPONDER_APPLY": "1",
+            "PLUME_CENTRAL": "http://central.invalid", "PLUME_HOST_LABEL": "hote-de-garde",
+            "PLUME_TOKEN": JETON_DE_GARDE, "PLUME_BAN_BACKEND": "auto",
+            "PLUME_RESPONDER_ALLOW": liste,
+            "PENDING_TSV": "1\tban_ip\t203.0.113.7\t0\n2\tban_ip\t203.0.113.8\t0",
+            "RESULTATS": resultats, "NFT_TRACE": os.path.join(tmp, "nft.trace"),
+            "STATUTS_DE_REMISE": fichier_statuts, "ATTENTES": attentes,
+            "CORPS_503": '{"error":"' + cause + ' (database is locked)","id":"plume-e1-0"}',
+        }
+        p = lancer("sh", "collectors/respond.sh", env)
+        if p is None:
+            return None
+        remises = {}
+        for ligne in open(resultats, encoding="utf-8").read().splitlines():
+            m = re.match(r'\{"id":(\d+),', ligne)
+            if m:
+                remises[m.group(1)] = remises.get(m.group(1), 0) + 1
+        demandes = open(attentes, encoding="utf-8").read().split()
+        if not remises:
+            echec(f"remise/{nom} (instrument) : AUCUNE remise n'a atteint le bouchon — l'enforcer n'a "
+                  f"pas été exercé, cette garde REFUSE DE CONCLURE. stderr={p.stderr.strip()[:300]}")
+            return None
+        return remises, demandes, p.stderr, p.returncode
+
+
+def temoins_de_la_remise_du_verdict():
+    cause = cause_du_resultat_non_enregistre()
+    if not cause:
+        return
+    ouverture = cause.split(" :")[0]
+    jugements = []
+
+    def juger(nom, statuts, remises_attendues, attentes_attendues, aveu, absent=()):
+        r = scenario_remise(nom, statuts, cause)
+        if r is None:
+            return
+        remises, demandes, err, code = r
+        jugements.append(nom)
+        if code != 0:
+            echec(f"remise/{nom} : l'enforcer s'est terminé en {code} — une remise refusée ne doit pas "
+                  f"arrêter la boucle. stderr={err.strip()[:300]}")
+        if remises != remises_attendues:
+            echec(f"remise/{nom} : remises par riposte {remises} au lieu de {remises_attendues}. "
+                  f"stderr={err.strip()[:300]}")
+        if demandes != attentes_attendues:
+            echec(f"remise/{nom} : attentes demandées {demandes} au lieu de {attentes_attendues}")
+        for mot in aveu:
+            if mot not in err:
+                echec(f"remise/{nom} : la sortie d'erreur ne porte pas « {mot} » — le refus de remise "
+                      f"reste muet. stderr={err.strip()[:400]}")
+        for mot in absent:
+            if mot in err:
+                echec(f"remise/{nom} : la sortie d'erreur porte « {mot} » là où rien n'est à avouer "
+                      f"— un instrument qui avoue toujours ne mesure rien. stderr={err.strip()[:300]}")
+        if JETON_DE_GARDE in err:
+            echec(f"remise/{nom} : le JETON d'authentification atteint la sortie d'erreur, c'est-à-dire "
+                  f"le journal de l'unité.")
+
+    # (R1) passager puis remis : deux remises de la riposte 1, une attente, aucun aveu d'échec.
+    juger("503-puis-200", ["503", "200", "200"], {"1": 2, "2": 1}, ["2"],
+          aveu=["#1 remise du verdict en HTTP 503"], absent=["NON REMIS", "REFUSE", "ILLISIBLE"])
+    # (R2) passager jusqu'à l'épuisement : bornée, attentes croissantes, cause du démon avouée, suite traitée.
+    juger("503-jusqu-a-epuisement", ["503", "503", "503", "200"], {"1": 3, "2": 1}, ["2", "4"],
+          aveu=["#1 verdict NON REMIS apres 3 essais", "reste OUVERTE", ouverture], absent=["#2 verdict"])
+    # (R3) refus définitifs : aucune attente, aucun réessai, suite traitée.
+    juger("404-et-400", ["404", "400"], {"1": 1, "2": 1}, [],
+          aveu=["#1 verdict REFUSE par le central (HTTP 404)", "#2 verdict REFUSE par le central (HTTP 400)"],
+          absent=["NON REMIS", "nouvel essai"])
+    # (R4, négatif) remise nominale : rien à dire.
+    juger("200-nominal", [], {"1": 1, "2": 1}, [],
+          aveu=[], absent=["verdict", "remise du verdict"])
+    # (R5) absence établie par le central : dite, jamais réessayée.
+    juger("200-ok-false", ["200f", "200"], {"1": 1, "2": 1}, [],
+          aveu=["#1 verdict NON RETENU par le central"], absent=["nouvel essai", "#2 verdict"])
+    if len(jugements) != 5:
+        echec(f"remise (instrument) : {len(jugements)} scénario(s) jugé(s) sur 5 — cette garde REFUSE "
+              f"DE CONCLURE sur la remise du verdict.")
 
 
 # =============================================================================
@@ -820,6 +982,7 @@ def main():
     # n'appartenait à personne qu'elle n'était mesurée par personne.
     if "collectors/respond.sh" in ENFORCERS:
         temoins_du_corpus_partage()
+        temoins_de_la_remise_du_verdict()   # `P10.21-d`
 
     if ERREURS:
         for e in ERREURS:
@@ -828,7 +991,9 @@ def main():
               f"n'est pas lisible, ou refuse quand elle l'est.")
         return 1
     print(f"{len(ENFORCERS)} enforcers : liste illisible -> refus NOMMÉ ; liste lisible et vide -> "
-          f"comportement normal.")
+          f"comportement normal. `respond.sh` lit la remise de son verdict : passager réessayé "
+          f"(borné, attentes croissantes) puis avoué avec la cause du démon, refus définitif avoué "
+          f"sans réessai, absence dite, jeton jamais écrit — 5 scénarios.")
     return 0
 
 

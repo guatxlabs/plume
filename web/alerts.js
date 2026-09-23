@@ -3,7 +3,7 @@
 // Extrait d'app.js en PURE MOVE ; depuis P11.1 : lien de recherche servi par le démon, barre d'actions unique.
 // Le cycle app<->module est benin : les fonctions importees d'app.js ne sont appelees qu'a
 // l'EXECUTION (handlers/async apres await), jamais a l'evaluation du module.
-import { $, esc, sev, fmtTs, ic, withBusy, api, apiSend, makePager, exportBar, confirmModal, modal, LANG, toast } from './core.js';
+import { $, esc, sev, fmtTs, ic, withBusy, api, apiSend, makePager, exportBar, confirmModal, modal, LANG, toast, phraseDuRefusDuDemon } from './core.js';
 import { libelleDeTechnique } from './catalogue_attack.js'; // `P11.6-c` : nom dérivé du catalogue servi, ou motif de son absence
 import { S } from './state.js';
 import { banIp, runQuery, updateZoomBadge } from './viz.js';
@@ -335,8 +335,8 @@ function alertRowHtml(a, i) {
 // supprime rien — l'alerte quitte la file active et reste lisible sous la portée « tous statuts ».
 // `portee` : { phrase, ids } — les identifiants acquittés un à un — ou { phrase, toutes: true } pour
 // l'acquittement global, qui a sa propre route parce qu'il dépasse la page.
-// Rend true si l'acquittement a été confirmé ET envoyé, false s'il a été refusé — l'appelant n'a pas à
-// redériver la réponse pour savoir s'il doit rafraîchir.
+// Rend true si l'acquittement a été confirmé ET envoyé — accepté ou refusé, l'appelant relit la liste,
+// seule source de ce qui a réellement quitté la file —, false si la confirmation a été écartée.
 async function acquitter(portee) {
   if (!await confirmModal(portee.phrase, { okText: 'Acquitter', danger: false })) return false;
   // `P11.1-h` — LE COMPTE REVIENT À CELUI QUI A ENGAGÉ LE GESTE. La question de la confirmation nomme la
@@ -344,13 +344,47 @@ async function acquitter(portee) {
   // démon, lui, sait exactement combien il a acquitté et le rendait déjà (`{"acked": n}`) — la console
   // jetait la réponse. Deux chemins, deux sources de vérité DIFFÉRENTES, et c'est voulu :
   //   · global : SEUL le démon connaît le nombre, la console ne peut pas le dériver ;
-  //   · par identifiant : la console les a envoyés, elle les compte — et si la boucle échoue, l'erreur
-  //     remonte comme avant, donc ce compte ne décrit que des envois RÉELLEMENT aboutis.
-  let reponse = null;
-  if (portee.toutes) reponse = await apiSend('/alerts/ack-all');
-  else for (const id of portee.ids) await apiSend('/alerts/' + id + '/ack');
+  //   · par identifiant : la console les a envoyés, elle les compte — un à un, pour qu'un refus en
+  //     route dise combien sont PASSÉS avant lui.
+  // `P10.21-d` — LE REFUS EST CAPTÉ ICI, ET DIT. Sans `try`, le rejet d'`apiSend` sortait de ce geste
+  // comme une promesse rejetée que personne n'écoute : `withBusy` rendait le bouton, aucun avis ne
+  // partait, et l'écran restait celui d'avant le clic — un refus du démon rendu par un silence.
+  let reponse = null, acquittees = 0;
+  try {
+    if (portee.toutes) reponse = await apiSend('/alerts/ack-all');
+    else for (const id of portee.ids) { await apiSend('/alerts/' + id + '/ack'); acquittees++; }
+  } catch (e) {
+    toast(phraseDeLAcquittementRefuse(portee, acquittees, e), 'bad', 9000);
+    return true;
+  }
   toast(phraseDuCompteAcquitte(portee, reponse));
   return true;
+}
+
+// `P10.21-d` — LE REFUS D'UN ACQUITTEMENT, LU SUR LA PHRASE QUE LE DÉMON ÉCRIT.
+// `ack_all` (daemon/src/handlers/cases.rs) sépare ses deux zéros : la file vide reste un deux cents
+// `{"acked": 0}`, l'écriture ratée part en cinq cent trois nommé (`CAUSE_ACQUITTEMENT_NON_ENREGISTRE`),
+// servi `<cause> (<détail>)` — la cause est donc en TÊTE du corps, et l'ouverture s'y ancre.
+// LA BORNE N'EST PAS `\b`, ET ICI CE N'EST PAS UNE PRÉCAUTION : l'ouverture finit sur « É », qui n'est
+// pas de la classe ASCII de `\b` — `/^ACQUITTEMENT NON ENREGISTRÉ\b/` ne reconnaît JAMAIS la phrase
+// servie (aucune frontière entre « É » et l'espace qui suit), et accepterait « ENREGISTRÉE ».
+const OUVERTURE_DE_L_ACQUITTEMENT_NON_ENREGISTRE = /^ACQUITTEMENT NON ENREGISTRÉ(?![\p{L}\p{N}])/u;
+// Trois issues, trois phrases : la file intacte (le cinq cent trois nommé), l'acquittement un à un
+// arrêté en route (ce qui est PASSÉ avant le refus reste acquitté), et tout autre refus, dont la
+// console ne sait que ce que le démon a répondu.
+function cleDuRefusDAcquittement(portee, acquittees, e) {
+  if (OUVERTURE_DE_L_ACQUITTEMENT_NON_ENREGISTRE.test(phraseDuRefusDuDemon(e))) return 'acquittement_non_enregistre';
+  if (!portee.toutes && acquittees > 0) return 'acquittement_interrompu';
+  return 'acquittement_refuse';
+}
+// UN AVIS, PAS UN AVEU À DEUX NŒUDS : le geste part d'une barre ou d'une ligne qui est redessinée
+// aussitôt, et aucun puits n'y survit. La phrase de la console et la cause servie tiennent donc dans
+// une seule chaîne — la cause entre guillemets, telle que le démon l'a écrite, ou son seul code
+// quand il n'en nomme aucune (l'acquittement unitaire refuse par un cinq cents NU).
+function phraseDeLAcquittementRefuse(portee, acquittees, e) {
+  const cle = cleDuRefusDAcquittement(portee, acquittees, e);
+  const valeurs = { n: acquittees, total: portee.ids ? portee.ids.length : 0 };
+  return motDeLAcquittement(cle, valeurs) + ' « ' + phraseDuRefusDuDemon(e) + ' »';
 }
 
 // LA DÉCISION, PURE ET DONC ÉPROUVABLE. Ce qu'un acquittement REND à celui qui l'a engagé, dérivé de la
@@ -529,6 +563,20 @@ const ACQUITTEMENT_MOTS = {
   acquittees_sans_compte: {
     fr: 'Acquittement effectué. Le démon n\'a pas déclaré combien d\'alertes il a acquittées.',
     en: 'Acknowledgement done. The daemon did not declare how many alerts it acknowledged.',
+  },
+  // `P10.21-d` — CE QUE LE DÉMON N'A PAS FAIT, DIT AVANT SA CAUSE. Chacune dit l'état de la file après
+  // le refus : sans cela l'exploitant lit un refus comme une file vide, ou recommence un geste pris.
+  acquittement_non_enregistre: {
+    fr: 'Acquittement NON ENREGISTRÉ : AUCUNE alerte n\'est acquittée, la file des alertes actives est intacte — ce n\'est PAS « aucune alerte à acquitter ». Le geste peut être rejoué. Le démon en nomme la cause —',
+    en: 'Acknowledgement NOT RECORDED: NO alert is acknowledged, the active alert queue is intact — this is NOT "no alert to acknowledge". The gesture can be replayed. The daemon names the cause —',
+  },
+  acquittement_interrompu: {
+    fr: 'Acquittement INTERROMPU : {n} alerte(s) sur {total} acquittée(s), les suivantes n\'ont PAS été envoyées et restent actives. Le démon a refusé la suivante et a répondu —',
+    en: 'Acknowledgement INTERRUPTED: {n} of {total} alert(s) acknowledged, the following ones were NOT sent and remain active. The daemon refused the next one and answered —',
+  },
+  acquittement_refuse: {
+    fr: 'Acquittement REFUSÉ : le démon n\'a pas confirmé ce geste, et la console ne peut pas dire ce qui a quitté la file — la liste relue le dit. Le démon a répondu —',
+    en: 'Acknowledgement REFUSED: the daemon did not confirm this gesture, and the console cannot tell what left the queue — the reloaded list says so. The daemon answered —',
   },
   // LA PONCTUATION EST DE LA LANGUE, ELLE AUSSI. Le français pose une espace devant le point
   // d'interrogation, l'anglais non : la coller en dur rendait « … the search “web-01” ? This gesture… ».
@@ -1185,4 +1233,7 @@ function redessinerLesAlertes() {
 
 export { renderAlerts, setAlertMitreFilter, setAlertSourceFilter, alertActionBarHtml, alertListModel,
   dessinerLaListePlate, redessinerLesAlertes, poserLaRechercheDesAlertes, texteCherchableDUneAlerte,
-  pivotDUneAlerte, alertDrill, machineDUneAlerte, porteeDeLAcquittement, questionDuGesteGlobal };
+  pivotDUneAlerte, alertDrill, machineDUneAlerte, porteeDeLAcquittement, questionDuGesteGlobal,
+  // `P10.21-d` — le seul expéditeur d'un acquittement, et son ouverture NUE : le harnais les juge sur
+  // la phrase lue dans l'arbre du démon, dans les deux sens, sans passer par une barre redessinée.
+  acquitter, OUVERTURE_DE_L_ACQUITTEMENT_NON_ENREGISTRE, motDeLAcquittement };

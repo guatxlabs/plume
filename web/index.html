@@ -86,6 +86,11 @@
     <label for="login-pass">Mot de passe
       <input id="login-pass" name="password" type="password" autocomplete="current-password" required>
     </label>
+    <!-- P10.22-n : l'étape du second facteur, montrée par login.js quand /api/login rend {mfa_required, ticket}.
+         Masquée en style et non par `hidden` : `.login-card label` pose `display:flex`, qui l'emporterait. -->
+    <label for="login-code" id="login-code-lbl" style="display:none">Code de double authentification
+      <input id="login-code" name="one-time-code" type="text" inputmode="numeric" autocomplete="one-time-code" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="code à 6 chiffres ou code de secours">
+    </label>
     <div id="login-err" class="login-err" role="alert" hidden></div>
     <button id="login-submit" type="submit">Se connecter</button>
   </form>

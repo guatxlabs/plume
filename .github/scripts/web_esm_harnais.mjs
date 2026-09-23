@@ -15069,14 +15069,18 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   // LES DEUX FACES DE CHAQUE PHRASE. Aucune langue ne peut partir sans l'autre.
   const srcRetention102 = (CORPUS_WEB.find(([f]) => f === "retention.js") || [])[1] || "";
   const srcDossiers102 = (CORPUS_WEB.find(([f]) => f === "cases.js") || [])[1] || "";
-  const deuxFaces102 = (src, nom) => {
+  // `P10.22-a` — `minimum` : la table de l'étape ne garde que sa face « servi » depuis que la face « absent »
+  // est partie au point commun ; la propriété jugée reste « chaque entrée a ses DEUX faces ».
+  const deuxFaces102 = (src, nom, minimum = 2) => {
     const table = (src.match(new RegExp("const " + nom + " = \\{[\\s\\S]*?\\n\\};")) || [""])[0];
     const cles = (table.match(/^ {2}\w+: \{$/gm) || []).length;
-    return cles >= 2 && (table.match(/^ {4}fr: /gm) || []).length === cles && (table.match(/^ {4}en: /gm) || []).length === cles;
+    return cles >= minimum && (table.match(/^ {4}fr: /gm) || []).length === cles && (table.match(/^ {4}en: /gm) || []).length === cles;
   };
+  const srcNoyau102 = (CORPUS_WEB.find(([f]) => f === "core.js") || [])[1] || "";
   exiger(deuxFaces102(srcRetention102, "MOTS_DU_DERNIER_CHANGEMENT_AUDITE"),
     "(102) le vocabulaire du dernier changement audité n'a pas ses DEUX faces sur chacune de ses entrées : une langue partirait sans l'autre");
-  exiger(deuxFaces102(srcDossiers102, "MOTS_DE_LA_RIPOSTE_MISE_EN_FILE"),
+  exiger(deuxFaces102(srcDossiers102, "MOTS_DE_LA_RIPOSTE_MISE_EN_FILE", 1)
+    && /\nconst MOTS_DE_LA_RIPOSTE_SANS_IDENTIFIANT = \{\n {2}fr: [^\n]+\n {2}en: [^\n]+\n\};/.test(srcNoyau102),
     "(102) le vocabulaire de la mise en file d'une étape n'a pas ses DEUX faces sur chacune de ses entrées : une langue partirait sans l'autre");
 
   // ── LE SIMULACRE DE TRANSPORT. Appariement EXACT sur « <MÉTHODE> <chemin> » ; corps en OBJET ou en
@@ -17057,7 +17061,8 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
 // CE QUE CE TÉMOIN NE TIENT PAS : il ne rejoue aucune route du démon ; il juge le TEXTE et les attributs
 // d'un arbre, jamais l'encre ; les autres états de la ligne du parcours (saut trop lourd, saut partiel,
 // reprise sans curseur) et la ligne du parcours par décalage restent en français et ne sont pas jugés ; et
-// l'étape de runbook, qui affirme encore « Action mise en file » sur le même corps vide, n'est pas jugée.
+// l'étape de runbook, qui affirmait encore « Action mise en file » sur le même corps vide, n'est pas jugée
+// ICI — elle l'est au témoin 108 (`P10.22-a`), qui lit la partition et sa face « absent » au point commun.
 // ---------------------------------------------------------------------------------------------
 {
   const url107 = (f) => pathToFileURL(path.join(WEB, f)).href;
@@ -17367,12 +17372,15 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     const srcViz107 = sansCommentaires107(srcDe107("viz.js"));
     exiger(!/plus de résultats/.test(srcViz107) && !/has_more \?/.test(srcViz107),
       "(107g) web/viz.js écrit encore « plus de résultats », ou relit `has_more` en ternaire : la ligne d'état affirmerait une existence que la clé ne dit pas");
-    const deuxFaces107 = (src, nom) => {
+    // `P10.22-a` — `minimum` : la table du bannissement ne garde que sa face « servi », la face « absent »
+    // étant partie au point commun, où ses deux langues sont jugées côte à côte.
+    const deuxFaces107 = (src, nom, minimum = 2) => {
       const table = (src.match(new RegExp("const " + nom + " = \\{[\\s\\S]*?\\n\\};")) || [""])[0];
       const cles = (table.match(/^ {2}\w+: \{$/gm) || []).length;
-      return cles >= 2 && (table.match(/^ {4}fr: /gm) || []).length === cles && (table.match(/^ {4}en: /gm) || []).length === cles;
+      return cles >= minimum && (table.match(/^ {4}fr: /gm) || []).length === cles && (table.match(/^ {4}en: /gm) || []).length === cles;
     };
-    exiger(deuxFaces107(srcDe107("viz.js"), "MOTS_DE_LA_SUITE_DU_PARCOURS") && deuxFaces107(srcDe107("viz.js"), "MOTS_DU_BANNISSEMENT_MIS_EN_FILE"),
+    exiger(deuxFaces107(srcDe107("viz.js"), "MOTS_DE_LA_SUITE_DU_PARCOURS") && deuxFaces107(srcDe107("viz.js"), "MOTS_DU_BANNISSEMENT_MIS_EN_FILE", 1)
+      && /\nconst MOTS_DE_LA_RIPOSTE_SANS_IDENTIFIANT = \{\n {2}fr: [^\n]+\n {2}en: [^\n]+\n\};/.test(srcDe107("core.js")),
       "(107g) une table de la ligne d'état ou de l'avis du bannissement n'a pas ses DEUX faces sur chacune de ses entrées : une langue partirait sans l'autre");
   } finally {
     globalThis.fetch = fetchOrigine107;
@@ -17385,6 +17393,678 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     const listeDesActions107 = document.querySelector("#act-list"); if (listeDesActions107) listeDesActions107.replaceChildren();
   }
   console.log("(107) OK — la ligne d'état du parcours par curseur de l'Explore dit la suite d'une page par le discriminant PARTAGÉ, déplacé au point commun où le fabricant de pager le lit : une suite servie annonce qu'un curseur est servi et que d'autres résultats PEUVENT suivre, sans jamais affirmer qu'ils existent ; une fin établie se dit « fin » ; une page PLEINE sans curseur se dit telle, et plus « fin » ; une clé ABSENTE — le repli par décalage d'une compilation ratée — ou d'un autre type est avouée comme un silence et ne décide pas du curseur ; la ligne est entière dans sa langue, résultats et serveur compris. Sans total, la flèche « suivant » suit la suite servie — offerte sur une page tronquée dont la suite est servie, retirée sur une page pleine sans curseur, la page pleine restant l'indice d'un silence — et le fabricant partagé rend enfin un pager quand une suite est servie sans total : l'onglet Audit n'y rend plus un total manquant comme zéro, et sa page pleine DITE est atteignable par clé ; une page unique sans suite ne peint aucun pager mort, et une vue qui ne sert aucune suite garde la règle d'avant. L'avis du geste « bannir » nomme l'identifiant servi et, sur un deux cents vide ou une page de passerelle, dit que le démon n'a rendu AUCUN identifiant sans affirmer la création — la même partition que l'étape de runbook, dans les deux langues. CE QUI ÉTAIT FAUX : « · fin » sur `false` est juste sur une page non pleine ; et l'onglet Audit a toujours un total ou un refus avec le démon d'aujourd'hui — le défaut était celui du fabricant partagé.");
+}
+
+
+// ---------------------------------------------------------------------------------------------
+// (108) `P10.22-n` — LES REFUS NEUFS DE `P10.21-s` ET `P10.21-t` — ET CEUX DU LOT MFA VOISIN (`P10.22-k`, `-l`,
+//       `-m`, `-r`) — SONT PEINTS PAR LEUR CAUSE : LA DÉCLARATION D'INCIDENT, L'ATTACHE D'UN RUNBOOK, LA
+//       DÉSACTIVATION ET L'ACTIVATION DE LA MFA, ET LE SECOND FACTEUR DE LA CONNEXION ;
+//       `P10.22-a` — L'ÉTAPE « RÉPONSE » D'UN RUNBOOK N'AFFIRME PLUS UNE MISE EN FILE SUR UN CORPS ABSENT ;
+//       `P10.22-c` — LE FORMULAIRE DU PANNEAU RÉPONSE NE SE REFERME PLUS EN SILENCE SUR UN CORPS ABSENT.
+//
+// CE QUE LE DÉMON SERT. `incident_set` : deux cent quatre, quatre cent quatre NU, cinq cent trois
+// `CAUSE_DECLARATION_D_INCIDENT_NON_ECRITE`. `case_runbook_attach` : `{attached}`, quatre cents nommés, deux
+// cinq cent trois qui n'écrivent rien. `mfa_disable` : `{ok:true}`, quatre cent un (code, pas déjà consommé
+// compris), quatre cent quatre, cinq cent trois `CAUSE_MFA_NON_DESACTIVEE` (base refusée) ou
+// `CAUSE_CODES_DE_SECOURS_ILLISIBLES` (code ni accepté ni refusé), quatre cent vingt-neuf freiné
+// (`CAUSE_SECOND_FACTEUR_FREINE`, délai servi). `mfa_verify` : `{ok, recovery_codes}`, quatre cent un (code),
+// quatre cent neuf (MFA déjà active, avant tout examen du code ; ou
+// `CAUSE_ENROLEMENT_CHANGE_PENDANT_LA_VERIFICATION`), cinq cent trois `CAUSE_MFA_NON_ACTIVEE`, quatre cent
+// vingt-neuf freiné. `login_post` : deux cents `{mfa_required, ticket}` sans session ; `login_mfa_post` :
+// `{ok}`, quatre cent un (code ou ticket refusé), quatre cent vingt-neuf (verrou par adresse, ou frein par
+// compte), cinq cent trois `CAUSE_PAS_TOTP_NON_CONSOMME` / `CAUSE_CODE_DE_SECOURS_NON_CONSOMME` (code JUSTE,
+// non consommé) ou `CAUSE_CODES_DE_SECOURS_ILLISIBLES`. `action_create` ne rend un succès qu'avec son `id`.
+// Les causes MFA sont LUES dans le démon (fonction par fonction), jamais recopiées : l'autre moitié du lot
+// les a élargies pendant celui-ci.
+//
+// CE QUE LA CONSOLE EN FAISAIT, MESURÉ SUR LES MODULES RÉELS AVANT CE LOT.
+//   · aucun de ces refus n'était annoncé comme un succès — `apiSend` les jette — mais l'avis peignait le
+//     message composé : « Élévation refusée : 503 {"error":"DÉCLARATION D'INCIDENT NON ENREGISTRÉE, … ni »,
+//     du JSON coupé à deux cents caractères (la cause de désactivation perdait « Réessayez », celle du
+//     runbook « un nouvel essai reste possible »), trois secondes, en français seulement ;
+//   · `disableMfa` écrivait « erreur : » + ce message pour le quatre cent un comme pour le cinq cent trois :
+//     rien ne séparait « votre code est refusé » de « votre code est bon, la base a refusé » ; et il
+//     annonçait « MFA désactivée » sur TOUT deux cents, corps vide et page de passerelle compris ;
+//   · « Vérifier & activer » écrivait « code invalide : » + ce message sur TOUS les refus — il accusait le
+//     code sur une MFA déjà active (code non examiné), sur une course et sur une écriture refusée —, et
+//     « MFA activée » avec une boîte de codes de secours VIDE sur un deux cents sans `recovery_codes` ;
+//   · l'écran de connexion N'APPELAIT PAS `/api/login/mfa` : il prenait le deux cents
+//     `{mfa_required, ticket}` pour une session et rechargeait — `/api/me` rendait quatre cent un et
+//     l'écran revenait, vide, sans un mot. Un compte à MFA ne pouvait pas ouvrir de session par ce
+//     formulaire, et aucune cause du second facteur ne pouvait y être peinte ;
+//   · `attachRunbook` annonçait « Runbook attaché » sur un deux cents vide — la route ne sert jamais de
+//     succès sans `{attached}` ;
+//   · `prepareResponse` écrivait « Action mise en file — approbation requise » sur un deux cents vide ;
+//   · le formulaire du panneau Réponse se repliait sur un deux cents vide comme sur une riposte créée.
+//
+// CE QUI ÉTAIT FAUX OU IMPRÉCIS DANS L'ÉNONCÉ, ET MESURÉ. (1) « là où la console attendait un 204 vide ou un
+// succès » : aucune des surfaces n'affichait de succès sur ces refus ; le défaut était la phrase — JSON
+// tronqué, cause amputée, langue unique, et pour la MFA l'absence de partage entre le code et la base.
+// (2) « l'écran de connexion peint la cause » supposait qu'il lisait `/api/login/mfa` : il ne l'appelait
+// pas, et le vrai défaut était plus lourd que le refus non peint — le second facteur n'était pas demandé.
+//
+// L'ANCRAGE. Les partages que la console lit (statut qui sépare le code de la base, corps de succès, refus
+// qui n'écrivent rien) sont relus dans l'arbre du démon ; s'ils changent, ce témoin REFUSE DE CONCLURE.
+//
+// CE QUE CE TÉMOIN NE TIENT PAS : il ne rejoue aucune route du démon ; il juge le TEXTE et les attributs
+// d'un arbre, jamais l'encre ni la feuille de style (l'étape du code est masquée en style, et seul
+// l'attribut posé est lu) ; il ne distingue pas le deux cent quatre légitime d'un deux cents non JSON
+// sur la déclaration d'incident (`P10.22-b`, `apiSend`).
+// ---------------------------------------------------------------------------------------------
+{
+  const url108 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const modNoyau108 = await import(url108("core.js"));
+  const modViz108 = await import(url108("viz.js"));
+  const modDossiers108 = await import(url108("cases.js"));
+  const modIdp108 = await import(url108("idp.js"));
+  const modConnexion108 = await import(url108("login.js"));
+  const { S: S108 } = await import(url108("state.js"));
+  const langueOrigine108 = localStorage.getItem("soc_lang");
+  localStorage.setItem("soc_lang", "en");
+  const modNoyauEn108 = await import(adresseSousLaLangue("core.js"));
+  const modDossiersEn108 = await import(adresseSousLaLangue("cases.js"));
+  const modIdpEn108 = await import(adresseSousLaLangue("idp.js"));
+  const modConnexionEn108 = await import(adresseSousLaLangue("login.js"));
+  const { S: SEn108 } = await import(adresseSousLaLangue("state.js"));
+  if (langueOrigine108 === null) localStorage.removeItem("soc_lang"); else localStorage.setItem("soc_lang", langueOrigine108);
+
+  const tic108 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser108 = async (n = 30) => { for (let i = 0; i < n; i++) await tic108(); };
+  const nu108 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ").trim();
+  const instrument108 = (vrai, quoi) => exiger(vrai, `(108-instrument) ${quoi} : ce témoin REFUSE DE CONCLURE`);
+  const sansCommentaires108 = (src) => String(src).replace(/\/\/[^\n]*/g, "");
+  const srcDe108 = (f) => ((CORPUS_WEB.find(([g]) => g === f) || [])[1]) || "";
+  const corpsDeFonction108 = (src, entete) => { const i = src.indexOf(entete); if (i < 0) return ""; const j = src.indexOf("\n}\n", i); return j < 0 ? "" : src.slice(i, j + 2); };
+  // Un littéral Rust peut se continuer à la ligne (`\` + fin de ligne + blancs de tête, retirés à la
+  // compilation) : `.` ne franchit pas la fin de ligne, d'où `[\s\S]` après la barre oblique.
+  const constante108 = (src, nom) => { const m = src.match(new RegExp("const " + nom + ": &str = \"((?:[^\"\\\\]|\\\\[\\s\\S])*)\";")); return m ? m[1].replace(/\\\n\s*/g, "").replace(/\\"/g, "\"") : ""; };
+
+  // ── (0) L'INSTRUMENT : LES PARTAGES QUE LA CONSOLE LIT SONT CEUX QUE LE DÉMON FAIT ─────────────────
+  const DOSSIER_HANDLERS108 = path.join(RACINE, "daemon", "src", "handlers");
+  const IDP108 = readFileSync(path.join(DOSSIER_HANDLERS108, "idp.rs"), "utf8");
+  const INCIDENTS108 = readFileSync(path.join(DOSSIER_HANDLERS108, "incidents.rs"), "utf8");
+  const SESSION108 = readFileSync(path.join(RACINE, "daemon", "src", "session.rs"), "utf8");
+  const RBAC108 = readFileSync(path.join(RACINE, "daemon", "src", "rbac.rs"), "utf8");
+  const RIPOSTES108 = readFileSync(path.join(DOSSIER_HANDLERS108, "actions.rs"), "utf8");
+  const secondFacteur108 = corpsDeFonction108(IDP108, "pub(crate) async fn login_mfa_post(");
+  const desactivation108 = corpsDeFonction108(IDP108, "pub(crate) async fn mfa_disable(");
+  const declaration108 = corpsDeFonction108(INCIDENTS108, "pub(crate) async fn incident_set(");
+  const attache108 = corpsDeFonction108(INCIDENTS108, "pub(crate) async fn case_runbook_attach(");
+  instrument108(!!secondFacteur108 && !!desactivation108 && !!declaration108 && !!attache108,
+    "une des quatre fonctions du démon jugées ici (`login_mfa_post`, `mfa_disable`, `incident_set`, `case_runbook_attach`) n'est plus lisible sous son nom");
+  // LE SECOND FACTEUR — TROIS ROUTES, LEURS CAUSES LUES DANS LE DÉMON, JAMAIS RECOPIÉES : l'autre moitié du lot
+  // (`P10.22-k`, `-l`, `-m`, `-r`) les a élargies pendant ce lot, et elle peut encore le faire. Chaque cause
+  // servie en refus nommé (cinq cent trois, quatre cent neuf, le frein en quatre cent vingt-neuf) est relevée
+  // par route ; ce que la console en fait est jugé plus bas, en (a2), sur CET ensemble.
+  const verification108 = corpsDeFonction108(IDP108, "pub(crate) async fn mfa_verify(");
+  const frein108 = corpsDeFonction108(IDP108, "fn refus_du_frein_du_second_facteur(");
+  instrument108(!!verification108 && !!frein108, "`mfa_verify` ou `refus_du_frein_du_second_facteur` n'est plus lisible sous son nom");
+  const causesServies108 = (corps, statut) => [...new Set([...corps.matchAll(new RegExp("err_json\\(StatusCode::" + statut + ", (CAUSE_\\w+)\\)", "g"))].map((m) => m[1]))];
+  const texteDe108 = (nom) => constante108(IDP108, nom);
+  const CAUSE_FREIN108 = texteDe108((frein108.match(/"error": (CAUSE_\w+)/) || [])[1] || "");
+  instrument108(/StatusCode::TOO_MANY_REQUESTS/.test(frein108) && /header::RETRY_AFTER/.test(frein108) && /SANS être examinés/.test(CAUSE_FREIN108),
+    "le frein du second facteur n'est plus un quatre cent vingt-neuf nommé, avec son délai, qui refuse les codes sans les examiner");
+  const POPULATION108 = {
+    connexion: { corps: secondFacteur108, c503: causesServies108(secondFacteur108, "SERVICE_UNAVAILABLE"), c409: [] },
+    desactivation: { corps: desactivation108, c503: causesServies108(desactivation108, "SERVICE_UNAVAILABLE"), c409: [] },
+    activation: { corps: verification108, c503: causesServies108(verification108, "SERVICE_UNAVAILABLE"), c409: causesServies108(verification108, "CONFLICT") },
+  };
+  instrument108(Object.values(POPULATION108).every((r) => r.c503.length >= 1 && r.c503.every((n) => !!texteDe108(n)) && /refus_du_frein_du_second_facteur\(/.test(r.corps)),
+    `une route du second facteur ne sert plus de cinq cent trois nommé, un nom de cause n'a plus de texte lisible, ou le frein n'y est plus appelé : ${JSON.stringify(Object.fromEntries(Object.entries(POPULATION108).map(([k, r]) => [k, r.c503])))}`);
+  // CE QUE CHAQUE FACE AFFIRME EST CE QUE LE TEXTE DU DÉMON DIT — sinon la face mentirait en restant verte.
+  const SENS108 = {
+    CAUSE_PAS_TOTP_NON_CONSOMME: /\best juste\b/, CAUSE_CODE_DE_SECOURS_NON_CONSOMME: /\best juste\b/,
+    CAUSE_CODES_DE_SECOURS_ILLISIBLES: /NI ACCEPTÉ NI REFUSÉ[\s\S]*rien n'est modifié/, CAUSE_MFA_NON_DESACTIVEE: /TOUJOURS ACTIVE/,
+    CAUSE_MFA_NON_ACTIVEE: /SANS second facteur/, CAUSE_ENROLEMENT_CHANGE_PENDANT_LA_VERIFICATION: /n'active rien/,
+  };
+  const sansSens108 = Object.entries(SENS108).filter(([n, sens]) => !sens.test(texteDe108(n)));
+  instrument108(sansSens108.length === 0,
+    `le texte d'une cause ne dit plus ce que la face qui la reçoit affirme (code juste, ni accepté ni refusé, toujours active, sans second facteur, rien d'activé) : ${JSON.stringify(sansSens108.map(([n]) => n))}`);
+  instrument108(/err_json\(StatusCode::UNAUTHORIZED, "code MFA invalide"\)/.test(secondFacteur108) && /err_json\(StatusCode::UNAUTHORIZED, "code MFA requis pour désactiver"\)/.test(desactivation108)
+    && /err_json\(StatusCode::UNAUTHORIZED, "code TOTP invalide"\)/.test(verification108) && /err_json\(StatusCode::CONFLICT, "MFA déjà active \(désactivez-la d'abord\)"\)/.test(verification108),
+    "un refus du CODE n'est plus un quatre cent un, ou la MFA déjà active n'est plus un quatre cent neuf : le partage lu par la console ne serait plus celui du démon");
+  instrument108(/"mfa_required": true, "ticket": ticket/.test(IDP108) && /Ok\(true\) => return mfa_challenge_response\(/.test(SESSION108),
+    "`login_post` ne rend plus `{mfa_required, ticket}` sans session : l'étape du code jugée ci-dessous ne s'ouvrirait sur aucun corps servi");
+  instrument108(/Json\(json!\(\{ "ok": true \}\)\)/.test(desactivation108) && /Json\(json!\(\{ "ok": true, "recovery_codes": clear \}\)\)/.test(verification108),
+    "`mfa_disable` ne sert plus `{ok:true}`, ou `mfa_verify` `{ok, recovery_codes}` : le succès reconnu par la console ne serait plus celui du démon");
+  const textesDuSecondFacteur108 = POPULATION108.connexion.c503.map((n) => [n, texteDe108(n)]);
+  const CAUSE_DESACTIVATION108 = texteDe108("CAUSE_MFA_NON_DESACTIVEE");
+  const CAUSE_ILLISIBLES108 = texteDe108("CAUSE_CODES_DE_SECOURS_ILLISIBLES");
+  const CAUSE_NON_ACTIVEE108 = texteDe108("CAUSE_MFA_NON_ACTIVEE");
+  const CAUSE_ENROLEMENT108 = texteDe108("CAUSE_ENROLEMENT_CHANGE_PENDANT_LA_VERIFICATION");
+  // L'INCIDENT ET LE RUNBOOK : chaque cinq cent trois nommé n'a RIEN écrit ; le quatre cent quatre est nu.
+  const CAUSE_DECLARATION108 = constante108(INCIDENTS108, "CAUSE_DECLARATION_D_INCIDENT_NON_ECRITE");
+  const CAUSE_ETAPES108 = constante108(INCIDENTS108, "CAUSE_ETAPES_DU_RUNBOOK_NON_ECRITES");
+  instrument108(/RIEN N'A CHANGÉ/.test(CAUSE_DECLARATION108) && /DeclarationDIncident::DossierIntrouvable => StatusCode::NOT_FOUND\.into_response\(\)/.test(declaration108)
+    && /DeclarationDIncident::Posee => StatusCode::NO_CONTENT/.test(declaration108)
+    && (declaration108.match(/StatusCode::SERVICE_UNAVAILABLE/g) || []).length === 1,
+    "`incident_set` ne rend plus ses trois issues (deux cent quatre, quatre cent quatre nu, un seul cinq cent trois « rien n'a changé ») : les faces jugées ci-dessous porteraient sur autre chose");
+  instrument108(/AUCUNE n'est posée/.test(CAUSE_ETAPES108) && (attache108.match(/StatusCode::SERVICE_UNAVAILABLE/g) || []).length === 2
+    && attache108.indexOf("attachement REFUSÉ") >= 0 && attache108.indexOf("attachement REFUSÉ") < attache108.indexOf("attach_runbook(")
+    && /Json\(json!\(\{ "attached": n \}\)\)/.test(attache108),
+    "`case_runbook_attach` ne rend plus ses deux cinq cent trois SANS écriture (étapes non toutes écrites, alertes non lues avant toute écriture) : la face « aucune étape n'est posée » ne serait plus fondée");
+  instrument108(/Some\(err_json\(StatusCode::SERVICE_UNAVAILABLE, CAUSE_ACCES_OPERATEUR_SANS_TRACE\)\)/.test(RBAC108),
+    "le refus d'accès opérateur sans trace n'est plus un cinq cent trois posé AVANT le gestionnaire : les cinq cent trois nommés de ces routes ne seraient plus tous « rien n'a changé »");
+  instrument108(/let mut corps = json!\(\{ "id": id \}\);/.test(RIPOSTES108),
+    "`action_create` ne rend plus son succès avec l'identifiant : la partition jugée ci-dessous porterait sur autre chose");
+  instrument108(modNoyauEn108.LANG === "en", `l'instance anglaise du point commun porte « ${modNoyauEn108.LANG} » : toutes les faces jugées ci-dessous seraient françaises`);
+  instrument108([modNoyau108.cleDeLIdentifiantDeRiposte, modNoyau108.motDeLaRiposteSansIdentifiant, modDossiers108.cleDuRefusDIncident, modDossiers108.motDuRefusDIncident,
+    modDossiers108.incidentDeclare, modDossiers108.incidentDemote, modDossiers108.attachRunbook, modDossiers108.prepareResponse, modDossiers108.motDeLaRiposteMiseEnFile,
+    modIdp108.disableMfa, modIdp108.cleDuRefusDeDesactivation, modIdp108.motDeLaDesactivationMfa, modConnexion108.bindLoginForm, modConnexion108.motDuSecondFacteur,
+    modConnexion108.cleDuRefusDuSecondFacteur, modViz108.motDuBannissementMisEnFile, modNoyau108.natureDuRefusDuSecondFacteur, modNoyau108.motDuRefusDuSecondFacteur,
+    modIdp108.cleDuRefusDActivation, modIdp108.motDeLActivationMfa, modIdp108.startEnroll, modIdp108.loadMfa, modIdpEn108.startEnroll, modIdpEn108.loadMfa].every((f) => typeof f === "function"),
+    "un des symboles jugés ci-dessous n'est plus exporté (web/core.js, web/cases.js, web/idp.js, web/login.js ou web/viz.js)");
+
+  // ── (a) LA PARTITION ET SA FACE « ABSENT » : UNE FOIS, AU POINT COMMUN ────────────────────────────────
+  exiger(modViz108.cleDeLIdentifiantDeRiposte === modNoyau108.cleDeLIdentifiantDeRiposte,
+    "(108a) web/viz.js ne RÉÉMET plus la partition du point commun : il en porte une copie, et les trois surfaces pourraient trancher différemment");
+  const CORPS108 = [{ id: 4401 }, { id: "x9" }, null, {}, { id: 0 }, { id: "" }, { id: null }];
+  const partition108 = CORPS108.map((j) => modNoyau108.cleDeLIdentifiantDeRiposte(j)).join(",");
+  exiger(partition108 === "identifiant_servi,identifiant_servi,identifiant_absent,identifiant_absent,identifiant_absent,identifiant_absent,identifiant_absent",
+    `(108a) la partition ne sépare plus un identifiant servi d'un identifiant absent sur les corps que \`apiSend\` rend : ${partition108}`);
+  const copies108 = ["viz.js", "cases.js", "detection_admin.js"].filter((f) => /j && j\.id \? 'identifiant_servi'|AUCUN identifiant :|ANY identifier:/.test(sansCommentaires108(srcDe108(f))));
+  exiger(copies108.length === 0,
+    `(108a) une surface RECOPIE la partition ou la face « absent » au lieu de la lire au point commun : ${JSON.stringify(copies108)}`);
+  const ABSENT108 = modNoyau108.motDeLaRiposteSansIdentifiant("kill_pid", "4242"), ABSENT_EN108 = modNoyauEn108.motDeLaRiposteSansIdentifiant("kill_pid", "4242");
+  exiger(/AUCUN identifiant/.test(ABSENT108) && /rien ici n'établit/.test(ABSENT108) && /ANY identifier/.test(ABSENT_EN108) && /nothing here establishes/.test(ABSENT_EN108)
+    && [ABSENT108, ABSENT_EN108].every((t) => t.includes("kill_pid 4242") && !/#|\{geste\}|\{cible\}/.test(t)) && ABSENT108 !== ABSENT_EN108,
+    `(108a) la face « absent » ne dit pas, dans ses deux langues, qu'aucun identifiant n'est rendu et que rien n'établit la création — ou elle perd son geste et sa cible : « ${ABSENT108} » / « ${ABSENT_EN108} »`);
+  exiger(![ABSENT108, ABSENT_EN108].some((t) => /^(Action (mise en file|créée|queued|created))/.test(t)),
+    `(108a-négatif) la face « absent » OUVRE sur une affirmation de création ou de mise en file : « ${ABSENT108} »`);
+  // LE GESTE « BANNIR » ET L'ÉTAPE DE RUNBOOK RENDENT LA MÊME PHRASE SUR LE MÊME CORPS ABSENT.
+  const memePhrase108 = [null, {}, { id: 0 }].every((j) => modDossiers108.motDeLaRiposteMiseEnFile(j, "ban_ip", "203.0.113.9") === modViz108.motDuBannissementMisEnFile(j, "203.0.113.9"));
+  exiger(memePhrase108,
+    "(108a) l'étape de runbook et le geste « bannir » n'écrivent pas la MÊME phrase sur un corps sans identifiant : deux rédactions d'un même fait sur une même route");
+
+  // ── (a2) LE LECTEUR DES CAUSES DU SECOND FACTEUR, DANS LES DEUX SENS, SUR LA POPULATION DU DÉMON ──────
+  // CHAQUE cause servie en refus nommé par les trois routes — et celle du frein — est reconnue par le point
+  // commun, avec la nature que ses deux écrans attendent. Une cause NEUVE que la console ne connaît pas
+  // rougit ici : elle retomberait sur le refus générique, sans que personne ne le sache.
+  const natureDe108 = modNoyau108.natureDuRefusDuSecondFacteur;
+  const ATTENDUES108 = {
+    connexion: ["code_juste_non_consomme", "codes_de_secours_illisibles"],
+    desactivation: ["mfa_non_desactivee", "codes_de_secours_illisibles"],
+    activation: ["mfa_non_activee"],
+  };
+  const nonReconnues108 = [];
+  for (const [route, r] of Object.entries(POPULATION108)) {
+    for (const n of r.c503) if (!ATTENDUES108[route].includes(natureDe108(texteDe108(n)))) nonReconnues108.push(route + " 503 " + n + " -> « " + natureDe108(texteDe108(n)) + " »");
+    for (const n of r.c409) if (natureDe108(texteDe108(n)) !== "enrolement_change") nonReconnues108.push(route + " 409 " + n + " -> « " + natureDe108(texteDe108(n)) + " »");
+  }
+  if (natureDe108(CAUSE_FREIN108) !== "second_facteur_freine") nonReconnues108.push("frein -> « " + natureDe108(CAUSE_FREIN108) + " »");
+  exiger(nonReconnues108.length === 0,
+    `(108a2) UNE CAUSE QUE LE DÉMON SERT N'EST PAS RECONNUE PAR LA CONSOLE, ou sous une autre nature que celle que son écran attend : ${JSON.stringify(nonReconnues108)}`);
+  const negatifs108 = ["code MFA invalide", "MFA déjà active (désactivez-la d'abord)", CAUSE_DECLARATION108, "", "SECOND FACTEUR NON CONSOMMÉS", " DOUBLE AUTHENTIFICATION TOUJOURS ACTIVEE", "trop d'échecs — réessayez plus tard"]
+    .filter((t) => natureDe108(t) !== "");
+  exiger(negatifs108.length === 0,
+    `(108a2-négatif) le lecteur des causes reconnaît une phrase qui n'ouvre sur AUCUNE cause du second facteur (refus du code, autre route, ouverture prolongée) : ${JSON.stringify(negatifs108)}`);
+  exiger(sansCommentaires108(srcDe108("login.js") + srcDe108("idp.js")).match(/NON CONSOMMÉ|CODES DE SECOURS NON LUS|TOUJOURS ACTIVE|NON ACTIVÉE|ENRÔLEMENT CHANGÉ|TROP D'ÉCHECS DU SECOND/g) === null,
+    "(108a2) un écran du second facteur RECOPIE une ouverture de cause au lieu de la lire au point commun : les deux écrans pourraient ranger la même cause différemment");
+
+  // ── LE SIMULACRE DE TRANSPORT ────────────────────────────────────────────────────────────────────
+  const fetchOrigine108 = globalThis.fetch;
+  const minuterieOrigine108 = globalThis.setTimeout;
+  const rechargementOrigine108 = globalThis.location.reload;
+  let rechargements108 = 0;
+  globalThis.location.reload = () => { rechargements108++; };
+  const etatOrigine108 = { admin: S108.isAdmin, auth: S108.AUTH, adminEn: SEn108.isAdmin, authEn: SEn108.AUTH };
+  let hoteDesAvis108 = document.querySelector("#toasts");
+  if (!hoteDesAvis108 || !hoteDesAvis108.isConnected) { hoteDesAvis108 = document.createElement("div"); hoteDesAvis108.id = "toasts"; document.body.appendChild(hoteDesAvis108); }
+  const servis108 = {};
+  const appels108 = [];
+  const corpsEnvoyes108 = [];
+  globalThis.fetch = async (u, init) => {
+    const chemin = String(u).split("?")[0];
+    const methode = ((init && init.method) || "GET").toUpperCase();
+    appels108.push(methode + " " + chemin);
+    corpsEnvoyes108.push([methode + " " + chemin, init && init.body]);
+    const r = servis108[methode + " " + chemin];
+    if (!r) return { ok: true, status: 200, headers: { get: () => null }, text: async () => "{}", json: async () => ({}) };
+    const texte = typeof r.corps === "string" ? r.corps : JSON.stringify(r.corps === undefined ? {} : r.corps);
+    return { ok: (r.statut || 200) < 400, status: r.statut || 200, headers: { get: (h) => (/retry-after/i.test(h) ? (r.reessai || null) : null) }, text: async () => texte, json: async () => JSON.parse(texte) };
+  };
+  globalThis.setTimeout = (fn, ms) => {
+    if (ms >= 1000) return 0;
+    if (ms >= 100) return minuterieOrigine108(fn, 0);
+    return minuterieOrigine108(fn, ms);
+  };
+  const fenetre108 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !c.classList.contains("out")).pop();
+  const valider108 = async (champs = {}) => {
+    const ov = fenetre108();
+    const form = ov && ov.children[0] ? ov.children[0].children[0] : null;
+    if (form) {
+      form.querySelectorAll("[data-n]").forEach((e) => { if (Object.prototype.hasOwnProperty.call(champs, e.dataset.n)) e.value = champs[e.dataset.n]; });
+      if (typeof form.onsubmit === "function") form.onsubmit({ preventDefault() {} });
+    }
+    await laisser108();
+    return !!form;
+  };
+  const avis108 = () => document.querySelectorAll(".toast");
+  const jouer108 = async (geste, modales = []) => {
+    const avant = avis108().length;
+    const p = geste();
+    await laisser108();
+    for (const champs of modales) await valider108(champs);
+    try { await p; } catch (e) { exiger(false, `(108-instrument) un geste a JETÉ au lieu de peindre : ${e && e.message}`); }
+    await laisser108(40);
+    return avis108().slice(avant).map((t) => ({ texte: String(t.textContent).replace(/\s+/g, " "), genre: t.className }));
+  };
+  const EXCES108 = (t) => /[{}]/.test(t) || /\b50[34]\b|\b40[01]\b/.test(t) || /plume-e\d/.test(t);
+
+  try {
+    S108.isAdmin = true; S108.AUTH = { user: "hugo", role: "admin" };
+    SEn108.isAdmin = true; SEn108.AUTH = { user: "hugo", role: "admin" };
+
+    // ══ (b) L'ÉTAPE « RÉPONSE » D'UN RUNBOOK (`P10.22-a`), PAR LE GESTE RÉEL ═════════════════════════
+    const DOSSIER108 = { id: 8108 };
+    const ETAPE108 = { id: 5, action_kind: "ban_ip", target: "203.0.113.108" };
+    const mettreEnFile108 = (mod) => jouer108(() => mod.prepareResponse(DOSSIER108, ETAPE108), [{ target: ETAPE108.target }]);
+    servis108["POST /api/actions"] = { statut: 200, corps: "" };
+    const b1108 = await mettreEnFile108(modDossiers108);
+    instrument108(appels108.includes("POST /api/actions"), "le geste « Réponse » d'une étape n'atteint pas la route de mise en file : les verdicts ci-dessous ne porteraient sur rien");
+    exiger(b1108.length === 1 && b1108[0].texte === modNoyau108.motDeLaRiposteSansIdentifiant("ban_ip", ETAPE108.target) && /\binfo\b/.test(b1108[0].genre),
+      `(108b) SUR UN DEUX CENTS À CORPS VIDE, L'ÉTAPE DE RUNBOOK AFFIRME UNE MISE EN FILE au lieu de dire que rien ne l'établit : ${JSON.stringify(b1108)}`);
+    exiger(!b1108.some((a) => /Action mise en file/.test(a.texte)),
+      `(108b-négatif) « Action mise en file » est écrit sur un corps qui ne l'établit pas : ${JSON.stringify(b1108)}`);
+    servis108["POST /api/actions"] = { statut: 200, corps: "<html><body>no available server</body></html>" };
+    const b2108 = await mettreEnFile108(modDossiers108);
+    exiger(b2108.length === 1 && b2108[0].texte === modNoyau108.motDeLaRiposteSansIdentifiant("ban_ip", ETAPE108.target),
+      `(108b) sur une page de passerelle servie en deux cents, l'étape de runbook affirme encore une mise en file : ${JSON.stringify(b2108)}`);
+    servis108["POST /api/actions"] = { statut: 200, corps: { id: 4410 } };
+    const b3108 = await mettreEnFile108(modDossiers108);
+    exiger(b3108.length === 1 && /Action mise en file \(#4410\)/.test(b3108[0].texte) && /\bok\b/.test(b3108[0].genre),
+      `(108b-négatif) une mise en file RÉUSSIE ne nomme plus son identifiant, ou n'est plus annoncée comme un succès : ${JSON.stringify(b3108)}`);
+    servis108["POST /api/actions"] = { statut: 200, corps: "" };
+    const b4108 = await mettreEnFile108(modDossiersEn108);
+    exiger(b4108.length === 1 && b4108[0].texte === modNoyauEn108.motDeLaRiposteSansIdentifiant("ban_ip", ETAPE108.target) && b4108[0].texte !== b1108[0]?.texte,
+      `(108b) SOUS \`LANG='en'\`, l'absence d'identifiant de l'étape n'est pas dite en anglais : ${JSON.stringify(b4108)}`);
+
+    // ══ (c) LE FORMULAIRE DU PANNEAU RÉPONSE (`P10.22-c`), PAR SON CÂBLAGE RÉEL ═════════════════════
+    servis108["GET /api/actions"] = { corps: { actions: [], served: 0, window: 200, total: 0, total_capped: false } };
+    const formulaire108 = document.querySelector("#act-form"), resultat108 = document.querySelector("#af-result");
+    const cible108 = document.querySelector("#af-target"), raison108 = document.querySelector("#af-reason"), genre108 = document.querySelector("#af-kind");
+    const cablages108 = ((formulaire108 && formulaire108._ecouteurs) || []).filter((e) => e.type === "submit").length;
+    instrument108(!!formulaire108 && !!resultat108 && !!cible108 && !!raison108 && cablages108 >= 1,
+      "le formulaire de riposte d'`index.html` (#act-form, #af-result, #af-target, #af-reason) n'est pas monté ou ne porte AUCUN écouteur de soumission");
+    // Chaque instance du module qui a été évaluée a câblé le MÊME nœud : la face peinte est celle de la
+    // DERNIÈRE à écrire, donc de l'une ou l'autre langue. Les deux sont admises, jamais autre chose.
+    const facesDuFormulaire108 = (geste, cible) => [modNoyau108.motDeLaRiposteSansIdentifiant(geste, cible), modNoyauEn108.motDeLaRiposteSansIdentifiant(geste, cible)];
+    const soumettreLeFormulaire108 = async () => {
+      formulaire108.classList.remove("hidden");
+      if (genre108) genre108.value = "kill_pid";
+      cible108.value = "4242"; raison108.value = "processus hostile";
+      formulaire108.dispatchEvent(new Evenement("submit", { bubbles: false }));
+      await laisser108(60);
+    };
+    servis108["POST /api/actions"] = { statut: 200, corps: "" };
+    const appelsAvantC108 = appels108.length;
+    await soumettreLeFormulaire108();
+    instrument108(appels108.slice(appelsAvantC108).includes("POST /api/actions"), "la soumission du formulaire n'atteint pas la route de mise en file");
+    const genreServi108 = genre108 && genre108.value ? genre108.value : "ban_ip";
+    exiger(facesDuFormulaire108(genreServi108, "4242").includes(nu108(resultat108)),
+      `(108c) SUR UN DEUX CENTS À CORPS VIDE, LE FORMULAIRE DU PANNEAU RÉPONSE NE DIT PAS QUE LE DÉMON N'A RENDU AUCUN IDENTIFIANT : « ${nu108(resultat108).slice(0, 300)} »`);
+    exiger(!formulaire108.classList.contains("hidden"),
+      "(108c) LE FORMULAIRE SE REFERME EN SILENCE SUR UN CORPS ABSENT : `#af-result` vit dans `#act-form`, et le replier emporte la seule phrase qui dit que rien n'établit la création");
+    exiger(cible108.value === "" && raison108.value === "",
+      "(108c) les champs gardent la saisie sous une phrase qui dit de retrouver la riposte AVANT de rejouer le geste : le second clic en poserait une seconde");
+    servis108["POST /api/actions"] = { statut: 200, corps: "<html><body>no available server</body></html>" };
+    await soumettreLeFormulaire108();
+    exiger(facesDuFormulaire108(genreServi108, "4242").includes(nu108(resultat108)) && !formulaire108.classList.contains("hidden"),
+      `(108c) sur une page de passerelle servie en deux cents, le formulaire se referme ou ne dit pas l'absence : « ${nu108(resultat108).slice(0, 300)} »`);
+    servis108["POST /api/actions"] = { statut: 200, corps: { id: 4420 } };
+    await soumettreLeFormulaire108();
+    exiger(formulaire108.classList.contains("hidden") && nu108(resultat108) === "",
+      `(108c-négatif) une création RÉUSSIE laisse le formulaire ouvert, ou y peint l'absence — un instrument qui avoue toujours ne mesure rien : « ${nu108(resultat108).slice(0, 200)} »`);
+
+    // ══ (d) LA DÉCLARATION D'INCIDENT ET L'ATTACHE D'UN RUNBOOK (`P10.22-n`), PAR LES GESTES RÉELS ═══
+    const declarer108 = (mod) => jouer108(() => mod.incidentDeclare(DOSSIER108), [{}]);
+    const retrograder108 = (mod) => jouer108(() => mod.incidentDemote(DOSSIER108), [{}]);
+    const attacher108 = (mod) => jouer108(() => mod.attachRunbook(DOSSIER108, 12));
+    const phrase108 = (mod, cle, cause) => mod.motDuRefusDIncident(cle) + (cause ? " « " + cause + " »" : "");
+    const CAUSE_D108 = CAUSE_DECLARATION108 + " (disk I/O error)";
+    servis108["POST /api/cases/8108/incident"] = { statut: 503, corps: { error: CAUSE_D108, id: "plume-e9-1" } };
+    const d1108 = await declarer108(modDossiers108);
+    instrument108(appels108.includes("POST /api/cases/8108/incident"), "la déclaration d'incident n'atteint pas sa route : les verdicts ci-dessous ne porteraient sur rien");
+    exiger(d1108.length === 1 && d1108[0].texte === phrase108(modDossiers108, "declaration_non_ecrite", CAUSE_D108) && /\bbad\b/.test(d1108[0].genre),
+      `(108d) LA DÉCLARATION NON ENREGISTRÉE N'EST PAS DITE PAR SA CAUSE ENTIÈRE : « ${JSON.stringify(d1108).slice(0, 400)} »`);
+    exiger(d1108.length === 1 && d1108[0].texte.includes("Réessayez") && d1108[0].texte.includes("(disk I/O error)") && !EXCES108(d1108[0].texte) && !/Incident déclaré/.test(d1108[0].texte),
+      `(108d) le corps JSON, le code, l'identifiant d'incident ou un succès atteint l'écran, ou la cause est COUPÉE (elle perdait « Réessayez ») : « ${(d1108[0] || {}).texte} »`);
+    servis108["POST /api/cases/8108/incident"] = { statut: 404, corps: "" };
+    const d2108 = await declarer108(modDossiers108);
+    exiger(d2108.length === 1 && d2108[0].texte === phrase108(modDossiers108, "dossier_introuvable_sans_cause", ""),
+      `(108d) le quatre cent quatre NU n'est pas dit comme tel (« introuvable », sans cause nommée) : ${JSON.stringify(d2108)}`);
+    servis108["POST /api/cases/8108/incident"] = { statut: 400, corps: { error: "palier invalide" } };
+    const d3108 = await declarer108(modDossiers108);
+    exiger(d3108.length === 1 && d3108[0].texte === phrase108(modDossiers108, "declaration_refusee", "palier invalide"),
+      `(108d-négatif) un refus de SAISIE se dit comme une écriture non prise : ${JSON.stringify(d3108)}`);
+    servis108["POST /api/cases/8108/incident"] = { statut: 204, corps: "" };
+    const d4108 = await declarer108(modDossiers108);
+    exiger(d4108.length === 1 && d4108[0].texte === "Incident déclaré" && /\bok\b/.test(d4108[0].genre),
+      `(108d-négatif) une déclaration RÉUSSIE n'est plus annoncée — un instrument qui avoue toujours ne mesure rien : ${JSON.stringify(d4108)}`);
+    servis108["POST /api/cases/8108/incident"] = { statut: 503, corps: { error: CAUSE_D108, id: "plume-e9-2" } };
+    const d5108 = await retrograder108(modDossiers108);
+    exiger(d5108.length === 1 && d5108[0].texte === phrase108(modDossiers108, "declaration_non_ecrite", CAUSE_D108),
+      `(108d) la rétrogradation non enregistrée (même route, même énoncé) n'est pas dite par sa cause : ${JSON.stringify(d5108).slice(0, 300)}`);
+    servis108["POST /api/cases/8108/incident"] = { statut: 403, corps: { error: "rôle insuffisant" } };
+    const d6108 = await retrograder108(modDossiers108);
+    exiger(d6108.length === 1 && d6108[0].texte === phrase108(modDossiers108, "retrogradation_refusee", "rôle insuffisant"),
+      `(108d-négatif) un refus de rétrogradation se dit comme une déclaration : ${JSON.stringify(d6108)}`);
+    const CAUSE_A108 = CAUSE_ETAPES108 + "étape 3 : disk I/O error";
+    servis108["POST /api/cases/8108/runbook"] = { statut: 503, corps: { error: CAUSE_A108, id: "plume-e9-3" } };
+    const d7108 = await attacher108(modDossiers108);
+    exiger(d7108.length === 1 && d7108[0].texte === phrase108(modDossiers108, "runbook_non_attache", CAUSE_A108) && d7108[0].texte.includes("un nouvel essai reste possible") && !EXCES108(d7108[0].texte),
+      `(108d) L'ATTACHE AMPUTÉE N'EST PAS DITE PAR SA CAUSE ENTIÈRE (elle perdait « un nouvel essai reste possible ») : ${JSON.stringify(d7108).slice(0, 400)}`);
+    servis108["POST /api/cases/8108/runbook"] = { statut: 503, corps: { error: "attachement REFUSÉ : liste illisible", id: "plume-e9-4" } };
+    const d8108 = await attacher108(modDossiers108);
+    exiger(d8108.length === 1 && d8108[0].texte === phrase108(modDossiers108, "runbook_non_attache", "attachement REFUSÉ : liste illisible"),
+      `(108d) le refus posé AVANT toute écriture (alertes non lues) ne se dit pas « aucune étape n'est posée » : ${JSON.stringify(d8108)}`);
+    servis108["POST /api/cases/8108/runbook"] = { statut: 400, corps: { error: "un runbook est déjà attaché à ce dossier" } };
+    const d9108 = await attacher108(modDossiers108);
+    exiger(d9108.length === 1 && d9108[0].texte === phrase108(modDossiers108, "attache_refusee", "un runbook est déjà attaché à ce dossier") && !/AUCUNE étape/.test(d9108[0].texte),
+      `(108d-négatif) un quatre cents « déjà attaché » se dit « aucune étape n'est posée » — faux, un runbook EST attaché : ${JSON.stringify(d9108)}`);
+    servis108["POST /api/cases/8108/runbook"] = { statut: 200, corps: { attached: 4 } };
+    const d10108 = await attacher108(modDossiers108);
+    exiger(d10108.length === 1 && d10108[0].texte === "Runbook attaché",
+      `(108d-négatif) une attache RÉUSSIE n'est plus annoncée : ${JSON.stringify(d10108)}`);
+    // UN DEUX CENTS QUI NE PORTE PAS `{attached}` N'EST PAS UNE ATTACHE : vide, ou page de passerelle.
+    for (const corps of ["", "<html><body>no available server</body></html>"]) {
+      servis108["POST /api/cases/8108/runbook"] = { statut: 200, corps };
+      const d12108 = await attacher108(modDossiers108);
+      exiger(d12108.length === 1 && d12108[0].texte === modDossiers108.motDuRefusDIncident("attache_non_etablie") && /\binfo\b/.test(d12108[0].genre) && !/Runbook attaché/.test(d12108[0].texte),
+        `(108d) SUR UN DEUX CENTS SANS \`{attached}\` (${corps ? "page de passerelle" : "corps vide"}), « Runbook attaché » EST ANNONCÉ au lieu de dire que rien ne l'établit : ${JSON.stringify(d12108)}`);
+    }
+    servis108["POST /api/cases/8108/incident"] = { statut: 503, corps: { error: CAUSE_D108, id: "plume-e9-5" } };
+    const d11108 = await declarer108(modDossiersEn108);
+    exiger(d11108.length === 1 && d11108[0].texte === phrase108(modDossiersEn108, "declaration_non_ecrite", CAUSE_D108) && /NOTHING CHANGED/.test(d11108[0].texte),
+      `(108d) SOUS \`LANG='en'\`, la déclaration non enregistrée n'est pas dite en anglais : ${JSON.stringify(d11108).slice(0, 300)}`);
+    // LE DISCRIMINANT, NU, DANS LES DEUX SENS.
+    const refus108 = (statut, cause) => Object.assign(new Error(statut + (cause ? " x" : "")), cause ? { causeDuDemon: cause, statutDuRefus: statut } : { statutDuRefus: statut });
+    const table108 = [["declarer", refus108(503, "c")], ["declarer", refus108(503, "")], ["declarer", refus108(404, "")], ["declarer", refus108(404, "c")], ["retrograder", refus108(400, "c")],
+      ["attacher", refus108(503, "c")], ["attacher", refus108(503, "")], ["attacher", refus108(400, "c")], ["declarer", new Error("réseau")]]
+      .map(([g, e]) => modDossiers108.cleDuRefusDIncident(g, e)).join(",");
+    exiger(table108 === "declaration_non_ecrite,declaration_refusee,dossier_introuvable_sans_cause,declaration_refusee,retrogradation_refusee,runbook_non_attache,attache_refusee,attache_refusee,declaration_refusee",
+      `(108d) le discriminant des refus d'incident ne sépare plus les corps comme le démon les sert (un cinq cent trois SANS cause nommée est une passerelle, pas une écriture refusée) : ${table108}`);
+
+    // ══ (e) LA DÉSACTIVATION DE LA MFA (`P10.22-n`), PAR LE GESTE RÉEL ═══════════════════════════════
+    const enrolement108 = document.querySelector("#mfa-enroll"), statutMfa108 = document.querySelector("#mfa-status");
+    instrument108(!!enrolement108 && !!statutMfa108, "les hôtes du bloc MFA d'`index.html` (#mfa-status, #mfa-enroll) ne sont pas montés");
+    const aveuDeDesactivation108 = () => { const a = enrolement108.children[0]; return a && a.getAttribute && a.getAttribute("data-refus-de-desactivation") ? a : null; };
+    const desactiver108 = async (mod) => { enrolement108.hidden = true; enrolement108.replaceChildren(); return jouer108(() => mod.disableMfa(), [{}, { code: "123456" }]); };
+    servis108["GET /api/mfa/status"] = { corps: { enrolled: true, enabled: true } };
+    servis108["POST /api/mfa/disable"] = { statut: 401, corps: { error: "code MFA requis pour désactiver" } };
+    const e1108 = await desactiver108(modIdp108);
+    instrument108(corpsEnvoyes108.some(([k, b]) => k === "POST /api/mfa/disable" && /"code":"123456"/.test(String(b))), "la désactivation n'atteint pas sa route avec le code saisi : les verdicts ci-dessous ne porteraient sur rien");
+    const a1108 = aveuDeDesactivation108();
+    exiger(!!a1108 && a1108.getAttribute("data-refus-de-desactivation") === "code_refuse" && nu108(a1108) === modIdp108.motDeLaDesactivationMfa("code_refuse") + " « code MFA requis pour désactiver »" && !enrolement108.hidden,
+      `(108e) LE CODE REFUSÉ N'EST PAS DIT DANS LE PANNEAU comme un refus du code, cause servie à côté : « ${nu108(enrolement108).slice(0, 300)} »`);
+    exiger(!e1108.some((a) => /MFA désactivée/.test(a.texte)), `(108e-négatif) un succès est annoncé sur un code refusé : ${JSON.stringify(e1108)}`);
+    servis108["POST /api/mfa/disable"] = { statut: 503, corps: { error: CAUSE_DESACTIVATION108, id: "plume-e9-6" } };
+    const e2108 = await desactiver108(modIdp108);
+    const a2108 = aveuDeDesactivation108();
+    exiger(!!a2108 && a2108.getAttribute("data-refus-de-desactivation") === "desactivation_non_ecrite" && nu108(a2108) === modIdp108.motDeLaDesactivationMfa("desactivation_non_ecrite") + " « " + CAUSE_DESACTIVATION108 + " »",
+      `(108e) LA DÉSACTIVATION NON ENREGISTRÉE N'EST PAS DITE PAR SA CAUSE ENTIÈRE : « ${nu108(enrolement108).slice(0, 400)} »`);
+    exiger(!!a1108 && !!a2108 && /PAS en cause/.test(nu108(a2108.children[0])) && !/PAS en cause/.test(nu108(a1108.children[0])) && /Code REFUSÉ/.test(nu108(a1108.children[0])) && !/Code REFUSÉ/.test(nu108(a2108.children[0])),
+      `(108e) LE QUATRE CENT UN ET LE CINQ CENT TROIS NE SE DISTINGUENT PAS À L'ÉCRAN : le second accuserait le code que le démon a jugé bon — « ${nu108(a1108 && a1108.children[0])} » / « ${nu108(a2108 && a2108.children[0])} »`);
+    exiger(!e2108.some((a) => /MFA désactivée/.test(a.texte)) && !EXCES108(nu108(enrolement108)), `(108e-négatif) un succès, le code ou le corps JSON atteint l'écran sur la désactivation refusée : ${JSON.stringify(e2108)} « ${nu108(enrolement108).slice(0, 200)} »`);
+    // UNE LISTE DE SECOURS ILLISIBLE N'EST NI UNE ÉCRITURE REFUSÉE NI UN CODE REFUSÉ — MÊME STATUT, AUTRE CAUSE.
+    servis108["POST /api/mfa/disable"] = { statut: 503, corps: { error: CAUSE_ILLISIBLES108, id: "plume-e9-10" } };
+    await desactiver108(modIdp108);
+    const a3108 = aveuDeDesactivation108();
+    exiger(!!a3108 && a3108.getAttribute("data-refus-de-desactivation") === "codes_de_secours_illisibles" && nu108(a3108) === modNoyau108.motDuRefusDuSecondFacteur("codes_de_secours_illisibles") + " « " + CAUSE_ILLISIBLES108 + " »",
+      `(108e) LA LISTE DE SECOURS ILLISIBLE SE DIT COMME UNE ÉCRITURE REFUSÉE (ou n'est pas dite par sa cause) : deux cinq cent trois de faits différents rangés sous la même phrase — « ${nu108(enrolement108).slice(0, 300)} »`);
+    exiger(!!a3108 && !!a2108 && nu108(a3108.children[0]) !== nu108(a2108.children[0]) && /ni accepté ni refusé/.test(nu108(a3108.children[0])) && !/Code REFUSÉ/.test(nu108(a3108.children[0])),
+      `(108e) les deux cinq cent trois ne se distinguent pas, ou la liste illisible accuse le code : « ${nu108(a3108 && a3108.children[0])} »`);
+    // LE FREIN : quatre cent vingt-neuf nommé, délai servi — il se dit, avec le délai, et n'accuse pas le code.
+    servis108["POST /api/mfa/disable"] = { statut: 429, reessai: "42", corps: { error: CAUSE_FREIN108 } };
+    await desactiver108(modIdp108);
+    const a4108 = aveuDeDesactivation108();
+    exiger(!!a4108 && a4108.getAttribute("data-refus-de-desactivation") === "second_facteur_freine" && nu108(a4108) === modNoyau108.motDuRefusDuSecondFacteur("second_facteur_freine", 42) + " « " + CAUSE_FREIN108 + " »" && /\b42 s\b/.test(nu108(a4108.children[0])),
+      `(108e) LE FREIN DU SECOND FACTEUR N'EST PAS DIT, ou sans son délai servi : « ${nu108(enrolement108).slice(0, 300)} »`);
+    servis108["POST /api/mfa/disable"] = { statut: 429, corps: { error: CAUSE_FREIN108 } };
+    await desactiver108(modIdp108);
+    exiger(!!aveuDeDesactivation108() && nu108(aveuDeDesactivation108().children[0]) === modNoyau108.motDuRefusDuSecondFacteur("second_facteur_freine", 0) && !/\{delai\}|undefined|NaN/.test(nu108(enrolement108)),
+      `(108e-négatif) un frein SANS délai servi peint un délai inventé, ou un gabarit : « ${nu108(enrolement108).slice(0, 200)} »`);
+    servis108["POST /api/mfa/disable"] = { statut: 404, corps: { error: "aucune MFA enrôlée" } };
+    await desactiver108(modIdp108);
+    exiger(!!aveuDeDesactivation108() && aveuDeDesactivation108().getAttribute("data-refus-de-desactivation") === "desactivation_refusee" && nu108(enrolement108).includes("aucune MFA enrôlée"),
+      `(108e-négatif) un quatre cent quatre nommé se dit comme un code refusé ou comme une écriture non prise : « ${nu108(enrolement108)} »`);
+    servis108["POST /api/mfa/disable"] = { statut: 200, corps: "" };
+    const appelsAvantE4108 = appels108.length;
+    const e4108 = await desactiver108(modIdp108);
+    exiger(!e4108.some((a) => /MFA désactivée/.test(a.texte)) && !!aveuDeDesactivation108() && aveuDeDesactivation108().getAttribute("data-refus-de-desactivation") === "desactivation_non_etablie",
+      `(108e) SUR UN DEUX CENTS À CORPS VIDE, « MFA désactivée » EST ANNONCÉ, ou l'absence de confirmation n'est pas dite : ${JSON.stringify(e4108)} « ${nu108(enrolement108).slice(0, 200)} »`);
+    exiger(appels108.slice(appelsAvantE4108).includes("GET /api/mfa/status"),
+      "(108e) sur une désactivation non confirmée, le statut n'est pas RELU : la phrase renvoie à un statut que personne n'a rafraîchi");
+    servis108["POST /api/mfa/disable"] = { statut: 200, corps: { ok: true } };
+    const e5108 = await desactiver108(modIdp108);
+    exiger(e5108.some((a) => a.texte === "MFA désactivée" && /\bok\b/.test(a.genre)) && !aveuDeDesactivation108(),
+      `(108e-négatif) une désactivation RÉUSSIE n'est plus annoncée, ou porte un aveu : ${JSON.stringify(e5108)}`);
+    servis108["POST /api/mfa/disable"] = { statut: 503, corps: { error: CAUSE_DESACTIVATION108, id: "plume-e9-7" } };
+    await desactiver108(modIdpEn108);
+    exiger(!!aveuDeDesactivation108() && nu108(aveuDeDesactivation108().children[0]) === modIdpEn108.motDeLaDesactivationMfa("desactivation_non_ecrite") && /NOT at fault/.test(nu108(aveuDeDesactivation108().children[0])),
+      `(108e) SOUS \`LANG='en'\`, la désactivation non enregistrée n'est pas dite en anglais : « ${nu108(enrolement108).slice(0, 200)} »`);
+    const tableMfa108 = [refus108(401, "c"), refus108(401, ""), refus108(503, CAUSE_DESACTIVATION108), refus108(503, CAUSE_ILLISIBLES108), refus108(503, "c"), refus108(503, ""),
+      refus108(429, CAUSE_FREIN108), refus108(429, "trop d'échecs — réessayez plus tard"), refus108(404, "c"), refus108(401, CAUSE_DESACTIVATION108), new Error("réseau")].map((e) => modIdp108.cleDuRefusDeDesactivation(e)).join(",");
+    exiger(tableMfa108 === "code_refuse,code_refuse,desactivation_non_ecrite,codes_de_secours_illisibles,desactivation_refusee,desactivation_refusee,second_facteur_freine,desactivation_refusee,desactivation_refusee,code_refuse,desactivation_refusee",
+      `(108e) le discriminant de la désactivation ne sépare plus le code refusé, l'écriture refusée, la liste illisible et le frein : ${tableMfa108}`);
+    enrolement108.hidden = true; enrolement108.replaceChildren();
+
+    // ══ (e2) L'ACTIVATION DE LA MFA (`P10.22-n` sur les refus de `P10.22-l` et `-m`), PAR LE GESTE RÉEL ══
+    const ouvrirLaCarte108 = async (mod) => {
+      servis108["GET /api/mfa/status"] = { corps: { enrolled: false, enabled: false } };
+      servis108["POST /api/mfa/enroll"] = { corps: { secret: "JBSWY3DPEHPK3PXP", otpauth_uri: "otpauth://totp/plume:hugo?secret=JBSWY3DPEHPK3PXP" } };
+      await mod.loadMfa(); await laisser108();
+      await mod.startEnroll(); await laisser108();
+      const champ = document.querySelector("#mfa-code");
+      const bouton = (enrolement108.querySelectorAll("button") || []).find((b) => nu108(b) === "Vérifier & activer");
+      const carte = enrolement108.children[0];
+      const puits = carte ? carte.children[carte.children.length - 1] : null;
+      return { champ, bouton, puits };
+    };
+    const verifier108 = async (mod, corpsServi) => {
+      const c = await ouvrirLaCarte108(mod);
+      instrument108(!!c.champ && !!c.bouton && !!c.puits, "la carte d'enrôlement n'a pas de champ de code, de bouton « Vérifier & activer » ou de puits : le geste jugé ci-dessous ne porterait sur rien");
+      servis108["POST /api/mfa/verify"] = corpsServi;
+      if (c.champ) c.champ.value = "123456";
+      const avant = avis108().length;
+      // Un geste qui JETTE ne fait pas tomber le banc : le jet est rendu, et le verdict qui suit le nomme.
+      let jete = null;
+      if (c.bouton && typeof c.bouton.onclick === "function") { try { await c.bouton.onclick(); } catch (e) { jete = e; } }
+      await laisser108(40);
+      const aveu = [c.puits, enrolement108].map((h) => h && (h.querySelectorAll ? [h, ...h.querySelectorAll("div")] : [h]).find((n) => n && n.getAttribute && n.getAttribute("data-refus-d-activation"))).find(Boolean) || null;
+      return { ...c, aveu, jete, avis: avis108().slice(avant).map((t) => String(t.textContent).replace(/\s+/g, " ")) };
+    };
+    const phraseActivation108 = (mod, cle, cause, delai) => mod.motDeLActivationMfa(cle, delai) + (cause ? " « " + cause + " »" : "");
+    const v1108 = await verifier108(modIdp108, { statut: 401, corps: { error: "code TOTP invalide" } });
+    exiger(!!v1108.aveu && v1108.aveu.getAttribute("data-refus-d-activation") === "code_refuse" && nu108(v1108.aveu) === phraseActivation108(modIdp108, "code_refuse", "code TOTP invalide"),
+      `(108e2) le code refusé à l'activation n'est pas dit comme tel : « ${nu108(enrolement108).slice(0, 300)} »`);
+    exiger(!!v1108.aveu && v1108.aveu.parentNode === v1108.puits && !!document.querySelector("#mfa-code") && !v1108.avis.some((t) => /MFA activée/.test(t)),
+      "(108e2) le code refusé détruit la carte d'enrôlement (le geste ne se rejouerait plus), ou un succès est annoncé");
+    const v2108 = await verifier108(modIdp108, { statut: 503, corps: { error: CAUSE_NON_ACTIVEE108, id: "plume-e9-11" } });
+    exiger(!!v2108.aveu && v2108.aveu.getAttribute("data-refus-d-activation") === "activation_non_ecrite" && nu108(v2108.aveu) === phraseActivation108(modIdp108, "activation_non_ecrite", CAUSE_NON_ACTIVEE108)
+      && /PAS en cause/.test(nu108(v2108.aveu.children[0])) && !/Code REFUSÉ/.test(nu108(v2108.aveu.children[0])) && !v2108.avis.some((t) => /code invalide|MFA activée/.test(t)),
+      `(108e2) L'ACTIVATION NON ENREGISTRÉE ACCUSE LE CODE (« code invalide ») ou n'est pas dite par sa cause entière : « ${nu108(enrolement108).slice(0, 300)} » ${JSON.stringify(v2108.avis)}`);
+    const v3108 = await verifier108(modIdp108, { statut: 429, reessai: "42", corps: { error: CAUSE_FREIN108 } });
+    exiger(!!v3108.aveu && v3108.aveu.getAttribute("data-refus-d-activation") === "second_facteur_freine" && nu108(v3108.aveu) === phraseActivation108(modIdp108, "second_facteur_freine", CAUSE_FREIN108, 42),
+      `(108e2) le frein à l'activation n'est pas dit, avec son délai : « ${nu108(enrolement108).slice(0, 300)} »`);
+    const appelsAvantV4108 = appels108.length;
+    const v4108 = await verifier108(modIdp108, { statut: 409, corps: { error: "MFA déjà active (désactivez-la d'abord)" } });
+    exiger(!!v4108.aveu && v4108.aveu.getAttribute("data-refus-d-activation") === "deja_active" && nu108(v4108.aveu) === phraseActivation108(modIdp108, "deja_active", "MFA déjà active (désactivez-la d'abord)")
+      && v4108.aveu.parentNode === enrolement108 && !v4108.avis.some((t) => /code invalide|MFA activée/.test(t)),
+      `(108e2) UNE MFA DÉJÀ ACTIVE SE DIT « CODE INVALIDE » — le code n'a pas été examiné —, ou l'aveu reste dans une carte périmée : « ${nu108(enrolement108).slice(0, 300)} » ${JSON.stringify(v4108.avis)}`);
+    exiger(appels108.slice(appelsAvantV4108).filter((a) => a === "GET /api/mfa/status").length >= 2,
+      "(108e2) sur une MFA déjà active, le statut n'est pas RELU après le refus : la phrase renvoie à un statut que personne n'a rafraîchi");
+    const v5108 = await verifier108(modIdp108, { statut: 409, corps: { error: CAUSE_ENROLEMENT108 } });
+    exiger(!!v5108.aveu && v5108.aveu.getAttribute("data-refus-d-activation") === "enrolement_change" && nu108(v5108.aveu) === phraseActivation108(modIdp108, "enrolement_change", CAUSE_ENROLEMENT108),
+      `(108e2) l'enrôlement changé pendant la vérification se dit comme une MFA déjà active, ou pas du tout : « ${nu108(enrolement108).slice(0, 300)} »`);
+    const v6108 = await verifier108(modIdp108, { statut: 200, corps: "" });
+    exiger(!v6108.jete && !!v6108.aveu && v6108.aveu.getAttribute("data-refus-d-activation") === "activation_non_etablie" && !v6108.avis.some((t) => /MFA activée/.test(t)) && !/Codes de secours/.test(nu108(enrolement108)),
+      `(108e2) SUR UN DEUX CENTS À CORPS VIDE, « MFA activée » EST ANNONCÉ — avec une boîte de codes de secours VIDE, ou le geste JETTE (${v6108.jete && v6108.jete.message}) : ${JSON.stringify(v6108.avis)} « ${nu108(enrolement108).slice(0, 200)} »`);
+    const v7108 = await verifier108(modIdp108, { statut: 200, corps: { ok: true, recovery_codes: ["aaaa-1111", "bbbb-2222"] } });
+    exiger(!v7108.aveu && v7108.avis.includes("MFA activée") && nu108(enrolement108).includes("aaaa-1111"),
+      `(108e2-négatif) une activation RÉUSSIE n'est plus annoncée, ou ses codes de secours ne sont pas montrés : ${JSON.stringify(v7108.avis)} « ${nu108(enrolement108).slice(0, 200)} »`);
+    const v8108 = await verifier108(modIdpEn108, { statut: 503, corps: { error: CAUSE_NON_ACTIVEE108, id: "plume-e9-12" } });
+    exiger(!!v8108.aveu && nu108(v8108.aveu.children[0]) === modIdpEn108.motDeLActivationMfa("activation_non_ecrite") && /NOT at fault/.test(nu108(v8108.aveu.children[0])),
+      `(108e2) SOUS \`LANG='en'\`, l'activation non enregistrée n'est pas dite en anglais : « ${nu108(enrolement108).slice(0, 200)} »`);
+    const tableActivation108 = [refus108(401, "c"), refus108(409, "MFA déjà active (désactivez-la d'abord)"), refus108(409, CAUSE_ENROLEMENT108), refus108(503, CAUSE_NON_ACTIVEE108),
+      refus108(503, CAUSE_DESACTIVATION108), refus108(429, CAUSE_FREIN108), refus108(400, "aucun enrôlement en cours"), new Error("réseau")].map((e) => modIdp108.cleDuRefusDActivation(e)).join(",");
+    exiger(tableActivation108 === "code_refuse,deja_active,enrolement_change,activation_non_ecrite,activation_refusee,second_facteur_freine,activation_refusee,activation_refusee",
+      `(108e2) le discriminant de l'activation ne sépare plus le code, la MFA déjà active, la course, l'écriture refusée et le frein : ${tableActivation108}`);
+    servis108["GET /api/mfa/status"] = { corps: { enrolled: false, enabled: false } };
+    await modIdp108.loadMfa(); await modIdpEn108.loadMfa(); await laisser108();
+    enrolement108.hidden = true; enrolement108.replaceChildren();
+
+    // ══ (f) LE SECOND FACTEUR DE LA CONNEXION (`P10.22-n`), PAR LE FORMULAIRE RÉEL ══════════════════
+    const formulaireConnexion108 = document.querySelector("#login-form"), erreurConnexion108 = document.querySelector("#login-err");
+    const utilisateur108 = document.querySelector("#login-user"), motDePasse108 = document.querySelector("#login-pass");
+    const blocDuCode108 = document.querySelector("#login-code-lbl"), champDuCode108 = document.querySelector("#login-code");
+    instrument108(!!formulaireConnexion108 && !!erreurConnexion108 && !!utilisateur108 && !!motDePasse108,
+      "les hôtes de l'écran de connexion d'`index.html` (#login-form, #login-err, #login-user, #login-pass) ne sont pas montés");
+    exiger(!!blocDuCode108 && !!champDuCode108 && /display:\s*none/.test(String(blocDuCode108.getAttribute("style") || "")),
+      "(108f) L'ÉCRAN DE CONNEXION N'A AUCUN PUITS POUR LE SECOND FACTEUR (#login-code-lbl, #login-code, masqué au départ) : un compte à MFA ne peut pas y saisir son code");
+    // LE CÂBLAGE EST REFAIT PAR L'INSTANCE JUGÉE, puis RENDU : l'état du ticket vit dans la fermeture du
+    // câblage, et la langue de la face est celle de l'instance qui a câblé.
+    const cablageOrigine108 = { ecouteurs: formulaireConnexion108._ecouteurs, lie: formulaireConnexion108._bound };
+    const cabler108 = (mod) => { formulaireConnexion108._ecouteurs = []; formulaireConnexion108._bound = false; mod.bindLoginForm(); };
+    const soumettreConnexion108 = async () => { formulaireConnexion108.dispatchEvent(new Evenement("submit", { bubbles: true })); await laisser108(30); };
+    const etapeDuCode108 = () => blocDuCode108.style.display === "" && utilisateur108.disabled === true && motDePasse108.disabled === true;
+    const etapeDuMotDePasse108 = () => blocDuCode108.style.display === "none" && !utilisateur108.disabled && !motDePasse108.disabled;
+    const ouvrirLEtapeDuCode108 = async () => {
+      utilisateur108.value = "hugo"; motDePasse108.value = "motdepasse";
+      servis108["POST /api/login"] = { statut: 200, corps: { mfa_required: true, ticket: "ticket-108" } };
+      await soumettreConnexion108();
+    };
+    try {
+      cabler108(modConnexion108);
+      const phraseConnexion108 = (mod, cle, cause, delai) => mod.motDuSecondFacteur(cle, delai) + (cause ? " « " + cause + " »" : "");
+      // (f1) LE MOT DE PASSE ACCEPTÉ SUR UN COMPTE À MFA OUVRE L'ÉTAPE DU CODE — PAS UN RECHARGEMENT.
+      const rechargementsAvant108 = rechargements108;
+      await ouvrirLEtapeDuCode108();
+      exiger(rechargements108 === rechargementsAvant108 && etapeDuCode108() && erreurConnexion108.hidden === true,
+        `(108f1) LE DEUX CENTS \`{mfa_required, ticket}\` EST PRIS POUR UNE SESSION : l'écran recharge (${rechargements108 - rechargementsAvant108} fois) au lieu de demander le code, et un compte à MFA ne peut pas se connecter — étape du code ${etapeDuCode108()}`);
+      // (f2) UN CODE VIDE NE PART PAS.
+      champDuCode108.value = "";
+      const appelsAvantF2108 = appels108.length;
+      await soumettreConnexion108();
+      exiger(!appels108.slice(appelsAvantF2108).some((a) => a.startsWith("POST /api/login")) && nu108(erreurConnexion108) === phraseConnexion108(modConnexion108, "code_manquant", ""),
+        `(108f2) un code vide part au démon, ou le manque n'est pas dit : « ${nu108(erreurConnexion108)} »`);
+      // (f3) CINQ CENT TROIS : LE CODE EST JUSTE ET NON CONSOMMÉ, OU NI ACCEPTÉ NI REFUSÉ (LISTE ILLISIBLE) —
+      //      CHAQUE CAUSE SERVIE PAR LA ROUTE, LUE DANS LE DÉMON : SA PHRASE N'ACCUSE PAS, ET LE CODE RESTE.
+      const FACE_DU_503108 = { code_juste_non_consomme: "code_non_en_cause", codes_de_secours_illisibles: "codes_de_secours_illisibles" };
+      for (const [nom, cause] of textesDuSecondFacteur108) {
+        const cle = FACE_DU_503108[modNoyau108.natureDuRefusDuSecondFacteur(cause)] || "(cause inconnue de la console)";
+        champDuCode108.value = "123456";
+        servis108["POST /api/login/mfa"] = { statut: 503, corps: { error: cause, id: "plume-e9-8" } };
+        const avant = corpsEnvoyes108.length;
+        await soumettreConnexion108();
+        const envoi = corpsEnvoyes108.slice(avant).find(([k]) => k === "POST /api/login/mfa");
+        exiger(!!envoi && /"ticket":"ticket-108"/.test(String(envoi[1])) && /"code":"123456"/.test(String(envoi[1])),
+          `(108f3) le code n'est pas échangé avec le ticket servi sur \`/api/login/mfa\` : ${JSON.stringify(envoi)}`);
+        exiger(cle !== "(cause inconnue de la console)" && nu108(erreurConnexion108) === phraseConnexion108(modConnexion108, cle, cause) && erreurConnexion108.hidden === false && !/Code REFUSÉ/.test(nu108(erreurConnexion108.children[0])),
+          `(108f3) LE CINQ CENT TROIS \`${nom}\` N'EST PAS PEINT PAR SA CAUSE ENTIÈRE, sous une phrase qui n'accuse pas le code : « ${nu108(erreurConnexion108).slice(0, 400)} »`);
+        exiger(etapeDuCode108() && champDuCode108.value === "123456" && rechargements108 === rechargementsAvant108,
+          `(108f3) après \`${nom}\`, l'écran quitte l'étape du code ou efface un code que le démon dit JUSTE et non brûlé : il faudrait retaper le mot de passe pour un code valable`);
+      }
+      // Le dernier cinq cent trois joué est relu : il faut celui du code JUSTE pour la comparaison qui suit.
+      const causeJuste108 = (textesDuSecondFacteur108.find(([, t]) => modNoyau108.natureDuRefusDuSecondFacteur(t) === "code_juste_non_consomme") || [])[1] || "";
+      champDuCode108.value = "123456";
+      servis108["POST /api/login/mfa"] = { statut: 503, corps: { error: causeJuste108, id: "plume-e9-8" } };
+      await soumettreConnexion108();
+      const texteDu503108 = nu108(erreurConnexion108.children[0]);
+      // (f4) QUATRE CENT UN : LE CODE EST REFUSÉ — LA PHRASE L'ACCUSE, ET LA CONNEXION REPREND AU MOT DE PASSE.
+      champDuCode108.value = "000000";
+      servis108["POST /api/login/mfa"] = { statut: 401, corps: { error: "code MFA invalide" } };
+      await soumettreConnexion108();
+      const texteDu401108 = nu108(erreurConnexion108.children[0]);
+      exiger(nu108(erreurConnexion108) === phraseConnexion108(modConnexion108, "code_refuse", "code MFA invalide") && etapeDuMotDePasse108() && motDePasse108.value === "" && champDuCode108.value === "",
+        `(108f4) le code REFUSÉ n'est pas dit comme tel, ou l'écran reste sur un ticket qui ne sert plus : « ${nu108(erreurConnexion108)} » — étape du mot de passe ${etapeDuMotDePasse108()}`);
+      exiger(/Code REFUSÉ/.test(texteDu401108) && !/PAS en cause/.test(texteDu401108) && /PAS en cause/.test(texteDu503108) && !/Code REFUSÉ/.test(texteDu503108),
+        `(108f4) UN 401 « CODE INVALIDE » ET UN 503 « NON CONSOMMÉ » NE SE DISTINGUENT PAS À L'ÉCRAN : le second accuserait l'utilisateur — « ${texteDu401108} » / « ${texteDu503108} »`);
+      // (f5) APRÈS LE REFUS, LE GESTE SUIVANT REPART DU MOT DE PASSE.
+      utilisateur108.value = "hugo"; motDePasse108.value = "motdepasse";
+      servis108["POST /api/login"] = { statut: 401, corps: { error: "identifiants invalides" } };
+      const appelsAvantF5108 = appels108.length;
+      await soumettreConnexion108();
+      exiger(appels108.slice(appelsAvantF5108).includes("POST /api/login") && !appels108.slice(appelsAvantF5108).includes("POST /api/login/mfa"),
+        `(108f5) après un code refusé, le geste suivant renvoie encore un code avec un ticket usé : ${JSON.stringify(appels108.slice(appelsAvantF5108))}`);
+      // (f6) LE VERROU D'ÉCHECS AU SECOND FACTEUR : la phrase de l'écran, et retour au mot de passe.
+      await ouvrirLEtapeDuCode108();
+      champDuCode108.value = "123456";
+      servis108["POST /api/login/mfa"] = { statut: 429, reessai: "7", corps: { error: "trop d'échecs — réessayez plus tard" } };
+      await soumettreConnexion108();
+      exiger(nu108(erreurConnexion108) === "Trop de tentatives, réessaie dans 7s." && etapeDuMotDePasse108(),
+        `(108f6) le verrou d'échecs au second facteur ne se dit pas comme au premier, ou l'écran reste sur le ticket : « ${nu108(erreurConnexion108)} »`);
+      // (f6b) LE FREIN DU SECOND FACTEUR, PAR COMPTE : il se dit, avec son délai, n'accuse pas le code et
+      //       ramène au mot de passe — la phrase dit que s'y reconnecter ne le lève pas.
+      await ouvrirLEtapeDuCode108();
+      champDuCode108.value = "123456";
+      servis108["POST /api/login/mfa"] = { statut: 429, reessai: "42", corps: { error: CAUSE_FREIN108 } };
+      await soumettreConnexion108();
+      exiger(nu108(erreurConnexion108) === phraseConnexion108(modConnexion108, "second_facteur_freine", CAUSE_FREIN108, 42) && /\b42 s\b/.test(nu108(erreurConnexion108)) && etapeDuMotDePasse108(),
+        `(108f6b) LE FREIN DU SECOND FACTEUR SE DIT COMME LE VERROU PAR ADRESSE (« Trop de tentatives »), sans sa cause ou sans son délai : « ${nu108(erreurConnexion108).slice(0, 300)} »`);
+      // (f7) LE SUCCÈS RECHARGE — ET LUI SEUL.
+      await ouvrirLEtapeDuCode108();
+      champDuCode108.value = "123456";
+      servis108["POST /api/login/mfa"] = { statut: 200, corps: { ok: true, user: "hugo", role: "admin" } };
+      const rechargementsAvantF7108 = rechargements108;
+      await soumettreConnexion108();
+      exiger(rechargements108 === rechargementsAvantF7108 + 1,
+        `(108f7-négatif) le second facteur ACCEPTÉ ne recharge pas l'écran (${rechargements108 - rechargementsAvantF7108}) : la session posée ne serait jamais ouverte`);
+      // (f8) LE PREMIER FACTEUR SANS MFA : le rechargement d'avant, inchangé.
+      cabler108(modConnexion108);
+      utilisateur108.disabled = false; motDePasse108.disabled = false; blocDuCode108.style.display = "none";
+      utilisateur108.value = "hugo"; motDePasse108.value = "motdepasse";
+      servis108["POST /api/login"] = { statut: 200, corps: { ok: true, user: "hugo", role: "admin" } };
+      const rechargementsAvantF8108 = rechargements108;
+      await soumettreConnexion108();
+      exiger(rechargements108 === rechargementsAvantF8108 + 1 && etapeDuMotDePasse108(),
+        "(108f8-négatif) une connexion SANS second facteur ne recharge plus, ou ouvre l'étape du code : le chemin de tous les comptes sans MFA aurait changé");
+      // (f9) L'INSTANCE ANGLAISE PEINT LA FACE ANGLAISE.
+      cabler108(modConnexionEn108);
+      await ouvrirLEtapeDuCode108();
+      champDuCode108.value = "123456";
+      servis108["POST /api/login/mfa"] = { statut: 503, corps: { error: causeJuste108 || "x", id: "plume-e9-9" } };
+      await soumettreConnexion108();
+      exiger(nu108(erreurConnexion108.children[0]) === modConnexionEn108.motDuSecondFacteur("code_non_en_cause") && /NOT at fault/.test(nu108(erreurConnexion108)) && etapeDuCode108(),
+        `(108f9) SOUS \`LANG='en'\`, le refus du second facteur n'est pas dit en anglais : « ${nu108(erreurConnexion108).slice(0, 300)} »`);
+      const tableConnexion108 = [{ status: 401, cause: "c" }, { status: 401 }, { status: 503, cause: causeJuste108 }, { status: 503, cause: CAUSE_ILLISIBLES108 }, { status: 503, cause: "c" }, { status: 503, msg: "<html>" },
+        { status: 429, cause: CAUSE_FREIN108 }, { status: 429, cause: "trop d'échecs — réessayez plus tard" }, { status: 400, cause: "c" }, { status: 0, msg: "réseau" }]
+        .map((r) => modConnexion108.cleDuRefusDuSecondFacteur(r)).join(",");
+      exiger(tableConnexion108 === "code_refuse,code_refuse,code_non_en_cause,codes_de_secours_illisibles,second_facteur_refuse,,second_facteur_freine,,second_facteur_refuse,",
+        `(108f) le discriminant du second facteur ne sépare plus le code refusé, le code juste non consommé, la liste illisible et le frein : ${tableConnexion108}`);
+    } finally {
+      formulaireConnexion108._ecouteurs = cablageOrigine108.ecouteurs; formulaireConnexion108._bound = cablageOrigine108.lie;
+      utilisateur108.disabled = false; motDePasse108.disabled = false;
+      if (blocDuCode108) blocDuCode108.style.display = "none";
+      if (champDuCode108) champDuCode108.value = "";
+      erreurConnexion108.hidden = true; erreurConnexion108.replaceChildren();
+    }
+
+    // ══ (g) LE RELEVÉ : deux faces sur chaque entrée, plus aucun message composé repeint ═════════════
+    const deuxFaces108 = (src, nom) => {
+      const table = (src.match(new RegExp("const " + nom + " = \\{[\\s\\S]*?\\n\\};")) || [""])[0];
+      const cles = (table.match(/^ {2}\w+: \{$/gm) || []).length;
+      return cles >= 2 && (table.match(/^ {4}fr: /gm) || []).length === cles && (table.match(/^ {4}en: /gm) || []).length === cles;
+    };
+    exiger(deuxFaces108(srcDe108("cases.js"), "MOTS_DES_REFUS_D_INCIDENT") && deuxFaces108(srcDe108("idp.js"), "MOTS_DE_LA_DESACTIVATION_MFA") && deuxFaces108(srcDe108("login.js"), "MOTS_DU_SECOND_FACTEUR")
+      && deuxFaces108(srcDe108("idp.js"), "MOTS_DE_L_ACTIVATION_MFA") && deuxFaces108(srcDe108("core.js"), "MOTS_DES_REFUS_DU_SECOND_FACTEUR"),
+      "(108g) une table des refus neufs n'a pas ses DEUX faces sur chacune de ses entrées : une langue partirait sans l'autre");
+    const repeignent108 = [["cases.js", "async function incidentDeclare("], ["cases.js", "async function incidentDemote("], ["cases.js", "async function attachRunbook("], ["idp.js", "async function disableMfa("]]
+      .filter(([f, entete]) => /e\.message/.test(sansCommentaires108(corpsDeFonction108(srcDe108(f), entete))));
+    exiger(repeignent108.length === 0,
+      `(108g) un geste repeint encore le MESSAGE composé par \`apiSend\` — « <code> <corps JSON coupé à deux cents caractères> » — au lieu de la phrase servie : ${JSON.stringify(repeignent108)}`);
+  } finally {
+    globalThis.fetch = fetchOrigine108;
+    globalThis.setTimeout = minuterieOrigine108;
+    globalThis.location.reload = rechargementOrigine108;
+    S108.isAdmin = etatOrigine108.admin; S108.AUTH = etatOrigine108.auth; SEn108.isAdmin = etatOrigine108.adminEn; SEn108.AUTH = etatOrigine108.authEn;
+    document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
+    const listeDesActions108 = document.querySelector("#act-list"); if (listeDesActions108) listeDesActions108.replaceChildren();
+    const formulaireDeRiposte108 = document.querySelector("#act-form"); if (formulaireDeRiposte108) formulaireDeRiposte108.classList.add("hidden");
+    const puitsDeRiposte108 = document.querySelector("#af-result"); if (puitsDeRiposte108) puitsDeRiposte108.textContent = "";
+  }
+  console.log("(108) OK — les refus neufs de la déclaration d'incident, de l'attache d'un runbook et de la désactivation de la MFA sont peints par la cause que le démon sert, ENTIÈRE et dans les deux langues, au lieu du message composé « <code> <corps JSON coupé> » : un cinq cent trois qui n'a rien écrit dit ce qui reste en base, un quatre cent quatre nu le dit sans cause, un refus de saisie reste un refus de saisie, les succès restent des succès, et un deux cents sans `{attached}` n'est plus une attache. La désactivation sépare le code refusé (quatre cent un, qui l'accuse), la base refusée et la liste de secours illisible (deux cinq cent trois de faits différents, séparés par la CAUSE, aucun n'accusant le code) et le frein par compte (avec son délai servi), et n'annonce plus « MFA désactivée » sur un deux cents sans `{ok}` ; l'activation fait de même pour le code, la MFA déjà active, la course, l'écriture refusée et le frein, et n'annonce plus « MFA activée » sans codes de secours ; chaque cause que les trois routes servent est RECONNUE par le lecteur du point commun, relue dans le démon. L'écran de connexion DEMANDE enfin le second facteur — il prenait `{mfa_required, ticket}` pour une session et rechargeait —, échange le code et le ticket sur `/api/login/mfa`, garde le code sur un cinq cent trois « juste mais non consommé » ou « liste illisible », repart du mot de passe sur un code refusé ou un frein — qu'il dit tel, délai compris. L'étape de runbook et le formulaire du panneau Réponse lisent la partition identifiant servi / absent et sa face « absent » au POINT COMMUN, déplacées de `web/viz.js` qui les réémet : sur un deux cents vide ou une page de passerelle, aucune n'affirme plus de mise en file, et le formulaire reste ouvert sur la phrase. CE QUI ÉTAIT FAUX : aucune surface n'affichait de succès sur ces refus — le défaut était la phrase ; et l'écran de connexion n'appelait pas `/api/login/mfa` du tout.");
 }
 
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;

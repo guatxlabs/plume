@@ -3,7 +3,7 @@
 // change côté auth. Anti-XSS : tout texte via textContent/esc ; le secret (client_secret / bind pw) est un
 // champ password, JAMAIS réaffiché, ré-envoyé UNIQUEMENT s'il est re-saisi (omis = conservé côté serveur).
 // La vraie garde reste SERVEUR (/api/idp/* admin-only ; /api/mfa/* borné à au.name).
-import { $, api, apiSend, confirmWithConsequence, disclosure, esc, fmtTs, modal, muted, toast, withBusy } from './core.js';
+import { $, LANG, api, apiSend, confirmWithConsequence, disclosure, esc, fmtTs, modal, motDuRefusDuSecondFacteur, muted, natureDuRefusDuSecondFacteur, phraseDuRefusDuDemon, toast, withBusy } from './core.js';
 import { enabledSwitch } from './producer_ui.js';
 import { uiIsAdmin } from './multitenant.js';
 
@@ -275,17 +275,21 @@ async function startEnroll() {
   const lbl = document.createElement('label'); lbl.style.cssText = 'display:block;margin:6px 0';
   const inp = document.createElement('input'); inp.id = 'mfa-code'; inp.placeholder = 'code à 6 chiffres'; inp.inputMode = 'numeric'; inp.autocomplete = 'one-time-code';
   lbl.append('Vérifie un premier code : ', inp);
+  // `P10.22-n` — LE PUITS DU GESTE « VÉRIFIER & ACTIVER », DANS LA CARTE : un refus qui laisse l'enrôlement
+  // valable s'y écrit sans détruire le champ du code, pour que le geste se rejoue.
+  const resultat = document.createElement('div');
   const btn = mkBtn('Vérifier & activer', async () => {
     const code = inp.value.trim();
-    try {
-      const r = await apiSend('/mfa/verify', 'POST', { code });
-      toast('MFA activée', 'ok');
-      showRecovery(enroll, (r && r.recovery_codes) || []);
-    } catch (e) { toast('code invalide : ' + e.message, 'bad'); }
+    let r;
+    try { r = await apiSend('/mfa/verify', 'POST', { code }); }
+    catch (e) { await avouerLeRefusDActivation(cleDuRefusDActivation(e), phraseDuRefusDuDemon(e), e.delaiDuRefus, resultat); return; }
+    if (!(r && r.ok === true && Array.isArray(r.recovery_codes))) { await avouerLeRefusDActivation('activation_non_etablie', '', 0, resultat); return; }
+    toast('MFA activée', 'ok');
+    showRecovery(enroll, r.recovery_codes);
   });
   // Le bouton « Vérifier & activer » est enveloppé dans .rf-actions (comme openIdpForm) -> stylé.
   const actions = document.createElement('div'); actions.className = 'rf-actions'; actions.appendChild(btn);
-  box.append(p1, sec, uri, lbl, actions);
+  box.append(p1, sec, uri, lbl, actions, resultat);
   enroll.replaceChildren(box);
 }
 
@@ -302,6 +306,138 @@ function showRecovery(enroll, codes) {
   box.append(h, ul, actions); enroll.replaceChildren(box);
 }
 
+// `P10.22-n` — LE REFUS DE DÉSACTIVER DIT QUI EST EN CAUSE : LE CODE, OU LA BASE.
+//
+// CE QUE LE DÉMON SERT DEPUIS `P10.21-s` ET `P10.22-k`. `mfa_disable` (daemon/src/handlers/idp.rs) juge,
+// consomme et supprime dans une transaction : quatre cent un quand aucun facteur valide n'accompagne la
+// demande (un pas déjà consommé compris, compté comme un échec) ; quatre cent quatre quand aucune MFA n'est
+// enrôlée ; cinq cent trois `CAUSE_MFA_NON_DESACTIVEE` quand la base n'a pas pris la transaction — le compte
+// exige TOUJOURS son second facteur ; cinq cent trois `CAUSE_CODES_DE_SECOURS_ILLISIBLES` (`P10.22-r`) quand la
+// liste de secours n'a pas été lue — code ni accepté ni refusé ; quatre cent vingt-neuf quand le compte est
+// freiné (`P10.22-m`) ; `{ok:true}` sur le succès, seul corps de succès que la route serve.
+//
+// CE QUE LA CONSOLE EN FAISAIT, MESURÉ. Le même avis pour les trois refus : « erreur : » suivi du message
+// composé par `apiSend` — « 401 {"error":"code MFA requis pour désactiver"} » ou « 503 {"error":"DOUBLE
+// AUTHENTIFICATION TOUJOURS ACTIVE : … désactivati » coupé à deux cents caractères —, trois secondes, en
+// français. Rien ne distinguait « votre code est refusé » de « votre code est bon, la base a refusé ». Et le
+// succès était annoncé sur TOUT deux cents, corps vide et page de passerelle compris.
+//
+// LE DISCRIMINANT EST LE STATUT (`statutDuRefus`, porté par `apiSend`), PUIS LA CAUSE : le statut sépare
+// l'accusation du code (quatre cent un) de tout le reste ; deux cinq cent trois différents se séparent par la
+// cause servie, lue au point commun (`natureDuRefusDuSecondFacteur`). Le témoin 108 relit chaque cause dans
+// l'arbre du démon. La phrase s'écrit DANS le panneau (`#mfa-enroll`, le puits du geste refusé depuis
+// `P10.20-b`), à deux nœuds : la face choisie par `LANG`, puis la cause servie, entière.
+const MOTS_DE_LA_DESACTIVATION_MFA = {
+  code_refuse: {
+    fr: "Code REFUSÉ : la double authentification reste ACTIVE sur ce compte. Le démon a répondu —",
+    en: 'Code REFUSED: two-factor authentication stays ACTIVE on this account. The daemon answered —' },
+  desactivation_non_ecrite: {
+    fr: "Désactivation NON ENREGISTRÉE, et ton code n'est PAS en cause : la double authentification reste ACTIVE — le compte exige toujours un code à la connexion. Le geste peut être rejoué. Le démon en nomme la cause —",
+    en: 'Deactivation NOT RECORDED, and your code is NOT at fault: two-factor authentication stays ACTIVE — the account still requires a code at sign-in. The gesture can be replayed. The daemon names the cause —' },
+  desactivation_refusee: {
+    fr: "Désactivation REFUSÉE : le démon ne l'a pas confirmée. Il a répondu —",
+    en: 'Deactivation REFUSED: the daemon did not confirm it. It answered —' },
+  desactivation_non_etablie: {
+    fr: "Le démon a répondu sans confirmer la désactivation : rien ici n'établit que la double authentification est désactivée. Son statut, relu, est affiché ci-dessus.",
+    en: 'The daemon answered without confirming the deactivation: nothing here establishes that two-factor authentication is disabled. Its status, read again, is shown above.' },
+};
+// LE STATUT D'ABORD, LA CAUSE ENSUITE. Le quatre cent un est le code refusé (y compris un pas déjà consommé,
+// `P10.22-k`) ; les cinq cent trois se séparent par la cause servie — écriture refusée ou liste de secours
+// illisible, deux faits différents — ; le quatre cent vingt-neuf freiné aussi. Une cause que le point commun
+// ne connaît pas retombe sur le refus générique, qui colle la phrase sans rien en affirmer.
+function cleDuRefusDeDesactivation(e) {
+  const statut = e && e.statutDuRefus;
+  const nature = natureDuRefusDuSecondFacteur(e && e.causeDuDemon);
+  if (statut === 401) return 'code_refuse';
+  if (statut === 503 && nature === 'mfa_non_desactivee') return 'desactivation_non_ecrite';
+  if (statut === 503 && nature === 'codes_de_secours_illisibles') return 'codes_de_secours_illisibles';
+  if (statut === 429 && nature === 'second_facteur_freine') return 'second_facteur_freine';
+  return 'desactivation_refusee';
+}
+// Les clés propres au panneau viennent de ses tables ; les deux clés communes aux deux écrans du second
+// facteur, du point commun (`web/core.js`).
+const faceDuPanneau = (table, cle, delai) => (Object.prototype.hasOwnProperty.call(table, cle)
+  ? (LANG === 'en' ? table[cle].en : table[cle].fr)
+  : motDuRefusDuSecondFacteur(cle, delai));
+const motDeLaDesactivationMfa = (cle, delai) => faceDuPanneau(MOTS_DE_LA_DESACTIVATION_MFA, cle, delai);
+// L'aveu à deux nœuds ; `cause` vide = la face se suffit (aucune cause servie). L'appelant y pose la marque du
+// geste refusé (`dataset.refusDe…`, marque de POSE, pas de style : aucune règle CSS ne la vise).
+function aveuDuPanneau(mot, cause) {
+  const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:0;font-size:12px';
+  const dit = document.createElement('span');
+  dit.textContent = mot;
+  aveu.append(dit);
+  if (cause) aveu.append(' « ' + String(cause).trim() + ' »');
+  return aveu;
+}
+// Au puits du geste refusé (`#mfa-enroll`, depuis `P10.20-b`).
+function avouerLaDesactivation(cle, cause, delai) {
+  const hote = $('#mfa-enroll');
+  const mot = motDeLaDesactivationMfa(cle, delai);
+  if (!hote) { toast(cause ? mot + ' « ' + cause + ' »' : mot, 'bad', 9000); return; }
+  const aveu = aveuDuPanneau(mot, cause);
+  aveu.dataset.refusDeDesactivation = cle;
+  hote.hidden = false;
+  hote.replaceChildren(aveu);
+}
+
+// `P10.22-n` — L'ACTIVATION (`/api/mfa/verify`) LIT SES REFUS NEUFS (`P10.22-l`, `-m`). Le démon refuse une
+// MFA DÉJÀ ACTIVE en quatre cent neuf AVANT tout examen du code, et un enrôlement changé pendant la
+// vérification en quatre cent neuf nommé (`CAUSE_ENROLEMENT_CHANGE_PENDANT_LA_VERIFICATION`) ; l'écriture
+// refusée en cinq cent trois (`CAUSE_MFA_NON_ACTIVEE`) ; le compte freiné en quatre cent vingt-neuf ; le code
+// en quatre cent un. La console écrivait « code invalide : » suivi du message composé sur TOUS ces refus —
+// elle accusait le code sur une MFA déjà active, sur une course et sur une écriture refusée —, et « MFA
+// activée » avec une boîte de codes VIDE sur un deux cents sans `recovery_codes`.
+const MOTS_DE_L_ACTIVATION_MFA = {
+  code_refuse: {
+    fr: "Code REFUSÉ : la double authentification n'est PAS activée. Le démon a répondu —",
+    en: 'Code REFUSED: two-factor authentication is NOT enabled. The daemon answered —' },
+  deja_active: {
+    fr: "Rien n'est activé : la double authentification est DÉJÀ ACTIVE sur ce compte, le code n'a pas été examiné et aucun code de secours n'est servi. Son statut, relu, est affiché ci-dessus. Le démon a répondu —",
+    en: 'Nothing is enabled: two-factor authentication is ALREADY ACTIVE on this account, the code was not examined and no recovery code is served. Its status, read again, is shown above. The daemon answered —' },
+  enrolement_change: {
+    fr: "Rien n'est activé : l'enrôlement a changé pendant la vérification, et aucun code de secours n'est servi. Son état, relu, est affiché ci-dessus. Le démon en nomme la cause —",
+    en: 'Nothing is enabled: the enrolment changed during the verification, and no recovery code is served. Its state, read again, is shown above. The daemon names the cause —' },
+  activation_non_ecrite: {
+    fr: "Activation NON ENREGISTRÉE, et ton code n'est PAS en cause : le compte reste SANS second facteur et aucun code de secours n'est servi. Le geste peut être rejoué. Le démon en nomme la cause —",
+    en: 'Activation NOT RECORDED, and your code is NOT at fault: the account stays WITHOUT a second factor and no recovery code is served. The gesture can be replayed. The daemon names the cause —' },
+  activation_refusee: {
+    fr: "Activation REFUSÉE : le démon ne l'a pas confirmée. Il a répondu —",
+    en: 'Activation REFUSED: the daemon did not confirm it. It answered —' },
+  activation_non_etablie: {
+    fr: "Le démon a répondu sans servir de codes de secours : rien ici n'établit que la double authentification est activée. Son statut, relu, est affiché ci-dessus.",
+    en: 'The daemon answered without serving recovery codes: nothing here establishes that two-factor authentication is enabled. Its status, read again, is shown above.' },
+};
+function cleDuRefusDActivation(e) {
+  const statut = e && e.statutDuRefus;
+  const nature = natureDuRefusDuSecondFacteur(e && e.causeDuDemon);
+  if (statut === 401) return 'code_refuse';
+  if (statut === 409) return nature === 'enrolement_change' ? 'enrolement_change' : 'deja_active';
+  if (statut === 503 && nature === 'mfa_non_activee') return 'activation_non_ecrite';
+  if (statut === 429 && nature === 'second_facteur_freine') return 'second_facteur_freine';
+  return 'activation_refusee';
+}
+const motDeLActivationMfa = (cle, delai) => faceDuPanneau(MOTS_DE_L_ACTIVATION_MFA, cle, delai);
+// UN ENRÔLEMENT QUI N'EST PLUS CELUI DE LA CARTE SE RELIT. Sur une MFA déjà active, un enrôlement changé ou un
+// succès non établi, la carte (graine, champ du code) décrit un état qui n'est plus : le statut est relu —
+// la relecture vide le panneau — et l'aveu est posé ENSUITE, au puits du panneau. Sur les autres refus
+// l'enrôlement reste valable : l'aveu se pose dans la carte, sous le bouton, et le geste se rejoue.
+const ACTIVATION_A_RELIRE = new Set(['deja_active', 'enrolement_change', 'activation_non_etablie']);
+async function avouerLeRefusDActivation(cle, cause, delai, puitsDeLaCarte) {
+  const mot = motDeLActivationMfa(cle, delai);
+  const aveu = aveuDuPanneau(mot, cause);
+  aveu.dataset.refusDActivation = cle;
+  if (ACTIVATION_A_RELIRE.has(cle)) {
+    await loadMfa();
+    const hote = $('#mfa-enroll');
+    if (!hote) { toast(cause ? mot + ' « ' + cause + ' »' : mot, 'bad', 9000); return; }
+    hote.hidden = false;
+    hote.replaceChildren(aveu);
+    return;
+  }
+  puitsDeLaCarte.replaceChildren(aveu);
+}
+
 async function disableMfa() {
   // P11.5-b : désactiver la MFA ABAISSE une protection du compte -> confirmation partagée qui nomme la
   // conséquence, puis saisie du code dans la modale partagée (plus de prompt() natif).
@@ -309,11 +445,21 @@ async function disableMfa() {
   const r = await modal({ title: 'Code de vérification', message: 'Entre un code TOTP courant, ou un code de secours, pour confirmer la désactivation.', okText: 'Désactiver', fields: [{ name: 'code', label: 'Code', value: '', required: true, placeholder: 'code à 6 chiffres ou code de secours' }] });
   if (!r) return;
   const code = String(r.code || '');
-  try { await apiSend('/mfa/disable', 'POST', { code: code.trim() }); toast('MFA désactivée', 'ok'); loadMfa(); }
-  catch (e) { toast('erreur : ' + e.message, 'bad'); }
+  let j;
+  try { j = await apiSend('/mfa/disable', 'POST', { code: code.trim() }); }
+  catch (e) { avouerLaDesactivation(cleDuRefusDeDesactivation(e), phraseDuRefusDuDemon(e), e.delaiDuRefus); return; }
+  if (j && j.ok === true) { toast('MFA désactivée', 'ok'); loadMfa(); return; }
+  // Un deux cents qui ne porte pas le succès de la route : le statut est RELU d'abord — la relecture vide
+  // le puits —, l'aveu est posé ensuite.
+  await loadMfa();
+  avouerLaDesactivation('desactivation_non_etablie', '');
 }
 
 // `startEnroll` est exposé pour le harnais ESM (témoin 96 : le refus du geste d'enrôlement et l'aveu écrit
 // dans le panneau, rendus par leur fabrique réelle et non par une copie) ; il n'a aucun usage applicatif
 // hors de ce module, où seul le bouton « Activer la MFA » l'appelle.
-export { startEnroll };
+// `P10.22-n` — `disableMfa`, `cleDuRefusDeDesactivation`, `motDeLaDesactivationMfa`, `cleDuRefusDActivation`
+// et `motDeLActivationMfa` partent pour le même harnais (témoin 108) : les refus de désactiver et d'activer
+// se mesurent en JOUANT les gestes, modales comprises, et les discriminants se jugent dans les deux sens sur
+// les statuts et les causes que le démon sert. Aucun usage applicatif hors de ce module.
+export { startEnroll, disableMfa, cleDuRefusDeDesactivation, motDeLaDesactivationMfa, cleDuRefusDActivation, motDeLActivationMfa };

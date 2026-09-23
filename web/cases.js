@@ -1,6 +1,6 @@
 // cases.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // Cases (gestion d'incident, first-class #4a): liste/detail/CRUD + rattachement d'items.
-import { $, api, apiSend, phraseDuRefusDuDemon, aveuDeLaTraceManquante, causeDeLaTraceManquante, confirmModal, confirmWithConsequence, disclosure, downloadText, exportPDF, fmtTs, ic, LANG, modal, motDeLaTraceManquante, muted, pagedList, phraseDeLaCreationDeRiposteRefusee, phraseDeLaTraceManquante, sev, toCSV, toast, tsSlug, withBusy, socIsAdmin, socRole } from './core.js';
+import { $, api, apiSend, phraseDuRefusDuDemon, aveuDeLaTraceManquante, causeDeLaTraceManquante, cleDeLIdentifiantDeRiposte, confirmModal, confirmWithConsequence, disclosure, downloadText, exportPDF, fmtTs, ic, LANG, modal, motDeLaRiposteSansIdentifiant, motDeLaTraceManquante, muted, pagedList, phraseDeLaCreationDeRiposteRefusee, phraseDeLaTraceManquante, sev, toCSV, toast, tsSlug, withBusy, socIsAdmin, socRole } from './core.js';
 import { phraseDAffichagePartiel, phraseDEchantillonCoupe, phraseDeCoupe } from './coupe_de_liste.js'; // `P11.22-g` : une liste bornée dit sa coupe
 import { S } from './state.js';
 import { refresh } from './app.js';
@@ -1195,6 +1195,76 @@ function stepEl(c, s, edit) {
   return el;
 }
 
+// =================================================================================================
+// `P10.22-n` — LES REFUS NEUFS DE LA DÉCLARATION D'INCIDENT ET DE L'ATTACHE D'UN RUNBOOK, LUS SUR LA PHRASE
+// DU DÉMON.
+//
+// CE QUE LE DÉMON SERT DEPUIS `P10.21-t`. `incident_set` (daemon/src/handlers/incidents.rs) écrit palier,
+// type et pilote en UN énoncé compté : posé → deux cent quatre ; dossier introuvable → quatre cent quatre
+// NU (aucun corps) ; écriture non prise → cinq cent trois `CAUSE_DECLARATION_D_INCIDENT_NON_ECRITE`, servi
+// `<cause> (<détail>)`. La rétrogradation passe par la même route et le même énoncé. `case_runbook_attach`
+// rend `{attached}` ; une saisie refusée en quatre cents (« déjà attaché »…) ; et deux cinq cent trois,
+// tous deux SANS RIEN ÉCRIRE : les étapes non toutes écrites (`CAUSE_ETAPES_DU_RUNBOOK_NON_ECRITES`), et
+// les alertes du dossier non lues (`CAUSE_LISTE_ILLISIBLE`, refus posé avant toute écriture).
+//
+// CE QUE LA CONSOLE EN FAISAIT, MESURÉ. Aucun succès n'était annoncé sur ces refus — `apiSend` les jette —,
+// mais l'avis peignait `e.message` : « Élévation refusée : 503 {"error":"DÉCLARATION D'INCIDENT NON
+// ENREGISTRÉE, RIEN N'A CHANGÉ : … ni » — du JSON coupé à deux cents caractères, dont la phrase perdait
+// « Réessayez » et le détail du moteur ; celle du runbook perdait « un nouvel essai reste possible ». Trois
+// secondes d'affichage, en français seulement. Et « Runbook attaché » partait sur TOUT deux cents, corps
+// vide et page de passerelle compris, alors que la route ne sert jamais de succès sans `{attached}`.
+//
+// LE DISCRIMINANT EST LE STATUT, PAS UN MOT DU DÉMON. Sur ces deux routes, un cinq cent trois qui nomme sa
+// cause est TOUJOURS un refus qui n'a RIEN écrit — les deux branches du gestionnaire, et le refus d'accès
+// opérateur sans trace posé avant lui (`CAUSE_ACCES_OPERATEUR_SANS_TRACE`) ; le témoin 108 le relit dans
+// l'arbre du démon et REFUSE DE CONCLURE s'il cesse d'être vrai. La phrase dit donc ce qui reste en base,
+// et la cause servie suit, entière, dans les deux langues de la console.
+// =================================================================================================
+const MOTS_DES_REFUS_D_INCIDENT = {
+  declaration_non_ecrite: {
+    fr: "Incident : RIEN N'A CHANGÉ — la demande n'est pas enregistrée, le dossier garde la déclaration qu'il avait avant elle, et ni la chronologie ni le registre n'en portent trace. Le geste peut être rejoué. Le démon en nomme la cause —",
+    en: 'Incident: NOTHING CHANGED — the request is not recorded, the case keeps the declaration it had before it, and neither the timeline nor the ledger carries a trace of it. The gesture can be replayed. The daemon names the cause —' },
+  dossier_introuvable_sans_cause: {
+    fr: "Incident : le démon a répondu « introuvable » (404) sans nommer de cause. Rien n'a changé.",
+    en: 'Incident: the daemon answered "not found" (404) without naming a cause. Nothing changed.' },
+  declaration_refusee: {
+    fr: "Déclaration de l'incident REFUSÉE : le démon ne l'a pas confirmée. Il a répondu —",
+    en: 'Incident declaration REFUSED: the daemon did not confirm it. It answered —' },
+  retrogradation_refusee: {
+    fr: "Rétrogradation de l'incident REFUSÉE : le démon ne l'a pas confirmée. Il a répondu —",
+    en: 'Incident downgrade REFUSED: the daemon did not confirm it. It answered —' },
+  runbook_non_attache: {
+    fr: "Runbook NON ATTACHÉ : AUCUNE étape n'est posée — l'attache est entière ou n'est pas —, le dossier n'a pas de progression, et ni la chronologie ni le registre n'en portent trace. Un nouvel essai reste possible. Le démon en nomme la cause —",
+    en: 'Runbook NOT ATTACHED: NO step is set — the attachment is whole or not at all —, the case has no progress, and neither the timeline nor the ledger carries a trace of it. A new attempt remains possible. The daemon names the cause —' },
+  attache_refusee: {
+    fr: "Attachement du runbook REFUSÉ : le démon ne l'a pas confirmé. Il a répondu —",
+    en: 'Runbook attachment REFUSED: the daemon did not confirm it. It answered —' },
+  // Pas un refus : un deux cents qui ne porte pas le seul corps de succès de la route (`{attached}`) — vide,
+  // ou une page de passerelle. Rien ne l'établit ; le rejouer ne pose rien de plus, le démon refusant un
+  // second attachement (« un runbook est déjà attaché à cet incident »).
+  attache_non_etablie: {
+    fr: "Le démon a répondu sans dire combien d'étapes il a attachées : rien ici n'établit que le runbook est attaché. Rejouer le geste ne pose rien de plus — s'il l'est déjà, le démon refuse un second attachement.",
+    en: 'The daemon answered without saying how many steps it attached: nothing here establishes that the runbook is attached. Replaying the gesture sets nothing more — if it already is, the daemon refuses a second attachment.' },
+};
+// `geste` : 'declarer', 'retrograder', 'attacher'. Le statut est celui que `apiSend` porte à côté de la
+// cause (`statutDuRefus`) ; « nommé » veut dire que le démon a servi un corps `{error}`.
+function cleDuRefusDIncident(geste, e) {
+  const statut = e && e.statutDuRefus;
+  const nomme = !!(e && e.causeDuDemon);
+  if (geste === 'attacher') return statut === 503 && nomme ? 'runbook_non_attache' : 'attache_refusee';
+  if (statut === 503 && nomme) return 'declaration_non_ecrite';
+  if (statut === 404 && !nomme) return 'dossier_introuvable_sans_cause';
+  return geste === 'retrograder' ? 'retrogradation_refusee' : 'declaration_refusee';
+}
+const motDuRefusDIncident = (cle) => (LANG === 'en' ? MOTS_DES_REFUS_D_INCIDENT[cle].en : MOTS_DES_REFUS_D_INCIDENT[cle].fr);
+// L'avis — la modale s'est refermée, aucun puits n'est ouvert : phrase et cause dans une seule chaîne, comme
+// les refus de dossier. Sur le quatre cent quatre nu, la phrase dit déjà qu'aucune cause n'est nommée.
+function phraseDuRefusDIncident(geste, e) {
+  const cle = cleDuRefusDIncident(geste, e);
+  const mot = motDuRefusDIncident(cle);
+  return /_sans_cause$/.test(cle) ? mot : mot + ' « ' + phraseDuRefusDuDemon(e) + ' »';
+}
+
 async function incidentDeclare(c) {
   const r = await modal({ title: 'Déclarer un incident', okText: 'Déclarer', fields: [
     { name: 'tier', label: 'Tier (1=critique … 4=bas)', type: 'select', value: '1', options: [{ value: '1', label: 'Tier 1 (critique)' }, { value: '2', label: 'Tier 2' }, { value: '3', label: 'Tier 3' }, { value: '4', label: 'Tier 4 (bas)' }] },
@@ -1203,21 +1273,24 @@ async function incidentDeclare(c) {
   ] });
   if (!r) return;
   try { await apiSend('/cases/' + c.id + '/incident', 'POST', { tier: Number(r.tier) || 1, incident_type: (r.incident_type || '').trim(), commander: (r.commander || '').trim() }); }
-  catch (e) { toast('Élévation refusée : ' + ((e && e.message) || e), 'bad'); return; }
+  catch (e) { toast(phraseDuRefusDIncident('declarer', e), 'bad', 9000); return; }
   toast('Incident déclaré', 'ok'); await refreshCaseDetail(c.id);
 }
 
 async function incidentDemote(c) {
   if (!await confirmModal('Rétrograder l\'incident #' + c.id + ' en case ordinaire ?', { okText: 'Rétrograder', danger: false })) return;
   try { await apiSend('/cases/' + c.id + '/incident', 'POST', { demote: true }); }
-  catch (e) { toast('Rétrogradation refusée : ' + ((e && e.message) || e), 'bad'); return; }
+  catch (e) { toast(phraseDuRefusDIncident('retrograder', e), 'bad', 9000); return; }
   toast('Incident rétrogradé', 'ok'); await refreshCaseDetail(c.id);
 }
 
 async function attachRunbook(c, runbookId) {
   if (!runbookId) return;
-  try { await apiSend('/cases/' + c.id + '/runbook', 'POST', { runbook_id: runbookId }); }
-  catch (e) { toast('Attachement refusé : ' + ((e && e.message) || e), 'bad'); return; }
+  let j;
+  try { j = await apiSend('/cases/' + c.id + '/runbook', 'POST', { runbook_id: runbookId }); }
+  catch (e) { toast(phraseDuRefusDIncident('attacher', e), 'bad', 9000); return; }
+  // `P10.22-n` — le succès n'est annoncé que sur le corps de succès que la route sert.
+  if (!(j && Number.isInteger(j.attached))) { toast(motDuRefusDIncident('attache_non_etablie'), 'info', 9000); await refreshCaseDetail(c.id); return; }
   toast('Runbook attaché', 'ok'); await refreshCaseDetail(c.id);
 }
 
@@ -1275,18 +1348,21 @@ async function runStepSearch(c, s) {
 // qu'aucune ligne ne porte, que l'analyste ira chercher dans l'onglet Réponse. Le refus de la clé
 // `P10.20-t` vient précisément de là — le démon rendait l'identifiant d'une AUTRE ligne —, et une
 // console qui invente le sien referait le défaut d'un cran plus loin.
+// `P10.22-a` — ET LA FACE « ABSENT » N'AFFIRME PLUS CE QUE RIEN N'ÉTABLIT. Elle ouvrait sur « Action mise en
+// file — approbation requise » : sur un deux cents vide ou une page de passerelle (`apiSend` rend `null`),
+// c'est une mise en file que le démon n'a pas dite, et la requête n'a peut-être jamais atteint le démon.
+// La partition et la face « absent » viennent du point commun (`web/core.js`), celles-là mêmes que le geste
+// « bannir » lit depuis `P10.21-y` : même lecture, même phrase, le geste de l'étape et sa cible en
+// paramètres. La face « servi » reste ici, elle seule dit « mise en file ».
 const MOTS_DE_LA_RIPOSTE_MISE_EN_FILE = {
   identifiant_servi: {
     fr: 'Action mise en file (#{identifiant}) — approbation requise',
     en: 'Action queued (#{identifiant}) — approval required' },
-  identifiant_absent: {
-    fr: "Action mise en file — approbation requise. Le démon n'a rendu AUCUN identifiant : cette riposte ne peut pas être désignée par un numéro, elle se retrouve dans l'onglet Réponse par son geste et sa cible.",
-    en: 'Action queued — approval required. The daemon returned NO identifier: this response cannot be designated by a number, it is found in the Response tab by its gesture and target.' },
 };
-function motDeLaRiposteMiseEnFile(j) {
-  const identifiant = j && j.id;
-  const mots = MOTS_DE_LA_RIPOSTE_MISE_EN_FILE[identifiant ? 'identifiant_servi' : 'identifiant_absent'];
-  return (LANG === 'en' ? mots.en : mots.fr).replace('{identifiant}', String(identifiant));
+function motDeLaRiposteMiseEnFile(j, geste, cible) {
+  if (cleDeLIdentifiantDeRiposte(j) === 'identifiant_absent') return motDeLaRiposteSansIdentifiant(geste, cible);
+  const mots = MOTS_DE_LA_RIPOSTE_MISE_EN_FILE.identifiant_servi;
+  return (LANG === 'en' ? mots.en : mots.fr).replace('{identifiant}', String(j.id));
 }
 
 // `P10.20-v`, lu ici sous `P10.20-y` — LE GESTE A EU LIEU, ET SA TRACE MANQUE : LES DEUX SE DISENT.
@@ -1335,7 +1411,11 @@ async function prepareResponse(c, s) {
   // ce chemin-là, contrairement au 503, n'est pas un rejet et il faut le lire dans le corps. La cause est
   // passée au lecteur commun sous le nom qu'il attend, pour que les deux refus rendent la même grammaire.
   if (j && j.error) { toast(phraseDeLaCreationDeRiposteRefusee({ causeDuDemon: String(j.error).trim() }), 'bad', 9000); return; }
-  toast(motDeLaRiposteMiseEnFile(j), j && j.id ? 'ok' : 'info');
+  // `P10.22-a` — un identifiant servi se nomme, dans le registre du succès ; son absence se dit dans celui de
+  // l'information, et assez longtemps pour être lue (même partage que le geste « bannir »).
+  const mot = motDeLaRiposteMiseEnFile(j, s.action_kind, r.target.trim());
+  if (cleDeLIdentifiantDeRiposte(j) === 'identifiant_servi') toast(mot, 'ok');
+  else toast(mot, 'info', 9000);
   await refreshCaseDetail(c.id);
   // APRÈS la relecture : elle remplace les enfants de l'hôte, et l'aveu posé avant partirait avec eux.
   // La clé est lue par le lecteur commun (`P10.21-a`) : son nom n'est plus écrit dans cette vue.
@@ -1363,4 +1443,9 @@ async function prepareResponse(c, s) {
 // rougirait si elle cessait de venir du lecteur partagé.
 // `P10.21-a` — `motDuGenreDeLien` part nu (témoin 103) : le vocabulaire des liens de dossier se juge dans
 // les DEUX sens — les trois valeurs que le démon écrit, et le jeton qu'aucune allowlist ne produit plus.
+// `P10.22-n` — `cleDuRefusDIncident`, `motDuRefusDIncident` et les trois gestes (`incidentDeclare`,
+// `incidentDemote`, `attachRunbook`) partent pour le harnais ESM (témoin 108) : le discriminant se juge dans
+// les deux sens sur les corps que le démon sert, et l'avis ne se mesure qu'en JOUANT le geste. Aucun usage
+// applicatif hors de ce module.
+export { cleDuRefusDIncident, motDuRefusDIncident, incidentDeclare, incidentDemote, attachRunbook };
 export { OUVERTURE_DU_DOSSIER_NON_OUVERT, OUVERTURE_DU_LIEN_NON_POSE, OUVERTURE_DU_LIEN_NON_RETIRE, cleDuRattachementRefuse, cleDuRefusDeDossier, motDuRefusDeDossier, phraseDuRefusDeDossier, addToCase, canEditCases, caseBtn, caseItemEl, caseRow, createCase, linkCasePrompt, loadCaseOpsSummary, loadCases, motDeLaRiposteMiseEnFile, motDeLaTraceManquante, motDuGenreDeLien, openCase, prepareResponse, renderCaseDetail, renderCaseLinks, renderWizardPanel };

@@ -455,6 +455,84 @@ function phraseDeLaTraceManquante(cause) {
   return motDeLaTraceManquante() + ' \u00ab ' + cause + ' \u00bb';
 }
 
+// `P10.22-a` et `P10.22-c` — UN IDENTIFIANT SERVI OU ABSENT : LA PARTITION ET SA FACE « ABSENT » PARTENT AU
+// POINT COMMUN, PARCE QU'ELLES ONT TROIS USAGES.
+//
+// CE QUE LE DÉMON SERT. `action_create` (daemon/src/handlers/actions.rs) ne rend un succès qu'avec son
+// `id`. `apiSend`, plus bas, rend `null` sur un deux cents dont le corps est VIDE ou n'est pas du JSON — une
+// page de passerelle servie en deux cents en est un, et la requête n'a alors peut-être jamais atteint le
+// démon. Rien, sur ces deux formes, n'établit qu'une riposte a été créée.
+//
+// POURQUOI ICI. `P10.21-y` a écrit la partition dans `web/viz.js` pour le geste « bannir », seul usage
+// alors. Les deux autres surfaces qui créent une riposte par la même route la lisent désormais : l'étape
+// « réponse » d'un runbook (`web/cases.js`) et le formulaire du panneau Réponse (`web/detection_admin.js`).
+// Ce dernier n'importe pas `web/viz.js`, et l'arête `viz.js -> detection_admin.js` a déjà été mesurée
+// fatale à l'ordre d'évaluation (`P10.20-t`, ci-dessus) : le point commun est le seul module que les
+// trois importent déjà. DÉPLACEMENT PUR de la partition — même lecture, mot pour mot (`j.id` vrai) —, et
+// `web/viz.js` la RÉÉMET pour que tout module qui l'y lisait la lise encore.
+// LA FACE « ABSENT » PART AVEC ELLE, et c'est la phrase de `P10.21-y` mot pour mot, le geste en paramètre
+// au lieu de `ban_ip` écrit en dur : trois rédactions du même fait sur la même route dériveraient. Elle
+// N'AFFIRME ni la création ni la mise en file, et dit de retrouver la riposte avant de rejouer le geste,
+// qui en poserait une seconde. Les faces « servi », elles, restent à leurs surfaces : chacune nomme son
+// geste à sa façon (« créée », « mise en file »), et le formulaire n'en peint aucune — il se referme.
+const cleDeLIdentifiantDeRiposte = (j) => (j && j.id ? 'identifiant_servi' : 'identifiant_absent');
+const MOTS_DE_LA_RIPOSTE_SANS_IDENTIFIANT = {
+  fr: "Le démon a répondu sans rendre AUCUN identifiant : rien ici n'établit que l'action {geste} {cible} a été créée. Elle ne peut pas être désignée par un numéro — la chercher dans l'onglet Réponse par son geste et sa cible avant de l'approuver, ou avant de rejouer ce geste, qui en poserait une seconde.",
+  en: 'The daemon answered without returning ANY identifier: nothing here establishes that the {geste} {cible} action was created. It cannot be designated by a number — look for it in the Response tab by its gesture and target before approving it, or before replaying this gesture, which would queue a second one.',
+};
+function motDeLaRiposteSansIdentifiant(geste, cible) {
+  return (LANG === 'en' ? MOTS_DE_LA_RIPOSTE_SANS_IDENTIFIANT.en : MOTS_DE_LA_RIPOSTE_SANS_IDENTIFIANT.fr)
+    .replace('{geste}', String(geste)).replace('{cible}', String(cible));
+}
+
+// `P10.22-n` — LES REFUS DU SECOND FACTEUR, LUS PAR LEUR CAUSE AU POINT COMMUN DE LEURS DEUX ÉCRANS.
+//
+// CE QUE LE DÉMON SERT (daemon/src/handlers/idp.rs, `P10.21-s` puis `P10.22-k`, `-l`, `-m`, `-r`). Trois
+// routes jugent un second facteur — la connexion (`/api/login/mfa`, écran de `web/login.js`), la
+// désactivation et l'activation (`/api/mfa/disable`, `/api/mfa/verify`, panneau de `web/idp.js`) — et leurs
+// refus nommés ne disent pas la même chose de la personne devant l'écran : un code JUSTE que la base n'a pas
+// consommé, une liste de codes de secours ILLISIBLE (code ni accepté ni refusé), un compte FREINÉ (codes
+// refusés sans examen), une écriture refusée, un enrôlement changé pendant la vérification. Le statut ne
+// suffit plus à les séparer — trois de ces causes partagent le cinq cent trois —, la CAUSE servie le fait.
+//
+// LES OUVERTURES S'ANCRENT EN TÊTE, BORNÉES PAR UNICODE, comme celles des refus de dossier (`web/cases.js`) :
+// le démon sert chaque cause en tête de son corps `{error}`. Aucune n'est recopiée ailleurs : le témoin 108
+// relit chaque constante du démon et exige qu'elle soit reconnue ICI, dans les deux sens.
+// POURQUOI ICI : deux causes (`codes_de_secours_illisibles`, `second_facteur_freine`) sont servies aux DEUX
+// écrans, qui n'importent l'un de l'autre rien ; leurs phrases partent avec le lecteur.
+const OUVERTURES_DES_REFUS_DU_SECOND_FACTEUR = [
+  ['code_juste_non_consomme', /^(?:SECOND FACTEUR|CODE DE SECOURS) NON CONSOMMÉ(?![\p{L}\p{N}])/u],
+  ['codes_de_secours_illisibles', /^CODES DE SECOURS NON LUS(?![\p{L}\p{N}])/u],
+  ['second_facteur_freine', /^TROP D'ÉCHECS DU SECOND FACTEUR(?![\p{L}\p{N}])/u],
+  ['mfa_non_desactivee', /^DOUBLE AUTHENTIFICATION TOUJOURS ACTIVE(?![\p{L}\p{N}])/u],
+  ['mfa_non_activee', /^DOUBLE AUTHENTIFICATION NON ACTIVÉE(?![\p{L}\p{N}])/u],
+  ['enrolement_change', /^ENRÔLEMENT CHANGÉ PENDANT LA VÉRIFICATION(?![\p{L}\p{N}])/u],
+];
+// Rend la nature du refus, ou '' quand la phrase n'ouvre sur aucune cause connue — l'appelant retombe alors
+// sur son refus générique, qui colle la phrase sans rien en affirmer.
+function natureDuRefusDuSecondFacteur(phrase) {
+  const p = String(phrase || '').trim();
+  const trouvee = OUVERTURES_DES_REFUS_DU_SECOND_FACTEUR.find(([, ouverture]) => ouverture.test(p));
+  return trouvee ? trouvee[0] : '';
+}
+// Les deux faces communes aux deux écrans ; `{delai}` est le délai servi (`Retry-After`), en secondes.
+const MOTS_DES_REFUS_DU_SECOND_FACTEUR = {
+  codes_de_secours_illisibles: {
+    fr: "Ton code n'est ni accepté ni refusé : la liste des codes de secours de ce compte n'a pas pu être lue, aucun échec n'est compté et rien n'est modifié. Réessaie, ou présente un code TOTP. Le démon en nomme la cause —",
+    en: 'Your code is neither accepted nor refused: the recovery code list of this account could not be read, no failure is counted and nothing is changed. Try again, or present a TOTP code. The daemon names the cause —' },
+  second_facteur_freine: {
+    fr: "Second facteur FREINÉ sur ce compte : trop d'échecs, les codes sont refusés SANS être examinés — réessaie dans {delai} s. Se reconnecter par mot de passe ne lève pas le frein. Le démon en nomme la cause —",
+    en: 'Second factor THROTTLED on this account: too many failures, codes are refused WITHOUT being examined — try again in {delai} s. Signing in again with the password does not lift it. The daemon names the cause —' },
+  second_facteur_freine_sans_delai: {
+    fr: "Second facteur FREINÉ sur ce compte : trop d'échecs, les codes sont refusés SANS être examinés jusqu'à la fin du délai. Se reconnecter par mot de passe ne lève pas le frein. Le démon en nomme la cause —",
+    en: 'Second factor THROTTLED on this account: too many failures, codes are refused WITHOUT being examined until the delay ends. Signing in again with the password does not lift it. The daemon names the cause —' },
+};
+function motDuRefusDuSecondFacteur(cle, delai) {
+  const cleServie = cle === 'second_facteur_freine' && !(delai > 0) ? 'second_facteur_freine_sans_delai' : cle;
+  const mots = MOTS_DES_REFUS_DU_SECOND_FACTEUR[cleServie];
+  return (LANG === 'en' ? mots.en : mots.fr).replace('{delai}', String(delai));
+}
+
 async function api(path) {
   // Sur panne transitoire de passerelle -> réessais GET-only (idempotents) ~400ms puis ~800ms, sinon
   // message propre. Toute autre erreur garde EXACTEMENT le comportement d'avant (statut+corps / vide / non-JSON).
@@ -498,7 +576,19 @@ async function apiSend(path, method = 'POST', body) {
   // `P10.20-b` — MÊME PORTAGE QUE DANS `api()` : la coupe à 200 caractères tronque les phrases longues que
   // le démon écrit pour être lues (un refus de lecture en fait 250 et plus), et le JSON brut n'est pas un
   // texte d'écran. Le message ne bouge pas ; la cause voyage à côté.
-  if (!r.ok) throw avecLaCauseDuDemon(new Error(r.status + (text ? ' ' + text.slice(0, 200) : '')), causeNommeeParLeDemon(text));
+  // `P10.22-n` — LE STATUT VOYAGE AUSSI À CÔTÉ DU MESSAGE. Sur une même route, le démon sépare par lui des
+  // refus qui ne disent pas la même chose de l'utilisateur : `mfa_disable` rend quatre cent un quand le
+  // code est refusé, cinq cent trois quand le code est bon et que la base n'a pas pris l'écriture. Le
+  // relire dans le message composé serait analyser une chaîne que ce module fabrique pour être lue.
+  // Le délai d'un refus freiné (en-tête de nouvel essai, en secondes) voyage de même : le second facteur
+  // freiné le sert, et « réessaie plus tard » ne dit pas quand.
+  if (!r.ok) {
+    const refus = avecLaCauseDuDemon(new Error(r.status + (text ? ' ' + text.slice(0, 200) : '')), causeNommeeParLeDemon(text));
+    refus.statutDuRefus = r.status;
+    const delai = r.headers && typeof r.headers.get === 'function' ? parseInt(r.headers.get('retry-after') || '', 10) : NaN;
+    if (Number.isFinite(delai) && delai > 0) refus.delaiDuRefus = delai;
+    throw refus;
+  }
   if (!text) return null;
   try { return JSON.parse(text); } catch { return null; }
 }
@@ -1901,6 +1991,11 @@ export {
   // mise en file le partagent, faute de quoi chacune écrirait le nom de la clé et sa propre phrase, et
   // l'une d'elles finirait par avouer autre chose que les deux autres sur le même fait.
   CLE_DU_REGISTRE_SANS_MAILLON, causeDeLaTraceManquante, motDeLaTraceManquante, aveuDUneTraceManquante, aveuDeLaTraceManquante, phraseDeLaTraceManquante,
+  // `P10.22-a` / `P10.22-c` — la partition identifiant servi / absent et sa face « absent », pour les mêmes
+  // trois surfaces et pour la même raison.
+  cleDeLIdentifiantDeRiposte, motDeLaRiposteSansIdentifiant,
+  // `P10.22-n` — la nature d'un refus du second facteur et les deux faces communes à ses deux écrans.
+  natureDuRefusDuSecondFacteur, motDuRefusDuSecondFacteur,
   // `P10.20-k` — ET LE LECTEUR QUI TIENT LES DEUX MOULES DE REFUS (JSON `error` et texte brut) : les
   // tableaux de bord et les modèles de données le PARTAGENT, faute de quoi chacun écrirait son
   // extraction et l'un des deux finirait par ne plus reconnaître la forme que l'autre lit.

@@ -3,7 +3,7 @@
 // entre l'application et l'overlay — est exposée par `initAuthGate()`, appelée par `app.js` au point où ce bloc
 // vivait (un module s'exécute à l'import, avant l'enveloppe `fetch` d'`app.js` qui pose CSRF et tenant).
 // `multitenant.js` continue de lire `fetchMe` / `setAuthUI` via le ré-export d'`app.js`. N'importe pas `app.js`.
-import { $, api, apiSend, applyRoleClass, causeNommeeParLeDemon, confirmModal } from './core.js';
+import { $, LANG, api, apiSend, applyRoleClass, causeNommeeParLeDemon, confirmModal, motDuRefusDuSecondFacteur, natureDuRefusDuSecondFacteur } from './core.js';
 import { S } from './state.js';
 import { initAiAssist } from './ai.js';
 import { initEnvironments, initTenants } from './multitenant.js';
@@ -59,7 +59,16 @@ async function doLogin(user, pass) {
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
     body: JSON.stringify({ user, pass }),
   });
-  if (r.ok) return { ok: true };
+  // `P10.22-n` — UN PREMIER FACTEUR ACCEPTÉ N'EST PAS UNE SESSION. Sur un compte à MFA active, `login_post`
+  // rend deux cents `{mfa_required: true, ticket}` SANS poser de session (daemon/src/session.rs). Cet écran
+  // lisait tout deux cents comme un succès et rechargeait : `/api/me` rendait quatre cent un, l'écran
+  // revenait, VIDE et sans un mot — le second facteur n'était jamais demandé, et un compte à MFA ne pouvait
+  // pas ouvrir de session par ce formulaire. Le corps du succès est donc LU.
+  if (r.ok) {
+    let corps = null; try { corps = JSON.parse(await r.text()); } catch (e) {}
+    if (corps && corps.mfa_required === true && typeof corps.ticket === 'string' && corps.ticket) return { ok: false, ticketDuSecondFacteur: corps.ticket };
+    return { ok: true };
+  }
   if (r.status === 429) {
     const ra = parseInt(r.headers.get('Retry-After') || '', 10);
     return { ok: false, status: 429, retry: Number.isFinite(ra) && ra > 0 ? ra : 0 };
@@ -91,6 +100,71 @@ async function doLogin(user, pass) {
   if (cause) return { ok: false, status: r.status, cause };
   return { ok: false, status: r.status, msg: corps.slice(0, 160) };
 }
+// `P10.22-n` — LE SECOND FACTEUR : LA ROUTE QUE CET ÉCRAN N'APPELAIT PAS, ET LES DEUX REFUS QU'IL DOIT SÉPARER.
+//
+// CE QUE LE DÉMON SERT. `login_mfa_post` (daemon/src/handlers/idp.rs) échange le ticket et un code contre la
+// session : deux cents `{ok}` et les cookies ; quatre cent un quand le ticket ou le code est refusé
+// (« code MFA invalide », « ticket MFA invalide ou expiré (recommencez la connexion) », « aucune MFA active
+// pour ce compte ») ; quatre cent vingt-neuf au verrou d'échecs par adresse, ou au FREIN du second facteur
+// par compte (`CAUSE_SECOND_FACTEUR_FREINE`, `P10.22-m`, que se reconnecter par mot de passe ne lève pas) ;
+// cinq cent trois quand le code est JUSTE mais que la base n'a pas pris l'écriture qui le consomme
+// (`CAUSE_PAS_TOTP_NON_CONSOMME`, `CAUSE_CODE_DE_SECOURS_NON_CONSOMME`, `P10.21-s`) — aucune session, et le code
+// n'est PAS brûlé — ; cinq cent trois encore quand la liste des codes de secours n'a pas été lue
+// (`CAUSE_CODES_DE_SECOURS_ILLISIBLES`, `P10.22-r`) — code ni accepté ni refusé.
+//
+// CES REFUS NE DISENT PAS LA MÊME CHOSE DE LA PERSONNE DEVANT L'ÉCRAN. Le quatre cent un accuse son code (ou
+// un ticket périmé) : la connexion reprend depuis le mot de passe, ce qui couvre les trois phrases d'un
+// geste. Les cinq cent trois ne l'accusent PAS : le code reste dans son champ, et la phrase dit qu'il peut
+// être soumis de nouveau — ou, liste illisible, qu'un code TOTP le peut. Le frein ramène au mot de passe et
+// dit que cela ne le lève pas. Le partage est le STATUT, puis la CAUSE lue au point commun
+// (`natureDuRefusDuSecondFacteur`, web/core.js) ; le témoin 108 relit chaque cause dans l'arbre du démon.
+const MOTS_DU_SECOND_FACTEUR = {
+  code_manquant: {
+    fr: "Ce compte exige un second facteur : saisis le code de ton application d'authentification, ou un code de secours.",
+    en: 'This account requires a second factor: enter the code from your authenticator app, or a recovery code.' },
+  code_refuse: {
+    fr: "Code REFUSÉ : aucune session n'est ouverte. Reprends la connexion depuis le mot de passe. Le démon a répondu —",
+    en: 'Code REFUSED: no session is open. Start the sign-in again from the password. The daemon answered —' },
+  code_non_en_cause: {
+    fr: "Connexion REFUSÉE, et ton code n'est PAS en cause : le démon n'a ouvert aucune session. Le même code peut être soumis de nouveau tant qu'il est valable. Le démon en nomme la cause —",
+    en: 'Sign-in REFUSED, and your code is NOT at fault: the daemon opened no session. The same code can be submitted again while it is valid. The daemon names the cause —' },
+  second_facteur_refuse: {
+    fr: "Connexion REFUSÉE au second facteur : le démon n'a ouvert aucune session. Il a répondu —",
+    en: 'Sign-in REFUSED at the second factor: the daemon opened no session. It answered —' },
+};
+// Les clés propres à cet écran viennent de sa table ; les deux clés communes aux deux écrans du second
+// facteur (`codes_de_secours_illisibles`, `second_facteur_freine`), du point commun.
+const motDuSecondFacteur = (cle, delai) => (Object.prototype.hasOwnProperty.call(MOTS_DU_SECOND_FACTEUR, cle)
+  ? (LANG === 'en' ? MOTS_DU_SECOND_FACTEUR[cle].en : MOTS_DU_SECOND_FACTEUR[cle].fr)
+  : motDuRefusDuSecondFacteur(cle, delai));
+// Le verrou d'échecs PAR ADRESSE n'est pas une clé ici : il garde la phrase que l'écran a déjà pour lui.
+function cleDuRefusDuSecondFacteur(res) {
+  const nature = natureDuRefusDuSecondFacteur(res.cause);
+  if (res.status === 401) return 'code_refuse';
+  if (res.status === 429) return nature === 'second_facteur_freine' ? 'second_facteur_freine' : '';
+  if (res.status === 503 && nature === 'code_juste_non_consomme') return 'code_non_en_cause';
+  if (res.status === 503 && nature === 'codes_de_secours_illisibles') return 'codes_de_secours_illisibles';
+  if (res.cause) return 'second_facteur_refuse';
+  return '';
+}
+async function doLoginMfa(ticket, code) {
+  // Même forme de requête que `/api/login` : route PUBLIQUE, exemptée de CSRF (daemon/src/auth.rs).
+  const r = await fetch('/api/login/mfa', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ ticket, code }),
+  });
+  if (r.ok) return { ok: true };
+  let corps = ''; try { corps = await r.text(); } catch (e) {}
+  const cause = causeNommeeParLeDemon(corps);
+  if (r.status === 429) {
+    // Le frein du second facteur et le verrou par adresse partagent le statut : la cause les sépare.
+    const ra = parseInt(r.headers.get('Retry-After') || '', 10);
+    return { ok: false, status: 429, retry: Number.isFinite(ra) && ra > 0 ? ra : 0, cause };
+  }
+  if (cause) return { ok: false, status: r.status, cause };
+  return { ok: false, status: r.status, msg: corps.slice(0, 160) };
+}
 function bindLoginForm() {
   const f = $('#login-form'); if (!f || f._bound) return; f._bound = true;
   const err = $('#login-err'), btn = $('#login-submit');
@@ -106,9 +180,48 @@ function bindLoginForm() {
     err.replaceChildren(dit, document.createTextNode(' « ' + String(cause).trim() + ' »'));
     err.hidden = false;
   };
+  // `P10.22-n` — L'ÉTAPE DU CODE. Le ticket vit dans cette fermeture, jamais dans un stockage : il ne vaut
+  // que pour cette page et cinq minutes. Identifiant et mot de passe sont DÉSACTIVÉS pendant l'étape — un
+  // champ requis vide bloquerait l'envoi du formulaire — et rendus au retour vers le mot de passe.
+  let ticketDuSecondFacteur = '';
+  const aveuADeuxNoeuds = (mot, cause) => {
+    if (!err) return;
+    const dit = document.createElement('span');
+    dit.textContent = mot;
+    if (cause) err.replaceChildren(dit, document.createTextNode(' « ' + String(cause).trim() + ' »'));
+    else err.replaceChildren(dit);
+    err.hidden = false;
+  };
+  const poserLEtapeDuCode = (ticket) => {
+    ticketDuSecondFacteur = ticket;
+    const bloc = $('#login-code-lbl'), code = $('#login-code');
+    ['#login-user', '#login-pass'].forEach(sel => { const c = $(sel); if (c) c.disabled = !!ticket; });
+    if (bloc) bloc.style.display = ticket ? '' : 'none';
+    if (code && !ticket) code.value = '';
+    const cible = ticket ? code : $('#login-pass');
+    if (cible) { try { cible.focus(); } catch (e) {} }
+  };
+  const direTropDeTentatives = res => fail(res.retry ? `Trop de tentatives, réessaie dans ${res.retry}s.` : 'Trop de tentatives, réessaie plus tard.');
+  const soumettreLeCode = async () => {
+    const code = ($('#login-code') ? $('#login-code').value : '').trim();
+    if (!code) { aveuADeuxNoeuds(motDuSecondFacteur('code_manquant'), ''); return; }
+    if (btn) { btn.disabled = true; btn.dataset._t = btn.textContent; btn.textContent = '...'; }
+    let res;
+    try { res = await doLoginMfa(ticketDuSecondFacteur, code); }
+    catch (ex) { res = { ok: false, status: 0, msg: ex && ex.message }; }
+    if (btn) { btn.disabled = false; btn.textContent = btn.dataset._t || 'Se connecter'; }
+    if (res.ok) { location.reload(); return; }
+    const cle = cleDuRefusDuSecondFacteur(res);
+    // Le verrou, le frein et le code refusé ramènent au mot de passe : le ticket ne sert plus.
+    if (res.status === 429 || cle === 'code_refuse') { poserLEtapeDuCode(''); const p = $('#login-pass'); if (p) p.value = ''; }
+    if (cle) aveuADeuxNoeuds(motDuSecondFacteur(cle, res.retry), res.cause || '');
+    else if (res.status === 429) direTropDeTentatives(res);
+    else fail('Échec de connexion' + (res.msg ? ' : ' + res.msg : '') + (res.status ? ' (' + res.status + ')' : ''));
+  };
   f.addEventListener('submit', async e => {
     e.preventDefault();
     if (err) err.hidden = true;
+    if (ticketDuSecondFacteur) { await soumettreLeCode(); return; }
     const user = ($('#login-user') ? $('#login-user').value : '').trim();
     const pass = $('#login-pass') ? $('#login-pass').value : '';
     if (!user || !pass) { fail('Renseigne identifiant et mot de passe.'); return; }
@@ -123,7 +236,9 @@ function bindLoginForm() {
       location.reload();
       return;
     }
-    if (res.status === 429) fail(res.retry ? `Trop de tentatives, réessaie dans ${res.retry}s.` : 'Trop de tentatives, réessaie plus tard.');
+    // `P10.22-n` — le mot de passe est accepté et AUCUNE session n'est posée : l'étape du code s'ouvre.
+    if (res.ticketDuSecondFacteur) { poserLEtapeDuCode(res.ticketDuSecondFacteur); return; }
+    if (res.status === 429) direTropDeTentatives(res);
     else if (res.status === 401) fail('Identifiants invalides.');
     // `P10.20-b` — le refus NOMMÉ passe avant le message générique : les deux autres issues ci-dessus
     // sont des faits ÉTABLIS (trop de tentatives, identifiants faux), celle-ci ne l'est pas.
@@ -165,4 +280,7 @@ function initAuthGate() {
 // par le chemin RÉEL de l'écran — le formulaire d'`index.html`, `doLogin`, et la boîte `#login-err` —
 // et non par une copie). Elle est idempotente (`f._bound`) et n'a d'autre appelant applicatif
 // qu'`initAuthGate`, juste au-dessus.
-export { initAuthGate, bindLoginForm, fetchMe, setAuthUI, showLogin };
+// `P10.22-n` — `motDuSecondFacteur` et `cleDuRefusDuSecondFacteur` partent pour le même harnais (témoin
+// 108) : les faces se jugent sous les deux instances de langue, le discriminant dans les deux sens sur les
+// statuts que le démon sert. Aucun usage applicatif hors de ce module.
+export { initAuthGate, bindLoginForm, fetchMe, setAuthUI, showLogin, motDuSecondFacteur, cleDuRefusDuSecondFacteur };

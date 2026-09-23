@@ -271,6 +271,7 @@ const I18N_EN = {
   "Provisionner": "Provision", "Rafraîchir": "Refresh", "Recharger": "Reload", "Réduire": "Reducing", "Requête": "Query", "Raison": "Reason", "Limite": "Limit",
   "Fenêtre": "Window", "Format": "Format", "Méthode": "Method", "Ressource": "Resource", "Pagination": "Pagination", "Préfixe": "Prefix", "Nom d'en-tête": "Header name",
   "Identifiant": "Identifier", "Utilisateur": "User", "Mot de passe": "Password", "Connexion": "Sign in", "Se connecter": "Sign in", "Se déconnecter": "Sign out",
+  "Code de double authentification": "Two-factor code",
   "Utilisateur connecté": "Signed-in user", "Environnement": "Environment", "Environnement courant": "Current environment", "Tenant courant": "Current tenant",
   "Tenants": "Tenants", "Conformité": "Compliance", "Couverture": "Coverage", "Données": "Data", "Défaut": "Default", "Sévérité ↓": "Severity ↓",
   "Observation": "Observation", "Objet :": "Object:", "Sens IP :": "IP direction:", "Quand ?": "When?", "Champ-clé": "Key field", "Collection (id)": "Collection (id)",

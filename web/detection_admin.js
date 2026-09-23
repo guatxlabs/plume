@@ -4,7 +4,7 @@
 // PURE MOVE : corps de fonctions IDENTIQUES au monolithe, seuls les import/export sont ajoutes.
 // Le cycle app<->module est benin : les fonctions importees d'app.js ne sont appelees qu'a
 // l'EXECUTION (handlers/async apres await), jamais a l'evaluation du module.
-import { $, LANG, esc, sev, fmtTs, ic, muted, api, apiSend, confirmModal, toast, pagedList, managedBadge, gateDeleteBtn, contentSubmit, contentDelete, fetchInto, formMsg, phraseDuRefusDuDemon, aveuDeLaCreationDeRiposte, aveuDeLaTraceManquante, causeDeLaTraceManquante, socIsAdmin, lsSet, collapsibleGroup, disclosure } from './core.js';
+import { $, LANG, esc, sev, fmtTs, ic, muted, api, apiSend, confirmModal, toast, pagedList, managedBadge, gateDeleteBtn, contentSubmit, contentDelete, fetchInto, formMsg, phraseDuRefusDuDemon, aveuDeLaCreationDeRiposte, aveuDeLaTraceManquante, causeDeLaTraceManquante, cleDeLIdentifiantDeRiposte, motDeLaRiposteSansIdentifiant, socIsAdmin, lsSet, collapsibleGroup, disclosure } from './core.js';
 import { libelleDeTechnique, nomDeTechnique } from './catalogue_attack.js'; // `P11.6-c` : nom dérivé du catalogue servi, ou motif de son absence
 import { S, lireLeStockageDuSite, ecrireDansLeStockageDuSite, ecrireSansDireLeRefus, RAISONS_DE_SILENCE } from './state.js';
 import { initSigmaImport } from './sigmaimport.js';
@@ -1195,7 +1195,21 @@ if ($('#act-form')) $('#act-form').addEventListener('submit', async e => {
   // vidé, le geste rejoué s'arrête sur « cible requise » au lieu de poser une seconde riposte.
   const sansMaillon = causeDeLaTraceManquante(j);
   $('#af-target').value = ''; $('#af-reason').value = '';
-  if (sansMaillon) $('#af-result').replaceChildren(aveuDeLaTraceManquante(sansMaillon, 'span'));
+  // `P10.22-c` — UN IDENTIFIANT ABSENT N'EST PAS UN SUCCÈS, ET LE FORMULAIRE NE SE REFERME PLUS DESSUS EN
+  // SILENCE. Sur un deux cents vide ou une page de passerelle, `apiSend` rend `null` : ce formulaire se
+  // repliait comme sur une riposte créée, alors que rien n'établit qu'elle existe. La partition et la
+  // phrase sont celles du point commun (`web/core.js`), que le geste « bannir » et l'étape de runbook lisent
+  // aussi. LE FORMULAIRE RESTE OUVERT pour la même raison que l'aveu de trace manquante ci-dessous — le
+  // puits vit DANS le formulaire —, et ses champs sont vidés pour la même raison : la phrase dit de
+  // retrouver la riposte AVANT de rejouer le geste. Un identifiant SERVI replie le formulaire comme avant :
+  // la ligne neuve, numérotée, est redessinée dans la file juste en dessous.
+  if (cleDeLIdentifiantDeRiposte(j) === 'identifiant_absent') {
+    const dit = document.createElement('span');
+    dit.textContent = motDeLaRiposteSansIdentifiant(body.kind, body.target);
+    $('#af-result').replaceChildren(dit);
+    if (sansMaillon) $('#af-result').append(' ', aveuDeLaTraceManquante(sansMaillon, 'span'));
+  }
+  else if (sansMaillon) $('#af-result').replaceChildren(aveuDeLaTraceManquante(sansMaillon, 'span'));
   else { $('#act-form').classList.add('hidden'); $('#af-result').textContent = ''; }
   apresCreationDUneAction();   // `P11.18-h` : la ligne qu'on vient d'écrire n'a aucune raison de porter la recherche posée
 });

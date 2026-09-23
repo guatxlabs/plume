@@ -1,6 +1,6 @@
 // viz.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // Explore + viz/charts: drilldown, fenetre glissante, requete interactive, rendu table/graphes (partages avec dashboards).
-import { $, CSSV, LANG, LOC, SEV, api, apiSend, bornerLePopoverSousSonAncre, causeDeLaTraceManquante, cleDeLaSuiteDuRegistre, colComparator, largeursDeColonnes, confirmModal, esc, flashStopped, fmtTs, ic, makePager, muted, phraseDeLaCreationDeRiposteRefusee, phraseDeLaTraceManquante, sev, socIsAdmin, toast, tzOpts } from './core.js';
+import { $, CSSV, LANG, LOC, SEV, api, apiSend, bornerLePopoverSousSonAncre, causeDeLaTraceManquante, cleDeLaSuiteDuRegistre, cleDeLIdentifiantDeRiposte, colComparator, largeursDeColonnes, confirmModal, esc, flashStopped, fmtTs, ic, makePager, motDeLaRiposteSansIdentifiant, muted, phraseDeLaCreationDeRiposteRefusee, phraseDeLaTraceManquante, sev, socIsAdmin, toast, tzOpts } from './core.js';
 import { S } from './state.js';
 // P11.4-h : LE clic qui respecte une sélection (mécanisme partagé, `copie_et_selection.js`).
 import { clicQuiRespecteLaSelection } from './copie_et_selection.js';
@@ -286,18 +286,19 @@ function timelineEl(results) {
 // la distinction ; elle est reprise ici, avec la MÊME lecture (un identifiant est servi quand `j.id` est
 // vrai) et deux faces par issue. La face « absent » N'AFFIRME PAS la création — rien ne l'établit — et dit
 // de retrouver la riposte avant d'en rejouer le geste, qui en poserait une seconde.
+// `P10.22-a` — LA PARTITION ET LA FACE « ABSENT » SONT PARTIES AU POINT COMMUN (`web/core.js`) : l'étape de
+// runbook et le formulaire du panneau Réponse les lisent désormais, et ce dernier n'importe pas ce module.
+// DÉPLACEMENT PUR : la phrase y est celle-ci mot pour mot, `ban_ip` passé en paramètre ; la face « servi »,
+// propre à ce geste, reste ici. La partition est RÉÉMISE par ce module (témoin 107).
 const MOTS_DU_BANNISSEMENT_MIS_EN_FILE = {
   identifiant_servi: {
     fr: "Action créée (#{identifiant}, en attente) - onglet Réponse pour l'approuver.",
     en: 'Action created (#{identifiant}, pending) - approve it in the Response tab.' },
-  identifiant_absent: {
-    fr: "Le démon a répondu sans rendre AUCUN identifiant : rien ici n'établit que l'action ban_ip {cible} a été créée. Elle ne peut pas être désignée par un numéro — la chercher dans l'onglet Réponse par son geste et sa cible avant de l'approuver, ou avant de rejouer ce geste, qui en poserait une seconde.",
-    en: 'The daemon answered without returning ANY identifier: nothing here establishes that the ban_ip {cible} action was created. It cannot be designated by a number — look for it in the Response tab by its gesture and target before approving it, or before replaying this gesture, which would queue a second one.' },
 };
-const cleDeLIdentifiantDeRiposte = (j) => (j && j.id ? 'identifiant_servi' : 'identifiant_absent');
 function motDuBannissementMisEnFile(j, cible) {
-  const mots = MOTS_DU_BANNISSEMENT_MIS_EN_FILE[cleDeLIdentifiantDeRiposte(j)];
-  return (LANG === 'en' ? mots.en : mots.fr).replace('{identifiant}', String(j && j.id)).replace('{cible}', String(cible));
+  if (cleDeLIdentifiantDeRiposte(j) === 'identifiant_absent') return motDeLaRiposteSansIdentifiant('ban_ip', cible);
+  const mots = MOTS_DU_BANNISSEMENT_MIS_EN_FILE.identifiant_servi;
+  return (LANG === 'en' ? mots.en : mots.fr).replace('{identifiant}', String(j && j.id));
 }
 
 // crée une action ban_ip (en attente d'approbation, dry-run). host optionnel = cible l'agent de cet

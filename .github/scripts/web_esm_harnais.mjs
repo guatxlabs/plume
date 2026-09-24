@@ -19063,7 +19063,9 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   const fleche111 = (pager, classe) => (pager ? parClasse111(pager, classe)[0] : null);
   exiger(!!pagerAuDela111 && !!fleche111(pagerAuDela111, "evprev") && fleche111(pagerAuDela111, "evprev").disabled === false && fleche111(pagerAuDela111, "evnext").disabled === true,
     `(111d) SUR UNE PAGE AU-DELÀ D'UN TOTAL D'UNE SEULE PAGE, LE FABRICANT NE REND AUCUN PAGER, ou pas de retour : la page est un cul-de-sac (${pagerAuDela111 ? nu111(pagerAuDela111) : "null"})`);
-  exiger(!!pagerAuDela111 && nu111(parClasse111(pagerAuDela111, "evtot")[0]) === "3 · —",
+  // `P10.24-z` (témoin 112) — la page au-delà du total ne rend plus « 3 · — » mais la phrase du point commun ; ce
+  // qui est tenu ici reste la propriété de `P10.22-d` : aucune plage à l'envers.
+  exiger(!!pagerAuDela111 && nu111(parClasse111(pagerAuDela111, "evtot")[0]) === "3 · " + modNoyau111.motDeLaPageAuDelaDuTotal(1, 3, 3) && !/4–3/.test(nu111(pagerAuDela111)),
     `(111d) la plage d'une page VIDE se lit à l'envers : « ${pagerAuDela111 ? nu111(parClasse111(pagerAuDela111, "evtot")[0]) : "(aucun pager)"} »`);
   exiger(modNoyau111.makePager({ pageSize: 3, total: 3, page: 0, shown: 3, keyset: true }, aucunGeste111) === null
     && nu111(parClasse111(modNoyau111.makePager({ pageSize: 3, total: 9, page: 1, shown: 3 }, aucunGeste111), "evtot")[0]) === "9 · 4–6",
@@ -19114,7 +19116,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     const d1111 = pageVide111(), texteD1111 = nu111(resultat111);
     instrument111(JSON.stringify(derniereDemande111().cursor) === JSON.stringify(CURSEUR111),
       `la page 2 n'est pas demandée par le curseur servi : ${JSON.stringify(derniereDemande111())}`);
-    exiger(d1111.length === 1 && d1111[0].getAttribute("data-page-vide") === "fin_du_resultat" && /^page vide, fin du résultat\b/.test(nu111(d1111[0])) && !/aucun evenement/.test(texteD1111),
+    exiger(d1111.length === 1 && d1111[0].getAttribute("data-page-vide") === "fin_du_resultat" && /^page vide, fin du résultat\b/.test(nu111(d1111[0])) && !/aucun (evenement|événement)/.test(texteD1111),
       `(111d1) UNE PAGE VIDE DE RANG SUPÉRIEUR SE DIT ENCORE COMME UNE FENÊTRE VIDE, ou ne dit pas « page vide, fin du résultat » — « ${texteD1111.slice(0, 200)} »`);
     const retourD1111 = parClasse111(resultat111, "evprev")[0];
     exiger(!!retourD1111 && retourD1111.disabled === false,
@@ -19125,7 +19127,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     const retourDemande111 = derniereDemande111();
     exiger(S111.evState.page === 0 && !("cursor" in retourDemande111) && !("offset" in retourDemande111),
       `(111d1) la flèche de retour ne ramène pas à la première page : page ${S111.evState.page}, demande ${JSON.stringify(retourDemande111)}`);
-    exiger(/aucun evenement sur la fenetre/.test(nu111(resultat111)) && pageVide111().length === 0 && parClasse111(resultat111, "evpager").length === 0,
+    exiger(nu111(resultat111) === modViz111.motDeLaListeDEvenements("fenetre_vide") && pageVide111().length === 0 && parClasse111(resultat111, "evpager").length === 0,
       `(111d1-négatif) la PREMIÈRE page vide ne se dit plus comme une fenêtre vide, ou porte un pager mort — « ${nu111(resultat111).slice(0, 200)} »`);
     // (d2) Le compte arrive APRÈS, et dit « une page » : le retour survit au repeint.
     let libererLeCompte111 = null;
@@ -19283,6 +19285,451 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     if (badge111) { badge111.replaceChildren(); badge111.hidden = true; }
   }
   console.log("(111) OK — une page vide de rang supérieur dit « page vide, fin du résultat » et garde sa flèche de retour, qui ramène à la première page ; quand le compte arrive ensuite et dit « une page », le retour survit au repeint et la plage ne se lit plus à l'envers ; un saut direct vide dit que la fin n'est PAS établie, marqué ; la première page vide reste une fenêtre vide. Le repli par décalage est reconnu au couple total + décalage sous un silence : son total est lu (plafonné, il relance le compte), le repli est dit — y compris quand le compte remplace la ligne —, et ses pages suivantes, demandées par leur rang, ne sont plus des sauts ; une page par curseur ordinaire n'est pas un repli. Le silence du démon est un nœud distinct marqué `bad`, qui survit à la reprise et à l'aveu d'un total non établi ; une suite servie n'est pas marquée. Saut trop lourd, saut partiel, reprise, ligne par décalage, ligne d'agrégation, préfixe d'erreur et badge de troncature ont leurs deux faces, les faces françaises inchangées, les nombres dans la langue de l'écran. Le discriminant s'appelle `cleDeLaSuiteServie` partout, l'ancien nom n'est plus écrit ni exporté, et la fermeture des imports recalculée égale `SHELL_JS_CLOSURE`. CE QUI ÉTAIT FAUX : le repli n'est pas atteignable par la console d'aujourd'hui, et il était aussi pris pour un saut ; le pager ne « restait » pas affiché sur un saut vide ; la ligne d'agrégation et le préfixe d'erreur étaient eux aussi français.");
+}
+
+// ---------------------------------------------------------------------------------------------
+// (112) `P10.24-v` — LA SUPPRESSION D'UN COMPTE DIT LE SORT DE SES OBJETS, ET SON REFUS A UNE FACE DANS LE PUITS DE LA
+//       LIGNE ; `P10.24-z` — UNE PAGE AU-DELÀ DU TOTAL COMPTÉ SE DIT TELLE, ET LE RETOUR EST JUGÉ SUR CHAQUE SURFACE
+//       DU PAGER PARTAGÉ ; `P10.25-b` — LES PHRASES DE LA LISTE D'ÉVÉNEMENTS ONT LEURS DEUX FACES, ACCENTUÉES, ET LA
+//       PAGE PLEINE SANS CURSEUR EST DANS LE REGISTRE DE L'ALARME.
+//
+// CE QUE LE DÉMON FAIT, RELU ICI ET NON RECOPIÉ. `user_delete` (daemon/src/handlers/users_lookups.rs) : le refus du
+// compte de l'administrateur de l'installation en quatre cents JSON (`CAUSE_COMPTE_DE_L_ASSISTANT_NON_SUPPRIMABLE`,
+// plus de cinq cents caractères), la purge du second facteur et des préférences, les deux listes FERMÉES des objets
+// réattribués à l'auteur et purgés avec le compte, et l'absence de toute écriture sur `token`. La phrase de
+// confirmation est jugée CONTRE ces listes : un objet ajouté à l'une d'elles fait refuser de conclure ce témoin.
+//
+// CE QUE LA CONSOLE EN FAISAIT, MESURÉ SUR LES MODULES RÉELS AVANT CE LOT (miroir de l'arbre, 2026-09-24) :
+//   · le refus du compte de l'assistant partait dans un AVIS qui s'efface — « 400 {"error":"COMPTE NON SUPPRIMÉ,
+//     C'EST L'ADMINISTRATEUR DE L'INSTALLATION : ce compte a été posé par l'assistant d'installation, et le démon
+//     garde sa crédence hors de la table des comptes. Supprimé, il » : corps JSON brut, coupé à deux cents
+//     caractères, le remède jamais atteint —, puis la liste se rechargeait ; sous `LANG='en'` à l'identique ;
+//   · la confirmation ne disait rien des objets (sa conséquence était au lexique, son titre composé restait français) ;
+//   · « 3 résultats · page 2 / 1 » (Explore, total connu), « 3 résultats · page 2 / 1 » quand le compte arrive
+//     après, « page 2/1 · 3 lignes » par décalage ; le pager, « 3 · — » ;
+//   · la liste plate des alertes (portée « tous statuts ») et la liste de groupes, page 2 vide pour un total de
+//     trois : « Aucune alerte… » sous une barre qui compte « 3 », et AUCUN pager — le changement de `P10.22-d` ne
+//     les atteignait pas (leur chemin vide rend la main avant le pager) ;
+//   · les occurrences d'un groupe, un panneau de tableau de bord et une liste paginée par le démon, page 2 vidée :
+//     le changement de `P10.22-d` leur a DONNÉ le retour (joué sur le miroir, garde d'avant remise : aucun pager,
+//     cul-de-sac ; garde d'aujourd'hui : ◀ actif) — et « aucune occurrence » restait écrit d'un groupe qui en compte ;
+//   · « aucun evenement sur la fenetre » (au lexique, donc traduite, mais sans accents en français) ; « 2 evenement(s) »,
+//     facettes « hote », « severite », infobulle « Creer une action ban_ip », note des champs vides, en français sous
+//     `LANG='en'`.
+//
+// CE QUE CE TÉMOIN NE TIENT PAS : il ne rejoue aucune route du démon (le transport est un simulacre) ; il juge le
+// TEXTE, les classes et les attributs, jamais l'encre ; la liste des comptes ne peut pas signaler le compte de
+// l'assistant (aucune route ne le sert) et rien ici ne le prétend ; la note des champs vides du détail de TABLE est
+// jugée par un rendu direct de `tableEl`, pas par un panneau.
+// ---------------------------------------------------------------------------------------------
+{
+  const url112 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const modNoyau112 = await import(url112("core.js"));
+  const modViz112 = await import(url112("viz.js"));
+  const modComptes112 = await import(url112("admin_users.js"));
+  const modAlertes112 = await import(url112("alerts.js"));
+  const modTdb112 = await import(url112("dashboards.js"));
+  const { S: S112 } = await import(url112("state.js"));
+  const langueOrigine112 = localStorage.getItem("soc_lang");
+  localStorage.setItem("soc_lang", "en");
+  const modNoyauEn112 = await import(adresseSousLaLangue("core.js"));
+  const modVizEn112 = await import(adresseSousLaLangue("viz.js"));
+  const modComptesEn112 = await import(adresseSousLaLangue("admin_users.js"));
+  const { S: SEn112 } = await import(adresseSousLaLangue("state.js"));
+  if (langueOrigine112 === null) localStorage.removeItem("soc_lang"); else localStorage.setItem("soc_lang", langueOrigine112);
+
+  const tic112 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser112 = async (n = 30) => { for (let i = 0; i < n; i++) await tic112(); };
+  const nu112 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ").trim();
+  const cueillir112 = (el, pred, acc = []) => { if (el && pred(el)) acc.push(el); ((el && el.children) || []).forEach((c) => cueillir112(c, pred, acc)); return acc; };
+  const parClasse112 = (hote, classe) => cueillir112(hote, (e) => e.classList && e.classList.contains(classe));
+  const parDonnee112 = (hote, attribut) => cueillir112(hote, (e) => typeof e.getAttribute === "function" && e.getAttribute(attribut) !== null);
+  const instrument112 = (vrai, quoi) => exiger(vrai, `(112-instrument) ${quoi} : ce témoin REFUSE DE CONCLURE`);
+  const srcDe112 = (f) => ((CORPUS_WEB.find(([g]) => g === f) || [])[1]) || "";
+  const corpsDeFonction112 = (src, entete) => { const i = src.indexOf(entete); if (i < 0) return ""; const j = src.indexOf("\n}\n", i); return j < 0 ? "" : src.slice(i, j + 2); };
+  const constante112 = (src, nom) => { const m = src.match(new RegExp("const " + nom + ": &str = \"((?:[^\"\\\\]|\\\\[\\s\\S])*)\";")); return m ? m[1].replace(/\\\n\s*/g, "").replace(/\\"/g, "\"") : ""; };
+  const ACCENTS112 = /[éèêàçùôâîÉÈÊÀ]/;
+
+  // ── (0) L'INSTRUMENT : CE QUE LE DÉMON FAIT D'UN COMPTE SUPPRIMÉ, LU DANS SON ARBRE ────────────────
+  const COMPTES112 = readFileSync(path.join(RACINE, "daemon", "src", "handlers", "users_lookups.rs"), "utf8");
+  const suppression112 = corpsDeFonction112(COMPTES112, "pub(crate) async fn user_delete(");
+  const suppressionSansCommentaires112 = suppression112.replace(/\/\/[^\n]*/g, "");
+  const CAUSE112 = constante112(COMPTES112, "CAUSE_COMPTE_DE_L_ASSISTANT_NON_SUPPRIMABLE");
+  const reattribues112 = [...(((COMPTES112.match(/const OBJETS_REATTRIBUES_A_L_AUTEUR: \[&str; \d+\] = \[([^\]]*)\];/) || [])[1]) || "").matchAll(/"(\w+)"/g)].map((m) => m[1]);
+  const purges112 = [...(((COMPTES112.match(/const OBJETS_PURGES_AVEC_LE_COMPTE: \[\(&str, &str\); \d+\] = \[([^\]]*)\];/) || [])[1]) || "").matchAll(/\("(\w+)", "\w+"\)/g)].map((m) => m[1]);
+  // Le mot de chaque table dans les deux faces. Une table ajoutée à l'une des listes du démon n'a pas de mot ici :
+  // la confirmation ne la dirait pas, et ce témoin refuse de conclure au lieu de rester vert.
+  const MOTS_DES_OBJETS112 = {
+    dashboard: ["tableaux de bord", "dashboards"], view: ["vues", "views"], library_panel: ["panneaux de bibliothèque", "library panels"],
+    playlist: ["playlists", "playlists"], saved_query: ["requêtes enregistrées", "saved queries"], dashboard_snapshot: ["instantanés de tableau de bord", "dashboard snapshots"],
+  };
+  instrument112(CAUSE112.length > 200 && /err_json\(StatusCode::BAD_REQUEST, CAUSE_COMPTE_DE_L_ASSISTANT_NON_SUPPRIMABLE\)/.test(suppression112)
+    && /DELETE FROM user_mfa WHERE user=\?1/.test(suppression112) && /DELETE FROM user_pref WHERE user=\?1/.test(suppression112)
+    && /ObjetsDuCompteSupprime::traiter\(&conn, &tname, &au\.name\)/.test(suppression112) && /avancer_l_epoque_du_compte\(&conn, &tname\)/.test(suppression112)
+    && reattribues112.length >= 1 && purges112.length >= 1 && [...reattribues112, ...purges112].every((t) => t in MOTS_DES_OBJETS112),
+    `\`user_delete\` ne sert plus le refus nommé du compte de l'assistant, ne purge plus second facteur et préférences, ne traite plus les objets du compte pour son auteur, ou une table de ses listes n'a pas de mot ici (réattribués ${JSON.stringify(reattribues112)}, purgés ${JSON.stringify(purges112)})`);
+  instrument112(!/\b(FROM|UPDATE|INTO)\s+token\b/.test(suppressionSansCommentaires112),
+    "`user_delete` écrit désormais la table `token` : la phrase « les jetons ne sont PAS révoqués » est à rejuger (`P10.24-w`)");
+  instrument112(modNoyauEn112.LANG === "en" && modNoyau112.LANG !== "en",
+    `les deux instances du point commun ne portent pas deux langues (« ${modNoyau112.LANG} » / « ${modNoyauEn112.LANG} »)`);
+  instrument112([modComptes112.loadUsers, modComptes112.motDeLaSuppressionDeCompte, modComptesEn112.motDeLaSuppressionDeCompte, modNoyau112.laPageEstAuDelaDuTotal,
+    modNoyau112.motDeLaPageAuDelaDuTotal, modNoyauEn112.motDeLaPageAuDelaDuTotal, modNoyau112.noeudDeLaPageVideAuDelaDuTotal, modNoyau112.makePager, modNoyau112.pagedList,
+    modViz112.evLoad, modVizEn112.evLoad, modViz112.motDeLaListeDEvenements, modVizEn112.motDeLaListeDEvenements, modViz112.etiquetteDeFacette, modViz112.tableEl,
+    modAlertes112.renderAlerts, modAlertes112.poserLaRechercheDesAlertes, modTdb112.loadPanelsInto].every((f) => typeof f === "function"),
+    "un des symboles jugés ici n'est plus exporté (web/core.js, web/viz.js, web/admin_users.js, web/alerts.js, web/dashboards.js)");
+
+  // ── LE SIMULACRE : TRANSPORT, MINUTERIES LONGUES, HÔTES ─────────────────────────────────────────────
+  const fetchOrigine112 = globalThis.fetch, minuterieOrigine112 = globalThis.setTimeout, qsOrigine112 = document.querySelector;
+  const etatOrigine112 = [S112, SEn112].map((S) => ({ S, admin: S.isAdmin, auth: S.AUTH, evState: S.evState, vol: S.exploreInflight, hist: S.qHist, histIdx: S.qHistIdx, dernier: S.lastResult,
+    groupBy: S.alertGroupBy, groupAll: S.alertGroupAll, uncased: S.alertUncased, histPage: S.alertHistPage, groupPage: S.alertGroupPage, cartes: S.panelCards }));
+  const servis112 = {}, appels112 = [];
+  globalThis.fetch = async (u, init) => {
+    const chemin = String(u).split("?")[0];
+    const methode = ((init && init.method) || "GET").toUpperCase();
+    let demande = {}; try { demande = init && init.body ? JSON.parse(init.body) : {}; } catch (e) { demande = {}; }
+    appels112.push({ k: methode + " " + chemin, url: String(u), demande });
+    let r = servis112[methode + " " + chemin];
+    if (typeof r === "function") r = await r(demande, String(u));
+    if (!r) return { ok: true, status: 200, headers: { get: () => null }, text: async () => "{}", json: async () => ({}) };
+    const texte = typeof r.corps === "string" ? r.corps : JSON.stringify(r.corps === undefined ? {} : r.corps);
+    const statut = r.statut || 200;
+    return { ok: statut >= 200 && statut < 300, status: statut, headers: { get: () => null }, text: async () => texte, json: async () => JSON.parse(texte) };
+  };
+  globalThis.setTimeout = (fn, ms) => (ms >= 1000 ? 0 : minuterieOrigine112(fn, ms >= 100 ? 0 : ms));
+  const hotes112 = { "#users": new Element("section"), "#user-list": new Element("div"), "#acces-list": new Element("div"), "#alerts .body": new Element("div") };
+  document.querySelector = (sel) => (Object.prototype.hasOwnProperty.call(hotes112, sel) ? hotes112[sel] : qsOrigine112.call(document, sel));
+  const compter112 = (k) => appels112.filter((a) => a.k === k).length;
+  const dernier112 = (k) => { const a = appels112.filter((x) => x.k === k); return a.length ? a[a.length - 1] : null; };
+
+  try {
+    for (const S of [S112, SEn112]) { S.isAdmin = true; S.AUTH = { user: "hugo", role: "admin" }; }
+
+    // ══ (v) `P10.24-v` — LA SUPPRESSION D'UN COMPTE ════════════════════════════════════════════════
+    const LISTE112 = { users: [{ id: 1, name: "hugo", role: "admin", created: 1 }, { id: 2, name: "wiz", role: "admin", created: 2 }, { id: 3, name: "bob", role: "editor", created: 3 }], me: "hugo", acces: [] };
+    servis112["GET /api/users"] = { corps: LISTE112 };
+    const HTML112 = "<!DOCTYPE html><html><head><title>502 Bad Gateway</title></head><body><center>nginx</center></body></html>";
+    const fenetre112 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !c.classList.contains("out")).pop();
+    const avis112 = () => document.querySelectorAll(".toast");
+    // LE GESTE RÉEL : la liste chargée, ✕ sur la ligne, la confirmation partagée lue puis jouée (ou annulée).
+    const supprimer112 = async (mod, nom, reponse, { confirmer = true } = {}) => {
+      hotes112["#user-list"].replaceChildren(); await mod.loadUsers(); await laisser112();
+      const enfants = hotes112["#user-list"].children;
+      const i = enfants.findIndex((e) => e.classList && e.classList.contains("urow") && nu112(e.children[0]).startsWith(nom + " "));
+      const ligne = i >= 0 ? enfants[i] : null;
+      const bouton = ligne ? cueillir112(ligne, (e) => e.tagName === "BUTTON" && e.title === "Supprimer le compte")[0] : null;
+      if (!bouton) return { bouton: null };
+      const id = LISTE112.users.find((x) => x.name === nom).id;
+      servis112["DELETE /api/users/" + id] = reponse;
+      const avantAvis = avis112().length, avantListe = compter112("GET /api/users"), avantEnvoi = compter112("DELETE /api/users/" + id);
+      const geste = bouton.onclick(); await laisser112();
+      const ov = fenetre112(); const form = ov && ov.children[0] ? ov.children[0].children[0] : null;
+      const titre = form ? nu112(form.querySelector("h3")) : "", consequence = form ? nu112(form.querySelector(".modal-consequence")) : "";
+      if (form && confirmer && typeof form.onsubmit === "function") form.onsubmit({ preventDefault() {} });
+      else if (form) { const b = form.querySelector(".m-cancel"); if (b && typeof b.onclick === "function") b.onclick(); }
+      let jete = null; try { await geste; } catch (e) { jete = e; }
+      await laisser112(40);
+      // Le puits suit l'éditeur de la ligne (la ligne, l'éditeur, puis lui) ; relu APRÈS le geste, dans l'arbre d'alors.
+      const apres = hotes112["#user-list"].children;
+      const j = apres.findIndex((e) => e.classList && e.classList.contains("urow") && nu112(e.children[0]).startsWith(nom + " "));
+      const editeur = j >= 0 ? apres[j + 1] : null, puits = j >= 0 ? apres[j + 2] : null;
+      return { bouton, titre, consequence, jete, envois: compter112("DELETE /api/users/" + id) - avantEnvoi, rechargements: compter112("GET /api/users") - avantListe,
+        avis: avis112().slice(avantAvis).map((t) => nu112(t)), editeur, puits, cle: puits && puits.getAttribute("data-refus-de-suppression"), phrase: puits && puits.children[0] ? nu112(puits.children[0]) : "" };
+    };
+    const faceFr112 = (cle) => modComptes112.motDeLaSuppressionDeCompte(cle), faceEn112 = (cle) => modComptesEn112.motDeLaSuppressionDeCompte(cle);
+
+    // (v1) LA CONFIRMATION DIT LE SORT DES OBJETS — jugé contre les deux listes du démon, dans les deux langues.
+    const v1112 = await supprimer112(modComptes112, "wiz", { statut: 204, corps: "" }, { confirmer: false });
+    const v1En112 = await supprimer112(modComptesEn112, "wiz", { statut: 204, corps: "" }, { confirmer: false });
+    instrument112(!!v1112.bouton && !!v1En112.bouton && v1112.consequence.length > 0, "la ligne d'un compte ne porte plus son bouton ✕, ou la confirmation partagée ne s'ouvre plus");
+    const partage112 = (texte, reattribue, supprime) => { const i = texte.indexOf(reattribue), j = texte.indexOf(supprime); return i < 0 || j < i ? null : [texte.slice(0, i), texte.slice(i, j)]; };
+    const ecartsV1112 = [];
+    for (const [nomLangue, v, mots, reattribue, supprime, pas] of [["fr", v1112, 0, "RÉATTRIBUÉS", "SUPPRIMÉS", "PAS révoqués"], ["en", v1En112, 1, "REASSIGNED", "DELETED", "NOT revoked"]]) {
+      const parts = partage112(v.consequence, reattribue, supprime);
+      if (!parts) { ecartsV1112.push(`${nomLangue} : « ${reattribue} » puis « ${supprime} » absents ou dans le désordre`); continue; }
+      for (const t of reattribues112) { const mot = MOTS_DES_OBJETS112[t][mots]; if (!parts[0].includes(mot) || parts[1].includes(mot)) ecartsV1112.push(`${nomLangue} : ${t} (« ${mot} ») n'est pas dit réattribué`); }
+      for (const t of purges112) { const mot = MOTS_DES_OBJETS112[t][mots]; if (!parts[1].includes(mot) || parts[0].includes(mot)) ecartsV1112.push(`${nomLangue} : ${t} (« ${mot} ») n'est pas dit supprimé`); }
+      if (!v.consequence.includes(pas)) ecartsV1112.push(`${nomLangue} : les jetons non révoqués ne sont pas dits`);
+    }
+    exiger(ecartsV1112.length === 0 && v1112.consequence === faceFr112("consequence") && v1En112.consequence === faceEn112("consequence")
+      && /second facteur/.test(v1112.consequence) && /préférences/.test(v1112.consequence) && /second factor/.test(v1En112.consequence) && !ACCENTS112.test(v1En112.consequence),
+      `(112v1) LA CONFIRMATION DE SUPPRESSION NE DIT PAS LE SORT DES OBJETS que le démon réattribue ou purge, ou pas dans les deux langues : ${JSON.stringify(ecartsV1112)} — « ${v1112.consequence.slice(0, 160)} » / « ${v1En112.consequence.slice(0, 160)} »`);
+    exiger(v1112.titre === "Supprimer le compte « wiz »" && v1En112.titre === "Delete the account “wiz”",
+      `(112v1) le titre de la confirmation n'a pas ses deux faces : « ${v1112.titre} » / « ${v1En112.titre} »`);
+    exiger(v1112.envois === 0 && v1112.cle === null && v1112.puits && v1112.puits.hidden === true && v1112.puits.className === "bad",
+      `(112v1-négatif) une confirmation ANNULÉE envoie la suppression, ou peint un refus : ${JSON.stringify({ envois: v1112.envois, cle: v1112.cle })}`);
+
+    // (v2) LE REFUS DU COMPTE DE L'ASSISTANT : SA CAUSE ENTIÈRE, DANS LE PUITS, SANS ACCUSER, SANS RECHARGER.
+    const ACCUSE112 = /\b(vous|votre|vos|you|your)\b|invalide|interdit|erreur|échec|invalid|forbidden|error|fail/i;
+    const ecartsV2112 = [];
+    for (const [nomLangue, mod, face] of [["fr", modComptes112, faceFr112], ["en", modComptesEn112, faceEn112]]) {
+      const r = await supprimer112(mod, "wiz", { statut: 400, corps: { error: CAUSE112 } });
+      if (r.envois !== 1) ecartsV2112.push(`${nomLangue} : ${r.envois} suppression(s) envoyée(s)`);
+      if (r.jete) ecartsV2112.push(`${nomLangue} : le geste JETTE ${r.jete.message}`);
+      if (r.cle !== "refus_nomme" || !r.puits || r.puits.hidden || nu112(r.puits) !== face("refus_nomme") + " « " + CAUSE112.trim() + " »") ecartsV2112.push(`${nomLangue} : puits « ${r.cle} / ${nu112(r.puits).slice(0, 160)} »`);
+      if (r.avis.length !== 0) ecartsV2112.push(`${nomLangue} : un avis qui s'efface est encore posé ${JSON.stringify(r.avis.map((t) => t.slice(0, 60)))}`);
+      if (r.rechargements !== 0) ecartsV2112.push(`${nomLangue} : la liste est rechargée après un refus (${r.rechargements})`);
+      if (/\{"error"|\b400\b/.test(nu112(r.puits))) ecartsV2112.push(`${nomLangue} : le puits colle le corps JSON ou le code`);
+      if (ACCUSE112.test(r.phrase) || r.phrase !== face("refus_nomme")) ecartsV2112.push(`${nomLangue} : la phrase du refus accuse l'utilisateur, ou n'est pas celle de la table : « ${r.phrase} »`);
+      if (!r.editeur || !r.editeur.classList.contains("ueditor")) ecartsV2112.push(`${nomLangue} : l'éditeur ne suit plus la ligne (le puits s'est glissé entre eux)`);
+    }
+    exiger(ecartsV2112.length === 0,
+      `(112v2) LE REFUS DU COMPTE DE L'ADMINISTRATEUR DE L'INSTALLATION N'A PAS SA FACE — cause entière dans le puits de la ligne, sans avis qui s'efface, sans accuser, sans recharger : ${JSON.stringify(ecartsV2112)}`);
+    exiger(!ACCENTS112.test(faceEn112("refus_nomme")) && faceEn112("refus_nomme") !== faceFr112("refus_nomme"),
+      `(112v2) la face anglaise du refus reste française : « ${faceEn112("refus_nomme")} »`);
+    // (v3) Un refus du démon en TEXTE BRUT (le dernier administrateur) : sa phrase, dans le même puits.
+    const v3112 = await supprimer112(modComptes112, "wiz", { statut: 400, corps: "dernier administrateur — suppression refusée" });
+    exiger(v3112.cle === "refus_nomme" && nu112(v3112.puits) === faceFr112("refus_nomme") + " « dernier administrateur — suppression refusée »" && v3112.rechargements === 0,
+      `(112v3) un refus du démon en texte brut n'est pas peint dans le puits avec sa phrase : « ${nu112(v3112.puits).slice(0, 200)} »`);
+    // (v4) Une page de passerelle garde sa propre phrase, sans son HTML.
+    const v4112 = await supprimer112(modComptes112, "wiz", { statut: 502, corps: HTML112 });
+    exiger(v4112.cle === "reponse_hors_demon" && nu112(v4112.puits) === modNoyau112.motDeLaReponseHorsDemon("page_de_passerelle") && !/<|nginx/.test(nu112(v4112.puits)),
+      `(112v4) une page de passerelle est peinte comme un refus du démon, ou colle son HTML : « ${nu112(v4112.puits).slice(0, 200)} »`);
+    // (v5) CONTRÔLE POSITIF : une suppression acceptée recharge la liste et ne peint aucun refus.
+    const v5112 = await supprimer112(modComptes112, "wiz", { statut: 204, corps: "" });
+    exiger(v5112.envois === 1 && v5112.rechargements === 1 && v5112.avis.length === 0 && parDonnee112(hotes112["#user-list"], "data-refus-de-suppression").length === 0,
+      `(112v5-négatif) une suppression ACCEPTÉE ne recharge pas la liste, ou peint un refus — un instrument qui avoue toujours ne mesure rien : ${JSON.stringify({ rechargements: v5112.rechargements, avis: v5112.avis })}`);
+
+    // ══ (z) `P10.24-z` — LA PAGE AU-DELÀ DU TOTAL ═════════════════════════════════════════════════
+    // (z0) Le point commun, nu : la partition, puis le fabricant de pager.
+    const partitionZ112 = [[0, 3, 3, false], [1, 3, 3, false], [1, 4, 3, false], [2, 4, 3, false], [1, -1, 3, false], [1, undefined, 3, false], [5, 10000, 50, true], [1, 0, 3, false]]
+      .map(([p, t, n, c]) => modNoyau112.laPageEstAuDelaDuTotal(p, t, n, c)).join(",");
+    exiger(partitionZ112 === "false,true,false,true,false,false,false,true",
+      `(112z0) la page au-delà du total n'est plus reconnue (dernière page du total compté, jamais sous un total inconnu ou plafonné, jamais sur la première) : ${partitionZ112}`);
+    const aucunGeste112 = () => {};
+    const evtot112 = (mod, etat) => { const p = mod.makePager(etat, aucunGeste112); const t = p ? parClasse112(p, "evtot")[0] : null; return { p, texte: nu112(t), marque: t && t.getAttribute("data-page-au-dela-du-total") }; };
+    const z0112 = evtot112(modNoyau112, { pageSize: 3, total: 3, page: 1, shown: 0, keyset: true }), z0En112 = evtot112(modNoyauEn112, { pageSize: 3, total: 3, page: 1, shown: 0, keyset: true });
+    const z0Plein112 = evtot112(modNoyau112, { pageSize: 3, total: 3, page: 2, shown: 2 });
+    exiger(z0112.texte === "3 · page 2 au-delà de la dernière (1)" && z0112.marque === "au_dela_de_la_derniere" && z0En112.texte === "3 · page 2 beyond the last one (1)" && !ACCENTS112.test(z0En112.texte)
+      && z0Plein112.texte === "3 · page 3 au-delà de la dernière (1) · 7–8",
+      `(112z0) LE PAGER D'UNE PAGE AU-DELÀ DU TOTAL NE LE DIT PAS, ou pas dans les deux langues : « ${z0112.texte} » / « ${z0En112.texte} » / « ${z0Plein112.texte} »`);
+    const z0Saut112 = evtot112(modNoyau112, { pageSize: 3, total: 30, page: 3, shown: 0, keyset: true }), z0Plafond112 = evtot112(modNoyau112, { pageSize: 3, total: 9, page: 4, shown: 0, totalCapped: true });
+    exiger(z0Saut112.texte === "30 · —" && z0Saut112.marque === null && z0Plafond112.texte === "9+ · —" && evtot112(modNoyau112, { pageSize: 3, total: 9, page: 1, shown: 3 }).texte === "9 · 4–6",
+      `(112z0-négatif) une page vide DANS le total (saut sans rendu), sous un total plafonné, ou une page pleine ordinaire se dit au-delà du total : « ${z0Saut112.texte} » / « ${z0Plafond112.texte} »`);
+
+    // L'Explore, par le chargeur réel.
+    const ligne112 = document.querySelector("#qstats"), resultat112 = document.querySelector("#qresult"), qsize112 = document.querySelector("#qsize"), sql112 = document.querySelector("#sql");
+    instrument112(!!ligne112 && !!resultat112 && !!qsize112, "`#qstats`, `#qresult` ou `#qsize` n'est plus dans `index.html`");
+    const valeursOrigine112 = { taille: qsize112 ? qsize112.value : "", sql: sql112 ? sql112.value : "" };
+    if (qsize112) qsize112.value = "3";
+    const COLONNES112 = ["ts", "source", "message"], CURSEUR112 = { ts: 1757999998, id: 903 };
+    const PAGE_VIDE112 = { columns: COLONNES112, rows: [], stats: { elapsed_ms: 1 }, has_more: false, next_cursor: null, limit: 3 };
+    let servirLaPage112 = () => PAGE_VIDE112, servirLeCompte112 = () => ({ count_only: true, total: -1 });
+    servis112["POST /api/query"] = async (d) => ({ corps: await (d.count_only ? servirLeCompte112(d) : servirLaPage112(d)) });
+    const charger112 = async (mod, S, plus = {}) => {
+      S.exploreInflight = null;
+      S.evState = { q: "search sshd", isSoql: true, keyset: true, cursors: [null], page: 0, pageSize: 3, total: -1, shown: 0, totalCapped: false, countFired: true, realTotal: false, totalError: null, win: { from: 1000, to: 2000 }, ...plus };
+      resultat112.replaceChildren(); ligne112.replaceChildren(); await mod.evLoad(); await laisser112(10); return nu112(ligne112);
+    };
+    const APRES_LA_PAGE112 = / · serveur 1 ms · total \d+ ms$/, APRES_LA_PAGE_EN112 = / · server 1 ms · total \d+ ms$/;
+    // (z1) Page 2 atteinte par curseur, total CONNU de trois : la ligne ne dit plus « page 2 / 1 ».
+    const z1112 = await charger112(modViz112, S112, { page: 1, cursors: [null, CURSEUR112], total: 3, realTotal: true });
+    const z1En112 = await charger112(modVizEn112, SEn112, { page: 1, cursors: [null, CURSEUR112], total: 3, realTotal: true });
+    exiger(z1112.startsWith("3 résultats · page 2 au-delà de la dernière (1)") && APRES_LA_PAGE112.test(z1112) && !/\/ 1\b/.test(z1112)
+      && z1En112.startsWith("3 results · page 2 beyond the last one (1)") && APRES_LA_PAGE_EN112.test(z1En112),
+      `(112z1) UNE PAGE AU-DELÀ DU TOTAL SE DIT ENCORE « PAGE 2 / 1 » dans la ligne d'état de l'Explore, ou pas dans les deux langues : « ${z1112} » / « ${z1En112} »`);
+    // (z2) Le compte arrive APRÈS la page atteinte.
+    let libererLeCompte112 = null;
+    servirLeCompte112 = () => new Promise((r) => { libererLeCompte112 = () => r({ count_only: true, total: 3 }); });
+    await charger112(modViz112, S112, { page: 1, cursors: [null, CURSEUR112], countFired: false });
+    instrument112(typeof libererLeCompte112 === "function", "le compte asynchrone n'est pas parti : le repeint jugé ci-dessous n'aurait pas lieu");
+    if (libererLeCompte112) { libererLeCompte112(); await laisser112(20); }
+    const z2112 = nu112(ligne112);
+    servirLeCompte112 = () => ({ count_only: true, total: -1 });
+    exiger(z2112 === "3 résultats · page 2 au-delà de la dernière (1)" && S112.evState.total === 3,
+      `(112z2) QUAND LE COMPTE ARRIVE APRÈS LA PAGE, LA LIGNE DIT ENCORE « PAGE 2 / 1 » : « ${z2112} »`);
+    // (z3) Le parcours par décalage.
+    servirLaPage112 = (d) => ({ columns: COLONNES112, rows: [], stats: { elapsed_ms: 1 }, total: 3, offset: d.offset || 0, limit: 3 });
+    const z3112 = await charger112(modViz112, S112, { keyset: false, page: 1, total: 0 });
+    const z3En112 = await charger112(modVizEn112, SEn112, { keyset: false, page: 1, total: 0 });
+    exiger(/^page 2 au-delà de la dernière \(1\) · 3 lignes · serveur 1 ms · total \d+ ms$/.test(z3112) && /^page 2 beyond the last one \(1\) · 3 rows · server 1 ms · total \d+ ms$/.test(z3En112),
+      `(112z3) LE PARCOURS PAR DÉCALAGE DIT ENCORE « PAGE 2/1 » : « ${z3112} » / « ${z3En112} »`);
+    // (z4) CONTRÔLE NÉGATIF : une page DANS le total garde sa numérotation.
+    servirLaPage112 = () => ({ columns: COLONNES112, rows: [[1758000000, "sshd", "l"], [1758000001, "sshd", "m"], [1758000002, "sshd", "n"]], stats: { elapsed_ms: 1 }, has_more: true, next_cursor: CURSEUR112, limit: 3 });
+    const z4112 = await charger112(modViz112, S112, { page: 1, cursors: [null, CURSEUR112], total: 9, realTotal: true });
+    exiger(z4112.startsWith("9 résultats · page 2 / 3") && !/au-delà/.test(z4112),
+      `(112z4-négatif) une page DANS le total ne se numérote plus « page 2 / 3 » : « ${z4112} »`);
+
+    // Les alertes : liste plate (portée « tous statuts »), liste de groupes, occurrences d'un groupe.
+    const listeA112 = hotes112["#alerts .body"];
+    modAlertes112.poserLaRechercheDesAlertes("");
+    const retourDe112 = (hote) => parClasse112(hote, "evprev")[0] || null;
+    // (z5) Liste plate, page 2 vide pour un total de trois.
+    S112.alertGroupBy = ""; S112.alertGroupAll = true; S112.alertUncased = true; S112.alertHistPage = 1;
+    servis112["GET /api/alerts"] = { corps: { alerts: [], total: 3 } };
+    await modAlertes112.renderAlerts(false); await laisser112();
+    const phraseZ5112 = parDonnee112(listeA112, "data-page-au-dela-du-total").filter((e) => e.getAttribute("data-page-au-dela-du-total") === "page_vide_au_dela");
+    const retourZ5112 = retourDe112(listeA112);
+    exiger(phraseZ5112.length === 1 && !/Aucune alerte/.test(nu112(listeA112)) && !!retourZ5112 && retourZ5112.disabled === false && /page 2 au-delà de la dernière \(1\)/.test(nu112(parClasse112(listeA112, "evtot")[0])),
+      `(112z5) LA LISTE PLATE DES ALERTES, PAGE VIDE AU-DELÀ DU TOTAL, SE DIT ENCORE « AUCUNE ALERTE » OU N'A PAS DE RETOUR : « ${nu112(listeA112).slice(-220)} »`);
+    if (retourZ5112) { retourZ5112.onclick(); await laisser112(); }
+    const demandeZ5112 = dernier112("GET /api/alerts");
+    exiger(S112.alertHistPage === 0 && !!demandeZ5112 && /[?&]offset=0\b/.test(demandeZ5112.url),
+      `(112z5) le retour de la liste plate ne ramène pas à la première page : page ${S112.alertHistPage}, ${demandeZ5112 && demandeZ5112.url}`);
+    // CONTRÔLE NÉGATIF : une première page vide pour un total nul reste une absence, sans pager.
+    servis112["GET /api/alerts"] = { corps: { alerts: [], total: 0 } };
+    S112.alertHistPage = 0; await modAlertes112.renderAlerts(false); await laisser112();
+    exiger(/Aucune alerte/.test(nu112(listeA112)) && parDonnee112(listeA112, "data-page-au-dela-du-total").length === 0 && parClasse112(listeA112, "evpager").length === 0,
+      `(112z5-négatif) une liste d'alertes VRAIMENT vide ne se dit plus « Aucune alerte », ou porte un pager : « ${nu112(listeA112).slice(-200)} »`);
+    // (z6) Liste de groupes, page 2 vide pour un total de trois.
+    S112.alertGroupBy = "rule"; S112.alertGroupAll = false; S112.alertGroupPage = 1;
+    servis112["GET /api/alerts/groups"] = { corps: { groups: [], total: 3 } };
+    await modAlertes112.renderAlerts(false); await laisser112();
+    const retourZ6112 = retourDe112(listeA112);
+    exiger(parDonnee112(listeA112, "data-page-au-dela-du-total").some((e) => e.getAttribute("data-page-au-dela-du-total") === "page_vide_au_dela") && !/Aucune alerte/.test(nu112(listeA112))
+      && !!retourZ6112 && retourZ6112.disabled === false,
+      `(112z6) LA LISTE DE GROUPES, PAGE VIDE AU-DELÀ DU TOTAL, SE DIT ENCORE « AUCUNE ALERTE » OU N'A PAS DE RETOUR : « ${nu112(listeA112).slice(-220)} »`);
+    if (retourZ6112) { retourZ6112.onclick(); await laisser112(); }
+    const demandeZ6112 = dernier112("GET /api/alerts/groups");
+    exiger(S112.alertGroupPage === 0 && !!demandeZ6112 && /[?&]offset=0\b/.test(demandeZ6112.url),
+      `(112z6) le retour de la liste de groupes ne ramène pas à la première page : page ${S112.alertGroupPage}, ${demandeZ6112 && demandeZ6112.url}`);
+    // (z7) Occurrences : la page 2 d'un groupe déplié, vidée entre deux pages (acquittements).
+    const GROUPE112 = { gkey: "rule.1", n: 30, severity: 3, sample_title: "t", open_n: 30, last_ts: 1000, mitre: "" };
+    servis112["GET /api/alerts/groups"] = { corps: { groups: [GROUPE112], total: 1 } };
+    const occurrences112 = (n) => Array.from({ length: n }, (_, i) => ({ id: 100 + i, ts: 1000 - i, rule: "rule.1", severity: 3, title: "o" + i, status: "new", detail: "", mitre: "", sources: "", case_id: null, acked_at: 0, acked_by: "" }));
+    let occurrencesServies112 = { alerts: occurrences112(25), total: 30 };
+    servis112["GET /api/alerts"] = () => ({ corps: occurrencesServies112 });
+    await modAlertes112.renderAlerts(false); await laisser112();
+    const groupe112 = parClasse112(listeA112, "agroup")[0], entete112 = groupe112 ? parClasse112(groupe112, "agsum")[0] : null;
+    if (entete112) { entete112.onclick(); await laisser112(); }
+    const corpsDuGroupe112 = groupe112 ? parClasse112(groupe112, "agbody")[0] : null;
+    const deux112 = corpsDuGroupe112 ? parClasse112(corpsDuGroupe112, "evnum").find((b) => nu112(b) === "2") : null;
+    instrument112(!!deux112, "les occurrences du groupe déplié ne portent pas de pager numéroté : la page 2 jugée ci-dessous ne serait pas atteinte");
+    occurrencesServies112 = { alerts: [], total: 20 };
+    if (deux112) { deux112.onclick(); await laisser112(); }
+    const retourZ7112 = corpsDuGroupe112 ? retourDe112(corpsDuGroupe112) : null;
+    exiger(!!corpsDuGroupe112 && !/aucune occurrence/.test(nu112(corpsDuGroupe112)) && parDonnee112(corpsDuGroupe112, "data-page-au-dela-du-total").some((e) => e.getAttribute("data-page-au-dela-du-total") === "page_vide_au_dela")
+      && !!retourZ7112 && retourZ7112.disabled === false && /20 · page 2 au-delà de la dernière \(1\)/.test(nu112(corpsDuGroupe112)),
+      `(112z7) LES OCCURRENCES VIDÉES AU-DELÀ DU TOTAL DISENT « AUCUNE OCCURRENCE » D'UN GROUPE QUI EN COMPTE, OU PERDENT LEUR RETOUR : « ${nu112(corpsDuGroupe112).slice(0, 220)} »`);
+    if (retourZ7112) { retourZ7112.onclick(); await laisser112(); }
+    const demandeZ7112 = dernier112("GET /api/alerts");
+    exiger(!!demandeZ7112 && /[?&]gkey=rule\b/.test(demandeZ7112.url) && /[?&]offset=0\b/.test(demandeZ7112.url),
+      `(112z7) le retour des occurrences ne redemande pas la première page du groupe : ${demandeZ7112 && demandeZ7112.url}`);
+    S112.alertGroupBy = ""; S112.alertGroupAll = false; S112.alertHistPage = 0; S112.alertGroupPage = 0;
+
+    // (z8) La liste paginée par le démon (fabrique partagée), page 2 vide pour un total d'une ligne.
+    const hoteListe112 = new Element("div"), demandesDeListe112 = [];
+    let pageDeListe112 = { rows: [{ a: 1 }, { a: 2 }], total: 3 };
+    const poignee112 = modNoyau112.pagedList(hoteListe112, { mode: "server", pageSize: 2, columns: [{ key: "a", label: "A" }], fetchPage: async (q) => { demandesDeListe112.push(q); return pageDeListe112; } });
+    await laisser112();
+    pageDeListe112 = { rows: [], total: 1 }; poignee112.state.page = 1; poignee112.reload(); await laisser112();
+    const retourZ8112 = retourDe112(hoteListe112);
+    exiger(!!retourZ8112 && retourZ8112.disabled === false && /^1 · page 2 au-delà de la dernière \(1\)$/.test(nu112(parClasse112(hoteListe112, "evtot")[0])),
+      `(112z8) LA LISTE PAGINÉE PAR LE DÉMON, PAGE VIDE AU-DELÀ DU TOTAL, N'A PAS DE RETOUR OU NE LE DIT PAS : « ${nu112(hoteListe112).slice(0, 200)} »`);
+    pageDeListe112 = { rows: [{ a: 1 }], total: 1 };
+    if (retourZ8112) { retourZ8112.onclick(); await laisser112(); }
+    exiger(demandesDeListe112.length >= 3 && demandesDeListe112[demandesDeListe112.length - 1].offset === 0 && poignee112.state.page === 0,
+      `(112z8) le retour de la liste paginée ne redemande pas la première page : ${JSON.stringify(demandesDeListe112.slice(-1))}`);
+
+    // (z9) Un panneau de tableau de bord (table paginée par décalage), page 2 atteinte puis vidée.
+    const grille112 = new Element("div");
+    const PANNEAU112 = { id: 11, title: "T", query: "search action=login | table a", is_soql: true, viz: "table", position: 0, window_s: 0, visibility: "private", query_private: false, cols: 1, height: 0, drill: "", library_panel_id: null };
+    servis112["GET /api/dashboard/3"] = { corps: { id: 3, name: "SOC", owner: "hugo", visibility: "shared", view_id: null, editable: true, panels: [PANNEAU112] } };
+    let pageDuPanneau112 = { columns: ["a"], rows: Array.from({ length: 50 }, (_, i) => [i]), total: 60, stats: {} };
+    servis112["POST /api/query"] = () => ({ corps: pageDuPanneau112 });
+    S112.panelCards = [];
+    await modTdb112.loadPanelsInto(grille112, { id: 3 }); await laisser112(10);
+    // Le premier chargement attend l'observateur d'intersection, que le simulacre ne déclenche pas : il est joué ici.
+    parClasse112(grille112, "panel").forEach((c) => { if (c._panel && !c._panel.loaded) { c._panel.loaded = true; c._panel.reload(); } });
+    await laisser112(60);
+    const deuxP112 = parClasse112(grille112, "evnum").find((b) => nu112(b) === "2");
+    instrument112(!!deuxP112, "le panneau de table paginée ne porte pas de pager numéroté : la page 2 jugée ci-dessous ne serait pas atteinte");
+    pageDuPanneau112 = { columns: ["a"], rows: [], total: 40, stats: {} };
+    if (deuxP112) { deuxP112.onclick(); await laisser112(60); }
+    const corpsDuPanneau112 = parClasse112(grille112, "panelbody")[0];
+    const retourZ9112 = corpsDuPanneau112 ? retourDe112(corpsDuPanneau112) : null;
+    exiger(!!retourZ9112 && retourZ9112.disabled === false && /^40 · page 2 au-delà de la dernière \(1\)$/.test(nu112(parClasse112(corpsDuPanneau112, "evtot")[0])),
+      `(112z9) LE PANNEAU DE TABLEAU DE BORD, PAGE VIDÉE AU-DELÀ DU TOTAL, N'A PAS DE RETOUR OU NE LE DIT PAS : « ${nu112(corpsDuPanneau112).slice(0, 200)} »`);
+    pageDuPanneau112 = { columns: ["a"], rows: [[1]], total: 40, stats: {} };
+    if (retourZ9112) { retourZ9112.onclick(); await laisser112(60); }
+    const demandeZ9112 = dernier112("POST /api/query");
+    exiger(!!demandeZ9112 && demandeZ9112.demande.offset === 0,
+      `(112z9) le retour du panneau ne redemande pas la première page : ${JSON.stringify(demandeZ9112 && demandeZ9112.demande)}`);
+    const pageVideEn112 = modNoyauEn112.noeudDeLaPageVideAuDelaDuTotal();
+    exiger(!ACCENTS112.test(nu112(pageVideEn112)) && /beyond the last page/.test(nu112(pageVideEn112)) && nu112(pageVideEn112) !== nu112(modNoyau112.noeudDeLaPageVideAuDelaDuTotal()),
+      `(112z) la phrase de la page vide au-delà du total n'a pas de face anglaise : « ${nu112(pageVideEn112)} »`);
+
+    // ══ (b) `P10.25-b` — LA LISTE D'ÉVÉNEMENTS ═══════════════════════════════════════════════════════
+    // (b0) Les tables de faces : deux faces DISTINCTES sur chaque entrée, l'anglaise sans accent français.
+    const srcViz112 = srcDe112("viz.js");
+    const entreesDe112 = (nom) => {
+      const table = (srcViz112.match(new RegExp("const " + nom + " = \\{[\\s\\S]*?\\n\\};")) || [""])[0];
+      return [...table.matchAll(/^ {2}(\w+): \{\n {4}fr: (.+),\n {4}en: (.+) \},?$/gm)].map((m) => ({ cle: m[1], fr: m[2], en: m[3] }));
+    };
+    const tablesFautives112 = Object.entries({ MOTS_DE_LA_LISTE_D_EVENEMENTS: 4, ETIQUETTES_DES_FACETTES: 5 })
+      .filter(([nom, n]) => { const e = entreesDe112(nom); return e.length !== n || e.some((x) => x.fr === x.en || ACCENTS112.test(x.en)); }).map(([nom]) => nom);
+    exiger(tablesFautives112.length === 0,
+      `(112b0) une table de faces de la liste d'événements n'a pas ses DEUX faces distinctes sur chaque entrée, ou a perdu une entrée : ${tablesFautives112.join(", ")}`);
+    // (b1) La première page vide, par le chargeur réel.
+    servirLaPage112 = () => PAGE_VIDE112;
+    servis112["POST /api/query"] = async (d) => ({ corps: await (d.count_only ? servirLeCompte112(d) : servirLaPage112(d)) });
+    await charger112(modViz112, S112); const b1112 = nu112(resultat112);
+    await charger112(modVizEn112, SEn112); const b1En112 = nu112(resultat112);
+    exiger(b1112 === "aucun événement sur la fenêtre" && b1En112 === "no event over the window",
+      `(112b1) LA FENÊTRE VIDE RESTE SANS ACCENTS, OU FRANÇAISE SOUS \`LANG='en'\` : « ${b1112} » / « ${b1En112} »`);
+    // (b2) Le compte, les facettes, l'infobulle du ban.
+    servirLaPage112 = () => ({ columns: ["ts", "source", "host", "severity", "src_ip", "message", "fields"],
+      rows: [[1758000000, "sshd", "web01", 3, "10.0.0.9", "ligne 0", JSON.stringify({ a: "x" })], [1758000001, "sshd", "", 2, "", "ligne 1", null]],
+      stats: { elapsed_ms: 1 }, has_more: false, next_cursor: null, limit: 3 });
+    const listeDEvenements112 = async (mod, S) => {
+      await charger112(mod, S);
+      const lignes = parClasse112(resultat112, "logline");
+      const ban = parClasse112(resultat112, "banbtn")[0];
+      if (lignes[1]) lignes[1].dispatchEvent(new Evenement("click", { bubbles: true }));
+      const detail = parClasse112(resultat112, "logdetail")[0];
+      return { compte: nu112(parClasse112(resultat112, "fldcount")[0]), facettes: parClasse112(resultat112, "fldname").map(nu112), ban: ban ? ban.getAttribute("title") : null,
+        note: detail ? nu112(parClasse112(detail, "muted")[0]) : "(aucun détail déplié)" };
+    };
+    const b2112 = await listeDEvenements112(modViz112, S112), b2En112 = await listeDEvenements112(modVizEn112, SEn112);
+    exiger(b2112.compte === "2 événement(s)" && b2En112.compte === "2 event(s)",
+      `(112b2) LE COMPTE DE LA LISTE D'ÉVÉNEMENTS RESTE SANS ACCENTS OU FRANÇAIS : « ${b2112.compte} » / « ${b2En112.compte} »`);
+    exiger(b2112.facettes.includes("hôte") && b2112.facettes.includes("sévérité") && b2112.facettes.includes("IP source") && !b2112.facettes.some((f) => /^(hote|severite|categorie)$/.test(f))
+      && b2En112.facettes.includes("host") && b2En112.facettes.includes("severity") && b2En112.facettes.includes("source IP") && !b2En112.facettes.some((f) => ACCENTS112.test(f) || f === "IP source"),
+      `(112b2) LES ÉTIQUETTES DE FACETTES RESTENT SANS ACCENTS OU FRANÇAISES : ${JSON.stringify(b2112.facettes)} / ${JSON.stringify(b2En112.facettes)}`);
+    exiger(b2112.ban === "Créer une action ban_ip" && b2En112.ban === "Create a ban_ip action",
+      `(112b2) l'infobulle du ban reste sans accents ou française : « ${b2112.ban} » / « ${b2En112.ban} »`);
+    // (b3) La note des champs vides du détail d'un événement.
+    const noteAttendue112 = /^\((\d+) champ\(s\) vide\(s\) masqué\(s\)\)$/, noteAttendueEn112 = /^\((\d+) empty field\(s\) hidden\)$/;
+    exiger(noteAttendue112.test(b2112.note) && noteAttendueEn112.test(b2En112.note) && b2112.note.match(noteAttendue112)[1] === b2En112.note.match(noteAttendueEn112)[1],
+      `(112b3) LA NOTE DES CHAMPS VIDES DU DÉTAIL D'UN ÉVÉNEMENT RESTE FRANÇAISE SOUS \`LANG='en'\` : « ${b2112.note} » / « ${b2En112.note} »`);
+    // (b4) La même note, dans le détail d'une ligne de TABLE (rendu direct de la fabrique).
+    const noteDeTable112 = (mod) => {
+      const table = mod.tableEl(["ts", "source", "host"], [[1758000000, "sshd", ""]], "search sshd");
+      const ligne = cueillir112(table, (e) => e.tagName === "TR" && e.style && e.style.cursor === "pointer")[0];
+      // Le clic de ligne est posé par le geste partagé (`clicQuiRespecteLaSelection`) sur `onclick` : il est joué tel quel.
+      if (ligne && typeof ligne.onclick === "function") ligne.onclick(new Evenement("click", { bubbles: true, target: ligne }));
+      const detail = cueillir112(table, (e) => e.classList && e.classList.contains("rowdetail"))[0];
+      return detail ? nu112(parClasse112(detail, "muted")[0]) : "(aucun détail déplié)";
+    };
+    const b4112 = noteDeTable112(modViz112), b4En112 = noteDeTable112(modVizEn112);
+    exiger(b4112 === "(1 champ(s) vide(s) masqué(s))" && b4En112 === "(1 empty field(s) hidden)",
+      `(112b4) LA NOTE DES CHAMPS VIDES DU DÉTAIL D'UNE LIGNE DE TABLE RESTE FRANÇAISE SOUS \`LANG='en'\` : « ${b4112} » / « ${b4En112} »`);
+    // (b5) DÉCISION : la page PLEINE sans curseur est dans le registre de l'alarme ; la fin établie et la suite servie non.
+    const suiteDe112 = () => parDonnee112(ligne112, "data-suite-du-parcours")[0] || null;
+    const PLEINE112 = [[1758000000, "sshd", "l"], [1758000001, "sshd", "m"], [1758000002, "sshd", "n"]];
+    servirLaPage112 = () => ({ columns: COLONNES112, rows: PLEINE112, stats: { elapsed_ms: 1 }, has_more: false, next_cursor: null, limit: 3 });
+    await charger112(modViz112, S112); const b5Pleine112 = suiteDe112();
+    servirLaPage112 = () => ({ columns: COLONNES112, rows: PLEINE112.slice(0, 2), stats: { elapsed_ms: 1 }, has_more: false, next_cursor: null, limit: 3 });
+    await charger112(modViz112, S112); const b5Fin112 = suiteDe112();
+    exiger(!!b5Pleine112 && b5Pleine112.getAttribute("data-suite-du-parcours") === "page_pleine_sans_curseur" && b5Pleine112.className === "bad"
+      && !!b5Fin112 && b5Fin112.getAttribute("data-suite-du-parcours") === "aucune_suite" && b5Fin112.className !== "bad",
+      `(112b5) LA PAGE PLEINE SANS CURSEUR N'EST PAS DANS LE REGISTRE DE L'ALARME (la fin n'y est pas établie et ▶ y est retirée), ou une fin établie y est : ${b5Pleine112 ? b5Pleine112.className : "aucun nœud"} / ${b5Fin112 ? b5Fin112.className : "aucun nœud"}`);
+    // (b6) Le lexique ne garde plus la clé sans accents, et `web/viz.js` n'écrit plus « evenement » hors d'une clé de table.
+    const lexique112 = srcDe112("i18n.js");
+    const vizSansCommentaires112 = srcViz112.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:'"\\])\/\/[^\n]*/g, "$1");
+    exiger(!lexique112.includes("\"aucun evenement sur la fenetre\"") && !/['`"][^'`"\n]*\bevenements?(\(s\)| )[^'`"\n]*['`"]/.test(vizSansCommentaires112),
+      "(112b6) la clé sans accents « aucun evenement sur la fenetre » est encore au lexique, ou web/viz.js écrit encore « evenement » dans un texte");
+  } finally {
+    globalThis.fetch = fetchOrigine112; globalThis.setTimeout = minuterieOrigine112; document.querySelector = qsOrigine112;
+    for (const o of etatOrigine112) {
+      o.S.isAdmin = o.admin; o.S.AUTH = o.auth; o.S.evState = o.evState; o.S.exploreInflight = o.vol; o.S.qHist = o.hist; o.S.qHistIdx = o.histIdx; o.S.lastResult = o.dernier;
+      o.S.alertGroupBy = o.groupBy; o.S.alertGroupAll = o.groupAll; o.S.alertUncased = o.uncased; o.S.alertHistPage = o.histPage; o.S.alertGroupPage = o.groupPage; o.S.panelCards = o.cartes;
+    }
+    const q = qsOrigine112.call(document, "#qsize"), s = qsOrigine112.call(document, "#sql");
+    const r = qsOrigine112.call(document, "#qresult"), l = qsOrigine112.call(document, "#qstats"), b = qsOrigine112.call(document, "#qbadge");
+    if (r) r.replaceChildren(); if (l) l.replaceChildren(); if (b) { b.replaceChildren(); b.hidden = true; }
+    document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
+  }
+  console.log("(112) OK — la confirmation de suppression d'un compte dit, dans les deux langues, ce que le démon fait de ses objets — tableaux de bord, vues, panneaux de bibliothèque et playlists réattribués à l'auteur, requêtes enregistrées et instantanés supprimés, jugés CONTRE les deux listes relues dans `user_delete` —, et que les jetons d'agent ne sont pas révoqués ; le refus du compte de l'administrateur de l'installation est peint dans le puits de la ligne, cause entière (plus de cinq cents caractères), sans avis qui s'efface, sans accuser, sans recharger ; un refus en texte brut et une page de passerelle ont leur face, une suppression acceptée recharge. Une page au-delà du total compté se dit « page 2 au-delà de la dernière (1) » dans la ligne d'état de l'Explore (total connu, compte arrivé après, décalage) et dans le pager partagé, jamais sous un total plafonné ni sur une page vide DANS le total ; la liste plate des alertes et la liste de groupes ne disent plus « Aucune alerte » d'une page au-delà du total et y gardent un retour qui ramène à la première page, comme les occurrences d'un groupe, une liste paginée par le démon et un panneau de tableau de bord. La liste d'événements a ses deux faces accentuées (fenêtre vide, compte, facettes, infobulle du ban, note des champs vides — aussi dans le détail d'une ligne de table), et la page pleine sans curseur est dans le registre de l'alarme. CE QUI ÉTAIT FAUX : `P10.24-z` ne nommait qu'`alerts.js` et `dashboards.js` — le changement de `P10.22-d` atteint aussi la liste paginée partagée et les occurrences d'un groupe, et il n'atteignait PAS la liste plate ni la liste de groupes, dont le chemin vide rend la main avant le pager ; la note des champs vides existait en DEUX sites.");
 }
 
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;

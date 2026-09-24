@@ -750,6 +750,47 @@ function laSuiteOffreLaPageSuivante(suite, servies, taille) {
   return servies >= taille;
 }
 
+// `P10.24-z` — UNE PAGE AU-DELÀ DU TOTAL SE DIT TELLE, UNE FOIS POUR TOUTE LA CONSOLE.
+//
+// MESURÉ LE 2026-09-24 SUR LES MODULES RÉELS. Une page devient « au-delà du total » quand le compte arrive, ou
+// change, APRÈS qu'elle a été atteinte : l'Explore atteint la page 2 par le curseur d'une page pleine, puis le
+// compte dit trois résultats — la ligne d'état écrivait « 3 résultats · page 2 / 1 », le parcours par décalage
+// « page 2/1 » ; un panneau de tableau de bord, une liste de journal ou les occurrences d'un groupe d'alertes
+// dont le total baisse entre deux pages (purge, acquittement) y arrivent de même. Le pager n'y écrivait que
+// « 3 · — ». CE QUI SE DIT ICI : la page, et la dernière page du total compté — sans cause devinée (le compte
+// est-il arrivé tard, ou a-t-il baissé ?) que rien ici n'établit. Un total PLAFONNÉ n'établit aucune dernière
+// page : il n'est jamais « dépassé ». Les faces sont côte à côte, choisies par `LANG` au moment d'écrire (le
+// nœud est composé d'un nombre, le lexique ne l'atteindrait pas).
+const MOTS_DE_LA_PAGE_AU_DELA_DU_TOTAL = {
+  au_dela_de_la_derniere: {
+    fr: 'page {page} au-delà de la dernière ({pages})',
+    en: 'page {page} beyond the last one ({pages})' },
+  page_vide_au_dela: {
+    fr: 'page vide : elle est au-delà de la dernière page du total compté — ◀ pour revenir',
+    en: 'empty page: it lies beyond the last page of the counted total — ◀ to go back' },
+};
+const pagesDuTotal = (total, taille) => Math.max(1, Math.ceil(total / taille));
+function laPageEstAuDelaDuTotal(indexDePage, total, taille, totalPlafonne) {
+  if (totalPlafonne) return false;
+  if (!(typeof total === 'number' && total >= 0)) return false;
+  if (!(taille > 0) || !(indexDePage > 0)) return false;
+  return indexDePage >= pagesDuTotal(total, taille);
+}
+function motDeLaPageAuDelaDuTotal(indexDePage, total, taille) {
+  const mots = MOTS_DE_LA_PAGE_AU_DELA_DU_TOTAL.au_dela_de_la_derniere;
+  const valeurs = { page: indexDePage + 1, pages: pagesDuTotal(total, taille) };
+  return (LANG === 'en' ? mots.en : mots.fr).replace(/\{(\w+)\}/g, (brut, nom) => (nom in valeurs ? String(valeurs[nom]) : brut));
+}
+// La phrase d'une liste dont le corps serait sinon une ABSENCE (« Aucune alerte… ») : une page vide au-delà du
+// total n'établit rien sur ce que la liste porte. La clé est portée par le nœud (marque de POSE pour le harnais).
+function noeudDeLaPageVideAuDelaDuTotal() {
+  const noeud = document.createElement('div'); noeud.className = 'muted';
+  const mots = MOTS_DE_LA_PAGE_AU_DELA_DU_TOTAL.page_vide_au_dela;
+  noeud.textContent = LANG === 'en' ? mots.en : mots.fr;
+  noeud.dataset.pageAuDelaDuTotal = 'page_vide_au_dela';
+  return noeud;
+}
+
 function makePager(state, onGo) {
   const PS = state.pageSize, total = state.total, numbered = total >= 0;
   const pages = numbered ? Math.max(1, Math.ceil(total / PS)) : state.page + (state.shown >= PS ? 2 : 1);
@@ -782,7 +823,11 @@ function makePager(state, onGo) {
   // (le total exact resterait honnête mais coûterait un scan complet). Absent/false -> total exact, inchangé.
   const totLbl = total >= 0 ? (total + (state.totalCapped ? '+' : '') + ' · ') : '';
   // `P10.22-d` — une page VIDE ne rend pas une plage à l'envers (« 101–100 ») : un tiret, dans les deux langues.
-  tot.textContent = totLbl + (state.shown > 0 ? (from + 1) + '–' + (from + state.shown) : '—');
+  // `P10.24-z` — une page AU-DELÀ du total compté le dit, et garde sa plage si des lignes y sont servies.
+  const plage = state.shown > 0 ? (from + 1) + '–' + (from + state.shown) : '';
+  const auDela = numbered && laPageEstAuDelaDuTotal(state.page, total, PS, state.totalCapped);
+  tot.textContent = totLbl + (auDela ? motDeLaPageAuDelaDuTotal(state.page, total, PS) + (plage ? ' · ' + plage : '') : (plage || '—'));
+  if (auDela) tot.dataset.pageAuDelaDuTotal = 'au_dela_de_la_derniere';
   wrap.appendChild(tot);
   return wrap;
 }
@@ -2074,6 +2119,9 @@ export {
   // `P10.21-x` — le discriminant de la suite d'une page et la règle de la flèche qu'il arme : lus par le
   // panneau de rétention, l'onglet Audit et la ligne d'état de l'Explore, jugés par le harnais ESM.
   cleDeLaSuiteServie, laSuiteOffreLaPageSuivante,
+  // `P10.24-z` — la page au-delà du total compté, lue par le fabricant de pager, la ligne d'état de l'Explore
+  // et les listes d'alertes (plate et groupée), qui ne rendent aucun pager sur une page vide.
+  laPageEstAuDelaDuTotal, motDeLaPageAuDelaDuTotal, noeudDeLaPageVideAuDelaDuTotal,
   socRole, socIsAdmin, applyRoleClass, controleDEcritureSous, motiverLeRefusAuLecteur, roleSansEcriturePartagee, managedBadge, gateDeleteBtn, formMsg, contentSubmit, contentDelete, SEVCOL, lsSet, collapsibleGroup, humanAge,
   confirmWithConsequence, disclosure, marquerLesCellulesTronquees, celluleDeborde,
   // `P10.20-b` (rang 2) — LE LECTEUR DE CAUSE EST EXPOSÉ, PAS RECOPIÉ. `api()` et `apiSend()` attachent

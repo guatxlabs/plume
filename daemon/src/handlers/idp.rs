@@ -144,7 +144,9 @@ fn idp_name_ok(name: &str) -> bool {
 /// Nom réservé au compte admin de CONFIG (PLUME_USER + PLUME_PASS_HASH) — repli de `authenticate()`, JAMAIS
 /// dans la table `user`. Un login fédéré portant ce nom est refusé (anti lockout/hijack de l'admin statique).
 /// None si aucun admin de config n'est posé (pass_hash vide) -> pas de nom à réserver.
-fn reserved_static_admin(st: &AppState) -> Option<&str> {
+/// `P10.24-u` — la MÊME réservation vaut pour la création d'un compte local (`user_create`) : une seule règle,
+/// lue aux deux portes qui peuvent poser une ligne `user` sur ce nom.
+pub(crate) fn reserved_static_admin(st: &AppState) -> Option<&str> {
     (!st.pass_hash.is_empty()).then(|| st.user.as_str())
 }
 

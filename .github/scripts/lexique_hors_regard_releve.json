@@ -8,7 +8,6 @@
   "nom invalide (alphanumérique, . _ - uniquement)",
   "portée « machine » : l'hôte est requis (sinon choisissez « relais »)",
   "portée « relais » : laissez l'hôte vide (un relais n'est lié à aucune machine)",
-  "échec",
   "échec de création du jeton",
   "échec de la révocation"
  ],
@@ -649,8 +648,6 @@
   "Données brutes (scan, non pré-agrégé) — exact",
   "Escape",
   "Go",
-  "IP dest",
-  "IP source",
   "Ko",
   "Mo",
   "SQL brut réservé à l'administrateur — utilisez GXQL (commencez par « search », ex : search source=… | stats count by …).",

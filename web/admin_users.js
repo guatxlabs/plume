@@ -65,6 +65,55 @@ function peindreLeRefusJete(puits, e) {
   if (e && e.statutDuRefus === 429 && e.delaiDuRefus) { peindreLeRefusDeModification(puits, 'refus_nomme_avec_delai', phraseDuRefusDuDemon(e), e.delaiDuRefus); return; }
   peindreLeRefusDeModification(puits, 'refus_nomme', phraseDuRefusDuDemon(e) || ((e && e.message) || String(e)), 0);
 }
+// `P10.24-v` — LA SUPPRESSION D'UN COMPTE DIT CE QU'ELLE FAIT DE SES OBJETS, ET SON REFUS A UNE FACE.
+// CE QUE LE DÉMON FAIT, RELU DANS `user_delete` (daemon/src/handlers/users_lookups.rs) : dans SA transaction, il
+// retire le second facteur et les préférences (`P10.24-c`), SUPPRIME les requêtes enregistrées et les instantanés de
+// tableau de bord (`OBJETS_PURGES_AVEC_LE_COMPTE`), RÉATTRIBUE à l'auteur de la suppression tableaux de bord, vues,
+// panneaux de bibliothèque et playlists, visibilité inchangée (`OBJETS_REATTRIBUES_A_L_AUTEUR`, `P10.24-p`), avance
+// l'époque du compte (ses sessions tombent) et atteste chaque objet à l'audit. Il ne touche pas aux jetons d'agent
+// et HEC : la table n'a aucune colonne d'auteur (`P10.24-w`). La confirmation d'avant disait seulement « ses
+// sessions et jetons de session cessent de fonctionner… » : rien du sort des objets (sa phrase était au lexique ; son
+// titre, composé du nom du compte, restait français sous `LANG='en'`).
+// CE QUE LA CONSOLE FAISAIT DU REFUS, MESURÉ AVANT CE LOT : le quatre cents du compte de l'administrateur de
+// l'installation (`CAUSE_COMPTE_DE_L_ASSISTANT_NON_SUPPRIMABLE`, `P10.24-n`) partait dans un AVIS qui s'efface,
+// « 400 {"error":"COMPTE NON SUPPRIMÉ… » — le corps JSON brut, coupé à deux cents caractères sur une cause qui en
+// compte plus de cinq cents, si bien que le remède qu'elle nomme (réinitialiser le mot de passe) n'atteignait
+// jamais l'écran — puis la liste se rechargeait. Le refus s'écrit désormais dans le PUITS de la ligne, phrase
+// ENTIÈRE, sans accuser l'utilisateur (c'est le démon qui refuse), et la liste n'est pas rechargée : un refus
+// n'a rien écrit. CE QUE LA CONSOLE NE PEUT PAS DIRE : quel compte est celui de l'assistant — `/api/users` ne le
+// sert pas, aucune autre route non plus ; le signaler dans la liste exige un champ servi.
+const MOTS_DE_LA_SUPPRESSION_DE_COMPTE = {
+  titre: {
+    fr: 'Supprimer le compte « {nom} »',
+    en: 'Delete the account “{nom}”' },
+  consequence: {
+    fr: "le compte ne se restaure pas : ses sessions cessent de fonctionner, son second facteur et ses préférences sont retirés. Ses tableaux de bord, vues, panneaux de bibliothèque et playlists vous sont RÉATTRIBUÉS, visibilité inchangée ; ses requêtes enregistrées et ses instantanés de tableau de bord sont SUPPRIMÉS. Les jetons d'agent et HEC, rattachés à aucun compte, ne sont PAS révoqués par ce geste. Ses actions passées restent dans le journal d'audit, qui atteste aussi chaque objet réattribué ou supprimé.",
+    en: 'the account cannot be restored: its sessions stop working, its second factor and preferences are removed. Its dashboards, views, library panels and playlists are REASSIGNED to you, visibility unchanged; its saved queries and dashboard snapshots are DELETED. Agent and HEC tokens, tied to no account, are NOT revoked by this action. Its past actions stay in the audit journal, which also records every object reassigned or deleted.' },
+  refus_nomme: {
+    fr: 'Compte NON supprimé : le démon a refusé et en nomme la cause —',
+    en: 'Account NOT deleted: the daemon refused and names the cause —' },
+};
+function motDeLaSuppressionDeCompte(cle, valeurs = {}) {
+  const face = LANG === 'en' ? MOTS_DE_LA_SUPPRESSION_DE_COMPTE[cle].en : MOTS_DE_LA_SUPPRESSION_DE_COMPTE[cle].fr;
+  return face.replace(/\{(\w+)\}/g, (brut, nom) => (Object.prototype.hasOwnProperty.call(valeurs, nom) ? String(valeurs[nom]) : brut));
+}
+// Le puits du refus de suppression d'une ligne : une réponse de passerelle garde sa propre phrase (rien n'y établit ce
+// que le démon a fait) ; tout autre refus porte la phrase que le démon a écrite, ENTIÈRE, dans un second nœud.
+// `data-refus-de-suppression` porte la clé de la face (marque de POSE pour le harnais).
+function peindreLeRefusDeSuppression(puits, e) {
+  if (!puits) return;
+  const dit = document.createElement('span');
+  if (e && e.reponseHorsDemon) {
+    dit.textContent = String(e.message || '');
+    puits.replaceChildren(dit); puits.dataset.refusDeSuppression = 'reponse_hors_demon';
+  } else {
+    dit.textContent = motDeLaSuppressionDeCompte('refus_nomme');
+    const cause = phraseDuRefusDuDemon(e) || ((e && e.message) || String(e));
+    puits.replaceChildren(dit, document.createTextNode(' « ' + String(cause).trim() + ' »'));
+    puits.dataset.refusDeSuppression = 'refus_nomme';
+  }
+  puits.hidden = false;
+}
 /* state: isAdmin -> S (state.js) */ // /api/users 200 => admin ; sinon la section reste masquee partout
 async function loadUsers() {
   const sec = $('#users'), list = $('#user-list'); if (!sec || !list) return;
@@ -153,15 +202,19 @@ async function loadUsers() {
     ed.onclick = () => editor.classList.toggle('hidden');
     const del = document.createElement('button'); del.className = 'picon'; del.innerHTML = ic('x'); del.title = 'Supprimer le compte';
     if (u.name === me) del.disabled = true;
+    // `P10.24-v` — le puits du refus de suppression suit l'éditeur de la ligne, hors de lui : l'éditeur est replié.
+    const puitsDeSuppression = document.createElement('div'); puitsDeSuppression.className = 'bad'; puitsDeSuppression.hidden = true;
+    puitsDeSuppression.style.cssText = 'margin:0 0 8px;font-size:12px';
     del.onclick = async () => {
-      if (!await confirmWithConsequence(`Supprimer le compte « ${u.name} »`, 'ses sessions et jetons de session cessent de fonctionner et le compte ne se restaure pas ; ses actions passées restent dans le journal d\'audit.', { okText: 'Supprimer' })) return;
+      puitsDeSuppression.hidden = true; puitsDeSuppression.replaceChildren(); delete puitsDeSuppression.dataset.refusDeSuppression;
+      if (!await confirmWithConsequence(motDeLaSuppressionDeCompte('titre', { nom: u.name }), motDeLaSuppressionDeCompte('consequence'), { okText: 'Supprimer' })) return;
       try { await apiSend('/users/' + u.id, 'DELETE'); }
-      catch (err) { toast((err && err.message) || 'échec', 'bad'); }
+      catch (err) { peindreLeRefusDeSuppression(puitsDeSuppression, err); return; }
       loadUsers();
     };
     // BATCH 2 (B3b) : ✎ + ✕ groupés à droite (sinon space-between les écarte) -> un span .urow-actions.
     const actions = document.createElement('span'); actions.className = 'urow-actions'; actions.append(ed, del);
-    row.append(info, actions); list.appendChild(row); list.appendChild(editor);
+    row.append(info, actions); list.appendChild(row); list.appendChild(editor); list.appendChild(puitsDeSuppression);
   });
 }
 // --- P11.5-c — QUI A ACCÈS : l'inventaire des comptes que l'AUTHENTIFICATION a vus -----------------
@@ -350,4 +403,5 @@ if ($('#token-new')) $('#token-new').onclick = newTokenFlow;
 
 // `P10.24-a` — `motDeLaModificationDeCompte` part pour le harnais ESM (témoin 110) : les faces s'y jugent sous les deux
 // instances de langue, contre ce que l'éditeur réel peint. Aucun usage applicatif hors de ce module.
-export { ROLE_LABEL, loadUsers, loadTokens, motDeLaModificationDeCompte };
+// `P10.24-v` — `motDeLaSuppressionDeCompte` de même (témoin 112).
+export { ROLE_LABEL, loadUsers, loadTokens, motDeLaModificationDeCompte, motDeLaSuppressionDeCompte };

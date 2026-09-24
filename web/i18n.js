@@ -129,7 +129,8 @@ const I18N_EN = {
   "les deux cas ne seront plus rattachés ; le lien se recrée à la main, sans son historique.": "the two cases will no longer be linked; the link is recreated by hand, without its history.",
   "l’index retombe sur la rétention globale ; aucun événement n’est supprimé par ce geste, mais le régime de purge propre à cet index disparaît.": "the index falls back to the global retention; no event is deleted by this action, but the purge regime specific to this index disappears.",
   "un jeton de livraison sera frappé et affiché UNE SEULE FOIS : quiconque le détient peut pousser des événements dans cet environnement.": "a delivery token will be minted and shown ONLY ONCE: whoever holds it can push events into this environment.",
-  "ses sessions et jetons de session cessent de fonctionner et le compte ne se restaure pas ; ses actions passées restent dans le journal d'audit.": "their sessions and session tokens stop working and the account cannot be restored; their past actions stay in the audit log.",
+  // `P10.24-v` — la conséquence de la suppression d'un compte a quitté le lexique : elle dit désormais le sort des objets,
+  // et ses deux faces sont côte à côte (`MOTS_DE_LA_SUPPRESSION_DE_COMPTE`, web/admin_users.js).
   "l'agent ou le forwarder porteur perd l'accès immédiatement ; un jeton révoqué ne se réactive pas, il faut en provisionner un autre.": "the agent or forwarder holding it loses access immediately; a revoked token cannot be reactivated, another one must be provisioned.",
   "une crédence d'accès machine est créée ; son secret n'est montré qu'une seule fois, et tout porteur de ce secret pourra écrire des événements sous l'hôte choisi (un relais : sous n'importe quel nom d'hôte).": "a machine access credential is created; its secret is shown only once, and anyone holding that secret can write events under the chosen host (a relay: under any host name).",
   "les comptes qui se connectent par ce fournisseur ne pourront plus ouvrir de session ; le secret associé est effacé et ne se restaure pas.": "accounts that sign in through this provider will no longer be able to open a session; the associated secret is erased and cannot be restored.",
@@ -1155,7 +1156,9 @@ const I18N_EN = {
   "aucune correspondance": "no match", "aucune occurrence": "no occurrence",
   "aucun parser": "no parser", "aucun playbook": "no playbook", "aucun runbook": "no runbook",
   "aucun runbook disponible": "no runbook available", "runbooks indisponibles": "runbooks unavailable",
-  "aucun silence.": "no silence.", "aucun evenement sur la fenetre": "no event over the window",
+  // `P10.25-b` — « aucun evenement sur la fenetre » est retiré : la phrase, accentuée, est désormais bilingue par
+  // construction (`MOTS_DE_LA_LISTE_D_EVENEMENTS`, web/viz.js), et la clé sans accents n'était plus affichée nulle part.
+  "aucun silence.": "no silence.",
   "aucune nouvelle technique couverte": "no newly covered technique",
   "couverture indisponible": "coverage unavailable",
   "secret manquant": "secret missing", "en clair": "in the clear", "hors parc": "out of estate",

@@ -3,7 +3,7 @@
 // Extrait d'app.js en PURE MOVE ; depuis P11.1 : lien de recherche servi par le démon, barre d'actions unique.
 // Le cycle app<->module est benin : les fonctions importees d'app.js ne sont appelees qu'a
 // l'EXECUTION (handlers/async apres await), jamais a l'evaluation du module.
-import { $, esc, sev, fmtTs, ic, withBusy, api, apiSend, makePager, exportBar, confirmModal, modal, LANG, toast, phraseDuRefusDuDemon } from './core.js';
+import { $, esc, sev, fmtTs, ic, withBusy, api, apiSend, makePager, exportBar, confirmModal, modal, LANG, toast, phraseDuRefusDuDemon, laPageEstAuDelaDuTotal, noeudDeLaPageVideAuDelaDuTotal } from './core.js';
 import { libelleDeTechnique } from './catalogue_attack.js'; // `P11.6-c` : nom dérivé du catalogue servi, ou motif de son absence
 import { S } from './state.js';
 import { banIp, runQuery, updateZoomBadge } from './viz.js';
@@ -1021,6 +1021,19 @@ function dessinerLaListePlate(b, m, alerts, alertTotal, etat) {
   // byte-identique à celui d'avant cette clé.
   const aveu = bandeauDePageIncomplete(LANG === 'en' ? 'Alerts' : 'Alertes', etat);
   const bar = aveu + alertActionBarHtml(m, loaded);
+  // `P10.24-z` — UNE PAGE VIDE AU-DELÀ DU TOTAL N'EST PAS UNE ABSENCE, ET ELLE GARDE SON RETOUR. Mesuré avant ce lot :
+  // page 2 de la portée « tous statuts », vide, total servi 3 — la liste disait « Aucune alerte… » sous une barre
+  // qui comptait « 3 alerte(s) », et ne rendait AUCUN pager (ce chemin rend la main avant lui) : un cul-de-sac
+  // qu'aucune flèche ne quittait. Le cas est ordinaire : le total baisse entre deux pages (purge, acquittement
+  // ailleurs), et l'auto-rafraîchissement redemande la même page.
+  if (!alerts.length && m.scopeAll && laPageEstAuDelaDuTotal(S.alertHistPage, alertTotal, ALERT_HIST_PS)) {
+    b.innerHTML = bar;
+    b.appendChild(noeudDeLaPageVideAuDelaDuTotal());
+    const retour = makePager({ page: S.alertHistPage, pageSize: ALERT_HIST_PS, total: alertTotal, shown: 0 }, p => { S.alertHistPage = p; renderAlerts(true); });
+    if (retour) b.appendChild(retour);
+    wireAlertActionBar(b, loaded, m);
+    return;
+  }
   if (!alerts.length) {
     let vide;
     if (m.mitre) {
@@ -1103,6 +1116,16 @@ async function renderAlertGroups(loading) {
   // acquittable depuis la liste de groupes), la phrase de P11.1-g ne sert donc ici qu'au bouton inerte.
   const loaded = { count, countLabel: `${count} groupe(s) · par ${axisLabel} · ${portee}${m.mitre ? ' · technique ' + m.mitre : ''}${m.source ? ' · source ' + m.source : ''}${etat.incomplet ? motDuCompteIncomplet() : ''}`, ackableIds: [], total };
   const bar = aveuDesGroupes + alertActionBarHtml(m, loaded);
+  // `P10.24-z` — même défaut que la liste plate, mesuré de même : page 2 des groupes, vide, total servi 3 —
+  // « Aucune alerte active à trier » sous « 3 groupe(s) », sans pager.
+  if (!groups.length && laPageEstAuDelaDuTotal(S.alertGroupPage, total, ALERT_GROUP_PS)) {
+    b.innerHTML = bar;
+    b.appendChild(noeudDeLaPageVideAuDelaDuTotal());
+    const retour = makePager({ page: S.alertGroupPage, pageSize: ALERT_GROUP_PS, total, shown: 0 }, p => { S.alertGroupPage = p; renderAlertGroups(true); });
+    if (retour) b.appendChild(retour);
+    wireAlertActionBar(b, loaded, m);
+    return;
+  }
   if (!groups.length) {
     b.innerHTML = bar + `<div class="ok">Aucune alerte ${m.scopeAll ? '' : 'active '}à trier${m.source ? ` pour la source ${esc(m.source)}` : ''}</div>`;
     wireAlertActionBar(b, loaded, m); return;
@@ -1194,8 +1217,12 @@ async function loadGroupOccurrences(body, g, opage) {
   // pager qui suit reste dérivé du `total` que le démon déclare, jamais de la longueur du préfixe.
   body.dataset.loaded = '1';
   body.dataset.opage = String(opage); // ui-regression : mémorise la page pour la restaurer après un rebuild (auto-refresh)
+  // `P10.24-z` — une page d'occurrences vidée au-delà du total compté (acquittements entre deux pages) ne dit plus
+  // « aucune occurrence » d'un groupe qui en compte : elle le dit telle, et le pager qui suit garde son retour.
+  const videAuDela = !occ.length && laPageEstAuDelaDuTotal(opage, total, ALERT_OCC_PS);
   body.innerHTML = bandeauDePageIncomplete(LANG === 'en' ? 'Occurrences' : 'Occurrences', etat)
-    + (occ.map((a, i) => alertRowHtml(a, i)).join('') || '<div class="muted">aucune occurrence</div>');
+    + (occ.map((a, i) => alertRowHtml(a, i)).join('') || (videAuDela ? '' : '<div class="muted">aucune occurrence</div>'));
+  if (videAuDela) body.appendChild(noeudDeLaPageVideAuDelaDuTotal());
   if (typeof total === 'number') {
     const pgState = { page: opage, pageSize: ALERT_OCC_PS, total, shown: occ.length };
     const go = p => loadGroupOccurrences(body, g, p);

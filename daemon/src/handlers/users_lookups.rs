@@ -55,6 +55,18 @@ pub(crate) async fn user_create(State(st): State<AppState>, Extension(au): Exten
     if name.starts_with(ENG_CRED_PREFIX) {
         return (StatusCode::BAD_REQUEST, "préfixe 'eng-cred-' réservé aux credentials d'engagement").into_response();
     }
+    // `P10.24-u` — LE NOM DE L'ADMINISTRATEUR DE CONFIGURATION EST RÉSERVÉ, ICI COMME À LA FÉDÉRATION (même règle,
+    // `reserved_static_admin`). Mesuré le 2026-09-24 sur la forme d'avant : `root`, administrateur de configuration
+    // (graine du second facteur active, une requête enregistrée et un instantané capturé au rôle `admin` à son nom),
+    // `adm` crée `root` `viewer` — 200. Son mot de passe de configuration rend alors 401 (la ligne créée fait
+    // autorité) ; il rendait encore 200, rôle `admin`, tant que le cache d'authentification gardait sa dernière
+    // connexion (cinq minutes : la création ne le vide pas). Le nouveau titulaire, avec son propre mot de passe, était
+    // arrêté au second facteur de l'administrateur de configuration, puis, avec un code de CETTE graine, recevait une
+    // session `viewer` qui listait sa requête privée et son instantané avec le jeton. Jugé AVANT le hachage : c'est
+    // un fait de configuration, aucune lecture de la base n'y entre.
+    if crate::handlers::idp::reserved_static_admin(&st) == Some(name.as_str()) {
+        return err_json(StatusCode::CONFLICT, CAUSE_NOM_DE_L_ADMINISTRATEUR_DE_CONFIGURATION);
+    }
     // POLITIQUE MDP (item 3) — à la CRÉATION du compte uniquement (les comptes existants intacts).
     if pw.chars().count() < PASSWORD_MIN_CHARS {
         return (StatusCode::BAD_REQUEST, format!("mot de passe trop court (≥ {PASSWORD_MIN_CHARS} caractères)")).into_response();
@@ -67,6 +79,21 @@ pub(crate) async fn user_create(State(st): State<AppState>, Extension(au): Exten
     // ADMIN = sévérité 4 (HIGH, alertable) ; editor/viewer = 3.
     if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
         return server_err("verrou base indisponible");
+    }
+    // `P10.24-u` — CE QUE LE NOM TIENT DÉJÀ SANS COMPTE, lu SOUS le verrou d'écriture de la création : rien ne peut
+    // s'y ajouter entre la lecture et l'écriture. Voir `ce_que_le_nom_tient_sans_compte`.
+    match ce_que_le_nom_tient_sans_compte(&conn, &name) {
+        Ok(None) => {}
+        Ok(Some(tenue)) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            return (StatusCode::CONFLICT, Json(json!({ "error": CAUSE_NOM_TENU_PAR_UNE_IDENTITE_SANS_COMPTE, "ce_que_le_nom_tient": tenue })))
+                .into_response();
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            eprintln!("[comptes] WARN création du compte '{name}' refusée : nom non vérifié ({e})");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_NOM_NON_VERIFIE_COMPTE_NON_CREE);
+        }
     }
     let sev = if role == "admin" { 4 } else { 3 };
     let outcome: rusqlite::Result<i64> = (|| {
@@ -81,7 +108,14 @@ pub(crate) async fn user_create(State(st): State<AppState>, Extension(au): Exten
         Ok(id)
     })();
     match outcome {
-        Ok(id) => { let _ = conn.execute_batch("COMMIT"); Json(json!({ "id": id })).into_response() }
+        // `P10.24-x` — l'identifiant n'est rendu qu'une fois la transaction VALIDÉE.
+        Ok(id) => match valider_la_transaction(&conn) {
+            Ok(()) => Json(json!({ "id": id })).into_response(),
+            Err(e) => {
+                eprintln!("[comptes] WARN création du compte '{name}' NON validée : {e}");
+                err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_COMPTE_NON_CREE_COMMIT_REFUSE)
+            }
+        },
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK"); // fail-closed : rien de persisté sans audit
             // distinguer un conflit de nom (UNIQUE) d'un vrai échec d'audit — même sémantique 409 qu'avant.
@@ -93,6 +127,133 @@ pub(crate) async fn user_create(State(st): State<AppState>, Extension(au): Exten
             }
         }
     }
+}
+
+/// `P10.24-u` — LE NOM DE L'ADMINISTRATEUR DE CONFIGURATION NE DEVIENT PAS UN COMPTE.
+pub(crate) const CAUSE_NOM_DE_L_ADMINISTRATEUR_DE_CONFIGURATION: &str = "NOM RÉSERVÉ, C'EST L'ADMINISTRATEUR DE \
+     CONFIGURATION : ce nom est celui du compte d'administration que pose la configuration du démon, sans ligne dans \
+     la table des comptes. Un compte de ce nom le masquerait — la table des comptes fait autorité, son mot de passe de \
+     configuration ne serait plus consulté — et hériterait de ce qu'il tient par son nom : graine du second facteur, \
+     requêtes, tableaux de bord, instantanés. Choisissez un autre nom. Rien n'est écrit.";
+
+/// `P10.24-u` — UN NOM TENU SANS COMPTE LOCAL NE DEVIENT PAS UN COMPTE À MOT DE PASSE.
+pub(crate) const CAUSE_NOM_TENU_PAR_UNE_IDENTITE_SANS_COMPTE: &str = "NOM TENU PAR UNE IDENTITÉ SANS COMPTE LOCAL : \
+     ce nom a accédé par l'annuaire externe (SSO d'en-têtes), ou tient encore, sans ligne dans la table des comptes, \
+     des objets, une graine du second facteur ou des préférences — le détail est dans `ce_que_le_nom_tient`. Un compte \
+     à mot de passe de ce nom en hériterait, et partagerait son nom avec une identité de l'annuaire, hors de portée de \
+     l'annuaire qui la révoque. Choisissez un autre nom ; un nom de l'annuaire devient un compte par la fédération \
+     (OIDC, SAML, LDAP), sans mot de passe local. Rien n'est écrit.";
+
+/// `P10.24-u` — la vérification du nom n'a pas eu lieu : aucun compte ne se crée sur un nom non vérifié.
+pub(crate) const CAUSE_NOM_NON_VERIFIE_COMPTE_NON_CREE: &str = "COMPTE NON CRÉÉ, NOM NON VÉRIFIÉ : la base n'a pas \
+     pu dire si ce nom est déjà tenu par une identité sans compte local (lecture refusée ou table illisible), et un \
+     compte ne se crée pas sur un nom qu'on n'a pas pu vérifier. Réessayez. Rien n'est écrit.";
+
+/// `P10.24-x` — le `COMMIT` de la création refusé.
+pub(crate) const CAUSE_COMPTE_NON_CREE_COMMIT_REFUSE: &str = "COMPTE NON CRÉÉ : la base n'a pas validé la \
+     transaction (COMMIT refusé) et l'a annulée — ni le compte ni sa trace d'audit ne sont écrits. Réessayez ; si le \
+     refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+
+/// `P10.24-x` — le `COMMIT` de la suppression refusé.
+pub(crate) const CAUSE_COMPTE_NON_SUPPRIME_COMMIT_REFUSE: &str = "COMPTE NON SUPPRIMÉ : la base n'a pas validé la \
+     transaction (COMMIT refusé) et l'a annulée — le compte, ses objets, sa graine du second facteur, ses préférences \
+     et ses sessions sont intacts, et ni ses échecs de connexion ni le frein de son second facteur ne sont oubliés. \
+     Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+
+/// `P10.24-x` — le `COMMIT` de la modification refusé.
+pub(crate) const CAUSE_COMPTE_NON_MODIFIE_COMMIT_REFUSE: &str = "COMPTE NON MODIFIÉ : la base n'a pas validé la \
+     transaction (COMMIT refusé) et l'a annulée — ni son rôle ni son mot de passe n'ont changé, et ses sessions ne sont \
+     pas révoquées. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+
+/// `P10.24-x` — le `COMMIT` d'un chargement ou d'une suppression de table d'enrichissement refusé.
+pub(crate) const CAUSE_TABLE_D_ENRICHISSEMENT_INCHANGEE: &str = "TABLE D'ENRICHISSEMENT INCHANGÉE : la base n'a pas \
+     validé la transaction (COMMIT refusé) et l'a annulée — le contenu d'avant est intact et aucune trace n'est écrite. \
+     Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+
+/// `P10.24-u` — LES LIGNES HORS OBJETS QUI DONNENT UNE AUTORITÉ À UN NOM : la graine du second facteur (que
+/// `login_post` lit par nom) et les préférences. Ce sont celles que `user_delete` purge avec le compte (`P10.24-c`).
+const LIGNES_DU_COMPTE_HORS_OBJETS: [(&str, &str); 2] = [("user_mfa", "user"), ("user_pref", "user")];
+
+/// `P10.24-u` — TOUT CE QU'UN NOM TIENT PAR UNE COLONNE D'AUTORITÉ, `(table, colonne)`. Dérivé des listes de la
+/// suppression (`P10.24-p`) : un objet que la suppression emporte ou réattribue est, du même geste, un objet que la
+/// création refuse de faire hériter. Les colonnes d'ATTESTATION (`created_by` d'un dossier, `acked_by`, `author`…)
+/// n'y sont pas : elles n'octroient rien.
+fn colonnes_d_autorite_par_nom() -> impl Iterator<Item = (&'static str, &'static str)> {
+    OBJETS_PURGES_AVEC_LE_COMPTE
+        .into_iter()
+        .chain(OBJETS_REATTRIBUES_A_L_AUTEUR.into_iter().map(|table| (table, "owner")))
+        .chain(LIGNES_DU_COMPTE_HORS_OBJETS)
+}
+
+/// `P10.24-u` — CE QUE TIENT UN NOM QUI N'A PAS DE LIGNE DANS `user`, ET QU'UN COMPTE À MOT DE PASSE DE CE NOM
+/// PRENDRAIT. `Ok(None)` : le nom a déjà un compte (la création bute sur l'unicité, comme avant) ou ne tient rien ;
+/// `Ok(Some(détail))` : la création est refusée ; `Err` : la lecture n'a pas eu lieu, rien n'est conclu.
+///
+/// LE DÉFAUT, MESURÉ LE 2026-09-24 SUR LA FORME D'AVANT. `carol`, vue par l'annuaire (SSO d'en-têtes, groupe
+/// administrateur, consignée à l'inventaire des accès) et propriétaire d'une requête privée, d'un tableau de bord
+/// privé et d'un instantané capturé au rôle `admin` : `adm` crée `carol` `viewer` (200). Le nouveau compte, par son
+/// mot de passe, listait la requête et l'instantané, et le jeton servait les données figées (200). Et les en-têtes
+/// résolvaient toujours `carol` en `admin` : une requête que le compte local écrivait se lisait par l'identité de
+/// l'annuaire — deux authentifications, un seul nom, l'une hors de portée de l'annuaire qui révoque l'autre.
+///
+/// DEUX CRITÈRES, INDÉPENDANTS :
+///  * LE NOM A ACCÉDÉ PAR L'ANNUAIRE (`acces_observe`, méthode `sso`), qu'il tienne ou non des objets : l'annuaire
+///    peut le présenter à nouveau à tout moment, et rien ici ne dit qu'il l'a retiré. L'inventaire est la seule
+///    trace de ces noms ; il est plafonné, et une vue très ancienne peut en avoir cédé — d'où le second critère ;
+///  * LE NOM TIENT DES LIGNES PAR UNE COLONNE D'AUTORITÉ (`colonnes_d_autorite_par_nom`) sans ligne `user` : une
+///    identité de l'annuaire sortie de l'inventaire, un administrateur de configuration retiré de la configuration,
+///    ou un compte supprimé avant que la suppression n'emporte ses objets (`P10.24-t`, que ce refus borne à la
+///    création sans rien nettoyer).
+/// Un nom vu comme compte LOCAL (mot de passe, session) puis supprimé n'est pas réservé : la suppression a emporté ce
+/// qu'il tenait, et son homonyme se recrée.
+///
+/// QUAND UN NOM DE L'ANNUAIRE DEVIENT-IL UN COMPTE ? PAR LA FÉDÉRATION SEULEMENT. `idp_provision_user` (OIDC, SAML,
+/// LDAP) pose une ligne SANS mot de passe (`IDP_HASH_SENTINEL`) : l'annuaire reste l'autorité qui l'authentifie et
+/// le révoque, et c'est le pendant de ce qu'elle refuse déjà — fédérer sur un nom tenu par un compte à mot de passe.
+/// Elle n'est pas touchée. Un compte LOCAL, lui, n'est jamais la même personne que l'identité de l'annuaire par la
+/// seule parole de celui qui le crée : il prend un autre nom.
+fn ce_que_le_nom_tient_sans_compte(conn: &Connection, nom: &str) -> rusqlite::Result<Option<Value>> {
+    let a_un_compte: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM user WHERE name=?1)", params![nom], |r| r.get(0))?;
+    if a_un_compte {
+        return Ok(None);
+    }
+    let vu_par_l_annuaire: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM acces_observe WHERE nom=?1 AND methode='sso')",
+        params![nom],
+        |r| r.get(0),
+    )?;
+    let mut lignes = serde_json::Map::new();
+    for (table, colonne) in colonnes_d_autorite_par_nom() {
+        let n: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM {table} WHERE {colonne}=?1"), params![nom], |r| r.get(0))?;
+        if n > 0 {
+            lignes.insert(table.to_string(), json!(n));
+        }
+    }
+    if !vu_par_l_annuaire && lignes.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(json!({ "vu_par_l_annuaire": vu_par_l_annuaire, "lignes": lignes })))
+}
+
+/// `P10.24-x` — LE `COMMIT` D'UN GESTE DE CE MODULE EST JUGÉ, ET UN REFUS FERME LA TRANSACTION.
+///
+/// LE DÉFAUT, MESURÉ LE 2026-09-24 SUR LA FORME D'AVANT (`COMMIT` refusé par un autorisateur SQLite) : `user_create`
+/// rendait 200 et l'identifiant d'un compte qui n'a jamais existé ; `user_delete` rendait 204 et avait déjà oublié les
+/// échecs de connexion du compte, toujours là ; `user_update` rendait 204, `lookup_upload` 200. L'énoncé sous-comptait :
+/// dans les quatre cas la transaction restait OUVERTE sur la connexion d'écriture partagée, et le geste suivant
+/// (une autre création) échouait à `BEGIN IMMEDIATE` — 500 « verrou base indisponible ».
+///
+/// Après un `COMMIT` refusé, SQLite peut avoir annulé la transaction de lui-même ou l'avoir laissée ouverte, selon
+/// l'erreur : le `ROLLBACK` couvre les deux (dans le premier cas il échoue sans effet, et cet échec n'est pas une
+/// information). S'il ne ferme pas la transaction, le journal le dit : l'écrivain est alors bloqué.
+fn valider_la_transaction(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch("COMMIT").map_err(|refus| {
+        let _ = conn.execute_batch("ROLLBACK");
+        if !conn.is_autocommit() {
+            eprintln!("[comptes] ERREUR transaction toujours ouverte après un COMMIT refusé puis un ROLLBACK : l'écrivain est bloqué");
+        }
+        refus
+    })
 }
 
 /// `P10.24-n` — LE COMPTE DE L'ADMINISTRATEUR DE L'ASSISTANT NE SE SUPPRIME PAS.
@@ -274,11 +435,15 @@ pub(crate) async fn user_delete(State(st): State<AppState>, Extension(au): Exten
     })();
     match outcome {
         Ok(()) => {
-            let _ = conn.execute_batch("COMMIT");
+            // `P10.24-x` — un `COMMIT` refusé n'est pas une suppression : 503 nommé, et la mémoire n'oublie rien.
+            if let Err(e) = valider_la_transaction(&conn) {
+                eprintln!("[comptes] WARN suppression du compte '{tname}' NON validée : {e}");
+                return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_COMPTE_NON_SUPPRIME_COMMIT_REFUSE);
+            }
             st.auth_cache.lock().clear(); // invalide les creds en cache du compte supprimé
-            // `P10.24-o` — ce que la mémoire tient par NOM pour ce compte part avec lui, APRÈS le commit : le compteur
-            // d'échecs de la connexion (toutes adresses) et le frein du second facteur. Un homonyme recréé repart de
-            // zéro ; une suppression refusée (ci-dessous) ne touche à rien.
+            // `P10.24-o` — ce que la mémoire tient par NOM pour ce compte part avec lui, APRÈS le commit VALIDÉ : le
+            // compteur d'échecs de la connexion (toutes adresses) et le frein du second facteur. Un homonyme recréé
+            // repart de zéro ; une suppression refusée (ci-dessus comme ci-dessous) ne touche à rien.
             oublier_les_echecs_du_compte_supprime(&st, &tname);
             crate::handlers::idp::oublier_le_frein_du_compte_supprime(&st, &tname);
             StatusCode::NO_CONTENT.into_response()
@@ -400,7 +565,11 @@ pub(crate) async fn user_update(
     })();
     match outcome {
         Ok(()) => {
-            let _ = conn.execute_batch("COMMIT");
+            // `P10.24-x` — un `COMMIT` refusé ne change ni le rôle ni le mot de passe : 503 nommé.
+            if let Err(e) = valider_la_transaction(&conn) {
+                eprintln!("[comptes] WARN modification du compte '{tname}' NON validée : {e}");
+                return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_COMPTE_NON_MODIFIE_COMMIT_REFUSE);
+            }
             st.auth_cache.lock().clear(); // invalide le cache d'auth (rôle/mdp changés)
             StatusCode::NO_CONTENT.into_response()
         }
@@ -536,7 +705,14 @@ pub(crate) async fn lookup_upload(State(st): State<AppState>, Extension(au): Ext
         Ok(())
     })();
     match outcome {
-        Ok(()) => { let _ = conn.execute_batch("COMMIT"); Json(json!({ "name": name, "rows": kv.len(), "cols": out_cols })).into_response() }
+        // `P10.24-x` — le remplacement n'est annoncé qu'une fois la transaction VALIDÉE.
+        Ok(()) => match valider_la_transaction(&conn) {
+            Ok(()) => Json(json!({ "name": name, "rows": kv.len(), "cols": out_cols })).into_response(),
+            Err(e) => {
+                eprintln!("[lookup] WARN remplacement de '{name}' NON validé : {e}");
+                err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_TABLE_D_ENRICHISSEMENT_INCHANGEE)
+            }
+        },
         Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
     }
 }
@@ -566,7 +742,14 @@ pub(crate) async fn lookup_delete(State(st): State<AppState>, Extension(au): Ext
         Ok(())
     })();
     match outcome {
-        Ok(()) => { let _ = conn.execute_batch("COMMIT"); Json(json!({ "ok": true, "deleted": true })).into_response() }
+        // `P10.24-x` — la suppression n'est annoncée qu'une fois la transaction VALIDÉE.
+        Ok(()) => match valider_la_transaction(&conn) {
+            Ok(()) => Json(json!({ "ok": true, "deleted": true })).into_response(),
+            Err(e) => {
+                eprintln!("[lookup] WARN suppression de '{name}' NON validée : {e}");
+                err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_TABLE_D_ENRICHISSEMENT_INCHANGEE)
+            }
+        },
         Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
     }
 }

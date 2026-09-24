@@ -1,6 +1,6 @@
 // viz.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // Explore + viz/charts: drilldown, fenetre glissante, requete interactive, rendu table/graphes (partages avec dashboards).
-import { $, CSSV, LANG, LOC, SEV, api, apiSend, unDeuxCentsSansCorpsLisible, bornerLePopoverSousSonAncre, causeDeLaTraceManquante, cleDeLaSuiteServie, cleDeLIdentifiantDeRiposte, colComparator, largeursDeColonnes, confirmModal, esc, flashStopped, fmtTs, ic, makePager, motDeLaRiposteSansIdentifiant, muted, phraseDeLaCreationDeRiposteRefusee, phraseDeLaTraceManquante, sev, socIsAdmin, toast, tzOpts } from './core.js';
+import { $, CSSV, LANG, LOC, SEV, api, apiSend, unDeuxCentsSansCorpsLisible, bornerLePopoverSousSonAncre, causeDeLaTraceManquante, cleDeLaSuiteServie, cleDeLIdentifiantDeRiposte, colComparator, largeursDeColonnes, confirmModal, esc, flashStopped, fmtTs, ic, laPageEstAuDelaDuTotal, makePager, motDeLaPageAuDelaDuTotal, motDeLaRiposteSansIdentifiant, muted, phraseDeLaCreationDeRiposteRefusee, phraseDeLaTraceManquante, sev, socIsAdmin, toast, tzOpts } from './core.js';
 import { S } from './state.js';
 // P11.4-h : LE clic qui respecte une sélection (mécanisme partagé, `copie_et_selection.js`).
 import { clicQuiRespecteLaSelection } from './copie_et_selection.js';
@@ -2273,7 +2273,7 @@ function tableEl(cols, rows, query, drill, opts) {
         let nHidden = 0;
         cols.forEach((c, i) => { const sv = row[i] == null ? '' : String(row[i]).trim(); if (sv === '' || sv === '-') { nHidden++; return; } const dt = document.createElement('dt'); dt.textContent = c; const dd = document.createElement('dd'); dd.textContent = sv; dl.append(dt, dd); });
         td.appendChild(dl);
-        if (nHidden) { const note = document.createElement('div'); note.className = 'muted'; note.style.cssText = 'font-size:11px;margin-top:6px'; note.textContent = '(' + nHidden + ' champ(s) vide(s) masqué(s))'; td.appendChild(note); }
+        if (nHidden) td.appendChild(noeudDesChampsVidesMasques(nHidden));
         dtr.appendChild(td); tr.after(dtr);
       });
       return tr;
@@ -2530,13 +2530,64 @@ function noeudDeLaPageVide(cle) {
   return noeud;
 }
 
+// `P10.25-b` — LES PHRASES DE LA LISTE D'ÉVÉNEMENTS, DANS LES DEUX LANGUES ET ACCENTUÉES. Mesuré avant ce lot :
+// « aucun evenement sur la fenetre » était au lexique (traduite sous `LANG='en'`) mais sans accents en français ;
+// « 2 evenement(s) », le détail d'une ligne « (N champ(s) vide(s) masqué(s)) », les étiquettes de facettes « hote »,
+// « severite », « categorie » et l'infobulle « Creer une action ban_ip » restaient françaises sous `LANG='en'`, et
+// sans accents sauf la note. Le compte et la note sont des nœuds COMPOSÉS (un nombre s'y colle) : le lexique ne
+// les atteignait pas ; les étiquettes et l'infobulle n'y étaient pas. Toutes les faces sont
+// ici, côte à côte ; `{n}` est posé au moment d'écrire, dans la forme de nombre de l'écran. La note des champs
+// vides est aussi celle du détail d'une ligne de la table (`tableEl`) : une phrase, un seul endroit.
+const MOTS_DE_LA_LISTE_D_EVENEMENTS = {
+  fenetre_vide: {
+    fr: 'aucun événement sur la fenêtre',
+    en: 'no event over the window' },
+  evenements: {
+    fr: '{n} événement(s)',
+    en: '{n} event(s)' },
+  champs_vides_masques: {
+    fr: '({n} champ(s) vide(s) masqué(s))',
+    en: '({n} empty field(s) hidden)' },
+  titre_du_ban: {
+    fr: 'Créer une action ban_ip',
+    en: 'Create a ban_ip action' },
+};
+const motDeLaListeDEvenements = (cle, n) => (LANG === 'en' ? MOTS_DE_LA_LISTE_D_EVENEMENTS[cle].en : MOTS_DE_LA_LISTE_D_EVENEMENTS[cle].fr)
+  .replace('{n}', () => (typeof n === 'number' ? n.toLocaleString(LOC) : String(n)));
+// Les étiquettes des facettes du cœur ; un champ qui n'y figure pas garde son NOM, identique dans les deux langues.
+const ETIQUETTES_DES_FACETTES = {
+  host: {
+    fr: 'hôte',
+    en: 'host' },
+  severity: {
+    fr: 'sévérité',
+    en: 'severity' },
+  src_ip: {
+    fr: 'IP source',
+    en: 'source IP' },
+  dst_ip: {
+    fr: 'IP destination',
+    en: 'destination IP' },
+  category: {
+    fr: 'catégorie',
+    en: 'category' },
+};
+const etiquetteDeFacette = (champ) => (Object.prototype.hasOwnProperty.call(ETIQUETTES_DES_FACETTES, champ)
+  ? (LANG === 'en' ? ETIQUETTES_DES_FACETTES[champ].en : ETIQUETTES_DES_FACETTES[champ].fr) : champ);
+// Le nœud de la note des champs vides masqués, partagé par le détail d'un événement et celui d'une ligne de table.
+function noeudDesChampsVidesMasques(n) {
+  const note = document.createElement('div'); note.className = 'muted'; note.style.cssText = 'font-size:11px;margin-top:6px';
+  note.textContent = motDeLaListeDEvenements('champs_vides_masques', n);
+  return note;
+}
+
 function renderEvents(host, cols, rows) {
   const ix = n => cols.indexOf(n);
   const tsI = ix('ts'), srcI = ix('source'), hostI = ix('host'), sevI = ix('severity'), ipI = ix('src_ip'), msgI = ix('message'), fldI = ix('fields');
   host.replaceChildren();
   if (!rows.length) {
     const cleDuVide = cleDeLaPageVide(S.evState ? S.evState.page : 0, !!(S.evState && S.evState.sautSansRendu));
-    if (cleDuVide === 'fenetre_vide') { host.appendChild(muted('aucun evenement sur la fenetre')); return; }
+    if (cleDuVide === 'fenetre_vide') { host.appendChild(muted(motDeLaListeDEvenements('fenetre_vide'))); return; }
     host.appendChild(noeudDeLaPageVide(cleDuVide));
     const retour = makePager(S.evState, p => { S.evState.page = p; evLoad(); });
     if (retour) host.appendChild(retour);
@@ -2547,10 +2598,9 @@ function renderEvents(host, cols, rows) {
   host.appendChild(tl);
   const body = document.createElement('div'); body.className = 'srchbody';
   const fields = document.createElement('aside'); fields.className = 'fields';
-  fields.appendChild(Object.assign(document.createElement('div'), { className: 'fldcount', textContent: `${rows.length} evenement(s)` }));
+  fields.appendChild(Object.assign(document.createElement('div'), { className: 'fldcount', textContent: motDeLaListeDEvenements('evenements', rows.length) }));
   // facettes = TOUS les champs (cœur d'abord, puis tout le reste issu de `fields` aplati) — facetBlock plafonne déjà à 8 valeurs/champ.
   const { cols: fcols, rows: frows } = expandFields(cols, rows);
-  const FLAB = { source: 'source', host: 'hote', severity: 'severite', src_ip: 'IP source', dst_ip: 'IP dest', category: 'categorie' };
   const FSKIP = new Set(['ts', '_time', 'bucket', 'message', 'fields', 'id', 'dedup', 'raw']);
   const FCORE = ['source', 'host', 'severity', 'src_ip'];
   const facetCols = [];
@@ -2561,7 +2611,7 @@ function renderEvents(host, cols, rows) {
     if (nFacets >= 50) break;
     const fi = fcols.indexOf(c);
     if (fi < 0 || !frows.some(r => r[fi] != null && r[fi] !== '')) continue;   // saute les colonnes vides
-    fields.appendChild(facetBlock(frows, fi, c, FLAB[c] || c));
+    fields.appendChild(facetBlock(frows, fi, c, etiquetteDeFacette(c)));
     nFacets++;
   }
   const ev = document.createElement('div'); ev.className = 'events';
@@ -2574,7 +2624,7 @@ function renderEvents(host, cols, rows) {
   body.append(fields, ev); host.appendChild(body);
   // pagination SERVEUR : `rows` = UNE page ; le pager (makePager, basé sur le total COUNT) RE-FETCH la
   // page cliquée via evLoad -> le navigateur ne tient jamais qu'une page (scale 1M+).
-  ev.innerHTML = rows.map((r, i) => `<div class="logline sev-${sevI >= 0 ? r[sevI] : 0}" data-i="${i}" title="Cliquer pour voir tous les détails"><time>${fmtTs(tsI >= 0 ? r[tsI] : 0)}</time><span class="src">${esc(srcI >= 0 ? r[srcI] : '')}</span><span class="logmeta">${hostI >= 0 && r[hostI] ? `<span class="hostchip">${esc(r[hostI])}</span>` : ''}${ipI >= 0 && r[ipI] ? `<span class="ipwrap"><span class="ipchip" title="${esc(r[ipI])}">${esc(r[ipI])}</span><button class="banbtn" data-ip="${esc(r[ipI])}" title="Creer une action ban_ip">${ic('ban')}</button></span>` : ''}${mailBtn(r)}<span class="logmsg">${esc(msgI >= 0 ? r[msgI] : '')}</span></span></div>`).join('');
+  ev.innerHTML = rows.map((r, i) => `<div class="logline sev-${sevI >= 0 ? r[sevI] : 0}" data-i="${i}" title="Cliquer pour voir tous les détails"><time>${fmtTs(tsI >= 0 ? r[tsI] : 0)}</time><span class="src">${esc(srcI >= 0 ? r[srcI] : '')}</span><span class="logmeta">${hostI >= 0 && r[hostI] ? `<span class="hostchip">${esc(r[hostI])}</span>` : ''}${ipI >= 0 && r[ipI] ? `<span class="ipwrap"><span class="ipchip" title="${esc(r[ipI])}">${esc(r[ipI])}</span><button class="banbtn" data-ip="${esc(r[ipI])}" title="${esc(motDeLaListeDEvenements('titre_du_ban'))}">${ic('ban')}</button></span>` : ''}${mailBtn(r)}<span class="logmsg">${esc(msgI >= 0 ? r[msgI] : '')}</span></span></div>`).join('');
   ev.querySelectorAll('.banbtn').forEach(b => b.onclick = () => banIp(b.dataset.ip));
   ev.querySelectorAll('.mailbtn').forEach(b => b.onclick = () => mailBody(b.dataset.acct, b.dataset.folder, b.dataset.fileid));
   // clic sur une ligne d'événement -> déplie/replie le DÉTAIL COMPLET (tous les champs, `fields` JSON aplati
@@ -2600,7 +2650,7 @@ function renderEvents(host, cols, rows) {
       dl.append(dt, dd);
     });
     det.appendChild(dl);
-    if (nHidden) { const note = document.createElement('div'); note.className = 'muted'; note.style.cssText = 'font-size:11px;margin-top:6px'; note.textContent = '(' + nHidden + ' champ(s) vide(s) masqué(s))'; det.appendChild(note); }
+    if (nHidden) det.appendChild(noeudDesChampsVidesMasques(nHidden));
     line.classList.add('open'); line.after(det);
   });
   const evGo = p => { S.evState.page = p; evLoad(); };
@@ -2730,9 +2780,19 @@ function motDeLaSuiteDuParcours(cle) {
 // n'a PAS dit si une suite existe » s'y lisait du même ton que « serveur 12 ms » — alors que le panneau
 // de rétention et l'onglet Audit posent ce même aveu dans un nœud marqué `bad`. Les autres issues gardent
 // le ton de la ligne ; la clé est portée par le nœud, pour qu'un lecteur la trouve sans relire le texte.
+// `P10.25-b` — DÉCISION ÉCRITE : LA PAGE PLEINE SANS CURSEUR EST DANS CE REGISTRE AUSSI. Le critère qu'appliquent le
+// panneau de rétention et l'onglet Audit n'est pas « le silence » : c'est « rien n'établit la fin » — leurs deux
+// faces `bad` le disent en ces termes, et la route qu'ils lisent (`ledger_page`) forme TOUJOURS un curseur sur une
+// page pleine, si bien que l'état « pleine sans curseur » ne s'y présente pas. Ici il se présente, et c'est le
+// plus lourd des deux : sous un silence la flèche ▶ reste offerte (la page pleine reste l'indice), alors que sous
+// « pas de suite » elle est RETIRÉE (`laSuiteOffreLaPageSuivante`) — le parcours s'arrête là sans que la fin soit
+// établie, et tant que le compte n'est pas arrivé (pager numéroté), rien ne mène aux résultats qui peuvent
+// suivre. Le saut direct vide (`saut_sans_rendu`, fin non établie) est déjà dans ce registre : même critère,
+// même encre.
+const CLES_DE_LA_SUITE_DANS_LE_REGISTRE_DE_L_ALARME = new Set(['suite_non_dite', 'page_pleine_sans_curseur']);
 function noeudDeLaSuiteDuParcours(cle) {
   const noeud = document.createElement('span');
-  if (cle === 'suite_non_dite') noeud.className = 'bad';
+  if (CLES_DE_LA_SUITE_DANS_LE_REGISTRE_DE_L_ALARME.has(cle)) noeud.className = 'bad';
   noeud.dataset.suiteDuParcours = cle;
   noeud.textContent = motDeLaSuiteDuParcours(cle);
   return noeud;
@@ -2780,6 +2840,15 @@ const MOTS_DE_LA_LIGNE_D_ETAT_HORS_PARCOURS = {
     en: 'error: ' },
 };
 const motDeLaLigneDEtatHorsParcours = (cle) => (LANG === 'en' ? MOTS_DE_LA_LIGNE_D_ETAT_HORS_PARCOURS[cle].en : MOTS_DE_LA_LIGNE_D_ETAT_HORS_PARCOURS[cle].fr);
+
+// `P10.24-z` — LE NUMÉRO DE PAGE D'UN PARCOURS DONT LE TOTAL EST CONNU. Mesuré avant ce lot : quand le compte
+// arrivait APRÈS la page atteinte (la page 2 d'un résultat de trois lignes, atteinte par le curseur d'une page
+// pleine), la ligne écrivait « 3 résultats · page 2 / 1 » — une page 2 sur 1, que rien ne permet de lire. La
+// page au-delà de la dernière le DIT, par la phrase du point commun (web/core.js), partagée avec le pager.
+function motDeLaPageDuParcoursNumerote(etat) {
+  if (laPageEstAuDelaDuTotal(etat.page, etat.total, etat.pageSize, etat.totalCapped)) return motDeLaPageAuDelaDuTotal(etat.page, etat.total, etat.pageSize);
+  return `page ${etat.page + 1} / ${Math.max(1, Math.ceil(etat.total / etat.pageSize))}`;
+}
 
 // charge UNE page d'events depuis le SERVEUR (curseur keyset ou LIMIT/OFFSET) — re-fetch à chaque changement de page/taille
 async function evLoad() {
@@ -2874,7 +2943,7 @@ async function evLoad() {
       else {
         // Total connu : la ligne numérote et ne dit plus la suite — SAUF le repli, qui se dit toujours.
         const cleDeLaSuite = kp ? (repli ? 'servie_par_decalage' : null) : cleDeLaSuiteDuParcours(j, rows.length, limit);
-        morceauxDeLaLigne.push(kp ? `${ktot}page ${S.evState.page + 1} / ${kp}` : `${ktot}page ${S.evState.page + 1}`);
+        morceauxDeLaLigne.push(kp ? ktot + motDeLaPageDuParcoursNumerote(S.evState) : `${ktot}page ${S.evState.page + 1}`);
         if (cleDeLaSuite) morceauxDeLaLigne.push(noeudDeLaSuiteDuParcours(cleDeLaSuite));
         morceauxDeLaLigne.push(` · ${motDeLaLigneDuParcours('serveur')} ${srv} ms · total ${net} ms`);
       }
@@ -2889,7 +2958,11 @@ async function evLoad() {
       // `P10.22-f` — « lignes » et « serveur » étaient français sous `LANG='en'` : ce sont des fragments du
       // même nœud composé, que le lexique n'atteint pas.
       const totTxt = S.evState.total >= 0 ? (S.evState.total + (S.evState.totalCapped ? '+' : '') + ' ' + motDeLaLigneDuParcours('lignes')) : ((LANG === 'en' ? 'unknown total' : 'total inconnu') + (S.evState.totalError ? ' — ' + S.evState.totalError : ''));
-      morceauxDeLaLigne.push(`page ${S.evState.page + 1}/${pages}${S.evState.totalCapped ? '+' : ''} · ${totTxt} · ${motDeLaLigneDuParcours('serveur')} ${srv} ms · total ${net} ms`);
+      // `P10.24-z` — une page au-delà du total compté ne s'écrit plus « page 2/1 ».
+      const pageDite = laPageEstAuDelaDuTotal(S.evState.page, S.evState.total, S.evState.pageSize, S.evState.totalCapped)
+        ? motDeLaPageAuDelaDuTotal(S.evState.page, S.evState.total, S.evState.pageSize)
+        : `page ${S.evState.page + 1}/${pages}${S.evState.totalCapped ? '+' : ''}`;
+      morceauxDeLaLigne.push(`${pageDite} · ${totTxt} · ${motDeLaLigneDuParcours('serveur')} ${srv} ms · total ${net} ms`);
     }
     if (S.evState.repriseAnnonce) {   // `P10.5-g` — la reprise se DIT : une page repartie de 1 sans un mot serait muette
       const cause = typeof S.evState.repriseAnnonce === 'string' ? ` (${S.evState.repriseAnnonce})` : '';
@@ -2909,9 +2982,9 @@ async function evLoad() {
         if (S.evState.q === cq && typeof tot === 'number' && tot >= 0) {
           S.evState.total = tot; S.evState.totalCapped = false; S.evState.realTotal = true;
           rerenderExplorePager();
-          const pg = Math.max(1, Math.ceil(tot / S.evState.pageSize));
           // `P10.22-e` — le repli se dit encore quand le compte remplace la ligne.
-          const ligneDuCompte = [`${tot.toLocaleString(LOC)} ${motDeLaLigneDuParcours('resultats')} · page ${S.evState.page + 1} / ${pg}`];
+          // `P10.24-z` — et une page que ce compte laisse au-delà de sa dernière le dit, au lieu de « page 2 / 1 ».
+          const ligneDuCompte = [`${tot.toLocaleString(LOC)} ${motDeLaLigneDuParcours('resultats')} · ${motDeLaPageDuParcoursNumerote(S.evState)}`];
           if (S.evState.repliParDecalage) ligneDuCompte.push(noeudDeLaSuiteDuParcours('servie_par_decalage'));
           $('#qstats').replaceChildren(...ligneDuCompte);
         } else if (S.evState.q === cq && S.evState.totalError) {
@@ -3036,4 +3109,5 @@ export { banIp, cleDeLIdentifiantDeRiposte, cleDeLaSuiteDuParcours, motDeLaSuite
 export { exploreCount };
 // `P10.22-d` / `P10.22-e` / `P10.22-f` — exportés pour le harnais ESM (témoin 111) : la partition de la page
 // vide, la signature du repli par décalage, et le mot d'une erreur de transport, jugés nus à côté du rendu.
-export { cleDeLaPageVide, laPageEstServieParDecalage, explainErr };
+// `P10.25-b` — et les faces de la liste d'événements, jugées sous les deux instances de langue (témoin 112).
+export { cleDeLaPageVide, laPageEstServieParDecalage, explainErr, motDeLaListeDEvenements, etiquetteDeFacette };

@@ -3,7 +3,7 @@
 // PURE MOVE : corps de fonctions IDENTIQUES au monolithe, seuls les import/export sont ajoutes.
 // Le cycle app<->module est benin : les fonctions importees d'app.js ne sont appelees qu'a
 // l'EXECUTION (handlers/async apres await), jamais a l'evaluation du module.
-import { $, LANG, esc, fmtTs, ic, muted, api, apiSend, confirmWithConsequence, disclosure, laDemandeNAPasAbouti, phraseDuRefusDuDemon, toast, pagedList, closeModals } from './core.js';
+import { $, LANG, esc, fmtTs, ic, muted, api, apiSend, confirmWithConsequence, disclosure, laDemandeNAPasAbouti, leRefusEstCeluiDuRole, phraseDuRefusDuDemon, puitsDuRefusDUnGeste, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste, toast, pagedList, closeModals } from './core.js';
 import { S } from './state.js';
 // P11.4-h : LE geste de copie de la console (mécanisme partagé).
 import { boutonDeCopie } from './copie_et_selection.js';
@@ -288,12 +288,49 @@ function peindreLeCompteRenduDeSuppression(nom, compteRendu) {
   const list = $('#user-list'); if (!list) return;
   list.prepend(noeudDuCompteRenduDeSuppression(nom, compteRendu));
 }
-/* state: isAdmin -> S (state.js) */ // /api/users 200 => admin ; sinon la section reste masquee partout
+// `P10.26-o` — UNE LECTURE DES COMPTES REFUSÉE N'EST PAS UN RÔLE REFUSÉ.
+// CE QUE LA CONSOLE EN FAISAIT, MESURÉ AVANT CE LOT (témoin 115) : TOUT refus de `/api/users` — le quatre cent trois
+// du rôle, mais aussi un refus de l'annuaire, un cinq cent trois nommé, un cinq cents, une page de passerelle, une
+// demande qui n'aboutit pas — posait `S.isAdmin = false` et relançait le routeur : l'espace Administration ENTIER
+// disparaissait (`uiIsAdmin`, web/multitenant.js), un onglet d'administration ouvert retombait sur la vue
+// d'ensemble, et RIEN ne disait pourquoi. Seul le refus du rôle (`leRefusEstCeluiDuRole`, core.js) le pose
+// désormais. Un quatre cent un (aucune session) garde le chemin d'avant : l'écran de connexion le dit à
+// l'ouverture, et le quatre cent un EN COURS de session est `P10.26-n`. Tout autre refus laisse `S.isAdmin` tel
+// qu'il était — il ne dit rien du rôle — et se DIT : dans la liste, et dans un avis quand la section n'est pas
+// montrée (le rôle n'a encore jamais été établi, typiquement à l'ouverture).
+const MOTS_DE_LA_LECTURE_DES_COMPTES = {
+  lecture_non_servie: {
+    fr: "Comptes NON LUS : la lecture n'a pas été servie, et ce n'est pas le refus du rôle — rien ici n'établit que ce compte n'administre pas cette console. Réponse reçue —",
+    en: 'Accounts NOT READ: the read was not served, and this is not the role refusal — nothing here establishes that this account does not administer this console. Answer received —' },
+  demande_non_aboutie: {
+    fr: "Comptes NON LUS : la demande n'a pas abouti — rien ici n'établit que ce compte n'administre pas cette console. Cause —",
+    en: 'Accounts NOT READ: the request did not complete — nothing here establishes that this account does not administer this console. Cause —' },
+};
+const motDeLaLectureDesComptes = (cle) => (LANG === 'en' ? MOTS_DE_LA_LECTURE_DES_COMPTES[cle].en : MOTS_DE_LA_LECTURE_DES_COMPTES[cle].fr);
+// L'aveu remplace la liste (rien d'elle n'est établi) ; `data-lecture-des-comptes-refusee` porte la clé (marque de
+// POSE pour le harnais). Rend la clé peinte.
+function peindreLaLectureDesComptesRefusee(list, e) {
+  const cle = laDemandeNAPasAbouti(e) ? 'demande_non_aboutie' : 'lecture_non_servie';
+  const reponse = String(cle === 'demande_non_aboutie' ? ((e && e.message) || e) : phraseDuRefusDuDemon(e)).trim();
+  const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:0 0 10px;font-size:12px';
+  aveu.setAttribute('role', 'alert');
+  const dit = document.createElement('span'); dit.textContent = motDeLaLectureDesComptes(cle);
+  aveu.append(dit, ' « ' + reponse + ' »');
+  aveu.dataset.lectureDesComptesRefusee = cle;
+  list.replaceChildren(aveu);
+  if (!S.isAdmin) toast(motDeLaLectureDesComptes(cle) + ' « ' + reponse + ' »', 'bad', 12000);
+  return cle;
+}
+/* state: isAdmin -> S (state.js) */ // /api/users 200 => admin ; refus du RÔLE => non admin ; tout autre refus : inchangé, et dit
 async function loadUsers() {
   const sec = $('#users'), list = $('#user-list'); if (!sec || !list) return;
   let d;
-  // api() jette sur 403 (non-admin) comme sur une erreur réseau -> isAdmin=false dans les deux cas (inchangé).
-  try { d = await api('/users'); } catch (e) { S.isAdmin = false; route(); return; }
+  try { d = await api('/users'); }
+  catch (e) {
+    if (leRefusEstCeluiDuRole(e) || (e && e.statutDuRefus === 401)) { S.isAdmin = false; route(); return; }
+    peindreLaLectureDesComptesRefusee(list, e);
+    return;
+  }
   S.isAdmin = true; route(); // ne PAS forcer hidden ici : laisser le routeur n'afficher #users que sous Reglages
   const { users, me } = d;
   renderAcces(d.acces);   // P11.5-c : QUI A ACCÈS — l'inventaire des comptes VUS, à côté des comptes gérés ici
@@ -607,6 +644,9 @@ loadUsers();
 const TOK_NAME_RE = /^[A-Za-z0-9_.-]+$/;          // miroir de token_name_ok côté daemon
 const TOK_HOST_RE = /^[A-Za-z0-9_.-]{1,253}$/;    // miroir de token_host_ok (chaîne vide = non lié, autorisée)
 const TOK_KIND_LABEL = { agent: 'agent', hec: 'HEC' };
+// `P10.26-q` — le puits des gestes sur les jetons (frappe, révocation), juste avant la liste : hors de ce que
+// `loadTokens` repeint, il survit au rechargement. La forme est celle du point commun (`peindreLeRefusDUnGeste`).
+function puitsDesJetons() { const liste = $('#token-list'); return liste ? puitsDuRefusDUnGeste(liste.parentNode, 'jetons', liste) : null; }
 async function loadTokens() {
   const host = $('#token-list'); if (!host) return;
   // `P10.7-f` — L'INVENTAIRE DES JETONS EST ENTIER OU AVOUÉ, ET LA CONSOLE LIT L'AVEU. Le démon sert, en
@@ -637,8 +677,11 @@ async function loadTokens() {
         const del = document.createElement('button'); del.className = 'picon'; del.innerHTML = ic('x'); del.title = 'Révoquer le jeton';
         del.onclick = async () => {
           if (!await confirmWithConsequence(`Révoquer le jeton « ${t.name} »`, 'l\'agent ou le forwarder porteur perd l\'accès immédiatement ; un jeton révoqué ne se réactive pas, il faut en provisionner un autre.', { okText: 'Révoquer' })) return;
-          try { await apiSend('/tokens/' + encodeURIComponent(t.name), 'DELETE'); toast('jeton révoqué', 'ok'); loadTokens(); }
-          catch (e) { toast(e.message || 'échec de la révocation', 'bad'); }
+          const puits = puitsDesJetons(); effacerLeRefusDUnGeste(puits);
+          // `P10.26-q` — un refus (« JETON NON RÉVOQUÉ » : le jeton authentifie TOUJOURS) reste sous les yeux, cause entière.
+          try { await apiSend('/tokens/' + encodeURIComponent(t.name), 'DELETE'); }
+          catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
+          toast('jeton révoqué', 'ok'); loadTokens();
         };
         return del;
       } },
@@ -686,9 +729,11 @@ async function newTokenFlow() {
   const body = { name: vals.name.trim(), kind: vals.kind };
   if (vals.portee === 'relais') body.relay = true;
   else body.host = vals.host.trim();
+  const puits = puitsDesJetons(); effacerLeRefusDUnGeste(puits);
   let res;
+  // `P10.26-q` — « JETON NON FRAPPÉ » : aucun secret n'est montré, et la face le dit à côté de la liste.
   try { res = await apiSend('/tokens', 'POST', body); }
-  catch (e) { toast(e.message || 'échec de création du jeton', 'bad'); return; }
+  catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
   loadTokens();
   showTokenOnce(res || {});
 }
@@ -748,4 +793,6 @@ if ($('#token-new')) $('#token-new').onclick = newTokenFlow;
 // (témoin 113).
 // `P10.25-p` — les faces du compte rendu de la suppression (témoin 113).
 // `P10.25-y` — les faces des confirmations (témoin 114).
-export { ROLE_LABEL, loadUsers, loadTokens, motDeLaModificationDeCompte, motDeLaSuppressionDeCompte, creerLeCompteDuFormulaire, natureDuRefusDeCreationDeCompte, motDeLaCreationDeCompte, motDUneLigneTenueParUnNom, motDuCompteRendu, motDUneConfirmationDeCompte };
+// `P10.26-q` / `P10.26-o` — le geste de frappe d'un jeton (joué sous chaque instance de langue : le bouton
+// `#token-new` n'écoute que la dernière importée) et les faces de la lecture des comptes refusée (témoin 115).
+export { ROLE_LABEL, loadUsers, loadTokens, newTokenFlow, motDeLaModificationDeCompte, motDeLaSuppressionDeCompte, creerLeCompteDuFormulaire, natureDuRefusDeCreationDeCompte, motDeLaCreationDeCompte, motDUneLigneTenueParUnNom, motDuCompteRendu, motDUneConfirmationDeCompte, motDeLaLectureDesComptes };

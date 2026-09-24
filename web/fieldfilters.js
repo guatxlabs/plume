@@ -2,7 +2,7 @@
 // Splunk ; PCI/PII). Additif : tant qu'aucune règle n'existe, toute lecture est inchangée (mode 0). La garde
 // réelle est SERVEUR (/api/field-filters admin-only ; le masque est émis DANS le SQL compilé). Anti-XSS : tout
 // texte via textContent/esc. La config CONTRAINT viewer/editor — l'admin voit en clair par défaut.
-import { $, apiSend, confirmWithConsequence, disclosure, esc, fetchInto, fmtTs, muted, toast, withBusy } from './core.js';
+import { $, apiSend, confirmWithConsequence, disclosure, effacerLeRefusDUnGeste, esc, fetchInto, fmtTs, muted, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, toast, withBusy } from './core.js';
 import { enabledSwitch } from './producer_ui.js';
 import { uiIsAdmin } from './multitenant.js';
 
@@ -16,6 +16,14 @@ const ACTION_LABEL = {
 const ROLE_LABEL = { '': 'viewer + editor (défaut)', viewer: 'viewer seul', editor: 'viewer + editor', admin: 'tous (admin compris)' };
 
 let LAST = { rules: [], matrix: {}, actions: [], roles: [] };
+
+// `P10.26-q` — LE REFUS D'UN GESTE SUR UN MASQUE RESTE SOUS LES YEUX. « MASQUE DE CHAMP INCHANGÉ » (le `COMMIT`
+// refusé, `P10.25-f`) dit que les masques SERVIS restent ceux d'avant — sur une règle PII, c'est ce qu'il faut lire.
+// Mesuré avant ce lot : un avis qui s'efface, « erreur : 503 {"error":… » coupé à deux cents caractères (création,
+// modification, retrait), ou « Bascule refusée : 503 {"error":… » (la bascule). Le puits, UN pour ce panneau, est posé
+// avant la liste — sous le formulaire ouvert —, hors de ce que `loadFieldFilters` repeint ; la forme est celle du
+// point commun (`peindreLeRefusDUnGeste`, core.js).
+function puitsDesMasques() { const liste = $('#field-filter-list'); return liste ? puitsDuRefusDUnGeste(liste.parentNode, 'masques', liste) : null; }
 
 export async function loadFieldFilters() {
   const wrap = $('#field-filter-list'); if (!wrap) return;
@@ -85,14 +93,17 @@ function ruleRow(r) {
   const toggle = enabledSwitch({
     enabled: !!r.enabled, name: r.name, allowed: true, confirmOnEnable: false,
     consequence: 'le champ « ' + r.field + ' » est ' + (ACTION_LABEL[r.action] || r.action) + ' pour ' + (ROLE_LABEL[r.role] || r.role) + ' ; OFF, ces rôles voient la valeur EN CLAIR dès la prochaine requête',
-    onToggle: (next) => apiSend('/field-filters/' + r.id, 'POST', { enabled: next }),
+    onToggle: (next) => { effacerLeRefusDUnGeste(puitsDesMasques()); return apiSend('/field-filters/' + r.id, 'POST', { enabled: next }); },
+    onRefus: (e) => peindreLeRefusDUnGeste(puitsDesMasques(), e),
   });
   const edit = mkBtn('Éditer', () => openForm(r));
   const del = mkBtn('Supprimer', async () => {
     // P11.5-b : DELETE = route sensible ; un field filter MASQUE des données personnelles aux rôles restreints.
     if (!(await confirmWithConsequence('Supprimer le field filter « ' + r.name + ' »', 'le champ « ' + r.field + ' » ne sera plus masqué ni filtré pour les rôles visés : ils verront ces valeurs en clair dès la prochaine requête.', { okText: 'Supprimer' }))) return;
-    try { await apiSend('/field-filters/' + r.id, 'DELETE'); toast('supprimée', 'ok'); loadFieldFilters(); }
-    catch (e) { toast('erreur : ' + e.message, 'bad'); }
+    const puits = puitsDesMasques(); effacerLeRefusDUnGeste(puits);
+    try { await apiSend('/field-filters/' + r.id, 'DELETE'); }
+    catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
+    toast('supprimée', 'ok'); loadFieldFilters();
   });
   del.classList.add('btn-danger');
   row.append(toggle, name, field, act, scope, meta, edit, del);
@@ -180,13 +191,18 @@ function openForm(existing) {
       existing ? 'Enregistrer le field filter « ' + body.name + ' »' : 'Créer le field filter « ' + body.name + ' »',
       'le champ « ' + body.field + ' » sera ' + (ACTION_LABEL[body.action] || body.action) + ' pour ' + (ROLE_LABEL[body.role] || body.role) + (body.tenant ? ' (tenant ' + body.tenant + ')' : '') + (body.env ? ' (env ' + body.env + ')' : '') + ' dès la prochaine requête.',
       { okText: 'Enregistrer' }))) return;
+    const puits = puitsDesMasques(); effacerLeRefusDUnGeste(puits);
     await withBusy(save, async () => {
       try {
         if (existing) await apiSend('/field-filters/' + existing.id, 'POST', body);
         else await apiSend('/field-filters', 'POST', body);
-        toast('enregistrée', 'ok'); host.replaceChildren(); loadFieldFilters();
-      } catch (err) { toast('erreur : ' + err.message, 'bad'); }
+      } catch (err) { peindreLeRefusDUnGeste(puits, err); return; }   // le formulaire reste ouvert, sa saisie gardée
+      toast('enregistrée', 'ok'); host.replaceChildren(); loadFieldFilters();
     });
   };
   host.replaceChildren(form);
 }
+
+// `P10.26-q` — le formulaire (création et modification) part pour le harnais ESM (témoin 115), qui le joue sous chaque
+// instance de langue : le bouton « + Règle » ne l'ouvre que par l'instance qui l'a câblé la première.
+export { openForm as ouvrirLeFormulaireDuMasque };

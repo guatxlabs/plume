@@ -7,10 +7,50 @@
 //!  - RÔLES COMPOSABLES (control-plane) : CRUD du catalogue global (super-admin en mode 1). Rafraîchit le
 //!    cache process (reload_custom_roles) à chaque mutation. base_role validé, deny_perms borné, jamais admin.
 use crate::*;
+use crate::handlers::transaction_validee::{refuser_le_geste_non_valide, valider_la_transaction};
 
 // =====================================================================================
 // LEGAL-HOLD (per-tenant, admin-only, ledgerisé)
 // =====================================================================================
+
+// `P10.26-c` — UN GEL JURIDIQUE ET UN PUITS D'EXPORT DU REGISTRE NE SONT ANNONCÉS QU'UNE FOIS LEUR TRANSACTION VALIDÉE.
+//
+// LE DÉFAUT, MESURÉ LE 2026-09-24 SUR LA FORME D'AVANT (`COMMIT` refusé par un autorisateur SQLite, relecture à froid
+// sur une connexion neuve) : les quatre gestes ignoraient leur `COMMIT` et laissaient la transaction PENDANTE sur
+// l'écrivain partagé — celui que lisent `retention_run` et `ledger_sink_flush`. Ce processus agissait donc sur un état
+// que la base n'avait pas pris :
+//  * gel posé : 200 `active: true` ; la rétention de ce processus le respectait, aucune ligne à froid — au redémarrage,
+//    la portée « gelée » redevenait purgeable ;
+//  * gel levé : 200 `active: false`, et la rétention de ce processus PURGEAIT la preuve gelée (dans la transaction
+//    pendante), alors que le gel restait actif à froid. L'issue ne dépendait plus du geste mais de qui fermerait la
+//    transaction : annulée, la preuve revenait et le gel aussi ; VALIDÉE par le `COMMIT` d'un autre chemin — mesuré
+//    avec `rollup_hosts`, qui ignore l'échec de son propre `BEGIN` puis valide ce qui est ouvert sur l'écrivain — la
+//    levée ET la purge devenaient durables, sans que la base ait jamais pris le `COMMIT` de la levée. Symétriquement
+//    (lu, non joué), un chemin qui ANNULE après un `BEGIN` raté aurait emporté un gel annoncé posé ;
+//  * puits créé : 200 ; un envoi sur ce puits exportait vers la copie inaltérable des maillons du registre que la base
+//    n'avait JAMAIS validés (dont la trace de sa propre création), et avançait son curseur ; aucun puits à froid. Lu,
+//    non joué : `ledger.id` est un `INTEGER PRIMARY KEY` sans `AUTOINCREMENT`, ces identifiants de maillon seraient
+//    réattribués après l'annulation, et la copie externe contredirait le registre ;
+//  * puits supprimé : 200, toujours déclaré à froid.
+// Dans chaque cas la transaction restait ouverte, et un geste suivant qui ouvre la sienne échouait en 500 « verrou base
+// indisponible » (mesuré sur une seconde pose de gel).
+
+/// `P10.26-c` — le `COMMIT` de la pose d'un gel juridique refusé.
+pub(crate) const CAUSE_GEL_JURIDIQUE_NON_POSE: &str = "GEL JURIDIQUE NON POSÉ : la base n'a pas validé la \
+     transaction (COMMIT refusé) et l'a annulée — aucune portée n'est gelée : la rétention purge toujours ce que ce gel \
+     devait protéger, et aucune trace n'est écrite. Réessayez AVANT le prochain passage de la rétention ; si le refus \
+     persiste, la base est en lecture seule, pleine ou verrouillée.";
+
+/// `P10.26-c` — le `COMMIT` de la levée d'un gel juridique refusé.
+pub(crate) const CAUSE_GEL_JURIDIQUE_NON_LEVE: &str = "GEL JURIDIQUE NON LEVÉ : la base n'a pas validé la \
+     transaction (COMMIT refusé) et l'a annulée — le gel est toujours actif, sa portée n'est pas purgée, et aucune \
+     trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+
+/// `P10.26-c` — le `COMMIT` de la création ou de la suppression d'un puits d'export du registre refusé.
+pub(crate) const CAUSE_PUITS_DU_REGISTRE_INCHANGE: &str = "PUITS D'EXPORT DU REGISTRE INCHANGÉ : la base n'a pas \
+     validé la transaction (COMMIT refusé) et l'a annulée — le puits n'est ni créé ni supprimé : un puits refusé à la \
+     création n'existe pas et ne reçoit rien, un puits dont le retrait est refusé reste déclaré, et aucune trace n'est \
+     écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
 
 fn hold_json(id: i64, name: &str, reason: &str, src: &str, s0: i64, s1: i64, active: i64, created: i64, by: &str, rel_ts: i64, rel_by: &str) -> Value {
     json!({
@@ -91,10 +131,11 @@ pub(crate) async fn legal_hold_create(State(st): State<AppState>, Extension(au):
         Ok(id)
     })();
     match outcome {
-        Ok(id) => {
-            let _ = conn.execute_batch("COMMIT");
-            Json(json!({ "ok": true, "id": id, "name": name, "active": true })).into_response()
-        }
+        // `P10.26-c` — « posé » n'est rendu qu'une fois la transaction VALIDÉE (voir `CAUSE_GEL_JURIDIQUE_NON_POSE`).
+        Ok(id) => match valider_la_transaction(&conn) {
+            Ok(()) => Json(json!({ "ok": true, "id": id, "name": name, "active": true })).into_response(),
+            Err(e) => refuser_le_geste_non_valide("gouvernance", &format!("pose du gel juridique '{name}'"), &e, CAUSE_GEL_JURIDIQUE_NON_POSE),
+        },
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
             server_err(format!("échec transaction audit (aucune modification): {e}"))
@@ -131,10 +172,11 @@ pub(crate) async fn legal_hold_release(State(st): State<AppState>, Extension(au)
         Ok(())
     })();
     match outcome {
-        Ok(()) => {
-            let _ = conn.execute_batch("COMMIT");
-            Json(json!({ "ok": true, "id": id, "active": false })).into_response()
-        }
+        // `P10.26-c` — « levé » n'est rendu qu'une fois la transaction VALIDÉE (voir `CAUSE_GEL_JURIDIQUE_NON_LEVE`).
+        Ok(()) => match valider_la_transaction(&conn) {
+            Ok(()) => Json(json!({ "ok": true, "id": id, "active": false })).into_response(),
+            Err(e) => refuser_le_geste_non_valide("gouvernance", &format!("levée du gel juridique '{name}' (#{id})"), &e, CAUSE_GEL_JURIDIQUE_NON_LEVE),
+        },
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
             server_err(format!("échec transaction audit (aucune modification): {e}"))
@@ -290,10 +332,10 @@ pub(crate) async fn ledger_sink_create(State(st): State<AppState>, Extension(au)
         Ok(id)
     })();
     match outcome {
-        Ok(id) => {
-            let _ = conn.execute_batch("COMMIT");
-            Json(json!({ "ok": true, "id": id, "name": name })).into_response()
-        }
+        Ok(id) => match valider_la_transaction(&conn) {
+            Ok(()) => Json(json!({ "ok": true, "id": id, "name": name })).into_response(),
+            Err(e) => refuser_le_geste_non_valide("gouvernance", &format!("création du puits du registre '{name}'"), &e, CAUSE_PUITS_DU_REGISTRE_INCHANGE),
+        },
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
             server_err(format!("échec transaction audit (aucune modification): {e}"))
@@ -325,10 +367,10 @@ pub(crate) async fn ledger_sink_delete(State(st): State<AppState>, Extension(au)
         Ok(())
     })();
     match outcome {
-        Ok(()) => {
-            let _ = conn.execute_batch("COMMIT");
-            Json(json!({ "ok": true, "id": id })).into_response()
-        }
+        Ok(()) => match valider_la_transaction(&conn) {
+            Ok(()) => Json(json!({ "ok": true, "id": id })).into_response(),
+            Err(e) => refuser_le_geste_non_valide("gouvernance", &format!("suppression du puits du registre '{name}' (#{id})"), &e, CAUSE_PUITS_DU_REGISTRE_INCHANGE),
+        },
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
             server_err(format!("échec transaction: {e}"))

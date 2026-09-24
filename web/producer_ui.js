@@ -58,9 +58,12 @@ function takePendingNote(listKey) {
 }
 
 // --- interrupteur ON / OFF ---------------------------------------------------------------------------------
-// opts : { enabled, name, consequence, allowed, deniedReason, confirmOnEnable, onToggle(next) -> Promise }
+// opts : { enabled, name, consequence, allowed, deniedReason, confirmOnEnable, onToggle(next) -> Promise, onRefus(err) }
 // Le mot porte l'état ; la conséquence est écrite à côté dans les DEUX états (avant de basculer, on sait ce
 // que ça arme). `onToggle` rejette -> la case revient à l'état précédent, le mot aussi.
+// `P10.26-q` — `onRefus` : une surface qui tient un PUITS de refus (`peindreLeRefusDUnGeste`, core.js) y écrit le
+// refus elle-même, cause entière ; l'avis qui s'efface, et qui collait le JSON coupé à deux cents caractères, n'est
+// alors pas posé. Sans `onRefus`, le chemin d'avant est inchangé.
 function enabledSwitch(opts) {
   const lbl = document.createElement('label'); lbl.className = 'producer-switch';
   lbl.style.cssText = 'display:inline-flex;gap:6px;align-items:center;font-size:12px;flex:0 0 auto;max-width:min(100%,440px)';
@@ -87,7 +90,11 @@ function enabledSwitch(opts) {
       if (!ok) { cb.checked = false; paint(); return; }
     }
     try { await opts.onToggle(next); paint(); toast((opts.name ? opts.name + ' : ' : '') + (next ? 'ON' : 'OFF'), 'ok'); }
-    catch (err) { cb.checked = !next; paint(); toast('Bascule refusée : ' + ((err && err.message) || err), 'bad'); }
+    catch (err) {
+      cb.checked = !next; paint();
+      if (typeof opts.onRefus === 'function') opts.onRefus(err);
+      else toast('Bascule refusée : ' + ((err && err.message) || err), 'bad');
+    }
   };
   paint();
   lbl.append(cb, word, what);

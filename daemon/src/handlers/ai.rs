@@ -11,6 +11,7 @@
 //! /api/query) et renvoie GXQL+SQL validés (ou l'erreur) à l'analyste. ZÉRO exécution : ce handler
 //! n'appelle jamais /api/query, ne touche jamais la base avec le texte généré.
 use crate::*;
+use crate::handlers::transaction_validee::{refuser_le_geste_non_valide, valider_la_transaction};
 
 /// Nom de provider valide : alphanumérique + `. _ -`, non vide, <= 64 (miroir idp_name_ok).
 fn ai_name_ok(name: &str) -> bool {
@@ -200,10 +201,44 @@ pub(crate) async fn ai_redaction_policy_put(State(st): State<AppState>, Extensio
         Ok(())
     })();
     match outcome {
-        Ok(()) => { let _ = conn.execute_batch("COMMIT"); Json(json!({ "ok": true, "version": version })).into_response() }
+        // `P10.26-b` — « posée » n'est rendu qu'une fois la transaction VALIDÉE : avant, la politique non validée était
+        // SERVIE et APPLIQUÉE par ce processus (voir `CAUSE_POLITIQUE_DE_CAVIARDAGE_INCHANGEE`).
+        Ok(()) => match valider_la_transaction(&conn) {
+            Ok(()) => Json(json!({ "ok": true, "version": version })).into_response(),
+            Err(e) => refuser_le_geste_non_valide("ia", &format!("politique de caviardage v{version}"), &e, CAUSE_POLITIQUE_DE_CAVIARDAGE_INCHANGEE),
+        },
         Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit: {e}")) }
     }
 }
+
+// `P10.26-b` — UNE POLITIQUE DE CAVIARDAGE ET UN FOURNISSEUR D'IA NE SONT ANNONCÉS QU'UNE FOIS LEUR TRANSACTION VALIDÉE.
+//
+// LE DÉFAUT, MESURÉ LE 2026-09-24 SUR LA FORME D'AVANT (`COMMIT` refusé par un autorisateur SQLite, relecture à froid
+// sur une connexion neuve) : les quatre gestes ignoraient leur `COMMIT` et laissaient la transaction PENDANTE sur
+// l'écrivain partagé — celui que lisent `active_redaction_policy`, `ai_status` et `ai_nl2soql`. La politique v2 rendait
+// 200 et était SERVIE (`GET /api/ai/redaction-policy` : v2) et APPLIQUÉE au schéma envoyé au modèle, sans ligne à froid :
+// au redémarrage, la politique d'avant revenait, et les noms de champ que la nouvelle retirait du prompt y rentraient.
+// Un fournisseur créé rendait 200 et était ACTIF pour `ai_status` (aucune ligne à froid) ; désactivé, 200 et
+// `has_provider: false` pour ce processus, `enabled=1` à froid ; supprimé, 204, toujours là à froid — une sortie vers un
+// modèle que l'administrateur venait de fermer se rouvrait au redémarrage ou dès la transaction annulée. La transaction
+// restait ouverte dans les quatre cas.
+//
+// CE QUE LA POLITIQUE GOUVERNE, PRÉCISÉMENT : les NOMS DE CHAMP du schéma envoyé au modèle (`redact_fields` sur les
+// champs CIM et chauds) — la question de l'analyste part telle quelle, et aucune valeur d'événement n'entre dans le
+// prompt. Une politique perdue laisse donc sortir des noms de champ, pas des données.
+
+/// `P10.26-b` — le `COMMIT` de la pose d'une politique de caviardage refusé.
+pub(crate) const CAUSE_POLITIQUE_DE_CAVIARDAGE_INCHANGEE: &str = "POLITIQUE DE CAVIARDAGE IA INCHANGÉE : la base n'a \
+     pas validé la transaction (COMMIT refusé) et l'a annulée — la politique servie et appliquée à ce qui sort vers le \
+     fournisseur d'IA reste celle d'avant : les noms de champ que la nouvelle retirait du schéma envoyé au modèle y \
+     entrent toujours, et aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, \
+     pleine ou verrouillée.";
+
+/// `P10.26-b` — le `COMMIT` d'une création, d'une modification ou d'une suppression de fournisseur d'IA refusé.
+pub(crate) const CAUSE_FOURNISSEUR_D_IA_INCHANGE: &str = "FOURNISSEUR D'IA INCHANGÉ : la base n'a pas validé la \
+     transaction (COMMIT refusé) et l'a annulée — le fournisseur n'est ni créé, ni modifié, ni supprimé : celui qui \
+     était actif l'est toujours et reçoit toujours les questions posées à l'assistant, et aucune trace n'est écrite. \
+     Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
 
 // ================================ CRUD PROVIDERS (admin-only, mode 0) ================================
 
@@ -313,7 +348,11 @@ pub(crate) async fn ai_provider_create(State(st): State<AppState>, Extension(au)
         Ok(id)
     })();
     match outcome {
-        Ok(id) => { let _ = conn.execute_batch("COMMIT"); Json(json!({ "id": id, "enabled": enabled != 0 })).into_response() }
+        // `P10.26-b` — l'identifiant n'est rendu qu'une fois la transaction VALIDÉE.
+        Ok(id) => match valider_la_transaction(&conn) {
+            Ok(()) => Json(json!({ "id": id, "enabled": enabled != 0 })).into_response(),
+            Err(e) => refuser_le_geste_non_valide("ia", &format!("création du fournisseur d'IA '{name}'"), &e, CAUSE_FOURNISSEUR_D_IA_INCHANGE),
+        },
         Err(_) => { let _ = conn.execute_batch("ROLLBACK"); (StatusCode::CONFLICT, "échec de création (nom déjà pris ou audit) — réessayez").into_response() }
     }
 }
@@ -386,7 +425,10 @@ pub(crate) async fn ai_provider_update(State(st): State<AppState>, Extension(au)
         Ok(())
     })();
     match outcome {
-        Ok(()) => { let _ = conn.execute_batch("COMMIT"); Json(json!({ "ok": true })).into_response() }
+        Ok(()) => match valider_la_transaction(&conn) {
+            Ok(()) => Json(json!({ "ok": true })).into_response(),
+            Err(e) => refuser_le_geste_non_valide("ia", &format!("modification du fournisseur d'IA #{id}"), &e, CAUSE_FOURNISSEUR_D_IA_INCHANGE),
+        },
         Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction (aucune modification): {e}")) }
     }
 }
@@ -416,7 +458,10 @@ pub(crate) async fn ai_provider_delete(State(st): State<AppState>, Extension(au)
         Ok(())
     })();
     match outcome {
-        Ok(()) => { let _ = conn.execute_batch("COMMIT"); StatusCode::NO_CONTENT.into_response() }
+        Ok(()) => match valider_la_transaction(&conn) {
+            Ok(()) => StatusCode::NO_CONTENT.into_response(),
+            Err(e) => refuser_le_geste_non_valide("ia", &format!("suppression du fournisseur d'IA '{name}'"), &e, CAUSE_FOURNISSEUR_D_IA_INCHANGE),
+        },
         Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit: {e}")) }
     }
 }

@@ -3,7 +3,7 @@
 // change côté auth. Anti-XSS : tout texte via textContent/esc ; le secret (client_secret / bind pw) est un
 // champ password, JAMAIS réaffiché, ré-envoyé UNIQUEMENT s'il est re-saisi (omis = conservé côté serveur).
 // La vraie garde reste SERVEUR (/api/idp/* admin-only ; /api/mfa/* borné à au.name).
-import { $, LANG, api, apiSend, unDeuxCentsSansCorpsLisible, confirmWithConsequence, disclosure, esc, fmtTs, modal, motDuRefusDuSecondFacteur, muted, natureDuRefusDuSecondFacteur, phraseDuRefusDuDemon, toast, withBusy } from './core.js';
+import { $, LANG, api, apiSend, unDeuxCentsSansCorpsLisible, confirmWithConsequence, disclosure, effacerLeRefusDUnGeste, esc, fmtTs, modal, motDuRefusDuSecondFacteur, muted, natureDuRefusDuSecondFacteur, peindreLeRefusDUnGeste, phraseDuRefusDuDemon, puitsDuRefusDUnGeste, toast, withBusy } from './core.js';
 import { enabledSwitch } from './producer_ui.js';
 import { uiIsAdmin } from './multitenant.js';
 
@@ -12,6 +12,14 @@ import { uiIsAdmin } from './multitenant.js';
 // ---------------------------------------------------------------------------------------------------
 
 const KIND_LABEL = { oidc: 'OIDC', ldap: 'LDAP / AD', saml: 'SAML (à venir)' };
+
+// `P10.26-q` — LE REFUS D'UN GESTE SUR UN FOURNISSEUR D'IDENTITÉ RESTE SOUS LES YEUX. « FOURNISSEUR D'IDENTITÉ
+// INCHANGÉ » (le `COMMIT` refusé, `P10.25-e`) dit que celui qui était actif l'est toujours et AUTHENTIFIE ENCORE —
+// une porte d'entrée qu'on croyait fermée. Mesuré avant ce lot : le formulaire écrivait « erreur : 503 {"error":… »
+// coupé à deux cents caractères dans sa ligne d'actions ; le retrait, un avis qui s'efface ; la bascule, « Bascule
+// refusée : 503 {"error":… ». Le puits, UN pour ce panneau, est posé avant la liste — sous le formulaire ouvert —,
+// hors de ce que `loadIdpProviders` repeint ; la forme est celle du point commun (`peindreLeRefusDUnGeste`, core.js).
+function puitsDesFournisseurs() { const liste = $('#idp-list'); return liste ? puitsDuRefusDUnGeste(liste.parentNode, 'fournisseurs_d_identite', liste) : null; }
 
 export async function loadIdpProviders() {
   const wrap = $('#idp-list'); if (!wrap) return;
@@ -51,14 +59,17 @@ function providerRow(p) {
   const toggle = enabledSwitch({
     enabled: !!p.enabled, name: p.name, allowed: true, confirmOnEnable: true,
     consequence: 'les comptes de cet annuaire ' + (KIND_LABEL[p.kind] || p.kind) + ' peuvent ouvrir une session sur plume, avec le rôle que leur groupe leur donne ; OFF, plus aucune session ne s\'ouvre par ce fournisseur',
-    onToggle: (next) => apiSend('/idp/providers/' + p.id, 'POST', { enabled: next }),
+    onToggle: (next) => { effacerLeRefusDUnGeste(puitsDesFournisseurs()); return apiSend('/idp/providers/' + p.id, 'POST', { enabled: next }); },
+    onRefus: (e) => peindreLeRefusDUnGeste(puitsDesFournisseurs(), e),
   });
   const edit = mkBtn('Éditer', () => openIdpForm(p));
   const del = mkBtn('Supprimer', async () => {
     // P11.5-b : DELETE = route sensible -> la confirmation partagée nomme la conséquence.
     if (!(await confirmWithConsequence('Supprimer le fournisseur « ' + p.name + ' »', 'les comptes qui se connectent par ce fournisseur ne pourront plus ouvrir de session ; le secret associé est effacé et ne se restaure pas.', { okText: 'Supprimer' }))) return;
-    try { await apiSend('/idp/providers/' + p.id, 'DELETE'); toast('supprimé', 'ok'); loadIdpProviders(); }
-    catch (e) { toast('erreur : ' + e.message, 'bad'); }
+    const puits = puitsDesFournisseurs(); effacerLeRefusDUnGeste(puits);
+    try { await apiSend('/idp/providers/' + p.id, 'DELETE'); }
+    catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
+    toast('supprimé', 'ok'); loadIdpProviders();
   });
   del.classList.add('btn-danger');
   row.append(toggle, name, kind, meta, edit, del);
@@ -134,8 +145,7 @@ function openIdpForm(existing) {
   const actions = document.createElement('div'); actions.className = 'rf-actions';
   const save = document.createElement('button'); save.type = 'submit'; save.className = 'btn-primary'; save.textContent = existing ? 'Enregistrer' : 'Créer'; // P11.4-b
   const cancel = document.createElement('button'); cancel.type = 'button'; cancel.className = 'btn'; cancel.textContent = 'Annuler'; cancel.onclick = () => host.replaceChildren();
-  const res = document.createElement('span'); res.className = 'muted';
-  actions.append(save, cancel, res); form.appendChild(actions);
+  actions.append(save, cancel); form.appendChild(actions);
 
   form.onsubmit = async (e) => {
     e.preventDefault();
@@ -164,13 +174,14 @@ function openIdpForm(existing) {
         ? 'ce fournisseur sera ACTIF : les comptes de son annuaire pourront ouvrir une session sur plume, avec le rôle que leur groupe leur donne.'
         : 'ce fournisseur sera enregistré INACTIF : personne ne pourra ouvrir de session par lui tant qu\'il n\'est pas activé depuis la liste.',
       { okText: 'Enregistrer' }))) return;
+    const puits = puitsDesFournisseurs(); effacerLeRefusDUnGeste(puits);
     try {
       await withBusy(save, async () => {
         if (existing) { await apiSend('/idp/providers/' + existing.id, 'POST', body); }
         else { body.name = v('idpf-name'); body.kind = kind; await apiSend('/idp/providers', 'POST', body); }
       });
-      toast('enregistré', 'ok'); host.replaceChildren(); loadIdpProviders();
-    } catch (err) { res.textContent = 'erreur : ' + err.message; }
+    } catch (err) { peindreLeRefusDUnGeste(puits, err); return; }   // le formulaire reste ouvert, sa saisie gardée
+    toast('enregistré', 'ok'); host.replaceChildren(); loadIdpProviders();
   };
   host.replaceChildren(form);
 }
@@ -564,4 +575,6 @@ async function disableMfa() {
 // se mesurent en JOUANT les gestes, modales comprises, et les discriminants se jugent dans les deux sens sur
 // les statuts et les causes que le démon sert. Aucun usage applicatif hors de ce module.
 // `P10.23-b` — `cleDuRefusDEnrolement` et `motDeLEnrolementMfa` partent pour le témoin 109, au même titre.
-export { startEnroll, disableMfa, cleDuRefusDeDesactivation, motDeLaDesactivationMfa, cleDuRefusDActivation, motDeLActivationMfa, cleDuRefusDEnrolement, motDeLEnrolementMfa };
+// `P10.26-q` — le formulaire d'un fournisseur (création et modification) part pour le témoin 115, qui le joue sous
+// chaque instance de langue : « + Fournisseur » ne l'ouvre que par l'instance qui l'a câblé la première.
+export { startEnroll, disableMfa, cleDuRefusDeDesactivation, motDeLaDesactivationMfa, cleDuRefusDActivation, motDeLActivationMfa, cleDuRefusDEnrolement, motDeLEnrolementMfa, openIdpForm as ouvrirLeFormulaireDuFournisseur };

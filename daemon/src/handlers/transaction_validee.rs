@@ -1,7 +1,8 @@
 //! `P10.24-x`, `P10.25-e`, `P10.25-f` — LE `COMMIT` D'UN GESTE D'ÉCRITURE EST JUGÉ, ET UN REFUS FERME LA
 //! TRANSACTION. `valider_la_transaction` vivait dans `users_lookups.rs` (lot 193) ; déplacée ici telle quelle
 //! (seule sa visibilité change) quand les jetons, les fournisseurs d'identité, les engagements, le mode, les
-//! masques de champs et les sources push ont dû juger leur `COMMIT` à leur tour.
+//! masques de champs et les sources push ont dû juger leur `COMMIT` à leur tour. `refuser_le_geste_non_valide`
+//! s'y ajoute (`P10.26-a` à `P10.26-c`) : le 503 nommé des connecteurs, de l'IA et de la gouvernance.
 use crate::*;
 
 /// `P10.24-x` — LE `COMMIT` D'UN GESTE D'ÉCRITURE EST JUGÉ, ET UN REFUS FERME LA TRANSACTION.
@@ -30,4 +31,15 @@ pub(crate) fn valider_la_transaction(conn: &Connection) -> rusqlite::Result<()> 
         }
         refus
     })
+}
+
+/// `P10.26-a`, `P10.26-b`, `P10.26-c` — LE REFUS D'UN GESTE D'ADMINISTRATION DONT `valider_la_transaction` A RENDU
+/// `Err` : le journal dit quel geste la base n'a pas validé et pourquoi, la réponse est un 503 qui porte la CAUSE
+/// NOMMÉE du geste (ce qui est toujours en place, ce qui ne l'est pas). Le 503 et non un 500 : rien n'est cassé dans
+/// la demande, la base a refusé de la prendre et un nouvel essai peut aboutir. Les appelants de `P10.25-e` et `P10.25-f`
+/// gardent leur fonction locale ; celle-ci sert les connecteurs, l'IA et la gouvernance, qui en auraient sinon écrit
+/// trois de plus.
+pub(crate) fn refuser_le_geste_non_valide(journal: &str, geste: &str, refus: &rusqlite::Error, cause: &'static str) -> Response {
+    eprintln!("[{journal}] WARN {geste} NON validé(e) : {refus}");
+    err_json(StatusCode::SERVICE_UNAVAILABLE, cause)
 }

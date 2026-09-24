@@ -1,6 +1,6 @@
 // connectors.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // Connecteurs (sources externes en PULL, #3/#3a, admin-only): liste/form/test/poll.
-import { $, api, apiSend, confirmModal, confirmWithConsequence, fetchInto, fmtTs, humanAge, ic, muted, pagedList, sev, toast, withBusy } from './core.js';
+import { $, api, apiSend, confirmModal, confirmWithConsequence, effacerLeRefusDUnGeste, fetchInto, fmtTs, humanAge, ic, muted, pagedList, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, sev, toast, withBusy } from './core.js';
 import { enabledSwitch } from './producer_ui.js';
 import { S } from './state.js';
 import { uiIsAdmin } from './multitenant.js';
@@ -484,9 +484,16 @@ async function createPushSource(p) {
       ] });
   if (!r) return;
   const name = String(r.name || '').trim(), env = String(r.env || '').trim();
+  // `P10.26-q` — « SOURCE PUSH NON CRÉÉE » : ni connecteur ni clé de livraison, et aucune clé montrée. Mesuré avant ce
+  // lot : un avis qui s'efface, « échec création source push : 503 {"error":… » coupé à deux cents caractères. Le
+  // refus s'écrit dans le picker, sous son en-tête, par la forme du point commun (`peindreLeRefusDUnGeste`) ; le
+  // picker rouvert ou la clé montrée le repeignent, et l'effacent avec lui.
+  const picker = $('#connector-preset-picker');
+  const puits = picker ? puitsDuRefusDUnGeste(picker, 'source_push', picker.children[1] || null) : null;
+  effacerLeRefusDUnGeste(puits);
   let res;
   try { res = await apiSend('/connectors/push-source', 'POST', { preset_id: p.id, name: name || undefined, env_id: env || 'prod' }); }
-  catch (e) { toast('échec création source push : ' + ((e && e.message) || e), 'bad'); return; }
+  catch (e) { peindreLeRefusDUnGeste(puits, e); return; }   // le bouton qui mène ici vit dans le picker : il existe
   showPushKey(res, p);
   if (typeof loadConnectors === 'function') loadConnectors();
 }

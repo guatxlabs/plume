@@ -4,7 +4,7 @@
 // PURE MOVE : corps de fonctions IDENTIQUES au monolithe, seuls les import/export sont ajoutes.
 // Le cycle app<->module est benin : les fonctions importees d'app.js ne sont appelees qu'a
 // l'EXECUTION (handlers/async apres await), jamais a l'evaluation du module.
-import { $, LANG, esc, sev, fmtTs, ic, muted, api, apiSend, unDeuxCentsSansCorpsLisible, confirmModal, toast, pagedList, managedBadge, gateDeleteBtn, contentSubmit, contentDelete, fetchInto, formMsg, phraseDuRefusDuDemon, aveuDeLaCreationDeRiposte, aveuDeLaTraceManquante, causeDeLaTraceManquante, cleDeLIdentifiantDeRiposte, motDeLaRiposteSansIdentifiant, socIsAdmin, lsSet, collapsibleGroup, disclosure } from './core.js';
+import { $, LANG, esc, sev, fmtTs, ic, muted, api, apiSend, unDeuxCentsSansCorpsLisible, confirmModal, toast, pagedList, managedBadge, gateDeleteBtn, contentSubmit, contentDelete, fetchInto, formMsg, phraseDuRefusDuDemon, aveuDeLaCreationDeRiposte, aveuDeLaTraceManquante, causeDeLaTraceManquante, cleDeLIdentifiantDeRiposte, motDeLaRiposteSansIdentifiant, socIsAdmin, lsSet, collapsibleGroup, disclosure, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste } from './core.js';
 import { libelleDeTechnique, nomDeTechnique } from './catalogue_attack.js'; // `P11.6-c` : nom dérivé du catalogue servi, ou motif de son absence
 import { S, lireLeStockageDuSite, ecrireDansLeStockageDuSite, ecrireSansDireLeRefus, RAISONS_DE_SILENCE } from './state.js';
 import { initSigmaImport } from './sigmaimport.js';
@@ -1339,8 +1339,19 @@ function peindreLeMode(tg, b, mode) {
   // libellé descriptif à côté de l'interrupteur (état COURANT + conséquence), même code couleur.
   b.innerHTML = `<span class="fdot ${active ? 'bad' : 'ok'}"></span>` + (active ? 'Actif — réponses automatiques' : 'Observation — propositions seulement');
 }
-if ($('#mode-toggle')) $('#mode-toggle').onclick = async () => {
-  const tg = $('#mode-toggle');
+// `P10.26-q` — LA BASCULE DU MODE DIT SON REFUS. `mode_set` (daemon/src/handlers/engagement.rs) rend, sur un `COMMIT`
+// refusé, cinq cent trois « MODE INCHANGÉ » (`P10.25-e`) : le mode reste celui d'avant. Mesuré avant ce lot : ce
+// geste n'avait AUCUNE capture — le refus partait en promesse rejetée non traitée, rien n'était dit, et le mode
+// n'était pas relu ; une demande qui n'aboutissait pas finissait de même. Le refus s'écrit dans le puits du
+// panneau, sous son en-tête (un interrupteur d'en-tête n'a pas la place d'une cause entière), par la forme du point
+// commun (`peindreLeRefusDUnGeste`, core.js), et le mode est RELU dans tous les cas : c'est le démon qui dit où il
+// en est, pas la console.
+function puitsDuRefusDuMode(tg) {
+  const tete = tg && tg.closest ? tg.closest('.panelhead') : null;
+  return tete && tete.parentNode ? puitsDuRefusDUnGeste(tete.parentNode, 'mode', tete.nextElementSibling) : null;
+}
+async function basculerLeMode() {
+  const tg = $('#mode-toggle'); if (!tg) return;
   // P11.14-a — FAIL-CLOSED : `data-mode` vide = état NON LU. Sans état courant il n'y a pas de destination,
   // et le repli implicite était « armer ». Le bouton est déjà désarmé dans ce cas ; la garde ferme le chemin.
   if (tg.dataset.mode !== 'active' && tg.dataset.mode !== 'observe') return;
@@ -1348,9 +1359,12 @@ if ($('#mode-toggle')) $('#mode-toggle').onclick = async () => {
   const next = active ? 'observe' : 'active';
   // confirm DESTRUCTIF conservé à l'armement (passage en Actif) : exécution réelle sans approbation.
   if (next === 'active' && !await confirmModal('Mode ACTIF : les playbooks exécuteront les réponses AUTOMATIQUEMENT (réel, sans approbation). Confirmer ?', { okText: 'Activer', danger: true })) return;
-  await apiSend('/mode', 'POST', { mode: next });
+  const puits = puitsDuRefusDuMode(tg); effacerLeRefusDUnGeste(puits);
+  try { await apiSend('/mode', 'POST', { mode: next }); }
+  catch (e) { peindreLeRefusDUnGeste(puits, e); }
   loadMode();
-};
+}
+if ($('#mode-toggle')) $('#mode-toggle').onclick = basculerLeMode;
 
 // --- playbooks (détection -> réponse) ---
 const PB = { name: '#pb-name', query: '#pb-query', issoql: '#pb-issoql', kind: '#pb-kind', interval: '#pb-interval', window: '#pb-window', enabled: '#pb-enabled' };
@@ -1475,4 +1489,4 @@ export { cleDuRefusDeRiposte, motDuRefusDeRiposte, OUVERTURE_DE_L_APPROBATION_SA
   OUVERTURE_DE_LA_RIPOSTE_NON_LUE, OUVERTURE_DE_L_APPROBATION_NON_ENREGISTREE, OUVERTURE_DE_LA_RIPOSTE_INTROUVABLE,
   // `P10.20-w` — et les deux de l'ANNULATION, nues elles aussi : chacune a une voisine dont elle ne
   // diffère que par un mot, et l'ordre des branches ne prouverait rien de cette différence-là.
-  OUVERTURE_DE_L_ANNULATION_NON_ENREGISTREE, OUVERTURE_DE_LA_RIPOSTE_NON_ANNULABLE, renderCoverage, loadRules, renderRules, peindreLeMode, poserLaRechercheDesRegles, apresEnregistrementDUneRegle, ouvrirLesReglesDeLaTechnique, ouvrirLaCreationPourLaTechnique, loadNotifiers, loadParsers, loadActions, dessinerLesActions, poserLaRechercheDesActions, apresCreationDUneAction, texteCherchableDUneAction, laFenetreBorneLeRegistre, loadMode, loadPlaybooks, motDeLaBorneDesActions, ruleRowModel, ruleRow, texteCherchableDUneRegle, playbookRowModel, pbRow, actionKindOptionLabel };
+  OUVERTURE_DE_L_ANNULATION_NON_ENREGISTREE, OUVERTURE_DE_LA_RIPOSTE_NON_ANNULABLE, renderCoverage, loadRules, renderRules, peindreLeMode, poserLaRechercheDesRegles, apresEnregistrementDUneRegle, ouvrirLesReglesDeLaTechnique, ouvrirLaCreationPourLaTechnique, loadNotifiers, loadParsers, loadActions, dessinerLesActions, poserLaRechercheDesActions, apresCreationDUneAction, texteCherchableDUneAction, laFenetreBorneLeRegistre, loadMode, basculerLeMode, loadPlaybooks, motDeLaBorneDesActions, ruleRowModel, ruleRow, texteCherchableDUneRegle, playbookRowModel, pbRow, actionKindOptionLabel };

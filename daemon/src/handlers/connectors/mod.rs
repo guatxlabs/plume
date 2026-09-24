@@ -5,6 +5,7 @@
 //! Extrait de main.rs (refactor split #25 — byte-identique).
 //! Split #35 : Defender / TAXII / http_pull en sous-modules ; runtime partage + re-exports (pure move).
 use crate::*;
+use crate::handlers::transaction_validee::{refuser_le_geste_non_valide, valider_la_transaction};
 
 mod defender;
 mod taxii;
@@ -377,10 +378,11 @@ pub(crate) async fn connector_create(State(st): State<AppState>, Extension(au): 
         Ok(id)
     })();
     match outcome {
-        Ok(id) => {
-            let _ = conn.execute_batch("COMMIT");
-            Json(json!({ "id": id, "enabled": enabled != 0 })).into_response()
-        }
+        // `P10.26-a` — l'identifiant n'est rendu qu'une fois la transaction VALIDÉE (voir `CAUSE_CONNECTEUR_NON_CREE`).
+        Ok(id) => match valider_la_transaction(&conn) {
+            Ok(()) => Json(json!({ "id": id, "enabled": enabled != 0 })).into_response(),
+            Err(e) => refuser_le_geste_non_valide("connecteurs", &format!("création du connecteur '{name}'"), &e, CAUSE_CONNECTEUR_NON_CREE),
+        },
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
             server_err(format!("échec transaction audit (aucune modification): {e}"))
@@ -444,7 +446,11 @@ pub(crate) async fn connector_update(State(st): State<AppState>, Extension(au): 
         Ok(())
     })();
     match outcome {
-        Ok(()) => { let _ = conn.execute_batch("COMMIT"); Json(json!({ "ok": true })).into_response() }
+        // `P10.26-a` — « modifié » n'est rendu qu'une fois la transaction VALIDÉE (voir `CAUSE_CONNECTEUR_INCHANGE`).
+        Ok(()) => match valider_la_transaction(&conn) {
+            Ok(()) => Json(json!({ "ok": true })).into_response(),
+            Err(e) => refuser_le_geste_non_valide("connecteurs", &format!("modification du connecteur #{id}"), &e, CAUSE_CONNECTEUR_INCHANGE),
+        },
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
             server_err(format!("échec transaction audit (aucune modification): {e}"))
@@ -481,13 +487,55 @@ pub(crate) async fn connector_delete(State(st): State<AppState>, Extension(au): 
         Ok(())
     })();
     match outcome {
-        Ok(()) => { let _ = conn.execute_batch("COMMIT"); StatusCode::NO_CONTENT.into_response() }
+        // `P10.26-a` — le 204 n'est rendu qu'une fois la transaction VALIDÉE : c'est elle qui révoque les clés de
+        // livraison (voir `CAUSE_CONNECTEUR_NON_SUPPRIME`).
+        Ok(()) => match valider_la_transaction(&conn) {
+            Ok(()) => StatusCode::NO_CONTENT.into_response(),
+            Err(e) => refuser_le_geste_non_valide("connecteurs", &format!("suppression du connecteur #{id} et révocation de ses clés de livraison"), &e, CAUSE_CONNECTEUR_NON_SUPPRIME),
+        },
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
             server_err(format!("échec transaction audit (aucune modification): {e}"))
         }
     }
 }
+
+// `P10.26-a` — UN CONNECTEUR N'EST ANNONCÉ CRÉÉ, MODIFIÉ OU SUPPRIMÉ QU'UNE FOIS SA TRANSACTION VALIDÉE.
+//
+// LE DÉFAUT, MESURÉ LE 2026-09-24 SUR LA FORME D'AVANT (`COMMIT` refusé par un autorisateur SQLite, relecture à froid
+// sur une connexion neuve) : les trois gestes ignoraient le résultat de leur `COMMIT` et laissaient la transaction
+// PENDANTE sur l'écrivain partagé. Tout ce qui lit par cet écrivain voyait donc l'état non validé :
+//  * suppression d'une source push : 204, et la clé de livraison était refusée par son récepteur tant que la
+//    transaction pendait ; à froid, le connecteur ET la clé étaient là, et dès la transaction annulée la clé
+//    AUTHENTIFIAIT de nouveau. C'est le geste que `DECISION_SUR_LES_JETONS_DU_COMPTE_SUPPRIME` prescrit pour une clé
+//    conservée : la révocation annoncée ne l'était pas. La trace `config.connector.delete` était lisible, elle aussi,
+//    par qui lit l'écrivain — un envoi de puits d'export l'aurait copiée (lu ; l'envoi est mesuré sous `P10.26-c`) ;
+//  * création : 200 et un identifiant ; le connecteur activé était SÉLECTIONNÉ comme dû par la collecte de fond
+//    (même requête que `run_due_connectors`), qui aurait présenté son secret au vendeur, sans connecteur à froid ;
+//  * modification (désactivation + rotation du secret) : 200 ; pour ce processus désactivé et nouveau secret, à froid
+//    ACTIF avec l'ANCIEN secret — au redémarrage, le connecteur désactivé collecte de nouveau, avec le secret que la
+//    rotation devait retirer.
+// Dans les trois cas la transaction restait ouverte, et un geste suivant qui ouvre la sienne échouait en 500 « verrou
+// base indisponible » (mesuré sur une création après la suppression refusée).
+
+/// `P10.26-a` — le `COMMIT` de la création d'un connecteur refusé.
+pub(crate) const CAUSE_CONNECTEUR_NON_CREE: &str = "CONNECTEUR NON CRÉÉ : la base n'a pas validé la transaction \
+     (COMMIT refusé) et l'a annulée — aucun connecteur n'est écrit, aucune collecte ne l'interrogera, et aucune trace \
+     n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+
+/// `P10.26-a` — le `COMMIT` de la modification d'un connecteur refusé.
+pub(crate) const CAUSE_CONNECTEUR_INCHANGE: &str = "CONNECTEUR INCHANGÉ : la base n'a pas validé la transaction \
+     (COMMIT refusé) et l'a annulée — ni son activation, ni sa configuration, ni son secret ne changent : un connecteur \
+     que vous désactiviez collecte toujours, un secret que vous remplaciez est toujours celui qu'il présente au \
+     vendeur, et aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou \
+     verrouillée.";
+
+/// `P10.26-a` — le `COMMIT` de la suppression d'un connecteur, qui révoque ses clés de livraison, refusé.
+pub(crate) const CAUSE_CONNECTEUR_NON_SUPPRIME: &str = "CONNECTEUR NON SUPPRIMÉ, SES CLÉS DE LIVRAISON NE SONT PAS \
+     RÉVOQUÉES : la base n'a pas validé la transaction (COMMIT refusé) et l'a annulée — le connecteur est toujours là \
+     et collecte toujours, chaque clé de livraison qui lui est liée AUTHENTIFIE ENCORE sur son récepteur, et aucune \
+     trace n'est écrite. Réessayez : c'est ce geste qui révoque ces clés ; si le refus persiste, la base est en lecture \
+     seule, pleine ou verrouillée.";
 
 /// DRY-RUN : OAuth + 1 page Graph, N'INGÈRE PAS et NE RENVOIE NI le contenu des alertes NI le secret —
 /// seulement { ok, sample_count, error }. `error` = statut/motif (jamais le corps, jamais le secret).

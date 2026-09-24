@@ -318,6 +318,12 @@ function causeNommeeParLeDemon(corps) {
 // Attache la cause nommée à une erreur déjà formée : un seul point d'écriture pour les deux sorties
 // d'`api()` qui peuvent porter un refus du démon (le repli transitoire, et le rejet `!r.ok`).
 function avecLaCauseDuDemon(err, cause) { if (cause) err.causeDuDemon = cause; return err; }
+// `P10.26-o` — LE STATUT D'UNE RÉPONSE LUE VOYAGE AUSSI À CÔTÉ DU MESSAGE D'`api()`, comme il le fait depuis
+// `P10.22-n` à côté de celui d'`apiSend`. Sans lui, la liste des comptes ne pouvait séparer le refus du RÔLE (un
+// quatre cent trois) d'aucun autre refus qu'en relisant le message composé ici pour être lu. Il est posé sur TOUTE
+// erreur jetée APRÈS qu'une réponse a été lue — refus, repli transitoire, corps vide ou illisible — et jamais sur un
+// rejet du transport : `laDemandeNAPasAbouti` vaut donc désormais pour les deux fabriques.
+function avecLeStatutDuRefus(err, statut) { err.statutDuRefus = statut; return err; }
 // `P10.25-i` — L'OBJET D'UN REFUS NOMMÉ VOYAGE ENTIER, À CÔTÉ DE SA CAUSE. Un refus peut porter, en plus de
 // `error`, un DÉTAIL que le démon a écrit pour être lu : `user_create` (daemon/src/handlers/users_lookups.rs) sert
 // en quatre cent neuf ce qu'un nom tient déjà sans compte local (`ce_que_le_nom_tient`). Le message composé par
@@ -573,15 +579,22 @@ async function api(path) {
     const tg = transientGatewayMsg(r.status, r.ok ? '' : body);   // ok=200 -> corps vérifié plus bas (cas HTML servi en 200)
     if (tg) {
       if (attempt < backoffs.length) { await new Promise(res => setTimeout(res, backoffs[attempt])); continue; }
-      throw avecLaCauseDuDemon(new Error(tg), cause);
+      // `P10.26-p` — UN CINQ CENT TROIS QUI NOMME SA CAUSE LA MONTRE, après ses deux réessais. La phrase de passerelle
+      // la REMPLAÇAIT : toute surface qui lit le message (`fetchInto` et ses « erreur : … », les avis) disait
+      // « Service momentanément indisponible » là où le démon écrit précisément ce qui n'est pas servi, et souvent
+      // que réessayer n'y changera rien (base en lecture seule, pleine ou verrouillée ; nom non vérifié). Le
+      // message devient la cause ENTIÈRE ; un cinq cent trois qui ne nomme rien (page de passerelle, corps vide)
+      // garde la phrase d'avant. Même règle pour les cinq cent deux que le démon nomme (découverte OIDC,
+      // `daemon/src/handlers/idp.rs`) : c'est sa phrase, pas celle d'un intermédiaire.
+      throw avecLeStatutDuRefus(avecLaCauseDuDemon(new Error(cause || tg), cause), r.status);
     }
-    if (!r.ok) throw avecLaCauseDuDemon(new Error(r.status + (body ? ' ' + body.slice(0, 200) : '')), cause);
-    if (!body) throw new Error('réponse vide du serveur (timeout proxy ou requête trop lourde ?)');
+    if (!r.ok) throw avecLeStatutDuRefus(avecLaCauseDuDemon(new Error(r.status + (body ? ' ' + body.slice(0, 200) : '')), cause), r.status);
+    if (!body) throw avecLeStatutDuRefus(new Error('réponse vide du serveur (timeout proxy ou requête trop lourde ?)'), r.status);
     try { return JSON.parse(body); }
     catch {
       const tg2 = transientGatewayMsg(r.status, body);   // corps HTML « no available server » servi en 200 -> transitoire
-      if (tg2) { if (attempt < backoffs.length) { await new Promise(res => setTimeout(res, backoffs[attempt])); continue; } throw new Error(tg2); }
-      throw new Error('réponse non-JSON (tronquée ? timeout ?) : ' + body.slice(0, 120));
+      if (tg2) { if (attempt < backoffs.length) { await new Promise(res => setTimeout(res, backoffs[attempt])); continue; } throw avecLeStatutDuRefus(new Error(tg2), r.status); }
+      throw avecLeStatutDuRefus(new Error('réponse non-JSON (tronquée ? timeout ?) : ' + body.slice(0, 120)), r.status);
     }
   }
 }
@@ -697,10 +710,116 @@ function unDeuxCentsSansCorpsLisible(e) {
 // erreur qui n'en porte pas vient du transport : `fetch` rejeté (réseau coupé, requête abandonnée), aucune réponse
 // lue. Le démon n'a rien refusé, et rien ici ne dit s'il a pris le geste avant que la réponse ne se perde : une face
 // qui dirait « le démon a refusé » ou « NON supprimé » affirmerait ce que personne n'a vu. Les trois gestes des
-// comptes (création, modification, suppression) lisent ce prédicat. Il ne vaut QUE pour une erreur jetée par
-// `apiSend` : `api()` ne pose pas ce statut.
+// comptes (création, modification, suppression) lisent ce prédicat, et la forme partagée du refus d'un geste
+// (ci-dessous) aussi. Il vaut pour une erreur jetée par `apiSend` comme par `api()`, qui pose le même statut depuis
+// `P10.26-o`.
 function laDemandeNAPasAbouti(e) {
   return !(e && typeof e.statutDuRefus === 'number');
+}
+
+// `P10.26-o` — LE REFUS DU RÔLE, ET LUI SEUL. `rbac_gate` (daemon/src/rbac.rs) refuse une route d'administration en
+// quatre cent trois TEXTE, par l'une de ces quatre phrases (la quatrième ne sert qu'une écriture). C'est le SEUL
+// refus qui établit qu'un compte n'administre pas : un refus de l'annuaire, une lecture refusée par la base, une
+// page de passerelle ou une demande qui n'aboutit pas ne disent rien de son rôle. Chaque phrase est un MOTIF ancré aux
+// deux bouts (reconnue entière, rien de plus), comme les ouvertures des refus nommés ; le témoin 115 relit les
+// phrases dans le démon et exige qu'à chacune réponde exactement un motif, et à chaque motif exactement une phrase.
+const REFUS_DU_ROLE_SUR_UNE_ROUTE_D_ADMINISTRATION = Object.freeze([
+  /^réservé à l'administrateur$/u,
+  /^rôle client confiné aux routes client-read$/u,
+  /^capacité retirée à ce rôle \(permission refusée\)$/u,
+  /^lecture seule \(rôle viewer\)$/u,
+]);
+function leRefusEstCeluiDuRole(e) {
+  if (!e || e.statutDuRefus !== 403 || e.causeDuDemon) return false;   // le refus du rôle est un TEXTE, jamais un objet nommé
+  const phrase = phraseDuRefusDuDemon(e);
+  return REFUS_DU_ROLE_SUR_UNE_ROUTE_D_ADMINISTRATION.some(motif => motif.test(phrase));
+}
+
+// =================================================================================================
+// `P10.26-q` — LE REFUS D'UN GESTE D'ÉCRITURE A UNE FORME, UNE SEULE, ET ELLE RESTE SOUS LES YEUX.
+//
+// CE QUE LE DÉMON SERT DEPUIS `P10.25-e` ET `P10.25-f` : quand la base ne valide pas la transaction d'un geste, il
+// rend cinq cent trois JSON `{error: <cause>, id}` et la cause dit ce qui N'A PAS changé — « JETON NON FRAPPÉ »,
+// « JETON NON RÉVOQUÉ », « MASQUE DE CHAMP INCHANGÉ », « FOURNISSEUR D'IDENTITÉ INCHANGÉ », « SOURCE PUSH NON
+// CRÉÉE », « ENGAGEMENT NON CRÉÉ », « ENGAGEMENT NON CLOS », « MODE INCHANGÉ » (et, avant eux, les comptes et les
+// tables d'enrichissement). Toutes s'ouvrent par la même phrase, relue ici au caractère près.
+// CE QUE LA CONSOLE EN FAISAIT, MESURÉ AVANT CE LOT (témoin 115) : un AVIS qui s'efface au bout de trois secondes,
+// « 503 {"error":"JETON NON FRAPPÉ : la base n'a pas validé la transaction… » — le JSON brut coupé à deux cents
+// caractères, qui n'atteignait jamais ce qui reste vrai (le jeton qui authentifie toujours, les masques servis
+// d'avant) ; le formulaire d'un fournisseur d'identité l'écrivait derrière « erreur : » ; la bascule du mode de
+// réponse n'avait AUCUNE capture — rien n'était dit, et la promesse rejetée partait sans être traitée.
+// LA FORME : un PUITS par surface, posé à côté de ce qu'elle liste, hors de ce qu'elle repeint ; la phrase dans un
+// nœud texte ENTIER (FR et EN côte à côte), la cause servie ENTIÈRE dans un second nœud, telle quelle.
+// `data-refus-d-un-geste` porte la nature (marque de POSE pour le harnais) :
+//   · `ecriture_non_validee` — cinq cent trois dont la cause s'ouvre par la phrase du COMMIT refusé : RIEN N'A
+//     CHANGÉ, c'est le démon qui l'établit, et la face le dit sans accuser personne ;
+//   · `demande_non_aboutie` — aucune réponse lue (`laDemandeNAPasAbouti`) : ni refus ni effet établis ;
+//   · `reponse_hors_demon` — une passerelle a répondu (`apiSend` l'a nommée) : sa propre phrase ;
+//   · `refus_sans_cause` — un refus dont le corps est vide : le statut, rien d'autre n'est inventé ;
+//   · `refus_nomme` — tout autre refus : la phrase que le démon a écrite, en JSON ou en texte brut.
+// =================================================================================================
+// L'en-tête est en capitales, et peut porter une apostrophe (« FOURNISSEUR D'IDENTITÉ ») ou une virgule (« CONNECTEUR
+// NON SUPPRIMÉ, SES CLÉS DE LIVRAISON NE SONT PAS RÉVOQUÉES ») ; la phrase qui suit est lue au caractère près.
+const OUVERTURE_DE_L_ECRITURE_NON_VALIDEE = /^[\p{Lu}', ]+ : la base n'a pas validé la transaction \(COMMIT refusé\) et l'a annulée(?![\p{L}\p{N}])/u;
+function natureDuRefusDUnGeste(e) {
+  if (e && e.reponseHorsDemon) return 'reponse_hors_demon';
+  if (laDemandeNAPasAbouti(e)) return 'demande_non_aboutie';
+  const cause = e.causeDuDemon ? String(e.causeDuDemon).trim() : '';
+  if (e.statutDuRefus === 503 && OUVERTURE_DE_L_ECRITURE_NON_VALIDEE.test(cause)) return 'ecriture_non_validee';
+  if (!cause && /^\d{3}$/.test(String(e.message || '').trim())) return 'refus_sans_cause';
+  return 'refus_nomme';
+}
+const MOTS_DU_REFUS_D_UN_GESTE = {
+  ecriture_non_validee: {
+    fr: "RIEN N'A CHANGÉ : la base n'a pas validé l'écriture et l'a annulée. Le démon en nomme la cause —",
+    en: 'NOTHING CHANGED: the database did not commit the write and rolled it back. The daemon names the cause —' },
+  demande_non_aboutie: {
+    fr: "Geste NON confirmé : la demande n'a pas abouti, et rien ici n'établit s'il a été pris — vérifier son effet avant de le rejouer. Cause —",
+    en: 'Action NOT confirmed: the request did not complete, and nothing here establishes whether it was taken — check its effect before replaying it. Cause —' },
+  refus_sans_cause: {
+    fr: 'Le démon a refusé ce geste sans en nommer la cause — statut',
+    en: 'The daemon refused this action without naming the cause — status' },
+  refus_nomme: {
+    fr: 'Le démon a refusé ce geste et en nomme la cause —',
+    en: 'The daemon refused this action and names the cause —' },
+};
+const motDuRefusDUnGeste = (nature) => (LANG === 'en' ? MOTS_DU_REFUS_D_UN_GESTE[nature].en : MOTS_DU_REFUS_D_UN_GESTE[nature].fr);
+// Le puits d'une surface : UN par surface (`surface` le nomme), enfant de `parent`, posé avant `avant` (ou en fin).
+// Retrouvé par son nom au geste suivant ; hors de l'hôte que la surface repeint, il survit au rechargement de sa liste.
+function puitsDuRefusDUnGeste(parent, surface, avant) {
+  if (!parent) return null;
+  let puits = [...parent.children].find(n => n.getAttribute && n.getAttribute('data-puits-du-refus-d-un-geste') === surface) || null;
+  if (!puits) {
+    puits = document.createElement('div'); puits.className = 'bad'; puits.hidden = true;
+    puits.setAttribute('role', 'alert');
+    puits.style.cssText = 'margin:0 0 8px;font-size:12px';
+    puits.dataset.puitsDuRefusDUnGeste = surface;
+    if (avant && avant.parentNode === parent) parent.insertBefore(puits, avant); else parent.appendChild(puits);
+  }
+  return puits;
+}
+// Un refus précédent s'efface au geste suivant : il ne décrit plus la demande en cours.
+function effacerLeRefusDUnGeste(puits) {
+  if (!puits) return;
+  puits.hidden = true; puits.replaceChildren(); delete puits.dataset.refusDUnGeste;
+}
+// Rend la nature peinte ('' sans puits).
+function peindreLeRefusDUnGeste(puits, e) {
+  if (!puits) return '';
+  const nature = natureDuRefusDUnGeste(e);
+  const dit = document.createElement('span');
+  if (nature === 'reponse_hors_demon') {
+    dit.textContent = String(e.message || '');
+    puits.replaceChildren(dit);
+  } else {
+    dit.textContent = motDuRefusDUnGeste(nature);
+    const cause = nature === 'demande_non_aboutie' ? String((e && e.message) || e)
+      : nature === 'refus_sans_cause' ? String(e.statutDuRefus) : phraseDuRefusDuDemon(e);
+    puits.replaceChildren(dit, document.createTextNode(' « ' + cause.trim() + ' »'));
+  }
+  puits.dataset.refusDUnGeste = nature;
+  puits.hidden = false;
+  return nature;
 }
 
 function muted(t) { return Object.assign(document.createElement('div'), { className: 'muted', textContent: t }); }
@@ -2246,6 +2365,10 @@ export {
   natureDeLaReponseHorsDemon, motDeLaReponseHorsDemon, unDeuxCentsSansCorpsLisible,
   // `P10.25-x` — et celui d'une demande qui n'a pas abouti (aucune réponse lue), lu par les trois gestes des comptes.
   laDemandeNAPasAbouti,
+  // `P10.26-o` — le refus du rôle, et lui seul (la liste des comptes ; l'ensemble est relu par le témoin 115).
+  REFUS_DU_ROLE_SUR_UNE_ROUTE_D_ADMINISTRATION, leRefusEstCeluiDuRole,
+  // `P10.26-q` — la forme partagée du refus d'un geste d'écriture : sa nature, ses faces, son puits.
+  natureDuRefusDUnGeste, motDuRefusDUnGeste, puitsDuRefusDUnGeste, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste,
   // `P10.20-k` — ET LE LECTEUR QUI TIENT LES DEUX MOULES DE REFUS (JSON `error` et texte brut) : les
   // tableaux de bord et les modèles de données le PARTAGENT, faute de quoi chacun écrirait son
   // extraction et l'un des deux finirait par ne plus reconnaître la forme que l'autre lit.

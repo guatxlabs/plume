@@ -20605,10 +20605,12 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     exiger(ecartsX114.length === 0,
       `(114x) UNE SUPPRESSION OU UNE MODIFICATION QUI N'A PAS ABOUTI SE DIT « LE DÉMON A REFUSÉ » (ou « NON supprimé ») : ${JSON.stringify(ecartsX114)}`);
     // Le prédicat du point commun, nu, dans les deux sens ; et il est LE SEUL que lisent les trois gestes des comptes.
+    // `P10.26-o` — la lecture de la liste des comptes (`peindreLaLectureDesComptesRefusee`) en est le QUATRIÈME lecteur :
+    // une demande qui n'aboutit pas n'y est pas un refus non plus (témoin 115).
     const partitionX114 = [new TypeError("Failed to fetch"), null, { statutDuRefus: 503 }, { statutDuRefus: 502, reponseHorsDemon: "page_de_passerelle" }, { statutDuRefus: 200, reponseHorsDemon: "corps_illisible" }, { message: "409 x" }]
       .map((e) => appeler114(modNoyau114, "laDemandeNAPasAbouti", e)).join(",");
     const srcComptes114 = srcDe114("admin_users.js").replace(/\/\/[^\n]*/g, "");
-    exiger(partitionX114 === "true,true,false,false,false,true" && (srcComptes114.match(/\blaDemandeNAPasAbouti\(/g) || []).length === 3 && !/statutDuRefus === 'number'/.test(srcComptes114),
+    exiger(partitionX114 === "true,true,false,false,false,true" && (srcComptes114.match(/\blaDemandeNAPasAbouti\(/g) || []).length === 4 && !/statutDuRefus === 'number'/.test(srcComptes114),
       `(114x) la demande non aboutie n'est plus reconnue au seul statut absent, ou un geste des comptes la juge à sa façon : ${partitionX114} ; ${(srcComptes114.match(/\blaDemandeNAPasAbouti\(/g) || []).length} lecture(s) du prédicat partagé`);
 
     // ══ (y) `P10.25-y` — LES CONFIRMATIONS DES COMPTES, DANS LES DEUX LANGUES ═══════════════════════════════════
@@ -20743,6 +20745,410 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
   }
   console.log("(114) OK — un refus de l'annuaire reçu EN COURS de session (le nom d'un compte à mot de passe, celui de l'administrateur de configuration, le nom non vérifié), sur cinq lectures refusées à la fois par l'enveloppe RÉELLE du transport, fait rejuger la session UNE fois par `/api/me` ; refusé à son tour, l'écran de connexion recouvre la console, la session est close, et UNE face dit la cause ENTIÈRE et le remède (le mot de passe du compte, ou recharger), dans les deux langues — l'appelant garde son corps ; un cinq cent trois passager, un refus nommé étranger à l'annuaire ou un refus hors session n'en posent aucune. La suppression et la modification d'un compte qui n'aboutissent pas disent « NON confirmée » au lieu de « le démon a refusé », par le prédicat du point commun que lit aussi la création. Les confirmations de création et de modification (titre, rôle, accès complet, perte de l'accès administrateur, mot de passe d'un autre compte) ont leurs deux faces. Une page vide dont le début est en deçà du total compté (exact ou plafonné) dit l'écart — le compte place des lignes que la lecture ne rend pas — dans une liste paginée, un panneau de table et l'Explore (table et événements), avec son retour ; au-delà du total, sans total et sur la première page, la phrase d'avant. CE QUI ÉTAIT FAUX OU IMPRÉCIS : `P10.25-w` disait « JSON brut coupé » — vrai des seuls `fetchInto` ; un panneau collait la cause entière derrière « Erreur : », et le cinq cent trois n'atteignait AUCUNE surface (« Service momentanément indisponible ») ; `P10.25-y` comptait trois chaînes — le titre de la modification et le mot de passe d'un autre compte restaient français aussi ; `P10.25-z` ne nommait que les surfaces de `noeudDeLaPageVideDeRangSuperieur` — l'Explore le disait aussi, par `cleDeLaPageVide`.");
+}
+
+// ---------------------------------------------------------------------------------------------
+// (115) `P10.26-q` — LE REFUS D'UN GESTE D'ÉCRITURE A UNE FORME PARTAGÉE, NOMMÉE, BILINGUE, QUI RESTE SOUS LES YEUX ;
+//       `P10.26-p` — un cinq cent trois qui nomme sa cause la montre, par `api()` ;
+//       `P10.26-o` — la liste des comptes ne se replie sur « non administrateur » que sur le refus du rôle.
+//
+// CE QUE LE DÉMON SERT, RELU ICI ET NON RECOPIÉ : les huit causes du `COMMIT` refusé du lot 195 (`P10.25-e`,
+// `P10.25-f`), chacune servie en cinq cent trois JSON par `err_json` dans son gestionnaire ; TOUTES les causes du
+// démon qui disent « (COMMIT refusé) », dérivées de l'arbre (douze dans `HEAD` au 2026-09-24, vingt avec le lot en cours
+// côté démon) ; les phrases du quatre cent trois
+// TEXTE de `rbac_gate` (daemon/src/rbac.rs) ; `CAUSE_MFA_NON_LUE`, un cinq cent trois nommé servi à une LECTURE.
+//
+// CE QUE LA CONSOLE EN FAISAIT, MESURÉ SUR LES MODULES RÉELS AVANT CE LOT (2026-09-24, miroir de `HEAD`, ce témoin
+// joué tel quel) :
+//   · les douze gestes — frappe et révocation d'un jeton ; pose, modification, retrait et bascule d'un masque ;
+//     création, modification, retrait et bascule d'un fournisseur d'identité ; création d'une source push ; bascule du
+//     mode — ne posaient AUCUN puits. Le refus partait dans un AVIS qui s'efface : « 503 {"error":"JETON NON FRAPPÉ : la
+//     base n'a pas validé la transaction (COMMIT refusé) et l'a annulée — ni le » (jetons), « erreur : 503 {"error":… »
+//     (masques, retrait d'un fournisseur), « Bascule refusée : 503 {"error":… » (les deux bascules), « échec création
+//     source push : 503 {"error":… » — le JSON brut coupé à deux cents caractères, jamais ce qui reste vrai ; le
+//     formulaire d'un fournisseur l'écrivait, lui, dans sa ligne d'actions (« erreur : 503 {"error":"FOURNISSEUR
+//     D'IDENTITÉ INCHANGÉ… ») ; la bascule du mode ne disait RIEN — promesse rejetée non traitée, mode non relu. Une
+//     demande qui n'aboutissait pas rendait « Failed to fetch » nu, « erreur : Failed to fetch », ou rien (mode) ;
+//   · `api()` sur un cinq cent trois nommé : « erreur : Service momentanément indisponible, réessaie dans un instant. »
+//     dans `fetchInto` comme dans la liste des fournisseurs — et de même sur un cinq cent deux nommé (découverte OIDC) ;
+//     aucune erreur d'`api()` ne portait son statut ;
+//   · la liste des comptes : les six refus joués hors du rôle (403 de l'annuaire, 503 nommé, 500 nommé, 502 sans corps,
+//     403 texte étranger au rôle, panne de transport) posaient `S.isAdmin = false`, liste vide, sans un mot — et ce
+//     drapeau gouverne l'espace Administration entier (`uiIsAdmin`, lu).
+//
+// CE QUE CE TÉMOIN NE TIENT PAS : le transport est un simulacre — aucune route du démon n'est rejouée, les causes
+// sont LUES dans son arbre et servies par le simulacre ; le puits est jugé par son texte et sa marque de pose, pas
+// par un rendu (sa visibilité réelle, sous un formulaire ou dans un en-tête, n'est pas mesurée) ; les deux causes
+// des engagements ne sont que RECONNUES (aucune surface de la console n'appelle `/api/engagements`) ; le quatre cent
+// un en cours de session garde son chemin d'avant (`P10.26-n`).
+// ---------------------------------------------------------------------------------------------
+{
+  const url115 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const FICHIERS115 = ["core.js", "admin_users.js", "fieldfilters.js", "idp.js", "connectors.js", "detection_admin.js", "state.js"];
+  const modsFr115 = [];
+  for (const f of FICHIERS115) modsFr115.push(await import(url115(f)));
+  const langueOrigine115 = localStorage.getItem("soc_lang");
+  localStorage.setItem("soc_lang", "en");
+  const modsEn115 = [];
+  for (const f of FICHIERS115) modsEn115.push(await import(adresseSousLaLangue(f)));
+  if (langueOrigine115 === null) localStorage.removeItem("soc_lang"); else localStorage.setItem("soc_lang", langueOrigine115);
+  const langue115 = (nom, m) => ({ nom, noyau: m[0], comptes: m[1], masques: m[2], idp: m[3], connecteurs: m[4], detection: m[5], S: m[6].S });
+  const FR115 = langue115("fr", modsFr115), EN115 = langue115("en", modsEn115);
+
+  const tic115 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser115 = async (n = 30) => { for (let i = 0; i < n; i++) await tic115(); };
+  const nu115 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ").trim();
+  const cueillir115 = (el, pred, acc = []) => { if (el && pred(el)) acc.push(el); ((el && el.children) || []).forEach((c) => cueillir115(c, pred, acc)); return acc; };
+  const parBalise115 = (hote, balise) => cueillir115(hote, (e) => e.tagName === balise);
+  const instrument115 = (vrai, quoi) => exiger(vrai, `(115-instrument) ${quoi} : ce témoin REFUSE DE CONCLURE`);
+  const corpsDeFonction115 = (src, entete) => { const i = src.indexOf(entete); if (i < 0) return ""; const j = src.indexOf("\n}\n", i); return j < 0 ? "" : src.slice(i, j + 2); };
+  const valeurRust115 = (brut) => brut.replace(/\\\n\s*/g, "").replace(/\\"/g, "\"");
+  const constante115 = (src, nom) => { const m = src.match(new RegExp("const " + nom + ": &str = \"((?:[^\"\\\\]|\\\\[\\s\\S])*)\";")); return m ? valeurRust115(m[1]) : ""; };
+  const lireLeDemon115 = (rel) => { try { return readFileSync(path.join(RACINE, "daemon", "src", rel), "utf8"); } catch (e) { return ""; } };
+  const ACCENTS115 = /[éèêàçùôâîÉÈÊÀ]/;
+  const ACCUSE115 = /\b(vous|votre|vos|you|your)\b|invalide|interdit|erreur|échec|invalid|forbidden|error|fail/i;
+  const appeler115 = (mod, nom, ...args) => { if (typeof mod[nom] !== "function") return `(${nom} absente)`; try { return mod[nom](...args); } catch (e) { return `(${nom} jette : ${e && e.message})`; } };
+
+  // ── (0) L'INSTRUMENT : CE QUE LE DÉMON SERT, LU DANS SON ARBRE ─────────────────────────────────────────────
+  const SITES_DES_CAUSES115 = [
+    ["handlers/tokens.rs", "CAUSE_JETON_NON_FRAPPE_COMMIT_REFUSE"], ["handlers/tokens.rs", "CAUSE_JETON_NON_REVOQUE_COMMIT_REFUSE"],
+    ["handlers/field_filters.rs", "CAUSE_MASQUE_DE_CHAMP_INCHANGE"], ["handlers/idp.rs", "CAUSE_FOURNISSEUR_D_IDENTITE_INCHANGE"],
+    ["handlers/connectors/presets.rs", "CAUSE_SOURCE_PUSH_NON_CREEE_COMMIT_REFUSE"], ["handlers/engagement.rs", "CAUSE_ENGAGEMENT_NON_CREE_COMMIT_REFUSE"],
+    ["handlers/engagement.rs", "CAUSE_ENGAGEMENT_NON_CLOS_COMMIT_REFUSE"], ["handlers/engagement.rs", "CAUSE_MODE_INCHANGE_COMMIT_REFUSE"],
+  ].map(([fichier, nom]) => { const src = lireLeDemon115(fichier); return { fichier, nom, cause: constante115(src, nom), servie: new RegExp("err_json\\(StatusCode::SERVICE_UNAVAILABLE, " + nom + "\\)").test(src) }; });
+  instrument115(SITES_DES_CAUSES115.every((c) => c.cause.length > 150 && c.servie),
+    `une cause du lot 195 n'est plus lue dans le démon, ou n'y est plus servie en cinq cent trois par \`err_json\` : ${JSON.stringify(SITES_DES_CAUSES115.filter((c) => !(c.cause.length > 150 && c.servie)).map((c) => c.nom))}`);
+  const causeDe115 = (nom) => ((SITES_DES_CAUSES115.find((c) => c.nom === nom) || {}).cause || "").trim();
+  // TOUTES les causes du `COMMIT` refusé, dérivées de l'arbre (hors tests) : une cause qu'un lot ajoutera est jugée ici
+  // sans qu'on l'écrive — et une phrase que le démon changerait fait rougir la reconnaissance, au lieu de passer.
+  const TOUTES_LES_CAUSES_DU_COMMIT_REFUSE115 = [];
+  for (const rel of readdirSync(path.join(RACINE, "daemon", "src"), { recursive: true })) {
+    const r = String(rel);
+    if (!r.endsWith(".rs") || r.split(path.sep).includes("tests")) continue;
+    for (const m of lireLeDemon115(r).matchAll(/const (CAUSE_[A-Z0-9_]+): &str = "((?:[^"\\]|\\[\s\S])*)";/g)) {
+      const cause = valeurRust115(m[2]);
+      if (/\(COMMIT refusé\)/.test(cause)) TOUTES_LES_CAUSES_DU_COMMIT_REFUSE115.push({ fichier: r, nom: m[1], cause: cause.trim() });
+    }
+  }
+  instrument115(TOUTES_LES_CAUSES_DU_COMMIT_REFUSE115.length >= 12 && SITES_DES_CAUSES115.every((c) => TOUTES_LES_CAUSES_DU_COMMIT_REFUSE115.some((t) => t.nom === c.nom)),
+    `la dérivation des causes du COMMIT refusé en trouve ${TOUTES_LES_CAUSES_DU_COMMIT_REFUSE115.length} (plancher 12), ou manque une cause du lot 195`);
+  // Aucune surface n'appelle `/api/engagements` : les deux causes des engagements ne sont que reconnues. Qu'une surface
+  // apparaisse, et ce témoin refuse de conclure tant que ses gestes ne sont pas JOUÉS ici.
+  const sitesDesEngagements115 = CORPUS_WEB.filter(([f, src]) => f.endsWith(".js") && /['"`]\/engagements/.test(src)).map(([f]) => f);
+  instrument115(sitesDesEngagements115.length === 0, `une surface de la console appelle désormais \`/api/engagements\` (${sitesDesEngagements115.join(",")}) : ses refus « ENGAGEMENT NON CRÉÉ » et « ENGAGEMENT NON CLOS » doivent être joués ici, et plus seulement reconnus`);
+  // Les phrases du refus du RÔLE : les littéraux de `rbac_gate`, commentaires retirés, qui contiennent une espace.
+  const RBAC115 = lireLeDemon115("rbac.rs");
+  const refusDuRoleServis115 = [...new Set([...corpsDeFonction115(RBAC115, "pub(crate) fn rbac_gate(").replace(/\/\/[^\n]*/g, "").matchAll(/"([^"\n]* [^"\n]*)"/g)].map((m) => m[1]))].sort();
+  instrument115(refusDuRoleServis115.length >= 3 && /path\.starts_with\("\/api\/users"\)/.test(RBAC115) && /Err\(\(StatusCode::FORBIDDEN, msg\)\)/.test(RBAC115),
+    `les refus du rôle ne sont plus lisibles dans \`rbac_gate\` (${refusDuRoleServis115.length}), ou \`/api/users\` n'y est plus une route d'administration`);
+  const AUTH115 = lireLeDemon115("auth.rs");
+  const CAUSE_ANNUAIRE_COMPTE115 = constante115(AUTH115, "CAUSE_ANNUAIRE_NOM_D_UN_COMPTE_A_MOT_DE_PASSE").trim();
+  const CAUSE_ANNUAIRE_NON_VERIFIE115 = constante115(AUTH115, "CAUSE_ANNUAIRE_NOM_NON_VERIFIE").trim();
+  const IDP115 = lireLeDemon115("handlers/idp.rs");
+  const CAUSE_MFA115 = constante115(IDP115, "CAUSE_MFA_NON_LUE").trim();
+  instrument115(CAUSE_ANNUAIRE_COMPTE115.length > 150 && CAUSE_ANNUAIRE_NON_VERIFIE115.length > 150 && CAUSE_MFA115.length > 150 && /err_json\(StatusCode::SERVICE_UNAVAILABLE, CAUSE_MFA_NON_LUE\)/.test(IDP115),
+    "les causes de l'annuaire ou `CAUSE_MFA_NON_LUE` ne sont plus lisibles dans le démon, ou la seconde n'est plus un cinq cent trois nommé");
+  instrument115(FR115.noyau.LANG !== "en" && EN115.noyau.LANG === "en", `les deux instances du point commun ne portent pas deux langues (« ${FR115.noyau.LANG} » / « ${EN115.noyau.LANG} »)`);
+  const ATTENDUS115 = [["noyau", "natureDuRefusDUnGeste"], ["noyau", "motDuRefusDUnGeste"], ["noyau", "peindreLeRefusDUnGeste"], ["noyau", "puitsDuRefusDUnGeste"], ["noyau", "effacerLeRefusDUnGeste"], ["noyau", "leRefusEstCeluiDuRole"],
+    ["comptes", "newTokenFlow"], ["comptes", "motDeLaLectureDesComptes"], ["masques", "ouvrirLeFormulaireDuMasque"], ["idp", "ouvrirLeFormulaireDuFournisseur"], ["detection", "basculerLeMode"]];
+  const absents115 = ATTENDUS115.filter(([m, n]) => typeof FR115[m][n] !== "function" || typeof EN115[m][n] !== "function").map(([m, n]) => n);
+  exiger(absents115.length === 0, `(115-exports) la forme partagée ou un geste joué ici n'est pas exporté : ${JSON.stringify(absents115)} — la mesure continue par les boutons câblés`);
+
+  // ── LE SIMULACRE ─────────────────────────────────────────────────────────────────────────────────────────
+  const fetchOrigine115 = globalThis.fetch, minuterieOrigine115 = globalThis.setTimeout, qsOrigine115 = document.querySelector;
+  const etatOrigine115 = [FR115.S, EN115.S].map((S) => ({ S, admin: S.isAdmin, auth: S.AUTH }));
+  const qs115 = (sel) => qsOrigine115.call(document, sel);
+  let servis115 = {};
+  const appels115 = [];
+  const reponse115 = (statut, texte) => ({ ok: statut >= 200 && statut < 300, status: statut, headers: { get: () => null }, text: async () => texte, json: async () => JSON.parse(texte), clone: () => reponse115(statut, texte) });
+  const simulacre115 = async (u, init) => {
+    const k = ((init && init.method) || "GET").toUpperCase() + " " + String(u).split("?")[0];
+    const appel = { k, statut: 0 }; appels115.push(appel);
+    let r = Object.prototype.hasOwnProperty.call(servis115, k) ? servis115[k] : servis115["*"];
+    if (typeof r === "function") r = await r();
+    const texte = !r ? "{}" : typeof r.corps === "string" ? r.corps : JSON.stringify(r.corps === undefined ? {} : r.corps);
+    appel.statut = (r && r.statut) || 200;
+    return reponse115(appel.statut, texte);
+  };
+  const compter115 = (k) => appels115.filter((a) => a.k === k).length;
+  const refus503De115 = (cause, id = "plume-e1-115") => ({ statut: 503, corps: { error: cause, id } });
+  const reseauCoupe115 = () => { throw new TypeError("Failed to fetch"); };
+  const hotes115 = { "#users": new Element("section"), "#user-list": new Element("div"), "#acces-list": new Element("div") };
+  const fenetre115 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !c.classList.contains("out")).pop();
+  // Accepte la fenêtre partagée ouverte par un geste, après avoir posé les valeurs de ses champs (`data-n`).
+  const accepter115 = (valeurs = {}) => {
+    const ov = fenetre115(); const form = ov && ov.children[0] ? ov.children[0].children[0] : null;
+    if (!form || typeof form.onsubmit !== "function") return false;
+    for (const [n, v] of Object.entries(valeurs)) { const champ = cueillir115(form, (e) => typeof e.getAttribute === "function" && e.getAttribute("data-n") === n)[0]; if (champ) champ.value = v; }
+    form.onsubmit({ preventDefault() {} });
+    return true;
+  };
+  const puitsNomme115 = (parent, surface) => (parent ? parent.children.find((n) => typeof n.getAttribute === "function" && n.getAttribute("data-puits-du-refus-d-un-geste") === surface) || null : null);
+  const avisDe115 = () => { const h = qs115("#toasts"); return h ? h.children.map((t) => nu115(t)) : []; };
+  const bouton115 = (hote, pred) => (hote ? cueillir115(hote, (e) => e.tagName === "BUTTON" && pred(e))[0] || null : null);
+  const parTexte115 = (t) => (e) => nu115(e) === t;
+  const bascule115 = (hote) => (hote ? cueillir115(hote, (e) => e.tagName === "INPUT" && e.classList && e.classList.contains("crud-toggle"))[0] || null : null);
+  // Un geste exporté, joué sous SA langue ; absent (arbre d'avant), le bouton câblé — par la dernière instance importée.
+  const lancer115 = (mod, nom, repli, ...args) => Promise.resolve(typeof mod[nom] === "function" ? mod[nom](...args) : repli());
+  const soumettre115 = async (form, valeurs) => { if (!form || typeof form.onsubmit !== "function") throw new Error("(formulaire absent)"); const g = Promise.resolve(form.onsubmit({ preventDefault() {} })); await laisser115(); accepter115(valeurs); await g; };
+
+  const REGLE115 = { id: 7, name: "pan-115", field: "pan", action: "mask", role: "", tenant: "", env: "", enabled: true, updated: 1 };
+  const FOURNISSEUR115 = { id: 3, name: "corp-115", kind: "oidc", enabled: true, has_secret: true, config: { issuer: "https://idp.example" }, updated: 1 };
+  const LECTURES115 = {
+    "GET /api/tokens": { corps: { tokens: [{ name: "relais-115", kind: "agent", host: "", created: 1, last_used: 0 }] } },
+    "GET /api/field-filters": { corps: { rules: [REGLE115], matrix: { viewer: { pan: "mask" } }, actions: ["mask", "hash"], roles: ["", "viewer"] } },
+    "GET /api/idp/providers": { corps: [FOURNISSEUR115] },
+    "GET /api/connectors/presets": { corps: { presets: [{ id: "aws_firehose", vendor: "aws", label: "AWS Firehose", push_source: true, instantiable: false, note: "n" }] } },
+    "GET /api/mode": { corps: { mode: "active" } },
+  };
+  const parentDe115 = (sel) => { const n = qs115(sel); return n ? n.parentNode : null; };
+  const teteDuMode115 = () => { const tg = qs115("#mode-toggle"); const t = tg && tg.closest ? tg.closest(".panelhead") : null; return t ? t.parentNode : null; };
+  // LES DOUZE SITES : un geste d'écriture chacun, sa route, sa cause, son puits.
+  const SITES115 = [
+    { site: "jeton_frappe", route: "POST /api/tokens", cause: "CAUSE_JETON_NON_FRAPPE_COMMIT_REFUSE", puits: () => puitsNomme115(parentDe115("#token-list"), "jetons"),
+      geste: async (L) => { const g = lancer115(L.comptes, "newTokenFlow", () => qs115("#token-new").onclick()); await laisser115(); accepter115({ name: "relais-115", kind: "agent", portee: "relais", host: "" }); await g; } },
+    { site: "jeton_revoque", route: "DELETE /api/tokens/relais-115", cause: "CAUSE_JETON_NON_REVOQUE_COMMIT_REFUSE", puits: () => puitsNomme115(parentDe115("#token-list"), "jetons"),
+      preparer: async (L) => { await L.comptes.loadTokens(); },
+      geste: async () => { const b = bouton115(qs115("#token-list"), (e) => e.title === "Révoquer le jeton"); if (!b) throw new Error("(✕ absent)"); const g = Promise.resolve(b.onclick()); await laisser115(); accepter115(); await g; } },
+    { site: "masque_pose", route: "POST /api/field-filters", cause: "CAUSE_MASQUE_DE_CHAMP_INCHANGE", puits: () => puitsNomme115(parentDe115("#field-filter-list"), "masques"),
+      preparer: async (L) => { await L.masques.loadFieldFilters(); },
+      geste: async (L) => { await lancer115(L.masques, "ouvrirLeFormulaireDuMasque", () => qs115("#field-filter-new").click(), null); const form = qs115("#field-filter-form"); const champs = parBalise115(form, "INPUT"); if (champs.length >= 2) { champs[0].value = "email-115"; champs[1].value = "email"; } await soumettre115(form); } },
+    { site: "masque_modifie", route: "POST /api/field-filters/7", cause: "CAUSE_MASQUE_DE_CHAMP_INCHANGE", puits: () => puitsNomme115(parentDe115("#field-filter-list"), "masques"),
+      preparer: async (L) => { await L.masques.loadFieldFilters(); },
+      geste: async () => { const b = bouton115(qs115("#field-filter-list"), parTexte115("Éditer")); if (!b) throw new Error("(Éditer absent)"); b.onclick(); await soumettre115(qs115("#field-filter-form")); } },
+    { site: "masque_retire", route: "DELETE /api/field-filters/7", cause: "CAUSE_MASQUE_DE_CHAMP_INCHANGE", puits: () => puitsNomme115(parentDe115("#field-filter-list"), "masques"),
+      preparer: async (L) => { await L.masques.loadFieldFilters(); },
+      geste: async () => { const b = bouton115(qs115("#field-filter-list"), parTexte115("Supprimer")); if (!b) throw new Error("(Supprimer absent)"); const g = Promise.resolve(b.onclick()); await laisser115(); accepter115(); await g; } },
+    { site: "masque_bascule", route: "POST /api/field-filters/7", cause: "CAUSE_MASQUE_DE_CHAMP_INCHANGE", puits: () => puitsNomme115(parentDe115("#field-filter-list"), "masques"),
+      preparer: async (L) => { await L.masques.loadFieldFilters(); },
+      geste: async () => { const cb = bascule115(qs115("#field-filter-list")); if (!cb) throw new Error("(bascule absente)"); cb.checked = false; await cb.onchange(); },
+      apres: () => { const cb = bascule115(qs115("#field-filter-list")); return cb && cb.checked === true ? "" : "la case n'est pas revenue à ON"; } },
+    { site: "fournisseur_cree", route: "POST /api/idp/providers", cause: "CAUSE_FOURNISSEUR_D_IDENTITE_INCHANGE", puits: () => puitsNomme115(parentDe115("#idp-list"), "fournisseurs_d_identite"),
+      preparer: async (L) => { await L.idp.loadIdpProviders(); },
+      geste: async (L) => { await lancer115(L.idp, "ouvrirLeFormulaireDuFournisseur", () => qs115("#idp-new").click(), null); const nom = qs115("#idpf-name"); if (nom) nom.value = "corp-116"; await soumettre115(qs115("#idp-form")); } },
+    { site: "fournisseur_modifie", route: "POST /api/idp/providers/3", cause: "CAUSE_FOURNISSEUR_D_IDENTITE_INCHANGE", puits: () => puitsNomme115(parentDe115("#idp-list"), "fournisseurs_d_identite"),
+      preparer: async (L) => { await L.idp.loadIdpProviders(); },
+      geste: async () => { const b = bouton115(qs115("#idp-list"), parTexte115("Éditer")); if (!b) throw new Error("(Éditer absent)"); b.onclick(); await soumettre115(qs115("#idp-form")); } },
+    { site: "fournisseur_retire", route: "DELETE /api/idp/providers/3", cause: "CAUSE_FOURNISSEUR_D_IDENTITE_INCHANGE", puits: () => puitsNomme115(parentDe115("#idp-list"), "fournisseurs_d_identite"),
+      preparer: async (L) => { await L.idp.loadIdpProviders(); },
+      geste: async () => { const b = bouton115(qs115("#idp-list"), parTexte115("Supprimer")); if (!b) throw new Error("(Supprimer absent)"); const g = Promise.resolve(b.onclick()); await laisser115(); accepter115(); await g; } },
+    { site: "fournisseur_bascule", route: "POST /api/idp/providers/3", cause: "CAUSE_FOURNISSEUR_D_IDENTITE_INCHANGE", puits: () => puitsNomme115(parentDe115("#idp-list"), "fournisseurs_d_identite"),
+      preparer: async (L) => { await L.idp.loadIdpProviders(); },
+      geste: async () => { const cb = bascule115(qs115("#idp-list")); if (!cb) throw new Error("(bascule absente)"); cb.checked = false; await cb.onchange(); },
+      apres: () => { const cb = bascule115(qs115("#idp-list")); return cb && cb.checked === true ? "" : "la case n'est pas revenue à ON"; } },
+    { site: "source_push", route: "POST /api/connectors/push-source", cause: "CAUSE_SOURCE_PUSH_NON_CREEE_COMMIT_REFUSE", puits: () => puitsNomme115(qs115("#connector-preset-picker"), "source_push"),
+      preparer: async (L) => { await L.connecteurs.openPresetPicker(); },
+      geste: async () => { const b = bouton115(qs115("#connector-preset-picker"), parTexte115("Créer source push")); if (!b) throw new Error("(Créer source push absent)"); const g = Promise.resolve(b.onclick()); await laisser115(); accepter115({ name: "fh-115", env: "prod" }); await g; } },
+    { site: "mode", route: "POST /api/mode", cause: "CAUSE_MODE_INCHANGE_COMMIT_REFUSE", puits: () => puitsNomme115(teteDuMode115(), "mode"),
+      preparer: async (L) => { await L.detection.loadMode(); },
+      geste: async (L) => { await lancer115(L.detection, "basculerLeMode", () => qs115("#mode-toggle").onclick()); },
+      // Le mode est RELU après le refus : c'est le démon qui dit où il en est, et il est toujours actif.
+      apres: () => (compter115("GET /api/mode") >= 1 && /Actif/.test(nu115(qs115("#mode-badge"))) ? "" : `le mode n'est pas relu après le refus (${compter115("GET /api/mode")} lecture(s), badge « ${nu115(qs115("#mode-badge"))} »)`) },
+  ];
+  const jouerUnSite115 = async (s, L, reponse) => {
+    servis115 = { ...LECTURES115, [s.route]: reponse };
+    if (s.preparer) await s.preparer(L);
+    await laisser115();
+    appels115.length = 0;
+    const avant = avisDe115().length;
+    let rejet = "";
+    try { await s.geste(L); } catch (e) { rejet = String((e && e.message) || e).slice(0, 200); }
+    await laisser115(40);
+    const p = s.puits();
+    return { site: s.site, appels: compter115(s.route), rejet, avis: avisDe115().slice(avant).map((t) => t.slice(0, 220)), nature: p && p.getAttribute("data-refus-d-un-geste"),
+      texte: nu115(p), phrase: p && p.children[0] ? nu115(p.children[0]) : "", montre: !!p && p.hidden === false, role: p && p.getAttribute("role"), apres: s.apres ? s.apres() : "" };
+  };
+
+  globalThis.fetch = simulacre115;
+  globalThis.setTimeout = (fn, ms) => (ms >= 1000 ? 0 : minuterieOrigine115(fn, ms >= 100 ? 0 : ms));
+  for (const L of [FR115, EN115]) { L.S.isAdmin = true; L.S.AUTH = { user: "hugo", role: "admin", auth_method: "cookie" }; }
+  try {
+    // ══ (q) `P10.26-q` — CHAQUE SITE, LE CINQ CENT TROIS DU COMMIT REFUSÉ, DANS LES DEUX LANGUES ════════════════
+    const ecartsQ115 = [];
+    const mesureQ115 = [];
+    for (const L of [FR115, EN115]) {
+      const face = appeler115(L.noyau, "motDuRefusDUnGeste", "ecriture_non_validee");
+      for (const s of SITES115) {
+        const cause = causeDe115(s.cause);
+        const r = await jouerUnSite115(s, L, refus503De115(cause));
+        if (L === FR115) mesureQ115.push(`${s.site} : puits « ${r.nature} » « ${r.texte.slice(0, 90)} » ; avis ${JSON.stringify(r.avis.map((a) => a.slice(0, 110)))}${r.rejet ? ` ; rejet non traité « ${r.rejet.slice(0, 90)} »` : ""}`);
+        const ecart = [];
+        if (r.appels !== 1) ecart.push(`${r.appels} envoi(s) de \`${s.route}\``);
+        if (r.nature !== "ecriture_non_validee" || !r.montre || r.role !== "alert" || r.texte !== face + " « " + cause + " »") ecart.push(`puits « ${r.nature} » montré=${r.montre} — « ${r.texte.slice(0, 160)} »`);
+        if (r.avis.length) ecart.push(`avis ${JSON.stringify(r.avis)}`);
+        if (r.rejet) ecart.push(`rejet non traité « ${r.rejet} »`);
+        if (r.apres) ecart.push(r.apres);
+        if (ACCUSE115.test(r.phrase) || (L === EN115 && ACCENTS115.test(r.phrase))) ecart.push(`la face accuse, ou reste française : « ${r.phrase} »`);
+        if (ecart.length) ecartsQ115.push(`${L.nom}/${s.site} : ${ecart.join(" ; ")}`);
+      }
+    }
+    console.log(`[115q0] le cinq cent trois du COMMIT refusé, site par site : ${mesureQ115.join(" | ")}`);
+    exiger(ecartsQ115.length === 0,
+      `(115q) UN REFUS DU COMMIT D'UN GESTE N'A PAS SA FACE (puits qui reste, « rien n'a changé », cause ENTIÈRE, dans la langue de l'écran, sans avis ni rejet non traité) : ${JSON.stringify(ecartsQ115)}`);
+
+    // (q1) LA PANNE DE TRANSPORT, site par site : ni refus ni effet établis.
+    const ecartsQ1115 = [];
+    const faceTransport115 = appeler115(FR115.noyau, "motDuRefusDUnGeste", "demande_non_aboutie");
+    for (const s of SITES115) {
+      const r = await jouerUnSite115(s, FR115, reseauCoupe115);
+      if (r.nature !== "demande_non_aboutie" || !r.montre || r.texte !== faceTransport115 + " « Failed to fetch »" || r.avis.length || r.rejet)
+        ecartsQ1115.push(`${s.site} : « ${r.nature} » « ${r.texte.slice(0, 140)} » avis ${JSON.stringify(r.avis)}${r.rejet ? " rejet « " + r.rejet + " »" : ""}`);
+    }
+    exiger(ecartsQ1115.length === 0, `(115q1) UNE DEMANDE QUI N'ABOUTIT PAS N'EST PAS DITE « NON CONFIRMÉE » SUR CHAQUE SITE : ${JSON.stringify(ecartsQ1115)}`);
+
+    // (q2) CONTRÔLES NÉGATIFS SUR UN SITE RÉEL (la frappe d'un jeton) : un autre cinq cent trois nommé, un refus en texte
+    // brut, un refus sans corps et une page de passerelle ne disent PAS « rien n'a changé » ; et un geste accepté efface.
+    const frappe115 = SITES115[0], revocation115 = SITES115[1];
+    const negatifs115 = [
+      [{ statut: 503, corps: { error: "NOM NON VÉRIFIÉ-115 : la vérification n'a pas eu lieu, rien n'est établi.", id: "plume-e1-9" } }, "refus_nomme", (f) => f("refus_nomme") + " « NOM NON VÉRIFIÉ-115 : la vérification n'a pas eu lieu, rien n'est établi. »"],
+      [{ statut: 409, corps: "ce nom de jeton existe déjà" }, "refus_nomme", (f) => f("refus_nomme") + " « ce nom de jeton existe déjà »"],
+      [{ statut: 500, corps: "" }, "refus_sans_cause", (f) => f("refus_sans_cause") + " « 500 »"],
+      [{ statut: 503, corps: "" }, "reponse_hors_demon", () => appeler115(FR115.noyau, "motDeLaReponseHorsDemon", "page_de_passerelle")],
+      [{ statut: 500, corps: { error: causeDe115("CAUSE_JETON_NON_FRAPPE_COMMIT_REFUSE"), id: "plume-e1-10" } }, "refus_nomme", (f) => f("refus_nomme") + " « " + causeDe115("CAUSE_JETON_NON_FRAPPE_COMMIT_REFUSE") + " »"],
+    ];
+    const ecartsQ2115 = [];
+    for (const [reponse, nature, attendu] of negatifs115) {
+      const r = await jouerUnSite115(frappe115, FR115, reponse);
+      const texte = attendu((k) => appeler115(FR115.noyau, "motDuRefusDUnGeste", k));
+      if (r.nature !== nature || r.texte !== texte || r.avis.length) ecartsQ2115.push(`${reponse.statut} ${String(JSON.stringify(reponse.corps)).slice(0, 40)} : « ${r.nature} » « ${r.texte.slice(0, 120)} »`);
+    }
+    await jouerUnSite115(revocation115, FR115, refus503De115(causeDe115("CAUSE_JETON_NON_REVOQUE_COMMIT_REFUSE")));
+    const accepte115 = await jouerUnSite115(revocation115, FR115, { statut: 204, corps: "" });
+    if (accepte115.montre || accepte115.nature !== null || !accepte115.avis.includes("jeton révoqué")) ecartsQ2115.push(`une révocation acceptée n'efface pas le refus d'avant : montré=${accepte115.montre} « ${accepte115.nature} » avis ${JSON.stringify(accepte115.avis)}`);
+    exiger(ecartsQ2115.length === 0, `(115q-négatif) « rien n'a changé » est dit là où le démon ne l'établit pas, ou un refus d'avant survit à un geste accepté : ${JSON.stringify(ecartsQ2115)}`);
+
+    // (q3) LA NATURE, NUE, DANS LES DEUX SENS : toutes les causes du COMMIT refusé que le démon écrit, sous 503 et sous
+    // d'autres statuts ; une ouverture déplacée ou collée à une lettre n'est pas reconnue.
+    const erreur115 = (statut, cause) => Object.assign(new Error(statut + " " + JSON.stringify({ error: cause }).slice(0, 200)), { statutDuRefus: statut, causeDuDemon: cause });
+    const nature115 = (e) => appeler115(FR115.noyau, "natureDuRefusDUnGeste", e);
+    const nonReconnues115 = TOUTES_LES_CAUSES_DU_COMMIT_REFUSE115.filter((c) => nature115(erreur115(503, c.cause)) !== "ecriture_non_validee").map((c) => c.nom);
+    const tropReconnues115 = TOUTES_LES_CAUSES_DU_COMMIT_REFUSE115.filter((c) => [500, 409, 502].some((st) => nature115(erreur115(st, c.cause)) !== "refus_nomme")).map((c) => c.nom);
+    const uneCause115 = causeDe115("CAUSE_JETON_NON_FRAPPE_COMMIT_REFUSE");
+    // L'en-tête peut porter une virgule (une cause réelle le fait : « CONNECTEUR NON SUPPRIMÉ, SES CLÉS… ») : jugé ici même
+    // quand l'arbre n'en sert aucune.
+    const enteteAVirgule115 = "OBJET NON RETIRÉ, SA TRACE NON ÉCRITE : la base n'a pas validé la transaction (COMMIT refusé) et l'a annulée — rien n'a changé.";
+    const partitionQ3115 = [erreur115(503, enteteAVirgule115), erreur115(503, "Le démon dit : " + uneCause115), erreur115(503, uneCause115.replace("et l'a annulée", "et l'a annuléee")), erreur115(503, uneCause115.replace("JETON NON FRAPPÉ :", "jeton non frappé :")),
+      new TypeError("Failed to fetch"), Object.assign(new Error("x"), { statutDuRefus: 502, reponseHorsDemon: "page_de_passerelle" }), Object.assign(new Error("500"), { statutDuRefus: 500 }), Object.assign(new Error("400 nom invalide"), { statutDuRefus: 400 })]
+      .map(nature115).join(",");
+    exiger(nonReconnues115.length === 0 && tropReconnues115.length === 0 && partitionQ3115 === "ecriture_non_validee,refus_nomme,refus_nomme,refus_nomme,demande_non_aboutie,reponse_hors_demon,refus_sans_cause,refus_nomme",
+      `(115q-nature) la nature d'un refus de geste ne suit plus le démon : non reconnues ${JSON.stringify(nonReconnues115)}, reconnues hors d'un cinq cent trois ${JSON.stringify(tropReconnues115)}, partition ${partitionQ3115}`);
+    // Les faces : quatre, deux langues distinctes, l'anglaise sans accent, aucune n'accuse.
+    const facesQ115 = ["ecriture_non_validee", "demande_non_aboutie", "refus_sans_cause", "refus_nomme"].map((k) => [k, appeler115(FR115.noyau, "motDuRefusDUnGeste", k), appeler115(EN115.noyau, "motDuRefusDUnGeste", k)]);
+    exiger(facesQ115.every(([, fr, en]) => fr !== en && !ACCENTS115.test(en) && !ACCUSE115.test(fr) && !ACCUSE115.test(en) && !/\(\w+ absente\)/.test(fr)) && /^RIEN N'A CHANGÉ/.test(facesQ115[0][1]),
+      `(115q-faces) une face du refus d'un geste n'a pas ses deux langues, porte un accent en anglais, accuse, ou ne dit pas « rien n'a changé » : ${JSON.stringify(facesQ115)}`);
+
+    // ══ (p) `P10.26-p` — UN CINQ CENT TROIS NOMMÉ ATTEINT LA SURFACE ; UN CINQ CENT TROIS NU GARDE SA PHRASE ═════════
+    const ecartsP115 = [];
+    const GENERIQUE115 = /^Service momentanément indisponible, réessaie dans un instant\.$/;
+    const lirePar115 = async (L, reponse, route = "/mfa/status") => {
+      servis115 = { ["GET /api" + route]: reponse }; appels115.length = 0;
+      const hote = new Element("div"); const lu = await L.noyau.fetchInto(hote, route);
+      let erreur = null; appels115.length = 0;
+      try { await L.noyau.api(route); } catch (e) { erreur = e; }
+      return { lu, surface: nu115(hote), appels: compter115("GET /api" + route), message: erreur && erreur.message, cause: erreur && erreur.causeDuDemon, statut: erreur && erreur.statutDuRefus };
+    };
+    const mesureP115 = [];
+    for (const L of [FR115, EN115]) {
+      const r = await lirePar115(L, refus503De115(CAUSE_MFA115));
+      if (L === FR115) mesureP115.push(`503 nommé : « ${r.surface.slice(0, 120)} »`);
+      if (r.lu !== null || r.surface !== "erreur : " + CAUSE_MFA115 || r.appels !== 3 || r.message !== CAUSE_MFA115 || r.cause !== CAUSE_MFA115 || r.statut !== 503)
+        ecartsP115.push(`${L.nom}/503 nommé : « ${r.surface.slice(0, 120)} » ${r.appels} lecture(s), statut ${r.statut}`);
+    }
+    // Un cinq cent trois (ou deux) qui ne nomme rien garde la phrase générique, ses deux réessais et son statut.
+    const genereLaPhraseGenerique115 = (r, statut) => GENERIQUE115.test(r.message || "") && r.surface === "erreur : " + r.message && r.appels === 3 && !r.cause && r.statut === statut;
+    for (const [etiquette, reponse, statut] of [["503 sans corps", { statut: 503, corps: "" }, 503], ["503 page de passerelle", { statut: 503, corps: "<html>no available server</html>" }, 503], ["502 sans corps", { statut: 502, corps: "" }, 502]]) {
+      const r = await lirePar115(FR115, reponse);
+      if (!genereLaPhraseGenerique115(r, statut)) ecartsP115.push(`${etiquette} : « ${r.surface.slice(0, 120)} » message « ${r.message} » ${r.appels} lecture(s), statut ${r.statut}`);
+    }
+    const nomme502 = await lirePar115(FR115, { statut: 502, corps: { error: "découverte OIDC échouée: délai dépassé-115", id: "plume-e1-11" } });
+    if (nomme502.message !== "découverte OIDC échouée: délai dépassé-115" || nomme502.statut !== 502) ecartsP115.push(`502 nommé : message « ${nomme502.message} »`);
+    // Une seconde surface qui lit le message : la liste des fournisseurs d'identité.
+    servis115 = { "GET /api/idp/providers": refus503De115(CAUSE_MFA115) };
+    await FR115.idp.loadIdpProviders(); await laisser115();
+    if (nu115(qs115("#idp-list")) !== "erreur : " + CAUSE_MFA115) ecartsP115.push(`liste des fournisseurs : « ${nu115(qs115("#idp-list")).slice(0, 120)} »`);
+    // Le statut voyage à côté de TOUTE erreur d'`api()` après une réponse ; jamais sur un rejet du transport.
+    const statuts115 = [];
+    for (const reponse of [{ statut: 403, corps: "réservé à l'administrateur" }, { statut: 200, corps: "" }, reseauCoupe115]) {
+      servis115 = { "GET /api/x": reponse }; let e = null; try { await FR115.noyau.api("/x"); } catch (err) { e = err; }
+      statuts115.push(e ? String(e.statutDuRefus) : "aucune erreur");
+    }
+    if (statuts115.join(",") !== "403,200,undefined") ecartsP115.push(`statut porté par \`api()\` : ${statuts115.join(",")}`);
+    console.log(`[115p0] une lecture : ${mesureP115.join(" | ")}`);
+    exiger(ecartsP115.length === 0, `(115p) UN CINQ CENT TROIS NOMMÉ N'ATTEINT PAS LA SURFACE PAR \`api()\`, OU UN CINQ CENT TROIS NU PERD SA PHRASE : ${JSON.stringify(ecartsP115)}`);
+
+    // ══ (o) `P10.26-o` — LA LISTE DES COMPTES NE DIT « NON ADMINISTRATEUR » QUE SUR LE REFUS DU RÔLE ════════════════
+    document.querySelector = (sel) => (Object.prototype.hasOwnProperty.call(hotes115, sel) ? hotes115[sel] : qsOrigine115.call(document, sel));
+    const lireLesComptes115 = async (L, reponse, adminAvant) => {
+      L.S.isAdmin = adminAvant;
+      servis115 = { "GET /api/users": reponse };
+      hotes115["#user-list"].replaceChildren(); appels115.length = 0;
+      const avant = avisDe115().length;
+      await L.comptes.loadUsers(); await laisser115(20);
+      const aveu = cueillir115(hotes115["#user-list"], (e) => typeof e.getAttribute === "function" && e.getAttribute("data-lecture-des-comptes-refusee") !== null)[0] || null;
+      return { admin: L.S.isAdmin, cle: aveu && aveu.getAttribute("data-lecture-des-comptes-refusee"), texte: nu115(aveu), phrase: aveu && aveu.children[0] ? nu115(aveu.children[0]) : "",
+        avis: avisDe115().slice(avant), liste: nu115(hotes115["#user-list"]).slice(0, 160), appels: compter115("GET /api/users") };
+    };
+    const ecartsO115 = [];
+    const mesureO115 = [];
+    // (o1) Le refus du rôle, chaque phrase que `rbac_gate` sert : non administrateur, rien de peint, aucun avis.
+    for (const phrase of refusDuRoleServis115) {
+      const r = await lireLesComptes115(FR115, { statut: 403, corps: phrase }, true);
+      if (r.admin !== false || r.cle !== null || r.avis.length) ecartsO115.push(`403 « ${phrase} » : admin ${r.admin}, « ${r.cle} », avis ${JSON.stringify(r.avis)}`);
+    }
+    // L'ensemble, dans les deux sens : à chaque phrase de `rbac_gate` exactement un motif de la console, et à chaque motif
+    // exactement une phrase — un motif qui n'en reconnaît aucune, ou qui en reconnaît deux, est un écart.
+    const motifsDuRole115 = [...(FR115.noyau.REFUS_DU_ROLE_SUR_UNE_ROUTE_D_ADMINISTRATION || [])];
+    const phrasesSansMotif115 = refusDuRoleServis115.filter((p) => motifsDuRole115.filter((m) => m instanceof RegExp && m.test(p)).length !== 1);
+    const motifsSansPhrase115 = motifsDuRole115.filter((m) => !(m instanceof RegExp) || refusDuRoleServis115.filter((p) => m.test(p)).length !== 1).map(String);
+    if (!motifsDuRole115.length || phrasesSansMotif115.length || motifsSansPhrase115.length) ecartsO115.push(`les refus du rôle reconnus ne sont pas ceux de \`rbac_gate\` : phrases sans motif ${JSON.stringify(phrasesSansMotif115)}, motifs sans phrase ${JSON.stringify(motifsSansPhrase115)}`);
+    // (o2) Tout autre refus, la section MONTRÉE (administrateur établi) : le rôle reste, la liste le dit, sans avis.
+    const faceO115 = (L, k) => appeler115(L.comptes, "motDeLaLectureDesComptes", k);
+    const autres115 = [
+      ["403 de l'annuaire", { statut: 403, corps: { error: CAUSE_ANNUAIRE_COMPTE115 } }, "lecture_non_servie", CAUSE_ANNUAIRE_COMPTE115, 1],
+      ["503 nommé", refus503De115(CAUSE_ANNUAIRE_NON_VERIFIE115), "lecture_non_servie", CAUSE_ANNUAIRE_NON_VERIFIE115, 3],
+      ["500 nommé", { statut: 500, corps: { error: "LECTURE DES COMPTES-115 : la table n'a pas été lue.", id: "plume-e1-12" } }, "lecture_non_servie", "LECTURE DES COMPTES-115 : la table n'a pas été lue.", 1],
+      ["502 sans corps", { statut: 502, corps: "" }, "lecture_non_servie", "Service momentanément indisponible, réessaie dans un instant.", 3],
+      ["403 texte étranger au rôle", { statut: 403, corps: "refus étranger-115" }, "lecture_non_servie", "refus étranger-115", 1],
+      ["panne de transport", reseauCoupe115, "demande_non_aboutie", "Failed to fetch", 1],
+    ];
+    for (const [etiquette, reponse, cle, reponseLue, appels] of autres115) {
+      const r = await lireLesComptes115(FR115, reponse, true);
+      mesureO115.push(`${etiquette} : admin ${r.admin}, liste « ${r.liste.slice(0, 70)} »`);
+      if (r.admin !== true || r.cle !== cle || r.texte !== faceO115(FR115, cle) + " « " + reponseLue + " »" || r.avis.length || r.appels !== appels)
+        ecartsO115.push(`${etiquette} : admin ${r.admin}, « ${r.cle} » « ${r.texte.slice(0, 140)} », avis ${JSON.stringify(r.avis)}, ${r.appels} lecture(s)`);
+    }
+    // (o3) À l'ouverture (rôle jamais établi, la section n'est pas montrée) : le rôle n'est pas inventé, et un AVIS le dit.
+    const ouverture115 = await lireLesComptes115(FR115, refus503De115(CAUSE_ANNUAIRE_NON_VERIFIE115), false);
+    const texteOuverture115 = faceO115(FR115, "lecture_non_servie") + " « " + CAUSE_ANNUAIRE_NON_VERIFIE115 + " »";
+    if (ouverture115.admin !== false || ouverture115.texte !== texteOuverture115 || ouverture115.avis.length !== 1 || ouverture115.avis[0] !== texteOuverture115)
+      ecartsO115.push(`à l'ouverture : admin ${ouverture115.admin}, « ${ouverture115.texte.slice(0, 100)} », avis ${JSON.stringify(ouverture115.avis.map((a) => a.slice(0, 100)))}`);
+    // (o4) Le quatre cent un garde son chemin d'avant (`P10.26-n`) ; (o5) une lecture servie établit le rôle.
+    const nonConnecte115 = await lireLesComptes115(FR115, { statut: 401, corps: "authentification requise" }, true);
+    if (nonConnecte115.admin !== false || nonConnecte115.cle !== null) ecartsO115.push(`401 : admin ${nonConnecte115.admin}, « ${nonConnecte115.cle} »`);
+    const servie115 = await lireLesComptes115(FR115, { corps: { users: [{ id: 1, name: "hugo", role: "admin", created: 1 }], me: "hugo", acces: [] } }, false);
+    if (servie115.admin !== true || servie115.cle !== null) ecartsO115.push(`lecture servie : admin ${servie115.admin}, « ${servie115.cle} »`);
+    // (o6) Sous `LANG='en'` : la face anglaise, sans accent ; les deux faces ont leurs deux langues.
+    const anglais115 = await lireLesComptes115(EN115, { statut: 500, corps: { error: "LECTURE DES COMPTES-115 : la table n'a pas été lue.", id: "plume-e1-13" } }, true);
+    if (anglais115.cle !== "lecture_non_servie" || anglais115.phrase !== faceO115(EN115, "lecture_non_servie") || ACCENTS115.test(anglais115.phrase) || anglais115.admin !== true) ecartsO115.push(`en : « ${anglais115.phrase} », admin ${anglais115.admin}`);
+    for (const k of ["lecture_non_servie", "demande_non_aboutie"]) if (faceO115(FR115, k) === faceO115(EN115, k) || ACCENTS115.test(faceO115(EN115, k)) || ACCUSE115.test(faceO115(FR115, k)) || ACCUSE115.test(faceO115(EN115, k))) ecartsO115.push(`faces « ${k} » : « ${faceO115(FR115, k)} » / « ${faceO115(EN115, k)} »`);
+    console.log(`[115o0] la liste des comptes : ${mesureO115.join(" | ")}`);
+    exiger(ecartsO115.length === 0, `(115o) LA LISTE DES COMPTES DIT « NON ADMINISTRATEUR » HORS DU REFUS DU RÔLE, OU TAIT UN AUTRE REFUS : ${JSON.stringify(ecartsO115)}`);
+
+    // ── CE QUE LE LOT NE TIENT PAS, MESURÉ ICI ET NON JUGÉ : la lecture des jetons dit « réservé admin » sur tout refus.
+    servis115 = { "GET /api/tokens": refus503De115(causeDe115("CAUSE_JETON_NON_FRAPPE_COMMIT_REFUSE")) };
+    await FR115.comptes.loadTokens(); await laisser115();
+    console.log(`[115-reste] \`loadTokens\` sur un cinq cent trois nommé : « ${nu115(qs115("#token-list")).slice(0, 140)} »`);
+  } finally {
+    globalThis.fetch = fetchOrigine115; globalThis.setTimeout = minuterieOrigine115; document.querySelector = qsOrigine115;
+    for (const o of etatOrigine115) { o.S.isAdmin = o.admin; o.S.AUTH = o.auth; }
+    for (const [sel, surface] of [["#token-list", "jetons"], ["#field-filter-list", "masques"], ["#idp-list", "fournisseurs_d_identite"]]) { const p = puitsNomme115(parentDe115(sel), surface); if (p) p.remove(); const h = qs115(sel); if (h) h.replaceChildren(); }
+    const pm = puitsNomme115(teteDuMode115(), "mode"); if (pm) pm.remove();
+    for (const sel of ["#field-filter-form-host", "#idp-form-host", "#connector-preset-picker"]) { const h = qs115(sel); if (h) h.replaceChildren(); }
+    const picker = qs115("#connector-preset-picker"); if (picker) picker.classList.add("hidden");
+    const avis = qs115("#toasts"); if (avis) avis.replaceChildren();
+    document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
+  }
+  console.log("(115) OK — les douze gestes d'écriture joués (jetons, masques, fournisseurs d'identité, source push, mode) disent le cinq cent trois du COMMIT refusé dans UN puits partagé qui reste — « rien n'a changé » et la cause ENTIÈRE, dans les deux langues, sans avis ni promesse rejetée —, la bascule du mode relit le mode, et la panne de transport est dite « NON confirmée » sur chaque site ; un autre cinq cent trois nommé, un refus en texte brut, un refus sans corps, une page de passerelle et un COMMIT refusé hors d'un cinq cent trois ne disent pas « rien n'a changé », et un geste accepté efface le refus d'avant ; toutes les causes du COMMIT refusé que le démon écrit sont reconnues, et seulement sous un cinq cent trois. `api()` montre la cause d'un cinq cent trois (ou deux) nommé après ses deux réessais, garde la phrase générique sans cause, et porte le statut de toute réponse lue. La liste des comptes ne se replie sur « non administrateur » que sur les refus du rôle de `rbac_gate` (ensemble égal dans les deux sens) ; tout autre refus garde le rôle et se dit, dans la liste, et dans un avis quand la section n'est pas montrée ; le quatre cent un garde son chemin. CE QUI ÉTAIT FAUX OU IMPRÉCIS : `P10.26-q` disait « avis qui s'efface » pour les quatre modules — le formulaire d'un fournisseur écrivait dans sa ligne d'actions, et la bascule du mode ne disait rien du tout ; `P10.26-p` ne comptait que le cinq cent trois — le cinq cent deux nommé était remplacé de même ; `P10.26-o` était « lu, non joué » — joué, six refus sur six hors du rôle retiraient le drapeau qui gouverne tout l'espace Administration.");
 }
 
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;

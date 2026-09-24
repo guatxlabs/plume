@@ -7,9 +7,7 @@
   "hôte invalide (alphanumérique, . _ - ; ≤ 253 car.)",
   "nom invalide (alphanumérique, . _ - uniquement)",
   "portée « machine » : l'hôte est requis (sinon choisissez « relais »)",
-  "portée « relais » : laissez l'hôte vide (un relais n'est lié à aucune machine)",
-  "échec de création du jeton",
-  "échec de la révocation"
+  "portée « relais » : laissez l'hôte vide (un relais n'est lié à aucune machine)"
  ],
  "ai.js": [
   "Enter"

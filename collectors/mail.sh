@@ -97,7 +97,7 @@ function rip_de_dovecot(m,   v){
   while (match(m, /[,:] rip=[^, ]*/)) { v = substr(m, RSTART + 6, RLENGTH - 6); m = substr(m, RSTART + RLENGTH) }
   return v
 }
-# Postfix, postscreen, amavis : le PREMIER crochet du message qui ressemble à une adresse — Postfix écrit
+# Postfix, postscreen : le PREMIER crochet du message qui ressemble à une adresse — Postfix écrit
 # le client `nom[adresse]` (ou `[adresse]:port`) AVANT tout texte venu du client (`helo=<…>`, texte de
 # pré-salutation, commande non SMTP). S’il ne se valide pas, aucune adresse : on ne va JAMAIS chercher
 # plus loin, là où le client écrit. Le PID (`smtpd[1457]`) n’a ni point ni deux-points, le port est
@@ -107,6 +107,64 @@ function crochet_du_client(m){
   if (!match(m, /\[[0-9A-Za-z:.%_-]*[.:][0-9A-Za-z:.%_-]*\]/)) return ""
   return substr(m, RSTART + 1, RLENGTH - 2)
 }
+# P10.23-w — combien de fois un motif figure dans s. Un champ qu’amavis écrit UNE fois, et qu’un texte du
+# client peut recopier, n’est lu que s’il n’y figure qu’une fois : la copie ne peut alors que le taire.
+function occurrences(s, motif,   n){
+  n = 0
+  while (match(s, motif)) { n++; s = substr(s, RSTART + RLENGTH) }
+  return n
+}
+# P10.23-w — L’ENTRÉE PRINCIPALE D’AMAVIS, LUE DANS SA FORME ET NULLE PART AILLEURS (témoin :
+# collectors/mail-amavis.corpus). Gabarit `$log_short_templ` (amavis, `lib/Amavis.pm`, section __DATA__) :
+#   (<id>) <Passed|Blocked> <catégorie>[ (<détail>)] {<actions>}, [<banque> ][LOCAL ][<a>]:<port>[ [<e>]] <exp> -> <dest>[,<dest>…], …, mail_id: <id>, Hits: <score>, size: <taille>, …, <n> ms
+# `$log_verbose_templ` insère `<proto>/<proto> ` avant l’expéditeur et `, b: <empreinte>` après mail_id.
+# Ce que le CLIENT écrit dans cette ligne : le détail de BANNED (nom de la pièce jointe), l’expéditeur, un
+# destinataire (`+extension`, partie locale entre guillemets), le Message-ID (espaces et virgules admis par
+# `parse_message_id`), `[<e>]` (plus ancienne adresse publique des en-têtes `Received:`). D’où :
+#   * catégorie, verdict : la TÊTE du message, que rien du client ne précède ;
+#   * adresse relais : `[<a>]:<port>` (XFORWARD ADDR/PORT de Postfix), JUSTE après `{<actions>}, ` et la
+#     banque éventuelle — jamais `[<e>]` (sans port), jamais un crochet du détail. Derrière BANNED, le
+#     détail précède ce délimiteur et peut le recopier : il doit être UNIQUE, sinon pas d’adresse ;
+#   * expéditeur, destinataire, score, taille, identifiant : sur une entrée COMPLÈTE seulement (qui finit
+#     par `, <n> ms` — amavis coupe une entrée de plus de 980 octets et termine le morceau par `...`, et
+#     le vrai champ peut alors tomber dans la suite), et seulement si leur repère (` -> `, la suite
+#     `, Hits: …, size: …`) n’y figure qu’UNE fois ; l’identifiant est celui qui la précède immédiatement.
+# Un champ copié par le client n’est ainsi jamais PRIS : il est TU. Lu partout, le nom d’une pièce jointe
+# bannie choisissait l’adresse et le destinataire, un Message-ID choisissait l’identifiant (donc la clé
+# de dédoublonnage : un événement malware portant la clé d’un passage propre antérieur est écarté à
+# l’ingestion), le score et la taille.
+function lire_amavis(m,   reste, apres, avant, p, s, detail, unique, complete){
+  vd = ""; vir = ""; aip = ""; frm = ""; rcpt = ""; sco = ""; sz = ""; mid = ""
+  sub(/^\([^ ()]+\) /, "", m)
+  match(m, /^(Passed|Blocked) [A-Z][A-Z0-9-]*/); vd = substr(m, 1, RLENGTH); reste = substr(m, RLENGTH + 1)
+  unique = 1; detail = ""
+  if (reste ~ /^ \(/) {
+    if (!match(reste, /[)] [{][A-Za-z,]*[}], /)) return
+    detail = substr(reste, 3, RSTART - 3); apres = substr(reste, RSTART + RLENGTH)
+    if (vd ~ /BANNED$/ && match(apres, /[)] [{][A-Za-z,]*[}], /)) unique = 0
+  } else {
+    if (!match(reste, /^ [{][A-Za-z,]*[}], /)) return
+    apres = substr(reste, RLENGTH + 1)
+  }
+  if (vd ~ /INFECTED$/) vir = detail
+  complete = (m ~ /, [0-9]+ ms$/)
+  if (vd ~ /BANNED$/ && !(complete && unique)) return
+  if (match(apres, /^([A-Za-z0-9_.\/-]+ )?(LOCAL )?\[[0-9A-Fa-f:.]+\]:[0-9]+ /)) {
+    s = substr(apres, RSTART, RLENGTH); match(s, /\[[0-9A-Fa-f:.]+\]/); aip = adresse(substr(s, RSTART + 1, RLENGTH - 2))
+  }
+  if (!complete) return
+  if (occurrences(apres, " -> ") == 1) {
+    p = index(apres, " -> "); avant = substr(apres, 1, p - 1); s = substr(apres, p + 4)
+    if (match(avant, /(^| )<[^<>]*>$/)) { frm = substr(avant, RSTART, RLENGTH); sub(/^ /, "", frm); frm = substr(frm, 2, length(frm) - 2) }
+    if (match(s, /^<[^<>]*>,/)) rcpt = substr(s, 2, RLENGTH - 3)
+  }
+  if (occurrences(m, SUITE_HITS_SIZE) == 1) {
+    match(m, SUITE_HITS_SIZE); avant = substr(m, 1, RSTART - 1); s = substr(m, RSTART, RLENGTH)
+    match(s, /Hits: [^,]*/); sco = substr(s, RSTART + 6, RLENGTH - 6); if (sco == "-") sco = ""
+    match(s, /size: [0-9]+/); sz = substr(s, RSTART + 6, RLENGTH - 6)
+    if (match(avant, /, mail_id: [A-Za-z0-9_-]+(, b: [A-Za-z0-9_-]+)?$/)) { mid = substr(avant, RSTART + 11, RLENGTH - 11); sub(/,.*/, "", mid) }
+  }
+}
 function emit(cat,act,sev,ip,usr,svc,extra,dk,   dd){
   # malware/banned/av_error/mailflow = signaux amavis/clamav : emis MEME sans src_ip (le verdict
   # amavis ne porte pas toujours une IP relais) ; les autres exigent une src_ip (respect de skipip).
@@ -115,7 +173,10 @@ function emit(cat,act,sev,ip,usr,svc,extra,dk,   dd){
   ev="{\"ts\":" et ",\"source\":\"mail\",\"category\":\"" cat "\",\"severity\":" sev ",\"src_ip\":\"" ip "\",\"message\":\"" jesc($0) "\",\"dedup\":\"" dd "\",\"fields\":{\"action\":\"" act "\",\"user\":\"" jesc(usr) "\",\"service\":\"" svc "\",\"src_ip\":\"" ip "\"" extra "}}"
   if(n>0) buf=buf ","; buf=buf ev; n++
 }
-BEGIN{ n=0; buf=""; maxts=last+0 }
+BEGIN{ n=0; buf=""; maxts=last+0
+  # `Hits: <score>, size: <taille>` : les deux champs qu’amavis écrit TOUJOURS, côte à côte, dans ses deux
+  # gabarits ; score `-`, `-1.1`, `3` ou `2.1..5.3` (`macro_score`).
+  SUITE_HITS_SIZE = ", Hits: (-|-?[0-9]+([.][0-9]+)?([.][.]-?[0-9]+([.][0-9]+)?)?), size: [0-9]+" }
 {
   if (n>=3000) next                                             # garde-fou volume/passage
   if ($0 !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T/) next
@@ -133,6 +194,7 @@ BEGIN{ n=0; buf=""; maxts=last+0 }
   dvc=""; if (match($0,/^[^ ]+ [^ ]+ dovecot(\[[0-9]+\])?: /)) dvc=substr($0,RSTART+RLENGTH)
   psd=""; if (match($0,/^[^ ]+ [^ ]+ postfix(\/[A-Za-z0-9_.-]+)*\/smtpd\[[0-9]+\]: /)) psd=substr($0,RSTART+RLENGTH)
   pss=""; if (match($0,/^[^ ]+ [^ ]+ postfix(\/[A-Za-z0-9_.-]+)*\/postscreen\[[0-9]+\]: /)) pss=substr($0,RSTART+RLENGTH)
+  amv=""; if (match($0,/^[^ ]+ [^ ]+ amavis\[[0-9]+\]: /)) amv=substr($0,RSTART+RLENGTH)
   msg=""; if (match($0,/^[^ ]+ [^ ]+ [^ ]+ /)) msg=substr($0,RSTART+RLENGTH)
   ip=""; if (dvc != "") ip=adresse(rip_de_dovecot(dvc)); else ip=adresse(crochet_du_client(msg))
   usr=""; if (dvc != "" && match(dvc,/user=<[^>]*>/)) usr=substr(dvc,RSTART+6,RLENGTH-7)
@@ -166,31 +228,38 @@ BEGIN{ n=0; buf=""; maxts=last+0 }
   # blocages (bruit des sondes du nœud, parité avec l’ancien motif).
   # P10.23-g — la liste de refus s’écrit `BLACKLISTED` ou `DENYLISTED` selon `respectful_logging`, dont
   # le défaut vaut `yes` dès `compatibility_level` 3.6 : les deux formes sont lues.
+  # P10.23-y — postscreen coupe aussi une session pour `COMMAND LENGTH LIMIT` (`line_length_limit`
+  # dépassé) et pour `DATA`/`BDAT without valid RCPT` (postscreen refuse tout destinataire et n’annonce
+  # pas PIPELINING : un client légitime n’envoie jamais DATA ni BDAT) — `postscreen_smtpd.c`.
   # Rejet : `NOQUEUE: reject: <étape> …` (smtpd et postscreen ; l’étape est écrite par le serveur, et
-  # peut porter une espace : `DATA content`), `<file>: reject: RCPT from …` (smtpd, quand la file
-  # existe), `…: milter-reject: RCPT from …` (smtpd) — les formes que l’ancien motif lisait, et elles
-  # seules.
-  else if (pss ~ /^(PREGREET [0-9]+ after |DNSBL rank [0-9]+ for |(BLACK|DENY)LISTED \[|COMMAND (PIPELINING|TIME LIMIT|COUNT LIMIT) from |BARE NEWLINE from |NON-SMTP COMMAND from )/) emit("postscreen","blocked",2,ip,usr,"postscreen")
-  else if (pss ~ /^NOQUEUE: reject: / || psd ~ /^NOQUEUE: reject: / || psd ~ /^[0-9A-Za-z]+: (milter-)?reject: RCPT from /) emit("reject","blocked",2,ip,usr,svc)
-  else if ($0 ~ /amavis\[[0-9]+\]:.*(Passed|Blocked) [A-Z]/) {  # verdict amavis (IronPort-like : flux + verdicts)
-    vd=""; if (match($0,/(Passed|Blocked) [A-Z][A-Z-]*/)) vd=substr($0,RSTART,RLENGTH)
-    frm=""; if (match($0,/<[^>]*> ->/)) frm=substr($0,RSTART+1,RLENGTH-5)           # <sender> ->
-    rcpt=""; if (match($0,/-> <[^>]*>/)) rcpt=substr($0,RSTART+4,RLENGTH-5)         # -> <rcpt>
-    sco=""; if (match($0,/Hits: -?[0-9.]+/)) sco=substr($0,RSTART+6,RLENGTH-6)
-    sz="";  if (match($0,/size: [0-9]+/)) sz=substr($0,RSTART+6,RLENGTH-6)
-    mid=""; if (match($0,/mail_id: [A-Za-z0-9_+-]+/)) mid=substr($0,RSTART+9,RLENGTH-9)
+  # peut porter une espace : `DATA content`) ; `<file|NOQUEUE>: (milter-)reject: <étape> from …` (smtpd,
+  # `log_whatsup` de `smtpd_check.c` et `milter-reject` de `smtpd.c`), l’étape étant l’une de celles que
+  # smtpd écrit (`smtpd.h`) — P10.23-y : sous identifiant de file, le rejet après le premier destinataire
+  # accepté (`DATA`, `END-OF-MESSAGE`, `bare <LF> received`…) et le rejet d’un milter à la fin du message
+  # n’étaient pas lus ; seule l’étape RCPT l’était.
+  else if (pss ~ /^(PREGREET [0-9]+ after |DNSBL rank [0-9]+ for |(BLACK|DENY)LISTED \[|COMMAND (PIPELINING|TIME LIMIT|COUNT LIMIT|LENGTH LIMIT) from |BARE NEWLINE from |NON-SMTP COMMAND from |(DATA|BDAT) without valid RCPT from )/) emit("postscreen","blocked",2,ip,usr,"postscreen")
+  else if (pss ~ /^NOQUEUE: reject: / || psd ~ /^NOQUEUE: reject: / || psd ~ /^[0-9A-Za-z]+: (milter-)?reject: (CONNECT|HELO|EHLO|STARTTLS|AUTH|MAIL|RCPT|DATA|DATA content|BDAT|BDAT content|END-OF-MESSAGE|RSET|NOOP|VRFY|ETRN|QUIT|XCLIENT|XFORWARD|UNKNOWN|HELP) from /) emit("reject","blocked",2,ip,usr,svc)
+  # P10.23-w — AMAVIS, SOUS SON ÉTIQUETTE `amavis[pid]:` ET EN TÊTE DE SON MESSAGE. Cherché partout, le
+  # verdict se lisait dans une commande HTTP envoyée au port de soumission (`GET /amavis[1]: Blocked
+  # INFECTED (…)` : alerte malware de sévérité quatre, virus au choix, à l’adresse du client), dans un
+  # `ID` IMAP, dans le nom d’une pièce jointe recopié par amavis lui-même (`p.path`, niveau 1). Verdict :
+  # l’entrée principale `(<id>) Passed|Blocked <catégorie>` (catégories de `$log_short_templ`), champs
+  # lus par `lire_amavis`. Panne du scanner : `(<id>) (!)<scanner> av-scanner FAILED: …` et `(<id>)
+  # (!)WARN: all primary virus scanners failed…` (`lib/Amavis/AV.pm`, niveau -1) ; `(!!)AV: ALL VIRUS
+  # SCANNERS FAILED` suit toujours ce WARN (même passage) et n’est pas lu. La panne n’a pas de client :
+  # aucune adresse (l’ancien bras prenait celle du démon clamd, `[::1]:3310`, pour une adresse source).
+  else if (amv ~ /^\([^ ()]+\) (Passed|Blocked) ((CLEAN|OTHER|MTA-BLOCKED|OVERSIZED|BAD-HEADER-[0-9]+|SPAMMY|SPAM|UNCHECKED|UNCHECKED-ENCRYPTED) [{]|(INFECTED|BANNED) \()/) {
+    lire_amavis(amv)
     mcat="mailflow"; msev=1; mact="pass"
-    if (vd ~ /INFECTED/) { mcat="malware"; msev=4; mact="infected" }
-    else if (vd ~ /BANNED/) { mcat="banned"; msev=3; mact="banned" }
+    if (vd ~ /INFECTED$/) { mcat="malware"; msev=4; mact="infected" }
+    else if (vd ~ /BANNED$/) { mcat="banned"; msev=3; mact="banned" }
     else if (vd ~ /SPAM/) { msev=2; mact="spam" }
-    else if (vd ~ /Blocked/) { msev=2; mact="blocked" }
-    ext=",\"verdict\":\"" jesc(vd) "\",\"sender\":\"" jesc(frm) "\",\"rcpt\":\"" jesc(rcpt) "\",\"score\":\"" sco "\",\"size\":\"" sz "\""
-    if (vd ~ /INFECTED/ && match($0,/INFECTED \([^)]+\)/)) ext=ext ",\"virus\":\"" jesc(substr($0,RSTART+10,RLENGTH-11)) "\""
-    emit(mcat,mact,msev,ip,rcpt,"amavis",ext,(mid!=""?("mail-" mid):""))
+    else if (vd ~ /^Blocked/) { msev=2; mact="blocked" }
+    ext=",\"verdict\":\"" jesc(vd) "\",\"sender\":\"" jesc(frm) "\",\"rcpt\":\"" jesc(rcpt) "\",\"score\":\"" jesc(sco) "\",\"size\":\"" sz "\""
+    if (vd ~ /INFECTED$/) ext=ext ",\"virus\":\"" jesc(vir) "\""
+    emit(mcat,mact,msev,aip,rcpt,"amavis",ext,(mid!=""?("mail-" mid):""))
   }
-  else if ($0 ~ /amavis\[[0-9]+\].*(av-scanner.*FAILED|virus scanners? failed)/) {       # clamd injoignable -> mail NON scanne
-    emit("av_error","error",3,ip,"","clamav","")
-  }
+  else if (amv ~ /^\([^ ()]+\) \(!!?\)([^:]* av-scanner FAILED: |WARN: all primary virus scanners failed)/) emit("av_error","error",3,"","","clamav","")
 }
 END{
   if (n>0) printf "{\"ts\":%d,\"host\":\"%s\",\"kind\":\"events\",\"events\":[%s]}\n", now, host, buf > out

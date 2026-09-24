@@ -29,6 +29,11 @@
 #   devenait un blocage ; le `helo` du rejet de postscreen lui-même en choisissait la catégorie.
 #   `P10.23-g` — la liste de refus s'écrit `BLACKLISTED` ou `DENYLISTED` (`respectful_logging`,
 #   `yes` par défaut dès `compatibility_level` 3.6) : `DENYLISTED` ne produisait aucun événement.
+#   `P10.23-y` — mesuré sur le capteur d'avant : les coupures postscreen `COMMAND LENGTH LIMIT`,
+#   `DATA without valid RCPT` et `BDAT without valid RCPT`, et les rejets smtpd sous identifiant de
+#   file hors de l'étape RCPT (`DATA`, `END-OF-MESSAGE`, `milter-reject` d'un filtre de contenu à la
+#   fin du message), ne produisaient aucun événement.
+# Les lignes amavis ont leur corpus : `collectors/mail-amavis.corpus` (`P10.23-w`).
 #
 # FORMAT : `verdict <TAB> user <TAB> src_ip <TAB> provenance <TAB> ligne`. `#` en colonne zéro =
 # commentaire, ligne vide ignorée.
@@ -48,7 +53,9 @@
 #                                2026-09-23 : `smtpd_sasl_glue.c`, `smtpd.c`, `smtpd_peer.c`,
 #                                `postscreen_early.c`, `postscreen_smtpd.c`, `smtp_sasl_glue.c`,
 #                                `unescape.c` ; le 2026-09-24 : `postscreen.c`, `postscreen_misc.c`,
-#                                `smtpd_check.c`, `smtpd.h`), NON MESURÉE
+#                                `smtpd_check.c`, `smtpd.h` ; pour `P10.23-y`, le 2026-09-24 sur
+#                                3.12-20260921 : `postscreen_smtpd.c`, `smtpd.c`, `smtpd_check.c`,
+#                                `smtpd.h`, `POSTSCREEN_README`, `HISTORY`), NON MESURÉE
 #     sources-postfix-avant-3.9  la même, sans le suffixe `, sasl_username=` : ajouté le 20231006
 #                                (fichier HISTORY de Postfix), il n'est publié qu'à partir de 3.9
 #     client-postfix             forme `sources-postfix` dont un champ porte un texte CHOISI par le
@@ -138,3 +145,20 @@ aucun	-	-	client-postfix	2026-09-23T19:31:19.123456+02:00 mailserver postfix/sub
 aucun	-	-	client-postfix	2026-09-23T19:31:20.123456+02:00 mailserver postfix/submission/smtpd[2049]: improper command pipelining after CONNECT from unknown[192.0.2.104]: postscreen BLACKLISTED [198.51.100.13]:1\r\n
 aucun	-	-	client-postfix	2026-09-23T19:31:21.123456+02:00 mailserver postfix/submission/smtpd[2050]: improper command pipelining after CONNECT from unknown[192.0.2.108]: postscreen DENYLISTED [198.51.100.14]:1\r\n
 aucun	-	-	fabriquee-2.3	2026-09-23T19:31:22.123456+02:00 mailserver dovecot: imap-login: ID sent: name=postscreen PREGREET, version=NOQUEUE: reject: user=<>, rip=192.0.2.105, lip=192.0.2.1, session=<Zml4dHVyZUlE>
+
+# --- P10.23-y : les coupures postscreen et les rejets smtpd que l'ancien motif ne lisait pas ----------
+# `postscreen_smtpd.c` : postscreen coupe la session. Son moteur SMTP refuse tout destinataire et
+# n'annonce pas PIPELINING : un client légitime n'envoie jamais DATA ni BDAT (`HISTORY`, 20191014).
+postscreen	-	192.0.2.150	sources-postfix	2026-09-24T11:20:01.123456+02:00 mailserver postfix/postscreen[3110]: COMMAND LENGTH LIMIT from [192.0.2.150]:40400 after CONNECT
+postscreen	-	192.0.2.151	sources-postfix	2026-09-24T11:20:02.123456+02:00 mailserver postfix/postscreen[3111]: DATA without valid RCPT from [192.0.2.151]:40401
+postscreen	-	2001:db8::152	sources-postfix	2026-09-24T11:20:03.123456+02:00 mailserver postfix/postscreen[3112]: BDAT without valid RCPT from [2001:db8::152]:40402
+# Sous identifiant de file (après le premier destinataire accepté) : `log_whatsup` (`smtpd_check.c`)
+# et `milter-reject` (`smtpd.c`), l'étape étant une de celles que smtpd écrit (`smtpd.h`).
+rejet	-	192.0.2.153	sources-postfix	2026-09-24T11:20:04.123456+02:00 mailserver postfix/smtpd[3113]: 4ABCDEF301: reject: DATA from mail.example.net[192.0.2.153]: 550 5.5.1 <DATA>: Data command rejected: Multi-recipient bounce; from=<> to=<b@example.test> proto=ESMTP helo=<mail.example.net>
+rejet	-	192.0.2.154	sources-postfix	2026-09-24T11:20:05.123456+02:00 mailserver postfix/smtpd[3114]: 4ABCDEF302: reject: END-OF-MESSAGE from mail.example.net[192.0.2.154]: bare <LF> received; from=<a@example.net> to=<b@example.test> proto=ESMTP helo=<mail.example.net>
+rejet	-	192.0.2.155	sources-postfix	2026-09-24T11:20:06.123456+02:00 mailserver postfix/smtpd[3115]: 4ABCDEF303: milter-reject: END-OF-MESSAGE from mail.example.net[192.0.2.155]: 554 5.7.1 Spam message rejected; from=<a@example.net> to=<b@example.test> proto=ESMTP helo=<mail.example.net>
+rejet	-	192.0.2.156	sources-postfix	2026-09-24T11:20:07.123456+02:00 mailserver postfix/smtpd[3116]: NOQUEUE: milter-reject: CONNECT from unknown[192.0.2.156]: 421 4.7.0 Server closing connection; proto=SMTP
+# Les mêmes mots écrits par le CLIENT ne sont jamais un verdict.
+aucun	-	-	client-postfix	2026-09-24T11:20:08.123456+02:00 mailserver postfix/submission/smtpd[3117]: warning: non-SMTP command from unknown[192.0.2.157]: GET /4ABCDEF304: reject: DATA from x HTTP/1.1
+aucun	-	-	client-postfix	2026-09-24T11:20:09.123456+02:00 mailserver postfix/submission/smtpd[3118]: improper command pipelining after CONNECT from unknown[192.0.2.158]: DATA without valid RCPT from [198.51.100.17]:1\r\n
+rejet	-	192.0.2.159	client-postfix	2026-09-24T11:20:10.123456+02:00 mailserver postfix/postscreen[3119]: NOQUEUE: reject: RCPT from [192.0.2.159]:40409: 550 5.7.1 Service unavailable; client [192.0.2.159] blocked using zen.example.net; from=<a@example.test>, to=<b@example.test>, proto=ESMTP, helo=<COMMAND LENGTH LIMIT from [198.51.100.16]:1>

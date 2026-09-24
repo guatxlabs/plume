@@ -1,0 +1,143 @@
+# =================================================================================================
+# LES VERDICTS D'AMAVIS, ET LES MOTS D'AMAVIS ÉCRITS PAR LE CLIENT — `P10.23-w` (SÉCURITÉ)
+#
+# Corpus frère de `collectors/mail-connexions-dovecot.corpus` et de
+# `collectors/mail-adresses-et-texte-du-client.corpus`, joué par le même témoin
+# (`.github/scripts/check_mail_sensor_classifies_dovecot_logins_of_both_versions.py`), qui exécute le
+# capteur LIVRÉ sur chaque ligne — jamais une copie de ses motifs.
+#
+# CE QUE CE CORPUS TIENT
+#   Les bras amavis de `collectors/mail.sh` cherchaient `amavis[pid]:` et `Passed|Blocked` PARTOUT dans
+#   la ligne. Mesuré sur le capteur d'avant, sous gawk, mawk 1.3.4 20200120 et mawk 1.3.4 20250131 :
+#   une commande HTTP `GET /amavis[1]: Blocked INFECTED (Eicar-Signature)` envoyée au port de
+#   soumission, sans authentification, devenait un événement `malware` de sévérité quatre (virus au
+#   choix, adresse du client) ; `GET /amavis[1]: virus scanners failed` une panne d'antivirus de
+#   sévérité trois ; un `ID` IMAP un blocage de pièce jointe ; une ligne amavis de niveau 1 (`p.path`)
+#   recopiant le nom d'une pièce jointe devenait un malware à l'adresse et au destinataire écrits dans
+#   ce nom. Dans l'entrée amavis elle-même, les champs étaient lus au premier endroit venu : le nom d'une
+#   pièce jointe bannie choisissait l'adresse source et le destinataire (donc le `user`), un Message-ID
+#   choisissait l'identifiant — donc la clé de dédoublonnage : un malware portant la clé d'un passage
+#   propre antérieur est écarté à l'ingestion (`INSERT OR IGNORE`, clé cloisonnée par hôte) —, le score
+#   et la taille ; l'adresse du démon clamd (`[::1]:3310`) devenait l'adresse source d'une panne ;
+#   `[<e>]`, adresse tirée des en-têtes `Received:`, devenait l'adresse relais d'un message local.
+#   ATTENDU, et tenu ici : verdicts lus sous l'étiquette `amavis[pid]:` (troisième champ syslog), en
+#   tête du message ; champs lus dans la forme d'amavis, et TUS (jamais pris) quand le client en écrit
+#   une copie ou quand l'entrée est coupée.
+#
+# FORMAT : `verdict <TAB> user <TAB> src_ip <TAB> provenance <TAB> champs <TAB> ligne`. `#` en colonne
+# zéro = commentaire, ligne vide ignorée.
+#   verdict    : `malware` -> `malware`/`infected` (sévérité 4) ; `banni` -> `banned`/`banned` (3) ;
+#                `flux-passe` -> `mailflow`/`pass` (1) ; `flux-spam` -> `mailflow`/`spam` (2) ;
+#                `flux-bloque` -> `mailflow`/`blocked` (2) ; `panne-av` -> `av_error`/`error` (3) ;
+#                `postscreen`, `rejet`, `aucun` comme dans le corpus frère
+#   user       : le `user` attendu (`-` = vide) : pour amavis, le PREMIER destinataire
+#   src_ip     : le `src_ip` attendu (`-` = vide ; amavis : `[<a>]:<port>` de sa forme, ou rien)
+#   champs     : `-`, ou les champs amavis attendus `clé=valeur` séparés par `;` — verdict, virus (sur
+#                `malware` seulement), sender, rcpt, score, size, dedup ; `dedup=(horodatage)` = la clé
+#                de repli `mail-<epoch>-<src_ip>-<action>` (identifiant tu ou absent)
+#   provenance : d'où vient la FORME de la ligne — vocabulaire fermé, relu par le témoin :
+#     sources-amavis   forme DÉRIVÉE des sources d'amavis (branche master lue le 2026-09-24, commit
+#                      7d473b22 : gabarits `$log_short_templ`/`$log_verbose_templ`/`$log_recip_templ` de
+#                      `lib/Amavis.pm`, `write_log` de `lib/Amavis/Log.pm`, `do_log` de
+#                      `lib/Amavis/Util.pm`, `lib/Amavis/AV.pm`) et des réglages Debian
+#                      (`20-debian_defaults` : étiquette `amavis`, `$log_recip_templ = undef`), NON MESURÉE
+#     client-amavis    forme `sources-amavis` dont un champ écrit par le CLIENT (nom de pièce jointe,
+#                      expéditeur, Message-ID) porte un texte choisi ; les valeurs choisies portent la
+#                      marque `FORGED` ou visent `ceo@example.test` et `198.51.100.7/8`
+#     client-postfix   forme des sources Postfix dont un champ porte un texte du client
+#     fabriquee-2.3    message Dovecot 2.3 portant un texte du client (`ID sent:`, `imap_id_log`)
+# Un verdict amavis n'est admis que sur une ligne `amavis[pid]:` ; aucune valeur marquée `FORGED` n'est
+# jamais attendue : le corpus ne peut pas légitimer le défaut qu'il garde.
+# Seule la FORME est relevée : adresses (RFC 5737, RFC 3849, bouclage), domaines (`example.test`,
+# `example.net`), identifiants, PID, ports et noms d'hôte sont SUBSTITUÉS.
+# =================================================================================================
+
+# --- Le constat : les mots d'amavis écrits par le CLIENT ne sont jamais un verdict ---------------
+# La commande HTTP du constat, au port de soumission : rien (le capteur d'avant : malware, sévérité 4).
+aucun	-	-	client-postfix	-	2026-09-24T11:00:01.123456+02:00 mailserver postfix/submission/smtpd[3101]: warning: non-SMTP command from unknown[192.0.2.30]: GET /amavis[1]: Blocked INFECTED (Eicar-Signature) HTTP/1.1
+# La même, à postscreen : c'est un blocage postscreen, et rien de plus.
+postscreen	-	192.0.2.31	client-postfix	-	2026-09-24T11:00:02.123456+02:00 mailserver postfix/postscreen[3102]: NON-SMTP COMMAND from [192.0.2.31]:40201 after CONNECT: GET /amavis[1]: Blocked INFECTED (Eicar-Signature) HTTP/1.1
+# Dans le `helo` d'un rejet : c'est un rejet.
+rejet	-	192.0.2.32	client-postfix	-	2026-09-24T11:00:03.123456+02:00 mailserver postfix/smtpd[3103]: NOQUEUE: reject: RCPT from unknown[192.0.2.32]: 554 5.7.1 <b@example.test>: Relay access denied; from=<a@example.test> to=<b@example.test> proto=ESMTP helo=<amavis[1]: (1-01) Blocked INFECTED (Eicar-Signature) {DiscardedInbound}, [198.51.100.7]:1>
+# Dans un `ID` IMAP : rien (le capteur d'avant : pièce jointe bannie, sévérité 3).
+aucun	-	-	fabriquee-2.3	-	2026-09-24T11:00:04.123456+02:00 mailserver dovecot: imap-login: ID sent: name=amavis[1]: (1-01) Passed BANNED (x) {RelayedInbound}, user=<>, rip=192.0.2.33, lip=192.0.2.1, session=<Zml4dHVyZUFW>
+# Une panne d'antivirus écrite par le client : rien (le capteur d'avant : panne, sévérité 3).
+aucun	-	-	client-postfix	-	2026-09-24T11:00:05.123456+02:00 mailserver postfix/submission/smtpd[3104]: warning: non-SMTP command from unknown[192.0.2.34]: GET /amavis[1]: (1-01) (!)WARN: all primary virus scanners failed HTTP/1.1
+aucun	-	-	client-postfix	-	2026-09-24T11:00:06.123456+02:00 mailserver postfix/submission/smtpd[3105]: warning: non-SMTP command from unknown[192.0.2.35]: GET /amavis[1]: (1-01) (!)ClamAV-clamd av-scanner FAILED: x HTTP/1.1
+# amavis lui-même recopie le nom d'une pièce jointe au niveau 1 (`p.path`, `Unpackers/Validity.pm`) :
+# un verdict écrit dans ce nom n'est pas en tête du message (le capteur d'avant : malware à 198.51.100.7,
+# destinataire ceo@example.test).
+aucun	-	-	client-amavis	-	2026-09-24T11:01:01.123456+02:00 mailserver amavis[4126]: (04126-01) p.path BANNED:1 b@example.test: "P=p003,L=1/2,M=application/x-msdownload,T=exe,T=exe-ms,N=(1-01) Blocked INFECTED (Eicar-Signature) {DiscardedInbound}, [198.51.100.7]:1 <x@example.net> -> <ceo@example.test>, mail_id: FORGEDID0126, Hits: -9, size: 1, 1 ms.exe", matching_key="(?^i:\\.exe$)"
+# De même, une panne écrite dans ce nom n'est pas une panne.
+aucun	-	-	client-amavis	-	2026-09-24T11:01:02.123456+02:00 mailserver amavis[4128]: (04128-01) p.path BANNED:1 b@example.test: "P=p002,L=1,M=application/octet-stream,T=exe,N=(1-01) (!)WARN: all primary virus scanners failed (1-01) (!)ClamAV-clamd av-scanner FAILED: x.exe", matching_key="(?^i:\\.exe$)"
+
+# --- L'entrée principale d'amavis, une par catégorie de `$log_short_templ` -----------------------
+# Témoins fabriqués (valeurs substituées) : CLEAN ; puis plusieurs destinataires, le premier est le `user`.
+flux-passe	b@example.test	192.0.2.110	sources-amavis	verdict=Passed CLEAN;sender=a@example.net;rcpt=b@example.test;score=-1.1;size=2345;dedup=mail-AbCdEfGh0101	2026-09-24T11:02:01.123456+02:00 mailserver amavis[4101]: (04101-01) Passed CLEAN {RelayedInbound}, [192.0.2.110]:40101 [192.0.2.110] <a@example.net> -> <b@example.test>, Queue-ID: 4ABCDEF101, Message-ID: <m101@example.net>, mail_id: AbCdEfGh0101, Hits: -1.1, size: 2345, queued_as: 4BCDEF3101, 120 ms
+flux-spam	b@example.test	192.0.2.111	sources-amavis	verdict=Passed SPAMMY;sender=a@example.net;rcpt=b@example.test;score=5.2;size=3456;dedup=mail-AbCdEfGh0102	2026-09-24T11:02:02.123456+02:00 mailserver amavis[4102]: (04102-01) Passed SPAMMY {RelayedTaggedInbound}, [192.0.2.111]:40102 [192.0.2.111] <a@example.net> -> <b@example.test>,<c@example.test>, Queue-ID: 4ABCDEF102, Message-ID: <m102@example.net>, mail_id: AbCdEfGh0102, Hits: 5.2, size: 3456, queued_as: 4BCDEF3102, 120 ms
+# Témoins : un score par destinataire (`min..max`, `macro_score`) ; un malware.
+flux-spam	b@example.test	192.0.2.112	sources-amavis	verdict=Blocked SPAM;sender=a@example.net;rcpt=b@example.test;score=12.3..15.1;size=4567;dedup=mail-AbCdEfGh0103	2026-09-24T11:02:03.123456+02:00 mailserver amavis[4103]: (04103-01) Blocked SPAM {DiscardedInbound,Quarantined}, [192.0.2.112]:40103 [192.0.2.112] <a@example.net> -> <b@example.test>, quarantine: spam-AbCdEfGh0103.gz, Queue-ID: 4ABCDEF103, Message-ID: <m103@example.net>, mail_id: AbCdEfGh0103, Hits: 12.3..15.1, size: 4567, 1500 ms
+malware	b@example.test	192.0.2.113	sources-amavis	verdict=Blocked INFECTED;virus=Eicar-Signature;sender=a@example.net;rcpt=b@example.test;score=;size=1234;dedup=mail-AbCdEfGh0104	2026-09-24T11:02:04.123456+02:00 mailserver amavis[4104]: (04104-01) Blocked INFECTED (Eicar-Signature) {DiscardedInbound,Quarantined}, [192.0.2.113]:40104 [192.0.2.113] <a@example.net> -> <b@example.test>, quarantine: virus-AbCdEfGh0104, Queue-ID: 4ABCDEF104, Message-ID: <m104@example.net>, mail_id: AbCdEfGh0104, Hits: -, size: 1234, 45 ms
+# Témoins : plusieurs noms de virus, joints par `, ` (`Amavis/Expand.pm`) ; une pièce jointe bannie.
+malware	b@example.test	192.0.2.114	sources-amavis	verdict=Passed INFECTED;virus=Eicar-Signature, Win.Test.EICAR_HDB-1;sender=a@example.net;rcpt=b@example.test;score=;size=1300;dedup=mail-AbCdEfGh0105	2026-09-24T11:02:05.123456+02:00 mailserver amavis[4105]: (04105-01) Passed INFECTED (Eicar-Signature, Win.Test.EICAR_HDB-1) {RelayedInbound}, [192.0.2.114]:40105 [192.0.2.114] <a@example.net> -> <b@example.test>, Queue-ID: 4ABCDEF105, Message-ID: <m105@example.net>, mail_id: AbCdEfGh0105, Hits: -, size: 1300, queued_as: 4BCDEF3105, 120 ms
+banni	b@example.test	192.0.2.115	sources-amavis	verdict=Blocked BANNED;sender=a@example.net;rcpt=b@example.test;score=;size=5678;dedup=mail-AbCdEfGh0106	2026-09-24T11:02:06.123456+02:00 mailserver amavis[4106]: (04106-01) Blocked BANNED (application/x-msdownload,.exe,.exe-ms,facture.exe) {DiscardedInbound,Quarantined}, [192.0.2.115]:40106 [192.0.2.115] <a@example.net> -> <b@example.test>, quarantine: banned-AbCdEfGh0106, Queue-ID: 4ABCDEF106, Message-ID: <m106@example.net>, mail_id: AbCdEfGh0106, Hits: -, size: 5678, 60 ms
+# Témoins : BAD-HEADER-<n>, UNCHECKED-ENCRYPTED.
+flux-passe	b@example.test	192.0.2.116	sources-amavis	verdict=Passed BAD-HEADER-0;sender=a@example.net;rcpt=b@example.test;score=1.2;size=999;dedup=mail-AbCdEfGh0107	2026-09-24T11:02:07.123456+02:00 mailserver amavis[4107]: (04107-01) Passed BAD-HEADER-0 {RelayedInbound}, [192.0.2.116]:40107 [192.0.2.116] <a@example.net> -> <b@example.test>, Queue-ID: 4ABCDEF107, Message-ID: <m107@example.net>, mail_id: AbCdEfGh0107, Hits: 1.2, size: 999, queued_as: 4BCDEF3107, 120 ms
+flux-passe	b@example.test	192.0.2.117	sources-amavis	verdict=Passed UNCHECKED-ENCRYPTED;sender=a@example.net;rcpt=b@example.test;score=0.5;size=2000;dedup=mail-AbCdEfGh0108	2026-09-24T11:02:08.123456+02:00 mailserver amavis[4108]: (04108-01) Passed UNCHECKED-ENCRYPTED {RelayedInbound}, [192.0.2.117]:40108 [192.0.2.117] <a@example.net> -> <b@example.test>, Queue-ID: 4ABCDEF108, Message-ID: <m108@example.net>, mail_id: AbCdEfGh0108, Hits: 0.5, size: 2000, queued_as: 4BCDEF3108, 120 ms
+# Témoins : UNCHECKED (scanner en panne), OVERSIZED.
+flux-passe	b@example.test	192.0.2.118	sources-amavis	verdict=Passed UNCHECKED;sender=a@example.net;rcpt=b@example.test;score=0;size=2100;dedup=mail-AbCdEfGh0109	2026-09-24T11:02:09.123456+02:00 mailserver amavis[4109]: (04109-01) Passed UNCHECKED {RelayedInbound}, [192.0.2.118]:40109 [192.0.2.118] <a@example.net> -> <b@example.test>, Queue-ID: 4ABCDEF109, Message-ID: <m109@example.net>, mail_id: AbCdEfGh0109, Hits: 0, size: 2100, queued_as: 4BCDEF3109, 120 ms
+flux-bloque	b@example.test	192.0.2.119	sources-amavis	verdict=Blocked OVERSIZED;sender=a@example.net;rcpt=b@example.test;score=;size=99999999;dedup=mail-AbCdEfGh0110	2026-09-24T11:02:10.123456+02:00 mailserver amavis[4110]: (04110-01) Blocked OVERSIZED {BouncedInbound}, [192.0.2.119]:40110 [192.0.2.119] <a@example.net> -> <b@example.test>, Queue-ID: 4ABCDEF110, Message-ID: <m110@example.net>, mail_id: AbCdEfGh0110, Hits: -, size: 99999999, 5 ms
+# Témoins : MTA-BLOCKED, OTHER.
+flux-bloque	b@example.test	192.0.2.120	sources-amavis	verdict=Blocked MTA-BLOCKED;sender=a@example.net;rcpt=b@example.test;score=-2;size=3000;dedup=mail-AbCdEfGh0111	2026-09-24T11:02:11.123456+02:00 mailserver amavis[4111]: (04111-01) Blocked MTA-BLOCKED {RejectedInbound}, [192.0.2.120]:40111 [192.0.2.120] <a@example.net> -> <b@example.test>, Queue-ID: 4ABCDEF111, Message-ID: <m111@example.net>, mail_id: AbCdEfGh0111, Hits: -2, size: 3000, 700 ms
+flux-passe	b@example.test	192.0.2.121	sources-amavis	verdict=Passed OTHER;sender=a@example.net;rcpt=b@example.test;score=;size=400;dedup=mail-AbCdEfGh0112	2026-09-24T11:02:12.123456+02:00 mailserver amavis[4112]: (04112-01) Passed OTHER {RelayedInbound}, [192.0.2.121]:40112 [192.0.2.121] <a@example.net> -> <b@example.test>, Queue-ID: 4ABCDEF112, Message-ID: <m112@example.net>, mail_id: AbCdEfGh0112, Hits: -, size: 400, queued_as: 4BCDEF3112, 120 ms
+# Témoin de `$log_verbose_templ` : `<proto>/<proto>` avant l'expéditeur, `, b: …` entre mail_id et Hits,
+# et après la taille des champs du client (Subject, From, helo) — lus nulle part.
+flux-passe	b@example.test	192.0.2.122	sources-amavis	verdict=Passed CLEAN;sender=a@example.net;rcpt=b@example.test;score=-0.9;size=1500;dedup=mail-AbCdEfGh0113	2026-09-24T11:02:13.123456+02:00 mailserver amavis[4113]: (04113-01) Passed CLEAN {RelayedInbound}, [192.0.2.122]:40122 [192.0.2.122] ESMTP/ESMTP <a@example.net> -> <b@example.test>, (ESMTP://[192.0.2.122]:40122), Queue-ID: 4ABCDEF113, Message-ID: <m113@example.net>, mail_id: AbCdEfGh0113, b: KMZg5wfn3, Hits: -0.9, size: 1500, queued_as: 4BCDEF3113, Subject: "Bonjour", From: <a@example.net>, helo=mail.example.net, Tests: [BAYES_00=-1.9,DKIM_SIGNED=0.1], shortcircuit=no, autolearn=ham, autolearnscore=-0.9, 800 ms
+# Témoin : relais IPv6 (amavis écrit XFORWARD ADDR sans `IPv6:`, en minuscules : `normalize_ip_addr`).
+flux-passe	b@example.test	2001:db8::114	sources-amavis	verdict=Passed CLEAN;sender=a@example.net;rcpt=b@example.test;score=-1;size=1600;dedup=mail-AbCdEfGh0114	2026-09-24T11:02:14.123456+02:00 mailserver amavis[4114]: (04114-01) Passed CLEAN {RelayedInbound}, [2001:db8::114]:40114 [2001:db8::114] <a@example.net> -> <b@example.test>, Queue-ID: 4ABCDEF114, Message-ID: <m114@example.net>, mail_id: AbCdEfGh0114, Hits: -1, size: 1600, queued_as: 4BCDEF3114, 120 ms
+# Témoin : banque de politique et `LOCAL` avant l'adresse relais, sans `[<e>]`.
+flux-passe	c@example.net	192.0.2.124	sources-amavis	verdict=Passed CLEAN;sender=alice@example.test;rcpt=c@example.net;score=;size=900;dedup=mail-AbCdEfGh0115	2026-09-24T11:02:15.123456+02:00 mailserver amavis[4115]: (04115-01) Passed CLEAN {RelayedOutbound}, ORIGINATING LOCAL [192.0.2.124]:40124 <alice@example.test> -> <c@example.net>, Queue-ID: 4ABCDEF115, Message-ID: <m115@example.net>, mail_id: AbCdEfGh0115, Hits: -, size: 900, queued_as: 4BCDEF3115, 120 ms
+# Témoin sans adresse relais (`%a` vide) : `[<e>]`, lue dans les en-têtes `Received:` (donc écrite
+# par le client), n'est PAS l'adresse source (le capteur d'avant la prenait).
+flux-passe	c@example.net	-	sources-amavis	verdict=Passed CLEAN;sender=a@example.test;rcpt=c@example.net;score=;size=812;dedup=mail-AbCdEfGh0116	2026-09-24T11:02:16.123456+02:00 mailserver amavis[4116]: (04116-01) Passed CLEAN {RelayedOutbound}, [198.51.100.30] <a@example.test> -> <c@example.net>, Message-ID: <m116@example.test>, mail_id: AbCdEfGh0116, Hits: -, size: 812, queued_as: 4BCDEF3116, 55 ms
+
+# --- Les champs de l'entrée amavis que le CLIENT écrit : jamais pris, tus quand ils sont recopiés -----
+# Le nom de la pièce jointe bannie recopie le délimiteur `) {…}, ` suivi d'une adresse, d'un destinataire
+# et d'une fin d'entrée : le délimiteur n'est plus UNIQUE, aucun champ n'est lu. Témoin fabriqué (le
+# capteur d'avant : adresse 198.51.100.7, destinataire ceo@example.test).
+banni	-	-	client-amavis	verdict=Blocked BANNED;sender=;rcpt=;score=;size=;dedup=(horodatage)	2026-09-24T11:03:01.123456+02:00 mailserver amavis[4117]: (04117-01) Blocked BANNED (application/x-msdownload,.exe,.exe-ms,x) {RelayedInbound}, [198.51.100.7]:1 <x@example.net> -> <ceo@example.test>, mail_id: FORGEDID0117, Hits: -9, size: 1, 1 ms.exe) {DiscardedInbound,Quarantined}, [192.0.2.126]:40126 [192.0.2.126] <a@example.net> -> <b@example.test>, quarantine: banned-AbCdEfGh0117, Queue-ID: 4ABCDEF117, Message-ID: <m117@example.net>, mail_id: AbCdEfGh0117, Hits: -, size: 6789, 70 ms
+# Témoin : un crochet et une flèche dans ce nom, sans le délimiteur — les champs sont ceux d'amavis.
+banni	b@example.test	192.0.2.127	client-amavis	verdict=Blocked BANNED;sender=a@example.net;rcpt=b@example.test;score=2.3;size=3456;dedup=mail-AbCdEfGh0118	2026-09-24T11:03:02.123456+02:00 mailserver amavis[4118]: (04118-01) Blocked BANNED (application/x-msdownload,.exe,.exe-ms,[198.51.100.7] <x@example.net> -> <ceo@example.test>.exe) {DiscardedInbound,Quarantined}, [192.0.2.127]:40127 [192.0.2.127] <a@example.net> -> <b@example.test>, Queue-ID: 4ABCDEF118, Message-ID: <m118@example.net>, mail_id: AbCdEfGh0118, Hits: 2.3, size: 3456, 67 ms
+# Le Message-ID (espaces et virgules admis par `parse_message_id`) recopie `mail_id:`, `Hits:`, `size:` :
+# identifiant, score et taille sont tus, la clé de dédoublonnage est celle de repli. Témoins : le
+# capteur d'avant donnait `mail-FORGEDID0001` aux DEUX lignes ; le malware, arrivé second, était écarté.
+flux-passe	b@example.test	192.0.2.128	client-amavis	verdict=Passed CLEAN;sender=a@example.net;rcpt=b@example.test;score=;size=;dedup=(horodatage)	2026-09-24T11:03:03.123456+02:00 mailserver amavis[4119]: (04119-01) Passed CLEAN {RelayedInbound}, [192.0.2.128]:40128 [192.0.2.128] <a@example.net> -> <b@example.test>, Queue-ID: 4ABCDEF119, Message-ID: <x, mail_id: FORGEDID0001, Hits: -99, size: 1@example.net>, mail_id: AbCdEfGh0119, Hits: 5.5, size: 4567, queued_as: 4BCDEF3119, 89 ms
+malware	b@example.test	192.0.2.129	client-amavis	verdict=Blocked INFECTED;virus=Eicar-Signature;sender=a@example.net;rcpt=b@example.test;score=;size=;dedup=(horodatage)	2026-09-24T11:03:04.123456+02:00 mailserver amavis[4120]: (04120-01) Blocked INFECTED (Eicar-Signature) {DiscardedInbound,Quarantined}, [192.0.2.129]:40129 [192.0.2.129] <a@example.net> -> <b@example.test>, Queue-ID: 4ABCDEF120, Message-ID: <y, mail_id: FORGEDID0001, Hits: -99, size: 1@example.net>, mail_id: AbCdEfGh0120, Hits: -, size: 5678, 12 ms
+# Témoin : l'expéditeur (partie locale entre guillemets) recopie ` -> <…>,` — expéditeur et destinataire
+# tus (le capteur d'avant : destinataire ceo@example.test, pris pour le `user`).
+flux-passe	-	192.0.2.136	client-amavis	verdict=Passed CLEAN;sender=;rcpt=;score=0.1;size=700;dedup=mail-AbCdEfGh0121	2026-09-24T11:03:05.123456+02:00 mailserver amavis[4121]: (04121-01) Passed CLEAN {RelayedInbound}, [192.0.2.136]:40136 [192.0.2.136] <"a -> <ceo@example.test>,"@example.net> -> <b@example.test>, Queue-ID: 4ABCDEF121, Message-ID: <m121@example.net>, mail_id: AbCdEfGh0121, Hits: 0.1, size: 700, queued_as: 4BCDEF3121, 40 ms
+# Une entrée de plus de 980 octets est COUPÉE par amavis (`write_log`) : le premier morceau finit par
+# `...`, la suite commence par `(<id>) ...`. Un Message-ID long y place sa copie de `mail_id:`, `Hits:`,
+# `size:` dans le premier morceau et repousse les vrais dans la suite : sur une entrée incomplète, seuls
+# le verdict et l'adresse relais (écrits avant tout texte du client) sont lus. La suite n'est rien.
+# Témoins générés par le découpage même de `write_log` (980 octets).
+flux-passe	-	192.0.2.131	client-amavis	verdict=Passed CLEAN;sender=;rcpt=;score=;size=;dedup=(horodatage)	2026-09-24T11:03:06.123456+02:00 mailserver amavis[4122]: (04122-01) Passed CLEAN {RelayedInbound}, [192.0.2.131]:40131 [192.0.2.131] <a@example.net> -> <b@example.test>, Queue-ID: 4ABCDEF222, Message-ID: <xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx, mail_id: FORGEDID0122, Hits: -99, size: 1, yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy...
+aucun	-	-	client-amavis	-	2026-09-24T11:03:07.123456+02:00 mailserver amavis[4122]: (04122-01) ...yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy@example.net>, mail_id: AbCdEfGh0122, Hits: 3.3, size: 7777, queued_as: 4BCDEF3122, 88 ms
+# Derrière BANNED, le nom de la pièce jointe précède l'adresse relais : sur une entrée coupée, rien que
+# le verdict (le premier morceau porte un faux délimiteur, le vrai est dans la suite). Témoins générés.
+banni	-	-	client-amavis	verdict=Blocked BANNED;sender=;rcpt=;score=;size=;dedup=(horodatage)	2026-09-24T11:03:08.123456+02:00 mailserver amavis[4124]: (04124-01) Blocked BANNED (application/x-msdownload,.exe,.exe-ms,zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz) {RelayedInbound}, [198.51.100.8]:1 <x@example.net> -> <ceo@example.test>, mail_id: FORGEDID0124, Hits: -9, size: 1, 1 mswwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww...
+aucun	-	-	client-amavis	-	2026-09-24T11:03:09.123456+02:00 mailserver amavis[4124]: (04124-01) ...wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww.exe) {DiscardedInbound,Quarantined}, [192.0.2.133]:40133 [192.0.2.133] <a@example.net> -> <b@example.test>, quarantine: banned-AbCdEfGh0124, Queue-ID: 4ABCDEF224, Message-ID: <m124@example.net>, mail_id: AbCdEfGh0124, Hits: -, size: 9999, 70 ms
+
+# --- Ce qui n'est pas l'entrée principale ----------------------------------------------------------
+# L'entrée par destinataire (`$log_recip_templ`) : désactivée par Debian et par la configuration
+# livrée d'amavis ; sans `{actions}` ni adresse relais, elle n'est pas lue (sinon : deux événements pour
+# un message).
+aucun	-	-	sources-amavis	-	2026-09-24T11:04:01.123456+02:00 mailserver amavis[4125]: (04125-01) Passed CLEAN, <a@example.net> -> <b@example.test>, Hits: -1.1, tag=2, tag2=6.31, kill=6.31, L/Y/0/0
+
+# --- La panne du scanner : une panne n'a pas de client, donc pas d'adresse ---------------------------
+# Témoin : l'adresse du démon clamd n'est pas une adresse source (le capteur d'avant : src_ip `::1`).
+panne-av	-	-	sources-amavis	dedup=(horodatage)	2026-09-24T11:05:01.123456+02:00 mailserver amavis[4127]: (04127-01) (!)ClamAV-clamd av-scanner FAILED: Too many retries to talk to [::1]:3310 (All attempts (1) failed connecting to [::1]:3310) at /usr/share/perl5/Amavis/AV.pm line 664.
+panne-av	-	-	sources-amavis	dedup=(horodatage)	2026-09-24T11:05:02.123456+02:00 mailserver amavis[4127]: (04127-01) (!)WARN: all primary virus scanners failed, considering backups
+# `(!!)AV: ALL VIRUS SCANNERS FAILED` suit toujours le WARN ci-dessus dans le même passage (`virus_scan`) :
+# non lu, pour ne pas compter deux fois la même panne.
+aucun	-	-	sources-amavis	-	2026-09-24T11:05:03.123456+02:00 mailserver amavis[4127]: (04127-01) (!!)AV: ALL VIRUS SCANNERS FAILED

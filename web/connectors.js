@@ -18,6 +18,15 @@ const CONNECTOR_TYPES = { defender: 'Microsoft Defender', taxii2: 'TAXII 2.1', h
 // #20/#22 — seed de field_map pour un NOUVEAU connecteur générique (scaffold de départ ; l'admin ajuste).
 const DEFAULT_FIELD_MAP = ['ts', 'message', 'severity', 'host', 'src_ip'];
 
+// `P10.27-b` — LE PUITS DES GESTES SUR LES CONNECTEURS, juste avant la liste : création et modification par le
+// formulaire (`web/app.js`), bascule, retrait. Hors de ce que `loadConnectors` repeint, il survit au rechargement ;
+// la forme est celle du point commun (`peindreLeRefusDUnGeste`, core.js). CE QUE LA CONSOLE EN FAISAIT, MESURÉ AVANT
+// CE LOT (témoin 116) : un avis qui s'efface, « 503 {"error":"CONNECTEUR NON SUPPRIMÉ, SES CLÉS DE LIVRAISON NE SONT
+// PAS RÉVOQUÉES : … le connecteur est toujours là et collecte toujou » — le JSON brut coupé à deux cents caractères,
+// AVANT la seule clause qui oblige à agir : chaque clé de livraison liée AUTHENTIFIE ENCORE sur son récepteur. La
+// bascule collait « Bascule refusée : 503 {… », le formulaire écrivait le même JSON coupé dans sa ligne d'actions.
+function puitsDesConnecteurs() { const liste = $('#connector-list'); return liste ? puitsDuRefusDUnGeste(liste.parentNode, 'connecteurs', liste) : null; }
+
 async function loadConnectors() {
   const wrap = $('#connector-list'); if (!wrap) return;
   // admin-only : côté client on court-circuite (le serveur renvoie 403 de toute façon) — pas de fetch inutile.
@@ -41,7 +50,11 @@ function connectorRow(c) {
   const en = enabledSwitch({
     enabled: !!c.enabled, name: c.name || '(sans nom)', allowed: true, confirmOnEnable: false,
     consequence: 'plume interroge ' + (CONNECTOR_TYPES[c.type] || c.type || '?') + ' et ingère ce qu\'il rend ; OFF, la collecte s\'arrête et rien n\'est rattrapé du temps passé hors ligne',
-    onToggle: (next) => apiSend('/connectors/' + c.id, 'POST', { enabled: next }),
+    // `P10.27-b` — le refus d'avant s'efface au geste ; la flèche reste une EXPRESSION : la garde des routes sensibles
+    // rattache cet envoi à `connectorRow`, et un corps en bloc en ferait une portée anonyme neuve.
+    onToggle: (next) => (effacerLeRefusDUnGeste(puitsDesConnecteurs()), apiSend('/connectors/' + c.id, 'POST', { enabled: next })),
+    // « CONNECTEUR INCHANGÉ » : un connecteur qu'on désactivait collecte toujours ; la cause entière le dit.
+    onRefus: (e) => peindreLeRefusDUnGeste(puitsDesConnecteurs(), e),
   });
   // nom + type + environnement (textContent — anti-XSS)
   const name = document.createElement('span'); name.className = 'rulename'; name.textContent = c.name || '(sans nom)';
@@ -564,11 +577,16 @@ function instantiatePreset(p) {
 
 async function deleteConnector(c) {
   if (!await confirmModal('Supprimer le connecteur « ' + (c.name || ('#' + c.id)) + ' » ? Sa configuration ET le credential stocké seront définitivement effacés, et la collecte de cette source s\'arrête.', { danger: true, okText: 'Supprimer' })) return;
+  const puits = puitsDesConnecteurs(); effacerLeRefusDUnGeste(puits);
+  // `P10.27-b` — « CONNECTEUR NON SUPPRIMÉ, SES CLÉS DE LIVRAISON NE SONT PAS RÉVOQUÉES » : le refus reste sous les yeux,
+  // cause ENTIÈRE — c'est elle qui dit que chaque clé de livraison liée authentifie encore, et que rejouer ce geste
+  // est ce qui les révoque.
   try { await apiSend('/connectors/' + c.id, 'DELETE'); }
-  catch (e) { toast((e && e.message) || 'échec', 'bad'); return; }
+  catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
   toast('connecteur supprimé', 'ok');
   loadConnectors();
 }
 
 
-export { loadConnectors, openConnectorForm, applyConnectorType, httpPullFormConfig, addFieldMapRow, addStMapRow, previewHttpPull, openPresetPicker };
+// `P10.27-b` — le puits des gestes sur les connecteurs, que le formulaire d'`app.js` emprunte aussi.
+export { loadConnectors, openConnectorForm, applyConnectorType, httpPullFormConfig, addFieldMapRow, addStMapRow, previewHttpPull, openPresetPicker, puitsDesConnecteurs };

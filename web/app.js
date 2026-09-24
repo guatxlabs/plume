@@ -2,7 +2,7 @@ import {
   $, CSSV, socTZ, LANG, LOC, tzOpts, fmtTs, SEV, sev, bool, esc, ICONS, ic, closeModals, withBusy, toast, showErr, modal, confirmModal, csvCell, downloadText, tsSlug, exportPDF, exportBar, closeMiniMenu, api, apiSend, muted, colComparator, pageNums, pagedList,
   setSocTZ,
   socIsAdmin, formMsg,
-  confirmWithConsequence, disclosure, phraseDuRefusDuDemon
+  confirmWithConsequence, disclosure, phraseDuRefusDuDemon, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste
 } from './core.js';
 import { ouvrirLaModaleDePlage } from './plage_de_dates.js';
 import { installI18nObserver } from './i18n_observer.js';
@@ -16,7 +16,7 @@ import { initAuthGate, fetchMe, lireUneReponseDuTransport, setAuthUI } from './l
 import { loadSourcesView } from './sources.js';
 import { loadSystemView } from './system.js'; // #51 DAY-2 OPS — console d'opérabilité + bandeau MOTD
 import { loadLedger } from './audit.js';
-import { applyConnectorType, loadConnectors, openConnectorForm, httpPullFormConfig, addFieldMapRow, addStMapRow, previewHttpPull, openPresetPicker } from './connectors.js';
+import { applyConnectorType, loadConnectors, openConnectorForm, httpPullFormConfig, addFieldMapRow, addStMapRow, previewHttpPull, openPresetPicker, puitsDesConnecteurs } from './connectors.js';
 import { loadDestinations, openDestinationForm } from './destinations.js';
 import { loadProcessors, openProcessorForm } from './processors.js';
 import { loadIndexPolicies, openIndexPolicyForm } from './index_policies.js';
@@ -495,7 +495,10 @@ if ($('#processors-refresh')) $('#processors-refresh').onclick = loadProcessors;
 if ($('#processor-new') && $('#processor-form')) disclosure($('#processor-new'), $('#processor-form'), { open: openProcessorForm, close: () => { $('#processor-form').hidden = true; $('#processor-form').replaceChildren(); } }); // P11.4-a — dépli partagé
 if ($('#index-policies-refresh')) $('#index-policies-refresh').onclick = loadIndexPolicies;
 if ($('#index-policy-new') && $('#index-policy-form')) disclosure($('#index-policy-new'), $('#index-policy-form'), { isOpen: () => !$('#index-policy-form').hidden && !$('#index-policy-form').dataset.editing, open: () => openIndexPolicyForm(), close: () => { $('#index-policy-form').hidden = true; $('#index-policy-form').replaceChildren(); } }); // P11.4-a — dépli partagé
-if ($('#connector-form')) $('#connector-form').addEventListener('submit', async e => {
+// `P10.27-b` — LE GESTE DU FORMULAIRE D'UN CONNECTEUR EST NOMMÉ ET EXPORTÉ : le harnais ESM le joue sous chaque instance
+// de langue (témoin 116) — les deux instances d'`app.js` qu'il charge écoutent le même formulaire, un envoi les
+// réveillerait ensemble. Le corps est celui de l'écouteur anonyme d'avant ; seul le refus change (voir sa capture).
+async function enregistrerLeConnecteurDuFormulaire(e) {
   e.preventDefault();
   const type = $('#cf-type').value || 'defender';
   const secret = $('#cf-secret').value;   // NE PAS trim un secret (espaces potentiellement significatifs)
@@ -544,13 +547,21 @@ if ($('#connector-form')) $('#connector-form').addEventListener('submit', async 
   // secret ré-envoyé UNIQUEMENT s'il a été (re)saisi -> omis/vide = conserver l'existant côté serveur.
   if (secret) body.secret = secret;
   const url = S.editingConnector ? '/connectors/' + S.editingConnector : '/connectors';
+  // `P10.27-b` — « CONNECTEUR NON CRÉÉ » / « CONNECTEUR INCHANGÉ » : la forme partagée, dans le puits des connecteurs
+  // (`puitsDesConnecteurs`, connectors.js), cause ENTIÈRE. Mesuré avant ce lot (témoin 116) : un avis qui s'efface et la
+  // ligne d'actions portaient le même « 503 {"error":… » coupé à deux cents caractères. La ligne d'actions est vidée
+  // à l'envoi : un message de validation d'avant ne décrit plus la demande en cours. Le formulaire reste ouvert, sa
+  // saisie (secret compris) gardée, pour qu'un nouvel essai ne demande rien de plus.
+  const puits = puitsDesConnecteurs(); effacerLeRefusDUnGeste(puits);
+  formMsg('#cf-result', '', false);
   try { await apiSend(url, 'POST', body); }
-  catch (err) { const m = (err && err.message) || 'échec'; formMsg('#cf-result', m, true); toast(m, 'bad'); return; }
+  catch (err) { peindreLeRefusDUnGeste(puits, err); return; }
   $('#cf-secret').value = '';   // ne jamais laisser traîner le secret dans le DOM
   $('#connector-form').classList.add('hidden');
   toast(S.editingConnector ? 'connecteur mis à jour' : 'connecteur créé (désactivé — teste la connexion puis active-le)', 'ok', 4200);
   loadConnectors();
-});
+}
+if ($('#connector-form')) $('#connector-form').addEventListener('submit', enregistrerLeConnecteurDuFormulaire);
 
 // ============ THREAT INTEL / IOC (#23, admin-only) ============
 // Panneau self-câblé (boutons refresh/ajout/import/recherche dans threatintel.js) ; la nav/route reste ici.
@@ -989,4 +1000,5 @@ initAuthGate();   // écran de connexion, déconnexion, état d'auth : câblage 
 
 /* ==== exports consumed by seam modules (auto-managed) ==== */
 // `P10.25-w` — `envelopperLeTransport` part pour le témoin 114 du harnais ESM, qui la pose sur son simulacre.
-export { ROLE_LABEL, SPACES, currentTab, currentViewName, envelopperLeTransport, fetchMe, loadActions, loadDashboard, loadUsers, refresh, refreshCurrentView, refreshPanels, renderNav, route, setAlertMitreFilter, setAlertSourceFilter, setAuthUI, updateQRangeBtn, updateRangeBtn };
+// `P10.27-b` — le geste du formulaire d'un connecteur, joué par le harnais sous chaque instance de langue (témoin 116).
+export { ROLE_LABEL, SPACES, currentTab, currentViewName, enregistrerLeConnecteurDuFormulaire, envelopperLeTransport, fetchMe, loadActions, loadDashboard, loadUsers, refresh, refreshCurrentView, refreshPanels, renderNav, route, setAlertMitreFilter, setAlertSourceFilter, setAuthUI, updateQRangeBtn, updateRangeBtn };

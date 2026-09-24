@@ -5,6 +5,7 @@
 //! `materialize_banned_ip` + dashboard banpass), refresh SWR des panneaux (`cache_refresh_all_panels`)
 //! et purge de rétention (`retention_run`). Extrait de main.rs (refactor split #25 — byte-identique).
 use crate::*;
+use crate::handlers::transaction_validee::{ouvrir_sa_transaction, valider_la_transaction};
 
 /// Cap de cardinalité src_ip du rollup : top-N adresses par bucket. Réglable via
 /// PLUME_ROLLUP_SRCIP_TOPN (défaut 50). 0 = pas de cap top-N (seul le seuil de
@@ -750,14 +751,28 @@ pub(crate) fn rollup_hosts(conn: &Connection) {
     // absent entre le fold additif et sa réécriture -> plus de re-fold [0,recent) additif au tick suivant qui
     // DOUBLAIT sig_total (double-comptage). Sur échec -> ROLLBACK atomique (fold annulé) + retry au tick
     // suivant. `new_wm` = borne « définitif terminé » après ce tick (recent si on a avancé, sinon wm inchangé).
+    // `P10.26-s` — le pli ne s'écrit que dans SA transaction. Un `BEGIN` refusé (verrou, ou transaction d'un autre
+    // geste pendante sur l'écrivain) n'écrit rien et laisse le watermark : le tick suivant reprend. Avant, ce `BEGIN`
+    // était ignoré et le `COMMIT` du pli VALIDAIT la transaction étrangère — mesuré : la levée refusée d'un gel
+    // juridique et la purge de la preuve gelée devenaient durables (le `ROLLBACK`, lui, l'annulait). Le `COMMIT` est
+    // jugé : refusé, le watermark n'avance pas.
     let new_wm = if recent > wm {
-        let _ = conn.execute_batch("BEGIN IMMEDIATE");
-        let done = conn.execute(&host_rollup_upsert_sql(&format!("ts >= {wm} AND ts < {recent}"), HostFold::Definitive, n), [])
-            .and_then(|_| conn.execute(
-                "INSERT INTO meta(key,value) VALUES('host_rollup_wm', ?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                params![recent.to_string()],
-            ));
-        if done.is_ok() { let _ = conn.execute_batch("COMMIT"); recent } else { let _ = conn.execute_batch("ROLLBACK"); wm }
+        if ouvrir_sa_transaction(conn, "rollup", "pli définitif de l'inventaire de flotte").is_err() {
+            wm
+        } else {
+            let done = conn.execute(&host_rollup_upsert_sql(&format!("ts >= {wm} AND ts < {recent}"), HostFold::Definitive, n), [])
+                .and_then(|_| conn.execute(
+                    "INSERT INTO meta(key,value) VALUES('host_rollup_wm', ?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    params![recent.to_string()],
+                ));
+            match valider_ou_annuler_sa_transaction(conn, done) {
+                Ok(()) => recent,
+                Err(e) => {
+                    eprintln!("[rollup] WARN pli définitif de l'inventaire de flotte NON validé ({e}) — watermark inchangé, repris au prochain passage");
+                    wm
+                }
+            }
+        }
     } else { wm };
     // RATTRAPAGE des arrivées TARDIVES (events backdatés) : `host_rollup_backfill_floor` = plus vieux ts < wm
     // noté À L'INGEST (note_host_backfill_floor). Si floor < new_wm, on fold UNE fois la fenêtre BORNÉE
@@ -768,20 +783,36 @@ pub(crate) fn rollup_hosts(conn: &Connection) {
     // tardif le rabaissera). Sans donnée tardive (floor absent -> new_wm, ou floor==new_wm) : NO-OP, AUCUN scan.
     let floor: i64 = conn.query_row("SELECT value FROM meta WHERE key='host_rollup_backfill_floor'", [], |r| r.get::<_, String>(0))
         .ok().and_then(|s| s.parse().ok()).unwrap_or(new_wm);
-    if floor < new_wm {
-        let _ = conn.execute_batch("BEGIN IMMEDIATE");
+    // `P10.26-s` — même règle que le pli définitif : sa transaction ou rien, le plancher reste noté et le tick suivant
+    // reprend le rattrapage.
+    if floor < new_wm && ouvrir_sa_transaction(conn, "rollup", "rattrapage de l'inventaire de flotte").is_ok() {
         let done = conn.execute(&host_rollup_upsert_sql(&format!("ts >= {floor} AND ts < {new_wm}"), HostFold::Backfill, n), [])
             .and_then(|_| conn.execute(
                 "INSERT INTO meta(key,value) VALUES('host_rollup_backfill_floor', ?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 params![new_wm.to_string()],
             ));
-        if done.is_ok() { let _ = conn.execute_batch("COMMIT"); } else { let _ = conn.execute_batch("ROLLBACK"); }
+        if let Err(e) = valider_ou_annuler_sa_transaction(conn, done) {
+            eprintln!("[rollup] WARN rattrapage de l'inventaire de flotte NON validé ({e}) — plancher inchangé, repris au prochain passage");
+        }
     }
     // FENÊTRE CHAUDE [recent, now] : ré-agrégée à CHAQUE tick. On remet sig_hot=0 sur TOUTE la table (petite) puis
     // sig_hot = count de la fenêtre chaude -> aucun double comptage (le count définitif est déjà dans sig_total).
     // last_ts/first_ts idem via MAX/MIN (idempotents). Le read renvoie sig_total + sig_hot.
     let _ = conn.execute("UPDATE host_rollup SET sig_hot = 0", []);
     let _ = conn.execute(&host_rollup_upsert_sql(&format!("ts >= {recent}"), HostFold::Hot, n), []);
+}
+
+/// `P10.26-s` — la fin d'une transaction que CE geste a ouverte : ses écritures ont réussi -> `COMMIT` jugé
+/// (`valider_la_transaction`, qui annule un refus) ; une écriture a échoué -> `ROLLBACK` de la sienne. Jamais appelée
+/// sans que `ouvrir_sa_transaction` ait rendu `Ok` : c'est ce qui garantit que la transaction fermée ici est la sienne.
+fn valider_ou_annuler_sa_transaction(conn: &Connection, ecritures: rusqlite::Result<usize>) -> rusqlite::Result<()> {
+    match ecritures {
+        Ok(_) => valider_la_transaction(conn),
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
 }
 
 /// Mode de fold host_rollup pour UNE fenêtre temporelle :

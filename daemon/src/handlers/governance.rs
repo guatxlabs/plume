@@ -7,7 +7,7 @@
 //!  - RÔLES COMPOSABLES (control-plane) : CRUD du catalogue global (super-admin en mode 1). Rafraîchit le
 //!    cache process (reload_custom_roles) à chaque mutation. base_role validé, deny_perms borné, jamais admin.
 use crate::*;
-use crate::handlers::transaction_validee::{refuser_le_geste_non_valide, valider_la_transaction};
+use crate::handlers::transaction_validee::{dire_la_transaction_non_ouverte, refuser_le_geste_non_valide, valider_la_transaction};
 
 // =====================================================================================
 // LEGAL-HOLD (per-tenant, admin-only, ledgerisé)
@@ -17,8 +17,8 @@ use crate::handlers::transaction_validee::{refuser_le_geste_non_valide, valider_
 //
 // LE DÉFAUT, MESURÉ LE 2026-09-24 SUR LA FORME D'AVANT (`COMMIT` refusé par un autorisateur SQLite, relecture à froid
 // sur une connexion neuve) : les quatre gestes ignoraient leur `COMMIT` et laissaient la transaction PENDANTE sur
-// l'écrivain partagé — celui que lisent `retention_run` et `ledger_sink_flush`. Ce processus agissait donc sur un état
-// que la base n'avait pas pris :
+// l'écrivain partagé — celui que lisent `retention_run` et, avant `P10.26-t`, `ledger_sink_flush`. Ce processus agissait
+// donc sur un état que la base n'avait pas pris :
 //  * gel posé : 200 `active: true` ; la rétention de ce processus le respectait, aucune ligne à froid — au redémarrage,
 //    la portée « gelée » redevenait purgeable ;
 //  * gel levé : 200 `active: false`, et la rétention de ce processus PURGEAIT la preuve gelée (dans la transaction
@@ -51,6 +51,24 @@ pub(crate) const CAUSE_PUITS_DU_REGISTRE_INCHANGE: &str = "PUITS D'EXPORT DU REG
      validé la transaction (COMMIT refusé) et l'a annulée — le puits n'est ni créé ni supprimé : un puits refusé à la \
      création n'existe pas et ne reçoit rien, un puits dont le retrait est refusé reste déclaré, et aucune trace n'est \
      écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+
+/// `P10.26-s`, `P10.26-u` — l'envoi vers un puits n'a pas pu ouvrir sa transaction, ou la base a refusé d'y poser le
+/// curseur : RIEN n'est écrit dans la copie.
+pub(crate) const CAUSE_ENVOI_DU_PUITS_NON_FAIT: &str = "ENVOI VERS LE PUITS NON FAIT : la base n'a pas pris la \
+     transaction de l'envoi (BEGIN refusé, ou avance du curseur refusée : verrou tenu, transaction d'un autre geste \
+     pendante, base en lecture seule ou pleine) — AUCUN maillon n'est écrit dans la copie et le curseur ne bouge pas. \
+     Réessayez ; si le refus persiste, l'écrivain est occupé ou bloqué.";
+
+/// `P10.26-u` — la tranche est DANS la copie, la base a refusé de valider l'avance du curseur.
+///
+/// CE N'EST PAS UNE CAUSE « RIEN N'A CHANGÉ » : la copie, hors de la base, a reçu la tranche. Elle n'emploie donc pas la
+/// forme « (COMMIT refusé) » que la console reconnaît pour « la base a tout annulé, rien n'a changé » (famille de
+/// `P10.24-x`, lue par le banc web) — la peindre ainsi serait faux.
+pub(crate) const CAUSE_ENVOI_DU_PUITS_CURSEUR_NON_AVANCE: &str = "MAILLONS EXPORTÉS, CURSEUR NON AVANCÉ : la tranche \
+     est écrite dans la copie, mais la base a refusé le COMMIT qui validait l'avance du curseur, et l'a annulée. Le \
+     prochain envoi réécrira ces maillons : la copie les portera DEUX fois, et `ledger-verify-export` y lira une rupture \
+     de chaîne à la première ligne répétée — ce n'est pas une altération. Vérifiez la copie en écartant les lignes \
+     répétées (même id, même hash) ; aucun maillon n'y MANQUE.";
 
 fn hold_json(id: i64, name: &str, reason: &str, src: &str, s0: i64, s1: i64, active: i64, created: i64, by: &str, rel_ts: i64, rel_by: &str) -> Value {
     json!({
@@ -188,6 +206,26 @@ pub(crate) async fn legal_hold_release(State(st): State<AppState>, Extension(au)
 // LEDGER — export streaming (chaîne préservée) + sinks
 // =====================================================================================
 
+/// `P10.26-t` — LA TRANCHE DU REGISTRE QUI SORT VERS UNE COPIE EST LUE LÀ OÙ SEUL LE VALIDÉ EXISTE : une connexion du
+/// pool de lecture, jamais l'écrivain partagé.
+///
+/// LE DÉFAUT, MESURÉ LE 2026-09-24 SUR LA FORME D'AVANT (transaction d'un autre geste ouverte sur l'écrivain, un maillon
+/// ajouté dedans et jamais validé). L'écrivain voit ce que sa transaction pendante a écrit : le téléchargement
+/// (`ledger_export_get`) rendait 200 et DEUX lignes pour un seul maillon validé, et l'envoi vers un puits
+/// (`ledger_sink_flush`) écrivait ces deux lignes dans la copie inaltérable en répondant `exported: 2`. La transaction
+/// annulée, le registre n'avait plus qu'un maillon, le curseur était revenu à zéro (son `UPDATE` était dans la même
+/// transaction), et la copie portait un maillon qui n'a jamais existé — dont l'identifiant sera réattribué (`ledger.id`
+/// est un `INTEGER PRIMARY KEY` sans `AUTOINCREMENT`). L'énoncé ne nommait que l'envoi ; le téléchargement avait le même
+/// défaut.
+///
+/// Une connexion du pool n'a PAS de transaction pendante à elle : elle lit le dernier état validé du fichier. Aucune
+/// connexion de lecture disponible -> `Err`, rien n'est exporté (la cause est celle des autres lectures non faites).
+fn tranche_validee_du_registre(db_path: &str, from_id: i64, limit: i64) -> Result<(Vec<String>, i64, String), String> {
+    read_with(db_path, Err(crate::query_exec::LECTURE_NON_FAITE_SANS_CONNEXION.to_string()), |conn| {
+        ledger_export_lines(conn, from_id, limit)
+    })
+}
+
 /// GET /api/ledger/export?from_id=<n>&limit=<n> -> JSONL (text/plain) de la chaîne du ledger (id,ts,kind,
 /// detail,prev_hash,hash) à partir de from_id (exclu), borné. READ-ONLY (aucune mutation). Un vérificateur
 /// externe recompute la chaîne (ledger_verify_export). En-têtes : last_id/last_hash pour reprendre.
@@ -197,27 +235,26 @@ pub(crate) async fn ledger_export_get(State(st): State<AppState>, Extension(au):
     }
     let from_id: i64 = q.get("from_id").and_then(|s| s.trim().parse().ok()).unwrap_or(0).max(0);
     let limit: i64 = q.get("limit").and_then(|s| s.trim().parse().ok()).unwrap_or(10000).clamp(1, 100000);
-    with_write(&st, &au, |conn| {
-        // `P10.7-s` — une tranche qu'on ne sait pas lire rend 500, jamais un `200` à corps VIDE. Le corps
-        // vide en succès est le pire des deux : il se sauvegarde, se vérifie (`Ok(0)`) et se classe comme
-        // une copie légitime. Un `200` reste possible AVEC un corps vide, et c'est voulu : c'est la réponse
-        // JUSTE quand la tranche demandée est réellement vide (`from_id` au-delà du dernier maillon).
-        let (lines, last_id, last_hash) = match ledger_export_lines(conn, from_id, limit) {
-            Ok(t) => t,
-            Err(e) => return server_err(format!("export du ledger impossible : {e}")),
-        };
-        let body = if lines.is_empty() { String::new() } else { format!("{}\n", lines.join("\n")) };
-        (
-            StatusCode::OK,
-            [
-                (header::CONTENT_TYPE, "application/x-ndjson".to_string()),
-                (header::HeaderName::from_static("x-plume-ledger-last-id"), last_id.to_string()),
-                (header::HeaderName::from_static("x-plume-ledger-last-hash"), last_hash),
-            ],
-            body,
-        )
-            .into_response()
-    })
+    // `P10.7-s` — une tranche qu'on ne sait pas lire rend 500, jamais un `200` à corps VIDE. Le corps
+    // vide en succès est le pire des deux : il se sauvegarde, se vérifie (`Ok(0)`) et se classe comme
+    // une copie légitime. Un `200` reste possible AVEC un corps vide, et c'est voulu : c'est la réponse
+    // JUSTE quand la tranche demandée est réellement vide (`from_id` au-delà du dernier maillon).
+    // `P10.26-t` — lue sur le pool : seul le validé sort (`tranche_validee_du_registre`).
+    let (lines, last_id, last_hash) = match tranche_validee_du_registre(&req_db_path(&st, &au), from_id, limit) {
+        Ok(t) => t,
+        Err(e) => return server_err(format!("export du ledger impossible : {e}")),
+    };
+    let body = if lines.is_empty() { String::new() } else { format!("{}\n", lines.join("\n")) };
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "application/x-ndjson".to_string()),
+            (header::HeaderName::from_static("x-plume-ledger-last-id"), last_id.to_string()),
+            (header::HeaderName::from_static("x-plume-ledger-last-hash"), last_hash),
+        ],
+        body,
+    )
+        .into_response()
 }
 
 /// GET /api/control-ledger/export?from_id=<n>&limit=<n> -> JSONL de la chaîne du journal de CONTRÔLE (accès
@@ -378,14 +415,44 @@ pub(crate) async fn ledger_sink_delete(State(st): State<AppState>, Extension(au)
     }
 }
 
-/// POST /api/ledger-sinks/{id}/flush — EXPORTE les nouvelles entrées du ledger (id > last_id) vers le sink,
-/// puis avance le curseur (last_id/last_hash) UNIQUEMENT si l'écriture réussit (at-least-once : jamais de
-/// trou dans la copie WORM). Read-only sur `ledger` (aucune mutation). Renvoie le nombre d'entrées exportées.
+/// POST /api/ledger-sinks/{id}/flush — EXPORTE les nouvelles entrées VALIDÉES du ledger (id > last_id) vers le sink et
+/// avance le curseur (last_id/last_hash) dans la MÊME transaction, validée seulement après l'écriture de la copie
+/// (at-least-once : jamais de trou dans la copie WORM). Read-only sur `ledger` (aucune mutation). Renvoie le nombre
+/// d'entrées exportées.
+///
+/// `P10.26-u` — LE CURSEUR N'AVANCE PLUS PAR UNE ÉCRITURE AVALÉE. MESURÉ LE 2026-09-24 SUR LA FORME D'AVANT
+/// (`let _ = conn.execute("UPDATE ledger_sink …")` après l'export, `UPDATE` refusé par un autorisateur SQLite) : 200
+/// `exported: 1`, la ligne dans la copie, le curseur à 0 ; l'envoi suivant réécrivait la même ligne (200 `exported: 1`)
+/// et la copie ne se vérifiait plus (`ledger_verify_export` : « rupture de chaîne » à la ligne répétée).
+///
+/// L'ORDRE, DÉCIDÉ. Durablement il reste « exporter PUIS avancer » : le curseur n'est validé qu'une fois la copie
+/// écrite, donc un trou — un maillon que la copie ne recevra jamais — reste impossible. Ce qui change est la FENÊTRE du
+/// doublon. Le curseur est désormais POSÉ (et compté) dans la transaction de l'envoi AVANT l'écriture de la copie : une
+/// transaction non ouverte ou un curseur refusé l'est avant que rien ne soit écrit (503 `CAUSE_ENVOI_DU_PUITS_NON_FAIT`),
+/// et seul un `COMMIT` refusé APRÈS l'écriture laisse la tranche dans la copie sans curseur avancé — dit par
+/// `CAUSE_ENVOI_DU_PUITS_CURSEUR_NON_AVANCE`. La copie NE TOLÈRE PAS un doublon : `ledger_verify_export` exige que chaque
+/// `prev_hash` soit le `hash` de la ligne précédente, et une tranche réécrite casse la chaîne à sa première ligne (lu,
+/// puis mesuré par le témoin). Le doublon reste préférable au trou — il s'écarte à la lecture, un trou ne se comble
+/// jamais —, mais il n'est plus produit en silence.
+///
+/// `P10.26-s` — la transaction de l'envoi est LA SIENNE : un `BEGIN` refusé (transaction d'un autre geste pendante sur
+/// l'écrivain) rend le 503 sans rien exporter ; la tranche est lue sur le pool (`P10.26-t`), jamais sur l'écrivain.
 pub(crate) async fn ledger_sink_flush(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     if !au.is_admin() {
         return forbidden("réservé à l'administrateur");
     }
+    let db_path = req_db_path(&st, &au);
     crate::req_conn!(st, au, conn);
+    let geste = format!("envoi vers le puits du registre #{id}");
+    // Le garde `Txn` ANNULE la transaction à sa destruction si elle n'a pas été validée : chaque retour anticipé
+    // ci-dessous referme donc la sienne, et elle seule.
+    let tx = match Txn::begin(&conn) {
+        Ok(tx) => tx,
+        Err(refus) => {
+            dire_la_transaction_non_ouverte(&conn, "gouvernance", &geste, &refus);
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_ENVOI_DU_PUITS_NON_FAIT);
+        }
+    };
     let sink = conn.query_row(
         "SELECT name,kind,target,enabled,last_id FROM ledger_sink WHERE id=?1",
         params![id],
@@ -404,23 +471,39 @@ pub(crate) async fn ledger_sink_flush(State(st): State<AppState>, Extension(au):
     // suivants annonçaient « exported: 0 ». Une lacune permanente ET silencieuse dans une preuve WORM.
     // Le refus arrive AVANT le raccourci « rien à exporter » : sans quoi « illisible » se relirait
     // exactement comme « rien de neuf », qui est la confusion que ce lot ferme.
-    let (lines, new_last_id, new_last_hash) = match ledger_export_lines(&conn, last_id, 100000) {
+    let (lines, new_last_id, new_last_hash) = match tranche_validee_du_registre(&db_path, last_id, 100000) {
         Ok(t) => t,
         Err(e) => return server_err(format!("export vers le sink '{name}' impossible : {e}")),
     };
     if lines.is_empty() {
         return Json(json!({ "ok": true, "exported": 0, "last_id": last_id })).into_response();
     }
-    // ÉCRITURE d'abord ; curseur avancé SEULEMENT en cas de succès (pas d'écriture DB avant, donc jamais un
-    // curseur avancé sur une écriture ratée). MEDIUM #59 : un sink WEB kind=file est CONFINÉ (confine_root) ->
-    // cible dans la racine d'export, O_NOFOLLOW, fichier régulier (défense en profondeur post-CREATE : la
-    // cible pourrait avoir été remplacée par un lien entre-temps — TOCTOU).
+    // `P10.26-u` — le curseur est POSÉ avant l'écriture de la copie, et COMPTÉ : une ligne, celle du puits lu dans cette
+    // même transaction. Refusé, rien n'est écrit dans la copie.
+    match conn.execute(
+        "UPDATE ledger_sink SET last_id=?1, last_hash=?2, updated=?3 WHERE id=?4 AND last_id=?5",
+        params![new_last_id, new_last_hash, now(), id, last_id],
+    ) {
+        Ok(1) => {}
+        Ok(n) => {
+            eprintln!("[gouvernance] WARN {geste} NON fait : l'avance du curseur a touché {n} ligne(s) au lieu d'une — rien n'est exporté");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_ENVOI_DU_PUITS_NON_FAIT);
+        }
+        Err(refus) => return refuser_le_geste_non_valide("gouvernance", &geste, &refus, CAUSE_ENVOI_DU_PUITS_NON_FAIT),
+    }
+    // ÉCRITURE de la copie. MEDIUM #59 : un sink WEB kind=file est CONFINÉ (confine_root) -> cible dans la racine
+    // d'export, O_NOFOLLOW, fichier régulier (défense en profondeur post-CREATE : la cible pourrait avoir été remplacée
+    // par un lien entre-temps — TOCTOU). Échec -> le garde annule le curseur posé : il n'a jamais été validé.
     let confine = if kind == "file" { Some(ledger_export_root(&load_config())) } else { None };
     if let Err(e) = ledger_sink_write(&kind, &target, &lines, confine.as_deref()) {
         return server_err(format!("écriture sink '{name}': {e}"));
     }
     let n = lines.len();
-    let _ = conn.execute("UPDATE ledger_sink SET last_id=?1, last_hash=?2, updated=?3 WHERE id=?4", params![new_last_id, new_last_hash, now(), id]);
+    // Le `COMMIT` est JUGÉ : refusé, `Txn::commit` rend `Err` et le garde annule — la tranche est dans la copie, le
+    // curseur n'a pas avancé, et la réponse le DIT.
+    if let Err(refus) = tx.commit() {
+        return refuser_le_geste_non_valide("gouvernance", &geste, &refus, CAUSE_ENVOI_DU_PUITS_CURSEUR_NON_AVANCE);
+    }
     Json(json!({ "ok": true, "exported": n, "last_id": new_last_id, "last_hash": new_last_hash })).into_response()
 }
 

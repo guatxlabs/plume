@@ -647,6 +647,42 @@ const TOK_KIND_LABEL = { agent: 'agent', hec: 'HEC' };
 // `P10.26-q` — le puits des gestes sur les jetons (frappe, révocation), juste avant la liste : hors de ce que
 // `loadTokens` repeint, il survit au rechargement. La forme est celle du point commun (`peindreLeRefusDUnGeste`).
 function puitsDesJetons() { const liste = $('#token-list'); return liste ? puitsDuRefusDUnGeste(liste.parentNode, 'jetons', liste) : null; }
+// `P10.27-a` — UNE LECTURE DES JETONS REFUSÉE N'EST PAS UN RÔLE REFUSÉ, et ce qu'elle colle dans un texte n'est pas du
+// HTML. CE QUE LA CONSOLE EN FAISAIT, MESURÉ AVANT CE LOT (témoin 116a) : TOUT refus de `/api/tokens` — les quatre
+// phrases du rôle, mais aussi un refus de l'annuaire, un cinq cent trois ou un cinq cents nommés, une page de
+// passerelle, un quatre cent un, une demande qui n'aboutit pas — se peignait « réservé admin (<message>) » ; et le
+// message passait par `esc()` avant d'entrer dans un `textContent`, qui ne l'interprète pas : un refus JSON s'affichait
+// « réservé admin (403 {&quot;error&quot;:&quot;IDENTITÉ DE L'ANNUAIRE REFUSÉE… », une esperluette « &amp; ». Sur
+// l'inventaire des ACCÈS MACHINE, dire « réservé » là où la lecture a échoué fait passer un inventaire NON LU pour un
+// inventaire interdit. Seul le refus du rôle (`leRefusEstCeluiDuRole`, core.js — la distinction de `P10.26-o`) se dit
+// ainsi ; tout autre refus se dit NON LU, avec la réponse reçue entière ; une demande qui n'aboutit pas, avec sa cause.
+// `data-lecture-des-jetons-refusee` porte la clé (marque de POSE pour le harnais).
+const MOTS_DE_LA_LECTURE_DES_JETONS = {
+  role_refuse: {
+    fr: "Jetons réservés à l'administrateur : le démon refuse cette lecture au rôle de ce compte —",
+    en: "Tokens reserved to the administrator: the daemon refuses this read to this account's role —" },
+  lecture_non_servie: {
+    fr: "Jetons NON LUS : la lecture n'a pas été servie, et ce n'est pas le refus du rôle — rien ici n'établit qu'aucun jeton n'existe. Réponse reçue —",
+    en: 'Tokens NOT READ: the read was not served, and this is not the role refusal — nothing here establishes that no token exists. Answer received —' },
+  demande_non_aboutie: {
+    fr: "Jetons NON LUS : la demande n'a pas abouti — rien ici n'établit qu'aucun jeton n'existe. Cause —",
+    en: 'Tokens NOT READ: the request did not complete — nothing here establishes that no token exists. Cause —' },
+};
+const motDeLaLectureDesJetons = (cle) => (LANG === 'en' ? MOTS_DE_LA_LECTURE_DES_JETONS[cle].en : MOTS_DE_LA_LECTURE_DES_JETONS[cle].fr);
+// L'aveu remplace la liste (rien d'elle n'est établi). Le refus du rôle est un état, pas une panne : il garde le ton
+// discret d'avant ; les deux autres se disent en alerte. Rend la clé peinte.
+function peindreLaLectureDesJetonsRefusee(host, e) {
+  const cle = laDemandeNAPasAbouti(e) ? 'demande_non_aboutie' : leRefusEstCeluiDuRole(e) ? 'role_refuse' : 'lecture_non_servie';
+  const reponse = String(cle === 'demande_non_aboutie' ? ((e && e.message) || e) : phraseDuRefusDuDemon(e)).trim();
+  const aveu = document.createElement('div'); aveu.style.cssText = 'margin:0;font-size:12px';
+  aveu.className = cle === 'role_refuse' ? 'muted' : 'bad';
+  if (cle !== 'role_refuse') aveu.setAttribute('role', 'alert');
+  const dit = document.createElement('span'); dit.textContent = motDeLaLectureDesJetons(cle);
+  aveu.append(dit, ' « ' + reponse + ' »');
+  aveu.dataset.lectureDesJetonsRefusee = cle;
+  host.replaceChildren(aveu);
+  return cle;
+}
 async function loadTokens() {
   const host = $('#token-list'); if (!host) return;
   // `P10.7-f` — L'INVENTAIRE DES JETONS EST ENTIER OU AVOUÉ, ET LA CONSOLE LIT L'AVEU. Le démon sert, en
@@ -657,7 +693,7 @@ async function loadTokens() {
   // LA RÉPONSE EST LIÉE, ELLE N'EST PLUS DÉCONSTRUITE : `({tokens} = await api(…))` jetait le corps, et
   // l'aveu partait avec lui — aucune ligne du module ne pouvait plus le lire.
   let rep;
-  try { rep = await api('/tokens'); } catch (e) { host.replaceChildren(muted('réservé admin (' + esc(e.message) + ')')); return; }
+  try { rep = await api('/tokens'); } catch (e) { peindreLaLectureDesJetonsRefusee(host, e); return; }   // `P10.27-a`
   if (rep.error) {
     const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:0;font-size:12px';
     const dit = document.createElement('span');
@@ -795,4 +831,5 @@ if ($('#token-new')) $('#token-new').onclick = newTokenFlow;
 // `P10.25-y` — les faces des confirmations (témoin 114).
 // `P10.26-q` / `P10.26-o` — le geste de frappe d'un jeton (joué sous chaque instance de langue : le bouton
 // `#token-new` n'écoute que la dernière importée) et les faces de la lecture des comptes refusée (témoin 115).
-export { ROLE_LABEL, loadUsers, loadTokens, newTokenFlow, motDeLaModificationDeCompte, motDeLaSuppressionDeCompte, creerLeCompteDuFormulaire, natureDuRefusDeCreationDeCompte, motDeLaCreationDeCompte, motDUneLigneTenueParUnNom, motDuCompteRendu, motDUneConfirmationDeCompte, motDeLaLectureDesComptes };
+// `P10.27-a` — les faces de la lecture des jetons refusée (témoin 116).
+export { ROLE_LABEL, loadUsers, loadTokens, newTokenFlow, motDeLaModificationDeCompte, motDeLaSuppressionDeCompte, creerLeCompteDuFormulaire, natureDuRefusDeCreationDeCompte, motDeLaCreationDeCompte, motDUneLigneTenueParUnNom, motDuCompteRendu, motDUneConfirmationDeCompte, motDeLaLectureDesComptes, motDeLaLectureDesJetons };

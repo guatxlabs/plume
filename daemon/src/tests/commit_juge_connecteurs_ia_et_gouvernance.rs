@@ -32,11 +32,11 @@
 //
 // CE QUE CES TÉMOINS NE TIENNENT PAS : les témoins de `P10.26-b` ne sont compilés que sous `--features ai`, qu'aucun job
 // de la CI ne compile en mode test (`cargo check --features ai` sans `--tests`) — ils ne comptent ni dans
-// `EXPECTED_TESTS` ni dans `EXPECTED_COLD_TESTS` et ont été joués à la main ; les sept chemins qui ignorent l'échec de
-// leur `BEGIN` puis valident (ou annulent) une transaction ÉTRANGÈRE restent tels quels ; le mode multi-tenant (écrivain
-// du tenant) et un `COMMIT` que SQLite annule de lui-même (disque plein, E/S) ne sont pas joués (`P10.26-h`) ; le
-// curseur d'un envoi de puits (`ledger_sink_flush`) avance toujours par une écriture avalée ; aucun module de `web/`
-// n'est exercé ici.
+// `EXPECTED_TESTS` ni dans `EXPECTED_COLD_TESTS` et ont été joués à la main ; les sept chemins qui ignoraient l'échec de
+// leur `BEGIN` puis validaient (ou annulaient) une transaction ÉTRANGÈRE sont fermés par `P10.26-s` ; le mode
+// multi-tenant (écrivain du tenant) et un `COMMIT` que SQLite annule de lui-même (disque plein, E/S) ne sont pas joués
+// (`P10.26-h`) ; le curseur d'un envoi de puits (`ledger_sink_flush`), qui avançait par une écriture avalée, est
+// compté depuis `P10.26-u` ; aucun module de `web/` n'est exercé ici.
 // =====================================================================================
 mod commit_juge_connecteurs_ia_et_gouvernance {
     use super::*;
@@ -375,8 +375,8 @@ mod commit_juge_connecteurs_ia_et_gouvernance {
     // -------------------------------------------------------------------------------------
 
     /// CE QU'IL TIENT : `COMMIT` refusé, la création d'un puits rend 503 nommé sans identifiant, transaction fermée,
-    /// aucun puits, aucune trace — et le registre que lit un envoi (`ledger_sink_flush`, sur l'écrivain) n'a AUCUN
-    /// maillon de plus que le registre à froid. Levé, 200. `COMMIT` refusé, la suppression rend 503 nommé, transaction
+    /// aucun puits, aucune trace — et le registre lu sur l'écrivain (celui que lisait un envoi avant `P10.26-t`) n'a
+    /// AUCUN maillon de plus que le registre à froid. Levé, 200. `COMMIT` refusé, la suppression rend 503 nommé, transaction
     /// fermée, le puits est là ici et à froid, sans trace. Levé, la suppression a lieu.
     ///
     /// LES MUTATIONS QUI LE FONT ROUGIR : ignorer le `COMMIT` de `ledger_sink_create` — 200 et un identifiant ; celui de

@@ -290,9 +290,25 @@ function miniMenu(anchor, items) {
 // (« réponse non-JSON … no available server »). null = ce n'est PAS transitoire (comportement inchangé).
 // `P10.22-b` — la reconnaissance d'une page de passerelle est PARTAGÉE avec `apiSend` (plus bas) : un seul motif.
 const RESSEMBLE_A_UNE_PAGE_DE_PASSERELLE = /no available server|<!doctype|<html/i;
+// `P10.27-c` — LA PHRASE D'UNE PANNE DE PASSERELLE ET LE PRÉFIXE D'UNE LECTURE REFUSÉE ONT LEURS DEUX FACES. Mesuré
+// avant ce lot (témoin 116c) : sous `LANG='en'`, `fetchInto` peignait « erreur : Service momentanément indisponible,
+// réessaie dans un instant. » — deux fragments qu'aucun nœud entier ne porte, donc que le lexique ne peut pas
+// traduire —, et la liste paginée côté serveur (`pagedList`, plus bas) collait le même « erreur : ». La phrase est
+// aussi le MESSAGE de l'erreur jetée par `api()` (un cinq cent deux, trois ou quatre qui ne nomme rien) et des
+// panneaux de tableau de bord qui lisent `transientGatewayMsg` : la face se choisit ici, une fois, à la langue de
+// l'écran. La face française est celle d'avant, au caractère près (le témoin 115p et le 116c l'ancrent).
+const MOTS_D_UNE_LECTURE_QUI_N_EST_PAS_SERVIE = {
+  panne_de_passerelle: {
+    fr: 'Service momentanément indisponible, réessaie dans un instant.',
+    en: 'Service temporarily unavailable, try again in a moment.' },
+  prefixe_de_la_lecture_refusee: {
+    fr: 'erreur : ',
+    en: 'error: ' },
+};
+const motDUneLectureQuiNEstPasServie = (cle) => (LANG === 'en' ? MOTS_D_UNE_LECTURE_QUI_N_EST_PAS_SERVIE[cle].en : MOTS_D_UNE_LECTURE_QUI_N_EST_PAS_SERVIE[cle].fr);
 function transientGatewayMsg(status, body) {
-  if (status === 502 || status === 503 || status === 504) return 'Service momentanément indisponible, réessaie dans un instant.';
-  if (body && RESSEMBLE_A_UNE_PAGE_DE_PASSERELLE.test(body)) return 'Service momentanément indisponible, réessaie dans un instant.';
+  if (status === 502 || status === 503 || status === 504) return motDUneLectureQuiNEstPasServie('panne_de_passerelle');
+  if (body && RESSEMBLE_A_UNE_PAGE_DE_PASSERELLE.test(body)) return motDUneLectureQuiNEstPasServie('panne_de_passerelle');
   return null;
 }
 
@@ -829,7 +845,8 @@ function muted(t) { return Object.assign(document.createElement('div'), { classN
 // -> const d = await fetchInto(host, '/x'); if (!d) return;
 // Rend le MÊME message d'erreur (« erreur : » + message/erreur) DANS `host` et renvoie null sur échec
 // (l'appelant early-return sur !d). Succès -> renvoie le JSON d'api() (toujours truthy pour ces endpoints).
-async function fetchInto(host, path){ try { return await api(path); } catch(e){ host.replaceChildren(muted('erreur : '+((e&&e.message)||e))); return null; } }
+// `P10.27-c` — le préfixe suit la langue de l'écran (« error: » sous `LANG='en'`).
+async function fetchInto(host, path){ try { return await api(path); } catch(e){ host.replaceChildren(muted(motDUneLectureQuiNEstPasServie('prefixe_de_la_lecture_refusee')+((e&&e.message)||e))); return null; } }
 
 function colComparator(rows, get) {
   const ipv4 = s => /^(\d{1,3}\.){3}\d{1,3}$/.test(s);
@@ -1476,7 +1493,7 @@ function pagedList(host, opts) {
   async function loadServer() {
     let r;
     try { r = await opts.fetchPage({ limit: state.pageSize, offset: state.page * state.pageSize, sort: sort ? sort.key : '', dir: sort ? (sort.dir > 0 ? 'asc' : 'desc') : '' }); }
-    catch (e) { cible.replaceChildren(muted('erreur : ' + (e && e.message ? e.message : e))); return; }
+    catch (e) { cible.replaceChildren(muted(motDUneLectureQuiNEstPasServie('prefixe_de_la_lecture_refusee') + (e && e.message ? e.message : e))); return; }   // `P10.27-c`
     const rows = (r && r.rows) || [];
     // `P10.21-x` — SANS TOTAL SERVI, LA SUITE SERVIE DÉCIDE S'IL Y A UNE PAGE SUIVANTE. Le repli d'avant
     // (`total` = lignes servies) faisait de toute page une page UNIQUE : aucun pager n'était rendu, et une
@@ -2369,6 +2386,9 @@ export {
   REFUS_DU_ROLE_SUR_UNE_ROUTE_D_ADMINISTRATION, leRefusEstCeluiDuRole,
   // `P10.26-q` — la forme partagée du refus d'un geste d'écriture : sa nature, ses faces, son puits.
   natureDuRefusDUnGeste, motDuRefusDUnGeste, puitsDuRefusDUnGeste, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste,
+  // `P10.27-c` — les deux faces d'une lecture qui n'est pas servie (la phrase d'une panne de passerelle, le préfixe
+  // d'une lecture refusée), jugées sous les deux instances de langue par le témoin 116.
+  motDUneLectureQuiNEstPasServie,
   // `P10.20-k` — ET LE LECTEUR QUI TIENT LES DEUX MOULES DE REFUS (JSON `error` et texte brut) : les
   // tableaux de bord et les modèles de données le PARTAGENT, faute de quoi chacun écrirait son
   // extraction et l'un des deux finirait par ne plus reconnaître la forme que l'autre lit.

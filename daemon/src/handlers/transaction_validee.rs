@@ -3,7 +3,45 @@
 //! (seule sa visibilité change) quand les jetons, les fournisseurs d'identité, les engagements, le mode, les
 //! masques de champs et les sources push ont dû juger leur `COMMIT` à leur tour. `refuser_le_geste_non_valide`
 //! s'y ajoute (`P10.26-a` à `P10.26-c`) : le 503 nommé des connecteurs, de l'IA et de la gouvernance.
+//! `ouvrir_sa_transaction` (`P10.26-s`) juge l'autre bout : le `BEGIN`.
 use crate::*;
+
+/// `P10.26-s` — UN GESTE N'ÉCRIT QUE DANS SA PROPRE TRANSACTION, OU IL N'ÉCRIT RIEN.
+///
+/// LE DÉFAUT, MESURÉ LE 2026-09-24 SUR LA FORME D'AVANT (`let _ = conn.execute_batch("BEGIN IMMEDIATE")`, sept sites).
+/// Quand l'écrivain partagé portait déjà la transaction d'un AUTRE geste — celle qu'un `COMMIT` refusé puis ignoré
+/// laisse pendante —, le `BEGIN` échouait sans un mot, les écritures du geste entraient dans la transaction étrangère, et
+/// le `COMMIT` du geste la VALIDAIT, son `ROLLBACK` l'ANNULAIT. Mesuré (transaction étrangère ouverte à la main, relecture
+/// à froid sur une connexion neuve) : `rollup_hosts` a rendu durables la levée refusée d'un gel juridique ET la purge de
+/// la preuve gelée que la rétention avait faite dans la transaction pendante ; le reparse rétroactif, les trois
+/// récepteurs de base (Prometheus texte, remote_write, Loki) et les deux voies de spool (journald, événements) ont validé
+/// la transaction étrangère en rendant leur succès ; un `INSERT` refusé dans l'ingestion et dans `rollup_hosts` a ANNULÉ
+/// une écriture étrangère encore pendante.
+///
+/// Un `BEGIN` refusé — verrou tenu ailleurs, ou transaction étrangère — rend `Err` : l'appelant n'écrit RIEN, ne valide
+/// rien, n'annule rien, et le tour suivant (tick, nouvel essai de l'émetteur, lot laissé au spool) reprend. Le journal
+/// distingue les deux causes, parce qu'elles n'appellent pas la même suite : un verrou passe, une transaction étrangère
+/// pendante BLOQUE l'écrivain jusqu'à ce que son geste la ferme — ce geste-ci ne la ferme pas à sa place.
+pub(crate) fn ouvrir_sa_transaction(conn: &Connection, journal: &str, geste: &str) -> rusqlite::Result<()> {
+    conn.execute_batch("BEGIN IMMEDIATE").map_err(|refus| {
+        dire_la_transaction_non_ouverte(conn, journal, geste, &refus);
+        refus
+    })
+}
+
+/// `P10.26-s` — LA PHRASE D'UN `BEGIN` REFUSÉ, une seule, pour `ouvrir_sa_transaction` et pour les gestes qui ouvrent
+/// leur transaction par le garde `Txn` (spool de métriques et d'instantanés). Elle est dite APRÈS le refus : c'est
+/// l'état de l'écrivain à cet instant qui sépare le verrou passager de la transaction étrangère.
+pub(crate) fn dire_la_transaction_non_ouverte(conn: &Connection, journal: &str, geste: &str, refus: &rusqlite::Error) {
+    if conn.is_autocommit() {
+        eprintln!("[{journal}] WARN {geste} NON pris(e) : BEGIN refusé ({refus}) — rien n'est écrit, repris au prochain passage");
+    } else {
+        eprintln!(
+            "[{journal}] ERREUR {geste} NON pris(e) : l'écrivain porte une transaction qui n'est pas la sienne ({refus}) — \
+             rien n'est écrit, validé ni annulé à sa place ; l'écrivain reste bloqué tant que son geste ne la ferme pas"
+        );
+    }
+}
 
 /// `P10.24-x` — LE `COMMIT` D'UN GESTE D'ÉCRITURE EST JUGÉ, ET UN REFUS FERME LA TRANSACTION.
 ///

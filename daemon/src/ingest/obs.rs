@@ -4,6 +4,17 @@
 //! `loki_push`) et garde-fous DoS (`ingest_decompress_capped`, caps INGEST_MAX_*). Statics/consts
 //! avec accesseurs. Extrait de main.rs (refactor split #25 — byte-identique).
 use crate::*;
+use crate::handlers::transaction_validee::{ouvrir_sa_transaction, refuser_le_geste_non_valide, valider_la_transaction};
+
+/// `P10.26-s` — LE LOT D'UN RÉCEPTEUR DE BASE N'EST ACQUITTÉ QUE VALIDÉ DANS SA PROPRE TRANSACTION. Mesuré le 2026-09-24
+/// sur la forme d'avant (transaction d'un autre geste laissée pendante sur l'écrivain, relecture à froid) : le `BEGIN`
+/// ignoré de `metrics_prom`, `metrics_write` et du lot de `loki_push` faisait entrer le lot dans la transaction
+/// étrangère, et leur `COMMIT` la VALIDAIT — 200 `ingested: 1` et 204, la transaction étrangère durable. Un `BEGIN` ou
+/// un `COMMIT` refusé rend désormais ce 503 : rien n'est écrit (la transaction du lot est annulée ou n'a jamais été
+/// ouverte), donc l'émetteur qui réémet sur un 5xx — Prometheus, Alloy, Promtail le font — n'écrit le lot qu'UNE fois.
+pub(crate) const CAUSE_LOT_D_INGESTION_NON_ECRIT: &str = "LOT NON ÉCRIT : la base n'a pas pris la transaction de ce \
+     lot (BEGIN ou COMMIT refusé : verrou tenu, transaction d'un autre geste pendante, base en lecture seule ou pleine) \
+     — AUCUNE ligne de ce lot n'est écrite. Réémettez-le tel quel.";
 
 // ---------- OBS-1 : ingestion métriques au format d'exposition Prometheus ----------
 // Parse les labels `k="v",k2="v2"` (guillemets respectés, déséchappement) -> JSON.
@@ -75,7 +86,10 @@ pub(crate) async fn metrics_prom(State(st): State<AppState>, Extension(au): Exte
     let hote = HoteIngere::resoudre(&au, q.get("host").map(|s| s.as_str()));
     let n = series.len();
     with_write(&st, &au, |conn| {
-    let _ = conn.execute_batch("BEGIN IMMEDIATE");
+    // `P10.26-s` — sa transaction ou rien (cf. `CAUSE_LOT_D_INGESTION_NON_ECRIT`).
+    if ouvrir_sa_transaction(conn, "ingest", "lot de métriques Prometheus").is_err() {
+        return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_LOT_D_INGESTION_NON_ECRIT);
+    }
     {
         for (name, labels, value) in &series {
             // Passe par le DTO d'ingestion (host = `HoteIngere`) : le point d'écriture n'accepte plus
@@ -83,7 +97,9 @@ pub(crate) async fn metrics_prom(State(st): State<AppState>, Extension(au): Exte
             let _ = store().insert_metric(conn, &metric_ingeree(ts, name, labels, *value, &hote));
         }
     }
-    let _ = conn.execute_batch("COMMIT");
+    if let Err(refus) = valider_la_transaction(conn) {
+        return refuser_le_geste_non_valide("ingest", "lot de métriques Prometheus", &refus, CAUSE_LOT_D_INGESTION_NON_ECRIT);
+    }
     // `S31` (temps 1) — `ingested` est VRAI (les lignes sont insérées et la transaction est validée) et
     // ne suffit pas : sous `synchronous=NORMAL`, un COMMIT n'attend aucune barrière d'écriture. `durable`
     // porte la seule chose que cet accusé ne couvre pas ; le bandeau de `ingest/mod.rs` porte le régime.
@@ -195,13 +211,18 @@ pub(crate) async fn metrics_write(State(st): State<AppState>, Extension(au): Ext
         return StatusCode::NO_CONTENT.into_response();
     }
     with_write(&st, &au, |conn| {
-    let _ = conn.execute_batch("BEGIN IMMEDIATE");
+    // `P10.26-s` — sa transaction ou rien (cf. `CAUSE_LOT_D_INGESTION_NON_ECRIT`).
+    if ouvrir_sa_transaction(conn, "ingest", "lot remote_write").is_err() {
+        return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_LOT_D_INGESTION_NON_ECRIT);
+    }
     for (ts, name, labels, host, value) in &rows {
         // Le host des labels est le DÉCLARÉ ; la résolution tranche (jeton lié -> écrasé, relais -> gardé).
         let hote = HoteIngere::resoudre(&au, host.as_deref());
         let _ = store().insert_metric(conn, &metric_ingeree(*ts, name.as_ref(), labels.as_ref(), *value, &hote));
     }
-    let _ = conn.execute_batch("COMMIT");
+    if let Err(refus) = valider_la_transaction(conn) {
+        return refuser_le_geste_non_valide("ingest", "lot remote_write", &refus, CAUSE_LOT_D_INGESTION_NON_ECRIT);
+    }
     // `S31` (temps 1) — ce 204 fait avancer le WAL de l'émetteur (Alloy/Prometheus) et disparaître sa
     // copie. Il n'a pas de corps où l'écrire, et le protocole remote_write n'en veut pas : la limite est
     // dans `docs/AGENTS-PROTOCOLE.md` et dans le bandeau de `ingest/mod.rs`.
@@ -355,10 +376,12 @@ pub(crate) async fn loki_push(State(st): State<AppState>, Extension(au): Extensi
         // atteste que le lot a été REÇU et validé, pas qu'il survivrait à une coupure d'alimentation.
         // Sans corps où l'écrire, la limite est dans `docs/AGENTS-PROTOCOLE.md` et le bandeau du module.
         Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        // `P10.26-s` — la transaction du lot n'a pas été prise : rien n'est écrit, rien d'étranger n'est validé.
+        Err(LotNonEcrit::NonPris) => err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_LOT_D_INGESTION_NON_ECRIT),
         // Le batch a été ANNULÉ (disque plein, verrou) : rendre 204 annoncerait une ingestion qui
         // n'a pas eu lieu. L'ancien code ignorait chaque échec de ligne (`let _ = stmt.execute`) —
         // une perte silencieuse, ligne par ligne, que rien ne remontait à l'émetteur.
-        Err(_) => err_json(
+        Err(LotNonEcrit::Annule(_)) => err_json(
             StatusCode::INTERNAL_SERVER_ERROR,
             "ingestion Loki ANNULÉE (transaction rejetée) : aucune entrée de ce lot n'a été écrite — réémettez",
         ),

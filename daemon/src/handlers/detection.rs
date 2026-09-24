@@ -5,6 +5,7 @@
 //! `parser_reparse`). Extrait de main.rs (refactor split #25 — byte-identique).
 use crate::*;
 use crate::detection_aveugle::AbandonDEvaluation;
+use crate::handlers::transaction_validee::{ouvrir_sa_transaction, refuser_le_geste_non_valide, valider_la_transaction};
 
 // ---------- moteur de règles de détection (P4) ----------
 pub(crate) fn cmp_op(a: f64, op: &str, b: f64) -> bool {
@@ -1188,13 +1189,21 @@ pub(crate) const CAUSE_REPARSE_INCOMPLET: &str = "REPARSE INCOMPLET : le parcour
      sur le préfixe lu, pas sur toute la fenêtre demandée ; combien d'events restent n'est pas connu. \
      En écriture, les changements du préfixe ont bien été appliqués (enrichissement additif, sans \
      perte) — relancer le reparse REPREND ce qu'il reste à faire. Cause : ";
+/// `P10.26-s` — LE REPARSE N'ÉCRIT QUE DANS SA TRANSACTION. Mesuré le 2026-09-24 sur la forme d'avant (transaction
+/// d'un autre geste laissée pendante sur l'écrivain) : le `BEGIN` ignoré laissait les `UPDATE` entrer dans la transaction
+/// étrangère, le `COMMIT` la VALIDAIT, et la route rendait 200 `updated: 1`. Un `BEGIN` ou un `COMMIT` refusé rend
+/// désormais ce 503, et aucun event n'a été modifié : le reparse se relance tel quel (il n'écrase jamais un champ déjà
+/// présent, le relancer n'enrichit que ce qui manque encore).
+pub(crate) const CAUSE_REPARSE_NON_APPLIQUE: &str = "REPARSE NON APPLIQUÉ : la base n'a pas pris la transaction du \
+     reparse (BEGIN ou COMMIT refusé : verrou tenu, transaction d'un autre geste pendante, base en lecture seule ou \
+     pleine) — AUCUN event n'a été modifié. Relancez le reparse ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 /// Réapplique les parsers ACTIFS aux events DÉJÀ stockés (rétroactif). RÉSERVÉ ADMIN.
 /// `dry_run:true` = compte seulement (validation UI avant d'écrire) ; `source`/`days` = portée
 /// (défaut : toutes sources, 30 j). Mono-connexion : on COLLECTE d'abord (curseur lecture ouvert),
 /// PUIS on UPDATE (sinon "table is locked"). Plafond mémoire CAP écritures/appel (VPS RAM serrée).
 /// N'ÉCRASE jamais un champ/colonne déjà présent (même politique que l'ingestion : enrichit, sans perte).
-pub(crate) async fn parser_reparse(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Json<Value> {
-    if !au.is_admin() { return Json(json!({ "error": "réservé admin" })); }
+pub(crate) async fn parser_reparse(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
+    if !au.is_admin() { return Json(json!({ "error": "réservé admin" })).into_response(); }
     let source = b.get("source").and_then(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     let days = b.get("days").and_then(|v| v.as_i64()).filter(|&n| n > 0 && n <= 3650).unwrap_or(30);
     let dry = b.bool_field("dry_run", false);
@@ -1202,7 +1211,8 @@ pub(crate) async fn parser_reparse(State(st): State<AppState>, Extension(au): Ex
     const CAP: usize = 50000;
     let db = req_db(&st, &au);
     let db_path = req_db_path(&st, &au); // MT-KEY : parseurs de CE db_path pour le reparse
-    let out = tokio::task::spawn_blocking(move || -> (i64, i64, i64, String, Option<String>) {
+    // `P10.26-s` — `Err` = la transaction du reparse n'a pas été prise (BEGIN ou COMMIT refusé) : rien n'est écrit.
+    let out = tokio::task::spawn_blocking(move || -> rusqlite::Result<(i64, i64, i64, String, Option<String>)> {
         let conn = db.lock();
         // H2 (#18 P1 TIER FROID) : quand le tier cold est ON, une donnée agée est IMMUABLE (columnarisée).
         // Un reparse dont la fenêtre `days` atteint un jour agé pourrait, pendant la columnarisation (verrou
@@ -1228,7 +1238,7 @@ pub(crate) async fn parser_reparse(State(st): State<AppState>, Extension(au): Ex
         {
             let mut stmt = match conn.prepare(
                 "SELECT id,source,message,fields,src_ip,dst_ip FROM event WHERE ts>=?1 AND (?2 IS NULL OR source=?2) ORDER BY id"
-            ) { Ok(s) => s, Err(e) => return (0, 0, 0, format!("prepare: {e}"), None) };
+            ) { Ok(s) => s, Err(e) => return Ok((0, 0, 0, format!("prepare: {e}"), None)) };
             let rows = stmt.query_map(params![cut, source], |r| Ok((
                 r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?,
                 r.get::<_, Option<String>>(3)?, r.get::<_, Option<String>>(4)?, r.get::<_, Option<String>>(5)?,
@@ -1262,23 +1272,28 @@ pub(crate) async fn parser_reparse(State(st): State<AppState>, Extension(au): Ex
         // `P10.7-f` — un scan interrompu par le budget ne sert plus `scanned`/`matched` comme un total :
         // la cause du moteur est conservée telle qu'il l'a dite, jamais un nombre de lignes manquantes inventé.
         let cause_scan = fin.cause().map(|c| format!("{CAUSE_REPARSE_INCOMPLET}{c}"));
-        if dry { return (scanned, would, 0, String::new(), cause_scan); }
-        let _ = conn.execute_batch("BEGIN IMMEDIATE");
+        if dry { return Ok((scanned, would, 0, String::new(), cause_scan)); }
+        ouvrir_sa_transaction(&conn, "reparse", "reparse rétroactif des events")?;
         for (id, f, s, d) in &changes {
             if let Some(f) = f { let _ = conn.execute("UPDATE event SET fields=?1 WHERE id=?2", params![f, id]); }
             if let Some(s) = s { let _ = conn.execute("UPDATE event SET src_ip=?1 WHERE id=?2 AND (src_ip IS NULL OR src_ip='')", params![s, id]); }
             if let Some(d) = d { let _ = conn.execute("UPDATE event SET dst_ip=?1 WHERE id=?2 AND (dst_ip IS NULL OR dst_ip='')", params![d, id]); }
         }
-        let _ = conn.execute_batch("COMMIT");
-        (scanned, would, changes.len() as i64, String::new(), cause_scan)
-    }).await.unwrap_or((0, 0, 0, "join".into(), None));
-    if !out.3.is_empty() { return Json(json!({ "error": out.3 })); }
+        valider_la_transaction(&conn)?;
+        Ok((scanned, would, changes.len() as i64, String::new(), cause_scan))
+    }).await;
+    let out = match out {
+        Ok(Ok(t)) => t,
+        Ok(Err(refus)) => return refuser_le_geste_non_valide("reparse", "reparse rétroactif des events", &refus, CAUSE_REPARSE_NON_APPLIQUE),
+        Err(_) => (0, 0, 0, "join".into(), None),
+    };
+    if !out.3.is_empty() { return Json(json!({ "error": out.3 })).into_response(); }
     let mut body = json!({ "scanned": out.0, "matched": out.1, "updated": out.2, "truncated": (out.1 as usize) > CAP, "dry_run": dry, "cap": CAP });
     // `P10.7-f` — si le scan a été coupé par le budget, le corps le DIT (`interrompu` + `cause_scan`) :
     // `scanned`/`matched` ne sont qu'un préfixe. Sans coupe, aucun de ces deux champs n'apparaît (un
     // corps qui avoue TOUJOURS n'avoue rien).
     if let Some(cause) = out.4 { body["interrompu"] = json!(true); body["cause_scan"] = json!(cause); }
-    Json(body)
+    Json(body).into_response()
 }
 pub(crate) async fn parser_test(Json(b): Json<Value>) -> Json<Value> {
     let pat = b.str_field("pattern");

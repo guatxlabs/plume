@@ -173,8 +173,7 @@
   "disponible dans une phase ultérieure",
   "jamais collecté",
   "puis crée (désactivé) et teste la connexion.",
-  "token_url requis pour OAuth2 client-credentials.",
-  "échec"
+  "token_url requis pour OAuth2 client-credentials."
  ],
  "copie_et_selection.js": [
   "Copier",
@@ -189,7 +188,6 @@
   "Exporter en CSV",
   "Exporter en JSON",
   "Imprimer / exporter en PDF",
-  "Service momentanément indisponible, réessaie dans un instant.",
   "aucune donnée",
   "confirmWithConsequence : la conséquence doit être nommée",
   "contenu créé via l’interface — modifiable et supprimable",

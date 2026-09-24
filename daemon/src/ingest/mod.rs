@@ -42,7 +42,9 @@
 //!     copie sur ce 2xx. Réserve honnête : ce qui est prouvé est l'APPEL des deux barrières et leur
 //!     succès, pas la survie à une coupure d'alimentation réelle (cf. `ingest/spool.rs`).
 //!   * Les TROIS surfaces de base : le 2xx atteste que la transaction a été VALIDÉE, donc qu'elle
-//!     survit à la mort du processus — pas à celle de la machine.
+//!     survit à la mort du processus — pas à celle de la machine. (`P10.26-s` : vrai depuis que le
+//!     `BEGIN` et le `COMMIT` de leur lot sont jugés — mesuré avant, un `BEGIN` ignoré faisait entrer le
+//!     lot dans la transaction pendante d'un autre geste et le 2xx la validait avec lui.)
 //!
 //! CE QUI EST ÉCRIT, ET OÙ. QUATRE accusés ont un CORPS qui appartient à plume et portent le champ
 //! `durable`. Il n'est plus une constante : il est la valeur RENDUE par la publication.
@@ -64,6 +66,7 @@
 //! `S31` RESTE OUVERTE sur son second régime. La perte y reste un DÉFAUT ; elle est DITE — par un
 //! `durable: false` qui, désormais, se distingue d'un `durable: true` voisin.
 use crate::*;
+use crate::handlers::transaction_validee::{dire_la_transaction_non_ouverte, ouvrir_sa_transaction, valider_la_transaction};
 
 pub(crate) mod store;
 pub(crate) use store::*;
@@ -144,9 +147,10 @@ fn extract_src_ip(msg: &str) -> Option<String> {
 
 /// ING-1 : renvoie `None` si le fichier est ILLISIBLE (transitoire -> laissé au spool, rejoué au prochain
 /// tick, CALQUE de la voie events `.json` qui `continue`), `Some(Ok(n))` = batch committé (l'appelant
-/// supprime), `Some(Err(n))` = INSERT/COMMIT échoué + ROLLBACK (l'appelant met en QUARANTAINE au lieu de
-/// supprimer -> aucune perte silencieuse d'events journald/auth sous pression disque).
-fn ingest_journal(db: &Arc<Mutex<Connection>>, db_path: &str, path: &std::path::Path, forced_host: Option<&str>) -> Option<Result<usize, usize>> {
+/// supprime), `Some(Err(Annule(n)))` = INSERT/COMMIT échoué + ROLLBACK (l'appelant met en QUARANTAINE au lieu de
+/// supprimer -> aucune perte silencieuse d'events journald/auth sous pression disque), `Some(Err(NonPris))` =
+/// transaction non ouverte (`P10.26-s`) : le lot est LAISSÉ au spool, comme un fichier illisible.
+fn ingest_journal(db: &Arc<Mutex<Connection>>, db_path: &str, path: &std::path::Path, forced_host: Option<&str>) -> Option<Result<usize, LotNonEcrit>> {
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(_) => return None,
@@ -350,13 +354,34 @@ fn cim_warn_sur_etat(source: &str, cat: &CategorieIngeree) {
     }
 }
 
-/// ING-1 : `Ok(n)` = n lignes traitées et COMMITTÉES ; `Err(n)` = ROLLBACK atomique après un INSERT (ou le
+/// CE QU'IL EST ADVENU D'UN LOT QUI N'A PAS ÉTÉ ÉCRIT — deux issues, et le spool ne les traite pas pareil.
+///
+/// `P10.26-s` — AVANT, le `BEGIN` du lot était ignoré. MESURÉ le 2026-09-24 (transaction d'un autre geste laissée
+/// pendante sur l'écrivain, relecture à froid sur une connexion neuve) : les événements du lot entraient dans la
+/// transaction étrangère, et le `COMMIT` du lot la VALIDAIT — voie journald, voie événements, `loki_push` ; un
+/// `INSERT` refusé, lui, l'ANNULAIT par le `ROLLBACK` du lot. Le type sépare désormais le lot que la base n'a pas
+/// PRIS de celui qu'elle a ANNULÉ, parce que l'acquittement du spool en dépend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LotNonEcrit {
+    /// La transaction du lot ne s'est pas ouverte (verrou tenu, transaction étrangère pendante) : RIEN n'a été tenté,
+    /// rien n'est écrit, validé ni annulé. Le lot est intact : le spool le LAISSE en place et le passage suivant le
+    /// reprend (ni perdu, ni doublé) ; un récepteur HTTP rend 503 et l'émetteur réémet.
+    NonPris,
+    /// ING-1 — une écriture ou le `COMMIT` a été refusé après `n` événements traités : ROLLBACK de la transaction du
+    /// lot. Le refus tient au LOT (ou à la base) : le spool le met en QUARANTAINE, rejouable.
+    Annule(usize),
+}
+
+/// ING-1 : `Ok(n)` = n lignes traitées et COMMITTÉES ; `Err(Annule(n))` = ROLLBACK atomique après un INSERT (ou le
 /// COMMIT) échoué -> l'appelant (`ingest_journal`) remonte le signal pour QUARANTAINER le fichier (rejouable)
-/// au lieu de le supprimer. Mirroir STRICT de `ingest_events_batch` (voie `.json`), pour que la voie journald
+/// au lieu de le supprimer ; `Err(NonPris)` = transaction non ouverte, rien d'écrit (`P10.26-s`). Mirroir STRICT de
+/// `ingest_events_batch` (voie `.json`), pour que la voie journald
 /// NE PERDE PLUS silencieusement des events auth (sshd/sudo/su) sur une écriture DB en échec (disque plein,
 /// base verrouillée). Succès : sémantique/lignes stockées INCHANGÉES (parité mode 0).
-pub(crate) fn ingest_journal_lines(conn: &Connection, db_path: &str, content: &str, forced_host: Option<&str>) -> Result<usize, usize> {
-    let _ = conn.execute_batch("BEGIN IMMEDIATE");
+pub(crate) fn ingest_journal_lines(conn: &Connection, db_path: &str, content: &str, forced_host: Option<&str>) -> Result<usize, LotNonEcrit> {
+    if ouvrir_sa_transaction(conn, "ingest", "lot journald").is_err() {
+        return Err(LotNonEcrit::NonPris);
+    }
     let mut n = 0usize;
     let mut batch_min = i64::MAX;   // plus vieux ts du batch -> plancher de rattrapage host_rollup (buffer journald tardif)
     for line in content.lines() {
@@ -453,7 +478,7 @@ pub(crate) fn ingest_journal_lines(conn: &Connection, db_path: &str, content: &s
         if let Err(e) = store().insert_event(conn, &row) {
             eprintln!("[ingest] journal INSERT échoué -> ROLLBACK du batch ({db_path}) : {e}");
             let _ = conn.execute_batch("ROLLBACK");
-            return Err(n);
+            return Err(LotNonEcrit::Annule(n));
         }
         // COMPOSITION RBA (#24) : un match threat-intel CONTRIBUE du risque à son entité (dans la MÊME
         // transaction que l'event -> atomique/cohérent). INERTE en mode 0 (aucun IOC -> ti_hit None).
@@ -466,7 +491,7 @@ pub(crate) fn ingest_journal_lines(conn: &Connection, db_path: &str, content: &s
     // au lieu d'avaler l'erreur et de supprimer un fichier dont les events n'ont PAS été durcis.
     if conn.execute_batch("COMMIT").is_err() {
         let _ = conn.execute_batch("ROLLBACK");
-        return Err(n);
+        return Err(LotNonEcrit::Annule(n));
     }
     // #51 DAY-2 OPS : compteur monotone d'events ingérés (voie journald NDJSON), cf. plume_ingest_events_total.
     crate::INGEST_EVENTS_TOTAL.fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
@@ -481,9 +506,10 @@ pub(crate) fn ingest_journal_lines(conn: &Connection, db_path: &str, content: &s
 /// host forcé (M2), extracteur générique + promotions src_ip/dst_ip/url, colonne `origin` par défaut
 /// (ingéré, non 'daemon'). La transaction reste sur LA connexion tenant fournie par l'appelant (résolue
 /// per-fichier par `resolve_ingest_target`) -> JAMAIS inter-tenant. Fail-safe : sur erreur mid-batch
-/// (base verrouillée, disque plein…) -> `ROLLBACK` ATOMIQUE + log, le daemon NE tombe PAS ; `Err(n)`
+/// (base verrouillée, disque plein…) -> `ROLLBACK` ATOMIQUE + log, le daemon NE tombe PAS ; `Err(Annule(n))`
 /// signale à l'appelant de mettre le fichier en quarantaine (rejouable, aucune perte silencieuse).
-/// Renvoie `Ok(n)` = events traités et committés (avant dédup) ou `Err(n)` = rollback après n tentatives.
+/// Renvoie `Ok(n)` = events traités et committés (avant dédup), `Err(Annule(n))` = rollback après n tentatives, ou
+/// `Err(NonPris)` = transaction non ouverte, rien d'écrit (`P10.26-s`, cf. `LotNonEcrit`).
 pub(crate) fn ingest_events_batch(
     conn: &Connection,
     db_path: &str,
@@ -491,7 +517,7 @@ pub(crate) fn ingest_events_batch(
     default_ts: i64,
     host: Option<&str>,
     forced_host: Option<&str>,
-) -> Result<usize, usize> {
+) -> Result<usize, LotNonEcrit> {
     // Délègue à la variante env-aware avec `env_id=None` (-> le store lie 'prod' comme avant). Renvoie le
     // compte TRAITÉ (parité STRICTE avec l'historique : mêmes valeurs de retour pour tous les appelants/tests).
     ingest_events_batch_env(conn, db_path, events, default_ts, host, forced_host, None).map(|(processed, _)| processed)
@@ -505,7 +531,8 @@ pub(crate) fn ingest_events_batch(
 /// sémantique de ligne (ts/host/source/category/severity/fields/dedup) qu'un event ingéré nativement.
 /// Renvoie `Ok((traités, insérés))` : `traités` = events parcourus (== retour historique) ; `insérés` =
 /// lignes RÉELLEMENT écrites (INSERT OR IGNORE : les doublons dédupliqués comptent 0) -> `last_count`
-/// dédup-aware pour le connecteur. `Err(n)` = ROLLBACK atomique après n events (quarantaine côté appelant).
+/// dédup-aware pour le connecteur. `Err(Annule(n))` = ROLLBACK atomique après n events (quarantaine côté appelant) ;
+/// `Err(NonPris)` = la transaction du lot ne s'est pas ouverte, rien d'écrit (`P10.26-s`, cf. `LotNonEcrit`).
 pub(crate) fn ingest_events_batch_env(
     conn: &Connection,
     db_path: &str,
@@ -514,8 +541,10 @@ pub(crate) fn ingest_events_batch_env(
     host: Option<&str>,
     forced_host: Option<&str>,
     env_id: Option<&str>,
-) -> Result<(usize, usize), usize> {
-    let _ = conn.execute_batch("BEGIN IMMEDIATE");
+) -> Result<(usize, usize), LotNonEcrit> {
+    if ouvrir_sa_transaction(conn, "ingest", "lot d'événements").is_err() {
+        return Err(LotNonEcrit::NonPris);
+    }
     let mut n = 0usize;
     let mut inserted = 0usize;
     let mut batch_min = i64::MAX;   // plus vieux ts du batch -> plancher de rattrapage host_rollup (arrivées tardives)
@@ -674,7 +703,7 @@ pub(crate) fn ingest_events_batch_env(
                 // PAS. L'appelant met le fichier en quarantaine (rejouable, aucune perte silencieuse).
                 eprintln!("[ingest] events INSERT échoué -> ROLLBACK du batch ({db_path}) : {e}");
                 let _ = conn.execute_batch("ROLLBACK");
-                return Err(n);
+                return Err(LotNonEcrit::Annule(n));
             }
         }
         // COMPOSITION RBA (#24) : un match threat-intel CONTRIBUE du risque à son entité (MÊME transaction
@@ -687,7 +716,12 @@ pub(crate) fn ingest_events_batch_env(
     // offline qui rejoue), on l'enregistre pour que rollup_hosts folde [floor, wm) une fois (sinon il serait
     // perdu). NO-OP quand tout est courant (ts>=wm). DANS la transaction du batch -> cohérent avec un rollback.
     if batch_min != i64::MAX { note_host_backfill_floor(conn, batch_min); }
-    let _ = conn.execute_batch("COMMIT");
+    // `P10.26-s` — le `COMMIT` du lot est JUGÉ : refusé, la transaction est annulée (c'est la sienne) et le lot l'est
+    // avec, rien n'est compté comme ingéré. Il était ignoré, et `Ok` partait quoi que la base ait fait.
+    if let Err(e) = valider_la_transaction(conn) {
+        eprintln!("[ingest] events COMMIT refusé -> lot annulé ({db_path}) : {e}");
+        return Err(LotNonEcrit::Annule(n));
+    }
     // #51 DAY-2 OPS : compteur monotone d'events ingérés (self-métrique `plume_ingest_events_total`) — voie
     // batch générique `kind=events` (spool .json + HEC/MinIO normalisés). La voie journald NDJSON compte à
     // part (ingest_journal_lines). Une seule addition par batch (Relaxed, ~1 ns) -> mode 0 identique.
@@ -908,16 +942,20 @@ pub(crate) fn ingest_once(mgr: &TenantDbManager, spool: &str) -> crate::bilan_de
         if name.ends_with(".ndjson") {
             crate::INGEST_FILES_TOTAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed); // #51 DAY-2 : fichiers spool consommés
             // ING-1 : ne supprime le fichier QUE si le batch a été COMMITTÉ. Illisible (None) -> laissé pour
-            // rejouer ; INSERT/COMMIT échoué (Some(Err)) -> QUARANTAINE (rejouable) au lieu d'une perte silencieuse.
+            // rejouer ; INSERT/COMMIT échoué (Some(Err(Annule))) -> QUARANTAINE (rejouable) au lieu d'une perte silencieuse.
             return match ingest_journal(db, db_path, &path, forced_host.as_deref()) {
                 // illisible : laissé en place pour rejouer — et COMPTÉ, parce qu'un fichier qui reste
                 // illisible à chaque passage n'est jamais ingéré et que rien d'autre ne le dirait.
                 None => Sort::Abandonne,
+                // `P10.26-s` — transaction NON PRISE : rien n'a été écrit, le lot est intact. Il RESTE au spool (ni
+                // supprimé ni écarté) et il est compté ; le passage suivant le reprend. Mesuré avant : le lot entrait
+                // dans la transaction d'un autre geste, la VALIDAIT, et le fichier était supprimé.
+                Some(Err(LotNonEcrit::NonPris)) => Sort::Abandonne,
                 Some(Ok(_)) => {
                     let _ = std::fs::remove_file(&path);
                     Sort::Ingere
                 }
-                Some(Err(_)) => {
+                Some(Err(LotNonEcrit::Annule(_))) => {
                     quarantine_spool_file(spool, &path, &name, "journald INSERT échoué (ROLLBACK du batch)");
                     Sort::Abandonne
                 }
@@ -968,8 +1006,10 @@ pub(crate) fn ingest_once(mgr: &TenantDbManager, spool: &str) -> crate::bilan_de
                     let _ = std::fs::remove_file(&path);
                     Sort::Ingere
                 }
+                // `P10.26-s` — transaction NON PRISE : lot intact, LAISSÉ au spool et compté (même règle que journald).
+                Err(LotNonEcrit::NonPris) => Sort::Abandonne,
                 // ROLLBACK (fail-safe) -> quarantaine : données préservées/rejouables, pas de perte silencieuse ni de boucle.
-                Err(_) => {
+                Err(LotNonEcrit::Annule(_)) => {
                     quarantine_spool_file(spool, &path, &name, "events INSERT échoué (ROLLBACK du batch)");
                     Sort::Abandonne
                 }
@@ -990,32 +1030,42 @@ pub(crate) fn ingest_once(mgr: &TenantDbManager, spool: &str) -> crate::bilan_de
             // entre BEGIN et le terminateur — capturé par le catch_unwind CONC-2 par-fichier ci-dessus — LIBÈRE
             // quand même l'écrivain PROCESS-GLOBAL (sinon transaction ouverte fuitée -> toutes les écritures
             // suivantes « cannot start a transaction within a transaction »). Succès + erreur d'insert = byte-identiques.
-            let committed = if let Ok(tx) = Txn::begin(&conn) {
-                let mut ok = true;
-                for m in arr {
-                    let name = m.get("name").and_then(|x| x.as_str()).unwrap_or("");
-                    let val = m.get("value").and_then(|x| x.as_f64()).unwrap_or(0.0);
-                    if !name.is_empty() {
-                        // COUTURE STORE (data-plane) : `labels=None` == littéral NULL du legacy -> ligne identique.
-                        if store().insert_metric(&conn, &MetricRow { ts, name: name.to_string(), labels: None, value: val, host: host.map(|s| s.to_string()) }).is_err() {
-                            ok = false;
-                            break;
+            // `P10.26-s` — `None` = transaction NON PRISE : le lot RESTE au spool, intact et compté, au lieu de partir en
+            // quarantaine. Mesuré avant (transaction d'un autre geste pendante) : un `BEGIN` refusé ÉCARTAIT le lot
+            // — conservé, mais sorti du flux, et rien ne le rejoue sans geste de l'exploitant.
+            let committed = match Txn::begin(&conn) {
+                Err(refus) => {
+                    dire_la_transaction_non_ouverte(&conn, "ingest", "lot de métriques du spool", &refus);
+                    None
+                }
+                Ok(tx) => {
+                    let mut ok = true;
+                    for m in arr {
+                        let name = m.get("name").and_then(|x| x.as_str()).unwrap_or("");
+                        let val = m.get("value").and_then(|x| x.as_f64()).unwrap_or(0.0);
+                        if !name.is_empty() {
+                            // COUTURE STORE (data-plane) : `labels=None` == littéral NULL du legacy -> ligne identique.
+                            if store().insert_metric(&conn, &MetricRow { ts, name: name.to_string(), labels: None, value: val, host: host.map(|s| s.to_string()) }).is_err() {
+                                ok = false;
+                                break;
+                            }
                         }
                     }
+                    // ok -> COMMIT (Txn::commit) ; !ok OU COMMIT en échec -> Drop(tx) = ROLLBACK (identique au manuel).
+                    Some(ok && tx.commit().is_ok())
                 }
-                // ok -> COMMIT (Txn::commit) ; !ok OU COMMIT en échec -> Drop(tx) = ROLLBACK (identique au manuel).
-                ok && tx.commit().is_ok()
-            } else {
-                // BEGIN IMMEDIATE indisponible (writer déjà en transaction / verrou) -> quarantaine (rejouable).
-                false
             };
             drop(conn);
-            return if committed {
-                let _ = std::fs::remove_file(&path);
-                Sort::Ingere
-            } else {
-                quarantine_spool_file(spool, &path, &name, "metrics INSERT échoué (ROLLBACK du batch)");
-                Sort::Abandonne
+            return match committed {
+                None => Sort::Abandonne,
+                Some(true) => {
+                    let _ = std::fs::remove_file(&path);
+                    Sort::Ingere
+                }
+                Some(false) => {
+                    quarantine_spool_file(spool, &path, &name, "metrics INSERT échoué (ROLLBACK du batch)");
+                    Sort::Abandonne
+                }
             }; // (closure CONC-2 : ex-`continue`)
         }
         // ING-1 : snapshot/firewall/controls en UNE transaction (CALQUE de la voie events). Sur échec d'une
@@ -1027,91 +1077,99 @@ pub(crate) fn ingest_once(mgr: &TenantDbManager, spool: &str) -> crate::bilan_de
             // capturé par le catch_unwind CONC-2 par-fichier, LIBÈRE quand même l'écrivain PROCESS-GLOBAL au
             // Drop (ROLLBACK) au lieu de fuiter une transaction ouverte. Succès + erreur d'écriture = byte-identiques.
             // `done` LIÉ (pas en position de queue) : le temporaire `Result<Txn>` est ainsi dropé AVANT `conn`.
-            let done = if let Ok(tx) = Txn::begin(&conn) {
-                let mut ok = true;
-                // SÉRIE = (kind, host) — cf. le bandeau `SnapshotSeries` de `ingest/store.rs`. C'est le SEUL
-                // point d'écriture de la voie snapshot : la comparaison d'état, le heartbeat ET les clés
-                // d'alerte ci-dessous en DÉRIVENT, donc aucune des trois ne peut confondre deux machines.
-                let serie = SnapshotSeries::new(&kind, host);
-                let last: Option<String> = serie.dernier_hash(&conn);
-                if hash.is_empty() || last.as_deref() != Some(hash.as_str()) {
-                    // COUTURE STORE (data-plane). kind/hash CLONÉS (réutilisés dans la branche else = heartbeat).
-                    if store().insert_snapshot(&conn, &SnapshotRow { ts, kind: kind.clone(), hash: hash.clone(), data: data.to_string(), host: host.map(|s| s.to_string()) }).is_err() { ok = false; }
-                } else {
-                    // même état (hash inchangé) -> on TOUCHE le ts du dernier snapshot DE CETTE SÉRIE = heartbeat.
-                    // Sinon un capteur stable (ex Control Catalog 3-manquants constants) est marqué "muet" à tort
-                    // (dédup) — et, sans le filtre d'hôte, on rajeunissait la ligne de la machine d'à côté.
-                    if serie.toucher_le_dernier(&conn, ts).is_err() { ok = false; }
+            // `P10.26-s` — `None` = transaction NON PRISE : lot laissé au spool (même règle que les métriques).
+            let done = match Txn::begin(&conn) {
+                Err(refus) => {
+                    dire_la_transaction_non_ouverte(&conn, "ingest", "lot d'instantané du spool", &refus);
+                    None
                 }
-                if ok && kind == "firewall" {
-                    let fw_ok = data
-                        .get("control_docker_lockdown")
-                        .and_then(|c| c.get("ok"))
-                        .and_then(|b| b.as_bool())
-                        .unwrap_or(true);
-                    if !fw_ok {
-                        // 1 alerte par JOUR et PAR MACHINE : le constat décrit l'état d'UNE machine (l'INSERT
-                        // lie d'ailleurs `host`). MESURÉ sans l'hôte : 5 machines sans lockdown -> 1 alerte.
-                        let dedup = serie.cle_alerte(&format!("fw-lockdown-{}", ts / 86400));
-                        if conn.execute(
-                            "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,host,basis,basis_ref) \
-                             VALUES(?1,'firewall.lockdown',3,?2,?3,?4,?5,?6,?7)",
-                            params![ts, "Contrôle firewall docker-lan-lockdown ABSENT", data.to_string(), dedup, host, crate::fondement::Fondement::Instantane.mot(), kind],
-                        ).is_err() { ok = false; }
+                Ok(tx) => {
+                    let mut ok = true;
+                    // SÉRIE = (kind, host) — cf. le bandeau `SnapshotSeries` de `ingest/store.rs`. C'est le SEUL
+                    // point d'écriture de la voie snapshot : la comparaison d'état, le heartbeat ET les clés
+                    // d'alerte ci-dessous en DÉRIVENT, donc aucune des trois ne peut confondre deux machines.
+                    let serie = SnapshotSeries::new(&kind, host);
+                    let last: Option<String> = serie.dernier_hash(&conn);
+                    if hash.is_empty() || last.as_deref() != Some(hash.as_str()) {
+                        // COUTURE STORE (data-plane). kind/hash CLONÉS (réutilisés dans la branche else = heartbeat).
+                        if store().insert_snapshot(&conn, &SnapshotRow { ts, kind: kind.clone(), hash: hash.clone(), data: data.to_string(), host: host.map(|s| s.to_string()) }).is_err() { ok = false; }
+                    } else {
+                        // même état (hash inchangé) -> on TOUCHE le ts du dernier snapshot DE CETTE SÉRIE = heartbeat.
+                        // Sinon un capteur stable (ex Control Catalog 3-manquants constants) est marqué "muet" à tort
+                        // (dédup) — et, sans le filtre d'hôte, on rajeunissait la ligne de la machine d'à côté.
+                        if serie.toucher_le_dernier(&conn, ts).is_err() { ok = false; }
                     }
+                    if ok && kind == "firewall" {
+                        let fw_ok = data
+                            .get("control_docker_lockdown")
+                            .and_then(|c| c.get("ok"))
+                            .and_then(|b| b.as_bool())
+                            .unwrap_or(true);
+                        if !fw_ok {
+                            // 1 alerte par JOUR et PAR MACHINE : le constat décrit l'état d'UNE machine (l'INSERT
+                            // lie d'ailleurs `host`). MESURÉ sans l'hôte : 5 machines sans lockdown -> 1 alerte.
+                            let dedup = serie.cle_alerte(&format!("fw-lockdown-{}", ts / 86400));
+                            if conn.execute(
+                                "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,host,basis,basis_ref) \
+                                 VALUES(?1,'firewall.lockdown',3,?2,?3,?4,?5,?6,?7)",
+                                params![ts, "Contrôle firewall docker-lan-lockdown ABSENT", data.to_string(), dedup, host, crate::fondement::Fondement::Instantane.mot(), kind],
+                            ).is_err() { ok = false; }
+                        }
+                    }
+                    if ok && kind == "controls" {
+                        let failed = data.get("failed").and_then(|x| x.as_i64()).unwrap_or(0);
+                        // P11.18-i — L'ÉNONCÉ EST COMPOSÉ DE CE QUI EST DÉJÀ LÀ. La charge nomme les contrôles,
+                        // l'INSERT lie déjà la machine, et la série d'instantanés porte le dernier état
+                        // DIFFÉRENT de cette machine : aucune donnée nouvelle n'entre ici (cf. le module).
+                        let etat = crate::controles_de_defense::lire_le_catalogue(&data);
+                        if failed > 0 {
+                            // dédup sur l'ÉTAT (hash) + jour, PAR MACHINE : 1 alerte/jour tant que l'état de CETTE
+                            // machine ne change pas (avant : /3600 = toutes les heures = verbeux pour un manque
+                            // persistant). L'hôte manquait à la clé alors que le `hash` dédupliqué est celui d'UNE
+                            // machine — MESURÉ : 5 machines à 2 contrôles manquants (même hash) -> 1 alerte.
+                            let dedup = serie.cle_alerte(&format!("controls-{}-{}", hash, ts / 86400));
+                            // Lu APRÈS l'écriture de l'instantané courant : la ligne courante s'exclut par son
+                            // empreinte, la borne rendue est donc bien celle de l'état PRÉCÉDENT.
+                            let depuis = crate::controles_de_defense::dernier_etat_different(&conn, host, &hash)
+                                .and_then(|t| crate::controles_de_defense::jour_utc(&conn, t));
+                            let titre = crate::controles_de_defense::enonce_des_manquants(&etat, failed, host, depuis.as_deref());
+                            if conn.execute(
+                                "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,host,basis,basis_ref) \
+                                 VALUES(?1,'control.catalog',3,?2,?3,?4,?5,?6,?7)",
+                                params![ts, titre, data.to_string(), dedup, host, crate::fondement::Fondement::Instantane.mot(), kind],
+                            ).is_err() { ok = false; }
+                        }
+                        // UN CATALOGUE VIDE SE DIT. `failed=0` sur un catalogue vide est la valeur la PLUS
+                        // rassurante de la série et ne mesure rien : la posture serait verte parce que personne
+                        // ne regarde. La condition est DÉRIVÉE de la charge (« zéro contrôle évalué »), jamais de
+                        // la raison — outil absent, catalogue retiré, contrôles tous désactivés y tombent pareil.
+                        // Sévérité 2 : c'est un TROU DE COUVERTURE (même rang que l'aveu d'indisponibilité d'un
+                        // capteur), pas une défense connue tombée. Dédup (hôte, jour) : un seul état possible.
+                        if ok && etat.declare_vide() {
+                            let dedup = serie.cle_alerte(&format!("controls-vides-{}", ts / 86400));
+                            if conn.execute(
+                                "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,host,basis,basis_ref) \
+                                 VALUES(?1,'control.catalog.vide',2,?2,?3,?4,?5,?6,?7)",
+                                params![ts, crate::controles_de_defense::enonce_du_catalogue_vide(host), data.to_string(), dedup, host, crate::fondement::Fondement::Instantane.mot(), kind],
+                            ).is_err() { ok = false; }
+                        }
+                    }
+                    // ok -> COMMIT (Txn::commit) ; !ok OU COMMIT en échec -> Drop(tx) = ROLLBACK (identique au manuel).
+                    Some(ok && tx.commit().is_ok())
                 }
-                if ok && kind == "controls" {
-                    let failed = data.get("failed").and_then(|x| x.as_i64()).unwrap_or(0);
-                    // P11.18-i — L'ÉNONCÉ EST COMPOSÉ DE CE QUI EST DÉJÀ LÀ. La charge nomme les contrôles,
-                    // l'INSERT lie déjà la machine, et la série d'instantanés porte le dernier état
-                    // DIFFÉRENT de cette machine : aucune donnée nouvelle n'entre ici (cf. le module).
-                    let etat = crate::controles_de_defense::lire_le_catalogue(&data);
-                    if failed > 0 {
-                        // dédup sur l'ÉTAT (hash) + jour, PAR MACHINE : 1 alerte/jour tant que l'état de CETTE
-                        // machine ne change pas (avant : /3600 = toutes les heures = verbeux pour un manque
-                        // persistant). L'hôte manquait à la clé alors que le `hash` dédupliqué est celui d'UNE
-                        // machine — MESURÉ : 5 machines à 2 contrôles manquants (même hash) -> 1 alerte.
-                        let dedup = serie.cle_alerte(&format!("controls-{}-{}", hash, ts / 86400));
-                        // Lu APRÈS l'écriture de l'instantané courant : la ligne courante s'exclut par son
-                        // empreinte, la borne rendue est donc bien celle de l'état PRÉCÉDENT.
-                        let depuis = crate::controles_de_defense::dernier_etat_different(&conn, host, &hash)
-                            .and_then(|t| crate::controles_de_defense::jour_utc(&conn, t));
-                        let titre = crate::controles_de_defense::enonce_des_manquants(&etat, failed, host, depuis.as_deref());
-                        if conn.execute(
-                            "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,host,basis,basis_ref) \
-                             VALUES(?1,'control.catalog',3,?2,?3,?4,?5,?6,?7)",
-                            params![ts, titre, data.to_string(), dedup, host, crate::fondement::Fondement::Instantane.mot(), kind],
-                        ).is_err() { ok = false; }
-                    }
-                    // UN CATALOGUE VIDE SE DIT. `failed=0` sur un catalogue vide est la valeur la PLUS
-                    // rassurante de la série et ne mesure rien : la posture serait verte parce que personne
-                    // ne regarde. La condition est DÉRIVÉE de la charge (« zéro contrôle évalué »), jamais de
-                    // la raison — outil absent, catalogue retiré, contrôles tous désactivés y tombent pareil.
-                    // Sévérité 2 : c'est un TROU DE COUVERTURE (même rang que l'aveu d'indisponibilité d'un
-                    // capteur), pas une défense connue tombée. Dédup (hôte, jour) : un seul état possible.
-                    if ok && etat.declare_vide() {
-                        let dedup = serie.cle_alerte(&format!("controls-vides-{}", ts / 86400));
-                        if conn.execute(
-                            "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,host,basis,basis_ref) \
-                             VALUES(?1,'control.catalog.vide',2,?2,?3,?4,?5,?6,?7)",
-                            params![ts, crate::controles_de_defense::enonce_du_catalogue_vide(host), data.to_string(), dedup, host, crate::fondement::Fondement::Instantane.mot(), kind],
-                        ).is_err() { ok = false; }
-                    }
-                }
-                // ok -> COMMIT (Txn::commit) ; !ok OU COMMIT en échec -> Drop(tx) = ROLLBACK (identique au manuel).
-                ok && tx.commit().is_ok()
-            } else {
-                // BEGIN IMMEDIATE indisponible (writer déjà en transaction / verrou) -> quarantaine (rejouable).
-                false
             };
             done
         };
-        if committed {
-            let _ = std::fs::remove_file(&path);
-            Sort::Ingere
-        } else {
-            quarantine_spool_file(spool, &path, &name, "snapshot INSERT échoué (ROLLBACK du batch)");
-            Sort::Abandonne
+        match committed {
+            None => Sort::Abandonne,
+            Some(true) => {
+                let _ = std::fs::remove_file(&path);
+                Sort::Ingere
+            }
+            Some(false) => {
+                quarantine_spool_file(spool, &path, &name, "snapshot INSERT échoué (ROLLBACK du batch)");
+                Sort::Abandonne
+            }
         }
         })); // fin du corps par-fichier isolé (CONC-2)
         match res {

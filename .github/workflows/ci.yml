@@ -2977,7 +2977,15 @@ jobs:
             # 6. shipped-unit digest table — shape only, see reason 6 above.
             '''\("plume-[a-z0-9-]+\.(service|timer)", "[0-9a-f]{64}"\),''',
             # 7. native-backup posture test keys — shape only, see reason 7 above.
-            '''"p8[0-9]{2}-cle-[a-z-]+"'''
+            '''"p8[0-9]{2}-cle-[a-z-]+"''',
+            # 8. MFA enrolment test passwords (2026-09-24, `P10.23-b`): the enrolment route now requires the
+            #    account password, so two fixtures send one — the Rust witness posts the literal
+            #    `motdepasse12345` (a throwaway account in an in-memory base) and the ESM harness posts the
+            #    variable `MOT_DE_PASSE109`. `generic-api-key` read the key `password` followed by a token.
+            #    The exact LITERAL and the exact VARIABLE REFERENCE are allowlisted, never the files: a real
+            #    password written elsewhere in either file is still scanned.
+            '''"password": "motdepasse12345"''',
+            '''password: MOT_DE_PASSE109\b'''
           ]
           # PATH-scoped allowlist — TEST FILES ONLY (never a production path). Each holds documented, offline-generated
           # fixtures: the OIDC/SAML unit-test PEM keys live under `daemon/src/idp/` (a directory module) and in

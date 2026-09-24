@@ -1,6 +1,6 @@
 // viz.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // Explore + viz/charts: drilldown, fenetre glissante, requete interactive, rendu table/graphes (partages avec dashboards).
-import { $, CSSV, LANG, LOC, SEV, api, apiSend, unDeuxCentsSansCorpsLisible, bornerLePopoverSousSonAncre, causeDeLaTraceManquante, cleDeLaSuiteServie, cleDeLIdentifiantDeRiposte, colComparator, largeursDeColonnes, confirmModal, esc, flashStopped, fmtTs, ic, laPageEstAuDelaDuTotal, laPageEstDansLeTotal, makePager, motDeLaPageAuDelaDuTotal, motDeLaRiposteSansIdentifiant, muted, noeudDeLaFinDuResultat, noeudDeLaPageVideDansLeTotal, phraseDeLaCreationDeRiposteRefusee, phraseDeLaTraceManquante, sev, socIsAdmin, toast, tzOpts } from './core.js';
+import { $, CSSV, LANG, LOC, SEV, api, apiSend, unDeuxCentsSansCorpsLisible, bornerLePopoverSousSonAncre, causeDeLaTraceManquante, cleDeLaSuiteServie, cleDeLIdentifiantDeRiposte, colComparator, largeursDeColonnes, confirmModal, esc, flashStopped, fmtTs, ic, laPageEstAuDelaDuTotal, laPageEstDansLeTotal, makePager, motDeLaPageAuDelaDuTotal, motDeLaRiposteSansIdentifiant, motDUneLectureQuiNEstPasServie, muted, noeudDeLaFinDuResultat, noeudDeLaPageVideDansLeTotal, phraseDeLaCreationDeRiposteRefusee, phraseDeLaTraceManquante, phraseDUneReponseNonJson, sev, socIsAdmin, toast, tzOpts } from './core.js';
 import { S } from './state.js';
 // P11.4-h : LE clic qui respecte une sélection (mécanisme partagé, `copie_et_selection.js`).
 import { clicQuiRespecteLaSelection } from './copie_et_selection.js';
@@ -346,7 +346,7 @@ async function mailBody(account, folder, fileid) {
     const j = await r.json();
     if (!r.ok || j.error) { toast('Mail complet : ' + (j.error || ('HTTP ' + r.status)), 'bad'); return; }
     mailBodyView(j);
-  } catch (e) { toast('Erreur : ' + e.message, 'bad'); }
+  } catch (e) { toast(motDUneLectureQuiNEstPasServie('prefixe_de_la_lecture_refusee_en_debut_de_phrase') + e.message, 'bad'); }
 }
 
 // affichage isole : metadata + texte + HTML dans une iframe sandbox + CSP (anti-XSS / anti-tracking)
@@ -725,7 +725,7 @@ function showQError(serverMsg) {
   const m = serverMsg || '';
   if (/annul/i.test(m)) { $('#qresult').replaceChildren(); $('#qstats').textContent = 'Annulé'; return; }
   if (/budget|dépass|trop lourd|too heavy|timeout|deadline/i.test(m)) { $('#qresult').replaceChildren(); $('#qstats').textContent = 'Trop lourd même sur 60s — resserre la fenêtre'; return; }
-  $('#qresult').replaceChildren(Object.assign(document.createElement('div'), { className: 'bad', textContent: 'Erreur : ' + m }));
+  $('#qresult').replaceChildren(Object.assign(document.createElement('div'), { className: 'bad', textContent: motDUneLectureQuiNEstPasServie('prefixe_de_la_lecture_refusee_en_debut_de_phrase') + m }));
   $('#qstats').textContent = '';
 }
 
@@ -802,8 +802,8 @@ async function runQ(query, isSoql, fromOverride, limit, offset, opts) {
     body: JSON.stringify(body), signal: opts.signal,
   });
   const t = await r.text().catch(() => '');   // texte d'abord -> gère réponse vide/tronquée (timeout proxy)
-  if (!t) { const e = new Error('réponse vide du serveur (timeout proxy ou requête trop lourde ?)'); e.code = 'empty'; throw e; }
-  try { return JSON.parse(t); } catch { throw new Error('réponse non-JSON (tronquée ? timeout ?) : ' + t.slice(0, 120)); }
+  if (!t) { const e = new Error(motDUneLectureQuiNEstPasServie('reponse_vide')); e.code = 'empty'; throw e; }   // `P10.27-t`
+  try { return JSON.parse(t); } catch { throw new Error(phraseDUneReponseNonJson(t.slice(0, 120))); }
 }
 
 // LA REPRÉSENTATION ELLE-MÊME, SANS LA PORTE. Un seul appelant a le droit de la prendre : le SONDAGE

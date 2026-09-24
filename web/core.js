@@ -297,6 +297,12 @@ const RESSEMBLE_A_UNE_PAGE_DE_PASSERELLE = /no available server|<!doctype|<html/
 // aussi le MESSAGE de l'erreur jetée par `api()` (un cinq cent deux, trois ou quatre qui ne nomme rien) et des
 // panneaux de tableau de bord qui lisent `transientGatewayMsg` : la face se choisit ici, une fois, à la langue de
 // l'écran. La face française est celle d'avant, au caractère près (le témoin 115p et le 116c l'ancrent).
+// `P10.27-t` — LE MÊME PRÉFIXE, ET LES DEUX PHRASES D'`api()`, N'ONT PLUS QU'UNE FACE PAR LANGUE, ICI. Mesuré avant ce lot
+// (témoin 117t, commentaires retirés) : quarante-sept littéraux français répétaient ces mots dans douze modules — « erreur : »
+// et « Erreur : » collés devant un message, « réponse vide… » et « réponse non-JSON… » écrits dans `api()`, dans la
+// requête de l'Explore (`viz.js`) et dans deux chargeurs de panneau (`dashboards.js`) —, chacun collé à ce qu'il
+// précède, donc intraduisible par le lexique. Les faces françaises sont celles d'avant, au caractère près ; le
+// séparateur de l'extrait suit la typographie de la langue.
 const MOTS_D_UNE_LECTURE_QUI_N_EST_PAS_SERVIE = {
   panne_de_passerelle: {
     fr: 'Service momentanément indisponible, réessaie dans un instant.',
@@ -304,8 +310,26 @@ const MOTS_D_UNE_LECTURE_QUI_N_EST_PAS_SERVIE = {
   prefixe_de_la_lecture_refusee: {
     fr: 'erreur : ',
     en: 'error: ' },
+  prefixe_de_la_lecture_refusee_en_debut_de_phrase: {
+    fr: 'Erreur : ',
+    en: 'Error: ' },
+  reponse_vide: {
+    fr: 'réponse vide du serveur (timeout proxy ou requête trop lourde ?)',
+    en: 'empty answer from the server (proxy timeout or query too heavy?)' },
+  reponse_non_json: {
+    fr: 'réponse non-JSON (tronquée ? timeout ?)',
+    en: 'non-JSON answer (truncated? timeout?)' },
+  separateur_de_l_extrait: {
+    fr: ' : ',
+    en: ': ' },
 };
 const motDUneLectureQuiNEstPasServie = (cle) => (LANG === 'en' ? MOTS_D_UNE_LECTURE_QUI_N_EST_PAS_SERVIE[cle].en : MOTS_D_UNE_LECTURE_QUI_N_EST_PAS_SERVIE[cle].fr);
+// Le préfixe d'un échec rendu TEL QUEL — une lecture refusée comme un geste qui a échoué (un avis, une ligne) : la même
+// face, sous un nom qui ne dit pas « lecture » là où c'est une écriture qui échoue.
+const prefixeDUnEchecRenduTelQuel = () => motDUneLectureQuiNEstPasServie('prefixe_de_la_lecture_refusee');
+// La phrase d'un corps qui n'est pas du JSON, suivie de son extrait quand il y en a un.
+const phraseDUneReponseNonJson = (extrait) => motDUneLectureQuiNEstPasServie('reponse_non_json')
+  + (extrait ? motDUneLectureQuiNEstPasServie('separateur_de_l_extrait') + extrait : '');
 function transientGatewayMsg(status, body) {
   if (status === 502 || status === 503 || status === 504) return motDUneLectureQuiNEstPasServie('panne_de_passerelle');
   if (body && RESSEMBLE_A_UNE_PAGE_DE_PASSERELLE.test(body)) return motDUneLectureQuiNEstPasServie('panne_de_passerelle');
@@ -605,12 +629,12 @@ async function api(path) {
       throw avecLeStatutDuRefus(avecLaCauseDuDemon(new Error(cause || tg), cause), r.status);
     }
     if (!r.ok) throw avecLeStatutDuRefus(avecLaCauseDuDemon(new Error(r.status + (body ? ' ' + body.slice(0, 200) : '')), cause), r.status);
-    if (!body) throw avecLeStatutDuRefus(new Error('réponse vide du serveur (timeout proxy ou requête trop lourde ?)'), r.status);
+    if (!body) throw avecLeStatutDuRefus(new Error(motDUneLectureQuiNEstPasServie('reponse_vide')), r.status);   // `P10.27-t`
     try { return JSON.parse(body); }
     catch {
       const tg2 = transientGatewayMsg(r.status, body);   // corps HTML « no available server » servi en 200 -> transitoire
       if (tg2) { if (attempt < backoffs.length) { await new Promise(res => setTimeout(res, backoffs[attempt])); continue; } throw avecLeStatutDuRefus(new Error(tg2), r.status); }
-      throw avecLeStatutDuRefus(new Error('réponse non-JSON (tronquée ? timeout ?) : ' + body.slice(0, 120)), r.status);
+      throw avecLeStatutDuRefus(new Error(phraseDUneReponseNonJson(body.slice(0, 120))), r.status);   // `P10.27-t`
     }
   }
 }
@@ -769,6 +793,9 @@ function leRefusEstCeluiDuRole(e) {
 // `data-refus-d-un-geste` porte la nature (marque de POSE pour le harnais) :
 //   · `ecriture_non_validee` — cinq cent trois dont la cause s'ouvre par la phrase du COMMIT refusé : RIEN N'A
 //     CHANGÉ, c'est le démon qui l'établit, et la face le dit sans accuser personne ;
+//   · `transaction_non_prise` (`P10.27-q`) — cinq cent trois dont la cause s'ouvre par la transaction que la base N'A
+//     PAS PRISE (« BEGIN ou COMMIT refusé », « BEGIN refusé, ou … ») : rien n'est écrit non plus, mais « annulée »
+//     serait faux quand c'est le `BEGIN` qui est refusé — la transaction n'a jamais été ouverte. Sa face le dit ;
 //   · `demande_non_aboutie` — aucune réponse lue (`laDemandeNAPasAbouti`) : ni refus ni effet établis ;
 //   · `reponse_hors_demon` — une passerelle a répondu (`apiSend` l'a nommée) : sa propre phrase ;
 //   · `refus_sans_cause` — un refus dont le corps est vide : le statut, rien d'autre n'est inventé ;
@@ -777,11 +804,19 @@ function leRefusEstCeluiDuRole(e) {
 // L'en-tête est en capitales, et peut porter une apostrophe (« FOURNISSEUR D'IDENTITÉ ») ou une virgule (« CONNECTEUR
 // NON SUPPRIMÉ, SES CLÉS DE LIVRAISON NE SONT PAS RÉVOQUÉES ») ; la phrase qui suit est lue au caractère près.
 const OUVERTURE_DE_L_ECRITURE_NON_VALIDEE = /^[\p{Lu}', ]+ : la base n'a pas validé la transaction \(COMMIT refusé\) et l'a annulée(?![\p{L}\p{N}])/u;
+// `P10.27-q` — LA SECONDE OUVERTURE DE LA FAMILLE « RIEN N'A CHANGÉ ». Le démon la sert depuis `P10.26-s`/`P10.26-u`
+// (`CAUSE_REPARSE_NON_APPLIQUE`, `CAUSE_ENVOI_DU_PUITS_NON_FAIT`, `CAUSE_LOT_D_INGESTION_NON_ECRIT`) ; mesuré avant ce
+// lot (témoin 117q), ces causes étaient lues « refus nommé » — la forme ne connaissait qu'une ouverture. Même en-tête,
+// puis la transaction nommée que la base n'a pas prise, puis la parenthèse qui s'ouvre sur le `BEGIN` refusé.
+// UNE CAUSE À EFFET PARTIEL NE S'OUVRE PAR AUCUNE DES DEUX : c'est la condition, et le témoin 117 la juge sur l'ensemble
+// nommé des causes à effet partiel (une tranche déjà écrite dans une copie, le curseur non avancé).
+const OUVERTURE_DE_LA_TRANSACTION_NON_PRISE = /^[\p{Lu}', ]+ : la base n'a pas pris la transaction [^()—]{1,60}\(BEGIN(?![\p{L}\p{N}])/u;
 function natureDuRefusDUnGeste(e) {
   if (e && e.reponseHorsDemon) return 'reponse_hors_demon';
   if (laDemandeNAPasAbouti(e)) return 'demande_non_aboutie';
   const cause = e.causeDuDemon ? String(e.causeDuDemon).trim() : '';
   if (e.statutDuRefus === 503 && OUVERTURE_DE_L_ECRITURE_NON_VALIDEE.test(cause)) return 'ecriture_non_validee';
+  if (e.statutDuRefus === 503 && OUVERTURE_DE_LA_TRANSACTION_NON_PRISE.test(cause)) return 'transaction_non_prise';
   if (!cause && /^\d{3}$/.test(String(e.message || '').trim())) return 'refus_sans_cause';
   return 'refus_nomme';
 }
@@ -789,6 +824,9 @@ const MOTS_DU_REFUS_D_UN_GESTE = {
   ecriture_non_validee: {
     fr: "RIEN N'A CHANGÉ : la base n'a pas validé l'écriture et l'a annulée. Le démon en nomme la cause —",
     en: 'NOTHING CHANGED: the database did not commit the write and rolled it back. The daemon names the cause —' },
+  transaction_non_prise: {
+    fr: "RIEN N'A CHANGÉ : la base n'a pas pris la transaction de ce geste, rien n'en est écrit. Le démon en nomme la cause —",
+    en: "NOTHING CHANGED: the database did not take this action's transaction, nothing of it is written. The daemon names the cause —" },
   demande_non_aboutie: {
     fr: "Geste NON confirmé : la demande n'a pas abouti, et rien ici n'établit s'il a été pris — vérifier son effet avant de le rejouer. Cause —",
     en: 'Action NOT confirmed: the request did not complete, and nothing here establishes whether it was taken — check its effect before replaying it. Cause —' },
@@ -2389,6 +2427,9 @@ export {
   // `P10.27-c` — les deux faces d'une lecture qui n'est pas servie (la phrase d'une panne de passerelle, le préfixe
   // d'une lecture refusée), jugées sous les deux instances de langue par le témoin 116.
   motDUneLectureQuiNEstPasServie,
+  // `P10.27-t` — le préfixe d'un échec rendu tel quel et la phrase d'un corps non-JSON, lus par les modules qui en
+  // écrivaient une copie française (témoin 117t).
+  prefixeDUnEchecRenduTelQuel, phraseDUneReponseNonJson,
   // `P10.20-k` — ET LE LECTEUR QUI TIENT LES DEUX MOULES DE REFUS (JSON `error` et texte brut) : les
   // tableaux de bord et les modèles de données le PARTAGENT, faute de quoi chacun écrirait son
   // extraction et l'un des deux finirait par ne plus reconnaître la forme que l'autre lit.

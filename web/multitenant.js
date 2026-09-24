@@ -1,6 +1,6 @@
 // multitenant.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // #2c multi-tenant : switcher tenant/env (header) + vue Tenants + grants + audit acces operateur.
-import { $, LANG, LOC, api, apiSend, applyRoleClass, aveuDUneTraceManquante, causeDeLaTraceManquante, confirmWithConsequence, fmtTs, ic, muted, pagedList, phraseDuRefusDuDemon, toast } from './core.js';
+import { $, LANG, LOC, api, apiSend, applyRoleClass, aveuDUneTraceManquante, causeDeLaTraceManquante, confirmWithConsequence, fmtTs, ic, muted, pagedList, phraseDuRefusDuDemon, prefixeDUnEchecRenduTelQuel, toast } from './core.js';
 import { S, ecrireDansLeStockageDuSite, ecrireSansDireLeRefus, lireLeStockageDuSite, RAISONS_DE_SILENCE } from './state.js';
 import { runQ, tableEl } from './viz.js';
 import { ROLE_LABEL, currentTab, fetchMe, loadUsers, refresh, refreshCurrentView, refreshPanels, renderNav, route, setAuthUI } from './app.js';
@@ -15,6 +15,11 @@ import { ROLE_LABEL, currentTab, fetchMe, loadUsers, refresh, refreshCurrentView
 // (is_superadmin, /api/me). En mode 0, AUTH.is_superadmin est TOUJOURS false -> uiIsAdmin()===isAdmin
 // (aucun changement). Le super-admin garde l'accès à l'espace Administration même cross-tenant.
 function uiIsAdmin() { return S.isAdmin || !!(S.AUTH && S.AUTH.is_superadmin); }
+// `P10.27-t` — LE PRÉFIXE D'UNE LECTURE DES TENANTS OU DE LEURS DROITS QUI ÉCHOUE, dans ses deux faces : il était collé
+// en français devant le message (« accès refusé ou erreur : … »), donc intraduisible par le lexique. La face française
+// est celle d'avant, au caractère près.
+const MOTS_D_UNE_LECTURE_DES_TENANTS_REFUSEE = { fr: 'accès refusé ou erreur : ', en: 'access refused or error: ' };
+const prefixeDUneLectureDesTenantsRefusee = () => (LANG === 'en' ? MOTS_D_UNE_LECTURE_DES_TENANTS_REFUSEE.en : MOTS_D_UNE_LECTURE_DES_TENANTS_REFUSEE.fr);
 
 // Détection FIABLE du mode 1 (multi-tenant). Fail-CLOSED côté mode 0 : chaque signal reste faux en mode 0
 // (is_superadmin=false, tenant='default', my-tenants=[{id:'default',role}] sans name/suspended).
@@ -337,7 +342,7 @@ async function loadTenantsView() {
   if (sa) {
     let j;
     try { j = await api('/tenants'); }        // GET /api/tenants -> {tenants:[...]} (super-admin, re-check serveur)
-    catch (e) { list.replaceChildren(muted('accès refusé ou erreur : ' + e.message)); return; }
+    catch (e) { list.replaceChildren(muted(prefixeDUneLectureDesTenantsRefusee() + e.message)); return; }
     renderTenantList(j.tenants || []);
   } else {
     renderTenantAdminSelf(list);              // admin de tenant : accès de SON tenant courant uniquement
@@ -467,7 +472,7 @@ async function loadGrants(tid, host) {
   host.replaceChildren(muted('chargement…'));
   let j;
   try { j = await api('/tenants/' + encodeURIComponent(tid) + '/grants'); }
-  catch (e) { host.replaceChildren(muted('accès refusé ou erreur : ' + e.message)); return; }
+  catch (e) { host.replaceChildren(muted(prefixeDUneLectureDesTenantsRefusee() + e.message)); return; }
   host.replaceChildren();
   const grants = j.grants || [];
   const cap = document.createElement('div'); cap.className = 'muted'; cap.style.marginBottom = '6px';
@@ -549,8 +554,8 @@ async function loadOperatorAudit() {
   body.replaceChildren(muted('chargement…'));
   let j;
   try { j = await runQ('search source=' + src + ' | sort -ts | head 200', true, 0); }
-  catch (e) { body.replaceChildren(muted('erreur : ' + ((e && e.message) || e))); return; }
-  if (j && j.error) { body.replaceChildren(muted('erreur : ' + j.error)); return; }
+  catch (e) { body.replaceChildren(muted(prefixeDUnEchecRenduTelQuel() + ((e && e.message) || e))); return; }
+  if (j && j.error) { body.replaceChildren(muted(prefixeDUnEchecRenduTelQuel() + j.error)); return; }
   const cols = j.columns || j.cols || [], rows = j.rows || [];
   if (!rows.length) { body.replaceChildren(muted('aucun événement (' + src + ') sur le tenant courant')); return; }
   body.replaceChildren(tableEl(cols, rows, 'search source=' + src));

@@ -22,6 +22,7 @@
 //! identifiants allowlistés, injection-safe — mêmes garanties que les règles GXQL, éditeur+). Aucun SQL brut,
 //! aucune surface d'exécution custom, aucun contrôle hôte.
 use crate::*;
+use crate::handlers::transaction_validee::rendre_apres_validation;
 use rusqlite::OptionalExtension;
 
 /// `P10.20-b` — LA CAUSE NOMMÉE D'UN DRY-RUN REFUSÉ FAUTE D'AVOIR PU ARMER SA PORTE DE MASQUAGE.
@@ -698,6 +699,26 @@ pub(crate) async fn correlations_list(State(st): State<AppState>, Extension(au):
     }
 }
 
+// `P10.25-g` — LES `COMMIT` DES CORRÉLATIONS ET DES RÉFÉRENCES UEBA SONT JUGÉS : un refus rend l'une de ces causes en
+// 503, la transaction fermée (la forme d'avant rendait 200 et laissait la transaction ouverte sur l'écrivain).
+/// `P10.25-g` — corrélation non créée : le `COMMIT` de ce geste refusé.
+pub(crate) const CAUSE_CORRELATION_NON_CREEE: &str = "CORRÉLATION NON CRÉÉE : la base n'a pas validé la transaction \
+     (COMMIT refusé) et l'a annulée — aucune corrélation n'est écrite ni évaluée, et aucune trace n'est écrite. \
+     Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.25-g` — corrélation inchangée : le `COMMIT` de ce geste refusé.
+pub(crate) const CAUSE_CORRELATION_INCHANGEE: &str = "CORRÉLATION INCHANGÉE : la base n'a pas validé la transaction \
+     (COMMIT refusé) et l'a annulée — elle garde ses étapes, sa fenêtre et son activation d'avant, et aucune trace \
+     n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.25-g` — référence ueba non créée : le `COMMIT` de ce geste refusé.
+pub(crate) const CAUSE_REFERENCE_UEBA_NON_CREEE: &str = "RÉFÉRENCE UEBA NON CRÉÉE : la base n'a pas validé la \
+     transaction (COMMIT refusé) et l'a annulée — aucune référence n'est écrite ni évaluée, et aucune trace n'est \
+     écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.25-g` — référence ueba inchangée : le `COMMIT` de ce geste refusé.
+pub(crate) const CAUSE_REFERENCE_UEBA_INCHANGEE: &str = "RÉFÉRENCE UEBA INCHANGÉE : la base n'a pas validé la \
+     transaction (COMMIT refusé) et l'a annulée — elle garde sa requête, son seuil et son activation d'avant, et \
+     aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou \
+     verrouillée.";
+
 pub(crate) async fn correlation_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
     let name = b.get("name").and_then(|v| v.as_str()).unwrap_or("Corrélation").to_string();
     let key_field = b.get("key_field").and_then(|v| v.as_str()).unwrap_or("src_ip").trim().to_string();
@@ -739,7 +760,9 @@ pub(crate) async fn correlation_create(State(st): State<AppState>, Extension(au)
         Ok(id)
     })();
     match outcome {
-        Ok(id) => { let _ = conn.execute_batch("COMMIT"); Json(json!({ "id": id, "managed": 2 })).into_response() }
+        Ok(id) => rendre_apres_validation(&conn, "detection", &format!("création de la corrélation '{name}'"), CAUSE_CORRELATION_NON_CREEE, || {
+            Json(json!({ "id": id, "managed": 2 })).into_response()
+        }),
         Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
     }
 }
@@ -805,7 +828,9 @@ pub(crate) async fn correlation_update(State(st): State<AppState>, Extension(au)
         Ok(())
     })();
     match outcome {
-        Ok(()) => { let _ = conn.execute_batch("COMMIT"); Json(json!({ "ok": true })).into_response() }
+        Ok(()) => rendre_apres_validation(&conn, "detection", &format!("modification de la corrélation #{id}"), CAUSE_CORRELATION_INCHANGEE, || {
+            Json(json!({ "ok": true })).into_response()
+        }),
         Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
     }
 }
@@ -947,7 +972,9 @@ pub(crate) async fn baseline_create(State(st): State<AppState>, Extension(au): E
         Ok(id)
     })();
     match outcome {
-        Ok(id) => { let _ = conn.execute_batch("COMMIT"); Json(json!({ "id": id, "managed": 2 })).into_response() }
+        Ok(id) => rendre_apres_validation(&conn, "detection", &format!("création de la référence UEBA '{name}'"), CAUSE_REFERENCE_UEBA_NON_CREEE, || {
+            Json(json!({ "id": id, "managed": 2 })).into_response()
+        }),
         Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
     }
 }
@@ -1011,7 +1038,9 @@ pub(crate) async fn baseline_update(State(st): State<AppState>, Extension(au): E
         Ok(())
     })();
     match outcome {
-        Ok(()) => { let _ = conn.execute_batch("COMMIT"); Json(json!({ "ok": true })).into_response() }
+        Ok(()) => rendre_apres_validation(&conn, "detection", &format!("modification de la référence UEBA #{id}"), CAUSE_REFERENCE_UEBA_INCHANGEE, || {
+            Json(json!({ "ok": true })).into_response()
+        }),
         Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
     }
 }

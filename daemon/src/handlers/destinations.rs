@@ -38,6 +38,7 @@
 //! MODE 0 (byte-identique) : aucune destination -> `run_due_destinations` sélectionne 0 ligne -> no-op
 //! strict (aucun réseau, aucune écriture, zéro coût sur l'ingest).
 use crate::*;
+use crate::handlers::transaction_validee::{rendre_apres_validation, tracer_apres_coup};
 
 // ===================================================================================================
 // TYPES DE SINK. syslog | hec | webhook = FAITS. s3 | kafka = DESIGN/STUB (posent last_error explicite,
@@ -680,10 +681,33 @@ pub(crate) async fn destination_create(State(st): State<AppState>, Extension(au)
         Ok(id)
     })();
     match outcome {
-        Ok(id) => { let _ = conn.execute_batch("COMMIT"); Json(json!({ "id": id, "enabled": enabled != 0 })).into_response() }
+        Ok(id) => rendre_apres_validation(&conn, "destinations", &format!("création de la destination '{name}'"), CAUSE_DESTINATION_NON_CREEE, || {
+            Json(json!({ "id": id, "enabled": enabled != 0 })).into_response()
+        }),
         Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
     }
 }
+
+// `P10.25-g`, `P10.26-x` — LES `COMMIT` DES DESTINATIONS DE SORTIE SONT JUGÉS. La forme d'avant rendait 200 ou 204 sur une
+// transaction que la base n'avait pas prise et la laissait ouverte sur l'écrivain ; l'envoi manuel taisait sa trace perdue.
+/// `P10.25-g` — destination non créée : le `COMMIT` de ce geste refusé.
+pub(crate) const CAUSE_DESTINATION_NON_CREEE: &str = "DESTINATION NON CRÉÉE : la base n'a pas validé la transaction \
+     (COMMIT refusé) et l'a annulée — aucune destination n'est écrite, aucune donnée ne partira vers elle, et aucune \
+     trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.25-g` — destination inchangée : le `COMMIT` de ce geste refusé.
+pub(crate) const CAUSE_DESTINATION_INCHANGEE: &str = "DESTINATION INCHANGÉE : la base n'a pas validé la transaction \
+     (COMMIT refusé) et l'a annulée — elle garde sa cible, son filtre, son secret et son activation d'avant (une \
+     destination que vous désactiviez envoie toujours), et aucune trace n'est écrite. Réessayez ; si le refus \
+     persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.25-g` — destination non supprimée : le `COMMIT` de ce geste refusé.
+pub(crate) const CAUSE_DESTINATION_NON_SUPPRIMEE: &str = "DESTINATION NON SUPPRIMÉE : la base n'a pas validé la \
+     transaction (COMMIT refusé) et l'a annulée — elle est toujours là et ENVOIE TOUJOURS les données hors du \
+     périmètre, et aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine \
+     ou verrouillée.";
+/// `P10.26-x` — l'envoi manuel a eu lieu, mais sa trace d'audit n'a pas été écrite (champ `trace_non_ecrite` de la réponse).
+pub(crate) const CAUSE_TRACE_DE_L_ENVOI_MANUEL_NON_ECRITE: &str = "TRACE NON ÉCRITE : l'envoi manuel a eu lieu (ce \
+     qui est parti est parti), mais la base n'a pas pris sa trace d'audit — le registre ne dit pas qui l'a déclenché \
+     ni combien d'events ont quitté le périmètre. Le journal du démon nomme le refus.";
 
 pub(crate) async fn destination_update(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
     if !au.is_admin() {
@@ -760,7 +784,9 @@ pub(crate) async fn destination_update(State(st): State<AppState>, Extension(au)
         Ok(())
     })();
     match outcome {
-        Ok(()) => { let _ = conn.execute_batch("COMMIT"); Json(json!({ "ok": true })).into_response() }
+        Ok(()) => rendre_apres_validation(&conn, "destinations", &format!("modification de la destination #{id}"), CAUSE_DESTINATION_INCHANGEE, || {
+            Json(json!({ "ok": true })).into_response()
+        }),
         Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
     }
 }
@@ -786,7 +812,9 @@ pub(crate) async fn destination_delete(State(st): State<AppState>, Extension(au)
         Ok(())
     })();
     match outcome {
-        Ok(()) => { let _ = conn.execute_batch("COMMIT"); StatusCode::NO_CONTENT.into_response() }
+        Ok(()) => rendre_apres_validation(&conn, "destinations", &format!("suppression de la destination #{id}"), CAUSE_DESTINATION_NON_SUPPRIMEE, || {
+            StatusCode::NO_CONTENT.into_response()
+        }),
         Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
     }
 }
@@ -852,16 +880,22 @@ pub(crate) async fn destination_flush(State(st): State<AppState>, Extension(au):
     // journal d'audit est pire qu'un chiffre absent. Le couple watermark avant -> après dit, lui, la
     // frontière exacte de ce qui a quitté le périmètre : égal = rien n'est parti.
     let parti = if le.is_none() { lc } else { 0 };
-    if let Ok(tx) = Txn::begin(&conn) {
-        let ok = audit_config_change(
+    // `P10.26-x` — LA TRACE EST ÉCRITE APRÈS COUP, ET SON ABSENCE SE DIT. La forme d'avant (`if let Ok(tx) = Txn::begin(..)`
+    // puis `let _ = tx.commit()`) taisait un `BEGIN`, un audit ou un `COMMIT` refusé : la réponse était identique à celle
+    // d'un envoi tracé. Le refus est désormais au journal, et la réponse porte `trace_non_ecrite`.
+    let trace = tracer_apres_coup(&conn, "destinations", &format!("envoi manuel de la destination #{id}"), CAUSE_TRACE_DE_L_ENVOI_MANUEL_NON_ECRITE, || {
+        audit_config_change(
             &conn,
             "config.destination.flush",
             &format!("SORTIE de données déclenchée à la main sur la destination #{id} ({dtype_audite}) par {} : {parti} event(s), watermark {watermark} -> {wm}", au.name),
             3,
             &format!("SORTIE de données : forward MANUEL de la destination #{id} ({dtype_audite}) déclenché par {} — {parti} event(s) ont quitté le périmètre (watermark {watermark} -> {wm})", au.name),
             &json!({ "id": id, "type": dtype_audite, "forwarded": parti, "watermark_before": watermark, "watermark_after": wm, "ok": le.is_none(), "actor": au.name }).to_string(),
-        );
-        if ok.is_ok() { let _ = tx.commit(); } // sinon : Drop(tx) -> ROLLBACK (idem panic entre BEGIN et ici)
+        )
+    });
+    let mut corps = json!({ "ok": le.is_none(), "forwarded": lc, "watermark": wm, "last_error": le });
+    if let Err(cause) = trace {
+        corps["trace_non_ecrite"] = json!(cause);
     }
-    Json(json!({ "ok": le.is_none(), "forwarded": lc, "watermark": wm, "last_error": le })).into_response()
+    Json(corps).into_response()
 }

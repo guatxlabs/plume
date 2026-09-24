@@ -11,6 +11,7 @@
 //! Les STATS par index (compte / plus ancien / estimation de taille) sont lues depuis `event_rollup`
 //! (pré-agrégé, cheap) — JAMAIS un scan de `event` (doctrine « jamais scanner event par requête au volume »).
 use crate::*;
+use crate::handlers::transaction_validee::rendre_apres_validation;
 
 /// Estimation d'octets par event pour la taille par index (message+fields+colonnes+index+overhead SQLite).
 /// APPROXIMATIVE et DISPLAY-only (l'UI affiche « ~N ») ; le plafond `max_bytes` réel se mesure ligne-à-ligne
@@ -163,6 +164,19 @@ fn validate_policy(name: &str, rdays: i64, max_rows: i64, max_bytes: i64) -> Res
     Ok((rd, max_rows, max_bytes))
 }
 
+// `P10.25-g` — LES `COMMIT` DES POLITIQUES D'INDEX SONT JUGÉS : un refus rend l'une de ces causes en 503, la transaction fermée.
+/// `P10.25-g` — politique d'index non créée : le `COMMIT` de ce geste refusé.
+pub(crate) const CAUSE_POLITIQUE_D_INDEX_NON_CREEE: &str = "POLITIQUE D'INDEX NON CRÉÉE : la base n'a pas validé la \
+     transaction (COMMIT refusé) et l'a annulée — l'index garde la rétention globale, aucune purge ne suit une \
+     politique qui n'existe pas, et aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en \
+     lecture seule, pleine ou verrouillée.";
+/// `P10.25-g` — politique d'index inchangée : le `COMMIT` de ce geste refusé.
+pub(crate) const CAUSE_POLITIQUE_D_INDEX_INCHANGEE: &str = "POLITIQUE D'INDEX INCHANGÉE : la base n'a pas validé la \
+     transaction (COMMIT refusé) et l'a annulée — la rétention et les plafonds d'avant s'appliquent toujours à la \
+     purge, et aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou \
+     verrouillée.";
+
+
 /// POST /api/index-policies — crée une policy d'index (admin-only). Valide + clampe AVANT insert (fail-closed).
 pub(crate) async fn index_policy_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
     if !au.is_admin() {
@@ -202,10 +216,9 @@ pub(crate) async fn index_policy_create(State(st): State<AppState>, Extension(au
         Ok(id)
     })();
     match outcome {
-        Ok(id) => {
-            let _ = conn.execute_batch("COMMIT");
+        Ok(id) => rendre_apres_validation(&conn, "index-policies", &format!("création de la politique d'index '{name}'"), CAUSE_POLITIQUE_D_INDEX_NON_CREEE, || {
             Json(json!({ "id": id, "name": name, "retention_days": rd, "managed": 2 })).into_response()
-        }
+        }),
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
             server_err(format!("échec transaction audit (aucune modification): {e}"))
@@ -262,10 +275,9 @@ pub(crate) async fn index_policy_update(State(st): State<AppState>, Extension(au
         Ok(())
     })();
     match outcome {
-        Ok(()) => {
-            let _ = conn.execute_batch("COMMIT");
+        Ok(()) => rendre_apres_validation(&conn, "index-policies", &format!("modification de la politique d'index #{id}"), CAUSE_POLITIQUE_D_INDEX_INCHANGEE, || {
             Json(json!({ "ok": true, "retention_days": rd, "max_rows": mr, "max_bytes": mb })).into_response()
-        }
+        }),
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
             server_err(format!("échec transaction audit (aucune modification): {e}"))

@@ -7,6 +7,7 @@
 //! fields INCHANGÉS -> ligne stockée BYTE-IDENTIQUE. L'enrichissement ENRICHIT (ajoute `fields.threat_intel`
 //! + `fields.ti_match=1`), il NE SUPPRIME JAMAIS un event (enrich-not-suppress, comme le CIM/dparsers).
 use crate::*;
+use crate::handlers::transaction_validee::rendre_apres_validation;
 
 // ============================================================================================
 // CACHE DE MATCH EN MÉMOIRE (keyé par db_path — MT-KEY, comme PARSERS). value NORMALISÉE ->
@@ -575,6 +576,20 @@ fn clamp_conf(v: Option<i64>) -> i64 {
     v.unwrap_or(50).clamp(0, 100)
 }
 
+// `P10.25-g` — LES `COMMIT` DES INDICATEURS SONT JUGÉS. MESURÉ sur la forme d'avant (témoins `cjds_`) : 200, transaction
+// laissée ouverte, l'indicateur visible pour ce processus et absent à froid. LU : le cache de correspondance était
+// rechargé ensuite, depuis cet état pendant. Il ne l'est plus qu'après la validation ; un refus rend l'une de ces causes.
+/// `P10.25-g` — indicateurs non ajoutés : le `COMMIT` de ce geste refusé.
+pub(crate) const CAUSE_INDICATEURS_NON_AJOUTES: &str = "INDICATEURS NON AJOUTÉS : la base n'a pas validé la \
+     transaction (COMMIT refusé) et l'a annulée — aucun indicateur n'est écrit ni chargé pour la correspondance, et \
+     aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou \
+     verrouillée.";
+/// `P10.25-g` — import stix non écrit : le `COMMIT` de ce geste refusé.
+pub(crate) const CAUSE_IMPORT_STIX_NON_ECRIT: &str = "IMPORT STIX NON ÉCRIT : la base n'a pas validé la transaction \
+     (COMMIT refusé) et l'a annulée — aucun indicateur n'est écrit ni chargé pour la correspondance, et aucune trace \
+     n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+
+
 /// POST /api/threat-intel/iocs — ajout MANUEL / bulk d'IOC (admin). Corps : un objet unique
 /// {type,value,...} OU {iocs:[…], source?, env_id?}. Chaque valeur est NORMALISÉE (guatx_core::ti) ;
 /// une valeur illégale pour son type est IGNORÉE avec raison (jamais une ligne corrompue). Recharge le
@@ -639,13 +654,12 @@ pub(crate) async fn ioc_add(State(st): State<AppState>, Extension(au): Extension
         Ok(())
     })();
     match outcome {
-        Ok(()) => {
-            let _ = conn.execute_batch("COMMIT");
-            // Recharge le cache de match SOUS le lock writer courant (effet immédiat).
+        Ok(()) => rendre_apres_validation(&conn, "threat-intel", "ajout d'indicateurs", CAUSE_INDICATEURS_NON_AJOUTES, || {
+            // Recharge le cache de match SOUS le lock writer courant (effet immédiat), une fois la transaction VALIDÉE.
             let db_path = req_db_path(&st, &au);
             ioc_cache_reload(&conn, &db_path);
             Json(json!({ "added": added, "skipped": skipped })).into_response()
-        }
+        }),
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
             server_err(format!("échec transaction (aucune modification): {e}"))
@@ -702,12 +716,11 @@ pub(crate) async fn stix_import(State(st): State<AppState>, Extension(au): Exten
         Ok(())
     })();
     match outcome {
-        Ok(()) => {
-            let _ = conn.execute_batch("COMMIT");
+        Ok(()) => rendre_apres_validation(&conn, "threat-intel", "import STIX", CAUSE_IMPORT_STIX_NON_ECRIT, || {
             let db_path = req_db_path(&st, &au);
             ioc_cache_reload(&conn, &db_path);
             Json(json!({ "imported": imported, "skipped": skipped })).into_response()
-        }
+        }),
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
             server_err(format!("échec transaction import (aucune modification): {e}"))

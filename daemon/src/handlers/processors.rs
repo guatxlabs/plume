@@ -5,6 +5,7 @@
 //! le registre chaud de CE db_path. La LISTE renvoie les règles + les compteurs live (dropped/masked/
 //! routed/sampled_out) : non-silence, la donnée non-indexée est VISIBLE.
 use crate::*;
+use crate::handlers::transaction_validee::rendre_apres_validation;
 
 /// GET /api/processors — règles ordonnées + compteurs live + erreurs de reload (admin-only).
 pub(crate) async fn processors_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
@@ -48,6 +49,20 @@ fn validate_rule(mf: &str, mo: &str, mv: &str, act: &str, arg: &str) -> Result<(
     }
 }
 
+// `P10.25-g` — LES `COMMIT` DES RÈGLES D'INGESTION SONT JUGÉS. MESURÉ sur la forme d'avant (témoins `cjds_`) : 200,
+// transaction laissée ouverte, la règle visible pour ce processus et absente à froid. LU : le registre des processeurs de
+// l'ingestion était rechargé ensuite depuis cet état pendant ; il ne l'est plus qu'après la validation.
+/// `P10.25-g` — règle d'ingestion non créée : le `COMMIT` de ce geste refusé.
+pub(crate) const CAUSE_REGLE_D_INGESTION_NON_CREEE: &str = "RÈGLE D'INGESTION NON CRÉÉE : la base n'a pas validé la \
+     transaction (COMMIT refusé) et l'a annulée — aucune règle n'est écrite ni appliquée aux lots entrants, et \
+     aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou \
+     verrouillée.";
+/// `P10.25-g` — règle d'ingestion inchangée : le `COMMIT` de ce geste refusé.
+pub(crate) const CAUSE_REGLE_D_INGESTION_INCHANGEE: &str = "RÈGLE D'INGESTION INCHANGÉE : la base n'a pas validé la \
+     transaction (COMMIT refusé) et l'a annulée — l'ingestion applique toujours la règle d'avant, et aucune trace \
+     n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+
+
 /// POST /api/processors — crée une règle (admin-only). Valide AVANT insert (fail-closed).
 pub(crate) async fn processor_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
     let name = b.get("name").and_then(|v| v.as_str()).unwrap_or("Règle d'ingest").to_string();
@@ -81,11 +96,10 @@ pub(crate) async fn processor_create(State(st): State<AppState>, Extension(au): 
         Ok(id)
     })();
     match outcome {
-        Ok(id) => {
-            let _ = conn.execute_batch("COMMIT");
+        Ok(id) => rendre_apres_validation(&conn, "processors", "création d'une règle d'ingestion", CAUSE_REGLE_D_INGESTION_NON_CREEE, || {
             processors_reload(&conn, req_db_path(&st, &au).as_str());
             Json(json!({ "id": id, "managed": 2 })).into_response()
-        }
+        }),
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
             server_err(format!("échec transaction audit (aucune modification): {e}"))
@@ -135,11 +149,10 @@ pub(crate) async fn processor_update(State(st): State<AppState>, Extension(au): 
         Ok(())
     })();
     match outcome {
-        Ok(()) => {
-            let _ = conn.execute_batch("COMMIT");
+        Ok(()) => rendre_apres_validation(&conn, "processors", &format!("modification de la règle d'ingestion #{id}"), CAUSE_REGLE_D_INGESTION_INCHANGEE, || {
             processors_reload(&conn, req_db_path(&st, &au).as_str());
             Json(json!({ "ok": true })).into_response()
-        }
+        }),
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
             server_err(format!("échec transaction audit (aucune modification): {e}"))

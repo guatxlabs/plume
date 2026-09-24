@@ -17,6 +17,7 @@
 //!  - Création/suppression de silence + toute mutation de politique -> `audit_config_change` (ledger
 //!    ed25519 hash-chaîné + event plume-config alertable). Un silence NE PEUT PAS être permanent (TTL max).
 use crate::*;
+use crate::handlers::transaction_validee::rendre_apres_validation;
 use std::collections::BTreeSet;
 
 // ======================================================================================
@@ -522,6 +523,38 @@ fn policy_body(b: &Value) -> Result<(String, String, i64, i64), String> {
     Ok((matchers_to_json(&matchers), csv, cont, enabled))
 }
 
+// `P10.25-g` — LES `COMMIT` DU ROUTAGE ET DES SILENCES SONT JUGÉS. MESURÉ le 2026-09-24 sur la forme d'avant (`COMMIT`
+// refusé par un autorisateur, relecture à froid, témoins `cjds_`) : les six gestes rendaient 200 sur une transaction que la
+// base n'avait pas prise, laissée OUVERTE sur l'écrivain, et ce processus lisait l'état pendant — un silence « levé »
+// absent pour lui, toujours là à froid. LU, non mesuré : c'est par cet écrivain que le dispatch lit routage et silences.
+/// `P10.25-g` — politique de notification non créée : le `COMMIT` de ce geste refusé.
+pub(crate) const CAUSE_POLITIQUE_DE_NOTIFICATION_NON_CREEE: &str = "POLITIQUE DE NOTIFICATION NON CRÉÉE : la base \
+     n'a pas validé la transaction (COMMIT refusé) et l'a annulée — aucune route n'est écrite, les alertes suivent \
+     le routage d'avant, et aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture \
+     seule, pleine ou verrouillée.";
+/// `P10.25-g` — politique de notification inchangée : le `COMMIT` de ce geste refusé.
+pub(crate) const CAUSE_POLITIQUE_DE_NOTIFICATION_INCHANGEE: &str = "POLITIQUE DE NOTIFICATION INCHANGÉE : la base \
+     n'a pas validé la transaction (COMMIT refusé) et l'a annulée — la route garde ses critères et ses canaux \
+     d'avant, et aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine \
+     ou verrouillée.";
+/// `P10.25-g` — politique de notification non supprimée : le `COMMIT` de ce geste refusé.
+pub(crate) const CAUSE_POLITIQUE_DE_NOTIFICATION_NON_SUPPRIMEE: &str = "POLITIQUE DE NOTIFICATION NON SUPPRIMÉE : la \
+     base n'a pas validé la transaction (COMMIT refusé) et l'a annulée — la route est toujours là et route toujours \
+     les alertes, et aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, \
+     pleine ou verrouillée.";
+/// `P10.25-g` — silence non posé : le `COMMIT` de ce geste refusé.
+pub(crate) const CAUSE_SILENCE_NON_POSE: &str = "SILENCE NON POSÉ : la base n'a pas validé la transaction (COMMIT \
+     refusé) et l'a annulée — aucune alerte n'est étouffée par lui, les notifications partent comme avant, et aucune \
+     trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.25-g` — silence inchangé : le `COMMIT` de ce geste refusé.
+pub(crate) const CAUSE_SILENCE_INCHANGE: &str = "SILENCE INCHANGÉ : la base n'a pas validé la transaction (COMMIT \
+     refusé) et l'a annulée — il garde ses critères, son échéance et sa raison d'avant, et aucune trace n'est \
+     écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.25-g` — silence non levé : le `COMMIT` de ce geste refusé.
+pub(crate) const CAUSE_SILENCE_NON_LEVE: &str = "SILENCE NON LEVÉ : la base n'a pas validé la transaction (COMMIT \
+     refusé) et l'a annulée — il ÉTOUFFE TOUJOURS les alertes qu'il vise jusqu'à son échéance, et aucune trace n'est \
+     écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+
 pub(crate) async fn policy_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
     let (matchers, csv, cont, enabled) = match policy_body(&b) {
         Ok(x) => x,
@@ -546,7 +579,9 @@ pub(crate) async fn policy_create(State(st): State<AppState>, Extension(au): Ext
         Ok(id)
     })();
     match outcome {
-        Ok(id) => { let _ = conn.execute_batch("COMMIT"); Json(json!({ "id": id })).into_response() }
+        Ok(id) => rendre_apres_validation(&conn, "alerting", "création d'une politique de notification", CAUSE_POLITIQUE_DE_NOTIFICATION_NON_CREEE, || {
+            Json(json!({ "id": id })).into_response()
+        }),
         Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
     }
 }
@@ -577,7 +612,9 @@ pub(crate) async fn policy_update(State(st): State<AppState>, Extension(au): Ext
         Ok(())
     })();
     match outcome {
-        Ok(()) => { let _ = conn.execute_batch("COMMIT"); Json(json!({ "ok": true })).into_response() }
+        Ok(()) => rendre_apres_validation(&conn, "alerting", &format!("modification de la politique de notification #{id}"), CAUSE_POLITIQUE_DE_NOTIFICATION_INCHANGEE, || {
+            Json(json!({ "ok": true })).into_response()
+        }),
         Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
     }
 }
@@ -601,7 +638,9 @@ pub(crate) async fn policy_delete(State(st): State<AppState>, Extension(au): Ext
         Ok(())
     })();
     match outcome {
-        Ok(()) => { let _ = conn.execute_batch("COMMIT"); Json(json!({ "ok": true })).into_response() }
+        Ok(()) => rendre_apres_validation(&conn, "alerting", &format!("suppression de la politique de notification #{id}"), CAUSE_POLITIQUE_DE_NOTIFICATION_NON_SUPPRIMEE, || {
+            Json(json!({ "ok": true })).into_response()
+        }),
         Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
     }
 }
@@ -683,7 +722,9 @@ pub(crate) async fn silence_create(State(st): State<AppState>, Extension(au): Ex
         Ok(id)
     })();
     match outcome {
-        Ok(id) => { let _ = conn.execute_batch("COMMIT"); Json(json!({ "id": id, "expires_at": expires })).into_response() }
+        Ok(id) => rendre_apres_validation(&conn, "alerting", "pose d'un silence", CAUSE_SILENCE_NON_POSE, || {
+            Json(json!({ "id": id, "expires_at": expires })).into_response()
+        }),
         Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
     }
 }
@@ -748,7 +789,9 @@ pub(crate) async fn silence_update(State(st): State<AppState>, Extension(au): Ex
         Ok(())
     })();
     match outcome {
-        Ok(()) => { let _ = conn.execute_batch("COMMIT"); Json(json!({ "ok": true, "id": id, "expires_at": expires, "changed": true })).into_response() }
+        Ok(()) => rendre_apres_validation(&conn, "alerting", &format!("modification du silence #{id}"), CAUSE_SILENCE_INCHANGE, || {
+            Json(json!({ "ok": true, "id": id, "expires_at": expires, "changed": true })).into_response()
+        }),
         Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
     }
 }
@@ -772,7 +815,9 @@ pub(crate) async fn silence_delete(State(st): State<AppState>, Extension(au): Ex
         Ok(())
     })();
     match outcome {
-        Ok(()) => { let _ = conn.execute_batch("COMMIT"); Json(json!({ "ok": true })).into_response() }
+        Ok(()) => rendre_apres_validation(&conn, "alerting", &format!("levée du silence #{id}"), CAUSE_SILENCE_NON_LEVE, || {
+            Json(json!({ "ok": true })).into_response()
+        }),
         Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
     }
 }

@@ -5,7 +5,10 @@
 //! `parser_reparse`). Extrait de main.rs (refactor split #25 — byte-identique).
 use crate::*;
 use crate::detection_aveugle::AbandonDEvaluation;
-use crate::handlers::transaction_validee::{ouvrir_sa_transaction, refuser_le_geste_non_valide, valider_la_transaction};
+use crate::handlers::transaction_validee::{
+    ouvrir_sa_transaction, refuser_le_geste_non_valide, rendre_apres_validation, signaler_une_transaction_ouverte_hors_de_tout_geste,
+    valider_la_transaction,
+};
 
 // ---------- moteur de règles de détection (P4) ----------
 pub(crate) fn cmp_op(a: f64, op: &str, b: f64) -> bool {
@@ -277,6 +280,10 @@ pub(crate) fn run_due_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
     // mitre porté en queue du tuple -> hérité par l'alerte (mesure de couverture de détection, purple-team)
     let due: Vec<RegleDue> = {
         let conn = db.lock();
+        // `P10.27-g` — LA SONDE : ce tick tient le verrou de l'écrivain hors de tout geste, toutes les 20 s et pour chaque
+        // tenant. Une transaction qu'il y trouve ouverte a été laissée par un geste qui a rendu la main ; elle est dite
+        // et comptée (la décision de la fermer n'est pas prise ici).
+        signaler_une_transaction_ouverte_hors_de_tout_geste(&conn, "tick de détection");
         // #24 (RBA) : les règles en MODE RISK (risk_score>0) sont exclues ICI — elles ne lèvent PAS d'alerte
         // scalaire par tir ; elles CONTRIBUENT du risque via run_risk_rules (« instead of »). COALESCE défensif
         // (colonne ADDITIVE v80, défaut 0). MODE 0 : aucune règle risk -> risk_score=0 partout -> sélection
@@ -573,6 +580,46 @@ pub(crate) fn validate_detection_content(
         _ => Err((StatusCode::BAD_REQUEST, format!("type de contenu inconnu : {kind}"))),
     }
 }
+// `P10.25-g` — LES `COMMIT` DU CONTENU DE DÉTECTION SONT JUGÉS. MESURÉ le 2026-09-24 sur la forme d'avant (`COMMIT`
+// refusé par un autorisateur, relecture à froid, témoins `cjds_`) : chaque geste ci-dessous rendait son succès sur une
+// transaction que la base n'avait pas prise, la laissait OUVERTE sur l'écrivain, ce processus lisait l'état pendant, et le
+// parseur créé ou modifié était CHARGÉ dans le registre de l'ingestion depuis cette transaction (le motif modifié
+// remplaçait l'ancien) — absent au redémarrage. Un refus rend désormais l'une de ces causes en 503, la transaction
+// fermée, rien de rechargé.
+
+/// `P10.25-g` — le `COMMIT` d'une suppression (ou désactivation d'un contenu natif) refusé.
+pub(crate) const CAUSE_SUPPRESSION_DE_CONTENU_NON_VALIDEE: &str = "SUPPRESSION NON FAITE : la base n'a pas validé la \
+     transaction (COMMIT refusé) et l'a annulée — le contenu est toujours là, dans l'état d'activation qu'il avait, \
+     et aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou \
+     verrouillée.";
+
+/// `P10.25-g` — le `COMMIT` d'une bascule d'activation refusé.
+pub(crate) const CAUSE_ACTIVATION_DE_CONTENU_INCHANGEE: &str = "ACTIVATION INCHANGÉE : la base n'a pas validé la \
+     transaction (COMMIT refusé) et l'a annulée — le contenu garde son état d'avant (ce que vous désactiviez agit \
+     toujours, ce que vous activiez n'agit pas), aucune dérogation n'est retenue pour le prochain démarrage et \
+     aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou \
+     verrouillée.";
+
+/// `P10.25-g` — le `COMMIT` de la création d'une règle refusé.
+pub(crate) const CAUSE_REGLE_NON_CREEE: &str = "RÈGLE NON CRÉÉE : la base n'a pas validé la transaction (COMMIT \
+     refusé) et l'a annulée — aucune règle n'est écrite, aucune évaluation ne la tirera, et aucune trace n'est \
+     écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+
+/// `P10.25-g` — le `COMMIT` de la modification d'une règle refusé.
+pub(crate) const CAUSE_REGLE_INCHANGEE: &str = "RÈGLE INCHANGÉE : la base n'a pas validé la transaction (COMMIT \
+     refusé) et l'a annulée — la règle garde sa requête, son seuil et son activation d'avant, et aucune trace n'est \
+     écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+
+/// `P10.25-g` — le `COMMIT` de la création d'un parseur refusé.
+pub(crate) const CAUSE_PARSEUR_NON_CREE: &str = "PARSEUR NON CRÉÉ : la base n'a pas validé la transaction (COMMIT \
+     refusé) et l'a annulée — aucun parseur n'est écrit ni chargé par l'ingestion, et aucune trace n'est écrite. \
+     Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+
+/// `P10.25-g` — le `COMMIT` de la modification d'un parseur refusé.
+pub(crate) const CAUSE_PARSEUR_INCHANGE: &str = "PARSEUR INCHANGÉ : la base n'a pas validé la transaction (COMMIT \
+     refusé) et l'a annulée — l'ingestion applique toujours le parseur d'avant, et aucune trace n'est écrite. \
+     Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+
 /// #1c garde-fou #4/#6 — suppression MANAGED-AWARE + audit #1b, transactionnelle fail-closed. Politique :
 /// - managed=2 (ad-hoc UI)      -> DELETE réel (destructif, audit sévérité 3) ;
 /// - managed=0 (builtin/seed)   -> enabled=0 (DÉSACTIVÉ, jamais détruit ; durable car les seeds sont one-shot) ;
@@ -608,7 +655,13 @@ pub(crate) fn delete_managed_row_tx(conn: &Connection, table: &str, audit_prefix
         }
     })();
     match outcome {
-        Ok(body) => { let _ = conn.execute_batch("COMMIT"); Ok(body) }
+        Ok(body) => match valider_la_transaction(conn) {
+            Ok(()) => Ok(body),
+            Err(refus) => {
+                eprintln!("[detection] WARN suppression de {table} #{id} NON validée : {refus}");
+                Err((StatusCode::SERVICE_UNAVAILABLE, CAUSE_SUPPRESSION_DE_CONTENU_NON_VALIDEE.to_string()))
+            }
+        },
         Err(e) => { let _ = conn.execute_batch("ROLLBACK"); Err((StatusCode::INTERNAL_SERVER_ERROR, format!("échec transaction audit (aucune modification): {e}"))) }
     }
 }
@@ -812,7 +865,13 @@ pub(crate) fn set_content_enabled_tx(conn: &Connection, kind: &str, table: &str,
         Ok(())
     })();
     match outcome {
-        Ok(()) => { let _ = conn.execute_batch("COMMIT"); Ok(json!({ "ok": true, "enabled": enabled, "managed": managed, "override": managed == 1 })) }
+        Ok(()) => match valider_la_transaction(conn) {
+            Ok(()) => Ok(json!({ "ok": true, "enabled": enabled, "managed": managed, "override": managed == 1 })),
+            Err(refus) => {
+                eprintln!("[detection] WARN bascule d'activation de {kind} #{id} NON validée : {refus}");
+                Err((StatusCode::SERVICE_UNAVAILABLE, CAUSE_ACTIVATION_DE_CONTENU_INCHANGEE.to_string()))
+            }
+        },
         Err(e) => { let _ = conn.execute_batch("ROLLBACK"); Err((StatusCode::INTERNAL_SERVER_ERROR, format!("échec transaction audit (aucune modification): {e}"))) }
     }
 }
@@ -924,7 +983,9 @@ pub(crate) async fn rule_create(State(st): State<AppState>, Extension(au): Exten
         Ok(id)
     })();
     match outcome {
-        Ok(id) => { let _ = conn.execute_batch("COMMIT"); Json(json!({ "id": id, "managed": 2 })).into_response() }
+        Ok(id) => rendre_apres_validation(&conn, "detection", &format!("création de la règle '{name}'"), CAUSE_REGLE_NON_CREEE, || {
+            Json(json!({ "id": id, "managed": 2 })).into_response()
+        }),
         Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
     }
 }
@@ -1033,7 +1094,9 @@ pub(crate) async fn rule_update(State(st): State<AppState>, Extension(au): Exten
         Ok(())
     })();
     match outcome {
-        Ok(()) => { let _ = conn.execute_batch("COMMIT"); Json(reponse_modification_acceptee("Cette règle", "rule", cur_managed)).into_response() }
+        Ok(()) => rendre_apres_validation(&conn, "detection", &format!("modification de la règle #{id}"), CAUSE_REGLE_INCHANGEE, || {
+            Json(reponse_modification_acceptee("Cette règle", "rule", cur_managed)).into_response()
+        }),
         Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
     }
 }
@@ -1100,7 +1163,10 @@ pub(crate) async fn parser_create(State(st): State<AppState>, Extension(au): Ext
         Ok(id)
     })();
     match outcome {
-        Ok(id) => { let _ = conn.execute_batch("COMMIT"); parsers_reload(&conn, req_db_path(&st, &au).as_str()); Json(json!({ "id": id, "managed": 2 })).into_response() }
+        Ok(id) => rendre_apres_validation(&conn, "detection", &format!("création du parseur '{name}'"), CAUSE_PARSEUR_NON_CREE, || {
+            parsers_reload(&conn, req_db_path(&st, &au).as_str());
+            Json(json!({ "id": id, "managed": 2 })).into_response()
+        }),
         Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
     }
 }
@@ -1162,7 +1228,10 @@ pub(crate) async fn parser_update(State(st): State<AppState>, Extension(au): Ext
         Ok(())
     })();
     match outcome {
-        Ok(()) => { let _ = conn.execute_batch("COMMIT"); parsers_reload(&conn, req_db_path(&st, &au).as_str()); Json(reponse_modification_acceptee("Ce parseur", "parser", cur_managed)).into_response() }
+        Ok(()) => rendre_apres_validation(&conn, "detection", &format!("modification du parseur #{id}"), CAUSE_PARSEUR_INCHANGE, || {
+            parsers_reload(&conn, req_db_path(&st, &au).as_str());
+            Json(reponse_modification_acceptee("Ce parseur", "parser", cur_managed)).into_response()
+        }),
         Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
     }
 }

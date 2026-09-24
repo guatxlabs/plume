@@ -13,6 +13,7 @@
 //! s'appliquent bien ; run_as défaut = `viewer` (le plus masqué). Le notifier est admin-configuré (secret hors de
 //! portée de l'editor). CRUD ledgerisé (gouvernance).
 use crate::*;
+use crate::handlers::transaction_validee::rendre_apres_validation;
 
 
 /// Rôle d'exécution valide + PLAFONNÉ au rôle du créateur (anti-escalade). Enum FERMÉ (jamais 'agent').
@@ -95,6 +96,14 @@ pub(crate) async fn report_create(State(st): State<AppState>, Extension(au): Ext
     }
 }
 
+// `P10.25-g` — LE `COMMIT` DE LA SUPPRESSION D'UN RAPPORT PLANIFIÉ EST JUGÉ. Celui de `report_create` reste avalé, et c'est
+// un reste NOMMÉ : il est tenu par l'ensemble de `check_a_swallowed_write_is_never_affirmed_as_a_fact.py` (identifiant
+// emprunté servi), dont le plancher interdit de le corriger sans retirer son entrée — geste hors de ce lot.
+/// `P10.25-g` — rapport planifié non supprimé : le `COMMIT` de ce geste refusé.
+pub(crate) const CAUSE_RAPPORT_PLANIFIE_NON_SUPPRIME: &str = "RAPPORT PLANIFIÉ NON SUPPRIMÉ : la base n'a pas validé \
+     la transaction (COMMIT refusé) et l'a annulée — il est toujours là et PART TOUJOURS à son échéance, et aucune \
+     trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+
 /// DELETE /api/scheduled-reports/{id} — supprime (editor+, audité).
 pub(crate) async fn report_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     if let Err(r) = require_editor(&au) { return r; }
@@ -112,7 +121,9 @@ pub(crate) async fn report_delete(State(st): State<AppState>, Extension(au): Ext
         Ok(id)
     })();
     match outcome {
-        Ok(_) => { let _ = conn.execute_batch("COMMIT"); Json(json!({ "ok": true })).into_response() }
+        Ok(_) => rendre_apres_validation(&conn, "rapports", &format!("suppression du rapport planifié #{id}"), CAUSE_RAPPORT_PLANIFIE_NON_SUPPRIME, || {
+            Json(json!({ "ok": true })).into_response()
+        }),
         Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit: {e}")) }
     }
 }

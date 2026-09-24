@@ -193,7 +193,6 @@
   "contenu créé via l’interface — modifiable et supprimable",
   "contenu overlay (config.d) — géré par fichier, réimposé au démarrage ; non supprimable ici",
   "contenu par défaut (seed) — non supprimable ; passez l’interrupteur sur OFF pour le désactiver",
-  "réponse vide du serveur (timeout proxy ou requête trop lourde ?)",
   "échec"
  ],
  "coupe_de_liste.js": [],
@@ -208,9 +207,7 @@
   "ResizeObserver",
   "Un dashboard porte déjà ce nom.",
   "[privé]",
-  "favDash",
-  "réponse non-JSON (tronquée ? timeout ?)",
-  "réponse vide (timeout proxy ou requête trop lourde ?)"
+  "favDash"
  ],
  "dataaccess.js": [
   "7 derniers jours",
@@ -653,7 +650,6 @@
   "depuis la recherche",
   "page partielle — plafond de lignes du serveur",
   "page sautée — contenu partiel",
-  "réponse vide du serveur (timeout proxy ou requête trop lourde ?)",
   "tronqué — ampleur inconnue",
   "viewBox",
   "⚡ rollup"

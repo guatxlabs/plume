@@ -13,7 +13,7 @@
 //   GET    /api/datasets  |  POST /api/datasets  (editor+)  |  POST /api/datasets/{id}/run  (viewer+)
 //   DELETE /api/datasets/{id}                                            (editor+)
 // SÉCU UI : tout en textContent/esc (anti-XSS). Mutations via apiSend (jeton CSRF auto).
-import { $, api, apiSend, fetchInto, LANG, muted, pagedList, phraseDuRefusDuDemon, toast, modal, confirmModal, managedBadge, gateDeleteBtn } from './core.js';
+import { $, api, apiSend, fetchInto, LANG, muted, pagedList, phraseDuRefusDuDemon, prefixeDUnEchecRenduTelQuel, toast, modal, confirmModal, managedBadge, gateDeleteBtn } from './core.js';
 import { phraseDeCoupe } from './coupe_de_liste.js'; // `P11.22-g` : le résultat borné du Pivot dit sa coupe
 
 // État module : cache du GET /api/datamodels + sélection courante (modèle -> objet).
@@ -119,7 +119,7 @@ function selectModel(id) { selModel = id; selObject = null; renderModels(); rend
 async function delModel(r) {
   if (!(await confirmModal('Supprimer le modèle « ' + (r.title || r.name) + " » et tous ses objets/champs ?", { okText: 'Supprimer', danger: true }))) return;
   try { await apiSend('/datamodels/' + r.id, 'DELETE'); toast('modèle supprimé', 'ok'); await reload(); }
-  catch (e) { toast('erreur : ' + ((e && e.message) || e), 'err', 6000); }
+  catch (e) { toast(prefixeDUnEchecRenduTelQuel() + ((e && e.message) || e), 'err', 6000); }
 }
 // `P10.7-f` — LE GESTE PROMIS EST REFUSÉ, ET IL LE DIT. La marque d'inertie posée par la charge se VOIT ;
 // seul ce point-ci EMPÊCHE l'écriture. La MÊME phrase est écrite aux deux endroits, jamais deux formulations.
@@ -141,7 +141,7 @@ async function newModel() {
   try {
     await apiSend('/datamodels', 'POST', { name: (v.name || '').trim(), title: (v.title || '').trim(), description: (v.description || '').trim(), category: (v.category || '').trim(), enabled: !!v.enabled });
     toast('modèle créé', 'ok'); await reload();
-  } catch (e) { toast('erreur : ' + ((e && e.message) || e), 'err', 6000); }
+  } catch (e) { toast(prefixeDUnEchecRenduTelQuel() + ((e && e.message) || e), 'err', 6000); }
 }
 
 // ============================ OBJETS ============================
@@ -170,7 +170,7 @@ function selectObject(id) { selObject = id; renderObjects(); renderFields(); ren
 async function delObject(r) {
   if (!(await confirmModal('Supprimer l’objet « ' + r.name + ' » et ses champs ?', { okText: 'Supprimer', danger: true }))) return;
   try { await apiSend('/datamodels/objects/' + r.id, 'DELETE'); toast('objet supprimé', 'ok'); if (selObject === r.id) selObject = null; await reload(); }
-  catch (e) { toast('erreur : ' + ((e && e.message) || e), 'err', 6000); }
+  catch (e) { toast(prefixeDUnEchecRenduTelQuel() + ((e && e.message) || e), 'err', 6000); }
 }
 async function newObject() {
   if (refusDeDeclarerSurUnEtageNonLu('objects')) return;
@@ -186,7 +186,7 @@ async function newObject() {
   const body = { name: (v.name || '').trim(), constraint: (v.constraint || '').trim(), enabled: !!v.enabled };
   if (v.parent_id) body.parent_id = Number(v.parent_id);
   try { await apiSend('/datamodels/' + selModel + '/objects', 'POST', body); toast('objet créé', 'ok'); await reload(); }
-  catch (e) { toast('erreur : ' + ((e && e.message) || e), 'err', 6000); }
+  catch (e) { toast(prefixeDUnEchecRenduTelQuel() + ((e && e.message) || e), 'err', 6000); }
 }
 
 // ============================ CHAMPS ============================
@@ -211,7 +211,7 @@ function renderFields() {
 async function delField(r) {
   if (!(await confirmModal('Supprimer le champ « ' + r.name + ' » ?', { okText: 'Supprimer', danger: true }))) return;
   try { await apiSend('/datamodels/fields/' + r.id, 'DELETE'); toast('champ supprimé', 'ok'); await reload(); }
-  catch (e) { toast('erreur : ' + ((e && e.message) || e), 'err', 6000); }
+  catch (e) { toast(prefixeDUnEchecRenduTelQuel() + ((e && e.message) || e), 'err', 6000); }
 }
 async function newField() {
   if (refusDeDeclarerSurUnEtageNonLu('fields')) return;
@@ -223,7 +223,7 @@ async function newField() {
   ] });
   if (!v) return;
   try { await apiSend('/datamodels/objects/' + selObject + '/fields', 'POST', { name: (v.name || '').trim(), type: v.type, expr: (v.expr || '').trim() }); toast('champ créé', 'ok'); await reload(); }
-  catch (e) { toast('erreur : ' + ((e && e.message) || e), 'err', 6000); }
+  catch (e) { toast(prefixeDUnEchecRenduTelQuel() + ((e && e.message) || e), 'err', 6000); }
 }
 
 // ============================ PIVOT (report-builder) ============================
@@ -456,7 +456,7 @@ async function runDataset(r) {
 async function delDataset(r) {
   if (!(await confirmModal('Supprimer le dataset « ' + r.name + ' » ?', { okText: 'Supprimer', danger: true }))) return;
   try { await apiSend('/datasets/' + r.id, 'DELETE'); toast('dataset supprimé', 'ok'); loadDatasets(); }
-  catch (e) { toast('erreur : ' + ((e && e.message) || e), 'err', 6000); }
+  catch (e) { toast(prefixeDUnEchecRenduTelQuel() + ((e && e.message) || e), 'err', 6000); }
 }
 
 // ---- petite modale de résultat (lecture seule) ----
@@ -482,7 +482,7 @@ function syncButtons() {
 async function reload() {
   let d;
   try { d = await api('/datamodels'); }
-  catch (e) { const h = $('#dm-models-list'); if (h) h.replaceChildren(muted('erreur : ' + ((e && e.message) || e))); return; }
+  catch (e) { const h = $('#dm-models-list'); if (h) h.replaceChildren(muted(prefixeDUnEchecRenduTelQuel() + ((e && e.message) || e))); return; }
   // `P10.7-f` — UN ÉTAGE NON LU N'EST PAS UN ÉTAGE VIDE. `api()` ne jette que sur `!r.ok` : l'aveu arrive en
   // 200, forme intacte, et `Array.isArray([])` est VRAI sur la clé vidée. Les trois phrases de vide rendues
   // plus bas affirmeraient alors qu'aucun modèle, aucun objet, aucun champ n'est déclaré — et l'éditeur en

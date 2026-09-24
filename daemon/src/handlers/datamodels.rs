@@ -9,15 +9,23 @@
 //! Un Pivot ne fabrique JAMAIS de SQL : `pivot_to_soql` (module `datamodels`) produit du GXQL, compilé par le
 //! chemin masqué normal -> masquage jamais contourné, denylist de secrets intacte, enum de commandes fermée.
 use crate::*;
+use crate::handlers::transaction_validee::rendre_apres_validation;
 
+// `P10.25-g` — LE `COMMIT` DES MODÈLES DE DONNÉES EST JUGÉ, une fois, dans le squelette commun des créations et
+// suppressions : la forme d'avant rendait 200 sur une transaction que la base n'avait pas prise, laissée ouverte sur
+// l'écrivain. Un refus rend cette cause en 503, la transaction fermée.
+/// `P10.25-g` — modèle de données non écrit : le `COMMIT` de ce geste refusé.
+pub(crate) const CAUSE_MODELE_DE_DONNEES_NON_ECRIT: &str = "MODÈLE DE DONNÉES NON ÉCRIT : la base n'a pas validé la \
+     transaction (COMMIT refusé) et l'a annulée — rien n'est créé ni supprimé, modèles, objets, champs et jeux de \
+     données restent ceux d'avant, et aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en \
+     lecture seule, pleine ou verrouillée.";
 
 /// Squelette transactionnel commun aux mutations (create/delete) auditées.
 fn dm_commit(conn: &Connection, outcome: rusqlite::Result<i64>, ok_val: Value) -> Response {
     match outcome {
-        Ok(_) => {
-            let _ = conn.execute_batch("COMMIT");
+        Ok(_) => rendre_apres_validation(conn, "datamodels", "écriture d'un modèle de données", CAUSE_MODELE_DE_DONNEES_NON_ECRIT, || {
             Json(ok_val).into_response()
-        }
+        }),
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
             if e.to_string().contains("UNIQUE") {

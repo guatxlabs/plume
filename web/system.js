@@ -4,7 +4,7 @@
 //  - (admin) bulletin/MOTD (setting global, bandeau pour TOUS)                             -> /api/bulletin
 //  - (admin) bundle de diagnostic NON-SECRET (support hand-off, téléchargé)               -> GET /api/system/diag
 // LECTURE viewer+. Additif : aucun bulletin -> aucun bandeau (invariant mode 0).
-import { $, LANG, api, apiSend, muted, toast, fmtTs, downloadText, humanAge, socIsAdmin } from './core.js';
+import { $, LANG, api, apiSend, muted, prefixeDUnEchecRenduTelQuel, toast, fmtTs, downloadText, humanAge, socIsAdmin } from './core.js';
 // P11.4-g : la référence documentaire d'un avertissement est une VALEUR qu'on transporte — geste de copie
 // partagé (`copie_et_selection.js`, `P11.4-h`).
 import { valeurTransportee } from './copie_et_selection.js';
@@ -324,7 +324,7 @@ async function loadSystemView() {
   const wrap = $('#system-body'); if (!wrap) return;
   let m, h;
   try { [m, h] = await Promise.all([api('/system/metrics'), api('/system/health')]); }
-  catch (e) { wrap.replaceChildren(muted('erreur : ' + e.message)); return; }
+  catch (e) { wrap.replaceChildren(muted(prefixeDUnEchecRenduTelQuel() + e.message)); return; }
   rendreSysteme(wrap, m, h);
 }
 
@@ -432,11 +432,11 @@ function adminTools() {
   }).catch(() => {});
   save.onclick = async () => {
     try { await apiSend('/bulletin', 'POST', { message: ta.value.trim(), level: lvl.value }); toast('bulletin publié', 'ok'); loadBulletin(); }
-    catch (e) { toast('erreur : ' + e.message, 'bad'); }
+    catch (e) { toast(prefixeDUnEchecRenduTelQuel() + e.message, 'bad'); }
   };
   clear.onclick = async () => {
     try { await apiSend('/bulletin', 'DELETE'); ta.value = ''; toast('bulletin effacé', 'ok'); loadBulletin(); }
-    catch (e) { toast('erreur : ' + e.message, 'bad'); }
+    catch (e) { toast(prefixeDUnEchecRenduTelQuel() + e.message, 'bad'); }
   };
   box.appendChild(bl);
 
@@ -457,7 +457,7 @@ function adminTools() {
       direLesListesNonLuesDuPaquet(v);
       downloadText('plume-diag-' + (v.generated_at || Math.floor(Date.now() / 1000)) + '.json', 'application/json', JSON.stringify(v, null, 2));
       direLaVersionDeSchemaDuPaquet(v);
-    } catch (e) { toast('erreur : ' + e.message, 'bad'); }
+    } catch (e) { toast(prefixeDUnEchecRenduTelQuel() + e.message, 'bad'); }
   };
   dl.append(dlbl, dbtn);
   box.appendChild(dl);

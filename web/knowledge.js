@@ -7,7 +7,7 @@
 //   DELETE /api/knowledge/alias|calc|eventtype|tag/{id}    (editor+)
 // SÉCU UI : tout en textContent/esc (anti-XSS). Mutations via apiSend (jeton CSRF auto). Aucune surface
 // nouvelle ni chemin de requête/masquage touché — pure UI sur des routes déjà en place.
-import { $, api, apiSend, muted, pagedList, toast, modal, confirmModal, managedBadge, gateDeleteBtn } from './core.js';
+import { $, api, apiSend, muted, pagedList, prefixeDUnEchecRenduTelQuel, toast, modal, confirmModal, managedBadge, gateDeleteBtn } from './core.js';
 
 // `P10.7-f` (rang 4) — LES SIX FAMILLES VIENNENT DANS UN SEUL CORPS, ET L'AVEU NOMME CELLES QUI N'ONT PAS
 // ÉTÉ LUES. `/api/knowledge` rend `{aliases, calcs, eventtypes, tags, macros, auto_lookups}` ; quand une
@@ -50,7 +50,7 @@ function codeCell(text) { const c = document.createElement('code'); c.textConten
 async function del(kind, id, label, human) {
   if (!(await confirmModal('Supprimer ' + human + ' « ' + label + ' » ?', { okText: 'Supprimer', danger: true }))) return;
   try { await apiSend('/knowledge/' + kind + '/' + id, 'DELETE'); toast(human + ' supprimé', 'ok'); loadKnowledge(); }
-  catch (e) { toast('erreur : ' + ((e && e.message) || e), 'err', 6000); }
+  catch (e) { toast(prefixeDUnEchecRenduTelQuel() + ((e && e.message) || e), 'err', 6000); }
 }
 async function create(kind, human, fields, payloadFn) {
   // `P10.7-f` — LE GESTE PROMIS EST REFUSÉ, ET IL LE DIT. Le bouton « + … » de cette famille porte déjà la
@@ -60,7 +60,7 @@ async function create(kind, human, fields, payloadFn) {
   const v = await modal({ title: 'Nouvel objet — ' + human, okText: 'Créer', fields });
   if (!v) return;
   try { await apiSend('/knowledge/' + kind, 'POST', payloadFn(v)); toast(human + ' créé', 'ok'); loadKnowledge(); }
-  catch (e) { toast('erreur : ' + ((e && e.message) || e), 'err', 6000); }
+  catch (e) { toast(prefixeDUnEchecRenduTelQuel() + ((e && e.message) || e), 'err', 6000); }
 }
 
 // ---- rendu des 4 familles (chaque liste = pagedList, croissante) ----
@@ -156,7 +156,7 @@ async function loadKnowledge() {
   let d;
   try { d = await api('/knowledge'); }
   catch (e) {
-    ['#ko-alias-list', '#ko-calc-list', '#ko-eventtype-list', '#ko-tag-list'].forEach(s => { if ($(s)) $(s).replaceChildren(muted('erreur : ' + ((e && e.message) || e))); });
+    ['#ko-alias-list', '#ko-calc-list', '#ko-eventtype-list', '#ko-tag-list'].forEach(s => { if ($(s)) $(s).replaceChildren(muted(prefixeDUnEchecRenduTelQuel() + ((e && e.message) || e))); });
     return;
   }
   // `P10.7-f` — UNE FAMILLE NON LUE N'EST PAS UNE FAMILLE VIDE. `api()` ne jette que sur `!r.ok` : l'aveu

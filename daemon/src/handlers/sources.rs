@@ -42,6 +42,7 @@
 //! NATURE : c'est une réponse, pas un trou. Ces déclarations ne pilotent que le VERDICT AFFICHÉ ; aucune
 //! alerte n'en dérive (le dead-man's-switch reste celui des sondes de `COLLECTORS`).
 use crate::*;
+use crate::handlers::transaction_validee::rendre_apres_validation;
 
 // Plafonds de longueur (caractères) des métadonnées de source éditables — bornage anti-abus avant écriture.
 const LABEL_MAX: usize = 200;
@@ -551,6 +552,13 @@ pub(crate) async fn source_settings_get(State(st): State<AppState>, Extension(au
     }
 }
 
+// `P10.25-g` — LE `COMMIT` DES MÉTADONNÉES D'UNE SOURCE EST JUGÉ : un refus rend cette cause en 503, la transaction fermée.
+/// `P10.25-g` — réglages de source inchangés : le `COMMIT` de ce geste refusé.
+pub(crate) const CAUSE_REGLAGES_DE_SOURCE_INCHANGES: &str = "RÉGLAGES DE SOURCE INCHANGÉS : la base n'a pas validé \
+     la transaction (COMMIT refusé) et l'a annulée — la source garde ses métadonnées d'avant, et aucune trace n'est \
+     écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+
+
 /// POST|PUT /api/sources/settings {source, action, value?, interval_s?} -> DÉCLARATIONS et métadonnées
 /// d'affichage par source. Enum d'actions FERMÉ : set_expected(bool) | set_cadence("continue" +
 /// `interval_s` | "evenementielle" | "inconnue") | set_label(str) | set_note(str) | set_category(str) |
@@ -705,10 +713,9 @@ pub(crate) async fn source_settings_put(State(st): State<AppState>, Extension(au
         Ok(())
     })();
     match outcome {
-        Ok(()) => {
-            let _ = conn.execute_batch("COMMIT");
+        Ok(()) => rendre_apres_validation(&conn, "sources", "réglage d'une source", CAUSE_REGLAGES_DE_SOURCE_INCHANGES, || {
             (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
-        }
+        }),
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK"); // fail-closed : rien de persisté sans audit
             (StatusCode::INTERNAL_SERVER_ERROR, format!("échec transaction audit (aucune modification appliquée): {e}")).into_response()

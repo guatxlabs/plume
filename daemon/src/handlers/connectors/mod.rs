@@ -5,7 +5,7 @@
 //! Extrait de main.rs (refactor split #25 — byte-identique).
 //! Split #35 : Defender / TAXII / http_pull en sous-modules ; runtime partage + re-exports (pure move).
 use crate::*;
-use crate::handlers::transaction_validee::{refuser_le_geste_non_valide, valider_la_transaction};
+use crate::handlers::transaction_validee::{refuser_le_geste_non_valide, tracer_apres_coup, valider_la_transaction};
 
 mod defender;
 mod taxii;
@@ -537,6 +537,11 @@ pub(crate) const CAUSE_CONNECTEUR_NON_SUPPRIME: &str = "CONNECTEUR NON SUPPRIMÉ
      trace n'est écrite. Réessayez : c'est ce geste qui révoque ces clés ; si le refus persiste, la base est en lecture \
      seule, pleine ou verrouillée.";
 
+/// `P10.26-x` — le poll manuel a eu lieu, mais sa trace d'audit n'a pas été écrite (champ `trace_non_ecrite` de la réponse).
+pub(crate) const CAUSE_TRACE_DU_POLL_MANUEL_NON_ECRITE: &str = "TRACE NON ÉCRITE : le poll manuel a eu lieu (ce qui \
+     est collecté est collecté), mais la base n'a pas pris sa trace d'audit — le registre ne dit pas qui l'a \
+     déclenché ni combien d'events il a rapportés. Le journal du démon nomme le refus.";
+
 /// DRY-RUN : OAuth + 1 page Graph, N'INGÈRE PAS et NE RENVOIE NI le contenu des alertes NI le secret —
 /// seulement { ok, sample_count, error }. `error` = statut/motif (jamais le corps, jamais le secret).
 pub(crate) async fn connector_test(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
@@ -649,25 +654,30 @@ pub(crate) async fn connector_poll(State(st): State<AppState>, Extension(au): Ex
     // POST-poll (le poll lui-même est fail-safe : poll_one_connector avale ses erreurs -> last_error, jamais
     // de rollback possible du réseau) ; on trace donc l'ACTION opérateur (qui, quand, combien d'events) SANS
     // gater le réseau dans une transaction (ne jamais tenir le lock writer pendant l'I/O réseau).
-    let (count, error): (i64, Option<String>) = {
+    let ((count, error), trace): ((i64, Option<String>), Result<(), &'static str>) = {
         crate::req_conn!(st, au, conn);
         let ce = conn.query_row(
             "SELECT last_count,last_error FROM connector WHERE id=?1",
             params![id],
             |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?)),
         ).unwrap_or((0, None));
-        if let Ok(tx) = Txn::begin(&conn) {
-            let ok = audit_config_change(
+        // `P10.26-x` — LA TRACE EST ÉCRITE APRÈS COUP, ET SON ABSENCE SE DIT (même forme que l'envoi manuel d'une
+        // destination) : un `BEGIN`, un audit ou un `COMMIT` refusé n'est plus tu, la réponse porte `trace_non_ecrite`.
+        let trace = tracer_apres_coup(&conn, "connecteurs", &format!("poll manuel du connecteur #{id}"), CAUSE_TRACE_DU_POLL_MANUEL_NON_ECRITE, || {
+            audit_config_change(
                 &conn,
                 "config.connector.poll",
                 &format!("poll manuel du connecteur #{id} par {} (count={})", au.name, ce.0),
                 2,
                 &format!("poll manuel du connecteur externe #{id} par {} : {} event(s)", au.name, ce.0),
                 &json!({ "id": id, "count": ce.0, "ok": ce.1.is_none(), "actor": au.name }).to_string(),
-            );
-            if ok.is_ok() { let _ = tx.commit(); } // sinon : Drop(tx) -> ROLLBACK (idem panic entre BEGIN et ici)
-        }
-        ce
+            )
+        });
+        (ce, trace)
     };
-    Json(json!({ "ok": error.is_none(), "count": count, "error": error })).into_response()
+    let mut corps = json!({ "ok": error.is_none(), "count": count, "error": error });
+    if let Err(cause) = trace {
+        corps["trace_non_ecrite"] = json!(cause);
+    }
+    Json(corps).into_response()
 }

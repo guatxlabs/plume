@@ -6,6 +6,7 @@
 //! transaction auditée, puis `knowledge_reload` recompile le `KnowledgeSet` de CE db_path -> auto-appliqué à
 //! la compilation GXQL suivante (Explore, panels, règles, export en héritent).
 use crate::*;
+use crate::handlers::transaction_validee::rendre_apres_validation;
 
 
 /// GET /api/knowledge — les 4 familles d'objets de savoir (viewer+). Rend la politique LISIBLE.
@@ -97,16 +98,24 @@ pub(crate) async fn knowledge_list(State(st): State<AppState>, Extension(au): Ex
     Json(crate::handlers::liste_bornee::corps_de_listes_illisibles(corps, &non_lus)).into_response()
 }
 
+// `P10.25-g` — LE `COMMIT` DES OBJETS DE SAVOIR EST JUGÉ, une fois, dans le squelette commun. MESURÉ sur la forme d'avant
+// (témoins `cjds_`) : 200, transaction laissée ouverte, l'objet visible pour ce processus et absent à froid. LU : la
+// compilation des requêtes était rechargée ensuite depuis cet état pendant ; elle ne l'est plus qu'après la validation.
+/// `P10.25-g` — objet de savoir non écrit : le `COMMIT` de ce geste refusé.
+pub(crate) const CAUSE_OBJET_DE_SAVOIR_NON_ECRIT: &str = "OBJET DE SAVOIR NON ÉCRIT : la base n'a pas validé la \
+     transaction (COMMIT refusé) et l'a annulée — rien n'est créé ni supprimé, les recherches appliquent toujours \
+     les alias, calculs, types d'événement, étiquettes, macros et recherches automatiques d'avant, et aucune trace \
+     n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+
 /// Émet la réponse d'un create/delete audité + `knowledge_reload`. Factorise le squelette transactionnel.
 fn ko_commit(st: &AppState, au: &AuthUser, conn: &Connection, outcome: rusqlite::Result<i64>, ok_val: Value) -> Response {
     match outcome {
-        Ok(_) => {
-            let _ = conn.execute_batch("COMMIT");
+        Ok(_) => rendre_apres_validation(conn, "knowledge", "écriture d'un objet de savoir", CAUSE_OBJET_DE_SAVOIR_NON_ECRIT, || {
             let dbp = req_db_path(st, au);
             knowledge_reload(conn, dbp.as_str());
             knowledge_activate(dbp.as_str()); // CRUD sur le tenant courant -> réactive la compilation
             Json(ok_val).into_response()
-        }
+        }),
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
             if e.to_string().contains("UNIQUE") {

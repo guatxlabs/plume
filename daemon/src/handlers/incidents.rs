@@ -13,6 +13,7 @@
 //! (tamper-evident, comme case.status/case.assign). Réutilise : case_add_item (timeline + MTTA), ledger_append,
 //! guatx_core::attack (technique->tactique), le compilateur GXQL FERMÉ, l'enum action_kind_valid.
 use crate::*;
+use crate::handlers::transaction_validee::rendre_apres_validation_du_garde;
 use rusqlite::OptionalExtension;
 
 /// `P10.20-b` (rang 2) — LA RECOMMANDATION N'EST PAS ÉTABLIE, ET CE N'EST PAS « AUCUN RUNBOOK NE CONVIENT ».
@@ -1053,6 +1054,32 @@ pub(crate) async fn runbook_get(State(st): State<AppState>, Extension(au): Exten
     }
 }
 
+// `P10.26-x` — LES `COMMIT` DES RUNBOOKS SONT JUGÉS. La forme d'avant (`let _ = tx.commit()`) fermait la transaction (le
+// garde `Txn` annule dans son `Drop`) mais rendait le succès d'un geste que la base n'avait pas pris, sa trace disparue sans
+// aveu. Un refus rend désormais l'une de ces causes en 503.
+/// `P10.26-x` — runbook non créé : le `COMMIT` de ce geste refusé.
+pub(crate) const CAUSE_RUNBOOK_NON_CREE: &str = "RUNBOOK NON CRÉÉ : la base n'a pas validé la transaction (COMMIT \
+     refusé) et l'a annulée — aucun runbook ni aucune étape n'est écrit, aucun dossier ne le recevra, et aucune \
+     trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.26-x` — runbook inchangé : le `COMMIT` de ce geste refusé.
+pub(crate) const CAUSE_RUNBOOK_INCHANGE: &str = "RUNBOOK INCHANGÉ : la base n'a pas validé la transaction (COMMIT \
+     refusé) et l'a annulée — il garde ses étapes et son critère d'attache d'avant, et aucune trace n'est écrite. \
+     Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.26-x` — runbook non supprimé : le `COMMIT` de ce geste refusé.
+pub(crate) const CAUSE_RUNBOOK_NON_SUPPRIME: &str = "RUNBOOK NON SUPPRIMÉ : la base n'a pas validé la transaction \
+     (COMMIT refusé) et l'a annulée — il est toujours là avec ses étapes et s'attache toujours aux dossiers qu'il \
+     vise, et aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou \
+     verrouillée.";
+/// `P10.26-x` — activation du runbook inchangée : le `COMMIT` de ce geste refusé.
+pub(crate) const CAUSE_ACTIVATION_DU_RUNBOOK_INCHANGEE: &str = "ACTIVATION DU RUNBOOK INCHANGÉE : la base n'a pas \
+     validé la transaction (COMMIT refusé) et l'a annulée — il garde son état d'avant (désactivé, il s'attache \
+     toujours ; activé, il ne s'attache pas), et aucune trace n'est écrite. Réessayez ; si le refus persiste, la \
+     base est en lecture seule, pleine ou verrouillée.";
+/// `P10.26-x` — runbook non cloné : le `COMMIT` de ce geste refusé.
+pub(crate) const CAUSE_RUNBOOK_NON_CLONE: &str = "RUNBOOK NON CLONÉ : la base n'a pas validé la transaction (COMMIT \
+     refusé) et l'a annulée — aucune copie n'est écrite, et aucune trace n'est écrite. Réessayez ; si le refus \
+     persiste, la base est en lecture seule, pleine ou verrouillée.";
+
 /// POST /api/runbooks — CRÉE un runbook custom (managed=0). ADMIN. Body : {name, match_kind, match_key?,
 /// description?, active?, steps:[{phase,title,guidance?,step_kind,search_soql?,action_kind?}]}.
 pub(crate) async fn runbook_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
@@ -1071,7 +1098,9 @@ pub(crate) async fn runbook_create(State(st): State<AppState>, Extension(au): Ex
         Ok(id)
     })();
     match outcome {
-        Ok(id) => { let _ = tx.commit(); Json(json!({ "id": id })).into_response() }
+        Ok(id) => rendre_apres_validation_du_garde(tx, &conn, "runbooks", &format!("création du runbook '{name}'"), CAUSE_RUNBOOK_NON_CREE, || {
+            Json(json!({ "id": id })).into_response()
+        }),
         Err(e) => { drop(tx); bad_req(e) } // Drop -> ROLLBACK
     }
 }
@@ -1092,7 +1121,9 @@ pub(crate) async fn runbook_update_handler(State(st): State<AppState>, Extension
         Ok(())
     })();
     match outcome {
-        Ok(()) => { let _ = tx.commit(); Json(json!({ "ok": true })).into_response() }
+        Ok(()) => rendre_apres_validation_du_garde(tx, &conn, "runbooks", &format!("modification du runbook #{id}"), CAUSE_RUNBOOK_INCHANGE, || {
+            Json(json!({ "ok": true })).into_response()
+        }),
         Err(e) => { drop(tx); bad_req(e) } // Drop -> ROLLBACK
     }
 }
@@ -1117,7 +1148,9 @@ pub(crate) async fn runbook_delete(State(st): State<AppState>, Extension(au): Ex
         Ok(())
     })();
     match outcome {
-        Ok(()) => { let _ = tx.commit(); Json(json!({ "ok": true })).into_response() }
+        Ok(()) => rendre_apres_validation_du_garde(tx, &conn, "runbooks", &format!("suppression du runbook '{name}' (#{id})"), CAUSE_RUNBOOK_NON_SUPPRIME, || {
+            Json(json!({ "ok": true })).into_response()
+        }),
         Err(e) => { drop(tx); server_err(format!("échec transaction: {e}")) } // Drop -> ROLLBACK
     }
 }
@@ -1142,7 +1175,9 @@ pub(crate) async fn runbook_set_enabled(State(st): State<AppState>, Extension(au
         Ok(())
     })();
     match outcome {
-        Ok(()) => { let _ = tx.commit(); Json(json!({ "ok": true, "enabled": enabled })).into_response() }
+        Ok(()) => rendre_apres_validation_du_garde(tx, &conn, "runbooks", &format!("bascule d'activation du runbook #{id}"), CAUSE_ACTIVATION_DU_RUNBOOK_INCHANGEE, || {
+            Json(json!({ "ok": true, "enabled": enabled })).into_response()
+        }),
         Err(e) => { drop(tx); server_err(format!("échec transaction: {e}")) } // Drop -> ROLLBACK
     }
 }
@@ -1163,7 +1198,9 @@ pub(crate) async fn runbook_clone_handler(State(st): State<AppState>, Extension(
         Ok(new_id)
     })();
     match outcome {
-        Ok(new_id) => { let _ = tx.commit(); Json(json!({ "id": new_id })).into_response() }
+        Ok(new_id) => rendre_apres_validation_du_garde(tx, &conn, "runbooks", &format!("clonage du runbook #{id}"), CAUSE_RUNBOOK_NON_CLONE, || {
+            Json(json!({ "id": new_id })).into_response()
+        }),
         Err(e) => { drop(tx); bad_req(e) } // Drop -> ROLLBACK
     }
 }

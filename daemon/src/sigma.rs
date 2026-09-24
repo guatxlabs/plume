@@ -2,6 +2,7 @@
 //! purs sur serde_json::Value + le handler HTTP sigma_import. Extrait de main.rs (refactor split
 //! #25 — byte-identique).
 use crate::*;
+use crate::handlers::transaction_validee::rendre_apres_validation;
 
 // =====================================================================================
 //  SLICE #7 — PIÈCE 3 : IMPORTEUR SIGMA (Sigma YAML -> règle de détection Plume)
@@ -837,6 +838,20 @@ pub(crate) fn sigma_import_disposition(existing: Option<i64>) -> SigmaDisp {
     }
 }
 
+// `P10.25-g` — LES `COMMIT` DES IMPORTS SIGMA SONT JUGÉS : la forme d'avant rendait 200 et la liste des règles « importées »
+// sur une transaction que la base n'avait pas prise, laissée ouverte sur l'écrivain. Un refus rend l'une de ces causes en 503.
+/// `P10.25-g` — import sigma non écrit : le `COMMIT` de ce geste refusé.
+pub(crate) const CAUSE_IMPORT_SIGMA_NON_ECRIT: &str = "IMPORT SIGMA NON ÉCRIT : la base n'a pas validé la \
+     transaction (COMMIT refusé) et l'a annulée — aucune règle n'est créée ni mise à jour, les règles existantes \
+     gardent leur logique d'avant, et aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en \
+     lecture seule, pleine ou verrouillée.";
+/// `P10.25-g` — import sigma en masse non écrit : le `COMMIT` de ce geste refusé.
+pub(crate) const CAUSE_IMPORT_SIGMA_EN_MASSE_NON_ECRIT: &str = "IMPORT SIGMA EN MASSE NON ÉCRIT : la base n'a pas \
+     validé la transaction (COMMIT refusé) et l'a annulée — aucune règle n'est créée ni mise à jour, la couverture \
+     ATT&CK reste celle d'avant, et aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en \
+     lecture seule, pleine ou verrouillée.";
+
+
 /// SLICE #7 pièce 3 — ADMIN API : importe des règles Sigma. Corps : `{content:"<yaml|json>"}` (texte
 /// Sigma, multi-docs OK) OU `{rules:[<sigma json>…]}`, + `{dry_run:bool}`. Gate RBAC : route sous
 /// `/api/sigma/*` -> DEFAULT-DENY = ADMIN (route_min_role) : l'import en masse de détections externes est
@@ -930,13 +945,12 @@ pub(crate) async fn sigma_import(State(st): State<AppState>, Extension(au): Exte
         Ok(())
     })();
     match outcome {
-        Ok(()) => {
-            let _ = conn.execute_batch("COMMIT");
+        Ok(()) => rendre_apres_validation(&conn, "sigma", "import Sigma", CAUSE_IMPORT_SIGMA_NON_ECRIT, || {
             let imported: Vec<Value> = plan.iter().map(|(t, _)| json!({
                 "name": t.name, "query": t.query, "severity": t.severity, "mitre": t.mitre, "compliance": t.compliance, "warnings": t.warnings
             })).collect();
             Json(json!({ "imported": imported, "skipped": skipped, "managed": 2 })).into_response()
-        }
+        }),
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
             server_err(format!("échec transaction audit (aucune modification) : {e}"))
@@ -1256,8 +1270,7 @@ pub(crate) async fn sigma_import_bulk(State(st): State<AppState>, Extension(au):
         Ok(())
     })();
     match outcome {
-        Ok(()) => {
-            let _ = conn.execute_batch("COMMIT");
+        Ok(()) => rendre_apres_validation(&conn, "sigma", "import Sigma en masse", CAUSE_IMPORT_SIGMA_EN_MASSE_NON_ECRIT, || {
             Json(json!({
                 "imported": n_insert, "updated": n_update, "skipped": skipped_json, "errors": errors,
                 "coverage_before": cov_before, "coverage_after": cov_after, "techniques_newly_covered": newly,
@@ -1265,7 +1278,7 @@ pub(crate) async fn sigma_import_bulk(State(st): State<AppState>, Extension(au):
                 "disabled_on_import": !enable, "managed": 2,
                 "note": "règles créées DÉSACTIVÉES (l'admin revoit puis active) ; 'coverage_after' = couverture une fois activées ET NOURRIES — une règle importée qu'aucun producteur n'alimente ici est rendue à part, avec les sources qui lui manquent."
             })).into_response()
-        }
+        }),
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
             server_err(format!("échec transaction (aucune modification) : {e}"))

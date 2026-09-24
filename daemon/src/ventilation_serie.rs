@@ -258,14 +258,24 @@ fn poser(m: Mesure) {
 pub(crate) fn mesurer_une_fois(db_path: &str, ts: i64) -> Mesure {
     let t0 = Instant::now();
     let m = read_with(db_path, None, |conn| {
-        let transaction = conn.execute_batch("BEGIN DEFERRED").is_ok();
+        // `P10.25-g` — L'INSTANTANÉ EST OUVERT ET FERMÉ PAR DES GESTES JUGÉS. La connexion vient du POOL DE LECTURE et y
+        // retourne : un `COMMIT` refusé puis ignoré (la forme d'avant) l'y rendait avec son instantané OUVERT (lu, non
+        // mesuré). Un `BEGIN` refusé est dit : les quatre lectures ne partagent alors pas un même instantané.
+        let transaction = match conn.execute_batch("BEGIN DEFERRED") {
+            Ok(()) => true,
+            Err(refus) => {
+                let etat = if conn.is_autocommit() { "" } else { " ; la connexion porte déjà une transaction qui n'est pas la sienne" };
+                eprintln!("[ventilation] WARN instantané de lecture NON ouvert ({refus}{etat}) : les quatre lectures ne partagent pas un même instantané");
+                false
+            }
+        };
         let q = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap_or(-1) };
         let page_size = q("PRAGMA page_size");
         let page_count = q("PRAGMA page_count");
         let freelist = q("PRAGMA freelist_count");
         let r = db_ventilation::mesurer(conn, page_size.max(0), page_count.max(0), freelist.max(0));
         if transaction {
-            let _ = conn.execute_batch("COMMIT");
+            crate::handlers::transaction_validee::fermer_l_instantane_de_lecture(conn, "ventilation", "ventilation de la base");
         }
         Some(depuis_resultat(ts, t0.elapsed().as_millis().min(u64::MAX as u128) as u64, r))
     });

@@ -4,7 +4,7 @@
 // au point où ce bloc vivait (un module s'exécute à l'import, avant l'enveloppe `fetch` d'`app.js`). Les seams
 // (`viz.js`, `multitenant.js`) continuent de lire `loadDashboard` / `refreshPanels` via le ré-export d'`app.js`.
 // `renderDashboard` est exporté pour le harnais. N'importe pas `app.js`.
-import { $, ic, flashStopped, stopBtn, toast, modal, confirmModal, confirmWithConsequence, toCSV, downloadText, tsSlug, exportPDF, miniMenu, api, apiSend, phraseDuRefusDuDemon, transientGatewayMsg, makePager, noeudDeLaPageVideDeRangSuperieur, socIsAdmin, applyRoleClass, roleSansEcriturePartagee, LANG } from './core.js';
+import { $, ic, flashStopped, stopBtn, toast, modal, confirmModal, confirmWithConsequence, toCSV, downloadText, tsSlug, exportPDF, miniMenu, api, apiSend, phraseDuRefusDuDemon, transientGatewayMsg, motDUneLectureQuiNEstPasServie, prefixeDUnEchecRenduTelQuel, phraseDUneReponseNonJson, makePager, noeudDeLaPageVideDeRangSuperieur, socIsAdmin, applyRoleClass, roleSansEcriturePartagee, LANG } from './core.js';
 import { S } from './state.js';
 import { coldShareBadge, coverageBadge, coverageHorizonNodes, provenanceBadge, currentFrom, currentTo, noeudsDeVizReglee, queryCount, runQuery, tableEl, vizElement } from './viz.js'; // `P10.5-q` : l'aveu de part froide que les panneaux reçoivent est LU
 // P11.4-h : LE geste de copie de la console (mécanisme partagé).
@@ -590,7 +590,7 @@ async function loadPanelsInto(grid, d) {
     const frag = document.createDocumentFragment();
     for (const p of panels) { const c = await renderPanel(p, j.editable !== false); S.panelCards.push(c); frag.appendChild(c); }
     grid.replaceChildren(frag);
-  } catch (e) { grid.replaceChildren(Object.assign(document.createElement('div'), { className: 'bad', textContent: 'erreur : ' + e.message })); }
+  } catch (e) { grid.replaceChildren(Object.assign(document.createElement('div'), { className: 'bad', textContent: prefixeDUnEchecRenduTelQuel() + e.message })); }
 }
 // reordonne les dashboards (place `from` juste avant `target`) et persiste les positions
 function reorderDash(fromId, targetId) {
@@ -834,7 +834,7 @@ async function renderPanel(p, editable = true) {
   function fenetreDuParcours(ouvrir) {
     return (ouvrir || !spg.win) ? panelWindow() : spg.win;
   }
-  function panelBad(m) { body.replaceChildren(Object.assign(document.createElement('div'), { className: 'bad', textContent: 'Erreur : ' + m })); }
+  function panelBad(m) { body.replaceChildren(Object.assign(document.createElement('div'), { className: 'bad', textContent: motDUneLectureQuiNEstPasServie('prefixe_de_la_lecture_refusee_en_debut_de_phrase') + m })); }
   function renderServerPaged() {
     if (!spg.rows) return;
     const stats = result && result.stats;
@@ -894,10 +894,10 @@ async function renderPanel(p, editable = true) {
       const txt = await r.text().catch(() => '');
       const tg = transientGatewayMsg(r.status, r.ok ? '' : txt);
       if (tg) { panelBad(tg); return; }
-      if (!txt) { panelBad('réponse vide (timeout proxy ou requête trop lourde ?)'); return; }
+      if (!txt) { panelBad(motDUneLectureQuiNEstPasServie('reponse_vide')); return; }
       let j;
       try { j = JSON.parse(txt); }
-      catch { const tg2 = transientGatewayMsg(r.status, txt); if (tg2) { panelBad(tg2); return; } panelBad('réponse non-JSON (tronquée ? timeout ?)'); return; }
+      catch { const tg2 = transientGatewayMsg(r.status, txt); if (tg2) { panelBad(tg2); return; } panelBad(phraseDUneReponseNonJson()); return; }
       if (!r.ok || j.error) { panelBad(j.error || r.status); return; }
       spg.page = Math.max(0, page); spg.cols = j.columns || []; spg.rows = j.rows || []; spg.shown = spg.rows.length;
       // ① KEYSET : mémorise le curseur de continuation (Suivant SÉQUENTIEL rapide, sans cap). Le total reste celui du
@@ -925,7 +925,7 @@ async function renderPanel(p, editable = true) {
       }
     } catch (e) {
       if (e && e.name === 'AbortError') { flashStopped(prog); return; }
-      body.textContent = 'erreur : ' + e.message;
+      body.textContent = prefixeDUnEchecRenduTelQuel() + e.message;
     } finally {
       panelInflight.delete(ctrl); if (card._loadCtrl === ctrl) card._loadCtrl = null;
       if (prog && !prog.classList.contains('stopped')) prog.hidden = true;
@@ -980,18 +980,18 @@ async function renderPanel(p, editable = true) {
       pFrom = from; pTo = to;
       const r = await fetch(`/api/panels/${p.id}/data?from=${from}&to=${to}`, { signal: ctrl.signal });
       const txt = await r.text().catch(() => '');   // texte d'abord -> gère réponse vide/tronquée (timeout proxy)
-      const bad = m => body.replaceChildren(Object.assign(document.createElement('div'), { className: 'bad', textContent: 'Erreur : ' + m }));
+      const bad = m => body.replaceChildren(Object.assign(document.createElement('div'), { className: 'bad', textContent: motDUneLectureQuiNEstPasServie('prefixe_de_la_lecture_refusee_en_debut_de_phrase') + m }));
       // PANNE TRANSITOIRE DE PASSERELLE : (502/503/504 ou corps HTML « no available server » pendant
       // un rollout) -> message propre au lieu du corps brut Traefik.
       const tg = transientGatewayMsg(r.status, r.ok ? '' : txt);   // ok=200 -> corps vérifié plus bas (cas HTML servi en 200)
       if (tg) { bad(tg); return; }
-      if (!txt) { bad('réponse vide (timeout proxy ou requête trop lourde ?)'); return; }
+      if (!txt) { bad(motDUneLectureQuiNEstPasServie('reponse_vide')); return; }
       let j;
       try { j = JSON.parse(txt); }
       catch {
         const tg2 = transientGatewayMsg(r.status, txt);   // corps HTML « no available server » servi en 200 -> transitoire
         if (tg2) { bad(tg2); return; }
-        bad('réponse non-JSON (tronquée ? timeout ?) : ' + txt.slice(0, 120)); return;
+        bad(phraseDUneReponseNonJson(txt.slice(0, 120))); return;
       }
       if (!r.ok || j.error) { bad(j.error || r.status); return; }
       // FROID : 1er affichage d'un panneau jamais mesuré -> le daemon renvoie {warming:true} sans bloquer.
@@ -1012,7 +1012,7 @@ async function renderPanel(p, editable = true) {
       result = { columns: j.columns, rows: j.rows, stats: j.stats }; draw();
     } catch (e) {
       if (e && e.name === 'AbortError') { flashStopped(prog); return; }   // STOP : feedback DISCRET via la barre (pas de texte)
-      body.textContent = 'erreur : ' + e.message;
+      body.textContent = prefixeDUnEchecRenduTelQuel() + e.message;
     } finally {
       panelInflight.delete(ctrl); if (card._loadCtrl === ctrl) card._loadCtrl = null;
       if (prog && !prog.classList.contains('stopped')) prog.hidden = true;   // ne pas couper le flash STOP en cours
@@ -1111,7 +1111,7 @@ async function captureSnapshot(d) {
       const card = document.createElement('div'); card.className = 'snapcard';
       const t = document.createElement('div'); t.className = 'snaptitle'; t.textContent = p.title || '';
       card.appendChild(t);
-      if (p.error) { card.appendChild(Object.assign(document.createElement('div'), { className: 'muted', textContent: 'erreur : ' + p.error })); }
+      if (p.error) { card.appendChild(Object.assign(document.createElement('div'), { className: 'muted', textContent: prefixeDUnEchecRenduTelQuel() + p.error })); }
       // `P10.5-i` — L'INSTANTANÉ EST L'ARTEFACT QUI VOYAGE : partageable par jeton, relu des semaines
       // plus tard, hors de tout contexte de fenêtre. C'est le point de pose le plus nécessaire des quatre.
       else if (!p.rows || !p.rows.length) { card.appendChild(corpsSansLigne(p.stats, document.createTextNode('aucune donnée'))); }

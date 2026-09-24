@@ -39,6 +39,7 @@
 //! Parce qu'une déclaration ÉTEINT une alerte, elle est auditée à la sévérité que ce dépôt réserve à
 //! l'étouffement d'un signal (3), et jamais silencieusement.
 use crate::*;
+use crate::handlers::transaction_validee::rendre_apres_validation;
 
 /// Plafond du motif écrit par l'exploitant — bornage anti-abus avant écriture (même discipline que
 /// `NOTE_MAX` côté sources).
@@ -326,6 +327,16 @@ pub(crate) async fn host_settings_get(State(st): State<AppState>, Extension(au):
     }
 }
 
+// `P10.25-g` — LE `COMMIT` D'UNE DÉCLARATION D'HÔTE EST JUGÉ. MESURÉ sur la forme d'avant (témoins `cjds_`) : 200,
+// transaction laissée ouverte, la déclaration visible pour ce processus et absente à froid ; le cache de flotte était
+// invalidé pour une déclaration que la base n'avait pas prise. Un refus rend cette cause en 503, rien d'invalidé.
+/// `P10.25-g` — déclaration d'hôte inchangée : le `COMMIT` de ce geste refusé.
+pub(crate) const CAUSE_DECLARATION_D_HOTE_INCHANGEE: &str = "DÉCLARATION D'HÔTE INCHANGÉE : la base n'a pas validé \
+     la transaction (COMMIT refusé) et l'a annulée — l'hôte garde ses réglages d'avant dans l'inventaire de flotte, \
+     et aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou \
+     verrouillée.";
+
+
 /// POST|PUT /api/hosts/settings {host, action, value?, motif?} -> LA DÉCLARATION D'ATTENTE d'un hôte.
 /// Enum d'actions FERMÉ : `set_attente` (value ∈ `ATTENTES_DECLARABLES`) | `clear`. EDITOR+ (déclarer une
 /// machine de son propre parc est un geste éditorial, comme déclarer une source) + double-audit
@@ -418,13 +429,12 @@ pub(crate) async fn host_settings_put(State(st): State<AppState>, Extension(au):
         Ok(())
     })();
     match outcome {
-        Ok(()) => {
-            let _ = conn.execute_batch("COMMIT");
+        Ok(()) => rendre_apres_validation(&conn, "hotes", "déclaration d'hôte", CAUSE_DECLARATION_D_HOTE_INCHANGEE, || {
             // La flotte est servie en SWR : sans invalidation, la déclaration ne se verrait qu'au bout du
             // TTL et l'exploitant croirait son geste perdu.
             fleet_map().lock().remove(req_db_path(&st, &au).as_str());
             (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
-        }
+        }),
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK"); // fail-closed : rien de persisté sans audit
             (StatusCode::INTERNAL_SERVER_ERROR, format!("échec transaction audit (aucune modification appliquée): {e}")).into_response()

@@ -2,6 +2,7 @@
 //! envoi `notify_send`, dispatch de fond `dispatch_notifications`, et CRUD/test des notifiers.
 //! Extrait de main.rs (refactor split #25 — byte-identique).
 use crate::*;
+use crate::handlers::transaction_validee::valider_la_transaction;
 
 // ---------- notifications multi-canal (P-IR) ----------
 /// Neutralise l'injection d'en-têtes (CR/LF) dans les valeurs passées à curl (Title/Subject/From/To).
@@ -394,16 +395,30 @@ pub(crate) async fn notifier_create(State(st): State<AppState>, Extension(au): E
         Ok(id)
     })();
     match outcome {
-        Ok(id) => {
-            let _ = conn.execute_batch("COMMIT");
-            Json(json!({ "id": id }))
-        }
+        Ok(id) => match valider_la_transaction(&conn) {
+            Ok(()) => Json(json!({ "id": id })),
+            Err(refus) => {
+                eprintln!("[notifiers] WARN création du canal '{name}' NON validée : {refus}");
+                Json(json!({ "error": CAUSE_CANAL_DE_NOTIFICATION_NON_CREE }))
+            }
+        },
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK"); // fail-closed : rien de persisté sans audit
             Json(json!({ "error": format!("échec transaction audit (aucune modification): {e}") }))
         }
     }
 }
+// `P10.25-g` — LES `COMMIT` DES CANAUX DE NOTIFICATION SONT JUGÉS. MESURÉ sur la forme d'avant (témoins `cjds_`) :
+// `{ id }`, 204 et 204 sur une transaction que la base n'avait pas prise, laissée ouverte sur l'écrivain. Les trois
+// routes gardent leur type de réponse (tenu par des témoins existants) : la création refuse par le canal `error`
+// qu'elle emploie déjà pour tous ses refus, la modification et la suppression rendent 503 (leur type ne porte pas de
+// corps) et le journal nomme la cause.
+/// `P10.25-g` — canal de notification non créé : le `COMMIT` de ce geste refusé.
+pub(crate) const CAUSE_CANAL_DE_NOTIFICATION_NON_CREE: &str = "CANAL DE NOTIFICATION NON CRÉÉ : la base n'a pas \
+     validé la transaction (COMMIT refusé) et l'a annulée — aucun canal n'est écrit, aucune alerte ne partira vers \
+     lui, et aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou \
+     verrouillée.";
+
 pub(crate) async fn notifier_update(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> StatusCode {
     if !au.is_admin() {
         return StatusCode::FORBIDDEN;
@@ -441,7 +456,16 @@ pub(crate) async fn notifier_update(State(st): State<AppState>, Extension(au): E
         Ok(())
     })();
     match outcome {
-        Ok(()) => { let _ = conn.execute_batch("COMMIT"); StatusCode::NO_CONTENT }
+        Ok(()) => match valider_la_transaction(&conn) {
+            Ok(()) => StatusCode::NO_CONTENT,
+            Err(refus) => {
+                eprintln!(
+                    "[notifiers] WARN modification du canal #{id} NON validée : {refus} — CANAL INCHANGÉ : il garde sa cible, \
+                     son secret et son activation d'avant, et aucune trace n'est écrite (503)"
+                );
+                StatusCode::SERVICE_UNAVAILABLE
+            }
+        },
         Err(_) => { let _ = conn.execute_batch("ROLLBACK"); StatusCode::INTERNAL_SERVER_ERROR }
     }
 }
@@ -467,7 +491,16 @@ pub(crate) async fn notifier_delete(State(st): State<AppState>, Extension(au): E
         Ok(())
     })();
     match outcome {
-        Ok(()) => { let _ = conn.execute_batch("COMMIT"); StatusCode::NO_CONTENT }
+        Ok(()) => match valider_la_transaction(&conn) {
+            Ok(()) => StatusCode::NO_CONTENT,
+            Err(refus) => {
+                eprintln!(
+                    "[notifiers] WARN suppression du canal #{id} NON validée : {refus} — CANAL NON SUPPRIMÉ : il reçoit toujours \
+                     les alertes, et aucune trace n'est écrite (503)"
+                );
+                StatusCode::SERVICE_UNAVAILABLE
+            }
+        },
         Err(_) => { let _ = conn.execute_batch("ROLLBACK"); StatusCode::INTERNAL_SERVER_ERROR }
     }
 }

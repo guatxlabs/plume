@@ -11,6 +11,7 @@
 //!                 commande. L'EXÉCUTION reste le chemin /api/actions EXISTANT (approbation + ledger) : ce
 //!                 workflow-action ne fait que RÉFÉRENCER l'action ; il ne l'exécute pas. Création = ADMIN.
 use crate::*;
+use crate::handlers::transaction_validee::rendre_apres_validation;
 
 
 /// Pourcent-encode une valeur pour insertion SÛRE dans une URL (unreserved RFC 3986 conservés ; tout le reste
@@ -128,6 +129,16 @@ pub(crate) async fn workflow_action_create(State(st): State<AppState>, Extension
     }
 }
 
+// `P10.25-g` — LE `COMMIT` DE LA SUPPRESSION D'UNE WORKFLOW-ACTION EST JUGÉ. Celui de `workflow_action_create` reste
+// avalé, reste NOMMÉ pour la même raison que `report_create` (ensemble de `check_a_swallowed_write_is_never_affirmed_as_a_fact.py`).
+/// `P10.25-g` — workflow-action non supprimée : le `COMMIT` de ce geste refusé.
+/// La tête s'écrit sans trait d'union : la console reconnaît la famille « rien n'a changé » à une tête en capitales,
+/// apostrophes, virgules et espaces (`OUVERTURE_DE_L_ECRITURE_NON_VALIDEE`, `web/core.js`).
+pub(crate) const CAUSE_WORKFLOW_ACTION_NON_SUPPRIMEE: &str = "ACTION DE WORKFLOW NON SUPPRIMÉE : la base n'a pas validé \
+     la transaction (COMMIT refusé) et l'a annulée — elle est toujours là et toujours proposée sur les champs qu'elle \
+     vise, et aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou \
+     verrouillée.";
+
 /// DELETE /api/workflow-actions/{id} — supprime (editor+, audité).
 pub(crate) async fn workflow_action_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     if let Err(r) = require_editor(&au) { return r; }
@@ -145,7 +156,9 @@ pub(crate) async fn workflow_action_delete(State(st): State<AppState>, Extension
         Ok(id)
     })();
     match outcome {
-        Ok(_) => { let _ = conn.execute_batch("COMMIT"); Json(json!({ "ok": true })).into_response() }
+        Ok(_) => rendre_apres_validation(&conn, "workflow-actions", &format!("suppression de la workflow-action #{id}"), CAUSE_WORKFLOW_ACTION_NON_SUPPRIMEE, || {
+            Json(json!({ "ok": true })).into_response()
+        }),
         Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit: {e}")) }
     }
 }

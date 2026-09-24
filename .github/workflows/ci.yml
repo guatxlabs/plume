@@ -834,7 +834,7 @@ env:
   # la copie est retirée, `knowledge` lit l'autorité `field_filter::STRUCTURAL_DENY`, et le témoin refuse toute
   # dérive future. Pas de `cfg(feature)` -> le MÊME +1 sur `EXPECTED_COLD_TESTS`, écart INCHANGÉ, mesuré par le
   # script du dépôt, jamais d'une addition.
-  EXPECTED_TESTS: "1894"
+  EXPECTED_TESTS: "1918"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -1306,7 +1306,7 @@ jobs:
           # `P11.19-a` (second volet, groundwork) (2026-09-12) : +1, le MÊME que sur `EXPECTED_TESTS`
           # (`les_champs_structurels_de_l_autorite_sont_refuses_comme_objet_de_savoir`) — pas de `cfg(feature)`,
           # écart INCHANGÉ. La dérivation est écrite auprès d'`EXPECTED_TESTS`, une seule fois.
-          EXPECTED_COLD_TESTS: "2149"
+          EXPECTED_COLD_TESTS: "2173"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail
@@ -2198,6 +2198,17 @@ jobs:
         continue-on-error: true
         run: python3 .github/scripts/check_a_sensor_escapes_a_backslash_under_every_awk.py
 
+      # `P10.25-g`, `P10.27-m` — UNE BORNE DE TRANSACTION N'EST JAMAIS AVALÉE. `let _ = … execute_batch("COMMIT")`,
+      # `let _ = tx.commit()`, un `BEGIN` absorbé ou pris sous un `if let Ok` sans `else` : depuis `P10.26-s`, un
+      # `COMMIT` avalé peut laisser ouverte une transaction qui BLOQUE l'ingestion jusqu'au redémarrage (`P10.27-g`),
+      # et un `BEGIN` avalé fait écrire dans la transaction d'un autre geste. Ensemble NOMMÉ des sites encore tolérés
+      # (fichier + fonction + forme), jugé dans les deux sens ; épreuves positives et négatives jouées à chaque
+      # exécution (54 sites vus sur l'arbre d'avant le lot, 2 tolérés après).
+      - name: Une borne de transaction n'est jamais avalée (P10.25-g, P10.27-m)
+        id: garde_72
+        continue-on-error: true
+        run: python3 .github/scripts/check_a_transaction_boundary_is_never_swallowed.py
+
       # `P11.18-z` — LA RECHERCHE D'UNE LISTE SURVIT AU RENDU QUI DÉTRUIT SON CHAMP. La garde tient que
       # chaque liste cherchable déclare l'identité stable sans laquelle la mémoire ne peut pas s'armer :
       # sans elle, le mécanisme est posé mais la vue se comporte comme avant, en silence.
@@ -2678,6 +2689,7 @@ jobs:
           total=$((total+1)); o="${{ steps.garde_69.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_swallowed_write_is_never_affirmed_as_a_fact.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_70.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_mail_sensor_classifies_dovecot_logins_of_both_versions.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_71.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_sensor_escapes_a_backslash_under_every_awk.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_72.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_transaction_boundary_is_never_swallowed.py : $o"; }
           echo "gardes jouées : $total ; en échec : $rouges"
           exit $rc
   features:

@@ -2,6 +2,7 @@
 //! cellule `playbook_cell`, et l'exécuteur périodique `run_playbooks`.
 //! Extrait de main.rs (refactor split #25 — byte-identique).
 use crate::*;
+use crate::handlers::transaction_validee::rendre_apres_validation;
 
 /// Durée du ban posé par un playbook `ban_ip`, telle que les exécuteurs la posent : `--duration` CrowdSec et
 /// TTL du blocage HTTP natif partagent `NETBAN_ACTION_TTL_S` (voir `action_command` et `netban_upsert`).
@@ -26,6 +27,17 @@ pub(crate) fn action_consequence(kind: &str) -> String {
         other => format!("action « {other} » hors vocabulaire : refusée à l'exécution"),
     }
 }
+
+// `P10.25-g` — LES `COMMIT` DES PLAYBOOKS SONT JUGÉS : un refus rend l'une de ces causes en 503, la transaction fermée.
+/// `P10.25-g` — playbook non créé : le `COMMIT` de ce geste refusé.
+pub(crate) const CAUSE_PLAYBOOK_NON_CREE: &str = "PLAYBOOK NON CRÉÉ : la base n'a pas validé la transaction (COMMIT \
+     refusé) et l'a annulée — aucun playbook n'est écrit, aucune riposte ne sera posée par lui, et aucune trace \
+     n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.25-g` — playbook inchangé : le `COMMIT` de ce geste refusé.
+pub(crate) const CAUSE_PLAYBOOK_INCHANGE: &str = "PLAYBOOK INCHANGÉ : la base n'a pas validé la transaction (COMMIT \
+     refusé) et l'a annulée — il garde sa requête, son action et son activation d'avant, et aucune trace n'est \
+     écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+
 
 pub(crate) async fn playbooks_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
     crate::req_conn!(st, au, conn);
@@ -99,7 +111,9 @@ pub(crate) async fn playbook_create(State(st): State<AppState>, Extension(au): E
         Ok(id)
     })();
     match outcome {
-        Ok(id) => { let _ = conn.execute_batch("COMMIT"); Json(json!({ "id": id, "managed": 2 })).into_response() }
+        Ok(id) => rendre_apres_validation(&conn, "playbooks", "création d'un playbook", CAUSE_PLAYBOOK_NON_CREE, || {
+            Json(json!({ "id": id, "managed": 2 })).into_response()
+        }),
         Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
     }
 }
@@ -170,7 +184,9 @@ pub(crate) async fn playbook_update(State(st): State<AppState>, Extension(au): E
         Ok(())
     })();
     match outcome {
-        Ok(()) => { let _ = conn.execute_batch("COMMIT"); Json(reponse_modification_acceptee("Ce playbook", "playbook", cur_managed)).into_response() }
+        Ok(()) => rendre_apres_validation(&conn, "playbooks", &format!("modification du playbook #{id}"), CAUSE_PLAYBOOK_INCHANGE, || {
+            Json(reponse_modification_acceptee("Ce playbook", "playbook", cur_managed)).into_response()
+        }),
         Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
     }
 }

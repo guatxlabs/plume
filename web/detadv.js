@@ -6,7 +6,7 @@
 //   POST /api/correlations/{id}/test   -> backtest {ok,matched,entities:[{entity,detail}]}
 //   GET  /api/baselines / POST … /{id} / DELETE … / POST …/{id}/test (aperçu {ok,bucket,observed,anomalies,hits})
 // SÉCU UI : tout en textContent/esc (anti-XSS). Mutations via apiSend (CSRF auto).
-import { $, api, apiSend, esc, fetchInto, fmtTs, humanAge, muted, pagedList, sev, toast, modal, confirmModal } from './core.js';
+import { $, api, apiSend, esc, fetchInto, fmtTs, humanAge, muted, pagedList, prefixeDUnEchecRenduTelQuel, sev, toast, modal, confirmModal } from './core.js';
 // P11.1-e : où arrive ce qu'une corrélation / une baseline produit (Alertes, ou Risque si risk_score > 0).
 import { announceCreated, takePendingNote, detectionDestination, destinationSentence } from './producer_ui.js';
 
@@ -98,16 +98,16 @@ async function editCorrelation(c) {
     await apiSend(isNew ? '/correlations' : '/correlations/' + c.id, 'POST', payload);
     announceCreated('correlations', detectionDestination(payload.risk_score), payload.name, payload.enabled ? 'première évaluation dans ' + payload.interval_s + ' s' : 'désactivée : cochez « Activée » pour qu\'elle tourne');
     loadCorrelations();
-  } catch (e) { toast('erreur : ' + ((e && e.message) || e), 'err', 6000); }
+  } catch (e) { toast(prefixeDUnEchecRenduTelQuel() + ((e && e.message) || e), 'err', 6000); }
 }
 async function deleteCorrelation(c) {
   if (!(await confirmModal('Supprimer la corrélation « ' + c.name + ' » ?', { okText: 'Supprimer', danger: true }))) return;
   try { await apiSend('/correlations/' + c.id, 'DELETE'); toast('corrélation supprimée', 'ok'); loadCorrelations(); }
-  catch (e) { toast('erreur : ' + ((e && e.message) || e), 'err', 6000); }
+  catch (e) { toast(prefixeDUnEchecRenduTelQuel() + ((e && e.message) || e), 'err', 6000); }
 }
 async function testCorrelation(c) {
   let d;
-  try { d = await apiSend('/correlations/' + c.id + '/test', 'POST', {}); } catch (e) { toast('erreur : ' + ((e && e.message) || e), 'err', 6000); return; }
+  try { d = await apiSend('/correlations/' + c.id + '/test', 'POST', {}); } catch (e) { toast(prefixeDUnEchecRenduTelQuel() + ((e && e.message) || e), 'err', 6000); return; }
   if (!d || d.error) { toast('échec : ' + ((d && d.error) || 'inconnu'), 'err', 6000); return; }
   const ents = Array.isArray(d.entities) ? d.entities : [];
   const body = document.createElement('div');
@@ -195,12 +195,12 @@ async function editBaseline(b) {
     await apiSend(isNew ? '/baselines' : '/baselines/' + b.id, 'POST', payload);
     announceCreated('baselines', detectionDestination(payload.risk_score), payload.name, payload.enabled ? 'première évaluation dans ' + payload.interval_s + ' s' : 'désactivée : cochez « Activée » pour qu\'elle tourne');
     loadBaselines();
-  } catch (e) { toast('erreur : ' + ((e && e.message) || e), 'err', 6000); }
+  } catch (e) { toast(prefixeDUnEchecRenduTelQuel() + ((e && e.message) || e), 'err', 6000); }
 }
 async function deleteBaseline(b) {
   if (!(await confirmModal('Supprimer la baseline « ' + b.name + ' » ?', { okText: 'Supprimer', danger: true }))) return;
   try { await apiSend('/baselines/' + b.id, 'DELETE'); toast('baseline supprimée', 'ok'); loadBaselines(); }
-  catch (e) { toast('erreur : ' + ((e && e.message) || e), 'err', 6000); }
+  catch (e) { toast(prefixeDUnEchecRenduTelQuel() + ((e && e.message) || e), 'err', 6000); }
 }
 // `P10.20-b` — CE QUI DISTINGUE UNE PORTE NON ARMÉE D'UNE LIGNE DE BASE ABSENTE, ET CE QUE ÇA COÛTE. La
 // route du dry-run ne porte AUCUN code : tous ses refus vivent dans `error` à 200 (« baseline introuvable »,
@@ -214,7 +214,7 @@ const OUVERTURE_DU_REFUS_DE_LA_PORTE_DRYRUN = /^DRY-RUN\s+REFUS/;
 
 async function testBaseline(b) {
   let d;
-  try { d = await apiSend('/baselines/' + b.id + '/test', 'POST', {}); } catch (e) { toast('erreur : ' + ((e && e.message) || e), 'err', 6000); return; }
+  try { d = await apiSend('/baselines/' + b.id + '/test', 'POST', {}); } catch (e) { toast(prefixeDUnEchecRenduTelQuel() + ((e && e.message) || e), 'err', 6000); return; }
   const causeServie = (d && typeof d.error === 'string') ? d.error.trim() : '';
   if (OUVERTURE_DU_REFUS_DE_LA_PORTE_DRYRUN.test(causeServie)) {
     // LE REFUS DE LA PORTE NE S'EFFACE PAS AU BOUT DE SIX SECONDES. Ce n'est pas un échec d'évaluation :

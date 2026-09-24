@@ -3,7 +3,7 @@
 // change côté auth. Anti-XSS : tout texte via textContent/esc ; le secret (client_secret / bind pw) est un
 // champ password, JAMAIS réaffiché, ré-envoyé UNIQUEMENT s'il est re-saisi (omis = conservé côté serveur).
 // La vraie garde reste SERVEUR (/api/idp/* admin-only ; /api/mfa/* borné à au.name).
-import { $, LANG, api, apiSend, unDeuxCentsSansCorpsLisible, confirmWithConsequence, disclosure, effacerLeRefusDUnGeste, esc, fmtTs, modal, motDuRefusDuSecondFacteur, muted, natureDuRefusDuSecondFacteur, peindreLeRefusDUnGeste, phraseDuRefusDuDemon, puitsDuRefusDUnGeste, toast, withBusy } from './core.js';
+import { $, LANG, api, apiSend, unDeuxCentsSansCorpsLisible, confirmWithConsequence, disclosure, effacerLeRefusDUnGeste, fmtTs, modal, motDuRefusDuSecondFacteur, muted, natureDuRefusDuSecondFacteur, peindreLeRefusDUnGeste, phraseDuRefusDuDemon, prefixeDUnEchecRenduTelQuel, puitsDuRefusDUnGeste, toast, withBusy } from './core.js';
 import { enabledSwitch } from './producer_ui.js';
 import { uiIsAdmin } from './multitenant.js';
 
@@ -12,6 +12,8 @@ import { uiIsAdmin } from './multitenant.js';
 // ---------------------------------------------------------------------------------------------------
 
 const KIND_LABEL = { oidc: 'OIDC', ldap: 'LDAP / AD', saml: 'SAML (à venir)' };
+const MOTS_DE_LA_MISE_A_JOUR_D_UN_FOURNISSEUR = { fr: '  · maj ', en: '  · updated ' };
+const motDeLaMiseAJourDUnFournisseur = () => (LANG === 'en' ? MOTS_DE_LA_MISE_A_JOUR_D_UN_FOURNISSEUR.en : MOTS_DE_LA_MISE_A_JOUR_D_UN_FOURNISSEUR.fr);
 
 // `P10.26-q` — LE REFUS D'UN GESTE SUR UN FOURNISSEUR D'IDENTITÉ RESTE SOUS LES YEUX. « FOURNISSEUR D'IDENTITÉ
 // INCHANGÉ » (le `COMMIT` refusé, `P10.25-e`) dit que celui qui était actif l'est toujours et AUTHENTIFIE ENCORE —
@@ -32,7 +34,7 @@ export async function loadIdpProviders() {
   catch (e) {
     // api() jette « <statut> <corps> » sur non-2xx : le 501 (mode multi-tenant) garde son message dédié.
     if (String((e && e.message) || '').startsWith('501')) { wrap.replaceChildren(muted('IdP réservé au mode mono-tenant.')); return; }
-    wrap.replaceChildren(muted('erreur : ' + ((e && e.message) || e))); return;
+    wrap.replaceChildren(muted(prefixeDUnEchecRenduTelQuel() + ((e && e.message) || e))); return;
   }
   if (!Array.isArray(list) || !list.length) {
     wrap.replaceChildren(muted('aucun fournisseur — clique « + Fournisseur » pour brancher un IdP OIDC ou LDAP. Tant qu\'aucun n\'est activé, l\'auth existante est inchangée.'));
@@ -51,7 +53,9 @@ function providerRow(p) {
   kind.textContent = KIND_LABEL[p.kind] || p.kind;
   const meta = document.createElement('span'); meta.className = 'muted'; meta.style.cssText = 'font-size:11px;margin-left:auto';
   const issuer = (p.config && (p.config.issuer || p.config.url)) || '';
-  meta.textContent = (p.has_secret ? '🔑 ' : '') + (issuer ? esc(issuer) : '') + (p.updated ? '  · maj ' + fmtTs(p.updated) : '');
+  // `P10.27-s` — l'émetteur est posé TEL QUEL dans un texte : `esc()` y affichait `&amp;`, `&quot;`, `&lt;` (témoin 117s),
+  // un texte n'étant jamais analysé comme du balisage. `P10.27-t` — la date de mise à jour a ses deux faces.
+  meta.textContent = (p.has_secret ? '🔑 ' : '') + issuer + (p.updated ? motDeLaMiseAJourDUnFournisseur() + fmtTs(p.updated) : '');
   // COMMUTATEUR PARTAGÉ (`P11.13-c`) : ce que la bascule arme, c'est une PORTE D'ENTRÉE — des comptes
   // extérieurs peuvent ouvrir une session par ce fournisseur. Le bouton « Activer / Désactiver » ne le
   // disait pas. `enabledSwitch` écrit la conséquence à côté de l'interrupteur dans les deux états, porte
@@ -237,7 +241,7 @@ export async function loadMfa() {
       actions.replaceChildren(refuse);
       return;
     }
-    status.textContent = 'erreur : ' + ((e && e.message) || e); return;
+    status.textContent = prefixeDUnEchecRenduTelQuel() + ((e && e.message) || e); return;
   }
   if (st && st.enabled) {
     status.textContent = '✓ Double authentification ACTIVE sur ce compte.';

@@ -20749,6 +20749,21 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
 }
 
 // ---------------------------------------------------------------------------------------------
+// `P10.27-q` — LES CAUSES DU DÉMON À EFFET PARTIEL, NOMMÉES : UN ENSEMBLE, PLUS UNE FORMULATION À ÉVITER.
+//
+// Une cause qui nomme un `BEGIN` ou un `COMMIT` dit, presque toujours, que RIEN N'A CHANGÉ : la base a annulé la
+// transaction, ou ne l'a jamais prise. Pas toutes : `CAUSE_ENVOI_DU_PUITS_CURSEUR_NON_AVANCE` dit une tranche DÉJÀ
+// écrite dans la copie, le `COMMIT` du curseur refusé. La dérivation du témoin 115 rangeait toute cause qui porte
+// « (COMMIT refusé) » dans « rien n'a changé » : une cause à effet partiel devait donc ÉVITER ces mots pour ne pas y
+// tomber — une règle que rien n'écrivait, tenue par la seule vigilance de qui rédige. Elle est désormais un ENSEMBLE
+// NOMMÉ : le témoin 115 en exclut les noms de sa dérivation, et le témoin 117 le juge dans les deux sens (chaque nom
+// désigne une cause de transaction du démon, aucune n'est dite « rien n'a changé » ; toute AUTRE cause de transaction
+// l'est, sous un cinq cent trois). Une cause neuve qui n'est ni reconnue ni nommée fait rougir le 117 : c'est une
+// décision qui manque, pas un défaut à taire.
+// ---------------------------------------------------------------------------------------------
+const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CURSEUR_NON_AVANCE"]);
+
+// ---------------------------------------------------------------------------------------------
 // (115) `P10.26-q` — LE REFUS D'UN GESTE D'ÉCRITURE A UNE FORME PARTAGÉE, NOMMÉE, BILINGUE, QUI RESTE SOUS LES YEUX ;
 //       `P10.26-p` — un cinq cent trois qui nomme sa cause la montre, par `api()` ;
 //       `P10.26-o` — la liste des comptes ne se replie sur « non administrateur » que sur le refus du rôle.
@@ -20822,13 +20837,15 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   const causeDe115 = (nom) => ((SITES_DES_CAUSES115.find((c) => c.nom === nom) || {}).cause || "").trim();
   // TOUTES les causes du `COMMIT` refusé, dérivées de l'arbre (hors tests) : une cause qu'un lot ajoutera est jugée ici
   // sans qu'on l'écrive — et une phrase que le démon changerait fait rougir la reconnaissance, au lieu de passer.
+  // `P10.27-q` — hors les causes à effet PARTIEL, nommées (`CAUSES_DU_DEMON_A_EFFET_PARTIEL`) : « (COMMIT refusé) » n'y
+  // dit pas « rien n'a changé », et le témoin 117 exige qu'elles ne le soient jamais.
   const TOUTES_LES_CAUSES_DU_COMMIT_REFUSE115 = [];
   for (const rel of readdirSync(path.join(RACINE, "daemon", "src"), { recursive: true })) {
     const r = String(rel);
     if (!r.endsWith(".rs") || r.split(path.sep).includes("tests")) continue;
     for (const m of lireLeDemon115(r).matchAll(/const (CAUSE_[A-Z0-9_]+): &str = "((?:[^"\\]|\\[\s\S])*)";/g)) {
       const cause = valeurRust115(m[2]);
-      if (/\(COMMIT refusé\)/.test(cause)) TOUTES_LES_CAUSES_DU_COMMIT_REFUSE115.push({ fichier: r, nom: m[1], cause: cause.trim() });
+      if (/\(COMMIT refusé\)/.test(cause) && !CAUSES_DU_DEMON_A_EFFET_PARTIEL.includes(m[1])) TOUTES_LES_CAUSES_DU_COMMIT_REFUSE115.push({ fichier: r, nom: m[1], cause: cause.trim() });
     }
   }
   instrument115(TOUTES_LES_CAUSES_DU_COMMIT_REFUSE115.length >= 12 && SITES_DES_CAUSES115.every((c) => TOUTES_LES_CAUSES_DU_COMMIT_REFUSE115.some((t) => t.nom === c.nom)),
@@ -21492,6 +21509,412 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
   }
   console.log("(116) OK — les quatre gestes des connecteurs (création et modification par le formulaire, bascule, retrait) disent le cinq cent trois du COMMIT refusé dans le puits partagé des connecteurs — « rien n'a changé » et la cause ENTIÈRE, dont la clause du retrait : chaque clé de livraison liée AUTHENTIFIE ENCORE —, dans les deux langues, sans avis ni rejet ; le formulaire refusé reste ouvert, secret gardé, sa ligne d'actions vidée ; la panne de transport est dite « NON confirmée » sur chaque geste ; un refus de forme, un texte brut, une page de passerelle et un COMMIT refusé hors d'un cinq cent trois ne disent pas « rien n'a changé », et un retrait, une bascule ou une création acceptés effacent le refus d'avant. La lecture des jetons ne dit « réservé à l'administrateur » que sur les refus du rôle de `rbac_gate` ; tout autre refus (annuaire, cinq cent trois et cinq cents nommés, passerelle, texte étranger, quatre cent un) se dit NON LU avec la réponse entière, sans échappement HTML, une demande qui n'aboutit pas avec sa cause, dans les deux langues. La phrase d'une panne de passerelle et le préfixe d'une lecture refusée (`fetchInto`, liste paginée côté serveur) ont leurs deux faces, la française inchangée. CE QUI ÉTAIT FAUX OU IMPRÉCIS : `P10.26-w` disait la cause « remplacée par Service momentanément indisponible » — `apiSend` ne remplace rien, c'était le JSON brut coupé à deux cents caractères, et le retrait perdait ainsi la clause des clés qui authentifient encore ; `P10.27-a` disait `esc()` « lu » — joué, tout refus JSON hors cinq cent deux/trois/quatre s'affichait `&quot;`, et `&amp;`/`&lt;` de même ; `P10.27-c` ne nommait que `fetchInto` — la liste paginée côté serveur portait le même préfixe.");
+}
+
+// ---------------------------------------------------------------------------------------------
+// (117) `P10.27-n` / `P10.27-v` — LE CINQ CENT TROIS DU REPARSE EMPRUNTE LA FORME PARTAGÉE DE `P10.26-q` ;
+//       `P10.27-q` — la forme reconnaît la famille « rien n'a changé » par ses DEUX ouvertures (le COMMIT refusé
+//       et annulé ; la transaction que la base n'a pas prise), et une cause à effet PARTIEL — nommée dans
+//       `CAUSES_DU_DEMON_A_EFFET_PARTIEL`, ensemble jugé ici dans les deux sens — n'y est JAMAIS rangée ;
+//       `P10.27-t` — le préfixe d'un échec rendu tel quel et les deux phrases d'`api()` ont leurs deux faces, et
+//       aucun module n'en écrit une copie française hors d'une face `fr:` ;
+//       `P10.27-r` — la confirmation du retrait d'un connecteur dit que ses clés de livraison sont révoquées ;
+//       `P10.27-s` — aucun `esc()` n'aboutit dans un texte : l'émetteur d'un fournisseur s'affiche tel quel.
+//
+// CE QUE LE DÉMON SERT, RELU ICI ET NON RECOPIÉ : `CAUSE_REPARSE_NON_APPLIQUE` (daemon/src/handlers/detection.rs),
+// rendue par `refuser_le_geste_non_valide` dans `parser_reparse`, qui la sert en cinq cent trois JSON par `err_json` ;
+// TOUTES les causes du démon (hors tests) qui nomment un `BEGIN` ou un `COMMIT` ; le corps de `connector_delete`, où
+// la suppression des clés de livraison (`DELETE FROM token … kind IN (…)`) précède le `COMMIT` jugé de la même
+// transaction — les genres révoqués sont LUS dans cette requête.
+//
+// CE QUE LA CONSOLE EN FAISAIT, MESURÉ AVANT CE LOT (2026-09-24, `web/` de `HEAD`, ce témoin joué tel quel ; les lignes
+// `[117…0]` rejouent la mesure à chaque exécution) :
+//   · le reparse n'avait AUCUN puits : le cinq cent trois partait dans un avis qui s'efface, « 503 {"error":"REPARSE NON
+//     APPLIQUÉ : la base n'a pas pris la transaction du reparse (BEGIN ou COMMIT refusé : verrou tenu, transaction d'un
+//     autre geste pendante » — le JSON brut coupé AVANT « AUCUN event n'a été modifié », la clause qui dit que rien n'a
+//     bougé ; « Failed to fetch » nu, à l'essai comme à l'écriture ; « réservé admin » (servi en deux cents) dans un avis ;
+//   · la forme partagée lisait « refus nommé » les trois causes de la transaction non prise (`CAUSE_REPARSE_NON_APPLIQUE`,
+//     `CAUSE_ENVOI_DU_PUITS_NON_FAIT`, `CAUSE_LOT_D_INGESTION_NON_ECRIT`) : elle ne connaissait qu'une ouverture ;
+//   · la confirmation du retrait d'un connecteur ne disait RIEN des clés de livraison, et restait française en anglais ;
+//   · l'émetteur d'un fournisseur s'affichait « https://idp.example/realm?a=1&amp;b=&quot;x&quot;&amp;c=&lt;y&gt; »,
+//     suivi de « · maj » en anglais ;
+//   · quarante-sept littéraux français du préfixe d'un échec et des deux phrases d'`api()`, dans douze modules ; en anglais,
+//     « erreur : 500 … » (panneau Système, modèles de données, fournisseurs), « réponse vide du serveur… », « réponse
+//     non-JSON… ».
+//
+// CE QUE CE TÉMOIN NE TIENT PAS : le transport est un simulacre — aucune route n'est rejouée, les causes sont LUES
+// dans l'arbre du démon ; le puits est jugé par son texte et sa marque de pose, pas par un rendu (`P10.27-f`) ; la
+// cause servie reste en français sous les deux langues (`P10.27-u`) ; la recherche d'un préfixe français et celle
+// d'un `esc()` dans un texte lisent le SOURCE (commentaires retirés), littéral par littéral et instruction par
+// instruction : une valeur échappée qui voyage par une variable jusqu'à un texte, ou un préfixe composé de deux
+// littéraux, leur échappent.
+// ---------------------------------------------------------------------------------------------
+{
+  const url117 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const FICHIERS117 = ["core.js", "detection_admin.js", "connectors.js", "idp.js", "datamodels.js", "system.js", "state.js"];
+  const modsFr117 = [];
+  for (const f of FICHIERS117) modsFr117.push(await import(url117(f)));
+  const langueOrigine117 = localStorage.getItem("soc_lang");
+  localStorage.setItem("soc_lang", "en");
+  const modsEn117 = [];
+  for (const f of FICHIERS117) modsEn117.push(await import(adresseSousLaLangue(f)));
+  if (langueOrigine117 === null) localStorage.removeItem("soc_lang"); else localStorage.setItem("soc_lang", langueOrigine117);
+  const langue117 = (nom, m) => ({ nom, noyau: m[0], detection: m[1], connecteurs: m[2], idp: m[3], modeles: m[4], systeme: m[5], S: m[6].S });
+  const FR117 = langue117("fr", modsFr117), EN117 = langue117("en", modsEn117);
+
+  const tic117 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser117 = async (n = 30) => { for (let i = 0; i < n; i++) await tic117(); };
+  const nu117 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ").trim();
+  const serre117 = (t) => String(t).replace(/\s+/g, " ").trim();
+  const cueillir117 = (el, pred, acc = []) => { if (el && pred(el)) acc.push(el); ((el && el.children) || []).forEach((c) => cueillir117(c, pred, acc)); return acc; };
+  const instrument117 = (vrai, quoi) => exiger(vrai, `(117-instrument) ${quoi} : ce témoin REFUSE DE CONCLURE`);
+  const corpsDeFonction117 = (src, entete) => { const i = src.indexOf(entete); if (i < 0) return ""; const j = src.indexOf("\n}\n", i); return j < 0 ? "" : src.slice(i, j + 2); };
+  const valeurRust117 = (brut) => brut.replace(/\\\n\s*/g, "").replace(/\\"/g, "\"");
+  const constante117 = (src, nom) => { const m = src.match(new RegExp("const " + nom + ": &str = \"((?:[^\"\\\\]|\\\\[\\s\\S])*)\";")); return m ? valeurRust117(m[1]).trim() : ""; };
+  const lireLeDemon117 = (rel) => { try { return readFileSync(path.join(RACINE, "daemon", "src", rel), "utf8"); } catch (e) { return ""; } };
+  const ACCENTS117 = /[éèêàçùôâîÉÈÊÀ]/;
+  const ACCUSE117 = /\b(vous|votre|vos|you|your)\b|invalide|interdit|erreur|échec|invalid|forbidden|error|fail/i;
+  const ECHAPPEMENT_HTML117 = /&(quot|amp|lt|gt|#39);/;
+  const appeler117 = (mod, nom, ...args) => { if (typeof mod[nom] !== "function") return `(${nom} absente)`; try { return mod[nom](...args); } catch (e) { return `(${nom} jette : ${e && e.message})`; } };
+  // Les commentaires retirés, positions gardées (une ligne reste la même ligne). Un `//` précédé d'un deux-points
+  // (`https://`) ou d'un guillemet n'ouvre pas de commentaire.
+  const sansCommentaires117 = (s) => s.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "))
+    .replace(/(^|[^:\\'"`])\/\/[^\n]*/g, (m, p) => p + " ".repeat(m.length - p.length));
+
+  // ── (0) L'INSTRUMENT : CE QUE LE DÉMON SERT, LU DANS SON ARBRE ─────────────────────────────────────────────
+  const DETECTION_RS117 = lireLeDemon117("handlers/detection.rs");
+  const CAUSE_REPARSE117 = constante117(DETECTION_RS117, "CAUSE_REPARSE_NON_APPLIQUE");
+  const REFUSER117 = corpsDeFonction117(lireLeDemon117("handlers/transaction_validee.rs"), "pub(crate) fn refuser_le_geste_non_valide(");
+  const ROUTEUR117 = lireLeDemon117("server/groupes_de_routes.rs");
+  instrument117(CAUSE_REPARSE117.length > 150
+    && /refuser_le_geste_non_valide\([^;]*, CAUSE_REPARSE_NON_APPLIQUE\)/.test(corpsDeFonction117(DETECTION_RS117, "pub(crate) async fn parser_reparse("))
+    && /err_json\(StatusCode::SERVICE_UNAVAILABLE, cause\)/.test(REFUSER117)
+    && /\.route\("\/api\/parsers\/reparse", post\(parser_reparse\)\)/.test(ROUTEUR117),
+    "`CAUSE_REPARSE_NON_APPLIQUE` n'est plus lue, n'est plus rendue par `parser_reparse` en cinq cent trois JSON, ou la route du reparse a changé");
+  // L'UNIVERS DE `P10.27-q` : toute cause du démon (hors tests) qui nomme un `BEGIN` ou un `COMMIT` — une transaction
+  // que la base n'a pas prise, pas validée, ou dont une partie seulement a eu lieu. Une cause qu'un lot ajoutera est
+  // jugée ici sans qu'on l'écrive.
+  const CAUSES_DE_TRANSACTION117 = [];
+  for (const rel of readdirSync(path.join(RACINE, "daemon", "src"), { recursive: true })) {
+    const r = String(rel);
+    if (!r.endsWith(".rs") || r.split(path.sep).includes("tests")) continue;
+    for (const m of lireLeDemon117(r).matchAll(/const (CAUSE_[A-Z0-9_]+): &str = "((?:[^"\\]|\\[\s\S])*)";/g)) {
+      const cause = valeurRust117(m[2]).trim();
+      if (/\b(?:BEGIN|COMMIT)\b/.test(cause)) CAUSES_DE_TRANSACTION117.push({ fichier: r, nom: m[1], cause });
+    }
+  }
+  instrument117(CAUSES_DE_TRANSACTION117.length >= 20 && CAUSES_DE_TRANSACTION117.some((c) => c.nom === "CAUSE_REPARSE_NON_APPLIQUE"),
+    `la dérivation des causes de transaction en trouve ${CAUSES_DE_TRANSACTION117.length} (plancher 20), ou ne trouve pas celle du reparse`);
+  // Le retrait d'un connecteur : les genres de clé de livraison qu'il révoque, LUS dans sa requête, et la preuve que
+  // cette requête précède le `COMMIT` jugé de la même transaction.
+  const SUPPRESSION117 = corpsDeFonction117(lireLeDemon117("handlers/connectors/mod.rs"), "pub(crate) async fn connector_delete(");
+  const requeteDesCles117 = SUPPRESSION117.match(/DELETE FROM token WHERE connector_id=\?1 AND kind IN \(([^)]*)\)/);
+  const GENRES_REVOQUES117 = requeteDesCles117 ? [...requeteDesCles117[1].matchAll(/'([a-z_]+)'/g)].map((m) => m[1]) : [];
+  const iCles117 = requeteDesCles117 ? SUPPRESSION117.indexOf(requeteDesCles117[0]) : -1;
+  instrument117(GENRES_REVOQUES117.length >= 1 && iCles117 > SUPPRESSION117.indexOf("BEGIN") && SUPPRESSION117.indexOf("BEGIN") >= 0
+    && iCles117 < SUPPRESSION117.indexOf("valider_la_transaction(&conn)"),
+    "`connector_delete` ne révoque plus les clés de livraison de son connecteur dans la transaction qu'il valide, ou sa requête n'est plus lisible");
+  // Ce qui, dans une phrase, NOMME chaque genre révoqué. Un genre neuf sans motif ici : ce témoin refuse de conclure.
+  const MOTIF_D_UN_GENRE117 = { firehose: /firehose/i, gcp_pubsub: /pub\/sub/i };
+  instrument117(GENRES_REVOQUES117.every((g) => MOTIF_D_UN_GENRE117[g]), `un genre révoqué par \`connector_delete\` n'a pas de motif ici : ${JSON.stringify(GENRES_REVOQUES117)}`);
+  instrument117(FR117.noyau.LANG !== "en" && EN117.noyau.LANG === "en", `les deux instances du point commun ne portent pas deux langues (« ${FR117.noyau.LANG} » / « ${EN117.noyau.LANG} »)`);
+  const ATTENDUS117 = [["detection", "reparserLesEvenements"], ["noyau", "prefixeDUnEchecRenduTelQuel"], ["noyau", "phraseDUneReponseNonJson"]];
+  const absents117 = ATTENDUS117.filter(([m, n]) => typeof FR117[m][n] !== "function" || typeof EN117[m][n] !== "function").map(([m, n]) => n);
+  exiger(absents117.length === 0, `(117-exports) un geste ou une face jugés ici ne sont pas exportés : ${JSON.stringify(absents117)} — la mesure continue par les nœuds câblés`);
+
+  // ── LE SIMULACRE ─────────────────────────────────────────────────────────────────────────────────────────
+  const fetchOrigine117 = globalThis.fetch, minuterieOrigine117 = globalThis.setTimeout, qsOrigine117 = document.querySelector;
+  const etatOrigine117 = [FR117.S, EN117.S].map((S) => ({ S, admin: S.isAdmin, auth: S.AUTH }));
+  const qs117 = (sel) => qsOrigine117.call(document, sel);
+  let servis117 = {};
+  const appels117 = [];
+  const reponse117 = (statut, texte) => ({ ok: statut >= 200 && statut < 300, status: statut, headers: { get: () => null }, text: async () => texte, json: async () => JSON.parse(texte), clone: () => reponse117(statut, texte) });
+  // Une réponse peut dépendre de la demande (le reparse sépare l'essai de l'écriture par son corps).
+  const simulacre117 = async (u, init) => {
+    const k = ((init && init.method) || "GET").toUpperCase() + " " + String(u).split("?")[0];
+    let corpsEnvoye = null; try { corpsEnvoye = init && init.body ? JSON.parse(init.body) : null; } catch (e) { corpsEnvoye = null; }
+    const appel = { k, statut: 0, corps: corpsEnvoye }; appels117.push(appel);
+    let r = Object.prototype.hasOwnProperty.call(servis117, k) ? servis117[k] : servis117["*"];
+    if (typeof r === "function") r = await r(corpsEnvoye);
+    const texte = !r ? "{}" : typeof r.corps === "string" ? r.corps : JSON.stringify(r.corps === undefined ? {} : r.corps);
+    appel.statut = (r && r.statut) || 200;
+    return reponse117(appel.statut, texte);
+  };
+  const compter117 = (k, pred = () => true) => appels117.filter((a) => a.k === k && pred(a)).length;
+  const refus503De117 = (cause, id = "plume-e1-117") => ({ statut: 503, corps: { error: cause, id } });
+  const reseauCoupe117 = () => { throw new TypeError("Failed to fetch"); };
+  const fenetre117 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !c.classList.contains("out")).pop();
+  const formulaireDeLaFenetre117 = () => { const ov = fenetre117(); return ov && ov.children[0] ? ov.children[0].children[0] || null : null; };
+  const accepter117 = () => { const form = formulaireDeLaFenetre117(); if (!form || typeof form.onsubmit !== "function") return false; form.onsubmit({ preventDefault() {} }); return true; };
+  // Le texte que la fenêtre de confirmation MONTRE (titre, message, conséquence), sans ses boutons.
+  const texteDeLaFenetre117 = () => { const form = formulaireDeLaFenetre117(); return form ? serre117(cueillir117(form, (e) => e.tagName === "H3" || e.tagName === "P").map((e) => nu117(e)).join(" ")) : ""; };
+  const avisDe117 = () => { const h = qs117("#toasts"); return h ? h.children.map((t) => nu117(t)) : []; };
+  const bouton117 = (hote, pred) => (hote ? cueillir117(hote, (e) => e.tagName === "BUTTON" && pred(e))[0] || null : null);
+  const puitsNomme117 = (parent, surface) => (parent ? parent.children.find((n) => typeof n.getAttribute === "function" && n.getAttribute("data-puits-du-refus-d-un-geste") === surface) || null : null);
+  const puitsDuReparse117 = () => puitsNomme117(qs117("#parsers"), "reparse");
+  const puitsDesConnecteurs117 = () => { const l = qs117("#connector-list"); return puitsNomme117(l ? l.parentNode : null, "connecteurs"); };
+
+  const ESSAI117 = { scanned: 10, matched: 3, updated: 0, truncated: false, dry_run: true, cap: 50000 };
+  const ROUTE_DU_REPARSE117 = "POST /api/parsers/reparse";
+  const estUnEssai117 = (a) => !!(a.corps && a.corps.dry_run === true);
+  // Le geste exporté, sous SA langue ; absent (arbre d'avant), le bouton câblé — par la dernière instance importée.
+  const jouerLeReparse117 = async (L, essai, ecriture) => {
+    servis117 = { [ROUTE_DU_REPARSE117]: (corps) => (corps && corps.dry_run === true ? (typeof essai === "function" ? essai() : essai) : (typeof ecriture === "function" ? ecriture() : ecriture)) };
+    appels117.length = 0;
+    const avant = avisDe117().length;
+    let rejet = "", confirmation = "";
+    try {
+      const g = Promise.resolve(typeof L.detection.reparserLesEvenements === "function" ? L.detection.reparserLesEvenements() : qs117("#parser-reparse").onclick());
+      await laisser117();
+      confirmation = texteDeLaFenetre117();
+      accepter117();
+      await g;
+    } catch (e) { rejet = String((e && e.message) || e).slice(0, 200); }
+    await laisser117(40);
+    const p = puitsDuReparse117(), b = qs117("#parser-reparse");
+    return { essais: compter117(ROUTE_DU_REPARSE117, estUnEssai117), ecritures: compter117(ROUTE_DU_REPARSE117, (a) => !estUnEssai117(a)), rejet, confirmation,
+      avis: avisDe117().slice(avant).map((t) => t.slice(0, 220)), nature: p && p.getAttribute("data-refus-d-un-geste"), texte: nu117(p),
+      phrase: p && p.children[0] ? nu117(p.children[0]) : "", montre: !!p && p.hidden === false, role: p && p.getAttribute("role"),
+      bouton: b ? { inactif: !!b.disabled, libelle: nu117(b) } : null };
+  };
+  const LIBELLE_DU_REPARSE117 = nu117(qs117("#parser-reparse"));
+  instrument117(LIBELLE_DU_REPARSE117.length > 3, "le bouton `#parser-reparse` n'est plus dans la page");
+
+  const CONNECTEUR117 = { id: 6, name: "fh-117", type: "firehose", env_id: "prod", interval_s: 300, enabled: true, has_secret: false, config: {} };
+  const FOURNISSEUR117 = { id: 4, name: "corp-117", kind: "oidc", enabled: true, has_secret: true, config: { issuer: "https://idp.example/realm?a=1&b=\"x\"&c=<y>" }, updated: 1 };
+
+  globalThis.fetch = simulacre117;
+  globalThis.setTimeout = (fn, ms) => (ms >= 1000 ? 0 : minuterieOrigine117(fn, ms >= 100 ? 0 : ms));
+  for (const L of [FR117, EN117]) { L.S.isAdmin = true; L.S.AUTH = { user: "hugo", role: "admin", auth_method: "cookie" }; }
+  try {
+    // ══ (q) `P10.27-q` — LA FAMILLE « RIEN N'A CHANGÉ » PAR SES DEUX OUVERTURES ; LES CAUSES À EFFET PARTIEL, NOMMÉES ══
+    const FAMILLE_RIEN_N_A_CHANGE117 = ["ecriture_non_validee", "transaction_non_prise"];
+    const erreur117 = (statut, cause) => Object.assign(new Error(statut + " " + JSON.stringify({ error: cause }).slice(0, 200)), { statutDuRefus: statut, causeDuDemon: cause });
+    const nature117 = (L, statut, cause) => appeler117(L.noyau, "natureDuRefusDUnGeste", erreur117(statut, cause));
+    const ecartsQ117 = [];
+    const nomsDesCausesDeTransaction117 = new Set(CAUSES_DE_TRANSACTION117.map((c) => c.nom));
+    // (q1) L'ensemble nommé désigne des causes QUI EXISTENT et qui parlent d'une transaction.
+    const nomsSansCause117 = CAUSES_DU_DEMON_A_EFFET_PARTIEL.filter((n) => !nomsDesCausesDeTransaction117.has(n));
+    if (nomsSansCause117.length) ecartsQ117.push(`un nom de l'ensemble à effet partiel ne désigne aucune cause de transaction du démon : ${JSON.stringify(nomsSansCause117)}`);
+    const partielle117 = (c) => CAUSES_DU_DEMON_A_EFFET_PARTIEL.includes(c.nom);
+    // (q2) Aucune cause à effet partiel n'est dite « rien n'a changé », sous aucune langue ; peinte, sa face n'en est pas une.
+    const facesDeLaFamille117 = [FR117, EN117].flatMap((L) => FAMILLE_RIEN_N_A_CHANGE117.map((k) => appeler117(L.noyau, "motDuRefusDUnGeste", k)));
+    for (const c of CAUSES_DE_TRANSACTION117.filter(partielle117)) {
+      for (const L of [FR117, EN117]) {
+        const n = nature117(L, 503, c.cause);
+        const puits = new Element("div");
+        appeler117(L.noyau, "peindreLeRefusDUnGeste", puits, erreur117(503, c.cause));
+        const peint = nu117(puits);
+        if (FAMILLE_RIEN_N_A_CHANGE117.includes(n) || facesDeLaFamille117.some((f) => f && peint.startsWith(serre117(f)))) ecartsQ117.push(`${L.nom}/${c.nom} (effet PARTIEL) est dite « rien n'a changé » : « ${n} » « ${peint.slice(0, 120)} »`);
+      }
+    }
+    // (q3) Toute AUTRE cause de transaction est reconnue « rien n'a changé » sous un cinq cent trois — ni reconnue, ni
+    // nommée partielle, c'est une décision qui manque, et ce témoin la réclame au lieu de la prendre.
+    const nonDecidees117 = CAUSES_DE_TRANSACTION117.filter((c) => !partielle117(c) && !FAMILLE_RIEN_N_A_CHANGE117.includes(nature117(FR117, 503, c.cause))).map((c) => c.nom);
+    if (nonDecidees117.length) ecartsQ117.push(`cause(s) de transaction ni reconnues « rien n'a changé » ni nommées à effet partiel : ${JSON.stringify(nonDecidees117)}`);
+    // (q4) Hors d'un cinq cent trois, aucune n'est « rien n'a changé ».
+    const horsDe503117 = CAUSES_DE_TRANSACTION117.filter((c) => [500, 409, 502].some((st) => nature117(FR117, st, c.cause) !== "refus_nomme")).map((c) => c.nom);
+    if (horsDe503117.length) ecartsQ117.push(`reconnue(s) hors d'un cinq cent trois : ${JSON.stringify(horsDe503117)}`);
+    // (q5) Les DEUX ouvertures sont exercées par l'arbre du démon.
+    const parNature117 = {};
+    for (const c of CAUSES_DE_TRANSACTION117.filter((c) => !partielle117(c))) { const n = nature117(FR117, 503, c.cause); (parNature117[n] = parNature117[n] || []).push(c.nom); }
+    if (!FAMILLE_RIEN_N_A_CHANGE117.every((k) => (parNature117[k] || []).length >= 1)) ecartsQ117.push(`une ouverture de la famille n'est exercée par aucune cause du démon : ${JSON.stringify(Object.fromEntries(Object.entries(parNature117).map(([k, v]) => [k, v.length])))}`);
+    // (q6) L'ouverture de la transaction non prise, lue au caractère près : déplacée, en minuscules, collée à une
+    // lettre ou privée de sa parenthèse, elle n'est pas reconnue.
+    const partitionQ117 = [CAUSE_REPARSE117, "Le démon dit : " + CAUSE_REPARSE117, CAUSE_REPARSE117.replace("REPARSE NON APPLIQUÉ :", "reparse non appliqué :"),
+      CAUSE_REPARSE117.replace("(BEGIN ou", "(BEGINS ou"), CAUSE_REPARSE117.replace("n'a pas pris la transaction", "n'a pas pris la transactions")].map((c) => nature117(FR117, 503, c)).join(",");
+    if (partitionQ117 !== "transaction_non_prise,refus_nomme,refus_nomme,refus_nomme,refus_nomme") ecartsQ117.push(`l'ouverture de la transaction non prise n'est pas lue au caractère près : ${partitionQ117}`);
+    // (q7) Ses faces : deux langues distinctes, l'anglaise sans accent, aucune n'accuse, chacune dit « rien n'a changé ».
+    const facesQ117 = [appeler117(FR117.noyau, "motDuRefusDUnGeste", "transaction_non_prise"), appeler117(EN117.noyau, "motDuRefusDUnGeste", "transaction_non_prise")];
+    if (!(facesQ117[0] !== facesQ117[1] && /^RIEN N'A CHANGÉ/.test(facesQ117[0]) && /^NOTHING CHANGED/.test(facesQ117[1]) && !ACCENTS117.test(facesQ117[1]) && !ACCUSE117.test(facesQ117[0]) && !ACCUSE117.test(facesQ117[1])))
+      ecartsQ117.push(`les faces de la transaction non prise : ${JSON.stringify(facesQ117)}`);
+    console.log(`[117q0] causes de transaction du démon : ${CAUSES_DE_TRANSACTION117.length} ; par nature sous 503 (hors effet partiel) : ${JSON.stringify(Object.fromEntries(Object.entries(parNature117).map(([k, v]) => [k, v.length])))} ; à effet partiel nommées : ${JSON.stringify(CAUSES_DU_DEMON_A_EFFET_PARTIEL)} ; non décidées : ${JSON.stringify(nonDecidees117)}`);
+    exiger(ecartsQ117.length === 0, `(117q) LA FAMILLE « RIEN N'A CHANGÉ » ET L'ENSEMBLE DES CAUSES À EFFET PARTIEL NE SE PARTAGENT PLUS LES CAUSES DE TRANSACTION DU DÉMON (deux ouvertures reconnues sous un cinq cent trois seulement ; toute cause nommée partielle existe et n'est jamais dite « rien n'a changé ») : ${JSON.stringify(ecartsQ117)}`);
+
+    // ══ (n) `P10.27-n` / `P10.27-v` — LE REPARSE : SON CINQ CENT TROIS DANS LE PUITS DU PANNEAU, DANS LES DEUX LANGUES ══
+    const ecartsN117 = [];
+    const mesureN117 = [];
+    for (const L of [FR117, EN117]) {
+      const face = appeler117(L.noyau, "motDuRefusDUnGeste", "transaction_non_prise");
+      const r = await jouerLeReparse117(L, { corps: ESSAI117 }, refus503De117(CAUSE_REPARSE117));
+      if (L === FR117) mesureN117.push(`503 : ${r.essais} essai(s), ${r.ecritures} écriture(s) ; puits « ${r.nature} » ; avis ${JSON.stringify(r.avis.map((a) => a.slice(0, 160)))}${r.rejet ? ` ; rejet « ${r.rejet.slice(0, 90)} »` : ""}`);
+      const ecart = [];
+      if (r.essais !== 1 || r.ecritures !== 1) ecart.push(`${r.essais} essai(s), ${r.ecritures} écriture(s)`);
+      if (r.nature !== "transaction_non_prise" || !r.montre || r.role !== "alert" || r.texte !== serre117(face + " « " + CAUSE_REPARSE117 + " »")) ecart.push(`puits « ${r.nature} » montré=${r.montre} — « ${r.texte.slice(0, 160)} »`);
+      if (r.avis.length) ecart.push(`avis ${JSON.stringify(r.avis)}`);
+      if (r.rejet) ecart.push(`rejet non traité « ${r.rejet} »`);
+      if (!r.bouton || r.bouton.inactif || r.bouton.libelle !== LIBELLE_DU_REPARSE117) ecart.push(`bouton ${JSON.stringify(r.bouton)}`);
+      if (ACCUSE117.test(r.phrase) || (L === EN117 && ACCENTS117.test(r.phrase))) ecart.push(`la face accuse, ou reste française : « ${r.phrase} »`);
+      if (ecart.length) ecartsN117.push(`${L.nom}/503 : ${ecart.join(" ; ")}`);
+    }
+    // (n1) La panne de transport, sur l'écriture puis sur l'essai : ni refus ni effet établis.
+    const faceTransport117 = appeler117(FR117.noyau, "motDuRefusDUnGeste", "demande_non_aboutie");
+    for (const [etiquette, essai, ecriture, ecritures] of [["écriture", { corps: ESSAI117 }, reseauCoupe117, 1], ["essai", reseauCoupe117, { corps: { updated: 0 } }, 0]]) {
+      const r = await jouerLeReparse117(FR117, essai, ecriture);
+      mesureN117.push(`transport coupé (${etiquette}) : puits « ${r.nature} » ; avis ${JSON.stringify(r.avis.map((a) => a.slice(0, 120)))}`);
+      if (r.nature !== "demande_non_aboutie" || !r.montre || r.texte !== serre117(faceTransport117 + " « Failed to fetch »") || r.avis.length || r.rejet || r.ecritures !== ecritures)
+        ecartsN117.push(`transport coupé (${etiquette}) : « ${r.nature} » « ${r.texte.slice(0, 140)} » avis ${JSON.stringify(r.avis)} ${r.ecritures} écriture(s)`);
+    }
+    // (n2) Un refus servi en deux cents (`{error}` : « réservé admin », une préparation refusée) : la phrase du démon,
+    // dans le puits, et aucune écriture ne part.
+    {
+      const r = await jouerLeReparse117(FR117, { corps: { error: "réservé admin" } }, { corps: { updated: 0 } });
+      mesureN117.push(`200 {error} à l'essai : puits « ${r.nature} » ; avis ${JSON.stringify(r.avis)}`);
+      const attendu = serre117(appeler117(FR117.noyau, "motDuRefusDUnGeste", "refus_nomme") + " « réservé admin »");
+      if (r.nature !== "refus_nomme" || r.texte !== attendu || r.avis.length || r.ecritures !== 0) ecartsN117.push(`200 {error} à l'essai : « ${r.nature} » « ${r.texte.slice(0, 120)} » avis ${JSON.stringify(r.avis)} ${r.ecritures} écriture(s)`);
+    }
+    // (n3) CONTRÔLES NÉGATIFS : la cause du reparse hors d'un cinq cent trois n'est pas « rien n'a changé » ; un reparse
+    // accepté efface le refus d'avant et dit ce qu'il a mis à jour.
+    {
+      const r = await jouerLeReparse117(FR117, { corps: ESSAI117 }, { statut: 500, corps: { error: CAUSE_REPARSE117, id: "plume-e1-8" } });
+      if (r.nature !== "refus_nomme" || r.texte !== serre117(appeler117(FR117.noyau, "motDuRefusDUnGeste", "refus_nomme") + " « " + CAUSE_REPARSE117 + " »")) ecartsN117.push(`500 nommé : « ${r.nature} » « ${r.texte.slice(0, 120)} »`);
+      await jouerLeReparse117(FR117, { corps: ESSAI117 }, refus503De117(CAUSE_REPARSE117));
+      const accepte = await jouerLeReparse117(FR117, { corps: ESSAI117 }, { corps: { scanned: 10, matched: 3, updated: 3, truncated: false, dry_run: false, cap: 50000 } });
+      mesureN117.push(`accepté après un refus : montré=${accepte.montre} ; avis ${JSON.stringify(accepte.avis)}`);
+      if (accepte.montre || accepte.nature !== null || !accepte.avis.some((a) => /^3 events mis à jour/.test(a))) ecartsN117.push(`un reparse accepté n'efface pas le refus d'avant : montré=${accepte.montre} « ${accepte.nature} » avis ${JSON.stringify(accepte.avis)}`);
+    }
+    // (n4) MESURE SEULE, reste proposé hors de ce lot : un essai dont le parcours a été coupé (`interrompu`, `cause_scan`, `P10.7-f`).
+    {
+      const r = await jouerLeReparse117(EN117, { corps: { ...ESSAI117, interrompu: true, cause_scan: "REPARSE INCOMPLET-117" } }, { corps: { updated: 3 } });
+      mesureN117.push(`essai interrompu (anglais) : confirmation « ${r.confirmation.slice(0, 200)} »`);
+    }
+    console.log(`[117n0] le reparse : ${mesureN117.join(" | ")}`);
+    exiger(ecartsN117.length === 0, `(117n) LE REPARSE NE DIT PAS SON REFUS PAR LA FORME PARTAGÉE (puits du panneau qui reste, « rien n'a changé » et la cause ENTIÈRE sur la transaction non prise, dans la langue de l'écran, sans avis ni rejet ; la demande non aboutie « NON confirmée » ; un refus servi en deux cents nommé sans écriture ; un reparse accepté efface le refus) : ${JSON.stringify(ecartsN117)}`);
+
+    // ══ (r) `P10.27-r` — LA CONFIRMATION DU RETRAIT D'UN CONNECTEUR DIT LE SORT DE SES CLÉS DE LIVRAISON ═══════════
+    const ecartsR117 = [];
+    const mesureR117 = [];
+    for (const L of [FR117, EN117]) {
+      servis117 = { "GET /api/connectors": { corps: [CONNECTEUR117] }, "DELETE /api/connectors/6": { statut: 204, corps: "" } };
+      await L.connecteurs.loadConnectors(); await laisser117();
+      const b = bouton117(qs117("#connector-list"), (e) => e.title === "Supprimer le connecteur");
+      if (!b) { ecartsR117.push(`${L.nom} : ✕ absent`); continue; }
+      appels117.length = 0;
+      const g = Promise.resolve(b.onclick()); await laisser117();
+      const texte = texteDeLaFenetre117();
+      accepter117(); await g; await laisser117();
+      mesureR117.push(`${L.nom} : « ${texte} »`);
+      const ecart = [];
+      const cles = L === FR117 ? /cl(é|e)s? de livraison/i : /delivery keys?/i, revoque = L === FR117 ? /RÉVOQUÉE/ : /REVOKED/;
+      if (!cles.test(texte) || !revoque.test(texte)) ecart.push("ne dit pas que les clés de livraison sont révoquées");
+      const genresTus = GENRES_REVOQUES117.filter((g2) => !MOTIF_D_UN_GENRE117[g2].test(texte));
+      if (genresTus.length) ecart.push(`ne nomme pas les genres révoqués ${JSON.stringify(genresTus)}`);
+      if (!/credential/i.test(texte) || !/configuration/i.test(texte)) ecart.push("ne dit plus que la configuration et le credential sont effacés");
+      if (L === EN117 && ACCENTS117.test(texte.replace(CONNECTEUR117.name, ""))) ecart.push("reste française");
+      if (ACCUSE117.test(texte)) ecart.push("accuse");
+      if (compter117("DELETE /api/connectors/6") !== 1) ecart.push(`${compter117("DELETE /api/connectors/6")} retrait(s) envoyé(s) après acceptation`);
+      if (ecart.length) ecartsR117.push(`${L.nom} : ${ecart.join(" ; ")} — « ${texte.slice(0, 200)} »`);
+    }
+    console.log(`[117r0] la confirmation du retrait d'un connecteur : ${mesureR117.join(" | ")}`);
+    exiger(ecartsR117.length === 0, `(117r) LA CONFIRMATION DU RETRAIT D'UN CONNECTEUR NE DIT PAS LE VRAI SORT DE SES CLÉS DE LIVRAISON (révoquées dans la même transaction, genres lus dans \`connector_delete\`), OU N'A PAS SES DEUX FACES : ${JSON.stringify(ecartsR117)}`);
+
+    // ══ (s) `P10.27-s` — AUCUN `esc()` DANS UN TEXTE ; L'ÉMETTEUR D'UN FOURNISSEUR S'AFFICHE TEL QUEL ═════════════════
+    const ecartsS117 = [];
+    const PUITS_DE_TEXTE117 = /(textContent\s*[:=](?!=)|innerText\s*[:=](?!=)|createTextNode\s*\(|\.title\s*=(?!=)|\.placeholder\s*=(?!=)|\.value\s*=(?!=)|setAttribute\s*\(|\bmuted\s*\(|\btoast\s*\(|\.append\s*\(|\.prepend\s*\()/g;
+    const PUITS_HTML117 = /(innerHTML|outerHTML|insertAdjacentHTML|\bhtml\s*\+?=|<[a-z/])/i;
+    // Pour chaque `esc(`, l'instruction qui le porte (depuis le dernier `;`, `{` ou `}` en fin de ligne) : s'il y
+    // aboutit dans un puits de TEXTE sans qu'aucun balisage ne l'en sépare, la valeur est échappée pour du HTML qu'aucun
+    // navigateur n'analysera.
+    const escDansUnTexte117 = (f, source) => {
+      const src = sansCommentaires117(source), out = [];
+      for (const m of src.matchAll(/\besc\(/g)) {
+        const avant = src.slice(Math.max(0, m.index - 400), m.index);
+        const instr = avant.slice(Math.max(avant.lastIndexOf(";"), avant.lastIndexOf("{\n"), avant.lastIndexOf("}\n")) + 1);
+        const puits = [...instr.matchAll(PUITS_DE_TEXTE117)].pop();
+        if (puits && !PUITS_HTML117.test(instr.slice(puits.index))) out.push(`${f}:${src.slice(0, m.index).split("\n").length}`);
+      }
+      return out;
+    };
+    // L'instrument, dans les deux sens : un échappement dans un texte est trouvé, un échappement dans du balisage, dans
+    // une comparaison ou dans un commentaire ne l'est pas.
+    instrument117(escDansUnTexte117("t.js", "a.textContent = 'x' + esc(v);\nb.append(esc(w));\n").length === 2
+      && escDansUnTexte117("t.js", "a.innerHTML = '<b>' + esc(v) + '</b>';\nif (a.value === esc(v)) f();\n// a.textContent = esc(v);\n").length === 0,
+      "la recherche d'un `esc()` dans un texte ne distingue plus un texte d'un balisage");
+    const escTrouves117 = CORPUS_WEB.filter(([f]) => f.endsWith(".js")).flatMap(([f, src]) => escDansUnTexte117(f, src));
+    if (escTrouves117.length) ecartsS117.push(`\`esc()\` dans un texte : ${JSON.stringify(escTrouves117)}`);
+    const mesureS117 = [];
+    for (const L of [FR117, EN117]) {
+      servis117 = { "GET /api/idp/providers": { corps: [FOURNISSEUR117] } };
+      await L.idp.loadIdpProviders(); await laisser117();
+      const meta = cueillir117(qs117("#idp-list"), (e) => e.tagName === "SPAN" && nu117(e).includes("idp.example"))[0] || null;
+      const texte = nu117(meta);
+      mesureS117.push(`${L.nom} : « ${texte} »`);
+      if (!texte.includes(FOURNISSEUR117.config.issuer) || ECHAPPEMENT_HTML117.test(texte)) ecartsS117.push(`${L.nom} : l'émetteur n'est pas montré tel quel — « ${texte} »`);
+      if (L === EN117 && /\bmaj\b/.test(texte)) ecartsS117.push(`en : la date de mise à jour reste française — « ${texte} »`);
+    }
+    console.log(`[117s0] l'émetteur d'un fournisseur : ${mesureS117.join(" | ")} ; \`esc()\` dans un texte : ${JSON.stringify(escTrouves117)}`);
+    exiger(ecartsS117.length === 0, `(117s) UNE VALEUR ÉCHAPPÉE POUR DU HTML ABOUTIT DANS UN TEXTE, OU L'ÉMETTEUR D'UN FOURNISSEUR N'EST PAS MONTRÉ TEL QUEL : ${JSON.stringify(ecartsS117)}`);
+
+    // ══ (t) `P10.27-t` — LE PRÉFIXE D'UN ÉCHEC ET LES DEUX PHRASES D'`api()` ONT LEURS DEUX FACES, ET NULLE COPIE ═══
+    const ecartsT117 = [];
+    const mesureT117 = [];
+    // (t1) DÉRIVÉ DU CORPUS : un littéral qui FINIT par « erreur : » (casse comprise), ou qui porte « réponse vide » ou
+    // « réponse non-JSON », hors d'une face `fr:` — une copie française qu'aucun nœud entier ne porte, donc que le
+    // lexique ne peut pas traduire. Ce qui reste hors de ce lot est NOMMÉ ci-dessous et jugé dans les deux sens.
+    const PREFIXE_FRANCAIS117 = /\berreur ?: ?$|réponse vide|réponse non-JSON/iu;
+    const prefixesFrancais117 = (f, source) => {
+      const src = sansCommentaires117(source), out = [];
+      for (const m of src.matchAll(/(['"`])((?:(?!\1)[^\\\n]|\\.)*)\1/gu)) {
+        if (!PREFIXE_FRANCAIS117.test(m[2])) continue;
+        if (/\bfr\s*:\s*$/.test(src.slice(Math.max(0, m.index - 12), m.index))) continue;   // face française, sa sœur anglaise à côté
+        out.push(`${f} « ${m[2].trim()} »`);
+      }
+      return out;
+    };
+    instrument117(prefixesFrancais117("t.js", "toast('erreur : ' + e.message);\nx.textContent = \"Erreur : \" + m;\nthrow new Error('réponse vide du serveur');\n").length === 3
+      && prefixesFrancais117("t.js", "const M = { fr: 'erreur : ', en: 'error: ' };\n// toast('erreur : ' + e.message);\nx.textContent = 'dernière erreur connue';\n").length === 0,
+      "la recherche d'un préfixe français ne distingue plus une copie d'une face `fr:` ou d'un commentaire");
+    // Hors du périmètre de ce lot, reste proposé : nommé, et un nom qui ne désigne plus rien fait rougir autant qu'une copie neuve.
+    const RESTES_HORS_DU_LOT117 = ["retention.js « accès refusé ou erreur : »"];
+    const prefixesTrouves117 = CORPUS_WEB.filter(([f]) => f.endsWith(".js")).flatMap(([f, src]) => prefixesFrancais117(f, src));
+    const copiesNeuves117 = prefixesTrouves117.filter((p) => !RESTES_HORS_DU_LOT117.includes(p));
+    const restesDisparus117 = RESTES_HORS_DU_LOT117.filter((p) => !prefixesTrouves117.includes(p));
+    mesureT117.push(`copies françaises du corpus : ${prefixesTrouves117.length} — ${JSON.stringify(prefixesTrouves117.reduce((acc, p) => { const f = p.split(" ")[0]; acc[f] = (acc[f] || 0) + 1; return acc; }, {}))}`);
+    if (copiesNeuves117.length) ecartsT117.push(`préfixe français codé en dur hors d'une face : ${JSON.stringify(copiesNeuves117)}`);
+    if (restesDisparus117.length) ecartsT117.push(`un reste nommé ne désigne plus rien (retirez-le de l'ensemble) : ${JSON.stringify(restesDisparus117)}`);
+    // (t2) Les faces au point commun : la française est celle d'avant, au caractère près ; l'anglaise en diffère, sans accent.
+    const ANCRES_FR117 = { prefixe_de_la_lecture_refusee: "erreur : ", prefixe_de_la_lecture_refusee_en_debut_de_phrase: "Erreur : ",
+      reponse_vide: "réponse vide du serveur (timeout proxy ou requête trop lourde ?)", reponse_non_json: "réponse non-JSON (tronquée ? timeout ?)", separateur_de_l_extrait: " : " };
+    for (const [k, fr] of Object.entries(ANCRES_FR117)) {
+      const f = appeler117(FR117.noyau, "motDUneLectureQuiNEstPasServie", k), e = appeler117(EN117.noyau, "motDUneLectureQuiNEstPasServie", k);
+      if (f !== fr || e === f || typeof e !== "string" || ACCENTS117.test(e) || /absente|jette/.test(String(e))) ecartsT117.push(`face « ${k} » : « ${f} » / « ${e} »`);
+    }
+    for (const L of [FR117, EN117]) {
+      if (appeler117(L.noyau, "prefixeDUnEchecRenduTelQuel") !== appeler117(L.noyau, "motDUneLectureQuiNEstPasServie", "prefixe_de_la_lecture_refusee")) ecartsT117.push(`${L.nom} : \`prefixeDUnEchecRenduTelQuel\` n'est pas la face du point commun`);
+    }
+    // (t3) `api()` JOUÉE : un corps vide, un corps non-JSON — le message dans la langue de l'écran.
+    for (const L of [FR117, EN117]) {
+      const lire = async (reponse) => { servis117 = { "GET /api/lecture-117": reponse }; try { await L.noyau.api("/lecture-117"); return "(aucune erreur)"; } catch (e) { return String((e && e.message) || e); } };
+      const vide = await lire({ statut: 200, corps: "" }), illisible = await lire({ statut: 200, corps: "abc{-117" });
+      const mot = (k) => appeler117(L.noyau, "motDUneLectureQuiNEstPasServie", k);
+      mesureT117.push(`${L.nom}/api : « ${vide} » | « ${illisible} »`);
+      if (vide !== mot("reponse_vide")) ecartsT117.push(`${L.nom}/api corps vide : « ${vide} »`);
+      if (illisible !== mot("reponse_non_json") + mot("separateur_de_l_extrait") + "abc{-117" || illisible !== appeler117(L.noyau, "phraseDUneReponseNonJson", "abc{-117")) ecartsT117.push(`${L.nom}/api corps non-JSON : « ${illisible} »`);
+    }
+    // (t4) TROIS SITES JOUÉS, un par forme (liste d'un panneau, liste d'un module, liste d'un fournisseur) : le préfixe
+    // suit la langue de l'écran.
+    for (const L of [FR117, EN117]) {
+      const prefixe = appeler117(L.noyau, "motDUneLectureQuiNEstPasServie", "prefixe_de_la_lecture_refusee");
+      servis117 = { "*": { statut: 500, corps: "x-117" } };
+      await L.systeme.loadSystemView(); await laisser117();
+      await L.modeles.reload(); await laisser117();
+      await L.idp.loadIdpProviders(); await laisser117();
+      const lus = [["système", nu117(qs117("#system-body"))], ["modèles de données", nu117(qs117("#dm-models-list"))], ["fournisseurs", nu117(qs117("#idp-list"))]];
+      mesureT117.push(`${L.nom} : ${lus.map(([k, v]) => `${k} « ${v.slice(0, 60)} »`).join(", ")}`);
+      for (const [k, v] of lus) if (v !== serre117(prefixe + "500 x-117")) ecartsT117.push(`${L.nom}/${k} : « ${v.slice(0, 120)} »`);
+    }
+    console.log(`[117t0] le préfixe d'un échec : ${mesureT117.join(" | ")}`);
+    exiger(ecartsT117.length === 0, `(117t) LE PRÉFIXE D'UN ÉCHEC OU UNE PHRASE D'\`api()\` RESTE FRANÇAIS EN ANGLAIS, LA FACE FRANÇAISE A CHANGÉ, OU UN MODULE EN ÉCRIT UNE COPIE HORS D'UNE FACE : ${JSON.stringify(ecartsT117)}`);
+  } finally {
+    globalThis.fetch = fetchOrigine117; globalThis.setTimeout = minuterieOrigine117; document.querySelector = qsOrigine117;
+    for (const o of etatOrigine117) { o.S.isAdmin = o.admin; o.S.AUTH = o.auth; }
+    for (const p of [puitsDuReparse117(), puitsDesConnecteurs117(), puitsNomme117((qs117("#idp-list") || {}).parentNode, "fournisseurs_d_identite")]) if (p) p.remove();
+    for (const sel of ["#connector-list", "#idp-list", "#system-body", "#dm-models-list"]) { const h = qs117(sel); if (h) h.replaceChildren(); }
+    const b = qs117("#parser-reparse"); if (b) { b.disabled = false; b.textContent = LIBELLE_DU_REPARSE117; }
+    const avis = qs117("#toasts"); if (avis) avis.replaceChildren();
+    document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
+  }
+  console.log("(117) OK — le reparse dit son cinq cent trois dans le puits de son panneau par la forme partagée — « rien n'a changé » sur la transaction non prise et la cause ENTIÈRE, dans les deux langues, sans avis ni rejet —, une demande qui n'aboutit pas « NON confirmée », un refus servi en deux cents avec sa phrase et sans écriture, et un reparse accepté efface le refus ; la famille « rien n'a changé » est reconnue par ses deux ouvertures (le COMMIT refusé et annulé, la transaction que la base n'a pas prise), sous un cinq cent trois seulement, et partage avec l'ensemble nommé des causes à effet partiel TOUTES les causes de transaction du démon — aucune cause à effet partiel n'est dite « rien n'a changé », aucun nom de l'ensemble ne désigne une cause absente ; la confirmation du retrait d'un connecteur dit, dans les deux langues, que ses clés de livraison des genres lus dans `connector_delete` sont RÉVOQUÉES dans la même transaction ; aucun `esc()` n'aboutit dans un texte, l'émetteur d'un fournisseur s'affiche tel quel ; le préfixe d'un échec et les deux phrases d'`api()` suivent la langue de l'écran, la face française inchangée, et aucun module n'en écrit de copie française hors d'une face `fr:` (un reste hors du lot, nommé). CE QUI ÉTAIT FAUX OU IMPRÉCIS : `P10.27-n` disait le 503 affiché par `toast(e.message)` — c'était le JSON brut coupé AVANT « AUCUN event n'a été modifié », et un refus servi en deux cents suivait le même chemin ; `P10.27-q` ne nommait que la forme — la dérivation du 115 ne reconnaissait aucune cause de la transaction non prise, trois aujourd'hui ; `P10.27-t` comptait neuf modules et « viz.js 1 » — quarante-sept littéraux dans douze modules, dont « Erreur : » capitalisé (tableaux de bord, Explore) et les deux phrases d'`api()` recopiées dans `viz.js` et `dashboards.js`, tandis que la ligne comptée dans `viz.js` était déjà une face bilingue ; `P10.27-r` était « lu » — joué, la confirmation ne disait rien des clés, en français sous les deux langues ; `P10.27-s` était « lu » — joué, `&amp;`, `&quot;`, `&lt;`, `&gt;` visibles.");
 }
 
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;

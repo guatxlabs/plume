@@ -445,7 +445,9 @@ fn backup_compressed_stream(db_path: &str, dest: &str, pass: &str, recipient: Op
     };
     let age_w = z.finish().map_err(|e| PlanErr::Fatal(format!("finalisation zstd : {e}")))?;
     age_w.finish().map_err(|e| PlanErr::Fatal(format!("finalisation age : {e}")))?;
-    let _ = conn.execute_batch("COMMIT"); // fin du snapshot (lecture seule).
+    // `P10.25-g` — fin du snapshot (lecture seule), JUGÉE : la connexion est privée et fermée au retour, mais un refus se
+    // dit au lieu de se taire (la sauvegarde écrite est complète : rien n'a été écrit dans la base).
+    crate::handlers::transaction_validee::fermer_l_instantane_de_lecture(&conn, "backup", "sauvegarde en flux");
 
     let dest_bytes = taille_sur_disque(std::path::Path::new(dest));
     Ok(BackupStats { plaintext_bytes: crate::mesure_environnement::Mesure::Lue(plaintext_bytes), dest_bytes, wrote_plaintext_to_disk: false })

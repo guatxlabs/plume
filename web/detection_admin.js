@@ -4,7 +4,7 @@
 // PURE MOVE : corps de fonctions IDENTIQUES au monolithe, seuls les import/export sont ajoutes.
 // Le cycle app<->module est benin : les fonctions importees d'app.js ne sont appelees qu'a
 // l'EXECUTION (handlers/async apres await), jamais a l'evaluation du module.
-import { $, LANG, esc, sev, fmtTs, ic, muted, api, apiSend, unDeuxCentsSansCorpsLisible, confirmModal, toast, pagedList, managedBadge, gateDeleteBtn, contentSubmit, contentDelete, fetchInto, formMsg, phraseDuRefusDuDemon, aveuDeLaCreationDeRiposte, aveuDeLaTraceManquante, causeDeLaTraceManquante, cleDeLIdentifiantDeRiposte, motDeLaRiposteSansIdentifiant, socIsAdmin, lsSet, collapsibleGroup, disclosure, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste } from './core.js';
+import { $, LANG, esc, sev, fmtTs, ic, muted, api, apiSend, unDeuxCentsSansCorpsLisible, confirmModal, toast, pagedList, managedBadge, gateDeleteBtn, contentSubmit, contentDelete, fetchInto, formMsg, phraseDuRefusDuDemon, aveuDeLaCreationDeRiposte, aveuDeLaTraceManquante, causeDeLaTraceManquante, cleDeLIdentifiantDeRiposte, motDeLaRiposteSansIdentifiant, socIsAdmin, lsSet, collapsibleGroup, disclosure, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, prefixeDUnEchecRenduTelQuel } from './core.js';
 import { libelleDeTechnique, nomDeTechnique } from './catalogue_attack.js'; // `P11.6-c` : nom dérivé du catalogue servi, ou motif de son absence
 import { S, lireLeStockageDuSite, ecrireDansLeStockageDuSite, ecrireSansDireLeRefus, RAISONS_DE_SILENCE } from './state.js';
 import { initSigmaImport } from './sigmaimport.js';
@@ -351,7 +351,7 @@ function ruleRow(r) {
   const test = rowButton('Tester', { title: 'Évalue la requête maintenant, sans lever d\'alerte', onClick: async () => {
     meta.textContent = '...';
     const j = await apiSend('/rules/' + r.id + '/test');
-    meta.textContent = j.error ? ('erreur : ' + j.error) : `test : ${j.value} -> ${j.fired ? 'déclenche' : 'ok'}`;
+    meta.textContent = j.error ? (prefixeDUnEchecRenduTelQuel() + j.error) : `test : ${j.value} -> ${j.fired ? 'déclenche' : 'ok'}`;
     meta.title = j.sql || '';
   } });
   // MIROIR UX : éditer une règle BASELINE (seed/builtin managed=0) est réservé admin (le serveur 403 sinon) —
@@ -702,21 +702,38 @@ if ($('#pf-test')) $('#pf-test').onclick = async () => {
     res.textContent = j.error ? ('' + j.error) : (j.matched ? ('OK → ' + JSON.stringify(j.fields)) : 'aucune correspondance');
   } catch (e) { res.textContent = '' + e.message; }
 };
+// `P10.27-n` — LE REPARSE DIT SON REFUS PAR LA FORME PARTAGÉE, DANS LE PUITS DU PANNEAU. `parser_reparse`
+// (daemon/src/handlers/detection.rs) rend, quand la base ne prend pas sa transaction, cinq cent trois
+// `CAUSE_REPARSE_NON_APPLIQUE` : AUCUN event n'est modifié, et le geste se relance tel quel. MESURÉ AVANT CE LOT
+// (témoin 117n) : un avis qui s'efface, « 503 {"error":"REPARSE NON APPLIQUÉ : la base n'a pas pris la transaction du
+// reparse (BEGIN ou COMMIT refusé : verrou tenu, transaction d'un autre geste pendante » — le JSON brut coupé à deux
+// cents caractères AVANT « AUCUN event n'a été modifié », la seule clause qui dit que rien n'a bougé ; « Failed to
+// fetch » nu ; « réservé admin » dans un avis. Le refus s'écrit sous l'en-tête du panneau (un bouton d'en-tête n'a pas la
+// place d'une cause entière), par la forme du point commun (`peindreLeRefusDUnGeste`, core.js) ; un refus que le démon
+// sert en deux cents (`{error}` : le rôle, une préparation refusée) y est dit de même, sans écriture.
+function puitsDuRefusDuReparse(btn) {
+  const tete = btn && btn.closest ? btn.closest('.panelhead') : null;
+  return tete && tete.parentNode ? puitsDuRefusDUnGeste(tete.parentNode, 'reparse', tete.nextElementSibling) : null;
+}
+const refusServiEnDeuxCents = (d) => Object.assign(new Error(String(d.error)), { statutDuRefus: 200, causeDuDemon: String(d.error).trim() });
 // rétroactif : dry-run (compte) -> confirmation -> écriture. N'écrase aucun champ déjà présent.
-if ($('#parser-reparse')) $('#parser-reparse').onclick = async () => {
-  const btn = $('#parser-reparse'); btn.disabled = true; const lbl = btn.textContent; btn.textContent = '↻ calcul…';
+async function reparserLesEvenements() {
+  const btn = $('#parser-reparse'); if (!btn) return;
+  const puits = puitsDuRefusDuReparse(btn); effacerLeRefusDUnGeste(puits);
+  btn.disabled = true; const lbl = btn.textContent; btn.textContent = '↻ calcul…';
   try {
     const d = await apiSend('/parsers/reparse', 'POST', { dry_run: true });
-    if (d.error) { toast(d.error, 'bad'); return; }
+    if (d.error) { peindreLeRefusDUnGeste(puits, refusServiEnDeuxCents(d)); return; }
     if (!d.matched) { toast('Rien à ré-enrichir sur les ' + d.scanned + ' events des 30 derniers jours.'); return; }
     const warn = d.truncated ? ('\n\n⚠ plafonné à ' + d.cap + ' écritures/passe — relance pour finir.') : '';
     if (!await confirmModal('Réappliquer les parsers actifs : ' + d.matched + ' / ' + d.scanned + ' events (30 j) seront ré-enrichis (sans écraser l\'existant).' + warn + '\n\nContinuer ?')) return;
     btn.textContent = '↻ application…';
     const r = await apiSend('/parsers/reparse', 'POST', {});
-    if (r.error) { toast(r.error, 'bad'); return; }
+    if (r.error) { peindreLeRefusDUnGeste(puits, refusServiEnDeuxCents(r)); return; }
     toast(r.updated + ' events mis à jour' + (r.truncated ? ' (plafond atteint, relance pour le reste)' : '') + '.', 'ok');
-  } catch (e) { toast('' + e.message, 'bad'); } finally { btn.disabled = false; btn.textContent = lbl; }
-};
+  } catch (e) { peindreLeRefusDUnGeste(puits, e); } finally { btn.disabled = false; btn.textContent = lbl; }
+}
+if ($('#parser-reparse')) $('#parser-reparse').onclick = reparserLesEvenements;
 if ($('#parser-form')) $('#parser-form').addEventListener('submit', async e => {
   e.preventDefault();
   const body = { name: $(PF.name).value.trim() || 'Parser', source: $(PF.source).value.trim() || '*', pattern: $(PF.pattern).value, enabled: $(PF.enabled).checked };
@@ -1435,7 +1452,7 @@ function playbookRowModel(p, mode) {
 function pbRow(p, mode) {
   const row = producerRow(playbookRowModel(p, mode));
   const meta = row.metaEl;
-  const test = rowButton('Tester', { title: 'Liste les cibles que la requête rend maintenant, sans poser d\'action', onClick: async () => { meta.textContent = '...'; const j = await apiSend('/playbooks/' + p.id + '/test'); meta.textContent = j.error ? ('erreur : ' + j.error) : `${j.valides} cible(s) : ${(j.targets || []).slice(0, 5).join(', ')}`; } });
+  const test = rowButton('Tester', { title: 'Liste les cibles que la requête rend maintenant, sans poser d\'action', onClick: async () => { meta.textContent = '...'; const j = await apiSend('/playbooks/' + p.id + '/test'); meta.textContent = j.error ? (prefixeDUnEchecRenduTelQuel() + j.error) : `${j.valides} cible(s) : ${(j.targets || []).slice(0, 5).join(', ')}`; } });
   // MIROIR UX : éditer un playbook BASELINE (seed/builtin managed=0) est réservé admin (403 serveur).
   const baselineLocked = !socIsAdmin() && p.managed === 0;
   const edit = rowButton('Éditer', { cls: 'crud-btn', disabled: baselineLocked, title: baselineLocked ? 'playbook baseline (seed/builtin) : édition réservée à l\'administrateur' : '', onClick: baselineLocked ? null : () => openPbForm(p) });
@@ -1489,4 +1506,4 @@ export { cleDuRefusDeRiposte, motDuRefusDeRiposte, OUVERTURE_DE_L_APPROBATION_SA
   OUVERTURE_DE_LA_RIPOSTE_NON_LUE, OUVERTURE_DE_L_APPROBATION_NON_ENREGISTREE, OUVERTURE_DE_LA_RIPOSTE_INTROUVABLE,
   // `P10.20-w` — et les deux de l'ANNULATION, nues elles aussi : chacune a une voisine dont elle ne
   // diffère que par un mot, et l'ordre des branches ne prouverait rien de cette différence-là.
-  OUVERTURE_DE_L_ANNULATION_NON_ENREGISTREE, OUVERTURE_DE_LA_RIPOSTE_NON_ANNULABLE, renderCoverage, loadRules, renderRules, peindreLeMode, poserLaRechercheDesRegles, apresEnregistrementDUneRegle, ouvrirLesReglesDeLaTechnique, ouvrirLaCreationPourLaTechnique, loadNotifiers, loadParsers, loadActions, dessinerLesActions, poserLaRechercheDesActions, apresCreationDUneAction, texteCherchableDUneAction, laFenetreBorneLeRegistre, loadMode, basculerLeMode, loadPlaybooks, motDeLaBorneDesActions, ruleRowModel, ruleRow, texteCherchableDUneRegle, playbookRowModel, pbRow, actionKindOptionLabel };
+  OUVERTURE_DE_L_ANNULATION_NON_ENREGISTREE, OUVERTURE_DE_LA_RIPOSTE_NON_ANNULABLE, renderCoverage, loadRules, renderRules, peindreLeMode, poserLaRechercheDesRegles, apresEnregistrementDUneRegle, ouvrirLesReglesDeLaTechnique, ouvrirLaCreationPourLaTechnique, loadNotifiers, loadParsers, loadActions, dessinerLesActions, poserLaRechercheDesActions, apresCreationDUneAction, texteCherchableDUneAction, laFenetreBorneLeRegistre, loadMode, basculerLeMode, reparserLesEvenements, loadPlaybooks, motDeLaBorneDesActions, ruleRowModel, ruleRow, texteCherchableDUneRegle, playbookRowModel, pbRow, actionKindOptionLabel };

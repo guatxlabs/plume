@@ -4,6 +4,7 @@
 //! L'inventaire des sources et leurs métadonnées d'affichage vivent dans `handlers/sources.rs`.
 //! Extrait de main.rs (refactor split #25 — byte-identique).
 use crate::*;
+use crate::handlers::transaction_validee::{rendre_apres_validation, valider_la_transaction};
 
 // ================================ #1b ADMINISTRATION UI (daemon) ================================
 // Rétention éditable. Toutes les mutations sont admin-only (path-guard + revérif interne), doublement
@@ -46,6 +47,19 @@ pub(crate) async fn retention_settings_get(State(st): State<AppState>, Extension
     })
 }
 
+// `P10.25-g` — LES `COMMIT` DES RÉGLAGES DE RÉTENTION ET DES EXCLUSIONS D'AFFICHAGE SONT JUGÉS. MESURÉ sur la forme d'avant
+// (témoins `cjds_`) : 200 sur une transaction que la base n'avait pas prise, laissée ouverte sur l'écrivain, le réglage
+// visible pour ce processus et absent à froid. Un refus rend l'une de ces causes en 503.
+/// `P10.25-g` — rétention inchangée : le `COMMIT` de ce geste refusé.
+pub(crate) const CAUSE_RETENTION_INCHANGEE: &str = "RÉTENTION INCHANGÉE : la base n'a pas validé la transaction \
+     (COMMIT refusé) et l'a annulée — la purge applique toujours les durées d'avant, et aucune trace n'est écrite. \
+     Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.25-g` — exclusion d'affichage inchangée : le `COMMIT` de ce geste refusé.
+pub(crate) const CAUSE_EXCLUSION_D_AFFICHAGE_INCHANGEE: &str = "EXCLUSION D'AFFICHAGE INCHANGÉE : la base n'a pas \
+     validé la transaction (COMMIT refusé) et l'a annulée — les panneaux gardent l'exclusion d'avant, et aucune \
+     trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+
+
 /// POST|PUT /api/retention {retention_days?,snapshot_days?,alert_days?,metric_days?,metric_raw_hours?} (i64).
 /// Chaque champ présent est clampé aux planchers (M6) puis écrit dans `setting`, avec double-audit (ledger +
 /// event) DANS UNE TRANSACTION fail-closed (M5). L'« ancienne » valeur auditée = valeur EFFECTIVE résolue (H2).
@@ -87,11 +101,10 @@ pub(crate) async fn retention_settings_put(State(st): State<AppState>, Extension
         Ok(changes)
     })();
     match outcome {
-        Ok(changes) => {
-            let _ = conn.execute_batch("COMMIT");
+        Ok(changes) => rendre_apres_validation(&conn, "retention", "réglage de la rétention", CAUSE_RETENTION_INCHANGEE, || {
             let applied: serde_json::Map<String, Value> = changes.iter().map(|(k, _, n)| (k.clone(), json!(n))).collect();
             (StatusCode::OK, Json(json!({ "ok": true, "changed": changes.len(), "applied": applied }))).into_response()
-        }
+        }),
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK"); // fail-closed : mutation NON persistée si l'audit échoue
             (StatusCode::INTERNAL_SERVER_ERROR, format!("échec transaction audit (aucune modification appliquée): {e}")).into_response()
@@ -1053,10 +1066,13 @@ pub(crate) fn apply_display_excl_edit(
         Ok((old, new))
     })();
     match outcome {
-        Ok((old, new)) => {
-            let _ = conn.execute_batch("COMMIT");
-            Ok((field, old, new))
-        }
+        Ok((old, new)) => match valider_la_transaction(conn) {
+            Ok(()) => Ok((field, old, new)),
+            Err(refus) => {
+                eprintln!("[suppressions] WARN exclusion d'affichage {field} NON validée : {refus}");
+                Err((StatusCode::SERVICE_UNAVAILABLE, CAUSE_EXCLUSION_D_AFFICHAGE_INCHANGEE.to_string()))
+            }
+        },
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK"); // fail-closed : rien de persisté sans audit
             Err((StatusCode::INTERNAL_SERVER_ERROR, format!("échec transaction audit (aucune modification): {e}")))

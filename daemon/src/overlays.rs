@@ -1,6 +1,7 @@
 //! Overlays versionnés (config.d) : charge parsers/dparsers/règles/playbooks/sigma déclarés en JSON.
 //! Sur &Connection. Extrait de main.rs (refactor split #25 — byte-identique).
 use crate::*;
+use crate::handlers::transaction_validee::rendre_apres_validation;
 
 // =====================================================================================
 // PERSONNALISATION PHASE 1 — OVERLAYS VERSIONNÉS (config.d). Charge les parsers/règles/playbooks
@@ -647,6 +648,15 @@ pub(crate) fn prune_orphan_overlays(conn: &Connection, root: &std::path::Path) -
     })
 }
 
+// `P10.25-g` — LE `COMMIT` DE L'ÉLAGAGE DES OVERLAYS EST JUGÉ. MESURÉ sur la forme d'avant (témoins `cjds_`) : 200,
+// transaction laissée ouverte, l'orpheline élaguée pour ce processus et présente à froid. LU : parseurs, parseurs
+// déclaratifs et masques de champ étaient rechargés ensuite depuis cet état pendant ; ils ne le sont plus qu'après.
+/// `P10.25-g` — élagage des overlays non fait : le `COMMIT` de ce geste refusé.
+pub(crate) const CAUSE_ELAGAGE_DES_OVERLAYS_NON_FAIT: &str = "ÉLAGAGE DES OVERLAYS NON FAIT : la base n'a pas validé \
+     la transaction (COMMIT refusé) et l'a annulée — les overlays orphelins sont toujours là et toujours actifs, et \
+     aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou \
+     verrouillée.";
+
 /// POST /api/config-overlays/prune — élague les overlays config.d ORPHELINS (managed=1 sans fichier adossé).
 /// ADMIN-only (serveur default-deny + re-check) + PAR-TENANT (req_db). Transaction fail-closed + AUDIT
 /// (audit_config_change, sévérité 3 = mutation de config). Recharge les registres parsers/dparsers après
@@ -688,8 +698,7 @@ pub(crate) async fn config_overlays_prune(State(st): State<AppState>, Extension(
         Ok((c, o))
     })();
     match outcome {
-        Ok((c, o)) => {
-            let _ = conn.execute_batch("COMMIT");
+        Ok((c, o)) => rendre_apres_validation(&conn, "overlays", "élagage des overlays orphelins", CAUSE_ELAGAGE_DES_OVERLAYS_NON_FAIT, || {
             // Recharge les registres compilés depuis les fichiers RESTANTS -> état runtime cohérent.
             parsers_reload(&conn, &db_path);
             dparsers_reload(&conn, &db_path);
@@ -698,7 +707,7 @@ pub(crate) async fn config_overlays_prune(State(st): State<AppState>, Extension(
                 "notifier": o.notifier, "destination": o.destination, "connector": o.connector, "index_policy": o.index_policy,
                 "field_filter": o.field_filter, "library_panel": o.library_panel, "notification_policy": o.notification_policy,
                 "dashboard": o.dashboard, "panel": o.panel } })).into_response()
-        }
+        }),
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
             server_err(format!("échec transaction prune (aucune modification): {e}"))

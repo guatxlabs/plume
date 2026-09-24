@@ -1,6 +1,6 @@
 // connectors.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // Connecteurs (sources externes en PULL, #3/#3a, admin-only): liste/form/test/poll.
-import { $, api, apiSend, confirmModal, confirmWithConsequence, effacerLeRefusDUnGeste, fetchInto, fmtTs, humanAge, ic, muted, pagedList, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, sev, toast, withBusy } from './core.js';
+import { $, LANG, api, apiSend, confirmWithConsequence, effacerLeRefusDUnGeste, fetchInto, fmtTs, humanAge, ic, muted, pagedList, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, sev, toast, withBusy } from './core.js';
 import { enabledSwitch } from './producer_ui.js';
 import { S } from './state.js';
 import { uiIsAdmin } from './multitenant.js';
@@ -17,6 +17,37 @@ import { uiIsAdmin } from './multitenant.js';
 const CONNECTOR_TYPES = { defender: 'Microsoft Defender', taxii2: 'TAXII 2.1', http_pull: 'Generic HTTP' };
 // #20/#22 — seed de field_map pour un NOUVEAU connecteur générique (scaffold de départ ; l'admin ajuste).
 const DEFAULT_FIELD_MAP = ['ts', 'message', 'severity', 'host', 'src_ip'];
+
+// `P10.27-t`, `P10.27-r` — CE QUE CE MODULE ÉCRIT AUTOUR D'UNE VALEUR, DANS SES DEUX FACES. Chaque phrase était collée en
+// français à ce qu'elle précède (« dernière erreur : … », « Supprimer le connecteur « … » ? … »), donc intraduisible par
+// le lexique. `{nom}` est remplacé à l'endroit du rendu.
+//
+// LE RETRAIT, ET LE VRAI SORT DE SES CLÉS (`P10.27-r`). `connector_delete` (daemon/src/handlers/connectors/mod.rs) supprime
+// le connecteur ET, dans la MÊME transaction, chaque clé de livraison qui lui est liée (`token.connector_id`, genres
+// Firehose et Pub/Sub : une source push), puis écrit sa trace ; il ne rend 204 qu'une fois cette transaction validée.
+// La révocation est donc DURABLE et immédiate : le flux du nuage qui présente encore la clé est refusé par son
+// récepteur, et aucune route ne la refrappe — rétablir le flux, c'est créer une source push neuve et reporter sa clé.
+// Un connecteur en PULL n'en porte aucune. Les événements déjà ingérés ne sont pas touchés. Mesuré avant ce lot
+// (témoin 117r) : la confirmation n'en disait rien, et restait française sous `LANG='en'`. Les genres nommés ici sont
+// ceux que le témoin lit dans la requête du démon.
+const MOTS_DU_CONNECTEUR = {
+  derniere_erreur: {
+    fr: 'dernière erreur : ',
+    en: 'last error: ' },
+  retrait_titre: {
+    fr: 'Supprimer le connecteur « {nom} » ?',
+    en: 'Delete connector “{nom}”?' },
+  retrait_consequence: {
+    fr: "Sa configuration ET le credential stocké seront définitivement effacés, et la collecte de cette source s'arrête. Si c'est une source push (Firehose, Pub/Sub), chaque clé de livraison qui lui est liée est RÉVOQUÉE dans la même transaction : le flux du nuage qui la présente encore sera refusé par son récepteur, et aucune route ne la refrappe — le rétablir demandera une source push neuve et le report de sa clé dans le flux. Les événements déjà ingérés restent.",
+    en: 'Its configuration AND the stored credential will be permanently erased, and collection from this source stops. If it is a push source (Firehose, Pub/Sub), every delivery key bound to it is REVOKED in the same transaction: the cloud stream that still presents it will be refused by its receiver, and no route mints it again — restoring it will take a new push source and carrying its key over into the stream. Events already ingested stay.' },
+  retrait_valider: {
+    fr: 'Supprimer',
+    en: 'Delete' },
+};
+const motDuConnecteur = (cle, valeurs) => {
+  const mots = MOTS_DU_CONNECTEUR[cle];
+  return Object.entries(valeurs || {}).reduce((t, [k, v]) => t.split('{' + k + '}').join(String(v)), LANG === 'en' ? mots.en : mots.fr);
+};
 
 // `P10.27-b` — LE PUITS DES GESTES SUR LES CONNECTEURS, juste avant la liste : création et modification par le
 // formulaire (`web/app.js`), bascule, retrait. Hors de ce que `loadConnectors` repeint, il survit au rechargement ;
@@ -75,7 +106,7 @@ function connectorRow(c) {
   meta.title = (c.last_ok ? 'dernier succès : ' + fmtTs(c.last_ok) : 'aucun succès enregistré') + (c.watermark ? '\nwatermark : ' + c.watermark : '');
   // dernière erreur (le serveur ne met JAMAIS le secret ni le corps HTTP dans last_error — statut/motif seul).
   const errRow = document.createElement('span'); errRow.className = 'rulemeta';
-  if (c.last_error) { errRow.textContent = 'dernière erreur : ' + c.last_error; errRow.title = c.last_error; errRow.style.cssText = 'color:var(--warn)'; }
+  if (c.last_error) { errRow.textContent = motDuConnecteur('derniere_erreur') + c.last_error; errRow.title = c.last_error; errRow.style.cssText = 'color:var(--warn)'; }
   // actions : Tester / Éditer / Supprimer
   const test = document.createElement('button'); test.type = 'button'; test.textContent = 'Tester la connexion';
   test.title = 'OAuth + 1 page Graph, sans ingérer — feedback succès/erreur (jamais le secret)';
@@ -576,7 +607,9 @@ function instantiatePreset(p) {
 }
 
 async function deleteConnector(c) {
-  if (!await confirmModal('Supprimer le connecteur « ' + (c.name || ('#' + c.id)) + ' » ? Sa configuration ET le credential stocké seront définitivement effacés, et la collecte de cette source s\'arrête.', { danger: true, okText: 'Supprimer' })) return;
+  // `P10.27-r` — la confirmation dit le sort des clés de livraison (voir `MOTS_DU_CONNECTEUR`), dans la langue de l'écran.
+  if (!await confirmWithConsequence(motDuConnecteur('retrait_titre', { nom: c.name || ('#' + c.id) }),
+    motDuConnecteur('retrait_consequence'), { danger: true, okText: motDuConnecteur('retrait_valider') })) return;
   const puits = puitsDesConnecteurs(); effacerLeRefusDUnGeste(puits);
   // `P10.27-b` — « CONNECTEUR NON SUPPRIMÉ, SES CLÉS DE LIVRAISON NE SONT PAS RÉVOQUÉES » : le refus reste sous les yeux,
   // cause ENTIÈRE — c'est elle qui dit que chaque clé de livraison liée authentifie encore, et que rejouer ce geste

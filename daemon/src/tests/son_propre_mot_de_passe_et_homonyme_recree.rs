@@ -12,11 +12,10 @@
 //    graine, et la connexion du nouveau titulaire, par son propre mot de passe, était arrêtée au second facteur de
 //    l'ancien (`mfa_required`) — la ligne `user_mfa` et la ligne `user_pref` survivaient à la suppression.
 //
-// CE QUE CES TÉMOINS NE TIENNENT PAS : le mode multi-tenant (la preuve y est jugée par la résolution du mode 0) ;
-// le frein du second facteur et le compteur d'échecs de la connexion, tenus EN MÉMOIRE par nom, que la suppression
-// ne remet pas à zéro ; les objets PRIVÉS d'un compte supprimé (modèles de requête, tableaux de bord), qui restent
-// à son nom ; la suppression du compte de l'administrateur de l'assistant, dont la crédence vit aussi hors de
-// `user`.
+// CE QUE CES TÉMOINS NE TIENNENT PAS : le mode multi-tenant (la preuve y est jugée par la résolution du mode 0).
+// Les trois restes que cet en-tête nommait ici — le frein du second facteur et le compteur d'échecs tenus en mémoire
+// par nom, les objets d'un compte supprimé restés à son nom, le compte de l'administrateur de l'assistant — sont
+// tenus depuis par `suppression_de_compte_complete.rs` (`P10.24-o`, `P10.24-p`, `P10.24-n`).
 // =====================================================================================
 mod son_propre_mot_de_passe_et_homonyme_recree {
     use super::*;

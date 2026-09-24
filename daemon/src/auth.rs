@@ -688,6 +688,17 @@ pub(crate) fn auth_record_success(st: &AppState, user: &str, ip: &str) {
     g.remove(&(user.to_string(), ip.to_string()));
 }
 
+/// `P10.24-o` — LE COMPTE EST SUPPRIMÉ : SES ÉCHECS DE CONNEXION PARTENT AVEC LUI, DEPUIS TOUTES LES ADRESSES.
+/// Mesuré le 2026-09-24 sur la forme d'avant : dix échecs de l'ancien `bob` depuis une adresse, `bob` supprimé
+/// puis recréé, et le NOUVEAU titulaire, avec son BON mot de passe, recevait 429 depuis cette adresse. Ces
+/// échecs comptaient les essais contre un mot de passe qui n'existe plus. Appelée par `user_delete` APRÈS le
+/// commit (l'état en mémoire suit la base, jamais l'inverse). La CRÉATION, elle, n'efface rien : ce qu'elle
+/// trouverait ici, ce sont des essais faits contre un nom sans compte, donc sans mot de passe à connaître —
+/// les effacer libérerait celui qui martèle un nom à l'instant précis où un mot de passe y apparaît.
+pub(crate) fn oublier_les_echecs_du_compte_supprime(st: &AppState, user: &str) {
+    st.auth_fails.lock().retain(|(nom, _), _| nom != user);
+}
+
 /// Échec d'auth Basic : incrémente (user,ip), pose un lockout à BACKOFF EXPONENTIEL au seuil, et
 /// AUTO-INGÈRE un event SIEM (source=plume-auth) -> le SOC se détecte lui-même (règle 37, T1110).
 /// Retourne Some(retry_secs) si l'échec déclenche/maintient un lockout. Si lockout désactivé

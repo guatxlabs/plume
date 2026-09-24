@@ -15852,7 +15852,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     // ══ (c) LE PANNEAU DE RÉTENTION : LA BORNE DE LA PAGE EST DITE, ET LE SILENCE DU DÉMON AVOUÉ ══
     // `P10.21-x` (lot 107) : le discriminant est parti au POINT COMMUN (web/core.js), où le fabricant de
     // pager le lit ; son vocabulaire reste celui du panneau.
-    const cleDeLaSuite103 = modNoyau103.cleDeLaSuiteDuRegistre;
+    const cleDeLaSuite103 = modNoyau103.cleDeLaSuiteServie;
     const motDeLaSuite103 = modRetention103.motDeLaSuiteDuRegistre;
     exiger(typeof cleDeLaSuite103 === "function" && typeof motDeLaSuite103 === "function",
       "(103-instrument) le discriminant de la suite n'est pas exporté par web/core.js, ou son vocabulaire par web/retention.js : il n'y aurait rien à juger dans les deux sens");
@@ -16042,7 +16042,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     // fine (qui lit par le littéral, qui par le discriminant) est jugée au témoin 106.
     // `P10.21-x` (lot 107) : le discriminant vit au point commun, qui porte donc le SEUL littéral ; les
     // trois vues restent lectrices, par lui.
-    const lecteursDeLaSuite103 = CORPUS_WEB.filter(([f, src]) => f.endsWith(".js") && /\bj\.has_more\b|\bhas_more\b|\bcleDeLaSuiteDuRegistre\(/.test(src.replace(/\/\/[^\n]*/g, ""))).map(([f]) => f).sort();
+    const lecteursDeLaSuite103 = CORPUS_WEB.filter(([f, src]) => f.endsWith(".js") && /\bj\.has_more\b|\bhas_more\b|\bcleDeLaSuiteServie\(/.test(src.replace(/\/\/[^\n]*/g, ""))).map(([f]) => f).sort();
     exiger(lecteursDeLaSuite103.join(",") === "audit.js,core.js,retention.js,viz.js",
       `(103e) l'ensemble des vues qui LISENT \`has_more\` n'est plus celui que ce lot a relevé — une vue neuve peut en tirer une borne sans la dire : ${JSON.stringify(lecteursDeLaSuite103)}`);
     const surfacesQuiLisentLaTrace103 = CORPUS_WEB.filter(([f, src]) => f.endsWith(".js") && /=\s*causeDeLaTraceManquante\(/.test(src)).map(([f]) => f).sort();
@@ -16840,9 +16840,9 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   instrument106(typeof mot106 === "function" && typeof motEn106 === "function",
     "`motDeLaSuiteDuJournal` n'est pas exporté par web/audit.js : les trois issues ne seraient jugées que par le rendu");
   // `P10.21-x` (lot 107) : le discriminant est lu au point commun, où il a été déplacé.
-  const cleDeLaSuite106 = modNoyau106.cleDeLaSuiteDuRegistre;
+  const cleDeLaSuite106 = modNoyau106.cleDeLaSuiteServie;
   instrument106(typeof cleDeLaSuite106 === "function",
-    "`cleDeLaSuiteDuRegistre` n'est plus exporté par web/core.js : la lecture partagée n'aurait plus de point commun");
+    "`cleDeLaSuiteServie` n'est plus exporté par web/core.js : la lecture partagée n'aurait plus de point commun");
 
   // ── (a) LES FACES : UNE ENTRÉE PAR ISSUE DU DISCRIMINANT, DEUX LANGUES, ET PAS UN MOT DE PLUS QUE LA CLÉ ──
   const ISSUES106 = [...new Set([{ has_more: true }, { has_more: false }, {}].map((j) => cleDeLaSuite106(j)))].sort();
@@ -16876,11 +16876,11 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   // `P10.21-x` (lot 107) : le discriminant a quitté `retention.js` pour le point commun ; les TROIS vues
   // l'importent de là, et le seul littéral restant est sa définition. La ligne d'état de l'Explore
   // (`viz.js`), qui lisait la clé à sa façon, passe du côté du discriminant.
-  const importeDuPointCommun106 = (f) => /^import \{[^}\n]*\bcleDeLaSuiteDuRegistre\b[^}\n]*\} from '\.\/core\.js';$/m.test(srcDe106(f));
+  const importeDuPointCommun106 = (f) => /^import \{[^}\n]*\bcleDeLaSuiteServie\b[^}\n]*\} from '\.\/core\.js';$/m.test(srcDe106(f));
   exiger(["audit.js", "retention.js", "viz.js"].every(importeDuPointCommun106),
     `(106b) une vue n'importe plus le discriminant du point commun (${["audit.js", "retention.js", "viz.js"].filter((f) => !importeDuPointCommun106(f)).join(",")}) : deux vues pourraient lire la même clé de deux façons`);
   const parLeLitteral106 = CORPUS_WEB.filter(([f, src]) => f.endsWith(".js") && /\bhas_more\b/.test(sansCommentaires106(src))).map(([f]) => f).sort().join(",");
-  const parLeDiscriminant106 = CORPUS_WEB.filter(([f, src]) => f.endsWith(".js") && /\bcleDeLaSuiteDuRegistre\(/.test(sansCommentaires106(src))).map(([f]) => f).sort().join(",");
+  const parLeDiscriminant106 = CORPUS_WEB.filter(([f, src]) => f.endsWith(".js") && /\bcleDeLaSuiteServie\(/.test(sansCommentaires106(src))).map(([f]) => f).sort().join(",");
   exiger(parLeLitteral106 === "core.js" && parLeDiscriminant106 === "audit.js,core.js,retention.js,viz.js",
     `(106b) la partition des lecteurs de \`has_more\` a changé — par le littéral : ${parLeLitteral106} (attendu core.js, la seule définition) ; par le discriminant : ${parLeDiscriminant106} (attendu audit.js,core.js,retention.js,viz.js). Une vue qui relit la clé à sa façon peut prendre un silence pour une fin`);
 
@@ -17074,7 +17074,9 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
 //
 // CE QUE CE TÉMOIN NE TIENT PAS : il ne rejoue aucune route du démon ; il juge le TEXTE et les attributs
 // d'un arbre, jamais l'encre ; les autres états de la ligne du parcours (saut trop lourd, saut partiel,
-// reprise sans curseur) et la ligne du parcours par décalage restent en français et ne sont pas jugés ; et
+// reprise sans curseur) et la ligne du parcours par décalage restent en français et ne sont pas jugés
+// (`P10.22-f`, lot 111 : ils le sont au témoin 111, avec le repli par décalage que (c5) servait sans le
+// savoir) ; et
 // l'étape de runbook, qui affirmait encore « Action mise en file » sur le même corps vide, n'est pas jugée
 // ICI — elle l'est au témoin 108 (`P10.22-a`), qui lit la partition et sa face « absent » au point commun.
 // ---------------------------------------------------------------------------------------------
@@ -17114,7 +17116,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     "`action_create` ne rend plus son succès avec l'identifiant, ni son refus de saisie en `{error}` : la distinction jugée ci-dessous porterait sur autre chose");
   instrument107(modNoyauEn107.LANG === "en",
     `l'instance anglaise du point commun porte « ${modNoyauEn107.LANG} » : toutes les faces jugées ci-dessous seraient françaises`);
-  const cleDeLaSuite107 = modNoyau107.cleDeLaSuiteDuRegistre;
+  const cleDeLaSuite107 = modNoyau107.cleDeLaSuiteServie;
   const laFlecheEstOfferte107 = modNoyau107.laSuiteOffreLaPageSuivante;
   const cleDuParcours107 = modViz107.cleDeLaSuiteDuParcours;
   const motDuParcours107 = modViz107.motDeLaSuiteDuParcours, motDuParcoursEn107 = modVizEn107.motDeLaSuiteDuParcours;
@@ -17157,7 +17159,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     .map(([j, n]) => cleDuParcours107(j, n, 3)).join(",");
   exiger(partition107 === "il_en_existe_peut_etre_d_autres,il_en_existe_peut_etre_d_autres,aucune_suite,page_pleine_sans_curseur,suite_non_dite,suite_non_dite,suite_non_dite",
     `(107a) la clé du parcours ne sépare plus les corps servis comme le démon les produit : ${partition107}`);
-  exiger(/function cleDeLaSuiteDuParcours\([^)]*\) \{\n\s*const cle = cleDeLaSuiteDuRegistre\(j\);/.test(srcDe107("viz.js")),
+  exiger(/function cleDeLaSuiteDuParcours\([^)]*\) \{\n\s*const cle = cleDeLaSuiteServie\(j\);/.test(srcDe107("viz.js")),
     "(107a) la clé du parcours ne part plus du discriminant partagé : la ligne d'état relirait `has_more` à sa façon");
 
   // ── (b) LA RÈGLE DE LA FLÈCHE, NUE ───────────────────────────────────────────────────────────────
@@ -17238,8 +17240,11 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     exiger(facesSures107 && c4107.includes(FACE107.page_pleine_sans_curseur.trim()) && !c4107.includes("page 1" + FACE107.aucune_suite + " · ") && flecheOfferte107() === false,
       `(107c4) UNE PAGE PLEINE SANS CURSEUR SE LIT « FIN » : le démon dit qu'il n'a pas pu former de curseur, pas que le résultat s'arrête là — flèche ${flecheOfferte107()}, « ${c4107.slice(0, 300)} »`);
 
-    // (c5) CLÉ ABSENTE (le repli par décalage d'une compilation ratée) : le silence est AVOUÉ, jamais « fin ».
-    servirLaPage107(2, undefined, { total: 2, offset: 0 });
+    // (c5) CLÉ ABSENTE, SANS TOTAL NI DÉCALAGE : le silence est AVOUÉ, jamais « fin ».
+    // `P10.22-e` (lot 111) : ce corps portait `total` et `offset` — la signature même du repli par décalage,
+    // que la ligne RECONNAÎT désormais et dit à part (témoin 111). Le silence jugé ici est celui qui reste :
+    // un corps sans clé de suite, sans total et sans décalage.
+    servirLaPage107(2, undefined);
     const c5107 = await charger107();
     exiger(facesSures107 && c5107.includes(FACE107.suite_non_dite.trim()) && !c5107.includes(FACE107.aucune_suite + " · "),
       `(107c5) LE DÉMON N'A RIEN DIT DE LA SUITE ET LA LIGNE D'ÉTAT ÉCRIT « FIN » : un silence se lit comme la fin du résultat — « ${c5107.slice(0, 300)} »`);
@@ -17259,7 +17264,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
       `(107c7-négatif) avec un total servi, la ligne ne numérote plus, ou dit encore la suite : « ${c7107.slice(0, 300)} »`);
 
     // (c8) L'INSTANCE ANGLAISE PEINT LA FACE ANGLAISE, ET LA LIGNE ENTIÈRE EST ANGLAISE.
-    servirLaPage107(2, undefined, { total: 2, offset: 0 });
+    servirLaPage107(2, undefined);
     const c8107 = await charger107(modVizEn107, SEn107);
     exiger(facesSures107 && c8107.includes(FACE_EN107.suite_non_dite.trim()) && !c8107.includes(FACE107.suite_non_dite.trim()) && / · server \d/.test(c8107) && !/serveur|résultats/.test(c8107),
       `(107c8) SOUS \`LANG='en'\`, LA LIGNE D'ÉTAT DU PARCOURS RESTE FRANÇAISE, en tout ou en partie : « ${c8107.slice(0, 300)} »`);
@@ -17406,7 +17411,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
     const listeDesActions107 = document.querySelector("#act-list"); if (listeDesActions107) listeDesActions107.replaceChildren();
   }
-  console.log("(107) OK — la ligne d'état du parcours par curseur de l'Explore dit la suite d'une page par le discriminant PARTAGÉ, déplacé au point commun où le fabricant de pager le lit : une suite servie annonce qu'un curseur est servi et que d'autres résultats PEUVENT suivre, sans jamais affirmer qu'ils existent ; une fin établie se dit « fin » ; une page PLEINE sans curseur se dit telle, et plus « fin » ; une clé ABSENTE — le repli par décalage d'une compilation ratée — ou d'un autre type est avouée comme un silence et ne décide pas du curseur ; la ligne est entière dans sa langue, résultats et serveur compris. Sans total, la flèche « suivant » suit la suite servie — offerte sur une page tronquée dont la suite est servie, retirée sur une page pleine sans curseur, la page pleine restant l'indice d'un silence — et le fabricant partagé rend enfin un pager quand une suite est servie sans total : l'onglet Audit n'y rend plus un total manquant comme zéro, et sa page pleine DITE est atteignable par clé ; une page unique sans suite ne peint aucun pager mort, et une vue qui ne sert aucune suite garde la règle d'avant. L'avis du geste « bannir » nomme l'identifiant servi et, sur un deux cents vide ou une page de passerelle, dit que le démon n'a rendu AUCUN identifiant sans affirmer la création — la même partition que l'étape de runbook, dans les deux langues. CE QUI ÉTAIT FAUX : « · fin » sur `false` est juste sur une page non pleine ; et l'onglet Audit a toujours un total ou un refus avec le démon d'aujourd'hui — le défaut était celui du fabricant partagé.");
+  console.log("(107) OK — la ligne d'état du parcours par curseur de l'Explore dit la suite d'une page par le discriminant PARTAGÉ, déplacé au point commun où le fabricant de pager le lit : une suite servie annonce qu'un curseur est servi et que d'autres résultats PEUVENT suivre, sans jamais affirmer qu'ils existent ; une fin établie se dit « fin » ; une page PLEINE sans curseur se dit telle, et plus « fin » ; une clé ABSENTE (sans total ni décalage) ou d'un autre type est avouée comme un silence et ne décide pas du curseur ; la ligne est entière dans sa langue, résultats et serveur compris. Sans total, la flèche « suivant » suit la suite servie — offerte sur une page tronquée dont la suite est servie, retirée sur une page pleine sans curseur, la page pleine restant l'indice d'un silence — et le fabricant partagé rend enfin un pager quand une suite est servie sans total : l'onglet Audit n'y rend plus un total manquant comme zéro, et sa page pleine DITE est atteignable par clé ; une page unique sans suite ne peint aucun pager mort, et une vue qui ne sert aucune suite garde la règle d'avant. L'avis du geste « bannir » nomme l'identifiant servi et, sur un deux cents vide ou une page de passerelle, dit que le démon n'a rendu AUCUN identifiant sans affirmer la création — la même partition que l'étape de runbook, dans les deux langues. CE QUI ÉTAIT FAUX : « · fin » sur `false` est juste sur une page non pleine ; et l'onglet Audit a toujours un total ou un refus avec le démon d'aujourd'hui — le défaut était celui du fabricant partagé.");
 }
 
 
@@ -18936,6 +18941,348 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
   }
   console.log(`(110) OK — la ligne de l'administrateur connecté porte un champ du mot de passe actuel (et aucune autre) ; son propre mot de passe ne part pas sans lui ni après une confirmation annulée ; le corps porte \`current\` et le champ est VIDÉ à chaque geste ; chacun des ${refus110.length} refus nommés que \`user_update\` sert par \`juger_le_mot_de_passe_actuel\` (causes relues dans le démon) est peint dans le puits de la ligne avec sa cause et, au verrou, son délai — plus d'avis qui s'efface ni de corps JSON brut ; une page de passerelle garde sa phrase ; le changement accepté recharge (ses sessions sont révoquées), la réinitialisation d'un AUTRE compte n'envoie pas \`current\` et dit son succès ; les faces ont leurs deux langues. Le cinq cent trois « révocation du compte non lue » de \`/api/login\` est peint comme un refus nommé, cause collée, sans accuser le mot de passe. CE QUI ÉTAIT FAUX : \`P10.24-f\` disait « aucune face » — la face existait (chemin générique de \`P10.20-b\`), elle n'était pas vérifiée.`);
+}
+
+// ---------------------------------------------------------------------------------------------
+// (111) `P10.22-d` à `P10.22-h` — LES RESTES DE L'EXPLORE QUE `P10.21-x` A NOMMÉS : une page vide de rang
+//       supérieur dit la fin du résultat et GARDE son retour ; le repli par décalage est RECONNU, son total
+//       lu et dit, et ses pages ne sont plus des sauts ; les autres états de `#qstats` et le badge de
+//       troncature ont leurs deux faces ; le silence du démon est un NŒUD MARQUÉ ; le discriminant de la
+//       suite porte un nom qui dit ce qu'il lit.
+//
+// CE QUE LE DÉMON SERT, RELU ICI ET NON RECOPIÉ (daemon/src/handlers/query.rs). `keyset_finalize` pose la
+// suite et le curseur, JAMAIS `total` ni `offset` ; une page qui rend moins de lignes que demandé, sans
+// troncature, n'a pas de suite — c'est ce qui fait d'une page vide venue après une page pleine une FIN. Quand
+// la forme par curseur ne compile pas, `keyset_compile_failed` désarme le curseur et la page part par le
+// chemin par décalage, qui pose `total` (compte borné) et `offset` et aucune suite : la signature du repli.
+//
+// CE QUE LA CONSOLE EN FAISAIT, MESURÉ SUR LES MODULES RÉELS AVANT CE LOT :
+//   · une page vide de rang supérieur écrivait « aucun evenement sur la fenetre » et rendait la main AVANT le
+//     pager — aucune flèche pour revenir ; si le compte asynchrone arrivait ensuite en disant « une page », le
+//     fabricant rendait `null` ; sa plage se lisait « 4–3 » ; un saut direct vide (budget dépassé) écrivait la
+//     même absence, alors que rien n'y établit la fin ;
+//   · le repli : total servi ignoré jusqu'au compte asynchrone, « le démon n'a PAS dit… » là où le démon avait
+//     servi un nombre, et ses pages suivantes traitées en SAUTS (badge « page sautée », phrases « par
+//     curseur » sans curseur) ;
+//   · saut trop lourd, saut partiel, reprise, ligne par décalage, ligne d'agrégation et préfixe d'erreur en
+//     français sous `LANG='en'` ; le badge chiffré formaté en `'fr-FR'`, ses quatre infobulles françaises ;
+//   · le silence du démon, un fragment de texte nu ; la reprise et l'aveu d'un total non établi recollaient la
+//     ligne par son TEXTE, ce qui aplatit tout nœud marqué ;
+//   · le discriminant portait le nom du registre alors qu'il lit aussi la suite de l'Explore.
+//
+// CE QUI ÉTAIT FAUX OU IMPRÉCIS DANS LES ÉNONCÉS, ET MESURÉ. (1) `P10.22-e` : le repli n'est PAS atteignable
+// par la console d'aujourd'hui — il n'arme que sur une projection augmentée (`| table`/`| fields` à liste), et
+// l'Explore ne part en curseur que SANS étage ; il est jugé sur le corps que le démon sert. Et le total n'était
+// pas le seul défaut : le repli était pris pour un SAUT. (2) `P10.22-d` : le commentaire du chargeur affirmait
+// que le pager « reste affiché » sur un saut vide — il ne l'était pas ; et une page vide n'est pas toujours une
+// fin (saut sans rendu). (3) `P10.22-f` : la ligne d'agrégation et le préfixe d'erreur, non nommés, étaient
+// eux aussi français.
+//
+// CE QUE CE TÉMOIN NE TIENT PAS : il ne rejoue aucune route du démon (le transport est un simulacre) ; il juge
+// le TEXTE, les classes et les attributs d'un arbre, jamais l'encre (le rouge de `bad` n'est pas mesuré) ; les
+// trois libellés STATIQUES du badge restent au lexique et ne sont pas rendus ici sous `LANG='en'` ; la
+// fermeture des imports est recalculée sur les imports STATIQUES, comme le fait le test du démon, sans lui.
+// ---------------------------------------------------------------------------------------------
+{
+  const url111 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const modNoyau111 = await import(url111("core.js"));
+  const modViz111 = await import(url111("viz.js"));
+  const { S: S111 } = await import(url111("state.js"));
+  const langueOrigine111 = localStorage.getItem("soc_lang");
+  localStorage.setItem("soc_lang", "en");
+  const modNoyauEn111 = await import(adresseSousLaLangue("core.js"));
+  const modVizEn111 = await import(adresseSousLaLangue("viz.js"));
+  const { S: SEn111 } = await import(adresseSousLaLangue("state.js"));
+  if (langueOrigine111 === null) localStorage.removeItem("soc_lang"); else localStorage.setItem("soc_lang", langueOrigine111);
+
+  const tic111 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser111 = async (n = 30) => { for (let i = 0; i < n; i++) await tic111(); };
+  const nu111 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ").trim();
+  const cueillir111 = (el, pred, acc = []) => { if (el && pred(el)) acc.push(el); ((el && el.children) || []).forEach((c) => cueillir111(c, pred, acc)); return acc; };
+  const parClasse111 = (hote, classe) => cueillir111(hote, (e) => e.className === classe);
+  const parDonnee111 = (hote, attribut) => cueillir111(hote, (e) => typeof e.getAttribute === "function" && e.getAttribute(attribut) !== null);
+  const instrument111 = (vrai, quoi) => exiger(vrai, `(111-instrument) ${quoi} : ce témoin REFUSE DE CONCLURE`);
+  const srcDe111 = (f) => ((CORPUS_WEB.find(([g]) => g === f) || [])[1]) || "";
+  const sansCommentaires111 = (src) => String(src).replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:'"\\])\/\/[^\n]*/g, "$1");
+  const corpsDeFonction111 = (src, entete) => { const i = src.indexOf(entete); if (i < 0) return ""; const j = src.indexOf("\n}\n", i); return j < 0 ? "" : src.slice(i, j + 2); };
+
+  // ── (0) L'INSTRUMENT : CE QUE LE DÉMON SERT, LU DANS SON ARBRE ────────────────────────────────────
+  const REQUETE111 = readFileSync(path.join(RACINE, "daemon", "src", "handlers", "query.rs"), "utf8");
+  const finaliser111 = corpsDeFonction111(REQUETE111, "pub(crate) fn keyset_finalize(");
+  instrument111(finaliser111.length > 0 && /let more = truncated \|\| n == lim;/.test(finaliser111) && /v\["has_more"\] = json!\(more && !next\.is_null\(\)\);/.test(finaliser111)
+    && !/v\["(total|offset)"\]/.test(finaliser111),
+    "`keyset_finalize` ne pose plus la suite comme « page pleine ou tronquée, ET curseur formé », ou pose désormais `total`/`offset` : une page vide ne serait plus une fin, ou le couple total + décalage ne signerait plus le repli");
+  instrument111(/keyset_compile_failed = true;/.test(REQUETE111) && /let do_keyset = keyset && from_soql && !keyset_compile_failed;/.test(REQUETE111)
+    && /v\["total"\] = json!\(total\);/.test(REQUETE111) && /v\["offset"\] = json!\(offset\);/.test(REQUETE111),
+    "le repli par décalage d'une compilation de curseur ratée ne sert plus `total` et `offset` sans suite : le corps jugé ci-dessous ne serait plus un corps du démon");
+  instrument111(modNoyauEn111.LANG === "en" && modNoyau111.LANG !== "en",
+    `les deux instances du point commun ne portent pas deux langues (« ${modNoyau111.LANG} » / « ${modNoyauEn111.LANG} ») : toutes les faces jugées ci-dessous seraient d'une seule`);
+  instrument111([modNoyau111.cleDeLaSuiteServie, modNoyau111.makePager, modViz111.evLoad, modVizEn111.evLoad, modViz111.runQuery, modVizEn111.runQuery, modViz111.cleDeLaPageVide,
+    modViz111.laPageEstServieParDecalage, modViz111.explainErr, modVizEn111.explainErr, modViz111.truncationBadge, modVizEn111.truncationBadge, modViz111.motDeLaSuiteDuParcours, modVizEn111.motDeLaSuiteDuParcours]
+    .every((f) => typeof f === "function"),
+    "un des symboles jugés ici n'est plus exporté (web/core.js, web/viz.js)");
+
+  // ── (h) `P10.22-h` — LE NOM DU DISCRIMINANT, ET TOUS SES RENVOIS, EN UNE FOIS ─────────────────────
+  // L'ancien nom est ASSEMBLÉ, pour que ce fichier ne le porte pas lui-même : sa présence ici ferait taire
+  // la lecture qui le cherche dans ce même fichier.
+  const ANCIEN_NOM111 = "cleDeLaSuite" + "DuRegistre";
+  const porteursDeLAncien111 = CORPUS_WEB.filter(([, src]) => src.includes(ANCIEN_NOM111)).map(([f]) => f);
+  const harnaisLu111 = readFileSync(new URL(import.meta.url).pathname, "utf8");
+  exiger(typeof modNoyau111.cleDeLaSuiteServie === "function" && !(ANCIEN_NOM111 in modNoyau111) && porteursDeLAncien111.length === 0 && !harnaisLu111.includes(ANCIEN_NOM111),
+    `(111h) L'ANCIEN NOM DU DISCRIMINANT SURVIT — exporté (${ANCIEN_NOM111 in modNoyau111}), écrit dans web/ (${porteursDeLAncien111.join(",") || "nulle part"}) ou dans ce harnais (${harnaisLu111.includes(ANCIEN_NOM111)}) : deux noms pour une lecture, et le renvoi qui cite l'un ne trouve pas l'autre`);
+  const lecteurs111 = CORPUS_WEB.filter(([f, src]) => f.endsWith(".js") && /\bcleDeLaSuiteServie\(/.test(sansCommentaires111(src))).map(([f]) => f).sort().join(",");
+  const importeurs111 = ["audit.js", "retention.js", "viz.js"].filter((f) => /^import \{[^}\n]*\bcleDeLaSuiteServie\b[^}\n]*\} from '\.\/core\.js';$/m.test(srcDe111(f)));
+  exiger(lecteurs111 === "audit.js,core.js,retention.js,viz.js" && importeurs111.length === 3,
+    `(111h) les lecteurs du discriminant renommé ne sont plus les trois vues et le point commun (${lecteurs111}), ou une vue ne l'importe plus du point commun (${importeurs111.join(",")})`);
+  // LA FERMETURE DES IMPORTS STATIQUES DEPUIS `app.js`, RECALCULÉE, ÉGALE `SHELL_JS_CLOSURE` LU DANS LE DÉMON.
+  const importsStatiques111 = (src) => [...sansCommentaires111(src).matchAll(/(?:^|\n)[ \t]*(?:import|export)\b(?!\s*\()[^;]*?['"]\.\/([\w.-]+\.js)['"]/g)].map((m) => m[1]);
+  instrument111(importsStatiques111("import { a } from './x.js';\n// import b from './y.js';\nconst z = import('./z.js');\nexport { c } from './w.js';\nimport './v.js';").join(",") === "x.js,w.js,v.js",
+    "le lecteur d'imports statiques ne sépare plus un import statique d'un import en commentaire ou dynamique");
+  const sourcesJs111 = Object.fromEntries(CORPUS_WEB.filter(([f]) => f.endsWith(".js")).map(([f, src]) => [f, src]));
+  const atteints111 = new Set(); const pile111 = ["app.js"];
+  while (pile111.length) { const f = pile111.pop(); if (atteints111.has(f) || !sourcesJs111[f]) continue; atteints111.add(f); importsStatiques111(sourcesJs111[f]).forEach((g) => pile111.push(g)); }
+  const coquille111 = readFileSync(path.join(RACINE, "daemon", "src", "surface_publique_du_shell.rs"), "utf8");
+  const listeServie111 = [...(((coquille111.match(/pub\(crate\) const SHELL_JS_CLOSURE: &\[&str\] = &\[([\s\S]*?)\];/) || [])[1]) || "").matchAll(/"\/([\w.-]+\.js)"/g)].map((m) => m[1]).sort();
+  instrument111(listeServie111.length >= 40 && atteints111.has("core.js") && atteints111.has("viz.js"),
+    `la liste \`SHELL_JS_CLOSURE\` n'est plus lisible dans daemon/src/surface_publique_du_shell.rs (${listeServie111.length}), ou la fermeture recalculée n'atteint pas même le point commun`);
+  exiger(JSON.stringify([...atteints111].sort()) === JSON.stringify(listeServie111),
+    `(111h) LA FERMETURE DES IMPORTS A CHANGÉ : recalculée ${atteints111.size}, servie ${listeServie111.length} — en trop ${JSON.stringify([...atteints111].filter((f) => !listeServie111.includes(f)))}, manquants ${JSON.stringify(listeServie111.filter((f) => !atteints111.has(f)))}`);
+
+  // ── (e0) `P10.22-e` — LA SIGNATURE DU REPLI, NUE ─────────────────────────────────────────────────
+  const partitionDuRepli111 = [{ total: 7, offset: 0 }, { total: -1, offset: 3 }, { has_more: false, total: 7, offset: 0 }, { has_more: true, total: 7, offset: 0 }, { total: 7 }, { offset: 0 }, {}, null, { total: "7", offset: 0 }]
+    .map((j) => modViz111.laPageEstServieParDecalage(j)).join(",");
+  exiger(partitionDuRepli111 === "true,true,false,false,false,false,false,false,false",
+    `(111e) le repli par décalage n'est plus reconnu au seul couple total + décalage sous un silence (une suite servie l'emporte, un total seul ou un décalage seul n'y suffit pas) : ${partitionDuRepli111}`);
+  // ── (d0) `P10.22-d` — LA PARTITION DE LA PAGE VIDE, NUE ──────────────────────────────────────────
+  const partitionDuVide111 = [[0, false], [0, true], [undefined, false], [1, false], [3, true]].map(([p, s]) => modViz111.cleDeLaPageVide(p, s)).join(",");
+  exiger(partitionDuVide111 === "fenetre_vide,fenetre_vide,fenetre_vide,fin_du_resultat,saut_sans_rendu",
+    `(111d) la page vide ne se partage plus en fenêtre vide / fin du résultat / saut sans rendu : ${partitionDuVide111}`);
+  // ── (d0) LE FABRICANT DE PAGER, NU : une page au-delà d'un total d'une page garde son retour ────────
+  const aucunGeste111 = () => {};
+  const pagerAuDela111 = modNoyau111.makePager({ pageSize: 3, total: 3, page: 1, shown: 0, keyset: true }, aucunGeste111);
+  const fleche111 = (pager, classe) => (pager ? parClasse111(pager, classe)[0] : null);
+  exiger(!!pagerAuDela111 && !!fleche111(pagerAuDela111, "evprev") && fleche111(pagerAuDela111, "evprev").disabled === false && fleche111(pagerAuDela111, "evnext").disabled === true,
+    `(111d) SUR UNE PAGE AU-DELÀ D'UN TOTAL D'UNE SEULE PAGE, LE FABRICANT NE REND AUCUN PAGER, ou pas de retour : la page est un cul-de-sac (${pagerAuDela111 ? nu111(pagerAuDela111) : "null"})`);
+  exiger(!!pagerAuDela111 && nu111(parClasse111(pagerAuDela111, "evtot")[0]) === "3 · —",
+    `(111d) la plage d'une page VIDE se lit à l'envers : « ${pagerAuDela111 ? nu111(parClasse111(pagerAuDela111, "evtot")[0]) : "(aucun pager)"} »`);
+  exiger(modNoyau111.makePager({ pageSize: 3, total: 3, page: 0, shown: 3, keyset: true }, aucunGeste111) === null
+    && nu111(parClasse111(modNoyau111.makePager({ pageSize: 3, total: 9, page: 1, shown: 3 }, aucunGeste111), "evtot")[0]) === "9 · 4–6",
+    "(111d-négatif) une page UNIQUE, et l'on y est, rend désormais un pager — ou la plage d'une page pleine a changé");
+
+  // ── LE SIMULACRE DE TRANSPORT ────────────────────────────────────────────────────────────────────
+  const fetchOrigine111 = globalThis.fetch, minuterieOrigine111 = globalThis.setTimeout;
+  const ligne111 = document.querySelector("#qstats"), resultat111 = document.querySelector("#qresult"), badge111 = document.querySelector("#qbadge");
+  const qsize111 = document.querySelector("#qsize"), sql111 = document.querySelector("#sql");
+  instrument111(!!ligne111 && !!resultat111 && !!badge111 && !!qsize111 && !!sql111,
+    "`#qstats`, `#qresult`, `#qbadge`, `#qsize` ou `#sql` n'est plus dans `index.html` : l'Explore n'aurait nulle part où peindre");
+  const valeursOrigine111 = { taille: qsize111 ? qsize111.value : "", sql: sql111 ? sql111.value : "" };
+  const etatOrigine111 = [S111, SEn111].map((S) => ({ S, evState: S.evState, vol: S.exploreInflight, hist: S.qHist, histIdx: S.qHistIdx, dernier: S.lastResult }));
+  const appels111 = [];
+  let servirLaPage111 = () => ({});
+  let servirLeCompte111 = () => ({ count_only: true, total: -1 });
+  const reponse111 = (corps) => { const texte = JSON.stringify(corps === undefined ? {} : corps); return { ok: true, status: 200, headers: { get: () => "application/json" }, text: async () => texte, json: async () => JSON.parse(texte) }; };
+  globalThis.fetch = async (u, init) => {
+    const chemin = String(u).split("?")[0];
+    const methode = ((init && init.method) || "GET").toUpperCase();
+    let demande = {}; try { demande = init && init.body ? JSON.parse(init.body) : {}; } catch (e) { demande = {}; }
+    appels111.push({ methode, chemin, demande });
+    if (methode !== "POST" || chemin !== "/api/query") return reponse111({});
+    return reponse111(await (demande.count_only ? servirLeCompte111(demande) : servirLaPage111(demande)));
+  };
+  globalThis.setTimeout = (fn, ms) => (ms >= 1000 ? 0 : minuterieOrigine111(fn, ms >= 100 ? 0 : ms));
+
+  try {
+    if (qsize111) qsize111.value = "3";
+    const COLONNES111 = ["ts", "source", "message"];
+    const LIGNES111 = (n) => Array.from({ length: n }, (_, i) => [1758000000 - i, "sshd", "ligne " + i]);
+    const CURSEUR111 = { ts: 1757999998, id: 903 };
+    const parcours111 = (S, plus = {}) => { S.exploreInflight = null; S.evState = { q: "search sshd", isSoql: true, keyset: true, cursors: [null], page: 0, pageSize: 3, total: -1, shown: 0, totalCapped: false, countFired: true, realTotal: false, totalError: null, win: { from: 1000, to: 2000 }, ...plus }; };
+    const charger111 = async (mod, S, plus = {}) => { parcours111(S, plus); resultat111.replaceChildren(); ligne111.replaceChildren(); badge111.replaceChildren(); await mod.evLoad(); await laisser111(10); return nu111(ligne111); };
+    const derniereDemande111 = () => { const q = appels111.filter((a) => a.chemin === "/api/query" && !a.demande.count_only); return q.length ? q[q.length - 1].demande : {}; };
+    const pageVide111 = () => parDonnee111(resultat111, "data-page-vide");
+    const noeudDeSuite111 = () => parDonnee111(ligne111, "data-suite-du-parcours")[0] || null;
+    const PAGE_VIDE111 = { columns: COLONNES111, rows: [], stats: { elapsed_ms: 1 }, has_more: false, next_cursor: null, limit: 3 };
+    const FACE111 = (cle) => modViz111.motDeLaSuiteDuParcours(cle), FACE_EN111 = (cle) => modVizEn111.motDeLaSuiteDuParcours(cle);
+    // Un nombre tel que la ligne LUE le rend : l'espace fine insécable du format français y est un blanc.
+    const nombreLu111 = (n) => n.toLocaleString("fr-FR").replace(/\s+/g, " ");
+    const FRANCAIS111 = /[éèêàçù]|\b(page vide|résultats?|serveur|lignes?|lointaine|parcours|repris|décalage|tronqué|erreur|démon)\b/i;
+
+    // ══ (d) `P10.22-d` — LA PAGE VIDE DE RANG SUPÉRIEUR, PAR LE CHARGEUR RÉEL ═══════════════════════
+    // (d1) Page 2 atteinte par curseur après une page PLEINE : vide, fin du résultat, retour gardé.
+    servirLaPage111 = () => PAGE_VIDE111;
+    await charger111(modViz111, S111, { page: 1, cursors: [null, CURSEUR111] });
+    const d1111 = pageVide111(), texteD1111 = nu111(resultat111);
+    instrument111(JSON.stringify(derniereDemande111().cursor) === JSON.stringify(CURSEUR111),
+      `la page 2 n'est pas demandée par le curseur servi : ${JSON.stringify(derniereDemande111())}`);
+    exiger(d1111.length === 1 && d1111[0].getAttribute("data-page-vide") === "fin_du_resultat" && /^page vide, fin du résultat\b/.test(nu111(d1111[0])) && !/aucun evenement/.test(texteD1111),
+      `(111d1) UNE PAGE VIDE DE RANG SUPÉRIEUR SE DIT ENCORE COMME UNE FENÊTRE VIDE, ou ne dit pas « page vide, fin du résultat » — « ${texteD1111.slice(0, 200)} »`);
+    const retourD1111 = parClasse111(resultat111, "evprev")[0];
+    exiger(!!retourD1111 && retourD1111.disabled === false,
+      `(111d1) SUR UNE PAGE VIDE DE RANG SUPÉRIEUR, AUCUNE FLÈCHE NE RAMÈNE : la page rendait la main avant le pager (${retourD1111 ? "flèche inerte" : "aucune flèche"})`);
+    // Le retour, joué : il repart de la première page, sans curseur ni décalage — et la première page vide
+    // est, elle, une fenêtre vide (le contrôle négatif du même geste).
+    if (retourD1111 && typeof retourD1111.onclick === "function") { retourD1111.onclick(); await laisser111(20); }
+    const retourDemande111 = derniereDemande111();
+    exiger(S111.evState.page === 0 && !("cursor" in retourDemande111) && !("offset" in retourDemande111),
+      `(111d1) la flèche de retour ne ramène pas à la première page : page ${S111.evState.page}, demande ${JSON.stringify(retourDemande111)}`);
+    exiger(/aucun evenement sur la fenetre/.test(nu111(resultat111)) && pageVide111().length === 0 && parClasse111(resultat111, "evpager").length === 0,
+      `(111d1-négatif) la PREMIÈRE page vide ne se dit plus comme une fenêtre vide, ou porte un pager mort — « ${nu111(resultat111).slice(0, 200)} »`);
+    // (d2) Le compte arrive APRÈS, et dit « une page » : le retour survit au repeint.
+    let libererLeCompte111 = null;
+    servirLeCompte111 = () => new Promise((r) => { libererLeCompte111 = () => r({ count_only: true, total: 3 }); });
+    await charger111(modViz111, S111, { page: 1, cursors: [null, CURSEUR111], countFired: false });
+    instrument111(typeof libererLeCompte111 === "function", "le compte asynchrone n'est pas parti sur la page vide : le repeint jugé ci-dessous n'aurait pas lieu");
+    if (libererLeCompte111) { libererLeCompte111(); await laisser111(20); }
+    const retourD2111 = parClasse111(resultat111, "evprev")[0];
+    exiger(S111.evState.total === 3 && pageVide111().length === 1 && !!retourD2111 && retourD2111.disabled === false && !/4–3/.test(nu111(resultat111)),
+      `(111d2) QUAND LE COMPTE ARRIVE ET DIT « UNE PAGE », LA PAGE VIDE PERD SON RETOUR (le fabricant rendait \`null\`), ou sa plage se lit à l'envers — total ${S111.evState.total}, « ${nu111(resultat111).slice(0, 200)} »`);
+    servirLeCompte111 = () => ({ count_only: true, total: -1 });
+    // (d3) Un SAUT direct vide, alors que le total promet des lignes : ce n'est PAS une fin — et c'est dit, marqué.
+    servirLaPage111 = () => PAGE_VIDE111;
+    const ligneD3111 = await charger111(modViz111, S111, { page: 3, total: 30, realTotal: true });
+    const d3111 = pageVide111();
+    exiger(derniereDemande111().offset === 9 && d3111.length === 1 && d3111[0].getAttribute("data-page-vide") === "saut_sans_rendu" && d3111[0].className === "bad"
+      && /n'est PAS établie/.test(nu111(d3111[0])) && !/^page vide, fin du résultat/.test(nu111(d3111[0])) && !!parClasse111(resultat111, "evprev")[0],
+      `(111d3) UN SAUT DIRECT VIDE SE DIT « FIN DU RÉSULTAT », n'est pas marqué, ou n'a pas de retour — « ${nu111(resultat111).slice(0, 200)} »`);
+    exiger(ligneD3111 === "30 résultats · page 4 lointaine trop lourde (budget dépassé) — utilise ◀ / ▶ pour un parcours fiable, ou affine la requête",
+      `(111d3) la ligne du saut trop lourd a changé en français : « ${ligneD3111} »`);
+    // (d4) Les deux faces anglaises, par l'instance anglaise.
+    servirLaPage111 = () => PAGE_VIDE111;
+    await charger111(modVizEn111, SEn111, { page: 1, cursors: [null, CURSEUR111] });
+    const d4111 = nu111(pageVide111()[0]);
+    const ligneD4111 = await charger111(modVizEn111, SEn111, { page: 3, total: 30, realTotal: true });
+    const d4bis111 = nu111(pageVide111()[0]);
+    exiger(/^empty page, end of the result\b/.test(d4111) && /NOT established/.test(d4bis111) && !FRANCAIS111.test(d4111 + " " + d4bis111)
+      && /^30 results · page 4 too far to reach/.test(ligneD4111) && !FRANCAIS111.test(ligneD4111),
+      `(111d4) SOUS \`LANG='en'\`, LA PAGE VIDE OU LE SAUT TROP LOURD RESTE FRANÇAIS : « ${d4111} » / « ${d4bis111} » / « ${ligneD4111} »`);
+
+    // ══ (e) `P10.22-e` — LE REPLI PAR DÉCALAGE, PAR LE CHARGEUR RÉEL ═══════════════════════════════
+    const pageDuRepli111 = (plus = {}) => (d) => ({ columns: COLONNES111, rows: LIGNES111(3), stats: { elapsed_ms: 1 }, total: 7, offset: d.offset || 0, limit: 3, ...plus });
+    // (e1) Le total servi est LU, le repli DIT, le pager numéroté.
+    servirLaPage111 = pageDuRepli111();
+    const e1111 = await charger111(modViz111, S111);
+    const suiteE1111 = noeudDeSuite111();
+    exiger(S111.evState.total === 7 && S111.evState.repliParDecalage === true && e1111.startsWith("7 résultats · page 1 / 3") && e1111.includes(FACE111("servie_par_decalage").trim())
+      && !!suiteE1111 && suiteE1111.getAttribute("data-suite-du-parcours") === "servie_par_decalage" && !e1111.includes(FACE111("suite_non_dite").trim()),
+      `(111e1) LE REPLI PAR DÉCALAGE N'EST PAS RECONNU : le total servi est ignoré (${S111.evState.total}), ou la ligne avoue un silence là où le démon a servi un nombre — « ${e1111.slice(0, 300)} »`);
+    exiger(/[▶]/.test(nu111(resultat111)) && parClasse111(resultat111, "evnum").length >= 3 && parClasse111(resultat111, "evnext")[0] && parClasse111(resultat111, "evnext")[0].disabled === false,
+      `(111e1) le total servi par le repli n'arme pas le pager numéroté : « ${nu111(resultat111).slice(0, 160)} »`);
+    // (e2) La page suivante part par son RANG, et ce n'est pas un saut : ni badge « page sautée », ni phrase « par curseur ».
+    servirLaPage111 = pageDuRepli111({ stats: { elapsed_ms: 1, truncated: true } });
+    const suivante111 = parClasse111(resultat111, "evnext")[0];
+    if (suivante111 && typeof suivante111.onclick === "function") { badge111.replaceChildren(); suivante111.onclick(); await laisser111(20); }
+    const demandeE2111 = derniereDemande111(), ligneE2111 = nu111(ligne111), badgeE2111 = nu111(badge111);
+    instrument111(S111.evState.page === 1 && demandeE2111.keyset === true && demandeE2111.offset === 3 && !("cursor" in demandeE2111),
+      `la page suivante du repli n'est pas demandée par son rang : page ${S111.evState.page}, ${JSON.stringify(demandeE2111)}`);
+    exiger(/page partielle/.test(badgeE2111) && !/page sautée/.test(badgeE2111) && !/saut direct|par curseur/.test(ligneE2111) && ligneE2111.includes(FACE111("servie_par_decalage").trim()),
+      `(111e2) UNE PAGE DU REPLI EST TRAITÉE EN SAUT : badge « ${badgeE2111} », ligne « ${ligneE2111.slice(0, 300)} » — les phrases du saut renvoient à un curseur qui n'existe pas`);
+    // (e3) Un total PLAFONNÉ relance le compte, et le repli se dit encore quand le compte remplace la ligne.
+    let libererLeCompteE3111 = null;
+    servirLeCompte111 = () => new Promise((r) => { libererLeCompteE3111 = () => r({ count_only: true, total: 12345 }); });
+    servirLaPage111 = pageDuRepli111({ total: 10000, total_capped: true });
+    const e3111 = await charger111(modViz111, S111, { countFired: false });
+    exiger(e3111.startsWith(nombreLu111(10000) + "+ résultats · page 1 / 3334") && typeof libererLeCompteE3111 === "function",
+      `(111e3) un total PLAFONNÉ servi par le repli n'est pas dit plafonné, ou ne relance pas le compte : « ${e3111.slice(0, 200)} »`);
+    if (libererLeCompteE3111) { libererLeCompteE3111(); await laisser111(20); }
+    const e3bis111 = nu111(ligne111);
+    exiger(S111.evState.total === 12345 && e3bis111.startsWith(nombreLu111(12345) + " résultats · page 1 / 4115") && e3bis111.includes(FACE111("servie_par_decalage").trim()),
+      `(111e3) le compte arrivé efface l'aveu du repli, ou n'est pas lu : « ${e3bis111.slice(0, 200)} »`);
+    servirLeCompte111 = () => ({ count_only: true, total: -1 });
+    // (e4) Contrôle négatif : une page par curseur ordinaire n'est pas un repli, et son total reste inconnu.
+    servirLaPage111 = () => ({ columns: COLONNES111, rows: LIGNES111(3), stats: { elapsed_ms: 1 }, has_more: true, next_cursor: CURSEUR111, limit: 3 });
+    const e4111 = await charger111(modViz111, S111);
+    exiger(S111.evState.total === -1 && S111.evState.repliParDecalage === false && !e4111.includes(FACE111("servie_par_decalage").trim()),
+      `(111e4-négatif) une page par curseur ordinaire se dit servie par décalage : « ${e4111.slice(0, 200)} »`);
+    // (e5) L'instance anglaise.
+    servirLaPage111 = pageDuRepli111();
+    const e5111 = await charger111(modVizEn111, SEn111);
+    exiger(e5111.startsWith("7 results · page 1 / 3") && e5111.includes(FACE_EN111("servie_par_decalage").trim()) && !FRANCAIS111.test(e5111),
+      `(111e5) sous \`LANG='en'\`, le repli ne se dit pas en anglais : « ${e5111.slice(0, 300)} »`);
+
+    // ══ (g) `P10.22-g` — LE SILENCE DU DÉMON EST UN NŒUD MARQUÉ ══════════════════════════════════════
+    servirLaPage111 = () => ({ columns: COLONNES111, rows: LIGNES111(2), stats: { elapsed_ms: 1 }, limit: 3 });
+    const g1111 = await charger111(modViz111, S111);
+    const silence111 = noeudDeSuite111();
+    exiger(!!silence111 && silence111.getAttribute("data-suite-du-parcours") === "suite_non_dite" && silence111.className === "bad" && nu111(silence111) === FACE111("suite_non_dite").trim(),
+      `(111g) LE SILENCE DU DÉMON N'EST PAS UN NŒUD DISTINCT DANS LE REGISTRE DE L'ALARME : ${silence111 ? `classe « ${silence111.className} », texte « ${nu111(silence111)} »` : "aucun nœud"} — ligne « ${g1111.slice(0, 200)} »`);
+    servirLaPage111 = () => ({ columns: COLONNES111, rows: LIGNES111(3), stats: { elapsed_ms: 1 }, has_more: true, next_cursor: CURSEUR111, limit: 3 });
+    await charger111(modViz111, S111);
+    const servie111 = noeudDeSuite111();
+    exiger(!!servie111 && servie111.getAttribute("data-suite-du-parcours") === "il_en_existe_peut_etre_d_autres" && servie111.className !== "bad",
+      `(111g-négatif) une suite SERVIE est posée dans le registre de l'alarme, ou n'est pas un nœud : ${servie111 ? servie111.className : "aucun nœud"}`);
+    // (g2) La reprise se pose DEVANT sans aplatir le nœud marqué ; (g3) l'aveu d'un total non établi aussi.
+    servirLaPage111 = () => ({ columns: COLONNES111, rows: LIGNES111(2), stats: { elapsed_ms: 1 }, limit: 3 });
+    const g2111 = await charger111(modViz111, S111, { repriseAnnonce: "cause-111" });
+    const g2En111 = await charger111(modVizEn111, SEn111, { repriseAnnonce: "cause-111" });
+    exiger(g2111.startsWith("parcours repris depuis la première page (cause-111) · page 1") && g2En111.startsWith("walk restarted from the first page (cause-111) · page 1") && !FRANCAIS111.test(g2En111.replace("cause-111", "")) && !!noeudDeSuite111() && noeudDeSuite111().className === "bad",
+      `(111g2) la reprise n'est pas dite dans les deux langues, ou elle APLATIT le nœud marqué en recollant la ligne par son texte : « ${g2111.slice(0, 200)} » / « ${g2En111.slice(0, 200)} »`);
+    servirLeCompte111 = () => ({ count_only: true, total: -1, total_error: "budget-111" });
+    await charger111(modViz111, S111, { countFired: false });
+    await laisser111(20);
+    const g3111 = nu111(ligne111);
+    exiger(g3111.startsWith("total non établi — budget-111 · page 1") && !!noeudDeSuite111() && noeudDeSuite111().className === "bad",
+      `(111g3) l'aveu d'un total non établi aplatit le nœud marqué, ou ne se pose plus devant : « ${g3111.slice(0, 200)} »`);
+    servirLeCompte111 = () => ({ count_only: true, total: -1 });
+
+    // ══ (f) `P10.22-f` — LES AUTRES ÉTATS DE `#qstats` ET LE BADGE, DANS LES DEUX LANGUES ═══════════
+    // (f1) Saut partiel : la phrase française est INCHANGÉE, l'anglaise est entière.
+    servirLaPage111 = () => ({ columns: COLONNES111, rows: LIGNES111(2), stats: { elapsed_ms: 1, truncated: true }, has_more: true, next_cursor: CURSEUR111, limit: 3 });
+    const f1111 = await charger111(modViz111, S111, { page: 2, total: 30, realTotal: true });
+    const badgeF1111 = nu111(badge111);
+    const f1En111 = await charger111(modVizEn111, SEn111, { page: 2, total: 30, realTotal: true });
+    exiger(f1111 === "30 résultats · page 3 atteinte par saut direct : contenu partiel (plafond serveur) — ◀ / ▶ parcourent le résultat complet par curseur" && /page sautée/.test(badgeF1111)
+      && /^30 results · page 3 reached by direct jump: partial content/.test(f1En111) && !FRANCAIS111.test(f1En111),
+      `(111f1) le saut partiel n'a pas ses deux faces, ou la face française a changé, ou un VRAI saut ne porte plus son badge : « ${f1111} » / « ${f1En111} » / badge « ${badgeF1111} »`);
+    // (f2) La ligne du parcours par décalage.
+    servirLaPage111 = (d) => ({ columns: COLONNES111, rows: LIGNES111(3), stats: { elapsed_ms: 1 }, total: 7, offset: d.offset || 0, limit: 3 });
+    const f2111 = await charger111(modViz111, S111, { keyset: false, total: 0 });
+    const f2En111 = await charger111(modVizEn111, SEn111, { keyset: false, total: 0 });
+    exiger(/^page 1\/3 · 7 lignes · serveur 1 ms · total \d+ ms$/.test(f2111) && /^page 1\/3 · 7 rows · server 1 ms · total \d+ ms$/.test(f2En111),
+      `(111f2) LA LIGNE DU PARCOURS PAR DÉCALAGE RESTE FRANÇAISE SOUS \`LANG='en'\`, ou sa face française a changé : « ${f2111} » / « ${f2En111} »`);
+    // (f3) La ligne d'une agrégation, par le chargeur réel.
+    const agreger111 = async (mod, S) => { S.exploreInflight = null; ligne111.replaceChildren(); if (sql111) sql111.value = "search sshd | stats count"; servirLaPage111 = () => ({ columns: ["count"], rows: [[5]], stats: { rows: 1, truncated: true, elapsed_ms: 2 } }); await mod.runQuery(); await laisser111(20); return nu111(ligne111); };
+    const f3111 = await agreger111(modViz111, S111), f3En111 = await agreger111(modVizEn111, SEn111);
+    exiger(/^1 ligne\(s\) \(tronqué — affine la requête\) - serveur 2 ms - total \d+ ms$/.test(f3111) && /^1 row\(s\) \(truncated — refine the query\) - server 2 ms - total \d+ ms$/.test(f3En111),
+      `(111f3) la ligne d'une agrégation reste française sous \`LANG='en'\`, ou sa face française a changé : « ${f3111} » / « ${f3En111} »`);
+    // (f4) Le préfixe d'une erreur de transport ; l'annulation garde son nœud entier, que le lexique traduit.
+    const erreurFr111 = modViz111.explainErr(new Error("x-111")), erreurEn111 = modVizEn111.explainErr(new Error("x-111"));
+    const abandon111 = Object.assign(new Error("abandon"), { name: "AbortError" });
+    exiger(erreurFr111 === "erreur : x-111" && erreurEn111 === "error: x-111" && modVizEn111.explainErr(abandon111) === "Annulé",
+      `(111f4) le préfixe d'une erreur de transport n'a pas ses deux faces, ou l'annulation n'est plus un nœud entier au lexique : « ${erreurFr111} » / « ${erreurEn111} »`);
+    // (f5) Le badge de troncature : nombres dans la langue de l'écran, quatre infobulles bilingues.
+    const chiffreFr111 = modViz111.truncationBadge({ truncated: true, topn_ecartes: 12345, topn_total: 50000, rollup_note: "note-111" }, null);
+    const chiffreEn111 = modVizEn111.truncationBadge({ truncated: true, topn_ecartes: 12345, topn_total: 50000, rollup_note: "note-111" }, null);
+    exiger(chiffreFr111[1] === `tronqué — ${(12345).toLocaleString("fr-FR")} écartés (25 %)` && chiffreFr111[2].startsWith(`Le compte affiché est un PLANCHER : ${(12345).toLocaleString("fr-FR")} événement(s) écartés sur ${(50000).toLocaleString("fr-FR")}`)
+      && chiffreEn111[1] === "truncated — 12,345 left out (25 %)" && chiffreEn111[2].startsWith("The displayed count is a FLOOR: 12,345 event(s) left out of 50,000")
+      && chiffreFr111[2].endsWith("\n\nnote-111") && chiffreEn111[2].endsWith("\n\nnote-111"),
+      `(111f5) LE BADGE CHIFFRÉ FORMATE SES NOMBRES EN FRANÇAIS SOUS \`LANG='en'\`, ou n'a pas ses deux faces : « ${chiffreFr111[1]} » / « ${chiffreEn111[1]} » / « ${chiffreEn111[2].slice(0, 120)} »`);
+    const contextes111 = [[{ truncated: true }, { keyset: true, saut: true, page: 7 }], [{ truncated: true }, { keyset: true, saut: false, page: 2 }], [{ truncated: true }, null]];
+    const infobullesEn111 = contextes111.map(([st, nav]) => modVizEn111.truncationBadge(st, nav)[2]);
+    const infobullesFr111 = contextes111.map(([st, nav]) => modViz111.truncationBadge(st, nav));
+    exiger(infobullesEn111.every((t) => t.length > 80 && !FRANCAIS111.test(t)) && infobullesFr111.map((b) => b[1]).join("|") === "page sautée — contenu partiel|page partielle — plafond de lignes du serveur|tronqué — ampleur inconnue",
+      `(111f5) une infobulle du badge reste française sous \`LANG='en'\`, ou un libellé statique a changé de forme (le lexique ne le traduirait plus) : ${JSON.stringify(infobullesEn111.map((t) => t.slice(0, 60)))}`);
+    // (f6) LE RELEVÉ : chaque table porte ses deux faces sur chaque entrée, distinctes ; plus un `'fr-FR'` écrit.
+    const srcViz111 = srcDe111("viz.js");
+    const entreesDe111 = (nom) => {
+      const table = (srcViz111.match(new RegExp("const " + nom + " = \\{[\\s\\S]*?\\n\\};")) || [""])[0];
+      return [...table.matchAll(/^ {2}(\w+): \{\n {4}fr: (.+),\n {4}en: (.+) \},?$/gm)].map((m) => ({ cle: m[1], fr: m[2], en: m[3] }));
+    };
+    const TABLES111 = { MOTS_DE_LA_SUITE_DU_PARCOURS: 5, MOTS_DE_LA_LIGNE_DU_PARCOURS: 6, MOTS_DE_LA_LIGNE_D_ETAT_HORS_PARCOURS: 4, MOTS_DE_LA_PAGE_VIDE: 2, TITRES_DU_BADGE_DE_TRONCATURE: 4 };
+    const tablesFautives111 = Object.entries(TABLES111).filter(([nom, n]) => { const e = entreesDe111(nom); return e.length !== n || e.some((x) => x.fr === x.en || x.fr.length < 3); }).map(([nom]) => nom);
+    exiger(tablesFautives111.length === 0,
+      `(111f6) une table de faces n'a pas ses DEUX faces DISTINCTES sur chaque entrée, ou a perdu une entrée : ${tablesFautives111.join(", ")}`);
+    exiger(!/'fr-FR'|"fr-FR"/.test(sansCommentaires111(srcViz111)),
+      "(111f6) web/viz.js écrit encore la locale `'fr-FR'` en dur : un nombre y serait français quelle que soit la langue de l'écran");
+  } finally {
+    globalThis.fetch = fetchOrigine111; globalThis.setTimeout = minuterieOrigine111;
+    if (qsize111) qsize111.value = valeursOrigine111.taille;
+    if (sql111) sql111.value = valeursOrigine111.sql;
+    for (const o of etatOrigine111) { o.S.evState = o.evState; o.S.exploreInflight = o.vol; o.S.qHist = o.hist; o.S.qHistIdx = o.histIdx; o.S.lastResult = o.dernier; }
+    if (resultat111) resultat111.replaceChildren();
+    if (ligne111) ligne111.replaceChildren();
+    if (badge111) { badge111.replaceChildren(); badge111.hidden = true; }
+  }
+  console.log("(111) OK — une page vide de rang supérieur dit « page vide, fin du résultat » et garde sa flèche de retour, qui ramène à la première page ; quand le compte arrive ensuite et dit « une page », le retour survit au repeint et la plage ne se lit plus à l'envers ; un saut direct vide dit que la fin n'est PAS établie, marqué ; la première page vide reste une fenêtre vide. Le repli par décalage est reconnu au couple total + décalage sous un silence : son total est lu (plafonné, il relance le compte), le repli est dit — y compris quand le compte remplace la ligne —, et ses pages suivantes, demandées par leur rang, ne sont plus des sauts ; une page par curseur ordinaire n'est pas un repli. Le silence du démon est un nœud distinct marqué `bad`, qui survit à la reprise et à l'aveu d'un total non établi ; une suite servie n'est pas marquée. Saut trop lourd, saut partiel, reprise, ligne par décalage, ligne d'agrégation, préfixe d'erreur et badge de troncature ont leurs deux faces, les faces françaises inchangées, les nombres dans la langue de l'écran. Le discriminant s'appelle `cleDeLaSuiteServie` partout, l'ancien nom n'est plus écrit ni exporté, et la fermeture des imports recalculée égale `SHELL_JS_CLOSURE`. CE QUI ÉTAIT FAUX : le repli n'est pas atteignable par la console d'aujourd'hui, et il était aussi pris pour un saut ; le pager ne « restait » pas affiché sur un saut vide ; la ligne d'agrégation et le préfixe d'erreur étaient eux aussi français.");
 }
 
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;

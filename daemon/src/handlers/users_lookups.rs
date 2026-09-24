@@ -95,7 +95,104 @@ pub(crate) async fn user_create(State(st): State<AppState>, Extension(au): Exten
     }
 }
 
+/// `P10.24-n` — LE COMPTE DE L'ADMINISTRATEUR DE L'ASSISTANT NE SE SUPPRIME PAS.
+pub(crate) const CAUSE_COMPTE_DE_L_ASSISTANT_NON_SUPPRIMABLE: &str = "COMPTE NON SUPPRIMÉ, C'EST L'ADMINISTRATEUR \
+     DE L'INSTALLATION : ce compte a été posé par l'assistant d'installation, et le démon garde sa crédence hors de \
+     la table des comptes. Supprimé, il se reconnecterait en administrateur par son mot de passe d'installation — \
+     même réinitialisé, même rétrogradé — jusqu'au redémarrage ; et au redémarrage, sans mot de passe de \
+     configuration, le démon repartirait en mode installation, tous les comptes refusés. Pour lui retirer l'accès, \
+     réinitialisez son mot de passe : ses sessions tombent. Rien n'est écrit.";
+
+/// `P10.24-p` — LES OBJETS QU'UN COMPTE POSSÈDE PAR SON NOM ET QUI PASSENT À L'AUTEUR DE SA SUPPRESSION (colonne
+/// `owner`). Liste FERMÉE, jamais lue d'un corps : les noms entrent tels quels dans l'énoncé.
+const OBJETS_REATTRIBUES_A_L_AUTEUR: [&str; 4] = ["dashboard", "view", "library_panel", "playlist"];
+
+/// `P10.24-p` — LES OBJETS QU'UN COMPTE POSSÈDE PAR SON NOM ET QUI PARTENT AVEC LUI : `(table, colonne du nom)`.
+const OBJETS_PURGES_AVEC_LE_COMPTE: [(&str, &str); 2] = [("saved_query", "owner"), ("dashboard_snapshot", "created_by")];
+
+/// `P10.24-p` — les identifiants des lignes de `table` dont `colonne` porte `nom`, lus EN BLOC (une ligne illisible
+/// fait échouer la transaction, elle ne disparaît pas du compte rendu).
+fn identifiants_au_nom(conn: &Connection, table: &str, colonne: &str, nom: &str) -> rusqlite::Result<Vec<i64>> {
+    conn.prepare(&format!("SELECT id FROM {table} WHERE {colonne}=?1 ORDER BY id"))?
+        .query_map(params![nom], |r| r.get::<_, i64>(0))?
+        .collect()
+}
+
+/// `P10.24-p` — une écriture qui doit toucher EXACTEMENT les lignes lues juste avant, dans la même transaction.
+fn exactement(ecrites: usize, lues: usize) -> rusqlite::Result<()> {
+    if ecrites == lues { Ok(()) } else { Err(rusqlite::Error::StatementChangedRows(ecrites)) }
+}
+
+/// `P10.24-p` — CE QUE LA SUPPRESSION FAIT DES OBJETS DU COMPTE, DANS SA TRANSACTION, ET CE QU'ELLE EN ATTESTE.
+///
+/// LE DÉFAUT, MESURÉ LE 2026-09-24 SUR LA FORME D'AVANT. `bob` supprimé puis recréé comme `viewer` : le nouveau `bob`
+/// listait la requête enregistrée de l'ancien, son tableau de bord, sa vue, son panneau de bibliothèque et sa
+/// playlist PRIVÉS — tous « modifiables » — et son INSTANTANÉ avec son jeton, capturé au rôle `admin` : des données
+/// figées sans masque, servies à un `viewer` qui ne les aurait jamais vues. L'énoncé ne nommait ni les panneaux de
+/// bibliothèque, ni les playlists, ni les instantanés.
+///
+/// LA DÉCISION, TABLE PAR TABLE. Recensement par NOM de colonne sur le schéma migré : seules celles-ci donnent une
+/// autorité à un nom, avec `user_mfa` et `user_pref`, déjà purgées (`P10.24-c`). Toutes les autres ATTESTENT un
+/// geste passé et ne se réécrivent pas — `created_by`, `updated_by`, `acked_by`, `author`, `actor`, `*_par`,
+/// `archived_by`, `disposition_by`, `released_by`, `authorizer`, l'inventaire `acces_observe` — ou servent de filtre
+/// sans rien octroyer (`incident.owner`, `incident.assignee` : tout dossier se lit par tout lecteur) :
+///  * `dashboard`, `view`, `library_panel`, `playlist` : RÉATTRIBUÉS À L'AUTEUR DE LA SUPPRESSION. Ils peuvent être
+///    communs et servir à d'autres (un panneau de bibliothèque rattaché ailleurs, une playlist sur un écran, une vue
+///    qui regroupe des tableaux) : les purger détruirait le travail des autres. L'auteur est administrateur, et un
+///    administrateur voit et modifie déjà chacun d'eux, privés compris : la réattribution n'ouvre rien à personne,
+///    elle retire seulement l'objet au prochain homonyme. Leur visibilité ne change pas.
+///  * `saved_query` : PURGÉES. Privées par construction — même un administrateur ne lit pas celles d'autrui —, elles
+///    sont de la nature de `user_pref`, déjà purgée : les donner à l'auteur ouvrirait à un administrateur, par une
+///    suppression, des notes qu'aucun administrateur ne lit.
+///  * `dashboard_snapshot` : PURGÉS. Leur colonne est à la fois l'autorité (liste, jeton, suppression) et la
+///    provenance affichée à qui lit le lien : la réattribuer ferait dire « capturé par » à qui ne l'a pas capturé.
+///    Ce sont des données dérivées, figées au rôle d'un compte qui n'existe plus ; le tableau de bord reste, on
+///    recapture.
+/// Aucune désactivation : il faudrait une colonne, donc une migration. Rien n'est laissé au nom du compte supprimé.
+///
+/// LA TRACE : les identifiants de chaque objet réattribué ou purgé vont dans l'événement d'audit de la suppression
+/// (source `plume-config`, non purgeable), leurs comptes dans la ligne du registre (chaînée) — l'ancien
+/// propriétaire de chaque objet reste lisible là où rien ne s'efface.
+struct ObjetsDuCompteSupprime {
+    reattribues: Vec<(&'static str, Vec<i64>)>,
+    purges: Vec<(&'static str, Vec<i64>)>,
+}
+
+impl ObjetsDuCompteSupprime {
+    fn traiter(conn: &Connection, nom: &str, heritier: &str) -> rusqlite::Result<Self> {
+        // Un héritier sans nom laisserait des objets privés SANS propriétaire, ce que rien n'écrit (`P11.20-n`) :
+        // l'échec fait tomber toute la suppression.
+        if heritier.is_empty() {
+            return Err(rusqlite::Error::ToSqlConversionFailure("P10.24-p : auteur de la suppression sans nom, aucun héritier pour ses objets".into()));
+        }
+        let mut purges = Vec::new();
+        for (table, colonne) in OBJETS_PURGES_AVEC_LE_COMPTE {
+            let ids = identifiants_au_nom(conn, table, colonne, nom)?;
+            exactement(conn.execute(&format!("DELETE FROM {table} WHERE {colonne}=?1"), params![nom])?, ids.len())?;
+            purges.push((table, ids));
+        }
+        let mut reattribues = Vec::new();
+        for table in OBJETS_REATTRIBUES_A_L_AUTEUR {
+            let ids = identifiants_au_nom(conn, table, "owner", nom)?;
+            exactement(conn.execute(&format!("UPDATE {table} SET owner=?1 WHERE owner=?2"), params![heritier, nom])?, ids.len())?;
+            reattribues.push((table, ids));
+        }
+        Ok(Self { reattribues, purges })
+    }
+
+    fn en_json(liste: &[(&'static str, Vec<i64>)]) -> Value {
+        Value::Object(liste.iter().map(|(table, ids)| (table.to_string(), json!(ids))).collect())
+    }
+
+    fn en_phrase(liste: &[(&'static str, Vec<i64>)]) -> String {
+        liste.iter().map(|(table, ids)| format!("{table} {}", ids.len())).collect::<Vec<_>>().join(", ")
+    }
+}
+
 pub(crate) async fn user_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
+    // `P10.24-n` — la base visée est-elle celle qui porte le compte de l'assistant ? Toujours en mode 0 ; en mode
+    // multi-tenant, seulement pour le tenant `default` (un homonyme dans un autre tenant n'est pas cette crédence).
+    let base_de_l_assistant = Arc::ptr_eq(&req_db(&st, &au), &st.db);
     crate::req_conn!(st, au, conn);
     let target: Option<(String, String)> = conn
         .query_row("SELECT name,role FROM user WHERE id=?1", params![id], |r| Ok((r.get(0)?, r.get(1)?)))
@@ -105,6 +202,26 @@ pub(crate) async fn user_delete(State(st): State<AppState>, Extension(au): Exten
     };
     if tname == au.name {
         return (StatusCode::BAD_REQUEST, "impossible de supprimer son propre compte").into_response();
+    }
+    // `P10.24-n` — LE COMPTE DE L'ADMINISTRATEUR DE L'ASSISTANT N'EST PAS UN COMPTE COMME LES AUTRES. Mesuré le
+    // 2026-09-24 sur la forme d'avant : l'administrateur `wiz` posé par l'assistant, puis réinitialisé ET rétrogradé
+    // `viewer` par un autre administrateur (son mot de passe d'installation refusé, 401) ; supprimé (204) — et ce
+    // mot de passe d'installation se reconnectait (200), en ADMINISTRATEUR, session résolue `admin`, Basic aussi :
+    // `authenticate` et la résolution de session retombent, pour un nom absent de `user`, sur `st.admin`, la
+    // crédence en mémoire posée à l'installation ou au dernier `/api/password`, que ni la réinitialisation ni la
+    // rétrogradation ne touchent. Et au redémarrage (LU, `server/mod.rs`) : `meta.admin_user` nomme un compte
+    // absent, l'administrateur de l'assistant n'est pas rechargé, et sans mot de passe de configuration le démon
+    // repart en MODE INSTALLATION — toute l'API refusée à tous, administrateurs compris.
+    // POURQUOI REFUSER PLUTÔT QUE RETIRER LA CRÉDENCE AVEC LE COMPTE : l'état « installé » du démon EST cette crédence
+    // (`auth_guard`, `setup_status`, `setup_post`). La retirer met l'installation en mode installation SUR-LE-CHAMP,
+    // avec aucun jeton d'installation (il n'est frappé qu'au démarrage) : plus personne n'entre, puis au redémarrage
+    // l'installation appartient au porteur du jeton. C'est l'installation sans administrateur que l'anti-
+    // verrouillage ci-dessous interdit pour le DERNIER administrateur ; ce refus en est le pendant pour le compte
+    // dont dépend l'état installé, jugé par NOM (une rétrogradation préalable ne le contourne pas). Le retrait d'accès reste possible : la
+    // réinitialisation du mot de passe par un autre administrateur, qui révoque ses sessions (`P10.23-l`).
+    let compte_de_l_assistant = st.admin.lock().as_ref().is_some_and(|(nom, _)| *nom == tname);
+    if base_de_l_assistant && compte_de_l_assistant {
+        return err_json(StatusCode::BAD_REQUEST, CAUSE_COMPTE_DE_L_ASSISTANT_NON_SUPPRIMABLE);
     }
     if trole == "admin" {
         let admins: i64 = conn.query_row("SELECT COUNT(*) FROM user WHERE role='admin'", [], |r| r.get(0)).unwrap_or(0);
@@ -130,14 +247,26 @@ pub(crate) async fn user_delete(State(st): State<AppState>, Extension(au): Exten
         // les jetons vaudraient encore pour son homonyme, ni de purge sans suppression.
         let seconds_facteurs_retires = conn.execute("DELETE FROM user_mfa WHERE user=?1", params![tname])?;
         conn.execute("DELETE FROM user_pref WHERE user=?1", params![tname])?;
+        // `P10.24-p` — ses objets, dans CETTE transaction : purgés ou réattribués à l'auteur, et attestés ci-dessous.
+        let objets = ObjetsDuCompteSupprime::traiter(&conn, &tname, &au.name)?;
         avancer_l_epoque_du_compte(&conn, &tname)?;
         audit_config_change(
             &conn, "config.user.delete",
-            &format!("compte '{tname}' (rôle {trole}) supprimé par {}", au.name), sev,
+            &format!(
+                "compte '{tname}' (rôle {trole}) supprimé par {} ; objets réattribués à {} : {} ; purgés : {}",
+                au.name,
+                au.name,
+                ObjetsDuCompteSupprime::en_phrase(&objets.reattribues),
+                ObjetsDuCompteSupprime::en_phrase(&objets.purges),
+            ),
+            sev,
             &format!("compte utilisateur '{tname}' supprimé (rôle {trole}) par {}", au.name),
             &json!({
                 "action": "config.user.delete", "kind": "user", "target": tname, "role": trole, "actor": au.name,
                 "second_facteur_retire": seconds_facteurs_retires > 0,
+                "objets_reattribues_a": au.name,
+                "objets_reattribues": ObjetsDuCompteSupprime::en_json(&objets.reattribues),
+                "objets_purges": ObjetsDuCompteSupprime::en_json(&objets.purges),
             })
             .to_string(),
         )?;
@@ -147,6 +276,11 @@ pub(crate) async fn user_delete(State(st): State<AppState>, Extension(au): Exten
         Ok(()) => {
             let _ = conn.execute_batch("COMMIT");
             st.auth_cache.lock().clear(); // invalide les creds en cache du compte supprimé
+            // `P10.24-o` — ce que la mémoire tient par NOM pour ce compte part avec lui, APRÈS le commit : le compteur
+            // d'échecs de la connexion (toutes adresses) et le frein du second facteur. Un homonyme recréé repart de
+            // zéro ; une suppression refusée (ci-dessous) ne touche à rien.
+            oublier_les_echecs_du_compte_supprime(&st, &tname);
+            crate::handlers::idp::oublier_le_frein_du_compte_supprime(&st, &tname);
             StatusCode::NO_CONTENT.into_response()
         }
         Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }

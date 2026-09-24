@@ -4,7 +4,7 @@
 // PURE MOVE : corps de fonctions IDENTIQUES au monolithe, seuls les import/export sont ajoutes.
 // Le cycle app<->module est benin : les fonctions importees d'app.js ne sont appelees qu'a
 // l'EXECUTION (handlers/async apres await), jamais a l'evaluation du module.
-import { $, muted, api, apiSend, cleDeLaSuiteDuRegistre, fmtTs, confirmWithConsequence, toast, LANG, LOC, tzOpts } from './core.js';
+import { $, muted, api, apiSend, cleDeLaSuiteServie, fmtTs, confirmWithConsequence, toast, LANG, LOC, tzOpts } from './core.js';
 import { S } from './state.js';
 // `P10.20-y` — LE GENRE D'UNE LIGNE DE REGISTRE SE REND PAR LA FABRIQUE DE L'ONGLET AUDIT, pas par une
 // seconde. Les deux seules vues qui lisent `GET /api/ledger` sont celle-ci et `web/audit.js` ; écrire ici
@@ -181,7 +181,7 @@ const motDuDernierChangementAudite = (cle, nombre) =>
 // rendue par identifiant DÉCROISSANT : ce qui est derrière est plus ANCIEN, donc la ligne trouvée est
 // bien la dernière, et la suite du registre ne change rien à ce qui est annoncé.
 // =================================================================================================
-// LE DISCRIMINANT DE CES TROIS ISSUES EST AU POINT COMMUN (`web/core.js`, `cleDeLaSuiteDuRegistre`) depuis
+// LE DISCRIMINANT DE CES TROIS ISSUES EST AU POINT COMMUN (`web/core.js`, `cleDeLaSuiteServie`) depuis
 // `P10.21-x` : le fabricant de pager le lit pour armer sa flèche, et il ne pouvait pas l'importer d'ici.
 const MOTS_DE_LA_SUITE_DU_REGISTRE = {
   il_en_existe_peut_etre_d_autres: {
@@ -235,7 +235,7 @@ async function loadRetentionLast() {
   // (`textContent`), dans le registre de l'alarme quand c'est un aveu : un silence du démon sur la
   // suite ne doit pas se lire comme la fin du registre.
   if (!ent) {
-    const cleDeLaSuite = cleDeLaSuiteDuRegistre(j);
+    const cleDeLaSuite = cleDeLaSuiteServie(j);
     const motDeLaSuite = motDeLaSuiteDuRegistre(cleDeLaSuite, entries.length);
     if (motDeLaSuite) {
       const suite = document.createElement('span');

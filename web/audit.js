@@ -25,7 +25,7 @@
 // (`web/core.js`), que les deux vues importaient déjà : l'arête `audit.js` → `retention.js`, qui fermait un
 // cycle direct avec l'import inverse (`celluleDeGenre`), n'existe plus, et aucun module n'entre ni ne
 // sort de la fermeture des imports (`retention.js` y reste par `navigation.js`).
-import { $, api, cleDeLaSuiteDuRegistre, fmtTs, muted, pagedList, LANG } from './core.js';
+import { $, api, cleDeLaSuiteServie, fmtTs, muted, pagedList, LANG } from './core.js';
 import { poserLaPlageSurLaCible, poserLeChoixDeDates } from './plage_de_dates.js';
 import { S } from './state.js';
 import { loadOperatorAudit } from './multitenant.js';
@@ -338,7 +338,7 @@ function direLaFenetre(j) {
   // `P10.21-c` — LA SUITE DE LA PAGE, POSÉE AU PUITS (`textContent`) APRÈS LA PHRASE DE FENÊTRE. Elle vit
   // dans la même ligne, hors de `#ledger-body` que la liste paginée remplace ; l'affectation ci-dessus
   // retire celle de la page précédente, donc rien ne s'empile d'une page à l'autre.
-  const cleDeLaSuite = cleDeLaSuiteDuRegistre(j);
+  const cleDeLaSuite = cleDeLaSuiteServie(j);
   const motDeLaSuite = motDeLaSuiteDuJournal(cleDeLaSuite, (j.entries || []).length);
   if (motDeLaSuite) {
     const suite = document.createElement('span');
@@ -401,7 +401,7 @@ async function loadLedger() {
       if (j && j.error) { const n = ligneDeFenetre(); if (n) n.textContent = ''; throw new Error(String(j.error).trim()); }
       // Le curseur suit la MÊME lecture que la phrase : une valeur que la vue n'avouerait pas comme une
       // suite ne décide pas non plus de la page suivante (pour un booléen, rien ne change).
-      const cleDeLaSuite = cleDeLaSuiteDuRegistre(j);
+      const cleDeLaSuite = cleDeLaSuiteServie(j);
       curseurs[page + 1] = cleDeLaSuite === 'il_en_existe_peut_etre_d_autres' ? j.next_cursor : null;
       direLaFenetre(j);
       // Total PLAFONNÉ -> `-1` : le pager partagé passe en « page N » avec des flèches fiables plutôt que

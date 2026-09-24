@@ -1,6 +1,6 @@
 // viz.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // Explore + viz/charts: drilldown, fenetre glissante, requete interactive, rendu table/graphes (partages avec dashboards).
-import { $, CSSV, LANG, LOC, SEV, api, apiSend, unDeuxCentsSansCorpsLisible, bornerLePopoverSousSonAncre, causeDeLaTraceManquante, cleDeLaSuiteDuRegistre, cleDeLIdentifiantDeRiposte, colComparator, largeursDeColonnes, confirmModal, esc, flashStopped, fmtTs, ic, makePager, motDeLaRiposteSansIdentifiant, muted, phraseDeLaCreationDeRiposteRefusee, phraseDeLaTraceManquante, sev, socIsAdmin, toast, tzOpts } from './core.js';
+import { $, CSSV, LANG, LOC, SEV, api, apiSend, unDeuxCentsSansCorpsLisible, bornerLePopoverSousSonAncre, causeDeLaTraceManquante, cleDeLaSuiteServie, cleDeLIdentifiantDeRiposte, colComparator, largeursDeColonnes, confirmModal, esc, flashStopped, fmtTs, ic, makePager, motDeLaRiposteSansIdentifiant, muted, phraseDeLaCreationDeRiposteRefusee, phraseDeLaTraceManquante, sev, socIsAdmin, toast, tzOpts } from './core.js';
 import { S } from './state.js';
 // P11.4-h : LE clic qui respecte une sélection (mécanisme partagé, `copie_et_selection.js`).
 import { clicQuiRespecteLaSelection } from './copie_et_selection.js';
@@ -505,28 +505,51 @@ function setRunning(on) {
 // connaît pas l'infrastructure. La navigation ◀ / ▶ (curseur) ne passe PAS par ce plafond : elle reste
 // complète et continue. Le rendu nomme donc ce qui s'est passé et comment continuer, selon le contexte.
 // Pure (texte + titre) -> tenue par le harnais ESM.
+// `P10.22-f` — LE BADGE PARLE LES DEUX LANGUES, ET SES NOMBRES SE LISENT DANS LA LANGUE DE L'ÉCRAN. Mesuré
+// avant ce lot : le libellé chiffré et son infobulle formataient leurs nombres en `'fr-FR'` quelle que soit
+// la langue (« 12 345 » sous `LANG='en'`), et les QUATRE infobulles étaient françaises — composées (la note
+// du pré-agrégé s'y colle), le lexique ne pouvait pas les atteindre. Les trois libellés STATIQUES, eux,
+// restent des nœuds entiers que le lexique traduit (`web/i18n.js`) : ils ne changent pas de forme.
+const TITRES_DU_BADGE_DE_TRONCATURE = {
+  plancher_chiffre: {
+    fr: 'Le compte affiché est un PLANCHER : {ecartes} événement(s) écartés sur {total} par le plafond top-N du pré-agrégé.',
+    en: 'The displayed count is a FLOOR: {ecartes} event(s) left out of {total} by the top-N cap of the pre-aggregate.' },
+  page_sautee: {
+    fr: "Cette page a été demandée par son NUMÉRO (saut direct). Au-delà de ce que le serveur peut matérialiser en une fois, une page sautée n'est ni complète ni garantie continue, et le total n'est pas recompté.\nLes flèches ◀ / ▶ parcourent TOUT le résultat par curseur, sans ce plafond : revenez en arrière avec ◀ (ou à la page 1), puis avancez avec ▶. Pour atteindre une zone lointaine sans sauter, resserrez la fenêtre temporelle ou affinez la requête.",
+    en: 'This page was requested by its NUMBER (direct jump). Beyond what the server can materialise at once, a jumped-to page is neither complete nor guaranteed continuous, and the total is not recounted.\nThe ◀ / ▶ arrows walk the WHOLE result by cursor, without that cap: go back with ◀ (or to page 1), then move forward with ▶. To reach a distant area without jumping, narrow the time window or refine the query.' },
+  page_partielle: {
+    fr: "Le serveur a rendu moins de lignes que cette page n'en demande, sans pouvoir mesurer ce qui manque (plafond de lignes ou de matérialisation atteint). ◀ / ▶ restent fiables ; si ce badge apparaît à CHAQUE page, la taille de page dépasse le plafond du serveur : choisissez une page plus petite.",
+    en: 'The server returned fewer rows than this page asks for, without being able to measure what is missing (row or materialisation cap reached). ◀ / ▶ remain reliable; if this badge appears on EVERY page, the page size exceeds the server cap: choose a smaller page.' },
+  ampleur_inconnue: {
+    fr: "Résultat INCOMPLET : le serveur a atteint un plafond (lignes, matérialisation ou top-N) sans pouvoir mesurer ce qui manque — le compte affiché est un PLANCHER d'écart inconnu. Resserrez la fenêtre temporelle ou affinez la requête pour un résultat complet.",
+    en: 'INCOMPLETE result: the server reached a cap (rows, materialisation or top-N) without being able to measure what is missing — the displayed count is a FLOOR with an unknown gap. Narrow the time window or refine the query for a complete result.' },
+};
+const LIBELLE_DU_BADGE_CHIFFRE = {
+  fr: 'tronqué — {ecartes} écartés ({pct} %)',
+  en: 'truncated — {ecartes} left out ({pct} %)',
+};
+const titreDuBadgeDeTroncature = (cle, stats, nombres) =>
+  (LANG === 'en' ? TITRES_DU_BADGE_DE_TRONCATURE[cle].en : TITRES_DU_BADGE_DE_TRONCATURE[cle].fr)
+    .replace('{ecartes}', nombres ? nombres.ecartes : '').replace('{total}', nombres ? nombres.total : '')
+  + (stats.rollup_note ? '\n\n' + stats.rollup_note : '');
 function truncationBadge(stats, navigation) {
   const ec = stats.topn_ecartes, tot = stats.topn_total;
   if (Number.isFinite(ec) && Number.isFinite(tot) && tot > 0) {
     const pct = Math.round((ec / tot) * 100);
-    return ['qb-trunc', `tronqué — ${ec.toLocaleString('fr-FR')} écartés (${pct} %)`,
-      `Le compte affiché est un PLANCHER : ${ec.toLocaleString('fr-FR')} événement(s) écartés sur ${tot.toLocaleString('fr-FR')} par le plafond top-N du pré-agrégé.`
-      + (stats.rollup_note ? '\n\n' + stats.rollup_note : '')];
+    const nombres = { ecartes: ec.toLocaleString(LOC), total: tot.toLocaleString(LOC) };
+    return ['qb-trunc', (LANG === 'en' ? LIBELLE_DU_BADGE_CHIFFRE.en : LIBELLE_DU_BADGE_CHIFFRE.fr).replace('{ecartes}', nombres.ecartes).replace('{pct}', String(pct)),
+      titreDuBadgeDeTroncature('plancher_chiffre', stats, nombres)];
   }
   if (navigation && navigation.keyset && navigation.saut) {
     return ['qb-trunc', 'page sautée — contenu partiel',   // libellé STATIQUE : traduisible par le lexique ; le numéro de page est dans la ligne d'état
-      `Cette page a été demandée par son NUMÉRO (saut direct). Au-delà de ce que le serveur peut matérialiser en une fois, une page sautée n'est ni complète ni garantie continue, et le total n'est pas recompté.\n`
-      + `Les flèches ◀ / ▶ parcourent TOUT le résultat par curseur, sans ce plafond : revenez en arrière avec ◀ (ou à la page 1), puis avancez avec ▶. Pour atteindre une zone lointaine sans sauter, resserrez la fenêtre temporelle ou affinez la requête.`
-      + (stats.rollup_note ? '\n\n' + stats.rollup_note : '')];
+      titreDuBadgeDeTroncature('page_sautee', stats)];
   }
   if (navigation && navigation.keyset) {
     return ['qb-trunc', 'page partielle — plafond de lignes du serveur',
-      `Le serveur a rendu moins de lignes que cette page n'en demande, sans pouvoir mesurer ce qui manque (plafond de lignes ou de matérialisation atteint). ◀ / ▶ restent fiables ; si ce badge apparaît à CHAQUE page, la taille de page dépasse le plafond du serveur : choisissez une page plus petite.`
-      + (stats.rollup_note ? '\n\n' + stats.rollup_note : '')];
+      titreDuBadgeDeTroncature('page_partielle', stats)];
   }
   return ['qb-trunc', 'tronqué — ampleur inconnue',
-    "Résultat INCOMPLET : le serveur a atteint un plafond (lignes, matérialisation ou top-N) sans pouvoir mesurer ce qui manque — le compte affiché est un PLANCHER d'écart inconnu. Resserrez la fenêtre temporelle ou affinez la requête pour un résultat complet."
-    + (stats.rollup_note ? '\n\n' + stats.rollup_note : '')];
+    titreDuBadgeDeTroncature('ampleur_inconnue', stats)];
 }
 
 // `P10.5-i` — CE QU'UN PANNEAU N'A PAS PU VOIR, DIT À L'ÉCRAN.
@@ -692,7 +715,7 @@ function explainErr(e) {
   if (e && e.code === 'empty') return 'Trop lourd même sur 60s — resserre la fenêtre';
   const m = (e && e.message) ? e.message : String(e);
   if (/budget|dépass|trop lourd|too heavy|timeout|deadline/i.test(m)) return 'Trop lourd même sur 60s — resserre la fenêtre';
-  return 'erreur : ' + m;
+  return motDeLaLigneDEtatHorsParcours('erreur') + m;   // `P10.22-f` — préfixe d'un nœud composé : ses deux faces
 }
 
 // erreur SERVEUR (j.error) : annulation/budget -> ligne de stats lisible ; sinon boîte rouge (existant).
@@ -2478,11 +2501,47 @@ function facetBlock(rows, idx, field, label) {
   return block;
 }
 
+// `P10.22-d` — UNE PAGE VIDE DE RANG SUPÉRIEUR N'EST PAS UNE FENÊTRE VIDE. Mesuré avant ce lot : toute page
+// sans ligne rendait « aucun evenement sur la fenetre » — une ABSENCE, fausse dès la deuxième page (les
+// pages précédentes en portaient), sans accents — et rendait la main AVANT le pager : aucune flèche pour
+// revenir. Le cas est ordinaire : une page PLEINE exactement, dont le démon sert la suite (`has_more` dit
+// « page pleine », pas « il en reste »), mène à une page vide. Trois issues :
+//   · première page vide : la fenêtre est vide, et la phrase d'origine le dit (elle passe par le lexique) ;
+//   · page de rang supérieur, vide : fin du résultat, et le retour est GARDÉ ;
+//   · page atteinte par SAUT DIRECT, vide alors que rien n'établit la fin (budget du saut dépassé) : ce
+//     n'est PAS une fin, et la face le dit — dans le registre de l'alarme.
+const MOTS_DE_LA_PAGE_VIDE = {
+  fin_du_resultat: {
+    fr: 'page vide, fin du résultat — ◀ pour revenir',
+    en: 'empty page, end of the result — ◀ to go back' },
+  saut_sans_rendu: {
+    fr: "page vide : le saut direct n'a rien rendu, et la fin du résultat n'est PAS établie — revenez avec ◀ (ou à la page 1), puis avancez avec ▶",
+    en: 'empty page: the direct jump returned nothing, and the end of the result is NOT established — go back with ◀ (or to page 1), then move forward with ▶' },
+};
+function cleDeLaPageVide(page, sautSansRendu) {
+  if (!(page > 0)) return 'fenetre_vide';
+  return sautSansRendu ? 'saut_sans_rendu' : 'fin_du_resultat';
+}
+function noeudDeLaPageVide(cle) {
+  const noeud = document.createElement('div');
+  noeud.className = cle === 'saut_sans_rendu' ? 'bad' : 'muted';
+  noeud.dataset.pageVide = cle;
+  noeud.textContent = LANG === 'en' ? MOTS_DE_LA_PAGE_VIDE[cle].en : MOTS_DE_LA_PAGE_VIDE[cle].fr;
+  return noeud;
+}
+
 function renderEvents(host, cols, rows) {
   const ix = n => cols.indexOf(n);
   const tsI = ix('ts'), srcI = ix('source'), hostI = ix('host'), sevI = ix('severity'), ipI = ix('src_ip'), msgI = ix('message'), fldI = ix('fields');
   host.replaceChildren();
-  if (!rows.length) { host.appendChild(muted('aucun evenement sur la fenetre')); return; }
+  if (!rows.length) {
+    const cleDuVide = cleDeLaPageVide(S.evState ? S.evState.page : 0, !!(S.evState && S.evState.sautSansRendu));
+    if (cleDuVide === 'fenetre_vide') { host.appendChild(muted('aucun evenement sur la fenetre')); return; }
+    host.appendChild(noeudDeLaPageVide(cleDuVide));
+    const retour = makePager(S.evState, p => { S.evState.page = p; evLoad(); });
+    if (retour) host.appendChild(retour);
+    return;
+  }
   const tl = document.createElement('div'); tl.className = 'timeline';
   if (tsI >= 0) tl.appendChild(timelineEl(rows.map(r => ({ ts: Number(r[tsI]) }))));
   host.appendChild(tl);
@@ -2620,7 +2679,7 @@ function rerenderExplorePager() {
 // démon se lisait comme la fin du résultat. Les deux fragments étaient français sous `LANG='en'` : pris
 // dans un nœud composé, le lexique ne pouvait pas les atteindre.
 //
-// CE QU'ELLE DIT. Les trois issues de `cleDeLaSuiteDuRegistre` (web/core.js, le même discriminant que le
+// CE QU'ELLE DIT. Les trois issues de `cleDeLaSuiteServie` (web/core.js, le même discriminant que le
 // panneau de rétention et l'onglet Audit) et UN raffinement que seule cette route rend nécessaire : un
 // « pas de suite » sur une page PLEINE n'est pas une fin établie — c'est un curseur que le démon n'a pas
 // pu former. Les deux faces sont côte à côte, choisies par `LANG` au moment d'écrire.
@@ -2638,20 +2697,89 @@ const MOTS_DE_LA_SUITE_DU_PARCOURS = {
   suite_non_dite: {
     fr: " · le démon n'a PAS dit si une suite existe : rien n'établit que ces résultats sont les derniers",
     en: ' · the daemon did NOT say whether a continuation exists: nothing establishes that these results are the last' },
+  // `P10.22-e` — LE REPLI PAR DÉCALAGE N'EST PAS UN SILENCE : le démon a servi la page par son rang, avec
+  // un total. La face le DIT, sans affirmer qu'une page suivante existe.
+  servie_par_decalage: {
+    fr: " · page servie par DÉCALAGE : le démon n'a pas pu compiler le curseur de ce parcours, une page suivante, s'il en est, est lue par son rang",
+    en: " · page served by OFFSET: the daemon could not compile this walk's cursor, a following page, if any, is read by its rank" },
 };
+// `P10.22-e` — LE REPLI PAR DÉCALAGE SE RECONNAÎT À CE QUE LE DÉMON SERT, PAS À CE QU'IL TAIT. Quand la
+// forme par curseur d'un parcours ne compile pas (`keyset_compile_failed`, daemon/src/handlers/query.rs),
+// la page part par le chemin par DÉCALAGE : aucune suite, mais un `total` (compte borné, `-1` s'il a été
+// interrompu) et l'`offset` servi — deux clés que `keyset_finalize` ne pose jamais. Le silence seul ne
+// suffit pas à le signer (un corps privé de sa clé en route serait un vrai silence) : c'est le couple
+// total + décalage, sous un silence, qui le signe. Mesuré avant ce lot : la ligne ignorait ce total
+// jusqu'au compte asynchrone et avouait un « silence » là où le démon avait servi un nombre.
+// CE QUI N'EST PAS ATTEIGNABLE AUJOURD'HUI, ET C'EST DIT : le repli n'arme que sur une projection augmentée
+// (`| table` / `| fields` à liste), et l'Explore ne part en curseur que SANS étage — la console n'y entre
+// donc pas avec ses propres requêtes. La lecture est posée pour le jour où le motif s'élargira (décision
+// produit écrite au site de `useKeyset`), pas pour un corps que la console reçoit déjà.
+function laPageEstServieParDecalage(j) {
+  return !!j && cleDeLaSuiteServie(j) === 'suite_non_dite' && typeof j.total === 'number' && typeof j.offset === 'number';
+}
 function cleDeLaSuiteDuParcours(j, lignesServies, taillePage) {
-  const cle = cleDeLaSuiteDuRegistre(j);
+  const cle = cleDeLaSuiteServie(j);
+  if (laPageEstServieParDecalage(j)) return 'servie_par_decalage';
   return (cle === 'aucune_suite' && lignesServies >= taillePage) ? 'page_pleine_sans_curseur' : cle;
 }
 function motDeLaSuiteDuParcours(cle) {
   return LANG === 'en' ? MOTS_DE_LA_SUITE_DU_PARCOURS[cle].en : MOTS_DE_LA_SUITE_DU_PARCOURS[cle].fr;
 }
-// Les deux autres mots de la même ligne, pour qu'une ligne anglaise ne le soit pas qu'à moitié.
+// `P10.22-g` — LA FACE DE LA SUITE EST UN NŒUD À PART, ET LE SILENCE DU DÉMON Y EST DANS LE REGISTRE DE
+// L'ALARME. Mesuré avant ce lot : la face était un fragment du texte de `#qstats`, si bien que « le démon
+// n'a PAS dit si une suite existe » s'y lisait du même ton que « serveur 12 ms » — alors que le panneau
+// de rétention et l'onglet Audit posent ce même aveu dans un nœud marqué `bad`. Les autres issues gardent
+// le ton de la ligne ; la clé est portée par le nœud, pour qu'un lecteur la trouve sans relire le texte.
+function noeudDeLaSuiteDuParcours(cle) {
+  const noeud = document.createElement('span');
+  if (cle === 'suite_non_dite') noeud.className = 'bad';
+  noeud.dataset.suiteDuParcours = cle;
+  noeud.textContent = motDeLaSuiteDuParcours(cle);
+  return noeud;
+}
+// Les autres mots de la même ligne, pour qu'une ligne anglaise ne le soit pas qu'à moitié.
+// `P10.22-f` — ET LES ÉTATS DE LA LIGNE QUI N'ÉTAIENT QU'EN FRANÇAIS. Saut trop lourd, saut partiel, reprise
+// sans curseur et ligne du parcours par décalage remplissent un nœud COMPOSÉ (un numéro de page, un total,
+// une cause s'y collent) : `i18nWalk` ne remplace qu'un nœud texte ENTIER, le lexique ne les atteignait pas.
+// `{page}` est le numéro de la page, posé au moment d'écrire.
 const MOTS_DE_LA_LIGNE_DU_PARCOURS = {
-  resultats: { fr: 'résultats', en: 'results' },
-  serveur: { fr: 'serveur', en: 'server' },
+  resultats: {
+    fr: 'résultats',
+    en: 'results' },
+  serveur: {
+    fr: 'serveur',
+    en: 'server' },
+  lignes: {
+    fr: 'lignes',
+    en: 'rows' },
+  saut_trop_lourd: {
+    fr: 'page {page} lointaine trop lourde (budget dépassé) — utilise ◀ / ▶ pour un parcours fiable, ou affine la requête',
+    en: 'page {page} too far to reach (budget exceeded) — use ◀ / ▶ for a reliable walk, or refine the query' },
+  saut_partiel: {
+    fr: 'page {page} atteinte par saut direct : contenu partiel (plafond serveur) — ◀ / ▶ parcourent le résultat complet par curseur',
+    en: 'page {page} reached by direct jump: partial content (server cap) — ◀ / ▶ walk the complete result by cursor' },
+  parcours_repris: {
+    fr: 'parcours repris depuis la première page',
+    en: 'walk restarted from the first page' },
 };
-const motDeLaLigneDuParcours = (cle) => (LANG === 'en' ? MOTS_DE_LA_LIGNE_DU_PARCOURS[cle].en : MOTS_DE_LA_LIGNE_DU_PARCOURS[cle].fr);
+const motDeLaLigneDuParcours = (cle, page) => (LANG === 'en' ? MOTS_DE_LA_LIGNE_DU_PARCOURS[cle].en : MOTS_DE_LA_LIGNE_DU_PARCOURS[cle].fr).replace('{page}', String(page));
+// `P10.22-f` — LA MÊME LIGNE `#qstats`, HORS DU PARCOURS : le résultat d'une agrégation et l'erreur levée
+// par le transport. Non nommés par l'énoncé de la clé, français seulement pour la même raison.
+const MOTS_DE_LA_LIGNE_D_ETAT_HORS_PARCOURS = {
+  lignes_de_l_agregat: {
+    fr: 'ligne(s)',
+    en: 'row(s)' },
+  agregat_tronque: {
+    fr: ' (tronqué — affine la requête)',
+    en: ' (truncated — refine the query)' },
+  serveur: {
+    fr: 'serveur',
+    en: 'server' },
+  erreur: {
+    fr: 'erreur : ',
+    en: 'error: ' },
+};
+const motDeLaLigneDEtatHorsParcours = (cle) => (LANG === 'en' ? MOTS_DE_LA_LIGNE_D_ETAT_HORS_PARCOURS[cle].en : MOTS_DE_LA_LIGNE_D_ETAT_HORS_PARCOURS[cle].fr);
 
 // charge UNE page d'events depuis le SERVEUR (curseur keyset ou LIMIT/OFFSET) — re-fetch à chaque changement de page/taille
 async function evLoad() {
@@ -2684,10 +2812,19 @@ async function evLoad() {
     const srv = j.stats ? j.stats.elapsed_ms : '?';
     const rows = j.rows || [];
     S.evState.shown = rows.length;
+    // `P10.22-e` — UNE PAGE DU PARCOURS SERVIE PAR LE REPLI PAR DÉCALAGE N'EST PAS UN SAUT. Sans curseur servi,
+    // la page suivante part par son rang (`jumpOff`) : c'est le parcours ORDINAIRE de ce repli, pas un saut
+    // direct, et les phrases du saut (« ◀ / ▶ parcourent par curseur ») y seraient fausses — il n'y a pas
+    // de curseur.
+    const repli = keyset && laPageEstServieParDecalage(j);
+    const saut = jumpOff > 0 && !repli;
     // SAUT OFFSET PROFOND (clic page lointaine, modèle Splunk) rendant 0 ligne ALORS que le total en promet
     // des données : budget interactif dépassé, PAS une vraie fin de données. Détecté ici, annoncé après le rendu
-    // (le pager Préc/Suiv — curseur, fiable, illimité — reste affiché) au lieu d'une page vide muette et trompeuse.
-    const heavyJump = keyset && jumpOff > 0 && rows.length === 0 && (S.evState.total < 0 || jumpOff < S.evState.total);
+    // au lieu d'une page vide muette et trompeuse. `P10.22-d` — le pager n'était PAS « affiché » comme ce
+    // commentaire l'écrivait : la page vide rendait la main avant lui. Il l'est désormais, et la page vide dit
+    // que la fin n'est pas établie (`sautSansRendu`, lu par `renderEvents`, y compris au repeint du compte).
+    const heavyJump = keyset && saut && rows.length === 0 && (S.evState.total < 0 || jumpOff < S.evState.total);
+    S.evState.sautSansRendu = heavyJump;
     if (keyset) {
       // KEYSET : le total vient du COUNT ASYNC (sans plafond) — NE PAS le remettre à -1 ici (il peut déjà être connu).
       // On mémorise le curseur de continuation (Suivant séquentiel rapide) ; le pager passe numéroté « X / N » dès
@@ -2697,8 +2834,18 @@ async function evLoad() {
       // `P10.21-x` — LA SUITE SERVIE ARME LA FLÈCHE du pager tant que le total n'est pas connu, et le
       // curseur suit la MÊME lecture : une valeur que la ligne n'avoue pas comme une suite ne décide pas
       // non plus de la page suivante (pour un booléen servi avec son curseur, rien ne change).
-      S.evState.suite = cleDeLaSuiteDuRegistre(j);
+      S.evState.suite = cleDeLaSuiteServie(j);
       S.evState.cursors[S.evState.page + 1] = S.evState.suite === 'il_en_existe_peut_etre_d_autres' ? j.next_cursor : null;
+      // `P10.22-e` — LE TOTAL QUE LE REPLI SERT EST LU, pas ignoré jusqu'au compte asynchrone : c'est le compte
+      // BORNÉ du chemin par décalage (`-1` s'il a été interrompu, plafonné au-delà de dix mille). Un vrai
+      // total déjà établi par le compte asynchrone l'emporte ; un total plafonné relance ce compte, comme
+      // sur le chemin par décalage.
+      S.evState.repliParDecalage = repli;
+      if (repli && !S.evState.realTotal) {
+        S.evState.total = j.total;
+        S.evState.totalCapped = !!j.total_capped;
+        if (typeof j.total_error === 'string' && j.total_error) S.evState.totalError = j.total_error;
+      }
     } else if (!S.evState.realTotal) {   // total inline (capé 10k) pour l'affichage IMMÉDIAT, tant que le COUNT async n'a pas donné le VRAI total
       S.evState.total = (typeof j.total === 'number') ? j.total : rows.length;
       S.evState.totalCapped = !!j.total_capped;   // COUNT borné serveur : plafonné -> le COUNT async le remplace par le vrai (| table inclus)
@@ -2711,17 +2858,26 @@ async function evLoad() {
     if (!S.exploreInflight || S.exploreInflight.qid !== qid) return;   // requête supersédée pendant le yield -> on jette ce rendu périmé
     if (forceTable) renderTablePaged($('#qresult'), j.columns, rows);
     else renderEvents($('#qresult'), j.columns, rows);
-    renderQBadge(j.stats, { keyset, saut: jumpOff > 0, page: S.evState.page + 1 });
+    renderQBadge(j.stats, { keyset, saut, page: S.evState.page + 1 });
     showQExport(rows.length > 0);
     const net = Math.round(performance.now() - t0);
+    // `P10.22-g` — LA LIGNE EST PEINTE EN NŒUDS, UNE FOIS : la face de la suite y est un nœud à part (le
+    // silence du démon marqué), et la reprise se pose DEVANT sans relire le texte — relire `textContent` pour
+    // le recoller aplatissait le nœud marqué en texte nu.
+    const morceauxDeLaLigne = [];
     if (keyset) {
       const kp = S.evState.total >= 0 ? Math.max(1, Math.ceil(S.evState.total / S.evState.pageSize)) : null;
-      const ktot = S.evState.total >= 0 ? `${S.evState.total.toLocaleString(LOC)} ${motDeLaLigneDuParcours('resultats')} · ` : '';
-      const kpg = kp ? `page ${S.evState.page + 1} / ${kp}` : `page ${S.evState.page + 1}${motDeLaSuiteDuParcours(cleDeLaSuiteDuParcours(j, rows.length, limit))}`;
-      $('#qstats').textContent = `${ktot}${kpg} · ${motDeLaLigneDuParcours('serveur')} ${srv} ms · total ${net} ms`;
-      if (heavyJump) $('#qstats').textContent = `${ktot}page ${S.evState.page + 1} lointaine trop lourde (budget dépassé) — utilise ◀ / ▶ pour un parcours fiable, ou affine la requête`;
+      const ktot = S.evState.total >= 0 ? `${S.evState.total.toLocaleString(LOC)}${S.evState.totalCapped ? '+' : ''} ${motDeLaLigneDuParcours('resultats')} · ` : '';
+      if (heavyJump) morceauxDeLaLigne.push(ktot + motDeLaLigneDuParcours('saut_trop_lourd', S.evState.page + 1));
       // P11.9-c — une page sautée servie PARTIELLE le dit dans la ligne d'état, pas seulement dans un badge.
-      else if (jumpOff > 0 && j.stats && j.stats.truncated) $('#qstats').textContent = `${ktot}page ${S.evState.page + 1} atteinte par saut direct : contenu partiel (plafond serveur) — ◀ / ▶ parcourent le résultat complet par curseur`;
+      else if (saut && j.stats && j.stats.truncated) morceauxDeLaLigne.push(ktot + motDeLaLigneDuParcours('saut_partiel', S.evState.page + 1));
+      else {
+        // Total connu : la ligne numérote et ne dit plus la suite — SAUF le repli, qui se dit toujours.
+        const cleDeLaSuite = kp ? (repli ? 'servie_par_decalage' : null) : cleDeLaSuiteDuParcours(j, rows.length, limit);
+        morceauxDeLaLigne.push(kp ? `${ktot}page ${S.evState.page + 1} / ${kp}` : `${ktot}page ${S.evState.page + 1}`);
+        if (cleDeLaSuite) morceauxDeLaLigne.push(noeudDeLaSuiteDuParcours(cleDeLaSuite));
+        morceauxDeLaLigne.push(` · ${motDeLaLigneDuParcours('serveur')} ${srv} ms · total ${net} ms`);
+      }
     } else {
       const pages = S.evState.total >= 0 ? Math.max(1, Math.ceil(S.evState.total / S.evState.pageSize)) : '?';
       // P11.13-f — CE LIBELLÉ NE PEUT PAS PASSER PAR LE LEXIQUE, IL EST DONC BILINGUE PAR CONSTRUCTION.
@@ -2730,17 +2886,21 @@ async function evLoad() {
       // Une entrée au lexique serait une entrée MORTE — un vert sans traduction, le piège déjà nommé pour
       // les fragments de concaténation. Les trois autres états de `#qstats` (« Annulé », « exécution… »,
       // « Trop lourd… ») remplissent le nœud ENTIER : eux passent bien par le lexique.
-      const totTxt = S.evState.total >= 0 ? (S.evState.total + (S.evState.totalCapped ? '+' : '') + ' lignes') : ((LANG === 'en' ? 'unknown total' : 'total inconnu') + (S.evState.totalError ? ' — ' + S.evState.totalError : ''));
-      $('#qstats').textContent = `page ${S.evState.page + 1}/${pages}${S.evState.totalCapped ? '+' : ''} · ${totTxt} · serveur ${srv} ms · total ${net} ms`;
+      // `P10.22-f` — « lignes » et « serveur » étaient français sous `LANG='en'` : ce sont des fragments du
+      // même nœud composé, que le lexique n'atteint pas.
+      const totTxt = S.evState.total >= 0 ? (S.evState.total + (S.evState.totalCapped ? '+' : '') + ' ' + motDeLaLigneDuParcours('lignes')) : ((LANG === 'en' ? 'unknown total' : 'total inconnu') + (S.evState.totalError ? ' — ' + S.evState.totalError : ''));
+      morceauxDeLaLigne.push(`page ${S.evState.page + 1}/${pages}${S.evState.totalCapped ? '+' : ''} · ${totTxt} · ${motDeLaLigneDuParcours('serveur')} ${srv} ms · total ${net} ms`);
     }
     if (S.evState.repriseAnnonce) {   // `P10.5-g` — la reprise se DIT : une page repartie de 1 sans un mot serait muette
       const cause = typeof S.evState.repriseAnnonce === 'string' ? ` (${S.evState.repriseAnnonce})` : '';
-      $('#qstats').textContent = `parcours repris depuis la première page${cause} · ${$('#qstats').textContent}`;
+      morceauxDeLaLigne.unshift(`${motDeLaLigneDuParcours('parcours_repris')}${cause} · `);
       S.evState.repriseAnnonce = null;
     }
+    $('#qstats').replaceChildren(...morceauxDeLaLigne);
     // COUNT async SANS PLAFOND — keyset (total inconnu) OU offset CAPÉ (| table/| fields gardent l'offset + COUNT capé
     // à 10k) : récupère le VRAI total UNE fois -> pager numéroté COMPLET + « page X / N » réel, sans plafond qui cache des lignes.
-    if (!S.evState.countFired && (keyset ? S.evState.total < 0 : S.evState.totalCapped)) {
+    // `P10.22-e` — un total PLAFONNÉ servi par le repli relance le compte, comme sur le chemin par décalage.
+    if (!S.evState.countFired && (keyset ? (S.evState.total < 0 || S.evState.totalCapped) : S.evState.totalCapped)) {
       S.evState.countFired = true;
       const cq = q;
       // Le total doit compter la fenêtre que les PAGES parcourent, pas celle de l'instant où il part :
@@ -2750,11 +2910,15 @@ async function evLoad() {
           S.evState.total = tot; S.evState.totalCapped = false; S.evState.realTotal = true;
           rerenderExplorePager();
           const pg = Math.max(1, Math.ceil(tot / S.evState.pageSize));
-          $('#qstats').textContent = `${tot.toLocaleString(LOC)} ${motDeLaLigneDuParcours('resultats')} · page ${S.evState.page + 1} / ${pg}`;
+          // `P10.22-e` — le repli se dit encore quand le compte remplace la ligne.
+          const ligneDuCompte = [`${tot.toLocaleString(LOC)} ${motDeLaLigneDuParcours('resultats')} · page ${S.evState.page + 1} / ${pg}`];
+          if (S.evState.repliParDecalage) ligneDuCompte.push(noeudDeLaSuiteDuParcours('servie_par_decalage'));
+          $('#qstats').replaceChildren(...ligneDuCompte);
         } else if (S.evState.q === cq && S.evState.totalError) {
           // `P10.7-g` (lot 103) — le compte n'a pas abouti : la ligne d'état porte la cause servie, pas seulement « ? ».
+          // `P10.22-g` — posée DEVANT, sans relire le texte : le nœud marqué de la suite survit.
           const n = $('#qstats');
-          if (n && !n.textContent.includes(S.evState.totalError)) n.textContent = `${LANG === 'en' ? 'total not established' : 'total non établi'} — ${S.evState.totalError} · ${n.textContent}`;
+          if (n && !n.textContent.includes(S.evState.totalError)) n.prepend(`${LANG === 'en' ? 'total not established' : 'total non établi'} — ${S.evState.totalError} · `);
         }
       });
     }
@@ -2852,7 +3016,8 @@ async function runQuery() {
     renderQBadge(j.stats);
     showQExport((j.rows || []).length > 0);
     const net = Math.round(performance.now() - t0);
-    $('#qstats').textContent = `${j.stats.rows} ligne(s)${j.stats.truncated ? ' (tronqué — affine la requête)' : ''} - serveur ${j.stats.elapsed_ms} ms - total ${net} ms${j.compiled_sql ? ' - GXQL' : ''}`;
+    // `P10.22-f` — la ligne d'une agrégation, français seulement avant ce lot (fragments d'un nœud composé).
+    $('#qstats').textContent = `${j.stats.rows} ${motDeLaLigneDEtatHorsParcours('lignes_de_l_agregat')}${j.stats.truncated ? motDeLaLigneDEtatHorsParcours('agregat_tronque') : ''} - ${motDeLaLigneDEtatHorsParcours('serveur')} ${j.stats.elapsed_ms} ms - total ${net} ms${j.compiled_sql ? ' - GXQL' : ''}`;
     $('#qstats').title = j.compiled_sql || '';
   } catch (e) {
     if (!S.exploreInflight || S.exploreInflight.qid !== qid) return;
@@ -2869,3 +3034,6 @@ function showQExport(has) { const el = $('#qexport'); if (el) el.hidden = !has; 
 export { banIp, cleDeLIdentifiantDeRiposte, cleDeLaSuiteDuParcours, motDeLaSuiteDuParcours, motDuBannissementMisEnFile, clearDrillCrumb, clearZoom, coldShareBadge, coverageBadge, coverageHorizonNodes, renderQBadge, provenanceBadge, currentFrom, currentTo, evLoad, exploreFrom, exploreTo, noeudsDeVizReglee, qHistGo, queryCount, refusDeReglage, reglageLu, renderViz, runQ, runQuery, setZoom, sondage, stopExplore, tableEl, updateZoomBadge, vizElement, vizSansPorte, refusDeRepresentation, truncationBadge };
 // `P10.7-g` (lot 103) — exporté pour le harnais ESM (scénario 91), qui lit la cause d'un total non établi.
 export { exploreCount };
+// `P10.22-d` / `P10.22-e` / `P10.22-f` — exportés pour le harnais ESM (témoin 111) : la partition de la page
+// vide, la signature du repli par décalage, et le mot d'une erreur de transport, jugés nus à côté du rendu.
+export { cleDeLaPageVide, laPageEstServieParDecalage, explainErr };

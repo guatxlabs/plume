@@ -729,9 +729,13 @@ function colComparator(rows, get) {
 // ces issues pour armer sa flèche « suivant » quand aucun total n'est servi ; or ce module ne peut pas
 // importer `retention.js` — c'est la racine du graphe, que `retention.js` importe lui-même. Garder le
 // discriminant là-bas aurait obligé à RÉÉCRIRE ses clés ici, c'est-à-dire à tenir deux fois le même
-// vocabulaire. Le nom est conservé tel quel : il est cité par la roadmap et par le harnais ESM.
+// vocabulaire.
+// `P10.22-h` — LE NOM DIT CE QU'IL LIT. Il nommait le registre alors qu'il lit aussi la suite du parcours
+// de l'Explore, qui n'est pas un registre : un lecteur qui cherchait ce que la ligne d'état de l'Explore
+// fait de `has_more` ne pouvait pas le trouver par son nom. Il nomme désormais ce qui est commun aux trois
+// vues — la suite SERVIE avec une page —, et il a été renommé partout en une fois, harnais compris.
 // =================================================================================================
-function cleDeLaSuiteDuRegistre(j) {
+function cleDeLaSuiteServie(j) {
   if (!j || typeof j.has_more !== 'boolean') return 'suite_non_dite';
   return j.has_more ? 'il_en_existe_peut_etre_d_autres' : 'aucune_suite';
 }
@@ -749,7 +753,10 @@ function laSuiteOffreLaPageSuivante(suite, servies, taille) {
 function makePager(state, onGo) {
   const PS = state.pageSize, total = state.total, numbered = total >= 0;
   const pages = numbered ? Math.max(1, Math.ceil(total / PS)) : state.page + (state.shown >= PS ? 2 : 1);
-  if (numbered && pages <= 1) return null;   // une seule page -> pas de pager
+  // `P10.22-d` — « UNE SEULE PAGE » NE RETIRE LE PAGER QUE SUR LA PREMIÈRE. Une page de rang supérieur au
+  // total — vide, atteinte par ▶ avant que le compte n'arrive et ne dise « une page » — garde sa flèche ◀
+  // et le numéro 1 : sans eux, elle était un cul-de-sac que seule une nouvelle recherche quittait.
+  if (numbered && pages <= 1 && state.page <= 0) return null;   // une seule page, et on y est -> pas de pager
   const from = state.page * PS;
   const wrap = document.createElement('div'); wrap.className = 'evpager';
   const prev = document.createElement('button'); prev.type = 'button'; prev.className = 'evprev'; prev.title = 'précédent'; prev.textContent = '◀'; prev.disabled = state.page === 0;
@@ -765,7 +772,7 @@ function makePager(state, onGo) {
   }
   const next = document.createElement('button'); next.type = 'button'; next.className = 'evnext'; next.title = 'suivant'; next.textContent = '▶';
   // `P10.21-x` — sans total, la flèche suit la suite SERVIE (`state.suite`, une clé de
-  // `cleDeLaSuiteDuRegistre`) et non plus la seule page pleine ; une vue qui n'en pose aucune garde la
+  // `cleDeLaSuiteServie`) et non plus la seule page pleine ; une vue qui n'en pose aucune garde la
   // règle d'avant.
   next.disabled = numbered ? state.page >= pages - 1 : !laSuiteOffreLaPageSuivante(state.suite, state.shown, PS);
   next.onclick = () => onGo(state.page + 1);
@@ -774,7 +781,8 @@ function makePager(state, onGo) {
   // COUNT BORNÉ : `state.totalCapped` -> le serveur a plafonné le total (> 10 000) -> on rend « 10 000+ »
   // (le total exact resterait honnête mais coûterait un scan complet). Absent/false -> total exact, inchangé.
   const totLbl = total >= 0 ? (total + (state.totalCapped ? '+' : '') + ' · ') : '';
-  tot.textContent = totLbl + (from + 1) + '–' + (from + state.shown);
+  // `P10.22-d` — une page VIDE ne rend pas une plage à l'envers (« 101–100 ») : un tiret, dans les deux langues.
+  tot.textContent = totLbl + (state.shown > 0 ? (from + 1) + '–' + (from + state.shown) : '—');
   wrap.appendChild(tot);
   return wrap;
 }
@@ -1035,7 +1043,7 @@ function poserLaRechercheDeLaListe(host, opts) {
 //     page/tri (aucun fetch). Petit/moyen volume déjà chargé.
 //   - 'server' : `fetchPage({limit,offset,sort,dir})` -> {rows,total,suite?} ; page/tri => re-fetch (le
 //     navigateur ne tient qu'une page). Grand volume. `suite` (facultatif, `P10.21-x`) = la clé que
-//     `cleDeLaSuiteDuRegistre` rend du corps servi : elle arme la flèche « suivant » quand `total` manque.
+//     `cleDeLaSuiteServie` rend du corps servi : elle arme la flèche « suivant » quand `total` manque.
 // opts.columns=[{key,label,sortable,align:'l|c|r',render:(row)=>Node|string,sortVal:(row)=>v}] (rendu en
 // <table.qtable>) OU opts.renderRow:(row)=>Node (liste libre, ex. lignes badge/action). `render`/`renderRow`
 // renvoient des NŒUDS -> badges & boutons d'action survivent. opts: {mode,pageSize=50,rows,fetchPage,columns,
@@ -1213,7 +1221,7 @@ function pagedList(host, opts) {
     // `P10.21-x` — SANS TOTAL SERVI, LA SUITE SERVIE DÉCIDE S'IL Y A UNE PAGE SUIVANTE. Le repli d'avant
     // (`total` = lignes servies) faisait de toute page une page UNIQUE : aucun pager n'était rendu, et une
     // page pleine que la vue venait de DIRE (« un curseur de suite est servi ») n'était pas atteignable.
-    // Une vue qui rend `suite` (une clé de `cleDeLaSuiteDuRegistre`) passe donc en pager NON NUMÉROTÉ
+    // Une vue qui rend `suite` (une clé de `cleDeLaSuiteServie`) passe donc en pager NON NUMÉROTÉ
     // (`total` = -1, « inconnu ») dès qu'une page suivante est offerte ou qu'on n'est plus sur la première ;
     // sinon — une seule page, ou une vue qui ne sert aucune suite — la règle d'avant tient.
     state.suite = (r && typeof r.suite === 'string') ? r.suite : undefined;
@@ -2065,7 +2073,7 @@ export {
   $, CSSV, socTZ, LANG, LOC, tzOpts, fmtTs, SEV, sev, bool, esc, ICONS, ic, flashStopped, stopBtn, closeModals, withBusy, toast, showErr, modal, confirmModal, csvCell, toCSV, downloadText, tsSlug, exportPDF, exportBar, closeMiniMenu, miniMenu, api, apiSend, transientGatewayMsg, muted, fetchInto, colComparator, makePager, pageNums, pagedList,
   // `P10.21-x` — le discriminant de la suite d'une page et la règle de la flèche qu'il arme : lus par le
   // panneau de rétention, l'onglet Audit et la ligne d'état de l'Explore, jugés par le harnais ESM.
-  cleDeLaSuiteDuRegistre, laSuiteOffreLaPageSuivante,
+  cleDeLaSuiteServie, laSuiteOffreLaPageSuivante,
   socRole, socIsAdmin, applyRoleClass, controleDEcritureSous, motiverLeRefusAuLecteur, roleSansEcriturePartagee, managedBadge, gateDeleteBtn, formMsg, contentSubmit, contentDelete, SEVCOL, lsSet, collapsibleGroup, humanAge,
   confirmWithConsequence, disclosure, marquerLesCellulesTronquees, celluleDeborde,
   // `P10.20-b` (rang 2) — LE LECTEUR DE CAUSE EST EXPOSÉ, PAS RECOPIÉ. `api()` et `apiSend()` attachent

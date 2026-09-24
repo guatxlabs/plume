@@ -929,6 +929,17 @@ fn remettre_le_second_facteur_a_zero(st: &AppState, user: &str) {
     echecs_du_second_facteur().lock().remove(&cle_du_frein_du_second_facteur(st, user));
 }
 
+/// `P10.24-o` — LE COMPTE EST SUPPRIMÉ : SON FREIN PART AVEC LUI. Mesuré le 2026-09-24 sur la forme d'avant : dix
+/// codes faux de l'ancien `bob`, `bob` supprimé puis recréé, et le NOUVEAU titulaire, avec un code JUSTE de SA
+/// graine, recevait le 429 du frein — des échecs comptés contre le premier facteur d'un compte qui n'existe
+/// plus. Sans condition sur le seuil (rien n'est retenu quand il vaut zéro). Appelée par `user_delete` APRÈS le
+/// commit. La création n'y touche pas : ce frein ne s'alimente qu'avec un premier facteur, qu'un nom sans compte
+/// n'a pas — hors l'administrateur de configuration, qui n'a pas de ligne dans `user` et qu'un compte homonyme
+/// créé ensuite masquerait (défaut d'homonymie à part, pas un reste de suppression).
+pub(crate) fn oublier_le_frein_du_compte_supprime(st: &AppState, user: &str) {
+    echecs_du_second_facteur().lock().remove(&cle_du_frein_du_second_facteur(st, user));
+}
+
 /// TÉMOINS SEULEMENT — les échecs consécutifs comptés au second facteur de ce compte : ce qui permet de
 /// prouver qu'un refus NOMMÉ (503) ou un refus AVANT examen (409) ne compte rien.
 #[cfg(test)]

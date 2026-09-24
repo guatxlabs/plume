@@ -916,15 +916,16 @@ pub(crate) fn resolve_identity(
     let mut sso_superadmin = false;
     if let Some(tok) = session_tok.as_deref() {
         // L2 : vérif HMAC LIÉE à l'epoch de session courant (révocation serveur : un cookie antérieur à un
-        // logout / changement de mdp échoue ici). TTL conservé.
+        // logout échoue ici). TTL conservé. `P10.23-l` : le jeton rend aussi l'époque de SON compte, jugée
+        // en mode 0 avec le rôle live (un cookie antérieur à un changement de mdp de ce compte échoue là).
         let epoch = st.session_epoch.load(std::sync::atomic::Ordering::Relaxed);
-        if let Some((u, r)) = verify_session(st.session_secret.as_slice(), tok, epoch) {
+        if let Some((u, r, epoque_du_compte)) = verify_session_du_compte(st.session_secret.as_slice(), tok, epoch) {
             if st.multi_tenant {
                 // MODE 1 : le rôle du cookie n'est qu'un PLANCHER ; le rôle PER-TENANT est relu LIVE via les
                 // grants (resolve_tenant_access) -> comportement inchangé (déjà mitigé).
                 ident = Some((u, r));
                 auth_method = "cookie";
-            } else if let Some(live) = live_role_for(st, &u) {
+            } else if let Some(live) = live_role_si_l_epoque_du_compte_vaut(st, &u, epoque_du_compte) {
                 // MODE 0 (L2) : NE PAS faire confiance au rôle FIGÉ dans le cookie -> le RE-RÉSOUDRE LIVE. Un
                 // rôle changé (editor->viewer) prend effet immédiatement ; un compte supprimé -> pas d'ident.
                 ident = Some((u, live));

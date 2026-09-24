@@ -18,7 +18,7 @@
 // CE QUE CES TÉMOINS NE TIENNENT PAS : la réinitialisation d'un mot de passe par un administrateur
 // (`user_update`) ne fait pas avancer l'époque — MESURÉ le même jour : le ticket d'avant ouvre encore une session
 // (200) ET la session d'avant reste valide ; c'est un défaut de révocation des SESSIONS, hors de ce lot (clé
-// neuve) ; le rejeu d'un ticket pendant ses cinq minutes, à époque inchangée, reste possible À DESSEIN (voir
+// neuve, `P10.23-l`, tenue depuis par `mot_de_passe_actuel_exige_et_revocation_par_compte.rs`) ; le rejeu d'un ticket pendant ses cinq minutes, à époque inchangée, reste possible À DESSEIN (voir
 // `mfa_ticket_sign`) ; ce que la console peint des refus neufs (`web/idp.js` n'envoie pas encore de mot de
 // passe à l'enrôlement) ; le budget par adresse du `rate_limit` (non traversé par un appel direct).
 // =====================================================================================
@@ -367,12 +367,15 @@ mod second_facteur_preuve_du_premier_facteur_et_ticket_revoque {
     // -------------------------------------------------------------------------------------
 
     /// CE QU'IL TIENT : `adm` (administrateur de l'assistant, MFA active) reçoit un ticket ; son mot de passe est
-    /// changé (`password_post`, l'époque avance) ; le ticket d'avant, avec un code JUSTE, est refusé en `401` nommé :
-    /// aucune session, le pas n'est pas consommé, aucune connexion attestée, aucun échec compté (ni au frein du
-    /// compte, ni au couple). CONTRÔLE POSITIF : le NOUVEAU mot de passe rend un ticket qui ouvre la session.
+    /// changé (`password_post`, l'époque DU COMPTE avance) ; le ticket d'avant, avec un code JUSTE, est refusé en
+    /// `401` nommé : aucune session, le pas n'est pas consommé, aucune connexion attestée, aucun échec compté (ni au
+    /// frein du compte, ni au couple). CONTRÔLE POSITIF : le NOUVEAU mot de passe rend un ticket qui ouvre la session.
     ///
-    /// LA MUTATION QUI LE FAIT ROUGIR : retirer `{epoch}` du message signé par `mfa_ticket_sign` et vérifié par
-    /// `mfa_ticket_verify` (la forme d'avant) — le ticket d'avant ouvre une session valide APRÈS le changement.
+    /// ADAPTÉ PAR `P10.23-m` ET `P10.23-l` : `password_post` exige le mot de passe actuel (`current`), et n'avance
+    /// plus l'époque GLOBALE mais celle du SEUL compte — la fixture l'établit ainsi. LA MUTATION QUI LE FAIT ROUGIR
+    /// DÉSORMAIS : retirer l'époque du compte du message signé par `mfa_ticket_sign` et vérifié par
+    /// `mfa_ticket_verify`, ou retirer l'avancée de l'époque du compte de `password_post`. Celle de `P10.22-x`
+    /// (retirer `{epoch}`) reste tenue par le témoin (8), la déconnexion avançant toujours l'époque globale.
     #[tokio::test]
     async fn sfpr_un_ticket_emis_avant_un_changement_de_mot_de_passe_ne_sert_plus() {
         let (st, _p, graine) = sfpr_etat_mfa_active("ticket-mot-de-passe", "adm");
@@ -383,9 +386,16 @@ mod second_facteur_preuve_du_premier_facteur_et_ticket_revoque {
         assert_eq!((statut, ticket.is_empty()), (200, false), "fixture : le mot de passe rend un ticket");
 
         let epoque = sfpr_epoque(&st);
-        let r = password_post(State(st.clone()), Extension(sp_au("adm", "admin")), Json(json!({ "new": "un-autre-mot-de-passe-long" }))).await;
+        let r = password_post(
+            State(st.clone()),
+            ConnectInfo(sfpr_pair(ip)),
+            Extension(sp_au("adm", "admin")),
+            Json(json!({ "current": SFPR_MOT_DE_PASSE, "new": "un-autre-mot-de-passe-long" })),
+        )
+        .await;
         assert_eq!(r.status().as_u16(), 200, "fixture : le mot de passe est changé");
-        assert_eq!(sfpr_epoque(&st), epoque + 1, "fixture : le changement fait avancer l'époque de session");
+        assert_eq!(epoque_du_compte(&st.db.lock(), "adm").expect("époque lue"), 1, "fixture : le changement avance l'époque du compte");
+        assert_eq!(sfpr_epoque(&st), epoque, "fixture : et pas l'époque globale");
 
         let (statut, session, corps) = sfpr_second_facteur(&st, &ticket, &sfpr_code(&graine, now() / 30), ip).await;
         assert_eq!((statut, session), (401, false), "le ticket d'avant le changement ne sert plus : {corps}");

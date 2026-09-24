@@ -50,8 +50,8 @@ grep -h -F -f "$ids" $LOGS 2>/dev/null > "$rec"
 
 umask 027
 tmp=$(mktemp "$SPOOL/.da.XXXXXX")
-newwm=$(awk -v host="$host" -v now="$ts" -v out="$tmp" -v last="$last" '
-function jesc(s){ gsub(/\\/,"\\\\",s); gsub(/"/,"\\\"",s); gsub(/[\001-\037]/," ",s); return s }   # strip TOUT char de controle (auditd joint les cles multiples par \x1d -> JSON invalide sinon)
+newwm=$(awk -v host="$host" -v now="$ts" -v out="$tmp" -v last="$last" "$_PLUME_AWK_ECHAPPEMENT_JSON"'
+# jesc() : l’échappement JSON de collectors/lib.sh (_PLUME_AWK_ECHAPPEMENT_JSON, P10.23-e), placé en tête de ce programme.
 function fv(line,name,   re,v){ re=name "=\"[^\"]*\"|" name "=[^ ]+"; if(match(line,re)){ v=substr(line,RSTART,RLENGTH); sub(/^[^=]*=/,"",v); gsub(/"/,"",v); return v } return "" }
 function eid(line,   v){ if(match(line,/:[0-9]+\)/)){ return substr(line,RSTART+1,RLENGTH-2) } return "" }
 function eep(line,   v){ if(match(line,/audit\([0-9]+/)){ return substr(line,RSTART+6,RLENGTH-6) } return "" }

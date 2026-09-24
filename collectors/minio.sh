@@ -44,8 +44,8 @@ done
 umask 027
 tmp=$(mktemp "$SPOOL/.minio.XXXXXX")
 { printf '==USERS==\n%s\n==ANON==\n%s\n==INFO==\n%s\n' "$USERS" "$ANON" "$INFO"; } \
-| awk -v ts="$ts" -v host="$host" -v out="$tmp" '
-function jesc(s){ gsub(/\\/,"\\\\",s); gsub(/"/,"\\\"",s); gsub(/[\001-\037]/," ",s); return s }
+| awk -v ts="$ts" -v host="$host" -v out="$tmp" "$_PLUME_AWK_ECHAPPEMENT_JSON"'
+# jesc() : l’échappement JSON de collectors/lib.sh (_PLUME_AWK_ECHAPPEMENT_JSON, P10.23-e), placé en tête de ce programme.
 function jval(s,k,  r){ r=s
   if(match(r,"\""k"\":\"")){ r=substr(r,RSTART+length(k)+4); sub(/".*/,"",r); return r }
   if(match(r,"\""k"\":")){ r=substr(r,RSTART+length(k)+3); sub(/[,}].*/,"",r); return r }

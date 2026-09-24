@@ -23,8 +23,8 @@ for p in $PATHS; do [ -e "$p" ] && set -- "$@" "$p"; done
 [ "$#" -gt 0 ] || { rm -f "$tmp"; plume_exit_nodata; }
 find "$@" -maxdepth "$DEPTH" \( -type f -o -type d \) -printf '%p\t%u\t%g\t%m\t%y\n' 2>/dev/null \
   | head -n "$MAX" \
-  | awk -v ts="$ts" -v host="$host" -v out="$tmp" '
-function jesc(s){ gsub(/\\/,"\\\\",s); gsub(/"/,"\\\"",s); gsub(/[\001-\037]/," ",s); return s }
+  | awk -v ts="$ts" -v host="$host" -v out="$tmp" "$_PLUME_AWK_ECHAPPEMENT_JSON"'
+# jesc() : l’échappement JSON de collectors/lib.sh (_PLUME_AWK_ECHAPPEMENT_JSON, P10.23-e), placé en tête de ce programme.
 BEGIN{ FS="\t"; n=0; buf="" }
 {
   path=$1; owner=$2; grp=$3; mode=$4; typ=$5

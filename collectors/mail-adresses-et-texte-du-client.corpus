@@ -22,6 +22,13 @@
 #   RÉUSSIE. L'échec SASL de notre propre relais sortant était imputé à l'adresse du relais.
 #   Les VRAIS échecs restent comptés : `SASL … authentication failed` du serveur smtpd de Postfix
 #   (ici), `auth failed` de Dovecot 2.3 et 2.4 (corpus frère).
+#   `P10.23-f` — les blocages postscreen et les rejets sont lus en TÊTE du message, sous l'étiquette
+#   du démon qui les écrit. Mesuré sur le capteur d'avant : un `helo=<postscreen PREGREET>` faisait
+#   d'un rejet smtpd un blocage postscreen (service compris) ; `NOQUEUE: reject` envoyé en commande
+#   HTTP au port de soumission devenait un rejet ; un texte du client dans un message Dovecot
+#   devenait un blocage ; le `helo` du rejet de postscreen lui-même en choisissait la catégorie.
+#   `P10.23-g` — la liste de refus s'écrit `BLACKLISTED` ou `DENYLISTED` (`respectful_logging`,
+#   `yes` par défaut dès `compatibility_level` 3.6) : `DENYLISTED` ne produisait aucun événement.
 #
 # FORMAT : `verdict <TAB> user <TAB> src_ip <TAB> provenance <TAB> ligne`. `#` en colonne zéro =
 # commentaire, ligne vide ignorée.
@@ -40,11 +47,16 @@
 #     sources-postfix            forme lue dans les sources Postfix (branche principale, lue le
 #                                2026-09-23 : `smtpd_sasl_glue.c`, `smtpd.c`, `smtpd_peer.c`,
 #                                `postscreen_early.c`, `postscreen_smtpd.c`, `smtp_sasl_glue.c`,
-#                                `unescape.c`), NON MESURÉE
+#                                `unescape.c` ; le 2026-09-24 : `postscreen.c`, `postscreen_misc.c`,
+#                                `smtpd_check.c`, `smtpd.h`), NON MESURÉE
 #     sources-postfix-avant-3.9  la même, sans le suffixe `, sasl_username=` : ajouté le 20231006
 #                                (fichier HISTORY de Postfix), il n'est publié qu'à partir de 3.9
 #     client-postfix             forme `sources-postfix` dont un champ porte un texte CHOISI par le
 #                                client ; ne peut JAMAIS être `succes` ni `echec`
+#     fabriquee-2.3              message Dovecot 2.3 portant un texte du client (un `ID sent:` quand
+#                                `imap_id_log` est armé) : forme NON relue dans les sources
+# Un verdict `postscreen` n'est admis que sur une ligne postscreen, un `rejet` que sur une ligne
+# smtpd ou postscreen : le corpus ne peut pas légitimer le défaut qu'il garde.
 # Seule la FORME est relevée : utilisateurs et domaines (`example.test`, `example.net`), adresses
 # (plages de documentation RFC 5737 et RFC 3849), identifiants, PID, ports et noms d'hôte sont
 # SUBSTITUÉS. Le témoin refuse une adresse hors de ces plages.
@@ -92,3 +104,37 @@ postscreen	-	192.0.2.82	client-postfix	2026-09-23T19:30:29.123456+02:00 mailserv
 # L'échec SASL de NOTRE client smtp auprès d'un relais : ni une attaque, ni une tentative venue de
 # l'adresse du relais.
 aucun	-	-	sources-postfix	2026-09-23T19:30:30.123456+02:00 mailserver postfix/smtp[2027]: 4ABCDEF123: to=<c@example.net>, relay=relay.example.net[198.51.100.20]:587, delay=1.2, delays=0.1/0/1/0, dsn=4.7.8, status=deferred (SASL authentication failed; server relay.example.net[198.51.100.20] said: 535 5.7.8 Error: authentication failed: authentication failure)
+
+# --- P10.23-f et P10.23-g : postscreen et rejets, lus en tête du message, sous leur étiquette ----
+# Les blocages de postscreen, un par forme (`postscreen.c`, `postscreen_early.c`, `postscreen_smtpd.c`).
+# La liste de refus s'écrit selon `respectful_logging` : `DENY` (défaut dès 3.6) ou `BLACK`.
+postscreen	-	192.0.2.84	sources-postfix	2026-09-23T19:31:01.123456+02:00 mailserver postfix/postscreen[2030]: DNSBL rank 3 for [192.0.2.84]:40011
+postscreen	-	192.0.2.85	sources-postfix	2026-09-23T19:31:02.123456+02:00 mailserver postfix/postscreen[2031]: BLACKLISTED [192.0.2.85]:40012
+postscreen	-	2001:db8::86	sources-postfix	2026-09-23T19:31:03.123456+02:00 mailserver postfix/postscreen[2032]: DENYLISTED [2001:db8::86]:40013
+postscreen	-	192.0.2.87	sources-postfix	2026-09-23T19:31:04.123456+02:00 mailserver postfix/postscreen[2033]: COMMAND PIPELINING from [192.0.2.87]:40014 after EHLO: MAIL FROM:<a@example.test>\r\n
+postscreen	-	192.0.2.88	sources-postfix	2026-09-23T19:31:05.123456+02:00 mailserver postfix/postscreen[2034]: COMMAND TIME LIMIT from [192.0.2.88]:40015 after DATA
+postscreen	-	192.0.2.89	sources-postfix	2026-09-23T19:31:06.123456+02:00 mailserver postfix/postscreen[2035]: COMMAND COUNT LIMIT from [192.0.2.89]:40016 after RSET
+postscreen	-	192.0.2.91	sources-postfix	2026-09-23T19:31:07.123456+02:00 mailserver postfix/postscreen[2036]: BARE NEWLINE from [192.0.2.91]:40017 after DATA
+# Ce que postscreen écrit sans bloquer n'est rien : raccroché avant la salutation (bruit des sondes
+# du nœud), passage, connexion, liste d'acceptation sous ses deux noms — témoins de parité.
+aucun	-	-	sources-postfix	2026-09-23T19:31:08.123456+02:00 mailserver postfix/postscreen[2037]: HANGUP after 0.5 from [192.0.2.92]:40018 in tests before SMTP handshake
+aucun	-	-	sources-postfix	2026-09-23T19:31:09.123456+02:00 mailserver postfix/postscreen[2038]: CONNECT from [192.0.2.93]:40019 to [192.0.2.1]:25
+aucun	-	-	sources-postfix	2026-09-23T19:31:10.123456+02:00 mailserver postfix/postscreen[2039]: PASS NEW [192.0.2.94]:40020
+aucun	-	-	sources-postfix	2026-09-23T19:31:11.123456+02:00 mailserver postfix/postscreen[2040]: ALLOWLISTED [192.0.2.95]:40021
+aucun	-	-	sources-postfix	2026-09-23T19:31:12.123456+02:00 mailserver postfix/postscreen[2041]: WHITELISTED [192.0.2.96]:40022
+# Les rejets de postscreen lui-même : c'est un rejet, et le `helo` que le client y écrit n'en choisit
+# pas la catégorie (le capteur d'avant rendait `postscreen` pour un `helo` qui écrit un blocage).
+rejet	-	192.0.2.97	sources-postfix	2026-09-23T19:31:13.123456+02:00 mailserver postfix/postscreen[2042]: NOQUEUE: reject: RCPT from [192.0.2.97]:40023: 550 5.7.1 Service unavailable; client [192.0.2.97] blocked using zen.example.net; from=<a@example.test>, to=<b@example.test>, proto=ESMTP, helo=<mx.example.test>
+rejet	-	192.0.2.107	client-postfix	2026-09-23T19:31:14.123456+02:00 mailserver postfix/postscreen[2043]: NOQUEUE: reject: RCPT from [192.0.2.107]:40027: 550 5.7.1 Service unavailable; client [192.0.2.107] blocked using zen.example.net; from=<a@example.test>, to=<b@example.test>, proto=ESMTP, helo=<DNSBL rank 9 for [198.51.100.15]:1>
+rejet	-	192.0.2.98	sources-postfix	2026-09-23T19:31:15.123456+02:00 mailserver postfix/postscreen[2044]: NOQUEUE: reject: CONNECT from [192.0.2.98]:40024: too many connections
+# Les rejets smtpd que l'ancien motif lisait : sous identifiant de file, à la connexion, par un milter.
+rejet	-	192.0.2.100	sources-postfix	2026-09-23T19:31:16.123456+02:00 mailserver postfix/smtpd[2045]: 4ABCDEF123: reject: RCPT from mail.example.test[192.0.2.100]: 550 5.1.1 <c@example.test>: Recipient address rejected: User unknown in virtual mailbox table; from=<a@example.net> to=<c@example.test> proto=ESMTP helo=<mail.example.test>
+rejet	-	192.0.2.101	sources-postfix	2026-09-23T19:31:17.123456+02:00 mailserver postfix/smtpd[2046]: NOQUEUE: reject: CONNECT from unknown[192.0.2.101]: 554 5.7.1 <unknown[192.0.2.101]>: Client host rejected: Access denied; proto=SMTP
+rejet	-	192.0.2.109	sources-postfix	2026-09-23T19:31:23.123456+02:00 mailserver postfix/smtpd[2051]: NOQUEUE: milter-reject: RCPT from unknown[192.0.2.109]: 451 4.7.1 Try again later; from=<a@example.test> to=<b@example.test> proto=ESMTP helo=<mx.example.test>
+# Les mots de postscreen et de rejet écrits par le CLIENT ne sont jamais un verdict (mesuré sur le
+# capteur d'avant : blocage postscreen, rejet, blocage, blocage).
+rejet	-	192.0.2.102	client-postfix	2026-09-23T19:31:18.123456+02:00 mailserver postfix/smtpd[2047]: NOQUEUE: reject: RCPT from unknown[192.0.2.102]: 554 5.7.1 <b@example.test>: Relay access denied; from=<a@example.test> to=<b@example.test> proto=ESMTP helo=<postscreen PREGREET>
+aucun	-	-	client-postfix	2026-09-23T19:31:19.123456+02:00 mailserver postfix/submission/smtpd[2048]: warning: non-SMTP command from unknown[192.0.2.103]: GET /NOQUEUE: reject: RCPT from x HTTP/1.1
+aucun	-	-	client-postfix	2026-09-23T19:31:20.123456+02:00 mailserver postfix/submission/smtpd[2049]: improper command pipelining after CONNECT from unknown[192.0.2.104]: postscreen BLACKLISTED [198.51.100.13]:1\r\n
+aucun	-	-	client-postfix	2026-09-23T19:31:21.123456+02:00 mailserver postfix/submission/smtpd[2050]: improper command pipelining after CONNECT from unknown[192.0.2.108]: postscreen DENYLISTED [198.51.100.14]:1\r\n
+aucun	-	-	fabriquee-2.3	2026-09-23T19:31:22.123456+02:00 mailserver dovecot: imap-login: ID sent: name=postscreen PREGREET, version=NOQUEUE: reject: user=<>, rip=192.0.2.105, lip=192.0.2.1, session=<Zml4dHVyZUlE>

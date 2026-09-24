@@ -179,6 +179,13 @@ pub(crate) async fn user_update(State(st): State<AppState>, Extension(au): Exten
         }
         if let Some(pw) = new_pw {
             conn.execute("UPDATE user SET hash=?1 WHERE id=?2", params![hash_pw(pw), id])?;
+            // `P10.23-l` — LA RÉINITIALISATION RÉVOQUE LES SESSIONS ET LES TICKETS MFA DU SEUL COMPTE RÉINITIALISÉ.
+            // Mesuré le 2026-09-24 sur la forme d'avant : après ce 204, la session d'avant du compte résolvait
+            // encore son identité, et un ticket MFA émis avant ouvrait encore une session — l'époque de session est
+            // GLOBALE et ce chemin ne la touchait pas (l'avancer déconnecterait tous les comptes). L'époque du
+            // COMPTE avance DANS cette transaction : pas de mot de passe réinitialisé sans ses jetons d'avant
+            // révoqués, ni l'inverse.
+            avancer_l_epoque_du_compte(&conn, &tname)?;
             audit_config_change(
                 &conn, "config.user.password_reset",
                 &format!("mot de passe du compte '{tname}' réinitialisé par {}", au.name), 4,

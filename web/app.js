@@ -366,6 +366,8 @@ async function loadSettings() {
   const b = $('#setup-banner'); if (b) b.hidden = configured;
   const u = $('#set-user'); if (u) u.hidden = configured;
   const t = $('#set-token'); if (t) t.hidden = configured;
+  // `P10.23-m` — le changement exige le mot de passe ACTUEL (`current`) : le champ n'existe qu'une fois configuré.
+  const c = $('#set-pw-current'); if (c) c.hidden = !configured;
 }
 if ($('#setup-form')) $('#setup-form').addEventListener('submit', async e => {
   e.preventDefault();
@@ -373,13 +375,21 @@ if ($('#setup-form')) $('#setup-form').addEventListener('submit', async e => {
   if (pw.length < 12) { res.textContent = 'mot de passe >= 12 caractères'; return; }
   let configured = true;
   try { ({ configured } = await api('/setup-status')); } catch (e) {}
+  // `P10.23-m` — le démon refuse un changement sans le mot de passe actuel (403 nommé) : il est demandé ici, envoyé
+  // sous `current`, et le champ est vidé après chaque envoi, accepté ou refusé.
+  const champActuel = $('#set-pw-current');
+  const actuel = champActuel ? champActuel.value : '';
+  if (configured && !actuel) { res.textContent = 'mot de passe actuel requis'; return; }
   if (configured && !await confirmModal('Changer le mot de passe ? Tu devras te reconnecter avec le nouveau.', { okText: 'Changer', danger: true })) return;
   try {
-    if (configured) await apiSend('/password', 'POST', { new: pw });
+    if (configured) await apiSend('/password', 'POST', { current: actuel, new: pw });
     else await apiSend('/setup', 'POST', { token: $('#set-token').value.trim(), user: ($('#set-user').value.trim() || 'admin'), password: pw });
-  } catch (err) { res.textContent = '' + ((err && err.message) || err); return; }
+  } catch (err) {
+    if (champActuel) champActuel.value = '';
+    res.textContent = '' + ((err && (err.causeDuDemon || err.message)) || err); return;
+  }
   res.textContent = 'enregistré - reconnecte-toi avec les nouveaux identifiants';
-  $('#set-pw').value = ''; loadSettings();
+  $('#set-pw').value = ''; if (champActuel) champActuel.value = ''; loadSettings();
 });
 loadSettings();
 

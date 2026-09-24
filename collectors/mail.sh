@@ -50,12 +50,8 @@ raw=$(read_log) || plume_lecture_echouee mail source_illisible "source de log ma
 now=$(date +%s)
 umask 027
 tmp=$(mktemp "$SPOOL/.mail.XXXXXX")
-newwm=$(printf '%s\n' "$raw" | TZ=UTC awk -v last="$last" -v host="$host" -v now="$now" -v out="$tmp" -v skipip="$SKIPIP" '
-# L’antislash se double par `&&` (le texte trouvé, deux fois) et non par "\\\\" : mawk 1.3.4 20200120
-# (l’awk par défaut de Debian 12 et d’Ubuntu 22.04) lit cette chaîne comme UN antislash et ne double
-# rien — une seule ligne portant `\026` (octet échappé par Postfix) rendait l’enveloppe entière
-# illisible comme JSON, vrais échecs d’authentification compris.
-function jesc(s){ gsub(/\\/,"&&",s); gsub(/"/,"\\\"",s); gsub(/\r/,"",s); gsub(/\t/," ",s); return s }
+newwm=$(printf '%s\n' "$raw" | TZ=UTC awk -v last="$last" -v host="$host" -v now="$now" -v out="$tmp" -v skipip="$SKIPIP" "$_PLUME_AWK_ECHAPPEMENT_JSON"'
+# jesc() : l’échappement JSON de collectors/lib.sh (_PLUME_AWK_ECHAPPEMENT_JSON, P10.23-e), placé en tête de ce programme.
 # P10.22-s — UNE ADRESSE, ET RIEN D’AUTRE. IPv4 pointée ou IPv6 (témoin :
 # collectors/mail-adresses-et-texte-du-client.corpus), validée ENTIÈRE : une valeur qui n’en est pas une
 # rend "" et la ligne n’est pas émise, plutôt qu’un préfixe (`rip=2001:db8::5` rendait `2001`). La forme
@@ -136,10 +132,11 @@ BEGIN{ n=0; buf=""; maxts=last+0 }
   # une ligne Postfix, il ne peut venir que du client.
   dvc=""; if (match($0,/^[^ ]+ [^ ]+ dovecot(\[[0-9]+\])?: /)) dvc=substr($0,RSTART+RLENGTH)
   psd=""; if (match($0,/^[^ ]+ [^ ]+ postfix(\/[A-Za-z0-9_.-]+)*\/smtpd\[[0-9]+\]: /)) psd=substr($0,RSTART+RLENGTH)
+  pss=""; if (match($0,/^[^ ]+ [^ ]+ postfix(\/[A-Za-z0-9_.-]+)*\/postscreen\[[0-9]+\]: /)) pss=substr($0,RSTART+RLENGTH)
   msg=""; if (match($0,/^[^ ]+ [^ ]+ [^ ]+ /)) msg=substr($0,RSTART+RLENGTH)
   ip=""; if (dvc != "") ip=adresse(rip_de_dovecot(dvc)); else ip=adresse(crochet_du_client(msg))
   usr=""; if (dvc != "" && match(dvc,/user=<[^>]*>/)) usr=substr(dvc,RSTART+6,RLENGTH-7)
-  svc="postfix"; if (dvc != "") svc="dovecot"; else if ($0 ~ /^[^ ]+ [^ ]+ postfix\/postscreen\[/) svc="postscreen"
+  svc="postfix"; if (dvc != "") svc="dovecot"; else if (pss != "") svc="postscreen"
   # P10.22-j — connexions Dovecot, 2.3 ET 2.4 (témoin : collectors/mail-connexions-dovecot.corpus).
   # Succès : 2.3 `Login:`, 2.4 `Logged in:` (émis par login-common, donc aussi par managesieve-login).
   # Lu en TÊTE du message Dovecot, et nulle part ailleurs : le `user=<…>` qui suit est fourni par le
@@ -159,8 +156,22 @@ BEGIN{ n=0; buf=""; maxts=last+0 }
            dvc ~ /^(imap|pop3|submission|managesieve)-login: (Disconnected: )?Aborted login[ (]/ ||
            dvc ~ /^(imap|pop3|submission|managesieve)-login: Login aborted: Logged out / ||
            psd ~ /^warning: [A-Za-z0-9._-]+\[[0-9A-Fa-f:.]+\](:[0-9]+)?: SASL [A-Za-z0-9_-]+ authentication failed/) emit("auth","failure",2,ip,usr,svc)
-  else if ($0 ~ /postscreen.*(PREGREET|DNSBL|BLACKLISTED|COMMAND (PIPELINING|TIME|COUNT)|BARE NEWLINE|NON-SMTP)/) emit("postscreen","blocked",2,ip,usr,"postscreen")  # HANGUP exclu = bruit (probes node)
-  else if ($0 ~ /NOQUEUE: reject|reject: RCPT/) emit("reject","blocked",2,ip,usr,svc)
+  # P10.23-f — POSTSCREEN ET REJET, ANCRÉS COMME L’AUTHENTIFICATION : lus en TÊTE du message, sous
+  # l’étiquette du démon qui les écrit, et nulle part ailleurs. Cherchés partout, un `helo=<postscreen
+  # PREGREET>` faisait d’un rejet smtpd un blocage postscreen (service compris), une sonde HTTP portant
+  # `NOQUEUE: reject` au port de soumission devenait un rejet, un texte du client dans un message
+  # Dovecot devenait un blocage — et le `helo` du rejet de postscreen lui-même en choisissait la
+  # catégorie. Formes lues dans les sources Postfix (`postscreen.c`, `postscreen_early.c`,
+  # `postscreen_smtpd.c`, `smtpd_check.c`) ; HANGUP, PASS, CONNECT et ALLOWLISTED restent hors des
+  # blocages (bruit des sondes du nœud, parité avec l’ancien motif).
+  # P10.23-g — la liste de refus s’écrit `BLACKLISTED` ou `DENYLISTED` selon `respectful_logging`, dont
+  # le défaut vaut `yes` dès `compatibility_level` 3.6 : les deux formes sont lues.
+  # Rejet : `NOQUEUE: reject: <étape> …` (smtpd et postscreen ; l’étape est écrite par le serveur, et
+  # peut porter une espace : `DATA content`), `<file>: reject: RCPT from …` (smtpd, quand la file
+  # existe), `…: milter-reject: RCPT from …` (smtpd) — les formes que l’ancien motif lisait, et elles
+  # seules.
+  else if (pss ~ /^(PREGREET [0-9]+ after |DNSBL rank [0-9]+ for |(BLACK|DENY)LISTED \[|COMMAND (PIPELINING|TIME LIMIT|COUNT LIMIT) from |BARE NEWLINE from |NON-SMTP COMMAND from )/) emit("postscreen","blocked",2,ip,usr,"postscreen")
+  else if (pss ~ /^NOQUEUE: reject: / || psd ~ /^NOQUEUE: reject: / || psd ~ /^[0-9A-Za-z]+: (milter-)?reject: RCPT from /) emit("reject","blocked",2,ip,usr,svc)
   else if ($0 ~ /amavis\[[0-9]+\]:.*(Passed|Blocked) [A-Z]/) {  # verdict amavis (IronPort-like : flux + verdicts)
     vd=""; if (match($0,/(Passed|Blocked) [A-Z][A-Z-]*/)) vd=substr($0,RSTART,RLENGTH)
     frm=""; if (match($0,/<[^>]*> ->/)) frm=substr($0,RSTART+1,RLENGTH-5)           # <sender> ->

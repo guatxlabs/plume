@@ -70,8 +70,8 @@ if [ -n "$_rbac_manque" ]; then
   plume_lecture_partielle kube-rbac source_illisible "lecture RBAC PARTIELLE — $_rbac_manque"
 fi
 tmp=$(mktemp "$SPOOL/.rbac.XXXXXX")
-awk -v ts="$ts" -v host="$host" -v out="$tmp" -v sec="$SEC" '
-function jesc(s){ gsub(/\\/,"\\\\",s); gsub(/"/,"\\\"",s); gsub(/[\001-\037]/," ",s); return s }
+awk -v ts="$ts" -v host="$host" -v out="$tmp" -v sec="$SEC" "$_PLUME_AWK_ECHAPPEMENT_JSON"'
+# jesc() : l’échappement JSON de collectors/lib.sh (_PLUME_AWK_ECHAPPEMENT_JSON, P10.23-e), placé en tête de ce programme.
 BEGIN{ FS="|"; n=0; buf=""; m=split(sec,A,"\n"); for(i=1;i<=m;i++) if(A[i]!="") SECR[A[i]]=1 }
 {
   scope=($1=="C")?"cluster":"ns"; ns=($1=="C")?"":$1; binding=$2; role=$3; subs=$4

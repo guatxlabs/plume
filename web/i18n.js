@@ -611,6 +611,7 @@ const I18N_EN = {
   "Déconnexion": "Sign out", "Se déconnecter de Plume ?": "Sign out of Plume?", "Utilisateur courant inconnu (session ?).": "Unknown current user (session?).",
   "enregistré - reconnecte-toi avec les nouveaux identifiants": "saved - sign in again with the new credentials",
   "mot de passe >= 12 caractères": "password >= 12 characters",
+  "mot de passe actuel": "current password", "mot de passe actuel requis": "current password required",
   "SQL brut réservé à l'administrateur (utilisez GXQL)": "Raw SQL is restricted to the administrator (use GXQL)",
   "SQL brut réservé à l'administrateur — utilisez GXQL": "Raw SQL is restricted to the administrator — use GXQL",
   "aucun lookup - clique \" + Nouveau lookup \" (tables d'enrichissement : geoip, asn, threat-intel...).": "no lookup - click “+ New lookup” (enrichment tables: geoip, asn, threat-intel...).",

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Le capteur mail classe les connexions Dovecot 2.3 ET 2.4, lit l'adresse source ENTIÈRE, et ne prend jamais un texte du client pour un verdict — garde de CI (`P10.22-j`, `P10.22-s`, `P10.22-v`).
+"""Le capteur mail classe les connexions Dovecot 2.3 ET 2.4, lit l'adresse source ENTIÈRE, et ne prend jamais un texte du client pour un verdict — garde de CI (`P10.22-j`, `P10.22-s`, `P10.22-v`, `P10.23-f`, `P10.23-g`).
 
 LES DÉFAUTS QUE CETTE GARDE REND NON-ÉCRIVABLES
 -----------------------------------------------
@@ -18,6 +18,13 @@ sans s'authentifier : chacune devenait un échec d'authentification, à l'adress
 client écrivait (`rip=`, `user=<…>` étaient lus partout eux aussi). L'étiquette ` dovecot: ` était
 cherchée partout : un client qui l'écrivait fabriquait une connexion RÉUSSIE. L'échec SASL de notre
 propre relais sortant était imputé à l'adresse du relais.
+`P10.23-f` — mesuré le 2026-09-24 : les bras postscreen et rejet lisaient encore la ligne entière. Un
+`helo=<postscreen PREGREET>` faisait d'un rejet smtpd un blocage postscreen (service compris) ; une
+commande HTTP `GET /NOQUEUE: reject` au port de soumission devenait un rejet ; un texte du client
+dans un message Dovecot devenait un blocage ; le `helo` du rejet de postscreen lui-même en
+choisissait la catégorie. Six lignes sur vingt-trois classées faux, sous gawk et mawk.
+`P10.23-g` — même mesure : `DENYLISTED` (la liste de refus quand `respectful_logging` vaut `yes`, son
+défaut dès `compatibility_level` 3.6) ne produisait aucun événement ; seul `BLACKLISTED` était lu.
 
 CE QUE LA GARDE FAIT
 --------------------
@@ -43,14 +50,15 @@ LES CORPUS SE VALIDENT AVANT DE SERVIR
 Un corpus qui perd sa matière rend un vert vide. Avant toute exécution : cinq colonnes, un verdict
 et une provenance des vocabulaires fermés, un horodatage ISO et une étiquette syslog reconnue en
 tête, une provenance de la famille de l'étiquette ; aucune ligne « Login aborted » déclarée
-`succes`, aucune ligne `client-postfix` déclarée `succes` ou `echec` (un corpus ne peut pas
+`succes`, aucune ligne `client-postfix` déclarée `succes` ou `echec`, aucun `postscreen` hors d'une
+ligne postscreen, aucun `rejet` hors d'une ligne smtpd ou postscreen (un corpus ne peut pas
 légitimer le défaut qu'il garde) ; le `user` attendu est celui du message Dovecot, et `-` sur toute
 ligne Postfix ; le `src_ip` attendu est une adresse sous sa forme rendue (jamais mappée) et figure
 dans la ligne là où le serveur l'écrit (`rip=` Dovecot, `[…]` Postfix) ; toute adresse, IPv4 ou
 IPv6, est de documentation (RFC 5737, RFC 3849) ou de bouclage ; tout utilisateur Dovecot est vide,
 sous `example.test`, ou sur une ligne fabriquée. Chaque corpus a son PLANCHER, écrit exigence par
 exigence ci-dessous. Cette validation est elle-même éprouvée sur des lignes FABRIQUÉES : une ligne
-conforme passe, et six écarts sont CHACUN refusés.
+conforme passe, et huit écarts sont CHACUN refusés.
 
 LE JUGE SE VALIDE AUSSI
 -----------------------
@@ -64,8 +72,10 @@ CE QUE LA GARDE NE TIENT PAS, DIT FRANCHEMENT
 Elle éprouve la CLASSIFICATION du capteur livré, pas ce qui tourne sur l'hôte : un capteur corrigé
 ici et jamais installé ne classe rien (famille de `P10.22-i`). Les formes `sources-*` sont dérivées
 des sources, pas relevées ; seules les lignes `mesuree-*` l'ont été, et aucune ligne Postfix ne
-l'est. Les bras « postscreen » et « rejet » lisent encore la ligne entière : un texte du client peut
-y choisir entre ces deux catégories (toutes deux `blocked`, à l'adresse du client). Qu'une première
+l'est. Les bras amavis (verdicts, virus, panne du scanner) lisent encore la ligne entière, sans
+étiquette. Les blocages postscreen que l'ancien motif ignorait (`COMMAND LENGTH LIMIT`, `DATA` ou
+`BDAT without valid RCPT`) et les rejets smtpd sous identifiant de file après RCPT (`DATA content`,
+`END-OF-MESSAGE`) restent hors des verdicts : parité, pas jugement. Qu'une première
 adresse entre crochets invalide ne fasse JAMAIS chercher plus loin n'a pas de témoin : aucune forme
 réelle de Postfix ne l'écrit. Les unités awk des capteurs échappent au recensement des définitions
 d'adresse de `P4.7-j`.
@@ -88,7 +98,7 @@ CAPTEUR = os.path.join(RACINE, "collectors", "mail.sh")
 LIB = os.path.join(RACINE, "collectors", "lib.sh")
 CORPUS_DOVECOT = os.path.join(RACINE, "collectors", "mail-connexions-dovecot.corpus")
 CORPUS_CLIENT = os.path.join(RACINE, "collectors", "mail-adresses-et-texte-du-client.corpus")
-ETIQUETTE = "P10.22-j/s/v"
+ETIQUETTE = "P10.22-j/s/v, P10.23-f/g"
 
 CLASSE_DU_VERDICT = {"succes": ("auth", "success"), "echec": ("auth", "failure"),
                      "rejet": ("reject", "blocked"), "postscreen": ("postscreen", "blocked"),
@@ -104,7 +114,7 @@ SPEC_CLIENT = dict(
     nom="mail-adresses-et-texte-du-client.corpus",
     verdicts=tuple(CLASSE_DU_VERDICT),
     provenances={"sources-2.3.19.1": "dovecot", "sources-2.4.1": "dovecot", "fabriquee-2.4": "dovecot",
-                 "enonce-P10.22-s": "dovecot", "sources-postfix": "postfix",
+                 "enonce-P10.22-s": "dovecot", "fabriquee-2.3": "dovecot", "sources-postfix": "postfix",
                  "sources-postfix-avant-3.9": "postfix", "client-postfix": "postfix"},
 )
 SERVICES_DE_CONNEXION = ("imap", "pop3", "submission", "managesieve")
@@ -114,13 +124,14 @@ PLAGES_DE_DOCUMENTATION = [ipaddress.ip_network(n) for n in
                             "2001:db8::/32", "::1/128")]
 HORODATAGE = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?[+-]\d\d:\d\d ")
 # L'étiquette syslog, TROISIÈME champ : c'est elle, et elle seule, qui dit qui a écrit la ligne.
-FAMILLE = re.compile(r"^\S+ \S+ (?:(?P<dovecot>dovecot(?:\[\d+\])?)|(?P<postscreen>postfix/postscreen\[\d+\])"
+FAMILLE = re.compile(r"^\S+ \S+ (?:(?P<dovecot>dovecot(?:\[\d+\])?)|(?P<postscreen>postfix(?:/[\w.-]+)*/postscreen\[\d+\])"
                      r"|(?P<smtpd>postfix(?:/[\w.-]+)*/smtpd\[\d+\])|(?P<smtp>postfix(?:/[\w.-]+)*/smtp\[\d+\])): ")
 SERVICE_DE_LA_FAMILLE = {"dovecot": "dovecot", "postscreen": "postscreen", "smtpd": "postfix", "smtp": "postfix"}
 QUADRUPLET = re.compile(r"(?<![0-9.])(\d{1,3}(?:\.\d{1,3}){3})(?![0-9.])")
 SUITE_HEXA = re.compile(r"[0-9A-Fa-f:.]+")
 UTILISATEUR = re.compile(r"user=<([^>]*)>")
 SERVICE_DOVECOT = re.compile(r"^\S+ \S+ dovecot(?:\[\d+\])?: ([a-z0-9]+)-login: ")
+MESSAGE = re.compile(r"^\S+ \S+ \S+ (.*)$")
 FONCTIONS_D_ADRESSE = ("est_ipv4", "est_ipv6", "adresse")
 # `(valeur lue, adresse rendue)` ; "" = pas une adresse. Les valeurs rendues sont relues par
 # `ipaddress` avant usage : la table ne peut pas attendre une forme que Python refuse.
@@ -196,6 +207,10 @@ def analyser_ligne(n, texte, spec):
         fautes.append(f"ligne {n} : une ligne « Login aborted » déclarée `succes` — le corpus légitimerait le défaut qu'il garde")
     if provenance == "client-postfix" and verdict in ("succes", "echec"):
         fautes.append(f"ligne {n} : un texte du client déclaré `{verdict}` — le corpus légitimerait le défaut qu'il garde")
+    # P10.23-f — la catégorie suit l'ÉTIQUETTE : seul postscreen bloque, seuls smtpd et postscreen rejettent.
+    if famille is not None and ((verdict == "postscreen" and famille != "postscreen")
+                                or (verdict == "rejet" and famille not in ("smtpd", "postscreen"))):
+        fautes.append(f"ligne {n} : une ligne `{famille}` déclarée `{verdict}` — le corpus légitimerait le défaut qu'il garde")
     attendu_user = "" if user == "-" else user
     if famille == "dovecot":
         u = UTILISATEUR.search(ligne)
@@ -227,10 +242,11 @@ def analyser_ligne(n, texte, spec):
         if not de_documentation(a):
             fautes.append(f"ligne {n} : adresse `{a}` hors des plages de documentation — une vraie adresse n'a rien à faire ici")
     s = SERVICE_DOVECOT.search(ligne)
+    m = MESSAGE.match(ligne)
     entree = dict(n=n, corpus=spec["nom"], verdict=verdict, user=attendu_user, ip=ip, provenance=provenance,
                   version=("2.4" if "2.4" in provenance else "2.3" if "2.3" in provenance else None),
                   famille=famille, service=SERVICE_DE_LA_FAMILLE.get(famille),
-                  login=(s.group(1) if s else None), ligne=ligne)
+                  login=(s.group(1) if s else None), message=(m.group(1) if m else ""), ligne=ligne)
     return entree, fautes
 
 
@@ -317,6 +333,42 @@ EXIGENCES_CLIENT = [
      lambda e: _client(e, "PREGREET") and e["famille"] == "postscreen"),
     ("P10.22-v : l'échec SASL du relais SORTANT, jamais compté",
      lambda e: e["famille"] == "smtp" and "SASL authentication failed" in e["ligne"] and e["verdict"] == "aucun"),
+] + [
+    # P10.23-f et P10.23-g — chaque forme bloquante de postscreen, lue en tête de son message (deux noms
+    # pour la liste de refus) ; chaque forme non bloquante, qui n'est rien.
+    (f"P10.23-{'g' if forme.endswith('LISTED [') else 'f'} : postscreen `{forme.strip()}` en tête du message, bloquant",
+     lambda e, forme=forme: e["famille"] == "postscreen" and e["verdict"] == "postscreen" and e["message"].startswith(forme))
+    for forme in ("PREGREET ", "DNSBL rank ", "BLACKLISTED [", "DENYLISTED [", "COMMAND PIPELINING from ",
+                  "COMMAND TIME LIMIT from ", "COMMAND COUNT LIMIT from ", "BARE NEWLINE from ", "NON-SMTP COMMAND from ")
+] + [
+    (f"P10.23-f : postscreen `{forme.strip()}`, non bloquant, n'est rien",
+     lambda e, forme=forme: e["famille"] == "postscreen" and e["verdict"] == "aucun" and e["message"].startswith(forme))
+    for forme in ("HANGUP after ", "CONNECT from ", "PASS NEW ", "ALLOWLISTED [", "WHITELISTED [")
+] + [
+    ("P10.23-f : le rejet de postscreen lui-même",
+     lambda e: e["famille"] == "postscreen" and e["verdict"] == "rejet" and e["message"].startswith("NOQUEUE: reject: ")),
+    ("P10.23-f : un rejet smtpd sous identifiant de file (`<file>: reject: RCPT`)",
+     lambda e: e["famille"] == "smtpd" and e["verdict"] == "rejet" and re.match(r"[0-9A-Z]+: reject: RCPT from ", e["message"])
+     and not e["message"].startswith("NOQUEUE")),
+    ("P10.23-f : un rejet smtpd à la connexion (`NOQUEUE: reject: CONNECT`)",
+     lambda e: e["famille"] == "smtpd" and e["verdict"] == "rejet" and e["message"].startswith("NOQUEUE: reject: CONNECT from ")),
+    ("P10.23-f : un rejet de milter à l'étape RCPT (parité avec l'ancien motif)",
+     lambda e: e["famille"] == "smtpd" and e["verdict"] == "rejet" and "milter-reject: RCPT from " in e["message"]),
+    ("P10.23-f : `postscreen PREGREET` écrit par le client dans un rejet smtpd",
+     lambda e: _client(e, "postscreen PREGREET") and e["famille"] == "smtpd" and e["verdict"] == "rejet"),
+    # Les deux suivantes portent la forme COMPLÈTE, deux-points compris : c'est elle qui distingue un
+    # motif ancré en tête du message d'un motif cherché dans tout le message sous la bonne étiquette.
+    ("P10.23-f : `NOQUEUE: reject: RCPT from` écrit par le client hors d'un rejet",
+     lambda e: _client(e, "NOQUEUE: reject: RCPT from") and e["famille"] == "smtpd" and e["verdict"] == "aucun"),
+    ("P10.23-f : `BLACKLISTED` écrit par le client dans une ligne smtpd",
+     lambda e: _client(e, "BLACKLISTED") and e["famille"] == "smtpd" and e["verdict"] == "aucun"),
+    ("P10.23-g : `DENYLISTED` écrit par le client dans une ligne smtpd",
+     lambda e: _client(e, "DENYLISTED") and e["famille"] == "smtpd" and e["verdict"] == "aucun"),
+    ("P10.23-f : un mot de postscreen écrit par le client dans le `helo` du rejet de postscreen",
+     lambda e: _client(e, "helo=<DNSBL rank") and re.search(r"helo=<DNSBL rank \d+ for \[", e["ligne"])
+     and e["famille"] == "postscreen" and e["verdict"] == "rejet"),
+    ("P10.23-f : un mot de postscreen et de rejet dans un message Dovecot",
+     lambda e: e["famille"] == "dovecot" and e["verdict"] == "aucun" and "PREGREET" in e["ligne"] and "NOQUEUE: reject" in e["ligne"]),
 ]
 
 
@@ -340,6 +392,9 @@ def epreuve_de_la_validation():
         "un texte du client déclaré échec": conforme.replace("rejet\t", "echec\t", 1),
         "une adresse attendue absente des crochets": conforme.replace("\t2001:db8::7\t", "\t2001:db8::8\t"),
         "une provenance Dovecot sur une ligne Postfix": conforme.replace("\tclient-postfix\t", "\tsources-2.4.1\t"),
+        "une ligne smtpd déclarée `postscreen`": conforme.replace("rejet\t", "postscreen\t", 1),
+        "une ligne Dovecot déclarée `rejet`": ("rejet\t-\t192.0.2.105\tfabriquee-2.3\t" + tete + "dovecot: imap-login: ID sent: "
+                                              "name=NOQUEUE: reject: user=<>, rip=192.0.2.105, lip=192.0.2.1"),
     }
     for nom, ligne in ecarts.items():
         if not analyser_ligne(1, ligne, SPEC_CLIENT)[1]:
@@ -536,7 +591,8 @@ def main():
     print(f"{ETIQUETTE} : le capteur mail LIVRÉ classe les {len(dovecot)} lignes Dovecot "
           f"({par_version['2.4']} en 2.4, {par_version['2.3']} en 2.3) et les {len(client)} lignes d'adresses et de "
           f"texte du client ({len(EXIGENCES_CLIENT)} exigences de plancher) comme attendu — succès lus à l'en-tête "
-          f"Dovecot, « Login aborted » et texte du client jamais verdict d'authentification, adresse entière "
+          f"Dovecot, blocages postscreen et rejets lus sous leur étiquette, « Login aborted » et texte du client "
+          f"jamais verdict, adresse entière "
           f"(IPv6, mappée rendue en IPv4), {len(TABLE_DES_ADRESSES)} valeurs d'adresse jugées, rien d'inventé. "
           f"Awk exercés : {exerces}" + (f" ; NON EXERCÉS (absents) : {absents}." if absents else "."))
     sys.exit(0)

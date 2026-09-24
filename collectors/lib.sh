@@ -353,6 +353,27 @@ json_escape() {
     | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
+# _PLUME_AWK_ECHAPPEMENT_JSON — la fonction awk `jesc(s)`, pendant de `json_escape` pour un capteur qui
+# construit ses événements DANS un programme awk (constante interne, d'où le `_` : pas un levier
+# d'exploitation). Elle se place en tête du programme qui l'appelle :
+#     awk -v out="$tmp" "$_PLUME_AWK_ECHAPPEMENT_JSON"'
+#     { print jesc($0) > out }'
+# ÉCRITE UNE FOIS, ICI (`P10.23-e`), PARCE QUE SIX COPIES S'ÉTAIENT DIVISÉES. Cinq capteurs doublaient
+# l'antislash par un remplacement écrit "\\\\" : mawk 1.3.4 20200120 (awk par défaut de Debian 11 et 12,
+# d'Ubuntu 22.04) et mawk 1.3.3 y lisent UN antislash et ne doublent rien. Mesuré le 2026-09-24 sur les
+# cinq, joués dans un bac : une valeur portant `\0…`, un antislash final ou un guillemet rend
+# l'enveloppe ENTIÈRE illisible — tout le passage perdu, filigrane avancé ; `a\b` passe en JSON valide
+# décodé en retour arrière. Le sixième (`mail.sh`) avait été corrigé seul et laissait passer les
+# contrôles autres que tabulation et retour chariot : illisible sous tous les awk. `&&` (le texte
+# trouvé, deux fois) double sous gawk et sous chaque mawk mesuré.
+# Les contrôles C0 sont rendus en ESPACE (JSON interdit un contrôle brut ; auditd joint ses clés
+# multiples par \x1d, que l'espace garde séparées) — là où `json_escape` les SUPPRIME : les deux
+# formes divergent, et c'est nommé ici. `jesc` n'est pas un décodeur : une valeur lue dans un texte
+# JSON (journal Traefik, `mc --json`) garde ses échappements, et son décodé est le texte lu.
+# Témoin : `.github/scripts/check_a_sensor_escapes_a_backslash_under_every_awk.py`, qui joue chaque
+# capteur appelant sous chaque awk présent et refuse une seconde définition.
+_PLUME_AWK_ECHAPPEMENT_JSON='function jesc(s){ gsub(/\\/,"&&",s); gsub(/"/,"\\\"",s); gsub(/[\001-\037]/," ",s); return s }'
+
 # emit_event <events-fragment>
 # Build the standard kind:events envelope around one-or-more already-built event
 # object(s). ts/host come from plume_init (ts is numeric — quoted-numeric guard :

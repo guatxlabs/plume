@@ -569,7 +569,9 @@ pub(crate) fn erase_setup_token_file(db_path: &str) -> Option<String> {
 /// puis celui de la configuration). Un hachage vide ou la sentinelle des comptes fédérés (`IDP_HASH_SENTINEL`)
 /// n'est PAS un mot de passe : `verify_pw` le refuse toujours. Une identité SSO par en-têtes sans ligne locale n'en
 /// a pas non plus. `Err` : la lecture n'a pas eu lieu — l'appelant refuse sans rien conclure.
-fn le_compte_a_un_mot_de_passe_local(st: &AppState, user: &str) -> rusqlite::Result<bool> {
+/// `P10.25-d` — lue aussi par le chemin SSO d'en-têtes (`auth::juger_le_nom_presente_par_l_annuaire`) : un nom qui
+/// porte un mot de passe local n'est pas pris par l'annuaire.
+pub(crate) fn le_compte_a_un_mot_de_passe_local(st: &AppState, user: &str) -> rusqlite::Result<bool> {
     let hash: Option<String> =
         st.db.lock().query_row("SELECT hash FROM user WHERE name=?1", params![user], |r| r.get(0)).optional()?;
     Ok(match hash {

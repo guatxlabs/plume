@@ -109,6 +109,8 @@ impl PorteeJeton {
 /// SEUL point d'écriture d'une ligne `token` (CLI comme UI). La colonne `host` n'est pas un paramètre
 /// libre : elle est DÉRIVÉE de la portée déclarée. `kind`/`role` restent `None` pour la voie CLI
 /// historique -> ligne stockée IDENTIQUE à l'INSERT d'avant (colonnes omises == NULL).
+/// `P10.24-w` — la ligne de commande n'a pas de compte : `created_by` reste NULL (auteur NON ÉTABLI, c'est
+/// l'installation). La console passe par `inserer_jeton_frappe_par`.
 pub(crate) fn inserer_jeton(
     conn: &Connection,
     name: &str,
@@ -117,9 +119,23 @@ pub(crate) fn inserer_jeton(
     role: Option<&str>,
     portee: &PorteeJeton,
 ) -> rusqlite::Result<usize> {
+    inserer_jeton_frappe_par(conn, name, hash, kind, role, portee, None)
+}
+
+/// `P10.24-w` — `inserer_jeton`, et le compte qui frappe (`created_by`), écrit dans la MÊME ligne : c'est ce que la
+/// suppression de ce compte relira pour savoir quels jetons il a frappés (`JetonsDuCompteSupprime`).
+pub(crate) fn inserer_jeton_frappe_par(
+    conn: &Connection,
+    name: &str,
+    hash: &str,
+    kind: Option<&str>,
+    role: Option<&str>,
+    portee: &PorteeJeton,
+    auteur: Option<&str>,
+) -> rusqlite::Result<usize> {
     conn.execute(
-        "INSERT INTO token(name,token_hash,created,host,kind,role) VALUES(?1,?2,?3,?4,?5,?6)",
-        params![name, hash, now(), portee.hote_lie(), kind, role],
+        "INSERT INTO token(name,token_hash,created,host,kind,role,created_by) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+        params![name, hash, now(), portee.hote_lie(), kind, role, auteur],
     )
 }
 
@@ -234,7 +250,7 @@ pub(crate) async fn token_create(State(st): State<AppState>, Extension(au): Exte
         return server_err("verrou base indisponible");
     }
     let outcome: rusqlite::Result<()> = (|| {
-        inserer_jeton(&conn, &name, &hash, Some(kind), role, &portee)?;
+        inserer_jeton_frappe_par(&conn, &name, &hash, Some(kind), role, &portee, Some(au.name.as_str()))?;
         audit_config_change(
             &conn, "config.token.create",
             &format!("jeton {kind} '{name}'{} créé par {}", host_opt.as_deref().map(|h| format!(" (hôte {h})")).unwrap_or_default(), au.name), 2,
@@ -294,5 +310,130 @@ pub(crate) async fn token_delete(State(st): State<AppState>, Extension(au): Exte
     match outcome {
         Ok(()) => { let _ = conn.execute_batch("COMMIT"); StatusCode::NO_CONTENT.into_response() }
         Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
+    }
+}
+
+// ====================================================================================================
+// `P10.24-w` — CE QUE LA SUPPRESSION D'UN COMPTE FAIT DES JETONS QU'IL A FRAPPÉS.
+//
+// LE DÉFAUT, MESURÉ LE 2026-09-24 SUR LA FORME D'AVANT. Une administratrice frappe un jeton d'agent lié à un
+// hôte, un relais HEC, un jeton de source de données `editor`, un jeton client et une clé de livraison ; son
+// compte est supprimé (204) : les cinq authentifient encore, chacun avec tous ses droits — ingestion et ripostes
+// en attente de l'hôte lié, lecture des données au rôle `editor` sur les routes de source de données, lecture
+// des dossiers clients, ingestion poussée. Aucune colonne ne les rattachait au compte : seul le registre disait
+// « créé par ». Un homonyme recréé n'en héritait RIEN — un jeton ne donne aucun droit à celui qui l'a frappé,
+// la liste des jetons est commune à tous les administrateurs —, et c'est la même absence de lien qui laissait
+// la suppression sans prise sur eux.
+//
+// LA DÉCISION, ET CE QUI LA FONDE. Ce qui rend un jeton dangereux après la suppression, c'est que son SECRET a été
+// montré au compte, une fois, à la frappe. Ce qui rend sa révocation coûteuse, c'est ce qui en dépend. Les deux
+// se jugent par genre :
+//  * LECTURE (`datasource`, `client`) : RÉVOQUÉS AVEC LE COMPTE. Ils donnent à leur porteur la lecture des
+//    données du SOC ; garder ce jeton, c'est garder l'accès que la suppression retire. Leur révocation casse une
+//    intégration VISIBLEMENT (un tableau Grafana, un portail client), sans perte de donnée, et se répare en
+//    refrappant.
+//  * INGESTION jamais servie (`last_used` NULL) : RÉVOQUÉS AUSSI. Aucun capteur ne s'en est servi, donc aucun
+//    n'en dépend : c'est un secret que seul le compte détient.
+//  * INGESTION déjà servie (agent, HEC) : CONSERVÉS — un bien de l'INSTALLATION. Un capteur la porte ; la
+//    révoquer ferait taire sa collecte, un angle mort ouvert par un geste de compte, sur une machine ou sur toute
+//    une flotte. Ce que le porteur y garde est une ÉCRITURE dans l'ingestion (et, lié à un hôte, les ripostes en
+//    attente de cet hôte), pas la lecture des données. Le jeton est marqué (`created_by_deleted_at`) et NOMMÉ
+//    dans la réponse et à l'audit, avec le geste : le révoquer et en refrapper un pour le capteur.
+// Les jetons d'auteur NON ÉTABLI (ligne de commande, clés de livraison des sources push, frappes antérieures à
+// la colonne sans maillon rattachable) ne sont pas touchés, et leur COMPTE est dit : rien n'établit que ce compte
+// n'a pas vu leur secret.
+// ====================================================================================================
+
+/// `P10.24-w` — les genres de jeton qui donnent à leur porteur la LECTURE des données du SOC : révoqués avec leur
+/// auteur.
+pub(crate) const GENRES_DE_JETON_DE_LECTURE: [&str; 2] = ["datasource", "client"];
+
+/// `P10.24-w` — la décision, servie telle quelle dans la réponse de la suppression et dans son audit.
+pub(crate) const DECISION_SUR_LES_JETONS_DU_COMPTE_SUPPRIME: &str = "JETONS DU COMPTE SUPPRIMÉ : leur secret lui a \
+     été montré à la frappe. RÉVOQUÉS avec lui : les jetons de LECTURE (source de données, client), qui donnent à \
+     leur porteur la lecture des données — la suppression retire cet accès — et tout jeton d'ingestion JAMAIS \
+     SERVI, dont aucun capteur ne dépend. CONSERVÉS : les jetons d'ingestion déjà servis (agent, HEC), biens de \
+     l'installation — les révoquer ferait taire un capteur. Leur secret reste connu d'un compte supprimé : \
+     révoquez-les et refrappez-en un pour chaque capteur. Les jetons d'auteur NON ÉTABLI (ligne de commande, clé de \
+     livraison d'une source push, frappe antérieure sans trace rattachable) ne sont pas touchés : rien ne dit qui a \
+     vu leur secret.";
+
+/// `P10.24-w` — ce que la suppression d'un compte a fait des jetons qu'il a frappés, dans SA transaction.
+pub(crate) struct JetonsDuCompteSupprime {
+    revoques: Vec<Value>,
+    conserves: Vec<Value>,
+    auteur_non_etabli: serde_json::Map<String, Value>,
+}
+
+impl JetonsDuCompteSupprime {
+    /// Lit EN BLOC les jetons frappés par `auteur` (et pas déjà marqués par la suppression d'un homonyme
+    /// antérieur), révoque ou marque chacun selon la décision, sur la connexion de l'appelant — donc dans sa
+    /// transaction : une suppression refusée ne révoque rien. Chaque écriture doit toucher exactement sa ligne.
+    pub(crate) fn traiter(conn: &Connection, auteur: &str) -> rusqlite::Result<Self> {
+        let une_ligne = |ecrites: usize| if ecrites == 1 { Ok(()) } else { Err(rusqlite::Error::StatementChangedRows(ecrites)) };
+        let lus: Vec<(i64, String, String, Option<String>, Option<i64>)> = conn
+            .prepare(
+                "SELECT id, name, COALESCE(kind,'agent'), host, last_used FROM token \
+                 WHERE created_by=?1 AND created_by_deleted_at IS NULL ORDER BY id",
+            )?
+            .query_map(params![auteur], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        let maintenant = now();
+        let mut revoques = Vec::new();
+        let mut conserves = Vec::new();
+        for (id, name, kind, host, last_used) in lus {
+            let raison = if GENRES_DE_JETON_DE_LECTURE.contains(&kind.as_str()) {
+                Some("lecture_des_donnees")
+            } else if last_used.is_none() {
+                Some("jamais_servi")
+            } else {
+                None
+            };
+            match raison {
+                Some(raison) => {
+                    une_ligne(conn.execute("DELETE FROM token WHERE id=?1", params![id])?)?;
+                    revoques.push(json!({ "name": name, "kind": kind, "host": host, "raison": raison }));
+                }
+                None => {
+                    une_ligne(conn.execute(
+                        "UPDATE token SET created_by_deleted_at=?1 WHERE id=?2 AND created_by_deleted_at IS NULL",
+                        params![maintenant, id],
+                    )?)?;
+                    conserves.push(json!({ "name": name, "kind": kind, "host": host, "last_used": last_used }));
+                }
+            }
+        }
+        let auteur_non_etabli = conn
+            .prepare("SELECT COALESCE(kind,'agent'), COUNT(*) FROM token WHERE created_by IS NULL GROUP BY 1 ORDER BY 1")?
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .map(|(genre, n)| (genre, json!(n)))
+            .collect();
+        Ok(Self { revoques, conserves, auteur_non_etabli })
+    }
+
+    /// Le compte rendu structuré : réponse de la suppression ET champ de son audit, le même objet.
+    pub(crate) fn en_json(&self) -> Value {
+        json!({
+            "revoques": self.revoques,
+            "conserves_secret_connu": self.conserves,
+            "auteur_non_etabli": self.auteur_non_etabli,
+            "decision": DECISION_SUR_LES_JETONS_DU_COMPTE_SUPPRIME,
+        })
+    }
+
+    /// La phrase du registre : les noms des jetons révoqués et conservés, le nombre de ceux d'auteur non établi.
+    pub(crate) fn en_phrase(&self) -> String {
+        let noms = |liste: &[Value]| liste.iter().filter_map(|j| j["name"].as_str()).collect::<Vec<_>>().join(", ");
+        let non_etablis: i64 = self.auteur_non_etabli.values().filter_map(Value::as_i64).sum();
+        format!(
+            "jetons révoqués {} [{}], conservés au secret connu {} [{}], d'auteur non établi {}",
+            self.revoques.len(),
+            noms(&self.revoques),
+            self.conserves.len(),
+            noms(&self.conserves),
+            non_etablis
+        )
     }
 }

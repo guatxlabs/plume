@@ -70,9 +70,9 @@ function peindreLeRefusJete(puits, e) {
 // retire le second facteur et les préférences (`P10.24-c`), SUPPRIME les requêtes enregistrées et les instantanés de
 // tableau de bord (`OBJETS_PURGES_AVEC_LE_COMPTE`), RÉATTRIBUE à l'auteur de la suppression tableaux de bord, vues,
 // panneaux de bibliothèque et playlists, visibilité inchangée (`OBJETS_REATTRIBUES_A_L_AUTEUR`, `P10.24-p`), avance
-// l'époque du compte (ses sessions tombent) et atteste chaque objet à l'audit. Il ne touche pas aux jetons d'agent
-// et HEC : la table n'a aucune colonne d'auteur (`P10.24-w`). La confirmation d'avant disait seulement « ses
-// sessions et jetons de session cessent de fonctionner… » : rien du sort des objets (sa phrase était au lexique ; son
+// l'époque du compte (ses sessions tombent) et atteste chaque objet à l'audit. (Les jetons : voir `P10.25-p`
+// ci-dessous — la phrase de `P10.24-v`, « jetons NON révoqués », est devenue fausse.) La confirmation d'avant
+// disait seulement « ses sessions et jetons de session cessent de fonctionner… » : rien du sort des objets (sa phrase était au lexique ; son
 // titre, composé du nom du compte, restait français sous `LANG='en'`).
 // CE QUE LA CONSOLE FAISAIT DU REFUS, MESURÉ AVANT CE LOT : le quatre cents du compte de l'administrateur de
 // l'installation (`CAUSE_COMPTE_DE_L_ASSISTANT_NON_SUPPRIMABLE`, `P10.24-n`) partait dans un AVIS qui s'efface,
@@ -82,16 +82,74 @@ function peindreLeRefusJete(puits, e) {
 // ENTIÈRE, sans accuser l'utilisateur (c'est le démon qui refuse), et la liste n'est pas rechargée : un refus
 // n'a rien écrit. CE QUE LA CONSOLE NE PEUT PAS DIRE : quel compte est celui de l'assistant — `/api/users` ne le
 // sert pas, aucune autre route non plus ; le signaler dans la liste exige un champ servi.
+// `P10.25-p` — LES JETONS DU COMPTE SUPPRIMÉ, ET LE COMPTE RENDU DE LA SUPPRESSION. `user_delete` traite désormais,
+// dans SA transaction, les jetons que le compte a FRAPPÉS (`JetonsDuCompteSupprime`, daemon/src/handlers/tokens.rs,
+// décision `DECISION_SUR_LES_JETONS_DU_COMPTE_SUPPRIME`) : ceux de LECTURE (source de données, client) et ceux
+// d'ingestion JAMAIS SERVIS sont RÉVOQUÉS ; ceux d'ingestion déjà servis (agent, HEC) sont CONSERVÉS — les révoquer
+// ferait taire un capteur — et nommés « secret connu d'un compte supprimé », avec le geste : les révoquer et en
+// refrapper un ; ceux d'auteur NON ÉTABLI (ligne de commande, clé de livraison, frappe antérieure à la colonne) ne
+// sont pas touchés, et leur nombre est dit. Il rend deux cents et ce compte rendu (le même objet que son audit), là
+// où il rendait deux cent quatre sans corps. MESURÉ AVANT CE LOT, sur l'arbre qui porte ce démon : la confirmation
+// disait « les jetons d'agent et HEC … ne sont PAS révoqués » — FAUX pour les jetons de lecture et ceux jamais
+// servis, et muette sur ceux qu'il conserve —, et le compte rendu servi était jeté : la liste se rechargeait en
+// silence, le compte disparaissait sans que rien ne dise quel jeton était tombé ni lequel restait à refrapper.
+// La confirmation dit la décision ; APRÈS la suppression, le compte rendu est PEINT en tête de la liste rechargée.
 const MOTS_DE_LA_SUPPRESSION_DE_COMPTE = {
   titre: {
     fr: 'Supprimer le compte « {nom} »',
     en: 'Delete the account “{nom}”' },
   consequence: {
-    fr: "le compte ne se restaure pas : ses sessions cessent de fonctionner, son second facteur et ses préférences sont retirés. Ses tableaux de bord, vues, panneaux de bibliothèque et playlists vous sont RÉATTRIBUÉS, visibilité inchangée ; ses requêtes enregistrées et ses instantanés de tableau de bord sont SUPPRIMÉS. Les jetons d'agent et HEC, rattachés à aucun compte, ne sont PAS révoqués par ce geste. Ses actions passées restent dans le journal d'audit, qui atteste aussi chaque objet réattribué ou supprimé.",
-    en: 'the account cannot be restored: its sessions stop working, its second factor and preferences are removed. Its dashboards, views, library panels and playlists are REASSIGNED to you, visibility unchanged; its saved queries and dashboard snapshots are DELETED. Agent and HEC tokens, tied to no account, are NOT revoked by this action. Its past actions stay in the audit journal, which also records every object reassigned or deleted.' },
+    fr: "le compte ne se restaure pas : ses sessions cessent de fonctionner, son second facteur et ses préférences sont retirés. Ses tableaux de bord, vues, panneaux de bibliothèque et playlists vous sont RÉATTRIBUÉS, visibilité inchangée ; ses requêtes enregistrées et ses instantanés de tableau de bord sont SUPPRIMÉS. Les jetons qu'il a frappés : ceux de LECTURE (source de données, client) et ceux d'ingestion JAMAIS SERVIS sont RÉVOQUÉS ; ceux d'ingestion déjà servis (agent, HEC) sont CONSERVÉS pour ne pas faire taire un capteur, mais leur secret reste connu d'un compte supprimé — le compte rendu les nommera, pour les révoquer et en refrapper. Les jetons d'auteur non établi (ligne de commande, clé de livraison, frappe antérieure) ne sont pas touchés. Ses actions passées restent dans le journal d'audit, qui atteste aussi chaque objet et chaque jeton traité.",
+    en: 'the account cannot be restored: its sessions stop working, its second factor and preferences are removed. Its dashboards, views, library panels and playlists are REASSIGNED to you, visibility unchanged; its saved queries and dashboard snapshots are DELETED. The tokens it minted: READ tokens (data source, client) and ingestion tokens NEVER USED are REVOKED; ingestion tokens already in use (agent, HEC) are KEPT so that no sensor goes silent, but their secret is still known to a deleted account — the report will name them, to revoke and mint new ones. Tokens with no established author (command line, delivery key, earlier mint) are not touched. Its past actions stay in the audit journal, which also records every object and every token handled.' },
   refus_nomme: {
     fr: 'Compte NON supprimé : le démon a refusé et en nomme la cause —',
     en: 'Account NOT deleted: the daemon refused and names the cause —' },
+};
+// Les mots du compte rendu, FR et EN côte à côte ; `{…}` posés par une fonction de remplacement.
+const MOTS_DU_COMPTE_RENDU_DE_SUPPRESSION = {
+  titre: {
+    fr: 'Compte « {nom} » supprimé — ce que le démon en a fait :',
+    en: 'Account “{nom}” deleted — what the daemon did with it:' },
+  sans_compte_rendu: {
+    fr: "Compte « {nom} » supprimé ; le démon n'a pas servi de compte rendu lisible — le journal d'audit atteste ce qui a été fait de ses objets et de ses jetons.",
+    en: 'Account “{nom}” deleted; the daemon served no readable report — the audit journal records what was done with its objects and tokens.' },
+  objets_reattribues: {
+    fr: 'objets réattribués à {auteur} : {liste}',
+    en: 'objects reassigned to {auteur}: {liste}' },
+  objets_purges: {
+    fr: 'objets supprimés : {liste}',
+    en: 'objects deleted: {liste}' },
+  aucun_objet: {
+    fr: 'aucun',
+    en: 'none' },
+  second_facteur_retire: {
+    fr: 'second facteur retiré',
+    en: 'second factor removed' },
+  jeton_revoque: {
+    fr: 'jeton RÉVOQUÉ : {jeton} — {raison}',
+    en: 'token REVOKED: {jeton} — {raison}' },
+  raison_lecture_des_donnees: {
+    fr: 'il donnait la lecture des données',
+    en: 'it granted reading the data' },
+  raison_jamais_servi: {
+    fr: "jamais servi, aucun capteur n'en dépendait",
+    en: 'never used, no sensor depended on it' },
+  jeton_conserve: {
+    fr: "jeton CONSERVÉ, secret connu d'un compte supprimé : {jeton} — le révoquer et en refrapper un pour son capteur",
+    en: 'token KEPT, secret known to a deleted account: {jeton} — revoke it and mint a new one for its sensor' },
+  aucun_jeton: {
+    fr: 'aucun jeton frappé par ce compte',
+    en: 'no token minted by this account' },
+  auteur_non_etabli: {
+    fr: "jetons d'auteur non établi, non touchés : {liste}",
+    en: 'tokens with no established author, not touched: {liste}' },
+};
+// Le genre d'un jeton, dans les deux langues ; un genre que le démon ajouterait est dit par son NOM.
+const GENRES_DE_JETON = {
+  agent: { fr: 'agent', en: 'agent' },
+  hec: { fr: 'HEC', en: 'HEC' },
+  datasource: { fr: 'source de données', en: 'data source' },
+  client: { fr: 'client', en: 'client' },
 };
 function motDeLaSuppressionDeCompte(cle, valeurs = {}) {
   const face = LANG === 'en' ? MOTS_DE_LA_SUPPRESSION_DE_COMPTE[cle].en : MOTS_DE_LA_SUPPRESSION_DE_COMPTE[cle].fr;
@@ -113,6 +171,67 @@ function peindreLeRefusDeSuppression(puits, e) {
     puits.dataset.refusDeSuppression = 'refus_nomme';
   }
   puits.hidden = false;
+}
+// `P10.25-p` — LE COMPTE RENDU DE LA SUPPRESSION, PEINT. Rien n'est inventé : chaque ligne vient d'un champ servi, et
+// un champ absent ou d'une autre forme ne produit pas de ligne — sauf le corps entier, dont l'absence se DIT.
+function motDuCompteRendu(cle, valeurs = {}) {
+  const face = LANG === 'en' ? MOTS_DU_COMPTE_RENDU_DE_SUPPRESSION[cle].en : MOTS_DU_COMPTE_RENDU_DE_SUPPRESSION[cle].fr;
+  return face.replace(/\{(\w+)\}/g, (brut, nom) => (Object.prototype.hasOwnProperty.call(valeurs, nom) ? String(valeurs[nom]) : brut));
+}
+const genreDeJeton = (genre) => (Object.prototype.hasOwnProperty.call(GENRES_DE_JETON, genre)
+  ? (LANG === 'en' ? GENRES_DE_JETON[genre].en : GENRES_DE_JETON[genre].fr) : String(genre));
+// Un jeton nommé : son nom, son genre, et son hôte lié s'il en a un.
+const jetonNomme = (j) => String(j.name) + ' (' + genreDeJeton(j.kind) + (j.host ? ' · ' + String(j.host) : '') + ')';
+const estUnObjet = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
+// `{table: [identifiants]}` -> « 2 tableau(x) de bord, 1 vue(s) » ; les tables sans objet ne sont pas dites.
+function listeDObjets(parTable) {
+  const morceaux = Object.keys(parTable).filter(t => Array.isArray(parTable[t]) && parTable[t].length > 0)
+    .map(t => motDUneLigneTenueParUnNom(t, parTable[t].length));
+  return morceaux.length ? morceaux.join(', ') : motDuCompteRendu('aucun_objet');
+}
+function noeudDuCompteRenduDeSuppression(nom, compteRendu) {
+  const bloc = document.createElement('div'); bloc.style.cssText = 'margin:0 0 10px;font-size:12px';
+  bloc.dataset.compteRenduDeSuppression = nom;
+  if (!estUnObjet(compteRendu)) {
+    bloc.className = 'muted'; bloc.textContent = motDuCompteRendu('sans_compte_rendu', { nom });
+    bloc.dataset.compteRenduLu = 'non';
+    return bloc;
+  }
+  const titre = document.createElement('b'); titre.textContent = motDuCompteRendu('titre', { nom });
+  const liste = document.createElement('ul'); liste.style.cssText = 'margin:2px 0 0;padding-left:18px';
+  const ligne = (texte, genre, alarme) => {
+    const li = document.createElement('li'); li.textContent = texte; li.dataset.ligneDuCompteRendu = genre;
+    if (alarme) li.className = 'bad';
+    liste.appendChild(li);
+  };
+  if (estUnObjet(compteRendu.objets_reattribues)) ligne(motDuCompteRendu('objets_reattribues', { auteur: compteRendu.objets_reattribues_a || '?', liste: listeDObjets(compteRendu.objets_reattribues) }), 'objets_reattribues');
+  if (estUnObjet(compteRendu.objets_purges)) ligne(motDuCompteRendu('objets_purges', { liste: listeDObjets(compteRendu.objets_purges) }), 'objets_purges');
+  if (compteRendu.second_facteur_retire === true) ligne(motDuCompteRendu('second_facteur_retire'), 'second_facteur_retire');
+  const jetons = compteRendu.jetons;
+  if (estUnObjet(jetons)) {
+    const revoques = Array.isArray(jetons.revoques) ? jetons.revoques.filter(estUnObjet) : [];
+    const conserves = Array.isArray(jetons.conserves_secret_connu) ? jetons.conserves_secret_connu.filter(estUnObjet) : [];
+    revoques.forEach(j => {
+      const raison = j.raison === 'lecture_des_donnees' ? motDuCompteRendu('raison_lecture_des_donnees')
+        : j.raison === 'jamais_servi' ? motDuCompteRendu('raison_jamais_servi') : String(j.raison);
+      ligne(motDuCompteRendu('jeton_revoque', { jeton: jetonNomme(j), raison }), 'jeton_revoque');
+    });
+    // Un jeton CONSERVÉ dont le secret reste connu d'un compte supprimé est dans le registre de l'alarme : il appelle un geste.
+    conserves.forEach(j => ligne(motDuCompteRendu('jeton_conserve', { jeton: jetonNomme(j) }), 'jeton_conserve', true));
+    if (!revoques.length && !conserves.length) ligne(motDuCompteRendu('aucun_jeton'), 'aucun_jeton');
+    if (estUnObjet(jetons.auteur_non_etabli)) {
+      const parGenre = Object.keys(jetons.auteur_non_etabli).map(g => String(jetons.auteur_non_etabli[g]) + ' ' + genreDeJeton(g));
+      if (parGenre.length) ligne(motDuCompteRendu('auteur_non_etabli', { liste: parGenre.join(', ') }), 'auteur_non_etabli');
+    }
+  }
+  bloc.append(titre, liste);
+  bloc.dataset.compteRenduLu = 'oui';
+  return bloc;
+}
+// Posé en TÊTE de la liste rechargée : la ligne du compte n'existe plus, et le compte rendu doit rester sous les yeux.
+function peindreLeCompteRenduDeSuppression(nom, compteRendu) {
+  const list = $('#user-list'); if (!list) return;
+  list.prepend(noeudDuCompteRenduDeSuppression(nom, compteRendu));
 }
 /* state: isAdmin -> S (state.js) */ // /api/users 200 => admin ; sinon la section reste masquee partout
 async function loadUsers() {
@@ -208,9 +327,12 @@ async function loadUsers() {
     del.onclick = async () => {
       puitsDeSuppression.hidden = true; puitsDeSuppression.replaceChildren(); delete puitsDeSuppression.dataset.refusDeSuppression;
       if (!await confirmWithConsequence(motDeLaSuppressionDeCompte('titre', { nom: u.name }), motDeLaSuppressionDeCompte('consequence'), { okText: 'Supprimer' })) return;
-      try { await apiSend('/users/' + u.id, 'DELETE'); }
+      let compteRendu;
+      try { compteRendu = await apiSend('/users/' + u.id, 'DELETE'); }
       catch (err) { peindreLeRefusDeSuppression(puitsDeSuppression, err); return; }
-      loadUsers();
+      // `P10.25-p` — la liste rechargée, puis le compte rendu servi peint en tête (au lieu d'un rechargement muet).
+      await loadUsers();
+      peindreLeCompteRenduDeSuppression(u.name, compteRendu);
     };
     // BATCH 2 (B3b) : ✎ + ✕ groupés à droite (sinon space-between les écarte) -> un span .urow-actions.
     const actions = document.createElement('span'); actions.className = 'urow-actions'; actions.append(ed, del);
@@ -245,19 +367,175 @@ function renderAcces(acces) {
   });
 }
 
+// `P10.25-i` — LES REFUS DE LA CRÉATION D'UN COMPTE ONT LEURS FACES, ET CE QUE LE NOM TIENT EST LU.
+// CE QUE LE DÉMON SERT, RELU DANS `user_create` (daemon/src/handlers/users_lookups.rs, `P10.24-u` et `P10.24-x`) :
+//   · 409 JSON `CAUSE_NOM_DE_L_ADMINISTRATEUR_DE_CONFIGURATION` — le nom de l'administrateur que pose la configuration ;
+//   · 409 JSON `CAUSE_NOM_TENU_PAR_UNE_IDENTITE_SANS_COMPTE`, avec `ce_que_le_nom_tient` : `vu_par_l_annuaire`
+//     (booléen) et `lignes` (nombre de lignes par table, pour les seules tables où le nom en tient) ;
+//   · 503 JSON `CAUSE_NOM_NON_VERIFIE_COMPTE_NON_CREE` — la vérification du nom n'a pas eu lieu ;
+//   · 503 JSON `CAUSE_COMPTE_NON_CREE_COMMIT_REFUSE` — le COMMIT refusé ;
+//   · 409 TEXTE « ce nom de compte existe déjà », et les quatre cents TEXTE de forme (nom, préfixe, mot de passe).
+// CE QUE LE FORMULAIRE EN FAISAIT, MESURÉ AVANT CE LOT : la ligne d'actions (`#uf-result`, encre neutre) recevait le
+// message composé par `apiSend` — « 409 {"error":"NOM RÉSERVÉ, C'EST L'ADMINISTRATEUR DE CONFIGURATION : ce nom est
+// celui… » —, du JSON brut coupé à deux cents caractères sur des causes de 460, 558, 250 et 224 caractères, si bien
+// qu'aucune n'atteignait son remède ; `ce_que_le_nom_tient` n'était lu nulle part (il n'atteignait même pas la
+// console : `apiSend` ne le portait pas) ; le « 409 » et le « 400 » précédaient les refus en texte brut.
+// LES OUVERTURES S'ANCRENT EN TÊTE, BORNÉES PAR UNICODE, comme celles des refus du second facteur (web/core.js) : le
+// témoin 113 relit chaque constante du démon et exige qu'elle soit reconnue ICI. Une cause qui n'ouvre sur aucune
+// garde la face générique, qui colle la phrase sans rien en affirmer. Aucune face n'accuse la personne qui crée :
+// c'est le démon qui refuse, et chaque face dit ce qui n'est PAS écrit.
+const OUVERTURES_DES_REFUS_DE_CREATION_DE_COMPTE = [
+  ['nom_de_l_administrateur_de_configuration', /^NOM RÉSERVÉ, C'EST L'ADMINISTRATEUR DE CONFIGURATION(?![\p{L}\p{N}])/u],
+  ['nom_tenu_par_une_identite_sans_compte', /^NOM TENU PAR UNE IDENTITÉ SANS COMPTE LOCAL(?![\p{L}\p{N}])/u],
+  ['nom_non_verifie', /^COMPTE NON CRÉÉ, NOM NON VÉRIFIÉ(?![\p{L}\p{N}])/u],
+  ['commit_refuse', /^COMPTE NON CRÉÉ : la base n'a pas validé la transaction \(COMMIT refusé\)/u],
+];
+function natureDuRefusDeCreationDeCompte(phrase) {
+  const p = String(phrase || '').trim();
+  const trouvee = OUVERTURES_DES_REFUS_DE_CREATION_DE_COMPTE.find(([, ouverture]) => ouverture.test(p));
+  return trouvee ? trouvee[0] : '';
+}
+const MOTS_DE_LA_CREATION_DE_COMPTE = {
+  refus_nomme: {
+    fr: 'Compte NON créé : le démon a refusé et en nomme la cause —',
+    en: 'Account NOT created: the daemon refused and names the cause —' },
+  nom_de_l_administrateur_de_configuration: {
+    fr: "Compte NON créé : ce nom est celui de l'administrateur que pose la configuration du démon, et il est réservé — un compte de ce nom le masquerait. Rien n'est écrit ; choisir un autre nom. Le démon en nomme la cause —",
+    en: "Account NOT created: this name is the administrator set by the daemon's configuration, and it is reserved — an account of this name would mask it. Nothing is written; pick another name. The daemon names the cause —" },
+  nom_tenu_par_une_identite_sans_compte: {
+    fr: "Compte NON créé : ce nom est déjà tenu par une identité sans compte local, et un compte à mot de passe en hériterait. Rien n'est écrit ; choisir un autre nom — une identité de l'annuaire devient un compte par la fédération (OIDC, SAML, LDAP). Le démon en nomme la cause —",
+    en: 'Account NOT created: this name is already held by an identity without a local account, and a password account would inherit it. Nothing is written; pick another name — a directory identity becomes an account through federation (OIDC, SAML, LDAP). The daemon names the cause —' },
+  nom_non_verifie: {
+    fr: "Compte NON créé : le démon n'a pas pu vérifier si ce nom est déjà tenu, et ne crée pas de compte sur un nom non vérifié. Rien n'est écrit ; réessayer. Le démon en nomme la cause —",
+    en: 'Account NOT created: the daemon could not check whether this name is already held, and creates no account on an unchecked name. Nothing is written; try again. The daemon names the cause —' },
+  commit_refuse: {
+    fr: "Compte NON créé : la base n'a pas validé l'écriture et l'a annulée — ni le compte ni sa trace d'audit ne sont écrits. Réessayer. Le démon en nomme la cause —",
+    en: 'Account NOT created: the database did not commit the write and rolled it back — neither the account nor its audit trace is written. Try again. The daemon names the cause —' },
+  // Une demande qui n'a pas abouti (réseau coupé, requête abandonnée) : le démon n'a rien refusé, et rien ici ne dit
+  // s'il a créé le compte avant que la réponse ne se perde.
+  demande_non_aboutie: {
+    fr: "Création NON confirmée : la demande n'a pas abouti, et rien ici n'établit si le compte a été créé — vérifier la liste des comptes avant de la rejouer. Cause —",
+    en: 'Creation NOT confirmed: the request did not complete, and nothing here establishes whether the account was created — check the account list before replaying it. Cause —' },
+  ce_que_le_nom_tient: {
+    fr: 'Ce que ce nom tient sans compte local :',
+    en: 'What this name holds without a local account:' },
+  vu_par_l_annuaire: {
+    fr: "vu par l'annuaire externe (SSO d'en-têtes) à l'inventaire des accès",
+    en: 'seen by the external directory (header SSO) in the access inventory' },
+  non_vu_par_l_annuaire: {
+    fr: "pas vu par l'annuaire externe à l'inventaire des accès",
+    en: 'not seen by the external directory in the access inventory' },
+  detail_illisible: {
+    fr: "le démon n'a pas servi ce que ce nom tient sous une forme lisible",
+    en: 'the daemon did not serve what this name holds in a readable form' },
+};
+function motDeLaCreationDeCompte(cle) {
+  return LANG === 'en' ? MOTS_DE_LA_CREATION_DE_COMPTE[cle].en : MOTS_DE_LA_CREATION_DE_COMPTE[cle].fr;
+}
+// LES TABLES QUE LE DÉMON COMPTE POUR UN NOM (`colonnes_d_autorite_par_nom` : objets purgés avec un compte, objets
+// réattribués à l'auteur de sa suppression, second facteur et préférences), une ligne par table, `{n}` le nombre
+// servi. Une table que le démon ajouterait sans mot ici est dite par son NOM, jamais tue (et le témoin 113 refuse
+// de conclure tant qu'elle n'a pas de mot).
+const MOTS_DES_LIGNES_TENUES_PAR_UN_NOM = {
+  dashboard: { fr: '{n} tableau(x) de bord', en: '{n} dashboard(s)' },
+  view: { fr: '{n} vue(s)', en: '{n} view(s)' },
+  library_panel: { fr: '{n} panneau(x) de bibliothèque', en: '{n} library panel(s)' },
+  playlist: { fr: '{n} playlist(s)', en: '{n} playlist(s)' },
+  saved_query: { fr: '{n} requête(s) enregistrée(s)', en: '{n} saved query(ies)' },
+  dashboard_snapshot: { fr: '{n} instantané(s) de tableau de bord', en: '{n} dashboard snapshot(s)' },
+  user_mfa: { fr: '{n} graine(s) du second facteur', en: '{n} second-factor seed(s)' },
+  user_pref: { fr: '{n} préférence(s)', en: '{n} preference(s)' },
+  table_sans_mot: { fr: '{n} ligne(s) de la table {table}', en: '{n} row(s) of the {table} table' },
+};
+function motDUneLigneTenueParUnNom(table, n) {
+  const mots = Object.prototype.hasOwnProperty.call(MOTS_DES_LIGNES_TENUES_PAR_UN_NOM, table) && table !== 'table_sans_mot'
+    ? MOTS_DES_LIGNES_TENUES_PAR_UN_NOM[table] : MOTS_DES_LIGNES_TENUES_PAR_UN_NOM.table_sans_mot;
+  const valeurs = { n, table };
+  return (LANG === 'en' ? mots.en : mots.fr).replace(/\{(\w+)\}/g, (brut, nom) => (Object.prototype.hasOwnProperty.call(valeurs, nom) ? String(valeurs[nom]) : brut));
+}
+// La forme servie, jugée pièce par pièce : un détail qu'on ne sait pas lire se DIT, il ne se tait pas.
+function ceQueLeNomTientEstLisible(tenue) {
+  if (!tenue || typeof tenue !== 'object' || Array.isArray(tenue)) return false;
+  if (typeof tenue.vu_par_l_annuaire !== 'boolean') return false;
+  const lignes = tenue.lignes;
+  return !!lignes && typeof lignes === 'object' && !Array.isArray(lignes);
+}
+// Le bloc « ce que le nom tient » : l'annuaire d'abord, puis une ligne par table, dans l'ordre servi. Chaque ligne
+// porte sa table (`data-table`) : marque de POSE pour le harnais, aucune règle CSS ne la vise.
+function noeudDeCeQueLeNomTient(tenue) {
+  const bloc = document.createElement('div'); bloc.style.cssText = 'margin:4px 0 0';
+  if (!ceQueLeNomTientEstLisible(tenue)) {
+    bloc.textContent = motDeLaCreationDeCompte('detail_illisible');
+    bloc.dataset.ceQueLeNomTient = 'illisible';
+    return bloc;
+  }
+  const titre = document.createElement('span'); titre.textContent = motDeLaCreationDeCompte('ce_que_le_nom_tient');
+  const liste = document.createElement('ul'); liste.style.cssText = 'margin:2px 0 0;padding-left:18px';
+  const annuaire = document.createElement('li');
+  annuaire.textContent = motDeLaCreationDeCompte(tenue.vu_par_l_annuaire ? 'vu_par_l_annuaire' : 'non_vu_par_l_annuaire');
+  annuaire.dataset.vuParLAnnuaire = tenue.vu_par_l_annuaire ? 'oui' : 'non';
+  liste.appendChild(annuaire);
+  Object.keys(tenue.lignes).forEach(table => {
+    const ligne = document.createElement('li'); ligne.dataset.table = table;
+    ligne.textContent = motDUneLigneTenueParUnNom(table, tenue.lignes[table]);
+    liste.appendChild(ligne);
+  });
+  bloc.append(titre, liste);
+  bloc.dataset.ceQueLeNomTient = 'lu';
+  return bloc;
+}
+// Le puits du refus de création : un seul, sous les champs du formulaire, posé au premier geste. La cause servie
+// est ENTIÈRE dans un second nœud ; `data-refus-de-creation` porte la clé de la face (marque de POSE pour le harnais).
+function puitsDuRefusDeCreation() {
+  const form = $('#user-form'); if (!form) return null;
+  let puits = form.querySelector('[data-puits-du-refus-de-creation]');
+  if (!puits) {
+    puits = document.createElement('div'); puits.className = 'bad'; puits.hidden = true;
+    puits.style.cssText = 'margin:0;font-size:12px';
+    puits.dataset.puitsDuRefusDeCreation = '1';
+    form.appendChild(puits);
+  }
+  return puits;
+}
+function peindreLeRefusDeCreation(puits, e) {
+  if (!puits) return;
+  const dit = document.createElement('span');
+  if (e && e.reponseHorsDemon) {
+    dit.textContent = String(e.message || '');
+    puits.replaceChildren(dit); puits.dataset.refusDeCreation = 'reponse_hors_demon'; puits.hidden = false;
+    return;
+  }
+  // Sans statut, le démon n'a rien répondu : l'erreur vient du transport (`fetch` rejeté), pas d'un refus.
+  const servi = !!e && typeof e.statutDuRefus === 'number';
+  const cause = servi ? phraseDuRefusDuDemon(e) : String((e && e.message) || e);
+  const cle = servi ? (natureDuRefusDeCreationDeCompte(cause) || 'refus_nomme') : 'demande_non_aboutie';
+  dit.textContent = motDeLaCreationDeCompte(cle);
+  puits.replaceChildren(dit, document.createTextNode(' « ' + String(cause).trim() + ' »'));
+  const objet = servi && e.objetDuRefus ? e.objetDuRefus : null;
+  if (cle === 'nom_tenu_par_une_identite_sans_compte' || (objet && Object.prototype.hasOwnProperty.call(objet, 'ce_que_le_nom_tient'))) {
+    puits.appendChild(noeudDeCeQueLeNomTient(objet ? objet.ce_que_le_nom_tient : undefined));
+  }
+  puits.dataset.refusDeCreation = cle;
+  puits.hidden = false;
+}
+
 if ($('#user-new') && $('#user-form')) disclosure($('#user-new'), $('#user-form')); // P11.4-a — dépli partagé
 if ($('#uf-cancel')) $('#uf-cancel').onclick = () => $('#user-form').classList.add('hidden');
-if ($('#user-form')) $('#user-form').addEventListener('submit', async e => {
+async function creerLeCompteDuFormulaire(e) {
   e.preventDefault();
   const res = $('#uf-result');
+  // `P10.25-i` — un refus précédent s'efface au geste suivant : il ne décrit plus la demande en cours.
+  const puits = puitsDuRefusDeCreation();
+  if (puits) { puits.hidden = true; puits.replaceChildren(); delete puits.dataset.refusDeCreation; }
   const body = { name: $('#uf-name').value.trim(), password: $('#uf-pw').value, role: $('#uf-role').value };
   // P11.5-b : créer un compte ÉLÈVE un droit (un nouvel accès naît, avec un rôle) -> confirmation partagée.
   if (!await confirmWithConsequence(`Créer le compte « ${body.name || '?'} »`, `un accès ${ROLE_LABEL[body.role] || body.role} à cette console est ouvert immédiatement` + (body.role === 'admin' ? ' — accès complet à la configuration, aux secrets et aux suppressions' : '') + '.', { okText: 'Créer', danger: body.role === 'admin' })) return;
   res.textContent = '...';
   try { await apiSend('/users', 'POST', body); }
-  catch (err) { res.textContent = '' + ((err && err.message) || err); return; }
+  catch (err) { res.textContent = ''; peindreLeRefusDeCreation(puits, err); return; }
   res.textContent = 'compte créé'; $('#uf-name').value = ''; $('#uf-pw').value = ''; $('#user-form').classList.add('hidden'); loadUsers();
-});
+}
+if ($('#user-form')) $('#user-form').addEventListener('submit', creerLeCompteDuFormulaire);
 loadUsers();
 
 // --- Jetons (agent + HEC) : provisioning UI, pendant du CLI `plume-daemon token`. Réservé admin (isAdmin ;
@@ -404,4 +682,8 @@ if ($('#token-new')) $('#token-new').onclick = newTokenFlow;
 // `P10.24-a` — `motDeLaModificationDeCompte` part pour le harnais ESM (témoin 110) : les faces s'y jugent sous les deux
 // instances de langue, contre ce que l'éditeur réel peint. Aucun usage applicatif hors de ce module.
 // `P10.24-v` — `motDeLaSuppressionDeCompte` de même (témoin 112).
-export { ROLE_LABEL, loadUsers, loadTokens, motDeLaModificationDeCompte, motDeLaSuppressionDeCompte };
+// `P10.25-i` — le geste de création (joué par le harnais sous chaque instance de langue : les deux instances
+// écoutent le même formulaire, un envoi du formulaire les réveillerait ensemble), la nature d'un refus et ses faces
+// (témoin 113).
+// `P10.25-p` — les faces du compte rendu de la suppression (témoin 113).
+export { ROLE_LABEL, loadUsers, loadTokens, motDeLaModificationDeCompte, motDeLaSuppressionDeCompte, creerLeCompteDuFormulaire, natureDuRefusDeCreationDeCompte, motDeLaCreationDeCompte, motDUneLigneTenueParUnNom, motDuCompteRendu };

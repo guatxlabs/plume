@@ -290,7 +290,7 @@ mod noms_reserves_a_la_creation_et_commit_compte {
             "fixture : vu à l'inventaire comme compte local"
         );
         let (statut, corps) = rncc_supprimer(&st, ancien).await;
-        assert_eq!(statut, 204, "fixture : supprimé : {corps}");
+        assert_eq!(statut, 200, "fixture : supprimé : {corps}");
         let (statut, corps) = rncc_creer(&st, ancien, &rncc_mot("homonyme"), "viewer").await;
         assert_eq!(statut, 200, "CONTRÔLE POSITIF : un ancien compte local se recrée : {corps}");
     }
@@ -370,11 +370,11 @@ mod noms_reserves_a_la_creation_et_commit_compte {
     ///    création suivante réussit (200) — la connexion d'écriture n'est pas restée dans une transaction ;
     ///  * SUPPRESSION de `bob` (trois échecs de connexion depuis une adresse, trois codes faux au second facteur) :
     ///    503 nommé, transaction fermée, `bob` là, sa graine là, son époque à zéro, aucune suppression attestée, et
-    ///    la mémoire n'a rien oublié ; levé, 204, et la mémoire oublie ;
+    ///    la mémoire n'a rien oublié ; levé, 200, et la mémoire oublie ;
     ///  * MODIFICATION d'`alice` (rôle et mot de passe) : 503 nommé, transaction fermée, `alice` `editor`, son époque à
     ///    zéro, son ancien mot de passe la connecte ; levé, 204 et `viewer`.
     ///
-    /// LES MUTATIONS QUI LE FONT ROUGIR : ignorer le `COMMIT` de `user_delete` (la forme d'avant) — 204 ; oublier la
+    /// LES MUTATIONS QUI LE FONT ROUGIR : ignorer le `COMMIT` de `user_delete` (la forme d'avant) — 200 ; oublier la
     /// mémoire AVANT de juger le `COMMIT` — échecs perdus alors que rien n'est supprimé ; retirer le `ROLLBACK` de
     /// `valider_la_transaction` — transaction restée ouverte ; ignorer le `COMMIT` de `user_create` — 200 ; ignorer
     /// celui de `user_update` — 204.
@@ -423,7 +423,7 @@ mod noms_reserves_a_la_creation_et_commit_compte {
         assert_eq!(echecs(&st), Some(3), "la mémoire n'a pas oublié ses échecs");
         assert_eq!(crate::handlers::idp::echecs_consecutifs_du_second_facteur(&st, "bob"), 3, "ni ses codes faux");
         let (statut, corps) = rncc_supprimer(&st, "bob").await;
-        assert_eq!(statut, 204, "levé, la suppression a lieu : {corps}");
+        assert_eq!(statut, 200, "levé, la suppression a lieu : {corps}");
         assert_eq!(echecs(&st), None, "et la mémoire oublie");
 
         // MODIFICATION

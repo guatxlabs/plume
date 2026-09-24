@@ -90,7 +90,7 @@ impl Drop for MigrationLogSilencer {
 /// rien (toutes ses gardes `v < N` sont fausses) et OPÈRE À L'AVEUGLE sur un schéma qu'il ne connaît pas
 /// -> risque de corruption (survivable AUJOURD'HUI car migrations additives, mais non gardé). On REFUSE
 /// d'ouvrir : arrêt PROPRE (exit non-zéro), JAMAIS un panic, JAMAIS un « proceed » silencieux.
-pub(crate) const CODE_SCHEMA_MAX: i64 = 122;
+pub(crate) const CODE_SCHEMA_MAX: i64 = 123;
 
 /// Lit `meta.schema_version` (défaut 1 si table/lignes absentes ou illisibles) — MÊME lecture que `migrate()`.
 ///
@@ -975,6 +975,7 @@ fn migrate_chain(conn: &Connection) -> bool {
     if v < 120 && !migrate_step(conn, 120, migrate_v120) { return false; }
     if v < 121 && !migrate_step(conn, 121, migrate_v121) { return false; }
     if v < 122 && !migrate_step(conn, 122, migrate_v122) { return false; }
+    if v < 123 && !migrate_step(conn, 123, migrate_v123) { return false; }
     true
 }
 
@@ -1580,6 +1581,95 @@ fn migrate_v122(conn: &MigTx) {
     let _ = conn.execute("UPDATE meta SET value='122' WHERE key='schema_version'", []);
     mig_log!("[migration] schéma -> v122 (P4.12-g : rule.population / population_vue — la population de calibrage d'une règle livrée est déclarée dans la base, et une population neuve sous la règle est dite au tir)");
 }
+
+/// v123 (`P10.24-w`) — UN JETON DIT QUEL COMPTE L'A FRAPPÉ, ET SI CE COMPTE A ÉTÉ SUPPRIMÉ. Deux colonnes ADDITIVES
+/// sur `token` : `created_by`, le nom du compte qui a frappé le jeton (NULL = auteur NON ÉTABLI : ligne de commande,
+/// clé de livraison d'une source push, ou jeton antérieur sans trace rattachable) ; `created_by_deleted_at`,
+/// l'instant de la suppression de ce compte quand le jeton lui a survécu (NULL = auteur présent, ou inconnu).
+///
+/// CE QUI ÉTAIT MESURÉ (2026-09-24, sur les gestionnaires réels) : une administratrice frappe un jeton d'agent lié,
+/// un relais HEC, un jeton de source de données `editor`, un jeton client et une clé de livraison, puis son compte
+/// est supprimé (204) — les CINQ authentifient encore, chacun avec tous ses droits (ingestion et ripostes en
+/// attente de l'hôte, lecture des données au rôle `editor`, lecture des dossiers clients). Rien ne les rattachait
+/// au compte : seul le registre disait « créé par », dans une phrase. La suppression ne pouvait donc ni les
+/// révoquer, ni même les nommer.
+///
+/// POURQUOI UNE COLONNE ET NON UNE RELECTURE DU REGISTRE À CHAQUE SUPPRESSION. Qui a frappé un jeton est un fait
+/// connu à l'instant de la frappe, dans la transaction de la frappe ; le reconstruire à chaque suppression depuis
+/// une phrase du registre ferait dépendre une révocation du FORMAT d'un texte. `created_by_deleted_at` existe pour
+/// l'homonyme : un jeton conservé à la suppression de son auteur n'est pas attribué, plus tard, au compte recréé
+/// sous le même nom (`created_by` est une colonne d'ATTESTATION, jamais réécrite — `P10.24-p`).
+///
+/// RÉTRO-REMPLISSAGE, ET SA LIMITE ÉCRITE. Les jetons frappés par la console avant cette version portent leur
+/// auteur dans le registre (`config.token.create`, « jeton <genre> '<nom>'[ (hôte <h>)] créé par <auteur> »),
+/// maillon écrit dans la MÊME transaction que la ligne (audit fail-closed). Un jeton reçoit son auteur quand
+/// l'appariement est UNIQUE dans les deux sens : un seul maillon de même genre, nom et hôte dans les deux
+/// secondes qui suivent sa création, et ce maillon n'appartient à aucun autre jeton. Toute ambiguïté laisse NULL
+/// (non établi) : rien n'est deviné. Les jetons de la ligne de commande n'ont pas de maillon (NULL : c'est
+/// l'installation) ; les clés de livraison des sources push non plus (leur maillon nomme le connecteur, pas la
+/// clé). Puis `created_by_deleted_at` reçoit l'instant de la PREMIÈRE suppression de ce nom (`config.user.delete`)
+/// postérieure à la création du jeton. AUCUN jeton n'est révoqué par cette migration : ceux qu'un compte déjà
+/// supprimé a frappés deviennent LISIBLES, pas détruits au démarrage.
+///
+/// COÛT, BORNÉ : le registre est lu une fois par genre de maillon (aucun index sur `ledger.kind`), `token` est
+/// petit ; la DDL ne dépend d'aucune donnée (colonnes gardées par `col_exists`, remplissage dans des `UPDATE`).
+///
+/// ROLLBACK — bumpe le schéma à 123 : un binaire max=122 REFUSE d'ouvrir une base v123 (`db_open`,
+/// `v > CODE_SCHEMA_MAX` -> Err). Rollback = RESTAURER le SNAPSHOT pré-migrate. Forward-only, idempotent.
+fn migrate_v123(conn: &MigTx) {
+    if !conn.col_exists("token", "created_by") {
+        let _ = conn.execute("ALTER TABLE token ADD COLUMN created_by TEXT", []);
+    }
+    if !conn.col_exists("token", "created_by_deleted_at") {
+        let _ = conn.execute("ALTER TABLE token ADD COLUMN created_by_deleted_at INTEGER", []);
+    }
+    let _ = conn.execute(SQL_V123_AUTEUR_DES_JETONS_DEPUIS_LE_REGISTRE, []);
+    let _ = conn.execute(SQL_V123_SUPPRESSION_DE_L_AUTEUR_DEPUIS_LE_REGISTRE, []);
+    let _ = conn.execute("UPDATE meta SET value='123' WHERE key='schema_version'", []);
+    mig_log!("[migration] schéma -> v123 (P10.24-w : token.created_by / created_by_deleted_at — un jeton dit quel compte l'a frappé et si ce compte a été supprimé ; rétro-remplis depuis le registre quand l'appariement est unique, NULL sinon ; aucun jeton révoqué par la migration)");
+}
+
+/// `P10.24-w` (v123) — l'auteur d'un jeton frappé par la console, relu dans le registre. Le préfixe attendu est
+/// RECONSTRUIT depuis la ligne (genre, nom, hôte) exactement comme `token_create` l'écrit, puis comparé par
+/// `substr` (un nom de jeton peut porter `_`, joker de `LIKE`). L'appariement n'est retenu que s'il est unique
+/// dans les deux sens.
+const SQL_V123_AUTEUR_DES_JETONS_DEPUIS_LE_REGISTRE: &str = "\
+    WITH maillons AS (SELECT id, ts, detail FROM ledger WHERE kind='config.token.create'), \
+    jetons AS ( \
+      SELECT id, created, 'jeton ' || kind || ' ''' || name || '''' \
+        || CASE WHEN host IS NOT NULL AND host <> '' THEN ' (hôte ' || host || ')' ELSE '' END \
+        || ' créé par ' AS prefixe \
+      FROM token \
+      WHERE created_by IS NULL AND created IS NOT NULL AND kind IN ('agent','hec','datasource','client') \
+    ), \
+    candidats AS ( \
+      SELECT j.id AS jeton, m.id AS maillon, substr(m.detail, length(j.prefixe) + 1) AS auteur \
+      FROM maillons m CROSS JOIN jetons j \
+      WHERE m.ts BETWEEN j.created AND j.created + 2 \
+        AND length(m.detail) > length(j.prefixe) \
+        AND substr(m.detail, 1, length(j.prefixe)) = j.prefixe \
+    ), \
+    uniques AS ( \
+      SELECT jeton, auteur FROM candidats \
+      WHERE jeton IN (SELECT jeton FROM candidats GROUP BY jeton HAVING COUNT(*) = 1) \
+        AND maillon IN (SELECT maillon FROM candidats GROUP BY maillon HAVING COUNT(*) = 1) \
+    ) \
+    UPDATE token SET created_by = uniques.auteur FROM uniques WHERE token.id = uniques.jeton";
+
+/// `P10.24-w` (v123) — la première suppression du compte auteur postérieure à la création du jeton
+/// (`config.user.delete`, « compte '<nom>' (rôle … »). Un compte recréé sous le même nom APRÈS cette suppression
+/// n'est pas l'auteur.
+const SQL_V123_SUPPRESSION_DE_L_AUTEUR_DEPUIS_LE_REGISTRE: &str = "\
+    WITH suppressions AS (SELECT ts, detail FROM ledger WHERE kind='config.user.delete'), \
+    premieres AS ( \
+      SELECT t.id AS jeton, MIN(s.ts) AS le \
+      FROM suppressions s CROSS JOIN token t \
+      WHERE t.created_by IS NOT NULL AND t.created_by_deleted_at IS NULL AND t.created IS NOT NULL \
+        AND s.ts >= t.created \
+        AND substr(s.detail, 1, length('compte ''' || t.created_by || ''' (rôle ')) = 'compte ''' || t.created_by || ''' (rôle ' \
+      GROUP BY t.id \
+    ) \
+    UPDATE token SET created_by_deleted_at = premieres.le FROM premieres WHERE token.id = premieres.jeton";
 
 /// v108 (PERF — RECHERCHE RAW HAUT-VOLUME source=X sur fenêtre longue). MARQUEUR PUR (aucune DDL lourde
 /// synchrone), MÊME posture EXACTE que v102 (idx_event_src). Comble l'index COMPOSITE MANQUANT

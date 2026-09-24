@@ -332,7 +332,7 @@ mod son_propre_mot_de_passe_et_homonyme_recree {
     // -------------------------------------------------------------------------------------
 
     /// CE QU'IL TIENT : `bob` (MFA active, préférences posées) a une session et un ticket ; `alice` a une session. Un
-    /// administrateur supprime `bob` (204) puis crée un compte du même nom (200) avec un autre mot de passe. La session
+    /// administrateur supprime `bob` (200) puis crée un compte du même nom (200) avec un autre mot de passe. La session
     /// de l'ancien `bob` ne résout AUCUNE identité ; son ticket, avec un code juste de l'ANCIENNE graine, rend le `401`
     /// nommé du ticket, sans session ; la ligne `user_mfa` et la ligne `user_pref` de l'ancien compte n'existent plus ;
     /// le nouveau titulaire se connecte par SON mot de passe sans second facteur (200, cookie), et cette session
@@ -364,7 +364,7 @@ mod son_propre_mot_de_passe_et_homonyme_recree {
         let epoque = rpch_epoque_globale(&st);
 
         let r = user_delete(State(st.clone()), Extension(sp_au("adm", "admin")), axum::extract::Path(rpch_id(&st, "bob"))).await;
-        assert_eq!(r.status().as_u16(), 204, "fixture : bob supprimé");
+        assert_eq!(r.status().as_u16(), 200, "fixture : bob supprimé");
         let neuf = rpch_neuf("homonyme");
         let (statut, _, _, corps) = rpch_corps(
             user_create(State(st.clone()), Extension(sp_au("adm", "admin")), Json(json!({ "name": "bob", "password": neuf, "role": "viewer" }))).await,
@@ -392,10 +392,10 @@ mod son_propre_mot_de_passe_et_homonyme_recree {
 
     /// CE QU'IL TIENT : la purge de `user_mfa` refusée (autorisateur SQLite), la suppression n'a PAS lieu — `500`
     /// nommé, le compte existe toujours, son époque n'a pas bougé, sa graine est là, aucune suppression n'est
-    /// attestée. La purge revenue, le même geste supprime (204), avance l'époque et retire la graine.
+    /// attestée. La purge revenue, le même geste supprime (200), avance l'époque et retire la graine.
     ///
     /// LA MUTATION QUI LE FAIT ROUGIR : avaler l'échec de la purge (`let _ = conn.execute(...)`) — le compte est
-    /// supprimé, `204`, et sa graine survit pour le prochain homonyme.
+    /// supprimé, `200`, et sa graine survit pour le prochain homonyme.
     #[tokio::test]
     async fn rpch_la_revocation_et_la_purge_sont_dans_la_transaction_de_la_suppression() {
         let (st, _p) = sp_state("rpch-atomique");
@@ -420,7 +420,7 @@ mod son_propre_mot_de_passe_et_homonyme_recree {
         assert_eq!(rpch_registre_de_type(&st, "config.user.delete"), 0, "aucune suppression attestée");
 
         let r = user_delete(State(st.clone()), Extension(sp_au("adm", "admin")), axum::extract::Path(id)).await;
-        assert_eq!(r.status().as_u16(), 204, "la purge revenue, le même geste supprime");
+        assert_eq!(r.status().as_u16(), 200, "la purge revenue, le même geste supprime");
         assert_eq!(rpch_epoque_du_compte(&st, "bob"), 1, "l'époque du compte avance à la suppression");
         assert_eq!(rpch_compte(&st, "SELECT COUNT(*) FROM user_mfa WHERE user=?1", "bob"), 0, "la graine est retirée");
         assert_eq!(rpch_registre_de_type(&st, "config.user.delete"), 1, "la suppression est attestée");

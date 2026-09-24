@@ -4,7 +4,7 @@
 // au point où ce bloc vivait (un module s'exécute à l'import, avant l'enveloppe `fetch` d'`app.js`). Les seams
 // (`viz.js`, `multitenant.js`) continuent de lire `loadDashboard` / `refreshPanels` via le ré-export d'`app.js`.
 // `renderDashboard` est exporté pour le harnais. N'importe pas `app.js`.
-import { $, ic, flashStopped, stopBtn, toast, modal, confirmModal, confirmWithConsequence, toCSV, downloadText, tsSlug, exportPDF, miniMenu, api, apiSend, phraseDuRefusDuDemon, transientGatewayMsg, makePager, socIsAdmin, applyRoleClass, roleSansEcriturePartagee, LANG } from './core.js';
+import { $, ic, flashStopped, stopBtn, toast, modal, confirmModal, confirmWithConsequence, toCSV, downloadText, tsSlug, exportPDF, miniMenu, api, apiSend, phraseDuRefusDuDemon, transientGatewayMsg, makePager, noeudDeLaPageVideDeRangSuperieur, socIsAdmin, applyRoleClass, roleSansEcriturePartagee, LANG } from './core.js';
 import { S } from './state.js';
 import { coldShareBadge, coverageBadge, coverageHorizonNodes, provenanceBadge, currentFrom, currentTo, noeudsDeVizReglee, queryCount, runQuery, tableEl, vizElement } from './viz.js'; // `P10.5-q` : l'aveu de part froide que les panneaux reçoivent est LU
 // P11.4-h : LE geste de copie de la console (mécanisme partagé).
@@ -847,6 +847,16 @@ async function renderPanel(p, editable = true) {
     }
     body.replaceChildren();
     const go = pp => loadServerPage(pp);
+    // `P10.25-n` — UNE PAGE DE RANG SUPÉRIEUR SERVIE VIDE DIT CE QU'ELLE EST, À LA PLACE D'UN TABLEAU D'EN-TÊTES : au-delà
+    // du total compté (un rafraîchissement relit la MÊME page par décalage sur une fenêtre dont le compte a baissé), ou fin du
+    // résultat quand aucun total n'est compté. Son retour est gardé ; les aveux du panneau se posent comme ailleurs.
+    const pageVide = spg.rows.length ? null : noeudDeLaPageVideDeRangSuperieur(spg.page, spg.total, spg.pageSize, spg.totalCapped);
+    if (pageVide) {
+      body.appendChild(pageVide);
+      const retour = makePager(spg, go); if (retour) body.appendChild(retour);
+      poserLesAveuxDuPanneau(body, stats, body.firstChild);
+      return;
+    }
     const top = makePager(spg, go); if (top) body.appendChild(top);
     body.appendChild(tableEl(spg.cols, spg.rows, p.query, p.drill || ''));
     const bot = makePager(spg, go); if (bot) body.appendChild(bot);

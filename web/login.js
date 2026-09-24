@@ -52,6 +52,43 @@ async function fetchMe() {
   try { return await api('/me'); }
   catch (e) { return null; }
 }
+// `P10.25-p` — L'OUVERTURE REFUSÉE PAR LE DÉMON SE DIT : ELLE N'EST PAS UNE INVITE DE CONNEXION MUETTE.
+// CE QUE LE DÉMON SERT (`P10.25-d`, daemon/src/auth.rs, `RefusDeLAnnuaire`) : derrière le SSO d'en-têtes, un nom que
+// l'annuaire présente et que le démon ne prend pas est refusé sur TOUTE route gardée, `/api/me` comprise — 403 JSON
+// `CAUSE_ANNUAIRE_NOM_DE_L_ADMINISTRATEUR_DE_CONFIGURATION` ou `CAUSE_ANNUAIRE_NOM_D_UN_COMPTE_A_MOT_DE_PASSE`, 503 JSON
+// `CAUSE_ANNUAIRE_NOM_NON_VERIFIE`. CE QUE LA CONSOLE EN FAISAIT, MESURÉ AVANT CE LOT : `fetchMe` avale tout refus,
+// et l'amorçage montrait l'écran de connexion SANS UN MOT — une invite trompeuse pour une personne que l'annuaire
+// venait d'authentifier, et la cause (qui nomme le remède) jamais lue ; le 503, après ses deux réessais, finissait
+// de même. La connexion par mot de passe EST un remède pour les deux 403 (le cookie de session est jugé AVANT les
+// en-têtes de l'annuaire, `resolve_identity_ou_refus`) : l'écran reste donc offert, et le refus est dit AU-DESSUS,
+// cause entière. Les ouvertures s'ancrent en tête, bornées par Unicode ; un autre refus nommé garde une face
+// générique ; un 401 (texte nu) et une panne de transport gardent l'écran d'avant, sans phrase.
+const OUVERTURES_DES_REFUS_DE_L_OUVERTURE = [
+  ['annuaire_refuse', /^IDENTITÉ DE L'ANNUAIRE REFUSÉE(?![\p{L}\p{N}])/u],
+  ['annuaire_non_verifie', /^IDENTITÉ DE L'ANNUAIRE NON VÉRIFIÉE(?![\p{L}\p{N}])/u],
+];
+function cleDuRefusDeLOuverture(e) {
+  const cause = e && e.causeDuDemon ? String(e.causeDuDemon).trim() : '';
+  if (!cause) return '';
+  const trouvee = OUVERTURES_DES_REFUS_DE_L_OUVERTURE.find(([, ouverture]) => ouverture.test(cause));
+  return trouvee ? trouvee[0] : 'ouverture_refusee';
+}
+// Un nœud À PART, posé au-dessus de `#login-err` : la boîte des refus du formulaire se réécrit à chaque essai, alors
+// que ce refus-ci reste vrai tant qu'aucune session n'est ouverte. `data-refus-de-l-ouverture` porte la clé (marque
+// de POSE pour le harnais).
+function peindreLeRefusDeLOuverture(e) {
+  const cle = cleDuRefusDeLOuverture(e);
+  const err = $('#login-err'); if (!err || !err.parentNode) return;
+  let noeud = $('#login-form [data-refus-de-l-ouverture]');
+  if (!cle) { if (noeud) noeud.remove(); return; }
+  if (!noeud) {
+    noeud = document.createElement('div'); noeud.className = 'login-err'; noeud.setAttribute('role', 'alert');
+    err.parentNode.insertBefore(noeud, err);
+  }
+  const dit = document.createElement('span'); dit.textContent = motDeLaConnexion(cle);
+  noeud.replaceChildren(dit, document.createTextNode(' « ' + String(e.causeDuDemon).trim() + ' »'));
+  noeud.dataset.refusDeLOuverture = cle;
+}
 // `P10.23-c` — LES PHRASES PROPRES À CET ÉCRAN, FR ET EN CÔTE À CÔTE : aucune des deux langues ne part sans
 // l'autre. Elles étaient écrites en français nu, hors du lexique — « Renseigne identifiant… », « Identifiants
 // invalides. », « Trop de tentatives… » (deux formes, dont un gabarit que la garde du lexique ne pouvait pas
@@ -96,6 +133,16 @@ const MOTS_DE_LA_CONNEXION = {
   ticket_expire: {
     fr: "Le ticket de connexion a EXPIRÉ : aucun code n'a été accepté dans le délai, et aucune session n'est ouverte. Reprends depuis le mot de passe.",
     en: 'The sign-in ticket has EXPIRED: no code was accepted in time, and no session is open. Start again from the password.' },
+  // `P10.25-p` — l'ouverture de la console refusée par le démon, dite au-dessus du formulaire (voir `cleDuRefusDeLOuverture`).
+  annuaire_refuse: {
+    fr: "Identité de l'annuaire REFUSÉE par le démon : rien n'est servi sous ce nom. Si ce nom a un mot de passe (compte local ou administrateur de configuration), ce formulaire ouvre sa session. Le démon en nomme la cause —",
+    en: 'Directory identity REFUSED by the daemon: nothing is served under this name. If this name has a password (local account or configuration administrator), this form opens its session. The daemon names the cause —' },
+  annuaire_non_verifie: {
+    fr: "Identité de l'annuaire NON VÉRIFIÉE : le démon n'a rien servi sous ce nom. Recharger la page pour réessayer. Le démon en nomme la cause —",
+    en: 'Directory identity NOT VERIFIED: the daemon served nothing under this name. Reload the page to try again. The daemon names the cause —' },
+  ouverture_refusee: {
+    fr: 'Console NON ouverte : le démon a refusé et en nomme la cause —',
+    en: 'Console NOT opened: the daemon refused and names the cause —' },
 };
 // Les valeurs se posent par une fonction de remplacement : un détail servi qui contiendrait `$&` ou une accolade
 // n'est jamais réinterprété.
@@ -402,7 +449,8 @@ function initAuthGate() {
     // est attendu avant d'ouvrir l'app : chaque surface qui nomme une technique le trouve posé, sans second
     // rendu. En échec il ne bloque rien — le registre porte l'état, et les surfaces le disent à la place du nom.
     const catalogueAttack = chargerLeCatalogueAttack(api);
-    fetchMe().then(async me => {
+    // `P10.25-p` — le refus éventuel de `/api/me` est GARDÉ (`fetchMe` le jette), pour être dit au-dessus du formulaire.
+    api('/me').then(me => ({ me, refus: null }), refus => ({ me: null, refus })).then(async ({ me, refus }) => {
       if (me && me.user) {
         await catalogueAttack;
         S.AUTH = me; setAuthUI(); applyRoleClass(me.role); showLogin(false);   // SSO/cookie/démo : app directe
@@ -412,7 +460,7 @@ function initAuthGate() {
         // #2c switcher tenant, PUIS #2d sélecteur d'environnement (résolu APRÈS le tenant : les env sont
         // cloisonnés par tenant). initEnvironments(true) : si un env persisté est restauré, il recharge la vue.
         initTenants().then(() => initEnvironments(true)).catch(() => { try { initEnvironments(true); } catch (e) {} });
-      } else { S.AUTH = null; setAuthUI(); showLogin(true); document.documentElement.classList.add('app-ready'); }   // 401 : écran de login (overlay au-dessus ; on révèle <main> pour ne pas le laisser bloqué masqué)
+      } else { S.AUTH = null; setAuthUI(); showLogin(true); peindreLeRefusDeLOuverture(refus); document.documentElement.classList.add('app-ready'); }   // 401 : écran de login (overlay au-dessus ; on révèle <main> pour ne pas le laisser bloqué masqué)
     });
 }
 
@@ -425,4 +473,5 @@ function initAuthGate() {
 // statuts que le démon sert. Aucun usage applicatif hors de ce module.
 // `P10.23-c` — `motDeLaConnexion` part pour le témoin 109, au même titre : les phrases de l'écran s'y jugent
 // sous les deux instances de langue, contre ce que le formulaire réel peint.
-export { initAuthGate, bindLoginForm, fetchMe, setAuthUI, showLogin, motDuSecondFacteur, cleDuRefusDuSecondFacteur, motDeLaConnexion };
+// `P10.25-p` — `cleDuRefusDeLOuverture` part pour le témoin 113 : la nature d'un refus de l'ouverture, dans les deux sens.
+export { initAuthGate, bindLoginForm, fetchMe, setAuthUI, showLogin, motDuSecondFacteur, cleDuRefusDuSecondFacteur, motDeLaConnexion, cleDuRefusDeLOuverture };

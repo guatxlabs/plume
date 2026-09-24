@@ -895,21 +895,192 @@ pub(crate) fn client_bearer_path(path: &str) -> bool {
     path == "/api/client/cases" || path.starts_with("/api/client/cases/")
 }
 
-/// RÉSOLUTION D'IDENTITÉ (extrait byte-identique de `auth_guard`, refactor TIER 2). ORDRE D'AUTH ADDITIF :
-/// cookie de session -> Basic (argon2/bcrypt) -> SSO trusted-header -> Bearer agent -> démo publique.
-/// Ne lit QUE des en-têtes (aucune écriture) -> pur du point de vue observable. Retourne l'identité
-/// (nom, rôle PLANCHER), la méthode, la map de grants SSO (mode 1) + flag super-admin SSO, et le tenant
-/// PORTEUR d'un éventuel token agent (Bearer). Zéro changement de logique vs l'inline d'origine.
-pub(crate) fn resolve_identity(
-    st: &AppState,
-    req: &Request,
-) -> (
+// ====================================================================================================
+// `P10.25-d` — L'ANNUAIRE NE PREND PAS UN NOM QUI PORTE UN MOT DE PASSE LOCAL.
+//
+// LE DÉFAUT, MESURÉ LE 2026-09-24 SUR LA FORME D'AVANT (par `resolve_identity`, secret d'en-tête juste). L'annuaire
+// présente `bob`, compte local `editor` à mot de passe, dans le groupe administrateur : identité `bob`, rôle
+// `admin`, et la requête privée de `bob` lui est servie. Il présente le nom de l'administrateur de configuration :
+// identité résolue, rôle `viewer`. Il présente `adm`, compte local administrateur : identité `adm`, rôle `viewer`.
+// Le même nom, deux authentifications — l'une par le mot de passe local, l'autre par des en-têtes qu'un annuaire
+// compromis ou mal nommé pose à volonté — et les objets, le second facteur et le registre d'un compte servis à
+// l'autre. La fédération (`idp_provision_user`, OIDC, SAML, LDAP) refusait déjà ces deux cas ; ce chemin non.
+//
+// LA RÈGLE, LA MÊME QUE CELLE DE LA FÉDÉRATION. Refusé : le nom de l'administrateur de configuration
+// (`reserved_static_admin`, lu aux deux portes) ; un nom qui porte un mot de passe local
+// (`session::le_compte_a_un_mot_de_passe_local` : ligne `user` à mot de passe réel, ou administrateur de
+// l'assistant sans ligne). Servi comme avant : une identité sans ligne, ou liée à une ligne SANS mot de passe local
+// (`IDP_HASH_SENTINEL` posée par la fédération, ou hachage vide). Les comptes `eng-cred-*` d'un engagement portent
+// un mot de passe : l'annuaire ne les prend pas non plus (leur fenêtre horaire n'est jugée que par `authenticate`).
+//
+// AUCUN CACHE. La décision est relue à CHAQUE requête : une ligne qui reçoit un mot de passe (réinitialisation par
+// un administrateur), un compte local supprimé, prennent effet à la requête suivante. Le cache d'authentification
+// (`auth_cache`, cinq minutes, clé = en-tête `Authorization`) n'est pas sur ce chemin. Le coût : l'existence de la
+// ligne est lue sur le READ POOL (`user.hash` y est dénié, `name` non) ; l'écrivain n'est consulté, pour lire le
+// hachage, que si la ligne existe — cas rare sur ce chemin, où l'identité de l'annuaire n'a pas de ligne.
+//
+// LE REFUS EST NOMMÉ ET TRACÉ : `403` et sa cause pour un nom tenu, `503` pour un nom non vérifié ; un maillon au
+// registre (`auth.annuaire.refuse`) et un événement `plume-auth` de sévérité quatre, une fois par fenêtre et par
+// (base, nom, cause) — une console refusée qui interroge en boucle n'écrit pas à chaque requête, et la fenêtre
+// n'est armée que par une trace ÉCRITE. Le refus ne consigne pas l'identité à l'inventaire des accès : elle n'a
+// pas accédé.
+//
+// CE QUE CE CHEMIN NE TIENT PAS : le mode multi-tenant (les comptes à mot de passe y vivent dans `platform_user`
+// du plan de contrôle ; la règle n'y est pas jouée).
+// ====================================================================================================
+
+/// `P10.25-d` — l'annuaire présente le nom de l'administrateur de configuration.
+pub(crate) const CAUSE_ANNUAIRE_NOM_DE_L_ADMINISTRATEUR_DE_CONFIGURATION: &str = "IDENTITÉ DE L'ANNUAIRE REFUSÉE, \
+     C'EST LE NOM DE L'ADMINISTRATEUR DE CONFIGURATION : le fournisseur d'identité présente un nom que la \
+     configuration du démon réserve à son compte d'administration (mot de passe de configuration). L'annuaire ne \
+     prend pas ce nom — il servirait, au rôle que donnent ses groupes, ce que cet administrateur tient par son nom \
+     (requêtes, instantanés, second facteur) ; la fédération le refuse de même. Connectez-vous par le mot de passe \
+     de configuration, ou renommez l'identité dans l'annuaire. Le refus est inscrit au registre ; rien n'est servi.";
+
+/// `P10.25-d` — l'annuaire présente le nom d'un compte local à mot de passe.
+pub(crate) const CAUSE_ANNUAIRE_NOM_D_UN_COMPTE_A_MOT_DE_PASSE: &str = "IDENTITÉ DE L'ANNUAIRE REFUSÉE, CE NOM EST \
+     CELUI D'UN COMPTE LOCAL À MOT DE PASSE : le fournisseur d'identité présente le nom d'un compte de la table des \
+     comptes qui porte un mot de passe local. L'annuaire ne prend pas ce nom — il lui donnerait le rôle de ses \
+     groupes et les objets du compte local, hors du mot de passe qui le protège ; la fédération (OIDC, SAML, LDAP) \
+     le refuse de même. Connectez-vous par le mot de passe de ce compte ; sinon un administrateur supprime le compte \
+     local, ou l'annuaire renomme l'identité. Le refus est inscrit au registre ; rien n'est servi.";
+
+/// `P10.25-d` — la lecture qui dit si le nom porte un mot de passe local n'a pas eu lieu.
+pub(crate) const CAUSE_ANNUAIRE_NOM_NON_VERIFIE: &str = "IDENTITÉ DE L'ANNUAIRE NON VÉRIFIÉE : la base n'a pas pu \
+     dire si ce nom est celui d'un compte local à mot de passe (lecture refusée ou table illisible), et le démon ne \
+     sert pas une identité de l'annuaire sur un nom qu'il n'a pas pu vérifier. Réessayez ; rien n'est servi.";
+
+/// `P10.25-d` — fenêtre de la trace d'un refus de l'annuaire, par (base, nom, cause) : même ordre que la fenêtre
+/// de l'inventaire des accès (`ACCES_OBSERVE_DEBOUNCE_S`).
+pub(crate) const REFUS_DE_L_ANNUAIRE_FENETRE_S: i64 = 300;
+
+/// `P10.25-d` — POURQUOI L'ANNUAIRE N'EST PAS SERVI SUR CE NOM.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum RefusDeLAnnuaire {
+    /// Le nom de l'administrateur de configuration.
+    AdministrateurDeConfiguration(String),
+    /// Le nom d'un compte qui porte un mot de passe local.
+    CompteAMotDePasse(String),
+    /// La lecture n'a pas eu lieu : (nom, cause du moteur).
+    NonVerifie(String, String),
+}
+
+impl RefusDeLAnnuaire {
+    fn nom(&self) -> &str {
+        match self {
+            Self::AdministrateurDeConfiguration(n) | Self::CompteAMotDePasse(n) | Self::NonVerifie(n, _) => n,
+        }
+    }
+    /// Code court, stable, porté par la trace (jamais une phrase).
+    pub(crate) fn code(&self) -> &'static str {
+        match self {
+            Self::AdministrateurDeConfiguration(_) => "administrateur_de_configuration",
+            Self::CompteAMotDePasse(_) => "compte_a_mot_de_passe",
+            Self::NonVerifie(..) => "non_verifie",
+        }
+    }
+    fn statut_et_cause(&self) -> (StatusCode, &'static str) {
+        match self {
+            Self::AdministrateurDeConfiguration(_) => (StatusCode::FORBIDDEN, CAUSE_ANNUAIRE_NOM_DE_L_ADMINISTRATEUR_DE_CONFIGURATION),
+            Self::CompteAMotDePasse(_) => (StatusCode::FORBIDDEN, CAUSE_ANNUAIRE_NOM_D_UN_COMPTE_A_MOT_DE_PASSE),
+            Self::NonVerifie(..) => (StatusCode::SERVICE_UNAVAILABLE, CAUSE_ANNUAIRE_NOM_NON_VERIFIE),
+        }
+    }
+    /// Trace (une fois par fenêtre) puis réponse nommée. Rien n'est servi, rien n'est consigné à l'inventaire.
+    pub(crate) fn servir(&self, st: &AppState, ip: &str) -> Response {
+        if let Self::NonVerifie(nom, cause) = self {
+            eprintln!("[auth] WARN identité de l'annuaire '{nom}' refusée, nom non vérifié : {cause}");
+        }
+        tracer_le_refus_de_l_annuaire(st, self, ip);
+        let (statut, cause) = self.statut_et_cause();
+        err_json(statut, cause)
+    }
+}
+
+/// `P10.25-d` — LE NOM QUE PRÉSENTE L'ANNUAIRE EST-IL PRENABLE ? Voir le bandeau ci-dessus.
+pub(crate) fn juger_le_nom_presente_par_l_annuaire(st: &AppState, nom: &str) -> Result<(), RefusDeLAnnuaire> {
+    if crate::handlers::idp::reserved_static_admin(st) == Some(nom) {
+        return Err(RefusDeLAnnuaire::AdministrateurDeConfiguration(nom.to_string()));
+    }
+    // L'existence de la ligne, sur le read pool (`None` : pool indisponible ou lecture ratée -> l'écrivain juge).
+    let ligne = read_with(st.db_path.as_str(), None, |c| {
+        c.query_row("SELECT EXISTS(SELECT 1 FROM user WHERE name=?1)", params![nom], |r| r.get::<_, bool>(0)).ok()
+    });
+    let porte_un_mot_de_passe = match ligne {
+        // Sans ligne, seul l'administrateur de l'assistant (crédence en mémoire) porte un mot de passe sous ce nom.
+        Some(false) => Ok(st.admin.lock().as_ref().is_some_and(|(n, _)| n == nom)),
+        _ => crate::session::le_compte_a_un_mot_de_passe_local(st, nom),
+    };
+    match porte_un_mot_de_passe {
+        Ok(false) => Ok(()),
+        Ok(true) => Err(RefusDeLAnnuaire::CompteAMotDePasse(nom.to_string())),
+        Err(e) => Err(RefusDeLAnnuaire::NonVerifie(nom.to_string(), e.to_string())),
+    }
+}
+
+/// `P10.25-d` — (base, nom, cause) -> instant de la dernière trace ÉCRITE. Borné comme le registre de débounce de
+/// l'inventaire des accès.
+static REFUS_DE_L_ANNUAIRE_DERNIERE_TRACE: std::sync::OnceLock<Mutex<HashMap<(String, String, &'static str), i64>>> =
+    std::sync::OnceLock::new();
+
+/// `P10.25-d` — un maillon au registre et un événement `plume-auth` (sévérité quatre), une fois par fenêtre. Le nom,
+/// venu d'un en-tête, est borné comme à l'inventaire des accès ; ni les groupes ni aucun secret n'y entrent.
+fn tracer_le_refus_de_l_annuaire(st: &AppState, refus: &RefusDeLAnnuaire, ip: &str) {
+    let nom: String = refus.nom().chars().take(crate::acces_observe::ACCES_OBSERVE_NOM_MAX).collect();
+    let cle = (st.db_path.to_string(), nom.clone(), refus.code());
+    let maintenant = now();
+    let registre = REFUS_DE_L_ANNUAIRE_DERNIERE_TRACE.get_or_init(|| Mutex::new(HashMap::new()));
+    if registre.lock().get(&cle).is_some_and(|&t| maintenant - t < REFUS_DE_L_ANNUAIRE_FENETRE_S) {
+        return;
+    }
+    let message = format!("identité de l'annuaire '{nom}' refusée ({}) depuis {ip}", refus.code());
+    let (maillon, ecriture) = {
+        let conn = st.db.lock();
+        let maillon = ledger_append(&conn, "auth.annuaire.refuse", &message);
+        let champs = json!({ "action": "annuaire_refuse", "username": nom, "cause": refus.code(), "src_ip": ip }).to_string();
+        let ipc: Option<&str> = if ip.is_empty() { None } else { Some(ip) };
+        let ecriture = conn.execute(
+            "INSERT INTO event(ts,source,category,severity,message,host,src_ip,fields,origin) \
+             VALUES(?1,'plume-auth','auth',4,?2,'plume-daemon',?3,?4,'daemon')",
+            params![maintenant, message, ipc, champs],
+        );
+        (maillon, ecriture)
+    };
+    let evenement_ecrit = matches!(ecriture, Ok(1));
+    compter_l_evenement_d_acces_s_il_n_est_pas_ecrit("plume-auth.annuaire-refuse", ecriture);
+    if matches!(maillon, crate::ledger::MaillonDeRegistre::Inscrit) && evenement_ecrit {
+        let mut g = registre.lock();
+        if g.len() > 4096 {
+            g.retain(|_, t| maintenant - *t < REFUS_DE_L_ANNUAIRE_FENETRE_S);
+        }
+        g.insert(cle, maintenant);
+    }
+}
+
+/// L'identité résolue : (nom, rôle plancher), méthode, grants SSO (mode 1), super-admin SSO, tenant d'un jeton.
+pub(crate) type IdentiteResolue = (
     Option<(String, String)>,
     &'static str,
     Option<HashMap<String, String>>,
     bool,
     Option<String>,
-) {
+);
+
+/// TÉMOINS SEULEMENT — `resolve_identity_ou_refus` dont un refus de l'annuaire (`P10.25-d`) se lit comme « aucune
+/// identité ». Le chemin servi (`auth_guard`) prend le refus pour le nommer.
+#[cfg(test)]
+pub(crate) fn resolve_identity(st: &AppState, req: &Request) -> IdentiteResolue {
+    resolve_identity_ou_refus(st, req).unwrap_or((None, "", None, false, None))
+}
+
+/// RÉSOLUTION D'IDENTITÉ (extrait byte-identique de `auth_guard`, refactor TIER 2). ORDRE D'AUTH ADDITIF :
+/// cookie de session -> Basic (argon2/bcrypt) -> SSO trusted-header -> Bearer agent -> démo publique.
+/// Ne lit QUE des en-têtes (aucune écriture) -> pur du point de vue observable. Retourne l'identité
+/// (nom, rôle PLANCHER), la méthode, la map de grants SSO (mode 1) + flag super-admin SSO, et le tenant
+/// PORTEUR d'un éventuel token agent (Bearer). Zéro changement de logique vs l'inline d'origine.
+/// `P10.25-d` — `Err` : l'annuaire présente, en mode 0, un nom qu'il ne prend pas ; la résolution S'ARRÊTE là (aucune
+/// méthode suivante — jeton, démonstration — ne sert la requête à sa place).
+pub(crate) fn resolve_identity_ou_refus(st: &AppState, req: &Request) -> Result<IdentiteResolue, RefusDeLAnnuaire> {
     let path = req.uri().path();
     let authz = req.headers().get(header::AUTHORIZATION).and_then(|h| h.to_str().ok()).unwrap_or("").to_string();
     // ORDRE D'AUTH (ADDITIF) : cookie de session OU Basic OU SSO OU Bearer.
@@ -991,6 +1162,8 @@ pub(crate) fn resolve_identity(
                     ident = Some((user.to_string(), if sa { "admin".to_string() } else { "viewer".to_string() }));
                 } else {
                     // MODE 0 (INVARIANT ABSOLU) : mapping groupe->rôle EXACT, sso_role INCHANGÉ.
+                    // `P10.25-d` — sauf sur un nom qui porte un mot de passe local : refus nommé, relu à chaque requête.
+                    juger_le_nom_presente_par_l_annuaire(st, user)?;
                     ident = Some((user.to_string(), sso_role(st, groups)));
                 }
                 auth_method = "sso";
@@ -1059,7 +1232,7 @@ pub(crate) fn resolve_identity(
         ident = Some(("demo".into(), "viewer".into()));
         auth_method = "demo";
     }
-    (ident, auth_method, sso_grant_map, sso_superadmin, bearer_tenant)
+    Ok((ident, auth_method, sso_grant_map, sso_superadmin, bearer_tenant))
 }
 
 /// RÉSOLUTION TENANT + RÔLE PER-TENANT (extrait byte-identique de `auth_guard`, refactor TIER 2) — choke-point
@@ -1335,7 +1508,11 @@ pub(crate) async fn auth_guard(State(st): State<AppState>, mut req: Request, nex
         }
     }
     // IDENTITÉ (cookie de session / Basic / SSO trusted-header / Bearer agent / démo) — extrait byte-identique.
-    let (ident, auth_method, sso_grant_map, sso_superadmin, bearer_tenant) = resolve_identity(&st, &req);
+    // `P10.25-d` — un nom que l'annuaire ne prend pas est refusé ci-dessous, APRÈS la comptabilité anti-brute-force.
+    let (ident, auth_method, sso_grant_map, sso_superadmin, bearer_tenant, refus_de_l_annuaire) = match resolve_identity_ou_refus(&st, &req) {
+        Ok((ident, methode, grants, superadmin, tenant_du_jeton)) => (ident, methode, grants, superadmin, tenant_du_jeton, None),
+        Err(refus) => (None, "", None, false, None, Some(refus)),
+    };
     // ANTI-BRUTE-FORCE (item 2) — comptabilité APRÈS résolution complète de l'identité (Basic/SSO/Bearer/
     // démo). Succès avec creds Basic -> réarme. Aucune identité MAIS creds Basic présentés -> ÉCHEC :
     // incrémente + AUTO-INGEST SIEM, et si la rafale franchit le seuil -> lockout (429 + Retry-After).
@@ -1347,6 +1524,9 @@ pub(crate) async fn auth_guard(State(st): State<AppState>, mut req: Request, nex
             return (StatusCode::TOO_MANY_REQUESTS, [(header::RETRY_AFTER, retry.to_string())],
                 "trop d'échecs d'authentification — réessayez plus tard").into_response();
         }
+    }
+    if let Some(refus) = refus_de_l_annuaire {
+        return refus.servir(&st, &src_ip);
     }
     let Some((name, role_floor)) = ident else {
         // HEC (#16) : un client HEC attend une réponse HEC-SHAPED sur token invalide (code 4). Route neuve

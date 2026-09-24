@@ -156,9 +156,9 @@ pub(crate) const CAUSE_COMPTE_NON_CREE_COMMIT_REFUSE: &str = "COMPTE NON CRÉÉ 
 
 /// `P10.24-x` — le `COMMIT` de la suppression refusé.
 pub(crate) const CAUSE_COMPTE_NON_SUPPRIME_COMMIT_REFUSE: &str = "COMPTE NON SUPPRIMÉ : la base n'a pas validé la \
-     transaction (COMMIT refusé) et l'a annulée — le compte, ses objets, sa graine du second facteur, ses préférences \
-     et ses sessions sont intacts, et ni ses échecs de connexion ni le frein de son second facteur ne sont oubliés. \
-     Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+     transaction (COMMIT refusé) et l'a annulée — le compte, ses objets, ses jetons, sa graine du second facteur, ses \
+     préférences et ses sessions sont intacts, et ni ses échecs de connexion ni le frein de son second facteur ne \
+     sont oubliés. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
 
 /// `P10.24-x` — le `COMMIT` de la modification refusé.
 pub(crate) const CAUSE_COMPTE_NON_MODIFIE_COMMIT_REFUSE: &str = "COMPTE NON MODIFIÉ : la base n'a pas validé la \
@@ -396,7 +396,9 @@ pub(crate) async fn user_delete(State(st): State<AppState>, Extension(au): Exten
         return server_err("verrou base indisponible");
     }
     let sev = if trole == "admin" { 4 } else { 3 };
-    let outcome: rusqlite::Result<()> = (|| {
+    // `P10.24-w` — la transaction rend le compte rendu de la suppression : champ de son audit ET corps de sa réponse,
+    // le même objet (ce que la réponse dit est ce que l'audit atteste).
+    let outcome: rusqlite::Result<Value> = (|| {
         conn.execute("DELETE FROM user WHERE id=?1", params![id])?;
         // `P10.24-c` — CE QUI EST LIÉ AU NOM PART AVEC LE COMPTE, ET SES JETONS AVEC LUI. Mesuré le 2026-09-24 sur la
         // forme d'avant : après cette suppression puis la création d'un homonyme, la session frappée AVANT résolvait
@@ -410,31 +412,36 @@ pub(crate) async fn user_delete(State(st): State<AppState>, Extension(au): Exten
         conn.execute("DELETE FROM user_pref WHERE user=?1", params![tname])?;
         // `P10.24-p` — ses objets, dans CETTE transaction : purgés ou réattribués à l'auteur, et attestés ci-dessous.
         let objets = ObjetsDuCompteSupprime::traiter(&conn, &tname, &au.name)?;
+        // `P10.24-w` — les jetons qu'il a frappés, dans CETTE transaction : révoqués ou conservés selon la décision
+        // écrite dans `handlers/tokens.rs` (`DECISION_SUR_LES_JETONS_DU_COMPTE_SUPPRIME`), et nommés ci-dessous.
+        let jetons = crate::handlers::tokens::JetonsDuCompteSupprime::traiter(&conn, &tname)?;
         avancer_l_epoque_du_compte(&conn, &tname)?;
+        let compte_rendu = json!({
+            "action": "config.user.delete", "kind": "user", "target": tname, "role": trole, "actor": au.name,
+            "second_facteur_retire": seconds_facteurs_retires > 0,
+            "objets_reattribues_a": au.name,
+            "objets_reattribues": ObjetsDuCompteSupprime::en_json(&objets.reattribues),
+            "objets_purges": ObjetsDuCompteSupprime::en_json(&objets.purges),
+            "jetons": jetons.en_json(),
+        });
         audit_config_change(
             &conn, "config.user.delete",
             &format!(
-                "compte '{tname}' (rôle {trole}) supprimé par {} ; objets réattribués à {} : {} ; purgés : {}",
+                "compte '{tname}' (rôle {trole}) supprimé par {} ; objets réattribués à {} : {} ; purgés : {} ; {}",
                 au.name,
                 au.name,
                 ObjetsDuCompteSupprime::en_phrase(&objets.reattribues),
                 ObjetsDuCompteSupprime::en_phrase(&objets.purges),
+                jetons.en_phrase(),
             ),
             sev,
             &format!("compte utilisateur '{tname}' supprimé (rôle {trole}) par {}", au.name),
-            &json!({
-                "action": "config.user.delete", "kind": "user", "target": tname, "role": trole, "actor": au.name,
-                "second_facteur_retire": seconds_facteurs_retires > 0,
-                "objets_reattribues_a": au.name,
-                "objets_reattribues": ObjetsDuCompteSupprime::en_json(&objets.reattribues),
-                "objets_purges": ObjetsDuCompteSupprime::en_json(&objets.purges),
-            })
-            .to_string(),
+            &compte_rendu.to_string(),
         )?;
-        Ok(())
+        Ok(compte_rendu)
     })();
     match outcome {
-        Ok(()) => {
+        Ok(compte_rendu) => {
             // `P10.24-x` — un `COMMIT` refusé n'est pas une suppression : 503 nommé, et la mémoire n'oublie rien.
             if let Err(e) = valider_la_transaction(&conn) {
                 eprintln!("[comptes] WARN suppression du compte '{tname}' NON validée : {e}");
@@ -446,7 +453,9 @@ pub(crate) async fn user_delete(State(st): State<AppState>, Extension(au): Exten
             // repart de zéro ; une suppression refusée (ci-dessus comme ci-dessous) ne touche à rien.
             oublier_les_echecs_du_compte_supprime(&st, &tname);
             crate::handlers::idp::oublier_le_frein_du_compte_supprime(&st, &tname);
-            StatusCode::NO_CONTENT.into_response()
+            // `P10.24-w` — 200 et le compte rendu (il rendait 204, sans corps : rien ne disait ce que la suppression
+            // avait fait des objets ni des jetons du compte).
+            Json(compte_rendu).into_response()
         }
         Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
     }

@@ -19269,7 +19269,10 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
       const table = (srcViz111.match(new RegExp("const " + nom + " = \\{[\\s\\S]*?\\n\\};")) || [""])[0];
       return [...table.matchAll(/^ {2}(\w+): \{\n {4}fr: (.+),\n {4}en: (.+) \},?$/gm)].map((m) => ({ cle: m[1], fr: m[2], en: m[3] }));
     };
-    const TABLES111 = { MOTS_DE_LA_SUITE_DU_PARCOURS: 5, MOTS_DE_LA_LIGNE_DU_PARCOURS: 6, MOTS_DE_LA_LIGNE_D_ETAT_HORS_PARCOURS: 4, MOTS_DE_LA_PAGE_VIDE: 2, TITRES_DU_BADGE_DE_TRONCATURE: 4 };
+    // `P10.25-a` — la face « fin du résultat » a quitté `MOTS_DE_LA_PAGE_VIDE` pour le point commun
+    // (`MOTS_DE_LA_FIN_DU_RESULTAT`, web/core.js), que la liste paginée et le panneau de table disent aussi : ses
+    // deux faces y sont jugées au témoin 113 ; celle du saut sans rendu reste ici.
+    const TABLES111 = { MOTS_DE_LA_SUITE_DU_PARCOURS: 5, MOTS_DE_LA_LIGNE_DU_PARCOURS: 6, MOTS_DE_LA_LIGNE_D_ETAT_HORS_PARCOURS: 4, MOTS_DE_LA_PAGE_VIDE: 1, TITRES_DU_BADGE_DE_TRONCATURE: 4 };
     const tablesFautives111 = Object.entries(TABLES111).filter(([nom, n]) => { const e = entreesDe111(nom); return e.length !== n || e.some((x) => x.fr === x.en || x.fr.length < 3); }).map(([nom]) => nom);
     exiger(tablesFautives111.length === 0,
       `(111f6) une table de faces n'a pas ses DEUX faces DISTINCTES sur chaque entrée, ou a perdu une entrée : ${tablesFautives111.join(", ")}`);
@@ -19368,8 +19371,26 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     && /ObjetsDuCompteSupprime::traiter\(&conn, &tname, &au\.name\)/.test(suppression112) && /avancer_l_epoque_du_compte\(&conn, &tname\)/.test(suppression112)
     && reattribues112.length >= 1 && purges112.length >= 1 && [...reattribues112, ...purges112].every((t) => t in MOTS_DES_OBJETS112),
     `\`user_delete\` ne sert plus le refus nommé du compte de l'assistant, ne purge plus second facteur et préférences, ne traite plus les objets du compte pour son auteur, ou une table de ses listes n'a pas de mot ici (réattribués ${JSON.stringify(reattribues112)}, purgés ${JSON.stringify(purges112)})`);
-  instrument112(!/\b(FROM|UPDATE|INTO)\s+token\b/.test(suppressionSansCommentaires112),
-    "`user_delete` écrit désormais la table `token` : la phrase « les jetons ne sont PAS révoqués » est à rejuger (`P10.24-w`)");
+  // `P10.25-p` — CETTE LECTURE ÉTAIT AVEUGLE, ET C'EST MESURÉ. Elle cherchait du SQL `token` dans le SEUL corps de
+  // `user_delete` ; le traitement des jetons (`P10.24-w`) vit dans `daemon/src/handlers/tokens.rs` et y est APPELÉ —
+  // mesuré le 2026-09-24 sur l'arbre qui le porte : la confirmation disait « jetons NON révoqués », le démon en
+  // révoquait, et ce témoin restait VERT. Elle lit désormais LA DÉCISION là où elle vit : l'appel de
+  // `JetonsDuCompteSupprime::traiter` depuis `user_delete`, la forme de son jugement (genres de lecture, jeton jamais
+  // servi, conservation marquée), les genres de lecture servis, et le compte rendu rendu en deux cents. Un jugement
+  // qui change fait refuser de conclure ; une écriture directe de `token` dans `user_delete` aussi.
+  const JETONS112 = readFileSync(path.join(RACINE, "daemon", "src", "handlers", "tokens.rs"), "utf8");
+  const traitementDesJetons112 = corpsDeFonction112(JETONS112, "    pub(crate) fn traiter(conn: &Connection, auteur: &str) -> rusqlite::Result<Self> {").replace(/\/\/[^\n]*/g, "");
+  const genresDeLecture112 = [...(((JETONS112.match(/pub\(crate\) const GENRES_DE_JETON_DE_LECTURE: \[&str; \d+\] = \[([^\]]*)\];/) || [])[1]) || "").matchAll(/"(\w+)"/g)].map((m) => m[1]);
+  const decisionDesJetons112 = constante112(JETONS112, "DECISION_SUR_LES_JETONS_DU_COMPTE_SUPPRIME");
+  instrument112(!/\b(FROM|UPDATE|INTO)\s+token\b/.test(suppressionSansCommentaires112)
+    && /crate::handlers::tokens::JetonsDuCompteSupprime::traiter\(&conn, &tname\)\?/.test(suppressionSansCommentaires112)
+    && /Json\(compte_rendu\)\.into_response\(\)/.test(suppressionSansCommentaires112)
+    && JSON.stringify(genresDeLecture112) === JSON.stringify(["datasource", "client"])
+    && /if GENRES_DE_JETON_DE_LECTURE\.contains\(&kind\.as_str\(\)\) \{\s*Some\("lecture_des_donnees"\)\s*\} else if last_used\.is_none\(\) \{\s*Some\("jamais_servi"\)\s*\} else \{\s*None\s*\}/.test(traitementDesJetons112)
+    && /Some\(raison\) => \{\s*une_ligne\(conn\.execute\("DELETE FROM token WHERE id=\?1"/.test(traitementDesJetons112)
+    && /None => \{\s*une_ligne\(conn\.execute\(\s*"UPDATE token SET created_by_deleted_at=\?1/.test(traitementDesJetons112)
+    && /WHERE created_by IS NULL GROUP BY 1/.test(traitementDesJetons112) && decisionDesJetons112.length > 200,
+    `la décision de \`user_delete\` sur les jetons du compte n'est plus celle que la confirmation dit (révoqués : lecture ${JSON.stringify(genresDeLecture112)} et jamais servis ; conservés : ingestion servie ; auteur non établi intact), ou \`user_delete\` écrit \`token\` lui-même : la phrase est à rejuger (\`P10.25-p\`)`);
   instrument112(modNoyauEn112.LANG === "en" && modNoyau112.LANG !== "en",
     `les deux instances du point commun ne portent pas deux langues (« ${modNoyau112.LANG} » / « ${modNoyauEn112.LANG} »)`);
   instrument112([modComptes112.loadUsers, modComptes112.motDeLaSuppressionDeCompte, modComptesEn112.motDeLaSuppressionDeCompte, modNoyau112.laPageEstAuDelaDuTotal,
@@ -19443,12 +19464,25 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     instrument112(!!v1112.bouton && !!v1En112.bouton && v1112.consequence.length > 0, "la ligne d'un compte ne porte plus son bouton ✕, ou la confirmation partagée ne s'ouvre plus");
     const partage112 = (texte, reattribue, supprime) => { const i = texte.indexOf(reattribue), j = texte.indexOf(supprime); return i < 0 || j < i ? null : [texte.slice(0, i), texte.slice(i, j)]; };
     const ecartsV1112 = [];
-    for (const [nomLangue, v, mots, reattribue, supprime, pas] of [["fr", v1112, 0, "RÉATTRIBUÉS", "SUPPRIMÉS", "PAS révoqués"], ["en", v1En112, 1, "REASSIGNED", "DELETED", "NOT revoked"]]) {
+    // `P10.25-p` — les jetons, jugés contre la décision relue dans `tokens.rs` (instrument ci-dessus) : les genres de
+    // lecture et les jetons jamais servis dans la proposition des RÉVOQUÉS, l'ingestion servie dans celle des CONSERVÉS,
+    // l'auteur non établi « pas touchés » ; « NON révoqués » ne s'écrit plus.
+    const MOTS_DES_GENRES112 = { datasource: ["source de données", "data source"], client: ["client", "client"] };
+    const JETONS_DITS112 = [["RÉVOQUÉS", "JAMAIS SERVIS", "CONSERVÉS", "(agent, HEC)", "auteur non établi", "ne sont pas touchés", /\bNON révoqués|\bPAS révoqués/],
+      ["REVOKED", "NEVER USED", "KEPT", "(agent, HEC)", "no established author", "are not touched", /\bNOT revoked/]];
+    for (const [nomLangue, v, mots] of [["fr", v1112, 0], ["en", v1En112, 1]]) {
+      const [revoques, jamais, conserves, ingestion, auteur, intacts, ancienne] = JETONS_DITS112[mots];
+      const iR = v.consequence.indexOf(revoques), iJ = v.consequence.indexOf(jamais), iC = v.consequence.indexOf(conserves), iI = v.consequence.indexOf(ingestion);
+      const avantRevoques = iR >= 0 ? v.consequence.slice(0, iR) : "";
+      const lecturesDites = genresDeLecture112.every((g) => MOTS_DES_GENRES112[g] && avantRevoques.includes(MOTS_DES_GENRES112[g][mots]));
+      if (!(iR > 0 && iJ >= 0 && iJ < iR && lecturesDites && iI > iR && iC > iI && v.consequence.includes(auteur) && v.consequence.includes(intacts)) || ancienne.test(v.consequence))
+        ecartsV1112.push(`${nomLangue} : la décision sur les jetons n'est pas dite (révoqués : lecture ${JSON.stringify(genresDeLecture112)} et jamais servis ; conservés : agent, HEC ; auteur non établi intact), ou « non révoqués » s'écrit encore`);
+    }
+    for (const [nomLangue, v, mots, reattribue, supprime] of [["fr", v1112, 0, "RÉATTRIBUÉS", "SUPPRIMÉS"], ["en", v1En112, 1, "REASSIGNED", "DELETED"]]) {
       const parts = partage112(v.consequence, reattribue, supprime);
       if (!parts) { ecartsV1112.push(`${nomLangue} : « ${reattribue} » puis « ${supprime} » absents ou dans le désordre`); continue; }
       for (const t of reattribues112) { const mot = MOTS_DES_OBJETS112[t][mots]; if (!parts[0].includes(mot) || parts[1].includes(mot)) ecartsV1112.push(`${nomLangue} : ${t} (« ${mot} ») n'est pas dit réattribué`); }
       for (const t of purges112) { const mot = MOTS_DES_OBJETS112[t][mots]; if (!parts[1].includes(mot) || parts[0].includes(mot)) ecartsV1112.push(`${nomLangue} : ${t} (« ${mot} ») n'est pas dit supprimé`); }
-      if (!v.consequence.includes(pas)) ecartsV1112.push(`${nomLangue} : les jetons non révoqués ne sont pas dits`);
     }
     exiger(ecartsV1112.length === 0 && v1112.consequence === faceFr112("consequence") && v1En112.consequence === faceEn112("consequence")
       && /second facteur/.test(v1112.consequence) && /préférences/.test(v1112.consequence) && /second factor/.test(v1En112.consequence) && !ACCENTS112.test(v1En112.consequence),
@@ -19729,7 +19763,585 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     if (r) r.replaceChildren(); if (l) l.replaceChildren(); if (b) { b.replaceChildren(); b.hidden = true; }
     document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
   }
-  console.log("(112) OK — la confirmation de suppression d'un compte dit, dans les deux langues, ce que le démon fait de ses objets — tableaux de bord, vues, panneaux de bibliothèque et playlists réattribués à l'auteur, requêtes enregistrées et instantanés supprimés, jugés CONTRE les deux listes relues dans `user_delete` —, et que les jetons d'agent ne sont pas révoqués ; le refus du compte de l'administrateur de l'installation est peint dans le puits de la ligne, cause entière (plus de cinq cents caractères), sans avis qui s'efface, sans accuser, sans recharger ; un refus en texte brut et une page de passerelle ont leur face, une suppression acceptée recharge. Une page au-delà du total compté se dit « page 2 au-delà de la dernière (1) » dans la ligne d'état de l'Explore (total connu, compte arrivé après, décalage) et dans le pager partagé, jamais sous un total plafonné ni sur une page vide DANS le total ; la liste plate des alertes et la liste de groupes ne disent plus « Aucune alerte » d'une page au-delà du total et y gardent un retour qui ramène à la première page, comme les occurrences d'un groupe, une liste paginée par le démon et un panneau de tableau de bord. La liste d'événements a ses deux faces accentuées (fenêtre vide, compte, facettes, infobulle du ban, note des champs vides — aussi dans le détail d'une ligne de table), et la page pleine sans curseur est dans le registre de l'alarme. CE QUI ÉTAIT FAUX : `P10.24-z` ne nommait qu'`alerts.js` et `dashboards.js` — le changement de `P10.22-d` atteint aussi la liste paginée partagée et les occurrences d'un groupe, et il n'atteignait PAS la liste plate ni la liste de groupes, dont le chemin vide rend la main avant le pager ; la note des champs vides existait en DEUX sites.");
+  console.log("(112) OK — la confirmation de suppression d'un compte dit, dans les deux langues, ce que le démon fait de ses objets — tableaux de bord, vues, panneaux de bibliothèque et playlists réattribués à l'auteur, requêtes enregistrées et instantanés supprimés, jugés CONTRE les deux listes relues dans `user_delete` —, et ce qu'elle fait des jetons qu'il a frappés, jugé contre la décision relue dans `tokens.rs` (`P10.25-p` : la lecture d'avant, aveugle, cherchait du SQL dans le seul `user_delete`) ; le refus du compte de l'administrateur de l'installation est peint dans le puits de la ligne, cause entière (plus de cinq cents caractères), sans avis qui s'efface, sans accuser, sans recharger ; un refus en texte brut et une page de passerelle ont leur face, une suppression acceptée recharge. Une page au-delà du total compté se dit « page 2 au-delà de la dernière (1) » dans la ligne d'état de l'Explore (total connu, compte arrivé après, décalage) et dans le pager partagé, jamais sous un total plafonné ni sur une page vide DANS le total ; la liste plate des alertes et la liste de groupes ne disent plus « Aucune alerte » d'une page au-delà du total et y gardent un retour qui ramène à la première page, comme les occurrences d'un groupe, une liste paginée par le démon et un panneau de tableau de bord. La liste d'événements a ses deux faces accentuées (fenêtre vide, compte, facettes, infobulle du ban, note des champs vides — aussi dans le détail d'une ligne de table), et la page pleine sans curseur est dans le registre de l'alarme. CE QUI ÉTAIT FAUX : `P10.24-z` ne nommait qu'`alerts.js` et `dashboards.js` — le changement de `P10.22-d` atteint aussi la liste paginée partagée et les occurrences d'un groupe, et il n'atteignait PAS la liste plate ni la liste de groupes, dont le chemin vide rend la main avant le pager ; la note des champs vides existait en DEUX sites.");
+}
+
+// ---------------------------------------------------------------------------------------------
+// (113) `P10.25-i` — LES REFUS DE LA CRÉATION D'UN COMPTE ONT LEURS FACES NOMMÉES, CAUSE ENTIÈRE, ET CE QUE LE NOM TIENT
+//       EST PRÉSENTÉ ; les cinq cent trois de la suppression et de la modification ont leur face (vérifiée) ;
+//       `P10.25-a` — la table paginée de l'Explore dit sa page vide de rang supérieur comme la liste d'événements ;
+//       `P10.25-n` — la liste paginée partagée et le panneau de table d'un tableau de bord aussi ; `P10.25-o` —
+//       l'infobulle d'une ligne de table qui mène aux événements d'une valeur a ses deux faces ; `P10.25-p` — la
+//       confirmation de suppression dit la décision sur les jetons, le compte rendu servi est PEINT, et l'ouverture
+//       refusée par l'annuaire (`P10.25-d`, démon) est dite au-dessus du formulaire de connexion.
+//
+// CE QUE LE DÉMON SERT, RELU ICI ET NON RECOPIÉ (daemon/src/handlers/users_lookups.rs). `user_create` : 409 JSON du nom
+// de l'administrateur de configuration ; 409 JSON du nom tenu sans compte, avec `ce_que_le_nom_tient` (`vu_par_l_annuaire`,
+// `lignes` par table) ; 503 JSON du nom non vérifié et du COMMIT refusé ; 409 TEXTE « ce nom de compte existe déjà ». Les
+// tables que le démon compte pour un nom sont relues dans ses trois listes. Une cause neuve dans `user_create`, ou une
+// table neuve, fait refuser de conclure ce témoin au lieu de le laisser vert.
+//
+// CE QUE LA CONSOLE EN FAISAIT, MESURÉ SUR LES MODULES RÉELS AVANT CE LOT (2026-09-24) :
+//   · le formulaire de création écrivait dans sa ligne d'actions, encre neutre, « 409 {"error":"NOM RÉSERVÉ, C'EST
+//     L'ADMINISTRATEUR DE CONFIGURATION : ce nom est celui du compte d'administration que pose la configuration du dé »
+//     — JSON brut coupé à deux cents caractères —, de même pour les trois autres causes (460, 558, 250 et 224
+//     caractères), et « 409 ce nom de compte existe déjà » ; `ce_que_le_nom_tient` n'atteignait pas la console ;
+//   · la table paginée de l'Explore, une liste paginée par le démon et un panneau de table rendaient, sur une page vide
+//     de rang supérieur, un tableau d'EN-TÊTES sans phrase (le pager seul disait la page, et rien sans total compté) ;
+//   · « Cliquer pour voir les événements host=web01 » sous `LANG='en'`.
+//
+// CE QUE CE TÉMOIN NE TIENT PAS : il ne rejoue aucune route du démon (le transport est un simulacre) ; il juge le TEXTE,
+// les classes et les attributs, jamais l'encre ; il ne dit pas quel compte de la liste est celui de l'assistant.
+// ---------------------------------------------------------------------------------------------
+{
+  const url113 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const modNoyau113 = await import(url113("core.js"));
+  const modViz113 = await import(url113("viz.js"));
+  const modComptes113 = await import(url113("admin_users.js"));
+  const modTdb113 = await import(url113("dashboards.js"));
+  const { S: S113 } = await import(url113("state.js"));
+  const langueOrigine113 = localStorage.getItem("soc_lang");
+  localStorage.setItem("soc_lang", "en");
+  const modNoyauEn113 = await import(adresseSousLaLangue("core.js"));
+  const modVizEn113 = await import(adresseSousLaLangue("viz.js"));
+  const modComptesEn113 = await import(adresseSousLaLangue("admin_users.js"));
+  const { S: SEn113 } = await import(adresseSousLaLangue("state.js"));
+  if (langueOrigine113 === null) localStorage.removeItem("soc_lang"); else localStorage.setItem("soc_lang", langueOrigine113);
+
+  const tic113 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser113 = async (n = 30) => { for (let i = 0; i < n; i++) await tic113(); };
+  const nu113 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ").trim();
+  const cueillir113 = (el, pred, acc = []) => { if (el && pred(el)) acc.push(el); ((el && el.children) || []).forEach((c) => cueillir113(c, pred, acc)); return acc; };
+  const parClasse113 = (hote, classe) => cueillir113(hote, (e) => e.classList && e.classList.contains(classe));
+  const parDonnee113 = (hote, attribut) => cueillir113(hote, (e) => typeof e.getAttribute === "function" && e.getAttribute(attribut) !== null);
+  const parBalise113 = (hote, balise) => cueillir113(hote, (e) => e.tagName === balise);
+  const instrument113 = (vrai, quoi) => exiger(vrai, `(113-instrument) ${quoi} : ce témoin REFUSE DE CONCLURE`);
+  const srcDe113 = (f) => ((CORPUS_WEB.find(([g]) => g === f) || [])[1]) || "";
+  const corpsDeFonction113 = (src, entete) => { const i = src.indexOf(entete); if (i < 0) return ""; const j = src.indexOf("\n}\n", i); return j < 0 ? "" : src.slice(i, j + 2); };
+  const constante113 = (src, nom) => { const m = src.match(new RegExp("const " + nom + ": &str = \"((?:[^\"\\\\]|\\\\[\\s\\S])*)\";")); return m ? m[1].replace(/\\\n\s*/g, "").replace(/\\"/g, "\"") : ""; };
+  const ACCENTS113 = /[éèêàçùôâîÉÈÊÀ]/;
+  const ACCUSE113 = /\b(vous|votre|vos|you|your)\b|invalide|interdit|erreur|échec|invalid|forbidden|error|fail/i;
+
+  // ── (0) L'INSTRUMENT : CE QUE `user_create` SERT, LU DANS L'ARBRE DU DÉMON ──────────────────────────
+  const COMPTES113 = readFileSync(path.join(RACINE, "daemon", "src", "handlers", "users_lookups.rs"), "utf8");
+  const creation113 = corpsDeFonction113(COMPTES113, "pub(crate) async fn user_create(");
+  const tenue113 = corpsDeFonction113(COMPTES113, "fn ce_que_le_nom_tient_sans_compte(");
+  const autorite113 = corpsDeFonction113(COMPTES113, "fn colonnes_d_autorite_par_nom(");
+  const CAUSES_DE_CREATION113 = {
+    nom_de_l_administrateur_de_configuration: constante113(COMPTES113, "CAUSE_NOM_DE_L_ADMINISTRATEUR_DE_CONFIGURATION"),
+    nom_tenu_par_une_identite_sans_compte: constante113(COMPTES113, "CAUSE_NOM_TENU_PAR_UNE_IDENTITE_SANS_COMPTE"),
+    nom_non_verifie: constante113(COMPTES113, "CAUSE_NOM_NON_VERIFIE_COMPTE_NON_CREE"),
+    commit_refuse: constante113(COMPTES113, "CAUSE_COMPTE_NON_CREE_COMMIT_REFUSE"),
+  };
+  const STATUTS113 = { nom_de_l_administrateur_de_configuration: 409, nom_tenu_par_une_identite_sans_compte: 409, nom_non_verifie: 503, commit_refuse: 503 };
+  const causesCitees113 = [...new Set([...creation113.matchAll(/\bCAUSE_[A-Z_]+\b/g)].map((m) => m[0]))].sort().join(",");
+  instrument113(causesCitees113 === "CAUSE_COMPTE_NON_CREE_COMMIT_REFUSE,CAUSE_NOM_DE_L_ADMINISTRATEUR_DE_CONFIGURATION,CAUSE_NOM_NON_VERIFIE_COMPTE_NON_CREE,CAUSE_NOM_TENU_PAR_UNE_IDENTITE_SANS_COMPTE",
+    `\`user_create\` ne sert plus exactement les quatre causes nommées jugées ici (${causesCitees113}) : une cause neuve doit recevoir sa face, ou être dite générique`);
+  instrument113(Object.values(CAUSES_DE_CREATION113).every((c) => c.length > 200)
+    && /err_json\(StatusCode::CONFLICT, CAUSE_NOM_DE_L_ADMINISTRATEUR_DE_CONFIGURATION\)/.test(creation113)
+    && /\(StatusCode::CONFLICT, Json\(json!\(\{ "error": CAUSE_NOM_TENU_PAR_UNE_IDENTITE_SANS_COMPTE, "ce_que_le_nom_tient": tenue \}\)\)\)/.test(creation113)
+    && /err_json\(StatusCode::SERVICE_UNAVAILABLE, CAUSE_NOM_NON_VERIFIE_COMPTE_NON_CREE\)/.test(creation113)
+    && /err_json\(StatusCode::SERVICE_UNAVAILABLE, CAUSE_COMPTE_NON_CREE_COMMIT_REFUSE\)/.test(creation113)
+    && /\(StatusCode::CONFLICT, "ce nom de compte existe déjà"\)\.into_response\(\)/.test(creation113),
+    "`user_create` ne sert plus ses refus sous les statuts et les formes jugés ici (JSON nommé en 409 et 503, détail du nom tenu, 409 en texte brut)");
+  instrument113(/json!\(\{ "vu_par_l_annuaire": vu_par_l_annuaire, "lignes": lignes \}\)/.test(tenue113) && /lignes\.insert\(table\.to_string\(\), json!\(n\)\)/.test(tenue113),
+    "`ce_que_le_nom_tient_sans_compte` ne sert plus `{vu_par_l_annuaire, lignes: {table: n}}` : le détail jugé ci-dessous ne serait plus celui du démon");
+  const reattribues113 = [...(((COMPTES113.match(/const OBJETS_REATTRIBUES_A_L_AUTEUR: \[&str; \d+\] = \[([^\]]*)\];/) || [])[1]) || "").matchAll(/"(\w+)"/g)].map((m) => m[1]);
+  const purges113 = [...(((COMPTES113.match(/const OBJETS_PURGES_AVEC_LE_COMPTE: \[\(&str, &str\); \d+\] = \[([^\]]*)\];/) || [])[1]) || "").matchAll(/\("(\w+)", "\w+"\)/g)].map((m) => m[1]);
+  const horsObjets113 = [...(((COMPTES113.match(/const LIGNES_DU_COMPTE_HORS_OBJETS: \[\(&str, &str\); \d+\] = \[([^\]]*)\];/) || [])[1]) || "").matchAll(/\("(\w+)", "\w+"\)/g)].map((m) => m[1]);
+  const tablesDuDemon113 = [...reattribues113, ...purges113, ...horsObjets113].sort();
+  instrument113(reattribues113.length >= 1 && purges113.length >= 1 && horsObjets113.length >= 1
+    && /OBJETS_PURGES_AVEC_LE_COMPTE/.test(autorite113) && /OBJETS_REATTRIBUES_A_L_AUTEUR/.test(autorite113) && /LIGNES_DU_COMPTE_HORS_OBJETS/.test(autorite113),
+    `les tables que le démon compte pour un nom ne se relisent plus dans ses trois listes (${JSON.stringify(tablesDuDemon113)})`);
+  const CAUSE_SUPPRESSION113 = constante113(COMPTES113, "CAUSE_COMPTE_NON_SUPPRIME_COMMIT_REFUSE"), CAUSE_MODIFICATION113 = constante113(COMPTES113, "CAUSE_COMPTE_NON_MODIFIE_COMMIT_REFUSE");
+  instrument113(CAUSE_SUPPRESSION113.length > 200 && CAUSE_MODIFICATION113.length > 200
+    && /err_json\(StatusCode::SERVICE_UNAVAILABLE, CAUSE_COMPTE_NON_SUPPRIME_COMMIT_REFUSE\)/.test(corpsDeFonction113(COMPTES113, "pub(crate) async fn user_delete("))
+    && /err_json\(StatusCode::SERVICE_UNAVAILABLE, CAUSE_COMPTE_NON_MODIFIE_COMMIT_REFUSE\)/.test(corpsDeFonction113(COMPTES113, "pub(crate) async fn user_update(")),
+    "`user_delete` ou `user_update` ne sert plus son cinq cent trois nommé du COMMIT refusé");
+  instrument113(modNoyauEn113.LANG === "en" && modNoyau113.LANG !== "en",
+    `les deux instances du point commun ne portent pas deux langues (« ${modNoyau113.LANG} » / « ${modNoyauEn113.LANG} »)`);
+  instrument113([modComptes113.creerLeCompteDuFormulaire, modComptesEn113.creerLeCompteDuFormulaire, modComptes113.natureDuRefusDeCreationDeCompte, modComptes113.motDeLaCreationDeCompte,
+    modComptesEn113.motDeLaCreationDeCompte, modComptes113.motDUneLigneTenueParUnNom, modComptesEn113.motDUneLigneTenueParUnNom, modComptes113.loadUsers, modComptes113.motDeLaModificationDeCompte,
+    modComptes113.motDeLaSuppressionDeCompte, modNoyau113.pagedList, modNoyauEn113.pagedList, modNoyau113.noeudDeLaFinDuResultat, modNoyau113.noeudDeLaPageVideDeRangSuperieur,
+    modViz113.evLoad, modVizEn113.evLoad, modViz113.tableEl, modVizEn113.tableEl, modViz113.motDeLInfobulleDUneLigne, modVizEn113.motDeLInfobulleDUneLigne, modTdb113.loadPanelsInto]
+    .every((f) => typeof f === "function"),
+    "un des symboles jugés ici n'est plus exporté (web/core.js, web/viz.js, web/admin_users.js, web/dashboards.js)");
+
+  // ── (i0) LA NATURE D'UN REFUS DE CRÉATION, NUE, DANS LES DEUX SENS ──────────────────────────────────
+  const ecartsI0113 = [];
+  for (const [cle, cause] of Object.entries(CAUSES_DE_CREATION113)) {
+    const lue = modComptes113.natureDuRefusDeCreationDeCompte(cause);
+    if (lue !== cle) ecartsI0113.push(`${cle} lue « ${lue} »`);
+  }
+  const etrangeres113 = [CAUSE_SUPPRESSION113, CAUSE_MODIFICATION113, constante113(COMPTES113, "CAUSE_COMPTE_DE_L_ASSISTANT_NON_SUPPRIMABLE"), "ce nom de compte existe déjà",
+    "COMPTE NON CRÉÉ : autre cause", "NOM RÉSERVÉ, C'EST L'ADMINISTRATEUR DE CONFIGURATIONS", "", "nom invalide (alphanumérique, . _ - uniquement)"];
+  etrangeres113.forEach((c) => { const lue = modComptes113.natureDuRefusDeCreationDeCompte(c); if (lue) ecartsI0113.push(`une cause étrangère est lue « ${lue} » : « ${String(c).slice(0, 60)} »`); });
+  exiger(ecartsI0113.length === 0,
+    `(113i0) LA NATURE D'UN REFUS DE CRÉATION N'EST PAS RECONNUE À LA CAUSE SERVIE, ou une cause étrangère est prise pour une autre : ${JSON.stringify(ecartsI0113)}`);
+
+  // ── LE SIMULACRE : TRANSPORT, MINUTERIES LONGUES, HÔTES ─────────────────────────────────────────────
+  const fetchOrigine113 = globalThis.fetch, minuterieOrigine113 = globalThis.setTimeout, qsOrigine113 = document.querySelector;
+  const etatOrigine113 = [S113, SEn113].map((S) => ({ S, admin: S.isAdmin, auth: S.AUTH, evState: S.evState, vol: S.exploreInflight, hist: S.qHist, histIdx: S.qHistIdx, dernier: S.lastResult, cartes: S.panelCards }));
+  const formulaire113 = qsOrigine113.call(document, "#user-form"), nom113 = qsOrigine113.call(document, "#uf-name"), mdp113 = qsOrigine113.call(document, "#uf-pw");
+  const role113 = qsOrigine113.call(document, "#uf-role"), resultatDeCreation113 = qsOrigine113.call(document, "#uf-result");
+  instrument113(!!formulaire113 && !!nom113 && !!mdp113 && !!role113 && !!resultatDeCreation113, "`#user-form`, `#uf-name`, `#uf-pw`, `#uf-role` ou `#uf-result` n'est plus dans `index.html`");
+  const valeursDuFormulaire113 = { nom: nom113 && nom113.value, mdp: mdp113 && mdp113.value, role: role113 && role113.value, cache: !!(formulaire113 && formulaire113.classList.contains("hidden")) };
+  const servis113 = {}, appels113 = [];
+  globalThis.fetch = async (u, init) => {
+    const chemin = String(u).split("?")[0];
+    const methode = ((init && init.method) || "GET").toUpperCase();
+    let demande = {}; try { demande = init && init.body ? JSON.parse(init.body) : {}; } catch (e) { demande = {}; }
+    appels113.push({ k: methode + " " + chemin, url: String(u), demande });
+    let r = servis113[methode + " " + chemin];
+    if (typeof r === "function") r = await r(demande, String(u));
+    if (!r) return { ok: true, status: 200, headers: { get: () => null }, text: async () => "{}", json: async () => ({}) };
+    const texte = typeof r.corps === "string" ? r.corps : JSON.stringify(r.corps === undefined ? {} : r.corps);
+    const statut = r.statut || 200;
+    return { ok: statut >= 200 && statut < 300, status: statut, headers: { get: () => null }, text: async () => texte, json: async () => JSON.parse(texte) };
+  };
+  globalThis.setTimeout = (fn, ms) => (ms >= 1000 ? 0 : minuterieOrigine113(fn, ms >= 100 ? 0 : ms));
+  const hotes113 = { "#users": new Element("section"), "#user-list": new Element("div"), "#acces-list": new Element("div") };
+  document.querySelector = (sel) => (Object.prototype.hasOwnProperty.call(hotes113, sel) ? hotes113[sel] : qsOrigine113.call(document, sel));
+  const compter113 = (k) => appels113.filter((a) => a.k === k).length;
+  const dernier113 = (k) => { const a = appels113.filter((x) => x.k === k); return a.length ? a[a.length - 1] : null; };
+  const fenetre113 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !c.classList.contains("out")).pop();
+  const avis113 = () => document.querySelectorAll(".toast");
+  // Accepte (ou annule) la confirmation partagée ouverte par un geste, et en rend le titre.
+  const confirmer113 = (accepter = true) => {
+    const ov = fenetre113(); const form = ov && ov.children[0] ? ov.children[0].children[0] : null;
+    const titre = form ? nu113(form.querySelector("h3")) : "";
+    if (form && accepter && typeof form.onsubmit === "function") form.onsubmit({ preventDefault() {} });
+    else if (form) { const b = form.querySelector(".m-cancel"); if (b && typeof b.onclick === "function") b.onclick(); }
+    return titre;
+  };
+  const ligne113 = qsOrigine113.call(document, "#qstats"), resultat113 = qsOrigine113.call(document, "#qresult"), qsize113 = qsOrigine113.call(document, "#qsize"), sql113 = qsOrigine113.call(document, "#sql");
+  const valeursOrigine113 = { taille: qsize113 ? qsize113.value : "", sql: sql113 ? sql113.value : "" };
+  const HTML113 = "<!DOCTYPE html><html><head><title>502 Bad Gateway</title></head><body><center>nginx</center></body></html>";
+
+  try {
+    for (const S of [S113, SEn113]) { S.isAdmin = true; S.AUTH = { user: "hugo", role: "admin" }; }
+    const LISTE113 = { users: [{ id: 1, name: "hugo", role: "admin", created: 1 }, { id: 3, name: "bob", role: "editor", created: 3 }], me: "hugo", acces: [] };
+    servis113["GET /api/users"] = { corps: LISTE113 };
+
+    // ══ (i) `P10.25-i` — LE GESTE RÉEL DE CRÉATION : les champs posés, le formulaire soumis, la confirmation jouée ═══
+    const creer113 = async (mod, reponse, nom = "carol") => {
+      if (formulaire113) formulaire113.classList.remove("hidden");
+      nom113.value = nom; mdp113.value = "un-mot-de-passe-long"; role113.value = "viewer";
+      resultatDeCreation113.textContent = "";
+      servis113["POST /api/users"] = reponse;
+      const avantAvis = avis113().length, avantListe = compter113("GET /api/users"), avantEnvoi = compter113("POST /api/users");
+      const geste = mod.creerLeCompteDuFormulaire({ preventDefault() {} }); await laisser113();
+      const titre = confirmer113(true);
+      let jete = null; try { await geste; } catch (e) { jete = e; }
+      await laisser113(40);
+      const puits = formulaire113 ? parDonnee113(formulaire113, "data-puits-du-refus-de-creation")[0] || null : null;
+      // Le puits est PARTAGÉ par les deux instances (un seul formulaire) : son texte est relu ICI, avant le geste suivant.
+      return { titre, jete, puits, texte: nu113(puits), cle: puits && puits.getAttribute("data-refus-de-creation"), phrase: puits && puits.children[0] ? nu113(puits.children[0]) : "",
+        envois: compter113("POST /api/users") - avantEnvoi, rechargements: compter113("GET /api/users") - avantListe, avis: avis113().slice(avantAvis).map((t) => nu113(t)),
+        ligneDActions: nu113(resultatDeCreation113), cache: !!(formulaire113 && formulaire113.classList.contains("hidden")), nomGarde: nom113.value };
+    };
+    const faceFr113 = (cle) => modComptes113.motDeLaCreationDeCompte(cle), faceEn113 = (cle) => modComptesEn113.motDeLaCreationDeCompte(cle);
+    const TENUE113 = { vu_par_l_annuaire: true, lignes: { dashboard: 2, saved_query: 1, user_mfa: 1 } };
+
+    // (i1) LES QUATRE REFUS NOMMÉS, DANS LES DEUX LANGUES : leur face, la cause ENTIÈRE, dans le puits, sans rien d'autre.
+    const ecartsI1113 = [];
+    for (const [nomLangue, mod, face] of [["fr", modComptes113, faceFr113], ["en", modComptesEn113, faceEn113]]) {
+      for (const [cle, cause] of Object.entries(CAUSES_DE_CREATION113)) {
+        const corps = cle === "nom_tenu_par_une_identite_sans_compte" ? { error: cause, ce_que_le_nom_tient: TENUE113 } : (STATUTS113[cle] === 503 ? { error: cause, id: "plume-e1-7" } : { error: cause });
+        const r = await creer113(mod, { statut: STATUTS113[cle], corps });
+        const lu = r.texte;
+        const attendu = face(cle) + " « " + cause.trim() + " »";
+        if (r.envois !== 1) ecartsI1113.push(`${nomLangue}/${cle} : ${r.envois} envoi(s)`);
+        if (r.jete) ecartsI1113.push(`${nomLangue}/${cle} : le geste JETTE ${r.jete.message}`);
+        if (!r.puits || r.puits.hidden || r.puits.className !== "bad" || r.cle !== cle) ecartsI1113.push(`${nomLangue}/${cle} : puits ${r.puits ? `« ${r.cle} », caché ${r.puits.hidden}, classe « ${r.puits.className} »` : "absent"}`);
+        if (!lu.startsWith(attendu)) ecartsI1113.push(`${nomLangue}/${cle} : « ${lu.slice(0, 120)}… » ne commence pas par la face et la cause entière`);
+        if (/\{"error"|\b(409|503)\b|plume-e1-7/.test(lu)) ecartsI1113.push(`${nomLangue}/${cle} : le puits colle le corps JSON, le code ou l'identifiant`);
+        if (r.phrase !== face(cle) || ACCUSE113.test(r.phrase)) ecartsI1113.push(`${nomLangue}/${cle} : la phrase n'est pas celle de la table, ou accuse : « ${r.phrase} »`);
+        if (r.ligneDActions !== "") ecartsI1113.push(`${nomLangue}/${cle} : la ligne d'actions porte encore « ${r.ligneDActions.slice(0, 80)} »`);
+        if (r.avis.length || r.rechargements || r.cache || r.nomGarde !== "carol") ecartsI1113.push(`${nomLangue}/${cle} : avis ${r.avis.length}, rechargements ${r.rechargements}, formulaire caché ${r.cache}, nom « ${r.nomGarde} »`);
+      }
+    }
+    exiger(ecartsI1113.length === 0,
+      `(113i1) UN REFUS NOMMÉ DE LA CRÉATION D'UN COMPTE N'A PAS SA FACE — cause entière dans le puits du formulaire, sans JSON ni code, sans accuser, formulaire gardé : ${JSON.stringify(ecartsI1113)}`);
+    exiger(Object.keys(CAUSES_DE_CREATION113).every((cle) => faceFr113(cle) !== faceEn113(cle) && !ACCENTS113.test(faceEn113(cle)) && /^Compte NON créé/.test(faceFr113(cle)) && /^Account NOT created/.test(faceEn113(cle))),
+      "(113i1) une face de refus de création n'a pas ses deux langues, ou l'anglaise porte un accent français");
+
+    // (i2) CE QUE LE NOM TIENT, PRÉSENTÉ : l'annuaire, puis une ligne par table, dans l'ordre servi.
+    const tenueLue113 = async (mod, tenue) => {
+      const corps = { error: CAUSES_DE_CREATION113.nom_tenu_par_une_identite_sans_compte };
+      if (tenue !== undefined) corps.ce_que_le_nom_tient = tenue;
+      const r = await creer113(mod, { statut: 409, corps });
+      const bloc = r.puits ? parDonnee113(r.puits, "data-ce-que-le-nom-tient")[0] || null : null;   // relu avant le geste suivant
+      const lignes = bloc ? parBalise113(bloc, "LI") : [];
+      return { etat: bloc && bloc.getAttribute("data-ce-que-le-nom-tient"), texte: nu113(bloc), lignes: lignes.map((li) => [li.getAttribute("data-table") || li.getAttribute("data-vu-par-l-annuaire"), nu113(li)]) };
+    };
+    const i2113 = await tenueLue113(modComptes113, TENUE113), i2En113 = await tenueLue113(modComptesEn113, TENUE113);
+    exiger(i2113.etat === "lu" && JSON.stringify(i2113.lignes) === JSON.stringify([["oui", "vu par l'annuaire externe (SSO d'en-têtes) à l'inventaire des accès"], ["dashboard", "2 tableau(x) de bord"], ["saved_query", "1 requête(s) enregistrée(s)"], ["user_mfa", "1 graine(s) du second facteur"]])
+      && i2113.texte.startsWith("Ce que ce nom tient sans compte local :"),
+      `(113i2) CE QUE LE NOM TIENT N'EST PAS PRÉSENTÉ (annuaire, puis une ligne par table) : ${JSON.stringify(i2113)}`);
+    exiger(i2En113.etat === "lu" && JSON.stringify(i2En113.lignes) === JSON.stringify([["oui", "seen by the external directory (header SSO) in the access inventory"], ["dashboard", "2 dashboard(s)"], ["saved_query", "1 saved query(ies)"], ["user_mfa", "1 second-factor seed(s)"]])
+      && i2En113.texte.startsWith("What this name holds without a local account:") && !ACCENTS113.test(i2En113.texte),
+      `(113i2) CE QUE LE NOM TIENT RESTE FRANÇAIS SOUS \`LANG='en'\` : ${JSON.stringify(i2En113)}`);
+    // Un nom tenu SANS avoir été vu par l'annuaire, une table sans mot : dite par son nom, jamais tue.
+    const i2Bis113 = await tenueLue113(modComptes113, { vu_par_l_annuaire: false, lignes: { playlist: 3, table_neuve_113: 4 } });
+    exiger(i2Bis113.etat === "lu" && JSON.stringify(i2Bis113.lignes) === JSON.stringify([["non", "pas vu par l'annuaire externe à l'inventaire des accès"], ["playlist", "3 playlist(s)"], ["table_neuve_113", "4 ligne(s) de la table table_neuve_113"]]),
+      `(113i2) un nom non vu par l'annuaire, ou une table sans mot, n'est pas dit : ${JSON.stringify(i2Bis113)}`);
+    // Un détail absent ou d'une autre forme se DIT illisible — jamais une liste vide qui se lirait « ne tient rien ».
+    const illisibles113 = [];
+    for (const t of [undefined, "x", null, { vu_par_l_annuaire: "oui", lignes: {} }, { vu_par_l_annuaire: true, lignes: [] }]) {
+      const r = await tenueLue113(modComptes113, t);
+      if (r.etat !== "illisible" || r.texte !== faceFr113("detail_illisible") || r.lignes.length) illisibles113.push(`${JSON.stringify(t)} -> ${JSON.stringify(r)}`);
+    }
+    exiger(illisibles113.length === 0,
+      `(113i2) UN DÉTAIL ABSENT OU ILLISIBLE N'EST PAS DIT ILLISIBLE : ${JSON.stringify(illisibles113)}`);
+    // Les mots des tables couvrent EXACTEMENT les tables que le démon compte pour un nom, dans les deux langues.
+    const sansMot113 = tablesDuDemon113.filter((t) => modComptes113.motDUneLigneTenueParUnNom(t, 1) === `1 ligne(s) de la table ${t}` || modComptesEn113.motDUneLigneTenueParUnNom(t, 1) === `1 row(s) of the ${t} table`);
+    const srcComptes113 = srcDe113("admin_users.js");
+    const tableDesMots113 = (srcComptes113.match(/const MOTS_DES_LIGNES_TENUES_PAR_UN_NOM = \{[\s\S]*?\n\};/) || [""])[0];
+    const motsEcrits113 = [...tableDesMots113.matchAll(/^ {2}(\w+): \{ fr: '([^']*)', en: '([^']*)' \},$/gm)].map((m) => ({ cle: m[1], fr: m[2], en: m[3] }));
+    const clesEcrites113 = motsEcrits113.map((x) => x.cle).filter((c) => c !== "table_sans_mot").sort().join(",");
+    exiger(sansMot113.length === 0 && clesEcrites113 === tablesDuDemon113.join(",") && motsEcrits113.every((x) => x.fr.includes("{n}") && x.en.includes("{n}") && !ACCENTS113.test(x.en)),
+      `(113i2) LES MOTS DES TABLES NE COUVRENT PAS EXACTEMENT CELLES QUE LE DÉMON COMPTE POUR UN NOM : écrits ${clesEcrites113}, démon ${tablesDuDemon113.join(",")}, sans mot ${JSON.stringify(sansMot113)}`);
+
+    // (i3) Le refus en TEXTE BRUT : sa phrase, sans son code, sous la face générique.
+    const i3113 = await creer113(modComptes113, { statut: 409, corps: "ce nom de compte existe déjà" });
+    const i3En113 = await creer113(modComptesEn113, { statut: 409, corps: "ce nom de compte existe déjà" });
+    exiger(i3113.cle === "refus_nomme" && i3113.texte === faceFr113("refus_nomme") + " « ce nom de compte existe déjà »"
+      && i3En113.cle === "refus_nomme" && i3En113.texte === faceEn113("refus_nomme") + " « ce nom de compte existe déjà »" && !ACCENTS113.test(faceEn113("refus_nomme")),
+      `(113i3) LE 409 EN TEXTE BRUT N'EST PAS PEINT SANS SON CODE sous la face générique : « ${i3113.texte} » / « ${i3En113.texte} »`);
+    // (i4) Une page de passerelle garde sa propre phrase, sans son HTML.
+    const i4113 = await creer113(modComptes113, { statut: 502, corps: HTML113 });
+    exiger(i4113.cle === "reponse_hors_demon" && i4113.texte === modNoyau113.motDeLaReponseHorsDemon("page_de_passerelle") && !/<|nginx/.test(i4113.texte),
+      `(113i4) une page de passerelle est peinte comme un refus du démon, ou colle son HTML : « ${i4113.texte.slice(0, 200)} »`);
+    // (i5) Une demande qui n'aboutit pas n'est pas un refus du démon, et la face ne dit pas que rien n'est créé.
+    const i5113 = await creer113(modComptes113, () => { throw new TypeError("Failed to fetch"); });
+    const i5En113 = await creer113(modComptesEn113, () => { throw new TypeError("Failed to fetch"); });
+    exiger(i5113.cle === "demande_non_aboutie" && i5113.texte === faceFr113("demande_non_aboutie") + " « Failed to fetch »" && !/NON créé|refusé/.test(i5113.phrase)
+      && i5En113.cle === "demande_non_aboutie" && !ACCENTS113.test(i5En113.phrase) && /NOT confirmed/.test(i5En113.phrase),
+      `(113i5) UNE DEMANDE QUI N'A PAS ABOUTI SE DIT « LE DÉMON A REFUSÉ », ou affirme que rien n'est créé : « ${i5113.texte} » / « ${i5En113.texte} »`);
+    // (i6) CONTRÔLE POSITIF : une création acceptée efface le refus précédent, recharge la liste, referme le formulaire.
+    await creer113(modComptes113, { statut: 409, corps: { error: CAUSES_DE_CREATION113.nom_de_l_administrateur_de_configuration } });
+    const i6113 = await creer113(modComptes113, { statut: 200, corps: { id: 9 } });
+    exiger(i6113.envois === 1 && i6113.rechargements === 1 && i6113.cache === true && i6113.ligneDActions === "compte créé" && !!i6113.puits && i6113.puits.hidden === true && i6113.cle === null && i6113.texte === ""
+      && /^Créer le compte « carol »/.test(i6113.titre),
+      `(113i6-négatif) UNE CRÉATION ACCEPTÉE garde le refus précédent, ne recharge pas la liste ou ne referme pas le formulaire — un instrument qui avoue toujours ne mesure rien : ${JSON.stringify({ rechargements: i6113.rechargements, cache: i6113.cache, ligne: i6113.ligneDActions, cle: i6113.cle, titre: i6113.titre })}`);
+    exiger(parDonnee113(formulaire113, "data-puits-du-refus-de-creation").length === 1,
+      "(113i6) le formulaire porte plusieurs puits de refus : chaque geste en pose un de plus");
+
+    // (i7) Les cinq cent trois de la suppression et de la modification : la face GÉNÉRIQUE existe (lot 193), cause entière.
+    const lignesDeLaListe113 = async (mod) => { hotes113["#user-list"].replaceChildren(); await mod.loadUsers(); await laisser113(); return hotes113["#user-list"].children; };
+    const indexDe113 = (enfants, nom) => enfants.findIndex((e) => e.classList && e.classList.contains("urow") && nu113(e.children[0]).startsWith(nom + " "));
+    const ecartsI7113 = [];
+    for (const [nomLangue, mod] of [["fr", modComptes113], ["en", modComptesEn113]]) {
+      // Suppression.
+      let enfants = await lignesDeLaListe113(mod); let i = indexDe113(enfants, "bob");
+      const bouton = i >= 0 ? cueillir113(enfants[i], (e) => e.tagName === "BUTTON" && e.title === "Supprimer le compte")[0] : null;
+      if (!bouton) { ecartsI7113.push(`${nomLangue} : la ligne de « bob » ne porte pas ✕`); continue; }
+      servis113["DELETE /api/users/3"] = { statut: 503, corps: { error: CAUSE_SUPPRESSION113, id: "plume-e1-8" } };
+      const avantListeS = compter113("GET /api/users");
+      let geste = bouton.onclick(); await laisser113(); confirmer113(true); await geste; await laisser113(40);
+      enfants = hotes113["#user-list"].children; i = indexDe113(enfants, "bob");
+      const puitsS = i >= 0 ? enfants[i + 2] : null;
+      if (!puitsS || puitsS.getAttribute("data-refus-de-suppression") !== "refus_nomme" || nu113(puitsS) !== mod.motDeLaSuppressionDeCompte("refus_nomme") + " « " + CAUSE_SUPPRESSION113.trim() + " »" || compter113("GET /api/users") !== avantListeS)
+        ecartsI7113.push(`${nomLangue} : suppression « ${nu113(puitsS).slice(0, 160)} »`);
+      // Modification (le rôle de « bob »).
+      enfants = await lignesDeLaListe113(mod); i = indexDe113(enfants, "bob");
+      const editeur = i >= 0 ? enfants[i + 1] : null;
+      const selecteur = editeur ? parBalise113(editeur, "SELECT")[0] : null, enregistrer = editeur ? cueillir113(editeur, (e) => e.tagName === "BUTTON" && nu113(e) === "Enregistrer")[0] : null;
+      if (!selecteur || !enregistrer) { ecartsI7113.push(`${nomLangue} : l'éditeur de « bob » n'a plus son sélecteur ou son bouton`); continue; }
+      selecteur.value = "viewer";
+      servis113["POST /api/users/3"] = { statut: 503, corps: { error: CAUSE_MODIFICATION113, id: "plume-e1-9" } };
+      const avantListeM = compter113("GET /api/users");
+      geste = enregistrer.onclick(); await laisser113(); confirmer113(true); await geste; await laisser113(40);
+      const puitsM = parDonnee113(editeur, "data-refus-de-modification")[0] || null;
+      if (!puitsM || puitsM.getAttribute("data-refus-de-modification") !== "refus_nomme" || nu113(puitsM) !== mod.motDeLaModificationDeCompte("refus_nomme") + " « " + CAUSE_MODIFICATION113.trim() + " »" || compter113("GET /api/users") !== avantListeM)
+        ecartsI7113.push(`${nomLangue} : modification « ${nu113(puitsM).slice(0, 160)} »`);
+    }
+    exiger(ecartsI7113.length === 0,
+      `(113i7) LE CINQ CENT TROIS DU COMMIT REFUSÉ DE LA SUPPRESSION OU DE LA MODIFICATION N'A PAS SA FACE (générique, cause entière, sans recharger) : ${JSON.stringify(ecartsI7113)}`);
+
+    // ══ (a) `P10.25-a` — LA TABLE PAGINÉE DE L'EXPLORE, PAR LE CHARGEUR RÉEL ═══════════════════════════════
+    instrument113(!!ligne113 && !!resultat113 && !!qsize113, "`#qstats`, `#qresult` ou `#qsize` n'est plus dans `index.html`");
+    if (qsize113) qsize113.value = "3";
+    const CURSEUR113 = { ts: 1757999998, id: 903 };
+    let servirLaPage113 = () => ({}), servirLeCompte113 = () => ({ count_only: true, total: -1 });
+    servis113["POST /api/query"] = async (d) => ({ corps: await (d.count_only ? servirLeCompte113(d) : servirLaPage113(d)) });
+    const charger113 = async (mod, S, plus = {}) => {
+      S.exploreInflight = null;
+      S.evState = { q: "search sshd | table a b", isSoql: true, keyset: false, cursors: [null], page: 0, pageSize: 3, total: -1, shown: 0, totalCapped: false, countFired: true, realTotal: false, totalError: null, win: { from: 1000, to: 2000 }, ...plus };
+      resultat113.replaceChildren(); ligne113.replaceChildren(); await mod.evLoad(); await laisser113(10); return nu113(ligne113);
+    };
+    const pageVideDe113 = (hote) => parDonnee113(hote, "data-page-vide")[0] || null;
+    // (a1) Page 2 par décalage, vide, total de trois : la phrase de la liste d'événements, le retour, aucun tableau d'en-têtes.
+    servirLaPage113 = (d) => ({ columns: ["a", "b"], rows: [], stats: { elapsed_ms: 1 }, total: 3, offset: d.offset || 0, limit: 3 });
+    await charger113(modViz113, S113, { page: 1 });
+    const a1113 = pageVideDe113(resultat113), retourA1113 = parClasse113(resultat113, "evprev")[0] || null;
+    exiger(!!a1113 && a1113.getAttribute("data-page-vide") === "fin_du_resultat" && nu113(a1113) === "page vide, fin du résultat — ◀ pour revenir" && parBalise113(resultat113, "TH").length === 0
+      && !!retourA1113 && retourA1113.disabled === false,
+      `(113a1) LA TABLE PAGINÉE DE L'EXPLORE, PAGE VIDE DE RANG SUPÉRIEUR, N'A QUE SES EN-TÊTES, sans la phrase de la liste d'événements, ou sans retour : « ${nu113(resultat113).slice(0, 200)} » (${parBalise113(resultat113, "TH").length} en-tête(s))`);
+    servirLaPage113 = (d) => ({ columns: ["a", "b"], rows: [["x", "y"]], stats: { elapsed_ms: 1 }, total: 1, offset: d.offset || 0, limit: 3 });
+    if (retourA1113) { retourA1113.onclick(); await laisser113(20); }
+    exiger(S113.evState.page === 0 && parBalise113(resultat113, "TH").length >= 2 && !pageVideDe113(resultat113),
+      `(113a1) le retour de la table ne ramène pas à une première page rendue en table : page ${S113.evState.page}, « ${nu113(resultat113).slice(0, 120)} »`);
+    // (a2) Un SAUT direct vide d'un parcours par curseur non événementiel : la fin n'est PAS établie, marqué.
+    servirLaPage113 = () => ({ columns: ["a"], rows: [], stats: { elapsed_ms: 1 }, has_more: false, next_cursor: null, limit: 3 });
+    await charger113(modViz113, S113, { q: "search sshd", keyset: true, page: 3, total: 30, realTotal: true });
+    const a2113 = pageVideDe113(resultat113);
+    exiger(!!a2113 && a2113.getAttribute("data-page-vide") === "saut_sans_rendu" && a2113.className === "bad" && parBalise113(resultat113, "TH").length === 0 && !!parClasse113(resultat113, "evprev")[0],
+      `(113a2) UN SAUT DIRECT VIDE DE LA TABLE N'EST PAS DIT « FIN NON ÉTABLIE », marqué, avec son retour : « ${nu113(resultat113).slice(0, 200)} »`);
+    // (a3) Le compte arrive APRÈS la page vide : le repeint garde la phrase et le retour.
+    let libererLeCompte113 = null;
+    servirLeCompte113 = () => new Promise((r) => { libererLeCompte113 = () => r({ count_only: true, total: 3 }); });
+    servirLaPage113 = () => ({ columns: ["a"], rows: [], stats: { elapsed_ms: 1 }, has_more: false, next_cursor: null, limit: 3 });
+    await charger113(modViz113, S113, { q: "search sshd", keyset: true, page: 1, cursors: [null, CURSEUR113], countFired: false });
+    instrument113(typeof libererLeCompte113 === "function", "le compte asynchrone n'est pas parti : le repeint jugé ci-dessous n'aurait pas lieu");
+    if (libererLeCompte113) { libererLeCompte113(); await laisser113(20); }
+    servirLeCompte113 = () => ({ count_only: true, total: -1 });
+    exiger(S113.evState.total === 3 && !!pageVideDe113(resultat113) && parBalise113(resultat113, "TH").length === 0 && !!parClasse113(resultat113, "evprev")[0] && parClasse113(resultat113, "evprev")[0].disabled === false,
+      `(113a3) QUAND LE COMPTE ARRIVE, LA TABLE REPEINTE RETOMBE SUR SES EN-TÊTES ou perd son retour : « ${nu113(resultat113).slice(0, 200)} »`);
+    // (a4) L'instance anglaise ; et CONTRÔLE NÉGATIF : la première page vide d'une table garde ses colonnes, sans phrase.
+    servirLaPage113 = (d) => ({ columns: ["a", "b"], rows: [], stats: { elapsed_ms: 1 }, total: 3, offset: d.offset || 0, limit: 3 });
+    await charger113(modVizEn113, SEn113, { page: 1 });
+    const a4113 = nu113(pageVideDe113(resultat113));
+    servirLaPage113 = (d) => ({ columns: ["a", "b"], rows: [], stats: { elapsed_ms: 1 }, total: 0, offset: d.offset || 0, limit: 3 });
+    await charger113(modViz113, S113, { page: 0 });
+    exiger(a4113 === "empty page, end of the result — ◀ to go back" && !pageVideDe113(resultat113) && parBalise113(resultat113, "TH").length >= 2,
+      `(113a4) la face anglaise de la page vide de la table manque (« ${a4113} »), ou la PREMIÈRE page vide perd ses colonnes au profit d'une phrase`);
+
+    // ══ (n) `P10.25-n` — LA LISTE PAGINÉE PARTAGÉE ET LE PANNEAU DE TABLE ═══════════════════════════════════
+    // (n1) Une liste paginée par CURSEUR, sans total : la page pleine exacte mène à une page vide — fin du résultat.
+    const liste113 = async (mod, pages, plus = {}) => {
+      const hote = new Element("div"), demandes = [];
+      const poignee = mod.pagedList(hote, { mode: "server", pageSize: 2, columns: [{ key: "a", label: "A" }], fetchPage: async (q) => { demandes.push(q); return pages[Math.round(q.offset / 2)] || { rows: [], total: 0 }; }, ...plus });
+      await laisser113();
+      return { hote, demandes, poignee };
+    };
+    const suivre113 = async (hote) => { const b = parClasse113(hote, "evnext")[0]; if (b && !b.disabled) { b.onclick(); await laisser113(); return true; } return false; };
+    const N1113 = [{ rows: [{ a: 1 }, { a: 2 }], suite: "il_en_existe_peut_etre_d_autres" }, { rows: [], suite: "aucune_suite" }];
+    for (const [nomLangue, mod, attendu] of [["fr", modNoyau113, "page vide, fin du résultat — ◀ pour revenir"], ["en", modNoyauEn113, "empty page, end of the result — ◀ to go back"]]) {
+      const l = await liste113(mod, N1113);
+      const avance = await suivre113(l.hote);
+      const pv = pageVideDe113(l.hote), retour = parClasse113(l.hote, "evprev")[0] || null;
+      exiger(avance && l.poignee.state.page === 1 && !!pv && nu113(pv) === attendu && parBalise113(l.hote, "TH").length === 0 && !parDonnee113(l.hote, "data-page-au-dela-du-total").length && !!retour && retour.disabled === false,
+        `(113n1-${nomLangue}) UNE LISTE PAGINÉE SANS TOTAL, PAGE VIDE APRÈS UNE PAGE PLEINE, N'A QUE SES EN-TÊTES — ou se dit « au-delà du total » sans total compté : « ${nu113(l.hote).slice(0, 200)} »`);
+      if (retour) { retour.onclick(); await laisser113(); }
+      exiger(l.poignee.state.page === 0 && l.demandes.length >= 3 && l.demandes[l.demandes.length - 1].offset === 0 && parBalise113(l.hote, "TH").length === 1,
+        `(113n1-${nomLangue}) le retour de la liste ne redemande pas la première page : ${JSON.stringify(l.demandes.slice(-1))}`);
+    }
+    // (n2) Un total COMPTÉ que la page dépasse : la phrase au-delà du total, dans le corps.
+    const n2113 = await liste113(modNoyau113, [{ rows: [{ a: 1 }, { a: 2 }], total: 3 }, { rows: [], total: 1 }]);
+    await suivre113(n2113.hote);
+    exiger(parDonnee113(n2113.hote, "data-page-au-dela-du-total").some((e) => e.getAttribute("data-page-au-dela-du-total") === "page_vide_au_dela") && !pageVideDe113(n2113.hote) && parBalise113(n2113.hote, "TH").length === 0,
+      `(113n2) UNE LISTE PAGINÉE AU-DELÀ DE SON TOTAL COMPTÉ N'A QUE SES EN-TÊTES, ou se dit « fin du résultat » : « ${nu113(n2113.hote).slice(0, 200)} »`);
+    // (n3) Une liste rendue ligne à ligne (sans colonnes) : même phrase au lieu d'un corps vide.
+    const n3113 = await liste113(modNoyau113, N1113, { columns: null, renderRow: (r) => Object.assign(new Element("div"), { textContent: "ligne " + r.a }) });
+    await suivre113(n3113.hote);
+    exiger(!!pageVideDe113(n3113.hote) && !/ligne \d/.test(nu113(n3113.hote)),
+      `(113n3) une liste rendue ligne à ligne, page vide de rang supérieur, ne dit rien : « ${nu113(n3113.hote).slice(0, 200)} »`);
+    // (n4) CONTRÔLES NÉGATIFS : une page SERVIE que la recherche vide n'est pas une page vide ; la première page vide garde son texte.
+    const n4113 = await liste113(modNoyau113, [{ rows: [{ a: 1 }, { a: 2 }], total: 4 }, { rows: [{ a: 3 }, { a: 4 }], total: 4 }], { recherche: true });
+    const champN4113 = parBalise113(n4113.hote, "INPUT")[0] || null;
+    instrument113(!!champN4113, "la liste avec recherche ne porte plus son champ : la page filtrée jugée ci-dessous n'existerait pas");
+    if (champN4113) { champN4113.value = "zzz-113"; champN4113.dispatchEvent(new Evenement("input", { bubbles: true })); await laisser113(); }
+    await suivre113(n4113.hote);
+    const n4Vide113 = await liste113(modNoyau113, [{ rows: [], total: 0 }], { emptyText: "aucune ligne-113" });
+    exiger(n4113.poignee.state.page === 1 && !pageVideDe113(n4113.hote) && !parDonnee113(n4113.hote, "data-page-au-dela-du-total").length
+      && nu113(n4Vide113.hote) === "aucune ligne-113" && !pageVideDe113(n4Vide113.hote),
+      `(113n4-négatif) une page SERVIE que la recherche a vidée se dit page vide (page ${n4113.poignee.state.page} : « ${nu113(n4113.hote).slice(0, 160)} »), ou la première page vide perd son texte (« ${nu113(n4Vide113.hote)} »)`);
+    // (n5) Le panneau de table d'un tableau de bord, sans total compté (compte interrompu, `-1`) puis au-delà d'un total.
+    const panneau113 = async (pages) => {
+      const grille = new Element("div");
+      const PANNEAU = { id: 13, title: "T", query: "search action=login | table a", is_soql: true, viz: "table", position: 0, window_s: 0, visibility: "private", query_private: false, cols: 1, height: 0, drill: "", library_panel_id: null };
+      servis113["GET /api/dashboard/5"] = { corps: { id: 5, name: "SOC", owner: "hugo", visibility: "shared", view_id: null, editable: true, panels: [PANNEAU] } };
+      servis113["POST /api/query"] = (d) => ({ corps: pages[Math.round((d.offset || 0) / 50)] || { columns: ["a"], rows: [], total: 0, stats: {} } });
+      S113.panelCards = [];
+      await modTdb113.loadPanelsInto(grille, { id: 5 }); await laisser113(10);
+      parClasse113(grille, "panel").forEach((c) => { if (c._panel && !c._panel.loaded) { c._panel.loaded = true; c._panel.reload(); } });
+      await laisser113(60);
+      return grille;
+    };
+    const CINQUANTE113 = Array.from({ length: 50 }, (_, i) => [i]);
+    const grilleN5113 = await panneau113([{ columns: ["a"], rows: CINQUANTE113, total: -1, stats: {} }, { columns: ["a"], rows: [], total: -1, stats: {} }]);
+    const suivanteN5113 = parClasse113(grilleN5113, "evnext")[0] || null;
+    instrument113(!!suivanteN5113 && suivanteN5113.disabled === false, "le panneau sans total compté n'offre pas ▶ sur sa page pleine : la page 2 jugée ci-dessous ne serait pas atteinte");
+    if (suivanteN5113) { suivanteN5113.onclick(); await laisser113(60); }
+    const corpsN5113 = parClasse113(grilleN5113, "panelbody")[0] || null;
+    exiger(!!corpsN5113 && !!pageVideDe113(corpsN5113) && nu113(pageVideDe113(corpsN5113)) === "page vide, fin du résultat — ◀ pour revenir" && parBalise113(corpsN5113, "TH").length === 0
+      && !!parClasse113(corpsN5113, "evprev")[0] && parClasse113(corpsN5113, "evprev")[0].disabled === false,
+      `(113n5) LE PANNEAU DE TABLE, PAGE VIDE SANS TOTAL COMPTÉ, N'A QUE SES EN-TÊTES ou pas de retour : « ${nu113(corpsN5113).slice(0, 200)} »`);
+    const grilleN5Bis113 = await panneau113([{ columns: ["a"], rows: CINQUANTE113, total: 60, stats: {} }, { columns: ["a"], rows: [], total: 40, stats: {} }]);
+    const deuxN5113 = parClasse113(grilleN5Bis113, "evnum").find((b) => nu113(b) === "2") || null;
+    instrument113(!!deuxN5113, "le panneau de table paginée ne porte pas de pager numéroté : la page 2 jugée ci-dessous ne serait pas atteinte");
+    if (deuxN5113) { deuxN5113.onclick(); await laisser113(60); }
+    const corpsN5Bis113 = parClasse113(grilleN5Bis113, "panelbody")[0] || null;
+    exiger(!!corpsN5Bis113 && parDonnee113(corpsN5Bis113, "data-page-au-dela-du-total").some((e) => e.getAttribute("data-page-au-dela-du-total") === "page_vide_au_dela") && parBalise113(corpsN5Bis113, "TH").length === 0,
+      `(113n5) LE PANNEAU DE TABLE, PAGE VIDÉE AU-DELÀ DU TOTAL, N'A QUE SES EN-TÊTES : « ${nu113(corpsN5Bis113).slice(0, 200)} »`);
+
+    // ══ (o) `P10.25-o` — L'INFOBULLE D'UNE LIGNE DE TABLE ═══════════════════════════════════════════════
+    const infobulles113 = (mod, cols, lignes, drill) => cueillir113(mod.tableEl(cols, lignes, "search x | stats count by host", drill), (e) => e.tagName === "TR" && e.style && e.style.cursor === "pointer").map((tr) => tr.getAttribute("title"));
+    const o113 = infobulles113(modViz113, ["host", "count"], [["web01", 3], ["{champ}", 1]]), oEn113 = infobulles113(modVizEn113, ["host", "count"], [["web01", 3], ["{champ}", 1]]);
+    exiger(JSON.stringify(o113) === JSON.stringify(["Cliquer pour voir les événements host=web01", "Cliquer pour voir les événements host={champ}"])
+      && JSON.stringify(oEn113) === JSON.stringify(["Click to see the events with host=web01", "Click to see the events with host={champ}"]),
+      `(113o) L'INFOBULLE D'UNE LIGNE DE TABLE RESTE FRANÇAISE SOUS \`LANG='en'\`, ou une valeur servie y est réinterprétée : ${JSON.stringify(o113)} / ${JSON.stringify(oEn113)}`);
+    // CONTRÔLE NÉGATIF : les deux autres infobulles restent des nœuds entiers, clés du lexique.
+    const oForage113 = infobulles113(modVizEn113, ["host", "count"], [["web01", 3]], "search host=$value$")[0], oInstant113 = infobulles113(modVizEn113, ["ts", "count"], [[1758000000, 3]])[0];
+    const lexique113 = srcDe113("i18n.js");
+    exiger(oForage113 === "Cliquer pour exécuter le drill du panneau" && oInstant113 === "Cliquer pour voir tous les détails"
+      && lexique113.includes("\"Cliquer pour exécuter le drill du panneau\": \"Click to run the panel drill\"") && lexique113.includes("\"Cliquer pour voir tous les détails\": \"Click to see all details\""),
+      `(113o-négatif) les infobulles de forage et d'instant ne sont plus les nœuds entiers que le lexique traduit : « ${oForage113} » / « ${oInstant113} »`);
+
+    // ══ (f) LES TABLES DE FACES : deux faces DISTINCTES par entrée, l'anglaise sans accent français ═══════════
+    const entreesDe113 = (src, nom) => {
+      const table = (src.match(new RegExp("const " + nom + " = \\{[\\s\\S]*?\\n\\};")) || [""])[0];
+      return [...table.matchAll(/^ {2}(\w+): \{\n {4}fr: (.+),\n {4}en: (.+) \},?$/gm)].map((m) => ({ cle: m[1], fr: m[2], en: m[3] }));
+    };
+    const tablesFautives113 = [[srcComptes113, "MOTS_DE_LA_CREATION_DE_COMPTE", 10], [srcDe113("viz.js"), "MOTS_DE_L_INFOBULLE_D_UNE_LIGNE", 1], [srcDe113("viz.js"), "MOTS_DE_LA_PAGE_VIDE", 1]]
+      .filter(([src, nom, n]) => { const e = entreesDe113(src, nom); return e.length !== n || e.some((x) => x.fr === x.en || ACCENTS113.test(x.en)); }).map(([, nom]) => nom);
+    const finDuResultat113 = (srcDe113("core.js").match(/const MOTS_DE_LA_FIN_DU_RESULTAT = \{\n {2}fr: (.+),\n {2}en: (.+),\n\};/) || []);
+    exiger(tablesFautives113.length === 0 && finDuResultat113.length === 3 && finDuResultat113[1] !== finDuResultat113[2] && !ACCENTS113.test(finDuResultat113[2])
+      && !/fin du résultat — ◀/.test(srcDe113("viz.js").replace(/\/\/[^\n]*/g, "")),
+      `(113f) une table de faces n'a pas ses DEUX faces distinctes sur chaque entrée, a perdu une entrée, ou la fin du résultat est écrite ailleurs qu'au point commun : ${JSON.stringify(tablesFautives113)}`);
+
+    // ══ (p) `P10.25-p` — LE COMPTE RENDU DE LA SUPPRESSION, PEINT ; ET L'OUVERTURE REFUSÉE PAR L'ANNUAIRE, DITE ═════════
+    // L'INSTRUMENT : le corps que `user_delete` rend en deux cents, et le jugement des jetons, relus dans le démon.
+    const suppressionP113 = corpsDeFonction113(COMPTES113, "pub(crate) async fn user_delete(").replace(/\/\/[^\n]*/g, "");
+    const JETONS113 = readFileSync(path.join(RACINE, "daemon", "src", "handlers", "tokens.rs"), "utf8");
+    const traitementP113 = corpsDeFonction113(JETONS113, "    pub(crate) fn traiter(conn: &Connection, auteur: &str) -> rusqlite::Result<Self> {").replace(/\/\/[^\n]*/g, "");
+    const clesDuCompteRendu113 = (((suppressionP113.match(/let compte_rendu = json!\(\{([\s\S]*?)\}\);/) || [])[1]) || "").match(/"(\w+)":/g) || [];
+    const clesDesJetons113 = (((traitementP113.match(/pub\(crate\) fn en_json\(&self\) -> Value \{\s*json!\(\{([\s\S]*?)\}\)/) || [])[1]) || "").match(/"(\w+)":/g) || [];
+    const raisons113 = [...traitementP113.matchAll(/Some\("(\w+)"\)/g)].map((m) => m[1]).sort();
+    instrument113(clesDuCompteRendu113.join("") === '"action":"kind":"target":"role":"actor":"second_facteur_retire":"objets_reattribues_a":"objets_reattribues":"objets_purges":"jetons":'
+      && clesDesJetons113.join("") === '"revoques":"conserves_secret_connu":"auteur_non_etabli":"decision":' && JSON.stringify(raisons113) === JSON.stringify(["jamais_servi", "lecture_des_donnees"])
+      && /Json\(compte_rendu\)\.into_response\(\)/.test(suppressionP113),
+      `le compte rendu que \`user_delete\` rend en deux cents n'a plus la forme peinte ici (clés ${clesDuCompteRendu113.join("")} ; jetons ${clesDesJetons113.join("")} ; raisons ${JSON.stringify(raisons113)})`);
+    const srcComptesP113 = srcDe113("admin_users.js");
+    const clesDesFacesDuCompteRendu113 = [...((srcComptesP113.match(/const MOTS_DU_COMPTE_RENDU_DE_SUPPRESSION = \{[\s\S]*?\n\};/) || [""])[0]).matchAll(/^ {2}(\w+): \{$/gm)].map((m) => m[1]);
+    exiger(raisons113.every((r) => clesDesFacesDuCompteRendu113.includes("raison_" + r)),
+      `(113p0) une raison de révocation servie par le démon n'a pas de face (${JSON.stringify(raisons113)} / ${JSON.stringify(clesDesFacesDuCompteRendu113)})`);
+    const DECISION113 = constante113(JETONS113, "DECISION_SUR_LES_JETONS_DU_COMPTE_SUPPRIME");
+    const COMPTE_RENDU113 = { action: "config.user.delete", kind: "user", target: "bob", role: "editor", actor: "hugo", second_facteur_retire: true, objets_reattribues_a: "hugo",
+      objets_reattribues: { dashboard: [4, 5], view: [7], library_panel: [], playlist: [] }, objets_purges: { saved_query: [9], dashboard_snapshot: [] },
+      jetons: { revoques: [{ name: "graf-113", kind: "datasource", host: null, raison: "lecture_des_donnees" }, { name: "neuf-113", kind: "agent", host: "web01", raison: "jamais_servi" }],
+        conserves_secret_connu: [{ name: "hec-113", kind: "hec", host: null, last_used: 1758000000 }], auteur_non_etabli: { agent: 3, hec: 1 }, decision: DECISION113 } };
+    // LE GESTE RÉEL : ✕ sur la ligne de « bob », la confirmation jouée, la réponse servie ; le compte rendu relu en tête de liste.
+    const supprimerP113 = async (mod, reponse) => {
+      const enfants = await lignesDeLaListe113(mod); const i = indexDe113(enfants, "bob");
+      const bouton = i >= 0 ? cueillir113(enfants[i], (e) => e.tagName === "BUTTON" && e.title === "Supprimer le compte")[0] : null;
+      if (!bouton) return { bouton: null };
+      servis113["DELETE /api/users/3"] = reponse;
+      const avantListe = compter113("GET /api/users"), avantAvis = avis113().length;
+      const geste = bouton.onclick(); await laisser113(); confirmer113(true); await geste; await laisser113(40);
+      const liste = hotes113["#user-list"];
+      const bloc = parDonnee113(liste, "data-compte-rendu-de-suppression")[0] || null;
+      return { bouton, bloc, lu: bloc && bloc.getAttribute("data-compte-rendu-lu"), enTete: !!bloc && liste.children[0] === bloc, texte: nu113(bloc),
+        titre: bloc && bloc.children[0] ? nu113(bloc.children[0]) : "",
+        lignes: bloc ? parDonnee113(bloc, "data-ligne-du-compte-rendu").map((li) => [li.getAttribute("data-ligne-du-compte-rendu"), nu113(li), li.className]) : [],
+        rechargements: compter113("GET /api/users") - avantListe, avis: avis113().length - avantAvis, refus: parDonnee113(liste, "data-refus-de-suppression").length };
+    };
+    const ATTENDU_P1113 = {
+      fr: ["Compte « bob » supprimé — ce que le démon en a fait :", [
+        ["objets_reattribues", "objets réattribués à hugo : 2 tableau(x) de bord, 1 vue(s)", ""], ["objets_purges", "objets supprimés : 1 requête(s) enregistrée(s)", ""],
+        ["second_facteur_retire", "second facteur retiré", ""], ["jeton_revoque", "jeton RÉVOQUÉ : graf-113 (source de données) — il donnait la lecture des données", ""],
+        ["jeton_revoque", "jeton RÉVOQUÉ : neuf-113 (agent · web01) — jamais servi, aucun capteur n'en dépendait", ""],
+        ["jeton_conserve", "jeton CONSERVÉ, secret connu d'un compte supprimé : hec-113 (HEC) — le révoquer et en refrapper un pour son capteur", "bad"],
+        ["auteur_non_etabli", "jetons d'auteur non établi, non touchés : 3 agent, 1 HEC", ""]]],
+      en: ["Account “bob” deleted — what the daemon did with it:", [
+        ["objets_reattribues", "objects reassigned to hugo: 2 dashboard(s), 1 view(s)", ""], ["objets_purges", "objects deleted: 1 saved query(ies)", ""],
+        ["second_facteur_retire", "second factor removed", ""], ["jeton_revoque", "token REVOKED: graf-113 (data source) — it granted reading the data", ""],
+        ["jeton_revoque", "token REVOKED: neuf-113 (agent · web01) — never used, no sensor depended on it", ""],
+        ["jeton_conserve", "token KEPT, secret known to a deleted account: hec-113 (HEC) — revoke it and mint a new one for its sensor", "bad"],
+        ["auteur_non_etabli", "tokens with no established author, not touched: 3 agent, 1 HEC", ""]]],
+    };
+    const ecartsP1113 = [];
+    for (const [nomLangue, mod] of [["fr", modComptes113], ["en", modComptesEn113]]) {
+      const r = await supprimerP113(mod, { statut: 200, corps: COMPTE_RENDU113 });
+      if (!r.bouton) { ecartsP1113.push(`${nomLangue} : la ligne de « bob » ne porte pas ✕`); continue; }
+      const [titre, lignes] = ATTENDU_P1113[nomLangue];
+      if (!r.bloc || r.lu !== "oui" || !r.enTete || r.titre !== titre) ecartsP1113.push(`${nomLangue} : bloc ${r.bloc ? `« ${r.lu} », en tête ${r.enTete}, titre « ${r.titre} »` : "absent"}`);
+      if (JSON.stringify(r.lignes) !== JSON.stringify(lignes)) ecartsP1113.push(`${nomLangue} : lignes ${JSON.stringify(r.lignes)}`);
+      if (r.rechargements !== 1 || r.avis || r.refus) ecartsP1113.push(`${nomLangue} : rechargements ${r.rechargements}, avis ${r.avis}, refus ${r.refus}`);
+      if (nomLangue === "en" && ACCENTS113.test(r.texte.replace("“bob”", ""))) ecartsP1113.push(`en : un accent français dans « ${r.texte.slice(0, 120)} »`);
+    }
+    exiger(ecartsP1113.length === 0,
+      `(113p1) LE COMPTE RENDU SERVI PAR LA SUPPRESSION N'EST PAS PEINT (objets réattribués et supprimés, second facteur, jetons révoqués avec leur raison, conservés au secret connu avec le geste et marqués, auteur non établi), en tête de la liste rechargée, dans les deux langues : ${JSON.stringify(ecartsP1113)}`);
+    // (p2) Sans corps (deux cent quatre d'un démon d'avant) : la suppression est dite, et l'absence de compte rendu aussi.
+    const p2113 = await supprimerP113(modComptes113, { statut: 204, corps: "" });
+    exiger(p2113.lu === "non" && p2113.texte === modComptes113.motDuCompteRendu("sans_compte_rendu", { nom: "bob" }) && p2113.lignes.length === 0 && p2113.rechargements === 1,
+      `(113p2) une suppression acceptée SANS compte rendu lisible ne le dit pas : ${JSON.stringify({ lu: p2113.lu, texte: p2113.texte.slice(0, 120) })}`);
+    // (p3) CONTRÔLE NÉGATIF : un refus n'est pas suivi d'un compte rendu, et la liste n'est pas rechargée.
+    const p3113 = await supprimerP113(modComptes113, { statut: 503, corps: { error: CAUSE_SUPPRESSION113, id: "plume-e1-10" } });
+    exiger(!p3113.bloc && p3113.refus === 1 && p3113.rechargements === 0,
+      `(113p3-négatif) un REFUS de suppression peint un compte rendu, ou recharge la liste : ${JSON.stringify({ bloc: !!p3113.bloc, refus: p3113.refus, rechargements: p3113.rechargements })}`);
+    // (p4) Les faces du compte rendu : deux faces DISTINCTES par entrée, l'anglaise sans accent français.
+    const facesP113 = entreesDe113(srcComptesP113, "MOTS_DU_COMPTE_RENDU_DE_SUPPRESSION");
+    exiger(facesP113.length === 12 && facesP113.length === clesDesFacesDuCompteRendu113.length && facesP113.every((x) => x.fr !== x.en && !ACCENTS113.test(x.en)),
+      `(113p4) une face du compte rendu n'a pas ses deux langues distinctes, ou l'anglaise porte un accent : ${JSON.stringify(facesP113.filter((x) => x.fr === x.en || ACCENTS113.test(x.en)).map((x) => x.cle))} (${facesP113.length})`);
+
+    // (s) L'OUVERTURE REFUSÉE PAR L'ANNUAIRE (`P10.25-d`, démon) : la cause entière au-dessus du formulaire, pas une invite muette.
+    const AUTH113 = readFileSync(path.join(RACINE, "daemon", "src", "auth.rs"), "utf8");
+    const CAUSES_DE_L_ANNUAIRE113 = [["CAUSE_ANNUAIRE_NOM_DE_L_ADMINISTRATEUR_DE_CONFIGURATION", 403, "annuaire_refuse"], ["CAUSE_ANNUAIRE_NOM_D_UN_COMPTE_A_MOT_DE_PASSE", 403, "annuaire_refuse"], ["CAUSE_ANNUAIRE_NOM_NON_VERIFIE", 503, "annuaire_non_verifie"]]
+      .map(([nom, statut, cle]) => ({ nom, statut, cle, cause: constante113(AUTH113, nom) }));
+    instrument113(CAUSES_DE_L_ANNUAIRE113.every((c) => c.cause.length > 150)
+      && /Self::AdministrateurDeConfiguration\(_\) => \(StatusCode::FORBIDDEN, CAUSE_ANNUAIRE_NOM_DE_L_ADMINISTRATEUR_DE_CONFIGURATION\)/.test(AUTH113)
+      && /Self::CompteAMotDePasse\(_\) => \(StatusCode::FORBIDDEN, CAUSE_ANNUAIRE_NOM_D_UN_COMPTE_A_MOT_DE_PASSE\)/.test(AUTH113)
+      && /Self::NonVerifie\(\.\.\) => \(StatusCode::SERVICE_UNAVAILABLE, CAUSE_ANNUAIRE_NOM_NON_VERIFIE\)/.test(AUTH113)
+      && /let \(statut, cause\) = self\.statut_et_cause\(\);\s*err_json\(statut, cause\)/.test(AUTH113) && /return refus\.servir\(&st, &src_ip\);/.test(AUTH113),
+      "les refus de l'annuaire ne sont plus servis par `auth_guard` en JSON nommé sous 403/403/503 : les faces jugées ci-dessous ne seraient plus celles du démon");
+    const modConnexion113 = await import(url113("login.js"));
+    localStorage.setItem("soc_lang", "en");
+    const modConnexionEn113 = await import(adresseSousLaLangue("login.js"));
+    if (langueOrigine113 === null) localStorage.removeItem("soc_lang"); else localStorage.setItem("soc_lang", langueOrigine113);
+    instrument113([modConnexion113.initAuthGate, modConnexionEn113.initAuthGate, modConnexion113.cleDuRefusDeLOuverture, modConnexion113.motDeLaConnexion, modConnexionEn113.motDeLaConnexion].every((f) => typeof f === "function"),
+      "`initAuthGate`, `cleDuRefusDeLOuverture` ou `motDeLaConnexion` n'est plus exporté par web/login.js");
+    const ecartsS0113 = [];
+    CAUSES_DE_L_ANNUAIRE113.forEach((c) => { const lue = modConnexion113.cleDuRefusDeLOuverture({ causeDuDemon: c.cause }); if (lue !== c.cle) ecartsS0113.push(`${c.nom} lue « ${lue} »`); });
+    for (const [e, attendu] of [[{ causeDuDemon: CAUSES_DE_CREATION113.nom_de_l_administrateur_de_configuration }, "ouverture_refusee"], [{ causeDuDemon: "IDENTITÉ DE L'ANNUAIRE REFUSÉES x" }, "ouverture_refusee"],
+      [{ message: "401 auth requise" }, ""], [new TypeError("Failed to fetch"), ""], [null, ""]]) {
+      const lue = modConnexion113.cleDuRefusDeLOuverture(e); if (lue !== attendu) ecartsS0113.push(`${JSON.stringify(e && (e.causeDuDemon || e.message))} lue « ${lue} », attendu « ${attendu} »`);
+    }
+    exiger(ecartsS0113.length === 0, `(113s0) LA NATURE D'UN REFUS DE L'OUVERTURE N'EST PAS RECONNUE À LA CAUSE SERVIE, dans les deux sens : ${JSON.stringify(ecartsS0113)}`);
+    const recouvrement113 = qsOrigine113.call(document, "#login-ov"), formulaireDeConnexion113 = qsOrigine113.call(document, "#login-form");
+    const recouvrementCache113 = recouvrement113 ? recouvrement113.hidden : true, verrouille113 = document.body.classList.contains("login-locked");
+    const ouvrir113 = async (mod, reponse) => {
+      servis113["GET /api/me"] = reponse;
+      mod.initAuthGate(); await laisser113(60);
+      const noeud = formulaireDeConnexion113 ? parDonnee113(formulaireDeConnexion113, "data-refus-de-l-ouverture")[0] || null : null;
+      return { cle: noeud && noeud.getAttribute("data-refus-de-l-ouverture"), texte: nu113(noeud), role: noeud && noeud.getAttribute("role"), invite: !!recouvrement113 && recouvrement113.hidden === false };
+    };
+    const ecartsS1113 = [];
+    try {
+      for (const [nomLangue, mod] of [["fr", modConnexion113], ["en", modConnexionEn113]]) {
+        for (const c of CAUSES_DE_L_ANNUAIRE113) {
+          const r = await ouvrir113(mod, { statut: c.statut, corps: { error: c.cause, ...(c.statut >= 500 ? { id: "plume-e1-11" } : {}) } });
+          const attendu = mod.motDeLaConnexion(c.cle) + " « " + c.cause.trim() + " »";
+          if (r.cle !== c.cle || r.texte !== attendu || r.role !== "alert" || !r.invite) ecartsS1113.push(`${nomLangue}/${c.nom} : « ${r.cle} » ${r.texte.slice(0, 120)}… (invite ${r.invite})`);
+          if (nomLangue === "en" && ACCENTS113.test(mod.motDeLaConnexion(c.cle))) ecartsS1113.push(`en/${c.nom} : la face anglaise porte un accent`);
+        }
+      }
+      // Un autre refus nommé : la face générique ; un 401 nu : l'invite d'avant, SANS phrase (et un refus précédent retiré).
+      const s2113 = await ouvrir113(modConnexion113, { statut: 403, corps: { error: "TENANT REFUSÉ-113 : cause d'essai" } });
+      const s3113 = await ouvrir113(modConnexion113, { statut: 401, corps: "auth requise" });
+      if (s2113.cle !== "ouverture_refusee" || s2113.texte !== modConnexion113.motDeLaConnexion("ouverture_refusee") + " « TENANT REFUSÉ-113 : cause d'essai »") ecartsS1113.push(`générique : « ${s2113.cle} » ${s2113.texte}`);
+      if (s3113.cle !== null || !s3113.invite) ecartsS1113.push(`401 nu : « ${s3113.cle} » ${s3113.texte} (invite ${s3113.invite})`);
+    } finally {
+      if (formulaireDeConnexion113) parDonnee113(formulaireDeConnexion113, "data-refus-de-l-ouverture").forEach((n) => n.remove());
+      if (recouvrement113) recouvrement113.hidden = recouvrementCache113;
+      document.body.classList.toggle("login-locked", verrouille113);
+    }
+    exiger(ecartsS1113.length === 0,
+      `(113s1) UNE OUVERTURE REFUSÉE PAR LE DÉMON N'EST PAS DITE AU-DESSUS DU FORMULAIRE, cause entière, dans les deux langues — ou un 401 nu porte une phrase : ${JSON.stringify(ecartsS1113)}`);
+  } finally {
+    globalThis.fetch = fetchOrigine113; globalThis.setTimeout = minuterieOrigine113; document.querySelector = qsOrigine113;
+    for (const o of etatOrigine113) { o.S.isAdmin = o.admin; o.S.AUTH = o.auth; o.S.evState = o.evState; o.S.exploreInflight = o.vol; o.S.qHist = o.hist; o.S.qHistIdx = o.histIdx; o.S.lastResult = o.dernier; o.S.panelCards = o.cartes; }
+    if (nom113) nom113.value = valeursDuFormulaire113.nom; if (mdp113) mdp113.value = valeursDuFormulaire113.mdp; if (role113) role113.value = valeursDuFormulaire113.role;
+    if (resultatDeCreation113) resultatDeCreation113.textContent = "";
+    if (formulaire113) { parDonnee113(formulaire113, "data-puits-du-refus-de-creation").forEach((p) => p.remove()); if (valeursDuFormulaire113.cache) formulaire113.classList.add("hidden"); else formulaire113.classList.remove("hidden"); }
+    if (qsize113) qsize113.value = valeursOrigine113.taille; if (sql113) sql113.value = valeursOrigine113.sql;
+    const b = qsOrigine113.call(document, "#qbadge");
+    if (resultat113) resultat113.replaceChildren(); if (ligne113) ligne113.replaceChildren(); if (b) { b.replaceChildren(); b.hidden = true; }
+    document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
+  }
+  console.log("(113) OK — les quatre refus nommés de la création d'un compte (nom de l'administrateur de configuration, nom tenu sans compte, nom non vérifié, COMMIT refusé), reconnus à la cause relue dans `user_create` et à elle seule, ont leur face dans les deux langues et leur cause ENTIÈRE dans un puits du formulaire — plus de JSON brut coupé à deux cents caractères, plus de code, sans accuser, le formulaire et le nom gardés ; ce que le nom tient est présenté (l'annuaire, puis une ligne par table, les tables jugées contre les trois listes du démon, une table sans mot dite par son nom) et un détail illisible se dit illisible ; le 409 en texte brut garde sa phrase sans son code, une page de passerelle sa face, une demande qui n'aboutit pas ne se dit pas refusée, une création acceptée efface le refus. Les cinq cent trois du COMMIT refusé de la suppression et de la modification ont bien leur face générique, cause entière. Une page vide de rang supérieur dit sa phrase au lieu d'un tableau d'en-têtes dans la table paginée de l'Explore (fin du résultat, saut sans rendu marqué, repeint du compte), dans une liste paginée (fin du résultat sans total compté, au-delà du total compté, liste rendue ligne à ligne) et dans un panneau de table, avec son retour ; une page que la recherche vide et une première page vide n'en disent rien. L'infobulle d'une ligne qui mène aux événements d'une valeur a ses deux faces. Après une suppression, le compte rendu servi (objets réattribués et supprimés, second facteur, jetons révoqués avec leur raison, conservés au secret connu avec le geste, auteur non établi) est peint en tête de la liste rechargée, et son absence se dit ; une ouverture de la console refusée par l'annuaire (403, 503) dit sa cause entière au-dessus du formulaire, un 401 nu garde l'invite d'avant. CE QUI ÉTAIT FAUX OU IMPRÉCIS : `P10.25-i` comptait trois causes (460, 558, 224) — la quatrième, le nom non vérifié (250), était coupée aussi ; `ce_que_le_nom_tient` n'atteignait même pas la console (`apiSend` ne portait que `error`) ; `P10.25-n` disait « seul le pager le dit » — sans total compté (liste par curseur, panneau au compte interrompu), le pager ne le disait pas non plus ; la confirmation de suppression disait les jetons « NON révoqués » quand le démon en révoque, et le témoin 112 restait vert (sa lecture cherchait du SQL dans le seul `user_delete`) ; `fetchMe` avalait tout refus de `/api/me`, et l'annuaire refusé ouvrait une invite de connexion muette.");
 }
 
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;

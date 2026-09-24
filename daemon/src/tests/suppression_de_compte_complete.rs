@@ -129,10 +129,10 @@ mod suppression_de_compte_complete {
     /// rétrogradation préalable ne la contourne pas. Rien n'est écrit : le compte est là, `viewer`, son second facteur
     /// aussi, son époque n'a pas bougé depuis la réinitialisation, aucune suppression n'est attestée. Le mot de passe
     /// d'INSTALLATION ne connecte pas (ni par `/api/login`, ni en Basic) ; le mot de passe posé par `adm` connecte,
-    /// `viewer`. CONTRÔLE POSITIF : un autre administrateur (`adm2`) se supprime (204), et son mot de passe ne connecte
+    /// `viewer`. CONTRÔLE POSITIF : un autre administrateur (`adm2`) se supprime (200), et son mot de passe ne connecte
     /// plus — aucune crédence ne survit pour un compte qui n'est pas celui de l'assistant.
     ///
-    /// LA MUTATION QUI LE FAIT ROUGIR, ET QUI EST LA FORME D'AVANT : retirer le refus de `user_delete` — `204`, puis le
+    /// LA MUTATION QUI LE FAIT ROUGIR, ET QUI EST LA FORME D'AVANT : retirer le refus de `user_delete` — `200`, puis le
     /// mot de passe d'installation reconnecte `wiz` en administrateur.
     #[tokio::test]
     async fn csup_le_compte_de_l_assistant_ne_se_supprime_pas_et_sa_credence_ne_revient_pas() {
@@ -178,7 +178,7 @@ mod suppression_de_compte_complete {
         let de_adm2 = csup_mot("adm2");
         csup_creer(&st, "adm2", &de_adm2, "admin").await;
         let (statut, corps) = csup_supprimer(&st, "adm", "adm2").await;
-        assert_eq!(statut, 204, "un autre administrateur se supprime : {corps}");
+        assert_eq!(statut, 200, "un autre administrateur se supprime : {corps}");
         let (s, _, _) = csup_connexion(&st, "adm2", &de_adm2, "10.81.0.5").await;
         assert_eq!(s, 401, "et son mot de passe ne connecte plus");
     }
@@ -189,7 +189,7 @@ mod suppression_de_compte_complete {
 
     /// CE QU'IL TIENT : l'ancien `bob` (second facteur actif) a dix mots de passe faux depuis `X` (verrouillé) et dix
     /// codes faux, chacun depuis sa propre adresse, avec un ticket juste (frein engagé) ; `alice` a trois échecs depuis
-    /// `X`. `bob` supprimé (204) : plus aucun échec compté pour `bob`, quelle que soit l'adresse, et plus de frein ;
+    /// `X`. `bob` supprimé (200) : plus aucun échec compté pour `bob`, quelle que soit l'adresse, et plus de frein ;
     /// les trois échecs d'`alice` sont intacts. `bob` recréé, avec sa propre graine : son BON mot de passe depuis `X`
     /// rend un ticket (200), et un code JUSTE de SA graine ouvre une session qui résout son identité.
     ///
@@ -217,7 +217,7 @@ mod suppression_de_compte_complete {
         assert!(crate::handlers::idp::second_facteur_freine(&st, "bob").is_some(), "fixture : le frein de l'ancien bob est engagé");
 
         let (statut, corps) = csup_supprimer(&st, "adm", "bob").await;
-        assert_eq!(statut, 204, "fixture : bob supprimé : {corps}");
+        assert_eq!(statut, 200, "fixture : bob supprimé : {corps}");
         assert_eq!(st.auth_fails.lock().keys().filter(|(nom, _)| nom == "bob").count(), 0, "aucun échec ne reste compté pour bob");
         assert_eq!(crate::handlers::idp::second_facteur_freine(&st, "bob"), None, "plus de frein");
         assert_eq!(crate::handlers::idp::echecs_consecutifs_du_second_facteur(&st, "bob"), 0, "plus aucun code faux compté");
@@ -311,7 +311,7 @@ mod suppression_de_compte_complete {
 
     /// CE QU'IL TIENT : `bob` possède deux requêtes enregistrées, un tableau de bord privé et un commun, une vue, un
     /// panneau de bibliothèque et une playlist privés, et un instantané capturé au rôle `admin` ; `alice` possède une
-    /// requête, un tableau de bord privé et un instantané. `adm` supprime `bob` (204) :
+    /// requête, un tableau de bord privé et un instantané. `adm` supprime `bob` (200) :
     ///  * ses requêtes et son instantané n'existent plus ; ses tableaux de bord, sa vue, son panneau et sa playlist
     ///    appartiennent à `adm`, leur visibilité INCHANGÉE (le privé reste privé, le commun commun) ;
     ///  * rien de ce qui est à `alice` n'a bougé ;
@@ -332,7 +332,7 @@ mod suppression_de_compte_complete {
         let a_alice = csup_poser_les_objets(&st, "alice", &"cd".repeat(32));
 
         let (statut, corps) = csup_supprimer(&st, "adm", "bob").await;
-        assert_eq!(statut, 204, "bob supprimé : {corps}");
+        assert_eq!(statut, 200, "bob supprimé : {corps}");
         assert_eq!(csup_compte(&st, "SELECT COUNT(*) FROM saved_query WHERE owner=?1", "bob"), 0, "ses requêtes enregistrées sont purgées");
         assert_eq!(csup_compte(&st, "SELECT COUNT(*) FROM dashboard_snapshot WHERE created_by=?1", "bob"), 0, "son instantané aussi");
         assert_eq!(csup_proprietaire(&st, "dashboard", a_bob.tdb_prive), ("adm".into(), "private".into()), "tableau de bord privé : à adm, privé");
@@ -373,7 +373,8 @@ mod suppression_de_compte_complete {
                 &st,
                 "SELECT COUNT(*) FROM ledger WHERE kind='config.user.delete' AND detail=?1",
                 "compte 'bob' (rôle editor) supprimé par adm ; objets réattribués à adm : dashboard 2, view 1, library_panel 1, \
-                 playlist 1 ; purgés : saved_query 2, dashboard_snapshot 1"
+                 playlist 1 ; purgés : saved_query 2, dashboard_snapshot 1 ; \
+                 jetons révoqués 0 [], conservés au secret connu 0 [], d'auteur non établi 0" // `P10.24-w` : la phrase des jetons
             ),
             1,
             "et au registre, chaîné"
@@ -418,10 +419,10 @@ mod suppression_de_compte_complete {
     /// la suppression n'a PAS lieu — `500` nommé : le compte existe, ses requêtes et son instantané sont là (leur purge,
     /// faite AVANT, est défaite), ses tableaux de bord sont à lui, son époque n'a pas bougé, aucune suppression n'est
     /// attestée, et la mémoire n'a rien oublié (trois échecs de connexion, trois codes faux comptés). L'autorisateur
-    /// retiré, le même geste supprime (204), purge, réattribue, et la mémoire oublie.
+    /// retiré, le même geste supprime (200), purge, réattribue, et la mémoire oublie.
     ///
     /// LES MUTATIONS QUI LE FONT ROUGIR : avaler l'échec des objets (le `?` de `ObjetsDuCompteSupprime::traiter` remplacé
-    /// par un résultat vide) — `204`, le compte supprimé avec ses playlists à son nom ; oublier la mémoire AVANT la
+    /// par un résultat vide) — `200`, le compte supprimé avec ses playlists à son nom ; oublier la mémoire AVANT la
     /// transaction — les échecs de `bob` perdus alors que rien n'est supprimé.
     #[tokio::test]
     async fn csup_objets_et_memoire_suivent_la_transaction_de_la_suppression() {
@@ -456,7 +457,7 @@ mod suppression_de_compte_complete {
         assert_eq!(crate::handlers::idp::echecs_consecutifs_du_second_facteur(&st, "bob"), 3, "ni ses codes faux");
 
         let (statut, corps) = csup_supprimer(&st, "adm", "bob").await;
-        assert_eq!(statut, 204, "l'autorisateur retiré, le même geste supprime : {corps}");
+        assert_eq!(statut, 200, "l'autorisateur retiré, le même geste supprime : {corps}");
         assert_eq!(csup_compte(&st, "SELECT COUNT(*) FROM saved_query WHERE owner=?1", "bob"), 0, "requêtes purgées");
         assert_eq!(csup_proprietaire(&st, "playlist", a_bob.playlist).0, "adm", "playlist réattribuée");
         assert_eq!(csup_epoque_du_compte(&st, "bob"), 1, "époque avancée");

@@ -1,6 +1,6 @@
 // viz.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // Explore + viz/charts: drilldown, fenetre glissante, requete interactive, rendu table/graphes (partages avec dashboards).
-import { $, CSSV, LANG, LOC, SEV, api, apiSend, unDeuxCentsSansCorpsLisible, bornerLePopoverSousSonAncre, causeDeLaTraceManquante, cleDeLaSuiteServie, cleDeLIdentifiantDeRiposte, colComparator, largeursDeColonnes, confirmModal, esc, flashStopped, fmtTs, ic, laPageEstAuDelaDuTotal, makePager, motDeLaPageAuDelaDuTotal, motDeLaRiposteSansIdentifiant, muted, phraseDeLaCreationDeRiposteRefusee, phraseDeLaTraceManquante, sev, socIsAdmin, toast, tzOpts } from './core.js';
+import { $, CSSV, LANG, LOC, SEV, api, apiSend, unDeuxCentsSansCorpsLisible, bornerLePopoverSousSonAncre, causeDeLaTraceManquante, cleDeLaSuiteServie, cleDeLIdentifiantDeRiposte, colComparator, largeursDeColonnes, confirmModal, esc, flashStopped, fmtTs, ic, laPageEstAuDelaDuTotal, makePager, motDeLaPageAuDelaDuTotal, motDeLaRiposteSansIdentifiant, muted, noeudDeLaFinDuResultat, phraseDeLaCreationDeRiposteRefusee, phraseDeLaTraceManquante, sev, socIsAdmin, toast, tzOpts } from './core.js';
 import { S } from './state.js';
 // P11.4-h : LE clic qui respecte une sélection (mécanisme partagé, `copie_et_selection.js`).
 import { clicQuiRespecteLaSelection } from './copie_et_selection.js';
@@ -2169,6 +2169,21 @@ function closeColsMenu() { if (S._colsMenuClose) { const f = S._colsMenuClose; S
 // listes de lignes non serveur-paginées : le DOM ne tient qu'une page (scale des milliers de groupes). `total`
 // = vrai total affiché (défaut = rows.length ; un count_only NON plafonné peut le remplacer via re-rendu).
 // SANS `opts` : comportement STRICTEMENT INCHANGÉ (Explore, aperçus) — byte-identique.
+// `P10.25-o` — L'INFOBULLE D'UNE LIGNE QUI MÈNE AUX ÉVÉNEMENTS DE SA VALEUR A SES DEUX FACES. Mesuré avant ce lot :
+// « Cliquer pour voir les événements champ=valeur » restait française sous `LANG='en'` — le nom de la colonne et la
+// valeur s'y collent, la chaîne n'égale donc jamais la clé « Cliquer pour voir les événements » du lexique (qui
+// traduit, elle, l'infobulle SANS valeur d'une barre de graphe). Les deux autres infobulles de la ligne (forage du
+// panneau, détail d'un instant) sont des nœuds entiers, au lexique, et le restent. La valeur est posée par une
+// fonction de remplacement : une valeur servie qui contient « {champ} » n'est jamais réinterprétée.
+const MOTS_DE_L_INFOBULLE_D_UNE_LIGNE = {
+  evenements_de_la_valeur: {
+    fr: 'Cliquer pour voir les événements {champ}={valeur}',
+    en: 'Click to see the events with {champ}={valeur}' },
+};
+function motDeLInfobulleDUneLigne(cle, valeurs = {}) {
+  const face = LANG === 'en' ? MOTS_DE_L_INFOBULLE_D_UNE_LIGNE[cle].en : MOTS_DE_L_INFOBULLE_D_UNE_LIGNE[cle].fr;
+  return face.replace(/\{(\w+)\}/g, (brut, nom) => (Object.prototype.hasOwnProperty.call(valeurs, nom) ? String(valeurs[nom]) : brut));
+}
 function tableEl(cols, rows, query, drill, opts) {
   ({ cols, rows } = expandFields(cols, rows));   // décompose la colonne `fields` (JSON) en colonnes individuelles
   const showNum = rows.length > 1;   // colonne « # » (numéro de ligne) inutile s'il n'y a qu'une seule ligne
@@ -2254,7 +2269,7 @@ function tableEl(cols, rows, query, drill, opts) {
       if (showNum) { const numTd = document.createElement('td'); numTd.className = 'numcol'; numTd.textContent = String(numBase + ri + 1); tr.appendChild(numTd); }   // numero de ligne (suit le tri ; offset par page)
       order.forEach(oi => { if (hidden.has(oi)) return; const td = document.createElement('td'); td.textContent = fmtCell(row[oi], oi); tr.appendChild(td); });
       tr.style.cursor = 'pointer';
-      tr.title = drill ? 'Cliquer pour exécuter le drill du panneau' : (DIMENSIONLESS.has(cols[0]) ? 'Cliquer pour voir tous les détails' : `Cliquer pour voir les événements ${cols[0]}=${row[0]}`);
+      tr.title = drill ? 'Cliquer pour exécuter le drill du panneau' : (DIMENSIONLESS.has(cols[0]) ? 'Cliquer pour voir tous les détails' : motDeLInfobulleDUneLigne('evenements_de_la_valeur', { champ: cols[0], valeur: row[0] }));
       // P11.4-h — LA LIGNE ENTIÈRE EST CLIQUABLE, ET C'EST ELLE QUI AVALAIT LA SÉLECTION. Un
       // glisser-sélectionner dans une cellule se termine par un `mouseup` dans la ligne : le clic partait,
       // le drilldown remplaçait la vue, et le fragment sélectionné disparaissait avec elle. Le geste
@@ -2510,10 +2525,10 @@ function facetBlock(rows, idx, field, label) {
 //   · page de rang supérieur, vide : fin du résultat, et le retour est GARDÉ ;
 //   · page atteinte par SAUT DIRECT, vide alors que rien n'établit la fin (budget du saut dépassé) : ce
 //     n'est PAS une fin, et la face le dit — dans le registre de l'alarme.
+// `P10.25-a` — LA FACE « FIN DU RÉSULTAT » VIT AU POINT COMMUN (`noeudDeLaFinDuResultat`, web/core.js) : la liste
+// paginée partagée et le panneau de table d'un tableau de bord la disent aussi, et ce module ne peut pas être
+// importé par le point commun. Le saut sans rendu, propre à l'Explore, reste ici.
 const MOTS_DE_LA_PAGE_VIDE = {
-  fin_du_resultat: {
-    fr: 'page vide, fin du résultat — ◀ pour revenir',
-    en: 'empty page, end of the result — ◀ to go back' },
   saut_sans_rendu: {
     fr: "page vide : le saut direct n'a rien rendu, et la fin du résultat n'est PAS établie — revenez avec ◀ (ou à la page 1), puis avancez avec ▶",
     en: 'empty page: the direct jump returned nothing, and the end of the result is NOT established — go back with ◀ (or to page 1), then move forward with ▶' },
@@ -2523,6 +2538,7 @@ function cleDeLaPageVide(page, sautSansRendu) {
   return sautSansRendu ? 'saut_sans_rendu' : 'fin_du_resultat';
 }
 function noeudDeLaPageVide(cle) {
+  if (cle === 'fin_du_resultat') return noeudDeLaFinDuResultat();
   const noeud = document.createElement('div');
   noeud.className = cle === 'saut_sans_rendu' ? 'bad' : 'muted';
   noeud.dataset.pageVide = cle;
@@ -2581,16 +2597,26 @@ function noeudDesChampsVidesMasques(n) {
   return note;
 }
 
+// `P10.25-a` — LA PAGE VIDE DE RANG SUPÉRIEUR DE L'EXPLORE, PEINTE PAR SES DEUX RENDUS. Mesuré avant ce lot : la
+// liste d'événements disait « page vide, fin du résultat » (ou le saut sans rendu) et gardait son retour, la table
+// paginée (`| table`, `| fields`, `| rex`, résultat non événementiel) rendait ses pagers autour d'un tableau
+// d'EN-TÊTES, sans une phrase. Les deux passent ici : même partition, même phrase, même retour. Rend `false` sur la
+// première page, que chaque rendu dit à sa façon (la liste, une fenêtre vide ; la table, ses colonnes).
+function peindreLaPageVideDeRangSuperieur(host) {
+  const cleDuVide = cleDeLaPageVide(S.evState ? S.evState.page : 0, !!(S.evState && S.evState.sautSansRendu));
+  if (cleDuVide === 'fenetre_vide') return false;
+  host.appendChild(noeudDeLaPageVide(cleDuVide));
+  const retour = makePager(S.evState, p => { S.evState.page = p; evLoad(); });
+  if (retour) host.appendChild(retour);
+  return true;
+}
+
 function renderEvents(host, cols, rows) {
   const ix = n => cols.indexOf(n);
   const tsI = ix('ts'), srcI = ix('source'), hostI = ix('host'), sevI = ix('severity'), ipI = ix('src_ip'), msgI = ix('message'), fldI = ix('fields');
   host.replaceChildren();
   if (!rows.length) {
-    const cleDuVide = cleDeLaPageVide(S.evState ? S.evState.page : 0, !!(S.evState && S.evState.sautSansRendu));
-    if (cleDuVide === 'fenetre_vide') { host.appendChild(muted(motDeLaListeDEvenements('fenetre_vide'))); return; }
-    host.appendChild(noeudDeLaPageVide(cleDuVide));
-    const retour = makePager(S.evState, p => { S.evState.page = p; evLoad(); });
-    if (retour) host.appendChild(retour);
+    if (!peindreLaPageVideDeRangSuperieur(host)) host.appendChild(muted(motDeLaListeDEvenements('fenetre_vide')));
     return;
   }
   const tl = document.createElement('div'); tl.className = 'timeline';
@@ -2665,6 +2691,7 @@ function renderEvents(host, cols, rows) {
 // table PAGINÉE (| table, | fields, ou résultat non-événementiel) : pager + tableEl (content-visibility gère le DOM)
 function renderTablePaged(host, cols, rows) {
   host.replaceChildren();
+  if (!rows.length && peindreLaPageVideDeRangSuperieur(host)) return;   // `P10.25-a`
   const go = p => { S.evState.page = p; evLoad(); };
   const top = makePager(S.evState, go);
   if (top) host.appendChild(top);
@@ -3111,3 +3138,5 @@ export { exploreCount };
 // vide, la signature du repli par décalage, et le mot d'une erreur de transport, jugés nus à côté du rendu.
 // `P10.25-b` — et les faces de la liste d'événements, jugées sous les deux instances de langue (témoin 112).
 export { cleDeLaPageVide, laPageEstServieParDecalage, explainErr, motDeLaListeDEvenements, etiquetteDeFacette };
+// `P10.25-o` — la face de l'infobulle d'une ligne de table, jugée sous les deux instances de langue (témoin 113).
+export { motDeLInfobulleDUneLigne };

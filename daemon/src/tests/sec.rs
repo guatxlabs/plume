@@ -34,7 +34,7 @@ async fn sec_c1_identity_mutations_audited_and_rule_matches() {
 
     // 3) DELETE (bob).
     let rd = user_delete(State(st.clone()), Extension(admin.clone()), axum::extract::Path(bob_id)).await;
-    assert_eq!(rd.status(), StatusCode::NO_CONTENT, "delete -> 204");
+    assert_eq!(rd.status(), StatusCode::OK, "delete -> 200 et son compte rendu (`P10.24-w`)");
 
     // --- vérifs base : ledger + events plume-config action=config.user.* ---
     let conn = st.db.lock();

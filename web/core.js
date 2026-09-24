@@ -318,6 +318,17 @@ function causeNommeeParLeDemon(corps) {
 // Attache la cause nommée à une erreur déjà formée : un seul point d'écriture pour les deux sorties
 // d'`api()` qui peuvent porter un refus du démon (le repli transitoire, et le rejet `!r.ok`).
 function avecLaCauseDuDemon(err, cause) { if (cause) err.causeDuDemon = cause; return err; }
+// `P10.25-i` — L'OBJET D'UN REFUS NOMMÉ VOYAGE ENTIER, À CÔTÉ DE SA CAUSE. Un refus peut porter, en plus de
+// `error`, un DÉTAIL que le démon a écrit pour être lu : `user_create` (daemon/src/handlers/users_lookups.rs) sert
+// en quatre cent neuf ce qu'un nom tient déjà sans compte local (`ce_que_le_nom_tient`). Le message composé par
+// `apiSend` coupe le corps à deux cents caractères — et la cause de ce refus en compte cinq cent cinquante-huit à
+// elle seule —, `causeDuDemon` ne garde que `error` : le détail n'atteignait aucune surface. Seul un corps qui
+// NOMME sa cause porte un objet ici ; tout autre (texte brut, page de passerelle, JSON sans `error`) n'en porte
+// aucun, et rien ne change pour les surfaces qui ne le lisent pas.
+function objetDuRefusNomme(corps) {
+  if (!causeNommeeParLeDemon(corps)) return null;
+  return JSON.parse(corps);   // lisible, et objet : `causeNommeeParLeDemon` vient de l'établir
+}
 
 // `P10.20-k` (2026-09-16) — LA PHRASE D'UN REFUS, QUEL QUE SOIT LE MOULE OÙ LE DÉMON L'A COULÉE.
 // `causeNommeeParLeDemon` ci-dessus ne lit qu'UNE forme : le corps JSON `{"error": …}` d'`err_json`.
@@ -658,6 +669,8 @@ async function apiSend(path, method = 'POST', body) {
     const refus = horsDemon ? refusHorsDemon(horsDemon, r.status)
       : avecLaCauseDuDemon(new Error(r.status + (text ? ' ' + text.slice(0, 200) : '')), causeNommeeParLeDemon(text));
     refus.statutDuRefus = r.status;
+    const objet = horsDemon ? null : objetDuRefusNomme(text);
+    if (objet) refus.objetDuRefus = objet;   // `P10.25-i`
     const delai = r.headers && typeof r.headers.get === 'function' ? parseInt(r.headers.get('retry-after') || '', 10) : NaN;
     if (Number.isFinite(delai) && delai > 0) refus.delaiDuRefus = delai;
     throw refus;
@@ -789,6 +802,38 @@ function noeudDeLaPageVideAuDelaDuTotal() {
   noeud.textContent = LANG === 'en' ? mots.en : mots.fr;
   noeud.dataset.pageAuDelaDuTotal = 'page_vide_au_dela';
   return noeud;
+}
+
+// `P10.25-a` / `P10.25-n` — UNE PAGE VIDE DE RANG SUPÉRIEUR SE DIT DANS LE CORPS, SUR TOUTE SURFACE PAGINÉE.
+//
+// MESURÉ LE 2026-09-24 SUR LES MODULES RÉELS. La table paginée de l'Explore (`| table`, `| fields`, `| rex`, résultat
+// non événementiel), la liste paginée partagée (`pagedList`) et un panneau de table de tableau de bord rendaient,
+// sur une page vide de rang supérieur, le pager et un TABLEAU D'EN-TÊTES, sans une phrase : seul le pager disait
+// « page 2 au-delà de la dernière (1) » — et rien du tout quand le total n'est pas compté (une liste paginée par
+// curseur, comme le journal d'audit, dont la page pleine exacte mène à une page vide). Pas une fausse absence : un
+// silence. La liste d'événements, elle, dit « page vide, fin du résultat » depuis `P10.22-d`.
+//
+// DEUX PHRASES, ET LE CHOIX ENTRE ELLES EST UN FAIT, PAS UNE DEVINETTE. Un total COMPTÉ (ni inconnu, ni plafonné)
+// que la page dépasse : « au-delà de la dernière page du total compté » (`noeudDeLaPageVideAuDelaDuTotal`, la
+// phrase des listes d'alertes). Sans total compté, cette phrase affirmerait un compte qui n'existe pas : la page
+// vide venue après une page servie dit « fin du résultat » — la phrase de la liste d'événements, qui vit ici
+// désormais pour n'être écrite qu'une fois. La première page n'est jamais concernée : chaque surface y garde sa
+// phrase de fenêtre vide. Un saut direct sans rendu (fin NON établie) n'existe que dans l'Explore, qui le dit
+// lui-même (`web/viz.js`).
+const MOTS_DE_LA_FIN_DU_RESULTAT = {
+  fr: 'page vide, fin du résultat — ◀ pour revenir',
+  en: 'empty page, end of the result — ◀ to go back',
+};
+function noeudDeLaFinDuResultat() {
+  const noeud = document.createElement('div'); noeud.className = 'muted';
+  noeud.textContent = LANG === 'en' ? MOTS_DE_LA_FIN_DU_RESULTAT.en : MOTS_DE_LA_FIN_DU_RESULTAT.fr;
+  noeud.dataset.pageVide = 'fin_du_resultat';   // marque de POSE (harnais), la même que celle de l'Explore
+  return noeud;
+}
+// Rend le nœud de la phrase d'une page vide de rang supérieur, ou `null` sur la première page.
+function noeudDeLaPageVideDeRangSuperieur(indexDePage, total, taille, totalPlafonne) {
+  if (!(indexDePage > 0)) return null;
+  return laPageEstAuDelaDuTotal(indexDePage, total, taille, totalPlafonne) ? noeudDeLaPageVideAuDelaDuTotal() : noeudDeLaFinDuResultat();
 }
 
 function makePager(state, onGo) {
@@ -1238,6 +1283,14 @@ function pagedList(host, opts) {
     // l'option, `chercheur` est nul et le message d'origine est rendu exactement comme avant.
     if (!rows.length && !state.total) { if (!chercheur || !chercheur.valeur()) cible.appendChild(muted(opts.emptyText || 'aucune donnée')); return; }
     const go = p => { state.page = p; reload(); };
+    // `P10.25-n` — UNE PAGE DE RANG SUPÉRIEUR SERVIE VIDE DIT CE QU'ELLE EST, À LA PLACE D'UN TABLEAU D'EN-TÊTES, et
+    // garde son retour. `shown` compte les lignes SERVIES : une page que la recherche a vidée n'est pas une page vide.
+    const pageVide = (!rows.length && !state.shown) ? noeudDeLaPageVideDeRangSuperieur(state.page, state.total, state.pageSize, state.totalCapped) : null;
+    if (pageVide) {
+      cible.appendChild(pageVide);
+      const retour = makePager(state, go); if (retour) cible.appendChild(retour);
+      return;
+    }
     const top = makePager(state, go); if (top) cible.appendChild(top);
     cible.appendChild(bodyNode(rows));
     const bot = makePager(state, go); if (bot) cible.appendChild(bot);
@@ -2122,6 +2175,9 @@ export {
   // `P10.24-z` — la page au-delà du total compté, lue par le fabricant de pager, la ligne d'état de l'Explore
   // et les listes d'alertes (plate et groupée), qui ne rendent aucun pager sur une page vide.
   laPageEstAuDelaDuTotal, motDeLaPageAuDelaDuTotal, noeudDeLaPageVideAuDelaDuTotal,
+  // `P10.25-a` / `P10.25-n` — la phrase d'une page vide de rang supérieur : la fin du résultat (lue aussi par
+  // l'Explore) et le choix entre elle et la page au-delà du total (panneau de table d'un tableau de bord).
+  noeudDeLaFinDuResultat, noeudDeLaPageVideDeRangSuperieur,
   socRole, socIsAdmin, applyRoleClass, controleDEcritureSous, motiverLeRefusAuLecteur, roleSansEcriturePartagee, managedBadge, gateDeleteBtn, formMsg, contentSubmit, contentDelete, SEVCOL, lsSet, collapsibleGroup, humanAge,
   confirmWithConsequence, disclosure, marquerLesCellulesTronquees, celluleDeborde,
   // `P10.20-b` (rang 2) — LE LECTEUR DE CAUSE EST EXPOSÉ, PAS RECOPIÉ. `api()` et `apiSend()` attachent

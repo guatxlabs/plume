@@ -21,20 +21,103 @@ use super::*;
 // volume suffit). `s3://…` : voir le bloc « DESTINATION OBJET » ci-dessous — implémenté SOUS LA FEATURE
 // `s3_backup` (OFF par défaut), refusé avec un log clair sans elle. Dans les deux cas, JAMAIS un faux backup
 // local silencieux sous un nom de destination distante.
-pub(crate) fn spawn_backup_scheduler(conf: HashMap<String, String>, db_path: String) {
+//
+// REND LA POIGNÉE DU FIL LANCÉ, `None` quand l'ordonnanceur est désactivé (aucun fil). L'appelant de
+// production (`boucles_de_fond.rs`) ignore cette valeur : la poignée est lâchée aussitôt, et la lâcher ne
+// demande PAS l'arrêt — le fil reste détaché et vit autant que le processus, comme avant.
+pub(crate) fn spawn_backup_scheduler(conf: HashMap<String, String>, db_path: String) -> Option<FilDuPlanificateur> {
         let interval: u64 = cfg(&conf, "PLUME_BACKUP_INTERVAL", "0").parse().unwrap_or(0);
-        if interval == 0 { return; } // DÉSACTIVÉ (défaut) -> aucun thread -> byte-identique.
-        std::thread::spawn(move || {
-            let _arme = demarrer_le_planificateur(conf, db_path, interval);
+        if interval == 0 { return None; } // DÉSACTIVÉ (défaut) -> aucun thread -> byte-identique.
+        let arret = std::sync::Arc::new(ArretDuPlanificateur::default());
+        let arret_du_fil = std::sync::Arc::clone(&arret);
+        let fil = std::thread::spawn(move || {
+            let _arme = demarrer_le_planificateur(conf, db_path, interval, &arret_du_fil);
         });
+        Some(FilDuPlanificateur { arret, fil })
+}
+
+/// LA POIGNÉE DU FIL DE L'ORDONNANCEUR, rendue par `spawn_backup_scheduler` quand il est armé.
+///
+/// CE QU'ELLE NE CHANGE PAS : aucun `Drop` n'est écrit. Lâcher la poignée — ce que fait la production —
+/// ne demande pas l'arrêt et n'attend rien ; le fil continue, détaché, exactement comme lorsque la
+/// fonction ne rendait rien. Hors tests, personne ne lit ses champs, d'où l'`allow` ci-dessous.
+///
+/// CE QU'ELLE REND POSSIBLE : ARRÊTER le fil puis ATTENDRE SA FIN avant de détruire le répertoire où il
+/// écrit. Sans elle, un test qui lançait l'ordonnanceur sur un temporaire possédé ne pouvait que détruire
+/// le temporaire pendant que le fil y écrivait encore. MESURÉ le 2026-09-24 : la destination objet refusée
+/// fait ouvrir la base source par le fil pour y poser le signal « sauvegarde sans archive », donc créer
+/// `plume.db` puis — `PRAGMA journal_mode=WAL` de `db/schema.sql` — `plume.db-wal` et `plume.db-shm`, et
+/// jouer toute la chaîne de migrations. Quand l'un de ces fichiers naît entre l'inventaire et le `rmdir` du
+/// nettoyage récursif, le `rmdir` échoue (répertoire non vide) et le nettoyage l'ignore ; la base, elle, a
+/// été déliée, et SQLite, qui voit sa base déliée, ne fait pas de point de reprise à la fermeture et ne
+/// supprime ni `-wal` ni `-shm` (vérifié à part : base déliée -> les deux restent ; base intacte -> aucun).
+/// Le répertoire reste, avec le journal de toute la migration. Sous charge (24 exécutions parallèles du
+/// test, huit tours, sur un système de fichiers FUSE dont le `rmdir` élargit la fenêtre), 86 répertoires
+/// `adv-objet-src` sont restés, avec `-wal` et/ou `-shm` et jamais `plume.db` ; sans charge, 0 sur 60.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct FilDuPlanificateur {
+    arret: std::sync::Arc<ArretDuPlanificateur>,
+    fil: std::thread::JoinHandle<()>,
+}
+
+impl FilDuPlanificateur {
+    /// Demande l'arrêt, puis ATTEND la fin du fil. Une attente en cours est écourtée ; un travail en
+    /// cours (préparation, signal de posture, cycle) n'est PAS interrompu au milieu d'une écriture : il va
+    /// jusqu'au bout, et c'est lui qu'on attend. Au retour `Ok`, le fil a fini : plus rien ne peut écrire.
+    ///
+    /// Le délai ne mesure rien : il transforme en échec NOMMÉ ce qui serait sinon une suite pendue (un fil
+    /// qui ne rendrait jamais la main parce qu'une attente aurait cessé d'écouter l'arrêt).
+    #[cfg(test)]
+    pub(crate) fn arreter_et_attendre(self) -> Result<(), String> {
+        const DELAI_AVANT_D_ACCUSER: Duration = Duration::from_secs(120);
+        self.arret.demander();
+        let limite = std::time::Instant::now() + DELAI_AVANT_D_ACCUSER;
+        while !self.fil.is_finished() {
+            if std::time::Instant::now() >= limite {
+                return Err(format!(
+                    "le fil de l'ordonnanceur n'a pas rendu la main {DELAI_AVANT_D_ACCUSER:?} après la demande \
+                     d'arrêt : une de ses attentes n'écoute plus l'arrêt"));
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        self.fil.join().map_err(|_| "le fil de l'ordonnanceur a paniqué".to_string())
+    }
+}
+
+/// LE SIGNAL D'ARRÊT DU FIL : un drapeau sous verrou et sa condition de réveil. Toutes les attentes du fil
+/// passent par lui au lieu de `std::thread::sleep`. Sans demande d'arrêt — la production n'en fait jamais —
+/// une attente dure exactement sa durée, comme le sommeil qu'elle remplace ; avec une demande, elle rend la
+/// main tout de suite.
+#[derive(Default)]
+struct ArretDuPlanificateur {
+    demande: std::sync::Mutex<bool>,
+    reveil: std::sync::Condvar,
+}
+
+impl ArretDuPlanificateur {
+    /// Attend `duree`, ou moins si l'arrêt est demandé ; rend `true` quand l'arrêt est demandé. Le prédicat
+    /// est re-testé à chaque réveil : un réveil sans notification ne raccourcit pas l'attente.
+    fn attendre_ou_etre_arrete(&self, duree: Duration) -> bool {
+        let demande = self.demande.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (demande, _) = self.reveil
+            .wait_timeout_while(demande, duree, |demande| !*demande)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *demande
+    }
+
+    #[cfg(test)]
+    fn demander(&self) {
+        *self.demande.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+        self.reveil.notify_all();
+    }
 }
 
 /// `P9.4-a` — PRÉPARER, PUIS BOUCLER, EN DEUX FONCTIONS. La préparation rend sa cause d'échec comme VALEUR
 /// (`?` sur chaque lecture) ; c'est ici, à l'unique point de décision, qu'un planificateur qui ne pourra
 /// JAMAIS publier le DIT par le signal de `P9.4-b` (événement SOC durable, non purgeable) et non par une
 /// seule ligne de journal d'hôte — puis rend `false` : il n'est pas armé. La boucle, elle, ne décide rien
-/// et ne rend jamais la main.
-fn demarrer_le_planificateur(conf: HashMap<String, String>, db_path: String, interval: u64) -> bool {
+/// et ne rend la main que sur un arrêt DEMANDÉ, ce que seule la poignée des tests fait.
+fn demarrer_le_planificateur(conf: HashMap<String, String>, db_path: String, interval: u64, arret: &ArretDuPlanificateur) -> bool {
         let pret = match preparer_le_planificateur(&conf, &db_path, interval) {
             Ok(p) => p,
             Err(cause) => {
@@ -43,7 +126,8 @@ fn demarrer_le_planificateur(conf: HashMap<String, String>, db_path: String, int
                 return false;
             }
         };
-        boucle_du_planificateur(db_path, pret)
+        boucle_du_planificateur(db_path, pret, arret);
+        true
 }
 
 /// Ce que la boucle a besoin de savoir, résolu UNE fois au démarrage (cf. `P9.4-a` : ces scalaires ne
@@ -123,12 +207,14 @@ fn preparer_le_planificateur(conf: &HashMap<String, String>, db_path: &str, inte
 
 /// La boucle du planificateur, dans son fil : mise en route, première attente DÉRIVÉE, puis un cycle par
 /// intervalle. Elle ne décide rien — tout ce qui pouvait échouer a été résolu par `preparer_le_planificateur`.
-fn boucle_du_planificateur(db_path: String, pret: PlanificateurPret) -> ! {
+/// Elle ne rend la main que sur un arrêt DEMANDÉ, entendu pendant une attente : un cycle commencé va au bout.
+fn boucle_du_planificateur(db_path: String, pret: PlanificateurPret, arret: &ArretDuPlanificateur) {
         let PlanificateurPret { dest, keep, interval, on_start, .. } = pret;
         eprintln!(
             "[backup-sched] ACTIF : intervalle={interval}s dest={dest} keep={keep} on_start={on_start} \
              (B1 age(zstd), rename atomique, rétention KEEP-N, best-effort)");
-        std::thread::sleep(Duration::from_secs(90)); // laisse passer le bind + la liveness (comme les autres boucles)
+        // laisse passer le bind + la liveness (comme les autres boucles)
+        if arret.attendre_ou_etre_arrete(Duration::from_secs(90)) { return; }
         // UN SEUL point d'appel du cycle, quel que soit le sink -> le chemin local et le chemin objet ne
         // peuvent pas diverger sur la cadence, le démarrage à chaud ou la rétention.
         #[cfg(feature = "s3_backup")]
@@ -202,10 +288,10 @@ fn boucle_du_planificateur(db_path: String, pret: PlanificateurPret) -> ! {
             if mesure.repertoire_lisible { "" } else { " — RÉPERTOIRE ILLISIBLE, donc tout de suite" },
             if mesure.entrees_illisibles > 0 { format!(", {} entrée(s) illisible(s) ignorée(s)", mesure.entrees_illisibles) } else { String::new() },
         );
-        std::thread::sleep(Duration::from_secs(premiere));
+        if arret.attendre_ou_etre_arrete(Duration::from_secs(premiere)) { return; }
         loop {
             cycle(&db_path, &dest, keep);
-            std::thread::sleep(Duration::from_secs(interval));
+            if arret.attendre_ou_etre_arrete(Duration::from_secs(interval)) { return; }
         }
 }
 

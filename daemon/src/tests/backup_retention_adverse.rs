@@ -198,7 +198,9 @@
             conf.insert("PLUME_AUTOVACUUM_INTERVAL".to_string(), bad.to_string());
             conf.insert("PLUME_BACKUP_DEST".to_string(), dest.as_str().to_string());
             let src_off = mk_tmp_path("adv-off-src");
-            crate::server::spawn_backup_scheduler(conf.clone(), src_off.as_str().to_string());
+            // « jamais spawner » se LIT désormais sur la valeur rendue : pas de poignée, pas de fil.
+            assert!(crate::server::spawn_backup_scheduler(conf.clone(), src_off.as_str().to_string()).is_none(),
+                "valeur d'intervalle invalide ({bad:?}) -> AUCUN fil d'ordonnanceur lancé");
             let dummy = std::sync::Arc::new(parking_lot::Mutex::new(rusqlite::Connection::open_in_memory().unwrap()));
             crate::server::spawn_autovacuum_loop(conf, dummy);
             std::thread::sleep(std::time::Duration::from_millis(60));
@@ -222,8 +224,18 @@
     /// Deux causes, une seule conséquence observable — c'est ELLE qui est le contrat, et c'est elle
     /// que ce test fixe. Il est donc aussi la preuve, exécutée par la suite PAR DÉFAUT, que la
     /// fonctionnalité éteinte ne change pas le comportement.
+    ///
+    /// CHAQUE FIL EST ARRÊTÉ ET ATTENDU AVANT LA DESTRUCTION DE SON TEMPORAIRE. Ce test lançait quatre
+    /// fils détachés, attendait 60 ms, puis laissait détruire `src` pendant que le fil y jouait encore
+    /// la migration de la base du signal : c'est lui qui a laissé `…-bk-adv-objet-src-…` dans le
+    /// `$TMPDIR` de la CI (voir `FilDuPlanificateur`). L'attente de la FIN du fil rend en outre chaque
+    /// assertion DÉFINITIVE : elle porte sur tout ce que le fil a fait, et non sur ce qu'il avait eu le
+    /// temps de faire en 60 ou 300 ms.
     #[test]
     fn adverse_destination_objet_non_honorable_ne_devient_jamais_une_ecriture_locale() {
+        // Le fil lit ses réglages et la clé de base dans l'environnement ; il vit désormais DANS ce test,
+        // le verrou couvre donc toutes ses lectures.
+        let _reglages = VERROU_ENV_PROCESSUS.read();
         assert!(std::env::var("PLUME_BACKUP_S3_ENDPOINT").is_err(),
             "aucun service objet ne doit être configuré dans l'environnement de test");
         for dest in ["s3://sauvegardes", "s3://sauvegardes/plume/noeud-1", "s3://X", "s3://"] {
@@ -236,25 +248,83 @@
             conf.insert("PLUME_BACKUP_INTERVAL".to_string(), "1".to_string()); // ACTIF, donc rien ne masque le refus
             conf.insert("PLUME_BACKUP_ON_START".to_string(), "1".to_string());
             conf.insert("PLUME_BACKUP_DEST".to_string(), dest.to_string());
-            crate::server::spawn_backup_scheduler(conf, src.as_str().to_string());
-            std::thread::sleep(std::time::Duration::from_millis(60));
+            let fil = crate::server::spawn_backup_scheduler(conf, src.as_str().to_string())
+                .expect("PLUME_BACKUP_INTERVAL=1 : l'ordonnanceur est armé, un fil est lancé");
+            fil.arreter_et_attendre().expect("fil de l'ordonnanceur arrêté et attendu");
             assert!(!local.exists(),
                 "destination objet {dest:?} non honorable -> AUCUNE écriture locale ne doit apparaître ({})",
                 local.display());
         }
         // TÉMOIN POSITIF de l'instrument : la MÊME mécanique, avec une destination LOCALE, crée bien le
         // répertoire. Sans lui, les quatre assertions ci-dessus seraient satisfaites par un scheduler qui
-        // ne ferait jamais rien, et ce vecteur ne prouverait rien du tout.
+        // ne ferait jamais rien, et ce vecteur ne prouverait rien du tout. La préparation (qui crée la
+        // destination) précède toute attente et ne s'interrompt pas : une fois le fil attendu, elle a eu lieu.
         let src = mk_tmp_path("adv-objet-temoin");
         let dest_local = mk_tmp_path("adv-objet-dest");
         let mut conf = std::collections::HashMap::new();
         conf.insert("PLUME_BACKUP_INTERVAL".to_string(), "1".to_string());
         conf.insert("PLUME_BACKUP_DEST".to_string(), dest_local.as_str().to_string());
-        crate::server::spawn_backup_scheduler(conf, src.as_str().to_string());
-        std::thread::sleep(std::time::Duration::from_millis(300));
+        let fil = crate::server::spawn_backup_scheduler(conf, src.as_str().to_string())
+            .expect("PLUME_BACKUP_INTERVAL=1 : l'ordonnanceur est armé, un fil est lancé");
+        fil.arreter_et_attendre().expect("fil de l'ordonnanceur arrêté et attendu");
         assert!(std::path::Path::new(dest_local.as_str()).exists(),
             "témoin positif : une destination LOCALE fait bien créer le répertoire — sinon l'instrument \
              ne distingue pas « refusé » de « rien ne tourne »");
+    }
+
+    /// VECTEUR 4 ter — UN FIL D'ORDONNANCEUR ARRÊTÉ ET ATTENDU N'ÉCRIT PLUS RIEN : son temporaire part en
+    /// entier et ne revient pas. C'est la propriété dont dépend le test précédent, fixée ici seule.
+    ///
+    /// CE QU'IL TIENT, dans l'ordre : (1) au retour de `arreter_et_attendre`, le fil a FINI d'écrire — le
+    /// répertoire ne contient que `plume.db`, refermée, sans `-wal` ni `-shm` (un fil encore en cours y
+    /// laisse ses fichiers de journal, ou rien du tout s'il n'a pas commencé) ; (2) sa DERNIÈRE écriture
+    /// est dans la base : le signal « sauvegarde sans archive » ; (3) le garde détruit, le répertoire
+    /// disparaît et rien ne le recrée ensuite — la forme même de la garde de CI « aucun temporaire laissé ».
+    ///
+    /// LA MUTATION QUI LE FAIT ROUGIR : `arreter_et_attendre` qui demande l'arrêt SANS attendre la fin du
+    /// fil. (1) rougit alors — le fil vient d'être lancé et joue encore sa migration.
+    #[test]
+    fn un_fil_d_ordonnanceur_arrete_et_attendu_n_ecrit_plus_rien_dans_son_temporaire() {
+        let _reglages = VERROU_ENV_PROCESSUS.read();
+        assert!(std::env::var("PLUME_BACKUP_S3_ENDPOINT").is_err(),
+            "aucun service objet ne doit être configuré dans l'environnement de test");
+        assert!(std::env::var("PLUME_DB_KEY").is_err(),
+            "pré-condition : la base du signal s'ouvre sans clé (le fil lit `PLUME_DB_KEY`)");
+        let src = mk_tmp_path("adv-arret-src");
+        let repertoire = std::path::Path::new(src.as_str()).parent().unwrap().to_path_buf();
+        let mut conf = std::collections::HashMap::new();
+        conf.insert("PLUME_BACKUP_INTERVAL".to_string(), "1".to_string());
+        conf.insert("PLUME_BACKUP_ON_START".to_string(), "1".to_string());
+        // Une destination objet refusée : le fil ouvre la base source pour y poser le signal, c'est-à-dire
+        // exactement l'écriture qui fuyait.
+        conf.insert("PLUME_BACKUP_DEST".to_string(), "s3://arret-attendu".to_string());
+        let fil = crate::server::spawn_backup_scheduler(conf, src.as_str().to_string())
+            .expect("PLUME_BACKUP_INTERVAL=1 : l'ordonnanceur est armé, un fil est lancé");
+        fil.arreter_et_attendre().expect("fil de l'ordonnanceur arrêté et attendu");
+
+        // (1) ce que le fil a écrit est FINI : la base seule, refermée.
+        let mut entrees: Vec<String> = std::fs::read_dir(&repertoire).expect("le temporaire existe encore")
+            .map(|e| e.expect("entrée lisible").file_name().to_string_lossy().into_owned())
+            .collect();
+        entrees.sort();
+        assert_eq!(entrees, vec!["plume.db".to_string()],
+            "au retour de l'arrêt attendu, le fil ne doit plus rien avoir en cours dans {} : une base refermée \
+             ne laisse ni `-wal` ni `-shm`", repertoire.display());
+        // (2) sa dernière écriture y est.
+        {
+            let c = rusqlite::Connection::open(src.as_str()).expect("la base du signal s'ouvre");
+            let n: i64 = c.query_row(
+                "SELECT COUNT(*) FROM event WHERE source='plume-config' AND category='health' \
+                 AND json_extract(fields,'$.backup_cycle')='no_archive'", [], |r| r.get(0))
+                .expect("la table `event` existe : la migration du fil est terminée");
+            assert_eq!(n, 1, "le signal « sauvegarde sans archive » — la dernière écriture du fil — est dans la base");
+        }
+        // (3) le garde détruit, tout part, et rien ne revient.
+        drop(src);
+        assert!(!repertoire.exists(), "le garde détruit, le temporaire {} disparaît en entier", repertoire.display());
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(!repertoire.exists(),
+            "aucun fil ne recrée ni ne remplit {} après la destruction de son garde", repertoire.display());
     }
 
     /// VECTEUR 6 — fmt_backup_ts est l'INVERSE EXACT de parse_backup_ts sur des dates DURES : epoch 0,

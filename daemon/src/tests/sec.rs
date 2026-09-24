@@ -26,7 +26,9 @@ async fn sec_c1_identity_mutations_audited_and_rule_matches() {
             Json(json!({ "name": "bob", "password": "longenoughpw12", "role": "editor" }))).await,
     ).await;
     let bob_id = v2["id"].as_i64().unwrap();
-    let r = user_update(State(st.clone()), Extension(admin.clone()), axum::extract::Path(bob_id),
+    // `P10.24-a` : `user_update` lit l'adresse du pair (verrou du mot de passe actuel, jugé quand la cible est
+    // l'appelant) ; ici la cible est un AUTRE compte, l'adresse n'est pas jugée.
+    let r = user_update(State(st.clone()), ConnectInfo("127.0.0.1:45454".parse().expect("adresse de test")), Extension(admin.clone()), axum::extract::Path(bob_id),
         Json(json!({ "role": "viewer", "password": "anotherlongpw34" }))).await;
     assert_eq!(r.status(), StatusCode::NO_CONTENT, "role_change + reset -> 204");
 

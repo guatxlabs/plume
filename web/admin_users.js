@@ -3,7 +3,7 @@
 // PURE MOVE : corps de fonctions IDENTIQUES au monolithe, seuls les import/export sont ajoutes.
 // Le cycle app<->module est benin : les fonctions importees d'app.js ne sont appelees qu'a
 // l'EXECUTION (handlers/async apres await), jamais a l'evaluation du module.
-import { $, esc, fmtTs, ic, muted, api, apiSend, confirmWithConsequence, disclosure, toast, pagedList, closeModals } from './core.js';
+import { $, LANG, esc, fmtTs, ic, muted, api, apiSend, confirmWithConsequence, disclosure, phraseDuRefusDuDemon, toast, pagedList, closeModals } from './core.js';
 import { S } from './state.js';
 // P11.4-h : LE geste de copie de la console (mécanisme partagé).
 import { boutonDeCopie } from './copie_et_selection.js';
@@ -11,6 +11,60 @@ import { route } from './app.js';
 
 // --- Comptes & accès (réservé admin ; vit sous Réglages : la VISIBILITE est pilotee par le routeur) ---
 const ROLE_LABEL = { admin: 'admin', editor: 'editor', viewer: 'viewer' };
+// `P10.24-a` (démon) — SON PROPRE MOT DE PASSE SE CHANGE PAR LE MOT DE PASSE ACTUEL. `user_update`
+// (daemon/src/handlers/users_lookups.rs) exige `current` quand la cible est l'APPELANT et que le corps change le mot
+// de passe : même preuve, même verrou (compte, adresse) et mêmes refus nommés que `/api/password`. Cet éditeur
+// envoyait `{role, password}` sur la seule session ; il demande désormais le mot de passe actuel sur la ligne de
+// l'appelant, dans un champ PROPRE À CETTE LIGNE, lu puis VIDÉ à chaque geste — la valeur ne vit que le temps de la
+// requête, dans la fonction du geste, et n'atteint ni un état du module ni le stockage du site. Le mot de passe
+// d'un AUTRE compte se réinitialise toujours sans le vôtre (geste d'administration, attesté au registre).
+// Tout refus — nommé par le démon, local, ou venu d'une passerelle — s'écrit dans le PUITS de la ligne, qui reste
+// sous les yeux, au lieu d'un avis qui s'efface. Les phrases, FR et EN côte à côte.
+const MOTS_DE_LA_MODIFICATION_DE_COMPTE = {
+  mot_de_passe_actuel: {
+    fr: 'votre mot de passe actuel (exigé pour changer le vôtre)',
+    en: 'your current password (required to change yours)' },
+  mot_de_passe_actuel_manquant: {
+    fr: "Mot de passe NON changé : votre mot de passe actuel est exigé pour changer le vôtre. Rien n'a été envoyé.",
+    en: 'Password NOT changed: your current password is required to change yours. Nothing was sent.' },
+  refus_nomme: {
+    fr: 'Compte NON modifié : le démon a refusé et en nomme la cause —',
+    en: 'Account NOT changed: the daemon refused and names the cause —' },
+  refus_nomme_avec_delai: {
+    fr: 'Compte NON modifié : trop d\'échecs depuis cette adresse, réessayez dans {delai} s. Le démon en nomme la cause —',
+    en: 'Account NOT changed: too many failures from this address, try again in {delai} s. The daemon names the cause —' },
+  consequence_de_son_propre_mot_de_passe: {
+    fr: 'votre propre mot de passe est remplacé immédiatement : vos sessions sont révoquées, et il faudra vous reconnecter avec le nouveau',
+    en: 'your own password is replaced immediately: your sessions are revoked, and you will have to sign in again with the new one' },
+};
+// Les valeurs se posent par une fonction de remplacement : un détail servi n'est jamais réinterprété.
+function motDeLaModificationDeCompte(cle, valeurs = {}) {
+  const face = LANG === 'en' ? MOTS_DE_LA_MODIFICATION_DE_COMPTE[cle].en : MOTS_DE_LA_MODIFICATION_DE_COMPTE[cle].fr;
+  return face.replace(/\{(\w+)\}/g, (brut, nom) => (Object.prototype.hasOwnProperty.call(valeurs, nom) ? String(valeurs[nom]) : brut));
+}
+// Le puits d'une ligne : la phrase dans un nœud texte ENTIER (traduisible), la cause servie dans un SECOND nœud,
+// telle quelle. `data-refus-de-modification` porte la clé de la face (marque de POSE pour le harnais).
+function peindreLeRefusDeModification(puits, cle, cause, delai) {
+  if (!puits) return;
+  const dit = document.createElement('span');
+  dit.textContent = motDeLaModificationDeCompte(cle, { delai });
+  if (cause) puits.replaceChildren(dit, document.createTextNode(' « ' + String(cause).trim() + ' »'));
+  else puits.replaceChildren(dit);
+  puits.dataset.refusDeModification = cle;
+  puits.hidden = false;
+}
+// Un refus JETÉ par `apiSend` : une réponse de passerelle se dit par sa propre phrase (le démon n'a rien refusé) ;
+// tout autre porte la phrase que le démon a écrite, en JSON ou en texte brut, et le délai d'un verrou.
+function peindreLeRefusJete(puits, e) {
+  if (!puits) return;
+  if (e && e.reponseHorsDemon) {
+    const dit = document.createElement('span'); dit.textContent = String(e.message || '');
+    puits.replaceChildren(dit); puits.dataset.refusDeModification = 'reponse_hors_demon'; puits.hidden = false;
+    return;
+  }
+  if (e && e.statutDuRefus === 429 && e.delaiDuRefus) { peindreLeRefusDeModification(puits, 'refus_nomme_avec_delai', phraseDuRefusDuDemon(e), e.delaiDuRefus); return; }
+  peindreLeRefusDeModification(puits, 'refus_nomme', phraseDuRefusDuDemon(e) || ((e && e.message) || String(e)), 0);
+}
 /* state: isAdmin -> S (state.js) */ // /api/users 200 => admin ; sinon la section reste masquee partout
 async function loadUsers() {
   const sec = $('#users'), list = $('#user-list'); if (!sec || !list) return;
@@ -57,21 +111,44 @@ async function loadUsers() {
     const rsel = document.createElement('select'); rsel.className = 'ue-role';
     ['admin', 'editor', 'viewer'].forEach(r => { const o = document.createElement('option'); o.value = r; o.textContent = r; if (r === u.role) o.selected = true; rsel.appendChild(o); });
     const pw = document.createElement('input'); pw.type = 'password'; pw.className = 'ue-pw'; pw.placeholder = 'nouveau mdp (optionnel, ≥12)'; pw.autocomplete = 'new-password';
+    // `P10.24-a` — la ligne de l'APPELANT porte le champ du mot de passe actuel ; aucune autre ne le porte.
+    const soi = u.name === me;
+    const actuel = soi ? document.createElement('input') : null;
+    if (actuel) {
+      actuel.type = 'password'; actuel.className = 'ue-pw'; actuel.autocomplete = 'current-password';
+      actuel.placeholder = motDeLaModificationDeCompte('mot_de_passe_actuel');
+      actuel.dataset.motDePasseActuel = '1';   // marque de POSE (harnais) : aucune règle CSS ne la vise
+    }
+    const puits = document.createElement('div'); puits.className = 'bad'; puits.hidden = true;
+    puits.style.cssText = 'margin:6px 0 0;font-size:12px;flex-basis:100%';
     const save = document.createElement('button'); save.type = 'button'; save.className = 'btn btn-sm'; save.textContent = 'Enregistrer';
     save.onclick = async () => {
+      puits.hidden = true; puits.replaceChildren(); delete puits.dataset.refusDeModification;
+      // Le mot de passe actuel est LU puis VIDÉ ici, quelle que soit l'issue du geste (envoi, refus, annulation).
+      let motDePasseActuel = actuel ? actuel.value : '';
+      if (actuel) actuel.value = '';
+      const sonPropreMotDePasse = soi && !!pw.value;
       const body = { role: rsel.value }; if (pw.value) body.password = pw.value;
       // P11.5-b : changer un RÔLE élève ou retire un droit ; réinitialiser un MOT DE PASSE remplace une
       // crédence. Les deux passent par la confirmation partagée, qui nomme ce qui change.
       const parts = [];
       if (rsel.value !== u.role) parts.push(`le rôle de « ${u.name} » passe de ${ROLE_LABEL[u.role] || u.role} à ${ROLE_LABEL[rsel.value] || rsel.value}` + (rsel.value === 'admin' ? ' — accès complet à la configuration, aux secrets et aux suppressions' : u.role === 'admin' ? ' — ce compte perd l\'accès administrateur' : ''));
-      if (pw.value) parts.push(`le mot de passe de « ${u.name} » est remplacé immédiatement (l\'ancien cesse de fonctionner)`);
-      if (!parts.length) { toast('aucune modification', 'info'); return; }
-      if (!await confirmWithConsequence(`Modifier le compte « ${u.name} »`, parts.join(' ; ') + '.', { okText: 'Appliquer', danger: rsel.value === 'admin' || u.role === 'admin' || !!pw.value })) return;
+      if (pw.value) parts.push(sonPropreMotDePasse ? motDeLaModificationDeCompte('consequence_de_son_propre_mot_de_passe') : `le mot de passe de « ${u.name} » est remplacé immédiatement (l\'ancien cesse de fonctionner)`);
+      if (!parts.length) { motDePasseActuel = ''; toast('aucune modification', 'info'); return; }
+      // Un mot de passe actuel absent ne part pas : le démon le refuserait, et rien ne serait appris de plus.
+      if (sonPropreMotDePasse && !motDePasseActuel) { peindreLeRefusDeModification(puits, 'mot_de_passe_actuel_manquant', '', 0); return; }
+      if (!await confirmWithConsequence(`Modifier le compte « ${u.name} »`, parts.join(' ; ') + '.', { okText: 'Appliquer', danger: rsel.value === 'admin' || u.role === 'admin' || !!pw.value })) { motDePasseActuel = ''; return; }
+      if (sonPropreMotDePasse) body.current = motDePasseActuel;
       try { await apiSend('/users/' + u.id, 'POST', body); }
-      catch (err) { toast((err && err.message) || 'échec', 'bad'); return; }
+      catch (err) { peindreLeRefusJete(puits, err); return; }
+      finally { motDePasseActuel = ''; delete body.current; }
+      // Son propre mot de passe changé, ses sessions sont révoquées (`P10.23-l`) : la console ne prétend pas le
+      // contraire — le rechargement ramène à l'écran de connexion, que la confirmation vient d'annoncer.
+      if (sonPropreMotDePasse) { location.reload(); return; }
       toast('compte mis à jour', 'ok'); loadUsers();
     };
-    editor.append(rsel, pw, save);
+    if (actuel) editor.append(rsel, pw, actuel, save, puits);
+    else editor.append(rsel, pw, save, puits);
     const ed = document.createElement('button'); ed.className = 'picon'; ed.title = 'Éditer (rôle / mot de passe)'; ed.textContent = '✎';
     ed.onclick = () => editor.classList.toggle('hidden');
     const del = document.createElement('button'); del.className = 'picon'; del.innerHTML = ic('x'); del.title = 'Supprimer le compte';
@@ -271,4 +348,6 @@ function showTokenOnce(res) {
 }
 if ($('#token-new')) $('#token-new').onclick = newTokenFlow;
 
-export { ROLE_LABEL, loadUsers, loadTokens };
+// `P10.24-a` — `motDeLaModificationDeCompte` part pour le harnais ESM (témoin 110) : les faces s'y jugent sous les deux
+// instances de langue, contre ce que l'éditeur réel peint. Aucun usage applicatif hors de ce module.
+export { ROLE_LABEL, loadUsers, loadTokens, motDeLaModificationDeCompte };

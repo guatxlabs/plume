@@ -18688,6 +18688,256 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   console.log(`(109) OK — \`apiSend\` sépare le corps VIDE légitime (les ${routesA204109.length} routes mutantes à deux cent quatre, dérivées du démon, rendent toujours \`null\`), le deux cents non JSON (page de passerelle ou corps illisible : un refus NOMMÉ, jamais un succès) et la page de passerelle en cinq cents (sa phrase, sans son HTML), et garde la phrase d'un refus du démon en texte brut ; une page de passerelle servie en deux cents n'est plus « Incident déclaré », et les six gestes qui lisent leur corps de succès gardent leur face « non établie ». L'écran de connexion parle les deux langues — identifiants manquants, invalides, trop de tentatives (avec et sans délai), échec, passerelle, réponse sans succès — et ne recharge plus que sur \`{ok: true}\`. L'étape du code dit l'échéance du ticket (${DUREE109} s au démon, tenue à ${DUREE109 - 1} s depuis l'ENVOI), se referme d'elle-même en le disant, ne laisse partir aucun code après elle, offre le retour au mot de passe, et n'arme qu'UNE minuterie, arrêtée à toute sortie de l'étape ; le ticket refusé s'y dit sans accuser le code. L'enrôlement demande le mot de passe du compte dans la modale partagée, l'envoie une fois et VIDE son champ ; chacun des refus nommés que \`mfa_enroll\` sert (${Object.values(CAUSES_D_ENROLEMENT109).flat().length} causes relues dans le démon, plus le quatre cent neuf) a sa face, et aucun n'est plus peint « statut NON LU ». CE QUI ÉTAIT FAUX : quatre phrases et non trois ; une durée réelle de ${DUREE109 - 1} à ${DUREE109} s ; et l'écran de connexion avait le défaut d'\`apiSend\`.`);
 }
 
+// ---------------------------------------------------------------------------------------------
+// (110) `P10.24-a` (démon voisin) — L'ÉDITEUR DES COMPTES DEMANDE LE MOT DE PASSE ACTUEL QUAND L'ADMINISTRATEUR CHANGE
+//       LE SIEN, LE VIDE À CHAQUE GESTE, ET PEINT CHACUN DES REFUS NOMMÉS DANS LE PUITS DE LA LIGNE ;
+//       `P10.24-f` — L'ÉCRAN DE CONNEXION PEINT LE CINQ CENT TROIS « RÉVOCATION DU COMPTE NON LUE » SANS ACCUSER LE
+//       MOT DE PASSE.
+//
+// CE QUE LE DÉMON SERT, RELU ICI ET NON RECOPIÉ. `user_update` (daemon/src/handlers/users_lookups.rs) juge `current`
+// quand la cible est l'APPELANT, par `juger_le_mot_de_passe_actuel` (daemon/src/session.rs) : ses refus — exigé et
+// refusé en quatre cent trois, verrouillé en quatre cent vingt-neuf avec délai, compte non lu en cinq cent trois — et
+// la cause propre que `user_update` lui passe pour un compte sans mot de passe local sont LUS dans l'arbre, statut par
+// statut. `CAUSE_EPOQUE_DU_COMPTE_NON_LUE` est lue dans session.rs, et ses deux sites sur `/api/login`
+// (`frapper_la_session_du_compte`, `mfa_challenge_response`) sont exigés.
+//
+// CE QUE LA CONSOLE EN FAISAIT, MESURÉ SUR LES MODULES RÉELS AVANT CE LOT :
+//   · l'éditeur envoyait `{role, password}` sur la ligne de l'appelant comme sur les autres — aucun champ pour le mot
+//     de passe actuel —, et tout refus partait dans un AVIS qui s'efface (« 403 {"error":"MOT DE PASSE ACTUEL
+//     EXIGÉ… », corps JSON brut coupé à deux cents caractères) ;
+//   · `P10.24-f` : la face EXISTAIT déjà — le chemin générique du refus nommé de `P10.20-b` (« Connexion REFUSÉE : le
+//     démon n'a pas lu ce dont la décision dépend… » suivi de la cause) la peignait —, mais aucun témoin ne la tenait
+//     pour CETTE cause : ce qui était faux dans l'énoncé est « aucune face », ce qui était vrai est « non vérifiée ».
+//
+// CE QUE CE TÉMOIN NE TIENT PAS : il ne rejoue aucune route du démon (le transport est un simulacre) ; la langue
+// anglaise de la phrase du refus nommé de la connexion n'est jugée que par sa présence au lexique, pas par un rendu
+// traduit ; le rechargement qui suit le changement de son propre mot de passe est COMPTÉ, pas suivi jusqu'à l'écran de
+// connexion.
+// ---------------------------------------------------------------------------------------------
+{
+  const url110 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const modNoyau110 = await import(url110("core.js"));
+  const modComptes110 = await import(url110("admin_users.js"));
+  const modConnexion110 = await import(url110("login.js"));
+  const { S: S110 } = await import(url110("state.js"));
+  const langueOrigine110 = localStorage.getItem("soc_lang");
+  localStorage.setItem("soc_lang", "en");
+  const modComptesEn110 = await import(adresseSousLaLangue("admin_users.js"));
+  if (langueOrigine110 === null) localStorage.removeItem("soc_lang"); else localStorage.setItem("soc_lang", langueOrigine110);
+
+  const tic110 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser110 = async (n = 30) => { for (let i = 0; i < n; i++) await tic110(); };
+  const nu110 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ").trim();
+  const instrument110 = (vrai, quoi) => exiger(vrai, `(110-instrument) ${quoi} : ce témoin REFUSE DE CONCLURE`);
+  const srcDe110 = (f) => ((CORPUS_WEB.find(([g]) => g === f) || [])[1]) || "";
+  const corpsDeFonction110 = (src, entete) => { const i = src.indexOf(entete); if (i < 0) return ""; const j = src.indexOf("\n}\n", i); return j < 0 ? "" : src.slice(i, j + 2); };
+  const constante110 = (src, nom) => { const m = src.match(new RegExp("const " + nom + ": &str = \"((?:[^\"\\\\]|\\\\[\\s\\S])*)\";")); return m ? m[1].replace(/\\\n\s*/g, "").replace(/\\"/g, "\"") : ""; };
+
+  // ── (0) L'INSTRUMENT : CE QUE LE DÉMON SERT, LU DANS SON ARBRE ────────────────────────────────────
+  const SRC_DU_DEMON110 = path.join(RACINE, "daemon", "src");
+  const SESSION110 = readFileSync(path.join(SRC_DU_DEMON110, "session.rs"), "utf8");
+  const COMPTES110 = readFileSync(path.join(SRC_DU_DEMON110, "handlers", "users_lookups.rs"), "utf8");
+  const IDP110 = readFileSync(path.join(SRC_DU_DEMON110, "handlers", "idp.rs"), "utf8");
+  const jugement110 = corpsDeFonction110(SESSION110, "pub(crate) fn juger_le_mot_de_passe_actuel(");
+  const miseAJour110 = corpsDeFonction110(COMPTES110, "pub(crate) async fn user_update(");
+  const causesDe110 = (corps, statut) => [...new Set([...corps.matchAll(new RegExp("err_json\\(StatusCode::" + statut + ", (CAUSE_\\w+)\\)", "g"))].map((m) => m[1]))];
+  const causeDuCompteSansMotDePasse110 = ((miseAJour110.match(/juger_le_mot_de_passe_actuel\([\s\S]*?(CAUSE_\w+)/) || [])[1]) || "";
+  const CAUSES_DU_JUGEMENT110 = {
+    403: [...causesDe110(jugement110, "FORBIDDEN"), causeDuCompteSansMotDePasse110].filter(Boolean),
+    503: causesDe110(jugement110, "SERVICE_UNAVAILABLE"),
+    429: [...new Set([...jugement110.matchAll(/"error": (CAUSE_\w+)/g)].map((m) => m[1]))],
+  };
+  instrument110(/b\.str_field\("current"\)/.test(miseAJour110) && /if new_pw\.is_some\(\) && son_propre_compte \{/.test(miseAJour110)
+    && CAUSES_DU_JUGEMENT110[403].length === 3 && CAUSES_DU_JUGEMENT110[503].length === 1 && CAUSES_DU_JUGEMENT110[429].length === 1
+    && /header::RETRY_AFTER/.test(jugement110) && Object.values(CAUSES_DU_JUGEMENT110).flat().every((n) => constante110(SESSION110, n).length > 60),
+    `\`user_update\` ne juge plus \`current\` quand la cible est l'appelant, ou \`juger_le_mot_de_passe_actuel\` ne sert plus ses refus nommés (trois quatre cent trois dont celui du compte sans mot de passe local, un cinq cent trois, un quatre cent vingt-neuf avec délai) : ${JSON.stringify(CAUSES_DU_JUGEMENT110)}`);
+  const CAUSE_EPOQUE110 = constante110(SESSION110, "CAUSE_EPOQUE_DU_COMPTE_NON_LUE");
+  instrument110(CAUSE_EPOQUE110.length > 60 && /NON LUE/.test(CAUSE_EPOQUE110)
+    && /err_json\(StatusCode::SERVICE_UNAVAILABLE, CAUSE_EPOQUE_DU_COMPTE_NON_LUE\)/.test(corpsDeFonction110(SESSION110, "pub(crate) fn frapper_la_session_du_compte("))
+    && /frapper_la_session_du_compte\(&st, &name, &role\)/.test(corpsDeFonction110(SESSION110, "pub(crate) async fn login_post("))
+    && /err_json\(StatusCode::SERVICE_UNAVAILABLE, CAUSE_EPOQUE_DU_COMPTE_NON_LUE\)/.test(corpsDeFonction110(IDP110, "pub(crate) fn mfa_challenge_response(")),
+    "`CAUSE_EPOQUE_DU_COMPTE_NON_LUE` n'est plus lisible dans daemon/src/session.rs, ou `/api/login` ne la sert plus en cinq cent trois (`frapper_la_session_du_compte` depuis `login_post`, `mfa_challenge_response`)");
+  instrument110([modComptes110.loadUsers, modComptes110.motDeLaModificationDeCompte, modComptesEn110.motDeLaModificationDeCompte, modConnexion110.bindLoginForm, modNoyau110.motDeLaReponseHorsDemon, modNoyau110.natureDuRefusDuSecondFacteur]
+    .every((f) => typeof f === "function"),
+    "un des symboles jugés ici n'est plus exporté (web/admin_users.js, web/login.js, web/core.js)");
+
+  // ── LE SIMULACRE : TRANSPORT, HÔTES DE LA LISTE, MINUTERIES LONGUES, RECHARGEMENT ──────────────────
+  const fetchOrigine110 = globalThis.fetch, minuterieOrigine110 = globalThis.setTimeout;
+  const rechargementOrigine110 = globalThis.location.reload, qsOrigine110 = document.querySelector;
+  const etatOrigine110 = { admin: S110.isAdmin, auth: S110.AUTH };
+  const hotes110 = { "#users": new Element("section"), "#user-list": new Element("div"), "#acces-list": new Element("div") };
+  const servis110 = {}, appels110 = [], corpsEnvoyes110 = [];
+  let rechargements110 = 0;
+  const LISTE110 = { users: [{ id: 1, name: "hugo", role: "admin", created: 1 }, { id: 2, name: "bob", role: "editor", created: 2 }], me: "hugo", acces: [] };
+  const ACTUEL110 = "actuel-110-" + "s".repeat(12), NEUF110 = "neuf-110-" + "n".repeat(12);
+  const HTML110 = "<!DOCTYPE html><html><head><title>502 Bad Gateway</title></head><body><center>nginx</center></body></html>";
+  // Les refus que `user_update` sert par le jugement partagé : [statut, nom de la constante, phrase relue dans le démon].
+  const refus110 = Object.entries(CAUSES_DU_JUGEMENT110).flatMap(([statut, noms]) => noms.map((n) => [Number(statut), n, constante110(SESSION110, n)]));
+  try {
+    globalThis.location.reload = () => { rechargements110++; };
+    globalThis.setTimeout = (fn, ms) => (ms >= 1000 ? 0 : minuterieOrigine110(fn, ms >= 100 ? 0 : ms));
+    document.querySelector = (sel) => (Object.prototype.hasOwnProperty.call(hotes110, sel) ? hotes110[sel] : qsOrigine110.call(document, sel));
+    globalThis.fetch = async (u, init) => {
+      const chemin = String(u).split("?")[0];
+      const methode = ((init && init.method) || "GET").toUpperCase();
+      appels110.push(methode + " " + chemin); corpsEnvoyes110.push([methode + " " + chemin, init && init.body]);
+      const r = servis110[methode + " " + chemin];
+      if (!r) return { ok: true, status: 200, headers: { get: () => null }, text: async () => "{}" };
+      const texte = typeof r.corps === "string" ? r.corps : JSON.stringify(r.corps === undefined ? {} : r.corps);
+      const statut = r.statut || 200;
+      return { ok: statut >= 200 && statut < 300, status: statut, headers: { get: (h) => (/retry-after/i.test(h) ? (r.reessai || null) : null) }, text: async () => texte, json: async () => JSON.parse(texte) };
+    };
+    S110.isAdmin = true; S110.AUTH = { user: "hugo", role: "admin" };
+    servis110["GET /api/users"] = { corps: LISTE110 };
+
+    const fenetre110 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !c.classList.contains("out")).pop();
+    const avis110 = () => document.querySelectorAll(".toast");
+    // La ligne d'un compte, telle que `loadUsers` la peint : l'éditeur suit la ligne `.urow` qui porte le nom.
+    const ligneDe110 = (nom) => {
+      const enfants = hotes110["#user-list"].children;
+      const i = enfants.findIndex((e) => e.classList && e.classList.contains("urow") && nu110(e.children[0]).startsWith(nom + " "));
+      const editeur = i >= 0 ? enfants[i + 1] : null;
+      if (!editeur || !editeur.classList.contains("ueditor")) return null;
+      const champs = editeur.children;
+      return {
+        role: champs.find((c) => c.tagName === "SELECT"),
+        neuf: champs.find((c) => c.tagName === "INPUT" && c.autocomplete === "new-password"),
+        actuel: champs.find((c) => c.tagName === "INPUT" && c.getAttribute("data-mot-de-passe-actuel") === "1") || null,
+        enregistrer: champs.find((c) => c.tagName === "BUTTON"),
+        puits: champs.filter((c) => c.tagName === "DIV").pop() || null,
+      };
+    };
+    // LE GESTE RÉEL : la liste chargée par son chargeur, les champs remplis, « Enregistrer », la confirmation partagée.
+    const modifier110 = async (mod, nom, { neuf = NEUF110, actuel = "", role = null, reponse = null, confirmer = true } = {}) => {
+      hotes110["#user-list"].replaceChildren();
+      await mod.loadUsers(); await laisser110();
+      const ligne = ligneDe110(nom);
+      if (!ligne || !ligne.enregistrer) return { ligne: null };
+      const id = LISTE110.users.find((x) => x.name === nom).id;
+      ligne.neuf.value = neuf;
+      if (ligne.actuel) ligne.actuel.value = actuel;
+      // Le simulacre ne reflète pas l'option choisie dans `value` : le rôle est posé comme le navigateur le rendrait.
+      ligne.role.value = role !== null ? role : LISTE110.users.find((x) => x.name === nom).role;
+      if (reponse) servis110["POST /api/users/" + id] = reponse; else delete servis110["POST /api/users/" + id];
+      const avantCorps = corpsEnvoyes110.length, avantAvis = avis110().length, avantRecharges = rechargements110;
+      const geste = ligne.enregistrer.onclick(); await laisser110();
+      const ov = fenetre110(); const form = ov && ov.children[0] ? ov.children[0].children[0] : null;
+      if (form && confirmer && typeof form.onsubmit === "function") form.onsubmit({ preventDefault() {} });
+      else if (form) { const b = form.querySelector(".m-cancel"); if (b && typeof b.onclick === "function") b.onclick(); }
+      let jete = null; try { await geste; } catch (e) { jete = e; }
+      await laisser110(40);
+      const envoi = corpsEnvoyes110.slice(avantCorps).find(([k]) => k === "POST /api/users/" + id);
+      return { ligne, jete, confirmation: !!form, envoi: envoi ? JSON.parse(String(envoi[1])) : null, recharges: rechargements110 - avantRecharges,
+        avis: avis110().slice(avantAvis).map((t) => nu110(t)), puits: ligne.puits, cle: ligne.puits && ligne.puits.getAttribute("data-refus-de-modification") };
+    };
+    const mot110 = (cle, delai) => modComptes110.motDeLaModificationDeCompte(cle, { delai });
+    const fuite110 = () => { const vus = []; for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (String(localStorage.getItem(k)).includes(ACTUEL110)) vus.push(k); } if (nu110(document.body).includes(ACTUEL110) || nu110(hotes110["#user-list"]).includes(ACTUEL110)) vus.push("<texte du document>"); return vus; };
+
+    // ══ (a) LA LIGNE DE L'APPELANT PORTE LE CHAMP DU MOT DE PASSE ACTUEL ; AUCUNE AUTRE ══════════════
+    hotes110["#user-list"].replaceChildren();
+    await modComptes110.loadUsers(); await laisser110();
+    const soi110 = ligneDe110("hugo"), autre110 = ligneDe110("bob");
+    instrument110(!!soi110 && !!autre110 && !!soi110.neuf && !!autre110.neuf && !!soi110.enregistrer && !!soi110.puits,
+      "l'éditeur des comptes n'est plus peint sous la forme lue ici (ligne `.urow`, éditeur `.ueditor` : liste, champ du nouveau mot de passe, bouton, puits)");
+    exiger(!!soi110.actuel && soi110.actuel.getAttribute("type") === "password" && soi110.actuel.autocomplete === "current-password"
+      && soi110.actuel.getAttribute("placeholder") === mot110("mot_de_passe_actuel") && autre110.actuel === null && soi110.puits.hidden === true,
+      "(110a) LA LIGNE DE L'APPELANT N'A PAS DE CHAMP DE MOT DE PASSE ACTUEL (type « password », `current-password`, libellé de la table), ou une AUTRE ligne en porte un, ou le puits est peint au repos");
+
+    // ══ (b) UN MOT DE PASSE ACTUEL ABSENT NE PART PAS ; UNE CONFIRMATION ANNULÉE NON PLUS ══════════════
+    const bVide110 = await modifier110(modComptes110, "hugo", { actuel: "" });
+    exiger(!bVide110.envoi && !bVide110.confirmation && bVide110.cle === "mot_de_passe_actuel_manquant" && nu110(bVide110.puits) === mot110("mot_de_passe_actuel_manquant") && bVide110.puits.hidden === false,
+      `(110b) SON PROPRE MOT DE PASSE PART SANS LE MOT DE PASSE ACTUEL, ou le manque n'est pas dit dans le puits : ${JSON.stringify({ envoi: bVide110.envoi, cle: bVide110.cle, texte: nu110(bVide110.puits) })}`);
+    const bAnnule110 = await modifier110(modComptes110, "hugo", { actuel: ACTUEL110, confirmer: false });
+    exiger(bAnnule110.confirmation && !bAnnule110.envoi && bAnnule110.ligne.actuel.value === "" && bAnnule110.puits.hidden === true,
+      `(110b) une confirmation ANNULÉE poste le geste, peint un refus, ou garde le mot de passe actuel dans son champ : ${JSON.stringify({ envoi: bAnnule110.envoi, champ: bAnnule110.ligne.actuel.value === "" ? "" : "(plein)" })}`);
+
+    // ══ (c) CHACUN DES REFUS QUE LE DÉMON SERT A SA FACE ; LE CHAMP EST VIDÉ, LE CORPS PORTE `current` ══════
+    const ecartsC110 = [];
+    for (const [statut, nom, cause] of refus110) {
+      const r = await modifier110(modComptes110, "hugo", { actuel: ACTUEL110, reponse: { statut, corps: { error: cause }, reessai: statut === 429 ? "42" : undefined } });
+      const cle = statut === 429 ? "refus_nomme_avec_delai" : "refus_nomme";
+      const attendu = mot110(cle, 42) + " « " + cause.trim() + " »";
+      if (!r.envoi || r.envoi.current !== ACTUEL110 || r.envoi.password !== NEUF110 || r.envoi.role !== "admin" || Object.keys(r.envoi).length !== 3) ecartsC110.push(`${statut} ${nom} : corps envoyé ${JSON.stringify(r.envoi && Object.keys(r.envoi))}`);
+      if (r.ligne.actuel.value !== "") ecartsC110.push(`${statut} ${nom} : le champ du mot de passe actuel n'est pas vidé`);
+      if (r.jete) ecartsC110.push(`${statut} ${nom} : le geste JETTE ${r.jete.message}`);
+      if (r.cle !== cle || nu110(r.puits) !== attendu || r.puits.hidden) ecartsC110.push(`${statut} ${nom} : puits « ${r.cle} / ${nu110(r.puits).slice(0, 140)} »`);
+      if (r.avis.some((t) => /compte mis à jour/.test(t)) || r.recharges !== 0) ecartsC110.push(`${statut} ${nom} : un refus est annoncé comme un succès (avis ${JSON.stringify(r.avis)}, ${r.recharges} rechargement(s))`);
+      if (/\{"error"|\b(403|429|503)\b/.test(nu110(r.puits))) ecartsC110.push(`${statut} ${nom} : le puits colle le corps JSON ou le code`);
+    }
+    exiger(refus110.length === 5 && ecartsC110.length === 0,
+      `(110c) L'ÉDITEUR N'ENVOIE PAS \`current\`, NE LE VIDE PAS, OU NE PEINT PAS UN REFUS NOMMÉ PAR LE DÉMON DANS LE PUITS DE LA LIGNE : ${JSON.stringify(ecartsC110)}`);
+    // Une page de passerelle n'est pas un refus du démon : sa propre phrase, sans son HTML.
+    const cPasserelle110 = await modifier110(modComptes110, "hugo", { actuel: ACTUEL110, reponse: { statut: 502, corps: HTML110 } });
+    exiger(cPasserelle110.cle === "reponse_hors_demon" && nu110(cPasserelle110.puits) === modNoyau110.motDeLaReponseHorsDemon("page_de_passerelle") && !/<|nginx/.test(nu110(cPasserelle110.puits)) && cPasserelle110.ligne.actuel.value === "",
+      `(110c) une page de passerelle est peinte comme un refus du démon, ou colle son HTML : « ${nu110(cPasserelle110.puits).slice(0, 200)} »`);
+    exiger(fuite110().length === 0, `(110c) LE MOT DE PASSE ACTUEL SURVIT AU GESTE — dans le stockage du site ou le texte du document : ${JSON.stringify(fuite110())}`);
+
+    // ══ (d) LE SUCCÈS DE SON PROPRE CHANGEMENT RECHARGE (SES SESSIONS SONT RÉVOQUÉES) ; UN AUTRE COMPTE, NON ═══
+    const dSoi110 = await modifier110(modComptes110, "hugo", { actuel: ACTUEL110, reponse: { statut: 204, corps: "" } });
+    exiger(!!dSoi110.envoi && dSoi110.envoi.current === ACTUEL110 && dSoi110.recharges === 1 && dSoi110.ligne.actuel.value === "" && dSoi110.puits.hidden === true,
+      `(110d-négatif) le changement ACCEPTÉ de son propre mot de passe ne recharge pas (ses sessions viennent d'être révoquées), ou avoue un refus — un instrument qui avoue toujours ne mesure rien : ${JSON.stringify({ recharges: dSoi110.recharges, cle: dSoi110.cle })}`);
+    const dAutre110 = await modifier110(modComptes110, "bob", { reponse: { statut: 204, corps: "" } });
+    exiger(!!dAutre110.envoi && !("current" in dAutre110.envoi) && dAutre110.envoi.password === NEUF110 && dAutre110.recharges === 0 && dAutre110.avis.some((t) => t === "compte mis à jour"),
+      `(110d) LA RÉINITIALISATION D'UN AUTRE COMPTE ENVOIE \`current\`, recharge, ou ne dit plus son succès : ${JSON.stringify({ cles: dAutre110.envoi && Object.keys(dAutre110.envoi), recharges: dAutre110.recharges, avis: dAutre110.avis })}`);
+    // Le refus en TEXTE BRUT du démon (anti-verrouillage) : sa phrase, dans le puits.
+    const dTexte110 = await modifier110(modComptes110, "bob", { neuf: "", role: "viewer", reponse: { statut: 400, corps: "dernier administrateur — rétrogradation refusée" } });
+    exiger(dTexte110.cle === "refus_nomme" && nu110(dTexte110.puits) === mot110("refus_nomme") + " « dernier administrateur — rétrogradation refusée »",
+      `(110d) un refus du démon en texte brut n'est pas peint dans le puits avec sa phrase : « ${nu110(dTexte110.puits).slice(0, 200)} »`);
+
+    // ══ (e) LES DEUX LANGUES ═══════════════════════════════════════════════════════════════════════
+    const tableComptes110 = (srcDe110("admin_users.js").match(/const MOTS_DE_LA_MODIFICATION_DE_COMPTE = \{[\s\S]*?\n\};/) || [""])[0];
+    const clesComptes110 = [...tableComptes110.matchAll(/^ {2}(\w+): \{$/gm)].map((m) => m[1]);
+    exiger(clesComptes110.length >= 5 && (tableComptes110.match(/^ {4}fr: /gm) || []).length === clesComptes110.length && (tableComptes110.match(/^ {4}en: /gm) || []).length === clesComptes110.length
+      && clesComptes110.every((k) => modComptesEn110.motDeLaModificationDeCompte(k, { delai: 42 }) !== modComptes110.motDeLaModificationDeCompte(k, { delai: 42 })
+        && !/[éèêàçù]/.test(modComptesEn110.motDeLaModificationDeCompte(k, { delai: 42 }))),
+      `(110e) la table des faces de l'éditeur des comptes n'a pas ses DEUX faces sur chacune de ses entrées, ou une face anglaise reste française : ${JSON.stringify(clesComptes110)}`);
+    const eEn110 = await modifier110(modComptesEn110, "hugo", { actuel: "" });
+    exiger(nu110(eEn110.puits) === modComptesEn110.motDeLaModificationDeCompte("mot_de_passe_actuel_manquant") && /current password is required/.test(nu110(eEn110.puits)),
+      `(110e) SOUS \`LANG='en'\`, le mot de passe actuel manquant n'est pas dit en anglais : « ${nu110(eEn110.puits)} »`);
+
+    // ══ (f) `P10.24-f` — LA RÉVOCATION DU COMPTE NON LUE, À LA CONNEXION ══════════════════════════════
+    const formulaire110 = document.querySelector("#login-form"), erreur110 = document.querySelector("#login-err");
+    const utilisateur110 = document.querySelector("#login-user"), motDePasse110 = document.querySelector("#login-pass"), blocDuCode110 = document.querySelector("#login-code-lbl");
+    instrument110(!!formulaire110 && !!erreur110 && !!utilisateur110 && !!motDePasse110 && !!blocDuCode110, "les hôtes de l'écran de connexion d'`index.html` ne sont pas montés");
+    const cablageOrigine110 = { ecouteurs: formulaire110._ecouteurs, lie: formulaire110._bound };
+    try {
+      formulaire110._ecouteurs = []; formulaire110._bound = false; modConnexion110.bindLoginForm();
+      const soumettre110 = async (reponse) => {
+        erreur110.hidden = true; erreur110.replaceChildren(); utilisateur110.disabled = false; motDePasse110.disabled = false;
+        utilisateur110.value = "hugo"; motDePasse110.value = "x";
+        servis110["POST /api/login"] = reponse;
+        const r0 = rechargements110;
+        formulaire110.dispatchEvent(new Evenement("submit", { bubbles: true })); await laisser110(30);
+        return { texte: nu110(erreur110), phrase: nu110(erreur110.children[0]), recharges: rechargements110 - r0, cache: erreur110.hidden, etapeDuCode: blocDuCode110.style.display === "" };
+      };
+      const f110 = await soumettre110({ statut: 503, corps: { error: CAUSE_EPOQUE110 } });
+      const CADRE110 = "Connexion REFUSÉE : le démon n'a pas lu ce dont la décision dépend, et il en nomme la cause —";
+      exiger(!f110.cache && f110.texte === CADRE110 + " « " + CAUSE_EPOQUE110.trim() + " »" && f110.phrase === CADRE110 && f110.recharges === 0 && !f110.etapeDuCode,
+        `(110f) LE CINQ CENT TROIS « RÉVOCATION DU COMPTE NON LUE » N'EST PAS PEINT COMME UN REFUS NOMMÉ, SA CAUSE COLLÉE TELLE QUELLE — ou l'écran recharge, ou ouvre l'étape du code : « ${f110.texte.slice(0, 300)} »`);
+      exiger(!/mot de passe|identifiants|invalide/i.test(f110.phrase) && !/Identifiants invalides|Échec de connexion|\(503\)|\{"error"/.test(f110.texte) && modNoyau110.natureDuRefusDuSecondFacteur(CAUSE_EPOQUE110) === "",
+        `(110f) LA RÉVOCATION NON LUE ACCUSE LE MOT DE PASSE, se dit « échec », colle le code ou le JSON, ou se lit comme un refus du second facteur : « ${f110.texte.slice(0, 300)} »`);
+      const lexique110 = srcDe110("i18n.js");
+      const faceAnglaise110 = (lexique110.match(new RegExp("\\n\\s*\"" + CADRE110.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\": \"([^\"]+)\"")) || [])[1] || "";
+      exiger(/^Sign-in REFUSED/.test(faceAnglaise110) && !/[éèêàçù]/.test(faceAnglaise110),
+        `(110f) le cadre du refus nommé de la connexion n'a pas de face anglaise au lexique : « ${faceAnglaise110} »`);
+      // CONTRÔLE POSITIF : un identifiant faux garde sa phrase — un instrument qui avoue toujours ne mesure rien.
+      const fFaux110 = await soumettre110({ statut: 401, corps: { error: "identifiants invalides" } });
+      exiger(fFaux110.texte === modConnexion110.motDeLaConnexion("identifiants_invalides"),
+        `(110f-négatif) un identifiant faux ne rend plus sa phrase : « ${fFaux110.texte} »`);
+    } finally {
+      formulaire110._ecouteurs = cablageOrigine110.ecouteurs; formulaire110._bound = cablageOrigine110.lie;
+      utilisateur110.disabled = false; motDePasse110.disabled = false; utilisateur110.value = ""; motDePasse110.value = "";
+      erreur110.hidden = true; erreur110.replaceChildren();
+    }
+  } finally {
+    globalThis.fetch = fetchOrigine110; globalThis.setTimeout = minuterieOrigine110;
+    globalThis.location.reload = rechargementOrigine110; document.querySelector = qsOrigine110;
+    S110.isAdmin = etatOrigine110.admin; S110.AUTH = etatOrigine110.auth;
+    document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
+  }
+  console.log(`(110) OK — la ligne de l'administrateur connecté porte un champ du mot de passe actuel (et aucune autre) ; son propre mot de passe ne part pas sans lui ni après une confirmation annulée ; le corps porte \`current\` et le champ est VIDÉ à chaque geste ; chacun des ${refus110.length} refus nommés que \`user_update\` sert par \`juger_le_mot_de_passe_actuel\` (causes relues dans le démon) est peint dans le puits de la ligne avec sa cause et, au verrou, son délai — plus d'avis qui s'efface ni de corps JSON brut ; une page de passerelle garde sa phrase ; le changement accepté recharge (ses sessions sont révoquées), la réinitialisation d'un AUTRE compte n'envoie pas \`current\` et dit son succès ; les faces ont leurs deux langues. Le cinq cent trois « révocation du compte non lue » de \`/api/login\` est peint comme un refus nommé, cause collée, sans accuser le mot de passe. CE QUI ÉTAIT FAUX : \`P10.24-f\` disait « aucune face » — la face existait (chemin générique de \`P10.20-b\`), elle n'était pas vérifiée.`);
+}
+
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;
 verdictRendu = true;
 if (echecs.length) {

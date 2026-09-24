@@ -169,6 +169,10 @@ async function doLogin(user, pass) {
   // Cet écran ne compose aucune phrase sur l'état du compte — il colle ce que le démon a écrit.
   // `P10.22-b` — la vraie panne de passerelle (HTML, cinq cent deux ou quatre, cinq cent trois vide) ne
   // retombe plus sur l'ancien message, qui collait son HTML : elle est nommée juste au-dessus.
+  // `P10.24-f` — LE MÊME CHEMIN PORTE `CAUSE_EPOQUE_DU_COMPTE_NON_LUE` (`P10.23-l`, daemon/src/session.rs) : le
+  // cinq cent trois que `/api/login` sert quand l'époque de révocation du compte n'a pas été lue — aucune session ni
+  // ticket frappé, aucun échec compté. Il se peint en refus NOMMÉ, jamais en « Identifiants invalides » : le mot de
+  // passe n'y est pas en cause. Aucune face propre n'est écrite pour lui ; le témoin 110 tient ce chemin pour lui.
   // ═══════════════════════════════════════════════════════════════════════════════════════════════
   const cause = causeNommeeParLeDemon(corps);
   if (cause) return { ok: false, status: r.status, cause };

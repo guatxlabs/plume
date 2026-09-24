@@ -120,11 +120,26 @@ pub(crate) async fn user_delete(State(st): State<AppState>, Extension(au): Exten
     let sev = if trole == "admin" { 4 } else { 3 };
     let outcome: rusqlite::Result<()> = (|| {
         conn.execute("DELETE FROM user WHERE id=?1", params![id])?;
+        // `P10.24-c` — CE QUI EST LIÉ AU NOM PART AVEC LE COMPTE, ET SES JETONS AVEC LUI. Mesuré le 2026-09-24 sur la
+        // forme d'avant : après cette suppression puis la création d'un homonyme, la session frappée AVANT résolvait
+        // l'identité du NOUVEAU compte (son époque, restée à zéro, était celle du jeton), le ticket MFA d'avant
+        // ouvrait une session avec un code de l'ANCIENNE graine, et la connexion du nouveau titulaire était arrêtée
+        // au second facteur de l'ancien — `user_mfa` et `user_pref` survivaient. L'époque du compte AVANCE (sa clé
+        // `meta` survit à la ligne : un homonyme repart au-delà de tout jeton frappé pour l'ancien), la graine et les
+        // codes de secours sont retirés, les préférences aussi — DANS cette transaction : pas de compte supprimé dont
+        // les jetons vaudraient encore pour son homonyme, ni de purge sans suppression.
+        let seconds_facteurs_retires = conn.execute("DELETE FROM user_mfa WHERE user=?1", params![tname])?;
+        conn.execute("DELETE FROM user_pref WHERE user=?1", params![tname])?;
+        avancer_l_epoque_du_compte(&conn, &tname)?;
         audit_config_change(
             &conn, "config.user.delete",
             &format!("compte '{tname}' (rôle {trole}) supprimé par {}", au.name), sev,
             &format!("compte utilisateur '{tname}' supprimé (rôle {trole}) par {}", au.name),
-            &json!({ "action": "config.user.delete", "kind": "user", "target": tname, "role": trole, "actor": au.name }).to_string(),
+            &json!({
+                "action": "config.user.delete", "kind": "user", "target": tname, "role": trole, "actor": au.name,
+                "second_facteur_retire": seconds_facteurs_retires > 0,
+            })
+            .to_string(),
         )?;
         Ok(())
     })();
@@ -139,36 +154,84 @@ pub(crate) async fn user_delete(State(st): State<AppState>, Extension(au): Exten
 }
 
 // MAJ d'un compte (admin only via auth_guard) : rôle et/ou reset du mot de passe.
-pub(crate) async fn user_update(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
+//
+// `P10.24-a` — SON PROPRE MOT DE PASSE SE CHANGE PAR LE MOT DE PASSE ACTUEL, PAS PAR LA SESSION. Mesuré le 2026-09-24
+// sur la forme d'avant : sous la seule session de `adm`, `{password}` sur son propre identifiant rendait 204, et
+// `{password, current: <faux>}` aussi (`current` n'était pas lu) — la prise de compte que `P10.23-m` a fermée sur
+// `/api/password` restait ouverte ici, et le titulaire, dont les sessions tombent avec le changement, était mis
+// dehors. Quand la cible EST l'appelant et que le corps change le mot de passe, `current` est jugé par le jugement
+// partagé avec `/api/password` (`juger_le_mot_de_passe_actuel`) : même preuve, même verrou (compte, adresse) que la
+// connexion, mêmes refus nommés. Un compte SANS mot de passe local (fédéré) ne s'en pose pas un sur la foi de sa
+// session — une session fédérée volée devenait sinon un mot de passe local, hors de portée de l'annuaire qui la
+// révoque ; un AUTRE administrateur peut le poser.
+//
+// LE GESTE D'ADMINISTRATION SUR UN AUTRE COMPTE RESTE, SANS LE MOT DE PASSE DE SON AUTEUR. C'est son objet : le
+// titulaire a oublié le sien, ou il faut lui retirer l'accès. Ce qui le borne : il est attesté au registre et au SIEM
+// sous le nom de son auteur (sévérité 4, alertable, règle d'auto-détection des mutations d'identité), et le compte
+// VISÉ perd ses sessions et ses tickets (`P10.23-l`). Le mot de passe de l'AUTEUR n'y est pas exigé : un
+// administrateur servi par un SSO d'en-têtes n'en a pas, et la même persistance s'obtient par d'autres gestes
+// d'administration (créer ou promouvoir un administrateur, frapper un jeton) — une preuve récente se décide pour eux
+// tous à la fois, pas pour l'un d'eux.
+pub(crate) async fn user_update(
+    State(st): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
+    Extension(au): Extension<AuthUser>,
+    Path(id): Path<i64>,
+    Json(b): Json<Value>,
+) -> Response {
     let new_pw = b.get("password").and_then(|v| v.as_str()).map(|s| s.trim()).filter(|s| !s.is_empty());
     let new_role = b.get("role").and_then(|v| v.as_str());
-    crate::req_conn!(st, au, conn);
-    let target: Option<(String, String)> = conn
-        .query_row("SELECT name,role FROM user WHERE id=?1", params![id], |r| Ok((r.get(0)?, r.get(1)?)))
-        .ok();
-    let Some((tname, trole)) = target else { return (StatusCode::NOT_FOUND, "compte introuvable").into_response(); };
-    // VALIDATION AVANT toute écriture (rôle valide, anti-lockout, longueur mdp) — inchangé, mais hors transaction.
-    let role_change: Option<&str> = if let Some(nr) = new_role {
-        let role = match nr { "admin" => "admin", "editor" => "editor", "viewer" => "viewer", _ => return (StatusCode::BAD_REQUEST, "rôle invalide (admin|editor|viewer)").into_response() };
-        // anti-lockout : ne pas rétrograder le DERNIER admin
-        if trole == "admin" && role != "admin" {
-            let admins: i64 = conn.query_row("SELECT COUNT(*) FROM user WHERE role='admin'", [], |r| r.get(0)).unwrap_or(0);
-            if admins <= 1 { return (StatusCode::BAD_REQUEST, "dernier administrateur — rétrogradation refusée").into_response(); }
+    // LECTURE ET VALIDATION sous le verrou de la base, RELÂCHÉ avant la preuve : en mode 0 la base de la requête est
+    // celle que la preuve relit (`prouver_le_premier_facteur` la verrouille à son tour).
+    let (tname, trole, role_change) = {
+        crate::req_conn!(st, au, conn);
+        let target: Option<(String, String)> = conn
+            .query_row("SELECT name,role FROM user WHERE id=?1", params![id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .ok();
+        let Some((tname, trole)) = target else { return (StatusCode::NOT_FOUND, "compte introuvable").into_response(); };
+        // VALIDATION AVANT toute écriture (rôle valide, anti-lockout, longueur mdp) — inchangé, mais hors transaction.
+        let role_change: Option<&str> = if let Some(nr) = new_role {
+            let role = match nr { "admin" => "admin", "editor" => "editor", "viewer" => "viewer", _ => return (StatusCode::BAD_REQUEST, "rôle invalide (admin|editor|viewer)").into_response() };
+            // anti-lockout : ne pas rétrograder le DERNIER admin
+            if trole == "admin" && role != "admin" {
+                let admins: i64 = conn.query_row("SELECT COUNT(*) FROM user WHERE role='admin'", [], |r| r.get(0)).unwrap_or(0);
+                if admins <= 1 { return (StatusCode::BAD_REQUEST, "dernier administrateur — rétrogradation refusée").into_response(); }
+            }
+            Some(role)
+        } else { None };
+        if let Some(pw) = new_pw {
+            if pw.chars().count() < PASSWORD_MIN_CHARS { return (StatusCode::BAD_REQUEST, format!("mot de passe trop court (≥ {PASSWORD_MIN_CHARS} caractères)")).into_response(); } // POLITIQUE MDP (item 3) — reset admin uniquement
         }
-        Some(role)
-    } else { None };
-    if let Some(pw) = new_pw {
-        if pw.chars().count() < PASSWORD_MIN_CHARS { return (StatusCode::BAD_REQUEST, format!("mot de passe trop court (≥ {PASSWORD_MIN_CHARS} caractères)")).into_response(); } // POLITIQUE MDP (item 3) — reset admin uniquement
+        (tname, trole, role_change)
+    };
+    // `P10.24-a` — jugé APRÈS la validation, comme `/api/password` : un corps irrecevable n'engage aucun essai du mot
+    // de passe actuel. Un refus n'écrit RIEN, pas même le rôle demandé dans le même corps.
+    let son_propre_compte = tname == au.name;
+    if new_pw.is_some() && son_propre_compte {
+        if let Err(refus) = juger_le_mot_de_passe_actuel(
+            &st,
+            &tname,
+            &peer.ip().to_string(),
+            b.str_field("current"),
+            CAUSE_SON_PROPRE_COMPTE_SANS_MOT_DE_PASSE_LOCAL,
+            &format!("réinitialisation du mot de passe de son propre compte '{tname}' refusée : mot de passe actuel refusé"),
+        ) {
+            return refus;
+        }
     }
+    crate::req_conn!(st, au, conn);
     // AUDIT D'IDENTITÉ : changement de rôle ET/OU reset mdp = mutations d'identité -> AUDIT fail-closed transactionnel
     // (un audit PAR type de changement : role_change / password_reset). Un reset mdp ou une escalade vers admin
     // = sévérité 4 (HIGH, alertable). Le nouveau hash n'est JAMAIS mis dans l'audit.
     if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
         return server_err("verrou base indisponible");
     }
+    // `P10.24-a` — le verrou relâché pour la preuve, les écritures visent le compte LU ET JUGÉ (identifiant ET nom) :
+    // un identifiant réattribué entre-temps ne reçoit pas un mot de passe prouvé pour un autre compte.
+    let une_ligne = |ecrites: usize| if ecrites == 1 { Ok(()) } else { Err(rusqlite::Error::StatementChangedRows(ecrites)) };
     let outcome: rusqlite::Result<()> = (|| {
         if let Some(role) = role_change {
-            conn.execute("UPDATE user SET role=?1 WHERE id=?2", params![role, id])?;
+            une_ligne(conn.execute("UPDATE user SET role=?1 WHERE id=?2 AND name=?3", params![role, id, tname])?)?;
             let sev = if role == "admin" || trole == "admin" { 4 } else { 3 };
             audit_config_change(
                 &conn, "config.user.role_change",
@@ -178,7 +241,7 @@ pub(crate) async fn user_update(State(st): State<AppState>, Extension(au): Exten
             )?;
         }
         if let Some(pw) = new_pw {
-            conn.execute("UPDATE user SET hash=?1 WHERE id=?2", params![hash_pw(pw), id])?;
+            une_ligne(conn.execute("UPDATE user SET hash=?1 WHERE id=?2 AND name=?3", params![hash_pw(pw), id, tname])?)?;
             // `P10.23-l` — LA RÉINITIALISATION RÉVOQUE LES SESSIONS ET LES TICKETS MFA DU SEUL COMPTE RÉINITIALISÉ.
             // Mesuré le 2026-09-24 sur la forme d'avant : après ce 204, la session d'avant du compte résolvait
             // encore son identité, et un ticket MFA émis avant ouvrait encore une session — l'époque de session est
@@ -186,11 +249,17 @@ pub(crate) async fn user_update(State(st): State<AppState>, Extension(au): Exten
             // COMPTE avance DANS cette transaction : pas de mot de passe réinitialisé sans ses jetons d'avant
             // révoqués, ni l'inverse.
             avancer_l_epoque_du_compte(&conn, &tname)?;
+            // `P10.24-a` — l'attestation dit si c'est le titulaire (mot de passe actuel prouvé) ou un autre.
+            let par_qui = if son_propre_compte { " (son propre compte, mot de passe actuel prouvé)" } else { "" };
             audit_config_change(
                 &conn, "config.user.password_reset",
-                &format!("mot de passe du compte '{tname}' réinitialisé par {}", au.name), 4,
-                &format!("mot de passe du compte '{tname}' (rôle {trole}) réinitialisé par {}", au.name),
-                &json!({ "action": "config.user.password_reset", "kind": "user", "target": tname, "actor": au.name }).to_string(),
+                &format!("mot de passe du compte '{tname}' réinitialisé par {}{par_qui}", au.name), 4,
+                &format!("mot de passe du compte '{tname}' (rôle {trole}) réinitialisé par {}{par_qui}", au.name),
+                &json!({
+                    "action": "config.user.password_reset", "kind": "user", "target": tname, "actor": au.name,
+                    "mot_de_passe_actuel_prouve": son_propre_compte,
+                })
+                .to_string(),
             )?;
         }
         Ok(())

@@ -6,6 +6,8 @@
 //! (refactor split #25 — byte-identique). `P10.23-l` : l'époque PROPRE À UN COMPTE (`epoque_du_compte`,
 //! `avancer_l_epoque_du_compte`), liée à la session et au ticket MFA. `P10.23-m` : la preuve du premier
 //! facteur (`prouver_le_premier_facteur`), partagée par l'enrôlement MFA et le changement du mot de passe.
+//! `P10.24-a` : le jugement du mot de passe actuel et ses refus nommés (`juger_le_mot_de_passe_actuel`), partagés
+//! par `/api/password` et par `/api/users/{id}` quand la cible est l'appelant.
 use crate::*;
 use rusqlite::OptionalExtension;
 
@@ -650,11 +652,13 @@ pub(crate) fn prouver_le_premier_facteur(st: &AppState, user: &str, ip: &str, mo
     }
 }
 
-/// `P10.23-m` — le champ `current` est absent ou vide : rien n'est examiné, rien n'est compté.
+/// `P10.23-m` — le champ `current` est absent ou vide : rien n'est examiné, rien n'est compté. `P10.24-a` : servie
+/// aussi par `/api/users/{id}`, dont le nouveau mot de passe voyage sous `password` et non sous `new` — la phrase ne
+/// nomme donc plus le champ du nouveau.
 pub(crate) const CAUSE_MOT_DE_PASSE_ACTUEL_EXIGE: &str = "MOT DE PASSE ACTUEL EXIGÉ, MOT DE PASSE NON CHANGÉ : \
-     une session seule ne prouve pas qu'elle est tenue par le titulaire, et changer le mot de passe \
-     administrateur prendrait le compte. Présentez le mot de passe actuel (champ `current`) à côté du nouveau \
-     (champ `new`). Rien n'est écrit, aucun échec n'est compté.";
+     une session seule ne prouve pas qu'elle est tenue par le titulaire, et changer ce mot de passe prendrait le \
+     compte. Présentez le mot de passe actuel (champ `current`) à côté du nouveau. Rien n'est écrit, aucun échec \
+     n'est compté.";
 
 /// `P10.23-m` — le mot de passe actuel présenté n'est pas celui du compte administrateur.
 pub(crate) const CAUSE_MOT_DE_PASSE_ACTUEL_REFUSE: &str = "MOT DE PASSE ACTUEL REFUSÉ, MOT DE PASSE NON CHANGÉ : \
@@ -676,6 +680,51 @@ pub(crate) const CAUSE_ADMINISTRATEUR_SANS_MOT_DE_PASSE_LOCAL: &str = "MOT DE PA
 pub(crate) const CAUSE_COMPTE_NON_LU_AU_CHANGEMENT: &str = "COMPTE NON LU, MOT DE PASSE NI CHANGÉ NI REFUSÉ : la \
      lecture du compte administrateur a échoué, le mot de passe actuel n'a donc pas pu être jugé. Rien n'est écrit, \
      aucun échec n'est compté. Réessayez.";
+
+/// `P10.24-a` — l'APPELANT de `/api/users/{id}` vise son propre compte, qui n'a pas de mot de passe local (compte
+/// fédéré OIDC, SAML ou LDAP, ou hachage vide) : sa session ne lui en pose pas un. Le remède n'est pas celui de
+/// `/api/password` (l'installation) : un AUTRE administrateur peut le poser, et ce geste-là est tracé.
+pub(crate) const CAUSE_SON_PROPRE_COMPTE_SANS_MOT_DE_PASSE_LOCAL: &str = "MOT DE PASSE NON POSÉ, CE COMPTE N'A PAS \
+     DE MOT DE PASSE LOCAL : il est fédéré (OIDC, SAML, LDAP) ou son mot de passe est vide, donc aucun mot de passe \
+     actuel ne peut être prouvé — et une session seule ne pose pas de mot de passe sur son propre compte. Un AUTRE \
+     administrateur peut le poser (réinitialisation inscrite au registre, sessions du compte révoquées). Rien n'est \
+     écrit ni compté.";
+
+/// `P10.24-a` — LE JUGEMENT DU MOT DE PASSE ACTUEL, UN SEUL POUR LES DEUX ROUTES QUI REMPLACENT LE MOT DE PASSE D'UN
+/// COMPTE SUR LA FOI D'UNE SESSION : `/api/password` (le compte administrateur) et `/api/users/{id}` quand la cible
+/// est l'APPELANT. Une seule écriture pour que les deux ne divergent pas : même preuve (`prouver_le_premier_facteur`),
+/// même verrou (compte, adresse) que `/api/login`, mêmes refus nommés sous les mêmes statuts — `403` exigé, `403`
+/// refusé (inscrit au registre sous `trace_du_refus`), `429` au verrou avec son délai, `403` pour un compte sans mot
+/// de passe local (la cause PROPRE à la route, qui nomme son remède), `503` pour un compte non lu. `Ok(())` : la
+/// preuve est faite, et le couple (compte, adresse) remis à zéro comme par une connexion.
+pub(crate) fn juger_le_mot_de_passe_actuel(
+    st: &AppState,
+    user: &str,
+    ip: &str,
+    mot_de_passe_actuel: &str,
+    cause_sans_mot_de_passe_local: &'static str,
+    trace_du_refus: &str,
+) -> Result<(), Response> {
+    match prouver_le_premier_facteur(st, user, ip, mot_de_passe_actuel) {
+        PreuveDuPremierFacteur::Prouvee => Ok(()),
+        PreuveDuPremierFacteur::Absente => Err(err_json(StatusCode::FORBIDDEN, CAUSE_MOT_DE_PASSE_ACTUEL_EXIGE)),
+        PreuveDuPremierFacteur::Refusee => {
+            ledger_append(&st.db.lock(), "password", trace_du_refus);
+            Err(err_json(StatusCode::FORBIDDEN, CAUSE_MOT_DE_PASSE_ACTUEL_REFUSE))
+        }
+        PreuveDuPremierFacteur::Verrouillee(attente) => Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            [(header::RETRY_AFTER, attente.to_string())],
+            Json(json!({ "error": CAUSE_MOT_DE_PASSE_ACTUEL_VERROUILLE })),
+        )
+            .into_response()),
+        PreuveDuPremierFacteur::SansMotDePasseLocal => Err(err_json(StatusCode::FORBIDDEN, cause_sans_mot_de_passe_local)),
+        PreuveDuPremierFacteur::CompteNonLu(cause) => {
+            eprintln!("[password] WARN compte '{user}' NON lu au jugement du mot de passe actuel : {cause}");
+            Err(err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_COMPTE_NON_LU_AU_CHANGEMENT))
+        }
+    }
+}
 
 /// POST /api/password {current, new} — change le mot de passe de l'administrateur (celui de l'assistant, à défaut
 /// celui de la configuration).
@@ -710,32 +759,16 @@ pub(crate) async fn password_post(
     }
     let user = st.admin.lock().clone().map(|(u, _)| u).unwrap_or_else(|| st.user.as_ref().clone());
     let ip = peer.ip().to_string();
-    match prouver_le_premier_facteur(&st, &user, &ip, b.str_field("current")) {
-        PreuveDuPremierFacteur::Prouvee => {}
-        PreuveDuPremierFacteur::Absente => return err_json(StatusCode::FORBIDDEN, CAUSE_MOT_DE_PASSE_ACTUEL_EXIGE),
-        PreuveDuPremierFacteur::Refusee => {
-            ledger_append(
-                &st.db.lock(),
-                "password",
-                &format!("changement du mot de passe admin de '{user}' refusé (demandé par '{}') : mot de passe actuel refusé", au.name),
-            );
-            return err_json(StatusCode::FORBIDDEN, CAUSE_MOT_DE_PASSE_ACTUEL_REFUSE);
-        }
-        PreuveDuPremierFacteur::Verrouillee(attente) => {
-            return (
-                StatusCode::TOO_MANY_REQUESTS,
-                [(header::RETRY_AFTER, attente.to_string())],
-                Json(json!({ "error": CAUSE_MOT_DE_PASSE_ACTUEL_VERROUILLE })),
-            )
-                .into_response();
-        }
-        PreuveDuPremierFacteur::SansMotDePasseLocal => {
-            return err_json(StatusCode::FORBIDDEN, CAUSE_ADMINISTRATEUR_SANS_MOT_DE_PASSE_LOCAL);
-        }
-        PreuveDuPremierFacteur::CompteNonLu(cause) => {
-            eprintln!("[password] WARN compte '{user}' NON lu au changement du mot de passe : {cause}");
-            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_COMPTE_NON_LU_AU_CHANGEMENT);
-        }
+    // `P10.24-a` — le jugement est celui que `/api/users/{id}` applique au compte de son appelant (déplacé tel quel).
+    if let Err(refus) = juger_le_mot_de_passe_actuel(
+        &st,
+        &user,
+        &ip,
+        b.str_field("current"),
+        CAUSE_ADMINISTRATEUR_SANS_MOT_DE_PASSE_LOCAL,
+        &format!("changement du mot de passe admin de '{user}' refusé (demandé par '{}') : mot de passe actuel refusé", au.name),
+    ) {
+        return refus;
     }
     match hash_pw(new) {
         Some(h) => {

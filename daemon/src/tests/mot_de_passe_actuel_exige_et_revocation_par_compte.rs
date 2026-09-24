@@ -129,8 +129,10 @@ mod mot_de_passe_actuel_exige_et_revocation_par_compte {
         (s, session, c)
     }
 
+    /// `P10.24-a` : `user_update` lit l'adresse du pair ; la cible étant ici un AUTRE compte que l'appelant (`adm`),
+    /// le mot de passe actuel n'est pas jugé et l'adresse est sans effet.
     async fn mdpa_reinitialiser(st: &AppState, cible: &str, neuf: &str) -> u16 {
-        user_update(State(st.clone()), Extension(sp_au("adm", "admin")), axum::extract::Path(mdpa_id(st, cible)), Json(json!({ "password": neuf })))
+        user_update(State(st.clone()), ConnectInfo(mdpa_pair("10.60.0.1")), Extension(sp_au("adm", "admin")), axum::extract::Path(mdpa_id(st, cible)), Json(json!({ "password": neuf })))
             .await
             .status()
             .as_u16()
@@ -298,7 +300,7 @@ mod mot_de_passe_actuel_exige_et_revocation_par_compte {
         assert!(mdpa_identite(&st, &session_de_bob).is_some(), "fixture : la session de bob vaut");
 
         // CONTRÔLE POSITIF — un changement de rôle seul ne révoque rien.
-        let r = user_update(State(st.clone()), Extension(sp_au("adm", "admin")), axum::extract::Path(mdpa_id(&st, "bob")), Json(json!({ "role": "viewer" }))).await;
+        let r = user_update(State(st.clone()), ConnectInfo(mdpa_pair(ip)), Extension(sp_au("adm", "admin")), axum::extract::Path(mdpa_id(&st, "bob")), Json(json!({ "role": "viewer" }))).await;
         assert_eq!(r.status().as_u16(), 204, "fixture : rôle changé");
         assert_eq!(mdpa_identite(&st, &session_de_bob), Some(("bob".into(), "viewer".into())), "le rôle suit, la session vaut");
 

@@ -4,6 +4,7 @@
 //! (`expire`/`activate_due_engagements_conn`), les handlers engagement et `mode_get`/`mode_set`.
 //! Extrait de main.rs (refactor split #25 — byte-identique).
 use crate::*;
+use crate::handlers::transaction_validee::valider_la_transaction;
 
 // =====================================================================================
 // MODE ENGAGEMENT AUTORISÉ (v75) — pentest natif black/grey/whitebox, SANS reconfigurer le SOC, SANS angle
@@ -434,7 +435,10 @@ pub(crate) fn expire_due_engagements_conn(conn: &Connection, now_i: i64) -> usiz
     };
     let mut n = 0usize;
     for (id, name) in &due {
-        if conn.execute_batch("BEGIN IMMEDIATE").is_err() { continue; }
+        if let Err(e) = conn.execute_batch("BEGIN IMMEDIATE") {
+            dire_un_geste_du_cycle_non_pris("expiration", id, "BEGIN refusé", &e);
+            continue;
+        }
         let outcome: rusqlite::Result<()> = (|| {
             conn.execute("UPDATE engagement SET status='expired', ended_ts=?2 WHERE id=?1 AND status='active'", params![id, now_i])?;
             revoke_engagement_creds(conn, id)?; // INVALIDE les comptes mintés (avant de révoquer les grants)
@@ -451,10 +455,7 @@ pub(crate) fn expire_due_engagements_conn(conn: &Connection, now_i: i64) -> usiz
             )?;
             Ok(())
         })();
-        match outcome {
-            Ok(()) => { let _ = conn.execute_batch("COMMIT"); n += 1; }
-            Err(_) => { let _ = conn.execute_batch("ROLLBACK"); }
-        }
+        clore_un_geste_du_cycle(conn, outcome, "expiration", id, &mut n);
     }
     n
 }
@@ -476,7 +477,10 @@ pub(crate) fn activate_due_engagements_conn(conn: &Connection, now_i: i64) -> (u
     };
     let mut activated = 0usize;
     for (id, name) in &to_activate {
-        if conn.execute_batch("BEGIN IMMEDIATE").is_err() { continue; }
+        if let Err(e) = conn.execute_batch("BEGIN IMMEDIATE") {
+            dire_un_geste_du_cycle_non_pris("activation", id, "BEGIN refusé", &e);
+            continue;
+        }
         let outcome: rusqlite::Result<()> = (|| {
             conn.execute("UPDATE engagement SET status='active' WHERE id=?1 AND status='scheduled'", params![id])?;
             audit_source_change(
@@ -488,10 +492,7 @@ pub(crate) fn activate_due_engagements_conn(conn: &Connection, now_i: i64) -> (u
             )?;
             Ok(())
         })();
-        match outcome {
-            Ok(()) => { let _ = conn.execute_batch("COMMIT"); activated += 1; }
-            Err(_) => { let _ = conn.execute_batch("ROLLBACK"); }
-        }
+        clore_un_geste_du_cycle(conn, outcome, "activation", id, &mut activated);
     }
     // (2) scheduled -> expired : fenêtre écoulée SANS activation (mêmes effets que l'expiry d'un actif).
     let stale: Vec<(String, String)> = match conn
@@ -503,7 +504,10 @@ pub(crate) fn activate_due_engagements_conn(conn: &Connection, now_i: i64) -> (u
     };
     let mut expired = 0usize;
     for (id, name) in &stale {
-        if conn.execute_batch("BEGIN IMMEDIATE").is_err() { continue; }
+        if let Err(e) = conn.execute_batch("BEGIN IMMEDIATE") {
+            dire_un_geste_du_cycle_non_pris("expiration sans activation", id, "BEGIN refusé", &e);
+            continue;
+        }
         let outcome: rusqlite::Result<()> = (|| {
             conn.execute("UPDATE engagement SET status='expired', ended_ts=?2 WHERE id=?1 AND status='scheduled'", params![id, now_i])?;
             revoke_engagement_creds(conn, id)?; // INVALIDE les comptes mintés (scheduled expiré sans activation)
@@ -520,12 +524,49 @@ pub(crate) fn activate_due_engagements_conn(conn: &Connection, now_i: i64) -> (u
             )?;
             Ok(())
         })();
-        match outcome {
-            Ok(()) => { let _ = conn.execute_batch("COMMIT"); expired += 1; }
-            Err(_) => { let _ = conn.execute_batch("ROLLBACK"); }
-        }
+        clore_un_geste_du_cycle(conn, outcome, "expiration sans activation", id, &mut expired);
     }
     (activated, expired)
+}
+
+// `P10.25-e` — UN GESTE DU CYCLE DE VIE QUE LA BASE N'A PAS PRIS N'EST NI COMPTÉ, NI LAISSÉ OUVERT, NI TU.
+//
+// LE DÉFAUT, MESURÉ LE 2026-09-24 SUR LA FORME D'AVANT (`COMMIT` refusé par un autorisateur SQLite, deux engagements
+// échus par balayage) : le balayage d'expiration rendait 1 — un engagement compté expiré, qui ne l'était pas au
+// redémarrage — et la transaction restait OUVERTE sur l'écrivain partagé ; le second engagement échu n'était même pas
+// tenté (`BEGIN` refusé, `continue` muet), ni aucun geste d'écriture de la console jusqu'au redémarrage (500 « verrou
+// base indisponible »). L'activation, de même : 1 compté, le second sauté, et le rafraîchissement de l'index de scope
+// qui suit le balayage lisait la transaction pendante — l'exemption d'auto-ban d'un engagement resté `scheduled` en
+// base était posée en mémoire. L'énoncé (« une révocation annoncée faite et non faite ») est IMPRÉCIS pour
+// l'expiration : l'exemption et les crédences d'un engagement échu cessent de servir à `window_end` même quand le
+// balayage échoue, parce que `engagement_scope_match` et `engagement_cred_within_window` revérifient la fenêtre à
+// chaque usage ; ce qui manquait, c'est la révocation écrite (grants, comptes `eng-cred-*`) et sa trace.
+//
+// LA FORME : chaque engagement a SA transaction, jugée ; un refus la ferme (`valider_la_transaction`), n'est pas
+// compté, et le journal le dit par engagement — la ligne reste due, le balayage suivant (20 s) la reprend, et
+// l'index de scope, rafraîchi APRÈS le balayage, ne lit que ce que la base a validé.
+
+/// `P10.25-e` — le journal d'un geste du cycle de vie non pris : quel geste, quel engagement, à quelle étape, pourquoi.
+fn dire_un_geste_du_cycle_non_pris(geste: &str, id: &str, etape: &str, cause: &rusqlite::Error) {
+    eprintln!(
+        "[engagement] WARN {geste} de l'engagement '{id}' NON prise ({etape} : {cause}) — rien n'est écrit ni compté, \
+         l'engagement reste dû et le balayage suivant le reprend"
+    );
+}
+
+/// `P10.25-e` — solde la transaction d'un geste du cycle de vie : validée, elle est comptée ; refusée (écriture ou
+/// `COMMIT`), elle est fermée et dite, jamais comptée.
+fn clore_un_geste_du_cycle(conn: &Connection, outcome: rusqlite::Result<()>, geste: &str, id: &str, compte: &mut usize) {
+    match outcome {
+        Ok(()) => match valider_la_transaction(conn) {
+            Ok(()) => *compte += 1,
+            Err(e) => dire_un_geste_du_cycle_non_pris(geste, id, "COMMIT refusé", &e),
+        },
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            dire_un_geste_du_cycle_non_pris(geste, id, "écriture refusée", &e);
+        }
+    }
 }
 /// Sweep boucle-de-fond (tick 20 s, à côté de escalate_overdue_cases). SELF-GATED : hors mode engagement,
 /// return AVANT tout lock/SELECT -> no-op strict (byte-identique). Cycle de vie COMPLET : activation des
@@ -855,7 +896,14 @@ pub(crate) async fn engagement_create(State(st): State<AppState>, Extension(au):
     })();
     match outcome {
         Ok(()) => {
-            let _ = conn.execute_batch("COMMIT");
+            // `P10.25-e` — ni crédence montrée, ni exemption posée en mémoire avant la transaction VALIDÉE : avant, un
+            // `COMMIT` refusé rendait 200 et le secret d'un compte `eng-cred-*` qui authentifiait tant que la transaction
+            // restait pendante, et l'index de scope, rechargé DANS cette transaction, suspendait l'auto-ban sur le
+            // scope d'un engagement qui n'existait plus au redémarrage — sans aucune trace validée.
+            if let Err(e) = valider_la_transaction(&conn) {
+                eprintln!("[engagement] WARN création de l'engagement '{id}' NON validée : {e}");
+                return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_ENGAGEMENT_NON_CREE_COMMIT_REFUSE);
+            }
             let db_path = req_db_path(&st, &au);
             engagement_scope_refresh(&db_path, &conn); // effet immédiat sans attendre le tick 20 s
             // `credentials` = secret(s) minté(s) rendus UNE SEULE FOIS ici (jamais stockés en clair, jamais
@@ -904,7 +952,13 @@ pub(crate) async fn engagement_end(State(st): State<AppState>, Extension(au): Ex
     })();
     match outcome {
         Ok(()) => {
-            let _ = conn.execute_batch("COMMIT");
+            // `P10.25-e` — la clôture n'est annoncée, et l'index de scope rechargé, qu'une fois la transaction VALIDÉE :
+            // avant, un `COMMIT` refusé rendait 200 `revoked`, la crédence refusée tant que la transaction restait
+            // pendante AUTHENTIFIAIT de nouveau dès qu'elle était annulée, et l'engagement était toujours `active` en base.
+            if let Err(e) = valider_la_transaction(&conn) {
+                eprintln!("[engagement] WARN clôture de l'engagement '{id}' NON validée : {e}");
+                return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_ENGAGEMENT_NON_CLOS_COMMIT_REFUSE);
+            }
             let db_path = req_db_path(&st, &au);
             engagement_scope_refresh(&db_path, &conn);
             Json(json!({ "id": id, "status": "revoked" })).into_response()
@@ -954,10 +1008,35 @@ pub(crate) async fn mode_set(State(st): State<AppState>, Extension(au): Extensio
         Ok(())
     })();
     match outcome {
-        Ok(()) => { let _ = conn.execute_batch("COMMIT"); Json(json!({ "mode": m })).into_response() }
+        // `P10.25-e` — la bascule n'est annoncée qu'une fois VALIDÉE : avant, un `COMMIT` refusé rendait 200 `observe`,
+        // les playbooks lisaient `observe` dans la transaction pendante, et la base disait `active` au redémarrage.
+        Ok(()) => match valider_la_transaction(&conn) {
+            Ok(()) => Json(json!({ "mode": m })).into_response(),
+            Err(e) => {
+                eprintln!("[engagement] WARN bascule du mode vers '{m}' NON validée : {e}");
+                err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_MODE_INCHANGE_COMMIT_REFUSE)
+            }
+        },
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
             server_err(format!("échec transaction audit (mode inchangé): {e}"))
         }
     }
 }
+
+/// `P10.25-e` — le `COMMIT` de la création d'un engagement refusé.
+pub(crate) const CAUSE_ENGAGEMENT_NON_CREE_COMMIT_REFUSE: &str = "ENGAGEMENT NON CRÉÉ : la base n'a pas validé la \
+     transaction (COMMIT refusé) et l'a annulée — aucune crédence n'est frappée ni montrée, aucune exemption d'auto-ban \
+     n'est posée, et rien n'est attesté. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou \
+     verrouillée.";
+
+/// `P10.25-e` — le `COMMIT` de la clôture anticipée d'un engagement refusé.
+pub(crate) const CAUSE_ENGAGEMENT_NON_CLOS_COMMIT_REFUSE: &str = "ENGAGEMENT NON CLOS : la base n'a pas validé la \
+     transaction (COMMIT refusé) et l'a annulée — l'engagement court toujours : son exemption d'auto-ban reste posée et \
+     ses crédences authentifient jusqu'à la fin de sa fenêtre. Réessayez ; si le refus persiste, la base est en lecture \
+     seule, pleine ou verrouillée.";
+
+/// `P10.25-e` — le `COMMIT` d'une bascule du mode de réponse refusé.
+pub(crate) const CAUSE_MODE_INCHANGE_COMMIT_REFUSE: &str = "MODE INCHANGÉ : la base n'a pas validé la transaction \
+     (COMMIT refusé) et l'a annulée — le mode de réponse reste celui d'avant, et la bascule n'est pas attestée. \
+     Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";

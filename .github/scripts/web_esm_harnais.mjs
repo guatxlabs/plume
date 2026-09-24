@@ -20344,6 +20344,407 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   console.log("(113) OK — les quatre refus nommés de la création d'un compte (nom de l'administrateur de configuration, nom tenu sans compte, nom non vérifié, COMMIT refusé), reconnus à la cause relue dans `user_create` et à elle seule, ont leur face dans les deux langues et leur cause ENTIÈRE dans un puits du formulaire — plus de JSON brut coupé à deux cents caractères, plus de code, sans accuser, le formulaire et le nom gardés ; ce que le nom tient est présenté (l'annuaire, puis une ligne par table, les tables jugées contre les trois listes du démon, une table sans mot dite par son nom) et un détail illisible se dit illisible ; le 409 en texte brut garde sa phrase sans son code, une page de passerelle sa face, une demande qui n'aboutit pas ne se dit pas refusée, une création acceptée efface le refus. Les cinq cent trois du COMMIT refusé de la suppression et de la modification ont bien leur face générique, cause entière. Une page vide de rang supérieur dit sa phrase au lieu d'un tableau d'en-têtes dans la table paginée de l'Explore (fin du résultat, saut sans rendu marqué, repeint du compte), dans une liste paginée (fin du résultat sans total compté, au-delà du total compté, liste rendue ligne à ligne) et dans un panneau de table, avec son retour ; une page que la recherche vide et une première page vide n'en disent rien. L'infobulle d'une ligne qui mène aux événements d'une valeur a ses deux faces. Après une suppression, le compte rendu servi (objets réattribués et supprimés, second facteur, jetons révoqués avec leur raison, conservés au secret connu avec le geste, auteur non établi) est peint en tête de la liste rechargée, et son absence se dit ; une ouverture de la console refusée par l'annuaire (403, 503) dit sa cause entière au-dessus du formulaire, un 401 nu garde l'invite d'avant. CE QUI ÉTAIT FAUX OU IMPRÉCIS : `P10.25-i` comptait trois causes (460, 558, 224) — la quatrième, le nom non vérifié (250), était coupée aussi ; `ce_que_le_nom_tient` n'atteignait même pas la console (`apiSend` ne portait que `error`) ; `P10.25-n` disait « seul le pager le dit » — sans total compté (liste par curseur, panneau au compte interrompu), le pager ne le disait pas non plus ; la confirmation de suppression disait les jetons « NON révoqués » quand le démon en révoque, et le témoin 112 restait vert (sa lecture cherchait du SQL dans le seul `user_delete`) ; `fetchMe` avalait tout refus de `/api/me`, et l'annuaire refusé ouvrait une invite de connexion muette.");
 }
 
+// ---------------------------------------------------------------------------------------------
+// (114) `P10.25-w` — UN REFUS DE L'ANNUAIRE EN COURS DE SESSION A UNE FACE UNIQUE, PAS UNE COPIE PAR SURFACE ;
+//       `P10.25-x` — la suppression et la modification d'un compte ne disent plus « le démon a refusé » d'une
+//       demande qui n'a pas abouti ; `P10.25-y` — les confirmations de création et de modification ont leurs deux
+//       faces ; `P10.25-z` — une page vide DANS le total compté dit l'écart au lieu de « fin du résultat ».
+//
+// CE QUE LE DÉMON SERT, RELU ICI ET NON RECOPIÉ (daemon/src/auth.rs, `P10.25-d`) : les trois refus de l'annuaire —
+// 403 JSON du nom d'un compte à mot de passe, 403 JSON du nom de l'administrateur de configuration, 503 JSON du nom
+// non vérifié — sont rendus par `auth_guard`, donc par TOUTE route gardée, `/api/me` comprise (elle n'est pas dans
+// les routes publiques), et le jugement est relu à chaque requête. Une session ouverte par l'annuaire (ou par un
+// cookie qui expire derrière le même mandataire) est donc refusée EN COURS de route, sur chaque lecture à la fois.
+//
+// CE QUE LA CONSOLE EN FAISAIT, MESURÉ SUR LES MODULES RÉELS AVANT CE LOT (2026-09-24, miroir de `HEAD`) :
+//   · un refus de l'annuaire en cours de session : AUCUNE face — aucun `/api/me`, l'écran de connexion jamais
+//     rendu, la session tenue pour ouverte ; chaque surface peignait SA copie : « erreur : 403 {"error":"IDENTITÉ DE
+//     L'ANNUAIRE REFUSÉE, CE NOM EST CELUI D'UN COMPTE LOCAL À MOT DE PASSE : le fournisseur d'identité présente le
+//     nom d'un compte de la table des comptes qui porte un m » (JSON brut coupé à deux cents caractères, remède
+//     jamais atteint) dans chaque `fetchInto`, « Erreur : » suivi de la cause ENTIÈRE dans chaque panneau de tableau
+//     de bord ; le cinq cent trois (nom non vérifié) devenait « erreur : Service momentanément indisponible,
+//     réessaie dans un instant. » — la cause, qui dit que rien n'est servi, n'atteignait AUCUNE surface ;
+//   · la suppression et la modification d'un compte, sur une demande qui n'aboutit pas : « Compte NON supprimé : le
+//     démon a refusé et en nomme la cause — « Failed to fetch » » (et « Compte NON modifié… ») — un refus que
+//     personne n'a servi, et une non-suppression que rien n'établit ;
+//   · sous `LANG='en'` : « Créer le compte « carol » », « un accès viewer à cette console est ouvert
+//     immédiatement. », « Modifier le compte « bob » », « le rôle de « bob » passe de editor à admin — accès complet
+//     à la configuration, aux secrets et aux suppressions », « le mot de passe de « bob » est remplacé immédiatement
+//     (l'ancien cesse de fonctionner) » — la clé ne comptait que trois de ces cinq chaînes ;
+//   · une page vide dont le début est EN DEÇÀ du total compté disait « page vide, fin du résultat — ◀ pour
+//     revenir » sous un pager qui annonce le total — dans une liste paginée, un panneau de table, et AUSSI dans
+//     l'Explore (table paginée et liste d'événements), qui choisit sa phrase par `cleDeLaPageVide` : la clé ne
+//     nommait que les surfaces de `noeudDeLaPageVideDeRangSuperieur`.
+//
+// CE QUE CE TÉMOIN NE TIENT PAS : le transport est un simulacre, sur lequel l'enveloppe RÉELLE (`web/app.js`) est
+// posée — le navigateur ne l'est pas ; le recouvrement de la console par l'écran de connexion est jugé par sa règle
+// de style, pas par un rendu ; aucune route du démon n'est rejouée ; la première page vide dans un total compté
+// (sous son pager, un tableau d'en-têtes) n'est pas jugée.
+// ---------------------------------------------------------------------------------------------
+{
+  const url114 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const modNoyau114 = await import(url114("core.js"));
+  const modViz114 = await import(url114("viz.js"));
+  const modComptes114 = await import(url114("admin_users.js"));
+  const modTdb114 = await import(url114("dashboards.js"));
+  const modConnexion114 = await import(url114("login.js"));
+  const modApp114 = await import(url114("app.js"));
+  const { S: S114 } = await import(url114("state.js"));
+  const langueOrigine114 = localStorage.getItem("soc_lang");
+  localStorage.setItem("soc_lang", "en");
+  const modNoyauEn114 = await import(adresseSousLaLangue("core.js"));
+  const modVizEn114 = await import(adresseSousLaLangue("viz.js"));
+  const modComptesEn114 = await import(adresseSousLaLangue("admin_users.js"));
+  const modConnexionEn114 = await import(adresseSousLaLangue("login.js"));
+  const modAppEn114 = await import(adresseSousLaLangue("app.js"));
+  const { S: SEn114 } = await import(adresseSousLaLangue("state.js"));
+  if (langueOrigine114 === null) localStorage.removeItem("soc_lang"); else localStorage.setItem("soc_lang", langueOrigine114);
+
+  const tic114 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser114 = async (n = 30) => { for (let i = 0; i < n; i++) await tic114(); };
+  const nu114 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ").trim();
+  const cueillir114 = (el, pred, acc = []) => { if (el && pred(el)) acc.push(el); ((el && el.children) || []).forEach((c) => cueillir114(c, pred, acc)); return acc; };
+  const parClasse114 = (hote, classe) => cueillir114(hote, (e) => e.classList && e.classList.contains(classe));
+  const parDonnee114 = (hote, attribut) => cueillir114(hote, (e) => typeof e.getAttribute === "function" && e.getAttribute(attribut) !== null);
+  const parBalise114 = (hote, balise) => cueillir114(hote, (e) => e.tagName === balise);
+  const instrument114 = (vrai, quoi) => exiger(vrai, `(114-instrument) ${quoi} : ce témoin REFUSE DE CONCLURE`);
+  const srcDe114 = (f) => ((CORPUS_WEB.find(([g]) => g === f) || [])[1]) || "";
+  const corpsDeFonction114 = (src, entete) => { const i = src.indexOf(entete); if (i < 0) return ""; const j = src.indexOf("\n}\n", i); return j < 0 ? "" : src.slice(i, j + 2); };
+  const constante114 = (src, nom) => { const m = src.match(new RegExp("const " + nom + ": &str = \"((?:[^\"\\\\]|\\\\[\\s\\S])*)\";")); return m ? m[1].replace(/\\\n\s*/g, "").replace(/\\"/g, "\"") : ""; };
+  const ACCENTS114 = /[éèêàçùôâîÉÈÊÀ]/;
+  const ACCUSE114 = /\b(vous|votre|vos|you|your)\b|invalide|interdit|erreur|échec|invalid|forbidden|error|fail/i;
+  // Une fonction neuve absente (arbre d'avant) se DIT par sa valeur, au lieu de faire tomber le banc : la mesure continue.
+  const appeler114 = (mod, nom, ...args) => { if (typeof mod[nom] !== "function") return `(${nom} absente)`; try { return mod[nom](...args); } catch (e) { return `(${nom} jette : ${e && e.message})`; } };
+
+  // ── (0) L'INSTRUMENT : CE QUE LE DÉMON SERT, LU DANS SON ARBRE ; CE QUE LA CONSOLE EXPORTE ──────────────
+  const AUTH114 = readFileSync(path.join(RACINE, "daemon", "src", "auth.rs"), "utf8");
+  const garde114 = corpsDeFonction114(AUTH114, "pub(crate) async fn auth_guard(");
+  const CAUSES_DE_L_ANNUAIRE114 = [["CAUSE_ANNUAIRE_NOM_D_UN_COMPTE_A_MOT_DE_PASSE", 403, "annuaire_refuse"], ["CAUSE_ANNUAIRE_NOM_DE_L_ADMINISTRATEUR_DE_CONFIGURATION", 403, "annuaire_refuse"], ["CAUSE_ANNUAIRE_NOM_NON_VERIFIE", 503, "annuaire_non_verifie"]]
+    .map(([nom, statut, cle]) => ({ nom, statut, cle, cause: constante114(AUTH114, nom) }));
+  instrument114(CAUSES_DE_L_ANNUAIRE114.every((c) => c.cause.length > 150)
+    && /Self::CompteAMotDePasse\(_\) => \(StatusCode::FORBIDDEN, CAUSE_ANNUAIRE_NOM_D_UN_COMPTE_A_MOT_DE_PASSE\)/.test(AUTH114)
+    && /Self::AdministrateurDeConfiguration\(_\) => \(StatusCode::FORBIDDEN, CAUSE_ANNUAIRE_NOM_DE_L_ADMINISTRATEUR_DE_CONFIGURATION\)/.test(AUTH114)
+    && /Self::NonVerifie\(\.\.\) => \(StatusCode::SERVICE_UNAVAILABLE, CAUSE_ANNUAIRE_NOM_NON_VERIFIE\)/.test(AUTH114)
+    && /return refus\.servir\(&st, &src_ip\);/.test(garde114) && !/path == "\/api\/me"/.test(garde114),
+    "les refus de l'annuaire ne sont plus rendus par `auth_guard` sous 403/403/503 JSON sur toute route gardée, `/api/me` comprise : la session jugée ci-dessous ne serait plus celle du démon");
+  const STYLE114 = srcDe114("style.css");
+  instrument114(/\.login-ov\{position:fixed;inset:0;[^}]*background:var\(--bg\)/.test(STYLE114) && /body\.login-locked\{overflow:hidden\}/.test(STYLE114),
+    "l'écran de connexion ne recouvre plus toute la console (règle `.login-ov` fixe, pleine, opaque) : une face posée sur lui ne serait plus UNIQUE à l'écran");
+  instrument114([modApp114.envelopperLeTransport, modAppEn114.envelopperLeTransport, modConnexion114.natureDuRefusDeLAnnuaire, modConnexion114.lireUneReponseDuTransport, modConnexion114.motDeLaConnexion, modConnexionEn114.motDeLaConnexion,
+    modNoyau114.fetchInto, modNoyau114.laDemandeNAPasAbouti, modNoyau114.laPageEstDansLeTotal, modNoyau114.pagedList, modNoyauEn114.pagedList, modViz114.cleDeLaPageVide, modViz114.evLoad, modVizEn114.evLoad,
+    modComptes114.loadUsers, modComptesEn114.loadUsers, modComptes114.motDUneConfirmationDeCompte, modComptesEn114.motDUneConfirmationDeCompte, modComptes114.creerLeCompteDuFormulaire, modTdb114.loadPanelsInto]
+    .every((f) => typeof f === "function"),
+    "un des symboles jugés ici n'est pas exporté (web/app.js, web/login.js, web/core.js, web/viz.js, web/admin_users.js, web/dashboards.js)");
+  instrument114(modNoyauEn114.LANG === "en" && modNoyau114.LANG !== "en", `les deux instances du point commun ne portent pas deux langues (« ${modNoyau114.LANG} » / « ${modNoyauEn114.LANG} »)`);
+
+  // ── LE SIMULACRE : TRANSPORT (avec `clone`, que l'enveloppe lit), MINUTERIES LONGUES, HÔTES ───────────────
+  const fetchOrigine114 = globalThis.fetch, minuterieOrigine114 = globalThis.setTimeout, qsOrigine114 = document.querySelector;
+  const etatOrigine114 = [S114, SEn114].map((S) => ({ S, admin: S.isAdmin, auth: S.AUTH, evState: S.evState, vol: S.exploreInflight, hist: S.qHist, histIdx: S.qHistIdx, dernier: S.lastResult, cartes: S.panelCards }));
+  let servis114 = {};
+  const appels114 = [];
+  const reponse114 = (statut, texte) => ({ ok: statut >= 200 && statut < 300, status: statut, headers: { get: () => null }, text: async () => texte, json: async () => JSON.parse(texte), clone: () => reponse114(statut, texte) });
+  const simulacre114 = async (u, init) => {
+    const chemin = String(u).split("?")[0];
+    const methode = ((init && init.method) || "GET").toUpperCase();
+    let demande = {}; try { demande = init && init.body ? JSON.parse(init.body) : {}; } catch (e) { demande = {}; }
+    const k = methode + " " + chemin;
+    const appel = { k, statut: 0 }; appels114.push(appel);
+    let r = Object.prototype.hasOwnProperty.call(servis114, k) ? servis114[k] : servis114["*"];
+    if (typeof r === "function") r = await r(demande, String(u));
+    const texte = !r ? "{}" : typeof r.corps === "string" ? r.corps : JSON.stringify(r.corps === undefined ? {} : r.corps);
+    appel.statut = (r && r.statut) || 200;
+    return reponse114(appel.statut, texte);
+  };
+  const compter114 = (k) => appels114.filter((a) => a.k === k).length;
+  globalThis.setTimeout = (fn, ms) => (ms >= 1000 ? 0 : minuterieOrigine114(fn, ms >= 100 ? 0 : ms));
+  const hotes114 = { "#users": new Element("section"), "#user-list": new Element("div"), "#acces-list": new Element("div") };
+  document.querySelector = (sel) => (Object.prototype.hasOwnProperty.call(hotes114, sel) ? hotes114[sel] : qsOrigine114.call(document, sel));
+  const recouvrement114 = qsOrigine114.call(document, "#login-ov"), formulaireDeConnexion114 = qsOrigine114.call(document, "#login-form");
+  instrument114(!!recouvrement114 && !!formulaireDeConnexion114 && !!qsOrigine114.call(document, "#login-err"), "`#login-ov`, `#login-form` ou `#login-err` n'est plus dans `index.html`");
+  const recouvrementCache114 = recouvrement114 ? recouvrement114.hidden : true, verrouille114 = document.body.classList.contains("login-locked");
+  const formulaire114 = qsOrigine114.call(document, "#user-form"), nom114 = qsOrigine114.call(document, "#uf-name"), mdp114 = qsOrigine114.call(document, "#uf-pw"), role114 = qsOrigine114.call(document, "#uf-role");
+  instrument114(!!formulaire114 && !!nom114 && !!mdp114 && !!role114, "`#user-form`, `#uf-name`, `#uf-pw` ou `#uf-role` n'est plus dans `index.html`");
+  const valeursDuFormulaire114 = { nom: nom114 && nom114.value, mdp: mdp114 && mdp114.value, role: role114 && role114.value, cache: !!(formulaire114 && formulaire114.classList.contains("hidden")) };
+  const ligne114 = qsOrigine114.call(document, "#qstats"), resultat114 = qsOrigine114.call(document, "#qresult"), qsize114 = qsOrigine114.call(document, "#qsize"), sql114 = qsOrigine114.call(document, "#sql");
+  const valeursOrigine114 = { taille: qsize114 ? qsize114.value : "", sql: sql114 ? sql114.value : "" };
+  const fenetre114 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !c.classList.contains("out")).pop();
+  // Lit la confirmation partagée ouverte par un geste (titre, conséquence), puis l'accepte ou l'annule.
+  const confirmation114 = (accepter) => {
+    const ov = fenetre114(); const form = ov && ov.children[0] ? ov.children[0].children[0] : null;
+    const lu = { titre: form ? nu114(form.querySelector("h3")) : "", consequence: form ? nu114(form.querySelector(".modal-consequence")) : "" };
+    if (form && accepter && typeof form.onsubmit === "function") form.onsubmit({ preventDefault() {} });
+    else if (form) { const b = form.querySelector(".m-cancel"); if (b && typeof b.onclick === "function") b.onclick(); }
+    return lu;
+  };
+
+  try {
+    // ══ (w) `P10.25-w` — LA SESSION REFUSÉE EN COURS DE ROUTE, PAR L'ENVELOPPE RÉELLE ═══════════════════════════
+    const PANNEAU114 = { id: 14, title: "T", query: "search x | stats count", is_soql: true, viz: "stat", position: 0, window_s: 0, visibility: "private", query_private: false, cols: 1, height: 0, drill: "", library_panel_id: null };
+    // Une session ouverte, la console montrée, un tableau de bord chargé ; puis TOUTE route rend `refus` (sauf `/api/me`,
+    // qui rend `me`), et cinq surfaces RÉELLES lisent en même temps : trois `fetchInto`, une lecture par `fetch` direct
+    // (le chemin des panneaux et de l'Explore) et le panneau du tableau de bord. `enveloppe: false` joue l'arbre sans
+    // l'enveloppe, pour mesurer ce que les surfaces peignent seules.
+    const jouerLaSession114 = async ({ S, noyau, app, refus, me, session = true, enveloppe = true, panneau = false }) => {
+      parDonnee114(formulaireDeConnexion114, "data-refus-de-l-ouverture").forEach((n) => n.remove());
+      if (recouvrement114) recouvrement114.hidden = true;
+      document.body.classList.remove("login-locked");
+      S.AUTH = session ? { user: "bob", role: "editor", auth_method: "sso" } : null;
+      globalThis.fetch = enveloppe && typeof app.envelopperLeTransport === "function" ? app.envelopperLeTransport(simulacre114) : simulacre114;
+      let grille = null;
+      if (panneau) {
+        grille = new Element("div");
+        servis114 = { "GET /api/dashboard/5": { corps: { id: 5, name: "SOC", owner: "hugo", visibility: "shared", view_id: null, editable: true, panels: [PANNEAU114] } }, "*": { corps: {} } };
+        S.panelCards = [];
+        await modTdb114.loadPanelsInto(grille, { id: 5 }); await laisser114(10);
+      }
+      appels114.length = 0;
+      servis114 = { "*": refus, "GET /api/me": me === undefined ? refus : me };
+      const hotes = [new Element("div"), new Element("div"), new Element("div")];
+      const lectures = [noyau.fetchInto(hotes[0], "/sources"), noyau.fetchInto(hotes[1], "/fleet"), noyau.fetchInto(hotes[2], "/cases")];
+      const direct = globalThis.fetch("/api/query", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).then((r) => r.text());
+      if (grille) parClasse114(grille, "panel").forEach((c) => { if (c._panel) { c._panel.loaded = true; c._panel.reload(); } });
+      await Promise.all(lectures); const corpsDirect = await direct;
+      await laisser114(80);
+      const noeuds = parDonnee114(formulaireDeConnexion114, "data-refus-de-l-ouverture");
+      const noeud = noeuds[0] || null;
+      return { me: compter114("GET /api/me"), refuses: appels114.filter((a) => a.statut === 403 || a.statut === 503).length,
+        noeuds: noeuds.length, cle: noeud && noeud.getAttribute("data-refus-de-l-ouverture"), texte: nu114(noeud), phrase: noeud && noeud.children[0] ? nu114(noeud.children[0]) : "", role: noeud && noeud.getAttribute("role"),
+        invite: !!recouvrement114 && recouvrement114.hidden === false, verrou: document.body.classList.contains("login-locked"), session: S.AUTH,
+        surfaces: [...hotes.map((h) => nu114(h).slice(0, 170)), grille ? nu114(parClasse114(grille, "panelbody")[0]).slice(0, 170) : ""].filter(Boolean), corpsDirect };
+    };
+    const refusDe114 = (c, id) => ({ statut: c.statut, corps: { error: c.cause, ...(c.statut >= 500 ? { id } : {}) } });
+    const [COMPTE114, ADMIN_DE_CONFIGURATION114, NON_VERIFIE114] = CAUSES_DE_L_ANNUAIRE114;
+    const faceDeSession114 = (mod, c) => appeler114(mod, "motDeLaConnexion", "session_interrompue_" + c.cle) + " « " + c.cause.trim() + " »";
+
+    // (w0) TÉMOIN : l'arbre SANS l'enveloppe — ce que chaque surface peint seule. Aucune face, aucun `/api/me`.
+    const w0114 = await jouerLaSession114({ S: S114, noyau: modNoyau114, app: modApp114, refus: refusDe114(COMPTE114), enveloppe: false, panneau: true });
+    const w0NonVerifie114 = await jouerLaSession114({ S: S114, noyau: modNoyau114, app: modApp114, refus: refusDe114(NON_VERIFIE114, "plume-e1-14"), enveloppe: false });
+    instrument114(w0114.refuses >= 5 && w0114.me === 0 && w0114.noeuds === 0 && !w0114.invite && w0114.surfaces.length === 4,
+      `sans l'enveloppe, le scénario ne produit pas ses cinq refus sur quatre surfaces peintes, ou une face apparaît déjà : ${JSON.stringify({ refuses: w0114.refuses, me: w0114.me, noeuds: w0114.noeuds, surfaces: w0114.surfaces.length })}`);
+    console.log(`[114w0] sans l'enveloppe, chaque surface peint sa copie : ${JSON.stringify(w0114.surfaces)} ; le cinq cent trois : ${JSON.stringify(w0NonVerifie114.surfaces.slice(0, 1))}`);
+
+    // (w1) LE 403 DU COMPTE À MOT DE PASSE : UNE vérification, UNE face, la console recouverte, la session close.
+    const ecartsW114 = [];
+    const jugerLaFace114 = (etiquette, r, mod, c, meAttendus) => {
+      const attendu = faceDeSession114(mod, c);
+      if (r.me !== meAttendus) ecartsW114.push(`${etiquette} : ${r.me} lecture(s) de \`/api/me\`, ${meAttendus} attendue(s) pour ${r.refuses} refus`);
+      if (r.noeuds !== 1 || r.cle !== "session_interrompue_" + c.cle || r.texte !== attendu || r.role !== "alert")
+        ecartsW114.push(`${etiquette} : ${r.noeuds} face(s), « ${r.cle} » — « ${r.texte.slice(0, 140)} » ; surfaces : ${JSON.stringify(r.surfaces)}`);
+      if (!r.invite || !r.verrou || r.session !== null) ecartsW114.push(`${etiquette} : écran de connexion ${r.invite}, console verrouillée ${r.verrou}, session ${JSON.stringify(r.session)}`);
+      if (ACCUSE114.test(r.phrase) || /\{"error"|\b(403|503)\b/.test(r.texte)) ecartsW114.push(`${etiquette} : la face accuse, colle le JSON ou le code : « ${r.texte.slice(0, 140)} »`);
+    };
+    const w1114 = await jouerLaSession114({ S: S114, noyau: modNoyau114, app: modApp114, refus: refusDe114(COMPTE114), panneau: true });
+    instrument114(w1114.refuses >= 5, `le scénario ne produit pas ses cinq refus (${w1114.refuses}) : « une seule face pour N refus » ne serait pas jugé`);
+    jugerLaFace114("403 compte à mot de passe", w1114, modConnexion114, COMPTE114, 1);
+    if (w1114.corpsDirect !== JSON.stringify({ error: COMPTE114.cause })) ecartsW114.push(`l'appelant d'un \`fetch\` direct ne lit plus le corps servi : « ${String(w1114.corpsDirect).slice(0, 80)} »`);
+    // (w2) Le 403 du nom de l'administrateur de configuration : même face, sa cause.
+    jugerLaFace114("403 administrateur de configuration", await jouerLaSession114({ S: S114, noyau: modNoyau114, app: modApp114, refus: refusDe114(ADMIN_DE_CONFIGURATION114) }), modConnexion114, ADMIN_DE_CONFIGURATION114, 1);
+    // (w3) Le 503 : `/api/me` refusé à son tour après les deux réessais d'`api()` — trois lectures pour UNE vérification.
+    jugerLaFace114("503 nom non vérifié", await jouerLaSession114({ S: S114, noyau: modNoyau114, app: modApp114, refus: refusDe114(NON_VERIFIE114, "plume-e1-15") }), modConnexion114, NON_VERIFIE114, 3);
+    // (w4) Sous `LANG='en'` : la face anglaise, sans accent ; la cause, elle, est celle que le démon a servie.
+    jugerLaFace114("en/403 compte à mot de passe", await jouerLaSession114({ S: SEn114, noyau: modNoyauEn114, app: modAppEn114, refus: refusDe114(COMPTE114) }), modConnexionEn114, COMPTE114, 1);
+    if (["session_interrompue_annuaire_refuse", "session_interrompue_annuaire_non_verifie"].some((k) => ACCENTS114.test(appeler114(modConnexionEn114, "motDeLaConnexion", k)) || appeler114(modConnexionEn114, "motDeLaConnexion", k) === appeler114(modConnexion114, "motDeLaConnexion", k)))
+      ecartsW114.push("une face de la session interrompue n'a pas ses deux langues distinctes, ou l'anglaise porte un accent");
+    exiger(ecartsW114.length === 0,
+      `(114w) UN REFUS DE L'ANNUAIRE EN COURS DE SESSION N'A PAS SA FACE UNIQUE (une vérification par \`/api/me\`, l'écran de connexion qui recouvre la console, la cause ENTIÈRE et le remède, la session close) : ${JSON.stringify(ecartsW114)}`);
+    // (w5) CONTRÔLES NÉGATIFS : un refus nommé qui n'est pas de l'annuaire, un refus hors session, puis un cinq cent
+    // trois passager (`/api/me` servi) — aucune face, la session gardée. L'ORDRE EST UNE MESURE : le passager arme le
+    // délai sans rejugement qui suit une session confirmée, et joué en premier il masquait les deux autres (mutation
+    // « toute cause nommée est de l'annuaire » restée verte ici).
+    const etranger114 = await jouerLaSession114({ S: S114, noyau: modNoyau114, app: modApp114, refus: { statut: 403, corps: { error: "RÔLE INSUFFISANT-114 : cause d'essai" } } });
+    const horsSession114 = await jouerLaSession114({ S: S114, noyau: modNoyau114, app: modApp114, refus: refusDe114(COMPTE114), session: false });
+    const passager114 = await jouerLaSession114({ S: S114, noyau: modNoyau114, app: modApp114, refus: refusDe114(NON_VERIFIE114, "plume-e1-16"), me: { corps: { user: "bob", role: "editor", auth_method: "sso" } } });
+    exiger(passager114.me === 1 && passager114.noeuds === 0 && !passager114.invite && !!passager114.session
+      && etranger114.me === 0 && etranger114.noeuds === 0 && !etranger114.invite && !!etranger114.session
+      && horsSession114.me === 0 && horsSession114.noeuds === 0 && !horsSession114.invite,
+      `(114w-négatif) une face est posée, ou \`/api/me\` relu, là où rien ne l'établit : ${JSON.stringify({ passager: [passager114.me, passager114.noeuds, passager114.invite], etranger: [etranger114.me, etranger114.noeuds], horsSession: [horsSession114.me, horsSession114.noeuds] })}`);
+    // Le nœud et l'écran reviennent à leur état d'avant : les témoins qui suivent ne voient pas la face posée ici.
+    parDonnee114(formulaireDeConnexion114, "data-refus-de-l-ouverture").forEach((n) => n.remove());
+    if (recouvrement114) recouvrement114.hidden = recouvrementCache114;
+    document.body.classList.toggle("login-locked", verrouille114);
+    globalThis.fetch = simulacre114;
+
+    // ══ (x) `P10.25-x` — UNE DEMANDE QUI N'ABOUTIT PAS N'EST PAS UN REFUS, POUR LA SUPPRESSION ET LA MODIFICATION ══
+    for (const S of [S114, SEn114]) { S.isAdmin = true; S.AUTH = { user: "hugo", role: "admin" }; }
+    const LISTE114 = { users: [{ id: 1, name: "hugo", role: "admin", created: 1 }, { id: 3, name: "bob", role: "editor", created: 3 }, { id: 4, name: "alice", role: "admin", created: 4 }], me: "hugo", acces: [] };
+    servis114 = { "GET /api/users": { corps: LISTE114 } };
+    const lignesDeLaListe114 = async (mod) => { hotes114["#user-list"].replaceChildren(); await mod.loadUsers(); await laisser114(); return hotes114["#user-list"].children; };
+    const indexDe114 = (enfants, nom) => enfants.findIndex((e) => e.classList && e.classList.contains("urow") && nu114(e.children[0]).startsWith(nom + " "));
+    const reseauCoupe114 = () => { throw new TypeError("Failed to fetch"); };
+    const ecartsX114 = [];
+    for (const [nomLangue, mod] of [["fr", modComptes114], ["en", modComptesEn114]]) {
+      // Suppression.
+      let enfants = await lignesDeLaListe114(mod); let i = indexDe114(enfants, "bob");
+      const bouton = i >= 0 ? cueillir114(enfants[i], (e) => e.tagName === "BUTTON" && e.title === "Supprimer le compte")[0] : null;
+      if (!bouton) { ecartsX114.push(`${nomLangue} : la ligne de « bob » ne porte pas ✕`); continue; }
+      servis114["DELETE /api/users/3"] = reseauCoupe114;
+      const avantS = compter114("GET /api/users");
+      let geste = bouton.onclick(); await laisser114(); confirmation114(true); await geste; await laisser114(40);
+      enfants = hotes114["#user-list"].children; i = indexDe114(enfants, "bob");
+      const puitsS = i >= 0 ? enfants[i + 2] : null;
+      const faceS = appeler114(mod, "motDeLaSuppressionDeCompte", "demande_non_aboutie");
+      if (!puitsS || puitsS.getAttribute("data-refus-de-suppression") !== "demande_non_aboutie" || nu114(puitsS) !== faceS + " « Failed to fetch »" || compter114("GET /api/users") !== avantS)
+        ecartsX114.push(`${nomLangue}/suppression : « ${puitsS && puitsS.getAttribute("data-refus-de-suppression")} » « ${nu114(puitsS).slice(0, 160)} »`);
+      if (/refus|NON supprimé|NOT deleted/i.test(nu114(puitsS && puitsS.children[0]))) ecartsX114.push(`${nomLangue}/suppression : la face dit un refus ou une non-suppression : « ${nu114(puitsS && puitsS.children[0])} »`);
+      // Modification (le rôle de « bob »).
+      enfants = await lignesDeLaListe114(mod); i = indexDe114(enfants, "bob");
+      const editeur = i >= 0 ? enfants[i + 1] : null;
+      const selecteur = editeur ? parBalise114(editeur, "SELECT")[0] : null, enregistrer = editeur ? cueillir114(editeur, (e) => e.tagName === "BUTTON" && nu114(e) === "Enregistrer")[0] : null;
+      if (!selecteur || !enregistrer) { ecartsX114.push(`${nomLangue} : l'éditeur de « bob » n'a plus son sélecteur ou son bouton`); continue; }
+      selecteur.value = "viewer";
+      servis114["POST /api/users/3"] = reseauCoupe114;
+      const avantM = compter114("GET /api/users");
+      geste = enregistrer.onclick(); await laisser114(); confirmation114(true); await geste; await laisser114(40);
+      const puitsM = parDonnee114(editeur, "data-refus-de-modification")[0] || null;
+      const faceM = appeler114(mod, "motDeLaModificationDeCompte", "demande_non_aboutie");
+      if (!puitsM || puitsM.getAttribute("data-refus-de-modification") !== "demande_non_aboutie" || nu114(puitsM) !== faceM + " « Failed to fetch »" || compter114("GET /api/users") !== avantM)
+        ecartsX114.push(`${nomLangue}/modification : « ${puitsM && puitsM.getAttribute("data-refus-de-modification")} » « ${nu114(puitsM).slice(0, 160)} »`);
+      if (/refus|NON modifié|NOT changed/i.test(nu114(puitsM && puitsM.children[0]))) ecartsX114.push(`${nomLangue}/modification : la face dit un refus ou une non-modification : « ${nu114(puitsM && puitsM.children[0])} »`);
+      if (nomLangue === "en" && (ACCENTS114.test(faceS) || ACCENTS114.test(faceM))) ecartsX114.push("en : une face de demande non aboutie porte un accent français");
+    }
+    exiger(ecartsX114.length === 0,
+      `(114x) UNE SUPPRESSION OU UNE MODIFICATION QUI N'A PAS ABOUTI SE DIT « LE DÉMON A REFUSÉ » (ou « NON supprimé ») : ${JSON.stringify(ecartsX114)}`);
+    // Le prédicat du point commun, nu, dans les deux sens ; et il est LE SEUL que lisent les trois gestes des comptes.
+    const partitionX114 = [new TypeError("Failed to fetch"), null, { statutDuRefus: 503 }, { statutDuRefus: 502, reponseHorsDemon: "page_de_passerelle" }, { statutDuRefus: 200, reponseHorsDemon: "corps_illisible" }, { message: "409 x" }]
+      .map((e) => appeler114(modNoyau114, "laDemandeNAPasAbouti", e)).join(",");
+    const srcComptes114 = srcDe114("admin_users.js").replace(/\/\/[^\n]*/g, "");
+    exiger(partitionX114 === "true,true,false,false,false,true" && (srcComptes114.match(/\blaDemandeNAPasAbouti\(/g) || []).length === 3 && !/statutDuRefus === 'number'/.test(srcComptes114),
+      `(114x) la demande non aboutie n'est plus reconnue au seul statut absent, ou un geste des comptes la juge à sa façon : ${partitionX114} ; ${(srcComptes114.match(/\blaDemandeNAPasAbouti\(/g) || []).length} lecture(s) du prédicat partagé`);
+
+    // ══ (y) `P10.25-y` — LES CONFIRMATIONS DES COMPTES, DANS LES DEUX LANGUES ═══════════════════════════════════
+    const conf114 = (mod, cle, v) => appeler114(mod, "motDUneConfirmationDeCompte", cle, v);
+    const ecartsY114 = [];
+    for (const [nomLangue, mod] of [["fr", modComptes114], ["en", modComptesEn114]]) {
+      // La création, par le geste réel : un rôle ordinaire, puis admin.
+      for (const role of ["viewer", "admin"]) {
+        if (formulaire114) formulaire114.classList.remove("hidden");
+        nom114.value = "carol"; mdp114.value = "un-mot-de-passe-long"; role114.value = role;
+        const avant = compter114("POST /api/users");
+        const geste = mod.creerLeCompteDuFormulaire({ preventDefault() {} }); await laisser114();
+        const lu = confirmation114(false); await geste; await laisser114();
+        const attendu = { titre: conf114(mod, "titre_de_la_creation", { nom: "carol" }), consequence: conf114(mod, "consequence_de_la_creation", { role }) + (role === "admin" ? conf114(mod, "acces_complet") : "") + "." };
+        if (lu.titre !== attendu.titre || lu.consequence !== attendu.consequence || compter114("POST /api/users") !== avant) ecartsY114.push(`${nomLangue}/création ${role} : ${JSON.stringify(lu)}`);
+        if (nomLangue === "en" && (ACCENTS114.test(lu.titre.replace("carol", "")) || ACCENTS114.test(lu.consequence) || !/carol/.test(lu.titre))) ecartsY114.push(`en/création ${role} : reste française ou perd le nom : ${JSON.stringify(lu)}`);
+      }
+      // La modification : « bob » (editor) passe admin avec un mot de passe neuf ; « alice » (admin) passe viewer.
+      for (const [nom, role, motDePasse] of [["bob", "admin", "un-mot-de-passe-neuf-114"], ["alice", "viewer", ""]]) {
+        const enfants = await lignesDeLaListe114(mod); const i = indexDe114(enfants, nom);
+        const editeur = i >= 0 ? enfants[i + 1] : null;
+        const selecteur = editeur ? parBalise114(editeur, "SELECT")[0] : null, champ = editeur ? parBalise114(editeur, "INPUT")[0] : null;
+        const enregistrer = editeur ? cueillir114(editeur, (e) => e.tagName === "BUTTON" && nu114(e) === "Enregistrer")[0] : null;
+        if (!selecteur || !champ || !enregistrer) { ecartsY114.push(`${nomLangue} : l'éditeur de « ${nom} » est incomplet`); continue; }
+        selecteur.value = role; champ.value = motDePasse;
+        const avant = compter114(`POST /api/users/${nom === "bob" ? 3 : 4}`);
+        const geste = enregistrer.onclick(); await laisser114();
+        const lu = confirmation114(false); await geste; await laisser114();
+        champ.value = "";
+        const ancien = nom === "bob" ? "editor" : "admin";
+        const parts = [conf114(mod, "changement_de_role", { nom, avant: ancien, apres: role }) + (role === "admin" ? conf114(mod, "acces_complet") : ancien === "admin" ? conf114(mod, "perte_de_l_acces_administrateur") : "")];
+        if (motDePasse) parts.push(conf114(mod, "mot_de_passe_d_un_autre_compte", { nom }));
+        const attendu = { titre: conf114(mod, "titre_de_la_modification", { nom }), consequence: parts.join(conf114(mod, "separateur_des_consequences")) + "." };
+        if (lu.titre !== attendu.titre || lu.consequence !== attendu.consequence || compter114(`POST /api/users/${nom === "bob" ? 3 : 4}`) !== avant) ecartsY114.push(`${nomLangue}/modification de ${nom} : ${JSON.stringify(lu)}`);
+        if (nomLangue === "en" && (ACCENTS114.test(lu.titre) || ACCENTS114.test(lu.consequence))) ecartsY114.push(`en/modification de ${nom} : reste française : ${JSON.stringify(lu)}`);
+      }
+    }
+    // La table des faces : deux faces DISTINCTES par entrée, l'anglaise sans accent français.
+    const tableY114 = (srcDe114("admin_users.js").match(/const MOTS_DES_CONFIRMATIONS_DE_COMPTE = \{[\s\S]*?\n\};/) || [""])[0];
+    const facesY114 = [...tableY114.matchAll(/^ {2}(\w+): \{\n {4}fr: (.+),\n {4}en: (.+) \},?$/gm)].map((m) => ({ cle: m[1], fr: m[2], en: m[3] }));
+    if (facesY114.length !== 8 || facesY114.some((x) => x.fr === x.en || ACCENTS114.test(x.en))) ecartsY114.push(`table des confirmations : ${facesY114.length} entrée(s), ${JSON.stringify(facesY114.filter((x) => x.fr === x.en || ACCENTS114.test(x.en)).map((x) => x.cle))}`);
+    exiger(ecartsY114.length === 0,
+      `(114y) UNE CONFIRMATION DE CRÉATION OU DE MODIFICATION D'UN COMPTE RESTE FRANÇAISE SOUS \`LANG='en'\`, ou ne dit plus sa conséquence : ${JSON.stringify(ecartsY114)}`);
+
+    // ══ (z) `P10.25-z` — LA PAGE VIDE DANS LE TOTAL COMPTÉ DIT L'ÉCART ═════════════════════════════════════════
+    const ecart114 = (mod, total) => { const n = appeler114(mod, "noeudDeLaPageVideDansLeTotal", total, false); return n && typeof n === "object" ? nu114(n) : String(n); };
+    const pageVideDe114 = (hote) => parDonnee114(hote, "data-page-vide")[0] || parDonnee114(hote, "data-page-au-dela-du-total")[0] || null;
+    const ecartsZ114 = [];
+    // (z0) Les partitions, nues. `laPageEstDansLeTotal` : le début de la page est-il en deçà d'un total compté ?
+    const partitionZ114 = [[1, 6, 2], [2, 6, 2], [3, 6, 2], [0, 6, 2], [1, -1, 2], [1, 0, 2], [1, undefined, 2], [1, 10000, 50]].map(([p, t, n]) => appeler114(modNoyau114, "laPageEstDansLeTotal", p, t, n)).join(",");
+    if (partitionZ114 !== "true,true,false,true,false,false,false,true") ecartsZ114.push(`laPageEstDansLeTotal : ${partitionZ114}`);
+    const partitionVideZ114 = [[1, false, 30, 10], [3, false, 30, 10], [1, true, 30, 10], [1, false, -1, 10], [0, false, 30, 10], [1, false]].map(([p, s, t, n]) => modViz114.cleDeLaPageVide(p, s, t, n)).join(",");
+    if (partitionVideZ114 !== "dans_le_total,fin_du_resultat,saut_sans_rendu,fin_du_resultat,fenetre_vide,fin_du_resultat") ecartsZ114.push(`cleDeLaPageVide : ${partitionVideZ114}`);
+    // (z1) Une liste paginée : total compté de six, la page 2 servie vide.
+    for (const [nomLangue, mod] of [["fr", modNoyau114], ["en", modNoyauEn114]]) {
+      const hote = new Element("div"), demandes = [];
+      const pages = [{ rows: [{ a: 1 }, { a: 2 }], total: 6 }, { rows: [], total: 6 }];
+      mod.pagedList(hote, { mode: "server", pageSize: 2, columns: [{ key: "a", label: "A" }], fetchPage: async (q) => { demandes.push(q); return pages[Math.round(q.offset / 2)] || { rows: [], total: 6 }; } });
+      await laisser114();
+      const suivante = parClasse114(hote, "evnext")[0]; if (suivante && !suivante.disabled) { suivante.onclick(); await laisser114(); }
+      const pv = pageVideDe114(hote), retour = parClasse114(hote, "evprev")[0] || null;
+      if (!pv || pv.getAttribute("data-page-vide") !== "dans_le_total" || nu114(pv) !== ecart114(mod, 6) || parBalise114(hote, "TH").length !== 0 || !retour || retour.disabled)
+        ecartsZ114.push(`${nomLangue}/liste paginée : « ${pv && (pv.getAttribute("data-page-vide") || pv.getAttribute("data-page-au-dela-du-total"))} » « ${nu114(hote).slice(0, 160)} »`);
+      if (nomLangue === "en" && ACCENTS114.test(nu114(pv))) ecartsZ114.push(`en/liste paginée : accent dans « ${nu114(pv)} »`);
+    }
+    // (z2) Un panneau de table : cent vingt comptés, la page 2 servie vide.
+    {
+      const grille = new Element("div");
+      const PANNEAU = { id: 15, title: "T", query: "search action=login | table a", is_soql: true, viz: "table", position: 0, window_s: 0, visibility: "private", query_private: false, cols: 1, height: 0, drill: "", library_panel_id: null };
+      const CINQUANTE = Array.from({ length: 50 }, (_, i) => [i]);
+      const pages = [{ columns: ["a"], rows: CINQUANTE, total: 120, stats: {} }, { columns: ["a"], rows: [], total: 120, stats: {} }];
+      servis114 = { "GET /api/dashboard/6": { corps: { id: 6, name: "SOC", owner: "hugo", visibility: "shared", view_id: null, editable: true, panels: [PANNEAU] } },
+        "POST /api/query": (d) => ({ corps: pages[Math.round((d.offset || 0) / 50)] || { columns: ["a"], rows: [], total: 120, stats: {} } }) };
+      S114.panelCards = [];
+      await modTdb114.loadPanelsInto(grille, { id: 6 }); await laisser114(10);
+      parClasse114(grille, "panel").forEach((c) => { if (c._panel && !c._panel.loaded) { c._panel.loaded = true; c._panel.reload(); } });
+      await laisser114(60);
+      const deux = parClasse114(grille, "evnum").find((b) => nu114(b) === "2") || null;
+      instrument114(!!deux, "le panneau de table paginée ne porte pas de pager numéroté : la page 2 jugée ci-dessous ne serait pas atteinte");
+      if (deux) { deux.onclick(); await laisser114(60); }
+      const corps = parClasse114(grille, "panelbody")[0] || null, pv = pageVideDe114(corps);
+      if (!pv || pv.getAttribute("data-page-vide") !== "dans_le_total" || nu114(pv) !== ecart114(modNoyau114, 120) || parBalise114(corps, "TH").length !== 0 || !parClasse114(corps, "evprev")[0])
+        ecartsZ114.push(`panneau de table : « ${pv && (pv.getAttribute("data-page-vide") || pv.getAttribute("data-page-au-dela-du-total"))} » « ${nu114(corps).slice(0, 160)} »`);
+    }
+    // (z3) L'Explore : la table paginée par décalage (neuf comptés, page 2), la liste d'événements par curseur (trente
+    // comptés, page 2), et un total PLAFONNÉ (au moins dix mille) — dans les deux langues pour la liste d'événements.
+    instrument114(!!ligne114 && !!resultat114 && !!qsize114, "`#qstats`, `#qresult` ou `#qsize` n'est plus dans `index.html`");
+    if (qsize114) qsize114.value = "3";
+    let servirLaPage114 = () => ({});
+    const chargerZ114 = async (mod, S, plus) => {
+      servis114 = { "POST /api/query": async (d) => ({ corps: d.count_only ? { count_only: true, total: -1 } : await servirLaPage114(d) }) };
+      S.exploreInflight = null;
+      S.evState = { q: "search sshd | table a b", isSoql: true, keyset: false, cursors: [null], page: 0, pageSize: 3, total: -1, shown: 0, totalCapped: false, countFired: true, realTotal: false, totalError: null, win: { from: 1000, to: 2000 }, ...plus };
+      resultat114.replaceChildren(); ligne114.replaceChildren(); await mod.evLoad(); await laisser114(10);
+      return pageVideDe114(resultat114);
+    };
+    servirLaPage114 = (d) => ({ columns: ["a", "b"], rows: [], stats: { elapsed_ms: 1 }, total: 9, offset: d.offset || 0, limit: 3 });
+    let pv = await chargerZ114(modViz114, S114, { page: 1 });
+    if (!pv || pv.getAttribute("data-page-vide") !== "dans_le_total" || nu114(pv) !== ecart114(modNoyau114, 9) || parBalise114(resultat114, "TH").length !== 0 || !parClasse114(resultat114, "evprev")[0])
+      ecartsZ114.push(`Explore, table par décalage : « ${pv && pv.getAttribute("data-page-vide")} » « ${nu114(resultat114).slice(0, 160)} »`);
+    servirLaPage114 = () => ({ columns: ["ts", "source", "message"], rows: [], stats: { elapsed_ms: 1 }, has_more: false, next_cursor: null, limit: 3 });
+    for (const [nomLangue, mod, S, noyau] of [["fr", modViz114, S114, modNoyau114], ["en", modVizEn114, SEn114, modNoyauEn114]]) {
+      pv = await chargerZ114(mod, S, { q: "search sshd", keyset: true, page: 1, cursors: [null, { ts: 1757999998, id: 903 }], total: 30, realTotal: true });
+      if (!pv || pv.getAttribute("data-page-vide") !== "dans_le_total" || nu114(pv) !== ecart114(noyau, 30) || !parClasse114(resultat114, "evprev")[0])
+        ecartsZ114.push(`${nomLangue}/Explore, événements par curseur : « ${pv && pv.getAttribute("data-page-vide")} » « ${nu114(resultat114).slice(0, 160)} »`);
+    }
+    servirLaPage114 = (d) => ({ columns: ["a", "b"], rows: [], stats: { elapsed_ms: 1 }, total: 10000, total_capped: true, offset: d.offset || 0, limit: 3 });
+    pv = await chargerZ114(modViz114, S114, { page: 1 });
+    if (!pv || pv.getAttribute("data-page-vide") !== "dans_le_total" || !nu114(pv).includes("(10000+)"))
+      ecartsZ114.push(`Explore, total plafonné : « ${pv && pv.getAttribute("data-page-vide")} » « ${nu114(resultat114).slice(0, 160)} »`);
+    // La phrase ne dit ni « fin » ni un refus, et ne met personne en cause.
+    const phraseZ114 = ecart114(modNoyau114, 6), phraseZEn114 = ecart114(modNoyauEn114, 6);
+    if (/fin du résultat|end of the result/.test(phraseZ114 + phraseZEn114) || ACCUSE114.test(phraseZ114) || ACCUSE114.test(phraseZEn114) || phraseZ114 === phraseZEn114 || ACCENTS114.test(phraseZEn114) || !/\(6\)/.test(phraseZ114))
+      ecartsZ114.push(`la phrase de l'écart : « ${phraseZ114} » / « ${phraseZEn114} »`);
+    exiger(ecartsZ114.length === 0,
+      `(114z) UNE PAGE VIDE DANS LE TOTAL COMPTÉ SE DIT « FIN DU RÉSULTAT » au lieu de dire l'écart, ou perd son retour : ${JSON.stringify(ecartsZ114)}`);
+    // CONTRÔLES NÉGATIFS : au-delà du total, la phrase d'avant ; sans total, la fin du résultat ; un saut, sa fin non établie.
+    const auDela114 = modNoyau114.noeudDeLaPageVideDeRangSuperieur(3, 6, 2, false), sansTotal114 = modNoyau114.noeudDeLaPageVideDeRangSuperieur(1, -1, 2, false), premiere114 = modNoyau114.noeudDeLaPageVideDeRangSuperieur(0, 6, 2, false);
+    exiger(!!auDela114 && auDela114.getAttribute("data-page-au-dela-du-total") === "page_vide_au_dela" && !!sansTotal114 && sansTotal114.getAttribute("data-page-vide") === "fin_du_resultat" && premiere114 === null,
+      `(114z-négatif) au-delà du total, sans total ou sur la première page, la phrase d'avant n'est plus rendue : ${JSON.stringify([auDela114 && nu114(auDela114), sansTotal114 && nu114(sansTotal114), premiere114])}`);
+  } finally {
+    globalThis.fetch = fetchOrigine114; globalThis.setTimeout = minuterieOrigine114; document.querySelector = qsOrigine114;
+    for (const o of etatOrigine114) { o.S.isAdmin = o.admin; o.S.AUTH = o.auth; o.S.evState = o.evState; o.S.exploreInflight = o.vol; o.S.qHist = o.hist; o.S.qHistIdx = o.histIdx; o.S.lastResult = o.dernier; o.S.panelCards = o.cartes; }
+    if (formulaireDeConnexion114) parDonnee114(formulaireDeConnexion114, "data-refus-de-l-ouverture").forEach((n) => n.remove());
+    if (recouvrement114) recouvrement114.hidden = recouvrementCache114;
+    document.body.classList.toggle("login-locked", verrouille114);
+    if (nom114) nom114.value = valeursDuFormulaire114.nom; if (mdp114) mdp114.value = valeursDuFormulaire114.mdp; if (role114) role114.value = valeursDuFormulaire114.role;
+    if (formulaire114) { parDonnee114(formulaire114, "data-puits-du-refus-de-creation").forEach((p) => p.remove()); if (valeursDuFormulaire114.cache) formulaire114.classList.add("hidden"); else formulaire114.classList.remove("hidden"); }
+    if (qsize114) qsize114.value = valeursOrigine114.taille; if (sql114) sql114.value = valeursOrigine114.sql;
+    const b = qsOrigine114.call(document, "#qbadge");
+    if (resultat114) resultat114.replaceChildren(); if (ligne114) ligne114.replaceChildren(); if (b) { b.replaceChildren(); b.hidden = true; }
+    document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
+  }
+  console.log("(114) OK — un refus de l'annuaire reçu EN COURS de session (le nom d'un compte à mot de passe, celui de l'administrateur de configuration, le nom non vérifié), sur cinq lectures refusées à la fois par l'enveloppe RÉELLE du transport, fait rejuger la session UNE fois par `/api/me` ; refusé à son tour, l'écran de connexion recouvre la console, la session est close, et UNE face dit la cause ENTIÈRE et le remède (le mot de passe du compte, ou recharger), dans les deux langues — l'appelant garde son corps ; un cinq cent trois passager, un refus nommé étranger à l'annuaire ou un refus hors session n'en posent aucune. La suppression et la modification d'un compte qui n'aboutissent pas disent « NON confirmée » au lieu de « le démon a refusé », par le prédicat du point commun que lit aussi la création. Les confirmations de création et de modification (titre, rôle, accès complet, perte de l'accès administrateur, mot de passe d'un autre compte) ont leurs deux faces. Une page vide dont le début est en deçà du total compté (exact ou plafonné) dit l'écart — le compte place des lignes que la lecture ne rend pas — dans une liste paginée, un panneau de table et l'Explore (table et événements), avec son retour ; au-delà du total, sans total et sur la première page, la phrase d'avant. CE QUI ÉTAIT FAUX OU IMPRÉCIS : `P10.25-w` disait « JSON brut coupé » — vrai des seuls `fetchInto` ; un panneau collait la cause entière derrière « Erreur : », et le cinq cent trois n'atteignait AUCUNE surface (« Service momentanément indisponible ») ; `P10.25-y` comptait trois chaînes — le titre de la modification et le mot de passe d'un autre compte restaient français aussi ; `P10.25-z` ne nommait que les surfaces de `noeudDeLaPageVideDeRangSuperieur` — l'Explore le disait aussi, par `cleDeLaPageVide`.");
+}
+
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;
 verdictRendu = true;
 if (echecs.length) {

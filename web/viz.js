@@ -1,6 +1,6 @@
 // viz.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // Explore + viz/charts: drilldown, fenetre glissante, requete interactive, rendu table/graphes (partages avec dashboards).
-import { $, CSSV, LANG, LOC, SEV, api, apiSend, unDeuxCentsSansCorpsLisible, bornerLePopoverSousSonAncre, causeDeLaTraceManquante, cleDeLaSuiteServie, cleDeLIdentifiantDeRiposte, colComparator, largeursDeColonnes, confirmModal, esc, flashStopped, fmtTs, ic, laPageEstAuDelaDuTotal, makePager, motDeLaPageAuDelaDuTotal, motDeLaRiposteSansIdentifiant, muted, noeudDeLaFinDuResultat, phraseDeLaCreationDeRiposteRefusee, phraseDeLaTraceManquante, sev, socIsAdmin, toast, tzOpts } from './core.js';
+import { $, CSSV, LANG, LOC, SEV, api, apiSend, unDeuxCentsSansCorpsLisible, bornerLePopoverSousSonAncre, causeDeLaTraceManquante, cleDeLaSuiteServie, cleDeLIdentifiantDeRiposte, colComparator, largeursDeColonnes, confirmModal, esc, flashStopped, fmtTs, ic, laPageEstAuDelaDuTotal, laPageEstDansLeTotal, makePager, motDeLaPageAuDelaDuTotal, motDeLaRiposteSansIdentifiant, muted, noeudDeLaFinDuResultat, noeudDeLaPageVideDansLeTotal, phraseDeLaCreationDeRiposteRefusee, phraseDeLaTraceManquante, sev, socIsAdmin, toast, tzOpts } from './core.js';
 import { S } from './state.js';
 // P11.4-h : LE clic qui respecte une sélection (mécanisme partagé, `copie_et_selection.js`).
 import { clicQuiRespecteLaSelection } from './copie_et_selection.js';
@@ -2533,12 +2533,18 @@ const MOTS_DE_LA_PAGE_VIDE = {
     fr: "page vide : le saut direct n'a rien rendu, et la fin du résultat n'est PAS établie — revenez avec ◀ (ou à la page 1), puis avancez avec ▶",
     en: 'empty page: the direct jump returned nothing, and the end of the result is NOT established — go back with ◀ (or to page 1), then move forward with ▶' },
 };
-function cleDeLaPageVide(page, sautSansRendu) {
+// `P10.25-z` — UNE PAGE VIDE DONT LE DÉBUT EST EN DEÇÀ DU TOTAL COMPTÉ n'est pas une fin : le compte y place des
+// lignes que la page ne rend pas, et la phrase de l'écart vient du point commun (`noeudDeLaPageVideDansLeTotal`,
+// web/core.js), partagée avec la liste paginée et le panneau de table. Le saut sans rendu passe avant elle : sa fin
+// n'est pas établie, quel que soit le total. Sans total (`total` absent ou négatif), la partition d'avant est rendue.
+function cleDeLaPageVide(page, sautSansRendu, total, taille) {
   if (!(page > 0)) return 'fenetre_vide';
-  return sautSansRendu ? 'saut_sans_rendu' : 'fin_du_resultat';
+  if (sautSansRendu) return 'saut_sans_rendu';
+  return laPageEstDansLeTotal(page, total, taille) ? 'dans_le_total' : 'fin_du_resultat';
 }
 function noeudDeLaPageVide(cle) {
   if (cle === 'fin_du_resultat') return noeudDeLaFinDuResultat();
+  if (cle === 'dans_le_total') return noeudDeLaPageVideDansLeTotal(S.evState.total, S.evState.totalCapped);
   const noeud = document.createElement('div');
   noeud.className = cle === 'saut_sans_rendu' ? 'bad' : 'muted';
   noeud.dataset.pageVide = cle;
@@ -2603,7 +2609,7 @@ function noeudDesChampsVidesMasques(n) {
 // d'EN-TÊTES, sans une phrase. Les deux passent ici : même partition, même phrase, même retour. Rend `false` sur la
 // première page, que chaque rendu dit à sa façon (la liste, une fenêtre vide ; la table, ses colonnes).
 function peindreLaPageVideDeRangSuperieur(host) {
-  const cleDuVide = cleDeLaPageVide(S.evState ? S.evState.page : 0, !!(S.evState && S.evState.sautSansRendu));
+  const cleDuVide = S.evState ? cleDeLaPageVide(S.evState.page, !!S.evState.sautSansRendu, S.evState.total, S.evState.pageSize) : cleDeLaPageVide(0, false);
   if (cleDuVide === 'fenetre_vide') return false;
   host.appendChild(noeudDeLaPageVide(cleDuVide));
   const retour = makePager(S.evState, p => { S.evState.page = p; evLoad(); });

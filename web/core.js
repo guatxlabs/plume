@@ -692,6 +692,16 @@ async function apiSend(path, method = 'POST', body) {
 function unDeuxCentsSansCorpsLisible(e) {
   return !!(e && e.reponseHorsDemon && e.statutDuRefus >= 200 && e.statutDuRefus < 300);
 }
+// `P10.25-x` — UNE DEMANDE QUI N'A PAS ABOUTI N'EST PAS UN REFUS. `apiSend` pose `statutDuRefus` sur TOUT ce qu'il
+// jette après avoir reçu une réponse — refus du démon, en JSON ou en texte brut, comme réponse de passerelle. Une
+// erreur qui n'en porte pas vient du transport : `fetch` rejeté (réseau coupé, requête abandonnée), aucune réponse
+// lue. Le démon n'a rien refusé, et rien ici ne dit s'il a pris le geste avant que la réponse ne se perde : une face
+// qui dirait « le démon a refusé » ou « NON supprimé » affirmerait ce que personne n'a vu. Les trois gestes des
+// comptes (création, modification, suppression) lisent ce prédicat. Il ne vaut QUE pour une erreur jetée par
+// `apiSend` : `api()` ne pose pas ce statut.
+function laDemandeNAPasAbouti(e) {
+  return !(e && typeof e.statutDuRefus === 'number');
+}
 
 function muted(t) { return Object.assign(document.createElement('div'), { className: 'muted', textContent: t }); }
 
@@ -830,10 +840,43 @@ function noeudDeLaFinDuResultat() {
   noeud.dataset.pageVide = 'fin_du_resultat';   // marque de POSE (harnais), la même que celle de l'Explore
   return noeud;
 }
+// `P10.25-z` — UNE PAGE VIDE DANS LE TOTAL COMPTÉ N'EST PAS LA FIN DU RÉSULTAT : ELLE DIT L'ÉCART.
+//
+// MESURÉ LE 2026-09-24 SUR LES MODULES RÉELS. Une page de rang supérieur servie vide alors qu'un total compté place
+// des lignes sur elle (son début est EN DEÇÀ du total) se disait « page vide, fin du résultat » — dans une liste
+// paginée, dans un panneau de table, et dans l'Explore, qui choisit sa phrase ailleurs (`cleDeLaPageVide`,
+// web/viz.js) mais sur la même partition. Le compte promet des lignes que la page ne rend pas : dire « fin » sous
+// un pager qui annonce trente lignes affirme une fin que le compte contredit. Le cas n'est pas théorique : un
+// compte est une lecture, la page une autre, et des lignes retirées entre les deux (rétention, purge) suffisent.
+//
+// CE QUI SE DIT : l'écart lui-même — le compte place des lignes sur cette page, la lecture n'en rend aucune, des
+// lignes comptées ont disparu entre les deux —, sans cause devinée au-delà (rien ici ne dit lesquelles ni
+// pourquoi), sans accuser, et le retour. Un total PLAFONNÉ est un compte arrêté à sa borne : il établit AU MOINS
+// ce nombre de lignes, et une page qui commence en deçà est dans l'écart de la même façon (le nombre porte alors
+// son « + », comme dans le pager). Au-delà du total, ou sans total, les deux phrases d'avant restent vraies.
+const MOTS_DE_LA_PAGE_VIDE_DANS_LE_TOTAL = {
+  fr: 'page vide DANS le total compté ({total}) : le compte place des lignes sur cette page, la lecture n\'en rend aucune — des lignes comptées ont disparu entre le compte et la page — ◀ pour revenir',
+  en: 'empty page WITHIN the counted total ({total}): the count places rows on this page, the read returns none — counted rows disappeared between the count and the page — ◀ to go back',
+};
+// Le début de la page est-il EN DEÇÀ d'un total compté (exact ou plafonné) ? Faux sans total, ou sur un total nul.
+function laPageEstDansLeTotal(indexDePage, total, taille) {
+  if (!(typeof total === 'number' && total > 0)) return false;
+  if (!(taille > 0) || !(indexDePage >= 0)) return false;
+  return indexDePage * taille < total;
+}
+function noeudDeLaPageVideDansLeTotal(total, totalPlafonne) {
+  const noeud = document.createElement('div'); noeud.className = 'muted';
+  const valeur = String(total) + (totalPlafonne ? '+' : '');
+  noeud.textContent = (LANG === 'en' ? MOTS_DE_LA_PAGE_VIDE_DANS_LE_TOTAL.en : MOTS_DE_LA_PAGE_VIDE_DANS_LE_TOTAL.fr).replace('{total}', () => valeur);
+  noeud.dataset.pageVide = 'dans_le_total';   // marque de POSE (harnais), lue comme celle de la fin du résultat
+  return noeud;
+}
 // Rend le nœud de la phrase d'une page vide de rang supérieur, ou `null` sur la première page.
 function noeudDeLaPageVideDeRangSuperieur(indexDePage, total, taille, totalPlafonne) {
   if (!(indexDePage > 0)) return null;
-  return laPageEstAuDelaDuTotal(indexDePage, total, taille, totalPlafonne) ? noeudDeLaPageVideAuDelaDuTotal() : noeudDeLaFinDuResultat();
+  if (laPageEstAuDelaDuTotal(indexDePage, total, taille, totalPlafonne)) return noeudDeLaPageVideAuDelaDuTotal();
+  if (laPageEstDansLeTotal(indexDePage, total, taille)) return noeudDeLaPageVideDansLeTotal(total, totalPlafonne);   // `P10.25-z`
+  return noeudDeLaFinDuResultat();
 }
 
 function makePager(state, onGo) {
@@ -2178,6 +2221,8 @@ export {
   // `P10.25-a` / `P10.25-n` — la phrase d'une page vide de rang supérieur : la fin du résultat (lue aussi par
   // l'Explore) et le choix entre elle et la page au-delà du total (panneau de table d'un tableau de bord).
   noeudDeLaFinDuResultat, noeudDeLaPageVideDeRangSuperieur,
+  // `P10.25-z` — la page vide DANS le total compté, lue aussi par l'Explore (qui choisit sa phrase lui-même).
+  laPageEstDansLeTotal, noeudDeLaPageVideDansLeTotal,
   socRole, socIsAdmin, applyRoleClass, controleDEcritureSous, motiverLeRefusAuLecteur, roleSansEcriturePartagee, managedBadge, gateDeleteBtn, formMsg, contentSubmit, contentDelete, SEVCOL, lsSet, collapsibleGroup, humanAge,
   confirmWithConsequence, disclosure, marquerLesCellulesTronquees, celluleDeborde,
   // `P10.20-b` (rang 2) — LE LECTEUR DE CAUSE EST EXPOSÉ, PAS RECOPIÉ. `api()` et `apiSend()` attachent
@@ -2199,6 +2244,8 @@ export {
   // connexion, qui tient sa propre requête), ses deux faces, et le prédicat des six gestes qui lisent leur
   // corps de succès.
   natureDeLaReponseHorsDemon, motDeLaReponseHorsDemon, unDeuxCentsSansCorpsLisible,
+  // `P10.25-x` — et celui d'une demande qui n'a pas abouti (aucune réponse lue), lu par les trois gestes des comptes.
+  laDemandeNAPasAbouti,
   // `P10.20-k` — ET LE LECTEUR QUI TIENT LES DEUX MOULES DE REFUS (JSON `error` et texte brut) : les
   // tableaux de bord et les modèles de données le PARTAGENT, faute de quoi chacun écrirait son
   // extraction et l'un des deux finirait par ne plus reconnaître la forme que l'autre lit.

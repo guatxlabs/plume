@@ -21,8 +21,8 @@
 //    authentifications.
 //
 // CE QUE CES TÉMOINS NE TIENNENT PAS : le mode multi-tenant (jetons du plan de contrôle, `platform_user`) ; les clés
-// de livraison des sources push, que `connectors/presets.rs` frappe sans auteur (NULL, dites « auteur non établi ») ;
-// la face console du compte rendu neuf de la suppression et des refus de l'annuaire (`web/`) ; les jetons déjà
+// de livraison des sources push conservées au secret connu (`P10.25-q` : elles portent leur auteur depuis, tenu par
+// `cjgi_` (7) ; ici la clé d'`eve`, jamais servie, part avec elle) ; la face console du compte rendu neuf de la suppression et des refus de l'annuaire (`web/`) ; les jetons déjà
 // laissés en production par des comptes supprimés avant v123 (rendus lisibles, pas révoqués) ; un annuaire qui
 // présente le nom d'une identité de jeton ou de la démonstration (`P10.25-h`).
 // =====================================================================================
@@ -99,13 +99,14 @@ mod jetons_du_compte_supprime_et_annuaire_sur_compte_local {
     // -------------------------------------------------------------------------------------
 
     /// CE QU'IL TIENT : `eve` frappe un jeton d'agent lié (servi une fois), un relais HEC (jamais servi), un jeton de
-    /// source de données `editor` et un jeton client ; la ligne de commande frappe un jeton, une source push une clé
-    /// (auteurs non établis). La frappe de la console écrit `created_by`. Une suppression dont le COMMIT est refusé ne
-    /// révoque rien (503). Puis la suppression : 200 et le compte rendu — RÉVOQUÉS le relais jamais servi, la source
-    /// de données et le client (raison nommée), CONSERVÉ au secret connu le jeton d'agent servi (marqué
-    /// `created_by_deleted_at`, `created_by` intact), AUTEUR NON ÉTABLI un agent et une clé de livraison, la décision
+    /// source de données `editor`, un jeton client, et une clé de livraison par une source push (jamais servie ;
+    /// `P10.25-q` : son auteur est écrit) ; la ligne de commande frappe un jeton (auteur non établi). La frappe de la
+    /// console écrit `created_by`. Une suppression dont le COMMIT est refusé ne révoque rien (503). Puis la
+    /// suppression : 200 et le compte rendu — RÉVOQUÉS le relais et la clé de livraison jamais servis, la source de
+    /// données et le client (raison nommée), CONSERVÉ au secret connu le jeton d'agent servi (marqué
+    /// `created_by_deleted_at`, `created_by` intact), AUTEUR NON ÉTABLI le jeton de la ligne de commande, la décision
     /// écrite. L'événement d'audit porte le MÊME compte rendu, la ligne du registre les noms. Après : l'agent
-    /// conservé, le jeton de la ligne de commande et la clé de livraison authentifient ; les trois révoqués, non.
+    /// conservé et le jeton de la ligne de commande authentifient ; les quatre révoqués, non.
     ///
     /// LES MUTATIONS QUI LE FONT ROUGIR : `JetonsDuCompteSupprime::traiter` qui ne lit aucun jeton (la forme d'avant,
     /// quant aux jetons) — les révoqués authentifient, le compte rendu est vide ; la frappe sans auteur (`inserer_jeton`
@@ -127,6 +128,7 @@ mod jetons_du_compte_supprime_et_annuaire_sur_compte_local {
         let (s, c) = jcsa_corps(connector_push_source(State(st.clone()), Extension(sp_au("eve", "admin")), Json(json!({ "preset_id": "aws-cloudtrail" }))).await).await;
         assert_eq!(s, 200, "fixture : clé de livraison : {c}");
         let cle = c["delivery_key"].as_str().expect("fixture : clé montrée").to_string();
+        let cle_nom = format!("firehose-{}", c["connector_id"].as_i64().expect("fixture : connecteur"));
         // Servis une fois : le jeton d'agent (capteur en place) et le jeton client ; le relais et la source de données, jamais.
         assert_eq!(jcsa_par_le_jeton(&st, "/api/ingest", format!("Bearer {agent}")), Some(("h-jcsa".into(), "agent".into())), "fixture");
         assert_eq!(jcsa_par_le_jeton(&st, "/api/client/cases", format!("Bearer {client}")), Some(("cl-jcsa".into(), "client".into())), "fixture");
@@ -150,6 +152,7 @@ mod jetons_du_compte_supprime_et_annuaire_sur_compte_local {
                 { "name": "hec-jcsa", "kind": "hec", "host": null, "raison": "jamais_servi" },
                 { "name": "ds-jcsa", "kind": "datasource", "host": null, "raison": "lecture_des_donnees" },
                 { "name": "cl-jcsa", "kind": "client", "host": null, "raison": "lecture_des_donnees" },
+                { "name": cle_nom, "kind": "firehose", "host": null, "raison": "jamais_servi" },
             ]),
             "{corps}"
         );
@@ -157,7 +160,7 @@ mod jetons_du_compte_supprime_et_annuaire_sur_compte_local {
         assert_eq!(conserves.len(), 1, "{corps}");
         assert_eq!((&conserves[0]["name"], &conserves[0]["kind"], &conserves[0]["host"]), (&json!("ag-jcsa"), &json!("agent"), &json!("h-jcsa")), "{corps}");
         assert!(conserves[0]["last_used"].as_i64().is_some(), "le conservé a servi : {corps}");
-        assert_eq!(jetons["auteur_non_etabli"], json!({ "agent": 1, "firehose": 1 }), "{corps}");
+        assert_eq!(jetons["auteur_non_etabli"], json!({ "agent": 1 }), "{corps}");
         assert_eq!(jetons["decision"], json!(DECISION_SUR_LES_JETONS_DU_COMPTE_SUPPRIME), "{corps}");
 
         // L'audit : le même compte rendu dans l'événement, les noms dans le registre.
@@ -171,7 +174,9 @@ mod jetons_du_compte_supprime_et_annuaire_sur_compte_local {
         let detail: String =
             st.db.lock().query_row("SELECT detail FROM ledger WHERE kind='config.user.delete'", [], |r| r.get(0)).expect("maillon");
         assert!(
-            detail.ends_with("jetons révoqués 3 [hec-jcsa, ds-jcsa, cl-jcsa], conservés au secret connu 1 [ag-jcsa], d'auteur non établi 2"),
+            detail.ends_with(&format!(
+                "jetons révoqués 4 [hec-jcsa, ds-jcsa, cl-jcsa, {cle_nom}], conservés au secret connu 1 [ag-jcsa], d'auteur non établi 1"
+            )),
             "{detail}"
         );
 
@@ -181,7 +186,7 @@ mod jetons_du_compte_supprime_et_annuaire_sur_compte_local {
         assert_eq!(jcsa_par_le_jeton(&st, "/api/ds/query", format!("Bearer {lecture}")), None, "lecture : révoquée");
         assert_eq!(jcsa_par_le_jeton(&st, "/api/client/cases", format!("Bearer {client}")), None, "client : révoqué");
         assert_eq!(jcsa_par_le_jeton(&st, "/api/ingest", format!("Bearer {cli}")), Some(("h-cli".into(), "agent".into())), "auteur non établi : intact");
-        assert!(firehose_token_lookup(&st, &cle).is_some(), "clé de livraison, auteur non établi : intacte");
+        assert!(firehose_token_lookup(&st, &cle).is_none(), "clé de livraison jamais servie : révoquée avec son autrice (`P10.25-q`)");
         let (auteur, marque): (Option<String>, Option<i64>) = st
             .db
             .lock()

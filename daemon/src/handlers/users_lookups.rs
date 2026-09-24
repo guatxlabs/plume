@@ -3,6 +3,7 @@
 //! `build_lookup_kv`, `lookups_list`/`lookup_upload`/`lookup_delete`).
 //! Extrait de main.rs (refactor split #25 — byte-identique).
 use crate::*;
+use crate::handlers::transaction_validee::valider_la_transaction;
 
 // ---------- comptes utilisateurs (réservé admin via auth_guard) ----------
 pub(crate) async fn users_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
@@ -233,27 +234,6 @@ fn ce_que_le_nom_tient_sans_compte(conn: &Connection, nom: &str) -> rusqlite::Re
         return Ok(None);
     }
     Ok(Some(json!({ "vu_par_l_annuaire": vu_par_l_annuaire, "lignes": lignes })))
-}
-
-/// `P10.24-x` — LE `COMMIT` D'UN GESTE DE CE MODULE EST JUGÉ, ET UN REFUS FERME LA TRANSACTION.
-///
-/// LE DÉFAUT, MESURÉ LE 2026-09-24 SUR LA FORME D'AVANT (`COMMIT` refusé par un autorisateur SQLite) : `user_create`
-/// rendait 200 et l'identifiant d'un compte qui n'a jamais existé ; `user_delete` rendait 204 et avait déjà oublié les
-/// échecs de connexion du compte, toujours là ; `user_update` rendait 204, `lookup_upload` 200. L'énoncé sous-comptait :
-/// dans les quatre cas la transaction restait OUVERTE sur la connexion d'écriture partagée, et le geste suivant
-/// (une autre création) échouait à `BEGIN IMMEDIATE` — 500 « verrou base indisponible ».
-///
-/// Après un `COMMIT` refusé, SQLite peut avoir annulé la transaction de lui-même ou l'avoir laissée ouverte, selon
-/// l'erreur : le `ROLLBACK` couvre les deux (dans le premier cas il échoue sans effet, et cet échec n'est pas une
-/// information). S'il ne ferme pas la transaction, le journal le dit : l'écrivain est alors bloqué.
-fn valider_la_transaction(conn: &Connection) -> rusqlite::Result<()> {
-    conn.execute_batch("COMMIT").map_err(|refus| {
-        let _ = conn.execute_batch("ROLLBACK");
-        if !conn.is_autocommit() {
-            eprintln!("[comptes] ERREUR transaction toujours ouverte après un COMMIT refusé puis un ROLLBACK : l'écrivain est bloqué");
-        }
-        refus
-    })
 }
 
 /// `P10.24-n` — LE COMPTE DE L'ADMINISTRATEUR DE L'ASSISTANT NE SE SUPPRIME PAS.

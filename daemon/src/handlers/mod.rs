@@ -54,4 +54,6 @@ pub(crate) mod rba;
 pub(crate) mod system; // #51 DAY-2 OPS : console d'opérabilité (healthz/readyz/metrics/diag/bulletin)
 pub(crate) mod threat_intel;
 pub(crate) mod tokens;
+pub(crate) mod transaction_validee; // P10.24-x, P10.25-e, P10.25-f : le COMMIT d'un geste d'écriture est JUGÉ — un refus rend
+                                    // la main à l'appelant (503 nommé), ferme la transaction, et rien n'est annoncé ni chargé avant
 pub(crate) mod users_lookups;

@@ -5,6 +5,7 @@
 //! recompile le registre de CE db_path (+ set DENY de l'authorizer + sel). La LISTE renvoie les règles + une
 //! MATRICE « quels champs sont masqués pour quel rôle » (transparence de la politique PII).
 use crate::*;
+use crate::handlers::transaction_validee::valider_la_transaction;
 
 /// Actions valides à la CRÉATION (rejet explicite d'une action inconnue -> 400 ; au reload, une action
 /// corrompue tombe en DENY = fail-closed, mais on ne LAISSE PAS créer une action illisible).
@@ -129,7 +130,9 @@ pub(crate) async fn field_filter_create(State(st): State<AppState>, Extension(au
     })();
     match outcome {
         Ok(id) => {
-            let _ = conn.execute_batch("COMMIT");
+            if let Err(e) = valider_la_transaction(&conn) {
+                return masque_inchange_commit_refuse("pose", &format!("'{name}'"), e);
+            }
             field_filters_reload(&conn, req_db_path(&st, &au).as_str());
             Json(json!({ "id": id })).into_response()
         }
@@ -195,7 +198,9 @@ pub(crate) async fn field_filter_update(State(st): State<AppState>, Extension(au
     })();
     match outcome {
         Ok(()) => {
-            let _ = conn.execute_batch("COMMIT");
+            if let Err(e) = valider_la_transaction(&conn) {
+                return masque_inchange_commit_refuse("modification", &format!("#{id}"), e);
+            }
             field_filters_reload(&conn, req_db_path(&st, &au).as_str());
             Json(json!({ "ok": true })).into_response()
         }
@@ -234,7 +239,9 @@ pub(crate) async fn field_filter_delete(State(st): State<AppState>, Extension(au
     })();
     match outcome {
         Ok(()) => {
-            let _ = conn.execute_batch("COMMIT");
+            if let Err(e) = valider_la_transaction(&conn) {
+                return masque_inchange_commit_refuse("retrait", &format!("'{name}' (#{id})"), e);
+            }
             field_filters_reload(&conn, req_db_path(&st, &au).as_str());
             Json(json!({ "ok": true })).into_response()
         }
@@ -243,4 +250,26 @@ pub(crate) async fn field_filter_delete(State(st): State<AppState>, Extension(au
             server_err(format!("échec transaction audit (aucune modification): {e}"))
         }
     }
+}
+
+// `P10.25-f` — UN MASQUE N'EST ANNONCÉ, ET LE REGISTRE SERVI RECHARGÉ, QU'UNE FOIS SA TRANSACTION VALIDÉE.
+//
+// LE DÉFAUT, MESURÉ LE 2026-09-24 SUR LA FORME D'AVANT (`COMMIT` refusé par un autorisateur SQLite) : les trois gestes
+// rendaient 200, et `field_filters_reload`, appelé APRÈS le `COMMIT` ignoré, relisait la table DANS la transaction
+// restée pendante. La pose d'un masque `hash` sur `src_user` était donc SERVIE (un viewer lisait l'empreinte, la console
+// le montrait à l'œuvre) et n'existait plus au redémarrage : le champ revenait en clair, l'administrateur le croyant
+// masqué. La désactivation et la suppression démasquaient le champ POUR CE PROCESSUS alors que la base gardait la règle.
+// L'énoncé (« un masque annoncé posé ou retiré qui ne l'est pas ») sous-comptait ce second temps : c'est le REGISTRE
+// SERVI, pas seulement la réponse, qui annonçait l'état non validé. Et, comme ailleurs, la transaction restait ouverte
+// sur l'écrivain partagé.
+
+/// `P10.25-f` — le `COMMIT` d'une pose, d'une modification ou d'un retrait de masque de champ refusé.
+pub(crate) const CAUSE_MASQUE_DE_CHAMP_INCHANGE: &str = "MASQUE DE CHAMP INCHANGÉ : la base n'a pas validé la \
+     transaction (COMMIT refusé) et l'a annulée — la règle n'est ni posée, ni modifiée, ni retirée, les masques servis \
+     restent ceux d'avant, et aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, \
+     pleine ou verrouillée.";
+
+fn masque_inchange_commit_refuse(geste: &str, regle: &str, refus: rusqlite::Error) -> Response {
+    eprintln!("[masques] WARN {geste} du masque de champ {regle} NON validée : {refus} — registre servi inchangé");
+    err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_MASQUE_DE_CHAMP_INCHANGE)
 }

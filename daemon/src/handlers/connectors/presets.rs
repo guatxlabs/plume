@@ -367,9 +367,16 @@ pub(crate) async fn connector_push_source(State(st): State<AppState>, Extension(
         let cid = conn.last_insert_rowid();
         // clé de livraison : SHA-256 stocké (jamais le clair), kind=token_kind ('firehose'|'gcp_pubsub' — isolée
         // du seam agent/HEC ET de l'autre voie push), connector_id lié (-> field_map/env_id). token_hash UNIQUE.
-        conn.execute(
-            "INSERT INTO token(name,token_hash,created,kind,connector_id) VALUES(?1,?2,?3,?4,?5)",
-            params![format!("{token_kind}-{cid}"), hash, now(), token_kind, cid],
+        // `P10.25-q` — par le point d'écriture des jetons, avec le compte qui la frappe (`created_by`) : c'est ce que
+        // la suppression de ce compte relit (`JetonsDuCompteSupprime`). Avant, un `INSERT` propre à ce fichier la
+        // laissait sans auteur, ni révoquée ni nommée à la suppression de l'administratrice qui en avait vu le secret.
+        crate::handlers::tokens::inserer_cle_de_livraison_frappee_par(
+            &conn,
+            &format!("{token_kind}-{cid}"),
+            &hash,
+            token_kind,
+            cid,
+            au.name.as_str(),
         )?;
         audit_config_change(
             &conn,
@@ -383,7 +390,12 @@ pub(crate) async fn connector_push_source(State(st): State<AppState>, Extension(
     })();
     match outcome {
         Ok(cid) => {
-            let _ = conn.execute_batch("COMMIT");
+            // `P10.25-e` — la clé n'est montrée qu'une fois la transaction VALIDÉE : avant, un `COMMIT` refusé rendait
+            // 200 et une clé qui authentifiait tant que la transaction restait pendante, sans connecteur au redémarrage.
+            if let Err(e) = crate::handlers::transaction_validee::valider_la_transaction(&conn) {
+                eprintln!("[connecteurs] WARN source push '{name}' NON validée : {e}");
+                return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_SOURCE_PUSH_NON_CREEE_COMMIT_REFUSE);
+            }
             // SHOW-ONCE : la clé de livraison n'est renvoyée QU'ICI (jamais re-dérivable ; la lecture connecteur
             // n'expose que has_secret/has_key). Réponse SELON le transport (Firehose header vs Pub/Sub query).
             if conn_type == "gcp_pubsub" {
@@ -415,3 +427,8 @@ pub(crate) async fn connector_push_source(State(st): State<AppState>, Extension(
         }
     }
 }
+
+/// `P10.25-e` — le `COMMIT` de la création d'une source push refusé.
+pub(crate) const CAUSE_SOURCE_PUSH_NON_CREEE_COMMIT_REFUSE: &str = "SOURCE PUSH NON CRÉÉE : la base n'a pas validé la \
+     transaction (COMMIT refusé) et l'a annulée — ni le connecteur ni sa clé de livraison ne sont écrits, et aucune clé \
+     n'est montrée. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";

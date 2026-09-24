@@ -367,9 +367,28 @@ pub(crate) async fn idp_provider_create(State(st): State<AppState>, Extension(au
         Ok(id)
     })();
     match outcome {
-        Ok(id) => { let _ = conn.execute_batch("COMMIT"); Json(json!({ "id": id, "enabled": enabled != 0 })).into_response() }
+        // `P10.25-e` — l'identifiant n'est rendu qu'une fois la transaction VALIDÉE.
+        Ok(id) => match crate::handlers::transaction_validee::valider_la_transaction(&conn) {
+            Ok(()) => Json(json!({ "id": id, "enabled": enabled != 0 })).into_response(),
+            Err(e) => fournisseur_inchange_commit_refuse("création", &name, e),
+        },
         Err(_) => { let _ = conn.execute_batch("ROLLBACK"); (StatusCode::CONFLICT, "échec de création (nom déjà pris ou audit) — réessayez").into_response() }
     }
+}
+
+/// `P10.25-e` — le `COMMIT` d'une création, d'une modification ou d'une suppression de fournisseur d'identité refusé.
+pub(crate) const CAUSE_FOURNISSEUR_D_IDENTITE_INCHANGE: &str = "FOURNISSEUR D'IDENTITÉ INCHANGÉ : la base n'a pas \
+     validé la transaction (COMMIT refusé) et l'a annulée — le fournisseur n'est ni créé, ni modifié, ni supprimé : \
+     celui qui était actif l'est toujours et authentifie encore, et aucune trace n'est écrite. Réessayez ; si le refus \
+     persiste, la base est en lecture seule, pleine ou verrouillée.";
+
+/// `P10.25-e` — LE `COMMIT` D'UN GESTE SUR UN FOURNISSEUR D'IDENTITÉ EST JUGÉ. Mesuré le 2026-09-24 sur la forme d'avant
+/// (`COMMIT` refusé par un autorisateur) : création 200 et un identifiant, désactivation 200, suppression 204 — et
+/// rien d'écrit au redémarrage : le fournisseur désactivé ou supprimé l'était pour ce processus, par la transaction
+/// laissée pendante, puis RÉ-OUVRAIT sa voie d'authentification dès qu'elle était annulée.
+fn fournisseur_inchange_commit_refuse(geste: &str, fournisseur: &str, refus: rusqlite::Error) -> Response {
+    eprintln!("[idp] WARN {geste} du fournisseur d'identité '{fournisseur}' NON validée : {refus}");
+    err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_FOURNISSEUR_D_IDENTITE_INCHANGE)
 }
 
 pub(crate) async fn idp_provider_update(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
@@ -413,7 +432,10 @@ pub(crate) async fn idp_provider_update(State(st): State<AppState>, Extension(au
         Ok(())
     })();
     match outcome {
-        Ok(()) => { let _ = conn.execute_batch("COMMIT"); Json(json!({ "ok": true })).into_response() }
+        Ok(()) => match crate::handlers::transaction_validee::valider_la_transaction(&conn) {
+            Ok(()) => Json(json!({ "ok": true })).into_response(),
+            Err(e) => fournisseur_inchange_commit_refuse("modification", &format!("#{id}"), e),
+        },
         Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
     }
 }
@@ -442,7 +464,10 @@ pub(crate) async fn idp_provider_delete(State(st): State<AppState>, Extension(au
         Ok(())
     })();
     match outcome {
-        Ok(()) => { let _ = conn.execute_batch("COMMIT"); StatusCode::NO_CONTENT.into_response() }
+        Ok(()) => match crate::handlers::transaction_validee::valider_la_transaction(&conn) {
+            Ok(()) => StatusCode::NO_CONTENT.into_response(),
+            Err(e) => fournisseur_inchange_commit_refuse("suppression", &name, e),
+        },
         Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit: {e}")) }
     }
 }

@@ -7,6 +7,7 @@
 //! création (show-once) ; il n'est jamais re-dérivable (seul son SHA-256 est en base). Toutes les routes sont
 //! admin-only (route_min_role /api/tokens -> Admin, default-deny) AVEC re-check `au.is_admin()` dans le handler.
 use crate::*;
+use crate::handlers::transaction_validee::valider_la_transaction;
 
 /// CSPRNG hex (/dev/urandom). MÊME construction que le CLI `token` : 32 octets -> hex. None si l'entropie
 /// noyau est indisponible -> le mint ÉCHOUE (jamais de secret faible/prévisible).
@@ -106,8 +107,8 @@ impl PorteeJeton {
     }
 }
 
-/// SEUL point d'écriture d'une ligne `token` (CLI comme UI). La colonne `host` n'est pas un paramètre
-/// libre : elle est DÉRIVÉE de la portée déclarée. `kind`/`role` restent `None` pour la voie CLI
+/// Point d'écriture d'un jeton d'agent, de relais ou de lecture (CLI comme UI). La colonne `host` n'est pas un
+/// paramètre libre : elle est DÉRIVÉE de la portée déclarée. `kind`/`role` restent `None` pour la voie CLI
 /// historique -> ligne stockée IDENTIQUE à l'INSERT d'avant (colonnes omises == NULL).
 /// `P10.24-w` — la ligne de commande n'a pas de compte : `created_by` reste NULL (auteur NON ÉTABLI, c'est
 /// l'installation). La console passe par `inserer_jeton_frappe_par`.
@@ -133,9 +134,50 @@ pub(crate) fn inserer_jeton_frappe_par(
     portee: &PorteeJeton,
     auteur: Option<&str>,
 ) -> rusqlite::Result<usize> {
+    ecrire_la_ligne_de_jeton(conn, name, hash, portee.hote_lie(), kind, role, None, auteur)
+}
+
+/// `P10.25-q` — LA CLÉ DE LIVRAISON D'UNE SOURCE PUSH, ET LE COMPTE QUI LA FRAPPE.
+///
+/// CE QUI ÉTAIT FAUX, MESURÉ LE 2026-09-24. `connectors/presets.rs` écrivait sa clé par son PROPRE `INSERT INTO token`
+/// — ni `inserer_jeton` ni `inserer_jeton_frappe_par` : un second point d'écriture de la table, que ce fichier disait
+/// « SEUL », et qui n'écrivait pas `created_by` (NULL, « auteur non établi »). La clé d'une administratrice supprimée
+/// n'était donc ni révoquée ni nommée par la suppression, alors que son secret lui avait été montré.
+///
+/// Une clé de livraison n'a qu'une voie de frappe, la console, et donc toujours un compte : l'auteur n'est pas une
+/// `Option`. Sa portée n'est pas un hôte (colonne `host` NULL) mais son CONNECTEUR (`connector_id`), et son genre
+/// (`firehose`, `gcp_pubsub`) la borne à son seul récepteur. Au regard de `DECISION_SUR_LES_JETONS_DU_COMPTE_SUPPRIME`
+/// c'est un jeton d'INGESTION : elle n'ouvre aucune lecture (`push_token_connector` ne rend qu'un connecteur, le
+/// récepteur n'écrit que dans le spool), elle est révoquée avec son auteur si elle n'a jamais servi, conservée et
+/// nommée si un flux du nuage la porte.
+pub(crate) fn inserer_cle_de_livraison_frappee_par(
+    conn: &Connection,
+    name: &str,
+    hash: &str,
+    genre: &str,
+    connector_id: i64,
+    auteur: &str,
+) -> rusqlite::Result<usize> {
+    ecrire_la_ligne_de_jeton(conn, name, hash, None, Some(genre), None, Some(connector_id), Some(auteur))
+}
+
+/// SEUL point d'écriture d'une ligne `token` : les deux voies ci-dessus y passent. Les colonnes omises par une voie
+/// valent NULL, comme dans l'`INSERT` que chacune écrivait avant (`connector_id` NULL pour un jeton d'agent, `host`
+/// et `role` NULL pour une clé de livraison).
+#[allow(clippy::too_many_arguments)]
+fn ecrire_la_ligne_de_jeton(
+    conn: &Connection,
+    name: &str,
+    hash: &str,
+    host: Option<&str>,
+    kind: Option<&str>,
+    role: Option<&str>,
+    connector_id: Option<i64>,
+    auteur: Option<&str>,
+) -> rusqlite::Result<usize> {
     conn.execute(
-        "INSERT INTO token(name,token_hash,created,host,kind,role,created_by) VALUES(?1,?2,?3,?4,?5,?6,?7)",
-        params![name, hash, now(), portee.hote_lie(), kind, role, auteur],
+        "INSERT INTO token(name,token_hash,created,host,kind,role,created_by,connector_id) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+        params![name, hash, now(), host, kind, role, auteur, connector_id],
     )
 }
 
@@ -261,7 +303,12 @@ pub(crate) async fn token_create(State(st): State<AppState>, Extension(au): Exte
     })();
     match outcome {
         Ok(()) => {
-            let _ = conn.execute_batch("COMMIT");
+            // `P10.25-e` — le secret n'est montré qu'une fois la transaction VALIDÉE : avant, un `COMMIT` refusé rendait
+            // 200 et un secret qui authentifiait tant que la transaction restait pendante, puis plus rien au redémarrage.
+            if let Err(e) = valider_la_transaction(&conn) {
+                eprintln!("[jetons] WARN frappe du jeton '{name}' NON validée : {e}");
+                return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_JETON_NON_FRAPPE_COMMIT_REFUSE);
+            }
             // SHOW-ONCE : le secret CLAIR n'est renvoyé QU'ICI (jamais re-dérivable). Le SPA l'affiche une fois.
             Json(json!({
                 "name": name, "kind": kind, "host": host_opt, "role": role,
@@ -308,10 +355,28 @@ pub(crate) async fn token_delete(State(st): State<AppState>, Extension(au): Exte
         Ok(())
     })();
     match outcome {
-        Ok(()) => { let _ = conn.execute_batch("COMMIT"); StatusCode::NO_CONTENT.into_response() }
+        // `P10.25-e` — la révocation n'est annoncée qu'une fois VALIDÉE : avant, un `COMMIT` refusé rendait 204, le jeton
+        // n'authentifiait plus tant que la transaction restait pendante, et revivait dès qu'elle était annulée.
+        Ok(()) => match valider_la_transaction(&conn) {
+            Ok(()) => StatusCode::NO_CONTENT.into_response(),
+            Err(e) => {
+                eprintln!("[jetons] WARN révocation du jeton '{name}' NON validée : {e}");
+                err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_JETON_NON_REVOQUE_COMMIT_REFUSE)
+            }
+        },
         Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
     }
 }
+
+/// `P10.25-e` — le `COMMIT` de la frappe d'un jeton refusé.
+pub(crate) const CAUSE_JETON_NON_FRAPPE_COMMIT_REFUSE: &str = "JETON NON FRAPPÉ : la base n'a pas validé la transaction \
+     (COMMIT refusé) et l'a annulée — ni le jeton ni sa trace d'audit ne sont écrits, et aucun secret n'est montré. \
+     Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+
+/// `P10.25-e` — le `COMMIT` de la révocation d'un jeton refusé.
+pub(crate) const CAUSE_JETON_NON_REVOQUE_COMMIT_REFUSE: &str = "JETON NON RÉVOQUÉ : la base n'a pas validé la \
+     transaction (COMMIT refusé) et l'a annulée — le jeton authentifie toujours son porteur, et aucune révocation n'est \
+     attestée. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
 
 // ====================================================================================================
 // `P10.24-w` — CE QUE LA SUPPRESSION D'UN COMPTE FAIT DES JETONS QU'IL A FRAPPÉS.
@@ -339,9 +404,14 @@ pub(crate) async fn token_delete(State(st): State<AppState>, Extension(au): Exte
 //    une flotte. Ce que le porteur y garde est une ÉCRITURE dans l'ingestion (et, lié à un hôte, les ripostes en
 //    attente de cet hôte), pas la lecture des données. Le jeton est marqué (`created_by_deleted_at`) et NOMMÉ
 //    dans la réponse et à l'audit, avec le geste : le révoquer et en refrapper un pour le capteur.
-// Les jetons d'auteur NON ÉTABLI (ligne de commande, clés de livraison des sources push, frappes antérieures à
-// la colonne sans maillon rattachable) ne sont pas touchés, et leur COMPTE est dit : rien n'établit que ce compte
-// n'a pas vu leur secret.
+//  * `P10.25-q` — LA CLÉ DE LIVRAISON D'UNE SOURCE PUSH est un jeton d'INGESTION, et suit les deux règles
+//    précédentes : elle ne rend à son porteur qu'un connecteur où écrire (`push_token_connector`), jamais une
+//    lecture. Jamais servie, elle part avec son auteur (le connecteur reste, sans clé) ; servie, un flux du nuage la
+//    porte et elle est conservée, nommée — son geste est de supprimer la source push et de la recréer, puis de
+//    reporter la nouvelle clé dans le flux, parce qu'aucune route ne refrappe la clé d'un connecteur existant.
+// Les jetons d'auteur NON ÉTABLI (ligne de commande, clés de livraison frappées avant que la source push n'écrive
+// son auteur, frappes antérieures à la colonne sans maillon rattachable) ne sont pas touchés, et leur COMPTE est
+// dit : rien n'établit que ce compte n'a pas vu leur secret.
 // ====================================================================================================
 
 /// `P10.24-w` — les genres de jeton qui donnent à leur porteur la LECTURE des données du SOC : révoqués avec leur
@@ -352,10 +422,12 @@ pub(crate) const GENRES_DE_JETON_DE_LECTURE: [&str; 2] = ["datasource", "client"
 pub(crate) const DECISION_SUR_LES_JETONS_DU_COMPTE_SUPPRIME: &str = "JETONS DU COMPTE SUPPRIMÉ : leur secret lui a \
      été montré à la frappe. RÉVOQUÉS avec lui : les jetons de LECTURE (source de données, client), qui donnent à \
      leur porteur la lecture des données — la suppression retire cet accès — et tout jeton d'ingestion JAMAIS \
-     SERVI, dont aucun capteur ne dépend. CONSERVÉS : les jetons d'ingestion déjà servis (agent, HEC), biens de \
-     l'installation — les révoquer ferait taire un capteur. Leur secret reste connu d'un compte supprimé : \
-     révoquez-les et refrappez-en un pour chaque capteur. Les jetons d'auteur NON ÉTABLI (ligne de commande, clé de \
-     livraison d'une source push, frappe antérieure sans trace rattachable) ne sont pas touchés : rien ne dit qui a \
+     SERVI, dont aucun capteur ne dépend. CONSERVÉS : les jetons d'ingestion déjà servis (agent, HEC, clé de \
+     livraison d'une source push), biens de l'installation — les révoquer ferait taire un capteur ou un flux du \
+     nuage. Leur secret reste connu d'un compte supprimé : révoquez-les et refrappez-en un pour chaque capteur ; pour \
+     une clé de livraison, supprimez la source push, recréez-la et reportez la nouvelle clé dans le flux. Les jetons \
+     d'auteur NON ÉTABLI (ligne de commande, clé de livraison frappée avant que la source push n'écrive son auteur, \
+     frappe antérieure sans trace rattachable) ne sont pas touchés : rien ne dit qui a \
      vu leur secret.";
 
 /// `P10.24-w` — ce que la suppression d'un compte a fait des jetons qu'il a frappés, dans SA transaction.

@@ -229,8 +229,9 @@
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
             // `P10.24-w` (v123) : la table porte l'auteur de la frappe, que la voie commune écrit (NULL pour la CLI).
+            // `P10.25-q` : et le connecteur (v103), que la même voie écrit pour une clé de livraison (NULL ici).
             "CREATE TABLE token(id INTEGER PRIMARY KEY, name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, \
-             created INTEGER, last_used INTEGER, host TEXT, kind TEXT, role TEXT, created_by TEXT)",
+             created INTEGER, last_used INTEGER, host TEXT, kind TEXT, role TEXT, created_by TEXT, connector_id INTEGER)",
         )
         .unwrap();
         inserer_jeton(&conn, "machine", "h1", None, None, &PorteeJeton::declarer(Some("web01"), false).unwrap()).unwrap();

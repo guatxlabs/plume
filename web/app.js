@@ -12,7 +12,7 @@ import { initDashboards, loadDashboard, loadDashboards, refreshPanels } from './
 import { initLookups } from './lookups.js';
 import { loadFleetView } from './fleet.js';
 import { chargesAffichees, chargesVivesAffichees, cibleAffichee, initNavigation, lancerLesCharges, poserUneCharge, SPACES, currentTab, currentViewName, renderNav, route } from './navigation.js';
-import { initAuthGate, fetchMe, setAuthUI } from './login.js';
+import { initAuthGate, fetchMe, lireUneReponseDuTransport, setAuthUI } from './login.js';
 import { loadSourcesView } from './sources.js';
 import { loadSystemView } from './system.js'; // #51 DAY-2 OPS — console d'opérabilité + bandeau MOTD
 import { loadLedger } from './audit.js';
@@ -81,9 +81,14 @@ function _netProgEl() {
   return el;
 }
 function _netProgSync() { _netProgEl().hidden = S._netInflight <= 0; }
-if (typeof window !== 'undefined' && typeof window.fetch === 'function' && !window._netFetchWrapped) {
-  const _origFetch = window.fetch.bind(window);
-  window.fetch = function (input, init) {
+// `P10.25-w` — L'ENVELOPPE EST UNE FABRIQUE, ET ELLE PASSE CHAQUE RÉPONSE À L'ÉCRAN DE CONNEXION. Un refus de
+// l'annuaire en cours de session frappe TOUTE route gardée, y compris celles que les panneaux et l'Explore lisent
+// par `fetch` direct, hors d'`api()` : le seul point que toutes traversent est ici. `lireUneReponseDuTransport`
+// (web/login.js) ne lit qu'une copie du corps d'un 403 ou d'un 503 et ne jette jamais ; la réponse est rendue à son
+// appelant inchangée. La fabrique prend le transport d'origine en paramètre (déplacement pur du corps d'avant) : le
+// harnais ESM, qui n'a pas de `fetch` au chargement, la pose sur son simulacre et juge l'enveloppe RÉELLE.
+function envelopperLeTransport(_origFetch) {
+  return function (input, init) {
     // CSRF (item 4) : on AJOUTE X-CSRF-Token aux requêtes MUTANTES (POST/PUT/DELETE hors lectures).
     // Inoffensif en SSO/Basic/Bearer (csrfToken() vide -> header non posé ; le daemon n'exige le CSRF
     // qu'en session cookie). Best-effort : ne JAMAIS faire échouer une requête à cause du wiring CSRF.
@@ -122,8 +127,13 @@ if (typeof window !== 'undefined' && typeof window.fetch === 'function' && !wind
       }
     } catch (e) { /* CSRF/tenant/env best-effort : on n'altère pas la requête en cas d'imprévu */ }
     S._netInflight++; _netProgSync();
-    return _origFetch(input, init).finally(() => { S._netInflight = Math.max(0, S._netInflight - 1); _netProgSync(); });
+    return _origFetch(input, init)
+      .then(reponse => { try { lireUneReponseDuTransport(reponse); } catch (e) { /* la lecture ne fait jamais échouer une requête */ } return reponse; })
+      .finally(() => { S._netInflight = Math.max(0, S._netInflight - 1); _netProgSync(); });
   };
+}
+if (typeof window !== 'undefined' && typeof window.fetch === 'function' && !window._netFetchWrapped) {
+  window.fetch = envelopperLeTransport(window.fetch.bind(window));
   window._netFetchWrapped = true;
 }
 
@@ -978,4 +988,5 @@ if ($('#lang')) {
 initAuthGate();   // écran de connexion, déconnexion, état d'auth : câblage + GET /api/me qui ouvre l'app ou l'overlay (login.js)
 
 /* ==== exports consumed by seam modules (auto-managed) ==== */
-export { ROLE_LABEL, SPACES, currentTab, currentViewName, fetchMe, loadActions, loadDashboard, loadUsers, refresh, refreshCurrentView, refreshPanels, renderNav, route, setAlertMitreFilter, setAlertSourceFilter, setAuthUI, updateQRangeBtn, updateRangeBtn };
+// `P10.25-w` — `envelopperLeTransport` part pour le témoin 114 du harnais ESM, qui la pose sur son simulacre.
+export { ROLE_LABEL, SPACES, currentTab, currentViewName, envelopperLeTransport, fetchMe, loadActions, loadDashboard, loadUsers, refresh, refreshCurrentView, refreshPanels, renderNav, route, setAlertMitreFilter, setAlertSourceFilter, setAuthUI, updateQRangeBtn, updateRangeBtn };

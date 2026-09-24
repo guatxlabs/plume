@@ -67,17 +67,26 @@ const OUVERTURES_DES_REFUS_DE_L_OUVERTURE = [
   ['annuaire_refuse', /^IDENTITÉ DE L'ANNUAIRE REFUSÉE(?![\p{L}\p{N}])/u],
   ['annuaire_non_verifie', /^IDENTITÉ DE L'ANNUAIRE NON VÉRIFIÉE(?![\p{L}\p{N}])/u],
 ];
+// `P10.25-w` — la nature d'un refus de l'ANNUAIRE, nue : lue à l'ouverture (ci-dessous) et en cours de session (plus
+// bas, `lireUneReponseDuTransport`). Rend '' pour toute autre cause, et pour l'absence de cause.
+function natureDuRefusDeLAnnuaire(cause) {
+  const c = String(cause || '').trim();
+  const trouvee = OUVERTURES_DES_REFUS_DE_L_OUVERTURE.find(([, ouverture]) => ouverture.test(c));
+  return trouvee ? trouvee[0] : '';
+}
 function cleDuRefusDeLOuverture(e) {
   const cause = e && e.causeDuDemon ? String(e.causeDuDemon).trim() : '';
   if (!cause) return '';
-  const trouvee = OUVERTURES_DES_REFUS_DE_L_OUVERTURE.find(([, ouverture]) => ouverture.test(cause));
-  return trouvee ? trouvee[0] : 'ouverture_refusee';
+  return natureDuRefusDeLAnnuaire(cause) || 'ouverture_refusee';
 }
 // Un nœud À PART, posé au-dessus de `#login-err` : la boîte des refus du formulaire se réécrit à chaque essai, alors
 // que ce refus-ci reste vrai tant qu'aucune session n'est ouverte. `data-refus-de-l-ouverture` porte la clé (marque
 // de POSE pour le harnais).
-function peindreLeRefusDeLOuverture(e) {
-  const cle = cleDuRefusDeLOuverture(e);
+// `P10.25-w` — `enCoursDeSession` : la session était ouverte, et c'est un refus de l'annuaire qui l'interrompt ; la
+// face le dit (clé `session_interrompue_<nature>`), le nœud et sa cause entière sont les mêmes.
+function peindreLeRefusDeLOuverture(e, enCoursDeSession) {
+  const nature = cleDuRefusDeLOuverture(e);
+  const cle = enCoursDeSession && (nature === 'annuaire_refuse' || nature === 'annuaire_non_verifie') ? 'session_interrompue_' + nature : nature;
   const err = $('#login-err'); if (!err || !err.parentNode) return;
   let noeud = $('#login-form [data-refus-de-l-ouverture]');
   if (!cle) { if (noeud) noeud.remove(); return; }
@@ -143,6 +152,13 @@ const MOTS_DE_LA_CONNEXION = {
   ouverture_refusee: {
     fr: 'Console NON ouverte : le démon a refusé et en nomme la cause —',
     en: 'Console NOT opened: the daemon refused and names the cause —' },
+  // `P10.25-w` — la session ouverte, interrompue par un refus de l'annuaire (voir `lireUneReponseDuTransport`).
+  session_interrompue_annuaire_refuse: {
+    fr: "Session INTERROMPUE : l'identité que présente l'annuaire est REFUSÉE par le démon, et plus rien n'est servi sous ce nom — la console est masquée. Si ce nom a un mot de passe (compte local ou administrateur de configuration), ce formulaire ouvre sa session. Le démon en nomme la cause —",
+    en: 'Session INTERRUPTED: the identity the directory presents is REFUSED by the daemon, and nothing more is served under this name — the console is hidden. If this name has a password (local account or configuration administrator), this form opens its session. The daemon names the cause —' },
+  session_interrompue_annuaire_non_verifie: {
+    fr: "Session INTERROMPUE : l'identité que présente l'annuaire n'a pas pu être VÉRIFIÉE, et le démon ne sert plus rien sous ce nom — la console est masquée. Recharger la page pour réessayer. Le démon en nomme la cause —",
+    en: 'Session INTERRUPTED: the identity the directory presents could not be VERIFIED, and the daemon serves nothing more under this name — the console is hidden. Reload the page to try again. The daemon names the cause —' },
 };
 // Les valeurs se posent par une fonction de remplacement : un détail servi qui contiendrait `$&` ou une accolade
 // n'est jamais réinterprété.
@@ -442,6 +458,56 @@ async function doLogout() {
   // (forward-auth) : /api/me reste 200 -> l'app recharge (la déconnexion SSO se fait côté Authentik).
   location.reload();
 }
+// `P10.25-w` — UN REFUS DE L'ANNUAIRE EN COURS DE SESSION : UNE FACE, PAS UN PANNEAU PAR REQUÊTE.
+// CE QUE LE DÉMON SERT (`P10.25-d`, daemon/src/auth.rs) : le jugement du nom que présente l'annuaire est relu à
+// CHAQUE requête, sans cache. Une session ouverte par l'annuaire (SSO d'en-têtes, sans cookie) est donc refusée en
+// COURS de route dès que le nom devient celui d'un compte à mot de passe (un administrateur pose un mot de passe sur
+// sa ligne) ; une session par cookie l'est à l'expiration du cookie, derrière le même mandataire ; la lecture qui
+// juge peut aussi échouer (503). Toute route gardée rend alors le même refus.
+// CE QUE LA CONSOLE EN FAISAIT, MESURÉ AVANT CE LOT (témoin 114) : chaque surface peignait SA copie — `fetchInto`
+// le JSON brut coupé à deux cents caractères, un panneau de tableau de bord la cause entière derrière « Erreur : »,
+// la liste des comptes se repliait EN SILENCE sur « non administrateur » (la section disparaissait) ; le cinq cent
+// trois n'était dit NULLE PART : `api()` et les panneaux le remplacent par « Service momentanément indisponible »,
+// et la cause — qui dit que rien n'est servi — ne sortait pas.
+// LE GESTE : l'enveloppe du transport (`web/app.js`) passe ici chaque réponse ; un 403 ou un 503 dont la cause
+// NOMMÉE ouvre sur un refus de l'annuaire, reçu PENDANT une session, fait REJUGER la session par `/api/me` — une
+// seule fois à la fois, quel que soit le nombre de requêtes refusées. `/api/me` refusé à son tour par l'annuaire
+// (après les deux réessais d'`api()` pour un 503) : la session est close côté console et l'écran de connexion
+// revient, recouvrant la console, avec la cause ENTIÈRE et le remède au-dessus du formulaire — la connexion par mot
+// de passe est un remède réel, le cookie étant jugé avant les en-têtes. `/api/me` servi : un refus passager, rien
+// n'est dit ici (chaque surface garde son propre aveu). La face est unique parce que l'écran l'est : il recouvre
+// toute la console.
+let rejugementDeLaSessionEnCours = false;
+// Une session que `/api/me` vient de CONFIRMER n'est pas rejugée aussitôt par les refus encore en vol (les réessais
+// d'un cinq cent trois passager, qui arrivent après la confirmation) : sans ce délai, chacun relirait `/api/me`.
+const DELAI_SANS_REJUGEMENT_APRES_UNE_SESSION_CONFIRMEE_MS = 5000;
+let sessionConfirmeeA = 0;
+function rejugerLaSessionApresUnRefusDeLAnnuaire() {
+  // Une copie lue APRÈS la face posée ne rejuge plus rien : la session est déjà close côté console.
+  if (rejugementDeLaSessionEnCours || !(S.AUTH && S.AUTH.user)) return;
+  if (Date.now() - sessionConfirmeeA < DELAI_SANS_REJUGEMENT_APRES_UNE_SESSION_CONFIRMEE_MS) return;
+  rejugementDeLaSessionEnCours = true;
+  api('/me').then(() => { rejugementDeLaSessionEnCours = false; sessionConfirmeeA = Date.now(); }, refus => {
+    rejugementDeLaSessionEnCours = false;
+    if (!natureDuRefusDeLAnnuaire(refus && refus.causeDuDemon)) return;   // un 401, une panne : pas ce refus-ci
+    if (!(S.AUTH && S.AUTH.user)) return;                                 // l'écran est déjà revenu
+    S.AUTH = null; setAuthUI(); showLogin(true);
+    peindreLeRefusDeLOuverture(refus, true);
+  });
+}
+// Lue par l'enveloppe du transport pour CHAQUE réponse, avant qu'elle ne soit rendue à son appelant : ne lit qu'une
+// COPIE du corps (l'appelant garde le sien), ne jette jamais, et ne fait rien hors d'une session ouverte — à
+// l'ouverture, c'est `initAuthGate` qui dit le refus de `/api/me`.
+function lireUneReponseDuTransport(reponse) {
+  if (!reponse || (reponse.status !== 403 && reponse.status !== 503)) return;
+  if (!(S.AUTH && S.AUTH.user) || rejugementDeLaSessionEnCours) return;
+  if (typeof reponse.clone !== 'function') return;
+  let copie;
+  try { copie = reponse.clone(); } catch (e) { return; }
+  Promise.resolve().then(() => copie.text()).then(corps => {
+    if (natureDuRefusDeLAnnuaire(causeNommeeParLeDemon(corps))) rejugerLaSessionApresUnRefusDeLAnnuaire();
+  }, () => {});
+}
 function initAuthGate() {
     bindLoginForm();
     const lo = $('#logout'); if (lo && !lo._bound) { lo._bound = true; lo.onclick = doLogout; }
@@ -474,4 +540,6 @@ function initAuthGate() {
 // `P10.23-c` — `motDeLaConnexion` part pour le témoin 109, au même titre : les phrases de l'écran s'y jugent
 // sous les deux instances de langue, contre ce que le formulaire réel peint.
 // `P10.25-p` — `cleDuRefusDeLOuverture` part pour le témoin 113 : la nature d'un refus de l'ouverture, dans les deux sens.
-export { initAuthGate, bindLoginForm, fetchMe, setAuthUI, showLogin, motDuSecondFacteur, cleDuRefusDuSecondFacteur, motDeLaConnexion, cleDuRefusDeLOuverture };
+// `P10.25-w` — `lireUneReponseDuTransport` part pour l'enveloppe du transport (`web/app.js`), son seul appelant
+// applicatif ; `natureDuRefusDeLAnnuaire` pour le témoin 114.
+export { initAuthGate, bindLoginForm, fetchMe, setAuthUI, showLogin, motDuSecondFacteur, cleDuRefusDuSecondFacteur, motDeLaConnexion, cleDuRefusDeLOuverture, natureDuRefusDeLAnnuaire, lireUneReponseDuTransport };

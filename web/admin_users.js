@@ -3,7 +3,7 @@
 // PURE MOVE : corps de fonctions IDENTIQUES au monolithe, seuls les import/export sont ajoutes.
 // Le cycle app<->module est benin : les fonctions importees d'app.js ne sont appelees qu'a
 // l'EXECUTION (handlers/async apres await), jamais a l'evaluation du module.
-import { $, LANG, esc, fmtTs, ic, muted, api, apiSend, confirmWithConsequence, disclosure, phraseDuRefusDuDemon, toast, pagedList, closeModals } from './core.js';
+import { $, LANG, esc, fmtTs, ic, muted, api, apiSend, confirmWithConsequence, disclosure, laDemandeNAPasAbouti, phraseDuRefusDuDemon, toast, pagedList, closeModals } from './core.js';
 import { S } from './state.js';
 // P11.4-h : LE geste de copie de la console (mécanisme partagé).
 import { boutonDeCopie } from './copie_et_selection.js';
@@ -36,12 +36,56 @@ const MOTS_DE_LA_MODIFICATION_DE_COMPTE = {
   consequence_de_son_propre_mot_de_passe: {
     fr: 'votre propre mot de passe est remplacé immédiatement : vos sessions sont révoquées, et il faudra vous reconnecter avec le nouveau',
     en: 'your own password is replaced immediately: your sessions are revoked, and you will have to sign in again with the new one' },
+  // `P10.25-x` — la demande n'a pas abouti (aucune réponse lue) : le démon n'a rien refusé, et rien ici ne dit s'il a
+  // pris la modification avant que la réponse ne se perde.
+  demande_non_aboutie: {
+    fr: "Modification NON confirmée : la demande n'a pas abouti, et rien ici n'établit si le compte a été modifié — vérifier la liste des comptes avant de la rejouer. Cause —",
+    en: 'Change NOT confirmed: the request did not complete, and nothing here establishes whether the account was changed — check the account list before replaying it. Cause —' },
 };
 // Les valeurs se posent par une fonction de remplacement : un détail servi n'est jamais réinterprété.
 function motDeLaModificationDeCompte(cle, valeurs = {}) {
   const face = LANG === 'en' ? MOTS_DE_LA_MODIFICATION_DE_COMPTE[cle].en : MOTS_DE_LA_MODIFICATION_DE_COMPTE[cle].fr;
   return face.replace(/\{(\w+)\}/g, (brut, nom) => (Object.prototype.hasOwnProperty.call(valeurs, nom) ? String(valeurs[nom]) : brut));
 }
+// `P10.25-y` — LES CONFIRMATIONS DES COMPTES, DANS LES DEUX LANGUES. Mesuré avant ce lot : le titre et la conséquence
+// de la confirmation de création (« Créer le compte « carol » », « un accès viewer à cette console est ouvert
+// immédiatement. »), comme le titre de la confirmation de modification, la conséquence du changement de rôle et celle
+// de la réinitialisation du mot de passe d'un AUTRE compte, étaient des chaînes COMPOSÉES (un nom, un rôle s'y
+// collent) : le lexique ne remplace qu'un nœud texte ENTIER, il ne les atteignait pas, et elles restaient françaises
+// sous `LANG='en'`. Les faces sont côte à côte, `{…}` posés par une fonction de remplacement (un nom servi qui
+// contiendrait `$&` ou une accolade n'est jamais réinterprété). Les rôles se disent par leur nom technique, le même
+// dans les deux langues (`ROLE_LABEL`).
+const MOTS_DES_CONFIRMATIONS_DE_COMPTE = {
+  titre_de_la_creation: {
+    fr: 'Créer le compte « {nom} »',
+    en: 'Create the account “{nom}”' },
+  consequence_de_la_creation: {
+    fr: 'un accès {role} à cette console est ouvert immédiatement',
+    en: 'access to this console with the {role} role is opened immediately' },
+  acces_complet: {
+    fr: ' — accès complet à la configuration, aux secrets et aux suppressions',
+    en: ' — full access to configuration, secrets and deletions' },
+  titre_de_la_modification: {
+    fr: 'Modifier le compte « {nom} »',
+    en: 'Change the account “{nom}”' },
+  changement_de_role: {
+    fr: 'le rôle de « {nom} » passe de {avant} à {apres}',
+    en: 'the role of “{nom}” changes from {avant} to {apres}' },
+  perte_de_l_acces_administrateur: {
+    fr: " — ce compte perd l'accès administrateur",
+    en: ' — this account loses administrator access' },
+  mot_de_passe_d_un_autre_compte: {
+    fr: "le mot de passe de « {nom} » est remplacé immédiatement (l'ancien cesse de fonctionner)",
+    en: 'the password of “{nom}” is replaced immediately (the old one stops working)' },
+  separateur_des_consequences: {
+    fr: ' ; ',
+    en: '; ' },
+};
+function motDUneConfirmationDeCompte(cle, valeurs = {}) {
+  const face = LANG === 'en' ? MOTS_DES_CONFIRMATIONS_DE_COMPTE[cle].en : MOTS_DES_CONFIRMATIONS_DE_COMPTE[cle].fr;
+  return face.replace(/\{(\w+)\}/g, (brut, nom) => (Object.prototype.hasOwnProperty.call(valeurs, nom) ? String(valeurs[nom]) : brut));
+}
+const nomDuRole = (role) => ROLE_LABEL[role] || role;
 // Le puits d'une ligne : la phrase dans un nœud texte ENTIER (traduisible), la cause servie dans un SECOND nœud,
 // telle quelle. `data-refus-de-modification` porte la clé de la face (marque de POSE pour le harnais).
 function peindreLeRefusDeModification(puits, cle, cause, delai) {
@@ -62,6 +106,8 @@ function peindreLeRefusJete(puits, e) {
     puits.replaceChildren(dit); puits.dataset.refusDeModification = 'reponse_hors_demon'; puits.hidden = false;
     return;
   }
+  // `P10.25-x` — sans réponse lue, ce n'est pas un refus : la face le dit, avec ce que le transport a rendu.
+  if (laDemandeNAPasAbouti(e)) { peindreLeRefusDeModification(puits, 'demande_non_aboutie', (e && e.message) || String(e), 0); return; }
   if (e && e.statutDuRefus === 429 && e.delaiDuRefus) { peindreLeRefusDeModification(puits, 'refus_nomme_avec_delai', phraseDuRefusDuDemon(e), e.delaiDuRefus); return; }
   peindreLeRefusDeModification(puits, 'refus_nomme', phraseDuRefusDuDemon(e) || ((e && e.message) || String(e)), 0);
 }
@@ -104,6 +150,10 @@ const MOTS_DE_LA_SUPPRESSION_DE_COMPTE = {
   refus_nomme: {
     fr: 'Compte NON supprimé : le démon a refusé et en nomme la cause —',
     en: 'Account NOT deleted: the daemon refused and names the cause —' },
+  // `P10.25-x` — la demande n'a pas abouti : ni refus ni suppression établis.
+  demande_non_aboutie: {
+    fr: "Suppression NON confirmée : la demande n'a pas abouti, et rien ici n'établit si le compte a été supprimé — recharger la liste des comptes avant de la rejouer. Cause —",
+    en: 'Deletion NOT confirmed: the request did not complete, and nothing here establishes whether the account was deleted — reload the account list before replaying it. Cause —' },
 };
 // Les mots du compte rendu, FR et EN côte à côte ; `{…}` posés par une fonction de remplacement.
 const MOTS_DU_COMPTE_RENDU_DE_SUPPRESSION = {
@@ -164,6 +214,11 @@ function peindreLeRefusDeSuppression(puits, e) {
   if (e && e.reponseHorsDemon) {
     dit.textContent = String(e.message || '');
     puits.replaceChildren(dit); puits.dataset.refusDeSuppression = 'reponse_hors_demon';
+  } else if (laDemandeNAPasAbouti(e)) {
+    // `P10.25-x` — aucune réponse lue : « le démon a refusé » serait faux, « NON supprimé » ne serait pas établi.
+    dit.textContent = motDeLaSuppressionDeCompte('demande_non_aboutie');
+    puits.replaceChildren(dit, document.createTextNode(' « ' + String((e && e.message) || e).trim() + ' »'));
+    puits.dataset.refusDeSuppression = 'demande_non_aboutie';
   } else {
     dit.textContent = motDeLaSuppressionDeCompte('refus_nomme');
     const cause = phraseDuRefusDuDemon(e) || ((e && e.message) || String(e));
@@ -300,12 +355,14 @@ async function loadUsers() {
       // P11.5-b : changer un RÔLE élève ou retire un droit ; réinitialiser un MOT DE PASSE remplace une
       // crédence. Les deux passent par la confirmation partagée, qui nomme ce qui change.
       const parts = [];
-      if (rsel.value !== u.role) parts.push(`le rôle de « ${u.name} » passe de ${ROLE_LABEL[u.role] || u.role} à ${ROLE_LABEL[rsel.value] || rsel.value}` + (rsel.value === 'admin' ? ' — accès complet à la configuration, aux secrets et aux suppressions' : u.role === 'admin' ? ' — ce compte perd l\'accès administrateur' : ''));
-      if (pw.value) parts.push(sonPropreMotDePasse ? motDeLaModificationDeCompte('consequence_de_son_propre_mot_de_passe') : `le mot de passe de « ${u.name} » est remplacé immédiatement (l\'ancien cesse de fonctionner)`);
+      // `P10.25-y` — chaque conséquence vient de sa face, dans la langue de l'écran.
+      if (rsel.value !== u.role) parts.push(motDUneConfirmationDeCompte('changement_de_role', { nom: u.name, avant: nomDuRole(u.role), apres: nomDuRole(rsel.value) })
+        + (rsel.value === 'admin' ? motDUneConfirmationDeCompte('acces_complet') : u.role === 'admin' ? motDUneConfirmationDeCompte('perte_de_l_acces_administrateur') : ''));
+      if (pw.value) parts.push(sonPropreMotDePasse ? motDeLaModificationDeCompte('consequence_de_son_propre_mot_de_passe') : motDUneConfirmationDeCompte('mot_de_passe_d_un_autre_compte', { nom: u.name }));
       if (!parts.length) { motDePasseActuel = ''; toast('aucune modification', 'info'); return; }
       // Un mot de passe actuel absent ne part pas : le démon le refuserait, et rien ne serait appris de plus.
       if (sonPropreMotDePasse && !motDePasseActuel) { peindreLeRefusDeModification(puits, 'mot_de_passe_actuel_manquant', '', 0); return; }
-      if (!await confirmWithConsequence(`Modifier le compte « ${u.name} »`, parts.join(' ; ') + '.', { okText: 'Appliquer', danger: rsel.value === 'admin' || u.role === 'admin' || !!pw.value })) { motDePasseActuel = ''; return; }
+      if (!await confirmWithConsequence(motDUneConfirmationDeCompte('titre_de_la_modification', { nom: u.name }), parts.join(motDUneConfirmationDeCompte('separateur_des_consequences')) + '.', { okText: 'Appliquer', danger: rsel.value === 'admin' || u.role === 'admin' || !!pw.value })) { motDePasseActuel = ''; return; }
       if (sonPropreMotDePasse) body.current = motDePasseActuel;
       try { await apiSend('/users/' + u.id, 'POST', body); }
       catch (err) { peindreLeRefusJete(puits, err); return; }
@@ -506,7 +563,8 @@ function peindreLeRefusDeCreation(puits, e) {
     return;
   }
   // Sans statut, le démon n'a rien répondu : l'erreur vient du transport (`fetch` rejeté), pas d'un refus.
-  const servi = !!e && typeof e.statutDuRefus === 'number';
+  // `P10.25-x` — le prédicat est désormais celui du point commun, lu aussi par la modification et la suppression.
+  const servi = !laDemandeNAPasAbouti(e);
   const cause = servi ? phraseDuRefusDuDemon(e) : String((e && e.message) || e);
   const cle = servi ? (natureDuRefusDeCreationDeCompte(cause) || 'refus_nomme') : 'demande_non_aboutie';
   dit.textContent = motDeLaCreationDeCompte(cle);
@@ -529,7 +587,10 @@ async function creerLeCompteDuFormulaire(e) {
   if (puits) { puits.hidden = true; puits.replaceChildren(); delete puits.dataset.refusDeCreation; }
   const body = { name: $('#uf-name').value.trim(), password: $('#uf-pw').value, role: $('#uf-role').value };
   // P11.5-b : créer un compte ÉLÈVE un droit (un nouvel accès naît, avec un rôle) -> confirmation partagée.
-  if (!await confirmWithConsequence(`Créer le compte « ${body.name || '?'} »`, `un accès ${ROLE_LABEL[body.role] || body.role} à cette console est ouvert immédiatement` + (body.role === 'admin' ? ' — accès complet à la configuration, aux secrets et aux suppressions' : '') + '.', { okText: 'Créer', danger: body.role === 'admin' })) return;
+  // `P10.25-y` — titre et conséquence dans la langue de l'écran.
+  if (!await confirmWithConsequence(motDUneConfirmationDeCompte('titre_de_la_creation', { nom: body.name || '?' }),
+    motDUneConfirmationDeCompte('consequence_de_la_creation', { role: nomDuRole(body.role) }) + (body.role === 'admin' ? motDUneConfirmationDeCompte('acces_complet') : '') + '.',
+    { okText: 'Créer', danger: body.role === 'admin' })) return;
   res.textContent = '...';
   try { await apiSend('/users', 'POST', body); }
   catch (err) { res.textContent = ''; peindreLeRefusDeCreation(puits, err); return; }
@@ -686,4 +747,5 @@ if ($('#token-new')) $('#token-new').onclick = newTokenFlow;
 // écoutent le même formulaire, un envoi du formulaire les réveillerait ensemble), la nature d'un refus et ses faces
 // (témoin 113).
 // `P10.25-p` — les faces du compte rendu de la suppression (témoin 113).
-export { ROLE_LABEL, loadUsers, loadTokens, motDeLaModificationDeCompte, motDeLaSuppressionDeCompte, creerLeCompteDuFormulaire, natureDuRefusDeCreationDeCompte, motDeLaCreationDeCompte, motDUneLigneTenueParUnNom, motDuCompteRendu };
+// `P10.25-y` — les faces des confirmations (témoin 114).
+export { ROLE_LABEL, loadUsers, loadTokens, motDeLaModificationDeCompte, motDeLaSuppressionDeCompte, creerLeCompteDuFormulaire, natureDuRefusDeCreationDeCompte, motDeLaCreationDeCompte, motDUneLigneTenueParUnNom, motDuCompteRendu, motDUneConfirmationDeCompte };

@@ -119,8 +119,13 @@ pub(crate) async fn workflow_action_create(State(st): State<AppState>, Extension
             &json!({ "op":"create", "kind":"workflow_action", "id":id, "name":name, "action_kind":kind, "actor":au.name }).to_string())?;
         Ok(id)
     })();
+    // `P10.27-w` — LE `COMMIT` EST JUGÉ, ET L'IDENTIFIANT SERVI EST CELUI QUE LA FERMETURE A LU AU PIED DE L'`INSERT`
+    // (voir `report_create`, même forme d'avant, même mesure : 200 et transaction OUVERTE sous un `COMMIT` refusé, le
+    // numéro de l'ÉVÉNEMENT d'audit servi comme identifiant sinon).
     match outcome {
-        Ok(_) => { let _ = conn.execute_batch("COMMIT"); Json(json!({ "id": conn.last_insert_rowid() })).into_response() }
+        Ok(id) => rendre_apres_validation(&conn, "workflow-actions", &format!("création de la workflow-action '{name}'"), CAUSE_WORKFLOW_ACTION_NON_CREEE, || {
+            Json(json!({ "id": id })).into_response()
+        }),
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
             if e.to_string().contains("UNIQUE") { return bad_req("une workflow-action porte déjà ce nom"); }
@@ -129,8 +134,12 @@ pub(crate) async fn workflow_action_create(State(st): State<AppState>, Extension
     }
 }
 
-// `P10.25-g` — LE `COMMIT` DE LA SUPPRESSION D'UNE WORKFLOW-ACTION EST JUGÉ. Celui de `workflow_action_create` reste
-// avalé, reste NOMMÉ pour la même raison que `report_create` (ensemble de `check_a_swallowed_write_is_never_affirmed_as_a_fact.py`).
+/// `P10.27-w` — workflow-action non créée : le `COMMIT` de ce geste refusé. Tête sans trait d'union (voir plus bas).
+pub(crate) const CAUSE_WORKFLOW_ACTION_NON_CREEE: &str = "ACTION DE WORKFLOW NON CRÉÉE : la base n'a pas validé la \
+     transaction (COMMIT refusé) et l'a annulée — aucune action n'est écrite ni proposée sur les champs qu'elle viserait, \
+     et aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+
+// `P10.25-g` — LE `COMMIT` DE LA SUPPRESSION D'UNE WORKFLOW-ACTION EST JUGÉ. `P10.27-w` — celui de la création aussi.
 /// `P10.25-g` — workflow-action non supprimée : le `COMMIT` de ce geste refusé.
 /// La tête s'écrit sans trait d'union : la console reconnaît la famille « rien n'a changé » à une tête en capitales,
 /// apostrophes, virgules et espaces (`OUVERTURE_DE_L_ECRITURE_NON_VALIDEE`, `web/core.js`).

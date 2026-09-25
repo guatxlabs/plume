@@ -9,13 +9,21 @@
 // secret). SÉCU UI : rendu textContent (anti-XSS) ; l'auth (jeton HEC / en-tête webhook) est un CREDENTIAL
 // -> champ password, JAMAIS réaffiché, ré-envoyé UNIQUEMENT s'il est re-saisi (vide = conservé côté serveur).
 // La VRAIE garde reste serveur (403 hors admin + route_min_role Admin) ; ceci est la défense en profondeur.
-import { $, api, apiSend, confirmModal, confirmWithConsequence, fetchInto, fmtTs, humanAge, ic, muted, pagedList, toast, withBusy } from './core.js';
+import { $, api, apiSend, confirmModal, confirmWithConsequence, effacerLeRefusDUnGeste, fetchInto, fmtTs, humanAge, ic, laTraceNonEcriteServieEnDeuxCents, muted, pagedList, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, toast, unRefusServiEnDeuxCents, withBusy } from './core.js';
 import { enabledSwitch } from './producer_ui.js';
 import { uiIsAdmin } from './multitenant.js';
 
 const DEST_TYPES = { syslog: 'Syslog (RFC5424/TCP)', hec: 'HEC-out (Splunk)', webhook: 'Webhook (POST JSON)', s3: 'S3 (design/stub)', kafka: 'Kafka (design/stub)' };
 const DEST_IMPLEMENTED = { syslog: 1, hec: 1, webhook: 1 };
 let editing = null; // id de la destination en édition (null = création)
+
+// `P10.27-d` / `P10.27-e` — LE PUITS DES GESTES SUR LES DESTINATIONS, juste avant la liste : création et modification
+// par le formulaire, bascule, envoi manuel, retrait. Hors de ce que `loadDestinations` repeint, il survit au
+// rechargement ; la forme est celle du point commun (`peindreLeRefusDUnGeste`, core.js). MESURÉ AVANT CE LOT (témoin
+// 118) : un avis qui s'efface — « échec suppression : 503 {"error":"DESTINATION NON SUPPRIMÉE : … », « Bascule refusée :
+// 503 {… », « échec : 503 {… », « flush : Failed to fetch » —, le JSON brut coupé à deux cents caractères, avant ce
+// qui oblige à agir : la destination est toujours là et ENVOIE TOUJOURS les données hors du périmètre.
+function puitsDesDestinations() { const liste = $('#destination-list'); return liste ? puitsDuRefusDUnGeste(liste.parentNode, 'destinations', liste) : null; }
 
 export async function loadDestinations() {
   const wrap = $('#destination-list'); if (!wrap) return;
@@ -44,7 +52,10 @@ function destinationRow(d) {
   const en = enabledSwitch({
     enabled: !!d.enabled, name: d.name || '(sans nom)', allowed: true, confirmOnEnable: false,
     consequence: 'les events retenus par le filtre SORTENT de plume vers ' + (d.endpoint || DEST_TYPES[d.type] || d.type || '?') + ' ; OFF, plus rien ne sort et le retard ne se rattrape pas',
-    onToggle: (next) => apiSend('/destinations/' + d.id, 'POST', { enabled: next }),
+    // Le refus d'avant s'efface au geste ; la flèche reste une EXPRESSION (la garde des routes sensibles rattache cet
+    // envoi à `destinationRow`). « DESTINATION INCHANGÉE » : une destination qu'on désactivait envoie toujours.
+    onToggle: (next) => (effacerLeRefusDUnGeste(puitsDesDestinations()), apiSend('/destinations/' + d.id, 'POST', { enabled: next })),
+    onRefus: (e) => peindreLeRefusDUnGeste(puitsDesDestinations(), e),
   });
   const name = document.createElement('span'); name.className = 'rulename'; name.textContent = d.name || '(sans nom)';
   const type = document.createElement('code'); type.className = 'rulecond'; type.textContent = DEST_TYPES[d.type] || d.type || '?';
@@ -110,22 +121,27 @@ function consequenceDuFlush(d) {
 }
 
 // flush : POST /api/destinations/{id}/flush -> {ok,forwarded,watermark,last_error} (jamais la réponse du sink).
-async function flushDestination(d) {
+export async function flushDestination(d) {
   if (!await confirmWithConsequence('Forwarder maintenant « ' + (d.name || d.id) + ' » ?', consequenceDuFlush(d))) return;
+  const puits = puitsDesDestinations(); effacerLeRefusDUnGeste(puits);
   let j;
   try { j = await apiSend('/destinations/' + d.id + '/flush', 'POST'); }
-  catch (e) { toast('flush : ' + ((e && e.message) || e), 'bad'); return; }
+  catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
   j = j || {};
+  // `P10.28-o` — L'ENVOI A EU LIEU, SA TRACE D'AUDIT MANQUE PEUT-ÊTRE. `destination_flush` le dit sous `trace_non_ecrite`
+  // (ce qui est parti est parti, le registre ne dit ni qui ni combien) ; mesuré avant ce lot, ce champ n'était pas lu.
+  const traceAbsente = laTraceNonEcriteServieEnDeuxCents(j); if (traceAbsente) peindreLeRefusDUnGeste(puits, traceAbsente);
   if (j.ok) toast('forward OK : ' + (j.forwarded || 0) + ' event(s), watermark #' + (j.watermark || 0), 'ok');
   else toast('forward échoué : ' + (j.last_error || 'erreur'), 'bad');
   loadDestinations();
 }
 
-async function deleteDestination(d) {
+export async function deleteDestination(d) {
   const ok = await confirmModal("Supprimer la destination « " + (d.name || d.id) + " » ? La sortie de données vers ce sink cessera. (Action journalisée / ledgerisée.)");
   if (!ok) return;
+  const puits = puitsDesDestinations(); effacerLeRefusDUnGeste(puits);
   try { await apiSend('/destinations/' + d.id, 'DELETE'); }
-  catch (e) { toast('échec suppression : ' + ((e && e.message) || e), 'bad'); return; }
+  catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
   toast('destination supprimée', 'ok'); loadDestinations();
 }
 
@@ -195,7 +211,7 @@ export function openDestinationForm(d) {
   name.focus();
 }
 
-async function saveDestination(d) {
+export async function saveDestination(d) {
   const type = $('#df-type').value;
   const filter = {};
   const cat = $('#df-fcat').value.trim(); if (cat) filter.category = cat;
@@ -218,11 +234,13 @@ async function saveDestination(d) {
   if (Object.keys(config).length) body.config = config;
 
   const url = editing ? '/destinations/' + editing : '/destinations';
+  // Le formulaire refusé reste ouvert, sa saisie gardée ; le refus s'écrit dans le puits des destinations.
+  const puits = puitsDesDestinations(); effacerLeRefusDUnGeste(puits);
   let j;
   try { j = await apiSend(url, 'POST', body); }
-  catch (e) { toast('échec : ' + ((e && e.message) || e), 'bad'); return; }
+  catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
   j = j || {};
-  if (j.error) { toast('échec : ' + j.error, 'bad'); return; }
+  if (j.error) { peindreLeRefusDUnGeste(puits, unRefusServiEnDeuxCents(j)); return; }
   toast(editing ? 'destination enregistrée' : 'destination créée (désactivée — teste avec Flush puis active)', 'ok');
   editing = null;
   const host = $('#destination-form-host'); if (host) host.replaceChildren();

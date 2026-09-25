@@ -834,7 +834,7 @@ env:
   # la copie est retirée, `knowledge` lit l'autorité `field_filter::STRUCTURAL_DENY`, et le témoin refuse toute
   # dérive future. Pas de `cfg(feature)` -> le MÊME +1 sur `EXPECTED_COLD_TESTS`, écart INCHANGÉ, mesuré par le
   # script du dépôt, jamais d'une addition.
-  EXPECTED_TESTS: "1918"
+  EXPECTED_TESTS: "1923"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -1306,7 +1306,7 @@ jobs:
           # `P11.19-a` (second volet, groundwork) (2026-09-12) : +1, le MÊME que sur `EXPECTED_TESTS`
           # (`les_champs_structurels_de_l_autorite_sont_refuses_comme_objet_de_savoir`) — pas de `cfg(feature)`,
           # écart INCHANGÉ. La dérivation est écrite auprès d'`EXPECTED_TESTS`, une seule fois.
-          EXPECTED_COLD_TESTS: "2173"
+          EXPECTED_COLD_TESTS: "2178"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail
@@ -2203,11 +2203,22 @@ jobs:
       # `COMMIT` avalé peut laisser ouverte une transaction qui BLOQUE l'ingestion jusqu'au redémarrage (`P10.27-g`),
       # et un `BEGIN` avalé fait écrire dans la transaction d'un autre geste. Ensemble NOMMÉ des sites encore tolérés
       # (fichier + fonction + forme), jugé dans les deux sens ; épreuves positives et négatives jouées à chaque
-      # exécution (54 sites vus sur l'arbre d'avant le lot, 2 tolérés après).
+      # exécution (54 sites vus sur l'arbre d'avant le lot, 2 tolérés après ; 0 depuis `P10.27-w`, ensemble VIDE).
       - name: Une borne de transaction n'est jamais avalée (P10.25-g, P10.27-m)
         id: garde_72
         continue-on-error: true
         run: python3 .github/scripts/check_a_transaction_boundary_is_never_swallowed.py
+
+      # `P10.27-x`, `P10.27-w` — UN IDENTIFIANT INSÉRÉ SE LIT AU PIED DE SON INSERTION. `last_insert_rowid()` rend la
+      # DERNIÈRE ligne insérée sur la connexion : lu après l'audit (`audit_config_change` insère un événement), il
+      # servait le numéro de cet événement comme identifiant de l'objet créé — mesuré, la suppression de « son » objet
+      # par cet identifiant retirait celui d'un autre compte. Le dernier usage du receveur avant chaque lecture doit
+      # être son `INSERT` ; ensemble NOMMÉ des sites tolérés (vide), jugé dans les deux sens ; épreuves positives et
+      # négatives jouées à chaque exécution (12 sites vus sur l'arbre d'avant le lot, 0 après).
+      - name: Un identifiant inséré se lit au pied de son insertion (P10.27-x, P10.27-w)
+        id: garde_73
+        continue-on-error: true
+        run: python3 .github/scripts/check_an_inserted_id_is_read_at_the_foot_of_its_insert.py
 
       # `P11.18-z` — LA RECHERCHE D'UNE LISTE SURVIT AU RENDU QUI DÉTRUIT SON CHAMP. La garde tient que
       # chaque liste cherchable déclare l'identité stable sans laquelle la mémoire ne peut pas s'armer :
@@ -2690,6 +2701,7 @@ jobs:
           total=$((total+1)); o="${{ steps.garde_70.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_mail_sensor_classifies_dovecot_logins_of_both_versions.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_71.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_sensor_escapes_a_backslash_under_every_awk.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_72.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_transaction_boundary_is_never_swallowed.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_73.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_an_inserted_id_is_read_at_the_foot_of_its_insert.py : $o"; }
           echo "gardes jouées : $total ; en échec : $rouges"
           exit $rc
   features:

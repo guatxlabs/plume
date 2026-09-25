@@ -108,13 +108,20 @@ pub(crate) const CAUSE_OBJET_DE_SAVOIR_NON_ECRIT: &str = "OBJET DE SAVOIR NON É
      n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
 
 /// Émet la réponse d'un create/delete audité + `knowledge_reload`. Factorise le squelette transactionnel.
-fn ko_commit(st: &AppState, au: &AuthUser, conn: &Connection, outcome: rusqlite::Result<i64>, ok_val: Value) -> Response {
+///
+/// `P10.27-x` — LE CORPS DU SUCCÈS SE CONSTRUIT SUR L'IDENTIFIANT QUE LA FERMETURE A RENDU, lu au pied de l'`INSERT`
+/// de l'objet, jamais sur un second `conn.last_insert_rowid()` : la forme d'avant le relisait APRÈS l'audit et servait
+/// le numéro de l'ÉVÉNEMENT de configuration. MESURÉ le 2026-09-25 (témoins `isdl_`, un événement déjà ingéré) : les
+/// six créations servaient ce numéro ; l'alias d'Alice était servi avec l'identifiant de l'alias de Bob, et la
+/// suppression de « son » alias par cet identifiant retirait celui de Bob (200) ; lu, non mesuré : le registre
+/// recompilé ensuite n'appliquait plus l'alias de Bob à aucune recherche du produit.
+fn ko_commit(st: &AppState, au: &AuthUser, conn: &Connection, outcome: rusqlite::Result<i64>, corps_du_succes: impl FnOnce(i64) -> Value) -> Response {
     match outcome {
-        Ok(_) => rendre_apres_validation(conn, "knowledge", "écriture d'un objet de savoir", CAUSE_OBJET_DE_SAVOIR_NON_ECRIT, || {
+        Ok(id) => rendre_apres_validation(conn, "knowledge", "écriture d'un objet de savoir", CAUSE_OBJET_DE_SAVOIR_NON_ECRIT, || {
             let dbp = req_db_path(st, au);
             knowledge_reload(conn, dbp.as_str());
             knowledge_activate(dbp.as_str()); // CRUD sur le tenant courant -> réactive la compilation
-            Json(ok_val).into_response()
+            Json(corps_du_succes(id)).into_response()
         }),
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
@@ -147,8 +154,7 @@ pub(crate) async fn alias_create(State(st): State<AppState>, Extension(au): Exte
             &json!({ "op":"create", "kind":"knowledge_alias", "id":id, "canonical":canonical, "source":source, "actor":au.name }).to_string())?;
         Ok(id)
     })();
-    let id = conn.last_insert_rowid();
-    ko_commit(&st, &au, &conn, outcome, json!({ "id": id }))
+    ko_commit(&st, &au, &conn, outcome, |id| json!({ "id": id }))
 }
 
 pub(crate) async fn alias_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
@@ -166,7 +172,7 @@ pub(crate) async fn alias_delete(State(st): State<AppState>, Extension(au): Exte
             &json!({ "op":"delete", "kind":"knowledge_alias", "id":id, "canonical":canonical, "actor":au.name }).to_string())?;
         Ok(id)
     })();
-    ko_commit(&st, &au, &conn, outcome, json!({ "ok": true }))
+    ko_commit(&st, &au, &conn, outcome, |_| json!({ "ok": true }))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -193,8 +199,7 @@ pub(crate) async fn calc_create(State(st): State<AppState>, Extension(au): Exten
             &json!({ "op":"create", "kind":"knowledge_calc", "id":id, "name":name, "actor":au.name }).to_string())?;
         Ok(id)
     })();
-    let id = conn.last_insert_rowid();
-    ko_commit(&st, &au, &conn, outcome, json!({ "id": id }))
+    ko_commit(&st, &au, &conn, outcome, |id| json!({ "id": id }))
 }
 
 pub(crate) async fn calc_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
@@ -212,7 +217,7 @@ pub(crate) async fn calc_delete(State(st): State<AppState>, Extension(au): Exten
             &json!({ "op":"delete", "kind":"knowledge_calc", "id":id, "name":name, "actor":au.name }).to_string())?;
         Ok(id)
     })();
-    ko_commit(&st, &au, &conn, outcome, json!({ "ok": true }))
+    ko_commit(&st, &au, &conn, outcome, |_| json!({ "ok": true }))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -238,8 +243,7 @@ pub(crate) async fn eventtype_create(State(st): State<AppState>, Extension(au): 
             &json!({ "op":"create", "kind":"knowledge_eventtype", "id":id, "name":name, "actor":au.name }).to_string())?;
         Ok(id)
     })();
-    let id = conn.last_insert_rowid();
-    ko_commit(&st, &au, &conn, outcome, json!({ "id": id }))
+    ko_commit(&st, &au, &conn, outcome, |id| json!({ "id": id }))
 }
 
 pub(crate) async fn eventtype_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
@@ -257,7 +261,7 @@ pub(crate) async fn eventtype_delete(State(st): State<AppState>, Extension(au): 
             &json!({ "op":"delete", "kind":"knowledge_eventtype", "id":id, "name":name, "actor":au.name }).to_string())?;
         Ok(id)
     })();
-    ko_commit(&st, &au, &conn, outcome, json!({ "ok": true }))
+    ko_commit(&st, &au, &conn, outcome, |_| json!({ "ok": true }))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -282,8 +286,7 @@ pub(crate) async fn tag_create(State(st): State<AppState>, Extension(au): Extens
             &json!({ "op":"create", "kind":"knowledge_tag", "id":id, "label":label, "field":field, "actor":au.name }).to_string())?;
         Ok(id)
     })();
-    let id = conn.last_insert_rowid();
-    ko_commit(&st, &au, &conn, outcome, json!({ "id": id }))
+    ko_commit(&st, &au, &conn, outcome, |id| json!({ "id": id }))
 }
 
 pub(crate) async fn tag_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
@@ -301,7 +304,7 @@ pub(crate) async fn tag_delete(State(st): State<AppState>, Extension(au): Extens
             &json!({ "op":"delete", "kind":"knowledge_tag", "id":id, "label":label, "actor":au.name }).to_string())?;
         Ok(id)
     })();
-    ko_commit(&st, &au, &conn, outcome, json!({ "ok": true }))
+    ko_commit(&st, &au, &conn, outcome, |_| json!({ "ok": true }))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -337,8 +340,7 @@ pub(crate) async fn macro_create(State(st): State<AppState>, Extension(au): Exte
             &json!({ "op":"create", "kind":"macro", "id":id, "name":name, "actor":au.name }).to_string())?;
         Ok(id)
     })();
-    let id = conn.last_insert_rowid();
-    ko_commit(&st, &au, &conn, outcome, json!({ "id": id }))
+    ko_commit(&st, &au, &conn, outcome, |id| json!({ "id": id }))
 }
 
 pub(crate) async fn macro_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
@@ -356,7 +358,7 @@ pub(crate) async fn macro_delete(State(st): State<AppState>, Extension(au): Exte
             &json!({ "op":"delete", "kind":"macro", "id":id, "name":name, "actor":au.name }).to_string())?;
         Ok(id)
     })();
-    ko_commit(&st, &au, &conn, outcome, json!({ "ok": true }))
+    ko_commit(&st, &au, &conn, outcome, |_| json!({ "ok": true }))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -392,8 +394,7 @@ pub(crate) async fn auto_lookup_create(State(st): State<AppState>, Extension(au)
             &json!({ "op":"create", "kind":"auto_lookup", "id":id, "name":name, "key_field":key_field, "actor":au.name }).to_string())?;
         Ok(id)
     })();
-    let id = conn.last_insert_rowid();
-    ko_commit(&st, &au, &conn, outcome, json!({ "id": id }))
+    ko_commit(&st, &au, &conn, outcome, |id| json!({ "id": id }))
 }
 
 pub(crate) async fn auto_lookup_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
@@ -411,5 +412,5 @@ pub(crate) async fn auto_lookup_delete(State(st): State<AppState>, Extension(au)
             &json!({ "op":"delete", "kind":"auto_lookup", "id":id, "name":name, "actor":au.name }).to_string())?;
         Ok(id)
     })();
-    ko_commit(&st, &au, &conn, outcome, json!({ "ok": true }))
+    ko_commit(&st, &au, &conn, outcome, |_| json!({ "ok": true }))
 }

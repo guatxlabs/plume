@@ -7,7 +7,7 @@
 // NON-SILENCE : on affiche les compteurs dropped/masked/routed/sampled_out (la donnée non-indexée est
 // VISIBLE — philosophie garde-disque 503). SÉCU UI : rendu textContent (anti-XSS) ; la VRAIE garde reste
 // serveur (403 hors admin). Défense en profondeur : on court-circuite le fetch hors admin.
-import { $, api, apiSend, confirmWithConsequence, fetchInto, modal, muted, pagedList, toast } from './core.js';
+import { $, api, apiSend, confirmWithConsequence, effacerLeRefusDUnGeste, fetchInto, modal, muted, pagedList, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, toast } from './core.js';
 import { enabledSwitch } from './producer_ui.js';
 import { uiIsAdmin } from './multitenant.js';
 
@@ -16,6 +16,11 @@ const OPS = ['eq', 'ne', 'contains', 'regex', 'any'];
 const ACTIONS = ['drop', 'mask', 'route', 'sample', 'rename']; // `P4.12-b` : rename = champ vendeur -> colonne d'entité
 
 function num(v) { return typeof v === 'number' ? v : 0; }
+// `P10.27-d` / `P10.27-e` — LE PUITS DES GESTES SUR LES RÈGLES D'INGESTION, juste avant la liste : bascule, retrait,
+// création. Hors de ce que `loadProcessors` repeint, il survit au rechargement ; la forme est celle du point commun
+// (`peindreLeRefusDUnGeste`, core.js). MESURÉ AVANT CE LOT (témoin 118) : « Bascule refusée : 503 {… », « échec : 503
+// {… », « refus : 503 {… » dans un avis qui s'efface, coupés avant ce que la chaîne d'ingestion garde en place.
+function puitsDesReglesDIngestion() { const liste = $('#processor-list'); return liste && liste.parentNode ? puitsDuRefusDUnGeste(liste.parentNode, 'regles_d_ingestion', liste) : null; }
 
 // `P10.7-f` — LE DRAPEAU EST POSÉ PAR LA CHARGE ET LU PAR LE FORMULAIRE, câblé par le dépli partagé
 // d'`app.js`, hors d'elle : la marque accessible de l'inertie se VOIT sur « + Règle », seul le point
@@ -104,7 +109,8 @@ function ruleRow(r, counters) {
   const en = enabledSwitch({
     enabled: !!r.enabled, name: r.name || '(sans nom)', allowed: true, confirmOnEnable: false,
     consequence: 'chaque event qui vérifie « ' + (r.match_op === 'any' ? 'tout event' : r.match_field + ' ' + r.match_op) + ' » subit ' + r.action + (r.action_arg ? ' ' + r.action_arg : '') + ' AVANT l\'index ; OFF, le pipeline le laisse passer entier',
-    onToggle: (next) => apiSend('/processors/' + r.id, 'POST', { enabled: next }),
+    onToggle: (next) => (effacerLeRefusDUnGeste(puitsDesReglesDIngestion()), apiSend('/processors/' + r.id, 'POST', { enabled: next })),
+    onRefus: (e) => peindreLeRefusDUnGeste(puitsDesReglesDIngestion(), e),
   });
 
   const ord = document.createElement('span'); ord.className = 'muted'; ord.textContent = '#' + num(r.ord); ord.title = "ordre d'évaluation";
@@ -131,8 +137,9 @@ function ruleRow(r, counters) {
   del.onclick = async () => {
     // P11.5-b : DELETE = route sensible -> confirmation partagée qui nomme la conséquence (plus de confirm() natif).
     if (!await confirmWithConsequence('Supprimer la règle d’ingest « ' + (r.name || r.id) + ' »', 'les événements que cette règle filtrait, masquait ou routait seront de nouveau ingérés tels quels dès le prochain lot ; la règle ne se restaure pas.', { okText: 'Supprimer' })) return;
+    const puits = puitsDesReglesDIngestion(); effacerLeRefusDUnGeste(puits);
     try { await apiSend('/processors/' + r.id, 'DELETE'); toast('règle supprimée', 'ok'); loadProcessors(); }
-    catch (e) { toast('échec : ' + ((e && e.message) || e), 'bad'); }
+    catch (e) { peindreLeRefusDUnGeste(puits, e); }
   };
 
   row.append(en, ord, name, pred, arrow, act, cnt, del);
@@ -185,8 +192,10 @@ export function openProcessorForm() {
       match_op: op.value, match_value: val.value,
       action: action.value, action_arg: arg.value.trim(),
     };
+    // Le formulaire refusé reste ouvert, sa saisie gardée ; le refus s'écrit dans le puits des règles d'ingestion.
+    const puits = puitsDesReglesDIngestion(); effacerLeRefusDUnGeste(puits);
     try { await apiSend('/processors', 'POST', body); toast('règle créée', 'ok'); host.hidden = true; host.replaceChildren(); loadProcessors(); }
-    catch (e) { toast('refus : ' + ((e && e.message) || e), 'bad'); }
+    catch (e) { peindreLeRefusDUnGeste(puits, e); }
   };
 
   const rowA = mk('div', { className: 'rf-row' }); rowA.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;align-items:center';

@@ -192,8 +192,7 @@
   "confirmWithConsequence : la conséquence doit être nommée",
   "contenu créé via l’interface — modifiable et supprimable",
   "contenu overlay (config.d) — géré par fichier, réimposé au démarrage ; non supprimable ici",
-  "contenu par défaut (seed) — non supprimable ; passez l’interrupteur sur OFF pour le désactiver",
-  "échec"
+  "contenu par défaut (seed) — non supprimable ; passez l’interrupteur sur OFF pour le désactiver"
  ],
  "coupe_de_liste.js": [],
  "dashboards.js": [
@@ -332,8 +331,7 @@
   "personne n'a rien dit",
   "retirée du parc",
   "signal attendu",
-  "silence attendu",
-  "échec"
+  "silence attendu"
  ],
  "freshness.js": [
   "Enter",
@@ -450,8 +448,7 @@
   "champ-clé invalide (alphanumérique + _, non vide)",
   "chaque ligne doit être un objet {champ: valeur}",
   "le JSON doit être un TABLEAU d'objets : [{...}, ...]",
-  "nom invalide (alphanumérique + _, non vide)",
-  "échec"
+  "nom invalide (alphanumérique + _, non vide)"
  ],
  "multitenant.js": [
   "DELETE"
@@ -505,7 +502,6 @@
   "points métriques bruts",
   "rollups métriques",
   "Événements",
-  "échec",
   "événements"
  ],
  "risk.js": [
@@ -575,7 +571,6 @@
   "aucune cadence déclarée",
   "en attente",
   "en retard",
-  "échec",
   "événementiel — pas de cadence par nature"
  ],
  "state.js": [],
@@ -591,7 +586,6 @@
   "réduit l'ingestion/le stockage — read-only ici, contrôle à la frontière hôte",
   "vhosts self (CSV)",
   "État firewall (hôte)",
-  "échec",
   "état firewall/enforcement à la frontière hôte — read-only, visibilité seule"
  ],
  "system.js": [

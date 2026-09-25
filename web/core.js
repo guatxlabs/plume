@@ -390,9 +390,14 @@ function objetDuRefusNomme(corps) {
 // surfaces ne se fabriquent pas chacune leur extraction — elles dériveraient.
 // CE QU'IL NE FAIT PAS : il n'invente rien. Quand il ne reconnaît ni l'une ni l'autre forme (un corps
 // vide, un message sans code), il rend le message TEL QUEL — moins lisible, jamais faux.
+// `P10.27-d` — LE TEXTE BRUT D'UN REFUS VOYAGE ENTIER (`texteDuRefus`, posé par `apiSend`) : le message composé le coupe
+// à deux cents caractères, et une cause du démon servie en texte en compte davantage — « EXCLUSION D'AFFICHAGE
+// INCHANGÉE : … » (`suppressions_put`, daemon/src/handlers/admin_ui.rs) perdait ce qui reste vrai.
 function phraseDuRefusDuDemon(e) {
   const nommee = (e && e.causeDuDemon) ? String(e.causeDuDemon).trim() : '';
   if (nommee) return nommee;
+  const texte = (e && typeof e.texteDuRefus === 'string') ? e.texteDuRefus.trim() : '';
+  if (texte) return texte;
   const brut = String((e && e.message) || e || '').trim();
   const m = brut.match(/^\d{3}\s+([\s\S]+)$/);
   if (!m) return brut;
@@ -722,6 +727,10 @@ async function apiSend(path, method = 'POST', body) {
     const refus = horsDemon ? refusHorsDemon(horsDemon, r.status)
       : avecLaCauseDuDemon(new Error(r.status + (text ? ' ' + text.slice(0, 200) : '')), causeNommeeParLeDemon(text));
     refus.statutDuRefus = r.status;
+    // `P10.27-d` — UN REFUS DU DÉMON EN TEXTE BRUT (ni JSON, ni page de passerelle) garde sa phrase ENTIÈRE à côté du
+    // message coupé : c'est elle que la forme partagée du refus d'un geste peint, et dont elle lit l'ouverture.
+    const brutDuRefus = horsDemon || refus.causeDuDemon ? '' : text.trim();
+    if (brutDuRefus) { let estDuJson = false; try { JSON.parse(brutDuRefus); estDuJson = true; } catch { /* texte */ } if (!estDuJson) refus.texteDuRefus = brutDuRefus; }
     const objet = horsDemon ? null : objetDuRefusNomme(text);
     if (objet) refus.objetDuRefus = objet;   // `P10.25-i`
     const delai = r.headers && typeof r.headers.get === 'function' ? parseInt(r.headers.get('retry-after') || '', 10) : NaN;
@@ -796,6 +805,8 @@ function leRefusEstCeluiDuRole(e) {
 //   · `transaction_non_prise` (`P10.27-q`) — cinq cent trois dont la cause s'ouvre par la transaction que la base N'A
 //     PAS PRISE (« BEGIN ou COMMIT refusé », « BEGIN refusé, ou … ») : rien n'est écrit non plus, mais « annulée »
 //     serait faux quand c'est le `BEGIN` qui est refusé — la transaction n'a jamais été ouverte. Sa face le dit ;
+//   · `geste_fait_trace_absente` (`P10.28-o`) — un deux cents qui porte `trace_non_ecrite` : le geste A EU LIEU, sa
+//     trace d'audit manque ; ni « rien n'a changé » ni « refusé » ;
 //   · `demande_non_aboutie` — aucune réponse lue (`laDemandeNAPasAbouti`) : ni refus ni effet établis ;
 //   · `reponse_hors_demon` — une passerelle a répondu (`apiSend` l'a nommée) : sa propre phrase ;
 //   · `refus_sans_cause` — un refus dont le corps est vide : le statut, rien d'autre n'est inventé ;
@@ -811,10 +822,31 @@ const OUVERTURE_DE_L_ECRITURE_NON_VALIDEE = /^[\p{Lu}', ]+ : la base n'a pas val
 // UNE CAUSE À EFFET PARTIEL NE S'OUVRE PAR AUCUNE DES DEUX : c'est la condition, et le témoin 117 la juge sur l'ensemble
 // nommé des causes à effet partiel (une tranche déjà écrite dans une copie, le curseur non avancé).
 const OUVERTURE_DE_LA_TRANSACTION_NON_PRISE = /^[\p{Lu}', ]+ : la base n'a pas pris la transaction [^()—]{1,60}\(BEGIN(?![\p{L}\p{N}])/u;
+// `P10.28-o` — GESTE FAIT, TRACE ABSENTE : LE CONTRAIRE D'UN REFUS. Le poll manuel d'un connecteur et l'envoi manuel
+// d'une destination ont lieu AVANT leur trace (le réseau ne se défait pas) ; quand la base ne prend pas la trace
+// d'audit, le démon répond deux cents et pose la cause sous `trace_non_ecrite` (`tracer_apres_coup`,
+// daemon/src/handlers/transaction_validee.rs). Ce n'est ni « rien n'a changé » ni « le démon a refusé ce geste » :
+// le geste a eu lieu, sa trace manque, et le rejouer referait le geste sans écrire la trace manquante. C'est le CHAMP
+// servi qui établit la nature, jamais la phrase : `laTraceNonEcriteServieEnDeuxCents` le lit dans le corps d'un deux
+// cents et rend l'objet que la forme partagée peint ; hors de ce champ, aucune phrase ne fait dire « geste fait ».
+function laTraceNonEcriteServieEnDeuxCents(corps) {
+  const cause = corps && typeof corps.trace_non_ecrite === 'string' ? corps.trace_non_ecrite.trim() : '';
+  if (!cause) return null;
+  return Object.assign(new Error(cause), { statutDuRefus: 200, causeDuDemon: cause, traceNonEcrite: true });
+}
+// `P10.27-d` — UN REFUS QUE LE DÉMON SERT EN DEUX CENTS (`{error}` : le rôle, une validation, et le COMMIT refusé de la
+// création d'un canal de notification) : l'objet que la forme partagée peint, avec la phrase entière du démon. Il n'est
+// jamais « rien n'a changé » (hors d'un cinq cent trois) : « le démon a refusé ce geste », ce qui est vrai.
+function unRefusServiEnDeuxCents(corps) {
+  const cause = corps && corps.error != null ? String(corps.error).trim() : '';
+  return cause ? Object.assign(new Error(cause), { statutDuRefus: 200, causeDuDemon: cause }) : null;
+}
 function natureDuRefusDUnGeste(e) {
   if (e && e.reponseHorsDemon) return 'reponse_hors_demon';
   if (laDemandeNAPasAbouti(e)) return 'demande_non_aboutie';
-  const cause = e.causeDuDemon ? String(e.causeDuDemon).trim() : '';
+  if (e.traceNonEcrite === true && e.statutDuRefus >= 200 && e.statutDuRefus < 300) return 'geste_fait_trace_absente';
+  // La cause nommée en JSON, ou la phrase entière d'un refus servi en texte brut (`texteDuRefus`, `P10.27-d`).
+  const cause = e.causeDuDemon ? String(e.causeDuDemon).trim() : (typeof e.texteDuRefus === 'string' ? e.texteDuRefus.trim() : '');
   if (e.statutDuRefus === 503 && OUVERTURE_DE_L_ECRITURE_NON_VALIDEE.test(cause)) return 'ecriture_non_validee';
   if (e.statutDuRefus === 503 && OUVERTURE_DE_LA_TRANSACTION_NON_PRISE.test(cause)) return 'transaction_non_prise';
   if (!cause && /^\d{3}$/.test(String(e.message || '').trim())) return 'refus_sans_cause';
@@ -827,6 +859,9 @@ const MOTS_DU_REFUS_D_UN_GESTE = {
   transaction_non_prise: {
     fr: "RIEN N'A CHANGÉ : la base n'a pas pris la transaction de ce geste, rien n'en est écrit. Le démon en nomme la cause —",
     en: "NOTHING CHANGED: the database did not take this action's transaction, nothing of it is written. The daemon names the cause —" },
+  geste_fait_trace_absente: {
+    fr: "GESTE FAIT, TRACE ABSENTE : le démon a accompli ce geste, mais la base n'a pas pris sa trace d'audit — le rejouer referait le geste sans écrire cette trace. Le démon en nomme la cause —",
+    en: 'ACTION DONE, TRACE MISSING: the daemon carried out this action, but the database did not take its audit trace — replaying it would do the action again without writing that trace. The daemon names the cause —' },
   demande_non_aboutie: {
     fr: "Geste NON confirmé : la demande n'a pas abouti, et rien ici n'établit s'il a été pris — vérifier son effet avant de le rejouer. Cause —",
     en: 'Action NOT confirmed: the request did not complete, and nothing here establishes whether it was taken — check its effect before replaying it. Cause —' },
@@ -2207,13 +2242,23 @@ function gateDeleteBtn(btn, m) {
 }
 // petite aide : écrit un message d'état dans un <span> de formulaire (#rf-result, #pf-result, …).
 function formMsg(sel, msg, bad) { const el = $(sel); if (el) { el.textContent = msg; el.className = bad ? 'bad' : 'muted'; } }
-// POST une mutation de CONTENU (règle/parseur/playbook) et REMONTE l'erreur serveur dans le <span> resSel
-// SANS fermer le formulaire. Retour: true si 2xx. Fin wrapper d'UX autour d'apiSend (plus de fetch brut).
+// POST une mutation de CONTENU (règle/parseur/playbook) et REMONTE l'erreur serveur dans le formulaire
+// SANS le fermer. Retour: true si 2xx. Fin wrapper d'UX autour d'apiSend (plus de fetch brut).
+// `P10.27-d` — LE REFUS S'Y DIT PAR LA FORME PARTAGÉE (`peindreLeRefusDUnGeste`), DANS UN PUITS DU FORMULAIRE, posé juste
+// avant sa ligne d'actions : le formulaire d'une règle est une MODALE, et un puits de surface, sous le calque, ne se
+// verrait pas tant qu'elle reste ouverte. MESURÉ AVANT CE LOT (témoin 118) : la ligne d'actions ET un avis qui s'efface
+// portaient « 503 {"error":"RÈGLE NON CRÉÉE : la base n'a pas validé… » — le JSON brut coupé à deux cents caractères.
+// La ligne d'actions est vidée : un « … » d'attente ne décrit plus rien.
+function puitsDuFormulaireDeContenu(resSel) {
+  const ligne = $(resSel), actions = ligne ? ligne.parentNode : null;
+  return actions && actions.parentNode ? puitsDuRefusDUnGeste(actions.parentNode, 'formulaire', actions) : null;
+}
 async function contentSubmit(path, body, resSel) {
+  const puits = puitsDuFormulaireDeContenu(resSel); effacerLeRefusDUnGeste(puits);
   formMsg(resSel, '…', false);
   let j;
   try { j = await apiSend(path, 'POST', body); }
-  catch (e) { const m = (e && e.message) || 'échec'; formMsg(resSel, m, true); toast(m, 'bad'); return false; }
+  catch (e) { formMsg(resSel, '', false); peindreLeRefusDUnGeste(puits, e); return false; }
   // P11.5-c : une modification ACCEPTÉE peut quand même ne pas SURVIVRE — un contenu d'overlay config.d est
   // réimposé par son fichier au prochain démarrage. Le serveur le DIT (`avertissement`) ; le taire ici
   // rendrait un succès qui se défait tout seul, ce qui se lit « l'administrateur ne peut pas éditer ».
@@ -2223,10 +2268,14 @@ async function contentSubmit(path, body, resSel) {
 // DELETE managed-aware : 200 {deleted:true} -> supprimé ; 200 {deleted:false,disabled:true,message}
 // -> builtin désactivé (message serveur) ; 409/404 {error} -> refusé/introuvable (apiSend jette). Retour:
 // true si la liste doit être rechargée (succès OU désactivation). Fin wrapper managed-aware autour d'apiSend.
-async function contentDelete(path, label) {
+// `P10.27-d` — `puits` : celui de la surface qui liste le contenu (`puitsDuRefusDUnGeste`) ; le refus s'y écrit par la
+// forme partagée, cause entière, au lieu de l'avis qui s'efface (« SUPPRESSION NON FAITE : … » coupé à deux cents
+// caractères). Un geste accepté efface le refus d'avant.
+async function contentDelete(path, label, puits) {
+  effacerLeRefusDUnGeste(puits);
   let j;
   try { j = await apiSend(path, 'DELETE'); }
-  catch (e) { toast((e && e.message) || 'échec', 'bad'); return false; }
+  catch (e) { peindreLeRefusDUnGeste(puits, e); return false; }
   j = j || {};
   if (j.deleted === false && j.disabled) toast(j.message || ((label || 'contenu') + ' builtin : désactivé (non supprimé)'), 'info');
   else toast((label || 'contenu') + ' supprimé', 'ok');
@@ -2424,6 +2473,10 @@ export {
   REFUS_DU_ROLE_SUR_UNE_ROUTE_D_ADMINISTRATION, leRefusEstCeluiDuRole,
   // `P10.26-q` — la forme partagée du refus d'un geste d'écriture : sa nature, ses faces, son puits.
   natureDuRefusDUnGeste, motDuRefusDUnGeste, puitsDuRefusDUnGeste, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste,
+  // `P10.28-o` — le deux cents d'un geste fait dont la trace manque, lu par le poll et l'envoi manuels (témoin 118).
+  laTraceNonEcriteServieEnDeuxCents,
+  // `P10.27-d` — et le refus servi en deux cents (`{error}`), peint par la même forme.
+  unRefusServiEnDeuxCents,
   // `P10.27-c` — les deux faces d'une lecture qui n'est pas servie (la phrase d'une panne de passerelle, le préfixe
   // d'une lecture refusée), jugées sous les deux instances de langue par le témoin 116.
   motDUneLectureQuiNEstPasServie,

@@ -6,7 +6,8 @@
 //! `ouvrir_sa_transaction` (`P10.26-s`) juge l'autre bout : le `BEGIN`. `rendre_apres_validation`,
 //! `rendre_apres_validation_du_garde`, `tracer_apres_coup` et `fermer_l_instantane_de_lecture` (`P10.25-g`, `P10.26-x`)
 //! servent les derniers sites qui avalaient leur `COMMIT` ; `signaler_une_transaction_ouverte_hors_de_tout_geste`
-//! (`P10.27-g`) est la sonde d'une transaction laissée ouverte.
+//! (`P10.27-g`) est la sonde d'une transaction laissée ouverte ; `ouvrir_la_transaction_du_geste` (`P10.28-p`) est la
+//! forme d'une ROUTE qui ouvre sa transaction : `ouvrir_sa_transaction`, et un refus en 503 nommé.
 use crate::*;
 
 /// `P10.26-s` — UN GESTE N'ÉCRIT QUE DANS SA PROPRE TRANSACTION, OU IL N'ÉCRIT RIEN.
@@ -30,6 +31,18 @@ pub(crate) fn ouvrir_sa_transaction(conn: &Connection, journal: &str, geste: &st
         dire_la_transaction_non_ouverte(conn, journal, geste, &refus);
         refus
     })
+}
+
+/// `P10.28-p` — LA FORME COMMUNE D'UNE ROUTE QUI OUVRE SA TRANSACTION : `ouvrir_sa_transaction`, et un refus rendu en
+/// 503 qui porte la CAUSE NOMMÉE du geste. La forme qu'elle remplace (`if conn.execute_batch("BEGIN IMMEDIATE").is_err()
+/// { return server_err("verrou base indisponible"); }`) ne se trompait pas sur l'intégrité — elle n'écrivait rien —, mais
+/// elle rendait un 500 GÉNÉRIQUE (« rien n'est cassé » y ressemble à « tout est cassé »), ne disait pas ce qui n'avait
+/// pas eu lieu, et ne disait RIEN au journal : ni le verrou passager, ni la transaction d'un autre geste qui bloque
+/// l'écrivain (`dire_la_transaction_non_ouverte` les sépare). Le 503 et non un 500, comme pour un `COMMIT` refusé
+/// (`refuser_le_geste_non_valide`) : la base n'a pas pris la demande, un nouvel essai peut aboutir. Aucune écriture,
+/// aucune validation, aucune annulation n'a lieu ici : la transaction d'un autre geste, s'il y en a une, reste la sienne.
+pub(crate) fn ouvrir_la_transaction_du_geste(conn: &Connection, journal: &str, geste: &str, cause: &'static str) -> Result<(), Response> {
+    ouvrir_sa_transaction(conn, journal, geste).map_err(|_refus_deja_dit| err_json(StatusCode::SERVICE_UNAVAILABLE, cause))
 }
 
 /// `P10.26-s` — LA PHRASE D'UN `BEGIN` REFUSÉ, une seule, pour `ouvrir_sa_transaction` et pour les gestes qui ouvrent
@@ -168,9 +181,10 @@ pub(crate) fn tracer_apres_coup(
 /// `P10.25-g` — LA FIN D'UN INSTANTANÉ DE LECTURE (`BEGIN` sans écriture) EST JUGÉE, et sa connexion est rendue FERMÉE.
 /// Deux sites la tenaient par `let _ = conn.execute_batch("COMMIT")` : la ventilation de la base, sur une connexion du
 /// POOL DE LECTURE qui y retourne ensuite, et la sauvegarde en flux, sur une connexion privée. LU, NON MESURÉ en
-/// production : un `COMMIT` refusé y laissait l'instantané OUVERT, et `read_conn_put` rend la connexion au pool sans
+/// production : un `COMMIT` refusé y laissait l'instantané OUVERT, et `read_conn_put` rendait la connexion au pool sans
 /// regarder son état — elle aurait servi à toute lecture suivante un instantané figé, que le point de reprise du WAL ne
-/// peut pas franchir. Rien n'a été écrit, donc rien n'est perdu : un refus est annulé (`ROLLBACK`) et DIT. Rend `true`
+/// peut pas franchir (MESURÉ depuis sous `P10.28-a`, et `read_conn_put` ferme désormais une connexion rendue en
+/// transaction). Rien n'a été écrit, donc rien n'est perdu : un refus est annulé (`ROLLBACK`) et DIT. Rend `true`
 /// quand la connexion est revenue en autocommit (le témoin `cjds_` joue les trois cas).
 pub(crate) fn fermer_l_instantane_de_lecture(conn: &Connection, journal: &str, geste: &str) -> bool {
     if let Err(refus) = conn.execute_batch("COMMIT") {

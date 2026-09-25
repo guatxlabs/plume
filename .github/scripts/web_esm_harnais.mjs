@@ -21865,7 +21865,9 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
       && prefixesFrancais117("t.js", "const M = { fr: 'erreur : ', en: 'error: ' };\n// toast('erreur : ' + e.message);\nx.textContent = 'dernière erreur connue';\n").length === 0,
       "la recherche d'un préfixe français ne distingue plus une copie d'une face `fr:` ou d'un commentaire");
     // Hors du périmètre de ce lot, reste proposé : nommé, et un nom qui ne désigne plus rien fait rougir autant qu'une copie neuve.
-    const RESTES_HORS_DU_LOT117 = ["retention.js « accès refusé ou erreur : »"];
+    // `P10.28-n` — le seul reste (« accès refusé ou erreur : » de `web/retention.js`) a sa face {fr, en} : l'ensemble est vide,
+    // et le témoin 118 (n) joue la lecture refusée sous les deux langues.
+    const RESTES_HORS_DU_LOT117 = [];
     const prefixesTrouves117 = CORPUS_WEB.filter(([f]) => f.endsWith(".js")).flatMap(([f, src]) => prefixesFrancais117(f, src));
     const copiesNeuves117 = prefixesTrouves117.filter((p) => !RESTES_HORS_DU_LOT117.includes(p));
     const restesDisparus117 = RESTES_HORS_DU_LOT117.filter((p) => !prefixesTrouves117.includes(p));
@@ -21914,7 +21916,766 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
     const avis = qs117("#toasts"); if (avis) avis.replaceChildren();
     document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
   }
-  console.log("(117) OK — le reparse dit son cinq cent trois dans le puits de son panneau par la forme partagée — « rien n'a changé » sur la transaction non prise et la cause ENTIÈRE, dans les deux langues, sans avis ni rejet —, une demande qui n'aboutit pas « NON confirmée », un refus servi en deux cents avec sa phrase et sans écriture, et un reparse accepté efface le refus ; la famille « rien n'a changé » est reconnue par ses deux ouvertures (le COMMIT refusé et annulé, la transaction que la base n'a pas prise), sous un cinq cent trois seulement, et partage avec l'ensemble nommé des causes à effet partiel TOUTES les causes de transaction du démon — aucune cause à effet partiel n'est dite « rien n'a changé », aucun nom de l'ensemble ne désigne une cause absente ; la confirmation du retrait d'un connecteur dit, dans les deux langues, que ses clés de livraison des genres lus dans `connector_delete` sont RÉVOQUÉES dans la même transaction ; aucun `esc()` n'aboutit dans un texte, l'émetteur d'un fournisseur s'affiche tel quel ; le préfixe d'un échec et les deux phrases d'`api()` suivent la langue de l'écran, la face française inchangée, et aucun module n'en écrit de copie française hors d'une face `fr:` (un reste hors du lot, nommé). CE QUI ÉTAIT FAUX OU IMPRÉCIS : `P10.27-n` disait le 503 affiché par `toast(e.message)` — c'était le JSON brut coupé AVANT « AUCUN event n'a été modifié », et un refus servi en deux cents suivait le même chemin ; `P10.27-q` ne nommait que la forme — la dérivation du 115 ne reconnaissait aucune cause de la transaction non prise, trois aujourd'hui ; `P10.27-t` comptait neuf modules et « viz.js 1 » — quarante-sept littéraux dans douze modules, dont « Erreur : » capitalisé (tableaux de bord, Explore) et les deux phrases d'`api()` recopiées dans `viz.js` et `dashboards.js`, tandis que la ligne comptée dans `viz.js` était déjà une face bilingue ; `P10.27-r` était « lu » — joué, la confirmation ne disait rien des clés, en français sous les deux langues ; `P10.27-s` était « lu » — joué, `&amp;`, `&quot;`, `&lt;`, `&gt;` visibles.");
+  console.log("(117) OK — le reparse dit son cinq cent trois dans le puits de son panneau par la forme partagée — « rien n'a changé » sur la transaction non prise et la cause ENTIÈRE, dans les deux langues, sans avis ni rejet —, une demande qui n'aboutit pas « NON confirmée », un refus servi en deux cents avec sa phrase et sans écriture, et un reparse accepté efface le refus ; la famille « rien n'a changé » est reconnue par ses deux ouvertures (le COMMIT refusé et annulé, la transaction que la base n'a pas prise), sous un cinq cent trois seulement, et partage avec l'ensemble nommé des causes à effet partiel TOUTES les causes de transaction du démon — aucune cause à effet partiel n'est dite « rien n'a changé », aucun nom de l'ensemble ne désigne une cause absente ; la confirmation du retrait d'un connecteur dit, dans les deux langues, que ses clés de livraison des genres lus dans `connector_delete` sont RÉVOQUÉES dans la même transaction ; aucun `esc()` n'aboutit dans un texte, l'émetteur d'un fournisseur s'affiche tel quel ; le préfixe d'un échec et les deux phrases d'`api()` suivent la langue de l'écran, la face française inchangée, et aucun module n'en écrit de copie française hors d'une face `fr:` (aucun reste depuis `P10.28-n`). CE QUI ÉTAIT FAUX OU IMPRÉCIS : `P10.27-n` disait le 503 affiché par `toast(e.message)` — c'était le JSON brut coupé AVANT « AUCUN event n'a été modifié », et un refus servi en deux cents suivait le même chemin ; `P10.27-q` ne nommait que la forme — la dérivation du 115 ne reconnaissait aucune cause de la transaction non prise, trois aujourd'hui ; `P10.27-t` comptait neuf modules et « viz.js 1 » — quarante-sept littéraux dans douze modules, dont « Erreur : » capitalisé (tableaux de bord, Explore) et les deux phrases d'`api()` recopiées dans `viz.js` et `dashboards.js`, tandis que la ligne comptée dans `viz.js` était déjà une face bilingue ; `P10.27-r` était « lu » — joué, la confirmation ne disait rien des clés, en français sous les deux langues ; `P10.27-s` était « lu » — joué, `&amp;`, `&quot;`, `&lt;`, `&gt;` visibles.");
+}
+
+// ---------------------------------------------------------------------------------------------
+// (118) `P10.27-e` — LE COMMUTATEUR PARTAGÉ NE DIT PLUS « Bascule refusée : » + LE MESSAGE BRUT : chaque surface qui le
+//       sert passe son `onRefus` (le puits de sa surface), et son DÉFAUT peint la forme partagée ;
+//       `P10.27-d` — les captures d'un geste d'écriture qui collaient `e.message` empruntent la forme partagée de
+//       `P10.26-q`, et celles qui restent sont un ENSEMBLE NOMMÉ (fichier › fonction), jugé dans les deux sens ;
+//       `P10.28-m` — l'essai d'un reparse interrompu le dit, et ses mots ont leurs deux faces ;
+//       `P10.28-n` — la lecture refusée de la rétention a ses deux faces ;
+//       `P10.28-o` — « geste fait, trace absente » : le deux cents qui porte `trace_non_ecrite` le dit, sous sa face.
+//
+// CE QUE LE DÉMON SERT, RELU ICI ET NON RECOPIÉ : les causes nommées du lot 198 (et d'avant), chacune lue dans son
+// fichier et vue servie par `rendre_apres_validation`, `refuser_le_geste_non_valide` ou un cinq cent trois ; la
+// suppression d'un contenu géré (`delete_managed_row_tx`) ; `CAUSE_REPARSE_INCOMPLET` ; TOUTES les causes que le démon
+// passe à `tracer_apres_coup` (dérivées de l'arbre) et le champ `trace_non_ecrite` de leur gestionnaire ; la forme de
+// réponse des canaux de notification (`{error}` en deux cents à la création, cinq cent trois SANS corps ensuite) et de
+// l'exclusion d'affichage (cinq cent trois en TEXTE BRUT), servies telles quelles au simulacre.
+//
+// CE QUE LA CONSOLE EN FAISAIT, MESURÉ AVANT CE LOT (miroir de `HEAD`, ce témoin joué tel quel ; les lignes `[118…0]`
+// rejouent la mesure à chaque exécution) : voir les lignes de mesure — l'avis qui s'efface « Bascule refusée : 503
+// {… » sur huit surfaces du commutateur ; le JSON brut coupé à deux cents caractères dans un avis sur les gestes des
+// routes du lot 198 ; aucune capture sur le retrait et le formulaire d'un canal ; le deux cents d'un poll ou d'un envoi
+// manuel dont la trace manque, ignoré ; un essai de reparse interrompu annoncé comme un total, en français sous
+// `LANG='en'` ; « accès refusé ou erreur : » en anglais.
+//
+// CE QUE CE TÉMOIN NE TIENT PAS : le transport est un simulacre — aucune route du démon n'est rejouée, les causes sont
+// LUES dans son arbre ; le puits est jugé par son texte et sa marque de pose, pas par un rendu (`P10.27-f`) ; la cause
+// servie reste française sous les deux langues (`P10.27-u`) ; le formulaire d'une règle est joué par l'enveloppe
+// partagée (`contentSubmit`), pas par l'envoi de son formulaire (deux instances d'un même module écoutent le même
+// nœud) ; l'ensemble nommé des captures restantes lit le SOURCE — une capture qui colle le message par une variable
+// intermédiaire, ou un envoi qui ne passe pas par `apiSend`, lui échappent.
+// ---------------------------------------------------------------------------------------------
+{
+  const url118 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const FICHIERS118 = { noyau: "core.js", producteur: "producer_ui.js", destinations: "destinations.js", index: "index_policies.js", processeurs: "processors.js",
+    detection: "detection_admin.js", runbooks: "runbooks.js", connecteurs: "connectors.js", retention: "retention.js", modeles: "datamodels.js", avancee: "detadv.js",
+    savoir: "knowledge.js", renseignement: "threatintel.js", sources: "sources.js", flotte: "fleet.js", suppressions: "suppressions.js", routage: "alerting.js",
+    sigma: "sigmaimport.js", lookups: "lookups.js", etat: "state.js" };
+  const importer118 = async (adresse) => { const L = {}; for (const [cle, f] of Object.entries(FICHIERS118)) L[cle] = await import(adresse(f)); return L; };
+  const modsFr118 = await importer118(url118);
+  const langueOrigine118 = localStorage.getItem("soc_lang");
+  localStorage.setItem("soc_lang", "en");
+  const modsEn118 = await importer118((f) => adresseSousLaLangue(f));
+  if (langueOrigine118 === null) localStorage.removeItem("soc_lang"); else localStorage.setItem("soc_lang", langueOrigine118);
+  const FR118 = { nom: "fr", ...modsFr118, S: modsFr118.etat.S }, EN118 = { nom: "en", ...modsEn118, S: modsEn118.etat.S };
+
+  const tic118 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser118 = async (n = 30) => { for (let i = 0; i < n; i++) await tic118(); };
+  const nu118 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ").trim();
+  const serre118 = (t) => String(t).replace(/\s+/g, " ").trim();
+  const cueillir118 = (el, pred, acc = []) => { if (el && pred(el)) acc.push(el); ((el && el.children) || []).forEach((c) => cueillir118(c, pred, acc)); return acc; };
+  const instrument118 = (vrai, quoi) => exiger(vrai, `(118-instrument) ${quoi} : ce témoin REFUSE DE CONCLURE`);
+  const corpsDeFonction118 = (src, entete) => { const i = src.indexOf(entete); if (i < 0) return ""; const j = src.indexOf("\n}\n", i); return j < 0 ? "" : src.slice(i, j + 2); };
+  const valeurRust118 = (brut) => brut.replace(/\\\n\s*/g, "").replace(/\\"/g, "\"");
+  const constante118 = (src, nom) => { const m = src.match(new RegExp("const " + nom + ": &str = \"((?:[^\"\\\\]|\\\\[\\s\\S])*)\";")); return m ? valeurRust118(m[1]).trim() : ""; };
+  const lireLeDemon118 = (rel) => { try { return readFileSync(path.join(RACINE, "daemon", "src", rel), "utf8"); } catch (e) { return ""; } };
+  const ACCENTS118 = /[éèêàçùôâîÉÈÊÀ]/;
+  const ACCUSE118 = /\b(vous|votre|vos|you|your)\b|invalide|interdit|erreur|échec|invalid|forbidden|error|fail/i;
+  const appeler118 = (mod, nom, ...args) => { if (typeof mod[nom] !== "function") return `(${nom} absente)`; try { return mod[nom](...args); } catch (e) { return `(${nom} jette : ${e && e.message})`; } };
+  // Les commentaires retirés PAR UN LECTEUR qui suit les chaînes, les gabarits et les littéraux d'expression régulière
+  // (positions gardées, une ligne reste la même ligne). Le retrait par motif du 117 prend un `/*` écrit dans un
+  // commentaire de ligne (« route /api/sigma/* ») pour l'ouverture d'un bloc, et mange le code jusqu'au `*/` suivant.
+  const precedeUneRegex118 = (src, i) => { let k = i - 1; while (k >= 0 && /\s/.test(src[k])) k--; if (k < 0) return true; if (/[(,=:[!&|?{};+\-*%<>~^]/.test(src[k])) return true; const mot = src.slice(Math.max(0, k - 6), k + 1); return /(?:^|[^\w$])(?:return|typeof|case|in|of|void|delete|throw)$/.test(mot); };
+  const sansCommentaires118 = (src) => {
+    const out = src.split("");
+    const blanchir = (a, b) => { for (let k = a; k < b; k++) if (out[k] !== "\n") out[k] = " "; };
+    const sauterChaine = (i, q) => { i++; while (i < src.length && src[i] !== q) { if (src[i] === "\\") i++; else if (src[i] === "\n" && q !== "`") return i; i++; } return i; };
+    for (let i = 0; i < src.length; i++) {
+      const c = src[i];
+      if (c === "'" || c === '"' || c === "`") { i = sauterChaine(i, c); continue; }
+      if (c === "/" && src[i + 1] === "/") { const f = src.indexOf("\n", i); const fin = f < 0 ? src.length : f; blanchir(i, fin); i = fin - 1; continue; }
+      if (c === "/" && src[i + 1] === "*") { const f = src.indexOf("*/", i + 2); const fin = f < 0 ? src.length : f + 2; blanchir(i, fin); i = fin - 1; continue; }
+      if (c === "/" && precedeUneRegex118(src, i)) { i++; let classe = false; while (i < src.length && src[i] !== "\n") { const d = src[i]; if (d === "\\") { i += 2; continue; } if (d === "[") classe = true; else if (d === "]") classe = false; else if (d === "/" && !classe) break; i++; } continue; }
+    }
+    return out.join("");
+  };
+  // Les paires d'accolades d'un source sans commentaires : chaînes, gabarits (et leurs `${…}`) et littéraux d'expression
+  // régulière sautés. Rend `paires` (ouvrante -> fermante) ; une accolade non appariée fait rendre `null`.
+  const pairesDAccolades118 = (src) => {
+    const paires = new Map(), pile = [];
+    const precedeUneRegex = (i) => precedeUneRegex118(src, i);
+    const sauterChaine = (i, q) => { i++; while (i < src.length && src[i] !== q) { if (src[i] === "\\") i++; else if (src[i] === "\n" && q !== "`") return i; i++; } return i; };
+    const sauterGabarit = (i) => { i++; while (i < src.length && src[i] !== "`") { if (src[i] === "\\") { i += 2; continue; } if (src[i] === "$" && src[i + 1] === "{") { let d = 1; i += 2; while (i < src.length && d > 0) { const c = src[i]; if (c === "'" || c === '"') { i = sauterChaine(i, c) + 1; continue; } if (c === "`") { i = sauterGabarit(i) + 1; continue; } if (c === "{") d++; else if (c === "}") d--; i++; } continue; } i++; } return i; };
+    const sauterRegex = (i) => { i++; let classe = false; while (i < src.length && src[i] !== "\n") { const c = src[i]; if (c === "\\") { i += 2; continue; } if (c === "[") classe = true; else if (c === "]") classe = false; else if (c === "/" && !classe) return i; i++; } return i; };
+    for (let i = 0; i < src.length; i++) {
+      const c = src[i];
+      if (c === "'" || c === '"') { i = sauterChaine(i, c); continue; }
+      if (c === "`") { i = sauterGabarit(i); continue; }
+      if (c === "/" && src[i + 1] !== "/" && src[i + 1] !== "*" && precedeUneRegex(i)) { i = sauterRegex(i); continue; }
+      if (c === "{") pile.push(i);
+      else if (c === "}") { const o = pile.pop(); if (o === undefined) return null; paires.set(o, i); }
+    }
+    return pile.length ? null : paires;
+  };
+  // Les fonctions NOMMÉES d'un source et la portée de leur corps : déclarations (`function nom(`), et expressions
+  // liées à un nom (`const nom = function (`, `const nom = (…) => {`, `const nom = async x => {`).
+  const fonctionsNommees118 = (src, paires) => {
+    const out = [];
+    const corpsApres = (i) => { // depuis la parenthèse ouvrante des paramètres (ou le paramètre nu), l'accolade du corps
+      let k = i;
+      if (src[k] === "(") { let d = 0; for (; k < src.length; k++) { if (src[k] === "(") d++; else if (src[k] === ")") { d--; if (d === 0) break; } } k++; }
+      const reste = src.slice(k, k + 40).match(/^\s*(=>)?\s*\{/);
+      if (!reste) return null;
+      const o = k + reste[0].length - 1;
+      return paires.has(o) ? [o, paires.get(o)] : null;
+    };
+    for (const m of src.matchAll(/\b(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)\s*\(/g)) { const r = corpsApres(m.index + m[0].length - 1); if (r) out.push({ nom: m[1], debut: r[0], fin: r[1] }); }
+    for (const m of src.matchAll(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:function\b\s*\*?\s*[\w$]*\s*)?\(/g)) { const r = corpsApres(m.index + m[0].length - 1); if (r) out.push({ nom: m[1], debut: r[0], fin: r[1] }); }
+    for (const m of src.matchAll(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?[A-Za-z_$][\w$]*\s*=>\s*\{/g)) { const o = m.index + m[0].length - 1; if (paires.has(o)) out.push({ nom: m[1], debut: o, fin: paires.get(o) }); }
+    // Un écouteur anonyme posé au premier niveau sur un nœud de la page prend le nom de son nœud et de son événement :
+    // `$('#rf-test').onclick = async () => {`, `$('#settings-form').addEventListener('submit', async e => {`.
+    const FLECHE = String.raw`(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>\s*\{`;
+    for (const m of src.matchAll(new RegExp(String.raw`\$\(\s*'([^']+)'\s*\)\s*\.\s*(on[a-z]+)\s*=\s*` + FLECHE, "g"))) { const o = m.index + m[0].length - 1; if (paires.has(o)) out.push({ nom: `$('${m[1]}').${m[2]}`, debut: o, fin: paires.get(o) }); }
+    for (const m of src.matchAll(new RegExp(String.raw`\$\(\s*'([^']+)'\s*\)\s*\.addEventListener\(\s*'([a-z]+)'\s*,\s*` + FLECHE, "g"))) { const o = m.index + m[0].length - 1; if (paires.has(o)) out.push({ nom: `$('${m[1]}').${m[2]}`, debut: o, fin: paires.get(o) }); }
+    return out;
+  };
+  const fonctionEnglobante118 = (fonctions, position) => {
+    let meilleure = null;
+    for (const f of fonctions) if (f.debut < position && position < f.fin && (!meilleure || f.debut > meilleure.debut)) meilleure = f;
+    return meilleure ? meilleure.nom : "(module)";
+  };
+  // Les captures d'une ÉCRITURE qui collent le message : un `catch (v) { … }` dont le `try` appelle `apiSend(` et dont le
+  // corps lit `v.message` ; ou un `.catch(v => …v.message…)` accroché à une instruction qui appelle `apiSend(`.
+  const capturesDEcritureQuiCollentLeMessage118 = (f, source) => {
+    const src = sansCommentaires118(source), paires = pairesDAccolades118(src);
+    if (!paires) return { illisible: true, sites: [] };
+    const fonctions = fonctionsNommees118(src, paires), sites = [];
+    const ouvranteDuTry = new Map();
+    for (const m of src.matchAll(/\btry\s*\{/g)) { const o = m.index + m[0].length - 1; if (paires.has(o)) ouvranteDuTry.set(paires.get(o), o); }
+    for (const m of src.matchAll(/\bcatch\s*\(\s*([A-Za-z_$][\w$]*)\s*\)\s*\{/g)) {
+      const o = m.index + m[0].length - 1, fin = paires.get(o);
+      if (fin === undefined) continue;
+      const corps = src.slice(o, fin + 1);
+      if (!new RegExp("\\b" + m[1].replace(/\$/g, "\\$") + "\\.message\\b").test(corps)) continue;
+      let k = m.index - 1; while (k >= 0 && /\s/.test(src[k])) k--;
+      const oTry = ouvranteDuTry.get(k);
+      if (oTry === undefined || !/\bapiSend\s*\(/.test(src.slice(oTry, k + 1))) continue;
+      sites.push({ f, fonction: fonctionEnglobante118(fonctions, m.index), ligne: src.slice(0, m.index).split("\n").length });
+    }
+    for (const m of src.matchAll(/\.catch\s*\(\s*\(?\s*([A-Za-z_$][\w$]*)\s*\)?\s*=>/g)) {
+      const fin = src.indexOf("\n", m.index), apres = src.slice(m.index, fin < 0 ? undefined : fin);
+      if (!new RegExp("\\b" + m[1] + "\\.message\\b").test(apres)) continue;
+      const debut = Math.max(src.lastIndexOf(";", m.index), src.lastIndexOf("{\n", m.index), src.lastIndexOf("}\n", m.index));
+      if (!/\bapiSend\s*\(/.test(src.slice(debut + 1, m.index))) continue;
+      sites.push({ f, fonction: fonctionEnglobante118(fonctions, m.index), ligne: src.slice(0, m.index).split("\n").length });
+    }
+    return { illisible: false, sites };
+  };
+
+  // ── (0) L'INSTRUMENT : CE QUE LE DÉMON SERT, LU DANS SON ARBRE ─────────────────────────────────────────────
+  // Une cause nommée : sa phrase, et la preuve qu'elle est SERVIE (rendue par l'un des juges du COMMIT, ou en cinq cent
+  // trois) dans son fichier. `delete_managed_row_tx` sert la sienne à tous les retraits d'un contenu géré.
+  const causesLues118 = new Map();
+  const cause118 = (rel, nom) => {
+    const cle = rel + "#" + nom;
+    if (!causesLues118.has(cle)) {
+      const src = lireLeDemon118(rel);
+      const servie = new RegExp("(?:rendre_apres_validation(?:_du_garde)?|refuser_le_geste_non_valide)\\([^;]*\\b" + nom + "\\b|SERVICE_UNAVAILABLE, " + nom + "\\b").test(src);
+      causesLues118.set(cle, { rel, nom, texte: constante118(src, nom), servie });
+    }
+    return causesLues118.get(cle);
+  };
+  const SUPPRESSION_DE_CONTENU118 = cause118("handlers/detection.rs", "CAUSE_SUPPRESSION_DE_CONTENU_NON_VALIDEE");
+  const RETRAITS_GERES118 = [["handlers/detection.rs", "rule_delete"], ["handlers/detection.rs", "parser_delete"], ["handlers/playbooks.rs", "playbook_delete"],
+    ["handlers/index_policies.rs", "index_policy_delete"], ["handlers/processors.rs", "processor_delete"], ["handlers/detection_advanced.rs", "correlation_delete"], ["handlers/detection_advanced.rs", "baseline_delete"]];
+  const retraitsSansJuge118 = RETRAITS_GERES118.filter(([rel, fn]) => !/delete_managed_row(?:_tx)?\(/.test(corpsDeFonction118(lireLeDemon118(rel), "pub(crate) async fn " + fn + "(")))
+    .map(([, fn]) => fn);
+  instrument118(retraitsSansJuge118.length === 0 && /CAUSE_SUPPRESSION_DE_CONTENU_NON_VALIDEE/.test(corpsDeFonction118(lireLeDemon118("handlers/detection.rs"), "pub(crate) fn delete_managed_row_tx(")),
+    `un retrait de contenu géré ne passe plus par \`delete_managed_row_tx\`, ou celui-ci ne sert plus « SUPPRESSION NON FAITE » : ${JSON.stringify(retraitsSansJuge118)}`);
+  const NOTIFIEURS_RS118 = lireLeDemon118("handlers/notifiers.rs");
+  const CAUSE_CANAL_NON_CREE118 = cause118("handlers/notifiers.rs", "CAUSE_CANAL_DE_NOTIFICATION_NON_CREE");
+  instrument118(/Json\(json!\(\{ "error": CAUSE_CANAL_DE_NOTIFICATION_NON_CREE \}\)\)/.test(NOTIFIEURS_RS118)
+    && /StatusCode::SERVICE_UNAVAILABLE\s*\n\s*\}/.test(corpsDeFonction118(NOTIFIEURS_RS118, "pub(crate) async fn notifier_update(")),
+    "la création d'un canal ne sert plus son COMMIT refusé en deux cents `{error}`, ou sa modification plus en cinq cent trois SANS corps : la forme jouée ici ne serait plus celle du démon");
+  const EXCLUSION118 = cause118("handlers/admin_ui.rs", "CAUSE_EXCLUSION_D_AFFICHAGE_INCHANGEE");
+  instrument118(/Err\(\(code, msg\)\) => \(code, msg\)\.into_response\(\)/.test(corpsDeFonction118(lireLeDemon118("handlers/admin_ui.rs"), "pub(crate) async fn suppressions_put(")),
+    "`suppressions_put` ne sert plus son refus en TEXTE BRUT : la forme jouée ici ne serait plus celle du démon");
+  // `P10.28-o` — L'UNIVERS DES TRACES ÉCRITES APRÈS COUP : toute cause que le démon (hors tests) passe à
+  // `tracer_apres_coup`, et le gestionnaire qui pose alors `trace_non_ecrite` dans son deux cents. Une trace neuve sans
+  // surface jouée ici, ou une surface jouée dont la trace a disparu : ce témoin refuse de conclure.
+  const TRACES_DU_DEMON118 = [];
+  for (const rel of readdirSync(path.join(RACINE, "daemon", "src"), { recursive: true })) {
+    const r = String(rel);
+    if (!r.endsWith(".rs") || r.split(path.sep).includes("tests") || r.endsWith("transaction_validee.rs")) continue;
+    const src = lireLeDemon118(r);
+    for (const m of src.matchAll(/tracer_apres_coup\([^;]*?,\s*(CAUSE_[A-Z0-9_]+)\s*,/g)) {
+      const avant = src.slice(0, m.index), fn = [...avant.matchAll(/pub\(crate\) async fn ([a-z_0-9]+)\(/g)].pop();
+      const corps = fn ? corpsDeFonction118(src, fn[0]) : "";
+      TRACES_DU_DEMON118.push({ rel: r, gestionnaire: fn ? fn[1] : "?", nom: m[1], texte: constante118(src, m[1]), posee: /corps\["trace_non_ecrite"\] = json!\(cause\)/.test(corps) });
+    }
+  }
+  const SURFACES_DE_LA_TRACE118 = { connector_poll: "CAUSE_TRACE_DU_POLL_MANUEL_NON_ECRITE", destination_flush: "CAUSE_TRACE_DE_L_ENVOI_MANUEL_NON_ECRITE" };
+  const tracesSansSurface118 = TRACES_DU_DEMON118.filter((t) => SURFACES_DE_LA_TRACE118[t.gestionnaire] !== t.nom).map((t) => `${t.gestionnaire}/${t.nom}`);
+  const surfacesSansTrace118 = Object.entries(SURFACES_DE_LA_TRACE118).filter(([g, n]) => !TRACES_DU_DEMON118.some((t) => t.gestionnaire === g && t.nom === n && t.posee && t.texte.length > 100)).map(([g]) => g);
+  instrument118(TRACES_DU_DEMON118.length >= 2 && tracesSansSurface118.length === 0 && surfacesSansTrace118.length === 0,
+    `les traces écrites après coup du démon ne sont plus celles que la console joue : sans surface ${JSON.stringify(tracesSansSurface118)}, surface sans trace servie ${JSON.stringify(surfacesSansTrace118)}`);
+  const traceDe118 = (gestionnaire) => (TRACES_DU_DEMON118.find((t) => t.gestionnaire === gestionnaire) || {}).texte || "";
+  const REPARSE_INCOMPLET118 = constante118(lireLeDemon118("handlers/detection.rs"), "CAUSE_REPARSE_INCOMPLET");
+  instrument118(REPARSE_INCOMPLET118.length > 100 && /body\["interrompu"\] = json!\(true\); body\["cause_scan"\] = json!\(cause\)/.test(lireLeDemon118("handlers/detection.rs")),
+    "`CAUSE_REPARSE_INCOMPLET` n'est plus lisible, ou le reparse ne pose plus `interrompu` et `cause_scan`");
+  instrument118(FR118.noyau.LANG !== "en" && EN118.noyau.LANG === "en", `les deux instances du point commun ne portent pas deux langues (« ${FR118.noyau.LANG} » / « ${EN118.noyau.LANG} »)`);
+  const ATTENDUS118 = [["noyau", "laTraceNonEcriteServieEnDeuxCents"], ["noyau", "unRefusServiEnDeuxCents"], ["destinations", "flushDestination"], ["destinations", "deleteDestination"],
+    ["destinations", "saveDestination"], ["detection", "enregistrerLeCanalDuFormulaire"], ["detection", "parserRow"], ["detection", "notifRow"], ["connecteurs", "pollConnector"],
+    ["retention", "enregistrerLaRetention"], ["routage", "enregistrerLaPolitiqueDuFormulaire"], ["routage", "poserLeSilenceDuFormulaire"], ["lookups", "chargerLeLookupDuFormulaire"]];
+  const absents118 = ATTENDUS118.filter(([m, n]) => typeof FR118[m][n] !== "function" || typeof EN118[m][n] !== "function").map(([m, n]) => n);
+  exiger(absents118.length === 0, `(118-exports) un geste ou une forme jugés ici ne sont pas exportés : ${JSON.stringify(absents118)} — la mesure continue par les nœuds câblés`);
+
+  // ── LE SIMULACRE ─────────────────────────────────────────────────────────────────────────────────────────
+  const fetchOrigine118 = globalThis.fetch, minuterieOrigine118 = globalThis.setTimeout, qsOrigine118 = document.querySelector;
+  const etatOrigine118 = [FR118.S, EN118.S].map((S) => ({ S, admin: S.isAdmin, auth: S.AUTH, notif: S.editingNotif }));
+  const qs118 = (sel) => qsOrigine118.call(document, sel);
+  let servis118 = {};
+  const appels118 = [];
+  const reponse118 = (statut, texte) => ({ ok: statut >= 200 && statut < 300, status: statut, headers: { get: () => null }, text: async () => texte, json: async () => JSON.parse(texte), clone: () => reponse118(statut, texte) });
+  const simulacre118 = async (u, init) => {
+    const k = ((init && init.method) || "GET").toUpperCase() + " " + String(u).split("?")[0];
+    let corpsEnvoye = null; try { corpsEnvoye = init && init.body ? JSON.parse(init.body) : null; } catch (e) { corpsEnvoye = null; }
+    const appel = { k, statut: 0, corps: corpsEnvoye }; appels118.push(appel);
+    let r = Object.prototype.hasOwnProperty.call(servis118, k) ? servis118[k] : servis118["*"];
+    if (typeof r === "function") r = await r(corpsEnvoye);
+    const texte = !r ? "{}" : typeof r.corps === "string" ? r.corps : JSON.stringify(r.corps === undefined ? {} : r.corps);
+    appel.statut = (r && r.statut) || 200;
+    return reponse118(appel.statut, texte);
+  };
+  const compter118 = (k, pred = () => true) => appels118.filter((a) => a.k === k && pred(a)).length;
+  const refus503De118 = (cause) => ({ statut: 503, corps: { error: cause, id: "plume-e1-118" } });
+  const refusNomme118 = (statut, phrase) => ({ statut, corps: { error: phrase, id: "plume-e1-118" } });
+  const reseauCoupe118 = () => { throw new TypeError("Failed to fetch"); };
+  const fenetre118 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !c.classList.contains("out")).pop();
+  const formulaireDeLaFenetre118 = () => { const ov = fenetre118(); return ov && ov.children[0] ? ov.children[0].children[0] || null : null; };
+  const texteDeLaFenetre118 = () => { const form = formulaireDeLaFenetre118(); return form ? serre118(cueillir118(form, (e) => e.tagName === "H3" || e.tagName === "P").map((e) => nu118(e)).join(" ")) : ""; };
+  // Accepte les fenêtres qu'un geste ouvre l'une après l'autre (une confirmation après une saisie), en posant les valeurs
+  // des champs `data-n` qu'elles portent.
+  // Le simulacre ne reflète pas l'attribut `value` (ni le contenu d'un `<textarea>`, ni l'option `selected`) dans la
+  // valeur d'un champ posé par balisage : un navigateur le fait, et une fenêtre préremplie (une modification) se
+  // soumettrait ici VIDE, refusée par ses champs requis. La valeur par défaut est donc posée comme le navigateur la
+  // poserait, avant les valeurs du geste. Une fenêtre qui reste ouverte après trois acceptations est ANNULÉE, et son
+  // geste le dira (aucun envoi) au lieu de laisser le banc suspendu.
+  const valeursParDefaut118 = (form) => {
+    for (const champ of cueillir118(form, (e) => typeof e.getAttribute === "function" && e.getAttribute("data-n") !== null)) {
+      if (champ.value) continue;
+      if (champ.tagName === "TEXTAREA") champ.value = champ.textContent;
+      else if (champ.tagName === "SELECT") { const opt = cueillir118(champ, (o) => o.tagName === "OPTION" && o.getAttribute("selected") !== null)[0] || cueillir118(champ, (o) => o.tagName === "OPTION")[0]; if (opt) champ.value = opt.getAttribute("value") ?? nu118(opt); }
+      else if (champ.getAttribute("value") !== null) champ.value = champ.getAttribute("value");
+    }
+  };
+  const accepterLesFenetres118 = async (valeurs = {}, n = 3) => {
+    for (let i = 0; i < n; i++) {
+      await laisser118();
+      const form = formulaireDeLaFenetre118();
+      if (!form || typeof form.onsubmit !== "function") return;
+      valeursParDefaut118(form);
+      for (const [cle, v] of Object.entries(valeurs)) { const champ = cueillir118(form, (e) => typeof e.getAttribute === "function" && e.getAttribute("data-n") === cle)[0]; if (champ) { if (champ.type === "checkbox") champ.checked = !!v; else champ.value = v; } }
+      await Promise.resolve(form.onsubmit({ preventDefault() {} }));
+    }
+    await laisser118();
+    const restee = formulaireDeLaFenetre118();
+    const annuler = restee ? bouton118(restee, (e) => e.classList && e.classList.contains("m-cancel")) : null;
+    if (annuler && typeof annuler.onclick === "function") annuler.onclick();
+  };
+  const avisDe118 = () => { const h = qs118("#toasts"); return h ? h.children.map((t) => nu118(t)) : []; };
+  const bouton118 = (hote, pred) => (hote ? cueillir118(hote, (e) => e.tagName === "BUTTON" && pred(e))[0] || null : null);
+  const parTexte118 = (t) => (e) => nu118(e) === t;
+  const parTitre118 = (t) => (e) => e.title === t;
+  const bascule118 = (hote) => (hote ? cueillir118(hote, (e) => e.tagName === "INPUT" && e.classList && e.classList.contains("crud-toggle"))[0] || null : null);
+  const puitsNomme118 = (parent, surface) => (parent ? parent.children.find((n) => typeof n.getAttribute === "function" && n.getAttribute("data-puits-du-refus-d-un-geste") === surface) || null : null);
+  const puitsAvant118 = (sel, surface) => () => { const l = qs118(sel); return puitsNomme118(l ? l.parentNode : null, surface); };
+  const puitsDans118 = (sel, surface) => () => puitsNomme118(qs118(sel), surface);
+  // Un geste exporté, joué sous SA langue ; absent (arbre d'avant), le nœud câblé — par la dernière instance importée.
+  const lancer118 = (mod, nom, repli, ...args) => Promise.resolve(typeof mod[nom] === "function" ? mod[nom](...args) : repli());
+  const cliquer118 = (hote, pred, quoi) => { const b = bouton118(hote, pred); if (!b || typeof b.onclick !== "function") throw new Error(`(${quoi} absent)`); return Promise.resolve(b.onclick({ stopPropagation() {}, preventDefault() {} })); };
+  const poser118 = (valeurs) => { for (const [sel, v] of Object.entries(valeurs)) { const n = qs118(sel); if (n) { if (n.type === "checkbox") n.checked = !!v; else n.value = v; } } };
+  const rendreDans118 = (sel, noeud) => { const h = qs118(sel); if (h && noeud) h.replaceChildren(noeud); };
+  const face118 = (L, nature) => appeler118(L.noyau, "motDuRefusDUnGeste", nature);
+  const erreur118 = (statut, cause) => Object.assign(new Error(statut + " " + JSON.stringify({ error: cause }).slice(0, 200)), { statutDuRefus: statut, causeDuDemon: cause });
+  const FAMILLE_RIEN_N_A_CHANGE118 = ["ecriture_non_validee", "transaction_non_prise"];
+
+  // ── LES DONNÉES SERVIES ─────────────────────────────────────────────────────────────────────────────────
+  const DEST118 = { id: 9, name: "syslog-118", type: "syslog", endpoint: "tcp://collecteur.example:514", enabled: true, interval_s: 30, batch_max: 500, filter: {}, has_auth: false, watermark: 1, last_count: 0 };
+  const INDEX118 = { ok: true, global_retention_days: 30, bounds: {}, indexes: [{ name: "auth-118", id: 4, has_policy: true, enabled: true, retention_days: 30, max_rows: 0, max_bytes: 0, events: 10, size_bytes_est: 100, oldest_ts: 1 }] };
+  const PROC118 = { rules: [{ id: 3, name: "drop-118", ord: 0, match_field: "category", match_op: "eq", match_value: "debug", action: "drop", action_arg: "", enabled: true }], counters: { per_rule: {}, totals: {}, reload_errors: 0 } };
+  const REGLE118 = { id: 11, name: "regle-118", severity: 2, op: ">", threshold: 0, query: "search x", is_soql: true, enabled: true, managed: 2, risk_score: 0, interval_s: 300, window_s: 3600 };
+  const PARSEUR118 = { id: 5, name: "parseur-118", source: "sshd", pattern: "(?P<x>.)", enabled: true, managed: 2 };
+  const CANAL118 = { id: 6, name: "canal-118", kind: "ntfy", url: "https://ntfy.example/t", min_severity: 2, enabled: true, has_auth: false };
+  const PLAYBOOK118 = { id: 7, name: "pb-118", query: "search x", action_kind: "ban_ip", enabled: true, managed: 2, interval_s: 300, window_s: 3600, consequence: "bannit la source" };
+  const RUNBOOK118 = { id: 8, name: "rb-118", managed: 0, active: true, match_kind: "*", match_key: "", steps: 1, description: "" };
+  const CONNECTEUR118 = { id: 5, name: "defender-118", type: "defender", env_id: "prod", interval_s: 300, enabled: true, has_secret: true, config: {} };
+  const RETENTION118 = { retention_days: 30, snapshot_days: 30, alert_days: 30, metric_days: 30, metric_raw_hours: 48,
+    bounds: { retention_days: { min: 7, max: 3650, default: 30, unit: "days" }, snapshot_days: { min: 1, max: 3650, default: 30, unit: "days" }, alert_days: { min: 1, max: 3650, default: 30, unit: "days" }, metric_days: { min: 1, max: 3650, default: 30, unit: "days" }, metric_raw_hours: { min: 1, max: 720, default: 48, unit: "hours" } } };
+  const MODELES118 = { models: [{ id: 1, name: "auth118", title: "Auth", managed: 2, enabled: true }], objects: [{ id: 2, model_id: 1, name: "echecs", enabled: true }], fields: [{ id: 3, object_id: 2, name: "src", type: "string" }], field_types: ["string"], stat_funcs: ["count"], filter_ops: ["="] };
+  const DATASET118 = { id: 4, name: "ds118", kind: "pivot", soql: "search x", managed: 2, enabled: true };
+  const CORRELATION118 = { id: 12, name: "c118", key_field: "src_ip", entity_type: "ip", steps: "[]", window_s: 3600, interval_s: 300, severity: 3, mitre: "", risk_score: 0, enabled: true, managed: 2 };
+  const LIGNE_DE_BASE118 = { id: 15, name: "b118", query: "search x | stats count by host", entity_field: "host", value_field: "", entity_type: "host", bucket_s: 3600, min_samples: 5, z_threshold: 3, window_s: 604800, interval_s: 3600, severity: 2, mitre: "", risk_score: 0, enabled: true };
+  const SILENCE118 = { id: 13, matchers: { host: "web-118" }, expires_at: 4102444800, reason: "", active: true, created_by: "hugo" };
+  const POLITIQUE118 = { id: 14, matchers: { host: "web-118" }, contact_points: [1], continue: false, enabled: true };
+  const LOOKUP118 = { name: "geo118", key_field: "ip", cols: "pays", rows: 1, updated: 1, managed: 2 };
+  const LECTURES118 = {
+    "GET /api/destinations": { corps: [DEST118] }, "GET /api/index-policies": { corps: INDEX118 }, "GET /api/processors": { corps: PROC118 },
+    "GET /api/rules": { corps: { rules: [REGLE118] } }, "GET /api/parsers": { corps: { parsers: [PARSEUR118] } }, "GET /api/notifiers": { corps: { notifiers: [CANAL118] } },
+    "GET /api/playbooks": { corps: { playbooks: [PLAYBOOK118], mode: "observe", ban_duration_s: 3600 } }, "GET /api/runbooks": { corps: { runbooks: [RUNBOOK118] } },
+    "GET /api/connectors": { corps: [CONNECTEUR118] }, "GET /api/retention": { corps: RETENTION118 }, "GET /api/datamodels": { corps: MODELES118 },
+    "GET /api/datasets": { corps: { datasets: [DATASET118] } }, "GET /api/correlations": { corps: { correlations: [CORRELATION118] } }, "GET /api/baselines": { corps: { baselines: [LIGNE_DE_BASE118] } },
+    "GET /api/knowledge": { corps: { aliases: [], calcs: [], eventtypes: [], tags: [] } }, "GET /api/threat-intel/iocs": { corps: { iocs: [] } },
+    "GET /api/notification-policies": { corps: { policies: [POLITIQUE118] } }, "GET /api/silences": { corps: { silences: [SILENCE118] } },
+    "GET /api/lookups": { corps: { lookups: [LOOKUP118] } }, "GET /api/suppressions": { corps: { daemon: [], collectors: [] } }, "GET /api/mode": { corps: { mode: "observe" } },
+  };
+
+  // ── LES SITES ────────────────────────────────────────────────────────────────────────────────────────────
+  // Chaque site : un geste d'écriture (ou d'essai), sa route, la réponse du démon (sa cause nommée LUE, ou la forme
+  // que son gestionnaire sert), le puits où la surface doit la dire, et ce qu'elle doit y dire.
+  const attenduDeLaCause118 = (cause) => (L) => { const n = appeler118(L.noyau, "natureDuRefusDUnGeste", erreur118(503, cause.texte)); return { nature: n, texte: serre118(face118(L, n) + " « " + cause.texte + " »"), famille: true }; };
+  const attenduNomme118 = (phrase) => (L) => ({ nature: "refus_nomme", texte: serre118(face118(L, "refus_nomme") + " « " + phrase + " »") });
+  const attenduPasserelle118 = (L) => ({ nature: "reponse_hors_demon", texte: serre118(appeler118(L.noyau, "motDeLaReponseHorsDemon", "page_de_passerelle")) });
+  const site118 = (o) => ({ ...o, reponse: o.reponse || refus503De118(o.cause.texte), attendu: o.attendu || attenduDeLaCause118(o.cause) });
+  const C118 = (rel, nom) => cause118(rel, nom);
+  const PUITS_DESTINATIONS118 = puitsAvant118("#destination-list", "destinations"), PUITS_INDEX118 = puitsAvant118("#index-policy-list", "politiques_d_index");
+  const PUITS_PROCESSEURS118 = puitsAvant118("#processor-list", "regles_d_ingestion"), PUITS_REGLES118 = puitsAvant118("#rule-list", "regles");
+  const PUITS_PARSEURS118 = puitsAvant118("#parser-list", "parseurs"), PUITS_CANAUX118 = puitsAvant118("#notif-list", "canaux"), PUITS_PLAYBOOKS118 = puitsAvant118("#pb-list", "playbooks");
+  const PUITS_RUNBOOKS118 = puitsAvant118("#rb-list", "runbooks");
+  // Le commutateur d'une ligne rendue, sa case repassée à OFF, et la case revenue à ON après le refus.
+  const basculerDans118 = (sel) => async () => { const cb = bascule118(qs118(sel)); if (!cb) throw new Error("(bascule absente)"); cb.checked = false; await cb.onchange(); };
+  const revenueDans118 = (sel) => () => { const cb = bascule118(qs118(sel)); return cb && cb.checked === true ? "" : "la case n'est pas revenue à ON"; };
+  const COMMUTATEURS118 = [
+    site118({ site: "bascule_destination", fichier: "destinations.js", route: "POST /api/destinations/9", cause: C118("handlers/destinations.rs", "CAUSE_DESTINATION_INCHANGEE"), puits: PUITS_DESTINATIONS118,
+      preparer: async (L) => { await L.destinations.loadDestinations(); }, geste: basculerDans118("#destination-list"), apres: revenueDans118("#destination-list") }),
+    site118({ site: "bascule_politique_d_index", fichier: "index_policies.js", route: "POST /api/index-policies/4", cause: C118("handlers/index_policies.rs", "CAUSE_POLITIQUE_D_INDEX_INCHANGEE"), puits: PUITS_INDEX118,
+      preparer: async (L) => { await L.index.loadIndexPolicies(); }, geste: basculerDans118("#index-policy-list"), apres: revenueDans118("#index-policy-list") }),
+    site118({ site: "bascule_regle_d_ingestion", fichier: "processors.js", route: "POST /api/processors/3", cause: C118("handlers/processors.rs", "CAUSE_REGLE_D_INGESTION_INCHANGEE"), puits: PUITS_PROCESSEURS118,
+      preparer: async (L) => { await L.processeurs.loadProcessors(); }, geste: basculerDans118("#processor-list"), apres: revenueDans118("#processor-list") }),
+    site118({ site: "bascule_regle", fichier: "detection_admin.js", route: "POST /api/rules/11/enabled", cause: C118("handlers/detection.rs", "CAUSE_ACTIVATION_DE_CONTENU_INCHANGEE"), puits: PUITS_REGLES118,
+      preparer: async (L) => { rendreDans118("#rule-list", L.detection.ruleRow(REGLE118)); }, geste: basculerDans118("#rule-list"), apres: revenueDans118("#rule-list") }),
+    site118({ site: "bascule_parseur", fichier: "detection_admin.js", route: "POST /api/parsers/5/enabled", cause: C118("handlers/detection.rs", "CAUSE_ACTIVATION_DE_CONTENU_INCHANGEE"), puits: PUITS_PARSEURS118,
+      preparer: async (L) => { if (typeof L.detection.parserRow === "function") rendreDans118("#parser-list", L.detection.parserRow(PARSEUR118)); else await L.detection.loadParsers(); }, geste: basculerDans118("#parser-list"), apres: revenueDans118("#parser-list") }),
+    // Le canal : `notifier_update` rend cinq cent trois SANS corps — la console ne peut dire que la phrase d'une réponse hors du démon.
+    site118({ site: "bascule_canal", fichier: "detection_admin.js", route: "POST /api/notifiers/6", reponse: { statut: 503, corps: "" }, attendu: attenduPasserelle118, puits: PUITS_CANAUX118,
+      preparer: async (L) => { if (typeof L.detection.notifRow === "function") rendreDans118("#notif-list", L.detection.notifRow(CANAL118)); else await L.detection.loadNotifiers(); }, geste: basculerDans118("#notif-list"), apres: revenueDans118("#notif-list") }),
+    site118({ site: "bascule_playbook", fichier: "detection_admin.js", route: "POST /api/playbooks/7/enabled", cause: C118("handlers/detection.rs", "CAUSE_ACTIVATION_DE_CONTENU_INCHANGEE"), puits: PUITS_PLAYBOOKS118,
+      preparer: async (L) => { rendreDans118("#pb-list", L.detection.pbRow(PLAYBOOK118, "observe")); }, geste: basculerDans118("#pb-list"), apres: revenueDans118("#pb-list") }),
+    site118({ site: "bascule_runbook", fichier: "runbooks.js", route: "POST /api/runbooks/8/enabled", cause: C118("handlers/incidents.rs", "CAUSE_ACTIVATION_DU_RUNBOOK_INCHANGEE"), puits: PUITS_RUNBOOKS118,
+      preparer: async (L) => { rendreDans118("#rb-list", L.runbooks.rbRow(RUNBOOK118)); }, geste: basculerDans118("#rb-list"), apres: revenueDans118("#rb-list") }),
+  ];
+  const confirmerPuis118 = (valeurs, gesteLance) => async (L) => { const g = gesteLance(L); await accepterLesFenetres118(valeurs); await g; };
+  const GESTES118 = [
+    // ─ destinations ─
+    site118({ site: "envoi_manuel_destination", fichier: "destinations.js", route: "POST /api/destinations/9/flush", reponse: refusNomme118(404, "destination introuvable ou désactivée"), attendu: attenduNomme118("destination introuvable ou désactivée"), puits: PUITS_DESTINATIONS118,
+      preparer: async (L) => { await L.destinations.loadDestinations(); },
+      geste: confirmerPuis118({}, (L) => lancer118(L.destinations, "flushDestination", () => cliquer118(qs118("#destination-list"), parTexte118("Flush"), "Flush"), DEST118)) }),
+    site118({ site: "retrait_destination", fichier: "destinations.js", route: "DELETE /api/destinations/9", cause: C118("handlers/destinations.rs", "CAUSE_DESTINATION_NON_SUPPRIMEE"), puits: PUITS_DESTINATIONS118,
+      preparer: async (L) => { await L.destinations.loadDestinations(); },
+      geste: confirmerPuis118({}, (L) => lancer118(L.destinations, "deleteDestination", () => cliquer118(qs118("#destination-list"), parTitre118("Supprimer la destination"), "✕"), DEST118)) }),
+    site118({ site: "creation_destination", fichier: "destinations.js", route: "POST /api/destinations", cause: C118("handlers/destinations.rs", "CAUSE_DESTINATION_NON_CREEE"), puits: PUITS_DESTINATIONS118,
+      preparer: async (L) => { await L.destinations.loadDestinations(); L.destinations.openDestinationForm(null); poser118({ "#df-name": "sortie-118", "#df-endpoint": "tcp://collecteur.example:514" }); },
+      geste: async (L) => { if (typeof L.destinations.saveDestination === "function") return L.destinations.saveDestination(null); const f = qs118("#destination-form"); f.onsubmit({ preventDefault() {} }); await laisser118(); },
+      apres: () => (qs118("#destination-form") ? "" : "le formulaire refusé est refermé") }),
+    site118({ site: "modification_destination", fichier: "destinations.js", route: "POST /api/destinations/9", cause: C118("handlers/destinations.rs", "CAUSE_DESTINATION_INCHANGEE"), puits: PUITS_DESTINATIONS118,
+      preparer: async (L) => { await L.destinations.loadDestinations(); L.destinations.openDestinationForm(DEST118); },
+      geste: async (L) => { if (typeof L.destinations.saveDestination === "function") return L.destinations.saveDestination(DEST118); const f = qs118("#destination-form"); f.onsubmit({ preventDefault() {} }); await laisser118(); } }),
+    // ─ politiques d'index ─
+    site118({ site: "retrait_politique_d_index", fichier: "index_policies.js", route: "DELETE /api/index-policies/4", cause: SUPPRESSION_DE_CONTENU118, puits: PUITS_INDEX118,
+      preparer: async (L) => { await L.index.loadIndexPolicies(); }, geste: confirmerPuis118({}, () => cliquer118(qs118("#index-policy-list"), parTexte118("Supprimer"), "Supprimer")) }),
+    site118({ site: "modification_politique_d_index", fichier: "index_policies.js", route: "POST /api/index-policies/4", cause: C118("handlers/index_policies.rs", "CAUSE_POLITIQUE_D_INDEX_INCHANGEE"), puits: PUITS_INDEX118,
+      preparer: async (L) => { await L.index.loadIndexPolicies(); const h = qs118("#index-policy-form"); if (h) { h.hidden = true; h.replaceChildren(); } L.index.openIndexPolicyForm(INDEX118.indexes[0]); },
+      geste: confirmerPuis118({}, () => cliquer118(qs118("#index-policy-form"), parTexte118("Enregistrer"), "Enregistrer")) }),
+    site118({ site: "creation_politique_d_index", fichier: "index_policies.js", route: "POST /api/index-policies", cause: C118("handlers/index_policies.rs", "CAUSE_POLITIQUE_D_INDEX_NON_CREEE"), puits: PUITS_INDEX118,
+      preparer: async (L) => { await L.index.loadIndexPolicies(); const h = qs118("#index-policy-form"); if (h) { h.hidden = true; h.replaceChildren(); } L.index.openIndexPolicyForm({ name: "neuf-118" }); },
+      geste: confirmerPuis118({}, () => cliquer118(qs118("#index-policy-form"), parTexte118("Créer"), "Créer")) }),
+    // ─ règles d'ingestion ─
+    site118({ site: "retrait_regle_d_ingestion", fichier: "processors.js", route: "DELETE /api/processors/3", cause: SUPPRESSION_DE_CONTENU118, puits: PUITS_PROCESSEURS118,
+      preparer: async (L) => { await L.processeurs.loadProcessors(); }, geste: confirmerPuis118({}, () => cliquer118(qs118("#processor-list"), parTexte118("Supprimer"), "Supprimer")) }),
+    site118({ site: "creation_regle_d_ingestion", fichier: "processors.js", route: "POST /api/processors", cause: C118("handlers/processors.rs", "CAUSE_REGLE_D_INGESTION_NON_CREEE"), puits: PUITS_PROCESSEURS118,
+      preparer: async (L) => { await L.processeurs.loadProcessors(); const h = qs118("#processor-form"); if (h) { h.hidden = true; h.replaceChildren(); } L.processeurs.openProcessorForm(); },
+      geste: () => cliquer118(qs118("#processor-form"), parTexte118("Créer"), "Créer") }),
+    // ─ contenus de détection : formulaires par l'enveloppe partagée, retraits par la ligne ─
+    site118({ site: "formulaire_regle", fichier: "core.js", route: "POST /api/rules", cause: C118("handlers/detection.rs", "CAUSE_REGLE_NON_CREEE"), puits: puitsDans118("#rule-form", "formulaire"),
+      geste: (L) => L.noyau.contentSubmit("/rules", { name: "regle-118" }, "#rf-result"), apres: () => (nu118(qs118("#rf-result")) === "" ? "" : `la ligne d'actions porte « ${nu118(qs118("#rf-result")).slice(0, 120)} »`) }),
+    site118({ site: "formulaire_parseur", fichier: "core.js", route: "POST /api/parsers/5", cause: C118("handlers/detection.rs", "CAUSE_PARSEUR_INCHANGE"), puits: puitsDans118("#parser-form", "formulaire"),
+      geste: (L) => L.noyau.contentSubmit("/parsers/5", { name: "parseur-118" }, "#pf-result"), apres: () => (nu118(qs118("#pf-result")) === "" ? "" : `la ligne d'actions porte « ${nu118(qs118("#pf-result")).slice(0, 120)} »`) }),
+    site118({ site: "formulaire_playbook", fichier: "core.js", route: "POST /api/playbooks", cause: C118("handlers/playbooks.rs", "CAUSE_PLAYBOOK_NON_CREE"), puits: puitsDans118("#pb-form", "formulaire"),
+      geste: (L) => L.noyau.contentSubmit("/playbooks", { name: "pb-118" }, "#pb-result"), apres: () => (nu118(qs118("#pb-result")) === "" ? "" : `la ligne d'actions porte « ${nu118(qs118("#pb-result")).slice(0, 120)} »`) }),
+    site118({ site: "retrait_regle", fichier: "detection_admin.js", route: "DELETE /api/rules/11", cause: SUPPRESSION_DE_CONTENU118, puits: PUITS_REGLES118,
+      preparer: async (L) => { rendreDans118("#rule-list", L.detection.ruleRow(REGLE118)); }, geste: confirmerPuis118({}, () => cliquer118(qs118("#rule-list"), parTitre118("Supprimer"), "✕")) }),
+    site118({ site: "retrait_parseur", fichier: "detection_admin.js", route: "DELETE /api/parsers/5", cause: SUPPRESSION_DE_CONTENU118, puits: PUITS_PARSEURS118,
+      preparer: async (L) => { if (typeof L.detection.parserRow === "function") rendreDans118("#parser-list", L.detection.parserRow(PARSEUR118)); else await L.detection.loadParsers(); },
+      geste: confirmerPuis118({}, () => cliquer118(qs118("#parser-list"), parTitre118("Supprimer"), "✕")) }),
+    site118({ site: "retrait_playbook", fichier: "detection_admin.js", route: "DELETE /api/playbooks/7", cause: SUPPRESSION_DE_CONTENU118, puits: PUITS_PLAYBOOKS118,
+      preparer: async (L) => { rendreDans118("#pb-list", L.detection.pbRow(PLAYBOOK118, "observe")); }, geste: confirmerPuis118({}, () => cliquer118(qs118("#pb-list"), parTitre118("Supprimer"), "✕")) }),
+    // ─ canaux de notification : la forme de réponse de CHAQUE gestionnaire, telle quelle ─
+    site118({ site: "creation_canal", fichier: "detection_admin.js", route: "POST /api/notifiers", reponse: { statut: 200, corps: { error: CAUSE_CANAL_NON_CREE118.texte } }, attendu: attenduNomme118(CAUSE_CANAL_NON_CREE118.texte), puits: PUITS_CANAUX118,
+      preparer: async (L) => { L.S.editingNotif = null; const f = qs118("#notif-form"); if (f) f.classList.remove("hidden"); poser118({ "#nf-name": "canal-118", "#nf-kind": "ntfy", "#nf-url": "https://ntfy.example/t", "#nf-sev": "2", "#nf-config": "" }); },
+      geste: async (L) => { if (typeof L.detection.enregistrerLeCanalDuFormulaire === "function") return L.detection.enregistrerLeCanalDuFormulaire({ preventDefault() {} }); qs118("#notif-form").dispatchEvent(new Evenement("submit", { bubbles: false })); await laisser118(); },
+      apres: () => (qs118("#notif-form") && !qs118("#notif-form").classList.contains("hidden") ? "" : "le formulaire refusé est refermé comme si le canal existait") }),
+    site118({ site: "modification_canal", fichier: "detection_admin.js", route: "POST /api/notifiers/6", reponse: { statut: 503, corps: "" }, attendu: attenduPasserelle118, puits: PUITS_CANAUX118,
+      preparer: async (L) => { L.S.editingNotif = 6; const f = qs118("#notif-form"); if (f) f.classList.remove("hidden"); poser118({ "#nf-name": "canal-118", "#nf-config": "" }); },
+      geste: async (L) => { if (typeof L.detection.enregistrerLeCanalDuFormulaire === "function") return L.detection.enregistrerLeCanalDuFormulaire({ preventDefault() {} }); qs118("#notif-form").dispatchEvent(new Evenement("submit", { bubbles: false })); await laisser118(); } }),
+    site118({ site: "retrait_canal", fichier: "detection_admin.js", route: "DELETE /api/notifiers/6", reponse: { statut: 503, corps: "" }, attendu: attenduPasserelle118, puits: PUITS_CANAUX118,
+      preparer: async (L) => { if (typeof L.detection.notifRow === "function") rendreDans118("#notif-list", L.detection.notifRow(CANAL118)); else await L.detection.loadNotifiers(); },
+      geste: confirmerPuis118({}, () => { const rangee = cueillir118(qs118("#notif-list"), (e) => e.classList && e.classList.contains("rulerow"))[0]; const b = rangee ? rangee.children.filter((c) => c.tagName === "BUTTON").pop() : null; if (!b) throw new Error("(✕ absent)"); return Promise.resolve(b.onclick()); }) }),
+    // ─ runbooks ─
+    site118({ site: "clonage_runbook", fichier: "runbooks.js", route: "POST /api/runbooks/8/clone", cause: C118("handlers/incidents.rs", "CAUSE_RUNBOOK_NON_CLONE"), puits: PUITS_RUNBOOKS118,
+      preparer: async (L) => { rendreDans118("#rb-list", L.runbooks.rbRow(RUNBOOK118)); }, geste: confirmerPuis118({ name: "rb-118 (copie)" }, () => cliquer118(qs118("#rb-list"), parTexte118("Cloner"), "Cloner")) }),
+    site118({ site: "retrait_runbook", fichier: "runbooks.js", route: "DELETE /api/runbooks/8", cause: C118("handlers/incidents.rs", "CAUSE_RUNBOOK_NON_SUPPRIME"), puits: PUITS_RUNBOOKS118,
+      preparer: async (L) => { rendreDans118("#rb-list", L.runbooks.rbRow(RUNBOOK118)); }, geste: confirmerPuis118({}, () => cliquer118(qs118("#rb-list"), parTitre118("Supprimer"), "✕")) }),
+    site118({ site: "enregistrement_runbook", fichier: "runbooks.js", route: "POST /api/runbooks", cause: C118("handlers/incidents.rs", "CAUSE_RUNBOOK_NON_CREE"), puits: PUITS_RUNBOOKS118,
+      preparer: async (L) => { await L.runbooks.loadRunbooks(); await L.runbooks.openEditor(null); const f = qs118("#rb-editor form"); const nom = f ? cueillir118(f, (e) => e.tagName === "INPUT" && e.getAttribute && e.getAttribute("aria-label") === "Nom du runbook")[0] : null; if (nom) nom.value = "rb-neuf-118"; const titre = f ? cueillir118(f, (e) => e.tagName === "INPUT" && e.dataset && e.dataset.f === "title")[0] : null; if (titre) titre.value = "trier"; },
+      geste: async () => { const f = qs118("#rb-editor form"); if (!f || typeof f.onsubmit !== "function") throw new Error("(éditeur absent)"); await f.onsubmit({ preventDefault() {} }); } }),
+    // ─ connecteurs : le poll manuel (sa trace est jugée en (o)) ─
+    site118({ site: "poll_manuel_connecteur", fichier: "connectors.js", route: "POST /api/connectors/5/poll", reponse: refusNomme118(404, "connecteur introuvable"), attendu: attenduNomme118("connecteur introuvable"), puits: puitsAvant118("#connector-list", "connecteurs"),
+      preparer: async (L) => { await L.connecteurs.loadConnectors(); },
+      geste: confirmerPuis118({}, (L) => lancer118(L.connecteurs, "pollConnector", () => cliquer118(qs118("#connector-list"), parTexte118("Collecter maintenant"), "Collecter maintenant"), CONNECTEUR118)) }),
+    // ─ rétention ─
+    site118({ site: "enregistrement_retention", fichier: "retention.js", route: "PUT /api/retention", cause: C118("handlers/admin_ui.rs", "CAUSE_RETENTION_INCHANGEE"), puits: puitsDans118("#retention-form", "retention"),
+      preparer: async (L) => { await L.retention.loadRetention(); const i = cueillir118(qs118("#retention-fields"), (e) => e.tagName === "INPUT" && e.getAttribute && e.getAttribute("data-key") === "retention_days")[0]; if (i) i.value = "40"; },
+      geste: confirmerPuis118({}, (L) => lancer118(L.retention, "enregistrerLaRetention", () => { qs118("#retention-form").dispatchEvent(new Evenement("submit", { bubbles: false })); }, { preventDefault() {} })) }),
+    // ─ modèles de données ─
+    ...[["creation_modele", "POST /api/datamodels", "#dm-models-list", "modeles_de_donnees", (L) => L.modeles.newModel(), { name: "m118" }],
+      ["retrait_modele", "DELETE /api/datamodels/1", "#dm-models-list", "modeles_de_donnees", (L) => lancer118(L.modeles, "delModel", () => { throw new Error("(delModel absent)"); }, MODELES118.models[0]), {}],
+      ["creation_objet", "POST /api/datamodels/1/objects", "#dm-objects-list", "objets_de_modele", (L) => (appeler118(L.modeles, "selectModel", 1), L.modeles.newObject()), { name: "o118" }],
+      ["retrait_objet", "DELETE /api/datamodels/objects/2", "#dm-objects-list", "objets_de_modele", (L) => lancer118(L.modeles, "delObject", () => { throw new Error("(delObject absent)"); }, MODELES118.objects[0]), {}],
+      ["creation_champ", "POST /api/datamodels/objects/2/fields", "#dm-fields-list", "champs_de_modele", (L) => (appeler118(L.modeles, "selectModel", 1), appeler118(L.modeles, "selectObject", 2), L.modeles.newField()), { name: "f118" }],
+      ["retrait_champ", "DELETE /api/datamodels/fields/3", "#dm-fields-list", "champs_de_modele", (L) => lancer118(L.modeles, "delField", () => { throw new Error("(delField absent)"); }, MODELES118.fields[0]), {}],
+      ["retrait_dataset", "DELETE /api/datasets/4", "#dm-datasets-list", "datasets", (L) => lancer118(L.modeles, "delDataset", () => { throw new Error("(delDataset absent)"); }, DATASET118), {}]]
+      .map(([nom, route, sel, surface, lancer, valeurs]) => site118({ site: nom, fichier: "datamodels.js", route, cause: C118("handlers/datamodels.rs", "CAUSE_MODELE_DE_DONNEES_NON_ECRIT"), puits: puitsAvant118(sel, surface),
+        preparer: async (L) => { await L.modeles.reload(); }, geste: confirmerPuis118(valeurs, lancer) })),
+    site118({ site: "execution_dataset", fichier: "datamodels.js", route: "POST /api/datasets/4/run", reponse: refusNomme118(500, "EXÉCUTION REFUSÉE-118 : le jeu de données n'a pas été exécuté."), attendu: attenduNomme118("EXÉCUTION REFUSÉE-118 : le jeu de données n'a pas été exécuté."), puits: puitsAvant118("#dm-datasets-list", "datasets"),
+      preparer: async (L) => { await L.modeles.reload(); }, geste: (L) => lancer118(L.modeles, "runDataset", () => { throw new Error("(runDataset absent)"); }, DATASET118) }),
+    // ─ détection avancée ─
+    ...[["creation_correlation", "POST /api/correlations", C118("handlers/detection_advanced.rs", "CAUSE_CORRELATION_NON_CREEE"), "#detadv-corr-list", "correlations", (L) => lancer118(L.avancee, "editCorrelation", () => { throw new Error("(editCorrelation absent)"); }, null), { name: "c-neuve-118" }],
+      ["modification_correlation", "POST /api/correlations/12", C118("handlers/detection_advanced.rs", "CAUSE_CORRELATION_INCHANGEE"), "#detadv-corr-list", "correlations", (L) => lancer118(L.avancee, "editCorrelation", () => { throw new Error("(editCorrelation absent)"); }, CORRELATION118), {}],
+      ["retrait_correlation", "DELETE /api/correlations/12", SUPPRESSION_DE_CONTENU118, "#detadv-corr-list", "correlations", (L) => lancer118(L.avancee, "deleteCorrelation", () => { throw new Error("(deleteCorrelation absent)"); }, CORRELATION118), {}],
+      ["creation_ligne_de_base", "POST /api/baselines", C118("handlers/detection_advanced.rs", "CAUSE_REFERENCE_UEBA_NON_CREEE"), "#detadv-base-list", "lignes_de_base", (L) => lancer118(L.avancee, "editBaseline", () => { throw new Error("(editBaseline absent)"); }, null), { name: "b-neuve-118" }],
+      ["modification_ligne_de_base", "POST /api/baselines/15", C118("handlers/detection_advanced.rs", "CAUSE_REFERENCE_UEBA_INCHANGEE"), "#detadv-base-list", "lignes_de_base", (L) => lancer118(L.avancee, "editBaseline", () => { throw new Error("(editBaseline absent)"); }, LIGNE_DE_BASE118), {}],
+      ["retrait_ligne_de_base", "DELETE /api/baselines/15", SUPPRESSION_DE_CONTENU118, "#detadv-base-list", "lignes_de_base", (L) => lancer118(L.avancee, "deleteBaseline", () => { throw new Error("(deleteBaseline absent)"); }, LIGNE_DE_BASE118), {}]]
+      .map(([nom, route, cause, sel, surface, lancer, valeurs]) => site118({ site: nom, fichier: "detadv.js", route, cause, puits: puitsAvant118(sel, surface), geste: confirmerPuis118(valeurs, lancer) })),
+    ...[["essai_correlation", "POST /api/correlations/12/test", "#detadv-corr-list", "correlations", (L) => lancer118(L.avancee, "testCorrelation", () => { throw new Error("(testCorrelation absent)"); }, CORRELATION118)],
+      ["essai_ligne_de_base", "POST /api/baselines/15/test", "#detadv-base-list", "lignes_de_base", (L) => L.avancee.testBaseline(LIGNE_DE_BASE118)]]
+      .map(([nom, route, sel, surface, lancer]) => site118({ site: nom, fichier: "detadv.js", route, reponse: refusNomme118(500, "ESSAI REFUSÉ-118 : l'évaluation n'a pas eu lieu."), attendu: attenduNomme118("ESSAI REFUSÉ-118 : l'évaluation n'a pas eu lieu."), puits: puitsAvant118(sel, surface), geste: lancer })),
+    // ─ objets de savoir ─
+    site118({ site: "creation_objet_de_savoir", fichier: "knowledge.js", route: "POST /api/knowledge/alias", cause: C118("handlers/knowledge.rs", "CAUSE_OBJET_DE_SAVOIR_NON_ECRIT"), puits: puitsAvant118("#ko-alias-list", "objets_de_savoir:alias"),
+      preparer: async (L) => { await L.savoir.loadKnowledge(); }, geste: confirmerPuis118({ canonical: "src_ip" }, (L) => L.savoir.create("alias", "alias de champ", [{ name: "canonical", label: "Champ", required: true }], (v) => ({ canonical: v.canonical }))) }),
+    site118({ site: "retrait_objet_de_savoir", fichier: "knowledge.js", route: "DELETE /api/knowledge/tag/9", cause: C118("handlers/knowledge.rs", "CAUSE_OBJET_DE_SAVOIR_NON_ECRIT"), puits: puitsAvant118("#ko-tag-list", "objets_de_savoir:tag"),
+      preparer: async (L) => { await L.savoir.loadKnowledge(); }, geste: confirmerPuis118({}, (L) => lancer118(L.savoir, "del", () => { throw new Error("(del absent)"); }, "tag", 9, "tag-118", "le tag")) }),
+    // ─ magasin d'indicateurs ─
+    site118({ site: "ajout_indicateur", fichier: "threatintel.js", route: "POST /api/threat-intel/iocs", cause: C118("handlers/threat_intel.rs", "CAUSE_INDICATEURS_NON_AJOUTES"), puits: puitsAvant118("#ti-ioc-list", "indicateurs"),
+      geste: confirmerPuis118({ value: "203.0.113.9" }, (L) => lancer118(L.renseignement, "addIocPrompt", () => { throw new Error("(addIocPrompt absent)"); })) }),
+    site118({ site: "import_stix", fichier: "threatintel.js", route: "POST /api/threat-intel/import", cause: C118("handlers/threat_intel.rs", "CAUSE_IMPORT_STIX_NON_ECRIT"), puits: puitsAvant118("#ti-ioc-list", "indicateurs"),
+      preparer: async () => { poser118({ "#ti-imp-fmt": "stix", "#ti-imp-body": "{\"type\":\"bundle\",\"objects\":[]}", "#ti-imp-source": "" }); },
+      geste: (L) => lancer118(L.renseignement, "doImport", () => { throw new Error("(doImport absent)"); }, { preventDefault() {} }),
+      apres: () => (nu118(qs118("#ti-imp-result")) === "" ? "" : `la ligne du formulaire porte « ${nu118(qs118("#ti-imp-result")).slice(0, 120)} »`) }),
+    // ─ sources, flotte ─
+    site118({ site: "reglage_source", fichier: "sources.js", route: "PUT /api/sources/settings", cause: C118("handlers/sources.rs", "CAUSE_REGLAGES_DE_SOURCE_INCHANGES"), puits: puitsAvant118("#sources-body", "sources"),
+      geste: (L) => lancer118(L.sources, "sourcePut", () => { throw new Error("(sourcePut absent)"); }, "src-118", "set_label", "étiquette-118") }),
+    site118({ site: "cadence_source", fichier: "sources.js", route: "PUT /api/sources/settings", cause: C118("handlers/sources.rs", "CAUSE_REGLAGES_DE_SOURCE_INCHANGES"), puits: puitsAvant118("#sources-body", "sources"),
+      geste: confirmerPuis118({ nature: "evenementielle" }, (L) => lancer118(L.sources, "declareCadence", () => { throw new Error("(declareCadence absent)"); }, { source: "src-118", cadence_declaree: "non_declaree" })) }),
+    site118({ site: "declaration_hote", fichier: "fleet.js", route: "PUT /api/hosts/settings", cause: C118("handlers/hotes_declares.rs", "CAUSE_DECLARATION_D_HOTE_INCHANGEE"), puits: puitsAvant118("#fleet-body", "flotte"),
+      geste: confirmerPuis118({ attente: "silence_attendu", motif: "banc de test" }, (L) => lancer118(L.flotte, "declareHostExpectation", () => { throw new Error("(declareHostExpectation absent)"); }, { host: "h118", attente: "non_declare" })) }),
+    site118({ site: "retrait_declaration_hote", fichier: "fleet.js", route: "PUT /api/hosts/settings", cause: C118("handlers/hotes_declares.rs", "CAUSE_DECLARATION_D_HOTE_INCHANGEE"), puits: puitsAvant118("#fleet-body", "flotte"),
+      geste: confirmerPuis118({}, (L) => lancer118(L.flotte, "clearHostExpectation", () => { throw new Error("(clearHostExpectation absent)"); }, { host: "h118" })) }),
+    // ─ suppressions & silences ─
+    // L'exclusion d'affichage : `suppressions_put` sert son refus en TEXTE BRUT — la phrase entière doit arriver.
+    site118({ site: "exclusion_d_affichage", fichier: "suppressions.js", route: "PUT /api/suppressions", reponse: { statut: 503, corps: EXCLUSION118.texte }, cause: EXCLUSION118, puits: puitsAvant118("#suppressions-body", "suppressions"),
+      geste: (L) => lancer118(L.suppressions, "suppressionsPut", () => { throw new Error("(suppressionsPut absent)"); }, "set_operator_excl", "203.0.113.7") }),
+    site118({ site: "creation_silence", fichier: "suppressions.js", route: "POST /api/silences", cause: C118("handlers/alerting.rs", "CAUSE_SILENCE_NON_POSE"), puits: puitsAvant118("#suppressions-body", "suppressions"),
+      geste: confirmerPuis118({ matchers: "host=web-118", minutes: "60", reason: "" }, (L) => lancer118(L.suppressions, "silenceDialog", () => { throw new Error("(silenceDialog absent)"); }, null)) }),
+    site118({ site: "modification_silence", fichier: "suppressions.js", route: "PUT /api/silences/13", cause: C118("handlers/alerting.rs", "CAUSE_SILENCE_INCHANGE"), puits: puitsAvant118("#suppressions-body", "suppressions"),
+      geste: confirmerPuis118({ matchers: "host=web-118", minutes: "30" }, (L) => lancer118(L.suppressions, "silenceDialog", () => { throw new Error("(silenceDialog absent)"); }, SILENCE118)) }),
+    site118({ site: "levee_silence", fichier: "suppressions.js", route: "DELETE /api/silences/13", cause: C118("handlers/alerting.rs", "CAUSE_SILENCE_NON_LEVE"), puits: puitsAvant118("#suppressions-body", "suppressions"),
+      geste: confirmerPuis118({}, (L) => lancer118(L.suppressions, "deleteSilence", () => { throw new Error("(deleteSilence absent)"); }, SILENCE118)) }),
+    // ─ routage : politiques et silences ─
+    site118({ site: "creation_politique_de_notification", fichier: "alerting.js", route: "POST /api/notification-policies", cause: C118("handlers/alerting.rs", "CAUSE_POLITIQUE_DE_NOTIFICATION_NON_CREEE"), puits: puitsAvant118("#policies-body", "politiques_de_notification"),
+      preparer: async (L) => { await L.routage.loadPolicies(); poser118({ "#pol-matchers": "host=web-118", "#pol-contacts": "1" }); },
+      geste: async (L) => { if (typeof L.routage.enregistrerLaPolitiqueDuFormulaire === "function") return L.routage.enregistrerLaPolitiqueDuFormulaire({ preventDefault() {} }); qs118("#policy-form").dispatchEvent(new Evenement("submit", { bubbles: false })); await laisser118(); },
+      apres: () => (nu118(qs118("#pol-result")) === "" ? "" : `la ligne du formulaire porte « ${nu118(qs118("#pol-result")).slice(0, 120)} »`) }),
+    site118({ site: "retrait_politique_de_notification", fichier: "alerting.js", route: "DELETE /api/notification-policies/14", cause: C118("handlers/alerting.rs", "CAUSE_POLITIQUE_DE_NOTIFICATION_NON_SUPPRIMEE"), puits: puitsAvant118("#policies-body", "politiques_de_notification"),
+      preparer: async (L) => { await L.routage.loadPolicies(); }, geste: confirmerPuis118({}, () => cliquer118(qs118("#policies-body"), parTitre118("Supprimer la route"), "✕")) }),
+    site118({ site: "pose_silence_du_routage", fichier: "alerting.js", route: "POST /api/silences", cause: C118("handlers/alerting.rs", "CAUSE_SILENCE_NON_POSE"), puits: puitsAvant118("#silences-body", "silences"),
+      preparer: async (L) => { await L.routage.loadSilences(); poser118({ "#sil-matchers": "host=web-118", "#sil-duration": "60", "#sil-reason": "" }); },
+      geste: async (L) => { if (typeof L.routage.poserLeSilenceDuFormulaire === "function") return L.routage.poserLeSilenceDuFormulaire({ preventDefault() {} }); qs118("#silence-form").dispatchEvent(new Evenement("submit", { bubbles: false })); await laisser118(); },
+      apres: () => (nu118(qs118("#sil-result")) === "" ? "" : `la ligne du formulaire porte « ${nu118(qs118("#sil-result")).slice(0, 120)} »`) }),
+    site118({ site: "levee_silence_du_routage", fichier: "alerting.js", route: "DELETE /api/silences/13", cause: C118("handlers/alerting.rs", "CAUSE_SILENCE_NON_LEVE"), puits: puitsAvant118("#silences-body", "silences"),
+      preparer: async (L) => { await L.routage.loadSilences(); }, geste: confirmerPuis118({}, () => cliquer118(qs118("#silences-body"), parTitre118("Lever le silence"), "✕")) }),
+    // ─ import Sigma en masse : sa fenêtre porte son puits ─
+    site118({ site: "import_sigma_en_masse", fichier: "sigmaimport.js", route: "POST /api/sigma/import-bulk", cause: C118("sigma.rs", "CAUSE_IMPORT_SIGMA_EN_MASSE_NON_ECRIT"),
+      puits: () => { const f = formulaireDeLaFenetre118(); return puitsNomme118(f, "import_sigma"); },
+      preparer: async (L) => { L.sigma.openSigmaImport(); await laisser118(); const f = formulaireDeLaFenetre118(); const t = f ? cueillir118(f, (e) => e.getAttribute && e.getAttribute("data-n") === "paste")[0] : null; if (t) t.value = "title: regle-118\nlogsource: {}\ndetection: {}"; },
+      geste: async () => { const f = formulaireDeLaFenetre118(); if (!f || typeof f.onsubmit !== "function") throw new Error("(fenêtre absente)"); await f.onsubmit({ preventDefault() {} }); },
+      apres: () => { const f = formulaireDeLaFenetre118(); const err = f ? cueillir118(f, (e) => e.classList && e.classList.contains("modal-err"))[0] : null; return err && !err.hidden ? `la zone d'erreur porte « ${nu118(err).slice(0, 120)} »` : ""; } }),
+    // ─ lookups ─
+    site118({ site: "chargement_lookup", fichier: "lookups.js", route: "POST /api/lookups", cause: C118("handlers/users_lookups.rs", "CAUSE_TABLE_D_ENRICHISSEMENT_INCHANGEE"), puits: puitsAvant118("#lookup-list", "lookups"),
+      preparer: async (L) => { await L.lookups.loadLookups(); poser118({ "#lk-name": "geo118", "#lk-key": "ip", "#lk-rows": "[{\"ip\":\"203.0.113.9\",\"pays\":\"fr\"}]" }); },
+      geste: async (L) => { if (typeof L.lookups.chargerLeLookupDuFormulaire === "function") return L.lookups.chargerLeLookupDuFormulaire({ preventDefault() {} }); qs118("#lookup-form").dispatchEvent(new Evenement("submit", { bubbles: false })); await laisser118(); },
+      apres: () => (/^(|\.\.\.)$/.test(nu118(qs118("#lk-result"))) ? "" : `la ligne du formulaire porte « ${nu118(qs118("#lk-result")).slice(0, 120)} »`) }),
+    site118({ site: "retrait_lookup", fichier: "lookups.js", route: "DELETE /api/lookups/geo118", cause: C118("handlers/users_lookups.rs", "CAUSE_TABLE_D_ENRICHISSEMENT_INCHANGEE"), puits: puitsAvant118("#lookup-list", "lookups"),
+      preparer: async (L) => { rendreDans118("#lookup-list", L.lookups.lookupRow(LOOKUP118)); }, geste: confirmerPuis118({}, () => cliquer118(qs118("#lookup-list"), parTitre118("Supprimer"), "✕")) }),
+  ];
+  const SITES118 = [...COMMUTATEURS118, ...GESTES118];
+  const causesManquantes118 = SITES118.filter((s) => s.cause && !(s.cause.texte.length > 100 && (s.cause.servie || s.cause === SUPPRESSION_DE_CONTENU118 || s.cause === EXCLUSION118))).map((s) => `${s.site}/${s.cause.nom}`);
+  instrument118(causesManquantes118.length === 0 && SUPPRESSION_DE_CONTENU118.texte.length > 100 && EXCLUSION118.texte.length > 100,
+    `une cause jouée ici n'est plus lue dans le démon, ou n'y est plus servie : ${JSON.stringify(causesManquantes118)}`);
+
+  // Une promesse rejetée que personne ne traite (un écouteur `async` sans capture, arbre d'avant) ferait TOMBER le banc :
+  // elle est inscrite comme le rejet du site en cours, jamais tue.
+  const rejetsNonTraites118 = [];
+  const surRejetNonTraite118 = (raison) => { rejetsNonTraites118.push(String((raison && raison.message) || raison).slice(0, 200)); };
+  const jouerUnSite118 = async (s, L, reponse) => {
+    const calquesDAvant = new Set(document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")));
+    rejetsNonTraites118.length = 0;
+    servis118 = { ...LECTURES118, [s.route]: reponse };
+    if (s.preparer) { try { await s.preparer(L); } catch (e) { /* le geste dira ce qui manque */ } }
+    await laisser118();
+    appels118.length = 0;
+    const avant = avisDe118().length;
+    let rejet = "";
+    try { await s.geste(L); } catch (e) { rejet = String((e && e.message) || e).slice(0, 200); }
+    await laisser118(40);
+    if (!rejet && rejetsNonTraites118.length) rejet = "(promesse rejetée non traitée) " + rejetsNonTraites118.join(" | ");
+    const p = s.puits();
+    const r = { site: s.site, appels: compter118(s.route), rejet, avis: avisDe118().slice(avant).map((t) => t.slice(0, 220)), nature: p && p.getAttribute("data-refus-d-un-geste"),
+      texte: nu118(p), phrase: p && p.children[0] ? nu118(p.children[0]) : "", montre: !!p && p.hidden === false, role: p && p.getAttribute("role"), apres: s.apres ? s.apres() : "" };
+    // Seules les fenêtres que CE geste a ouvertes partent : un calque d'avant (le formulaire d'une règle) reste en place.
+    document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !calquesDAvant.has(c)).forEach((c) => c.remove());
+    return r;
+  };
+
+  globalThis.fetch = simulacre118;
+  globalThis.setTimeout = (fn, ms) => (ms >= 1000 ? 0 : minuterieOrigine118(fn, ms >= 100 ? 0 : ms));
+  for (const L of [FR118, EN118]) { L.S.isAdmin = true; L.S.AUTH = { user: "hugo", role: "admin", auth_method: "cookie" }; }
+  process.on("unhandledRejection", surRejetNonTraite118);
+  try {
+    // ══ (e) + (d) — CHAQUE SITE, LA RÉPONSE DE SON GESTIONNAIRE, DANS LES DEUX LANGUES ═══════════════════════════
+    const ecartsE118 = [], ecartsD118 = [];
+    const mesureED118 = [];
+    for (const L of [FR118, EN118]) {
+      for (const s of SITES118) {
+        const r = await jouerUnSite118(s, L, s.reponse);
+        const a = s.attendu(L);
+        if (L === FR118) mesureED118.push(`${s.site} : puits « ${r.nature} » « ${r.texte.slice(0, 80)} » ; avis ${JSON.stringify(r.avis.map((x) => x.slice(0, 110)))}${r.rejet ? ` ; rejet « ${r.rejet.slice(0, 80)} »` : ""}`);
+        const ecart = [];
+        if (a.famille && !FAMILLE_RIEN_N_A_CHANGE118.includes(a.nature)) ecart.push(`(instrument) la cause servie n'est pas de la famille « rien n'a changé » : « ${a.nature} »`);
+        if (r.appels !== 1) ecart.push(`${r.appels} envoi(s) de \`${s.route}\``);
+        if (r.nature !== a.nature || !r.montre || r.role !== "alert" || r.texte !== a.texte) ecart.push(`puits « ${r.nature} » montré=${r.montre} — « ${r.texte.slice(0, 160)} »`);
+        if (r.avis.length) ecart.push(`avis ${JSON.stringify(r.avis)}`);
+        if (r.rejet) ecart.push(`rejet non traité « ${r.rejet} »`);
+        if (r.apres) ecart.push(r.apres);
+        if (ACCUSE118.test(r.phrase) || (L === EN118 && ACCENTS118.test(r.phrase))) ecart.push(`la face accuse, ou reste française : « ${r.phrase} »`);
+        if (ecart.length) (COMMUTATEURS118.includes(s) ? ecartsE118 : ecartsD118).push(`${L.nom}/${s.site} : ${ecart.join(" ; ")}`);
+      }
+    }
+    console.log(`[118ed0] le refus, site par site : ${mesureED118.join(" | ")}`);
+    // (e1) LA PANNE DE TRANSPORT, site par site : ni refus ni effet établis.
+    const faceTransport118 = face118(FR118, "demande_non_aboutie");
+    for (const s of SITES118) {
+      const r = await jouerUnSite118(s, FR118, reseauCoupe118);
+      if (r.nature !== "demande_non_aboutie" || !r.montre || r.texte !== serre118(faceTransport118 + " « Failed to fetch »") || r.avis.length || r.rejet)
+        (COMMUTATEURS118.includes(s) ? ecartsE118 : ecartsD118).push(`transport coupé/${s.site} : « ${r.nature} » « ${r.texte.slice(0, 140)} » avis ${JSON.stringify(r.avis)}${r.rejet ? " rejet « " + r.rejet + " »" : ""}`);
+    }
+    // (e2) CONTRÔLES NÉGATIFS : un geste accepté efface le refus d'avant (une bascule, un retrait, un formulaire) ; un
+    // refus en texte brut étranger à la famille reste « refusé », entier.
+    for (const [s, accepte] of [[COMMUTATEURS118[0], { corps: { ok: true } }], [GESTES118.find((x) => x.site === "retrait_destination"), { statut: 204, corps: "" }], [GESTES118.find((x) => x.site === "formulaire_regle"), { corps: { id: 11 } }]]) {
+      await jouerUnSite118(s, FR118, s.reponse);
+      const r = await jouerUnSite118(s, FR118, accepte);
+      if (r.montre || r.nature !== null) (COMMUTATEURS118.includes(s) ? ecartsE118 : ecartsD118).push(`${s.site} accepté après un refus : le refus d'avant survit (« ${r.nature} »)`);
+    }
+    {
+      const texteLong = "EXCLUSION REFUSÉE-118 : " + "la valeur n'est pas une adresse ni un préfixe reconnu, ".repeat(6) + "rien n'est changé.";
+      const s = GESTES118.find((x) => x.site === "exclusion_d_affichage");
+      const r = await jouerUnSite118(s, FR118, { statut: 409, corps: texteLong });
+      if (r.nature !== "refus_nomme" || r.texte !== serre118(face118(FR118, "refus_nomme") + " « " + texteLong + " »")) ecartsD118.push(`un refus en texte brut de ${texteLong.length} caractères n'est pas dit ENTIER : « ${r.nature} » « ${r.texte.slice(0, 80)}… » (${r.texte.length} caractères)`);
+    }
+    // (e3) LE DÉFAUT DU COMMUTATEUR : sans `onRefus`, la forme partagée dans un puits posé avant la liste qui le porte —
+    // jamais « Bascule refusée : » ; un geste accepté l'efface. Joué dans les deux langues, sur une liste fabriquée.
+    for (const L of [FR118, EN118]) {
+      const section = new Element("section"), liste = new Element("div"); liste.id = "liste-du-temoin-118"; section.appendChild(liste); document.body.appendChild(section);
+      const rangee = new Element("div"); rangee.className = "rulerow"; liste.appendChild(rangee);
+      let issue = () => { throw erreur118(503, SUPPRESSION_DE_CONTENU118.texte); };
+      const sw = appeler118(L.producteur, "enabledSwitch", { enabled: true, name: "objet-118", allowed: true, consequence: "c-118", onToggle: async () => issue() });
+      if (!(sw instanceof Element)) { ecartsE118.push(`${L.nom}/défaut : \`enabledSwitch\` ne rend pas d'élément (${String(sw).slice(0, 80)})`); section.remove(); continue; }
+      rangee.appendChild(sw);
+      const cb = bascule118(sw);
+      const avant = avisDe118().length;
+      cb.checked = false; await cb.onchange(); await laisser118();
+      const p = puitsNomme118(section, "bascule:liste-du-temoin-118");
+      const n = appeler118(L.noyau, "natureDuRefusDUnGeste", erreur118(503, SUPPRESSION_DE_CONTENU118.texte));
+      const attendu = serre118(face118(L, n) + " « " + SUPPRESSION_DE_CONTENU118.texte + " »");
+      const avis = avisDe118().slice(avant);
+      if (!p || p.hidden || p.getAttribute("data-refus-d-un-geste") !== n || nu118(p) !== attendu || avis.length || cb.checked !== true)
+        ecartsE118.push(`${L.nom}/défaut : puits ${p ? `« ${p.getAttribute("data-refus-d-un-geste")} » « ${nu118(p).slice(0, 120)} »` : "absent"} ; avis ${JSON.stringify(avis.map((x) => x.slice(0, 120)))} ; case ${cb.checked}`);
+      issue = () => ({ ok: true });
+      cb.checked = false; await cb.onchange(); await laisser118();
+      if (p && !p.hidden) ecartsE118.push(`${L.nom}/défaut : une bascule acceptée n'efface pas le refus d'avant`);
+      section.remove();
+    }
+    // (e4) DÉRIVÉ DU CORPUS : toute fonction de web/ qui passe un `onToggle:` au commutateur passe aussi son `onRefus:`, et
+    // l'ensemble de ces fonctions est NOMMÉ, jugé dans les deux sens — une surface neuve doit être jouée, ou nommée ici.
+    const SURFACES_DU_COMMUTATEUR118 = ["connectors.js › connectorRow", "destinations.js › destinationRow", "detection_admin.js › notifRow", "detection_admin.js › parserRow",
+      "detection_admin.js › playbookRowModel", "detection_admin.js › ruleRowModel", "fieldfilters.js › ruleRow", "idp.js › providerRow", "index_policies.js › indexRow", "processors.js › ruleRow",
+      "producer_ui.js › producerRow", "runbooks.js › runbookRowModel"];
+    const surfacesLues118 = [], sansOnRefus118 = [];
+    for (const [f, source] of CORPUS_WEB.filter(([x]) => x.endsWith(".js"))) {
+      const src = sansCommentaires118(source), paires = pairesDAccolades118(src);
+      if (!paires) { sansOnRefus118.push(`${f} : illisible`); continue; }
+      const fonctions = fonctionsNommees118(src, paires);
+      for (const m of src.matchAll(/\bonToggle\s*:/g)) {
+        const nom = `${f} › ${fonctionEnglobante118(fonctions, m.index)}`;
+        if (!surfacesLues118.includes(nom)) surfacesLues118.push(nom);
+        // Le littéral d'objet qui porte ce `onToggle:` : la paire d'accolades la plus proche qui l'entoure.
+        let ouvrante = -1, fermante = -1; for (const [o, c] of paires) if (o < m.index && m.index < c && o > ouvrante) { ouvrante = o; fermante = c; }
+        if (!/\bonRefus\s*:/.test(src.slice(ouvrante, fermante + 1))) sansOnRefus118.push(nom);
+      }
+    }
+    surfacesLues118.sort();
+    const surfacesNeuves118 = surfacesLues118.filter((n) => !SURFACES_DU_COMMUTATEUR118.includes(n)), surfacesDisparues118 = SURFACES_DU_COMMUTATEUR118.filter((n) => !surfacesLues118.includes(n));
+    if (surfacesNeuves118.length || surfacesDisparues118.length || sansOnRefus118.length) ecartsE118.push(`surfaces du commutateur : neuves ${JSON.stringify(surfacesNeuves118)}, disparues ${JSON.stringify(surfacesDisparues118)}, sans \`onRefus\` ${JSON.stringify(sansOnRefus118)}`);
+    console.log(`[118e0] surfaces du commutateur lues : ${JSON.stringify(surfacesLues118)} ; sans \`onRefus\` : ${JSON.stringify(sansOnRefus118)}`);
+    exiger(ecartsE118.length === 0, `(118e) LE COMMUTATEUR PARTAGÉ NE DIT PAS SON REFUS PAR LA FORME PARTAGÉE (le puits de SA surface, cause entière, dans la langue de l'écran, sans avis ni rejet, la case revenue ; sans \`onRefus\`, un puits avant la liste qui le porte ; toute surface nommée et munie de son \`onRefus\`) : ${JSON.stringify(ecartsE118)}`);
+
+    // (d1) LES CAPTURES D'UNE ÉCRITURE QUI COLLENT ENCORE LE MESSAGE : dérivées du corpus, NOMMÉES (fichier › fonction ×
+    // nombre), jugées dans les deux sens — une capture neuve, ou un reste nommé qui ne désigne plus rien, fait rougir.
+    instrument118(capturesDEcritureQuiCollentLeMessage118("t.js", "async function f() { try { await apiSend('/x', 'POST'); } catch (e) { toast('échec : ' + e.message); } }\nconst g = async () => { try { await apiSend('/y'); } catch (err) { x.textContent = err.message; } };\n$('#b').onclick = async () => { try { await apiSend('/z'); } catch (e) { toast(e.message); } };\n").sites.map((x) => x.fonction).join(",") === "f,g,$('#b').onclick"
+      && capturesDEcritureQuiCollentLeMessage118("t.js", "async function f() { try { await api('/x'); } catch (e) { h.textContent = e.message; } }\nasync function g() { try { await apiSend('/x'); } catch (e) { peindreLeRefusDUnGeste(p, e); } }\n// try { await apiSend('/x'); } catch (e) { toast(e.message); }\nconst r = /[{]/; // route /api/x/*\nfunction h() { return 1; }\n").sites.length === 0,
+      "la recherche des captures d'une écriture qui collent le message ne distingue plus une écriture d'une lecture, une forme partagée d'un message collé, ou un commentaire du code");
+    const RESTES_DES_CAPTURES_D_ECRITURE118 = {
+      "app.js › $('#setup-form').submit": 1,
+      "cases.js › advanceStep": 1, "cases.js › attachToCasePrompt": 1, "cases.js › caseArchive": 1, "cases.js › caseUnarchive": 1, "cases.js › caseUpdate": 1,
+      "cases.js › detachCaseItem": 1, "cases.js › mergeCasePrompt": 1, "cases.js › renderCaseDetail": 1, "cases.js › renderCaseLinks": 1,
+      "connectors.js › previewHttpPull": 1, "connectors.js › testConnector": 1,
+      "dashboards.js › createPanelModal": 2,
+      "detection_admin.js › $('#pf-test').onclick": 1, "detection_admin.js › $('#rf-test').onclick": 1,
+      "savedqueries.js › deleteSaved": 1, "savedqueries.js › editSaved": 1, "savedqueries.js › saveAsTemplate": 1,
+      "system.js › adminTools": 2,
+    };
+    const capturesLues118 = {}, illisibles118 = [];
+    for (const [f, source] of CORPUS_WEB.filter(([x]) => x.endsWith(".js"))) {
+      const r = capturesDEcritureQuiCollentLeMessage118(f, source);
+      if (r.illisible) illisibles118.push(f);
+      for (const x of r.sites) { const k = `${x.f} › ${x.fonction}`; capturesLues118[k] = (capturesLues118[k] || 0) + 1; }
+    }
+    instrument118(illisibles118.length === 0, `des modules ne se lisent pas (accolades non appariées) : ${JSON.stringify(illisibles118)}`);
+    const capturesNeuves118 = Object.entries(capturesLues118).filter(([k, n]) => (RESTES_DES_CAPTURES_D_ECRITURE118[k] || 0) < n).map(([k, n]) => `${k} ×${n}`);
+    const restesPayes118 = Object.entries(RESTES_DES_CAPTURES_D_ECRITURE118).filter(([k, n]) => (capturesLues118[k] || 0) < n).map(([k, n]) => `${k} ×${n} (lu ×${capturesLues118[k] || 0})`);
+    if (capturesNeuves118.length) ecartsD118.push(`capture(s) d'une écriture qui collent le message, hors de l'ensemble nommé : ${JSON.stringify(capturesNeuves118)}`);
+    if (restesPayes118.length) ecartsD118.push(`un reste nommé ne désigne plus rien (retirez-le de l'ensemble) : ${JSON.stringify(restesPayes118)}`);
+    console.log(`[118d0] captures d'une écriture qui collent encore le message : ${Object.values(capturesLues118).reduce((a, b) => a + b, 0)} — ${JSON.stringify(capturesLues118)}`);
+    exiger(ecartsD118.length === 0, `(118d) UN GESTE D'ÉCRITURE NE DIT PAS SON REFUS PAR LA FORME PARTAGÉE (puits de sa surface, « rien n'a changé » et la cause ENTIÈRE sur un COMMIT refusé, dans la langue de l'écran, sans avis ni rejet ; la demande non aboutie « NON confirmée » ; un geste accepté efface), OU UNE CAPTURE QUI COLLE LE MESSAGE SORT DE L'ENSEMBLE NOMMÉ : ${JSON.stringify(ecartsD118)}`);
+
+    // ══ (o) `P10.28-o` — GESTE FAIT, TRACE ABSENTE ═══════════════════════════════════════════════════════════════
+    const ecartsO118 = [];
+    const mesureO118 = [];
+    const SITES_DE_LA_TRACE118 = [
+      { site: "poll_manuel", gestionnaire: "connector_poll", route: "POST /api/connectors/5/poll", corps: { ok: true, count: 3, error: null }, succes: /^collecte OK/,
+        s: GESTES118.find((x) => x.site === "poll_manuel_connecteur") },
+      { site: "envoi_manuel", gestionnaire: "destination_flush", route: "POST /api/destinations/9/flush", corps: { ok: true, forwarded: 3, watermark: 4, last_error: null }, succes: /^forward OK/,
+        s: GESTES118.find((x) => x.site === "envoi_manuel_destination") },
+    ];
+    for (const L of [FR118, EN118]) {
+      const face = face118(L, "geste_fait_trace_absente");
+      for (const t of SITES_DE_LA_TRACE118) {
+        const cause = traceDe118(t.gestionnaire);
+        const r = await jouerUnSite118(t.s, L, { corps: { ...t.corps, trace_non_ecrite: cause } });
+        if (L === FR118) mesureO118.push(`${t.site} en deux cents avec \`trace_non_ecrite\` : puits « ${r.nature} » « ${r.texte.slice(0, 90)} » ; avis ${JSON.stringify(r.avis.map((x) => x.slice(0, 80)))}`);
+        if (r.nature !== "geste_fait_trace_absente" || !r.montre || r.texte !== serre118(face + " « " + cause + " »") || !r.avis.some((a) => t.succes.test(a)) || r.rejet)
+          ecartsO118.push(`${L.nom}/${t.site} : « ${r.nature} » montré=${r.montre} « ${r.texte.slice(0, 140)} » avis ${JSON.stringify(r.avis)}${r.rejet ? " rejet « " + r.rejet + " »" : ""}`);
+        if (L === EN118 && ACCENTS118.test(r.phrase)) ecartsO118.push(`en/${t.site} : la face reste française « ${r.phrase} »`);
+      }
+    }
+    // (o1) CONTRÔLES NÉGATIFS : un deux cents sans le champ ne peint rien ; la même phrase servie en REFUS n'est pas
+    // « geste fait » (le champ établit la nature, jamais la phrase) ; ni l'une ni l'autre n'est « rien n'a changé ».
+    for (const t of SITES_DE_LA_TRACE118) {
+      const sans = await jouerUnSite118(t.s, FR118, { corps: t.corps });
+      if (sans.montre || sans.nature !== null) ecartsO118.push(`${t.site} : un deux cents sans \`trace_non_ecrite\` peint « ${sans.nature} »`);
+      const enRefus = appeler118(FR118.noyau, "natureDuRefusDUnGeste", erreur118(503, traceDe118(t.gestionnaire)));
+      if (enRefus === "geste_fait_trace_absente" || FAMILLE_RIEN_N_A_CHANGE118.includes(enRefus)) ecartsO118.push(`${t.site} : la phrase de la trace servie en cinq cent trois est lue « ${enRefus} »`);
+      const faite = appeler118(FR118.noyau, "laTraceNonEcriteServieEnDeuxCents", { ...t.corps, trace_non_ecrite: traceDe118(t.gestionnaire) });
+      if (appeler118(FR118.noyau, "natureDuRefusDUnGeste", faite) !== "geste_fait_trace_absente") ecartsO118.push(`${t.site} : l'objet d'une trace non écrite n'est pas lu « geste fait, trace absente »`);
+    }
+    const facesO118 = [face118(FR118, "geste_fait_trace_absente"), face118(EN118, "geste_fait_trace_absente")];
+    if (!(facesO118[0] !== facesO118[1] && /^GESTE FAIT, TRACE ABSENTE/.test(facesO118[0]) && /^ACTION DONE, TRACE MISSING/.test(facesO118[1]) && !ACCENTS118.test(facesO118[1]) && !ACCUSE118.test(facesO118[0]) && !ACCUSE118.test(facesO118[1])))
+      ecartsO118.push(`les faces « geste fait, trace absente » : ${JSON.stringify(facesO118)}`);
+    console.log(`[118o0] geste fait, trace absente : ${mesureO118.join(" | ")} ; traces du démon : ${JSON.stringify(TRACES_DU_DEMON118.map((t) => `${t.gestionnaire}/${t.nom}`))}`);
+    exiger(ecartsO118.length === 0, `(118o) UN GESTE FAIT DONT LA TRACE MANQUE N'EST PAS DIT (deux cents avec \`trace_non_ecrite\` : face « geste fait, trace absente » et la cause entière, dans la langue de l'écran, le succès gardé ; rien sans le champ ; la phrase servie en refus n'en est pas un) : ${JSON.stringify(ecartsO118)}`);
+
+    // ══ (m) `P10.28-m` — L'ESSAI D'UN REPARSE INTERROMPU LE DIT, DANS LES DEUX LANGUES ═══════════════════════════════
+    const ecartsM118 = [];
+    const mesureM118 = [];
+    const ROUTE_DU_REPARSE118 = "POST /api/parsers/reparse";
+    const CAUSE_DU_PARCOURS118 = REPARSE_INCOMPLET118 + "budget_memoire";
+    const jouerLeReparse118 = async (L, essai, ecriture, accepter = true) => {
+      servis118 = { [ROUTE_DU_REPARSE118]: (corps) => (corps && corps.dry_run === true ? essai : ecriture) };
+      appels118.length = 0;
+      const avant = avisDe118().length;
+      let confirmation = "", rejet = "";
+      try {
+        const g = Promise.resolve(typeof L.detection.reparserLesEvenements === "function" ? L.detection.reparserLesEvenements() : qs118("#parser-reparse").onclick());
+        await laisser118();
+        confirmation = texteDeLaFenetre118();
+        if (accepter) { const f = formulaireDeLaFenetre118(); if (f) f.onsubmit({ preventDefault() {} }); }
+        else { const f = formulaireDeLaFenetre118(); const annuler = f ? bouton118(f, (e) => e.classList && e.classList.contains("m-cancel")) : null; if (annuler) annuler.onclick(); }
+        await g;
+      } catch (e) { rejet = String((e && e.message) || e).slice(0, 200); }
+      await laisser118(40);
+      return { confirmation, avis: avisDe118().slice(avant), rejet, ecritures: compter118(ROUTE_DU_REPARSE118, (a) => !(a.corps && a.corps.dry_run === true)) };
+    };
+    const motDuReparse118 = (L, cle, valeurs = {}) => { const m = L.detection.MOTS_DU_REPARSE; if (!m || !m[cle]) return `(${cle} absente)`; return Object.entries(valeurs).reduce((t, [k, v]) => t.split("{" + k + "}").join(String(v)), L === EN118 ? m[cle].en : m[cle].fr); };
+    for (const L of [FR118, EN118]) {
+      const sansLaCause = (t) => serre118(String(t).split(CAUSE_DU_PARCOURS118).join(""));
+      // (m1) l'essai interrompu : la confirmation dit la coupure et la cause entière.
+      const interrompu = await jouerLeReparse118(L, { corps: { scanned: 10, matched: 3, updated: 0, truncated: false, dry_run: true, cap: 50000, interrompu: true, cause_scan: CAUSE_DU_PARCOURS118 } }, { corps: { updated: 3, truncated: false, dry_run: false } }, false);
+      if (L === EN118) mesureM118.push(`essai interrompu (anglais) : confirmation « ${interrompu.confirmation.slice(0, 220)} »`);
+      const coupure = serre118(motDuReparse118(L, "confirmation_du_prefixe_lu", { m: 3, n: 10, cause: CAUSE_DU_PARCOURS118 }));
+      if (!serre118(interrompu.confirmation).includes(coupure) || !serre118(interrompu.confirmation).includes(serre118(motDuReparse118(L, "confirmation", { m: 3, n: 10 }))))
+        ecartsM118.push(`${L.nom}/essai interrompu : la confirmation ne dit pas la coupure et sa cause — « ${interrompu.confirmation.slice(0, 220)} »`);
+      if (L === EN118 && ACCENTS118.test(sansLaCause(interrompu.confirmation))) ecartsM118.push(`en/essai interrompu : la confirmation reste française — « ${sansLaCause(interrompu.confirmation).slice(0, 200)} »`);
+      if (interrompu.ecritures !== 0) ecartsM118.push(`${L.nom}/essai interrompu refusé : ${interrompu.ecritures} écriture(s) envoyée(s)`);
+      // (m2) contrôle négatif : un essai complet ne parle pas de coupure.
+      const complet = await jouerLeReparse118(L, { corps: { scanned: 10, matched: 3, updated: 0, truncated: false, dry_run: true, cap: 50000 } }, { corps: { updated: 3 } }, false);
+      if (serre118(complet.confirmation).includes(serre118(motDuReparse118(L, "confirmation_du_prefixe_lu", { m: 3, n: 10, cause: "" })).split("«")[0].trim()) || !complet.confirmation)
+        ecartsM118.push(`${L.nom}/essai complet : « ${complet.confirmation.slice(0, 200)} »`);
+      // (m3) rien trouvé dans un préfixe lu : l'avis le dit, avec la cause ; l'écriture interrompue le dit aussi.
+      const rien = await jouerLeReparse118(L, { corps: { scanned: 10, matched: 0, updated: 0, dry_run: true, cap: 50000, interrompu: true, cause_scan: CAUSE_DU_PARCOURS118 } }, { corps: { updated: 0 } });
+      if (!rien.avis.some((a) => serre118(a) === serre118(motDuReparse118(L, "rien_dans_le_prefixe_lu", { n: 10, cause: CAUSE_DU_PARCOURS118 })))) ecartsM118.push(`${L.nom}/rien dans le préfixe lu : ${JSON.stringify(rien.avis.map((a) => a.slice(0, 160)))}`);
+      const ecrit = await jouerLeReparse118(L, { corps: { scanned: 10, matched: 3, updated: 0, dry_run: true, cap: 50000 } }, { corps: { scanned: 10, matched: 3, updated: 3, truncated: false, dry_run: false, cap: 50000, interrompu: true, cause_scan: CAUSE_DU_PARCOURS118 } });
+      if (!ecrit.avis.some((a) => serre118(a).startsWith(serre118(motDuReparse118(L, "mis_a_jour", { u: 3 }))) && serre118(a).includes(serre118(motDuReparse118(L, "ecriture_du_prefixe_lu", { cause: CAUSE_DU_PARCOURS118 })))))
+        ecartsM118.push(`${L.nom}/écriture interrompue : ${JSON.stringify(ecrit.avis.map((a) => a.slice(0, 160)))}`);
+      if (L === EN118) { mesureM118.push(`avis (anglais) : ${JSON.stringify([...rien.avis, ...ecrit.avis].map((a) => a.slice(0, 120)))}`); for (const a of [...rien.avis, ...ecrit.avis]) if (ACCENTS118.test(sansLaCause(a))) ecartsM118.push(`en : un avis du reparse reste français — « ${sansLaCause(a).slice(0, 160)} »`); }
+    }
+    // (m4) les faces : deux langues distinctes, l'anglaise sans accent ; la face française d'un succès est celle d'avant.
+    const facesM118 = Object.keys((FR118.detection.MOTS_DU_REPARSE || {})).filter((k) => { const m = FR118.detection.MOTS_DU_REPARSE[k]; return !(m.fr !== m.en && !ACCENTS118.test(m.en) && !ACCUSE118.test(m.fr) && !ACCUSE118.test(m.en)); });
+    if (!FR118.detection.MOTS_DU_REPARSE || facesM118.length || FR118.detection.MOTS_DU_REPARSE.mis_a_jour.fr !== "{u} events mis à jour") ecartsM118.push(`faces du reparse : ${JSON.stringify(facesM118)}`);
+    console.log(`[118m0] le reparse interrompu : ${mesureM118.join(" | ")}`);
+    exiger(ecartsM118.length === 0, `(118m) L'ESSAI D'UN REPARSE INTERROMPU NE LE DIT PAS, OU SES MOTS RESTENT FRANÇAIS EN ANGLAIS (confirmation qui nomme la coupure et sa cause entière ; avis du préfixe lu ; faces {fr, en}) : ${JSON.stringify(ecartsM118)}`);
+
+    // ══ (n) `P10.28-n` — LA LECTURE REFUSÉE DE LA RÉTENTION A SES DEUX FACES ═════════════════════════════════════════
+    const ecartsN118 = [];
+    const mesureN118 = [];
+    for (const L of [FR118, EN118]) {
+      servis118 = { "GET /api/retention": { statut: 500, corps: "x-118" } };
+      await L.retention.loadRetention(); await laisser118();
+      const lu = nu118(qs118("#retention-fields"));
+      const face = L.retention.MOTS_DE_LA_RETENTION ? (L === EN118 ? L.retention.MOTS_DE_LA_RETENTION.lecture_non_servie.en : L.retention.MOTS_DE_LA_RETENTION.lecture_non_servie.fr) : "(face absente)";
+      mesureN118.push(`${L.nom} : « ${lu} »`);
+      if (lu !== serre118(face + "500 x-118") || (L === FR118 && face !== "accès refusé ou erreur : ") || (L === EN118 && (ACCENTS118.test(lu) || face === "accès refusé ou erreur : "))) ecartsN118.push(`${L.nom} : « ${lu} »`);
+    }
+    console.log(`[118n0] la lecture refusée de la rétention : ${mesureN118.join(" | ")}`);
+    exiger(ecartsN118.length === 0, `(118n) LA LECTURE REFUSÉE DE LA RÉTENTION RESTE FRANÇAISE EN ANGLAIS, OU SA FACE FRANÇAISE A CHANGÉ : ${JSON.stringify(ecartsN118)}`);
+  } finally {
+    process.off("unhandledRejection", surRejetNonTraite118);
+    globalThis.fetch = fetchOrigine118; globalThis.setTimeout = minuterieOrigine118; document.querySelector = qsOrigine118;
+    for (const o of etatOrigine118) { o.S.isAdmin = o.admin; o.S.AUTH = o.auth; o.S.editingNotif = o.notif; }
+    for (const s of SITES118) { try { const p = s.puits(); if (p) p.remove(); } catch (e) { /* hôte absent */ } }
+    for (const [sel, surface] of [["#rule-form", "formulaire"], ["#parser-form", "formulaire"], ["#pb-form", "formulaire"], ["#retention-form", "retention"]]) { const p = puitsNomme118(qs118(sel), surface); if (p) p.remove(); }
+    for (const sel of ["#destination-list", "#destination-form-host", "#index-policy-list", "#index-policy-form", "#processor-list", "#processor-form", "#rule-list", "#parser-list", "#notif-list", "#pb-list", "#rb-list", "#rb-editor",
+      "#connector-list", "#retention-fields", "#dm-models-list", "#dm-objects-list", "#dm-fields-list", "#dm-datasets-list", "#detadv-corr-list", "#detadv-base-list", "#ko-alias-list", "#ko-calc-list", "#ko-eventtype-list", "#ko-tag-list",
+      "#ti-ioc-list", "#policies-body", "#silences-body", "#lookup-list"]) { const h = qs118(sel); if (h) h.replaceChildren(); }
+    for (const sel of ["#rf-result", "#pf-result", "#pb-result", "#nf-result", "#pol-result", "#sil-result", "#lk-result", "#ti-imp-result", "#retention-result"]) { const h = qs118(sel); if (h) h.textContent = ""; }
+    const nf = qs118("#notif-form"); if (nf) nf.classList.add("hidden");
+    const b = qs118("#parser-reparse"); if (b) b.disabled = false;
+    const avis = qs118("#toasts"); if (avis) avis.replaceChildren();
+    document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
+  }
+  console.log("(118) OK — le commutateur partagé dit son refus dans le puits de SA surface sur les huit surfaces qui n'en passaient pas (destinations, politiques d'index, règles d'ingestion, règles, parseurs, canaux, playbooks, runbooks), cause entière, dans les deux langues, la case revenue ; sans `onRefus`, son défaut peint la même forme avant la liste qui le porte, et une bascule acceptée l'efface ; toute surface qui passe un `onToggle:` est nommée et passe son `onRefus:`. Les gestes d'écriture des routes que le démon juge depuis le lot 198 — destinations, politiques d'index, règles d'ingestion, formulaires et retraits de contenus de détection, canaux, runbooks, rétention, modèles de données, détection avancée, objets de savoir, indicateurs, sources, flotte, suppressions et silences, routage, import Sigma, lookups — disent leur refus par la forme partagée, « rien n'a changé » et la cause ENTIÈRE sur un COMMIT refusé (une cause servie en texte brut comprise), la demande non aboutie « NON confirmée », un geste accepté efface ; les captures d'une écriture qui collent encore le message sont un ensemble nommé, jugé dans les deux sens. Un poll ou un envoi manuel FAIT dont la trace manque le dit sous « geste fait, trace absente », le succès gardé. L'essai d'un reparse interrompu le dit avec sa cause, et les mots du reparse ont leurs deux faces ; la lecture refusée de la rétention aussi.");
 }
 
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;

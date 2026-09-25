@@ -1,7 +1,7 @@
 // alerting.js — #53 UI : politiques de notification (arbre de routage) + silences (mute temporisé).
 // Admin/éditeur : create/delete ; viewer : lecture seule. Les secrets des canaux ne transitent JAMAIS ici
 // (les politiques ne référencent les canaux QUE par id). Miroir de style des autres modules (connectors.js).
-import { $, api, apiSend, confirmModal, fetchInto, fmtTs, ic, muted, sev, toast } from './core.js';
+import { $, api, apiSend, confirmModal, effacerLeRefusDUnGeste, fetchInto, fmtTs, ic, muted, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, sev, toast } from './core.js';
 
 const MATCHER_FIELDS = ['severity', 'mitre', 'host', 'source', 'env', 'tag'];
 
@@ -42,6 +42,14 @@ function rendreLEnvoiVif(selecteur) {
   if (envoi) { envoi.removeAttribute('aria-disabled'); envoi.removeAttribute('title'); }
 }
 
+// `P10.27-d` — LES PUITS DES GESTES DU ROUTAGE, un par liste (politiques, silences), posés juste avant elle (et après
+// son formulaire), hors de ce qu'elle repeint : création par le formulaire, retrait, levée. La forme est celle du point
+// commun (`peindreLeRefusDUnGeste`, core.js). MESURÉ AVANT CE LOT (témoin 118) : « échec : 503 {"error":"POLITIQUE DE
+// NOTIFICATION NON SUPPRIMÉE : … » dans un avis qui s'efface, le formulaire écrivant le même JSON coupé dans sa ligne.
+const puitsAvantLaListe = (sel, surface) => { const liste = $(sel); return liste && liste.parentNode ? puitsDuRefusDUnGeste(liste.parentNode, surface, liste) : null; };
+const puitsDesPolitiques = () => puitsAvantLaListe('#policies-body', 'politiques_de_notification');
+const puitsDesSilences = () => puitsAvantLaListe('#silences-body', 'silences');
+
 async function loadRouting() {
   await loadPolicies();
   await loadSilences();
@@ -81,7 +89,11 @@ async function loadPolicies() {
     const arrow = document.createElement('span'); arrow.textContent = ' → canaux [' + (p.contact_points || []).join(', ') + ']' + (p.continue ? ' + continue' : '') + (p.enabled ? '' : ' (désactivée)');
     desc.append(m, arrow);
     const del = document.createElement('button'); del.type = 'button'; del.className = 'btn btn-sm'; del.innerHTML = ic('x'); del.title = 'Supprimer la route'; // P11.4-b : classe partagée
-    del.onclick = async () => { if (await confirmModal('Supprimer la politique #' + p.id + ' ?', { danger: true })) { try { await apiSend('/notification-policies/' + p.id, 'DELETE'); toast('route supprimée', 'ok'); loadPolicies(); } catch (e) { toast('échec : ' + e.message, 'bad'); } } };
+    del.onclick = async () => {
+      if (!await confirmModal('Supprimer la politique #' + p.id + ' ?', { danger: true })) return;
+      const puits = puitsDesPolitiques(); effacerLeRefusDUnGeste(puits);
+      try { await apiSend('/notification-policies/' + p.id, 'DELETE'); toast('route supprimée', 'ok'); loadPolicies(); } catch (e) { peindreLeRefusDUnGeste(puits, e); }
+    };
     row.append(desc, del);
     wrap.appendChild(row);
   });
@@ -120,16 +132,20 @@ async function loadSilences() {
     meta.className = s.active ? '' : 'muted';
     desc.append(m, meta);
     const del = document.createElement('button'); del.type = 'button'; del.className = 'btn btn-sm'; del.innerHTML = ic('x'); del.title = 'Lever le silence'; // P11.4-b : classe partagée
-    del.onclick = async () => { if (await confirmModal('Lever le silence #' + s.id + ' ?', { danger: true })) { try { await apiSend('/silences/' + s.id, 'DELETE'); toast('silence levé', 'ok'); loadSilences(); } catch (e) { toast('échec : ' + e.message, 'bad'); } } };
+    del.onclick = async () => {
+      if (!await confirmModal('Lever le silence #' + s.id + ' ?', { danger: true })) return;
+      const puits = puitsDesSilences(); effacerLeRefusDUnGeste(puits);
+      try { await apiSend('/silences/' + s.id, 'DELETE'); toast('silence levé', 'ok'); loadSilences(); } catch (e) { peindreLeRefusDUnGeste(puits, e); }
+    };
     row.append(desc, del);
     wrap.appendChild(row);
   });
 }
 
-function wireAlertingForms() {
-  const pf = $('#policy-form');
-  if (pf) pf.addEventListener('submit', async e => {
-    e.preventDefault();
+// Les gestes des deux formulaires, nommés et exportés (ils étaient les écouteurs anonymes de `wireAlertingForms`,
+// déplacés tels quels ; seul leur refus change : le puits de leur liste, la forme partagée, la ligne vidée).
+async function enregistrerLaPolitiqueDuFormulaire(e) {
+    if (e && typeof e.preventDefault === 'function') e.preventDefault();
     // La MÊME phrase qu'au survol du bouton d'envoi, jamais deux formulations du même refus.
     if (POLITIQUES_NON_LUES) { toast("L'arbre de routage n'a PAS été lu : ajouter une route ici, c'est peut-être doubler une route que cette lecture n'a pas pu rendre — et rien n'établit ici vers quels canaux les alertes partent.", 'bad', 9000); return; }
     let matchers;
@@ -137,21 +153,27 @@ function wireAlertingForms() {
     const contacts = $('#pol-contacts').value.split(',').map(s => Number(s.trim())).filter(n => Number.isInteger(n) && n > 0);
     if (!contacts.length) { $('#pol-result').textContent = 'au moins un id de canal requis'; return; }
     const body = { matchers, contact_points: contacts, continue: $('#pol-continue').checked, enabled: true };
+    const puits = puitsDesPolitiques(); effacerLeRefusDUnGeste(puits);
     try { await apiSend('/notification-policies', 'POST', body); $('#pol-result').textContent = ''; $('#pol-matchers').value = ''; $('#pol-contacts').value = ''; loadPolicies(); }
-    catch (err) { $('#pol-result').textContent = err.message; }
-  });
-  const sf = $('#silence-form');
-  if (sf) sf.addEventListener('submit', async e => {
-    e.preventDefault();
+    catch (err) { $('#pol-result').textContent = ''; peindreLeRefusDUnGeste(puits, err); }
+}
+async function poserLeSilenceDuFormulaire(e) {
+    if (e && typeof e.preventDefault === 'function') e.preventDefault();
     if (SILENCES_NON_LUS) { toast("Les silences n'ont PAS été lus : en créer un ici, c'est peut-être doubler un silence déjà posé que cette lecture n'a pas pu rendre — et rien n'établit ici quelles alertes sont déjà muettes.", 'bad', 9000); return; }
     let matchers;
     try { matchers = parseMatchers($('#sil-matchers').value); } catch (err) { $('#sil-result').textContent = err.message; return; }
     if (!Object.keys(matchers).length) { $('#sil-result').textContent = 'au moins un matcher requis'; return; }
     const body = { matchers, duration_s: Number($('#sil-duration').value) * 60, reason: $('#sil-reason').value.trim() };
+    const puits = puitsDesSilences(); effacerLeRefusDUnGeste(puits);
     try { await apiSend('/silences', 'POST', body); $('#sil-result').textContent = ''; $('#sil-matchers').value = ''; $('#sil-reason').value = ''; loadSilences(); }
-    catch (err) { $('#sil-result').textContent = err.message; }
-  });
+    catch (err) { $('#sil-result').textContent = ''; peindreLeRefusDUnGeste(puits, err); }
+}
+function wireAlertingForms() {
+  const pf = $('#policy-form');
+  if (pf) pf.addEventListener('submit', enregistrerLaPolitiqueDuFormulaire);
+  const sf = $('#silence-form');
+  if (sf) sf.addEventListener('submit', poserLeSilenceDuFormulaire);
 }
 wireAlertingForms();
 
-export { loadRouting, loadPolicies, loadSilences };
+export { loadRouting, loadPolicies, loadSilences, enregistrerLaPolitiqueDuFormulaire, poserLeSilenceDuFormulaire };

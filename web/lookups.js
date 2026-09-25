@@ -2,7 +2,7 @@
 // déplacement pur ; le câblage des boutons et le premier chargement sont exposés par `initLookups()`, appelé par
 // `app.js` au point où ce bloc vivait (un module s'exécute à l'import, avant l'enveloppe `fetch` d'`app.js`).
 // `lookupRow` et `parseCsvRows` sont exportés pour le harnais. N'importe pas `app.js`.
-import { $, api, apiSend, confirmModal, contentDelete, disclosure, fmtTs, ic, managedBadge, muted, toast } from './core.js';
+import { $, api, apiSend, confirmModal, contentDelete, disclosure, effacerLeRefusDUnGeste, fmtTs, ic, managedBadge, muted, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, toast } from './core.js';
 
 // --- Lookups (tables d'enrichissement GXQL ; réservé admin ; vit sous Réglages, comme les Comptes) ---
 // Un lookup = table de référence nommée (clé -> colonnes JSON) jointe en LEFT JOIN par l'op GXQL
@@ -17,6 +17,11 @@ const LK_NAME_RE = /^[A-Za-z0-9_]+$/;   // miroir de soql_ident_ok côté daemon
 // d'elle : la marque accessible de l'inertie se VOIT sur « + Nouveau lookup », seul le point de soumission
 // EMPÊCHE le remplacement.
 let LOOKUPS_NON_LUS = false;
+// `P10.27-d` — LE PUITS DES GESTES SUR LES LOOKUPS, juste avant la liste (et après le formulaire) : chargement et retrait.
+// Hors de ce que `loadLookups` repeint, il survit au rechargement ; la forme est celle du point commun
+// (`peindreLeRefusDUnGeste`, core.js). MESURÉ AVANT CE LOT (témoin 118) : le chargement refusé écrivait « 503 {"error":
+// "TABLE D'ENRICHISSEMENT INCHANGÉE : … » coupé dans la ligne du formulaire, le retrait refusé un avis qui s'efface.
+function puitsDesLookups() { const liste = $('#lookup-list'); return liste && liste.parentNode ? puitsDuRefusDUnGeste(liste.parentNode, 'lookups', liste) : null; }
 // Import CSV (collage) -> tableau d'objets, en pendant du collage JSON. RFC 4180 simplifié : séparateur
 // virgule, guillemets doubles pour échapper virgule/retour-ligne/guillemet interne ("" -> "). La 1re ligne
 // non vide = en-têtes (= noms de colonnes) ; chaque ligne suivante -> {en-tête: valeur(string)}. Les valeurs
@@ -87,7 +92,7 @@ function lookupRow(l) {
   const del = document.createElement('button'); del.className = 'crud-btn'; del.innerHTML = ic('x'); del.title = 'Supprimer';
   del.onclick = async () => {
     if (!await confirmModal('Supprimer le lookup "' + l.name + '" (' + l.rows + ' ligne(s)) ?', { danger: true })) return;
-    if (await contentDelete('/lookups/' + encodeURIComponent(l.name), 'lookup')) loadLookups();
+    if (await contentDelete('/lookups/' + encodeURIComponent(l.name), 'lookup', puitsDesLookups())) loadLookups();
   };
   row.append(name, key, meta, del);
   return row;
@@ -95,8 +100,13 @@ function lookupRow(l) {
 function initLookups() {
   if ($('#lookup-new') && $('#lookup-form')) disclosure($('#lookup-new'), $('#lookup-form'), { open: () => { $('#lookup-form').classList.remove('hidden'); $('#lk-name').focus(); } }); // P11.4-a — dépli partagé
   if ($('#lk-cancel')) $('#lk-cancel').onclick = () => $('#lookup-form').classList.add('hidden');
-  if ($('#lookup-form')) $('#lookup-form').addEventListener('submit', async e => {
-    e.preventDefault();
+  if ($('#lookup-form')) $('#lookup-form').addEventListener('submit', chargerLeLookupDuFormulaire);
+  loadLookups();
+}
+// Le geste du formulaire, nommé et exporté (il était l'écouteur anonyme d'`initLookups`, déplacé tel quel ; seul son refus
+// change : le puits des lookups, la forme partagée).
+async function chargerLeLookupDuFormulaire(e) {
+    if (e && typeof e.preventDefault === 'function') e.preventDefault();
     // La MÊME phrase qu'au survol du bouton, jamais deux formulations du même refus.
     if (LOOKUPS_NON_LUS) { toast("Les lookups n'ont PAS été lus : « créer » ici REMPLACE intégralement le contenu du lookup portant ce nom — celui que cette lecture n'a pas pu rendre serait écrasé sans un mot.", 'bad', 9000); return; }
     const res = $('#lk-result');
@@ -118,16 +128,15 @@ function initLookups() {
     if (!rows.every(r => r && typeof r === 'object' && !Array.isArray(r))) return fail('chaque ligne doit être un objet {champ: valeur}');
     if (!rows.every(r => Object.prototype.hasOwnProperty.call(r, key))) return fail(`chaque ligne doit contenir le champ-clé "${key}"`);
     res.textContent = '...'; res.className = 'muted';
+    const puits = puitsDesLookups(); effacerLeRefusDUnGeste(puits);
     let j;
     try { j = await apiSend('/lookups', 'POST', { name, key_field: key, rows }); }
-    catch (e) { return fail((e && e.message) || 'échec'); }
+    catch (err) { res.textContent = ''; res.className = 'muted'; peindreLeRefusDUnGeste(puits, err); return; }
     j = j || {};
     res.textContent = ''; res.className = 'muted';
     toast(`lookup "${name}" chargé : ${j.rows} ligne(s)` + (j.cols && j.cols.length ? ' - colonnes ' + j.cols.join(', ') : ' - aucune colonne hors clé'), 'ok');
     $('#lk-rows').value = ''; $('#lookup-form').classList.add('hidden');
     loadLookups();
-  });
-  loadLookups();
 }
 
-export { initLookups, loadLookups, lookupRow, parseCsvRows };
+export { initLookups, loadLookups, lookupRow, parseCsvRows, chargerLeLookupDuFormulaire };

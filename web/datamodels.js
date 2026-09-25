@@ -13,8 +13,19 @@
 //   GET    /api/datasets  |  POST /api/datasets  (editor+)  |  POST /api/datasets/{id}/run  (viewer+)
 //   DELETE /api/datasets/{id}                                            (editor+)
 // SÉCU UI : tout en textContent/esc (anti-XSS). Mutations via apiSend (jeton CSRF auto).
-import { $, api, apiSend, fetchInto, LANG, muted, pagedList, phraseDuRefusDuDemon, prefixeDUnEchecRenduTelQuel, toast, modal, confirmModal, managedBadge, gateDeleteBtn } from './core.js';
+import { $, api, apiSend, effacerLeRefusDUnGeste, fetchInto, LANG, muted, pagedList, peindreLeRefusDUnGeste, phraseDuRefusDuDemon, prefixeDUnEchecRenduTelQuel, puitsDuRefusDUnGeste, toast, modal, confirmModal, managedBadge, gateDeleteBtn } from './core.js';
 import { phraseDeCoupe } from './coupe_de_liste.js'; // `P11.22-g` : le résultat borné du Pivot dit sa coupe
+
+// `P10.27-d` — LES PUITS DES GESTES SUR L'ARBRE DES MODÈLES, un par liste (modèles, objets, champs, datasets), posés
+// juste avant elle, hors de ce qu'elle repeint : création, retrait, exécution d'un dataset. La forme est celle du point
+// commun (`peindreLeRefusDUnGeste`, core.js). MESURÉ AVANT CE LOT (témoin 118) : « erreur : 503 {"error":"MODÈLE DE
+// DONNÉES NON ÉCRIT : … » dans un avis qui s'efface, coupé avant ce qui reste vrai — modèles, objets, champs et jeux de
+// données restent ceux d'avant ; « exécution : Failed to fetch » nu.
+const puitsAvantLaListe = (sel, surface) => { const liste = $(sel); return liste && liste.parentNode ? puitsDuRefusDUnGeste(liste.parentNode, surface, liste) : null; };
+const puitsDesModeles = () => puitsAvantLaListe('#dm-models-list', 'modeles_de_donnees');
+const puitsDesObjets = () => puitsAvantLaListe('#dm-objects-list', 'objets_de_modele');
+const puitsDesChamps = () => puitsAvantLaListe('#dm-fields-list', 'champs_de_modele');
+const puitsDesDatasets = () => puitsAvantLaListe('#dm-datasets-list', 'datasets');
 
 // État module : cache du GET /api/datamodels + sélection courante (modèle -> objet).
 let DM = { models: [], objects: [], fields: [], field_types: [], stat_funcs: [], filter_ops: [] };
@@ -118,8 +129,9 @@ function selectModel(id) { selModel = id; selObject = null; renderModels(); rend
 
 async function delModel(r) {
   if (!(await confirmModal('Supprimer le modèle « ' + (r.title || r.name) + " » et tous ses objets/champs ?", { okText: 'Supprimer', danger: true }))) return;
+  const puits = puitsDesModeles(); effacerLeRefusDUnGeste(puits);
   try { await apiSend('/datamodels/' + r.id, 'DELETE'); toast('modèle supprimé', 'ok'); await reload(); }
-  catch (e) { toast(prefixeDUnEchecRenduTelQuel() + ((e && e.message) || e), 'err', 6000); }
+  catch (e) { peindreLeRefusDUnGeste(puits, e); }
 }
 // `P10.7-f` — LE GESTE PROMIS EST REFUSÉ, ET IL LE DIT. La marque d'inertie posée par la charge se VOIT ;
 // seul ce point-ci EMPÊCHE l'écriture. La MÊME phrase est écrite aux deux endroits, jamais deux formulations.
@@ -138,10 +150,11 @@ async function newModel() {
     { name: 'enabled', label: 'Actif', type: 'checkbox', value: true },
   ] });
   if (!v) return;
+  const puits = puitsDesModeles(); effacerLeRefusDUnGeste(puits);
   try {
     await apiSend('/datamodels', 'POST', { name: (v.name || '').trim(), title: (v.title || '').trim(), description: (v.description || '').trim(), category: (v.category || '').trim(), enabled: !!v.enabled });
     toast('modèle créé', 'ok'); await reload();
-  } catch (e) { toast(prefixeDUnEchecRenduTelQuel() + ((e && e.message) || e), 'err', 6000); }
+  } catch (e) { peindreLeRefusDUnGeste(puits, e); }
 }
 
 // ============================ OBJETS ============================
@@ -169,8 +182,9 @@ function selectObject(id) { selObject = id; renderObjects(); renderFields(); ren
 
 async function delObject(r) {
   if (!(await confirmModal('Supprimer l’objet « ' + r.name + ' » et ses champs ?', { okText: 'Supprimer', danger: true }))) return;
+  const puits = puitsDesObjets(); effacerLeRefusDUnGeste(puits);
   try { await apiSend('/datamodels/objects/' + r.id, 'DELETE'); toast('objet supprimé', 'ok'); if (selObject === r.id) selObject = null; await reload(); }
-  catch (e) { toast(prefixeDUnEchecRenduTelQuel() + ((e && e.message) || e), 'err', 6000); }
+  catch (e) { peindreLeRefusDUnGeste(puits, e); }
 }
 async function newObject() {
   if (refusDeDeclarerSurUnEtageNonLu('objects')) return;
@@ -185,8 +199,9 @@ async function newObject() {
   if (!v) return;
   const body = { name: (v.name || '').trim(), constraint: (v.constraint || '').trim(), enabled: !!v.enabled };
   if (v.parent_id) body.parent_id = Number(v.parent_id);
+  const puits = puitsDesObjets(); effacerLeRefusDUnGeste(puits);
   try { await apiSend('/datamodels/' + selModel + '/objects', 'POST', body); toast('objet créé', 'ok'); await reload(); }
-  catch (e) { toast(prefixeDUnEchecRenduTelQuel() + ((e && e.message) || e), 'err', 6000); }
+  catch (e) { peindreLeRefusDUnGeste(puits, e); }
 }
 
 // ============================ CHAMPS ============================
@@ -210,8 +225,9 @@ function renderFields() {
 }
 async function delField(r) {
   if (!(await confirmModal('Supprimer le champ « ' + r.name + ' » ?', { okText: 'Supprimer', danger: true }))) return;
+  const puits = puitsDesChamps(); effacerLeRefusDUnGeste(puits);
   try { await apiSend('/datamodels/fields/' + r.id, 'DELETE'); toast('champ supprimé', 'ok'); await reload(); }
-  catch (e) { toast(prefixeDUnEchecRenduTelQuel() + ((e && e.message) || e), 'err', 6000); }
+  catch (e) { peindreLeRefusDUnGeste(puits, e); }
 }
 async function newField() {
   if (refusDeDeclarerSurUnEtageNonLu('fields')) return;
@@ -222,8 +238,9 @@ async function newField() {
     { name: 'expr', label: 'Champ source (optionnel — renomme un champ existant)', placeholder: 'src_ip' },
   ] });
   if (!v) return;
+  const puits = puitsDesChamps(); effacerLeRefusDUnGeste(puits);
   try { await apiSend('/datamodels/objects/' + selObject + '/fields', 'POST', { name: (v.name || '').trim(), type: v.type, expr: (v.expr || '').trim() }); toast('champ créé', 'ok'); await reload(); }
-  catch (e) { toast(prefixeDUnEchecRenduTelQuel() + ((e && e.message) || e), 'err', 6000); }
+  catch (e) { peindreLeRefusDUnGeste(puits, e); }
 }
 
 // ============================ PIVOT (report-builder) ============================
@@ -447,16 +464,18 @@ async function loadDatasets() {
 }
 async function runDataset(r) {
   const { from, to } = rangeFromTo();
+  const puits = puitsDesDatasets(); effacerLeRefusDUnGeste(puits);
   let d;
   try { d = await apiSend('/datasets/' + r.id + '/run', 'POST', { from, to, limit: 1000 }); }
-  catch (e) { toast('exécution : ' + ((e && e.message) || e), 'err', 6000); return; }
+  catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
   const body = document.createElement('div'); renderResults(body, d);
   resultModal('Dataset — ' + r.name, body);
 }
 async function delDataset(r) {
   if (!(await confirmModal('Supprimer le dataset « ' + r.name + ' » ?', { okText: 'Supprimer', danger: true }))) return;
+  const puits = puitsDesDatasets(); effacerLeRefusDUnGeste(puits);
   try { await apiSend('/datasets/' + r.id, 'DELETE'); toast('dataset supprimé', 'ok'); loadDatasets(); }
-  catch (e) { toast(prefixeDUnEchecRenduTelQuel() + ((e && e.message) || e), 'err', 6000); }
+  catch (e) { peindreLeRefusDUnGeste(puits, e); }
 }
 
 // ---- petite modale de résultat (lecture seule) ----
@@ -521,4 +540,4 @@ function loadDataModels() { wireOnce(); reload(); loadDatasets(); }
 // `P10.20-p` — `avouerLeRefusDuPivot` est exposé pour le harnais ESM (témoin 100) : la séparation du cinq
 // cent trois « champs déclarés NON LUS » et du quatre cents « défaut du corps » ne se prouve qu'en
 // RENDANT les deux refus par LEUR écrivain réel. Aucun usage applicatif hors de ce module.
-export { avouerLeRefusDuPivot, loadDataModels, loadDatasets, newModel, newObject, newField, reload, renderResults };
+export { avouerLeRefusDuPivot, loadDataModels, loadDatasets, newModel, newObject, newField, reload, renderResults, delModel, delObject, delField, delDataset, runDataset, selectModel, selectObject };

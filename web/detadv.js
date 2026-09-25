@@ -6,11 +6,18 @@
 //   POST /api/correlations/{id}/test   -> backtest {ok,matched,entities:[{entity,detail}]}
 //   GET  /api/baselines / POST … /{id} / DELETE … / POST …/{id}/test (aperçu {ok,bucket,observed,anomalies,hits})
 // SÉCU UI : tout en textContent/esc (anti-XSS). Mutations via apiSend (CSRF auto).
-import { $, api, apiSend, esc, fetchInto, fmtTs, humanAge, muted, pagedList, prefixeDUnEchecRenduTelQuel, sev, toast, modal, confirmModal } from './core.js';
+import { $, api, apiSend, effacerLeRefusDUnGeste, esc, fetchInto, fmtTs, humanAge, muted, pagedList, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, sev, toast, modal, confirmModal } from './core.js';
 // P11.1-e : où arrive ce qu'une corrélation / une baseline produit (Alertes, ou Risque si risk_score > 0).
 import { announceCreated, takePendingNote, detectionDestination, destinationSentence } from './producer_ui.js';
 
 // ---- helpers ----
+// `P10.27-d` — LES PUITS DES GESTES DE LA DÉTECTION AVANCÉE, un par liste (corrélations, lignes de base), posés juste
+// avant elle, hors de ce qu'elle repeint : création, modification, retrait, essai. La forme est celle du point commun
+// (`peindreLeRefusDUnGeste`, core.js). MESURÉ AVANT CE LOT (témoin 118) : « erreur : 503 {"error":"CORRÉLATION NON CRÉÉE :
+// … » dans un avis qui s'efface, coupé avant ce qui reste vrai.
+const puitsAvantLaListe = (sel, surface) => { const liste = $(sel); return liste && liste.parentNode ? puitsDuRefusDUnGeste(liste.parentNode, surface, liste) : null; };
+const puitsDesCorrelations = () => puitsAvantLaListe('#detadv-corr-list', 'correlations');
+const puitsDesLignesDeBase = () => puitsAvantLaListe('#detadv-base-list', 'lignes_de_base');
 function stepCount(stepsJson) {
   try { const a = JSON.parse(stepsJson || '[]'); return Array.isArray(a) ? a.length : 0; } catch { return 0; }
 }
@@ -93,21 +100,24 @@ async function editCorrelation(c) {
   const isNew = !c;
   const v = await modal({ title: isNew ? 'Nouvelle corrélation' : 'Éditer la corrélation', okText: isNew ? 'Créer' : 'Enregistrer', message: destinationSentence(detectionDestination(c && c.risk_score)) + ' Un score RBA > 0 la bascule vers Risque.', fields: corrFields(c) });
   if (!v) return;
+  const puits = puitsDesCorrelations(); effacerLeRefusDUnGeste(puits);
   try {
     const payload = corrPayload(v);
     await apiSend(isNew ? '/correlations' : '/correlations/' + c.id, 'POST', payload);
     announceCreated('correlations', detectionDestination(payload.risk_score), payload.name, payload.enabled ? 'première évaluation dans ' + payload.interval_s + ' s' : 'désactivée : cochez « Activée » pour qu\'elle tourne');
     loadCorrelations();
-  } catch (e) { toast(prefixeDUnEchecRenduTelQuel() + ((e && e.message) || e), 'err', 6000); }
+  } catch (e) { peindreLeRefusDUnGeste(puits, e); }
 }
 async function deleteCorrelation(c) {
   if (!(await confirmModal('Supprimer la corrélation « ' + c.name + ' » ?', { okText: 'Supprimer', danger: true }))) return;
+  const puits = puitsDesCorrelations(); effacerLeRefusDUnGeste(puits);
   try { await apiSend('/correlations/' + c.id, 'DELETE'); toast('corrélation supprimée', 'ok'); loadCorrelations(); }
-  catch (e) { toast(prefixeDUnEchecRenduTelQuel() + ((e && e.message) || e), 'err', 6000); }
+  catch (e) { peindreLeRefusDUnGeste(puits, e); }
 }
 async function testCorrelation(c) {
+  const puits = puitsDesCorrelations(); effacerLeRefusDUnGeste(puits);
   let d;
-  try { d = await apiSend('/correlations/' + c.id + '/test', 'POST', {}); } catch (e) { toast(prefixeDUnEchecRenduTelQuel() + ((e && e.message) || e), 'err', 6000); return; }
+  try { d = await apiSend('/correlations/' + c.id + '/test', 'POST', {}); } catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
   if (!d || d.error) { toast('échec : ' + ((d && d.error) || 'inconnu'), 'err', 6000); return; }
   const ents = Array.isArray(d.entities) ? d.entities : [];
   const body = document.createElement('div');
@@ -190,17 +200,19 @@ async function editBaseline(b) {
   const isNew = !b;
   const v = await modal({ title: isNew ? 'Nouvelle baseline' : 'Éditer la baseline', okText: isNew ? 'Créer' : 'Enregistrer', message: destinationSentence(detectionDestination(b && b.risk_score)) + ' Un score RBA > 0 la bascule vers Risque.', fields: baseFields(b) });
   if (!v) return;
+  const puits = puitsDesLignesDeBase(); effacerLeRefusDUnGeste(puits);
   try {
     const payload = basePayload(v);
     await apiSend(isNew ? '/baselines' : '/baselines/' + b.id, 'POST', payload);
     announceCreated('baselines', detectionDestination(payload.risk_score), payload.name, payload.enabled ? 'première évaluation dans ' + payload.interval_s + ' s' : 'désactivée : cochez « Activée » pour qu\'elle tourne');
     loadBaselines();
-  } catch (e) { toast(prefixeDUnEchecRenduTelQuel() + ((e && e.message) || e), 'err', 6000); }
+  } catch (e) { peindreLeRefusDUnGeste(puits, e); }
 }
 async function deleteBaseline(b) {
   if (!(await confirmModal('Supprimer la baseline « ' + b.name + ' » ?', { okText: 'Supprimer', danger: true }))) return;
+  const puits = puitsDesLignesDeBase(); effacerLeRefusDUnGeste(puits);
   try { await apiSend('/baselines/' + b.id, 'DELETE'); toast('baseline supprimée', 'ok'); loadBaselines(); }
-  catch (e) { toast(prefixeDUnEchecRenduTelQuel() + ((e && e.message) || e), 'err', 6000); }
+  catch (e) { peindreLeRefusDUnGeste(puits, e); }
 }
 // `P10.20-b` — CE QUI DISTINGUE UNE PORTE NON ARMÉE D'UNE LIGNE DE BASE ABSENTE, ET CE QUE ÇA COÛTE. La
 // route du dry-run ne porte AUCUN code : tous ses refus vivent dans `error` à 200 (« baseline introuvable »,
@@ -213,8 +225,9 @@ async function deleteBaseline(b) {
 const OUVERTURE_DU_REFUS_DE_LA_PORTE_DRYRUN = /^DRY-RUN\s+REFUS/;
 
 async function testBaseline(b) {
+  const puits = puitsDesLignesDeBase(); effacerLeRefusDUnGeste(puits);
   let d;
-  try { d = await apiSend('/baselines/' + b.id + '/test', 'POST', {}); } catch (e) { toast(prefixeDUnEchecRenduTelQuel() + ((e && e.message) || e), 'err', 6000); return; }
+  try { d = await apiSend('/baselines/' + b.id + '/test', 'POST', {}); } catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
   const causeServie = (d && typeof d.error === 'string') ? d.error.trim() : '';
   if (OUVERTURE_DU_REFUS_DE_LA_PORTE_DRYRUN.test(causeServie)) {
     // LE REFUS DE LA PORTE NE S'EFFACE PAS AU BOUT DE SIX SECONDES. Ce n'est pas un échec d'évaluation :
@@ -272,4 +285,4 @@ function loadDetAdv() {
 // `testBaseline` est exposée pour le harnais ESM (témoin 96 : le refus de la porte de masquage rendu par
 // sa fabrique réelle, distinct d'un « introuvable ») ; son seul appelant applicatif est le bouton « Test »
 // d'une ligne de la table des lignes de base.
-export { loadDetAdv, loadBaselines, testBaseline };
+export { loadDetAdv, loadBaselines, testBaseline, editCorrelation, deleteCorrelation, testCorrelation, editBaseline, deleteBaseline };

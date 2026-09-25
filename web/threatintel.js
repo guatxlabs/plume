@@ -8,7 +8,7 @@
 //   POST /api/threat-intel/iocs     <- {type,value,source?,confidence?,severity?,expires?,env_id?} OU {iocs:[…],source?,env_id?}  -> {added, skipped:[…]}
 //   POST /api/threat-intel/import   <- {bundle:{…}, source?, env_id?}  -> {imported, skipped:[…]}
 // SÉCU UI : tout en textContent/esc (anti-XSS) ; le contenu IOC n'est pas un secret (renseignement).
-import { $, api, apiSend, disclosure, fetchInto, fmtTs, humanAge, LANG, modal, muted, pagedList, sev, toast } from './core.js';
+import { $, api, apiSend, disclosure, effacerLeRefusDUnGeste, fetchInto, fmtTs, humanAge, LANG, modal, muted, pagedList, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, sev, toast } from './core.js';
 import { champDeRecherche, filtrerParRecherche, texteCherchable } from './recherche_de_liste.js';
 import { uiIsAdmin } from './multitenant.js';
 import { RECHERCHE_IOC } from './registres.js'; // `P11.21-f` : l'état de recherche vit dans un module feuille
@@ -183,6 +183,13 @@ const MOT_IOC_MAGASIN_VIDE = LANG === 'en'
   ? 'No indicator — add one, or import a feed / STIX bundle.'
   : "Aucun indicateur — ajoutes-en un ou importe un feed / bundle STIX.";
 
+// `P10.27-d` — LE PUITS DES GESTES SUR LE MAGASIN D'INDICATEURS, juste avant la liste (et après le formulaire d'import) :
+// ajout manuel et import en masse. Hors de ce que `loadThreatIntel` repeint, il survit au rechargement ; la forme est
+// celle du point commun (`peindreLeRefusDUnGeste`, core.js). MESURÉ AVANT CE LOT (témoin 118) : « échec : 503 {"error":
+// "INDICATEURS NON AJOUTÉS : … » dans un avis (ajout) ou dans la ligne du formulaire plus un avis « import : échec »
+// (import), coupés avant ce qui reste vrai — le magasin reste celui d'avant.
+function puitsDesIndicateurs() { const liste = $('#ti-ioc-list'); return liste && liste.parentNode ? puitsDuRefusDUnGeste(liste.parentNode, 'indicateurs', liste) : null; }
+
 // ---- ajout MANUEL d'un IOC (modale) — POST /threat-intel/iocs {type,value,…} ----
 async function addIocPrompt() {
   const r = await modal({
@@ -204,9 +211,10 @@ async function addIocPrompt() {
     severity: Math.max(0, Math.min(4, Number(r.severity) || 0)),
     env_id: String(r.env_id || '').trim() || 'prod',
   };
+  const puits = puitsDesIndicateurs(); effacerLeRefusDUnGeste(puits);
   let res;
   try { res = await apiSend('/threat-intel/iocs', 'POST', body); }
-  catch (e) { toast('échec : ' + ((e && e.message) || e), 'bad', 4200); return; }
+  catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
   const added = res && res.added != null ? res.added : 0;
   const skipped = res && Array.isArray(res.skipped) ? res.skipped.length : 0;
   toast(added ? added + ' IOC ajouté/mis à jour' + (skipped ? ' (' + skipped + ' ignoré)' : '') : 'aucun IOC ajouté' + (skipped ? ' (' + skipped + ' ignoré — type/valeur invalide)' : ''), added ? 'ok' : 'bad', 4200);
@@ -254,9 +262,10 @@ async function doImport(e) {
     path = '/threat-intel/iocs';
     body = { iocs, source: source || 'manual', env_id: env };
   }
+  const puits = puitsDesIndicateurs(); effacerLeRefusDUnGeste(puits);
   let r;
   try { r = await apiSend(path, 'POST', body); }
-  catch (err) { setMsg('échec : ' + ((err && err.message) || err), true); toast('import : échec', 'bad'); return; }
+  catch (err) { setMsg('', false); peindreLeRefusDUnGeste(puits, err); return; }
   const okN = r ? (r.imported != null ? r.imported : (r.added != null ? r.added : 0)) : 0;
   const skN = r && Array.isArray(r.skipped) ? r.skipped.length : 0;
   setMsg(okN + ' importé(s)/mis à jour' + (skN ? ' · ' + skN + ' ignoré(s)' : ''), false);
@@ -276,4 +285,4 @@ function initThreatIntel() {
   if ($('#ti-search')) { const poignee = champDeRecherche($('#ti-search'), { auChangement: v => { RECHERCHE_IOC.valeur = v; renderIocList(); } }); RECHERCHE_IOC.valeur = poignee.valeur(); }
 }
 
-export { loadThreatIntel, initThreatIntel };
+export { loadThreatIntel, initThreatIntel, addIocPrompt, doImport };

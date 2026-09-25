@@ -14,7 +14,7 @@
 // CSS » qui figurait ici était FAUSSE (cinq `style.cssText`, trois classes sans règle) ; elle est vraie
 // depuis : les mises en page vivent dans `style.css` (`.rb-steps`, `.rb-phase`, `.rb-line`, `.rb-inline`,
 // `.rb-cond`, `.rb-step`), et une classe qui n'a pas de règle n'est pas posée.
-import { $, api, apiSend, confirmModal, disclosure, LANG, modal, muted, pagedList, toast, socIsAdmin, gateDeleteBtn, ic } from './core.js';
+import { $, api, apiSend, confirmModal, disclosure, effacerLeRefusDUnGeste, LANG, modal, muted, pagedList, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, toast, socIsAdmin, gateDeleteBtn, ic } from './core.js';
 import { producerRow, rowButton, announceCreated, takePendingNote, destinationNote } from './producer_ui.js';
 
 const RB_PHASES = ['triage', 'investigation', 'containment', 'eradication', 'recovery'];
@@ -30,6 +30,13 @@ function mkSelect(opts, val) {
 }
 function mkInput(ph, val) { const i = document.createElement('input'); i.placeholder = ph || ''; i.value = val || ''; return i; }
 function mkLabel(text, ctl) { const l = document.createElement('label'); l.appendChild(document.createTextNode(text + ' ')); l.appendChild(ctl); return l; }
+
+// `P10.27-d` / `P10.27-e` — LE PUITS DES GESTES SUR LES RUNBOOKS, juste avant la liste (et après l'éditeur) : bascule,
+// clonage, retrait, enregistrement de l'éditeur. Hors de ce que `loadRunbooks` repeint, il survit au rechargement ; la
+// forme est celle du point commun (`peindreLeRefusDUnGeste`, core.js). MESURÉ AVANT CE LOT (témoin 118) : « Clone refusé :
+// 503 {… », « Suppression refusée : 503 {… », « Enregistrement refusé : 503 {… » (dans un avis ET dans la ligne de
+// l'éditeur), et la bascule — par `producerRow`, qui ne transmettait pas `onRefus` — « Bascule refusée : 503 {… ».
+function puitsDesRunbooks() { const liste = $('#rb-list'); return liste && liste.parentNode ? puitsDuRefusDUnGeste(liste.parentNode, 'runbooks', liste) : null; }
 
 // `P10.7-f` (rang 4) — LE SQUELETTE DE L'AVEU À DEUX NŒUDS, POUR LES TROIS SURFACES DE CE MODULE. La phrase
 // est écrite AU PUITS par chaque appelant (`dit.textContent = …`) et jamais passée ici en argument : le
@@ -124,7 +131,8 @@ function runbookRowModel(r) {
     toggleAllowed: socIsAdmin(), toggleDeniedReason: "l'activation/désactivation d'un runbook est réservée à l'administrateur",
     confirmOnEnable: false,
     // override d'activation — persiste, survit au reboot ; managé compris.
-    onToggle: next => apiSend('/runbooks/' + r.id + '/enabled', 'POST', { enabled: next }),
+    onToggle: next => (effacerLeRefusDUnGeste(puitsDesRunbooks()), apiSend('/runbooks/' + r.id + '/enabled', 'POST', { enabled: next })),
+    onRefus: (e) => peindreLeRefusDUnGeste(puitsDesRunbooks(), e),
     summary: r.match_kind === '*' ? 'défaut' : r.match_kind + ':' + r.match_key,
     summaryTitle: r.description || '',
     meta: r.steps + ' étape(s)',
@@ -140,7 +148,8 @@ function rbRow(r) {
   row.appendChild(rowButton('Cloner', { title: 'Copie custom éditable', onClick: async () => {
     const m = await modal({ title: 'Cloner le runbook', okText: 'Cloner', fields: [{ name: 'name', label: 'Nom de la copie', value: r.name + ' (copie)' }] });
     if (!m) return;
-    try { await apiSend('/runbooks/' + r.id + '/clone', 'POST', { name: (m.name || '').trim() }); } catch (e) { toast('Clone refusé : ' + ((e && e.message) || e), 'bad'); return; }
+    const puits = puitsDesRunbooks(); effacerLeRefusDUnGeste(puits);
+    try { await apiSend('/runbooks/' + r.id + '/clone', 'POST', { name: (m.name || '').trim() }); } catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
     toast('Runbook cloné', 'ok'); loadRunbooks();
   } }));
   // édition / suppression : CUSTOM uniquement (un managé est immuable en place — seuls enable/disable + clone).
@@ -149,7 +158,8 @@ function rbRow(r) {
   const del = rowButton('', { cls: 'crud-btn', icon: ic('x'), title: 'Supprimer' });
   if (gateDeleteBtn(del, locked ? 0 : 2)) del.onclick = async () => {
     if (!await confirmModal('Supprimer le runbook custom « ' + r.name + ' » ?', { danger: true })) return;
-    try { await apiSend('/runbooks/' + r.id, 'DELETE'); } catch (e) { toast('Suppression refusée : ' + ((e && e.message) || e), 'bad'); return; }
+    const puits = puitsDesRunbooks(); effacerLeRefusDUnGeste(puits);
+    try { await apiSend('/runbooks/' + r.id, 'DELETE'); } catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
     toast('Runbook supprimé', 'ok'); loadRunbooks();
   };
   row.appendChild(del);
@@ -287,7 +297,9 @@ async function openEditor(id) {
     if (!body.name) { toast('nom requis', 'bad'); return; }
     if (!steps.length) { toast('au moins une étape', 'bad'); return; }
     const path = id != null ? '/runbooks/' + id : '/runbooks';
-    try { await apiSend(path, 'POST', body); } catch (e) { result.textContent = 'Enregistrement refusé : ' + ((e && e.message) || e); toast('Enregistrement refusé : ' + ((e && e.message) || e), 'bad'); return; }
+    // L'éditeur refusé reste ouvert, sa saisie gardée ; le refus s'écrit dans le puits des runbooks.
+    const puits = puitsDesRunbooks(); effacerLeRefusDUnGeste(puits);
+    try { await apiSend(path, 'POST', body); } catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
     box.classList.add('hidden'); box.replaceChildren();
     announceCreated('runbooks', 'cases', body.name, body.active === false ? 'OFF : activez-le dans la liste' : ''); // P11.1-e
     loadRunbooks();

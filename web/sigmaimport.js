@@ -11,7 +11,7 @@
 //   (comportement backend) -> on le signale + lien vers la liste des règles pour relire/activer.
 // DÉGRADATION : si /api/sigma/import-bulk 404 (daemon concurrent pas encore déployé), message clair, aucune
 //   erreur dure. ADDITIF : ce module n'écrit rien tout seul (une mutation = un import explicite de l'admin).
-import { $, LANG, esc, ic, muted, toast, apiSend, closeModals, withBusy, pagedList, socIsAdmin } from './core.js';
+import { $, LANG, esc, ic, muted, toast, apiSend, closeModals, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste, phraseDuRefusDuDemon, puitsDuRefusDUnGeste, withBusy, pagedList, socIsAdmin } from './core.js';
 import { destinationNote } from './producer_ui.js';
 
 // `P11.8-j` — DEUX NŒUDS QUE LE LEXIQUE NE PEUT PAS VOIR, RENDUS BILINGUES PAR LEUR MODULE. La règle qui
@@ -228,6 +228,12 @@ export function openSigmaImport() {
   form.querySelector('.m-cancel').onclick = close;
   ov.onclick = e => { if (e.target === ov) close(); };
 
+  // `P10.27-d` — LE REFUS DE L'IMPORT S'ÉCRIT DANS LA FENÊTRE, par la forme du point commun (`peindreLeRefusDUnGeste`,
+  // core.js), dans un puits posé juste avant ses boutons. MESURÉ AVANT CE LOT (témoin 118) : « Échec de l'import : 503
+  // {"error":"IMPORT SIGMA EN MASSE NON ÉCRIT : … » coupé à deux cents caractères, avant ce qui reste vrai — aucune règle
+  // n'est importée. Les deux indications propres à cette fenêtre (route absente, fichier binaire) restent ; elles lisent
+  // le statut et la phrase du démon, plus le message composé.
+  const puits = puitsDuRefusDUnGeste(form, 'import_sigma', form.querySelector('.modal-act'));
   form.onsubmit = e => {
     e.preventDefault();
     errEl.hidden = true;
@@ -235,15 +241,14 @@ export function openSigmaImport() {
       const file = fileEl.files && fileEl.files[0];
       const { body, err } = await buildBody(file, pasteEl.value);
       if (err) { showErr(err); return; }
+      effacerLeRefusDUnGeste(puits);
       let sum;
       try {
         sum = await apiSend('/sigma/import-bulk', 'POST', body);
       } catch (ex) {
-        const msg = (ex && ex.message) || String(ex);
-        if (/(^|\s)404(\s|$)/.test(msg)) { showErr("Import en masse indisponible : l'endpoint /api/sigma/import-bulk n'est pas encore déployé (daemon en cours). Réessayez après le déploiement."); return; }
-        if (/(^|\s)403(\s|$)/.test(msg)) { showErr("Refusé (403) : l'import Sigma est réservé à l'administrateur."); return; }
-        if (/UTF-?8|base64/i.test(msg)) { showErr("Fichier non reconnu comme bundle Sigma TEXTE. Les archives compressées (.zip/.gz) ne sont pas prises en charge — fournissez un bundle YAML/JSON (multi-docs) ou collez le texte."); return; }
-        showErr('Échec de l’import : ' + msg);
+        if (ex && ex.statutDuRefus === 404) { showErr("Import en masse indisponible : l'endpoint /api/sigma/import-bulk n'est pas encore déployé (daemon en cours). Réessayez après le déploiement."); return; }
+        if (ex && ex.statutDuRefus === 400 && /UTF-?8|base64/i.test(phraseDuRefusDuDemon(ex))) { showErr("Fichier non reconnu comme bundle Sigma TEXTE. Les archives compressées (.zip/.gz) ne sont pas prises en charge — fournissez un bundle YAML/JSON (multi-docs) ou collez le texte."); return; }
+        peindreLeRefusDUnGeste(puits, ex);
         return;
       }
       // apiSend renvoie null sur corps vide ; on rend quand même (comptes à 0) sans casser.

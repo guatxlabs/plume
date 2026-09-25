@@ -1,6 +1,6 @@
 // fleet.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // Flotte d'agents (P0 UI): inventaire des hotes/endpoints (GET /api/fleet, lecture seule).
-import { $, apiSend, confirmModal, exportBar, fetchInto, fmtTs, humanAge, ic, modal, muted, pagedList, socRole, toast } from './core.js';
+import { $, apiSend, confirmModal, effacerLeRefusDUnGeste, exportBar, fetchInto, fmtTs, humanAge, ic, modal, muted, pagedList, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, socRole, toast } from './core.js';
 
 // =================================================================================================
 // FLOTTE D'AGENTS (P0 UI) — inventaire des HÔTES/endpoints qui remontent des données. LECTURE (viewer+) :
@@ -323,6 +323,12 @@ async function loadFleetView() {
   renderFleetInventory(wrap, d);
 }
 
+// `P10.27-d` — LE PUITS DES GESTES SUR L'INVENTAIRE DE FLOTTE, juste avant lui (hors de ce que `loadFleetView` repeint) :
+// déclaration et retrait de ce qu'on attend d'une machine. La forme est celle du point commun (`peindreLeRefusDUnGeste`,
+// core.js). MESURÉ AVANT CE LOT (témoin 118) : « 503 {"error":"DÉCLARATION D'HÔTE INCHANGÉE : … » dans un avis qui
+// s'efface, coupé avant ce qui reste vrai — l'alerte des hôtes muets compte la machine comme avant.
+function puitsDeLaFlotte() { const hote = $('#fleet-body'); return hote && hote.parentNode ? puitsDuRefusDUnGeste(hote.parentNode, 'flotte', hote) : null; }
+
 // DÉCLARER CE QU'ON ATTEND D'UNE MACHINE. Trois réponses, dont le RÉARMEMENT : sans lui, un exploitant
 // pourrait taire une machine et jamais se dédire. Le démon EXIGE un motif sur les deux valeurs qui
 // éteignent l'alerte — la question est donc posée ici, et la validation est locale AVANT l'appel pour que
@@ -340,17 +346,19 @@ async function declareHostExpectation(h) {
   });
   if (!r) return;
   if (eteint(r.attente) && !await confirmModal(`Déclarer « ${h.host} » : ${ATT_LBL[r.attente]} ? L'alerte « hôtes muets » cessera de compter cette machine, et la console dira que vous l'avez déclarée, avec la date et le motif. Geste persistant, réversible, audité.`, { danger: true, okText: 'Déclarer' })) return;
+  const puits = puitsDeLaFlotte(); effacerLeRefusDUnGeste(puits);
   try { await apiSend('/hosts/settings', 'PUT', { host: h.host, action: 'set_attente', value: r.attente, motif: r.motif || '' }); }
-  catch (e) { toast((e && e.message) || 'échec', 'bad'); return; }
+  catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
   toast('déclaration enregistrée', 'ok'); loadFleetView();
 }
 
 async function clearHostExpectation(h) {
   if (!await confirmModal(`Retirer la déclaration de « ${h.host} » ? La machine reprend le défaut : personne n'a rien dit, donc son silence alerte de nouveau. Geste audité.`, { danger: false, okText: 'Retirer la déclaration' })) return;
+  const puits = puitsDeLaFlotte(); effacerLeRefusDUnGeste(puits);
   try { await apiSend('/hosts/settings', 'PUT', { host: h.host, action: 'clear' }); }
-  catch (e) { toast((e && e.message) || 'échec', 'bad'); return; }
+  catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
   toast('déclaration retirée', 'ok'); loadFleetView();
 }
 
 
-export { loadFleetView, renderFleetInventory };
+export { loadFleetView, renderFleetInventory, declareHostExpectation, clearHostExpectation };

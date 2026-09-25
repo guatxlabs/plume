@@ -23,9 +23,9 @@
 //  * le poll manuel et l'envoi manuel rendaient une réponse identique à celle d'un geste tracé : l'absence de trace
 //    n'était dite nulle part.
 //
-// CE QUE CES TÉMOINS NE TIENNENT PAS : les deux `COMMIT` encore avalés (`report_create`, `workflow_action_create`), tenus
-// par l'ensemble de `check_a_swallowed_write_is_never_affirmed_as_a_fact.py` et nommés dans l'ensemble toléré de
-// `check_a_transaction_boundary_is_never_swallowed.py` ; les deux fins d'instantané de lecture (ventilation, sauvegarde en
+// CE QUE CES TÉMOINS NE TIENNENT PAS : les deux `COMMIT` que ce lot laissait avalés (`report_create`,
+// `workflow_action_create`) sont jugés depuis le lot suivant et tenus par les témoins `isdl_` (ensemble toléré de
+// `check_a_transaction_boundary_is_never_swallowed.py` désormais vide) ; les deux fins d'instantané de lecture (ventilation, sauvegarde en
 // flux), dont seule l'aide commune est jouée ici (une connexion du pool de lecture ou privée n'accepte pas d'autorisateur
 // posé depuis un témoin) — leur câblage est tenu par la garde ; un `COMMIT` que SQLite annule de lui-même (disque plein,
 // E/S) et le mode multi-tenant ne sont pas joués ; aucun module de `web/` n'est exercé.

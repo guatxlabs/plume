@@ -4,7 +4,7 @@
 // PURE MOVE : corps de fonctions IDENTIQUES au monolithe, seuls les import/export sont ajoutes.
 // Le cycle app<->module est benin : les fonctions importees d'app.js ne sont appelees qu'a
 // l'EXECUTION (handlers/async apres await), jamais a l'evaluation du module.
-import { $, LANG, esc, sev, fmtTs, ic, muted, api, apiSend, unDeuxCentsSansCorpsLisible, confirmModal, toast, pagedList, managedBadge, gateDeleteBtn, contentSubmit, contentDelete, fetchInto, formMsg, phraseDuRefusDuDemon, aveuDeLaCreationDeRiposte, aveuDeLaTraceManquante, causeDeLaTraceManquante, cleDeLIdentifiantDeRiposte, motDeLaRiposteSansIdentifiant, socIsAdmin, lsSet, collapsibleGroup, disclosure, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, prefixeDUnEchecRenduTelQuel } from './core.js';
+import { $, LANG, esc, sev, fmtTs, ic, muted, api, apiSend, unDeuxCentsSansCorpsLisible, confirmModal, toast, pagedList, managedBadge, gateDeleteBtn, contentSubmit, contentDelete, fetchInto, formMsg, phraseDuRefusDuDemon, aveuDeLaCreationDeRiposte, aveuDeLaTraceManquante, causeDeLaTraceManquante, cleDeLIdentifiantDeRiposte, motDeLaRiposteSansIdentifiant, socIsAdmin, lsSet, collapsibleGroup, disclosure, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, prefixeDUnEchecRenduTelQuel, unRefusServiEnDeuxCents } from './core.js';
 import { libelleDeTechnique, nomDeTechnique } from './catalogue_attack.js'; // `P11.6-c` : nom dérivé du catalogue servi, ou motif de son absence
 import { S, lireLeStockageDuSite, ecrireDansLeStockageDuSite, ecrireSansDireLeRefus, RAISONS_DE_SILENCE } from './state.js';
 import { initSigmaImport } from './sigmaimport.js';
@@ -223,6 +223,18 @@ let reglesChargees = [];
 // survivait pas. `/api/rules` la sert désormais UNE fois pour toute la liste, dérivée côté serveur des
 // colonnes que la réimposition écrase réellement — il n'y a plus qu'un seul endroit où elle s'écrit.
 let avertissementOverlayRegle = '';
+// `P10.27-d` / `P10.27-e` — LES PUITS DES GESTES DE CE MODULE, un par surface, juste avant sa liste (hors de ce qu'elle
+// repeint) : règles, parseurs, canaux de notification, playbooks — bascule, retrait, et pour les canaux leur formulaire.
+// Les formulaires de contenu (règle, parseur, playbook) disent leur refus DANS le formulaire (`contentSubmit`, core.js).
+// La forme est celle du point commun (`peindreLeRefusDUnGeste`). MESURÉ AVANT CE LOT (témoin 118) : « Bascule refusée :
+// 503 {… », « SUPPRESSION NON FAITE… » coupé dans un avis ; le retrait et le formulaire d'un canal n'avaient AUCUNE
+// capture (promesse rejetée non traitée), et la création d'un canal refusée en deux cents fermait le formulaire comme
+// si le canal existait.
+const puitsAvantLaListe = (sel, surface) => { const liste = $(sel); return liste && liste.parentNode ? puitsDuRefusDUnGeste(liste.parentNode, surface, liste) : null; };
+const puitsDesRegles = () => puitsAvantLaListe('#rule-list', 'regles');
+const puitsDesParseurs = () => puitsAvantLaListe('#parser-list', 'parseurs');
+const puitsDesCanaux = () => puitsAvantLaListe('#notif-list', 'canaux');
+const puitsDesPlaybooks = () => puitsAvantLaListe('#pb-list', 'playbooks');
 // P11.14-a — UN PANNEAU VIDE DISAIT « AUCUNE RÈGLE » ALORS QU'IL N'AVAIT RIEN PU LIRE. Le chargement
 // avalait son erreur (`catch { return; }`) et sortait SANS TOUCHER À `#rule-list` : la div reste celle
 // d'`index.html`, c'est-à-dire vide, et rien ne distingue « le serveur n'a pas répondu » de « il n'y a
@@ -339,7 +351,8 @@ function ruleRowModel(r) {
     consequence: (Number(r.risk_score) > 0 ? 'ajoute ' + r.risk_score + ' au score de risque des entités (' : 'lève une alerte ' + sev(r.severity) + ' (') + dest.label + ') à chaque évaluation où le seuil est franchi',
     toggleAllowed: socIsAdmin(), toggleDeniedReason: "l'activation/désactivation d'une règle est réservée à l'administrateur",
     confirmOnEnable: false,
-    onToggle: next => apiSend('/rules/' + r.id + '/enabled', 'POST', { enabled: next }),
+    onToggle: next => (effacerLeRefusDUnGeste(puitsDesRegles()), apiSend('/rules/' + r.id + '/enabled', 'POST', { enabled: next })),
+    onRefus: (e) => peindreLeRefusDUnGeste(puitsDesRegles(), e),
     summary: `${r.op} ${r.threshold}`, summaryTitle: `${r.is_soql ? 'GXQL' : 'SQL'} : ${r.query}`,
     meta: `${sev(r.severity)} - ${r.last_value == null ? 'pas encore évaluée' : 'dernier ' + r.last_value}${r.last_fired ? ' - ' + fmtTs(r.last_fired) : ''}`,
   };
@@ -359,7 +372,7 @@ function ruleRow(r) {
   const baselineLocked = !socIsAdmin() && r.managed === 0;
   const edit = rowButton('Éditer', { cls: 'crud-btn', disabled: baselineLocked, title: baselineLocked ? 'détection baseline (seed/builtin) : édition réservée à l\'administrateur ; créez plutôt votre propre règle' : '', onClick: baselineLocked ? null : () => openRuleForm(r) });
   const del = rowButton('', { cls: 'crud-btn', icon: ic('x'), title: 'Supprimer' });
-  if (gateDeleteBtn(del, r.managed)) del.onclick = async () => { if (await confirmModal('Supprimer la règle "' + r.name + '" ?', { danger: true })) { if (await contentDelete('/rules/' + r.id, 'règle')) loadRules(); } };
+  if (gateDeleteBtn(del, r.managed)) del.onclick = async () => { if (await confirmModal('Supprimer la règle "' + r.name + '" ?', { danger: true })) { if (await contentDelete('/rules/' + r.id, 'règle', puitsDesRegles())) loadRules(); } };
   row.append(test, edit, del);
   return row;
 }
@@ -567,7 +580,8 @@ function notifRow(n) {
   const en = enabledSwitch({
     enabled: !!n.enabled, name: n.name, allowed: true, confirmOnEnable: false,
     consequence: 'chaque alerte de sévérité ' + sev(n.min_severity) + ' ou plus part vers ' + n.kind + (n.url ? ' (' + n.url + ')' : '') + ' ; OFF, plus aucune notification ne sort par ce canal',
-    onToggle: (next) => apiSend('/notifiers/' + n.id, 'POST', { enabled: next }),
+    onToggle: (next) => (effacerLeRefusDUnGeste(puitsDesCanaux()), apiSend('/notifiers/' + n.id, 'POST', { enabled: next })),
+    onRefus: (e) => peindreLeRefusDUnGeste(puitsDesCanaux(), e),
   });
   const name = document.createElement('span'); name.className = 'rulename'; name.textContent = n.name;
   const kind = document.createElement('code'); kind.className = 'rulecond'; kind.textContent = `${n.kind} >= ${sev(n.min_severity)}`;
@@ -579,7 +593,13 @@ function notifRow(n) {
   const test = document.createElement('button'); test.textContent = 'Tester';
   test.onclick = async () => { meta.textContent = '...'; const j = await apiSend('/notifiers/' + n.id + '/test'); meta.textContent = j.ok ? 'envoyé' : 'échec (vérifie URL / curl / config)'; };
   const edit = document.createElement('button'); edit.textContent = 'Éditer'; edit.onclick = () => openNotifForm(n);
-  const del = document.createElement('button'); del.innerHTML = ic('x'); del.onclick = async () => { if (await confirmModal('Supprimer le canal "' + n.name + '" ?', { danger: true })) { await apiSend('/notifiers/' + n.id, 'DELETE'); loadNotifiers(); } };
+  const del = document.createElement('button'); del.innerHTML = ic('x'); del.title = 'Supprimer le canal';
+  del.onclick = async () => {
+    if (!await confirmModal('Supprimer le canal "' + n.name + '" ?', { danger: true })) return;
+    const puits = puitsDesCanaux(); effacerLeRefusDUnGeste(puits);
+    try { await apiSend('/notifiers/' + n.id, 'DELETE'); } catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
+    loadNotifiers();
+  };
   row.append(en, name, kind, meta, auth, test, edit, del);
   return row;
 }
@@ -608,17 +628,26 @@ function openNotifForm(n) {
 }
 if ($('#notif-new')) $('#notif-new').onclick = () => openNotifForm(null);
 if ($('#nf-cancel')) $('#nf-cancel').onclick = () => $('#notif-form').classList.add('hidden');
-if ($('#notif-form')) $('#notif-form').addEventListener('submit', async e => {
-  e.preventDefault();
+// `P10.27-d` — LE GESTE DU FORMULAIRE D'UN CANAL, NOMMÉ ET EXPORTÉ (il était l'écouteur anonyme ci-dessous, sans capture).
+// Un refus — la création refusée en deux cents (`{error}`, dont le COMMIT refusé « CANAL DE NOTIFICATION NON CRÉÉ »), la
+// modification refusée en cinq cent trois — s'écrit dans le puits des canaux ; le formulaire reste ouvert, sa saisie
+// (secret compris) gardée.
+async function enregistrerLeCanalDuFormulaire(e) {
+  if (e && typeof e.preventDefault === 'function') e.preventDefault();
   const cfgRaw = $(NFK.config).value.trim();
   if (cfgRaw) { try { JSON.parse(cfgRaw); } catch (_) { $('#nf-result').textContent = 'config JSON invalide'; return; } }
   const body = { name: $(NFK.name).value.trim() || 'Canal', kind: $(NFK.kind).value, url: $(NFK.url).value.trim(), min_severity: Number($(NFK.sev).value), enabled: $(NFK.enabled).checked };
   // config (secret) ré-envoyée UNIQUEMENT si (re)saisie -> omise = conserver l'existant côté serveur (comme les connecteurs).
   if (cfgRaw) body.config = cfgRaw;
-  await apiSend(S.editingNotif ? '/notifiers/' + S.editingNotif : '/notifiers', 'POST', body);
+  const puits = puitsDesCanaux(); effacerLeRefusDUnGeste(puits);
+  let j;
+  try { j = await apiSend(S.editingNotif ? '/notifiers/' + S.editingNotif : '/notifiers', 'POST', body); }
+  catch (err) { peindreLeRefusDUnGeste(puits, err); return; }
+  if (j && j.error) { peindreLeRefusDUnGeste(puits, unRefusServiEnDeuxCents(j)); return; }
   $('#notif-form').classList.add('hidden');
   loadNotifiers();
-});
+}
+if ($('#notif-form')) $('#notif-form').addEventListener('submit', enregistrerLeCanalDuFormulaire);
 loadNotifiers();
 
 // --- parsers (registre modulaire d'extraction de champs à l'ingestion) ---
@@ -674,7 +703,8 @@ function parserRow(p) {
   const en = enabledSwitch({
     enabled: !!p.enabled, name: p.name, allowed: socIsAdmin(), confirmOnEnable: false,
     consequence: 'les events de source=' + p.source + ' sont découpés en champs par ce parseur (choix persistant : il survit au reboot, même pour un overlay config.d) ; OFF, ils restent bruts et les recherches sur ces champs ne rendent plus rien',
-    onToggle: (next) => apiSend('/parsers/' + p.id + '/enabled', 'POST', { enabled: next }),
+    onToggle: (next) => (effacerLeRefusDUnGeste(puitsDesParseurs()), apiSend('/parsers/' + p.id + '/enabled', 'POST', { enabled: next })),
+    onRefus: (e) => peindreLeRefusDUnGeste(puitsDesParseurs(), e),
   });
   const name = document.createElement('span'); name.className = 'rulename'; name.textContent = p.name + (p.builtin ? ' · défaut' : '');
   const src = document.createElement('code'); src.className = 'rulecond'; src.textContent = 'source=' + p.source;
@@ -689,7 +719,7 @@ function parserRow(p) {
   row.append(edit);
   // delete : managed=2 (perso) UNIQUEMENT ; builtin (managed=0)/overlay (managed=1) -> bouton grisé (se désactivent via la case).
   const del = document.createElement('button'); del.className = 'crud-btn'; del.innerHTML = ic('x'); del.title = 'Supprimer';
-  if (gateDeleteBtn(del, p.managed)) del.onclick = async () => { if (await confirmModal('Supprimer le parser "' + p.name + '" ?', { danger: true })) { if (await contentDelete('/parsers/' + p.id, 'parseur')) loadParsers(); } };
+  if (gateDeleteBtn(del, p.managed)) del.onclick = async () => { if (await confirmModal('Supprimer le parser "' + p.name + '" ?', { danger: true })) { if (await contentDelete('/parsers/' + p.id, 'parseur', puitsDesParseurs())) loadParsers(); } };
   row.append(del);
   return row;
 }
@@ -715,7 +745,42 @@ function puitsDuRefusDuReparse(btn) {
   const tete = btn && btn.closest ? btn.closest('.panelhead') : null;
   return tete && tete.parentNode ? puitsDuRefusDUnGeste(tete.parentNode, 'reparse', tete.nextElementSibling) : null;
 }
-const refusServiEnDeuxCents = (d) => Object.assign(new Error(String(d.error)), { statutDuRefus: 200, causeDuDemon: String(d.error).trim() });
+// `P10.28-m` — L'ESSAI D'UN REPARSE DIT QU'IL A ÉTÉ INTERROMPU, ET SES MOTS ONT LEURS DEUX FACES. `parser_reparse`
+// (daemon/src/handlers/detection.rs, `P10.7-f`) pose `interrompu` et `cause_scan` quand le budget a coupé le parcours :
+// `scanned` et `matched` ne comptent alors que le PRÉFIXE lu, combien restent n'est pas connu, et relancer reprend.
+// MESURÉ AVANT CE LOT (témoin 117n4, rejoué par le 118) : la confirmation annonçait « {m} / {n} events (30 j) seront
+// ré-enrichis » comme un total, sans un mot de la coupure — et « Rien à ré-enrichir sur les {n} events des 30 derniers
+// jours » affirmait une fenêtre entière qui n'avait pas été lue ; tous ces avis restaient français sous `LANG='en'`.
+// La cause du démon est rendue ENTIÈRE, telle qu'il l'écrit.
+// Les deux libellés du bouton (« ↻ calcul… », « ↻ application… ») sont des nœuds ENTIERS : le lexique les traduit déjà.
+const MOTS_DU_REPARSE = {
+  rien_a_reenrichir: {
+    fr: 'Rien à ré-enrichir sur les {n} events des 30 derniers jours.',
+    en: 'Nothing to re-enrich in the {n} events of the last 30 days.' },
+  rien_dans_le_prefixe_lu: {
+    fr: "Rien à ré-enrichir dans les {n} events LUS — le parcours a été INTERROMPU avant la fin des 30 derniers jours : le reste n'a pas été lu, et relancer le reprend. Le démon en nomme la cause — « {cause} »",
+    en: 'Nothing to re-enrich in the {n} events READ — the scan was INTERRUPTED before the end of the last 30 days: the rest was not read, and running it again resumes it. The daemon names the cause — “{cause}”' },
+  confirmation: {
+    fr: "Réappliquer les parsers actifs : {m} / {n} events (30 j) seront ré-enrichis (sans écraser l'existant).",
+    en: 'Reapply the active parsers: {m} / {n} events (30 d) will be re-enriched (without overwriting what is there).' },
+  confirmation_du_prefixe_lu: {
+    fr: "⚠ PARCOURS INTERROMPU : {m} / {n} ne comptent que les events LUS avant la coupure, pas les 30 jours entiers ; combien restent n'est pas connu. Relancer le reparse reprendra ce qui reste. Le démon en nomme la cause — « {cause} »",
+    en: '⚠ SCAN INTERRUPTED: {m} / {n} count only the events READ before the cut, not the whole 30 days; how many remain is not known. Running the reparse again resumes what remains. The daemon names the cause — “{cause}”' },
+  plafond_par_passe: {
+    fr: '⚠ plafonné à {cap} écritures/passe — relance pour finir.',
+    en: '⚠ capped at {cap} writes per pass — run it again to finish.' },
+  continuer: { fr: 'Continuer ?', en: 'Continue?' },
+  mis_a_jour: { fr: '{u} events mis à jour', en: '{u} events updated' },
+  plafond_atteint: { fr: ' (plafond atteint, relance pour le reste)', en: ' (cap reached, run it again for the rest)' },
+  ecriture_du_prefixe_lu: {
+    fr: " — parcours INTERROMPU : seul le préfixe lu a été traité, relancer reprend ce qui reste. Le démon en nomme la cause — « {cause} »",
+    en: ' — scan INTERRUPTED: only the prefix read was processed, running it again resumes what remains. The daemon names the cause — “{cause}”' },
+};
+const motDuReparse = (cle, valeurs) => Object.entries(valeurs || {})
+  .reduce((t, [k, v]) => t.split('{' + k + '}').join(String(v)), LANG === 'en' ? MOTS_DU_REPARSE[cle].en : MOTS_DU_REPARSE[cle].fr);
+// Le parcours a été coupé : le démon le dit par `interrompu`, et en nomme la cause (`cause_scan`, entière).
+const parcoursInterrompu = (d) => !!(d && d.interrompu === true);
+const causeDuParcours = (d) => String((d && d.cause_scan) || '').trim();
 // rétroactif : dry-run (compte) -> confirmation -> écriture. N'écrase aucun champ déjà présent.
 async function reparserLesEvenements() {
   const btn = $('#parser-reparse'); if (!btn) return;
@@ -723,14 +788,21 @@ async function reparserLesEvenements() {
   btn.disabled = true; const lbl = btn.textContent; btn.textContent = '↻ calcul…';
   try {
     const d = await apiSend('/parsers/reparse', 'POST', { dry_run: true });
-    if (d.error) { peindreLeRefusDUnGeste(puits, refusServiEnDeuxCents(d)); return; }
-    if (!d.matched) { toast('Rien à ré-enrichir sur les ' + d.scanned + ' events des 30 derniers jours.'); return; }
-    const warn = d.truncated ? ('\n\n⚠ plafonné à ' + d.cap + ' écritures/passe — relance pour finir.') : '';
-    if (!await confirmModal('Réappliquer les parsers actifs : ' + d.matched + ' / ' + d.scanned + ' events (30 j) seront ré-enrichis (sans écraser l\'existant).' + warn + '\n\nContinuer ?')) return;
+    if (d.error) { peindreLeRefusDUnGeste(puits, unRefusServiEnDeuxCents(d)); return; }
+    if (!d.matched) {
+      // Interrompu, l'avis porte la cause entière : il reste le temps de la lire.
+      if (parcoursInterrompu(d)) toast(motDuReparse('rien_dans_le_prefixe_lu', { n: d.scanned, cause: causeDuParcours(d) }), 'info', 12000);
+      else toast(motDuReparse('rien_a_reenrichir', { n: d.scanned }));
+      return;
+    }
+    const coupure = parcoursInterrompu(d) ? ('\n\n' + motDuReparse('confirmation_du_prefixe_lu', { m: d.matched, n: d.scanned, cause: causeDuParcours(d) })) : '';
+    const warn = d.truncated ? ('\n\n' + motDuReparse('plafond_par_passe', { cap: d.cap })) : '';
+    if (!await confirmModal(motDuReparse('confirmation', { m: d.matched, n: d.scanned }) + coupure + warn + '\n\n' + motDuReparse('continuer'))) return;
     btn.textContent = '↻ application…';
     const r = await apiSend('/parsers/reparse', 'POST', {});
-    if (r.error) { peindreLeRefusDUnGeste(puits, refusServiEnDeuxCents(r)); return; }
-    toast(r.updated + ' events mis à jour' + (r.truncated ? ' (plafond atteint, relance pour le reste)' : '') + '.', 'ok');
+    if (r.error) { peindreLeRefusDUnGeste(puits, unRefusServiEnDeuxCents(r)); return; }
+    toast(motDuReparse('mis_a_jour', { u: r.updated }) + (r.truncated ? motDuReparse('plafond_atteint') : '')
+      + (parcoursInterrompu(r) ? motDuReparse('ecriture_du_prefixe_lu', { cause: causeDuParcours(r) }) : '.'), 'ok', parcoursInterrompu(r) ? 12000 : undefined);
   } catch (e) { peindreLeRefusDUnGeste(puits, e); } finally { btn.disabled = false; btn.textContent = lbl; }
 }
 if ($('#parser-reparse')) $('#parser-reparse').onclick = reparserLesEvenements;
@@ -1444,7 +1516,8 @@ function playbookRowModel(p, mode) {
     // #1c-toggle : (dés)activation ADMIN-only via /enabled (audité + persistant pour les overlays config.d).
     toggleAllowed: socIsAdmin(), toggleDeniedReason: "l'activation/désactivation d'un playbook est réservée à l'administrateur",
     confirmOnEnable: true,
-    onToggle: next => apiSend('/playbooks/' + p.id + '/enabled', 'POST', { enabled: next }),
+    onToggle: next => (effacerLeRefusDUnGeste(puitsDesPlaybooks()), apiSend('/playbooks/' + p.id + '/enabled', 'POST', { enabled: next })),
+    onRefus: (e) => peindreLeRefusDUnGeste(puitsDesPlaybooks(), e),
     summary: '-> ' + p.action_kind, summaryTitle: p.query,
     meta: 'toutes les ' + (p.interval_s || 0) + ' s sur ' + (p.window_s || 0) + ' s',
   };
@@ -1457,7 +1530,7 @@ function pbRow(p, mode) {
   const baselineLocked = !socIsAdmin() && p.managed === 0;
   const edit = rowButton('Éditer', { cls: 'crud-btn', disabled: baselineLocked, title: baselineLocked ? 'playbook baseline (seed/builtin) : édition réservée à l\'administrateur' : '', onClick: baselineLocked ? null : () => openPbForm(p) });
   const del = rowButton('', { cls: 'crud-btn', icon: ic('x'), title: 'Supprimer' });
-  if (gateDeleteBtn(del, p.managed)) del.onclick = async () => { if (await confirmModal('Supprimer le playbook "' + p.name + '" ?', { danger: true })) { if (await contentDelete('/playbooks/' + p.id, 'playbook')) loadPlaybooks(); } };
+  if (gateDeleteBtn(del, p.managed)) del.onclick = async () => { if (await confirmModal('Supprimer le playbook "' + p.name + '" ?', { danger: true })) { if (await contentDelete('/playbooks/' + p.id, 'playbook', puitsDesPlaybooks())) loadPlaybooks(); } };
   row.append(test, edit, del);
   return row;
 }
@@ -1506,4 +1579,4 @@ export { cleDuRefusDeRiposte, motDuRefusDeRiposte, OUVERTURE_DE_L_APPROBATION_SA
   OUVERTURE_DE_LA_RIPOSTE_NON_LUE, OUVERTURE_DE_L_APPROBATION_NON_ENREGISTREE, OUVERTURE_DE_LA_RIPOSTE_INTROUVABLE,
   // `P10.20-w` — et les deux de l'ANNULATION, nues elles aussi : chacune a une voisine dont elle ne
   // diffère que par un mot, et l'ordre des branches ne prouverait rien de cette différence-là.
-  OUVERTURE_DE_L_ANNULATION_NON_ENREGISTREE, OUVERTURE_DE_LA_RIPOSTE_NON_ANNULABLE, renderCoverage, loadRules, renderRules, peindreLeMode, poserLaRechercheDesRegles, apresEnregistrementDUneRegle, ouvrirLesReglesDeLaTechnique, ouvrirLaCreationPourLaTechnique, loadNotifiers, loadParsers, loadActions, dessinerLesActions, poserLaRechercheDesActions, apresCreationDUneAction, texteCherchableDUneAction, laFenetreBorneLeRegistre, loadMode, basculerLeMode, reparserLesEvenements, loadPlaybooks, motDeLaBorneDesActions, ruleRowModel, ruleRow, texteCherchableDUneRegle, playbookRowModel, pbRow, actionKindOptionLabel };
+  OUVERTURE_DE_L_ANNULATION_NON_ENREGISTREE, OUVERTURE_DE_LA_RIPOSTE_NON_ANNULABLE, renderCoverage, loadRules, renderRules, peindreLeMode, poserLaRechercheDesRegles, apresEnregistrementDUneRegle, ouvrirLesReglesDeLaTechnique, ouvrirLaCreationPourLaTechnique, loadNotifiers, loadParsers, loadActions, dessinerLesActions, poserLaRechercheDesActions, apresCreationDUneAction, texteCherchableDUneAction, laFenetreBorneLeRegistre, loadMode, basculerLeMode, reparserLesEvenements, MOTS_DU_REPARSE, loadPlaybooks, enregistrerLeCanalDuFormulaire, parserRow, notifRow, motDeLaBorneDesActions, ruleRowModel, ruleRow, texteCherchableDUneRegle, playbookRowModel, pbRow, actionKindOptionLabel };

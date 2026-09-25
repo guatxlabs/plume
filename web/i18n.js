@@ -78,6 +78,8 @@ const I18N_EN = {
   "Seuil": "Threshold", "Sévérité": "Severity", "sévérité": "severity", "Intervalle(s)": "Interval (s)", "Fenêtre(s)": "Window (s)",
   "actif": "enabled", "Enregistrer": "Save", "Tester la requête": "Test query", "Annuler": "Cancel", "Tester": "Test",
   "+ Nouveau canal": "+ New channel", "Nom du canal": "Channel name", "Nom du canal (ex: ntfy perso)": "Channel name (e.g. my ntfy)",
+  // `P10.27-d` — le bouton de retrait d'un canal porte son titre (il n'en avait aucun).
+  "Supprimer le canal": "Delete the channel",
   "Sévérité min": "Min severity",
   "+ Nouveau parser": "+ New parser", "↻ Réappliquer aux events": "↻ Re-apply to events",
   "Réappliquer les parsers actifs aux events déjà stockés (30 j)": "Re-apply active parsers to stored events (30 d)",
@@ -794,7 +796,7 @@ const I18N_EN = {
   "Import Sigma réservé à l'administrateur.": "Sigma import is restricted to the administrator.", "Import Sigma traité": "Sigma import processed",
   "Import en masse indisponible : l'endpoint /api/sigma/import-bulk n'est pas encore déployé (daemon en cours). Réessayez après le déploiement.": "Bulk import unavailable: the /api/sigma/import-bulk endpoint is not deployed yet (daemon in progress). Retry after deployment.",
   "Les règles importées arrivent": "Imported rules arrive",
-  "Refusé (403) : l'import Sigma est réservé à l'administrateur.": "Refused (403): Sigma import is restricted to the administrator.", "Règle": "Rule",
+  "Règle": "Rule",
   "Ré-importer": "Re-import", "Sigma": "Sigma", "Sigma (": "Sigma (", "YAML multi-documents": "multi-document YAML",
   "désactivées": "disabled", "la liste des règles": "the rule list", "tableau JSON": "JSON array",
   "— relisez-les puis activez celles voulues dans": "— review them then enable the ones you want in",
@@ -1105,7 +1107,6 @@ const I18N_EN = {
   // P11.8-a — threatintel.js
   "Ajouter un IOC": "Add an IOC", "Conf.": "Conf.", "Confiance (0-100)": "Confidence (0-100)", "Env": "Env", "Expiration": "Expiry",
   "Hits dans le temps (Explore) :": "Hits over time (Search):", "Vu": "Seen", "ex : 203.0.113.9 / evil.example / …": "e.g. 203.0.113.9 / evil.example / …",
-  "import : échec": "import: failure",
   // P11.4-b — bouton d'aide de la section Suppressions (index.html)
   "Aide : Suppressions & whitelists": "Help: Suppressions & whitelists",
   // P11.8-b — help.js, mécanique du guide et des modales d'aide (le contenu des sections vit au registre, en {fr, en})

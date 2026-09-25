@@ -11,7 +11,7 @@
 // arme), et demande CONFIRMATION à l'activation quand la conséquence touche le réseau ou un processus.
 //
 // P11.1-e : chaque surface qui crée un producteur dit OÙ son produit arrivera, avec le lien.
-import { confirmModal, managedBadge, motiverLeRefusAuLecteur, toast } from './core.js';
+import { confirmModal, effacerLeRefusDUnGeste, managedBadge, motiverLeRefusAuLecteur, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, toast } from './core.js';
 
 // --- destinations : où arrive ce qu'un producteur produit. Clé = famille de producteur. ---------------------
 // `hash` = onglet de la console (routage par `location.hash`), `label` = le nom de l'onglet tel qu'affiché.
@@ -63,7 +63,20 @@ function takePendingNote(listKey) {
 // que ça arme). `onToggle` rejette -> la case revient à l'état précédent, le mot aussi.
 // `P10.26-q` — `onRefus` : une surface qui tient un PUITS de refus (`peindreLeRefusDUnGeste`, core.js) y écrit le
 // refus elle-même, cause entière ; l'avis qui s'efface, et qui collait le JSON coupé à deux cents caractères, n'est
-// alors pas posé. Sans `onRefus`, le chemin d'avant est inchangé.
+// alors pas posé.
+// `P10.27-e` — ET SANS `onRefus`, LE COMMUTATEUR PEINT LA MÊME FORME, JAMAIS PLUS « Bascule refusée : » + LE MESSAGE BRUT.
+// MESURÉ AVANT CE LOT (témoin 118e) : huit surfaces sur onze n'en passaient pas — destinations, politiques d'index,
+// processeurs, règles, parseurs, canaux, playbooks, runbooks (les trois dernières par `producerRow`, qui ne le
+// transmettait même pas) — et chacune rendait, dans un avis qui s'efface, « Bascule refusée : 503 {"error":"… » coupé
+// à deux cents caractères. DÉCIDÉ : chaque surface passe son `onRefus` (son puits est aussi celui de ses autres gestes :
+// UN puits par surface, que le commutateur ne peut pas nommer à sa place) ; le DÉFAUT reste le filet des surfaces à
+// venir, correct par construction : la forme partagée, dans un puits posé juste avant la liste qui porte l'interrupteur
+// (le premier ancêtre qui a un identifiant — ce que la surface repeint), hors d'elle, donc qui survit à son rechargement.
+function puitsDuCommutateurSansSurface(lbl) {
+  let liste = lbl ? lbl.parentNode : null;
+  while (liste && !liste.id) liste = liste.parentNode;
+  return liste && liste.parentNode ? puitsDuRefusDUnGeste(liste.parentNode, 'bascule:' + liste.id, liste) : null;
+}
 function enabledSwitch(opts) {
   const lbl = document.createElement('label'); lbl.className = 'producer-switch';
   lbl.style.cssText = 'display:inline-flex;gap:6px;align-items:center;font-size:12px;flex:0 0 auto;max-width:min(100%,440px)';
@@ -89,11 +102,13 @@ function enabledSwitch(opts) {
       const ok = await confirmModal('Activer « ' + (opts.name || '') + ' » ? Une fois ON : ' + (opts.consequence || '') + '. Réversible : repasser sur OFF arrête l\'effet pour la suite ; ce qui a déjà eu lieu n\'est pas défait.', { okText: 'Activer', danger: true });
       if (!ok) { cb.checked = false; paint(); return; }
     }
+    const puitsParDefaut = typeof opts.onRefus === 'function' ? null : puitsDuCommutateurSansSurface(lbl);
+    effacerLeRefusDUnGeste(puitsParDefaut);
     try { await opts.onToggle(next); paint(); toast((opts.name ? opts.name + ' : ' : '') + (next ? 'ON' : 'OFF'), 'ok'); }
     catch (err) {
       cb.checked = !next; paint();
       if (typeof opts.onRefus === 'function') opts.onRefus(err);
-      else toast('Bascule refusée : ' + ((err && err.message) || err), 'bad');
+      else peindreLeRefusDUnGeste(puitsParDefaut, err);
     }
   };
   paint();
@@ -120,7 +135,7 @@ function rowButton(label, opts = {}) {
 
 // --- LA ligne : un seul chemin pour toutes les familles ----------------------------------------------------
 // model : { name, origin (0 builtin / 1 overlay / 2 perso — convention `managed` des règles et playbooks),
-//           enabled, consequence, toggleAllowed, toggleDeniedReason, confirmOnEnable, onToggle,
+//           enabled, consequence, toggleAllowed, toggleDeniedReason, confirmOnEnable, onToggle, onRefus,
 //           summary, summaryTitle, meta, chips: [Element], extraClass, buttons: [Element] }
 function producerRow(model) {
   const row = document.createElement('div'); row.className = 'rulerow' + (model.extraClass ? ' ' + model.extraClass : '');
@@ -129,6 +144,7 @@ function producerRow(model) {
     enabled: model.enabled, name: model.name, consequence: model.consequence,
     allowed: !!model.toggleAllowed, deniedReason: model.toggleDeniedReason,
     confirmOnEnable: !!model.confirmOnEnable, onToggle: model.onToggle || (async () => {}),
+    onRefus: model.onRefus,   // `P10.27-e` — la ligne partagée transmet le puits de sa surface
   }));
   const name = document.createElement('span'); name.className = 'rulename'; name.textContent = model.name || '';
   (model.chips || []).forEach(c => { name.appendChild(document.createTextNode(' ')); name.appendChild(c); });

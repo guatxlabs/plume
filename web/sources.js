@@ -1,6 +1,6 @@
 // sources.js — extracted from app.js (DEEP state-container split).
 // Sources (inventaire + métadonnées d'affichage) + mutations de métadonnées (editor+, auditées).
-import { $, LANG, apiSend, confirmModal, fetchInto, fmtTs, humanAge, ic, modal, pagedList, socRole, toast } from './core.js';
+import { $, LANG, apiSend, confirmModal, effacerLeRefusDUnGeste, fetchInto, fmtTs, humanAge, ic, modal, pagedList, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, socRole, toast } from './core.js';
 
 // ============ SOURCES (inventaire + métadonnées d'affichage) ============
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
@@ -423,11 +423,17 @@ async function loadSourcesView() {
   renderSourcesInventory(wrap, d);
 }
 
+// `P10.27-d` — LE PUITS DES GESTES SUR L'INVENTAIRE DES SOURCES, juste avant lui (hors de ce que `loadSourcesView`
+// repeint) : réglages d'une source (libellé, catégorie, note, déclaration attendue, réinitialisation) et cadence
+// déclarée. La forme est celle du point commun (`peindreLeRefusDUnGeste`, core.js). MESURÉ AVANT CE LOT (témoin 118) :
+// « 503 {"error":"RÉGLAGES DE SOURCE INCHANGÉS : … » dans un avis qui s'efface, coupé avant ce qui reste vrai.
+function puitsDesSources() { const hote = $('#sources-body'); return hote && hote.parentNode ? puitsDuRefusDUnGeste(hote.parentNode, 'sources', hote) : null; }
 async function sourcePut(source, action, value) {
   const b = { source, action };
   if (value !== undefined) b.value = value;
+  const puits = puitsDesSources(); effacerLeRefusDUnGeste(puits);
   try { await apiSend('/sources/settings', 'PUT', b); }
-  catch (e) { toast((e && e.message) || 'échec', 'bad'); return false; }
+  catch (e) { peindreLeRefusDUnGeste(puits, e); return false; }
   return true;
 }
 
@@ -479,8 +485,9 @@ async function declareCadence(s) {
   if (!r) return;
   const b = { source: s.source, action: 'set_cadence', value: r.nature };
   if (r.nature === 'continue') b.interval_s = Number(r.interval_s || 0);
+  const puits = puitsDesSources(); effacerLeRefusDUnGeste(puits);
   try { await apiSend('/sources/settings', 'PUT', b); }
-  catch (e) { toast((e && e.message) || 'échec', 'bad'); return; }
+  catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
   toast('cadence déclarée', 'ok'); loadSourcesView();
 }
 
@@ -490,4 +497,4 @@ async function clearSourceMeta(s) {
 }
 
 
-export { loadSourcesView, renderSourcesInventory, ETAT_DE_SOURCE, etatDeSource, rangDEtatDeSource };
+export { loadSourcesView, renderSourcesInventory, ETAT_DE_SOURCE, etatDeSource, rangDEtatDeSource, sourcePut, declareCadence };

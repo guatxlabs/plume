@@ -314,9 +314,34 @@ pub(crate) fn read_conn_get(db_path: &str) -> Result<Connection, String> {
     }
     read_conn_open(db_path)
 }
+/// Rend une connexion de lecture au pool de SON db_path.
+///
+/// `P10.28-a` — UNE CONNEXION QUI REVIENT EN TRANSACTION EST FERMÉE, JAMAIS RECYCLÉE. Le pool ne sert une lecture
+/// « fraîche » que parce que chaque `SELECT` en autocommit prend un instantané NEUF ; une connexion rendue avec un
+/// instantané OUVERT (un `BEGIN` que son geste n'a pas fermé : `COMMIT` refusé, retour anticipé par `?`, panique
+/// capturée) servirait à TOUTE lecture suivante, sur cette base, l'état figé de cet instant — et le point de reprise du
+/// WAL ne peut pas franchir un lecteur qui tient un instantané. MESURÉ le 2026-09-25 sur la forme d'avant (témoin
+/// `isdl_`, base en WAL) : la connexion rendue en transaction était remise au pool, la lecture suivante la recevait
+/// toujours en transaction et ne voyait PAS une écriture validée entre-temps (compte 0 au lieu de 1). Elle est
+/// désormais fermée (`drop`, qui annule l'instantané) avant même de prendre le verrou du pool, et le journal le dit :
+/// c'est le geste qui l'a rendue ainsi qui est en faute, et rien d'autre ne le signalerait.
 pub(crate) fn read_conn_put(db_path: &str, conn: Connection) {
+    if !conn.is_autocommit() {
+        eprintln!(
+            "[lecture] ERREUR une connexion de lecture revient au pool EN TRANSACTION (un instantané que son geste n'a pas \
+             fermé) : elle est FERMÉE, pas remise au pool — recyclée, elle aurait servi à toute lecture suivante un état \
+             figé que le point de reprise du WAL ne peut pas franchir"
+        );
+        drop(conn);
+        return;
+    }
     let pool = READ_POOL.get_or_init(|| Mutex::new(ReadPool::new()));
     pool.lock().put(db_path, conn); // CAP GLOBAL + éviction LRU inter-bases (cf. ReadPool)
+}
+/// `P10.28-a` — le nombre de connexions de lecture AU REPOS pour CE db_path, lu par les témoins.
+#[cfg(test)]
+pub(crate) fn connexions_de_lecture_au_repos(db_path: &str) -> usize {
+    READ_POOL.get().map_or(0, |pool| pool.lock().by_path.get(db_path).map_or(0, |v| v.len()))
 }
 /// Lecture sur une connexion read-only du pool (WAL) -> NE prend PAS le mutex d'écriture partagé,
 /// donc les lectures fréquentes (dashboards/alertes/overview, x2 si 2 fenêtres) ne contendent plus

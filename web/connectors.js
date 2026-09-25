@@ -1,6 +1,6 @@
 // connectors.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // Connecteurs (sources externes en PULL, #3/#3a, admin-only): liste/form/test/poll.
-import { $, LANG, api, apiSend, confirmWithConsequence, effacerLeRefusDUnGeste, fetchInto, fmtTs, humanAge, ic, muted, pagedList, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, sev, toast, withBusy } from './core.js';
+import { $, LANG, api, apiSend, confirmWithConsequence, effacerLeRefusDUnGeste, fetchInto, fmtTs, humanAge, ic, laTraceNonEcriteServieEnDeuxCents, muted, pagedList, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, sev, toast, withBusy } from './core.js';
 import { enabledSwitch } from './producer_ui.js';
 import { S } from './state.js';
 import { uiIsAdmin } from './multitenant.js';
@@ -154,12 +154,18 @@ function consequenceDuPoll(c) {
     + 'tire rien et ne change rien à l\'état du connecteur — ni sa collecte périodique, ni son curseur.';
 }
 
-async function pollConnector(c) {
+// `P10.27-d` / `P10.28-o` — son refus s'écrit dans le puits des connecteurs par la forme partagée (mesuré avant ce lot :
+// « échec de la collecte : 503 {… » dans un avis qui s'efface) ; et un poll FAIT dont la trace d'audit manque le dit,
+// sous sa face « geste fait, trace absente » (`trace_non_ecrite`, servi en deux cents par `connector_poll` : ce qui est
+// collecté est collecté, le registre ne dit ni qui ni combien) — ce champ n'était pas lu.
+export async function pollConnector(c) {
   if (!await confirmWithConsequence('Collecter maintenant « ' + (c.name || c.id) + ' » ?', consequenceDuPoll(c))) return;
+  const puits = puitsDesConnecteurs(); effacerLeRefusDUnGeste(puits);
   let j;
   try { j = await apiSend('/connectors/' + c.id + '/poll', 'POST'); }
-  catch (e) { toast('échec de la collecte : ' + ((e && e.message) || e), 'bad'); loadConnectors(); return; }
+  catch (e) { peindreLeRefusDUnGeste(puits, e); loadConnectors(); return; }
   j = j || {};
+  const traceAbsente = laTraceNonEcriteServieEnDeuxCents(j); if (traceAbsente) peindreLeRefusDUnGeste(puits, traceAbsente);
   if (j.ok) toast('collecte OK — ' + (j.count != null ? j.count : 0) + ' event(s) ingéré(s)', 'ok', 4200);
   else toast('collecte : ' + (j.error || 'erreur inconnue'), 'bad', 4200);
   loadConnectors();   // reflète last_run / last_count / last_error mis à jour par le poll

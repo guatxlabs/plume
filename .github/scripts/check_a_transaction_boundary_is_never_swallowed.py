@@ -117,15 +117,14 @@ PLANCHER_FICHIERS = 27
 # ================================================================================================
 # `(fichier, fonction) -> (forme, …)` ; une forme par site (les doublons comptent). Une forme s'écrit
 # `<genre> <façon d'avaler>`.
-SITES_TOLERES = {
-    # LES DEUX DERNIERS `COMMIT` AVALÉS, ET LEUR RAISON EST UN AUTRE INSTRUMENT. Tous deux servent ensuite
-    # `conn.last_insert_rowid()` — l'identifiant d'une AUTRE ligne (celle que l'audit vient d'écrire) — et
-    # l'ensemble de `check_a_swallowed_write_is_never_affirmed_as_a_fact.py` les admet sous cette forme, à son
-    # plancher exact. Les corriger ici ferait rougir cette garde-là (exemption sans objet, plancher franchi) :
-    # le geste qui les retire est UN seul, qui touche les deux ensembles et re-dérive son plancher.
-    ("daemon/src/handlers/scheduled_reports.rs", "report_create"): ("COMMIT let _",),
-    ("daemon/src/handlers/workflow_actions.rs", "workflow_action_create"): ("COMMIT let _",),
-}
+# VIDE depuis le 2026-09-25 (`P10.27-w`). Les deux dernières entrées — `scheduled_reports.rs::report_create` et
+# `workflow_actions.rs::workflow_action_create`, `COMMIT let _` — sont RETIRÉES parce que les deux sites sont CORRIGÉS :
+# le `COMMIT` passe par `rendre_apres_validation` (503 nommé, transaction fermée, rien d'annoncé avant) et l'identifiant
+# servi est celui que la fermeture a lu au pied de l'`INSERT`. Elles étaient tolérées pour une raison qui tenait à un
+# AUTRE instrument (l'ensemble de `check_a_swallowed_write_is_never_affirmed_as_a_fact.py`, à son plancher exact) : le
+# même geste a retiré leurs entrées là-bas et re-dérivé son plancher. Zéro borne avalée tolérée : toute borne avalée est
+# désormais une forme neuve.
+SITES_TOLERES = {}
 
 
 # ================================================================================================

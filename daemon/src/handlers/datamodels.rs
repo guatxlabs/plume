@@ -21,10 +21,18 @@ pub(crate) const CAUSE_MODELE_DE_DONNEES_NON_ECRIT: &str = "MODÈLE DE DONNÉES 
      lecture seule, pleine ou verrouillée.";
 
 /// Squelette transactionnel commun aux mutations (create/delete) auditées.
-fn dm_commit(conn: &Connection, outcome: rusqlite::Result<i64>, ok_val: Value) -> Response {
+///
+/// `P10.27-x` — LE CORPS DU SUCCÈS SE CONSTRUIT SUR L'IDENTIFIANT QUE LA FERMETURE A RENDU, lu au pied de l'`INSERT`
+/// de l'objet (`corps_du_succes(id)`), jamais sur un second `conn.last_insert_rowid()`. La forme d'avant relisait
+/// `last_insert_rowid()` APRÈS la fermeture, donc après `audit_config_change` — qui insère une ligne de registre puis
+/// un ÉVÉNEMENT de configuration — : elle servait le numéro de cet événement. MESURÉ le 2026-09-25 (témoins `isdl_`,
+/// un événement déjà ingéré) : le modèle d'Alice était servi avec l'identifiant du modèle de Bob, l'objet qu'Alice
+/// rattachait à « son » modèle entrait dans celui de Bob, et la suppression de « son » modèle retirait celui de Bob
+/// — 200, avec ses objets et ses champs.
+fn dm_commit(conn: &Connection, outcome: rusqlite::Result<i64>, corps_du_succes: impl FnOnce(i64) -> Value) -> Response {
     match outcome {
-        Ok(_) => rendre_apres_validation(conn, "datamodels", "écriture d'un modèle de données", CAUSE_MODELE_DE_DONNEES_NON_ECRIT, || {
-            Json(ok_val).into_response()
+        Ok(id) => rendre_apres_validation(conn, "datamodels", "écriture d'un modèle de données", CAUSE_MODELE_DE_DONNEES_NON_ECRIT, || {
+            Json(corps_du_succes(id)).into_response()
         }),
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
@@ -121,8 +129,7 @@ pub(crate) async fn model_create(State(st): State<AppState>, Extension(au): Exte
             &json!({ "op":"create", "kind":"data_model", "id":id, "name":name, "actor":au.name }).to_string())?;
         Ok(id)
     })();
-    let id = conn.last_insert_rowid();
-    dm_commit(&conn, outcome, json!({ "id": id }))
+    dm_commit(&conn, outcome, |id| json!({ "id": id }))
 }
 
 pub(crate) async fn model_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
@@ -143,7 +150,7 @@ pub(crate) async fn model_delete(State(st): State<AppState>, Extension(au): Exte
             &json!({ "op":"delete", "kind":"data_model", "id":id, "name":name, "actor":au.name }).to_string())?;
         Ok(id)
     })();
-    dm_commit(&conn, outcome, json!({ "ok": true }))
+    dm_commit(&conn, outcome, |_| json!({ "ok": true }))
 }
 
 // =================================================================================================
@@ -180,8 +187,7 @@ pub(crate) async fn object_create(State(st): State<AppState>, Extension(au): Ext
             &json!({ "op":"create", "kind":"data_model_object", "id":id, "model_id":model_id, "name":name, "actor":au.name }).to_string())?;
         Ok(id)
     })();
-    let id = conn.last_insert_rowid();
-    dm_commit(&conn, outcome, json!({ "id": id }))
+    dm_commit(&conn, outcome, |id| json!({ "id": id }))
 }
 
 pub(crate) async fn object_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
@@ -203,7 +209,7 @@ pub(crate) async fn object_delete(State(st): State<AppState>, Extension(au): Ext
             &json!({ "op":"delete", "kind":"data_model_object", "id":id, "name":name, "actor":au.name }).to_string())?;
         Ok(id)
     })();
-    dm_commit(&conn, outcome, json!({ "ok": true }))
+    dm_commit(&conn, outcome, |_| json!({ "ok": true }))
 }
 
 // =================================================================================================
@@ -235,8 +241,7 @@ pub(crate) async fn field_create(State(st): State<AppState>, Extension(au): Exte
             &json!({ "op":"create", "kind":"data_model_field", "id":id, "object_id":object_id, "name":name, "type":ftype, "actor":au.name }).to_string())?;
         Ok(id)
     })();
-    let id = conn.last_insert_rowid();
-    dm_commit(&conn, outcome, json!({ "id": id }))
+    dm_commit(&conn, outcome, |id| json!({ "id": id }))
 }
 
 pub(crate) async fn field_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
@@ -254,7 +259,7 @@ pub(crate) async fn field_delete(State(st): State<AppState>, Extension(au): Exte
             &json!({ "op":"delete", "kind":"data_model_field", "id":id, "name":name, "actor":au.name }).to_string())?;
         Ok(id)
     })();
-    dm_commit(&conn, outcome, json!({ "ok": true }))
+    dm_commit(&conn, outcome, |_| json!({ "ok": true }))
 }
 
 // =================================================================================================
@@ -529,8 +534,7 @@ pub(crate) async fn dataset_create(State(st): State<AppState>, Extension(au): Ex
             &json!({ "op":"create", "kind":"dataset", "id":id, "name":name, "dataset_kind":kind, "actor":au.name }).to_string())?;
         Ok(id)
     })();
-    let id = conn.last_insert_rowid();
-    dm_commit(&conn, outcome, json!({ "id": id }))
+    dm_commit(&conn, outcome, |id| json!({ "id": id }))
 }
 
 pub(crate) async fn dataset_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
@@ -548,7 +552,7 @@ pub(crate) async fn dataset_delete(State(st): State<AppState>, Extension(au): Ex
             &json!({ "op":"delete", "kind":"dataset", "id":id, "name":name, "actor":au.name }).to_string())?;
         Ok(id)
     })();
-    dm_commit(&conn, outcome, json!({ "ok": true }))
+    dm_commit(&conn, outcome, |_| json!({ "ok": true }))
 }
 
 /// POST /api/datasets/{id}/run — exécute le GXQL stocké du dataset via le chemin MASQUÉ. viewer+ (readonly_post).

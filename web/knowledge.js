@@ -7,7 +7,7 @@
 //   DELETE /api/knowledge/alias|calc|eventtype|tag/{id}    (editor+)
 // SÉCU UI : tout en textContent/esc (anti-XSS). Mutations via apiSend (jeton CSRF auto). Aucune surface
 // nouvelle ni chemin de requête/masquage touché — pure UI sur des routes déjà en place.
-import { $, api, apiSend, muted, pagedList, prefixeDUnEchecRenduTelQuel, toast, modal, confirmModal, managedBadge, gateDeleteBtn } from './core.js';
+import { $, api, apiSend, effacerLeRefusDUnGeste, muted, pagedList, peindreLeRefusDUnGeste, prefixeDUnEchecRenduTelQuel, puitsDuRefusDUnGeste, toast, modal, confirmModal, managedBadge, gateDeleteBtn } from './core.js';
 
 // `P10.7-f` (rang 4) — LES SIX FAMILLES VIENNENT DANS UN SEUL CORPS, ET L'AVEU NOMME CELLES QUI N'ONT PAS
 // ÉTÉ LUES. `/api/knowledge` rend `{aliases, calcs, eventtypes, tags, macros, auto_lookups}` ; quand une
@@ -47,10 +47,18 @@ function nameCell(text, enabled) {
 }
 function codeCell(text) { const c = document.createElement('code'); c.textContent = text == null ? '' : String(text); return c; }
 
+// `P10.27-d` — LE PUITS D'UNE FAMILLE, juste avant sa liste (hors de ce qu'elle repeint) : création et retrait. La forme
+// est celle du point commun (`peindreLeRefusDUnGeste`, core.js). MESURÉ AVANT CE LOT (témoin 118) : « erreur : 503
+// {"error":"OBJET DE SAVOIR NON ÉCRIT : … » dans un avis qui s'efface, coupé avant ce qui reste vrai.
+function puitsDeLaFamille(kind) {
+  const famille = FAMILLES_DE_SAVOIR.find(f => f.kind === kind), liste = famille ? $(famille.liste) : null;
+  return liste && liste.parentNode ? puitsDuRefusDUnGeste(liste.parentNode, 'objets_de_savoir:' + kind, liste) : null;
+}
 async function del(kind, id, label, human) {
   if (!(await confirmModal('Supprimer ' + human + ' « ' + label + ' » ?', { okText: 'Supprimer', danger: true }))) return;
+  const puits = puitsDeLaFamille(kind); effacerLeRefusDUnGeste(puits);
   try { await apiSend('/knowledge/' + kind + '/' + id, 'DELETE'); toast(human + ' supprimé', 'ok'); loadKnowledge(); }
-  catch (e) { toast(prefixeDUnEchecRenduTelQuel() + ((e && e.message) || e), 'err', 6000); }
+  catch (e) { peindreLeRefusDUnGeste(puits, e); }
 }
 async function create(kind, human, fields, payloadFn) {
   // `P10.7-f` — LE GESTE PROMIS EST REFUSÉ, ET IL LE DIT. Le bouton « + … » de cette famille porte déjà la
@@ -59,8 +67,9 @@ async function create(kind, human, fields, payloadFn) {
   if (FAMILLES_NON_LUES.has(kind)) { toast("Cette famille d'objets de savoir n'a PAS été lue : en créer un ici, c'est peut-être en écrire un SECOND par-dessus celui que cette lecture n'a pas pu rendre — l'insertion sera refusée par l'unicité du nom, ou le doublon façonnera toute recherche du produit.", 'bad', 9000); return; }
   const v = await modal({ title: 'Nouvel objet — ' + human, okText: 'Créer', fields });
   if (!v) return;
+  const puits = puitsDeLaFamille(kind); effacerLeRefusDUnGeste(puits);
   try { await apiSend('/knowledge/' + kind, 'POST', payloadFn(v)); toast(human + ' créé', 'ok'); loadKnowledge(); }
-  catch (e) { toast(prefixeDUnEchecRenduTelQuel() + ((e && e.message) || e), 'err', 6000); }
+  catch (e) { peindreLeRefusDUnGeste(puits, e); }
 }
 
 // ---- rendu des 4 familles (chaque liste = pagedList, croissante) ----
@@ -190,4 +199,4 @@ async function loadKnowledge() {
 // `loadKnowledge` et `create` sont exposés pour le harnais ESM (témoin 95 : l'aveu PAR FAMILLE et le refus
 // du geste de création, rendus par leur fabrique réelle et non par une copie) ; `create` n'a aucun usage
 // applicatif hors de ce module.
-export { create, loadKnowledge };
+export { create, del, loadKnowledge };

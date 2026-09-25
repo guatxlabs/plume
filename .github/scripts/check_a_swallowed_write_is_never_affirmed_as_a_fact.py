@@ -302,8 +302,12 @@ FAITS_QUI_AFFIRMENT = (
 # se RE-DÉRIVENT du relevé de ce moment-là, par la même règle, avec sa date écrite ici. Ce qu'ils ne
 # séparent PAS, et c'est voulu : une découverte PARTIELLEMENT aveugle passe sous eux sans les
 # franchir — c'est le jugement de l'ensemble nommé dans les deux sens qui la prend.
-PLANCHER_SITES = 29
-PLANCHER_FICHIERS = 8
+# RE-DÉRIVÉS le 2026-09-25 (`P10.27-w`) : la population était à son plancher EXACT (29 sites sur 10 fichiers) et le
+# lot retire deux sites (`report_create`, `workflow_action_create`), donc aussi deux fichiers. Relevé de ce jour-là sur
+# l'arbre : 27 sites sur 8 fichiers ; même règle des deux tiers, arrondie en dessous : 27 -> 18, 8 -> 5 (les
+# pourcentages de la première écriture, 69 % et 65 %, rendent les mêmes entiers).
+PLANCHER_SITES = 18
+PLANCHER_FICHIERS = 5
 
 # ================================================================================================
 # L'ENSEMBLE NOMMÉ — SIX CLASSES, JUGÉES DANS LES DEUX SENS
@@ -384,12 +388,14 @@ SITES_IDENTIFIANT_SERVI_SANS_REGISTRE = {
     ("daemon/src/handlers/dashboards.rs", "dash_create"): ("let _ -> last_insert_rowid",),
     ("daemon/src/handlers/dashboards.rs", "panel_create"): ("let _ -> last_insert_rowid",),
     ("daemon/src/handlers/dashboards.rs", "view_create"): ("let _ -> last_insert_rowid",),
-    # LES DEUX SITES QUE `P10.20-t` NE COMPTAIT PAS, et ils ne sont pas de la même forme que les six
-    # ci-dessus : l'INSERT y est vérifié (`?`) et l'audit aussi, c'est le `COMMIT` qui est avalé. Un
-    # identifiant de transaction NON VALIDÉE part au client comme un identifiant persisté.
-    ("daemon/src/handlers/scheduled_reports.rs", "report_create"): ("let _ -> last_insert_rowid",),
-    ("daemon/src/handlers/workflow_actions.rs", "workflow_action_create"):
-        ("let _ -> last_insert_rowid",),
+    # `P10.27-w` — LES DEUX SITES QUE `P10.20-t` NE COMPTAIT PAS SONT RETIRÉS (2026-09-25) : `report_create` et
+    # `workflow_action_create` jugent leur `COMMIT` (`rendre_apres_validation`, 503 nommé) et servent l'identifiant lu
+    # au pied de l'`INSERT`. CE QUI ÉTAIT IMPRÉCIS dans leur raison d'entrée (« un identifiant de transaction NON
+    # VALIDÉE ») : MESURÉ (témoins `isdl_`), l'identifiant servi n'était pas celui de l'objet même quand le `COMMIT`
+    # passait — `last_insert_rowid()` était lu APRÈS l'audit, donc c'était le numéro de l'ÉVÉNEMENT de configuration :
+    # le rapport d'Alice était servi avec l'identifiant de celui de Bob. La même faute d'ordre, sans `COMMIT` avalé,
+    # vivait dans dix créations que cette garde ne pouvait pas voir (rien n'y était avalé) ; c'est
+    # `check_an_inserted_id_is_read_at_the_foot_of_its_insert.py` qui la tient désormais.
 }
 
 # --- CLASSE 5 : DÉGRADÉ MAIS FAIL-CLOSED. Le compte de lignes EXISTE (`unwrap_or(0)`) et le fait qui
@@ -1423,8 +1429,8 @@ def main():
           "où elle est écrite plutôt que d'attendre une campagne — une garde qui naît rouge ne se "
           "branche pas, et une garde qui ne se branche pas ne tient rien. Le vert dit UNE chose et une "
           "seule : AUCUNE CONJONCTION NEUVE n'est entrée depuis le 2026-09-19. Il ne dit pas que "
-          "l'arbre est sain — deux de ces sites arment un blocage réseau, neuf servent un identifiant "
-          "emprunté. CHAQUE correction doit RETIRER son entrée de SITES_ADMIS, sous peine "
+          "l'arbre est sain — six de ces sites servent au client un identifiant "
+          "emprunté sur une écriture avalée. CHAQUE correction doit RETIRER son entrée de SITES_ADMIS, sous peine "
           "d'« exemption sans objet » : c'est ce qui fait descendre la liste au lieu de la laisser "
           "devenir un décor.")
     ce_qui_n_est_pas_tenu()

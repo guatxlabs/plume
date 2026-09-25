@@ -86,8 +86,16 @@ pub(crate) async fn report_create(State(st): State<AppState>, Extension(au): Ext
             &json!({ "op":"create", "kind":"scheduled_report", "id":id, "name":name, "run_as":run_as, "actor":au.name }).to_string())?;
         Ok(id)
     })();
+    // `P10.27-w` — LE `COMMIT` EST JUGÉ, ET L'IDENTIFIANT SERVI EST CELUI QUE LA FERMETURE A LU AU PIED DE L'`INSERT`.
+    // La forme d'avant (`let _ = conn.execute_batch("COMMIT")` puis `conn.last_insert_rowid()`) faisait les deux fautes
+    // à la fois. MESURÉ le 2026-09-25 (témoins `isdl_`) : sous un `COMMIT` refusé, 200 et un identifiant, la transaction
+    // laissée OUVERTE sur l'écrivain, le rapport visible pour ce processus et absent à froid ; `COMMIT` accepté, le
+    // numéro servi était celui de l'ÉVÉNEMENT d'audit — le rapport d'Alice servi avec l'identifiant de celui de Bob, et
+    // la suppression de « son » rapport par cet identifiant retirait celui de Bob (200).
     match outcome {
-        Ok(_) => { let _ = conn.execute_batch("COMMIT"); Json(json!({ "id": conn.last_insert_rowid() })).into_response() }
+        Ok(id) => rendre_apres_validation(&conn, "rapports", &format!("création du rapport planifié '{name}'"), CAUSE_RAPPORT_PLANIFIE_NON_CREE, || {
+            Json(json!({ "id": id })).into_response()
+        }),
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
             if e.to_string().contains("UNIQUE") { return bad_req("un rapport porte déjà ce nom"); }
@@ -96,9 +104,12 @@ pub(crate) async fn report_create(State(st): State<AppState>, Extension(au): Ext
     }
 }
 
-// `P10.25-g` — LE `COMMIT` DE LA SUPPRESSION D'UN RAPPORT PLANIFIÉ EST JUGÉ. Celui de `report_create` reste avalé, et c'est
-// un reste NOMMÉ : il est tenu par l'ensemble de `check_a_swallowed_write_is_never_affirmed_as_a_fact.py` (identifiant
-// emprunté servi), dont le plancher interdit de le corriger sans retirer son entrée — geste hors de ce lot.
+/// `P10.27-w` — rapport planifié non créé : le `COMMIT` de ce geste refusé.
+pub(crate) const CAUSE_RAPPORT_PLANIFIE_NON_CREE: &str = "RAPPORT PLANIFIÉ NON CRÉÉ : la base n'a pas validé la \
+     transaction (COMMIT refusé) et l'a annulée — aucun rapport n'est écrit, rien ne partira vers le canal, et aucune \
+     trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+
+// `P10.25-g` — LE `COMMIT` DE LA SUPPRESSION D'UN RAPPORT PLANIFIÉ EST JUGÉ. `P10.27-w` — celui de la création aussi.
 /// `P10.25-g` — rapport planifié non supprimé : le `COMMIT` de ce geste refusé.
 pub(crate) const CAUSE_RAPPORT_PLANIFIE_NON_SUPPRIME: &str = "RAPPORT PLANIFIÉ NON SUPPRIMÉ : la base n'a pas validé \
      la transaction (COMMIT refusé) et l'a annulée — il est toujours là et PART TOUJOURS à son échéance, et aucune \

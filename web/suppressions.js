@@ -1,7 +1,7 @@
 // suppressions.js — panneau « Suppressions & whitelists actives » (administration). Extrait de retention.js
 // (déplacement pur du panneau), puis complété : les SILENCES d'alertes y reçoivent les trois gestes de
 // l'administrateur (créer, modifier, supprimer), chacun audité côté démon.
-import { $, muted, api, apiSend, fetchInto, fmtTs, humanAge, confirmWithConsequence, toast, modal, pagedList, ic, LANG } from './core.js';
+import { $, muted, api, apiSend, effacerLeRefusDUnGeste, fetchInto, fmtTs, humanAge, confirmWithConsequence, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, toast, modal, pagedList, ic, LANG } from './core.js';
 import { uiIsAdmin } from './multitenant.js';
 
 // `P10.20-p` (2026-09-16) — LES MOTS DU RELEVÉ DES AUTO-REPORTS COLLECTEURS, FR et EN côte à côte : le
@@ -54,10 +54,16 @@ function suppSectionTitle(txt, sub) {
   if (sub) { const m = document.createElement('span'); m.className = 'muted'; m.style.marginLeft = '8px'; m.textContent = '· ' + sub; s.appendChild(m); }
   h.appendChild(s); return h;
 }
+// `P10.27-d` — LE PUITS DES GESTES DE CE PANNEAU, juste avant lui (hors de ce que `loadSuppressions` repeint) : exclusion
+// d'affichage (appliquer, réinitialiser) et silences (créer, modifier, lever). La forme est celle du point commun
+// (`peindreLeRefusDUnGeste`, core.js). MESURÉ AVANT CE LOT (témoin 118) : « 503 {"error":"SILENCE NON POSÉ : … » dans un
+// avis qui s'efface, coupé avant ce qui reste vrai — les alertes continuent d'être notifiées (ou le restent muettes).
+function puitsDesSuppressions() { const hote = $('#suppressions-body'); return hote && hote.parentNode ? puitsDuRefusDUnGeste(hote.parentNode, 'suppressions', hote) : null; }
 async function suppressionsPut(action, value) {
   const b = { action }; if (value !== undefined) b.value = value;
+  const puits = puitsDesSuppressions(); effacerLeRefusDUnGeste(puits);
   try { await apiSend('/suppressions', 'PUT', b); }
-  catch (e) { toast((e && e.message) || 'échec', 'bad'); return false; }
+  catch (e) { peindreLeRefusDUnGeste(puits, e); return false; }
   return true;
 }
 async function editSuppression(e) {
@@ -123,16 +129,18 @@ async function silenceDialog(existing) {
   });
   if (!r) return;
   const body = { matchers: silenceMatchersFromText(r.matchers), duration_s: parseInt(r.minutes, 10) * 60, reason: String(r.reason || '').trim() };
+  const puits = puitsDesSuppressions(); effacerLeRefusDUnGeste(puits);
   try {
     if (isEdit) await apiSend('/silences/' + existing.id, 'PUT', body);
     else await apiSend('/silences', 'POST', body);
-  } catch (e) { toast((e && e.message) || 'échec', 'bad'); return; }
+  } catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
   toast(isEdit ? 'silence modifié' : 'silence créé', 'ok');
   loadSuppressions();
 }
 async function deleteSilence(s) {
   if (!await confirmWithConsequence('Lever le silence #' + s.id, 'les alertes « ' + silenceMatchersToText(s.matchers) + ' » seront de nouveau notifiées dès la prochaine occurrence. Action auditée.', { okText: 'Lever' })) return;
-  try { await apiSend('/silences/' + s.id, 'DELETE'); } catch (e) { toast((e && e.message) || 'échec', 'bad'); return; }
+  const puits = puitsDesSuppressions(); effacerLeRefusDUnGeste(puits);
+  try { await apiSend('/silences/' + s.id, 'DELETE'); } catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
   toast('silence levé', 'ok'); loadSuppressions();
 }
 function silencesSection(wrap, d) {
@@ -319,4 +327,4 @@ async function loadSuppressions() {
 }
 if ($('#suppressions-refresh')) $('#suppressions-refresh').onclick = loadSuppressions;
 
-export { loadSuppressions };
+export { loadSuppressions, suppressionsPut, silenceDialog, deleteSilence };

@@ -7,11 +7,16 @@
 //   POST /api/index-policies         -> create ; POST /api/index-policies/{id} -> update ; DELETE …/{id}
 // SÉCU UI : rendu textContent (anti-XSS) ; la VRAIE garde reste serveur (403 hors admin). Défense en
 // profondeur : on court-circuite le fetch hors admin.
-import { $, api, apiSend, confirmWithConsequence, fetchInto, muted, pagedList, toast } from './core.js';
+import { $, api, apiSend, confirmWithConsequence, effacerLeRefusDUnGeste, fetchInto, muted, pagedList, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, toast } from './core.js';
 import { enabledSwitch } from './producer_ui.js';
 import { uiIsAdmin } from './multitenant.js';
 
 function num(v) { return typeof v === 'number' ? v : 0; }
+// `P10.27-d` / `P10.27-e` — LE PUITS DES GESTES SUR LES POLITIQUES D'INDEX, juste avant la liste : bascule, retrait,
+// création et modification. Hors de ce que `loadIndexPolicies` repeint, il survit au rechargement ; la forme est celle
+// du point commun (`peindreLeRefusDUnGeste`, core.js). MESURÉ AVANT CE LOT (témoin 118) : « Bascule refusée : 503 {… »,
+// « échec : 503 {… », « refus : 503 {… » dans un avis qui s'efface, coupés avant ce que la politique garde en place.
+function puitsDesPolitiquesDIndex() { const liste = $('#index-policy-list'); return liste && liste.parentNode ? puitsDuRefusDUnGeste(liste.parentNode, 'politiques_d_index', liste) : null; }
 function fmtBytes(n) {
   n = num(n); if (n < 1024) return n + ' o';
   const u = ['Ko', 'Mo', 'Go', 'To']; let i = -1;
@@ -112,7 +117,8 @@ function indexRow(r, globalDays) {
     const en = enabledSwitch({
       enabled: r.enabled !== false, name: r.name, allowed: true, confirmOnEnable: false,
       consequence: 'la purge applique à cet index sa rétention propre (' + (num(r.retention_days) > 0 ? num(r.retention_days) + ' j' : 'héritée : ' + globalDays + ' j') + ') et ses plafonds ; OFF, l\'index retombe sur la rétention globale',
-      onToggle: (next) => apiSend('/index-policies/' + r.id, 'POST', { enabled: next }),
+      onToggle: (next) => (effacerLeRefusDUnGeste(puitsDesPolitiquesDIndex()), apiSend('/index-policies/' + r.id, 'POST', { enabled: next })),
+      onRefus: (e) => peindreLeRefusDUnGeste(puitsDesPolitiquesDIndex(), e),
     });
     const edit = document.createElement('button'); edit.type = 'button'; edit.textContent = 'Éditer'; edit.className = 'btn btn-sm'; // P11.4-b : bouton texte = .btn (pas le chrome icône)
     edit.onclick = () => openIndexPolicyForm(r);
@@ -120,8 +126,9 @@ function indexRow(r, globalDays) {
     del.onclick = async () => {
       // P11.5-b : DELETE = route sensible -> confirmation partagée qui nomme la conséquence (plus de confirm() natif).
       if (!await confirmWithConsequence('Supprimer la politique de l’index « ' + r.name + ' »', 'l’index retombe sur la rétention globale ; aucun événement n’est supprimé par ce geste, mais le régime de purge propre à cet index disparaît.', { okText: 'Supprimer' })) return;
+      const puits = puitsDesPolitiquesDIndex(); effacerLeRefusDUnGeste(puits);
       try { await apiSend('/index-policies/' + r.id, 'DELETE'); toast('politique supprimée', 'ok'); loadIndexPolicies(); }
-      catch (e) { toast('échec : ' + ((e && e.message) || e), 'bad'); }
+      catch (e) { peindreLeRefusDUnGeste(puits, e); }
     };
     row.append(en, edit, del);
   } else {
@@ -177,12 +184,14 @@ export function openIndexPolicyForm(existing) {
       ? 'les événements de cet index au-delà de la rétention ou des plafonds seront PURGÉS au prochain cycle, sans retour possible.'
       : 'aucune purge immédiate ; cette politique fixe le régime de purge propre à cet index (elle peut en retirer plus tard si elle est resserrée).';
     if (!await confirmWithConsequence((isEdit ? 'Enregistrer' : 'Créer') + ' la politique d\'index « ' + (name.value.trim() || prefillName || '?') + ' »', consequence, { danger: tightens, okText: isEdit ? 'Enregistrer' : 'Créer' })) return;
+    // Le formulaire refusé reste ouvert, sa saisie gardée ; le refus s'écrit dans le puits des politiques d'index.
+    const puits = puitsDesPolitiquesDIndex(); effacerLeRefusDUnGeste(puits);
     try {
       if (isEdit) await apiSend('/index-policies/' + existing.id, 'POST', body);
       else await apiSend('/index-policies', 'POST', Object.assign({ name: name.value.trim() }, body));
       toast(isEdit ? 'index enregistré' : 'index créé', 'ok');
       host.hidden = true; host.replaceChildren(); loadIndexPolicies();
-    } catch (e) { toast('refus : ' + ((e && e.message) || e), 'bad'); }
+    } catch (e) { peindreLeRefusDUnGeste(puits, e); }
   };
   const cancel = mk('button', { type: 'button', className: 'btn' }, 'Annuler'); // P11.4-b : classe partagée (secondaire)
   cancel.onclick = () => { host.hidden = true; host.replaceChildren(); };

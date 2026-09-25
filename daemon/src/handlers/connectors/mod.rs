@@ -5,7 +5,7 @@
 //! Extrait de main.rs (refactor split #25 — byte-identique).
 //! Split #35 : Defender / TAXII / http_pull en sous-modules ; runtime partage + re-exports (pure move).
 use crate::*;
-use crate::handlers::transaction_validee::{refuser_le_geste_non_valide, tracer_apres_coup, valider_la_transaction};
+use crate::handlers::transaction_validee::{ouvrir_la_transaction_du_geste, refuser_le_geste_non_valide, tracer_apres_coup, valider_la_transaction};
 
 mod defender;
 mod taxii;
@@ -464,8 +464,18 @@ pub(crate) async fn connector_delete(State(st): State<AppState>, Extension(au): 
     }
     crate::req_conn!(st, au, conn);
     // M3 : suppression + audit fail-closed (retirer une source externe = mutation de config auditable).
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    // `P10.28-p` — LE `BEGIN` REFUSÉ EST NOMMÉ. La forme d'avant (`BEGIN IMMEDIATE` nu) rendait un 500 « verrou base
+    // indisponible » et ne disait rien au journal. MESURÉ le 2026-09-25 (témoins `isdl_`) : sous un `BEGIN` refusé comme
+    // sous la transaction d'un autre geste restée ouverte, 500 générique — rien n'était écrit (le connecteur et sa clé
+    // de livraison restaient en place, la transaction étrangère intacte), mais personne n'apprenait que la révocation
+    // des clés n'avait pas eu lieu. Désormais 503, et la cause le dit.
+    if let Err(refus) = ouvrir_la_transaction_du_geste(
+        &conn,
+        "connecteurs",
+        &format!("suppression du connecteur #{id} et révocation de ses clés de livraison"),
+        CAUSE_CONNECTEUR_NON_SUPPRIME_TRANSACTION_NON_OUVERTE,
+    ) {
+        return refus;
     }
     let outcome: rusqlite::Result<()> = (|| {
         conn.execute("DELETE FROM connector WHERE id=?1", params![id])?;
@@ -536,6 +546,16 @@ pub(crate) const CAUSE_CONNECTEUR_NON_SUPPRIME: &str = "CONNECTEUR NON SUPPRIMÉ
      et collecte toujours, chaque clé de livraison qui lui est liée AUTHENTIFIE ENCORE sur son récepteur, et aucune \
      trace n'est écrite. Réessayez : c'est ce geste qui révoque ces clés ; si le refus persiste, la base est en lecture \
      seule, pleine ou verrouillée.";
+
+/// `P10.28-p` — le `BEGIN` de la suppression d'un connecteur refusé : rien n'est écrit, et c'est la révocation des clés
+/// de livraison qui n'a pas lieu. L'ouverture est celle que la console lit comme « rien n'a changé » pour un `BEGIN`
+/// refusé (`OUVERTURE_DE_LA_TRANSACTION_NON_PRISE`, `web/core.js`).
+pub(crate) const CAUSE_CONNECTEUR_NON_SUPPRIME_TRANSACTION_NON_OUVERTE: &str = "CONNECTEUR NON SUPPRIMÉ, SES CLÉS DE \
+     LIVRAISON NE SONT PAS RÉVOQUÉES : la base n'a pas pris la transaction du retrait (BEGIN refusé : verrou tenu, ou \
+     transaction d'un autre geste pendante sur l'écrivain) — RIEN n'est écrit : le connecteur est toujours là et \
+     collecte toujours, chaque clé de livraison qui lui est liée AUTHENTIFIE ENCORE sur son récepteur, et aucune trace \
+     n'est écrite. Réessayez : c'est ce geste qui révoque ces clés ; s'il est refusé encore, l'écrivain est occupé ou \
+     bloqué.";
 
 /// `P10.26-x` — le poll manuel a eu lieu, mais sa trace d'audit n'a pas été écrite (champ `trace_non_ecrite` de la réponse).
 pub(crate) const CAUSE_TRACE_DU_POLL_MANUEL_NON_ECRITE: &str = "TRACE NON ÉCRITE : le poll manuel a eu lieu (ce qui \

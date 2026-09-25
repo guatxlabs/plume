@@ -4,7 +4,7 @@
 // PURE MOVE : corps de fonctions IDENTIQUES au monolithe, seuls les import/export sont ajoutes.
 // Le cycle app<->module est benin : les fonctions importees d'app.js ne sont appelees qu'a
 // l'EXECUTION (handlers/async apres await), jamais a l'evaluation du module.
-import { $, muted, api, apiSend, cleDeLaSuiteServie, fmtTs, confirmWithConsequence, toast, LANG, LOC, tzOpts } from './core.js';
+import { $, muted, api, apiSend, cleDeLaSuiteServie, effacerLeRefusDUnGeste, fmtTs, confirmWithConsequence, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, toast, LANG, LOC, tzOpts } from './core.js';
 import { S } from './state.js';
 // `P10.20-y` — LE GENRE D'UNE LIGNE DE REGISTRE SE REND PAR LA FABRIQUE DE L'ONGLET AUDIT, pas par une
 // seconde. Les deux seules vues qui lisent `GET /api/ledger` sont celle-ci et `web/audit.js` ; écrire ici
@@ -35,6 +35,13 @@ const DELETED_KIND_LABEL = {
   events: 'événements', snapshots: 'snapshots', alerts_closed: 'alertes closes',
   metric_rollups: 'rollups métriques', metrics_raw: 'points métriques bruts',
 };
+// `P10.28-n` — LE PRÉFIXE D'UNE LECTURE DE LA RÉTENTION QUI N'EST PAS SERVIE A SES DEUX FACES. Mesuré avant ce lot (témoin
+// 117t, reste nommé ; 118n) : « accès refusé ou erreur : » restait français sous `LANG='en'`, collé à la cause, donc
+// intraduisible par le lexique. La face française est celle d'avant, au caractère près.
+const MOTS_DE_LA_RETENTION = {
+  lecture_non_servie: { fr: 'accès refusé ou erreur : ', en: 'access refused or error: ' },
+};
+const motDeLaRetention = (cle) => (LANG === 'en' ? MOTS_DE_LA_RETENTION[cle].en : MOTS_DE_LA_RETENTION[cle].fr);
 const unitAbbr = u => u === 'hours' ? 'h' : 'j';
 const unitWord = u => u === 'hours' ? 'heures' : 'jours';
 /* state: RET_STATE -> S (state.js) */           // {values:{clé:n effectif}, bounds:{clé:{min,max,default,unit}}}
@@ -43,7 +50,7 @@ const _retTimers = {};          // debounce du preview par champ
 async function loadRetention() {
   const wrap = $('#retention-fields'); if (!wrap) return;
   let d;
-  try { d = await api('/retention'); } catch (e) { wrap.replaceChildren(muted('accès refusé ou erreur : ' + e.message)); return; }
+  try { d = await api('/retention'); } catch (e) { wrap.replaceChildren(muted(motDeLaRetention('lecture_non_servie') + e.message)); return; }
   S.RET_STATE = { values: {}, bounds: d.bounds || {}, provenance: d.provenance || {}, reglage_illisible: d.reglage_illisible || {} };
   RET_KEYS.forEach(k => { S.RET_STATE.values[k] = Number(d[k]); });
   wrap.replaceChildren(...RET_KEYS.map(retentionField));
@@ -246,8 +253,16 @@ async function loadRetentionLast() {
   }
 }
 if ($('#retention-refresh')) $('#retention-refresh').onclick = loadRetention;
-if ($('#retention-form')) $('#retention-form').addEventListener('submit', async e => {
-  e.preventDefault();
+// `P10.27-d` — LE REFUS DE L'ENREGISTREMENT S'ÉCRIT DANS LE FORMULAIRE, par la forme du point commun
+// (`peindreLeRefusDUnGeste`, core.js), dans un puits posé juste avant sa ligne d'actions. MESURÉ AVANT CE LOT (témoin 118) :
+// un avis qui s'efface, « 503 {"error":"RÉTENTION INCHANGÉE : … » coupé à deux cents caractères — avant ce qui reste vrai,
+// la purge qui continue sur les durées d'avant. Le geste est nommé et exporté (il était l'écouteur anonyme ci-dessous).
+function puitsDeLaRetention() {
+  const ligne = $('#retention-result'), actions = ligne ? ligne.parentNode : null;
+  return actions && actions.parentNode ? puitsDuRefusDUnGeste(actions.parentNode, 'retention', actions) : null;
+}
+async function enregistrerLaRetention(e) {
+  if (e && typeof e.preventDefault === 'function') e.preventDefault();
   if (!S.RET_STATE) return;
   const res = $('#retention-result');
   const body = {}, decreases = [];
@@ -272,14 +287,16 @@ if ($('#retention-form')) $('#retention-form').addEventListener('submit', async 
     + (hausses.length ? `Conservation allongée, aucune purge — ${hausses.join(' ; ')} : plus d'espace disque et une base plus grande.` : '');
   if (!await confirmWithConsequence('Enregistrer la rétention', consequence.trim(), { danger: baisses.length > 0, okText: baisses.length ? 'Réduire (destructif)' : 'Enregistrer' })) return;
   res.textContent = '...';
+  const puits = puitsDeLaRetention(); effacerLeRefusDUnGeste(puits);
   let j;
   try { j = await apiSend('/retention', 'PUT', body); }
-  catch (e) { res.textContent = ''; toast((e && e.message) || 'échec', 'bad'); return; }
+  catch (err) { res.textContent = ''; peindreLeRefusDUnGeste(puits, err); return; }
   j = j || {};
   res.textContent = '';
   toast(`rétention mise à jour (${j.changed != null ? j.changed : Object.keys(body).length} champ(s))`, 'ok');
   loadRetention();
-});
+}
+if ($('#retention-form')) $('#retention-form').addEventListener('submit', enregistrerLaRetention);
 
 // `P10.20-y` — `loadRetentionLast` et son vocabulaire partent pour le harnais ESM (témoin 102) : ce que
 // ce panneau ANNONCE d'une ligne de registre ne se mesure qu'en le faisant RENDRE une page servie, et le
@@ -288,4 +305,4 @@ if ($('#retention-form')) $('#retention-form').addEventListener('submit', async 
 // l'est pas » et « le démon n'a rien dit » sont trois issues, et elles ne se distinguent qu'en jugeant
 // la fonction qui les sépare sur les trois corps que la route peut servir. Cette fonction-là vit au point
 // commun depuis `P10.21-x` et s'importe de `web/core.js`.
-export { loadRetention, loadRetentionLast, motDeLaSuiteDuRegistre, motDuDernierChangementAudite, OUVERTURE_DU_CHANGEMENT_DE_RETENTION };
+export { loadRetention, enregistrerLaRetention, MOTS_DE_LA_RETENTION, loadRetentionLast, motDeLaSuiteDuRegistre, motDuDernierChangementAudite, OUVERTURE_DU_CHANGEMENT_DE_RETENTION };

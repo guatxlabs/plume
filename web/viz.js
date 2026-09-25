@@ -1,6 +1,6 @@
 // viz.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // Explore + viz/charts: drilldown, fenetre glissante, requete interactive, rendu table/graphes (partages avec dashboards).
-import { $, CSSV, LANG, LOC, SEV, api, apiSend, unDeuxCentsSansCorpsLisible, bornerLePopoverSousSonAncre, causeDeLaTraceManquante, cleDeLaSuiteServie, cleDeLIdentifiantDeRiposte, colComparator, largeursDeColonnes, confirmModal, esc, flashStopped, fmtTs, ic, laPageEstAuDelaDuTotal, laPageEstDansLeTotal, makePager, motDeLaPageAuDelaDuTotal, motDeLaRiposteSansIdentifiant, motDUneLectureQuiNEstPasServie, muted, noeudDeLaFinDuResultat, noeudDeLaPageVideDansLeTotal, noeudDeLaPremierePageVideDansLeTotal, phraseDeLaCreationDeRiposteRefusee, phraseDeLaTraceManquante, phraseDUneReponseNonJson, sev, socIsAdmin, toast, tzOpts, faceDansLaLangue, phraseDuRefusDUneLecture, refusDUneLectureServie } from './core.js';
+import { $, CSSV, LANG, LOC, SEV, api, apiSend, unDeuxCentsSansCorpsLisible, bornerLePopoverSousSonAncre, causeDeLaTraceManquante, cleDeLaSuiteServie, cleDeLIdentifiantDeRiposte, colComparator, largeursDeColonnes, confirmModal, esc, flashStopped, fmtTs, ic, laPageEstAuDelaDuTotal, laPageEstDansLeTotal, makePager, motDeLaPageAuDelaDuTotal, motDeLaRiposteSansIdentifiant, motDUneLectureQuiNEstPasServie, muted, noeudDeLaFinDuResultat, noeudDeLaPageVideDansLeTotal, noeudDeLaPremierePageVideDansLeTotal, phraseDeLaCreationDeRiposteRefusee, phraseDeLaTraceManquante, phraseDUneReponseNonJson, sev, socIsAdmin, toast, tzOpts, faceDansLaLangue, phraseDuRefusDUneLecture, refusDUneLectureServie, noeudDuRefusDUneLecture, unRefusServiEnDeuxCents } from './core.js';
 import { S } from './state.js';
 // P11.4-h : LE clic qui respecte une sélection (mécanisme partagé, `copie_et_selection.js`).
 import { clicQuiRespecteLaSelection } from './copie_et_selection.js';
@@ -295,8 +295,8 @@ const MOTS_DU_BANNISSEMENT_MIS_EN_FILE = {
     fr: "Action créée (#{identifiant}, en attente) - onglet Réponse pour l'approuver.",
     en: 'Action created (#{identifiant}, pending) - approve it in the Response tab.' },
 };
-function motDuBannissementMisEnFile(j, cible) {
-  if (cleDeLIdentifiantDeRiposte(j) === 'identifiant_absent') return motDeLaRiposteSansIdentifiant('ban_ip', cible);
+function motDuBannissementMisEnFile(j, cible, horsDuDemon = null) {
+  if (cleDeLIdentifiantDeRiposte(j) === 'identifiant_absent') return motDeLaRiposteSansIdentifiant('ban_ip', cible, horsDuDemon);   // `P10.23-q` : le sujet suit la réponse
   const mots = MOTS_DU_BANNISSEMENT_MIS_EN_FILE.identifiant_servi;
   return (LANG === 'en' ? mots.en : mots.fr).replace('{identifiant}', String(j && j.id));
 }
@@ -315,18 +315,18 @@ async function banIp(ip, host) {
   // bannissement lancé depuis une ligne de résultats, le silence se lit « c'est parti ». L'aveu part à
   // l'AVIS : ce geste n'a aucun puits ouvert où poser deux nœuds. La lecture du corps reste, pour un
   // refus qui serait servi en 200.
-  let j;
+  let j, horsDuDemon = null;
   try { j = await apiSend('/actions', 'POST', body); }
   catch (e) {
     // `P10.22-b` — sur un deux cents sans corps lisible, la face « absent » ci-dessous, et non « le démon a refusé ».
     if (!unDeuxCentsSansCorpsLisible(e)) { toast(phraseDeLaCreationDeRiposteRefusee(e), 'bad', 9000); return; }
-    j = null;
+    j = null; horsDuDemon = e;   // `P10.23-q` : la face « absent » nomme alors ce qui a répondu
   }
   if (j && j.error) { toast(phraseDeLaCreationDeRiposteRefusee({ causeDuDemon: String(j.error).trim() }), 'bad', 9000); return; }
   // `P10.21-y` — un identifiant servi se nomme, dans le registre du succès ; son absence se dit dans celui
   // de l'information, et assez longtemps pour être lue (même partage que l'étape de runbook).
   if (cleDeLIdentifiantDeRiposte(j) === 'identifiant_servi') toast(motDuBannissementMisEnFile(j, ip), 'ok');
-  else toast(motDuBannissementMisEnFile(j, ip), 'info', 9000);
+  else toast(motDuBannissementMisEnFile(j, ip, horsDuDemon), 'info', 9000);
   // `P10.21-a` — LA RIPOSTE EST EN FILE ET SA TRACE MANQUE : ce geste le recevait et le laissait
   // tomber. `action_create` sert l'aveu À CÔTÉ du succès, sous la clé que le lecteur commun nomme :
   // annoncer la mise en file sans lui, c'est laisser un geste de riposte hors de la trace non
@@ -754,7 +754,24 @@ function showQError(serverMsg) {
   const m = serverMsg || '';
   if (/annul/i.test(m)) { $('#qresult').replaceChildren(); $('#qstats').textContent = 'Annulé'; return; }
   if (/budget|dépass|trop lourd|too heavy|timeout|deadline/i.test(m)) { $('#qresult').replaceChildren(); $('#qstats').textContent = 'Trop lourd même sur 60s — resserre la fenêtre'; return; }
-  $('#qresult').replaceChildren(Object.assign(document.createElement('div'), { className: 'bad', textContent: motDUneLectureQuiNEstPasServie('prefixe_de_la_lecture_refusee_en_debut_de_phrase') + m }));
+  // `P10.29-r` — LE `{error}` QUE LA REQUÊTE SERT EN DEUX CENTS SE DIT PAR LA FACE NOMMÉE D'UNE LECTURE NON SERVIE, cause entière.
+  // MESURÉ AVANT CE LOT (témoin 121rr) : « Erreur : » + la cause, collés dans un seul nœud — intraduisible, et sans dire que rien
+  // n'est établi sur ce que la requête porte. Une cause vide garde le statut, rien n'est inventé.
+  const refus = unRefusServiEnDeuxCents({ error: m }) || Object.assign(new Error('200'), { statutDuRefus: 200 });
+  $('#qresult').replaceChildren(noeudDuRefusDUneLecture(refus, undefined, 'bad'));
+  $('#qstats').textContent = '';
+}
+// LE REFUS QUE LA CONSOLE POSE ELLE-MÊME, AVANT TOUT ENVOI (la garde du SQL brut) : ce n'est pas une lecture refusée par le
+// démon — sa phrase, dans la langue de l'écran, seule.
+const MOTS_DU_REFUS_LOCAL_DE_LA_REQUETE = {
+  sql_brut_reserve: {
+    fr: "SQL brut réservé à l'administrateur — utilisez GXQL (commencez par « search », ex : search source=… | stats count by …).",
+    en: 'Raw SQL is restricted to the administrator — use GXQL (start with “search”, e.g. search source=… | stats count by …).' },
+};
+function direLeRefusLocalDeLaRequete(cle) {
+  renderQBadge(null);
+  if (typeof showQExport === 'function') showQExport(false);
+  $('#qresult').replaceChildren(Object.assign(document.createElement('div'), { className: 'bad', textContent: faceDansLaLangue(MOTS_DU_REFUS_LOCAL_DE_LA_REQUETE[cle]) }));
   $('#qstats').textContent = '';
 }
 
@@ -3110,7 +3127,7 @@ async function runQuery() {
   // la base). Le SQL brut est RÉSERVÉ ADMIN : un non-admin garde tout son accès LECTURE via GXQL/search, on
   // refuse juste d'envoyer du SQL brut (la VRAIE garde reste serveur : /api/query renvoie 403). Message clair.
   if (!isSoql && !socIsAdmin()) {
-    showQError('SQL brut réservé à l\'administrateur — utilisez GXQL (commencez par « search », ex : search source=… | stats count by …).');
+    direLeRefusLocalDeLaRequete('sql_brut_reserve');   // `P10.29-r` : un refus de la console, pas une lecture refusée
     return;
   }
   qHistPush(q);   // ITEM 6 : empile la requête exécutée (sql + fenêtre) dans l'historique Explore

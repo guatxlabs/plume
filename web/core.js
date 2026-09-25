@@ -462,19 +462,24 @@ function motDuRefusDeCreationDeRiposte(e) {
 // L'aveu à DEUX nœuds : la phrase posée au puits (`dit.textContent = …`) — c'est là, et seulement là,
 // que le lexique la voit —, la cause SERVIE par le démon collée dans un SECOND nœud. Rendu en `span` :
 // ses deux surfaces l'accrochent dans une ligne de formulaire, pas dans un bloc.
+// `P10.23-q` — une réponse qui ne vient pas du démon (passerelle, demande non aboutie) ne reçoit pas le cadre « REFUSÉE » :
+// sa propre phrase, et le message du transport en second nœud quand il y en a un.
 function aveuDeLaCreationDeRiposte(e) {
   const aveu = document.createElement('span'); aveu.className = 'bad';
   const dit = document.createElement('span');
-  dit.textContent = motDuRefusDeCreationDeRiposte(e);
-  aveu.append(dit, ' \u00ab ' + phraseDuRefusDuDemon(e) + ' \u00bb');
-  aveu.dataset.refusDeRiposte = '1';   // marque de POSE, pas de style : aucune règle CSS ne la vise
+  const horsDuDemon = cadreDUneReponseQuiNeVientPasDuDemon(e);
+  dit.textContent = horsDuDemon ? horsDuDemon.mot : motDuRefusDeCreationDeRiposte(e);
+  const cause = horsDuDemon ? horsDuDemon.cause : phraseDuRefusDuDemon(e);
+  aveu.append(dit);
+  if (cause) aveu.append(' \u00ab ' + cause + ' \u00bb');
+  aveu.dataset.refusDeRiposte = horsDuDemon ? horsDuDemon.nature : '1';   // marque de POSE, pas de style : aucune règle CSS ne la vise
   return aveu;
 }
 // LA MÊME PHRASE QUAND AUCUN NŒUD NE PEUT LA PORTER. Un avis est une CHAÎNE : la surface qui n'a pas de
 // puits ouvert — le geste « bannir » part d'une ligne de résultats — reçoit la phrase et la cause dans
 // un seul nœud. C'est le repli déjà livré ailleurs pour un aveu sans hôte, pas une seconde grammaire.
 function phraseDeLaCreationDeRiposteRefusee(e) {
-  return motDuRefusDeCreationDeRiposte(e) + ' \u00ab ' + phraseDuRefusDuDemon(e) + ' \u00bb';
+  return phraseDUneReponseQuiNeVientPasDuDemon(e) || (motDuRefusDeCreationDeRiposte(e) + ' \u00ab ' + phraseDuRefusDuDemon(e) + ' \u00bb');   // `P10.23-q`
 }
 
 // `P10.21-a` \u2014 LE GESTE A EU LIEU ET SA TRACE MANQUE : LE LECTEUR PART AU POINT COMMUN, \u00c0 DEUX USAGES.
@@ -560,12 +565,13 @@ function phraseDeLaTraceManquante(cause) {
 // geste à sa façon (« créée », « mise en file »), et le formulaire n'en peint aucune — il se referme.
 const cleDeLIdentifiantDeRiposte = (j) => (j && j.id ? 'identifiant_servi' : 'identifiant_absent');
 const MOTS_DE_LA_RIPOSTE_SANS_IDENTIFIANT = {
-  fr: "Le démon a répondu sans rendre AUCUN identifiant : rien ici n'établit que l'action {geste} {cible} a été créée. Elle ne peut pas être désignée par un numéro — la chercher dans l'onglet Réponse par son geste et sa cible avant de l'approuver, ou avant de rejouer ce geste, qui en poserait une seconde.",
-  en: 'The daemon answered without returning ANY identifier: nothing here establishes that the {geste} {cible} action was created. It cannot be designated by a number — look for it in the Response tab by its gesture and target before approving it, or before replaying this gesture, which would queue a second one.',
+  fr: "{sujet} sans rendre AUCUN identifiant : rien ici n'établit que l'action {geste} {cible} a été créée. Elle ne peut pas être désignée par un numéro — la chercher dans l'onglet Réponse par son geste et sa cible avant de l'approuver, ou avant de rejouer ce geste, qui en poserait une seconde.",
+  en: '{sujet} without returning ANY identifier: nothing here establishes that the {geste} {cible} action was created. It cannot be designated by a number — look for it in the Response tab by its gesture and target before approving it, or before replaying this gesture, which would queue a second one.',
 };
-function motDeLaRiposteSansIdentifiant(geste, cible) {
-  return (LANG === 'en' ? MOTS_DE_LA_RIPOSTE_SANS_IDENTIFIANT.en : MOTS_DE_LA_RIPOSTE_SANS_IDENTIFIANT.fr)
-    .replace('{geste}', String(geste)).replace('{cible}', String(cible));
+// `P10.23-q` — le SUJET suit la réponse : `horsDuDemon` est le refus qu'`apiSend` a nommé sur un deux cents sans corps
+// lisible (`unDeuxCentsSansCorpsLisible`), ou rien quand le démon a répondu sans l'identifiant.
+function motDeLaRiposteSansIdentifiant(geste, cible, horsDuDemon = null) {
+  return faceDansLaLangue(MOTS_DE_LA_RIPOSTE_SANS_IDENTIFIANT, { sujet: sujetDUneReponseSansCorpsDeSucces(horsDuDemon), geste: String(geste), cible: String(cible) });
 }
 
 // `P10.22-n` — LES REFUS DU SECOND FACTEUR, LUS PAR LEUR CAUSE AU POINT COMMUN DE LEURS DEUX ÉCRANS.
@@ -832,6 +838,8 @@ function leRefusEstCeluiDuRole(e) {
 //   · `transaction_non_prise` (`P10.27-q`) — cinq cent trois dont la cause s'ouvre par la transaction que la base N'A
 //     PAS PRISE (« BEGIN ou COMMIT refusé », « BEGIN refusé, ou … ») : rien n'est écrit non plus, mais « annulée »
 //     serait faux quand c'est le `BEGIN` qui est refusé — la transaction n'a jamais été ouverte. Sa face le dit ;
+//   · `ecriture_non_prise` (`P10.29-v`) — cinq cent trois dont la cause s'ouvre par l'écriture (ou l'effacement) que la
+//     base N'A PAS PRISE, « et la transaction est annulée » : ouverte, puis défaite ; rien n'est écrit ;
 //   · `geste_fait_trace_absente` (`P10.28-o`) — un deux cents qui porte `trace_non_ecrite` : le geste A EU LIEU, sa
 //     trace d'audit manque ; ni « rien n'a changé » ni « refusé » ;
 //   · `demande_non_aboutie` — aucune réponse lue (`laDemandeNAPasAbouti`) : ni refus ni effet établis ;
@@ -849,6 +857,15 @@ const OUVERTURE_DE_L_ECRITURE_NON_VALIDEE = /^[\p{Lu}', ]+ : la base n'a pas val
 // UNE CAUSE À EFFET PARTIEL NE S'OUVRE PAR AUCUNE DES DEUX : c'est la condition, et le témoin 117 la juge sur l'ensemble
 // nommé des causes à effet partiel (une tranche déjà écrite dans une copie, le curseur non avancé).
 const OUVERTURE_DE_LA_TRANSACTION_NON_PRISE = /^[\p{Lu}', ]+ : la base n'a pas pris la transaction [^()—]{1,60}\(BEGIN(?![\p{L}\p{N}])/u;
+// `P10.29-v` — LA TROISIÈME OUVERTURE DE LA FAMILLE « RIEN N'A CHANGÉ » : l'ÉCRITURE que la base n'a pas prise, la
+// transaction ANNULÉE. Le démon la sert depuis `P10.29-a` (`CAUSE_BULLETIN_NON_PUBLIE_ECRITURE_REFUSEE`,
+// `CAUSE_BULLETIN_NON_EFFACE_ECRITURE_REFUSEE`, daemon/src/handlers/system.rs) : la transaction était ouverte, l'écriture
+// (ou l'effacement) du geste, ou sa trace, a été refusée, et le `ROLLBACK` a suivi — rien n'est écrit. MESURÉ AVANT CE LOT
+// (témoin 119d5, puis 121v) : ces deux causes se lisaient « refus nommé » — juste, mais sans l'en-tête « RIEN N'A CHANGÉ » que
+// la cause établit. Ni `BEGIN` ni `COMMIT` n'y figurent : aucune des deux ouvertures d'avant ne pouvait la reconnaître.
+// L'objet non pris est lu entre « pris » et la virgule, sans parenthèse : une transaction non prise (« (BEGIN … ») n'y
+// entre pas, et le témoin 117 juge que les trois ouvertures se partagent les causes de transaction du démon.
+const OUVERTURE_DE_L_ECRITURE_NON_PRISE = /^[\p{Lu}', ]+ : la base n'a pas pris (?:l'écriture|l'effacement) [^()—]{1,80}, et la transaction est annulée(?![\p{L}\p{N}])/u;
 // `P10.28-o` — GESTE FAIT, TRACE ABSENTE : LE CONTRAIRE D'UN REFUS. Le poll manuel d'un connecteur et l'envoi manuel
 // d'une destination ont lieu AVANT leur trace (le réseau ne se défait pas) ; quand la base ne prend pas la trace
 // d'audit, le démon répond deux cents et pose la cause sous `trace_non_ecrite` (`tracer_apres_coup`,
@@ -876,6 +893,7 @@ function natureDuRefusDUnGeste(e) {
   const cause = e.causeDuDemon ? String(e.causeDuDemon).trim() : (typeof e.texteDuRefus === 'string' ? e.texteDuRefus.trim() : '');
   if (e.statutDuRefus === 503 && OUVERTURE_DE_L_ECRITURE_NON_VALIDEE.test(cause)) return 'ecriture_non_validee';
   if (e.statutDuRefus === 503 && OUVERTURE_DE_LA_TRANSACTION_NON_PRISE.test(cause)) return 'transaction_non_prise';
+  if (e.statutDuRefus === 503 && OUVERTURE_DE_L_ECRITURE_NON_PRISE.test(cause)) return 'ecriture_non_prise';   // `P10.29-v`
   if (!cause && /^\d{3}$/.test(String(e.message || '').trim())) return 'refus_sans_cause';
   return 'refus_nomme';
 }
@@ -886,6 +904,9 @@ const MOTS_DU_REFUS_D_UN_GESTE = {
   transaction_non_prise: {
     fr: "RIEN N'A CHANGÉ : la base n'a pas pris la transaction de ce geste, rien n'en est écrit. Le démon en nomme la cause —",
     en: "NOTHING CHANGED: the database did not take this action's transaction, nothing of it is written. The daemon names the cause —" },
+  ecriture_non_prise: {
+    fr: "RIEN N'A CHANGÉ : la base n'a pas pris l'écriture de ce geste, et la transaction est annulée. Le démon en nomme la cause —",
+    en: "NOTHING CHANGED: the database did not take this action's write, and the transaction is rolled back. The daemon names the cause —" },
   geste_fait_trace_absente: {
     fr: "GESTE FAIT, TRACE ABSENTE : le démon a accompli ce geste, mais la base n'a pas pris sa trace d'audit — le rejouer referait le geste sans écrire cette trace. Le démon en nomme la cause —",
     en: 'ACTION DONE, TRACE MISSING: the daemon carried out this action, but the database did not take its audit trace — replaying it would do the action again without writing that trace. The daemon names the cause —' },
@@ -939,6 +960,45 @@ function peindreLeRefusDUnGeste(puits, e) {
   return nature;
 }
 
+// `P10.23-q` — LE CADRE D'UN REFUS SUIT LA NATURE DE LA RÉPONSE : LE DÉMON, UNE PASSERELLE, OU PERSONNE.
+// Les surfaces qui ont leur propre table de refus (la déclaration d'un incident, l'ouverture d'un dossier et ses liens,
+// l'attache d'un runbook, la création, l'approbation et l'annulation d'une riposte, les gestes des tenants,
+// l'acquittement, les gestes du second facteur) écrivent « … REFUSÉ(E) : … Le démon a répondu — » autour de la phrase du
+// refus. MESURÉ AVANT CE LOT (témoin 121q, miroir de `HEAD`) : sur une page de passerelle, ce cadre entourait la phrase
+// qu'`apiSend` compose pour elle — « Création du dossier REFUSÉE : … Le démon a répondu — « Réponse d'une PASSERELLE, pas
+// du démon … » » —, et sur une demande qui n'aboutit pas, « Failed to fetch » ; « Geste REFUSÉ par le démon, rien n'a
+// changé » (tenants) affirmait même un état que personne n'avait vu. Ce lecteur rend `null` quand le démon a répondu
+// (son cadre s'applique) ; sinon ce qui se peint À LA PLACE du cadre, dans la langue de l'écran : la phrase d'une
+// réponse hors démon, entière (elle dit déjà que rien ici n'établit ce que le démon a fait) ; la face « NON confirmé »
+// de la forme partagée et le message du transport. Un objet de refus FABRIQUÉ par une surface à partir d'un deux cents
+// `{error}` (il porte `causeDuDemon` sans statut) est une réponse du démon, jamais une demande non aboutie.
+function cadreDUneReponseQuiNeVientPasDuDemon(e) {
+  if (e && e.reponseHorsDemon) return { nature: 'reponse_hors_demon', mot: String(e.message || '').trim(), cause: '' };
+  if (laDemandeNAPasAbouti(e) && !(e && e.causeDuDemon)) return { nature: 'demande_non_aboutie', mot: motDuRefusDUnGeste('demande_non_aboutie'), cause: String((e && e.message) || e).trim() };
+  return null;
+}
+// La même chose en une chaîne, pour un avis ; '' quand le démon a répondu.
+function phraseDUneReponseQuiNeVientPasDuDemon(e) {
+  const cadre = cadreDUneReponseQuiNeVientPasDuDemon(e);
+  if (!cadre) return '';
+  return cadre.cause ? cadre.mot + ' « ' + cadre.cause + ' »' : cadre.mot;
+}
+// LE SUJET D'UNE FACE « NON ÉTABLIE ». Sept gestes lisent le seul corps de succès de leur route et disent son absence
+// (les trois mises en file d'une riposte, l'attache d'un runbook, l'enrôlement, l'activation et la désactivation du second
+// facteur : « Le démon a répondu sans rendre AUCUN identifiant », « … sans confirmer la désactivation »…). Un deux cents dont le
+// corps n'est pas lisible (`unDeuxCentsSansCorpsLisible`) y mène aussi : c'est alors une passerelle, ou un corps abîmé en
+// route, qui a répondu — pas le démon. Le sujet suit la nature que `apiSend` a posée ; sans elle, le démon.
+const MOTS_DU_SUJET_D_UNE_REPONSE_SANS_CORPS_DE_SUCCES = {
+  demon: { fr: 'Le démon a répondu', en: 'The daemon answered' },
+  page_de_passerelle: { fr: 'Une PASSERELLE a répondu, pas le démon,', en: 'A GATEWAY answered, not the daemon,' },
+  corps_illisible: { fr: 'Une réponse ILLISIBLE est arrivée', en: 'An UNREADABLE answer arrived' },
+};
+function sujetDUneReponseSansCorpsDeSucces(e) {
+  const nature = e && e.reponseHorsDemon;
+  const cle = nature && nature !== 'demon' && Object.prototype.hasOwnProperty.call(MOTS_DU_SUJET_D_UNE_REPONSE_SANS_CORPS_DE_SUCCES, nature) ? nature : 'demon';
+  return faceDansLaLangue(MOTS_DU_SUJET_D_UNE_REPONSE_SANS_CORPS_DE_SUCCES[cle]);
+}
+
 // `P10.27-d` — L'ESSAI (UNE LECTURE QUI N'ÉCRIT RIEN) A SA FACE NOMMÉE, DISTINCTE DE CELLE D'UN GESTE.
 // Quatre boutons de la console envoient un POST qui n'écrit RIEN : le test et l'aperçu d'un connecteur
 // (`connector_test`, daemon/src/handlers/connectors/mod.rs — une page lue, rien d'ingéré, rien d'audité), l'essai d'une
@@ -951,8 +1011,11 @@ function peindreLeRefusDUnGeste(puits, e) {
 //   · `essai_refuse` — le démon a refusé l'essai, en statut d'erreur ou en deux cents `{error}`, et en nomme la cause ;
 //   · `essai_refuse_sans_cause` — un refus sans corps : le statut, rien d'autre n'est inventé ;
 //   · `essai_non_abouti` — aucune réponse lue ;
-//   · `reponse_hors_demon` — une passerelle a répondu : sa propre phrase (`apiSend` l'a nommée).
+//   · `reponse_hors_demon` — une passerelle a répondu : sa propre phrase (`apiSend` l'a nommée) ;
+//   · `essai_sans_resultat` (`P10.23-t`, `P10.29-q`) — la réponse ne porte AUCUN résultat (corps vide : `apiSend` rend `null`,
+//     ou le champ du résultat manque) ; l'objet vient d'`unEssaiSansResultat`, la face ne cite rien.
 function natureDuRefusDUnEssai(e) {
+  if (e && e.essaiSansResultat === true) return 'essai_sans_resultat';
   if (e && e.reponseHorsDemon) return 'reponse_hors_demon';
   if (laDemandeNAPasAbouti(e)) return 'essai_non_abouti';
   const cause = e.causeDuDemon ? String(e.causeDuDemon).trim() : (typeof e.texteDuRefus === 'string' ? e.texteDuRefus.trim() : '');
@@ -969,7 +1032,12 @@ const MOTS_DU_REFUS_D_UN_ESSAI = {
   essai_non_abouti: {
     fr: "Essai NON abouti : la demande n'a pas abouti, aucun résultat n'est établi. Un essai n'écrit rien, il peut être relancé. Cause —",
     en: 'Test NOT completed: the request did not complete, no result is established. A test writes nothing, it can be run again. Cause —' },
+  essai_sans_resultat: {
+    fr: "Essai NON abouti : la réponse ne porte aucun résultat, rien n'en est établi. Un essai n'écrit rien, il peut être relancé.",
+    en: 'Test NOT completed: the answer carries no result, nothing of it is established. A test writes nothing, it can be run again.' },
 };
+// L'objet d'un essai dont la réponse ne porte aucun résultat, pour la même pose que ses refus.
+const unEssaiSansResultat = () => Object.assign(new Error(), { statutDuRefus: 200, essaiSansResultat: true });
 const motDuRefusDUnEssai = (nature) => (LANG === 'en' ? MOTS_DU_REFUS_D_UN_ESSAI[nature].en : MOTS_DU_REFUS_D_UN_ESSAI[nature].fr);
 // Peint le refus d'un essai DANS `noeud` (sa ligne de résultat, ou le puits de sa surface) ; rend la nature peinte.
 function peindreLeRefusDUnEssai(noeud, e) {
@@ -978,6 +1046,9 @@ function peindreLeRefusDUnEssai(noeud, e) {
   const dit = document.createElement('span');
   if (nature === 'reponse_hors_demon') {
     dit.textContent = String(e.message || '');
+    noeud.replaceChildren(dit);
+  } else if (nature === 'essai_sans_resultat') {
+    dit.textContent = motDuRefusDUnEssai(nature);
     noeud.replaceChildren(dit);
   } else {
     dit.textContent = motDuRefusDUnEssai(nature);
@@ -2719,6 +2790,9 @@ export {
   natureDeLaReponseHorsDemon, motDeLaReponseHorsDemon, unDeuxCentsSansCorpsLisible,
   // `P10.25-x` — et celui d'une demande qui n'a pas abouti (aucune réponse lue), lu par les trois gestes des comptes.
   laDemandeNAPasAbouti,
+  // `P10.23-q` — le cadre d'un refus suit la nature de la réponse (démon, passerelle, personne), et le sujet d'une face
+  // « non établie » aussi : lus par les surfaces qui ont leur propre table de refus (témoin 121q).
+  cadreDUneReponseQuiNeVientPasDuDemon, phraseDUneReponseQuiNeVientPasDuDemon, sujetDUneReponseSansCorpsDeSucces,
   // `P10.26-o` — le refus du rôle, et lui seul (la liste des comptes ; l'ensemble est relu par le témoin 115).
   REFUS_DU_ROLE_SUR_UNE_ROUTE_D_ADMINISTRATION, leRefusEstCeluiDuRole,
   // `P10.26-q` — la forme partagée du refus d'un geste d'écriture : sa nature, ses faces, son puits.
@@ -2729,7 +2803,7 @@ export {
   unRefusServiEnDeuxCents,
   // `P10.27-d` — la face nommée d'un ESSAI qui n'écrit rien (test et aperçu d'un connecteur, essai d'une règle ou d'un
   // parseur) : sa nature, ses faces, sa pose, et l'écriture du résultat qui l'efface (témoin 119).
-  natureDuRefusDUnEssai, motDuRefusDUnEssai, peindreLeRefusDUnEssai, effacerLeRefusDUnEssai,
+  natureDuRefusDUnEssai, motDuRefusDUnEssai, peindreLeRefusDUnEssai, effacerLeRefusDUnEssai, unEssaiSansResultat,
   // `P10.28-t` — le formateur des faces `{fr, en}` d'un avis composé (témoin 119t).
   faceDansLaLangue,
   // `P10.29-g` — la face nommée d'une LECTURE qui n'est pas servie : sa nature, sa face, sa phrase (avis, ligne) et son

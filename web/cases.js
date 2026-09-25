@@ -1,6 +1,6 @@
 // cases.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // Cases (gestion d'incident, first-class #4a): liste/detail/CRUD + rattachement d'items.
-import { $, api, apiSend, unDeuxCentsSansCorpsLisible, phraseDuRefusDuDemon, aveuDeLaTraceManquante, causeDeLaTraceManquante, cleDeLIdentifiantDeRiposte, confirmModal, confirmWithConsequence, disclosure, downloadText, exportPDF, fmtTs, ic, LANG, modal, motDeLaRiposteSansIdentifiant, motDeLaTraceManquante, muted, pagedList, phraseDeLaCreationDeRiposteRefusee, phraseDeLaTraceManquante, sev, toCSV, toast, tsSlug, withBusy, socIsAdmin, socRole, puitsDuRefusDUnGeste, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste, faceDansLaLangue, phraseDuRefusDUneLecture } from './core.js';
+import { $, api, apiSend, unDeuxCentsSansCorpsLisible, phraseDuRefusDuDemon, aveuDeLaTraceManquante, causeDeLaTraceManquante, cleDeLIdentifiantDeRiposte, confirmModal, confirmWithConsequence, disclosure, downloadText, exportPDF, fmtTs, ic, LANG, modal, motDeLaRiposteSansIdentifiant, motDeLaTraceManquante, muted, pagedList, phraseDeLaCreationDeRiposteRefusee, phraseDeLaTraceManquante, sev, toCSV, toast, tsSlug, withBusy, socIsAdmin, socRole, puitsDuRefusDUnGeste, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste, faceDansLaLangue, phraseDuRefusDUneLecture, cadreDUneReponseQuiNeVientPasDuDemon, phraseDUneReponseQuiNeVientPasDuDemon, sujetDUneReponseSansCorpsDeSucces } from './core.js';
 import { phraseDAffichagePartiel, phraseDEchantillonCoupe, phraseDeCoupe } from './coupe_de_liste.js'; // `P11.22-g` : une liste bornée dit sa coupe
 import { S } from './state.js';
 import { refresh } from './app.js';
@@ -809,6 +809,10 @@ const MOTS_DES_REFUS_DE_DOSSIER = {
   element_refuse_dossier_neuf: {
     fr: "Dossier OUVERT, mais l'élément n'y est PAS RATTACHÉ : le dossier existe, vide — ne le recréez pas, ajoutez-y l'élément. Le démon a répondu —",
     en: 'Case OPENED, but the item is NOT ATTACHED to it: the case exists, empty — do not create it again, add the item to it. The daemon answered —' },
+  // `P10.23-q` — le même dossier neuf, quand la réponse à l'ajout ne vient pas du démon : l'ajout n'est ni refusé ni établi.
+  element_non_confirme_dossier_neuf: {
+    fr: "Dossier OUVERT, mais l'ajout de l'élément n'est PAS confirmé : le dossier existe — ne le recréez pas ; vérifiez s'il porte l'élément avant de l'y ajouter de nouveau —",
+    en: 'Case OPENED, but adding the item is NOT confirmed: the case exists — do not create it again; check whether it holds the item before adding it again —' },
 };
 const motDuRefusDeDossier = (cle) => (LANG === 'en' ? MOTS_DES_REFUS_DE_DOSSIER[cle].en : MOTS_DES_REFUS_DE_DOSSIER[cle].fr);
 // LE DISCRIMINANT, un par geste, jugé par le harnais dans les deux sens sur les littéraux du démon.
@@ -825,7 +829,11 @@ function cleDuRefusDeDossier(geste, e) {
 }
 // La phrase et la cause SÉPARÉES : la cause est ce que le démon a servi, ou rien quand la phrase de la
 // console dit déjà qu'il n'a rien nommé — citer « 404 » après « a répondu 404 » serait un bégaiement.
+// `P10.23-q` — une réponse qui ne vient pas du démon (passerelle, demande non aboutie) ne reçoit AUCUN des cadres
+// « REFUSÉ … Il a répondu — » : sa phrase, dans la langue de l'écran, et le message du transport quand il y en a un.
 function refusDeDossier(geste, e) {
+  const horsDuDemon = cadreDUneReponseQuiNeVientPasDuDemon(e);
+  if (horsDuDemon) return { cle: horsDuDemon.nature, mot: horsDuDemon.mot, cause: horsDuDemon.cause };
   const cle = cleDuRefusDeDossier(geste, e);
   return { cle, mot: motDuRefusDeDossier(cle), cause: /_sans_cause$/.test(cle) ? '' : phraseDuRefusDuDemon(e) };
 }
@@ -1002,6 +1010,9 @@ function cleDuRattachementRefuse(e, dossierNeuf) {
   return dossierNeuf ? 'element_refuse_dossier_neuf' : 'element_refuse';
 }
 function phraseDuRattachementRefuse(e, dossierNeuf) {
+  // `P10.23-q` — hors du démon, rien n'établit que l'élément n'est PAS rattaché ; un dossier ouvert par ce geste, lui, existe.
+  const horsDuDemon = phraseDUneReponseQuiNeVientPasDuDemon(e);
+  if (horsDuDemon) return dossierNeuf ? motDuRefusDeDossier('element_non_confirme_dossier_neuf') + ' « ' + horsDuDemon + ' »' : horsDuDemon;
   const cle = cleDuRattachementRefuse(e, dossierNeuf);
   return /_sans_cause$/.test(cle) ? motDuRefusDeDossier(cle) : motDuRefusDeDossier(cle) + ' « ' + phraseDuRefusDuDemon(e) + ' »';
 }
@@ -1324,9 +1335,10 @@ const MOTS_DES_REFUS_D_INCIDENT = {
   // Pas un refus : un deux cents qui ne porte pas le seul corps de succès de la route (`{attached}`) — vide,
   // ou une page de passerelle. Rien ne l'établit ; le rejouer ne pose rien de plus, le démon refusant un
   // second attachement (« un runbook est déjà attaché à cet incident »).
+  // `P10.23-q` — le sujet suit la réponse (`sujetDUneReponseSansCorpsDeSucces`) : une passerelle n'est pas le démon.
   attache_non_etablie: {
-    fr: "Le démon a répondu sans dire combien d'étapes il a attachées : rien ici n'établit que le runbook est attaché. Rejouer le geste ne pose rien de plus — s'il l'est déjà, le démon refuse un second attachement.",
-    en: 'The daemon answered without saying how many steps it attached: nothing here establishes that the runbook is attached. Replaying the gesture sets nothing more — if it already is, the daemon refuses a second attachment.' },
+    fr: "{sujet} sans dire combien d'étapes sont attachées : rien ici n'établit que le runbook est attaché. Rejouer le geste ne pose rien de plus — s'il l'est déjà, le démon refuse un second attachement.",
+    en: '{sujet} without saying how many steps are attached: nothing here establishes that the runbook is attached. Replaying the gesture sets nothing more — if it already is, the daemon refuses a second attachment.' },
 };
 // `geste` : 'declarer', 'retrograder', 'attacher'. Le statut est celui que `apiSend` porte à côté de la
 // cause (`statutDuRefus`) ; « nommé » veut dire que le démon a servi un corps `{error}`.
@@ -1338,10 +1350,14 @@ function cleDuRefusDIncident(geste, e) {
   if (statut === 404 && !nomme) return 'dossier_introuvable_sans_cause';
   return geste === 'retrograder' ? 'retrogradation_refusee' : 'declaration_refusee';
 }
-const motDuRefusDIncident = (cle) => (LANG === 'en' ? MOTS_DES_REFUS_D_INCIDENT[cle].en : MOTS_DES_REFUS_D_INCIDENT[cle].fr);
+// `horsDuDemon` : le refus qu'`apiSend` a nommé sur un deux cents sans corps lisible — il fait le sujet d'une face « non
+// établie » (`P10.23-q`) ; sans lui, le démon.
+const motDuRefusDIncident = (cle, horsDuDemon = null) => faceDansLaLangue(MOTS_DES_REFUS_D_INCIDENT[cle], { sujet: sujetDUneReponseSansCorpsDeSucces(horsDuDemon) });
 // L'avis — la modale s'est refermée, aucun puits n'est ouvert : phrase et cause dans une seule chaîne, comme
 // les refus de dossier. Sur le quatre cent quatre nu, la phrase dit déjà qu'aucune cause n'est nommée.
 function phraseDuRefusDIncident(geste, e) {
+  const horsDuDemon = phraseDUneReponseQuiNeVientPasDuDemon(e);   // `P10.23-q` : ni « REFUSÉE » ni « Il a répondu — »
+  if (horsDuDemon) return horsDuDemon;
   const cle = cleDuRefusDIncident(geste, e);
   const mot = motDuRefusDIncident(cle);
   return /_sans_cause$/.test(cle) ? mot : mot + ' « ' + phraseDuRefusDuDemon(e) + ' »';
@@ -1368,16 +1384,16 @@ async function incidentDemote(c) {
 
 async function attachRunbook(c, runbookId) {
   if (!runbookId) return;
-  let j;
+  let j, horsDuDemon = null;
   try { j = await apiSend('/cases/' + c.id + '/runbook', 'POST', { runbook_id: runbookId }); }
   catch (e) {
     // `P10.22-b` — un deux cents sans corps lisible n'est pas un refus : la face « non établie » ci-dessous est
     // la juste, le cadre du refus l'écrirait « REFUSÉ ».
     if (!unDeuxCentsSansCorpsLisible(e)) { toast(phraseDuRefusDIncident('attacher', e), 'bad', 9000); return; }
-    j = null;
+    j = null; horsDuDemon = e;   // `P10.23-q` : la face nomme alors ce qui a répondu
   }
   // `P10.22-n` — le succès n'est annoncé que sur le corps de succès que la route sert.
-  if (!(j && Number.isInteger(j.attached))) { toast(motDuRefusDIncident('attache_non_etablie'), 'info', 9000); await refreshCaseDetail(c.id); return; }
+  if (!(j && Number.isInteger(j.attached))) { toast(motDuRefusDIncident('attache_non_etablie', horsDuDemon), 'info', 9000); await refreshCaseDetail(c.id); return; }
   toast('Runbook attaché', 'ok'); await refreshCaseDetail(c.id);
 }
 
@@ -1447,8 +1463,8 @@ const MOTS_DE_LA_RIPOSTE_MISE_EN_FILE = {
     fr: 'Action mise en file (#{identifiant}) — approbation requise',
     en: 'Action queued (#{identifiant}) — approval required' },
 };
-function motDeLaRiposteMiseEnFile(j, geste, cible) {
-  if (cleDeLIdentifiantDeRiposte(j) === 'identifiant_absent') return motDeLaRiposteSansIdentifiant(geste, cible);
+function motDeLaRiposteMiseEnFile(j, geste, cible, horsDuDemon = null) {
+  if (cleDeLIdentifiantDeRiposte(j) === 'identifiant_absent') return motDeLaRiposteSansIdentifiant(geste, cible, horsDuDemon);   // `P10.23-q` : le sujet suit la réponse
   const mots = MOTS_DE_LA_RIPOSTE_MISE_EN_FILE.identifiant_servi;
   return (LANG === 'en' ? mots.en : mots.fr).replace('{identifiant}', String(j.id));
 }
@@ -1492,12 +1508,12 @@ async function prepareResponse(c, s) {
     { name: 'dry_run', label: 'Simulation (dry-run)', type: 'select', value: '1', options: [{ value: '1', label: 'Oui (dry-run)' }, { value: '0', label: 'Non (réel, requiert approbation)' }] },
   ] });
   if (!r || !(r.target || '').trim()) return;
-  let j;
+  let j, horsDuDemon = null;
   try { j = await apiSend('/actions', 'POST', { kind: s.action_kind, target: r.target.trim(), dry_run: r.dry_run === '1', reason: 'runbook step #' + s.id + ' (case #' + c.id + ')' }); }
   catch (e) {
     // `P10.22-b` — sur un deux cents sans corps lisible, la face « absent » ci-dessous, et non « le démon a refusé ».
     if (!unDeuxCentsSansCorpsLisible(e)) { toast(phraseDeLaCreationDeRiposteRefusee(e), 'bad', 9000); return; }
-    j = null;
+    j = null; horsDuDemon = e;   // `P10.23-q` : la face « absent » nomme alors ce qui a répondu
   }
   // `action_valid` (daemon/src/handlers/actions.rs) refuse la SAISIE par un corps `{error}` servi en 200 :
   // ce chemin-là, contrairement au 503, n'est pas un rejet et il faut le lire dans le corps. La cause est
@@ -1505,7 +1521,7 @@ async function prepareResponse(c, s) {
   if (j && j.error) { toast(phraseDeLaCreationDeRiposteRefusee({ causeDuDemon: String(j.error).trim() }), 'bad', 9000); return; }
   // `P10.22-a` — un identifiant servi se nomme, dans le registre du succès ; son absence se dit dans celui de
   // l'information, et assez longtemps pour être lue (même partage que le geste « bannir »).
-  const mot = motDeLaRiposteMiseEnFile(j, s.action_kind, r.target.trim());
+  const mot = motDeLaRiposteMiseEnFile(j, s.action_kind, r.target.trim(), horsDuDemon);
   if (cleDeLIdentifiantDeRiposte(j) === 'identifiant_servi') toast(mot, 'ok');
   else toast(mot, 'info', 9000);
   await refreshCaseDetail(c.id);
@@ -1540,4 +1556,6 @@ async function prepareResponse(c, s) {
 // les deux sens sur les corps que le démon sert, et l'avis ne se mesure qu'en JOUANT le geste. Aucun usage
 // applicatif hors de ce module.
 export { cleDuRefusDIncident, motDuRefusDIncident, incidentDeclare, incidentDemote, attachRunbook };
+// `P10.23-q` — les phrases des refus d'incident et de rattachement, jouées par le témoin 121 sur une réponse hors du démon.
+export { phraseDuRefusDIncident, phraseDuRattachementRefuse };
 export { OUVERTURE_DU_DOSSIER_NON_OUVERT, OUVERTURE_DU_LIEN_NON_POSE, OUVERTURE_DU_LIEN_NON_RETIRE, cleDuRattachementRefuse, cleDuRefusDeDossier, motDuRefusDeDossier, phraseDuRefusDeDossier, addToCase, canEditCases, caseBtn, caseItemEl, caseRow, createCase, linkCasePrompt, loadCaseOpsSummary, loadCases, motDeLaRiposteMiseEnFile, motDeLaTraceManquante, motDuGenreDeLien, openCase, prepareResponse, renderCaseDetail, renderCaseLinks, renderWizardPanel };

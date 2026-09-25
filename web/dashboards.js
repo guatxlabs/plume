@@ -4,7 +4,7 @@
 // au point où ce bloc vivait (un module s'exécute à l'import, avant l'enveloppe `fetch` d'`app.js`). Les seams
 // (`viz.js`, `multitenant.js`) continuent de lire `loadDashboard` / `refreshPanels` via le ré-export d'`app.js`.
 // `renderDashboard` est exporté pour le harnais. N'importe pas `app.js`.
-import { $, ic, flashStopped, stopBtn, toast, modal, confirmModal, confirmWithConsequence, toCSV, downloadText, tsSlug, exportPDF, miniMenu, api, apiSend, phraseDuRefusDuDemon, transientGatewayMsg, motDUneLectureQuiNEstPasServie, prefixeDUnEchecRenduTelQuel, phraseDUneReponseNonJson, makePager, noeudDUnePageServieVide, socIsAdmin, applyRoleClass, roleSansEcriturePartagee, LANG, puitsDuRefusDUnGeste, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste, faceDansLaLangue, noeudDuRefusDUneLecture, unRefusServiEnDeuxCents } from './core.js';
+import { $, ic, flashStopped, stopBtn, toast, modal, confirmModal, confirmWithConsequence, toCSV, downloadText, tsSlug, exportPDF, miniMenu, api, apiSend, phraseDuRefusDuDemon, makePager, noeudDUnePageServieVide, socIsAdmin, applyRoleClass, roleSansEcriturePartagee, LANG, puitsDuRefusDUnGeste, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste, faceDansLaLangue, noeudDuRefusDUneLecture, refusDUneLectureServie, unRefusServiEnDeuxCents, cadreDUneReponseQuiNeVientPasDuDemon, phraseDUneReponseQuiNeVientPasDuDemon } from './core.js';
 import { S } from './state.js';
 import { coldShareBadge, coverageBadge, coverageHorizonNodes, provenanceBadge, currentFrom, currentTo, noeudsDeVizReglee, queryCount, runQuery, tableEl, vizElement } from './viz.js'; // `P10.5-q` : l'aveu de part froide que les panneaux reçoivent est LU
 // P11.4-h : LE geste de copie de la console (mécanisme partagé).
@@ -401,7 +401,15 @@ function renderDashboard(d) {
     if (await persisterLeTableauDeBord({ name: r.name.trim() })) loadDashboards();
   };
   wsel.onchange = () => { const n = Number(wsel.value); d.cols = n; tile.style.flexBasis = tileBasis(n); persisterLeTableauDeBord({ cols: n }); };
-  del.onclick = async () => { if (await confirmModal('Supprimer ce dashboard et ses panneaux ?', { danger: true })) { await apiSend('/dashboard/' + d.id, 'DELETE'); loadDashboards(); } };
+  // `P10.23-t` — LE RETRAIT D'UN TABLEAU DE BORD N'AVAIT AUCUNE CAPTURE : un refus partait en promesse rejetée non traitée, rien
+  // n'était dit, la tuile restait. Il se dit par la forme partagée, dans le puits des tableaux de bord (hors de ce que
+  // `loadDashboards` repeint) ; la liste ne se relit que si le retrait a eu lieu.
+  del.onclick = async () => {
+    if (!(await confirmModal('Supprimer ce dashboard et ses panneaux ?', { danger: true }))) return;
+    const puits = puitsDesTableauxDeBord(); effacerLeRefusDUnGeste(puits);
+    try { await apiSend('/dashboard/' + d.id, 'DELETE'); } catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
+    loadDashboards();
+  };
   if (editable) {
     // coin de redimensionnement : hauteur px + largeur 1-4 col (calee sur le quart de ligne = garde-fou)
     const corner = document.createElement('div'); corner.className = 'dcorner editonly'; corner.title = 'Redimensionner (glisser)';
@@ -505,12 +513,18 @@ const motDuRefusDEcriture = (cle) => (LANG === 'en' ? REFUS_D_ECRITURE_MOTS[cle]
 // L'aveu à deux nœuds d'un refus d'ÉCRITURE : la phrase est posée au puits (`dit.textContent = …`),
 // jamais passée en argument — c'est là, et seulement là, que le lexique et `i18nWalk` la voient —, et la
 // phrase SERVIE par le démon est collée dans un SECOND nœud.
+// `P10.23-q` — une réponse qui ne vient pas du démon (passerelle, demande non aboutie) n'est ni « NON ENREGISTRÉ » ni « le
+// démon a refusé » : sa propre phrase, et le message du transport en second nœud quand il y en a un.
 function aveuDeRefusDEcriture(cle, e) {
   const { aveu, dit } = boiteDAveu();
-  dit.textContent = motDuRefusDEcriture(cle);
-  aveu.append(' « ' + phraseDuRefusDuDemon(e) + ' »');
+  const horsDuDemon = cadreDUneReponseQuiNeVientPasDuDemon(e);
+  dit.textContent = horsDuDemon ? horsDuDemon.mot : motDuRefusDEcriture(cle);
+  const cause = horsDuDemon ? horsDuDemon.cause : phraseDuRefusDuDemon(e);
+  if (cause) aveu.append(' « ' + cause + ' »');
   return aveu;
 }
+// La même chose en une chaîne, pour un avis.
+const phraseDuRefusDEcriture = (cle, e) => phraseDUneReponseQuiNeVientPasDuDemon(e) || (motDuRefusDEcriture(cle) + ' « ' + phraseDuRefusDuDemon(e) + ' »');
 
 // LE REFUS D'UNE PERSISTANCE DE TABLEAU DE BORD, PEINT DANS LA TUILE QUI LE SUBIT. Un avis fugace ne
 // suffirait pas : le geste refusé (plier, renommer, largeur, hauteur, position) a laissé la tuile dans
@@ -523,7 +537,7 @@ function aveuDeRefusDEcriture(cle, e) {
 // ce que le 503 emporte ici, c'est l'écriture elle-même.
 function avouerLeRefusDuTableauDeBord(tile, e) {
   const cle = visibiliteCouranteNonLue(e) ? 'visibilite_de_tableau_de_bord' : 'tableau_de_bord_non_enregistre';
-  if (!tile) { toast(motDuRefusDEcriture(cle) + ' « ' + phraseDuRefusDuDemon(e) + ' »', 'bad', 9000); return; }
+  if (!tile) { toast(phraseDuRefusDEcriture(cle, e), 'bad', 9000); return; }
   const ancien = tile.querySelector('[data-refus-de-tableau-de-bord]');
   if (ancien) ancien.remove();
   const aveu = aveuDeRefusDEcriture(cle, e);
@@ -625,7 +639,7 @@ function patchPanel(id, body) { return roleSansEcriturePartagee() ? Promise.reso
 // la phrase du démon part ENTIÈRE à l'avis, jamais sous la forme d'un code ni d'un corps JSON.
 function avisDuRefusDuPanneau(e) {
   const cle = visibiliteCouranteNonLue(e) ? 'visibilite_de_panneau' : 'panneau_non_enregistre';
-  toast(motDuRefusDEcriture(cle) + ' « ' + phraseDuRefusDuDemon(e) + ' »', 'bad', 9000);
+  toast(phraseDuRefusDEcriture(cle, e), 'bad', 9000);
 }
 const persisterLePanneau = (id, corps) => Promise.resolve(patchPanel(id, corps)).catch(avisDuRefusDuPanneau);
 // reordonne les PANNEAUX dans une grille de dashboard (place `from` avant `target`) et persiste position
@@ -675,7 +689,14 @@ async function renderPanel(p, editable = true) {
   // PERMIS a un lecteur, ce que la borne serveur dit deja (lecture, ou aucun appel du tout).
   const edit = document.createElement('button'); edit.className = 'picon editonly crud-btn'; edit.innerHTML = ic('pencil'); edit.title = 'Éditer le panneau';
   const del = document.createElement('button'); del.className = 'picon editonly crud-btn'; del.innerHTML = ic('x'); del.title = 'Supprimer le panneau';
-  del.onclick = async () => { if (await confirmModal('Supprimer ce panneau ?', { danger: true })) { await apiSend('/panels/' + p.id, 'DELETE'); loadDashboards(); } };
+  // `P10.23-t` — le retrait d'un panneau, même défaut, même forme (le panneau se refabrique au rechargement : le puits des
+  // tableaux de bord, qui lui survit).
+  del.onclick = async () => {
+    if (!(await confirmModal('Supprimer ce panneau ?', { danger: true }))) return;
+    const puits = puitsDesTableauxDeBord(); effacerLeRefusDUnGeste(puits);
+    try { await apiSend('/panels/' + p.id, 'DELETE'); } catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
+    loadDashboards();
+  };
   const wsel = document.createElement('select'); wsel.className = 'picon editonly crud-btn'; wsel.title = 'Largeur (colonnes)';
   [1, 2, 3, 4].forEach(n => { const o = document.createElement('option'); o.value = n; o.textContent = n + ' col'; wsel.appendChild(o); });
   wsel.value = String(p.cols || 1);
@@ -844,7 +865,11 @@ async function renderPanel(p, editable = true) {
   function fenetreDuParcours(ouvrir) {
     return (ouvrir || !spg.win) ? panelWindow() : spg.win;
   }
-  function panelBad(m) { body.replaceChildren(Object.assign(document.createElement('div'), { className: 'bad', textContent: motDUneLectureQuiNEstPasServie('prefixe_de_la_lecture_refusee_en_debut_de_phrase') + m })); }
+  // `P10.29-r` — UNE LECTURE LUE À LA MAIN (`fetch` direct) DIT SON REFUS PAR LA FACE NOMMÉE D'UNE LECTURE. MESURÉ AVANT CE LOT
+  // (témoin 121rr) : « Erreur : » + le `{error}` servi, ou le code nu, ou la phrase de passerelle — qui REMPLAÇAIT la cause
+  // d'un cinq cent trois nommé (« Service momentanément indisponible » là où le démon dit ce qui n'est pas servi).
+  // `refusDUneLectureServie` (web/core.js) bâtit le refus par les règles d'`api()` ; la face le dit, cause entière.
+  const lectureDuPanneauNonServie = (statut, corps) => body.replaceChildren(noeudDuRefusDUneLecture(refusDUneLectureServie(statut, corps), undefined, 'bad'));
   function renderServerPaged() {
     if (!spg.rows) return;
     const stats = result && result.stats;
@@ -903,13 +928,11 @@ async function renderPanel(p, editable = true) {
       }
       const r = await fetch('/api/query', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(reqBody), signal: ctrl.signal });
       const txt = await r.text().catch(() => '');
-      const tg = transientGatewayMsg(r.status, r.ok ? '' : txt);
-      if (tg) { panelBad(tg); return; }
-      if (!txt) { panelBad(motDUneLectureQuiNEstPasServie('reponse_vide')); return; }
+      if (!r.ok) { lectureDuPanneauNonServie(r.status, txt); return; }
       let j;
-      try { j = JSON.parse(txt); }
-      catch { const tg2 = transientGatewayMsg(r.status, txt); if (tg2) { panelBad(tg2); return; } panelBad(phraseDUneReponseNonJson()); return; }
-      if (!r.ok || j.error) { panelBad(j.error || r.status); return; }
+      try { j = JSON.parse(txt); } catch { lectureDuPanneauNonServie(r.status, txt); return; }
+      if (!j) { lectureDuPanneauNonServie(r.status, txt); return; }
+      if (j.error != null) { lectureDuPanneauNonServie(r.status, txt); return; }
       spg.page = Math.max(0, page); spg.cols = j.columns || []; spg.rows = j.rows || []; spg.shown = spg.rows.length;
       // ① KEYSET : mémorise le curseur de continuation (Suivant SÉQUENTIEL rapide, sans cap). Le total reste celui du
       // COUNT (pager NUMÉROTÉ commun) — un saut OFFSET renvoie `total`, une page séquentielle non (on garde l'ancien).
@@ -991,20 +1014,15 @@ async function renderPanel(p, editable = true) {
       pFrom = from; pTo = to;
       const r = await fetch(`/api/panels/${p.id}/data?from=${from}&to=${to}`, { signal: ctrl.signal });
       const txt = await r.text().catch(() => '');   // texte d'abord -> gère réponse vide/tronquée (timeout proxy)
-      const bad = m => body.replaceChildren(Object.assign(document.createElement('div'), { className: 'bad', textContent: motDUneLectureQuiNEstPasServie('prefixe_de_la_lecture_refusee_en_debut_de_phrase') + m }));
-      // PANNE TRANSITOIRE DE PASSERELLE : (502/503/504 ou corps HTML « no available server » pendant
-      // un rollout) -> message propre au lieu du corps brut Traefik.
-      const tg = transientGatewayMsg(r.status, r.ok ? '' : txt);   // ok=200 -> corps vérifié plus bas (cas HTML servi en 200)
-      if (tg) { bad(tg); return; }
-      if (!txt) { bad(motDUneLectureQuiNEstPasServie('reponse_vide')); return; }
+      // `P10.29-r` — la face nommée d'une lecture non servie, bâtie par les règles d'`api()` (`refusDUneLectureServie`) : une
+      // page de passerelle garde sa phrase (jamais le corps brut Traefik), un cinq cent trois nommé sa cause, un corps vide ou
+      // non JSON la sienne ; plus de « Erreur : » collé devant.
+      const nonServie = () => body.replaceChildren(noeudDuRefusDUneLecture(refusDUneLectureServie(r.status, txt), undefined, 'bad'));
+      if (!r.ok) { nonServie(); return; }
       let j;
-      try { j = JSON.parse(txt); }
-      catch {
-        const tg2 = transientGatewayMsg(r.status, txt);   // corps HTML « no available server » servi en 200 -> transitoire
-        if (tg2) { bad(tg2); return; }
-        bad(phraseDUneReponseNonJson(txt.slice(0, 120))); return;
-      }
-      if (!r.ok || j.error) { bad(j.error || r.status); return; }
+      try { j = JSON.parse(txt); } catch { nonServie(); return; }
+      if (!j) { nonServie(); return; }
+      if (j.error != null) { nonServie(); return; }
       // FROID : 1er affichage d'un panneau jamais mesuré -> le daemon renvoie {warming:true} sans bloquer.
       // On montre un placeholder « chargement… » et on re-poll (3s) jusqu'aux vraies données -> plus de
       // « aucune donnée » à tort au retour sur Dashboards.
@@ -1076,11 +1094,15 @@ async function addDashboardFlow() {
     },
   });
   if (!r) return;
+  // `P10.23-t` — LE RATTACHEMENT ET LA CRÉATION N'AVAIENT AUCUNE CAPTURE : un refus partait en promesse rejetée non traitée,
+  // la fenêtre refermée sans un mot. La forme partagée, dans le puits des tableaux de bord ; l'avis de succès ne part qu'après
+  // l'écriture.
+  const puits = puitsDesTableauxDeBord(); effacerLeRefusDUnGeste(puits);
   if (r.existing) {
-    await patchDash(Number(r.existing), { view_id: view ? Number(view) : null });
+    try { await patchDash(Number(r.existing), { view_id: view ? Number(view) : null }); } catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
     toast('Dashboard rattaché à la vue', 'ok');
   } else {
-    await apiSend('/dashboards', 'POST', { name: r.name.trim(), visibility: r.visibility, view_id: view ? Number(view) : null });
+    try { await apiSend('/dashboards', 'POST', { name: r.name.trim(), visibility: r.visibility, view_id: view ? Number(view) : null }); } catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
     toast('Dashboard créé', 'ok');
   }
   await loadDashboards(); await loadViews();
@@ -1090,7 +1112,19 @@ async function addDashboardFlow() {
 const MOTS_DE_L_INSTANTANE_DE_DASHBOARD = {
   titre: { fr: 'Instantané : {nom}', en: 'Snapshot: {nom}' },
   sans_jeton: { fr: "Instantané NON CONFIRMÉ : la réponse ne porte pas son jeton, rien ici n'établit qu'il a été créé.", en: 'Snapshot NOT CONFIRMED: the answer does not carry its token, nothing here establishes that it was created.' },
+  // `P10.29-r` — UN PANNEAU QUE LA CAPTURE N'A PAS RENDU. `capture_dashboard_data` (daemon/src/handlers/dash_ergonomics.rs)
+  // range la cause sous `error` quand la requête d'un panneau ne compile pas ou ne s'exécute pas : l'instantané n'en porte
+  // aucune donnée. MESURÉ AVANT CE LOT (témoin 121rr) : « erreur : » + la cause, collés, français sous `LANG='en'`.
+  panneau_non_capture: { fr: "Panneau NON CAPTURÉ : sa requête n'a pas été servie quand l'instantané a été pris — l'instantané ne porte rien de ce panneau. Le démon en nomme la cause —", en: 'Panel NOT CAPTURED: its query was not served when the snapshot was taken — the snapshot carries nothing of this panel. The daemon names the cause —' },
 };
+// La face dans un nœud texte ENTIER, la cause servie dans un second ; la marque de POSE sert au harnais.
+function noeudDUnPanneauNonCapture(cause) {
+  const noeud = document.createElement('div'); noeud.className = 'muted';
+  const dit = document.createElement('span'); dit.textContent = faceDansLaLangue(MOTS_DE_L_INSTANTANE_DE_DASHBOARD.panneau_non_capture);
+  noeud.append(dit, document.createTextNode(' « ' + String(cause).trim() + ' »'));
+  noeud.dataset.panneauNonCapture = '1';
+  return noeud;
+}
 // Capture les données rendues du dashboard via le chemin GXQL MASQUÉ côté serveur (au rôle de l'appelant) ->
 // jamais un champ hors de sa portée. Renvoie {id, token}. On affiche un aperçu (rendu par les MÊMES
 // vizElement) + un lien de partage read-only copiable (l'API renvoie le JSON figé au token).
@@ -1135,7 +1169,7 @@ async function captureSnapshot(d) {
       const card = document.createElement('div'); card.className = 'snapcard';
       const t = document.createElement('div'); t.className = 'snaptitle'; t.textContent = p.title || '';
       card.appendChild(t);
-      if (p.error) { card.appendChild(Object.assign(document.createElement('div'), { className: 'muted', textContent: prefixeDUnEchecRenduTelQuel() + p.error })); }
+      if (p.error) { card.appendChild(noeudDUnPanneauNonCapture(p.error)); }   // `P10.29-r`
       // `P10.5-i` — L'INSTANTANÉ EST L'ARTEFACT QUI VOYAGE : partageable par jeton, relu des semaines
       // plus tard, hors de tout contexte de fenêtre. C'est le point de pose le plus nécessaire des quatre.
       else if (!p.rows || !p.rows.length) { card.appendChild(corpsSansLigne(p.stats, document.createTextNode('aucune donnée'))); }
@@ -1278,7 +1312,8 @@ const GESTE_DE_VUE_MOTS = {
 };
 // `P10.20-k` — LA PHRASE DU DÉMON, PAS SON ENVELOPPE. `e.message` vaut « <code> <corps> » : depuis que
 // les refus portent leur phrase dans un corps JSON, ce libellé rendait de la syntaxe à l'écran.
-const motDuRefusServeurDeVue = (geste, e) => (LANG === 'en' ? GESTE_DE_VUE_MOTS[geste].en : GESTE_DE_VUE_MOTS[geste].fr) + ' (' + phraseDuRefusDuDemon(e) + ')';
+// `P10.23-q` — « … refusée par le serveur » n'entoure plus une réponse qui ne vient pas de lui : sa propre phrase.
+const motDuRefusServeurDeVue = (geste, e) => phraseDUneReponseQuiNeVientPasDuDemon(e) || ((LANG === 'en' ? GESTE_DE_VUE_MOTS[geste].en : GESTE_DE_VUE_MOTS[geste].fr) + ' (' + phraseDuRefusDuDemon(e) + ')');
 function viewCanShare(v) { return !!v && (S.viewsRole === 'admin' || !v.owner || v.owner === S.viewsMe); }
 // La raison de refuser CETTE vue, ou '' si rien ne la refuse. UN SEUL LECTEUR pour les trois contrôles :
 // deux formulations du même refus divergeraient, et le démon n'en porte qu'une.
@@ -1421,7 +1456,7 @@ function initDashboards() {
     // est retenue, l'aveu est peint à côté du sélecteur, et partager comme renommer deviennent inertes
     // AVEC leur raison jusqu'à ce qu'une écriture passe.
     try { await apiSend('/views/' + id, 'POST', { visibility: next }); }
-    catch (e) { noterLIssueDUnViewUpdate(e); toast(motDuRefusDEcriture('visibilite_de_vue') + ' « ' + phraseDuRefusDuDemon(e) + ' »', 'bad', 9000); return; }
+    catch (e) { noterLIssueDUnViewUpdate(e); toast(phraseDuRefusDEcriture('visibilite_de_vue', e), 'bad', 9000); return; }
     noterLIssueDUnViewUpdate(null);
     await loadViews(); sel.value = id; refleterLesDroitsDeLaVue();
     toast(next === 'shared' ? 'Vue partagée avec l\'équipe' : 'Vue rendue privée', 'ok');
@@ -1436,8 +1471,12 @@ function initDashboards() {
       ], validate: v => S.viewList.some(x => x.name === v.name.trim()) ? 'Une vue porte déjà ce nom.' : null,
     });
     if (!r) return;
-    const cr = await apiSend('/views', 'POST', { name: r.name.trim(), visibility: r.visibility });
-    await loadViews(); if (cr.id) $('#view').value = cr.id; loadDashboards(); toast('Vue créée', 'ok');
+    // `P10.23-t` — la création d'une vue n'avait AUCUNE capture (promesse rejetée non traitée, rien de dit) ; un corps de succès
+    // vide (`apiSend` rend `null`) faisait jeter `cr.id`. La forme partagée, dans le puits des tableaux de bord.
+    const puits = puitsDesTableauxDeBord(); effacerLeRefusDUnGeste(puits);
+    let cr;
+    try { cr = await apiSend('/views', 'POST', { name: r.name.trim(), visibility: r.visibility }); } catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
+    await loadViews(); if (cr && cr.id) $('#view').value = cr.id; loadDashboards(); toast('Vue créée', 'ok');
   });
   if ($('#view-del')) $('#view-del').addEventListener('click', async () => {
     const sel = $('#view');
@@ -1487,4 +1526,6 @@ function initDashboards() {
 // partage de `P11.20-m`) doit être CONFRONTÉ aux littéraux de l'arbre du démon, dans les deux sens. Le
 // relire dans le texte du module prouverait qu'il est écrit, pas qu'il discrimine. Aucun usage applicatif
 // hors de ce module.
-export { corpsSansLigne, initDashboards, loadDashboard, loadDashboards, loadPanelsInto, loadViews, refreshPanels, renderDashboard, visibiliteCouranteNonLue };
+// `P10.23-q` — les phrases et l'aveu d'un refus d'écriture et d'un geste de vue, joués par le témoin 121 hors du démon.
+export { aveuDeRefusDEcriture, phraseDuRefusDEcriture, motDuRefusServeurDeVue, avouerLeRefusDuTableauDeBord };
+export { addDashboardFlow, corpsSansLigne, initDashboards, loadDashboard, loadDashboards, loadPanelsInto, loadViews, refreshPanels, renderDashboard, visibiliteCouranteNonLue };

@@ -4,7 +4,7 @@
 // PURE MOVE : corps de fonctions IDENTIQUES au monolithe, seuls les import/export sont ajoutes.
 // Le cycle app<->module est benin : les fonctions importees d'app.js ne sont appelees qu'a
 // l'EXECUTION (handlers/async apres await), jamais a l'evaluation du module.
-import { $, LANG, esc, sev, fmtTs, ic, muted, api, apiSend, unDeuxCentsSansCorpsLisible, confirmModal, toast, pagedList, managedBadge, gateDeleteBtn, contentSubmit, contentDelete, fetchInto, formMsg, phraseDuRefusDuDemon, aveuDeLaCreationDeRiposte, aveuDeLaTraceManquante, causeDeLaTraceManquante, cleDeLIdentifiantDeRiposte, motDeLaRiposteSansIdentifiant, socIsAdmin, lsSet, collapsibleGroup, disclosure, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, prefixeDUnEchecRenduTelQuel, unRefusServiEnDeuxCents, peindreLeRefusDUnEssai, effacerLeRefusDUnEssai, faceDansLaLangue } from './core.js';
+import { $, LANG, esc, sev, fmtTs, ic, muted, api, apiSend, unDeuxCentsSansCorpsLisible, confirmModal, toast, pagedList, managedBadge, gateDeleteBtn, contentSubmit, contentDelete, fetchInto, formMsg, phraseDuRefusDuDemon, aveuDeLaCreationDeRiposte, aveuDeLaTraceManquante, causeDeLaTraceManquante, cleDeLIdentifiantDeRiposte, motDeLaRiposteSansIdentifiant, socIsAdmin, lsSet, collapsibleGroup, disclosure, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, unRefusServiEnDeuxCents, peindreLeRefusDUnEssai, effacerLeRefusDUnEssai, faceDansLaLangue, cadreDUneReponseQuiNeVientPasDuDemon, unEssaiSansResultat } from './core.js';
 import { libelleDeTechnique, nomDeTechnique } from './catalogue_attack.js'; // `P11.6-c` : nom dérivé du catalogue servi, ou motif de son absence
 import { S, lireLeStockageDuSite, ecrireDansLeStockageDuSite, ecrireSansDireLeRefus, RAISONS_DE_SILENCE } from './state.js';
 import { initSigmaImport } from './sigmaimport.js';
@@ -367,15 +367,43 @@ function ruleRowModel(r) {
     meta: `${sev(r.severity)} - ${r.last_value == null ? 'pas encore évaluée' : 'dernier ' + r.last_value}${r.last_fired ? ' - ' + fmtTs(r.last_fired) : ''}`,
   };
 }
+// `P10.23-t` — LES TROIS ESSAIS D'UNE LIGNE (une règle, un canal, un playbook), DITS PAR LA FACE NOMMÉE D'UN ESSAI. Aucun n'avait
+// de capture : leur refus partait en promesse rejetée non traitée, la ligne restait sur « ... ». Leur route répond en deux cents
+// `{error}` à ses refus (`rule_test`, `notifier_test`, `playbook_test`) : lu par un test séparé de celui du résultat, peint par
+// la même forme, cause entière ; la ligne reprend ce qu'elle disait avant l'essai. Chaque essai garde son envoi LITTÉRAL, dans
+// son propre `try`, dans la ligne qui l'offre (la garde des routes sensibles dérive le chemin à son site, et la portée qui le
+// contient reste celle d'avant) ; le début, le refus et la conclusion sont partagés ici.
+function commencerLEssaiDUneLigne(puits, meta) {
+  const avant = meta.textContent;
+  effacerLeRefusDUnGeste(puits);
+  meta.textContent = '...';
+  return avant;
+}
+function refuserLEssaiDUneLigne(puits, meta, avant, e) { meta.textContent = avant; peindreLeRefusDUnEssai(puits, e); }
+function conclureLEssaiDUneLigne(puits, meta, avant, j, aUnResultat, peindreLeResultat) {
+  const refuse = j && j.error != null ? unRefusServiEnDeuxCents(j) : null;
+  if (refuse) { refuserLEssaiDUneLigne(puits, meta, avant, refuse); return; }
+  if (!j || !aUnResultat(j)) { refuserLEssaiDUneLigne(puits, meta, avant, unEssaiSansResultat()); return; }
+  peindreLeResultat(j);
+}
+
 function ruleRow(r) {
   const m = ruleRowModel(r);
   const row = producerRow(m);
   const meta = row.metaEl;
+  // `P10.23-t` — L'ESSAI D'UNE RÈGLE EN PLACE N'AVAIT AUCUNE CAPTURE : un refus (rôle, passerelle, demande non aboutie) partait
+  // en promesse rejetée non traitée, la ligne figée sur « ... » ; et le `{error}` servi en deux cents (`rule_test`,
+  // daemon/src/handlers/detection.rs : règle introuvable, évaluation échouée, porte de compilation) se collait derrière
+  // « erreur : ». Un ESSAI, pas un geste : la face nommée d'un essai (`peindreLeRefusDUnEssai`), dans le puits des règles, et la
+  // ligne reprend ce qu'elle disait ; un corps sans résultat se dit aussi.
   const test = rowButton('Tester', { title: 'Évalue la requête maintenant, sans lever d\'alerte', onClick: async () => {
-    meta.textContent = '...';
-    const j = await apiSend('/rules/' + r.id + '/test');
-    meta.textContent = j.error ? (prefixeDUnEchecRenduTelQuel() + j.error) : faceDansLaLangue({ fr: 'test : {valeur} -> {verdict}', en: 'test: {valeur} -> {verdict}' }, { valeur: j.value, verdict: j.fired ? faceDansLaLangue({ fr: 'déclenche', en: 'fires' }) : 'ok' });
-    meta.title = j.sql || '';
+    const puits = puitsDesRegles(), avant = commencerLEssaiDUneLigne(puits, meta);   // `P10.23-t`
+    let j;
+    try { j = await apiSend('/rules/' + r.id + '/test'); } catch (e) { refuserLEssaiDUneLigne(puits, meta, avant, e); return; }
+    conclureLEssaiDUneLigne(puits, meta, avant, j, (x) => x.value !== undefined, (x) => {
+      meta.textContent = faceDansLaLangue({ fr: 'test : {valeur} -> {verdict}', en: 'test: {valeur} -> {verdict}' }, { valeur: x.value, verdict: x.fired ? faceDansLaLangue({ fr: 'déclenche', en: 'fires' }) : 'ok' });
+      meta.title = x.sql || '';
+    });
   } });
   // MIROIR UX : éditer une règle BASELINE (seed/builtin managed=0) est réservé admin (le serveur 403 sinon) —
   // bouton grisé pour un non-admin plutôt qu'une action qui échoue. Overlay (1) et perso (2) restent éditables.
@@ -625,7 +653,12 @@ function notifRow(n) {
   auth.textContent = n.has_auth ? '• auth' : '';
   if (n.has_auth) auth.title = 'credential enregistré (token ntfy / user:pass SMTP) — jamais réaffiché';
   const test = document.createElement('button'); test.textContent = 'Tester';
-  test.onclick = async () => { meta.textContent = '...'; const j = await apiSend('/notifiers/' + n.id + '/test'); meta.textContent = j.ok ? 'envoyé' : 'échec (vérifie URL / curl / config)'; };
+  test.onclick = async () => {   // `P10.23-t` : la face nommée d'un essai, dans le puits des canaux
+    const puits = puitsDesCanaux(), avant = commencerLEssaiDUneLigne(puits, meta);
+    let j;
+    try { j = await apiSend('/notifiers/' + n.id + '/test'); } catch (e) { refuserLEssaiDUneLigne(puits, meta, avant, e); return; }
+    conclureLEssaiDUneLigne(puits, meta, avant, j, (x) => typeof x.ok === 'boolean', (x) => { meta.textContent = x.ok ? 'envoyé' : 'échec (vérifie URL / curl / config)'; });
+  };
   const edit = document.createElement('button'); edit.textContent = 'Éditer'; edit.onclick = () => openNotifForm(n);
   const del = document.createElement('button'); del.innerHTML = ic('x'); del.title = 'Supprimer le canal';
   del.onclick = async () => {
@@ -1194,17 +1227,23 @@ function noterLeRefusDeRiposte(id, geste, e) {
   // l'approuver n'écrit ni statut ni ligne et n'arme rien — le clic serait vide. Une approbation sans
   // trace et un ban non armé sont l'inverse : le geste rejoué RÉINSCRIT la trace, puis arme. Le
   // retenir enfermerait l'exploitant hors du seul geste qui répare.
-  refusParRiposte.set(id, { cle, cause: phraseDuRefusDuDemon(e), retenir: cle === 'riposte_non_lue', peint: false, surLaLigne: false });
+  // `P10.23-q` — une réponse qui ne vient pas du démon (passerelle, demande non aboutie) ne reçoit pas le cadre « REFUSÉE » :
+  // son propre cadre est retenu avec le refus, et peint à sa place.
+  refusParRiposte.set(id, { cle, cause: phraseDuRefusDuDemon(e), horsDuDemon: cadreDUneReponseQuiNeVientPasDuDemon(e), retenir: cle === 'riposte_non_lue', peint: false, surLaLigne: false });
 }
 // L'aveu à DEUX nœuds : la phrase est posée au puits (`dit.textContent = …`) — c'est là, et seulement
 // là, que le lexique et `i18nWalk` la voient —, et la phrase SERVIE par le démon est collée dans un
 // SECOND nœud. Les fondre en un seul littéral rendrait la phrase intraduisible ET ferait passer la cause
 // du démon pour un texte de la console.
+// Le mot et la cause d'un refus retenu : son cadre hors du démon quand la réponse ne vient pas de lui (`P10.23-q`).
+const motEtCauseDuRefusDeRiposte = (refus) => (refus.horsDuDemon ? refus.horsDuDemon : { mot: motDuRefusDeRiposte(refus.cle), cause: refus.cause });
 function aveuDuRefusDeRiposte(refus) {
   const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:0;font-size:12px;flex-basis:100%';
   const dit = document.createElement('span');
-  dit.textContent = motDuRefusDeRiposte(refus.cle);
-  aveu.append(dit, ' « ' + refus.cause + ' »');
+  const { mot, cause } = motEtCauseDuRefusDeRiposte(refus);
+  dit.textContent = mot;
+  aveu.append(dit);
+  if (cause) aveu.append(' « ' + cause + ' »');
   aveu.dataset.refusDeRiposte = '1';   // marque de POSE, pas de style : aucune règle CSS ne la vise
   return aveu;
 }
@@ -1241,7 +1280,8 @@ function reposerLesRefusDeRiposte(lignes) {
 function direLeRefusQueAucuneLigneNaPris(id) {
   const refus = refusParRiposte.get(id);
   if (!refus || refus.surLaLigne) return;
-  toast(motDuRefusDeRiposte(refus.cle) + ' « ' + refus.cause + ' »', 'bad', 9000);
+  const { mot, cause } = motEtCauseDuRefusDeRiposte(refus);
+  toast(cause ? mot + ' « ' + cause + ' »' : mot, 'bad', 9000);
 }
 
 function actionRow(a) {
@@ -1310,12 +1350,12 @@ if ($('#act-form')) $('#act-form').addEventListener('submit', async e => {
   // 503 que `action_create` rend désormais quand la ligne n'a pas pu être écrite laissait le
   // formulaire OUVERT, figé, sans un mot. L'exploitant recommence — et chaque tentative est une
   // riposte qu'il croit avoir mise en file. La lecture du corps reste, pour un refus servi en 200.
-  let j;
+  let j, horsDuDemon = null;
   try { j = await apiSend('/actions', 'POST', body); }
   catch (err) {
     // `P10.22-b` — sur un deux cents sans corps lisible, la face « absent » ci-dessous, et non « le démon a refusé ».
     if (!unDeuxCentsSansCorpsLisible(err)) { $('#af-result').replaceChildren(aveuDeLaCreationDeRiposte(err)); return; }
-    j = null;
+    j = null; horsDuDemon = err;   // `P10.23-q` : la face « absent » nomme alors ce qui a répondu
   }
   if (j && j.error) { $('#af-result').replaceChildren(aveuDeLaCreationDeRiposte({ causeDuDemon: String(j.error).trim() })); return; }
   // `P10.21-a` — LA RIPOSTE EST EN FILE ET SA TRACE MANQUE : LES DEUX SE DISENT, AU MÊME PUITS QUE LE
@@ -1338,7 +1378,7 @@ if ($('#act-form')) $('#act-form').addEventListener('submit', async e => {
   // la ligne neuve, numérotée, est redessinée dans la file juste en dessous.
   if (cleDeLIdentifiantDeRiposte(j) === 'identifiant_absent') {
     const dit = document.createElement('span');
-    dit.textContent = motDeLaRiposteSansIdentifiant(body.kind, body.target);
+    dit.textContent = motDeLaRiposteSansIdentifiant(body.kind, body.target, horsDuDemon);
     $('#af-result').replaceChildren(dit);
     if (sansMaillon) $('#af-result').append(' ', aveuDeLaTraceManquante(sansMaillon, 'span'));
   }
@@ -1565,7 +1605,14 @@ function playbookRowModel(p, mode) {
 function pbRow(p, mode) {
   const row = producerRow(playbookRowModel(p, mode));
   const meta = row.metaEl;
-  const test = rowButton('Tester', { title: 'Liste les cibles que la requête rend maintenant, sans poser d\'action', onClick: async () => { meta.textContent = '...'; const j = await apiSend('/playbooks/' + p.id + '/test'); meta.textContent = j.error ? (prefixeDUnEchecRenduTelQuel() + j.error) : faceDansLaLangue({ fr: '{n} cible(s) : {cibles}', en: '{n} target(s): {cibles}' }, { n: j.valides, cibles: (j.targets || []).slice(0, 5).join(', ') }); } });
+  const test = rowButton('Tester', { title: 'Liste les cibles que la requête rend maintenant, sans poser d\'action', onClick: async () => {
+    const puits = puitsDesPlaybooks(), avant = commencerLEssaiDUneLigne(puits, meta);   // `P10.23-t`
+    let j;
+    try { j = await apiSend('/playbooks/' + p.id + '/test'); } catch (e) { refuserLEssaiDUneLigne(puits, meta, avant, e); return; }
+    conclureLEssaiDUneLigne(puits, meta, avant, j, (x) => x.valides !== undefined || Array.isArray(x.targets), (x) => {
+      meta.textContent = faceDansLaLangue({ fr: '{n} cible(s) : {cibles}', en: '{n} target(s): {cibles}' }, { n: x.valides, cibles: (x.targets || []).slice(0, 5).join(', ') });
+    });
+  } });
   // MIROIR UX : éditer un playbook BASELINE (seed/builtin managed=0) est réservé admin (403 serveur).
   const baselineLocked = !socIsAdmin() && p.managed === 0;
   const edit = rowButton('Éditer', { cls: 'crud-btn', disabled: baselineLocked, title: baselineLocked ? 'playbook baseline (seed/builtin) : édition réservée à l\'administrateur' : '', onClick: baselineLocked ? null : () => openPbForm(p) });
@@ -1616,6 +1663,8 @@ loadMode();
 export { cleDuRefusDeRiposte, motDuRefusDeRiposte, OUVERTURE_DE_L_APPROBATION_SANS_TRACE, OUVERTURE_DU_BAN_NON_ARME,
   // `P10.27-d` — les deux essais en lecture seule, joués par le témoin 119 sous la langue de leur instance.
   essayerLaRegleDuFormulaire, essayerLeParseurDuFormulaire,
+  // `P10.23-q` — le refus retenu d'une riposte et son avis quand aucune ligne ne le porte (témoin 121).
+  noterLeRefusDeRiposte, direLeRefusQueAucuneLigneNaPris,
   // `P10.21-a` — les TROIS ouvertures du lot 101 rejoignent les deux du lot 102 : nues, pour que le
   // témoin les confronte aux littéraux du démon sans passer par l'aiguillage qui les abritait.
   OUVERTURE_DE_LA_RIPOSTE_NON_LUE, OUVERTURE_DE_L_APPROBATION_NON_ENREGISTREE, OUVERTURE_DE_LA_RIPOSTE_INTROUVABLE,

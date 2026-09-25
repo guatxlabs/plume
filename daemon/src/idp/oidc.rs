@@ -314,16 +314,33 @@ pub(crate) const IDP_HASH_SENTINEL: &str = "!external-idp";
 /// l'assistant sans ligne est refusé (il était pris, et son mot de passe d'installation ne connectait plus) ; une
 /// lecture du hachage qui échoue refuse (elle était avalée, et l'`UPSERT` donnait à un compte à mot de passe le rôle
 /// de l'annuaire). `noms` : `NomsTenusHorsDeLaTable::de(&st)` sur tout chemin servi (`federer_le_nom`).
+///
+/// `P10.24-t` — TÉMOINS SEULEMENT : les trois portes servies passent par `federer_le_nom`, qui compose la même règle
+/// (`juger_le_nom_a_federer`), la lecture de ce que le nom tient sans compte, puis la même écriture
+/// (`poser_la_ligne_federee`). Cette forme-ci, sans la lecture neuve, reste aux témoins d'avant qui l'éprouvent.
+#[cfg(test)]
 pub(crate) fn idp_provision_user<'a>(
     conn: &Connection,
     name: &str,
     role: &str,
     noms: impl Into<crate::auth::NomsTenusHorsDeLaTable<'a>>,
 ) -> Result<(), RefusDeLaFederation> {
-    crate::auth::juger_le_nom_pris_par_un_annuaire(name, &noms.into(), || {
+    juger_le_nom_a_federer(conn, name, &noms.into())?;
+    poser_la_ligne_federee(conn, name, role)
+}
+
+/// `P10.25-t` — la règle unique des annuaires, sur la lecture du hachage que fait la connexion d'écriture de la
+/// fédération. `P10.24-t` : extraite telle quelle de `idp_provision_user` pour que `federer_le_nom` intercale sa lecture
+/// de ce que le nom tient entre la règle et l'écriture.
+fn juger_le_nom_a_federer(conn: &Connection, name: &str, noms: &crate::auth::NomsTenusHorsDeLaTable<'_>) -> Result<(), RefusDeLaFederation> {
+    crate::auth::juger_le_nom_pris_par_un_annuaire(name, noms, || {
         conn.query_row("SELECT hash FROM user WHERE name=?1", params![name], |r| r.get::<_, String>(0)).optional()
     })
-    .map_err(RefusDeLaFederation::Nom)?;
+    .map_err(RefusDeLaFederation::Nom)
+}
+
+/// L'`UPSERT` de la ligne fédérée (extrait tel quel de `idp_provision_user`, `P10.24-t`).
+fn poser_la_ligne_federee(conn: &Connection, name: &str, role: &str) -> Result<(), RefusDeLaFederation> {
     conn.execute(
         "INSERT INTO user(name,hash,role) VALUES(?1,?2,?3) \
          ON CONFLICT(name) DO UPDATE SET role=excluded.role",
@@ -333,11 +350,43 @@ pub(crate) fn idp_provision_user<'a>(
     Ok(())
 }
 
+/// `P10.24-t` — CE QUE LE NOM TIENT SANS COMPTE, LU PAR LA FÉDÉRATION COMME PAR LA CRÉATION.
+///
+/// LE DÉFAUT, MESURÉ LE 2026-09-25 SUR LA FORME D'AVANT (témoins `mpra_`). `zed-mpra` tient, sans ligne `user` et sans
+/// avoir jamais été présenté par l'annuaire, une requête privée, un tableau de bord privé et un instantané capturé au
+/// rôle `admin` — les restes d'un compte supprimé avant que la suppression n'emporte ses objets (lots 190 et 192). La
+/// création d'un compte local de ce nom rend 409 (`P10.24-u`) ; sa FÉDÉRATION rendait `Ok`, posait la ligne, et le
+/// compte fédéré listait la requête privée de l'ancien titulaire.
+///
+/// LA DÉCISION : même lecture que la création (`ce_que_le_nom_tient_sans_compte`), et REFUS NOMMÉ (409, le détail des
+/// lignes) quand le nom tient des lignes sans compte ET que l'annuaire ne l'a jamais présenté par les en-têtes ; une
+/// lecture ratée refuse (503). Un nom VU par l'annuaire (inventaire des accès, méthode `sso`) reste fédérable : ses
+/// lignes sont celles de l'identité de l'annuaire elle-même, que les en-têtes lui servent déjà — c'est la voie que
+/// `P10.24-u` a nommée. POURQUOI UN REFUS ET NON UNE PURGE OU UNE RÉATTRIBUTION : la fédération n'a pas d'auteur à qui
+/// réattribuer (la suppression réattribue à l'administrateur qui supprime, `P10.24-p`), et purger à la connexion d'un
+/// tiers détruirait des objets communs sans décision humaine. Le nettoyage des lignes orphelines existantes est une
+/// porte à sens unique, décrite et non exécutée (clé proposée par ce lot).
+///
+/// CE QUI N'EST PAS TOUCHÉ, ET C'EST DÉLIBÉRÉ : le chemin d'en-têtes SSO. Une identité d'en-têtes n'a JAMAIS de ligne
+/// `user` et tient ses objets par son nom — la même forme que des restes orphelins, sans colonne de provenance pour
+/// les séparer ; y appliquer ce refus refuserait l'identité SSO réelle de l'exploitant dès que l'inventaire des accès
+/// l'aurait oubliée (plafonné), et une identité neuve au nom d'un compte supprimé ne pourrait jamais entrer.
+fn juger_ce_que_le_nom_tient_a_la_federation(conn: &Connection, name: &str) -> Result<(), RefusDeLaFederation> {
+    match crate::handlers::users_lookups::ce_que_le_nom_tient_sans_compte(conn, name) {
+        Ok(None) => Ok(()),
+        Ok(Some(tenue)) if tenue["vu_par_l_annuaire"].as_bool() == Some(true) => Ok(()),
+        Ok(Some(tenue)) => Err(RefusDeLaFederation::NomTenuSansCompte(name.to_string(), tenue)),
+        Err(e) => Err(RefusDeLaFederation::TenueNonVerifiee(name.to_string(), e.to_string())),
+    }
+}
+
 /// `P10.25-t` — LA FÉDÉRATION D'UN NOM, TELLE QUE LES TROIS PORTES SERVIES L'APPELLENT (OIDC, SAML, LDAP) : les noms tenus
 /// hors de la table sont lus sur l'état du démon, les DEUX (configuration et assistant). `conn` est la connexion
-/// d'écriture que l'appelant tient.
+/// d'écriture que l'appelant tient. `P10.24-t` : entre la règle et l'écriture, ce que le nom tient sans compte.
 pub(crate) fn federer_le_nom(st: &AppState, conn: &Connection, name: &str, role: &str) -> Result<(), RefusDeLaFederation> {
-    idp_provision_user(conn, name, role, crate::auth::NomsTenusHorsDeLaTable::de(st))
+    juger_le_nom_a_federer(conn, name, &crate::auth::NomsTenusHorsDeLaTable::de(st))?;
+    juger_ce_que_le_nom_tient_a_la_federation(conn, name)?;
+    poser_la_ligne_federee(conn, name, role)
 }
 
 /// `P10.25-t` — POURQUOI UNE FÉDÉRATION N'A PAS POSÉ SA LIGNE.
@@ -345,9 +394,28 @@ pub(crate) fn federer_le_nom(st: &AppState, conn: &Connection, name: &str, role:
 pub(crate) enum RefusDeLaFederation {
     /// La règle unique des annuaires refuse le nom (`auth::RefusDeLAnnuaire`).
     Nom(crate::auth::RefusDeLAnnuaire),
+    /// `P10.24-t` — le nom tient des lignes sans compte et l'annuaire ne l'a jamais présenté : (nom, détail).
+    NomTenuSansCompte(String, Value),
+    /// `P10.24-t` — ce que le nom tient n'a pas pu être lu : (nom, cause du moteur).
+    TenueNonVerifiee(String, String),
     /// L'écriture de la ligne fédérée a échoué.
     Ecriture(String),
 }
+
+/// `P10.24-t` — la fédération refusée : le nom tient des lignes sans compte, et l'annuaire ne l'a jamais présenté.
+pub(crate) const CAUSE_FEDERATION_NOM_TENU_SANS_COMPTE: &str = "FÉDÉRATION REFUSÉE, CE NOM TIENT DES LIGNES SANS \
+     COMPTE : sans ligne dans la table des comptes, ce nom tient encore des objets, une graine du second facteur ou des \
+     préférences (détail dans `ce_que_le_nom_tient`) — les restes d'un compte supprimé avant que la suppression ne les \
+     emporte —, et l'annuaire ne l'a jamais présenté. Le compte fédéré en hériterait. Aucune ligne n'est posée, aucune \
+     session n'est ouverte. Ces lignes ne se retirent pas toutes par la console (requêtes, instantanés, graine et \
+     préférences d'un nom sans compte) : leur nettoyage est un geste d'exploitation à décider ; d'ici là, l'annuaire \
+     peut présenter l'identité sous un autre nom.";
+
+/// `P10.24-t` — la fédération refusée : ce que le nom tient n'a pas pu être lu.
+pub(crate) const CAUSE_FEDERATION_CE_QUE_LE_NOM_TIENT_NON_VERIFIE: &str = "FÉDÉRATION REFUSÉE, NOM NON VÉRIFIÉ : la \
+     base n'a pas pu dire si ce nom tient des lignes sans compte (lecture refusée ou table illisible), et le démon ne \
+     fédère pas un nom qu'il n'a pas pu vérifier — aucune ligne n'est posée ni modifiée, aucune session n'est ouverte. \
+     Réessayez.";
 
 /// `P10.25-t` — la fédération refusée parce que le nom n'a pas pu être vérifié (lecture du hachage non faite).
 pub(crate) const CAUSE_FEDERATION_NOM_NON_VERIFIE: &str = "FÉDÉRATION REFUSÉE, NOM NON VÉRIFIÉ : la base n'a pas pu \
@@ -362,8 +430,12 @@ impl RefusDeLaFederation {
     /// Le nom n'entre PAS à l'inventaire des accès (il n'a pas accédé). Une écriture de la ligne fédérée qui échoue n'est
     /// pas un refus de nom : elle n'est pas tracée ici. L'appelant ne tient PAS la connexion d'écriture (la trace la prend).
     pub(crate) fn servir(&self, st: &AppState, porte: crate::auth::PorteDeLAnnuaire, ip: &str) -> Response {
-        if let Self::Nom(refus) = self {
-            crate::auth::tracer_le_refus_de_l_annuaire(st, refus, ip, porte);
+        match self {
+            Self::Nom(refus) => crate::auth::tracer_le_refus_de_l_annuaire(st, refus, ip, porte),
+            // `P10.24-t` — les deux refus neufs sont tracés par la MÊME trace, sous leur propre code.
+            Self::NomTenuSansCompte(nom, _) => crate::auth::tracer_un_refus_de_l_annuaire(st, nom, "nom_tenu_sans_compte", ip, porte),
+            Self::TenueNonVerifiee(nom, _) => crate::auth::tracer_un_refus_de_l_annuaire(st, nom, "tenue_non_verifiee", ip, porte),
+            Self::Ecriture(_) => {}
         }
         self.reponse()
     }
@@ -384,6 +456,15 @@ impl RefusDeLaFederation {
             Self::Nom(R::NonVerifie(nom, cause)) => {
                 eprintln!("[idp] WARN fédération de '{nom}' refusée, nom non vérifié : {cause}");
                 err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_FEDERATION_NOM_NON_VERIFIE)
+            }
+            Self::NomTenuSansCompte(_, tenue) => (
+                StatusCode::CONFLICT,
+                Json(json!({ "error": CAUSE_FEDERATION_NOM_TENU_SANS_COMPTE, "ce_que_le_nom_tient": tenue })),
+            )
+                .into_response(),
+            Self::TenueNonVerifiee(nom, cause) => {
+                eprintln!("[idp] WARN fédération de '{nom}' refusée, ce que le nom tient non lu : {cause}");
+                err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_FEDERATION_CE_QUE_LE_NOM_TIENT_NON_VERIFIE)
             }
             Self::Ecriture(e) => (StatusCode::CONFLICT, e.clone()).into_response(),
         }

@@ -12635,14 +12635,20 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
       `(96k) le refus ne nomme pas la porte de masquage : « ${texteDryRun96} »`);
     exiger(texteDryRun96.includes(CAUSE_DRYRUN96), `(96k) la CAUSE servie par le démon n'est pas collée telle quelle dans la modale : « ${texteDryRun96} »`);
     exiger(ditAuDryRun96.length === 0, `(96k) le refus de la porte est AUSSI jeté dans un avis de six secondes, comme un échec ordinaire : ${JSON.stringify(ditAuDryRun96)}`);
-    // L'AUTRE SENS : une ligne de base ABSENTE reste ce qu'elle est — un avis, pas une modale de refus.
+    // L'AUTRE SENS : une ligne de base ABSENTE reste ce qu'elle est — un refus de l'ESSAI, pas une modale de refus de porte.
+    // `P10.29-q` — il se dit désormais par la face nommée d'un essai, dans le puits de la liste des lignes de base (plus dans un
+    // avis qui s'efface) : c'est là que ce verdict le cherche, cause entière.
     const modalesAvantAbsence96 = modales96().length;
     reponsesServies96 = { "POST /api/baselines/7/test": { corps: { error: mIntrouvable96[1] } } };
     const ditAAbsence96 = await ditAuGeste96(async () => { await modDetAdv96.testBaseline(LIGNE_DE_BASE96); await laisser96(); });
+    const listeDesLignesDeBase96 = document.querySelector("#detadv-base-list");
+    const puitsDeLAbsence96 = listeDesLignesDeBase96 && listeDesLignesDeBase96.parentNode
+      ? listeDesLignesDeBase96.parentNode.children.find((n) => n.getAttribute && n.getAttribute("data-refus-d-un-essai")) : null;
     exiger(modales96().length === modalesAvantAbsence96,
       "(96l) une ligne de base ABSENTE ouvre la modale du refus de PORTE : les deux issues se confondent de nouveau");
-    exiger(ditAAbsence96.length === 1 && ditAAbsence96[0].includes(mIntrouvable96[1]),
-      `(96l) une ligne de base absente ne dit plus sa cause : ${JSON.stringify(ditAAbsence96)}`);
+    exiger(ditAAbsence96.length === 0 && !!puitsDeLAbsence96 && puitsDeLAbsence96.getAttribute("data-refus-d-un-essai") === "essai_refuse" && String(puitsDeLAbsence96.textContent).includes(mIntrouvable96[1]),
+      `(96l) une ligne de base absente ne dit plus sa cause dans le puits de sa liste : avis ${JSON.stringify(ditAAbsence96)}, puits « ${puitsDeLAbsence96 ? puitsDeLAbsence96.textContent : "(absent)"} »`);
+    if (puitsDeLAbsence96) { puitsDeLAbsence96.hidden = true; puitsDeLAbsence96.replaceChildren(); delete puitsDeLAbsence96.dataset.refusDUnEssai; }
     // CONTRÔLE POSITIF : un aperçu ABOUTI rend son bucket, sans un mot de refus.
     const modalesAvantApercu96 = modales96().length;
     reponsesServies96 = { "POST /api/baselines/7/test": { corps: { ok: true, bucket: 1700000000, observed: 3, anomalies: 1, samples: [], hits: [{ entity: "web-01", value: 42, z: 3.4 }] } } };
@@ -16424,6 +16430,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   const modTenants105 = await import(url105("multitenant.js"));
   const modSysteme105 = await import(url105("system.js"));
   const modDossiers105 = await import(url105("cases.js"));
+  const modNoyau105 = await import(url105("core.js"));   // `P10.23-q` : la face de la passerelle, lue au point commun
   const { S: S105 } = await import(url105("state.js"));
   await import(url105("app.js"));   // l'écouteur du formulaire de provisionnement vit à son top-level
 
@@ -16788,10 +16795,19 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
           `(105f) un refus nommé ne se dit pas avec sa cause (corps en ${enChaine ? "chaîne" : "objet"}) : ${JSON.stringify(g.avis)}`);
       }
       servis105["POST /api/cases"] = { corps: { id: 900, status: "new" } };
-      servis105["POST /api/cases/900/items"] = { statut: 502, corps: "" };
+      // `P10.23-q` — l'élément REFUSÉ par le démon (un refus nommé) : la face du dossier neuf, cause entière. Ce verdict jouait un
+      // cinq cent deux VIDE — une réponse de passerelle, que ce cadre (« … PAS RATTACHÉ … Le démon a répondu — ») disait refusée par
+      // le démon : c'est le défaut même de `P10.23-q`. La passerelle est jouée juste après, sous sa propre face.
+      servis105["POST /api/cases/900/items"] = { statut: 409, corps: { error: "ÉLÉMENT DÉJÀ PRÉSENT-105 : rien n'est ajouté." } };
       const neuf = await geste105(() => modDossiers105.addToCase("alert", "x", "alert:5"), { cid: "new" });
-      exiger(neuf.appels.includes("POST /api/cases/900/items") && neuf.avis.length === 1 && neuf.avis[0].startsWith(motDossier("element_refuse_dossier_neuf")) && ouvre(neuf.appels).length === 0,
+      exiger(neuf.appels.includes("POST /api/cases/900/items") && neuf.avis.length === 1 && neuf.avis[0] === motDossier("element_refuse_dossier_neuf") + " « ÉLÉMENT DÉJÀ PRÉSENT-105 : rien n'est ajouté. »" && ouvre(neuf.appels).length === 0,
         `(105f) un dossier ouvert par ce geste, élément refusé, n'est pas dit EXISTANT : ${JSON.stringify(neuf.avis)}`);
+      servis105["POST /api/cases/900/items"] = { statut: 502, corps: "" };
+      const neufPasserelle = await geste105(() => modDossiers105.addToCase("alert", "x", "alert:5"), { cid: "new" });
+      const motDossierSur105 = (k) => { try { return motDossier(k); } catch (e) { return `(${k} absente)`; } };
+      exiger(neufPasserelle.avis.length === 1 && neufPasserelle.avis[0].startsWith(motDossierSur105("element_non_confirme_dossier_neuf")) && neufPasserelle.avis[0].includes(modNoyau105.motDeLaReponseHorsDemon("page_de_passerelle"))
+        && !neufPasserelle.avis[0].includes("PAS RATTACHÉ") && !/Le démon a répondu/.test(neufPasserelle.avis[0]) && ouvre(neufPasserelle.appels).length === 0,
+        `(105f) un dossier ouvert par ce geste, réponse de PASSERELLE à l'ajout : l'élément est dit refusé par le démon, ou le dossier n'est pas dit existant : ${JSON.stringify(neufPasserelle.avis)}`);
       servis105["POST /api/cases/7/items"] = { statut: 204, corps: "" };
       const pris = await geste105(() => modDossiers105.addToCase("alert", "x", "alert:5"), { cid: "7" });
       exiger(pris.avis.includes("Ajouté au case #7") && pris.appels.includes("GET /api/cases/7"),
@@ -17420,8 +17436,9 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
       `(107f) SUR UN DEUX CENTS À CORPS VIDE, LE GESTE « BANNIR » ANNONCE UNE CRÉATION au lieu de dire que le démon n'a rendu AUCUN identifiant : ${JSON.stringify(vide107)}`);
     servis107["POST /api/actions"] = { statut: 200, corps: "<html><body>no available server</body></html>" };
     const passerelle107 = await bannir107(modViz107);
-    exiger(passerelle107.length === 1 && passerelle107[0].texte === motDuBan107(null, "203.0.113.77"),
-      `(107f) sur une page de passerelle servie en deux cents, l'avis affirme encore une création : ${JSON.stringify(passerelle107)}`);
+    // `P10.23-q` — la face « absent » y nomme ce qui a répondu : une passerelle, pas le démon (« Le démon a répondu sans… » y était faux).
+    exiger(passerelle107.length === 1 && passerelle107[0].texte === motDuBan107(null, "203.0.113.77", { statutDuRefus: 200, reponseHorsDemon: "page_de_passerelle" }) && /^Une PASSERELLE a répondu, pas le démon,/.test(passerelle107[0].texte),
+      `(107f) sur une page de passerelle servie en deux cents, l'avis affirme encore une création, ou dit que le démon a répondu : ${JSON.stringify(passerelle107)}`);
     servis107["POST /api/actions"] = { statut: 200, corps: { id: 4402 } };
     const servi107 = await bannir107(modViz107);
     exiger(servi107.length === 1 && servi107[0].texte === motDuBan107({ id: 4402 }, "203.0.113.77") && servi107[0].texte.includes("#4402") && /\bok\b/.test(servi107[0].genre),
@@ -17744,8 +17761,9 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
       `(108b-négatif) « Action mise en file » est écrit sur un corps qui ne l'établit pas : ${JSON.stringify(b1108)}`);
     servis108["POST /api/actions"] = { statut: 200, corps: "<html><body>no available server</body></html>" };
     const b2108 = await mettreEnFile108(modDossiers108);
-    exiger(b2108.length === 1 && b2108[0].texte === modNoyau108.motDeLaRiposteSansIdentifiant("ban_ip", ETAPE108.target),
-      `(108b) sur une page de passerelle servie en deux cents, l'étape de runbook affirme encore une mise en file : ${JSON.stringify(b2108)}`);
+    // `P10.23-q` — la face « absent » y nomme la passerelle, pas le démon.
+    exiger(b2108.length === 1 && b2108[0].texte === modNoyau108.motDeLaRiposteSansIdentifiant("ban_ip", ETAPE108.target, { statutDuRefus: 200, reponseHorsDemon: "page_de_passerelle" }) && !/^Le démon a répondu/.test(b2108[0].texte),
+      `(108b) sur une page de passerelle servie en deux cents, l'étape de runbook affirme encore une mise en file, ou dit que le démon a répondu : ${JSON.stringify(b2108)}`);
     servis108["POST /api/actions"] = { statut: 200, corps: { id: 4410 } };
     const b3108 = await mettreEnFile108(modDossiers108);
     exiger(b3108.length === 1 && /Action mise en file \(#4410\)/.test(b3108[0].texte) && /\bok\b/.test(b3108[0].genre),
@@ -17764,7 +17782,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
       "le formulaire de riposte d'`index.html` (#act-form, #af-result, #af-target, #af-reason) n'est pas monté ou ne porte AUCUN écouteur de soumission");
     // Chaque instance du module qui a été évaluée a câblé le MÊME nœud : la face peinte est celle de la
     // DERNIÈRE à écrire, donc de l'une ou l'autre langue. Les deux sont admises, jamais autre chose.
-    const facesDuFormulaire108 = (geste, cible) => [modNoyau108.motDeLaRiposteSansIdentifiant(geste, cible), modNoyauEn108.motDeLaRiposteSansIdentifiant(geste, cible)];
+    const facesDuFormulaire108 = (geste, cible, horsDuDemon = null) => [modNoyau108.motDeLaRiposteSansIdentifiant(geste, cible, horsDuDemon), modNoyauEn108.motDeLaRiposteSansIdentifiant(geste, cible, horsDuDemon)];
     const soumettreLeFormulaire108 = async () => {
       formulaire108.classList.remove("hidden");
       if (genre108) genre108.value = "kill_pid";
@@ -17785,8 +17803,8 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
       "(108c) les champs gardent la saisie sous une phrase qui dit de retrouver la riposte AVANT de rejouer le geste : le second clic en poserait une seconde");
     servis108["POST /api/actions"] = { statut: 200, corps: "<html><body>no available server</body></html>" };
     await soumettreLeFormulaire108();
-    exiger(facesDuFormulaire108(genreServi108, "4242").includes(nu108(resultat108)) && !formulaire108.classList.contains("hidden"),
-      `(108c) sur une page de passerelle servie en deux cents, le formulaire se referme ou ne dit pas l'absence : « ${nu108(resultat108).slice(0, 300)} »`);
+    exiger(facesDuFormulaire108(genreServi108, "4242", { statutDuRefus: 200, reponseHorsDemon: "page_de_passerelle" }).includes(nu108(resultat108)) && !formulaire108.classList.contains("hidden"),
+      `(108c) sur une page de passerelle servie en deux cents, le formulaire se referme ou ne dit pas l'absence (sous le sujet de la passerelle, \`P10.23-q\`) : « ${nu108(resultat108).slice(0, 300)} »`);
     servis108["POST /api/actions"] = { statut: 200, corps: { id: 4420 } };
     await soumettreLeFormulaire108();
     exiger(formulaire108.classList.contains("hidden") && nu108(resultat108) === "",
@@ -17857,7 +17875,10 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     for (const corps of ["", "<html><body>no available server</body></html>"]) {
       servis108["POST /api/cases/8108/runbook"] = { statut: 200, corps };
       const d12108 = await attacher108(modDossiers108);
-      exiger(d12108.length === 1 && d12108[0].texte === modDossiers108.motDuRefusDIncident("attache_non_etablie") && /\binfo\b/.test(d12108[0].genre) && !/Runbook attaché/.test(d12108[0].texte),
+      // `P10.23-q` — le sujet de la face suit la réponse : le démon sur un corps vide, la passerelle sur sa page.
+      const sujet108 = corps ? { statutDuRefus: 200, reponseHorsDemon: "page_de_passerelle" } : null;
+      exiger(d12108.length === 1 && d12108[0].texte === modDossiers108.motDuRefusDIncident("attache_non_etablie", sujet108) && /\binfo\b/.test(d12108[0].genre) && !/Runbook attaché/.test(d12108[0].texte)
+        && (corps ? /^Une PASSERELLE/.test(d12108[0].texte) : /^Le démon a répondu/.test(d12108[0].texte)),
         `(108d) SUR UN DEUX CENTS SANS \`{attached}\` (${corps ? "page de passerelle" : "corps vide"}), « Runbook attaché » EST ANNONCÉ au lieu de dire que rien ne l'établit : ${JSON.stringify(d12108)}`);
     }
     servis108["POST /api/cases/8108/incident"] = { statut: 503, corps: { error: CAUSE_D108, id: "plume-e9-5" } };
@@ -21684,7 +21705,9 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
     if (!r.endsWith(".rs") || r.split(path.sep).includes("tests")) continue;
     for (const m of lireLeDemon117(r).matchAll(/const (CAUSE_[A-Z0-9_]+): &str = "((?:[^"\\]|\\[\s\S])*)";/g)) {
       const cause = valeurRust117(m[2]).trim();
-      if (/\b(?:BEGIN|COMMIT)\b/.test(cause)) CAUSES_DE_TRANSACTION117.push({ fichier: r, nom: m[1], cause });
+      // `P10.29-v` — et toute cause qui dit sa transaction ANNULÉE sans nommer `BEGIN` ni `COMMIT` (l'écriture refusée du bulletin) :
+      // la dérivation d'avant, bornée aux deux mots, ne les voyait pas, et aucune décision ne pouvait donc y manquer.
+      if (/\b(?:BEGIN|COMMIT)\b/.test(cause) || /la transaction est annulée/.test(cause)) CAUSES_DE_TRANSACTION117.push({ fichier: r, nom: m[1], cause });
     }
   }
   instrument117(CAUSES_DE_TRANSACTION117.length >= 20 && CAUSES_DE_TRANSACTION117.some((c) => c.nom === "CAUSE_REPARSE_NON_APPLIQUE"),
@@ -21772,7 +21795,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   for (const L of [FR117, EN117]) { L.S.isAdmin = true; L.S.AUTH = { user: "hugo", role: "admin", auth_method: "cookie" }; }
   try {
     // ══ (q) `P10.27-q` — LA FAMILLE « RIEN N'A CHANGÉ » PAR SES DEUX OUVERTURES ; LES CAUSES À EFFET PARTIEL, NOMMÉES ══
-    const FAMILLE_RIEN_N_A_CHANGE117 = ["ecriture_non_validee", "transaction_non_prise"];
+    const FAMILLE_RIEN_N_A_CHANGE117 = ["ecriture_non_validee", "transaction_non_prise", "ecriture_non_prise"];   // `P10.29-v` : la troisième ouverture
     const erreur117 = (statut, cause) => Object.assign(new Error(statut + " " + JSON.stringify({ error: cause }).slice(0, 200)), { statutDuRefus: statut, causeDuDemon: cause });
     const nature117 = (L, statut, cause) => appeler117(L.noyau, "natureDuRefusDUnGeste", erreur117(statut, cause));
     const ecartsQ117 = [];
@@ -21808,12 +21831,22 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
     const partitionQ117 = [CAUSE_REPARSE117, "Le démon dit : " + CAUSE_REPARSE117, CAUSE_REPARSE117.replace("REPARSE NON APPLIQUÉ :", "reparse non appliqué :"),
       CAUSE_REPARSE117.replace("(BEGIN ou", "(BEGINS ou"), CAUSE_REPARSE117.replace("n'a pas pris la transaction", "n'a pas pris la transactions")].map((c) => nature117(FR117, 503, c)).join(",");
     if (partitionQ117 !== "transaction_non_prise,refus_nomme,refus_nomme,refus_nomme,refus_nomme") ecartsQ117.push(`l'ouverture de la transaction non prise n'est pas lue au caractère près : ${partitionQ117}`);
+    // (q6bis) `P10.29-v` — L'OUVERTURE DE L'ÉCRITURE NON PRISE, lue au caractère près sur une cause du démon qui l'emploie :
+    // déplacée, en minuscules, au pluriel, ou une parenthèse (« (BEGIN ») dans l'objet, elle n'est pas reconnue.
+    const CAUSE_ECRITURE117 = (CAUSES_DE_TRANSACTION117.find((c) => /la transaction est annulée/.test(c.cause) && !/\b(?:BEGIN|COMMIT)\b/.test(c.cause)) || {}).cause || "";
+    instrument117(CAUSE_ECRITURE117.length > 80, "aucune cause du démon ne dit une écriture non prise et sa transaction annulée : l'ouverture jugée ci-dessous ne serait exercée par rien");
+    const teteEcriture117 = (CAUSE_ECRITURE117.match(/^[^:]+ :/) || [""])[0];
+    const partitionV117 = [CAUSE_ECRITURE117, "Le démon dit : " + CAUSE_ECRITURE117, CAUSE_ECRITURE117.replace(teteEcriture117, teteEcriture117.toLowerCase()),
+      CAUSE_ECRITURE117.replace("et la transaction est annulée", "et la transaction est annulées"), CAUSE_ECRITURE117.replace(/n'a pas pris (l'écriture|l'effacement)/, "n'a pas pris $1 (BEGIN")].map((c) => nature117(FR117, 503, c)).join(",");
+    if (partitionV117 !== "ecriture_non_prise,refus_nomme,refus_nomme,refus_nomme,refus_nomme") ecartsQ117.push(`l'ouverture de l'écriture non prise n'est pas lue au caractère près : ${partitionV117}`);
     // (q7) Ses faces : deux langues distinctes, l'anglaise sans accent, aucune n'accuse, chacune dit « rien n'a changé ».
-    const facesQ117 = [appeler117(FR117.noyau, "motDuRefusDUnGeste", "transaction_non_prise"), appeler117(EN117.noyau, "motDuRefusDUnGeste", "transaction_non_prise")];
-    if (!(facesQ117[0] !== facesQ117[1] && /^RIEN N'A CHANGÉ/.test(facesQ117[0]) && /^NOTHING CHANGED/.test(facesQ117[1]) && !ACCENTS117.test(facesQ117[1]) && !ACCUSE117.test(facesQ117[0]) && !ACCUSE117.test(facesQ117[1])))
-      ecartsQ117.push(`les faces de la transaction non prise : ${JSON.stringify(facesQ117)}`);
+    for (const nature of ["transaction_non_prise", "ecriture_non_prise"]) {
+      const facesQ117 = [appeler117(FR117.noyau, "motDuRefusDUnGeste", nature), appeler117(EN117.noyau, "motDuRefusDUnGeste", nature)];
+      if (!(facesQ117[0] !== facesQ117[1] && /^RIEN N'A CHANGÉ/.test(facesQ117[0]) && /^NOTHING CHANGED/.test(facesQ117[1]) && !ACCENTS117.test(facesQ117[1]) && !ACCUSE117.test(facesQ117[0]) && !ACCUSE117.test(facesQ117[1])))
+        ecartsQ117.push(`les faces de « ${nature} » : ${JSON.stringify(facesQ117)}`);
+    }
     console.log(`[117q0] causes de transaction du démon : ${CAUSES_DE_TRANSACTION117.length} ; par nature sous 503 (hors effet partiel) : ${JSON.stringify(Object.fromEntries(Object.entries(parNature117).map(([k, v]) => [k, v.length])))} ; à effet partiel nommées : ${JSON.stringify(CAUSES_DU_DEMON_A_EFFET_PARTIEL)} ; non décidées : ${JSON.stringify(nonDecidees117)}`);
-    exiger(ecartsQ117.length === 0, `(117q) LA FAMILLE « RIEN N'A CHANGÉ » ET L'ENSEMBLE DES CAUSES À EFFET PARTIEL NE SE PARTAGENT PLUS LES CAUSES DE TRANSACTION DU DÉMON (deux ouvertures reconnues sous un cinq cent trois seulement ; toute cause nommée partielle existe et n'est jamais dite « rien n'a changé ») : ${JSON.stringify(ecartsQ117)}`);
+    exiger(ecartsQ117.length === 0, `(117q) LA FAMILLE « RIEN N'A CHANGÉ » ET L'ENSEMBLE DES CAUSES À EFFET PARTIEL NE SE PARTAGENT PLUS LES CAUSES DE TRANSACTION DU DÉMON (trois ouvertures reconnues sous un cinq cent trois seulement — la troisième depuis \`P10.29-v\` ; toute cause nommée partielle existe et n'est jamais dite « rien n'a changé ») : ${JSON.stringify(ecartsQ117)}`);
 
     // ══ (n) `P10.27-n` / `P10.27-v` — LE REPARSE : SON CINQ CENT TROIS DANS LE PUITS DU PANNEAU, DANS LES DEUX LANGUES ══
     const ecartsN117 = [];
@@ -22004,7 +22037,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
     const avis = qs117("#toasts"); if (avis) avis.replaceChildren();
     document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
   }
-  console.log("(117) OK — le reparse dit son cinq cent trois dans le puits de son panneau par la forme partagée — « rien n'a changé » sur la transaction non prise et la cause ENTIÈRE, dans les deux langues, sans avis ni rejet —, une demande qui n'aboutit pas « NON confirmée », un refus servi en deux cents avec sa phrase et sans écriture, et un reparse accepté efface le refus ; la famille « rien n'a changé » est reconnue par ses deux ouvertures (le COMMIT refusé et annulé, la transaction que la base n'a pas prise), sous un cinq cent trois seulement, et partage avec l'ensemble nommé des causes à effet partiel TOUTES les causes de transaction du démon — aucune cause à effet partiel n'est dite « rien n'a changé », aucun nom de l'ensemble ne désigne une cause absente ; la confirmation du retrait d'un connecteur dit, dans les deux langues, que ses clés de livraison des genres lus dans `connector_delete` sont RÉVOQUÉES dans la même transaction ; aucun `esc()` n'aboutit dans un texte, l'émetteur d'un fournisseur s'affiche tel quel ; le préfixe d'un échec et les deux phrases d'`api()` suivent la langue de l'écran, la face française inchangée, et aucun module n'en écrit de copie française hors d'une face `fr:` (aucun reste depuis `P10.28-n`). CE QUI ÉTAIT FAUX OU IMPRÉCIS : `P10.27-n` disait le 503 affiché par `toast(e.message)` — c'était le JSON brut coupé AVANT « AUCUN event n'a été modifié », et un refus servi en deux cents suivait le même chemin ; `P10.27-q` ne nommait que la forme — la dérivation du 115 ne reconnaissait aucune cause de la transaction non prise, trois aujourd'hui ; `P10.27-t` comptait neuf modules et « viz.js 1 » — quarante-sept littéraux dans douze modules, dont « Erreur : » capitalisé (tableaux de bord, Explore) et les deux phrases d'`api()` recopiées dans `viz.js` et `dashboards.js`, tandis que la ligne comptée dans `viz.js` était déjà une face bilingue ; `P10.27-r` était « lu » — joué, la confirmation ne disait rien des clés, en français sous les deux langues ; `P10.27-s` était « lu » — joué, `&amp;`, `&quot;`, `&lt;`, `&gt;` visibles.");
+  console.log("(117) OK — le reparse dit son cinq cent trois dans le puits de son panneau par la forme partagée — « rien n'a changé » sur la transaction non prise et la cause ENTIÈRE, dans les deux langues, sans avis ni rejet —, une demande qui n'aboutit pas « NON confirmée », un refus servi en deux cents avec sa phrase et sans écriture, et un reparse accepté efface le refus ; la famille « rien n'a changé » est reconnue par ses trois ouvertures (le COMMIT refusé et annulé, la transaction que la base n'a pas prise, et depuis `P10.29-v` l'écriture qu'elle n'a pas prise, la transaction annulée), sous un cinq cent trois seulement, et partage avec l'ensemble nommé des causes à effet partiel TOUTES les causes de transaction du démon — aucune cause à effet partiel n'est dite « rien n'a changé », aucun nom de l'ensemble ne désigne une cause absente ; la confirmation du retrait d'un connecteur dit, dans les deux langues, que ses clés de livraison des genres lus dans `connector_delete` sont RÉVOQUÉES dans la même transaction ; aucun `esc()` n'aboutit dans un texte, l'émetteur d'un fournisseur s'affiche tel quel ; le préfixe d'un échec et les deux phrases d'`api()` suivent la langue de l'écran, la face française inchangée, et aucun module n'en écrit de copie française hors d'une face `fr:` (aucun reste depuis `P10.28-n`). CE QUI ÉTAIT FAUX OU IMPRÉCIS : `P10.27-n` disait le 503 affiché par `toast(e.message)` — c'était le JSON brut coupé AVANT « AUCUN event n'a été modifié », et un refus servi en deux cents suivait le même chemin ; `P10.27-q` ne nommait que la forme — la dérivation du 115 ne reconnaissait aucune cause de la transaction non prise, trois aujourd'hui ; `P10.27-t` comptait neuf modules et « viz.js 1 » — quarante-sept littéraux dans douze modules, dont « Erreur : » capitalisé (tableaux de bord, Explore) et les deux phrases d'`api()` recopiées dans `viz.js` et `dashboards.js`, tandis que la ligne comptée dans `viz.js` était déjà une face bilingue ; `P10.27-r` était « lu » — joué, la confirmation ne disait rien des clés, en français sous les deux langues ; `P10.27-s` était « lu » — joué, `&amp;`, `&quot;`, `&lt;`, `&gt;` visibles.");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -22296,7 +22329,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   const rendreDans118 = (sel, noeud) => { const h = qs118(sel); if (h && noeud) h.replaceChildren(noeud); };
   const face118 = (L, nature) => appeler118(L.noyau, "motDuRefusDUnGeste", nature);
   const erreur118 = (statut, cause) => Object.assign(new Error(statut + " " + JSON.stringify({ error: cause }).slice(0, 200)), { statutDuRefus: statut, causeDuDemon: cause });
-  const FAMILLE_RIEN_N_A_CHANGE118 = ["ecriture_non_validee", "transaction_non_prise"];
+  const FAMILLE_RIEN_N_A_CHANGE118 = ["ecriture_non_validee", "transaction_non_prise", "ecriture_non_prise"];   // `P10.29-v`
 
   // ── LES DONNÉES SERVIES ─────────────────────────────────────────────────────────────────────────────────
   const DEST118 = { id: 9, name: "syslog-118", type: "syslog", endpoint: "tcp://collecteur.example:514", enabled: true, interval_s: 30, batch_max: 500, filter: {}, has_auth: false, watermark: 1, last_count: 0 };
@@ -22455,9 +22488,9 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
       ["modification_ligne_de_base", "POST /api/baselines/15", C118("handlers/detection_advanced.rs", "CAUSE_REFERENCE_UEBA_INCHANGEE"), "#detadv-base-list", "lignes_de_base", (L) => lancer118(L.avancee, "editBaseline", () => { throw new Error("(editBaseline absent)"); }, LIGNE_DE_BASE118), {}],
       ["retrait_ligne_de_base", "DELETE /api/baselines/15", SUPPRESSION_DE_CONTENU118, "#detadv-base-list", "lignes_de_base", (L) => lancer118(L.avancee, "deleteBaseline", () => { throw new Error("(deleteBaseline absent)"); }, LIGNE_DE_BASE118), {}]]
       .map(([nom, route, cause, sel, surface, lancer, valeurs]) => site118({ site: nom, fichier: "detadv.js", route, cause, puits: puitsAvant118(sel, surface), geste: confirmerPuis118(valeurs, lancer) })),
-    ...[["essai_correlation", "POST /api/correlations/12/test", "#detadv-corr-list", "correlations", (L) => lancer118(L.avancee, "testCorrelation", () => { throw new Error("(testCorrelation absent)"); }, CORRELATION118)],
-      ["essai_ligne_de_base", "POST /api/baselines/15/test", "#detadv-base-list", "lignes_de_base", (L) => L.avancee.testBaseline(LIGNE_DE_BASE118)]]
-      .map(([nom, route, sel, surface, lancer]) => site118({ site: nom, fichier: "detadv.js", route, reponse: refusNomme118(500, "ESSAI REFUSÉ-118 : l'évaluation n'a pas eu lieu."), attendu: attenduNomme118("ESSAI REFUSÉ-118 : l'évaluation n'a pas eu lieu."), puits: puitsAvant118(sel, surface), geste: lancer })),
+    // `P10.29-q` — les deux ESSAIS de la détection avancée (corrélation, ligne de base) ne sont plus des gestes : ils disent leur
+    // refus par la face nommée d'un essai (`peindreLeRefusDUnEssai`), jugée par le témoin 121 (29q) ; ce témoin les jouait sous
+    // la forme d'un geste, qui leur prêtait un effet à vérifier.
     // ─ objets de savoir ─
     site118({ site: "creation_objet_de_savoir", fichier: "knowledge.js", route: "POST /api/knowledge/alias", cause: C118("handlers/knowledge.rs", "CAUSE_OBJET_DE_SAVOIR_NON_ECRIT"), puits: puitsAvant118("#ko-alias-list", "objets_de_savoir:alias"),
       preparer: async (L) => { await L.savoir.loadKnowledge(); }, geste: confirmerPuis118({ canonical: "src_ip" }, (L) => L.savoir.create("alias", "alias de champ", [{ name: "canonical", label: "Champ", required: true }], (v) => ({ canonical: v.canonical }))) }),
@@ -23128,12 +23161,13 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
     }
     // (d5) `P10.29-k` — LE BULLETIN NOMME SES TROIS REFUS DE TRANSACTION (`P10.29-a`) ET LES DOSSIERS NE SERVENT PLUS DE
     // REFUS NU. Le `BEGIN` refusé se lit « transaction non prise », le `COMMIT` refusé « écriture non validée » ; l'écriture
-    // refusée (« la base n'a pas pris l'écriture … et la transaction est annulée ») ne s'ouvre par AUCUNE des deux : elle se
-    // lit « refus nommé », sa cause ENTIÈRE dit que le bandeau est toujours celui d'avant. Chaque cause est lue dans
-    // `system.rs`. Un refus NU (aucune route des dossiers n'en sert plus) garde sa face : le statut, aucune cause inventée.
+    // refusée (« la base n'a pas pris l'écriture … et la transaction est annulée ») se lit, depuis `P10.29-v`, par la TROISIÈME
+    // ouverture de la famille, « écriture non prise » — elle se lisait « refus nommé », sans l'en-tête « RIEN N'A CHANGÉ » que sa
+    // cause établit. Chaque cause est lue dans `system.rs`. Un refus NU (aucune route des dossiers n'en sert plus) garde sa
+    // face : le statut, aucune cause inventée.
     const C_TX_BULLETIN119 = ["CAUSE_BULLETIN_NON_PUBLIE_TRANSACTION_NON_OUVERTE", "CAUSE_BULLETIN_NON_PUBLIE_ECRITURE_REFUSEE", "CAUSE_BULLETIN_NON_EFFACE_TRANSACTION_NON_OUVERTE", "CAUSE_BULLETIN_NON_EFFACE_ECRITURE_REFUSEE"].map((n) => constante119(SYSTEME_RS119, n));
-    const TX_BULLETIN119 = [["bulletin_publication", C_BULLETIN119.publie, "ecriture_non_validee"], ["bulletin_publication", C_TX_BULLETIN119[0], "transaction_non_prise"], ["bulletin_publication", C_TX_BULLETIN119[1], "refus_nomme"],
-      ["bulletin_effacement", C_BULLETIN119.efface, "ecriture_non_validee"], ["bulletin_effacement", C_TX_BULLETIN119[2], "transaction_non_prise"], ["bulletin_effacement", C_TX_BULLETIN119[3], "refus_nomme"]];
+    const TX_BULLETIN119 = [["bulletin_publication", C_BULLETIN119.publie, "ecriture_non_validee"], ["bulletin_publication", C_TX_BULLETIN119[0], "transaction_non_prise"], ["bulletin_publication", C_TX_BULLETIN119[1], "ecriture_non_prise"],
+      ["bulletin_effacement", C_BULLETIN119.efface, "ecriture_non_validee"], ["bulletin_effacement", C_TX_BULLETIN119[2], "transaction_non_prise"], ["bulletin_effacement", C_TX_BULLETIN119[3], "ecriture_non_prise"]];
     if (!C_TX_BULLETIN119.every((c) => c.length > 100)) ecartsD119.push(`les causes de transaction du bulletin ne se lisent plus dans system.rs : ${JSON.stringify(C_TX_BULLETIN119.map((c) => c.slice(0, 40)))}`);
     const mesureD5119 = [];
     for (const L of [FR119, EN119]) {
@@ -23258,11 +23292,16 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
       // `P10.29-g`, `P10.29-f`, `P10.29-c` — les tables que le témoin 120 a posées : la face nommée d'une lecture non servie, les
       // avis d'échec, et les lignes, infobulles, confirmations et notes composées.
       "alerts.js › MOTS_DES_LECTURES_D_ALERTES", "attack.js › MOTS_DES_RESUMES_ATTACK", "cases.js › MOTS_DES_LECTURES_DE_DOSSIER", "cases.js › MOTS_DES_TEXTES_DE_DOSSIER",
-      "core.js › MOTS_DE_L_AGE", "core.js › MOTS_DU_REFUS_D_UNE_LECTURE", "dashboards.js › MOTS_DE_L_INSTANTANE_DE_DASHBOARD", "detadv.js › MOTS_DES_ESSAIS_DE_DETECTION_AVANCEE",
+      "core.js › MOTS_DE_L_AGE", "core.js › MOTS_DU_REFUS_D_UNE_LECTURE", "dashboards.js › MOTS_DE_L_INSTANTANE_DE_DASHBOARD",
       "detadv.js › MOTS_DES_NOTES_DE_DETECTION_AVANCEE", "detection_admin.js › MOTS_DES_NOTES_DE_DETECTION", "fleet.js › MOTS_DES_ATTENTES_D_HOTE", "fleet.js › MOTS_DE_L_INVENTAIRE_DE_FLOTTE", "knowledge.js › MOTS_DES_GESTES_DE_SAVOIR",
       "multitenant.js › MOTS_DES_LECTURES_DES_TENANTS", "navigation.js › MOTS_DU_STATUT_DES_CHARGES", "prefs.js › MOTS_DES_PREFERENCES_NON_LUES", "producer_ui.js › MOTS_DE_LA_NOTE_DE_DESTINATION",
       "producer_ui.js › MOTS_DU_COMMUTATEUR", "savedqueries.js › MOTS_DE_LA_LECTURE_DE_MES_MODELES", "sigmaimport.js › MOTS_DU_RESUME_D_IMPORT_SIGMA", "sources.js › MOTS_DE_L_INVENTAIRE_DES_SOURCES",
-      "suppressions.js › MOTS_DES_SILENCES_NON_LUS", "system.js › MOTS_DU_PAQUET_DE_DIAGNOSTIC", "viz.js › MOTS_DE_LA_PART_FROIDE", "viz.js › MOTS_DU_BOUTON_DES_COLONNES", "viz.js › MOTS_DU_CORPS_D_UN_COURRIEL"];
+      "suppressions.js › MOTS_DES_SILENCES_NON_LUS", "system.js › MOTS_DU_PAQUET_DE_DIAGNOSTIC", "viz.js › MOTS_DE_LA_PART_FROIDE", "viz.js › MOTS_DU_BOUTON_DES_COLONNES", "viz.js › MOTS_DU_CORPS_D_UN_COURRIEL",
+      // `P10.23-q`, `P10.29-r` — les tables que le témoin 121 a posées ou fait lire par le formateur : le sujet d'une face « non
+      // établie » (et les deux tables qui le reçoivent), la face des sondes non lues, le refus local de la requête. La table des
+      // essais de la détection avancée est partie avec `P10.29-q` (ses essais passent par la face nommée d'un essai).
+      "cases.js › MOTS_DES_REFUS_D_INCIDENT", "core.js › MOTS_DE_LA_RIPOSTE_SANS_IDENTIFIANT", "core.js › MOTS_DU_SUJET_D_UNE_REPONSE_SANS_CORPS_DE_SUCCES",
+      "freshness.js › MOTS_DES_SONDES_NON_LUES", "viz.js › MOTS_DU_REFUS_LOCAL_DE_LA_REQUETE"];
     const tablesLues119 = [], pairesFautives119 = [];
     const placeholders119 = (t) => [...String(t).matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort().join(",");
     const jugerLesPaires119 = (ou, texte) => {
@@ -23976,8 +24015,8 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
         lectures: { "GET /api/cases": { corps: { cases: [], error: CAUSE_SERVIE120 } } }, geste: (L) => L.dossiers.addToCase("alert", "a-120", "alert:1") },
       { avis: "paquet de diagnostic partiel", fr: `Bundle de diagnostic PARTIELLEMENT NON LU : le démon a refusé une partie des lectures et en nomme la cause — « ${CAUSE_SERVIE120} »`, en: `Diagnostic bundle PARTIALLY NOT READ: the daemon refused part of the reads and names the cause — “${CAUSE_SERVIE120}”`,
         lectures: {}, geste: async (L) => { L.systeme.direLesListesNonLuesDuPaquet({ error: CAUSE_SERVIE120 }); } },
-      { avis: "essai d'une ligne de base refusé", fr: `Essai NON FAIT : le démon a refusé cet essai, qui n'écrit rien, et en nomme la cause — « ${CAUSE_SERVIE120} »`, en: `Test NOT RUN: the daemon refused this test, which writes nothing, and names the cause — “${CAUSE_SERVIE120}”`,
-        lectures: { "POST /api/baselines/15/test": { corps: { error: CAUSE_SERVIE120 } } }, geste: (L) => L.avancee.testBaseline({ id: 15, name: "b120", query: "search x", entity_field: "host", value_field: "", entity_type: "host", bucket_s: 3600, min_samples: 5, z_threshold: 3, window_s: 604800, interval_s: 3600, severity: 2, risk_score: 0, enabled: true, managed: 2 }) },
+      // `P10.29-q` — l'essai d'une ligne de base refusé en deux cents ne part plus dans un avis : la face nommée d'un essai, dans
+      // le puits de sa liste, jugée par le témoin 121 (29q).
     ];
     const mesureF120 = [];
     for (const L of [FR120, EN120]) {
@@ -24187,6 +24226,803 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
     fermerLesFenetres120();
   }
   console.log("(120) OK — aucune lecture ne colle plus le message : les vingt-neuf captures d'avant (et `fetchInto`, la liste paginée, l'erreur de transport de l'Explore, la ligne d'état des charges) disent la face nommée d'une lecture non servie, cause entière, dans la langue de l'écran ; le seul reste nommé (la cause rangée au registre du catalogue ATT&CK) n'est peint par aucune surface ; les trois lectures de la liste des dossiers ne taisent plus leur refus ; une absence n'est dite que sur le quatre cent quatre qui l'établit. Aucun avis d'échec composé ne reste hors d'une face ; les lignes, infobulles, confirmations et notes composées ont leurs faces, les restes neutres sont nommés. La page vide de rang supérieur dit deux lectures, compte arrivé après la page compris. Un quatre cent un reçu dans le délai d'une session confirmée arme une relecture à l'échéance, une seule, sans boucle.");
+}
+
+
+// ---------------------------------------------------------------------------------------------
+// (121) `P10.23-t` — AUCUN APPEL `apiSend` NE LAISSE PLUS SON REFUS SANS AVIS : chaque appel (et chaque écrivain nommé qui le
+//       rend à son appelant) est capté LOCALEMENT, par le commutateur partagé (`onToggle` + `onRefus`), par l'appelant qui
+//       attend l'enveloppe, ou par l'appelant de l'écrivain — recensement dérivé, ensemble nommé des restes (vide) ;
+//       `P10.23-q` — le cadre d'un refus suit la nature de la réponse : une passerelle ou une demande qui n'aboutit pas ne
+//       reçoit plus « … REFUSÉ … Le démon a répondu — », et le sujet d'une face « non établie » nomme ce qui a répondu ;
+//       `P10.23-r` — la phrase de passerelle d'`api()` a ses deux faces (tenue depuis `P10.27-c`, rejouée ici) ;
+//       `P10.23-s` — le survol « Connecté : … » de l'en-tête a ses deux faces (tenu depuis `P10.29-c`, rejoué ici) ;
+//       `P10.29-v` — la troisième ouverture de la famille « rien n'a changé » : l'écriture que la base n'a pas prise ;
+//       `P10.29-q` — les essais de la détection avancée disent leur refus par la face nommée d'un essai, dans un puits qui reste ;
+//       `P10.29-r` — les lectures lues à la main ne collent plus « erreur : » ni la cause nue : recensement étendu à `x.error`.
+//
+// CE QUE LE DÉMON SERT, RELU ICI ET NON RECOPIÉ : les causes qui disent une écriture non prise ET leur transaction annulée
+// (dérivées de l'arbre, hors tests) ; les refus en deux cents `{error}` de `rule_test`, `notifier_test` et `playbook_test` ;
+// l'`error` qu'un panneau non capturé porte dans l'instantané (`capture_dashboard_data`). S'ils n'y sont plus, ce témoin
+// refuse de conclure.
+//
+// CE QUE LA CONSOLE EN FAISAIT, MESURÉ AVANT CE LOT (miroir de `HEAD`, ce témoin joué tel quel ; les lignes `[121…0]`
+// rejouent la mesure à chaque exécution) :
+//   · sur 147 appels d'écriture, 25 sans capture LOCALE : 17 captés ailleurs (11 par le commutateur partagé, 2 par l'enveloppe
+//     attendue d'un formulaire, 2 en chaîne, 2 rendus par un écrivain nommé à des appelants qui captent), et HUIT par personne
+//     (et non « une trentaine ») — le retrait d'un tableau de bord et d'un panneau, la création et le rattachement d'un tableau
+//     de bord, la création d'une vue (qui jetait aussi sur un corps vide), les trois essais d'une ligne (règle, canal, playbook) :
+//     une promesse rejetée non traitée, la ligne figée sur « ... » ;
+//   · le cadre « … REFUSÉ(E) … Le démon a répondu — » (ou « … refusée par le serveur », « NON ENREGISTRÉ : le démon a refusé »)
+//     entourait la phrase d'une passerelle ou « Failed to fetch » : ouverture d'un dossier, lien, retrait de lien, rattachement,
+//     déclaration et rétrogradation d'un incident, attache d'un runbook, création, approbation et annulation d'une riposte,
+//     gestes et destruction d'un tenant, acquittement, trois gestes du second facteur, persistances d'un tableau de bord et
+//     gestes d'une vue ; « Geste REFUSÉ par le démon, rien n'a changé » l'affirmait même ; la face « non établie » disait « Le
+//     démon a répondu sans… » sur une page de passerelle servie en deux cents ;
+//   · `api()` et le survol de l'en-tête avaient DÉJÀ leurs deux faces (`P10.27-c`, `P10.29-c`) : ces deux énoncés étaient tenus ;
+//   · les deux causes de l'écriture non prise du bulletin se lisaient « refus nommé », sans « RIEN N'A CHANGÉ » ;
+//   · les essais d'une corrélation et d'une ligne de base disaient un refus en deux cents dans un avis de six secondes, et un
+//     refus en statut d'erreur sous la forme d'un GESTE (« vérifier son effet avant de le rejouer ») ;
+//   · onze causes servies collées (et non « des lectures lues à la main » seulement) : « Erreur : » + le `{error}` servi dans les deux panneaux de
+//     tableau de bord (et la phrase de passerelle À LA PLACE de la cause d'un cinq cent trois nommé), dans l'Explore, dans
+//     l'audit opérateur, dans l'aperçu d'un instantané et dans deux des trois essais d'une ligne (« erreur : » + cause, deux
+//     fois chacun) ; la cause NUE dans l'inventaire des sources et sous la rangée des sondes — la douzième pose relevée est une
+//     validation locale, le reste nommé.
+//
+// CE QUE CE TÉMOIN NE TIENT PAS : les recensements lisent le SOURCE — un envoi qui ne passe pas par `apiSend` (un `fetch`
+// direct en écriture), une promesse passée par une variable puis abandonnée, une cause servie qui voyage par une variable
+// jusqu'à un texte, un gabarit HTML composé ailleurs leur échappent ; la capture « par l'appelant d'un écrivain nommé » est
+// suivie d'UN cran (un écrivain qui en appelle un autre n'est pas remonté) ; le transport et les minuteries sont des
+// simulacres ; la cause servie reste française sous les deux langues (`P10.27-u`) ; les faces « non établie » des trois mises
+// en file d'une riposte et de l'attache d'un runbook sont jouées par les témoins 107 et 108.
+// ---------------------------------------------------------------------------------------------
+{
+  const url121 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const FICHIERS121 = { noyau: "core.js", etat: "state.js", tableaux: "dashboards.js", detection: "detection_admin.js", avancee: "detadv.js", dossiers: "cases.js",
+    alertes: "alerts.js", tenants: "multitenant.js", idp: "idp.js", viz: "viz.js", connexion: "login.js", sources: "sources.js", fraicheur: "freshness.js" };
+  const importer121 = async (adresse) => { const L = {}; for (const [cle, f] of Object.entries(FICHIERS121)) L[cle] = await import(adresse(f)); return L; };
+  const modsFr121 = await importer121(url121);
+  const langueOrigine121 = localStorage.getItem("soc_lang");
+  localStorage.setItem("soc_lang", "en");
+  const modsEn121 = await importer121((f) => adresseSousLaLangue(f));
+  if (langueOrigine121 === null) localStorage.removeItem("soc_lang"); else localStorage.setItem("soc_lang", langueOrigine121);
+  const FR121 = { nom: "fr", ...modsFr121, S: modsFr121.etat.S }, EN121 = { nom: "en", ...modsEn121, S: modsEn121.etat.S };
+
+  const tic121 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser121 = async (n = 30) => { for (let i = 0; i < n; i++) await tic121(); };
+  const nu121 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ").trim();
+  const serre121 = (t) => String(t).replace(/\s+/g, " ").trim();
+  const cueillir121 = (el, pred, acc = []) => { if (el && pred(el)) acc.push(el); ((el && el.children) || []).forEach((c) => cueillir121(c, pred, acc)); return acc; };
+  const instrument121 = (vrai, quoi) => exiger(vrai, `(121-instrument) ${quoi} : ce témoin REFUSE DE CONCLURE`);
+  const lireLeDemon121 = (rel) => { try { return readFileSync(path.join(RACINE, "daemon", "src", rel), "utf8"); } catch (e) { return ""; } };
+  const valeurRust121 = (brut) => brut.replace(/\\\n\s*/g, "").replace(/\\"/g, "\"");
+  const ACCENTS121 = /[éèêàçùôâîÉÈÊÀ]/;
+  const appeler121 = (mod, nom, ...args) => { if (typeof mod[nom] !== "function") return `(${nom} absente)`; try { return mod[nom](...args); } catch (e) { return `(${nom} jette : ${e && e.message})`; } };
+  const parDonnee121 = (hote, attr) => cueillir121(hote, (e) => typeof e.getAttribute === "function" && e.getAttribute(attr) !== null);
+  instrument121(FR121.noyau.LANG !== "en" && EN121.noyau.LANG === "en", "les deux instances du point commun ne portent pas deux langues");
+
+  // ── (0) L'INSTRUMENT : LE DÉCOUPEUR DU TÉMOIN 120 (chaînes, gabarits, expressions régulières, commentaires), recopié pour que
+  // ce bloc tienne seul, et jugé sur ses deux pièges.
+  const precedeUneRegex121 = (src, i) => { let k = i - 1; while (k >= 0 && /\s/.test(src[k])) k--; if (k < 0) return true; if (/[(,=:[!&|?{};+\-*%<>~^]/.test(src[k])) return true; const mot = src.slice(Math.max(0, k - 10), k + 1); return /(?:^|[^\w$])(?:return|typeof|case|in|of|void|delete|throw|instanceof|new|yield|await)$/.test(mot); };
+  const analyserLeSource121 = (src) => {
+    const n = src.length, sortie = src.split(""), code = new Uint8Array(n);
+    const blanchir = (a, b) => { for (let k = a; k < b; k++) if (sortie[k] !== "\n") sortie[k] = " "; };
+    const pile = [{ gabarit: false, substitution: false, profondeur: 0 }];
+    let i = 0;
+    while (i < n) {
+      const cadre = pile[pile.length - 1], c = src[i];
+      if (cadre.gabarit) {
+        if (c === "\\") { i += 2; continue; }
+        if (c === "`") { pile.pop(); i++; continue; }
+        if (c === "$" && src[i + 1] === "{") { pile.push({ gabarit: false, substitution: true, profondeur: 0 }); i += 2; continue; }
+        i++; continue;
+      }
+      if (c === "/" && src[i + 1] === "/") { let f = src.indexOf("\n", i); if (f < 0) f = n; blanchir(i, f); i = f; continue; }
+      if (c === "/" && src[i + 1] === "*") { let f = src.indexOf("*/", i + 2); f = f < 0 ? n : f + 2; blanchir(i, f); i = f; continue; }
+      if (c === "'" || c === '"') { let j = i + 1; while (j < n && src[j] !== c && src[j] !== "\n") { if (src[j] === "\\") j++; j++; } i = j + 1; continue; }
+      if (c === "`") { pile.push({ gabarit: true }); i++; continue; }
+      if (c === "/" && precedeUneRegex121(sortie, i)) { let j = i + 1, classe = false; while (j < n && src[j] !== "\n") { const d = src[j]; if (d === "\\") { j += 2; continue; } if (d === "[") classe = true; else if (d === "]") classe = false; else if (d === "/" && !classe) break; j++; } i = j + 1; continue; }
+      if (cadre.substitution) {
+        if (c === "{") cadre.profondeur++;
+        else if (c === "}") { if (cadre.profondeur === 0) { pile.pop(); i++; continue; } cadre.profondeur--; }
+      }
+      code[i] = 1; i++;
+    }
+    const texte = sortie.join(""), paires = new Map(), ouvrantes = [];
+    let equilibre = true;
+    for (let k = 0; k < n; k++) {
+      if (!code[k]) continue;
+      if (src[k] === "{") ouvrantes.push(k);
+      else if (src[k] === "}") { const o = ouvrantes.pop(); if (o === undefined) { equilibre = false; break; } paires.set(o, k); }
+    }
+    if (ouvrantes.length) equilibre = false;
+    return { texte, code, paires: equilibre ? paires : null };
+  };
+  // La parenthèse fermante qui répond à l'ouvrante `i` (dans un texte déjà blanchi de ses chaînes et commentaires).
+  const fermante121 = (src, i) => { let d = 0; for (let k = i; k < src.length; k++) { if (src[k] === "(") d++; else if (src[k] === ")") { d--; if (d === 0) return k; } } return -1; };
+  const fonctionsNommees121 = (src, paires) => {
+    const out = [];
+    const corpsApres = (i) => {
+      let k = i;
+      if (src[k] === "(") { k = fermante121(src, k); if (k < 0) return null; k++; }
+      const reste = src.slice(k, k + 40).match(/^\s*(=>)?\s*\{/);
+      if (!reste) return null;
+      const o = k + reste[0].length - 1;
+      return paires.has(o) ? [o, paires.get(o)] : null;
+    };
+    for (const m of src.matchAll(/\b(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)\s*\(/g)) { const r = corpsApres(m.index + m[0].length - 1); if (r) out.push({ nom: m[1], debut: r[0], fin: r[1] }); }
+    for (const m of src.matchAll(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:function\b\s*\*?\s*[\w$]*\s*)?\(/g)) { const r = corpsApres(m.index + m[0].length - 1); if (r) out.push({ nom: m[1], debut: r[0], fin: r[1] }); }
+    for (const m of src.matchAll(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?[A-Za-z_$][\w$]*\s*=>\s*\{/g)) { const o = m.index + m[0].length - 1; if (paires.has(o)) out.push({ nom: m[1], debut: o, fin: paires.get(o) }); }
+    // Une flèche À CORPS D'EXPRESSION liée à un nom (`const f = (a) => apiSend(…)`) : sa portée va jusqu'à la fin de l'expression.
+    for (const m of src.matchAll(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>\s*(?![\s{])/g)) {
+      const debut = m.index + m[0].length; let d = 0, k = debut;
+      for (; k < src.length; k++) { const c = src[k]; if (c === "(" || c === "[" || c === "{") d++; else if (c === ")" || c === "]" || c === "}") { if (d === 0) break; d--; } else if ((c === ";" || c === "\n") && d === 0) break; }
+      out.push({ nom: m[1], debut: debut - 1, fin: k, expression: true });
+    }
+    const FLECHE = String.raw`(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>\s*\{`;
+    for (const m of src.matchAll(new RegExp(String.raw`\$\(\s*'([^']+)'\s*\)\s*\.\s*(on[a-z]+)\s*=\s*` + FLECHE, "g"))) { const o = m.index + m[0].length - 1; if (paires.has(o)) out.push({ nom: `$('${m[1]}').${m[2]}`, debut: o, fin: paires.get(o) }); }
+    for (const m of src.matchAll(new RegExp(String.raw`\$\(\s*'([^']+)'\s*\)\s*\.addEventListener\(\s*'([a-z]+)'\s*,\s*` + FLECHE, "g"))) { const o = m.index + m[0].length - 1; if (paires.has(o)) out.push({ nom: `$('${m[1]}').${m[2]}`, debut: o, fin: paires.get(o) }); }
+    return out;
+  };
+  const fonctionEnglobante121 = (fonctions, position) => { let meilleure = null; for (const f of fonctions) if (f.debut < position && position < f.fin && (!meilleure || f.debut > meilleure.debut)) meilleure = f; return meilleure ? meilleure.nom : "(module)"; };
+  // TOUTES les portées de fonction (nommées ou non) : un `try` qui entoure une flèche ne capte pas ce que la flèche fait plus tard.
+  const portees121 = (src, paires) => {
+    const out = [];
+    for (const m of src.matchAll(/(?:\([^()]*\)|\b[A-Za-z_$][\w$]*)\s*=>\s*\{/g)) { const o = m.index + m[0].length - 1; if (paires.has(o)) out.push({ debut: o, fin: paires.get(o), fleche: m.index }); }
+    for (const m of src.matchAll(/\bfunction\b\s*\*?\s*[\w$]*\s*\(/g)) { const k = fermante121(src, m.index + m[0].length - 1); if (k < 0) continue; const r = src.slice(k + 1, k + 40).match(/^\s*\{/); if (!r) continue; const o = k + 1 + r[0].length - 1; if (paires.has(o)) out.push({ debut: o, fin: paires.get(o), fleche: -1 }); }
+    for (const m of src.matchAll(/(?:^|[,{\s])(?:async\s+)?([A-Za-z_$][\w$]*)\s*\(([^()]*)\)\s*\{/g)) { if (/^(if|for|while|switch|catch|function|with)$/.test(m[1])) continue; const o = m.index + m[0].length - 1; if (paires.has(o)) out.push({ debut: o, fin: paires.get(o), fleche: -1 }); }
+    // Les flèches à corps d'EXPRESSION : leur portée va jusqu'à la fin de l'expression (virgule, parenthèse ou accolade fermante).
+    for (const m of src.matchAll(/(?:\([^()]*\)|\b[A-Za-z_$][\w$]*)\s*=>\s*(?![\s{])/g)) {
+      const debut = m.index + m[0].length; let d = 0, k = debut;
+      for (; k < src.length; k++) { const c = src[k]; if (c === "(" || c === "[" || c === "{") d++; else if (c === ")" || c === "]" || c === "}") { if (d === 0) break; d--; } else if ((c === "," || c === ";") && d === 0) break; }
+      out.push({ debut: debut - 1, fin: k, fleche: m.index, expression: true });
+    }
+    return out;
+  };
+  {
+    const piegeGabarit = "function f(v) { const lit = `\"${String(v).replace(/\"/g, '')}\"`; }\nfunction g() { try { h(); } catch (e) { x(e.message); } }\n";
+    const a = analyserLeSource121(piegeGabarit), noms = a.paires ? fonctionsNommees121(a.texte, a.paires).map((x) => x.nom).join(",") : "(illisible)";
+    instrument121(noms === "f,g" && analyserLeSource121("function x() { { }").paires === null, `le découpeur perd le fil sur un gabarit piégé (« ${noms} »)`);
+  }
+  const CORPUS121 = CORPUS_WEB.filter(([f]) => f.endsWith(".js") && f !== "i18n.js");
+  instrument121(CORPUS121.every(([, s]) => analyserLeSource121(s).paires !== null), "des modules ne se découpent pas (accolades non appariées)");
+
+  // ── (0bis) LE RECENSEMENT DES ÉCRITURES (`P10.23-t`), DÉRIVÉ DU CORPUS ──────────────────────────────────────────
+  // Un SITE est un appel à `apiSend(`, ou à un ÉCRIVAIN NOMMÉ — une fonction nommée qui REND un appel `apiSend(` à son
+  // appelant (instruction `return`, ou flèche à corps d'expression) sans le capter. Un site est CAPTÉ :
+  //   · `local` — dans un `try` suivi d'un `catch`, DANS la portée de fonction la plus intérieure qui le contient ;
+  //   · `chaîne` — suivi (au besoin à travers `Promise.resolve( … )`) d'un `.catch(` après zéro ou plusieurs `.then(` ;
+  //   · `commutateur` — dans la flèche d'une propriété `onToggle:` : le commutateur partagé (`enabledSwitch`,
+  //     web/producer_ui.js) l'attend dans un `try` et peint le refus (ce témoin relit ce `try` plus bas) ;
+  //   · `enveloppe` — dans une flèche passée à un appel ATTENDU (`await withBusy(b, async () => …)`), lui-même capté ;
+  //   · `rendu` — rendu à l'appelant par un écrivain nommé : ce sont alors les appels de l'écrivain qui sont jugés.
+  // Tout autre site est SANS CAPTURE : son refus part en promesse rejetée que personne ne traite.
+  const recenserLesEcritures121 = (corpus) => {
+    const lus = corpus.map(([f, source]) => { const a = analyserLeSource121(source); return { f, src: a.texte, paires: a.paires, trys: [], portees: [], noms: [] }; }).filter((x) => x.paires);
+    for (const x of lus) {
+      for (const m of x.src.matchAll(/\btry\s*\{/g)) { const o = m.index + m[0].length - 1, fin = x.paires.get(o); if (fin !== undefined && /^\s*catch\b/.test(x.src.slice(fin + 1, fin + 4000))) x.trys.push([o, fin]); }
+      x.portees = portees121(x.src, x.paires); x.noms = fonctionsNommees121(x.src, x.paires);
+    }
+    const interieure = (x, p) => { let best = null; for (const P of x.portees) if (P.debut < p && p < P.fin && (!best || P.debut > best.debut)) best = P; return best || { debut: -1, fin: x.src.length, fleche: -1 }; };
+    const nomme = (x, P) => x.noms.find((n) => n.debut === P.debut || (P.expression && n.expression && n.debut === P.debut)) || null;
+    const enChaine = (src, debutAppel, parenAppel) => {
+      let fin = fermante121(src, parenAppel); if (fin < 0) return false;
+      // À travers un `Promise.resolve( … )` qui enveloppe exactement l'appel.
+      let k = debutAppel - 1; while (k >= 0 && /\s/.test(src[k])) k--;
+      if (src[k] === "(" && /Promise\s*\.\s*resolve\s*$/.test(src.slice(Math.max(0, k - 20), k))) { const f2 = fermante121(src, k); if (f2 > fin) fin = f2; }
+      let reste = src.slice(fin + 1, fin + 4000);
+      for (let n = 0; n < 8; n++) {
+        const m = reste.match(/^\s*\.\s*(then|catch|finally)\s*\(/); if (!m) return false;
+        if (m[1] === "catch") return true;
+        const f3 = fermante121(reste, m[0].length - 1); if (f3 < 0) return false;
+        const args = reste.slice(m[0].length, f3);
+        if (m[1] === "then" && /,\s*(?:\(?\s*[A-Za-z_$][\w$]*\s*\)?\s*=>|[A-Za-z_$][\w$]*\s*\))/.test(args + ")")) return true;   // `.then(ok, ko)`
+        reste = reste.slice(f3 + 1);
+      }
+      return false;
+    };
+    const juger = (x, p, parenAppel, profondeur = 0) => {
+      const P = interieure(x, p);
+      if (x.trys.some(([o, fin]) => o > P.debut && o < p && p < fin)) return { capte: "local" };
+      if (enChaine(x.src, p, parenAppel)) return { capte: "chaîne" };
+      if (P.fleche >= 0 && /\bonToggle\s*:\s*(?:async\s*)?$/.test(x.src.slice(Math.max(0, P.fleche - 40), P.fleche))) return { capte: "commutateur" };
+      const debutInstr = Math.max(x.src.lastIndexOf(";", p), x.src.lastIndexOf("{", p), x.src.lastIndexOf("}", p), P.debut);
+      const rendu = P.expression ? true : /^\s*return\b/.test(x.src.slice(debutInstr + 1, p));
+      const n = nomme(x, P);
+      if (rendu && n) return { capte: "rendu", ecrivain: n.nom };
+      if (P.fleche >= 0 && profondeur < 2) {
+        let k = P.fleche - 1; while (k >= 0 && /\s/.test(x.src[k])) k--;
+        if (x.src.slice(Math.max(0, k - 4), k + 1) === "async") { k -= 5; while (k >= 0 && /\s/.test(x.src[k])) k--; }
+        if (x.src[k] === "," || x.src[k] === "(") {
+          let d = 0, q = k;
+          for (; q >= 0; q--) { const c = x.src[q]; if (c === ")") d++; else if (c === "(") { if (d === 0) break; d--; } }
+          const avant = x.src.slice(Math.max(0, q - 60), q);
+          const m = avant.match(/(\bawait\s+)?([A-Za-z_$][\w$.]*)\s*$/);
+          if (m && m[1]) { const r = juger(x, q - m[2].length, q, profondeur + 1); if (r.capte && r.capte !== "rendu") return { capte: "enveloppe" }; }
+        }
+      }
+      return { capte: null };
+    };
+    const sites = [], ecrivains = new Set();
+    for (const x of lus) for (const m of x.src.matchAll(/(?<![\w$.])apiSend\s*\(/g)) {
+      if (x.f === "core.js" && /async\s+function\s+$/.test(x.src.slice(Math.max(0, m.index - 20), m.index))) continue;   // la définition
+      const r = juger(x, m.index, m.index + m[0].length - 1);
+      if (r.capte === "rendu") ecrivains.add(r.ecrivain);
+      sites.push({ f: x.f, fonction: fonctionEnglobante121(x.noms.filter((n) => !n.expression || true), m.index), appel: "apiSend", capte: r.capte, ecrivain: r.ecrivain || "" });
+    }
+    for (const nom of ecrivains) {
+      const motif = new RegExp("(?<![\\w$.])" + nom.replace(/\$/g, "\\$") + "\\s*\\(", "g");
+      for (const x of lus) for (const m of x.src.matchAll(motif)) {
+        if (/\bfunction\s+$|\b(?:const|let|var)\s+$/.test(x.src.slice(Math.max(0, m.index - 12), m.index))) continue;   // sa définition
+        const r = juger(x, m.index, m.index + m[0].length - 1);
+        sites.push({ f: x.f, fonction: fonctionEnglobante121(x.noms, m.index), appel: nom, capte: r.capte === "rendu" ? null : r.capte, ecrivain: "" });
+      }
+    }
+    return { sites, ecrivains: [...ecrivains].sort() };
+  };
+  {
+    const positifs = [["t.js", "async function a() { await apiSend('/x'); }\n$('#b').onclick = async () => { await apiSend('/y', 'DELETE'); };\nfunction w() { return apiSend('/z'); }\nasync function c() { await w(); }\n"]];
+    const negatifs = [["t.js", "async function d() { try { await apiSend('/x'); } catch (e) { p(e); } }\nfunction e2() { apiSend('/x').then(r => r).catch(err => p(err)); }\nconst s2 = enabledSwitch({ onToggle: (n) => (f(), apiSend('/t', 'POST', { n })), onRefus: (e) => g(e) });\nfunction w2() { return apiSend('/z'); }\nasync function h2() { try { await w2(); } catch (e) { p(e); } }\nconst k2 = () => Promise.resolve(w2()).catch(p);\nasync function i2() { try { await withBusy(b, async () => { await apiSend('/q'); }); } catch (e) { p(e); } }\n// await apiSend('/commentaire');\n"]];
+    const sansCapture = (c) => recenserLesEcritures121(c).sites.filter((s) => !s.capte).map((s) => s.fonction).join(",");
+    const pos = sansCapture(positifs), neg = sansCapture(negatifs);
+    instrument121(pos === "a,$('#b').onclick,c" && neg === "",
+      `le recensement des écritures ne distingue plus une capture locale, une chaîne, le commutateur, une enveloppe attendue, un écrivain nommé et son appelant, ou un commentaire (« ${pos} » / « ${neg} »)`);
+  }
+  // LE COMMUTATEUR CAPTE CE QU'IL ATTEND — la prémisse de la capture `commutateur`, relue dans son source.
+  const COMMUTATEUR121 = ((CORPUS121.find(([f]) => f === "producer_ui.js") || [])[1]) || "";
+  instrument121(/try \{ await opts\.onToggle\(next\);[^\n]*\}\s*catch \(err\) \{/.test(COMMUTATEUR121) && /onToggle: model\.onToggle/.test(COMMUTATEUR121),
+    "le commutateur partagé n'attend plus `onToggle` dans un `try` suivi d'un `catch`, ou la ligne partagée ne le lui passe plus : la capture « commutateur » ne serait plus fondée");
+
+  // ── (0ter) CE QUE LE DÉMON SERT ──────────────────────────────────────────────────────────────────────────────
+  // Les causes qui disent une écriture non prise ET leur transaction annulée, sans `BEGIN` ni `COMMIT` : dérivées de l'arbre.
+  const CAUSES_DE_L_ECRITURE_NON_PRISE121 = [];
+  for (const rel of readdirSync(path.join(RACINE, "daemon", "src"), { recursive: true })) {
+    const r = String(rel);
+    if (!r.endsWith(".rs") || r.split(path.sep).includes("tests")) continue;
+    for (const m of lireLeDemon121(r).matchAll(/const (CAUSE_[A-Z0-9_]+): &str = "((?:[^"\\]|\\[\s\S])*)";/g)) {
+      const cause = valeurRust121(m[2]).trim();
+      if (/la transaction est annulée/.test(cause) && !/\b(?:BEGIN|COMMIT)\b/.test(cause)) CAUSES_DE_L_ECRITURE_NON_PRISE121.push({ fichier: r, nom: m[1], cause });
+    }
+  }
+  instrument121(CAUSES_DE_L_ECRITURE_NON_PRISE121.length >= 1, "aucune cause du démon ne dit une écriture non prise et sa transaction annulée : la troisième ouverture ne serait exercée par rien");
+  const DETECTION_RS121 = lireLeDemon121("handlers/detection.rs"), NOTIFIERS_RS121 = lireLeDemon121("handlers/notifiers.rs"), PLAYBOOKS_RS121 = lireLeDemon121("handlers/playbooks.rs"), DASH_RS121 = lireLeDemon121("handlers/dash_ergonomics.rs");
+  instrument121(/fn rule_test\([\s\S]{0,900}?Json\(json!\(\{ "error": "règle introuvable" \}\)\)/.test(DETECTION_RS121) && /fn notifier_test\([\s\S]{0,300}?Json\(json!\(\{ "error": "réservé à l'administrateur" \}\)\)/.test(NOTIFIERS_RS121)
+    && /fn playbook_test\([\s\S]{0,1500}?Json\(json!\(\{ "error": "playbook introuvable" \}\)\)/.test(PLAYBOOKS_RS121),
+    "les trois essais d'une ligne (`rule_test`, `notifier_test`, `playbook_test`) ne servent plus leurs refus en deux cents `{error}` : les refus joués ci-dessous ne seraient plus ceux du démon");
+  instrument121(/panels_out\.push\(json!\(\{ "title": title, "viz": viz, "error": e \}\)\)/.test(DASH_RS121),
+    "`capture_dashboard_data` ne range plus la cause d'un panneau non capturé sous `error` : l'aperçu joué ci-dessous ne serait plus celui d'un instantané servi");
+
+  // ── LE SIMULACRE ─────────────────────────────────────────────────────────────────────────────────────────────
+  const fetchOrigine121 = globalThis.fetch, minuterieOrigine121 = globalThis.setTimeout, qsOrigine121 = document.querySelector;
+  const etatOrigine121 = [FR121.S, EN121.S].map((S) => ({ S, admin: S.isAdmin, auth: S.AUTH, vues: S.viewList, evState: S.evState, vol: S.exploreInflight, cartes: S.panelCards, tenants: S.MY_TENANTS }));
+  const qs121 = (sel) => qsOrigine121.call(document, sel);
+  let servis121 = {};
+  const appels121 = [];
+  const reponse121 = (statut, texte) => ({ ok: statut >= 200 && statut < 300, status: statut, headers: { get: () => null }, text: async () => texte, json: async () => JSON.parse(texte), clone: () => reponse121(statut, texte) });
+  const simulacre121 = async (u, init) => {
+    const k = ((init && init.method) || "GET").toUpperCase() + " " + String(u).split("?")[0];
+    let corpsEnvoye = null; try { corpsEnvoye = init && init.body ? JSON.parse(init.body) : null; } catch (e) { corpsEnvoye = null; }
+    const appel = { k, statut: 0, corps: corpsEnvoye }; appels121.push(appel);
+    let r = Object.prototype.hasOwnProperty.call(servis121, k) ? servis121[k] : servis121["*"];
+    if (typeof r === "function") r = await r(corpsEnvoye);
+    const texte = !r ? "{}" : typeof r.corps === "string" ? r.corps : JSON.stringify(r.corps === undefined ? {} : r.corps);
+    appel.statut = (r && r.statut) || 200;
+    return reponse121(appel.statut, texte);
+  };
+  const compter121 = (k) => appels121.filter((a) => a.k === k).length;
+  const RESEAU_COUPE121 = () => { throw new TypeError("Failed to fetch"); };
+  const PAGE_DE_PASSERELLE121 = "<html><body>502 Bad Gateway — nginx</body></html>";
+  const noeudsDAvis121 = () => { const h = qs121("#toasts"); return h ? [...h.children] : []; };
+  const avisDepuis121 = (avant) => noeudsDAvis121().filter((t) => !avant.has(t)).map((t) => nu121(t));
+  const fenetre121 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !c.classList.contains("out")).pop() || null;
+  const formulaireDeLaFenetre121 = () => { const ov = fenetre121(); return ov && ov.children[0] ? ov.children[0].children[0] || null : null; };
+  const fermerLesFenetres121 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
+  const valeursParDefaut121 = (form) => {
+    for (const champ of cueillir121(form, (e) => typeof e.getAttribute === "function" && e.getAttribute("data-n") !== null)) {
+      if (champ.value) continue;
+      if (champ.tagName === "TEXTAREA") champ.value = champ.textContent;
+      else if (champ.tagName === "SELECT") { const opt = cueillir121(champ, (o) => o.tagName === "OPTION" && o.getAttribute("selected") !== null)[0] || cueillir121(champ, (o) => o.tagName === "OPTION")[0]; if (opt) champ.value = opt.getAttribute("value") ?? nu121(opt); }
+      else if (champ.getAttribute("value") !== null) champ.value = champ.getAttribute("value");
+    }
+  };
+  // Accepte les fenêtres qu'un geste ouvre l'une après l'autre, en posant les valeurs des champs `data-n` (et le mot de passe
+  // d'un enrôlement) ; une fenêtre restée ouverte après trois acceptations est annulée.
+  const accepterLesFenetres121 = async (valeurs = {}, n = 3) => {
+    for (let i = 0; i < n; i++) {
+      await laisser121();
+      const form = formulaireDeLaFenetre121();
+      if (!form || typeof form.onsubmit !== "function") return;
+      valeursParDefaut121(form);
+      for (const [cle, v] of Object.entries(valeurs)) { const champ = cueillir121(form, (e) => typeof e.getAttribute === "function" && e.getAttribute("data-n") === cle)[0]; if (champ) champ.value = v; }
+      const mdp = cueillir121(form, (e) => e.tagName === "INPUT" && e.type === "password")[0]; if (mdp && !mdp.value) mdp.value = "motdepasse-121";
+      await Promise.resolve(form.onsubmit({ preventDefault() {} }));
+    }
+    await laisser121();
+    const restee = formulaireDeLaFenetre121();
+    const annuler = restee ? cueillir121(restee, (e) => e.tagName === "BUTTON" && e.classList && e.classList.contains("m-cancel"))[0] : null;
+    if (annuler && typeof annuler.onclick === "function") annuler.onclick();
+  };
+  // Une promesse rejetée que personne ne traite est inscrite comme le rejet du geste en cours, jamais tue.
+  const rejetsNonTraites121 = [];
+  const surRejetNonTraite121 = (raison) => { rejetsNonTraites121.push(String((raison && raison.message) || raison).slice(0, 160)); };
+  const jouer121 = async (L, { geste, route, reponse, lectures = {}, valeurs = {}, preparer }) => {
+    fermerLesFenetres121(); rejetsNonTraites121.length = 0;
+    servis121 = { "*": { corps: {} }, ...lectures, ...(route ? { [route]: reponse } : {}) };
+    if (preparer) await preparer(L);
+    appels121.length = 0;
+    const avant = new Set(noeudsDAvis121());
+    let rejet = "";
+    const g = Promise.resolve().then(() => geste(L));
+    g.catch((e) => { rejet = String((e && e.message) || e).slice(0, 160); });
+    await accepterLesFenetres121(valeurs);
+    await Promise.race([g.catch(() => {}), laisser121(150)]);
+    await laisser121(40);
+    if (!rejet && rejetsNonTraites121.length) rejet = "(promesse rejetée non traitée) " + rejetsNonTraites121.join(" | ");
+    const r = { avis: avisDepuis121(avant), rejet, appels: route ? compter121(route) : 0 };
+    fermerLesFenetres121();
+    return r;
+  };
+  // Un refus RÉEL d'`apiSend`, bâti par le point commun de la langue jouée sur la réponse servie.
+  const refusDe121 = async (L, reponse) => { servis121 = { "POST /api/refus-121": reponse }; try { await L.noyau.apiSend("/refus-121", "POST", {}); return null; } catch (e) { return e; } };
+  const puitsNomme121 = (parent, nom) => (parent ? (parent.children || []).find((n) => n.getAttribute && n.getAttribute("data-puits-du-refus-d-un-geste") === nom) || null : null);
+  const puitsAvant121 = (sel, nom) => () => { const liste = qs121(sel); return liste ? puitsNomme121(liste.parentNode, nom) : null; };
+  const viderLePuits121 = (p) => { if (p) { p.hidden = true; p.replaceChildren(); delete p.dataset.refusDUnGeste; delete p.dataset.refusDUnEssai; } };
+  const faceGeste121 = (L, n) => appeler121(L.noyau, "motDuRefusDUnGeste", n), faceEssai121 = (L, n) => appeler121(L.noyau, "motDuRefusDUnEssai", n), faceLecture121 = (L, n) => appeler121(L.noyau, "motDuRefusDUneLecture", n);
+  const CAUSE121 = "REFUS-121 : le démon a refusé ce que la console lui demandait, et le dit ENTIER — rien n'est écrit, rien n'est lu.";
+  const REFUS121 = { statut: 403, corps: { error: CAUSE121 } };
+
+  const SQL121 = qs121("#sql"), sqlOrigine121 = SQL121 ? SQL121.value : "";
+  const vue121 = qs121("#view"), vueOrigine121 = vue121 ? vue121.value : "";
+  const corpsDesIntegrations121 = new Element("div");
+  globalThis.fetch = simulacre121;
+  globalThis.setTimeout = (fn, ms) => (ms >= 1000 ? 0 : minuterieOrigine121(fn, ms >= 100 ? 0 : ms));
+  document.querySelector = (sel) => (sel === "#integrations .body" ? corpsDesIntegrations121 : qs121(sel));
+  for (const L of [FR121, EN121]) { L.S.isAdmin = true; L.S.AUTH = { user: "hugo", role: "admin", auth_method: "cookie" }; L.S.viewList = []; }
+  process.on("unhandledRejection", surRejetNonTraite121);
+  try {
+
+    // ══ (23t) `P10.23-t` — AUCUN APPEL `apiSend` SANS CAPTURE ; LES HUIT D'AVANT, JOUÉS ═══════════════════════════════
+    const ecartsT121 = [];
+    // (t0) LE RECENSEMENT, ET L'ENSEMBLE NOMMÉ DES RESTES — VIDE, jugé dans les deux sens.
+    const RESTES_DES_ECRITURES_SANS_CAPTURE121 = {};
+    const recensement121 = recenserLesEcritures121(CORPUS121);
+    const sansCapture121 = {}, parCapture121 = {};
+    for (const s of recensement121.sites) {
+      parCapture121[s.capte || "sans capture"] = (parCapture121[s.capte || "sans capture"] || 0) + 1;
+      if (!s.capte) { const k = `${s.f} › ${s.fonction}`; sansCapture121[k] = (sansCapture121[k] || 0) + 1; }
+    }
+    const neufsT121 = Object.entries(sansCapture121).filter(([k, n]) => (RESTES_DES_ECRITURES_SANS_CAPTURE121[k] || 0) < n).map(([k, n]) => `${k} ×${n}`);
+    const payesT121 = Object.entries(RESTES_DES_ECRITURES_SANS_CAPTURE121).filter(([k, n]) => (sansCapture121[k] || 0) < n).map(([k]) => k);
+    if (neufsT121.length) ecartsT121.push(`appel(s) d'écriture SANS capture, hors de l'ensemble nommé (le refus part en promesse rejetée non traitée) : ${JSON.stringify(neufsT121)}`);
+    if (payesT121.length) ecartsT121.push(`un reste nommé ne désigne plus rien : ${JSON.stringify(payesT121)}`);
+    instrument121(recensement121.sites.length >= 100 && (parCapture121.commutateur || 0) >= 5 && recensement121.ecrivains.length >= 1,
+      `le recensement ne voit plus le corpus (${recensement121.sites.length} site(s), ${parCapture121.commutateur || 0} par le commutateur, écrivains ${JSON.stringify(recensement121.ecrivains)})`);
+    console.log(`[121t0] appels d'écriture : ${recensement121.sites.length} — ${JSON.stringify(parCapture121)} ; écrivains nommés ${JSON.stringify(recensement121.ecrivains)} ; sans capture : ${JSON.stringify(sansCapture121)}`);
+    // (t1) LES SURFACES, JOUÉES DANS LES DEUX LANGUES : un refus NOMMÉ, une demande qui n'aboutit pas, puis le geste accepté.
+    const PUITS_DES_TABLEAUX121 = () => { const g = qs121("#dashview"); return g ? puitsNomme121(g.parentNode, "tableaux_de_bord") : null; };
+    const hoteDesTuiles121 = new Element("div");
+    const tuile121 = (L) => { hoteDesTuiles121.replaceChildren(); const t = L.tableaux.renderDashboard({ id: 61, name: "d121", panels: 0, editable: true, cols: 2, visibility: "private" }); hoteDesTuiles121.appendChild(t); return t; };
+    const boutonParTitre121 = (hote, titre) => cueillir121(hote, (e) => e.tagName === "BUTTON" && e.title === titre)[0] || null;
+    const cliquer121 = async (bouton, quoi) => { if (!bouton || typeof bouton.onclick !== "function") throw new Error(`(${quoi} absent)`); return bouton.onclick({ preventDefault() {}, stopPropagation() {} }); };
+    const grille121 = new Element("div");
+    // Le geste « + Vue » vit dans l'écouteur que `initDashboards` pose sur `#view-new` (une flèche anonyme, dans la portée qui
+    // la contient) : chaque instance du module l'a posé sur le MÊME nœud de la page. Il est donc câblé ici sur un bouton
+    // NEUF — le temps de l'appel, tout autre sélecteur rend un nœud jetable —, puis ce bouton seul est cliqué.
+    const creerUneVueParSonBouton121 = async (L) => {
+      const bouton = new Element("button"), jetables = new Map();
+      const qsAvant = document.querySelector;
+      document.querySelector = (sel) => { if (sel === "#view-new") return bouton; if (!jetables.has(sel)) jetables.set(sel, new Element("div")); return jetables.get(sel); };
+      try { L.tableaux.initDashboards(); } finally { document.querySelector = qsAvant; }
+      // Cliqué AUSSITÔT : la fenêtre du geste doit être ouverte quand le banc vient l'accepter.
+      bouton.dispatchEvent(new Evenement("click", { bubbles: false }));
+    };
+    const PANNEAU121 = { id: 71, title: "P121", query: "search x | stats count by a", is_soql: true, viz: "bar", position: 0, window_s: 0, visibility: "private", query_private: false, cols: 1, height: 0, drill: "", library_panel_id: null };
+    const GESTES_T121 = [
+      { site: "retrait d'un tableau de bord", route: "DELETE /api/dashboard/61", puits: PUITS_DES_TABLEAUX121, geste: (L) => cliquer121(boutonParTitre121(tuile121(L), "Supprimer le dashboard"), "✕ du tableau de bord") },
+      { site: "retrait d'un panneau", route: "DELETE /api/panels/71", puits: PUITS_DES_TABLEAUX121, lectures: { "GET /api/dashboard/62": { corps: { id: 62, name: "SOC", owner: "hugo", visibility: "shared", view_id: null, editable: true, panels: [PANNEAU121] } } },
+        preparer: async (L) => { grille121.replaceChildren(); L.S.panelCards = []; await L.tableaux.loadPanelsInto(grille121, { id: 62 }); await laisser121(10); },
+        geste: (L) => cliquer121(boutonParTitre121(grille121, "Supprimer le panneau"), "✕ du panneau") },
+      { site: "création d'un tableau de bord", route: "POST /api/dashboards", puits: PUITS_DES_TABLEAUX121, valeurs: { name: "d121-neuf" }, lectures: { "GET /api/dashboards": { corps: { dashboards: [] } } },
+        preparer: () => { if (vue121) vue121.value = ""; }, geste: (L) => L.tableaux.addDashboardFlow() },
+      { site: "rattachement d'un tableau de bord", route: "POST /api/dashboard/63", puits: PUITS_DES_TABLEAUX121, valeurs: { existing: "63" },
+        lectures: { "GET /api/dashboards": { corps: { dashboards: [{ id: 63, name: "d121-ailleurs", editable: true, view_id: null }] } } },
+        preparer: () => { if (vue121) vue121.value = "3"; }, geste: (L) => L.tableaux.addDashboardFlow() },
+      { site: "création d'une vue", route: "POST /api/views", puits: PUITS_DES_TABLEAUX121, valeurs: { name: "v121" }, preparer: (L) => { L.S.viewList = []; }, geste: (L) => creerUneVueParSonBouton121(L) },
+    ];
+    const mesureT121 = [];
+    for (const L of [FR121, EN121]) {
+      for (const g of GESTES_T121) {
+        viderLePuits121(g.puits());
+        const refus = await jouer121(L, { ...g, reponse: REFUS121 });
+        const p = g.puits();
+        if (L === FR121) mesureT121.push(`${g.site} : ${refus.appels} envoi(s), puits « ${p && p.getAttribute("data-refus-d-un-geste")} » ; avis ${JSON.stringify(refus.avis.map((a) => a.slice(0, 70)))}${refus.rejet ? ` ; rejet « ${refus.rejet.slice(0, 90)} »` : ""}`);
+        if (refus.appels !== 1 || !p || p.hidden || p.getAttribute("data-refus-d-un-geste") !== "refus_nomme" || nu121(p) !== serre121(faceGeste121(L, "refus_nomme") + " « " + CAUSE121 + " »") || refus.avis.length || refus.rejet)
+          ecartsT121.push(`${L.nom}/${g.site} (refus nommé) : ${refus.appels} envoi(s), puits « ${p && p.getAttribute("data-refus-d-un-geste")} » « ${nu121(p).slice(0, 110)} », avis ${JSON.stringify(refus.avis)}, rejet « ${refus.rejet} »`);
+        const coupe = await jouer121(L, { ...g, reponse: RESEAU_COUPE121 });
+        const p2 = g.puits();
+        if (!p2 || p2.getAttribute("data-refus-d-un-geste") !== "demande_non_aboutie" || coupe.rejet) ecartsT121.push(`${L.nom}/${g.site} (demande non aboutie) : puits « ${p2 && p2.getAttribute("data-refus-d-un-geste")} », rejet « ${coupe.rejet} »`);
+        const pris = await jouer121(L, { ...g, reponse: { statut: 200, corps: { ok: true, id: 900 } } });
+        const p3 = g.puits();
+        if (!p3 || !p3.hidden || p3.getAttribute("data-refus-d-un-geste") !== null || pris.rejet) ecartsT121.push(`${L.nom}/${g.site} (accepté) : le refus d'avant reste peint, ou le geste jette (« ${pris.rejet} »)`);
+      }
+    }
+    // LES TROIS ESSAIS D'UNE LIGNE, PAR LEUR BOUTON : la face nommée d'un essai, dans le puits de leur liste ; la ligne reprend
+    // ce qu'elle disait ; le `{error}` servi en deux cents et le corps sans résultat se disent aussi ; un essai réussi efface.
+    const REGLE121 = { id: 11, name: "r121", query: "search x", is_soql: true, op: ">", threshold: 0, window_s: 3600, severity: 2, enabled: true, managed: 2, last_value: null, last_fired: null, mitre: "", risk_score: 0 };
+    const CANAL121 = { id: 6, name: "c121", kind: "ntfy", url: "https://ntfy.example/t", min_severity: 2, enabled: true, has_auth: false };
+    const PLAYBOOK121 = { id: 7, name: "pb121", query: "search x", action_kind: "ban_ip", enabled: true, managed: 2, interval_s: 300, window_s: 600 };
+    const ESSAIS_T121 = [
+      { site: "essai d'une règle", route: "POST /api/rules/11/test", liste: "#rule-list", puits: "regles", ligne: (L) => L.detection.ruleRow(REGLE121), meta: (row) => row.metaEl, succes: { corps: { value: 3, fired: true, sql: "select 3" } }, attendu: { fr: "test : 3 -> déclenche", en: "test: 3 -> fires" }, refusServi: "règle introuvable" },
+      { site: "essai d'un canal", route: "POST /api/notifiers/6/test", liste: "#notif-list", puits: "canaux", ligne: (L) => L.detection.notifRow(CANAL121), meta: (row) => cueillir121(row, (e) => e.classList && e.classList.contains("rulemeta"))[0], succes: { corps: { ok: true } }, attendu: { fr: "envoyé", en: "envoyé" }, refusServi: "réservé à l'administrateur" },
+      { site: "essai d'un playbook", route: "POST /api/playbooks/7/test", liste: "#pb-list", puits: "playbooks", ligne: (L) => L.detection.pbRow(PLAYBOOK121, "observe"), meta: (row) => row.metaEl, succes: { corps: { action_kind: "ban_ip", targets: ["203.0.113.9"], valides: 1 } }, attendu: { fr: "1 cible(s) : 203.0.113.9", en: "1 target(s): 203.0.113.9" }, refusServi: "playbook introuvable" },
+    ];
+    for (const L of [FR121, EN121]) {
+      for (const s of ESSAIS_T121) {
+        const puits = puitsAvant121(s.liste, s.puits);
+        const jouerLEssai = async (reponse, garderLeRefusDAvant = false) => {
+          if (!garderLeRefusDAvant) viderLePuits121(puits());
+          const row = s.ligne(L), meta = s.meta(row), avantMeta = nu121(meta);
+          const bouton = cueillir121(row, (e) => e.tagName === "BUTTON" && nu121(e) === "Tester")[0];
+          const r = await jouer121(L, { route: s.route, reponse, geste: () => cliquer121(bouton, "bouton « Tester »") });
+          const p = puits();
+          return { ...r, p, nature: p && !p.hidden ? p.getAttribute("data-refus-d-un-essai") : null, texte: nu121(p), meta: nu121(meta), avantMeta, geste: p && p.getAttribute("data-refus-d-un-geste") };
+        };
+        const cas = [
+          ["403 en texte", { statut: 403, corps: "lecture seule (rôle viewer)" }, "essai_refuse", serre121(faceEssai121(L, "essai_refuse") + " « lecture seule (rôle viewer) »")],
+          ["deux cents {error}", { statut: 200, corps: { error: s.refusServi } }, "essai_refuse", serre121(faceEssai121(L, "essai_refuse") + " « " + s.refusServi + " »")],
+          ["corps vide", { statut: 200, corps: "" }, "essai_sans_resultat", serre121(faceEssai121(L, "essai_sans_resultat"))],
+          ["demande non aboutie", RESEAU_COUPE121, "essai_non_abouti", null],
+        ];
+        for (const [quoi, reponse, nature, texte] of cas) {
+          const r = await jouerLEssai(reponse);
+          if (L === FR121 && quoi === "403 en texte") mesureT121.push(`${s.site} (${quoi}) : puits « ${r.nature} », ligne « ${r.meta.slice(0, 40)} »${r.rejet ? ` ; rejet « ${r.rejet.slice(0, 80)} »` : ""}`);
+          if (r.appels !== 1 || r.nature !== nature || (texte && r.texte !== texte) || r.geste || r.avis.length || r.rejet || r.meta !== r.avantMeta || /vérifier son effet|check its effect/.test(r.texte))
+            ecartsT121.push(`${L.nom}/${s.site} (${quoi}) : puits « ${r.nature} » « ${r.texte.slice(0, 120)} », ligne « ${r.meta} » (avant « ${r.avantMeta} »), avis ${JSON.stringify(r.avis)}, rejet « ${r.rejet} »`);
+        }
+        // L'essai réussi suit un refus resté peint : il l'efface (le refus d'avant ne décrit plus la ligne).
+        const ok = await jouerLEssai(s.succes, true);
+        if (ok.nature !== null || !ok.p || !ok.p.hidden || ok.meta !== (L === EN121 ? s.attendu.en : s.attendu.fr) || ok.rejet) ecartsT121.push(`${L.nom}/${s.site} (réussi, après un refus) : puits « ${ok.nature} », ligne « ${ok.meta} », rejet « ${ok.rejet} »`);
+      }
+    }
+    for (const p of [PUITS_DES_TABLEAUX121(), ...ESSAIS_T121.map((s) => puitsAvant121(s.liste, s.puits)())]) viderLePuits121(p);
+    if (vue121) vue121.value = vueOrigine121;
+    console.log(`[121t1] les écritures qui n'avaient aucune capture : ${mesureT121.join(" | ")}`);
+    exiger(ecartsT121.length === 0, `(121t) UN APPEL D'ÉCRITURE LAISSE SON REFUS SANS AVIS (recensement dérivé, ensemble nommé des restes VIDE jugé dans les deux sens ; chaque geste d'avant joué dans les deux langues : la forme partagée dans le puits de sa surface, la demande non aboutie « NON confirmée », sans avis ni rejet, un geste accepté efface ; les trois essais d'une ligne par la face nommée d'un essai, la ligne rendue) : ${JSON.stringify(ecartsT121)}`);
+
+    // ══ (23q) `P10.23-q` — LE CADRE D'UN REFUS SUIT LA NATURE DE LA RÉPONSE ═══════════════════════════════════════════
+    const ecartsQ121 = [];
+    // (q0) LE RECENSEMENT DES CADRES : toute face `fr:` qui encadre une réponse du démon (« Le démon a répondu — », « Il a
+    // répondu — », « le démon a refusé ce geste », « REFUSÉ par le démon » ou « par le serveur », « NON ENREGISTRÉ : le démon
+    // a refusé »), par module. Chaque module qui en porte est JOUÉ
+    // ci-dessous, ou nommé avec la raison qui le tient ailleurs — ensemble jugé dans les deux sens.
+    const CADRE_D_UNE_REPONSE_DU_DEMON121 = /(?:[Ll]e démon|\bIl) a (?:répondu|refusé ce geste|refusé la suivante)|(?:REFUSÉE?|refusée?) par le (?:démon|serveur)|NON ENREGISTRÉ : le démon a refusé/;
+    const cadresLus121 = {};
+    for (const [f, source] of CORPUS121) {
+      const texte = analyserLeSource121(source).texte;
+      for (const m of texte.matchAll(/\bfr:\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/g)) if (CADRE_D_UNE_REPONSE_DU_DEMON121.test(m[1])) cadresLus121[f] = (cadresLus121[f] || 0) + 1;
+    }
+    const MODULES_DES_CADRES_JOUES121 = ["alerts.js", "cases.js", "core.js", "dashboards.js", "detection_admin.js", "idp.js", "multitenant.js"];
+    // Le reste nommé, et la raison, TENUE : l'écran de connexion tient sa propre requête et nomme la réponse hors démon AVANT
+    // toute cause (`doLoginMfa`, jugé par le témoin 109) ; ses cadres ne sont donc atteints que par une cause du démon.
+    const RESTES_DES_CADRES121 = { "login.js": "la connexion nomme la réponse hors démon avant toute cause ; ses autres cadres ne sont choisis que sur une cause NOMMÉE de l'annuaire (témoins 109, 114)" };
+    const connexionSource121 = ((CORPUS121.find(([f]) => f === "login.js") || [])[1]) || "";
+    if (!/const horsDemon = natureDeLaReponseHorsDemon\(r\.status, corps\);\s*if \(horsDemon\) return \{[^}]*horsDemon \};\s*if \(cause\)/.test(connexionSource121)) ecartsQ121.push("la raison du reste nommé `login.js` ne tient plus : la connexion ne nomme plus la réponse hors démon avant sa cause");
+    const nommes121 = [...MODULES_DES_CADRES_JOUES121, ...Object.keys(RESTES_DES_CADRES121)];
+    const cadresNonJoues121 = Object.keys(cadresLus121).filter((f) => !nommes121.includes(f)), nommesSansCadre121 = nommes121.filter((f) => !cadresLus121[f]);
+    if (cadresNonJoues121.length || nommesSansCadre121.length) ecartsQ121.push(`modules à cadres de refus : non joués ni nommés ${JSON.stringify(cadresNonJoues121)}, nommés sans cadre ${JSON.stringify(nommesSansCadre121)}`);
+    console.log(`[121q0] faces qui encadrent une réponse du démon, par module : ${JSON.stringify(cadresLus121)}`);
+    // (q1) LES PHRASES, SUR TROIS RÉPONSES RÉELLES D'`apiSend` : une page de passerelle, une demande qui n'aboutit pas (la
+    // phrase partagée, et RIEN du cadre), un refus NOMMÉ du démon (le cadre, et sa cause entière).
+    const CAUSE_Q121 = "CAUSE-Q121 : le démon a refusé, et le dit.";
+    const CADRE_INTERDIT121 = /REFUS(?:É|ED)|[Ll]e démon a répondu|The daemon answered|\bIl a répondu|\bIt answered|REFUSÉ par le démon/;
+    const avisDe121 = async (faire) => { const avant = new Set(noeudsDAvis121()); await faire(); await laisser121(10); return avisDepuis121(avant).join(" ‖ "); };
+    const PHRASES_Q121 = [
+      ["ouverture d'un dossier", (L, e) => L.dossiers.phraseDuRefusDeDossier("ouvrir", e)],
+      ["lien entre dossiers", (L, e) => L.dossiers.phraseDuRefusDeDossier("lier", e)],
+      ["retrait d'un lien", (L, e) => L.dossiers.phraseDuRefusDeDossier("delier", e)],
+      ["rattachement d'un élément", (L, e) => L.dossiers.phraseDuRattachementRefuse(e, false)],
+      ["déclaration d'un incident", (L, e) => L.dossiers.phraseDuRefusDIncident("declarer", e)],
+      ["rétrogradation d'un incident", (L, e) => L.dossiers.phraseDuRefusDIncident("retrograder", e)],
+      ["attache d'un runbook", (L, e) => L.dossiers.phraseDuRefusDIncident("attacher", e)],
+      ["création d'une riposte (avis)", (L, e) => L.noyau.phraseDeLaCreationDeRiposteRefusee(e)],
+      ["création d'une riposte (aveu)", (L, e) => nu121(L.noyau.aveuDeLaCreationDeRiposte(e))],
+      ["approbation d'une riposte", (L, e) => avisDe121(() => { L.detection.noterLeRefusDeRiposte(9121, "approuver", e); L.detection.direLeRefusQueAucuneLigneNaPris(9121); })],
+      ["annulation d'une riposte", (L, e) => avisDe121(() => { L.detection.noterLeRefusDeRiposte(9122, "annuler", e); L.detection.direLeRefusQueAucuneLigneNaPris(9122); })],
+      ["geste d'un tenant", (L, e) => L.tenants.phraseDuGesteRefuse(e)],
+      ["destruction d'un tenant", (L, e) => avisDe121(() => L.tenants.direLaDestructionRefusee(e))],
+      ["tableau de bord non enregistré (avis)", (L, e) => L.tableaux.phraseDuRefusDEcriture("tableau_de_bord_non_enregistre", e)],
+      ["panneau non enregistré (aveu)", (L, e) => nu121(L.tableaux.aveuDeRefusDEcriture("panneau_non_enregistre", e))],
+      ["tableau de bord non enregistré (tuile)", (L, e) => { const t = new Element("section"); t.appendChild(new Element("div")); L.tableaux.avouerLeRefusDuTableauDeBord(t, e); return nu121(parDonnee121(t, "data-refus-de-tableau-de-bord")[0]); }],
+      ["suppression d'une vue", (L, e) => L.tableaux.motDuRefusServeurDeVue("suppression", e)],
+      ["renommage d'une vue", (L, e) => L.tableaux.motDuRefusServeurDeVue("renommage", e)],
+    ];
+    const mesureQ121 = [];
+    for (const L of [FR121, EN121]) {
+      const passerelle = await refusDe121(L, { statut: 502, corps: PAGE_DE_PASSERELLE121 }), coupe = await refusDe121(L, RESEAU_COUPE121), demon = await refusDe121(L, { statut: 409, corps: { error: CAUSE_Q121 } });
+      instrument121(passerelle && passerelle.reponseHorsDemon && coupe && coupe.statutDuRefus === undefined && demon && demon.causeDuDemon === CAUSE_Q121, `${L.nom} : les trois refus réels d'\`apiSend\` ne sont plus ceux qu'on croit jouer`);
+      for (const [nom, phrase] of PHRASES_Q121) {
+        for (const [quoi, e] of [["passerelle", passerelle], ["demande non aboutie", coupe]]) {
+          const attendu = appeler121(L.noyau, "phraseDUneReponseQuiNeVientPasDuDemon", e);
+          let lu = ""; try { lu = serre121(await phrase(L, e)); } catch (x) { lu = `(jette : ${x && x.message})`; }
+          if (L === FR121 && quoi === "passerelle") mesureQ121.push(`${nom} : « ${lu.slice(0, 90)} »`);
+          if (!attendu || typeof attendu !== "string" || lu !== serre121(attendu) || CADRE_INTERDIT121.test(lu)) ecartsQ121.push(`${L.nom}/${nom} (${quoi}) : « ${lu.slice(0, 200)} » — attendu la phrase de la réponse hors démon, sans cadre`);
+        }
+        let luDemon = ""; try { luDemon = serre121(await phrase(L, demon)); } catch (x) { luDemon = `(jette : ${x && x.message})`; }
+        if (!luDemon.includes(CAUSE_Q121) || appeler121(L.noyau, "phraseDUneReponseQuiNeVientPasDuDemon", demon) !== "") ecartsQ121.push(`${L.nom}/${nom} (refus du démon) : le cadre ne porte plus la cause entière : « ${luDemon.slice(0, 200)} »`);
+      }
+      // Le dossier NEUF, élément non confirmé : le dossier est dit existant, l'élément ni refusé ni rattaché.
+      const neuf = serre121(appeler121(L.dossiers, "phraseDuRattachementRefuse", passerelle, true));
+      const teteNeuf = serre121(appeler121(L.dossiers, "motDuRefusDeDossier", "element_non_confirme_dossier_neuf"));
+      if (!neuf.startsWith(teteNeuf) || /absente\)|jette/.test(teteNeuf) || !neuf.includes(serre121(appeler121(L.noyau, "phraseDUneReponseQuiNeVientPasDuDemon", passerelle))) || /PAS RATTACHÉ|NOT ATTACHED to it/.test(neuf))
+        ecartsQ121.push(`${L.nom}/rattachement à un dossier neuf (passerelle) : « ${neuf.slice(0, 200)} »`);
+      // Un objet FABRIQUÉ par une surface depuis un deux cents `{error}` (cause sans statut) reste une réponse du démon.
+      if (appeler121(L.noyau, "cadreDUneReponseQuiNeVientPasDuDemon", { causeDuDemon: CAUSE_Q121 }) !== null) ecartsQ121.push(`${L.nom} : un refus fabriqué depuis un deux cents \`{error}\` est pris pour une demande non aboutie`);
+    }
+    // (q2) L'ACQUITTEMENT : global, et interrompu — la boucle garde ce que la console a compté elle-même.
+    for (const L of [FR121, EN121]) {
+      for (const [quoi, reponse] of [["passerelle", { statut: 502, corps: PAGE_DE_PASSERELLE121 }], ["demande non aboutie", RESEAU_COUPE121]]) {
+        const e = await refusDe121(L, reponse), partagee = serre121(appeler121(L.noyau, "phraseDUneReponseQuiNeVientPasDuDemon", e));
+        const global = await jouer121(L, { route: "POST /api/alerts/ack-all", reponse, geste: (M) => M.alertes.acquitter({ phrase: "q121 ?", toutes: true }) });
+        if (global.avis.length !== 1 || serre121(global.avis[0]) !== partagee) ecartsQ121.push(`${L.nom}/acquittement global (${quoi}) : ${JSON.stringify(global.avis)}`);
+        const interrompu = await jouer121(L, { lectures: { "POST /api/alerts/1/ack": { statut: 204, corps: "" }, "POST /api/alerts/2/ack": reponse }, geste: (M) => M.alertes.acquitter({ phrase: "q121 ?", ids: [1, 2] }) });
+        const tete = serre121(appeler121(L.alertes, "motDeLAcquittement", "acquittement_interrompu_hors_du_demon", { n: 1, total: 2 }));
+        if (interrompu.avis.length !== 1 || serre121(interrompu.avis[0]) !== serre121(tete + " « " + partagee + " »") || CADRE_INTERDIT121.test(tete)) ecartsQ121.push(`${L.nom}/acquittement interrompu (${quoi}) : ${JSON.stringify(interrompu.avis)}`);
+      }
+    }
+    // (q3) LES TROIS GESTES DU SECOND FACTEUR, JOUÉS : une réponse hors démon se dit au puits du panneau, après la relecture du
+    // statut, sous sa propre phrase — jamais « Code REFUSÉ » ni « … REFUSÉE : le démon ne l'a pas confirmée ».
+    const enrolement121 = qs121("#mfa-enroll");
+    instrument121(!!enrolement121, "l'hôte du bloc MFA (`#mfa-enroll`) n'est pas dans `index.html`");
+    const aveuMfa121 = (attr) => (enrolement121 ? [enrolement121, ...cueillir121(enrolement121, () => true)].find((n) => n && n.getAttribute && n.getAttribute(attr)) || null : null);
+    const ouvrirLaCarte121 = async (L) => {
+      servis121 = { "*": { corps: {} }, "GET /api/mfa/status": { corps: { enrolled: false, enabled: false } }, "POST /api/mfa/enroll": { corps: { secret: "JBSWY3DPEHPK3PXP", otpauth_uri: "otpauth://totp/plume:hugo?secret=JBSWY3DPEHPK3PXP" } } };
+      await L.idp.loadMfa(); await laisser121();
+      const p = L.idp.startEnroll(); await accepterLesFenetres121({}); await p; await laisser121();
+      return cueillir121(enrolement121, (e) => e.tagName === "BUTTON" && nu121(e) === "Vérifier & activer")[0] || null;
+    };
+    const GESTES_MFA121 = [
+      { nom: "désactivation", attr: "data-refus-de-desactivation", route: "POST /api/mfa/disable", lectures: { "GET /api/mfa/status": { corps: { enrolled: true, enabled: true } } }, valeurs: { code: "123456" }, geste: (L) => L.idp.disableMfa(),
+        nonEtablie: "desactivation_non_etablie" },
+      { nom: "enrôlement", attr: "data-refus-d-enrolement", route: "POST /api/mfa/enroll", lectures: { "GET /api/mfa/status": { corps: { enrolled: false, enabled: false } } }, geste: (L) => L.idp.startEnroll(), nonEtablie: "enrolement_non_etabli" },
+      { nom: "activation", attr: "data-refus-d-activation", route: "POST /api/mfa/verify", lectures: { "GET /api/mfa/status": { corps: { enrolled: false, enabled: false } } }, carte: true, nonEtablie: "activation_non_etablie" },
+    ];
+    const mesureMfa121 = [];
+    for (const L of [FR121, EN121]) {
+      for (const g of GESTES_MFA121) {
+        const jouerLeGeste = async (reponse) => {
+          if (enrolement121) { enrolement121.hidden = true; enrolement121.replaceChildren(); }
+          if (g.carte) {
+            const bouton = await ouvrirLaCarte121(L);
+            instrument121(!!bouton, "la carte d'enrôlement n'a pas de bouton « Vérifier & activer »");
+            const champ = qs121("#mfa-code"); if (champ) champ.value = "123456";
+            return jouer121(L, { route: g.route, reponse, lectures: g.lectures, geste: () => cliquer121(bouton, "« Vérifier & activer »") });
+          }
+          return jouer121(L, { route: g.route, reponse, lectures: g.lectures, valeurs: g.valeurs || {}, geste: g.geste });
+        };
+        for (const [quoi, reponse] of [["passerelle", { statut: 502, corps: PAGE_DE_PASSERELLE121 }], ["demande non aboutie", RESEAU_COUPE121]]) {
+          const e = await refusDe121(L, reponse);
+          const r = await jouerLeGeste(reponse);
+          const aveu = aveuMfa121(g.attr);
+          if (L === FR121 && quoi === "passerelle") mesureMfa121.push(`${g.nom} : « ${aveu && aveu.getAttribute(g.attr)} » « ${nu121(aveu).slice(0, 80)} »`);
+          const attendu = serre121(appeler121(L.noyau, "phraseDUneReponseQuiNeVientPasDuDemon", e));
+          if (!aveu || aveu.getAttribute(g.attr) !== (quoi === "passerelle" ? "reponse_hors_demon" : "demande_non_aboutie") || nu121(aveu) !== attendu || CADRE_INTERDIT121.test(nu121(aveu)) || r.rejet)
+            ecartsQ121.push(`${L.nom}/${g.nom} (${quoi}) : « ${aveu && aveu.getAttribute(g.attr)} » « ${nu121(aveu).slice(0, 160)} », rejet « ${r.rejet} »`);
+        }
+        // LA FACE « NON ÉTABLIE » : sur une page de passerelle servie en deux cents, son sujet est la passerelle ; sur un corps
+        // lisible qui ne porte pas le succès, le démon.
+        for (const [quoi, reponse, sujet] of [["passerelle en deux cents", { statut: 200, corps: PAGE_DE_PASSERELLE121 }, { fr: /^Une PASSERELLE a répondu, pas le démon,/, en: /^A GATEWAY answered, not the daemon,/ }],
+          ["corps lisible sans succès", { statut: 200, corps: { autre: 1 } }, { fr: /^Le démon a répondu/, en: /^The daemon answered/ }]]) {
+          await jouerLeGeste(reponse);
+          const aveu = aveuMfa121(g.attr);
+          if (!aveu || aveu.getAttribute(g.attr) !== g.nonEtablie || !(L === EN121 ? sujet.en : sujet.fr).test(nu121(aveu))) ecartsQ121.push(`${L.nom}/${g.nom} (${quoi}) : « ${aveu && aveu.getAttribute(g.attr)} » « ${nu121(aveu).slice(0, 160)} »`);
+        }
+      }
+    }
+    if (enrolement121) { enrolement121.hidden = true; enrolement121.replaceChildren(); }
+    // (q4) LE SUJET D'UNE FACE « NON ÉTABLIE », AU POINT COMMUN : trois natures, deux langues, et la face qui le reçoit.
+    for (const L of [FR121, EN121]) {
+      const sujets = [null, { reponseHorsDemon: "page_de_passerelle" }, { reponseHorsDemon: "corps_illisible" }].map((e) => appeler121(L.noyau, "sujetDUneReponseSansCorpsDeSucces", e));
+      const attendus = L === EN121 ? ["The daemon answered", "A GATEWAY answered, not the daemon,", "An UNREADABLE answer arrived"] : ["Le démon a répondu", "Une PASSERELLE a répondu, pas le démon,", "Une réponse ILLISIBLE est arrivée"];
+      if (sujets.join("|") !== attendus.join("|")) ecartsQ121.push(`${L.nom}/sujets : ${JSON.stringify(sujets)}`);
+      const face = appeler121(L.noyau, "motDeLaRiposteSansIdentifiant", "ban_ip", "203.0.113.121", { reponseHorsDemon: "page_de_passerelle" });
+      if (!String(face).startsWith(attendus[1]) || !/203\.0\.113\.121/.test(face) || /\{sujet\}/.test(face)) ecartsQ121.push(`${L.nom}/riposte sans identifiant sous la passerelle : « ${String(face).slice(0, 120)} »`);
+    }
+    console.log(`[121q1] le cadre d'un refus sur une page de passerelle : ${mesureQ121.join(" | ")} ; second facteur : ${mesureMfa121.join(" | ")}`);
+    exiger(ecartsQ121.length === 0, `(121q) UN CADRE « … REFUSÉ … LE DÉMON A RÉPONDU — » ENTOURE ENCORE UNE RÉPONSE QUI NE VIENT PAS DU DÉMON (recensement des cadres jugé dans les deux sens ; chaque surface jouée dans les deux langues sur une page de passerelle et une demande non aboutie : la phrase partagée, sans cadre ; un refus nommé garde son cadre et sa cause ; le dossier neuf dit existant ; l'acquittement interrompu garde son compte ; le sujet d'une face « non établie » suit la réponse) : ${JSON.stringify(ecartsQ121)}`);
+
+    // ══ (23r) `P10.23-r` — LA PHRASE DE PASSERELLE D'`api()` A SES DEUX FACES (tenue depuis `P10.27-c`, rejouée) ═════════
+    const ecartsR121 = [];
+    const PANNE121 = { fr: "Service momentanément indisponible, réessaie dans un instant.", en: "Service temporarily unavailable, try again in a moment." };
+    for (const L of [FR121, EN121]) {
+      for (const [quoi, reponse] of [["cinq cent deux vide", { statut: 502, corps: "" }], ["page de passerelle en deux cents", { statut: 200, corps: "<html><body>no available server</body></html>" }]]) {
+        servis121 = { "GET /api/lecture-121": reponse };
+        let lu = ""; try { await L.noyau.api("/lecture-121"); lu = "(servie)"; } catch (e) { lu = String((e && e.message) || e); }
+        if (lu !== (L === EN121 ? PANNE121.en : PANNE121.fr)) ecartsR121.push(`${L.nom}/api() (${quoi}) : « ${lu} »`);
+      }
+      const hote = new Element("div");
+      servis121 = { "GET /api/lecture-121": { statut: 504, corps: "" } };
+      await L.noyau.fetchInto(hote, "/lecture-121");
+      if (!nu121(hote).includes(L === EN121 ? PANNE121.en : PANNE121.fr) || (L === EN121 && ACCENTS121.test(nu121(hote)))) ecartsR121.push(`${L.nom}/fetchInto : « ${nu121(hote).slice(0, 160)} »`);
+    }
+    exiger(ecartsR121.length === 0, `(121r) LA PHRASE DE PASSERELLE D'\`api()\` N'A PLUS SES DEUX FACES (message de l'erreur et face d'une lecture non servie, sous chaque langue ; la française d'avant au caractère près) : ${JSON.stringify(ecartsR121)}`);
+
+    // ══ (23s) `P10.23-s` — LE SURVOL « CONNECTÉ : … » A SES DEUX FACES (tenu depuis `P10.29-c`, rejoué) ═══════════════════
+    const ecartsS121 = [];
+    const identite121 = qs121("#auth-id");
+    instrument121(!!identite121, "`#auth-id` n'est plus dans `index.html`");
+    for (const L of [FR121, EN121]) {
+      const avant = L.S.AUTH;
+      L.S.AUTH = { user: "alice", role: "admin", auth_method: "sso" };
+      L.connexion.setAuthUI();
+      const lu = identite121 ? identite121.title : "";
+      if (lu !== (L === EN121 ? "Signed in: alice (admin) — sso" : "Connecté : alice (admin) — sso")) ecartsS121.push(`${L.nom} : « ${lu} »`);
+      L.S.AUTH = avant;
+    }
+    exiger(ecartsS121.length === 0, `(121s) LE SURVOL « CONNECTÉ : … » DE L'EN-TÊTE N'A PLUS SES DEUX FACES : ${JSON.stringify(ecartsS121)}`);
+
+    // ══ (29v) `P10.29-v` — LA TROISIÈME OUVERTURE : L'ÉCRITURE QUE LA BASE N'A PAS PRISE, LA TRANSACTION ANNULÉE ═══════════
+    const ecartsV121 = [];
+    const erreur121 = (statut, cause) => Object.assign(new Error(statut + " " + JSON.stringify({ error: cause }).slice(0, 200)), { statutDuRefus: statut, causeDuDemon: cause });
+    const mesureV121 = [];
+    for (const L of [FR121, EN121]) {
+      const face = faceGeste121(L, "ecriture_non_prise");
+      if (!(L === EN121 ? /^NOTHING CHANGED/.test(face) && !ACCENTS121.test(face) : /^RIEN N'A CHANGÉ/.test(face))) ecartsV121.push(`${L.nom}/face : « ${face} »`);
+      for (const c of CAUSES_DE_L_ECRITURE_NON_PRISE121) {
+        const puits = new Element("div");
+        const nature = appeler121(L.noyau, "peindreLeRefusDUnGeste", puits, erreur121(503, c.cause));
+        if (L === FR121) mesureV121.push(`${c.nom} → « ${nature} »`);
+        if (nature !== "ecriture_non_prise" || puits.getAttribute("data-refus-d-un-geste") !== "ecriture_non_prise" || nu121(puits) !== serre121(face + " « " + c.cause + " »")) ecartsV121.push(`${L.nom}/${c.nom} : « ${nature} » « ${nu121(puits).slice(0, 140)} »`);
+        for (const st of [500, 409, 200]) { const n = appeler121(L.noyau, "natureDuRefusDUnGeste", erreur121(st, c.cause)); if (n !== "refus_nomme") ecartsV121.push(`${L.nom}/${c.nom} sous ${st} : « ${n} » (hors d'un cinq cent trois, jamais « rien n'a changé »)`); }
+      }
+    }
+    if (faceGeste121(FR121, "ecriture_non_prise") === faceGeste121(EN121, "ecriture_non_prise")) ecartsV121.push("les deux faces de l'écriture non prise sont identiques");
+    console.log(`[121v0] les causes de l'écriture non prise, lues dans le démon : ${mesureV121.join(" | ")}`);
+    exiger(ecartsV121.length === 0, `(121v) LA TROISIÈME OUVERTURE DE LA FAMILLE « RIEN N'A CHANGÉ » N'EST PAS RECONNUE (causes dérivées du démon, peintes sous « RIEN N'A CHANGÉ » et leur cause entière dans les deux langues, sous un cinq cent trois seulement) : ${JSON.stringify(ecartsV121)}`);
+
+    // ══ (29q) `P10.29-q` — LES ESSAIS DE LA DÉTECTION AVANCÉE : LA FACE NOMMÉE D'UN ESSAI, DANS LE PUITS DE LEUR LISTE ═════
+    const ecartsQE121 = [];
+    const CORRELATION121 = { id: 12, name: "c121", key_field: "src_ip", entity_type: "ip", steps: "[]", window_s: 3600, interval_s: 300, severity: 3, mitre: "", risk_score: 0, enabled: true, managed: 2 };
+    const LIGNE_DE_BASE121 = { id: 15, name: "b121", query: "search x | stats count by host", entity_field: "host", value_field: "", entity_type: "host", bucket_s: 3600, min_samples: 5, z_threshold: 3, window_s: 604800, interval_s: 3600, severity: 2, mitre: "", risk_score: 0, enabled: true };
+    const ESSAIS_Q121 = [
+      { site: "essai d'une corrélation", route: "POST /api/correlations/12/test", puits: puitsAvant121("#detadv-corr-list", "correlations"), geste: (L) => L.avancee.testCorrelation(CORRELATION121), succes: { corps: { matched: 1, entities: [{ entity: "203.0.113.9", detail: "a→b" }] } } },
+      { site: "essai d'une ligne de base", route: "POST /api/baselines/15/test", puits: puitsAvant121("#detadv-base-list", "lignes_de_base"), geste: (L) => L.avancee.testBaseline(LIGNE_DE_BASE121), succes: { corps: { ok: true, bucket: 1700000000, observed: 3, anomalies: 0, samples: [], hits: [] } } },
+    ];
+    const mesureQE121 = [];
+    for (const L of [FR121, EN121]) {
+      for (const s of ESSAIS_Q121) {
+        const cas = [
+          ["403 en texte", { statut: 403, corps: "lecture seule (rôle viewer)" }, "essai_refuse", serre121(faceEssai121(L, "essai_refuse") + " « lecture seule (rôle viewer) »")],
+          ["deux cents {error}", { statut: 200, corps: { error: CAUSE121 } }, "essai_refuse", serre121(faceEssai121(L, "essai_refuse") + " « " + CAUSE121 + " »")],
+          ["corps vide", { statut: 200, corps: "" }, "essai_sans_resultat", serre121(faceEssai121(L, "essai_sans_resultat"))],
+          ["demande non aboutie", RESEAU_COUPE121, "essai_non_abouti", null],
+          ["page de passerelle", { statut: 502, corps: PAGE_DE_PASSERELLE121 }, "reponse_hors_demon", serre121(appeler121(L.noyau, "motDeLaReponseHorsDemon", "page_de_passerelle"))],
+        ];
+        for (const [quoi, reponse, nature, texte] of cas) {
+          viderLePuits121(s.puits());
+          const r = await jouer121(L, { route: s.route, reponse, geste: s.geste });
+          const p = s.puits();
+          const lu = { nature: p && !p.hidden ? p.getAttribute("data-refus-d-un-essai") : null, geste: p && p.getAttribute("data-refus-d-un-geste"), texte: nu121(p) };
+          if (L === FR121 && (quoi === "deux cents {error}" || quoi === "403 en texte")) mesureQE121.push(`${s.site} (${quoi}) : puits « ${lu.nature || lu.geste} » ; avis ${JSON.stringify(r.avis.map((a) => a.slice(0, 60)))}`);
+          if (r.appels !== 1 || lu.nature !== nature || lu.geste || (texte && lu.texte !== texte) || r.avis.length || r.rejet || (nature !== "reponse_hors_demon" && /vérifier son effet|check its effect/.test(lu.texte)) || !!fenetre121())
+            ecartsQE121.push(`${L.nom}/${s.site} (${quoi}) : puits « ${lu.nature} »${lu.geste ? ` (forme d'un GESTE « ${lu.geste} »)` : ""} « ${lu.texte.slice(0, 120)} », avis ${JSON.stringify(r.avis)}, rejet « ${r.rejet} »`);
+        }
+        viderLePuits121(s.puits());
+        let fenetreOuverte = false;
+        const ok = await jouer121(L, { route: s.route, reponse: s.succes, geste: async (M) => { await s.geste(M); await laisser121(); fenetreOuverte = !!fenetre121(); } });
+        const p = s.puits();
+        if (!fenetreOuverte || (p && !p.hidden) || ok.rejet) ecartsQE121.push(`${L.nom}/${s.site} (réussi) : fenêtre ${fenetreOuverte}, puits montré ${!!p && !p.hidden}, rejet « ${ok.rejet} »`);
+      }
+    }
+    console.log(`[121qe0] les essais de la détection avancée : ${mesureQE121.join(" | ")}`);
+    exiger(ecartsQE121.length === 0, `(121qe) UN ESSAI DE LA DÉTECTION AVANCÉE NE DIT PAS SON REFUS PAR LA FACE NOMMÉE D'UN ESSAI DANS LE PUITS DE SA LISTE (403, deux cents \`{error}\`, corps vide, demande non aboutie, passerelle ; jamais la forme d'un geste, jamais un avis qui s'efface ; un essai réussi ouvre son résultat et n'a rien à dire) : ${JSON.stringify(ecartsQE121)}`);
+
+    // ══ (29r) `P10.29-r` — LES LECTURES LUES À LA MAIN : NI « ERREUR : » + LA CAUSE, NI LA CAUSE NUE ═════════════════════════
+    const ecartsRR121 = [];
+    // (r0) LE RECENSEMENT, ÉTENDU À LA CAUSE SERVIE (`x.error`) : (a) toute pose du préfixe d'un échec rendu tel quel hors du
+    // point commun (il ne précède qu'un message ou une cause collés) ; (b) toute cause servie posée NUE dans un texte
+    // (`textContent`, `muted(`, `toast(`, `formMsg(`, une substitution `esc(…)` seule dans un élément d'un gabarit). Ensemble nommé des restes, jugé
+    // dans les deux sens, raison tenue.
+    const PREFIXE121 = /\bprefixeDUnEchecRenduTelQuel\s*\(|\bmotDUneLectureQuiNEstPasServie\(\s*'prefixe_de_la_lecture_refusee/g;
+    const CAUSE_NUE121 = /\.textContent\s*=\s*(?:String\()?\s*[A-Za-z_$][\w$]*\.error\b|\bmuted\(\s*(?:String\()?\s*[A-Za-z_$][\w$]*\.error\b|\btoast\(\s*(?:String\()?\s*[A-Za-z_$][\w$]*\.error\b|\bformMsg\([^,()]+,\s*(?:String\()?\s*[A-Za-z_$][\w$]*\.error\b|>\s*\$\{\s*esc\(\s*(?:String\()?\s*[A-Za-z_$][\w$]*\.error\b[^}]*\}\s*</g;
+    const causesCollees121 = (f, source) => {
+      const a = analyserLeSource121(source); if (!a.paires) return null;
+      const noms = fonctionsNommees121(a.texte, a.paires), out = [];
+      if (f !== "core.js") for (const m of a.texte.matchAll(PREFIXE121)) out.push({ f, fonction: fonctionEnglobante121(noms, m.index), forme: "préfixe" });
+      for (const m of a.texte.matchAll(CAUSE_NUE121)) out.push({ f, fonction: fonctionEnglobante121(noms, m.index), forme: "cause nue" });
+      return out;
+    };
+    {
+      const pos = causesCollees121("t.js", "function a() { x.textContent = prefixeDUnEchecRenduTelQuel() + j.error; }\nfunction b() { box.replaceChildren(muted(String(d.error))); }\nfunction c() { h.innerHTML = `<i>${esc(String(d.error))}</i>`; }\nfunction d2() { formMsg('#r', built.error, true); }\n");
+      const neg = causesCollees121("t.js", "function a() { x.replaceChildren(noeudDuRefusDUneLecture(unRefusServiEnDeuxCents(j))); }\nfunction b() { dit.textContent = 'NON LU —'; aveu.append(dit, ' « ' + String(d.error).trim() + ' »'); }\n// x.textContent = j.error;\nfunction c() { if (d.error) return; }\n");
+      instrument121(pos && neg && pos.map((x) => x.fonction).join(",") === "a,b,c,d2" && neg.length === 0, `le recensement des causes collées ne distingue plus un préfixe, une cause nue, une face nommée, un commentaire (« ${pos && pos.map((x) => x.fonction).join(",")} » / ${neg && neg.length})`);
+    }
+    const causesLues121 = {};
+    for (const [f, source] of CORPUS121) for (const x of causesCollees121(f, source) || []) { const k = `${x.f} › ${x.fonction}`; causesLues121[k] = (causesLues121[k] || 0) + 1; }
+    // Le reste nommé : la validation LOCALE d'un connecteur générique (`httpPullFormConfig`, web/connectors.js) rend `{error}`
+    // sans rien demander au démon — ce n'est pas une cause servie. La raison est tenue : son corps ne lit aucune route.
+    const RESTES_DES_CAUSES_COLLEES121 = { "app.js › enregistrerLeConnecteurDuFormulaire": 1 };
+    const connecteurs121 = ((CORPUS121.find(([f]) => f === "connectors.js") || [])[1]) || "";
+    const corpsValidation121 = (() => { const a = analyserLeSource121(connecteurs121); if (!a.paires) return ""; const f = fonctionsNommees121(a.texte, a.paires).find((n) => n.nom === "httpPullFormConfig"); return f ? a.texte.slice(f.debut, f.fin + 1) : ""; })();
+    if (!corpsValidation121 || /\b(?:api|apiSend|fetch)\s*\(/.test(corpsValidation121)) ecartsRR121.push("la raison du reste nommé ne tient plus : `httpPullFormConfig` est introuvable, ou lit une route");
+    const neufsR121 = Object.entries(causesLues121).filter(([k, n]) => (RESTES_DES_CAUSES_COLLEES121[k] || 0) < n).map(([k, n]) => `${k} ×${n}`);
+    const payesR121 = Object.entries(RESTES_DES_CAUSES_COLLEES121).filter(([k, n]) => (causesLues121[k] || 0) < n).map(([k]) => k);
+    if (neufsR121.length || payesR121.length) ecartsRR121.push(`causes servies collées derrière « erreur : » ou nues : neuves ${JSON.stringify(neufsR121)}, restes payés ${JSON.stringify(payesR121)}`);
+    console.log(`[121r0] causes servies collées derrière le préfixe d'un échec, ou nues : ${Object.values(causesLues121).reduce((a, b) => a + b, 0)} — ${JSON.stringify(causesLues121)}`);
+    // (r1) LES SURFACES, JOUÉES DANS LES DEUX LANGUES : la face nommée, la cause entière, aucun « Erreur : », l'anglaise sans
+    // accent hors de la cause.
+    const PANNEAU_NON_PAGINE121 = { id: 81, title: "P81", query: "search x | stats count by a", is_soql: true, viz: "bar", position: 0, window_s: 0, visibility: "private", query_private: false, cols: 1, height: 0, drill: "", library_panel_id: null };
+    const PANNEAU_PAGINE121 = { ...PANNEAU_NON_PAGINE121, id: 82, title: "P82", query: "search x | table a", viz: "table" };
+    const grilleR121 = new Element("div");
+    const chargerLePanneau121 = async (L, panneau) => {
+      grilleR121.replaceChildren(); L.S.panelCards = [];
+      await L.tableaux.loadPanelsInto(grilleR121, { id: 64 }); await laisser121(10);
+      cueillir121(grilleR121, (e) => e.classList && e.classList.contains("panel")).forEach((c) => { if (c._panel && !c._panel.loaded) { c._panel.loaded = true; c._panel.reload(); } });
+      await laisser121(60);
+    };
+    const lectureDans121 = (hote) => parDonnee121(hote, "data-refus-d-une-lecture")[0] || null;
+    const resultatR121 = qs121("#qresult"), ligneR121 = qs121("#qstats"), auditR121 = qs121("#opaccess-body");
+    instrument121(!!resultatR121 && !!ligneR121 && !!auditR121, "`#qresult`, `#qstats` ou `#opaccess-body` n'est plus dans `index.html`");
+    const LECTURES_R121 = [
+      { site: "panneau d'un tableau de bord", lectures: (panneau) => ({ "GET /api/dashboard/64": { corps: { id: 64, name: "SOC", owner: "hugo", visibility: "shared", view_id: null, editable: true, panels: [PANNEAU_NON_PAGINE121] } } }),
+        route: "GET /api/panels/81/data", geste: (L) => chargerLePanneau121(L), hote: () => grilleR121 },
+      { site: "panneau paginé par le démon", lectures: () => ({ "GET /api/dashboard/64": { corps: { id: 64, name: "SOC", owner: "hugo", visibility: "shared", view_id: null, editable: true, panels: [PANNEAU_PAGINE121] } } }),
+        route: "POST /api/query", geste: (L) => chargerLePanneau121(L), hote: () => grilleR121 },
+      { site: "résultat de l'Explore", route: "POST /api/query", deuxCentsSeulement: true,
+        geste: async (L) => { L.S.exploreInflight = null; L.S.evState = { q: "search sshd | table a b", isSoql: true, keyset: false, cursors: [null], page: 0, pageSize: 3, total: -1, shown: 0, totalCapped: false, countFired: true, realTotal: false, totalError: null, win: { from: 1000, to: 2000 } }; resultatR121.replaceChildren(); ligneR121.replaceChildren(); await L.viz.evLoad(); await laisser121(20); },
+        hote: () => resultatR121 },
+      { site: "audit des accès opérateur", route: "POST /api/query", deuxCentsSeulement: true,
+        geste: async (L) => { L.S.AUTH = { user: "hugo", role: "admin", auth_method: "cookie", is_superadmin: true }; await L.tenants.loadOperatorAudit(); await laisser121(); }, hote: () => auditR121 },
+    ];
+    const mesureR121 = [];
+    for (const L of [FR121, EN121]) {
+      for (const s of LECTURES_R121) {
+        const cas = [["deux cents {error}", { statut: 200, corps: { error: CAUSE121 } }, "lecture_refusee"]];
+        if (!s.deuxCentsSeulement) cas.push(["cinq cent trois nommé", { statut: 503, corps: { error: CAUSE121 } }, "lecture_refusee"], ["page de passerelle", { statut: 502, corps: PAGE_DE_PASSERELLE121 }, "reponse_hors_demon"]);
+        for (const [quoi, reponse, nature] of cas) {
+          const r = await jouer121(L, { route: s.route, reponse, lectures: s.lectures ? s.lectures() : {}, geste: s.geste });
+          const n = lectureDans121(s.hote()), texte = nu121(n), sansCause = texte.replace(CAUSE121, "");
+          if (L === FR121 && quoi === "deux cents {error}") mesureR121.push(`${s.site} : « ${(texte || nu121(s.hote())).slice(0, 90)} »`);
+          const attendu = nature === "lecture_refusee" ? CAUSE121 : (L === EN121 ? PANNE121.en : PANNE121.fr);
+          if (!n || n.getAttribute("data-refus-d-une-lecture") !== nature || !texte.includes(attendu) || !texte.includes(serre121(faceLecture121(L, nature))) || /(?:^|\s)(?:Erreur|erreur|Error|error) : ?/.test(sansCause) || (L === EN121 && ACCENTS121.test(sansCause)) || r.rejet)
+            ecartsRR121.push(`${L.nom}/${s.site} (${quoi}) : « ${n && n.getAttribute("data-refus-d-une-lecture")} » « ${(texte || nu121(s.hote())).slice(0, 160)} », rejet « ${r.rejet} »`);
+        }
+      }
+      // L'inventaire des sources et la rangée des sondes : la cause servie n'est plus NUE.
+      const inventaire = new Element("div");
+      L.sources.renderSourcesInventory(inventaire, { ok: false, pipeline_fresh: null, sources: [], error: CAUSE121 });
+      const ni = lectureDans121(inventaire), ti = nu121(ni);
+      if (!ni || ni.getAttribute("data-refus-d-une-lecture") !== "lecture_refusee" || !ti.startsWith(L === EN121 ? "Source inventory — READ NOT SERVED" : "Inventaire des sources — LECTURE NON SERVIE") || !ti.includes(CAUSE121) || /en panne|is down/.test(nu121(inventaire)))
+        ecartsRR121.push(`${L.nom}/inventaire des sources : « ${nu121(inventaire).slice(0, 160)} »`);
+      servis121 = { "*": { corps: {} }, "GET /api/integrations": { corps: { collectors: [], hosts: [], flotte: null, error: CAUSE121 } } };
+      corpsDesIntegrations121.replaceChildren();
+      await L.fraicheur.renderIntegrations(); await laisser121();
+      const brut = String(corpsDesIntegrations121.innerHTML || nu121(corpsDesIntegrations121));
+      const faceSondes = L === EN121 ? "Probes NOT READ this time" : "Sondes NON LUES cette fois-ci";
+      if (!brut.includes(faceSondes) || !brut.includes("data-sondes-non-lues") || !brut.includes(CAUSE121.replace(/'/g, "&#39;").replace(/"/g, "&quot;")) && !brut.includes(CAUSE121)) ecartsRR121.push(`${L.nom}/sondes non lues : « ${brut.slice(0, 200)} »`);
+      // L'aperçu d'un instantané : un panneau non capturé a sa face, la cause entière dans un second nœud.
+      const tuile = tuile121(L);
+      servis121 = { "*": { corps: {} }, "POST /api/dashboard-snapshots": { corps: { id: 5, token: "tok121" } }, "GET /api/dashboard-snapshots/tok121": { corps: { data: { panels: [{ title: "P-non-capturé", viz: "table", error: CAUSE121 }] } } } };
+      fermerLesFenetres121();
+      await cliquer121(boutonParTitre121(tuile, "Capturer un instantané partageable (lecture seule)"), "bouton de l'instantané"); await laisser121(40);
+      const apercu = parDonnee121(fenetre121(), "data-panneau-non-capture")[0] || null, ta = nu121(apercu);
+      if (!apercu || !ta.startsWith(L === EN121 ? "Panel NOT CAPTURED" : "Panneau NON CAPTURÉ") || !ta.includes("« " + CAUSE121 + " »") || (L === EN121 && ACCENTS121.test(ta.replace(CAUSE121, ""))) || /erreur :|error:/i.test(ta))
+        ecartsRR121.push(`${L.nom}/aperçu d'un instantané : « ${ta || nu121(fenetre121()).slice(0, 160)} »`);
+      fermerLesFenetres121();
+    }
+    console.log(`[121r1] les lectures lues à la main, sur un deux cents \`{error}\` : ${mesureR121.join(" | ")}`);
+    exiger(ecartsRR121.length === 0, `(121rr) UNE LECTURE LUE À LA MAIN COLLE ENCORE « ERREUR : » ET LA CAUSE, OU LA CAUSE NUE (recensement étendu à la cause servie, reste nommé jugé dans les deux sens et raison tenue ; panneaux, Explore, audit opérateur, inventaire des sources, sondes non lues et aperçu d'un instantané joués dans les deux langues : la face nommée, la cause entière) : ${JSON.stringify(ecartsRR121)}`);
+    for (const p of [PUITS_DES_TABLEAUX121(), ...ESSAIS_Q121.map((s) => s.puits())]) viderLePuits121(p);
+  } finally {
+    process.off("unhandledRejection", surRejetNonTraite121);
+    globalThis.fetch = fetchOrigine121; globalThis.setTimeout = minuterieOrigine121; document.querySelector = qsOrigine121;
+    for (const o of etatOrigine121) { o.S.isAdmin = o.admin; o.S.AUTH = o.auth; o.S.viewList = o.vues; o.S.evState = o.evState; o.S.exploreInflight = o.vol; o.S.panelCards = o.cartes; o.S.MY_TENANTS = o.tenants; }
+    if (SQL121) SQL121.value = sqlOrigine121;
+    if (vue121) vue121.value = vueOrigine121;
+    for (const sel of ["#qresult", "#qstats", "#opaccess-body", "#mfa-enroll"]) { const h = qs121(sel); if (h) h.replaceChildren(); }
+    const avis = qs121("#toasts"); if (avis) avis.replaceChildren();
+    fermerLesFenetres121();
+  }
+  console.log("(121) OK — aucun appel `apiSend` ne laisse plus son refus sans avis : le recensement dérivé (captures locales, chaînes, commutateur partagé, enveloppes attendues, appelants des écrivains nommés) ne laisse AUCUN reste, et les huit appels qui n'en avaient pas — retraits d'un tableau de bord et d'un panneau, création et rattachement d'un tableau de bord, création d'une vue, trois essais d'une ligne — disent leur refus par la forme partagée, ou par la face nommée d'un essai, dans le puits de leur surface, dans les deux langues. Le cadre « … REFUSÉ … le démon a répondu — » n'entoure plus une page de passerelle ni une demande qui n'aboutit pas, sur toutes les surfaces à cadre (recensées) ; le dossier neuf reste dit existant, l'acquittement interrompu garde son compte, et le sujet d'une face « non établie » suit la réponse. `api()` et le survol de l'en-tête ont leurs deux faces. L'écriture que la base n'a pas prise se dit « rien n'a changé », sous un cinq cent trois seulement. Les essais de la détection avancée disent leur refus par la face nommée d'un essai, dans le puits de leur liste. Aucune lecture lue à la main ne colle plus « erreur : » ni la cause nue, hors du reste nommé.");
 }
 
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;

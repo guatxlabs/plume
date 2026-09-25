@@ -26,6 +26,9 @@ mod mot_de_passe_actuel_exige_et_revocation_par_compte {
 
     /// Le mot de passe que `sp_state` pose sur `alice`, `bob` et `adm`.
     const MDPA_MOT_DE_PASSE_DE_FIXTURE: &str = "motdepasse12345";
+    /// `P10.24-b` — la tête de la ligne du registre qui atteste le changement de `adm` par lui-même (elle disait « mot de
+    /// passe admin changé », quel que soit le compte changé).
+    const MDPA_CHANGEMENT_ATTESTE: &str = "mot de passe du compte 'adm' changé par son titulaire";
     const MDPA_GRAINE: &[u8] = b"12345678901234567890";
 
     /// Un mot de passe neuf recevable (au moins `PASSWORD_MIN_CHARS`), construit — jamais un littéral de clé.
@@ -167,9 +170,10 @@ mod mot_de_passe_actuel_exige_et_revocation_par_compte {
         assert_eq!(corps["error"], json!(CAUSE_MOT_DE_PASSE_ACTUEL_REFUSE), "{corps}");
         assert_eq!(mdpa_echecs_du_couple(&st, "adm", ip), 1, "l'échec est compté au verrou de la connexion");
         assert_eq!(mdpa_evenements_d_acces(&st), 1, "et vu du SIEM");
-        assert_eq!(mdpa_registre(&st, "changement du mot de passe admin de 'adm' refusé"), 1, "et inscrit au registre");
+        // ADAPTÉ PAR `P10.24-b` : la route vise l'APPELANT (`adm`, ici aussi administrateur de l'assistant) ; la trace le dit.
+        assert_eq!(mdpa_registre(&st, "changement de son propre mot de passe par 'adm' refusé"), 1, "et inscrit au registre");
 
-        assert_eq!(mdpa_registre(&st, "mot de passe admin changé"), 0, "aucun changement attesté");
+        assert_eq!(mdpa_registre(&st, MDPA_CHANGEMENT_ATTESTE), 0, "aucun changement attesté");
         assert_eq!(mdpa_epoque_du_compte(&st, "adm"), 0, "aucune session du compte révoquée");
         let (statut, _, _) = mdpa_connexion(&st, "adm", &neuf, "10.61.0.2").await;
         assert_eq!(statut, 401, "le mot de passe n'a PAS changé : le neuf ne connecte pas");
@@ -179,7 +183,7 @@ mod mot_de_passe_actuel_exige_et_revocation_par_compte {
         // CONTRÔLE POSITIF — le vrai mot de passe actuel.
         let (statut, _, corps) = mdpa_changer(&st, ip, Some(MDPA_MOT_DE_PASSE_DE_FIXTURE), &neuf).await;
         assert_eq!(statut, 200, "le mot de passe actuel prouvé change le mot de passe : {corps}");
-        assert_eq!(mdpa_registre(&st, "mot de passe admin changé"), 1, "changement attesté");
+        assert_eq!(mdpa_registre(&st, MDPA_CHANGEMENT_ATTESTE), 1, "changement attesté");
         assert_eq!(mdpa_echecs_du_couple(&st, "adm", ip), 0, "une preuve réussie remet le couple à zéro, comme la connexion");
         assert_eq!(mdpa_epoque_du_compte(&st, "adm"), 1, "les sessions et tickets du compte sont révoqués");
         let (statut, _, _) = mdpa_connexion(&st, "adm", MDPA_MOT_DE_PASSE_DE_FIXTURE, "10.61.0.4").await;
@@ -215,7 +219,7 @@ mod mot_de_passe_actuel_exige_et_revocation_par_compte {
         assert_eq!(statut, 429, "verrouillé : le mot de passe actuel JUSTE n'est même pas examiné : {corps}");
         assert!(attente.is_some(), "le refus dit combien attendre (Retry-After)");
         assert_eq!(corps["error"], json!(CAUSE_MOT_DE_PASSE_ACTUEL_VERROUILLE), "{corps}");
-        assert_eq!(mdpa_registre(&st, "mot de passe admin changé"), 0, "rien n'est écrit");
+        assert_eq!(mdpa_registre(&st, MDPA_CHANGEMENT_ATTESTE), 0, "rien n'est écrit");
         let (statut, session, _) = mdpa_connexion(&st, "adm", MDPA_MOT_DE_PASSE_DE_FIXTURE, ip).await;
         assert_eq!((statut, session.is_some()), (429, false), "la connexion du même couple est verrouillée : UN compteur");
 
@@ -229,12 +233,16 @@ mod mot_de_passe_actuel_exige_et_revocation_par_compte {
 
     /// CE QU'IL TIENT : la lecture du hachage refusée (autorisateur SQLite), le mot de passe actuel JUSTE rend un
     /// `503` NOMMÉ — ni « refusé » (une accusation), ni un changement : aucun échec compté, rien d'écrit ; la lecture
-    /// revenue, le même geste change le mot de passe. Et un administrateur visé SANS mot de passe local (aucun
-    /// administrateur d'assistant, aucun `PLUME_PASS_HASH`) rend le `403` nommé qui renvoie à l'installation, au
-    /// lieu de POSER un mot de passe administrateur sur la foi d'une session.
+    /// revenue, le même geste change le mot de passe. Et un APPELANT sans mot de passe local (identité SSO d'en-têtes,
+    /// sans ligne) rend le `403` nommé, au lieu de POSER un mot de passe sur la foi d'une session.
     ///
-    /// LA MUTATION QUI LE FAIT ROUGIR : dans `password_post`, rendre `CompteNonLu` comme `Refusee` — la lecture ratée
-    /// devient une accusation comptée ; ou `SansMotDePasseLocal => {}` — un administrateur est posé sans preuve.
+    /// ADAPTÉ PAR `P10.24-b` : la route vise l'appelant. La seconde moitié jouait un administrateur VISÉ sans mot de
+    /// passe local (aucun administrateur d'assistant, aucun `PLUME_PASS_HASH`, appelant `adm`) ; sous la règle neuve,
+    /// `adm` y changerait SON mot de passe — le cas « aucun mot de passe à prouver » est celui d'un appelant sans
+    /// mot de passe local, joué ici, et le 503 est rendu dès le classement de l'appelant (`ou_vit_le_mot_de_passe_de`).
+    ///
+    /// LA MUTATION QUI LE FAIT ROUGIR : dans `password_post`, rendre le classement non lu comme `Aucun` — le 503 devient
+    /// un 403 ; ou `MotDePasseDeLAppelant::Aucun` rendu comme une ligne — un mot de passe est posé sans preuve.
     #[tokio::test]
     async fn mdpa_une_lecture_ratee_ne_change_ni_n_accuse_et_l_administrateur_sans_mot_de_passe_est_nomme() {
         let (st, _p) = mdpa_etat("compte-non-lu");
@@ -249,21 +257,23 @@ mod mot_de_passe_actuel_exige_et_revocation_par_compte {
         assert_eq!(statut, 503, "compte non lu : ni changé ni refusé : {corps}");
         assert_eq!(corps["error"], json!(CAUSE_COMPTE_NON_LU_AU_CHANGEMENT), "{corps}");
         assert_eq!(mdpa_echecs_du_couple(&st, "adm", ip), 0, "aucun échec compté");
-        assert_eq!(mdpa_registre(&st, "mot de passe admin changé"), 0, "rien n'est écrit");
+        assert_eq!(mdpa_registre(&st, MDPA_CHANGEMENT_ATTESTE), 0, "rien n'est écrit");
         let (statut, _, corps) = mdpa_changer(&st, ip, Some(MDPA_MOT_DE_PASSE_DE_FIXTURE), &neuf).await;
         assert_eq!(statut, 200, "la lecture revenue, le même geste change le mot de passe : {corps}");
 
-        // L'ADMINISTRATEUR VISÉ SANS MOT DE PASSE LOCAL — rien à prouver, donc rien à changer.
+        // L'APPELANT SANS MOT DE PASSE LOCAL — rien à prouver, donc rien à changer.
         let (st, _p) = sp_state("mdpa-sans-mot-de-passe-local");
-        let mut st = st;
-        st.user = Arc::new("racine-sans-ligne".to_string());
-        st.pass_hash = Arc::new(String::new());
         *st.admin.lock() = None;
-        let (statut, _, corps) = mdpa_changer(&st, ip, Some("un-mot-de-passe-quelconque"), &neuf).await;
+        let sso = AuthUser { method: "sso".into(), ..sp_au("racine-sans-ligne", "admin") };
+        let quelconque = format!("un-mot-de-passe-{}", "quelconque");
+        let (statut, _, _, corps) = mdpa_corps(
+            password_post(State(st.clone()), ConnectInfo(mdpa_pair(ip)), Extension(sso), Json(json!({ "current": quelconque, "new": neuf }))).await,
+        )
+        .await;
         assert_eq!(statut, 403, "aucun mot de passe actuel à prouver : {corps}");
-        assert_eq!(corps["error"], json!(CAUSE_ADMINISTRATEUR_SANS_MOT_DE_PASSE_LOCAL), "{corps}");
+        assert_eq!(corps["error"], json!(CAUSE_APPELANT_SANS_MOT_DE_PASSE_LOCAL), "{corps}");
         let lignes: i64 = st.db.lock().query_row("SELECT COUNT(*) FROM user WHERE name='racine-sans-ligne'", [], |r| r.get(0)).expect("lu");
-        assert_eq!(lignes, 0, "aucun administrateur posé sur la foi d'une session");
+        assert_eq!(lignes, 0, "aucun compte posé sur la foi d'une session");
         assert!(st.admin.lock().is_none(), "aucun administrateur d'assistant posé");
         assert_eq!(mdpa_echecs_du_couple(&st, "racine-sans-ligne", ip), 0, "personne n'est accusé");
     }

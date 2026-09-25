@@ -1,6 +1,6 @@
 // multitenant.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // #2c multi-tenant : switcher tenant/env (header) + vue Tenants + grants + audit acces operateur.
-import { $, LANG, LOC, api, apiSend, applyRoleClass, aveuDUneTraceManquante, causeDeLaTraceManquante, confirmWithConsequence, fmtTs, ic, muted, noeudDuRefusDUneLecture, pagedList, phraseDuRefusDuDemon, prefixeDUnEchecRenduTelQuel, toast, faceDansLaLangue } from './core.js';
+import { $, LANG, LOC, api, apiSend, applyRoleClass, aveuDUneTraceManquante, causeDeLaTraceManquante, confirmWithConsequence, fmtTs, ic, muted, noeudDuRefusDUneLecture, pagedList, phraseDuRefusDuDemon, toast, faceDansLaLangue, phraseDUneReponseQuiNeVientPasDuDemon, unRefusServiEnDeuxCents } from './core.js';
 import { S, ecrireDansLeStockageDuSite, ecrireSansDireLeRefus, lireLeStockageDuSite, RAISONS_DE_SILENCE } from './state.js';
 import { runQ, tableEl } from './viz.js';
 import { ROLE_LABEL, currentTab, fetchMe, loadUsers, refresh, refreshCurrentView, refreshPanels, renderNav, route, setAuthUI } from './app.js';
@@ -343,7 +343,9 @@ function avouerLeProvisionnement(j) {
   poserLesAveuxDuPanneauDesTenants(aveux);
 }
 // Un refus qui n'est pas celui de la destruction sans trace : l'avis cite ce que le démon a répondu.
-const phraseDuGesteRefuse = (e) => motDuPlanDeControle('geste_refuse') + ' « ' + phraseDuRefusDuDemon(e) + ' »';
+// `P10.23-q` — « Geste REFUSÉ par le démon, rien n'a changé » affirmait, sur une page de passerelle ou une demande qui n'aboutit
+// pas, un refus et un état que personne n'a vus : la réponse qui ne vient pas du démon garde sa propre phrase.
+const phraseDuGesteRefuse = (e) => phraseDUneReponseQuiNeVientPasDuDemon(e) || (motDuPlanDeControle('geste_refuse') + ' « ' + phraseDuRefusDuDemon(e) + ' »');
 
 // --- Vue « Tenants » (Administration) : liste + CRUD (super-admin) OU accès de son tenant (admin de tenant) --
 async function loadTenantsView() {
@@ -472,6 +474,8 @@ async function destroyTenant(t) {
 // avoué à DEUX nœuds dans le puits du panneau (le tenant est intact, le geste rejouable) ; tout autre refus
 // part à l'avis avec ce que le démon a répondu, jamais avec le code et le JSON coupés.
 function direLaDestructionRefusee(e) {
+  const horsDuDemon = phraseDUneReponseQuiNeVientPasDuDemon(e);   // `P10.23-q` : ni « REFUSÉE » ni « le démon a répondu — »
+  if (horsDuDemon) { toast(horsDuDemon, 'bad', 9000); return; }
   const phrase = phraseDuRefusDuDemon(e);
   if (!OUVERTURE_DE_LA_DESTRUCTION_SANS_TRACE.test(phrase)) {
     toast(motDuPlanDeControle('destruction_refusee') + ' « ' + phrase + ' »', 'bad', 9000);
@@ -569,11 +573,15 @@ async function loadOperatorAudit() {
   let j;
   try { j = await runQ('search source=' + src + ' | sort -ts | head 200', true, 0); }
   catch (e) { body.replaceChildren(noeudDuRefusDUneLecture(e, faceDansLaLangue(MOTS_DES_LECTURES_DES_TENANTS.audit_operateur))); return; }   // `P10.29-g`
-  if (j && j.error) { body.replaceChildren(muted(prefixeDUnEchecRenduTelQuel() + j.error)); return; }
+  // `P10.29-r` — le `{error}` que la requête sert en deux cents : la face nommée d'une lecture non servie, cause entière (MESURÉ
+  // AVANT CE LOT, témoin 121rr : « erreur : » + la cause, collés).
+  if (j && j.error != null) { body.replaceChildren(noeudDuRefusDUneLecture(unRefusServiEnDeuxCents(j), faceDansLaLangue(MOTS_DES_LECTURES_DES_TENANTS.audit_operateur))); return; }
   const cols = j.columns || j.cols || [], rows = j.rows || [];
   if (!rows.length) { body.replaceChildren(muted(faceDansLaLangue({ fr: 'aucun événement ({source}) sur le tenant courant', en: 'no event ({source}) on the current tenant' }, { source: src }))); return; }   // `P10.29-c`
   body.replaceChildren(tableEl(cols, rows, 'search source=' + src));
 }
 
 
+// `P10.23-q` — la phrase d'un geste refusé et la destruction refusée, jouées par le témoin 121 sur une réponse hors du démon.
+export { phraseDuGesteRefuse, direLaDestructionRefusee };
 export { CLE_DU_PREMIER_ADMINISTRATEUR_NON_POSE, OUVERTURE_DE_LA_BASCULE_NON_ECRITE, OUVERTURE_DE_LA_DESTRUCTION_SANS_TRACE, OUVERTURE_DU_RETRAIT_DE_DROIT_NON_ECRIT, avouerLeProvisionnement, initEnvironments, initTenants, loadOperatorAudit, loadTenantsView, motDuPlanDeControle, multiTenantMode, uiIsAdmin };

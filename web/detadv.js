@@ -6,7 +6,7 @@
 //   POST /api/correlations/{id}/test   -> backtest {ok,matched,entities:[{entity,detail}]}
 //   GET  /api/baselines / POST … /{id} / DELETE … / POST …/{id}/test (aperçu {ok,bucket,observed,anomalies,hits})
 // SÉCU UI : tout en textContent/esc (anti-XSS). Mutations via apiSend (CSRF auto).
-import { $, api, apiSend, effacerLeRefusDUnGeste, esc, faceDansLaLangue, fetchInto, fmtTs, humanAge, muted, pagedList, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, sev, toast, modal, confirmModal, ilYA } from './core.js';
+import { $, api, apiSend, effacerLeRefusDUnGeste, esc, faceDansLaLangue, fetchInto, fmtTs, humanAge, muted, pagedList, peindreLeRefusDUnEssai, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, sev, toast, modal, confirmModal, ilYA, unEssaiSansResultat, unRefusServiEnDeuxCents } from './core.js';
 // P11.1-e : où arrive ce qu'une corrélation / une baseline produit (Alertes, ou Risque si risk_score > 0).
 import { announceCreated, takePendingNote, detectionDestination, destinationSentence, suiteDUnProducteurCree } from './producer_ui.js';
 
@@ -115,24 +115,23 @@ async function deleteCorrelation(c) {
   catch (e) { peindreLeRefusDUnGeste(puits, e); }
 }
 // `P10.29-f` — L'ESSAI D'UNE CORRÉLATION OU D'UNE LIGNE DE BASE QUE LE DÉMON REFUSE EN DEUX CENTS, DANS LES DEUX LANGUES.
-// MESURÉ AVANT CE LOT (témoin 120f) : « échec : <cause> » (ou « échec : inconnu » sur un corps vide), français sous
-// `LANG='en'`, et « échec » ne disait pas qu'un essai n'écrit rien. La face dit ce qui est vrai : l'essai n'a pas eu
-// lieu, et le démon en nomme la cause ; un corps vide n'établit aucun résultat.
-const MOTS_DES_ESSAIS_DE_DETECTION_AVANCEE = {
-  refus_servi: { fr: "Essai NON FAIT : le démon a refusé cet essai, qui n'écrit rien, et en nomme la cause — « {cause} »", en: 'Test NOT RUN: the daemon refused this test, which writes nothing, and names the cause — “{cause}”' },
-  reponse_vide: { fr: "Essai NON abouti : la réponse du démon ne porte aucun résultat. Un essai n'écrit rien, il peut être relancé.", en: 'Test NOT completed: the daemon answer carries no result. A test writes nothing, it can be run again.' },
-};
+// `P10.29-q` — ET PAR LA FACE NOMMÉE D'UN ESSAI, DANS LE PUITS DE SA LISTE, QUI RESTE. MESURÉ AVANT CE LOT (témoin 121qe) : le
+// `{error}` servi en deux cents et le corps sans résultat partaient dans un AVIS qui s'efface au bout de six secondes, et un
+// refus en statut d'erreur (rôle, passerelle, demande non aboutie) prenait la forme d'un GESTE — « rien ici n'établit s'il a
+// été pris — vérifier son effet avant de le rejouer » prêtait un effet à un essai qui n'en a aucun. Désormais les trois se
+// disent par `peindreLeRefusDUnEssai` (web/core.js), cause entière, dans le puits de la corrélation ou de la ligne de base.
 // `P10.29-c` — la phrase d'un score de risque et la suite d'une création, dans les deux langues (témoin 120c).
 const MOTS_DES_NOTES_DE_DETECTION_AVANCEE = {
   bascule_vers_risque: { fr: '{destination} Un score RBA > 0 la bascule vers Risque.', en: '{destination} An RBA score > 0 moves it to Risk.' },
   desactivee: { fr: "désactivée : cochez « Activée » pour qu'elle tourne", en: 'disabled: tick “Enabled” for it to run' },
 };
-const avisDUnEssaiNonFait = (cause) => faceDansLaLangue(cause ? MOTS_DES_ESSAIS_DE_DETECTION_AVANCEE.refus_servi : MOTS_DES_ESSAIS_DE_DETECTION_AVANCEE.reponse_vide, { cause });
 async function testCorrelation(c) {
   const puits = puitsDesCorrelations(); effacerLeRefusDUnGeste(puits);
   let d;
-  try { d = await apiSend('/correlations/' + c.id + '/test', 'POST', {}); } catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
-  if (!d || d.error) { toast(avisDUnEssaiNonFait(d && d.error != null ? String(d.error).trim() : ''), 'err', 6000); return; }
+  try { d = await apiSend('/correlations/' + c.id + '/test', 'POST', {}); } catch (e) { peindreLeRefusDUnEssai(puits, e); return; }
+  const refuse = d && d.error != null ? unRefusServiEnDeuxCents(d) : null;
+  if (refuse) { peindreLeRefusDUnEssai(puits, refuse); return; }
+  if (!d) { peindreLeRefusDUnEssai(puits, unEssaiSansResultat()); return; }
   const ents = Array.isArray(d.entities) ? d.entities : [];
   const body = document.createElement('div');
   const h = document.createElement('p'); h.textContent = faceDansLaLangue({ fr: '{n} entité(s) complètent la séquence sur la fenêtre courante.', en: '{n} entity(ies) complete the sequence over the current window.' }, { n: d.matched }); body.appendChild(h);
@@ -241,7 +240,7 @@ const OUVERTURE_DU_REFUS_DE_LA_PORTE_DRYRUN = /^DRY-RUN\s+REFUS/;
 async function testBaseline(b) {
   const puits = puitsDesLignesDeBase(); effacerLeRefusDUnGeste(puits);
   let d;
-  try { d = await apiSend('/baselines/' + b.id + '/test', 'POST', {}); } catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
+  try { d = await apiSend('/baselines/' + b.id + '/test', 'POST', {}); } catch (e) { peindreLeRefusDUnEssai(puits, e); return; }
   const causeServie = (d && typeof d.error === 'string') ? d.error.trim() : '';
   if (OUVERTURE_DU_REFUS_DE_LA_PORTE_DRYRUN.test(causeServie)) {
     // LE REFUS DE LA PORTE NE S'EFFACE PAS AU BOUT DE SIX SECONDES. Ce n'est pas un échec d'évaluation :
@@ -258,7 +257,8 @@ async function testBaseline(b) {
     showResultModal('Aperçu baseline — ' + b.name, boite);
     return;
   }
-  if (!d || causeServie) { toast(avisDUnEssaiNonFait(causeServie), 'err', 6000); return; }
+  if (causeServie) { peindreLeRefusDUnEssai(puits, unRefusServiEnDeuxCents(d)); return; }   // `P10.29-q`
+  if (!d) { peindreLeRefusDUnEssai(puits, unEssaiSansResultat()); return; }
   const hits = Array.isArray(d.hits) ? d.hits : [];
   const body = document.createElement('div');
   const h = document.createElement('p'); h.textContent = faceDansLaLangue({ fr: 'Bucket {bucket} — {n} entité(s) observée(s), {a} anomalie(s) (aucune écriture).', en: 'Bucket {bucket} — {n} entity(ies) observed, {a} anomaly(ies) (nothing written).' }, { bucket: d.bucket, n: d.observed, a: d.anomalies }); body.appendChild(h);

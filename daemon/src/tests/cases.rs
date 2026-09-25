@@ -1410,10 +1410,15 @@
     #[test]
     fn rbac_gate_default_deny_hotfix_w1() {
         // ---------- TROUS FERMÉS ----------
-        // CRITICAL — /api/password : un editor ne reset PLUS le mdp admin.
-        assert!(rbac_gate("editor", "/api/password", true).is_err(), "editor NE reset PAS le mdp admin");
-        assert!(rbac_gate("viewer", "/api/password", true).is_err(), "viewer refusé sur /api/password");
-        assert!(rbac_gate("admin", "/api/password", true).is_ok(), "admin change le mdp");
+        // CRITICAL — /api/password : un editor ne reset PLUS le mdp admin. ADAPTÉ PAR `P10.24-b` : le trou est fermé
+        // DANS LE HANDLER, qui ne change plus que le mot de passe de l'APPELANT (sur preuve de l'actuel) — la route
+        // est donc ouverte à tout compte authentifié pour SON mot de passe (témoins `mpra_`), et reste fermée aux
+        // rôles machine (`agent`) et au rôle `client`.
+        assert!(rbac_gate("editor", "/api/password", true).is_ok(), "editor change SON mot de passe (le handler ne vise que lui)");
+        assert!(rbac_gate("viewer", "/api/password", true).is_ok(), "viewer change SON mot de passe");
+        assert!(rbac_gate("admin", "/api/password", true).is_ok(), "admin change le sien");
+        assert!(rbac_gate("agent", "/api/password", true).is_err(), "un jeton d'agent n'atteint pas /api/password");
+        assert!(rbac_gate("client", "/api/password", true).is_err(), "le rôle client reste confiné à ses routes");
         // HIGH — /api/mode : POST (armement réponse) = admin ; GET (lecture du mode) = viewer+.
         assert!(rbac_gate("editor", "/api/mode", true).is_err(), "editor N'ARME PAS la réponse (mode active)");
         assert!(rbac_gate("viewer", "/api/mode", true).is_err(), "viewer refusé sur POST /api/mode");

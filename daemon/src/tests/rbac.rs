@@ -923,6 +923,9 @@ const ROUTER_VIEWER_SELF_SERVICE: &[(&str, &str)] = &[
     ("/api/mfa/enroll", "#44 enrôlement de SA PROPRE MFA (au.name uniquement)"),
     ("/api/mfa/verify", "#44 vérification de SON PROPRE code TOTP"),
     ("/api/mfa/disable", "#44 désactivation de SA PROPRE MFA"),
+    // ADAPTÉ PAR `P10.24-b` : la route changeait le mot de passe de l'ADMINISTRATEUR, d'où sa classe admin ; elle
+    // change désormais celui de l'APPELANT, sur preuve de l'actuel (témoins `mpra_`).
+    ("/api/password", "P10.24-b : changement de SON PROPRE mot de passe (au.name uniquement, mot de passe actuel exigé au verrou de /api/login)"),
 ];
 fn router_viewer_self_service(path: &str) -> bool {
     ROUTER_VIEWER_SELF_SERVICE.iter().any(|(p, _)| path == *p)

@@ -614,7 +614,6 @@
   "Go",
   "Ko",
   "Mo",
-  "SQL brut réservé à l'administrateur — utilisez GXQL (commencez par « search », ex : search source=… | stats count by …).",
   "Servi depuis un rollup pré-agrégé (rapide) — pas un scan brut",
   "Trop lourd même sur 60s — resserre la fenêtre",
   "Valeur approximative (issue d'un rollup tronqué)",

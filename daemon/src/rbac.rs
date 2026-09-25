@@ -3,7 +3,8 @@
 //! `default_grant`/`platform_user_is_superadmin`), résolution d'accès (`TenantAccess`/`resolve_tenant_access`),
 //! marqueur opérateur cross-tenant (`OPERATOR_ACCESS_*`/`operator_access_should_emit`/`emit_operator_access`/`TraceDAccesOperateur`/
 //! `control_ledger_prev_hash`/`control_ledger_append`/`control_ledger_verify_conn`), garde de gestion tenant (`mgmt_*`/`tenant_mgmt_gate`/`can_manage_grants`/
-//! `valid_grant_role`/`platform_user_name_ok`/`gen_control_id`/`ensure_platform_user`/`tenant_admin_grant_count`)
+//! `valid_grant_role`/`platform_user_name_ok`/`gen_control_id`/`ensure_platform_user`/`ensure_platform_user_conn`/
+//! `le_geste_retirerait_le_dernier_administrateur` — `P10.21-r`, lue dans la transaction du geste)
 //! et l'audit (`audit_tenant_event`/`tenant_db_path`). Extrait de main.rs (refactor split #25 — byte-identique).
 use crate::*;
 
@@ -257,6 +258,17 @@ pub(crate) fn route_min_role(path: &str, mutating: bool) -> MinRole {
     if path.starts_with("/api/prefs") {
         return MinRole::Read;
     }
+    // 2ter-bis) `P10.24-b` — CHANGER SON PROPRE MOT DE PASSE (`POST /api/password`) : tout compte authentifié (viewer+ ;
+    //    admin court-circuité). Le handler opère UNIQUEMENT sur `au.name` et exige le mot de passe ACTUEL de ce compte,
+    //    au verrou (compte, adresse) de `/api/login` — une route publique qui essaie déjà ce mot de passe : l'ouvrir au
+    //    lecteur ne donne aucun essai de plus. La route était ADMIN parce qu'elle changeait le mot de passe de
+    //    L'ADMINISTRATEUR (celui de l'assistant, à défaut celui de la configuration), quel que soit l'appelant ;
+    //    MESURÉ le 2026-09-25 (témoins `mpra_`), un lecteur ou un éditeur n'avait AUCUN moyen de changer le sien. Les
+    //    identifiants d'engagement restent refusés (toute mutation, `engagement_cred_write_gate`), le rôle `client`
+    //    reste confiné à ses deux routes. Miroir du self-service MFA (2bis) et des préférences (2ter).
+    if path == "/api/password" {
+        return MinRole::Read;
+    }
     // 2quater) SAVED QUERIES self-service : liste/crée/édite/supprime SES PROPRES requêtes GXQL nommées ->
     //    tout compte authentifié (viewer+ ; admin court-circuité). Le handler pose TOUJOURS `owner = au.name`
     //    (list `WHERE owner=?`, mutation `WHERE id=? AND owner=?`) -> aucun accès aux requêtes d'autrui (IDOR
@@ -318,7 +330,6 @@ pub(crate) fn route_min_role(path: &str, mutating: bool) -> MinRole {
         // NE commence PAS par /api/runbooks -> reste editor+/viewer+ (section 6/7), inchangé.
         || path.starts_with("/api/runbooks")
         || path.starts_with("/api/engagements") // v75 : create/end/list/get = admin-only (break-glass) ; /active déjà capté en 2
-        || path == "/api/password"
         || path == "/api/setup"
         // #51 DAY-2 OPS — bundle de diagnostic (support hand-off) : GET admin-only (résumé de config +
         // échantillon d'events opérationnels). Allowlist non-secret dans le handler + re-check require_admin.
@@ -997,7 +1008,13 @@ pub(crate) fn gen_control_id(prefix: &str) -> Option<String> {
 /// n'existe pas — un grant ne peut référencer qu'un platform_user existant (matérialisation du grant SSO,
 /// cf. spec B.3). Ne modifie JAMAIS is_superadmin d'un compte existant.
 pub(crate) fn ensure_platform_user(cp: &ControlPlane, name: &str) -> Option<String> {
-    let conn = cp.conn.lock();
+    ensure_platform_user_conn(&cp.conn.lock(), name)
+}
+
+/// `P10.21-r` — `ensure_platform_user` sur une connexion DÉJÀ tenue : celle de la transaction d'un geste de droit
+/// (`grant_set`), pour que la matérialisation du compte plateforme entre dans la même transaction que le droit — un
+/// droit refusé par l'anti-verrouillage n'y laisse pas de compte créé pour lui. Corps déplacé tel quel.
+pub(crate) fn ensure_platform_user_conn(conn: &Connection, name: &str) -> Option<String> {
     if let Ok(id) = conn.query_row("SELECT id FROM platform_user WHERE name=?1", params![name], |r| r.get::<_, String>(0)) {
         return Some(id);
     }
@@ -1026,13 +1043,41 @@ pub(crate) fn effective_admin_grant_count_conn(conn: &Connection, tid: &str) -> 
     Ok(roles.iter().filter(|r| effective_base_role(r) == "admin").count() as i64)
 }
 
-/// (#2c/#64) Compte les grants à autorité admin EFFECTIVE d'un tenant (anti-lockout : ne pas retirer/rétrograder
-/// le DERNIER admin d'un tenant via l'API, sauf super-admin qui peut toujours re-granter). Depuis #64 un rôle
-/// composable base=admin COMPTE comme admin (sinon un tenant dont le seul admin est un rôle custom pourrait être
-/// orphelin -> lockout DoS). `P10.21-o` : `Err` = compte NON LU, jamais servi comme un zéro.
-pub(crate) fn tenant_admin_grant_count(cp: &ControlPlane, tid: &str) -> rusqlite::Result<i64> {
-    let conn = cp.conn.lock();
-    effective_admin_grant_count_conn(&conn, tid)
+/// `P10.21-r` — CE GESTE RETIRERAIT-IL AU TENANT SON DERNIER ADMINISTRATEUR EFFECTIF ? (anti-lockout #59, #64 : ne
+/// pas retirer ni rétrograder le DERNIER admin d'un tenant, sauf super-admin qui peut toujours re-granter.)
+///
+/// LU SUR LA CONNEXION DU GESTE, DÉJÀ EN TRANSACTION (`transaction_validee::jouer_le_geste_garde`) : la réponse vaut
+/// pour l'écriture qui suit, aucune autre ne s'intercale. La forme d'avant (`tenant_admin_grant_count`, qui prenait et
+/// rendait son propre verrou, et `scim_would_orphan_last_admin`, qui en prenait deux) lisait sous un verrou et
+/// écrivait sous un autre : MESURÉ le 2026-09-25 (témoins `mpra_`), deux retraits concurrents des deux derniers
+/// administrateurs passaient tous les deux, par SCIM (`PUT active=false`, `DELETE`) comme par `grant_set` et
+/// `grant_delete` — zéro administrateur.
+///
+/// `nouveau_role` : `None` pour un retrait de tous les droits du membre dans le tenant (déprovisionnement,
+/// `grant_delete`) ; `Some(r)` pour un droit REMPLACÉ par `r` (`grant_set`, et l'ajout SCIM qui écrase le rôle d'un
+/// membre — `POST /Users` avec des groupes, `PATCH /Groups` `add`/`replace`, que l'énoncé de la clé ne nommait pas et
+/// qui rétrogradaient le dernier administrateur sans aucune garde). Vrai SEULEMENT si le membre porte aujourd'hui
+/// l'autorité admin effective (littéral `admin` ou rôle composable de base admin), que le rôle qui la remplace ne la
+/// porte pas, et qu'il est le seul. `Err` : non établi — l'appelant refuse (503), jamais « permis ».
+pub(crate) fn le_geste_retirerait_le_dernier_administrateur(
+    conn: &Connection,
+    tenant: &str,
+    user_id: &str,
+    nouveau_role: Option<&str>,
+) -> rusqlite::Result<bool> {
+    use rusqlite::OptionalExtension as _;
+    // Un rôle qui garde l'autorité admin ne retire rien : jugé AVANT toute lecture (un ajout au groupe `admin` ne lit
+    // rien, comme avant).
+    if nouveau_role.is_some_and(|r| effective_base_role(r) == "admin") {
+        return Ok(false);
+    }
+    let actuel: Option<String> = conn
+        .query_row("SELECT role FROM \"grant\" WHERE user_id=?1 AND tenant_id=?2", params![user_id, tenant], |r| r.get(0))
+        .optional()?;
+    if !actuel.is_some_and(|r| effective_base_role(&r) == "admin") {
+        return Ok(false);
+    }
+    Ok(effective_admin_grant_count_conn(conn, tenant)? <= 1)
 }
 
 /// `P10.21-o` — L'ANTI-VERROUILLAGE QUI N'A PAS PU LIRE REFUSE, ET LE DIT. Retirer ou rétrograder un droit

@@ -253,9 +253,13 @@ fn colonnes_d_autorite_par_nom() -> impl Iterator<Item = (&'static str, &'static
 /// QUAND UN NOM DE L'ANNUAIRE DEVIENT-IL UN COMPTE ? PAR LA FÉDÉRATION SEULEMENT. `idp_provision_user` (OIDC, SAML,
 /// LDAP) pose une ligne SANS mot de passe (`IDP_HASH_SENTINEL`) : l'annuaire reste l'autorité qui l'authentifie et
 /// le révoque, et c'est le pendant de ce qu'elle refuse déjà — fédérer sur un nom tenu par un compte à mot de passe.
-/// Elle n'est pas touchée. Un compte LOCAL, lui, n'est jamais la même personne que l'identité de l'annuaire par la
-/// seule parole de celui qui le crée : il prend un autre nom.
-fn ce_que_le_nom_tient_sans_compte(conn: &Connection, nom: &str) -> rusqlite::Result<Option<Value>> {
+/// Un compte LOCAL, lui, n'est jamais la même personne que l'identité de l'annuaire par la seule parole de celui qui
+/// le crée : il prend un autre nom.
+///
+/// `P10.24-t` — LA FÉDÉRATION LIT LA MÊME CHOSE (`idp::oidc::federer_le_nom`) : elle refuse un nom qui tient des lignes
+/// sans compte et que l'annuaire n'a JAMAIS présenté par les en-têtes (le second critère SEUL) ; un nom vu par
+/// l'annuaire reste sa voie légitime.
+pub(crate) fn ce_que_le_nom_tient_sans_compte(conn: &Connection, nom: &str) -> rusqlite::Result<Option<Value>> {
     let a_un_compte: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM user WHERE name=?1)", params![nom], |r| r.get(0))?;
     if a_un_compte {
         return Ok(None);
@@ -285,6 +289,24 @@ pub(crate) const CAUSE_COMPTE_DE_L_ASSISTANT_NON_SUPPRIMABLE: &str = "COMPTE NON
      même réinitialisé, même rétrogradé — jusqu'au redémarrage ; et au redémarrage, sans mot de passe de \
      configuration, le démon repartirait en mode installation, tous les comptes refusés. Pour lui retirer l'accès, \
      réinitialisez son mot de passe : ses sessions tombent. Rien n'est écrit.";
+
+/// `P10.24-s` — LE COMPTE DE L'ADMINISTRATEUR DE L'ASSISTANT NE SE RÉTROGRADE PAS.
+///
+/// MESURÉ LE 2026-09-25 SUR LA FORME D'AVANT (témoins `mpra_`) : `adm` rétrograde `viewer` le compte `wiz3` posé par
+/// l'assistant — 204 ; l'énoncé de rechargement du démarrage (`server/mod.rs`, `… AND role='admin'`, rejoué par le
+/// témoin et épinglé sur sa source) ne rend alors AUCUN administrateur de l'assistant, et sans mot de passe de
+/// configuration l'état redémarré est celui de l'installation (`/api/setup-status` : `configured: false`) : toute l'API
+/// refusée à tous, et l'installation au porteur du prochain jeton d'installation.
+///
+/// DÉCISION : REFUSER, comme la suppression (`P10.24-n`), plutôt que recharger sans condition de rôle. Recharger un
+/// compte d'assistant rétrogradé garderait l'état « installé » sur la foi d'un compte qui n'administre plus — et
+/// l'énoncé de rechargement vit dans `server/mod.rs`, qui n'est pas de ce geste. Le retrait d'accès reste possible :
+/// réinitialiser son mot de passe révoque ses sessions (`P10.23-l`).
+pub(crate) const CAUSE_COMPTE_DE_L_ASSISTANT_NON_RETROGRADABLE: &str = "RÔLE NON CHANGÉ, C'EST L'ADMINISTRATEUR DE \
+     L'INSTALLATION : ce compte a été posé par l'assistant d'installation, et le démon ne le recharge au démarrage que \
+     s'il est administrateur. Rétrogradé, il ne serait plus rechargé : sans mot de passe de configuration, le démon \
+     repartirait en mode installation, tous les comptes refusés. Pour lui retirer l'accès, réinitialisez son mot de \
+     passe : ses sessions tombent. Rien n'est écrit.";
 
 /// `P10.24-p` — LES OBJETS QU'UN COMPTE POSSÈDE PAR SON NOM ET QUI PASSENT À L'AUTEUR DE SA SUPPRESSION (colonne
 /// `owner`). Liste FERMÉE, jamais lue d'un corps : les noms entrent tels quels dans l'énoncé.
@@ -511,6 +533,8 @@ pub(crate) async fn user_update(
 ) -> Response {
     let new_pw = b.get("password").and_then(|v| v.as_str()).map(|s| s.trim()).filter(|s| !s.is_empty());
     let new_role = b.get("role").and_then(|v| v.as_str());
+    // `P10.24-s` — même borne que le refus de suppression de `P10.24-n` : la base qui porte le compte de l'assistant.
+    let base_de_l_assistant = Arc::ptr_eq(&req_db(&st, &au), &st.db);
     // LECTURE ET VALIDATION sous le verrou de la base, RELÂCHÉ avant la preuve : en mode 0 la base de la requête est
     // celle que la preuve relit (`prouver_le_premier_facteur` la verrouille à son tour).
     let (tname, trole, role_change) = {
@@ -522,7 +546,16 @@ pub(crate) async fn user_update(
         // VALIDATION AVANT toute écriture (rôle valide, anti-lockout, longueur mdp) — inchangé, mais hors transaction.
         let role_change: Option<&str> = if let Some(nr) = new_role {
             let role = match nr { "admin" => "admin", "editor" => "editor", "viewer" => "viewer", _ => return (StatusCode::BAD_REQUEST, "rôle invalide (admin|editor|viewer)").into_response() };
-            // anti-lockout : ne pas rétrograder le DERNIER admin
+            // `P10.24-s` — LE COMPTE DE L'ADMINISTRATEUR DE L'ASSISTANT NE SE RÉTROGRADE PAS. Voir
+            // `CAUSE_COMPTE_DE_L_ASSISTANT_NON_RETROGRADABLE`. Jugé par NOM, sur la base qui porte ce compte, avant la
+            // preuve du mot de passe (un corps refusé n'engage aucun essai). La promotion vers `admin` reste permise :
+            // elle répare un compte d'assistant rétrogradé avant ce refus.
+            if role != "admin" && base_de_l_assistant && st.admin.lock().as_ref().is_some_and(|(nom, _)| *nom == tname) {
+                return err_json(StatusCode::BAD_REQUEST, CAUSE_COMPTE_DE_L_ASSISTANT_NON_RETROGRADABLE);
+            }
+            // anti-lockout : ne pas rétrograder le DERNIER admin. `P10.21-r` — lecture ANTICIPÉE (avant la preuve du
+            // mot de passe : un corps refusé n'engage aucun essai) ; elle ne fait plus foi : le verrou est relâché
+            // ensuite, et c'est la relecture DANS la transaction de l'écriture qui décide (plus bas).
             if trole == "admin" && role != "admin" {
                 let admins: i64 = conn.query_row("SELECT COUNT(*) FROM user WHERE role='admin'", [], |r| r.get(0)).unwrap_or(0);
                 if admins <= 1 { return (StatusCode::BAD_REQUEST, "dernier administrateur — rétrogradation refusée").into_response(); }
@@ -549,6 +582,9 @@ pub(crate) async fn user_update(
             return refus;
         }
     }
+    // `P10.21-r` — LA FENÊTRE : le verrou est relâché depuis les lectures ci-dessus (pour la preuve). Un témoin de course
+    // y fait jouer le geste concurrent ; l'anti-verrouillage relu DANS la transaction ci-dessous le rend inoffensif.
+    crate::handlers::transaction_validee::point_de_course(st.db_path.as_str());
     crate::req_conn!(st, au, conn);
     // AUDIT D'IDENTITÉ : changement de rôle ET/OU reset mdp = mutations d'identité -> AUDIT fail-closed transactionnel
     // (un audit PAR type de changement : role_change / password_reset). Un reset mdp ou une escalade vers admin
@@ -559,8 +595,19 @@ pub(crate) async fn user_update(
     // `P10.24-a` — le verrou relâché pour la preuve, les écritures visent le compte LU ET JUGÉ (identifiant ET nom) :
     // un identifiant réattribué entre-temps ne reçoit pas un mot de passe prouvé pour un autre compte.
     let une_ligne = |ecrites: usize| if ecrites == 1 { Ok(()) } else { Err(rusqlite::Error::StatementChangedRows(ecrites)) };
-    let outcome: rusqlite::Result<()> = (|| {
+    // `P10.21-r` — `Ok(false)` : l'anti-verrouillage, relu dans la transaction, refuse la rétrogradation (rien d'écrit).
+    let outcome: rusqlite::Result<bool> = (|| {
         if let Some(role) = role_change {
+            // `P10.21-r` — L'ANTI-VERROUILLAGE QUI FAIT FOI : relu ICI, dans la transaction de l'écriture, sous le verrou
+            // tenu jusqu'au `COMMIT`. MESURÉ le 2026-09-25 sur la forme d'avant (témoins `mpra_`) : `adm` rétrograde
+            // `adm2` pendant que `adm2` rétrograde `adm`, seuls administrateurs — les deux lectures anticipées disaient
+            // « deux », les deux gestes rendaient 204, et il ne restait AUCUN administrateur.
+            if trole == "admin" && role != "admin" {
+                let admins: i64 = conn.query_row("SELECT COUNT(*) FROM user WHERE role='admin'", [], |r| r.get(0))?;
+                if admins <= 1 {
+                    return Ok(false);
+                }
+            }
             une_ligne(conn.execute("UPDATE user SET role=?1 WHERE id=?2 AND name=?3", params![role, id, tname])?)?;
             let sev = if role == "admin" || trole == "admin" { 4 } else { 3 };
             audit_config_change(
@@ -592,10 +639,14 @@ pub(crate) async fn user_update(
                 .to_string(),
             )?;
         }
-        Ok(())
+        Ok(true)
     })();
     match outcome {
-        Ok(()) => {
+        Ok(false) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            (StatusCode::BAD_REQUEST, "dernier administrateur — rétrogradation refusée").into_response()
+        }
+        Ok(true) => {
             // `P10.24-x` — un `COMMIT` refusé ne change ni le rôle ni le mot de passe : 503 nommé.
             if let Err(e) = valider_la_transaction(&conn) {
                 eprintln!("[comptes] WARN modification du compte '{tname}' NON validée : {e}");

@@ -132,10 +132,9 @@ SITES_DE_ROUTE_TOLERES = {
     # (`db`, 500 `{ok:false, refusal, message}`), un contrat propre que la forme commune ne rend pas. Le reprendre
     # demande une variante neuve et sa face console — clé proposée par le lot `P10.28-d`.
     ("daemon/src/purge.rs", "purge_apply"): ("BEGIN littéral",),
-    # `scim_group_patch` (`PATCH /scim/v2/Groups/{id}`) : le refus est NOMMÉ (503, `scim_refuser_a_rejouer`, au format
-    # d'erreur SCIM — RFC 7644 —, que `err_json` ne sert pas) ; le journal ne sépare pas les deux causes d'un `BEGIN`
-    # refusé. Reste de la même clé.
-    ("daemon/src/scim.rs", "scim_group_patch"): ("Txn::begin",),
+    # `P10.21-r` — `scim_group_patch` EST RETIRÉ (2026-09-25) : il ouvre sa transaction par la forme commune d'un geste
+    # gardé (`transaction_validee::jouer_le_geste_garde`, qui passe par `ouvrir_sa_transaction` et dit au journal les deux
+    # causes d'un `BEGIN` refusé) ; son refus reste le 503 au format d'erreur SCIM (`scim_refuser_a_rejouer`).
     # `attach_runbook` (aide de `POST /api/cases/{id}/runbook`) : refus rendu en 503 par son appelant
     # (`RefusDAttache::EtapesNonEcrites`), sans la phrase d'une transaction non prise ni le journal des deux causes.
     ("daemon/src/handlers/incidents.rs", "attach_runbook"): ("Txn::begin",),

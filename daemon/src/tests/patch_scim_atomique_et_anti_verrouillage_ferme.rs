@@ -421,8 +421,11 @@ mod patch_scim_atomique_et_anti_verrouillage_ferme {
         pafv_refus_scim("(c) GET, droits illisibles", statut_get, &v_get, CAUSE_SCIM_UTILISATEUR_ILLISIBLE);
         pafv_refus_scim("(c) PUT active=true, droits illisibles", statut_put, &v_put, CAUSE_SCIM_UTILISATEUR_ILLISIBLE);
 
-        // (d) LE GESTE FAIT, SA REPRÉSENTATION NON RELUE.
-        pafv_refuser_la_lecture_des_roles(&st, 0);
+        // (d) LE GESTE FAIT, SA REPRÉSENTATION NON RELUE. ADAPTÉ PAR `P10.21-r` : `POST /Users` lit désormais, AVANT
+        // d'écrire, le rôle actuel du membre (un droit qui écraserait celui du dernier administrateur est refusé) ; cette
+        // première lecture refusée rendrait le 503 « non établi », rien d'écrit. La panne commence donc à la SECONDE
+        // lecture des rôles — celle de la représentation, après l'écriture —, qui est la propriété de ce volet.
+        pafv_refuser_la_lecture_des_roles(&st, 1);
         let (statut, v) = tok_resp_json(
             scim_user_create(State(st.clone()), Extension(pafv_ctx()), Json(json!({ "userName": "pafv-ines", "groups": [{ "value": "viewer" }] }))).await,
         )

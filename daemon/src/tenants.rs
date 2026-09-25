@@ -596,41 +596,44 @@ pub(crate) async fn grant_set(State(st): State<AppState>, Extension(au): Extensi
     // `P10.21-o` — LES DEUX LECTURES DE L'ANTI-LOCKOUT REFUSENT QUAND ELLES N'ONT PAS EU LIEU. `unwrap_or(false)`
     // lisait un rôle illisible comme « pas administrateur » : l'écriture qui suit passait, et le dernier
     // administrateur du tenant était rétrogradé ; un compte non lu valait zéro, donc « dernier administrateur ».
-    if !au.is_superadmin && effective_base_role(&role) != "admin" {
-        use rusqlite::OptionalExtension as _;
-        let ancien_role: rusqlite::Result<Option<String>> = {
-            let conn = cp.conn.lock();
-            conn.query_row(
-                "SELECT g.role FROM \"grant\" g JOIN platform_user p ON p.id=g.user_id \
-                 WHERE g.tenant_id=?1 AND p.name=?2",
-                params![id, user],
-                |r| r.get::<_, String>(0),
-            )
-            .optional()
-        };
-        let was_admin = match ancien_role {
-            Ok(r) => r.is_some_and(|r| effective_base_role(&r) == "admin"),
-            Err(e) => return refuser_le_geste_sans_anti_verrouillage_lu(&e.to_string()),
-        };
-        if was_admin {
-            match tenant_admin_grant_count(cp, &id) {
-                Ok(n) if n <= 1 => return (StatusCode::BAD_REQUEST, "dernier administrateur du tenant — rétrogradation refusée").into_response(),
-                Ok(_) => {}
-                Err(e) => return refuser_le_geste_sans_anti_verrouillage_lu(&e.to_string()),
-            }
-        }
+    // `P10.21-r` — LA MATÉRIALISATION DU COMPTE, LA GARDE ET L'ÉCRITURE DANS UNE TRANSACTION, sous un seul verrou
+    // (`jouer_le_geste_garde`). Elles vivaient sous quatre verrous successifs : MESURÉ le 2026-09-25 (témoins `mpra_`),
+    // deux administrateurs d'un tenant qui se rétrogradaient l'un l'autre rendaient tous deux 200, zéro administrateur.
+    use crate::handlers::transaction_validee::{jouer_le_geste_garde, point_de_course, IssueDuGesteGarde as Issue};
+    enum RefusDuDroit {
+        DernierAdministrateur,
+        NonEtabli(String),
+        Materialisation,
+        NonEcrit(String),
     }
-    let Some(uid) = ensure_platform_user(cp, &user) else {
-        return (StatusCode::INTERNAL_SERVER_ERROR, "échec de matérialisation du compte plateforme").into_response();
-    };
-    {
+    let issue = {
         let conn = cp.conn.lock();
-        if let Err(e) = conn.execute(
-            "INSERT OR REPLACE INTO \"grant\"(user_id,tenant_id,role) VALUES(?1,?2,?3)",
-            params![uid, id, role],
-        ) {
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("échec du grant: {e}")).into_response();
+        jouer_le_geste_garde(&conn, "tenants", "pose d'un droit de tenant", |conn| {
+            let uid = ensure_platform_user_conn(conn, &user).ok_or(RefusDuDroit::Materialisation)?;
+            if !au.is_superadmin {
+                match le_geste_retirerait_le_dernier_administrateur(conn, &id, &uid, Some(&role)) {
+                    Ok(false) => {}
+                    Ok(true) => return Err(RefusDuDroit::DernierAdministrateur),
+                    Err(e) => return Err(RefusDuDroit::NonEtabli(e.to_string())),
+                }
+            }
+            point_de_course(&cp.db_path);
+            conn.execute("INSERT OR REPLACE INTO \"grant\"(user_id,tenant_id,role) VALUES(?1,?2,?3)", params![uid, id, role])
+                .map_err(|e| RefusDuDroit::NonEcrit(e.to_string()))?;
+            Ok(())
+        })
+    };
+    match issue {
+        Issue::Valide(()) => {}
+        Issue::Refuse(RefusDuDroit::DernierAdministrateur) => {
+            return (StatusCode::BAD_REQUEST, "dernier administrateur du tenant — rétrogradation refusée").into_response()
         }
+        Issue::Refuse(RefusDuDroit::NonEtabli(cause)) => return refuser_le_geste_sans_anti_verrouillage_lu(&cause),
+        Issue::Refuse(RefusDuDroit::Materialisation) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "échec de matérialisation du compte plateforme").into_response()
+        }
+        Issue::Refuse(RefusDuDroit::NonEcrit(e)) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("échec du grant: {e}")).into_response(),
+        Issue::NonOuvert(e) | Issue::NonValide(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("échec du grant: {e}")).into_response(),
     }
     // `P10.20-z` — le grant est écrit ; une ligne manquante au journal de contrôle est dite à côté du succès.
     let maillon = control_ledger_append(&st, "grant.set", &au.name, &id, &json!({ "user": user, "role": role, "by": au.name }).to_string());
@@ -667,43 +670,65 @@ pub(crate) async fn grant_delete(State(st): State<AppState>, Extension(au): Exte
         return (StatusCode::INTERNAL_SERVER_ERROR, "control-plane indisponible").into_response();
     };
     // Le grant existe-t-il, et est-ce le rôle admin ? (existence + anti-lockout).
-    let existing_role: Option<String> = {
-        let conn = cp.conn.lock();
-        conn.query_row(
-            "SELECT g.role FROM \"grant\" g JOIN platform_user p ON p.id=g.user_id \
-             WHERE g.tenant_id=?1 AND p.name=?2",
-            params![id, user],
-            |r| r.get::<_, String>(0),
-        )
-        .ok()
-    };
-    let Some(existing_role) = existing_role else {
-        return (StatusCode::NOT_FOUND, "grant inconnu").into_response();
-    };
     // #64 : autorité admin EFFECTIVE (littéral OU rôle composable base=admin) -> cohérent avec l'anti-lockout
     // de scim.rs/grant demote ; retirer le dernier `gov-admin` d'un tenant serait sinon un lockout DoS.
     // `P10.21-o` — un compte d'administrateurs non lu refuse en 503 nommé : il ne vaut plus zéro, donc il ne
     // fait plus dire « dernier administrateur » à un tenant dont personne n'a lu les droits.
-    if !au.is_superadmin && effective_base_role(&existing_role) == "admin" {
-        match tenant_admin_grant_count(cp, &id) {
-            Ok(n) if n <= 1 => return (StatusCode::BAD_REQUEST, "dernier administrateur du tenant — retrait refusé").into_response(),
-            Ok(_) => {}
-            Err(e) => return refuser_le_geste_sans_anti_verrouillage_lu(&e.to_string()),
-        }
-    }
     // `P10.21-g` — LE RETRAIT EST COMPTÉ AVANT D'ÊTRE ATTESTÉ. Avalé, un retrait refusé par la base
     // laissait le droit EN PLACE pendant que le journal de contrôle, l'événement du tenant et la réponse
     // (204) disaient l'accès retiré.
-    let retrait = {
+    // `P10.21-r` — L'EXISTENCE, LA GARDE ET LE RETRAIT DANS UNE TRANSACTION, sous un seul verrou (`jouer_le_geste_garde`).
+    // Ils vivaient sous trois verrous successifs : MESURÉ le 2026-09-25 (témoins `mpra_`), deux administrateurs d'un
+    // tenant qui se retiraient l'un l'autre rendaient tous deux 204, zéro administrateur. La lecture d'existence
+    // ratée n'est plus un « grant inconnu » (404) : l'anti-verrouillage n'a pas pu lire, 503 nommé.
+    use crate::handlers::transaction_validee::{jouer_le_geste_garde, point_de_course, IssueDuGesteGarde as Issue};
+    enum RefusDuRetrait {
+        Inconnu,
+        DernierAdministrateur,
+        NonEtabli(String),
+    }
+    let issue = {
         let conn = cp.conn.lock();
-        EcritureDuPlanDeControle::from(conn.execute(
-            "DELETE FROM \"grant\" WHERE tenant_id=?1 AND user_id=(SELECT id FROM platform_user WHERE name=?2)",
-            params![id, user],
-        ))
+        jouer_le_geste_garde(&conn, "tenants", "retrait d'un droit de tenant", |conn| {
+            use rusqlite::OptionalExtension as _;
+            let existant: Option<String> = conn
+                .query_row(
+                    "SELECT g.role FROM \"grant\" g JOIN platform_user p ON p.id=g.user_id \
+                     WHERE g.tenant_id=?1 AND p.name=?2",
+                    params![id, user],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(|e| RefusDuRetrait::NonEtabli(e.to_string()))?;
+            let Some(existant) = existant else { return Err(RefusDuRetrait::Inconnu) };
+            if !au.is_superadmin && effective_base_role(&existant) == "admin" {
+                match effective_admin_grant_count_conn(conn, &id) {
+                    Ok(n) if n <= 1 => return Err(RefusDuRetrait::DernierAdministrateur),
+                    Ok(_) => {}
+                    Err(e) => return Err(RefusDuRetrait::NonEtabli(e.to_string())),
+                }
+            }
+            point_de_course(&cp.db_path);
+            // Le retrait est CLASSÉ ici et jugé plus bas, hors de la transaction : refusé, il n'a rien écrit, et la
+            // transaction qui se ferme ne porte que les lectures de la garde.
+            Ok(EcritureDuPlanDeControle::from(conn.execute(
+                "DELETE FROM \"grant\" WHERE tenant_id=?1 AND user_id=(SELECT id FROM platform_user WHERE name=?2)",
+                params![id, user],
+            )))
+        })
+    };
+    let retrait = match issue {
+        Issue::Valide(retrait) => retrait,
+        Issue::Refuse(RefusDuRetrait::Inconnu) => return (StatusCode::NOT_FOUND, "grant inconnu").into_response(),
+        Issue::Refuse(RefusDuRetrait::DernierAdministrateur) => {
+            return (StatusCode::BAD_REQUEST, "dernier administrateur du tenant — retrait refusé").into_response()
+        }
+        Issue::Refuse(RefusDuRetrait::NonEtabli(cause)) => return refuser_le_geste_sans_anti_verrouillage_lu(&cause),
+        Issue::NonOuvert(e) | Issue::NonValide(e) => return refuser_le_geste_non_ecrit(CAUSE_RETRAIT_DE_DROIT_NON_ECRIT, &e.to_string()),
     };
     match retrait {
         EcritureDuPlanDeControle::Ecrite => {}
-        // Le droit existait à la lecture ci-dessus et n'existe plus : retiré entre-temps.
+        // Lu dans la même transaction que l'existence : ne peut plus arriver ; dit comme avant si la base le rendait.
         EcritureDuPlanDeControle::AucuneLigne => return (StatusCode::NOT_FOUND, "grant inconnu").into_response(),
         EcritureDuPlanDeControle::Refusee(cause) => return refuser_le_geste_non_ecrit(CAUSE_RETRAIT_DE_DROIT_NON_ECRIT, &cause),
     }

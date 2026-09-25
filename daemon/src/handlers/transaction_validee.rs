@@ -9,7 +9,92 @@
 //! (`P10.27-g`) est la sonde d'une transaction laissée ouverte ; `ouvrir_la_transaction_du_geste` (`P10.28-p`) est la
 //! forme d'une ROUTE qui ouvre sa transaction : `ouvrir_sa_transaction`, et un refus en 503 nommé ;
 //! `ouvrir_le_garde_du_geste` (`P10.28-d`) est la même forme pour une route qui l'ouvre par le garde `Txn`.
+//! `jouer_le_geste_garde` (`P10.21-r`) est la forme d'un geste dont la GARDE (une lecture qui peut refuser) et
+//! l'ÉCRITURE qu'elle autorise vivent dans UNE transaction, sous un seul verrou ; `point_de_course` est le lieu où un
+//! témoin de course fait jouer le geste concurrent (inerte hors `cfg(test)`).
 use crate::*;
+
+/// `P10.21-r` — CE QUE REND UN GESTE GARDÉ (voir `jouer_le_geste_garde`). Le jeter serait taire un refus.
+#[must_use]
+#[derive(Debug)]
+pub(crate) enum IssueDuGesteGarde<T, R> {
+    /// La garde a permis, l'écriture est faite, la transaction est VALIDÉE.
+    Valide(T),
+    /// Le corps a refusé (la garde, ou une écriture qu'il a comptée) : la transaction est ANNULÉE, rien n'est écrit.
+    Refuse(R),
+    /// Le `BEGIN` refusé, dit au journal par `ouvrir_sa_transaction` : rien n'est lu ni écrit.
+    NonOuvert(rusqlite::Error),
+    /// Le `COMMIT` refusé : `valider_la_transaction` l'a annulé et l'a dit ; rien n'est écrit.
+    NonValide(rusqlite::Error),
+}
+
+/// `P10.21-r` — LA GARDE ET L'ÉCRITURE QU'ELLE AUTORISE, DANS LA MÊME TRANSACTION.
+///
+/// LE DÉFAUT, MESURÉ LE 2026-09-25 SUR LA FORME D'AVANT (témoins `mpra_`). L'anti-verrouillage du dernier
+/// administrateur d'un tenant (SCIM `PUT active=false` et `DELETE`, `grant_set`, `grant_delete`) lisait le rôle visé et
+/// le compte des administrateurs sous un verrou du plan de contrôle, le RELÂCHAIT, puis écrivait sous un second : deux
+/// retraits concurrents des deux derniers administrateurs lisaient chacun « il en reste deux » et passaient tous les
+/// deux — le tenant n'avait plus d'administrateur. `user_update` (mode 0) avait la même fenêtre, ouverte pour la preuve
+/// du mot de passe actuel.
+///
+/// LA FORME : `corps` reçoit la connexion DÉJÀ en transaction (`BEGIN IMMEDIATE` par `ouvrir_sa_transaction`) ; il lit
+/// sa garde, écrit, et rend `Ok` (validé ici par `valider_la_transaction`) ou `Err` (annulé ici). L'appelant TIENT le
+/// verrou de `conn` de l'appel au retour : aucune écriture d'un autre geste ne s'intercale entre la lecture de la garde
+/// et l'écriture — ni de ce processus (le verrou), ni d'un autre (le verrou d'écriture de SQLite, pris au `BEGIN`).
+/// Un `ROLLBACK` refusé n'est pas une information (voir `valider_la_transaction`).
+pub(crate) fn jouer_le_geste_garde<T, R>(
+    conn: &Connection,
+    journal: &str,
+    geste: &str,
+    corps: impl FnOnce(&Connection) -> Result<T, R>,
+) -> IssueDuGesteGarde<T, R> {
+    if let Err(refus) = ouvrir_sa_transaction(conn, journal, geste) {
+        return IssueDuGesteGarde::NonOuvert(refus);
+    }
+    match corps(conn) {
+        Ok(fait) => match valider_la_transaction(conn) {
+            Ok(()) => IssueDuGesteGarde::Valide(fait),
+            Err(refus) => IssueDuGesteGarde::NonValide(refus),
+        },
+        Err(refus) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            if !conn.is_autocommit() {
+                eprintln!("[{journal}] ERREUR {geste} : transaction toujours ouverte après un ROLLBACK — l'écrivain est bloqué");
+            }
+            IssueDuGesteGarde::Refuse(refus)
+        }
+    }
+}
+
+/// `P10.21-r` — LE POINT DE COURSE : posé, dans un geste qui garde le dernier administrateur, ENTRE la lecture de la
+/// garde et l'écriture qu'elle autorise. Hors `cfg(test)` il ne fait RIEN. Sous `cfg(test)`, il appelle — une seule
+/// fois, puis l'oublie — le crochet qu'un témoin a posé pour la base `cle` (son chemin : deux témoins parallèles ne se
+/// croisent pas). Le crochet y fait jouer le geste concurrent ; ce qu'il PEUT faire dépend de ce que le geste tient à
+/// cet instant — c'est la propriété que le témoin mesure (voir `poser_un_crochet_de_course`).
+#[inline]
+pub(crate) fn point_de_course(cle: &str) {
+    #[cfg(test)]
+    {
+        let crochet = CROCHETS_DE_COURSE.get_or_init(Default::default).lock().remove(cle);
+        if let Some(crochet) = crochet {
+            crochet();
+        }
+    }
+    #[cfg(not(test))]
+    let _ = cle;
+}
+
+#[cfg(test)]
+type CrochetDeCourse = Box<dyn FnOnce() + Send>;
+
+#[cfg(test)]
+static CROCHETS_DE_COURSE: std::sync::OnceLock<Mutex<HashMap<String, CrochetDeCourse>>> = std::sync::OnceLock::new();
+
+/// TÉMOINS SEULEMENT — pose le crochet que `point_de_course(cle)` appellera une fois.
+#[cfg(test)]
+pub(crate) fn poser_un_crochet_de_course(cle: &str, crochet: impl FnOnce() + Send + 'static) {
+    CROCHETS_DE_COURSE.get_or_init(Default::default).lock().insert(cle.to_string(), Box::new(crochet));
+}
 
 /// `P10.26-s` — UN GESTE N'ÉCRIT QUE DANS SA PROPRE TRANSACTION, OU IL N'ÉCRIT RIEN.
 ///

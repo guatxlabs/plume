@@ -1,6 +1,6 @@
 // sources.js — extracted from app.js (DEEP state-container split).
 // Sources (inventaire + métadonnées d'affichage) + mutations de métadonnées (editor+, auditées).
-import { $, LANG, apiSend, confirmModal, effacerLeRefusDUnGeste, fetchInto, fmtTs, humanAge, ic, modal, pagedList, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, socRole, toast, faceDansLaLangue, ilYA } from './core.js';
+import { $, LANG, apiSend, confirmModal, effacerLeRefusDUnGeste, fetchInto, fmtTs, humanAge, ic, modal, pagedList, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, socRole, toast, faceDansLaLangue, ilYA, noeudDuRefusDUneLecture, unRefusServiEnDeuxCents } from './core.js';
 // `P10.29-c` — LES TEXTES COMPOSÉS DE L'INVENTAIRE DES SOURCES, DANS LES DEUX LANGUES (témoin 120c : l'invite des
 // sources non déclarées, « déclarée par … le … » et deux titres de fenêtre restaient français sous `LANG='en'`).
 const MOTS_DE_L_INVENTAIRE_DES_SOURCES = {
@@ -13,6 +13,8 @@ const MOTS_DE_L_INVENTAIRE_DES_SOURCES = {
   declaree_par_la_sonde: { fr: 'déclarée par la sonde « {sonde} »', en: 'declared by the probe “{sonde}”' },
   editer: { fr: 'Éditer : {source}', en: 'Edit: {source}' },
   cadence_attendue: { fr: 'Cadence attendue : {source}', en: 'Expected cadence: {source}' },
+  // `P10.29-r` — ce que la lecture refusée n'a pas servi, nommé devant sa face.
+  inventaire: { fr: 'Inventaire des sources', en: 'Source inventory' },
 };
 
 // ============ SOURCES (inventaire + métadonnées d'affichage) ============
@@ -185,12 +187,12 @@ function renderSourcesInventory(wrap, d) {
   // `P10.7-g` (lot 98) — UN INVENTAIRE NON LU N'EST PAS UNE INGESTION EN PANNE. Le démon sert `ok: false`,
   // `pipeline_fresh: null` et la cause sous `error` : on écrit la cause, et rien d'autre — ni bandeau de panne,
   // ni note de périmètre, ni tableau vide qui se lirait « aucune source ».
+  // `P10.29-r` — la cause sous la face nommée d'une lecture non servie (MESURÉ AVANT CE LOT, témoin 121rr : la cause NUE, seule
+  // dans son nœud — ni ce qui n'est pas lu, ni que rien n'en est établi).
   if (d && d.error) {
     wrap.replaceChildren();
-    const aveu = document.createElement('div');
-    aveu.className = 'bad';
+    const aveu = noeudDuRefusDUneLecture(unRefusServiEnDeuxCents(d), faceDansLaLangue(MOTS_DE_L_INVENTAIRE_DES_SOURCES.inventaire), 'bad');
     aveu.style.cssText = 'margin:0 0 9px;font-size:12px';
-    aveu.textContent = String(d.error);
     wrap.appendChild(aveu);
     return;
   }

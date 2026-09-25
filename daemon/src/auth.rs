@@ -1143,8 +1143,15 @@ static REFUS_DE_L_ANNUAIRE_DERNIERE_TRACE: std::sync::OnceLock<Mutex<HashMap<Cle
 /// entrent. `P10.28-v` — la fédération l'appelle aussi (`RefusDeLaFederation::servir`), SANS tenir la connexion
 /// d'écriture (la trace la prend ici).
 pub(crate) fn tracer_le_refus_de_l_annuaire(st: &AppState, refus: &RefusDeLAnnuaire, ip: &str, porte: PorteDeLAnnuaire) {
-    let nom: String = refus.nom().chars().take(crate::acces_observe::ACCES_OBSERVE_NOM_MAX).collect();
-    let cle = (st.db_path.to_string(), nom.clone(), refus.code(), porte);
+    tracer_un_refus_de_l_annuaire(st, refus.nom(), refus.code(), ip, porte)
+}
+
+/// `P10.24-t` — LA MÊME TRACE, PAR (nom, code) : la fédération refuse aussi un nom qui tient des lignes sans compte
+/// (`idp::oidc::federer_le_nom`), un refus que la règle unique des annuaires ne rend pas (le chemin d'en-têtes ne le
+/// joue pas). Corps extrait tel quel de `tracer_le_refus_de_l_annuaire`, qui y délègue.
+pub(crate) fn tracer_un_refus_de_l_annuaire(st: &AppState, nom: &str, code: &'static str, ip: &str, porte: PorteDeLAnnuaire) {
+    let nom: String = nom.chars().take(crate::acces_observe::ACCES_OBSERVE_NOM_MAX).collect();
+    let cle = (st.db_path.to_string(), nom.clone(), code, porte);
     let maintenant = now();
     let registre = REFUS_DE_L_ANNUAIRE_DERNIERE_TRACE.get_or_init(|| Mutex::new(HashMap::new()));
     if registre.lock().get(&cle).is_some_and(|&t| maintenant - t < REFUS_DE_L_ANNUAIRE_FENETRE_S) {
@@ -1152,12 +1159,12 @@ pub(crate) fn tracer_le_refus_de_l_annuaire(st: &AppState, refus: &RefusDeLAnnua
     }
     let (message, champs) = match porte {
         PorteDeLAnnuaire::EnTetes => (
-            format!("identité de l'annuaire '{nom}' refusée ({}) depuis {ip}", refus.code()),
-            json!({ "action": "annuaire_refuse", "username": nom, "cause": refus.code(), "src_ip": ip }),
+            format!("identité de l'annuaire '{nom}' refusée ({}) depuis {ip}", code),
+            json!({ "action": "annuaire_refuse", "username": nom, "cause": code, "src_ip": ip }),
         ),
         _ => (
-            format!("identité de l'annuaire '{nom}' refusée ({}) à la fédération ({}) depuis {ip}", refus.code(), porte.code()),
-            json!({ "action": "annuaire_refuse", "username": nom, "cause": refus.code(), "src_ip": ip, "porte": porte.code() }),
+            format!("identité de l'annuaire '{nom}' refusée ({}) à la fédération ({}) depuis {ip}", code, porte.code()),
+            json!({ "action": "annuaire_refuse", "username": nom, "cause": code, "src_ip": ip, "porte": porte.code() }),
         ),
     };
     let (maillon, ecriture) = {

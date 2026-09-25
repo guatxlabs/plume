@@ -3,7 +3,7 @@
 // Extrait d'app.js en PURE MOVE ; depuis P11.1 : lien de recherche servi par le démon, barre d'actions unique.
 // Le cycle app<->module est benin : les fonctions importees d'app.js ne sont appelees qu'a
 // l'EXECUTION (handlers/async apres await), jamais a l'evaluation du module.
-import { $, esc, sev, fmtTs, ic, withBusy, api, apiSend, makePager, exportBar, confirmModal, modal, LANG, toast, phraseDuRefusDuDemon, laPageEstAuDelaDuTotal, noeudDeLaPageVideAuDelaDuTotal, faceDansLaLangue, noeudDuRefusDUneLecture } from './core.js';
+import { $, esc, sev, fmtTs, ic, withBusy, api, apiSend, makePager, exportBar, confirmModal, modal, LANG, toast, phraseDuRefusDuDemon, laPageEstAuDelaDuTotal, noeudDeLaPageVideAuDelaDuTotal, faceDansLaLangue, noeudDuRefusDUneLecture, phraseDUneReponseQuiNeVientPasDuDemon } from './core.js';
 import { libelleDeTechnique } from './catalogue_attack.js'; // `P11.6-c` : nom dérivé du catalogue servi, ou motif de son absence
 import { S } from './state.js';
 import { banIp, runQuery, updateZoomBadge } from './viz.js';
@@ -397,8 +397,12 @@ function cleDuRefusDAcquittement(portee, acquittees, e) {
 // une seule chaîne — la cause entre guillemets, telle que le démon l'a écrite, ou son seul code
 // quand il n'en nomme aucune (l'acquittement unitaire refuse par un cinq cents NU).
 function phraseDeLAcquittementRefuse(portee, acquittees, e) {
-  const cle = cleDuRefusDAcquittement(portee, acquittees, e);
   const valeurs = { n: acquittees, total: portee.ids ? portee.ids.length : 0 };
+  // `P10.23-q` — une réponse qui ne vient pas du démon (passerelle, demande non aboutie) ne reçoit pas le cadre « REFUSÉ … Le
+  // démon a répondu — » : sa propre phrase ; une boucle interrompue garde ce que la console a compté elle-même.
+  const horsDuDemon = phraseDUneReponseQuiNeVientPasDuDemon(e);
+  if (horsDuDemon) return !portee.toutes && acquittees > 0 ? motDeLAcquittement('acquittement_interrompu_hors_du_demon', valeurs) + ' « ' + horsDuDemon + ' »' : horsDuDemon;
+  const cle = cleDuRefusDAcquittement(portee, acquittees, e);
   return motDeLAcquittement(cle, valeurs) + ' « ' + phraseDuRefusDuDemon(e) + ' »';
 }
 
@@ -588,6 +592,10 @@ const ACQUITTEMENT_MOTS = {
   acquittement_interrompu: {
     fr: 'Acquittement INTERROMPU : {n} alerte(s) sur {total} acquittée(s), les suivantes n\'ont PAS été envoyées et restent actives. Le démon a refusé la suivante et a répondu —',
     en: 'Acknowledgement INTERRUPTED: {n} of {total} alert(s) acknowledged, the following ones were NOT sent and remain active. The daemon refused the next one and answered —',
+  },
+  acquittement_interrompu_hors_du_demon: {
+    fr: 'Acquittement INTERROMPU : {n} alerte(s) sur {total} acquittée(s), les suivantes n\'ont PAS été envoyées et restent actives. La suivante n\'a pas reçu de réponse du démon —',
+    en: 'Acknowledgement INTERRUPTED: {n} of {total} alert(s) acknowledged, the following ones were NOT sent and remain active. The next one got no answer from the daemon —',
   },
   acquittement_refuse: {
     fr: 'Acquittement REFUSÉ : le démon n\'a pas confirmé ce geste, et la console ne peut pas dire ce qui a quitté la file — la liste relue le dit. Le démon a répondu —',

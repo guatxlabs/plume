@@ -13,7 +13,7 @@
 // de le supposer ; la MÉMOIRE d'un choix d'affichage vient de `prefs.js`. Le sens des imports va de
 // freshness vers sources, jamais l'inverse : sources.js ne dépend que de core.js, donc aucun cycle neuf
 // n'est introduit (celui qui existe, app<->freshness, reste le seul, et il est sans danger — cf. plus haut).
-import { $, api, colComparator, disclosure, esc, fmtTs, ic, LANG } from './core.js';
+import { $, api, colComparator, disclosure, esc, fmtTs, ic, LANG, faceDansLaLangue } from './core.js';
 import { S, ecrireSansDireLeRefus, RAISONS_DE_SILENCE } from './state.js';
 import { setAlertSourceFilter } from './app.js';
 import { ETAT_DE_SOURCE, etatDeSource, rangDEtatDeSource } from './sources.js';
@@ -156,6 +156,11 @@ function renvoi(destination) {
   return `<a class="capsum-link" href="${esc(destination)}" title="${esc(r.titre)}">${esc(r.nom)} →</a>`;
 }
 
+// `P10.29-r` — la face d'une lecture de sondes que le démon n'a pas faite cette fois-ci (`status: 'non_lu'`, cause sous `error`).
+const MOTS_DES_SONDES_NON_LUES = {
+  fr: "Sondes NON LUES cette fois-ci : le démon n'a pas pu les lire, rien n'est établi sur leur état. Le démon en nomme la cause —",
+  en: 'Probes NOT READ this time: the daemon could not read them, nothing is established about their state. The daemon names the cause —',
+};
 async function renderIntegrations() {
   const b = $('#integrations .body'); if (!b) return;
   let d; try { d = await api('/integrations'); } catch (e) { return; }
@@ -201,7 +206,9 @@ async function renderIntegrations() {
   // MÊME fabrique : « déclarés = branchés + muets + en attente » se lisait déjà en commentaire ici, et
   // la portée « tous hôtes confondus » RECOUPE ces trois parts (une sonde de cette portée est déjà
   // comptée dans son état) sans jamais les partager.
-  const aveu = d.error ? `<div class="kv"><span class="muted">${esc(String(d.error))}</span></div>` : '';
+  // `P10.29-r` — la cause servie sous sa face, et non NUE (MESURÉ AVANT CE LOT, témoin 121rr : la cause seule sous la rangée) :
+  // la face dit que des sondes n'ont pas été lues cette fois-ci, et que rien n'est établi sur leur état.
+  const aveu = d.error ? `<div class="kv"><span class="muted" data-sondes-non-lues="1">${esc(faceDansLaLangue(MOTS_DES_SONDES_NON_LUES))} « ${esc(String(d.error).trim())} »</span></div>` : '';
   const capsum = `<div class="capsum">` + rangeeDeChiffres([
     { famille: 'total', valeur: total, libelle: LANG === 'en' ? 'declared sensors' : 'capteurs déclarés',
       titre: LANG === 'en' ? 'A sensor is a PROBE TYPE, not a source: the total is shared by the three terms joined by « + ». What follows « of which » is taken from the same population and is not part of the addition.' : 'Un capteur est un TYPE de sonde, pas une source : le total se partage entre les trois termes reliés par « + ». Ce qui suit « dont » est pris sur la même population et n\'entre pas dans l\'addition.' },

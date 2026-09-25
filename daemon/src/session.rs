@@ -7,7 +7,8 @@
 //! `avancer_l_epoque_du_compte`), liée à la session et au ticket MFA. `P10.23-m` : la preuve du premier
 //! facteur (`prouver_le_premier_facteur`), partagée par l'enrôlement MFA et le changement du mot de passe.
 //! `P10.24-a` : le jugement du mot de passe actuel et ses refus nommés (`juger_le_mot_de_passe_actuel`), partagés
-//! par `/api/password` et par `/api/users/{id}` quand la cible est l'appelant.
+//! par `/api/password` et par `/api/users/{id}` quand la cible est l'appelant. `P10.24-b` : `/api/password` change le
+//! mot de passe de l'APPELANT (`ou_vit_le_mot_de_passe_de`), et refuse nommément ce qu'il ne peut pas changer.
 use crate::*;
 use rusqlite::OptionalExtension;
 
@@ -665,30 +666,67 @@ pub(crate) const CAUSE_MOT_DE_PASSE_ACTUEL_EXIGE: &str = "MOT DE PASSE ACTUEL EX
      compte. Présentez le mot de passe actuel (champ `current`) à côté du nouveau. Rien n'est écrit, aucun échec \
      n'est compté.";
 
-/// `P10.23-m` — le mot de passe actuel présenté n'est pas celui du compte administrateur.
+/// `P10.23-m` — le mot de passe actuel présenté n'est pas celui du compte. `P10.24-b` : le compte est celui de
+/// l'APPELANT (la phrase disait « du compte administrateur », que `/api/password` visait quel que soit l'appelant).
 pub(crate) const CAUSE_MOT_DE_PASSE_ACTUEL_REFUSE: &str = "MOT DE PASSE ACTUEL REFUSÉ, MOT DE PASSE NON CHANGÉ : \
-     le mot de passe présenté n'est pas celui du compte administrateur. L'échec est compté au MÊME verrou que la \
-     connexion (compte, adresse) et inscrit au registre ; rien n'est écrit.";
+     le mot de passe présenté n'est pas celui de ce compte. L'échec est compté au MÊME verrou que la connexion \
+     (compte, adresse) et inscrit au registre ; rien n'est écrit.";
 
 /// `P10.23-m` — le verrou (compte, adresse) de la connexion est posé : le mot de passe actuel n'est pas examiné.
 pub(crate) const CAUSE_MOT_DE_PASSE_ACTUEL_VERROUILLE: &str = "TROP D'ÉCHECS DU MOT DE PASSE SUR CE COMPTE \
      DEPUIS CETTE ADRESSE : le verrou est celui de la connexion (en-tête Retry-After) ; le mot de passe actuel \
      n'est pas examiné et rien n'est écrit.";
 
-/// `P10.23-m` — le compte administrateur visé n'a pas de mot de passe local : il n'y a rien à « changer ».
-pub(crate) const CAUSE_ADMINISTRATEUR_SANS_MOT_DE_PASSE_LOCAL: &str = "MOT DE PASSE NON CHANGÉ, LE COMPTE \
-     ADMINISTRATEUR N'A PAS DE MOT DE PASSE LOCAL : aucun mot de passe actuel ne peut être prouvé. Le premier \
-     mot de passe administrateur se pose par l'installation (`/api/setup`, jeton d'installation). Rien n'est écrit \
+/// `P10.24-b` — l'APPELANT de `/api/password` n'a pas de mot de passe local : identité de l'annuaire servie par les
+/// en-têtes SSO (sans ligne dans la table des comptes), compte fédéré (OIDC, SAML, LDAP) ou hachage vide. Il remplace
+/// `CAUSE_ADMINISTRATEUR_SANS_MOT_DE_PASSE_LOCAL` (`P10.23-m`), qui parlait du compte administrateur VISÉ.
+pub(crate) const CAUSE_APPELANT_SANS_MOT_DE_PASSE_LOCAL: &str = "MOT DE PASSE NON CHANGÉ, VOTRE COMPTE N'A PAS DE MOT \
+     DE PASSE LOCAL : il s'authentifie par l'annuaire (en-têtes SSO, OIDC, SAML ou LDAP) — son mot de passe se change \
+     dans l'annuaire —, ou son mot de passe local est vide. Aucun mot de passe actuel ne peut être prouvé, et une \
+     session seule ne pose pas de mot de passe. Cette route ne change que le mot de passe du compte qui l'appelle. \
+     Rien n'est écrit ni compté.";
+
+/// `P10.24-b` — l'appelant est l'administrateur de CONFIGURATION : son mot de passe vit dans la configuration du démon.
+pub(crate) const CAUSE_MOT_DE_PASSE_DE_CONFIGURATION: &str = "MOT DE PASSE NON CHANGÉ, C'EST CELUI DE LA \
+     CONFIGURATION : ce compte est l'administrateur que pose la configuration du démon (son nom et le haché de son mot \
+     de passe y sont écrits), sans ligne dans la table des comptes. Le changer ici créerait une ligne à son nom, qui \
+     ferait autorité : le mot de passe de configuration cesserait d'être consulté sans que la configuration le dise. \
+     Il se change dans la configuration (le haché de son mot de passe), puis au redémarrage du démon. Rien n'est écrit \
      ni compté.";
+
+/// `P10.24-b` — mode multi-tenant : l'appelant est un compte PLATEFORME (ou une identité de l'annuaire) — son mot de
+/// passe, s'il en a un, vit dans le plan de contrôle, que cette route n'écrit pas.
+pub(crate) const CAUSE_MOT_DE_PASSE_DE_PLATEFORME: &str = "MOT DE PASSE NON CHANGÉ, CE COMPTE EST UN COMPTE DE LA \
+     PLATEFORME : en mode multi-tenant, les mots de passe des comptes vivent dans le plan de contrôle, que cette route \
+     n'écrit pas ; elle ne change ici que celui de l'administrateur de l'installation. Rien n'est écrit ni compté.";
+
+/// `P10.24-b` — le mot de passe a changé entre la preuve et l'écriture (une réinitialisation par un administrateur,
+/// un autre changement) : la preuve portait sur un mot de passe qui n'est plus celui du compte.
+pub(crate) const CAUSE_MOT_DE_PASSE_CHANGE_ENTRE_TEMPS: &str = "MOT DE PASSE NON CHANGÉ, IL A CHANGÉ PENDANT LA \
+     DEMANDE : le mot de passe du compte a été remplacé (réinitialisation par un administrateur, ou autre changement) \
+     entre la vérification du mot de passe actuel et l'écriture — la preuve ne vaut plus. Rien n'est écrit. \
+     Reconnectez-vous avec le mot de passe en vigueur.";
+
+/// `P10.24-b` — le `BEGIN` du changement refusé.
+pub(crate) const CAUSE_MOT_DE_PASSE_NON_CHANGE_TRANSACTION_NON_OUVERTE: &str = "MOT DE PASSE NON CHANGÉ : la base \
+     n'a pas pris la transaction du changement (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante \
+     sur l'écrivain) — RIEN n'est écrit : l'ancien mot de passe vaut toujours et les sessions du compte ne sont pas \
+     révoquées. Réessayez.";
+
+/// `P10.24-b` — l'écriture ou le `COMMIT` du changement refusé.
+pub(crate) const CAUSE_MOT_DE_PASSE_NON_CHANGE_ECRITURE_REFUSEE: &str = "MOT DE PASSE NON CHANGÉ : la base n'a pas \
+     pris l'écriture du changement ou ne l'a pas validée (transaction annulée) — l'ancien mot de passe vaut toujours, \
+     les sessions du compte ne sont pas révoquées et rien n'est attesté. Réessayez ; si le refus persiste, la base est \
+     en lecture seule, pleine ou verrouillée.";
 
 /// `P10.23-m` — la lecture qui dit si le compte a un mot de passe local a échoué.
 pub(crate) const CAUSE_COMPTE_NON_LU_AU_CHANGEMENT: &str = "COMPTE NON LU, MOT DE PASSE NI CHANGÉ NI REFUSÉ : la \
-     lecture du compte administrateur a échoué, le mot de passe actuel n'a donc pas pu être jugé. Rien n'est écrit, \
-     aucun échec n'est compté. Réessayez.";
+     lecture du compte a échoué, le mot de passe actuel n'a donc pas pu être jugé. Rien n'est écrit, aucun échec \
+     n'est compté. Réessayez.";
 
 /// `P10.24-a` — l'APPELANT de `/api/users/{id}` vise son propre compte, qui n'a pas de mot de passe local (compte
 /// fédéré OIDC, SAML ou LDAP, ou hachage vide) : sa session ne lui en pose pas un. Le remède n'est pas celui de
-/// `/api/password` (l'installation) : un AUTRE administrateur peut le poser, et ce geste-là est tracé.
+/// `/api/password` (qui renvoie à l'annuaire) : un AUTRE administrateur peut le poser, et ce geste-là est tracé.
 pub(crate) const CAUSE_SON_PROPRE_COMPTE_SANS_MOT_DE_PASSE_LOCAL: &str = "MOT DE PASSE NON POSÉ, CE COMPTE N'A PAS \
      DE MOT DE PASSE LOCAL : il est fédéré (OIDC, SAML, LDAP) ou son mot de passe est vide, donc aucun mot de passe \
      actuel ne peut être prouvé — et une session seule ne pose pas de mot de passe sur son propre compte. Un AUTRE \
@@ -731,8 +769,91 @@ pub(crate) fn juger_le_mot_de_passe_actuel(
     }
 }
 
-/// POST /api/password {current, new} — change le mot de passe de l'administrateur (celui de l'assistant, à défaut
-/// celui de la configuration).
+/// `P10.24-b` — OÙ VIT LE MOT DE PASSE DE L'APPELANT DE `/api/password`, DONC CE QUE LA ROUTE PEUT EN FAIRE. Même
+/// préséance que `authenticate` (la ligne `user` fait autorité ; à défaut l'administrateur de l'assistant, puis celui
+/// de la configuration).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum MotDePasseDeLAppelant {
+    /// Mode 0 : sa ligne `user` porte un mot de passe local réel — le haché LU, que l'écriture exige inchangé.
+    DeSaLigne(String),
+    /// L'administrateur de l'assistant SANS ligne (cas hérité) ou, en mode multi-tenant, l'administrateur de
+    /// l'assistant : sa crédence vit en mémoire (et dans `meta`) — la route la change comme avant.
+    DeLAssistant,
+    /// L'administrateur de configuration : son mot de passe vit dans la configuration.
+    DeConfiguration,
+    /// Mode multi-tenant : un compte de la plateforme (ou une identité de l'annuaire).
+    DePlateforme,
+    /// Aucun mot de passe local : identité SSO d'en-têtes sans ligne, compte fédéré, hachage vide.
+    Aucun,
+}
+
+/// `P10.24-b` — la classification de l'appelant, sur l'écrivain. `Err` : la lecture n'a pas eu lieu, rien n'est conclu.
+pub(crate) fn ou_vit_le_mot_de_passe_de(st: &AppState, user: &str) -> rusqlite::Result<MotDePasseDeLAppelant> {
+    let de_l_assistant = st.admin.lock().as_ref().is_some_and(|(nom, _)| nom == user);
+    let de_configuration = !st.pass_hash.is_empty() && st.user.as_str() == user;
+    if st.multi_tenant {
+        return Ok(if de_l_assistant {
+            MotDePasseDeLAppelant::DeLAssistant
+        } else if de_configuration {
+            MotDePasseDeLAppelant::DeConfiguration
+        } else {
+            MotDePasseDeLAppelant::DePlateforme
+        });
+    }
+    let hachage: Option<String> =
+        st.db.lock().query_row("SELECT hash FROM user WHERE name=?1", params![user], |r| r.get(0)).optional()?;
+    Ok(match hachage {
+        Some(h) if !h.is_empty() && h != IDP_HASH_SENTINEL => MotDePasseDeLAppelant::DeSaLigne(h),
+        Some(_) => MotDePasseDeLAppelant::Aucun,
+        None if de_l_assistant => MotDePasseDeLAppelant::DeLAssistant,
+        None if de_configuration => MotDePasseDeLAppelant::DeConfiguration,
+        None => MotDePasseDeLAppelant::Aucun,
+    })
+}
+
+/// `P10.24-b` — L'ÉCRITURE DU CHANGEMENT D'UN COMPTE À LIGNE, DANS UNE TRANSACTION : le haché ne change que s'il est
+/// encore celui que la preuve a jugé (sinon `Ok(false)`, rien d'écrit), l'époque du compte avance (ses sessions et ses
+/// tickets d'avant tombent, `P10.23-l`), et le changement est attesté au registre et au SIEM, fail-closed.
+fn changer_le_mot_de_passe_de_sa_ligne(conn: &Connection, user: &str, lu: &str, neuf: &str) -> rusqlite::Result<bool> {
+    let ecrites = conn.execute("UPDATE user SET hash=?1 WHERE name=?2 AND hash=?3", params![neuf, user, lu])?;
+    if ecrites == 0 {
+        return Ok(false);
+    }
+    if ecrites != 1 {
+        return Err(rusqlite::Error::StatementChangedRows(ecrites));
+    }
+    avancer_l_epoque_du_compte(conn, user)?;
+    audit_config_change(
+        conn,
+        "config.user.password_change",
+        &format!("mot de passe du compte '{user}' changé par son titulaire (mot de passe actuel prouvé)"),
+        3,
+        &format!("mot de passe du compte '{user}' changé par son titulaire"),
+        &json!({ "action": "config.user.password_change", "kind": "user", "target": user, "actor": user, "mot_de_passe_actuel_prouve": true })
+            .to_string(),
+    )?;
+    Ok(true)
+}
+
+/// POST /api/password {current, new} — change le mot de passe DU COMPTE QUI L'APPELLE (`P10.24-b`).
+///
+/// `P10.24-b` — LA ROUTE VISAIT L'ADMINISTRATEUR, PAS L'APPELANT. MESURÉ LE 2026-09-25 SUR LA FORME D'AVANT (témoins
+/// `mpra_`) : `adm`, administrateur à mot de passe, présentait SON mot de passe actuel -> 403 « refusé », et l'échec
+/// était compté au verrou de l'administrateur de l'assistant `wiz` depuis l'adresse d'`adm` ; avec le mot de passe de
+/// `wiz` -> 200, et c'est le mot de passe de `wiz` qui changeait (celui d'`adm` restait le même). Sans administrateur
+/// de l'assistant, l'administrateur de CONFIGURATION changeait le sien -> 200, et la route lui posait une ligne `user`
+/// administrateur et la crédence d'assistant (`meta.admin_user`, rechargée au démarrage) : son mot de passe de
+/// configuration rendait ensuite 401, sans que la configuration le dise. Une identité SSO d'en-têtes (sans ligne)
+/// changeait de même le mot de passe de l'administrateur de configuration, et ses essais faux étaient comptés au
+/// verrou de CELUI-CI. Un éditeur ou un lecteur n'avait, lui, aucun moyen de changer le sien (route réservée admin).
+///
+/// LA DÉCISION : chaque compte change SON mot de passe, et rien d'autre. Classement par `ou_vit_le_mot_de_passe_de` :
+/// un compte à ligne (dont l'administrateur de l'assistant, qui a la sienne) change le haché de SA ligne, à condition
+/// qu'il n'ait pas changé depuis la preuve ; l'administrateur de l'assistant sans ligne (hérité) garde la voie d'avant
+/// (`poser_l_administrateur`) ; l'administrateur de CONFIGURATION est refusé en 409 nommé — son mot de passe se change
+/// dans la configuration ; un compte sans mot de passe local (SSO d'en-têtes, fédéré) est refusé en 403 nommé ; en
+/// mode multi-tenant, un compte de la plateforme est refusé en 409 nommé. Les refus de classement ne consomment aucun
+/// essai. La route est ouverte à tout compte authentifié (`rbac::route_min_role`, 2ter-bis).
 ///
 /// `P10.23-m` — LE MOT DE PASSE ACTUEL EST EXIGÉ. MESURÉ LE 2026-09-24 SUR LA FORME D'AVANT : `{new}` SEUL, sous une
 /// session d'administrateur, rendait 200 et changeait le mot de passe — une session volée prenait le compte. La
@@ -751,18 +872,28 @@ pub(crate) async fn password_post(
     Extension(au): Extension<AuthUser>,
     Json(b): Json<Value>,
 ) -> Response {
-    // DURCISSEMENT : ce handler écrit `set_admin` (mot de passe de l'admin). SANS ce garde,
-    // un editor pouvait reset le mdp admin = takeover/lockout. Le gate `rbac_gate` classe déjà /api/password
-    // ADMIN ; ce re-check DOUBLE la garde (défense en profondeur : les deux doivent bloquer un non-admin).
-    if let Err(r) = require_admin(&au) { return r; }
-    // l'appelant est déjà authentifié (auth_guard) ; on garde le même nom d'admin
     let new = b.str_field("new");
     // POLITIQUE MDP (item 3) — ne valide qu'au CHANGEMENT ; l'ancien mdp reste valide tant qu'inchangé. Jugée AVANT
     // la preuve : un nouveau mot de passe irrecevable n'engage aucun essai du mot de passe actuel.
     if new.chars().count() < PASSWORD_MIN_CHARS {
         return bad_req(format!("mot de passe ≥ {PASSWORD_MIN_CHARS} caractères"));
     }
-    let user = st.admin.lock().clone().map(|(u, _)| u).unwrap_or_else(|| st.user.as_ref().clone());
+    // `P10.24-b` — le compte visé est l'APPELANT, et rien d'autre.
+    let user = au.name.clone();
+    let classement = match ou_vit_le_mot_de_passe_de(&st, &user) {
+        Ok(classement) => classement,
+        Err(cause) => {
+            eprintln!("[password] WARN compte '{user}' NON lu au classement de son mot de passe : {cause}");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_COMPTE_NON_LU_AU_CHANGEMENT);
+        }
+    };
+    let hachage_lu = match classement {
+        MotDePasseDeLAppelant::DeSaLigne(h) => Some(h),
+        MotDePasseDeLAppelant::DeLAssistant => None,
+        MotDePasseDeLAppelant::DeConfiguration => return err_json(StatusCode::CONFLICT, CAUSE_MOT_DE_PASSE_DE_CONFIGURATION),
+        MotDePasseDeLAppelant::DePlateforme => return err_json(StatusCode::CONFLICT, CAUSE_MOT_DE_PASSE_DE_PLATEFORME),
+        MotDePasseDeLAppelant::Aucun => return err_json(StatusCode::FORBIDDEN, CAUSE_APPELANT_SANS_MOT_DE_PASSE_LOCAL),
+    };
     let ip = peer.ip().to_string();
     // `P10.24-a` — le jugement est celui que `/api/users/{id}` applique au compte de son appelant (déplacé tel quel).
     if let Err(refus) = juger_le_mot_de_passe_actuel(
@@ -770,23 +901,51 @@ pub(crate) async fn password_post(
         &user,
         &ip,
         b.str_field("current"),
-        CAUSE_ADMINISTRATEUR_SANS_MOT_DE_PASSE_LOCAL,
-        &format!("changement du mot de passe admin de '{user}' refusé (demandé par '{}') : mot de passe actuel refusé", au.name),
+        CAUSE_APPELANT_SANS_MOT_DE_PASSE_LOCAL,
+        &format!("changement de son propre mot de passe par '{user}' refusé : mot de passe actuel refusé"),
     ) {
         return refus;
     }
-    match hash_pw(new) {
-        Some(h) => {
-            // MÊME FAIL-CLOSED QUE `/api/setup` : si l'écriture n'a pas eu lieu, rien n'est révoqué (la révocation
-            // est DANS la transaction) et on ne certifie rien au registre.
-            if let Err(e) = poser_l_administrateur(&st, &user, &h, true) {
-                eprintln!("[password] changement REFUSÉ (base non inscriptible) : {e}");
-                return server_err(format!("mot de passe NON changé (rien n'a été écrit) : {e}"));
-            }
-            ledger_append(&st.db.lock(), "password", "mot de passe admin changé");
-            (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
+    let Some(h) = hash_pw(new) else { return server_err("hash échoué") };
+    let Some(lu) = hachage_lu else {
+        // L'administrateur de l'assistant sans ligne (hérité), ou en mode multi-tenant : la voie d'avant. MÊME
+        // FAIL-CLOSED QUE `/api/setup` : si l'écriture n'a pas eu lieu, rien n'est révoqué (la révocation est DANS la
+        // transaction) et on ne certifie rien au registre.
+        if let Err(e) = poser_l_administrateur(&st, &user, &h, true) {
+            eprintln!("[password] changement REFUSÉ (base non inscriptible) : {e}");
+            return server_err(format!("mot de passe NON changé (rien n'a été écrit) : {e}"));
         }
-        None => server_err("hash échoué"),
+        ledger_append(&st.db.lock(), "password", &format!("mot de passe de l'administrateur de l'assistant '{user}' changé par son titulaire"));
+        return (StatusCode::OK, Json(json!({ "ok": true, "user": user }))).into_response();
+    };
+    // `P10.24-b` — LA FENÊTRE entre la preuve (verrou relâché) et l'écriture : un témoin y fait réinitialiser ce mot de
+    // passe par un administrateur ; l'écriture, qui exige le haché jugé, ne l'écrase pas.
+    crate::handlers::transaction_validee::point_de_course(st.db_path.as_str());
+    let issue = {
+        let conn = st.db.lock();
+        crate::handlers::transaction_validee::jouer_le_geste_garde(&conn, "password", "changement de son mot de passe", |conn| {
+            changer_le_mot_de_passe_de_sa_ligne(conn, &user, &lu, &h).map_err(Some).and_then(|fait| if fait { Ok(()) } else { Err(None) })
+        })
+    };
+    use crate::handlers::transaction_validee::IssueDuGesteGarde as Issue;
+    match issue {
+        Issue::Valide(()) => {
+            // La crédence d'assistant en mémoire suit la ligne quand l'appelant est l'administrateur de l'assistant
+            // (elle ne sert que sans ligne ; la laisser à l'ancien haché la rendrait fausse).
+            if let Some((nom, hachage)) = st.admin.lock().as_mut() {
+                if *nom == user {
+                    *hachage = h.clone();
+                }
+            }
+            st.auth_cache.lock().clear();
+            (StatusCode::OK, Json(json!({ "ok": true, "user": user }))).into_response()
+        }
+        Issue::Refuse(None) => err_json(StatusCode::CONFLICT, CAUSE_MOT_DE_PASSE_CHANGE_ENTRE_TEMPS),
+        Issue::NonOuvert(_) => err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_MOT_DE_PASSE_NON_CHANGE_TRANSACTION_NON_OUVERTE),
+        Issue::Refuse(Some(e)) | Issue::NonValide(e) => {
+            eprintln!("[password] WARN changement du mot de passe de '{user}' NON écrit : {e}");
+            err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_MOT_DE_PASSE_NON_CHANGE_ECRITURE_REFUSEE)
+        }
     }
 }
 

@@ -22,8 +22,8 @@
 // CE QUE CES TÉMOINS NE TIENNENT PAS : le mode multi-tenant (le refus de `P10.24-n` y est borné au tenant `default`,
 // lu, non joué) ; le redémarrage (aucun banc ne rejoue `server/mod.rs`) ; les lignes laissées au nom de comptes
 // supprimés AVANT ce lot, qu'un homonyme créé aujourd'hui recevrait encore ; la rétrogradation de l'administrateur
-// de l'assistant, qui n'est pas refusée ; l'homonymie avec une identité sans ligne dans `user` (administrateur de
-// configuration, SSO d'en-têtes).
+// de l'assistant (refusée depuis `P10.24-s`, témoins `mpra_`) ; l'homonymie avec une identité sans ligne dans `user`
+// (administrateur de configuration, SSO d'en-têtes).
 // =====================================================================================
 mod suppression_de_compte_complete {
     use super::*;
@@ -149,12 +149,16 @@ mod suppression_de_compte_complete {
                 ConnectInfo(csup_pair("10.81.0.1")),
                 Extension(sp_au("adm", "admin")),
                 axum::extract::Path(csup_id(&st, "wiz")),
-                Json(json!({ "password": posee_par_adm, "role": "viewer" })),
+                Json(json!({ "password": posee_par_adm })),
             )
             .await,
         )
         .await;
-        assert_eq!(s, 204, "fixture : adm réinitialise et rétrograde wiz : {c}");
+        assert_eq!(s, 204, "fixture : adm réinitialise wiz : {c}");
+        // ADAPTÉ PAR `P10.24-s` : la rétrogradation du compte de l'assistant est désormais REFUSÉE par `user_update`
+        // (témoins `mpra_`). L'état « rétrogradé » que ce témoin exige reste celui d'une base rétrogradée AVANT ce refus
+        // (état hérité) : il est posé directement, et le refus de suppression doit le tenir par NOM.
+        st.db.lock().execute("UPDATE user SET role='viewer' WHERE name='wiz'", []).expect("fixture : wiz rétrogradé avant le refus de P10.24-s");
         let (s, _, _) = csup_connexion(&st, "wiz", &installation, "10.81.0.2").await;
         assert_eq!(s, 401, "fixture : avant la suppression, le mot de passe d'installation est déjà refusé");
 

@@ -3,7 +3,7 @@
 // change côté auth. Anti-XSS : tout texte via textContent/esc ; le secret (client_secret / bind pw) est un
 // champ password, JAMAIS réaffiché, ré-envoyé UNIQUEMENT s'il est re-saisi (omis = conservé côté serveur).
 // La vraie garde reste SERVEUR (/api/idp/* admin-only ; /api/mfa/* borné à au.name).
-import { $, LANG, api, apiSend, unDeuxCentsSansCorpsLisible, confirmWithConsequence, disclosure, effacerLeRefusDUnGeste, fmtTs, modal, motDuRefusDuSecondFacteur, muted, natureDuRefusDuSecondFacteur, peindreLeRefusDUnGeste, phraseDuRefusDuDemon, puitsDuRefusDUnGeste, noeudDuRefusDUneLecture, phraseDuRefusDUneLecture, toast, withBusy, faceDansLaLangue } from './core.js';
+import { $, LANG, api, apiSend, unDeuxCentsSansCorpsLisible, confirmWithConsequence, disclosure, effacerLeRefusDUnGeste, fmtTs, modal, motDuRefusDuSecondFacteur, muted, natureDuRefusDuSecondFacteur, peindreLeRefusDUnGeste, phraseDuRefusDuDemon, puitsDuRefusDUnGeste, noeudDuRefusDUneLecture, phraseDuRefusDUneLecture, toast, withBusy, faceDansLaLangue, cadreDUneReponseQuiNeVientPasDuDemon, sujetDUneReponseSansCorpsDeSucces } from './core.js';
 import { enabledSwitch } from './producer_ui.js';
 import { uiIsAdmin } from './multitenant.js';
 
@@ -280,14 +280,16 @@ async function startEnroll() {
   champ.value = '';
   if (choix === null) return;
   if (!motDePasse) { await avouerLeRefusDEnrolement('mot_de_passe_manquant', '', 0); return; }
-  let data;
+  let data, horsDuDemon = null;
   try { data = await apiSend('/mfa/enroll', 'POST', { password: motDePasse }); }
   catch (e) {
     // L'enrôlement refusé s'écrit DANS le panneau, pas dans un avis qui s'efface : la cause dit pourquoi le
     // second facteur n'a pas été touché. Le statut non lu garde son aveu et son drapeau — la garde du démon peut
     // tomber entre la charge et le clic — ; les cinq refus de la preuve du mot de passe ont chacun leur face.
-    if (unDeuxCentsSansCorpsLisible(e)) data = null;
+    if (unDeuxCentsSansCorpsLisible(e)) { data = null; horsDuDemon = e; }
     else {
+      const cadre = cadreDUneReponseQuiNeVientPasDuDemon(e);   // `P10.23-q`
+      if (cadre) { await avouerUneReponseHorsDuDemon((aveu, nature) => { aveu.dataset.refusDEnrolement = nature; }, cadre); return; }
       const cle = cleDuRefusDEnrolement(e);
       if (cle === 'statut_mfa_non_lu') { STATUT_MFA_NON_LU = true; enroll.hidden = false; avouerLeStatutMfaNonLu(enroll, e.causeDuDemon); return; }
       await avouerLeRefusDEnrolement(cle, phraseDuRefusDuDemon(e), e.delaiDuRefus);
@@ -295,7 +297,7 @@ async function startEnroll() {
     }
   } finally { motDePasse = ''; }
   // Un deux cents sans la graine n'ouvre pas de carte vide : il se dit, après relecture du statut.
-  if (!(data && typeof data.secret === 'string' && data.secret && typeof data.otpauth_uri === 'string')) { await avouerLeRefusDEnrolement('enrolement_non_etabli', '', 0); return; }
+  if (!(data && typeof data.secret === 'string' && data.secret && typeof data.otpauth_uri === 'string')) { await avouerLeRefusDEnrolement('enrolement_non_etabli', '', 0, horsDuDemon); return; }
   enroll.hidden = false;
   // La carte reprend le chrome .ruleform (comme openIdpForm) -> l'input #mfa-code et le panneau
   // sont stylés au lieu des défauts navigateur.
@@ -315,14 +317,18 @@ async function startEnroll() {
   const resultat = document.createElement('div');
   const btn = mkBtn('Vérifier & activer', async () => {
     const code = inp.value.trim();
-    let r;
+    let r, horsDuDemonDeLActivation = null;
     try { r = await apiSend('/mfa/verify', 'POST', { code }); }
     catch (e) {
       // `P10.22-b` — un deux cents sans corps lisible n'est pas un refus : « activation non établie », ci-dessous.
-      if (!unDeuxCentsSansCorpsLisible(e)) { await avouerLeRefusDActivation(cleDuRefusDActivation(e), phraseDuRefusDuDemon(e), e.delaiDuRefus, resultat); return; }
-      r = null;
+      if (!unDeuxCentsSansCorpsLisible(e)) {
+        const cadre = cadreDUneReponseQuiNeVientPasDuDemon(e);   // `P10.23-q`
+        if (cadre) { await avouerUneReponseHorsDuDemon((aveu, nature) => { aveu.dataset.refusDActivation = nature; }, cadre); return; }
+        await avouerLeRefusDActivation(cleDuRefusDActivation(e), phraseDuRefusDuDemon(e), e.delaiDuRefus, resultat); return;
+      }
+      r = null; horsDuDemonDeLActivation = e;
     }
-    if (!(r && r.ok === true && Array.isArray(r.recovery_codes))) { await avouerLeRefusDActivation('activation_non_etablie', '', 0, resultat); return; }
+    if (!(r && r.ok === true && Array.isArray(r.recovery_codes))) { await avouerLeRefusDActivation('activation_non_etablie', '', 0, resultat, horsDuDemonDeLActivation); return; }
     toast('MFA activée', 'ok');
     showRecovery(enroll, r.recovery_codes);
   });
@@ -376,9 +382,10 @@ const MOTS_DE_LA_DESACTIVATION_MFA = {
   desactivation_refusee: {
     fr: "Désactivation REFUSÉE : le démon ne l'a pas confirmée. Il a répondu —",
     en: 'Deactivation REFUSED: the daemon did not confirm it. It answered —' },
+  // `P10.23-q` — le sujet suit la réponse (`sujetDUneReponseSansCorpsDeSucces`) : une passerelle n'est pas le démon.
   desactivation_non_etablie: {
-    fr: "Le démon a répondu sans confirmer la désactivation : rien ici n'établit que la double authentification est désactivée. Son statut, relu, est affiché ci-dessus.",
-    en: 'The daemon answered without confirming the deactivation: nothing here establishes that two-factor authentication is disabled. Its status, read again, is shown above.' },
+    fr: "{sujet} sans confirmer la désactivation : rien ici n'établit que la double authentification est désactivée. Son statut, relu, est affiché ci-dessus.",
+    en: '{sujet} without confirming the deactivation: nothing here establishes that two-factor authentication is disabled. Its status, read again, is shown above.' },
 };
 // LE STATUT D'ABORD, LA CAUSE ENSUITE. Le quatre cent un est le code refusé (y compris un pas déjà consommé,
 // `P10.22-k`) ; les cinq cent trois se séparent par la cause servie — écriture refusée ou liste de secours
@@ -395,10 +402,12 @@ function cleDuRefusDeDesactivation(e) {
 }
 // Les clés propres au panneau viennent de ses tables ; les deux clés communes aux deux écrans du second
 // facteur, du point commun (`web/core.js`).
-const faceDuPanneau = (table, cle, delai) => (Object.prototype.hasOwnProperty.call(table, cle)
-  ? (LANG === 'en' ? table[cle].en : table[cle].fr)
+// `horsDuDemon` : le refus qu'`apiSend` a nommé sur un deux cents sans corps lisible ; il fait le SUJET d'une face « non
+// établie » (`P10.23-q`) — sans lui, le démon. Une face sans sujet reste telle quelle.
+const faceDuPanneau = (table, cle, delai, horsDuDemon = null) => (Object.prototype.hasOwnProperty.call(table, cle)
+  ? (LANG === 'en' ? table[cle].en : table[cle].fr).replace('{sujet}', () => sujetDUneReponseSansCorpsDeSucces(horsDuDemon))
   : motDuRefusDuSecondFacteur(cle, delai));
-const motDeLaDesactivationMfa = (cle, delai) => faceDuPanneau(MOTS_DE_LA_DESACTIVATION_MFA, cle, delai);
+const motDeLaDesactivationMfa = (cle, delai, horsDuDemon = null) => faceDuPanneau(MOTS_DE_LA_DESACTIVATION_MFA, cle, delai, horsDuDemon);
 // L'aveu à deux nœuds ; `cause` vide = la face se suffit (aucune cause servie). L'appelant y pose la marque du
 // geste refusé (`dataset.refusDe…`, marque de POSE, pas de style : aucune règle CSS ne la vise).
 function aveuDuPanneau(mot, cause) {
@@ -410,9 +419,9 @@ function aveuDuPanneau(mot, cause) {
   return aveu;
 }
 // Au puits du geste refusé (`#mfa-enroll`, depuis `P10.20-b`).
-function avouerLaDesactivation(cle, cause, delai) {
+function avouerLaDesactivation(cle, cause, delai, horsDuDemon = null) {
   const hote = $('#mfa-enroll');
-  const mot = motDeLaDesactivationMfa(cle, delai);
+  const mot = motDeLaDesactivationMfa(cle, delai, horsDuDemon);
   if (!hote) { toast(cause ? mot + ' « ' + cause + ' »' : mot, 'bad', 9000); return; }
   const aveu = aveuDuPanneau(mot, cause);
   aveu.dataset.refusDeDesactivation = cle;
@@ -458,8 +467,8 @@ const MOTS_DE_L_ENROLEMENT_MFA = {
     fr: "Enrôlement REFUSÉ : le démon ne l'a pas confirmé. Il a répondu —",
     en: 'Enrollment REFUSED: the daemon did not confirm it. It answered —' },
   enrolement_non_etabli: {
-    fr: "Le démon a répondu sans servir de graine : rien ici n'établit qu'un enrôlement est en attente. Son statut, relu, est affiché ci-dessus.",
-    en: 'The daemon answered without serving a seed: nothing here establishes that an enrollment is pending. Its status, read again, is shown above.' },
+    fr: "{sujet} sans servir de graine : rien ici n'établit qu'un enrôlement est en attente. Son statut, relu, est affiché ci-dessus.",
+    en: '{sujet} without serving a seed: nothing here establishes that an enrollment is pending. Its status, read again, is shown above.' },
 };
 // LE STATUT D'ABORD, LA CAUSE ENSUITE — la forme des deux discriminants voisins. `statut_mfa_non_lu` n'a pas de
 // face ici : il garde l'aveu et le drapeau du statut non lu (`avouerLeStatutMfaNonLu`).
@@ -475,16 +484,16 @@ function cleDuRefusDEnrolement(e) {
   if (statut === 409) return 'deja_active';
   return 'enrolement_refuse';
 }
-function motDeLEnrolementMfa(cle, delai) {
+function motDeLEnrolementMfa(cle, delai, horsDuDemon = null) {
   const cleServie = cle === 'mot_de_passe_verrouille' && !(delai > 0) ? 'mot_de_passe_verrouille_sans_delai' : cle;
   const mots = MOTS_DE_L_ENROLEMENT_MFA[cleServie];
-  return (LANG === 'en' ? mots.en : mots.fr).replace('{delai}', String(delai));
+  return (LANG === 'en' ? mots.en : mots.fr).replace('{delai}', String(delai)).replace('{sujet}', () => sujetDUneReponseSansCorpsDeSucces(horsDuDemon));   // `P10.23-q`
 }
 // Au puits du geste (`#mfa-enroll`). La MFA déjà active et l'enrôlement non établi décrivent un état qui n'est
 // pas celui du panneau : le statut est RELU d'abord — la relecture vide le panneau —, l'aveu posé ensuite.
 const ENROLEMENT_A_RELIRE = new Set(['deja_active', 'enrolement_non_etabli']);
-async function avouerLeRefusDEnrolement(cle, cause, delai) {
-  const mot = motDeLEnrolementMfa(cle, delai);
+async function avouerLeRefusDEnrolement(cle, cause, delai, horsDuDemon = null) {
+  const mot = motDeLEnrolementMfa(cle, delai, horsDuDemon);
   if (ENROLEMENT_A_RELIRE.has(cle)) await loadMfa();
   const hote = $('#mfa-enroll');
   if (!hote) { toast(cause ? mot + ' « ' + cause + ' »' : mot, 'bad', 9000); return; }
@@ -518,8 +527,8 @@ const MOTS_DE_L_ACTIVATION_MFA = {
     fr: "Activation REFUSÉE : le démon ne l'a pas confirmée. Il a répondu —",
     en: 'Activation REFUSED: the daemon did not confirm it. It answered —' },
   activation_non_etablie: {
-    fr: "Le démon a répondu sans servir de codes de secours : rien ici n'établit que la double authentification est activée. Son statut, relu, est affiché ci-dessus.",
-    en: 'The daemon answered without serving recovery codes: nothing here establishes that two-factor authentication is enabled. Its status, read again, is shown above.' },
+    fr: "{sujet} sans servir de codes de secours : rien ici n'établit que la double authentification est activée. Son statut, relu, est affiché ci-dessus.",
+    en: '{sujet} without serving recovery codes: nothing here establishes that two-factor authentication is enabled. Its status, read again, is shown above.' },
 };
 function cleDuRefusDActivation(e) {
   const statut = e && e.statutDuRefus;
@@ -530,14 +539,14 @@ function cleDuRefusDActivation(e) {
   if (statut === 429 && nature === 'second_facteur_freine') return 'second_facteur_freine';
   return 'activation_refusee';
 }
-const motDeLActivationMfa = (cle, delai) => faceDuPanneau(MOTS_DE_L_ACTIVATION_MFA, cle, delai);
+const motDeLActivationMfa = (cle, delai, horsDuDemon = null) => faceDuPanneau(MOTS_DE_L_ACTIVATION_MFA, cle, delai, horsDuDemon);
 // UN ENRÔLEMENT QUI N'EST PLUS CELUI DE LA CARTE SE RELIT. Sur une MFA déjà active, un enrôlement changé ou un
 // succès non établi, la carte (graine, champ du code) décrit un état qui n'est plus : le statut est relu —
 // la relecture vide le panneau — et l'aveu est posé ENSUITE, au puits du panneau. Sur les autres refus
 // l'enrôlement reste valable : l'aveu se pose dans la carte, sous le bouton, et le geste se rejoue.
 const ACTIVATION_A_RELIRE = new Set(['deja_active', 'enrolement_change', 'activation_non_etablie']);
-async function avouerLeRefusDActivation(cle, cause, delai, puitsDeLaCarte) {
-  const mot = motDeLActivationMfa(cle, delai);
+async function avouerLeRefusDActivation(cle, cause, delai, puitsDeLaCarte, horsDuDemon = null) {
+  const mot = motDeLActivationMfa(cle, delai, horsDuDemon);
   const aveu = aveuDuPanneau(mot, cause);
   aveu.dataset.refusDActivation = cle;
   if (ACTIVATION_A_RELIRE.has(cle)) {
@@ -551,6 +560,20 @@ async function avouerLeRefusDActivation(cle, cause, delai, puitsDeLaCarte) {
   puitsDeLaCarte.replaceChildren(aveu);
 }
 
+// `P10.23-q` — UNE RÉPONSE QUI NE VIENT PAS DU DÉMON (passerelle, demande non aboutie) N'EST NI « Code REFUSÉ » NI
+// « … REFUSÉE : le démon ne l'a pas confirmée. Il a répondu — » : sa propre phrase, au puits du panneau, APRÈS la relecture
+// du statut — rien n'établit ce que le démon a fait du geste, et le statut relu le montre. `marquer` pose la marque du
+// geste (`data-refus-d-enrolement`, `-d-activation`, `-de-desactivation`) ; la nature est celle du cadre.
+async function avouerUneReponseHorsDuDemon(marquer, cadre) {
+  await loadMfa();
+  const hote = $('#mfa-enroll');
+  if (!hote) { toast(cadre.cause ? cadre.mot + ' « ' + cadre.cause + ' »' : cadre.mot, 'bad', 9000); return; }
+  const aveu = aveuDuPanneau(cadre.mot, cadre.cause);
+  marquer(aveu, cadre.nature);
+  hote.hidden = false;
+  hote.replaceChildren(aveu);
+}
+
 async function disableMfa() {
   // P11.5-b : désactiver la MFA ABAISSE une protection du compte -> confirmation partagée qui nomme la
   // conséquence, puis saisie du code dans la modale partagée (plus de prompt() natif).
@@ -558,18 +581,22 @@ async function disableMfa() {
   const r = await modal({ title: 'Code de vérification', message: 'Entre un code TOTP courant, ou un code de secours, pour confirmer la désactivation.', okText: 'Désactiver', fields: [{ name: 'code', label: 'Code', value: '', required: true, placeholder: 'code à 6 chiffres ou code de secours' }] });
   if (!r) return;
   const code = String(r.code || '');
-  let j;
+  let j, horsDuDemon = null;
   try { j = await apiSend('/mfa/disable', 'POST', { code: code.trim() }); }
   catch (e) {
     // `P10.22-b` — un deux cents sans corps lisible n'est pas un refus : « désactivation non établie », ci-dessous.
-    if (!unDeuxCentsSansCorpsLisible(e)) { avouerLaDesactivation(cleDuRefusDeDesactivation(e), phraseDuRefusDuDemon(e), e.delaiDuRefus); return; }
-    j = null;
+    if (!unDeuxCentsSansCorpsLisible(e)) {
+      const cadre = cadreDUneReponseQuiNeVientPasDuDemon(e);   // `P10.23-q`
+      if (cadre) { await avouerUneReponseHorsDuDemon((aveu, nature) => { aveu.dataset.refusDeDesactivation = nature; }, cadre); return; }
+      avouerLaDesactivation(cleDuRefusDeDesactivation(e), phraseDuRefusDuDemon(e), e.delaiDuRefus); return;
+    }
+    j = null; horsDuDemon = e;
   }
   if (j && j.ok === true) { toast('MFA désactivée', 'ok'); loadMfa(); return; }
   // Un deux cents qui ne porte pas le succès de la route : le statut est RELU d'abord — la relecture vide
   // le puits —, l'aveu est posé ensuite.
   await loadMfa();
-  avouerLaDesactivation('desactivation_non_etablie', '');
+  avouerLaDesactivation('desactivation_non_etablie', '', 0, horsDuDemon);
 }
 
 // `startEnroll` est exposé pour le harnais ESM (témoin 96 : le refus du geste d'enrôlement et l'aveu écrit

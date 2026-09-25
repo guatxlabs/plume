@@ -8,10 +8,22 @@
 //   POST /api/threat-intel/iocs     <- {type,value,source?,confidence?,severity?,expires?,env_id?} OU {iocs:[…],source?,env_id?}  -> {added, skipped:[…]}
 //   POST /api/threat-intel/import   <- {bundle:{…}, source?, env_id?}  -> {imported, skipped:[…]}
 // SÉCU UI : tout en textContent/esc (anti-XSS) ; le contenu IOC n'est pas un secret (renseignement).
-import { $, api, apiSend, disclosure, effacerLeRefusDUnGeste, fetchInto, fmtTs, humanAge, LANG, modal, muted, pagedList, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, sev, toast } from './core.js';
+import { $, api, apiSend, disclosure, effacerLeRefusDUnGeste, fetchInto, fmtTs, humanAge, LANG, modal, muted, pagedList, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, sev, toast, faceDansLaLangue } from './core.js';
 import { champDeRecherche, filtrerParRecherche, texteCherchable } from './recherche_de_liste.js';
 import { uiIsAdmin } from './multitenant.js';
 import { RECHERCHE_IOC } from './registres.js'; // `P11.21-f` : l'état de recherche vit dans un module feuille
+// `P10.28-t` — LES AVIS DU MAGASIN D'INDICATEURS, DANS LES DEUX LANGUES. MESURÉ AVANT CE LOT (témoin 119t) : « 3 IOC
+// ajouté/mis à jour (1 ignoré) » et « 3 IOC importé(s) » étaient composés en français et le restaient sous `LANG='en'`.
+const MOTS_DES_AVIS_D_INDICATEURS = {
+  ajoutes: { fr: '{n} IOC ajouté/mis à jour', en: '{n} IOC added/updated' },
+  ajoutes_et_ignores: { fr: '{n} IOC ajouté/mis à jour ({ignores} ignoré)', en: '{n} IOC added/updated ({ignores} skipped)' },
+  aucun_ajout: { fr: 'aucun IOC ajouté', en: 'no IOC added' },
+  aucun_ajout_ignores: { fr: 'aucun IOC ajouté ({ignores} ignoré — type/valeur invalide)', en: 'no IOC added ({ignores} skipped — invalid type/value)' },
+  importes: { fr: '{n} IOC importé(s)', en: '{n} IOC imported' },
+  importes_et_ignores: { fr: '{n} IOC importé(s) ({ignores} ignoré)', en: '{n} IOC imported ({ignores} skipped)' },
+  ligne_importes: { fr: '{n} importé(s)/mis à jour', en: '{n} imported/updated' },
+  ligne_importes_et_ignores: { fr: '{n} importé(s)/mis à jour · {ignores} ignoré(s)', en: '{n} imported/updated · {ignores} skipped' },
+};
 // P11.12-a : ce panneau avait le PREMIER filtre de liste de la console, câblé en place. Il prend
 // désormais le mécanisme partagé (`recherche_de_liste.js`) — même prédicat, mêmes mots, même Échap que
 // la recherche des règles ; il n'en reste pas une seconde écriture.
@@ -217,7 +229,7 @@ async function addIocPrompt() {
   catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
   const added = res && res.added != null ? res.added : 0;
   const skipped = res && Array.isArray(res.skipped) ? res.skipped.length : 0;
-  toast(added ? added + ' IOC ajouté/mis à jour' + (skipped ? ' (' + skipped + ' ignoré)' : '') : 'aucun IOC ajouté' + (skipped ? ' (' + skipped + ' ignoré — type/valeur invalide)' : ''), added ? 'ok' : 'bad', 4200);
+  toast(faceDansLaLangue(added ? (skipped ? MOTS_DES_AVIS_D_INDICATEURS.ajoutes_et_ignores : MOTS_DES_AVIS_D_INDICATEURS.ajoutes) : (skipped ? MOTS_DES_AVIS_D_INDICATEURS.aucun_ajout_ignores : MOTS_DES_AVIS_D_INDICATEURS.aucun_ajout), { n: added, ignores: skipped }), added ? 'ok' : 'bad', 4200);
   loadThreatIntel();
 }
 
@@ -268,8 +280,8 @@ async function doImport(e) {
   catch (err) { setMsg('', false); peindreLeRefusDUnGeste(puits, err); return; }
   const okN = r ? (r.imported != null ? r.imported : (r.added != null ? r.added : 0)) : 0;
   const skN = r && Array.isArray(r.skipped) ? r.skipped.length : 0;
-  setMsg(okN + ' importé(s)/mis à jour' + (skN ? ' · ' + skN + ' ignoré(s)' : ''), false);
-  toast(okN + ' IOC importé(s)' + (skN ? ' (' + skN + ' ignoré)' : ''), okN ? 'ok' : 'bad', 4200);
+  setMsg(faceDansLaLangue(skN ? MOTS_DES_AVIS_D_INDICATEURS.ligne_importes_et_ignores : MOTS_DES_AVIS_D_INDICATEURS.ligne_importes, { n: okN, ignores: skN }), false);
+  toast(faceDansLaLangue(skN ? MOTS_DES_AVIS_D_INDICATEURS.importes_et_ignores : MOTS_DES_AVIS_D_INDICATEURS.importes, { n: okN, ignores: skN }), okN ? 'ok' : 'bad', 4200);
   if ($('#ti-imp-body')) $('#ti-imp-body').value = '';
   loadThreatIntel();
 }

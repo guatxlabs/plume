@@ -9,7 +9,7 @@
 // secret). SÉCU UI : rendu textContent (anti-XSS) ; l'auth (jeton HEC / en-tête webhook) est un CREDENTIAL
 // -> champ password, JAMAIS réaffiché, ré-envoyé UNIQUEMENT s'il est re-saisi (vide = conservé côté serveur).
 // La VRAIE garde reste serveur (403 hors admin + route_min_role Admin) ; ceci est la défense en profondeur.
-import { $, api, apiSend, confirmModal, confirmWithConsequence, effacerLeRefusDUnGeste, fetchInto, fmtTs, humanAge, ic, laTraceNonEcriteServieEnDeuxCents, muted, pagedList, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, toast, unRefusServiEnDeuxCents, withBusy } from './core.js';
+import { $, api, apiSend, confirmModal, confirmWithConsequence, effacerLeRefusDUnGeste, fetchInto, fmtTs, humanAge, ic, laTraceNonEcriteServieEnDeuxCents, muted, pagedList, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, toast, unRefusServiEnDeuxCents, withBusy, faceDansLaLangue } from './core.js';
 import { enabledSwitch } from './producer_ui.js';
 import { uiIsAdmin } from './multitenant.js';
 
@@ -120,6 +120,13 @@ function consequenceDuFlush(d) {
     + 'n\'envoie rien maintenant et n\'arrête PAS le forward périodique de cette destination active.';
 }
 
+// `P10.28-t` — LES AVIS DE L'ENVOI MANUEL, DANS LES DEUX LANGUES. MESURÉ AVANT CE LOT (témoin 119t) : « forward OK : N
+// event(s), watermark #M » restait français sous `LANG='en'`. `{cause}` est la phrase servie, telle quelle.
+const MOTS_DES_AVIS_DE_L_ENVOI = {
+  reussi: { fr: 'forward OK : {n} event(s), watermark #{w}', en: 'forward OK: {n} event(s), watermark #{w}' },
+  echoue: { fr: 'forward échoué : {cause}', en: 'forward failed: {cause}' },
+  cause_inconnue: { fr: 'erreur', en: 'error' },
+};
 // flush : POST /api/destinations/{id}/flush -> {ok,forwarded,watermark,last_error} (jamais la réponse du sink).
 export async function flushDestination(d) {
   if (!await confirmWithConsequence('Forwarder maintenant « ' + (d.name || d.id) + ' » ?', consequenceDuFlush(d))) return;
@@ -131,8 +138,9 @@ export async function flushDestination(d) {
   // `P10.28-o` — L'ENVOI A EU LIEU, SA TRACE D'AUDIT MANQUE PEUT-ÊTRE. `destination_flush` le dit sous `trace_non_ecrite`
   // (ce qui est parti est parti, le registre ne dit ni qui ni combien) ; mesuré avant ce lot, ce champ n'était pas lu.
   const traceAbsente = laTraceNonEcriteServieEnDeuxCents(j); if (traceAbsente) peindreLeRefusDUnGeste(puits, traceAbsente);
-  if (j.ok) toast('forward OK : ' + (j.forwarded || 0) + ' event(s), watermark #' + (j.watermark || 0), 'ok');
-  else toast('forward échoué : ' + (j.last_error || 'erreur'), 'bad');
+  // `P10.28-t` — l'avis de l'envoi, dans les deux langues (composé : un nombre s'y colle, le lexique ne l'atteignait pas).
+  if (j.ok) toast(faceDansLaLangue(MOTS_DES_AVIS_DE_L_ENVOI.reussi, { n: j.forwarded || 0, w: j.watermark || 0 }), 'ok');
+  else toast(faceDansLaLangue(MOTS_DES_AVIS_DE_L_ENVOI.echoue, { cause: j.last_error || faceDansLaLangue(MOTS_DES_AVIS_DE_L_ENVOI.cause_inconnue) }), 'bad');
   loadDestinations();
 }
 

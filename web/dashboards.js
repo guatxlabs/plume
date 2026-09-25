@@ -4,7 +4,7 @@
 // au point où ce bloc vivait (un module s'exécute à l'import, avant l'enveloppe `fetch` d'`app.js`). Les seams
 // (`viz.js`, `multitenant.js`) continuent de lire `loadDashboard` / `refreshPanels` via le ré-export d'`app.js`.
 // `renderDashboard` est exporté pour le harnais. N'importe pas `app.js`.
-import { $, ic, flashStopped, stopBtn, toast, modal, confirmModal, confirmWithConsequence, toCSV, downloadText, tsSlug, exportPDF, miniMenu, api, apiSend, phraseDuRefusDuDemon, transientGatewayMsg, motDUneLectureQuiNEstPasServie, prefixeDUnEchecRenduTelQuel, phraseDUneReponseNonJson, makePager, noeudDeLaPageVideDeRangSuperieur, socIsAdmin, applyRoleClass, roleSansEcriturePartagee, LANG } from './core.js';
+import { $, ic, flashStopped, stopBtn, toast, modal, confirmModal, confirmWithConsequence, toCSV, downloadText, tsSlug, exportPDF, miniMenu, api, apiSend, phraseDuRefusDuDemon, transientGatewayMsg, motDUneLectureQuiNEstPasServie, prefixeDUnEchecRenduTelQuel, phraseDUneReponseNonJson, makePager, noeudDUnePageServieVide, socIsAdmin, applyRoleClass, roleSansEcriturePartagee, LANG, puitsDuRefusDUnGeste, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste } from './core.js';
 import { S } from './state.js';
 import { coldShareBadge, coverageBadge, coverageHorizonNodes, provenanceBadge, currentFrom, currentTo, noeudsDeVizReglee, queryCount, runQuery, tableEl, vizElement } from './viz.js'; // `P10.5-q` : l'aveu de part froide que les panneaux reçoivent est LU
 // P11.4-h : LE geste de copie de la console (mécanisme partagé).
@@ -197,12 +197,17 @@ async function createPanelModal(did, query = '', prefill = {}) {
   // 2 lignes de la table `user`). Le SERVEUR tranche désormais (`panel_create`/`panel_update` résolvent
   // panneau ∪ bibliothèque AVANT la porte) : ce chemin peut légitimement répondre 403, et l'UI le montre.
   // Sinon, panneau autonome : requête requise + garde SQL brut côté saisie.
+  // `P10.27-d` — LE REFUS DE LA CRÉATION D'UN PANNEAU SE DIT PAR LA FORME PARTAGÉE (`peindreLeRefusDUnGeste`, core.js),
+  // dans le puits des tableaux de bord posé avant la grille (`#dashview`, que `loadDashboards` repeint). MESURÉ AVANT CE
+  // LOT (témoin 119d) : « Panneau non créé : » + `e.message` dans un avis qui s'efface — « 403 dashboard non modifiable »,
+  // le texte coupé d'une définition refusée, ou « Failed to fetch » nu.
+  const puits = puitsDesTableauxDeBord(); effacerLeRefusDUnGeste(puits);
   if (libId) {
     // Le refus du serveur doit être VU : sans ce catch, un 403 se perdait en rejet non traité (la
     // fenêtre se fermait « comme si » le panneau avait été créé). Une garde invisible n'en est pas une.
     try {
       await apiSend('/panels', 'POST', { dashboard_id: Number(did), title: r.title.trim(), library_panel_id: libId, query: '', is_soql: true, visibility: r.visibility });
-    } catch (e) { toast('Panneau non créé : ' + ((e && e.message) || e), 'bad'); return; }
+    } catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
     await loadDashboards(); toast('Panneau (bibliothèque) créé', 'ok'); return;
   }
   const qq = r.query.trim(); if (!qq) { toast('Requête requise (ou choisis un panneau de bibliothèque).', 'bad'); return; }
@@ -213,8 +218,13 @@ async function createPanelModal(did, query = '', prefill = {}) {
   if (!isSoql && !socIsAdmin()) { toast('SQL brut réservé à l\'administrateur (utilisez GXQL)', 'bad'); return; }
   try {
     await apiSend('/panels', 'POST', { dashboard_id: Number(did), title: r.title.trim(), query: qq, is_soql: isSoql, viz: r.viz, visibility: r.visibility, query_private: !!r.query_private, drill: (r.drill || '').trim() });
-  } catch (e) { toast('Panneau non créé : ' + ((e && e.message) || e), 'bad'); return; }
+  } catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
   await loadDashboards(); toast('Panneau créé', 'ok');
+}
+// Le puits des tableaux de bord : avant la grille, dans sa section — hors de ce que `loadDashboards` repeint.
+function puitsDesTableauxDeBord() {
+  const grille = $('#dashview');
+  return grille && grille.parentNode ? puitsDuRefusDUnGeste(grille.parentNode, 'tableaux_de_bord', grille) : null;
 }
 // La VUE courante affiche TOUS ses dashboards ; chaque dashboard = une tuile (carte) avec sa grille de panneaux.
 async function loadDashboards() {
@@ -850,7 +860,8 @@ async function renderPanel(p, editable = true) {
     // `P10.25-n` — UNE PAGE DE RANG SUPÉRIEUR SERVIE VIDE DIT CE QU'ELLE EST, À LA PLACE D'UN TABLEAU D'EN-TÊTES : au-delà
     // du total compté (un rafraîchissement relit la MÊME page par décalage sur une fenêtre dont le compte a baissé), ou fin du
     // résultat quand aucun total n'est compté. Son retour est gardé ; les aveux du panneau se posent comme ailleurs.
-    const pageVide = spg.rows.length ? null : noeudDeLaPageVideDeRangSuperieur(spg.page, spg.total, spg.pageSize, spg.totalCapped);
+    // `P10.26-m` — la PREMIÈRE page servie vide sous un total compté dit l'écart, elle aussi, au lieu d'un tableau d'en-têtes.
+    const pageVide = spg.rows.length ? null : noeudDUnePageServieVide(spg.page, spg.total, spg.pageSize, spg.totalCapped);
     if (pageVide) {
       body.appendChild(pageVide);
       const retour = makePager(spg, go); if (retour) body.appendChild(retour);

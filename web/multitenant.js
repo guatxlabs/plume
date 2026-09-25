@@ -1,9 +1,19 @@
 // multitenant.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // #2c multi-tenant : switcher tenant/env (header) + vue Tenants + grants + audit acces operateur.
-import { $, LANG, LOC, api, apiSend, applyRoleClass, aveuDUneTraceManquante, causeDeLaTraceManquante, confirmWithConsequence, fmtTs, ic, muted, pagedList, phraseDuRefusDuDemon, prefixeDUnEchecRenduTelQuel, toast } from './core.js';
+import { $, LANG, LOC, api, apiSend, applyRoleClass, aveuDUneTraceManquante, causeDeLaTraceManquante, confirmWithConsequence, fmtTs, ic, muted, pagedList, phraseDuRefusDuDemon, prefixeDUnEchecRenduTelQuel, toast, faceDansLaLangue } from './core.js';
 import { S, ecrireDansLeStockageDuSite, ecrireSansDireLeRefus, lireLeStockageDuSite, RAISONS_DE_SILENCE } from './state.js';
 import { runQ, tableEl } from './viz.js';
 import { ROLE_LABEL, currentTab, fetchMe, loadUsers, refresh, refreshCurrentView, refreshPanels, renderNav, route, setAuthUI } from './app.js';
+// `P10.28-t` — LES AVIS DE LA BASCULE DE TENANT OU D'ENVIRONNEMENT ET DE LA SUSPENSION, DANS LES DEUX LANGUES. MESURÉ
+// AVANT CE LOT (témoin 119t) : « Tenant courant : x », « Environnement : Tous », « tenant suspendu » étaient composés en
+// français et le restaient sous `LANG='en'`.
+const MOTS_DES_AVIS_DU_PLAN_DE_CONTROLE = {
+  tenant_courant: { fr: 'Tenant courant : {tenant}', en: 'Current tenant: {tenant}' },
+  environnement: { fr: 'Environnement : {env}', en: 'Environment: {env}' },
+  environnement_tous: { fr: 'Environnement : Tous', en: 'Environment: All' },
+  tenant_suspendu: { fr: 'tenant suspendu', en: 'tenant suspended' },
+  tenant_reactive: { fr: 'tenant réactivé', en: 'tenant reactivated' },
+};
 
 // ============ #2c MULTI-TENANT : switcher + vue Tenants + grants + audit accès opérateur ============
 // La VRAIE garde reste SERVEUR (le daemon renvoie 400/403/404/409 ; le path-guard + le re-check handler
@@ -90,7 +100,7 @@ async function switchTenant(tid) {
   // celui qu'on croyait avoir laissé. La capture au corps VIDE d'avant avalait ce refus, et l'avis de succès
   // juste en dessous (« Tenant courant : … ») le rendait PIRE : il confirmait un état que rien n'avait retenu.
   const retenu = ecrireDansLeStockageDuSite('plume_tenant', tid);
-  toast('Tenant courant : ' + tid, 'info');
+  toast(faceDansLaLangue(MOTS_DES_AVIS_DU_PLAN_DE_CONTROLE.tenant_courant, { tenant: tid }), 'info');
   if (!retenu) toast(LANG === 'en' ? 'Tenant switched for this session only: this browser refuses site storage, so the next load will start on your home tenant.' : "Tenant basculé pour cette session seulement : ce navigateur refuse le stockage de site, le prochain chargement repartira sur votre tenant d'origine.", 'info', 5000);
   await reloadForTenant();
   const sel = $('#tenant-switch'); if (sel && sel.value !== tid) sel.value = tid;
@@ -202,7 +212,7 @@ async function switchEnv(env) {
   // et les vues ne portent plus le filtre qu'il croyait posé. `null` EFFACE la clé — c'est la forme que la
   // ligne d'avant écrivait à la main, et l'écrivain partagé la porte déjà (`P4.13-b`).
   const retenu = ecrireDansLeStockageDuSite('plume_env', v || null);
-  toast('Environnement : ' + (v || 'Tous'), 'info');
+  toast(faceDansLaLangue(v ? MOTS_DES_AVIS_DU_PLAN_DE_CONTROLE.environnement : MOTS_DES_AVIS_DU_PLAN_DE_CONTROLE.environnement_tous, { env: v }), 'info');
   if (!retenu) toast(LANG === 'en' ? 'Environment applied for this session only: this browser refuses site storage, so the next load will start on « All ».' : "Environnement appliqué pour cette session seulement : ce navigateur refuse le stockage de site, le prochain chargement repartira sur « Tous ».", 'info', 5000);
   refreshCurrentView();                                        // overview + panneaux + loader de la vue courante
   const sel = $('#env-switch'); if (sel && sel.value !== v) sel.value = v;
@@ -420,7 +430,7 @@ async function toggleSuspend(t) {
     else toast(phraseDuGesteRefuse(e), 'bad', 9000);
     return;
   }
-  toast('tenant ' + (suspend ? 'suspendu' : 'réactivé'), 'ok');
+  toast(faceDansLaLangue(suspend ? MOTS_DES_AVIS_DU_PLAN_DE_CONTROLE.tenant_suspendu : MOTS_DES_AVIS_DU_PLAN_DE_CONTROLE.tenant_reactive), 'ok');
   // `P10.21-h` — le succès peut porter l'aveu du journal de contrôle : il est lu, et dit.
   const sansMaillon = causeDeLaTraceManquante(j);
   if (sansMaillon) avouerLeGesteSansTrace(suspend ? 'suspension' : 'reactivation', sansMaillon);

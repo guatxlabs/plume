@@ -68,6 +68,20 @@ pub(crate) async fn user_create(State(st): State<AppState>, Extension(au): Exten
     if crate::handlers::idp::reserved_static_admin(&st) == Some(name.as_str()) {
         return err_json(StatusCode::CONFLICT, CAUSE_NOM_DE_L_ADMINISTRATEUR_DE_CONFIGURATION);
     }
+    // `P10.25-h` — LE NOM DE LA DÉMONSTRATION PUBLIQUE EST RÉSERVÉ, QU'ELLE SOIT ACTIVE OU NON. Mesuré le 2026-09-25 sur la
+    // forme d'avant, démonstration active : `adm` crée `demo` (`editor`) — 200 ; ce compte pose par son mot de passe
+    // une requête privée et ses préférences, et possède un tableau de bord privé ; tout visiteur ANONYME (aucun
+    // identifiant, résolu `demo`/`viewer`) liste la requête avec son texte, voit le tableau de bord privé, lit les
+    // préférences, SUPPRIME la requête (200 : la liste du compte est vide ensuite) et ÉCRASE les préférences. La
+    // démonstration inactive, la création rendait 200 aussi : le compte serait livré à l'anonyme au premier démarrage
+    // avec `PLUME_PUBLIC_DEMO=1`. Jugé AVANT le hachage : c'est un fait du code, aucune lecture n'y entre. LES JETONS NE
+    // SONT PAS RÉSERVÉS, ET C'EST MESURÉ : un compte local au nom d'un jeton de source de données, d'un jeton d'agent ou
+    // de l'hôte qu'il porte ne reçoit rien du jeton ni ne lui cède rien (le jeton ne tient aucun objet par son nom, ne
+    // s'authentifie que par son secret et sur ses routes — 401 sur les requêtes enregistrées —, et la réponse d'agent
+    // exige le rôle `agent`, que la table des comptes ne donne pas — 403).
+    if name == crate::auth::IDENTITE_DE_LA_DEMONSTRATION {
+        return err_json(StatusCode::CONFLICT, CAUSE_NOM_DE_L_IDENTITE_DE_LA_DEMONSTRATION);
+    }
     // POLITIQUE MDP (item 3) — à la CRÉATION du compte uniquement (les comptes existants intacts).
     if pw.chars().count() < PASSWORD_MIN_CHARS {
         return (StatusCode::BAD_REQUEST, format!("mot de passe trop court (≥ {PASSWORD_MIN_CHARS} caractères)")).into_response();
@@ -136,6 +150,13 @@ pub(crate) const CAUSE_NOM_DE_L_ADMINISTRATEUR_DE_CONFIGURATION: &str = "NOM RÉ
      la table des comptes. Un compte de ce nom le masquerait — la table des comptes fait autorité, son mot de passe de \
      configuration ne serait plus consulté — et hériterait de ce qu'il tient par son nom : graine du second facteur, \
      requêtes, tableaux de bord, instantanés. Choisissez un autre nom. Rien n'est écrit.";
+
+/// `P10.25-h` — LE NOM DE LA DÉMONSTRATION PUBLIQUE NE DEVIENT PAS UN COMPTE.
+pub(crate) const CAUSE_NOM_DE_L_IDENTITE_DE_LA_DEMONSTRATION: &str = "NOM RÉSERVÉ, C'EST L'IDENTITÉ DE LA \
+     DÉMONSTRATION PUBLIQUE : quand la démonstration est active, le démon sert sous ce nom tout visiteur anonyme, sans \
+     identifiant. Un compte de ce nom lui livrerait ce qu'il tient — requêtes enregistrées, tableaux de bord privés, \
+     préférences —, que l'anonyme lirait, modifierait et supprimerait ; et la démonstration s'active par la \
+     configuration, au redémarrage. Choisissez un autre nom. Rien n'est écrit.";
 
 /// `P10.24-u` — UN NOM TENU SANS COMPTE LOCAL NE DEVIENT PAS UN COMPTE À MOT DE PASSE.
 pub(crate) const CAUSE_NOM_TENU_PAR_UNE_IDENTITE_SANS_COMPTE: &str = "NOM TENU PAR UNE IDENTITÉ SANS COMPTE LOCAL : \

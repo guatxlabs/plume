@@ -228,7 +228,8 @@ function exportBar(name, getData, pdfScope, opts) {
   // ui-regression — l'export « déjà chargé » ne porte que la PAGE COURANTE sur une vue paginée.
   // opts.partial={shown,total} -> on prévient (toast) au clic quand total>shown, pour ne pas laisser croire à un
   // jeu complet (l'export Explore, lui, re-tourne côté serveur /api/export pour le jeu complet borné).
-  const warnPartial = () => { const p = opts.partial; if (p && typeof p.total === 'number' && p.total > p.shown) toast(`Export : page courante uniquement (${p.shown}/${p.total} lignes) — filtrez ou paginez pour le reste`, 'info'); };
+  // `P10.28-t` — l'avis, dans les deux langues (composé : deux nombres s'y collent, le lexique ne l'atteignait pas).
+  const warnPartial = () => { const p = opts.partial; if (p && typeof p.total === 'number' && p.total > p.shown) toast(faceDansLaLangue({ fr: 'Export : page courante uniquement ({vues}/{total} lignes) — filtrez ou paginez pour le reste', en: 'Export: current page only ({vues}/{total} rows) — filter or page through for the rest' }, { vues: p.shown, total: p.total }), 'info'); };
   const mk = (label, title, fn) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'exportbtn'; b.title = title; b.textContent = label; b.onclick = fn; return b; };
   if (opts.csv !== false) wrap.appendChild(mk('CSV', 'Exporter en CSV', () => { warnPartial(); const d = getData(); downloadText(`plume-${name}-${tsSlug()}.csv`, 'text/csv;charset=utf-8', toCSV(d.cols, d.rows)); }));
   if (opts.json !== false) wrap.appendChild(mk('JSON', 'Exporter en JSON', () => { warnPartial(); const d = getData(); downloadText(`plume-${name}-${tsSlug()}.json`, 'application/json', JSON.stringify(d.rows, null, 2)); }));
@@ -374,6 +375,23 @@ function avecLeStatutDuRefus(err, statut) { err.statutDuRefus = statut; return e
 function objetDuRefusNomme(corps) {
   if (!causeNommeeParLeDemon(corps)) return null;
   return JSON.parse(corps);   // lisible, et objet : `causeNommeeParLeDemon` vient de l'établir
+}
+// `P10.28-s` — LE TEXTE BRUT D'UN REFUS VOYAGE ENTIER, PAR LES DEUX FABRIQUES, SOUS UNE SEULE RÈGLE. Un refus que le démon
+// sert en TEXTE (ni objet `{error}`, ni page de passerelle, ni JSON) n'a pas d'autre porteur que le message composé :
+// le couper à deux cents caractères perd ce qu'il dit en dernier — souvent ce qui reste vrai, ou le remède. MESURÉ
+// avant ce lot (témoin 119s) : `apiSend` le gardait entier à côté du message (`texteDuRefus`, lot 199), `api()` le
+// coupait encore, et `fetchInto` peignait la moitié d'une phrase. La règle vaut désormais pour les deux : le texte
+// brut est entier dans le message ET à côté (`texteDuRefus`, que la forme partagée et `phraseDuRefusDuDemon` lisent) ;
+// un corps JSON reste coupé dans le message, sa cause voyageant à part (`causeDuDemon`). Rend '' hors de ce cas.
+function texteBrutEntierDuRefus(texte, horsDemon, causeNommee) {
+  if (horsDemon || causeNommee) return '';
+  const brut = String(texte || '').trim();
+  if (!brut) return '';
+  try { JSON.parse(brut); return ''; } catch { return brut; }
+}
+// Le message composé d'un refus lu : le statut, puis le texte brut entier, ou le corps coupé à deux cents caractères.
+function messageDuRefusLu(statut, corps, texteBrut) {
+  return statut + (corps ? ' ' + (texteBrut || corps.slice(0, 200)) : '');
 }
 
 // `P10.20-k` (2026-09-16) — LA PHRASE D'UN REFUS, QUEL QUE SOIT LE MOULE OÙ LE DÉMON L'A COULÉE.
@@ -633,7 +651,13 @@ async function api(path) {
       // `daemon/src/handlers/idp.rs`) : c'est sa phrase, pas celle d'un intermédiaire.
       throw avecLeStatutDuRefus(avecLaCauseDuDemon(new Error(cause || tg), cause), r.status);
     }
-    if (!r.ok) throw avecLeStatutDuRefus(avecLaCauseDuDemon(new Error(r.status + (body ? ' ' + body.slice(0, 200) : '')), cause), r.status);
+    if (!r.ok) {
+      // `P10.28-s` — le texte brut d'un refus n'est plus coupé : entier dans le message, et à côté, comme par `apiSend`.
+      const texteBrut = texteBrutEntierDuRefus(body, '', cause);
+      const refus = avecLeStatutDuRefus(avecLaCauseDuDemon(new Error(messageDuRefusLu(r.status, body, texteBrut)), cause), r.status);
+      if (texteBrut) refus.texteDuRefus = texteBrut;
+      throw refus;
+    }
     if (!body) throw avecLeStatutDuRefus(new Error(motDUneLectureQuiNEstPasServie('reponse_vide')), r.status);   // `P10.27-t`
     try { return JSON.parse(body); }
     catch {
@@ -724,13 +748,15 @@ async function apiSend(path, method = 'POST', body) {
   // Le délai d'un refus freiné (en-tête de nouvel essai, en secondes) voyage de même : le second facteur
   // freiné le sert, et « réessaie plus tard » ne dit pas quand.
   if (!r.ok) {
+    // `P10.27-d` — UN REFUS DU DÉMON EN TEXTE BRUT (ni JSON, ni page de passerelle) garde sa phrase ENTIÈRE : c'est elle
+    // que la forme partagée du refus d'un geste peint, et dont elle lit l'ouverture. `P10.28-s` — la règle est celle
+    // d'`api()`, écrite une fois (`texteBrutEntierDuRefus`) : entier dans le message aussi.
+    const causeNommee = horsDemon ? '' : causeNommeeParLeDemon(text);
+    const brutDuRefus = texteBrutEntierDuRefus(text, horsDemon, causeNommee);
     const refus = horsDemon ? refusHorsDemon(horsDemon, r.status)
-      : avecLaCauseDuDemon(new Error(r.status + (text ? ' ' + text.slice(0, 200) : '')), causeNommeeParLeDemon(text));
+      : avecLaCauseDuDemon(new Error(messageDuRefusLu(r.status, text, brutDuRefus)), causeNommee);
     refus.statutDuRefus = r.status;
-    // `P10.27-d` — UN REFUS DU DÉMON EN TEXTE BRUT (ni JSON, ni page de passerelle) garde sa phrase ENTIÈRE à côté du
-    // message coupé : c'est elle que la forme partagée du refus d'un geste peint, et dont elle lit l'ouverture.
-    const brutDuRefus = horsDemon || refus.causeDuDemon ? '' : text.trim();
-    if (brutDuRefus) { let estDuJson = false; try { JSON.parse(brutDuRefus); estDuJson = true; } catch { /* texte */ } if (!estDuJson) refus.texteDuRefus = brutDuRefus; }
+    if (brutDuRefus) refus.texteDuRefus = brutDuRefus;
     const objet = horsDemon ? null : objetDuRefusNomme(text);
     if (objet) refus.objetDuRefus = objet;   // `P10.25-i`
     const delai = r.headers && typeof r.headers.get === 'function' ? parseInt(r.headers.get('retry-after') || '', 10) : NaN;
@@ -890,7 +916,7 @@ function puitsDuRefusDUnGeste(parent, surface, avant) {
 // Un refus précédent s'efface au geste suivant : il ne décrit plus la demande en cours.
 function effacerLeRefusDUnGeste(puits) {
   if (!puits) return;
-  puits.hidden = true; puits.replaceChildren(); delete puits.dataset.refusDUnGeste;
+  puits.hidden = true; puits.replaceChildren(); delete puits.dataset.refusDUnGeste; delete puits.dataset.refusDUnEssai;
 }
 // Rend la nature peinte ('' sans puits).
 function peindreLeRefusDUnGeste(puits, e) {
@@ -906,9 +932,81 @@ function peindreLeRefusDUnGeste(puits, e) {
       : nature === 'refus_sans_cause' ? String(e.statutDuRefus) : phraseDuRefusDuDemon(e);
     puits.replaceChildren(dit, document.createTextNode(' « ' + cause.trim() + ' »'));
   }
+  delete puits.dataset.refusDUnEssai;
   puits.dataset.refusDUnGeste = nature;
   puits.hidden = false;
   return nature;
+}
+
+// `P10.27-d` — L'ESSAI (UNE LECTURE QUI N'ÉCRIT RIEN) A SA FACE NOMMÉE, DISTINCTE DE CELLE D'UN GESTE.
+// Quatre boutons de la console envoient un POST qui n'écrit RIEN : le test et l'aperçu d'un connecteur
+// (`connector_test`, daemon/src/handlers/connectors/mod.rs — une page lue, rien d'ingéré, rien d'audité), l'essai d'une
+// règle (`rule_test_adhoc`) et celui d'un parseur (`parser_test`, daemon/src/handlers/detection.rs). MESURÉ AVANT CE LOT
+// (témoin 119d) : leur refus collait `e.message` — « 403 réservé admin », le JSON brut, ou « Failed to fetch » nu —
+// dans un avis qui s'efface ou dans leur ligne de résultat. La forme d'un GESTE y serait fausse : « rien ici n'établit
+// s'il a été pris — vérifier son effet avant de le rejouer » prête un effet à ce qui n'en a aucun. La face d'un essai
+// dit ce qui est vrai : l'essai n'a pas eu lieu (ou son résultat ne s'est pas lu), il n'écrit rien, il se relance.
+// `data-refus-d-un-essai` porte la nature (marque de POSE pour le harnais) :
+//   · `essai_refuse` — le démon a refusé l'essai, en statut d'erreur ou en deux cents `{error}`, et en nomme la cause ;
+//   · `essai_refuse_sans_cause` — un refus sans corps : le statut, rien d'autre n'est inventé ;
+//   · `essai_non_abouti` — aucune réponse lue ;
+//   · `reponse_hors_demon` — une passerelle a répondu : sa propre phrase (`apiSend` l'a nommée).
+function natureDuRefusDUnEssai(e) {
+  if (e && e.reponseHorsDemon) return 'reponse_hors_demon';
+  if (laDemandeNAPasAbouti(e)) return 'essai_non_abouti';
+  const cause = e.causeDuDemon ? String(e.causeDuDemon).trim() : (typeof e.texteDuRefus === 'string' ? e.texteDuRefus.trim() : '');
+  if (!cause && /^\d{3}$/.test(String(e.message || '').trim())) return 'essai_refuse_sans_cause';
+  return 'essai_refuse';
+}
+const MOTS_DU_REFUS_D_UN_ESSAI = {
+  essai_refuse: {
+    fr: "ESSAI NON FAIT : le démon a refusé cet essai, qui n'écrit rien — rien n'a changé. Le démon en nomme la cause —",
+    en: 'TEST NOT RUN: the daemon refused this test, which writes nothing — nothing changed. The daemon names the cause —' },
+  essai_refuse_sans_cause: {
+    fr: "ESSAI NON FAIT : le démon a refusé cet essai sans en nommer la cause ; un essai n'écrit rien — statut",
+    en: 'TEST NOT RUN: the daemon refused this test without naming the cause; a test writes nothing — status' },
+  essai_non_abouti: {
+    fr: "Essai NON abouti : la demande n'a pas abouti, aucun résultat n'est établi. Un essai n'écrit rien, il peut être relancé. Cause —",
+    en: 'Test NOT completed: the request did not complete, no result is established. A test writes nothing, it can be run again. Cause —' },
+};
+const motDuRefusDUnEssai = (nature) => (LANG === 'en' ? MOTS_DU_REFUS_D_UN_ESSAI[nature].en : MOTS_DU_REFUS_D_UN_ESSAI[nature].fr);
+// Peint le refus d'un essai DANS `noeud` (sa ligne de résultat, ou le puits de sa surface) ; rend la nature peinte.
+function peindreLeRefusDUnEssai(noeud, e) {
+  if (!noeud) return '';
+  const nature = natureDuRefusDUnEssai(e);
+  const dit = document.createElement('span');
+  if (nature === 'reponse_hors_demon') {
+    dit.textContent = String(e.message || '');
+    noeud.replaceChildren(dit);
+  } else {
+    dit.textContent = motDuRefusDUnEssai(nature);
+    const cause = nature === 'essai_non_abouti' ? String((e && e.message) || e)
+      : nature === 'essai_refuse_sans_cause' ? String(e.statutDuRefus) : phraseDuRefusDuDemon(e);
+    noeud.replaceChildren(dit, document.createTextNode(' « ' + cause.trim() + ' »'));
+  }
+  noeud.className = 'bad';
+  delete noeud.dataset.refusDUnGeste;
+  noeud.dataset.refusDUnEssai = nature;
+  noeud.hidden = false;
+  return nature;
+}
+// Un essai qui repart (ou dont le résultat s'écrit) efface le refus d'avant et sa marque ; l'appelant écrit ensuite son
+// texte par `textContent`, là où le lexique et sa garde le voient.
+function effacerLeRefusDUnEssai(noeud) {
+  if (!noeud) return;
+  delete noeud.dataset.refusDUnEssai;
+  noeud.className = 'muted';
+}
+
+// `P10.28-t` — LA FACE D'UN AVIS, DANS LA LANGUE DE L'ÉCRAN, SES VALEURS POSÉES. Un avis COMPOSÉ (un nombre, un nom s'y
+// collent) n'est jamais égal à une clé du lexique, qui ne traduit qu'un nœud ENTIER : mesuré avant ce lot (témoin
+// 119t), vingt-cinq avis de succès composés restaient français sous `LANG='en'` (« collecte OK — 3 event(s)
+// ingéré(s) », « forward OK : … », « Case #4 archivé »…). Chaque module range ses faces `{fr, en}` côte à côte ; ce
+// formateur choisit la face et pose les valeurs par une fonction de remplacement — une valeur servie qui contiendrait
+// `$&` ou une accolade n'est jamais réinterprétée, et une clé sans valeur reste écrite (visible, jamais inventée).
+function faceDansLaLangue(mots, valeurs = {}) {
+  const face = LANG === 'en' ? mots.en : mots.fr;
+  return String(face).replace(/\{(\w+)\}/g, (brut, nom) => (Object.prototype.hasOwnProperty.call(valeurs, nom) ? String(valeurs[nom]) : brut));
 }
 
 function muted(t) { return Object.assign(document.createElement('div'), { className: 'muted', textContent: t }); }
@@ -1086,6 +1184,38 @@ function noeudDeLaPageVideDeRangSuperieur(indexDePage, total, taille, totalPlafo
   if (laPageEstAuDelaDuTotal(indexDePage, total, taille, totalPlafonne)) return noeudDeLaPageVideAuDelaDuTotal();
   if (laPageEstDansLeTotal(indexDePage, total, taille)) return noeudDeLaPageVideDansLeTotal(total, totalPlafonne);   // `P10.25-z`
   return noeudDeLaFinDuResultat();
+}
+// `P10.26-m` — LA PREMIÈRE PAGE VIDE DANS UN TOTAL COMPTÉ DIT L'ÉCART, ELLE AUSSI.
+//
+// MESURÉ AVANT CE LOT (témoin 119m, sur les modules réels) : une première page servie vide sous un total compté de
+// N lignes rendait un tableau d'EN-TÊTES sous son pager (liste paginée, panneau de table), et l'Explore écrivait
+// « aucun événement sur la fenêtre » — une ABSENCE affirmée sous une ligne d'état qui annonce N résultats. Le cas
+// n'est pas théorique, et il est plus ordinaire qu'au rang supérieur : l'Explore par curseur rend sa première page
+// AVANT que le compte asynchrone ne parte, une source qui ingère en retard pose donc des lignes dans la fenêtre gelée
+// entre les deux lectures.
+// CE QUE LA PHRASE DE `P10.25-z` NE PEUT PAS DIRE ICI, ET C'EST POURQUOI ELLE N'EST PAS REPRISE TELLE QUELLE : « ◀ pour
+// revenir » n'a rien où revenir sur une première page, et « des lignes comptées ont disparu entre le compte et la
+// page » devine un SENS que rien n'établit — le compte peut suivre la page. Elle dit l'écart dans les mêmes mots (le
+// compte place des lignes sur cette page, la lecture n'en rend aucune), puis ce qui est vrai dans les deux sens : deux
+// lectures, entre lesquelles des lignes ont changé, et le geste qui les relit. Un total nul, ou absent, garde la
+// phrase d'avant de chaque surface.
+const MOTS_DE_LA_PREMIERE_PAGE_VIDE_DANS_LE_TOTAL = {
+  fr: 'première page vide DANS le total compté ({total}) : le compte place des lignes sur cette page, la lecture n\'en rend aucune — le compte et la page sont deux lectures, et des lignes ont changé entre elles (retirées avant la page, ou arrivées après elle) — relancer la lecture pour les relire',
+  en: 'first page empty WITHIN the counted total ({total}): the count places rows on this page, the read returns none — the count and the page are two reads, and rows changed between them (removed before the page, or arrived after it) — run the read again to read them',
+};
+function noeudDeLaPremierePageVideDansLeTotal(total, totalPlafonne) {
+  const noeud = document.createElement('div'); noeud.className = 'muted';
+  const valeur = String(total) + (totalPlafonne ? '+' : '');
+  noeud.textContent = (LANG === 'en' ? MOTS_DE_LA_PREMIERE_PAGE_VIDE_DANS_LE_TOTAL.en : MOTS_DE_LA_PREMIERE_PAGE_VIDE_DANS_LE_TOTAL.fr).replace('{total}', () => valeur);
+  noeud.dataset.pageVide = 'premiere_page_dans_le_total';   // marque de POSE (harnais)
+  return noeud;
+}
+// Le nœud d'une page SERVIE VIDE, quel que soit son rang : la première page dans un total compté dit l'écart (`P10.26-m`),
+// une page de rang supérieur prend la phrase de `noeudDeLaPageVideDeRangSuperieur` ; `null` sur une première page
+// qu'aucun total ne contredit — chaque surface y garde sa phrase de fenêtre vide.
+function noeudDUnePageServieVide(indexDePage, total, taille, totalPlafonne) {
+  if (indexDePage > 0) return noeudDeLaPageVideDeRangSuperieur(indexDePage, total, taille, totalPlafonne);
+  return laPageEstDansLeTotal(0, total, taille) ? noeudDeLaPremierePageVideDansLeTotal(total, totalPlafonne) : null;
 }
 
 function makePager(state, onGo) {
@@ -1537,7 +1667,8 @@ function pagedList(host, opts) {
     const go = p => { state.page = p; reload(); };
     // `P10.25-n` — UNE PAGE DE RANG SUPÉRIEUR SERVIE VIDE DIT CE QU'ELLE EST, À LA PLACE D'UN TABLEAU D'EN-TÊTES, et
     // garde son retour. `shown` compte les lignes SERVIES : une page que la recherche a vidée n'est pas une page vide.
-    const pageVide = (!rows.length && !state.shown) ? noeudDeLaPageVideDeRangSuperieur(state.page, state.total, state.pageSize, state.totalCapped) : null;
+    // `P10.26-m` — la PREMIÈRE page servie vide sous un total compté dit l'écart, elle aussi, au lieu de ses seuls en-têtes.
+    const pageVide = (!rows.length && !state.shown) ? noeudDUnePageServieVide(state.page, state.total, state.pageSize, state.totalCapped) : null;
     if (pageVide) {
       cible.appendChild(pageVide);
       const retour = makePager(state, go); if (retour) cible.appendChild(retour);
@@ -2271,14 +2402,35 @@ async function contentSubmit(path, body, resSel) {
 // `P10.27-d` — `puits` : celui de la surface qui liste le contenu (`puitsDuRefusDUnGeste`) ; le refus s'y écrit par la
 // forme partagée, cause entière, au lieu de l'avis qui s'efface (« SUPPRESSION NON FAITE : … » coupé à deux cents
 // caractères). Un geste accepté efface le refus d'avant.
+// `P10.28-t` — `label` est la CLÉ du contenu (`regle`, `parseur`, `playbook`, `lookup`) : ses deux avis ont leurs faces
+// {fr, en}. MESURÉ AVANT CE LOT (témoin 119t) : `label + ' supprimé'` — un nom français collé à un participe, sans
+// accord (« règle supprimé ») — restait français sous `LANG='en'`. Le message du démon (un contenu livré désactivé au
+// lieu d'être supprimé) est cité tel quel quand il est servi.
+const MOTS_DES_RETRAITS_DE_CONTENU = {
+  regle: {
+    supprime: { fr: 'règle supprimée', en: 'rule deleted' },
+    desactive: { fr: 'règle builtin : désactivée (non supprimée)', en: 'builtin rule: disabled (not deleted)' } },
+  parseur: {
+    supprime: { fr: 'parseur supprimé', en: 'parser deleted' },
+    desactive: { fr: 'parseur builtin : désactivé (non supprimé)', en: 'builtin parser: disabled (not deleted)' } },
+  playbook: {
+    supprime: { fr: 'playbook supprimé', en: 'playbook deleted' },
+    desactive: { fr: 'playbook builtin : désactivé (non supprimé)', en: 'builtin playbook: disabled (not deleted)' } },
+  lookup: {
+    supprime: { fr: 'lookup supprimé', en: 'lookup deleted' },
+    desactive: { fr: 'lookup builtin : désactivé (non supprimé)', en: 'builtin lookup: disabled (not deleted)' } },
+  contenu: {
+    supprime: { fr: 'contenu supprimé', en: 'content deleted' },
+    desactive: { fr: 'contenu builtin : désactivé (non supprimé)', en: 'builtin content: disabled (not deleted)' } },
+};
 async function contentDelete(path, label, puits) {
   effacerLeRefusDUnGeste(puits);
   let j;
   try { j = await apiSend(path, 'DELETE'); }
   catch (e) { peindreLeRefusDUnGeste(puits, e); return false; }
   j = j || {};
-  if (j.deleted === false && j.disabled) toast(j.message || ((label || 'contenu') + ' builtin : désactivé (non supprimé)'), 'info');
-  else toast((label || 'contenu') + ' supprimé', 'ok');
+  if (j.deleted === false && j.disabled) toast(j.message || faceDansLaLangue((MOTS_DES_RETRAITS_DE_CONTENU[label] || MOTS_DES_RETRAITS_DE_CONTENU.contenu).desactive), 'info');
+  else toast(faceDansLaLangue((MOTS_DES_RETRAITS_DE_CONTENU[label] || MOTS_DES_RETRAITS_DE_CONTENU.contenu).supprime), 'ok');
   return true;
 }
 
@@ -2446,6 +2598,9 @@ export {
   noeudDeLaFinDuResultat, noeudDeLaPageVideDeRangSuperieur,
   // `P10.25-z` — la page vide DANS le total compté, lue aussi par l'Explore (qui choisit sa phrase lui-même).
   laPageEstDansLeTotal, noeudDeLaPageVideDansLeTotal,
+  // `P10.26-m` — la première page vide dans le total compté, et le choix d'une page servie vide quel que soit son rang
+  // (liste paginée, panneau de table ; l'Explore choisit sa clé lui-même et lit le nœud).
+  noeudDeLaPremierePageVideDansLeTotal, noeudDUnePageServieVide,
   socRole, socIsAdmin, applyRoleClass, controleDEcritureSous, motiverLeRefusAuLecteur, roleSansEcriturePartagee, managedBadge, gateDeleteBtn, formMsg, contentSubmit, contentDelete, SEVCOL, lsSet, collapsibleGroup, humanAge,
   confirmWithConsequence, disclosure, marquerLesCellulesTronquees, celluleDeborde,
   // `P10.20-b` (rang 2) — LE LECTEUR DE CAUSE EST EXPOSÉ, PAS RECOPIÉ. `api()` et `apiSend()` attachent
@@ -2477,6 +2632,13 @@ export {
   laTraceNonEcriteServieEnDeuxCents,
   // `P10.27-d` — et le refus servi en deux cents (`{error}`), peint par la même forme.
   unRefusServiEnDeuxCents,
+  // `P10.27-d` — la face nommée d'un ESSAI qui n'écrit rien (test et aperçu d'un connecteur, essai d'une règle ou d'un
+  // parseur) : sa nature, ses faces, sa pose, et l'écriture du résultat qui l'efface (témoin 119).
+  natureDuRefusDUnEssai, motDuRefusDUnEssai, peindreLeRefusDUnEssai, effacerLeRefusDUnEssai,
+  // `P10.28-t` — le formateur des faces `{fr, en}` d'un avis composé (témoin 119t).
+  faceDansLaLangue,
+  // `P10.28-s` — la règle du texte brut d'un refus, commune aux deux fabriques (témoin 119s).
+  texteBrutEntierDuRefus,
   // `P10.27-c` — les deux faces d'une lecture qui n'est pas servie (la phrase d'une panne de passerelle, le préfixe
   // d'une lecture refusée), jugées sous les deux instances de langue par le témoin 116.
   motDUneLectureQuiNEstPasServie,

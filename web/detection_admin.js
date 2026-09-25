@@ -4,7 +4,7 @@
 // PURE MOVE : corps de fonctions IDENTIQUES au monolithe, seuls les import/export sont ajoutes.
 // Le cycle app<->module est benin : les fonctions importees d'app.js ne sont appelees qu'a
 // l'EXECUTION (handlers/async apres await), jamais a l'evaluation du module.
-import { $, LANG, esc, sev, fmtTs, ic, muted, api, apiSend, unDeuxCentsSansCorpsLisible, confirmModal, toast, pagedList, managedBadge, gateDeleteBtn, contentSubmit, contentDelete, fetchInto, formMsg, phraseDuRefusDuDemon, aveuDeLaCreationDeRiposte, aveuDeLaTraceManquante, causeDeLaTraceManquante, cleDeLIdentifiantDeRiposte, motDeLaRiposteSansIdentifiant, socIsAdmin, lsSet, collapsibleGroup, disclosure, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, prefixeDUnEchecRenduTelQuel, unRefusServiEnDeuxCents } from './core.js';
+import { $, LANG, esc, sev, fmtTs, ic, muted, api, apiSend, unDeuxCentsSansCorpsLisible, confirmModal, toast, pagedList, managedBadge, gateDeleteBtn, contentSubmit, contentDelete, fetchInto, formMsg, phraseDuRefusDuDemon, aveuDeLaCreationDeRiposte, aveuDeLaTraceManquante, causeDeLaTraceManquante, cleDeLIdentifiantDeRiposte, motDeLaRiposteSansIdentifiant, socIsAdmin, lsSet, collapsibleGroup, disclosure, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, prefixeDUnEchecRenduTelQuel, unRefusServiEnDeuxCents, peindreLeRefusDUnEssai, effacerLeRefusDUnEssai, faceDansLaLangue } from './core.js';
 import { libelleDeTechnique, nomDeTechnique } from './catalogue_attack.js'; // `P11.6-c` : nom dérivé du catalogue servi, ou motif de son absence
 import { S, lireLeStockageDuSite, ecrireDansLeStockageDuSite, ecrireSansDireLeRefus, RAISONS_DE_SILENCE } from './state.js';
 import { initSigmaImport } from './sigmaimport.js';
@@ -372,7 +372,7 @@ function ruleRow(r) {
   const baselineLocked = !socIsAdmin() && r.managed === 0;
   const edit = rowButton('Éditer', { cls: 'crud-btn', disabled: baselineLocked, title: baselineLocked ? 'détection baseline (seed/builtin) : édition réservée à l\'administrateur ; créez plutôt votre propre règle' : '', onClick: baselineLocked ? null : () => openRuleForm(r) });
   const del = rowButton('', { cls: 'crud-btn', icon: ic('x'), title: 'Supprimer' });
-  if (gateDeleteBtn(del, r.managed)) del.onclick = async () => { if (await confirmModal('Supprimer la règle "' + r.name + '" ?', { danger: true })) { if (await contentDelete('/rules/' + r.id, 'règle', puitsDesRegles())) loadRules(); } };
+  if (gateDeleteBtn(del, r.managed)) del.onclick = async () => { if (await confirmModal('Supprimer la règle "' + r.name + '" ?', { danger: true })) { if (await contentDelete('/rules/' + r.id, 'regle', puitsDesRegles())) loadRules(); } };
   row.append(test, edit, del);
   return row;
 }
@@ -473,17 +473,41 @@ function closeRuleForm() {
 }
 if ($('#rule-new')) $('#rule-new').onclick = () => openRuleForm(null);
 if ($('#rf-cancel')) $('#rf-cancel').onclick = closeRuleForm;
-if ($('#rf-test')) $('#rf-test').onclick = async () => {
+// `P10.27-d` / `P10.28-t` — L'ESSAI D'UNE RÈGLE ET CELUI D'UN PARSEUR N'ÉCRIVENT RIEN (`rule_test_adhoc`, `parser_test`,
+// daemon/src/handlers/detection.rs) : leur refus se dit par la face nommée d'un essai (`peindreLeRefusDUnEssai`,
+// core.js) dans leur ligne de résultat, et leur résultat dans les deux langues. MESURÉ AVANT CE LOT (témoin 119d) : la
+// ligne recevait `e.message` — « 403 lecture seule (rôle viewer) », « Failed to fetch » nu — ou le `{error}` servi en
+// deux cents, collé sans un mot ; le résultat (« valeur = 3 -> déclencherait », « OK → … ») restait français sous
+// `LANG='en'`. Le `{error}` servi en deux cents (motif vide, regex invalide, requête qui ne compile pas, SQL brut
+// réservé) est un refus de l'essai, dit comme tel, cause entière.
+// Les résultats COMPOSÉS (une valeur s'y colle) ont leurs faces ici ; les phrases entières (« écris une requête d'abord »,
+// « aucune correspondance ») restent au lexique, posées par `textContent`.
+const MOTS_DES_ESSAIS_DE_CONTENU = {
+  regle_declencherait: { fr: 'valeur = {valeur} -> déclencherait', en: 'value = {valeur} -> would fire' },
+  regle_ne_declenche_pas: { fr: 'valeur = {valeur} -> ne déclenche pas (seuil non franchi)', en: 'value = {valeur} -> does not fire (threshold not crossed)' },
+  parseur_correspond: { fr: 'OK → {champs}', en: 'match → {champs}' },
+};
+const motDUnEssaiDeContenu = (cle, valeurs) => faceDansLaLangue(MOTS_DES_ESSAIS_DE_CONTENU[cle], valeurs);
+// Nommés et exportés pour le harnais (témoin 119) : deux instances du module (une par langue) partagent le même bouton,
+// et la dernière chargée prend son `onclick` — l'essai se joue donc sous SA langue par la fonction, pas par le nœud.
+async function essayerLaRegleDuFormulaire() {
   const q = $(RF.query).value.trim(), res = $('#rf-result');
+  effacerLeRefusDUnEssai(res);
   if (!q) { res.textContent = "écris une requête d'abord"; return; }
   res.textContent = '...';
   const body = { query: q, is_soql: $(RF.issoql).value === '1', op: $(RF.op).value, threshold: Number($(RF.threshold).value) || 0, window_s: Number($(RF.window).value) || 3600 };
-  try {
-    const j = await apiSend('/rule-test', 'POST', body);
-    res.textContent = j.error ? ('' + j.error) : `valeur = ${j.value} -> ${j.fired ? 'déclencherait' : 'ne déclenche pas (seuil non franchi)'}`;
-    res.title = j.sql || '';
-  } catch (e) { res.textContent = '' + e.message; }
-};
+  let j;
+  try { j = await apiSend('/rule-test', 'POST', body); }
+  catch (e) { peindreLeRefusDUnEssai(res, e); return; }
+  res.title = (j && j.sql) || '';
+  // Le `{error}` servi en deux cents est lu ICI, par un test séparé de celui du résultat (la garde des refus rendus comme
+  // une absence le cherche dans le module) ; la forme partagée le peint, cause entière.
+  const refuse = j && j.error != null ? unRefusServiEnDeuxCents(j) : null;
+  if (refuse) { peindreLeRefusDUnEssai(res, refuse); return; }
+  effacerLeRefusDUnEssai(res);
+  res.textContent = motDUnEssaiDeContenu(j && j.fired ? 'regle_declencherait' : 'regle_ne_declenche_pas', { valeur: j ? j.value : '' });
+}
+if ($('#rf-test')) $('#rf-test').onclick = essayerLaRegleDuFormulaire;
 if ($('#rule-form')) $('#rule-form').addEventListener('submit', async e => {
   e.preventDefault();
   // normalise le tag MITRE (trim+upper) ; vide autorisé ; sinon doit matcher Txxxx[.yyy]
@@ -725,13 +749,18 @@ function parserRow(p) {
 }
 if ($('#parser-new')) $('#parser-new').onclick = () => openParserForm(null);
 if ($('#pf-cancel')) $('#pf-cancel').onclick = () => $('#parser-form').classList.add('hidden');
-if ($('#pf-test')) $('#pf-test').onclick = async () => {
-  const res = $('#pf-result'); res.textContent = '...';
-  try {
-    const j = await apiSend('/parser-test', 'POST', { pattern: $(PF.pattern).value, sample: $('#pf-sample').value });
-    res.textContent = j.error ? ('' + j.error) : (j.matched ? ('OK → ' + JSON.stringify(j.fields)) : 'aucune correspondance');
-  } catch (e) { res.textContent = '' + e.message; }
-};
+async function essayerLeParseurDuFormulaire() {
+  const res = $('#pf-result'); effacerLeRefusDUnEssai(res); res.textContent = '...';
+  let j;
+  try { j = await apiSend('/parser-test', 'POST', { pattern: $(PF.pattern).value, sample: $('#pf-sample').value }); }
+  catch (e) { peindreLeRefusDUnEssai(res, e); return; }
+  const refuse = j && j.error != null ? unRefusServiEnDeuxCents(j) : null;
+  if (refuse) { peindreLeRefusDUnEssai(res, refuse); return; }
+  effacerLeRefusDUnEssai(res);
+  if (j && j.matched) res.textContent = motDUnEssaiDeContenu('parseur_correspond', { champs: JSON.stringify(j.fields) });
+  else res.textContent = 'aucune correspondance';
+}
+if ($('#pf-test')) $('#pf-test').onclick = essayerLeParseurDuFormulaire;
 // `P10.27-n` — LE REPARSE DIT SON REFUS PAR LA FORME PARTAGÉE, DANS LE PUITS DU PANNEAU. `parser_reparse`
 // (daemon/src/handlers/detection.rs) rend, quand la base ne prend pas sa transaction, cinq cent trois
 // `CAUSE_REPARSE_NON_APPLIQUE` : AUCUN event n'est modifié, et le geste se relance tel quel. MESURÉ AVANT CE LOT
@@ -1574,6 +1603,8 @@ loadMode();
 // verdict, sa voisine étant reconnue un cran plus haut. Un discriminant dont l'élargissement ne se voit
 // pas n'est pas gardé ; il est donc confronté aux littéraux du démon SANS passer par l'aiguillage.
 export { cleDuRefusDeRiposte, motDuRefusDeRiposte, OUVERTURE_DE_L_APPROBATION_SANS_TRACE, OUVERTURE_DU_BAN_NON_ARME,
+  // `P10.27-d` — les deux essais en lecture seule, joués par le témoin 119 sous la langue de leur instance.
+  essayerLaRegleDuFormulaire, essayerLeParseurDuFormulaire,
   // `P10.21-a` — les TROIS ouvertures du lot 101 rejoignent les deux du lot 102 : nues, pour que le
   // témoin les confronte aux littéraux du démon sans passer par l'aiguillage qui les abritait.
   OUVERTURE_DE_LA_RIPOSTE_NON_LUE, OUVERTURE_DE_L_APPROBATION_NON_ENREGISTREE, OUVERTURE_DE_LA_RIPOSTE_INTROUVABLE,

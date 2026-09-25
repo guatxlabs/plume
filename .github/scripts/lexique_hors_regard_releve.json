@@ -57,8 +57,7 @@
   "timeZone",
   "un credential est requis à la création pour cette authentification.",
   "un secret (token / mot de passe) est requis à la création pour cette auth.",
-  "échec",
-  "— ampleur non mesurée par le serveur (plafond de lignes) : resserrez la fenêtre pour un export complet"
+  "échec"
  ],
  "attack.js": [
   "ANGLE MORT — aucune règle ne couvre cette technique. Importez un ruleset Sigma pour la couvrir (bouton « Importer un ruleset Sigma »).",
@@ -172,7 +171,6 @@
   "client_secret OAuth2 — jamais réaffiché",
   "disponible dans une phase ultérieure",
   "jamais collecté",
-  "puis crée (désactivé) et teste la connexion.",
   "token_url requis pour OAuth2 client-credentials."
  ],
  "copie_et_selection.js": [
@@ -296,7 +294,6 @@
   "l'activation/désactivation d'un playbook est réservée à l'administrateur",
   "l'activation/désactivation d'une règle est réservée à l'administrateur",
   "requête requise",
-  "règle",
   "stops the target service",
   "terminates the target process",
   "termine le processus cible",

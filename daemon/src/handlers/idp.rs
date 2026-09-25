@@ -623,8 +623,8 @@ pub(crate) async fn oidc_callback(State(st): State<AppState>, headers: axum::htt
     };
     {
         let conn = st.db.lock();
-        if let Err(e) = idp_provision_user(&conn, &username, &role, reserved_static_admin(&st)) {
-            return (StatusCode::CONFLICT, e).into_response();
+        if let Err(refus) = federer_le_nom(&st, &conn, &username, &role) {
+            return refus.reponse();
         }
         ledger_append(&conn, "login", &format!("login OIDC : '{username}' (rôle {role}) via provider '{provider}'"));
     }
@@ -736,8 +736,8 @@ pub(crate) async fn saml_acs(
     };
     {
         let conn = st.db.lock();
-        if let Err(e) = idp_provision_user(&conn, &username, &role, reserved_static_admin(&st)) {
-            return (StatusCode::CONFLICT, e).into_response();
+        if let Err(refus) = federer_le_nom(&st, &conn, &username, &role) {
+            return refus.reponse();
         }
         ledger_append(&conn, "login", &format!("login SAML : '{username}' (rôle {role}) via provider '{provider}'"));
     }
@@ -822,8 +822,8 @@ pub(crate) async fn ldap_login_post(State(st): State<AppState>, ConnectInfo(peer
             };
             {
                 let conn = st.db.lock();
-                if let Err(e) = idp_provision_user(&conn, &user, &role, reserved_static_admin(&st)) {
-                    return (StatusCode::CONFLICT, e).into_response();
+                if let Err(refus) = federer_le_nom(&st, &conn, &user, &role) {
+                    return refus.reponse();
                 }
                 ledger_append(&conn, "login", &format!("login LDAP : '{user}' (rôle {role})"));
             }

@@ -4,7 +4,7 @@
 //  - (admin) bulletin/MOTD (setting global, bandeau pour TOUS)                             -> /api/bulletin
 //  - (admin) bundle de diagnostic NON-SECRET (support hand-off, téléchargé)               -> GET /api/system/diag
 // LECTURE viewer+. Additif : aucun bulletin -> aucun bandeau (invariant mode 0).
-import { $, LANG, api, apiSend, muted, prefixeDUnEchecRenduTelQuel, toast, fmtTs, downloadText, humanAge, socIsAdmin } from './core.js';
+import { $, LANG, api, apiSend, muted, prefixeDUnEchecRenduTelQuel, toast, fmtTs, downloadText, humanAge, socIsAdmin, puitsDuRefusDUnGeste, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste } from './core.js';
 // P11.4-g : la référence documentaire d'un avertissement est une VALEUR qu'on transporte — geste de copie
 // partagé (`copie_et_selection.js`, `P11.4-h`).
 import { valeurTransportee } from './copie_et_selection.js';
@@ -396,6 +396,11 @@ function rendreSysteme(wrap, m, h) {
   }
 }
 
+// Le puits du bulletin : avant le corps du panneau Système, hors de ce que son rafraîchissement repeint.
+function puitsDuBulletin() {
+  const corps = $('#system-body');
+  return corps && corps.parentNode ? puitsDuRefusDUnGeste(corps.parentNode, 'bulletin', corps) : null;
+}
 function adminTools() {
   const box = document.createElement('div'); box.className = 'sys-admin';
   const h = document.createElement('h3'); h.textContent = 'Administration (opérateur)'; box.appendChild(h);
@@ -430,13 +435,19 @@ function adminTools() {
     }
     if (d && d.bulletin) { ta.value = d.bulletin.message || ''; lvl.value = d.bulletin.level || 'info'; }
   }).catch(() => {});
+  // `P10.27-d` — LA PUBLICATION ET L'EFFACEMENT DU BULLETIN DISENT LEUR REFUS PAR LA FORME PARTAGÉE (`peindreLeRefusDUnGeste`,
+  // core.js), dans un puits posé avant le corps du panneau (`#system-body`, que chaque rafraîchissement repeint). MESURÉ
+  // AVANT CE LOT (témoin 119d) : « erreur : » + `e.message` dans un avis qui s'efface — le JSON brut du refus du rôle,
+  // ou « Failed to fetch » nu lu comme un échec du démon.
   save.onclick = async () => {
+    const puits = puitsDuBulletin(); effacerLeRefusDUnGeste(puits);
     try { await apiSend('/bulletin', 'POST', { message: ta.value.trim(), level: lvl.value }); toast('bulletin publié', 'ok'); loadBulletin(); }
-    catch (e) { toast(prefixeDUnEchecRenduTelQuel() + e.message, 'bad'); }
+    catch (e) { peindreLeRefusDUnGeste(puits, e); }
   };
   clear.onclick = async () => {
+    const puits = puitsDuBulletin(); effacerLeRefusDUnGeste(puits);
     try { await apiSend('/bulletin', 'DELETE'); ta.value = ''; toast('bulletin effacé', 'ok'); loadBulletin(); }
-    catch (e) { toast(prefixeDUnEchecRenduTelQuel() + e.message, 'bad'); }
+    catch (e) { peindreLeRefusDUnGeste(puits, e); }
   };
   box.appendChild(bl);
 

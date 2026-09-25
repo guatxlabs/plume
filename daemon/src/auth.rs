@@ -5,6 +5,7 @@
 //! mapping SSO (`sso_role`) et l'authentification (`verify_pw`/`authenticate`). Extrait de main.rs
 //! (refactor split #25 — byte-identique).
 use crate::*;
+use rusqlite::OptionalExtension;
 
 /// État anti-brute-force d'un couple (username, src_ip). `count` = échecs consécutifs ; `locked_until`
 /// = fin du lockout courant (None si non verrouillé) ; `last` = dernier échec (TTL -> réarmement).
@@ -997,25 +998,103 @@ impl RefusDeLAnnuaire {
     }
 }
 
-/// `P10.25-d` — LE NOM QUE PRÉSENTE L'ANNUAIRE EST-IL PRENABLE ? Voir le bandeau ci-dessus.
-pub(crate) fn juger_le_nom_presente_par_l_annuaire(st: &AppState, nom: &str) -> Result<(), RefusDeLAnnuaire> {
-    if crate::handlers::idp::reserved_static_admin(st) == Some(nom) {
+// ====================================================================================================
+// `P10.25-t` — UNE SEULE RÈGLE POUR LES DEUX PORTES PAR LESQUELLES UN ANNUAIRE PREND UN NOM.
+//
+// AVANT : deux fonctions. Le chemin SSO d'en-têtes jugeait ici (`P10.25-d`) ; la fédération (OIDC, SAML, LDAP)
+// jugeait dans `idp_provision_user`, avec sa propre lecture. Elles disaient la même chose sur deux cas et
+// divergeaient sur deux autres, MESURÉS le 2026-09-25 sur la forme d'avant :
+//  * L'ADMINISTRATEUR DE L'ASSISTANT SANS LIGNE `user` (cas hérité : sa ligne retirée pendant que sa crédence
+//    vit en mémoire) : refusé ici, PRIS par la fédération — elle posait une ligne fédérée à son nom, qui fait
+//    autorité : son mot de passe d'installation, 200 `admin` avant, ne connectait plus (401), et l'identité de
+//    l'annuaire prenait ce qu'il tenait par son nom ;
+//  * UNE LECTURE DU HACHAGE QUI ÉCHOUE : refusée ici (503 nommé), AVALÉE par la fédération (`.ok()`, lue comme
+//    « aucune ligne ») — l'`UPSERT` suivait. MESURÉ avec la lecture de `user.hash` refusée sur l'écrivain :
+//    l'annuaire qui présente `bob` (compte `editor` À MOT DE PASSE) dans le groupe administrateur est fédéré (Ok),
+//    le rôle de la ligne de `bob` passe à `admin` sans toucher son hachage, et le MOT DE PASSE LOCAL de `bob`
+//    le connecte ensuite en administrateur.
+// DÉCISION : la règle la plus stricte des deux, pour les deux portes. Refusés : le nom de l'administrateur de
+// configuration ; un nom dont la ligne porte un mot de passe local réel ; sans ligne, le nom de l'administrateur
+// de l'assistant (crédence en mémoire) ; et tout nom qu'on n'a pas pu vérifier. Pris : un nom sans ligne, ou lié
+// à une ligne SANS mot de passe local (`IDP_HASH_SENTINEL`, ou hachage vide). CHACUNE DES DEUX PORTES FOURNIT
+// SEULEMENT SA LECTURE DU HACHAGE — le chemin d'en-têtes par le pool puis l'écrivain (il ne tient aucun verrou),
+// la fédération par la connexion d'écriture qu'elle tient déjà pour son `UPSERT` (lire par l'écrivain une seconde
+// fois l'interbloquerait) — et la décision est ICI, une fois.
+//
+// CE QUE LA RÈGLE NE PREND PAS : l'identité de la démonstration publique et les identités de jetons, qui n'ont pas
+// de ligne non plus. Les jetons ne sont pas des noms que l'annuaire usurperait (ils s'authentifient par leur
+// secret, sur leurs routes, et ne tiennent rien par leur nom — `P10.25-h`, mesuré) ; l'identité de la
+// démonstration n'est réservée qu'à la création d'un compte local (`user_create`). Et la population de production
+// n'est pas touchée : l'identité SSO réelle de l'exploitant est servie comme avant (même décision sur le chemin
+// d'en-têtes, que ce déplacement ne change pas).
+// ====================================================================================================
+
+/// `P10.25-t` — CE QUE LA CONFIGURATION ET L'INSTALLATION TIENNENT HORS DE LA TABLE `user`, lu aux deux portes.
+pub(crate) struct NomsTenusHorsDeLaTable<'a> {
+    /// Le nom de l'administrateur de configuration (`PLUME_USER` + `PLUME_PASS_HASH`), s'il est posé.
+    pub(crate) administrateur_de_configuration: Option<&'a str>,
+    /// Le nom de l'administrateur de l'assistant (crédence en mémoire), s'il est posé.
+    pub(crate) administrateur_de_l_assistant: Option<String>,
+}
+
+impl<'a> NomsTenusHorsDeLaTable<'a> {
+    /// Les deux noms, lus sur l'état du démon. Le verrou de la crédence est pris et rendu ici : aucun verrou n'est
+    /// tenu pendant la lecture du hachage.
+    pub(crate) fn de(st: &'a AppState) -> Self {
+        Self {
+            administrateur_de_configuration: crate::handlers::idp::reserved_static_admin(st),
+            administrateur_de_l_assistant: st.admin.lock().as_ref().map(|(nom, _)| nom.clone()),
+        }
+    }
+}
+
+/// TÉMOINS SEULEMENT — la forme des appelants d'avant `P10.25-t` (`idp_provision_user(…, reserved_static_admin(&st))`) :
+/// l'administrateur de configuration seul. Aucun chemin servi ne la prend ; les trois fédérations passent
+/// `NomsTenusHorsDeLaTable::de` (voir `federer_le_nom`).
+#[cfg(test)]
+impl<'a> From<Option<&'a str>> for NomsTenusHorsDeLaTable<'a> {
+    fn from(administrateur_de_configuration: Option<&'a str>) -> Self {
+        Self { administrateur_de_configuration, administrateur_de_l_assistant: None }
+    }
+}
+
+/// `P10.25-t` — LA RÈGLE, UNE FOIS : un annuaire (en-têtes SSO ou fédération) peut-il prendre ce nom ?
+/// `hachage_de_sa_ligne` est la lecture de la porte : `Ok(None)` sans ligne, `Ok(Some(h))` avec, `Err` quand elle n'a
+/// pas eu lieu — et alors rien n'est conclu. Voir le bandeau ci-dessus.
+pub(crate) fn juger_le_nom_pris_par_un_annuaire(
+    nom: &str,
+    noms: &NomsTenusHorsDeLaTable<'_>,
+    hachage_de_sa_ligne: impl FnOnce() -> rusqlite::Result<Option<String>>,
+) -> Result<(), RefusDeLAnnuaire> {
+    if noms.administrateur_de_configuration == Some(nom) {
         return Err(RefusDeLAnnuaire::AdministrateurDeConfiguration(nom.to_string()));
     }
-    // L'existence de la ligne, sur le read pool (`None` : pool indisponible ou lecture ratée -> l'écrivain juge).
-    let ligne = read_with(st.db_path.as_str(), None, |c| {
-        c.query_row("SELECT EXISTS(SELECT 1 FROM user WHERE name=?1)", params![nom], |r| r.get::<_, bool>(0)).ok()
-    });
-    let porte_un_mot_de_passe = match ligne {
+    let porte_un_mot_de_passe = match hachage_de_sa_ligne() {
+        Ok(Some(hachage)) => !hachage.is_empty() && hachage != IDP_HASH_SENTINEL,
         // Sans ligne, seul l'administrateur de l'assistant (crédence en mémoire) porte un mot de passe sous ce nom.
-        Some(false) => Ok(st.admin.lock().as_ref().is_some_and(|(n, _)| n == nom)),
-        _ => crate::session::le_compte_a_un_mot_de_passe_local(st, nom),
+        Ok(None) => noms.administrateur_de_l_assistant.as_deref() == Some(nom),
+        Err(e) => return Err(RefusDeLAnnuaire::NonVerifie(nom.to_string(), e.to_string())),
     };
-    match porte_un_mot_de_passe {
-        Ok(false) => Ok(()),
-        Ok(true) => Err(RefusDeLAnnuaire::CompteAMotDePasse(nom.to_string())),
-        Err(e) => Err(RefusDeLAnnuaire::NonVerifie(nom.to_string(), e.to_string())),
+    if porte_un_mot_de_passe {
+        return Err(RefusDeLAnnuaire::CompteAMotDePasse(nom.to_string()));
     }
+    Ok(())
+}
+
+/// `P10.25-d` — LE NOM QUE PRÉSENTE L'ANNUAIRE PAR LES EN-TÊTES EST-IL PRENABLE ? La règle est
+/// `juger_le_nom_pris_par_un_annuaire` (`P10.25-t`) ; ce chemin ne fournit que sa lecture.
+pub(crate) fn juger_le_nom_presente_par_l_annuaire(st: &AppState, nom: &str) -> Result<(), RefusDeLAnnuaire> {
+    juger_le_nom_pris_par_un_annuaire(nom, &NomsTenusHorsDeLaTable::de(st), || {
+        // L'existence de la ligne, sur le read pool (`None` : pool indisponible ou lecture ratée -> l'écrivain juge,
+        // lui seul lit `user.hash`, que l'autorisateur du pool dénie). Sans ligne, rien à lire de plus.
+        let ligne = read_with(st.db_path.as_str(), None, |c| {
+            c.query_row("SELECT EXISTS(SELECT 1 FROM user WHERE name=?1)", params![nom], |r| r.get::<_, bool>(0)).ok()
+        });
+        match ligne {
+            Some(false) => Ok(None),
+            _ => st.db.lock().query_row("SELECT hash FROM user WHERE name=?1", params![nom], |r| r.get::<_, String>(0)).optional(),
+        }
+    })
 }
 
 /// `P10.25-d` — (base, nom, cause) -> instant de la dernière trace ÉCRITE. Borné comme le registre de débounce de
@@ -1056,6 +1135,12 @@ fn tracer_le_refus_de_l_annuaire(st: &AppState, refus: &RefusDeLAnnuaire, ip: &s
         g.insert(cle, maintenant);
     }
 }
+
+/// `P10.25-h` — LE NOM SOUS LEQUEL LA DÉMONSTRATION PUBLIQUE (`PLUME_PUBLIC_DEMO=1`) SERT TOUT VISITEUR ANONYME. Tout
+/// ce qu'un compte de ce nom tiendrait — requêtes enregistrées, tableaux de bord privés, préférences — serait servi à
+/// l'anonyme, qui le lirait, le modifierait et le supprimerait (mesuré). `user_create` le réserve donc, que la
+/// démonstration soit active ou non : elle s'active par la configuration, au redémarrage.
+pub(crate) const IDENTITE_DE_LA_DEMONSTRATION: &str = "demo";
 
 /// L'identité résolue : (nom, rôle plancher), méthode, grants SSO (mode 1), super-admin SSO, tenant d'un jeton.
 pub(crate) type IdentiteResolue = (
@@ -1228,8 +1313,9 @@ pub(crate) fn resolve_identity_ou_refus(st: &AppState, req: &Request) -> Result<
         }
     }
     // DÉMO PUBLIQUE (opt-in) : si rien n'a authentifié, accès ANONYME forcé en LECTURE SEULE (viewer).
+    // `P10.25-h` — son nom est `IDENTITE_DE_LA_DEMONSTRATION`, que `user_create` réserve.
     if ident.is_none() && st.public_demo {
-        ident = Some(("demo".into(), "viewer".into()));
+        ident = Some((IDENTITE_DE_LA_DEMONSTRATION.into(), "viewer".into()));
         auth_method = "demo";
     }
     Ok((ident, auth_method, sso_grant_map, sso_superadmin, bearer_tenant))

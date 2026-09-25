@@ -204,24 +204,66 @@ pub(crate) fn find_or_create_view<C: SqlExec>(conn: &C, name: &str) -> Option<i6
         })
 }
 
+/// `P10.28-e` — UN SEMIS GARDÉ PAR SON DRAPEAU `meta` EST ENTIER OU N'EST PAS, ET LE DRAPEAU EST SA DERNIÈRE ÉCRITURE.
+///
+/// LE DÉFAUT, MESURÉ LE 2026-09-25 SUR LA FORME D'AVANT (quatre tableaux de bord : vue d'ensemble, infra & logs,
+/// sécurité, réseau sortant). Le drapeau `seeded_*` était posé EN PREMIER, écriture avalée, hors transaction ; puis le
+/// tableau de bord, puis ses panneaux, chacun avalé. Trois issues, toutes définitives :
+///  * TABLEAU REFUSÉ : drapeau posé, aucun tableau — et au démarrage suivant, toujours aucun : le semis ne se rejoue
+///    jamais (0 tableau, 0 panneau, drapeau 1, avant comme après) ;
+///  * PANNEAU REFUSÉ : un tableau de bord VIDE (0 panneau sur 7, 6, 6 ou 4), drapeau posé, jamais réparé ;
+///  * DRAPEAU REFUSÉ (l'énoncé ne le disait pas) : le tableau et ses panneaux écrits, pas le drapeau — et le démarrage
+///    suivant en écrit un SECOND (2 tableaux, 14 panneaux pour la vue d'ensemble), un de plus à chaque démarrage tant
+///    que le drapeau ne passe pas.
+/// L'identifiant, lui, n'était PAS emprunté (ce que `check_a_swallowed_write_is_never_affirmed_as_a_fact.py` accusait) :
+/// l'`INSERT` du tableau est vérifié entre le drapeau avalé et la lecture de l'identifiant.
+///
+/// DÉSORMAIS : une transaction ; le semis y écrit tout, chaque écriture propagée ; le drapeau est posé EN DERNIER, dans
+/// la même transaction ; la moindre écriture refusée annule tout (le `Drop` de `Txn`), le dit sur la sortie d'erreur,
+/// et le semis est retenté au démarrage suivant. Hors chemin de requête (amorçage) : un aveu sur la sortie d'erreur,
+/// comme `semer_la_demonstration`, pas un compteur.
+fn semer_sous_son_drapeau(conn: &Connection, drapeau: &str, semis: impl FnOnce(&Connection) -> rusqlite::Result<()>) {
+    if conn.query_row("SELECT value FROM meta WHERE key=?1", params![drapeau], |r| r.get::<_, String>(0)).is_ok() {
+        return;
+    }
+    let txn = match Txn::begin(conn) {
+        Ok(txn) => txn,
+        Err(e) => {
+            eprintln!("[seed] `{drapeau}` NON semé : transaction refusée ({e}) — rien n'est écrit, le semis sera retenté au prochain démarrage");
+            return;
+        }
+    };
+    let ecrit = semis(conn)
+        .and_then(|()| conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES(?1,'1')", params![drapeau]).map(|_| ()))
+        .and_then(|()| txn.commit());
+    if let Err(e) = ecrit {
+        eprintln!(
+            "[seed] `{drapeau}` NON semé : une écriture a été refusée ({e}) — RIEN n'est conservé (ni tableau, ni panneau, ni \
+             drapeau), le semis sera retenté au prochain démarrage"
+        );
+    }
+}
+
 /// PROLOGUE COMMUN des seeds de dashboard PARTAGÉS (l'idiome méta-flag ->
-/// INSERT dashboard `shared` -> rattachement à la vue était répété ~13×). Retourne `Some(did)` (le dashboard est
-/// créé, prêt à recevoir ses panneaux) ou `None` si DÉJÀ seedé / INSERT échoué -> l'appelant `return`. Le
-/// PANEL-LOOP reste DANS chaque fonction (données de panneaux spécifiques PRÉSERVÉES telles quelles = zéro
-/// régression). `seed_default_dashboard` N'utilise PAS ce prologue (dashboard NON-`shared`, cas spécial). Flag =
-/// `seeded_{flag}` (miroir exact des clés meta existantes). `collapsed` = dashboard replié dans la vue.
-pub(crate) fn seed_dashboard_head(conn: &Connection, flag: &str, name: &str, view: &str, collapsed: bool) -> Option<i64> {
-    let key = format!("seeded_{flag}");
-    if conn.query_row("SELECT value FROM meta WHERE key=?1", params![key], |r| r.get::<_, String>(0)).is_ok() {
-        return None;
-    }
-    let _ = conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES(?1,'1')", params![key]);
-    if conn.execute("INSERT INTO dashboard(name,created,visibility) VALUES(?1,?2,'shared')", params![name, now()]).is_err() {
-        return None;
-    }
-    let did = conn.last_insert_rowid();
-    seed_dashboard_attach(conn, did, view, collapsed);
-    Some(did)
+/// INSERT dashboard `shared` -> rattachement à la vue était répété ~13×). `P10.28-e` — les panneaux sont écrits par
+/// `panneaux` (données PRÉSERVÉES telles quelles dans chaque appelant), DANS la transaction du semis, et le drapeau
+/// `seeded_{flag}` (miroir exact des clés meta existantes) après eux : voir `semer_sous_son_drapeau`.
+/// `seed_default_dashboard` N'utilise PAS ce prologue (dashboard NON-`shared`, cas spécial). `collapsed` = dashboard
+/// replié dans la vue.
+pub(crate) fn seed_dashboard_head(
+    conn: &Connection,
+    flag: &str,
+    name: &str,
+    view: &str,
+    collapsed: bool,
+    panneaux: impl FnOnce(&Connection, i64) -> rusqlite::Result<()>,
+) {
+    semer_sous_son_drapeau(conn, &format!("seeded_{flag}"), |conn| {
+        conn.execute("INSERT INTO dashboard(name,created,visibility) VALUES(?1,?2,'shared')", params![name, now()])?;
+        let did = conn.last_insert_rowid();
+        rattacher_le_tableau_a_sa_vue(conn, did, view, collapsed)?;
+        panneaux(conn, did)
+    });
 }
 
 /// PROLOGUE des seeds de dashboard idempotents PAR NOM (l'AUTRE moitié : `web`/`mail`/`dataaccess`/`dataacl`/
@@ -240,35 +282,37 @@ pub(crate) fn seed_dashboard_head_named(conn: &Connection, name: &str, view: &st
     Some(did)
 }
 
-/// Rattache un dashboard à sa vue (repliée ou non) — commun aux deux prologues.
+/// Rattache un dashboard à sa vue (repliée ou non) — commun aux deux prologues. Le prologue idempotent PAR NOM
+/// (`seed_dashboard_head_named`, hors du périmètre de `P10.28-e`) ignore toujours l'échec, comme avant.
 fn seed_dashboard_attach(conn: &Connection, did: i64, view: &str, collapsed: bool) {
+    let _ = rattacher_le_tableau_a_sa_vue(conn, did, view, collapsed);
+}
+
+/// `P10.28-e` — le rattachement, écriture PROPAGÉE. Une vue introuvable et non créable (`find_or_create_view` rend
+/// `None`) laisse le tableau hors vue, comme avant ; c'est l'`UPDATE` refusé qui annule le semis.
+fn rattacher_le_tableau_a_sa_vue(conn: &Connection, did: i64, view: &str, collapsed: bool) -> rusqlite::Result<()> {
     if let Some(vid) = find_or_create_view(conn, view) {
         let sql = if collapsed {
             "UPDATE dashboard SET view_id=?1, collapsed=1 WHERE id=?2"
         } else {
             "UPDATE dashboard SET view_id=?1 WHERE id=?2"
         };
-        let _ = conn.execute(sql, params![vid, did]);
+        conn.execute(sql, params![vid, did])?;
     }
+    Ok(())
 }
 
+/// `P10.28-e` — semé ENTIER sous son drapeau `seeded_default`, posé en dernier (`semer_sous_son_drapeau`).
 pub(crate) fn seed_default_dashboard(conn: &Connection) {
-    let seeded: Option<String> = conn
-        .query_row("SELECT value FROM meta WHERE key='seeded_default'", [], |r| r.get(0))
-        .ok();
-    if seeded.is_some() {
-        return;
-    }
-    let _ = conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('seeded_default','1')", []);
-    if conn.execute("INSERT INTO dashboard(name,created) VALUES('SOC — Vue d''ensemble', ?1)", params![now()]).is_err() {
-        return;
-    }
+    semer_sous_son_drapeau(conn, "seeded_default", semer_la_vue_d_ensemble);
+}
+
+fn semer_la_vue_d_ensemble(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute("INSERT INTO dashboard(name,created) VALUES('SOC — Vue d''ensemble', ?1)", params![now()])?;
     let did = conn.last_insert_rowid();
     // vue par défaut « SOC » (anchor du SOC) — find_or_create PARTAGÉ avec la migration v63 et
     // seed_rollup_dashboard, pour que « Vue d'ensemble (rapide) » rejoigne CETTE même vue (parité live).
-    if let Some(vid) = find_or_create_view(conn, "SOC") {
-        let _ = conn.execute("UPDATE dashboard SET view_id=?1 WHERE id=?2", params![vid, did]);
-    }
+    rattacher_le_tableau_a_sa_vue(conn, did, "SOC", false)?;
     let panels: [(&str, &str, i64, &str); 7] = [
         ("Événements dans le temps", "search | timechart span=1h count", 1, "line"),
         ("Top sources", "search | stats count by source | sort -count | head 30", 1, "bar"),
@@ -279,11 +323,12 @@ pub(crate) fn seed_default_dashboard(conn: &Connection) {
         ("Température °C", "SELECT ts AS bucket, value FROM metric WHERE name='temp_c' AND ts>=__FROM__ ORDER BY ts", 0, "line"),
     ];
     for (i, (title, q, is_soql, viz)) in panels.iter().enumerate() {
-        let _ = conn.execute(
+        conn.execute(
             "INSERT INTO panel(dashboard_id,title,query,is_soql,viz,position) VALUES(?1,?2,?3,?4,?5,?6)",
             params![did, title, q, is_soql, viz, i as i64],
-        );
+        )?;
     }
+    Ok(())
 }
 
 /// Dashboard « Sécurité & détection » (vitrine des collecteurs §8) — flag `seeded_security`.
@@ -291,21 +336,23 @@ pub(crate) fn seed_default_dashboard(conn: &Connection) {
 /// ne tournent pas, mais le dashboard est prêt.
 pub(crate) fn seed_security_dashboard(conn: &Connection) {
     // v63 : « Sécurité & détection » est le dashboard PRIMAIRE (déplié) de la vue « Détection ».
-    let Some(did) = seed_dashboard_head(conn, "security", "Sécurité & détection", "Détection", false) else { return };
-    let panels: [(&str, &str, &str); 6] = [
-        ("Vulnérabilités par sévérité", "search source=vuln | stats count by severity | sort -severity", "bar"),
-        ("Malware détecté (ClamAV)", "search source=clamav | stats count", "stat"),
-        ("Connexions sortantes récentes", "search source=conntrack | table ts,message", "table"),
-        ("Exécutions & privesc (auditd)", "search source=auditd | timechart span=1h count", "line"),
-        ("Alertes IDS (Suricata)", "search source=suricata category=alert | table ts,message", "table"),
-        ("Mail suspect", "search source=mail | stats count by category | sort -count", "bar"),
-    ];
-    for (i, (title, q, viz)) in panels.iter().enumerate() {
-        let _ = conn.execute(
-            "INSERT INTO panel(dashboard_id,title,query,is_soql,viz,position,cols) VALUES(?1,?2,?3,1,?4,?5,2)",
-            params![did, title, q, viz, i as i64],
-        );
-    }
+    seed_dashboard_head(conn, "security", "Sécurité & détection", "Détection", false, |conn, did| {
+        let panels: [(&str, &str, &str); 6] = [
+            ("Vulnérabilités par sévérité", "search source=vuln | stats count by severity | sort -severity", "bar"),
+            ("Malware détecté (ClamAV)", "search source=clamav | stats count", "stat"),
+            ("Connexions sortantes récentes", "search source=conntrack | table ts,message", "table"),
+            ("Exécutions & privesc (auditd)", "search source=auditd | timechart span=1h count", "line"),
+            ("Alertes IDS (Suricata)", "search source=suricata category=alert | table ts,message", "table"),
+            ("Mail suspect", "search source=mail | stats count by category | sort -count", "bar"),
+        ];
+        for (i, (title, q, viz)) in panels.iter().enumerate() {
+            conn.execute(
+                "INSERT INTO panel(dashboard_id,title,query,is_soql,viz,position,cols) VALUES(?1,?2,?3,1,?4,?5,2)",
+                params![did, title, q, viz, i as i64],
+            )?;
+        }
+        Ok(())
+    });
 }
 
 /// Règle « backup Velero en échec » — flag dédié `seeded_velero_rule` (arrive même si seeded_sts_rules
@@ -343,22 +390,24 @@ pub(crate) fn seed_malware_rule(conn: &Connection) {
 /// (OPT-IN) ne tourne pas, mais prêt. Dans la vue 'Sécurité'.
 pub(crate) fn seed_egress_dashboard(conn: &Connection) {
     // v63 : « Réseau sortant (egress) » -> vue « Réseau & Web », REPLIÉ (non primaire).
-    let Some(did) = seed_dashboard_head(conn, "egress", "Réseau sortant (egress)", "Réseau & Web", true) else { return };
-    // conntrack DÉDUPE par destination -> un "stats count by dst_ip" donnerait count=1 partout (inutile)
-    // -> on liste les destinations distinctes (avec proc+port). Bande passante = envoyée seulement
-    // (reçue = déjà 'Réseau ↓' sur la vue d'ensemble -> pas de doublon).
-    let panels: [(&str, &str, &str); 4] = [
-        ("Destinations externes", "search source=conntrack dir=outbound scope=external | sort -ts | table dst_host,dst_ip,proc,dport", "table"),
-        ("Processus sortants", "search source=conntrack dir=outbound scope=external | stats count by proc | sort -count | head 15", "bar"),
-        ("Ports de destination", "search source=conntrack dir=outbound scope=external | stats count by dport | sort -count | head 15", "bar"),
-        ("Bande passante envoyée (o/s)", "metric net_tx_bps | timechart avg(value)", "line"),
-    ];
-    for (i, (title, q, viz)) in panels.iter().enumerate() {
-        let _ = conn.execute(
-            "INSERT INTO panel(dashboard_id,title,query,is_soql,viz,position,cols) VALUES(?1,?2,?3,1,?4,?5,2)",
-            params![did, title, q, viz, i as i64],
-        );
-    }
+    seed_dashboard_head(conn, "egress", "Réseau sortant (egress)", "Réseau & Web", true, |conn, did| {
+        // conntrack DÉDUPE par destination -> un "stats count by dst_ip" donnerait count=1 partout (inutile)
+        // -> on liste les destinations distinctes (avec proc+port). Bande passante = envoyée seulement
+        // (reçue = déjà 'Réseau ↓' sur la vue d'ensemble -> pas de doublon).
+        let panels: [(&str, &str, &str); 4] = [
+            ("Destinations externes", "search source=conntrack dir=outbound scope=external | sort -ts | table dst_host,dst_ip,proc,dport", "table"),
+            ("Processus sortants", "search source=conntrack dir=outbound scope=external | stats count by proc | sort -count | head 15", "bar"),
+            ("Ports de destination", "search source=conntrack dir=outbound scope=external | stats count by dport | sort -count | head 15", "bar"),
+            ("Bande passante envoyée (o/s)", "metric net_tx_bps | timechart avg(value)", "line"),
+        ];
+        for (i, (title, q, viz)) in panels.iter().enumerate() {
+            conn.execute(
+                "INSERT INTO panel(dashboard_id,title,query,is_soql,viz,position,cols) VALUES(?1,?2,?3,1,?4,?5,2)",
+                params![did, title, q, viz, i as i64],
+            )?;
+        }
+        Ok(())
+    });
 }
 
 /// Dashboard « Trafic web » (FortiGate-like) — vue du trafic HTTP ENTRANT via les access-logs
@@ -1234,17 +1283,16 @@ pub(crate) fn seed_ssh_cve_playbook(conn: &Connection) {
 /// Règles filet-de-sécurité k8s/hôte — TOUTES seedées DÉSACTIVÉES (activer quand la métrique existe,
 /// sinon faux positifs sur métrique absente). Flag dédié.
 // OBS-4 : dashboard de parité (métriques + logs) — utilise la soql metric/rate/timechart + search.
+/// `P10.28-e` — semé ENTIER sous son drapeau `seeded_obs`, posé en dernier (`semer_sous_son_drapeau`).
 pub(crate) fn seed_obs_dashboard(conn: &Connection) {
-    if conn.query_row("SELECT value FROM meta WHERE key='seeded_obs'", [], |r| r.get::<_, String>(0)).is_ok() {
-        return;
-    }
-    let _ = conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('seeded_obs','1')", []);
-    if conn.execute("INSERT INTO dashboard(name,created,visibility) VALUES('Infra & logs (OBS)', ?1, 'shared')", params![now()]).is_err() {
-        return;
-    }
+    semer_sous_son_drapeau(conn, "seeded_obs", semer_infra_et_logs);
+}
+
+fn semer_infra_et_logs(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute("INSERT INTO dashboard(name,created,visibility) VALUES('Infra & logs (OBS)', ?1, 'shared')", params![now()])?;
     let did = conn.last_insert_rowid();
     // v63 : ce dashboard (jadis orphelin, view_id NULL) rejoint la vue dédiée « Infra & logs » (primaire/déplié).
-    if let Some(vid) = find_or_create_view(conn, "Infra & logs") { let _ = conn.execute("UPDATE dashboard SET view_id=?1 WHERE id=?2", params![vid, did]); }
+    rattacher_le_tableau_a_sa_vue(conn, did, "Infra & logs", false)?;
     let panels: [(&str, &str, &str, i64); 6] = [
         ("CPU charge (load1)", "metric load1 | timechart span=1m avg(value)", "line", 2),
         ("Mémoire (%)", "metric mem_pct | timechart span=1m avg(value)", "line", 1),
@@ -1254,11 +1302,12 @@ pub(crate) fn seed_obs_dashboard(conn: &Connection) {
         ("Top sources de logs", "search | stats count by source | sort -count | head 30", "bar", 1),
     ];
     for (i, (title, q, viz, cols)) in panels.iter().enumerate() {
-        let _ = conn.execute(
+        conn.execute(
             "INSERT INTO panel(dashboard_id,title,query,is_soql,viz,position,cols) VALUES(?1,?2,?3,1,?4,?5,?6)",
             params![did, title, q, viz, i as i64, cols],
-        );
+        )?;
     }
+    Ok(())
 }
 
 // OBS-6 : alertes métriques/logs d'exemple (DÉSACTIVÉES — à activer après branchement des données).

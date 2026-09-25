@@ -19827,18 +19827,21 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   const creation113 = corpsDeFonction113(COMPTES113, "pub(crate) async fn user_create(");
   const tenue113 = corpsDeFonction113(COMPTES113, "fn ce_que_le_nom_tient_sans_compte(");
   const autorite113 = corpsDeFonction113(COMPTES113, "fn colonnes_d_autorite_par_nom(");
+  // `P10.28-u` — la cinquième cause, le nom de la démonstration publique, servie depuis le lot du démon du 2026-09-25.
   const CAUSES_DE_CREATION113 = {
     nom_de_l_administrateur_de_configuration: constante113(COMPTES113, "CAUSE_NOM_DE_L_ADMINISTRATEUR_DE_CONFIGURATION"),
+    nom_de_l_identite_de_la_demonstration: constante113(COMPTES113, "CAUSE_NOM_DE_L_IDENTITE_DE_LA_DEMONSTRATION"),
     nom_tenu_par_une_identite_sans_compte: constante113(COMPTES113, "CAUSE_NOM_TENU_PAR_UNE_IDENTITE_SANS_COMPTE"),
     nom_non_verifie: constante113(COMPTES113, "CAUSE_NOM_NON_VERIFIE_COMPTE_NON_CREE"),
     commit_refuse: constante113(COMPTES113, "CAUSE_COMPTE_NON_CREE_COMMIT_REFUSE"),
   };
-  const STATUTS113 = { nom_de_l_administrateur_de_configuration: 409, nom_tenu_par_une_identite_sans_compte: 409, nom_non_verifie: 503, commit_refuse: 503 };
+  const STATUTS113 = { nom_de_l_administrateur_de_configuration: 409, nom_de_l_identite_de_la_demonstration: 409, nom_tenu_par_une_identite_sans_compte: 409, nom_non_verifie: 503, commit_refuse: 503 };
   const causesCitees113 = [...new Set([...creation113.matchAll(/\bCAUSE_[A-Z_]+\b/g)].map((m) => m[0]))].sort().join(",");
-  instrument113(causesCitees113 === "CAUSE_COMPTE_NON_CREE_COMMIT_REFUSE,CAUSE_NOM_DE_L_ADMINISTRATEUR_DE_CONFIGURATION,CAUSE_NOM_NON_VERIFIE_COMPTE_NON_CREE,CAUSE_NOM_TENU_PAR_UNE_IDENTITE_SANS_COMPTE",
-    `\`user_create\` ne sert plus exactement les quatre causes nommées jugées ici (${causesCitees113}) : une cause neuve doit recevoir sa face, ou être dite générique`);
+  instrument113(causesCitees113 === "CAUSE_COMPTE_NON_CREE_COMMIT_REFUSE,CAUSE_NOM_DE_L_ADMINISTRATEUR_DE_CONFIGURATION,CAUSE_NOM_DE_L_IDENTITE_DE_LA_DEMONSTRATION,CAUSE_NOM_NON_VERIFIE_COMPTE_NON_CREE,CAUSE_NOM_TENU_PAR_UNE_IDENTITE_SANS_COMPTE",
+    `\`user_create\` ne sert plus exactement les cinq causes nommées jugées ici (${causesCitees113}) : une cause neuve doit recevoir sa face, ou être dite générique`);
   instrument113(Object.values(CAUSES_DE_CREATION113).every((c) => c.length > 200)
     && /err_json\(StatusCode::CONFLICT, CAUSE_NOM_DE_L_ADMINISTRATEUR_DE_CONFIGURATION\)/.test(creation113)
+    && /err_json\(StatusCode::CONFLICT, CAUSE_NOM_DE_L_IDENTITE_DE_LA_DEMONSTRATION\)/.test(creation113)
     && /\(StatusCode::CONFLICT, Json\(json!\(\{ "error": CAUSE_NOM_TENU_PAR_UNE_IDENTITE_SANS_COMPTE, "ce_que_le_nom_tient": tenue \}\)\)\)/.test(creation113)
     && /err_json\(StatusCode::SERVICE_UNAVAILABLE, CAUSE_NOM_NON_VERIFIE_COMPTE_NON_CREE\)/.test(creation113)
     && /err_json\(StatusCode::SERVICE_UNAVAILABLE, CAUSE_COMPTE_NON_CREE_COMMIT_REFUSE\)/.test(creation113)
@@ -19874,7 +19877,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     if (lue !== cle) ecartsI0113.push(`${cle} lue « ${lue} »`);
   }
   const etrangeres113 = [CAUSE_SUPPRESSION113, CAUSE_MODIFICATION113, constante113(COMPTES113, "CAUSE_COMPTE_DE_L_ASSISTANT_NON_SUPPRIMABLE"), "ce nom de compte existe déjà",
-    "COMPTE NON CRÉÉ : autre cause", "NOM RÉSERVÉ, C'EST L'ADMINISTRATEUR DE CONFIGURATIONS", "", "nom invalide (alphanumérique, . _ - uniquement)"];
+    "COMPTE NON CRÉÉ : autre cause", "NOM RÉSERVÉ, C'EST L'ADMINISTRATEUR DE CONFIGURATIONS", "NOM RÉSERVÉ, C'EST L'IDENTITÉ DE LA DÉMONSTRATION PUBLIQUES", "", "nom invalide (alphanumérique, . _ - uniquement)"];
   etrangeres113.forEach((c) => { const lue = modComptes113.natureDuRefusDeCreationDeCompte(c); if (lue) ecartsI0113.push(`une cause étrangère est lue « ${lue} » : « ${String(c).slice(0, 60)} »`); });
   exiger(ecartsI0113.length === 0,
     `(113i0) LA NATURE D'UN REFUS DE CRÉATION N'EST PAS RECONNUE À LA CAUSE SERVIE, ou une cause étrangère est prise pour une autre : ${JSON.stringify(ecartsI0113)}`);
@@ -20195,7 +20198,8 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
       const table = (src.match(new RegExp("const " + nom + " = \\{[\\s\\S]*?\\n\\};")) || [""])[0];
       return [...table.matchAll(/^ {2}(\w+): \{\n {4}fr: (.+),\n {4}en: (.+) \},?$/gm)].map((m) => ({ cle: m[1], fr: m[2], en: m[3] }));
     };
-    const tablesFautives113 = [[srcComptes113, "MOTS_DE_LA_CREATION_DE_COMPTE", 10], [srcDe113("viz.js"), "MOTS_DE_L_INFOBULLE_D_UNE_LIGNE", 1], [srcDe113("viz.js"), "MOTS_DE_LA_PAGE_VIDE", 1]]
+    // `P10.28-u` — onze entrées : la face du nom de la démonstration publique s'y ajoute.
+    const tablesFautives113 = [[srcComptes113, "MOTS_DE_LA_CREATION_DE_COMPTE", 11], [srcDe113("viz.js"), "MOTS_DE_L_INFOBULLE_D_UNE_LIGNE", 1], [srcDe113("viz.js"), "MOTS_DE_LA_PAGE_VIDE", 1]]
       .filter(([src, nom, n]) => { const e = entreesDe113(src, nom); return e.length !== n || e.some((x) => x.fr === x.en || ACCENTS113.test(x.en)); }).map(([, nom]) => nom);
     const finDuResultat113 = (srcDe113("core.js").match(/const MOTS_DE_LA_FIN_DU_RESULTAT = \{\n {2}fr: (.+),\n {2}en: (.+),\n\};/) || []);
     exiger(tablesFautives113.length === 0 && finDuResultat113.length === 3 && finDuResultat113[1] !== finDuResultat113[2] && !ACCENTS113.test(finDuResultat113[2])
@@ -20341,7 +20345,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     if (resultat113) resultat113.replaceChildren(); if (ligne113) ligne113.replaceChildren(); if (b) { b.replaceChildren(); b.hidden = true; }
     document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
   }
-  console.log("(113) OK — les quatre refus nommés de la création d'un compte (nom de l'administrateur de configuration, nom tenu sans compte, nom non vérifié, COMMIT refusé), reconnus à la cause relue dans `user_create` et à elle seule, ont leur face dans les deux langues et leur cause ENTIÈRE dans un puits du formulaire — plus de JSON brut coupé à deux cents caractères, plus de code, sans accuser, le formulaire et le nom gardés ; ce que le nom tient est présenté (l'annuaire, puis une ligne par table, les tables jugées contre les trois listes du démon, une table sans mot dite par son nom) et un détail illisible se dit illisible ; le 409 en texte brut garde sa phrase sans son code, une page de passerelle sa face, une demande qui n'aboutit pas ne se dit pas refusée, une création acceptée efface le refus. Les cinq cent trois du COMMIT refusé de la suppression et de la modification ont bien leur face générique, cause entière. Une page vide de rang supérieur dit sa phrase au lieu d'un tableau d'en-têtes dans la table paginée de l'Explore (fin du résultat, saut sans rendu marqué, repeint du compte), dans une liste paginée (fin du résultat sans total compté, au-delà du total compté, liste rendue ligne à ligne) et dans un panneau de table, avec son retour ; une page que la recherche vide et une première page vide n'en disent rien. L'infobulle d'une ligne qui mène aux événements d'une valeur a ses deux faces. Après une suppression, le compte rendu servi (objets réattribués et supprimés, second facteur, jetons révoqués avec leur raison, conservés au secret connu avec le geste, auteur non établi) est peint en tête de la liste rechargée, et son absence se dit ; une ouverture de la console refusée par l'annuaire (403, 503) dit sa cause entière au-dessus du formulaire, un 401 nu garde l'invite d'avant. CE QUI ÉTAIT FAUX OU IMPRÉCIS : `P10.25-i` comptait trois causes (460, 558, 224) — la quatrième, le nom non vérifié (250), était coupée aussi ; `ce_que_le_nom_tient` n'atteignait même pas la console (`apiSend` ne portait que `error`) ; `P10.25-n` disait « seul le pager le dit » — sans total compté (liste par curseur, panneau au compte interrompu), le pager ne le disait pas non plus ; la confirmation de suppression disait les jetons « NON révoqués » quand le démon en révoque, et le témoin 112 restait vert (sa lecture cherchait du SQL dans le seul `user_delete`) ; `fetchMe` avalait tout refus de `/api/me`, et l'annuaire refusé ouvrait une invite de connexion muette.");
+  console.log("(113) OK — les cinq refus nommés de la création d'un compte (nom de l'administrateur de configuration, nom de la démonstration publique — `P10.28-u` —, nom tenu sans compte, nom non vérifié, COMMIT refusé), reconnus à la cause relue dans `user_create` et à elle seule, ont leur face dans les deux langues et leur cause ENTIÈRE dans un puits du formulaire — plus de JSON brut coupé à deux cents caractères, plus de code, sans accuser, le formulaire et le nom gardés ; ce que le nom tient est présenté (l'annuaire, puis une ligne par table, les tables jugées contre les trois listes du démon, une table sans mot dite par son nom) et un détail illisible se dit illisible ; le 409 en texte brut garde sa phrase sans son code, une page de passerelle sa face, une demande qui n'aboutit pas ne se dit pas refusée, une création acceptée efface le refus. Les cinq cent trois du COMMIT refusé de la suppression et de la modification ont bien leur face générique, cause entière. Une page vide de rang supérieur dit sa phrase au lieu d'un tableau d'en-têtes dans la table paginée de l'Explore (fin du résultat, saut sans rendu marqué, repeint du compte), dans une liste paginée (fin du résultat sans total compté, au-delà du total compté, liste rendue ligne à ligne) et dans un panneau de table, avec son retour ; une page que la recherche vide et une première page vide qu'aucun total compté ne contredit n'en disent rien. L'infobulle d'une ligne qui mène aux événements d'une valeur a ses deux faces. Après une suppression, le compte rendu servi (objets réattribués et supprimés, second facteur, jetons révoqués avec leur raison, conservés au secret connu avec le geste, auteur non établi) est peint en tête de la liste rechargée, et son absence se dit ; une ouverture de la console refusée par l'annuaire (403, 503) dit sa cause entière au-dessus du formulaire, un 401 nu garde l'invite d'avant. CE QUI ÉTAIT FAUX OU IMPRÉCIS : `P10.25-i` comptait trois causes (460, 558, 224) — la quatrième, le nom non vérifié (250), était coupée aussi ; `ce_que_le_nom_tient` n'atteignait même pas la console (`apiSend` ne portait que `error`) ; `P10.25-n` disait « seul le pager le dit » — sans total compté (liste par curseur, panneau au compte interrompu), le pager ne le disait pas non plus ; la confirmation de suppression disait les jetons « NON révoqués » quand le démon en révoque, et le témoin 112 restait vert (sa lecture cherchait du SQL dans le seul `user_delete`) ; `fetchMe` avalait tout refus de `/api/me`, et l'annuaire refusé ouvrait une invite de connexion muette.");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -20664,7 +20668,10 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     const partitionZ114 = [[1, 6, 2], [2, 6, 2], [3, 6, 2], [0, 6, 2], [1, -1, 2], [1, 0, 2], [1, undefined, 2], [1, 10000, 50]].map(([p, t, n]) => appeler114(modNoyau114, "laPageEstDansLeTotal", p, t, n)).join(",");
     if (partitionZ114 !== "true,true,false,true,false,false,false,true") ecartsZ114.push(`laPageEstDansLeTotal : ${partitionZ114}`);
     const partitionVideZ114 = [[1, false, 30, 10], [3, false, 30, 10], [1, true, 30, 10], [1, false, -1, 10], [0, false, 30, 10], [1, false]].map(([p, s, t, n]) => modViz114.cleDeLaPageVide(p, s, t, n)).join(",");
-    if (partitionVideZ114 !== "dans_le_total,fin_du_resultat,saut_sans_rendu,fin_du_resultat,fenetre_vide,fin_du_resultat") ecartsZ114.push(`cleDeLaPageVide : ${partitionVideZ114}`);
+    // `P10.26-m` — la PREMIÈRE page dans un total compté n'est plus une fenêtre vide (cinquième cas) : elle dit l'écart. Sa
+    // face et ses surfaces sont jugées au témoin 119 (m) ; une première page sans total garde la fenêtre vide (dernier cas).
+    const partitionVideZ114Bis = [[0, false, 0, 10], [0, false, -1, 10]].map(([p, s, t, n]) => modViz114.cleDeLaPageVide(p, s, t, n)).join(",");
+    if (partitionVideZ114 !== "dans_le_total,fin_du_resultat,saut_sans_rendu,fin_du_resultat,premiere_page_dans_le_total,fin_du_resultat" || partitionVideZ114Bis !== "fenetre_vide,fenetre_vide") ecartsZ114.push(`cleDeLaPageVide : ${partitionVideZ114} | ${partitionVideZ114Bis}`);
     // (z1) Une liste paginée : total compté de six, la page 2 servie vide.
     for (const [nomLangue, mod] of [["fr", modNoyau114], ["en", modNoyauEn114]]) {
       const hote = new Element("div"), demandes = [];
@@ -22537,16 +22544,10 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
     instrument118(capturesDEcritureQuiCollentLeMessage118("t.js", "async function f() { try { await apiSend('/x', 'POST'); } catch (e) { toast('échec : ' + e.message); } }\nconst g = async () => { try { await apiSend('/y'); } catch (err) { x.textContent = err.message; } };\n$('#b').onclick = async () => { try { await apiSend('/z'); } catch (e) { toast(e.message); } };\n").sites.map((x) => x.fonction).join(",") === "f,g,$('#b').onclick"
       && capturesDEcritureQuiCollentLeMessage118("t.js", "async function f() { try { await api('/x'); } catch (e) { h.textContent = e.message; } }\nasync function g() { try { await apiSend('/x'); } catch (e) { peindreLeRefusDUnGeste(p, e); } }\n// try { await apiSend('/x'); } catch (e) { toast(e.message); }\nconst r = /[{]/; // route /api/x/*\nfunction h() { return 1; }\n").sites.length === 0,
       "la recherche des captures d'une écriture qui collent le message ne distingue plus une écriture d'une lecture, une forme partagée d'un message collé, ou un commentaire du code");
-    const RESTES_DES_CAPTURES_D_ECRITURE118 = {
-      "app.js › $('#setup-form').submit": 1,
-      "cases.js › advanceStep": 1, "cases.js › attachToCasePrompt": 1, "cases.js › caseArchive": 1, "cases.js › caseUnarchive": 1, "cases.js › caseUpdate": 1,
-      "cases.js › detachCaseItem": 1, "cases.js › mergeCasePrompt": 1, "cases.js › renderCaseDetail": 1, "cases.js › renderCaseLinks": 1,
-      "connectors.js › previewHttpPull": 1, "connectors.js › testConnector": 1,
-      "dashboards.js › createPanelModal": 2,
-      "detection_admin.js › $('#pf-test').onclick": 1, "detection_admin.js › $('#rf-test').onclick": 1,
-      "savedqueries.js › deleteSaved": 1, "savedqueries.js › editSaved": 1, "savedqueries.js › saveAsTemplate": 1,
-      "system.js › adminTools": 2,
-    };
+    // `P10.27-d` (lot 200) — L'ENSEMBLE EST VIDÉ : les vingt et une captures qui restaient (dossiers, modèles de requête,
+    // panneaux, bulletin, installation, et les quatre essais en lecture seule) empruntent la forme partagée ou la face
+    // nommée d'un essai, jouées au témoin 119 (d). Toute capture neuve qui collerait le message fait rougir ici.
+    const RESTES_DES_CAPTURES_D_ECRITURE118 = {};
     const capturesLues118 = {}, illisibles118 = [];
     for (const [f, source] of CORPUS_WEB.filter(([x]) => x.endsWith(".js"))) {
       const r = capturesDEcritureQuiCollentLeMessage118(f, source);
@@ -22565,7 +22566,8 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
     const ecartsO118 = [];
     const mesureO118 = [];
     const SITES_DE_LA_TRACE118 = [
-      { site: "poll_manuel", gestionnaire: "connector_poll", route: "POST /api/connectors/5/poll", corps: { ok: true, count: 3, error: null }, succes: /^collecte OK/,
+      // `P10.28-t` — l'avis de succès a désormais ses deux faces (« collection OK » sous `LANG='en'`), jugées au témoin 119 (t).
+      { site: "poll_manuel", gestionnaire: "connector_poll", route: "POST /api/connectors/5/poll", corps: { ok: true, count: 3, error: null }, succes: /^(collecte|collection) OK/,
         s: GESTES118.find((x) => x.site === "poll_manuel_connecteur") },
       { site: "envoi_manuel", gestionnaire: "destination_flush", route: "POST /api/destinations/9/flush", corps: { ok: true, forwarded: 3, watermark: 4, last_error: null }, succes: /^forward OK/,
         s: GESTES118.find((x) => x.site === "envoi_manuel_destination") },
@@ -22676,6 +22678,677 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
     document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
   }
   console.log("(118) OK — le commutateur partagé dit son refus dans le puits de SA surface sur les huit surfaces qui n'en passaient pas (destinations, politiques d'index, règles d'ingestion, règles, parseurs, canaux, playbooks, runbooks), cause entière, dans les deux langues, la case revenue ; sans `onRefus`, son défaut peint la même forme avant la liste qui le porte, et une bascule acceptée l'efface ; toute surface qui passe un `onToggle:` est nommée et passe son `onRefus:`. Les gestes d'écriture des routes que le démon juge depuis le lot 198 — destinations, politiques d'index, règles d'ingestion, formulaires et retraits de contenus de détection, canaux, runbooks, rétention, modèles de données, détection avancée, objets de savoir, indicateurs, sources, flotte, suppressions et silences, routage, import Sigma, lookups — disent leur refus par la forme partagée, « rien n'a changé » et la cause ENTIÈRE sur un COMMIT refusé (une cause servie en texte brut comprise), la demande non aboutie « NON confirmée », un geste accepté efface ; les captures d'une écriture qui collent encore le message sont un ensemble nommé, jugé dans les deux sens. Un poll ou un envoi manuel FAIT dont la trace manque le dit sous « geste fait, trace absente », le succès gardé. L'essai d'un reparse interrompu le dit avec sa cause, et les mots du reparse ont leurs deux faces ; la lecture refusée de la rétention aussi.");
+}
+
+// ---------------------------------------------------------------------------------------------
+// (119) `P10.27-d` — LES VINGT ET UNE CAPTURES QUI RESTAIENT : les dix-sept gestes (neuf des dossiers, trois de « mes
+//       modèles », deux des panneaux, deux du bulletin, l'installation et le changement de mot de passe) disent leur
+//       refus par la forme partagée de `P10.26-q`, dans le puits de leur surface ; les quatre ESSAIS en lecture seule
+//       (test et aperçu d'un connecteur, essai d'une règle, essai d'un parseur) par la face nommée d'un essai ;
+//       `P10.28-s` — le texte brut d'un refus voyage entier par `api()` comme par `apiSend` ;
+//       `P10.28-t` — les avis de succès composés ont leurs faces {fr, en} : un recensement dérivé du corpus, les tables
+//       de faces jugées, et les avis joués dans les deux langues ;
+//       `P10.26-n` — un quatre cent un en cours de session a une face unique, par l'enveloppe du transport ;
+//       `P10.26-m` — la PREMIÈRE page vide dans un total compté dit l'écart (liste paginée, panneau de table, Explore).
+//
+// CE QUE LE DÉMON SERT, RELU ICI : le quatre cent un TEXTE d'`auth_guard` (« auth requise ») et les quatre cent un
+// NOMMÉS d'un code refusé (`mfa_disable`) ; les statuts NUS des routes des dossiers (`case_update`, `case_archive`…,
+// aucun COMMIT nommé) ; les refus nommés de « mes modèles » (`sq_err_resp`) ; le refus du rôle de `connector_test` ;
+// le `{error}` en deux cents de `rule_test_adhoc` et `parser_test`. Chacun est relu dans son fichier : s'il n'y est
+// plus, ce témoin refuse de conclure.
+//
+// CE QUE LA CONSOLE EN FAISAIT, MESURÉ AVANT CE LOT (miroir de `HEAD`, ce témoin joué tel quel ; les lignes `[119…0]`
+// rejouent la mesure à chaque exécution) : les neuf gestes d'un dossier, un avis qui s'efface portant le seul CODE
+// (« Action refusée : 404 », « Refusé : 404 ») — les routes des dossiers ne servent aucun corps —, le sélecteur de
+// priorité laissé sur la valeur refusée ; « mes modèles », le bulletin et les panneaux, le JSON brut ou le texte dans un
+// avis ; le changement de mot de passe, la cause nue dans la ligne de résultat, sans un mot ; les essais d'une règle et
+// d'un parseur, le `{error}` servi en deux cents collé NU dans leur ligne (« SQL brut réservé… » s'y lisait comme un
+// résultat), l'aperçu d'un connecteur « échec du test : 404 {"error":… » ; `api()` ET `apiSend` coupaient le MESSAGE d'un
+// refus en texte brut à deux cents caractères (seul `texteDuRefus` d'`apiSend` était entier), `fetchInto` peignait la
+// moitié de la phrase ; vingt-cinq avis de succès composés hors d'une face (et non deux), dont « règle supprimé » sans
+// accord ; un quatre cent un en session peint « erreur : 401 auth requise » par chaque surface, aucune lecture de
+// `/api/me`, la session tenue pour ouverte ; la première page vide sous un total compté, un tableau d'en-têtes (liste
+// paginée, panneau, table de l'Explore) ou « aucun événement sur la fenêtre » sous une ligne d'état qui dit « 3
+// résultats · page 1 / 1 » — y compris quand le compte arrive APRÈS la page, le cas ordinaire.
+//
+// CE QUE CE TÉMOIN NE TIENT PAS : le transport est un simulacre ; le puits est jugé par son texte et sa marque, pas par
+// un rendu (`P10.27-f`) ; la cause servie reste française sous les deux langues (`P10.27-u`) ; le recensement des avis
+// lit le SOURCE — un avis composé dans une variable intermédiaire, puis passé à `toast`, lui échappe — et ne regarde que
+// les AVIS : une ligne de résultat ou une note composées hors d'un avis (la note de destination d'un producteur, le
+// résumé d'un import) n'y entrent pas, et une trentaine restent françaises sous `LANG='en'` ; le formulaire du
+// compte est joué par sa fonction exportée (deux instances du module écoutent le même nœud) ; le délai sans rejugement
+// qui suit une session confirmée (cinq secondes, `P10.25-w`) vaut aussi pour un quatre cent un — un refus reçu dans ce
+// délai ne rejuge rien, et cela n'est pas joué.
+// ---------------------------------------------------------------------------------------------
+{
+  const url119 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const FICHIERS119 = { noyau: "core.js", dossiers: "cases.js", modeles: "savedqueries.js", tableaux: "dashboards.js", systeme: "system.js", app: "app.js",
+    connecteurs: "connectors.js", detection: "detection_admin.js", connexion: "login.js", viz: "viz.js", etat: "state.js", destinations: "destinations.js",
+    retention: "retention.js", savoir: "knowledge.js", lookups: "lookups.js" };
+  const importer119 = async (adresse) => { const L = {}; for (const [cle, f] of Object.entries(FICHIERS119)) L[cle] = await import(adresse(f)); return L; };
+  const modsFr119 = await importer119(url119);
+  const langueOrigine119 = localStorage.getItem("soc_lang");
+  localStorage.setItem("soc_lang", "en");
+  const modsEn119 = await importer119((f) => adresseSousLaLangue(f));
+  if (langueOrigine119 === null) localStorage.removeItem("soc_lang"); else localStorage.setItem("soc_lang", langueOrigine119);
+  const FR119 = { nom: "fr", ...modsFr119, S: modsFr119.etat.S }, EN119 = { nom: "en", ...modsEn119, S: modsEn119.etat.S };
+
+  const tic119 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser119 = async (n = 30) => { for (let i = 0; i < n; i++) await tic119(); };
+  const nu119 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ").trim();
+  const serre119 = (t) => String(t).replace(/\s+/g, " ").trim();
+  const cueillir119 = (el, pred, acc = []) => { if (el && pred(el)) acc.push(el); ((el && el.children) || []).forEach((c) => cueillir119(c, pred, acc)); return acc; };
+  const instrument119 = (vrai, quoi) => exiger(vrai, `(119-instrument) ${quoi} : ce témoin REFUSE DE CONCLURE`);
+  const lireLeDemon119 = (rel) => { try { return readFileSync(path.join(RACINE, "daemon", "src", rel), "utf8"); } catch (e) { return ""; } };
+  const ACCENTS119 = /[éèêàçùôâîÉÈÊÀ]/;
+  const ACCUSE119 = /\b(vous|votre|vos|you|your)\b|invalide|interdit|erreur|échec|invalid|forbidden|error|fail/i;
+  const appeler119 = (mod, nom, ...args) => { if (typeof mod[nom] !== "function") return `(${nom} absente)`; try { return mod[nom](...args); } catch (e) { return `(${nom} jette : ${e && e.message})`; } };
+  const texteDe119 = (x) => (x && typeof x === "object" ? nu119(x) : String(x));
+
+  // ── (0) L'INSTRUMENT : CE QUE LE DÉMON SERT ───────────────────────────────────────────────────────────────────
+  const AUTH_RS119 = lireLeDemon119("auth.rs"), CAS_RS119 = lireLeDemon119("handlers/cases.rs"), MODELES_RS119 = lireLeDemon119("handlers/saved_queries.rs");
+  const CONNECTEURS_RS119 = lireLeDemon119("handlers/connectors/mod.rs"), DETECTION_RS119 = lireLeDemon119("handlers/detection.rs"), IDP_RS119 = lireLeDemon119("handlers/idp.rs");
+  instrument119(/return \(StatusCode::UNAUTHORIZED, "auth requise"\)\.into_response\(\);/.test(AUTH_RS119) && /err_json\(StatusCode::UNAUTHORIZED, "code MFA invalide"\)/.test(IDP_RS119),
+    "`auth_guard` ne sert plus son quatre cent un TEXTE « auth requise », ou `mfa_disable` plus son quatre cent un NOMMÉ : les deux refus joués ici ne seraient plus ceux du démon");
+  instrument119(/pub\(crate\) async fn case_update\(.*\) -> StatusCode \{/.test(CAS_RS119) && /pub\(crate\) async fn case_archive\(.*\) -> StatusCode \{/.test(CAS_RS119),
+    "`case_update` ou `case_archive` ne rendent plus un statut NU : les refus joués ici (sans cause) ne seraient plus ceux du démon");
+  const LIMITE_DES_MODELES119 = "limite de requêtes sauvegardées atteinte (max 200)", MODELE_INTROUVABLE119 = "requête sauvegardée introuvable";
+  instrument119(MODELES_RS119.includes(`"${LIMITE_DES_MODELES119}"`) && MODELES_RS119.includes(`"${MODELE_INTROUVABLE119}"`), "« mes modèles » ne sert plus les deux refus nommés joués ici");
+  instrument119(/return forbidden\("réservé admin"\);/.test(CONNECTEURS_RS119) && /return not_found\("connecteur introuvable"\)/.test(CONNECTEURS_RS119), "`connector_test` ne sert plus son refus du rôle ni son connecteur introuvable");
+  const REGEX_INVALIDE119 = "regex invalide : erreur d'essai-119";
+  instrument119(/Json\(json!\(\{ "error": format!\("regex invalide : \{e\}"\) \}\)\)/.test(DETECTION_RS119) && /Json\(json!\(\{ "error": "SQL brut réservé à l'administrateur \(utilisez GXQL\)" \}\)\)/.test(DETECTION_RS119),
+    "`parser_test` ou `rule_test_adhoc` ne servent plus leur refus en deux cents `{error}`");
+  instrument119(FR119.noyau.LANG !== "en" && EN119.noyau.LANG === "en", `les deux instances du point commun ne portent pas deux langues (« ${FR119.noyau.LANG} » / « ${EN119.noyau.LANG} »)`);
+
+  // ── LE SIMULACRE ─────────────────────────────────────────────────────────────────────────────────────────────
+  const fetchOrigine119 = globalThis.fetch, minuterieOrigine119 = globalThis.setTimeout, qsOrigine119 = document.querySelector;
+  const etatOrigine119 = [FR119.S, EN119.S].map((S) => ({ S, admin: S.isAdmin, auth: S.AUTH, cas: S.caseSelectedId, connecteur: S.editingConnector, evState: S.evState, vol: S.exploreInflight, cartes: S.panelCards }));
+  const qs119 = (sel) => qsOrigine119.call(document, sel);
+  let servis119 = {};
+  const appels119 = [];
+  const reponse119 = (statut, texte) => ({ ok: statut >= 200 && statut < 300, status: statut, headers: { get: () => null }, text: async () => texte, json: async () => JSON.parse(texte), clone: () => reponse119(statut, texte) });
+  const simulacre119 = async (u, init) => {
+    const k = ((init && init.method) || "GET").toUpperCase() + " " + String(u).split("?")[0];
+    let corpsEnvoye = null; try { corpsEnvoye = init && init.body ? JSON.parse(init.body) : null; } catch (e) { corpsEnvoye = null; }
+    const appel = { k, statut: 0, corps: corpsEnvoye }; appels119.push(appel);
+    let r = Object.prototype.hasOwnProperty.call(servis119, k) ? servis119[k] : servis119["*"];
+    if (typeof r === "function") r = await r(corpsEnvoye);
+    const texte = !r ? "{}" : typeof r.corps === "string" ? r.corps : JSON.stringify(r.corps === undefined ? {} : r.corps);
+    appel.statut = (r && r.statut) || 200;
+    return reponse119(appel.statut, texte);
+  };
+  const compter119 = (k) => appels119.filter((a) => a.k === k).length;
+  const reseauCoupe119 = () => { throw new TypeError("Failed to fetch"); };
+  const fenetre119 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !c.classList.contains("out")).pop();
+  const formulaireDeLaFenetre119 = () => { const ov = fenetre119(); return ov && ov.children[0] ? ov.children[0].children[0] || null : null; };
+  const bouton119 = (hote, pred) => (hote ? cueillir119(hote, (e) => e.tagName === "BUTTON" && pred(e))[0] || null : null);
+  const valeursParDefaut119 = (form) => {
+    for (const champ of cueillir119(form, (e) => typeof e.getAttribute === "function" && e.getAttribute("data-n") !== null)) {
+      if (champ.value) continue;
+      if (champ.tagName === "TEXTAREA") champ.value = champ.textContent;
+      else if (champ.tagName === "SELECT") { const opt = cueillir119(champ, (o) => o.tagName === "OPTION" && o.getAttribute("selected") !== null)[0] || cueillir119(champ, (o) => o.tagName === "OPTION")[0]; if (opt) champ.value = opt.getAttribute("value") ?? nu119(opt); }
+      else if (champ.getAttribute("value") !== null) champ.value = champ.getAttribute("value");
+    }
+  };
+  const accepterLesFenetres119 = async (valeurs = {}, n = 3) => {
+    for (let i = 0; i < n; i++) {
+      await laisser119();
+      const form = formulaireDeLaFenetre119();
+      if (!form || typeof form.onsubmit !== "function") return;
+      valeursParDefaut119(form);
+      for (const [cle, v] of Object.entries(valeurs)) { const champ = cueillir119(form, (e) => typeof e.getAttribute === "function" && e.getAttribute("data-n") === cle)[0]; if (champ) { if (champ.type === "checkbox") champ.checked = !!v; else champ.value = v; } }
+      await Promise.resolve(form.onsubmit({ preventDefault() {} }));
+    }
+    await laisser119();
+    const restee = formulaireDeLaFenetre119();
+    const annuler = restee ? bouton119(restee, (e) => e.classList && e.classList.contains("m-cancel")) : null;
+    if (annuler && typeof annuler.onclick === "function") annuler.onclick();
+  };
+  const confirmerPuis119 = (valeurs, gesteLance) => async (L) => { const g = gesteLance(L); await accepterLesFenetres119(valeurs); await g; };
+  // Les avis NOUVEAUX sont reconnus à leur nœud, pas à leur rang : un avis posé plus tôt (sous une minuterie réelle) peut
+  // être retiré pendant le geste, et un décompte par rang manquerait alors le nouvel avis.
+  const noeudsDAvis119 = () => { const h = qs119("#toasts"); return h ? [...h.children] : []; };
+  const avisDepuis119 = (avant) => noeudsDAvis119().filter((t) => !avant.has(t)).map((t) => nu119(t));
+  const parTexte119 = (t) => (e) => nu119(e) === t;
+  const parTitre119 = (t) => (e) => e.title === t;
+  const puitsNomme119 = (parent, surface) => (parent ? parent.children.find((n) => typeof n.getAttribute === "function" && n.getAttribute("data-puits-du-refus-d-un-geste") === surface) || null : null);
+  const puitsAvant119 = (sel, surface) => () => { const l = qs119(sel); return puitsNomme119(l ? l.parentNode : null, surface); };
+  const puitsDans119 = (sel, surface) => () => puitsNomme119(qs119(sel), surface);
+  const lancer119 = (mod, nom, repli, ...args) => Promise.resolve(typeof mod[nom] === "function" ? mod[nom](...args) : repli());
+  const cliquer119 = (hote, pred, quoi) => { const b = bouton119(hote, pred); if (!b || typeof b.onclick !== "function") throw new Error(`(${quoi} absent)`); return Promise.resolve(b.onclick({ stopPropagation() {}, preventDefault() {} })); };
+  const poser119 = (valeurs) => { for (const [sel, v] of Object.entries(valeurs)) { const n = qs119(sel); if (n) { if (n.type === "checkbox") n.checked = !!v; else n.value = v; } } };
+  const faceGeste119 = (L, nature) => appeler119(L.noyau, "motDuRefusDUnGeste", nature);
+  const faceEssai119 = (L, nature) => appeler119(L.noyau, "motDuRefusDUnEssai", nature);
+
+  // ── LES DONNÉES SERVIES ───────────────────────────────────────────────────────────────────────────────────────
+  const CAS119 = { id: 4, title: "cas-119", status: "triage", priority: 3, severity: 2, ts: 1, updated: 1, owner: "hugo", assignee: "", summary: "", items: [{ id: 7, ts: 1, kind: "note", author: "hugo", body: "note-119" }] };
+  const CONNECTEUR119 = { id: 5, name: "http-119", type: "http_pull", env_id: "prod", interval_s: 300, enabled: true, has_secret: true, config: {} };
+  const TDB119 = { id: 6, name: "SOC-119", owner: "hugo", visibility: "shared", view_id: null, editable: true, panels: [], cols: 2 };
+  const METRIQUES119 = { ts: 1000, version: "1.4.2", uptime_s: 3600, process: {}, ingest: {}, search: {}, scheduler: {}, db: {}, host: {}, alerts_open: 0, http: {} };
+  const LECTURES119 = {
+    "GET /api/cases/4": { corps: CAS119 }, "GET /api/cases/4/links": { corps: { links: [], served: 0 } },
+    "GET /api/cases/4/runbooks": { corps: { incident_tier: null, available: [], recommended: null } },
+    "GET /api/cases/4/steps": { corps: { steps: [{ id: 2, phase: "triage", title: "Qualifier-119", status: "pending", step_kind: "manual" }], progress: { total: 1, done: 0, skipped: 0 }, runbook: { id: 1, name: "rb-119" } } },
+    "GET /api/cases": { corps: { cases: [{ id: 4, title: "cas-119" }, { id: 8, title: "autre-119" }], total: 2 } }, "GET /api/cases/queues": { corps: { queues: [] } }, "GET /api/cases/metrics": { corps: {} },
+    "GET /api/saved-queries": { corps: { queries: [] } }, "GET /api/library-panels": { corps: { library_panels: [] } }, "GET /api/dashboards": { corps: { dashboards: [] } },
+    "GET /api/bulletin": { corps: { bulletin: null } }, "GET /api/setup-status": { corps: { configured: true } }, "GET /api/connectors": { corps: [CONNECTEUR119] },
+  };
+  const cas119 = (plus = {}) => ({ ...CAS119, ...plus });
+  // Le sélecteur de priorité du détail : ses options (posées par propriété) valent 1 à 4 ; celui du statut n'en porte aucune
+  // numérique, celui du verdict porte « true_positive ».
+  const valeurDOption119 = (o) => String(o.value !== undefined && o.value !== "" ? o.value : (o.getAttribute && o.getAttribute("value")) || "");
+  const selecteurDePriorite119 = (e) => e.tagName === "SELECT" && cueillir119(e, (o) => o.tagName === "OPTION" && valeurDOption119(o) === "4").length > 0 && !cueillir119(e, (o) => o.tagName === "OPTION" && valeurDOption119(o) === "true_positive").length;
+  const rendreLeCas119 = async (L, plus = {}) => { L.S.caseSelectedId = 4; const h = qs119("#case-detail"); if (h) h.replaceChildren(); L.dossiers.renderCaseDetail(h, cas119(plus)); await laisser119(20); return h; };
+
+  // ── LES SITES ────────────────────────────────────────────────────────────────────────────────────────────────
+  // Chaque site : son geste, sa route, la réponse du démon (forme LUE dans son gestionnaire, ou une phrase d'essai),
+  // le nœud où la surface doit la dire et sa marque (`geste` : `data-refus-d-un-geste` ; `essai` : `data-refus-d-un-essai`),
+  // la nature attendue et la cause entière.
+  const refusNu119 = (statut) => ({ statut, corps: "" });
+  const refusTexte119 = (statut, phrase) => ({ statut, corps: phrase });
+  const refusNomme119 = (statut, phrase) => ({ statut, corps: { error: phrase } });
+  const site119 = (o) => ({ genre: "geste", ...o });
+  const PUITS_DOSSIERS119 = puitsAvant119("#case-detail", "dossiers"), PUITS_MODELES119 = puitsAvant119("#sqlhint", "modeles_de_requete");
+  const PUITS_TABLEAUX119 = puitsAvant119("#dashview", "tableaux_de_bord"), PUITS_BULLETIN119 = puitsAvant119("#system-body", "bulletin");
+  const PUITS_CONNECTEURS119 = puitsAvant119("#connector-list", "connecteurs");
+  const SITES119 = [
+    // ─ dossiers (neuf) : statuts nus et refus du rôle en texte, tels que les routes les servent ─
+    site119({ site: "dossier_mise_a_jour", fichier: "cases.js", route: "POST /api/cases/4", reponse: refusNu119(404), nature: "refus_sans_cause", cause: "404", puits: PUITS_DOSSIERS119,
+      preparer: (L) => rendreLeCas119(L), geste: async () => { const sel = cueillir119(qs119("#case-detail"), selecteurDePriorite119)[0]; if (!sel) throw new Error("(sélecteur de priorité absent)"); sel.value = "1"; await sel.onchange(); },
+      apres: () => { const sel = cueillir119(qs119("#case-detail"), selecteurDePriorite119)[0]; return sel && sel.value === "1" ? "le sélecteur de priorité reste sur la valeur refusée (le détail n'est pas relu)" : ""; } }),
+    site119({ site: "dossier_archivage", fichier: "cases.js", route: "POST /api/cases/4/archive", reponse: refusNu119(403), nature: "refus_sans_cause", cause: "403", puits: PUITS_DOSSIERS119,
+      preparer: (L) => rendreLeCas119(L), geste: confirmerPuis119({}, () => cliquer119(qs119("#case-detail"), parTexte119("Archiver"), "Archiver")) }),
+    site119({ site: "dossier_desarchivage", fichier: "cases.js", route: "POST /api/cases/4/unarchive", reponse: refusTexte119(403, "réservé à l'administrateur"), nature: "refus_nomme", cause: "réservé à l'administrateur", puits: PUITS_DOSSIERS119,
+      preparer: (L) => rendreLeCas119(L, { archived: true }), geste: confirmerPuis119({}, () => cliquer119(qs119("#case-detail"), parTexte119("Désarchiver"), "Désarchiver")) }),
+    site119({ site: "dossier_detachement", fichier: "cases.js", route: "DELETE /api/cases/4/items/7", reponse: refusNu119(404), nature: "refus_sans_cause", cause: "404", puits: PUITS_DOSSIERS119,
+      preparer: (L) => rendreLeCas119(L), geste: confirmerPuis119({}, () => cliquer119(qs119("#case-detail"), parTitre119("Détacher cet élément"), "Détacher")) }),
+    site119({ site: "dossier_rattachement", fichier: "cases.js", route: "POST /api/cases/4/items", reponse: refusNu119(404), nature: "refus_sans_cause", cause: "404", puits: PUITS_DOSSIERS119,
+      preparer: (L) => rendreLeCas119(L), geste: confirmerPuis119({ ref: "alert:1", body: "rattache-119" }, () => cliquer119(qs119("#case-detail"), parTexte119("Rattacher un élément…"), "Rattacher")) }),
+    site119({ site: "dossier_fusion", fichier: "cases.js", route: "POST /api/cases/4/merge", reponse: refusNu119(400), nature: "refus_sans_cause", cause: "400", puits: PUITS_DOSSIERS119,
+      preparer: (L) => rendreLeCas119(L), geste: confirmerPuis119({ into: "8" }, () => cliquer119(qs119("#case-detail"), parTexte119("Fusionner…"), "Fusionner")) }),
+    site119({ site: "dossier_note", fichier: "cases.js", route: "POST /api/cases/4/items", reponse: refusTexte119(403, "lecture seule (rôle viewer)"), nature: "refus_nomme", cause: "lecture seule (rôle viewer)", puits: PUITS_DOSSIERS119,
+      preparer: (L) => rendreLeCas119(L), geste: async () => { const f = cueillir119(qs119("#case-detail"), (e) => e.tagName === "FORM" && e.classList.contains("c-noteform"))[0]; const i = f ? cueillir119(f, (e) => e.tagName === "INPUT")[0] : null; if (!f || !i) throw new Error("(formulaire de note absent)"); i.value = "note-refusee-119"; await f.onsubmit({ preventDefault() {} }); await laisser119(); },
+      apres: () => { const i = cueillir119(qs119("#case-detail"), (e) => e.tagName === "INPUT" && e.classList.contains("c-note"))[0]; return i && i.value === "note-refusee-119" ? "" : "la note refusée n'est plus dans son champ"; } }),
+    site119({ site: "dossier_defusion", fichier: "cases.js", route: "POST /api/cases/4/unmerge", reponse: refusNu119(404), nature: "refus_sans_cause", cause: "404", puits: PUITS_DOSSIERS119,
+      preparer: (L) => rendreLeCas119(L, { merged_into: 8 }), geste: () => cliquer119(qs119("#case-detail"), parTexte119("Dé-fusionner"), "Dé-fusionner") }),
+    site119({ site: "dossier_etape", fichier: "cases.js", route: "POST /api/cases/4/steps/2", reponse: refusNu119(404), nature: "refus_sans_cause", cause: "404", puits: PUITS_DOSSIERS119,
+      preparer: (L) => rendreLeCas119(L), geste: () => cliquer119(qs119("#case-detail"), parTexte119("Faite"), "Faite") }),
+    // ─ « mes modèles » (trois) : refus nommés de `sq_err_resp` ; la palette ouverte porte son propre puits ─
+    site119({ site: "modele_enregistrement", fichier: "savedqueries.js", route: "POST /api/saved-queries", reponse: refusNomme119(409, LIMITE_DES_MODELES119), nature: "refus_nomme", cause: LIMITE_DES_MODELES119, puits: PUITS_MODELES119,
+      geste: confirmerPuis119({ name: "m-119", soql: "search x" }, (L) => L.modeles.saveAsTemplate({ name: "m-119", soql: "search x" })) }),
+    site119({ site: "modele_modification", fichier: "savedqueries.js", route: "PUT /api/saved-queries/3", reponse: refusNomme119(404, MODELE_INTROUVABLE119), nature: "refus_nomme", cause: MODELE_INTROUVABLE119, puits: PUITS_MODELES119,
+      geste: confirmerPuis119({}, (L) => L.modeles.editSaved({ id: 3, name: "m-119", soql: "search x" })) }),
+    site119({ site: "modele_suppression", fichier: "savedqueries.js", route: "DELETE /api/saved-queries/3", reponse: refusNomme119(500, "enregistrement échoué"), nature: "refus_nomme", cause: "enregistrement échoué", puits: PUITS_MODELES119,
+      geste: confirmerPuis119({}, (L) => L.modeles.deleteSaved({ id: 3, name: "m-119" })) }),
+    site119({ site: "modele_modification_depuis_la_palette", fichier: "savedqueries.js", route: "PUT /api/saved-queries/3", reponse: refusNomme119(404, MODELE_INTROUVABLE119), nature: "refus_nomme", cause: MODELE_INTROUVABLE119,
+      puits: () => puitsNomme119(qs119(".soql-tpl-panel"), "modeles_de_requete"),
+      preparer: async () => { const ov = new Element("div"); ov.className = "soql-tpl-ov"; const panneau = new Element("div"); panneau.className = "soql-tpl-panel"; const liste = new Element("div"); liste.className = "soql-tpl-list"; panneau.appendChild(liste); ov.appendChild(panneau); document.body.appendChild(ov); },
+      geste: confirmerPuis119({}, (L) => L.modeles.editSaved({ id: 3, name: "m-119", soql: "search x" })),
+      nettoyer: () => { const ov = qs119(".soql-tpl-ov"); if (ov) ov.remove(); } }),
+    // ─ panneaux (deux) : les refus en TEXTE de `panel_create` ─
+    site119({ site: "panneau_creation", fichier: "dashboards.js", route: "POST /api/panels", reponse: refusTexte119(403, "dashboard non modifiable"), nature: "refus_nomme", cause: "dashboard non modifiable", puits: PUITS_TABLEAUX119,
+      geste: confirmerPuis119({ title: "P-119", query: "search x | stats count" }, (L) => { const tuile = L.tableaux.renderDashboard(TDB119); return cliquer119(tuile, parTitre119("Ajouter un panneau"), "Ajouter un panneau"); }) }),
+    site119({ site: "panneau_creation_bibliotheque", fichier: "dashboards.js", route: "POST /api/panels", reponse: refusTexte119(403, "SQL brut réservé à l'administrateur (utilisez GXQL)"), nature: "refus_nomme", cause: "SQL brut réservé à l'administrateur (utilisez GXQL)", puits: PUITS_TABLEAUX119,
+      lectures: { "GET /api/library-panels": { corps: { library_panels: [{ id: 3, name: "lib-119", viz: "table" }] } } },
+      geste: confirmerPuis119({ library_panel_id: "3", title: "P-119" }, (L) => { const tuile = L.tableaux.renderDashboard(TDB119); return cliquer119(tuile, parTitre119("Ajouter un panneau"), "Ajouter un panneau"); }) }),
+    // ─ bulletin (deux) ─
+    site119({ site: "bulletin_publication", fichier: "system.js", route: "POST /api/bulletin", reponse: refusNomme119(400, "message trop long (max 2000 caractères)"), nature: "refus_nomme", cause: "message trop long (max 2000 caractères)", puits: PUITS_BULLETIN119,
+      preparer: async (L) => { L.systeme.rendreSysteme(qs119("#system-body"), METRIQUES119, { posture: "green", components: [] }); await laisser119(); const ta = qs119("#sys-bulletin-msg"); if (ta) ta.value = "maintenance-119"; },
+      geste: () => cliquer119(qs119("#system-body"), parTexte119("Publier"), "Publier") }),
+    site119({ site: "bulletin_effacement", fichier: "system.js", route: "DELETE /api/bulletin", reponse: refusTexte119(403, "réservé à l'administrateur"), nature: "refus_nomme", cause: "réservé à l'administrateur", puits: PUITS_BULLETIN119,
+      preparer: async (L) => { L.systeme.rendreSysteme(qs119("#system-body"), METRIQUES119, { posture: "green", components: [] }); await laisser119(); },
+      geste: () => cliquer119(qs119("#system-body"), parTexte119("Effacer"), "Effacer") }),
+    // ─ installation et changement de mot de passe (un) ─
+    site119({ site: "reglages_du_compte", fichier: "app.js", route: "POST /api/password", reponse: refusNomme119(403, "MOT DE PASSE INCHANGÉ-119 : le mot de passe actuel ne correspond pas."), nature: "refus_nomme", cause: "MOT DE PASSE INCHANGÉ-119 : le mot de passe actuel ne correspond pas.", puits: puitsDans119("#setup-form", "reglages_du_compte"),
+      preparer: async () => { poser119({ "#set-pw": "nouveau-mot-de-passe-119", "#set-pw-current": "ancien-mot-de-passe-119" }); },
+      geste: confirmerPuis119({}, (L) => lancer119(L.app, "enregistrerLesReglagesDuCompte", () => { qs119("#setup-form").dispatchEvent(new Evenement("submit", { bubbles: false })); }, { preventDefault() {} })),
+      apres: () => (nu119(qs119("#set-result")) === "" ? "" : `la ligne de résultat porte « ${nu119(qs119("#set-result")).slice(0, 120)} »`) }),
+    // ─ les quatre ESSAIS : la face nommée d'un essai, dans le nœud qui dit leur résultat ─
+    site119({ genre: "essai", site: "essai_test_connecteur", fichier: "connectors.js", route: "POST /api/connectors/5/test", reponse: refusNomme119(403, "réservé admin"), nature: "essai_refuse", cause: "réservé admin", puits: PUITS_CONNECTEURS119,
+      preparer: async (L) => { await L.connecteurs.loadConnectors(); },
+      geste: (L) => lancer119(L.connecteurs, "testConnector", () => cliquer119(qs119("#connector-list"), parTexte119("Tester la connexion"), "Tester la connexion"), CONNECTEUR119) }),
+    site119({ genre: "essai", site: "essai_apercu_connecteur", fichier: "connectors.js", route: "POST /api/connectors/5/test", reponse: refusNomme119(404, "connecteur introuvable"), nature: "essai_refuse", cause: "connecteur introuvable", puits: () => qs119("#cf-http-preview-out"),
+      preparer: async (L) => { L.S.editingConnector = 5; }, geste: (L) => L.connecteurs.previewHttpPull() }),
+    site119({ genre: "essai", site: "essai_regle", fichier: "detection_admin.js", route: "POST /api/rule-test", reponse: { corps: { error: "SQL brut réservé à l'administrateur (utilisez GXQL)" } }, nature: "essai_refuse", cause: "SQL brut réservé à l'administrateur (utilisez GXQL)", puits: () => qs119("#rf-result"),
+      preparer: async () => { poser119({ "#rf-query": "select 1" }); }, geste: (L) => lancer119(L.detection, "essayerLaRegleDuFormulaire", () => qs119("#rf-test").onclick()) }),
+    site119({ genre: "essai", site: "essai_parseur", fichier: "detection_admin.js", route: "POST /api/parser-test", reponse: { corps: { error: REGEX_INVALIDE119 } }, nature: "essai_refuse", cause: REGEX_INVALIDE119, puits: () => qs119("#pf-result"),
+      preparer: async () => { poser119({ "#pf-pattern": "(?P<x", "#pf-sample": "x" }); }, geste: (L) => lancer119(L.detection, "essayerLeParseurDuFormulaire", () => qs119("#pf-test").onclick()) }),
+  ];
+  const rejetsNonTraites119 = [];
+  const surRejetNonTraite119 = (raison) => { rejetsNonTraites119.push(String((raison && raison.message) || raison).slice(0, 200)); };
+  const jouerUnSite119 = async (s, L, reponse) => {
+    const calquesDAvant = new Set(document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")));
+    rejetsNonTraites119.length = 0;
+    servis119 = { ...LECTURES119, ...(s.lectures || {}), [s.route]: reponse };
+    if (s.preparer) { try { await s.preparer(L); } catch (e) { /* le geste dira ce qui manque */ } }
+    await laisser119();
+    appels119.length = 0;
+    const avant = new Set(noeudsDAvis119());
+    let rejet = "";
+    try { await s.geste(L); } catch (e) { rejet = String((e && e.message) || e).slice(0, 200); }
+    await laisser119(40);
+    if (!rejet && rejetsNonTraites119.length) rejet = "(promesse rejetée non traitée) " + rejetsNonTraites119.join(" | ");
+    const p = s.puits();
+    const marque = s.genre === "essai" ? "data-refus-d-un-essai" : "data-refus-d-un-geste";
+    const r = { site: s.site, appels: compter119(s.route), rejet, avis: avisDepuis119(avant).map((t) => t.slice(0, 220)), nature: p && p.getAttribute(marque),
+      autreMarque: p && p.getAttribute(s.genre === "essai" ? "data-refus-d-un-geste" : "data-refus-d-un-essai"),
+      texte: nu119(p), phrase: p && p.children[0] ? nu119(p.children[0]) : "", montre: !!p && p.hidden === false, role: p && p.getAttribute("role"), apres: s.apres ? s.apres() : "" };
+    document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !calquesDAvant.has(c)).forEach((c) => c.remove());
+    if (s.nettoyer) s.nettoyer();
+    return r;
+  };
+
+  globalThis.fetch = simulacre119;
+  globalThis.setTimeout = (fn, ms) => (ms >= 1000 ? 0 : minuterieOrigine119(fn, ms >= 100 ? 0 : ms));
+  for (const L of [FR119, EN119]) { L.S.isAdmin = true; L.S.AUTH = { user: "hugo", role: "admin", auth_method: "cookie" }; }
+  process.on("unhandledRejection", surRejetNonTraite119);
+  try {
+    // ══ (d) `P10.27-d` — CHAQUE SITE, LA RÉPONSE DE SON GESTIONNAIRE, DANS LES DEUX LANGUES ═════════════════════════
+    const ecartsD119 = [];
+    const mesureD119 = [];
+    for (const L of [FR119, EN119]) {
+      for (const s of SITES119) {
+        const r = await jouerUnSite119(s, L, s.reponse);
+        const face = s.genre === "essai" ? faceEssai119(L, s.nature) : faceGeste119(L, s.nature);
+        const attendu = serre119(face + " « " + s.cause + " »");
+        if (L === FR119) mesureD119.push(`${s.site} : ${s.genre === "essai" ? "essai" : "puits"} « ${r.nature} » « ${r.texte.slice(0, 70)} » ; avis ${JSON.stringify(r.avis.map((x) => x.slice(0, 110)))}${r.rejet ? ` ; rejet « ${r.rejet.slice(0, 80)} »` : ""}`);
+        const ecart = [];
+        if (r.appels !== 1) ecart.push(`${r.appels} envoi(s) de \`${s.route}\``);
+        if (r.nature !== s.nature || !r.montre || r.texte !== attendu || r.autreMarque) ecart.push(`${s.genre === "essai" ? "essai" : "puits"} « ${r.nature} » montré=${r.montre} — « ${r.texte.slice(0, 160)} »`);
+        if (s.genre === "geste" && r.role !== "alert") ecart.push(`le puits n'a pas le rôle d'alerte (« ${r.role} »)`);
+        if (r.avis.length) ecart.push(`avis ${JSON.stringify(r.avis)}`);
+        if (r.rejet) ecart.push(`rejet « ${r.rejet} »`);
+        if (r.apres) ecart.push(r.apres);
+        if (ACCUSE119.test(r.phrase) || (L === EN119 && ACCENTS119.test(r.phrase))) ecart.push(`la face accuse, ou reste française : « ${r.phrase} »`);
+        if (ecart.length) ecartsD119.push(`${L.nom}/${s.site} : ${ecart.join(" ; ")}`);
+      }
+    }
+    console.log(`[119d0] le refus, site par site : ${mesureD119.join(" | ")}`);
+    // (d1) LA DEMANDE QUI N'ABOUTIT PAS : ni refus ni effet établis — « NON confirmé » pour un geste, « NON abouti » pour un
+    // essai (qui n'écrit rien, et se relance).
+    for (const s of SITES119) {
+      const r = await jouerUnSite119(s, FR119, reseauCoupe119);
+      const nature = s.genre === "essai" ? "essai_non_abouti" : "demande_non_aboutie";
+      const face = s.genre === "essai" ? faceEssai119(FR119, nature) : faceGeste119(FR119, nature);
+      if (r.nature !== nature || !r.montre || r.texte !== serre119(face + " « Failed to fetch »") || r.avis.length || r.rejet)
+        ecartsD119.push(`transport coupé/${s.site} : « ${r.nature} » « ${r.texte.slice(0, 140)} » avis ${JSON.stringify(r.avis)}${r.rejet ? " rejet « " + r.rejet + " »" : ""}`);
+    }
+    // (d2) UNE PASSERELLE : sa propre phrase, pour un geste comme pour un essai.
+    for (const s of [SITES119.find((x) => x.site === "dossier_archivage"), SITES119.find((x) => x.site === "essai_test_connecteur")]) {
+      const r = await jouerUnSite119(s, FR119, { statut: 502, corps: "<html>bad gateway</html>" });
+      if (r.nature !== "reponse_hors_demon" || r.texte !== serre119(appeler119(FR119.noyau, "motDeLaReponseHorsDemon", "page_de_passerelle"))) ecartsD119.push(`passerelle/${s.site} : « ${r.nature} » « ${r.texte.slice(0, 120)} »`);
+    }
+    // (d3) CONTRÔLES NÉGATIFS : un geste accepté efface le refus d'avant ; un essai réussi écrit son résultat (dans la
+    // langue de l'écran) et retire la marque ; un refus à 404 NU n'invente aucune cause.
+    for (const [nom, accepte] of [["dossier_mise_a_jour", { statut: 204, corps: "" }], ["modele_suppression", { statut: 204, corps: "" }], ["bulletin_publication", { corps: { ok: true, bulletin: null } }], ["reglages_du_compte", { corps: { ok: true } }]]) {
+      const s = SITES119.find((x) => x.site === nom);
+      await jouerUnSite119(s, FR119, s.reponse);
+      const r = await jouerUnSite119(s, FR119, accepte);
+      if (r.montre || r.nature !== null) ecartsD119.push(`${nom} accepté après un refus : le refus d'avant survit (« ${r.nature} »)`);
+    }
+    for (const L of [FR119, EN119]) {
+      const s = SITES119.find((x) => x.site === "essai_regle");
+      await jouerUnSite119(s, L, s.reponse);
+      const r = await jouerUnSite119(s, L, { corps: { value: 3, fired: true, sql: "select 3" } });
+      const attendu = L === EN119 ? "value = 3 -> would fire" : "valeur = 3 -> déclencherait";
+      if (r.nature !== null || nu119(qs119("#rf-result")) !== attendu) ecartsD119.push(`${L.nom}/essai d'une règle réussi : marque « ${r.nature} », ligne « ${nu119(qs119("#rf-result"))} »`);
+      const sp = SITES119.find((x) => x.site === "essai_parseur");
+      const rp = await jouerUnSite119(sp, L, { corps: { matched: true, fields: { x: "1" } } });
+      const attenduP = L === EN119 ? 'match → {"x":"1"}' : 'OK → {"x":"1"}';
+      if (rp.nature !== null || nu119(qs119("#pf-result")) !== attenduP) ecartsD119.push(`${L.nom}/essai d'un parseur réussi : marque « ${rp.nature} », ligne « ${nu119(qs119("#pf-result"))} »`);
+    }
+    // (d4) LES FACES D'UN ESSAI : distinctes de celles d'un geste, deux langues, l'anglaise sans accent, aucune n'accuse ;
+    // aucune ne prête d'effet à l'essai (« vérifier son effet »), toutes disent qu'il n'écrit rien.
+    const facesD119 = ["essai_refuse", "essai_refuse_sans_cause", "essai_non_abouti"].map((k) => [k, faceEssai119(FR119, k), faceEssai119(EN119, k)]);
+    if (!facesD119.every(([, fr, en]) => fr !== en && !ACCENTS119.test(en) && !ACCUSE119.test(fr) && !ACCUSE119.test(en) && /n'écrit rien/.test(fr) && /writes nothing/.test(en) && !/vérifier son effet|check its effect/.test(fr + en) && !/\(\w+ absente\)/.test(fr)))
+      ecartsD119.push(`les faces d'un essai : ${JSON.stringify(facesD119)}`);
+    const natureEssai119 = [Object.assign(new Error("403"), { statutDuRefus: 403 }), Object.assign(new Error("200"), { statutDuRefus: 200, causeDuDemon: "x" }), new TypeError("Failed to fetch"), Object.assign(new Error("y"), { statutDuRefus: 502, reponseHorsDemon: "page_de_passerelle" })]
+      .map((e) => appeler119(FR119.noyau, "natureDuRefusDUnEssai", e)).join(",");
+    if (natureEssai119 !== "essai_refuse_sans_cause,essai_refuse,essai_non_abouti,reponse_hors_demon") ecartsD119.push(`la nature d'un essai : ${natureEssai119}`);
+    exiger(ecartsD119.length === 0, `(119d) UN DES VINGT ET UN SITES NE DIT PAS SON REFUS PAR SA FORME (geste : le puits de sa surface, la forme partagée, cause entière, dans la langue de l'écran, sans avis ni rejet, un geste accepté efface ; essai : la face nommée d'un essai dans sa ligne de résultat, jamais « vérifier son effet », son résultat dans les deux langues) : ${JSON.stringify(ecartsD119)}`);
+
+    // ══ (s) `P10.28-s` — LE TEXTE BRUT D'UN REFUS VOYAGE ENTIER PAR LES DEUX FABRIQUES ═════════════════════════════
+    const ecartsS119 = [];
+    const mesureS119 = [];
+    const LONG119 = "REFUS EN TEXTE-119 : " + "la lecture n'est pas servie sous ce rôle, ".repeat(8) + "rien n'est rendu.";
+    instrument119(LONG119.length > 300, "la phrase d'essai ne dépasse pas la coupe de deux cents caractères");
+    const lire119 = async (fabrique, L, reponse) => {
+      servis119 = { "GET /api/lecture-119": reponse, "POST /api/lecture-119": reponse }; appels119.length = 0;
+      let e = null;
+      try { if (fabrique === "api") await L.noyau.api("/lecture-119"); else await L.noyau.apiSend("/lecture-119", "POST", {}); } catch (err) { e = err; }
+      return e;
+    };
+    for (const L of [FR119, EN119]) {
+      for (const fabrique of ["api", "apiSend"]) {
+        const e = await lire119(fabrique, L, { statut: 409, corps: LONG119 });
+        const phrase = appeler119(L.noyau, "phraseDuRefusDuDemon", e);
+        if (L === FR119) mesureS119.push(`${fabrique} : message ${e ? e.message.length : 0} caractères, texte à côté ${e && typeof e.texteDuRefus === "string" ? e.texteDuRefus.length : "absent"}`);
+        if (!e || e.message !== "409 " + LONG119 || e.texteDuRefus !== LONG119 || phrase !== LONG119 || e.statutDuRefus !== 409)
+          ecartsS119.push(`${L.nom}/${fabrique} texte brut : message « …${e ? e.message.slice(-40) : "(aucune erreur)"} » (${e ? e.message.length : 0}), à côté ${e && e.texteDuRefus ? e.texteDuRefus.length : "absent"}`);
+      }
+      // `fetchInto` peint le texte entier, sous le préfixe de la langue.
+      servis119 = { "GET /api/lecture-119": { statut: 409, corps: LONG119 } };
+      const hote = new Element("div"); await L.noyau.fetchInto(hote, "/lecture-119");
+      const prefixe = appeler119(L.noyau, "motDUneLectureQuiNEstPasServie", "prefixe_de_la_lecture_refusee");
+      if (L === FR119) mesureS119.push(`fetchInto : « …${nu119(hote).slice(-50)} » (${nu119(hote).length})`);
+      if (nu119(hote) !== serre119(prefixe + "409 " + LONG119)) ecartsS119.push(`${L.nom}/fetchInto : « …${nu119(hote).slice(-60)} » (${nu119(hote).length} caractères)`);
+    }
+    // CONTRÔLES NÉGATIFS : un corps JSON reste coupé dans le message (sa cause voyage entière à part), sans texte à côté ;
+    // une page de passerelle n'est jamais un texte du démon ; un texte court est rendu tel qu'avant.
+    for (const fabrique of ["api", "apiSend"]) {
+      const json = await lire119(fabrique, FR119, { statut: 409, corps: { error: LONG119 } });
+      if (!json || json.message.length > 204 || json.causeDuDemon !== LONG119 || json.texteDuRefus !== undefined) ecartsS119.push(`${fabrique}/JSON : message ${json ? json.message.length : 0}, cause ${json && json.causeDuDemon ? json.causeDuDemon.length : "absente"}, texte à côté ${json && json.texteDuRefus}`);
+      const page = await lire119(fabrique, FR119, { statut: 409, corps: "<html>no available server</html>" });
+      if (!page || page.texteDuRefus !== undefined) ecartsS119.push(`${fabrique}/page de passerelle : texte à côté « ${page && page.texteDuRefus} »`);
+      const court = await lire119(fabrique, FR119, { statut: 403, corps: "réservé à l'administrateur" });
+      if (!court || court.message !== "403 réservé à l'administrateur") ecartsS119.push(`${fabrique}/texte court : « ${court && court.message} »`);
+      // Un JSON qui ne nomme aucune cause n'est pas un texte du démon : il reste coupé, rien à côté.
+      const sansCause = await lire119(fabrique, FR119, { statut: 409, corps: JSON.stringify({ detail: LONG119 }) });
+      if (!sansCause || sansCause.texteDuRefus !== undefined || sansCause.message.length > 204) ecartsS119.push(`${fabrique}/JSON sans cause : message ${sansCause ? sansCause.message.length : 0}, texte à côté « ${sansCause && String(sansCause.texteDuRefus).slice(0, 40)} »`);
+    }
+    console.log(`[119s0] un refus en texte brut de ${LONG119.length} caractères : ${mesureS119.join(" | ")}`);
+    exiger(ecartsS119.length === 0, `(119s) LE TEXTE BRUT D'UN REFUS EST ENCORE COUPÉ PAR UNE DES DEUX FABRIQUES (message et texte à côté entiers, \`fetchInto\` le peint entier ; un corps JSON reste coupé, sa cause à part) : ${JSON.stringify(ecartsS119)}`);
+
+    // ══ (t) `P10.28-t` — LES AVIS DE SUCCÈS COMPOSÉS ONT LEURS DEUX FACES ═══════════════════════════════════════════
+    const ecartsT119 = [];
+    // (t0) LE RECENSEMENT, DÉRIVÉ DU CORPUS : tout `toast(` dont la nature est un succès ou une information (`'ok'`,
+    // `'info'`, ou un choix qui les contient) et dont le PREMIER argument est composé (`+`, gabarit) ne doit porter aucun
+    // FRAGMENT affiché — un littéral qui porte une lettre et n'est pas une clé (`mis_a_jour`) — : les mots viennent d'une
+    // face. Jugé sur un anti-corpus dans les deux sens, puis sur `web/` : l'ensemble nommé des restes est VIDE.
+    const argumentsDUnAppel119 = (src, ouvrante) => {
+      let i = ouvrante + 1, d = 1, q = null; const args = []; let courant = "";
+      for (; i < src.length && d > 0; i++) {
+        const c = src[i];
+        if (q) { courant += c; if (c === "\\") { courant += src[i + 1]; i++; continue; } if (c === q) q = null; continue; }
+        if (c === "'" || c === '"' || c === "`") { q = c; courant += c; continue; }
+        if (c === "(" || c === "[" || c === "{") d++;
+        else if (c === ")" || c === "]" || c === "}") { d--; if (!d) break; }
+        if (c === "," && d === 1) { args.push(courant); courant = ""; continue; }
+        courant += c;
+      }
+      args.push(courant);
+      return args.map((a) => a.trim());
+    };
+    const litterauxDe119 = (texte) => [...texte.matchAll(/'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)"|`((?:[^`\\]|\\.)*)`/g)].map((m) => (m[1] ?? m[2] ?? m[3] ?? "").replace(/\$\{[^}]*\}/g, " "));
+    const estUnFragmentAffiche119 = (lit) => /[A-Za-zÀ-ÿ]/.test(lit) && !/^[a-z0-9_]+$/.test(lit.trim());
+    const avisComposesHorsFace119 = (f, source) => {
+      const src = source.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " ")).replace(/(^|[^:\\'"`])\/\/[^\n]*/g, (m, p) => p + " ".repeat(m.length - p.length));
+      const sites = [];
+      for (const m of src.matchAll(/\btoast\(/g)) {
+        const args = argumentsDUnAppel119(src, m.index + m[0].length - 1);
+        const [message, nature = ""] = args;
+        if (nature !== "" && !/'(ok|info)'/.test(nature)) continue;    // un avis d'échec ou d'alerte n'est pas un succès ; sans nature, `info`
+        if (!/\+|\$\{/.test(message)) continue;                          // un avis entier passe par le lexique
+        // Les arguments d'un appel de face sont des CLÉS et des valeurs : seuls les littéraux HORS de ces appels comptent.
+        const horsDesFaces = message.replace(/\b(?:faceDansLaLangue|mot[A-Z][\w$]*|motDu[\w$]*|motDe[\w$]*)\s*\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\)/g, " ");
+        const fragments = litterauxDe119(horsDesFaces).filter(estUnFragmentAffiche119);
+        if (fragments.length) sites.push({ f, ligne: src.slice(0, m.index).split("\n").length, fragments });
+      }
+      return sites;
+    };
+    instrument119(avisComposesHorsFace119("t.js", "toast('Case #' + id + ' archivé', 'ok');\ntoast(`x ${n} importé(s)`, n ? 'ok' : 'bad');\ntoast((nom ? nom + ' : ' : '') + 'ON', 'ok');\n").length === 3
+      && avisComposesHorsFace119("t.js", "toast(faceDansLaLangue(M.x, { n }), 'ok');\ntoast('Case mis à jour', 'ok');\ntoast('échec : ' + e.message, 'bad');\ntoast(motDuReparse('mis_a_jour', { u: 1 }) + (t ? motDuReparse('plafond_atteint') : ''), 'ok');\n// toast('x ' + n + ' créé', 'ok');\ntoast(a ? faceDansLaLangue(M.a) : faceDansLaLangue(M.b), 'ok');\n").length === 0,
+      "le recensement des avis composés ne distingue plus un fragment affiché d'une face, un succès d'un échec, ou un commentaire du code");
+    const RESTES_DES_AVIS_COMPOSES119 = {};
+    const avisLus119 = {};
+    for (const [f, source] of CORPUS_WEB.filter(([x]) => x.endsWith(".js"))) for (const x of avisComposesHorsFace119(f, source)) { const k = `${x.f}:${x.ligne} ${JSON.stringify(x.fragments).slice(0, 80)}`; avisLus119[k] = 1; }
+    const avisNeufs119 = Object.keys(avisLus119).filter((k) => !RESTES_DES_AVIS_COMPOSES119[k]);
+    if (avisNeufs119.length) ecartsT119.push(`avis de succès composés hors d'une face : ${JSON.stringify(avisNeufs119)}`);
+    console.log(`[119t0] avis de succès composés hors d'une face : ${Object.keys(avisLus119).length} — ${JSON.stringify(Object.keys(avisLus119).slice(0, 40))}`);
+    // (t1) LES TABLES DE FACES, DÉRIVÉES : toute table que `faceDansLaLangue` lit (nommée dans son argument) — et
+    // l'ensemble de ces tables est NOMMÉ, jugé dans les deux sens ; chaque paire {fr, en} : deux faces distinctes,
+    // l'anglaise sans accent, les mêmes emplacements `{…}` ; et tout littéral `{ fr, en }` passé en ligne, de même.
+    const TABLES_DE_FACES119 = ["app.js › MOTS_DES_AVIS_D_EXPORT_ET_DE_TENANT", "cases.js › MOTS_DES_SUCCES_DE_DOSSIER", "connectors.js › MOTS_DES_AVIS_DE_CONNECTEUR", "core.js › MOTS_DES_RETRAITS_DE_CONTENU",
+      "destinations.js › MOTS_DES_AVIS_DE_L_ENVOI", "detection_admin.js › MOTS_DES_ESSAIS_DE_CONTENU", "knowledge.js › MOTS_DES_SUCCES_DE_SAVOIR", "lookups.js › MOTS_DU_CHARGEMENT_DE_LOOKUP",
+      "multitenant.js › MOTS_DES_AVIS_DU_PLAN_DE_CONTROLE", "producer_ui.js › DESTINATIONS_DE_L_AVIS", "producer_ui.js › MOTS_DES_AVIS_DE_PRODUCTEUR", "threatintel.js › MOTS_DES_AVIS_D_INDICATEURS"];
+    const tablesLues119 = [], pairesFautives119 = [];
+    const placeholders119 = (t) => [...String(t).matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort().join(",");
+    const jugerLesPaires119 = (ou, texte) => {
+      for (const m of texte.matchAll(/\bfr:\s*('(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")\s*,\s*en:\s*('(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")/g)) {
+        const fr = m[1].slice(1, -1).replace(/\\(.)/g, "$1"), en = m[2].slice(1, -1).replace(/\\(.)/g, "$1");
+        if (fr === en || ACCENTS119.test(en) || placeholders119(fr) !== placeholders119(en) || !fr.trim() || !en.trim()) pairesFautives119.push(`${ou} : « ${fr.slice(0, 60)} » / « ${en.slice(0, 60)} »`);
+      }
+    };
+    for (const [f, source] of CORPUS_WEB.filter(([x]) => x.endsWith(".js"))) {
+      for (const m of source.matchAll(/\bfaceDansLaLangue\(/g)) {
+        const arg = argumentsDUnAppel119(source, m.index + m[0].length - 1)[0] || "";
+        for (const t of arg.matchAll(/\b(MOTS_[A-Z0-9_]+|DESTINATIONS_DE_L_AVIS)\b/g)) { const nom = `${f} › ${t[1]}`; if (!tablesLues119.includes(nom)) tablesLues119.push(nom); }
+        if (/^\{\s*fr:/.test(arg)) jugerLesPaires119(`${f} (en ligne)`, arg);
+      }
+    }
+    tablesLues119.sort();
+    for (const nom of tablesLues119) {
+      const [f, table] = nom.split(" › "); const source = (CORPUS_WEB.find(([x]) => x === f) || [])[1] || "";
+      const i = source.indexOf(`const ${table} = {`); if (i < 0) { pairesFautives119.push(`${nom} : table introuvable`); continue; }
+      const j = source.indexOf("\n};", i); jugerLesPaires119(nom, source.slice(i, j < 0 ? undefined : j));
+    }
+    const tablesNeuves119 = tablesLues119.filter((n) => !TABLES_DE_FACES119.includes(n)), tablesDisparues119 = TABLES_DE_FACES119.filter((n) => !tablesLues119.includes(n));
+    if (tablesNeuves119.length || tablesDisparues119.length || pairesFautives119.length) ecartsT119.push(`tables de faces : neuves ${JSON.stringify(tablesNeuves119)}, disparues ${JSON.stringify(tablesDisparues119)}, paires fautives ${JSON.stringify(pairesFautives119)}`);
+    // (t2) LES AVIS JOUÉS, DANS LES DEUX LANGUES : la face française est celle d'avant (au caractère près, sauf l'accord
+    // corrigé de « règle supprimée ») ; l'anglaise, sans accent.
+    const mesureT119 = [];
+    const jouerUnAvis119 = async (L, lectures, geste) => {
+      servis119 = { ...LECTURES119, ...lectures }; appels119.length = 0;
+      const avant = new Set(noeudsDAvis119());
+      try { await geste(L); } catch (e) { return [`(rejet : ${String((e && e.message) || e).slice(0, 80)})`]; }
+      await laisser119(40);
+      document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
+      return avisDepuis119(avant);
+    };
+    const AVIS119 = [
+      { avis: "collecte manuelle", fr: "collecte OK — 3 event(s) ingéré(s)", en: "collection OK — 3 event(s) ingested",
+        lectures: { "POST /api/connectors/5/poll": { corps: { ok: true, count: 3, error: null } } }, geste: confirmerPuis119({}, (L) => L.connecteurs.pollConnector(CONNECTEUR119)) },
+      { avis: "envoi manuel", fr: "forward OK : 3 event(s), watermark #4", en: "forward OK: 3 event(s), watermark #4",
+        lectures: { "POST /api/destinations/9/flush": { corps: { ok: true, forwarded: 3, watermark: 4, last_error: null } }, "GET /api/destinations": { corps: [] } },
+        geste: confirmerPuis119({}, (L) => L.destinations.flushDestination({ id: 9, name: "syslog-119", type: "syslog", endpoint: "tcp://collecteur.example:514", enabled: true, interval_s: 30, batch_max: 500, filter: {}, has_auth: false, watermark: 1, last_count: 0 })) },
+      { avis: "test de connexion", fr: "connexion OK — 2 alerte(s) en échantillon", en: "connection OK — 2 alert(s) in the sample",
+        lectures: { "POST /api/connectors/5/test": { corps: { ok: true, sample_count: 2, error: null } } }, geste: (L) => lancer119(L.connecteurs, "testConnector", () => { throw new Error("(testConnector absent)"); }, CONNECTEUR119) },
+      { avis: "archivage d'un dossier", fr: "Case #4 archivé", en: "Case #4 archived",
+        lectures: { "POST /api/cases/4/archive": { statut: 204, corps: "" } }, geste: async (L) => { await rendreLeCas119(L); await confirmerPuis119({}, () => cliquer119(qs119("#case-detail"), parTexte119("Archiver"), "Archiver"))(L); } },
+      { avis: "retrait d'une règle", fr: "règle supprimée", en: "rule deleted",
+        lectures: { "DELETE /api/rules/11": { corps: { deleted: true } }, "GET /api/rules": { corps: { rules: [] } } },
+        geste: async (L) => { const h = qs119("#rule-list"); if (h) h.replaceChildren(L.detection.ruleRow({ id: 11, name: "regle-119", severity: 2, op: ">", threshold: 0, query: "search x", is_soql: true, enabled: true, managed: 2, risk_score: 0, interval_s: 300, window_s: 3600 })); await confirmerPuis119({}, () => cliquer119(qs119("#rule-list"), parTitre119("Supprimer"), "✕"))(L); } },
+      { avis: "création d'un alias", fr: "alias de champ créé", en: "field alias created",
+        lectures: { "POST /api/knowledge/alias": { corps: { id: 3 } }, "GET /api/knowledge": { corps: { aliases: [], calcs: [], eventtypes: [], tags: [] } } },
+        geste: confirmerPuis119({ canonical: "src_ip" }, (L) => L.savoir.create("alias", "alias de champ", [{ name: "canonical", label: "Champ", required: true }], (v) => ({ canonical: v.canonical }))) },
+    ];
+    for (const L of [FR119, EN119]) {
+      for (const a of AVIS119) {
+        const avis = await jouerUnAvis119(L, a.lectures, a.geste);
+        const attendu = L === EN119 ? a.en : a.fr;
+        if (L === EN119) mesureT119.push(`${a.avis} : ${JSON.stringify(avis.slice(0, 2))}`);
+        if (!avis.includes(attendu) || (L === EN119 && avis.some((x) => ACCENTS119.test(x) && x === a.fr))) ecartsT119.push(`${L.nom}/${a.avis} : ${JSON.stringify(avis)} — attendu « ${attendu} »`);
+      }
+    }
+    console.log(`[119t1] les avis de succès sous \`LANG='en'\` : ${mesureT119.join(" | ")}`);
+    exiger(ecartsT119.length === 0, `(119t) UN AVIS DE SUCCÈS COMPOSÉ RESTE FRANÇAIS SOUS \`LANG='en'\` (recensement du corpus vide, tables de faces à deux langues distinctes et mêmes emplacements, avis joués dans les deux langues) : ${JSON.stringify(ecartsT119)}`);
+
+    // ══ (n) `P10.26-n` — UN QUATRE CENT UN EN COURS DE SESSION : UNE FACE, PAR L'ENVELOPPE RÉELLE ═════════════════════
+    const ecartsN119 = [];
+    const recouvrement119 = qs119("#login-ov"), formulaireDeConnexion119 = qs119("#login-form");
+    instrument119(!!recouvrement119 && !!formulaireDeConnexion119 && !!qs119("#login-err"), "`#login-ov`, `#login-form` ou `#login-err` n'est plus dans `index.html`");
+    const recouvrementCache119 = recouvrement119 ? recouvrement119.hidden : true, verrouille119 = document.body.classList.contains("login-locked");
+    const parDonnee119 = (hote, attr) => cueillir119(hote, (e) => typeof e.getAttribute === "function" && e.getAttribute(attr) !== null);
+    const REFUS_DE_SESSION119 = { statut: 401, corps: "auth requise" };
+    const jouerLaSession119 = async ({ L, refus, me, session = true, enveloppe = true }) => {
+      parDonnee119(formulaireDeConnexion119, "data-refus-de-l-ouverture").forEach((n) => n.remove());
+      if (recouvrement119) recouvrement119.hidden = true;
+      document.body.classList.remove("login-locked");
+      L.S.AUTH = session ? { user: "bob", role: "editor", auth_method: "cookie" } : null;
+      globalThis.fetch = enveloppe && typeof L.app.envelopperLeTransport === "function" ? L.app.envelopperLeTransport(simulacre119) : simulacre119;
+      appels119.length = 0;
+      servis119 = { "*": refus, "GET /api/me": me === undefined ? refus : me };
+      const hotes = [new Element("div"), new Element("div"), new Element("div")];
+      const lectures = session ? [L.noyau.fetchInto(hotes[0], "/sources"), L.noyau.fetchInto(hotes[1], "/fleet"), L.noyau.fetchInto(hotes[2], "/cases")] : [L.noyau.api("/me").catch(() => null)];
+      const direct = session ? globalThis.fetch("/api/query", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).then((r) => r.text()) : Promise.resolve("");
+      await Promise.all(lectures); await direct;
+      await laisser119(80);
+      globalThis.fetch = simulacre119;
+      const noeuds = parDonnee119(formulaireDeConnexion119, "data-refus-de-l-ouverture"), noeud = noeuds[0] || null;
+      return { me: compter119("GET /api/me"), refuses: appels119.filter((a) => a.statut === 401).length, noeuds: noeuds.length, cle: noeud && noeud.getAttribute("data-refus-de-l-ouverture"),
+        texte: nu119(noeud), phrase: noeud && noeud.children[0] ? nu119(noeud.children[0]) : "", role: noeud && noeud.getAttribute("role"),
+        invite: !!recouvrement119 && recouvrement119.hidden === false, verrou: document.body.classList.contains("login-locked"), session: L.S.AUTH, surfaces: hotes.map((h) => nu119(h).slice(0, 120)) };
+    };
+    // (n0) TÉMOIN : l'arbre sans l'enveloppe — ce que chaque surface peint seule.
+    const n0119 = await jouerLaSession119({ L: FR119, refus: REFUS_DE_SESSION119, enveloppe: false });
+    instrument119(n0119.refuses >= 4 && n0119.me === 0 && n0119.noeuds === 0, `sans l'enveloppe, le scénario ne produit pas ses quatre refus, ou une face apparaît déjà : ${JSON.stringify({ refuses: n0119.refuses, me: n0119.me, noeuds: n0119.noeuds })}`);
+    console.log(`[119n0] sans l'enveloppe, un quatre cent un en session : ${JSON.stringify(n0119.surfaces)}`);
+    // (n1) LE QUATRE CENT UN DU COOKIE EXPIRÉ : UNE lecture de `/api/me`, UNE face, la console recouverte, la session close —
+    // l'instance anglaise d'abord (son délai sans rejugement n'a jamais été armé), puis la française.
+    const mesureN119 = [];
+    for (const L of [EN119, FR119]) {
+      const r = await jouerLaSession119({ L, refus: REFUS_DE_SESSION119 });
+      const attendu = serre119(appeler119(L.connexion, "motDeLaConnexion", "session_terminee") + " « auth requise »");
+      mesureN119.push(`${L.nom} : ${r.me} lecture(s) de /api/me pour ${r.refuses} refus, ${r.noeuds} face(s) « ${r.cle} », écran ${r.invite}`);
+      if (r.refuses < 4) instrument119(false, `${L.nom} : le scénario ne produit pas ses quatre refus (${r.refuses})`);
+      if (r.me !== 1) ecartsN119.push(`${L.nom} : ${r.me} lecture(s) de \`/api/me\` pour ${r.refuses} refus (une seule attendue : ni silence, ni boucle)`);
+      if (r.noeuds !== 1 || r.cle !== "session_terminee" || r.texte !== attendu || r.role !== "alert") ecartsN119.push(`${L.nom} : ${r.noeuds} face(s), « ${r.cle} » — « ${r.texte.slice(0, 160)} »`);
+      if (!r.invite || !r.verrou || r.session !== null) ecartsN119.push(`${L.nom} : écran de connexion ${r.invite}, console verrouillée ${r.verrou}, session ${JSON.stringify(r.session)}`);
+      if (ACCUSE119.test(r.phrase) || (L === EN119 && ACCENTS119.test(r.phrase))) ecartsN119.push(`${L.nom} : la face accuse ou reste française : « ${r.phrase} »`);
+    }
+    // (n2) CONTRÔLES NÉGATIFS : le premier chargement (hors session) ne lit `/api/me` qu'une fois, sans face ni boucle ; un
+    // quatre cent un NOMMÉ d'un code refusé, `/api/me` servi, ne clôt rien. L'ORDRE EST UNE MESURE : ce dernier arme le
+    // délai sans rejugement qui suit une session confirmée, il est donc joué en dernier.
+    for (const L of [FR119, EN119]) {
+      const premier = await jouerLaSession119({ L, refus: REFUS_DE_SESSION119, session: false });
+      // `/api/me` qui ne répond pas (un cinq cent trois passager, ses deux réessais) n'établit pas la fin de la session.
+      const passager = await jouerLaSession119({ L, refus: REFUS_DE_SESSION119, me: { statut: 503, corps: "" } });
+      if (passager.me !== 3 || passager.noeuds !== 0 || passager.invite || !passager.session) ecartsN119.push(`${L.nom}/\`/api/me\` en panne passagère : ${passager.me} lecture(s), ${passager.noeuds} face(s), écran ${passager.invite}, session ${JSON.stringify(passager.session)}`);
+      if (premier.me !== 1 || premier.noeuds !== 0 || premier.invite) ecartsN119.push(`${L.nom}/premier chargement : ${premier.me} lecture(s) de \`/api/me\`, ${premier.noeuds} face(s), écran ${premier.invite}`);
+      const code = await jouerLaSession119({ L, refus: { statut: 401, corps: { error: "code MFA invalide" } }, me: { corps: { user: "bob", role: "editor", auth_method: "cookie" } } });
+      if (code.me !== 1 || code.noeuds !== 0 || code.invite || !code.session) ecartsN119.push(`${L.nom}/code refusé, session confirmée : ${code.me} lecture(s), ${code.noeuds} face(s), écran ${code.invite}, session ${JSON.stringify(code.session)}`);
+    }
+    const facesN119 = [appeler119(FR119.connexion, "motDeLaConnexion", "session_terminee"), appeler119(EN119.connexion, "motDeLaConnexion", "session_terminee")];
+    if (!(facesN119[0] !== facesN119[1] && /^Session TERMINÉE/.test(facesN119[0]) && /^Session ENDED/.test(facesN119[1]) && !ACCENTS119.test(facesN119[1]) && !ACCUSE119.test(facesN119[0]) && !ACCUSE119.test(facesN119[1])))
+      ecartsN119.push(`les faces de la session terminée : ${JSON.stringify(facesN119)}`);
+    console.log(`[119n1] un quatre cent un en session, par l'enveloppe : ${mesureN119.join(" | ")}`);
+    exiger(ecartsN119.length === 0, `(119n) UN QUATRE CENT UN EN COURS DE SESSION N'A PAS SA FACE UNIQUE (une vérification par \`/api/me\`, l'écran de connexion qui recouvre la console, la cause entière, la session close ; rien au premier chargement ni sur un code refusé, aucune boucle) : ${JSON.stringify(ecartsN119)}`);
+    parDonnee119(formulaireDeConnexion119, "data-refus-de-l-ouverture").forEach((n) => n.remove());
+    if (recouvrement119) recouvrement119.hidden = recouvrementCache119;
+    document.body.classList.toggle("login-locked", verrouille119);
+    for (const L of [FR119, EN119]) L.S.AUTH = { user: "hugo", role: "admin", auth_method: "cookie" };   // la session close par (n) est rouverte
+
+    // ══ (m) `P10.26-m` — LA PREMIÈRE PAGE VIDE DANS UN TOTAL COMPTÉ DIT L'ÉCART, SUR CHAQUE SURFACE ═════════════════════
+    const ecartsM119 = [];
+    const mesureM119 = [];
+    const pageVideDe119 = (hote) => parDonnee119(hote, "data-page-vide")[0] || null;
+    const ecartPremiere119 = (L, total, plafonne = false) => texteDe119(appeler119(L.noyau, "noeudDeLaPremierePageVideDansLeTotal", total, plafonne));
+    const TH119 = (hote) => cueillir119(hote, (e) => e.tagName === "TH").length;
+    // (m1) La liste paginée : total compté de six, la PREMIÈRE page servie vide.
+    for (const L of [FR119, EN119]) {
+      const hote = new Element("div");
+      L.noyau.pagedList(hote, { mode: "server", pageSize: 2, columns: [{ key: "a", label: "A" }], fetchPage: async () => ({ rows: [], total: 6 }) });
+      await laisser119();
+      const pv = pageVideDe119(hote);
+      if (L === FR119) mesureM119.push(`liste paginée : « ${nu119(hote).slice(0, 90)} » (${TH119(hote)} en-tête(s))`);
+      if (!pv || pv.getAttribute("data-page-vide") !== "premiere_page_dans_le_total" || nu119(pv) !== ecartPremiere119(L, 6) || TH119(hote) !== 0) ecartsM119.push(`${L.nom}/liste paginée : « ${pv && pv.getAttribute("data-page-vide")} » « ${nu119(hote).slice(0, 160)} »`);
+      // Contrôle négatif : un total nul garde sa phrase de liste vide.
+      const vide = new Element("div");
+      L.noyau.pagedList(vide, { mode: "server", pageSize: 2, columns: [{ key: "a", label: "A" }], emptyText: "aucune ligne-119", fetchPage: async () => ({ rows: [], total: 0 }) });
+      await laisser119();
+      if (pageVideDe119(vide) || nu119(vide) !== "aucune ligne-119") ecartsM119.push(`${L.nom}/liste paginée, total nul : « ${nu119(vide).slice(0, 120)} »`);
+    }
+    // (m2) Un panneau de table : cent vingt comptés, la première page servie vide.
+    {
+      const grille = new Element("div");
+      const PANNEAU = { id: 16, title: "T", query: "search action=login | table a", is_soql: true, viz: "table", position: 0, window_s: 0, visibility: "private", query_private: false, cols: 1, height: 0, drill: "", library_panel_id: null };
+      servis119 = { "GET /api/dashboard/6": { corps: { id: 6, name: "SOC", owner: "hugo", visibility: "shared", view_id: null, editable: true, panels: [PANNEAU] } }, "POST /api/query": () => ({ corps: { columns: ["a"], rows: [], total: 120, stats: {} } }) };
+      FR119.S.panelCards = [];
+      await FR119.tableaux.loadPanelsInto(grille, { id: 6 }); await laisser119(10);
+      cueillir119(grille, (e) => e.classList && e.classList.contains("panel")).forEach((c) => { if (c._panel && !c._panel.loaded) { c._panel.loaded = true; c._panel.reload(); } });
+      await laisser119(60);
+      const corps = cueillir119(grille, (e) => e.classList && e.classList.contains("panelbody"))[0] || null, pv = pageVideDe119(corps);
+      mesureM119.push(`panneau de table : « ${nu119(corps).slice(0, 90)} » (${TH119(corps)} en-tête(s))`);
+      if (!pv || pv.getAttribute("data-page-vide") !== "premiere_page_dans_le_total" || nu119(pv) !== ecartPremiere119(FR119, 120) || TH119(corps) !== 0) ecartsM119.push(`panneau de table : « ${pv && pv.getAttribute("data-page-vide")} » « ${nu119(corps).slice(0, 160)} »`);
+    }
+    // (m3) L'Explore : la table par décalage (neuf comptés), la liste d'événements par curseur (trente comptés), et le cas
+    // ordinaire — la première page par curseur rendue VIDE avant que le compte asynchrone n'arrive avec trois lignes.
+    const ligne119 = qs119("#qstats"), resultat119 = qs119("#qresult"), qsize119 = qs119("#qsize");
+    instrument119(!!ligne119 && !!resultat119 && !!qsize119, "`#qstats`, `#qresult` ou `#qsize` n'est plus dans `index.html`");
+    const tailleOrigine119 = qsize119 ? qsize119.value : "";
+    if (qsize119) qsize119.value = "3";
+    let servirLaPage119 = () => ({}), servirLeCompte119 = () => ({ count_only: true, total: -1 });
+    const chargerM119 = async (L, plus) => {
+      servis119 = { "POST /api/query": async (d) => ({ corps: d && d.count_only ? await servirLeCompte119(d) : await servirLaPage119(d) }) };
+      L.S.exploreInflight = null;
+      L.S.evState = { q: "search sshd | table a b", isSoql: true, keyset: false, cursors: [null], page: 0, pageSize: 3, total: -1, shown: 0, totalCapped: false, countFired: true, realTotal: false, totalError: null, win: { from: 1000, to: 2000 }, ...plus };
+      resultat119.replaceChildren(); ligne119.replaceChildren(); await L.viz.evLoad(); await laisser119(20);
+      return pageVideDe119(resultat119);
+    };
+    for (const L of [FR119, EN119]) {
+      servirLaPage119 = (d) => ({ columns: ["a", "b"], rows: [], stats: { elapsed_ms: 1 }, total: 9, offset: (d && d.offset) || 0, limit: 3 });
+      let pv = await chargerM119(L, {});
+      if (L === FR119) mesureM119.push(`Explore, table : « ${nu119(resultat119).slice(0, 90)} » (${TH119(resultat119)} en-tête(s))`);
+      if (!pv || pv.getAttribute("data-page-vide") !== "premiere_page_dans_le_total" || nu119(pv) !== ecartPremiere119(L, 9) || TH119(resultat119) !== 0) ecartsM119.push(`${L.nom}/Explore, table par décalage : « ${pv && pv.getAttribute("data-page-vide")} » « ${nu119(resultat119).slice(0, 160)} »`);
+      servirLaPage119 = () => ({ columns: ["ts", "source", "message"], rows: [], stats: { elapsed_ms: 1 }, has_more: false, next_cursor: null, limit: 3 });
+      pv = await chargerM119(L, { q: "search sshd", keyset: true, total: 30, realTotal: true });
+      if (L === FR119) mesureM119.push(`Explore, événements : « ${nu119(resultat119).slice(0, 90)} »`);
+      if (!pv || pv.getAttribute("data-page-vide") !== "premiere_page_dans_le_total" || nu119(pv) !== ecartPremiere119(L, 30)) ecartsM119.push(`${L.nom}/Explore, événements par curseur : « ${pv && pv.getAttribute("data-page-vide")} » « ${nu119(resultat119).slice(0, 160)} »`);
+      servirLeCompte119 = () => ({ count_only: true, total: 3 });
+      pv = await chargerM119(L, { q: "search sshd", keyset: true, total: -1, countFired: false });
+      servirLeCompte119 = () => ({ count_only: true, total: -1 });
+      if (L === FR119) mesureM119.push(`Explore, compte après la page : « ${nu119(resultat119).slice(0, 90)} » — ligne d'état « ${nu119(ligne119).slice(0, 60)} »`);
+      if (!pv || pv.getAttribute("data-page-vide") !== "premiere_page_dans_le_total" || nu119(pv) !== ecartPremiere119(L, 3) || L.S.evState.total !== 3) ecartsM119.push(`${L.nom}/Explore, compte arrivé après la page : « ${pv && pv.getAttribute("data-page-vide")} » « ${nu119(resultat119).slice(0, 160)} » (total ${L.S.evState.total})`);
+      // Contrôle négatif : un total nul garde la fenêtre vide.
+      servirLaPage119 = () => ({ columns: ["ts", "source", "message"], rows: [], stats: { elapsed_ms: 1 }, total: 0, limit: 3 });
+      pv = await chargerM119(L, { q: "search sshd" });
+      const fenetreVide = appeler119(L.viz, "motDeLaListeDEvenements", "fenetre_vide");
+      if (pv || nu119(resultat119) !== fenetreVide) ecartsM119.push(`${L.nom}/Explore, total nul : « ${nu119(resultat119).slice(0, 120)} »`);
+    }
+    if (qsize119) qsize119.value = tailleOrigine119;
+    // (m4) La phrase : ni « fin », ni retour (« ◀ »), ni sens deviné ; les deux lectures ; le nombre ; deux langues ; aucune
+    // accusation ; et le rang supérieur garde la sienne (celle de `P10.25-z`).
+    const phraseM119 = ecartPremiere119(FR119, 6), phraseMEn119 = ecartPremiere119(EN119, 6), plafonneM119 = ecartPremiere119(FR119, 10000, true);
+    if (/fin du résultat|end of the result|◀|ont disparu entre le compte et la page/.test(phraseM119 + phraseMEn119) || !/deux lectures/.test(phraseM119) || !/two reads/.test(phraseMEn119)
+      || ACCUSE119.test(phraseM119) || ACCUSE119.test(phraseMEn119) || phraseM119 === phraseMEn119 || ACCENTS119.test(phraseMEn119) || !/\(6\)/.test(phraseM119) || !/\(10000\+\)/.test(plafonneM119))
+      ecartsM119.push(`la phrase de la première page : « ${phraseM119} » / « ${phraseMEn119} » / « ${plafonneM119.slice(0, 60)} »`);
+    const rangSuperieur119 = appeler119(FR119.noyau, "noeudDUnePageServieVide", 1, 6, 2, false), premiereSansTotal119 = appeler119(FR119.noyau, "noeudDUnePageServieVide", 0, 0, 2, false);
+    if (!rangSuperieur119 || typeof rangSuperieur119 !== "object" || rangSuperieur119.getAttribute("data-page-vide") !== "dans_le_total" || premiereSansTotal119 !== null)
+      ecartsM119.push(`le choix d'une page servie vide : rang supérieur « ${texteDe119(rangSuperieur119).slice(0, 60)} », première sans total ${JSON.stringify(texteDe119(premiereSansTotal119))}`);
+    console.log(`[119m0] la première page vide dans un total compté : ${mesureM119.join(" | ")}`);
+    exiger(ecartsM119.length === 0, `(119m) LA PREMIÈRE PAGE VIDE DANS UN TOTAL COMPTÉ N'A QUE SES EN-TÊTES, OU SE DIT « AUCUN ÉVÉNEMENT SUR LA FENÊTRE » (liste paginée, panneau de table, Explore — table, événements, compte arrivé après la page) : ${JSON.stringify(ecartsM119)}`);
+
+    // ══ (u) `P10.28-u` — LE NOM NON VÉRIFIÉ D'UNE FÉDÉRATION : AUCUNE SURFACE NE LIT CES PORTES, LA FORME PARTAGÉE LE DIRAIT ═══
+    // CE QUE LE DÉMON SERT (`federer_le_nom`, daemon/src/idp/oidc.rs) : sur le rappel OIDC, l'ACS SAML et la connexion
+    // LDAP, cinq cent trois JSON `CAUSE_FEDERATION_NOM_NON_VERIFIE`. MESURÉ : aucune de ces trois portes n'est lue par la
+    // console — le rappel et l'ACS sont des NAVIGATIONS du navigateur, et aucun module n'appelle `/api/auth/ldap` ; il
+    // n'y a donc aucune face à poser. Ce qui est tenu ici : (u1) l'ensemble des modules qui lisent une porte fédérée est
+    // VIDE (dérivé du code, commentaires retirés) — le jour où une surface en lira une, elle devra dire ce refus ; (u2) la
+    // forme partagée le lirait « refus nommé » (ni « rien n'a changé », ni une panne de passerelle), cause entière, dans
+    // les deux langues.
+    const ecartsU119 = [];
+    const OIDC_RS119 = lireLeDemon119("idp/oidc.rs");
+    const causeFederation119 = ((OIDC_RS119.match(/const CAUSE_FEDERATION_NOM_NON_VERIFIE: &str = "((?:[^"\\]|\\[\s\S])*)";/) || [])[1] || "").replace(/\\\n\s*/g, "").replace(/\\"/g, "\"").trim();
+    instrument119(causeFederation119.length > 100 && /err_json\(StatusCode::SERVICE_UNAVAILABLE, CAUSE_FEDERATION_NOM_NON_VERIFIE\)/.test(OIDC_RS119),
+      "`federer_le_nom` ne sert plus son cinq cent trois nommé `CAUSE_FEDERATION_NOM_NON_VERIFIE`");
+    const lecteursDesPortes119 = [];
+    for (const [f, source] of CORPUS_WEB.filter(([x]) => x.endsWith(".js"))) {
+      const code = source.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/(^|[^:\\'"`])\/\/[^\n]*/g, "$1");
+      if (/['"`]\/(?:api\/)?auth\/(?:ldap|oidc|saml)\b/.test(code)) lecteursDesPortes119.push(f);
+    }
+    if (lecteursDesPortes119.length) ecartsU119.push(`des modules lisent une porte fédérée sans face pour son nom non vérifié : ${JSON.stringify(lecteursDesPortes119)}`);
+    for (const L of [FR119, EN119]) {
+      const e = Object.assign(new Error("503 " + JSON.stringify({ error: causeFederation119 }).slice(0, 200)), { statutDuRefus: 503, causeDuDemon: causeFederation119 });
+      const nature = appeler119(L.noyau, "natureDuRefusDUnGeste", e);
+      const puits = new Element("div"); appeler119(L.noyau, "peindreLeRefusDUnGeste", puits, e);
+      if (nature !== "refus_nomme" || nu119(puits) !== serre119(faceGeste119(L, "refus_nomme") + " « " + causeFederation119 + " »")) ecartsU119.push(`${L.nom} : nature « ${nature} », « ${nu119(puits).slice(0, 120)} »`);
+    }
+    console.log(`[119u0] les portes fédérées lues par la console : ${JSON.stringify(lecteursDesPortes119)} ; le nom non vérifié d'une fédération lu « ${appeler119(FR119.noyau, "natureDuRefusDUnGeste", Object.assign(new Error("x"), { statutDuRefus: 503, causeDuDemon: causeFederation119 }))} »`);
+    exiger(ecartsU119.length === 0, `(119u) LE NOM NON VÉRIFIÉ D'UNE FÉDÉRATION N'EST PAS TENU (aucune surface ne lit une porte fédérée sans lui donner de face ; la forme partagée le lit « refus nommé », cause entière, dans les deux langues) : ${JSON.stringify(ecartsU119)}`);
+  } finally {
+    process.off("unhandledRejection", surRejetNonTraite119);
+    globalThis.fetch = fetchOrigine119; globalThis.setTimeout = minuterieOrigine119; document.querySelector = qsOrigine119;
+    for (const o of etatOrigine119) { o.S.isAdmin = o.admin; o.S.AUTH = o.auth; o.S.caseSelectedId = o.cas; o.S.editingConnector = o.connecteur; o.S.evState = o.evState; o.S.exploreInflight = o.vol; o.S.panelCards = o.cartes; }
+    for (const s of SITES119) { try { const p = s.puits(); if (p && p.getAttribute && p.getAttribute("data-puits-du-refus-d-un-geste")) p.remove(); } catch (e) { /* hôte absent */ } }
+    for (const sel of ["#case-detail", "#connector-list", "#system-body", "#rule-list", "#qresult", "#qstats"]) { const h = qs119(sel); if (h) h.replaceChildren(); }
+    for (const sel of ["#rf-result", "#pf-result", "#set-result"]) { const h = qs119(sel); if (h) { h.textContent = ""; h.className = "muted"; delete h.dataset.refusDUnEssai; } }
+    const apercu = qs119("#cf-http-preview-out"); if (apercu) { apercu.replaceChildren(); apercu.hidden = true; apercu.className = ""; delete apercu.dataset.refusDUnEssai; }
+    for (const sel of ["#set-pw", "#set-pw-current", "#rf-query", "#pf-pattern", "#pf-sample"]) { const h = qs119(sel); if (h) h.value = ""; }
+    const ov = qs119(".soql-tpl-ov"); if (ov) ov.remove();
+    const avis = qs119("#toasts"); if (avis) avis.replaceChildren();
+    document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
+  }
+  console.log("(119) OK — les vingt et une captures qui restaient disent leur refus par leur forme : les neuf gestes d'un dossier, les trois de « mes modèles » (et depuis la palette ouverte), les deux créations de panneau, la publication et l'effacement du bulletin, l'installation et le changement de mot de passe par la forme partagée, dans le puits de leur surface, cause entière, dans les deux langues, sans avis ni rejet, la demande non aboutie « NON confirmée », un geste accepté efface ; les quatre essais en lecture seule par la face nommée d'un essai, qui dit qu'il n'écrit rien et ne prête aucun effet, leur résultat dans les deux langues. Le texte brut d'un refus voyage entier par `api()` comme par `apiSend`, jusqu'à `fetchInto`. Aucun avis de succès composé ne reste hors d'une face, les tables de faces ont leurs deux langues et les mêmes emplacements, et les avis joués (collecte et envoi manuels, test de connexion, archivage, retrait d'une règle, création d'un alias) sont anglais sous `LANG='en'`. Un quatre cent un en session fait rejuger la session une fois et pose une face unique, l'écran de connexion recouvrant la console ; rien au premier chargement ni sur un code refusé. La première page vide dans un total compté dit l'écart sur la liste paginée, le panneau de table et l'Explore, compte arrivé après la page compris.");
 }
 
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;

@@ -11,7 +11,7 @@
 // arme), et demande CONFIRMATION à l'activation quand la conséquence touche le réseau ou un processus.
 //
 // P11.1-e : chaque surface qui crée un producteur dit OÙ son produit arrivera, avec le lien.
-import { confirmModal, effacerLeRefusDUnGeste, managedBadge, motiverLeRefusAuLecteur, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, toast } from './core.js';
+import { confirmModal, effacerLeRefusDUnGeste, faceDansLaLangue, managedBadge, motiverLeRefusAuLecteur, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, toast } from './core.js';
 
 // --- destinations : où arrive ce qu'un producteur produit. Clé = famille de producteur. ---------------------
 // `hash` = onglet de la console (routage par `location.hash`), `label` = le nom de l'onglet tel qu'affiché.
@@ -23,6 +23,20 @@ const DESTINATIONS = {
 };
 // Règle / corrélation / baseline : une entrée en mode risque (risk_score > 0) ne lève pas d'alerte, elle
 // alimente le score d'entité. La destination est DÉRIVÉE de ce champ, pas d'un choix de l'appelant.
+// `P10.28-t` — L'AVIS D'UN PRODUCTEUR ENREGISTRÉ ET CELUI DE SA BASCULE, DANS LES DEUX LANGUES. MESURÉ AVANT CE LOT (témoin
+// 119t) : « « x » enregistré — ses alertes arrivent dans Alertes » et « x : ON » étaient composés en français et le
+// restaient sous `LANG='en'`. La destination y porte son nom d'onglet dans chaque langue ; la note posée sous une liste
+// (`destinationNote`) n'est pas un avis, elle garde ses mots.
+const MOTS_DES_AVIS_DE_PRODUCTEUR = {
+  enregistre: { fr: '« {nom} » enregistré — {destination}', en: '“{nom}” saved — {destination}' },
+  bascule: { fr: '{nom} : {etat}', en: '{nom}: {etat}' },
+};
+const DESTINATIONS_DE_L_AVIS = {
+  alerts: { fr: 'ses alertes arrivent dans Alertes', en: 'its alerts arrive in Alerts' },
+  risk: { fr: 'sa contribution au score des entités arrive dans Risque', en: 'its contribution to the entity score arrives in Risk' },
+  actions: { fr: 'les actions qu\'il pose arrivent dans Actions', en: 'the actions it takes arrive in Actions' },
+  cases: { fr: 'sa checklist est proposée dans Cas', en: 'its checklist is offered in Cases' },
+};
 function detectionDestination(riskScore) { return Number(riskScore) > 0 ? 'risk' : 'alerts'; }
 function destinationOf(destKey) { return DESTINATIONS[destKey] || DESTINATIONS.alerts; }
 function capitalize(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
@@ -48,8 +62,8 @@ function destinationSentence(destKey) {
 const pendingNotes = new Map();
 function announceCreated(listKey, destKey, name, extra) {
   pendingNotes.set(listKey, { destKey, name, extra });
-  const d = destinationOf(destKey);
-  toast((name ? '« ' + name + ' » enregistré — ' : '') + d.lead + ' ' + d.label, 'ok', 5200);
+  const destination = faceDansLaLangue(DESTINATIONS_DE_L_AVIS[destKey] || DESTINATIONS_DE_L_AVIS.alerts);
+  toast(name ? faceDansLaLangue(MOTS_DES_AVIS_DE_PRODUCTEUR.enregistre, { nom: name, destination }) : destination, 'ok', 5200);
 }
 function takePendingNote(listKey) {
   const n = pendingNotes.get(listKey); if (!n) return null;
@@ -104,7 +118,7 @@ function enabledSwitch(opts) {
     }
     const puitsParDefaut = typeof opts.onRefus === 'function' ? null : puitsDuCommutateurSansSurface(lbl);
     effacerLeRefusDUnGeste(puitsParDefaut);
-    try { await opts.onToggle(next); paint(); toast((opts.name ? opts.name + ' : ' : '') + (next ? 'ON' : 'OFF'), 'ok'); }
+    try { await opts.onToggle(next); paint(); toast(opts.name ? faceDansLaLangue(MOTS_DES_AVIS_DE_PRODUCTEUR.bascule, { nom: opts.name, etat: next ? 'ON' : 'OFF' }) : (next ? 'ON' : 'OFF'), 'ok'); }
     catch (err) {
       cb.checked = !next; paint();
       if (typeof opts.onRefus === 'function') opts.onRefus(err);

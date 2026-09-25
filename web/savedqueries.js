@@ -20,7 +20,7 @@
 // SÉCURITÉ : l'endpoint saved-queries est owner-scoped côté serveur (clé = identité authentifiée ; le client
 // n'envoie JAMAIS d'identifiant d'utilisateur) -> pas d'IDOR/énumération. Le texte GXQL stocké est INERTE :
 // il n'est compilé/masqué/autorisé qu'au run, par le chemin gardé /api/query (comme une requête tapée à la main).
-import { $, api, apiSend, toast, modal, confirmModal, bornerLePopoverSousSonAncre } from './core.js';
+import { $, api, apiSend, toast, modal, confirmModal, bornerLePopoverSousSonAncre, puitsDuRefusDUnGeste, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste } from './core.js';
 import { ecrireSansDireLeRefus, RAISONS_DE_SILENCE } from './state.js';
 
 // ============================ 2) HISTORIQUE RÉCENT (localStorage) ============================
@@ -133,6 +133,19 @@ export async function fetchSaved() {
   catch (e) { toast('Chargement de mes modèles échoué : ' + e.message, 'err'); return null; }
 }
 
+// `P10.27-d` — LES TROIS GESTES DE « MES MODÈLES » DISENT LEUR REFUS PAR LA FORME PARTAGÉE (`peindreLeRefusDUnGeste`,
+// core.js). MESURÉ AVANT CE LOT (témoin 119d) : « Enregistrement échoué : », « Mise à jour échouée : » et « Suppression
+// échouée : » suivis de `e.message` dans un avis qui s'efface — le JSON brut coupé, ou « Failed to fetch » nu lu comme
+// un échec. La fenêtre de saisie s'est refermée quand le geste part : le puits est celui de la palette des modèles si
+// elle est ouverte (c'est d'elle que partent la modification, la suppression et la copie), sinon celui de la barre de
+// l'Explore, posé avant la zone de suggestions (d'où part « Enregistrer »). Un geste accepté efface le refus d'avant.
+function puitsDesModelesDeRequete() {
+  const palette = document.querySelector('.soql-tpl-panel');
+  if (palette) return puitsDuRefusDUnGeste(palette, 'modeles_de_requete', palette.querySelector('.soql-tpl-list'));
+  const repere = $('#sqlhint');
+  return repere && repere.parentNode ? puitsDuRefusDUnGeste(repere.parentNode, 'modeles_de_requete', repere) : null;
+}
+
 // Enregistrer un texte sous un nom parmi MES MODÈLES. Draft autorisé (texte vide accepté par le serveur).
 // `preset` = {name, soql} pour pré-remplir (copie d'un modèle livré) ; sans preset, le texte de la barre.
 export async function saveAsTemplate(preset) {
@@ -146,12 +159,13 @@ export async function saveAsTemplate(preset) {
     ],
   });
   if (!vals) return null;
+  const puits = puitsDesModelesDeRequete(); effacerLeRefusDUnGeste(puits);
   try {
     const r = await apiSend('/saved-queries', 'POST', { name: vals.name, soql: vals.soql || '' });
     toast('Modèle enregistré — retrouvez-le sous « Modèles »', 'ok');
     return r || { name: vals.name, soql: vals.soql || '' };
   } catch (e) {
-    toast('Enregistrement échoué : ' + e.message, 'err');
+    peindreLeRefusDUnGeste(puits, e);
     return null;
   }
 }
@@ -168,23 +182,25 @@ export async function editSaved(q, onDone) {
     ],
   });
   if (!vals) return;
+  const puits = puitsDesModelesDeRequete(); effacerLeRefusDUnGeste(puits);
   try {
     await apiSend('/saved-queries/' + encodeURIComponent(q.id), 'PUT', { name: vals.name, soql: vals.soql || '' });
     toast('Modèle mis à jour', 'ok');
     if (onDone) onDone();
   } catch (e) {
-    toast('Mise à jour échouée : ' + e.message, 'err');
+    peindreLeRefusDUnGeste(puits, e);
   }
 }
 
 export async function deleteSaved(q, onDone) {
   if (!(await confirmModal(`Supprimer le modèle « ${q.name} » ?`, { title: 'Supprimer', okText: 'Supprimer' }))) return;
+  const puits = puitsDesModelesDeRequete(); effacerLeRefusDUnGeste(puits);
   try {
     await apiSend('/saved-queries/' + encodeURIComponent(q.id), 'DELETE');
     toast('Modèle supprimé', 'ok');
     if (onDone) onDone();
   } catch (e) {
-    toast('Suppression échouée : ' + e.message, 'err');
+    peindreLeRefusDUnGeste(puits, e);
   }
 }
 

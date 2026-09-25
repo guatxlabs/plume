@@ -11,7 +11,7 @@
 //   (comportement backend) -> on le signale + lien vers la liste des règles pour relire/activer.
 // DÉGRADATION : si /api/sigma/import-bulk 404 (daemon concurrent pas encore déployé), message clair, aucune
 //   erreur dure. ADDITIF : ce module n'écrit rien tout seul (une mutation = un import explicite de l'admin).
-import { $, LANG, esc, ic, muted, toast, apiSend, closeModals, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste, phraseDuRefusDuDemon, puitsDuRefusDUnGeste, withBusy, pagedList, socIsAdmin } from './core.js';
+import { $, LANG, esc, ic, muted, toast, apiSend, closeModals, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste, phraseDuRefusDuDemon, puitsDuRefusDUnGeste, withBusy, pagedList, socIsAdmin, faceDansLaLangue } from './core.js';
 import { destinationNote } from './producer_ui.js';
 
 // `P11.8-j` — DEUX NŒUDS QUE LE LEXIQUE NE PEUT PAS VOIR, RENDUS BILINGUES PAR LEUR MODULE. La règle qui
@@ -258,7 +258,9 @@ export function openSigmaImport() {
       resEl.appendChild(destinationNote('alerts', '', 'règles importées OFF : activez-les dans Détection › Règles'));
       okBtn.textContent = 'Ré-importer';
       const imp = firstNum((sum || {}).imported);
-      toast(imp != null ? (imp + ' règle(s) Sigma importée(s) (désactivées)') : 'Import Sigma traité', 'ok');
+      // `P10.28-t` — l'avis de succès composé, dans les deux langues ; sans compte servi, la phrase entière reste au lexique.
+      if (imp != null) toast(faceDansLaLangue({ fr: '{n} règle(s) Sigma importée(s) (désactivées)', en: '{n} Sigma rule(s) imported (disabled)' }, { n: imp }), 'ok');
+      else toast('Import Sigma traité', 'ok');
     });
   };
   setTimeout(() => { if (pasteEl) pasteEl.focus(); }, 30);

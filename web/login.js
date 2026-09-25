@@ -3,7 +3,7 @@
 // entre l'application et l'overlay — est exposée par `initAuthGate()`, appelée par `app.js` au point où ce bloc
 // vivait (un module s'exécute à l'import, avant l'enveloppe `fetch` d'`app.js` qui pose CSRF et tenant).
 // `multitenant.js` continue de lire `fetchMe` / `setAuthUI` via le ré-export d'`app.js`. N'importe pas `app.js`.
-import { $, LANG, api, apiSend, applyRoleClass, causeNommeeParLeDemon, confirmModal, motDuRefusDuSecondFacteur, natureDeLaReponseHorsDemon, natureDuRefusDuSecondFacteur } from './core.js';
+import { $, LANG, api, apiSend, applyRoleClass, causeNommeeParLeDemon, confirmModal, motDuRefusDuSecondFacteur, natureDeLaReponseHorsDemon, natureDuRefusDuSecondFacteur, phraseDuRefusDuDemon } from './core.js';
 import { S } from './state.js';
 import { initAiAssist } from './ai.js';
 import { initEnvironments, initTenants } from './multitenant.js';
@@ -84,8 +84,11 @@ function cleDuRefusDeLOuverture(e) {
 // de POSE pour le harnais).
 // `P10.25-w` — `enCoursDeSession` : la session était ouverte, et c'est un refus de l'annuaire qui l'interrompt ; la
 // face le dit (clé `session_interrompue_<nature>`), le nœud et sa cause entière sont les mêmes.
-function peindreLeRefusDeLOuverture(e, enCoursDeSession) {
-  const nature = cleDuRefusDeLOuverture(e);
+// `P10.26-n` — `sessionTerminee` : la session était ouverte, et `/api/me` la refuse en quatre cent un (cookie expiré,
+// session révoquée) ; le refus est un TEXTE (`auth_guard`, « auth requise »), sans objet nommé : la cause est lue par
+// `phraseDuRefusDuDemon`, qui tient les deux moules.
+function peindreLeRefusDeLOuverture(e, enCoursDeSession, sessionTerminee) {
+  const nature = sessionTerminee ? 'session_terminee' : cleDuRefusDeLOuverture(e);
   const cle = enCoursDeSession && (nature === 'annuaire_refuse' || nature === 'annuaire_non_verifie') ? 'session_interrompue_' + nature : nature;
   const err = $('#login-err'); if (!err || !err.parentNode) return;
   let noeud = $('#login-form [data-refus-de-l-ouverture]');
@@ -95,7 +98,8 @@ function peindreLeRefusDeLOuverture(e, enCoursDeSession) {
     err.parentNode.insertBefore(noeud, err);
   }
   const dit = document.createElement('span'); dit.textContent = motDeLaConnexion(cle);
-  noeud.replaceChildren(dit, document.createTextNode(' « ' + String(e.causeDuDemon).trim() + ' »'));
+  const cause = sessionTerminee ? phraseDuRefusDuDemon(e) : String(e.causeDuDemon);
+  noeud.replaceChildren(dit, document.createTextNode(' « ' + cause.trim() + ' »'));
   noeud.dataset.refusDeLOuverture = cle;
 }
 // `P10.23-c` — LES PHRASES PROPRES À CET ÉCRAN, FR ET EN CÔTE À CÔTE : aucune des deux langues ne part sans
@@ -159,6 +163,10 @@ const MOTS_DE_LA_CONNEXION = {
   session_interrompue_annuaire_non_verifie: {
     fr: "Session INTERROMPUE : l'identité que présente l'annuaire n'a pas pu être VÉRIFIÉE, et le démon ne sert plus rien sous ce nom — la console est masquée. Recharger la page pour réessayer. Le démon en nomme la cause —",
     en: 'Session INTERRUPTED: the identity the directory presents could not be VERIFIED, and the daemon serves nothing more under this name — the console is hidden. Reload the page to try again. The daemon names the cause —' },
+  // `P10.26-n` — la session ouverte, que le démon ne reconnaît plus (voir `lireUneReponseDuTransport`).
+  session_terminee: {
+    fr: "Session TERMINÉE : le démon ne reconnaît plus la session de ce navigateur (cookie expiré, ou session révoquée — il ne distingue pas les deux) et ne sert plus rien sous elle — la console est masquée. Ce formulaire ouvre une nouvelle session. Le démon en nomme la cause —",
+    en: 'Session ENDED: the daemon no longer recognises the session of this browser (expired cookie, or revoked session — it does not tell the two apart) and serves nothing more under it — the console is hidden. This form opens a new session. The daemon names the cause —' },
 };
 // Les valeurs se posent par une fonction de remplacement : un détail servi qui contiendrait `$&` ou une accolade
 // n'est jamais réinterprété.
@@ -477,35 +485,52 @@ async function doLogout() {
 // de passe est un remède réel, le cookie étant jugé avant les en-têtes. `/api/me` servi : un refus passager, rien
 // n'est dit ici (chaque surface garde son propre aveu). La face est unique parce que l'écran l'est : il recouvre
 // toute la console.
+// `P10.26-n` — UN QUATRE CENT UN EN COURS DE SESSION : LA MÊME FACE UNIQUE, PAR LE MÊME MÉCANISME.
+// CE QUE LE DÉMON SERT (`auth_guard`, daemon/src/auth.rs) : une requête dont le cookie de session n'est plus reconnu
+// (expiré, révoqué par un changement de mot de passe ou une suppression de compte) rend quatre cent un en TEXTE,
+// « auth requise », sur TOUTE route gardée. CE QUE LA CONSOLE EN FAISAIT, MESURÉ AVANT CE LOT (témoin 119n) : chaque
+// surface peignait sa copie (« erreur : 401 auth requise » dans chaque `fetchInto`, le panneau et la liste chacun la
+// sienne), l'auto-rafraîchissement continuait de frapper, et l'écran de connexion n'était offert qu'au rechargement.
+// UN QUATRE CENT UN N'EST PAS TOUJOURS LA SESSION : `mfa_disable` et l'activation du second facteur rendent quatre
+// cent un sur un CODE refusé, session intacte (daemon/src/handlers/idp.rs). Le quatre cent un ne décide donc rien
+// seul : il fait rejuger la session par `/api/me`, une seule fois à la fois, comme un refus de l'annuaire ; seul un
+// quatre cent un de `/api/me` CLÔT la session. Hors session (le premier chargement, l'écran de connexion), rien n'est
+// rejugé : c'est `initAuthGate` qui dit ce qu'il lit, inchangé. Le rejugement passe lui-même par l'enveloppe, et ne se
+// relance pas (`rejugementDeLaSessionEnCours`) : aucune boucle.
 let rejugementDeLaSessionEnCours = false;
 // Une session que `/api/me` vient de CONFIRMER n'est pas rejugée aussitôt par les refus encore en vol (les réessais
 // d'un cinq cent trois passager, qui arrivent après la confirmation) : sans ce délai, chacun relirait `/api/me`.
 const DELAI_SANS_REJUGEMENT_APRES_UNE_SESSION_CONFIRMEE_MS = 5000;
 let sessionConfirmeeA = 0;
-function rejugerLaSessionApresUnRefusDeLAnnuaire() {
+function rejugerLaSessionApresUnRefus() {
   // Une copie lue APRÈS la face posée ne rejuge plus rien : la session est déjà close côté console.
   if (rejugementDeLaSessionEnCours || !(S.AUTH && S.AUTH.user)) return;
   if (Date.now() - sessionConfirmeeA < DELAI_SANS_REJUGEMENT_APRES_UNE_SESSION_CONFIRMEE_MS) return;
   rejugementDeLaSessionEnCours = true;
   api('/me').then(() => { rejugementDeLaSessionEnCours = false; sessionConfirmeeA = Date.now(); }, refus => {
     rejugementDeLaSessionEnCours = false;
-    if (!natureDuRefusDeLAnnuaire(refus && refus.causeDuDemon)) return;   // un 401, une panne : pas ce refus-ci
-    if (!(S.AUTH && S.AUTH.user)) return;                                 // l'écran est déjà revenu
+    const deLAnnuaire = !!natureDuRefusDeLAnnuaire(refus && refus.causeDuDemon);
+    const sessionTerminee = !deLAnnuaire && !!refus && refus.statutDuRefus === 401;   // `P10.26-n`
+    if (!deLAnnuaire && !sessionTerminee) return;                           // une panne, un autre refus : la session n'est pas jugée close
+    if (!(S.AUTH && S.AUTH.user)) return;                                  // l'écran est déjà revenu
     S.AUTH = null; setAuthUI(); showLogin(true);
-    peindreLeRefusDeLOuverture(refus, true);
+    peindreLeRefusDeLOuverture(refus, true, sessionTerminee);
   });
 }
 // Lue par l'enveloppe du transport pour CHAQUE réponse, avant qu'elle ne soit rendue à son appelant : ne lit qu'une
 // COPIE du corps (l'appelant garde le sien), ne jette jamais, et ne fait rien hors d'une session ouverte — à
 // l'ouverture, c'est `initAuthGate` qui dit le refus de `/api/me`.
 function lireUneReponseDuTransport(reponse) {
-  if (!reponse || (reponse.status !== 403 && reponse.status !== 503)) return;
+  if (!reponse) return;
   if (!(S.AUTH && S.AUTH.user) || rejugementDeLaSessionEnCours) return;
+  // `P10.26-n` — un quatre cent un fait rejuger la session ; son corps n'est pas lu (le jugement est celui de `/api/me`).
+  if (reponse.status === 401) { rejugerLaSessionApresUnRefus(); return; }
+  if (reponse.status !== 403 && reponse.status !== 503) return;
   if (typeof reponse.clone !== 'function') return;
   let copie;
   try { copie = reponse.clone(); } catch (e) { return; }
   Promise.resolve().then(() => copie.text()).then(corps => {
-    if (natureDuRefusDeLAnnuaire(causeNommeeParLeDemon(corps))) rejugerLaSessionApresUnRefusDeLAnnuaire();
+    if (natureDuRefusDeLAnnuaire(causeNommeeParLeDemon(corps))) rejugerLaSessionApresUnRefus();
   }, () => {});
 }
 function initAuthGate() {

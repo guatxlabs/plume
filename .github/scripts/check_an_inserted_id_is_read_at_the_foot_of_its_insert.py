@@ -37,7 +37,15 @@ dernier usage est accusé, sous une forme qui dit lequel :
     elle ne change pas l'identifiant, mais la lecture n'est plus au pied de l'insertion, et la règle ne se
     négocie pas à la méthode près ;
   * `receveur non nommé` — la lecture porte sur une expression (`st.db.lock().last_insert_rowid()`) : la
-    garde ne sait pas suivre son dernier usage.
+    garde ne sait pas suivre son dernier usage ;
+  * `après une insertion qui peut ne rien insérer, sans son compte` (`P10.28-g`) — la lecture est au pied de son
+    insertion, mais l'énoncé est un `INSERT OR IGNORE` ou un `ON CONFLICT … DO NOTHING` : ignoré, il n'insère RIEN
+    et laisse l'identifiant de la ligne insérée AVANT sur la connexion, d'une autre table. Toléré seulement sous
+    le bras `Ok(1)` d'un `match` dont l'insertion est le sujet ;
+  * `après un upsert qui peut mettre à jour sans insérer` (`P10.28-g`) — l'énoncé est un `ON CONFLICT … DO
+    UPDATE` : quand il met à jour, il rend UNE ligne (`Ok(1)`) ET laisse l'identifiant d'une autre ligne, mesuré sur
+    le SQLite embarqué (témoin `ndrs_une_insertion_qui_peut_ne_rien_inserer_laisse_l_identifiant_d_une_autre_ligne`).
+    Aucun compte ne l'en distingue : jamais toléré ; lire l'identifiant par la clé, ou `RETURNING id`.
 Le remède est toujours le même : lire l'identifiant juste après l'insertion (ou `RETURNING`), et faire
 voyager la VALEUR, jamais la relire.
 
@@ -101,7 +109,22 @@ CONSTANTE_EN_TETE = re.compile(r"\s*([A-Z_][A-Z0-9_]*)\s*[,)]")
 DEFINITION_DE_CONSTANTE = re.compile(r"\bconst\s+([A-Z_][A-Z0-9_]*)\s*:\s*&\s*(?:'static\s+)?str\s*=\s*r?#*\"\s*([A-Za-z]+)")
 
 FORMES = ("sans insertion sur son receveur", "après une écriture qui n'est pas son insertion",
-          "après un appel qui reçoit la connexion", "après un autre usage de la connexion", "receveur non nommé")
+          "après un appel qui reçoit la connexion", "après un autre usage de la connexion", "receveur non nommé",
+          "après une insertion qui peut ne rien insérer, sans son compte",
+          "après un upsert qui peut mettre à jour sans insérer")
+
+# `P10.28-g` — L'INSERTION QUI PEUT NE RIEN INSÉRER. Recensé le 2026-09-25 sur l'arbre : AUCUNE des 53 lectures
+# d'identifiant de `daemon/src` ne suit une telle insertion — les `INSERT OR IGNORE` et les `ON CONFLICT` du dépôt ne
+# sont jamais suivis d'un `last_insert_rowid()` (fédération, inventaire des accès, réglages…). La règle ferme la
+# porte avant qu'une forme n'y entre. L'énoncé est lu EN ENTIER (littéral en tête d'appel, ou constante du fichier),
+# majuscules et blancs normalisés.
+MOTIF_OU_IGNORER = re.compile(r"\bOR\s+IGNORE\b")
+MOTIF_SUR_CONFLIT = re.compile(r"\bON\s+CONFLICT\b")
+MOTIF_MISE_A_JOUR = re.compile(r"\bDO\s+UPDATE\b")
+# Le bras `Ok(1) =>` qui précède la lecture, et le `match` dont l'insertion est le sujet.
+BRAS_OK_UN = re.compile(r"\bOk\s*\(\s*1\s*\)\s*=>")
+MATCH_EN_QUEUE = re.compile(r"\bmatch\s*\Z")
+DEFINITION_D_ENONCE = re.compile(r"\bconst\s+([A-Z_][A-Z0-9_]*)\s*:\s*&\s*(?:'static\s+)?str\s*=\s*")
 
 # --- PLANCHER DE NON-DÉGÉNÉRESCENCE (première écriture, 2026-09-25) -------------------------------------------------
 # Il ne réclame pas un volume de code : il constate qu'une LECTURE est cassée. Relevé du jour sur l'arbre corrigé :
@@ -149,7 +172,36 @@ def appel_sur(code, fin_du_nom, constantes):
     return m.group(1), ouvrante, apparier(code, ouvrante), mot
 
 
-def forme_de_la_lecture(code, spans, fns, constantes, i):
+def enonce_de_l_appel(code, spans, ouvrante, enonces):
+    """L'énoncé ENTIER de l'appel dont la parenthèse s'ouvre en `ouvrante` — le littéral en tête d'appel, ou le littéral
+    d'une constante du fichier (`enonces` : nom -> littéral) —, majuscules et blancs normalisés ; '' s'il n'est pas lu."""
+    litteral = next(((a, b) for a, b in spans if a > ouvrante), None)
+    if litteral is not None and not code[ouvrante + 1:litteral[0]].strip():
+        texte = code[litteral[0]:litteral[1]]
+    else:
+        nommee = CONSTANTE_EN_TETE.match(code, ouvrante + 1)
+        texte = enonces.get(nommee.group(1), "") if nommee else ""
+    return " ".join(texte.upper().split())
+
+
+def forme_de_l_insertion_qui_peut_ne_rien_inserer(code, spans, enonces, debut_du_receveur, ouvrante, i):
+    """`P10.28-g` — la forme accusée quand la lecture en `i`, au pied de son insertion, suit un énoncé qui peut ne rien
+    insérer ; None sinon. `OR IGNORE`/`DO NOTHING` : toléré sous le bras `Ok(1)` du `match` dont l'insertion est le
+    sujet ; `DO UPDATE` : jamais."""
+    enonce = enonce_de_l_appel(code, spans, ouvrante, enonces)
+    sur_conflit = MOTIF_SUR_CONFLIT.search(enonce) is not None
+    if sur_conflit and MOTIF_MISE_A_JOUR.search(enonce):
+        return FORMES[6]
+    if not (MOTIF_OU_IGNORER.search(enonce) or sur_conflit):
+        return None
+    bras = list(BRAS_OK_UN.finditer(code, ouvrante, i))
+    sujet_d_un_match = MATCH_EN_QUEUE.search(code, 0, debut_du_receveur) is not None
+    if sujet_d_un_match and bras and "=>" not in code[bras[-1].end():i]:
+        return None
+    return FORMES[5]
+
+
+def forme_de_la_lecture(code, spans, fns, constantes, i, enonces=None):
     """La forme accusée pour la lecture dont le point est en `i`, ou None quand elle est au pied de son insertion.
     Rend aussi ('PERDU', raison) quand le lecteur ne peut pas conclure."""
     rec = RECEVEUR_EN_QUEUE.search(code, max(0, i - 200), i)  # le receveur colle au point : une fenêtre courte suffit
@@ -172,8 +224,10 @@ def forme_de_la_lecture(code, spans, fns, constantes, i):
     if not restants:
         return "sans insertion sur son receveur"
     dernier, fin_dernier = restants[-1]
-    if any(q == dernier and fe < i for q, _o, fe in insertions):
-        return None
+    au_pied = [(q, o) for q, o, fe in insertions if q == dernier and fe < i]
+    if au_pied:
+        q, o = au_pied[0]
+        return forme_de_l_insertion_qui_peut_ne_rien_inserer(code, spans, enonces or {}, q, o, i)
     appel = appel_sur(code, fin_dernier, constantes)
     if appel:
         return "après une écriture qui n'est pas son insertion"
@@ -195,13 +249,18 @@ def analyser(chemin_relatif, texte, journal, aveux_du_lecteur=None):
     fns = fonctions(code)
     spans = spans_de_chaines_rust(code)
     constantes = {m.group(1): m.group(2).upper() for m in DEFINITION_DE_CONSTANTE.finditer(code)}
+    enonces = {}
+    for m in DEFINITION_D_ENONCE.finditer(code):
+        litteral = next(((a, b) for a, b in spans if a >= m.end()), None)
+        if litteral is not None and not code[m.end():litteral[0]].strip():
+            enonces[m.group(1)] = code[litteral[0]:litteral[1]]
     sites, population = [], 0
     for m in LECTURE_D_IDENTIFIANT.finditer(code):
         if dans_une_chaine_rust(spans, m.start()):
             continue
         population += 1
         ligne = code.count("\n", 0, m.start()) + 1
-        forme = forme_de_la_lecture(code, spans, fns, constantes, m.start())
+        forme = forme_de_la_lecture(code, spans, fns, constantes, m.start(), enonces)
         if isinstance(forme, tuple):
             journal.append(f"{chemin_relatif}:{ligne} — {forme[1]} : le lecteur ne peut pas conclure sur cette lecture")
             continue
@@ -311,7 +370,50 @@ EPREUVES = [
     ("p11 énoncé nommé par une constante du fichier qui n'insère pas",
      'const SQL_MAJ: &str = "UPDATE t SET a=1";\n' + _f('    conn.execute(SQL_MAJ, [])?;\n    ok(conn.last_insert_rowid())'),
      {"après une écriture qui n'est pas son insertion"}),
+    # --- `P10.28-g` — L'INSERTION QUI PEUT NE RIEN INSÉRER (témoins POSITIFS).
+    ("p12 OR IGNORE puis la lecture, sans compte", _f('    conn.execute("INSERT OR IGNORE INTO t(k) VALUES(1)", [])?;\n'
+                                                     '    ok(conn.last_insert_rowid())'),
+     {"après une insertion qui peut ne rien insérer, sans son compte"}),
+    ("p13 ON CONFLICT DO NOTHING puis la lecture", _f('    conn.execute(\n        "INSERT INTO t(k) VALUES(?1) \\\n'
+                                                      '         ON CONFLICT(k) DO NOTHING",\n        params![k],\n    )?;\n'
+                                                      '    ok(conn.last_insert_rowid())'),
+     {"après une insertion qui peut ne rien insérer, sans son compte"}),
+    ("p14 DO UPDATE sous le bras Ok(1) : le compte ne le distingue pas",
+     _f('    match conn.execute("INSERT INTO t(k) VALUES(1) ON CONFLICT(k) DO UPDATE SET v=1", []) {\n'
+        '        Ok(1) => ok(conn.last_insert_rowid()),\n        _ => refus(),\n    }'),
+     {"après un upsert qui peut mettre à jour sans insérer"}),
+    ("p15 DO UPDATE propagé par ?", _f('    conn.execute("INSERT INTO t(k) VALUES(1) ON CONFLICT(k) DO UPDATE SET v=excluded.v", [])?;\n'
+                                      '    ok(conn.last_insert_rowid())'),
+     {"après un upsert qui peut mettre à jour sans insérer"}),
+    ("p16 OR IGNORE, compte lu hors d'un match (forme non reconnue, accusée par prudence)",
+     _f('    let n = conn.execute("INSERT OR IGNORE INTO t(k) VALUES(1)", [])?;\n'
+        '    if n == 1 { return ok(conn.last_insert_rowid()); }\n    refus()'),
+     {"après une insertion qui peut ne rien insérer, sans son compte"}),
+    ("p17 énoncé OR IGNORE nommé par une constante du fichier",
+     'const SQL_POSER_SI_ABSENT: &str = "INSERT OR IGNORE INTO t(k) VALUES(?1)";\n'
+     + _f('    conn.execute(SQL_POSER_SI_ABSENT, params![k])?;\n    ok(conn.last_insert_rowid())'),
+     {"après une insertion qui peut ne rien insérer, sans son compte"}),
+    ("p18 OR IGNORE, la lecture dans un AUTRE bras que Ok(1)",
+     _f('    match conn.execute("INSERT OR IGNORE INTO t(k) VALUES(1)", []) {\n'
+        '        Ok(1) => ok(0),\n        Ok(_) => ok(conn.last_insert_rowid()),\n        Err(_) => refus(),\n    }'),
+     {"après une insertion qui peut ne rien insérer, sans son compte"}),
+    ("p19 OR IGNORE, un bras Ok(1) d'un AUTRE match (l'insertion n'en est pas le sujet)",
+     _f('    let r = conn.execute("INSERT OR IGNORE INTO t(k) VALUES(1)", []);\n'
+        '    match autre(r) {\n        Ok(1) => ok(conn.last_insert_rowid()),\n        _ => refus(),\n    }'),
+     {"après une insertion qui peut ne rien insérer, sans son compte"}),
     # --- CE QUI NE DOIT PAS L'ÊTRE (témoins NÉGATIFS).
+    ("n11 OR IGNORE sous le bras Ok(1) du match qui l'a pour sujet",
+     _f('    let id = match conn.execute("INSERT OR IGNORE INTO t(k) VALUES(1)", []) {\n'
+        '        Ok(1) => conn.last_insert_rowid(),\n        Ok(_) => return deja(),\n        Err(_) => return refus(),\n    };\n    ok(id)'),
+     set()),
+    ("n12 DO NOTHING sous le bras Ok(1)",
+     _f('    match conn.execute(\n        "INSERT INTO t(k) VALUES(?1) ON CONFLICT(k) DO NOTHING",\n        params![k],\n    ) {\n'
+        '        Ok(1) => { let id = conn.last_insert_rowid(); ok(id) }\n        _ => refus(),\n    }'),
+     set()),
+    ("n13 un upsert AVANT l'insertion au pied de laquelle la lecture se fait",
+     _f('    conn.execute("INSERT INTO k(a) VALUES(1) ON CONFLICT(a) DO UPDATE SET b=1", [])?;\n'
+        '    conn.execute("INSERT INTO t(a) VALUES(1)", [])?;\n    ok(conn.last_insert_rowid())'),
+     set()),
     ("n1 lue au pied de l'insertion", _f('    conn.execute("INSERT INTO t(a) VALUES(1)", [])?;\n'
                                          '    let id = conn.last_insert_rowid();\n'
                                          '    audit_config_change(&conn, "k", "d", 2, "m", "{}")?;\n    ok(id)'), set()),
@@ -372,7 +474,11 @@ def valider_instrument():
     p11) ; les arguments de l'insertion plus comptés comme elle (n4) ; les littéraux plus exclus (n6) ; les modules de
     test lus (n7) ; un appel par chemin `::` et à arguments accepté comme lecture (n8) ; le receveur réduit à son
     dernier segment (n9 — `self.conn` n'est plus trouvé sous `conn`) ; le jugement de l'ensemble débranché (les deux
-    épreuves d'ensemble qui attendent un écart) ; les constantes du fichier plus lues (n10)."""
+    épreuves d'ensemble qui attendent un écart) ; les constantes du fichier plus lues (n10). Et le 2026-09-25
+    (`P10.28-g`), six de plus : `OR IGNORE`/`DO NOTHING` plus reconnus (p12, p13, p16, p17, p18) ; le bras `Ok(1)` plus
+    reconnu (n11, n12) ; `DO UPDATE` toléré sous `Ok(1)` comme `DO NOTHING` (p14) ; les énoncés des constantes plus lus
+    en entier (p17) ; l'énoncé pris sur la PREMIÈRE insertion de la fonction au lieu de celle du pied (n13) ; le bras
+    `Ok(1)` d'un `match` dont l'insertion n'est PAS le sujet accepté (p19)."""
     errs = []
     try:
         temoins_du_lecteur()
@@ -420,9 +526,11 @@ def ce_qui_n_est_pas_tenu():
           "d'exécution.\n"
           "  * un ALIAS du receveur (`let c = &conn;` puis `c.execute(…)`) n'est pas suivi : l'insertion faite sous "
           "l'autre nom rend la lecture accusée (`sans insertion`), jamais l'inverse.\n"
-          "  * une insertion qui peut NE RIEN insérer (`INSERT OR IGNORE`, `ON CONFLICT … DO NOTHING/UPDATE`) laisse "
-          "l'identifiant de la ligne PRÉCÉDENTE ; la garde l'accepte comme insertion — c'est au site de lire le compte "
-          "de lignes (`Ok(1)`) avant l'identifiant.\n"
+          "  * `P10.28-g` : une insertion qui peut NE RIEN insérer est lue sur son ÉNONCÉ (littéral en tête d'appel, ou "
+          "constante du fichier) ; un énoncé construit (`format!`, constante d'un autre fichier) n'est pas lu et passe "
+          "pour une insertion simple. Le compte n'est reconnu que sous le bras `Ok(1)` du `match` dont l'insertion est "
+          "le sujet : `let n = …?; if n == 1 { … }` est accusé par prudence, jamais l'inverse. Un déclencheur SQLite qui "
+          "insère ailleurs n'est pas vu.\n"
           "  * une insertion AVALÉE (`let _ = conn.execute(\"INSERT…\")` puis la lecture) est au pied de son insertion "
           "pour cette garde : c'est `check_a_swallowed_write_is_never_affirmed_as_a_fact.py` qui l'accuse.\n"
           "  * un identifiant lu au bon endroit puis REMPLACÉ plus bas, ou rendu par une autre voie qu'un "

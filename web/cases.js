@@ -1,6 +1,6 @@
 // cases.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // Cases (gestion d'incident, first-class #4a): liste/detail/CRUD + rattachement d'items.
-import { $, api, apiSend, unDeuxCentsSansCorpsLisible, phraseDuRefusDuDemon, aveuDeLaTraceManquante, causeDeLaTraceManquante, cleDeLIdentifiantDeRiposte, confirmModal, confirmWithConsequence, disclosure, downloadText, exportPDF, fmtTs, ic, LANG, modal, motDeLaRiposteSansIdentifiant, motDeLaTraceManquante, muted, pagedList, phraseDeLaCreationDeRiposteRefusee, phraseDeLaTraceManquante, sev, toCSV, toast, tsSlug, withBusy, socIsAdmin, socRole } from './core.js';
+import { $, api, apiSend, unDeuxCentsSansCorpsLisible, phraseDuRefusDuDemon, aveuDeLaTraceManquante, causeDeLaTraceManquante, cleDeLIdentifiantDeRiposte, confirmModal, confirmWithConsequence, disclosure, downloadText, exportPDF, fmtTs, ic, LANG, modal, motDeLaRiposteSansIdentifiant, motDeLaTraceManquante, muted, pagedList, phraseDeLaCreationDeRiposteRefusee, phraseDeLaTraceManquante, sev, toCSV, toast, tsSlug, withBusy, socIsAdmin, socRole, puitsDuRefusDUnGeste, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste, faceDansLaLangue } from './core.js';
 import { phraseDAffichagePartiel, phraseDEchantillonCoupe, phraseDeCoupe } from './coupe_de_liste.js'; // `P11.22-g` : une liste bornée dit sa coupe
 import { S } from './state.js';
 import { refresh } from './app.js';
@@ -439,7 +439,8 @@ function renderCaseDetail(host, c) {
     const ni = document.createElement('input'); ni.className = 'c-note'; ni.placeholder = 'Ajouter une note…'; ni.required = true;
     const nb = document.createElement('button'); nb.type = 'submit'; nb.className = 'btn-primary'; nb.textContent = 'Note'; // P11.4-b : classe partagée (primaire)
     nf.append(ni, nb);
-    nf.onsubmit = e => { e.preventDefault(); const v = ni.value.trim(); if (!v) return; withBusy(nb, async () => { try { await apiSend('/cases/' + c.id + '/items', 'POST', { kind: 'note', body: v }); } catch (err) { toast('Note refusée : ' + ((err && err.message) || err), 'bad'); return; } ni.value = ''; await refreshCaseDetail(c.id); await loadCases(); }); };
+    // `P10.27-d` — le refus de la note se dit dans le puits des dossiers ; la note reste dans son champ, à rejouer.
+    nf.onsubmit = e => { e.preventDefault(); const v = ni.value.trim(); if (!v) return; withBusy(nb, async () => { const puits = puitsDesDossiers(); effacerLeRefusDUnGeste(puits); try { await apiSend('/cases/' + c.id + '/items', 'POST', { kind: 'note', body: v }); } catch (err) { peindreLeRefusDUnGeste(puits, err); return; } ni.value = ''; await refreshCaseDetail(c.id); await loadCases(); }); };
     box.appendChild(nf);
   }
   host.appendChild(box);
@@ -499,9 +500,31 @@ function caseItemEl(caseId, it, edit) {
   return el;
 }
 
+// `P10.27-d` — LES GESTES D'UN DOSSIER DISENT LEUR REFUS PAR LA FORME PARTAGÉE (`peindreLeRefusDUnGeste`, core.js), dans UN
+// puits posé avant le détail (`#case-detail`), hors de ce que le détail et la liste repeignent. MESURÉ AVANT CE LOT
+// (témoin 119d) : neuf gestes (mise à jour, archivage, désarchivage, détachement, rattachement, fusion, dé-fusion, note,
+// étape d'un runbook) collaient `e.message` dans un avis qui s'efface — « Action refusée : 404 », « 403 réservé à
+// l'administrateur », « Failed to fetch » nu, qui laissait croire à un refus. Les routes des dossiers ne servent aucun
+// COMMIT nommé (`case_update`, `case_archive`… rendent un statut nu, daemon/src/handlers/cases.rs) : la forme dit le
+// statut sans cause inventée, le rôle refusé par sa phrase, la demande non aboutie « NON confirmée ».
+function puitsDesDossiers() {
+  const detail = $('#case-detail');
+  return detail && detail.parentNode ? puitsDuRefusDUnGeste(detail.parentNode, 'dossiers', detail) : null;
+}
+// `P10.28-t` — les avis de succès composés des dossiers, dans les deux langues (un numéro s'y colle : le lexique, qui ne
+// traduit qu'un nœud entier, ne les atteignait pas).
+const MOTS_DES_SUCCES_DE_DOSSIER = {
+  archive: { fr: 'Case #{id} archivé', en: 'Case #{id} archived' },
+  desarchive: { fr: 'Case #{id} désarchivé', en: 'Case #{id} unarchived' },
+  fusionne: { fr: 'Case #{id} fusionné dans #{cible}', en: 'Case #{id} merged into #{cible}' },
+  rattache: { fr: 'Ajouté au case #{id}', en: 'Added to case #{id}' },
+};
 async function caseUpdate(id, patch) {
+  const puits = puitsDesDossiers(); effacerLeRefusDUnGeste(puits);
+  // Refusé, le détail est relu : un sélecteur (statut, priorité, verdict) ou un champ resté sur la valeur refusée
+  // afficherait un état que le démon n'a pas pris.
   try { await apiSend('/cases/' + id, 'POST', patch); }
-  catch (e) { toast('Action refusée : ' + ((e && e.message) || e), 'bad'); return; }
+  catch (e) { peindreLeRefusDUnGeste(puits, e); await refreshCaseDetail(id); return; }
   toast('Case mis à jour', 'ok');
   await loadCases();          // statut/priorité/overdue peuvent avoir changé -> re-tri de la liste
   await refreshCaseDetail(id);
@@ -511,26 +534,29 @@ async function caseUpdate(id, patch) {
 // only côté daemon) et l'action est réversible. ADMIN uniquement (confirmModal explicite ; le daemon revérifie).
 async function caseArchive(id) {
   if (!await confirmModal('Archiver le case #' + id + ' ?\n\nArchiver = MASQUER de la liste par défaut. L\'historique (timeline) est conservé et l\'action est réversible (bouton « Désarchiver » dans la vue Archivés).', { okText: 'Archiver', danger: true })) return;
+  const puits = puitsDesDossiers(); effacerLeRefusDUnGeste(puits);
   try { await apiSend('/cases/' + id + '/archive', 'POST'); }
-  catch (e) { toast('Archivage refusé : ' + ((e && e.message) || e), 'bad'); return; }
-  toast('Case #' + id + ' archivé', 'ok');
+  catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
+  toast(faceDansLaLangue(MOTS_DES_SUCCES_DE_DOSSIER.archive, { id }), 'ok');
   await loadCases();            // disparaît de la liste par défaut (réapparaît sous « Archivés »)
   await refreshCaseDetail(id);  // le détail reste ouvert -> désarchivage possible dans la foulée
 }
 
 async function caseUnarchive(id) {
   if (!await confirmModal('Désarchiver le case #' + id + ' ? Il réapparaîtra dans la liste par défaut.', { okText: 'Désarchiver', danger: false })) return;
+  const puits = puitsDesDossiers(); effacerLeRefusDUnGeste(puits);
   try { await apiSend('/cases/' + id + '/unarchive', 'POST'); }
-  catch (e) { toast('Désarchivage refusé : ' + ((e && e.message) || e), 'bad'); return; }
-  toast('Case #' + id + ' désarchivé', 'ok');
+  catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
+  toast(faceDansLaLangue(MOTS_DES_SUCCES_DE_DOSSIER.desarchive, { id }), 'ok');
   await loadCases();
   await refreshCaseDetail(id);
 }
 
 async function detachCaseItem(caseId, itemId) {
   if (!await confirmModal('Détacher cet élément de la timeline ? (une note de traçabilité est conservée)', { okText: 'Détacher', danger: true })) return;
+  const puits = puitsDesDossiers(); effacerLeRefusDUnGeste(puits);
   try { await apiSend('/cases/' + caseId + '/items/' + itemId, 'DELETE'); }
-  catch (e) { toast('Détachement refusé : ' + ((e && e.message) || e), 'bad'); return; }
+  catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
   toast('Élément détaché', 'ok');
   await refreshCaseDetail(caseId); await loadCases();
 }
@@ -548,8 +574,9 @@ async function attachToCasePrompt(caseId) {
   const payload = { kind: r.kind };
   const ref = String(r.ref || '').trim(); if (ref) payload.ref = ref;
   const body = String(r.body || '').trim(); if (body) payload.body = body;
+  const puits = puitsDesDossiers(); effacerLeRefusDUnGeste(puits);
   try { await apiSend('/cases/' + caseId + '/items', 'POST', payload); }
-  catch (e) { toast('Rattachement refusé : ' + ((e && e.message) || e), 'bad'); return; }
+  catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
   toast('Élément rattaché', 'ok');
   await refreshCaseDetail(caseId); await loadCases();
 }
@@ -787,7 +814,7 @@ async function renderCaseLinks(box, c) {
     m.appendChild(a);
     if (canEditCases()) {
       const u = caseBtn('Dé-fusionner', 'ghost'); u.style.marginLeft = '8px';
-      u.onclick = () => withBusy(u, async () => { try { await apiSend('/cases/' + c.id + '/unmerge', 'POST'); } catch (err) { toast('Refusé : ' + ((err && err.message) || err), 'bad'); return; } toast('Dé-fusionné', 'ok'); await loadCases(); refreshCaseDetail(c.id); });
+      u.onclick = () => withBusy(u, async () => { const puits = puitsDesDossiers(); effacerLeRefusDUnGeste(puits); try { await apiSend('/cases/' + c.id + '/unmerge', 'POST'); } catch (err) { peindreLeRefusDUnGeste(puits, err); return; } toast('Dé-fusionné', 'ok'); await loadCases(); refreshCaseDetail(c.id); });
       m.appendChild(u);
     }
     sec.appendChild(m);
@@ -853,9 +880,10 @@ async function mergeCasePrompt(id) {
     { name: 'into', label: 'Fusionner DANS (cible) — #' + id + ' sera clos, rattaché et réversible', type: 'select', options: opts },
   ] });
   if (!r) return;
+  const puits = puitsDesDossiers(); effacerLeRefusDUnGeste(puits);
   try { await apiSend('/cases/' + id + '/merge', 'POST', { into: Number(r.into) }); }
-  catch (e) { toast('Fusion refusée : ' + ((e && e.message) || e), 'bad'); return; }
-  toast('Case #' + id + ' fusionné dans #' + r.into, 'ok');
+  catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
+  toast(faceDansLaLangue(MOTS_DES_SUCCES_DE_DOSSIER.fusionne, { id, cible: r.into }), 'ok');
   await loadCases(); showCaseDetail(Number(r.into));
 }
 
@@ -955,7 +983,7 @@ async function addToCase(kind, body, ref) {
   // la modale fermée, l'écran d'avant, et l'analyste croyait l'élément rattaché.
   try { await apiSend('/cases/' + id + '/items', 'POST', payload); }
   catch (e) { toast(phraseDuRattachementRefuse(e, r.cid === 'new'), 'bad', 9000); return; }
-  toast('Ajouté au case #' + id, 'ok');
+  toast(faceDansLaLangue(MOTS_DES_SUCCES_DE_DOSSIER.rattache, { id }), 'ok');
   if (typeof refresh === 'function') refresh(); // ré-affiche les alertes -> la pastille "case #N" apparait
   openCase(id); // bascule sur Cases + ouvre le détail (timeline avec l'élément rattaché)
 }
@@ -1300,8 +1328,9 @@ async function attachRunbook(c, runbookId) {
 }
 
 async function advanceStep(c, s, status, note) {
+  const puits = puitsDesDossiers(); effacerLeRefusDUnGeste(puits);
   try { await apiSend('/cases/' + c.id + '/steps/' + s.id, 'POST', note ? { status, note } : { status }); }
-  catch (e) { toast('Étape refusée : ' + ((e && e.message) || e), 'bad'); return; }
+  catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
   await refreshCaseDetail(c.id);
 }
 

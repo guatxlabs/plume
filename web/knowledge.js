@@ -7,7 +7,7 @@
 //   DELETE /api/knowledge/alias|calc|eventtype|tag/{id}    (editor+)
 // SÉCU UI : tout en textContent/esc (anti-XSS). Mutations via apiSend (jeton CSRF auto). Aucune surface
 // nouvelle ni chemin de requête/masquage touché — pure UI sur des routes déjà en place.
-import { $, api, apiSend, effacerLeRefusDUnGeste, muted, pagedList, peindreLeRefusDUnGeste, prefixeDUnEchecRenduTelQuel, puitsDuRefusDUnGeste, toast, modal, confirmModal, managedBadge, gateDeleteBtn } from './core.js';
+import { $, api, apiSend, effacerLeRefusDUnGeste, muted, pagedList, peindreLeRefusDUnGeste, prefixeDUnEchecRenduTelQuel, puitsDuRefusDUnGeste, toast, modal, confirmModal, managedBadge, gateDeleteBtn, faceDansLaLangue } from './core.js';
 
 // `P10.7-f` (rang 4) — LES SIX FAMILLES VIENNENT DANS UN SEUL CORPS, ET L'AVEU NOMME CELLES QUI N'ONT PAS
 // ÉTÉ LUES. `/api/knowledge` rend `{aliases, calcs, eventtypes, tags, macros, auto_lookups}` ; quand une
@@ -54,10 +54,22 @@ function puitsDeLaFamille(kind) {
   const famille = FAMILLES_DE_SAVOIR.find(f => f.kind === kind), liste = famille ? $(famille.liste) : null;
   return liste && liste.parentNode ? puitsDuRefusDUnGeste(liste.parentNode, 'objets_de_savoir:' + kind, liste) : null;
 }
+// `P10.28-t` — LES AVIS DE SUCCÈS DES OBJETS DE SAVOIR, DANS LES DEUX LANGUES, PAR FAMILLE. MESURÉ AVANT CE LOT (témoin
+// 119t) : `human + ' créé'` et `human + ' supprimé'` — un nom français collé à un participe, que le lexique ne pouvait
+// pas atteindre — restaient français sous `LANG='en'`. Les faces françaises sont celles d'avant, au caractère près ; une
+// famille qui n'y serait pas garderait son nom collé, sous la face générique de sa langue.
+const MOTS_DES_SUCCES_DE_SAVOIR = {
+  alias: { cree: { fr: 'alias de champ créé', en: 'field alias created' }, supprime: { fr: "l'alias supprimé", en: 'alias deleted' } },
+  calc: { cree: { fr: 'champ calculé créé', en: 'calculated field created' }, supprime: { fr: 'le champ calculé supprimé', en: 'calculated field deleted' } },
+  eventtype: { cree: { fr: 'event type créé', en: 'event type created' }, supprime: { fr: "l'event type supprimé", en: 'event type deleted' } },
+  tag: { cree: { fr: 'tag créé', en: 'tag created' }, supprime: { fr: 'le tag supprimé', en: 'tag deleted' } },
+  generique: { cree: { fr: '{objet} créé', en: '{objet} created' }, supprime: { fr: '{objet} supprimé', en: '{objet} deleted' } },
+};
+const motDUnSuccesDeSavoir = (kind, geste, human) => faceDansLaLangue((MOTS_DES_SUCCES_DE_SAVOIR[kind] || MOTS_DES_SUCCES_DE_SAVOIR.generique)[geste], { objet: human });
 async function del(kind, id, label, human) {
   if (!(await confirmModal('Supprimer ' + human + ' « ' + label + ' » ?', { okText: 'Supprimer', danger: true }))) return;
   const puits = puitsDeLaFamille(kind); effacerLeRefusDUnGeste(puits);
-  try { await apiSend('/knowledge/' + kind + '/' + id, 'DELETE'); toast(human + ' supprimé', 'ok'); loadKnowledge(); }
+  try { await apiSend('/knowledge/' + kind + '/' + id, 'DELETE'); toast(motDUnSuccesDeSavoir(kind, 'supprime', human), 'ok'); loadKnowledge(); }
   catch (e) { peindreLeRefusDUnGeste(puits, e); }
 }
 async function create(kind, human, fields, payloadFn) {
@@ -68,7 +80,7 @@ async function create(kind, human, fields, payloadFn) {
   const v = await modal({ title: 'Nouvel objet — ' + human, okText: 'Créer', fields });
   if (!v) return;
   const puits = puitsDeLaFamille(kind); effacerLeRefusDUnGeste(puits);
-  try { await apiSend('/knowledge/' + kind, 'POST', payloadFn(v)); toast(human + ' créé', 'ok'); loadKnowledge(); }
+  try { await apiSend('/knowledge/' + kind, 'POST', payloadFn(v)); toast(motDUnSuccesDeSavoir(kind, 'cree', human), 'ok'); loadKnowledge(); }
   catch (e) { peindreLeRefusDUnGeste(puits, e); }
 }
 

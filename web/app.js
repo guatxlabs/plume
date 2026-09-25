@@ -2,7 +2,7 @@ import {
   $, CSSV, socTZ, LANG, LOC, tzOpts, fmtTs, SEV, sev, bool, esc, ICONS, ic, closeModals, withBusy, toast, showErr, modal, confirmModal, csvCell, downloadText, tsSlug, exportPDF, exportBar, closeMiniMenu, api, apiSend, muted, colComparator, pageNums, pagedList,
   setSocTZ,
   socIsAdmin, formMsg,
-  confirmWithConsequence, disclosure, phraseDuRefusDuDemon, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste
+  confirmWithConsequence, disclosure, phraseDuRefusDuDemon, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, faceDansLaLangue
 } from './core.js';
 import { ouvrirLaModaleDePlage } from './plage_de_dates.js';
 import { installI18nObserver } from './i18n_observer.js';
@@ -84,8 +84,8 @@ function _netProgSync() { _netProgEl().hidden = S._netInflight <= 0; }
 // `P10.25-w` — L'ENVELOPPE EST UNE FABRIQUE, ET ELLE PASSE CHAQUE RÉPONSE À L'ÉCRAN DE CONNEXION. Un refus de
 // l'annuaire en cours de session frappe TOUTE route gardée, y compris celles que les panneaux et l'Explore lisent
 // par `fetch` direct, hors d'`api()` : le seul point que toutes traversent est ici. `lireUneReponseDuTransport`
-// (web/login.js) ne lit qu'une copie du corps d'un 403 ou d'un 503 et ne jette jamais ; la réponse est rendue à son
-// appelant inchangée. La fabrique prend le transport d'origine en paramètre (déplacement pur du corps d'avant) : le
+// (web/login.js) ne lit qu'une copie du corps d'un 403 ou d'un 503 (un 401 fait rejuger la session sans lire son corps,
+// `P10.26-n`) et ne jette jamais ; la réponse est rendue à son appelant inchangée. La fabrique prend le transport d'origine en paramètre (déplacement pur du corps d'avant) : le
 // harnais ESM, qui n'a pas de `fetch` au chargement, la pose sur son simulacre et juge l'enveloppe RÉELLE.
 function envelopperLeTransport(_origFetch) {
   return function (input, init) {
@@ -137,6 +137,18 @@ if (typeof window !== 'undefined' && typeof window.fetch === 'function' && !wind
   window._netFetchWrapped = true;
 }
 
+// `P10.28-t` — LES AVIS DE L'EXPORT DE L'EXPLORE ET DU PROVISIONNEMENT D'UN TENANT, DANS LES DEUX LANGUES. MESURÉ AVANT CE
+// LOT (témoin 119t) : « Export CSV téléchargé (TRONQUÉ — 12 ligne(s) manquante(s)) », « tenant « x » provisionné » et la
+// ligne « tenant créé — 1er admin : y » étaient composés en français et le restaient sous `LANG='en'`.
+const MOTS_DES_AVIS_D_EXPORT_ET_DE_TENANT = {
+  export_telecharge: { fr: 'Export {format} téléchargé', en: 'Export {format} downloaded' },
+  export_tronque: { fr: 'Export {format} téléchargé (TRONQUÉ{ampleur})', en: 'Export {format} downloaded (TRUNCATED{ampleur})' },
+  ampleur_mesuree: { fr: ' — {n} ligne(s) manquante(s)', en: ' — {n} missing row(s)' },
+  ampleur_non_mesuree: { fr: ' — ampleur non mesurée par le serveur (plafond de lignes) : resserrez la fenêtre pour un export complet', en: ' — extent not measured by the server (row cap): narrow the window for a complete export' },
+  tenant_provisionne: { fr: 'tenant « {nom} » provisionné', en: 'tenant “{nom}” provisioned' },
+  tenant_cree_avec_admin: { fr: 'tenant créé — 1er admin : {admin}', en: 'tenant created — first admin: {admin}' },
+  tenant_cree: { fr: 'tenant créé', en: 'tenant created' },
+};
 // EXPORT EXPLORE : re-exécute la requête courante côté serveur (/api/export) pour le JEU COMPLET borné,
 // puis télécharge. Même dérivation GXQL/SQL-brut que runQuery (le SQL brut non-admin est refusé côté serveur).
 async function exploreExport(format) {
@@ -161,8 +173,8 @@ async function exploreExport(format) {
   const ecartes = parseInt(r.headers.get('x-plume-truncated-ecartes') || '', 10);
   const marque = !trunc ? '' : (Number.isFinite(ecartes) && ecartes > 0 ? `-TRONQUE-${ecartes}-lignes-manquantes` : '-TRONQUE-ampleur-inconnue');
   downloadText(`plume-explore-${tsSlug()}${marque}.${format}`, format === 'csv' ? 'text/csv;charset=utf-8' : 'application/json', text);
-  const combien = Number.isFinite(ecartes) && ecartes > 0 ? ` — ${ecartes} ligne(s) manquante(s)` : ' — ampleur non mesurée par le serveur (plafond de lignes) : resserrez la fenêtre pour un export complet';
-  toast('Export ' + format.toUpperCase() + ' téléchargé' + (trunc ? ` (TRONQUÉ${combien})` : ''), trunc ? 'info' : 'ok');
+  const ampleur = Number.isFinite(ecartes) && ecartes > 0 ? faceDansLaLangue(MOTS_DES_AVIS_D_EXPORT_ET_DE_TENANT.ampleur_mesuree, { n: ecartes }) : faceDansLaLangue(MOTS_DES_AVIS_D_EXPORT_ET_DE_TENANT.ampleur_non_mesuree);
+  toast(faceDansLaLangue(trunc ? MOTS_DES_AVIS_D_EXPORT_ET_DE_TENANT.export_tronque : MOTS_DES_AVIS_D_EXPORT_ET_DE_TENANT.export_telecharge, { format: format.toUpperCase(), ampleur }), trunc ? 'info' : 'ok');
 }
 
 
@@ -379,9 +391,19 @@ async function loadSettings() {
   // `P10.23-m` — le changement exige le mot de passe ACTUEL (`current`) : le champ n'existe qu'une fois configuré.
   const c = $('#set-pw-current'); if (c) c.hidden = !configured;
 }
-if ($('#setup-form')) $('#setup-form').addEventListener('submit', async e => {
+// `P10.27-d` — LE REFUS DE L'INSTALLATION ET DU CHANGEMENT DE MOT DE PASSE SE DIT PAR LA FORME PARTAGÉE
+// (`peindreLeRefusDUnGeste`, core.js), dans un puits posé avant la ligne d'actions du formulaire. MESURÉ AVANT CE LOT
+// (témoin 119d) : la ligne de résultat recevait `causeDuDemon` ou, à défaut, `e.message` — « 401 auth requise »,
+// « Failed to fetch » nu lu comme un refus, ou la page d'une passerelle telle quelle.
+function puitsDuFormulaireDuCompte() {
+  const f = $('#setup-form'), actions = f ? f.querySelector('.rf-actions') : null;
+  return f ? puitsDuRefusDUnGeste(f, 'reglages_du_compte', actions) : null;
+}
+// Nommé et exporté pour le harnais (témoin 119) : les deux instances du module écoutent le même formulaire.
+async function enregistrerLesReglagesDuCompte(e) {
   e.preventDefault();
   const pw = $('#set-pw').value, res = $('#set-result');
+  const puits = puitsDuFormulaireDuCompte(); effacerLeRefusDUnGeste(puits);
   if (pw.length < 12) { res.textContent = 'mot de passe >= 12 caractères'; return; }
   let configured = true;
   try { ({ configured } = await api('/setup-status')); } catch (e) {}
@@ -396,11 +418,12 @@ if ($('#setup-form')) $('#setup-form').addEventListener('submit', async e => {
     else await apiSend('/setup', 'POST', { token: $('#set-token').value.trim(), user: ($('#set-user').value.trim() || 'admin'), password: pw });
   } catch (err) {
     if (champActuel) champActuel.value = '';
-    res.textContent = '' + ((err && (err.causeDuDemon || err.message)) || err); return;
+    res.textContent = ''; peindreLeRefusDUnGeste(puits, err); return;
   }
   res.textContent = 'enregistré - reconnecte-toi avec les nouveaux identifiants';
   $('#set-pw').value = ''; if (champActuel) champActuel.value = ''; loadSettings();
-});
+}
+if ($('#setup-form')) $('#setup-form').addEventListener('submit', enregistrerLesReglagesDuCompte);
 loadSettings();
 
 
@@ -602,10 +625,10 @@ if ($('#tenant-form')) $('#tenant-form').addEventListener('submit', async e => {
   // (`registre_sans_maillon`) et le premier administrateur demandé mais non posé (`P10.21-g`). Le tenant
   // EXISTE dans les deux cas ; le formulaire se replie, les aveux se posent dans le puits du panneau, et
   // aucun administrateur n'est annoncé quand `first_admin` est nul.
-  if (res) { res.textContent = 'tenant créé' + (out.first_admin ? ' — 1er admin : ' + out.first_admin : ''); res.className = 'muted'; }
+  if (res) { res.textContent = faceDansLaLangue(out.first_admin ? MOTS_DES_AVIS_D_EXPORT_ET_DE_TENANT.tenant_cree_avec_admin : MOTS_DES_AVIS_D_EXPORT_ET_DE_TENANT.tenant_cree, { admin: out.first_admin }); res.className = 'muted'; }
   ['#tf-id', '#tf-name', '#tf-admin', '#tf-key'].forEach(s => { const el = $(s); if (el) el.value = ''; });
   const f = $('#tenant-form'); if (f) f.classList.add('hidden');
-  toast('tenant « ' + (out.name || id) + ' » provisionné', 'ok');
+  toast(faceDansLaLangue(MOTS_DES_AVIS_D_EXPORT_ET_DE_TENANT.tenant_provisionne, { nom: out.name || id }), 'ok');
   avouerLeProvisionnement(out);
   loadTenantsView();
 });
@@ -1001,4 +1024,4 @@ initAuthGate();   // écran de connexion, déconnexion, état d'auth : câblage 
 /* ==== exports consumed by seam modules (auto-managed) ==== */
 // `P10.25-w` — `envelopperLeTransport` part pour le témoin 114 du harnais ESM, qui la pose sur son simulacre.
 // `P10.27-b` — le geste du formulaire d'un connecteur, joué par le harnais sous chaque instance de langue (témoin 116).
-export { ROLE_LABEL, SPACES, currentTab, currentViewName, enregistrerLeConnecteurDuFormulaire, envelopperLeTransport, fetchMe, loadActions, loadDashboard, loadUsers, refresh, refreshCurrentView, refreshPanels, renderNav, route, setAlertMitreFilter, setAlertSourceFilter, setAuthUI, updateQRangeBtn, updateRangeBtn };
+export { ROLE_LABEL, SPACES, currentTab, currentViewName, enregistrerLeConnecteurDuFormulaire, enregistrerLesReglagesDuCompte, envelopperLeTransport, fetchMe, loadActions, loadDashboard, loadUsers, refresh, refreshCurrentView, refreshPanels, renderNav, route, setAlertMitreFilter, setAlertSourceFilter, setAuthUI, updateQRangeBtn, updateRangeBtn };

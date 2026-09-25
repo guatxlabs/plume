@@ -1,6 +1,6 @@
 // viz.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // Explore + viz/charts: drilldown, fenetre glissante, requete interactive, rendu table/graphes (partages avec dashboards).
-import { $, CSSV, LANG, LOC, SEV, api, apiSend, unDeuxCentsSansCorpsLisible, bornerLePopoverSousSonAncre, causeDeLaTraceManquante, cleDeLaSuiteServie, cleDeLIdentifiantDeRiposte, colComparator, largeursDeColonnes, confirmModal, esc, flashStopped, fmtTs, ic, laPageEstAuDelaDuTotal, laPageEstDansLeTotal, makePager, motDeLaPageAuDelaDuTotal, motDeLaRiposteSansIdentifiant, motDUneLectureQuiNEstPasServie, muted, noeudDeLaFinDuResultat, noeudDeLaPageVideDansLeTotal, phraseDeLaCreationDeRiposteRefusee, phraseDeLaTraceManquante, phraseDUneReponseNonJson, sev, socIsAdmin, toast, tzOpts } from './core.js';
+import { $, CSSV, LANG, LOC, SEV, api, apiSend, unDeuxCentsSansCorpsLisible, bornerLePopoverSousSonAncre, causeDeLaTraceManquante, cleDeLaSuiteServie, cleDeLIdentifiantDeRiposte, colComparator, largeursDeColonnes, confirmModal, esc, flashStopped, fmtTs, ic, laPageEstAuDelaDuTotal, laPageEstDansLeTotal, makePager, motDeLaPageAuDelaDuTotal, motDeLaRiposteSansIdentifiant, motDUneLectureQuiNEstPasServie, muted, noeudDeLaFinDuResultat, noeudDeLaPageVideDansLeTotal, noeudDeLaPremierePageVideDansLeTotal, phraseDeLaCreationDeRiposteRefusee, phraseDeLaTraceManquante, phraseDUneReponseNonJson, sev, socIsAdmin, toast, tzOpts } from './core.js';
 import { S } from './state.js';
 // P11.4-h : LE clic qui respecte une sélection (mécanisme partagé, `copie_et_selection.js`).
 import { clicQuiRespecteLaSelection } from './copie_et_selection.js';
@@ -2537,14 +2537,20 @@ const MOTS_DE_LA_PAGE_VIDE = {
 // lignes que la page ne rend pas, et la phrase de l'écart vient du point commun (`noeudDeLaPageVideDansLeTotal`,
 // web/core.js), partagée avec la liste paginée et le panneau de table. Le saut sans rendu passe avant elle : sa fin
 // n'est pas établie, quel que soit le total. Sans total (`total` absent ou négatif), la partition d'avant est rendue.
+// `P10.26-m` — LA PREMIÈRE PAGE VIDE DONT LE TOTAL COMPTÉ PLACE DES LIGNES SUR ELLE n'est pas une fenêtre vide : mesuré avant
+// ce lot (témoin 119m), la liste d'événements y écrivait « aucun événement sur la fenêtre » sous une ligne d'état qui
+// annonce N résultats, et la table n'y rendait que ses en-têtes. Sa phrase vient du point commun
+// (`noeudDeLaPremierePageVideDansLeTotal`, web/core.js), partagée avec la liste paginée et le panneau de table. Un total
+// nul ou absent garde la fenêtre vide.
 function cleDeLaPageVide(page, sautSansRendu, total, taille) {
-  if (!(page > 0)) return 'fenetre_vide';
+  if (!(page > 0)) return laPageEstDansLeTotal(0, total, taille) ? 'premiere_page_dans_le_total' : 'fenetre_vide';
   if (sautSansRendu) return 'saut_sans_rendu';
   return laPageEstDansLeTotal(page, total, taille) ? 'dans_le_total' : 'fin_du_resultat';
 }
 function noeudDeLaPageVide(cle) {
   if (cle === 'fin_du_resultat') return noeudDeLaFinDuResultat();
   if (cle === 'dans_le_total') return noeudDeLaPageVideDansLeTotal(S.evState.total, S.evState.totalCapped);
+  if (cle === 'premiere_page_dans_le_total') return noeudDeLaPremierePageVideDansLeTotal(S.evState.total, S.evState.totalCapped);   // `P10.26-m`
   const noeud = document.createElement('div');
   noeud.className = cle === 'saut_sans_rendu' ? 'bad' : 'muted';
   noeud.dataset.pageVide = cle;
@@ -2606,8 +2612,9 @@ function noeudDesChampsVidesMasques(n) {
 // `P10.25-a` — LA PAGE VIDE DE RANG SUPÉRIEUR DE L'EXPLORE, PEINTE PAR SES DEUX RENDUS. Mesuré avant ce lot : la
 // liste d'événements disait « page vide, fin du résultat » (ou le saut sans rendu) et gardait son retour, la table
 // paginée (`| table`, `| fields`, `| rex`, résultat non événementiel) rendait ses pagers autour d'un tableau
-// d'EN-TÊTES, sans une phrase. Les deux passent ici : même partition, même phrase, même retour. Rend `false` sur la
-// première page, que chaque rendu dit à sa façon (la liste, une fenêtre vide ; la table, ses colonnes).
+// d'EN-TÊTES, sans une phrase. Les deux passent ici : même partition, même phrase, même retour. Rend `false` sur une
+// première page qu'aucun total compté ne contredit (`P10.26-m`), que chaque rendu dit à sa façon (la liste, une fenêtre
+// vide ; la table, ses colonnes).
 function peindreLaPageVideDeRangSuperieur(host) {
   const cleDuVide = S.evState ? cleDeLaPageVide(S.evState.page, !!S.evState.sautSansRendu, S.evState.total, S.evState.pageSize) : cleDeLaPageVide(0, false);
   if (cleDuVide === 'fenetre_vide') return false;

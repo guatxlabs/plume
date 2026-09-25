@@ -2,7 +2,13 @@
 // déplacement pur ; le câblage des boutons et le premier chargement sont exposés par `initLookups()`, appelé par
 // `app.js` au point où ce bloc vivait (un module s'exécute à l'import, avant l'enveloppe `fetch` d'`app.js`).
 // `lookupRow` et `parseCsvRows` sont exportés pour le harnais. N'importe pas `app.js`.
-import { $, api, apiSend, confirmModal, contentDelete, disclosure, effacerLeRefusDUnGeste, fmtTs, ic, managedBadge, muted, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, toast } from './core.js';
+import { $, api, apiSend, confirmModal, contentDelete, disclosure, effacerLeRefusDUnGeste, fmtTs, ic, managedBadge, muted, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, toast, faceDansLaLangue } from './core.js';
+// `P10.28-t` — L'AVIS D'UN LOOKUP CHARGÉ, DANS LES DEUX LANGUES. MESURÉ AVANT CE LOT (témoin 119t) : « lookup "geo"
+// chargé : 3 ligne(s) - colonnes pays » restait français sous `LANG='en'`.
+const MOTS_DU_CHARGEMENT_DE_LOOKUP = {
+  avec_colonnes: { fr: 'lookup "{nom}" chargé : {n} ligne(s) - colonnes {colonnes}', en: 'lookup "{nom}" loaded: {n} row(s) - columns {colonnes}' },
+  sans_colonne: { fr: 'lookup "{nom}" chargé : {n} ligne(s) - aucune colonne hors clé', en: 'lookup "{nom}" loaded: {n} row(s) - no column besides the key' },
+};
 
 // --- Lookups (tables d'enrichissement GXQL ; réservé admin ; vit sous Réglages, comme les Comptes) ---
 // Un lookup = table de référence nommée (clé -> colonnes JSON) jointe en LEFT JOIN par l'op GXQL
@@ -134,7 +140,8 @@ async function chargerLeLookupDuFormulaire(e) {
     catch (err) { res.textContent = ''; res.className = 'muted'; peindreLeRefusDUnGeste(puits, err); return; }
     j = j || {};
     res.textContent = ''; res.className = 'muted';
-    toast(`lookup "${name}" chargé : ${j.rows} ligne(s)` + (j.cols && j.cols.length ? ' - colonnes ' + j.cols.join(', ') : ' - aucune colonne hors clé'), 'ok');
+    // `P10.28-t` — l'avis du chargement, dans les deux langues (composé : un nom et un nombre s'y collent).
+    toast(faceDansLaLangue(j.cols && j.cols.length ? MOTS_DU_CHARGEMENT_DE_LOOKUP.avec_colonnes : MOTS_DU_CHARGEMENT_DE_LOOKUP.sans_colonne, { nom: name, n: j.rows, colonnes: (j.cols || []).join(', ') }), 'ok');
     $('#lk-rows').value = ''; $('#lookup-form').classList.add('hidden');
     loadLookups();
 }

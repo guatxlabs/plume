@@ -1,4 +1,5 @@
 use super::*;
+use rusqlite::OptionalExtension;
 
 // ===================== entropie / encodages =====================
 
@@ -305,25 +306,74 @@ pub(crate) const IDP_HASH_SENTINEL: &str = "!external-idp";
 ///    détourner ni piloter le rôle d'un compte local — fail-closed anti-usurpation) ;
 ///  - sinon UPSERT (nom, hash=sentinel, rôle mappé) : à chaque login le rôle est resynchronisé depuis l'IdP.
 /// Retourne Ok(()) si le compte est utilisable pour une session. NB : le sentinel neutralise Basic.
-pub(crate) fn idp_provision_user(conn: &Connection, name: &str, role: &str, reserved_static_admin: Option<&str>) -> Result<(), String> {
-    if let Some(reserved) = reserved_static_admin {
-        if name == reserved {
-            return Err("ce nom d'utilisateur est réservé au compte administrateur de configuration (fédération refusée)".into());
-        }
-    }
-    let existing: Option<String> = conn
-        .query_row("SELECT hash FROM user WHERE name=?1", params![name], |r| r.get::<_, String>(0))
-        .ok();
-    if let Some(h) = existing.as_deref() {
-        if !h.is_empty() && h != IDP_HASH_SENTINEL {
-            return Err("le nom d'utilisateur correspond à un compte local existant (fédération refusée)".into());
-        }
-    }
+///
+/// `P10.25-t` — LES DEUX REFUS NE SONT PLUS JUGÉS ICI : ils le sont par `auth::juger_le_nom_pris_par_un_annuaire`, la
+/// règle unique du chemin SSO d'en-têtes et de la fédération, sur la lecture du hachage que CETTE connexion d'écriture
+/// fait (celle de l'`UPSERT` qui suit : aucune autre écriture ne s'intercale, l'appelant tient le verrou). Deux
+/// différences avec la forme d'avant, décidées et mesurées (voir le bandeau de la règle) : l'administrateur de
+/// l'assistant sans ligne est refusé (il était pris, et son mot de passe d'installation ne connectait plus) ; une
+/// lecture du hachage qui échoue refuse (elle était avalée, et l'`UPSERT` donnait à un compte à mot de passe le rôle
+/// de l'annuaire). `noms` : `NomsTenusHorsDeLaTable::de(&st)` sur tout chemin servi (`federer_le_nom`).
+pub(crate) fn idp_provision_user<'a>(
+    conn: &Connection,
+    name: &str,
+    role: &str,
+    noms: impl Into<crate::auth::NomsTenusHorsDeLaTable<'a>>,
+) -> Result<(), RefusDeLaFederation> {
+    crate::auth::juger_le_nom_pris_par_un_annuaire(name, &noms.into(), || {
+        conn.query_row("SELECT hash FROM user WHERE name=?1", params![name], |r| r.get::<_, String>(0)).optional()
+    })
+    .map_err(RefusDeLaFederation::Nom)?;
     conn.execute(
         "INSERT INTO user(name,hash,role) VALUES(?1,?2,?3) \
          ON CONFLICT(name) DO UPDATE SET role=excluded.role",
         params![name, IDP_HASH_SENTINEL, role],
     )
-    .map_err(|e| format!("provisioning du compte fédéré échoué: {e}"))?;
+    .map_err(|e| RefusDeLaFederation::Ecriture(format!("provisioning du compte fédéré échoué: {e}")))?;
     Ok(())
+}
+
+/// `P10.25-t` — LA FÉDÉRATION D'UN NOM, TELLE QUE LES TROIS PORTES SERVIES L'APPELLENT (OIDC, SAML, LDAP) : les noms tenus
+/// hors de la table sont lus sur l'état du démon, les DEUX (configuration et assistant). `conn` est la connexion
+/// d'écriture que l'appelant tient.
+pub(crate) fn federer_le_nom(st: &AppState, conn: &Connection, name: &str, role: &str) -> Result<(), RefusDeLaFederation> {
+    idp_provision_user(conn, name, role, crate::auth::NomsTenusHorsDeLaTable::de(st))
+}
+
+/// `P10.25-t` — POURQUOI UNE FÉDÉRATION N'A PAS POSÉ SA LIGNE.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum RefusDeLaFederation {
+    /// La règle unique des annuaires refuse le nom (`auth::RefusDeLAnnuaire`).
+    Nom(crate::auth::RefusDeLAnnuaire),
+    /// L'écriture de la ligne fédérée a échoué.
+    Ecriture(String),
+}
+
+/// `P10.25-t` — la fédération refusée parce que le nom n'a pas pu être vérifié (lecture du hachage non faite).
+pub(crate) const CAUSE_FEDERATION_NOM_NON_VERIFIE: &str = "FÉDÉRATION REFUSÉE, NOM NON VÉRIFIÉ : la base n'a pas pu \
+     dire si ce nom est celui d'un compte local à mot de passe (lecture refusée ou table illisible), et le démon ne \
+     fédère pas un nom qu'il n'a pas pu vérifier — aucune ligne n'est posée ni modifiée, aucune session n'est ouverte. \
+     Réessayez.";
+
+impl RefusDeLaFederation {
+    /// La réponse des trois portes. Les deux refus d'avant gardent leur statut et leur texte (409) ; le nom non
+    /// vérifié, neuf, rend 503 et sa cause.
+    pub(crate) fn reponse(&self) -> Response {
+        use crate::auth::RefusDeLAnnuaire as R;
+        match self {
+            Self::Nom(R::AdministrateurDeConfiguration(_)) => (
+                StatusCode::CONFLICT,
+                "ce nom d'utilisateur est réservé au compte administrateur de configuration (fédération refusée)",
+            )
+                .into_response(),
+            Self::Nom(R::CompteAMotDePasse(_)) => {
+                (StatusCode::CONFLICT, "le nom d'utilisateur correspond à un compte local existant (fédération refusée)").into_response()
+            }
+            Self::Nom(R::NonVerifie(nom, cause)) => {
+                eprintln!("[idp] WARN fédération de '{nom}' refusée, nom non vérifié : {cause}");
+                err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_FEDERATION_NOM_NON_VERIFIE)
+            }
+            Self::Ecriture(e) => (StatusCode::CONFLICT, e.clone()).into_response(),
+        }
+    }
 }

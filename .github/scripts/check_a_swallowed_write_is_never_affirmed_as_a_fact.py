@@ -306,7 +306,11 @@ FAITS_QUI_AFFIRMENT = (
 # lot retire deux sites (`report_create`, `workflow_action_create`), donc aussi deux fichiers. Relevé de ce jour-là sur
 # l'arbre : 27 sites sur 8 fichiers ; même règle des deux tiers, arrondie en dessous : 27 -> 18, 8 -> 5 (les
 # pourcentages de la première écriture, 69 % et 65 %, rendent les mêmes entiers).
-PLANCHER_SITES = 18
+# RE-DÉRIVÉS le 2026-09-25 (`P10.28-e`) : le lot retire les quatre entrées de `seeds.rs` (trois sites corrigés dans le
+# code, un sorti par la règle de lecture) ; `seeds.rs` garde deux sites (`seed_ti_alert_rules`, `seed_risk_rules`),
+# donc aucun fichier ne sort. Relevé de ce jour-là sur l'arbre : 23 sites sur 8 fichiers ; même règle des deux tiers,
+# arrondie en dessous : 23 -> 15, 8 -> 5.
+PLANCHER_SITES = 15
 PLANCHER_FICHIERS = 5
 
 # ================================================================================================
@@ -425,10 +429,16 @@ SITES_AMORCAGE = {
     # fermeture `ev` (`democase-b3`), invisible de cette garde ; dix éléments de chronologie orphelins, et le
     # drapeau posé avant les données interdisait tout nouveau semis. Les deux `INSERT` de boucle n'avaient
     # AUCUN lien avec l'identifiant emprunté : la garde les appariait sans lire l'objet (angle mort écrit).
-    ("daemon/src/seeds.rs", "seed_dashboard_head"): ("let _ -> last_insert_rowid",),
-    ("daemon/src/seeds.rs", "seed_default_dashboard"): ("let _ -> last_insert_rowid",),
-    ("daemon/src/seeds.rs", "seed_obs_dashboard"): ("let _ -> last_insert_rowid",),
-    ("daemon/src/seeds.rs", "seed_runbooks"): ("let _ -> last_insert_rowid",),
+    # `P10.28-e` — LES QUATRE ENTRÉES « IDENTIFIANT EMPRUNTÉ » DE `seeds.rs` SONT RETIRÉES (2026-09-25), ET LEUR
+    # ACCUSATION ÉTAIT FAUSSE : un `INSERT` vérifié s'intercale entre le drapeau avalé et la lecture, l'identifiant
+    # est celui de SA ligne (règle de lecture neuve, `insertion_verifiee_avant_la_lecture`, épreuves `n22` à `n24`
+    # et (17) à (21)). Ce que chacune devient : `seed_dashboard_head`, `seed_default_dashboard`, `seed_obs_dashboard`
+    # — corrigées dans le code pour leur VRAI défaut, mesuré (le drapeau posé AVANT le semis : tableau refusé ->
+    # jamais rejoué ; panneau refusé -> tableau vide ; drapeau refusé -> un tableau de plus à chaque démarrage),
+    # semis et drapeau dans une transaction, le drapeau en dernier ; elles ne portent plus d'écriture avalée suivie
+    # d'un fait. `seed_runbooks` — sort par la seule règle de lecture : son drapeau est un marqueur d'observabilité
+    # qui ne garde rien (chaque gabarit s'insère ou non par sa clé). Ce qu'elle garde de vrai, et que cette garde ne
+    # voit pas : une étape refusée laisse le gabarit SANS étapes, pour toujours (mesuré : quinze sur quinze).
     # LES DEUX MARQUEURS DE SEMIS que `P10.20-w` nomme : l'INSERT du marqueur est avalé et l'audit de
     # configuration suit. Un semis rejoué deux fois écrirait deux audits pour une seule pose.
     ("daemon/src/seeds.rs", "seed_ti_alert_rules"): ("let _ -> audit_config_change",),
@@ -616,6 +626,74 @@ def faits_dans_la_portee(code, coupes, spans, depart, fin_fonction):
 
 
 # ================================================================================================
+# `P10.28-e` — UNE INSERTION VÉRIFIÉE ENTRE L'ÉCRITURE AVALÉE ET LA LECTURE D'IDENTIFIANT COUPE LA CONJONCTION
+# ================================================================================================
+# LE DÉFAUT D'INSTRUMENT, MESURÉ LE 2026-09-25. Quatre entrées « identifiant emprunté » de `seeds.rs`
+# (`seed_dashboard_head`, `seed_default_dashboard`, `seed_obs_dashboard`, `seed_runbooks`) étaient FAUSSES : le
+# drapeau `seeded_*` y est écrit et avalé, puis vient un `INSERT` VÉRIFIÉ (`.is_err()` qui sort, ou `?`), puis
+# `last_insert_rowid()`. L'identifiant lu est celui de cet `INSERT`, jamais celui du drapeau : sur l'échec de
+# l'insertion la lecture n'est pas atteinte, sur son succès elle rend SA ligne. La garde appariait le drapeau à la
+# lecture sans voir l'insertion qui s'intercale. Le vrai défaut de ces sites était ailleurs — le drapeau posé
+# AVANT le semis, qu'aucune garde ne lit — et il est corrigé dans le code (`semer_sous_son_drapeau`).
+# LA RÈGLE : pour le SEUL fait `last_insert_rowid`, si une écriture `execute` dont l'énoncé est un littéral
+# `INSERT`/`REPLACE` en tête, sur le MÊME receveur, tombe entre la fin de l'écriture avalée et la lecture, et que
+# cette insertion est VÉRIFIÉE — son échec sort (`?`, `unwrap`, `expect`), il est testé (`is_err`/`is_ok`, même
+# confiance que la population accorde à ces scrutateurs), ou elle est le sujet d'un `match` —, la lecture n'affirme
+# pas l'écriture avalée. Tout le reste garde l'accusation : insertion AVALÉE elle aussi, écriture qui n'insère pas,
+# autre receveur, énoncé non littéral, receveur de la lecture non nommé. Les autres faits (registre, audit,
+# armement) ne sont pas concernés : une insertion vérifiée ne rend pas vraie une ligne de registre.
+RECEVEUR_EN_QUEUE_DE_LECTURE = re.compile(r"(?<![\w.])([A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)*)\s*\.\s*\Z")
+RECEVEUR_EN_QUEUE_D_ECRITURE = re.compile(r"(?<![\w.])([A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)*)\s*\Z")
+TETE_DE_L_ENONCE = re.compile(r'\A(?:b?r)?#*"\s*([A-Za-z]+)')
+
+
+def l_echec_de_l_insertion_est_vu(jetons, prefixe):
+    """Vrai quand la chaîne posée sur l'insertion la VÉRIFIE : un `?` n'importe où, ou le premier jeton non
+    traversant qui propage (`unwrap`, `expect`) ou qui scrute (`is_err`, `is_ok`) ; ou la chaîne est vide et
+    l'insertion est le sujet d'un `match`. Un jeton inconnu ne vérifie RIEN (l'accusation reste)."""
+    if any(nom == "?" for nom, _i, _a1, _a2 in jetons):
+        return True
+    for nom, _i, _a1, _a2 in jetons:
+        if nom in TRAVERSANTS:
+            continue
+        return nom in PROPAGATEURS or nom in SCRUTATEURS_PARTIELS
+    return not jetons and re.search(r"\bmatch\s*\Z", prefixe) is not None
+
+
+def insertion_verifiee_avant_la_lecture(code, coupes, spans, debut, lecture):
+    """Vrai quand une insertion VÉRIFIÉE sur le receveur de la lecture `last_insert_rowid` (en `lecture`) tombe dans
+    `[debut, lecture)`. Voir le bandeau ci-dessus."""
+    fenetre = code[max(0, lecture - 200):lecture]
+    rec = RECEVEUR_EN_QUEUE_DE_LECTURE.search(fenetre)
+    if not rec:
+        return False
+    receveur = re.sub(r"\s+", "", rec.group(1))
+    for m in ECRITURE_SQL.finditer(code, debut, lecture):
+        if dans_une_chaine_rust(spans, m.start()) or "execute_batch" in m.group(0):
+            continue
+        r_ecr = RECEVEUR_EN_QUEUE_D_ECRITURE.search(code[max(0, m.start() - 200):m.start()])
+        if not r_ecr or re.sub(r"\s+", "", r_ecr.group(1)) != receveur:
+            continue
+        ouvrante = m.end() - 1
+        litteral = next(((a, b) for a, b in spans if a > ouvrante), None)
+        if litteral is None or code[ouvrante + 1:litteral[0]].strip():
+            continue
+        tete = TETE_DE_L_ENONCE.match(code[litteral[0]:litteral[1]])
+        if not tete or tete.group(1).upper() not in ("INSERT", "REPLACE"):
+            continue
+        fin = apparier(code, ouvrante)
+        if fin < 0 or fin >= lecture:
+            continue
+        jetons, _apres = chaine_detaillee(code, fin)
+        prefixe = code[debut_instruction(coupes, m.start()):r_ecr.start(1) + max(0, m.start() - 200)]
+        if liaison_sourde(code[debut_instruction(coupes, m.start()):m.start()]):
+            continue
+        if l_echec_de_l_insertion_est_vu(jetons, prefixe):
+            return True
+    return False
+
+
+# ================================================================================================
 # LA DÉCOUVERTE — UN SITE EST UNE CONJONCTION, JAMAIS UN AVALEMENT SEUL
 # ================================================================================================
 def analyser(chemin_relatif, texte, journal, aveux_du_lecteur=None):
@@ -663,6 +741,9 @@ def analyser(chemin_relatif, texte, journal, aveux_du_lecteur=None):
                            "introuvable, et un site sans fonction ne peut pas entrer dans l'ensemble")
             continue
         faits = faits_dans_la_portee(code, coupes, spans, apres, englobante[3])
+        # `P10.28-e` — une insertion vérifiée qui s'intercale rend la lecture d'identifiant à SA ligne.
+        faits = [(n, p) for n, p in faits
+                 if n != "last_insert_rowid" or not insertion_verifiee_avant_la_lecture(code, coupes, spans, apres, p)]
         if not faits:
             continue
         forme = f"{forme_chaine} -> " + "+".join(sorted({n for n, _p in faits}))
@@ -1015,6 +1096,59 @@ EPREUVES = [
      '    };\n'
      '    control_ledger_append(st, "t.maj", "op", "", "");\n'
      '    drop(plus_tard);\n}\n', set()),
+    # --- `P10.28-e` — L'INSERTION VÉRIFIÉE QUI S'INTERCALE. Les deux négatifs sont les formes de `seeds.rs` que la
+    # garde accusait à tort ; chaque positif est une condition de la règle, qui rougit si elle est débranchée.
+    ("témoin négatif (`P10.28-e`) : drapeau avalé, puis `INSERT` testé par `.is_err()` qui sort — `seed_runbooks`",
+     'fn n22(conn: &Connection, rb: &[&str]) {\n'
+     '    let _ = conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES(\'seeded_x\',\'1\')", []);\n'
+     '    for k in rb {\n'
+     '        if conn.execute("INSERT INTO runbook(key) VALUES(?1)", params![k]).is_err() { continue; }\n'
+     '        let id = conn.last_insert_rowid();\n'
+     '        let _ = conn.execute("INSERT INTO step(rb) VALUES(?1)", params![id]);\n'
+     '    }\n}\n', set()),
+    ("témoin négatif (`P10.28-e`) : drapeau avalé, puis `INSERT` propagé par `?` — l'ancien `seed_dashboard_head`",
+     'fn n23(conn: &Connection, name: &str) -> rusqlite::Result<i64> {\n'
+     '    let _ = conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES(?1,\'1\')", params![name]);\n'
+     '    conn.execute("INSERT INTO dashboard(name) VALUES(?1)", params![name])?;\n'
+     '    Ok(conn.last_insert_rowid())\n}\n', set()),
+    ("témoin négatif (`P10.28-e`) : drapeau avalé, puis `INSERT` sujet d'un `match` qui lit son compte",
+     'fn n24(conn: &Connection, name: &str) -> Option<i64> {\n'
+     '    let _ = conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES(?1,\'1\')", params![name]);\n'
+     '    match conn.execute("INSERT INTO dashboard(name) VALUES(?1)", params![name]) {\n'
+     '        Ok(1) => Some(conn.last_insert_rowid()),\n'
+     '        _ => None,\n'
+     '    }\n}\n', set()),
+    ("(17) (`P10.28-e`) l'insertion qui s'intercale est AVALÉE elle aussi : les deux écritures sont accusées",
+     'fn e17(conn: &Connection, name: &str) -> i64 {\n'
+     '    let _ = conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES(?1,\'1\')", params![name]);\n'
+     '    let _ = conn.execute("INSERT INTO dashboard(name) VALUES(?1)", params![name]);\n'
+     '    conn.last_insert_rowid()\n}\n', {"let _ -> last_insert_rowid"}),
+    ("(18) (`P10.28-e`) l'écriture vérifiée qui s'intercale N'INSÈRE PAS : la lecture rend encore l'identifiant avalé",
+     'fn e18(conn: &Connection, id: i64) -> rusqlite::Result<i64> {\n'
+     '    let _ = conn.execute("INSERT INTO t(a) VALUES(1)", []);\n'
+     '    conn.execute("UPDATE u SET b=1 WHERE id=?1", params![id])?;\n'
+     '    Ok(conn.last_insert_rowid())\n}\n', {"let _ -> last_insert_rowid"}),
+    ("(19) (`P10.28-e`) l'insertion vérifiée porte sur un AUTRE receveur",
+     'fn e19(conn: &Connection, tx: &Connection) -> rusqlite::Result<i64> {\n'
+     '    let _ = conn.execute("INSERT INTO t(a) VALUES(1)", []);\n'
+     '    tx.execute("INSERT INTO u(b) VALUES(1)", [])?;\n'
+     '    Ok(conn.last_insert_rowid())\n}\n', {"let _ -> last_insert_rowid"}),
+    ("(20) (`P10.28-e`) la règle ne vaut que pour l'identifiant : un REGISTRE reste une affirmation",
+     'fn e20(conn: &Connection, id: i64) -> rusqlite::Result<()> {\n'
+     '    let _ = conn.execute("UPDATE t SET a=1 WHERE id=?1", params![id]);\n'
+     '    conn.execute("INSERT INTO u(b) VALUES(1)", [])?;\n'
+     '    ledger_append(conn, "t.maj", "vérifiée ailleurs");\n'
+     '    Ok(())\n}\n', {"let _ -> ledger_append"}),
+    ("(22) (`P10.28-e`) le test de l'insertion qui s'intercale est lui-même JETÉ (`let _ = ….is_err();`)",
+     'fn e22(conn: &Connection) -> i64 {\n'
+     '    let _ = conn.execute("INSERT INTO t(a) VALUES(1)", []);\n'
+     '    let _ = conn.execute("INSERT INTO u(b) VALUES(1)", []).is_err();\n'
+     '    conn.last_insert_rowid()\n}\n', {"let _ -> last_insert_rowid"}),
+    ("(21) (`P10.28-e`) un jeton INCONNU sur l'insertion qui s'intercale ne la vérifie pas",
+     'fn e21(conn: &Connection) -> i64 {\n'
+     '    let _ = conn.execute("INSERT INTO t(a) VALUES(1)", []);\n'
+     '    conn.execute("INSERT INTO u(b) VALUES(1)", []).journaliser();\n'
+     '    conn.last_insert_rowid()\n}\n', {"let _ -> last_insert_rowid"}),
     # --- L'ANGLE MORT EST PROUVÉ, PAS ALLÉGUÉ. Ce témoin est DÉFENSIF dans un seul sens : il rougit
     # si la garde se met à voir le `match` muet, ce qui veut dire que le paragraphe « ce que ce vert
     # ne dit pas » doit être réécrit AVANT que le verdict reprenne. Il n'exige jamais qu'un défaut
@@ -1182,7 +1316,13 @@ def valider_instrument():
     `n17` et l'angle mort `a6` ; ne plus sauter les autres bras fait tomber `n19` ; accepter un fait à toute
     profondeur dans l'ancêtre fait tomber `n18` et `n20` ; traverser une fermeture fait tomber `n16` ;
     refuser le receveur-appel fait tomber (16) et quatre positifs de la liaison sourde ; ignorer
-    l'appariement fait tomber `n12`, `n21` et trois négatifs de la liaison sourde."""
+    l'appariement fait tomber `n12`, `n21` et trois négatifs de la liaison sourde. Et le 2026-09-25 (`P10.28-e`) :
+    débrancher la règle de l'insertion vérifiée fait tomber `n22` à `n24` ; tenir toute écriture vérifiée pour une
+    insertion fait tomber (18) ; ignorer le receveur fait tomber (19) ; tenir une insertion avalée pour vérifiée fait
+    tomber (17) ; tenir un jeton inconnu pour vérifiant fait tomber (21) ; ne plus écarter l'insertion dont le test
+    est jeté (`let _ = ….is_err();`) fait tomber (22). Appliquer la règle à TOUS les faits est une mutation
+    ÉQUIVALENTE, mesurée : un registre, un audit, un armement n'ont pas de receveur en queue (`ledger_append(conn, …)`),
+    donc la règle ne les coupe pas même sans son filtre ; (20) tient le cas pour le jour où un fait neuf en aurait un."""
     errs = []
     # LES LECTEURS PARTAGÉS SE VALIDENT AVANT DE SERVIR (`P10.20-d`, `P10.20-r`). Ils sont IMPORTÉS,
     # donc leurs témoins ne tournent pas à l'import : sans ces deux appels, un lecteur amputé de sa
@@ -1323,6 +1463,12 @@ def ce_qui_n_est_pas_tenu():
           "accusations dans `actions.rs::respond_run` (chaque écriture est suivie d'un `continue`) ; "
           "sans la lecture au seul niveau, SEPT (les cinq blocs frères de `case_apply_update`, deux "
           "bras `COMMIT`/`ROLLBACK` d'`engagement.rs::activate_due_engagements_conn`).\n"
+          "  * `P10.28-e` : une INSERTION VÉRIFIÉE qui s'intercale entre l'écriture avalée et la lecture "
+          "d'identifiant coupe la conjonction (pour ce seul fait). « Vérifiée » se lit sur la CHAÎNE : un "
+          "`if conn.execute(…).is_err() { … }` dont le corps ne sort pas est tenu pour vérifié, par la même "
+          "confiance que la population accorde à `is_err` ; un énoncé nommé par une constante n'est pas lu "
+          "(l'accusation reste) ; l'ordre est TEXTUEL (une insertion dans un bras frère ou au tour de boucle "
+          "suivant n'est pas départagée).\n"
           "  * elle ne juge PAS `is_ok()`/`is_err()` sur une écriture. Ils TESTENT l'échec et la route "
           "refuse — mais ils perdent le COMPTE de lignes, donc « aucune ligne ne correspondait » y "
           "reste indiscernable d'un succès sans effet. C'est la famille de `P10.20-b` côté écriture, "

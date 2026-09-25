@@ -468,7 +468,11 @@ function renderAcces(acces) {
 //     (booléen) et `lignes` (nombre de lignes par table, pour les seules tables où le nom en tient) ;
 //   · 503 JSON `CAUSE_NOM_NON_VERIFIE_COMPTE_NON_CREE` — la vérification du nom n'a pas eu lieu ;
 //   · 503 JSON `CAUSE_COMPTE_NON_CREE_COMMIT_REFUSE` — le COMMIT refusé ;
-//   · 409 TEXTE « ce nom de compte existe déjà », et les quatre cents TEXTE de forme (nom, préfixe, mot de passe).
+//   · 409 TEXTE « ce nom de compte existe déjà », et les quatre cents TEXTE de forme (nom, préfixe, mot de passe) ;
+//   · `P10.28-u` — 409 JSON `CAUSE_NOM_DE_L_IDENTITE_DE_LA_DEMONSTRATION` : le nom de la démonstration publique
+//     (`IDENTITE_DE_LA_DEMONSTRATION`, daemon/src/auth.rs), réservé à la création que la démonstration soit active ou non.
+//     MESURÉ AVANT CE LOT (témoin 113, sur l'arbre du démon qui la sert) : aucune ouverture ne la reconnaissait, elle
+//     tombait sous la face générique et le témoin refusait de conclure.
 // CE QUE LE FORMULAIRE EN FAISAIT, MESURÉ AVANT CE LOT : la ligne d'actions (`#uf-result`, encre neutre) recevait le
 // message composé par `apiSend` — « 409 {"error":"NOM RÉSERVÉ, C'EST L'ADMINISTRATEUR DE CONFIGURATION : ce nom est
 // celui… » —, du JSON brut coupé à deux cents caractères sur des causes de 460, 558, 250 et 224 caractères, si bien
@@ -480,6 +484,7 @@ function renderAcces(acces) {
 // c'est le démon qui refuse, et chaque face dit ce qui n'est PAS écrit.
 const OUVERTURES_DES_REFUS_DE_CREATION_DE_COMPTE = [
   ['nom_de_l_administrateur_de_configuration', /^NOM RÉSERVÉ, C'EST L'ADMINISTRATEUR DE CONFIGURATION(?![\p{L}\p{N}])/u],
+  ['nom_de_l_identite_de_la_demonstration', /^NOM RÉSERVÉ, C'EST L'IDENTITÉ DE LA DÉMONSTRATION PUBLIQUE(?![\p{L}\p{N}])/u],
   ['nom_tenu_par_une_identite_sans_compte', /^NOM TENU PAR UNE IDENTITÉ SANS COMPTE LOCAL(?![\p{L}\p{N}])/u],
   ['nom_non_verifie', /^COMPTE NON CRÉÉ, NOM NON VÉRIFIÉ(?![\p{L}\p{N}])/u],
   ['commit_refuse', /^COMPTE NON CRÉÉ : la base n'a pas validé la transaction \(COMMIT refusé\)/u],
@@ -496,6 +501,10 @@ const MOTS_DE_LA_CREATION_DE_COMPTE = {
   nom_de_l_administrateur_de_configuration: {
     fr: "Compte NON créé : ce nom est celui de l'administrateur que pose la configuration du démon, et il est réservé — un compte de ce nom le masquerait. Rien n'est écrit ; choisir un autre nom. Le démon en nomme la cause —",
     en: "Account NOT created: this name is the administrator set by the daemon's configuration, and it is reserved — an account of this name would mask it. Nothing is written; pick another name. The daemon names the cause —" },
+  // `P10.28-u` — le nom de la démonstration publique.
+  nom_de_l_identite_de_la_demonstration: {
+    fr: "Compte NON créé : ce nom est celui de la démonstration publique, et il est réservé — quand la démonstration est active, le démon sert sous ce nom tout visiteur anonyme, qui recevrait ce que ce compte tiendrait. Rien n'est écrit ; choisir un autre nom. Le démon en nomme la cause —",
+    en: 'Account NOT created: this name is the identity of the public demonstration, and it is reserved — when the demonstration is active, the daemon serves every anonymous visitor under this name, who would receive what this account held. Nothing is written; pick another name. The daemon names the cause —' },
   nom_tenu_par_une_identite_sans_compte: {
     fr: "Compte NON créé : ce nom est déjà tenu par une identité sans compte local, et un compte à mot de passe en hériterait. Rien n'est écrit ; choisir un autre nom — une identité de l'annuaire devient un compte par la fédération (OIDC, SAML, LDAP). Le démon en nomme la cause —",
     en: 'Account NOT created: this name is already held by an identity without a local account, and a password account would inherit it. Nothing is written; pick another name — a directory identity becomes an account through federation (OIDC, SAML, LDAP). The daemon names the cause —' },

@@ -1,6 +1,6 @@
 // connectors.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // Connecteurs (sources externes en PULL, #3/#3a, admin-only): liste/form/test/poll.
-import { $, LANG, api, apiSend, confirmWithConsequence, effacerLeRefusDUnGeste, fetchInto, fmtTs, humanAge, ic, laTraceNonEcriteServieEnDeuxCents, muted, pagedList, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, sev, toast, withBusy } from './core.js';
+import { $, LANG, api, apiSend, confirmWithConsequence, effacerLeRefusDUnGeste, faceDansLaLangue, fetchInto, fmtTs, humanAge, ic, laTraceNonEcriteServieEnDeuxCents, muted, pagedList, peindreLeRefusDUnEssai, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, sev, toast, withBusy } from './core.js';
 import { enabledSwitch } from './producer_ui.js';
 import { S } from './state.js';
 import { uiIsAdmin } from './multitenant.js';
@@ -57,6 +57,27 @@ const motDuConnecteur = (cle, valeurs) => {
 // AVANT la seule clause qui oblige à agir : chaque clé de livraison liée AUTHENTIFIE ENCORE sur son récepteur. La
 // bascule collait « Bascule refusée : 503 {… », le formulaire écrivait le même JSON coupé dans sa ligne d'actions.
 function puitsDesConnecteurs() { const liste = $('#connector-list'); return liste ? puitsDuRefusDUnGeste(liste.parentNode, 'connecteurs', liste) : null; }
+// `P10.28-t` — LES AVIS DES CONNECTEURS, DANS LES DEUX LANGUES. MESURÉ AVANT CE LOT (témoin 119t) : « connexion OK — N
+// alerte(s) en échantillon », « collecte OK — N event(s) ingéré(s) », l'en-tête de l'aperçu et l'avis d'un preset
+// chargé étaient composés en français (un nombre s'y colle : le lexique, qui ne traduit qu'un nœud entier, ne les
+// atteignait pas) et restaient français sous `LANG='en'`. `{cause}` est la phrase que le démon ou la source ont servie,
+// telle quelle.
+const MOTS_DES_AVIS_DE_CONNECTEUR = {
+  test_reussi: { fr: 'connexion OK — {n} alerte(s) en échantillon', en: 'connection OK — {n} alert(s) in the sample' },
+  test_echoue: { fr: 'échec du test de connexion : {cause}', en: 'connection test failed: {cause}' },
+  cause_inconnue: { fr: 'erreur inconnue', en: 'unknown error' },
+  collecte_reussie: { fr: 'collecte OK — {n} event(s) ingéré(s)', en: 'collection OK — {n} event(s) ingested' },
+  collecte_echouee: { fr: 'collecte : {cause}', en: 'collection: {cause}' },
+  apercu_reussi: { fr: 'Test OK — {n} event(s) au 1er lot ; aperçu de {m} event(s) mappé(s) (aucune ingestion) :', en: 'Test OK — {n} event(s) in the first batch; preview of {m} mapped event(s) (nothing ingested):' },
+  apercu_echoue: { fr: 'échec : {cause}', en: 'failed: {cause}' },
+  preset_charge_avec_placeholders: { fr: 'Preset chargé — {n} placeholder(s) à renseigner + le secret', en: 'Preset loaded — {n} placeholder(s) to fill in + the secret' },
+  preset_charge: { fr: 'Preset chargé — saisis le secret', en: 'Preset loaded — enter the secret' },
+  preset_consigne: { fr: 'Preset « {nom} » chargé — {etapes}', en: 'Preset “{nom}” loaded — {etapes}' },
+  preset_placeholders: { fr: 'remplace les placeholders ({liste})', en: 'replace the placeholders ({liste})' },
+  preset_secret: { fr: 'saisis le secret ({auth})', en: 'enter the secret ({auth})' },
+  preset_fin: { fr: 'puis crée (désactivé) et teste la connexion.', en: 'then create it (disabled) and test the connection.' },
+};
+const motDUnAvisDeConnecteur = (cle, valeurs) => faceDansLaLangue(MOTS_DES_AVIS_DE_CONNECTEUR[cle], valeurs);
 
 async function loadConnectors() {
   const wrap = $('#connector-list'); if (!wrap) return;
@@ -126,13 +147,17 @@ function connectorRow(c) {
 
 // DRY-RUN de connexion : POST /api/connectors/{id}/test -> {ok,sample_count,error}. N'ingère pas, ne renvoie
 // NI le secret NI le contenu des alertes ; `error` = statut/motif seul. Feedback par toast (succès/erreur).
+// `P10.27-d` — UN ESSAI, PAS UN GESTE : son refus (rôle, connecteur introuvable, passerelle, demande non aboutie) se dit
+// par la face nommée d'un essai (`peindreLeRefusDUnEssai`, core.js) dans le puits des connecteurs. MESURÉ AVANT CE LOT
+// (témoin 119d) : « échec du test : » + `e.message` dans un avis qui s'efface — « 403 {"error":"réservé admin"… ».
 async function testConnector(c) {
+  const puits = puitsDesConnecteurs(); effacerLeRefusDUnGeste(puits);
   let j;
   try { j = await apiSend('/connectors/' + c.id + '/test', 'POST'); }
-  catch (e) { toast('échec du test : ' + ((e && e.message) || e), 'bad'); return; }
+  catch (e) { peindreLeRefusDUnEssai(puits, e); return; }
   j = j || {};
-  if (j.ok) toast('connexion OK — ' + (j.sample_count != null ? j.sample_count : 0) + ' alerte(s) en échantillon', 'ok', 4200);
-  else toast('échec : ' + (j.error || 'erreur inconnue'), 'bad', 4200);
+  if (j.ok) toast(motDUnAvisDeConnecteur('test_reussi', { n: j.sample_count != null ? j.sample_count : 0 }), 'ok', 4200);
+  else toast(motDUnAvisDeConnecteur('test_echoue', { cause: j.error || motDUnAvisDeConnecteur('cause_inconnue') }), 'bad', 4200);
 }
 
 // D10b — POST /api/connectors/{id}/poll : déclenche UN pull+ingest IMMÉDIAT (admin-only + fail-safe serveur).
@@ -166,8 +191,8 @@ export async function pollConnector(c) {
   catch (e) { peindreLeRefusDUnGeste(puits, e); loadConnectors(); return; }
   j = j || {};
   const traceAbsente = laTraceNonEcriteServieEnDeuxCents(j); if (traceAbsente) peindreLeRefusDUnGeste(puits, traceAbsente);
-  if (j.ok) toast('collecte OK — ' + (j.count != null ? j.count : 0) + ' event(s) ingéré(s)', 'ok', 4200);
-  else toast('collecte : ' + (j.error || 'erreur inconnue'), 'bad', 4200);
+  if (j.ok) toast(motDUnAvisDeConnecteur('collecte_reussie', { n: j.count != null ? j.count : 0 }), 'ok', 4200);
+  else toast(motDUnAvisDeConnecteur('collecte_echouee', { cause: j.error || motDUnAvisDeConnecteur('cause_inconnue') }), 'bad', 4200);
   loadConnectors();   // reflète last_run / last_count / last_error mis à jour par le poll
 }
 
@@ -323,10 +348,11 @@ function httpPullFormConfig() {
 async function previewHttpPull() {
   const out = $('#cf-http-preview-out'); if (!out) return;
   if (!S.editingConnector) { toast('Enregistre d\'abord le connecteur (créé désactivé), puis prévisualise.', 'info', 4200); return; }
-  out.hidden = false; out.replaceChildren(muted('test en cours…'));
+  out.hidden = false; delete out.dataset.refusDUnEssai; out.className = ''; out.replaceChildren(muted('test en cours…'));
   let j;
+  // `P10.27-d` — l'aperçu est un ESSAI : son refus se dit par la face d'un essai, dans sa zone de résultat.
   try { j = await apiSend('/connectors/' + S.editingConnector + '/test', 'POST'); }
-  catch (e) { out.replaceChildren(muted('échec du test : ' + ((e && e.message) || e))); return; }
+  catch (e) { peindreLeRefusDUnEssai(out, e); return; }
   renderHttpPreview(out, j || {});
 }
 
@@ -341,10 +367,10 @@ function previewCell(k, v) {
 // Table des events mappés (échantillon). Colonnes = union ordonnée des clés présentes. textContent (anti-XSS).
 function renderHttpPreview(out, j) {
   out.replaceChildren();
-  if (!j.ok) { out.appendChild(muted('échec : ' + (j.error || 'erreur inconnue'))); return; }
+  if (!j.ok) { out.appendChild(muted(motDUnAvisDeConnecteur('apercu_echoue', { cause: j.error || motDUnAvisDeConnecteur('cause_inconnue') }))); return; }
   const sample = Array.isArray(j.sample) ? j.sample : [];
   const head = document.createElement('div'); head.className = 'muted'; head.style.cssText = 'margin:8px 0 6px;font-size:12px';
-  head.textContent = 'Test OK — ' + (j.sample_count != null ? j.sample_count : 0) + ' event(s) au 1er lot ; aperçu de ' + sample.length + ' event(s) mappé(s) (aucune ingestion) :';
+  head.textContent = motDUnAvisDeConnecteur('apercu_reussi', { n: j.sample_count != null ? j.sample_count : 0, m: sample.length });
   out.appendChild(head);
   if (!sample.length) { out.appendChild(muted('aucun event mappé — vérifie records_path et le field-map (le serveur a répondu, mais aucun record n\'a produit d\'event).')); return; }
   const ORDER = ['ts', 'source', 'category', 'severity', 'message', 'host', 'src_ip', 'dst_ip', 'url', 'dedup', 'fields'];
@@ -604,12 +630,12 @@ function instantiatePreset(p) {
   const res = $('#cf-result');
   if (res) {
     const parts = [];
-    if (needs.length) parts.push('remplace les placeholders (' + needs.join(', ') + ')');
-    if (p.requires_secret !== false) parts.push('saisis le secret (' + (p.auth_kind || 'auth') + ')');
-    parts.push('puis crée (désactivé) et teste la connexion.');
-    res.textContent = 'Preset « ' + (p.label || p.id) + ' » chargé — ' + parts.join(' · ');
+    if (needs.length) parts.push(motDUnAvisDeConnecteur('preset_placeholders', { liste: needs.join(', ') }));
+    if (p.requires_secret !== false) parts.push(motDUnAvisDeConnecteur('preset_secret', { auth: p.auth_kind || 'auth' }));
+    parts.push(motDUnAvisDeConnecteur('preset_fin'));
+    res.textContent = motDUnAvisDeConnecteur('preset_consigne', { nom: p.label || p.id, etapes: parts.join(' · ') });
   }
-  toast('Preset chargé' + (needs.length ? ' — ' + needs.length + ' placeholder(s) à renseigner + le secret' : ' — saisis le secret'), 'info', 4200);
+  toast(needs.length ? motDUnAvisDeConnecteur('preset_charge_avec_placeholders', { n: needs.length }) : motDUnAvisDeConnecteur('preset_charge'), 'info', 4200);
 }
 
 async function deleteConnector(c) {
@@ -628,4 +654,4 @@ async function deleteConnector(c) {
 
 
 // `P10.27-b` — le puits des gestes sur les connecteurs, que le formulaire d'`app.js` emprunte aussi.
-export { loadConnectors, openConnectorForm, applyConnectorType, httpPullFormConfig, addFieldMapRow, addStMapRow, previewHttpPull, openPresetPicker, puitsDesConnecteurs };
+export { loadConnectors, openConnectorForm, applyConnectorType, httpPullFormConfig, addFieldMapRow, addStMapRow, previewHttpPull, openPresetPicker, puitsDesConnecteurs, testConnector };

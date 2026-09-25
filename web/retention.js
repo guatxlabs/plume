@@ -4,7 +4,7 @@
 // PURE MOVE : corps de fonctions IDENTIQUES au monolithe, seuls les import/export sont ajoutes.
 // Le cycle app<->module est benin : les fonctions importees d'app.js ne sont appelees qu'a
 // l'EXECUTION (handlers/async apres await), jamais a l'evaluation du module.
-import { $, muted, api, apiSend, cleDeLaSuiteServie, effacerLeRefusDUnGeste, fmtTs, confirmWithConsequence, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, toast, LANG, LOC, tzOpts } from './core.js';
+import { $, muted, api, apiSend, cleDeLaSuiteServie, effacerLeRefusDUnGeste, fmtTs, confirmWithConsequence, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, toast, LANG, LOC, tzOpts, faceDansLaLangue } from './core.js';
 import { S } from './state.js';
 // `P10.20-y` — LE GENRE D'UNE LIGNE DE REGISTRE SE REND PAR LA FABRIQUE DE L'ONGLET AUDIT, pas par une
 // seconde. Les deux seules vues qui lisent `GET /api/ledger` sont celle-ci et `web/audit.js` ; écrire ici
@@ -293,7 +293,8 @@ async function enregistrerLaRetention(e) {
   catch (err) { res.textContent = ''; peindreLeRefusDUnGeste(puits, err); return; }
   j = j || {};
   res.textContent = '';
-  toast(`rétention mise à jour (${j.changed != null ? j.changed : Object.keys(body).length} champ(s))`, 'ok');
+  // `P10.28-t` — l'avis de succès, dans les deux langues (composé : un nombre s'y colle, le lexique ne l'atteignait pas).
+  toast(faceDansLaLangue({ fr: 'rétention mise à jour ({n} champ(s))', en: 'retention updated ({n} field(s))' }, { n: j.changed != null ? j.changed : Object.keys(body).length }), 'ok');
   loadRetention();
 }
 if ($('#retention-form')) $('#retention-form').addEventListener('submit', enregistrerLaRetention);

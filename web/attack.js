@@ -20,7 +20,7 @@
 // selon rule/alert_count ; non couvert = grisé -> les ANGLES MORTS ressortent). Clic technique -> ses alertes.
 // DÉGRADATION : si l'endpoint 404 (daemon non déployé), message « couverture indisponible » (pas d'erreur dure).
 // SÉCU UI : tout en textContent/attributs (anti-XSS). Aucune mutation (aucun apiSend).
-import { $, LANG, api, muted, socIsAdmin, socRole, closeModals } from './core.js';
+import { $, LANG, api, muted, socIsAdmin, socRole, closeModals, faceDansLaLangue, noeudDuRefusDUneLecture } from './core.js';
 import { setAlertMitreFilter } from './app.js';
 import { openSigmaImport } from './sigmaimport.js';
 import { PORTES_DE_TECHNIQUE as PORTES } from './registres.js'; // `P11.21-f` : les portes vivent dans un module feuille, jamais en zone morte
@@ -41,6 +41,33 @@ import { PORTES_DE_TECHNIQUE as PORTES } from './registres.js'; // `P11.21-f` : 
 // deviner : l'absence est DITE (« nom inconnu ») et l'infobulle en donne la raison. Une console qui connaît
 // 14 libellés par cœur sur 183 ne rend pas ce cas meilleur, elle le rend inégal.
 const NOM_INCONNU = 'nom inconnu';
+// `P10.29-c` — LES RÉSUMÉS COMPOSÉS DE LA MATRICE, DANS LES DEUX LANGUES. MESURÉ AVANT CE LOT (témoin 120c) : le compte d'une
+// cellule (« source manquante », « 3r/2a »), son infobulle d'état, le sous-titre d'une tactique et la synthèse de la
+// légende (« Couverture : 12 / 40 technique(s) · … ») étaient composés en français autour de leurs nombres, et le
+// restaient sous `LANG='en'` — le lexique ne traduit qu'un nœud entier. Les faces françaises sont celles d'avant.
+const MOTS_DES_RESUMES_ATTACK = {
+  etat_couvert: { fr: '{rc} règle(s) · {minorant}{ac} alerte(s)', en: '{rc} rule(s) · {minorant}{ac} alert(s)' },
+  etat_en_attente: { fr: "EN ATTENTE DE SOURCE — {n} règle(s) activée(s) portent cette technique, mais rien sur cette base ne produit ce qu'elles interrogent", en: 'WAITING FOR A SOURCE — {n} enabled rule(s) carry this technique, but nothing on this base produces what they query' },
+  sources_a_brancher: { fr: '. Source(s) à brancher : {liste}', en: '. Source(s) to connect: {liste}' },
+  fichiers_a_copier: { fr: '. Fichier(s) à copier : {liste}', en: '. File(s) to copy: {liste}' },
+  etat_eteinte: { fr: 'RÈGLE ÉTEINTE — {n} règle(s) existent sur cette technique, désactivées : {regles}', en: 'DISABLED RULE — {n} rule(s) exist on this technique, disabled: {regles}' },
+  sources_avant_activation: { fr: ". Source(s) à brancher avant de l'activer : {liste}", en: '. Source(s) to connect before enabling it: {liste}' },
+  activer_suffit: { fr: ". L'activer depuis le panneau des règles suffit", en: '. Enabling it from the rules panel is enough' },
+  angle_mort: { fr: 'ANGLE MORT — aucune règle ne couvre cette technique. Importez un ruleset Sigma pour la couvrir (bouton « Importer un ruleset Sigma »).', en: 'BLIND SPOT — no rule covers this technique. Import a Sigma ruleset to cover it (“Import a Sigma ruleset” button).' },
+  identifiant_hors_catalogue: { fr: '{nom} : identifiant hors du catalogue ATT&CK connu de la console (technique retirée, personnalisée ou mal saisie)', en: '{nom}: identifier outside the ATT&CK catalogue known to the console (technique retired, custom or mistyped)' },
+  clic_porte: { fr: 'Clic : ses règles, ses alertes, et le geste qui la couvrirait', en: 'Click: its rules, its alerts, and the action that would cover it' },
+  detail_en_attente_sources: { fr: ' {n} règle(s) en attente · source(s) à brancher : {liste}.', en: ' {n} rule(s) waiting · source(s) to connect: {liste}.' },
+  detail_en_attente_sans_source: { fr: " {n} règle(s) en attente ; la matrice ne nomme aucune source, cette surface n'en invente pas.", en: ' {n} rule(s) waiting; the matrix names no source, this surface does not invent one.' },
+  detail_fichiers: { fr: ' Fichier(s) à copier : {liste}.', en: ' File(s) to copy: {liste}.' },
+  detail_eteintes: { fr: ' {n} règle(s) éteinte(s) : {regles}.', en: ' {n} disabled rule(s): {regles}.' },
+  detail_sources: { fr: ' Source(s) à brancher : {liste}.', en: ' Source(s) to connect: {liste}.' },
+  couverte_par: { fr: '{rc} règle(s) la couvrent · {ac} alerte(s) sur la fenêtre de la matrice.', en: '{rc} rule(s) cover it · {ac} alert(s) over the matrix window.' },
+  sous_titre_de_tactique: { fr: '{couvertes} / {total} couverte(s){attente}{eteinte}', en: '{couvertes} / {total} covered{attente}{eteinte}' },
+  sous_titre_attente: { fr: ' · {n} en attente de source', en: ' · {n} waiting for a source' },
+  sous_titre_eteinte: { fr: ' · {n} avec règle éteinte', en: ' · {n} with a disabled rule' },
+  synthese: { fr: 'Couverture : {cov} / {tech} technique(s) · {angles} angle(s) mort(s) · {att} en attente de source · {ete} avec règle éteinte', en: 'Coverage: {cov} / {tech} technique(s) · {angles} blind spot(s) · {att} waiting for a source · {ete} with a disabled rule' },
+};
+const motDesResumesAttack = (cle, valeurs) => faceDansLaLangue(MOTS_DES_RESUMES_ATTACK[cle], valeurs);
 function techniqueDisplayName(t) {
   const servi = t && typeof t.name === 'string' ? t.name.trim() : '';
   return servi || null;
@@ -189,7 +216,10 @@ function techniqueCell(t, max, comptesDAlertesNonEtablis) {
   const manquantes = sourcesManquantes(t);
   const idEl = document.createElement('span'); idEl.className = 'attack-tid'; idEl.textContent = tid;
   const cnt = document.createElement('span'); cnt.className = 'attack-cnt' + (covered ? '' : ' none');
-  cnt.textContent = covered ? (rc + 'r/' + (minorant ? '≥' : '') + ac + 'a') : attente ? 'source manquante' : eteinte ? 'règle éteinte' : 'aucune règle';
+  // Le compte d'une cellule couverte (« 3r/2a ») est neutre : r et a valent dans les deux langues ; les trois autres
+  // états sont des nœuds ENTIERS, que le lexique traduit.
+  const compteDUneCelluleCouverte = rc + 'r/' + (minorant ? '≥' : '') + ac + 'a';
+  cnt.textContent = covered ? compteDUneCelluleCouverte : attente ? 'source manquante' : eteinte ? 'règle éteinte' : 'aucune règle';
   const nom = techniqueDisplayName(t);
   const nameEl = document.createElement('span'); nameEl.className = 'attack-tname' + (nom ? '' : ' attack-tname-inconnu');
   nameEl.textContent = nom || NOM_INCONNU;
@@ -197,23 +227,23 @@ function techniqueCell(t, max, comptesDAlertesNonEtablis) {
   // Le clic OUVRE LA PORTE de la technique (`P11.6-b`) : la sortie vers ses alertes y est le même appel
   // qu'avant, à côté de celles qui manquaient. Le raccourci d'import en masse reste sur la légende (admin),
   // et il ne s'offre qu'aux VRAIS angles morts : importer un ruleset ne branche aucun producteur.
+  const fichiersACopier = gestesDeBranchement(t).length ? motDesResumesAttack('fichiers_a_copier', { liste: motDesGestes(t) }) : '';
   const etatEnInfobulle = covered
-    ? (rc + ' règle(s) · ' + (minorant ? '≥' : '') + ac + ' alerte(s)')
+    ? motDesResumesAttack('etat_couvert', { rc, ac, minorant: minorant ? '≥' : '' })
     : attente
-      ? ("EN ATTENTE DE SOURCE — " + reglesEnAttente(t) + " règle(s) activée(s) portent cette technique, mais rien sur cette base ne produit ce qu'elles interrogent"
-         + (manquantes.length ? '. Source(s) à brancher : ' + manquantes.join(', ') : '')
-         + (gestesDeBranchement(t).length ? '. Fichier(s) à copier : ' + motDesGestes(t) : ''))
+      ? motDesResumesAttack('etat_en_attente', { n: reglesEnAttente(t) })
+         + (manquantes.length ? motDesResumesAttack('sources_a_brancher', { liste: manquantes.join(', ') }) : '')
+         + fichiersACopier
       : eteinte
-        ? ("RÈGLE ÉTEINTE — " + reglesEteintes(t) + " règle(s) existent sur cette technique, désactivées : " + motDesReglesEteintes(t)
+        ? motDesResumesAttack('etat_eteinte', { n: reglesEteintes(t), regles: motDesReglesEteintes(t) })
            + (sourcesManquantesDesEteintes(t).length
-              ? '. Source(s) à brancher avant de l\'activer : ' + sourcesManquantesDesEteintes(t).join(', ')
-                + (gestesDeBranchement(t).length ? '. Fichier(s) à copier : ' + motDesGestes(t) : '')
-              : ". L'activer depuis le panneau des règles suffit"))
-        : 'ANGLE MORT — aucune règle ne couvre cette technique. Importez un ruleset Sigma pour la couvrir (bouton « Importer un ruleset Sigma »).';
-  cell.title = tid + ' — ' + (nom || (NOM_INCONNU + " : identifiant hors du catalogue ATT&CK connu de la console (technique retirée, personnalisée ou mal saisie)"))
+              ? motDesResumesAttack('sources_avant_activation', { liste: sourcesManquantesDesEteintes(t).join(', ') }) + fichiersACopier
+              : motDesResumesAttack('activer_suffit'))
+        : motDesResumesAttack('angle_mort');
+  cell.title = tid + ' — ' + (nom || motDesResumesAttack('identifiant_hors_catalogue', { nom: NOM_INCONNU }))
     + '\n' + etatEnInfobulle
     + (minorant ? '\n' + motDuSousCompteDAlertes() : '')
-    + '\n' + 'Clic : ses règles, ses alertes, et le geste qui la couvrirait';
+    + '\n' + motDesResumesAttack('clic_porte');
   cell.onclick = () => ouvrirLaPorteDeLaTechnique(t);
   return cell;
 }
@@ -267,13 +297,14 @@ function porteDeLaTechnique(t, fermer = () => {}) {
   if (attente) {
     const phrase = document.createElement('span');
     phrase.textContent = "RIEN NE PEUT LA DÉCLENCHER : la ou les règles qui portent cette technique sont ACTIVÉES, mais aucune source de cette base ne produit ce qu'elles interrogent. Brancher le producteur suffit — il n'y a pas de règle à écrire.";
+    // `P10.29-c` — le détail d'une porte, dans les deux langues (témoin 120c).
     const detail = manquantes.length
-      ? ' ' + nAttente + " règle(s) en attente · source(s) à brancher : " + manquantes.join(', ') + '.'
-      : ' ' + nAttente + " règle(s) en attente ; la matrice ne nomme aucune source, cette surface n'en invente pas.";
+      ? motDesResumesAttack('detail_en_attente_sources', { n: nAttente, liste: manquantes.join(', ') })
+      : motDesResumesAttack('detail_en_attente_sans_source', { n: nAttente });
     // LE FICHIER À COPIER ET SA DESTINATION, quand le dépôt les connaît : « brancher le producteur » sans
     // nommer le fichier laissait l'exploitant chercher ce que le dépôt sait. Une source sans geste est
     // dite telle quelle plutôt qu'assortie d'un chemin inventé.
-    const geste = gestes.length ? ' Fichier(s) à copier : ' + motDesGestes(t) + '.' : '';
+    const geste = gestes.length ? motDesResumesAttack('detail_fichiers', { liste: motDesGestes(t) }) : '';
     etat.append(phrase, document.createTextNode(detail + geste));
   } else if (eteinte) {
     // LE QUATRIÈME ÉTAT, EN DEUX PHRASES SELON LA CAUSE — la raison voyage par règle (ses sources
@@ -284,13 +315,14 @@ function porteDeLaTechnique(t, fermer = () => {}) {
     phrase.textContent = aBrancher.length
       ? "UNE RÈGLE EXISTE, ÉTEINTE : elle a été semée désactivée parce qu'aucune source de cette base ne produit ce qu'elle interroge. Brancher le producteur, puis l'activer depuis le panneau des règles — il n'y a pas de règle à écrire."
       : "UNE RÈGLE EXISTE, ÉTEINTE : rien ne la détectera tant qu'elle reste désactivée. L'activer depuis le panneau des règles suffit — il n'y a pas de règle à écrire.";
-    const detail = ' ' + reglesEteintes(t) + ' règle(s) éteinte(s) : ' + motDesReglesEteintes(t) + '.'
-      + (aBrancher.length ? ' Source(s) à brancher : ' + aBrancher.join(', ') + '.' : '')
-      + (gestes.length ? ' Fichier(s) à copier : ' + motDesGestes(t) + '.' : '');
+    const detail = motDesResumesAttack('detail_eteintes', { n: reglesEteintes(t), regles: motDesReglesEteintes(t) })
+      + (aBrancher.length ? motDesResumesAttack('detail_sources', { liste: aBrancher.join(', ') }) : '')
+      + (gestes.length ? motDesResumesAttack('detail_fichiers', { liste: motDesGestes(t) }) : '');
     etat.append(phrase, document.createTextNode(detail));
   } else {
+    const couverteParSesRegles = motDesResumesAttack('couverte_par', { rc, ac });
     etat.textContent = couverte
-      ? rc + ' règle(s) la couvrent · ' + ac + ' alerte(s) sur la fenêtre de la matrice.'
+      ? couverteParSesRegles
       : "ANGLE MORT : aucune règle activée ne couvre cette technique. Rien ne la détectera tant qu'aucune ne la porte.";
   }
   const sorties = document.createElement('div');
@@ -386,7 +418,8 @@ function tacticColumn(tac, max, comptesDAlertesNonEtablis) {
   // n'attend qu'un producteur.
   const attCol = Math.max(0, Number(tac && tac.techniques_en_attente_de_source) || 0);
   const eteCol = Math.max(0, Number(tac && tac.techniques_avec_regle_eteinte) || 0);
-  sub.textContent = covered + ' / ' + techs.length + ' couverte(s)' + (attCol ? ' · ' + attCol + ' en attente de source' : '') + (eteCol ? ' · ' + eteCol + ' avec règle éteinte' : '');
+  sub.textContent = motDesResumesAttack('sous_titre_de_tactique', { couvertes: covered, total: techs.length,
+    attente: attCol ? motDesResumesAttack('sous_titre_attente', { n: attCol }) : '', eteinte: eteCol ? motDesResumesAttack('sous_titre_eteinte', { n: eteCol }) : '' });
   h.appendChild(sub); col.appendChild(h);
   // couvertes d'abord (poids décroissant), puis angles morts -> les cellules vertes remontent.
   // Couvertes en tête, puis les techniques dont la règle attend sa source, puis celles dont la règle est
@@ -428,7 +461,7 @@ function renderLegend(tactics) {
   // producteur se ferment SANS écrire une ligne. Les confondre reviendrait à prescrire le mauvais geste
   // sur le compte global, comme la porte le faisait sur une cellule.
   const summary = document.createElement('span');
-  summary.textContent = 'Couverture : ' + cov + ' / ' + tech + ' technique(s) · ' + (tech - cov - att - ete) + ' angle(s) mort(s) · ' + att + ' en attente de source · ' + ete + ' avec règle éteinte';
+  summary.textContent = motDesResumesAttack('synthese', { cov, tech, angles: tech - cov - att - ete, att, ete });
   leg.appendChild(summary);
   // AFFORDANCE « fermer les angles morts » : raccourci vers l'import Sigma en masse. Admin only (la modale
   // re-garde de toute façon, serveur = vraie garde). N'apparaît que s'il RESTE de VRAIS angles morts —
@@ -575,9 +608,11 @@ async function loadAttackMatrix() {
   let d;
   try { d = await api('/coverage/attack'); }
   catch (e) {
-    // dégrade proprement : 404 (daemon pas encore déployé) -> indisponible ; autre -> message d'erreur.
-    const msg = (e && e.message) || String(e);
-    host.replaceChildren(muted(/(^|\s)404(\s|$)/.test(msg) ? 'couverture ATT&CK indisponible (endpoint non déployé).' : 'couverture indisponible : ' + msg));
+    // dégrade proprement : 404 (daemon pas encore déployé) -> indisponible ; autre -> la face d'une lecture non servie.
+    // `P10.29-g` — le statut est lu à côté du message (`statutDuRefus`), plus dans le message : mesuré avant ce lot
+    // (témoin 120g), un refus collait « couverture indisponible : 403 {"error":…} », JSON et préfixe français compris.
+    if (e && e.statutDuRefus === 404) host.replaceChildren(muted('couverture ATT&CK indisponible (endpoint non déployé).'));
+    else host.replaceChildren(noeudDuRefusDUneLecture(e, faceDansLaLangue({ fr: 'Couverture ATT&CK', en: 'ATT&CK coverage' })));
     return;
   }
   // `P11.21-i` — L'ÉTAT DE LA LECTURE EST LU ICI, À UN CRAN DE L'APPEL, ET SUR LE CORPS SERVI.

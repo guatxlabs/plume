@@ -63,6 +63,24 @@ function newlyCovered(v) {
 }
 
 // Rendu du SUMMARY dans le conteneur `host`. Défensif sur la forme (le daemon est construit en concurrence).
+// `P10.29-c` — LE RÉSUMÉ D'UN IMPORT, DANS LES DEUX LANGUES. MESURÉ AVANT CE LOT (témoin 120c) : le delta de couverture
+// (« 3 technique(s) nouvellement couverte(s) », « Techniques couvertes : 10/40 → 13/40 », « · angles morts : … ») et les
+// en-têtes comptés (« Importées, mais rien ne peut les déclencher ici (2) », « Ignorées (4) ») étaient composés en
+// français autour de leurs nombres, et le restaient sous `LANG='en'`. Les faces françaises sont celles d'avant.
+const MOTS_DU_RESUME_D_IMPORT_SIGMA = {
+  nouvellement_couvertes: { fr: '{n} technique(s) nouvellement couverte(s)', en: '{n} newly covered technique(s)' },
+  aucune_nouvelle: { fr: 'aucune nouvelle technique couverte', en: 'no newly covered technique' },
+  techniques_couvertes: { fr: 'Techniques couvertes : {avant} → {apres}', en: 'Covered techniques: {avant} → {apres}' },
+  angles_morts: { fr: ' · angles morts : {avant} → {apres}{ecart}', en: ' · blind spots: {avant} → {apres}{ecart}' },
+  sans_producteur: { fr: 'Importées, mais rien ne peut les déclencher ici ({n})', en: 'Imported, but nothing can trigger them here ({n})' },
+  ignorees: { fr: 'Ignorées ({n})', en: 'Skipped ({n})' },
+  regles_importees_off: { fr: 'règles importées OFF : activez-les dans Détection › Règles', en: 'rules imported OFF: enable them in Detection › Rules' },
+  // Les libellés des pastilles comptées, collés à leur nombre par la fabrique locale : un nœud composé, que le lexique n'atteint pas.
+  pastille_importees: { fr: 'importée(s)', en: 'imported' },
+  pastille_mises_a_jour: { fr: 'mise(s) à jour', en: 'updated' },
+  pastille_ignorees: { fr: 'ignorée(s)', en: 'skipped' },
+  pastille_erreurs: { fr: 'erreur(s) de traduction', en: 'translation error(s)' },
+};
 function renderSummary(host, sum) {
   host.replaceChildren();
   sum = sum || {};
@@ -83,8 +101,9 @@ function renderSummary(host, sum) {
   const errors = firstNum(sum.errors) || 0;
   const counts = document.createElement('div'); counts.className = 'sigma-counts';
   const chip = (label, val, cls) => { const s = document.createElement('span'); s.className = 'sigma-chip' + (cls ? ' ' + cls : ''); const b = document.createElement('b'); b.textContent = String(val); s.append(b, document.createTextNode(' ' + label)); return s; };
-  counts.append(chip('importée(s)', imported, 'ok'), chip('mise(s) à jour', updated), chip('ignorée(s)', skipped.length, skipped.length ? 'warn' : ''));
-  if (errors > 0) counts.appendChild(chip('erreur(s) de traduction', errors, 'warn'));
+  counts.append(chip(faceDansLaLangue(MOTS_DU_RESUME_D_IMPORT_SIGMA.pastille_importees), imported, 'ok'), chip(faceDansLaLangue(MOTS_DU_RESUME_D_IMPORT_SIGMA.pastille_mises_a_jour), updated),
+    chip(faceDansLaLangue(MOTS_DU_RESUME_D_IMPORT_SIGMA.pastille_ignorees), skipped.length, skipped.length ? 'warn' : ''));
+  if (errors > 0) counts.appendChild(chip(faceDansLaLangue(MOTS_DU_RESUME_D_IMPORT_SIGMA.pastille_erreurs), errors, 'warn'));
   host.appendChild(counts);
   // note serveur éventuelle (ex. « bundle vide : no-op »)
   if (sum.note) { const n = document.createElement('div'); n.className = 'sigma-servernote'; n.textContent = String(sum.note); host.appendChild(n); }
@@ -93,17 +112,17 @@ function renderSummary(host, sum) {
   // Emphase conditionnelle (peaufinage) : gain -> accent succès ; aucun gain -> carte neutre (muet).
   const delta = document.createElement('div'); delta.className = 'sigma-delta' + (nc.count > 0 ? ' pos' : ' none');
   const dh = document.createElement('div'); dh.className = 'sigma-delta-h';
-  dh.textContent = nc.count > 0 ? (nc.count + ' technique(s) nouvellement couverte(s)') : 'aucune nouvelle technique couverte';
+  dh.textContent = faceDansLaLangue(nc.count > 0 ? MOTS_DU_RESUME_D_IMPORT_SIGMA.nouvellement_couvertes : MOTS_DU_RESUME_D_IMPORT_SIGMA.aucune_nouvelle, { n: nc.count });
   delta.appendChild(dh);
   if (before && after && before.covered != null && after.covered != null) {
     const line = document.createElement('div'); line.className = 'sigma-delta-line';
     const cov = document.createElement('span');
-    cov.textContent = 'Techniques couvertes : ' + before.covered + (before.total != null ? '/' + before.total : '') + ' → ' + after.covered + (after.total != null ? '/' + after.total : '');
+    cov.textContent = faceDansLaLangue(MOTS_DU_RESUME_D_IMPORT_SIGMA.techniques_couvertes, { avant: before.covered + (before.total != null ? '/' + before.total : ''), apres: after.covered + (after.total != null ? '/' + after.total : '') });
     line.appendChild(cov);
     if (before.total != null && after.total != null) {
       const bBlind = before.total - before.covered, aBlind = after.total - after.covered;
       const bs = document.createElement('span'); bs.className = 'sigma-blind';
-      bs.textContent = ' · angles morts : ' + bBlind + ' → ' + aBlind + (aBlind < bBlind ? ' (−' + (bBlind - aBlind) + ')' : '');
+      bs.textContent = faceDansLaLangue(MOTS_DU_RESUME_D_IMPORT_SIGMA.angles_morts, { avant: bBlind, apres: aBlind, ecart: aBlind < bBlind ? ' (−' + (bBlind - aBlind) + ')' : '' });
       line.appendChild(bs);
     }
     delta.appendChild(line);
@@ -119,7 +138,7 @@ function renderSummary(host, sum) {
   // --- ce que l'import ne ferme pas : les règles qu'aucun producteur ne nourrit ICI ---
   if (sansProducteur.length) {
     const cap = document.createElement('div'); cap.className = 'sigma-skip-h';
-    cap.textContent = 'Importées, mais rien ne peut les déclencher ici (' + sansProducteur.length + ')';
+    cap.textContent = faceDansLaLangue(MOTS_DU_RESUME_D_IMPORT_SIGMA.sans_producteur, { n: sansProducteur.length });
     host.appendChild(cap);
     const why = document.createElement('div'); why.className = 'sigma-servernote';
     why.textContent = "Ces règles sont créées et resteront éditables : c'est leur SOURCE qui n'existe pas sur cette base. Elles ne comptent donc dans aucun des deux bouts du delta ci-dessus. Brancher le producteur leur donne de quoi tirer, une fois activées — il n'y a pas de règle à réécrire.";
@@ -156,7 +175,7 @@ function renderSummary(host, sum) {
 
   // --- tableau des rejets (ref + raison) ---
   if (skipped.length) {
-    const cap = document.createElement('div'); cap.className = 'sigma-skip-h'; cap.textContent = 'Ignorées (' + skipped.length + ')';
+    const cap = document.createElement('div'); cap.className = 'sigma-skip-h'; cap.textContent = faceDansLaLangue(MOTS_DU_RESUME_D_IMPORT_SIGMA.ignorees, { n: skipped.length });
     host.appendChild(cap);
     // BATCH #13 — un bulk-import volumineux peut rejeter beaucoup de règles : liste paginée (pattern canonique).
     const skHost = document.createElement('div'); host.appendChild(skHost);
@@ -255,7 +274,7 @@ export function openSigmaImport() {
       resEl.hidden = false;
       renderSummary(resEl, sum || {});
       // P11.1-e : dire OÙ arrivent les règles importées — elles naissent OFF.
-      resEl.appendChild(destinationNote('alerts', '', 'règles importées OFF : activez-les dans Détection › Règles'));
+      resEl.appendChild(destinationNote('alerts', '', faceDansLaLangue(MOTS_DU_RESUME_D_IMPORT_SIGMA.regles_importees_off)));
       okBtn.textContent = 'Ré-importer';
       const imp = firstNum((sum || {}).imported);
       // `P10.28-t` — l'avis de succès composé, dans les deux langues ; sans compte servi, la phrase entière reste au lexique.

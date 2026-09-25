@@ -1,6 +1,19 @@
 // sources.js — extracted from app.js (DEEP state-container split).
 // Sources (inventaire + métadonnées d'affichage) + mutations de métadonnées (editor+, auditées).
-import { $, LANG, apiSend, confirmModal, effacerLeRefusDUnGeste, fetchInto, fmtTs, humanAge, ic, modal, pagedList, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, socRole, toast } from './core.js';
+import { $, LANG, apiSend, confirmModal, effacerLeRefusDUnGeste, fetchInto, fmtTs, humanAge, ic, modal, pagedList, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, socRole, toast, faceDansLaLangue, ilYA } from './core.js';
+// `P10.29-c` — LES TEXTES COMPOSÉS DE L'INVENTAIRE DES SOURCES, DANS LES DEUX LANGUES (témoin 120c : l'invite des
+// sources non déclarées, « déclarée par … le … » et deux titres de fenêtre restaient français sous `LANG='en'`).
+const MOTS_DE_L_INVENTAIRE_DES_SOURCES = {
+  non_declarees: { fr: "{n} source(s) que personne n'a déclarée(s) — ni ce dépôt, ni le démon, ni le produit, ni un connecteur, ni l'exploitant. ", en: '{n} source(s) nobody declared — neither this repository, nor the daemon, nor the product, nor a connector, nor the operator. ' },
+  geste_de_declaration: { fr: 'Une source installée hors de ce dépôt se déclare ici : Actions → « déclarer attendue » (persistant, réversible, audité).', en: 'A source installed outside this repository is declared here: Actions → “declare expected” (persistent, reversible, audited).' },
+  declaration_reservee: { fr: 'Une source installée hors de ce dépôt se déclare ici ; il faut le rôle éditeur ou administrateur (geste persistant, réversible, audité).', en: 'A source installed outside this repository is declared here; it takes the editor or administrator role (persistent, reversible, audited action).' },
+  declaree_par: { fr: 'déclarée par {qui}{le}', en: 'declared by {qui}{le}' },
+  declaree_non_attendue_par: { fr: 'déclarée NON attendue par {qui}{le}', en: 'declared NOT expected by {qui}{le}' },
+  le: { fr: ' le {date}', en: ' on {date}' },
+  declaree_par_la_sonde: { fr: 'déclarée par la sonde « {sonde} »', en: 'declared by the probe “{sonde}”' },
+  editer: { fr: 'Éditer : {source}', en: 'Edit: {source}' },
+  cadence_attendue: { fr: 'Cadence attendue : {source}', en: 'Expected cadence: {source}' },
+};
 
 // ============ SOURCES (inventaire + métadonnées d'affichage) ============
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
@@ -212,9 +225,8 @@ function renderSourcesInventory(wrap, d) {
   const nUnexpected = sources.filter(s => s.unexpected).length;
   if (nUnexpected) {
     const hint = document.createElement('div'); hint.className = 'fwarn'; hint.style.cssText = 'margin:0 0 8px;font-size:12px';
-    hint.textContent = nUnexpected + ' source(s) que personne n\'a déclarée(s) — ni ce dépôt, ni le démon, ni le produit, ni un connecteur, ni l\'exploitant. '
-      + (editable ? 'Une source installée hors de ce dépôt se déclare ici : Actions → « déclarer attendue » (persistant, réversible, audité).'
-                  : 'Une source installée hors de ce dépôt se déclare ici ; il faut le rôle éditeur ou administrateur (geste persistant, réversible, audité).');
+    hint.textContent = faceDansLaLangue(MOTS_DE_L_INVENTAIRE_DES_SOURCES.non_declarees, { n: nUnexpected })
+      + faceDansLaLangue(editable ? MOTS_DE_L_INVENTAIRE_DES_SOURCES.geste_de_declaration : MOTS_DE_L_INVENTAIRE_DES_SOURCES.declaration_reservee);   // `P10.29-c`
     wrap.insertBefore(hint, tblHost);
   }
   // colonnes : render -> NŒUD (badges/pastilles/boutons survivent) ; sortVal -> clé de tri par colonne.
@@ -317,7 +329,7 @@ function renderSourcesInventory(wrap, d) {
       if (s.indeterminee) {
         why.textContent = s.raison_attendue || '';
       } else if (mark && mark.updated_by && ((mark.expected && !s.in_collectors) || !mark.expected)) {
-        why.textContent = (mark.expected ? 'déclarée par ' : 'déclarée NON attendue par ') + mark.updated_by + (mark.updated ? ' le ' + fmtTs(mark.updated) : '');
+        why.textContent = faceDansLaLangue(mark.expected ? MOTS_DE_L_INVENTAIRE_DES_SOURCES.declaree_par : MOTS_DE_L_INVENTAIRE_DES_SOURCES.declaree_non_attendue_par, { qui: mark.updated_by, le: mark.updated ? faceDansLaLangue(MOTS_DE_L_INVENTAIRE_DES_SOURCES.le, { date: fmtTs(mark.updated) }) : '' });
       } else if (s.raison_attendue && !producteurSousLeNom) {
         why.textContent = s.raison_attendue;
       } else if (!s.raison_attendue && !s.expected) {
@@ -336,14 +348,14 @@ function renderSourcesInventory(wrap, d) {
       const sp = document.createElement('span'); sp.textContent = cadenceLabel(s); sp.title = cadenceTitre(s);
       f.appendChild(sp);
       const qui = document.createElement('span'); qui.className = 'muted srccadwho'; qui.style.cssText = 'display:block;font-size:10px';
-      qui.textContent = s.cadence_par ? 'déclarée par ' + s.cadence_par + (s.cadence_le ? ' le ' + fmtTs(s.cadence_le) : '')
-        : s.cadence_capteur ? 'déclarée par la sonde « ' + s.cadence_capteur + ' »'
+      qui.textContent = s.cadence_par ? faceDansLaLangue(MOTS_DE_L_INVENTAIRE_DES_SOURCES.declaree_par, { qui: s.cadence_par, le: s.cadence_le ? faceDansLaLangue(MOTS_DE_L_INVENTAIRE_DES_SOURCES.le, { date: fmtTs(s.cadence_le) }) : '' })
+        : s.cadence_capteur ? faceDansLaLangue(MOTS_DE_L_INVENTAIRE_DES_SOURCES.declaree_par_la_sonde, { sonde: s.cadence_capteur })
         : 'personne ne l\'a déclarée';
       f.appendChild(qui);
       return f;
     } },
     { key: 'age', label: 'Dernier vu', sortable: true, sortVal: s => s.last_seen || 0, render: s => {
-      const sp = document.createElement('span'); sp.textContent = s.last_seen ? 'il y a ' + humanAge(s.age_s) : '—'; if (s.last_seen) sp.title = fmtTs(s.last_seen); return sp;
+      const sp = document.createElement('span'); sp.textContent = s.last_seen ? ilYA(s.age_s) : '—'; if (s.last_seen) sp.title = fmtTs(s.last_seen); return sp;
     } },
     { key: 'n_24h', label: '24 h', sortable: true, align: 'r', sortVal: s => s.n_24h || 0, render: s => s.n_24h != null ? String(s.n_24h) : '0' },
     { key: 'status', label: 'Statut', sortable: true, sortVal: s => rangDeSource(s), render: s => {
@@ -439,7 +451,7 @@ async function sourcePut(source, action, value) {
 
 async function editSourceMeta(s) {
   const r = await modal({
-    title: 'Éditer : ' + s.source, okText: 'Enregistrer', danger: false, fields: [
+    title: faceDansLaLangue(MOTS_DE_L_INVENTAIRE_DES_SOURCES.editer, { source: s.source }), okText: 'Enregistrer', danger: false, fields: [
       { name: 'label', label: 'Libellé', value: s.label || '', placeholder: 'nom lisible (affichage)' },
       { name: 'category', label: 'Catégorie', value: s.category || '', placeholder: 'ex: réseau, auth, système' },
       { name: 'note', label: 'Note', type: 'textarea', value: s.note || '', placeholder: 'note libre (affichage)' },
@@ -470,7 +482,7 @@ async function toggleExpected(s) {
 // déclare déjà — la question n'est donc pas posée dans ce cas (le bouton n'est pas rendu).
 async function declareCadence(s) {
   const r = await modal({
-    title: 'Cadence attendue : ' + s.source, okText: 'Déclarer', danger: false,
+    title: faceDansLaLangue(MOTS_DE_L_INVENTAIRE_DES_SOURCES.cadence_attendue, { source: s.source }), okText: 'Déclarer', danger: false,
     message: 'La cadence attendue sert au STATUT affiché (ici et dans Fraîcheur). Elle ne crée aucune alerte : le dead-man\'s-switch reste celui des sondes du démon.',
     validate: v => (v.nature === 'continue' && !(Number(v.interval_s) > 0)) ? 'Une cadence continue demande un intervalle en secondes.' : null,
     fields: [
@@ -492,7 +504,7 @@ async function declareCadence(s) {
 }
 
 async function clearSourceMeta(s) {
-  if (!await confirmModal(`Réinitialiser « ${s.source} » (libellé, catégorie, note, déclaration attendue, cadence déclarée) ? La source reprend le verdict que ce dépôt en dérive. La collecte n'est pas touchée.`, { danger: true, okText: 'Réinitialiser' })) return;
+  if (!await confirmModal(faceDansLaLangue({ fr: "Réinitialiser « {source} » (libellé, catégorie, note, déclaration attendue, cadence déclarée) ? La source reprend le verdict que ce dépôt en dérive. La collecte n'est pas touchée.", en: 'Reset “{source}” (label, category, note, expected declaration, declared cadence)? The source goes back to the verdict this repository derives for it. Collection is not touched.' }, { source: s.source }), { danger: true, okText: 'Réinitialiser' })) return;
   if (await sourcePut(s.source, 'clear')) { toast('réinitialisé', 'ok'); loadSourcesView(); }
 }
 

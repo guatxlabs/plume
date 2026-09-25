@@ -4,11 +4,10 @@
 //! `delete_managed_row*`, CRUD règles/parseurs et tests (`rule_test`/`rule_test_adhoc`/`parser_test`/
 //! `parser_reparse`). Extrait de main.rs (refactor split #25 — byte-identique).
 use crate::*;
-use crate::detection_aveugle::AbandonDEvaluation;
 use crate::handlers::transaction_validee::{
-    ouvrir_sa_transaction, refuser_le_geste_non_valide, rendre_apres_validation, signaler_une_transaction_ouverte_hors_de_tout_geste,
-    valider_la_transaction,
+    ouvrir_la_transaction_du_geste, ouvrir_sa_transaction, refuser_le_geste_non_valide, rendre_apres_validation, signaler_une_transaction_ouverte_hors_de_tout_geste, valider_la_transaction,
 };
+use crate::detection_aveugle::AbandonDEvaluation;
 
 // ---------- moteur de règles de détection (P4) ----------
 pub(crate) fn cmp_op(a: f64, op: &str, b: f64) -> bool {
@@ -592,6 +591,11 @@ pub(crate) const CAUSE_SUPPRESSION_DE_CONTENU_NON_VALIDEE: &str = "SUPPRESSION N
      transaction (COMMIT refusé) et l'a annulée — le contenu est toujours là, dans l'état d'activation qu'il avait, \
      et aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou \
      verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_SUPPRESSION_DE_CONTENU_NON_VALIDEE_TRANSACTION_NON_OUVERTE: &str = "SUPPRESSION NON FAITE : \
+     la base n'a pas pris la transaction de la suppression (BEGIN refusé : verrou tenu, ou transaction d'un autre \
+     geste pendante sur l'écrivain) — RIEN n'est écrit : le contenu est toujours là, dans l'état d'activation qu'il \
+     avait, et aucune trace n'est écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 
 /// `P10.25-g` — le `COMMIT` d'une bascule d'activation refusé.
 pub(crate) const CAUSE_ACTIVATION_DE_CONTENU_INCHANGEE: &str = "ACTIVATION INCHANGÉE : la base n'a pas validé la \
@@ -599,26 +603,52 @@ pub(crate) const CAUSE_ACTIVATION_DE_CONTENU_INCHANGEE: &str = "ACTIVATION INCHA
      toujours, ce que vous activiez n'agit pas), aucune dérogation n'est retenue pour le prochain démarrage et \
      aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou \
      verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_ACTIVATION_DE_CONTENU_INCHANGEE_TRANSACTION_NON_OUVERTE: &str = "ACTIVATION INCHANGÉE : la \
+     base n'a pas pris la transaction de la bascule (BEGIN refusé : verrou tenu, ou transaction d'un autre geste \
+     pendante sur l'écrivain) — RIEN n'est écrit : le contenu garde son état d'avant (ce que vous désactiviez agit \
+     toujours, ce que vous activiez n'agit pas), aucune dérogation n'est retenue pour le prochain démarrage et \
+     aucune trace n'est écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 
 /// `P10.25-g` — le `COMMIT` de la création d'une règle refusé.
 pub(crate) const CAUSE_REGLE_NON_CREEE: &str = "RÈGLE NON CRÉÉE : la base n'a pas validé la transaction (COMMIT \
      refusé) et l'a annulée — aucune règle n'est écrite, aucune évaluation ne la tirera, et aucune trace n'est \
      écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_REGLE_NON_CREEE_TRANSACTION_NON_OUVERTE: &str = "RÈGLE NON CRÉÉE : la base n'a pas pris la \
+     transaction de la création (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante sur \
+     l'écrivain) — RIEN n'est écrit : aucune règle n'est écrite, aucune évaluation ne la tirera, et aucune trace \
+     n'est écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 
 /// `P10.25-g` — le `COMMIT` de la modification d'une règle refusé.
 pub(crate) const CAUSE_REGLE_INCHANGEE: &str = "RÈGLE INCHANGÉE : la base n'a pas validé la transaction (COMMIT \
      refusé) et l'a annulée — la règle garde sa requête, son seuil et son activation d'avant, et aucune trace n'est \
      écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_REGLE_INCHANGEE_TRANSACTION_NON_OUVERTE: &str = "RÈGLE INCHANGÉE : la base n'a pas pris la \
+     transaction de la modification (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante sur \
+     l'écrivain) — RIEN n'est écrit : la règle garde sa requête, son seuil et son activation d'avant, et aucune \
+     trace n'est écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 
 /// `P10.25-g` — le `COMMIT` de la création d'un parseur refusé.
 pub(crate) const CAUSE_PARSEUR_NON_CREE: &str = "PARSEUR NON CRÉÉ : la base n'a pas validé la transaction (COMMIT \
      refusé) et l'a annulée — aucun parseur n'est écrit ni chargé par l'ingestion, et aucune trace n'est écrite. \
      Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_PARSEUR_NON_CREE_TRANSACTION_NON_OUVERTE: &str = "PARSEUR NON CRÉÉ : la base n'a pas pris la \
+     transaction de la création (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante sur \
+     l'écrivain) — RIEN n'est écrit : aucun parseur n'est écrit ni chargé par l'ingestion, et aucune trace n'est \
+     écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 
 /// `P10.25-g` — le `COMMIT` de la modification d'un parseur refusé.
 pub(crate) const CAUSE_PARSEUR_INCHANGE: &str = "PARSEUR INCHANGÉ : la base n'a pas validé la transaction (COMMIT \
      refusé) et l'a annulée — l'ingestion applique toujours le parseur d'avant, et aucune trace n'est écrite. \
      Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_PARSEUR_INCHANGE_TRANSACTION_NON_OUVERTE: &str = "PARSEUR INCHANGÉ : la base n'a pas pris la \
+     transaction de la modification (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante sur \
+     l'écrivain) — RIEN n'est écrit : l'ingestion applique toujours le parseur d'avant, et aucune trace n'est \
+     écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 
 /// #1c garde-fou #4/#6 — suppression MANAGED-AWARE + audit #1b, transactionnelle fail-closed. Politique :
 /// - managed=2 (ad-hoc UI)      -> DELETE réel (destructif, audit sévérité 3) ;
@@ -630,8 +660,8 @@ pub(crate) fn delete_managed_row_tx(conn: &Connection, table: &str, audit_prefix
     if managed == 1 {
         return Err((StatusCode::CONFLICT, "contenu overlay (config.d) géré par fichier versionné — retirez-le côté git, pas via l'UI".into()));
     }
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return Err((StatusCode::INTERNAL_SERVER_ERROR, "verrou base indisponible".into()));
+    if ouvrir_sa_transaction(conn, "detection", &format!("suppression de {table} #{id}")).is_err() {
+        return Err((StatusCode::SERVICE_UNAVAILABLE, CAUSE_SUPPRESSION_DE_CONTENU_NON_VALIDEE_TRANSACTION_NON_OUVERTE.to_string()));
     }
     let outcome: rusqlite::Result<Value> = (|| {
         if managed == 2 {
@@ -843,8 +873,8 @@ pub(crate) fn set_content_enabled_tx(conn: &Connection, kind: &str, table: &str,
         Ok(x) => x,
         Err(_) => return Err((StatusCode::NOT_FOUND, format!("{kind} introuvable"))),
     };
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return Err((StatusCode::INTERNAL_SERVER_ERROR, "verrou base indisponible".into()));
+    if ouvrir_sa_transaction(conn, "detection", &format!("bascule d'activation de {kind} #{id}")).is_err() {
+        return Err((StatusCode::SERVICE_UNAVAILABLE, CAUSE_ACTIVATION_DE_CONTENU_INCHANGEE_TRANSACTION_NON_OUVERTE.to_string()));
     }
     let en = enabled as i64;
     let (word, verb) = if enabled { ("enable", "activé") } else { ("disable", "désactivé") };
@@ -963,8 +993,8 @@ pub(crate) async fn rule_create(State(st): State<AppState>, Extension(au): Exten
     crate::req_conn!(st, au, conn);
     // #1c garde-fou #6 : transaction fail-closed (patron retention_settings_put) — INSERT managed=2 + audit
     // #1b (ledger + event plume-config) ; si l'audit échoue -> ROLLBACK (mutation JAMAIS persistée sans trace).
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "detection", &format!("création de la règle '{name}'"), CAUSE_REGLE_NON_CREEE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<i64> = (|| {
         conn.execute(
@@ -1041,8 +1071,8 @@ pub(crate) async fn rule_update(State(st): State<AppState>, Extension(au): Exten
         if let Err((code, msg)) = refuser_le_renommage_d_un_overlay("règle", cur_managed, &cur_name, n) { return err_json(code, msg); }
     }
     // #1c garde-fou #6 : transaction fail-closed (patron retention_settings_put) + audit #1b.
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "detection", &format!("modification de la règle #{id}"), CAUSE_REGLE_INCHANGEE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<()> = (|| {
         if let Some(v) = b.get("name").and_then(|x| x.as_str()) { conn.execute("UPDATE rule SET name=?1 WHERE id=?2", params![v, id])?; }
@@ -1145,8 +1175,8 @@ pub(crate) async fn parser_create(State(st): State<AppState>, Extension(au): Ext
     let enabled = b.bool_field("enabled", true) as i64;
     crate::req_conn!(st, au, conn);
     // #1c garde-fous #4/#6 : INSERT builtin=0 managed=2 (ad-hoc UI) + audit #1b, transaction fail-closed.
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "detection", &format!("création du parseur '{name}'"), CAUSE_PARSEUR_NON_CREE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<i64> = (|| {
         conn.execute(
@@ -1204,8 +1234,8 @@ pub(crate) async fn parser_update(State(st): State<AppState>, Extension(au): Ext
     if let Some(n) = b.get("name").and_then(|x| x.as_str()) {
         if let Err((code, msg)) = refuser_le_renommage_d_un_overlay("parseur", cur_managed, &cur_name, n) { return err_json(code, msg); }
     }
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "detection", &format!("modification du parseur #{id}"), CAUSE_PARSEUR_INCHANGE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<()> = (|| {
         if let Some(v) = b.get("name").and_then(|x| x.as_str()) { conn.execute("UPDATE parser SET name=?1 WHERE id=?2", params![v, id])?; }

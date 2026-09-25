@@ -13,7 +13,7 @@
 //! (tamper-evident, comme case.status/case.assign). Réutilise : case_add_item (timeline + MTTA), ledger_append,
 //! guatx_core::attack (technique->tactique), le compilateur GXQL FERMÉ, l'enum action_kind_valid.
 use crate::*;
-use crate::handlers::transaction_validee::rendre_apres_validation_du_garde;
+use crate::handlers::transaction_validee::{ouvrir_le_garde_du_geste, rendre_apres_validation_du_garde};
 use rusqlite::OptionalExtension;
 
 /// `P10.20-b` (rang 2) — LA RECOMMANDATION N'EST PAS ÉTABLIE, ET CE N'EST PAS « AUCUN RUNBOOK NE CONVIENT ».
@@ -679,21 +679,33 @@ pub(crate) async fn incident_set(State(st): State<AppState>, Extension(au): Exte
     };
     let itype = b.get("incident_type").and_then(|v| v.as_str());
     let commander = b.get("commander").and_then(|v| v.as_str());
-    with_write(&st, &au, |conn| match incident_apply_tier(&conn, id, &au.name, tier, itype, commander) {
+    with_write(&st, &au, |conn| {
+    // `P10.29-b` — l'existence est établie d'abord, sous le verrou du geste : une lecture refusée rendait le même 404 nu
+    // qu'une absence (`incident_apply_tier` lit par `.is_err()`).
+    if let Err(refus) = crate::handlers::cases::etablir_le_dossier(conn, id) {
+        return refus;
+    }
+    match incident_apply_tier(&conn, id, &au.name, tier, itype, commander) {
         DeclarationDIncident::Posee => StatusCode::NO_CONTENT.into_response(),
-        DeclarationDIncident::DossierIntrouvable => StatusCode::NOT_FOUND.into_response(),
+        DeclarationDIncident::DossierIntrouvable => not_found(crate::handlers::cases::CAUSE_DOSSIER_INTROUVABLE),
         DeclarationDIncident::NonEcrite(cause) => {
             err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_DECLARATION_D_INCIDENT_NON_ECRITE} ({cause})"))
         }
+    }
     })
 }
 
 /// GET /api/cases/{id}/runbooks — incident + runbook recommandé (tactique dominante) + disponibles. viewer+.
 pub(crate) async fn case_runbooks_get(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     crate::req_conn!(st, au, conn);
+    // `P10.29-b` — 404 JSON nommé sur une absence établie (il rendait « incident introuvable » en texte, et le même 404
+    // sur une lecture refusée, que `case_runbooks_json` avale par `.ok()?`) ; 503 nommé sur une lecture refusée.
+    if let Err(refus) = crate::handlers::cases::etablir_le_dossier(&conn, id) {
+        return refus;
+    }
     match case_runbooks_json(&conn, id) {
         Some(v) => Json(v).into_response(),
-        None => (StatusCode::NOT_FOUND, "incident introuvable").into_response(),
+        None => crate::handlers::cases::refus_du_dossier_non_lu(&"lecture de la fiche d'incident"),
     }
 }
 
@@ -736,14 +748,38 @@ pub(crate) async fn case_steps_get(State(st): State<AppState>, Extension(au): Ex
 }
 
 /// POST /api/cases/{id}/steps/{step_id} — AVANCE/skip une step (+ note). editor+. Body : {status, note?}.
-pub(crate) async fn case_step_set(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path((id, step_id)): Path<(i64, i64)>, Json(b): Json<Value>) -> StatusCode {
+/// `P10.29-b` — un statut d'étape hors de la liste fermée (demande mal formée : il rendait 404).
+pub(crate) const CAUSE_STATUT_D_ETAPE_REFUSE: &str = "STATUT D'ÉTAPE REFUSÉ : `status` doit valoir done, skipped ou \
+     pending (ou l'un de leurs alias : completed, skip, open, todo). Rien n'a été écrit.";
+/// `P10.29-b` — l'étape visée n'appartient pas à ce dossier (absente, ou d'un autre dossier : dits ensemble).
+pub(crate) const CAUSE_ETAPE_ABSENTE_DE_CE_DOSSIER: &str = "ÉTAPE ABSENTE DE CE DOSSIER : ce dossier ne porte aucune \
+     étape sous cet identifiant. Rien n'a été écrit.";
+/// `P10.29-b` — la lecture de l'étape visée n'a pas eu lieu.
+pub(crate) const CAUSE_ETAPE_NON_LUE_GESTE_NON_FAIT: &str = "ÉTAPE NON LUE, GESTE NON FAIT : la base n'a pas pu dire si \
+     cette étape appartient à ce dossier (lecture refusée ou table illisible) — ce n'est PAS « étape absente ». Rien \
+     n'a été écrit. Réessayez.";
+
+/// POST /api/cases/{id}/steps/{step_id} — `P10.29-b` : 400 statut invalide, 404 dossier ou étape absents (nommés,
+/// distincts), 503 lecture refusée ; ils rendaient tous 404 nu. Le 204 est inchangé.
+pub(crate) async fn case_step_set(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path((id, step_id)): Path<(i64, i64)>, Json(b): Json<Value>) -> Response {
     let status = b.str_field("status");
     let note = b.get("note").and_then(|v| v.as_str());
+    if norm_step_status(status).is_none() {
+        return bad_req(CAUSE_STATUT_D_ETAPE_REFUSE);
+    }
     with_write(&st, &au, |conn| {
+        if let Err(refus) = crate::handlers::cases::etablir_le_dossier(conn, id) {
+            return refus;
+        }
+        match conn.query_row("SELECT 1 FROM case_step WHERE id=?1 AND incident_id=?2", params![step_id, id], |_| Ok(())) {
+            Ok(()) => {}
+            Err(rusqlite::Error::QueryReturnedNoRows) => return not_found(CAUSE_ETAPE_ABSENTE_DE_CE_DOSSIER),
+            Err(e) => return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_ETAPE_NON_LUE_GESTE_NON_FAIT} ({e})")),
+        }
         if step_advance(&conn, id, step_id, status, &au.name, note) {
-            StatusCode::NO_CONTENT
+            StatusCode::NO_CONTENT.into_response()
         } else {
-            StatusCode::NOT_FOUND
+            err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_ETAPE_NON_LUE_GESTE_NON_FAIT} (relecture de l'étape)"))
         }
     })
 }
@@ -1061,24 +1097,50 @@ pub(crate) async fn runbook_get(State(st): State<AppState>, Extension(au): Exten
 pub(crate) const CAUSE_RUNBOOK_NON_CREE: &str = "RUNBOOK NON CRÉÉ : la base n'a pas validé la transaction (COMMIT \
      refusé) et l'a annulée — aucun runbook ni aucune étape n'est écrit, aucun dossier ne le recevra, et aucune \
      trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_RUNBOOK_NON_CREE_TRANSACTION_NON_OUVERTE: &str = "RUNBOOK NON CRÉÉ : la base n'a pas pris la \
+     transaction de la création (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante sur \
+     l'écrivain) — RIEN n'est écrit : aucun runbook ni aucune étape n'est écrit, aucun dossier ne le recevra, et \
+     aucune trace n'est écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 /// `P10.26-x` — runbook inchangé : le `COMMIT` de ce geste refusé.
 pub(crate) const CAUSE_RUNBOOK_INCHANGE: &str = "RUNBOOK INCHANGÉ : la base n'a pas validé la transaction (COMMIT \
      refusé) et l'a annulée — il garde ses étapes et son critère d'attache d'avant, et aucune trace n'est écrite. \
      Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_RUNBOOK_INCHANGE_TRANSACTION_NON_OUVERTE: &str = "RUNBOOK INCHANGÉ : la base n'a pas pris la \
+     transaction de la modification (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante sur \
+     l'écrivain) — RIEN n'est écrit : il garde ses étapes et son critère d'attache d'avant, et aucune trace n'est \
+     écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 /// `P10.26-x` — runbook non supprimé : le `COMMIT` de ce geste refusé.
 pub(crate) const CAUSE_RUNBOOK_NON_SUPPRIME: &str = "RUNBOOK NON SUPPRIMÉ : la base n'a pas validé la transaction \
      (COMMIT refusé) et l'a annulée — il est toujours là avec ses étapes et s'attache toujours aux dossiers qu'il \
      vise, et aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou \
      verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_RUNBOOK_NON_SUPPRIME_TRANSACTION_NON_OUVERTE: &str = "RUNBOOK NON SUPPRIMÉ : la base n'a pas \
+     pris la transaction du retrait (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante sur \
+     l'écrivain) — RIEN n'est écrit : il est toujours là avec ses étapes et s'attache toujours aux dossiers qu'il \
+     vise, et aucune trace n'est écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 /// `P10.26-x` — activation du runbook inchangée : le `COMMIT` de ce geste refusé.
 pub(crate) const CAUSE_ACTIVATION_DU_RUNBOOK_INCHANGEE: &str = "ACTIVATION DU RUNBOOK INCHANGÉE : la base n'a pas \
      validé la transaction (COMMIT refusé) et l'a annulée — il garde son état d'avant (désactivé, il s'attache \
      toujours ; activé, il ne s'attache pas), et aucune trace n'est écrite. Réessayez ; si le refus persiste, la \
      base est en lecture seule, pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_ACTIVATION_DU_RUNBOOK_INCHANGEE_TRANSACTION_NON_OUVERTE: &str = "ACTIVATION DU RUNBOOK \
+     INCHANGÉE : la base n'a pas pris la transaction de la bascule (BEGIN refusé : verrou tenu, ou transaction d'un \
+     autre geste pendante sur l'écrivain) — RIEN n'est écrit : il garde son état d'avant (désactivé, il s'attache \
+     toujours ; activé, il ne s'attache pas), et aucune trace n'est écrite. Réessayez ; s'il est refusé encore, \
+     l'écrivain est occupé ou bloqué.";
 /// `P10.26-x` — runbook non cloné : le `COMMIT` de ce geste refusé.
 pub(crate) const CAUSE_RUNBOOK_NON_CLONE: &str = "RUNBOOK NON CLONÉ : la base n'a pas validé la transaction (COMMIT \
      refusé) et l'a annulée — aucune copie n'est écrite, et aucune trace n'est écrite. Réessayez ; si le refus \
      persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_RUNBOOK_NON_CLONE_TRANSACTION_NON_OUVERTE: &str = "RUNBOOK NON CLONÉ : la base n'a pas pris \
+     la transaction du clonage (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante sur l'écrivain) \
+     — RIEN n'est écrit : aucune copie n'est écrite, et aucune trace n'est écrite. Réessayez ; s'il est refusé \
+     encore, l'écrivain est occupé ou bloqué.";
 
 /// POST /api/runbooks — CRÉE un runbook custom (managed=0). ADMIN. Body : {name, match_kind, match_key?,
 /// description?, active?, steps:[{phase,title,guidance?,step_kind,search_soql?,action_kind?}]}.
@@ -1087,7 +1149,7 @@ pub(crate) async fn runbook_create(State(st): State<AppState>, Extension(au): Ex
     let (name, mkind, mkey, desc, steps) = match parse_runbook_payload(&b) { Ok(x) => x, Err(e) => return bad_req(e) };
     let active = b.bool_field("active", true);
     crate::req_conn!(st, au, conn);
-    let tx = match Txn::begin(&conn) { Ok(t) => t, Err(_) => return server_err("verrou base indisponible") };
+    let tx = match ouvrir_le_garde_du_geste(&conn, "runbooks", &format!("création du runbook '{name}'"), CAUSE_RUNBOOK_NON_CREE_TRANSACTION_NON_OUVERTE) { Ok(t) => t, Err(refus) => return refus };
     let outcome: Result<i64, String> = (|| {
         let id = create_custom_runbook(&conn, &name, &mkind, &mkey, &desc, &steps, active)?;
         audit_config_change(&conn, "config.runbook.create",
@@ -1110,7 +1172,7 @@ pub(crate) async fn runbook_update_handler(State(st): State<AppState>, Extension
     if let Err(r) = require_admin(&au) { return r; }
     let (name, mkind, mkey, desc, steps) = match parse_runbook_payload(&b) { Ok(x) => x, Err(e) => return bad_req(e) };
     crate::req_conn!(st, au, conn);
-    let tx = match Txn::begin(&conn) { Ok(t) => t, Err(_) => return server_err("verrou base indisponible") };
+    let tx = match ouvrir_le_garde_du_geste(&conn, "runbooks", &format!("modification du runbook #{id}"), CAUSE_RUNBOOK_INCHANGE_TRANSACTION_NON_OUVERTE) { Ok(t) => t, Err(refus) => return refus };
     let outcome: Result<(), String> = (|| {
         update_custom_runbook(&conn, id, &name, &mkind, &mkey, &desc, &steps)?;
         audit_config_change(&conn, "config.runbook.update",
@@ -1137,7 +1199,7 @@ pub(crate) async fn runbook_delete(State(st): State<AppState>, Extension(au): Ex
         Ok(v) => v, Err(_) => return not_found("runbook introuvable"),
     };
     if managed != 0 { return bad_req("runbook managé (git) : non supprimable — désactivez-le ou clonez-le"); }
-    let tx = match Txn::begin(&conn) { Ok(t) => t, Err(_) => return server_err("verrou base indisponible") };
+    let tx = match ouvrir_le_garde_du_geste(&conn, "runbooks", &format!("suppression du runbook '{name}' (#{id})"), CAUSE_RUNBOOK_NON_SUPPRIME_TRANSACTION_NON_OUVERTE) { Ok(t) => t, Err(refus) => return refus };
     let outcome: rusqlite::Result<()> = (|| {
         conn.execute("DELETE FROM runbook_step WHERE runbook_id=?1", params![id])?;
         conn.execute("DELETE FROM runbook WHERE id=?1 AND managed=0", params![id])?;
@@ -1165,7 +1227,7 @@ pub(crate) async fn runbook_set_enabled(State(st): State<AppState>, Extension(au
     let (name, managed): (String, i64) = match conn.query_row("SELECT name,managed FROM runbook WHERE id=?1", params![id], |r| Ok((r.get(0)?, r.get(1)?))) {
         Ok(v) => v, Err(_) => return not_found("runbook introuvable"),
     };
-    let tx = match Txn::begin(&conn) { Ok(t) => t, Err(_) => return server_err("verrou base indisponible") };
+    let tx = match ouvrir_le_garde_du_geste(&conn, "runbooks", &format!("bascule d'activation du runbook #{id}"), CAUSE_ACTIVATION_DU_RUNBOOK_INCHANGEE_TRANSACTION_NON_OUVERTE) { Ok(t) => t, Err(refus) => return refus };
     let outcome: rusqlite::Result<()> = (|| {
         conn.execute("UPDATE runbook SET active=?1 WHERE id=?2", params![enabled as i64, id])?;
         audit_config_change(&conn, "config.runbook.enabled",
@@ -1187,7 +1249,7 @@ pub(crate) async fn runbook_clone_handler(State(st): State<AppState>, Extension(
     if let Err(r) = require_admin(&au) { return r; }
     let new_name = b.get("name").and_then(|v| v.as_str());
     crate::req_conn!(st, au, conn);
-    let tx = match Txn::begin(&conn) { Ok(t) => t, Err(_) => return server_err("verrou base indisponible") };
+    let tx = match ouvrir_le_garde_du_geste(&conn, "runbooks", &format!("clonage du runbook #{id}"), CAUSE_RUNBOOK_NON_CLONE_TRANSACTION_NON_OUVERTE) { Ok(t) => t, Err(refus) => return refus };
     let outcome: Result<i64, String> = (|| {
         let new_id = clone_runbook(&conn, id, new_name)?;
         audit_config_change(&conn, "config.runbook.clone",

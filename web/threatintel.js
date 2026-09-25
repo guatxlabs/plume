@@ -8,7 +8,7 @@
 //   POST /api/threat-intel/iocs     <- {type,value,source?,confidence?,severity?,expires?,env_id?} OU {iocs:[…],source?,env_id?}  -> {added, skipped:[…]}
 //   POST /api/threat-intel/import   <- {bundle:{…}, source?, env_id?}  -> {imported, skipped:[…]}
 // SÉCU UI : tout en textContent/esc (anti-XSS) ; le contenu IOC n'est pas un secret (renseignement).
-import { $, api, apiSend, disclosure, effacerLeRefusDUnGeste, fetchInto, fmtTs, humanAge, LANG, modal, muted, pagedList, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, sev, toast, faceDansLaLangue } from './core.js';
+import { $, api, apiSend, disclosure, effacerLeRefusDUnGeste, fetchInto, fmtTs, LANG, modal, muted, pagedList, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, sev, toast, faceDansLaLangue, ilYA } from './core.js';
 import { champDeRecherche, filtrerParRecherche, texteCherchable } from './recherche_de_liste.js';
 import { uiIsAdmin } from './multitenant.js';
 import { RECHERCHE_IOC } from './registres.js'; // `P11.21-f` : l'état de recherche vit dans un module feuille
@@ -121,7 +121,7 @@ function renderIocList() {
     { key: 'source', label: 'Source', sortable: true, sortVal: r => r.source || '', render: r => r.source || '—' },
     { key: 'confidence', label: 'Conf.', sortable: true, align: 'r', sortVal: r => r.confidence || 0, render: r => (r.confidence == null ? 0 : r.confidence) + '%' },
     { key: 'severity', label: 'Sévérité', sortable: true, sortVal: r => r.severity || 0, render: r => { const s = document.createElement('span'); s.className = 'sev'; s.textContent = sev(r.severity); return s; } },
-    { key: 'last_seen', label: 'Vu', sortable: true, sortVal: r => r.last_seen || 0, render: r => { const s = document.createElement('span'); s.textContent = r.last_seen ? 'il y a ' + humanAge(nowS - r.last_seen) : '—'; if (r.last_seen) s.title = fmtTs(r.last_seen); return s; } },
+    { key: 'last_seen', label: 'Vu', sortable: true, sortVal: r => r.last_seen || 0, render: r => { const s = document.createElement('span'); s.textContent = r.last_seen ? ilYA(nowS - r.last_seen) : '—'; if (r.last_seen) s.title = fmtTs(r.last_seen); return s; } },
     { key: 'expires', label: 'Expiration', sortable: true, sortVal: r => r.expires || Infinity, render: r => {
       const s = document.createElement('span');
       if (!r.expires) { s.className = 'muted'; s.textContent = 'jamais'; return s; }
@@ -265,7 +265,7 @@ async function doImport(e) {
   let path, body;
   if (fmt === 'stix') {
     let bundle;
-    try { bundle = JSON.parse(raw); } catch (err) { setMsg('JSON invalide : ' + ((err && err.message) || err), true); return; }
+    try { bundle = JSON.parse(raw); } catch (err) { setMsg(faceDansLaLangue({ fr: 'JSON invalide : {cause}', en: 'Invalid JSON: {cause}' }, { cause: (err && err.message) || err }), true); return; }
     path = '/threat-intel/import';
     body = { bundle, source: source || 'stix-import', env_id: env };
   } else {

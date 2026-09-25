@@ -605,6 +605,18 @@ SITES_ADMIS = {
         # `P10.20-x` (2026-09-19) A FAIT LE MÊME CONSTAT SUR LE BRAS DE `match` : treize bras de plus sont suivis
         # sous `handlers/` (dix-sept sur `daemon/src`), et AUCUN ne porte d'avalement. Rien à admettre, rien à
         # relever : cet ensemble reste VIDE.
+        # `P10.29-b` (2026-09-25) — DEUX ENTRÉES, ET C'EST UN CHANGEMENT DE CONTRAT QUI LES FAIT VOIR, PAS UN DÉFAUT NEUF.
+        # `case_update` et `case_unmerge_handler` rendaient un `StatusCode` NU : sur la voie d'écriture, cette jambe
+        # n'ouvre la région que si un corps est servi, et leurs aides (`case_apply_update`, `case_unmerge`) étaient
+        # rangées FAIL-CLOSED en en-tête (une lecture ratée -> `false` -> 404). Elles servent désormais un refus
+        # NOMMÉ en JSON ; la région s'ouvre, et la lecture absorbée (`.ok()`) de l'aide est vue. Ce qui la rend sûre
+        # est ÉCRIT dans la route, pas dans l'aide : sous le MÊME verrou d'écriture, la route établit d'abord
+        # l'existence du dossier (`etablir_le_dossier`, `juger_la_defusion` : 404 sur une absence établie, 503 sur une
+        # lecture refusée), puis sert un 503 NOMMÉ (« DOSSIER NON LU, GESTE NON FAIT ») si l'aide rend quand même
+        # `false` — aucun fait n'est servi depuis une lecture qui n'a pas eu lieu (témoins `bdrn_`). L'aveu est dans la
+        # closure, l'avalement dans l'aide, et cette jambe juge chaque corps à part : d'où l'exemption, avec sa raison.
+        ("daemon/src/handlers/cases.rs", "case_update"): 1,
+        ("daemon/src/handlers/caseops.rs", "case_unmerge_handler"): 1,
     },
     "Q": {  # cause JETÉE : AUCUNE depuis le lot 102 (`P10.7-g`) — le compte total porte `total_error` à côté de `-1`, et
         # l'union des clés de labels dit qu'elle n'est pas établie quand l'échantillon ne se lit pas. Un site neuf rougit ici.

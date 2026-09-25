@@ -1,6 +1,19 @@
 // fleet.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // Flotte d'agents (P0 UI): inventaire des hotes/endpoints (GET /api/fleet, lecture seule).
-import { $, apiSend, confirmModal, effacerLeRefusDUnGeste, exportBar, fetchInto, fmtTs, humanAge, ic, modal, muted, pagedList, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, socRole, toast } from './core.js';
+import { $, apiSend, confirmModal, effacerLeRefusDUnGeste, exportBar, fetchInto, fmtTs, ic, modal, muted, pagedList, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, socRole, toast, faceDansLaLangue, ilYA } from './core.js';
+// `P10.29-c` — LES TEXTES COMPOSÉS DE L'INVENTAIRE DE FLOTTE, DANS LES DEUX LANGUES. MESURÉ AVANT CE LOT (témoin 120c) :
+// l'aveu d'un inventaire non lu, le compte d'une répartition non publiée, l'invite des hôtes muets non déclarés et deux
+// infobulles étaient composés en français autour d'un nombre ou d'une cause, et le restaient sous `LANG='en'`.
+const MOTS_DE_L_INVENTAIRE_DE_FLOTTE = {
+  non_lu: { fr: "Inventaire de la flotte NON LU : le démon a refusé et en nomme la cause — « {cause} » Ce n'est PAS une absence : aucun hôte n'a été lu, donc rien ici n'établit qu'il n'y en a pas, et surtout rien n'établit que l'ingestion soit en panne — cette vue ne l'a pas regardée.", en: 'Fleet inventory NOT READ: the daemon refused and names the cause — “{cause}” This is NOT an absence: no host was read, so nothing here establishes there are none, and above all nothing establishes that ingestion is down — this view did not look at it.' },
+  repartition_non_publiee: { fr: '{n} hôte(s) — répartition non publiée par le démon (comptes non rendus)', en: '{n} host(s) — breakdown not published by the daemon (counts not served)' },
+  muets_non_declares: { fr: "{n} hôte(s) muet(s) que personne n'a déclarés : un agent tombé et une machine décommissionnée se ressemblent tant que personne ne le dit. ", en: '{n} silent host(s) that nobody declared: a fallen agent and a decommissioned machine look alike until someone says so. ' },
+  geste_de_declaration: { fr: 'Actions → « déclarer » : silence attendu (elle reste au parc, sans alerter) ou retirée du parc (persistant, réversible, audité).', en: 'Actions → “declare”: expected silence (it stays in the fleet, without alerting) or removed from the fleet (persistent, reversible, audited).' },
+  declaration_reservee: { fr: 'La déclaration demande le rôle éditeur ou administrateur (geste persistant, réversible, audité).', en: 'Declaring requires the editor or administrator role (persistent, reversible, audited action).' },
+  jeton_lie: { fr: "Token d'agent lié à cet hôte{cree}", en: 'Agent token bound to this host{cree}' },
+  cree_le: { fr: ' — créé le {date}', en: ' — created on {date}' },
+  attendu_de_l_hote: { fr: "Attendu de l'hôte : {hote}", en: 'Expected from the host: {hote}' },
+};
 
 // =================================================================================================
 // FLOTTE D'AGENTS (P0 UI) — inventaire des HÔTES/endpoints qui remontent des données. LECTURE (viewer+) :
@@ -34,6 +47,14 @@ const OUVERTURE_DE_LA_FLOTTE_PARTIELLEMENT_NON_LUE = /^flotte partiellement NON 
 // L'ATTENTE, RENDUE. Les jetons viennent du démon (`VerdictDHote::jeton`) et ne sont pas réécrits ici —
 // la console pivote dessus, elle ne recalcule pas le verdict (leçon de `P11.3-d`).
 const ATT_LBL = { signal_attendu: 'signal attendu', silence_attendu: 'silence attendu', retire: 'retirée du parc', non_declare: 'personne n\'a rien dit' };
+// `P10.29-c` — le même libellé d'attente, dans la langue de l'écran, là où il se colle dans une phrase (la confirmation).
+const MOTS_DES_ATTENTES_D_HOTE = {
+  signal_attendu: { fr: 'signal attendu', en: 'signal expected' },
+  silence_attendu: { fr: 'silence attendu', en: 'silence expected' },
+  retire: { fr: 'retirée du parc', en: 'removed from the fleet' },
+  non_declare: { fr: "personne n'a rien dit", en: 'nobody said anything' },
+};
+const libelleDAttente = (cle) => (MOTS_DES_ATTENTES_D_HOTE[cle] ? faceDansLaLangue(MOTS_DES_ATTENTES_D_HOTE[cle]) : ATT_LBL[cle]);
 
 const ATT_TXT = { signal_attendu: 'ok', silence_attendu: 'calm', retire: 'mut', non_declare: 'mut' };
 
@@ -126,9 +147,7 @@ function renderFleetInventory(wrap, d) {
     const bad = document.createElement('div');
     bad.className = 'bad';
     bad.style.cssText = 'margin:0 0 9px;font-size:12px';
-    bad.textContent = "Inventaire de la flotte NON LU : le démon a refusé et en nomme la cause — « " + refusServi
-      + " » Ce n'est PAS une absence : aucun hôte n'a été lu, donc rien ici n'établit qu'il n'y en a pas, "
-      + "et surtout rien n'établit que l'ingestion soit en panne — cette vue ne l'a pas regardée.";
+    bad.textContent = faceDansLaLangue(MOTS_DE_L_INVENTAIRE_DE_FLOTTE.non_lu, { cause: refusServi });   // `P10.29-c`
     wrap.appendChild(bad);
     return;
   }
@@ -198,7 +217,7 @@ function renderFleetInventory(wrap, d) {
   } else {
     // Charge utile sans répartition (démon antérieur) : on le DIT plutôt que de recomposer un compte qui
     // ne se retrouverait pas — c'est exactement le défaut que cette clé ferme.
-    sub.textContent = `${hosts.length} hôte(s) — répartition non publiée par le démon (comptes non rendus)`;
+    sub.textContent = faceDansLaLangue(MOTS_DE_L_INVENTAIRE_DE_FLOTTE.repartition_non_publiee, { n: hosts.length });
   }
   head.appendChild(sub);
   head.appendChild(fleetExportBar(hosts));
@@ -210,12 +229,11 @@ function renderFleetInventory(wrap, d) {
   const aTrancher = r ? r.muet_inattendu : hosts.filter(h => h.status === 'silent' && h.attente === 'non_declare').length;
   if (aTrancher) {
     const hint = document.createElement('div'); hint.className = 'fwarn'; hint.style.cssText = 'margin:0 0 8px;font-size:12px';
-    hint.textContent = aTrancher + " hôte(s) muet(s) que personne n'a déclarés : un agent tombé et une machine décommissionnée se ressemblent tant que personne ne le dit. "
-      + (editable ? "Actions → « déclarer » : silence attendu (elle reste au parc, sans alerter) ou retirée du parc (persistant, réversible, audité)."
-                  : "La déclaration demande le rôle éditeur ou administrateur (geste persistant, réversible, audité).");
+    hint.textContent = faceDansLaLangue(MOTS_DE_L_INVENTAIRE_DE_FLOTTE.muets_non_declares, { n: aTrancher })
+      + faceDansLaLangue(editable ? MOTS_DE_L_INVENTAIRE_DE_FLOTTE.geste_de_declaration : MOTS_DE_L_INVENTAIRE_DE_FLOTTE.declaration_reservee);
     wrap.insertBefore(hint, tblHost);
   }
-  const ageTxt = s => 'il y a ' + humanAge(s);
+  const ageTxt = s => ilYA(s);   // `P10.29-c`
   const columns = [
     { key: 'host', label: 'Hôte', sortable: true, sortVal: h => h.host || '', render: h => {
       const f = document.createDocumentFragment();
@@ -271,7 +289,7 @@ function renderFleetInventory(wrap, d) {
       if (!h.enrolled) { const sp = document.createElement('span'); sp.className = 'muted'; sp.textContent = 'non enrôlé'; sp.title = "Aucun token d'agent lié à cet hôte (ingest via token partagé, ou hôte local)."; return sp; }
       const b = document.createElement('span'); b.className = 'badge'; b.textContent = h.enroll_name || 'agent';
       b.style.cssText = 'color:var(--ok);border-color:color-mix(in srgb,var(--ok) 40%,transparent)';
-      b.title = "Token d'agent lié à cet hôte" + (h.enroll_created ? ' — créé le ' + fmtTs(h.enroll_created) : '');
+      b.title = faceDansLaLangue(MOTS_DE_L_INVENTAIRE_DE_FLOTTE.jeton_lie, { cree: h.enroll_created ? faceDansLaLangue(MOTS_DE_L_INVENTAIRE_DE_FLOTTE.cree_le, { date: fmtTs(h.enroll_created) }) : '' });
       return b;
     } },
     { key: 'token_last_used', label: 'Dernier push agent', sortable: true, sortVal: h => h.token_last_used || 0, render: h => {
@@ -336,7 +354,7 @@ function puitsDeLaFlotte() { const hote = $('#fleet-body'); return hote && hote.
 async function declareHostExpectation(h) {
   const eteint = v => v === 'silence_attendu' || v === 'retire';
   const r = await modal({
-    title: "Attendu de l'hôte : " + h.host, okText: 'Déclarer', danger: false,
+    title: faceDansLaLangue(MOTS_DE_L_INVENTAIRE_DE_FLOTTE.attendu_de_l_hote, { hote: h.host }), okText: 'Déclarer', danger: false,
     message: "Ce que vous déclarez décide si le silence de cette machine LÈVE une alerte. Rien d'autre n'est touché : ni la collecte, ni les règles, ni la rétention — la machine reste listée et ses signaux continuent d'être reçus.",
     validate: v => (eteint(v.attente) && !String(v.motif || '').trim()) ? "Un motif est requis : éteindre l'alerte sur une machine sans dire pourquoi est illisible six mois plus tard." : null,
     fields: [
@@ -345,7 +363,7 @@ async function declareHostExpectation(h) {
     ],
   });
   if (!r) return;
-  if (eteint(r.attente) && !await confirmModal(`Déclarer « ${h.host} » : ${ATT_LBL[r.attente]} ? L'alerte « hôtes muets » cessera de compter cette machine, et la console dira que vous l'avez déclarée, avec la date et le motif. Geste persistant, réversible, audité.`, { danger: true, okText: 'Déclarer' })) return;
+  if (eteint(r.attente) && !await confirmModal(faceDansLaLangue({ fr: "Déclarer « {hote} » : {attente} ? L'alerte « hôtes muets » cessera de compter cette machine, et la console dira que vous l'avez déclarée, avec la date et le motif. Geste persistant, réversible, audité.", en: 'Declare “{hote}”: {attente}? The “silent hosts” alert will stop counting this machine, and the console will say you declared it, with the date and the reason. Persistent, reversible, audited action.' }, { hote: h.host, attente: libelleDAttente(r.attente) }), { danger: true, okText: 'Déclarer' })) return;
   const puits = puitsDeLaFlotte(); effacerLeRefusDUnGeste(puits);
   try { await apiSend('/hosts/settings', 'PUT', { host: h.host, action: 'set_attente', value: r.attente, motif: r.motif || '' }); }
   catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
@@ -353,7 +371,7 @@ async function declareHostExpectation(h) {
 }
 
 async function clearHostExpectation(h) {
-  if (!await confirmModal(`Retirer la déclaration de « ${h.host} » ? La machine reprend le défaut : personne n'a rien dit, donc son silence alerte de nouveau. Geste audité.`, { danger: false, okText: 'Retirer la déclaration' })) return;
+  if (!await confirmModal(faceDansLaLangue({ fr: "Retirer la déclaration de « {hote} » ? La machine reprend le défaut : personne n'a rien dit, donc son silence alerte de nouveau. Geste audité.", en: 'Remove the declaration of “{hote}”? The machine goes back to the default: nobody said anything, so its silence alerts again. Audited action.' }, { hote: h.host }), { danger: false, okText: 'Retirer la déclaration' })) return;
   const puits = puitsDeLaFlotte(); effacerLeRefusDUnGeste(puits);
   try { await apiSend('/hosts/settings', 'PUT', { host: h.host, action: 'clear' }); }
   catch (e) { peindreLeRefusDUnGeste(puits, e); return; }

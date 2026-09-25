@@ -2,7 +2,7 @@
 //! purs sur serde_json::Value + le handler HTTP sigma_import. Extrait de main.rs (refactor split
 //! #25 — byte-identique).
 use crate::*;
-use crate::handlers::transaction_validee::rendre_apres_validation;
+use crate::handlers::transaction_validee::{ouvrir_la_transaction_du_geste, rendre_apres_validation};
 
 // =====================================================================================
 //  SLICE #7 — PIÈCE 3 : IMPORTEUR SIGMA (Sigma YAML -> règle de détection Plume)
@@ -845,11 +845,23 @@ pub(crate) const CAUSE_IMPORT_SIGMA_NON_ECRIT: &str = "IMPORT SIGMA NON ÉCRIT :
      transaction (COMMIT refusé) et l'a annulée — aucune règle n'est créée ni mise à jour, les règles existantes \
      gardent leur logique d'avant, et aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en \
      lecture seule, pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_IMPORT_SIGMA_NON_ECRIT_TRANSACTION_NON_OUVERTE: &str = "IMPORT SIGMA NON ÉCRIT : la base n'a \
+     pas pris la transaction de l'import (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante sur \
+     l'écrivain) — RIEN n'est écrit : aucune règle n'est créée ni mise à jour, les règles existantes gardent leur \
+     logique d'avant, et aucune trace n'est écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou \
+     bloqué.";
 /// `P10.25-g` — import sigma en masse non écrit : le `COMMIT` de ce geste refusé.
 pub(crate) const CAUSE_IMPORT_SIGMA_EN_MASSE_NON_ECRIT: &str = "IMPORT SIGMA EN MASSE NON ÉCRIT : la base n'a pas \
      validé la transaction (COMMIT refusé) et l'a annulée — aucune règle n'est créée ni mise à jour, la couverture \
      ATT&CK reste celle d'avant, et aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en \
      lecture seule, pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_IMPORT_SIGMA_EN_MASSE_NON_ECRIT_TRANSACTION_NON_OUVERTE: &str = "IMPORT SIGMA EN MASSE NON \
+     ÉCRIT : la base n'a pas pris la transaction de l'import (BEGIN refusé : verrou tenu, ou transaction d'un autre \
+     geste pendante sur l'écrivain) — RIEN n'est écrit : aucune règle n'est créée ni mise à jour, la couverture \
+     ATT&CK reste celle d'avant, et aucune trace n'est écrite. Réessayez ; s'il est refusé encore, l'écrivain est \
+     occupé ou bloqué.";
 
 
 /// SLICE #7 pièce 3 — ADMIN API : importe des règles Sigma. Corps : `{content:"<yaml|json>"}` (texte
@@ -906,8 +918,8 @@ pub(crate) async fn sigma_import(State(st): State<AppState>, Extension(au): Exte
             SigmaDisp::Insert => plan.push((t, None)),
         }
     }
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "sigma", "import Sigma", CAUSE_IMPORT_SIGMA_NON_ECRIT_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<()> = (|| {
         for (t, target) in &plan {
@@ -1247,8 +1259,8 @@ pub(crate) async fn sigma_import_bulk(State(st): State<AppState>, Extension(au):
         })).into_response();
     }
 
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "sigma", "import Sigma en masse", CAUSE_IMPORT_SIGMA_EN_MASSE_NON_ECRIT_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<()> = (|| {
         sigma_bulk_apply(&conn, &plan, enable)?;

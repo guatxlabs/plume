@@ -27,8 +27,11 @@ Une BORNE est, dans `daemon/src/` (sous-répertoires compris, `tests/`, `tests.r
   * `.commit()` sans argument (garde `Txn`, transaction rusqlite) — genre `COMMIT` ;
   * `Txn::begin(`, `.transaction()`, `.unchecked_transaction()`, `.transaction_with_behavior(`,
     `.savepoint()` — genre `BEGIN` ;
-  * les deux JUGES du dépôt, `valider_la_transaction(` et `ouvrir_sa_transaction(` : jeter LEUR `Result`
-    serait la même faute écrite une ligne plus loin.
+  * les JUGES du dépôt, `valider_la_transaction(` et `ouvrir_sa_transaction(` : jeter LEUR `Result`
+    serait la même faute écrite une ligne plus loin — et, depuis `P10.28-d`, les deux formes d'une ROUTE qui
+    ouvre sa transaction, `ouvrir_la_transaction_du_geste(` et `ouvrir_le_garde_du_geste(` (genre `BEGIN`) : le lot
+    y a déplacé quatre-vingt-quinze `BEGIN` littéraux ; sans elles, cette garde aurait cessé de lire ces bornes
+    (MESURÉ : 88 bornes lues sur 25 fichiers, sous son plancher de 121/27) et leur `Result` jeté passerait.
 `ROLLBACK` n'en fait PAS partie : son échec, après un refus, n'est pas une information (`valider_la_transaction`
 le dit), et c'est `is_autocommit()` qu'on relit ensuite.
 
@@ -97,8 +100,10 @@ APPEL_BEGIN_DE_GARDE = re.compile(
     r"|\.\s*transaction_with_behavior\s*\(")
 # Appel nu ou par chemin (`crate::handlers::transaction_validee::valider_la_transaction(`) : seul un identifiant qui
 # PROLONGE le nom (`pre_valider_…`) est écarté.
-APPEL_DE_JUGE = re.compile(r"(?<![\w])(valider_la_transaction|ouvrir_sa_transaction)\s*\(")
-GENRE_DU_JUGE = {"valider_la_transaction": "COMMIT", "ouvrir_sa_transaction": "BEGIN"}
+APPEL_DE_JUGE = re.compile(
+    r"(?<![\w])(valider_la_transaction|ouvrir_sa_transaction|ouvrir_la_transaction_du_geste|ouvrir_le_garde_du_geste)\s*\(")
+GENRE_DU_JUGE = {"valider_la_transaction": "COMMIT", "ouvrir_sa_transaction": "BEGIN",
+                 "ouvrir_la_transaction_du_geste": "BEGIN", "ouvrir_le_garde_du_geste": "BEGIN"}
 
 TETE_SOURDE_NUE = re.compile(r"\A\s*let\s+_\s*(?::\s*[^=]*?)?=\s*\Z")
 ENVELOPPE_DROP = re.compile(r"\bdrop\s*\(\s*\Z")
@@ -368,6 +373,10 @@ EPREUVES = [
     ("p15 littéral brut", _f('    let _ = conn.execute_batch(r"BEGIN IMMEDIATE");\n    ok()'), {"BEGIN let _"}),
     ("p16 juge appelé par son chemin", _f('    let _ = crate::handlers::transaction_validee::valider_la_transaction(conn);\n    ok()'),
      {"COMMIT let _"}),
+    ("p17 la forme commune d'une route jetée (`P10.28-d`)",
+     _f('    let _ = ouvrir_la_transaction_du_geste(&conn, "j", "g", CAUSE);\n    ecrire(conn)?;\n    ok()'), {"BEGIN let _"}),
+    ("p18 le garde de la forme commune jeté (`P10.28-d`)",
+     _f('    drop(ouvrir_le_garde_du_geste(&conn, "j", "g", CAUSE));\n    ok()'), {"BEGIN drop"}),
     # --- CE QUI NE DOIT PAS L'ÊTRE (témoins NÉGATIFS).
     ("n1 juge propagé", _f('    valider_la_transaction(conn)?;\n    ok()'), set()),
     ("n2 BEGIN scruté qui refuse", _f('    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {\n        return refus();\n    }\n    ok()'),
@@ -395,6 +404,11 @@ EPREUVES = [
     ("n14 garde Txn jugé", _f('    match tx.commit() {\n        Ok(()) => ok(),\n        Err(e) => refus(e),\n    }'), set()),
     ("n15 définition du juge", 'fn valider_la_transaction(conn: &Connection) -> rusqlite::Result<()> {\n'
                                '    conn.execute_batch("COMMIT").map_err(|e| e)\n}\n', set()),
+    ("n16 la forme commune qui refuse (`P10.28-d`)",
+     _f('    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "j", "g", CAUSE) {\n        return refus;\n    }\n    ok()'), set()),
+    ("n17 le garde de la forme commune jugé (`P10.28-d`)",
+     _f('    let tx = match ouvrir_le_garde_du_geste(&conn, "j", "g", CAUSE) { Ok(t) => t, Err(refus) => return refus };\n    ok()'),
+     set()),
 ]
 
 

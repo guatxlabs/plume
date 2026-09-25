@@ -1,7 +1,7 @@
 //! Overlays versionnés (config.d) : charge parsers/dparsers/règles/playbooks/sigma déclarés en JSON.
 //! Sur &Connection. Extrait de main.rs (refactor split #25 — byte-identique).
 use crate::*;
-use crate::handlers::transaction_validee::rendre_apres_validation;
+use crate::handlers::transaction_validee::{ouvrir_la_transaction_du_geste, rendre_apres_validation};
 
 // =====================================================================================
 // PERSONNALISATION PHASE 1 — OVERLAYS VERSIONNÉS (config.d). Charge les parsers/règles/playbooks
@@ -656,6 +656,11 @@ pub(crate) const CAUSE_ELAGAGE_DES_OVERLAYS_NON_FAIT: &str = "ÉLAGAGE DES OVERL
      la transaction (COMMIT refusé) et l'a annulée — les overlays orphelins sont toujours là et toujours actifs, et \
      aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou \
      verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_ELAGAGE_DES_OVERLAYS_NON_FAIT_TRANSACTION_NON_OUVERTE: &str = "ÉLAGAGE DES OVERLAYS NON FAIT \
+     : la base n'a pas pris la transaction de l'élagage (BEGIN refusé : verrou tenu, ou transaction d'un autre geste \
+     pendante sur l'écrivain) — RIEN n'est écrit : les overlays orphelins sont toujours là et toujours actifs, et \
+     aucune trace n'est écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 
 /// POST /api/config-overlays/prune — élague les overlays config.d ORPHELINS (managed=1 sans fichier adossé).
 /// ADMIN-only (serveur default-deny + re-check) + PAR-TENANT (req_db). Transaction fail-closed + AUDIT
@@ -670,8 +675,8 @@ pub(crate) async fn config_overlays_prune(State(st): State<AppState>, Extension(
     let root = std::path::PathBuf::from(&base);
     let db_path = req_db_path(&st, &au);
     crate::req_conn!(st, au, conn);
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "overlays", "élagage des overlays orphelins", CAUSE_ELAGAGE_DES_OVERLAYS_NON_FAIT_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: Result<(PruneCounts, OacPruneCounts), crate::overlays_adossement::RefusDePrune> = (|| {
         let c = prune_orphan_overlays(&conn, &root)?;

@@ -527,6 +527,69 @@ pub(crate) async fn cases_list(State(st): State<AppState>, Extension(au): Extens
     Json(res)
 }
 
+// =====================================================================================================================
+// `P10.29-b` — LES REFUS DES ROUTES DES DOSSIERS SONT NOMMÉS, ET UN 404 NE COUVRE PLUS QU'UNE ABSENCE ÉTABLIE.
+//
+// LA FORME D'AVANT, MESURÉE LE 2026-09-25 (témoins `bdrn_`) : les gestes des dossiers rendaient des statuts NUS (404,
+// 403, 400 sans corps — la console ne pouvait dire que « refusé sans cause »), et le 404 couvrait PLUSIEURS FAITS :
+//  * une LECTURE REFUSÉE du dossier se servait comme une absence — modification, ajout d'élément, archivage, fusion,
+//    déclaration d'incident (404 nu), runbooks (404 « incident introuvable ») : « ce dossier n'existe pas » sur un
+//    dossier bien vivant ;
+//  * la fusion rendait le MÊME 404 pour « même dossier », « source absente », « cible absente », « source déjà
+//    fusionnée » et « la fusion fermerait un cycle » ; la défusion, pour « absent » et « pas fusionné » ;
+//  * l'avancée d'une étape rendait 404 pour un STATUT INVALIDE (une demande mal formée), une étape absente, une étape
+//    d'un autre dossier et une lecture refusée ; le lien, 404 pour « même dossier ».
+// Désormais chaque fait a sa réponse : 404 nommé pour une absence ÉTABLIE (lecture aboutie, aucune ligne), 503 nommé
+// pour une lecture qui n'a pas eu lieu (rien n'est fait), 400 nommé pour une demande mal formée, 409 nommé pour un état
+// qui s'y oppose, et le refus du rôle dans la phrase TEXTE de `rbac_gate`. Les succès sont INCHANGÉS (204).
+// =====================================================================================================================
+
+/// `P10.29-b` — aucun dossier ne porte cet identifiant (lecture aboutie, aucune ligne).
+pub(crate) const CAUSE_DOSSIER_INTROUVABLE: &str = "DOSSIER INTROUVABLE : aucun dossier ne porte cet identifiant \
+     (la lecture a abouti et n'a trouvé aucune ligne). Rien n'a été fait.";
+
+/// `P10.29-b` — la lecture qui établit l'existence du dossier n'a pas eu lieu : ni absence ni présence établies.
+pub(crate) const CAUSE_DOSSIER_NON_LU_GESTE_NON_FAIT: &str = "DOSSIER NON LU, GESTE NON FAIT : la base n'a pas pu dire \
+     si ce dossier existe (lecture refusée ou table illisible) — ce n'est PAS « dossier introuvable ». Rien n'est écrit, \
+     ni dans le dossier ni au registre. Réessayez.";
+
+/// `P10.29-b` — l'élément de timeline visé n'appartient pas à ce dossier (absent, ou d'un autre dossier : les deux sont
+/// dits ensemble, pour ne rien révéler du contenu d'un autre dossier).
+pub(crate) const CAUSE_ELEMENT_ABSENT_DE_CE_DOSSIER: &str = "ÉLÉMENT ABSENT DE CE DOSSIER : la timeline de ce dossier \
+     ne porte aucun élément sous cet identifiant. Rien n'a été détaché.";
+
+/// `P10.29-b` — la lecture de l'élément visé n'a pas eu lieu.
+pub(crate) const CAUSE_ELEMENT_NON_LU_GESTE_NON_FAIT: &str = "ÉLÉMENT NON LU, GESTE NON FAIT : la base n'a pas pu dire \
+     si cet élément appartient à ce dossier (lecture refusée ou table illisible) — ce n'est PAS « élément absent ». \
+     Rien n'a été détaché. Réessayez.";
+
+/// `P10.29-b` — un verdict (disposition) hors de la liste fermée.
+pub(crate) const CAUSE_VERDICT_DE_DOSSIER_REFUSE: &str = "VERDICT REFUSÉ : la disposition doit être vide ou l'une des \
+     valeurs de la liste fermée des verdicts. Rien n'a été écrit.";
+
+/// `P10.29-b` — LE REFUS DU RÔLE SUR UN GESTE DE DOSSIER RÉSERVÉ À L'ADMINISTRATEUR (archivage, désarchivage) : la phrase
+/// TEXTE de `rbac_gate`, seule forme que la console lit comme le refus du rôle. Ce re-contrôle double le garde, qui
+/// refuse le premier.
+pub(crate) fn refus_du_role_sur_un_dossier() -> Response {
+    (StatusCode::FORBIDDEN, "réservé à l'administrateur").into_response()
+}
+
+/// `P10.29-b` — L'EXISTENCE D'UN DOSSIER, ÉTABLIE AVANT UN GESTE : `Ok(())` s'il existe ; sinon la réponse nommée — 404
+/// sur une absence établie, 503 sur une lecture qui n'a pas eu lieu. Appelée sous le verrou de la connexion qui porte
+/// le geste : rien ne s'intercale entre elle et l'écriture.
+pub(crate) fn etablir_le_dossier(conn: &Connection, id: i64) -> Result<(), Response> {
+    match conn.query_row("SELECT 1 FROM incident WHERE id=?1", params![id], |_| Ok(())) {
+        Ok(()) => Ok(()),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Err(not_found(CAUSE_DOSSIER_INTROUVABLE)),
+        Err(e) => Err(refus_du_dossier_non_lu(&e)),
+    }
+}
+
+/// `P10.29-b` — le 503 d'une lecture de dossier qui n'a pas eu lieu, la cause du moteur jointe.
+pub(crate) fn refus_du_dossier_non_lu(e: &dyn std::fmt::Display) -> Response {
+    err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_DOSSIER_NON_LU_GESTE_NON_FAIT} ({e})"))
+}
+
 /// `P10.20-w` — la ligne du dossier n'a PAS été écrite : 503, et ni registre ni identifiant.
 pub(crate) const CAUSE_DOSSIER_NON_OUVERT: &str =
     "DOSSIER NON OUVERT : la ligne n'a pas pu être écrite, donc AUCUN dossier n'existe, le registre \
@@ -580,27 +643,34 @@ pub(crate) async fn case_get(State(st): State<AppState>, Extension(au): Extensio
             }
             Json(c).into_response()
         }
-        Ok(None) => (StatusCode::NOT_FOUND, "incident introuvable").into_response(),
+        // `P10.29-b` — l'absence établie est nommée en JSON (elle rendait « incident introuvable » en texte).
+        Ok(None) => not_found(CAUSE_DOSSIER_INTROUVABLE),
     }
     })
 }
 
 /// POST /api/cases/{id} — patch (status/priority/assignee/severity/title/summary). Chaque changement -> item
 /// typé + audit. Couvre assign / close / reopen / priorisation. Mutating (editor/admin). #4a.
-pub(crate) async fn case_update(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> StatusCode {
+pub(crate) async fn case_update(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
     // DISPOSITION (#4a) — validation FERMÉE au bord : un verdict non-vide hors de l'allowlist -> 400 AVANT toute
     // écriture. NULL/'' (unset) est légitime. Le CRUD du case reste gated editor+ par la RBAC de /api/cases/{id}.
     if let Some(dv) = b.get("disposition") {
         let d = dv.as_str().unwrap_or("").trim();
         if !d.is_empty() && !disposition_valid(d) {
-            return StatusCode::BAD_REQUEST;
+            return bad_req(CAUSE_VERDICT_DE_DOSSIER_REFUSE);
         }
     }
     with_write(&st, &au, |conn| {
+    // `P10.29-b` — l'existence est établie d'abord : une lecture refusée n'est plus servie comme « introuvable ».
+    if let Err(refus) = etablir_le_dossier(conn, id) {
+        return refus;
+    }
     if case_apply_update(&conn, id, &au.name, &b) {
-        StatusCode::NO_CONTENT
+        StatusCode::NO_CONTENT.into_response()
     } else {
-        StatusCode::NOT_FOUND
+        // Le dossier vient d'être établi sous ce même verrou : `false` ne peut plus venir que de la lecture de son
+        // état courant, qui n'a pas eu lieu.
+        refus_du_dossier_non_lu(&"lecture de l'état courant du dossier")
     }
     })
 }
@@ -608,10 +678,11 @@ pub(crate) async fn case_update(State(st): State<AppState>, Extension(au): Exten
 /// POST /api/cases/{id}/items — ajoute un item de timeline : note (add_note), OU rattachement d'une alerte
 /// (kind='alert', ref='alert:ID' = link_alert) / d'un event (kind='event', ref='event:ID' = link_event) /
 /// action. Mutating (editor/admin). #4a.
-pub(crate) async fn case_item_add(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> StatusCode {
+pub(crate) async fn case_item_add(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
     crate::req_conn!(st, au, conn);
-    if conn.query_row("SELECT 1 FROM incident WHERE id=?1", params![id], |_| Ok(())).is_err() {
-        return StatusCode::NOT_FOUND;
+    // `P10.29-b` — 404 nommé sur une absence établie, 503 nommé sur une lecture refusée (les deux rendaient 404 nu).
+    if let Err(refus) = etablir_le_dossier(&conn, id) {
+        return refus;
     }
     let kind = match b.get("kind").and_then(|v| v.as_str()) {
         Some("alert") => "alert",
@@ -622,17 +693,27 @@ pub(crate) async fn case_item_add(State(st): State<AppState>, Extension(au): Ext
     let body = b.str_field("body");
     let rf = b.get("ref").and_then(|v| v.as_str());
     case_add_item(&conn, id, now(), kind, &au.name, body, rf);
-    StatusCode::NO_CONTENT
+    StatusCode::NO_CONTENT.into_response()
 }
 
 /// DELETE /api/cases/{id}/items/{item_id} — détache un item (alerte/event/note) du case + trace le geste.
 /// Mutating (editor/admin). 404 si l'item n'appartient pas au case. #4a.
-pub(crate) async fn case_item_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path((id, item_id)): Path<(i64, i64)>) -> StatusCode {
+pub(crate) async fn case_item_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path((id, item_id)): Path<(i64, i64)>) -> Response {
     with_write(&st, &au, |conn| {
+    // `P10.29-b` — trois faits que le 404 nu confondait : le dossier absent, l'élément absent de CE dossier, une lecture
+    // refusée. Établis dans cet ordre, sous le verrou du geste.
+    if let Err(refus) = etablir_le_dossier(conn, id) {
+        return refus;
+    }
+    match conn.query_row("SELECT 1 FROM incident_item WHERE id=?1 AND incident_id=?2", params![item_id, id], |_| Ok(())) {
+        Ok(()) => {}
+        Err(rusqlite::Error::QueryReturnedNoRows) => return not_found(CAUSE_ELEMENT_ABSENT_DE_CE_DOSSIER),
+        Err(e) => return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_ELEMENT_NON_LU_GESTE_NON_FAIT} ({e})")),
+    }
     if case_detach_item(&conn, id, item_id, &au.name) {
-        StatusCode::NO_CONTENT
+        StatusCode::NO_CONTENT.into_response()
     } else {
-        StatusCode::NOT_FOUND
+        err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_ELEMENT_NON_LU_GESTE_NON_FAIT} (relecture de l'élément)"))
     }
     })
 }
@@ -668,30 +749,38 @@ pub(crate) fn case_set_archived(conn: &Connection, id: i64, author: &str, archiv
 /// POST /api/cases/{id}/archive — ARCHIVE (soft-delete) un case : le MASQUE de la liste par défaut tout en
 /// conservant la ligne + sa timeline (append-only). Action DELETE-LIKE => ADMIN-ONLY : gatée au choke-point
 /// (rbac_gate) ET re-vérifiée ICI (défense en profondeur). 403 hors admin ; 404 si le case n'existe pas. #4a-bis.
-pub(crate) async fn case_archive(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> StatusCode {
+pub(crate) async fn case_archive(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     if !au.is_admin() {
-        return StatusCode::FORBIDDEN;
+        return refus_du_role_sur_un_dossier();
     }
     with_write(&st, &au, |conn| {
+    // `P10.29-b` — 404 nommé sur une absence établie, 503 nommé sur une lecture refusée (les deux rendaient 404 nu).
+    if let Err(refus) = etablir_le_dossier(conn, id) {
+        return refus;
+    }
     if case_set_archived(&conn, id, &au.name, true) {
-        StatusCode::NO_CONTENT
+        StatusCode::NO_CONTENT.into_response()
     } else {
-        StatusCode::NOT_FOUND
+        refus_du_dossier_non_lu(&"relecture du dossier")
     }
     })
 }
 
 /// POST /api/cases/{id}/unarchive — DÉSARCHIVE un case (le ré-affiche dans la liste). ADMIN-ONLY (idem archive).
 /// 403 hors admin ; 404 si le case n'existe pas. #4a-bis.
-pub(crate) async fn case_unarchive(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> StatusCode {
+pub(crate) async fn case_unarchive(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     if !au.is_admin() {
-        return StatusCode::FORBIDDEN;
+        return refus_du_role_sur_un_dossier();
     }
     with_write(&st, &au, |conn| {
+    // `P10.29-b` — 404 nommé sur une absence établie, 503 nommé sur une lecture refusée (les deux rendaient 404 nu).
+    if let Err(refus) = etablir_le_dossier(conn, id) {
+        return refus;
+    }
     if case_set_archived(&conn, id, &au.name, false) {
-        StatusCode::NO_CONTENT
+        StatusCode::NO_CONTENT.into_response()
     } else {
-        StatusCode::NOT_FOUND
+        refus_du_dossier_non_lu(&"relecture du dossier")
     }
     })
 }

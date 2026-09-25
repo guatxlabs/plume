@@ -11,7 +11,7 @@
 //!                 commande. L'EXÉCUTION reste le chemin /api/actions EXISTANT (approbation + ledger) : ce
 //!                 workflow-action ne fait que RÉFÉRENCER l'action ; il ne l'exécute pas. Création = ADMIN.
 use crate::*;
-use crate::handlers::transaction_validee::rendre_apres_validation;
+use crate::handlers::transaction_validee::{ouvrir_la_transaction_du_geste, rendre_apres_validation};
 
 
 /// Pourcent-encode une valeur pour insertion SÛRE dans une URL (unreserved RFC 3986 conservés ; tout le reste
@@ -108,7 +108,9 @@ pub(crate) async fn workflow_action_create(State(st): State<AppState>, Extension
     if let Err(e) = validate_workflow_action(&kind, &scope_field, &target) { return bad_req(e); }
     let enabled = b.bool_field("enabled", true) as i64;
     crate::req_conn!(st, au, conn);
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() { return server_err("verrou base indisponible"); }
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "workflow-actions", &format!("création de la workflow-action '{name}'"), CAUSE_WORKFLOW_ACTION_NON_CREEE_TRANSACTION_NON_OUVERTE) {
+        return refus;
+    }
     let outcome: rusqlite::Result<i64> = (|| {
         conn.execute("INSERT INTO workflow_action(name,label,scope_field,kind,target,enabled,created,updated) VALUES(?1,?2,?3,?4,?5,?6,?7,?7)",
             params![name, label, scope_field, kind, target, enabled, now()])?;
@@ -138,6 +140,11 @@ pub(crate) async fn workflow_action_create(State(st): State<AppState>, Extension
 pub(crate) const CAUSE_WORKFLOW_ACTION_NON_CREEE: &str = "ACTION DE WORKFLOW NON CRÉÉE : la base n'a pas validé la \
      transaction (COMMIT refusé) et l'a annulée — aucune action n'est écrite ni proposée sur les champs qu'elle viserait, \
      et aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_WORKFLOW_ACTION_NON_CREEE_TRANSACTION_NON_OUVERTE: &str = "ACTION DE WORKFLOW NON CRÉÉE : la \
+     base n'a pas pris la transaction de la création (BEGIN refusé : verrou tenu, ou transaction d'un autre geste \
+     pendante sur l'écrivain) — RIEN n'est écrit : aucune action n'est écrite ni proposée sur les champs qu'elle \
+     viserait, et aucune trace n'est écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 
 // `P10.25-g` — LE `COMMIT` DE LA SUPPRESSION D'UNE WORKFLOW-ACTION EST JUGÉ. `P10.27-w` — celui de la création aussi.
 /// `P10.25-g` — workflow-action non supprimée : le `COMMIT` de ce geste refusé.
@@ -147,6 +154,12 @@ pub(crate) const CAUSE_WORKFLOW_ACTION_NON_SUPPRIMEE: &str = "ACTION DE WORKFLOW
      la transaction (COMMIT refusé) et l'a annulée — elle est toujours là et toujours proposée sur les champs qu'elle \
      vise, et aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou \
      verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_WORKFLOW_ACTION_NON_SUPPRIMEE_TRANSACTION_NON_OUVERTE: &str = "ACTION DE WORKFLOW NON \
+     SUPPRIMÉE : la base n'a pas pris la transaction du retrait (BEGIN refusé : verrou tenu, ou transaction d'un \
+     autre geste pendante sur l'écrivain) — RIEN n'est écrit : elle est toujours là et toujours proposée sur les \
+     champs qu'elle vise, et aucune trace n'est écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou \
+     bloqué.";
 
 /// DELETE /api/workflow-actions/{id} — supprime (editor+, audité).
 pub(crate) async fn workflow_action_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
@@ -155,7 +168,9 @@ pub(crate) async fn workflow_action_delete(State(st): State<AppState>, Extension
     let name = match conn.query_row("SELECT name FROM workflow_action WHERE id=?1", params![id], |r| r.get::<_,String>(0)) {
         Ok(n) => n, Err(_) => return not_found("workflow-action introuvable"),
     };
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() { return server_err("verrou base indisponible"); }
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "workflow-actions", &format!("suppression de la workflow-action #{id}"), CAUSE_WORKFLOW_ACTION_NON_SUPPRIMEE_TRANSACTION_NON_OUVERTE) {
+        return refus;
+    }
     let outcome: rusqlite::Result<i64> = (|| {
         conn.execute("DELETE FROM workflow_action WHERE id=?1", params![id])?;
         audit_config_change(&conn, "config.workflow_action.delete",

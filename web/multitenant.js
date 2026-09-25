@@ -1,6 +1,6 @@
 // multitenant.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // #2c multi-tenant : switcher tenant/env (header) + vue Tenants + grants + audit acces operateur.
-import { $, LANG, LOC, api, apiSend, applyRoleClass, aveuDUneTraceManquante, causeDeLaTraceManquante, confirmWithConsequence, fmtTs, ic, muted, pagedList, phraseDuRefusDuDemon, prefixeDUnEchecRenduTelQuel, toast, faceDansLaLangue } from './core.js';
+import { $, LANG, LOC, api, apiSend, applyRoleClass, aveuDUneTraceManquante, causeDeLaTraceManquante, confirmWithConsequence, fmtTs, ic, muted, noeudDuRefusDUneLecture, pagedList, phraseDuRefusDuDemon, prefixeDUnEchecRenduTelQuel, toast, faceDansLaLangue } from './core.js';
 import { S, ecrireDansLeStockageDuSite, ecrireSansDireLeRefus, lireLeStockageDuSite, RAISONS_DE_SILENCE } from './state.js';
 import { runQ, tableEl } from './viz.js';
 import { ROLE_LABEL, currentTab, fetchMe, loadUsers, refresh, refreshCurrentView, refreshPanels, renderNav, route, setAuthUI } from './app.js';
@@ -26,10 +26,14 @@ const MOTS_DES_AVIS_DU_PLAN_DE_CONTROLE = {
 // (aucun changement). Le super-admin garde l'accès à l'espace Administration même cross-tenant.
 function uiIsAdmin() { return S.isAdmin || !!(S.AUTH && S.AUTH.is_superadmin); }
 // `P10.27-t` — LE PRÉFIXE D'UNE LECTURE DES TENANTS OU DE LEURS DROITS QUI ÉCHOUE, dans ses deux faces : il était collé
-// en français devant le message (« accès refusé ou erreur : … »), donc intraduisible par le lexique. La face française
-// est celle d'avant, au caractère près.
-const MOTS_D_UNE_LECTURE_DES_TENANTS_REFUSEE = { fr: 'accès refusé ou erreur : ', en: 'access refused or error: ' };
-const prefixeDUneLectureDesTenantsRefusee = () => (LANG === 'en' ? MOTS_D_UNE_LECTURE_DES_TENANTS_REFUSEE.en : MOTS_D_UNE_LECTURE_DES_TENANTS_REFUSEE.fr);
+// en français devant le message (« accès refusé ou erreur : … »), donc intraduisible par le lexique.
+// `P10.29-g` — LE PRÉFIXE N'EST PLUS : la face nommée d'une lecture non servie (web/core.js), la cause entière à côté ;
+// mesuré avant ce lot (témoin 120g), le préfixe collait le message brut, JSON du refus compris.
+const MOTS_DES_LECTURES_DES_TENANTS = {
+  tenants: { fr: 'Liste des tenants', en: 'Tenant list' },
+  droits: { fr: 'Accès du tenant', en: 'Tenant access' },
+  audit_operateur: { fr: "Accès de l'opérateur", en: 'Operator access' },
+};
 
 // Détection FIABLE du mode 1 (multi-tenant). Fail-CLOSED côté mode 0 : chaque signal reste faux en mode 0
 // (is_superadmin=false, tenant='default', my-tenants=[{id:'default',role}] sans name/suspended).
@@ -352,7 +356,7 @@ async function loadTenantsView() {
   if (sa) {
     let j;
     try { j = await api('/tenants'); }        // GET /api/tenants -> {tenants:[...]} (super-admin, re-check serveur)
-    catch (e) { list.replaceChildren(muted(prefixeDUneLectureDesTenantsRefusee() + e.message)); return; }
+    catch (e) { list.replaceChildren(noeudDuRefusDUneLecture(e, faceDansLaLangue(MOTS_DES_LECTURES_DES_TENANTS.tenants))); return; }
     renderTenantList(j.tenants || []);
   } else {
     renderTenantAdminSelf(list);              // admin de tenant : accès de SON tenant courant uniquement
@@ -442,7 +446,7 @@ async function destroyTenant(t) {
   // P11.5-b : confirmation partagée qui nomme la conséquence, renforcée par la ressaisie du nom.
   const r = await confirmWithConsequence(`Supprimer le tenant « ${label} »`, 'destruction cryptographique IRRÉVERSIBLE : la clé est oubliée et la base chiffrée supprimée, aucune restauration possible.', {
     danger: true, okText: 'Détruire définitivement', cancelText: 'Annuler',
-    message: `Pour confirmer, retape EXACTEMENT le nom du tenant : ${t.name || t.id}`,
+    message: faceDansLaLangue({ fr: 'Pour confirmer, retape EXACTEMENT le nom du tenant : {nom}', en: 'To confirm, type EXACTLY the tenant name: {nom}' }, { nom: t.name || t.id }),
     fields: [{ name: 'confirm', label: 'Nom du tenant', placeholder: t.name || t.id, required: true }],
     validate: v => (String(v.confirm || '').trim() !== (t.name || t.id)) ? 'Le nom saisi ne correspond pas.' : null,
   });
@@ -482,11 +486,11 @@ async function loadGrants(tid, host) {
   host.replaceChildren(muted('chargement…'));
   let j;
   try { j = await api('/tenants/' + encodeURIComponent(tid) + '/grants'); }
-  catch (e) { host.replaceChildren(muted(prefixeDUneLectureDesTenantsRefusee() + e.message)); return; }
+  catch (e) { host.replaceChildren(noeudDuRefusDUneLecture(e, faceDansLaLangue(MOTS_DES_LECTURES_DES_TENANTS.droits))); return; }
   host.replaceChildren();
   const grants = j.grants || [];
   const cap = document.createElement('div'); cap.className = 'muted'; cap.style.marginBottom = '6px';
-  cap.textContent = 'Accès du tenant ' + (j.tenant || tid) + ' — rôle ∈ admin | editor | viewer';
+  cap.textContent = faceDansLaLangue({ fr: 'Accès du tenant {tenant} — rôle ∈ admin | editor | viewer', en: 'Access to tenant {tenant} — role ∈ admin | editor | viewer' }, { tenant: j.tenant || tid });
   host.appendChild(cap);
   if (!grants.length) host.appendChild(muted('aucun accès matérialisé (les grants SSO sont résolus à la volée).'));
   grants.forEach(g => {
@@ -564,10 +568,10 @@ async function loadOperatorAudit() {
   body.replaceChildren(muted('chargement…'));
   let j;
   try { j = await runQ('search source=' + src + ' | sort -ts | head 200', true, 0); }
-  catch (e) { body.replaceChildren(muted(prefixeDUnEchecRenduTelQuel() + ((e && e.message) || e))); return; }
+  catch (e) { body.replaceChildren(noeudDuRefusDUneLecture(e, faceDansLaLangue(MOTS_DES_LECTURES_DES_TENANTS.audit_operateur))); return; }   // `P10.29-g`
   if (j && j.error) { body.replaceChildren(muted(prefixeDUnEchecRenduTelQuel() + j.error)); return; }
   const cols = j.columns || j.cols || [], rows = j.rows || [];
-  if (!rows.length) { body.replaceChildren(muted('aucun événement (' + src + ') sur le tenant courant')); return; }
+  if (!rows.length) { body.replaceChildren(muted(faceDansLaLangue({ fr: 'aucun événement ({source}) sur le tenant courant', en: 'no event ({source}) on the current tenant' }, { source: src }))); return; }   // `P10.29-c`
   body.replaceChildren(tableEl(cols, rows, 'search source=' + src));
 }
 

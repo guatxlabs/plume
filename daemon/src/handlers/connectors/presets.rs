@@ -18,6 +18,7 @@
 //! (SigV4) et GCP/Workspace-SA-JWT sont livrés en métadonnée `instantiable:false` (voie push->HEC /
 //! phase ultérieure) — le pull-direct de leur API native n'est pas encore construit.
 use crate::*;
+use crate::handlers::transaction_validee::ouvrir_la_transaction_du_geste;
 
 /// Un preset embarqué : métadonnée d'affichage (curée) + le descriptor JSON brut (`include_str!`).
 /// L'`auth_kind`, les `needs` (placeholders à remplir) et le template `config` sont DÉRIVÉS du JSON —
@@ -354,8 +355,8 @@ pub(crate) async fn connector_push_source(State(st): State<AppState>, Extension(
     };
     let hash = sha256_hex(delivery_key.as_bytes());
     crate::req_conn!(st, au, conn);
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "connecteurs", "création d'une source push", CAUSE_SOURCE_PUSH_NON_CREEE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     // Connecteur + clé + audit ATOMIQUES fail-closed : la clé renvoyée correspond TOUJOURS à un binding persisté.
     let outcome: rusqlite::Result<i64> = (|| {
@@ -432,3 +433,8 @@ pub(crate) async fn connector_push_source(State(st): State<AppState>, Extension(
 pub(crate) const CAUSE_SOURCE_PUSH_NON_CREEE_COMMIT_REFUSE: &str = "SOURCE PUSH NON CRÉÉE : la base n'a pas validé la \
      transaction (COMMIT refusé) et l'a annulée — ni le connecteur ni sa clé de livraison ne sont écrits, et aucune clé \
      n'est montrée. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_SOURCE_PUSH_NON_CREEE_TRANSACTION_NON_OUVERTE: &str = "SOURCE PUSH NON CRÉÉE : la base n'a \
+     pas pris la transaction de la création (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante \
+     sur l'écrivain) — RIEN n'est écrit : ni le connecteur ni sa clé de livraison ne sont écrits, et aucune clé \
+     n'est montrée. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";

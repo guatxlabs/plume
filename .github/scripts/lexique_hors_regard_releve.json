@@ -33,6 +33,7 @@
   "Trier par technique MITRE ATT&CK",
   "alerte(s) de cette page — la recherche porte sur la page affichée, pas sur tout l'historique ; les filtres et le tri restent posés",
   "alerte(s) — la recherche porte sur les alertes actives servies ; les filtres et le tri restent posés",
+  "groupes indisponibles",
   "hôte",
   "règle"
  ],
@@ -60,7 +61,6 @@
   "échec"
  ],
  "attack.js": [
-  "ANGLE MORT — aucune règle ne couvre cette technique. Importez un ruleset Sigma pour la couvrir (bouton « Importer un ruleset Sigma »).",
   "Escape",
   "nom inconnu"
  ],
@@ -194,6 +194,7 @@
  ],
  "coupe_de_liste.js": [],
  "dashboards.js": [
+  "AbortError",
   "Arrêter ce panneau",
   "Content-Type",
   "Copier le lien de partage de cet instantané",
@@ -207,16 +208,13 @@
   "favDash"
  ],
  "dataaccess.js": [
-  "7 derniers jours",
   "Tout",
   "binaires SUID",
-  "dernières 24 h",
   "search source=auditd severity>=4 | sort -ts | head 30",
   "search source=dataaccess | stats count by path,user | sort -count | head 30",
   "search source=dataacl | sort -ts | head 20",
   "search source=integrity | sort -ts | head 30",
   "search source=kube-rbac | sort -ts | head 20",
-  "toute la rétention",
   "unités systemd"
  ],
  "datamodels.js": [
@@ -268,7 +266,6 @@
   "Supprimer",
   "Test",
   "[{\"name\":\"échec\",\"query\":\"search source=auth outcome=fail\",\"min_count\":3},{\"name\":\"succès\",\"query\":\"search source=auth outcome=success\",\"min_count\":1}]",
-  "désactivée : cochez « Activée » pour qu'elle tourne",
   "search source=auth | stats count by host",
   "Éditer"
  ],
@@ -280,8 +277,6 @@
   "MITRE invalide : format attendu Txxxx[.yyy] (ex T1110)",
   "Mode ACTIF (réponses automatiques armées) — cliquer pour repasser en Observation",
   "Mode Observation (propositions seulement) — cliquer pour armer les réponses automatiques",
-  "OFF : activez-la dans la liste",
-  "OFF : activez-le dans la liste (confirmation demandée)",
   "Parser",
   "Playbook",
   "Playbooks",
@@ -290,7 +285,6 @@
   "arrête le service cible",
   "bannit l'IP source",
   "bans the source IP",
-  "dès la première évaluation (Intervalle)",
   "l'activation/désactivation d'un playbook est réservée à l'administrateur",
   "l'activation/désactivation d'une règle est réservée à l'administrateur",
   "requête requise",
@@ -470,15 +464,7 @@
   "routés",
   "échantillonnés-out"
  ],
- "producer_ui.js": [
-  "(cas élevé en incident dont la tactique ou la technique dominante correspond, ou attachée à la main depuis le cas)",
-  "(mode Observation : en attente, dry-run ; mode Actif : exécutées)",
-  "(mode risque : pas d'alerte directe)",
-  "les actions qu'il pose arrivent dans",
-  "sa checklist est proposée dans",
-  "sa contribution au score des entités arrive dans",
-  "ses alertes arrivent dans"
- ],
+ "producer_ui.js": [],
  "recherche_de_liste.js": [
   "Escape"
  ],
@@ -518,7 +504,6 @@
   "Match",
   "Nom",
   "Nom du runbook",
-  "OFF : activez-le dans la liste",
   "Rétablissement",
   "Titre de l'étape",
   "Triage",
@@ -538,13 +523,8 @@
   "[data-n=\"file\"]",
   "[data-n=\"paste\"]",
   "collez des règles Sigma (multi-docs YAML séparés par « --- » ou tableau JSON) ou choisissez un fichier.",
-  "erreur(s) de traduction",
-  "ignorée(s)",
-  "importée(s)",
   "le fichier est vide.",
-  "lecture du fichier impossible",
-  "mise(s) à jour",
-  "règles importées OFF : activez-les dans Détection › Règles"
+  "lecture du fichier impossible"
  ],
  "soql_complete.js": [
   "(sans nom)",

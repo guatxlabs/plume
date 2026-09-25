@@ -11,6 +11,7 @@
 //! ADDITIF : aucun bulletin posé -> aucun bandeau ; aucune écriture DB en lecture -> mode 0 byte-identique.
 use crate::*;
 use rusqlite::OptionalExtension;
+use crate::handlers::transaction_validee::{ouvrir_la_transaction_du_geste, rendre_apres_validation};
 
 /// `P10.20-b` — LA CLÉ SOUS LAQUELLE UNE VERSION DE SCHÉMA NON ÉTABLIE S'AVOUE, la MÊME sur les quatre
 /// surfaces qui la servent (sonde de vivacité, exposition Prometheus, écran Système, paquet de
@@ -480,6 +481,74 @@ pub(crate) async fn bulletin_get(State(st): State<AppState>, Extension(au): Exte
     Json(Value::Object(corps))
 }
 
+// `P10.29-a` — LE BANDEAU N'EST ANNONCÉ PUBLIÉ OU EFFACÉ QU'UNE FOIS L'ÉCRITURE COMPTÉE ET LA TRANSACTION VALIDÉE.
+//
+// LE DÉFAUT, MESURÉ LE 2026-09-25 SUR LA FORME D'AVANT (témoins `bdrn_`, écriture de `setting` refusée par un
+// autorisateur SQLite) : `let _ = c.execute(..)` puis `let _ = audit_config_change(..)`, chacun en autocommit.
+//  * publication refusée : 200, et la réponse RENVOYAIT le bandeau `{message, level, …}` comme s'il était posé ; aucune
+//    ligne `setting` (aucun compte ne le voyait) ; le registre ET l'événement `plume-config` attestaient « bulletin posé » ;
+//  * effacement refusé (`DELETE /api/bulletin`, ou `POST` d'un message vide) : 200 `{ok:true}` / `{bulletin:null}`, le
+//    bandeau TOUJOURS affiché à tous les comptes, et « bulletin effacé » au registre.
+// L'énoncé (« une écriture peut-être non faite ») sous-comptait : la trace non purgeable affirmait un fait qui n'avait pas
+// eu lieu, et les deux écritures (bandeau, trace) n'étaient pas dans une même transaction. Désormais : `BEGIN` pris par la
+// forme commune, écriture COMPTÉE (l'`UPSERT` doit poser exactement une ligne ; l'effacement rend son compte, zéro étant
+// l'absence établie d'un bandeau), trace dans la même transaction, succès rendu après `COMMIT` seulement. Les corps de
+// succès sont INCHANGÉS.
+
+/// `P10.29-a` — le `BEGIN` de la publication du bandeau refusé.
+pub(crate) const CAUSE_BULLETIN_NON_PUBLIE_TRANSACTION_NON_OUVERTE: &str = "BULLETIN NON PUBLIÉ : la base n'a pas pris \
+     la transaction de la publication (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante sur \
+     l'écrivain) — RIEN n'est écrit : le bandeau que voient tous les comptes est toujours celui d'avant, et aucune trace \
+     n'est écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
+
+/// `P10.29-a` — l'écriture du bandeau (ou de sa trace) refusée : la transaction est annulée.
+pub(crate) const CAUSE_BULLETIN_NON_PUBLIE_ECRITURE_REFUSEE: &str = "BULLETIN NON PUBLIÉ : la base n'a pas pris \
+     l'écriture du bandeau ou de sa trace, et la transaction est annulée — le bandeau que voient tous les comptes est \
+     toujours celui d'avant, et le registre n'atteste aucune publication. Réessayez ; si le refus persiste, la base est \
+     en lecture seule, pleine ou verrouillée.";
+
+/// `P10.29-a` — le `COMMIT` de la publication du bandeau refusé.
+pub(crate) const CAUSE_BULLETIN_NON_PUBLIE: &str = "BULLETIN NON PUBLIÉ : la base n'a pas validé la transaction \
+     (COMMIT refusé) et l'a annulée — le bandeau que voient tous les comptes est toujours celui d'avant, et aucune trace \
+     n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+
+/// `P10.29-a` — le `BEGIN` de l'effacement du bandeau refusé.
+pub(crate) const CAUSE_BULLETIN_NON_EFFACE_TRANSACTION_NON_OUVERTE: &str = "BULLETIN NON EFFACÉ : la base n'a pas pris \
+     la transaction de l'effacement (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante sur \
+     l'écrivain) — RIEN n'est écrit : le bandeau est TOUJOURS affiché à tous les comptes, et aucune trace n'est écrite. \
+     Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
+
+/// `P10.29-a` — l'effacement du bandeau (ou sa trace) refusé : la transaction est annulée.
+pub(crate) const CAUSE_BULLETIN_NON_EFFACE_ECRITURE_REFUSEE: &str = "BULLETIN NON EFFACÉ : la base n'a pas pris \
+     l'effacement du bandeau ou sa trace, et la transaction est annulée — le bandeau est TOUJOURS affiché à tous les \
+     comptes, et le registre n'atteste aucun effacement. Réessayez ; si le refus persiste, la base est en lecture seule, \
+     pleine ou verrouillée.";
+
+/// `P10.29-a` — le `COMMIT` de l'effacement du bandeau refusé.
+pub(crate) const CAUSE_BULLETIN_NON_EFFACE: &str = "BULLETIN NON EFFACÉ : la base n'a pas validé la transaction \
+     (COMMIT refusé) et l'a annulée — le bandeau est TOUJOURS affiché à tous les comptes, et aucune trace n'est écrite. \
+     Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+
+/// `P10.29-a` — L'EFFACEMENT DU BANDEAU, commun à `DELETE /api/bulletin` et au `POST` d'un message vide : le compte de
+/// l'effacement est lu (zéro = aucun bandeau posé, absence établie, le geste est honoré et tracé comme avant), la trace
+/// suit dans la même transaction, et `succes` n'est rendu qu'après la validation.
+fn effacer_le_bandeau(c: &Connection, acteur: &str, succes: impl FnOnce() -> Response) -> Response {
+    if let Err(refus) =
+        ouvrir_la_transaction_du_geste(c, "bulletin", "effacement du bandeau", CAUSE_BULLETIN_NON_EFFACE_TRANSACTION_NON_OUVERTE)
+    {
+        return refus;
+    }
+    let ecriture = c
+        .execute("DELETE FROM setting WHERE scope='global' AND key=?1", params![BULLETIN_KEY])
+        .and_then(|_lignes_effacees| audit_config_change(c, "bulletin.clear", &format!("bulletin effacé par {acteur}"), 1, "bulletin effacé", "{}"));
+    if let Err(refus) = ecriture {
+        let _ = c.execute_batch("ROLLBACK");
+        eprintln!("[bulletin] WARN effacement du bandeau NON écrit : {refus}");
+        return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_BULLETIN_NON_EFFACE_ECRITURE_REFUSEE);
+    }
+    rendre_apres_validation(c, "bulletin", "effacement du bandeau", CAUSE_BULLETIN_NON_EFFACE, succes)
+}
+
 /// POST /api/bulletin — ADMIN-ONLY (route_min_role default-deny Admin + re-check). {message, level?}.
 /// Message vide -> efface (équivaut à DELETE). Ledgerisé (audit_config_change) — gouvernance.
 pub(crate) async fn bulletin_set(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(body): Json<Value>) -> Response {
@@ -492,21 +561,36 @@ pub(crate) async fn bulletin_set(State(st): State<AppState>, Extension(au): Exte
     let db = req_db(&st, &au);
     let c = db.lock();
     if message.is_empty() {
-        let _ = c.execute("DELETE FROM setting WHERE scope='global' AND key=?1", params![BULLETIN_KEY]);
-        let _ = audit_config_change(&c, "bulletin.clear", &format!("bulletin effacé par {}", au.name), 1, "bulletin effacé", "{}");
-        return (StatusCode::OK, Json(json!({ "ok": true, "bulletin": Value::Null }))).into_response();
+        return effacer_le_bandeau(&c, &au.name, || (StatusCode::OK, Json(json!({ "ok": true, "bulletin": Value::Null }))).into_response());
     }
     if message.len() > 2000 {
         return bad_req("message trop long (max 2000 caractères)");
     }
     let val = json!({ "message": message, "level": level, "updated_by": au.name, "updated": now() });
-    let _ = c.execute(
+    if let Err(refus) =
+        ouvrir_la_transaction_du_geste(&c, "bulletin", "publication du bandeau", CAUSE_BULLETIN_NON_PUBLIE_TRANSACTION_NON_OUVERTE)
+    {
+        return refus;
+    }
+    // L'`UPSERT` pose exactement une ligne (insérée ou remplacée) : tout autre compte est un refus, jamais un succès.
+    let ecriture = match c.execute(
         "INSERT INTO setting(scope,key,value,updated,updated_by) VALUES('global',?1,?2,?3,?4) \
          ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value, updated=excluded.updated, updated_by=excluded.updated_by",
         params![BULLETIN_KEY, val.to_string(), now(), au.name],
-    );
-    let _ = audit_config_change(&c, "bulletin.set", &format!("bulletin posé par {} (niveau {level})", au.name), 1, "bulletin/MOTD mis à jour", &json!({ "level": level, "by": au.name }).to_string());
-    (StatusCode::OK, Json(json!({ "ok": true, "bulletin": val }))).into_response()
+    ) {
+        Ok(1) => audit_config_change(&c, "bulletin.set", &format!("bulletin posé par {} (niveau {level})", au.name), 1, "bulletin/MOTD mis à jour", &json!({ "level": level, "by": au.name }).to_string())
+            .map_err(|e| e.to_string()),
+        Ok(n) => Err(format!("{n} ligne(s) écrite(s) au lieu d'une")),
+        Err(e) => Err(e.to_string()),
+    };
+    if let Err(refus) = ecriture {
+        let _ = c.execute_batch("ROLLBACK");
+        eprintln!("[bulletin] WARN publication du bandeau NON écrite : {refus}");
+        return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_BULLETIN_NON_PUBLIE_ECRITURE_REFUSEE);
+    }
+    rendre_apres_validation(&c, "bulletin", "publication du bandeau", CAUSE_BULLETIN_NON_PUBLIE, || {
+        (StatusCode::OK, Json(json!({ "ok": true, "bulletin": val }))).into_response()
+    })
 }
 
 /// DELETE /api/bulletin — ADMIN-ONLY. Efface le bandeau (retour à l'état mode 0 : aucun bandeau).
@@ -516,7 +600,5 @@ pub(crate) async fn bulletin_clear(State(st): State<AppState>, Extension(au): Ex
     }
     let db = req_db(&st, &au);
     let c = db.lock();
-    let _ = c.execute("DELETE FROM setting WHERE scope='global' AND key=?1", params![BULLETIN_KEY]);
-    let _ = audit_config_change(&c, "bulletin.clear", &format!("bulletin effacé par {}", au.name), 1, "bulletin effacé", "{}");
-    (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
+    effacer_le_bandeau(&c, &au.name, || (StatusCode::OK, Json(json!({ "ok": true }))).into_response())
 }

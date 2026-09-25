@@ -357,8 +357,8 @@ pub(crate) async fn connector_create(State(st): State<AppState>, Extension(au): 
     crate::req_conn!(st, au, conn);
     // M3 : création + audit fail-closed. Le `secret` (client_secret OAuth) n'est JAMAIS logué : l'audit ne
     // porte que type/name/enabled/env_id + un booléen has_secret.
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "connecteurs", &format!("création du connecteur '{name}'"), CAUSE_CONNECTEUR_NON_CREE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<i64> = (|| {
         conn.execute(
@@ -406,8 +406,8 @@ pub(crate) async fn connector_update(State(st): State<AppState>, Extension(au): 
     }
     // M3 : mutation + audit fail-closed. Le `secret` (rotation client_secret) n'est JAMAIS logué -> l'audit
     // note un booléen `secret_rotated` + les NOMS des champs modifiés (jamais leurs valeurs).
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "connecteurs", &format!("modification du connecteur #{id}"), CAUSE_CONNECTEUR_INCHANGE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<()> = (|| {
         if let Some(v) = b.get("name").and_then(|x| x.as_str()) {
@@ -532,6 +532,11 @@ pub(crate) async fn connector_delete(State(st): State<AppState>, Extension(au): 
 pub(crate) const CAUSE_CONNECTEUR_NON_CREE: &str = "CONNECTEUR NON CRÉÉ : la base n'a pas validé la transaction \
      (COMMIT refusé) et l'a annulée — aucun connecteur n'est écrit, aucune collecte ne l'interrogera, et aucune trace \
      n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_CONNECTEUR_NON_CREE_TRANSACTION_NON_OUVERTE: &str = "CONNECTEUR NON CRÉÉ : la base n'a pas \
+     pris la transaction de la création (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante sur \
+     l'écrivain) — RIEN n'est écrit : aucun connecteur n'est écrit, aucune collecte ne l'interrogera, et aucune \
+     trace n'est écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 
 /// `P10.26-a` — le `COMMIT` de la modification d'un connecteur refusé.
 pub(crate) const CAUSE_CONNECTEUR_INCHANGE: &str = "CONNECTEUR INCHANGÉ : la base n'a pas validé la transaction \
@@ -539,6 +544,13 @@ pub(crate) const CAUSE_CONNECTEUR_INCHANGE: &str = "CONNECTEUR INCHANGÉ : la ba
      que vous désactiviez collecte toujours, un secret que vous remplaciez est toujours celui qu'il présente au \
      vendeur, et aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou \
      verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_CONNECTEUR_INCHANGE_TRANSACTION_NON_OUVERTE: &str = "CONNECTEUR INCHANGÉ : la base n'a pas \
+     pris la transaction de la modification (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante \
+     sur l'écrivain) — RIEN n'est écrit : ni son activation, ni sa configuration, ni son secret ne changent : un \
+     connecteur que vous désactiviez collecte toujours, un secret que vous remplaciez est toujours celui qu'il \
+     présente au vendeur, et aucune trace n'est écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou \
+     bloqué.";
 
 /// `P10.26-a` — le `COMMIT` de la suppression d'un connecteur, qui révoque ses clés de livraison, refusé.
 pub(crate) const CAUSE_CONNECTEUR_NON_SUPPRIME: &str = "CONNECTEUR NON SUPPRIMÉ, SES CLÉS DE LIVRAISON NE SONT PAS \

@@ -5,7 +5,7 @@
 //! recompile le registre de CE db_path (+ set DENY de l'authorizer + sel). La LISTE renvoie les règles + une
 //! MATRICE « quels champs sont masqués pour quel rôle » (transparence de la politique PII).
 use crate::*;
-use crate::handlers::transaction_validee::valider_la_transaction;
+use crate::handlers::transaction_validee::{ouvrir_la_transaction_du_geste, valider_la_transaction};
 
 /// Actions valides à la CRÉATION (rejet explicite d'une action inconnue -> 400 ; au reload, une action
 /// corrompue tombe en DENY = fail-closed, mais on ne LAISSE PAS créer une action illisible).
@@ -110,8 +110,8 @@ pub(crate) async fn field_filter_create(State(st): State<AppState>, Extension(au
     let ord = b.get("ord").and_then(|v| v.as_i64()).unwrap_or(0);
     let enabled = b.bool_field("enabled", true) as i64;
     crate::req_conn!(st, au, conn);
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "masques", "pose d'un masque de champ", CAUSE_MASQUE_DE_CHAMP_INCHANGE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<i64> = (|| {
         conn.execute(
@@ -178,8 +178,8 @@ pub(crate) async fn field_filter_update(State(st): State<AppState>, Extension(au
     if let Err(r) = validate_role(&role) {
         return r;
     }
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "masques", &format!("modification du masque de champ #{id}"), CAUSE_MASQUE_DE_CHAMP_INCHANGE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<()> = (|| {
         if let Some(v) = b.get("name").and_then(|x| x.as_str()) { conn.execute("UPDATE field_filter SET name=?1 WHERE id=?2", params![v.trim(), id])?; }
@@ -224,8 +224,8 @@ pub(crate) async fn field_filter_delete(State(st): State<AppState>, Extension(au
         Ok(n) => n,
         Err(_) => return not_found("field-filter introuvable"),
     };
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "masques", &format!("retrait du masque de champ #{id}"), CAUSE_MASQUE_DE_CHAMP_INCHANGE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<()> = (|| {
         conn.execute("DELETE FROM field_filter WHERE id=?1", params![id])?;
@@ -268,6 +268,12 @@ pub(crate) const CAUSE_MASQUE_DE_CHAMP_INCHANGE: &str = "MASQUE DE CHAMP INCHANG
      transaction (COMMIT refusé) et l'a annulée — la règle n'est ni posée, ni modifiée, ni retirée, les masques servis \
      restent ceux d'avant, et aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, \
      pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_MASQUE_DE_CHAMP_INCHANGE_TRANSACTION_NON_OUVERTE: &str = "MASQUE DE CHAMP INCHANGÉ : la base \
+     n'a pas pris la transaction de ce geste (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante \
+     sur l'écrivain) — RIEN n'est écrit : la règle n'est ni posée, ni modifiée, ni retirée, les masques servis \
+     restent ceux d'avant, et aucune trace n'est écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé \
+     ou bloqué.";
 
 fn masque_inchange_commit_refuse(geste: &str, regle: &str, refus: rusqlite::Error) -> Response {
     eprintln!("[masques] WARN {geste} du masque de champ {regle} NON validée : {refus} — registre servi inchangé");

@@ -2,7 +2,8 @@ import {
   $, CSSV, socTZ, LANG, LOC, tzOpts, fmtTs, SEV, sev, bool, esc, ICONS, ic, closeModals, withBusy, toast, showErr, modal, confirmModal, csvCell, downloadText, tsSlug, exportPDF, exportBar, closeMiniMenu, api, apiSend, muted, colComparator, pageNums, pagedList,
   setSocTZ,
   socIsAdmin, formMsg,
-  confirmWithConsequence, disclosure, phraseDuRefusDuDemon, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, faceDansLaLangue
+  confirmWithConsequence, disclosure, phraseDuRefusDuDemon, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, faceDansLaLangue,
+  phraseDuRefusDUneLecture, refusDUneLectureServie
 } from './core.js';
 import { ouvrirLaModaleDePlage } from './plage_de_dates.js';
 import { installI18nObserver } from './i18n_observer.js';
@@ -148,7 +149,14 @@ const MOTS_DES_AVIS_D_EXPORT_ET_DE_TENANT = {
   tenant_provisionne: { fr: 'tenant « {nom} » provisionné', en: 'tenant “{nom}” provisioned' },
   tenant_cree_avec_admin: { fr: 'tenant créé — 1er admin : {admin}', en: 'tenant created — first admin: {admin}' },
   tenant_cree: { fr: 'tenant créé', en: 'tenant created' },
+  // `P10.29-f` / `P10.29-g` — ce qui n'a pas été lu, nommé devant la face d'une lecture non servie (web/core.js).
+  export_non_servi: { fr: 'Export {format} de la recherche', en: 'Search {format} export' },
 };
+// `P10.29-f` / `P10.29-g` — LE REFUS DE L'EXPORT, LU COMME `api()` LIT UN REFUS (`refusDUneLectureServie`, web/core.js).
+// MESURÉ AVANT CE LOT (témoin 120f) : « Export refusé : <cause> » ou « Export refusé (403) », français sous `LANG='en'` ;
+// un refus servi en TEXTE (le rôle, `rbac_gate`) perdait sa phrase — seul un corps JSON était lu — et se disait
+// « (403) » ; un réseau coupé collait « Export échoué : Failed to fetch ». La route est une lecture (exemptée de CSRF) :
+// la face d'une lecture non servie, la cause nommée ou le texte brut entier, une page de passerelle par sa phrase.
 // EXPORT EXPLORE : re-exécute la requête courante côté serveur (/api/export) pour le JEU COMPLET borné,
 // puis télécharge. Même dérivation GXQL/SQL-brut que runQuery (le SQL brut non-admin est refusé côté serveur).
 async function exploreExport(format) {
@@ -160,8 +168,8 @@ async function exploreExport(format) {
   body.from = exploreFrom(); body.to = exploreTo(); body.format = format; body.name = 'explore';
   let r;
   try { r = await fetch('/api/export', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); }
-  catch (e) { toast('Export échoué : ' + e.message, 'bad'); return; }
-  if (!r.ok) { let m = ''; try { m = (await r.json()).error || ''; } catch (_) {} toast('Export refusé' + (m ? ' : ' + m : ' (' + r.status + ')'), 'bad'); return; }
+  catch (e) { toast(phraseDuRefusDUneLecture(e, faceDansLaLangue(MOTS_DES_AVIS_D_EXPORT_ET_DE_TENANT.export_non_servi, { format: format.toUpperCase() })), 'bad', 9000); return; }
+  if (!r.ok) { toast(phraseDuRefusDUneLecture(refusDUneLectureServie(r.status, await r.text().catch(() => '')), faceDansLaLangue(MOTS_DES_AVIS_D_EXPORT_ET_DE_TENANT.export_non_servi, { format: format.toUpperCase() })), 'bad', 9000); return; }
   const text = await r.text();
   const trunc = r.headers.get('x-plume-truncated') === '1';
   // P7.3-b — LE NOM DU FICHIER PORTE L'AVEU. Le serveur le met déjà dans son `Content-Disposition`,
@@ -214,7 +222,7 @@ async function peindreLaPosture() {
     p.className = 'posture bad';
     return;
   }
-  p.textContent = ov.open_alerts > 0 ? `${ov.open_alerts} alerte(s)` : 'OK ';
+  p.textContent = ov.open_alerts > 0 ? faceDansLaLangue({ fr: '{n} alerte(s)', en: '{n} alert(s)' }, { n: ov.open_alerts }) : 'OK ';   // `P10.29-c`
   p.className = 'posture ' + (ov.open_alerts > 0 ? 'bad' : 'ok');
 }
 // Les trois charges que ce fichier PEINT : leur cible et leur cadence sont déclarées dans le registre,
@@ -1025,3 +1033,5 @@ initAuthGate();   // écran de connexion, déconnexion, état d'auth : câblage 
 // `P10.25-w` — `envelopperLeTransport` part pour le témoin 114 du harnais ESM, qui la pose sur son simulacre.
 // `P10.27-b` — le geste du formulaire d'un connecteur, joué par le harnais sous chaque instance de langue (témoin 116).
 export { ROLE_LABEL, SPACES, currentTab, currentViewName, enregistrerLeConnecteurDuFormulaire, enregistrerLesReglagesDuCompte, envelopperLeTransport, fetchMe, loadActions, loadDashboard, loadUsers, refresh, refreshCurrentView, refreshPanels, renderNav, route, setAlertMitreFilter, setAlertSourceFilter, setAuthUI, updateQRangeBtn, updateRangeBtn };
+// `P10.29-g` — `exploreExport` part pour le témoin 120 (deux instances du module écoutent le même bouton).
+export { exploreExport };

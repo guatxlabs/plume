@@ -3,7 +3,7 @@
 // entre l'application et l'overlay — est exposée par `initAuthGate()`, appelée par `app.js` au point où ce bloc
 // vivait (un module s'exécute à l'import, avant l'enveloppe `fetch` d'`app.js` qui pose CSRF et tenant).
 // `multitenant.js` continue de lire `fetchMe` / `setAuthUI` via le ré-export d'`app.js`. N'importe pas `app.js`.
-import { $, LANG, api, apiSend, applyRoleClass, causeNommeeParLeDemon, confirmModal, motDuRefusDuSecondFacteur, natureDeLaReponseHorsDemon, natureDuRefusDuSecondFacteur, phraseDuRefusDuDemon } from './core.js';
+import { $, LANG, api, apiSend, applyRoleClass, causeNommeeParLeDemon, confirmModal, motDuRefusDuSecondFacteur, natureDeLaReponseHorsDemon, natureDuRefusDuSecondFacteur, phraseDuRefusDuDemon, faceDansLaLangue } from './core.js';
 import { S } from './state.js';
 import { initAiAssist } from './ai.js';
 import { initEnvironments, initTenants } from './multitenant.js';
@@ -30,7 +30,7 @@ function setAuthUI() {
       // auth_method affiché seulement s'il n'est pas la session cookie (sso/basic/bearer/demo) -> contexte
       const am = (S.AUTH.auth_method && S.AUTH.auth_method !== 'cookie') ? ' (' + S.AUTH.auth_method + ')' : '';
       id.textContent = S.AUTH.user + role + am;
-      id.title = 'Connecté : ' + S.AUTH.user + (S.AUTH.role ? ' (' + S.AUTH.role + ')' : '') + (S.AUTH.auth_method ? ' — ' + S.AUTH.auth_method : '');
+      id.title = faceDansLaLangue({ fr: 'Connecté : {qui}{role}{methode}', en: 'Signed in: {qui}{role}{methode}' }, { qui: S.AUTH.user, role: S.AUTH.role ? ' (' + S.AUTH.role + ')' : '', methode: S.AUTH.auth_method ? ' — ' + S.AUTH.auth_method : '' });   // `P10.29-c`
     }
     box.hidden = false;
   } else {
@@ -502,10 +502,29 @@ let rejugementDeLaSessionEnCours = false;
 // d'un cinq cent trois passager, qui arrivent après la confirmation) : sans ce délai, chacun relirait `/api/me`.
 const DELAI_SANS_REJUGEMENT_APRES_UNE_SESSION_CONFIRMEE_MS = 5000;
 let sessionConfirmeeA = 0;
+// `P10.29-e` — UN REFUS REÇU DANS CE DÉLAI N'EST PLUS ABANDONNÉ : IL EST DIFFÉRÉ. MESURÉ AVANT CE LOT (témoin 120e) : un
+// quatre cent un « auth requise » reçu dans les cinq secondes qui suivent une session confirmée ne relisait rien, et
+// rien ne le relisait ensuite — la console restait ouverte sur une session que le démon ne reconnaît plus, chaque
+// surface peignant son refus, jusqu'au prochain refus reçu HORS du délai (qui ne vient jamais quand l'actualisation
+// automatique est coupée). Le délai garde sa raison (les réessais d'un cinq cent trois passager, qui arrivent après la
+// confirmation, ne relisent pas chacun `/api/me`) ; ce qui change : le premier refus reçu dans le délai arme UNE
+// relecture à son échéance, et une seule — les suivants la trouvent armée. À l'échéance, la relecture passe par le
+// chemin ordinaire : si la session a été close entre-temps, ou si un rejugement est en cours, elle ne fait rien. La
+// relecture qu'elle lance passe par l'enveloppe, qui ignore ce qu'elle lit pendant un rejugement : aucune boucle.
+// L'armement est tenu par son ÉCHÉANCE, pas par un drapeau : une minuterie qui ne partirait jamais (onglet gelé, banc
+// qui retient les longues minuteries) ne condamne pas les refus suivants au silence — passé l'échéance, un refus réarme.
+let echeanceDeLaRelectureDifferee = 0;
 function rejugerLaSessionApresUnRefus() {
   // Une copie lue APRÈS la face posée ne rejuge plus rien : la session est déjà close côté console.
   if (rejugementDeLaSessionEnCours || !(S.AUTH && S.AUTH.user)) return;
-  if (Date.now() - sessionConfirmeeA < DELAI_SANS_REJUGEMENT_APRES_UNE_SESSION_CONFIRMEE_MS) return;
+  const reste = DELAI_SANS_REJUGEMENT_APRES_UNE_SESSION_CONFIRMEE_MS - (Date.now() - sessionConfirmeeA);
+  if (reste > 0) {
+    if (echeanceDeLaRelectureDifferee <= Date.now()) {
+      echeanceDeLaRelectureDifferee = Date.now() + reste;
+      setTimeout(() => { echeanceDeLaRelectureDifferee = 0; rejugerLaSessionApresUnRefus(); }, reste);
+    }
+    return;
+  }
   rejugementDeLaSessionEnCours = true;
   api('/me').then(() => { rejugementDeLaSessionEnCours = false; sessionConfirmeeA = Date.now(); }, refus => {
     rejugementDeLaSessionEnCours = false;

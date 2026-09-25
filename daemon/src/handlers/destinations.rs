@@ -38,7 +38,7 @@
 //! MODE 0 (byte-identique) : aucune destination -> `run_due_destinations` sélectionne 0 ligne -> no-op
 //! strict (aucun réseau, aucune écriture, zéro coût sur l'ingest).
 use crate::*;
-use crate::handlers::transaction_validee::{rendre_apres_validation, tracer_apres_coup};
+use crate::handlers::transaction_validee::{ouvrir_la_transaction_du_geste, rendre_apres_validation, tracer_apres_coup};
 
 // ===================================================================================================
 // TYPES DE SINK. syslog | hec | webhook = FAITS. s3 | kafka = DESIGN/STUB (posent last_error explicite,
@@ -657,8 +657,8 @@ pub(crate) async fn destination_create(State(st): State<AppState>, Extension(au)
     // JAMAIS. Le geste manquant n'était pas un refus — refuser une URL créditée casserait les sinks qui
     // s'authentifient ainsi — c'était de ne pas RECOPIER ce qu'on n'a pas besoin d'inscrire.
     let endpoint_pour_audit = endpoint_sans_credence(&endpoint);
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "destinations", &format!("création de la destination '{name}'"), CAUSE_DESTINATION_NON_CREEE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let has_auth = serde_json::from_str::<Value>(&config).ok()
         .map(|v| ["hec_token", "auth_header"].iter().any(|k| v.get(*k).and_then(|x| x.as_str()).map(|s| !s.is_empty()).unwrap_or(false)))
@@ -694,16 +694,32 @@ pub(crate) async fn destination_create(State(st): State<AppState>, Extension(au)
 pub(crate) const CAUSE_DESTINATION_NON_CREEE: &str = "DESTINATION NON CRÉÉE : la base n'a pas validé la transaction \
      (COMMIT refusé) et l'a annulée — aucune destination n'est écrite, aucune donnée ne partira vers elle, et aucune \
      trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_DESTINATION_NON_CREEE_TRANSACTION_NON_OUVERTE: &str = "DESTINATION NON CRÉÉE : la base n'a \
+     pas pris la transaction de la création (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante \
+     sur l'écrivain) — RIEN n'est écrit : aucune destination n'est écrite, aucune donnée ne partira vers elle, et \
+     aucune trace n'est écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 /// `P10.25-g` — destination inchangée : le `COMMIT` de ce geste refusé.
 pub(crate) const CAUSE_DESTINATION_INCHANGEE: &str = "DESTINATION INCHANGÉE : la base n'a pas validé la transaction \
      (COMMIT refusé) et l'a annulée — elle garde sa cible, son filtre, son secret et son activation d'avant (une \
      destination que vous désactiviez envoie toujours), et aucune trace n'est écrite. Réessayez ; si le refus \
      persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_DESTINATION_INCHANGEE_TRANSACTION_NON_OUVERTE: &str = "DESTINATION INCHANGÉE : la base n'a \
+     pas pris la transaction de la modification (BEGIN refusé : verrou tenu, ou transaction d'un autre geste \
+     pendante sur l'écrivain) — RIEN n'est écrit : elle garde sa cible, son filtre, son secret et son activation \
+     d'avant (une destination que vous désactiviez envoie toujours), et aucune trace n'est écrite. Réessayez ; s'il \
+     est refusé encore, l'écrivain est occupé ou bloqué.";
 /// `P10.25-g` — destination non supprimée : le `COMMIT` de ce geste refusé.
 pub(crate) const CAUSE_DESTINATION_NON_SUPPRIMEE: &str = "DESTINATION NON SUPPRIMÉE : la base n'a pas validé la \
      transaction (COMMIT refusé) et l'a annulée — elle est toujours là et ENVOIE TOUJOURS les données hors du \
      périmètre, et aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine \
      ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_DESTINATION_NON_SUPPRIMEE_TRANSACTION_NON_OUVERTE: &str = "DESTINATION NON SUPPRIMÉE : la \
+     base n'a pas pris la transaction du retrait (BEGIN refusé : verrou tenu, ou transaction d'un autre geste \
+     pendante sur l'écrivain) — RIEN n'est écrit : elle est toujours là et ENVOIE TOUJOURS les données hors du \
+     périmètre, et aucune trace n'est écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 /// `P10.26-x` — l'envoi manuel a eu lieu, mais sa trace d'audit n'a pas été écrite (champ `trace_non_ecrite` de la réponse).
 pub(crate) const CAUSE_TRACE_DE_L_ENVOI_MANUEL_NON_ECRITE: &str = "TRACE NON ÉCRITE : l'envoi manuel a eu lieu (ce \
      qui est parti est parti), mais la base n'a pas pris sa trace d'audit — le registre ne dit pas qui l'a déclenché \
@@ -736,8 +752,8 @@ pub(crate) async fn destination_update(State(st): State<AppState>, Extension(au)
     }
     // GOUVERNANCE : mutation + audit fail-closed. Le blob `config` (secret) n'est JAMAIS logué -> l'audit
     // note un booléen `secret_set` + les NOMS des champs modifiés (jamais leurs valeurs).
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "destinations", &format!("modification de la destination #{id}"), CAUSE_DESTINATION_INCHANGEE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<()> = (|| {
         if let Some(v) = b.get("name").and_then(|x| x.as_str()) {
@@ -796,8 +812,8 @@ pub(crate) async fn destination_delete(State(st): State<AppState>, Extension(au)
         return forbidden("réservé admin");
     }
     crate::req_conn!(st, au, conn);
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "destinations", &format!("suppression de la destination #{id}"), CAUSE_DESTINATION_NON_SUPPRIMEE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<()> = (|| {
         conn.execute("DELETE FROM destination WHERE id=?1", params![id])?;

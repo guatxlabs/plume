@@ -209,16 +209,78 @@ pub(crate) fn sla_multilevel_tick(db: &Arc<Mutex<Connection>>) {
 /// timeline (append-only, audit préservé, réversible via case_unmerge). Trace un item 'merge' sur la source ET
 /// la cible + ledger `case.merge`. Refuse : case inexistant, src==dst, source déjà fusionnée, ou fusion CIBLE
 /// -> SOURCE (anti-cycle direct). `case_get_json(dst)` combinera les items des sources fusionnées.
-pub(crate) fn case_merge(conn: &Connection, src_id: i64, dst_id: i64, author: &str) -> bool {
-    if src_id == dst_id {
-        return false;
+/// `P10.29-b` — POURQUOI UNE FUSION N'A PAS LIEU. `case_merge` rendait `false` pour chacun de ces faits, et la route un
+/// 404 nu : la console ne pouvait pas dire lequel. Chaque variante a sa réponse nommée (`RefusDeFusion::reponse`).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum RefusDeFusion {
+    /// La source et la cible sont le même dossier (demande mal formée).
+    MemeDossier,
+    /// Aucun dossier ne porte l'identifiant de la source (absence établie).
+    SourceAbsente,
+    /// Aucun dossier ne porte l'identifiant de la cible (absence établie).
+    CibleAbsente,
+    /// La source est déjà fusionnée dans ce dossier-là.
+    SourceDejaFusionnee(i64),
+    /// La source est en amont de la cible dans la chaîne des fusions : fusionner fermerait un cycle.
+    Cycle,
+    /// Une lecture n'a pas eu lieu : rien n'est établi.
+    NonLu(String),
+}
+
+/// `P10.29-b` — la fusion d'un dossier dans lui-même.
+pub(crate) const CAUSE_FUSION_DANS_LE_MEME_DOSSIER: &str = "FUSION REFUSÉE, MÊME DOSSIER : un dossier ne se fusionne \
+     pas dans lui-même — `into` doit désigner un autre dossier. Rien n'a été fait.";
+/// `P10.29-b` — la cible de la fusion n'existe pas.
+pub(crate) const CAUSE_FUSION_CIBLE_INTROUVABLE: &str = "FUSION REFUSÉE, DOSSIER CIBLE INTROUVABLE : aucun dossier ne \
+     porte l'identifiant `into` (la lecture a abouti et n'a trouvé aucune ligne). Rien n'a été fait.";
+/// `P10.29-b` — la source est déjà fusionnée ailleurs.
+pub(crate) const CAUSE_FUSION_SOURCE_DEJA_FUSIONNEE: &str = "FUSION REFUSÉE, CE DOSSIER EST DÉJÀ FUSIONNÉ : il l'est \
+     dans un autre dossier (défusionnez-le d'abord ; il n'est jamais re-fusionné en silence). Rien n'a été fait.";
+/// `P10.29-b` — la fusion fermerait un cycle.
+pub(crate) const CAUSE_FUSION_FERMERAIT_UN_CYCLE: &str = "FUSION REFUSÉE, ELLE FERMERAIT UN CYCLE : le dossier cible \
+     est déjà fusionné, directement ou par une chaîne, dans ce dossier — la fusion ne laisserait aucun dossier \
+     survivant dans la liste. Rien n'a été fait.";
+/// `P10.29-b` — le corps ne désigne pas de cible.
+pub(crate) const CAUSE_FUSION_SANS_CIBLE: &str = "FUSION REFUSÉE : le corps doit porter `into`, l'identifiant (entier \
+     positif) du dossier cible. Rien n'a été fait.";
+/// `P10.29-b` — la défusion d'un dossier qui n'est pas fusionné.
+pub(crate) const CAUSE_DEFUSION_DOSSIER_NON_FUSIONNE: &str = "DÉFUSION REFUSÉE, CE DOSSIER N'EST PAS FUSIONNÉ : il n'a \
+     rien à défaire. Rien n'a été fait.";
+
+impl RefusDeFusion {
+    /// La réponse nommée de chaque fait : 400 (demande), 404 (absence établie), 409 (état qui s'y oppose), 503 (non lu).
+    pub(crate) fn reponse(&self) -> Response {
+        match self {
+            Self::MemeDossier => bad_req(CAUSE_FUSION_DANS_LE_MEME_DOSSIER),
+            Self::SourceAbsente => not_found(crate::handlers::cases::CAUSE_DOSSIER_INTROUVABLE),
+            Self::CibleAbsente => not_found(CAUSE_FUSION_CIBLE_INTROUVABLE),
+            Self::SourceDejaFusionnee(_) => err_json(StatusCode::CONFLICT, CAUSE_FUSION_SOURCE_DEJA_FUSIONNEE),
+            Self::Cycle => err_json(StatusCode::CONFLICT, CAUSE_FUSION_FERMERAIT_UN_CYCLE),
+            Self::NonLu(cause) => crate::handlers::cases::refus_du_dossier_non_lu(cause),
+        }
     }
+}
+
+/// `P10.29-b` — LE JUGEMENT D'UNE FUSION, AVANT TOUTE ÉCRITURE : les mêmes refus que `case_merge` portait, chacun nommé,
+/// et une lecture refusée distinguée d'une absence. `case_merge` l'appelle ; la route aussi, pour nommer le refus.
+pub(crate) fn juger_la_fusion(conn: &Connection, src_id: i64, dst_id: i64) -> Result<(), RefusDeFusion> {
+    if src_id == dst_id {
+        return Err(RefusDeFusion::MemeDossier);
+    }
+    let lire = |id: i64| conn.query_row("SELECT merged_into FROM incident WHERE id=?1", params![id], |r| r.get::<_, Option<i64>>(0));
     // les deux doivent exister ; la source ne doit pas être DÉJÀ fusionnée ailleurs.
-    let src_ok: Option<Option<i64>> = conn.query_row("SELECT merged_into FROM incident WHERE id=?1", params![src_id], |r| r.get(0)).ok();
-    let dst_ok: Option<Option<i64>> = conn.query_row("SELECT merged_into FROM incident WHERE id=?1", params![dst_id], |r| r.get(0)).ok();
-    let (Some(src_merged), Some(_)) = (src_ok, dst_ok) else { return false };
-    if src_merged.is_some() {
-        return false; // source déjà fusionnée -> refus (pas de re-fusion silencieuse)
+    let src_merged = match lire(src_id) {
+        Ok(m) => m,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return Err(RefusDeFusion::SourceAbsente),
+        Err(e) => return Err(RefusDeFusion::NonLu(e.to_string())),
+    };
+    match lire(dst_id) {
+        Ok(_) => {}
+        Err(rusqlite::Error::QueryReturnedNoRows) => return Err(RefusDeFusion::CibleAbsente),
+        Err(e) => return Err(RefusDeFusion::NonLu(e.to_string())),
+    }
+    if let Some(ailleurs) = src_merged {
+        return Err(RefusDeFusion::SourceDejaFusionnee(ailleurs)); // pas de re-fusion silencieuse
     }
     // #39 CORRECTIVE — ANTI-CYCLE de TOUTE longueur (pas seulement le 2-cycle direct). On REMONTE la chaîne
     // `merged_into` depuis dst ; si src y apparaît, la fusion fermerait un cycle (ex. merge(A,B);merge(B,C);
@@ -227,12 +289,21 @@ pub(crate) fn case_merge(conn: &Connection, src_id: i64, dst_id: i64, author: &s
     let mut cursor = dst_id;
     for _ in 0..50 {
         if cursor == src_id {
-            return false; // src est en AMONT de dst -> fusionner fermerait le cycle : refus
+            return Err(RefusDeFusion::Cycle); // src est en AMONT de dst -> fusionner fermerait le cycle : refus
         }
-        match conn.query_row("SELECT merged_into FROM incident WHERE id=?1", params![cursor], |r| r.get::<_, Option<i64>>(0)) {
+        match lire(cursor) {
             Ok(Some(next)) => cursor = next, // maillon suivant de la chaîne
-            _ => break,                      // racine non fusionnée (fin de chaîne) ou case absent
+            Ok(None) | Err(rusqlite::Error::QueryReturnedNoRows) => break, // racine non fusionnée, ou maillon absent
+            Err(e) => return Err(RefusDeFusion::NonLu(e.to_string())),
         }
+    }
+    Ok(())
+}
+
+pub(crate) fn case_merge(conn: &Connection, src_id: i64, dst_id: i64, author: &str) -> bool {
+    // `P10.29-b` — les refus sont jugés par `juger_la_fusion` (mêmes faits, désormais nommés par la route).
+    if juger_la_fusion(conn, src_id, dst_id).is_err() {
+        return false;
     }
     let t = now();
     let _ = conn.execute(
@@ -247,6 +318,17 @@ pub(crate) fn case_merge(conn: &Connection, src_id: i64, dst_id: i64, author: &s
 
 /// RÉVERSIBILITÉ de la fusion : dé-fusionne la source (merged_into=NULL) + la rouvre ('triage'). Trace + ledger.
 /// false si le case n'existe pas ou n'est pas fusionné. Preuve que la fusion NE DÉTRUIT rien (#39, exigence revue).
+/// `P10.29-b` — LE JUGEMENT D'UNE DÉFUSION : `Ok(cible)` si le dossier est fusionné ; sinon la réponse nommée — 404 sur
+/// une absence établie, 409 s'il n'est pas fusionné, 503 sur une lecture refusée (les trois rendaient 404 nu).
+pub(crate) fn juger_la_defusion(conn: &Connection, src_id: i64) -> Result<i64, Response> {
+    match conn.query_row("SELECT merged_into FROM incident WHERE id=?1", params![src_id], |r| r.get::<_, Option<i64>>(0)) {
+        Ok(Some(dst)) => Ok(dst),
+        Ok(None) => Err(err_json(StatusCode::CONFLICT, CAUSE_DEFUSION_DOSSIER_NON_FUSIONNE)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Err(not_found(crate::handlers::cases::CAUSE_DOSSIER_INTROUVABLE)),
+        Err(e) => Err(crate::handlers::cases::refus_du_dossier_non_lu(&e)),
+    }
+}
+
 pub(crate) fn case_unmerge(conn: &Connection, src_id: i64, author: &str) -> bool {
     let cur: Option<Option<i64>> = conn.query_row("SELECT merged_into FROM incident WHERE id=?1", params![src_id], |r| r.get(0)).ok();
     let Some(Some(dst)) = cur else { return false };
@@ -268,8 +350,13 @@ pub(crate) enum LienDeDossier {
     /// Les deux dossiers étaient DÉJÀ liés sous ce genre — aucune ligne écrite, aucune trace doublée,
     /// et la demande est honorée (l'énoncé porte `OR IGNORE`).
     DejaLie,
-    /// Un des deux dossiers n'existe pas, ou les deux identifiants sont le même — absence ÉTABLIE.
+    /// Un des deux dossiers n'existe pas — absence ÉTABLIE. (`P10.29-b` : « les deux identifiants sont le même » et
+    /// « la lecture n'a pas eu lieu » ont désormais leur variante ; ils rendaient le même 404 nu.)
     DossierAbsent,
+    /// `P10.29-b` — les deux identifiants désignent le même dossier (demande mal formée).
+    MemeDossier,
+    /// `P10.29-b` — la lecture qui établit l'existence d'un des deux dossiers n'a pas eu lieu.
+    DossierNonLu(String),
     /// L'écriture n'a pas eu lieu : la cause est portée, et rien — ni timeline, ni registre, ni
     /// réponse — ne doit dire que les deux dossiers sont liés.
     NonPose(String),
@@ -279,15 +366,17 @@ pub(crate) enum LienDeDossier {
 /// UNIQUE(src,dst,kind). Trace item 'link' des deux côtés + ledger.
 pub(crate) fn case_link_add(conn: &Connection, src_id: i64, dst_id: i64, kind: &str, note: &str, author: &str) -> LienDeDossier {
     if src_id == dst_id {
-        return LienDeDossier::DossierAbsent;
+        return LienDeDossier::MemeDossier;
     }
     let kind = match kind {
         "duplicate" | "blocks" | "related" => kind,
         _ => "related",
     };
     for cid in [src_id, dst_id] {
-        if conn.query_row("SELECT 1 FROM incident WHERE id=?1", params![cid], |_| Ok(())).is_err() {
-            return LienDeDossier::DossierAbsent;
+        match conn.query_row("SELECT 1 FROM incident WHERE id=?1", params![cid], |_| Ok(())) {
+            Ok(()) => {}
+            Err(rusqlite::Error::QueryReturnedNoRows) => return LienDeDossier::DossierAbsent,
+            Err(e) => return LienDeDossier::DossierNonLu(e.to_string()),
         }
     }
     let t = now();
@@ -761,20 +850,38 @@ pub(crate) async fn case_metrics(State(st): State<AppState>, Extension(au): Exte
 
 /// POST /api/cases/{id}/merge {into} — fusion SOFT du case :id DANS `into`. Mutating (editor+). Ledgerisé,
 /// non destructif (source conservée + réversible). 404 si un case manque / refus (déjà fusionné / cycle).
-pub(crate) async fn case_merge_handler(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> StatusCode {
+///
+/// `P10.29-b` — chaque refus est nommé (`RefusDeFusion`) : 400 sans cible ou même dossier, 404 source ou cible absente,
+/// 409 déjà fusionnée ou cycle, 503 lecture refusée. Le 204 est inchangé.
+pub(crate) async fn case_merge_handler(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
     let into = b.get("into").and_then(|v| v.as_i64()).unwrap_or(0);
     if into <= 0 {
-        return StatusCode::BAD_REQUEST;
+        return bad_req(CAUSE_FUSION_SANS_CIBLE);
     }
     with_write(&st, &au, |conn| {
-        if case_merge(&conn, id, into, &au.name) { StatusCode::NO_CONTENT } else { StatusCode::NOT_FOUND }
+        if let Err(refus) = juger_la_fusion(conn, id, into) {
+            return refus.reponse();
+        }
+        if case_merge(&conn, id, into, &au.name) {
+            StatusCode::NO_CONTENT.into_response()
+        } else {
+            RefusDeFusion::NonLu("second jugement de la fusion".into()).reponse()
+        }
     })
 }
 
-/// POST /api/cases/{id}/unmerge — dé-fusionne (réversibilité). Mutating (editor+).
-pub(crate) async fn case_unmerge_handler(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> StatusCode {
+/// POST /api/cases/{id}/unmerge — dé-fusionne (réversibilité). Mutating (editor+). `P10.29-b` — refus nommés
+/// (`juger_la_defusion`).
+pub(crate) async fn case_unmerge_handler(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     with_write(&st, &au, |conn| {
-        if case_unmerge(&conn, id, &au.name) { StatusCode::NO_CONTENT } else { StatusCode::NOT_FOUND }
+        if let Err(refus) = juger_la_defusion(conn, id) {
+            return refus;
+        }
+        if case_unmerge(&conn, id, &au.name) {
+            StatusCode::NO_CONTENT.into_response()
+        } else {
+            crate::handlers::cases::refus_du_dossier_non_lu(&"relecture du dossier fusionné")
+        }
     })
 }
 
@@ -793,6 +900,19 @@ pub(crate) const CAUSE_LIEN_NON_POSE: &str =
      timelines n'en portent rien et le registre non plus. Ce n'est PAS « ils étaient déjà liés » ni \
      « un des deux dossiers n'existe pas » : rien n'a été fait. Réessayez.";
 
+/// `P10.29-b` — le corps d'une pose de lien ne désigne pas l'autre dossier.
+pub(crate) const CAUSE_LIEN_SANS_CIBLE: &str = "LIEN REFUSÉ : le corps doit porter `to`, l'identifiant (entier positif) \
+     de l'autre dossier. Rien n'a été fait.";
+/// `P10.29-b` — un dossier ne se lie pas à lui-même.
+pub(crate) const CAUSE_LIEN_AVEC_LE_MEME_DOSSIER: &str = "LIEN REFUSÉ, MÊME DOSSIER : un dossier ne se lie pas à \
+     lui-même — `to` doit désigner un autre dossier. Rien n'a été fait.";
+/// `P10.29-b` — l'un des deux dossiers à lier n'existe pas.
+pub(crate) const CAUSE_LIEN_DOSSIER_INTROUVABLE: &str = "LIEN REFUSÉ, DOSSIER INTROUVABLE : l'un des deux dossiers \
+     n'existe pas (la lecture a abouti et n'a trouvé aucune ligne). Rien n'a été fait.";
+/// `P10.29-b` — aucun lien ne relie les deux dossiers.
+pub(crate) const CAUSE_AUCUN_LIEN_ENTRE_CES_DOSSIERS: &str = "AUCUN LIEN ENTRE CES DEUX DOSSIERS : il n'y avait rien à \
+     retirer (la suppression a abouti et n'a effacé aucune ligne).";
+
 /// `P10.20-w` — la suppression du lien n'a PAS eu lieu : 503 nommé, et le lien est TOUJOURS là.
 pub(crate) const CAUSE_LIEN_NON_RETIRE: &str =
     "LIEN NON RETIRÉ : la suppression n'a pas pu être écrite, donc les deux dossiers sont TOUJOURS \
@@ -803,13 +923,15 @@ pub(crate) async fn case_link_handler(State(st): State<AppState>, Extension(au):
     let kind = b.get("kind").and_then(|v| v.as_str()).unwrap_or("related").to_string();
     let note = b.get("note").and_then(|v| v.as_str()).unwrap_or("").to_string();
     if to <= 0 {
-        return StatusCode::BAD_REQUEST.into_response();
+        return bad_req(CAUSE_LIEN_SANS_CIBLE);
     }
-    // Le chemin nominal est INCHANGÉ — lien posé ou déjà posé : 204 ; dossier absent : 404 nu, comme
-    // avant. Seule l'écriture RATÉE, qui sortait en 404 « aucun de ces dossiers », est nommée.
+    // Le chemin nominal est INCHANGÉ — lien posé ou déjà posé : 204. `P10.29-b` — les refus sont nommés : 400 même
+    // dossier, 404 dossier absent (ÉTABLI), 503 lecture refusée ou écriture ratée ; ils rendaient 404 nu (sauf l'écriture).
     with_write(&st, &au, |conn| match case_link_add(conn, id, to, &kind, &note, &au.name) {
         LienDeDossier::Pose | LienDeDossier::DejaLie => StatusCode::NO_CONTENT.into_response(),
-        LienDeDossier::DossierAbsent => StatusCode::NOT_FOUND.into_response(),
+        LienDeDossier::MemeDossier => bad_req(CAUSE_LIEN_AVEC_LE_MEME_DOSSIER),
+        LienDeDossier::DossierAbsent => not_found(CAUSE_LIEN_DOSSIER_INTROUVABLE),
+        LienDeDossier::DossierNonLu(cause) => crate::handlers::cases::refus_du_dossier_non_lu(&cause),
         LienDeDossier::NonPose(cause) => err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_LIEN_NON_POSE} ({cause})")),
     })
 }
@@ -817,7 +939,7 @@ pub(crate) async fn case_link_handler(State(st): State<AppState>, Extension(au):
 pub(crate) async fn case_unlink_handler(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path((id, other)): Path<(i64, i64)>) -> Response {
     with_write(&st, &au, |conn| match case_link_remove(conn, id, other, &au.name) {
         LienRetire::Retire => StatusCode::NO_CONTENT.into_response(),
-        LienRetire::AucunLien => StatusCode::NOT_FOUND.into_response(),
+        LienRetire::AucunLien => not_found(CAUSE_AUCUN_LIEN_ENTRE_CES_DOSSIERS),
         LienRetire::NonRetire(cause) => err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_LIEN_NON_RETIRE} ({cause})")),
     })
 }

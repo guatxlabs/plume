@@ -356,7 +356,9 @@ CORPS_A_CAUSE_SEULE = {
     ("detection.rs", "rule_test_adhoc"),
     ("detection_advanced.rs", "baseline_test"),
     ("detection_advanced.rs", "correlation_test"),
-    ("notifiers.rs", "notifier_create"),
+    # `P10.28-c` (2026-09-25) — `notifier_create` RETIRÉE : ses refus ne sont plus des deux cents `{error}` ; le rôle
+    # rend la phrase TEXTE de `rbac_gate` (403), une URL refusée un 400 nommé, un `BEGIN` ou un `COMMIT` refusé un 503
+    # nommé, une écriture refusée un 500 nommé — tous par `err_json` ou un statut, donc hors population (b).
     ("notifiers.rs", "notifier_test"),
     ("playbooks.rs", "playbook_test"),
 }

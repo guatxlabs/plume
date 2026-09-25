@@ -11,7 +11,7 @@ import { initSigmaImport } from './sigmaimport.js';
 import { loadAttackMatrix, poserLesPortesDeTechnique } from './attack.js';
 import { setAlertMitreFilter } from './alerts.js';
 // P11.2-a/b + P11.1-e : ligne, interrupteur et destination PARTAGÉS (règles, playbooks, runbooks, détection avancée).
-import { producerRow, rowButton, enabledSwitch, announceCreated, takePendingNote, detectionDestination, destinationNote, DESTINATIONS } from './producer_ui.js';
+import { producerRow, rowButton, enabledSwitch, announceCreated, takePendingNote, detectionDestination, destinationNote, DESTINATIONS, suiteDUnProducteurCree } from './producer_ui.js';
 // P11.12-a : LE champ de recherche partagé des listes (voir `recherche_de_liste.js` pour la mesure
 // des trois filtres existants et la raison pour laquelle aucun n'était reprenable).
 import { champDeRecherche, filtrerParRecherche, resumeDeRecherche, texteCherchable } from './recherche_de_liste.js';
@@ -176,7 +176,7 @@ function refreshComplianceHint() {
   const parts = v.split(',').map(s => s.trim()).filter(Boolean);
   const bad = parts.filter(p => !COMPLIANCE_ENTRY_RE.test(p));
   if (bad.length) { hint.textContent = 'format attendu : cadre[:contrôle] séparés par des virgules (ex pci_dss:8.7,hipaa:164.312)'; hint.className = 'rf-hint bad'; return; }
-  hint.textContent = 'couverture (posture) : ' + parts.join(', ') + ' — le serveur valide le vocabulaire des cadres'; hint.className = 'rf-hint ok';
+  hint.textContent = faceDansLaLangue({ fr: 'couverture (posture) : {cadres} — le serveur valide le vocabulaire des cadres', en: 'coverage (posture): {cadres} — the server validates the framework vocabulary' }, { cadres: parts.join(', ') }); hint.className = 'rf-hint ok';
 }
 if ($('#rf-compliance')) $('#rf-compliance').addEventListener('input', refreshComplianceHint);
 // PURPLE — technique MITRE ATT&CK : T + 4 chiffres, sous-technique optionnelle .yyy (ex T1110 / T1190.001)
@@ -188,7 +188,7 @@ function refreshMitreHint() {
   const v = normMitre(inp.value);
   if (!v) { hint.textContent = ''; hint.className = 'rf-hint'; return; }
   const ok = MITRE_RE.test(v);
-  hint.textContent = ok ? 'technique reconnue : ' + v : 'format attendu : Txxxx ou Txxxx.yyy (ex T1110)';
+  hint.textContent = ok ? faceDansLaLangue({ fr: 'technique reconnue : {id}', en: 'technique recognised: {id}' }, { id: v }) : 'format attendu : Txxxx ou Txxxx.yyy (ex T1110)';   // `P10.29-c`
   hint.className = 'rf-hint ' + (ok ? 'ok' : 'bad');
 }
 if ($(RF.mitre)) $(RF.mitre).addEventListener('input', refreshMitreHint);
@@ -329,26 +329,36 @@ function chipDePopulationNeuve(r) {
   c.title = (LANG === 'en' ? POPULATION_MOTS.titre.en : POPULATION_MOTS.titre.fr).replace('{pop}', r.population || '?').replace('{vue}', r.population_vue);
   return c;
 }
+// `P10.29-c` — LA CONSÉQUENCE D'UNE RÈGLE ET LES NOTES DE DESTINATION, DANS LES DEUX LANGUES. MESURÉ AVANT CE LOT (témoin
+// 120c) : « lève une alerte haut (Alertes) à chaque évaluation où le seuil est franchi » et « première évaluation dans
+// 300 s » étaient composées en français et le restaient sous `LANG='en'`. Les faces françaises sont celles d'avant.
+const MOTS_DES_NOTES_DE_DETECTION = {
+  consequence_risque: { fr: 'ajoute {score} au score de risque des entités ({onglet}) à chaque évaluation où le seuil est franchi', en: 'adds {score} to the entities risk score ({onglet}) at every evaluation where the threshold is crossed' },
+  consequence_alerte: { fr: 'lève une alerte {sev} ({onglet}) à chaque évaluation où le seuil est franchi', en: 'raises a {sev} alert ({onglet}) at every evaluation where the threshold is crossed' },
+  des_la_premiere_evaluation: { fr: 'dès la première évaluation (Intervalle)', en: 'from the first evaluation (Interval)' },
+  regle_off: { fr: 'OFF : activez-la dans la liste', en: 'OFF: enable it in the list' },
+  playbook_off: { fr: 'OFF : activez-le dans la liste (confirmation demandée)', en: 'OFF: enable it in the list (confirmation asked)' },
+};
 function ruleRowModel(r) {
   const dest = DESTINATIONS[detectionDestination(r.risk_score)];
   const chips = [];
   const populationNeuve = chipDePopulationNeuve(r); if (populationNeuve) chips.push(populationNeuve);
   // tag MITRE ATT&CK (purple) : technique que la règle DÉTECTE — clé de jointure avec Forge (red).
-  if (r.mitre) { const mt = document.createElement('span'); mt.className = 'mitrechip'; mt.textContent = r.mitre; mt.title = libelleDeTechnique(r.mitre) + ' · technique MITRE ATT&CK détectée par cette règle'; chips.push(mt); }
+  if (r.mitre) { const mt = document.createElement('span'); mt.className = 'mitrechip'; mt.textContent = r.mitre; mt.title = faceDansLaLangue({ fr: '{libelle} · technique MITRE ATT&CK détectée par cette règle', en: '{libelle} · MITRE ATT&CK technique detected by this rule' }, { libelle: libelleDeTechnique(r.mitre) }); chips.push(mt); }
   // #38 : cadres de conformité couverts (posture/couverture, pas certification) — un chip par cadre distinct.
   if (r.compliance) {
     const seen = new Set();
     r.compliance.split(',').map(s => s.trim()).filter(Boolean).forEach(p => {
       const fw = p.split(':')[0]; if (!fw || seen.has(fw)) return; seen.add(fw);
       const c = document.createElement('span'); c.className = 'mitrechip'; c.textContent = fw.toUpperCase();
-      c.title = 'cadre de conformité couvert : ' + r.compliance + ' (posture / couverture — pas une certification)';
+      c.title = faceDansLaLangue({ fr: 'cadre de conformité couvert : {cadre} (posture / couverture — pas une certification)', en: 'compliance framework covered: {cadre} (posture / coverage — not a certification)' }, { cadre: r.compliance });
       chips.push(c);
     });
   }
   return {
     family: 'rule', extraClass: 'sev-' + r.severity, name: r.name, origin: r.managed, chips,
     enabled: !!r.enabled,
-    consequence: (Number(r.risk_score) > 0 ? 'ajoute ' + r.risk_score + ' au score de risque des entités (' : 'lève une alerte ' + sev(r.severity) + ' (') + dest.label + ') à chaque évaluation où le seuil est franchi',
+    consequence: faceDansLaLangue(Number(r.risk_score) > 0 ? MOTS_DES_NOTES_DE_DETECTION.consequence_risque : MOTS_DES_NOTES_DE_DETECTION.consequence_alerte, { score: r.risk_score, sev: sev(r.severity), onglet: faceDansLaLangue(dest.label) }),
     toggleAllowed: socIsAdmin(), toggleDeniedReason: "l'activation/désactivation d'une règle est réservée à l'administrateur",
     confirmOnEnable: false,
     onToggle: next => (effacerLeRefusDUnGeste(puitsDesRegles()), apiSend('/rules/' + r.id + '/enabled', 'POST', { enabled: next })),
@@ -364,7 +374,7 @@ function ruleRow(r) {
   const test = rowButton('Tester', { title: 'Évalue la requête maintenant, sans lever d\'alerte', onClick: async () => {
     meta.textContent = '...';
     const j = await apiSend('/rules/' + r.id + '/test');
-    meta.textContent = j.error ? (prefixeDUnEchecRenduTelQuel() + j.error) : `test : ${j.value} -> ${j.fired ? 'déclenche' : 'ok'}`;
+    meta.textContent = j.error ? (prefixeDUnEchecRenduTelQuel() + j.error) : faceDansLaLangue({ fr: 'test : {valeur} -> {verdict}', en: 'test: {valeur} -> {verdict}' }, { valeur: j.value, verdict: j.fired ? faceDansLaLangue({ fr: 'déclenche', en: 'fires' }) : 'ok' });
     meta.title = j.sql || '';
   } });
   // MIROIR UX : éditer une règle BASELINE (seed/builtin managed=0) est réservé admin (le serveur 403 sinon) —
@@ -372,7 +382,7 @@ function ruleRow(r) {
   const baselineLocked = !socIsAdmin() && r.managed === 0;
   const edit = rowButton('Éditer', { cls: 'crud-btn', disabled: baselineLocked, title: baselineLocked ? 'détection baseline (seed/builtin) : édition réservée à l\'administrateur ; créez plutôt votre propre règle' : '', onClick: baselineLocked ? null : () => openRuleForm(r) });
   const del = rowButton('', { cls: 'crud-btn', icon: ic('x'), title: 'Supprimer' });
-  if (gateDeleteBtn(del, r.managed)) del.onclick = async () => { if (await confirmModal('Supprimer la règle "' + r.name + '" ?', { danger: true })) { if (await contentDelete('/rules/' + r.id, 'regle', puitsDesRegles())) loadRules(); } };
+  if (gateDeleteBtn(del, r.managed)) del.onclick = async () => { if (await confirmModal(faceDansLaLangue({ fr: 'Supprimer la règle "{nom}" ?', en: 'Delete the rule "{nom}"?' }, { nom: r.name }), { danger: true })) { if (await contentDelete('/rules/' + r.id, 'regle', puitsDesRegles())) loadRules(); } };
   row.append(test, edit, del);
   return row;
 }
@@ -434,7 +444,7 @@ function openRuleForm(r) {
   refreshMitreHint();
   refreshComplianceHint();
   // P11.1-e : la destination est dite AVANT d'enregistrer (le span de résultat porte le lien).
-  const res = $('#rf-result'); if (res) { res.className = 'muted'; res.replaceChildren(destinationNote(detectionDestination(r && r.risk_score), '', 'dès la première évaluation (Intervalle)')); }
+  const res = $('#rf-result'); if (res) { res.className = 'muted'; res.replaceChildren(destinationNote(detectionDestination(r && r.risk_score), '', faceDansLaLangue(MOTS_DES_NOTES_DE_DETECTION.des_la_premiere_evaluation))); }
   // P11.5-c : DIT AVANT L'ÉDITION, pas après. Une règle d'overlay config.d se modifie ici (le serveur
   // accepte, 200) mais le fichier versionné réimpose au prochain démarrage les champs qu'il porte — un
   // succès partiel qui se défait tout seul, que rien n'annonçait. P11.5-d : la phrase vient du serveur
@@ -532,7 +542,7 @@ if ($('#rule-form')) $('#rule-form').addEventListener('submit', async e => {
   // garde-fou #1 : le serveur VALIDE (GXQL compile / MITRE / …). Sur erreur -> {error} affiché, MODALE OUVERTE.
   if (!await contentSubmit(S.editingRule ? '/rules/' + S.editingRule : '/rules', body, '#rf-result')) return;
   closeRuleForm();
-  announceCreated('rules', 'alerts', body.name, body.enabled ? 'première évaluation dans ' + body.interval_s + ' s' : 'OFF : activez-la dans la liste'); // P11.1-e
+  announceCreated('rules', 'alerts', body.name, suiteDUnProducteurCree(body.enabled, body.interval_s, MOTS_DES_NOTES_DE_DETECTION.regle_off)); // P11.1-e, `P10.29-c`
   apresEnregistrementDUneRegle();
   renderCoverage(); // re-render la couverture après création/édition (le tag MITRE peut avoir changé)
 });
@@ -619,7 +629,7 @@ function notifRow(n) {
   const edit = document.createElement('button'); edit.textContent = 'Éditer'; edit.onclick = () => openNotifForm(n);
   const del = document.createElement('button'); del.innerHTML = ic('x'); del.title = 'Supprimer le canal';
   del.onclick = async () => {
-    if (!await confirmModal('Supprimer le canal "' + n.name + '" ?', { danger: true })) return;
+    if (!await confirmModal(faceDansLaLangue({ fr: 'Supprimer le canal "{nom}" ?', en: 'Delete the channel "{nom}"?' }, { nom: n.name }), { danger: true })) return;
     const puits = puitsDesCanaux(); effacerLeRefusDUnGeste(puits);
     try { await apiSend('/notifiers/' + n.id, 'DELETE'); } catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
     loadNotifiers();
@@ -653,9 +663,10 @@ function openNotifForm(n) {
 if ($('#notif-new')) $('#notif-new').onclick = () => openNotifForm(null);
 if ($('#nf-cancel')) $('#nf-cancel').onclick = () => $('#notif-form').classList.add('hidden');
 // `P10.27-d` — LE GESTE DU FORMULAIRE D'UN CANAL, NOMMÉ ET EXPORTÉ (il était l'écouteur anonyme ci-dessous, sans capture).
-// Un refus — la création refusée en deux cents (`{error}`, dont le COMMIT refusé « CANAL DE NOTIFICATION NON CRÉÉ »), la
-// modification refusée en cinq cent trois — s'écrit dans le puits des canaux ; le formulaire reste ouvert, sa saisie
-// (secret compris) gardée.
+// Un refus s'écrit dans le puits des canaux ; le formulaire reste ouvert, sa saisie (secret compris) gardée. `P10.29-k` —
+// depuis `P10.28-q`, la création et la modification servent leurs refus en cinq cent trois NOMMÉ (le `BEGIN` refusé,
+// `…_TRANSACTION_NON_OUVERTE`, puis le `COMMIT` refusé, « CANAL DE NOTIFICATION NON CRÉÉ / INCHANGÉ ») ; la création ne
+// rend plus de deux cents `{error}`, dont la lecture reste ci-dessous : un refus servi ainsi n'est jamais un succès.
 async function enregistrerLeCanalDuFormulaire(e) {
   if (e && typeof e.preventDefault === 'function') e.preventDefault();
   const cfgRaw = $(NFK.config).value.trim();
@@ -730,7 +741,7 @@ function parserRow(p) {
     onToggle: (next) => (effacerLeRefusDUnGeste(puitsDesParseurs()), apiSend('/parsers/' + p.id + '/enabled', 'POST', { enabled: next })),
     onRefus: (e) => peindreLeRefusDUnGeste(puitsDesParseurs(), e),
   });
-  const name = document.createElement('span'); name.className = 'rulename'; name.textContent = p.name + (p.builtin ? ' · défaut' : '');
+  const name = document.createElement('span'); name.className = 'rulename'; name.textContent = p.name + (p.builtin ? faceDansLaLangue({ fr: ' · défaut', en: ' · default' }) : '');
   const src = document.createElement('code'); src.className = 'rulecond'; src.textContent = 'source=' + p.source;
   const pat = document.createElement('span'); pat.className = 'rulemeta muted'; pat.textContent = p.pattern; pat.title = p.pattern;
   pat.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:44ch';
@@ -743,7 +754,7 @@ function parserRow(p) {
   row.append(edit);
   // delete : managed=2 (perso) UNIQUEMENT ; builtin (managed=0)/overlay (managed=1) -> bouton grisé (se désactivent via la case).
   const del = document.createElement('button'); del.className = 'crud-btn'; del.innerHTML = ic('x'); del.title = 'Supprimer';
-  if (gateDeleteBtn(del, p.managed)) del.onclick = async () => { if (await confirmModal('Supprimer le parser "' + p.name + '" ?', { danger: true })) { if (await contentDelete('/parsers/' + p.id, 'parseur', puitsDesParseurs())) loadParsers(); } };
+  if (gateDeleteBtn(del, p.managed)) del.onclick = async () => { if (await confirmModal(faceDansLaLangue({ fr: 'Supprimer le parser "{nom}" ?', en: 'Delete the parser "{nom}"?' }, { nom: p.name }), { danger: true })) { if (await contentDelete('/parsers/' + p.id, 'parseur', puitsDesParseurs())) loadParsers(); } };
   row.append(del);
   return row;
 }
@@ -1238,7 +1249,7 @@ function actionRow(a) {
   const st = document.createElement('span'); st.className = 'actst act-' + a.status; st.textContent = a.status;
   const k = document.createElement('code'); k.className = 'rulecond'; k.textContent = `${a.kind} ${a.target}`;
   const hostEl = document.createElement('span'); hostEl.className = 'casechip'; hostEl.textContent = '@' + (a.host || 'central');
-  hostEl.title = a.host ? `Appliqué sur l'hôte ${a.host} (par son agent responder)` : 'Appliqué par le central';
+  hostEl.title = a.host ? faceDansLaLangue({ fr: "Appliqué sur l'hôte {hote} (par son agent responder)", en: 'Applied on the host {hote} (by its responder agent)' }, { hote: a.host }) : 'Appliqué par le central';   // `P10.29-c`
   const dry = document.createElement('span'); dry.className = a.dry_run ? 'muted' : 'bad'; dry.textContent = a.dry_run ? 'dry-run' : 'RÉEL';
   const meta = document.createElement('span'); meta.className = 'rulemeta muted';
   meta.textContent = (a.reason ? a.reason + ' - ' : '') + (a.result || ''); if (a.done_ts) meta.title = fmtTs(a.done_ts);
@@ -1252,7 +1263,7 @@ function actionRow(a) {
     // rechargée MÊME sur refus — sans quoi l'écran garde l'état d'avant un geste qui n'a pas eu lieu —
     // et un aveu qu'aucune ligne n'a pris part à l'avis.
     ap.onclick = async () => {
-      if (!await confirmModal(`Approuver : ${a.kind} ${a.target}${a.dry_run ? ' (dry-run)' : ' - REEL'} ?`, { okText: 'Approuver', danger: !a.dry_run })) return;
+      if (!await confirmModal(faceDansLaLangue({ fr: 'Approuver : {genre} {cible}{mode} ?', en: 'Approve: {genre} {cible}{mode}?' }, { genre: a.kind, cible: a.target, mode: a.dry_run ? ' (dry-run)' : faceDansLaLangue({ fr: ' - REEL', en: ' - REAL' }) }), { okText: 'Approuver', danger: !a.dry_run })) return;
       try { await apiSend('/actions/' + a.id + '/approve'); refusParRiposte.delete(a.id); }
       catch (e) { noterLeRefusDeRiposte(a.id, 'approuver', e); }
       await loadActions();
@@ -1554,12 +1565,12 @@ function playbookRowModel(p, mode) {
 function pbRow(p, mode) {
   const row = producerRow(playbookRowModel(p, mode));
   const meta = row.metaEl;
-  const test = rowButton('Tester', { title: 'Liste les cibles que la requête rend maintenant, sans poser d\'action', onClick: async () => { meta.textContent = '...'; const j = await apiSend('/playbooks/' + p.id + '/test'); meta.textContent = j.error ? (prefixeDUnEchecRenduTelQuel() + j.error) : `${j.valides} cible(s) : ${(j.targets || []).slice(0, 5).join(', ')}`; } });
+  const test = rowButton('Tester', { title: 'Liste les cibles que la requête rend maintenant, sans poser d\'action', onClick: async () => { meta.textContent = '...'; const j = await apiSend('/playbooks/' + p.id + '/test'); meta.textContent = j.error ? (prefixeDUnEchecRenduTelQuel() + j.error) : faceDansLaLangue({ fr: '{n} cible(s) : {cibles}', en: '{n} target(s): {cibles}' }, { n: j.valides, cibles: (j.targets || []).slice(0, 5).join(', ') }); } });
   // MIROIR UX : éditer un playbook BASELINE (seed/builtin managed=0) est réservé admin (403 serveur).
   const baselineLocked = !socIsAdmin() && p.managed === 0;
   const edit = rowButton('Éditer', { cls: 'crud-btn', disabled: baselineLocked, title: baselineLocked ? 'playbook baseline (seed/builtin) : édition réservée à l\'administrateur' : '', onClick: baselineLocked ? null : () => openPbForm(p) });
   const del = rowButton('', { cls: 'crud-btn', icon: ic('x'), title: 'Supprimer' });
-  if (gateDeleteBtn(del, p.managed)) del.onclick = async () => { if (await confirmModal('Supprimer le playbook "' + p.name + '" ?', { danger: true })) { if (await contentDelete('/playbooks/' + p.id, 'playbook', puitsDesPlaybooks())) loadPlaybooks(); } };
+  if (gateDeleteBtn(del, p.managed)) del.onclick = async () => { if (await confirmModal(faceDansLaLangue({ fr: 'Supprimer le playbook "{nom}" ?', en: 'Delete the playbook "{nom}"?' }, { nom: p.name }), { danger: true })) { if (await contentDelete('/playbooks/' + p.id, 'playbook', puitsDesPlaybooks())) loadPlaybooks(); } };
   row.append(test, edit, del);
   return row;
 }
@@ -1588,7 +1599,7 @@ if ($('#pb-form')) $('#pb-form').addEventListener('submit', async e => {
   // garde-fous #1/#3 : le serveur valide (requête compile, action ∈ enum fermé). Erreur -> {error} affiché, formulaire OUVERT.
   if (!await contentSubmit(S.editingPb ? '/playbooks/' + S.editingPb : '/playbooks', body, '#pb-result')) return;
   $('#pb-form').classList.add('hidden');
-  announceCreated('playbooks', 'actions', body.name, body.enabled ? 'première évaluation dans ' + body.interval_s + ' s' : 'OFF : activez-le dans la liste (confirmation demandée)'); // P11.1-e
+  announceCreated('playbooks', 'actions', body.name, suiteDUnProducteurCree(body.enabled, body.interval_s, MOTS_DES_NOTES_DE_DETECTION.playbook_off)); // P11.1-e, `P10.29-c`
   loadPlaybooks();
 });
 loadPlaybooks();

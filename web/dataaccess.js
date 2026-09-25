@@ -1,7 +1,7 @@
 // Accès données (DLP, gouvernance d'accès en lecture seule) : cinq panneaux sur des requêtes GXQL existantes,
 // sélecteur de fenêtre d'analyse, note de périmètre, réordonnancement des cartes persisté localement. Extrait
 // d'`app.js` par déplacement pur ; le seul consommateur est la navigation (`showView`). N'importe pas `app.js`.
-import { $, ic, muted, toast, LANG } from './core.js';
+import { $, ic, muted, toast, LANG, phraseDuRefusDuDemon, faceDansLaLangue } from './core.js';
 import { poserLeChoixDeDates } from './plage_de_dates.js';
 import { S, lireLeStockageDuSite, ecrireDansLeStockageDuSite } from './state.js';
 import { runQ, tableEl, truncationBadge } from './viz.js';
@@ -37,7 +37,10 @@ const DATA_WATCHED = ['/etc', '/etc/rancher/k3s', '/opt/local-path-provisioner',
 // Le libellé de 'all' ne CHIFFRE plus la rétention : le panneau ne l'a jamais lue (elle est réglable par
 // déploiement, servie par le démon), et « ~30 j » était donc un nombre sans source affiché à l'analyste.
 /* state: daWin -> S (state.js) */
-const DA_WINLBL = { all: 'toute la rétention', '7d': '7 derniers jours', '24h': 'dernières 24 h' };
+// `P10.29-c` — le nom d'une fenêtre, dans les deux langues (témoin 120c : il se collait, français, dans l'aveu, le vide et
+// la barre de la vue).
+const DA_WINLBL = { all: { fr: 'toute la rétention', en: 'the whole retention' }, '7d': { fr: '7 derniers jours', en: 'last 7 days' }, '24h': { fr: 'dernières 24 h', en: 'last 24 h' } };
+const nomDeLaFenetre = (win) => (DA_WINLBL[win] ? faceDansLaLangue(DA_WINLBL[win]) : String(win));
 // `P11.18-c` — LA PLAGE DE DATES PRIME SUR LE PALIER. Les deux répondent à la même question ; choisir
 // l'un retire l'autre. Seule la borne BASSE part d'ici : `runQ` la porte par son 3e argument (`from`).
 function daFromValue() {
@@ -128,7 +131,7 @@ function daToValue() {
 // et une plage n'est PAS `all`, ce qui suffit à ce qu'un vide y invite à élargir plutôt qu'à accuser un
 // capteur — la conclusion « rien sur toute la rétention » ne vaut que sur toute la rétention.
 function daRenduDeReponse(j, win, soql) {
-  const lbl = DA_WINLBL[win] || String(win);
+  const lbl = nomDeLaFenetre(win);
   // (1) RIEN N'A ÉTÉ ÉTABLI — refus du serveur, réponse illisible, ou promesse rejetée (réseau).
   // Le REFUS et le VIDE sont décidés par DEUX tests séparés : un `error` posé par le démon (quelle
   // qu'en soit la forme), ou une réponse qui ne porte pas de tableau de lignes. Les fondre en une
@@ -141,8 +144,8 @@ function daRenduDeReponse(j, win, soql) {
     const cause = brut.trim();
     const box = document.createElement('div');
     box.className = 'bad';
-    box.textContent = 'Résultat INCONNU (' + lbl + ") — le serveur n'a pas rendu de réponse à cette question, ce n'est donc PAS une absence de données : "
-      + (cause ? cause : 'réponse illisible du serveur');
+    // `P10.29-c` — l'aveu et l'absence d'une carte, dans les deux langues (témoin 120c).
+    box.textContent = faceDansLaLangue({ fr: "Résultat INCONNU ({question}) — le serveur n'a pas rendu de réponse à cette question, ce n'est donc PAS une absence de données : {cause}", en: 'UNKNOWN result ({question}) — the server did not return an answer to this question, so this is NOT an absence of data: {cause}' }, { question: lbl, cause: cause ? cause : faceDansLaLangue({ fr: 'réponse illisible du serveur', en: 'unreadable server answer' }) });
     box.title = cause ? cause : lbl;
     return box;
   }
@@ -150,9 +153,9 @@ function daRenduDeReponse(j, win, soql) {
   // muet que là où l'observation le porte : sur TOUTE la rétention. Sur une fenêtre plus étroite,
   // l'absence est celle de la fenêtre, et l'invitation est de l'élargir — pas d'accuser la collecte.
   if (!j.rows.length) {
-    return muted('Aucun événement (' + lbl + ')' + (win === 'all'
-      ? " — rien sur toute la rétention : vérifier que le capteur de cette source l'alimente."
-      : ' — élargir la fenêtre avant de conclure à un capteur inactif.'));
+    return muted(faceDansLaLangue(win === 'all'
+      ? { fr: "Aucun événement ({question}) — rien sur toute la rétention : vérifier que le capteur de cette source l'alimente.", en: 'No event ({question}) — nothing over the whole retention: check that the sensor of this source feeds it.' }
+      : { fr: 'Aucun événement ({question}) — élargir la fenêtre avant de conclure à un capteur inactif.', en: 'No event ({question}) — widen the window before concluding the sensor is inactive.' }, { question: lbl }));
   }
   // (3) DES LIGNES — conteneur scrollable (comme l'Explore) : les tables larges (dataacl : ~17
   // colonnes, chemins /opt/local-path-provisioner/pvc-… longs) défilent DANS la card au lieu de
@@ -209,7 +212,7 @@ async function renderDataAccess() {
   // fenêtres superposées. Sans plage, la phrase est EXACTEMENT celle d'avant.
   wlbl.textContent = plage
     ? ((LANG === 'en' ? 'Window: from ' : 'Fenêtre : du ') + plage.texteDebut + (LANG === 'en' ? ' to ' : ' au ') + plage.texteFin + (LANG === 'en' ? ' · top N per panel' : ' · top N par panneau'))
-    : ('Fenêtre : ' + DA_WINLBL[S.daWin] + ' · top N par panneau');
+    : faceDansLaLangue({ fr: 'Fenêtre : {fenetre} · top N par panneau', en: 'Window: {fenetre} · top N per panel' }, { fenetre: nomDeLaFenetre(S.daWin) });
   const wsel = document.createElement('select'); wsel.className = 'k-theme'; wsel.setAttribute('aria-label', "Fenêtre d'analyse (DLP)");
   wsel.title = "Fenêtre d'analyse : borne le `from` des requêtes (le nombre de lignes reste cappé par panneau)";
   [['24h', '24 h'], ['7d', '7 j'], ['all', 'Tout']].forEach(([v, t]) => { const o = document.createElement('option'); o.value = v; o.textContent = t; if (v === S.daWin) o.selected = true; wsel.appendChild(o); });
@@ -242,7 +245,7 @@ async function renderDataAccess() {
       // donc aucune branche ne peut ré-inventer une absence dans son coin.
       runQ(q.soql, true, daFrom, undefined, undefined, { to: daTo })
         .then(j => slot.replaceChildren(daRenduDeReponse(j, daWin, q.soql)))
-        .catch(e => slot.replaceChildren(daRenduDeReponse({ error: (e && e.message) || '' }, daWin, q.soql)));
+        .catch(e => slot.replaceChildren(daRenduDeReponse({ error: phraseDuRefusDuDemon(e) }, daWin, q.soql)));   // `P10.29-g` : la phrase du démon, plus le message composé
     });
   }
   // note de gouvernance : périmètre surveillé (auditd) + cap sur la Phase 2

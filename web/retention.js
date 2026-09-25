@@ -4,7 +4,7 @@
 // PURE MOVE : corps de fonctions IDENTIQUES au monolithe, seuls les import/export sont ajoutes.
 // Le cycle app<->module est benin : les fonctions importees d'app.js ne sont appelees qu'a
 // l'EXECUTION (handlers/async apres await), jamais a l'evaluation du module.
-import { $, muted, api, apiSend, cleDeLaSuiteServie, effacerLeRefusDUnGeste, fmtTs, confirmWithConsequence, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, toast, LANG, LOC, tzOpts, faceDansLaLangue } from './core.js';
+import { $, muted, api, apiSend, cleDeLaSuiteServie, effacerLeRefusDUnGeste, fmtTs, confirmWithConsequence, noeudDuRefusDUneLecture, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, toast, LANG, LOC, tzOpts, faceDansLaLangue } from './core.js';
 import { S } from './state.js';
 // `P10.20-y` — LE GENRE D'UNE LIGNE DE REGISTRE SE REND PAR LA FABRIQUE DE L'ONGLET AUDIT, pas par une
 // seconde. Les deux seules vues qui lisent `GET /api/ledger` sont celle-ci et `web/audit.js` ; écrire ici
@@ -38,19 +38,23 @@ const DELETED_KIND_LABEL = {
 // `P10.28-n` — LE PRÉFIXE D'UNE LECTURE DE LA RÉTENTION QUI N'EST PAS SERVIE A SES DEUX FACES. Mesuré avant ce lot (témoin
 // 117t, reste nommé ; 118n) : « accès refusé ou erreur : » restait français sous `LANG='en'`, collé à la cause, donc
 // intraduisible par le lexique. La face française est celle d'avant, au caractère près.
+// `P10.29-g` — LE PRÉFIXE N'EST PLUS COLLÉ AU MESSAGE : la lecture refusée dit la face nommée d'une lecture non servie
+// (web/core.js), précédée de ce qui n'a pas été lu, et la cause entière à côté. Mesuré avant ce lot (témoin 120g) :
+// « accès refusé ou erreur : 403 {"error":…} », le JSON brut du refus. La table garde le nom de l'objet lu.
 const MOTS_DE_LA_RETENTION = {
-  lecture_non_servie: { fr: 'accès refusé ou erreur : ', en: 'access refused or error: ' },
+  lecture_non_servie: { fr: 'Réglages de rétention', en: 'Retention settings' },
 };
 const motDeLaRetention = (cle) => (LANG === 'en' ? MOTS_DE_LA_RETENTION[cle].en : MOTS_DE_LA_RETENTION[cle].fr);
-const unitAbbr = u => u === 'hours' ? 'h' : 'j';
-const unitWord = u => u === 'hours' ? 'heures' : 'jours';
+// `P10.29-c` — les unités suivent la langue de l'écran (« j » / « d », « heures » / « hours »).
+const unitAbbr = u => u === 'hours' ? 'h' : (LANG === 'en' ? 'd' : 'j');
+const unitWord = u => u === 'hours' ? (LANG === 'en' ? 'hours' : 'heures') : (LANG === 'en' ? 'days' : 'jours');
 /* state: RET_STATE -> S (state.js) */           // {values:{clé:n effectif}, bounds:{clé:{min,max,default,unit}}}
 const _retTimers = {};          // debounce du preview par champ
 
 async function loadRetention() {
   const wrap = $('#retention-fields'); if (!wrap) return;
   let d;
-  try { d = await api('/retention'); } catch (e) { wrap.replaceChildren(muted(motDeLaRetention('lecture_non_servie') + e.message)); return; }
+  try { d = await api('/retention'); } catch (e) { wrap.replaceChildren(noeudDuRefusDUneLecture(e, motDeLaRetention('lecture_non_servie'))); return; }
   S.RET_STATE = { values: {}, bounds: d.bounds || {}, provenance: d.provenance || {}, reglage_illisible: d.reglage_illisible || {} };
   RET_KEYS.forEach(k => { S.RET_STATE.values[k] = Number(d[k]); });
   wrap.replaceChildren(...RET_KEYS.map(retentionField));
@@ -88,7 +92,7 @@ function retentionField(k) {
   else if (origine === 'default') prov.textContent = 'défaut du binaire';
   else prov.textContent = '';
   const illisible = (S.RET_STATE.reglage_illisible || {})[k];
-  if (illisible) { prov.className = 'bad'; prov.textContent = 'réglage NON LU : ' + String(illisible); prov.title = "La valeur affichée est celle que la purge appliquera (environnement, configuration ou défaut), pas la valeur enregistrée, qui n'a pas pu être lue."; }
+  if (illisible) { prov.className = 'bad'; prov.textContent = faceDansLaLangue({ fr: 'réglage NON LU : {cause}', en: 'setting NOT READ: {cause}' }, { cause: String(illisible) }); prov.title = "La valeur affichée est celle que la purge appliquera (environnement, configuration ou défaut), pas la valeur enregistrée, qui n'a pas pu être lue."; }
   lab.append(strong, sub, prov);
   const inp = document.createElement('input'); inp.type = 'number'; inp.dataset.key = k; inp.step = '1'; inp.className = 'field'; // P11.4-b : chrome partagé
   inp.value = String(S.RET_STATE.values[k]); inp.style.width = '110px';
@@ -96,7 +100,7 @@ function retentionField(k) {
   if (b.max != null) inp.max = String(b.max);
   const u = document.createElement('span'); u.className = 'muted'; u.textContent = unitWord(unit);
   const note = document.createElement('span'); note.className = 'muted'; note.dataset.note = k; note.style.cssText = 'font-size:12px;flex:1 1 260px;margin-top:0';
-  if (b.min != null && b.max != null) note.title = `plancher ${b.min} · plafond ${b.max} ${unitWord(unit)}`;
+  if (b.min != null && b.max != null) note.title = faceDansLaLangue({ fr: 'plancher {min} · plafond {max} {unite}', en: 'floor {min} · ceiling {max} {unite}' }, { min: b.min, max: b.max, unite: unitWord(unit) });
   inp.addEventListener('input', () => retPreview(k, inp, note));
   row.append(lab, inp, u, note);
   return row;
@@ -109,7 +113,7 @@ function retPreview(k, inp, note) {
   note.className = 'muted';
   if (!Number.isFinite(val)) { note.textContent = ''; return; }
   if (val === cur) { note.textContent = 'inchangé'; return; }
-  if (val > cur) { note.className = 'ok'; note.textContent = `+${val - cur} ${unitAbbr(unit)} · aucune purge`; return; }
+  if (val > cur) { note.className = 'ok'; note.textContent = faceDansLaLangue({ fr: '+{n} {unite} · aucune purge', en: '+{n} {unite} · no purge' }, { n: val - cur, unite: unitAbbr(unit) }); return; }
   note.textContent = 'calcul de l\'aperçu…';
   clearTimeout(_retTimers[k]);
   _retTimers[k] = setTimeout(async () => {
@@ -236,7 +240,7 @@ async function loadRetentionLast() {
   pre.textContent = ent ? motDuDernierChangementAudite('changement_de_retention', entries.length)
     : motDuDernierChangementAudite('aucun_changement_de_retention', entries.length);
   const rest = document.createElement('span'); rest.className = 'muted';
-  rest.textContent = (dernier.detail ? ' — ' + dernier.detail : '') + ' · ' + fmtTs(dernier.ts) + ' (voir onglet Audit)';
+  rest.textContent = faceDansLaLangue({ fr: '{detail} · {date} (voir onglet Audit)', en: '{detail} · {date} (see the Audit tab)' }, { detail: dernier.detail ? ' — ' + dernier.detail : '', date: fmtTs(dernier.ts) });
   el.append(pre, celluleDeGenre(dernier.kind || ''), rest);
   // `P10.21-a` — SOUS UNE ABSENCE, LA BORNE DE LA PAGE SE DIT. La phrase est posée au puits
   // (`textContent`), dans le registre de l'alarme quand c'est un aveu : un silence du démon sur la

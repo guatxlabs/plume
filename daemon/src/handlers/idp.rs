@@ -6,6 +6,7 @@
 //! (hors périmètre de cet incrément) -> ces routes renvoient 501, JAMAIS un chemin fédéré cross-tenant à
 //! moitié câblé. FAIL-CLOSED partout ; le cœur logique (validation JWT, bind, TOTP) est dans `idp.rs`.
 use crate::*;
+use crate::handlers::transaction_validee::ouvrir_la_transaction_du_geste;
 use rusqlite::OptionalExtension;
 
 // `P10.20-b` — LE STATUT DE DOUBLE AUTHENTIFICATION N'A PAS DE VALEUR PAR DÉFAUT.
@@ -62,6 +63,13 @@ pub(crate) const CAUSE_CODE_DE_SECOURS_NON_CONSOMME: &str = "CODE DE SECOURS NON
 pub(crate) const CAUSE_MFA_NON_DESACTIVEE: &str = "DOUBLE AUTHENTIFICATION TOUJOURS ACTIVE : la base \
      n'a pas pris la suppression du second facteur. Le compte exige TOUJOURS un code à la connexion, et \
      le registre n'atteste aucune désactivation. Réessayez.";
+
+/// `P10.28-d` — le `BEGIN` de la désactivation du second facteur refusé : rien n'est écrit, le code n'est pas consommé.
+pub(crate) const CAUSE_MFA_NON_DESACTIVEE_TRANSACTION_NON_OUVERTE: &str = "DOUBLE AUTHENTIFICATION TOUJOURS ACTIVE : la \
+     base n'a pas pris la transaction de la désactivation (BEGIN refusé : verrou tenu, ou transaction d'un autre geste \
+     pendante sur l'écrivain) — RIEN n'est écrit : le compte exige TOUJOURS un code à la connexion, le code présenté \
+     n'est pas consommé, et le registre n'atteste aucune désactivation. Réessayez ; s'il est refusé encore, l'écrivain \
+     est occupé ou bloqué.";
 
 /// `P10.22-r` — UNE LISTE DE CODES DE SECOURS QUI N'A PAS ÉTÉ LUE N'ACCUSE PERSONNE. Une lecture refusée ou
 /// un contenu corrompu rendait « code MFA invalide » (401) : un refus, mais une FAUSSE cause, qui accusait
@@ -349,8 +357,8 @@ pub(crate) async fn idp_provider_create(State(st): State<AppState>, Extension(au
     let enabled = b.get("enabled").and_then(|x| x.as_bool()).unwrap_or(false) as i64;
     let secret = b.get("secret").and_then(|x| x.as_str()).unwrap_or("").to_string();
     let conn = st.db.lock();
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "idp", "création d'un fournisseur d'identité", CAUSE_FOURNISSEUR_D_IDENTITE_INCHANGE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<i64> = (|| {
         conn.execute(
@@ -381,6 +389,12 @@ pub(crate) const CAUSE_FOURNISSEUR_D_IDENTITE_INCHANGE: &str = "FOURNISSEUR D'ID
      validé la transaction (COMMIT refusé) et l'a annulée — le fournisseur n'est ni créé, ni modifié, ni supprimé : \
      celui qui était actif l'est toujours et authentifie encore, et aucune trace n'est écrite. Réessayez ; si le refus \
      persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_FOURNISSEUR_D_IDENTITE_INCHANGE_TRANSACTION_NON_OUVERTE: &str = "FOURNISSEUR D'IDENTITÉ \
+     INCHANGÉ : la base n'a pas pris la transaction de ce geste (BEGIN refusé : verrou tenu, ou transaction d'un \
+     autre geste pendante sur l'écrivain) — RIEN n'est écrit : le fournisseur n'est ni créé, ni modifié, ni supprimé \
+     : celui qui était actif l'est toujours et authentifie encore, et aucune trace n'est écrite. Réessayez ; s'il \
+     est refusé encore, l'écrivain est occupé ou bloqué.";
 
 /// `P10.25-e` — LE `COMMIT` D'UN GESTE SUR UN FOURNISSEUR D'IDENTITÉ EST JUGÉ. Mesuré le 2026-09-24 sur la forme d'avant
 /// (`COMMIT` refusé par un autorisateur) : création 200 et un identifiant, désactivation 200, suppression 204 — et
@@ -402,8 +416,8 @@ pub(crate) async fn idp_provider_update(State(st): State<AppState>, Extension(au
     if conn.query_row("SELECT 1 FROM idp_provider WHERE id=?1", params![id], |_| Ok(())).is_err() {
         return not_found("provider introuvable");
     }
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "idp", &format!("modification du fournisseur d'identité #{id}"), CAUSE_FOURNISSEUR_D_IDENTITE_INCHANGE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<()> = (|| {
         if let Some(v) = b.get("enabled").and_then(|x| x.as_bool()) {
@@ -450,8 +464,8 @@ pub(crate) async fn idp_provider_delete(State(st): State<AppState>, Extension(au
     let conn = st.db.lock();
     let name: Option<String> = conn.query_row("SELECT name FROM idp_provider WHERE id=?1", params![id], |r| r.get(0)).ok();
     let Some(name) = name else { return not_found("provider introuvable") };
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "idp", &format!("suppression du fournisseur d'identité '{name}'"), CAUSE_FOURNISSEUR_D_IDENTITE_INCHANGE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<()> = (|| {
         conn.execute("DELETE FROM idp_provider WHERE id=?1", params![id])?;
@@ -538,7 +552,12 @@ pub(crate) async fn oidc_start(State(st): State<AppState>, Path(name): Path<Stri
 
 /// GET /api/auth/oidc/callback?code=&state= — valide le retour IdP, échange le code, valide l'id_token,
 /// mappe groupe->rôle, provisionne le compte JIT, pose la session et redirige vers `/`. PUBLIC. Fail-closed.
-pub(crate) async fn oidc_callback(State(st): State<AppState>, headers: axum::http::HeaderMap, Query(q): Query<HashMap<String, String>>) -> Response {
+pub(crate) async fn oidc_callback(
+    State(st): State<AppState>,
+    extensions: axum::http::Extensions,
+    headers: axum::http::HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
     if st.multi_tenant {
         return deny_multitenant();
     }
@@ -621,12 +640,19 @@ pub(crate) async fn oidc_callback(State(st): State<AppState>, headers: axum::htt
         Ok(jeton) => jeton,
         Err(refus) => return refus,
     };
-    {
+    // `P10.28-v` — un refus de la fédération est TRACÉ (`RefusDeLaFederation::servir`), connexion d'écriture rendue.
+    let refus_de_la_federation = {
         let conn = st.db.lock();
-        if let Err(refus) = federer_le_nom(&st, &conn, &username, &role) {
-            return refus.reponse();
+        match federer_le_nom(&st, &conn, &username, &role) {
+            Ok(()) => {
+                ledger_append(&conn, "login", &format!("login OIDC : '{username}' (rôle {role}) via provider '{provider}'"));
+                None
+            }
+            Err(refus) => Some(refus),
         }
-        ledger_append(&conn, "login", &format!("login OIDC : '{username}' (rôle {role}) via provider '{provider}'"));
+    };
+    if let Some(refus) = refus_de_la_federation {
+        return refus.servir(&st, crate::auth::PorteDeLAnnuaire::Oidc, &crate::auth::ip_du_pair(&extensions));
     }
     // 8) Redirige vers `/` (jamais une URL contrôlée par l'utilisateur -> pas d'open redirect) + efface le state.
     let mut resp = (StatusCode::FOUND, [(header::LOCATION, "/")]).into_response();
@@ -681,6 +707,7 @@ pub(crate) async fn saml_start(State(st): State<AppState>, Path(name): Path<Stri
 /// session, 302 vers `/`. PUBLIC. Fail-closed : toute anomalie -> 4xx, aucune session.
 pub(crate) async fn saml_acs(
     State(st): State<AppState>,
+    extensions: axum::http::Extensions,
     headers: axum::http::HeaderMap,
     axum::extract::Form(form): axum::extract::Form<HashMap<String, String>>,
 ) -> Response {
@@ -734,12 +761,19 @@ pub(crate) async fn saml_acs(
         Ok(jeton) => jeton,
         Err(refus) => return refus,
     };
-    {
+    // `P10.28-v` — un refus de la fédération est TRACÉ (`RefusDeLaFederation::servir`), connexion d'écriture rendue.
+    let refus_de_la_federation = {
         let conn = st.db.lock();
-        if let Err(refus) = federer_le_nom(&st, &conn, &username, &role) {
-            return refus.reponse();
+        match federer_le_nom(&st, &conn, &username, &role) {
+            Ok(()) => {
+                ledger_append(&conn, "login", &format!("login SAML : '{username}' (rôle {role}) via provider '{provider}'"));
+                None
+            }
+            Err(refus) => Some(refus),
         }
-        ledger_append(&conn, "login", &format!("login SAML : '{username}' (rôle {role}) via provider '{provider}'"));
+    };
+    if let Some(refus) = refus_de_la_federation {
+        return refus.servir(&st, crate::auth::PorteDeLAnnuaire::Saml, &crate::auth::ip_du_pair(&extensions));
     }
     // 8) Redirige vers `/` (jamais une URL contrôlée par l'utilisateur) + efface le cookie de flux.
     let mut resp = (StatusCode::FOUND, [(header::LOCATION, "/")]).into_response();
@@ -820,12 +854,19 @@ pub(crate) async fn ldap_login_post(State(st): State<AppState>, ConnectInfo(peer
                 Ok(jeton) => jeton,
                 Err(refus) => return refus,
             };
-            {
+            // `P10.28-v` — un refus de la fédération est TRACÉ (`RefusDeLaFederation::servir`), connexion rendue.
+            let refus_de_la_federation = {
                 let conn = st.db.lock();
-                if let Err(refus) = federer_le_nom(&st, &conn, &user, &role) {
-                    return refus.reponse();
+                match federer_le_nom(&st, &conn, &user, &role) {
+                    Ok(()) => {
+                        ledger_append(&conn, "login", &format!("login LDAP : '{user}' (rôle {role})"));
+                        None
+                    }
+                    Err(refus) => Some(refus),
                 }
-                ledger_append(&conn, "login", &format!("login LDAP : '{user}' (rôle {role})"));
+            };
+            if let Some(refus) = refus_de_la_federation {
+                return refus.servir(&st, crate::auth::PorteDeLAnnuaire::Ldap, &ip);
             }
             let mut resp = Json(json!({ "ok": true, "user": user, "role": role })).into_response();
             attach_session_cookies(&st, &mut resp, &jeton);
@@ -1179,8 +1220,15 @@ pub(crate) async fn mfa_disable(State(st): State<AppState>, Extension(au): Exten
     let conn = st.db.lock();
     // `P10.22-k` — LE FACTEUR EST JUGÉ, CONSOMMÉ ET LA LIGNE SUPPRIMÉE DANS UNE SEULE TRANSACTION. Un refus de la
     // suppression annule la consommation : le code n'est pas brûlé (même contrat que la connexion, `P10.21-s`).
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_MFA_NON_DESACTIVEE);
+    // `P10.28-d` — le `BEGIN` passe par la forme commune : refusé, il est dit au journal et rendu en 503 sous SA cause (la
+    // forme d'avant rendait `CAUSE_MFA_NON_DESACTIVEE`, la phrase d'une suppression refusée, et taisait le journal).
+    if let Err(refus) = ouvrir_la_transaction_du_geste(
+        &conn,
+        "mfa",
+        &format!("désactivation du second facteur de '{}'", au.name),
+        CAUSE_MFA_NON_DESACTIVEE_TRANSACTION_NON_OUVERTE,
+    ) {
+        return refus;
     }
     // Lue sous le MÊME verrou et dans la MÊME transaction que la consommation et la suppression. Son repli
     // (`.ok()` -> 404) est le rang quatre de `P10.20-b`, laissé tel quel ici (voir l'en-tête du module).

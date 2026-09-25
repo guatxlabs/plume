@@ -22,7 +22,7 @@
 //! identifiants allowlistés, injection-safe — mêmes garanties que les règles GXQL, éditeur+). Aucun SQL brut,
 //! aucune surface d'exécution custom, aucun contrôle hôte.
 use crate::*;
-use crate::handlers::transaction_validee::rendre_apres_validation;
+use crate::handlers::transaction_validee::{ouvrir_la_transaction_du_geste, rendre_apres_validation};
 use rusqlite::OptionalExtension;
 
 /// `P10.20-b` — LA CAUSE NOMMÉE D'UN DRY-RUN REFUSÉ FAUTE D'AVOIR PU ARMER SA PORTE DE MASQUAGE.
@@ -705,19 +705,39 @@ pub(crate) async fn correlations_list(State(st): State<AppState>, Extension(au):
 pub(crate) const CAUSE_CORRELATION_NON_CREEE: &str = "CORRÉLATION NON CRÉÉE : la base n'a pas validé la transaction \
      (COMMIT refusé) et l'a annulée — aucune corrélation n'est écrite ni évaluée, et aucune trace n'est écrite. \
      Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_CORRELATION_NON_CREEE_TRANSACTION_NON_OUVERTE: &str = "CORRÉLATION NON CRÉÉE : la base n'a \
+     pas pris la transaction de la création (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante \
+     sur l'écrivain) — RIEN n'est écrit : aucune corrélation n'est écrite ni évaluée, et aucune trace n'est écrite. \
+     Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 /// `P10.25-g` — corrélation inchangée : le `COMMIT` de ce geste refusé.
 pub(crate) const CAUSE_CORRELATION_INCHANGEE: &str = "CORRÉLATION INCHANGÉE : la base n'a pas validé la transaction \
      (COMMIT refusé) et l'a annulée — elle garde ses étapes, sa fenêtre et son activation d'avant, et aucune trace \
      n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_CORRELATION_INCHANGEE_TRANSACTION_NON_OUVERTE: &str = "CORRÉLATION INCHANGÉE : la base n'a \
+     pas pris la transaction de la modification (BEGIN refusé : verrou tenu, ou transaction d'un autre geste \
+     pendante sur l'écrivain) — RIEN n'est écrit : elle garde ses étapes, sa fenêtre et son activation d'avant, et \
+     aucune trace n'est écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 /// `P10.25-g` — référence ueba non créée : le `COMMIT` de ce geste refusé.
 pub(crate) const CAUSE_REFERENCE_UEBA_NON_CREEE: &str = "RÉFÉRENCE UEBA NON CRÉÉE : la base n'a pas validé la \
      transaction (COMMIT refusé) et l'a annulée — aucune référence n'est écrite ni évaluée, et aucune trace n'est \
      écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_REFERENCE_UEBA_NON_CREEE_TRANSACTION_NON_OUVERTE: &str = "RÉFÉRENCE UEBA NON CRÉÉE : la base \
+     n'a pas pris la transaction de la création (BEGIN refusé : verrou tenu, ou transaction d'un autre geste \
+     pendante sur l'écrivain) — RIEN n'est écrit : aucune référence n'est écrite ni évaluée, et aucune trace n'est \
+     écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 /// `P10.25-g` — référence ueba inchangée : le `COMMIT` de ce geste refusé.
 pub(crate) const CAUSE_REFERENCE_UEBA_INCHANGEE: &str = "RÉFÉRENCE UEBA INCHANGÉE : la base n'a pas validé la \
      transaction (COMMIT refusé) et l'a annulée — elle garde sa requête, son seuil et son activation d'avant, et \
      aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou \
      verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_REFERENCE_UEBA_INCHANGEE_TRANSACTION_NON_OUVERTE: &str = "RÉFÉRENCE UEBA INCHANGÉE : la base \
+     n'a pas pris la transaction de la modification (BEGIN refusé : verrou tenu, ou transaction d'un autre geste \
+     pendante sur l'écrivain) — RIEN n'est écrit : elle garde sa requête, son seuil et son activation d'avant, et \
+     aucune trace n'est écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 
 pub(crate) async fn correlation_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
     let name = b.get("name").and_then(|v| v.as_str()).unwrap_or("Corrélation").to_string();
@@ -741,8 +761,8 @@ pub(crate) async fn correlation_create(State(st): State<AppState>, Extension(au)
     };
     let enabled = b.bool_field("enabled", true) as i64;
     crate::req_conn!(st, au, conn);
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "detection", &format!("création de la corrélation '{name}'"), CAUSE_CORRELATION_NON_CREEE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<i64> = (|| {
         conn.execute(
@@ -805,8 +825,8 @@ pub(crate) async fn correlation_update(State(st): State<AppState>, Extension(au)
     if enabled_change.is_some() && !(au.is_admin() || cur_managed == 2) {
         return err_json(StatusCode::FORBIDDEN, "activer/désactiver une détection managée (seed/overlay) est réservé à l'administrateur");
     }
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "detection", &format!("modification de la corrélation #{id}"), CAUSE_CORRELATION_INCHANGEE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<()> = (|| {
         if let Some(v) = b.get("name").and_then(|x| x.as_str()) { conn.execute("UPDATE correlation SET name=?1 WHERE id=?2", params![v, id])?; }
@@ -953,8 +973,8 @@ pub(crate) async fn baseline_create(State(st): State<AppState>, Extension(au): E
     let risk_score = b.i64_field("risk_score", 0).max(0);
     let enabled = b.bool_field("enabled", true) as i64;
     crate::req_conn!(st, au, conn);
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "detection", &format!("création de la référence UEBA '{name}'"), CAUSE_REFERENCE_UEBA_NON_CREEE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<i64> = (|| {
         conn.execute(
@@ -1011,8 +1031,8 @@ pub(crate) async fn baseline_update(State(st): State<AppState>, Extension(au): E
     if enabled_change.is_some() && !(au.is_admin() || cur_managed == 2) {
         return err_json(StatusCode::FORBIDDEN, "activer/désactiver une détection managée (seed/overlay) est réservé à l'administrateur");
     }
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "detection", &format!("modification de la référence UEBA #{id}"), CAUSE_REFERENCE_UEBA_INCHANGEE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<()> = (|| {
         if let Some(v) = b.get("name").and_then(|x| x.as_str()) { conn.execute("UPDATE ueba_baseline SET name=?1 WHERE id=?2", params![v, id])?; }

@@ -4,7 +4,7 @@
 //! (`expire`/`activate_due_engagements_conn`), les handlers engagement et `mode_get`/`mode_set`.
 //! Extrait de main.rs (refactor split #25 — byte-identique).
 use crate::*;
-use crate::handlers::transaction_validee::valider_la_transaction;
+use crate::handlers::transaction_validee::{ouvrir_la_transaction_du_geste, valider_la_transaction};
 
 // =====================================================================================
 // MODE ENGAGEMENT AUTORISÉ (v75) — pentest natif black/grey/whitebox, SANS reconfigurer le SOC, SANS angle
@@ -860,8 +860,8 @@ pub(crate) async fn engagement_create(State(st): State<AppState>, Extension(au):
     }
 
     crate::req_conn!(st, au, conn);
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "engagement", "création d'un engagement", CAUSE_ENGAGEMENT_NON_CREE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<()> = (|| {
         conn.execute(
@@ -931,8 +931,8 @@ pub(crate) async fn engagement_end(State(st): State<AppState>, Extension(au): Ex
     if !exists {
         return not_found("engagement introuvable ou déjà clos");
     }
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "engagement", &format!("clôture de l'engagement '{id}'"), CAUSE_ENGAGEMENT_NON_CLOS_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<()> = (|| {
         conn.execute("UPDATE engagement SET status='revoked', ended_ts=?2 WHERE id=?1 AND status IN ('active','scheduled')", params![id, now_i])?;
@@ -992,8 +992,8 @@ pub(crate) async fn mode_set(State(st): State<AppState>, Extension(au): Extensio
     // BONUS : bascule de mode AUDITÉE fail-closed (ledger + event plume-config SOC-visible,
     // sev=3 car `active` ARME l'exécution réelle des réponses). Avant : ledger_append best-effort (avalait
     // l'erreur, aucun event SOC). Fail-closed : si l'audit échoue -> ROLLBACK (le mode N'est PAS changé sans trace).
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "engagement", &format!("bascule du mode vers '{m}'"), CAUSE_MODE_INCHANGE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<()> = (|| {
         conn.execute("INSERT INTO meta(key,value) VALUES('plume_mode',?1) ON CONFLICT(key) DO UPDATE SET value=?1", params![m])?;
@@ -1029,14 +1029,30 @@ pub(crate) const CAUSE_ENGAGEMENT_NON_CREE_COMMIT_REFUSE: &str = "ENGAGEMENT NON
      transaction (COMMIT refusé) et l'a annulée — aucune crédence n'est frappée ni montrée, aucune exemption d'auto-ban \
      n'est posée, et rien n'est attesté. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou \
      verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_ENGAGEMENT_NON_CREE_TRANSACTION_NON_OUVERTE: &str = "ENGAGEMENT NON CRÉÉ : la base n'a pas \
+     pris la transaction de la création (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante sur \
+     l'écrivain) — RIEN n'est écrit : aucune crédence n'est frappée ni montrée, aucune exemption d'auto-ban n'est \
+     posée, et rien n'est attesté. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 
 /// `P10.25-e` — le `COMMIT` de la clôture anticipée d'un engagement refusé.
 pub(crate) const CAUSE_ENGAGEMENT_NON_CLOS_COMMIT_REFUSE: &str = "ENGAGEMENT NON CLOS : la base n'a pas validé la \
      transaction (COMMIT refusé) et l'a annulée — l'engagement court toujours : son exemption d'auto-ban reste posée et \
      ses crédences authentifient jusqu'à la fin de sa fenêtre. Réessayez ; si le refus persiste, la base est en lecture \
      seule, pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_ENGAGEMENT_NON_CLOS_TRANSACTION_NON_OUVERTE: &str = "ENGAGEMENT NON CLOS : la base n'a pas \
+     pris la transaction de la clôture (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante sur \
+     l'écrivain) — RIEN n'est écrit : l'engagement court toujours : son exemption d'auto-ban reste posée et ses \
+     crédences authentifient jusqu'à la fin de sa fenêtre. Réessayez ; s'il est refusé encore, l'écrivain est occupé \
+     ou bloqué.";
 
 /// `P10.25-e` — le `COMMIT` d'une bascule du mode de réponse refusé.
 pub(crate) const CAUSE_MODE_INCHANGE_COMMIT_REFUSE: &str = "MODE INCHANGÉ : la base n'a pas validé la transaction \
      (COMMIT refusé) et l'a annulée — le mode de réponse reste celui d'avant, et la bascule n'est pas attestée. \
      Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_MODE_INCHANGE_TRANSACTION_NON_OUVERTE: &str = "MODE INCHANGÉ : la base n'a pas pris la \
+     transaction de la bascule (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante sur l'écrivain) \
+     — RIEN n'est écrit : le mode de réponse reste celui d'avant, et la bascule n'est pas attestée. Réessayez ; s'il \
+     est refusé encore, l'écrivain est occupé ou bloqué.";

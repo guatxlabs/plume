@@ -7,7 +7,7 @@
 //   POST /api/index-policies         -> create ; POST /api/index-policies/{id} -> update ; DELETE …/{id}
 // SÉCU UI : rendu textContent (anti-XSS) ; la VRAIE garde reste serveur (403 hors admin). Défense en
 // profondeur : on court-circuite le fetch hors admin.
-import { $, api, apiSend, confirmWithConsequence, effacerLeRefusDUnGeste, fetchInto, muted, pagedList, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, toast } from './core.js';
+import { $, api, apiSend, confirmWithConsequence, effacerLeRefusDUnGeste, fetchInto, muted, pagedList, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, toast, faceDansLaLangue } from './core.js';
 import { enabledSwitch } from './producer_ui.js';
 import { uiIsAdmin } from './multitenant.js';
 
@@ -93,12 +93,12 @@ function indexRow(r, globalDays) {
 
   const name = document.createElement('b'); name.textContent = r.name;
   const stats = document.createElement('span'); stats.className = 'muted'; stats.style.fontSize = '12px';
-  stats.textContent = `${num(r.events).toLocaleString('fr')} events · ~${fmtBytes(r.size_bytes_est)} · plus ancien ${fmtTs(r.oldest_ts)}`;
+  stats.textContent = faceDansLaLangue({ fr: '{n} events · ~{taille} · plus ancien {date}', en: '{n} events · ~{taille} · oldest {date}' }, { n: num(r.events).toLocaleString('fr'), taille: fmtBytes(r.size_bytes_est), date: fmtTs(r.oldest_ts) });   // `P10.29-c`
 
   // Régime de rétention : politique propre OU héritage du global.
   const ret = document.createElement('code');
   if (r.has_policy && num(r.retention_days) > 0) ret.textContent = `${num(r.retention_days)} j`;
-  else ret.textContent = `hérite (${globalDays} j)`;
+  else ret.textContent = faceDansLaLangue({ fr: 'hérite ({j} j)', en: 'inherits ({j} d)' }, { j: globalDays });
   ret.title = 'rétention effective de cet index';
 
   const caps = document.createElement('span'); caps.className = 'muted'; caps.style.fontSize = '12px';

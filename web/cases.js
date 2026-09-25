@@ -1,6 +1,6 @@
 // cases.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // Cases (gestion d'incident, first-class #4a): liste/detail/CRUD + rattachement d'items.
-import { $, api, apiSend, unDeuxCentsSansCorpsLisible, phraseDuRefusDuDemon, aveuDeLaTraceManquante, causeDeLaTraceManquante, cleDeLIdentifiantDeRiposte, confirmModal, confirmWithConsequence, disclosure, downloadText, exportPDF, fmtTs, ic, LANG, modal, motDeLaRiposteSansIdentifiant, motDeLaTraceManquante, muted, pagedList, phraseDeLaCreationDeRiposteRefusee, phraseDeLaTraceManquante, sev, toCSV, toast, tsSlug, withBusy, socIsAdmin, socRole, puitsDuRefusDUnGeste, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste, faceDansLaLangue } from './core.js';
+import { $, api, apiSend, unDeuxCentsSansCorpsLisible, phraseDuRefusDuDemon, aveuDeLaTraceManquante, causeDeLaTraceManquante, cleDeLIdentifiantDeRiposte, confirmModal, confirmWithConsequence, disclosure, downloadText, exportPDF, fmtTs, ic, LANG, modal, motDeLaRiposteSansIdentifiant, motDeLaTraceManquante, muted, pagedList, phraseDeLaCreationDeRiposteRefusee, phraseDeLaTraceManquante, sev, toCSV, toast, tsSlug, withBusy, socIsAdmin, socRole, puitsDuRefusDUnGeste, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste, faceDansLaLangue, phraseDuRefusDUneLecture } from './core.js';
 import { phraseDAffichagePartiel, phraseDEchantillonCoupe, phraseDeCoupe } from './coupe_de_liste.js'; // `P11.22-g` : une liste bornée dit sa coupe
 import { S } from './state.js';
 import { refresh } from './app.js';
@@ -127,13 +127,13 @@ function caseStatusBadge(status) {
 function casePrioBadge(prio) {
   const p = document.createElement('span'); p.className = 'badge'; const col = PRIO_COL[prio] || 'var(--mut)';
   p.style.color = col; p.style.borderColor = 'color-mix(in srgb,' + col + ' 45%,transparent)';
-  p.textContent = 'P' + prio; p.title = PRIO_LABEL[prio] || ('priorité ' + prio); return p;
+  p.textContent = 'P' + prio; p.title = PRIO_LABEL[prio] || faceDansLaLangue(MOTS_DES_TEXTES_DE_DOSSIER.priorite, { p: prio }); return p;
 }
 
 function caseOverdueBadge(sla_due) {
   const o = document.createElement('span'); o.className = 'badge';
   o.style.color = 'var(--bad)'; o.style.borderColor = 'color-mix(in srgb,var(--bad) 50%,transparent)'; o.style.fontWeight = '700';
-  o.textContent = 'RETARD'; o.title = 'SLA dépassé' + (sla_due ? ' (échéance ' + fmtTs(sla_due) + ')' : ''); return o;
+  o.textContent = 'RETARD'; o.title = faceDansLaLangue(MOTS_DES_TEXTES_DE_DOSSIER.sla_depasse, { echeance: sla_due ? faceDansLaLangue(MOTS_DES_TEXTES_DE_DOSSIER.echeance, { date: fmtTs(sla_due) }) : '' }); return o;
 }
 
 function caseFilterQuery() {
@@ -186,7 +186,7 @@ function caseRow(c) {
   if (c.archived) { const ab = document.createElement('span'); ab.className = 'badge'; ab.textContent = 'ARCHIVÉ'; ab.style.color = 'var(--mut)'; ab.style.borderColor = 'color-mix(in srgb,var(--mut) 45%,transparent)'; row.appendChild(ab); }
   row.appendChild(Object.assign(document.createElement('span'), { className: 'casetitle', textContent: c.title }));
   const meta = document.createElement('span'); meta.className = 'casemeta';
-  meta.textContent = c.items + ' élément(s)' + (c.assignee ? ' · ' + c.assignee : (c.owner ? ' · ' + c.owner : '')) + ' · ' + fmtTs(c.updated);
+  meta.textContent = faceDansLaLangue(MOTS_DES_TEXTES_DE_DOSSIER.elements, { n: c.items, qui: c.assignee ? ' · ' + c.assignee : (c.owner ? ' · ' + c.owner : ''), date: fmtTs(c.updated) });
   row.appendChild(meta);
   return row;
 }
@@ -298,7 +298,7 @@ function renderCaseDetail(host, c) {
   hr.appendChild(caseStatusBadge(c.status));
   hr.appendChild(casePrioBadge(c.priority));
   if (c.overdue) hr.appendChild(caseOverdueBadge(c.sla_due));
-  if (c.archived) { const ab = document.createElement('span'); ab.className = 'badge'; ab.textContent = 'ARCHIVÉ'; ab.style.color = 'var(--mut)'; ab.style.borderColor = 'color-mix(in srgb,var(--mut) 45%,transparent)'; ab.title = 'Case archivé' + (c.archived_by ? ' par ' + c.archived_by : '') + (c.archived_ts ? ' le ' + fmtTs(c.archived_ts) : '') + ' — masqué de la liste par défaut, historique conservé'; hr.appendChild(ab); }
+  if (c.archived) { const ab = document.createElement('span'); ab.className = 'badge'; ab.textContent = 'ARCHIVÉ'; ab.style.color = 'var(--mut)'; ab.style.borderColor = 'color-mix(in srgb,var(--mut) 45%,transparent)'; ab.title = faceDansLaLangue(MOTS_DES_TEXTES_DE_DOSSIER.archive_titre, { par: c.archived_by ? faceDansLaLangue(MOTS_DES_TEXTES_DE_DOSSIER.par, { qui: c.archived_by }) : '', le: c.archived_ts ? faceDansLaLangue(MOTS_DES_TEXTES_DE_DOSSIER.le, { date: fmtTs(c.archived_ts) }) : '' }); hr.appendChild(ab); }
   const collapse = document.createElement('button'); collapse.type = 'button'; collapse.className = 'picon'; collapse.title = 'Fermer le détail'; collapse.innerHTML = ic('x'); // P11.4-b : bouton-icône partagé
   collapse.onclick = closeCaseDetail;   // P11.11-a : le même chemin que le second clic sur la ligne
   hr.appendChild(caseExportBar(c));   // EXPORT : CSV (timeline) / JSON (case complet) / PDF (impression)
@@ -370,12 +370,12 @@ function renderCaseDetail(host, c) {
       bar.appendChild(reopen);
     } else {
       const resolve = caseBtn('Résoudre', 'ghost');
-      resolve.onclick = () => withBusy(resolve, async () => { if (await confirmModal('Marquer le case #' + c.id + ' comme résolu ?', { okText: 'Résoudre', danger: false })) await caseUpdate(c.id, { status: 'resolved' }); });
+      resolve.onclick = () => withBusy(resolve, async () => { if (await confirmModal(faceDansLaLangue(MOTS_DES_TEXTES_DE_DOSSIER.marquer_resolu, { id: c.id }), { okText: 'Résoudre', danger: false })) await caseUpdate(c.id, { status: 'resolved' }); });
       bar.appendChild(resolve);
     }
     if (c.status !== 'closed') {
       const close = caseBtn('Clore', 'danger');
-      close.onclick = () => withBusy(close, async () => { if (await confirmModal('Clore le case #' + c.id + ' ? (réouvrable ensuite)', { okText: 'Clore', danger: true })) await caseUpdate(c.id, { status: 'closed' }); });
+      close.onclick = () => withBusy(close, async () => { if (await confirmModal(faceDansLaLangue(MOTS_DES_TEXTES_DE_DOSSIER.clore, { id: c.id }), { okText: 'Clore', danger: true })) await caseUpdate(c.id, { status: 'closed' }); });
       bar.appendChild(close);
     }
     const attach = caseBtn('Rattacher un élément…', 'ghost');
@@ -519,6 +519,55 @@ const MOTS_DES_SUCCES_DE_DOSSIER = {
   fusionne: { fr: 'Case #{id} fusionné dans #{cible}', en: 'Case #{id} merged into #{cible}' },
   rattache: { fr: 'Ajouté au case #{id}', en: 'Added to case #{id}' },
 };
+// `P10.29-f` / `P10.29-g` — LES LECTURES DES DOSSIERS QUI NE SONT PAS SERVIES, DANS LES DEUX LANGUES. MESURÉ AVANT CE LOT
+// (témoin 120) : « Cases NON LUS — <cause> » et « Recherche refusée : » + le message brut restaient français sous
+// `LANG='en'` ; et les trois lectures de la liste des dossiers qui précèdent une fusion, un lien ou un rattachement
+// AVALAIENT leur refus (`catch (e) {}`) : un 403 ou un réseau coupé se lisait « Aucune autre case cible », une absence
+// affirmée sur une lecture qui n'a pas eu lieu — et, au rattachement, le seul choix offert était de CRÉER un dossier.
+// `P10.29-c` — LES LIGNES, INFOBULLES ET CONFIRMATIONS COMPOSÉES D'UN DOSSIER, DANS LES DEUX LANGUES. MESURÉ AVANT CE LOT
+// (témoin 120c) : vingt-six textes composés autour d'un numéro, d'un nom ou d'une date (« Marquer le case #4 comme
+// résolu ? », « 3 élément(s) · hugo · … », « Incident déclaré (tier 2) · pilote … », « fait par … ») restaient français
+// sous `LANG='en'`. Les faces françaises sont celles d'avant, au caractère près.
+const MOTS_DES_TEXTES_DE_DOSSIER = {
+  priorite: { fr: 'priorité {p}', en: 'priority {p}' },
+  sla_depasse: { fr: 'SLA dépassé{echeance}', en: 'SLA breached{echeance}' },
+  echeance: { fr: ' (échéance {date})', en: ' (due {date})' },
+  elements: { fr: '{n} élément(s){qui} · {date}', en: '{n} item(s){qui} · {date}' },
+  archive_titre: { fr: 'Case archivé{par}{le} — masqué de la liste par défaut, historique conservé', en: 'Archived case{par}{le} — hidden from the default list, history kept' },
+  par: { fr: ' par {qui}', en: ' by {qui}' },
+  le: { fr: ' le {date}', en: ' on {date}' },
+  marquer_resolu: { fr: 'Marquer le case #{id} comme résolu ?', en: 'Mark case #{id} as resolved?' },
+  clore: { fr: 'Clore le case #{id} ? (réouvrable ensuite)', en: 'Close case #{id}? (can be reopened later)' },
+  archiver: { fr: "Archiver le case #{id} ?\n\nArchiver = MASQUER de la liste par défaut. L'historique (timeline) est conservé et l'action est réversible (bouton « Désarchiver » dans la vue Archivés).", en: 'Archive case #{id}?\n\nArchive = HIDE from the default list. The history (timeline) is kept and the action is reversible (“Unarchive” button in the Archived view).' },
+  desarchiver: { fr: 'Désarchiver le case #{id} ? Il réapparaîtra dans la liste par défaut.', en: 'Unarchive case #{id}? It will reappear in the default list.' },
+  charge_non_lue: { fr: 'Charge et SLA NON LUS — {cause}', en: 'Workload and SLA NOT READ — {cause}' },
+  file_en_retard: { fr: ' ({n} retard)', en: ' ({n} overdue)' },
+  filtrer_la_file: { fr: 'Filtrer la file de {qui}', en: "Filter {qui}'s queue" },
+  fusionner_titre: { fr: 'Fusionner le case #{id}', en: 'Merge case #{id}' },
+  fusionner_cible: { fr: 'Fusionner DANS (cible) — #{id} sera clos, rattaché et réversible', en: 'Merge INTO (target) — #{id} will be closed, attached and reversible' },
+  lier_titre: { fr: 'Lier le case #{id}', en: 'Link case #{id}' },
+  incident_titre: { fr: 'Case élevé en incident{type}{pilote}', en: 'Case raised to an incident{type}{pilote}' },
+  incident_type: { fr: ' — type {type}', en: ' — of type {type}' },
+  incident_pilote: { fr: ' — pilote {qui}', en: ' — commander {qui}' },
+  incident_declare: { fr: 'Incident déclaré (tier {tier}){type}{pilote}', en: 'Incident declared (tier {tier}){type}{pilote}' },
+  incident_declare_pilote: { fr: ' · pilote {qui}', en: ' · commander {qui}' },
+  tactique_dominante: { fr: 'Tactique dominante des alertes liées : {tactique}{technique}', en: 'Dominant tactic of the linked alerts: {tactique}{technique}' },
+  recommande: { fr: 'Recommandé : {nom}', en: 'Recommended: {nom}' },
+  traitees: { fr: '{n}/{total} traitées', en: '{n}/{total} handled' },
+  etape_faite: { fr: 'fait par {qui}{date}{note}', en: 'done by {qui}{date}{note}' },
+  etape_ignoree: { fr: 'ignoré par {qui}{date}{note}', en: 'skipped by {qui}{date}{note}' },
+  reponse_reservee: { fr: 'réponse {genre} — nécessite un admin (arm/approbation)', en: 'response {genre} — needs an admin (arm/approval)' },
+  retrograder: { fr: "Rétrograder l'incident #{id} en case ordinaire ?", en: 'Demote incident #{id} to an ordinary case?' },
+  preparer_titre: { fr: 'Préparer la réponse : {genre}', en: 'Prepare the response: {genre}' },
+  cible_de_la_reponse: { fr: 'Cible ({genre})', en: 'Target ({genre})' },
+};
+const MOTS_DES_LECTURES_DE_DOSSIER = {
+  liste_des_dossiers: { fr: 'Liste des cases', en: 'Case list' },
+  recherche_de_l_etape: { fr: "Recherche de l'étape", en: 'Step search' },
+  cases_non_lus: { fr: 'Cases NON LUS — {cause}', en: 'Cases NOT READ — {cause}' },
+  cases_non_lus_sans_proposition: { fr: "Cases NON LUS — {cause} Aucun cas n'est proposé : rien n'a été lu, et créer ici ferait un doublon.", en: 'Cases NOT READ — {cause} No case is offered: nothing was read, and creating here would make a duplicate.' },
+  sans_proposition: { fr: "Aucun cas n'est proposé : rien n'a été lu, et créer ici ferait un doublon.", en: 'No case is offered: nothing was read, and creating here would make a duplicate.' },
+};
 async function caseUpdate(id, patch) {
   const puits = puitsDesDossiers(); effacerLeRefusDUnGeste(puits);
   // Refusé, le détail est relu : un sélecteur (statut, priorité, verdict) ou un champ resté sur la valeur refusée
@@ -533,7 +582,7 @@ async function caseUpdate(id, patch) {
 // #4a-bis — ARCHIVE (soft-delete) : masque le case de la liste par défaut, l'historique est conservé (append-
 // only côté daemon) et l'action est réversible. ADMIN uniquement (confirmModal explicite ; le daemon revérifie).
 async function caseArchive(id) {
-  if (!await confirmModal('Archiver le case #' + id + ' ?\n\nArchiver = MASQUER de la liste par défaut. L\'historique (timeline) est conservé et l\'action est réversible (bouton « Désarchiver » dans la vue Archivés).', { okText: 'Archiver', danger: true })) return;
+  if (!await confirmModal(faceDansLaLangue(MOTS_DES_TEXTES_DE_DOSSIER.archiver, { id }), { okText: 'Archiver', danger: true })) return;
   const puits = puitsDesDossiers(); effacerLeRefusDUnGeste(puits);
   try { await apiSend('/cases/' + id + '/archive', 'POST'); }
   catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
@@ -543,7 +592,7 @@ async function caseArchive(id) {
 }
 
 async function caseUnarchive(id) {
-  if (!await confirmModal('Désarchiver le case #' + id + ' ? Il réapparaîtra dans la liste par défaut.', { okText: 'Désarchiver', danger: false })) return;
+  if (!await confirmModal(faceDansLaLangue(MOTS_DES_TEXTES_DE_DOSSIER.desarchiver, { id }), { okText: 'Désarchiver', danger: false })) return;
   const puits = puitsDesDossiers(); effacerLeRefusDUnGeste(puits);
   try { await apiSend('/cases/' + id + '/unarchive', 'POST'); }
   catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
@@ -605,7 +654,7 @@ async function loadCaseOpsSummary() {
   // rendue à la place d'un refus. Le refus est maintenant DIT, avec la cause du démon telle quelle ; le mode
   // 0, lui, continue de ne rien afficher — il n'y a pas de refus à rapporter, et le test est SÉPARÉ.
   if (refus) {
-    host.appendChild(Object.assign(document.createElement('div'), { className: 'bad', textContent: 'Charge et SLA NON LUS — ' + refus }));
+    host.appendChild(Object.assign(document.createElement('div'), { className: 'bad', textContent: faceDansLaLangue(MOTS_DES_TEXTES_DE_DOSSIER.charge_non_lue, { cause: refus }) }));
     return;
   }
   const o = metrics.overall || {};
@@ -630,8 +679,8 @@ async function loadCaseOpsSummary() {
     qwrap.appendChild(Object.assign(document.createElement('span'), { textContent: 'Files :', className: 'muted', style: 'font-size:12px;align-self:center' }));
     queues.slice(0, FILES_AFFICHEES).forEach(q => {
       const chip = document.createElement('button'); chip.type = 'button'; chip.className = 'casechip'; chip.style.cursor = 'pointer';
-      chip.textContent = q.assignee + ' · ' + q.open + (q.overdue ? ' (' + q.overdue + ' retard)' : '') + (q.breach ? ' ⚠' + q.breach : '');
-      chip.title = 'Filtrer la file de ' + q.assignee;
+      chip.textContent = q.assignee + ' · ' + q.open + (q.overdue ? faceDansLaLangue(MOTS_DES_TEXTES_DE_DOSSIER.file_en_retard, { n: q.overdue }) : '') + (q.breach ? ' ⚠' + q.breach : '');
+      chip.title = faceDansLaLangue(MOTS_DES_TEXTES_DE_DOSSIER.filtrer_la_file, { qui: q.assignee });
       chip.onclick = () => { const inp = $('#case-assignee-filter'); if (inp && q.assignee !== '(none)') { inp.value = q.assignee; loadCases(); } };
       qwrap.appendChild(chip);
     });
@@ -747,9 +796,10 @@ const MOTS_DES_REFUS_DE_DOSSIER = {
   retrait_refuse: {
     fr: "Retrait du lien REFUSÉ : le démon n'a pas confirmé la suppression. Il a répondu —",
     en: 'Link removal REFUSED: the daemon did not confirm the deletion. It answered —' },
-  // `P10.21-j` — L'AJOUT D'UN ÉLÉMENT À UN DOSSIER. `case_item_add` (daemon/src/handlers/cases.rs) ne sert
-  // qu'un quatre cent quatre NU (dossier introuvable) ou un deux cent quatre ; tout autre refus vient d'une
-  // couche commune (rôle, passerelle). Quand le dossier vient d'être ouvert par ce geste, il EXISTE, vide.
+  // `P10.21-j` — L'AJOUT D'UN ÉLÉMENT À UN DOSSIER. Quand le dossier vient d'être ouvert par ce geste, il EXISTE,
+  // vide. `P10.29-k` — `case_item_add` (daemon/src/handlers/cases.rs) ne sert plus de quatre cent quatre NU : depuis
+  // `P10.29-b` il établit le dossier (quatre cent quatre NOMMÉ, cinq cent trois nommé sur une lecture refusée), et sa
+  // cause est citée entière (`element_refuse`) ; le quatre cent quatre nu reste celui d'un intermédiaire.
   element_introuvable_sans_cause: {
     fr: "Élément NON RATTACHÉ : le démon a répondu « introuvable » (404) sans nommer de cause. Rien n'a été ajouté au dossier.",
     en: 'Item NOT ATTACHED: the daemon answered "not found" (404) without naming a cause. Nothing was added to the case.' },
@@ -868,16 +918,17 @@ async function renderCaseLinks(box, c) {
 // timeline combinée dans la cible ; réversible). editor+.
 async function mergeCasePrompt(id) {
   let cases = [], refus = '';
-  try { const j = await api('/cases?limit=200'); refus = causeDuRefusServi(j); cases = j.cases; } catch (e) {}
+  try { const j = await api('/cases?limit=200'); refus = causeDuRefusServi(j); cases = j.cases; }
+  catch (e) { toast(phraseDuRefusDUneLecture(e, faceDansLaLangue(MOTS_DES_LECTURES_DE_DOSSIER.liste_des_dossiers)), 'bad', 9000); return; }   // `P10.29-g`
   // `P10.7-d` — LA DÉCONSTRUCTION JETAIT L'AVEU. `({ cases } = await api(…))` ne garde que la clé attendue :
   // la cause servie à côté disparaissait, `cases` valait `undefined`, et le sélecteur annonçait « Aucune
   // autre case cible » — une absence AFFIRMÉE sur une lecture qui n'a pas eu lieu. La réponse entière est
   // désormais tenue, et le refus est dit AVANT le compte.
-  if (refus) { toast('Cases NON LUS — ' + refus, 'bad', 8000); return; }
+  if (refus) { toast(faceDansLaLangue(MOTS_DES_LECTURES_DE_DOSSIER.cases_non_lus, { cause: refus }), 'bad', 8000); return; }
   const opts = (cases || []).filter(c => c.id !== id).map(c => ({ value: String(c.id), label: '#' + c.id + ' · ' + c.title }));
   if (!opts.length) { toast('Aucune autre case cible', 'bad'); return; }
-  const r = await modal({ title: 'Fusionner le case #' + id, okText: 'Fusionner', fields: [
-    { name: 'into', label: 'Fusionner DANS (cible) — #' + id + ' sera clos, rattaché et réversible', type: 'select', options: opts },
+  const r = await modal({ title: faceDansLaLangue(MOTS_DES_TEXTES_DE_DOSSIER.fusionner_titre, { id }), okText: 'Fusionner', fields: [
+    { name: 'into', label: faceDansLaLangue(MOTS_DES_TEXTES_DE_DOSSIER.fusionner_cible, { id }), type: 'select', options: opts },
   ] });
   if (!r) return;
   const puits = puitsDesDossiers(); effacerLeRefusDUnGeste(puits);
@@ -892,11 +943,12 @@ async function linkCasePrompt(id) {
   // La MÊME phrase qu'au survol du bouton, jamais deux formulations du même refus.
   if (LIENS_NON_LUS.has(id)) { toast("Les liens de ce dossier n'ont PAS été lus : en ajouter un ici, c'est peut-être recréer un rattachement qui existe déjà et que cette lecture n'a pas pu rendre.", 'bad', 9000); return; }
   let cases = [], refus = '';
-  try { const j = await api('/cases?limit=200'); refus = causeDuRefusServi(j); cases = j.cases; } catch (e) {}
-  if (refus) { toast('Cases NON LUS — ' + refus, 'bad', 8000); return; }   // `P10.7-d`, cf. mergeCasePrompt
+  try { const j = await api('/cases?limit=200'); refus = causeDuRefusServi(j); cases = j.cases; }
+  catch (e) { toast(phraseDuRefusDUneLecture(e, faceDansLaLangue(MOTS_DES_LECTURES_DE_DOSSIER.liste_des_dossiers)), 'bad', 9000); return; }   // `P10.29-g`
+  if (refus) { toast(faceDansLaLangue(MOTS_DES_LECTURES_DE_DOSSIER.cases_non_lus, { cause: refus }), 'bad', 8000); return; }   // `P10.7-d`, cf. mergeCasePrompt
   const opts = (cases || []).filter(c => c.id !== id).map(c => ({ value: String(c.id), label: '#' + c.id + ' · ' + c.title }));
   if (!opts.length) { toast('Aucune autre case à lier', 'bad'); return; }
-  const r = await modal({ title: 'Lier le case #' + id, okText: 'Lier', fields: [
+  const r = await modal({ title: faceDansLaLangue(MOTS_DES_TEXTES_DE_DOSSIER.lier_titre, { id }), okText: 'Lier', fields: [
     { name: 'to', label: 'Case à lier', type: 'select', options: opts },
     // `P10.21-a` — LES TROIS TYPES OFFERTS SONT CEUX QUE LA PUCE SAIT DIRE, et ils viennent de la MÊME
     // table : deux listes du même vocabulaire finiraient par ne plus se répondre, et un type qu'on peut
@@ -955,11 +1007,12 @@ function phraseDuRattachementRefuse(e, dossierNeuf) {
 }
 async function addToCase(kind, body, ref) {
   let cases = [], refus = '';
-  try { const j = await api('/cases'); refus = causeDuRefusServi(j); cases = j.cases; } catch (e) {}
+  try { const j = await api('/cases'); refus = causeDuRefusServi(j); cases = j.cases; }
+  catch (e) { toast(phraseDuRefusDUneLecture(e, faceDansLaLangue(MOTS_DES_LECTURES_DE_DOSSIER.liste_des_dossiers)) + ' ' + faceDansLaLangue(MOTS_DES_LECTURES_DE_DOSSIER.sans_proposition), 'bad', 9000); return; }   // `P10.29-g`
   // `P10.7-d` — C'EST ICI QUE L'ABSENCE FABRIQUÉE COÛTAIT LE PLUS CHER. Sur un refus, `cases` valait
   // `undefined` : le sélecteur n'offrait plus que « + Nouveau case », et l'analyste créait un DOUBLON du cas
   // qui existait déjà — un refus de lecture se soldait par une ÉCRITURE fausse. Le geste est refusé, et dit.
-  if (refus) { toast('Cases NON LUS — ' + refus + " Aucun cas n'est proposé : rien n'a été lu, et créer ici ferait un doublon.", 'bad', 9000); return; }
+  if (refus) { toast(faceDansLaLangue(MOTS_DES_LECTURES_DE_DOSSIER.cases_non_lus_sans_proposition, { cause: refus }), 'bad', 9000); return; }
   const active = (cases || []).filter(c => !CASE_TERMINAL.has(c.status));   // le daemon écrit 'new' (plus 'open' legacy)
   const opts = [{ value: 'new', label: '+ Nouveau case' }, ...active.map(c => ({ value: String(c.id), label: '#' + c.id + ' · ' + c.title }))];
   const r = await modal({ title: 'Ajouter à un case', okText: 'Ajouter', fields: [
@@ -1017,13 +1070,13 @@ async function renderWizardPanel(box, c, edit, hr) {
   if (rb.incident_tier != null && hr) {
     const ib = document.createElement('span'); ib.className = 'badge'; ib.textContent = 'INCIDENT · T' + rb.incident_tier;
     ib.style.color = 'var(--bad)'; ib.style.borderColor = 'color-mix(in srgb,var(--bad) 50%,transparent)';
-    ib.title = 'Case élevé en incident' + (rb.incident_type ? ' — type ' + rb.incident_type : '') + (rb.commander ? ' — pilote ' + rb.commander : '');
+    ib.title = faceDansLaLangue(MOTS_DES_TEXTES_DE_DOSSIER.incident_titre, { type: rb.incident_type ? faceDansLaLangue(MOTS_DES_TEXTES_DE_DOSSIER.incident_type, { type: rb.incident_type }) : '', pilote: rb.commander ? faceDansLaLangue(MOTS_DES_TEXTES_DE_DOSSIER.incident_pilote, { qui: rb.commander }) : '' });
     hr.insertBefore(ib, hr.firstChild);
   }
   // --- ligne incident : tier + type/commander + boutons déclarer/rétrograder (editor) ---
   const inc = document.createElement('div'); inc.style.cssText = 'display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px';
   if (rb.incident_tier != null) {
-    inc.appendChild(Object.assign(document.createElement('span'), { textContent: 'Incident déclaré (tier ' + rb.incident_tier + ')' + (rb.incident_type ? ' · ' + rb.incident_type : '') + (rb.commander ? ' · pilote ' + rb.commander : ''), style: 'font-weight:600' }));
+    inc.appendChild(Object.assign(document.createElement('span'), { textContent: faceDansLaLangue(MOTS_DES_TEXTES_DE_DOSSIER.incident_declare, { tier: rb.incident_tier, type: rb.incident_type ? ' · ' + rb.incident_type : '', pilote: rb.commander ? faceDansLaLangue(MOTS_DES_TEXTES_DE_DOSSIER.incident_declare_pilote, { qui: rb.commander }) : '' }), style: 'font-weight:600' }));
     if (edit) { const dem = caseBtn('Rétrograder', 'ghost'); dem.onclick = () => withBusy(dem, () => incidentDemote(c)); inc.appendChild(dem); }
   } else {
     inc.appendChild(muted('Case ordinaire — non élevé en incident.'));
@@ -1112,7 +1165,7 @@ async function renderWizardPanel(box, c, edit, hr) {
   }
   // --- tactique dominante inférée + runbook recommandé / attach ---
   if (rb.dominant_tactic || rb.dominant_technique) {
-    const info = muted('Tactique dominante des alertes liées : ' + (rb.dominant_tactic || '—') + (rb.dominant_technique ? ' (' + rb.dominant_technique + ')' : ''));
+    const info = muted(faceDansLaLangue(MOTS_DES_TEXTES_DE_DOSSIER.tactique_dominante, { tactique: rb.dominant_tactic || '—', technique: rb.dominant_technique ? ' (' + rb.dominant_technique + ')' : '' }));
     info.style.marginBottom = '6px'; sec.appendChild(info);
   }
   // `P10.7-f` — DES ÉTAPES NON LUES NE SONT NI UN RUNBOOK SANS PROGRESSION, NI UNE PROGRESSION NULLE. Le
@@ -1146,7 +1199,7 @@ async function renderWizardPanel(box, c, edit, hr) {
     const pick = document.createElement('div'); pick.style.cssText = 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px';
     // L'aveu PRÉCÈDE le geste : un bouton inerte rencontré avant sa raison se lit comme une panne.
     if (attacheNonLue) avouerLAttacheNonLue(pick);
-    if (rb.recommended) pick.appendChild(Object.assign(document.createElement('span'), { textContent: 'Recommandé : ' + rb.recommended.name, style: 'font-weight:600' }));
+    if (rb.recommended) pick.appendChild(Object.assign(document.createElement('span'), { textContent: faceDansLaLangue(MOTS_DES_TEXTES_DE_DOSSIER.recommande, { nom: rb.recommended.name }), style: 'font-weight:600' }));
     // Le sélecteur et « Attacher le runbook » ne se présentent PAS sur un catalogue non lu : ils diraient
     // que le choix offert est le choix qui existe. La phrase « aucun runbook disponible » ne s'écrit pas
     // davantage — c'est une absence établie, et rien ne l'a établie.
@@ -1173,7 +1226,7 @@ async function renderWizardPanel(box, c, edit, hr) {
   // exactement ce que la lecture ratée n'a PAS établi.
   if (hasRunbook) head.appendChild(Object.assign(document.createElement('span'), { textContent: steps.runbook.name, style: 'font-weight:600' }));
   else avouerLAttacheNonLue(head);
-  head.appendChild(muted((p.done + p.skipped) + '/' + p.total + ' traitées'));
+  head.appendChild(muted(faceDansLaLangue(MOTS_DES_TEXTES_DE_DOSSIER.traitees, { n: p.done + p.skipped, total: p.total })));
   // barre de progression (done + skipped comptent comme traité ; done en accent).
   const bar = document.createElement('div'); bar.style.cssText = 'flex:1;min-width:120px;height:8px;border-radius:6px;background:var(--bd);overflow:hidden;display:flex';
   const pctDone = p.total ? Math.round(100 * p.done / p.total) : 0;
@@ -1199,7 +1252,7 @@ function stepEl(c, s, edit) {
   const title = document.createElement('div'); title.textContent = s.title; title.style.cssText = 'font-weight:600;font-size:13px' + (s.status !== 'pending' ? ';opacity:.7' : '');
   body.appendChild(title);
   if (s.guidance) body.appendChild(Object.assign(document.createElement('div'), { textContent: s.guidance, style: 'font-size:12px;color:var(--mut)' }));
-  if (s.status !== 'pending' && s.actor) body.appendChild(muted((s.status === 'done' ? 'fait' : 'ignoré') + ' par ' + s.actor + (s.ts ? ' · ' + fmtTs(s.ts) : '') + (s.note ? ' — ' + s.note : '')));
+  if (s.status !== 'pending' && s.actor) body.appendChild(muted(faceDansLaLangue(s.status === 'done' ? MOTS_DES_TEXTES_DE_DOSSIER.etape_faite : MOTS_DES_TEXTES_DE_DOSSIER.etape_ignoree, { qui: s.actor, date: s.ts ? ' · ' + fmtTs(s.ts) : '', note: s.note ? ' — ' + s.note : '' })));
   // actions par step.
   const acts = document.createElement('div'); acts.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;margin-top:4px';
   if (s.step_kind === 'search' && s.search_soql) {
@@ -1209,7 +1262,7 @@ function stepEl(c, s, edit) {
     if (socIsAdmin()) {
       const rp = caseBtn('Réponse : ' + s.action_kind + ' ▸', 'ghost'); rp.title = 'Prépare l\'action via /api/actions (approbation + ledger)'; rp.onclick = () => prepareResponse(c, s); acts.appendChild(rp);
     } else {
-      acts.appendChild(muted('réponse ' + s.action_kind + ' — nécessite un admin (arm/approbation)'));
+      acts.appendChild(muted(faceDansLaLangue(MOTS_DES_TEXTES_DE_DOSSIER.reponse_reservee, { genre: s.action_kind })));
     }
   }
   if (edit && s.status === 'pending') {
@@ -1243,9 +1296,10 @@ function stepEl(c, s, edit) {
 // vide et page de passerelle compris, alors que la route ne sert jamais de succès sans `{attached}`.
 //
 // LE DISCRIMINANT EST LE STATUT, PAS UN MOT DU DÉMON. Sur ces deux routes, un cinq cent trois qui nomme sa
-// cause est TOUJOURS un refus qui n'a RIEN écrit — les deux branches du gestionnaire, et le refus d'accès
-// opérateur sans trace posé avant lui (`CAUSE_ACCES_OPERATEUR_SANS_TRACE`) ; le témoin 108 le relit dans
-// l'arbre du démon et REFUSE DE CONCLURE s'il cesse d'être vrai. La phrase dit donc ce qui reste en base,
+// cause est TOUJOURS un refus qui n'a RIEN écrit — les deux branches du gestionnaire, le refus d'accès
+// opérateur sans trace posé avant lui (`CAUSE_ACCES_OPERATEUR_SANS_TRACE`) et, depuis `P10.29-b`, la lecture
+// refusée du dossier que la déclaration établit avant d'écrire ; le témoin 108 le relit dans l'arbre du démon
+// et REFUSE DE CONCLURE s'il cesse d'être vrai (`P10.29-k`). La phrase dit donc ce qui reste en base,
 // et la cause servie suit, entière, dans les deux langues de la console.
 // =================================================================================================
 const MOTS_DES_REFUS_D_INCIDENT = {
@@ -1306,7 +1360,7 @@ async function incidentDeclare(c) {
 }
 
 async function incidentDemote(c) {
-  if (!await confirmModal('Rétrograder l\'incident #' + c.id + ' en case ordinaire ?', { okText: 'Rétrograder', danger: false })) return;
+  if (!await confirmModal(faceDansLaLangue(MOTS_DES_TEXTES_DE_DOSSIER.retrograder, { id: c.id }), { okText: 'Rétrograder', danger: false })) return;
   try { await apiSend('/cases/' + c.id + '/incident', 'POST', { demote: true }); }
   catch (e) { toast(phraseDuRefusDIncident('retrograder', e), 'bad', 9000); return; }
   toast('Incident rétrogradé', 'ok'); await refreshCaseDetail(c.id);
@@ -1350,7 +1404,7 @@ async function runStepSearch(c, s) {
     path += '?value=' + encodeURIComponent(r.value.trim());
   }
   let j;
-  try { j = await api(path); } catch (e) { toast('Recherche refusée : ' + ((e && e.message) || e), 'bad'); return; }
+  try { j = await api(path); } catch (e) { toast(phraseDuRefusDUneLecture(e, faceDansLaLangue(MOTS_DES_LECTURES_DE_DOSSIER.recherche_de_l_etape)), 'bad', 9000); return; }   // `P10.29-g`
   if (!j || !j.soql) { toast('GXQL indisponible', 'bad'); return; }
   location.hash = 'explore';
   if ($('#sql')) { $('#sql').value = j.soql; runQuery(); }
@@ -1433,8 +1487,8 @@ function avouerLaTraceManquante(cause) {
 // l'action est créée en 'pending' et reste soumise à approbation (console actions). La step peut être marquée
 // « faite » séparément (traçabilité). Le wizard ne fait que RÉFÉRENCER l'action.
 async function prepareResponse(c, s) {
-  const r = await modal({ title: 'Préparer la réponse : ' + s.action_kind, okText: 'Mettre en file', fields: [
-    { name: 'target', label: 'Cible (' + s.action_kind + ')', value: s.target || '' },
+  const r = await modal({ title: faceDansLaLangue(MOTS_DES_TEXTES_DE_DOSSIER.preparer_titre, { genre: s.action_kind }), okText: 'Mettre en file', fields: [
+    { name: 'target', label: faceDansLaLangue(MOTS_DES_TEXTES_DE_DOSSIER.cible_de_la_reponse, { genre: s.action_kind }), value: s.target || '' },
     { name: 'dry_run', label: 'Simulation (dry-run)', type: 'select', value: '1', options: [{ value: '1', label: 'Oui (dry-run)' }, { value: '0', label: 'Non (réel, requiert approbation)' }] },
   ] });
   if (!r || !(r.target || '').trim()) return;

@@ -7,7 +7,8 @@
 //! `rendre_apres_validation_du_garde`, `tracer_apres_coup` et `fermer_l_instantane_de_lecture` (`P10.25-g`, `P10.26-x`)
 //! servent les derniers sites qui avalaient leur `COMMIT` ; `signaler_une_transaction_ouverte_hors_de_tout_geste`
 //! (`P10.27-g`) est la sonde d'une transaction laissée ouverte ; `ouvrir_la_transaction_du_geste` (`P10.28-p`) est la
-//! forme d'une ROUTE qui ouvre sa transaction : `ouvrir_sa_transaction`, et un refus en 503 nommé.
+//! forme d'une ROUTE qui ouvre sa transaction : `ouvrir_sa_transaction`, et un refus en 503 nommé ;
+//! `ouvrir_le_garde_du_geste` (`P10.28-d`) est la même forme pour une route qui l'ouvre par le garde `Txn`.
 use crate::*;
 
 /// `P10.26-s` — UN GESTE N'ÉCRIT QUE DANS SA PROPRE TRANSACTION, OU IL N'ÉCRIT RIEN.
@@ -43,6 +44,19 @@ pub(crate) fn ouvrir_sa_transaction(conn: &Connection, journal: &str, geste: &st
 /// aucune validation, aucune annulation n'a lieu ici : la transaction d'un autre geste, s'il y en a une, reste la sienne.
 pub(crate) fn ouvrir_la_transaction_du_geste(conn: &Connection, journal: &str, geste: &str, cause: &'static str) -> Result<(), Response> {
     ouvrir_sa_transaction(conn, journal, geste).map_err(|_refus_deja_dit| err_json(StatusCode::SERVICE_UNAVAILABLE, cause))
+}
+
+/// `P10.28-d` — LA MÊME FORME POUR UNE ROUTE QUI OUVRE SA TRANSACTION PAR LE GARDE `Txn` (les runbooks, l'envoi d'un
+/// puits du registre) : un `BEGIN` refusé est dit au journal par `dire_la_transaction_non_ouverte` — verrou passager ou
+/// transaction d'un autre geste qui bloque l'écrivain —, et rendu en 503 qui porte la cause nommée du geste. La forme
+/// qu'elle remplace (`match Txn::begin(&conn) { Ok(t) => t, Err(_) => return server_err("verrou base indisponible") }`)
+/// rendait un 500 générique et taisait les deux causes. Aucune écriture n'a lieu : le garde n'existe que si le `BEGIN` a
+/// été pris, et c'est lui qui annule à sa destruction.
+pub(crate) fn ouvrir_le_garde_du_geste<'c>(conn: &'c Connection, journal: &str, geste: &str, cause: &'static str) -> Result<Txn<'c>, Response> {
+    Txn::begin(conn).map_err(|refus| {
+        dire_la_transaction_non_ouverte(conn, journal, geste, &refus);
+        err_json(StatusCode::SERVICE_UNAVAILABLE, cause)
+    })
 }
 
 /// `P10.26-s` — LA PHRASE D'UN `BEGIN` REFUSÉ, une seule, pour `ouvrir_sa_transaction` et pour les gestes qui ouvrent

@@ -186,7 +186,13 @@ pub(crate) const AUTH_FAIL_CAP: usize = 4096;                        // borne an
 /// `net_ban` devenaient TROIS écritures d'UNE machine. `ssrf_norm_ip` replie ; l'`and_then` ne perd
 /// jamais un pair présent (`IpAddr::to_string()` se réanalyse toujours).
 pub(crate) fn client_ip(req: &Request) -> String {
-    req.extensions()
+    ip_du_pair(req.extensions())
+}
+
+/// `P10.28-v` — LE PAIR TCP LU DANS LES EXTENSIONS D'UNE REQUÊTE : la même lecture que `client_ip` (déplacée telle
+/// quelle), pour les routes de fédération (OIDC, SAML) qui reçoivent les extensions et non la requête.
+pub(crate) fn ip_du_pair(extensions: &axum::http::Extensions) -> String {
+    extensions
         .get::<ConnectInfo<std::net::SocketAddr>>()
         .and_then(|c| crate::ledger::ssrf_norm_ip(&c.0.ip().to_string()))
         .map(|i| i.to_string())
@@ -992,9 +998,38 @@ impl RefusDeLAnnuaire {
         if let Self::NonVerifie(nom, cause) = self {
             eprintln!("[auth] WARN identité de l'annuaire '{nom}' refusée, nom non vérifié : {cause}");
         }
-        tracer_le_refus_de_l_annuaire(st, self, ip);
+        tracer_le_refus_de_l_annuaire(st, self, ip, PorteDeLAnnuaire::EnTetes);
         let (statut, cause) = self.statut_et_cause();
         err_json(statut, cause)
+    }
+}
+
+/// `P10.28-v` — LA PORTE PAR LAQUELLE UN ANNUAIRE A PRÉSENTÉ LE NOM REFUSÉ. Le chemin d'en-têtes SSO traçait ses
+/// refus (`P10.25-d`) ; la fédération (OIDC, SAML, LDAP), qui applique la MÊME règle depuis `P10.25-t`, ne traçait rien
+/// (MESURÉ le 2026-09-25, témoins `bdrn_` : `federer_le_nom` refusé sur un compte à mot de passe — aucun maillon, aucun
+/// événement). La porte entre dans la clé de la fenêtre (deux portes, deux faits) et, pour la fédération seulement, dans
+/// le message et les champs de la trace : celle du chemin d'en-têtes est inchangée.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum PorteDeLAnnuaire {
+    /// Le chemin d'en-têtes SSO (`x-authentik-*`), jugé par `auth_guard`.
+    EnTetes,
+    /// La fédération OpenID Connect (`oidc_callback`).
+    Oidc,
+    /// La fédération SAML 2.0 (`saml_acs`).
+    Saml,
+    /// La fédération LDAP (`ldap_login_post`).
+    Ldap,
+}
+
+impl PorteDeLAnnuaire {
+    /// Code court, stable, porté par la trace de la fédération (jamais une phrase).
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::EnTetes => "en_tetes",
+            Self::Oidc => "federation_oidc",
+            Self::Saml => "federation_saml",
+            Self::Ldap => "federation_ldap",
+        }
     }
 }
 
@@ -1097,26 +1132,38 @@ pub(crate) fn juger_le_nom_presente_par_l_annuaire(st: &AppState, nom: &str) -> 
     })
 }
 
-/// `P10.25-d` — (base, nom, cause) -> instant de la dernière trace ÉCRITE. Borné comme le registre de débounce de
-/// l'inventaire des accès.
-static REFUS_DE_L_ANNUAIRE_DERNIERE_TRACE: std::sync::OnceLock<Mutex<HashMap<(String, String, &'static str), i64>>> =
+/// `P10.25-d`, `P10.28-v` — (base, nom, cause, porte) -> instant de la dernière trace ÉCRITE. Borné comme le registre de
+/// débounce de l'inventaire des accès.
+type CleDUnRefusDeLAnnuaire = (String, String, &'static str, PorteDeLAnnuaire);
+static REFUS_DE_L_ANNUAIRE_DERNIERE_TRACE: std::sync::OnceLock<Mutex<HashMap<CleDUnRefusDeLAnnuaire, i64>>> =
     std::sync::OnceLock::new();
 
 /// `P10.25-d` — un maillon au registre et un événement `plume-auth` (sévérité quatre), une fois par fenêtre. Le nom,
-/// venu d'un en-tête, est borné comme à l'inventaire des accès ; ni les groupes ni aucun secret n'y entrent.
-fn tracer_le_refus_de_l_annuaire(st: &AppState, refus: &RefusDeLAnnuaire, ip: &str) {
+/// venu d'un en-tête ou d'une assertion, est borné comme à l'inventaire des accès ; ni les groupes ni aucun secret n'y
+/// entrent. `P10.28-v` — la fédération l'appelle aussi (`RefusDeLaFederation::servir`), SANS tenir la connexion
+/// d'écriture (la trace la prend ici).
+pub(crate) fn tracer_le_refus_de_l_annuaire(st: &AppState, refus: &RefusDeLAnnuaire, ip: &str, porte: PorteDeLAnnuaire) {
     let nom: String = refus.nom().chars().take(crate::acces_observe::ACCES_OBSERVE_NOM_MAX).collect();
-    let cle = (st.db_path.to_string(), nom.clone(), refus.code());
+    let cle = (st.db_path.to_string(), nom.clone(), refus.code(), porte);
     let maintenant = now();
     let registre = REFUS_DE_L_ANNUAIRE_DERNIERE_TRACE.get_or_init(|| Mutex::new(HashMap::new()));
     if registre.lock().get(&cle).is_some_and(|&t| maintenant - t < REFUS_DE_L_ANNUAIRE_FENETRE_S) {
         return;
     }
-    let message = format!("identité de l'annuaire '{nom}' refusée ({}) depuis {ip}", refus.code());
+    let (message, champs) = match porte {
+        PorteDeLAnnuaire::EnTetes => (
+            format!("identité de l'annuaire '{nom}' refusée ({}) depuis {ip}", refus.code()),
+            json!({ "action": "annuaire_refuse", "username": nom, "cause": refus.code(), "src_ip": ip }),
+        ),
+        _ => (
+            format!("identité de l'annuaire '{nom}' refusée ({}) à la fédération ({}) depuis {ip}", refus.code(), porte.code()),
+            json!({ "action": "annuaire_refuse", "username": nom, "cause": refus.code(), "src_ip": ip, "porte": porte.code() }),
+        ),
+    };
     let (maillon, ecriture) = {
         let conn = st.db.lock();
         let maillon = ledger_append(&conn, "auth.annuaire.refuse", &message);
-        let champs = json!({ "action": "annuaire_refuse", "username": nom, "cause": refus.code(), "src_ip": ip }).to_string();
+        let champs = champs.to_string();
         let ipc: Option<&str> = if ip.is_empty() { None } else { Some(ip) };
         let ecriture = conn.execute(
             "INSERT INTO event(ts,source,category,severity,message,host,src_ip,fields,origin) \

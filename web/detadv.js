@@ -6,9 +6,9 @@
 //   POST /api/correlations/{id}/test   -> backtest {ok,matched,entities:[{entity,detail}]}
 //   GET  /api/baselines / POST … /{id} / DELETE … / POST …/{id}/test (aperçu {ok,bucket,observed,anomalies,hits})
 // SÉCU UI : tout en textContent/esc (anti-XSS). Mutations via apiSend (CSRF auto).
-import { $, api, apiSend, effacerLeRefusDUnGeste, esc, fetchInto, fmtTs, humanAge, muted, pagedList, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, sev, toast, modal, confirmModal } from './core.js';
+import { $, api, apiSend, effacerLeRefusDUnGeste, esc, faceDansLaLangue, fetchInto, fmtTs, humanAge, muted, pagedList, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, sev, toast, modal, confirmModal, ilYA } from './core.js';
 // P11.1-e : où arrive ce qu'une corrélation / une baseline produit (Alertes, ou Risque si risk_score > 0).
-import { announceCreated, takePendingNote, detectionDestination, destinationSentence } from './producer_ui.js';
+import { announceCreated, takePendingNote, detectionDestination, destinationSentence, suiteDUnProducteurCree } from './producer_ui.js';
 
 // ---- helpers ----
 // `P10.27-d` — LES PUITS DES GESTES DE LA DÉTECTION AVANCÉE, un par liste (corrélations, lignes de base), posés juste
@@ -63,7 +63,7 @@ async function loadCorrelations() {
       { key: 'severity', label: 'Sév.', sortable: true, sortVal: r => r.severity || 0, render: r => { const s = document.createElement('span'); s.className = 'sev'; s.textContent = sev(r.severity); return s; } },
       { key: 'mode', label: 'Mode', render: r => (r.risk_score > 0 ? 'RBA +' + r.risk_score : 'alerte') },
       { key: 'mitre', label: 'MITRE', sortable: true, sortVal: r => r.mitre || '', render: r => { const c = document.createElement('code'); c.textContent = r.mitre || '—'; return c; } },
-      { key: 'last_fired', label: 'Dernier tir', sortable: true, sortVal: r => r.last_fired || 0, render: r => { const s = document.createElement('span'); s.textContent = r.last_fired ? 'il y a ' + humanAge(nowS - r.last_fired) : '—'; if (r.last_fired) s.title = fmtTs(r.last_fired); return s; } },
+      { key: 'last_fired', label: 'Dernier tir', sortable: true, sortVal: r => r.last_fired || 0, render: r => { const s = document.createElement('span'); s.textContent = r.last_fired ? ilYA(nowS - r.last_fired) : '—'; if (r.last_fired) s.title = fmtTs(r.last_fired); return s; } },
       { key: 'act', label: '', render: r => actionsCell(() => testCorrelation(r), () => editCorrelation(r), () => deleteCorrelation(r)) },
     ],
     emptyText: 'aucune corrélation définie — crée une séquence (ex. « échec auth ×N puis succès même IP ») pour lever des finding-groups.',
@@ -98,30 +98,44 @@ function corrPayload(v) {
 }
 async function editCorrelation(c) {
   const isNew = !c;
-  const v = await modal({ title: isNew ? 'Nouvelle corrélation' : 'Éditer la corrélation', okText: isNew ? 'Créer' : 'Enregistrer', message: destinationSentence(detectionDestination(c && c.risk_score)) + ' Un score RBA > 0 la bascule vers Risque.', fields: corrFields(c) });
+  const v = await modal({ title: isNew ? 'Nouvelle corrélation' : 'Éditer la corrélation', okText: isNew ? 'Créer' : 'Enregistrer', message: faceDansLaLangue(MOTS_DES_NOTES_DE_DETECTION_AVANCEE.bascule_vers_risque, { destination: destinationSentence(detectionDestination(c && c.risk_score)) }), fields: corrFields(c) });
   if (!v) return;
   const puits = puitsDesCorrelations(); effacerLeRefusDUnGeste(puits);
   try {
     const payload = corrPayload(v);
     await apiSend(isNew ? '/correlations' : '/correlations/' + c.id, 'POST', payload);
-    announceCreated('correlations', detectionDestination(payload.risk_score), payload.name, payload.enabled ? 'première évaluation dans ' + payload.interval_s + ' s' : 'désactivée : cochez « Activée » pour qu\'elle tourne');
+    announceCreated('correlations', detectionDestination(payload.risk_score), payload.name, suiteDUnProducteurCree(payload.enabled, payload.interval_s, MOTS_DES_NOTES_DE_DETECTION_AVANCEE.desactivee));
     loadCorrelations();
   } catch (e) { peindreLeRefusDUnGeste(puits, e); }
 }
 async function deleteCorrelation(c) {
-  if (!(await confirmModal('Supprimer la corrélation « ' + c.name + ' » ?', { okText: 'Supprimer', danger: true }))) return;
+  if (!(await confirmModal(faceDansLaLangue({ fr: 'Supprimer la corrélation « {nom} » ?', en: 'Delete the correlation “{nom}”?' }, { nom: c.name }), { okText: 'Supprimer', danger: true }))) return;
   const puits = puitsDesCorrelations(); effacerLeRefusDUnGeste(puits);
   try { await apiSend('/correlations/' + c.id, 'DELETE'); toast('corrélation supprimée', 'ok'); loadCorrelations(); }
   catch (e) { peindreLeRefusDUnGeste(puits, e); }
 }
+// `P10.29-f` — L'ESSAI D'UNE CORRÉLATION OU D'UNE LIGNE DE BASE QUE LE DÉMON REFUSE EN DEUX CENTS, DANS LES DEUX LANGUES.
+// MESURÉ AVANT CE LOT (témoin 120f) : « échec : <cause> » (ou « échec : inconnu » sur un corps vide), français sous
+// `LANG='en'`, et « échec » ne disait pas qu'un essai n'écrit rien. La face dit ce qui est vrai : l'essai n'a pas eu
+// lieu, et le démon en nomme la cause ; un corps vide n'établit aucun résultat.
+const MOTS_DES_ESSAIS_DE_DETECTION_AVANCEE = {
+  refus_servi: { fr: "Essai NON FAIT : le démon a refusé cet essai, qui n'écrit rien, et en nomme la cause — « {cause} »", en: 'Test NOT RUN: the daemon refused this test, which writes nothing, and names the cause — “{cause}”' },
+  reponse_vide: { fr: "Essai NON abouti : la réponse du démon ne porte aucun résultat. Un essai n'écrit rien, il peut être relancé.", en: 'Test NOT completed: the daemon answer carries no result. A test writes nothing, it can be run again.' },
+};
+// `P10.29-c` — la phrase d'un score de risque et la suite d'une création, dans les deux langues (témoin 120c).
+const MOTS_DES_NOTES_DE_DETECTION_AVANCEE = {
+  bascule_vers_risque: { fr: '{destination} Un score RBA > 0 la bascule vers Risque.', en: '{destination} An RBA score > 0 moves it to Risk.' },
+  desactivee: { fr: "désactivée : cochez « Activée » pour qu'elle tourne", en: 'disabled: tick “Enabled” for it to run' },
+};
+const avisDUnEssaiNonFait = (cause) => faceDansLaLangue(cause ? MOTS_DES_ESSAIS_DE_DETECTION_AVANCEE.refus_servi : MOTS_DES_ESSAIS_DE_DETECTION_AVANCEE.reponse_vide, { cause });
 async function testCorrelation(c) {
   const puits = puitsDesCorrelations(); effacerLeRefusDUnGeste(puits);
   let d;
   try { d = await apiSend('/correlations/' + c.id + '/test', 'POST', {}); } catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
-  if (!d || d.error) { toast('échec : ' + ((d && d.error) || 'inconnu'), 'err', 6000); return; }
+  if (!d || d.error) { toast(avisDUnEssaiNonFait(d && d.error != null ? String(d.error).trim() : ''), 'err', 6000); return; }
   const ents = Array.isArray(d.entities) ? d.entities : [];
   const body = document.createElement('div');
-  const h = document.createElement('p'); h.textContent = d.matched + ' entité(s) complètent la séquence sur la fenêtre courante.'; body.appendChild(h);
+  const h = document.createElement('p'); h.textContent = faceDansLaLangue({ fr: '{n} entité(s) complètent la séquence sur la fenêtre courante.', en: '{n} entity(ies) complete the sequence over the current window.' }, { n: d.matched }); body.appendChild(h);
   const list = document.createElement('div');
   pagedList(list, { mode: 'client', pageSize: 15, rows: ents, columns: [
     { key: 'entity', label: 'Entité', render: r => { const c2 = document.createElement('code'); c2.textContent = r.entity || ''; return c2; } },
@@ -198,18 +212,18 @@ function basePayload(v) {
 }
 async function editBaseline(b) {
   const isNew = !b;
-  const v = await modal({ title: isNew ? 'Nouvelle baseline' : 'Éditer la baseline', okText: isNew ? 'Créer' : 'Enregistrer', message: destinationSentence(detectionDestination(b && b.risk_score)) + ' Un score RBA > 0 la bascule vers Risque.', fields: baseFields(b) });
+  const v = await modal({ title: isNew ? 'Nouvelle baseline' : 'Éditer la baseline', okText: isNew ? 'Créer' : 'Enregistrer', message: faceDansLaLangue(MOTS_DES_NOTES_DE_DETECTION_AVANCEE.bascule_vers_risque, { destination: destinationSentence(detectionDestination(b && b.risk_score)) }), fields: baseFields(b) });
   if (!v) return;
   const puits = puitsDesLignesDeBase(); effacerLeRefusDUnGeste(puits);
   try {
     const payload = basePayload(v);
     await apiSend(isNew ? '/baselines' : '/baselines/' + b.id, 'POST', payload);
-    announceCreated('baselines', detectionDestination(payload.risk_score), payload.name, payload.enabled ? 'première évaluation dans ' + payload.interval_s + ' s' : 'désactivée : cochez « Activée » pour qu\'elle tourne');
+    announceCreated('baselines', detectionDestination(payload.risk_score), payload.name, suiteDUnProducteurCree(payload.enabled, payload.interval_s, MOTS_DES_NOTES_DE_DETECTION_AVANCEE.desactivee));
     loadBaselines();
   } catch (e) { peindreLeRefusDUnGeste(puits, e); }
 }
 async function deleteBaseline(b) {
-  if (!(await confirmModal('Supprimer la baseline « ' + b.name + ' » ?', { okText: 'Supprimer', danger: true }))) return;
+  if (!(await confirmModal(faceDansLaLangue({ fr: 'Supprimer la baseline « {nom} » ?', en: 'Delete the baseline “{nom}”?' }, { nom: b.name }), { okText: 'Supprimer', danger: true }))) return;
   const puits = puitsDesLignesDeBase(); effacerLeRefusDUnGeste(puits);
   try { await apiSend('/baselines/' + b.id, 'DELETE'); toast('baseline supprimée', 'ok'); loadBaselines(); }
   catch (e) { peindreLeRefusDUnGeste(puits, e); }
@@ -244,10 +258,10 @@ async function testBaseline(b) {
     showResultModal('Aperçu baseline — ' + b.name, boite);
     return;
   }
-  if (!d || causeServie) { toast('échec : ' + (causeServie || 'inconnu'), 'err', 6000); return; }
+  if (!d || causeServie) { toast(avisDUnEssaiNonFait(causeServie), 'err', 6000); return; }
   const hits = Array.isArray(d.hits) ? d.hits : [];
   const body = document.createElement('div');
-  const h = document.createElement('p'); h.textContent = 'Bucket ' + d.bucket + ' — ' + d.observed + ' entité(s) observée(s), ' + d.anomalies + ' anomalie(s) (aucune écriture).'; body.appendChild(h);
+  const h = document.createElement('p'); h.textContent = faceDansLaLangue({ fr: 'Bucket {bucket} — {n} entité(s) observée(s), {a} anomalie(s) (aucune écriture).', en: 'Bucket {bucket} — {n} entity(ies) observed, {a} anomaly(ies) (nothing written).' }, { bucket: d.bucket, n: d.observed, a: d.anomalies }); body.appendChild(h);
   const list = document.createElement('div');
   pagedList(list, { mode: 'client', pageSize: 15, rows: hits, sort: { key: 'z', dir: -1 }, columns: [
     { key: 'entity', label: 'Entité', render: r => { const c = document.createElement('code'); c.textContent = r.entity || ''; return c; } },

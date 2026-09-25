@@ -7,7 +7,7 @@
 //! fields INCHANGÉS -> ligne stockée BYTE-IDENTIQUE. L'enrichissement ENRICHIT (ajoute `fields.threat_intel`
 //! + `fields.ti_match=1`), il NE SUPPRIME JAMAIS un event (enrich-not-suppress, comme le CIM/dparsers).
 use crate::*;
-use crate::handlers::transaction_validee::rendre_apres_validation;
+use crate::handlers::transaction_validee::{ouvrir_la_transaction_du_geste, rendre_apres_validation};
 
 // ============================================================================================
 // CACHE DE MATCH EN MÉMOIRE (keyé par db_path — MT-KEY, comme PARSERS). value NORMALISÉE ->
@@ -584,10 +584,20 @@ pub(crate) const CAUSE_INDICATEURS_NON_AJOUTES: &str = "INDICATEURS NON AJOUTÉS
      transaction (COMMIT refusé) et l'a annulée — aucun indicateur n'est écrit ni chargé pour la correspondance, et \
      aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou \
      verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_INDICATEURS_NON_AJOUTES_TRANSACTION_NON_OUVERTE: &str = "INDICATEURS NON AJOUTÉS : la base \
+     n'a pas pris la transaction de l'ajout (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante \
+     sur l'écrivain) — RIEN n'est écrit : aucun indicateur n'est écrit ni chargé pour la correspondance, et aucune \
+     trace n'est écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 /// `P10.25-g` — import stix non écrit : le `COMMIT` de ce geste refusé.
 pub(crate) const CAUSE_IMPORT_STIX_NON_ECRIT: &str = "IMPORT STIX NON ÉCRIT : la base n'a pas validé la transaction \
      (COMMIT refusé) et l'a annulée — aucun indicateur n'est écrit ni chargé pour la correspondance, et aucune trace \
      n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_IMPORT_STIX_NON_ECRIT_TRANSACTION_NON_OUVERTE: &str = "IMPORT STIX NON ÉCRIT : la base n'a \
+     pas pris la transaction de l'import (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante sur \
+     l'écrivain) — RIEN n'est écrit : aucun indicateur n'est écrit ni chargé pour la correspondance, et aucune trace \
+     n'est écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 
 
 /// POST /api/threat-intel/iocs — ajout MANUEL / bulk d'IOC (admin). Corps : un objet unique
@@ -614,8 +624,8 @@ pub(crate) async fn ioc_add(State(st): State<AppState>, Extension(au): Extension
     }
     let now_ts = now();
     crate::req_conn!(st, au, conn);
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "threat-intel", "ajout d'indicateurs", CAUSE_INDICATEURS_NON_AJOUTES_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let mut added = 0i64;
     let mut skipped: Vec<Value> = Vec::new();
@@ -690,8 +700,8 @@ pub(crate) async fn stix_import(State(st): State<AppState>, Extension(au): Exten
     }
     let now_ts = now();
     crate::req_conn!(st, au, conn);
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "threat-intel", "import STIX", CAUSE_IMPORT_STIX_NON_ECRIT_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let mut imported = 0i64;
     let outcome: rusqlite::Result<()> = (|| {

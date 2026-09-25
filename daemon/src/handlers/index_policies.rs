@@ -11,7 +11,7 @@
 //! Les STATS par index (compte / plus ancien / estimation de taille) sont lues depuis `event_rollup`
 //! (pré-agrégé, cheap) — JAMAIS un scan de `event` (doctrine « jamais scanner event par requête au volume »).
 use crate::*;
-use crate::handlers::transaction_validee::rendre_apres_validation;
+use crate::handlers::transaction_validee::{ouvrir_la_transaction_du_geste, rendre_apres_validation};
 
 /// Estimation d'octets par event pour la taille par index (message+fields+colonnes+index+overhead SQLite).
 /// APPROXIMATIVE et DISPLAY-only (l'UI affiche « ~N ») ; le plafond `max_bytes` réel se mesure ligne-à-ligne
@@ -170,11 +170,22 @@ pub(crate) const CAUSE_POLITIQUE_D_INDEX_NON_CREEE: &str = "POLITIQUE D'INDEX NO
      transaction (COMMIT refusé) et l'a annulée — l'index garde la rétention globale, aucune purge ne suit une \
      politique qui n'existe pas, et aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en \
      lecture seule, pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_POLITIQUE_D_INDEX_NON_CREEE_TRANSACTION_NON_OUVERTE: &str = "POLITIQUE D'INDEX NON CRÉÉE : la \
+     base n'a pas pris la transaction de la création (BEGIN refusé : verrou tenu, ou transaction d'un autre geste \
+     pendante sur l'écrivain) — RIEN n'est écrit : l'index garde la rétention globale, aucune purge ne suit une \
+     politique qui n'existe pas, et aucune trace n'est écrite. Réessayez ; s'il est refusé encore, l'écrivain est \
+     occupé ou bloqué.";
 /// `P10.25-g` — politique d'index inchangée : le `COMMIT` de ce geste refusé.
 pub(crate) const CAUSE_POLITIQUE_D_INDEX_INCHANGEE: &str = "POLITIQUE D'INDEX INCHANGÉE : la base n'a pas validé la \
      transaction (COMMIT refusé) et l'a annulée — la rétention et les plafonds d'avant s'appliquent toujours à la \
      purge, et aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou \
      verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_POLITIQUE_D_INDEX_INCHANGEE_TRANSACTION_NON_OUVERTE: &str = "POLITIQUE D'INDEX INCHANGÉE : la \
+     base n'a pas pris la transaction de la modification (BEGIN refusé : verrou tenu, ou transaction d'un autre \
+     geste pendante sur l'écrivain) — RIEN n'est écrit : la rétention et les plafonds d'avant s'appliquent toujours \
+     à la purge, et aucune trace n'est écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 
 
 /// POST /api/index-policies — crée une policy d'index (admin-only). Valide + clampe AVANT insert (fail-closed).
@@ -197,8 +208,8 @@ pub(crate) async fn index_policy_create(State(st): State<AppState>, Extension(au
     if conn.query_row("SELECT 1 FROM index_policy WHERE name=?1", params![name], |r| r.get::<_, i64>(0)).is_ok() {
         return err_json(StatusCode::CONFLICT, format!("un index nommé '{name}' existe déjà"));
     }
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "index-policies", &format!("création de la politique d'index '{name}'"), CAUSE_POLITIQUE_D_INDEX_NON_CREEE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<i64> = (|| {
         conn.execute(
@@ -250,8 +261,8 @@ pub(crate) async fn index_policy_update(State(st): State<AppState>, Extension(au
         Ok(t) => t,
         Err(resp) => return resp,
     };
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "index-policies", &format!("modification de la politique d'index #{id}"), CAUSE_POLITIQUE_D_INDEX_INCHANGEE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<()> = (|| {
         conn.execute(

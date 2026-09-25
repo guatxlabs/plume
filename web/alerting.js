@@ -1,7 +1,7 @@
 // alerting.js — #53 UI : politiques de notification (arbre de routage) + silences (mute temporisé).
 // Admin/éditeur : create/delete ; viewer : lecture seule. Les secrets des canaux ne transitent JAMAIS ici
 // (les politiques ne référencent les canaux QUE par id). Miroir de style des autres modules (connectors.js).
-import { $, api, apiSend, confirmModal, effacerLeRefusDUnGeste, fetchInto, fmtTs, ic, muted, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, sev, toast } from './core.js';
+import { $, api, apiSend, confirmModal, effacerLeRefusDUnGeste, fetchInto, fmtTs, ic, muted, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, sev, toast, faceDansLaLangue } from './core.js';
 
 const MATCHER_FIELDS = ['severity', 'mitre', 'host', 'source', 'env', 'tag'];
 
@@ -86,11 +86,11 @@ async function loadPolicies() {
     const row = document.createElement('div'); row.className = 'rulerow';
     const desc = document.createElement('div'); desc.className = 'rulemain';
     const m = document.createElement('code'); m.className = 'rulecond'; m.textContent = matchersText(p.matchers);
-    const arrow = document.createElement('span'); arrow.textContent = ' → canaux [' + (p.contact_points || []).join(', ') + ']' + (p.continue ? ' + continue' : '') + (p.enabled ? '' : ' (désactivée)');
+    const arrow = document.createElement('span'); arrow.textContent = faceDansLaLangue({ fr: ' → canaux [{liste}]{suite}{etat}', en: ' → channels [{liste}]{suite}{etat}' }, { liste: (p.contact_points || []).join(', '), suite: p.continue ? ' + continue' : '', etat: p.enabled ? '' : faceDansLaLangue({ fr: ' (désactivée)', en: ' (disabled)' }) });   // `P10.29-c`
     desc.append(m, arrow);
     const del = document.createElement('button'); del.type = 'button'; del.className = 'btn btn-sm'; del.innerHTML = ic('x'); del.title = 'Supprimer la route'; // P11.4-b : classe partagée
     del.onclick = async () => {
-      if (!await confirmModal('Supprimer la politique #' + p.id + ' ?', { danger: true })) return;
+      if (!await confirmModal(faceDansLaLangue({ fr: 'Supprimer la politique #{id} ?', en: 'Delete policy #{id}?' }, { id: p.id }), { danger: true })) return;
       const puits = puitsDesPolitiques(); effacerLeRefusDUnGeste(puits);
       try { await apiSend('/notification-policies/' + p.id, 'DELETE'); toast('route supprimée', 'ok'); loadPolicies(); } catch (e) { peindreLeRefusDUnGeste(puits, e); }
     };
@@ -128,12 +128,12 @@ async function loadSilences() {
     const desc = document.createElement('div'); desc.className = 'rulemain';
     const m = document.createElement('code'); m.className = 'rulecond'; m.textContent = matchersText(s.matchers);
     const meta = document.createElement('span');
-    meta.textContent = (s.active ? ' actif' : ' expiré') + ' · expire ' + fmtTs(s.expires_at) + (s.reason ? ' · ' + s.reason : '') + (s.created_by ? ' · par ' + s.created_by : '');
+    meta.textContent = faceDansLaLangue({ fr: '{etat} · expire {date}{raison}{par}', en: '{etat} · expires {date}{raison}{par}' }, { etat: s.active ? faceDansLaLangue({ fr: ' actif', en: ' active' }) : faceDansLaLangue({ fr: ' expiré', en: ' expired' }), date: fmtTs(s.expires_at), raison: s.reason ? ' · ' + s.reason : '', par: s.created_by ? faceDansLaLangue({ fr: ' · par {qui}', en: ' · by {qui}' }, { qui: s.created_by }) : '' });
     meta.className = s.active ? '' : 'muted';
     desc.append(m, meta);
     const del = document.createElement('button'); del.type = 'button'; del.className = 'btn btn-sm'; del.innerHTML = ic('x'); del.title = 'Lever le silence'; // P11.4-b : classe partagée
     del.onclick = async () => {
-      if (!await confirmModal('Lever le silence #' + s.id + ' ?', { danger: true })) return;
+      if (!await confirmModal(faceDansLaLangue({ fr: 'Lever le silence #{id} ?', en: 'Lift silence #{id}?' }, { id: s.id }), { danger: true })) return;
       const puits = puitsDesSilences(); effacerLeRefusDUnGeste(puits);
       try { await apiSend('/silences/' + s.id, 'DELETE'); toast('silence levé', 'ok'); loadSilences(); } catch (e) { peindreLeRefusDUnGeste(puits, e); }
     };

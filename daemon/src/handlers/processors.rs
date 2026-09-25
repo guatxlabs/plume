@@ -5,7 +5,7 @@
 //! le registre chaud de CE db_path. La LISTE renvoie les règles + les compteurs live (dropped/masked/
 //! routed/sampled_out) : non-silence, la donnée non-indexée est VISIBLE.
 use crate::*;
-use crate::handlers::transaction_validee::rendre_apres_validation;
+use crate::handlers::transaction_validee::{ouvrir_la_transaction_du_geste, rendre_apres_validation};
 
 /// GET /api/processors — règles ordonnées + compteurs live + erreurs de reload (admin-only).
 pub(crate) async fn processors_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
@@ -57,10 +57,20 @@ pub(crate) const CAUSE_REGLE_D_INGESTION_NON_CREEE: &str = "RÈGLE D'INGESTION N
      transaction (COMMIT refusé) et l'a annulée — aucune règle n'est écrite ni appliquée aux lots entrants, et \
      aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou \
      verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_REGLE_D_INGESTION_NON_CREEE_TRANSACTION_NON_OUVERTE: &str = "RÈGLE D'INGESTION NON CRÉÉE : la \
+     base n'a pas pris la transaction de la création (BEGIN refusé : verrou tenu, ou transaction d'un autre geste \
+     pendante sur l'écrivain) — RIEN n'est écrit : aucune règle n'est écrite ni appliquée aux lots entrants, et \
+     aucune trace n'est écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 /// `P10.25-g` — règle d'ingestion inchangée : le `COMMIT` de ce geste refusé.
 pub(crate) const CAUSE_REGLE_D_INGESTION_INCHANGEE: &str = "RÈGLE D'INGESTION INCHANGÉE : la base n'a pas validé la \
      transaction (COMMIT refusé) et l'a annulée — l'ingestion applique toujours la règle d'avant, et aucune trace \
      n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_REGLE_D_INGESTION_INCHANGEE_TRANSACTION_NON_OUVERTE: &str = "RÈGLE D'INGESTION INCHANGÉE : la \
+     base n'a pas pris la transaction de la modification (BEGIN refusé : verrou tenu, ou transaction d'un autre \
+     geste pendante sur l'écrivain) — RIEN n'est écrit : l'ingestion applique toujours la règle d'avant, et aucune \
+     trace n'est écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 
 
 /// POST /api/processors — crée une règle (admin-only). Valide AVANT insert (fail-closed).
@@ -77,8 +87,8 @@ pub(crate) async fn processor_create(State(st): State<AppState>, Extension(au): 
         return resp;
     }
     crate::req_conn!(st, au, conn);
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "processors", "création d'une règle d'ingestion", CAUSE_REGLE_D_INGESTION_NON_CREEE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<i64> = (|| {
         conn.execute(
@@ -128,8 +138,8 @@ pub(crate) async fn processor_update(State(st): State<AppState>, Extension(au): 
     if let Err(resp) = validate_rule(&mf, &mo, &mv, &act, &arg) {
         return resp;
     }
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "processors", &format!("modification de la règle d'ingestion #{id}"), CAUSE_REGLE_D_INGESTION_INCHANGEE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<()> = (|| {
         if let Some(v) = b.get("name").and_then(|x| x.as_str()) { conn.execute("UPDATE ingest_rule SET name=?1 WHERE id=?2", params![v, id])?; }

@@ -29,7 +29,7 @@
 // pas les copier (un panneau de bibliothèque est édité une fois et à jour partout), et le sélecteur qui
 // les porte dit cette relation-là. Les mélanger dans une même liste ferait croire à un même geste.
 // Il n'écrit rien : il rend un choix, l'appelant compose.
-import { api, modal, muted, pagedList } from './core.js';
+import { api, modal, muted, pagedList, phraseDuRefusDuDemon } from './core.js';
 import { champDeRecherche, filtrerParRecherche, resumeDeRecherche, texteCherchable } from './recherche_de_liste.js';
 import { fetchSaved } from './savedqueries.js';
 
@@ -92,7 +92,9 @@ const STOCKS = [
 async function inventaireComposable() {
   const resultats = await Promise.all(STOCKS.map(async s => {
     try { return { stock: s, items: await s.charger() }; }
-    catch (e) { return { stock: s, items: null, err: (e && e.message) || String(e) }; }
+    // `P10.29-g` — la cause d'un stock non lu est la phrase du démon (`phraseDuRefusDuDemon`), plus le message composé :
+    // mesuré avant ce lot (témoin 120g), un refus y collait « 403 {"error":…} », le JSON brut du refus.
+    catch (e) { return { stock: s, items: null, err: phraseDuRefusDuDemon(e) }; }
   }));
   const items = [];
   const absents = [];

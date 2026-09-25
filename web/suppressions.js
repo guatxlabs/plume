@@ -1,7 +1,7 @@
 // suppressions.js — panneau « Suppressions & whitelists actives » (administration). Extrait de retention.js
 // (déplacement pur du panneau), puis complété : les SILENCES d'alertes y reçoivent les trois gestes de
 // l'administrateur (créer, modifier, supprimer), chacun audité côté démon.
-import { $, muted, api, apiSend, effacerLeRefusDUnGeste, fetchInto, fmtTs, humanAge, confirmWithConsequence, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, toast, modal, pagedList, ic, LANG } from './core.js';
+import { $, muted, api, apiSend, effacerLeRefusDUnGeste, faceDansLaLangue, fetchInto, fmtTs, confirmWithConsequence, noeudDuRefusDUneLecture, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, toast, modal, pagedList, ic, LANG, ilYA } from './core.js';
 import { uiIsAdmin } from './multitenant.js';
 
 // `P10.20-p` (2026-09-16) — LES MOTS DU RELEVÉ DES AUTO-REPORTS COLLECTEURS, FR et EN côte à côte : le
@@ -71,7 +71,7 @@ async function editSuppression(e) {
   const fieldLabel = e.edit_key === 'operator' ? 'IP / préfixes opérateur (CSV)' : 'vhosts self (CSV)';
   const ph = e.edit_key === 'operator' ? 'ex: 203.0.113.7, 2001:db8::/32' : 'ex: plume.example.com';
   const r = await modal({
-    title: 'Éditer : ' + e.label, okText: 'Enregistrer', danger: true,
+    title: faceDansLaLangue({ fr: 'Éditer : {nom}', en: 'Edit: {nom}' }, { nom: e.label }), okText: 'Enregistrer', danger: true,   // `P10.29-c`
     message: "Exclusion d'AFFICHAGE uniquement — de-bruite les panneaux « menace externe ». N'affecte JAMAIS la collecte, la détection (règles) ni le never-ban (HOST). Action auditée (sev 3).",
     fields: [{ name: 'value', label: fieldLabel, type: 'text', value: e.value || '', placeholder: ph }],
   });
@@ -175,12 +175,19 @@ function silencesSection(wrap, d) {
   pagedList(host, { mode: 'client', pageSize: 50, rows, columns: cols, emptyText: 'aucun silence — « + Silence » pour muter temporairement les notifications d\'une règle, d\'un hôte ou d\'une source.', storeKey: 'soc_silences', recherche: true });
 }
 
+// `P10.29-c` / `P10.29-g` — LES SILENCES NON LUS, DANS LES DEUX LANGUES. MESURÉ AVANT CE LOT (témoin 120) : « silences
+// indisponibles : » + la cause servie (ou le message brut d'une lecture refusée) restait français sous `LANG='en'`.
+const MOTS_DES_SILENCES_NON_LUS = {
+  objet: { fr: "Silences d'alertes", en: 'Alert silences' },
+  aveu_servi: { fr: 'silences indisponibles : {cause}', en: 'silences unavailable: {cause}' },
+};
 async function loadSuppressions() {
   const wrap = $('#suppressions-body'); if (!wrap) return;
   if (!uiIsAdmin()) { wrap.replaceChildren(muted("réservé à l'administrateur.")); return; }
   const d = await fetchInto(wrap, '/suppressions'); if (!d) return;
   // les silences viennent de leur propre route (viewer+ en lecture) ; une erreur ici ne vide pas le panneau.
-  let silences = null; try { silences = await api('/silences'); } catch (e) { silences = { silences: [], error: (e && e.message) || String(e) }; }
+  // `P10.29-g` — la lecture refusée des silences garde son ERREUR (sa nature et sa cause), plus le seul message composé.
+  let silences = null; try { silences = await api('/silences'); } catch (e) { silences = { silences: [], lectureNonServie: e }; }
   wrap.replaceChildren();
   const valCell = v => { const sp = document.createElement('span'); sp.style.cssText = 'font-family:var(--font-mono);font-size:11px;word-break:break-word'; sp.textContent = (v === '' ? '(vide)' : v); sp.title = v; return sp; };
   // ---- (1) DAEMON — registre déclaratif A1..A9 ----
@@ -238,7 +245,8 @@ async function loadSuppressions() {
   pagedList(dt, { mode: 'client', pageSize: 50, rows: d.daemon || [], columns: dcols, emptyText: 'aucune exclusion', storeKey: 'soc_daemon_suppressions', recherche: true });
   // ---- (1bis) SILENCES D'ALERTES — créer / modifier / supprimer (P11.5-a) ----
   silencesSection(wrap, silences);
-  if (silences && silences.error) wrap.appendChild(muted('silences indisponibles : ' + silences.error));
+  if (silences && silences.lectureNonServie) wrap.appendChild(noeudDuRefusDUneLecture(silences.lectureNonServie, faceDansLaLangue(MOTS_DES_SILENCES_NON_LUS.objet)));
+  else if (silences && silences.error) wrap.appendChild(muted(faceDansLaLangue(MOTS_DES_SILENCES_NON_LUS.aveu_servi, { cause: silences.error })));   // `P10.29-c`
   // ---- (2) COLLECTEURS HÔTE — auto-report config (category=config) ----
   // `P10.20-p` (2026-09-16) — LE RELEVÉ QUI N'A PAS COMMENCÉ N'EST PAS UN PARC SANS COLLECTEUR.
   // `suppressions_get` (daemon/src/handlers/admin_ui.rs) posait `FinDeParcours::Complet` quand la
@@ -300,7 +308,7 @@ async function loadSuppressions() {
         });
         return box;
       } },
-      { key: 'ts', label: 'Dernier report', sortable: true, sortVal: c => c.ts || 0, render: c => { const sp = document.createElement('span'); sp.textContent = c.ts ? 'il y a ' + humanAge(Math.max(0, (d.generated || Math.floor(Date.now() / 1000)) - c.ts)) : '—'; if (c.ts) sp.title = fmtTs(c.ts) + (c.host ? ' · ' + c.host : ''); return sp; } },
+      { key: 'ts', label: 'Dernier report', sortable: true, sortVal: c => c.ts || 0, render: c => { const sp = document.createElement('span'); sp.textContent = c.ts ? ilYA(Math.max(0, (d.generated || Math.floor(Date.now() / 1000)) - c.ts)) : '—'; if (c.ts) sp.title = fmtTs(c.ts) + (c.host ? ' · ' + c.host : ''); return sp; } },
     ];
     // `P11.18-m` — MÊME PORTÉE QUE LE REGISTRE CI-DESSUS : la route rend un auto-report par source, sans
     // borne ni pagination. Un collecteur se cherche par sa source, par son type, par les filtres qu'il

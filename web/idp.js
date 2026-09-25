@@ -3,7 +3,7 @@
 // change côté auth. Anti-XSS : tout texte via textContent/esc ; le secret (client_secret / bind pw) est un
 // champ password, JAMAIS réaffiché, ré-envoyé UNIQUEMENT s'il est re-saisi (omis = conservé côté serveur).
 // La vraie garde reste SERVEUR (/api/idp/* admin-only ; /api/mfa/* borné à au.name).
-import { $, LANG, api, apiSend, unDeuxCentsSansCorpsLisible, confirmWithConsequence, disclosure, effacerLeRefusDUnGeste, fmtTs, modal, motDuRefusDuSecondFacteur, muted, natureDuRefusDuSecondFacteur, peindreLeRefusDUnGeste, phraseDuRefusDuDemon, prefixeDUnEchecRenduTelQuel, puitsDuRefusDUnGeste, toast, withBusy } from './core.js';
+import { $, LANG, api, apiSend, unDeuxCentsSansCorpsLisible, confirmWithConsequence, disclosure, effacerLeRefusDUnGeste, fmtTs, modal, motDuRefusDuSecondFacteur, muted, natureDuRefusDuSecondFacteur, peindreLeRefusDUnGeste, phraseDuRefusDuDemon, puitsDuRefusDUnGeste, noeudDuRefusDUneLecture, phraseDuRefusDUneLecture, toast, withBusy, faceDansLaLangue } from './core.js';
 import { enabledSwitch } from './producer_ui.js';
 import { uiIsAdmin } from './multitenant.js';
 
@@ -32,9 +32,10 @@ export async function loadIdpProviders() {
   let list = [];
   try { list = await api('/idp/providers'); }
   catch (e) {
-    // api() jette « <statut> <corps> » sur non-2xx : le 501 (mode multi-tenant) garde son message dédié.
-    if (String((e && e.message) || '').startsWith('501')) { wrap.replaceChildren(muted('IdP réservé au mode mono-tenant.')); return; }
-    wrap.replaceChildren(muted(prefixeDUnEchecRenduTelQuel() + ((e && e.message) || e))); return;
+    // api() porte le statut à côté du message (`statutDuRefus`) : le 501 (mode multi-tenant) garde son message dédié.
+    // `P10.29-g` — tout autre refus, la face nommée d'une lecture non servie (plus « erreur : » + le message brut).
+    if (e && e.statutDuRefus === 501) { wrap.replaceChildren(muted('IdP réservé au mode mono-tenant.')); return; }
+    wrap.replaceChildren(noeudDuRefusDUneLecture(e)); return;
   }
   if (!Array.isArray(list) || !list.length) {
     wrap.replaceChildren(muted('aucun fournisseur — clique « + Fournisseur » pour brancher un IdP OIDC ou LDAP. Tant qu\'aucun n\'est activé, l\'auth existante est inchangée.'));
@@ -98,7 +99,7 @@ function openIdpForm(existing) {
     i.style.cssText = 'width:100%;box-sizing:border-box'; l.appendChild(i); return { l, i };
   };
   const title = document.createElement('h3'); title.style.cssText = 'margin:0 0 6px;font-size:14px';
-  title.textContent = existing ? ('Éditer ' + existing.name) : 'Nouveau fournisseur';
+  title.textContent = existing ? faceDansLaLangue({ fr: 'Éditer {nom}', en: 'Edit {nom}' }, { nom: existing.name }) : 'Nouveau fournisseur';   // `P10.29-c`
   form.appendChild(title);
 
   // nom + kind (non modifiables en édition).
@@ -225,7 +226,7 @@ export async function loadMfa() {
   let st;
   try { st = await api('/mfa/status'); }
   catch (e) {
-    if (String((e && e.message) || '').startsWith('501')) { status.textContent = 'MFA réservée au mode mono-tenant.'; return; }
+    if (e && e.statutDuRefus === 501) { status.textContent = 'MFA réservée au mode mono-tenant.'; return; }
     // `P10.20-b` — LE REFUS NOMMÉ EST RENDU COMME UN REFUS NOMMÉ. `api()` porte la phrase du démon à côté
     // de son message (`causeDuDemon`, core.js) : sans elle, un 503 se peignait « Service momentanément
     // indisponible », c'est-à-dire une panne de passerelle là où le démon dit précisément QUOI n'a pas été
@@ -241,7 +242,7 @@ export async function loadMfa() {
       actions.replaceChildren(refuse);
       return;
     }
-    status.textContent = prefixeDUnEchecRenduTelQuel() + ((e && e.message) || e); return;
+    status.textContent = phraseDuRefusDUneLecture(e); return;   // `P10.29-g`
   }
   if (st && st.enabled) {
     status.textContent = '✓ Double authentification ACTIVE sur ce compte.';

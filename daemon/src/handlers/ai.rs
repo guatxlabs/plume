@@ -11,7 +11,9 @@
 //! /api/query) et renvoie GXQL+SQL validés (ou l'erreur) à l'analyste. ZÉRO exécution : ce handler
 //! n'appelle jamais /api/query, ne touche jamais la base avec le texte généré.
 use crate::*;
-use crate::handlers::transaction_validee::{refuser_le_geste_non_valide, valider_la_transaction};
+use crate::handlers::transaction_validee::{
+    ouvrir_la_transaction_du_geste, refuser_le_geste_non_valide, valider_la_transaction,
+};
 
 /// Nom de provider valide : alphanumérique + `. _ -`, non vide, <= 64 (miroir idp_name_ok).
 fn ai_name_ok(name: &str) -> bool {
@@ -187,8 +189,8 @@ pub(crate) async fn ai_redaction_policy_put(State(st): State<AppState>, Extensio
     let allow = b.get("pii_allow").cloned().unwrap_or_else(|| json!([]));
     let stored = json!({ "version": version, "deny_substr": deny, "pii_allow": allow }).to_string();
     let conn = st.db.lock();
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "ia", &format!("politique de caviardage v{version}"), CAUSE_POLITIQUE_DE_CAVIARDAGE_INCHANGEE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<()> = (|| {
         conn.execute("INSERT INTO meta(key,value) VALUES('ai_redaction_policy',?1) ON CONFLICT(key) DO UPDATE SET value=?1", params![stored])?;
@@ -233,12 +235,25 @@ pub(crate) const CAUSE_POLITIQUE_DE_CAVIARDAGE_INCHANGEE: &str = "POLITIQUE DE C
      fournisseur d'IA reste celle d'avant : les noms de champ que la nouvelle retirait du schéma envoyé au modèle y \
      entrent toujours, et aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, \
      pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_POLITIQUE_DE_CAVIARDAGE_INCHANGEE_TRANSACTION_NON_OUVERTE: &str = "POLITIQUE DE CAVIARDAGE IA \
+     INCHANGÉE : la base n'a pas pris la transaction de la politique (BEGIN refusé : verrou tenu, ou transaction \
+     d'un autre geste pendante sur l'écrivain) — RIEN n'est écrit : la politique servie et appliquée à ce qui sort \
+     vers le fournisseur d'IA reste celle d'avant : les noms de champ que la nouvelle retirait du schéma envoyé au \
+     modèle y entrent toujours, et aucune trace n'est écrite. Réessayez ; s'il est refusé encore, l'écrivain est \
+     occupé ou bloqué.";
 
 /// `P10.26-b` — le `COMMIT` d'une création, d'une modification ou d'une suppression de fournisseur d'IA refusé.
 pub(crate) const CAUSE_FOURNISSEUR_D_IA_INCHANGE: &str = "FOURNISSEUR D'IA INCHANGÉ : la base n'a pas validé la \
      transaction (COMMIT refusé) et l'a annulée — le fournisseur n'est ni créé, ni modifié, ni supprimé : celui qui \
      était actif l'est toujours et reçoit toujours les questions posées à l'assistant, et aucune trace n'est écrite. \
      Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_FOURNISSEUR_D_IA_INCHANGE_TRANSACTION_NON_OUVERTE: &str = "FOURNISSEUR D'IA INCHANGÉ : la \
+     base n'a pas pris la transaction de ce geste (BEGIN refusé : verrou tenu, ou transaction d'un autre geste \
+     pendante sur l'écrivain) — RIEN n'est écrit : le fournisseur n'est ni créé, ni modifié, ni supprimé : celui qui \
+     était actif l'est toujours et reçoit toujours les questions posées à l'assistant, et aucune trace n'est écrite. \
+     Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 
 // ================================ CRUD PROVIDERS (admin-only, mode 0) ================================
 
@@ -330,8 +345,8 @@ pub(crate) async fn ai_provider_create(State(st): State<AppState>, Extension(au)
     let enabled = b.get("enabled").and_then(|x| x.as_bool()).unwrap_or(false) as i64;
     let secret = b.get("secret").and_then(|x| x.as_str()).unwrap_or("").to_string();
     let conn = st.db.lock();
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "ia", &format!("création du fournisseur d'IA '{name}'"), CAUSE_FOURNISSEUR_D_IA_INCHANGE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<i64> = (|| {
         conn.execute(
@@ -385,8 +400,8 @@ pub(crate) async fn ai_provider_update(State(st): State<AppState>, Extension(au)
             return err_json(StatusCode::FORBIDDEN, e);
         }
     }
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "ia", &format!("modification du fournisseur d'IA #{id}"), CAUSE_FOURNISSEUR_D_IA_INCHANGE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<()> = (|| {
         if let Some(v) = b.get("enabled").and_then(|x| x.as_bool()) {
@@ -444,8 +459,8 @@ pub(crate) async fn ai_provider_delete(State(st): State<AppState>, Extension(au)
     let conn = st.db.lock();
     let name: Option<String> = conn.query_row("SELECT name FROM ai_provider WHERE id=?1", params![id], |r| r.get(0)).ok();
     let Some(name) = name else { return not_found("provider introuvable") };
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "ia", &format!("suppression du fournisseur d'IA '{name}'"), CAUSE_FOURNISSEUR_D_IA_INCHANGE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<()> = (|| {
         conn.execute("DELETE FROM ai_provider WHERE id=?1", params![id])?;

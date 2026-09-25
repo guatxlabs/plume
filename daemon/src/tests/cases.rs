@@ -220,13 +220,14 @@
         let st = sso_test_state("plume-admin", "plume-editor", "admins");
         let id = { let g = st.db.lock(); dossier_seme(&g, "alice", "A", 3, "", None, 2) };
         // (a) valeur invalide -> 400, rien écrit.
-        let code = case_update(State(st.clone()), Extension(tok_au("editor")), Path(id), Json(json!({ "disposition": "not_a_verdict" }))).await;
+        // `P10.29-b` — la route rend une `Response` (le refus est nommé) ; ce témoin en lit le statut.
+        let code = case_update(State(st.clone()), Extension(tok_au("editor")), Path(id), Json(json!({ "disposition": "not_a_verdict" }))).await.status();
         assert_eq!(code, StatusCode::BAD_REQUEST, "verdict hors allowlist -> 400");
         { let g = st.db.lock();
           let d: Option<String> = g.query_row("SELECT disposition FROM incident WHERE id=?1", params![id], |r| r.get(0)).unwrap();
           assert!(d.is_none(), "aucune écriture sur rejet 400"); }
         // (b) valeur valide -> 204 + persistée.
-        let ok = case_update(State(st.clone()), Extension(tok_au("editor")), Path(id), Json(json!({ "disposition": "true_positive" }))).await;
+        let ok = case_update(State(st.clone()), Extension(tok_au("editor")), Path(id), Json(json!({ "disposition": "true_positive" }))).await.status();
         assert_eq!(ok, StatusCode::NO_CONTENT, "verdict valide accepté");
         { let g = st.db.lock();
           let d: Option<String> = g.query_row("SELECT disposition FROM incident WHERE id=?1", params![id], |r| r.get(0)).unwrap();

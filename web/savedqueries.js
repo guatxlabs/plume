@@ -20,7 +20,7 @@
 // SÉCURITÉ : l'endpoint saved-queries est owner-scoped côté serveur (clé = identité authentifiée ; le client
 // n'envoie JAMAIS d'identifiant d'utilisateur) -> pas d'IDOR/énumération. Le texte GXQL stocké est INERTE :
 // il n'est compilé/masqué/autorisé qu'au run, par le chemin gardé /api/query (comme une requête tapée à la main).
-import { $, api, apiSend, toast, modal, confirmModal, bornerLePopoverSousSonAncre, puitsDuRefusDUnGeste, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste } from './core.js';
+import { $, api, apiSend, toast, modal, confirmModal, bornerLePopoverSousSonAncre, puitsDuRefusDUnGeste, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste, faceDansLaLangue, phraseDuRefusDUneLecture } from './core.js';
 import { ecrireSansDireLeRefus, RAISONS_DE_SILENCE } from './state.js';
 
 // ============================ 2) HISTORIQUE RÉCENT (localStorage) ============================
@@ -115,6 +115,14 @@ function emptyRow(text) {
   const d = document.createElement('div'); d.className = 'sq-empty'; d.textContent = text; return d;
 }
 
+// `P10.29-f` / `P10.29-g` — LA LECTURE DE « MES MODÈLES » QUI N'EST PAS SERVIE, DANS LES DEUX LANGUES. MESURÉ AVANT CE LOT
+// (témoin 120) : « Mes modèles NON LUS : … » restait français sous `LANG='en'`, et « Chargement de mes modèles échoué : »
+// collait le message brut (le JSON d'un refus) ; la lecture refusée dit désormais la face nommée d'une lecture non servie.
+const MOTS_DE_LA_LECTURE_DE_MES_MODELES = {
+  objet: { fr: 'Mes modèles', en: 'My templates' },
+  refus_servi: { fr: 'Mes modèles NON LUS : le démon a refusé et en nomme la cause — « {cause} »', en: 'My templates NOT READ: the daemon refused and names the cause — “{cause}”' },
+};
+
 // ============================ 1) MES MODÈLES (serveur, owner-scoped) ==========================
 // null = chargement échoué (déjà signalé par un toast) ; [] = aucun modèle personnel.
 export async function fetchSaved() {
@@ -127,10 +135,10 @@ export async function fetchSaved() {
   // donc la branche `null`, et la cause SERVIE est dite — il n'y a pas de nœud à deux morceaux dans un avis.
   try {
     const d = await api('/saved-queries');
-    if (d && d.error) { toast('Mes modèles NON LUS : le démon a refusé et en nomme la cause — « ' + String(d.error).trim() + ' »', 'err', 9000); return null; }
+    if (d && d.error) { toast(faceDansLaLangue(MOTS_DE_LA_LECTURE_DE_MES_MODELES.refus_servi, { cause: String(d.error).trim() }), 'err', 9000); return null; }
     return (d && Array.isArray(d.queries)) ? d.queries : [];
   }
-  catch (e) { toast('Chargement de mes modèles échoué : ' + e.message, 'err'); return null; }
+  catch (e) { toast(phraseDuRefusDUneLecture(e, faceDansLaLangue(MOTS_DE_LA_LECTURE_DE_MES_MODELES.objet)), 'err', 9000); return null; }   // `P10.29-g`
 }
 
 // `P10.27-d` — LES TROIS GESTES DE « MES MODÈLES » DISENT LEUR REFUS PAR LA FORME PARTAGÉE (`peindreLeRefusDUnGeste`,
@@ -193,7 +201,7 @@ export async function editSaved(q, onDone) {
 }
 
 export async function deleteSaved(q, onDone) {
-  if (!(await confirmModal(`Supprimer le modèle « ${q.name} » ?`, { title: 'Supprimer', okText: 'Supprimer' }))) return;
+  if (!(await confirmModal(faceDansLaLangue({ fr: 'Supprimer le modèle « {nom} » ?', en: 'Delete the template “{nom}”?' }, { nom: q.name }), { title: 'Supprimer', okText: 'Supprimer' }))) return;
   const puits = puitsDesModelesDeRequete(); effacerLeRefusDUnGeste(puits);
   try {
     await apiSend('/saved-queries/' + encodeURIComponent(q.id), 'DELETE');

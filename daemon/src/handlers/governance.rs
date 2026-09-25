@@ -7,7 +7,9 @@
 //!  - RÔLES COMPOSABLES (control-plane) : CRUD du catalogue global (super-admin en mode 1). Rafraîchit le
 //!    cache process (reload_custom_roles) à chaque mutation. base_role validé, deny_perms borné, jamais admin.
 use crate::*;
-use crate::handlers::transaction_validee::{dire_la_transaction_non_ouverte, refuser_le_geste_non_valide, valider_la_transaction};
+use crate::handlers::transaction_validee::{
+    ouvrir_la_transaction_du_geste, ouvrir_le_garde_du_geste, refuser_le_geste_non_valide, valider_la_transaction,
+};
 
 // =====================================================================================
 // LEGAL-HOLD (per-tenant, admin-only, ledgerisé)
@@ -40,17 +42,34 @@ pub(crate) const CAUSE_GEL_JURIDIQUE_NON_POSE: &str = "GEL JURIDIQUE NON POSÉ :
      transaction (COMMIT refusé) et l'a annulée — aucune portée n'est gelée : la rétention purge toujours ce que ce gel \
      devait protéger, et aucune trace n'est écrite. Réessayez AVANT le prochain passage de la rétention ; si le refus \
      persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_GEL_JURIDIQUE_NON_POSE_TRANSACTION_NON_OUVERTE: &str = "GEL JURIDIQUE NON POSÉ : la base n'a \
+     pas pris la transaction de la pose (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante sur \
+     l'écrivain) — RIEN n'est écrit : aucune portée n'est gelée : la rétention purge toujours ce que ce gel devait \
+     protéger, et aucune trace n'est écrite. Réessayez AVANT le prochain passage de la rétention ; s'il est refusé \
+     encore, l'écrivain est occupé ou bloqué.";
 
 /// `P10.26-c` — le `COMMIT` de la levée d'un gel juridique refusé.
 pub(crate) const CAUSE_GEL_JURIDIQUE_NON_LEVE: &str = "GEL JURIDIQUE NON LEVÉ : la base n'a pas validé la \
      transaction (COMMIT refusé) et l'a annulée — le gel est toujours actif, sa portée n'est pas purgée, et aucune \
      trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_GEL_JURIDIQUE_NON_LEVE_TRANSACTION_NON_OUVERTE: &str = "GEL JURIDIQUE NON LEVÉ : la base n'a \
+     pas pris la transaction de la levée (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante sur \
+     l'écrivain) — RIEN n'est écrit : le gel est toujours actif, sa portée n'est pas purgée, et aucune trace n'est \
+     écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 
 /// `P10.26-c` — le `COMMIT` de la création ou de la suppression d'un puits d'export du registre refusé.
 pub(crate) const CAUSE_PUITS_DU_REGISTRE_INCHANGE: &str = "PUITS D'EXPORT DU REGISTRE INCHANGÉ : la base n'a pas \
      validé la transaction (COMMIT refusé) et l'a annulée — le puits n'est ni créé ni supprimé : un puits refusé à la \
      création n'existe pas et ne reçoit rien, un puits dont le retrait est refusé reste déclaré, et aucune trace n'est \
      écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_PUITS_DU_REGISTRE_INCHANGE_TRANSACTION_NON_OUVERTE: &str = "PUITS D'EXPORT DU REGISTRE \
+     INCHANGÉ : la base n'a pas pris la transaction de ce geste (BEGIN refusé : verrou tenu, ou transaction d'un \
+     autre geste pendante sur l'écrivain) — RIEN n'est écrit : le puits n'est ni créé ni supprimé : un puits refusé \
+     à la création n'existe pas et ne reçoit rien, un puits dont le retrait est refusé reste déclaré, et aucune \
+     trace n'est écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 
 /// `P10.26-s`, `P10.26-u` — l'envoi vers un puits n'a pas pu ouvrir sa transaction, ou la base a refusé d'y poser le
 /// curseur : RIEN n'est écrit dans la copie.
@@ -128,8 +147,8 @@ pub(crate) async fn legal_hold_create(State(st): State<AppState>, Extension(au):
     if conn.query_row("SELECT 1 FROM legal_hold WHERE name=?1", params![name], |r| r.get::<_, i64>(0)).is_ok() {
         return err_json(StatusCode::CONFLICT, format!("un hold nommé '{name}' existe déjà"));
     }
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "gouvernance", &format!("pose du gel juridique '{name}'"), CAUSE_GEL_JURIDIQUE_NON_POSE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<i64> = (|| {
         conn.execute(
@@ -176,8 +195,8 @@ pub(crate) async fn legal_hold_release(State(st): State<AppState>, Extension(au)
     if active == 0 {
         return err_json(StatusCode::CONFLICT, "hold déjà levé");
     }
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "gouvernance", &format!("levée du gel juridique '{name}' (#{id})"), CAUSE_GEL_JURIDIQUE_NON_LEVE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<()> = (|| {
         conn.execute("UPDATE legal_hold SET active=0, released_ts=?1, released_by=?2 WHERE id=?3", params![now(), au.name.as_str(), id])?;
@@ -350,8 +369,8 @@ pub(crate) async fn ledger_sink_create(State(st): State<AppState>, Extension(au)
     if conn.query_row("SELECT 1 FROM ledger_sink WHERE name=?1", params![name], |r| r.get::<_, i64>(0)).is_ok() {
         return err_json(StatusCode::CONFLICT, format!("un sink nommé '{name}' existe déjà"));
     }
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "gouvernance", &format!("création du puits du registre '{name}'"), CAUSE_PUITS_DU_REGISTRE_INCHANGE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<i64> = (|| {
         conn.execute(
@@ -390,8 +409,8 @@ pub(crate) async fn ledger_sink_delete(State(st): State<AppState>, Extension(au)
         Ok(n) => n,
         Err(_) => return not_found("sink introuvable"),
     };
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "gouvernance", &format!("suppression du puits du registre '{name}' (#{id})"), CAUSE_PUITS_DU_REGISTRE_INCHANGE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<()> = (|| {
         conn.execute("DELETE FROM ledger_sink WHERE id=?1", params![id])?;
@@ -446,12 +465,10 @@ pub(crate) async fn ledger_sink_flush(State(st): State<AppState>, Extension(au):
     let geste = format!("envoi vers le puits du registre #{id}");
     // Le garde `Txn` ANNULE la transaction à sa destruction si elle n'a pas été validée : chaque retour anticipé
     // ci-dessous referme donc la sienne, et elle seule.
-    let tx = match Txn::begin(&conn) {
+    // `P10.28-d` — la forme commune d'une route qui ouvre son garde (même journal, même 503 nommé qu'avant).
+    let tx = match ouvrir_le_garde_du_geste(&conn, "gouvernance", &geste, CAUSE_ENVOI_DU_PUITS_NON_FAIT) {
         Ok(tx) => tx,
-        Err(refus) => {
-            dire_la_transaction_non_ouverte(&conn, "gouvernance", &geste, &refus);
-            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_ENVOI_DU_PUITS_NON_FAIT);
-        }
+        Err(refus) => return refus,
     };
     let sink = conn.query_row(
         "SELECT name,kind,target,enabled,last_id FROM ledger_sink WHERE id=?1",

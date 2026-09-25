@@ -458,20 +458,29 @@ fn sec_dest_ssrf_rejects_internal_endpoints() {
 async fn sec_notifier_create_update_egress_guarded() {
     let st = sso_test_state("admins", "editors", "supers");
     let admin = ergo_au("admin");
+    // `P10.28-c` — LES TROIS ROUTES RENDENT UNE `Response` (elles rendaient `Json<Value>` et `StatusCode`, que ce témoin
+    // figeait) : le refus d'une URL interne est un 400 JSON NOMMÉ, et non plus un deux cents `{error}` (création) ou un
+    // 400 sans corps (modification) — la propriété tenue ici (refus immédiat, aucun identifiant) est INCHANGÉE.
+    async fn corps(r: Response) -> (StatusCode, Value) {
+        let code = r.status();
+        let b = axum::body::to_bytes(r.into_body(), usize::MAX).await.expect("corps lisible");
+        (code, serde_json::from_slice(&b).unwrap_or(Value::Null))
+    }
     // never-egress -> refus explicite à la création (pas d'id).
     for bad in ["http://169.254.169.254/", "http://127.0.0.1/ntfy"] {
-        let Json(v) = notifier_create(State(st.clone()), Extension(admin.clone()),
-            Json(json!({ "kind": "webhook", "url": bad }))).await;
-        assert!(v.get("error").is_some() && v.get("id").is_none(), "notifier interne {bad} refusé à la création");
+        let (code, v) = corps(notifier_create(State(st.clone()), Extension(admin.clone()),
+            Json(json!({ "kind": "webhook", "url": bad }))).await).await;
+        assert!(code == StatusCode::BAD_REQUEST && v.get("error").is_some() && v.get("id").is_none(), "notifier interne {bad} refusé à la création : {code} {v}");
     }
     // FIX #3 — endpoint RFC1918 on-prem légitime accepté PAR DÉFAUT.
-    let Json(v) = notifier_create(State(st.clone()), Extension(admin.clone()),
-        Json(json!({ "kind": "webhook", "url": "http://10.0.0.9/ntfy" }))).await;
+    let (_, v) = corps(notifier_create(State(st.clone()), Extension(admin.clone()),
+        Json(json!({ "kind": "webhook", "url": "http://10.0.0.9/ntfy" }))).await).await;
     let id = v.get("id").and_then(|x| x.as_i64()).expect("RFC1918 on-prem accepté par défaut");
     // UPDATE ré-pointant vers la metadata -> 400 (pas de re-cible interne silencieuse).
-    let code = notifier_update(State(st.clone()), Extension(admin.clone()),
-        axum::extract::Path(id), Json(json!({ "url": "http://169.254.169.254/" }))).await;
+    let (code, v) = corps(notifier_update(State(st.clone()), Extension(admin.clone()),
+        axum::extract::Path(id), Json(json!({ "url": "http://169.254.169.254/" }))).await).await;
     assert_eq!(code, StatusCode::BAD_REQUEST, "update vers metadata -> 400");
+    assert!(v.get("error").is_some(), "et le refus est nommé : {v}");
 }
 
 // ------------------------------------------------------------------------------------------------

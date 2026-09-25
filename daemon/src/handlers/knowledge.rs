@@ -6,7 +6,7 @@
 //! transaction auditée, puis `knowledge_reload` recompile le `KnowledgeSet` de CE db_path -> auto-appliqué à
 //! la compilation GXQL suivante (Explore, panels, règles, export en héritent).
 use crate::*;
-use crate::handlers::transaction_validee::rendre_apres_validation;
+use crate::handlers::transaction_validee::{ouvrir_la_transaction_du_geste, rendre_apres_validation};
 
 
 /// GET /api/knowledge — les 4 familles d'objets de savoir (viewer+). Rend la politique LISIBLE.
@@ -106,6 +106,12 @@ pub(crate) const CAUSE_OBJET_DE_SAVOIR_NON_ECRIT: &str = "OBJET DE SAVOIR NON É
      transaction (COMMIT refusé) et l'a annulée — rien n'est créé ni supprimé, les recherches appliquent toujours \
      les alias, calculs, types d'événement, étiquettes, macros et recherches automatiques d'avant, et aucune trace \
      n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_OBJET_DE_SAVOIR_NON_ECRIT_TRANSACTION_NON_OUVERTE: &str = "OBJET DE SAVOIR NON ÉCRIT : la \
+     base n'a pas pris la transaction de ce geste (BEGIN refusé : verrou tenu, ou transaction d'un autre geste \
+     pendante sur l'écrivain) — RIEN n'est écrit : rien n'est créé ni supprimé, les recherches appliquent toujours \
+     les alias, calculs, types d'événement, étiquettes, macros et recherches automatiques d'avant, et aucune trace \
+     n'est écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 
 /// Émet la réponse d'un create/delete audité + `knowledge_reload`. Factorise le squelette transactionnel.
 ///
@@ -143,7 +149,9 @@ pub(crate) async fn alias_create(State(st): State<AppState>, Extension(au): Exte
     if canonical == source { return bad_req("alias : canonical et source doivent différer"); }
     let enabled = b.bool_field("enabled", true) as i64;
     crate::req_conn!(st, au, conn);
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() { return server_err("verrou base indisponible"); }
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "knowledge", "création d'un alias de champ", CAUSE_OBJET_DE_SAVOIR_NON_ECRIT_TRANSACTION_NON_OUVERTE) {
+        return refus;
+    }
     let outcome: rusqlite::Result<i64> = (|| {
         conn.execute("INSERT INTO knowledge_alias(canonical,source,enabled,created,updated) VALUES(?1,?2,?3,?4,?4)",
             params![canonical, source, enabled, now()])?;
@@ -163,7 +171,9 @@ pub(crate) async fn alias_delete(State(st): State<AppState>, Extension(au): Exte
     let canonical = match conn.query_row("SELECT canonical FROM knowledge_alias WHERE id=?1", params![id], |r| r.get::<_,String>(0)) {
         Ok(n) => n, Err(_) => return not_found("alias introuvable"),
     };
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() { return server_err("verrou base indisponible"); }
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "knowledge", &format!("suppression de l'alias #{id}"), CAUSE_OBJET_DE_SAVOIR_NON_ECRIT_TRANSACTION_NON_OUVERTE) {
+        return refus;
+    }
     let outcome: rusqlite::Result<i64> = (|| {
         conn.execute("DELETE FROM knowledge_alias WHERE id=?1", params![id])?;
         audit_config_change(&conn, "config.knowledge.alias.delete",
@@ -188,7 +198,9 @@ pub(crate) async fn calc_create(State(st): State<AppState>, Extension(au): Exten
     let ord = b.get("ord").and_then(|v| v.as_i64()).unwrap_or(0);
     let enabled = b.bool_field("enabled", true) as i64;
     crate::req_conn!(st, au, conn);
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() { return server_err("verrou base indisponible"); }
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "knowledge", "création d'un champ calculé", CAUSE_OBJET_DE_SAVOIR_NON_ECRIT_TRANSACTION_NON_OUVERTE) {
+        return refus;
+    }
     let outcome: rusqlite::Result<i64> = (|| {
         conn.execute("INSERT INTO knowledge_calc(name,expr,enabled,ord,created,updated) VALUES(?1,?2,?3,?4,?5,?5)",
             params![name, expr, enabled, ord, now()])?;
@@ -208,7 +220,9 @@ pub(crate) async fn calc_delete(State(st): State<AppState>, Extension(au): Exten
     let name = match conn.query_row("SELECT name FROM knowledge_calc WHERE id=?1", params![id], |r| r.get::<_,String>(0)) {
         Ok(n) => n, Err(_) => return not_found("champ calculé introuvable"),
     };
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() { return server_err("verrou base indisponible"); }
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "knowledge", &format!("suppression du champ calculé #{id}"), CAUSE_OBJET_DE_SAVOIR_NON_ECRIT_TRANSACTION_NON_OUVERTE) {
+        return refus;
+    }
     let outcome: rusqlite::Result<i64> = (|| {
         conn.execute("DELETE FROM knowledge_calc WHERE id=?1", params![id])?;
         audit_config_change(&conn, "config.knowledge.calc.delete",
@@ -232,7 +246,9 @@ pub(crate) async fn eventtype_create(State(st): State<AppState>, Extension(au): 
     if let Err(e) = validate_eventtype_filter(&name, &filter) { return bad_req(format!("filtre d'eventtype invalide : {e}")); }
     let enabled = b.bool_field("enabled", true) as i64;
     crate::req_conn!(st, au, conn);
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() { return server_err("verrou base indisponible"); }
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "knowledge", "création d'un type d'événement", CAUSE_OBJET_DE_SAVOIR_NON_ECRIT_TRANSACTION_NON_OUVERTE) {
+        return refus;
+    }
     let outcome: rusqlite::Result<i64> = (|| {
         conn.execute("INSERT INTO knowledge_eventtype(name,filter,enabled,created,updated) VALUES(?1,?2,?3,?4,?4)",
             params![name, filter, enabled, now()])?;
@@ -252,7 +268,9 @@ pub(crate) async fn eventtype_delete(State(st): State<AppState>, Extension(au): 
     let name = match conn.query_row("SELECT name FROM knowledge_eventtype WHERE id=?1", params![id], |r| r.get::<_,String>(0)) {
         Ok(n) => n, Err(_) => return not_found("eventtype introuvable"),
     };
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() { return server_err("verrou base indisponible"); }
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "knowledge", &format!("suppression du type d'événement #{id}"), CAUSE_OBJET_DE_SAVOIR_NON_ECRIT_TRANSACTION_NON_OUVERTE) {
+        return refus;
+    }
     let outcome: rusqlite::Result<i64> = (|| {
         conn.execute("DELETE FROM knowledge_eventtype WHERE id=?1", params![id])?;
         audit_config_change(&conn, "config.knowledge.eventtype.delete",
@@ -275,7 +293,9 @@ pub(crate) async fn tag_create(State(st): State<AppState>, Extension(au): Extens
     if value.is_empty() { return bad_req("tag : valeur requise"); }
     let enabled = b.bool_field("enabled", true) as i64;
     crate::req_conn!(st, au, conn);
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() { return server_err("verrou base indisponible"); }
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "knowledge", "création d'une étiquette", CAUSE_OBJET_DE_SAVOIR_NON_ECRIT_TRANSACTION_NON_OUVERTE) {
+        return refus;
+    }
     let outcome: rusqlite::Result<i64> = (|| {
         conn.execute("INSERT INTO knowledge_tag(label,field,value,enabled,created,updated) VALUES(?1,?2,?3,?4,?5,?5)",
             params![label, field, value, enabled, now()])?;
@@ -295,7 +315,9 @@ pub(crate) async fn tag_delete(State(st): State<AppState>, Extension(au): Extens
     let label = match conn.query_row("SELECT label FROM knowledge_tag WHERE id=?1", params![id], |r| r.get::<_,String>(0)) {
         Ok(n) => n, Err(_) => return not_found("tag introuvable"),
     };
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() { return server_err("verrou base indisponible"); }
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "knowledge", &format!("suppression de l'étiquette #{id}"), CAUSE_OBJET_DE_SAVOIR_NON_ECRIT_TRANSACTION_NON_OUVERTE) {
+        return refus;
+    }
     let outcome: rusqlite::Result<i64> = (|| {
         conn.execute("DELETE FROM knowledge_tag WHERE id=?1", params![id])?;
         audit_config_change(&conn, "config.knowledge.tag.delete",
@@ -329,7 +351,9 @@ pub(crate) async fn macro_create(State(st): State<AppState>, Extension(au): Exte
     let params_str = params.join(",");
     let enabled = b.bool_field("enabled", true) as i64;
     crate::req_conn!(st, au, conn);
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() { return server_err("verrou base indisponible"); }
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "knowledge", "création d'une macro", CAUSE_OBJET_DE_SAVOIR_NON_ECRIT_TRANSACTION_NON_OUVERTE) {
+        return refus;
+    }
     let outcome: rusqlite::Result<i64> = (|| {
         conn.execute("INSERT INTO macro_def(name,params,body,enabled,created,updated) VALUES(?1,?2,?3,?4,?5,?5)",
             params![name, params_str, body, enabled, now()])?;
@@ -349,7 +373,9 @@ pub(crate) async fn macro_delete(State(st): State<AppState>, Extension(au): Exte
     let name = match conn.query_row("SELECT name FROM macro_def WHERE id=?1", params![id], |r| r.get::<_,String>(0)) {
         Ok(n) => n, Err(_) => return not_found("macro introuvable"),
     };
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() { return server_err("verrou base indisponible"); }
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "knowledge", &format!("suppression de la macro #{id}"), CAUSE_OBJET_DE_SAVOIR_NON_ECRIT_TRANSACTION_NON_OUVERTE) {
+        return refus;
+    }
     let outcome: rusqlite::Result<i64> = (|| {
         conn.execute("DELETE FROM macro_def WHERE id=?1", params![id])?;
         audit_config_change(&conn, "config.knowledge.macro.delete",
@@ -383,7 +409,9 @@ pub(crate) async fn auto_lookup_create(State(st): State<AppState>, Extension(au)
     let out_str = out_cols.join(",");
     let enabled = b.bool_field("enabled", true) as i64;
     crate::req_conn!(st, au, conn);
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() { return server_err("verrou base indisponible"); }
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "knowledge", "création d'une recherche automatique", CAUSE_OBJET_DE_SAVOIR_NON_ECRIT_TRANSACTION_NON_OUVERTE) {
+        return refus;
+    }
     let outcome: rusqlite::Result<i64> = (|| {
         conn.execute("INSERT INTO auto_lookup(name,key_field,out_cols,kind,enabled,created,updated) VALUES(?1,?2,?3,?4,?5,?6,?6)",
             params![name, key_field, out_str, kind, enabled, now()])?;
@@ -403,7 +431,9 @@ pub(crate) async fn auto_lookup_delete(State(st): State<AppState>, Extension(au)
     let name = match conn.query_row("SELECT name FROM auto_lookup WHERE id=?1", params![id], |r| r.get::<_,String>(0)) {
         Ok(n) => n, Err(_) => return not_found("auto-lookup introuvable"),
     };
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() { return server_err("verrou base indisponible"); }
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "knowledge", &format!("suppression de la recherche automatique #{id}"), CAUSE_OBJET_DE_SAVOIR_NON_ECRIT_TRANSACTION_NON_OUVERTE) {
+        return refus;
+    }
     let outcome: rusqlite::Result<i64> = (|| {
         conn.execute("DELETE FROM auto_lookup WHERE id=?1", params![id])?;
         audit_config_change(&conn, "config.knowledge.autolookup.delete",

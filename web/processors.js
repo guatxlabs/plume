@@ -7,7 +7,7 @@
 // NON-SILENCE : on affiche les compteurs dropped/masked/routed/sampled_out (la donnée non-indexée est
 // VISIBLE — philosophie garde-disque 503). SÉCU UI : rendu textContent (anti-XSS) ; la VRAIE garde reste
 // serveur (403 hors admin). Défense en profondeur : on court-circuite le fetch hors admin.
-import { $, api, apiSend, confirmWithConsequence, effacerLeRefusDUnGeste, fetchInto, modal, muted, pagedList, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, toast } from './core.js';
+import { $, api, apiSend, confirmWithConsequence, effacerLeRefusDUnGeste, fetchInto, modal, muted, pagedList, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, toast, faceDansLaLangue } from './core.js';
 import { enabledSwitch } from './producer_ui.js';
 import { uiIsAdmin } from './multitenant.js';
 
@@ -66,7 +66,7 @@ export async function loadProcessors() {
   if (num(counters.reload_errors) > 0) {
     const w = document.createElement('div'); w.className = 'muted';
     w.style.color = 'var(--bad, #c33)';
-    w.textContent = `⚠ ${counters.reload_errors} règle(s) invalide(s) ignorée(s) (fail-safe : les events concernés sont indexés inchangés). Corrige-les ci-dessous.`;
+    w.textContent = faceDansLaLangue({ fr: '⚠ {n} règle(s) invalide(s) ignorée(s) (fail-safe : les events concernés sont indexés inchangés). Corrige-les ci-dessous.', en: '⚠ {n} invalid rule(s) ignored (fail-safe: the events concerned are indexed unchanged). Fix them below.' }, { n: counters.reload_errors });   // `P10.29-c`
     frag.appendChild(w);
   }
   const listBox = document.createElement('div');
@@ -118,7 +118,8 @@ function ruleRow(r, counters) {
 
   // Prédicat lisible : « champ op valeur » (any -> « tout event »).
   const pred = document.createElement('code');
-  pred.textContent = r.match_op === 'any' ? 'tout event' : `${r.match_field} ${r.match_op} ${JSON.stringify(r.match_value)}`;
+  const predicatDeLaRegle = `${r.match_field} ${r.match_op} ${JSON.stringify(r.match_value)}`;
+    pred.textContent = r.match_op === 'any' ? 'tout event' : predicatDeLaRegle;
 
   const arrow = document.createElement('span'); arrow.textContent = '→'; arrow.className = 'muted';
 

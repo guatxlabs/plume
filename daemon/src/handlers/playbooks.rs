@@ -2,7 +2,7 @@
 //! cellule `playbook_cell`, et l'exécuteur périodique `run_playbooks`.
 //! Extrait de main.rs (refactor split #25 — byte-identique).
 use crate::*;
-use crate::handlers::transaction_validee::rendre_apres_validation;
+use crate::handlers::transaction_validee::{ouvrir_la_transaction_du_geste, rendre_apres_validation};
 
 /// Durée du ban posé par un playbook `ban_ip`, telle que les exécuteurs la posent : `--duration` CrowdSec et
 /// TTL du blocage HTTP natif partagent `NETBAN_ACTION_TTL_S` (voir `action_command` et `netban_upsert`).
@@ -33,10 +33,20 @@ pub(crate) fn action_consequence(kind: &str) -> String {
 pub(crate) const CAUSE_PLAYBOOK_NON_CREE: &str = "PLAYBOOK NON CRÉÉ : la base n'a pas validé la transaction (COMMIT \
      refusé) et l'a annulée — aucun playbook n'est écrit, aucune riposte ne sera posée par lui, et aucune trace \
      n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_PLAYBOOK_NON_CREE_TRANSACTION_NON_OUVERTE: &str = "PLAYBOOK NON CRÉÉ : la base n'a pas pris \
+     la transaction de la création (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante sur \
+     l'écrivain) — RIEN n'est écrit : aucun playbook n'est écrit, aucune riposte ne sera posée par lui, et aucune \
+     trace n'est écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 /// `P10.25-g` — playbook inchangé : le `COMMIT` de ce geste refusé.
 pub(crate) const CAUSE_PLAYBOOK_INCHANGE: &str = "PLAYBOOK INCHANGÉ : la base n'a pas validé la transaction (COMMIT \
      refusé) et l'a annulée — il garde sa requête, son action et son activation d'avant, et aucune trace n'est \
      écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_PLAYBOOK_INCHANGE_TRANSACTION_NON_OUVERTE: &str = "PLAYBOOK INCHANGÉ : la base n'a pas pris \
+     la transaction de la modification (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante sur \
+     l'écrivain) — RIEN n'est écrit : il garde sa requête, son action et son activation d'avant, et aucune trace \
+     n'est écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 
 
 pub(crate) async fn playbooks_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
@@ -89,8 +99,8 @@ pub(crate) async fn playbook_create(State(st): State<AppState>, Extension(au): E
     let interval_s = b.i64_field("interval_s", 300);
     crate::req_conn!(st, au, conn);
     // #1c garde-fous #4/#6 : INSERT managed=2 (ad-hoc UI) + audit #1b, transaction fail-closed.
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "playbooks", "création d'un playbook", CAUSE_PLAYBOOK_NON_CREE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<i64> = (|| {
         conn.execute(
@@ -155,8 +165,8 @@ pub(crate) async fn playbook_update(State(st): State<AppState>, Extension(au): E
     if let Some(n) = b.get("name").and_then(|x| x.as_str()) {
         if let Err((code, msg)) = refuser_le_renommage_d_un_overlay("playbook", cur_managed, &cur_name, n) { return err_json(code, msg); }
     }
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "playbooks", &format!("modification du playbook #{id}"), CAUSE_PLAYBOOK_INCHANGE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<()> = (|| {
         if let Some(v) = b.get("name").and_then(|x| x.as_str()) { conn.execute("UPDATE playbook SET name=?1 WHERE id=?2", params![v, id])?; }

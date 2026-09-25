@@ -13,7 +13,7 @@
 //   GET    /api/datasets  |  POST /api/datasets  (editor+)  |  POST /api/datasets/{id}/run  (viewer+)
 //   DELETE /api/datasets/{id}                                            (editor+)
 // SÉCU UI : tout en textContent/esc (anti-XSS). Mutations via apiSend (jeton CSRF auto).
-import { $, api, apiSend, effacerLeRefusDUnGeste, fetchInto, LANG, muted, pagedList, peindreLeRefusDUnGeste, phraseDuRefusDuDemon, prefixeDUnEchecRenduTelQuel, puitsDuRefusDUnGeste, toast, modal, confirmModal, managedBadge, gateDeleteBtn } from './core.js';
+import { $, api, apiSend, effacerLeRefusDUnGeste, fetchInto, LANG, muted, noeudDuRefusDUneLecture, pagedList, peindreLeRefusDUnGeste, phraseDuRefusDuDemon, puitsDuRefusDUnGeste, toast, modal, confirmModal, managedBadge, gateDeleteBtn, faceDansLaLangue } from './core.js';
 import { phraseDeCoupe } from './coupe_de_liste.js'; // `P11.22-g` : le résultat borné du Pivot dit sa coupe
 
 // `P10.27-d` — LES PUITS DES GESTES SUR L'ARBRE DES MODÈLES, un par liste (modèles, objets, champs, datasets), posés
@@ -128,7 +128,7 @@ function renderModels() {
 function selectModel(id) { selModel = id; selObject = null; renderModels(); renderObjects(); renderFields(); renderPivotBuilder(); syncButtons(); }
 
 async function delModel(r) {
-  if (!(await confirmModal('Supprimer le modèle « ' + (r.title || r.name) + " » et tous ses objets/champs ?", { okText: 'Supprimer', danger: true }))) return;
+  if (!(await confirmModal(faceDansLaLangue({ fr: 'Supprimer le modèle « {nom} » et tous ses objets/champs ?', en: 'Delete the model “{nom}” and all its objects/fields?' }, { nom: r.title || r.name }), { okText: 'Supprimer', danger: true }))) return;
   const puits = puitsDesModeles(); effacerLeRefusDUnGeste(puits);
   try { await apiSend('/datamodels/' + r.id, 'DELETE'); toast('modèle supprimé', 'ok'); await reload(); }
   catch (e) { peindreLeRefusDUnGeste(puits, e); }
@@ -162,7 +162,7 @@ function renderObjects() {
   const host = $('#dm-objects-list'); if (!host) return;
   if (etagePeintSonAveu('objects')) return;
   const ctx = $('#dm-obj-ctx'); const model = DM.models.find(m => m.id === selModel);
-  if (ctx) ctx.textContent = model ? '— ' + (model.title || model.name) : '(sélectionnez un modèle)';
+  if (ctx) { const titreDuModele = '— ' + (model ? (model.title || model.name) : ''); ctx.textContent = model ? titreDuModele : '(sélectionnez un modèle)'; }
   if (!selModel) { host.replaceChildren(muted('sélectionnez un modèle pour voir ses objets.')); return; }
   const rows = DM.objects.filter(o => o.model_id === selModel);
   pagedList(host, {
@@ -181,7 +181,7 @@ function renderObjects() {
 function selectObject(id) { selObject = id; renderObjects(); renderFields(); renderPivotBuilder(); syncButtons(); }
 
 async function delObject(r) {
-  if (!(await confirmModal('Supprimer l’objet « ' + r.name + ' » et ses champs ?', { okText: 'Supprimer', danger: true }))) return;
+  if (!(await confirmModal(faceDansLaLangue({ fr: 'Supprimer l’objet « {nom} » et ses champs ?', en: 'Delete the object “{nom}” and its fields?' }, { nom: r.name }), { okText: 'Supprimer', danger: true }))) return;
   const puits = puitsDesObjets(); effacerLeRefusDUnGeste(puits);
   try { await apiSend('/datamodels/objects/' + r.id, 'DELETE'); toast('objet supprimé', 'ok'); if (selObject === r.id) selObject = null; await reload(); }
   catch (e) { peindreLeRefusDUnGeste(puits, e); }
@@ -209,7 +209,7 @@ function renderFields() {
   const host = $('#dm-fields-list'); if (!host) return;
   if (etagePeintSonAveu('fields')) return;
   const ctx = $('#dm-field-ctx'); const obj = DM.objects.find(o => o.id === selObject);
-  if (ctx) ctx.textContent = obj ? '— ' + obj.name : '(sélectionnez un objet)';
+  if (ctx) { const titreDeLObjet = '— ' + (obj ? obj.name : ''); ctx.textContent = obj ? titreDeLObjet : '(sélectionnez un objet)'; }
   if (!selObject) { host.replaceChildren(muted('sélectionnez un objet pour voir/ajouter ses champs.')); return; }
   const rows = DM.fields.filter(f => f.object_id === selObject);
   pagedList(host, {
@@ -224,7 +224,7 @@ function renderFields() {
   });
 }
 async function delField(r) {
-  if (!(await confirmModal('Supprimer le champ « ' + r.name + ' » ?', { okText: 'Supprimer', danger: true }))) return;
+  if (!(await confirmModal(faceDansLaLangue({ fr: 'Supprimer le champ « {nom} » ?', en: 'Delete the field “{nom}”?' }, { nom: r.name }), { okText: 'Supprimer', danger: true }))) return;
   const puits = puitsDesChamps(); effacerLeRefusDUnGeste(puits);
   try { await apiSend('/datamodels/fields/' + r.id, 'DELETE'); toast('champ supprimé', 'ok'); await reload(); }
   catch (e) { peindreLeRefusDUnGeste(puits, e); }
@@ -403,7 +403,7 @@ function renderResults(host, d) {
   const rows = raw.map(arr => { const o = {}; cols.forEach((c, i) => { o[c] = arr[i]; }); return o; });
   const columns = cols.map(c => ({ key: c, label: c, sortable: true, sortVal: r => r[c], render: r => { const s = document.createElement('span'); const v = r[c]; s.textContent = v == null ? '' : String(v); return s; } }));
   const box = document.createElement('div');
-  if (d && d.stats) { const p = document.createElement('div'); p.className = 'muted'; p.style.margin = '4px 0'; p.textContent = d.stats.rows + ' ligne(s)' + (d.stats.truncated ? ' (tronqué)' : '') + ' — ' + d.stats.elapsed_ms + ' ms'; box.appendChild(p); }
+  if (d && d.stats) { const p = document.createElement('div'); p.className = 'muted'; p.style.margin = '4px 0'; p.textContent = faceDansLaLangue({ fr: '{n} ligne(s){tronque} — {ms} ms', en: '{n} row(s){tronque} — {ms} ms' }, { n: d.stats.rows, tronque: d.stats.truncated ? faceDansLaLangue({ fr: ' (tronqué)', en: ' (truncated)' }) : '', ms: d.stats.elapsed_ms }); box.appendChild(p); }
   // `P10.19-a` — L'AVEU DE BANDE FROIDE ATTEINT L'ÉCRAN. Depuis le 2026-09-08 le démon écrit dans `stats.cold` que
   // ce chemin (pivot / jeu de données) a calculé sur la fenêtre chaude SEULE quand la fenêtre demandée commence sous
   // la frontière froide ; un résultat partiel peint sans ce mot se lirait comme entier. La pastille porte le mot
@@ -472,7 +472,7 @@ async function runDataset(r) {
   resultModal('Dataset — ' + r.name, body);
 }
 async function delDataset(r) {
-  if (!(await confirmModal('Supprimer le dataset « ' + r.name + ' » ?', { okText: 'Supprimer', danger: true }))) return;
+  if (!(await confirmModal(faceDansLaLangue({ fr: 'Supprimer le dataset « {nom} » ?', en: 'Delete the dataset “{nom}”?' }, { nom: r.name }), { okText: 'Supprimer', danger: true }))) return;
   const puits = puitsDesDatasets(); effacerLeRefusDUnGeste(puits);
   try { await apiSend('/datasets/' + r.id, 'DELETE'); toast('dataset supprimé', 'ok'); loadDatasets(); }
   catch (e) { peindreLeRefusDUnGeste(puits, e); }
@@ -501,7 +501,7 @@ function syncButtons() {
 async function reload() {
   let d;
   try { d = await api('/datamodels'); }
-  catch (e) { const h = $('#dm-models-list'); if (h) h.replaceChildren(muted(prefixeDUnEchecRenduTelQuel() + ((e && e.message) || e))); return; }
+  catch (e) { const h = $('#dm-models-list'); if (h) h.replaceChildren(noeudDuRefusDUneLecture(e)); return; }   // `P10.29-g`
   // `P10.7-f` — UN ÉTAGE NON LU N'EST PAS UN ÉTAGE VIDE. `api()` ne jette que sur `!r.ok` : l'aveu arrive en
   // 200, forme intacte, et `Array.isArray([])` est VRAI sur la clé vidée. Les trois phrases de vide rendues
   // plus bas affirmeraient alors qu'aucun modèle, aucun objet, aucun champ n'est déclaré — et l'éditeur en

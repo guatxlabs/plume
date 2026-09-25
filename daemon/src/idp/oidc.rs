@@ -356,6 +356,18 @@ pub(crate) const CAUSE_FEDERATION_NOM_NON_VERIFIE: &str = "FÉDÉRATION REFUSÉE
      Réessayez.";
 
 impl RefusDeLaFederation {
+    /// `P10.28-v` — LE REFUS D'UNE FÉDÉRATION EST TRACÉ COMME CELUI DU CHEMIN D'EN-TÊTES : un refus de NOM (la règle unique
+    /// des annuaires) inscrit un maillon `auth.annuaire.refuse` et un événement `plume-auth` de sévérité quatre, une fois
+    /// par fenêtre et par (base, nom, cause, porte) — `auth::tracer_le_refus_de_l_annuaire`, la trace même des en-têtes.
+    /// Le nom n'entre PAS à l'inventaire des accès (il n'a pas accédé). Une écriture de la ligne fédérée qui échoue n'est
+    /// pas un refus de nom : elle n'est pas tracée ici. L'appelant ne tient PAS la connexion d'écriture (la trace la prend).
+    pub(crate) fn servir(&self, st: &AppState, porte: crate::auth::PorteDeLAnnuaire, ip: &str) -> Response {
+        if let Self::Nom(refus) = self {
+            crate::auth::tracer_le_refus_de_l_annuaire(st, refus, ip, porte);
+        }
+        self.reponse()
+    }
+
     /// La réponse des trois portes. Les deux refus d'avant gardent leur statut et leur texte (409) ; le nom non
     /// vérifié, neuf, rend 503 et sa cause.
     pub(crate) fn reponse(&self) -> Response {

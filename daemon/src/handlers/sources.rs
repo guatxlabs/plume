@@ -42,7 +42,7 @@
 //! NATURE : c'est une réponse, pas un trou. Ces déclarations ne pilotent que le VERDICT AFFICHÉ ; aucune
 //! alerte n'en dérive (le dead-man's-switch reste celui des sondes de `COLLECTORS`).
 use crate::*;
-use crate::handlers::transaction_validee::rendre_apres_validation;
+use crate::handlers::transaction_validee::{ouvrir_la_transaction_du_geste, rendre_apres_validation};
 
 // Plafonds de longueur (caractères) des métadonnées de source éditables — bornage anti-abus avant écriture.
 const LABEL_MAX: usize = 200;
@@ -557,6 +557,11 @@ pub(crate) async fn source_settings_get(State(st): State<AppState>, Extension(au
 pub(crate) const CAUSE_REGLAGES_DE_SOURCE_INCHANGES: &str = "RÉGLAGES DE SOURCE INCHANGÉS : la base n'a pas validé \
      la transaction (COMMIT refusé) et l'a annulée — la source garde ses métadonnées d'avant, et aucune trace n'est \
      écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_REGLAGES_DE_SOURCE_INCHANGES_TRANSACTION_NON_OUVERTE: &str = "RÉGLAGES DE SOURCE INCHANGÉS : \
+     la base n'a pas pris la transaction du réglage (BEGIN refusé : verrou tenu, ou transaction d'un autre geste \
+     pendante sur l'écrivain) — RIEN n'est écrit : la source garde ses métadonnées d'avant, et aucune trace n'est \
+     écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 
 
 /// POST|PUT /api/sources/settings {source, action, value?, interval_s?} -> DÉCLARATIONS et métadonnées
@@ -644,8 +649,8 @@ pub(crate) async fn source_settings_put(State(st): State<AppState>, Extension(au
     } else {
         None
     };
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return (StatusCode::INTERNAL_SERVER_ERROR, "verrou base indisponible").into_response();
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "sources", "réglage d'une source", CAUSE_REGLAGES_DE_SOURCE_INCHANGES_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<()> = (|| {
         let ts = now();

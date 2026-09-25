@@ -707,7 +707,6 @@ const I18N_EN = {
   "Détail par feed (santé de collecte) : Données → Fraîcheur": "Detail per feed (collection health): Data → Freshness",
   "Flotte d'agents : inventaire détaillé (statut, enrôlement, dernier signal) — Données → Flotte": "Agent fleet: detailed inventory (status, enrolment, last signal) — Data → Fleet",
   "Hôtes (endpoints)": "Hosts (endpoints)",
-  "Ouvrir l'inventaire complet des sources (Données → Sources)": "Open the full source inventory (Data → Sources)",
   "Plier / déplier les séries métriques": "Collapse / expand the metric series",
   "aucun feed récent": "no recent feed", "calme (collecte saine, source peu active) ·": "quiet (healthy collection, source not very active) ·",
   "capteurs déclarés": "declared sensors", "détail des séries indisponible (mettre à jour le daemon)": "series detail unavailable (update the daemon)",

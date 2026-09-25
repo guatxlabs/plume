@@ -39,7 +39,7 @@
 //! Parce qu'une déclaration ÉTEINT une alerte, elle est auditée à la sévérité que ce dépôt réserve à
 //! l'étouffement d'un signal (3), et jamais silencieusement.
 use crate::*;
-use crate::handlers::transaction_validee::rendre_apres_validation;
+use crate::handlers::transaction_validee::{ouvrir_la_transaction_du_geste, rendre_apres_validation};
 
 /// Plafond du motif écrit par l'exploitant — bornage anti-abus avant écriture (même discipline que
 /// `NOTE_MAX` côté sources).
@@ -335,6 +335,11 @@ pub(crate) const CAUSE_DECLARATION_D_HOTE_INCHANGEE: &str = "DÉCLARATION D'HÔT
      la transaction (COMMIT refusé) et l'a annulée — l'hôte garde ses réglages d'avant dans l'inventaire de flotte, \
      et aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou \
      verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_DECLARATION_D_HOTE_INCHANGEE_TRANSACTION_NON_OUVERTE: &str = "DÉCLARATION D'HÔTE INCHANGÉE : \
+     la base n'a pas pris la transaction de la déclaration (BEGIN refusé : verrou tenu, ou transaction d'un autre \
+     geste pendante sur l'écrivain) — RIEN n'est écrit : l'hôte garde ses réglages d'avant dans l'inventaire de \
+     flotte, et aucune trace n'est écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 
 
 /// POST|PUT /api/hosts/settings {host, action, value?, motif?} -> LA DÉCLARATION D'ATTENTE d'un hôte.
@@ -391,8 +396,8 @@ pub(crate) async fn host_settings_put(State(st): State<AppState>, Extension(au):
         None
     };
     crate::req_conn!(st, au, conn);
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return (StatusCode::INTERNAL_SERVER_ERROR, "verrou base indisponible").into_response();
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "hotes", "déclaration d'hôte", CAUSE_DECLARATION_D_HOTE_INCHANGEE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<()> = (|| {
         let ts = now();

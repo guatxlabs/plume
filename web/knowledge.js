@@ -7,7 +7,7 @@
 //   DELETE /api/knowledge/alias|calc|eventtype|tag/{id}    (editor+)
 // SÉCU UI : tout en textContent/esc (anti-XSS). Mutations via apiSend (jeton CSRF auto). Aucune surface
 // nouvelle ni chemin de requête/masquage touché — pure UI sur des routes déjà en place.
-import { $, api, apiSend, effacerLeRefusDUnGeste, muted, pagedList, peindreLeRefusDUnGeste, prefixeDUnEchecRenduTelQuel, puitsDuRefusDUnGeste, toast, modal, confirmModal, managedBadge, gateDeleteBtn, faceDansLaLangue } from './core.js';
+import { $, api, apiSend, effacerLeRefusDUnGeste, noeudDuRefusDUneLecture, pagedList, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, toast, modal, confirmModal, managedBadge, gateDeleteBtn, faceDansLaLangue } from './core.js';
 
 // `P10.7-f` (rang 4) — LES SIX FAMILLES VIENNENT DANS UN SEUL CORPS, ET L'AVEU NOMME CELLES QUI N'ONT PAS
 // ÉTÉ LUES. `/api/knowledge` rend `{aliases, calcs, eventtypes, tags, macros, auto_lookups}` ; quand une
@@ -65,9 +65,20 @@ const MOTS_DES_SUCCES_DE_SAVOIR = {
   tag: { cree: { fr: 'tag créé', en: 'tag created' }, supprime: { fr: 'le tag supprimé', en: 'tag deleted' } },
   generique: { cree: { fr: '{objet} créé', en: '{objet} created' }, supprime: { fr: '{objet} supprimé', en: '{objet} deleted' } },
 };
+// `P10.29-c` — LA CONFIRMATION D'UN RETRAIT ET LE TITRE D'UNE CRÉATION, DANS LES DEUX LANGUES (témoin 120c : « Supprimer le tag
+// « x » ? » et « Nouvel objet — tag » étaient composés en français autour du nom de la famille). Chaque famille nomme
+// son objet dans les deux langues ; une famille qui n'y serait pas garde son nom collé, sous la face générique.
+const MOTS_DES_GESTES_DE_SAVOIR = {
+  alias: { retrait: { fr: "Supprimer l'alias « {nom} » ?", en: 'Delete the alias “{nom}”?' }, titre: { fr: 'Nouvel objet — alias de champ', en: 'New object — field alias' } },
+  calc: { retrait: { fr: 'Supprimer le champ calculé « {nom} » ?', en: 'Delete the calculated field “{nom}”?' }, titre: { fr: 'Nouvel objet — champ calculé', en: 'New object — calculated field' } },
+  eventtype: { retrait: { fr: "Supprimer l'event type « {nom} » ?", en: 'Delete the event type “{nom}”?' }, titre: { fr: 'Nouvel objet — event type', en: 'New object — event type' } },
+  tag: { retrait: { fr: 'Supprimer le tag « {nom} » ?', en: 'Delete the tag “{nom}”?' }, titre: { fr: 'Nouvel objet — tag', en: 'New object — tag' } },
+  generique: { retrait: { fr: 'Supprimer {objet} « {nom} » ?', en: 'Delete {objet} “{nom}”?' }, titre: { fr: 'Nouvel objet — {objet}', en: 'New object — {objet}' } },
+};
+const motDUnGesteDeSavoir = (kind, geste, human, nom) => faceDansLaLangue((MOTS_DES_GESTES_DE_SAVOIR[kind] || MOTS_DES_GESTES_DE_SAVOIR.generique)[geste], { objet: human, nom });
 const motDUnSuccesDeSavoir = (kind, geste, human) => faceDansLaLangue((MOTS_DES_SUCCES_DE_SAVOIR[kind] || MOTS_DES_SUCCES_DE_SAVOIR.generique)[geste], { objet: human });
 async function del(kind, id, label, human) {
-  if (!(await confirmModal('Supprimer ' + human + ' « ' + label + ' » ?', { okText: 'Supprimer', danger: true }))) return;
+  if (!(await confirmModal(motDUnGesteDeSavoir(kind, 'retrait', human, label), { okText: 'Supprimer', danger: true }))) return;
   const puits = puitsDeLaFamille(kind); effacerLeRefusDUnGeste(puits);
   try { await apiSend('/knowledge/' + kind + '/' + id, 'DELETE'); toast(motDUnSuccesDeSavoir(kind, 'supprime', human), 'ok'); loadKnowledge(); }
   catch (e) { peindreLeRefusDUnGeste(puits, e); }
@@ -77,7 +88,7 @@ async function create(kind, human, fields, payloadFn) {
   // marque accessible de l'inertie et sa raison ; seul ce point-ci peut EMPÊCHER l'écriture, et la MÊME
   // phrase est écrite aux deux endroits, jamais deux formulations du même refus.
   if (FAMILLES_NON_LUES.has(kind)) { toast("Cette famille d'objets de savoir n'a PAS été lue : en créer un ici, c'est peut-être en écrire un SECOND par-dessus celui que cette lecture n'a pas pu rendre — l'insertion sera refusée par l'unicité du nom, ou le doublon façonnera toute recherche du produit.", 'bad', 9000); return; }
-  const v = await modal({ title: 'Nouvel objet — ' + human, okText: 'Créer', fields });
+  const v = await modal({ title: motDUnGesteDeSavoir(kind, 'titre', human), okText: 'Créer', fields });
   if (!v) return;
   const puits = puitsDeLaFamille(kind); effacerLeRefusDUnGeste(puits);
   try { await apiSend('/knowledge/' + kind, 'POST', payloadFn(v)); toast(motDUnSuccesDeSavoir(kind, 'cree', human), 'ok'); loadKnowledge(); }
@@ -177,7 +188,7 @@ async function loadKnowledge() {
   let d;
   try { d = await api('/knowledge'); }
   catch (e) {
-    ['#ko-alias-list', '#ko-calc-list', '#ko-eventtype-list', '#ko-tag-list'].forEach(s => { if ($(s)) $(s).replaceChildren(muted(prefixeDUnEchecRenduTelQuel() + ((e && e.message) || e))); });
+    ['#ko-alias-list', '#ko-calc-list', '#ko-eventtype-list', '#ko-tag-list'].forEach(s => { if ($(s)) $(s).replaceChildren(noeudDuRefusDUneLecture(e)); });   // `P10.29-g`
     return;
   }
   // `P10.7-f` — UNE FAMILLE NON LUE N'EST PAS UNE FAMILLE VIDE. `api()` ne jette que sur `!r.ok` : l'aveu

@@ -7,7 +7,7 @@
 //! création (show-once) ; il n'est jamais re-dérivable (seul son SHA-256 est en base). Toutes les routes sont
 //! admin-only (route_min_role /api/tokens -> Admin, default-deny) AVEC re-check `au.is_admin()` dans le handler.
 use crate::*;
-use crate::handlers::transaction_validee::valider_la_transaction;
+use crate::handlers::transaction_validee::{ouvrir_la_transaction_du_geste, valider_la_transaction};
 
 /// CSPRNG hex (/dev/urandom). MÊME construction que le CLI `token` : 32 octets -> hex. None si l'entropie
 /// noyau est indisponible -> le mint ÉCHOUE (jamais de secret faible/prévisible).
@@ -288,8 +288,8 @@ pub(crate) async fn token_create(State(st): State<AppState>, Extension(au): Exte
     // Insert + audit ATOMIQUES fail-closed (aucun jeton sans trace ; si l'audit échoue -> ROLLBACK, le secret
     // renvoyé ne correspondrait à aucune ligne persistée). Le UNIQUE(token_hash) rend une collision improbable
     // -> 409. host NULL = non lié (ingest/HEC only). last_used NULL tant qu'inutilisé.
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "jetons", "frappe d'un jeton", CAUSE_JETON_NON_FRAPPE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<()> = (|| {
         inserer_jeton_frappe_par(&conn, &name, &hash, Some(kind), role, &portee, Some(au.name.as_str()))?;
@@ -341,8 +341,8 @@ pub(crate) async fn token_delete(State(st): State<AppState>, Extension(au): Exte
     if n == 0 {
         return not_found("jeton introuvable");
     }
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "jetons", &format!("révocation du jeton '{name}'"), CAUSE_JETON_NON_REVOQUE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<()> = (|| {
         conn.execute("DELETE FROM token WHERE name=?1", params![name])?;
@@ -372,11 +372,21 @@ pub(crate) async fn token_delete(State(st): State<AppState>, Extension(au): Exte
 pub(crate) const CAUSE_JETON_NON_FRAPPE_COMMIT_REFUSE: &str = "JETON NON FRAPPÉ : la base n'a pas validé la transaction \
      (COMMIT refusé) et l'a annulée — ni le jeton ni sa trace d'audit ne sont écrits, et aucun secret n'est montré. \
      Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_JETON_NON_FRAPPE_TRANSACTION_NON_OUVERTE: &str = "JETON NON FRAPPÉ : la base n'a pas pris la \
+     transaction de la frappe (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante sur l'écrivain) \
+     — RIEN n'est écrit : ni le jeton ni sa trace d'audit ne sont écrits, et aucun secret n'est montré. Réessayez ; \
+     s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 
 /// `P10.25-e` — le `COMMIT` de la révocation d'un jeton refusé.
 pub(crate) const CAUSE_JETON_NON_REVOQUE_COMMIT_REFUSE: &str = "JETON NON RÉVOQUÉ : la base n'a pas validé la \
      transaction (COMMIT refusé) et l'a annulée — le jeton authentifie toujours son porteur, et aucune révocation n'est \
      attestée. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_JETON_NON_REVOQUE_TRANSACTION_NON_OUVERTE: &str = "JETON NON RÉVOQUÉ : la base n'a pas pris \
+     la transaction de la révocation (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante sur \
+     l'écrivain) — RIEN n'est écrit : le jeton authentifie toujours son porteur, et aucune révocation n'est \
+     attestée. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 
 // ====================================================================================================
 // `P10.24-w` — CE QUE LA SUPPRESSION D'UN COMPTE FAIT DES JETONS QU'IL A FRAPPÉS.

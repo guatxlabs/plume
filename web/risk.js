@@ -4,7 +4,7 @@
 //   GET /api/risk/entities                 -> {entities:[{entity_type,entity,env_id,score,contrib,distinct_tactics,tactics,score_hot,contrib_hot,max_severity,first_ts,last_ts,over_threshold}], served, window, total, total_capped, over_threshold_total, thresholds:{score,distinct_tactics,velocity,window_s}}
 //   GET /api/risk/entity/{etype}/{entity}    -> {entity_type,entity,summary:{…}|null, timeline:[{ts,score,contrib}], contributions:[{ts,risk_score,source,rule_id,reason,mitre,severity}]}
 // SÉCU UI : tout en textContent/esc (anti-XSS). Aucune mutation (aucun apiSend).
-import { $, api, fetchInto, fmtTs, humanAge, LANG, muted, pagedList, sev, toast } from './core.js';
+import { $, api, fetchInto, fmtTs, humanAge, LANG, muted, pagedList, sev, toast, ilYA, faceDansLaLangue } from './core.js';
 import { phraseDeCoupe } from './coupe_de_liste.js'; // `P11.22-g` : les contributions bornées disent leur coupe
 
 let _thresholds = null;   // seuils courants (pour la légende) — repeuplés à chaque chargement.
@@ -30,7 +30,7 @@ async function loadRiskView() {
     { key: 'contrib', label: 'Contrib.', sortable: true, align: 'r', sortVal: r => r.contrib || 0, render: r => String(r.contrib == null ? 0 : r.contrib) },
     { key: 'distinct_tactics', label: 'Tactiques', sortable: true, align: 'r', sortVal: r => r.distinct_tactics || 0, render: r => { const s = document.createElement('span'); s.textContent = String(r.distinct_tactics == null ? 0 : r.distinct_tactics); if (r.tactics) s.title = r.tactics; return s; } },
     { key: 'max_severity', label: 'Sév. max', sortable: true, sortVal: r => r.max_severity || 0, render: r => { const s = document.createElement('span'); s.className = 'sev'; s.textContent = sev(r.max_severity); return s; } },
-    { key: 'last_ts', label: 'Dernier', sortable: true, sortVal: r => r.last_ts || 0, render: r => { const s = document.createElement('span'); s.textContent = r.last_ts ? 'il y a ' + humanAge(nowS - r.last_ts) : '—'; if (r.last_ts) s.title = fmtTs(r.last_ts); return s; } },
+    { key: 'last_ts', label: 'Dernier', sortable: true, sortVal: r => r.last_ts || 0, render: r => { const s = document.createElement('span'); s.textContent = r.last_ts ? ilYA(nowS - r.last_ts) : '—'; if (r.last_ts) s.title = fmtTs(r.last_ts); return s; } },
   ];
   host.replaceChildren();
   // `P10.7-f` — LE CLASSEMENT LUI-MÊME A-T-IL ÉTÉ LU ? Le démon sert, en 200, `{entities: [], served: 0,
@@ -92,11 +92,12 @@ async function loadRiskView() {
     if (_thresholds) {
       const t = _thresholds;
       leg.className = 'muted'; leg.style.cssText = 'margin-top:8px;font-size:11px';
-      leg.textContent = 'Seuils courants — score ≥ ' + (t.score != null ? t.score : '?')
-        + (t.distinct_tactics ? ' · tactiques distinctes ≥ ' + t.distinct_tactics : '')
-        + (t.velocity ? ' · vélocité ≥ ' + t.velocity : '')
-        + (t.window_s ? ' · fenêtre ' + humanAge(t.window_s) : '')
-        + '. « Score » = risque cumulé attribué à l\'entité ; « Vélocité » = score sur la fenêtre récente. Clique une ligne pour la timeline + les contributions.';
+      // `P10.29-c` — la légende des seuils et la ligne d'une entité, dans les deux langues (témoin 120c).
+      leg.textContent = faceDansLaLangue({ fr: "Seuils courants — score ≥ {score}{tactiques}{velocite}{fenetre}. « Score » = risque cumulé attribué à l'entité ; « Vélocité » = score sur la fenêtre récente. Clique une ligne pour la timeline + les contributions.", en: 'Current thresholds — score ≥ {score}{tactiques}{velocite}{fenetre}. “Score” = cumulated risk attributed to the entity; “Velocity” = score over the recent window. Click a row for the timeline + the contributions.' }, {
+        score: t.score != null ? t.score : '?',
+        tactiques: t.distinct_tactics ? faceDansLaLangue({ fr: ' · tactiques distinctes ≥ {n}', en: ' · distinct tactics ≥ {n}' }, { n: t.distinct_tactics }) : '',
+        velocite: t.velocity ? faceDansLaLangue({ fr: ' · vélocité ≥ {n}', en: ' · velocity ≥ {n}' }, { n: t.velocity }) : '',
+        fenetre: t.window_s ? faceDansLaLangue({ fr: ' · fenêtre {duree}', en: ' · window {duree}' }, { duree: humanAge(t.window_s) }) : '' });
     }
   }
 }
@@ -264,10 +265,10 @@ async function openEntity(etype, entity) {
     );
     det.appendChild(tiles);
     const meta = document.createElement('div'); meta.className = 'muted'; meta.style.cssText = 'margin:6px 0 10px;font-size:12px';
-    meta.textContent = 'Sévérité max : ' + sev(sm.max_severity)
-      + (sm.tactics ? ' · tactiques : ' + sm.tactics : '')
-      + (sm.first_ts ? ' · première : ' + fmtTs(sm.first_ts) : '')
-      + (sm.last_ts ? ' · dernière : ' + fmtTs(sm.last_ts) : '');
+    meta.textContent = faceDansLaLangue({ fr: 'Sévérité max : {sev}{tactiques}{premiere}{derniere}', en: 'Max severity: {sev}{tactiques}{premiere}{derniere}' }, { sev: sev(sm.max_severity),
+      tactiques: sm.tactics ? faceDansLaLangue({ fr: ' · tactiques : {t}', en: ' · tactics: {t}' }, { t: sm.tactics }) : '',
+      premiere: sm.first_ts ? faceDansLaLangue({ fr: ' · première : {date}', en: ' · first: {date}' }, { date: fmtTs(sm.first_ts) }) : '',
+      derniere: sm.last_ts ? faceDansLaLangue({ fr: ' · dernière : {date}', en: ' · last: {date}' }, { date: fmtTs(sm.last_ts) }) : '' });
     det.appendChild(meta);
   } else if (causeDeLaSynthese) {
     const { aveu, dit } = boiteDAveuDuRisque();
@@ -291,7 +292,7 @@ async function openEntity(etype, entity) {
       const bar = document.createElement('div'); bar.className = 'risk-bar';
       const h2 = Math.max(2, Math.round(((p.score || 0) / max) * 40));
       bar.style.height = h2 + 'px';
-      bar.title = fmtTs(p.ts) + ' — score ' + (p.score || 0) + ' · ' + (p.contrib || 0) + ' contrib.';
+      bar.title = faceDansLaLangue({ fr: '{date} — score {score} · {n} contrib.', en: '{date} — score {score} · {n} contrib(s).' }, { date: fmtTs(p.ts), score: p.score || 0, n: p.contrib || 0 });
       bars.appendChild(bar);
     });
     det.appendChild(bars);

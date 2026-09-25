@@ -834,7 +834,7 @@ env:
   # la copie est retirée, `knowledge` lit l'autorité `field_filter::STRUCTURAL_DENY`, et le témoin refuse toute
   # dérive future. Pas de `cfg(feature)` -> le MÊME +1 sur `EXPECTED_COLD_TESTS`, écart INCHANGÉ, mesuré par le
   # script du dépôt, jamais d'une addition.
-  EXPECTED_TESTS: "1930"
+  EXPECTED_TESTS: "1942"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -1306,7 +1306,7 @@ jobs:
           # `P11.19-a` (second volet, groundwork) (2026-09-12) : +1, le MÊME que sur `EXPECTED_TESTS`
           # (`les_champs_structurels_de_l_autorite_sont_refuses_comme_objet_de_savoir`) — pas de `cfg(feature)`,
           # écart INCHANGÉ. La dérivation est écrite auprès d'`EXPECTED_TESTS`, une seule fois.
-          EXPECTED_COLD_TESTS: "2185"
+          EXPECTED_COLD_TESTS: "2197"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail
@@ -2220,6 +2220,19 @@ jobs:
         continue-on-error: true
         run: python3 .github/scripts/check_an_inserted_id_is_read_at_the_foot_of_its_insert.py
 
+      # `P10.28-d` — AUCUNE ROUTE N'OUVRE SA TRANSACTION PAR UN `BEGIN` NU. La forme d'avant (`if conn.execute_batch("BEGIN
+      # IMMEDIATE").is_err() { return server_err(..) }`, ou `match Txn::begin(..) { …, Err(_) => … }`) n'écrivait rien, mais
+      # rendait une réponse GÉNÉRIQUE (500 JSON, 500 texte, 500 sans corps, 200 `{error}`) et taisait le journal ; la forme
+      # commune (`ouvrir_la_transaction_du_geste`, `ouvrir_le_garde_du_geste`) dit au journal verrou passager ou transaction
+      # d'un autre geste, et rend le 503 NOMMÉ du geste. Ensemble NOMMÉ (fichier + fonction + forme) des ouvertures nues
+      # encore tolérées — hors route (vérifié contre le routeur) ou reste de route —, jugé dans les deux sens ; épreuves
+      # positives et négatives jouées à chaque exécution (99 ouvertures nues de route ou d'aide de route sur l'arbre d'avant
+      # le lot — 95 converties, 4 restes nommés —, et 13 ouvertures hors route, vérifiées contre le routeur).
+      - name: Aucune route n'ouvre sa transaction par un BEGIN nu (P10.28-d)
+        id: garde_74
+        continue-on-error: true
+        run: python3 .github/scripts/check_no_route_opens_its_transaction_with_a_bare_begin.py
+
       # `P11.18-z` — LA RECHERCHE D'UNE LISTE SURVIT AU RENDU QUI DÉTRUIT SON CHAMP. La garde tient que
       # chaque liste cherchable déclare l'identité stable sans laquelle la mémoire ne peut pas s'armer :
       # sans elle, le mécanisme est posé mais la vue se comporte comme avant, en silence.
@@ -2702,6 +2715,7 @@ jobs:
           total=$((total+1)); o="${{ steps.garde_71.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_sensor_escapes_a_backslash_under_every_awk.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_72.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_transaction_boundary_is_never_swallowed.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_73.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_an_inserted_id_is_read_at_the_foot_of_its_insert.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_74.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_no_route_opens_its_transaction_with_a_bare_begin.py : $o"; }
           echo "gardes jouées : $total ; en échec : $rouges"
           exit $rc
   features:

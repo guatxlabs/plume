@@ -2,7 +2,7 @@
 // si GET /api/ai/status renvoie { enabled:true } (feature `ai` compilée + PLUME_AI_ENABLE + provider actif).
 // L'IA PROPOSE une requête GXQL : on l'écrit dans #sql pour que l'analyste la RÉVISE puis l'exécute lui-même
 // (Exécuter). ZÉRO exécution automatique — le handler serveur ne fait que compiler+valider (compilo fermé).
-import { $, api, apiSend, showErr } from './core.js';
+import { $, api, apiSend, showErr, faceDansLaLangue } from './core.js';
 
 // Appelé au boot (app.js) : sonde le statut ; révèle et câble l'assistant seulement si activé.
 export async function initAiAssist() {
@@ -37,7 +37,7 @@ export async function initAiAssist() {
           stat.textContent = 'GXQL proposé — révisez puis Exécuter';
         } else {
           stat.classList.add('warn');
-          stat.textContent = 'GXQL proposé mais REJETÉ par le compilateur : ' + (r.error || 'invalide');
+          stat.textContent = faceDansLaLangue({ fr: 'GXQL proposé mais REJETÉ par le compilateur : {cause}', en: 'GXQL proposed but REJECTED by the compiler: {cause}' }, { cause: r.error || faceDansLaLangue({ fr: 'invalide', en: 'invalid' }) });   // `P10.29-c`
         }
       } else {
         stat.textContent = 'aucune proposition';

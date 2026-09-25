@@ -310,8 +310,11 @@ FAITS_QUI_AFFIRMENT = (
 # code, un sorti par la règle de lecture) ; `seeds.rs` garde deux sites (`seed_ti_alert_rules`, `seed_risk_rules`),
 # donc aucun fichier ne sort. Relevé de ce jour-là sur l'arbre : 23 sites sur 8 fichiers ; même règle des deux tiers,
 # arrondie en dessous : 23 -> 15, 8 -> 5.
-PLANCHER_SITES = 15
-PLANCHER_FICHIERS = 5
+# RE-DÉRIVÉS le 2026-09-25 (`P10.29-a`) : le lot retire les trois sites du bandeau (`system.rs::bulletin_set` ×2,
+# `bulletin_clear`), donc aussi un fichier (`system.rs` n'en portait pas d'autre). Relevé de ce jour-là sur l'arbre :
+# 20 sites sur 7 fichiers ; même règle des deux tiers, arrondie en dessous : 20 -> 13, 7 -> 4.
+PLANCHER_SITES = 13
+PLANCHER_FICHIERS = 4
 
 # ================================================================================================
 # L'ENSEMBLE NOMMÉ — SIX CLASSES, JUGÉES DANS LES DEUX SENS
@@ -372,11 +375,12 @@ SITES_REGISTRE_APRES_ECRITURE_AVALEE = {
     # nomme QUE le palier (`#id tier=2 by …`) ; c'est l'élément de CHRONOLOGIE qui nommait le type et le pilote
     # — et il le faisait sur un type refusé (« type intrusion » en chronologie, `incident_type` NULL en base).
     ("daemon/src/handlers/incidents.rs", "step_advance"): ("let _ -> ledger_append",),
-    # DEUX écritures ET l'audit avalés, avec un corps de succès : le bulletin d'accueil peut n'avoir
-    # jamais été posé pendant que l'audit de configuration dit qu'il l'a été.
-    ("daemon/src/handlers/system.rs", "bulletin_set"):
-        ("let _ -> audit_config_change", "let _ -> audit_config_change"),
-    ("daemon/src/handlers/system.rs", "bulletin_clear"): ("let _ -> audit_config_change",),
+    # `P10.29-a` — LES TROIS SITES DU BANDEAU (`bulletin_set` ×2, `bulletin_clear`) SONT RETIRÉS (2026-09-25) : la
+    # publication et l'effacement s'écrivent dans une transaction ouverte par la forme commune, l'écriture est COMPTÉE
+    # (l'`UPSERT` doit poser une ligne), la trace suit dans la même transaction et le succès n'est rendu qu'après le
+    # `COMMIT` (503 nommés sinon). CE QUE LEUR RAISON D'ENTRÉE SOUS-COMPTAIT (« le bulletin peut n'avoir jamais été
+    # posé ») : MESURÉ (témoins `bdrn_`), la réponse d'une publication refusée RENVOYAIT le bandeau comme posé, et un
+    # effacement refusé laissait le bandeau affiché à tous les comptes pendant que le registre attestait « effacé ».
     # `P10.21-l` — LES DEUX DÉPROVISIONNEMENTS SCIM (`scim_user_replace`, `scim_user_delete`), entrés par
     # `P10.21-g`, sont RETIRÉS : le `DELETE` des droits est compté avant la ligne `scim.user.deprovision`,
     # et un refus de la base rend à l'IdP l'erreur SCIM en 503 sans rien attester.

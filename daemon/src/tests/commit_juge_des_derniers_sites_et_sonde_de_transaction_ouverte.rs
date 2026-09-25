@@ -319,9 +319,9 @@ mod commit_juge_des_derniers_sites_et_sonde_de_transaction_ouverte {
     // (5) `notifiers.rs` — CANAUX DE NOTIFICATION (types de réponse gardés)
     // -------------------------------------------------------------------------------------
 
-    /// CE QU'IL TIENT : la création refuse par son canal `error` (le type `Json` de la route, tenu par `sec.rs`), la
-    /// modification et la suppression rendent 503 (le type `StatusCode` ne porte pas de corps) ; transaction fermée,
-    /// rien de changé à froid ni pour ce processus.
+    /// CE QU'IL TIENT : les trois gestes rendent le 503 NOMMÉ de leur geste (`P10.28-c`, `P10.28-q` : la création ne
+    /// refuse plus par un deux cents `{error}`, la modification et la suppression ne rendent plus un 503 sans corps) ;
+    /// transaction fermée, rien de changé à froid ni pour ce processus.
     ///
     /// LA MUTATION QUI LE FAIT ROUGIR : rendre l'un des trois `COMMIT` à `let _ =`.
     #[tokio::test]
@@ -330,24 +330,26 @@ mod commit_juge_des_derniers_sites_et_sonde_de_transaction_ouverte {
         let adm = cjds_adm();
         let canal = json!({ "kind": "webhook", "url": "http://10.0.0.9/cjds", "name": "cjds-canal" });
         let r = cjds_sous_commit_refuse(&st, async { notifier_create(State(st.clone()), Extension(adm.clone()), Json(canal.clone())).await.into_response() }).await;
-        cjds_juger("création de canal", &r, &[
-            ("cause nommée sous `error`", r.corps["error"] == json!(CAUSE_CANAL_DE_NOTIFICATION_NON_CREE)),
-            ("aucun identifiant rendu", r.corps.get("id").is_none()),
+        let [a, b] = cjds_refus_nomme(&r, CAUSE_CANAL_DE_NOTIFICATION_NON_CREE);
+        cjds_juger("création de canal", &r, &[a, b,
+            ("aucun identifiant d'objet rendu (seul l'identifiant du 5xx)", r.corps.get("id").and_then(|v| v.as_i64()).is_none()),
             ("aucun canal à froid", cjds_a_froid(&p, "SELECT COUNT(*) FROM notifier WHERE name='cjds-canal'") == 0),
             ("aucun canal pour ce processus", cjds_compte(&st, "SELECT COUNT(*) FROM notifier WHERE name='cjds-canal'") == 0)]);
-        let Json(v) = notifier_create(State(st.clone()), Extension(adm.clone()), Json(canal)).await;
+        let (_, v) = cjds_corps(notifier_create(State(st.clone()), Extension(adm.clone()), Json(canal)).await).await;
         let nid = v["id"].as_i64().unwrap_or_else(|| panic!("levé, le canal est créé : {v}"));
         let sql = format!("SELECT COUNT(*) FROM notifier WHERE id={nid} AND name='cjds-canal'");
 
         let r = cjds_sous_commit_refuse(&st, async {
             notifier_update(State(st.clone()), Extension(adm.clone()), Path(nid), Json(json!({ "name": "cjds-renomme" }))).await.into_response()
         }).await;
-        cjds_juger("modification de canal", &r, &[("statut 503", r.statut == 503),
+        let [a, b] = cjds_refus_nomme(&r, CAUSE_CANAL_DE_NOTIFICATION_INCHANGE);
+        cjds_juger("modification de canal", &r, &[a, b,
             ("nom d'avant à froid", cjds_a_froid(&p, &sql) == 1),
             ("nom d'avant pour ce processus", cjds_compte(&st, &sql) == 1)]);
 
         let r = cjds_sous_commit_refuse(&st, async { notifier_delete(State(st.clone()), Extension(adm.clone()), Path(nid)).await.into_response() }).await;
-        cjds_juger("suppression de canal", &r, &[("statut 503", r.statut == 503),
+        let [a, b] = cjds_refus_nomme(&r, CAUSE_CANAL_DE_NOTIFICATION_NON_SUPPRIME);
+        cjds_juger("suppression de canal", &r, &[a, b,
             ("toujours là à froid", cjds_a_froid(&p, &sql) == 1),
             ("toujours là pour ce processus", cjds_compte(&st, &sql) == 1)]);
     }
@@ -637,8 +639,9 @@ mod commit_juge_des_derniers_sites_et_sonde_de_transaction_ouverte {
             ("aucun réglage à froid", cjds_a_froid(&p, reglages) == avant), ("aucun réglage pour ce processus", cjds_compte(&st, reglages) == avant)]);
         let r = cjds_sous_commit_refuse(&st, suppressions_put(State(st.clone()), Extension(adm.clone()),
             Json(json!({ "action": "set_operator_excl", "value": "203.0.113.7" })))).await;
-        cjds_juger("exclusion d'affichage", &r, &[("statut 503", r.statut == 503),
-            ("cause nommée (corps texte)", r.corps == json!(CAUSE_EXCLUSION_D_AFFICHAGE_INCHANGEE)),
+        // `P10.28-r` — la cause est servie en JSON nommé (elle l'était en corps texte).
+        let [a, b] = cjds_refus_nomme(&r, CAUSE_EXCLUSION_D_AFFICHAGE_INCHANGEE);
+        cjds_juger("exclusion d'affichage", &r, &[a, b,
             ("aucun réglage à froid", cjds_a_froid(&p, reglages) == avant), ("aucun réglage pour ce processus", cjds_compte(&st, reglages) == avant)]);
     }
 

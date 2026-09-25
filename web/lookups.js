@@ -90,14 +90,14 @@ function lookupRow(l) {
   const row = document.createElement('div'); row.className = 'rulerow';
   const name = document.createElement('span'); name.className = 'rulename'; name.textContent = l.name;
   name.appendChild(managedBadge(l.managed)); // D12 — origine du contenu (builtin/overlay/perso), comme ruleRow
-  const key = document.createElement('code'); key.className = 'rulecond'; key.textContent = 'clé=' + (l.key_field || '?');
+  const key = document.createElement('code'); key.className = 'rulecond'; key.textContent = faceDansLaLangue({ fr: 'clé={champ}', en: 'key={champ}' }, { champ: l.key_field || '?' });   // `P10.29-c`
   const colList = (l.cols || '').split(',').filter(Boolean);
   const meta = document.createElement('span'); meta.className = 'rulemeta muted';
-  meta.textContent = `${l.rows} ligne(s)` + (colList.length ? ' - ' + colList.join(', ') : ' - aucune colonne de sortie') + (l.updated ? ' - ' + fmtTs(l.updated) : '');
-  meta.title = colList.length ? 'colonnes de sortie (OUTPUT) : ' + colList.join(', ') : 'aucune colonne hors champ-clé';
+  meta.textContent = faceDansLaLangue({ fr: '{n} ligne(s){colonnes}{date}', en: '{n} row(s){colonnes}{date}' }, { n: l.rows, colonnes: colList.length ? ' - ' + colList.join(', ') : faceDansLaLangue({ fr: ' - aucune colonne de sortie', en: ' - no output column' }), date: l.updated ? ' - ' + fmtTs(l.updated) : '' });
+  meta.title = colList.length ? faceDansLaLangue({ fr: 'colonnes de sortie (OUTPUT) : {colonnes}', en: 'output columns (OUTPUT): {colonnes}' }, { colonnes: colList.join(', ') }) : 'aucune colonne hors champ-clé';
   const del = document.createElement('button'); del.className = 'crud-btn'; del.innerHTML = ic('x'); del.title = 'Supprimer';
   del.onclick = async () => {
-    if (!await confirmModal('Supprimer le lookup "' + l.name + '" (' + l.rows + ' ligne(s)) ?', { danger: true })) return;
+    if (!await confirmModal(faceDansLaLangue({ fr: 'Supprimer le lookup "{nom}" ({n} ligne(s)) ?', en: 'Delete the lookup "{nom}" ({n} row(s))?' }, { nom: l.name, n: l.rows }), { danger: true })) return;
     if (await contentDelete('/lookups/' + encodeURIComponent(l.name), 'lookup', puitsDesLookups())) loadLookups();
   };
   row.append(name, key, meta, del);
@@ -132,7 +132,7 @@ async function chargerLeLookupDuFormulaire(e) {
     }
     if (!rows.length) return fail('aucune ligne à charger');
     if (!rows.every(r => r && typeof r === 'object' && !Array.isArray(r))) return fail('chaque ligne doit être un objet {champ: valeur}');
-    if (!rows.every(r => Object.prototype.hasOwnProperty.call(r, key))) return fail(`chaque ligne doit contenir le champ-clé "${key}"`);
+    if (!rows.every(r => Object.prototype.hasOwnProperty.call(r, key))) return fail(faceDansLaLangue({ fr: 'chaque ligne doit contenir le champ-clé "{champ}"', en: 'every row must contain the key field "{champ}"' }, { champ: key }));   // `P10.29-c`
     res.textContent = '...'; res.className = 'muted';
     const puits = puitsDesLookups(); effacerLeRefusDUnGeste(puits);
     let j;

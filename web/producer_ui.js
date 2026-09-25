@@ -15,12 +15,22 @@ import { confirmModal, effacerLeRefusDUnGeste, faceDansLaLangue, managedBadge, m
 
 // --- destinations : où arrive ce qu'un producteur produit. Clé = famille de producteur. ---------------------
 // `hash` = onglet de la console (routage par `location.hash`), `label` = le nom de l'onglet tel qu'affiché.
+// `P10.29-c` — LA NOTE DE DESTINATION, DANS LES DEUX LANGUES. MESURÉ AVANT CE LOT (témoin 120c) : « ses alertes arrivent
+// dans Alertes · première évaluation dans 300 s » était composée en français (le nom de l'onglet, l'amorce, la suite et
+// ce que l'appelant ajoute) et le restait sous `LANG='en'`. Chaque morceau a ses deux faces ; l'appelant passe les siennes.
 const DESTINATIONS = {
-  alerts:  { hash: 'alerts',  label: 'Alertes', lead: 'ses alertes arrivent dans', tail: '' },
-  risk:    { hash: 'risk',    label: 'Risque',  lead: 'sa contribution au score des entités arrive dans', tail: '(mode risque : pas d\'alerte directe)' },
-  actions: { hash: 'actions', label: 'Actions', lead: 'les actions qu\'il pose arrivent dans', tail: '(mode Observation : en attente, dry-run ; mode Actif : exécutées)' },
-  cases:   { hash: 'cases',   label: 'Cas',     lead: 'sa checklist est proposée dans', tail: '(cas élevé en incident dont la tactique ou la technique dominante correspond, ou attachée à la main depuis le cas)' },
+  alerts:  { hash: 'alerts',  label: { fr: 'Alertes', en: 'Alerts' }, lead: { fr: 'ses alertes arrivent dans', en: 'its alerts arrive in' }, tail: null },
+  risk:    { hash: 'risk',    label: { fr: 'Risque', en: 'Risk' }, lead: { fr: 'sa contribution au score des entités arrive dans', en: 'its contribution to the entity score arrives in' }, tail: { fr: '(mode risque : pas d\'alerte directe)', en: '(risk mode: no direct alert)' } },
+  actions: { hash: 'actions', label: { fr: 'Actions', en: 'Actions' }, lead: { fr: 'les actions qu\'il pose arrivent dans', en: 'the actions it takes arrive in' }, tail: { fr: '(mode Observation : en attente, dry-run ; mode Actif : exécutées)', en: '(Observation mode: pending, dry-run; Active mode: executed)' } },
+  cases:   { hash: 'cases',   label: { fr: 'Cas', en: 'Cases' }, lead: { fr: 'sa checklist est proposée dans', en: 'its checklist is offered in' }, tail: { fr: '(cas élevé en incident dont la tactique ou la technique dominante correspond, ou attachée à la main depuis le cas)', en: '(case raised to an incident whose dominant tactic or technique matches, or attached by hand from the case)' } },
 };
+const MOTS_DE_LA_NOTE_DE_DESTINATION = {
+  ouvrir: { fr: 'Ouvrir {onglet}', en: 'Open {onglet}' },
+  phrase: { fr: "{amorce} l'onglet {onglet}{suite}.", en: '{amorce} the {onglet} tab{suite}.' },
+  premiere_evaluation: { fr: 'première évaluation dans {s} s', en: 'first evaluation in {s} s' },
+};
+// Les faces de la note, choisies à la langue de l'écran.
+const faceDeDestination = (morceau) => (morceau ? faceDansLaLangue(morceau) : '');
 // Règle / corrélation / baseline : une entrée en mode risque (risk_score > 0) ne lève pas d'alerte, elle
 // alimente le score d'entité. La destination est DÉRIVÉE de ce champ, pas d'un choix de l'appelant.
 // `P10.28-t` — L'AVIS D'UN PRODUCTEUR ENREGISTRÉ ET CELUI DE SA BASCULE, DANS LES DEUX LANGUES. MESURÉ AVANT CE LOT (témoin
@@ -42,22 +52,27 @@ function destinationOf(destKey) { return DESTINATIONS[destKey] || DESTINATIONS.a
 function capitalize(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
 
 // Élément « <nom> — <lead> <lien> <tail> ». Tout texte passe par textContent ; seul le lien est un <a>.
+// `extra` est une face déjà choisie dans la langue de l'écran (l'appelant la compose de ses propres faces).
 function destinationNote(destKey, name, extra) {
   const d = destinationOf(destKey);
+  const lead = faceDeDestination(d.lead), label = faceDeDestination(d.label);
   const el = document.createElement('div'); el.className = 'muted producer-dest';
   el.style.cssText = 'margin:6px 0 8px;font-size:12px';
-  if (name) { const b = document.createElement('b'); b.textContent = name; el.append(b, document.createTextNode(' — ' + d.lead + ' ')); }
-  else el.appendChild(document.createTextNode(capitalize(d.lead) + ' '));
-  const a = document.createElement('a'); a.href = '#' + d.hash; a.textContent = d.label; a.title = 'Ouvrir ' + d.label; el.appendChild(a);
-  const rest = [d.tail, extra].filter(Boolean).join(' · ');
+  if (name) { const b = document.createElement('b'); b.textContent = name; el.append(b, document.createTextNode(' — ' + lead + ' ')); }
+  else el.appendChild(document.createTextNode(capitalize(lead) + ' '));
+  const a = document.createElement('a'); a.href = '#' + d.hash; a.textContent = label; a.title = faceDansLaLangue(MOTS_DE_LA_NOTE_DE_DESTINATION.ouvrir, { onglet: label }); el.appendChild(a);
+  const rest = [faceDeDestination(d.tail), extra].filter(Boolean).join(' · ');
   if (rest) el.appendChild(document.createTextNode(' ' + rest));
   return el;
 }
 // Phrase sans lien, pour un toast ou le message d'une modale.
 function destinationSentence(destKey) {
   const d = destinationOf(destKey);
-  return capitalize(d.lead) + ' l\'onglet ' + d.label + (d.tail ? ' ' + d.tail : '') + '.';
+  const tail = faceDeDestination(d.tail);
+  return faceDansLaLangue(MOTS_DE_LA_NOTE_DE_DESTINATION.phrase, { amorce: capitalize(faceDeDestination(d.lead)), onglet: faceDeDestination(d.label), suite: tail ? ' ' + tail : '' });
 }
+// La suite d'une note de producteur créé : sa première évaluation, ou la phrase OFF que l'appelant choisit dans sa langue.
+const suiteDUnProducteurCree = (actif, intervalle, faceOff) => (actif ? faceDansLaLangue(MOTS_DE_LA_NOTE_DE_DESTINATION.premiere_evaluation, { s: intervalle }) : faceDansLaLangue(faceOff));
 // Note « en attente » : posée par la surface qui vient de créer, consommée par le prochain rendu de liste.
 const pendingNotes = new Map();
 function announceCreated(listKey, destKey, name, extra) {
@@ -91,6 +106,16 @@ function puitsDuCommutateurSansSurface(lbl) {
   while (liste && !liste.id) liste = liste.parentNode;
   return liste && liste.parentNode ? puitsDuRefusDUnGeste(liste.parentNode, 'bascule:' + liste.id, liste) : null;
 }
+// `P10.29-c` — LES MOTS COMPOSÉS DU COMMUTATEUR, DANS LES DEUX LANGUES. MESURÉ AVANT CE LOT (témoin 120c) : « · à
+// l'activation : <conséquence> », l'infobulle « OFF — à l'activation : … · réservé à l'administrateur » et la
+// confirmation « Activer « x » ? Une fois ON : … » étaient composés en français autour de la conséquence que l'appelant
+// passe, et le restaient sous `LANG='en'`. La conséquence reste celle de l'appelant, dans la langue qu'il lui donne.
+const MOTS_DU_COMMUTATEUR = {
+  consequence_off: { fr: " · à l'activation : {consequence}", en: ' · on enabling: {consequence}' },
+  titre_off: { fr: "OFF — à l'activation : {consequence}{refus}", en: 'OFF — on enabling: {consequence}{refus}' },
+  reserve_admin: { fr: "réservé à l'administrateur", en: 'restricted to the administrator' },
+  confirmation: { fr: "Activer « {nom} » ? Une fois ON : {consequence}. Réversible : repasser sur OFF arrête l'effet pour la suite ; ce qui a déjà eu lieu n'est pas défait.", en: 'Enable “{nom}”? Once ON: {consequence}. Reversible: switching back to OFF stops the effect from then on; what already happened is not undone.' },
+};
 function enabledSwitch(opts) {
   const lbl = document.createElement('label'); lbl.className = 'producer-switch';
   lbl.style.cssText = 'display:inline-flex;gap:6px;align-items:center;font-size:12px;flex:0 0 auto;max-width:min(100%,440px)';
@@ -102,9 +127,10 @@ function enabledSwitch(opts) {
     const on = cb.checked;
     word.textContent = on ? 'ON' : 'OFF';
     word.style.color = on ? 'var(--bad)' : 'var(--mut)';
-    what.textContent = (on ? ' · ' : ' · à l\'activation : ') + (opts.consequence || '');
+    what.textContent = on ? ' · ' + (opts.consequence || '') : faceDansLaLangue(MOTS_DU_COMMUTATEUR.consequence_off, { consequence: opts.consequence || '' });
     cb.setAttribute('aria-label', (opts.name ? opts.name + ' : ' : '') + (on ? 'ON' : 'OFF') + ' — ' + (opts.consequence || ''));
-    lbl.title = (on ? 'ON — ' : 'OFF — à l\'activation : ') + (opts.consequence || '') + (opts.allowed ? '' : ' · ' + (opts.deniedReason || 'réservé à l\'administrateur'));
+    const refus = opts.allowed ? '' : ' · ' + (opts.deniedReason || faceDansLaLangue(MOTS_DU_COMMUTATEUR.reserve_admin));
+    lbl.title = on ? 'ON — ' + (opts.consequence || '') + refus : faceDansLaLangue(MOTS_DU_COMMUTATEUR.titre_off, { consequence: opts.consequence || '', refus });
   };
   if (!opts.allowed) { cb.disabled = true; }
   cb.onchange = async () => {
@@ -113,7 +139,7 @@ function enabledSwitch(opts) {
       // La phrase de réversibilité est celle de TOUTES les familles : elle nommait « Actions », l'onglet d'une
       // seule d'entre elles, alors que ce commutateur arme aussi une collecte, une sortie de données ou une
       // porte d'entrée. Ce qu'elle doit dire est le même partout — OFF arrête la suite, pas ce qui a eu lieu.
-      const ok = await confirmModal('Activer « ' + (opts.name || '') + ' » ? Une fois ON : ' + (opts.consequence || '') + '. Réversible : repasser sur OFF arrête l\'effet pour la suite ; ce qui a déjà eu lieu n\'est pas défait.', { okText: 'Activer', danger: true });
+      const ok = await confirmModal(faceDansLaLangue(MOTS_DU_COMMUTATEUR.confirmation, { nom: opts.name || '', consequence: opts.consequence || '' }), { okText: 'Activer', danger: true });
       if (!ok) { cb.checked = false; paint(); return; }
     }
     const puitsParDefaut = typeof opts.onRefus === 'function' ? null : puitsDuCommutateurSansSurface(lbl);
@@ -171,4 +197,4 @@ function producerRow(model) {
   return row;
 }
 
-export { DESTINATIONS, detectionDestination, destinationNote, destinationSentence, announceCreated, takePendingNote, enabledSwitch, rowButton, producerRow };
+export { DESTINATIONS, detectionDestination, destinationNote, destinationSentence, announceCreated, takePendingNote, enabledSwitch, rowButton, producerRow, suiteDUnProducteurCree };

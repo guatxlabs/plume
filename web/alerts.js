@@ -3,7 +3,7 @@
 // Extrait d'app.js en PURE MOVE ; depuis P11.1 : lien de recherche servi par le démon, barre d'actions unique.
 // Le cycle app<->module est benin : les fonctions importees d'app.js ne sont appelees qu'a
 // l'EXECUTION (handlers/async apres await), jamais a l'evaluation du module.
-import { $, esc, sev, fmtTs, ic, withBusy, api, apiSend, makePager, exportBar, confirmModal, modal, LANG, toast, phraseDuRefusDuDemon, laPageEstAuDelaDuTotal, noeudDeLaPageVideAuDelaDuTotal } from './core.js';
+import { $, esc, sev, fmtTs, ic, withBusy, api, apiSend, makePager, exportBar, confirmModal, modal, LANG, toast, phraseDuRefusDuDemon, laPageEstAuDelaDuTotal, noeudDeLaPageVideAuDelaDuTotal, faceDansLaLangue, noeudDuRefusDUneLecture } from './core.js';
 import { libelleDeTechnique } from './catalogue_attack.js'; // `P11.6-c` : nom dérivé du catalogue servi, ou motif de son absence
 import { S } from './state.js';
 import { banIp, runQuery, updateZoomBadge } from './viz.js';
@@ -106,6 +106,14 @@ const MOTS_INSTANTANE = {
   tenu: { fr: 'tenu', en: 'held' }, manquant: { fr: 'MANQUANT', en: 'MISSING' }, sans: { fr: 'sans verdict', en: 'no verdict' },
 };
 const motDeLInstantane = (cle) => (LANG === 'en' ? MOTS_INSTANTANE[cle].en : MOTS_INSTANTANE[cle].fr);
+// `P10.29-g` — CE QUI N'A PAS ÉTÉ LU, NOMMÉ DEVANT LA FACE D'UNE LECTURE NON SERVIE (web/core.js). Mesuré avant ce lot
+// (témoin 120g) : « alertes indisponibles : » + le message brut (le JSON d'un refus) ; la face dit désormais que rien
+// n'est établi sur ce que la liste porte, et la cause entière.
+const MOTS_DES_LECTURES_D_ALERTES = {
+  alertes: { fr: 'Liste des alertes', en: 'Alert list' },
+  groupes: { fr: "Groupes d'alertes", en: 'Alert groups' },
+  occurrences: { fr: 'Occurrences du groupe', en: 'Group occurrences' },
+};
 // LA DESTINATION D'UN FONDEMENT D'INSTANTANÉ : /api/snapshot/{genre}/{machine} (404 = pas d'instantané de cette
 // machine, jamais celui d'une autre). Un catalogue de contrôles est rendu contrôle par contrôle avec son
 // verdict ; un autre genre, clé par clé. Une absence ou une erreur est DITE dans la fenêtre, pas avalée.
@@ -113,7 +121,14 @@ async function ouvrirLInstantane(kind, host) {
   const body = document.createElement('div'); body.className = 'instantane';
   let r = null;
   try { r = await api(`/snapshot/${encodeURIComponent(kind)}/${encodeURIComponent(host)}`); }
-  catch (e) { body.appendChild(Object.assign(document.createElement('p'), { className: 'muted', textContent: `${motDeLInstantane('absent')} (${(e && e.message) || e})` })); }
+  catch (e) {
+    // `P10.29-g` — SEUL LE QUATRE CENT QUATRE (nu, `snapshot_par_genre_et_machine`) établit l'absence d'un instantané.
+    // Mesuré avant ce lot (témoin 120g) : tout refus — le rôle, une base en lecture seule, un réseau coupé — se lisait
+    // « aucun instantané de ce genre n'a été servi pour cette machine (403 …) », une absence affirmée sur une lecture
+    // refusée. Un autre refus dit la face d'une lecture non servie.
+    if (e && e.statutDuRefus === 404) body.appendChild(Object.assign(document.createElement('p'), { className: 'muted', textContent: motDeLInstantane('absent') }));
+    else body.appendChild(noeudDuRefusDUneLecture(e, motDeLInstantane('titre')));
+  }
   const data = r && r.data && typeof r.data === 'object' ? r.data : null;
   if (data && Array.isArray(data.controls)) {
     body.appendChild(Object.assign(document.createElement('p'), { textContent: `${data.controls.length} ${motDeLInstantane('controles')}` }));
@@ -970,7 +985,7 @@ async function renderAlerts(loading) {
   if (loading) { let prog = b.querySelector(':scope > .tableprog'); if (!prog) { prog = document.createElement('div'); prog.className='tableprog'; b.insertBefore(prog, b.firstChild); } prog.hidden=false; b.classList.add('reloading'); }
   let alerts, alertTotal;
   let etat = { cause: '', refus: false, incomplet: false };
-  try { const resp = await api(url); alerts = resp.alerts || []; alertTotal = resp.total; etat = etatDeLaLectureServie(resp, alerts); } catch (e) { b.classList.remove('reloading'); b.innerHTML = '<div class="bad">alertes indisponibles : ' + esc(e.message) + '</div>'; return; }
+  try { const resp = await api(url); alerts = resp.alerts || []; alertTotal = resp.total; etat = etatDeLaLectureServie(resp, alerts); } catch (e) { b.classList.remove('reloading'); b.replaceChildren(noeudDuRefusDUneLecture(e, faceDansLaLangue(MOTS_DES_LECTURES_D_ALERTES.alertes), 'bad')); return; }
   b.classList.remove('reloading');
   // `P10.7-d` — LE REFUS, AVANT TOUTE LECTURE DE LA FORME. Il ne passe pas par `alertesChargees` : une
   // frappe de recherche redessine le dernier lot SERVI, et un lot qui n'existe pas ne se redessine pas.
@@ -1091,7 +1106,7 @@ async function renderAlertGroups(loading) {
   let groups, total;
   let etat = { cause: '', refus: false, incomplet: false };
   try { const r = await api(url); groups = r.groups || []; total = r.total; etat = etatDeLaLectureServie(r, groups); }
-  catch (e) { b.classList.remove('reloading'); b.innerHTML = alertActionBarHtml(m, { count: 0, countLabel: 'groupes indisponibles' }) + '<div class="bad">groupes indisponibles : ' + esc(e.message) + '</div>'; wireAlertActionBar(b, { count: 0 }, m); return; }
+  catch (e) { b.classList.remove('reloading'); b.innerHTML = alertActionBarHtml(m, { count: 0, countLabel: 'groupes indisponibles' }); b.appendChild(noeudDuRefusDUneLecture(e, faceDansLaLangue(MOTS_DES_LECTURES_D_ALERTES.groupes), 'bad')); wireAlertActionBar(b, { count: 0 }, m); return; }
   b.classList.remove('reloading');
   // `P10.7-d` — même geste que la vue plate : le refus est rendu là où l'échec l'était déjà, et la barre
   // d'actions y reste inerte (aucun compte n'a été lu, donc aucun geste de masse n'a de portée connue).
@@ -1207,7 +1222,7 @@ async function loadGroupOccurrences(body, g, opage) {
   let occ, total;
   let etat = { cause: '', refus: false, incomplet: false };
   try { const r = await api(url); occ = r.alerts || []; total = r.total; etat = etatDeLaLectureServie(r, occ); }
-  catch (e) { body.innerHTML = '<div class="bad">occurrences indisponibles : ' + esc(e.message) + '</div>'; return; }
+  catch (e) { body.replaceChildren(noeudDuRefusDUneLecture(e, faceDansLaLangue(MOTS_DES_LECTURES_D_ALERTES.occurrences), 'bad')); return; }
   // `P10.7-d` — `body.dataset.loaded` N'EST PAS POSÉ SUR UN REFUS, et c'est la moitié qui compte : ce
   // drapeau dit « ce groupe porte ses occurrences ». Le poser sur un refus figerait l'aveu, et le dépli
   // suivant ne redemanderait rien.
@@ -1263,4 +1278,6 @@ export { renderAlerts, setAlertMitreFilter, setAlertSourceFilter, alertActionBar
   pivotDUneAlerte, alertDrill, machineDUneAlerte, porteeDeLAcquittement, questionDuGesteGlobal,
   // `P10.21-d` — le seul expéditeur d'un acquittement, et son ouverture NUE : le harnais les juge sur
   // la phrase lue dans l'arbre du démon, dans les deux sens, sans passer par une barre redessinée.
-  acquitter, OUVERTURE_DE_L_ACQUITTEMENT_NON_ENREGISTRE, motDeLAcquittement };
+  acquitter, OUVERTURE_DE_L_ACQUITTEMENT_NON_ENREGISTRE, motDeLAcquittement,
+  // `P10.29-g` — la fenêtre d'un instantané, jouée par le témoin 120 : seul un quatre cent quatre y dit l'absence.
+  ouvrirLInstantane };

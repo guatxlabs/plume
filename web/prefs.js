@@ -22,8 +22,12 @@
 //
 // SECURITY: the endpoint is self-scoped server-side (keyed by the authenticated identity; the client never
 // sends a user id). We never store secrets here — only UI state.
-import { api, apiSend, brancherLeMagasinDeLargeurs, toast } from './core.js';
+import { api, apiSend, brancherLeMagasinDeLargeurs, faceDansLaLangue, toast } from './core.js';
 import { ecrireSansDireLeRefus, RAISONS_DE_SILENCE } from './state.js';
+
+// `P10.29-f` — L'AVIS DES PRÉFÉRENCES NON LUES, DANS LES DEUX LANGUES. Mesuré avant ce lot (témoin 120f) : composé en
+// français autour de la cause servie, il le restait sous `LANG='en'`. La face française est celle d'avant.
+const MOTS_DES_PREFERENCES_NON_LUES = { fr: 'Préférences NON LUES : le démon a refusé et en nomme la cause — « {cause} »', en: 'Preferences NOT READ: the daemon refused and names the cause — “{cause}”' };
 
 // `P10.20-b` — LES PRÉFÉRENCES N'ONT PAS ÉTÉ LUES, ET CE SILENCE-LÀ COÛTE LA LIGNE DU COMPTE. Depuis que
 // `prefs_get` refuse en 503 nommé au lieu de servir `{}` (daemon/src/handlers/prefs.rs), la capture de
@@ -141,7 +145,7 @@ export async function prefsInit() {
     const cause = (e && e.causeDuDemon) || '';
     if (cause) {
       PREFERENCES_NON_LUES = true;
-      toast('Préférences NON LUES : le démon a refusé et en nomme la cause — « ' + cause + ' »', 'err', 9000);
+      toast(faceDansLaLangue(MOTS_DES_PREFERENCES_NON_LUES, { cause }), 'err', 9000);   // `P10.29-f`
     }
   }
   loaded = true;

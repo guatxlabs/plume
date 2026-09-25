@@ -124,7 +124,7 @@ function connectorRow(c) {
   else bits.push('jamais collecté');
   bits.push((c.last_count != null ? c.last_count : 0) + ' event(s) au dernier lot');
   meta.textContent = bits.join(' · ');
-  meta.title = (c.last_ok ? 'dernier succès : ' + fmtTs(c.last_ok) : 'aucun succès enregistré') + (c.watermark ? '\nwatermark : ' + c.watermark : '');
+  meta.title = (c.last_ok ? faceDansLaLangue({ fr: 'dernier succès : {date}', en: 'last success: {date}' }, { date: fmtTs(c.last_ok) }) : faceDansLaLangue({ fr: 'aucun succès enregistré', en: 'no success recorded' })) + (c.watermark ? faceDansLaLangue({ fr: '\nwatermark : {wm}', en: '\nwatermark: {wm}' }, { wm: c.watermark }) : '');   // `P10.29-c`
   // dernière erreur (le serveur ne met JAMAIS le secret ni le corps HTTP dans last_error — statut/motif seul).
   const errRow = document.createElement('span'); errRow.className = 'rulemeta';
   if (c.last_error) { errRow.textContent = motDuConnecteur('derniere_erreur') + c.last_error; errRow.title = c.last_error; errRow.style.cssText = 'color:var(--warn)'; }

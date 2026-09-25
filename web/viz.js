@@ -1,6 +1,6 @@
 // viz.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // Explore + viz/charts: drilldown, fenetre glissante, requete interactive, rendu table/graphes (partages avec dashboards).
-import { $, CSSV, LANG, LOC, SEV, api, apiSend, unDeuxCentsSansCorpsLisible, bornerLePopoverSousSonAncre, causeDeLaTraceManquante, cleDeLaSuiteServie, cleDeLIdentifiantDeRiposte, colComparator, largeursDeColonnes, confirmModal, esc, flashStopped, fmtTs, ic, laPageEstAuDelaDuTotal, laPageEstDansLeTotal, makePager, motDeLaPageAuDelaDuTotal, motDeLaRiposteSansIdentifiant, motDUneLectureQuiNEstPasServie, muted, noeudDeLaFinDuResultat, noeudDeLaPageVideDansLeTotal, noeudDeLaPremierePageVideDansLeTotal, phraseDeLaCreationDeRiposteRefusee, phraseDeLaTraceManquante, phraseDUneReponseNonJson, sev, socIsAdmin, toast, tzOpts } from './core.js';
+import { $, CSSV, LANG, LOC, SEV, api, apiSend, unDeuxCentsSansCorpsLisible, bornerLePopoverSousSonAncre, causeDeLaTraceManquante, cleDeLaSuiteServie, cleDeLIdentifiantDeRiposte, colComparator, largeursDeColonnes, confirmModal, esc, flashStopped, fmtTs, ic, laPageEstAuDelaDuTotal, laPageEstDansLeTotal, makePager, motDeLaPageAuDelaDuTotal, motDeLaRiposteSansIdentifiant, motDUneLectureQuiNEstPasServie, muted, noeudDeLaFinDuResultat, noeudDeLaPageVideDansLeTotal, noeudDeLaPremierePageVideDansLeTotal, phraseDeLaCreationDeRiposteRefusee, phraseDeLaTraceManquante, phraseDUneReponseNonJson, sev, socIsAdmin, toast, tzOpts, faceDansLaLangue, phraseDuRefusDUneLecture, refusDUneLectureServie } from './core.js';
 import { S } from './state.js';
 // P11.4-h : LE clic qui respecte une sélection (mécanisme partagé, `copie_et_selection.js`).
 import { clicQuiRespecteLaSelection } from './copie_et_selection.js';
@@ -304,7 +304,7 @@ function motDuBannissementMisEnFile(j, cible) {
 // crée une action ban_ip (en attente d'approbation, dry-run). host optionnel = cible l'agent de cet
 // hôte (sinon action non assignée, réclamée par le 1er agent qui poll). cf actions_pending côté daemon.
 async function banIp(ip, host) {
-  if (!ip || !(await confirmModal(`Créer une action ban_ip ${ip} ?${host ? ' (hôte ' + host + ')' : ''} (en attente d'approbation, dry-run)`, { okText: 'Créer' }))) return;
+  if (!ip || !(await confirmModal(faceDansLaLangue({ fr: "Créer une action ban_ip {ip} ?{hote} (en attente d'approbation, dry-run)", en: 'Create a ban_ip action {ip}?{hote} (pending approval, dry-run)' }, { ip, hote: host ? faceDansLaLangue({ fr: ' (hôte {h})', en: ' (host {h})' }, { h: host }) : '' }), { okText: 'Créer' }))) return;
   const body = { kind: 'ban_ip', target: ip, dry_run: true, reason: 'depuis la recherche' };
   if (host) body.host = host;
   // `P10.20-t` — CE GESTE ÉTAIT SOURD AU SEUL REFUS QUI LE CONCERNE. `action_create` rend désormais un
@@ -340,13 +340,20 @@ async function banIp(ip, host) {
 }
 
 // body-fetch mail : lit le corps COMPLET d'un message (admin + audite cote serveur), rendu isole.
+// `P10.29-f` / `P10.29-g` — LA LECTURE DU CORPS D'UN COURRIEL QUI N'EST PAS SERVIE A LA FACE D'UNE LECTURE. MESURÉ AVANT CE
+// LOT (témoin 120) : « Mail complet : <cause> » ou « HTTP 403 », français sous `LANG='en'` ; un refus servi en TEXTE
+// faisait jeter `r.json()` et se lisait « Erreur : Unexpected token… » ; un réseau coupé, « Erreur : Failed to fetch ».
+const MOTS_DU_CORPS_D_UN_COURRIEL = { objet: { fr: 'Corps complet du courriel', en: 'Full mail body' } };
 async function mailBody(account, folder, fileid) {
+  const objet = faceDansLaLangue(MOTS_DU_CORPS_D_UN_COURRIEL.objet);
+  let r, corps;
   try {
-    const r = await fetch('/api/mail/body', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ account, folder, id: fileid }) });
-    const j = await r.json();
-    if (!r.ok || j.error) { toast('Mail complet : ' + (j.error || ('HTTP ' + r.status)), 'bad'); return; }
-    mailBodyView(j);
-  } catch (e) { toast(motDUneLectureQuiNEstPasServie('prefixe_de_la_lecture_refusee_en_debut_de_phrase') + e.message, 'bad'); }
+    r = await fetch('/api/mail/body', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ account, folder, id: fileid }) });
+    corps = await r.text();
+  } catch (e) { toast(phraseDuRefusDUneLecture(e, objet), 'bad', 9000); return; }
+  let j = null; try { j = corps ? JSON.parse(corps) : null; } catch { j = null; }
+  if (!r.ok || !j || typeof j !== 'object' || j.error) { toast(phraseDuRefusDUneLecture(refusDUneLectureServie(r.status, corps), objet), 'bad', 9000); return; }
+  mailBodyView(j);
 }
 
 // affichage isole : metadata + texte + HTML dans une iframe sandbox + CSP (anti-XSS / anti-tracking)
@@ -579,9 +586,10 @@ function coverageBadge(stats) {
   // L'INFOBULLE PORTE AUSSI L'INSTANT DU CALCUL. Le démon publie `coverage.calcule_a` et le service SWR
   // rend une réponse MÉMORISÉE sans aucun prédicat de fraîcheur : un corps de trente heures se lit
   // autrement qu'un corps de maintenant, et rien à l'écran ne les distinguait.
+  // `P10.29-c` — l'horizon et l'instant du calcul, dans les deux langues (témoin 120c).
   b.title = (c.notice || '')
-    + (Number.isFinite(c.horizon_ts) ? '\n\nHorizon : ' + fmtTs(c.horizon_ts) : '')
-    + (Number.isFinite(c.calcule_a) ? '\nCalculé le : ' + fmtTs(c.calcule_a) : '');
+    + (Number.isFinite(c.horizon_ts) ? faceDansLaLangue({ fr: '\n\nHorizon : {date}', en: '\n\nHorizon: {date}' }, { date: fmtTs(c.horizon_ts) }) : '')
+    + (Number.isFinite(c.calcule_a) ? faceDansLaLangue({ fr: '\nCalculé le : {date}', en: '\nComputed on: {date}' }, { date: fmtTs(c.calcule_a) }) : '');
   return b;
 }
 
@@ -647,7 +655,24 @@ function coverageHorizonNodes(stats) {
 //     se voit au lieu de passer pour une absence ;
 //   • le bras froid n'a pas pu être lu (une requête de métriques, que le vieillissement ne touche pas).
 // Le libellé est STATIQUE (traduisible) ; les nombres et la date vivent dans l'infobulle.
-function coldShareBadge(stats) {
+
+const MOTS_DE_LA_PART_FROIDE = {
+  frontiere: { fr: '\nFrontière chaud/froid : {date}', en: '\nHot/cold boundary: {date}' },
+  comptes: { fr: '{fichiers}, {lignes}.', en: '{fichiers}; {lignes}.' },
+  fichiers_non_publies: { fr: 'compte de fichiers non publié', en: 'file count not published' },
+  fichiers_lus: { fr: '{n} fichier(s) lu(s)', en: '{n} file(s) read' },
+  lignes_non_publiees: { fr: 'compte de lignes non publié', en: 'row count not published' },
+  lignes_hydratees: { fr: '{n} ligne(s) hydratée(s)', en: '{n} row(s) hydrated' },
+  colonnaire_fusionne: { fr: 'Servi par le moteur colonnaire du tier froid, fusionné avec le chaud sur une fenêtre chevauchante.', en: 'Served by the cold-tier columnar engine, merged with the hot one over an overlapping window.' },
+  colonnaire_froid: { fr: 'Servi par le moteur colonnaire du tier froid, sur une fenêtre entièrement froide.', en: 'Served by the cold-tier columnar engine, over an entirely cold window.' },
+  lu_sans_compte: { fr: "Le bras froid a été lu ; la route n'a pas publié ce qu'il a porté.", en: 'The cold arm was read; the route did not publish what it carried.' },
+  part_servie: { fr: 'Une part de cette réponse vient du tier froid.', en: 'Part of this answer comes from the cold tier.' },
+  rien_de_vieilli: { fr: "Le bras froid a été lu et n'a rien porté sur cette fenêtre : aucune journée vieillie. Une journée passée sous la frontière mais pas encore vieillie n'est servie par aucun bras jusqu'à la passe de vieillissement.", en: 'The cold arm was read and carried nothing over this window: no aged day. A day past the boundary but not yet aged is served by no arm until the ageing pass.' },
+  non_lu: { fr: "Cette réponse n'a pas pu lire le bras froid : sa requête n'interroge pas les événements. Les métriques ne vieillissent pas, la réponse est entière.", en: 'This answer could not read the cold arm: its query does not query events. Metrics do not age, the answer is whole.' },
+};
+const MOTS_DU_BOUTON_DES_COLONNES = {
+  libelle: { fr: 'Colonnes {n}/{total} ▾', en: 'Columns {n}/{total} ▾' },
+};function coldShareBadge(stats) {
   const c = stats && stats.cold;
   if (!c || typeof c.served_from !== 'string') return null;
   const b = document.createElement('span');
@@ -657,21 +682,23 @@ function coldShareBadge(stats) {
   // un compte réellement lu.
   const fichiers = Number.isFinite(c.files_read) ? c.files_read : null;
   const lignes = Number.isFinite(c.rows_hydrated) ? c.rows_hydrated : null;
-  const frontiere = Number.isFinite(c.boundary_ts) ? '\nFrontière chaud/froid : ' + fmtTs(c.boundary_ts) : '';
-  const comptes = (fichiers === null ? 'compte de fichiers non publié' : fichiers + ' fichier(s) lu(s)') + ', '
-    + (lignes === null ? 'compte de lignes non publié' : lignes + ' ligne(s) hydratée(s)') + '.';
+  // `P10.29-c` — les infobulles de la part froide, dans les deux langues (témoin 120c : composées en français autour de leurs
+  // comptes et de la frontière, elles le restaient sous `LANG='en'`). Les faces françaises sont celles d'avant.
+  const frontiere = Number.isFinite(c.boundary_ts) ? faceDansLaLangue(MOTS_DE_LA_PART_FROIDE.frontiere, { date: fmtTs(c.boundary_ts) }) : '';
+  const comptes = faceDansLaLangue(MOTS_DE_LA_PART_FROIDE.comptes, { fichiers: fichiers === null ? faceDansLaLangue(MOTS_DE_LA_PART_FROIDE.fichiers_non_publies) : faceDansLaLangue(MOTS_DE_LA_PART_FROIDE.fichiers_lus, { n: fichiers }),
+    lignes: lignes === null ? faceDansLaLangue(MOTS_DE_LA_PART_FROIDE.lignes_non_publiees) : faceDansLaLangue(MOTS_DE_LA_PART_FROIDE.lignes_hydratees, { n: lignes }) });
   if (c.served_from.startsWith('cold-vectorized')) {
     b.textContent = 'froid : moteur colonnaire';
-    b.title = 'Servi par le moteur colonnaire du tier froid' + (c.served_from.endsWith('-merge') ? ', fusionné avec le chaud sur une fenêtre chevauchante.' : ', sur une fenêtre entièrement froide.') + frontiere;
+    b.title = faceDansLaLangue(c.served_from.endsWith('-merge') ? MOTS_DE_LA_PART_FROIDE.colonnaire_fusionne : MOTS_DE_LA_PART_FROIDE.colonnaire_froid) + frontiere;
   } else if (c.served_from === 'hot+cold' && fichiers === null) {
     b.textContent = 'froid : lu sans compte';
-    b.title = "Le bras froid a été lu ; la route n'a pas publié ce qu'il a porté." + '\n' + comptes + frontiere;
+    b.title = faceDansLaLangue(MOTS_DE_LA_PART_FROIDE.lu_sans_compte) + '\n' + comptes + frontiere;
   } else if (c.served_from === 'hot+cold' && fichiers > 0) {
     b.textContent = 'froid : part servie';
-    b.title = 'Une part de cette réponse vient du tier froid.' + '\n' + comptes + frontiere;
+    b.title = faceDansLaLangue(MOTS_DE_LA_PART_FROIDE.part_servie) + '\n' + comptes + frontiere;
   } else if (c.served_from === 'hot+cold') {
     b.textContent = 'froid : rien de vieilli';
-    b.title = "Le bras froid a été lu et n'a rien porté sur cette fenêtre : aucune journée vieillie. Une journée passée sous la frontière mais pas encore vieillie n'est servie par aucun bras jusqu'à la passe de vieillissement." + frontiere;
+    b.title = faceDansLaLangue(MOTS_DE_LA_PART_FROIDE.rien_de_vieilli) + frontiere;
   } else if (typeof c.aveu === 'string' && c.aveu) {
     // `P10.5-q` — LE CINQUIÈME ÉTAT : un chemin qui ne consulte JAMAIS la bande froide (coffre des panneaux, pivot,
     // jeux de données) sert `served_from: "hot"` AVEC une phrase d'aveu ; sans ce bras, il tomberait dans « non
@@ -680,7 +707,7 @@ function coldShareBadge(stats) {
     b.title = c.aveu + frontiere;
   } else {
     b.textContent = 'froid : non lu';
-    b.title = "Cette réponse n'a pas pu lire le bras froid : sa requête n'interroge pas les événements. Les métriques ne vieillissent pas, la réponse est entière." + frontiere;
+    b.title = faceDansLaLangue(MOTS_DE_LA_PART_FROIDE.non_lu) + frontiere;
   }
   return b;
 }
@@ -715,7 +742,9 @@ function explainErr(e) {
   if (e && e.code === 'empty') return 'Trop lourd même sur 60s — resserre la fenêtre';
   const m = (e && e.message) ? e.message : String(e);
   if (/budget|dépass|trop lourd|too heavy|timeout|deadline/i.test(m)) return 'Trop lourd même sur 60s — resserre la fenêtre';
-  return motDeLaLigneDEtatHorsParcours('erreur') + m;   // `P10.22-f` — préfixe d'un nœud composé : ses deux faces
+  // `P10.22-f` — préfixe d'un nœud composé : ses deux faces. `P10.29-g` — plus un préfixe collé au message : la face
+  // nommée d'une lecture non servie (mesuré avant ce lot, témoin 120g : « erreur : Failed to fetch » sous la requête).
+  return phraseDuRefusDUneLecture(e);
 }
 
 // erreur SERVEUR (j.error) : annulation/budget -> ligne de stats lisible ; sinon boîte rouge (existant).
@@ -2293,7 +2322,7 @@ function tableEl(cols, rows, query, drill, opts) {
       });
       return tr;
     }));
-    if (colsBtn) colsBtn.textContent = `Colonnes ${vcount()}/${order.length} ▾`;
+    if (colsBtn) colsBtn.textContent = faceDansLaLangue(MOTS_DU_BOUTON_DES_COLONNES.libelle, { n: vcount(), total: order.length });   // `P10.29-c`
   }
   build();
   // `P11.24-i` — L'AVEU EST ÉCRIT LÀ OÙ LA TABLE SE LIT, AVANT LE CLIC, et il ne s'écrit que là où le
@@ -2310,7 +2339,7 @@ function tableEl(cols, rows, query, drill, opts) {
   const wrap = document.createElement('div'); wrap.className = 'qtblwrap';
   const bar = document.createElement('div'); bar.className = 'qtblbar';
   colsBtn = document.createElement('button'); colsBtn.type = 'button'; colsBtn.className = 'colsbtn';
-  colsBtn.textContent = `Colonnes ${vcount()}/${order.length} ▾`;
+  colsBtn.textContent = faceDansLaLangue(MOTS_DU_BOUTON_DES_COLONNES.libelle, { n: vcount(), total: order.length });   // `P10.29-c`
   colsBtn.onclick = (ev) => {
     ev.stopPropagation();
     const wasMine = S._colsMenuOwner === id;
@@ -2875,9 +2904,6 @@ const MOTS_DE_LA_LIGNE_D_ETAT_HORS_PARCOURS = {
   serveur: {
     fr: 'serveur',
     en: 'server' },
-  erreur: {
-    fr: 'erreur : ',
-    en: 'error: ' },
 };
 const motDeLaLigneDEtatHorsParcours = (cle) => (LANG === 'en' ? MOTS_DE_LA_LIGNE_D_ETAT_HORS_PARCOURS[cle].en : MOTS_DE_LA_LIGNE_D_ETAT_HORS_PARCOURS[cle].fr);
 
@@ -3151,5 +3177,7 @@ export { exploreCount };
 // vide, la signature du repli par décalage, et le mot d'une erreur de transport, jugés nus à côté du rendu.
 // `P10.25-b` — et les faces de la liste d'événements, jugées sous les deux instances de langue (témoin 112).
 export { cleDeLaPageVide, laPageEstServieParDecalage, explainErr, motDeLaListeDEvenements, etiquetteDeFacette };
+// `P10.29-g` — la lecture du corps d'un courriel, jouée par le témoin 120 (un refus en texte, un réseau coupé).
+export { mailBody };
 // `P10.25-o` — la face de l'infobulle d'une ligne de table, jugée sous les deux instances de langue (témoin 113).
 export { motDeLInfobulleDUneLigne };

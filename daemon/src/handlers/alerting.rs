@@ -17,7 +17,7 @@
 //!  - Création/suppression de silence + toute mutation de politique -> `audit_config_change` (ledger
 //!    ed25519 hash-chaîné + event plume-config alertable). Un silence NE PEUT PAS être permanent (TTL max).
 use crate::*;
-use crate::handlers::transaction_validee::rendre_apres_validation;
+use crate::handlers::transaction_validee::{ouvrir_la_transaction_du_geste, rendre_apres_validation};
 use std::collections::BTreeSet;
 
 // ======================================================================================
@@ -532,28 +532,61 @@ pub(crate) const CAUSE_POLITIQUE_DE_NOTIFICATION_NON_CREEE: &str = "POLITIQUE DE
      n'a pas validé la transaction (COMMIT refusé) et l'a annulée — aucune route n'est écrite, les alertes suivent \
      le routage d'avant, et aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture \
      seule, pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_POLITIQUE_DE_NOTIFICATION_NON_CREEE_TRANSACTION_NON_OUVERTE: &str = "POLITIQUE DE \
+     NOTIFICATION NON CRÉÉE : la base n'a pas pris la transaction de la création (BEGIN refusé : verrou tenu, ou \
+     transaction d'un autre geste pendante sur l'écrivain) — RIEN n'est écrit : aucune route n'est écrite, les \
+     alertes suivent le routage d'avant, et aucune trace n'est écrite. Réessayez ; s'il est refusé encore, \
+     l'écrivain est occupé ou bloqué.";
 /// `P10.25-g` — politique de notification inchangée : le `COMMIT` de ce geste refusé.
 pub(crate) const CAUSE_POLITIQUE_DE_NOTIFICATION_INCHANGEE: &str = "POLITIQUE DE NOTIFICATION INCHANGÉE : la base \
      n'a pas validé la transaction (COMMIT refusé) et l'a annulée — la route garde ses critères et ses canaux \
      d'avant, et aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine \
      ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_POLITIQUE_DE_NOTIFICATION_INCHANGEE_TRANSACTION_NON_OUVERTE: &str = "POLITIQUE DE \
+     NOTIFICATION INCHANGÉE : la base n'a pas pris la transaction de la modification (BEGIN refusé : verrou tenu, ou \
+     transaction d'un autre geste pendante sur l'écrivain) — RIEN n'est écrit : la route garde ses critères et ses \
+     canaux d'avant, et aucune trace n'est écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou \
+     bloqué.";
 /// `P10.25-g` — politique de notification non supprimée : le `COMMIT` de ce geste refusé.
 pub(crate) const CAUSE_POLITIQUE_DE_NOTIFICATION_NON_SUPPRIMEE: &str = "POLITIQUE DE NOTIFICATION NON SUPPRIMÉE : la \
      base n'a pas validé la transaction (COMMIT refusé) et l'a annulée — la route est toujours là et route toujours \
      les alertes, et aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, \
      pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_POLITIQUE_DE_NOTIFICATION_NON_SUPPRIMEE_TRANSACTION_NON_OUVERTE: &str = "POLITIQUE DE \
+     NOTIFICATION NON SUPPRIMÉE : la base n'a pas pris la transaction du retrait (BEGIN refusé : verrou tenu, ou \
+     transaction d'un autre geste pendante sur l'écrivain) — RIEN n'est écrit : la route est toujours là et route \
+     toujours les alertes, et aucune trace n'est écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé \
+     ou bloqué.";
 /// `P10.25-g` — silence non posé : le `COMMIT` de ce geste refusé.
 pub(crate) const CAUSE_SILENCE_NON_POSE: &str = "SILENCE NON POSÉ : la base n'a pas validé la transaction (COMMIT \
      refusé) et l'a annulée — aucune alerte n'est étouffée par lui, les notifications partent comme avant, et aucune \
      trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_SILENCE_NON_POSE_TRANSACTION_NON_OUVERTE: &str = "SILENCE NON POSÉ : la base n'a pas pris la \
+     transaction de la pose (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante sur l'écrivain) — \
+     RIEN n'est écrit : aucune alerte n'est étouffée par lui, les notifications partent comme avant, et aucune trace \
+     n'est écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 /// `P10.25-g` — silence inchangé : le `COMMIT` de ce geste refusé.
 pub(crate) const CAUSE_SILENCE_INCHANGE: &str = "SILENCE INCHANGÉ : la base n'a pas validé la transaction (COMMIT \
      refusé) et l'a annulée — il garde ses critères, son échéance et sa raison d'avant, et aucune trace n'est \
      écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_SILENCE_INCHANGE_TRANSACTION_NON_OUVERTE: &str = "SILENCE INCHANGÉ : la base n'a pas pris la \
+     transaction de la modification (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante sur \
+     l'écrivain) — RIEN n'est écrit : il garde ses critères, son échéance et sa raison d'avant, et aucune trace \
+     n'est écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 /// `P10.25-g` — silence non levé : le `COMMIT` de ce geste refusé.
 pub(crate) const CAUSE_SILENCE_NON_LEVE: &str = "SILENCE NON LEVÉ : la base n'a pas validé la transaction (COMMIT \
      refusé) et l'a annulée — il ÉTOUFFE TOUJOURS les alertes qu'il vise jusqu'à son échéance, et aucune trace n'est \
      écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_SILENCE_NON_LEVE_TRANSACTION_NON_OUVERTE: &str = "SILENCE NON LEVÉ : la base n'a pas pris la \
+     transaction de la levée (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante sur l'écrivain) — \
+     RIEN n'est écrit : il ÉTOUFFE TOUJOURS les alertes qu'il vise jusqu'à son échéance, et aucune trace n'est \
+     écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 
 pub(crate) async fn policy_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
     let (matchers, csv, cont, enabled) = match policy_body(&b) {
@@ -561,8 +594,8 @@ pub(crate) async fn policy_create(State(st): State<AppState>, Extension(au): Ext
         Err(e) => return bad_req(e),
     };
     crate::req_conn!(st, au, conn);
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "alerting", "création d'une politique de notification", CAUSE_POLITIQUE_DE_NOTIFICATION_NON_CREEE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<i64> = (|| {
         conn.execute(
@@ -595,8 +628,8 @@ pub(crate) async fn policy_update(State(st): State<AppState>, Extension(au): Ext
     if conn.query_row("SELECT 1 FROM notification_policy WHERE id=?1", params![id], |_| Ok(())).is_err() {
         return not_found("politique introuvable");
     }
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "alerting", &format!("modification de la politique de notification #{id}"), CAUSE_POLITIQUE_DE_NOTIFICATION_INCHANGEE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<()> = (|| {
         conn.execute(
@@ -624,8 +657,8 @@ pub(crate) async fn policy_delete(State(st): State<AppState>, Extension(au): Ext
     if conn.query_row("SELECT 1 FROM notification_policy WHERE id=?1", params![id], |_| Ok(())).is_err() {
         return not_found("politique introuvable");
     }
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "alerting", &format!("suppression de la politique de notification #{id}"), CAUSE_POLITIQUE_DE_NOTIFICATION_NON_SUPPRIMEE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<()> = (|| {
         conn.execute("DELETE FROM notification_policy WHERE id=?1", params![id])?;
@@ -703,8 +736,8 @@ pub(crate) async fn silence_create(State(st): State<AppState>, Extension(au): Ex
     let expires = now_ts + dur;
     let matchers_json = matchers_to_json(&matchers);
     crate::req_conn!(st, au, conn);
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "alerting", "pose d'un silence", CAUSE_SILENCE_NON_POSE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<i64> = (|| {
         conn.execute(
@@ -772,8 +805,8 @@ pub(crate) async fn silence_update(State(st): State<AppState>, Extension(au): Ex
     if matchers_json == old_matchers && expires == old_expires && reason == old_reason {
         return Json(json!({ "ok": true, "id": id, "expires_at": expires, "changed": false })).into_response();
     }
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "alerting", &format!("modification du silence #{id}"), CAUSE_SILENCE_INCHANGE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<()> = (|| {
         conn.execute(
@@ -801,8 +834,8 @@ pub(crate) async fn silence_delete(State(st): State<AppState>, Extension(au): Ex
     if conn.query_row("SELECT 1 FROM silence WHERE id=?1", params![id], |_| Ok(())).is_err() {
         return not_found("silence introuvable");
     }
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "alerting", &format!("levée du silence #{id}"), CAUSE_SILENCE_NON_LEVE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<()> = (|| {
         conn.execute("DELETE FROM silence WHERE id=?1", params![id])?;

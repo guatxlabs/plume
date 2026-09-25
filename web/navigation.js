@@ -30,7 +30,7 @@
 // Ce module porte aussi LE NOM D'UNE DESTINATION (`P11.18-o`) : il ne l'écrit pas, il le DÉRIVE de la
 // page — titre du panneau, ou lien de barre latérale quand l'espace n'a qu'un onglet — et le pose là
 // où il manque. Voir le bloc de nommage sous `SPACES`.
-import { $, LANG } from './core.js';
+import { $, LANG, faceDansLaLangue, natureDuRefusDUneLecture, phraseDuRefusDuDemon } from './core.js';
 import { S } from './state.js';
 import { CHARGES_POSEES } from './registres.js'; // `P11.21-f` : l'attache des peintres vit dans un module feuille
 import { loadDashboards, refreshPanels } from './dashboards.js';
@@ -400,6 +400,11 @@ function chargesAffichees() { return CHARGES_DE_LA_CONSOLE.filter(chargeAffichee
 function chargesDeLaVueAffichees() { return chargesAffichees().filter(chargeDansLaVue); }
 function chargesVivesAffichees() { return chargesAffichees().filter(c => c.vive); }
 
+// `P10.29-g` — LE STATUT DES CHARGES D'UNE VUE, DANS LES DEUX LANGUES, SA CAUSE ENTIÈRE.
+const MOTS_DU_STATUT_DES_CHARGES = {
+  hors_ligne: { fr: 'hors-ligne ({cause})', en: 'offline ({cause})' },
+  lecture_non_servie: { fr: 'lecture non servie ({cause})', en: 'read not served ({cause})' },
+};
 // LE COUREUR, PARTAGÉ par l'entrée de vue et par la cadence — deux appelants, une seule mécanique de
 // fraîcheur et de non-recouvrement (`P11.17-a`).
 //   `depuis` absent  => GESTE EXPLICITE : tout part, et chaque charge est DATÉE.
@@ -428,7 +433,10 @@ function lancerLesCharges(liste, depuis) {
   return Promise.allSettled(promesses).then(bilans => {
     const rate = bilans.find(b => b.status === 'rejected');
     const st = $('#status');
-    if (st && partantes.length) st.textContent = rate ? ('hors-ligne (' + ((rate.reason && rate.reason.message) || rate.reason) + ')') : 'connecté';
+    // `P10.29-g` — « hors-ligne » ne se dit que d'une demande qui n'a pas abouti ; un refus du démon est une lecture non
+    // servie, et sa cause est la phrase du démon (plus le message composé, JSON du refus compris). Mesuré avant ce lot
+    // (témoin 120g) : un 403 du rôle se lisait « hors-ligne (403 {"error":…}) », en français sous `LANG='en'`.
+    if (st && partantes.length) st.textContent = rate ? faceDansLaLangue(natureDuRefusDUneLecture(rate.reason) === 'lecture_non_aboutie' ? MOTS_DU_STATUT_DES_CHARGES.hors_ligne : MOTS_DU_STATUT_DES_CHARGES.lecture_non_servie, { cause: phraseDuRefusDuDemon(rate.reason) }) : 'connecté';
     return partantes.length;
   });
 }

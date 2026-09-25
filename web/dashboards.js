@@ -4,7 +4,7 @@
 // au point où ce bloc vivait (un module s'exécute à l'import, avant l'enveloppe `fetch` d'`app.js`). Les seams
 // (`viz.js`, `multitenant.js`) continuent de lire `loadDashboard` / `refreshPanels` via le ré-export d'`app.js`.
 // `renderDashboard` est exporté pour le harnais. N'importe pas `app.js`.
-import { $, ic, flashStopped, stopBtn, toast, modal, confirmModal, confirmWithConsequence, toCSV, downloadText, tsSlug, exportPDF, miniMenu, api, apiSend, phraseDuRefusDuDemon, transientGatewayMsg, motDUneLectureQuiNEstPasServie, prefixeDUnEchecRenduTelQuel, phraseDUneReponseNonJson, makePager, noeudDUnePageServieVide, socIsAdmin, applyRoleClass, roleSansEcriturePartagee, LANG, puitsDuRefusDUnGeste, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste } from './core.js';
+import { $, ic, flashStopped, stopBtn, toast, modal, confirmModal, confirmWithConsequence, toCSV, downloadText, tsSlug, exportPDF, miniMenu, api, apiSend, phraseDuRefusDuDemon, transientGatewayMsg, motDUneLectureQuiNEstPasServie, prefixeDUnEchecRenduTelQuel, phraseDUneReponseNonJson, makePager, noeudDUnePageServieVide, socIsAdmin, applyRoleClass, roleSansEcriturePartagee, LANG, puitsDuRefusDUnGeste, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste, faceDansLaLangue, noeudDuRefusDUneLecture, unRefusServiEnDeuxCents } from './core.js';
 import { S } from './state.js';
 import { coldShareBadge, coverageBadge, coverageHorizonNodes, provenanceBadge, currentFrom, currentTo, noeudsDeVizReglee, queryCount, runQuery, tableEl, vizElement } from './viz.js'; // `P10.5-q` : l'aveu de part froide que les panneaux reçoivent est LU
 // P11.4-h : LE geste de copie de la console (mécanisme partagé).
@@ -287,7 +287,7 @@ function renderView() {
   wrap.replaceChildren();
   if (!S.dashList.length) {
     const es = document.createElement('div'); es.className = 'emptystate';
-    es.append(Object.assign(document.createElement('div'), { textContent: 'Aucun dashboard' + ($('#view') && $('#view').value ? ' dans cette vue' : '') + '.' }));
+    es.append(Object.assign(document.createElement('div'), { textContent: faceDansLaLangue({ fr: 'Aucun dashboard{vue}.', en: 'No dashboard{vue}.' }, { vue: $('#view') && $('#view').value ? faceDansLaLangue({ fr: ' dans cette vue', en: ' in this view' }) : '' }) }));
     const b = document.createElement('button'); b.type = 'button'; b.className = 'btn'; b.textContent = '+ Dashboard'; b.onclick = () => $('#dash-new').click(); es.appendChild(b); // P11.4-b : classe partagée
     wrap.replaceChildren(es); return;
   }
@@ -315,7 +315,7 @@ function renderDashboard(d) {
   const chev = document.createElement('button'); chev.type = 'button'; chev.className = 'chev picon'; chev.title = 'Plier / deplier'; chev.innerHTML = ic(d.collapsed ? 'chevright' : 'chevdown');
   const grip = document.createElement('span'); grip.className = 'grip editonly'; grip.innerHTML = ic('grip'); grip.title = 'Glisser l\'en-tete pour reordonner';
   const h = document.createElement('h3'); h.textContent = d.name;
-  const meta = document.createElement('span'); meta.className = 'dashmeta'; meta.textContent = `${d.panels} panneau(x)${d.visibility === 'private' ? ' - prive' : ''}`;
+  const meta = document.createElement('span'); meta.className = 'dashmeta'; meta.textContent = faceDansLaLangue({ fr: '{n} panneau(x){prive}', en: '{n} panel(s){prive}' }, { n: d.panels, prive: d.visibility === 'private' ? faceDansLaLangue({ fr: ' - prive', en: ' - private' }) : '' });   // `P10.29-c`
   const tools = document.createElement('div'); tools.className = 'paneltools';
   // #62 — étoile FAVORI (tous rôles : préférence perso, pas une mutation partagée). Toggle instantané : on
   // repeint l'étoile et, à l'ajout, on remonte la tuile en tête sans recharger les panneaux (le tri complet
@@ -600,7 +600,7 @@ async function loadPanelsInto(grid, d) {
     const frag = document.createDocumentFragment();
     for (const p of panels) { const c = await renderPanel(p, j.editable !== false); S.panelCards.push(c); frag.appendChild(c); }
     grid.replaceChildren(frag);
-  } catch (e) { grid.replaceChildren(Object.assign(document.createElement('div'), { className: 'bad', textContent: prefixeDUnEchecRenduTelQuel() + e.message })); }
+  } catch (e) { grid.replaceChildren(noeudDuRefusDUneLecture(e, faceDansLaLangue({ fr: 'Panneaux du dashboard', en: 'Dashboard panels' }), 'bad')); }   // `P10.29-g`
 }
 // reordonne les dashboards (place `from` juste avant `target`) et persiste les positions
 function reorderDash(fromId, targetId) {
@@ -712,8 +712,8 @@ async function renderPanel(p, editable = true) {
   card.style.flexBasis = tileBasis(p.cols || 1);
   const vistag = p.visibility === 'private' ? '  [privé]' : '';
   const qline = document.createElement('code'); qline.className = 'panelq';
-  qline.textContent = (p.query || '(requête privée)') + (p.window_s ? `  - fenêtre fixe ${p.window_s}s (épinglé)` : '') + vistag;
-  qline.title = (p.is_soql ? 'GXQL' : 'SQL') + (p.window_s ? " - fenêtre fixe : ignore l'intervalle/refresh global (édite, mets 0 pour resync)" : ''); card.appendChild(qline);
+  qline.textContent = (p.query || faceDansLaLangue({ fr: '(requête privée)', en: '(private query)' })) + (p.window_s ? faceDansLaLangue({ fr: '  - fenêtre fixe {s}s (épinglé)', en: '  - fixed window {s}s (pinned)' }, { s: p.window_s }) : '') + vistag;   // `P10.29-c`
+  qline.title = (p.is_soql ? 'GXQL' : 'SQL') + (p.window_s ? faceDansLaLangue({ fr: " - fenêtre fixe : ignore l'intervalle/refresh global (édite, mets 0 pour resync)", en: ' - fixed window: ignores the global interval/refresh (edit, set 0 to resync)' }) : ''); card.appendChild(qline);
   // formulaire d'édition par panneau (titre / requête / viz / fenêtre)
   const ef = document.createElement('form'); ef.className = 'ruleform'; ef.hidden = true;
   ef.innerHTML = `<input class="pe-title" placeholder="titre"><textarea class="pe-query" rows="2" spellcheck="false"></textarea>`
@@ -936,7 +936,7 @@ async function renderPanel(p, editable = true) {
       }
     } catch (e) {
       if (e && e.name === 'AbortError') { flashStopped(prog); return; }
-      body.textContent = prefixeDUnEchecRenduTelQuel() + e.message;
+      body.replaceChildren(noeudDuRefusDUneLecture(e, undefined, 'bad'));   // `P10.29-g` : la face nommée d'une lecture
     } finally {
       panelInflight.delete(ctrl); if (card._loadCtrl === ctrl) card._loadCtrl = null;
       if (prog && !prog.classList.contains('stopped')) prog.hidden = true;
@@ -1023,7 +1023,7 @@ async function renderPanel(p, editable = true) {
       result = { columns: j.columns, rows: j.rows, stats: j.stats }; draw();
     } catch (e) {
       if (e && e.name === 'AbortError') { flashStopped(prog); return; }   // STOP : feedback DISCRET via la barre (pas de texte)
-      body.textContent = prefixeDUnEchecRenduTelQuel() + e.message;
+      body.replaceChildren(noeudDuRefusDUneLecture(e, undefined, 'bad'));   // `P10.29-g` : la face nommée d'une lecture
     } finally {
       panelInflight.delete(ctrl); if (card._loadCtrl === ctrl) card._loadCtrl = null;
       if (prog && !prog.classList.contains('stopped')) prog.hidden = true;   // ne pas couper le flash STOP en cours
@@ -1048,7 +1048,7 @@ async function addDashboardFlow() {
   // dashboards editables pas deja dans cette vue (rattacher = deplacer ; le schema = 1 vue par dashboard)
   const attachable = view ? all.filter(d => d.editable !== false && String(d.view_id || '') !== String(view)) : [];
   const fields = [];
-  if (attachable.length) fields.push({ name: 'existing', label: 'Rattacher un dashboard existant', type: 'select', value: '', options: [{ value: '', label: '+ Creer un nouveau dashboard' }, ...attachable.map(d => ({ value: String(d.id), label: d.name + (d.view_id ? ' (deplace depuis une autre vue)' : '') }))] });
+  if (attachable.length) fields.push({ name: 'existing', label: 'Rattacher un dashboard existant', type: 'select', value: '', options: [{ value: '', label: '+ Creer un nouveau dashboard' }, ...attachable.map(d => ({ value: String(d.id), label: d.name + (d.view_id ? faceDansLaLangue({ fr: ' (deplace depuis une autre vue)', en: ' (moved from another view)' }) : '') }))] });
   else if (listeNonLue) fields.push({ name: 'existing', label: 'Rattacher un dashboard existant', type: 'select', value: '', options: [{ value: '', label: LANG === 'en' ? '— list NOT READ (the read failed): creation only —' : '— liste NON LUE (la lecture a échoué) : création seulement —' }] });
   fields.push({ name: 'name', label: attachable.length ? 'Nom (si nouveau)' : 'Nom', placeholder: 'ex: Plume vue d ensemble', value: '' });
   fields.push({ name: 'visibility', label: 'Visibilité (si nouveau)', type: 'select', value: 'private', options: [{ value: 'private', label: 'Privé (vous + admin)' }, { value: 'shared', label: 'Partagé (groupe)' }] });
@@ -1087,18 +1087,31 @@ async function addDashboardFlow() {
 }
 
 // ===================== #54 — INSTANTANÉ (snapshot partageable, lecture seule) =====================
+const MOTS_DE_L_INSTANTANE_DE_DASHBOARD = {
+  titre: { fr: 'Instantané : {nom}', en: 'Snapshot: {nom}' },
+  sans_jeton: { fr: "Instantané NON CONFIRMÉ : la réponse ne porte pas son jeton, rien ici n'établit qu'il a été créé.", en: 'Snapshot NOT CONFIRMED: the answer does not carry its token, nothing here establishes that it was created.' },
+};
 // Capture les données rendues du dashboard via le chemin GXQL MASQUÉ côté serveur (au rôle de l'appelant) ->
 // jamais un champ hors de sa portée. Renvoie {id, token}. On affiche un aperçu (rendu par les MÊMES
 // vizElement) + un lien de partage read-only copiable (l'API renvoie le JSON figé au token).
+// `P10.29-f` — MESURÉ AVANT CE LOT (témoin 120f) : le refus de la création n'avait AUCUNE capture — la promesse rejetée
+// partait sans être traitée, rien n'était dit —, et un deux cents `{error}` se disait « Instantané : <cause> » (ou
+// « Instantané : échec »), français sous `LANG='en'`. Le refus passe par la forme partagée d'un geste, dans le puits
+// des tableaux de bord ; un deux cents sans corps lisible aussi (`apiSend` le nomme).
 async function captureSnapshot(d) {
   const from = currentFrom() || 0, to = currentTo();
-  const j = await apiSend('/dashboard-snapshots', 'POST', { dashboard_id: d.id, from, to, name: d.name });
-  if (!j || j.error) { toast('Instantané : ' + ((j && j.error) || 'échec'), 'bad'); return; }
+  const puits = puitsDesTableauxDeBord(); effacerLeRefusDUnGeste(puits);
+  let j;
+  try { j = await apiSend('/dashboard-snapshots', 'POST', { dashboard_id: d.id, from, to, name: d.name }); }
+  catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
+  // La cause servie en deux cents est lue ICI, par un test séparé de celui du jeton absent : un refus n'est jamais une absence.
+  if (j && j.error != null) { peindreLeRefusDUnGeste(puits, unRefusServiEnDeuxCents(j)); return; }
+  if (!j || !j.token) { toast(faceDansLaLangue(MOTS_DE_L_INSTANTANE_DE_DASHBOARD.sans_jeton), 'bad', 9000); return; }
   const url = location.origin + '/api/dashboard-snapshots/' + encodeURIComponent(j.token);
   const ov = document.createElement('div'); ov.className = 'modal-ov';
   const box = document.createElement('div'); box.className = 'modal snapview';
   const close = () => { ov.classList.add('out'); setTimeout(() => ov.remove(), 160); };
-  const h = document.createElement('h3'); h.textContent = 'Instantané : ' + d.name;
+  const h = document.createElement('h3'); h.textContent = faceDansLaLangue(MOTS_DE_L_INSTANTANE_DE_DASHBOARD.titre, { nom: d.name });   // `P10.29-c`
   const meta = document.createElement('div'); meta.className = 'muted'; meta.style.cssText = 'font-size:12px;margin:4px 0 8px';
   meta.textContent = 'Lecture seule, figé maintenant (données déjà masquées à votre rôle). Lien partageable :';
   const linkRow = document.createElement('div'); linkRow.className = 'rf-row';
@@ -1329,9 +1342,10 @@ function updateViewShareBtn() {
   const shared = v.visibility === 'shared';
   btn.classList.toggle('on', shared);
   btn.setAttribute('aria-pressed', shared ? 'true' : 'false');
-  const owner = v.owner ? ' (propriétaire : ' + v.owner + ')' : '';
-  btn.title = shared ? `Vue partagée avec l'équipe${owner} — cliquer pour la rendre privée`
-                     : `Vue privée${owner} — cliquer pour la partager avec l'équipe`;
+  // `P10.29-c` — les deux infobulles du partage d'une vue, dans les deux langues (témoin 120c).
+  const owner = v.owner ? faceDansLaLangue({ fr: ' (propriétaire : {qui})', en: ' (owner: {qui})' }, { qui: v.owner }) : '';
+  btn.title = shared ? faceDansLaLangue({ fr: "Vue partagée avec l'équipe{proprietaire} — cliquer pour la rendre privée", en: 'View shared with the team{proprietaire} — click to make it private' }, { proprietaire: owner })
+                     : faceDansLaLangue({ fr: "Vue privée{proprietaire} — cliquer pour la partager avec l'équipe", en: 'Private view{proprietaire} — click to share it with the team' }, { proprietaire: owner });
 }
 // LES DEUX VOISINS, PAR LE MÊME PRÉDICAT ET LA MÊME GRAMMAIRE. Leur survol PERMIS est celui que la page
 // leur a écrit : le reposer ici efface la raison du refus quand elle cesse de s'appliquer, sans quoi une

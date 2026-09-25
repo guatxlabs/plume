@@ -76,7 +76,7 @@ function destinationRow(d) {
   const meta = document.createElement('span'); meta.className = 'rulemeta muted';
   const wm = 'watermark #' + (d.watermark || 0);
   const last = d.last_ok ? ('ok ' + humanAge(d.last_ok)) : (d.last_run ? ('run ' + humanAge(d.last_run)) : 'jamais forwardé');
-  meta.textContent = wm + ' · ' + last + ' · dernier lot ' + (d.last_count || 0);
+  meta.textContent = faceDansLaLangue({ fr: '{wm} · {dernier} · dernier lot {n}', en: '{wm} · {dernier} · last batch {n}' }, { wm, dernier: last, n: d.last_count || 0 });   // `P10.29-c`
   if (d.error_count) meta.textContent += ' · ' + d.error_count + ' err';
   // stub -> badge d'avertissement.
   const stub = !DEST_IMPLEMENTED[d.type];
@@ -145,7 +145,7 @@ export async function flushDestination(d) {
 }
 
 export async function deleteDestination(d) {
-  const ok = await confirmModal("Supprimer la destination « " + (d.name || d.id) + " » ? La sortie de données vers ce sink cessera. (Action journalisée / ledgerisée.)");
+  const ok = await confirmModal(faceDansLaLangue({ fr: 'Supprimer la destination « {nom} » ? La sortie de données vers ce sink cessera. (Action journalisée / ledgerisée.)', en: 'Delete the destination “{nom}”? Data output to this sink will stop. (Action logged / ledgered.)' }, { nom: d.name || d.id }));
   if (!ok) return;
   const puits = puitsDesDestinations(); effacerLeRefusDUnGeste(puits);
   try { await apiSend('/destinations/' + d.id, 'DELETE'); }

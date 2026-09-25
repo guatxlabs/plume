@@ -3,7 +3,7 @@
 // PURE MOVE : corps de fonctions IDENTIQUES au monolithe, seuls les import/export sont ajoutes.
 // Le cycle app<->module est benin : les fonctions importees d'app.js ne sont appelees qu'a
 // l'EXECUTION (handlers/async apres await), jamais a l'evaluation du module.
-import { $, LANG, esc, fmtTs, ic, muted, api, apiSend, confirmWithConsequence, disclosure, laDemandeNAPasAbouti, leRefusEstCeluiDuRole, phraseDuRefusDuDemon, puitsDuRefusDUnGeste, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste, toast, pagedList, closeModals } from './core.js';
+import { $, LANG, esc, fmtTs, ic, muted, api, apiSend, confirmWithConsequence, disclosure, laDemandeNAPasAbouti, leRefusEstCeluiDuRole, phraseDuRefusDuDemon, puitsDuRefusDUnGeste, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste, toast, pagedList, closeModals, faceDansLaLangue } from './core.js';
 import { S } from './state.js';
 // P11.4-h : LE geste de copie de la console (mécanisme partagé).
 import { boutonDeCopie } from './copie_et_selection.js';
@@ -356,7 +356,7 @@ async function loadUsers() {
   const counts = uarr.reduce((a, u) => { a[u.role] = (a[u.role] || 0) + 1; return a; }, {});
   const summary = document.createElement('div'); summary.className = 'muted';
   summary.style.cssText = 'margin:0 0 10px;display:flex;gap:14px;flex-wrap:wrap;align-items:center';
-  summary.appendChild(Object.assign(document.createElement('span'), { textContent: `${uarr.length} compte(s) · ` + ['admin', 'editor', 'viewer'].map(r => `${counts[r] || 0} ${ROLE_LABEL[r]}`).join(' · ') }));
+  summary.appendChild(Object.assign(document.createElement('span'), { textContent: faceDansLaLangue({ fr: '{n} compte(s) · {roles}', en: '{n} account(s) · {roles}' }, { n: uarr.length, roles: ['admin', 'editor', 'viewer'].map(r => `${counts[r] || 0} ${ROLE_LABEL[r]}`).join(' · ') }) }));
   const tokLink = document.createElement('button'); tokLink.type = 'button'; tokLink.textContent = "Provisionner un jeton d'agent →";
   tokLink.title = 'Aller à Administration → Jetons'; tokLink.className = 'btn-link'; // P11.4-b : classe partagée (lien)
   tokLink.onclick = () => { location.hash = 'tokens'; };
@@ -449,14 +449,14 @@ function renderAcces(acces) {
     const row = document.createElement('div'); row.className = 'urow';
     const info = document.createElement('span');
     const role = document.createElement('span'); role.className = 'badge role-' + a.role_effectif; role.textContent = a.role_effectif;
-    role.title = 'rôle effectif au dernier accès, dérivé de : ' + a.origine_du_role;
+    role.title = faceDansLaLangue({ fr: 'rôle effectif au dernier accès, dérivé de : {origine}', en: 'effective role at the last access, derived from: {origine}' }, { origine: a.origine_du_role });   // `P10.29-c`
     const nom = document.createElement('b'); nom.textContent = a.nom;
     const prov = document.createElement('span'); prov.className = 'muted'; prov.style.fontSize = '11px';
     prov.textContent = ' · ' + a.provenance;
     info.append(nom, document.createTextNode(' '), role, prov);
     const vu = document.createElement('span'); vu.className = 'muted'; vu.style.fontSize = '11px';
     vu.textContent = 'vu ' + fmtTs(a.derniere_vue);
-    vu.title = "première vue : " + fmtTs(a.premiere_vue) + " · méthode : " + a.methode;
+    vu.title = faceDansLaLangue({ fr: 'première vue : {date} · méthode : {methode}', en: 'first seen: {date} · method: {methode}' }, { date: fmtTs(a.premiere_vue), methode: a.methode });
     row.append(info, vu); host.appendChild(row);
   });
 }
@@ -488,6 +488,10 @@ const OUVERTURES_DES_REFUS_DE_CREATION_DE_COMPTE = [
   ['nom_tenu_par_une_identite_sans_compte', /^NOM TENU PAR UNE IDENTITÉ SANS COMPTE LOCAL(?![\p{L}\p{N}])/u],
   ['nom_non_verifie', /^COMPTE NON CRÉÉ, NOM NON VÉRIFIÉ(?![\p{L}\p{N}])/u],
   ['commit_refuse', /^COMPTE NON CRÉÉ : la base n'a pas validé la transaction \(COMMIT refusé\)/u],
+  // `P10.29-k` — le `BEGIN` refusé (`CAUSE_COMPTE_NON_CREE_TRANSACTION_NON_OUVERTE`, servi depuis `P10.28-d`) : mesuré avant
+  // ce lot (témoin 113 sur l'arbre du démon qui la sert), aucune ouverture ne la reconnaissait et le témoin refusait de
+  // conclure ; elle tombait sous la face générique. Sa face dit ce qui est vrai : la transaction n'a pas été ouverte.
+  ['transaction_non_prise', /^COMPTE NON CRÉÉ : la base n'a pas pris la transaction de la création \(BEGIN refusé(?![\p{L}\p{N}])/u],
 ];
 function natureDuRefusDeCreationDeCompte(phrase) {
   const p = String(phrase || '').trim();
@@ -514,6 +518,9 @@ const MOTS_DE_LA_CREATION_DE_COMPTE = {
   commit_refuse: {
     fr: "Compte NON créé : la base n'a pas validé l'écriture et l'a annulée — ni le compte ni sa trace d'audit ne sont écrits. Réessayer. Le démon en nomme la cause —",
     en: 'Account NOT created: the database did not commit the write and rolled it back — neither the account nor its audit trace is written. Try again. The daemon names the cause —' },
+  transaction_non_prise: {
+    fr: "Compte NON créé : la base n'a pas pris la transaction de la création — rien n'est écrit, ni le compte ni sa trace d'audit. Réessayer. Le démon en nomme la cause —",
+    en: 'Account NOT created: the database did not take the creation transaction — nothing is written, neither the account nor its audit trace. Try again. The daemon names the cause —' },
   // Une demande qui n'a pas abouti (réseau coupé, requête abandonnée) : le démon n'a rien refusé, et rien ici ne dit
   // s'il a créé le compte avant que la réponse ne se perde.
   demande_non_aboutie: {
@@ -789,7 +796,7 @@ function showTokenOnce(res) {
   closeModals();
   const ov = document.createElement('div'); ov.className = 'modal-ov';
   const box = document.createElement('div'); box.className = 'modal';
-  const h = document.createElement('h3'); h.textContent = `Jeton « ${res.name || ''} » créé`; box.appendChild(h);
+  const h = document.createElement('h3'); h.textContent = faceDansLaLangue({ fr: 'Jeton « {nom} » créé', en: 'Token “{nom}” created' }, { nom: res.name || '' }); box.appendChild(h);
   const warn = document.createElement('p'); warn.className = 'modal-msg'; warn.style.color = 'var(--warn)'; warn.style.fontWeight = '600';
   warn.textContent = 'Copie-le maintenant : il ne sera plus jamais affiché (seule son empreinte SHA-256 est stockée).';
   box.appendChild(warn);
@@ -815,8 +822,10 @@ function showTokenOnce(res) {
     box.appendChild(cp2);
   } else {
     const hint = document.createElement('p'); hint.className = 'muted'; hint.style.fontSize = '12px';
+    // `P10.29-c` — la ligne d'un jeton d'agent lié, dans les deux langues (témoin 120c) ; la ligne non liée est un nœud entier.
+    const jetonLie = faceDansLaLangue({ fr: "Jeton agent lié à l'hôte « {hote} » : pose PLUME_TOKEN=<jeton> sur cet hôte (ingest + responder).", en: 'Agent token bound to the host “{hote}”: set PLUME_TOKEN=<token> on this host (ingest + responder).' }, { hote: res.host || '' });
     hint.textContent = res.host
-      ? `Jeton agent lié à l'hôte « ${res.host} » : pose PLUME_TOKEN=<jeton> sur cet hôte (ingest + responder).`
+      ? jetonLie
       : 'Jeton agent NON lié : ingestion uniquement (pour le responder, recrée un jeton en renseignant un hôte).';
     box.appendChild(hint);
   }

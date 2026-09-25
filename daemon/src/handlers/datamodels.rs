@@ -9,7 +9,7 @@
 //! Un Pivot ne fabrique JAMAIS de SQL : `pivot_to_soql` (module `datamodels`) produit du GXQL, compilé par le
 //! chemin masqué normal -> masquage jamais contourné, denylist de secrets intacte, enum de commandes fermée.
 use crate::*;
-use crate::handlers::transaction_validee::rendre_apres_validation;
+use crate::handlers::transaction_validee::{ouvrir_la_transaction_du_geste, rendre_apres_validation};
 
 // `P10.25-g` — LE `COMMIT` DES MODÈLES DE DONNÉES EST JUGÉ, une fois, dans le squelette commun des créations et
 // suppressions : la forme d'avant rendait 200 sur une transaction que la base n'avait pas prise, laissée ouverte sur
@@ -19,6 +19,12 @@ pub(crate) const CAUSE_MODELE_DE_DONNEES_NON_ECRIT: &str = "MODÈLE DE DONNÉES 
      transaction (COMMIT refusé) et l'a annulée — rien n'est créé ni supprimé, modèles, objets, champs et jeux de \
      données restent ceux d'avant, et aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en \
      lecture seule, pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_MODELE_DE_DONNEES_NON_ECRIT_TRANSACTION_NON_OUVERTE: &str = "MODÈLE DE DONNÉES NON ÉCRIT : la \
+     base n'a pas pris la transaction de ce geste (BEGIN refusé : verrou tenu, ou transaction d'un autre geste \
+     pendante sur l'écrivain) — RIEN n'est écrit : rien n'est créé ni supprimé, modèles, objets, champs et jeux de \
+     données restent ceux d'avant, et aucune trace n'est écrite. Réessayez ; s'il est refusé encore, l'écrivain est \
+     occupé ou bloqué.";
 
 /// Squelette transactionnel commun aux mutations (create/delete) auditées.
 ///
@@ -118,7 +124,9 @@ pub(crate) async fn model_create(State(st): State<AppState>, Extension(au): Exte
     }
     let enabled = b.bool_field("enabled", true) as i64;
     crate::req_conn!(st, au, conn);
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() { return server_err("verrou base indisponible"); }
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "datamodels", "création d'un modèle de données", CAUSE_MODELE_DE_DONNEES_NON_ECRIT_TRANSACTION_NON_OUVERTE) {
+        return refus;
+    }
     let outcome: rusqlite::Result<i64> = (|| {
         conn.execute("INSERT INTO data_model(name,title,description,category,enabled,created,updated) VALUES(?1,?2,?3,?4,?5,?6,?6)",
             params![name, title, description, category, enabled, now()])?;
@@ -138,7 +146,9 @@ pub(crate) async fn model_delete(State(st): State<AppState>, Extension(au): Exte
     let name = match conn.query_row("SELECT name FROM data_model WHERE id=?1", params![id], |r| r.get::<_,String>(0)) {
         Ok(n) => n, Err(_) => return not_found("data model introuvable"),
     };
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() { return server_err("verrou base indisponible"); }
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "datamodels", &format!("suppression du modèle de données #{id}"), CAUSE_MODELE_DE_DONNEES_NON_ECRIT_TRANSACTION_NON_OUVERTE) {
+        return refus;
+    }
     let outcome: rusqlite::Result<i64> = (|| {
         // Cascade manuelle : champs des objets du modèle, puis objets, puis modèle.
         conn.execute("DELETE FROM data_model_field WHERE object_id IN (SELECT id FROM data_model_object WHERE model_id=?1)", params![id])?;
@@ -176,7 +186,9 @@ pub(crate) async fn object_create(State(st): State<AppState>, Extension(au): Ext
             Err(_) => return bad_req("objet parent introuvable"),
         }
     }
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() { return server_err("verrou base indisponible"); }
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "datamodels", "création d'un objet de modèle", CAUSE_MODELE_DE_DONNEES_NON_ECRIT_TRANSACTION_NON_OUVERTE) {
+        return refus;
+    }
     let outcome: rusqlite::Result<i64> = (|| {
         conn.execute("INSERT INTO data_model_object(model_id,name,parent_id,constraint_soql,enabled,created,updated) VALUES(?1,?2,?3,?4,?5,?6,?6)",
             params![model_id, name, parent_id, constraint, enabled, now()])?;
@@ -199,7 +211,9 @@ pub(crate) async fn object_delete(State(st): State<AppState>, Extension(au): Ext
     // Refus si l'objet a des enfants (évite d'orpheliner une hiérarchie ; l'éditeur supprime feuille-à-racine).
     let has_children: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM data_model_object WHERE parent_id=?1)", params![id], |r| r.get::<_,i64>(0)).map(|n| n != 0).unwrap_or(false);
     if has_children { return bad_req("objet parent d'autres objets : supprimez d'abord les enfants"); }
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() { return server_err("verrou base indisponible"); }
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "datamodels", &format!("suppression de l'objet de modèle #{id}"), CAUSE_MODELE_DE_DONNEES_NON_ECRIT_TRANSACTION_NON_OUVERTE) {
+        return refus;
+    }
     let outcome: rusqlite::Result<i64> = (|| {
         conn.execute("DELETE FROM data_model_field WHERE object_id=?1", params![id])?;
         conn.execute("DELETE FROM data_model_object WHERE id=?1", params![id])?;
@@ -230,7 +244,9 @@ pub(crate) async fn field_create(State(st): State<AppState>, Extension(au): Exte
     if conn.query_row("SELECT 1 FROM data_model_object WHERE id=?1", params![object_id], |_| Ok(())).is_err() {
         return not_found("objet introuvable");
     }
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() { return server_err("verrou base indisponible"); }
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "datamodels", "création d'un champ de modèle", CAUSE_MODELE_DE_DONNEES_NON_ECRIT_TRANSACTION_NON_OUVERTE) {
+        return refus;
+    }
     let outcome: rusqlite::Result<i64> = (|| {
         conn.execute("INSERT INTO data_model_field(object_id,name,ftype,expr,created) VALUES(?1,?2,?3,?4,?5)",
             params![object_id, name, ftype, expr, now()])?;
@@ -250,7 +266,9 @@ pub(crate) async fn field_delete(State(st): State<AppState>, Extension(au): Exte
     let name = match conn.query_row("SELECT name FROM data_model_field WHERE id=?1", params![id], |r| r.get::<_,String>(0)) {
         Ok(n) => n, Err(_) => return not_found("champ introuvable"),
     };
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() { return server_err("verrou base indisponible"); }
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "datamodels", &format!("suppression du champ de modèle #{id}"), CAUSE_MODELE_DE_DONNEES_NON_ECRIT_TRANSACTION_NON_OUVERTE) {
+        return refus;
+    }
     let outcome: rusqlite::Result<i64> = (|| {
         conn.execute("DELETE FROM data_model_field WHERE id=?1", params![id])?;
         audit_config_change(&conn, "config.datamodel.field.delete",
@@ -523,7 +541,9 @@ pub(crate) async fn dataset_create(State(st): State<AppState>, Extension(au): Ex
         _ => return bad_req("kind invalide (search|pivot)"),
     };
     let enabled = b.bool_field("enabled", true) as i64;
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() { return server_err("verrou base indisponible"); }
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "datamodels", "création d'un jeu de données", CAUSE_MODELE_DE_DONNEES_NON_ECRIT_TRANSACTION_NON_OUVERTE) {
+        return refus;
+    }
     let outcome: rusqlite::Result<i64> = (|| {
         conn.execute("INSERT INTO dataset(name,kind,soql,object_id,spec,enabled,created,updated) VALUES(?1,?2,?3,?4,?5,?6,?7,?7)",
             params![name, kind, soql, object_id, spec, enabled, now()])?;
@@ -543,7 +563,9 @@ pub(crate) async fn dataset_delete(State(st): State<AppState>, Extension(au): Ex
     let name = match conn.query_row("SELECT name FROM dataset WHERE id=?1", params![id], |r| r.get::<_,String>(0)) {
         Ok(n) => n, Err(_) => return not_found("dataset introuvable"),
     };
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() { return server_err("verrou base indisponible"); }
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "datamodels", &format!("suppression du jeu de données #{id}"), CAUSE_MODELE_DE_DONNEES_NON_ECRIT_TRANSACTION_NON_OUVERTE) {
+        return refus;
+    }
     let outcome: rusqlite::Result<i64> = (|| {
         conn.execute("DELETE FROM dataset WHERE id=?1", params![id])?;
         audit_config_change(&conn, "config.dataset.delete",

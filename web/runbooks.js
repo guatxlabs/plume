@@ -14,7 +14,7 @@
 // CSS » qui figurait ici était FAUSSE (cinq `style.cssText`, trois classes sans règle) ; elle est vraie
 // depuis : les mises en page vivent dans `style.css` (`.rb-steps`, `.rb-phase`, `.rb-line`, `.rb-inline`,
 // `.rb-cond`, `.rb-step`), et une classe qui n'a pas de règle n'est pas posée.
-import { $, api, apiSend, confirmModal, disclosure, effacerLeRefusDUnGeste, LANG, modal, muted, pagedList, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, toast, socIsAdmin, gateDeleteBtn, ic } from './core.js';
+import { $, api, apiSend, confirmModal, disclosure, effacerLeRefusDUnGeste, LANG, modal, muted, pagedList, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, toast, socIsAdmin, gateDeleteBtn, ic, faceDansLaLangue } from './core.js';
 import { producerRow, rowButton, announceCreated, takePendingNote, destinationNote } from './producer_ui.js';
 
 const RB_PHASES = ['triage', 'investigation', 'containment', 'eradication', 'recovery'];
@@ -157,7 +157,7 @@ function rbRow(r) {
   row.appendChild(rowButton('Éditer', { cls: 'crud-btn', disabled: locked, title: locked ? 'runbook livré (baseline git) : immuable en place — clonez pour éditer' : 'Modifier', onClick: locked ? null : () => openEditor(r.id) }));
   const del = rowButton('', { cls: 'crud-btn', icon: ic('x'), title: 'Supprimer' });
   if (gateDeleteBtn(del, locked ? 0 : 2)) del.onclick = async () => {
-    if (!await confirmModal('Supprimer le runbook custom « ' + r.name + ' » ?', { danger: true })) return;
+    if (!await confirmModal(faceDansLaLangue({ fr: 'Supprimer le runbook custom « {nom} » ?', en: 'Delete the custom runbook “{nom}”?' }, { nom: r.name }), { danger: true })) return;
     const puits = puitsDesRunbooks(); effacerLeRefusDUnGeste(puits);
     try { await apiSend('/runbooks/' + r.id, 'DELETE'); } catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
     toast('Runbook supprimé', 'ok'); loadRunbooks();
@@ -224,7 +224,7 @@ async function remplirLesEtapes(box, id) {
     const line = document.createElement('div'); line.className = 'rb-line';
     const t = document.createElement('b'); t.textContent = s.title; line.appendChild(t);
     if (s.step_kind === 'search') { const c = document.createElement('code'); c.className = 'rulecond'; c.textContent = s.search_soql || 'search'; c.style.marginLeft = '6px'; line.appendChild(c); }
-    if (s.step_kind === 'response') { const c = document.createElement('code'); c.className = 'rulecond'; c.textContent = 'réponse : ' + (s.action_kind || ''); c.style.marginLeft = '6px'; line.appendChild(c); }
+    if (s.step_kind === 'response') { const c = document.createElement('code'); c.className = 'rulecond'; c.textContent = faceDansLaLangue({ fr: 'réponse : {genre}', en: 'response: {genre}' }, { genre: s.action_kind || '' }); c.style.marginLeft = '6px'; line.appendChild(c); }
     if (s.guidance) { line.appendChild(document.createTextNode(' ')); const g = document.createElement('span'); g.className = 'muted'; g.textContent = s.guidance; line.appendChild(g); }
     box.appendChild(line);
   });
@@ -301,7 +301,7 @@ async function openEditor(id) {
     const puits = puitsDesRunbooks(); effacerLeRefusDUnGeste(puits);
     try { await apiSend(path, 'POST', body); } catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
     box.classList.add('hidden'); box.replaceChildren();
-    announceCreated('runbooks', 'cases', body.name, body.active === false ? 'OFF : activez-le dans la liste' : ''); // P11.1-e
+    announceCreated('runbooks', 'cases', body.name, body.active === false ? faceDansLaLangue({ fr: 'OFF : activez-le dans la liste', en: 'OFF: enable it in the list' }) : ''); // P11.1-e, `P10.29-c`
     loadRunbooks();
   };
   box.appendChild(form);

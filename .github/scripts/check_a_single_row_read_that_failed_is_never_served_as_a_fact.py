@@ -241,8 +241,11 @@ PROPAGATEURS = ("?", "unwrap", "expect")
 # chaque site qui cesse d'être vu sans que son entrée soit retirée devient une « exemption sans
 # objet ». Le plancher ne couvre que l'effondrement ASSEZ large pour que ce rouge-là passe pour une
 # guérison.
-PLANCHER_SITES = 62
-PLANCHER_FICHIERS = 18
+# RE-DÉRIVÉS le 2026-09-25 (`P10.29-b`) : le lot ferme quatre sites (`case_link_add`, `case_merge` ×2, `case_item_add`),
+# aucun fichier ne sort. Relevé de ce jour-là sur l'arbre : 81 sites sur 27 fichiers ; même règle (69 % et 65 %, arrondis
+# en dessous) : 81 -> 55, 27 -> 17.
+PLANCHER_SITES = 55
+PLANCHER_FICHIERS = 17
 
 # ================================================================================================
 # L'ENSEMBLE NOMMÉ — CINQ CLASSES, JUGÉES DANS LES DEUX SENS
@@ -386,11 +389,15 @@ DEFAUTS_RANG_4_FAIL_CLOSED = {
     ("daemon/src/handlers/alerting.rs", "policy_delete"): ("is_err",),
     ("daemon/src/handlers/alerting.rs", "policy_update"): ("is_err",),
     ("daemon/src/handlers/alerting.rs", "silence_delete"): ("is_err",),
-    ("daemon/src/handlers/caseops.rs", "case_link_add"): ("is_err",),
-    ("daemon/src/handlers/caseops.rs", "case_merge"): ("ok", "ok"),
+    # `P10.29-b` — TROIS ENTRÉES RETIRÉES (2026-09-25), PARCE QUE LES QUATRE SITES SONT CORRIGÉS : `case_link_add` et
+    # `case_item_add` (`is_err`) et les deux lectures de `case_merge` (`ok`, désormais `juger_la_fusion`) séparent
+    # l'absence ÉTABLIE (`QueryReturnedNoRows`, 404 nommé) de la lecture refusée (503 nommé). MESURÉ sur la forme
+    # d'avant (témoins `bdrn_`) : une lecture refusée y rendait le même 404 NU qu'un dossier absent — « introuvable »
+    # pour un dossier bien vivant. `case_unmerge`, `case_apply_update` et `case_set_archived` gardent leur lecture
+    # absorbée, mais leurs routes établissent désormais l'existence avant de les appeler (`etablir_le_dossier`,
+    # `juger_la_defusion`) : leur `false` ne sert plus d'absence ; les entrées restent tant que la forme reste.
     ("daemon/src/handlers/caseops.rs", "case_unmerge"): ("ok",),
     ("daemon/src/handlers/cases.rs", "case_apply_update"): ("ok",),
-    ("daemon/src/handlers/cases.rs", "case_item_add"): ("is_err",),
     ("daemon/src/handlers/cases.rs", "case_set_archived"): ("is_err",),
     ("daemon/src/handlers/connectors/mod.rs", "connector_test"): ("ok",),
     ("daemon/src/handlers/connectors/mod.rs", "connector_update"): ("is_err",),
@@ -1034,8 +1041,8 @@ def main():
     fichiers = {c for c, _l, _f, _fo, _x in sites}
     if len(sites) < PLANCHER_SITES or len(fichiers) < PLANCHER_FICHIERS:
         print(f"::error::{len(sites)} site(s) découvert(s) sur {len(fichiers)} fichier(s), planchers "
-              f"{PLANCHER_SITES}/{PLANCHER_FICHIERS} (dérivés le 2026-09-16 du relevé de ce jour-là : "
-              "90 sites sur 28 fichiers, règle des deux tiers). La DÉCOUVERTE est cassée, ou un lot a "
+              f"{PLANCHER_SITES}/{PLANCHER_FICHIERS} (re-dérivés le 2026-09-25 du relevé de ce jour-là : "
+              "81 sites sur 27 fichiers, règle des deux tiers). La DÉCOUVERTE est cassée, ou un lot a "
               "fermé assez de sites pour que les planchers doivent être RE-DÉRIVÉS du relevé du jour "
               "— dans le second cas, ils descendent, avec leur date écrite dans le fichier. La garde "
               "REFUSE DE CONCLURE plutôt que de rendre vert en étant aveugle.")

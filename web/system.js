@@ -4,7 +4,7 @@
 //  - (admin) bulletin/MOTD (setting global, bandeau pour TOUS)                             -> /api/bulletin
 //  - (admin) bundle de diagnostic NON-SECRET (support hand-off, téléchargé)               -> GET /api/system/diag
 // LECTURE viewer+. Additif : aucun bulletin -> aucun bandeau (invariant mode 0).
-import { $, LANG, api, apiSend, muted, prefixeDUnEchecRenduTelQuel, toast, fmtTs, downloadText, humanAge, socIsAdmin, puitsDuRefusDUnGeste, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste } from './core.js';
+import { $, LANG, api, apiSend, muted, toast, fmtTs, downloadText, humanAge, socIsAdmin, puitsDuRefusDUnGeste, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste, faceDansLaLangue, noeudDuRefusDUneLecture, phraseDuRefusDUneLecture } from './core.js';
 // P11.4-g : la référence documentaire d'un avertissement est une VALEUR qu'on transporte — geste de copie
 // partagé (`copie_et_selection.js`, `P11.4-h`).
 import { valeurTransportee } from './copie_et_selection.js';
@@ -145,10 +145,10 @@ function bilansDeTicks(sc) {
     const val = document.createElement('b');
     if (m.verdict === VERDICT_LU) {
       const n = Number(m.valeur) || 0;
-      val.textContent = n ? `${n} abandon(s)` : '0';
+      val.textContent = n ? faceDansLaLangue({ fr: '{n} abandon(s)', en: '{n} abandonment(s)' }, { n }) : '0';   // `P10.29-c`
       val.className = n ? 'warn' : 'ok';
     } else {
-      val.textContent = 'TICK AVEUGLE — ' + m.cause;
+      val.textContent = faceDansLaLangue({ fr: 'TICK AVEUGLE — {cause}', en: 'BLIND TICK — {cause}' }, { cause: m.cause });
       val.className = 'bad';
       if (m.detail) val.title = m.detail;
     }
@@ -324,7 +324,7 @@ async function loadSystemView() {
   const wrap = $('#system-body'); if (!wrap) return;
   let m, h;
   try { [m, h] = await Promise.all([api('/system/metrics'), api('/system/health')]); }
-  catch (e) { wrap.replaceChildren(muted(prefixeDUnEchecRenduTelQuel() + e.message)); return; }
+  catch (e) { wrap.replaceChildren(noeudDuRefusDUneLecture(e)); return; }   // `P10.29-g`
   rendreSysteme(wrap, m, h);
 }
 
@@ -337,14 +337,15 @@ function rendreSysteme(wrap, m, h) {
   const posture = h.posture || m.posture || 'green';
   const head = document.createElement('div'); head.className = 'sys-posture';
   const pdot = document.createElement('span'); pdot.className = 'fdot ' + (STATE_DOT[posture] || 'muet');
-  const ptxt = document.createElement('b'); ptxt.textContent = 'Posture : ' + (STATE_LBL[posture] || posture);
+  const ptxt = document.createElement('b'); ptxt.textContent = faceDansLaLangue({ fr: 'Posture : {etat}', en: 'Posture: {etat}' }, { etat: STATE_LBL[posture] || posture });
   const pver = document.createElement('span'); pver.className = 'muted'; pver.style.marginLeft = 'auto';
   // La version de schéma QUITTE l'en-tête quand elle n'est pas établie : « v? » y tiendrait la place d'un
   // numéro, et un numéro manquant se lit comme un défaut d'affichage. L'aveu prend sa place, en dessous.
   const causeDuSchema = causeDeLaVersionDeSchemaNonEtablie(m);
+  // `P10.29-c` — « schéma » suit la langue de l'écran (témoin 120c) ; « plume » et « uptime » valent dans les deux.
   pver.textContent = causeDuSchema
     ? 'plume ' + (m.version || '?') + ' · uptime ' + humanAge(m.uptime_s || 0)
-    : 'plume ' + (m.version || '?') + ' · schéma v' + (m.schema_version || '?') + ' · uptime ' + humanAge(m.uptime_s || 0);
+    : faceDansLaLangue({ fr: 'plume {version} · schéma v{schema} · uptime {duree}', en: 'plume {version} · schema v{schema} · uptime {duree}' }, { version: m.version || '?', schema: m.schema_version || '?', duree: humanAge(m.uptime_s || 0) });
   head.append(pdot, ptxt, pver);
   wrap.appendChild(head);
   if (causeDuSchema) {
@@ -468,7 +469,7 @@ function adminTools() {
       direLesListesNonLuesDuPaquet(v);
       downloadText('plume-diag-' + (v.generated_at || Math.floor(Date.now() / 1000)) + '.json', 'application/json', JSON.stringify(v, null, 2));
       direLaVersionDeSchemaDuPaquet(v);
-    } catch (e) { toast(prefixeDUnEchecRenduTelQuel() + e.message, 'bad'); }
+    } catch (e) { toast(phraseDuRefusDUneLecture(e, faceDansLaLangue({ fr: 'Paquet de diagnostic', en: 'Diagnostic bundle' })), 'bad', 9000); }   // `P10.29-g`
   };
   dl.append(dlbl, dbtn);
   box.appendChild(dl);
@@ -488,16 +489,22 @@ function adminTools() {
 // partiel vaut mieux que rien pour une reprise d'incident — mais la cause SERVIE est dite, telle quelle,
 // au moment où le fichier part. Sœur exacte de `direLaVersionDeSchemaDuPaquet` : même forme, même retour,
 // et c'est ce retour que le harnais ESM juge.
+// `P10.29-f` — LES DEUX AVIS DU PAQUET DE DIAGNOSTIC, DANS LES DEUX LANGUES (témoin 120f : composés en français autour de
+// la cause servie, ils le restaient sous `LANG='en'`). Les faces françaises sont celles d'avant.
+const MOTS_DU_PAQUET_DE_DIAGNOSTIC = {
+  listes_non_lues: { fr: 'Bundle de diagnostic PARTIELLEMENT NON LU : le démon a refusé une partie des lectures et en nomme la cause — « {cause} »', en: 'Diagnostic bundle PARTIALLY NOT READ: the daemon refused part of the reads and names the cause — “{cause}”' },
+  version_de_schema_non_etablie: { fr: "Version de schéma NON ÉTABLIE dans ce paquet de diagnostic : le démon ne l'a pas lue et en nomme la cause — « {cause} »", en: 'Schema version NOT ESTABLISHED in this diagnostic bundle: the daemon did not read it and names the cause — “{cause}”' },
+};
 function direLesListesNonLuesDuPaquet(paquet) {
   const cause = paquet && typeof paquet.error === 'string' ? paquet.error.trim() : '';
   if (!cause) return false;
-  toast('Bundle de diagnostic PARTIELLEMENT NON LU : le démon a refusé une partie des lectures et en nomme la cause — « ' + cause + ' »', 'err', 9000);
+  toast(faceDansLaLangue(MOTS_DU_PAQUET_DE_DIAGNOSTIC.listes_non_lues, { cause }), 'err', 9000);   // `P10.29-f`
   return true;
 }
 function direLaVersionDeSchemaDuPaquet(paquet) {
   const cause = causeDeLaVersionDeSchemaNonEtablie(paquet);
   if (!cause) return false;
-  toast('Version de schéma NON ÉTABLIE dans ce paquet de diagnostic : le démon ne l\'a pas lue et en nomme la cause — « ' + cause + ' »', 'err', 9000);
+  toast(faceDansLaLangue(MOTS_DU_PAQUET_DE_DIAGNOSTIC.version_de_schema_non_etablie, { cause }), 'err', 9000);   // `P10.29-f`
   return true;
 }
 

@@ -3,7 +3,7 @@
 //! `build_lookup_kv`, `lookups_list`/`lookup_upload`/`lookup_delete`).
 //! Extrait de main.rs (refactor split #25 — byte-identique).
 use crate::*;
-use crate::handlers::transaction_validee::valider_la_transaction;
+use crate::handlers::transaction_validee::{ouvrir_la_transaction_du_geste, valider_la_transaction};
 
 // ---------- comptes utilisateurs (réservé admin via auth_guard) ----------
 pub(crate) async fn users_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
@@ -92,8 +92,8 @@ pub(crate) async fn user_create(State(st): State<AppState>, Extension(au): Exten
     // audit_config_change des lookups/notifiers). Sans trace, un admin compromis plante une persistance
     // (nouvel admin) invisible. Le hash n'est JAMAIS mis dans l'audit — seuls actor/target/rôle. Créer un
     // ADMIN = sévérité 4 (HIGH, alertable) ; editor/viewer = 3.
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "comptes", "création d'un compte", CAUSE_COMPTE_NON_CREE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     // `P10.24-u` — CE QUE LE NOM TIENT DÉJÀ SANS COMPTE, lu SOUS le verrou d'écriture de la création : rien ne peut
     // s'y ajouter entre la lecture et l'écriture. Voir `ce_que_le_nom_tient_sans_compte`.
@@ -175,22 +175,43 @@ pub(crate) const CAUSE_NOM_NON_VERIFIE_COMPTE_NON_CREE: &str = "COMPTE NON CRÉ�
 pub(crate) const CAUSE_COMPTE_NON_CREE_COMMIT_REFUSE: &str = "COMPTE NON CRÉÉ : la base n'a pas validé la \
      transaction (COMMIT refusé) et l'a annulée — ni le compte ni sa trace d'audit ne sont écrits. Réessayez ; si le \
      refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_COMPTE_NON_CREE_TRANSACTION_NON_OUVERTE: &str = "COMPTE NON CRÉÉ : la base n'a pas pris la \
+     transaction de la création (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante sur \
+     l'écrivain) — RIEN n'est écrit : ni le compte ni sa trace d'audit ne sont écrits. Réessayez ; s'il est refusé \
+     encore, l'écrivain est occupé ou bloqué.";
 
 /// `P10.24-x` — le `COMMIT` de la suppression refusé.
 pub(crate) const CAUSE_COMPTE_NON_SUPPRIME_COMMIT_REFUSE: &str = "COMPTE NON SUPPRIMÉ : la base n'a pas validé la \
      transaction (COMMIT refusé) et l'a annulée — le compte, ses objets, ses jetons, sa graine du second facteur, ses \
      préférences et ses sessions sont intacts, et ni ses échecs de connexion ni le frein de son second facteur ne \
      sont oubliés. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_COMPTE_NON_SUPPRIME_TRANSACTION_NON_OUVERTE: &str = "COMPTE NON SUPPRIMÉ : la base n'a pas \
+     pris la transaction du retrait (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante sur \
+     l'écrivain) — RIEN n'est écrit : le compte, ses objets, ses jetons, sa graine du second facteur, ses \
+     préférences et ses sessions sont intacts, et ni ses échecs de connexion ni le frein de son second facteur ne \
+     sont oubliés. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 
 /// `P10.24-x` — le `COMMIT` de la modification refusé.
 pub(crate) const CAUSE_COMPTE_NON_MODIFIE_COMMIT_REFUSE: &str = "COMPTE NON MODIFIÉ : la base n'a pas validé la \
      transaction (COMMIT refusé) et l'a annulée — ni son rôle ni son mot de passe n'ont changé, et ses sessions ne sont \
      pas révoquées. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_COMPTE_NON_MODIFIE_TRANSACTION_NON_OUVERTE: &str = "COMPTE NON MODIFIÉ : la base n'a pas pris \
+     la transaction de la modification (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante sur \
+     l'écrivain) — RIEN n'est écrit : ni son rôle ni son mot de passe n'ont changé, et ses sessions ne sont pas \
+     révoquées. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 
 /// `P10.24-x` — le `COMMIT` d'un chargement ou d'une suppression de table d'enrichissement refusé.
 pub(crate) const CAUSE_TABLE_D_ENRICHISSEMENT_INCHANGEE: &str = "TABLE D'ENRICHISSEMENT INCHANGÉE : la base n'a pas \
      validé la transaction (COMMIT refusé) et l'a annulée — le contenu d'avant est intact et aucune trace n'est écrite. \
      Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_TABLE_D_ENRICHISSEMENT_INCHANGEE_TRANSACTION_NON_OUVERTE: &str = "TABLE D'ENRICHISSEMENT \
+     INCHANGÉE : la base n'a pas pris la transaction de ce geste (BEGIN refusé : verrou tenu, ou transaction d'un \
+     autre geste pendante sur l'écrivain) — RIEN n'est écrit : le contenu d'avant est intact et aucune trace n'est \
+     écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 
 /// `P10.24-u` — LES LIGNES HORS OBJETS QUI DONNENT UNE AUTORITÉ À UN NOM : la graine du second facteur (que
 /// `login_post` lit par nom) et les préférences. Ce sont celles que `user_delete` purge avec le compte (`P10.24-c`).
@@ -393,8 +414,8 @@ pub(crate) async fn user_delete(State(st): State<AppState>, Extension(au): Exten
     }
     // AUDIT D'IDENTITÉ : suppression de compte = mutation d'identité -> AUDIT fail-closed transactionnel. Supprimer un
     // ADMIN = sévérité 4. Rien n'est purgé sans trace (source=plume-config, non-purgeable).
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "comptes", "suppression d'un compte", CAUSE_COMPTE_NON_SUPPRIME_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let sev = if trole == "admin" { 4 } else { 3 };
     // `P10.24-w` — la transaction rend le compte rendu de la suppression : champ de son audit ET corps de sa réponse,
@@ -532,8 +553,8 @@ pub(crate) async fn user_update(
     // AUDIT D'IDENTITÉ : changement de rôle ET/OU reset mdp = mutations d'identité -> AUDIT fail-closed transactionnel
     // (un audit PAR type de changement : role_change / password_reset). Un reset mdp ou une escalade vers admin
     // = sévérité 4 (HIGH, alertable). Le nouveau hash n'est JAMAIS mis dans l'audit.
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "comptes", "modification d'un compte", CAUSE_COMPTE_NON_MODIFIE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     // `P10.24-a` — le verrou relâché pour la preuve, les écritures visent le compte LU ET JUGÉ (identifiant ET nom) :
     // un identifiant réattribué entre-temps ne reçoit pas un mot de passe prouvé pour un autre compte.
@@ -691,8 +712,8 @@ pub(crate) async fn lookup_upload(State(st): State<AppState>, Extension(au): Ext
     crate::req_conn!(st, au, conn);
     // #1c garde-fou #6 : remplacement ATOMIQUE fail-closed + audit #1b (ledger + event plume-config). Si un
     // write ou l'audit échoue -> ROLLBACK (aucun remplacement partiel, aucune mutation sans trace).
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "lookup", "remplacement d'une table d'enrichissement", CAUSE_TABLE_D_ENRICHISSEMENT_INCHANGEE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<()> = (|| {
         conn.execute("DELETE FROM lookup_kv WHERE name=?1", params![name])?;
@@ -737,8 +758,8 @@ pub(crate) async fn lookup_delete(State(st): State<AppState>, Extension(au): Ext
     if conn.query_row("SELECT 1 FROM lookup_meta WHERE name=?1", params![name], |_| Ok(())).is_err() {
         return not_found("lookup introuvable");
     }
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return server_err("verrou base indisponible");
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "lookup", "suppression d'une table d'enrichissement", CAUSE_TABLE_D_ENRICHISSEMENT_INCHANGEE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<()> = (|| {
         conn.execute("DELETE FROM lookup_kv WHERE name=?1", params![name])?;

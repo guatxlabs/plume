@@ -13,7 +13,7 @@
 //! s'appliquent bien ; run_as défaut = `viewer` (le plus masqué). Le notifier est admin-configuré (secret hors de
 //! portée de l'editor). CRUD ledgerisé (gouvernance).
 use crate::*;
-use crate::handlers::transaction_validee::rendre_apres_validation;
+use crate::handlers::transaction_validee::{ouvrir_la_transaction_du_geste, rendre_apres_validation};
 
 
 /// Rôle d'exécution valide + PLAFONNÉ au rôle du créateur (anti-escalade). Enum FERMÉ (jamais 'agent').
@@ -75,7 +75,9 @@ pub(crate) async fn report_create(State(st): State<AppState>, Extension(au): Ext
     if conn.query_row("SELECT 1 FROM notifier WHERE id=?1", params![notifier_id], |_| Ok(())).is_err() {
         return bad_req("notifier introuvable");
     }
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() { return server_err("verrou base indisponible"); }
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "rapports", &format!("création du rapport planifié '{name}'"), CAUSE_RAPPORT_PLANIFIE_NON_CREE_TRANSACTION_NON_OUVERTE) {
+        return refus;
+    }
     let outcome: rusqlite::Result<i64> = (|| {
         conn.execute("INSERT INTO scheduled_report(name,dataset_id,notifier_id,run_as_role,tenant,interval_s,enabled,created,created_by,updated) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?8)",
             params![name, dataset_id, notifier_id, run_as, au.tenant, interval_s, enabled, now(), au.name])?;
@@ -108,12 +110,22 @@ pub(crate) async fn report_create(State(st): State<AppState>, Extension(au): Ext
 pub(crate) const CAUSE_RAPPORT_PLANIFIE_NON_CREE: &str = "RAPPORT PLANIFIÉ NON CRÉÉ : la base n'a pas validé la \
      transaction (COMMIT refusé) et l'a annulée — aucun rapport n'est écrit, rien ne partira vers le canal, et aucune \
      trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_RAPPORT_PLANIFIE_NON_CREE_TRANSACTION_NON_OUVERTE: &str = "RAPPORT PLANIFIÉ NON CRÉÉ : la \
+     base n'a pas pris la transaction de la création (BEGIN refusé : verrou tenu, ou transaction d'un autre geste \
+     pendante sur l'écrivain) — RIEN n'est écrit : aucun rapport n'est écrit, rien ne partira vers le canal, et \
+     aucune trace n'est écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 
 // `P10.25-g` — LE `COMMIT` DE LA SUPPRESSION D'UN RAPPORT PLANIFIÉ EST JUGÉ. `P10.27-w` — celui de la création aussi.
 /// `P10.25-g` — rapport planifié non supprimé : le `COMMIT` de ce geste refusé.
 pub(crate) const CAUSE_RAPPORT_PLANIFIE_NON_SUPPRIME: &str = "RAPPORT PLANIFIÉ NON SUPPRIMÉ : la base n'a pas validé \
      la transaction (COMMIT refusé) et l'a annulée — il est toujours là et PART TOUJOURS à son échéance, et aucune \
      trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
+pub(crate) const CAUSE_RAPPORT_PLANIFIE_NON_SUPPRIME_TRANSACTION_NON_OUVERTE: &str = "RAPPORT PLANIFIÉ NON SUPPRIMÉ \
+     : la base n'a pas pris la transaction du retrait (BEGIN refusé : verrou tenu, ou transaction d'un autre geste \
+     pendante sur l'écrivain) — RIEN n'est écrit : il est toujours là et PART TOUJOURS à son échéance, et aucune \
+     trace n'est écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 
 /// DELETE /api/scheduled-reports/{id} — supprime (editor+, audité).
 pub(crate) async fn report_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
@@ -122,7 +134,9 @@ pub(crate) async fn report_delete(State(st): State<AppState>, Extension(au): Ext
     let name = match conn.query_row("SELECT name FROM scheduled_report WHERE id=?1", params![id], |r| r.get::<_,String>(0)) {
         Ok(n) => n, Err(_) => return not_found("rapport introuvable"),
     };
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() { return server_err("verrou base indisponible"); }
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "rapports", &format!("suppression du rapport planifié #{id}"), CAUSE_RAPPORT_PLANIFIE_NON_SUPPRIME_TRANSACTION_NON_OUVERTE) {
+        return refus;
+    }
     let outcome: rusqlite::Result<i64> = (|| {
         conn.execute("DELETE FROM scheduled_report WHERE id=?1", params![id])?;
         audit_config_change(&conn, "config.scheduled_report.delete",

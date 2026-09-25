@@ -4,7 +4,7 @@
 //! L'inventaire des sources et leurs métadonnées d'affichage vivent dans `handlers/sources.rs`.
 //! Extrait de main.rs (refactor split #25 — byte-identique).
 use crate::*;
-use crate::handlers::transaction_validee::{rendre_apres_validation, valider_la_transaction};
+use crate::handlers::transaction_validee::{ouvrir_la_transaction_du_geste, ouvrir_sa_transaction, rendre_apres_validation, valider_la_transaction};
 
 // ================================ #1b ADMINISTRATION UI (daemon) ================================
 // Rétention éditable. Toutes les mutations sont admin-only (path-guard + revérif interne), doublement
@@ -54,6 +54,17 @@ pub(crate) async fn retention_settings_get(State(st): State<AppState>, Extension
 pub(crate) const CAUSE_RETENTION_INCHANGEE: &str = "RÉTENTION INCHANGÉE : la base n'a pas validé la transaction \
      (COMMIT refusé) et l'a annulée — la purge applique toujours les durées d'avant, et aucune trace n'est écrite. \
      Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.28-d` — rétention inchangée : le `BEGIN` de ce geste refusé (la forme d'avant rendait un 500 TEXTE « verrou base
+/// indisponible », et le journal ne disait rien).
+pub(crate) const CAUSE_RETENTION_INCHANGEE_TRANSACTION_NON_OUVERTE: &str = "RÉTENTION INCHANGÉE : la base n'a pas pris \
+     la transaction du réglage (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante sur l'écrivain) — \
+     RIEN n'est écrit : la purge applique toujours les durées d'avant, et aucune trace n'est écrite. Réessayez ; s'il est \
+     refusé encore, l'écrivain est occupé ou bloqué.";
+/// `P10.28-d`, `P10.28-r` — exclusion d'affichage inchangée : le `BEGIN` de ce geste refusé.
+pub(crate) const CAUSE_EXCLUSION_D_AFFICHAGE_INCHANGEE_TRANSACTION_NON_OUVERTE: &str = "EXCLUSION D'AFFICHAGE \
+     INCHANGÉE : la base n'a pas pris la transaction de l'édition (BEGIN refusé : verrou tenu, ou transaction d'un autre \
+     geste pendante sur l'écrivain) — RIEN n'est écrit : les panneaux gardent l'exclusion d'avant, et aucune trace n'est \
+     écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 /// `P10.25-g` — exclusion d'affichage inchangée : le `COMMIT` de ce geste refusé.
 pub(crate) const CAUSE_EXCLUSION_D_AFFICHAGE_INCHANGEE: &str = "EXCLUSION D'AFFICHAGE INCHANGÉE : la base n'a pas \
      validé la transaction (COMMIT refusé) et l'a annulée — les panneaux gardent l'exclusion d'avant, et aucune \
@@ -70,8 +81,8 @@ pub(crate) async fn retention_settings_put(State(st): State<AppState>, Extension
     }
     let conf = load_config();
     crate::req_conn!(st, au, conn);
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return (StatusCode::INTERNAL_SERVER_ERROR, "verrou base indisponible").into_response();
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "retention", "réglage de la rétention", CAUSE_RETENTION_INCHANGEE_TRANSACTION_NON_OUVERTE) {
+        return refus;
     }
     let outcome: rusqlite::Result<Vec<(String, i64, i64)>> = (|| {
         let mut changes: Vec<(String, i64, i64)> = Vec::new();
@@ -1038,8 +1049,10 @@ pub(crate) fn apply_display_excl_edit(
     // valeur CSV bornée (display-only ; validée à la compilation par parse_excl_item -> une entrée non
     // interprétable devient no-op, jamais du SQL invalide ni un angle mort). Ici on borne juste la taille.
     let value: String = if is_clear { String::new() } else { value.chars().take(2000).collect() };
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return Err((StatusCode::INTERNAL_SERVER_ERROR, "verrou base indisponible".to_string()));
+    // `P10.28-d` — le `BEGIN` passe par le juge commun : refusé, il est dit au journal (verrou passager, ou transaction
+    // d'un autre geste qui bloque l'écrivain) et rendu en 503 nommé, là où la forme d'avant rendait un 500 générique.
+    if ouvrir_sa_transaction(conn, "suppressions", &format!("exclusion d'affichage {field}")).is_err() {
+        return Err((StatusCode::SERVICE_UNAVAILABLE, CAUSE_EXCLUSION_D_AFFICHAGE_INCHANGEE_TRANSACTION_NON_OUVERTE.to_string()));
     }
     let outcome: rusqlite::Result<(String, String)> = (|| {
         let ts = now();
@@ -1101,6 +1114,11 @@ pub(crate) async fn suppressions_put(State(st): State<AppState>, Extension(au): 
             excl_clauses_refresh(&conn, &conf);
             (StatusCode::OK, Json(json!({ "ok": true, "field": field, "old": old, "new": new }))).into_response()
         }
-        Err((code, msg)) => (code, msg).into_response(),
+        // `P10.28-r` — LES REFUS DE CETTE ROUTE SONT SERVIS EN JSON NOMMÉ (`err_json`), comme ceux des autres gestes.
+        // MESURÉ le 2026-09-25 sur la forme d'avant (témoins `bdrn_`) : action inconnue en 400 TEXTE, `BEGIN` refusé en
+        // 500 TEXTE « verrou base indisponible », `COMMIT` refusé en 503 TEXTE — la console lisait la phrase entière
+        // (`texteDuRefus`), mais aucun identifiant de 5xx ne la reliait au journal. Le refus du RÔLE, lui, reste la
+        // phrase TEXTE de `rbac_gate` : c'est la seule forme que la console lit comme un refus de rôle.
+        Err((code, msg)) => err_json(code, msg),
     }
 }

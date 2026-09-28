@@ -454,6 +454,9 @@ pub(crate) async fn user_delete(State(st): State<AppState>, Extension(au): Exten
         // les jetons vaudraient encore pour son homonyme, ni de purge sans suppression.
         let seconds_facteurs_retires = conn.execute("DELETE FROM user_mfa WHERE user=?1", params![tname])?;
         conn.execute("DELETE FROM user_pref WHERE user=?1", params![tname])?;
+        // `P10.22-y` — LE FREIN DU SECOND FACTEUR DU COMPTE, DANS CETTE TRANSACTION : il vit en base (ligne `setting`),
+        // il part avec le compte ou pas du tout (`P10.24-o` l'effaçait en mémoire APRÈS le commit).
+        crate::handlers::frein_du_second_facteur::oublier_dans_la_transaction(&conn, &tname)?;
         // `P10.24-p` — ses objets, dans CETTE transaction : purgés ou réattribués à l'auteur, et attestés ci-dessous.
         let objets = ObjetsDuCompteSupprime::traiter(&conn, &tname, &au.name)?;
         // `P10.24-w` — les jetons qu'il a frappés, dans CETTE transaction : révoqués ou conservés selon la décision
@@ -493,10 +496,10 @@ pub(crate) async fn user_delete(State(st): State<AppState>, Extension(au): Exten
             }
             st.auth_cache.lock().clear(); // invalide les creds en cache du compte supprimé
             // `P10.24-o` — ce que la mémoire tient par NOM pour ce compte part avec lui, APRÈS le commit VALIDÉ : le
-            // compteur d'échecs de la connexion (toutes adresses) et le frein du second facteur. Un homonyme recréé
-            // repart de zéro ; une suppression refusée (ci-dessus comme ci-dessous) ne touche à rien.
+            // compteur d'échecs de la connexion (toutes adresses). Un homonyme recréé repart de zéro ; une suppression
+            // refusée (ci-dessus comme ci-dessous) ne touche à rien. `P10.22-y` — le frein du second facteur, lui, vit
+            // en base : il est parti DANS la transaction validée ci-dessus.
             oublier_les_echecs_du_compte_supprime(&st, &tname);
-            crate::handlers::idp::oublier_le_frein_du_compte_supprime(&st, &tname);
             // `P10.24-w` — 200 et le compte rendu (il rendait 204, sans corps : rien ne disait ce que la suppression
             // avait fait des objets ni des jetons du compte).
             Json(compte_rendu).into_response()

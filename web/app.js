@@ -2,12 +2,13 @@ import {
   $, CSSV, socTZ, LANG, LOC, tzOpts, fmtTs, SEV, sev, bool, esc, ICONS, ic, closeModals, withBusy, toast, showErr, modal, confirmModal, csvCell, downloadText, tsSlug, exportPDF, exportBar, closeMiniMenu, api, apiSend, muted, colComparator, pageNums, pagedList,
   setSocTZ,
   socIsAdmin, formMsg,
-  confirmWithConsequence, disclosure, phraseDuRefusDuDemon, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, faceDansLaLangue,
+  confirmWithConsequence, disclosure, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, faceDansLaLangue,
   phraseDuRefusDUneLecture, refusDUneLectureServie
 } from './core.js';
 import { ouvrirLaModaleDePlage } from './plage_de_dates.js';
 import { installI18nObserver } from './i18n_observer.js';
 import { S, ecrireDansLeStockageDuSite, ecrireSansDireLeRefus, lireLeStockageDuSite, RAISONS_DE_SILENCE } from './state.js';
+import { AMORCE_DE_LA_NAVIGATION } from './registres.js'; // `P11.21-f` : le `refresh()` d'amorçage attend le corps de `navigation.js`
 import { banIp, clearDrillCrumb, clearZoom, evLoad, exploreFrom, exploreTo, qHistGo, renderViz, runQuery, setZoom, stopExplore, updateZoomBadge } from './viz.js';
 import { initDashboards, loadDashboard, loadDashboards, refreshPanels } from './dashboards.js';
 import { initLookups } from './lookups.js';
@@ -234,6 +235,8 @@ async function peindreLaPosture() {
 // dès qu'un autre module en est le point d'entrée — mesuré le 2026-08-30, entrer par `navigation.js`
 // empêche alors vingt-trois modules sur quarante-neuf de se charger. Les DIFFÉRER a été essayé et
 // refusé par le témoin (53c) du harnais ESM. Le raisonnement complet est en tête de `web/navigation.js`.
+// Depuis le 2026-09-28, aucun des six ne jette plus : les attaches vivent dans `web/registres.js`, et les trois autres
+// se rangent dans `AMORCE_DE_LA_NAVIGATION` tant que `navigation.js` n'est pas évalué (sans quitter la colonne 1).
 poserUneCharge('posture', peindreLaPosture);
 poserUneCharge('firewall', () => renderFirewall());
 poserUneCharge('controls', () => renderControls());
@@ -255,6 +258,9 @@ let dernierTirDeCadence = 0;
 // `#status` (« connecté » / « hors-ligne ») est écrit par le coureur partagé, une fois les charges
 // retombées : l'aveu appartient à celui qui sait si elles ont abouti, pas à chaque appelant.
 function refresh(opts) {
+  // `P11.21-f` — le seul des six gestes qui n'est pas dans `navigation.js` : rangé comme `initNavigation()` et `route()`
+  // tant que le corps de `navigation.js` n'est pas évalué (porte `navigation.js`), rejoué à sa dernière instruction.
+  if (!AMORCE_DE_LA_NAVIGATION.evaluee) { AMORCE_DE_LA_NAVIGATION.enAttente.push(() => refresh(opts)); return 0; }
   const depuis = (opts && typeof opts.depuis === 'number') ? opts.depuis : undefined;
   // Lu SYNCHRONEMENT : l'appelant avance la borne juste après.
   return lancerLesCharges(depuis === undefined ? chargesAffichees() : chargesVivesAffichees(), depuis);
@@ -398,7 +404,25 @@ async function loadSettings() {
   const t = $('#set-token'); if (t) t.hidden = configured;
   // `P10.23-m` — le changement exige le mot de passe ACTUEL (`current`) : le champ n'existe qu'une fois configuré.
   const c = $('#set-pw-current'); if (c) c.hidden = !configured;
+  // `P10.30-m` — la ligne qui nomme le compte suit le champ du mot de passe actuel (posée par `setAuthUI`, web/login.js).
+  const ligne = f.querySelector('[data-compte-du-mot-de-passe]'); if (ligne) ligne.hidden = !configured;
 }
+// `P10.30-m` — LE COMPTE QUI CHANGE EST NOMMÉ : dans la confirmation (le compte connecté, lu par `/api/me`) et dans le succès
+// (le compte que le démon SERT, `{ok, user}` de `password_post`). Un succès sans ce nom ne l'invente pas.
+const MOTS_DU_CHANGEMENT_DE_MOT_DE_PASSE = {
+  confirmation: {
+    fr: 'Changer le mot de passe du compte « {qui} » ? Tu devras te reconnecter avec le nouveau.',
+    en: 'Change the password of the account “{qui}”? You will have to sign in again with the new one.' },
+  confirmation_sans_nom: {
+    fr: 'Changer le mot de passe du compte connecté ? Tu devras te reconnecter avec le nouveau.',
+    en: 'Change the password of the signed-in account? You will have to sign in again with the new one.' },
+  change: {
+    fr: 'Mot de passe de « {qui} » changé — reconnecte-toi avec le nouveau.',
+    en: 'Password of “{qui}” changed — sign in again with the new one.' },
+  change_sans_nom: {
+    fr: "Mot de passe changé, sans que le démon nomme le compte — reconnecte-toi avec le nouveau.",
+    en: 'Password changed, without the daemon naming the account — sign in again with the new one.' },
+};
 // `P10.27-d` — LE REFUS DE L'INSTALLATION ET DU CHANGEMENT DE MOT DE PASSE SE DIT PAR LA FORME PARTAGÉE
 // (`peindreLeRefusDUnGeste`, core.js), dans un puits posé avant la ligne d'actions du formulaire. MESURÉ AVANT CE LOT
 // (témoin 119d) : la ligne de résultat recevait `causeDuDemon` ou, à défaut, `e.message` — « 401 auth requise »,
@@ -420,15 +444,19 @@ async function enregistrerLesReglagesDuCompte(e) {
   const champActuel = $('#set-pw-current');
   const actuel = champActuel ? champActuel.value : '';
   if (configured && !actuel) { res.textContent = 'mot de passe actuel requis'; return; }
-  if (configured && !await confirmModal('Changer le mot de passe ? Tu devras te reconnecter avec le nouveau.', { okText: 'Changer', danger: true })) return;
+  const quiConfirme = S.AUTH && S.AUTH.user ? String(S.AUTH.user) : '';
+  if (configured && !await confirmModal(faceDansLaLangue(MOTS_DU_CHANGEMENT_DE_MOT_DE_PASSE[quiConfirme ? 'confirmation' : 'confirmation_sans_nom'], { qui: quiConfirme }), { okText: 'Changer', danger: true })) return;
+  let servi = null;
   try {
-    if (configured) await apiSend('/password', 'POST', { current: actuel, new: pw });
+    if (configured) servi = await apiSend('/password', 'POST', { current: actuel, new: pw });
     else await apiSend('/setup', 'POST', { token: $('#set-token').value.trim(), user: ($('#set-user').value.trim() || 'admin'), password: pw });
   } catch (err) {
     if (champActuel) champActuel.value = '';
     res.textContent = ''; peindreLeRefusDUnGeste(puits, err); return;
   }
-  res.textContent = 'enregistré - reconnecte-toi avec les nouveaux identifiants';
+  const quiChange = servi && typeof servi.user === 'string' && servi.user.trim() ? servi.user.trim() : '';
+  res.textContent = !configured ? 'enregistré - reconnecte-toi avec les nouveaux identifiants'
+    : faceDansLaLangue(MOTS_DU_CHANGEMENT_DE_MOT_DE_PASSE[quiChange ? 'change' : 'change_sans_nom'], { qui: quiChange });
   $('#set-pw').value = ''; if (champActuel) champActuel.value = ''; loadSettings();
 }
 if ($('#setup-form')) $('#setup-form').addEventListener('submit', enregistrerLesReglagesDuCompte);
@@ -625,9 +653,15 @@ if ($('#tenant-form')) $('#tenant-form').addEventListener('submit', async e => {
   // P11.5-b : provisionner un tenant crée une base chiffrée et, si un premier admin est nommé, lui ACCORDE le
   // rôle admin sur ce tenant (un droit naît) -> confirmation partagée qui nomme la conséquence.
   if (!await confirmWithConsequence('Provisionner le tenant « ' + id + ' »', 'une base chiffrée dédiée est créée avec sa clé' + (admin ? ', et « ' + admin + ' » en devient administrateur (accès complet à ce tenant)' : '') + '. Action auditée.', { okText: 'Provisionner', danger: !!admin })) { if (res) res.textContent = ''; return; }
+  // `P10.30-m` — le refus du provisionnement se dit par la forme partagée d'un geste, dans un puits posé avant la ligne
+  // d'actions. MESURÉ AVANT CE LOT (témoin 122 m) : la ligne de résultat recevait la cause NUE (« Failed to fetch », la phrase
+  // d'une passerelle), ou « échec », en français seul — un provisionnement dont rien n'établit s'il a eu lieu.
+  const formulaire = $('#tenant-form'), actions = formulaire ? formulaire.querySelector('.rf-actions') : null;
+  const puits = formulaire ? puitsDuRefusDUnGeste(formulaire, 'provisionnement_de_tenant', actions) : null;
+  effacerLeRefusDUnGeste(puits);
   let out;
   try { out = await apiSend('/tenants', 'POST', body); }
-  catch (err) { if (res) { res.textContent = phraseDuRefusDuDemon(err) || 'échec'; res.className = 'bad'; } return; }
+  catch (err) { if (res) { res.textContent = ''; res.className = 'muted'; } peindreLeRefusDUnGeste(puits, err); return; }
   out = out || {};
   // `P10.21-h` — le succès peut porter DEUX aveux : la ligne manquante au journal de contrôle
   // (`registre_sans_maillon`) et le premier administrateur demandé mais non posé (`P10.21-g`). Le tenant

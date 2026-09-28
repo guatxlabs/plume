@@ -985,7 +985,7 @@ const I18N_EN = {
   "Environnements NON LUS : le démon a refusé et en nomme la cause —": "Environments NOT READ: the daemon declined and names the cause —",
   "Réglage de rétention NON LU : le démon a refusé et en nomme la cause —": "Retention setting NOT READ: the daemon declined and names the cause —",
   "Journal d'audit NON LU : le démon a refusé et en nomme la cause —": "Audit log NOT READ: the daemon declined and names the cause —",
-  "Stock NON LU, donc absent de cette liste — ce n'est pas « il n'y en a aucun ». Le démon en nomme la cause :": "Stock NOT READ, therefore missing from this list — this is not « there are none ». The daemon names the cause:",
+  "Stock NON LU, donc absent de cette liste — ce n'est pas « il n'y en a aucun ». Réponse reçue pour chaque stock :": "Stock NOT READ, therefore missing from this list — this is not « there are none ». Answer received for each stock:",
   "Les environnements n'ont PAS été lus : filtrer sur un inventaire que cette lecture n'a pas pu rendre choisirait dans un ensemble inconnu. La vue reste NON FILTRÉE.": "The environments were NOT read: filtering on an inventory this read could not return would pick from an unknown set. The view stays UNFILTERED.",
   "Silences NON LUS : le démon a refusé et en nomme la cause —": "Silences NOT READ: the daemon declined and names the cause —",
   "Canaux de notification NON LUS : le démon a refusé et en nomme la cause —": "Notification channels NOT READ: the daemon declined and names the cause —",

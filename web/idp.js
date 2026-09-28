@@ -379,6 +379,10 @@ const MOTS_DE_LA_DESACTIVATION_MFA = {
   desactivation_non_ecrite: {
     fr: "Désactivation NON ENREGISTRÉE, et ton code n'est PAS en cause : la double authentification reste ACTIVE — le compte exige toujours un code à la connexion. Le geste peut être rejoué. Le démon en nomme la cause —",
     en: 'Deactivation NOT RECORDED, and your code is NOT at fault: two-factor authentication stays ACTIVE — the account still requires a code at sign-in. The gesture can be replayed. The daemon names the cause —' },
+  // `P10.22-y` (démon) — `mfa_disable` lit le statut du second facteur avant de compter l'essai ; une lecture ratée refuse.
+  statut_non_lu_a_la_desactivation: {
+    fr: "Désactivation ni faite ni refusée, et ton code n'est PAS en cause : le statut de la double authentification n'a pas pu être lu, le code n'a pas été examiné et rien n'est modifié — réessaie. Le démon en nomme la cause —",
+    en: 'Deactivation neither done nor refused, and your code is NOT at fault: the two-factor status could not be read, the code was not examined and nothing is changed — try again. The daemon names the cause —' },
   desactivation_refusee: {
     fr: "Désactivation REFUSÉE : le démon ne l'a pas confirmée. Il a répondu —",
     en: 'Deactivation REFUSED: the daemon did not confirm it. It answered —' },
@@ -397,6 +401,9 @@ function cleDuRefusDeDesactivation(e) {
   if (statut === 401) return 'code_refuse';
   if (statut === 503 && nature === 'mfa_non_desactivee') return 'desactivation_non_ecrite';
   if (statut === 503 && nature === 'codes_de_secours_illisibles') return 'codes_de_secours_illisibles';
+  // `P10.22-y` (démon) — l'essai non compté au frein, et le statut du second facteur non lu AVANT tout examen du code.
+  if (statut === 503 && nature === 'essai_non_compte') return 'essai_non_compte';
+  if (statut === 503 && nature === 'statut_mfa_non_lu') return 'statut_non_lu_a_la_desactivation';
   if (statut === 429 && nature === 'second_facteur_freine') return 'second_facteur_freine';
   return 'desactivation_refusee';
 }
@@ -460,6 +467,10 @@ const MOTS_DE_L_ENROLEMENT_MFA = {
   compte_non_lu: {
     fr: "Enrôlement ni accepté ni refusé : le compte n'a pas pu être lu. Aucune graine n'est posée, aucun échec n'est compté — réessaie. Le démon en nomme la cause —",
     en: 'Enrollment neither accepted nor refused: the account could not be read. No seed is set, no failure is counted — try again. The daemon names the cause —' },
+  // `P10.22-y` (démon) — la base n'a pas pris l'écriture de l'enrôlement : aucune graine, l'état d'avant intact, rien compté.
+  enrolement_non_ecrit: {
+    fr: "Enrôlement NON ENREGISTRÉ : la base n'a pas pris l'écriture — aucune graine n'est posée ni montrée, l'état d'avant est intact, et ton mot de passe, vérifié, n'est pas compté contre toi. Réessaie. Le démon en nomme la cause —",
+    en: 'Enrollment NOT RECORDED: the database did not take the write — no seed is set or shown, the previous state is intact, and your password, verified, is not counted against you. Try again. The daemon names the cause —' },
   deja_active: {
     fr: "Rien n'est enrôlé : la double authentification est DÉJÀ ACTIVE sur ce compte (elle a pu l'être pendant l'enrôlement). Son statut, relu, est affiché ci-dessus. Le démon a répondu —",
     en: 'Nothing is enrolled: two-factor authentication is ALREADY ACTIVE on this account (it may have become so during the enrollment). Its status, read again, is shown above. The daemon answered —' },
@@ -477,6 +488,7 @@ function cleDuRefusDEnrolement(e) {
   const nature = natureDuRefusDuSecondFacteur(e && e.causeDuDemon);
   if (statut === 503 && nature === 'statut_mfa_non_lu') return 'statut_mfa_non_lu';
   if (statut === 503 && nature === 'compte_non_lu') return 'compte_non_lu';
+  if (statut === 503 && nature === 'enrolement_non_ecrit') return 'enrolement_non_ecrit';   // `P10.22-y` (démon)
   if (statut === 403 && nature === 'mot_de_passe_exige') return 'mot_de_passe_exige';
   if (statut === 403 && nature === 'mot_de_passe_refuse') return 'mot_de_passe_refuse';
   if (statut === 403 && nature === 'sans_mot_de_passe_local') return 'sans_mot_de_passe_local';
@@ -536,6 +548,7 @@ function cleDuRefusDActivation(e) {
   if (statut === 401) return 'code_refuse';
   if (statut === 409) return nature === 'enrolement_change' ? 'enrolement_change' : 'deja_active';
   if (statut === 503 && nature === 'mfa_non_activee') return 'activation_non_ecrite';
+  if (statut === 503 && nature === 'essai_non_compte') return 'essai_non_compte';   // `P10.22-y` (démon) : face commune
   if (statut === 429 && nature === 'second_facteur_freine') return 'second_facteur_freine';
   return 'activation_refusee';
 }

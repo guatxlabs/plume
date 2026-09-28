@@ -37,6 +37,7 @@ pub(crate) mod freshness;
 pub(crate) mod governance; // #59 : legal-hold (rétention-lock), export streaming du ledger + sinks, rôles composables (CRUD)
 pub(crate) mod purge; // PURGE EXPLICITE d'événements : surface HTTP deux temps, admin-only, FERMÉE par défaut (PLUME_PURGE_API)
 pub(crate) mod idp;
+pub(crate) mod frein_du_second_facteur; // P10.22-y, P10.22-z : le frein par compte du second facteur, DURABLE (ligne `setting`, aucune migration), l'essai compté avant d'être examiné, et vu du SIEM
 #[cfg(feature = "ai")]
 pub(crate) mod ai; // #16 handlers de la couche IA conseil (providers CRUD + presets + NL→GXQL + status) — feature `ai` OFF -> exclu à la compilation
 pub(crate) mod index_policies; // #49 : indexes logiques nommés (rétention/plafonds par env_id)

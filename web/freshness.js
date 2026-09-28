@@ -13,7 +13,7 @@
 // de le supposer ; la MÉMOIRE d'un choix d'affichage vient de `prefs.js`. Le sens des imports va de
 // freshness vers sources, jamais l'inverse : sources.js ne dépend que de core.js, donc aucun cycle neuf
 // n'est introduit (celui qui existe, app<->freshness, reste le seul, et il est sans danger — cf. plus haut).
-import { $, api, colComparator, disclosure, esc, fmtTs, ic, LANG, faceDansLaLangue } from './core.js';
+import { $, api, colComparator, disclosure, esc, fetchInto, fmtTs, ic, LANG, faceDansLaLangue } from './core.js';
 import { S, ecrireSansDireLeRefus, RAISONS_DE_SILENCE } from './state.js';
 import { setAlertSourceFilter } from './app.js';
 import { ETAT_DE_SOURCE, etatDeSource, rangDEtatDeSource } from './sources.js';
@@ -161,10 +161,29 @@ const MOTS_DES_SONDES_NON_LUES = {
   fr: "Sondes NON LUES cette fois-ci : le démon n'a pas pu les lire, rien n'est établi sur leur état. Le démon en nomme la cause —",
   en: 'Probes NOT READ this time: the daemon could not read them, nothing is established about their state. The daemon names the cause —',
 };
+// `P10.30-m` — CE QUI N'A PAS ÉTÉ LU NE SE COMPTE PAS. MESURÉ AVANT CE LOT (témoin 122 m) : une lecture REFUSÉE était avalée
+// (`catch (e) { return; }`) — le panneau gardait ce qu'il montrait, ou « chargement… », sans un mot ; un corps de repli
+// (`compute_integrations`, daemon/src/handlers/freshness.rs : `collectors: []`, `hosts: []` et `error` quand la lecture n'a
+// pas pu se faire) faisait peindre « 0 capteurs déclarés » À CÔTÉ de l'aveu, et une page d'hôtes non lue (`hosts: []`,
+// `hosts_total: null`, cause dans `non_lus`) « hôte local uniquement — aucun agent distant n'a encore poussé de logs » :
+// une absence affirmée sur une lecture qui n'a pas eu lieu. Le refus a désormais la face nommée d'une lecture non servie
+// (`fetchInto`) ; une liste vide qui accompagne `error` sans son compte servi se dit NON LUE.
+const MOTS_DES_INTEGRATIONS_NON_LUES = {
+  capteurs_non_lus: {
+    fr: "Capteurs NON LUS : la lecture n'a pas été faite, aucun compte n'est établi — ni déclarés, ni branchés, ni muets. La cause est écrite dessous.",
+    en: 'Sensors NOT READ: the read was not done, no count is established — neither declared, connected nor mute. The cause is written below.' },
+  hotes_non_lus: {
+    fr: "Hôtes NON LUS : la liste des hôtes n'a pas été lue — ce n'est PAS « aucun agent distant ». La cause est écrite sous les capteurs.",
+    en: 'Hosts NOT READ: the host list was not read — this is NOT “no remote agent”. The cause is written under the sensors.' },
+};
 async function renderIntegrations() {
   const b = $('#integrations .body'); if (!b) return;
-  let d; try { d = await api('/integrations'); } catch (e) { return; }
+  const d = await fetchInto(b, '/integrations'); if (!d) return;
   const collectors = d.collectors || [];
+  // Le démon déclare TOUJOURS ses capteurs (`COLLECTORS`, liste de code) : une liste vide portée par `error` est le corps de
+  // repli, rien n'a été lu. Une page d'hôtes lue porte toujours son compte (`hosts_total`, un nombre).
+  const capteursNonLus = !!d.error && collectors.length === 0;
+  const hotesNonLus = !!d.error && typeof d.hosts_total !== 'number';
   // batch-2 item 1 — RECADRAGE : cette carte n'est PLUS un 2e compteur de santé qui doublonne (et contredit)
   // Fraîcheur. Elle répond à une AUTRE question : la COUVERTURE de capteurs (types de sondes déclarés en code)
   // + les HÔTES (où les agents poussent). On ne compte donc plus actif/muet (santé d'une source vivante = rôle
@@ -209,7 +228,9 @@ async function renderIntegrations() {
   // `P10.29-r` — la cause servie sous sa face, et non NUE (MESURÉ AVANT CE LOT, témoin 121rr : la cause seule sous la rangée) :
   // la face dit que des sondes n'ont pas été lues cette fois-ci, et que rien n'est établi sur leur état.
   const aveu = d.error ? `<div class="kv"><span class="muted" data-sondes-non-lues="1">${esc(faceDansLaLangue(MOTS_DES_SONDES_NON_LUES))} « ${esc(String(d.error).trim())} »</span></div>` : '';
-  const capsum = `<div class="capsum">` + rangeeDeChiffres([
+  const capsum = capteursNonLus
+    ? `<div class="kv"><span class="muted" data-capteurs-non-lus="1">${esc(faceDansLaLangue(MOTS_DES_INTEGRATIONS_NON_LUES.capteurs_non_lus))}</span></div>`
+    : `<div class="capsum">` + rangeeDeChiffres([
     { famille: 'total', valeur: total, libelle: LANG === 'en' ? 'declared sensors' : 'capteurs déclarés',
       titre: LANG === 'en' ? 'A sensor is a PROBE TYPE, not a source: the total is shared by the three terms joined by « + ». What follows « of which » is taken from the same population and is not part of the addition.' : 'Un capteur est un TYPE de sonde, pas une source : le total se partage entre les trois termes reliés par « + ». Ce qui suit « dont » est pris sur la même population et n\'entre pas dans l\'addition.' },
     { famille: 'part', valeur: connected, libelle: LANG === 'en' ? 'connected sensor(s)' : 'capteur(s) branché(s)',
@@ -227,7 +248,9 @@ async function renderIntegrations() {
   // `P11.20-l` — LA LISTE EST BORNÉE PAR LA ROUTE, ET LA COUPE SE LIT ICI. Le démon sert `hosts_window`
   // lignes au plus et DIT s'il en a coupé (`hosts_truncated`, mesuré par la ligne excédentaire) et combien
   // il y en a (`hosts_total`). La phrase est dérivée de ces trois nombres, jamais de la longueur seule.
-  const hosts = ((d.hosts || []).length
+  const hosts = hotesNonLus
+    ? `<div class="muted" data-hotes-non-lus="1">${esc(faceDansLaLangue(MOTS_DES_INTEGRATIONS_NON_LUES.hotes_non_lus))}</div>`
+    : ((d.hosts || []).length
     ? d.hosts.map(h => `<div class="kv"><span>${ic('server')} ${esc(h.host)}</span><span class="muted">${fmtTs(h.last_seen)}</span></div>`).join('')
     : '<div class="muted">hôte local uniquement — aucun agent distant n\'a encore poussé de logs.</div>')
     + (phraseDeCoupeDesHotes(d) ? `<div class="muted flcoupe">${esc(phraseDeCoupeDesHotes(d))} ${renvoi('#fleet')}</div>` : '');
@@ -299,7 +322,7 @@ async function renderIntegrations() {
   };
   const flotteLigne = fl === undefined ? ''
     : fl === null ? '<div class="kv"><span class="muted">hôtes muets : inventaire illisible (aucun verdict rendu)</span></div>'
-    : rangeeDeFlotte(fl) + rattachementDeLaListe(fl);
+    : rangeeDeFlotte(fl) + (hotesNonLus ? '' : rattachementDeLaListe(fl));   // `P10.30-m` : une liste non lue ne se rattache à rien
   // caption : sépare EXPLICITEMENT les 2 axes (couverture de sondes vs endpoints) et renvoie la SANTÉ à Fraîcheur.
   const cap = `<div class="muted intplug" style="font-size:11px">Capteurs = <b>couverture</b> (types de sondes déclarés ; un capteur mort est signalé <b>muet</b> ici) · Hôtes = <b>endpoints</b> (où les agents poussent). La santé fine par source (frais/calme/en retard/muet) vit dans Fraîcheur — « en retard » y désigne la même observation que « muet » ici, au même seuil.</div>`;
   // lien de découverte -> la Flotte (inventaire détaillé des hôtes : statut/enrôlement/dernier signal, paginé + export).

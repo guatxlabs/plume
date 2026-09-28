@@ -1616,12 +1616,14 @@ pub(crate) async fn auth_guard(State(st): State<AppState>, mut req: Request, nex
         let Some(cp) = st.tenants.control.as_ref() else {
             return (StatusCode::NOT_FOUND, "SCIM indisponible (mode mono-tenant)").into_response();
         };
+        // `P10.21-u` — une lecture ratée des jetons n'est pas un bearer invalide : 503 nommé, rejouable.
         match scim_authenticate(cp, &authz) {
-            Some(tenant) => {
+            Ok(Some(tenant)) => {
                 req.extensions_mut().insert(ScimCtx { tenant });
                 return next.run(req).await;
             }
-            None => return (StatusCode::UNAUTHORIZED, "SCIM : bearer invalide").into_response(),
+            Ok(None) => return (StatusCode::UNAUTHORIZED, "SCIM : bearer invalide").into_response(),
+            Err(cause) => return crate::scim::scim_refuser_le_jeton_non_lu(&cause),
         }
     }
     // #51 DAY-2 OPS — /metrics : un jeton de scrape (Bearer PLUME_METRICS_TOKEN, comparé CONSTANT-TIME)

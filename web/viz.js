@@ -486,6 +486,10 @@ function exploreSig(query, isSoql, limit, offset) {
 }
 
 // abort + /api/cancel best-effort de la requête en vol (clic STOP ou supersession par une autre requête).
+// `P10.30-m` — LIMITE ÉCRITE, PAS UN OUBLI : ce `fetch` direct n'est pas une écriture (`/api/cancel` est un POST de LECTURE
+// pour le démon, `is_readonly_post`, daemon/src/auth.rs — ni rôle d'écriture ni jeton CSRF) et son refus est avalé À DESSEIN :
+// l'arrêt côté console est déjà fait (`abort()`, le résultat n'est plus attendu) et la requête côté démon reste bornée par son
+// budget (`query_exec.rs`). Dire son échec n'offrirait aucun geste. Le témoin 122 (m) tient la liste des `fetch` directs.
 function cancelInflight() {
   const inf = S.exploreInflight;
   if (!inf) return;
@@ -748,12 +752,31 @@ function explainErr(e) {
 }
 
 // erreur SERVEUR (j.error) : annulation/budget -> ligne de stats lisible ; sinon boîte rouge (existant).
+// `P10.30-m` — L'ANNULATION ET LE BUDGET DE TEMPS SE RECONNAISSENT À LA PHRASE EXACTE DU DÉMON, PAS À UN MOT. MESURÉ AVANT CE
+// LOT (témoin 122 m) : `/annul/` et `/budget|dépass|trop lourd|too heavy|timeout|deadline/` décidaient sur un mot de la
+// cause — « budget mémoire dépassé » et « quota de déversement dépassé » (deux autres refus, `sqlite_plafond`) se lisaient
+// « Trop lourd même sur 60s », leur cause AVALÉE, et soixante secondes étaient affirmées quel que soit le budget servi ;
+// toute cause portant « annul » se lisait « Annulé », comme un geste de l'analyste. Les deux phrases sont celles de
+// `query_exec.rs` (relues par le harnais) ; le budget dit est celui que la cause SERT ; tout autre refus garde sa face de
+// lecture non servie, cause entière.
+const CAUSE_DE_L_ANNULATION_DE_LA_REQUETE = /^requête annulée par l'utilisateur$/;
+const CAUSE_DU_BUDGET_DE_TEMPS_DE_LA_REQUETE = /^requête (?:DuckDB )?interrompue \(budget (\d+) (s|ms) dépassé\)/;
+const MOTS_DE_LA_REQUETE_INTERROMPUE = {
+  annulee: { fr: 'Annulé', en: 'Cancelled' },
+  budget_de_temps: {
+    fr: 'Trop lourd : le budget de {n} s de la requête est dépassé — resserre la fenêtre',
+    en: "Too heavy: the query's {n} s budget was exceeded — narrow the window" },
+};
 function showQError(serverMsg) {
   renderQBadge(null);
   if (typeof showQExport === 'function') showQExport(false);
-  const m = serverMsg || '';
-  if (/annul/i.test(m)) { $('#qresult').replaceChildren(); $('#qstats').textContent = 'Annulé'; return; }
-  if (/budget|dépass|trop lourd|too heavy|timeout|deadline/i.test(m)) { $('#qresult').replaceChildren(); $('#qstats').textContent = 'Trop lourd même sur 60s — resserre la fenêtre'; return; }
+  const m = String(serverMsg || '').trim();
+  if (CAUSE_DE_L_ANNULATION_DE_LA_REQUETE.test(m)) { $('#qresult').replaceChildren(); $('#qstats').textContent = faceDansLaLangue(MOTS_DE_LA_REQUETE_INTERROMPUE.annulee); return; }
+  const budget = m.match(CAUSE_DU_BUDGET_DE_TEMPS_DE_LA_REQUETE);
+  if (budget) {
+    const secondes = budget[2] === 'ms' ? Math.round(Number(budget[1]) / 100) / 10 : Number(budget[1]);
+    $('#qresult').replaceChildren(); $('#qstats').textContent = faceDansLaLangue(MOTS_DE_LA_REQUETE_INTERROMPUE.budget_de_temps, { n: secondes }); return;
+  }
   // `P10.29-r` — LE `{error}` QUE LA REQUÊTE SERT EN DEUX CENTS SE DIT PAR LA FACE NOMMÉE D'UNE LECTURE NON SERVIE, cause entière.
   // MESURÉ AVANT CE LOT (témoin 121rr) : « Erreur : » + la cause, collés dans un seul nœud — intraduisible, et sans dire que rien
   // n'est établi sur ce que la requête porte. Une cause vide garde le statut, rien n'est inventé.
@@ -3189,7 +3212,7 @@ function showQExport(has) { const el = $('#qexport'); if (el) el.hidden = !has; 
 
 export { banIp, cleDeLIdentifiantDeRiposte, cleDeLaSuiteDuParcours, motDeLaSuiteDuParcours, motDuBannissementMisEnFile, clearDrillCrumb, clearZoom, coldShareBadge, coverageBadge, coverageHorizonNodes, renderQBadge, provenanceBadge, currentFrom, currentTo, evLoad, exploreFrom, exploreTo, noeudsDeVizReglee, qHistGo, queryCount, refusDeReglage, reglageLu, renderViz, runQ, runQuery, setZoom, sondage, stopExplore, tableEl, updateZoomBadge, vizElement, vizSansPorte, refusDeRepresentation, truncationBadge };
 // `P10.7-g` (lot 103) — exporté pour le harnais ESM (scénario 91), qui lit la cause d'un total non établi.
-export { exploreCount };
+export { exploreCount, showQError };   // `P10.30-m` : jugé par le témoin 122 (m)
 // `P10.22-d` / `P10.22-e` / `P10.22-f` — exportés pour le harnais ESM (témoin 111) : la partition de la page
 // vide, la signature du repli par décalage, et le mot d'une erreur de transport, jugés nus à côté du rendu.
 // `P10.25-b` — et les faces de la liste d'événements, jugées sous les deux instances de langue (témoin 112).

@@ -29,7 +29,7 @@
 // pas les copier (un panneau de bibliothèque est édité une fois et à jour partout), et le sélecteur qui
 // les porte dit cette relation-là. Les mélanger dans une même liste ferait croire à un même geste.
 // Il n'écrit rien : il rend un choix, l'appelant compose.
-import { api, modal, muted, pagedList, phraseDuRefusDuDemon } from './core.js';
+import { api, modal, muted, pagedList, phraseDuRefusDuDemon, unRefusServiEnDeuxCents } from './core.js';
 import { champDeRecherche, filtrerParRecherche, resumeDeRecherche, texteCherchable } from './recherche_de_liste.js';
 import { fetchSaved } from './savedqueries.js';
 
@@ -74,7 +74,7 @@ const STOCKS = [
     // que ce module a déjà — `charger` jette, l'inventaire nomme le stock absent AVEC la cause servie.
     charger: async () => {
       const rep = await api('/rules');
-      if (rep && rep.error) throw new Error(String(rep.error).trim());
+      if (rep && rep.error) throw unRefusServiEnDeuxCents(rep);   // `P10.30-m` : un refus du DÉMON (sa cause portée), pas une demande non aboutie
       return (rep.rules || [])
         .filter(r => (r.query_reutilisable || '').trim())
         .map(r => ({
@@ -94,6 +94,8 @@ async function inventaireComposable() {
     try { return { stock: s, items: await s.charger() }; }
     // `P10.29-g` — la cause d'un stock non lu est la phrase du démon (`phraseDuRefusDuDemon`), plus le message composé :
     // mesuré avant ce lot (témoin 120g), un refus y collait « 403 {"error":…} », le JSON brut du refus.
+    // `P10.30-m` — la phrase rendue est celle du démon, ou celle d'une passerelle, ou le message du transport : l'aveu ci-dessous
+    // ne l'attribue plus au démon (« Le démon en nomme la cause » entourait « Failed to fetch » et la phrase d'une passerelle).
     catch (e) { return { stock: s, items: null, err: phraseDuRefusDuDemon(e) }; }
   }));
   const items = [];
@@ -131,7 +133,7 @@ async function choisirDansLexistant(opts = {}) {
     // n'égalerait jamais une clé de lexique.
     const aveu = document.createElement('div'); aveu.className = 'fwarn compo-absents'; aveu.style.cssText = 'font-size:11px;margin:0 0 6px';
     const dit = document.createElement('span');
-    dit.textContent = 'Stock NON LU, donc absent de cette liste — ce n\'est pas « il n\'y en a aucun ». Le démon en nomme la cause :';
+    dit.textContent = 'Stock NON LU, donc absent de cette liste — ce n\'est pas « il n\'y en a aucun ». Réponse reçue pour chaque stock :';
     aveu.append(dit, ' ' + absents.map(a => a.origine + (a.cause ? ' « ' + a.cause + ' »' : '')).join(' · '));
     corps.appendChild(aveu);
   }

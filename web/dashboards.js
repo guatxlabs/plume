@@ -504,10 +504,16 @@ const REFUS_D_ECRITURE_MOTS = {
   visibilite_de_vue: {
     fr: 'Visibilité courante de la vue NON LUE : le démon a refusé et en nomme la cause —',
     en: 'View current visibility NOT READ: the daemon refused and names the cause —' },
+  // `P10.30-m` — le refus d'un partage de vue qui n'est PAS la visibilité non lue (droit, vue absente, écriture non prise…).
+  partage_de_vue_non_enregistre: {
+    fr: 'Partage de la vue NON ENREGISTRÉ : le démon a refusé et en nomme la cause —',
+    en: 'View sharing NOT SAVED: the daemon refused and names the cause —' },
   partage_non_juge: {
     fr: "Le démon n'a PAS pu lire la visibilité courante : tant qu'elle n'est pas lue, le partage ne peut pas être jugé et rien n'est écrit. Ce n'est NI « déjà partagé » NI « un élément le retient » — réessayez.",
     en: 'The daemon could NOT read the current visibility: until it is read, sharing cannot be judged and nothing is written. This is NEITHER “already shared” NOR “an item holds it back” — retry.' },
 };
+// `P10.30-m` — la phrase du refus d'un partage de vue : la visibilité non lue n'est dite que sur SA cause (témoin 122 m).
+const phraseDuRefusDuPartageDeVue = (e) => phraseDuRefusDEcriture(visibiliteCouranteNonLue(e) ? 'visibilite_de_vue' : 'partage_de_vue_non_enregistre', e);
 const motDuRefusDEcriture = (cle) => (LANG === 'en' ? REFUS_D_ECRITURE_MOTS[cle].en : REFUS_D_ECRITURE_MOTS[cle].fr);
 
 // L'aveu à deux nœuds d'un refus d'ÉCRITURE : la phrase est posée au puits (`dit.textContent = …`),
@@ -1456,7 +1462,9 @@ function initDashboards() {
     // est retenue, l'aveu est peint à côté du sélecteur, et partager comme renommer deviennent inertes
     // AVEC leur raison jusqu'à ce qu'une écriture passe.
     try { await apiSend('/views/' + id, 'POST', { visibility: next }); }
-    catch (e) { noterLIssueDUnViewUpdate(e); toast(phraseDuRefusDEcriture('visibilite_de_vue', e), 'bad', 9000); return; }
+    // `P10.30-m` — MESURÉ AVANT CE LOT (témoin 122 m) : TOUT refus nommé se disait « Visibilité courante de la vue NON LUE » —
+    // un 403 de droit ou un 404 aussi. La face de la visibilité non lue est réservée à sa cause (`visibiliteCouranteNonLue`).
+    catch (e) { noterLIssueDUnViewUpdate(e); toast(phraseDuRefusDuPartageDeVue(e), 'bad', 9000); return; }
     noterLIssueDUnViewUpdate(null);
     await loadViews(); sel.value = id; refleterLesDroitsDeLaVue();
     toast(next === 'shared' ? 'Vue partagée avec l\'équipe' : 'Vue rendue privée', 'ok');
@@ -1527,5 +1535,5 @@ function initDashboards() {
 // relire dans le texte du module prouverait qu'il est écrit, pas qu'il discrimine. Aucun usage applicatif
 // hors de ce module.
 // `P10.23-q` — les phrases et l'aveu d'un refus d'écriture et d'un geste de vue, joués par le témoin 121 hors du démon.
-export { aveuDeRefusDEcriture, phraseDuRefusDEcriture, motDuRefusServeurDeVue, avouerLeRefusDuTableauDeBord };
+export { aveuDeRefusDEcriture, phraseDuRefusDEcriture, phraseDuRefusDuPartageDeVue, motDuRefusServeurDeVue, avouerLeRefusDuTableauDeBord };
 export { addDashboardFlow, corpsSansLigne, initDashboards, loadDashboard, loadDashboards, loadPanelsInto, loadViews, refreshPanels, renderDashboard, visibiliteCouranteNonLue };

@@ -268,7 +268,7 @@ mod second_facteur_consomme_et_incident_compte {
         let code = sfic_code(&graine, sfic_pas_courant());
 
         sfic_refuser_l_ecriture(&st, "delete", "user_mfa", None);
-        let (statut, corps) = sfic_corps(mfa_disable(State(st.clone()), Extension(au.clone()), Json(json!({ "code": code }))).await).await;
+        let (statut, corps) = sfic_corps(mfa_disable(State(st.clone()), ConnectInfo("10.14.0.1:45454".parse().expect("adresse")), Extension(au.clone()), Json(json!({ "code": code }))).await).await;
         assert_eq!(statut, 503, "le DELETE est refusé : la désactivation est REFUSÉE : {corps}");
         assert_eq!(corps["error"], json!(crate::handlers::idp::CAUSE_MFA_NON_DESACTIVEE), "{corps}");
         sfic_lever_la_panne(&st);
@@ -276,7 +276,7 @@ mod second_facteur_consomme_et_incident_compte {
         assert_eq!(desactivees(), 0, "le registre n'atteste aucune désactivation");
 
         // CONTRÔLE POSITIF — la base revenue, la désactivation aboutit et elle est attestée.
-        let (statut, corps) = sfic_corps(mfa_disable(State(st.clone()), Extension(au), Json(json!({ "code": code }))).await).await;
+        let (statut, corps) = sfic_corps(mfa_disable(State(st.clone()), ConnectInfo("10.14.0.1:45454".parse().expect("adresse")), Extension(au), Json(json!({ "code": code }))).await).await;
         assert_eq!(statut, 200, "{corps}");
         assert_eq!(sfic_compter(&st, "SELECT COUNT(*) FROM user_mfa WHERE user='adm'"), 0);
         assert_eq!(desactivees(), 1);

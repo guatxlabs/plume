@@ -26,13 +26,21 @@
 // navigateur est le seul sûr, et rien n'est cassé à l'écran. CE QUI NE L'EST PAS : tout autre point
 // d'entrée — un banc, un second paquet, un import différé. Un banc qui importe tous les modules dans
 // UN MÊME processus est vert PAR CONSTRUCTION dès sa première entrée, quelle qu'elle soit.
+// `P11.21-f`, LE 2026-09-28 — CE MODULE PEUT DÉSORMAIS ÊTRE LE POINT D'ENTRÉE, ET LE CYCLE DEMEURE. Ce n'est
+// pas un DÉPLACEMENT des gestes (53c l'interdit, et il tient) : `route();` reste en colonne 1 d'`app.js`. Les
+// trois gestes qui lisent l'état de ce module (`initNavigation()`, `route()`, et le `refresh()` d'`app.js`)
+// regardent d'abord `AMORCE_DE_LA_NAVIGATION` (`web/registres.js`, module feuille, évalué avant tout le reste
+// quelle que soit la porte) : tant que le corps de ce module n'est pas évalué, ils se RANGENT, et la dernière
+// instruction de ce corps les rejoue dans l'ordre d'appel, dans la même tâche synchrone. Par la porte que la page
+// emprunte (`app.js`), ce corps est achevé avant celui d'`app.js` : la file est vide, le chemin est celui d'avant.
+// Les trois `poserUneCharge` n'y passent pas : leur attache vit dans la feuille depuis le 2026-09-09.
 //
 // Ce module porte aussi LE NOM D'UNE DESTINATION (`P11.18-o`) : il ne l'écrit pas, il le DÉRIVE de la
 // page — titre du panneau, ou lien de barre latérale quand l'espace n'a qu'un onglet — et le pose là
 // où il manque. Voir le bloc de nommage sous `SPACES`.
 import { $, LANG, faceDansLaLangue, natureDuRefusDUneLecture, phraseDuRefusDuDemon } from './core.js';
 import { S } from './state.js';
-import { CHARGES_POSEES } from './registres.js'; // `P11.21-f` : l'attache des peintres vit dans un module feuille
+import { AMORCE_DE_LA_NAVIGATION, CHARGES_POSEES } from './registres.js'; // `P11.21-f` : l'attache des peintres vit dans un module feuille
 import { loadDashboards, refreshPanels } from './dashboards.js';
 import { renderDataAccess } from './dataaccess.js';
 import { loadCases } from './cases.js';
@@ -513,6 +521,7 @@ function showView(tabId) {
 }
 
 function route() {
+  if (!AMORCE_DE_LA_NAVIGATION.evaluee) { AMORCE_DE_LA_NAVIGATION.enAttente.push(route); return; }   // `P11.21-f` : voir registres.js
   // reset du scroll EN TÊTE : on revient en haut à chaque changement de vue (header sticky 57px reste en
   // place) -> plus d'à-coup vers le bas hérité de la vue précédente.
   window.scrollTo(0, 0);
@@ -545,6 +554,7 @@ function navTo(href) {
 // icônes-seules inchangé) -> le burger déplie réellement (labels + sous-onglets atteignables) ; >1024px inchangé.
 
 function initNavigation() {
+  if (!AMORCE_DE_LA_NAVIGATION.evaluee) { AMORCE_DE_LA_NAVIGATION.enAttente.push(initNavigation); return; }   // `P11.21-f` : voir registres.js
   // LES NOMS AVANT TOUT RENDU (`P11.18-o`) : un panneau qui ne se nomme pas lui-même et une vignette
   // qui résume une destination reçoivent leur nom AVANT que la marche du lexique ne passe (`app.js`
   // pose l'observateur plus loin), pour qu'il soit traduit par le même chemin que les titres écrits.
@@ -556,5 +566,10 @@ function initNavigation() {
   { const l0 = document.querySelector('.layout'); if (l0 && window.matchMedia('(max-width:1024px)').matches) l0.classList.add('collapsed'); }
   if ($('#navtoggle')) $('#navtoggle').onclick = () => { const l = document.querySelector('.layout'); if (l) l.classList.toggle('collapsed'); };
 }
+
+// `P11.21-f` — LA DERNIÈRE INSTRUCTION DU CORPS : l'état de ce module est posé, l'amorce rangée par un appelant évalué
+// avant lui (la porte `navigation.js`) se rejoue, dans l'ordre d'appel. Par la porte `app.js`, la file est vide.
+AMORCE_DE_LA_NAVIGATION.evaluee = true;
+AMORCE_DE_LA_NAVIGATION.enAttente.splice(0).forEach(amorce => amorce());
 
 export { CHARGES_DE_LA_CONSOLE, SECTIONS_SANS_CHARGE, chargesAffichees, chargesDeLaVueAffichees, chargesVivesAffichees, cibleAffichee, initNavigation, lancerLesCharges, poserUneCharge, SPACES, currentTab, currentViewName, nomEcritSurLePanneau, nomEcritSurLaBarreLaterale, nommerLesPanneaux, nommerLesResumes, renderNav, route };

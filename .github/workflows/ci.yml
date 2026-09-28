@@ -834,7 +834,10 @@ env:
   # la copie est retirée, `knowledge` lit l'autorité `field_filter::STRUCTURAL_DENY`, et le témoin refuse toute
   # dérive future. Pas de `cfg(feature)` -> le MÊME +1 sur `EXPECTED_COLD_TESTS`, écart INCHANGÉ, mesuré par le
   # script du dépôt, jamais d'une addition.
-  EXPECTED_TESTS: "1950"
+  # `P10.22-y`, `P10.22-z`, `P10.23-p`, `P10.21-u`, `P10.21-n` (2026-09-28) : +8 — le fichier
+  # `frein_durable_du_second_facteur_et_refus_nommes.rs` (`fdsf_`, huit témoins). Aucun derrière un `cfg(feature)` ->
+  # le MÊME +8 sur `EXPECTED_COLD_TESTS` (2205 -> 2213), écart INCHANGÉ, mesuré par le script du dépôt.
+  EXPECTED_TESTS: "1958"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -1306,7 +1309,7 @@ jobs:
           # `P11.19-a` (second volet, groundwork) (2026-09-12) : +1, le MÊME que sur `EXPECTED_TESTS`
           # (`les_champs_structurels_de_l_autorite_sont_refuses_comme_objet_de_savoir`) — pas de `cfg(feature)`,
           # écart INCHANGÉ. La dérivation est écrite auprès d'`EXPECTED_TESTS`, une seule fois.
-          EXPECTED_COLD_TESTS: "2205"
+          EXPECTED_COLD_TESTS: "2213"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail

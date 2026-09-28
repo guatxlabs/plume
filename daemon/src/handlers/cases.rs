@@ -112,21 +112,58 @@ pub(crate) fn resolve_case_ref(conn: &Connection, rf: &str) -> (Option<String>, 
 /// Insère un item de timeline horodaté + auteur, bump `incident.updated`, et fige first_response_ts (MTTA) au
 /// 1er item de RÉPONSE analyste (ni 'note', ni 'created', ni 'sla' système). CŒUR COMMUN des mutations de case :
 /// chaque action laisse une trace d'audit datée dans la timeline (#4a).
+///
+/// `P10.21-n` — CETTE FORME AVALE SES ÉCRITURES, et elle reste celle des vingt appelants qui posent un élément EN
+/// PASSANT (statut, assignation, fusion, échéance…) : leur défaut propre est suivi ailleurs (`garde_69` pour ceux
+/// qu'une trace affirme). La route qui n'a pas d'autre geste que l'ajout d'un élément, `case_item_add`, passe par
+/// `ajouter_l_element_au_dossier`, qui COMPTE.
 pub(crate) fn case_add_item(conn: &Connection, incident_id: i64, t: i64, kind: &str, author: &str, body: &str, rf: Option<&str>) {
-    let _ = conn.execute(
+    let _ = ajouter_l_element_au_dossier(conn, incident_id, t, kind, author, body, rf);
+}
+
+/// `P10.21-n` — L'ÉLÉMENT DE DOSSIER EST COMPTÉ AVANT D'ÊTRE ANNONCÉ. Mêmes trois écritures que `case_add_item` (élément,
+/// `updated`, `first_response_ts`), dont l'`INSERT` doit poser UNE ligne ; la première refusée arrête (l'appelant, dans
+/// sa transaction, annule tout). `Err` porte la cause du moteur, pour la sortie d'erreur — jamais servie.
+pub(crate) fn ajouter_l_element_au_dossier(
+    conn: &Connection,
+    incident_id: i64,
+    t: i64,
+    kind: &str,
+    author: &str,
+    body: &str,
+    rf: Option<&str>,
+) -> Result<(), String> {
+    match conn.execute(
         "INSERT INTO incident_item(incident_id,ts,kind,author,body,ref) VALUES(?1,?2,?3,?4,?5,?6)",
         params![incident_id, t, kind, author, body, rf],
-    );
-    let _ = conn.execute("UPDATE incident SET updated=?1 WHERE id=?2", params![t, incident_id]);
+    ) {
+        Ok(1) => {}
+        Ok(n) => return Err(format!("{n} élément(s) écrit(s) au lieu d'un")),
+        Err(e) => return Err(format!("élément non écrit : {e}")),
+    }
+    conn.execute("UPDATE incident SET updated=?1 WHERE id=?2", params![t, incident_id]).map_err(|e| format!("date du dossier non écrite : {e}"))?;
     // MTTA : archive/unarchive sont des gestes ADMIN de rangement (#4a-bis), PAS une réponse analyste ->
     // exclus, comme note/created/sla, pour ne pas figer un faux first_response_ts.
     if !matches!(kind, "note" | "created" | "sla" | "archive" | "unarchive") {
-        let _ = conn.execute(
+        conn.execute(
             "UPDATE incident SET first_response_ts=?1 WHERE id=?2 AND first_response_ts IS NULL",
             params![t, incident_id],
-        );
+        )
+        .map_err(|e| format!("première réponse non écrite : {e}"))?;
     }
+    Ok(())
 }
+
+/// `P10.21-n` — l'élément n'a pas été écrit (ou sa transaction pas validée) : 503, rien n'est rattaché.
+pub(crate) const CAUSE_ELEMENT_DE_DOSSIER_NON_AJOUTE: &str = "ÉLÉMENT NON RATTACHÉ AU DOSSIER : la base n'a pas pris \
+     l'écriture de l'élément (note, alerte, événement ou action). Rien n'est rattaché, la chronologie et la date du \
+     dossier sont inchangées. Réessayez.";
+
+/// `P10.21-n` — le `BEGIN` du rattachement refusé : rien n'est lu ni écrit.
+pub(crate) const CAUSE_ELEMENT_DE_DOSSIER_NON_AJOUTE_TRANSACTION_NON_OUVERTE: &str = "ÉLÉMENT NON RATTACHÉ AU DOSSIER : \
+     la base n'a pas pris la transaction du rattachement (BEGIN refusé : verrou tenu, ou transaction d'un autre geste \
+     pendante sur l'écrivain) — RIEN n'est lu ni écrit. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou \
+     bloqué.";
 
 /// `P10.20-w` — CE QU'UNE CRÉATION DE DOSSIER REND, POUR QUE PERSONNE N'EN SUPPOSE L'IDENTIFIANT.
 ///
@@ -692,8 +729,35 @@ pub(crate) async fn case_item_add(State(st): State<AppState>, Extension(au): Ext
     };
     let body = b.str_field("body");
     let rf = b.get("ref").and_then(|v| v.as_str());
-    case_add_item(&conn, id, now(), kind, &au.name, body, rf);
+    // `P10.21-n` — L'ÉLÉMENT EST COMPTÉ, DANS SA TRANSACTION, AVANT LE 204 (le verrou de l'écrivain est tenu depuis le
+    // dossier établi ci-dessus : aucun geste de ce processus ne s'intercale).
+    if let Err(refus) = rattacher_l_element_au_dossier(&conn, id, kind, &au.name, body, rf) {
+        return refus;
+    }
     StatusCode::NO_CONTENT.into_response()
+}
+
+/// `P10.21-n` — LE RATTACHEMENT D'UN ÉLÉMENT, COMPTÉ ET VALIDÉ, OU UN REFUS NOMMÉ. Mesuré le 2026-09-28 sur la forme
+/// d'avant (`case_add_item`, `INSERT` de `incident_item` refusé) : `204`, zéro élément en base — la console ne pouvait
+/// pas savoir que la note, l'alerte ou l'événement n'était pas rattaché. Les trois écritures (élément, date du dossier,
+/// première réponse) vivent dans UNE transaction (`jouer_le_geste_garde`) : refusée, rien n'est écrit.
+fn rattacher_l_element_au_dossier(conn: &Connection, id: i64, kind: &str, author: &str, body: &str, rf: Option<&str>) -> Result<(), Response> {
+    use crate::handlers::transaction_validee::{jouer_le_geste_garde, IssueDuGesteGarde as Issue};
+    let issue = jouer_le_geste_garde(conn, "cases", &format!("rattachement d'un élément au dossier #{id}"), |conn| {
+        ajouter_l_element_au_dossier(conn, id, now(), kind, author, body, rf)
+    });
+    match issue {
+        Issue::Valide(()) => Ok(()),
+        Issue::Refuse(cause) => {
+            eprintln!("[cases] WARN élément du dossier #{id} NON rattaché : {cause}");
+            Err(err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_ELEMENT_DE_DOSSIER_NON_AJOUTE))
+        }
+        Issue::NonOuvert(_) => Err(err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_ELEMENT_DE_DOSSIER_NON_AJOUTE_TRANSACTION_NON_OUVERTE)),
+        Issue::NonValide(e) => {
+            eprintln!("[cases] WARN rattachement au dossier #{id} NON validé : {e}");
+            Err(err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_ELEMENT_DE_DOSSIER_NON_AJOUTE))
+        }
+    }
 }
 
 /// DELETE /api/cases/{id}/items/{item_id} — détache un item (alerte/event/note) du case + trace le geste.

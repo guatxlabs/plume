@@ -36,6 +36,45 @@ function setAuthUI() {
   } else {
     box.hidden = true;
   }
+  direLeCompteDuFormulaireDuMotDePasse();
+}
+// `P10.30-m` — LE FORMULAIRE DE MOT DE PASSE DIT QUEL COMPTE IL CHANGE, ET CE QUE LE DÉMON RÉPONDRA À UNE IDENTITÉ DE
+// L'ANNUAIRE. `POST /api/password` (daemon/src/session.rs) ne change que le mot de passe de l'APPELANT (`P10.24-b`) et sert
+// `{ok, user}` ; il refuse en nom un compte sans mot de passe local (403), l'administrateur de configuration (409) et un
+// compte de plateforme (409). Ce que la console SAIT d'avance vient de `/api/me` : le nom et la méthode d'authentification.
+// Une identité présentée par l'annuaire (`sso`) n'a pas de mot de passe local — la règle unique d'annuaire (`P10.25-d`)
+// refuse l'identité dont le nom tient un compte à mot de passe : la phrase le dit AVANT l'envoi, le formulaire reste offert
+// et le refus nommé du démon reste peint s'il vient. CE QUE LA CONSOLE NE SAIT PAS : si le compte connecté par cookie est
+// l'administrateur de configuration ou un compte de plateforme — `/api/me` ne dit pas où vit le mot de passe ; ces deux
+// refus ne se disent qu'à la réponse, par la forme partagée, cause entière.
+const MOTS_DU_COMPTE_DU_MOT_DE_PASSE = {
+  compte_connecte: {
+    fr: 'Ce formulaire change le mot de passe du compte connecté, « {qui} », et de lui seul.',
+    en: 'This form changes the password of the signed-in account, “{qui}”, and of it alone.' },
+  identite_de_l_annuaire: {
+    fr: "« {qui} » est une identité présentée par l'annuaire (SSO) : son mot de passe se change dans l'annuaire. Ce formulaire ne change qu'un mot de passe LOCAL, et le démon le refuse à un compte qui n'en a pas.",
+    en: '“{qui}” is an identity presented by the directory (SSO): its password is changed in the directory. This form only changes a LOCAL password, and the daemon refuses it to an account that has none.' },
+};
+function motDuCompteDuMotDePasse(auth) {
+  if (!auth || !auth.user) return '';
+  return faceDansLaLangue(MOTS_DU_COMPTE_DU_MOT_DE_PASSE[auth.auth_method === 'sso' ? 'identite_de_l_annuaire' : 'compte_connecte'], { qui: auth.user });
+}
+// La phrase vit dans un nœud posé devant le champ du mot de passe actuel, qui n'existe qu'une fois l'installation faite :
+// l'assistant de premier lancement (`/api/setup`) ne change pas le mot de passe d'un compte connecté.
+function direLeCompteDuFormulaireDuMotDePasse() {
+  const f = $('#setup-form'), actuel = $('#set-pw-current');
+  if (!f || !actuel || !actuel.parentNode) return;
+  let ligne = f.querySelector('[data-compte-du-mot-de-passe]');
+  const mot = motDuCompteDuMotDePasse(S.AUTH);
+  if (!mot) { if (ligne) ligne.remove(); return; }
+  if (!ligne) {
+    ligne = document.createElement('div'); ligne.className = 'muted';
+    ligne.dataset.compteDuMotDePasse = '1';   // marque de POSE, pas de style : aucune règle CSS ne la vise
+    actuel.parentNode.insertBefore(ligne, actuel);
+  }
+  ligne.dataset.identiteDeLAnnuaire = S.AUTH.auth_method === 'sso' ? '1' : '0';
+  ligne.hidden = !!actuel.hidden;
+  ligne.textContent = mot;
 }
 function showLogin(show) {
   const ov = $login(); if (!ov) return;
@@ -279,6 +318,13 @@ const MOTS_DU_SECOND_FACTEUR = {
   ticket_refuse: {
     fr: "Ticket de connexion REFUSÉ, et ton code n'est PAS en cause : le ticket est invalide, expiré ou révoqué depuis l'acceptation du mot de passe. Aucune session n'est ouverte — reprends depuis le mot de passe. Le démon en nomme la cause —",
     en: 'Sign-in ticket REFUSED, and your code is NOT at fault: the ticket is invalid, expired or revoked since the password was accepted. No session is open — start again from the password. The daemon names the cause —' },
+  // `P10.23-u` — LE MÊME REFUS, REÇU AVANT L'ÉCHÉANCE QUE CET ÉCRAN DÉCOMPTE : ce n'est PAS une expiration. L'échéance dite
+  // précède toujours celle du démon (décomptée depuis l'ENVOI du mot de passe, moins une seconde) ; un ticket refusé avant
+  // elle a donc été révoqué ou n'est plus reconnu depuis l'acceptation du mot de passe (mot de passe changé, sessions
+  // révoquées, compte réinitialisé). La phrase le dit au lieu de laisser « expiré » parmi les causes possibles.
+  ticket_refuse_avant_echeance: {
+    fr: "Ticket de connexion REFUSÉ AVANT SON ÉCHÉANCE, et ton code n'est PAS en cause : le ticket n'a pas expiré, le démon ne le reconnaît plus depuis l'acceptation du mot de passe (mot de passe changé, sessions révoquées ou compte réinitialisé entre-temps). Aucune session n'est ouverte — reprends depuis le mot de passe. Le démon en nomme la cause —",
+    en: 'Sign-in ticket REFUSED BEFORE ITS DEADLINE, and your code is NOT at fault: the ticket did not expire, the daemon no longer recognises it since the password was accepted (password changed, sessions revoked or account reset in the meantime). No session is open — start again from the password. The daemon names the cause —' },
   code_non_en_cause: {
     fr: "Connexion REFUSÉE, et ton code n'est PAS en cause : le démon n'a ouvert aucune session. Le même code peut être soumis de nouveau tant qu'il est valable. Le démon en nomme la cause —",
     en: 'Sign-in REFUSED, and your code is NOT at fault: the daemon opened no session. The same code can be submitted again while it is valid. The daemon names the cause —' },
@@ -298,6 +344,7 @@ function cleDuRefusDuSecondFacteur(res) {
   if (res.status === 429) return nature === 'second_facteur_freine' ? 'second_facteur_freine' : '';
   if (res.status === 503 && nature === 'code_juste_non_consomme') return 'code_non_en_cause';
   if (res.status === 503 && nature === 'codes_de_secours_illisibles') return 'codes_de_secours_illisibles';
+  if (res.status === 503 && nature === 'essai_non_compte') return 'essai_non_compte';   // `P10.22-y` (démon) : l'étape reste ouverte
   if (res.cause) return 'second_facteur_refuse';
   return '';
 }
@@ -410,6 +457,8 @@ function bindLoginForm() {
     if (!code) { aveuADeuxNoeuds(motDuSecondFacteur('code_manquant'), ''); return; }
     if (btn) { btn.disabled = true; btn.dataset._t = btn.textContent; btn.textContent = '...'; }
     const ticketEnvoye = ticketDuSecondFacteur;
+    // `P10.23-u` — l'échéance tenue au départ du code : un refus du ticket reçu AVANT elle n'est pas une expiration.
+    const echeanceAuDepart = echeanceDuTicket;
     let res;
     try { res = await doLoginMfa(ticketDuSecondFacteur, code); }
     catch (ex) { res = { ok: false, status: 0, msg: ex && ex.message }; }
@@ -419,9 +468,14 @@ function bindLoginForm() {
     if (ticketDuSecondFacteur !== ticketEnvoye) return;
     // `P10.22-b` — une réponse qui ne vient pas du démon n'accuse pas le code, et le ticket reste valable.
     if (res.horsDemon) { direLaReponseHorsDemon(res); return; }
-    const cle = cleDuRefusDuSecondFacteur(res);
+    // `P10.23-u` — LA RÉVOCATION D'UN TICKET SE LIT SUR LA RÉPONSE DU DÉMON, ET SUR ELLE SEULE. Aucune route ne juge un ticket
+    // sans un code (`login_mfa_post` le refuse AVANT d'examiner le code, rien consommé ni compté) : sonder le démon pendant
+    // le décompte serait lui présenter des codes, ou une route qui n'existe pas. Le premier refus du ticket ABANDONNE donc le
+    // ticket (décompte arrêté, étape refermée, rien de relancé), et un refus reçu avant l'échéance se dit révocation.
+    const cleLue = cleDuRefusDuSecondFacteur(res);
+    const cle = cleLue === 'ticket_refuse' && echeanceAuDepart && Date.now() < echeanceAuDepart ? 'ticket_refuse_avant_echeance' : cleLue;
     // Le verrou, le frein, le code refusé et le ticket refusé ramènent au mot de passe : le ticket ne sert plus.
-    if (res.status === 429 || cle === 'code_refuse' || cle === 'ticket_refuse') { poserLEtapeDuCode(''); const p = $('#login-pass'); if (p) p.value = ''; }
+    if (res.status === 429 || cle === 'code_refuse' || cle === 'ticket_refuse' || cle === 'ticket_refuse_avant_echeance') { poserLEtapeDuCode(''); const p = $('#login-pass'); if (p) p.value = ''; }
     if (cle) aveuADeuxNoeuds(motDuSecondFacteur(cle, res.retry), res.cause || '');
     else if (res.status === 429) direTropDeTentatives(res);
     else direLEchec(res);
@@ -586,4 +640,4 @@ function initAuthGate() {
 // `P10.25-p` — `cleDuRefusDeLOuverture` part pour le témoin 113 : la nature d'un refus de l'ouverture, dans les deux sens.
 // `P10.25-w` — `lireUneReponseDuTransport` part pour l'enveloppe du transport (`web/app.js`), son seul appelant
 // applicatif ; `natureDuRefusDeLAnnuaire` pour le témoin 114.
-export { initAuthGate, bindLoginForm, fetchMe, setAuthUI, showLogin, motDuSecondFacteur, cleDuRefusDuSecondFacteur, motDeLaConnexion, cleDuRefusDeLOuverture, natureDuRefusDeLAnnuaire, lireUneReponseDuTransport };
+export { initAuthGate, bindLoginForm, fetchMe, setAuthUI, showLogin, motDuCompteDuMotDePasse, direLeCompteDuFormulaireDuMotDePasse, motDuSecondFacteur, cleDuRefusDuSecondFacteur, motDeLaConnexion, cleDuRefusDeLOuverture, natureDuRefusDeLAnnuaire, lireUneReponseDuTransport };

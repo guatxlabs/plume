@@ -583,10 +583,18 @@ pub(crate) async fn grant_set(State(st): State<AppState>, Extension(au): Extensi
         return (StatusCode::BAD_REQUEST, "rôle invalide (admin | editor | viewer)").into_response();
     }
     // Le tenant doit exister (jamais un grant sur un tenant fantôme).
+    // `P10.21-u` — TROIS ISSUES : présent, ABSENT (404), ILLISIBLE (503 nommé). Mesuré le 2026-09-28 sur la forme
+    // d'avant (`.is_err()`, lecture de `tenant` refusée) : `404 « tenant inconnu »` sur un tenant qui existe — un refus,
+    // mais une fausse cause, qu'une console ou un script lit comme « ce tenant n'existe pas ».
     {
         let conn = cp.conn.lock();
-        if conn.query_row("SELECT 1 FROM tenant WHERE id=?1", params![id], |_| Ok(())).is_err() {
-            return (StatusCode::NOT_FOUND, "tenant inconnu").into_response();
+        match conn.query_row("SELECT 1 FROM tenant WHERE id=?1", params![id], |_| Ok(())) {
+            Ok(()) => {}
+            Err(rusqlite::Error::QueryReturnedNoRows) => return (StatusCode::NOT_FOUND, "tenant inconnu").into_response(),
+            Err(e) => {
+                eprintln!("[tenants] WARN tenant '{id}' NON lu à la pose d'un droit : {e}");
+                return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_TENANT_NON_LU_DROIT_NON_POSE);
+            }
         }
     }
     // ANTI-LOCKOUT (non-superadmin, #64 effective-base-aware) : rétrograder le dernier admin EFFECTIF vers un
@@ -657,6 +665,18 @@ pub(crate) const CAUSE_RETRAIT_DE_DROIT_NON_ECRIT: &str =
      suppression de ce droit ; le compte garde son rôle sur ce tenant, et aucune trace ne dit le \
      contraire. Réessayez une fois le plan de contrôle de nouveau écrivable.";
 
+/// `P10.21-u` — la lecture du tenant visé par une pose de droit a échoué : ni présent ni absent n'est affirmé.
+pub(crate) const CAUSE_TENANT_NON_LU_DROIT_NON_POSE: &str = "TENANT NON LU, DROIT NON POSÉ : le plan de contrôle n'a \
+     pas pu lire le tenant visé — ce n'est PAS « tenant inconnu », son existence n'est ni affirmée ni niée. Aucun droit \
+     n'est posé ni modifié, rien n'est tracé. Réessayez une fois le plan de contrôle de nouveau lisible.";
+
+/// `P10.21-u` — la lecture du droit à retirer a échoué. Distincte de `CAUSE_DERNIER_ADMINISTRATEUR_NON_ETABLI`, que ce
+/// refus empruntait depuis `P10.21-r` : pour un super-administrateur — que l'anti-verrouillage ne concerne pas — la
+/// phrase « ce geste pourrait lui retirer son dernier administrateur » donnait une raison qui n'était pas la sienne.
+pub(crate) const CAUSE_DROIT_NON_LU_RETRAIT_NON_FAIT: &str = "DROIT NON LU, RETRAIT NON FAIT : le plan de contrôle n'a \
+     pas pu lire le droit de ce compte sur ce tenant — ce n'est PAS « droit inconnu », sa présence n'est ni affirmée ni \
+     niée. L'accès n'est PAS retiré, rien n'est tracé. Réessayez une fois le plan de contrôle de nouveau lisible.";
+
 /// DELETE /api/tenants/{id}/grants/{user} — retire un grant. SUPER-ADMIN (tout tenant) OU admin de CE tenant.
 /// Anti-lockout : un non-superadmin ne peut pas retirer le DERNIER admin. Audit control_ledger + event.
 pub(crate) async fn grant_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path((id, user)): Path<(String, String)>) -> Response {
@@ -680,10 +700,13 @@ pub(crate) async fn grant_delete(State(st): State<AppState>, Extension(au): Exte
     // `P10.21-r` — L'EXISTENCE, LA GARDE ET LE RETRAIT DANS UNE TRANSACTION, sous un seul verrou (`jouer_le_geste_garde`).
     // Ils vivaient sous trois verrous successifs : MESURÉ le 2026-09-25 (témoins `mpra_`), deux administrateurs d'un
     // tenant qui se retiraient l'un l'autre rendaient tous deux 204, zéro administrateur. La lecture d'existence
-    // ratée n'est plus un « grant inconnu » (404) : l'anti-verrouillage n'a pas pu lire, 503 nommé.
+    // ratée n'est plus un « grant inconnu » (404) : 503 nommé, sous SA cause depuis `P10.21-u` (elle empruntait celle
+    // de l'anti-verrouillage, fausse pour un super-administrateur).
     use crate::handlers::transaction_validee::{jouer_le_geste_garde, point_de_course, IssueDuGesteGarde as Issue};
     enum RefusDuRetrait {
         Inconnu,
+        /// `P10.21-u` — la lecture d'EXISTENCE a échoué (et non celle de l'anti-verrouillage).
+        DroitNonLu(String),
         DernierAdministrateur,
         NonEtabli(String),
     }
@@ -699,7 +722,7 @@ pub(crate) async fn grant_delete(State(st): State<AppState>, Extension(au): Exte
                     |r| r.get::<_, String>(0),
                 )
                 .optional()
-                .map_err(|e| RefusDuRetrait::NonEtabli(e.to_string()))?;
+                .map_err(|e| RefusDuRetrait::DroitNonLu(e.to_string()))?;
             let Some(existant) = existant else { return Err(RefusDuRetrait::Inconnu) };
             if !au.is_superadmin && effective_base_role(&existant) == "admin" {
                 match effective_admin_grant_count_conn(conn, &id) {
@@ -720,6 +743,10 @@ pub(crate) async fn grant_delete(State(st): State<AppState>, Extension(au): Exte
     let retrait = match issue {
         Issue::Valide(retrait) => retrait,
         Issue::Refuse(RefusDuRetrait::Inconnu) => return (StatusCode::NOT_FOUND, "grant inconnu").into_response(),
+        Issue::Refuse(RefusDuRetrait::DroitNonLu(cause)) => {
+            eprintln!("[tenants] WARN droit de '{user}' sur '{id}' NON lu au retrait : {cause}");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_DROIT_NON_LU_RETRAIT_NON_FAIT);
+        }
         Issue::Refuse(RefusDuRetrait::DernierAdministrateur) => {
             return (StatusCode::BAD_REQUEST, "dernier administrateur du tenant — retrait refusé").into_response()
         }

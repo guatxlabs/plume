@@ -857,7 +857,7 @@ mod begin_des_routes_nomme_refus_nommes_et_federation_tracee {
         jouer!("création de fournisseur", fournisseur, idp_provider_create(State(st.clone()), Extension(adm.clone()), Json(json!({ "name": "bdrn-idp2", "kind": "oidc", "enabled": false, "config": oidc }))));
         jouer!("modification de fournisseur", fournisseur, idp_provider_update(State(st.clone()), Extension(adm.clone()), Path(idp), Json(json!({ "enabled": false }))));
         jouer!("suppression de fournisseur", fournisseur, idp_provider_delete(State(st.clone()), Extension(adm.clone()), Path(idp)));
-        jouer!("désactivation du second facteur", CAUSE_MFA_NON_DESACTIVEE_TRANSACTION_NON_OUVERTE, mfa_disable(State(st.clone()), Extension(adm.clone()), Json(json!({ "code": "000000" }))));
+        jouer!("désactivation du second facteur", CAUSE_MFA_NON_DESACTIVEE_TRANSACTION_NON_OUVERTE, mfa_disable(State(st.clone()), pair, Extension(adm.clone()), Json(json!({ "code": "000000" }))));
         jouer!("création d'engagement", CAUSE_ENGAGEMENT_NON_CREE_TRANSACTION_NON_OUVERTE, engagement_create(State(st.clone()), Extension(adm.clone()), Json(engagement)));
         jouer!("clôture d'engagement", CAUSE_ENGAGEMENT_NON_CLOS_TRANSACTION_NON_OUVERTE, engagement_end(State(st.clone()), Extension(adm.clone()), Path(eid)));
         jouer!("bascule du mode", CAUSE_MODE_INCHANGE_TRANSACTION_NON_OUVERTE, mode_set(State(st.clone()), Extension(adm.clone()), Json(json!({ "mode": "active" }))));

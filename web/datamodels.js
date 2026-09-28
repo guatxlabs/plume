@@ -13,7 +13,7 @@
 //   GET    /api/datasets  |  POST /api/datasets  (editor+)  |  POST /api/datasets/{id}/run  (viewer+)
 //   DELETE /api/datasets/{id}                                            (editor+)
 // SÉCU UI : tout en textContent/esc (anti-XSS). Mutations via apiSend (jeton CSRF auto).
-import { $, api, apiSend, effacerLeRefusDUnGeste, fetchInto, LANG, muted, noeudDuRefusDUneLecture, pagedList, peindreLeRefusDUnGeste, phraseDuRefusDuDemon, puitsDuRefusDUnGeste, toast, modal, confirmModal, managedBadge, gateDeleteBtn, faceDansLaLangue } from './core.js';
+import { $, api, apiSend, effacerLeRefusDUnGeste, fetchInto, LANG, muted, noeudDuRefusDUneLecture, pagedList, peindreLeRefusDUnGeste, phraseDUneReponseQuiNeVientPasDuDemon, phraseDuRefusDuDemon, puitsDuRefusDUnGeste, toast, modal, confirmModal, managedBadge, gateDeleteBtn, faceDansLaLangue } from './core.js';
 import { phraseDeCoupe } from './coupe_de_liste.js'; // `P11.22-g` : le résultat borné du Pivot dit sa coupe
 
 // `P10.27-d` — LES PUITS DES GESTES SUR L'ARBRE DES MODÈLES, un par liste (modèles, objets, champs, datasets), posés
@@ -342,7 +342,8 @@ function avouerLeRefusDuPivot(hote, geste, e) {
     toast(motDuRefusDePivot('allowlist_non_lue') + ' « ' + phraseDuRefusDuDemon(e) + ' »', 'err', 9000);
     return;
   }
-  const dit = motDuRefusDePivot(geste) + phraseDuRefusDuDemon(e);
+  // `P10.30-m` — « … le démon refuse le corps reçu : » n'entoure plus une réponse qui ne vient pas de lui : sa propre phrase.
+  const dit = phraseDUneReponseQuiNeVientPasDuDemon(e) || (motDuRefusDePivot(geste) + phraseDuRefusDuDemon(e));
   if (hote) hote.replaceChildren(muted(dit));
   toast(dit, 'err', 6000);
 }

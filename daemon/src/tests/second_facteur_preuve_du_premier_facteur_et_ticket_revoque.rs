@@ -78,7 +78,7 @@ mod second_facteur_preuve_du_premier_facteur_et_ticket_revoque {
     }
 
     async fn sfpr_activer(st: &AppState, user: &str, code: &str) -> (u16, Value) {
-        let (s, _, _, c) = sfpr_corps(mfa_verify(State(st.clone()), Extension(sp_au(user, "editor")), Json(json!({ "code": code }))).await).await;
+        let (s, _, _, c) = sfpr_corps(mfa_verify(State(st.clone()), ConnectInfo(sfpr_pair("10.15.0.1")), Extension(sp_au(user, "editor")), Json(json!({ "code": code }))).await).await;
         (s, c)
     }
 

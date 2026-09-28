@@ -17,20 +17,42 @@ pub(crate) struct ScimCtx {
 }
 
 /// Valide un bearer SCIM (`Authorization: Bearer <tok>`) contre `scim_token` (hash sha256) et rend le
-/// tenant provisionné. None = bearer absent/invalide. Met à jour last_used (best-effort). Le hash est la
+/// tenant provisionné. Met à jour last_used (best-effort). Le hash est la
 /// clé primaire -> lookup direct (comme token_lookup agent) ; le secret n'est jamais stocké en clair.
-pub(crate) fn scim_authenticate(cp: &ControlPlane, authz: &str) -> Option<String> {
-    let tok = authz.strip_prefix("Bearer ")?.trim();
+///
+/// `P10.21-u` — TROIS ISSUES, JAMAIS DEUX : `Ok(Some(tenant))` jeton connu ; `Ok(None)` bearer absent, vide ou
+/// INCONNU (401) ; `Err` la lecture de `scim_token` a échoué (503 nommé, `scim_refuser_le_jeton_non_lu`). Mesuré le
+/// 2026-09-28 sur la forme d'avant (`.ok()`, lecture refusée) : `None`, donc `401 « bearer invalide »` sur un jeton
+/// valide — qu'un fournisseur d'identité lit comme un jeton révoqué, et qui arrête son provisionnement jusqu'à ce
+/// qu'un humain regarde, là où un `503` se rejoue.
+pub(crate) fn scim_authenticate(cp: &ControlPlane, authz: &str) -> Result<Option<String>, String> {
+    let Some(tok) = authz.strip_prefix("Bearer ").map(str::trim) else { return Ok(None) };
     if tok.is_empty() {
-        return None;
+        return Ok(None);
     }
+    use rusqlite::OptionalExtension as _;
     let h = sha256_hex(tok.as_bytes());
     let conn = cp.conn.lock();
-    let tenant: Option<String> = conn.query_row("SELECT tenant_id FROM scim_token WHERE hash=?1", params![h], |r| r.get(0)).ok();
+    let tenant: Option<String> = conn
+        .query_row("SELECT tenant_id FROM scim_token WHERE hash=?1", params![h], |r| r.get(0))
+        .optional()
+        .map_err(|e| e.to_string())?;
     if tenant.is_some() {
         let _ = conn.execute("UPDATE scim_token SET last_used=?1 WHERE hash=?2", params![now(), h]);
     }
-    tenant
+    Ok(tenant)
+}
+
+/// `P10.21-u` — le jeton SCIM n'a pas pu être lu : ni valide ni révoqué n'est affirmé.
+pub(crate) const CAUSE_SCIM_JETON_NON_LU: &str =
+    "JETON NON VÉRIFIÉ : la base du plan de contrôle n'a pas pu lire les jetons SCIM — ce n'est PAS « jeton \
+     invalide » ni « jeton révoqué », sa validité n'est ni affirmée ni niée. Rien n'est lu ni modifié ; la même \
+     demande peut être rejouée telle quelle.";
+
+/// `P10.21-u` — le refus d'un bearer SCIM NON LU : `503` au format d'erreur SCIM 2.0 (l'IdP rejoue), la cause du
+/// moteur sur la sortie d'erreur du démon — ni jeton, ni empreinte, ni tenant.
+pub(crate) fn scim_refuser_le_jeton_non_lu(cause_du_moteur: &str) -> Response {
+    scim_refuser_a_rejouer("authentification", CAUSE_SCIM_JETON_NON_LU, cause_du_moteur)
 }
 
 fn scim_err(code: StatusCode, detail: &str) -> Response {

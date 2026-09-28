@@ -1,6 +1,6 @@
 // connectors.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // Connecteurs (sources externes en PULL, #3/#3a, admin-only): liste/form/test/poll.
-import { $, LANG, api, apiSend, confirmWithConsequence, effacerLeRefusDUnGeste, faceDansLaLangue, fetchInto, fmtTs, humanAge, ic, laTraceNonEcriteServieEnDeuxCents, muted, pagedList, peindreLeRefusDUnEssai, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, sev, toast, withBusy } from './core.js';
+import { $, LANG, api, apiSend, confirmWithConsequence, effacerLeRefusDUnGeste, faceDansLaLangue, fetchInto, fmtTs, humanAge, ic, laTraceNonEcriteServieEnDeuxCents, muted, pagedList, peindreLeRefusDUnEssai, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, sev, toast, unEssaiSansResultat, withBusy } from './core.js';
 import { enabledSwitch } from './producer_ui.js';
 import { S } from './state.js';
 import { uiIsAdmin } from './multitenant.js';
@@ -68,6 +68,10 @@ const MOTS_DES_AVIS_DE_CONNECTEUR = {
   cause_inconnue: { fr: 'erreur inconnue', en: 'unknown error' },
   collecte_reussie: { fr: 'collecte OK — {n} event(s) ingéré(s)', en: 'collection OK — {n} event(s) ingested' },
   collecte_echouee: { fr: 'collecte : {cause}', en: 'collection: {cause}' },
+  // `P10.30-m` — un deux cents sans `ok` n'est ni une collecte faite ni une collecte échouée : rien n'en est établi.
+  collecte_sans_resultat: {
+    fr: "Collecte NON confirmée : la réponse ne porte aucun résultat, rien ici n'établit si des événements ont été ingérés — vérifier le dernier passage du connecteur avant de la rejouer.",
+    en: 'Collection NOT confirmed: the answer carries no result, nothing here establishes whether events were ingested — check the connector’s last run before replaying it.' },
   apercu_reussi: { fr: 'Test OK — {n} event(s) au 1er lot ; aperçu de {m} event(s) mappé(s) (aucune ingestion) :', en: 'Test OK — {n} event(s) in the first batch; preview of {m} mapped event(s) (nothing ingested):' },
   apercu_echoue: { fr: 'échec : {cause}', en: 'failed: {cause}' },
   preset_charge_avec_placeholders: { fr: 'Preset chargé — {n} placeholder(s) à renseigner + le secret', en: 'Preset loaded — {n} placeholder(s) to fill in + the secret' },
@@ -155,7 +159,10 @@ async function testConnector(c) {
   let j;
   try { j = await apiSend('/connectors/' + c.id + '/test', 'POST'); }
   catch (e) { peindreLeRefusDUnEssai(puits, e); return; }
-  j = j || {};
+  // `P10.30-m` — MESURÉ AVANT CE LOT (témoin 122 m) : un corps vide ou sans `ok` se disait « échec du test de connexion : erreur
+  // inconnue » — un échec affirmé sur une réponse qui n'en dit rien. `connector_test` sert TOUJOURS `ok` (booléen) et, en
+  // échec, sa cause sous `error` : sans `ok`, l'essai n'a pas de résultat, et c'est ce qui se dit.
+  if (!j || typeof j.ok !== 'boolean') { peindreLeRefusDUnEssai(puits, unEssaiSansResultat()); return; }
   if (j.ok) toast(motDUnAvisDeConnecteur('test_reussi', { n: j.sample_count != null ? j.sample_count : 0 }), 'ok', 4200);
   else toast(motDUnAvisDeConnecteur('test_echoue', { cause: j.error || motDUnAvisDeConnecteur('cause_inconnue') }), 'bad', 4200);
 }
@@ -189,7 +196,8 @@ export async function pollConnector(c) {
   let j;
   try { j = await apiSend('/connectors/' + c.id + '/poll', 'POST'); }
   catch (e) { peindreLeRefusDUnGeste(puits, e); loadConnectors(); return; }
-  j = j || {};
+  // `P10.30-m` — même règle que l'essai : `connector_poll` sert toujours `ok` ; sans lui, la collecte n'est pas confirmée.
+  if (!j || typeof j.ok !== 'boolean') { toast(motDUnAvisDeConnecteur('collecte_sans_resultat'), 'bad', 9000); loadConnectors(); return; }
   const traceAbsente = laTraceNonEcriteServieEnDeuxCents(j); if (traceAbsente) peindreLeRefusDUnGeste(puits, traceAbsente);
   if (j.ok) toast(motDUnAvisDeConnecteur('collecte_reussie', { n: j.count != null ? j.count : 0 }), 'ok', 4200);
   else toast(motDUnAvisDeConnecteur('collecte_echouee', { cause: j.error || motDUnAvisDeConnecteur('cause_inconnue') }), 'bad', 4200);
@@ -353,7 +361,8 @@ async function previewHttpPull() {
   // `P10.27-d` — l'aperçu est un ESSAI : son refus se dit par la face d'un essai, dans sa zone de résultat.
   try { j = await apiSend('/connectors/' + S.editingConnector + '/test', 'POST'); }
   catch (e) { peindreLeRefusDUnEssai(out, e); return; }
-  renderHttpPreview(out, j || {});
+  if (!j || typeof j.ok !== 'boolean') { peindreLeRefusDUnEssai(out, unEssaiSansResultat()); return; }   // `P10.30-m` : ni réussi ni échoué
+  renderHttpPreview(out, j);
 }
 
 // Rendu de la valeur d'une cellule de preview (ts -> date lisible ; severity -> label ; objet -> JSON compact).

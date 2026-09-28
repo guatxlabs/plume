@@ -37,7 +37,7 @@ pub(crate) enum IssueDuGesteGarde<T, R> {
 /// deux — le tenant n'avait plus d'administrateur. `user_update` (mode 0) avait la même fenêtre, ouverte pour la preuve
 /// du mot de passe actuel.
 ///
-/// LA FORME : `corps` reçoit la connexion DÉJÀ en transaction (`BEGIN IMMEDIATE` par `ouvrir_sa_transaction`) ; il lit
+/// LA FORME : `geste_garde` reçoit la connexion DÉJÀ en transaction (`BEGIN IMMEDIATE` par `ouvrir_sa_transaction`) ; il lit
 /// sa garde, écrit, et rend `Ok` (validé ici par `valider_la_transaction`) ou `Err` (annulé ici). L'appelant TIENT le
 /// verrou de `conn` de l'appel au retour : aucune écriture d'un autre geste ne s'intercale entre la lecture de la garde
 /// et l'écriture — ni de ce processus (le verrou), ni d'un autre (le verrou d'écriture de SQLite, pris au `BEGIN`).
@@ -46,12 +46,15 @@ pub(crate) fn jouer_le_geste_garde<T, R>(
     conn: &Connection,
     journal: &str,
     geste: &str,
-    corps: impl FnOnce(&Connection) -> Result<T, R>,
+    geste_garde: impl FnOnce(&Connection) -> Result<T, R>,
 ) -> IssueDuGesteGarde<T, R> {
     if let Err(refus) = ouvrir_sa_transaction(conn, journal, geste) {
         return IssueDuGesteGarde::NonOuvert(refus);
     }
-    match corps(conn) {
+    // `P10.22-y` — le paramètre s'appelait `corps` : la garde `check_a_refusal_is_not_rendered_as_an_absence.py` apparie
+    // ses fabricants d'aveu par NOM (`liste_bornee::corps`) et tenait tout appelant de ce geste pour un servant d'aveu en
+    // 200 — cinq accusations fausses mesurées le 2026-09-29 (trois routes : `mfa_verify`, `mfa_disable`, `case_item_add`). Renommé.
+    match geste_garde(conn) {
         Ok(fait) => match valider_la_transaction(conn) {
             Ok(()) => IssueDuGesteGarde::Valide(fait),
             Err(refus) => IssueDuGesteGarde::NonValide(refus),

@@ -22,3 +22,12 @@ export const CHARGES_POSEES = new Map();
 
 /// Le filtre de recherche courant du magasin d'indicateurs (`threatintel.js` seul, lu par son rendu).
 export const RECHERCHE_IOC = { valeur: '' };
+
+/// L'amorce de la navigation (`P11.21-f`, 2026-09-28). `app.js` appelle `initNavigation()` puis `route()` à son premier
+/// niveau ; par la porte `navigation.js`, le cycle `app.js` ↔ `navigation.js` fait évaluer `app.js` AVANT le corps de
+/// `navigation.js`, dont tout l'état (`SPACES`, `TAB`, la liste des charges) est alors en zone morte. Les deux fonctions,
+/// déclarations hissées, sont appelables ; elles lisent ici si le corps de `navigation.js` est ÉVALUÉ, et sinon se
+/// RANGENT dans `enAttente`, que la dernière instruction de ce corps rejoue dans l'ordre d'appel — toujours dans la même
+/// tâche synchrone que l'évaluation du graphe. Par la porte que la page emprunte (`app.js`), le corps de `navigation.js`
+/// est achevé avant celui d'`app.js` : `evaluee` est vrai, rien n'est rangé, le chemin est celui d'avant.
+export const AMORCE_DE_LA_NAVIGATION = { evaluee: false, enAttente: [] };

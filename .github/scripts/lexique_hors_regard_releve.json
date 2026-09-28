@@ -57,8 +57,7 @@
   "serviceWorker",
   "timeZone",
   "un credential est requis à la création pour cette authentification.",
-  "un secret (token / mot de passe) est requis à la création pour cette auth.",
-  "échec"
+  "un secret (token / mot de passe) est requis à la création pour cette auth."
  ],
  "attack.js": [
   "Escape",

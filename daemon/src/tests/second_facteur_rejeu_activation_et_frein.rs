@@ -22,8 +22,8 @@
 // CE QUE CES TÉMOINS NE TIENNENT PAS : l'intercalage des activations concurrentes est FORCÉ (une troisième
 // connexion tient le verrou d'écriture jusqu'à ce que les écrivains soient bloqués) — c'est une course réelle
 // entre connexions, pas une course entre deux requêtes HTTP d'un même processus sur `st.db` ; le délai
-// réel du frein (horloge monotone, non injectable) — sa levée et sa progression exponentielle ne sont pas
-// jouées, seul son déclenchement et sa remise à zéro le sont ; le budget par adresse du `rate_limit` (non
+// réel du frein — sa levée et sa progression exponentielle ne sont pas jouées ICI, seul son déclenchement et sa
+// remise à zéro le sont (`P10.22-y` les joue sur l'état stocké, horloge murale : `fdsf_`) ; le budget par adresse du `rate_limit` (non
 // traversé par un appel direct de gestionnaire) ; ce que la console peint des refus neufs.
 // =====================================================================================
 mod second_facteur_rejeu_activation_et_frein {
@@ -104,11 +104,11 @@ mod second_facteur_rejeu_activation_et_frein {
     }
 
     async fn sfra_desactiver(st: &AppState, code: &str) -> (u16, Value) {
-        sfra_corps(mfa_disable(State(st.clone()), Extension(sp_au("adm", "admin")), Json(json!({ "code": code }))).await).await
+        sfra_corps(mfa_disable(State(st.clone()), ConnectInfo(sfra_pair("10.13.0.1")), Extension(sp_au("adm", "admin")), Json(json!({ "code": code }))).await).await
     }
 
     async fn sfra_activer(st: &AppState, code: &str) -> (u16, Value) {
-        sfra_corps(mfa_verify(State(st.clone()), Extension(sp_au("adm", "admin")), Json(json!({ "code": code }))).await).await
+        sfra_corps(mfa_verify(State(st.clone()), ConnectInfo(sfra_pair("10.13.0.2")), Extension(sp_au("adm", "admin")), Json(json!({ "code": code }))).await).await
     }
 
     fn sfra_mfa_en_place(st: &AppState) -> i64 {
@@ -427,7 +427,8 @@ mod second_facteur_rejeu_activation_et_frein {
     ///
     /// LES MUTATIONS QUI LE FONT ROUGIR : retirer la consultation `second_facteur_freine` de `login_mfa_post`
     /// — le code juste ouvre la session ; retirer `compter_un_echec_du_second_facteur` du refus « code MFA
-    /// invalide » — même rouge. La forme d'avant (verrou du seul couple, remis à zéro par le mot de passe)
+    /// invalide » — même rouge. (`P10.22-y` : la consultation et le compte sont devenus UN geste,
+    /// `frein::reserver_un_essai`, joué AVANT l'examen ; le refus « code MFA invalide » garde l'échec réservé.) La forme d'avant (verrou du seul couple, remis à zéro par le mot de passe)
     /// rendait `200` ici : mesuré, 180 codes faux sans un seul `429` depuis UNE adresse.
     #[tokio::test]
     async fn sfra_le_second_facteur_se_freine_par_compte_quelles_que_soient_l_adresse_et_la_reconnexion() {
@@ -496,7 +497,8 @@ mod second_facteur_rejeu_activation_et_frein {
     /// puis `seuil - 1` échecs encore ne freinent pas — le code juste suivant passe. Le titulaire qui se trompe
     /// n'est jamais enfermé par l'accumulation de ses erreurs passées.
     ///
-    /// LA MUTATION QUI LE FAIT ROUGIR : retirer `remettre_le_second_facteur_a_zero` de `login_mfa_post` — le
+    /// LA MUTATION QUI LE FAIT ROUGIR : retirer `remettre_le_second_facteur_a_zero` (`frein::remettre_a_zero` depuis
+    /// `P10.22-y`) de `login_mfa_post` — le
     /// compte reste à `seuil - 1` échecs après le code juste accepté (vu rouge sur cette assertion, au premier
     /// lot).
     #[tokio::test]
@@ -528,7 +530,8 @@ mod second_facteur_rejeu_activation_et_frein {
     /// enrôlement en attente freinent de même : le code juste rend `429`, rien n'est activé.
     ///
     /// LES MUTATIONS QUI LE FONT ROUGIR : retirer la consultation `second_facteur_freine` de
-    /// `desactiver_le_second_facteur` — le code juste désactive (`200`) ; retirer le compte de l'échec du bras
+    /// `desactiver_le_second_facteur` (`P10.22-y` : la réservation, jouée par `mfa_disable` AVANT sa transaction)
+    /// — le code juste désactive (`200`) ; retirer le compte de l'échec du bras
     /// `CodeRefuse` de `mfa_disable` — même rouge ; retirer la consultation de `mfa_verify` — le code juste
     /// active (`200`). Mesuré sur la forme d'avant : 100 codes faux sur chacune, aucun `429`.
     #[tokio::test]

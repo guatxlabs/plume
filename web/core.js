@@ -607,6 +607,11 @@ const OUVERTURES_DES_REFUS_DU_SECOND_FACTEUR = [
   ['mot_de_passe_verrouille', /^TROP D'ÉCHECS DU MOT DE PASSE(?![\p{L}\p{N}])/u],
   ['sans_mot_de_passe_local', /^ENRÔLEMENT REFUSÉ, CE COMPTE N'A PAS DE MOT DE PASSE LOCAL(?![\p{L}\p{N}])/u],
   ['compte_non_lu', /^COMPTE NON LU, ENRÔLEMENT NI ACCEPTÉ NI REFUSÉ(?![\p{L}\p{N}])/u],
+  // `P10.22-y` (démon, frein durable) — l'essai n'a pas pu être COMPTÉ au frein du compte (écriture ou relecture refusée) :
+  // le code n'est pas examiné, ni accepté ni refusé, sur les trois routes du second facteur ; et l'enrôlement dont la base
+  // n'a pas pris l'écriture (aucune graine posée ni montrée, rien compté).
+  ['essai_non_compte', /^SECOND FACTEUR NON EXAMINÉ(?![\p{L}\p{N}])/u],
+  ['enrolement_non_ecrit', /^ENRÔLEMENT NON ENREGISTRÉ, AUCUNE GRAINE(?![\p{L}\p{N}])/u],
 ];
 // Rend la nature du refus, ou '' quand la phrase n'ouvre sur aucune cause connue — l'appelant retombe alors
 // sur son refus générique, qui colle la phrase sans rien en affirmer.
@@ -623,6 +628,10 @@ const MOTS_DES_REFUS_DU_SECOND_FACTEUR = {
   second_facteur_freine: {
     fr: "Second facteur FREINÉ sur ce compte : trop d'échecs, les codes sont refusés SANS être examinés — réessaie dans {delai} s. Se reconnecter par mot de passe ne lève pas le frein. Le démon en nomme la cause —",
     en: 'Second factor THROTTLED on this account: too many failures, codes are refused WITHOUT being examined — try again in {delai} s. Signing in again with the password does not lift it. The daemon names the cause —' },
+  // `P10.22-y` (démon) — commune aux trois routes du second facteur : le code n'a pas été examiné.
+  essai_non_compte: {
+    fr: "Ton code n'est ni accepté ni refusé : le démon n'a pas pu compter cet essai au frein du compte, il ne l'a donc pas examiné — aucune session n'est posée, rien n'est modifié. Le même code peut être présenté de nouveau tant qu'il est valable. Le démon en nomme la cause —",
+    en: 'Your code is neither accepted nor refused: the daemon could not count this attempt against the account throttle, so it did not examine it — no session is set, nothing is changed. The same code can be presented again while it is valid. The daemon names the cause —' },
   second_facteur_freine_sans_delai: {
     fr: "Second facteur FREINÉ sur ce compte : trop d'échecs, les codes sont refusés SANS être examinés jusqu'à la fin du délai. Se reconnecter par mot de passe ne lève pas le frein. Le démon en nomme la cause —",
     en: 'Second factor THROTTLED on this account: too many failures, codes are refused WITHOUT being examined until the delay ends. Signing in again with the password does not lift it. The daemon names the cause —' },

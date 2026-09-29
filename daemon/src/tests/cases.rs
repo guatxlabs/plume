@@ -1786,8 +1786,8 @@
         assert_eq!(n, 0, "aucun rôle 'client' persisté");
         // (b) grant_set REFUSE le rôle 'client' (mode 1).
         let (st2, dir) = mk_mode1_state();
-        assert_eq!(tenant_create(State(st2.clone()), Extension(au_super("op")), Json(json!({ "id": "acme", "name": "A", "admin": "alice" }))).await.status(), StatusCode::CREATED);
-        let r = grant_set(State(st2.clone()), Extension(au_super("op")), Path("acme".into()), Json(json!({ "user": "carol", "role": "client" }))).await;
+        assert_eq!(tenant_create(State(st2.clone()), crate::secret_des_gestes::presente_de_test(), Extension(au_super("op")), Json(json!({ "id": "acme", "name": "A", "admin": "alice" }))).await.status(), StatusCode::CREATED);
+        let r = grant_set(State(st2.clone()), crate::secret_des_gestes::presente_de_test(), Extension(au_super("op")), Path("acme".into()), Json(json!({ "user": "carol", "role": "client" }))).await;
         assert_eq!(r.status(), StatusCode::BAD_REQUEST, "grant_set refuse le rôle 'client'");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1798,7 +1798,7 @@
     #[tokio::test]
     async fn client_read_token_seam_and_kind_confusion() {
         let st = sso_test_state("plume-admin", "plume-editor", "admins");
-        let (code, v) = tok_resp_json(token_create(State(st.clone()), Extension(tok_au("admin")), Json(json!({ "name": "acme", "kind": "client" }))).await).await;
+        let (code, v) = tok_resp_json(token_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(tok_au("admin")), Json(json!({ "name": "acme", "kind": "client" }))).await).await;
         assert_eq!(code, StatusCode::OK);
         assert_eq!(v["kind"], "client");
         assert!(v["host"].is_null(), "jeton client JAMAIS host-lié");

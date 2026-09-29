@@ -226,6 +226,7 @@ mod budget_du_shell_public; // P4.13-a (reprise) : CE QUE LA PORTE OUVERTE COÛT
 mod auth;
 pub(crate) use auth::*;
 mod session;
+mod secret_des_gestes; // P10.24-m : LE SECRET DES GESTES — une preuve qu'une session seule ne porte pas, exigée (avec le droit) avant les gestes qui posent un accès persistant ; empreinte argon2id lue dans `PLUME_GESTURE_SECRET_FILE`, relue à chaque geste, refus nommé sans elle
 pub(crate) use session::*;
 mod rbac;
 pub(crate) use rbac::*;
@@ -1020,8 +1021,9 @@ const SUBCOMMANDS_COLD: [(&str, &str); 3] = [
 /// détection d'une sous-commande INCONNUE, elle, n'est PAS une comparaison à cette liste (cf. la
 /// garde en bas de `main`). La liste est tenue alignée sur le code par
 /// `aide_cli_liste_les_memes_sous_commandes_que_le_dispatch` (elle lit `main.rs`).
-const SUBCOMMANDS: [(&str, &str); 22] = [
+const SUBCOMMANDS: [(&str, &str); 23] = [
     ("hashpw", "hashpw [<mdp>] — hash argon2 d'un mot de passe (stdin si omis)"),
+    ("secret-des-gestes", "secret-des-gestes [--generer] — empreinte argon2id du secret des gestes (secret lu sur stdin, ou engendré et affiché une fois sur stderr) pour PLUME_GESTURE_SECRET_FILE"),
     ("respond", "respond — boucle du moteur de réponse (service séparé)"),
     ("verify", "verify — vérifie la chaîne d'intégrité du ledger"),
     ("verify-control", "verify-control — vérifie la chaîne d'intégrité du journal du PLAN DE CONTRÔLE (accès superadmin, ouvertures d'urgence) ; 0 = intègre, 1 = rupture nommée, 2 = AUCUN verdict"),
@@ -1159,6 +1161,10 @@ fn main() {
             }
         }
         return;
+    }
+    // `P10.24-m` — l'empreinte du secret des gestes (voir `secret_des_gestes::sous_commande_secret_des_gestes`).
+    if args.get(1).map(String::as_str) == Some("secret-des-gestes") {
+        std::process::exit(secret_des_gestes::sous_commande_secret_des_gestes(&args));
     }
     if args.get(1).map(String::as_str) == Some("respond") {
         respond_run();

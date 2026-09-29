@@ -104,7 +104,7 @@ mod suppression_de_compte_complete {
 
     async fn csup_creer(st: &AppState, nom: &str, mot: &str, role: &str) {
         let (s, _, c) = csup_corps(
-            user_create(State(st.clone()), Extension(sp_au("adm", "admin")), Json(json!({ "name": nom, "password": mot, "role": role }))).await,
+            user_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(sp_au("adm", "admin")), Json(json!({ "name": nom, "password": mot, "role": role }))).await,
         )
         .await;
         assert_eq!(s, 200, "fixture : le compte {nom} est créé : {c}");
@@ -145,7 +145,7 @@ mod suppression_de_compte_complete {
         st.db.lock().execute("UPDATE user_mfa SET enabled=0 WHERE user='wiz'", []).expect("fixture : graine en attente");
         let (s, _, c) = csup_corps(
             user_update(
-                State(st.clone()),
+                State(st.clone()), crate::secret_des_gestes::presente_de_test(),
                 ConnectInfo(csup_pair("10.81.0.1")),
                 Extension(sp_au("adm", "admin")),
                 axum::extract::Path(csup_id(&st, "wiz")),

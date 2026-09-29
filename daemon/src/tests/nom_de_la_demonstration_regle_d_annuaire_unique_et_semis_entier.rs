@@ -73,7 +73,7 @@ mod nom_de_la_demonstration_regle_d_annuaire_unique_et_semis_entier {
 
     async fn ndrs_creer(st: &AppState, nom: &str, role: &str) -> (u16, Value) {
         ndrs_corps(
-            user_create(State(st.clone()), Extension(sp_au("adm", "admin")), Json(json!({ "name": nom, "password": ndrs_mot(nom), "role": role })))
+            user_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(sp_au("adm", "admin")), Json(json!({ "name": nom, "password": ndrs_mot(nom), "role": role })))
                 .await,
         )
         .await

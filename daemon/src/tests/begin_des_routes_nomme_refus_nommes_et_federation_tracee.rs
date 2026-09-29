@@ -828,9 +828,9 @@ mod begin_des_routes_nomme_refus_nommes_et_federation_tracee {
         let taxii: Value = json!({ "api_root": "https://taxii.bdrn.example/api", "collection_id": "bdrn" });
         let engagement = json!({ "box": "greybox", "scope": ["198.51.100.0/24"], "reason": "bdrn", "window_end": now() + 3600 });
 
-        let (statut, corps) = bdrn_corps(token_create(State(st.clone()), Extension(adm.clone()), Json(json!({ "name": "ag-bdrn", "kind": "agent", "host": "h-bdrn" }))).await).await;
+        let (statut, corps) = bdrn_corps(token_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(adm.clone()), Json(json!({ "name": "ag-bdrn", "kind": "agent", "host": "h-bdrn" }))).await).await;
         assert_eq!(statut, 200, "fixture : jeton frappé : {corps}");
-        let idp = bdrn_creer("le fournisseur", idp_provider_create(State(st.clone()), Extension(adm.clone()), Json(json!({ "name": "bdrn-idp", "kind": "oidc", "enabled": true, "config": oidc.clone() }))).await).await;
+        let idp = bdrn_creer("le fournisseur", idp_provider_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(adm.clone()), Json(json!({ "name": "bdrn-idp", "kind": "oidc", "enabled": true, "config": oidc.clone() }))).await).await;
         let (statut, corps) = bdrn_corps(engagement_create(State(st.clone()), Extension(adm.clone()), Json(engagement.clone())).await).await;
         assert_eq!(statut, 200, "fixture : engagement créé : {corps}");
         let eid = corps["id"].as_str().expect("identifiant d'engagement").to_string();
@@ -839,7 +839,7 @@ mod begin_des_routes_nomme_refus_nommes_et_federation_tracee {
             Json(json!({ "type": "taxii2", "name": "bdrn-conn", "enabled": true, "secret": format!("bdrn-{}", "a".repeat(24)), "config": taxii.clone() }))).await).await;
         let gel = bdrn_creer("le gel", legal_hold_create(State(st.clone()), Extension(adm.clone()), Json(json!({ "name": "litige-bdrn", "scope_source": "sshd" }))).await).await;
         let puits = bdrn_creer("le puits", ledger_sink_create(State(st.clone()), Extension(adm.clone()), Json(json!({ "name": "puits-bdrn", "kind": "stdout" }))).await).await;
-        let compte = bdrn_creer("le compte", user_create(State(st.clone()), Extension(adm.clone()), Json(json!({ "name": "eve-bdrn", "password": bdrn_mot("eve"), "role": "editor" }))).await).await;
+        let compte = bdrn_creer("le compte", user_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(adm.clone()), Json(json!({ "name": "eve-bdrn", "password": bdrn_mot("eve"), "role": "editor" }))).await).await;
         let (statut, corps) = bdrn_corps(lookup_upload(State(st.clone()), Extension(adm.clone()), Json(json!({ "name": "bdrn_lk", "key_field": "k", "rows": [{ "k": "a", "v": "1" }] }))).await).await;
         assert_eq!(statut, 200, "fixture : table d'enrichissement : {corps}");
         let pair: ConnectInfo<std::net::SocketAddr> = ConnectInfo("127.0.0.1:40000".parse().expect("adresse"));
@@ -850,12 +850,12 @@ mod begin_des_routes_nomme_refus_nommes_et_federation_tracee {
                 bdrn_juger_begin(&mut m, $quoi, &r, $cause);
             }};
         }
-        jouer!("frappe de jeton", CAUSE_JETON_NON_FRAPPE_TRANSACTION_NON_OUVERTE, token_create(State(st.clone()), Extension(adm.clone()), Json(json!({ "name": "ag-bdrn2", "kind": "agent", "host": "h-bdrn2" }))));
+        jouer!("frappe de jeton", CAUSE_JETON_NON_FRAPPE_TRANSACTION_NON_OUVERTE, token_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(adm.clone()), Json(json!({ "name": "ag-bdrn2", "kind": "agent", "host": "h-bdrn2" }))));
         jouer!("révocation de jeton", CAUSE_JETON_NON_REVOQUE_TRANSACTION_NON_OUVERTE, token_delete(State(st.clone()), Extension(adm.clone()), Path("ag-bdrn".to_string())));
-        jouer!("source push", CAUSE_SOURCE_PUSH_NON_CREEE_TRANSACTION_NON_OUVERTE, connector_push_source(State(st.clone()), Extension(adm.clone()), Json(json!({ "preset_id": "aws-cloudtrail" }))));
+        jouer!("source push", CAUSE_SOURCE_PUSH_NON_CREEE_TRANSACTION_NON_OUVERTE, connector_push_source(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(adm.clone()), Json(json!({ "preset_id": "aws-cloudtrail" }))));
         let fournisseur = CAUSE_FOURNISSEUR_D_IDENTITE_INCHANGE_TRANSACTION_NON_OUVERTE;
-        jouer!("création de fournisseur", fournisseur, idp_provider_create(State(st.clone()), Extension(adm.clone()), Json(json!({ "name": "bdrn-idp2", "kind": "oidc", "enabled": false, "config": oidc }))));
-        jouer!("modification de fournisseur", fournisseur, idp_provider_update(State(st.clone()), Extension(adm.clone()), Path(idp), Json(json!({ "enabled": false }))));
+        jouer!("création de fournisseur", fournisseur, idp_provider_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(adm.clone()), Json(json!({ "name": "bdrn-idp2", "kind": "oidc", "enabled": false, "config": oidc }))));
+        jouer!("modification de fournisseur", fournisseur, idp_provider_update(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(adm.clone()), Path(idp), Json(json!({ "enabled": false }))));
         jouer!("suppression de fournisseur", fournisseur, idp_provider_delete(State(st.clone()), Extension(adm.clone()), Path(idp)));
         jouer!("désactivation du second facteur", CAUSE_MFA_NON_DESACTIVEE_TRANSACTION_NON_OUVERTE, mfa_disable(State(st.clone()), pair, Extension(adm.clone()), Json(json!({ "code": "000000" }))));
         jouer!("création d'engagement", CAUSE_ENGAGEMENT_NON_CREE_TRANSACTION_NON_OUVERTE, engagement_create(State(st.clone()), Extension(adm.clone()), Json(engagement)));
@@ -873,8 +873,8 @@ mod begin_des_routes_nomme_refus_nommes_et_federation_tracee {
         jouer!("création de puits", CAUSE_PUITS_DU_REGISTRE_INCHANGE_TRANSACTION_NON_OUVERTE, ledger_sink_create(State(st.clone()), Extension(adm.clone()), Json(json!({ "name": "puits-bdrn2", "kind": "stdout" }))));
         jouer!("suppression de puits", CAUSE_PUITS_DU_REGISTRE_INCHANGE_TRANSACTION_NON_OUVERTE, ledger_sink_delete(State(st.clone()), Extension(adm.clone()), Path(puits)));
         jouer!("envoi vers le puits", CAUSE_ENVOI_DU_PUITS_NON_FAIT, ledger_sink_flush(State(st.clone()), Extension(adm.clone()), Path(puits)));
-        jouer!("création de compte", CAUSE_COMPTE_NON_CREE_TRANSACTION_NON_OUVERTE, user_create(State(st.clone()), Extension(adm.clone()), Json(json!({ "name": "fred-bdrn", "password": bdrn_mot("fred"), "role": "viewer" }))));
-        jouer!("modification de compte", CAUSE_COMPTE_NON_MODIFIE_TRANSACTION_NON_OUVERTE, user_update(State(st.clone()), pair, Extension(adm.clone()), Path(compte), Json(json!({ "role": "viewer" }))));
+        jouer!("création de compte", CAUSE_COMPTE_NON_CREE_TRANSACTION_NON_OUVERTE, user_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(adm.clone()), Json(json!({ "name": "fred-bdrn", "password": bdrn_mot("fred"), "role": "viewer" }))));
+        jouer!("modification de compte", CAUSE_COMPTE_NON_MODIFIE_TRANSACTION_NON_OUVERTE, user_update(State(st.clone()), crate::secret_des_gestes::presente_de_test(), pair, Extension(adm.clone()), Path(compte), Json(json!({ "role": "viewer" }))));
         jouer!("suppression de compte", CAUSE_COMPTE_NON_SUPPRIME_TRANSACTION_NON_OUVERTE, user_delete(State(st.clone()), Extension(adm.clone()), Path(compte)));
         let table = CAUSE_TABLE_D_ENRICHISSEMENT_INCHANGEE_TRANSACTION_NON_OUVERTE;
         jouer!("remplacement de table", table, lookup_upload(State(st.clone()), Extension(adm.clone()), Json(json!({ "name": "bdrn_lk", "key_field": "k", "rows": [{ "k": "b", "v": "2" }] }))));
@@ -906,7 +906,7 @@ mod begin_des_routes_nomme_refus_nommes_et_federation_tracee {
              retention_settings_put(State(st.clone()), Extension(adm.clone()), Json(json!({ "retention_days": 45 }))).await),
             ("suppression gérée", CAUSE_SUPPRESSION_DE_CONTENU_NON_VALIDEE_TRANSACTION_NON_OUVERTE, rule_delete(State(st.clone()), Extension(adm.clone()), Path(geree)).await),
             ("création de compte", CAUSE_COMPTE_NON_CREE_TRANSACTION_NON_OUVERTE,
-             user_create(State(st.clone()), Extension(adm.clone()), Json(json!({ "name": "gus-bdrn", "password": bdrn_mot("gus"), "role": "viewer" }))).await),
+             user_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(adm.clone()), Json(json!({ "name": "gus-bdrn", "password": bdrn_mot("gus"), "role": "viewer" }))).await),
         ];
         for (quoi, cause, r) in gestes {
             let r = bdrn_corps(r).await;

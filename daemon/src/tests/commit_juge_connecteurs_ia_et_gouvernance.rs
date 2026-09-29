@@ -101,7 +101,7 @@ mod commit_juge_connecteurs_ia_et_gouvernance {
     async fn cjcg_un_commit_refuse_ne_supprime_aucun_connecteur_ni_ne_revoque_sa_cle_de_livraison() {
         let (st, p) = sp_state("cjcg-suppression");
         let (statut, corps) =
-            cjcg_corps(connector_push_source(State(st.clone()), Extension(cjcg_adm()), Json(json!({ "preset_id": "aws-cloudtrail" }))).await).await;
+            cjcg_corps(connector_push_source(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(cjcg_adm()), Json(json!({ "preset_id": "aws-cloudtrail" }))).await).await;
         assert_eq!(statut, 200, "fixture : source push : {corps}");
         let cle = corps["delivery_key"].as_str().expect("clé montrée une fois").to_string();
         let id = corps["connector_id"].as_i64().expect("connecteur");

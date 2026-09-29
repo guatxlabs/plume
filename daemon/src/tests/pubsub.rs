@@ -35,7 +35,7 @@
     }
     /// Minte une source push GCP Pub/Sub via le handler admin -> (connector_id, delivery_token clair once).
     async fn ps_mk_push_source(st: &AppState, env_id: &str) -> (i64, String) {
-        let r = connector_push_source(State(st.clone()), Extension(tok_au("admin")),
+        let r = connector_push_source(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(tok_au("admin")),
             Json(json!({ "preset_id": "gcp-audit", "env_id": env_id }))).await;
         let (code, v) = tok_resp_json(r).await;
         assert_eq!(code, StatusCode::OK, "push-source gcp-audit -> 200");
@@ -149,13 +149,13 @@
         let (_pc, ps_token) = ps_mk_push_source(&st, "prod").await;
         // une clé firehose (source push AWS) via le même handler.
         let (_fc, fh_key) = {
-            let r = connector_push_source(State(st.clone()), Extension(tok_au("admin")),
+            let r = connector_push_source(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(tok_au("admin")),
                 Json(json!({ "preset_id": "aws-cloudtrail", "env_id": "prod" }))).await;
             let (_c, v) = tok_resp_json(r).await;
             (v["connector_id"].as_i64().unwrap(), v["delivery_key"].as_str().unwrap().to_string())
         };
         // un token HEC (seam agent/ingest) via le provisioning UI.
-        let (_c, v) = tok_resp_json(token_create(State(st.clone()), Extension(tok_au("admin")),
+        let (_c, v) = tok_resp_json(token_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(tok_au("admin")),
             Json(json!({ "name": "hec-x", "kind": "hec", "relay": true }))).await).await; // P5.2-b : portée DÉCLARÉE
         let hec_token = v["token"].as_str().unwrap().to_string();
 
@@ -256,7 +256,7 @@
     async fn pubsub_admin_gate_and_haskey() {
         let st = sso_test_state("plume-admin", "plume-editor", "admins");
         for role in ["editor", "viewer"] {
-            let r = connector_push_source(State(st.clone()), Extension(tok_au(role)),
+            let r = connector_push_source(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(tok_au(role)),
                 Json(json!({ "preset_id": "gcp-audit" }))).await;
             assert_eq!(r.status(), StatusCode::FORBIDDEN, "{role} -> 403 push-source");
         }
@@ -305,7 +305,7 @@
 
         // Symétrie FIREHOSE : même invariant sur le kind 'firehose'.
         let (fn_, fk) = {
-            let rr = connector_push_source(State(st.clone()), Extension(tok_au("admin")),
+            let rr = connector_push_source(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(tok_au("admin")),
                 Json(json!({ "preset_id": "aws-cloudtrail", "env_id": "prod" }))).await;
             let (code, v) = tok_resp_json(rr).await;
             assert_eq!(code, StatusCode::OK, "push-source aws-cloudtrail -> 200");

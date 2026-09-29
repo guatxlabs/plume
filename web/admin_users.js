@@ -3,7 +3,7 @@
 // PURE MOVE : corps de fonctions IDENTIQUES au monolithe, seuls les import/export sont ajoutes.
 // Le cycle app<->module est benin : les fonctions importees d'app.js ne sont appelees qu'a
 // l'EXECUTION (handlers/async apres await), jamais a l'evaluation du module.
-import { $, LANG, esc, fmtTs, ic, muted, api, apiSend, confirmWithConsequence, disclosure, laDemandeNAPasAbouti, leRefusEstCeluiDuRole, phraseDuRefusDuDemon, puitsDuRefusDUnGeste, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste, toast, pagedList, closeModals, faceDansLaLangue } from './core.js';
+import { $, LANG, esc, fmtTs, ic, muted, api, apiSend, confirmWithConsequence, disclosure, laDemandeNAPasAbouti, leRefusEstCeluiDuRole, phraseDuRefusDuDemon, puitsDuRefusDUnGeste, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste, toast, pagedList, closeModals, faceDansLaLangue, avecLeSecretDesGestes, peindreLeRefusDuSecretDesGestes } from './core.js';
 import { S } from './state.js';
 // P11.4-h : LE geste de copie de la console (mécanisme partagé).
 import { boutonDeCopie } from './copie_et_selection.js';
@@ -101,6 +101,7 @@ function peindreLeRefusDeModification(puits, cle, cause, delai) {
 // tout autre porte la phrase que le démon a écrite, en JSON ou en texte brut, et le délai d'un verrou.
 function peindreLeRefusJete(puits, e) {
   if (!puits) return;
+  if (peindreLeRefusDuSecretDesGestes(puits, e)) { puits.dataset.refusDeModification = puits.dataset.refusDuSecretDesGestes; return; }   // `P10.24-m`
   if (e && e.reponseHorsDemon) {
     const dit = document.createElement('span'); dit.textContent = String(e.message || '');
     puits.replaceChildren(dit); puits.dataset.refusDeModification = 'reponse_hors_demon'; puits.hidden = false;
@@ -401,7 +402,12 @@ async function loadUsers() {
       if (sonPropreMotDePasse && !motDePasseActuel) { peindreLeRefusDeModification(puits, 'mot_de_passe_actuel_manquant', '', 0); return; }
       if (!await confirmWithConsequence(motDUneConfirmationDeCompte('titre_de_la_modification', { nom: u.name }), parts.join(motDUneConfirmationDeCompte('separateur_des_consequences')) + '.', { okText: 'Appliquer', danger: rsel.value === 'admin' || u.role === 'admin' || !!pw.value })) { motDePasseActuel = ''; return; }
       if (sonPropreMotDePasse) body.current = motDePasseActuel;
-      try { await apiSend('/users/' + u.id, 'POST', body); }
+      // `P10.24-m` — promouvoir en administrateur ou réinitialiser le mot de passe d'un AUTRE compte : le secret des gestes
+      // est demandé avant l'envoi ; tout autre changement part sans lui (et le demande si le démon l'exige).
+      const promotion = rsel.value === 'admin' && u.role !== 'admin';
+      const reinitialisation = !!body.password && !soi;
+      const geste = promotion ? 'promouvoir_administrateur' : reinitialisation ? 'reinitialiser_un_autre_compte' : 'modifier_un_compte';
+      try { await avecLeSecretDesGestes(geste, (entetes) => apiSend('/users/' + u.id, 'POST', body, entetes), { dEmblee: promotion || reinitialisation }); }
       catch (err) { peindreLeRefusJete(puits, err); return; }
       finally { motDePasseActuel = ''; delete body.current; }
       // Son propre mot de passe changé, ses sessions sont révoquées (`P10.23-l`) : la console ne prétend pas le
@@ -609,6 +615,7 @@ function puitsDuRefusDeCreation() {
 }
 function peindreLeRefusDeCreation(puits, e) {
   if (!puits) return;
+  if (peindreLeRefusDuSecretDesGestes(puits, e)) { puits.dataset.refusDeCreation = puits.dataset.refusDuSecretDesGestes; return; }   // `P10.24-m`
   const dit = document.createElement('span');
   if (e && e.reponseHorsDemon) {
     dit.textContent = String(e.message || '');
@@ -645,7 +652,9 @@ async function creerLeCompteDuFormulaire(e) {
     motDUneConfirmationDeCompte('consequence_de_la_creation', { role: nomDuRole(body.role) }) + (body.role === 'admin' ? motDUneConfirmationDeCompte('acces_complet') : '') + '.',
     { okText: 'Créer', danger: body.role === 'admin' })) return;
   res.textContent = '...';
-  try { await apiSend('/users', 'POST', body); }
+  // `P10.24-m` — créer un compte, DE TOUT RÔLE (`user_create` : un `viewer` lit toute la télémétrie aussi longtemps qu'il vit),
+  // demande le secret des gestes avant l'envoi.
+  try { await avecLeSecretDesGestes(body.role === 'admin' ? 'creer_un_administrateur' : 'creer_un_compte', (entetes) => apiSend('/users', 'POST', body, entetes)); }
   catch (err) { res.textContent = ''; peindreLeRefusDeCreation(puits, err); return; }
   res.textContent = 'compte créé'; $('#uf-name').value = ''; $('#uf-pw').value = ''; $('#user-form').classList.add('hidden'); loadUsers();
 }
@@ -784,7 +793,8 @@ async function newTokenFlow() {
   const puits = puitsDesJetons(); effacerLeRefusDUnGeste(puits);
   let res;
   // `P10.26-q` — « JETON NON FRAPPÉ » : aucun secret n'est montré, et la face le dit à côté de la liste.
-  try { res = await apiSend('/tokens', 'POST', body); }
+  // `P10.24-m` — frapper un jeton pose un accès persistant : le secret des gestes est demandé avant l'envoi.
+  try { res = await avecLeSecretDesGestes('frapper_un_jeton', (entetes) => apiSend('/tokens', 'POST', body, entetes)); }
   catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
   loadTokens();
   showTokenOnce(res || {});

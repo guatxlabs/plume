@@ -107,7 +107,7 @@ mod son_propre_mot_de_passe_et_homonyme_recree {
     async fn rpch_modifier(st: &AppState, appelant: &str, cible: &str, corps: Value, ip: &str) -> (u16, Option<String>, Value) {
         let id = rpch_id(st, cible);
         let (s, _, attente, c) = rpch_corps(
-            user_update(State(st.clone()), ConnectInfo(rpch_pair(ip)), Extension(sp_au(appelant, "admin")), axum::extract::Path(id), Json(corps)).await,
+            user_update(State(st.clone()), crate::secret_des_gestes::presente_de_test(), ConnectInfo(rpch_pair(ip)), Extension(sp_au(appelant, "admin")), axum::extract::Path(id), Json(corps)).await,
         )
         .await;
         (s, attente, c)
@@ -367,7 +367,7 @@ mod son_propre_mot_de_passe_et_homonyme_recree {
         assert_eq!(r.status().as_u16(), 200, "fixture : bob supprimé");
         let neuf = rpch_neuf("homonyme");
         let (statut, _, _, corps) = rpch_corps(
-            user_create(State(st.clone()), Extension(sp_au("adm", "admin")), Json(json!({ "name": "bob", "password": neuf, "role": "viewer" }))).await,
+            user_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(sp_au("adm", "admin")), Json(json!({ "name": "bob", "password": neuf, "role": "viewer" }))).await,
         )
         .await;
         assert_eq!(statut, 200, "fixture : un homonyme est créé : {corps}");

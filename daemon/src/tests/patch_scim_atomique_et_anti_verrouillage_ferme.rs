@@ -340,7 +340,7 @@ mod patch_scim_atomique_et_anti_verrouillage_ferme {
             let (st, _tmp, _ids) = pafv_etat(&[("pafv-alix", Some("admin"))]);
             pafv_refuser_la_lecture_des_roles(&st, laisser_passer);
             let (statut, v) = tok_resp_json(
-                grant_set(State(st.clone()), Extension(alix.clone()), Path(PAFV_TENANT.into()), Json(json!({ "user": "pafv-alix", "role": "viewer" })))
+                grant_set(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(alix.clone()), Path(PAFV_TENANT.into()), Json(json!({ "user": "pafv-alix", "role": "viewer" })))
                     .await,
             )
             .await;
@@ -349,7 +349,7 @@ mod patch_scim_atomique_et_anti_verrouillage_ferme {
             assert_eq!(pafv_droits(&st), pafv_attendus(&[("pafv-alix", "admin")]), "ÉTAT RELU (grant_set, {panne}) : toujours administratrice");
             assert_eq!(pafv_maillons(&st, "grant.set"), 0, "JOURNAL (grant_set, {panne}) : rien d'attesté");
             let (statut, v) = tok_resp_json(
-                grant_set(State(st.clone()), Extension(alix.clone()), Path(PAFV_TENANT.into()), Json(json!({ "user": "pafv-alix", "role": "viewer" })))
+                grant_set(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(alix.clone()), Path(PAFV_TENANT.into()), Json(json!({ "user": "pafv-alix", "role": "viewer" })))
                     .await,
             )
             .await;

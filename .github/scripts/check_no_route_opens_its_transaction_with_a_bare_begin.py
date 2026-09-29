@@ -138,11 +138,8 @@ SITES_DE_ROUTE_TOLERES = {
     # `attach_runbook` (aide de `POST /api/cases/{id}/runbook`) : refus rendu en 503 par son appelant
     # (`RefusDAttache::EtapesNonEcrites`), sans la phrase d'une transaction non prise ni le journal des deux causes.
     ("daemon/src/handlers/incidents.rs", "attach_runbook"): ("Txn::begin",),
-    # `poser_l_administrateur` (aide de `/api/setup` et du changement du mot de passe administrateur) : ouvre par
-    # `unchecked_transaction()` (un `BEGIN` DIFFÉRÉ), et son refus remonte en 500 « mot de passe NON changé (rien n'a été
-    # écrit) : transaction : … » — nommé, mais sans le 503 ni le journal des deux causes. Vu par cette garde à sa première
-    # exécution (l'énoncé de `P10.28-d` ne comptait que les `BEGIN IMMEDIATE`) ; reste de la même clé.
-    ("daemon/src/session.rs", "poser_l_administrateur"): ("transaction rusqlite",),
+    # `P10.29-i` — `poser_l_administrateur` EST RETIRÉ (2026-09-29) : il ouvre par la forme commune d'un geste gardé
+    # (`transaction_validee::jouer_le_geste_garde`), et ses deux appelants rendent son refus typé en 503 nommé.
 }
 
 

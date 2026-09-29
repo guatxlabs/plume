@@ -460,39 +460,94 @@ pub(crate) fn hash_pw(pw: &str) -> Option<String> {
 /// MÉMOIRE (`st.admin`, cache d'auth) n'est touché QU'APRÈS le commit. Sans cela, une base non inscriptible
 /// (volume RO, disque plein, migration ratée) laissait un admin vivant dans le process, absent de la base :
 /// l'appelant répondait « installé », et le redémarrage suivant repartait en mode setup.
-pub(crate) fn set_admin(st: &AppState, user: &str, hash: &str) -> Result<(), String> {
+pub(crate) fn set_admin(st: &AppState, user: &str, hash: &str) -> Result<(), PoseDeLAdministrateurRefusee> {
     poser_l_administrateur(st, user, hash, false)
 }
 
+/// `P10.29-i` — POURQUOI LA POSE DE L'ADMINISTRATEUR N'A PAS EU LIEU. Trois issues, trois phrases : la base n'a pas pris
+/// la transaction (`BEGIN` refusé, déjà dit au journal par `ouvrir_sa_transaction`, qui y sépare le verrou passager de
+/// la transaction d'un autre geste), une écriture refusée, ou le `COMMIT` refusé. Dans les trois cas RIEN n'est écrit.
+#[derive(Debug)]
+pub(crate) enum PoseDeLAdministrateurRefusee {
+    NonOuverte,
+    EcritureRefusee(String),
+    NonValidee(String),
+}
+
+impl PoseDeLAdministrateurRefusee {
+    /// La cause, pour le journal de l'appelant (le `BEGIN` refusé y est déjà dit).
+    pub(crate) fn cause(&self) -> String {
+        match self {
+            Self::NonOuverte => "transaction non prise (BEGIN refusé)".into(),
+            Self::EcritureRefusee(cause) => format!("écriture refusée : {cause}"),
+            Self::NonValidee(cause) => format!("COMMIT refusé : {cause}"),
+        }
+    }
+
+    /// Le 503 nommé de l'appelant : `non_ouverte` si la base n'a pas pris la transaction, `ecriture` sinon.
+    pub(crate) fn refus(&self, non_ouverte: &'static str, ecriture: &'static str) -> Response {
+        match self {
+            Self::NonOuverte => err_json(StatusCode::SERVICE_UNAVAILABLE, non_ouverte),
+            Self::EcritureRefusee(_) | Self::NonValidee(_) => err_json(StatusCode::SERVICE_UNAVAILABLE, ecriture),
+        }
+    }
+}
+
+/// `P10.29-i` — le `BEGIN` de l'installation refusé.
+pub(crate) const CAUSE_INSTALLATION_NON_EFFECTUEE_TRANSACTION_NON_OUVERTE: &str = "INSTALLATION NON EFFECTUÉE : la \
+     base n'a pas pris la transaction de la pose de l'administrateur (BEGIN refusé : verrou tenu, ou transaction d'un \
+     autre geste pendante sur l'écrivain) — RIEN n'est écrit, le jeton d'installation reste valable. Réessayez.";
+
+/// `P10.29-i` — une écriture ou le `COMMIT` de l'installation refusé.
+pub(crate) const CAUSE_INSTALLATION_NON_EFFECTUEE_ECRITURE_REFUSEE: &str = "INSTALLATION NON EFFECTUÉE : la base \
+     n'a pas pris l'écriture de l'administrateur ou ne l'a pas validée (transaction annulée) — RIEN n'est écrit, ni le \
+     compte ni son nom, et le jeton d'installation reste valable. Réessayez après réparation : la base est en lecture \
+     seule, pleine, verrouillée ou son schéma est incomplet.";
+
 /// `set_admin`, et — `revoquer_ses_sessions` — l'époque du compte avancée DANS LA MÊME TRANSACTION (`P10.23-l`) : un
 /// mot de passe changé sans que ses sessions et ses tickets MFA d'avant tombent n'est jamais écrit, ni l'inverse.
-fn poser_l_administrateur(st: &AppState, user: &str, hash: &str, revoquer_ses_sessions: bool) -> Result<(), String> {
-    {
+///
+/// `P10.29-i` — LA FORME COMMUNE D'UN GESTE (`jouer_le_geste_garde`). Elle ouvrait par `unchecked_transaction()` (un
+/// `BEGIN` DIFFÉRÉ) : un `BEGIN` refusé ne se disait pas au journal, et les deux appelants rendaient un 500 générique
+/// « … NON changé (rien n'a été écrit) : transaction : … » sans séparer le verrou passager de la transaction d'un autre
+/// geste. Désormais `BEGIN IMMEDIATE` par `ouvrir_sa_transaction` (le refus dit au journal, ses deux causes séparées),
+/// le `COMMIT` jugé par `valider_la_transaction`, et le refus typé (`PoseDeLAdministrateurRefusee`) que chaque appelant
+/// rend en 503 NOMMÉ. L'état en mémoire (`st.admin`, cache d'auth) n'est touché qu'après la validation, comme avant.
+fn poser_l_administrateur(st: &AppState, user: &str, hash: &str, revoquer_ses_sessions: bool) -> Result<(), PoseDeLAdministrateurRefusee> {
+    use crate::handlers::transaction_validee::{jouer_le_geste_garde, IssueDuGesteGarde as Issue};
+    let issue = {
         let c = st.db.lock();
-        let tx = c.unchecked_transaction().map_err(|e| format!("transaction : {e}"))?;
-        tx.execute("INSERT INTO meta(key,value) VALUES('admin_user',?1) ON CONFLICT(key) DO UPDATE SET value=?1", params![user])
-            .map_err(|e| format!("meta.admin_user : {e}"))?;
-        // ANTI-FUITE PAR EXPORT — on NE STOCKE PLUS le hash admin en CLAIR dans meta : il y était
-        // exfiltrable via /api/export ou /api/query en SQL brut admin (`SELECT value FROM meta WHERE
-        // key='admin_hash'`), l'authorizer read-pool ne pouvant pas filtrer meta PAR CLÉ (déni de meta.value
-        // casserait schema_version/plume_mode). La SOURCE DE VÉRITÉ du hash = user.hash (déjà DÉNIÉ par
-        // l'authorizer, écrit juste dessous). On purge toute copie héritée (bases pré-fix) — idempotent.
-        tx.execute("DELETE FROM meta WHERE key='admin_hash'", [])
-            .map_err(|e| format!("purge meta.admin_hash : {e}"))?;
-        // l'admin est aussi un compte de la table user (rôle admin)
-        tx.execute(
-            "INSERT INTO user(name,hash,role) VALUES(?1,?2,'admin') ON CONFLICT(name) DO UPDATE SET hash=?2, role='admin'",
-            params![user, hash],
-        )
-        .map_err(|e| format!("compte admin : {e}"))?;
-        if revoquer_ses_sessions {
-            avancer_l_epoque_du_compte(&tx, user).map_err(|e| format!("révocation des sessions du compte : {e}"))?;
+        jouer_le_geste_garde(&c, "setup", "pose de l'administrateur", |tx| -> Result<(), String> {
+            tx.execute("INSERT INTO meta(key,value) VALUES('admin_user',?1) ON CONFLICT(key) DO UPDATE SET value=?1", params![user])
+                .map_err(|e| format!("meta.admin_user : {e}"))?;
+            // ANTI-FUITE PAR EXPORT — on NE STOCKE PLUS le hash admin en CLAIR dans meta : il y était
+            // exfiltrable via /api/export ou /api/query en SQL brut admin (`SELECT value FROM meta WHERE
+            // key='admin_hash'`), l'authorizer read-pool ne pouvant pas filtrer meta PAR CLÉ (déni de meta.value
+            // casserait schema_version/plume_mode). La SOURCE DE VÉRITÉ du hash = user.hash (déjà DÉNIÉ par
+            // l'authorizer, écrit juste dessous). On purge toute copie héritée (bases pré-fix) — idempotent.
+            tx.execute("DELETE FROM meta WHERE key='admin_hash'", []).map_err(|e| format!("purge meta.admin_hash : {e}"))?;
+            // l'admin est aussi un compte de la table user (rôle admin)
+            tx.execute(
+                "INSERT INTO user(name,hash,role) VALUES(?1,?2,'admin') ON CONFLICT(name) DO UPDATE SET hash=?2, role='admin'",
+                params![user, hash],
+            )
+            .map_err(|e| format!("compte admin : {e}"))?;
+            if revoquer_ses_sessions {
+                avancer_l_epoque_du_compte(tx, user).map_err(|e| format!("révocation des sessions du compte : {e}"))?;
+            }
+            Ok(())
+        })
+    };
+    match issue {
+        Issue::Valide(()) => {
+            *st.admin.lock() = Some((user.to_string(), hash.to_string()));
+            st.auth_cache.lock().clear(); // invalide les creds en cache (l'ancien défaut ne marche plus)
+            Ok(())
         }
-        tx.commit().map_err(|e| format!("commit : {e}"))?;
+        Issue::NonOuvert(_) => Err(PoseDeLAdministrateurRefusee::NonOuverte),
+        Issue::Refuse(cause) => Err(PoseDeLAdministrateurRefusee::EcritureRefusee(cause)),
+        Issue::NonValide(refus) => Err(PoseDeLAdministrateurRefusee::NonValidee(refus.to_string())),
     }
-    *st.admin.lock() = Some((user.to_string(), hash.to_string()));
-    st.auth_cache.lock().clear(); // invalide les creds en cache (l'ancien défaut ne marche plus)
-    Ok(())
 }
 
 pub(crate) async fn setup_status(State(st): State<AppState>) -> Json<Value> {
@@ -536,9 +591,10 @@ pub(crate) async fn setup_post(
     let Some(h) = hash_pw(pw) else { return server_err("hash échoué") };
     // FAIL-CLOSED : tant que la pose de l'admin n'est pas ÉCRITE, il n'y a PAS d'installation — donc pas de
     // 200, pas d'effacement du token (l'exploitant doit pouvoir réessayer après réparation), pas de ledger.
-    if let Err(e) = set_admin(&st, &user, &h) {
-        eprintln!("[setup] pose de l'admin REFUSÉE (base non inscriptible) : {e}");
-        return server_err(format!("installation NON effectuée (rien n'a été écrit) : {e}"));
+    // `P10.29-i` — le refus est NOMMÉ (503) et sa cause dite au journal.
+    if let Err(refus) = set_admin(&st, &user, &h) {
+        eprintln!("[setup] pose de l'admin REFUSÉE, rien n'est écrit : {}", refus.cause());
+        return refus.refus(CAUSE_INSTALLATION_NON_EFFECTUEE_TRANSACTION_NON_OUVERTE, CAUSE_INSTALLATION_NON_EFFECTUEE_ECRITURE_REFUSEE);
     }
     // Le fichier de token porte le secret EN CLAIR : on l'écrase puis on RELIT le disque. S'il survit, on le
     // DIT — au journal, au registre et dans la réponse — au lieu de rendre un succès nu.
@@ -911,9 +967,10 @@ pub(crate) async fn password_post(
         // L'administrateur de l'assistant sans ligne (hérité), ou en mode multi-tenant : la voie d'avant. MÊME
         // FAIL-CLOSED QUE `/api/setup` : si l'écriture n'a pas eu lieu, rien n'est révoqué (la révocation est DANS la
         // transaction) et on ne certifie rien au registre.
-        if let Err(e) = poser_l_administrateur(&st, &user, &h, true) {
-            eprintln!("[password] changement REFUSÉ (base non inscriptible) : {e}");
-            return server_err(format!("mot de passe NON changé (rien n'a été écrit) : {e}"));
+        // `P10.29-i` — le refus est NOMMÉ (503) et sa cause dite au journal.
+        if let Err(refus) = poser_l_administrateur(&st, &user, &h, true) {
+            eprintln!("[password] changement du mot de passe de l'administrateur de l'assistant '{user}' REFUSÉ, rien n'est écrit : {}", refus.cause());
+            return refus.refus(CAUSE_MOT_DE_PASSE_NON_CHANGE_TRANSACTION_NON_OUVERTE, CAUSE_MOT_DE_PASSE_NON_CHANGE_ECRITURE_REFUSEE);
         }
         ledger_append(&st.db.lock(), "password", &format!("mot de passe de l'administrateur de l'assistant '{user}' changé par son titulaire"));
         return (StatusCode::OK, Json(json!({ "ok": true, "user": user }))).into_response();

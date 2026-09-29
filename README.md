@@ -678,6 +678,7 @@ personne ne nommait (`P4.1-u`). La colonne de droite est le texte d'aide du bina
 | Sous-commande | Ce qu'elle fait (texte de `--help`) |
 |---------------|-------------------------------------|
 | `hashpw` | hash argon2 d'un mot de passe (stdin si omis) |
+| `secret-des-gestes` | empreinte argon2id du secret des gestes pour `PLUME_GESTURE_SECRET_FILE` (secret lu sur stdin, ou `--generer` : engendré et affiché une fois sur stderr) — voir `docs/TROIS-MODES.md` §3.11 |
 | `respond` | boucle du moteur de réponse (service séparé) |
 | `verify` | vérifie la chaîne d'intégrité du ledger |
 | `verify-control` | vérifie la chaîne d'intégrité du journal du PLAN DE CONTRÔLE (accès superadmin, ouvertures d'urgence) ; 0 = intègre, 1 = rupture nommée, 2 = AUCUN verdict |

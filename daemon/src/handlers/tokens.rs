@@ -236,7 +236,12 @@ pub(crate) async fn tokens_list(State(st): State<AppState>, Extension(au): Exten
 
 /// POST /api/tokens {name, kind:agent|hec, host?} — mint un jeton. Stocke le SHA-256 (jamais le clair) ;
 /// renvoie le secret CLAIR UNE SEULE FOIS (show-once). Audité (config.token.create). Admin-only.
-pub(crate) async fn token_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
+pub(crate) async fn token_create(
+    State(st): State<AppState>,
+    secret_des_gestes: crate::secret_des_gestes::SecretDesGestesPresente,
+    Extension(au): Extension<AuthUser>,
+    Json(b): Json<Value>,
+) -> Response {
     if !au.is_admin() {
         return forbidden("réservé admin");
     }
@@ -280,6 +285,11 @@ pub(crate) async fn token_create(State(st): State<AppState>, Extension(au): Exte
         }
     };
     let host_opt: Option<String> = portee.hote_lie().map(|h| h.to_string());
+    // `P10.24-m` — UN JETON EST UNE CRÉDENCE QUI SURVIT À LA SESSION QUI L'A FRAPPÉ (agent, HEC, source de données,
+    // client) : le secret des gestes, après la validation du corps et avant l'entropie et toute écriture.
+    if let Err(refus) = crate::secret_des_gestes::exiger_le_secret_des_gestes(&st, &secret_des_gestes, &au.name, &format!("frappe du jeton {kind} '{name}'")) {
+        return refus;
+    }
     let Some(secret) = token_rand_hex() else {
         return server_err("entropie noyau indisponible — jeton NON créé");
     };

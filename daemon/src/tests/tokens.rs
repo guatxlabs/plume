@@ -20,7 +20,7 @@
     async fn tokens_create_lookup_list_revoke() {
         let st = sso_test_state("plume-admin", "plume-editor", "admins");
         // --- create AGENT host-lié ---
-        let (code, v) = tok_resp_json(token_create(State(st.clone()), Extension(tok_au("admin")),
+        let (code, v) = tok_resp_json(token_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(tok_au("admin")),
             Json(json!({ "name": "agent-a", "kind": "agent", "host": "web01.internal" }))).await).await;
         assert_eq!(code, StatusCode::OK, "create agent -> 200");
         let agent_secret = v["token"].as_str().expect("secret CLAIR renvoyé une fois").to_string();
@@ -37,7 +37,7 @@
         assert_eq!(valid_token(&st, &agent_secret), Some("web01.internal".to_string()), "agent host-lié -> host projeté");
         // --- create HEC RELAIS (non lié) — P5.2-b : « non lié » se DÉCLARE (`relay: true`). L'omission
         // n'est plus un défaut silencieux : sans déclaration, ce même appel rend 400 (assertion ci-dessous).
-        let (code, _) = tok_resp_json(token_create(State(st.clone()), Extension(tok_au("admin")),
+        let (code, _) = tok_resp_json(token_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(tok_au("admin")),
             Json(json!({ "name": "hec-sans-portee", "kind": "hec" }))).await).await;
         assert_eq!(code, StatusCode::BAD_REQUEST, "kind hec SANS portée déclarée -> 400 (P5.2-b)");
         {
@@ -45,7 +45,7 @@
             let n: i64 = c.query_row("SELECT COUNT(*) FROM token WHERE name='hec-sans-portee'", [], |r| r.get(0)).unwrap();
             assert_eq!(n, 0, "un refus de portée n'écrit AUCUNE ligne token");
         }
-        let (code, v) = tok_resp_json(token_create(State(st.clone()), Extension(tok_au("admin")),
+        let (code, v) = tok_resp_json(token_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(tok_au("admin")),
             Json(json!({ "name": "hec-splunk", "kind": "hec", "relay": true }))).await).await;
         assert_eq!(code, StatusCode::OK, "create hec relais -> 200");
         let hec_secret = v["token"].as_str().unwrap().to_string();
@@ -80,21 +80,21 @@
         // re-check admin DANS le handler (au-delà de route_min_role) : editor & viewer -> 403 partout.
         for role in ["editor", "viewer"] {
             assert_eq!(tokens_list(State(st.clone()), Extension(tok_au(role))).await.into_response().status(), StatusCode::FORBIDDEN, "{role} -> 403 list");
-            let r = token_create(State(st.clone()), Extension(tok_au(role)), Json(json!({ "name": "x", "kind": "agent" }))).await;
+            let r = token_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(tok_au(role)), Json(json!({ "name": "x", "kind": "agent" }))).await;
             assert_eq!(r.status(), StatusCode::FORBIDDEN, "{role} -> 403 create");
             assert_eq!(token_delete(State(st.clone()), Extension(tok_au(role)), Path("x".into())).await.status(), StatusCode::FORBIDDEN, "{role} -> 403 revoke");
         }
         // le create refusé par un editor ne DOIT rien avoir persisté.
         { let c = st.db.lock(); let n: i64 = c.query_row("SELECT COUNT(*) FROM token", [], |r| r.get(0)).unwrap(); assert_eq!(n, 0, "aucun jeton créé par un non-admin"); }
         // validation : nom vide/invalide + hôte invalide -> 400.
-        assert_eq!(token_create(State(st.clone()), Extension(tok_au("admin")), Json(json!({ "name": "", "kind": "agent" }))).await.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(token_create(State(st.clone()), Extension(tok_au("admin")), Json(json!({ "name": "bad name!", "kind": "agent" }))).await.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(token_create(State(st.clone()), Extension(tok_au("admin")), Json(json!({ "name": "ok", "kind": "agent", "host": "bad host!" }))).await.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(token_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(tok_au("admin")), Json(json!({ "name": "", "kind": "agent" }))).await.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(token_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(tok_au("admin")), Json(json!({ "name": "bad name!", "kind": "agent" }))).await.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(token_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(tok_au("admin")), Json(json!({ "name": "ok", "kind": "agent", "host": "bad host!" }))).await.status(), StatusCode::BAD_REQUEST);
         // P5.2-b — PORTÉE NON DÉCLARÉE : ni hôte, ni `relay` -> 400. La garde du CLI serait contournable par
         // le SPA sans celle-ci (les deux écrivent la MÊME table `token`). Et une déclaration CONTRADICTOIRE
         // (hôte ET relais) est refusée elle aussi, plutôt qu'arbitrée en silence.
-        assert_eq!(token_create(State(st.clone()), Extension(tok_au("admin")), Json(json!({ "name": "ok", "kind": "agent" }))).await.status(), StatusCode::BAD_REQUEST, "ni hôte ni relais -> 400");
-        assert_eq!(token_create(State(st.clone()), Extension(tok_au("admin")), Json(json!({ "name": "ok", "kind": "agent", "host": "web01", "relay": true }))).await.status(), StatusCode::BAD_REQUEST, "hôte ET relais -> 400");
+        assert_eq!(token_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(tok_au("admin")), Json(json!({ "name": "ok", "kind": "agent" }))).await.status(), StatusCode::BAD_REQUEST, "ni hôte ni relais -> 400");
+        assert_eq!(token_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(tok_au("admin")), Json(json!({ "name": "ok", "kind": "agent", "host": "web01", "relay": true }))).await.status(), StatusCode::BAD_REQUEST, "hôte ET relais -> 400");
         { let c = st.db.lock(); let n: i64 = c.query_row("SELECT COUNT(*) FROM token", [], |r| r.get(0)).unwrap(); assert_eq!(n, 0, "aucun refus n'a écrit de jeton"); }
     }
 
@@ -1188,6 +1188,10 @@
             sso_header_user: Arc::new("x-authentik-username".to_string()),
             sso_header_groups: Arc::new("x-authentik-groups".to_string()),
             public_demo: false,
+            // `P10.24-m` — l'état de test ATTEND le secret de test (les témoins du refus posent leur propre source).
+            secret_des_gestes: Arc::new(crate::secret_des_gestes::SourceDuSecretDesGestes::Empreinte(
+                crate::secret_des_gestes::empreinte_de_test(),
+            )),
             metrics_token: Arc::new(String::new()),
             search_limit_default: 100,
             search_limit_max: 5000,
@@ -1340,7 +1344,7 @@
     async fn mt2c_onboarding_creates_tenant_seed_grant_and_audit() {
         let (st, dir) = mk_mode1_state();
         let resp = tenant_create(
-            State(st.clone()),
+            State(st.clone()), crate::secret_des_gestes::presente_de_test(),
             Extension(au_super("op")),
             Json(json!({ "id": "acme", "name": "AcmeCorp", "admin": "alice" })),
         )
@@ -1395,19 +1399,19 @@
     async fn mt2c_onboarding_rejections_and_no_tenant_admin_create() {
         let (st, dir) = mk_mode1_state();
         // slug invalide.
-        let r = tenant_create(State(st.clone()), Extension(au_super("op")), Json(json!({ "id": "bad slug!" }))).await;
+        let r = tenant_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(au_super("op")), Json(json!({ "id": "bad slug!" }))).await;
         assert_eq!(r.status(), StatusCode::BAD_REQUEST, "slug invalide -> 400");
         // `default` réservé.
-        let r = tenant_create(State(st.clone()), Extension(au_super("op")), Json(json!({ "id": "default" }))).await;
+        let r = tenant_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(au_super("op")), Json(json!({ "id": "default" }))).await;
         assert_eq!(r.status(), StatusCode::BAD_REQUEST, "default réservé -> 400");
         // NON-super-admin (tenant-admin) -> 403 (le handler re-vérifie is_superadmin, indépendamment du path-guard).
-        let r = tenant_create(State(st.clone()), Extension(au_tadmin("alice", "acme")), Json(json!({ "id": "acme2" }))).await;
+        let r = tenant_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(au_tadmin("alice", "acme")), Json(json!({ "id": "acme2" }))).await;
         assert_eq!(r.status(), StatusCode::FORBIDDEN, "tenant-admin NE peut PAS créer un tenant (anti-escalade)");
         assert!(st.tenants.resolve("acme2").is_none(), "aucun tenant créé par le tenant-admin");
         // doublon -> 409.
-        let r = tenant_create(State(st.clone()), Extension(au_super("op")), Json(json!({ "id": "acme", "name": "A" }))).await;
+        let r = tenant_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(au_super("op")), Json(json!({ "id": "acme", "name": "A" }))).await;
         assert_eq!(r.status(), StatusCode::CREATED);
-        let r = tenant_create(State(st.clone()), Extension(au_super("op")), Json(json!({ "id": "acme", "name": "A2" }))).await;
+        let r = tenant_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(au_super("op")), Json(json!({ "id": "acme", "name": "A2" }))).await;
         assert_eq!(r.status(), StatusCode::CONFLICT, "id existant -> 409");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1417,7 +1421,7 @@
     #[tokio::test]
     async fn mt2c_suspend_unsuspend_scoping_and_audit() {
         let (st, dir) = mk_mode1_state();
-        assert_eq!(tenant_create(State(st.clone()), Extension(au_super("op")), Json(json!({ "id": "acme", "name": "A" }))).await.status(), StatusCode::CREATED);
+        assert_eq!(tenant_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(au_super("op")), Json(json!({ "id": "acme", "name": "A" }))).await.status(), StatusCode::CREATED);
         // tenant-admin -> 403 (in-handler is_superadmin check).
         let r = tenant_suspend(State(st.clone()), Extension(au_tadmin("alice", "acme")), Path("acme".into())).await;
         assert_eq!(r.status(), StatusCode::FORBIDDEN, "tenant-admin NE peut PAS suspendre");
@@ -1442,7 +1446,7 @@
     #[tokio::test]
     async fn mt2c_delete_confirmation_default_protected_and_crypto_destroy() {
         let (st, dir) = mk_mode1_state();
-        assert_eq!(tenant_create(State(st.clone()), Extension(au_super("op")), Json(json!({ "id": "acme", "name": "AcmeCorp" }))).await.status(), StatusCode::CREATED);
+        assert_eq!(tenant_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(au_super("op")), Json(json!({ "id": "acme", "name": "AcmeCorp" }))).await.status(), StatusCode::CREATED);
         let db_path: String = {
             let cp = st.tenants.control.as_ref().unwrap();
             let c = cp.conn.lock();
@@ -1473,21 +1477,21 @@
     #[tokio::test]
     async fn mt2c_grants_scoping_antiescalade_and_antilockout() {
         let (st, dir) = mk_mode1_state();
-        assert_eq!(tenant_create(State(st.clone()), Extension(au_super("op")), Json(json!({ "id": "acme", "name": "A", "admin": "alice" }))).await.status(), StatusCode::CREATED);
-        assert_eq!(tenant_create(State(st.clone()), Extension(au_super("op")), Json(json!({ "id": "beta", "name": "B", "admin": "bob" }))).await.status(), StatusCode::CREATED);
+        assert_eq!(tenant_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(au_super("op")), Json(json!({ "id": "acme", "name": "A", "admin": "alice" }))).await.status(), StatusCode::CREATED);
+        assert_eq!(tenant_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(au_super("op")), Json(json!({ "id": "beta", "name": "B", "admin": "bob" }))).await.status(), StatusCode::CREATED);
 
         // (1) tenant-admin alice pose un grant editor sur SON tenant acme -> OK.
-        let r = grant_set(State(st.clone()), Extension(au_tadmin("alice", "acme")), Path("acme".into()), Json(json!({ "user": "carol", "role": "editor" }))).await;
+        let r = grant_set(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(au_tadmin("alice", "acme")), Path("acme".into()), Json(json!({ "user": "carol", "role": "editor" }))).await;
         assert_eq!(r.status(), StatusCode::OK, "admin de acme pose un grant sur acme");
         assert_eq!(count_grant(&st, "acme", "carol"), 1);
 
         // (2) ANTI CROSS-TENANT : alice (admin de acme) NE peut PAS granter sur beta -> 403.
-        let r = grant_set(State(st.clone()), Extension(au_tadmin("alice", "acme")), Path("beta".into()), Json(json!({ "user": "carol", "role": "admin" }))).await;
+        let r = grant_set(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(au_tadmin("alice", "acme")), Path("beta".into()), Json(json!({ "user": "carol", "role": "admin" }))).await;
         assert_eq!(r.status(), StatusCode::FORBIDDEN, "admin de acme NE grante PAS sur beta (anti cross-tenant)");
         assert_eq!(count_grant(&st, "beta", "carol"), 0);
 
         // (3) ANTI-ESCALADE : rôle 'superadmin' REFUSÉ (enum fermé) même pour le super-admin.
-        let r = grant_set(State(st.clone()), Extension(au_super("op")), Path("acme".into()), Json(json!({ "user": "dave", "role": "superadmin" }))).await;
+        let r = grant_set(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(au_super("op")), Path("acme".into()), Json(json!({ "user": "dave", "role": "superadmin" }))).await;
         assert_eq!(r.status(), StatusCode::BAD_REQUEST, "rôle superadmin refusé (anti-escalade)");
         // is_superadmin de dave inchangé (0) : l'API de grants ne touche JAMAIS le flag plateforme.
         {
@@ -1498,10 +1502,10 @@
         }
 
         // (4) ANTI-LOCKOUT : alice (seule admin de acme) NE peut PAS se rétrograder viewer.
-        let r = grant_set(State(st.clone()), Extension(au_tadmin("alice", "acme")), Path("acme".into()), Json(json!({ "user": "alice", "role": "viewer" }))).await;
+        let r = grant_set(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(au_tadmin("alice", "acme")), Path("acme".into()), Json(json!({ "user": "alice", "role": "viewer" }))).await;
         assert_eq!(r.status(), StatusCode::BAD_REQUEST, "dernier admin du tenant -> rétrogradation refusée");
         // ... mais le super-admin, lui, le peut (management-plane).
-        let r = grant_set(State(st.clone()), Extension(au_super("op")), Path("acme".into()), Json(json!({ "user": "alice", "role": "viewer" }))).await;
+        let r = grant_set(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(au_super("op")), Path("acme".into()), Json(json!({ "user": "alice", "role": "viewer" }))).await;
         assert_eq!(r.status(), StatusCode::OK, "le super-admin peut rétrograder (il peut toujours re-granter)");
 
         // (5) DELETE grant : super-admin retire carol de acme -> OK ; audit présent.
@@ -1522,8 +1526,8 @@
     #[tokio::test]
     async fn mt2c_grants_role_never_inherits_identity_floor() {
         let (st, dir) = mk_mode1_state();
-        assert_eq!(tenant_create(State(st.clone()), Extension(au_super("op")), Json(json!({ "id": "acme", "name": "A", "admin": "alice" }))).await.status(), StatusCode::CREATED);
-        assert_eq!(tenant_create(State(st.clone()), Extension(au_super("op")), Json(json!({ "id": "beta", "name": "B" }))).await.status(), StatusCode::CREATED);
+        assert_eq!(tenant_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(au_super("op")), Json(json!({ "id": "acme", "name": "A", "admin": "alice" }))).await.status(), StatusCode::CREATED);
+        assert_eq!(tenant_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(au_super("op")), Json(json!({ "id": "beta", "name": "B" }))).await.status(), StatusCode::CREATED);
 
         // (a) VRAI admin de acme (grant présent, NON-superadmin) -> "admin" SUR acme, "viewer" sur beta.
         assert_eq!(mgmt_grants_role(&st, "alice", "acme", None, false), "admin", "grant admin réel -> admin sur SON tenant");
@@ -1566,10 +1570,10 @@
         let r = tenants_list(State(st.clone()), Extension(au_super("op"))).await;
         assert_eq!(r.status(), StatusCode::OK, "mode 0 : liste inerte (200 vide)");
         // mutations -> 404 (route inerte, aucun effet, control-plane JAMAIS ouvert).
-        assert_eq!(tenant_create(State(st.clone()), Extension(au_super("op")), Json(json!({ "id": "x" }))).await.status(), StatusCode::NOT_FOUND);
+        assert_eq!(tenant_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(au_super("op")), Json(json!({ "id": "x" }))).await.status(), StatusCode::NOT_FOUND);
         assert_eq!(tenant_suspend(State(st.clone()), Extension(au_super("op")), Path("x".into())).await.status(), StatusCode::NOT_FOUND);
         assert_eq!(tenant_delete(State(st.clone()), Extension(au_super("op")), Path("x".into()), Json(json!({ "confirm": "x" }))).await.status(), StatusCode::NOT_FOUND);
-        assert_eq!(grant_set(State(st.clone()), Extension(au_super("op")), Path("x".into()), Json(json!({ "user": "u", "role": "admin" }))).await.status(), StatusCode::NOT_FOUND);
+        assert_eq!(grant_set(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(au_super("op")), Path("x".into()), Json(json!({ "user": "u", "role": "admin" }))).await.status(), StatusCode::NOT_FOUND);
         assert!(st.tenants.control.is_none(), "control-plane JAMAIS ouvert en mode 0");
     }
 

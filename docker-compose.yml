@@ -104,6 +104,13 @@ services:
       PLUME_CONFIG: "/nonexistent"
       PLUME_DEMO: "${PLUME_DEMO:-0}"   # 1 = peuple une instance fraîche avec des données de démo (à voir vivante sans agent)
       PLUME_PUBLIC_DEMO: "${PLUME_PUBLIC_DEMO:-0}"   # 1 = accès ANONYME lecture seule (démo publique exposée ; instance isolée + PLUME_DEMO=1)
+      # --- SECRET DES GESTES — `P10.24-m` ---
+      # Sans lui, créer un compte, promouvoir un administrateur, réinitialiser un autre compte, frapper un jeton ou
+      # une clé de livraison, poser un fournisseur d'identité sont REFUSÉS (403 nommé). Le démon ne lit que
+      # l'EMPREINTE argon2id, dans un fichier relu à chaque geste :
+      #   docker compose run --rm -T soc secret-des-gestes --generer > secret-des-gestes.phc   # le secret s'affiche UNE fois
+      # puis décommentez la ligne ci-dessous ET le bloc `secrets:` du service et de fin de fichier (docs/TROIS-MODES.md §3.11).
+      # PLUME_GESTURE_SECRET_FILE: "/run/secrets/secret-des-gestes"
       # --- CHIFFREMENT AT-REST (SQLCipher) — `P9.6-a` ---
       # TROIS PROVENANCES POSSIBLES POUR LA CLÉ, DANS CET ORDRE DE PRÉCÉDENCE :
       #   1. PLUME_DB_KEY_FILE — un fichier monté en lecture seule. C'est la forme PRÉFÉRÉE quand vous
@@ -279,6 +286,7 @@ services:
     # les transposer ici ferait diverger les modes au lieu de les aligner.
     volumes:
       - soc-data:/data
+    # secrets: [ secret-des-gestes ]   # P10.24-m — avec PLUME_GESTURE_SECRET_FILE ci-dessus
     restart: unless-stopped
     read_only: true
     tmpfs:
@@ -299,3 +307,7 @@ services:
       - no-new-privileges:true
 volumes:
   soc-data:
+# P10.24-m — l'EMPREINTE du secret des gestes (jamais le secret), montée en /run/secrets/secret-des-gestes.
+# secrets:
+#   secret-des-gestes:
+#     file: ./secret-des-gestes.phc

@@ -36,6 +36,9 @@ pub(crate) struct AppState {
     // DÉMO PUBLIQUE (PLUME_PUBLIC_DEMO=1, OPT-IN) : accès ANONYME forcé en LECTURE SEULE (rôle viewer).
     // JAMAIS en prod. À combiner avec PLUME_DEMO=1 (données factices) + instance ISOLÉE de la prod.
     pub(crate) public_demo: bool,
+    // `P10.24-m` — D'OÙ LIRE L'EMPREINTE DU SECRET DES GESTES (`PLUME_GESTURE_SECRET_FILE`). Le fichier est relu à
+    // chaque geste gardé (rotation = remplacer le fichier) ; non configuré -> les gestes gardés sont REFUSÉS, nommés.
+    pub(crate) secret_des_gestes: Arc<crate::secret_des_gestes::SourceDuSecretDesGestes>,
     // #51 DAY-2 OPS — jeton de scrape /metrics (PLUME_METRICS_TOKEN). Non vide -> un scraper Prometheus
     // présente `Authorization: Bearer <token>` (comparé constant-time dans auth_guard) et lit /metrics sans
     // compte. Vide (DÉFAUT) -> /metrics EXIGE une auth viewer+ normale (jamais anonyme au monde). N'affecte

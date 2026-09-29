@@ -76,7 +76,7 @@ mod noms_reserves_a_la_creation_et_commit_compte {
 
     async fn rncc_creer(st: &AppState, nom: &str, mot: &str, role: &str) -> (u16, Value) {
         let (s, _, c) = rncc_corps(
-            user_create(State(st.clone()), Extension(sp_au("adm", "admin")), Json(json!({ "name": nom, "password": mot, "role": role }))).await,
+            user_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(sp_au("adm", "admin")), Json(json!({ "name": nom, "password": mot, "role": role }))).await,
         )
         .await;
         (s, c)
@@ -430,7 +430,7 @@ mod noms_reserves_a_la_creation_et_commit_compte {
         let id_alice = rncc_compte(&st, "SELECT id FROM user WHERE name=?1", "alice");
         let modifier = |st: AppState| async move {
             let r = user_update(
-                State(st),
+                State(st), crate::secret_des_gestes::presente_de_test(),
                 ConnectInfo(rncc_pair("10.93.0.4")),
                 Extension(sp_au("adm", "admin")),
                 axum::extract::Path(id_alice),

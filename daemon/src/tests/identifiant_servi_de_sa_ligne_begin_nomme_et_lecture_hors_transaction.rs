@@ -369,7 +369,7 @@ mod identifiant_servi_de_sa_ligne_begin_nomme_et_lecture_hors_transaction {
         let (st, p) = sp_state("isdl-connecteur");
         let adm = sp_au("adm", "admin");
         let (statut, corps) =
-            isdl_corps(connector_push_source(State(st.clone()), Extension(adm.clone()), Json(json!({ "preset_id": "aws-cloudtrail" }))).await).await;
+            isdl_corps(connector_push_source(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(adm.clone()), Json(json!({ "preset_id": "aws-cloudtrail" }))).await).await;
         assert_eq!(statut, 200, "fixture : source push : {corps}");
         let cle = corps["delivery_key"].as_str().expect("clé montrée une fois").to_string();
         let id = corps["connector_id"].as_i64().expect("connecteur");

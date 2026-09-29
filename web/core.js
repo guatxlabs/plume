@@ -748,10 +748,15 @@ function refusHorsDemon(nature, statut) {
 // « supprimé », « rétention mise à jour », la préférence tenue pour acquittée…). Il JETTE désormais un refus
 // NOMMÉ (`refusHorsDemon`) ; le cinq cents de passerelle aussi, au lieu de coller son HTML comme cause. Le corps
 // VIDE, lui, reste `null` : c'est le succès des routes à deux cent quatre.
-async function apiSend(path, method = 'POST', body) {
+// `P10.24-m` — `entetes` porte, pour les seuls gestes qui posent un accès persistant, le secret des gestes
+// (`avecLeSecretDesGestes`) ; tout autre appel n'en passe aucun et part exactement comme avant.
+async function apiSend(path, method = 'POST', body, entetes) {
   const init = { method };
   if (body !== undefined) { init.headers = { 'Content-Type': 'application/json' }; init.body = JSON.stringify(body); }
+  const secretEnvoye = !!(entetes && entetes[ENTETE_DU_SECRET_DES_GESTES]);
+  if (entetes) init.headers = Object.assign({}, init.headers || {}, entetes);
   const r = await fetch('/api' + path, init);
+  if (init.headers && init.headers[ENTETE_DU_SECRET_DES_GESTES]) delete init.headers[ENTETE_DU_SECRET_DES_GESTES];
   const text = await r.text().catch(() => '');   // texte d'abord -> corps d'erreur dispo + gère réponse vide
   const horsDemon = natureDeLaReponseHorsDemon(r.status, text);
   // `P10.20-b` — MÊME PORTAGE QUE DANS `api()` : la coupe à 200 caractères tronque les phrases longues que
@@ -777,6 +782,7 @@ async function apiSend(path, method = 'POST', body) {
     if (objet) refus.objetDuRefus = objet;   // `P10.25-i`
     const delai = r.headers && typeof r.headers.get === 'function' ? parseInt(r.headers.get('retry-after') || '', 10) : NaN;
     if (Number.isFinite(delai) && delai > 0) refus.delaiDuRefus = delai;
+    if (secretEnvoye) refus.secretDesGestesEnvoye = true;   // `P10.24-m` : un 429 sur ce geste est le frein du secret
     throw refus;
   }
   if (horsDemon) throw refusHorsDemon(horsDemon, r.status);
@@ -895,6 +901,8 @@ function unRefusServiEnDeuxCents(corps) {
   return cause ? Object.assign(new Error(cause), { statutDuRefus: 200, causeDuDemon: cause }) : null;
 }
 function natureDuRefusDUnGeste(e) {
+  const duSecret = natureDuRefusDuSecretDesGestes(e);   // `P10.24-m` — avant tout : le secret non saisi n'a pas de statut
+  if (duSecret) return duSecret;
   if (e && e.reponseHorsDemon) return 'reponse_hors_demon';
   if (laDemandeNAPasAbouti(e)) return 'demande_non_aboutie';
   if (e.traceNonEcrite === true && e.statutDuRefus >= 200 && e.statutDuRefus < 300) return 'geste_fait_trace_absente';
@@ -929,7 +937,8 @@ const MOTS_DU_REFUS_D_UN_GESTE = {
     fr: 'Le démon a refusé ce geste et en nomme la cause —',
     en: 'The daemon refused this action and names the cause —' },
 };
-const motDuRefusDUnGeste = (nature) => (LANG === 'en' ? MOTS_DU_REFUS_D_UN_GESTE[nature].en : MOTS_DU_REFUS_D_UN_GESTE[nature].fr);
+const motDuRefusDUnGeste = (nature) => (MOTS_DES_REFUS_DU_SECRET_DES_GESTES[nature] ? motDuRefusDuSecretDesGestes(nature)
+  : LANG === 'en' ? MOTS_DU_REFUS_D_UN_GESTE[nature].en : MOTS_DU_REFUS_D_UN_GESTE[nature].fr);
 // Le puits d'une surface : UN par surface (`surface` le nomme), enfant de `parent`, posé avant `avant` (ou en fin).
 // Retrouvé par son nom au geste suivant ; hors de l'hôte que la surface repeint, il survit au rechargement de sa liste.
 function puitsDuRefusDUnGeste(parent, surface, avant) {
@@ -952,6 +961,7 @@ function effacerLeRefusDUnGeste(puits) {
 // Rend la nature peinte ('' sans puits).
 function peindreLeRefusDUnGeste(puits, e) {
   if (!puits) return '';
+  if (peindreLeRefusDuSecretDesGestes(puits, e)) return natureDuRefusDuSecretDesGestes(e);
   const nature = natureDuRefusDUnGeste(e);
   const dit = document.createElement('span');
   if (nature === 'reponse_hors_demon') {
@@ -967,6 +977,130 @@ function peindreLeRefusDUnGeste(puits, e) {
   puits.dataset.refusDUnGeste = nature;
   puits.hidden = false;
   return nature;
+}
+
+// `P10.24-m` — LE SECRET DES GESTES QUI POSENT UN ACCÈS PERSISTANT. Créer ou promouvoir un administrateur, réinitialiser le
+// mot de passe d'un autre compte, frapper un jeton : le démon exige, EN PLUS du droit, un secret dédié que l'exploitant pose
+// (fichier désigné par `PLUME_GESTURE_SECRET_FILE`), présenté dans l'en-tête `x-plume-secret-des-gestes`. Refus : quatre cent
+// trois `{error, cause}`, `cause` ∈ les trois clés ci-dessous ; quatre cent vingt-neuf = le frein anti-force brute.
+// LE SECRET N'EST JAMAIS MÉMORISÉ : lu dans un champ mot de passe sans autocomplétion, dans une fenêtre posée pour CE geste,
+// vidé dès sa lecture, passé à l'envoi dans un objet d'en-têtes dont il est retiré après ; aucune variable de module, aucun
+// stockage du navigateur. Un secret FAUX rouvre la fenêtre (ressaisie) ; le non configuré n'est PAS une erreur de saisie.
+const ENTETE_DU_SECRET_DES_GESTES = 'x-plume-secret-des-gestes';
+const CAUSES_DU_SECRET_DES_GESTES = ['secret_des_gestes_absent', 'secret_des_gestes_faux', 'secret_des_gestes_non_configure'];
+const MOTS_DES_REFUS_DU_SECRET_DES_GESTES = {
+  secret_des_gestes_absent: {
+    fr: "GESTE REFUSÉ, RIEN N'A CHANGÉ : ce geste pose un accès persistant, et le démon exige le secret des gestes, qui n'a pas été présenté. Le démon en nomme la cause —",
+    en: 'ACTION REFUSED, NOTHING CHANGED: this action grants lasting access, and the daemon requires the gesture secret, which was not presented. The daemon names the cause —' },
+  secret_des_gestes_faux: {
+    fr: "GESTE REFUSÉ, RIEN N'A CHANGÉ : le secret des gestes présenté est FAUX. Rejouer le geste pour le ressaisir. Le démon en nomme la cause —",
+    en: 'ACTION REFUSED, NOTHING CHANGED: the gesture secret presented is WRONG. Replay the action to enter it again. The daemon names the cause —' },
+  secret_des_gestes_non_configure: {
+    fr: "GESTE REFUSÉ, RIEN N'A CHANGÉ — ce n'est PAS une erreur de saisie : aucun secret des gestes n'est posé sur ce démon. L'exploitant doit le poser (fichier désigné par PLUME_GESTURE_SECRET_FILE) ; d'ici là, ce geste est refusé à tous. Le démon en nomme la cause —",
+    en: 'ACTION REFUSED, NOTHING CHANGED — this is NOT a typing error: no gesture secret is set on this daemon. The operator must set it (file named by PLUME_GESTURE_SECRET_FILE); until then, this action is refused to everyone. The daemon names the cause —' },
+  secret_des_gestes_freine: {
+    fr: "Secret des gestes FREINÉ : trop d'essais refusés, le démon refuse sans examiner — réessayer dans {delai} s. Rien n'a changé. Le démon en nomme la cause —",
+    en: 'Gesture secret THROTTLED: too many refused attempts, the daemon refuses without examining — try again in {delai} s. Nothing changed. The daemon names the cause —' },
+  secret_des_gestes_freine_sans_delai: {
+    fr: "Secret des gestes FREINÉ : trop d'essais refusés, le démon refuse sans examiner jusqu'à la fin du délai. Rien n'a changé. Le démon en nomme la cause —",
+    en: 'Gesture secret THROTTLED: too many refused attempts, the daemon refuses without examining until the delay ends. Nothing changed. The daemon names the cause —' },
+  secret_des_gestes_non_saisi: {
+    fr: "GESTE NON FAIT : le secret des gestes n'a pas été saisi — rien n'a changé.",
+    en: 'ACTION NOT DONE: the gesture secret was not entered — nothing changed.' },
+};
+const MOTS_DE_LA_DEMANDE_DU_SECRET_DES_GESTES = {
+  titre: { fr: 'Secret des gestes exigé', en: 'Gesture secret required' },
+  message: {
+    fr: "« {geste} » pose un accès persistant : le démon exige le secret des gestes en plus de ton droit. Il n'est ni mémorisé ni réaffiché, et ne part qu'avec cet envoi.",
+    en: '“{geste}” grants lasting access: the daemon requires the gesture secret on top of your role. It is neither remembered nor shown again, and leaves only with this request.' },
+  ressaisir: { fr: 'Le secret présenté était FAUX — ressaisis-le.', en: 'The secret presented was WRONG — enter it again.' },
+  champ: { fr: 'Secret des gestes', en: 'Gesture secret' },
+  requis: { fr: 'Le secret des gestes est requis.', en: 'The gesture secret is required.' },
+  envoyer: { fr: 'Envoyer', en: 'Send' },
+  annuler: { fr: 'Annuler', en: 'Cancel' },
+};
+// Les gestes à secret, nommés dans la langue de l'écran (le titre de la fenêtre les cite) ; un nom inconnu passe tel quel.
+const MOTS_DES_GESTES_A_SECRET = {
+  creer_un_administrateur: { fr: 'Créer un administrateur', en: 'Create an administrator' },
+  creer_un_compte: { fr: 'Créer un compte', en: 'Create an account' },
+  modifier_un_compte: { fr: 'Modifier un compte', en: 'Edit an account' },
+  promouvoir_administrateur: { fr: 'Promouvoir en administrateur', en: 'Promote to administrator' },
+  reinitialiser_un_autre_compte: { fr: "Réinitialiser le mot de passe d'un autre compte", en: "Reset another account's password" },
+  frapper_un_jeton: { fr: 'Frapper un jeton API', en: 'Mint an API token' },
+  creer_une_source_push: { fr: 'Créer une source push et sa clé de livraison', en: 'Create a push source and its delivery key' },
+  accorder_un_acces_de_tenant: { fr: "Accorder l'accès à un tenant", en: 'Grant access to a tenant' },
+  provisionner_un_tenant_et_son_administrateur: { fr: 'Provisionner un tenant et son premier administrateur', en: 'Provision a tenant and its first administrator' },
+  poser_un_fournisseur: { fr: "Créer ou reconfigurer un fournisseur d'identité", en: 'Create or reconfigure an identity provider' },
+  activer_un_fournisseur: { fr: "Activer un fournisseur d'identité", en: 'Enable an identity provider' },
+};
+const nomDuGesteASecret = (geste) => (MOTS_DES_GESTES_A_SECRET[geste] ? faceDansLaLangue(MOTS_DES_GESTES_A_SECRET[geste]) : String(geste || ''));
+// La nature d'un refus du secret, ou '' : lue sur le CHAMP `cause` servi (jamais sur la phrase), sous le seul quatre cent trois ;
+// le quatre cent vingt-neuf n'est le frein du secret que si le secret est parti avec la demande.
+function natureDuRefusDuSecretDesGestes(e) {
+  if (!e) return '';
+  if (e.secretDesGestesNonSaisi === true) return 'secret_des_gestes_non_saisi';
+  if (e.reponseHorsDemon || typeof e.statutDuRefus !== 'number') return '';
+  const cause = e.objetDuRefus && typeof e.objetDuRefus.cause === 'string' ? e.objetDuRefus.cause.trim() : '';
+  if (e.statutDuRefus === 403 && CAUSES_DU_SECRET_DES_GESTES.includes(cause)) return cause;
+  if (e.statutDuRefus === 429 && e.secretDesGestesEnvoye === true) return e.delaiDuRefus > 0 ? 'secret_des_gestes_freine' : 'secret_des_gestes_freine_sans_delai';
+  return '';
+}
+function motDuRefusDuSecretDesGestes(nature, delai) {
+  return faceDansLaLangue(MOTS_DES_REFUS_DU_SECRET_DES_GESTES[nature], { delai: String(delai == null ? '' : delai) });
+}
+// La phrase entière (pour une ligne de résultat ou un avis) ; '' hors de ces refus.
+function phraseDuRefusDuSecretDesGestes(e) {
+  const nature = natureDuRefusDuSecretDesGestes(e);
+  if (!nature) return '';
+  const mot = motDuRefusDuSecretDesGestes(nature, e.delaiDuRefus);
+  return nature === 'secret_des_gestes_non_saisi' ? mot : mot + ' « ' + phraseDuRefusDuDemon(e).trim() + ' »';
+}
+// Peint au puits (deux nœuds : la face, puis la cause servie) ; rend la nature, ou '' sans rien toucher.
+function peindreLeRefusDuSecretDesGestes(puits, e) {
+  const nature = natureDuRefusDuSecretDesGestes(e);
+  if (!puits || !nature) return '';
+  const dit = document.createElement('span');
+  dit.textContent = motDuRefusDuSecretDesGestes(nature, e.delaiDuRefus);
+  if (nature === 'secret_des_gestes_non_saisi') puits.replaceChildren(dit);
+  else puits.replaceChildren(dit, document.createTextNode(' « ' + phraseDuRefusDuDemon(e).trim() + ' »'));
+  puits.dataset.refusDuSecretDesGestes = nature;
+  puits.hidden = false;
+  return nature;
+}
+// La fenêtre du secret, posée pour UN geste. Rend le secret saisi, ou '' (annulé). Le champ est vidé dès sa lecture.
+async function demanderLeSecretDesGestes(geste, ressaisie) {
+  const f = (k, v) => faceDansLaLangue(MOTS_DE_LA_DEMANDE_DU_SECRET_DES_GESTES[k], v);
+  const etiquette = document.createElement('label'); etiquette.className = 'modal-f';
+  const nom = document.createElement('span'); nom.textContent = f('champ');
+  const champ = document.createElement('input');
+  champ.type = 'password'; champ.autocomplete = 'off'; champ.setAttribute('autocomplete', 'off'); champ.spellcheck = false;
+  champ.setAttribute('aria-label', f('champ')); champ.dataset.secretDesGestes = '1';
+  etiquette.append(nom, champ);
+  const r = await modal({ title: f('titre'), message: (ressaisie ? f('ressaisir') + ' ' : '') + f('message', { geste: nomDuGesteASecret(geste) }), body: etiquette,
+    okText: f('envoyer'), cancelText: f('annuler'), danger: true, validate: () => (champ.value ? null : f('requis')) });
+  const secret = champ.value;
+  champ.value = '';
+  return r === null ? '' : secret;
+}
+// L'envoi d'un geste à secret. `envoyer(entetes)` fait l'appel (`apiSend(…, entetes)`). `dEmblee` : le secret est demandé
+// AVANT le premier envoi (gestes que la console sait gardés) ; sinon l'appel part sans lui, et seul un refus
+// `secret_des_gestes_absent` fait demander le secret puis rejouer (le démon a refusé avant d'agir). Un secret FAUX rouvre
+// la fenêtre ; annuler après un faux rend ce refus-là ; tout autre refus est rendu tel quel. JAMAIS de succès sans réponse.
+async function avecLeSecretDesGestes(geste, envoyer, { dEmblee = true } = {}) {
+  let dernierFaux = null;
+  if (!dEmblee) {
+    try { return await envoyer(undefined); }
+    catch (e) { if (natureDuRefusDuSecretDesGestes(e) !== 'secret_des_gestes_absent') throw e; }
+  }
+  for (;;) {
+    let secret = await demanderLeSecretDesGestes(geste, !!dernierFaux);
+    if (!secret) throw dernierFaux || Object.assign(new Error(motDuRefusDuSecretDesGestes('secret_des_gestes_non_saisi')), { secretDesGestesNonSaisi: true });
+    const entetes = { [ENTETE_DU_SECRET_DES_GESTES]: secret };
+    secret = '';
+    try { return await envoyer(entetes); }
+    catch (e) { if (natureDuRefusDuSecretDesGestes(e) !== 'secret_des_gestes_faux') throw e; dernierFaux = e; }
+    finally { delete entetes[ENTETE_DU_SECRET_DES_GESTES]; }
+  }
 }
 
 // `P10.23-q` — LE CADRE D'UN REFUS SUIT LA NATURE DE LA RÉPONSE : LE DÉMON, UNE PASSERELLE, OU PERSONNE.
@@ -2806,6 +2940,8 @@ export {
   REFUS_DU_ROLE_SUR_UNE_ROUTE_D_ADMINISTRATION, leRefusEstCeluiDuRole,
   // `P10.26-q` — la forme partagée du refus d'un geste d'écriture : sa nature, ses faces, son puits.
   natureDuRefusDUnGeste, motDuRefusDUnGeste, puitsDuRefusDUnGeste, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste,
+  // `P10.24-m` — le secret des gestes qui posent un accès persistant : l'en-tête, la demande, l'envoi, les faces.
+  ENTETE_DU_SECRET_DES_GESTES, avecLeSecretDesGestes, demanderLeSecretDesGestes, natureDuRefusDuSecretDesGestes, motDuRefusDuSecretDesGestes, peindreLeRefusDuSecretDesGestes, phraseDuRefusDuSecretDesGestes,
   // `P10.28-o` — le deux cents d'un geste fait dont la trace manque, lu par le poll et l'envoi manuels (témoin 118).
   laTraceNonEcriteServieEnDeuxCents,
   // `P10.27-d` — et le refus servi en deux cents (`{error}`), peint par la même forme.

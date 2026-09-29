@@ -14,7 +14,7 @@ async fn sec_c1_identity_mutations_audited_and_rule_matches() {
 
     // 1) CREATE d'un ADMIN -> 200 + event action=config.user.create + ledger.
     let (code, v) = tok_resp_json(
-        user_create(State(st.clone()), Extension(admin.clone()),
+        user_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(admin.clone()),
             Json(json!({ "name": "eviladmin", "password": "longenoughpw12", "role": "admin" }))).await,
     ).await;
     assert_eq!(code, StatusCode::OK, "create admin -> 200");
@@ -22,13 +22,13 @@ async fn sec_c1_identity_mutations_audited_and_rule_matches() {
 
     // 2) ROLE_CHANGE (admin->viewer sur un 2e compte) + PASSWORD_RESET.
     let (_c, v2) = tok_resp_json(
-        user_create(State(st.clone()), Extension(admin.clone()),
+        user_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(admin.clone()),
             Json(json!({ "name": "bob", "password": "longenoughpw12", "role": "editor" }))).await,
     ).await;
     let bob_id = v2["id"].as_i64().unwrap();
     // `P10.24-a` : `user_update` lit l'adresse du pair (verrou du mot de passe actuel, jugé quand la cible est
     // l'appelant) ; ici la cible est un AUTRE compte, l'adresse n'est pas jugée.
-    let r = user_update(State(st.clone()), ConnectInfo("127.0.0.1:45454".parse().expect("adresse de test")), Extension(admin.clone()), axum::extract::Path(bob_id),
+    let r = user_update(State(st.clone()), crate::secret_des_gestes::presente_de_test(), ConnectInfo("127.0.0.1:45454".parse().expect("adresse de test")), Extension(admin.clone()), axum::extract::Path(bob_id),
         Json(json!({ "role": "viewer", "password": "anotherlongpw34" }))).await;
     assert_eq!(r.status(), StatusCode::NO_CONTENT, "role_change + reset -> 204");
 
@@ -68,9 +68,9 @@ async fn sec_c1_identity_mutations_audited_and_rule_matches() {
 async fn sec_c1_duplicate_name_conflict_no_partial() {
     let st = sso_test_state("admins", "editors", "supers");
     let admin = ergo_au("admin");
-    let _ = user_create(State(st.clone()), Extension(admin.clone()),
+    let _ = user_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(admin.clone()),
         Json(json!({ "name": "dup", "password": "longenoughpw12", "role": "editor" }))).await;
-    let r = user_create(State(st.clone()), Extension(admin.clone()),
+    let r = user_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(admin.clone()),
         Json(json!({ "name": "dup", "password": "longenoughpw12", "role": "editor" }))).await;
     assert_eq!(r.status(), StatusCode::CONFLICT, "nom en doublon -> 409 (sémantique préservée)");
     let conn = st.db.lock();

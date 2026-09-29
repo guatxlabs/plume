@@ -546,6 +546,33 @@ if (UNE_ENTREE) {
 const PLANCHER_MODULES = 20;
 const echecs = [];
 const exiger = (cond, msg) => { if (!cond) echecs.push(msg); };
+// `P10.24-m` — LA FENÊTRE DU SECRET DES GESTES, répondue par les témoins qui jouent un geste qui pose un accès persistant
+// (créer ou promouvoir un administrateur, réinitialiser un autre compte, frapper un jeton). Rend le champ trouvé, ou null
+// (aucune fenêtre du secret n'est ouverte : rien n'est touché). `secret === null` annule la fenêtre.
+const fenetreDuSecretDesGestes = () => {
+  const ov = document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !c.classList.contains("out")).pop() || null;
+  const trouver = (el) => { if (!el) return null; if (typeof el.getAttribute === "function" && el.getAttribute("data-secret-des-gestes") === "1") return el; for (const c of (el.children || [])) { const t = trouver(c); if (t) return t; } return null; };
+  const champ = trouver(ov);
+  return champ ? { ov, champ, form: ov.children[0] ? ov.children[0].children[0] || null : null } : null;
+};
+const repondreAuSecretDesGestes = async (secret, attendre) => {
+  if (attendre) await attendre();
+  const f = fenetreDuSecretDesGestes();
+  if (!f || !f.form) return null;
+  const champ = f.champ;
+  if (secret === null) { const b = f.form.querySelector(".m-cancel"); if (b && typeof b.onclick === "function") b.onclick(); }
+  else { champ.value = secret; await Promise.resolve(f.form.onsubmit({ preventDefault() {} })); }
+  if (attendre) await attendre();
+  return champ;
+};
+// Joue un geste en répondant à la fenêtre du secret si elle s'ouvre pendant qu'il attend (au plus six fois : un secret
+// faux rouvre la fenêtre, et un témoin qui ne veut pas de réponse n'appelle pas ceci).
+const jouerEnRepondantAuSecret = async (faire, attendre, secret = "secret-des-gestes-du-banc") => {
+  let fini = false;
+  const p = Promise.resolve().then(faire).finally(() => { fini = true; });
+  for (let i = 0; i < 6 && !fini; i++) { await attendre(); if (!fini && fenetreDuSecretDesGestes()) await repondreAuSecretDesGestes(secret); }
+  return p;
+};
 
 // ---------------------------------------------------------------------------------------------
 // `P11.24-j` — L'ADRESSE DE LANGUE EST POSÉE ICI, AU PRÉAMBULE, ET PLUS AU MILIEU D'UNE SECTION.
@@ -13953,17 +13980,20 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   // ET LA LIMITE, LUE DANS LE DÉMON : `cause()` rend la MÊME clé pour `NonCommence` et pour `Interrompu`.
   // La console ne peut donc pas les séparer par un champ — elle les sépare par ce qu'elle a REÇU.
   const srcParcours100 = readFileSync(path.join(RACINE, "daemon", "src", "query_exec.rs"), "utf8");
-  instrument100(/FinDeParcours::Interrompu \{ cause, \.\. \} \| FinDeParcours::NonCommence \{ cause \} => Some\(cause\.as_str\(\)\)/.test(srcParcours100),
-    "`FinDeParcours::cause` ne fond plus les deux fins en une seule clé (daemon/src/query_exec.rs) : la règle de séparation écrite dans web/suppressions.js n'aurait plus sa raison");
+  // `P10.20-u` — LA RÈGLE DE SÉPARATION N'EST PLUS QU'UN REPLI : quand le démon sert `collectors_etat`, c'est lui qui décide
+  // (témoin 123). L'instrument accepte donc les deux arbres : la clé fondue (démon ancien) ou le champ nommé servi.
+  instrument100(/FinDeParcours::Interrompu \{ cause, \.\. \} \| FinDeParcours::NonCommence \{ cause \} => Some\(cause\.as_str\(\)\)/.test(srcParcours100) || /"collectors_etat"/.test(srcAdmin100),
+    "`FinDeParcours::cause` ne fond plus les deux fins en une seule clé (daemon/src/query_exec.rs) ET `suppressions_get` ne sert pas `collectors_etat` : ni la règle de repli de web/suppressions.js ni le champ nommé n'auraient de fondement");
 
   // (0.d) LA CLÉ D'AVEU DE LA CHRONOLOGIE — et le fait qu'elle est POSÉE SOUS CONDITION (un aveu
   //       inconditionnel n'avouerait rien), et qu'elle NE PORTE AUCUNE CAUSE.
-  instrument100(/if ref_non_lu \{\s*if let Some\(o\) = item\.as_object_mut\(\) \{\s*o\.insert\("ref_non_lu"\.into\(\), json!\(true\)\);/.test(srcDossiers100),
+  instrument100(/if (?:ref_non_lu|let Some\(cause\) = ref_non_lu_cause) \{\s*if let Some\(o\) = item\.as_object_mut\(\) \{\s*o\.insert\("ref_non_lu"\.into\(\), json!\(true\)\);/.test(srcDossiers100),
     "`case_get_lu` ne pose plus `ref_non_lu` SOUS CONDITION (daemon/src/handlers/cases.rs)");
-  instrument100(/Err\(_\) => \(None, None, true\),/.test(srcDossiers100),
+  instrument100(/Err\(_\) => \(None, None, true\),/.test(srcDossiers100) || /ref_non_lu_cause/.test(srcDossiers100),
     "`resolve_case_ref` ne distingue plus la cible NON LUE de la cible ABSENTE (daemon/src/handlers/cases.rs)");
-  instrument100(!/o\.insert\("ref_non_lu_cause"/.test(srcDossiers100),
-    "`case_get_lu` sert désormais une CAUSE à côté de `ref_non_lu` : la limite écrite dans web/cases.js (« cette route ne sert pas la cause ») est périmée et l'aveu doit passer à deux nœuds");
+  // `P10.20-u` — LE JOUR OÙ LE DÉMON SERT `ref_non_lu_cause`, LA CONSOLE DOIT LA LIRE (l'aveu à deux nœuds est jugé au témoin 123).
+  instrument100(!/ref_non_lu_cause/.test(srcDossiers100) || /it\.ref_non_lu_cause/.test(readFileSync(path.join(WEB, "cases.js"), "utf8")),
+    "`case_get_lu` sert une CAUSE à côté de `ref_non_lu` et web/cases.js ne la lit pas : l'aveu de chronologie resterait à un nœud");
 
   // (0.e) LA PHRASE D'ALLOWLIST NON LUE, SON CODE, ET LA PHRASE DU QUATRE CENTS À NE PAS CONFONDRE.
   const CAUSE_ALLOWLIST100 = litteralRust100(srcModelesH100, "NON_LUS");
@@ -16581,7 +16611,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     const avant = avis105().length, appelsAvant = appels105.length;
     let rejet = null;
     const p = Promise.resolve().then(lancer).then(() => {}, (e) => { rejet = e; });
-    await laisser105(); await valider105(champs); await p; await laisser105(40);
+    await laisser105(); await valider105(champs); await repondreAuSecretDesGestes("secret-des-gestes-105", () => laisser105()); await p; await laisser105(40);
     return { avis: avis105().slice(avant), appels: appels105.slice(appelsAvant), rejet };
   };
   const sansCodeNiJson105 = (t) => !/[{}]/.test(t) && !/\b(50[0-9]|40[0-9]|20[0-9])\b/.test(t) && !/plume-e/.test(t);
@@ -18949,7 +18979,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
       const avantCorps = corpsEnvoyes110.length, avantAvis = avis110().length, avantRecharges = rechargements110;
       const geste = ligne.enregistrer.onclick(); await laisser110();
       const ov = fenetre110(); const form = ov && ov.children[0] ? ov.children[0].children[0] : null;
-      if (form && confirmer && typeof form.onsubmit === "function") form.onsubmit({ preventDefault() {} });
+      if (form && confirmer && typeof form.onsubmit === "function") { form.onsubmit({ preventDefault() {} }); await repondreAuSecretDesGestes("secret-des-gestes-110", () => laisser110()); }
       else if (form) { const b = form.querySelector(".m-cancel"); if (b && typeof b.onclick === "function") b.onclick(); }
       let jete = null; try { await geste; } catch (e) { jete = e; }
       await laisser110(40);
@@ -20066,6 +20096,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
       const avantAvis = avis113().length, avantListe = compter113("GET /api/users"), avantEnvoi = compter113("POST /api/users");
       const geste = mod.creerLeCompteDuFormulaire({ preventDefault() {} }); await laisser113();
       const titre = confirmer113(true);
+      await repondreAuSecretDesGestes("secret-des-gestes-113", () => laisser113());   // `P10.24-m` : créer un compte, de tout rôle
       let jete = null; try { await geste; } catch (e) { jete = e; }
       await laisser113(40);
       const puits = formulaire113 ? parDonnee113(formulaire113, "data-puits-du-refus-de-creation")[0] || null : null;
@@ -21109,7 +21140,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
     appels115.length = 0;
     const avant = avisDe115().length;
     let rejet = "";
-    try { await s.geste(L); } catch (e) { rejet = String((e && e.message) || e).slice(0, 200); }
+    try { await jouerEnRepondantAuSecret(() => s.geste(L), () => laisser115()); } catch (e) { rejet = String((e && e.message) || e).slice(0, 200); }
     await laisser115(40);
     const p = s.puits();
     return { site: s.site, appels: compter115(s.route), rejet, avis: avisDe115().slice(avant).map((t) => t.slice(0, 220)), nature: p && p.getAttribute("data-refus-d-un-geste"),
@@ -23326,7 +23357,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
     // (t1) LES TABLES DE FACES, DÉRIVÉES : toute table que `faceDansLaLangue` lit (nommée dans son argument) — et
     // l'ensemble de ces tables est NOMMÉ, jugé dans les deux sens ; chaque paire {fr, en} : deux faces distinctes,
     // l'anglaise sans accent, les mêmes emplacements `{…}` ; et tout littéral `{ fr, en }` passé en ligne, de même.
-    const TABLES_DE_FACES119 = ["app.js › MOTS_DES_AVIS_D_EXPORT_ET_DE_TENANT", "cases.js › MOTS_DES_SUCCES_DE_DOSSIER", "connectors.js › MOTS_DES_AVIS_DE_CONNECTEUR", "core.js › MOTS_DES_RETRAITS_DE_CONTENU",
+    const TABLES_DE_FACES119 = ["app.js › MOTS_DES_AVIS_D_EXPORT_ET_DE_TENANT", "core.js › MOTS_DES_GESTES_A_SECRET", "core.js › MOTS_DES_REFUS_DU_SECRET_DES_GESTES", "core.js › MOTS_DE_LA_DEMANDE_DU_SECRET_DES_GESTES", "cases.js › MOTS_DES_SUCCES_DE_DOSSIER", "connectors.js › MOTS_DES_AVIS_DE_CONNECTEUR", "core.js › MOTS_DES_RETRAITS_DE_CONTENU",
       "destinations.js › MOTS_DES_AVIS_DE_L_ENVOI", "detection_admin.js › MOTS_DES_ESSAIS_DE_CONTENU", "knowledge.js › MOTS_DES_SUCCES_DE_SAVOIR", "lookups.js › MOTS_DU_CHARGEMENT_DE_LOOKUP",
       "multitenant.js › MOTS_DES_AVIS_DU_PLAN_DE_CONTROLE", "producer_ui.js › DESTINATIONS_DE_L_AVIS", "producer_ui.js › MOTS_DES_AVIS_DE_PRODUCTEUR", "threatintel.js › MOTS_DES_AVIS_D_INDICATEURS",
       // `P10.29-g`, `P10.29-f`, `P10.29-c` — les tables que le témoin 120 a posées : la face nommée d'une lecture non servie, les
@@ -25407,7 +25438,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
     // `fetch` direct — nommée, ou rouge.
     const RESTES_DES_FETCH_DIRECTS122 = {
       "core.js › api": ["core.js", /async function api\(path\) \{/, "le transport partagé des lectures : son refus JETTE vers l'appelant, dont les captures sont recensées par le témoin 120"],
-      "core.js › apiSend": ["core.js", /async function apiSend\(path, method = 'POST', body\) \{/, "le transport partagé des écritures : son refus JETTE vers l'appelant, dont les captures sont recensées par le témoin 121"],
+      "core.js › apiSend": ["core.js", /async function apiSend\(path, method = 'POST', body, entetes\) \{/, "le transport partagé des écritures : son refus JETTE vers l'appelant, dont les captures sont recensées par le témoin 121"],
       "login.js › doLogin": ["login.js", /try \{ res = await doLogin\(user, pass\); \}\s*catch \(ex\)/, "la connexion rend son échec à `bindLoginForm`, qui l'attend dans un `try` et le peint (témoin 109)"],
       "login.js › doLoginMfa": ["login.js", /try \{ res = await doLoginMfa\(ticketDuSecondFacteur, code\); \}\s*catch \(ex\)/, "le second facteur rend son échec à `bindLoginForm`, qui l'attend dans un `try` et le peint (témoins 109, 122 u)"],
       "viz.js › runQ": ["viz.js", /try \{\s*(?:\/\/[^\n]*\n\s*)*const win = S\.evState\.win[\s\S]{0,700}const j = await runQ\(q, isSoql, win\.from, limit, offset, opts\);[\s\S]*try \{\s*const j = await runQ\(q, isSoql, exploreFrom\(\), null, 0,/, "la requête de l'Explore rend son échec à ses DEUX appelants, qui l'attendent chacun dans un `try` (la page du parcours, l'agrégation)"],
@@ -25566,6 +25597,279 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
     fermerLesFenetres122();
   }
   console.log("(122) OK — `P10.23-u` : le ticket que le démon refuse est abandonné au premier refus, sans boucle ni sonde (un envoi, l'étape refermée, aucune minuterie), et un refus reçu avant l'échéance décomptée se dit révocation, dans les deux langues ; `P11.21-f` : la porte `navigation.js` se charge dans un processus neuf, l'amorce y est jouée et lance les mêmes charges que par `app.js`, `route();` restant en colonne 1 ; `P10.30-m` : les intégrations disent leur refus et ne comptent ni n'affirment absent ce qu'elles n'ont pas lu, le partage d'une vue ne dit « visibilité NON LUE » que sur sa cause, les `fetch` directs et les cadres de la phrase du démon sont recensés par usage dans les deux sens, `showQError` décide sur les phrases exactes du démon, un essai ou une collecte de connecteur sans résultat n'est pas un échec, le formulaire de mot de passe nomme son compte et dit l'annuaire d'avance, le provisionnement d'un tenant a la forme partagée.");
+}
+
+// ---------------------------------------------------------------------------------------------
+// (123) `P10.24-m` (SÉCURITÉ, face console) — LE SECRET DES GESTES QUI POSENT UN ACCÈS PERSISTANT. Contrat fixé avec le
+//       démon : en-tête `x-plume-secret-des-gestes`, refus quatre cent trois `{error, cause}` avec `cause` ∈
+//       `secret_des_gestes_absent` / `_faux` / `_non_configure`, quatre cent vingt-neuf = frein anti-force brute.
+//       Jugé : le secret est demandé AVANT l'envoi des gestes que la console sait gardés, dans un champ mot de passe sans
+//       autocomplétion ; il part dans l'en-tête et n'y reste pas ; le champ est vidé ; rien n'est écrit au stockage ni au
+//       document ; un secret FAUX rouvre la fenêtre et le second part ; le non configuré dit l'exploitant et
+//       `PLUME_GESTURE_SECRET_FILE`, n'est pas une erreur de saisie et ne rouvre rien ; le frein se dit avec son délai ;
+//       l'annulation n'envoie rien ; un geste parti sans secret le demande sur `absent` puis rejoue ; les cinq faces ont
+//       leurs deux langues ; un geste refusé n'affiche aucun succès (ligne d'un compte promu) ; chaque appel des routes
+//       gardées sous web/ passe par `avecLeSecretDesGestes` (recensement jugé dans les deux sens).
+//       `P10.20-u` (face console) — la chronologie cite `ref_non_lu_cause` en second nœud (sans elle, la face d'avant) ;
+//       le relevé des collecteurs suit `collectors_etat` (interrompu sans ligne ≠ non commencé), la règle d'avant sans lui.
+//
+// CE QUE CE TÉMOIN NE TIENT PAS : le démon n'est PAS relu ici pour le secret (l'agent du démon le pose en parallèle) —
+// si l'arbre du démon nomme des causes `secret_des_gestes_*`, leur ensemble est comparé à celui de la console, sinon ce
+// contrat n'est que celui de l'énoncé ; QUELLES routes le démon garde n'est pas établi ici : les gestes dont la console
+// ne sait pas qu'ils sont gardés partent sans secret et ne le demandent que sur `secret_des_gestes_absent` ; le transport
+// est un simulacre ; un navigateur peut ignorer `autocomplete="off"` sur un champ mot de passe (seule l'intention est posée).
+// ---------------------------------------------------------------------------------------------
+{
+  const FICHIERS123 = { noyau: "core.js", etat: "state.js", comptes: "admin_users.js", dossiers: "cases.js", supp: "suppressions.js" };
+  const importer123 = async (adresse) => { const L = {}; for (const [cle, f] of Object.entries(FICHIERS123)) L[cle] = await import(adresse(f)); return L; };
+  const modsFr123 = await importer123((f) => pathToFileURL(path.join(WEB, f)).href);
+  const langueOrigine123 = localStorage.getItem("soc_lang");
+  localStorage.setItem("soc_lang", "en");
+  const modsEn123 = await importer123((f) => adresseSousLaLangue(f));
+  if (langueOrigine123 === null) localStorage.removeItem("soc_lang"); else localStorage.setItem("soc_lang", langueOrigine123);
+  const FR123 = { nom: "fr", ...modsFr123, S: modsFr123.etat.S }, EN123 = { nom: "en", ...modsEn123, S: modsEn123.etat.S };
+  const tic123 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser123 = async (n = 30) => { for (let i = 0; i < n; i++) await tic123(); };
+  const nu123 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ").trim();
+  const instrument123 = (vrai, quoi) => exiger(vrai, `(123-instrument) ${quoi} : ce témoin REFUSE DE CONCLURE`);
+  const ACCENTS123 = /[éèêàçùôâîÉÈÊÀ]/;
+  const srcDe123 = (f) => ((CORPUS_WEB.find(([g]) => g === f) || [])[1]) || "";
+  const CAUSES123 = ["secret_des_gestes_absent", "secret_des_gestes_faux", "secret_des_gestes_non_configure"];
+  instrument123(FR123.noyau.LANG !== "en" && EN123.noyau.LANG === "en", "les deux instances du point commun ne portent pas deux langues");
+  instrument123(["avecLeSecretDesGestes", "natureDuRefusDuSecretDesGestes", "motDuRefusDuSecretDesGestes", "peindreLeRefusDuSecretDesGestes", "phraseDuRefusDuSecretDesGestes"].every((n) => typeof FR123.noyau[n] === "function")
+    && FR123.noyau.ENTETE_DU_SECRET_DES_GESTES === "x-plume-secret-des-gestes" && typeof FR123.dossiers.caseItemEl === "function" && typeof FR123.supp.loadSuppressions === "function",
+    "le point commun n'exporte plus la forme du secret des gestes, ou l'en-tête n'est plus celui du contrat");
+  // Le démon, s'il nomme déjà ses causes : l'ensemble doit être celui de la console (ni une de plus, ni une de moins).
+  const causesDuDemon123 = [...new Set(readdirSync(path.join(RACINE, "daemon", "src"), { recursive: true }).map(String).filter((f) => f.endsWith(".rs"))
+    .flatMap((f) => [...readFileSync(path.join(RACINE, "daemon", "src", f), "utf8").matchAll(/"(secret_des_gestes_[a-z_]+)"/g)].map((m) => m[1])))].sort();
+  if (causesDuDemon123.length) exiger(JSON.stringify(causesDuDemon123) === JSON.stringify([...CAUSES123].sort()),
+    `(123m) LE DÉMON NOMME D'AUTRES CAUSES DU SECRET DES GESTES QUE LA CONSOLE : ${JSON.stringify(causesDuDemon123)} contre ${JSON.stringify(CAUSES123)}`);
+  console.log(`[123m0] causes du secret nommées par l'arbre du démon : ${causesDuDemon123.length ? JSON.stringify(causesDuDemon123) : "AUCUNE (le démon ne les sert pas encore : le contrat jugé est celui de l'énoncé)"}`);
+
+  const fetchOrigine123 = globalThis.fetch, minuterieOrigine123 = globalThis.setTimeout, qsOrigine123 = document.querySelector;
+  const etatOrigine123 = [FR123, EN123].map((L) => ({ S: L.S, auth: L.S.AUTH, admin: L.S.isAdmin }));
+  let servis123 = [];
+  const envois123 = [];
+  const surRejet123 = (e) => { exiger(false, `(123) une promesse rejetée n'est pas traitée : ${e && e.message}`); };
+  process.on("unhandledRejection", surRejet123);
+  const fermer123 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
+  try {
+    globalThis.setTimeout = (fn, ms) => (ms >= 1000 ? 0 : minuterieOrigine123(fn, ms >= 100 ? 0 : ms));
+    // Le simulacre SERT une file de réponses (une par envoi) et CAPTURE la valeur de l'en-tête AU MOMENT de l'envoi, ainsi
+    // que l'objet d'en-têtes lui-même (relu APRÈS : le secret ne doit plus y être).
+    globalThis.fetch = async (u, init) => {
+      const chemin = String(u).split("?")[0], methode = ((init && init.method) || "GET").toUpperCase();
+      const entetes = (init && init.headers) || null;
+      envois123.push({ route: methode + " " + chemin, secret: entetes ? entetes["x-plume-secret-des-gestes"] : undefined, entetes, corps: init && init.body });
+      const r = servis123.length ? servis123.shift() : { statut: 200, corps: {} };
+      const texte = typeof r.corps === "string" ? r.corps : JSON.stringify(r.corps === undefined ? {} : r.corps);
+      return { ok: r.statut >= 200 && r.statut < 300, status: r.statut, headers: { get: (h) => (/retry-after/i.test(h) ? (r.reessai || null) : null) }, text: async () => texte };
+    };
+    const refus403 = (cause) => ({ statut: 403, corps: { error: "phrase du démon pour " + cause + " (fabriquée)", cause } });
+    // Joue `avecLeSecretDesGestes` sur un geste, en répondant aux fenêtres par la liste `saisies` (null = annuler).
+    const jouer123 = async (L, reponses, saisies, options) => {
+      servis123 = [...reponses]; envois123.length = 0; fermer123();
+      const vus = [], champs = [];
+      let rendu = null, jete = null, fini = false;
+      const p = L.noyau.avecLeSecretDesGestes("frapper_un_jeton", (h) => L.noyau.apiSend("/tokens", "POST", { name: "t123" }, h), options)
+        .then((r) => { rendu = r; }, (e) => { jete = e; }).finally(() => { fini = true; });
+      for (let i = 0; i < 12 && !fini; i++) {
+        await laisser123(8);
+        const f = fenetreDuSecretDesGestes();
+        if (f && !fini) {
+          vus.push(nu123(f.ov)); champs.push(f.champ);
+          const s = saisies.length ? saisies.shift() : null;
+          await repondreAuSecretDesGestes(s, () => laisser123(4));
+        }
+      }
+      await p; await laisser123(10);
+      return { rendu, jete, vus, champs, envois: envois123.slice(), nature: jete ? L.noyau.natureDuRefusDuSecretDesGestes(jete) : "" };
+    };
+    const ecartsM123 = [], mesureM123 = [];
+    const SECRET123 = "secret-123-" + "x".repeat(16), SECRET_BIS123 = "secret-bis-123-" + "y".repeat(12);
+    const fuite123 = (secret) => {
+      const vus = [];
+      for (const stock of [localStorage, globalThis.sessionStorage].filter(Boolean)) for (let i = 0; i < stock.length; i++) { const k = stock.key(i); if (String(stock.getItem(k)).includes(secret) || String(k).includes(secret)) vus.push("stockage:" + k); }
+      if (nu123(document.body).includes(secret)) vus.push("texte du document");
+      return vus;
+    };
+    for (const L of [FR123, EN123]) {
+      // (1) D'EMBLÉE : une fenêtre, un envoi, le secret dans l'en-tête, puis retiré ; champ vidé ; aucune fuite.
+      const a = await jouer123(L, [{ statut: 200, corps: { token: "tok", name: "t123" } }], [SECRET123]);
+      const champ = a.champs[0];
+      mesureM123.push(`${L.nom}/d'emblée : ${a.vus.length} fenêtre(s), ${a.envois.length} envoi(s), en-tête ${a.envois[0] && a.envois[0].secret === SECRET123 ? "PORTÉ" : "absent"}`);
+      if (a.vus.length !== 1 || a.envois.length !== 1 || !a.envois[0] || a.envois[0].secret !== SECRET123 || !a.rendu || a.rendu.token !== "tok")
+        ecartsM123.push(`${L.nom}/d'emblée : ${a.vus.length} fenêtre(s), ${a.envois.length} envoi(s), secret porté « ${a.envois[0] && a.envois[0].secret} », rendu ${JSON.stringify(a.rendu)}`);
+      if (a.envois[0] && a.envois[0].entetes && "x-plume-secret-des-gestes" in a.envois[0].entetes) ecartsM123.push(`${L.nom}/le secret reste dans l'objet d'en-têtes après l'envoi`);
+      if (!champ || champ.type !== "password" || champ.getAttribute("autocomplete") !== "off" || champ.value !== "") ecartsM123.push(`${L.nom}/champ : type « ${champ && champ.type} », autocomplete « ${champ && champ.getAttribute("autocomplete")} », valeur restante « ${champ && champ.value} »`);
+      if (fuite123(SECRET123).length) ecartsM123.push(`${L.nom}/le secret fuit : ${JSON.stringify(fuite123(SECRET123))}`);
+      if (L === EN123 && ACCENTS123.test(a.vus[0] || "")) ecartsM123.push(`en/la fenêtre reste française : « ${a.vus[0]} »`);
+      if (!/Frapper un jeton API|Mint an API token/.test(a.vus[0] || "")) ecartsM123.push(`${L.nom}/la fenêtre ne nomme pas le geste : « ${a.vus[0]} »`);
+      // (2) FAUX : la fenêtre se rouvre en le disant, le second secret part, succès.
+      const b = await jouer123(L, [refus403("secret_des_gestes_faux"), { statut: 200, corps: { token: "tok2" } }], [SECRET123, SECRET_BIS123]);
+      if (b.vus.length !== 2 || b.envois.length !== 2 || b.envois[1].secret !== SECRET_BIS123 || !/FAUX|WRONG/.test(b.vus[1] || "") || /FAUX|WRONG/.test(b.vus[0] || "") || !b.rendu)
+        ecartsM123.push(`${L.nom}/faux : ${b.vus.length} fenêtre(s), ${b.envois.length} envoi(s), seconde fenêtre « ${(b.vus[1] || "").slice(0, 120)} », rendu ${JSON.stringify(b.rendu)}`);
+      // (2') FAUX puis ANNULER : le refus « faux » est rendu (pas « non saisi »).
+      const b2 = await jouer123(L, [refus403("secret_des_gestes_faux")], [SECRET123, null]);
+      if (b2.nature !== "secret_des_gestes_faux" || b2.envois.length !== 1) ecartsM123.push(`${L.nom}/faux puis annuler : nature « ${b2.nature} », ${b2.envois.length} envoi(s)`);
+      // (3) NON CONFIGURÉ : un envoi, aucune seconde fenêtre, face qui dit l'exploitant et le fichier.
+      const c = await jouer123(L, [refus403("secret_des_gestes_non_configure")], [SECRET123, SECRET_BIS123]);
+      const faceNC = c.jete ? L.noyau.phraseDuRefusDuSecretDesGestes(c.jete) : "";
+      if (c.nature !== "secret_des_gestes_non_configure" || c.vus.length !== 1 || c.envois.length !== 1 || !faceNC.includes("PLUME_GESTURE_SECRET_FILE")
+        || !(L === FR123 ? /PAS une erreur de saisie/.test(faceNC) && /exploitant/.test(faceNC) : /NOT a typing error/.test(faceNC) && /operator/.test(faceNC)) || !faceNC.includes("(fabriquée)"))
+        ecartsM123.push(`${L.nom}/non configuré : nature « ${c.nature} », ${c.vus.length} fenêtre(s), ${c.envois.length} envoi(s), face « ${faceNC} »`);
+      // (4) ABSENT sur un geste parti sans secret : premier envoi sans en-tête, fenêtre, second envoi avec.
+      const d = await jouer123(L, [refus403("secret_des_gestes_absent"), { statut: 200, corps: { ok: true } }], [SECRET123], { dEmblee: false });
+      if (d.envois.length !== 2 || d.envois[0].secret !== undefined || d.envois[1].secret !== SECRET123 || d.vus.length !== 1 || !d.rendu)
+        ecartsM123.push(`${L.nom}/absent : ${d.envois.length} envoi(s), secrets ${JSON.stringify(d.envois.map((x) => x.secret))}, ${d.vus.length} fenêtre(s)`);
+      // (4-négatif) parti sans secret et ACCEPTÉ : aucune fenêtre.
+      const d2 = await jouer123(L, [{ statut: 200, corps: { ok: true } }], [], { dEmblee: false });
+      if (d2.vus.length !== 0 || d2.envois.length !== 1 || d2.envois[0].secret !== undefined) ecartsM123.push(`${L.nom}/parti sans secret et accepté : ${d2.vus.length} fenêtre(s)`);
+      // (5) FREIN : quatre cent vingt-neuf après un secret envoyé, délai servi.
+      const e = await jouer123(L, [{ statut: 429, corps: { error: "trop d'essais (fabriquée)" }, reessai: "42" }], [SECRET123]);
+      const faceF = e.jete ? L.noyau.phraseDuRefusDuSecretDesGestes(e.jete) : "";
+      if (e.nature !== "secret_des_gestes_freine" || !/42 s/.test(faceF) || !/FREINÉ|THROTTLED/.test(faceF) || e.vus.length !== 1) ecartsM123.push(`${L.nom}/frein : nature « ${e.nature} », face « ${faceF} »`);
+      // (5-négatif) le même quatre cent vingt-neuf SANS secret envoyé n'est pas le frein du secret.
+      const e2 = await jouer123(L, [{ statut: 429, corps: { error: "trop de requêtes (fabriquée)" } }], [], { dEmblee: false });
+      if (e2.nature !== "" || e2.vus.length !== 0) ecartsM123.push(`${L.nom}/un 429 sans secret envoyé se dit frein du secret (« ${e2.nature} »)`);
+      // (6) ANNULER d'emblée : rien n'est envoyé, « non saisi ».
+      const f = await jouer123(L, [], [null]);
+      if (f.envois.length !== 0 || f.nature !== "secret_des_gestes_non_saisi") ecartsM123.push(`${L.nom}/annuler : ${f.envois.length} envoi(s), nature « ${f.nature} »`);
+      // (7-négatifs) un quatre cent trois d'une AUTRE cause, ou la clé dans la seule PHRASE, n'est pas un refus du secret.
+      const g = await jouer123(L, [{ statut: 403, corps: { error: "réservé admin", cause: "role" } }], [SECRET123]);
+      const h = await jouer123(L, [{ statut: 403, corps: { error: "secret_des_gestes_faux" } }], [SECRET123]);
+      if (g.nature !== "" || h.nature !== "" || g.vus.length !== 1 || h.vus.length !== 1) ecartsM123.push(`${L.nom}/négatifs : autre cause « ${g.nature} », clé dans la phrase « ${h.nature} » (${h.vus.length} fenêtre(s))`);
+      // (8) LES FACES : deux langues distinctes, l'anglaise sans accent ; la forme partagée les peint (natureDuRefusDUnGeste).
+      for (const n of ["secret_des_gestes_absent", "secret_des_gestes_faux", "secret_des_gestes_non_configure", "secret_des_gestes_freine", "secret_des_gestes_freine_sans_delai", "secret_des_gestes_non_saisi"]) {
+        const fr = FR123.noyau.motDuRefusDuSecretDesGestes(n, 7), en = EN123.noyau.motDuRefusDuSecretDesGestes(n, 7);
+        if (!fr || !en || fr === en || ACCENTS123.test(en) || /\{delai\}/.test(fr + en)) ecartsM123.push(`face ${n} : fr « ${fr} » / en « ${en} »`);
+      }
+      const puits = new Element("div"); puits.hidden = true;
+      const refusF = { statutDuRefus: 403, objetDuRefus: { error: "phrase servie", cause: "secret_des_gestes_faux" }, causeDuDemon: "phrase servie" };
+      const nat = L.noyau.peindreLeRefusDUnGeste(puits, refusF);
+      if (nat !== "secret_des_gestes_faux" || puits.hidden || nu123(puits.children[0]) !== L.noyau.motDuRefusDuSecretDesGestes("secret_des_gestes_faux") || !nu123(puits).endsWith("« phrase servie »") || L.noyau.natureDuRefusDUnGeste(refusF) !== "secret_des_gestes_faux" || puits.getAttribute("data-refus-du-secret-des-gestes") !== "secret_des_gestes_faux")
+        ecartsM123.push(`${L.nom}/forme partagée : nature « ${nat} », « ${nu123(puits)} »`);
+    }
+    console.log(`[123m] ${mesureM123.join(" | ")}`);
+
+    // (9) LE SITE : promouvoir un compte en administrateur (ligne de la liste des comptes). Le secret est demandé AVANT
+    //     l'envoi ; « non configuré » se peint dans la ligne et aucun succès n'est dit ; accepté, le succès est dit.
+    {
+      const hotes = { "#users": new Element("section"), "#user-list": new Element("div"), "#acces-list": new Element("div") };
+      document.querySelector = (sel) => (Object.prototype.hasOwnProperty.call(hotes, sel) ? hotes[sel] : qsOrigine123.call(document, sel));
+      FR123.S.isAdmin = true; FR123.S.AUTH = { user: "hugo", role: "admin" };
+      const LISTE = { users: [{ id: 1, name: "hugo", role: "admin", created: 1 }, { id: 2, name: "bob", role: "editor", created: 2 }], me: "hugo", acces: [] };
+      const promouvoir = async (reponses, saisie) => {
+        servis123 = [{ statut: 200, corps: LISTE }]; envois123.length = 0; fermer123();
+        hotes["#user-list"].replaceChildren(); await FR123.comptes.loadUsers(); await laisser123();
+        const enfants = hotes["#user-list"].children;
+        const i = enfants.findIndex((e) => e.classList && e.classList.contains("urow") && nu123(e.children[0]).startsWith("bob "));
+        const editeur = enfants[i + 1];
+        const role = editeur.children.find((c) => c.tagName === "SELECT"), bouton = editeur.children.find((c) => c.tagName === "BUTTON");
+        const puits = editeur.children.find((c) => c.className === "bad");
+        role.value = "admin";
+        servis123 = [...reponses, { statut: 200, corps: LISTE }];
+        const avantAvis = document.querySelectorAll(".toast").length;
+        const geste = bouton.onclick(); await laisser123();
+        const conf = document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !c.classList.contains("out")).pop();
+        const formConf = conf && conf.children[0] ? conf.children[0].children[0] : null;
+        const envoisAvantSecret = envois123.filter((x) => x.route === "POST /api/users/2").length;
+        if (formConf) { formConf.onsubmit({ preventDefault() {} }); }
+        const champ = await repondreAuSecretDesGestes(saisie, () => laisser123());
+        await geste; await laisser123(20);
+        const avis = [...document.querySelectorAll(".toast")].slice(avantAvis).map((t) => nu123(t));
+        return { envoisAvantSecret, champ, envois: envois123.filter((x) => x.route === "POST /api/users/2"), puits, avis };
+      };
+      const ok = await promouvoir([{ statut: 200, corps: {} }], SECRET123);
+      if (!ok.champ || ok.envoisAvantSecret !== 0 || ok.envois.length !== 1 || ok.envois[0].secret !== SECRET123 || !ok.avis.includes("compte mis à jour") || !ok.puits.hidden)
+        ecartsM123.push(`site/promotion acceptée : fenêtre ${!!ok.champ}, envois avant le secret ${ok.envoisAvantSecret}, ${ok.envois.length} envoi(s), avis ${JSON.stringify(ok.avis)}`);
+      const nc = await promouvoir([refus403("secret_des_gestes_non_configure")], SECRET123);
+      if (nc.envois.length !== 1 || nc.puits.hidden || nc.puits.getAttribute("data-refus-du-secret-des-gestes") !== "secret_des_gestes_non_configure" || !/PLUME_GESTURE_SECRET_FILE/.test(nu123(nc.puits)) || nc.avis.some((t) => /mis à jour/.test(t)))
+        ecartsM123.push(`site/promotion non configurée : puits « ${nu123(nc.puits).slice(0, 160)} », avis ${JSON.stringify(nc.avis)}`);
+      const an = await promouvoir([], null);
+      if (an.envois.length !== 0 || an.puits.hidden || an.puits.getAttribute("data-refus-du-secret-des-gestes") !== "secret_des_gestes_non_saisi" || an.avis.some((t) => /mis à jour/.test(t)))
+        ecartsM123.push(`site/promotion annulée : ${an.envois.length} envoi(s), puits « ${nu123(an.puits)} », avis ${JSON.stringify(an.avis)}`);
+      document.querySelector = qsOrigine123;
+    }
+
+    // (10) LE RECENSEMENT : chaque appel d'une route gardée, sous web/, passe par `avecLeSecretDesGestes` (même ligne),
+    //      jugé dans les deux sens (une ligne fabriquée sans l'enveloppe est accusée).
+    const ROUTES_GARDEES123 = [/apiSend\('\/tokens', 'POST'/, /apiSend\('\/users', 'POST'/, /apiSend\('\/users\/' \+ [\w.]+, 'POST'/, /\/grants', 'POST'/, /apiSend\('\/connectors\/push-source', 'POST'/,
+      /apiSend\('\/tenants', 'POST'/, /apiSend\('\/idp\/providers\/?'(?: \+ [\w.]+)?, 'POST'/];
+    const recenser123 = (corpus) => corpus.flatMap(([f, src]) => src.split("\n").map((ligne, i) => [f, i + 1, ligne]))
+      .filter(([, , ligne]) => ROUTES_GARDEES123.some((r) => r.test(ligne)));
+    const sites123 = recenser123(CORPUS_WEB);
+    const nus123 = sites123.filter(([, , ligne]) => !/avecLeSecretDesGestes\(/.test(ligne)).map(([f, n]) => `${f}:${n}`);
+    if (sites123.length < 9) ecartsM123.push(`recensement : ${sites123.length} site(s) seulement — le motif ne voit plus les appels`);
+    if (nus123.length) ecartsM123.push(`appels de routes gardées SANS secret des gestes : ${JSON.stringify(nus123)}`);
+    const fabrique123 = recenser123([["fabrique.js", "  try { res = await apiSend('/tokens', 'POST', body); }"]]).filter(([, , l]) => !/avecLeSecretDesGestes\(/.test(l));
+    if (fabrique123.length !== 1) ecartsM123.push("recensement (négatif) : un appel nu fabriqué n'est pas accusé");
+    console.log(`[123m9] ${sites123.length} appel(s) de routes gardées recensé(s) : ${sites123.map(([f, n]) => f + ":" + n).join(", ")}`);
+    exiger(ecartsM123.length === 0, `(123m) LE SECRET DES GESTES N'A PAS SA FORME (\`P10.24-m\` : demandé avant l'envoi, en-tête posé puis retiré, champ mot de passe vidé sans autocomplétion, aucune fuite, faux = ressaisie, non configuré = l'exploitant et PLUME_GESTURE_SECRET_FILE sans ressaisie, frein et délai, annulation sans envoi, absent = demande puis rejeu, faces bilingues, aucun succès sur un refus, recensement des routes gardées) : ${JSON.stringify(ecartsM123)}`);
+
+    // ══ (u) `P10.20-u` — LA CAUSE DE LA CHRONOLOGIE ET LA FIN NOMMÉE DU RELEVÉ ═════════════════════════════════════
+    const ecartsU123 = [];
+    const CAUSE_U123 = "database is locked (fabriquée pour le témoin 123)";
+    // Les clés de la cible non lue, LUES dans le démon (`REF_NON_LUE_*`) quand il les sert ; chacune doit avoir sa face.
+    const srcDossiers123 = readFileSync(path.join(RACINE, "daemon", "src", "handlers", "cases.rs"), "utf8");
+    const clesCible123 = [...srcDossiers123.matchAll(/pub\(crate\) const REF_NON_LUE_\w+: &str = "([a-z_]+)";/g)].map((m) => m[1]);
+    console.log(`[123u0] clés de la cible non lue servies par le démon : ${JSON.stringify(clesCible123)}`);
+    for (const L of [FR123, EN123]) for (const cle of clesCible123) {
+      const el = L.dossiers.caseItemEl(4, { id: 9, ts: 1758000000, kind: "alert", author: "hugo", body: "", ref: "alert:42", ref_title: null, ref_severity: null, ref_non_lu: true, ref_non_lu_cause: cle }, false);
+      const n = (function t(e) { if (e.getAttribute && e.getAttribute("data-cause-de-la-cible-non-lue") === "1") return e; for (const c of (e.children || [])) { const r = t(c); if (r) return r; } return null; })(el);
+      const texte = nu123(n);
+      if (!n || !texte.includes("(" + cle + ")") || texte === "« " + cle + " »" || (L === EN123 && ACCENTS123.test(texte))) ecartsU123.push(`${L.nom}/clé servie « ${cle} » sans face : « ${texte} »`);
+    }
+    for (const L of [FR123, EN123]) {
+      const avec = L.dossiers.caseItemEl(4, { id: 1, ts: 1758000000, kind: "alert", author: "hugo", body: "", ref: "alert:42", ref_title: null, ref_severity: null, ref_non_lu: true, ref_non_lu_cause: CAUSE_U123 }, false);
+      const sans = L.dossiers.caseItemEl(4, { id: 2, ts: 1758000000, kind: "alert", author: "hugo", body: "", ref: "alert:42", ref_title: null, ref_severity: null, ref_non_lu: true }, false);
+      const titres = (el) => { const acc = []; const w = (e) => { if (e.getAttribute && e.getAttribute("title")) acc.push(e.getAttribute("title")); (e.children || []).forEach(w); }; w(el); return acc.join(" | "); };
+      const corpsAvec = avec.children.find((c) => c.className === "body");
+      const noeudCause = corpsAvec && corpsAvec.children.find((c) => c.getAttribute && c.getAttribute("data-cause-de-la-cible-non-lue") === "1");
+      const noeudMot = corpsAvec && corpsAvec.children.find((c) => c.className === "bad" && c !== noeudCause);
+      if (!noeudCause || nu123(noeudCause) !== "« " + CAUSE_U123 + " »" || !noeudMot || nu123(noeudMot).includes(CAUSE_U123) || !/NON LUE|NOT READ/.test(nu123(noeudMot)))
+        ecartsU123.push(`${L.nom}/chronologie avec cause : mot « ${nu123(noeudMot)} », cause « ${nu123(noeudCause)} »`);
+      if (/ne sert pas la cause|does not serve the cause/.test(titres(avec))) ecartsU123.push(`${L.nom}/chronologie avec cause : l'infobulle dit encore que la route ne sert pas la cause`);
+      const corpsSans = sans.children.find((c) => c.className === "body");
+      if (corpsSans.children.some((c) => c.getAttribute && c.getAttribute("data-cause-de-la-cible-non-lue") === "1") || !/ne sert pas la cause|does not serve the cause/.test(titres(sans)))
+        ecartsU123.push(`${L.nom}/chronologie sans cause (démon ancien) : la face d'avant n'est plus servie`);
+    }
+    const hoteSupp = new Element("div");
+    document.querySelector = (sel) => (sel === "#suppressions-body" ? hoteSupp : new Element("div"));
+    const COLL = { source: "auditd", type: "collection-reducing", ts: 1758000000, host: "web-01", fields: { filters: { exclude: ["cron"] } }, attested: true, contested: false };
+    const rendre = async (corps) => {
+      servis123 = [];
+      globalThis.fetch = async (u) => { const c = String(u).split("?")[0]; const b = c === "/api/suppressions" ? corps : c === "/api/silences" ? { silences: [] } : {}; return { ok: true, status: 200, headers: { get: () => null }, text: async () => JSON.stringify(b) }; };
+      hoteSupp.replaceChildren(); await FR123.supp.loadSuppressions(); await laisser123();
+      const aveu = (function t(e) { if (e.getAttribute && e.getAttribute("data-fin-du-releve-des-collecteurs")) return e; for (const c of (e.children || [])) { const r = t(c); if (r) return r; } return null; })(hoteSupp);
+      return { texte: nu123(hoteSupp), fin: aveu ? aveu.getAttribute("data-fin-du-releve-des-collecteurs") : "" };
+    };
+    const base = { daemon: [], collectors_incomplets: true, collectors_cause: CAUSE_U123, generated: 1758000100 };
+    const cas = [
+      ["interrompu servi, aucune ligne", { ...base, collectors: [], collectors_etat: "interrompu" }, "interrompu_sans_ligne", /INTERROMPU avant toute ligne/, /NON COMMENCÉ/],
+      ["interrompu servi, une ligne", { ...base, collectors: [COLL], collectors_etat: "interrompu" }, "interrompu", /PRÉFIXE/, /NON COMMENCÉ/],
+      ["non commencé servi", { ...base, collectors: [], collectors_etat: "non_commence" }, "non_commence", /NON COMMENCÉ/, /INTERROMPU/],
+      ["démon ancien, aucune ligne", { ...base, collectors: [] }, "non_commence", /NON COMMENCÉ/, /INTERROMPU/],
+      ["démon ancien, une ligne", { ...base, collectors: [COLL] }, "interrompu", /PRÉFIXE/, /NON COMMENCÉ/],
+      ["valeur inconnue = règle d'avant", { ...base, collectors: [], collectors_etat: "autre" }, "non_commence", /NON COMMENCÉ/, /INTERROMPU/],
+    ];
+    for (const [nom, corps, fin, oui, non] of cas) {
+      const r = await rendre(corps);
+      if (r.fin !== fin || !oui.test(r.texte) || non.test(r.texte) || !r.texte.includes(CAUSE_U123)) ecartsU123.push(`relevé/${nom} : fin « ${r.fin} » attendue « ${fin} » — « ${r.texte.slice(0, 260)} »`);
+    }
+    const complet = await rendre({ daemon: [], collectors: [], collectors_incomplets: false, collectors_cause: null, generated: 1758000100 });
+    if (complet.fin || /NON COMMENCÉ|INTERROMPU/.test(complet.texte)) ecartsU123.push(`relevé/complet (négatif) : un aveu est peint — « ${complet.texte.slice(0, 200)} »`);
+    const faceEn = EN123.supp && srcDe123("suppressions.js").includes("INTERRUPTED before any row");
+    if (!faceEn) ecartsU123.push("relevé : la face anglaise de l'interruption sans ligne manque");
+    document.querySelector = qsOrigine123;
+    exiger(ecartsU123.length === 0, `(123u) \`P10.20-u\` — LA CONSOLE NE CITE PAS LA CAUSE DE LA CHRONOLOGIE OU NE SUIT PAS LA FIN NOMMÉE DU RELEVÉ (et doit garder la face d'avant sans les champs) : ${JSON.stringify(ecartsU123)}`);
+  } finally {
+    process.off("unhandledRejection", surRejet123);
+    globalThis.fetch = fetchOrigine123; globalThis.setTimeout = minuterieOrigine123; document.querySelector = qsOrigine123;
+    for (const o of etatOrigine123) { o.S.AUTH = o.auth; o.S.isAdmin = o.admin; }
+    fermer123();
+  }
+  console.log("(123) OK — `P10.24-m` : le secret des gestes est demandé avant l'envoi des gestes gardés (champ mot de passe, sans autocomplétion, vidé), part dans `x-plume-secret-des-gestes` et n'y reste pas, ne fuit ni au stockage ni au document ; faux = ressaisie, non configuré = l'exploitant et PLUME_GESTURE_SECRET_FILE sans ressaisie, frein avec son délai, annulation sans envoi, absent = demande puis rejeu ; faces bilingues par la forme partagée ; une promotion refusée ne dit aucun succès ; chaque appel des routes gardées passe par l'enveloppe. `P10.20-u` : la chronologie cite `ref_non_lu_cause` en second nœud, le relevé suit `collectors_etat` (interrompu sans ligne n'est plus « non commencé »), la règle d'avant sans ces champs.");
 }
 
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;

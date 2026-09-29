@@ -3,7 +3,7 @@ import {
   setSocTZ,
   socIsAdmin, formMsg,
   confirmWithConsequence, disclosure, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, faceDansLaLangue,
-  phraseDuRefusDUneLecture, refusDUneLectureServie
+  avecLeSecretDesGestes, phraseDuRefusDUneLecture, refusDUneLectureServie
 } from './core.js';
 import { ouvrirLaModaleDePlage } from './plage_de_dates.js';
 import { installI18nObserver } from './i18n_observer.js';
@@ -660,7 +660,9 @@ if ($('#tenant-form')) $('#tenant-form').addEventListener('submit', async e => {
   const puits = formulaire ? puitsDuRefusDUnGeste(formulaire, 'provisionnement_de_tenant', actions) : null;
   effacerLeRefusDUnGeste(puits);
   let out;
-  try { out = await apiSend('/tenants', 'POST', body); }
+  // `P10.24-m` — nommer un premier administrateur pose un droit persistant : secret des gestes avant l'envoi ; sans lui,
+  // la création ne pose aucun accès et part sans secret.
+  try { out = await avecLeSecretDesGestes('provisionner_un_tenant_et_son_administrateur', (entetes) => apiSend('/tenants', 'POST', body, entetes), { dEmblee: !!body.admin }); }
   catch (err) { if (res) { res.textContent = ''; res.className = 'muted'; } peindreLeRefusDUnGeste(puits, err); return; }
   out = out || {};
   // `P10.21-h` — le succès peut porter DEUX aveux : la ligne manquante au journal de contrôle

@@ -461,9 +461,23 @@ const CIBLE_DE_CHRONOLOGIE_MOTS = {
   non_lue_detail: {
     fr: "Cible NON LUE : le démon n'a PAS pu lire cet élément de chronologie — ce n'est PAS « supprimée ou expirée », et l'alerte ou l'événement visé existe peut-être. Cette route ne sert pas la cause ; rouvrez la cible par sa référence.",
     en: 'Target NOT READ: the daemon could NOT read this timeline item — this is NOT “deleted or expired”, and the alert or event may well exist. This route does not serve the cause; reopen the target by its reference.' },
+  // `P10.20-u` — le démon sert désormais `ref_non_lu_cause` : l'aveu passe à DEUX nœuds (le mot, puis la cause citée),
+  // et l'infobulle ne dit plus « cette route ne sert pas la cause ». Sans le champ (démon ancien), la face d'avant.
+  non_lue_detail_avec_cause: {
+    fr: "Cible NON LUE : le démon n'a PAS pu lire cet élément de chronologie — ce n'est PAS « supprimée ou expirée », et l'alerte ou l'événement visé existe peut-être. Le démon en nomme la cause, citée à côté ; rouvrez la cible par sa référence.",
+    en: 'Target NOT READ: the daemon could NOT read this timeline item — this is NOT “deleted or expired”, and the alert or event may well exist. The daemon names the cause, quoted alongside; reopen the target by its reference.' },
   absente: { fr: '(cible introuvable — supprimée ou expirée)', en: '(target not found — deleted or expired)' },
 };
 const motDeLaCibleDeChronologie = (cle) => (LANG === 'en' ? CIBLE_DE_CHRONOLOGIE_MOTS[cle].en : CIBLE_DE_CHRONOLOGIE_MOTS[cle].fr);
+// `P10.20-u` — `ref_non_lu_cause` est une CLÉ STABLE (`cause_de_ref_non_lue`, daemon/src/handlers/cases.rs), pas une phrase :
+// chacune a sa face, la clé servie restant citée entre parenthèses ; une clé inconnue (démon plus récent) est citée telle quelle.
+const CAUSES_DE_LA_CIBLE_NON_LUE_MOTS = {
+  table_non_lue: { fr: "table de la cible non lue (retirée, renommée ou hors d'atteinte)", en: 'target table not read (dropped, renamed or out of reach)' },
+  ligne_illisible: { fr: 'ligne de la cible illisible (une colonne ne se décode pas dans son type)', en: 'target row unreadable (a column does not decode in its type)' },
+  lecture_refusee: { fr: 'lecture refusée par le moteur (verrou, entrée-sortie ou autorisateur)', en: 'read refused by the engine (lock, I/O or authorizer)' },
+};
+const phraseDeLaCauseDeCibleNonLue = (cle) => (Object.prototype.hasOwnProperty.call(CAUSES_DE_LA_CIBLE_NON_LUE_MOTS, cle)
+  ? (LANG === 'en' ? CAUSES_DE_LA_CIBLE_NON_LUE_MOTS[cle].en : CAUSES_DE_LA_CIBLE_NON_LUE_MOTS[cle].fr) + ' (' + cle + ')' : cle);
 function caseItemEl(caseId, it, edit) {
   const el = document.createElement('div'); el.className = 'caseitem k-' + (it.kind || 'note');
   el.appendChild(Object.assign(document.createElement('time'), { textContent: fmtTs(it.ts) }));
@@ -472,9 +486,11 @@ function caseItemEl(caseId, it, edit) {
   const body = document.createElement('span'); body.className = 'body';
   if (it.ref) {
     const nonLue = it.ref_non_lu === true;
+    const causeNonLue = nonLue && typeof it.ref_non_lu_cause === 'string' ? it.ref_non_lu_cause.trim() : '';
+    const detailNonLue = motDeLaCibleDeChronologie(causeNonLue ? 'non_lue_detail_avec_cause' : 'non_lue_detail');
     const chip = document.createElement('span'); chip.className = 'casechip';
     chip.textContent = it.ref_title ? (it.ref + ' · ' + it.ref_title) : it.ref;
-    chip.title = it.ref_title || (nonLue ? motDeLaCibleDeChronologie('non_lue_detail') : motDeLaCibleDeChronologie('absente'));
+    chip.title = it.ref_title || (nonLue ? detailNonLue : motDeLaCibleDeChronologie('absente'));
     if (!it.ref_title) chip.style.opacity = '.7';
     if (it.ref_severity != null) chip.title += ' — ' + sev(it.ref_severity);
     body.appendChild(chip);
@@ -484,8 +500,15 @@ function caseItemEl(caseId, it, edit) {
     if (nonLue) {
       const dit = document.createElement('span'); dit.className = 'bad'; dit.style.cssText = 'margin-left:6px;font-size:11px';
       dit.textContent = motDeLaCibleDeChronologie('non_lue');
-      dit.title = motDeLaCibleDeChronologie('non_lue_detail');
+      dit.title = detailNonLue;
       body.appendChild(dit);
+      // `P10.20-u` — le second nœud : la cause SERVIE, citée entière, jamais fondue dans le mot.
+      if (causeNonLue) {
+        const cause = document.createElement('span'); cause.className = 'bad'; cause.style.cssText = 'margin-left:4px;font-size:11px';
+        cause.dataset.causeDeLaCibleNonLue = '1';
+        cause.textContent = '« ' + phraseDeLaCauseDeCibleNonLue(causeNonLue) + ' »';
+        body.appendChild(cause);
+      }
     }
     if (it.body && it.body !== it.ref_title) { body.appendChild(document.createTextNode(' ')); body.appendChild(Object.assign(document.createElement('span'), { textContent: it.body })); }
   } else {

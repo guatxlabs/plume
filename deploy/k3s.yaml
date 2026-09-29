@@ -81,6 +81,11 @@ spec:
             #      quand aucune des deux précédentes n'est fournie. C'est le défaut de ce manifeste.
             # - { name: PLUME_DB_KEY_FILE, value: "/etc/plume/secrets/PLUME_DB_KEY" }
             - { name: PLUME_DB_KEY_AUTO_PATH, value: "/data/plume-at-rest.key" }
+            # SECRET DES GESTES (`P10.24-m`) — l'EMPREINTE argon2id (jamais le secret) dans le Secret `soc-auth`,
+            # clé `PLUME_GESTURE_SECRET` (`plume-daemon secret-des-gestes --generer`). Sans elle, créer un compte,
+            # promouvoir un administrateur, réinitialiser un autre compte, frapper un jeton ou une clé de livraison,
+            # poser un fournisseur d'identité sont REFUSÉS. Fichier relu à chaque geste : montage SANS `subPath`.
+            # - { name: PLUME_GESTURE_SECRET_FILE, value: "/etc/plume/secret-des-gestes/PLUME_GESTURE_SECRET" }
             # ACQUITTEMENT DE MISE À L'ABRI — à décommenter UNE FOIS la clé copiée hors du cluster.
             # Livré COMMENTÉ, délibérément : un acquittement livré par défaut n'acquitte rien.
             # - { name: PLUME_DB_KEY_ESCROWED, value: "1" }
@@ -150,6 +155,8 @@ spec:
             - { name: tmp,  mountPath: /tmp }
             # Montage de la clé SQLCipher — décommente avec PLUME_DB_KEY_FILE ci-dessus.
             # - { name: db-key, mountPath: /etc/plume/secrets, readOnly: true }
+            # Montage de l'empreinte du secret des gestes — décommente avec PLUME_GESTURE_SECRET_FILE ci-dessus.
+            # - { name: secret-des-gestes, mountPath: /etc/plume/secret-des-gestes, readOnly: true }
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -164,6 +171,7 @@ spec:
         - { name: data, persistentVolumeClaim: { claimName: soc-data } }
         - { name: tmp,  emptyDir: {} }
         # - { name: db-key, secret: { secretName: soc-auth, items: [ { key: PLUME_DB_KEY, path: PLUME_DB_KEY } ] } }
+        # - { name: secret-des-gestes, secret: { secretName: soc-auth, items: [ { key: PLUME_GESTURE_SECRET, path: PLUME_GESTURE_SECRET } ] } }
 ---
 apiVersion: v1
 kind: Service

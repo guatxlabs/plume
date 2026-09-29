@@ -77,7 +77,7 @@ mod jetons_du_compte_supprime_et_annuaire_sur_compte_local {
 
     async fn jcsa_creer(st: &AppState, nom: &str, role: &str) {
         let (s, c) = jcsa_corps(
-            user_create(State(st.clone()), Extension(sp_au("adm", "admin")), Json(json!({ "name": nom, "password": jcsa_mot(nom), "role": role }))).await,
+            user_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(sp_au("adm", "admin")), Json(json!({ "name": nom, "password": jcsa_mot(nom), "role": role }))).await,
         )
         .await;
         assert_eq!(s, 200, "fixture : compte `{nom}` créé : {c}");
@@ -89,7 +89,7 @@ mod jetons_du_compte_supprime_et_annuaire_sur_compte_local {
     }
 
     async fn jcsa_frapper(st: &AppState, auteur: &str, corps: Value) -> String {
-        let (s, c) = jcsa_corps(token_create(State(st.clone()), Extension(sp_au(auteur, "admin")), Json(corps)).await).await;
+        let (s, c) = jcsa_corps(token_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(sp_au(auteur, "admin")), Json(corps)).await).await;
         assert_eq!(s, 200, "fixture : jeton frappé : {c}");
         c["token"].as_str().expect("fixture : secret montré une fois").to_string()
     }
@@ -125,7 +125,7 @@ mod jetons_du_compte_supprime_et_annuaire_sur_compte_local {
         let cli = "c".repeat(64);
         inserer_jeton(&st.db.lock(), "cli-jcsa", &sha256_hex(cli.as_bytes()), None, None, &PorteeJeton::Machine("h-cli".into()))
             .expect("fixture : jeton de la ligne de commande");
-        let (s, c) = jcsa_corps(connector_push_source(State(st.clone()), Extension(sp_au("eve", "admin")), Json(json!({ "preset_id": "aws-cloudtrail" }))).await).await;
+        let (s, c) = jcsa_corps(connector_push_source(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(sp_au("eve", "admin")), Json(json!({ "preset_id": "aws-cloudtrail" }))).await).await;
         assert_eq!(s, 200, "fixture : clé de livraison : {c}");
         let cle = c["delivery_key"].as_str().expect("fixture : clé montrée").to_string();
         let cle_nom = format!("firehose-{}", c["connector_id"].as_i64().expect("fixture : connecteur"));
@@ -473,7 +473,7 @@ mod jetons_du_compte_supprime_et_annuaire_sur_compte_local {
 
         let id = jcsa_compte(&st, "SELECT id FROM user WHERE name=?1", "fed-jcsa");
         let r = user_update(
-            State(st.clone()),
+            State(st.clone()), crate::secret_des_gestes::presente_de_test(),
             ConnectInfo("10.94.0.1:45454".parse().expect("adresse")),
             Extension(sp_au("adm", "admin")),
             axum::extract::Path(id),

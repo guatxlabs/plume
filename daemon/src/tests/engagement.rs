@@ -652,7 +652,7 @@
             assert_eq!(n, 0, "mode off : AUCUN credential minté");
         }
         // préfixe réservé : user_create refuse un nom eng-cred-* (aucun compte durable ne l'usurpe).
-        let r = user_create(State(st.clone()), Extension(admin.clone()),
+        let r = user_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(admin.clone()),
             Json(json!({ "name": "eng-cred-x", "password": "longenoughpw12", "role": "viewer" }))).await;
         assert_eq!(r.status(), StatusCode::BAD_REQUEST, "user_create REFUSE le préfixe réservé");
         eng_test_reset();

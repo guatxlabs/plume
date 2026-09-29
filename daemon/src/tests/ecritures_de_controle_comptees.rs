@@ -117,7 +117,7 @@ mod ecritures_de_controle_comptees {
         let (st, _dir) = mk_mode1_state();
         let sa = ecc_super_admin();
         let (statut, v) =
-            pb_json(tenant_create(State(st.clone()), Extension(sa.clone()), Json(json!({ "id": "ecc-susp", "name": "EccSusp" }))).await).await;
+            pb_json(tenant_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(sa.clone()), Json(json!({ "id": "ecc-susp", "name": "EccSusp" }))).await).await;
         assert_eq!(statut, 201, "{v}");
 
         ecc_plan_de_controle(&st, &ecc_vue_sur("tenant"));
@@ -163,11 +163,11 @@ mod ecritures_de_controle_comptees {
         let (st, _dir) = mk_mode1_state();
         let sa = ecc_super_admin();
         assert_eq!(
-            tenant_create(State(st.clone()), Extension(sa.clone()), Json(json!({ "id": "ecc-droit", "name": "EccDroit" }))).await.status(),
+            tenant_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(sa.clone()), Json(json!({ "id": "ecc-droit", "name": "EccDroit" }))).await.status(),
             StatusCode::CREATED
         );
         let (statut, v) = pb_json(
-            grant_set(State(st.clone()), Extension(sa.clone()), Path("ecc-droit".into()), Json(json!({ "user": "erin", "role": "editor" }))).await,
+            grant_set(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(sa.clone()), Path("ecc-droit".into()), Json(json!({ "user": "erin", "role": "editor" }))).await,
         )
         .await;
         assert_eq!(statut, 200, "fixture : {v}");
@@ -293,7 +293,7 @@ mod ecritures_de_controle_comptees {
         ] {
             ecc_plan_de_controle(&st, &pose);
             let (statut, v) = pb_json(
-                tenant_create(State(st.clone()), Extension(sa.clone()), Json(json!({ "id": tenant, "name": tenant, "admin": "frank" }))).await,
+                tenant_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(sa.clone()), Json(json!({ "id": tenant, "name": tenant, "admin": "frank" }))).await,
             )
             .await;
             ecc_plan_de_controle(&st, &remise);
@@ -309,7 +309,7 @@ mod ecritures_de_controle_comptees {
 
         // UN NOM INVALIDE — ignoré sans un mot jusque-là, il suit la même voie.
         let (statut, v) = pb_json(
-            tenant_create(State(st.clone()), Extension(sa.clone()), Json(json!({ "id": "ecc-adm-nom", "name": "n", "admin": "pas un nom" }))).await,
+            tenant_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(sa.clone()), Json(json!({ "id": "ecc-adm-nom", "name": "n", "admin": "pas un nom" }))).await,
         )
         .await;
         assert_eq!(statut, 201, "{v}");
@@ -317,7 +317,7 @@ mod ecritures_de_controle_comptees {
 
         // CONTRÔLE POSITIF — la table en place : posé, nommé, sans aveu, détail de contrôle inchangé.
         let (statut, v) = pb_json(
-            tenant_create(State(st.clone()), Extension(sa.clone()), Json(json!({ "id": "ecc-adm-ok", "name": "ok", "admin": "frank" }))).await,
+            tenant_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(sa.clone()), Json(json!({ "id": "ecc-adm-ok", "name": "ok", "admin": "frank" }))).await,
         )
         .await;
         assert_eq!(statut, 201, "{v}");

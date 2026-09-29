@@ -3,7 +3,7 @@
 // change côté auth. Anti-XSS : tout texte via textContent/esc ; le secret (client_secret / bind pw) est un
 // champ password, JAMAIS réaffiché, ré-envoyé UNIQUEMENT s'il est re-saisi (omis = conservé côté serveur).
 // La vraie garde reste SERVEUR (/api/idp/* admin-only ; /api/mfa/* borné à au.name).
-import { $, LANG, api, apiSend, unDeuxCentsSansCorpsLisible, confirmWithConsequence, disclosure, effacerLeRefusDUnGeste, fmtTs, modal, motDuRefusDuSecondFacteur, muted, natureDuRefusDuSecondFacteur, peindreLeRefusDUnGeste, phraseDuRefusDuDemon, puitsDuRefusDUnGeste, noeudDuRefusDUneLecture, phraseDuRefusDUneLecture, toast, withBusy, faceDansLaLangue, cadreDUneReponseQuiNeVientPasDuDemon, sujetDUneReponseSansCorpsDeSucces } from './core.js';
+import { $, LANG, api, apiSend, avecLeSecretDesGestes, unDeuxCentsSansCorpsLisible, confirmWithConsequence, disclosure, effacerLeRefusDUnGeste, fmtTs, modal, motDuRefusDuSecondFacteur, muted, natureDuRefusDuSecondFacteur, peindreLeRefusDUnGeste, phraseDuRefusDuDemon, puitsDuRefusDUnGeste, noeudDuRefusDUneLecture, phraseDuRefusDUneLecture, toast, withBusy, faceDansLaLangue, cadreDUneReponseQuiNeVientPasDuDemon, sujetDUneReponseSansCorpsDeSucces } from './core.js';
 import { enabledSwitch } from './producer_ui.js';
 import { uiIsAdmin } from './multitenant.js';
 
@@ -64,7 +64,9 @@ function providerRow(p) {
   const toggle = enabledSwitch({
     enabled: !!p.enabled, name: p.name, allowed: true, confirmOnEnable: true,
     consequence: 'les comptes de cet annuaire ' + (KIND_LABEL[p.kind] || p.kind) + ' peuvent ouvrir une session sur plume, avec le rôle que leur groupe leur donne ; OFF, plus aucune session ne s\'ouvre par ce fournisseur',
-    onToggle: (next) => { effacerLeRefusDUnGeste(puitsDesFournisseurs()); return apiSend('/idp/providers/' + p.id, 'POST', { enabled: next }); },
+    // `P10.24-m` — ACTIVER un fournisseur pose un accès persistant (secret des gestes demandé avant l'envoi) ; le DÉSACTIVER
+    // seul reste ouvert au droit (`est_une_desactivation_seule`) et part sans lui.
+    onToggle: async (next) => { effacerLeRefusDUnGeste(puitsDesFournisseurs()); return await avecLeSecretDesGestes('activer_un_fournisseur', (entetes) => apiSend('/idp/providers/' + p.id, 'POST', { enabled: next }, entetes), { dEmblee: next === true }); },
     onRefus: (e) => peindreLeRefusDUnGeste(puitsDesFournisseurs(), e),
   });
   const edit = mkBtn('Éditer', () => openIdpForm(p));
@@ -182,8 +184,9 @@ function openIdpForm(existing) {
     const puits = puitsDesFournisseurs(); effacerLeRefusDUnGeste(puits);
     try {
       await withBusy(save, async () => {
-        if (existing) { await apiSend('/idp/providers/' + existing.id, 'POST', body); }
-        else { body.name = v('idpf-name'); body.kind = kind; await apiSend('/idp/providers', 'POST', body); }
+        // `P10.24-m` — créer ou reconfigurer un fournisseur d'identité pose un accès persistant : secret des gestes avant l'envoi.
+        if (existing) { await avecLeSecretDesGestes('poser_un_fournisseur', (entetes) => apiSend('/idp/providers/' + existing.id, 'POST', body, entetes)); }
+        else { body.name = v('idpf-name'); body.kind = kind; await avecLeSecretDesGestes('poser_un_fournisseur', (entetes) => apiSend('/idp/providers', 'POST', body, entetes)); }
       });
     } catch (err) { peindreLeRefusDUnGeste(puits, err); return; }   // le formulaire reste ouvert, sa saisie gardée
     toast('enregistré', 'ok'); host.replaceChildren(); loadIdpProviders();

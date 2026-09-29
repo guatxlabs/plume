@@ -88,14 +88,48 @@ pub(crate) fn disposition_valid(s: &str) -> bool {
 /// c'est-à-dire EXACTEMENT ce que rend une cible supprimée — et `web/cases.js` peint alors, en toutes
 /// lettres, « cible introuvable — supprimée ou expirée » sur une alerte qui existe. Le troisième membre
 /// dit « je n'ai pas lu » ; l'absence de ligne, elle, reste un FAIT (`false`).
+///
+/// `P10.20-u` — le gestionnaire lit désormais `resolve_case_ref_avec_cause` ; cette forme à booléen reste pour les
+/// témoins qui la citent.
+#[cfg(test)]
 pub(crate) fn resolve_case_ref(conn: &Connection, rf: &str) -> (Option<String>, Option<i64>, bool) {
+    let (titre, sev, non_lu) = resolve_case_ref_avec_cause(conn, rf);
+    (titre, sev, non_lu.is_some())
+}
+
+/// `P10.20-u` — POURQUOI LA CIBLE N'A PAS ÉTÉ LUE, en clé STABLE (servie sous `ref_non_lu_cause` à côté de `ref_non_lu`).
+/// La cause était JETÉE (`Err(_)`) : la console ne pouvait que peindre le mot « non lue » sans rien citer. Trois clés,
+/// dérivées de la famille de l'erreur du moteur et non de son texte (qui change d'une version à l'autre) :
+///  * `table_non_lue`   — l'énoncé n'a pas pu être préparé : table retirée ou renommée, schéma hors d'atteinte ;
+///  * `ligne_illisible` — la ligne existe mais une colonne ne se décode pas dans son type (valeur corrompue) ;
+///  * `lecture_refusee` — toute autre erreur du moteur (verrou, E/S, autorisateur).
+pub(crate) const REF_NON_LUE_TABLE: &str = "table_non_lue";
+pub(crate) const REF_NON_LUE_LIGNE_ILLISIBLE: &str = "ligne_illisible";
+pub(crate) const REF_NON_LUE_LECTURE_REFUSEE: &str = "lecture_refusee";
+
+fn cause_de_ref_non_lue(e: &rusqlite::Error) -> &'static str {
+    match e {
+        rusqlite::Error::FromSqlConversionFailure(..)
+        | rusqlite::Error::InvalidColumnType(..)
+        | rusqlite::Error::IntegralValueOutOfRange(..)
+        | rusqlite::Error::Utf8Error(..) => REF_NON_LUE_LIGNE_ILLISIBLE,
+        rusqlite::Error::SqlInputError { .. } => REF_NON_LUE_TABLE,
+        rusqlite::Error::SqliteFailure(_, Some(message)) if message.starts_with("no such table") || message.starts_with("no such column") => {
+            REF_NON_LUE_TABLE
+        }
+        _ => REF_NON_LUE_LECTURE_REFUSEE,
+    }
+}
+
+/// `resolve_case_ref`, et la cause d'une lecture ratée (`Some(clé)`) au lieu du seul booléen.
+pub(crate) fn resolve_case_ref_avec_cause(conn: &Connection, rf: &str) -> (Option<String>, Option<i64>, Option<&'static str>) {
     let lire = |sql: &str, id: i64| match conn
         .query_row(sql, params![id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
         .optional()
     {
-        Ok(Some((titre, sev))) => (Some(titre), Some(sev), false),
-        Ok(None) => (None, None, false),
-        Err(_) => (None, None, true),
+        Ok(Some((titre, sev))) => (Some(titre), Some(sev), None),
+        Ok(None) => (None, None, None),
+        Err(e) => (None, None, Some(cause_de_ref_non_lue(&e))),
     };
     if let Some(ids) = rf.strip_prefix("alert:") {
         if let Ok(id) = ids.parse::<i64>() {
@@ -106,7 +140,7 @@ pub(crate) fn resolve_case_ref(conn: &Connection, rf: &str) -> (Option<String>, 
             return lire("SELECT COALESCE(message,''),severity FROM event WHERE id=?1", id);
         }
     }
-    (None, None, false)
+    (None, None, None)
 }
 
 /// Insère un item de timeline horodaté + auteur, bump `incident.updated`, et fige first_response_ts (MTTA) au
@@ -367,15 +401,17 @@ pub(crate) fn case_get_lu(conn: &Connection, id: i64, now_i: i64) -> Result<Opti
     let items: Vec<Value> = rows
         .into_iter()
         .map(|(iid, its, kind, author, body, rf)| {
-            let (ref_title, ref_severity, ref_non_lu) = resolve_case_ref(conn, &rf);
+            let (ref_title, ref_severity, ref_non_lu_cause) = resolve_case_ref_avec_cause(conn, &rf);
             let mut item = json!({ "id": iid, "ts": its, "kind": kind, "author": author, "body": body, "ref": rf,
                     "ref_title": ref_title, "ref_severity": ref_severity });
             // `P10.20-p` — L'AVEU N'EST POSÉ QUE S'IL Y A QUELQUE CHOSE À AVOUER : sur le chemin nominal
             // l'objet ressort BYTE-IDENTIQUE, et un aveu inconditionnel — qui ne vaudrait rien — est
             // structurellement impossible.
-            if ref_non_lu {
+            // `P10.20-u` — ET SA CAUSE, en clé stable, sous la même condition (voir `resolve_case_ref_avec_cause`).
+            if let Some(cause) = ref_non_lu_cause {
                 if let Some(o) = item.as_object_mut() {
                     o.insert("ref_non_lu".into(), json!(true));
+                    o.insert("ref_non_lu_cause".into(), json!(cause));
                 }
             }
             item

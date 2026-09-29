@@ -283,7 +283,7 @@ mod mot_de_passe_de_l_appelant_retrogradation_annuaire_et_dernier_administrateur
         let course = mpra_course(st.db_path.as_str(), st.db.clone(), move || {
             mpra_bloquer(async move {
                 mpra_corps(
-                    user_update(State(st2), ConnectInfo(mpra_pair("10.73.0.9")), Extension(sp_au("adm", "admin")), axum::extract::Path(id_bob), Json(json!({ "password": pose })))
+                    user_update(State(st2), crate::secret_des_gestes::presente_de_test(), ConnectInfo(mpra_pair("10.73.0.9")), Extension(sp_au("adm", "admin")), axum::extract::Path(id_bob), Json(json!({ "password": pose })))
                         .await,
                 )
                 .await
@@ -324,7 +324,7 @@ mod mot_de_passe_de_l_appelant_retrogradation_annuaire_et_dernier_administrateur
         let modifier = |corps: Value| {
             let st = st.clone();
             async move {
-                mpra_corps(user_update(State(st), ConnectInfo(mpra_pair("10.74.0.1")), Extension(sp_au("adm", "admin")), axum::extract::Path(id_wiz), Json(corps)).await).await
+                mpra_corps(user_update(State(st), crate::secret_des_gestes::presente_de_test(), ConnectInfo(mpra_pair("10.74.0.1")), Extension(sp_au("adm", "admin")), axum::extract::Path(id_wiz), Json(corps)).await).await
             }
         };
         for role in ["viewer", "editor"] {
@@ -351,7 +351,7 @@ mod mot_de_passe_de_l_appelant_retrogradation_annuaire_et_dernier_administrateur
         // CONTRÔLE POSITIF — un administrateur qui n'est pas celui de l'assistant se rétrograde.
         st.db.lock().execute("INSERT INTO user(name,hash,role) VALUES('adm2',?1,'admin')", params![hash_pw(MPRA_FIXTURE).expect("hachage")]).expect("fixture");
         let id_adm2 = mpra_id(&st, "adm2");
-        let r = user_update(State(st.clone()), ConnectInfo(mpra_pair("10.74.0.2")), Extension(sp_au("adm", "admin")), axum::extract::Path(id_adm2), Json(json!({ "role": "viewer" }))).await;
+        let r = user_update(State(st.clone()), crate::secret_des_gestes::presente_de_test(), ConnectInfo(mpra_pair("10.74.0.2")), Extension(sp_au("adm", "admin")), axum::extract::Path(id_adm2), Json(json!({ "role": "viewer" }))).await;
         assert_eq!(r.status().as_u16(), 204, "un autre administrateur se rétrograde");
     }
 
@@ -424,7 +424,7 @@ mod mot_de_passe_de_l_appelant_retrogradation_annuaire_et_dernier_administrateur
         assert_eq!(trace, Some(("nom_tenu_sans_compte".into(), "federation_oidc".into())), "le refus est tracé");
         assert_eq!(mpra_compte(&st, "SELECT COUNT(*) FROM ledger WHERE kind=?1", "auth.annuaire.refuse"), 1, "et inscrit au registre");
         let (statut, corps) = mpra_corps(
-            user_create(State(st.clone()), Extension(sp_au("adm", "admin")), Json(json!({ "name": orphelin, "password": mpra_mot("zed"), "role": "viewer" }))).await,
+            user_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(sp_au("adm", "admin")), Json(json!({ "name": orphelin, "password": mpra_mot("zed"), "role": "viewer" }))).await,
         )
         .await;
         assert_eq!((statut, corps["ce_que_le_nom_tient"].clone()), (409, detail), "la création lit la même chose");
@@ -463,10 +463,10 @@ mod mot_de_passe_de_l_appelant_retrogradation_annuaire_et_dernier_administrateur
     async fn mpra_tenant_a_deux_administrateurs() -> (AppState, crate::tmp_possede::TmpPossede) {
         let (st, dir) = mk_mode1_state();
         let sa = au_super("sa-mpra");
-        let r = tenant_create(State(st.clone()), Extension(sa.clone()), Json(json!({ "id": MPRA_TENANT, "name": "MpraT" }))).await;
+        let r = tenant_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(sa.clone()), Json(json!({ "id": MPRA_TENANT, "name": "MpraT" }))).await;
         assert_eq!(r.status(), StatusCode::CREATED, "fixture : tenant");
         for nom in ["mpra-a", "mpra-b"] {
-            let r = grant_set(State(st.clone()), Extension(sa.clone()), Path(MPRA_TENANT.into()), Json(json!({ "user": nom, "role": "admin" }))).await;
+            let r = grant_set(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(sa.clone()), Path(MPRA_TENANT.into()), Json(json!({ "user": nom, "role": "admin" }))).await;
             assert_eq!(r.status().as_u16(), 200, "fixture : {nom} administrateur");
         }
         (st, dir)
@@ -494,7 +494,7 @@ mod mot_de_passe_de_l_appelant_retrogradation_annuaire_et_dernier_administrateur
             "SCIM DELETE" => scim_user_delete(State(st.clone()), Extension(ctx), Path(id_de(cible))).await,
             "SCIM PUT active=false" => scim_user_replace(State(st.clone()), Extension(ctx), Path(id_de(cible)), Json(json!({ "active": false }))).await,
             "grant_delete" => grant_delete(State(st.clone()), Extension(au_tadmin(acteur, MPRA_TENANT)), Path((MPRA_TENANT.into(), cible.into()))).await,
-            _ => grant_set(State(st.clone()), Extension(au_tadmin(acteur, MPRA_TENANT)), Path(MPRA_TENANT.into()), Json(json!({ "user": cible, "role": "viewer" }))).await,
+            _ => grant_set(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(au_tadmin(acteur, MPRA_TENANT)), Path(MPRA_TENANT.into()), Json(json!({ "user": cible, "role": "viewer" }))).await,
         };
         mpra_corps(r).await
     }
@@ -553,12 +553,12 @@ mod mot_de_passe_de_l_appelant_retrogradation_annuaire_et_dernier_administrateur
         let st2 = st.clone();
         let course = mpra_course(st.db_path.as_str(), st.db.clone(), move || {
             mpra_bloquer(async move {
-                mpra_corps(user_update(State(st2), ConnectInfo(mpra_pair("10.75.0.2")), Extension(sp_au("adm2", "admin")), axum::extract::Path(id_adm), Json(json!({ "role": "viewer" }))).await)
+                mpra_corps(user_update(State(st2), crate::secret_des_gestes::presente_de_test(), ConnectInfo(mpra_pair("10.75.0.2")), Extension(sp_au("adm2", "admin")), axum::extract::Path(id_adm), Json(json!({ "role": "viewer" }))).await)
                     .await
             })
         });
         let premier = mpra_corps(
-            user_update(State(st.clone()), ConnectInfo(mpra_pair("10.75.0.1")), Extension(sp_au("adm", "admin")), axum::extract::Path(id_adm2), Json(json!({ "role": "viewer" }))).await,
+            user_update(State(st.clone()), crate::secret_des_gestes::presente_de_test(), ConnectInfo(mpra_pair("10.75.0.1")), Extension(sp_au("adm", "admin")), axum::extract::Path(id_adm2), Json(json!({ "role": "viewer" }))).await,
         )
         .await;
         let (tenu, second) = mpra_attendre(&course);
@@ -604,7 +604,7 @@ mod mot_de_passe_de_l_appelant_retrogradation_annuaire_et_dernier_administrateur
         assert_eq!(mpra_maillons(&st, "scim.group.patch"), 0, "PATCH add : rien d'attesté");
 
         // CONTRÔLE POSITIF — un second administrateur présent.
-        let r = grant_set(State(st.clone()), Extension(sa), Path(MPRA_TENANT.into()), Json(json!({ "user": "mpra-b", "role": "admin" }))).await;
+        let r = grant_set(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(sa), Path(MPRA_TENANT.into()), Json(json!({ "user": "mpra-b", "role": "admin" }))).await;
         assert_eq!(r.status().as_u16(), 200, "fixture : second administrateur");
         let (statut, v) = mpra_corps(scim_group_patch(State(st.clone()), Extension(ctx()), Path("viewer".into()), Json(patch)).await).await;
         assert_eq!(statut, 200, "avec un second administrateur, la demande passe : {v}");

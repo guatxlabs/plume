@@ -254,7 +254,12 @@ pub(crate) async fn tenants_list(State(st): State<AppState>, Extension(au): Exte
 /// `key_ref` explicite (ex. `vault:chemin` pré-approvisionné) n'est fourni. `tenant_provision` crée l'entrée
 /// control-plane + la base chiffrée + seed COMPLET (D7). Refuse un slug invalide / `default` / existant.
 /// Optionnellement pose le 1er grant admin. Audit : control_ledger `tenant.create` + event tenant.
-pub(crate) async fn tenant_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
+pub(crate) async fn tenant_create(
+    State(st): State<AppState>,
+    secret_des_gestes: crate::secret_des_gestes::SecretDesGestesPresente,
+    Extension(au): Extension<AuthUser>,
+    Json(b): Json<Value>,
+) -> Response {
     if !st.multi_tenant {
         return (StatusCode::NOT_FOUND, "multi-tenant désactivé (mode 0)").into_response();
     }
@@ -273,6 +278,14 @@ pub(crate) async fn tenant_create(State(st): State<AppState>, Extension(au): Ext
         return (StatusCode::BAD_REQUEST, "le tenant 'default' est réservé").into_response();
     }
     let name = if name.is_empty() { id.clone() } else { name };
+    // `P10.24-m` — UN TENANT CRÉÉ AVEC SON PREMIER ADMINISTRATEUR POSE UN DROIT ADMINISTRATEUR PERSISTANT : le secret des
+    // gestes, avant tout provisionnement. Sans `admin` demandé, la création ne pose aucun accès (le catalogue et une
+    // base vide) et reste ouverte au seul droit.
+    if let Some(premier) = b.get("admin").and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty()) {
+        if let Err(refus) = crate::secret_des_gestes::exiger_le_secret_des_gestes(&st, &secret_des_gestes, &au.name, &format!("création du tenant '{id}' avec son premier administrateur '{premier}'")) {
+            return refus;
+        }
+    }
     // key_ref explicite (ex. vault:...) sinon clé fraîche générée, stockée en literal: dans le control-plane
     // (lui-même chiffré at-rest par PLUME_CONTROL_KEY). tenant_provision est FAIL-CLOSED si key_ref ne résout pas.
     // Et la GÉNÉRATION l'est aussi : sans entropie de l'OS, AUCUN tenant n'est créé — plutôt aucun tenant
@@ -564,7 +577,13 @@ pub(crate) async fn grants_list(State(st): State<AppState>, Extension(au): Exten
 /// POST /api/tenants/{id}/grants — pose/màj un grant {user, role}. SUPER-ADMIN (tout tenant) OU admin de CE
 /// tenant. `role` ∈ {admin, editor, viewer} (enum FERMÉ -> aucune escalade superadmin). Anti-lockout : un
 /// non-superadmin ne peut pas retirer/rétrograder le DERNIER admin du tenant. Audit control_ledger + event.
-pub(crate) async fn grant_set(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<String>, Json(b): Json<Value>) -> Response {
+pub(crate) async fn grant_set(
+    State(st): State<AppState>,
+    secret_des_gestes: crate::secret_des_gestes::SecretDesGestesPresente,
+    Extension(au): Extension<AuthUser>,
+    Path(id): Path<String>,
+    Json(b): Json<Value>,
+) -> Response {
     if !st.multi_tenant {
         return (StatusCode::NOT_FOUND, "multi-tenant désactivé (mode 0)").into_response();
     }
@@ -581,6 +600,11 @@ pub(crate) async fn grant_set(State(st): State<AppState>, Extension(au): Extensi
     }
     if !valid_grant_role(&role) {
         return (StatusCode::BAD_REQUEST, "rôle invalide (admin | editor | viewer)").into_response();
+    }
+    // `P10.24-m` — UN DROIT DE TENANT EST UN ACCÈS QUI SURVIT À LA SESSION (tout rôle : un droit `viewer` lit toute la
+    // télémétrie du tenant) : le secret des gestes, après la validation du corps et avant toute lecture et écriture.
+    if let Err(refus) = crate::secret_des_gestes::exiger_le_secret_des_gestes(&st, &secret_des_gestes, &au.name, &format!("pose du droit {role} de '{user}' sur le tenant '{id}'")) {
+        return refus;
     }
     // Le tenant doit exister (jamais un grant sur un tenant fantôme).
     // `P10.21-u` — TROIS ISSUES : présent, ABSENT (404), ILLISIBLE (503 nommé). Mesuré le 2026-09-28 sur la forme

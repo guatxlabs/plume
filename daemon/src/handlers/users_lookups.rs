@@ -39,7 +39,12 @@ pub(crate) async fn users_list(State(st): State<AppState>, Extension(au): Extens
     }
 }
 
-pub(crate) async fn user_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
+pub(crate) async fn user_create(
+    State(st): State<AppState>,
+    secret_des_gestes: crate::secret_des_gestes::SecretDesGestesPresente,
+    Extension(au): Extension<AuthUser>,
+    Json(b): Json<Value>,
+) -> Response {
     let name = b.trimmed("name");
     let pw = b.str_field("password");
     let role = match b.get("role").and_then(|v| v.as_str()) {
@@ -85,6 +90,13 @@ pub(crate) async fn user_create(State(st): State<AppState>, Extension(au): Exten
     // POLITIQUE MDP (item 3) — à la CRÉATION du compte uniquement (les comptes existants intacts).
     if pw.chars().count() < PASSWORD_MIN_CHARS {
         return (StatusCode::BAD_REQUEST, format!("mot de passe trop court (≥ {PASSWORD_MIN_CHARS} caractères)")).into_response();
+    }
+    // `P10.24-m` — CRÉER UN COMPTE POSE UN ACCÈS QUI SURVIT À LA SESSION : le droit (route réservée administrateur) ET le
+    // secret des gestes, jugé après la validation du corps (un corps irrecevable n'engage aucun essai) et avant toute
+    // écriture. TOUT RÔLE, et non le seul administrateur : un compte `viewer` lit toute la télémétrie de sécurité
+    // aussi longtemps qu'il vit, et une session volée qui s'en crée un garde sa lecture après la révocation.
+    if let Err(refus) = crate::secret_des_gestes::exiger_le_secret_des_gestes(&st, &secret_des_gestes, &au.name, &format!("création du compte '{name}' (rôle {role})")) {
+        return refus;
     }
     let hash = hash_pw(pw);
     crate::req_conn!(st, au, conn);
@@ -529,6 +541,7 @@ pub(crate) async fn user_delete(State(st): State<AppState>, Extension(au): Exten
 // tous à la fois, pas pour l'un d'eux.
 pub(crate) async fn user_update(
     State(st): State<AppState>,
+    secret_des_gestes: crate::secret_des_gestes::SecretDesGestesPresente,
     ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
     Extension(au): Extension<AuthUser>,
     Path(id): Path<i64>,
@@ -570,9 +583,24 @@ pub(crate) async fn user_update(
         }
         (tname, trole, role_change)
     };
+    let son_propre_compte = tname == au.name;
+    // `P10.24-m` — PROMOUVOIR UN ADMINISTRATEUR, OU POSER LE MOT DE PASSE D'UN AUTRE COMPTE, POSE UN ACCÈS QUI SURVIT À
+    // LA SESSION : le secret des gestes, jugé après la validation et avant toute écriture. Rétrograder n'ouvre rien ;
+    // changer son propre mot de passe se prouve par le mot de passe actuel (`P10.24-a`), pas par ce secret.
+    let promotion = role_change == Some("admin") && trole != "admin";
+    let mot_de_passe_d_autrui = new_pw.is_some() && !son_propre_compte;
+    if promotion || mot_de_passe_d_autrui {
+        let geste = match (promotion, mot_de_passe_d_autrui) {
+            (true, true) => format!("promotion en administrateur et réinitialisation du mot de passe du compte '{tname}'"),
+            (true, false) => format!("promotion en administrateur du compte '{tname}'"),
+            _ => format!("réinitialisation du mot de passe du compte '{tname}'"),
+        };
+        if let Err(refus) = crate::secret_des_gestes::exiger_le_secret_des_gestes(&st, &secret_des_gestes, &au.name, &geste) {
+            return refus;
+        }
+    }
     // `P10.24-a` — jugé APRÈS la validation, comme `/api/password` : un corps irrecevable n'engage aucun essai du mot
     // de passe actuel. Un refus n'écrit RIEN, pas même le rôle demandé dans le même corps.
-    let son_propre_compte = tname == au.name;
     if new_pw.is_some() && son_propre_compte {
         if let Err(refus) = juger_le_mot_de_passe_actuel(
             &st,

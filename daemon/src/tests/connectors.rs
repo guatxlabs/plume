@@ -1305,7 +1305,7 @@
         assert!(rbac_gate("agent", "/api/ds/query", false).is_err(), "agent -> 403 sur la datasource");
         // Mint + résolution du token datasource (mode 0).
         let st = sso_test_state("plume-admin", "plume-editor", "admins");
-        let (code, v) = tok_resp_json(token_create(State(st.clone()), Extension(tok_au("admin")), Json(json!({ "name": "grafana", "kind": "datasource", "role": "editor" }))).await).await;
+        let (code, v) = tok_resp_json(token_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(tok_au("admin")), Json(json!({ "name": "grafana", "kind": "datasource", "role": "editor" }))).await).await;
         assert_eq!(code, StatusCode::OK);
         assert_eq!(v["kind"], "datasource");
         assert_eq!(v["role"], "editor");
@@ -1314,10 +1314,10 @@
         assert_eq!(ds.role, "editor");
         assert_eq!(ds.tenant, "default");
         // défaut = viewer (moindre privilège).
-        let (_c, vd) = tok_resp_json(token_create(State(st.clone()), Extension(tok_au("admin")), Json(json!({ "name": "g2", "kind": "datasource" }))).await).await;
+        let (_c, vd) = tok_resp_json(token_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(tok_au("admin")), Json(json!({ "name": "g2", "kind": "datasource" }))).await).await;
         assert_eq!(vd["role"], "viewer", "rôle datasource par défaut = viewer");
         // Un token AGENT n'est PAS un token datasource (kind disjoint) -> None.
-        let (_c2, va) = tok_resp_json(token_create(State(st.clone()), Extension(tok_au("admin")), Json(json!({ "name": "ag", "kind": "agent", "host": "h1" }))).await).await;
+        let (_c2, va) = tok_resp_json(token_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(tok_au("admin")), Json(json!({ "name": "ag", "kind": "agent", "host": "h1" }))).await).await;
         assert!(datasource_token_lookup(&st, va["token"].as_str().unwrap()).is_none(), "token agent != token datasource");
         assert!(datasource_token_lookup(&st, "nope").is_none(), "token inconnu -> None");
     }
@@ -1330,7 +1330,7 @@
     #[tokio::test]
     async fn ds_token_kind_confusion_closed() {
         let st = sso_test_state("plume-admin", "plume-editor", "admins");
-        let (code, v) = tok_resp_json(token_create(State(st.clone()), Extension(tok_au("admin")), Json(json!({ "name": "grafana", "kind": "datasource", "role": "viewer" }))).await).await;
+        let (code, v) = tok_resp_json(token_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(tok_au("admin")), Json(json!({ "name": "grafana", "kind": "datasource", "role": "viewer" }))).await).await;
         assert_eq!(code, StatusCode::OK);
         let ds = v["token"].as_str().unwrap().to_string();
 
@@ -1356,7 +1356,7 @@
         assert_eq!(ds_method, "datasource");
 
         // (4) DÉFENSE EN PROFONDEUR : host IGNORÉ au mint d'un token datasource (lecture seule, jamais host-lié).
-        let (_c, vh) = tok_resp_json(token_create(State(st.clone()), Extension(tok_au("admin")), Json(json!({ "name": "g-host", "kind": "datasource", "host": "web01" }))).await).await;
+        let (_c, vh) = tok_resp_json(token_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(tok_au("admin")), Json(json!({ "name": "g-host", "kind": "datasource", "host": "web01" }))).await).await;
         assert!(vh["host"].is_null(), "token datasource JAMAIS host-lié (host ignoré au mint)");
     }
 

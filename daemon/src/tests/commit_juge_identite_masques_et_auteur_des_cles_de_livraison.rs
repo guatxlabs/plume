@@ -112,7 +112,7 @@ mod commit_juge_identite_masques_et_auteur_des_cles_de_livraison {
     async fn cjgi_un_commit_refuse_ne_frappe_ni_ne_revoque_aucun_jeton_ni_aucune_cle_de_livraison() {
         let (st, p) = sp_state("cjgi-jetons");
         let frapper = |st: AppState| async move {
-            cjgi_corps(token_create(State(st), Extension(cjgi_adm()), Json(json!({ "name": "ag-cjgi", "kind": "agent", "host": "h-cjgi" }))).await).await
+            cjgi_corps(token_create(State(st), crate::secret_des_gestes::presente_de_test(), Extension(cjgi_adm()), Json(json!({ "name": "ag-cjgi", "kind": "agent", "host": "h-cjgi" }))).await).await
         };
 
         // FRAPPE
@@ -150,7 +150,7 @@ mod commit_juge_identite_masques_et_auteur_des_cles_de_livraison {
 
         // SOURCE PUSH
         let creer = |st: AppState| async move {
-            cjgi_corps(connector_push_source(State(st), Extension(cjgi_adm()), Json(json!({ "preset_id": "gcp-audit" }))).await).await
+            cjgi_corps(connector_push_source(State(st), crate::secret_des_gestes::presente_de_test(), Extension(cjgi_adm()), Json(json!({ "preset_id": "gcp-audit" }))).await).await
         };
         cjgi_refuser_le_commit(&st);
         let (statut, corps) = creer(st.clone()).await;
@@ -183,7 +183,7 @@ mod commit_juge_identite_masques_et_auteur_des_cles_de_livraison {
         let creer = |st: AppState, nom: &'static str| {
             let config = config.clone();
             async move {
-                cjgi_corps(idp_provider_create(State(st), Extension(cjgi_adm()), Json(json!({ "name": nom, "kind": "oidc", "enabled": true, "config": config }))).await).await
+                cjgi_corps(idp_provider_create(State(st), crate::secret_des_gestes::presente_de_test(), Extension(cjgi_adm()), Json(json!({ "name": nom, "kind": "oidc", "enabled": true, "config": config }))).await).await
             }
         };
 
@@ -200,7 +200,7 @@ mod commit_juge_identite_masques_et_auteur_des_cles_de_livraison {
         assert_eq!(statut, 200, "levé, la création a lieu : {corps}");
         let id = corps["id"].as_i64().expect("identifiant");
         let desactiver = |st: AppState| async move {
-            cjgi_corps(idp_provider_update(State(st), Extension(cjgi_adm()), axum::extract::Path(id), Json(json!({ "enabled": false }))).await).await
+            cjgi_corps(idp_provider_update(State(st), crate::secret_des_gestes::presente_de_test(), Extension(cjgi_adm()), axum::extract::Path(id), Json(json!({ "enabled": false }))).await).await
         };
         let supprimer = |st: AppState| async move {
             cjgi_corps(idp_provider_delete(State(st), Extension(cjgi_adm()), axum::extract::Path(id)).await).await
@@ -511,10 +511,10 @@ mod commit_juge_identite_masques_et_auteur_des_cles_de_livraison {
         let (st, _p) = sp_state("cjgi-cles-de-livraison");
         let mot = format!("cjgi-eve-{}", "m".repeat(PASSWORD_MIN_CHARS));
         let (statut, corps) =
-            cjgi_corps(user_create(State(st.clone()), Extension(cjgi_adm()), Json(json!({ "name": "eve", "password": mot, "role": "admin" }))).await).await;
+            cjgi_corps(user_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(cjgi_adm()), Json(json!({ "name": "eve", "password": mot, "role": "admin" }))).await).await;
         assert_eq!(statut, 200, "fixture : eve créée : {corps}");
         let creer = |st: AppState, preset: &'static str| async move {
-            cjgi_corps(connector_push_source(State(st), Extension(sp_au("eve", "admin")), Json(json!({ "preset_id": preset }))).await).await
+            cjgi_corps(connector_push_source(State(st), crate::secret_des_gestes::presente_de_test(), Extension(sp_au("eve", "admin")), Json(json!({ "preset_id": preset }))).await).await
         };
         let (statut, corps) = creer(st.clone(), "aws-cloudtrail").await;
         assert_eq!(statut, 200, "fixture : source Firehose : {corps}");

@@ -330,6 +330,47 @@ La sémantique complète — ce que `--purge` détruit, les codes de sortie, ce 
 est dans le [`README`](../README.md#désinstallation--les-trois-modes). Le mode `k3s` **imprime** son
 plan et n'exécute qu'avec `--apply`, parce qu'il touche un cluster partagé.
 
+### 3.11 Poser le secret des gestes
+
+Créer un compte, promouvoir un administrateur, réinitialiser le mot de passe d'un **autre** compte,
+frapper un jeton (agent, HEC, source de données, client) ou une clé de livraison (source push), poser
+ou reconfigurer un fournisseur d'identité, et — en mode multi-tenant — poser un droit de tenant ou le
+premier administrateur d'un tenant exigent, **en plus du droit**, le secret des gestes dans l'en-tête
+`x-plume-secret-des-gestes`. C'est vrai pour tout administrateur, quel que soit son mode
+d'authentification (session locale, SSO d'en-têtes, fédération, Basic). **Sans secret posé, ces
+gestes sont refusés** (403, `cause: secret_des_gestes_non_configure`), et le refus dit comment le poser.
+
+Le démon ne connaît que l'**empreinte** du secret (argon2id, format PHC), lue dans le fichier que nomme
+`PLUME_GESTURE_SECRET_FILE`. Jamais le secret en clair, ni en base, ni dans l'environnement. La même
+sous-commande engendre l'empreinte dans les trois modes :
+
+```sh
+# le secret s'affiche UNE fois sur la sortie d'erreur ; l'empreinte seule part dans le fichier
+plume-daemon secret-des-gestes --generer > secret-des-gestes.phc
+# ou, avec un secret choisi (≥ 16 caractères), lu sur l'entrée standard — jamais en argument
+plume-daemon secret-des-gestes < fichier-qui-porte-le-secret > secret-des-gestes.phc
+```
+
+| | où vit le fichier | ce qui le pointe |
+|---|---|---|
+| `host` | `/etc/plume/secret-des-gestes.phc`, `0640`, `root:soc` (`sudo /usr/local/bin/plume-daemon secret-des-gestes --generer \| sudo tee /etc/plume/secret-des-gestes.phc >/dev/null`) | `PLUME_GESTURE_SECRET_FILE=/etc/plume/secret-des-gestes.phc` dans `/etc/plume/soc.conf`, puis `sudo systemctl restart plume-daemon` |
+| `docker` | un secret compose monté en fichier (`secrets:` → `/run/secrets/secret-des-gestes`) ; l'empreinte s'engendre par `docker compose run --rm -T soc secret-des-gestes --generer > secret-des-gestes.phc` | `PLUME_GESTURE_SECRET_FILE=/run/secrets/secret-des-gestes` dans le bloc `environment:` du service `soc` (lignes livrées commentées dans `docker-compose.yml`), puis `docker compose up -d` |
+| `k3s` | une clé du `Secret` `soc-auth`, montée en lecture seule (volume `secret`, **sans** `subPath`) | la variable dans le bloc `env:` du `Deployment` (lignes livrées commentées dans `deploy/k3s.yaml`), puis `kubectl -n soc rollout restart deploy/soc` |
+
+**La variable est lue au démarrage ; le fichier, à chaque geste.** La rotation est donc un
+remplacement du fichier, sans redémarrage — un secret Kubernetes monté sans `subPath` se met à jour
+sous le pod ; en Docker, un fichier réécrit en place (même inode) est vu, un fichier remplacé par un
+éditeur qui change d'inode ne l'est qu'au prochain `docker compose up -d`. Un fichier retiré, vide,
+illisible ou qui porte autre chose qu'une empreinte `$argon2id$…` referme les gestes au geste suivant.
+
+Un secret **faux** compte au même frein que les échecs de connexion (couple compte, adresse ;
+backoff ; `429` au-delà du seuil `PLUME_AUTH_LOCK_THRESHOLD`) et s'inscrit au registre avec l'auteur
+— jamais le secret. Un en-tête absent n'est pas un essai.
+
+*Non exécutées sur une installation réelle dans ce lot* : les trois lignes du tableau. La sous-commande
+et le jugement du fichier (rotation, retrait, clair refusé) sont joués par les témoins `sdg_`
+(`daemon/src/tests/secret_des_gestes_demonstration_freinee_et_pose_de_l_administrateur.rs`).
+
 ---
 
 ## 4. Les gestes qui n'existent pas, nommés
@@ -345,7 +386,7 @@ vides, et pourquoi.
 | éditer `/etc/hosts` pour la résolution locale | `k3s` | la résolution passe par l'`Ingress` et le DNS du cluster |
 | appliquer une `NetworkPolicy` d'egress | `host`, `docker` | c'est un objet Kubernetes ; l'équivalent hôte est le pare-feu de la machine |
 | recharger l'activation, la cadence, la cible ou la rétention de sauvegarde sans redémarrer | **les trois** | lues une seule fois au lancement du fil (`spawn_backup_scheduler`) — cf. §3.7 |
-| recharger **quoi que ce soit** sans redémarrer | `docker`, `k3s` | aucun support à relire : environnement figé + `PLUME_CONFIG=/nonexistent` — cf. §3.2 |
+| recharger **quoi que ce soit** sans redémarrer | `docker`, `k3s` | aucun support à relire : environnement figé + `PLUME_CONFIG=/nonexistent` — cf. §3.2. Seule exception : le **fichier** du secret des gestes, relu à chaque geste (§3.11) |
 | demander un rechargement par un signal ou une commande | **les trois** | pas d'`ExecReload=`, pas de `SIGHUP` — cf. §3.2 |
 
 ---

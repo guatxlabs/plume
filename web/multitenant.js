@@ -1,6 +1,6 @@
 // multitenant.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // #2c multi-tenant : switcher tenant/env (header) + vue Tenants + grants + audit acces operateur.
-import { $, LANG, LOC, api, apiSend, applyRoleClass, aveuDUneTraceManquante, causeDeLaTraceManquante, confirmWithConsequence, fmtTs, ic, muted, noeudDuRefusDUneLecture, pagedList, phraseDuRefusDuDemon, toast, faceDansLaLangue, phraseDUneReponseQuiNeVientPasDuDemon, unRefusServiEnDeuxCents } from './core.js';
+import { $, LANG, LOC, api, apiSend, applyRoleClass, aveuDUneTraceManquante, causeDeLaTraceManquante, confirmWithConsequence, fmtTs, ic, muted, noeudDuRefusDUneLecture, pagedList, phraseDuRefusDuDemon, toast, faceDansLaLangue, phraseDUneReponseQuiNeVientPasDuDemon, unRefusServiEnDeuxCents, avecLeSecretDesGestes, phraseDuRefusDuSecretDesGestes } from './core.js';
 import { S, ecrireDansLeStockageDuSite, ecrireSansDireLeRefus, lireLeStockageDuSite, RAISONS_DE_SILENCE } from './state.js';
 import { runQ, tableEl } from './viz.js';
 import { ROLE_LABEL, currentTab, fetchMe, loadUsers, refresh, refreshCurrentView, refreshPanels, renderNav, route, setAuthUI } from './app.js';
@@ -345,7 +345,7 @@ function avouerLeProvisionnement(j) {
 // Un refus qui n'est pas celui de la destruction sans trace : l'avis cite ce que le démon a répondu.
 // `P10.23-q` — « Geste REFUSÉ par le démon, rien n'a changé » affirmait, sur une page de passerelle ou une demande qui n'aboutit
 // pas, un refus et un état que personne n'a vus : la réponse qui ne vient pas du démon garde sa propre phrase.
-const phraseDuGesteRefuse = (e) => phraseDUneReponseQuiNeVientPasDuDemon(e) || (motDuPlanDeControle('geste_refuse') + ' « ' + phraseDuRefusDuDemon(e) + ' »');
+const phraseDuGesteRefuse = (e) => phraseDuRefusDuSecretDesGestes(e) || phraseDUneReponseQuiNeVientPasDuDemon(e) || (motDuPlanDeControle('geste_refuse') + ' « ' + phraseDuRefusDuDemon(e) + ' »');
 
 // --- Vue « Tenants » (Administration) : liste + CRUD (super-admin) OU accès de son tenant (admin de tenant) --
 async function loadTenantsView() {
@@ -523,7 +523,8 @@ async function loadGrants(tid, host) {
     if (!await confirmWithConsequence(`Accorder l'accès au tenant ${tid}`, `« ${user} » obtient le rôle ${role} sur ce tenant` + (role === 'admin' ? ' — accès complet à sa configuration, ses secrets et ses suppressions' : '') + '.', { okText: 'Accorder', danger: role === 'admin' })) return;
     res.textContent = '…'; res.className = 'muted';
     let j;
-    try { j = await apiSend('/tenants/' + encodeURIComponent(tid) + '/grants', 'POST', { user, role }); }
+    // `P10.24-m` — un droit de tenant, DE TOUT RÔLE, est un accès persistant : le secret des gestes est demandé avant l'envoi.
+    try { j = await avecLeSecretDesGestes('accorder_un_acces_de_tenant', (entetes) => apiSend('/tenants/' + encodeURIComponent(tid) + '/grants', 'POST', { user, role }, entetes)); }
     catch (err) { res.textContent = phraseDuGesteRefuse(err); res.className = 'bad'; return; }
     uinp.value = ''; res.textContent = ''; res.className = 'muted'; toast('accès accordé', 'ok');
     await rechargerLesAccesAvecLAveu(tid, host, 'pose_de_droit', causeDeLaTraceManquante(j));

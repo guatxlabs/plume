@@ -40,7 +40,7 @@
     }
     /// Minte une source push via le handler admin -> (connector_id, delivery_key clair montré une fois).
     async fn fh_mk_push_source(st: &AppState, preset_id: &str, env_id: &str) -> (i64, String) {
-        let r = connector_push_source(State(st.clone()), Extension(tok_au("admin")),
+        let r = connector_push_source(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(tok_au("admin")),
             Json(json!({ "preset_id": preset_id, "env_id": env_id }))).await;
         let (code, v) = tok_resp_json(r).await;
         assert_eq!(code, StatusCode::OK, "push-source create -> 200");
@@ -226,12 +226,12 @@
         let st = sso_test_state("plume-admin", "plume-editor", "admins");
         // gate admin : editor/viewer -> 403 (re-check handler, au-delà du path-guard).
         for role in ["editor", "viewer"] {
-            let r = connector_push_source(State(st.clone()), Extension(tok_au(role)),
+            let r = connector_push_source(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(tok_au(role)),
                 Json(json!({ "preset_id": "aws-cloudtrail" }))).await;
             assert_eq!(r.status(), StatusCode::FORBIDDEN, "{role} -> 403 push-source");
         }
         // preset non-push -> 400 (okta n'est pas une source push).
-        assert_eq!(connector_push_source(State(st.clone()), Extension(tok_au("admin")),
+        assert_eq!(connector_push_source(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(tok_au("admin")),
             Json(json!({ "preset_id": "okta" }))).await.status(), StatusCode::BAD_REQUEST);
         // crée une source push -> has_key=true, clé jamais dans la liste.
         let (cid, key) = fh_mk_push_source(&st, "aws-cloudtrail", "prod").await;

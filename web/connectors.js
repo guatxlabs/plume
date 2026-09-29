@@ -1,6 +1,6 @@
 // connectors.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // Connecteurs (sources externes en PULL, #3/#3a, admin-only): liste/form/test/poll.
-import { $, LANG, api, apiSend, confirmWithConsequence, effacerLeRefusDUnGeste, faceDansLaLangue, fetchInto, fmtTs, humanAge, ic, laTraceNonEcriteServieEnDeuxCents, muted, pagedList, peindreLeRefusDUnEssai, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, sev, toast, unEssaiSansResultat, withBusy } from './core.js';
+import { $, LANG, api, apiSend, avecLeSecretDesGestes, confirmWithConsequence, effacerLeRefusDUnGeste, faceDansLaLangue, fetchInto, fmtTs, humanAge, ic, laTraceNonEcriteServieEnDeuxCents, muted, pagedList, peindreLeRefusDUnEssai, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, sev, toast, unEssaiSansResultat, withBusy } from './core.js';
 import { enabledSwitch } from './producer_ui.js';
 import { S } from './state.js';
 import { uiIsAdmin } from './multitenant.js';
@@ -577,7 +577,8 @@ async function createPushSource(p) {
   const puits = picker ? puitsDuRefusDUnGeste(picker, 'source_push', picker.children[1] || null) : null;
   effacerLeRefusDUnGeste(puits);
   let res;
-  try { res = await apiSend('/connectors/push-source', 'POST', { preset_id: p.id, name: name || undefined, env_id: env || 'prod' }); }
+  // `P10.24-m` — la source push frappe une clé de livraison (accès persistant) : le secret des gestes est demandé avant l'envoi.
+  try { res = await avecLeSecretDesGestes('creer_une_source_push', (entetes) => apiSend('/connectors/push-source', 'POST', { preset_id: p.id, name: name || undefined, env_id: env || 'prod' }, entetes)); }
   catch (e) { peindreLeRefusDUnGeste(puits, e); return; }   // le bouton qui mène ici vit dans le picker : il existe
   showPushKey(res, p);
   if (typeof loadConnectors === 'function') loadConnectors();

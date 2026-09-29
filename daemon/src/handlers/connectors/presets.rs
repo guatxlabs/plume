@@ -312,7 +312,12 @@ fn push_config_from_preset(raw: &str) -> Value {
 /// jamais le clair (montré UNE fois). Renvoie `{ connector_id, delivery_key (once), endpoint_path, instructions }`.
 /// Aucune clé cloud n'est stockée. Fail-closed : si l'audit/insert échoue -> ROLLBACK, la clé renvoyée ne
 /// correspondrait à rien -> on ne la renvoie PAS. Mode 1 (control-plane) refusé (comme le provisioning de jetons UI).
-pub(crate) async fn connector_push_source(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
+pub(crate) async fn connector_push_source(
+    State(st): State<AppState>,
+    secret_des_gestes: crate::secret_des_gestes::SecretDesGestesPresente,
+    Extension(au): Extension<AuthUser>,
+    Json(b): Json<Value>,
+) -> Response {
     if !au.is_admin() {
         return forbidden("réservé admin");
     }
@@ -348,6 +353,11 @@ pub(crate) async fn connector_push_source(State(st): State<AppState>, Extension(
         if let Some(o) = config.as_object_mut() {
             o.insert("records_path".to_string(), json!(""));
         }
+    }
+    // `P10.24-m` — LA CLÉ DE LIVRAISON EST UNE CRÉDENCE QUI SURVIT À LA SESSION : son porteur écrit des événements dans
+    // la base du SOC tant qu'elle vit. Le secret des gestes, après la validation et avant toute écriture.
+    if let Err(refus) = crate::secret_des_gestes::exiger_le_secret_des_gestes(&st, &secret_des_gestes, &au.name, &format!("création de la source push '{name}' (clé de livraison {token_kind})")) {
+        return refus;
     }
     // CSPRNG AVANT la transaction (entropie noyau ; jamais de secret faible). SEUL son SHA-256 sera stocké.
     let Some(delivery_key) = token_rand_hex() else {

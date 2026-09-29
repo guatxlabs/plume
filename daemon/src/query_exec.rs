@@ -552,6 +552,17 @@ impl FinDeParcours {
             FinDeParcours::Interrompu { cause, .. } | FinDeParcours::NonCommence { cause } => Some(cause.as_str()),
         }
     }
+    /// `P10.20-u` — LA FIN NOMMÉE, en clé stable : `interrompu` (le parcours a démarré et a été coupé : les lignes rendues
+    /// sont un PRÉFIXE) ou `non_commence` (l'énoncé n'a jamais démarré : aucune ligne n'a été lue), `None` si complet.
+    /// `cause()` rend le texte du moteur pour les deux, et c'est ce qui les confondait sur le fil : un relevé interrompu
+    /// sans aucune ligne rendue se lisait « non commencé ».
+    pub(crate) fn etat(&self) -> Option<&'static str> {
+        match self {
+            FinDeParcours::Complet => None,
+            FinDeParcours::Interrompu { .. } => Some("interrompu"),
+            FinDeParcours::NonCommence { .. } => Some("non_commence"),
+        }
+    }
     /// LE NOMBRE D'ERREURS RENCONTRÉES — jamais un nombre de lignes manquantes, et c'est la raison
     /// pour laquelle il n'est PAS publié tel quel dans un corps servi. Une interruption de `step()`
     /// vaut UNE erreur et solde un reste de cardinalité inconnue ; une erreur de mappeur vaut une

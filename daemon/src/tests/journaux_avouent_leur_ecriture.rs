@@ -182,7 +182,7 @@ mod journaux_avouent_leur_ecriture {
         let (st, _dir) = mk_mode1_state();
         let sa = jae_super_admin();
         let (statut, cree) =
-            pb_json(tenant_create(State(st.clone()), Extension(sa.clone()), Json(json!({ "id": "jae-acme", "name": "JaeAcme" }))).await).await;
+            pb_json(tenant_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(sa.clone()), Json(json!({ "id": "jae-acme", "name": "JaeAcme" }))).await).await;
         assert_eq!(statut, 201, "{cree}");
         assert_eq!(jae_aveu(&cree), None, "CONTRÔLE POSITIF : le chemin nominal n'avoue RIEN : {cree}");
 
@@ -190,7 +190,7 @@ mod journaux_avouent_leur_ecriture {
         let maillons_avant = jae_compte_de_controle(&st, "SELECT COUNT(*) FROM control_ledger_source");
 
         let (statut, v) = pb_json(
-            grant_set(State(st.clone()), Extension(sa.clone()), Path("jae-acme".into()), Json(json!({ "user": "carol", "role": "editor" }))).await,
+            grant_set(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(sa.clone()), Path("jae-acme".into()), Json(json!({ "user": "carol", "role": "editor" }))).await,
         )
         .await;
         assert_eq!(statut, 200, "le grant EST posé : {v}");
@@ -223,7 +223,7 @@ mod journaux_avouent_leur_ecriture {
         // CONTRÔLE POSITIF — la vue retirée, les gestes inverses n'avouent rien et inscrivent leur maillon.
         jae_plan_de_controle(&st, JAE_VUE_RETIREE);
         let (statut, v) = pb_json(
-            grant_set(State(st.clone()), Extension(sa.clone()), Path("jae-acme".into()), Json(json!({ "user": "dave", "role": "viewer" }))).await,
+            grant_set(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(sa.clone()), Path("jae-acme".into()), Json(json!({ "user": "dave", "role": "viewer" }))).await,
         )
         .await;
         assert_eq!((statut, jae_aveu(&v)), (200, None), "{v}");
@@ -257,7 +257,7 @@ mod journaux_avouent_leur_ecriture {
         let (st, _dir) = mk_mode1_state();
         let sa = jae_super_admin();
         assert_eq!(
-            tenant_create(State(st.clone()), Extension(sa.clone()), Json(json!({ "id": "jae-beta", "name": "JaeBeta" }))).await.status(),
+            tenant_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(sa.clone()), Json(json!({ "id": "jae-beta", "name": "JaeBeta" }))).await.status(),
             StatusCode::CREATED
         );
         let chemin: String = {

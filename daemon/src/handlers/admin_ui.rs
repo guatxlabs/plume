@@ -1002,6 +1002,8 @@ pub(crate) async fn suppressions_get(State(st): State<AppState>, Extension(au): 
         // `collectors_incomplets` vaut `false` et la cause est nulle (un corps qui avoue toujours n'avoue rien).
         "collectors_incomplets": coll_fin.cause().is_some(),
         "collectors_cause": coll_fin.cause(),
+        // `P10.20-u` — ET LA FIN NOMMÉE : `interrompu` (préfixe) ou `non_commence` (rien lu), `null` si complet.
+        "collectors_etat": coll_fin.etat(),
         "firewall": firewall,
         "firewall_hosts": fw_json,
         "firewall_n_hosts": fw_json.len(),

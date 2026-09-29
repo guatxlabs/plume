@@ -1659,8 +1659,15 @@ pub(crate) async fn auth_guard(State(st): State<AppState>, mut req: Request, nex
     // démo). Succès avec creds Basic -> réarme. Aucune identité MAIS creds Basic présentés -> ÉCHEC :
     // incrémente + AUTO-INGEST SIEM, et si la rafale franchit le seuil -> lockout (429 + Retry-After).
     // Un SSO/Bearer valide (ou l'absence de creds Basic) n'incrémente JAMAIS -> k3s/agents transparents.
+    // `P10.28-h` — L'IDENTITÉ DE LA DÉMONSTRATION N'EST PAS UN SUCCÈS DES IDENTIFIANTS PRÉSENTÉS. Mesuré le 2026-09-25 sur
+    // la forme d'avant (démonstration active) : un essai Basic FAUX tombait sur le repli anonyme `demo`, `ident` était
+    // posé, et l'essai était compté comme un SUCCÈS — le compteur du couple (compte, adresse) remis à zéro à chaque
+    // essai, quarante essais faux sans jamais un 429, puis le vrai mot de passe connectait l'administrateur. Un essai
+    // Basic servi `demo` est donc compté comme un ÉCHEC (événement d'accès, backoff, 429 au seuil) ; la requête reste
+    // servie en lecture seule anonyme tant que le frein ne mord pas, comme tout visiteur sans identifiants.
     if let Some(u) = basic_user.as_deref() {
-        if ident.is_some() {
+        let identifiants_prouves = ident.is_some() && auth_method != "demo";
+        if identifiants_prouves {
             auth_record_success(&st, u, &src_ip);
         } else if let Some(retry) = auth_record_failure(&st, u, &src_ip) {
             return (StatusCode::TOO_MANY_REQUESTS, [(header::RETRY_AFTER, retry.to_string())],

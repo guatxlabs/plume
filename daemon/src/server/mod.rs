@@ -794,6 +794,14 @@ pub(crate) async fn run() {
         }
         String::new()
     };
+    // `P10.24-m` — DIT AU DÉMARRAGE, pour qu'un refus de geste ne soit pas la première nouvelle.
+    if cfg(&conf, crate::secret_des_gestes::VARIABLE_DU_FICHIER_DU_SECRET_DES_GESTES, "").trim().is_empty() {
+        eprintln!(
+            "[secret-des-gestes] PLUME_GESTURE_SECRET_FILE non posée : créer ou promouvoir un administrateur, réinitialiser \
+             un autre compte, frapper un jeton ou une clé de livraison, poser un fournisseur d'identité ou un droit sont \
+             REFUSÉS (voir docs/TROIS-MODES.md §3.11)"
+        );
+    }
     let state = AppState {
         db,
         user: Arc::new(user),
@@ -809,6 +817,12 @@ pub(crate) async fn run() {
         sso_header_user: Arc::new(sso_header_user),
         sso_header_groups: Arc::new(sso_header_groups),
         public_demo,
+        // `P10.24-m` — la SOURCE est fixée ici ; le fichier, lui, est relu à chaque geste gardé.
+        secret_des_gestes: Arc::new(crate::secret_des_gestes::SourceDuSecretDesGestes::depuis_la_configuration(&cfg(
+            &conf,
+            crate::secret_des_gestes::VARIABLE_DU_FICHIER_DU_SECRET_DES_GESTES,
+            "",
+        ))),
         metrics_token: Arc::new(metrics_token),
         search_limit_default,
         search_limit_max,

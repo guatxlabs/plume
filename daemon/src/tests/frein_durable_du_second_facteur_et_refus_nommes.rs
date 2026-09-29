@@ -444,21 +444,21 @@ mod frein_durable_du_second_facteur_et_refus_nommes {
     async fn fdsf_une_lecture_ratee_du_plan_de_controle_n_est_pas_une_absence() {
         let (st, _dir) = mk_mode1_state();
         let sa = au_super("sa-fdsf");
-        let r = tenant_create(State(st.clone()), Extension(sa.clone()), Json(json!({ "id": FDSF_TENANT, "name": "FdsfT" }))).await;
+        let r = tenant_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(sa.clone()), Json(json!({ "id": FDSF_TENANT, "name": "FdsfT" }))).await;
         assert_eq!(r.status(), StatusCode::CREATED, "fixture : tenant");
-        let r = grant_set(State(st.clone()), Extension(sa.clone()), Path(FDSF_TENANT.into()), Json(json!({ "user": "fdsf-a", "role": "admin" }))).await;
+        let r = grant_set(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(sa.clone()), Path(FDSF_TENANT.into()), Json(json!({ "user": "fdsf-a", "role": "admin" }))).await;
         assert_eq!(r.status().as_u16(), 200, "fixture : droit posé");
         let cp = st.tenants.control.as_ref().expect("mode 1");
         let droits = || -> i64 { cp.conn.lock().query_row("SELECT COUNT(*) FROM \"grant\" WHERE tenant_id=?1", params![FDSF_TENANT], |r| r.get(0)).expect("lu") };
 
         // grant_set — tenant illisible, puis absent.
         fdsf_refuser_la_lecture(cp, "tenant");
-        let (statut, corps) = fdsf_corps(grant_set(State(st.clone()), Extension(sa.clone()), Path(FDSF_TENANT.into()), Json(json!({ "user": "fdsf-b", "role": "viewer" }))).await).await;
+        let (statut, corps) = fdsf_corps(grant_set(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(sa.clone()), Path(FDSF_TENANT.into()), Json(json!({ "user": "fdsf-b", "role": "viewer" }))).await).await;
         fdsf_lever_le_plan(cp);
         assert_eq!(statut, 503, "tenant NON LU : ce n'est pas « tenant inconnu » : {corps}");
         assert_eq!(corps["error"], json!(crate::tenants::CAUSE_TENANT_NON_LU_DROIT_NON_POSE));
         assert_eq!(droits(), 1, "aucun droit posé");
-        let (statut, _) = fdsf_corps(grant_set(State(st.clone()), Extension(sa.clone()), Path("fdsf-absent".into()), Json(json!({ "user": "fdsf-b", "role": "viewer" }))).await).await;
+        let (statut, _) = fdsf_corps(grant_set(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(sa.clone()), Path("fdsf-absent".into()), Json(json!({ "user": "fdsf-b", "role": "viewer" }))).await).await;
         assert_eq!(statut, 404, "un tenant réellement absent garde son 404");
 
         // grant_delete — droit illisible, puis absent.

@@ -312,7 +312,12 @@ pub(crate) async fn idp_providers_list(State(st): State<AppState>, Extension(au)
     }
 }
 
-pub(crate) async fn idp_provider_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
+pub(crate) async fn idp_provider_create(
+    State(st): State<AppState>,
+    secret_des_gestes: crate::secret_des_gestes::SecretDesGestesPresente,
+    Extension(au): Extension<AuthUser>,
+    Json(b): Json<Value>,
+) -> Response {
     if !au.is_admin() {
         return forbidden("réservé admin");
     }
@@ -362,6 +367,12 @@ pub(crate) async fn idp_provider_create(State(st): State<AppState>, Extension(au
     }
     let enabled = b.get("enabled").and_then(|x| x.as_bool()).unwrap_or(false) as i64;
     let secret = b.get("secret").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    // `P10.24-m` — UN FOURNISSEUR D'IDENTITÉ AUTHENTIFIE QUI IL VEUT, AUSSI LONGTEMPS QU'IL VIT, et son annuaire décide des
+    // groupes (dont celui des administrateurs) : le secret des gestes, même désactivé à la création (un geste de
+    // modification l'active). Après la validation, avant toute écriture.
+    if let Err(refus) = crate::secret_des_gestes::exiger_le_secret_des_gestes(&st, &secret_des_gestes, &au.name, &format!("création du fournisseur d'identité '{name}' ({kind})")) {
+        return refus;
+    }
     let conn = st.db.lock();
     if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "idp", "création d'un fournisseur d'identité", CAUSE_FOURNISSEUR_D_IDENTITE_INCHANGE_TRANSACTION_NON_OUVERTE) {
         return refus;
@@ -411,12 +422,26 @@ fn fournisseur_inchange_commit_refuse(geste: &str, fournisseur: &str, refus: rus
     err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_FOURNISSEUR_D_IDENTITE_INCHANGE)
 }
 
-pub(crate) async fn idp_provider_update(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
+pub(crate) async fn idp_provider_update(
+    State(st): State<AppState>,
+    secret_des_gestes: crate::secret_des_gestes::SecretDesGestesPresente,
+    Extension(au): Extension<AuthUser>,
+    Path(id): Path<i64>,
+    Json(b): Json<Value>,
+) -> Response {
     if !au.is_admin() {
         return forbidden("réservé admin");
     }
     if st.multi_tenant {
         return deny_multitenant();
+    }
+    // `P10.24-m` — ACTIVER, RECONFIGURER (émetteur, mappage des groupes…) OU CHANGER LE SECRET D'UN FOURNISSEUR POSE UN
+    // ACCÈS PERSISTANT ; LE DÉSACTIVER SEUL N'EN POSE AUCUN, et reste ouvert sans le secret (retirer une voie
+    // d'authentification compromise ne doit pas attendre qu'on retrouve le secret). Jugé avant toute lecture et écriture.
+    if !est_une_desactivation_seule(&b) {
+        if let Err(refus) = crate::secret_des_gestes::exiger_le_secret_des_gestes(&st, &secret_des_gestes, &au.name, &format!("modification du fournisseur d'identité #{id}")) {
+            return refus;
+        }
     }
     let conn = st.db.lock();
     if conn.query_row("SELECT 1 FROM idp_provider WHERE id=?1", params![id], |_| Ok(())).is_err() {
@@ -458,6 +483,14 @@ pub(crate) async fn idp_provider_update(State(st): State<AppState>, Extension(au
         },
         Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
     }
+}
+
+/// `P10.24-m` — le corps d'une modification ne fait QUE désactiver : `{"enabled": false}` et rien d'autre qui s'écrive
+/// (`config`, `secret` non vide). Un `secret` vide est ignoré par la modification (il conserve l'existant).
+fn est_une_desactivation_seule(b: &Value) -> bool {
+    b.get("enabled").and_then(|x| x.as_bool()) == Some(false)
+        && b.get("config").is_none()
+        && b.get("secret").and_then(|x| x.as_str()).is_none_or(str::is_empty)
 }
 
 pub(crate) async fn idp_provider_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {

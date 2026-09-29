@@ -15,6 +15,11 @@ const RELEVE_DES_COLLECTEURS_MOTS = {
     en: 'Collector self-report survey INTERRUPTED: the rows below are a PREFIX, the daemon names the cause —' },
   sous_titre_non_commence: { fr: 'relevé NON COMMENCÉ — aucun collecteur n’a été lu', en: 'survey NOT STARTED — no collector was read' },
   sous_titre_interrompu: { fr: 'relevé INTERROMPU — on ignore combien il en manque', en: 'survey INTERRUPTED — how many are missing is unknown' },
+  // `P10.20-u` — l'interruption AVANT toute ligne rendue : le démon la nomme (`collectors_etat`), la console ne la devinait pas.
+  releve_interrompu_sans_ligne: {
+    fr: "Relevé des auto-reports collecteurs INTERROMPU avant toute ligne rendue : il a commencé, rien n'en est montré, et on ignore combien il en manque. Le démon nomme la cause —",
+    en: 'Collector self-report survey INTERRUPTED before any row was returned: it started, none of it is shown, and how many are missing is unknown. The daemon names the cause —' },
+  sous_titre_interrompu_sans_ligne: { fr: 'relevé INTERROMPU avant toute ligne — on ignore combien il en manque', en: 'survey INTERRUPTED before any row — how many are missing is unknown' },
 };
 const motDuReleveDesCollecteurs = (cle) => (LANG === 'en' ? RELEVE_DES_COLLECTEURS_MOTS[cle].en : RELEVE_DES_COLLECTEURS_MOTS[cle].fr);
 // L'aveu à deux nœuds (grammaire de `P10.7-f`) : la phrase est posée AU PUITS par l'appelant
@@ -261,14 +266,22 @@ async function loadSuppressions() {
   // ne peut donc pas les distinguer par un champ. Elle les distingue par ce qu'elle A REÇU : aucune ligne
   // sous un aveu = rien n'a été lu ; des lignes sous un aveu = la liste est un PRÉFIXE.
   const collecteurs = (d && Array.isArray(d.collectors)) ? d.collectors : [];
-  const collecteursNonLus = !!(d && d.collectors_incomplets);
+  // `P10.20-u` — QUAND LE DÉMON NOMME LA FIN (`collectors_etat` ∈ interrompu / non_commence), C'EST ELLE QUI DÉCIDE : un
+  // relevé interrompu sans aucune ligne rendue ne se dit plus « non commencé ». Absente ou hors de ces deux valeurs
+  // (démon ancien), la règle d'avant : aucune ligne sous un aveu = non commencé, des lignes = préfixe.
+  const etatServi = (d && (d.collectors_etat === 'interrompu' || d.collectors_etat === 'non_commence')) ? d.collectors_etat : '';
+  const collecteursNonLus = !!(d && d.collectors_incomplets) || !!etatServi;
   const causeDesCollecteurs = (d && d.collectors_cause != null) ? String(d.collectors_cause).trim() : '';
+  const finDuReleve = etatServi === 'non_commence' ? 'non_commence'
+    : etatServi === 'interrompu' ? (collecteurs.length ? 'interrompu' : 'interrompu_sans_ligne')
+    : (collecteurs.length ? 'interrompu' : 'non_commence');
   wrap.appendChild(suppSectionTitle('Collecteurs hôte — filtres auto-reportés',
-    collecteursNonLus ? motDuReleveDesCollecteurs(collecteurs.length ? 'sous_titre_interrompu' : 'sous_titre_non_commence')
+    collecteursNonLus ? motDuReleveDesCollecteurs('sous_titre_' + finDuReleve)
                       : collecteurs.length + ' collecteurs (read-only)'));
   if (collecteursNonLus) {
     const { aveu, dit } = boiteDAveuDeSuppressions();
-    dit.textContent = motDuReleveDesCollecteurs(collecteurs.length ? 'releve_interrompu' : 'releve_non_commence');
+    aveu.dataset.finDuReleveDesCollecteurs = finDuReleve;
+    dit.textContent = motDuReleveDesCollecteurs('releve_' + finDuReleve);
     aveu.append(' « ' + causeDesCollecteurs + ' »');
     wrap.appendChild(aveu);
   }

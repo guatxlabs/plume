@@ -3014,6 +3014,11 @@ jobs:
             '''Bearer \$\{?[A-Z0-9_]+''',
             '''pentest-secret-''',
             '''env-token-xyz''',
+            # `.github/scripts/web_esm_harnais.mjs` (temoin 123m, P10.24-m) — la comparaison d'une NATURE
+            # de refus au nom d'une cause du secret des gestes (`b.nature !== "secret_des_gestes_faux"`)
+            # ressemble a une assignation de cle pour `generic-api-key`. Ce n'est qu'un nom de cause
+            # public, pas une valeur secrete. La FORME exacte est admise, jamais le fichier.
+            '''\.nature !== "secret_des_gestes_[a-z_]+"''',
             # 4. `bench/fts-compaction/banc_fts.c` line 27 — the literal SQLCipher key of the FTS5 compaction
             #    harness. It is handed to `PRAGMA key=` on the throwaway databases that harness BUILDS itself
             #    (ref.db, purge.db, arme-*.db, all created by `bench/fts-compaction/mesurer.sh` in a scratch

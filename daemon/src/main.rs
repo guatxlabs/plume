@@ -164,6 +164,7 @@ mod bilan_de_tick; // P4.1-r : CE QU'UN TICK DE FOND REND — le compte des él�
 mod detection_aveugle; // P3.9-a : UNE RÈGLE ABANDONNÉE À RÉPÉTITION EST UNE DÉTECTION ÉTEINTE — la cause de l'abandon conservée (ensemble fermé), un compte consécutif par règle qui persiste, et au seuil dérivé de l'intervalle une alerte de cécité par le chemin des alertes de capteur muet, résolue à la première évaluation réussie
 mod entrees_scriptees; // P9.5-a : LE GESTE QUI BRANCHE UNE SOURCE, dérivé de ce que le dépôt livre — entrée scriptée (fichier et destination), capteur shell (répertoire de l'amorçage), ou fichier émetteur seul ; deux tables miroirs de l'arbre, tenues par témoins
 mod mesure_environnement; // S32 : une lecture d'environnement qui échoue n'est PAS un zéro — un type à deux cas, des fonctions paramétrées sur leurs chemins (donc exerçables hors machine), et une jauge de LISIBILITÉ à côté d'une série de valeur ABSENTE
+mod comptes_de_transaction; // P10.27-h, P10.26-d, P10.27-y : les REFUS DE TRANSACTION comptés et servis — un `BEGIN` refusé sur l'écrivain (par cause : verrou, refus hors verrou, transaction étrangère ; par journal, sous un plafond), le geste dû d'une passe de fond que la base n'a pas validé (par geste, avec l'étape et la dernière cause), la transaction orpheline vue par la sonde ; un seul auteur pour leur JSON, leur nommage Prometheus et leur `# HELP`
 mod metrics; // #51 DAY-2 OPS : self-métriques process-globales + santé par composant + exposition Prometheus
 pub(crate) use metrics::*;
 mod handlers;

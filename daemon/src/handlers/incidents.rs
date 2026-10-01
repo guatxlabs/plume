@@ -499,7 +499,12 @@ pub(crate) fn attach_runbook(conn: &Connection, id: i64, runbook_id: i64, author
         return Err("runbook sans étape".into());
     }
     let host = targets.host.as_deref().map(str::trim).filter(|s| !s.is_empty());
-    let txn = Txn::begin(conn).map_err(|e| RefusDAttache::EtapesNonEcrites(format!("transaction refusée ({e})")))?;
+    // `P10.27-h` — le `BEGIN` refusé est dit avec sa cause et compté ; aucune étape n'est écrite. La forme commune d'une
+    // route (`ouvrir_le_garde_du_geste`) n'est pas prise : le refus reste typé (`RefusDAttache`) — reste de `P10.29-j`.
+    let txn = Txn::begin(conn).map_err(|e| {
+        crate::handlers::transaction_validee::dire_la_transaction_non_ouverte(conn, "runbooks", "attache d'un runbook", &e);
+        RefusDAttache::EtapesNonEcrites(format!("transaction refusée ({e})"))
+    })?;
     let mut n = 0i64;
     for (step_id, ordinal, phase, title, guidance, step_kind, soql, act) in &steps {
         // #3 P3-A — cible + hôte PAR action_kind (validés ; blanc plutôt qu'une cible invalide/trompeuse).

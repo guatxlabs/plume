@@ -1002,7 +1002,10 @@ fn purge_rebuild_rollups(conn: &Connection, b0: i64, b1: i64) -> Result<bool, Pu
 /// une purge qui n'a pas eu lieu). Le seul argument est un `ConfirmedPurge` : il n'existe pas de signature
 /// permettant d'exécuter sans avoir simulé ET confirmé.
 pub(crate) fn purge_apply(conn: &Connection, c: ConfirmedPurge) -> Result<PurgeReceipt, PurgeRefusal> {
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
+    // `P10.27-h` — le `BEGIN` refusé est dit avec sa cause et compté ; rien n'est inscrit. La réponse garde son contrat
+    // (`PurgeRefusal::Db`, « verrou base indisponible » quelle que soit la cause) : sa variante propre est `P10.29-h`.
+    if let Err(refus) = conn.execute_batch("BEGIN IMMEDIATE") {
+        crate::handlers::transaction_validee::dire_la_transaction_non_ouverte(conn, "purge", "purge confirmée", &refus);
         return Err(PurgeRefusal::Db("verrou base indisponible".into()));
     }
     let outcome = (|| -> Result<PurgeReceipt, PurgeRefusal> {

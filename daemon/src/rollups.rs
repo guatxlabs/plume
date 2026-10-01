@@ -5,6 +5,7 @@
 //! `materialize_banned_ip` + dashboard banpass), refresh SWR des panneaux (`cache_refresh_all_panels`)
 //! et purge de rétention (`retention_run`). Extrait de main.rs (refactor split #25 — byte-identique).
 use crate::*;
+use crate::comptes_de_transaction::compter_un_geste_de_fond_non_valide;
 use crate::handlers::transaction_validee::{ouvrir_sa_transaction, valider_la_transaction};
 
 /// Cap de cardinalité src_ip du rollup : top-N adresses par bucket. Réglable via
@@ -756,20 +757,27 @@ pub(crate) fn rollup_hosts(conn: &Connection) {
     // était ignoré et le `COMMIT` du pli VALIDAIT la transaction étrangère — mesuré : la levée refusée d'un gel
     // juridique et la purge de la preuve gelée devenaient durables (le `ROLLBACK`, lui, l'annulait). Le `COMMIT` est
     // jugé : refusé, le watermark n'avance pas.
+    // `P10.26-d` — un pli non pris (`BEGIN`, écriture ou `COMMIT` refusé) est COMPTÉ, pas seulement dit
+    // (`plume_scheduler_gestes_de_fond_non_valides_total`) : un pli refusé à chaque heure ne se voyait qu'au journal.
     let new_wm = if recent > wm {
-        if ouvrir_sa_transaction(conn, "rollup", "pli définitif de l'inventaire de flotte").is_err() {
-            wm
-        } else {
-            let done = conn.execute(&host_rollup_upsert_sql(&format!("ts >= {wm} AND ts < {recent}"), HostFold::Definitive, n), [])
-                .and_then(|_| conn.execute(
-                    "INSERT INTO meta(key,value) VALUES('host_rollup_wm', ?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                    params![recent.to_string()],
-                ));
-            match valider_ou_annuler_sa_transaction(conn, done) {
-                Ok(()) => recent,
-                Err(e) => {
-                    eprintln!("[rollup] WARN pli définitif de l'inventaire de flotte NON validé ({e}) — watermark inchangé, repris au prochain passage");
-                    wm
+        match ouvrir_sa_transaction(conn, JOURNAL_DU_PLI, GESTE_PLI_DEFINITIF) {
+            // Le `BEGIN` refusé est déjà dit (et compté comme tel) par `ouvrir_sa_transaction`.
+            Err(refus) => {
+                compter_un_geste_de_fond_non_valide(conn, JOURNAL_DU_PLI, GESTE_PLI_DEFINITIF, "BEGIN refusé", &refus);
+                wm
+            }
+            Ok(()) => {
+                let done = conn.execute(&host_rollup_upsert_sql(&format!("ts >= {wm} AND ts < {recent}"), HostFold::Definitive, n), [])
+                    .and_then(|_| conn.execute(
+                        "INSERT INTO meta(key,value) VALUES('host_rollup_wm', ?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                        params![recent.to_string()],
+                    ));
+                match valider_ou_annuler_sa_transaction(conn, done) {
+                    Ok(()) => recent,
+                    Err((etape, e)) => {
+                        dire_un_pli_non_valide(conn, GESTE_PLI_DEFINITIF, etape, &e, "watermark inchangé");
+                        wm
+                    }
                 }
             }
         }
@@ -784,15 +792,20 @@ pub(crate) fn rollup_hosts(conn: &Connection) {
     let floor: i64 = conn.query_row("SELECT value FROM meta WHERE key='host_rollup_backfill_floor'", [], |r| r.get::<_, String>(0))
         .ok().and_then(|s| s.parse().ok()).unwrap_or(new_wm);
     // `P10.26-s` — même règle que le pli définitif : sa transaction ou rien, le plancher reste noté et le tick suivant
-    // reprend le rattrapage.
-    if floor < new_wm && ouvrir_sa_transaction(conn, "rollup", "rattrapage de l'inventaire de flotte").is_ok() {
-        let done = conn.execute(&host_rollup_upsert_sql(&format!("ts >= {floor} AND ts < {new_wm}"), HostFold::Backfill, n), [])
-            .and_then(|_| conn.execute(
-                "INSERT INTO meta(key,value) VALUES('host_rollup_backfill_floor', ?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                params![new_wm.to_string()],
-            ));
-        if let Err(e) = valider_ou_annuler_sa_transaction(conn, done) {
-            eprintln!("[rollup] WARN rattrapage de l'inventaire de flotte NON validé ({e}) — plancher inchangé, repris au prochain passage");
+    // reprend le rattrapage. `P10.26-d` — et un rattrapage non pris est compté de même.
+    if floor < new_wm {
+        match ouvrir_sa_transaction(conn, JOURNAL_DU_PLI, GESTE_RATTRAPAGE) {
+            Err(refus) => compter_un_geste_de_fond_non_valide(conn, JOURNAL_DU_PLI, GESTE_RATTRAPAGE, "BEGIN refusé", &refus),
+            Ok(()) => {
+                let done = conn.execute(&host_rollup_upsert_sql(&format!("ts >= {floor} AND ts < {new_wm}"), HostFold::Backfill, n), [])
+                    .and_then(|_| conn.execute(
+                        "INSERT INTO meta(key,value) VALUES('host_rollup_backfill_floor', ?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                        params![new_wm.to_string()],
+                    ));
+                if let Err((etape, e)) = valider_ou_annuler_sa_transaction(conn, done) {
+                    dire_un_pli_non_valide(conn, GESTE_RATTRAPAGE, etape, &e, "plancher inchangé");
+                }
+            }
         }
     }
     // FENÊTRE CHAUDE [recent, now] : ré-agrégée à CHAQUE tick. On remet sig_hot=0 sur TOUTE la table (petite) puis
@@ -802,17 +815,30 @@ pub(crate) fn rollup_hosts(conn: &Connection) {
     let _ = conn.execute(&host_rollup_upsert_sql(&format!("ts >= {recent}"), HostFold::Hot, n), []);
 }
 
+/// Le journal des deux plis de `rollup_hosts`, et la première moitié de la clé de leurs refus comptés (`P10.26-d`).
+const JOURNAL_DU_PLI: &str = "rollup";
+const GESTE_PLI_DEFINITIF: &str = "pli définitif de l'inventaire de flotte";
+const GESTE_RATTRAPAGE: &str = "rattrapage de l'inventaire de flotte";
+
 /// `P10.26-s` — la fin d'une transaction que CE geste a ouverte : ses écritures ont réussi -> `COMMIT` jugé
 /// (`valider_la_transaction`, qui annule un refus) ; une écriture a échoué -> `ROLLBACK` de la sienne. Jamais appelée
 /// sans que `ouvrir_sa_transaction` ait rendu `Ok` : c'est ce qui garantit que la transaction fermée ici est la sienne.
-fn valider_ou_annuler_sa_transaction(conn: &Connection, ecritures: rusqlite::Result<usize>) -> rusqlite::Result<()> {
+/// `P10.26-d` — un refus rend aussi l'ÉTAPE refusée, que le compte et le journal portent.
+fn valider_ou_annuler_sa_transaction(conn: &Connection, ecritures: rusqlite::Result<usize>) -> Result<(), (&'static str, rusqlite::Error)> {
     match ecritures {
-        Ok(_) => valider_la_transaction(conn),
+        Ok(_) => valider_la_transaction(conn).map_err(|e| ("COMMIT refusé", e)),
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
-            Err(e)
+            Err(("écriture refusée", e))
         }
     }
+}
+
+/// `P10.26-d` — un pli de `rollup_hosts` que la base n'a pas validé : compté, puis dit au journal (la phrase d'avant, avec
+/// l'étape) ; `reste` dit ce qui n'a pas bougé.
+fn dire_un_pli_non_valide(conn: &Connection, geste: &'static str, etape: &'static str, refus: &rusqlite::Error, reste: &str) {
+    compter_un_geste_de_fond_non_valide(conn, JOURNAL_DU_PLI, geste, etape, refus);
+    eprintln!("[rollup] WARN {geste} NON validé ({etape} : {refus}) — {reste}, repris au prochain passage");
 }
 
 /// Mode de fold host_rollup pour UNE fenêtre temporelle :

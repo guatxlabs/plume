@@ -4,6 +4,7 @@
 //! (`expire`/`activate_due_engagements_conn`), les handlers engagement et `mode_get`/`mode_set`.
 //! Extrait de main.rs (refactor split #25 — byte-identique).
 use crate::*;
+use crate::comptes_de_transaction::{compter_un_begin_refuse, compter_un_geste_de_fond_non_valide};
 use crate::handlers::transaction_validee::{ouvrir_la_transaction_du_geste, valider_la_transaction};
 
 // =====================================================================================
@@ -436,7 +437,7 @@ pub(crate) fn expire_due_engagements_conn(conn: &Connection, now_i: i64) -> usiz
     let mut n = 0usize;
     for (id, name) in &due {
         if let Err(e) = conn.execute_batch("BEGIN IMMEDIATE") {
-            dire_un_geste_du_cycle_non_pris("expiration", id, "BEGIN refusé", &e);
+            dire_un_begin_du_cycle_refuse(conn, "expiration", id, &e);
             continue;
         }
         let outcome: rusqlite::Result<()> = (|| {
@@ -478,7 +479,7 @@ pub(crate) fn activate_due_engagements_conn(conn: &Connection, now_i: i64) -> (u
     let mut activated = 0usize;
     for (id, name) in &to_activate {
         if let Err(e) = conn.execute_batch("BEGIN IMMEDIATE") {
-            dire_un_geste_du_cycle_non_pris("activation", id, "BEGIN refusé", &e);
+            dire_un_begin_du_cycle_refuse(conn, "activation", id, &e);
             continue;
         }
         let outcome: rusqlite::Result<()> = (|| {
@@ -505,7 +506,7 @@ pub(crate) fn activate_due_engagements_conn(conn: &Connection, now_i: i64) -> (u
     let mut expired = 0usize;
     for (id, name) in &stale {
         if let Err(e) = conn.execute_batch("BEGIN IMMEDIATE") {
-            dire_un_geste_du_cycle_non_pris("expiration sans activation", id, "BEGIN refusé", &e);
+            dire_un_begin_du_cycle_refuse(conn, "expiration sans activation", id, &e);
             continue;
         }
         let outcome: rusqlite::Result<()> = (|| {
@@ -543,28 +544,45 @@ pub(crate) fn activate_due_engagements_conn(conn: &Connection, now_i: i64) -> (u
 // chaque usage ; ce qui manquait, c'est la révocation écrite (grants, comptes `eng-cred-*`) et sa trace.
 //
 // LA FORME : chaque engagement a SA transaction, jugée ; un refus la ferme (`valider_la_transaction`), n'est pas
-// compté, et le journal le dit par engagement — la ligne reste due, le balayage suivant (20 s) la reprend, et
+// compté comme fait, et le journal le dit par engagement — la ligne reste due, le balayage suivant (20 s) la reprend, et
 // l'index de scope, rafraîchi APRÈS le balayage, ne lit que ce que la base a validé.
+//
+// `P10.26-d` — ET LE REFUS EST COMPTÉ, sous `/metrics` (`plume_scheduler_gestes_de_fond_non_valides_total`, ventilé par
+// geste avec sa dernière cause dans `/api/system/metrics` `scheduler.gestes_de_fond_non_valides`) : une expiration refusée
+// tour après tour ne se voyait qu'au journal. Le `BEGIN` refusé est aussi compté comme tel (`P10.27-h`).
 
-/// `P10.25-e` — le journal d'un geste du cycle de vie non pris : quel geste, quel engagement, à quelle étape, pourquoi.
-fn dire_un_geste_du_cycle_non_pris(geste: &str, id: &str, etape: &str, cause: &rusqlite::Error) {
+/// Le journal des balayages, et la première moitié de la clé de leurs refus comptés.
+const JOURNAL_DU_CYCLE: &str = "engagement";
+
+/// `P10.25-e`, `P10.26-d` — le journal d'un geste du cycle de vie non pris (quel geste, quel engagement, à quelle étape,
+/// pourquoi), et son compte : la phrase et le compte ont un seul auteur, donc aucune des trois étapes ne dit sans compter.
+fn dire_un_geste_du_cycle_non_pris(conn: &Connection, geste: &'static str, id: &str, etape: &'static str, cause: &rusqlite::Error) {
+    compter_un_geste_de_fond_non_valide(conn, JOURNAL_DU_CYCLE, geste, etape, cause);
     eprintln!(
-        "[engagement] WARN {geste} de l'engagement '{id}' NON prise ({etape} : {cause}) — rien n'est écrit ni compté, \
-         l'engagement reste dû et le balayage suivant le reprend"
+        "[engagement] WARN {geste} de l'engagement '{id}' NON prise ({etape} : {cause}) — rien n'est écrit ni compté comme \
+         fait, l'engagement reste dû et le balayage suivant le reprend"
     );
 }
 
+/// `P10.25-e`, `P10.27-h` — le `BEGIN` refusé d'un geste du cycle de vie : compté comme `BEGIN` refusé, puis comme geste
+/// non pris et dit par engagement ; rien n'est écrit, validé ni annulé, et l'engagement suivant est tenté. Le `BEGIN`
+/// reste écrit dans chaque balayage : c'est là que la garde des ouvertures nues le lit et le range hors des routes.
+fn dire_un_begin_du_cycle_refuse(conn: &Connection, geste: &'static str, id: &str, refus: &rusqlite::Error) {
+    compter_un_begin_refuse(conn, JOURNAL_DU_CYCLE, refus);
+    dire_un_geste_du_cycle_non_pris(conn, geste, id, "BEGIN refusé", refus);
+}
+
 /// `P10.25-e` — solde la transaction d'un geste du cycle de vie : validée, elle est comptée ; refusée (écriture ou
-/// `COMMIT`), elle est fermée et dite, jamais comptée.
-fn clore_un_geste_du_cycle(conn: &Connection, outcome: rusqlite::Result<()>, geste: &str, id: &str, compte: &mut usize) {
+/// `COMMIT`), elle est fermée, dite et comptée comme refus, jamais comme fait.
+fn clore_un_geste_du_cycle(conn: &Connection, outcome: rusqlite::Result<()>, geste: &'static str, id: &str, compte: &mut usize) {
     match outcome {
         Ok(()) => match valider_la_transaction(conn) {
             Ok(()) => *compte += 1,
-            Err(e) => dire_un_geste_du_cycle_non_pris(geste, id, "COMMIT refusé", &e),
+            Err(e) => dire_un_geste_du_cycle_non_pris(conn, geste, id, "COMMIT refusé", &e),
         },
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
-            dire_un_geste_du_cycle_non_pris(geste, id, "écriture refusée", &e);
+            dire_un_geste_du_cycle_non_pris(conn, geste, id, "écriture refusée", &e);
         }
     }
 }

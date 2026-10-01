@@ -32,15 +32,38 @@ pub(crate) static PUSH_ZERO_MAP_TOTAL: AtomicU64 = AtomicU64::new(0);
 /// rien), et ventilé par CLÉ dans une table bornée — c'est la clé, pas la source, qui dit à
 /// l'exploitant quel mapping ne s'applique plus.
 pub(crate) static INGEST_CHAMP_PREEMPTE_TOTAL: AtomicU64 = AtomicU64::new(0);
+/// LA CLÉ QUI REÇOIT CE QUI DÉPASSE LE PLAFOND D'UNE VENTILATION BORNÉE.
+pub(crate) const CLE_DES_AUTRES: &str = "(autres)";
+/// L'ENTRÉE DE `cle` DANS UNE VENTILATION BORNÉE : la sienne si elle existe, une neuve tant que le plafond n'est pas
+/// atteint, sinon celle de `CLE_DES_AUTRES` — le compte n'est jamais perdu, seule sa ventilation l'est. Un seul auteur pour
+/// les ventilations bornées : champs préemptés (`P4.12-f`), sources sans adresse (`P4.12-b`), `BEGIN` refusés par journal
+/// (`P10.27-h`, `comptes_de_transaction`) — les deux premières en gardaient chacune une copie en ligne.
+pub(crate) fn entree_sous_plafond<'m, V: Default>(
+    ventilation: &'m mut std::collections::BTreeMap<String, V>,
+    cle: &str,
+    plafond: usize,
+) -> &'m mut V {
+    let cle = if ventilation.contains_key(cle) || ventilation.len() < plafond { cle } else { CLE_DES_AUTRES };
+    ventilation.entry(cle.to_string()).or_default()
+}
+/// LE COMPTE ET LA DERNIÈRE CAUSE D'UNE CLÉ, forme `(n, dernière cause)` : le compte monte, la cause est REMPLACÉE par
+/// celle du DERNIER refus. Un seul auteur pour les ticks aveugles (`P10.7-f`) et les gestes de fond non validés
+/// (`P10.26-d`, `comptes_de_transaction`).
+pub(crate) fn consigner_avec_sa_derniere_cause(
+    ventilation: &mut std::collections::BTreeMap<String, (u64, String)>,
+    cle: &str,
+    cause: String,
+) {
+    let e = ventilation.entry(cle.to_string()).or_insert((0, String::new()));
+    e.0 += 1;
+    e.1 = cause;
+}
 pub(crate) static CHAMPS_PREEMPTES: std::sync::Mutex<std::collections::BTreeMap<String, u64>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
 pub(crate) const CHAMPS_PREEMPTES_PLAFOND: usize = 64;
 pub(crate) fn compter_un_champ_preempte(cle: &str) {
     INGEST_CHAMP_PREEMPTE_TOTAL.fetch_add(1, Ordering::Relaxed);
     if let Ok(mut m) = CHAMPS_PREEMPTES.lock() {
-        if let Some(n) = m.get_mut(cle) { *n += 1; }
-        else if m.len() < CHAMPS_PREEMPTES_PLAFOND { m.insert(cle.to_string(), 1); }
-        else if let Some(n) = m.get_mut("(autres)") { *n += 1; }
-        else { m.insert("(autres)".to_string(), 1); }
+        *entree_sous_plafond(&mut m, cle, CHAMPS_PREEMPTES_PLAFOND) += 1;
     }
 }
 /// `P4.12-b` — UN ÉVÉNEMENT INDEXÉ SANS ADRESSE SOURCE, COMPTÉ PAR SOURCE. Six voies d'entrée n'ont aucun
@@ -56,10 +79,7 @@ pub(crate) const SOURCES_SANS_ADRESSE_PLAFOND: usize = 64;
 pub(crate) fn compter_un_evenement_sans_adresse_source(source: &str) {
     INGEST_SANS_ADRESSE_SOURCE_TOTAL.fetch_add(1, Ordering::Relaxed);
     if let Ok(mut m) = SOURCES_SANS_ADRESSE.lock() {
-        if let Some(n) = m.get_mut(source) { *n += 1; }
-        else if m.len() < SOURCES_SANS_ADRESSE_PLAFOND { m.insert(source.to_string(), 1); }
-        else if let Some(n) = m.get_mut("(autres)") { *n += 1; }
-        else { m.insert("(autres)".to_string(), 1); }
+        *entree_sous_plafond(&mut m, source, SOURCES_SANS_ADRESSE_PLAFOND) += 1;
     }
 }
 /// Le compte d'une source, pour l'inventaire des sources (`None` = jamais comptée depuis le démarrage).
@@ -80,9 +100,7 @@ pub(crate) fn compter_un_tick_aveugle(balayage: &'static str, cause: &str) {
     TICKS_AVEUGLES_TOTAL.fetch_add(1, Ordering::Relaxed);
     eprintln!("[plume] balayage de fond AVEUGLE ({balayage}) : liste de travail NON LUE, aucun geste ce tour-ci : {cause}");
     if let Ok(mut m) = TICKS_AVEUGLES.lock() {
-        let e = m.entry(balayage.to_string()).or_insert((0, String::new()));
-        e.0 += 1;
-        e.1 = cause.to_string();
+        consigner_avec_sa_derniere_cause(&mut m, balayage, cause.to_string());
     }
 }
 /// Le compte et la dernière cause d'un balayage (`None` = jamais aveugle depuis le démarrage).
@@ -742,6 +760,9 @@ pub(crate) fn gather_json(conn: &Connection, spool: &str, db_path: &str, schema_
             .map(|m| m.iter().map(|(k, (n, c))| (k.clone(), json!({ "n": n, "derniere_cause": c }))).collect::<serde_json::Map<String, Value>>())
             .unwrap_or_default()),
     );
+    // `P10.26-d` — les gestes dus des passes de fond que la base n'a pas validés, par geste (tenus par le module qui juge
+    // les transactions).
+    crate::comptes_de_transaction::poser_les_gestes_de_fond_non_valides(&mut scheduler);
     // P10.7-x — LA TABLE PARCOURUE EST DÉRIVÉE DU REGISTRE (`boucles_publiees`), plus une liste écrite :
     // une passe qui publie est servie le jour où elle publie. Clés BRUTES ici ; c'est l'exposition
     // Prometheus qui les réduit à son alphabet.
@@ -769,6 +790,8 @@ pub(crate) fn gather_json(conn: &Connection, spool: &str, db_path: &str, schema_
         "ingest": ingest,
         "search": { "requests_total": SEARCH_TOTAL.load(Ordering::Relaxed), "p50_ms": p50, "p95_ms": p95, "samples": lat_n },
         "scheduler": scheduler,
+        // `P10.27-h`, `P10.27-y` — les `BEGIN` refusés sur l'écrivain et les transactions orphelines vues par la sonde.
+        "transactions": crate::comptes_de_transaction::comptes_de_transaction_json(),
         "detection": detection,
         "db": db,
         "host": hote,
@@ -853,6 +876,10 @@ pub(crate) fn gather_prom(conn: &Connection, spool: &str, db_path: &str, schema_
     g(&mut o, "plume_scheduler_rule_ticks_total", "counter", "Ticks du scheduler de règles", "/scheduler/rule_ticks_total");
     g(&mut o, "plume_scheduler_rollup_ticks_total", "counter", "Ticks de la boucle de rollup", "/scheduler/rollup_ticks_total");
     g(&mut o, "plume_scheduler_ticks_aveugles_total", "counter", "Balayages de fond qui n'ont pas pu lire leur liste de travail et n'ont rien fait ce tour-ci (P10.7-f ; ventilation par balayage avec la dernière cause dans /api/metrics scheduler.ticks_aveugles)", "/scheduler/ticks_aveugles_total");
+    // `P10.26-d`, `P10.27-h`, `P10.27-y` — LES REFUS DE TRANSACTION, qui n'étaient dits qu'au journal. Rendu par le module
+    // qui TIENT les compteurs (nommage, `# HELP` = documentation d'exploitation, cardinalité fermée des causes), dérivé de
+    // `j` : la série et la clé JSON ne peuvent pas diverger.
+    o.push_str(&crate::comptes_de_transaction::exposition_prom(&j));
     // P4.1-r — PAR BOUCLE DE FOND : les abandons du dernier tick (jauge, ABSENTE tant que la boucle n'a
     // pas tické, ou quand le tick a été AVEUGLE) et la lisibilité du bilan à côté, comme pour toute
     // mesure de `S32`. `g()` n'imprime que ce qu'il trouve : l'absence EST le message, la jauge

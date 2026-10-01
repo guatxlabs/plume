@@ -12,7 +12,10 @@
 //! `jouer_le_geste_garde` (`P10.21-r`) est la forme d'un geste dont la GARDE (une lecture qui peut refuser) et
 //! l'ÉCRITURE qu'elle autorise vivent dans UNE transaction, sous un seul verrou ; `point_de_course` est le lieu où un
 //! témoin de course fait jouer le geste concurrent (inerte hors `cfg(test)`).
+//! `P10.27-h`, `P10.26-d`, `P10.27-y` — les refus que ces phrases disent au journal sont aussi COMPTÉS, au même
+//! endroit, par `crate::comptes_de_transaction`, qui les sert sous `/api/system/metrics` et `/metrics`.
 use crate::*;
+use crate::comptes_de_transaction::CauseDuBeginRefuse;
 
 /// `P10.21-r` — CE QUE REND UN GESTE GARDÉ (voir `jouer_le_geste_garde`). Le jeter serait taire un refus.
 #[must_use]
@@ -114,7 +117,8 @@ pub(crate) fn poser_un_crochet_de_course(cle: &str, crochet: impl FnOnce() + Sen
 /// Un `BEGIN` refusé — verrou tenu ailleurs, ou transaction étrangère — rend `Err` : l'appelant n'écrit RIEN, ne valide
 /// rien, n'annule rien, et le tour suivant (tick, nouvel essai de l'émetteur, lot laissé au spool) reprend. Le journal
 /// distingue les deux causes, parce qu'elles n'appellent pas la même suite : un verrou passe, une transaction étrangère
-/// pendante BLOQUE l'écrivain jusqu'à ce que son geste la ferme — ce geste-ci ne la ferme pas à sa place.
+/// pendante BLOQUE l'écrivain jusqu'à ce que son geste la ferme — ce geste-ci ne la ferme pas à sa place. (`P10.27-h` :
+/// un refus du moteur sur un écrivain libre qui n'est pas un verrou est une troisième cause, dite et comptée à part.)
 pub(crate) fn ouvrir_sa_transaction(conn: &Connection, journal: &str, geste: &str) -> rusqlite::Result<()> {
     conn.execute_batch("BEGIN IMMEDIATE").map_err(|refus| {
         dire_la_transaction_non_ouverte(conn, journal, geste, &refus);
@@ -150,14 +154,26 @@ pub(crate) fn ouvrir_le_garde_du_geste<'c>(conn: &'c Connection, journal: &str, 
 /// `P10.26-s` — LA PHRASE D'UN `BEGIN` REFUSÉ, une seule, pour `ouvrir_sa_transaction` et pour les gestes qui ouvrent
 /// leur transaction par le garde `Txn` (spool de métriques et d'instantanés). Elle est dite APRÈS le refus : c'est
 /// l'état de l'écrivain à cet instant qui sépare le verrou passager de la transaction étrangère.
+///
+/// `P10.27-h` — ET LE REFUS EST COMPTÉ, sous la même cause que la phrase (`comptes_de_transaction::compter_un_begin_refuse`),
+/// et la phrase distingue TROIS causes : un verrou tenu ailleurs (il passe), un refus du moteur qui n'est pas un verrou
+/// (base en lecture seule, disque, E/S : un nouvel essai sera refusé de même), une transaction étrangère (l'écrivain reste
+/// bloqué). Elle ne promet aucune reprise automatique : elle sert aussi des gestes d'opérateur (purge confirmée, attache
+/// d'un runbook) et des routes, que rien ne rejoue — la première forme disait « repris au prochain passage » à tous.
 pub(crate) fn dire_la_transaction_non_ouverte(conn: &Connection, journal: &str, geste: &str, refus: &rusqlite::Error) {
-    if conn.is_autocommit() {
-        eprintln!("[{journal}] WARN {geste} NON pris(e) : BEGIN refusé ({refus}) — rien n'est écrit, repris au prochain passage");
-    } else {
-        eprintln!(
+    match crate::comptes_de_transaction::compter_un_begin_refuse(conn, journal, refus) {
+        CauseDuBeginRefuse::Verrou => eprintln!(
+            "[{journal}] WARN {geste} NON pris(e) : BEGIN refusé, verrou d'écriture tenu ailleurs ({refus}) — rien n'est écrit ; \
+             un verrou passe, un nouvel essai (passage suivant ou geste rejoué) peut aboutir"
+        ),
+        CauseDuBeginRefuse::HorsVerrou => eprintln!(
+            "[{journal}] ERREUR {geste} NON pris(e) : BEGIN refusé par la base, et ce n'est pas un verrou ({refus}) — rien n'est \
+             écrit ; un nouvel essai sera refusé de même tant que la cause demeure (base en lecture seule, disque, E/S)"
+        ),
+        CauseDuBeginRefuse::TransactionEtrangere => eprintln!(
             "[{journal}] ERREUR {geste} NON pris(e) : l'écrivain porte une transaction qui n'est pas la sienne ({refus}) — \
              rien n'est écrit, validé ni annulé à sa place ; l'écrivain reste bloqué tant que son geste ne la ferme pas"
-        );
+        ),
     }
 }
 
@@ -263,7 +279,12 @@ pub(crate) fn tracer_apres_coup(
     let tx = match Txn::begin(conn) {
         Ok(tx) => tx,
         Err(refus) => {
-            let etat = if conn.is_autocommit() { "verrou indisponible" } else { "l'écrivain porte une transaction qui n'est pas la sienne" };
+            // `P10.27-h` — ce `BEGIN` refusé a sa propre phrase ; il est compté comme ceux de `dire_la_transaction_non_ouverte`.
+            let etat = match crate::comptes_de_transaction::compter_un_begin_refuse(conn, journal, &refus) {
+                CauseDuBeginRefuse::Verrou => "verrou indisponible",
+                CauseDuBeginRefuse::HorsVerrou => "la base refuse, et ce n'est pas un verrou",
+                CauseDuBeginRefuse::TransactionEtrangere => "l'écrivain porte une transaction qui n'est pas la sienne",
+            };
             eprintln!("[{journal}] WARN trace de « {geste} » NON écrite : BEGIN refusé ({refus} ; {etat}) — le geste a eu lieu, sa trace manque");
             return Err(cause);
         }
@@ -306,9 +327,8 @@ pub(crate) fn fermer_l_instantane_de_lecture(conn: &Connection, journal: &str, g
 /// `P10.27-g` — LE COMPTE DES TRANSACTIONS TROUVÉES OUVERTES HORS DE TOUT GESTE, depuis le démarrage (jamais persisté).
 static TRANSACTIONS_OUVERTES_HORS_DE_TOUT_GESTE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// Le compte ci-dessus, lu par les témoins. Il n'est pas (encore) exposé sous `/metrics` : ce serait toucher le rendu
-/// des compteurs et leur documentation d'exploitation, hors de ce lot.
-#[cfg(test)]
+/// Le compte ci-dessus. `P10.27-y` — servi sous `/api/system/metrics` (`transactions.orphelines_vues_total`) et `/metrics`
+/// (`plume_transactions_orphelines_vues_total`) par `comptes_de_transaction`.
 pub(crate) fn transactions_ouvertes_hors_de_tout_geste() -> u64 {
     TRANSACTIONS_OUVERTES_HORS_DE_TOUT_GESTE.load(std::sync::atomic::Ordering::Relaxed)
 }
@@ -327,6 +347,8 @@ pub(crate) fn signaler_une_transaction_ouverte_hors_de_tout_geste(conn: &Connect
         return false;
     }
     TRANSACTIONS_OUVERTES_HORS_DE_TOUT_GESTE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    #[cfg(test)]
+    crate::comptes_de_transaction::noter_pour_les_temoins(conn, "orpheline vue".to_string());
     eprintln!(
         "[transaction] ERREUR l'écrivain porte une transaction OUVERTE hors de tout geste (vue par la boucle « {boucle} ») : \
          l'ingestion, le pli des hôtes, le reparse et l'envoi des puits sont bloqués jusqu'à sa fermeture ou au redémarrage"

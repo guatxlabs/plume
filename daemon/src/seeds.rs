@@ -29,6 +29,8 @@ pub(crate) fn semer_la_demonstration(conn: &Connection) {
     let txn = match Txn::begin(conn) {
         Ok(txn) => txn,
         Err(e) => {
+            // `P10.27-h` — ce `BEGIN` refusé garde sa phrase, et il est compté comme tout `BEGIN` refusé sur l'écrivain.
+            crate::comptes_de_transaction::compter_un_begin_refuse(conn, "demo", &e);
             eprintln!("[demo] données de démo NON semées : transaction refusée ({e}) — rien n'est écrit, le semis sera retenté au prochain démarrage");
             return;
         }
@@ -229,6 +231,8 @@ fn semer_sous_son_drapeau(conn: &Connection, drapeau: &str, semis: impl FnOnce(&
     let txn = match Txn::begin(conn) {
         Ok(txn) => txn,
         Err(e) => {
+            // `P10.27-h` — ce `BEGIN` refusé garde sa phrase, et il est compté comme tout `BEGIN` refusé sur l'écrivain.
+            crate::comptes_de_transaction::compter_un_begin_refuse(conn, "seed", &e);
             eprintln!("[seed] `{drapeau}` NON semé : transaction refusée ({e}) — rien n'est écrit, le semis sera retenté au prochain démarrage");
             return;
         }

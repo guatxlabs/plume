@@ -22,7 +22,11 @@ Everything here is **read-only** and **additive** — existing ingest/UI endpoin
 This is a **new external read surface**. It does **not** bypass #45 field-filter masking or RBAC:
 
 - The caller is resolved by the normal `auth_guard` choke-point (token → role/tenant), exactly like every
-  other route. **Anonymous is refused** (401) unless the operator opted into `PLUME_PUBLIC_DEMO` (viewer).
+  other route. **Anonymous is refused** (401) unless the public demonstration is *served*: the operator opted into
+  `PLUME_PUBLIC_DEMO` **and** the daemon activated it at start — it is not activated when the name `demo` already
+  belongs to someone (`P10.28-j`: the refusal is written to the start log and to the ledger, and the diagnostic bundle
+  reports `public_demo_served` next to the configured value). Served, the demonstration is read-only (viewer, and no
+  write of any kind under its shared identity, `P10.28-i`).
 - **GXQL-HTTP** funnels every read through `soql_to_sql_masked_x(soql, from, to, env, effective_masks(role,…))`
   — the *same* masked compiler the UI's `/api/query` uses. The mask is emitted **inside the SQL** (before any
   aggregation/rename), and DENY rules on real columns also arm the SQLite read-pool authorizer. A viewer-scoped

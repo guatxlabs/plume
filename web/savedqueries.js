@@ -21,7 +21,20 @@
 // n'envoie JAMAIS d'identifiant d'utilisateur) -> pas d'IDOR/énumération. Le texte GXQL stocké est INERTE :
 // il n'est compilé/masqué/autorisé qu'au run, par le chemin gardé /api/query (comme une requête tapée à la main).
 import { $, api, apiSend, toast, modal, confirmModal, bornerLePopoverSousSonAncre, puitsDuRefusDUnGeste, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste, faceDansLaLangue, phraseDuRefusDUneLecture } from './core.js';
-import { ecrireSansDireLeRefus, RAISONS_DE_SILENCE } from './state.js';
+import { ecrireSansDireLeRefus, RAISONS_DE_SILENCE, sousLaDemonstrationPublique } from './state.js';
+
+// `P10.28-i` — SOUS LA DÉMONSTRATION PUBLIQUE, « ENREGISTRER » N'OUVRE PAS LA FENÊTRE ET LE DIT. Le démon sert tout
+// visiteur anonyme sous UNE identité partagée (`auth_method` « demo ») et refuse toute écriture servie sous elle (403
+// nommé, `CAUSE_DEMONSTRATION_EN_LECTURE_SEULE`, daemon/src/auth.rs) ; avant ce lot, il la prenait (200), et le modèle
+// d'un visiteur était lu, modifié et effacé par les suivants. Laisser partir le geste ferait saisir un nom pour rien,
+// puis peindre ce refus — et inscrire un déni d'autorisation au journal à chaque clic d'un visiteur. La console
+// s'arrête donc AVANT la fenêtre, sans rien envoyer, et dit pourquoi dans les deux langues. Hors démonstration, rien
+// ne change. La modification et la suppression ne sont pas gardées ici : sous une démonstration active, l'identité
+// partagée ne tient aucun modèle (le démon refuse de l'activer sinon, `P10.28-j`), la palette n'en liste donc aucun.
+// Le prédicat vit dans state.js (`sousLaDemonstrationPublique`, partagé avec prefs.js). CORRECTION DE VÉRIFICATION :
+// l'avis ne conseille plus « connectez-vous » — sous une démonstration active, `/api/me` rend 200 `demo`, l'écran de
+// connexion ne vient que d'un 401 et la déconnexion recharge la page dans la démonstration : la console n'offre aucune
+// connexion. Il dit ce qu'un enregistrement demande, une identité à soi, que la démonstration ne donne pas.
 
 // ============================ 2) HISTORIQUE RÉCENT (localStorage) ============================
 const RECENT_KEY = 'plume_recent_queries';
@@ -157,6 +170,11 @@ function puitsDesModelesDeRequete() {
 // Enregistrer un texte sous un nom parmi MES MODÈLES. Draft autorisé (texte vide accepté par le serveur).
 // `preset` = {name, soql} pour pré-remplir (copie d'un modèle livré) ; sans preset, le texte de la barre.
 export async function saveAsTemplate(preset) {
+  // `P10.28-i` — voir l'en-tête : rien n'est envoyé, aucune fenêtre ne s'ouvre, la raison est dite.
+  if (sousLaDemonstrationPublique()) {
+    toast(faceDansLaLangue({ fr: "Démonstration publique en LECTURE SEULE : un modèle ne s'enregistre pas sous la démonstration, le démon refuserait l'écriture. Rien n'est envoyé ; enregistrer demande une identité à soi, un compte de cette instance, que la démonstration ne donne pas.", en: "Public demonstration is READ-ONLY: a template is not saved under the demonstration, the daemon would refuse the write. Nothing is sent; saving requires an identity of your own, an account on this instance, which the demonstration does not provide." }), 'info', 9000);
+    return null;
+  }
   const sql = preset && typeof preset.soql === 'string' ? preset.soql : (($('#sql') && $('#sql').value) || '').trim();
   const vals = await modal({
     title: 'Enregistrer dans mes modèles',

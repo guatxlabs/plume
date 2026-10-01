@@ -216,3 +216,9 @@ export const S = {
   autoTimer: null,
   autoPaused: false,
 };
+
+// `P10.28-i` — LA CONSOLE EST-ELLE SERVIE SOUS LA DÉMONSTRATION PUBLIQUE ? Le démon sert alors tout visiteur anonyme sous
+// UNE identité partagée (`auth_method` « demo », rendu par `/api/me` et posé dans `S.AUTH`) et refuse toute écriture
+// servie sous elle (403 nommé, `CAUSE_DEMONSTRATION_EN_LECTURE_SEULE`, daemon/src/auth.rs). UN SEUL prédicat, ici, à côté
+// de `S` qu'il lit : `prefs.js` et `savedqueries.js` en portaient chacun une copie à l'identique.
+export function sousLaDemonstrationPublique() { return !!(S.AUTH && S.AUTH.auth_method === 'demo'); }

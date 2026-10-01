@@ -81,7 +81,16 @@ Sécurité : `CMD` tourne en root → `/etc/plume/inputs.d` doit être **root-on
 Pour exposer une démo publique **sans risque** :
 - **`PLUME_PUBLIC_DEMO=1`** → accès **anonyme en lecture seule** (rôle *viewer* forcé) : lecture OK
   (overview, search, explore, dashboards, alertes…), **tout le reste bloqué 403** (création/màj/suppression,
-  `/api/users`, `/api/actions`, `/api/ingest`, `/api/mail/body`). Réutilise le RBAC viewer (testé).
+  `/api/users`, `/api/actions`, `/api/ingest`, `/api/mail/body`). Réutilise le RBAC viewer, PLUS une porte propre
+  à la démonstration (`P10.28-i`) : le rôle *viewer* écrit pour lui-même ses requêtes enregistrées, ses préférences,
+  son second facteur et son mot de passe, et tous les visiteurs anonymes partagent la même identité — ces écritures
+  sont donc refusées aussi (403 nommé), les lectures restent.
+- La démonstration **ne s'active pas** si le nom `demo` appartient déjà à quelqu'un (`P10.28-j`) : un compte `demo`,
+  `PLUME_USER=demo`, des lignes tenues sous ce nom ou une identité d'annuaire qui l'a porté. Le démon démarre sans
+  elle (accès anonyme refusé) : le journal de démarrage nomme la cause et le remède, le registre inscrit le refus
+  (`demo.activation.refusee`) et le paquet de diagnostic rend `public_demo_served` à côté de la configuration.
+  L'assistant d'installation ne pose pas ce nom ; démonstration active, un annuaire ne peut pas le présenter (hors
+  démonstration, il le prend comme un autre nom — et la démonstration demandée ensuite refusera de s'activer).
 - **`PLUME_DEMO=1`** → uniquement des **données factices** (aucune vraie donnée).
 - **Instance ISOLÉE** : un déploiement séparé, **jamais** le SOC de prod (sa DB, ses tokens, son réseau).
 - Rate-limit intégré ; mets-la derrière un reverse-proxy / Cloudflare. Pas de secret réel, pas d'agent.

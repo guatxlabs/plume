@@ -588,6 +588,15 @@ pub(crate) async fn setup_post(
     if user.is_empty() || pw.chars().count() < PASSWORD_MIN_CHARS {
         return bad_req(format!("utilisateur requis + mot de passe ≥ {PASSWORD_MIN_CHARS} caractères"));
     }
+    // `P10.28-j` — L'ASSISTANT NE POSE PAS UN ADMINISTRATEUR AU NOM DE LA DÉMONSTRATION PUBLIQUE. Mesuré le 2026-09-29 sur
+    // la forme d'avant : `/api/setup` avec `user = demo` rendait 200 et posait `user(demo, admin)` — seul test, un nom non
+    // vide. Au premier démarrage avec `PLUME_PUBLIC_DEMO=1`, tout visiteur anonyme aurait été servi sous le nom de
+    // l'administrateur : ses requêtes, tableaux de bord privés et préférences livrés à qui passe. Même réservation et même
+    // cause que la création d'un compte (`user_create`, `P10.25-h`), démonstration active ou non ; jugé APRÈS le jeton
+    // (un anonyme sans jeton n'apprend rien) et AVANT le hachage. Rien n'est écrit, le jeton d'installation reste valable.
+    if user == crate::auth::IDENTITE_DE_LA_DEMONSTRATION {
+        return err_json(StatusCode::CONFLICT, crate::handlers::users_lookups::CAUSE_NOM_DE_L_IDENTITE_DE_LA_DEMONSTRATION);
+    }
     let Some(h) = hash_pw(pw) else { return server_err("hash échoué") };
     // FAIL-CLOSED : tant que la pose de l'admin n'est pas ÉCRITE, il n'y a PAS d'installation — donc pas de
     // 200, pas d'effacement du token (l'exploitant doit pouvoir réessayer après réparation), pas de ledger.

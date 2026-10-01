@@ -453,6 +453,10 @@ impl RefusDeLaFederation {
             Self::Nom(R::CompteAMotDePasse(_)) => {
                 (StatusCode::CONFLICT, "le nom d'utilisateur correspond à un compte local existant (fédération refusée)").into_response()
             }
+            // `P10.28-j` — le nom de la démonstration publique : 409 comme les deux refus de nom d'avant, la cause de la règle.
+            Self::Nom(R::IdentiteDeLaDemonstration(_)) => {
+                err_json(StatusCode::CONFLICT, crate::auth::CAUSE_ANNUAIRE_NOM_DE_L_IDENTITE_DE_LA_DEMONSTRATION)
+            }
             Self::Nom(R::NonVerifie(nom, cause)) => {
                 eprintln!("[idp] WARN fédération de '{nom}' refusée, nom non vérifié : {cause}");
                 err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_FEDERATION_NOM_NON_VERIFIE)

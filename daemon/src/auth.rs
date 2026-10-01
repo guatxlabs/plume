@@ -952,6 +952,23 @@ pub(crate) const CAUSE_ANNUAIRE_NOM_D_UN_COMPTE_A_MOT_DE_PASSE: &str = "IDENTIT�
      le refuse de même. Connectez-vous par le mot de passe de ce compte ; sinon un administrateur supprime le compte \
      local, ou l'annuaire renomme l'identité. Le refus est inscrit au registre ; rien n'est servi.";
 
+/// `P10.28-j` — l'annuaire présente, démonstration SERVIE, le nom sous lequel elle sert tout visiteur anonyme.
+pub(crate) const CAUSE_ANNUAIRE_NOM_DE_L_IDENTITE_DE_LA_DEMONSTRATION: &str = "IDENTITÉ DE L'ANNUAIRE REFUSÉE, C'EST LE \
+     NOM DE LA DÉMONSTRATION PUBLIQUE : la démonstration publique est active sur ce démon, et elle sert sous ce nom tout \
+     visiteur anonyme. Cette identité partagerait son nom avec eux : ce qu'elle écrirait par son nom (requêtes \
+     enregistrées, tableaux de bord privés) serait lu par n'importe quel visiteur sans identifiant. Tant que la \
+     démonstration est active, l'annuaire ne prend pas ce nom, et la fédération (OIDC, SAML, LDAP) le refuse de même. \
+     Renommez l'identité dans l'annuaire, ou servez-la par une instance sans démonstration. Le refus est inscrit au \
+     registre ; rien n'est servi.";
+
+/// `P10.28-i` — une écriture présentée sous la démonstration publique (visiteur anonyme, identité partagée).
+pub(crate) const CAUSE_DEMONSTRATION_EN_LECTURE_SEULE: &str = "DÉMONSTRATION PUBLIQUE EN LECTURE SEULE : ce visiteur \
+     n'a présenté aucun identifiant, et la démonstration le sert sous une identité PARTAGÉE par tous les visiteurs \
+     anonymes — ce qu'il écrirait (requête enregistrée, préférences, second facteur, mot de passe) serait lu, modifié \
+     ou effacé par le visiteur suivant, et chaque écriture s'inscrirait au registre. Aucune écriture n'est servie sous \
+     la démonstration ; rien n'est écrit. Les lectures restent ouvertes ; écrire demande une identité à soi — un compte \
+     de cette instance qui présente ses identifiants —, que la démonstration ne donne à personne.";
+
 /// `P10.25-d` — la lecture qui dit si le nom porte un mot de passe local n'a pas eu lieu.
 pub(crate) const CAUSE_ANNUAIRE_NOM_NON_VERIFIE: &str = "IDENTITÉ DE L'ANNUAIRE NON VÉRIFIÉE : la base n'a pas pu \
      dire si ce nom est celui d'un compte local à mot de passe (lecture refusée ou table illisible), et le démon ne \
@@ -968,6 +985,8 @@ pub(crate) enum RefusDeLAnnuaire {
     AdministrateurDeConfiguration(String),
     /// Le nom d'un compte qui porte un mot de passe local.
     CompteAMotDePasse(String),
+    /// `P10.28-j` — le nom de la démonstration publique (`IDENTITE_DE_LA_DEMONSTRATION`), démonstration servie.
+    IdentiteDeLaDemonstration(String),
     /// La lecture n'a pas eu lieu : (nom, cause du moteur).
     NonVerifie(String, String),
 }
@@ -975,7 +994,7 @@ pub(crate) enum RefusDeLAnnuaire {
 impl RefusDeLAnnuaire {
     fn nom(&self) -> &str {
         match self {
-            Self::AdministrateurDeConfiguration(n) | Self::CompteAMotDePasse(n) | Self::NonVerifie(n, _) => n,
+            Self::AdministrateurDeConfiguration(n) | Self::CompteAMotDePasse(n) | Self::IdentiteDeLaDemonstration(n) | Self::NonVerifie(n, _) => n,
         }
     }
     /// Code court, stable, porté par la trace (jamais une phrase).
@@ -983,6 +1002,7 @@ impl RefusDeLAnnuaire {
         match self {
             Self::AdministrateurDeConfiguration(_) => "administrateur_de_configuration",
             Self::CompteAMotDePasse(_) => "compte_a_mot_de_passe",
+            Self::IdentiteDeLaDemonstration(_) => "identite_de_la_demonstration",
             Self::NonVerifie(..) => "non_verifie",
         }
     }
@@ -990,6 +1010,7 @@ impl RefusDeLAnnuaire {
         match self {
             Self::AdministrateurDeConfiguration(_) => (StatusCode::FORBIDDEN, CAUSE_ANNUAIRE_NOM_DE_L_ADMINISTRATEUR_DE_CONFIGURATION),
             Self::CompteAMotDePasse(_) => (StatusCode::FORBIDDEN, CAUSE_ANNUAIRE_NOM_D_UN_COMPTE_A_MOT_DE_PASSE),
+            Self::IdentiteDeLaDemonstration(_) => (StatusCode::FORBIDDEN, CAUSE_ANNUAIRE_NOM_DE_L_IDENTITE_DE_LA_DEMONSTRATION),
             Self::NonVerifie(..) => (StatusCode::SERVICE_UNAVAILABLE, CAUSE_ANNUAIRE_NOM_NON_VERIFIE),
         }
     }
@@ -1056,12 +1077,28 @@ impl PorteDeLAnnuaire {
 // la fédération par la connexion d'écriture qu'elle tient déjà pour son `UPSERT` (lire par l'écrivain une seconde
 // fois l'interbloquerait) — et la décision est ICI, une fois.
 //
-// CE QUE LA RÈGLE NE PREND PAS : l'identité de la démonstration publique et les identités de jetons, qui n'ont pas
-// de ligne non plus. Les jetons ne sont pas des noms que l'annuaire usurperait (ils s'authentifient par leur
-// secret, sur leurs routes, et ne tiennent rien par leur nom — `P10.25-h`, mesuré) ; l'identité de la
-// démonstration n'est réservée qu'à la création d'un compte local (`user_create`). Et la population de production
-// n'est pas touchée : l'identité SSO réelle de l'exploitant est servie comme avant (même décision sur le chemin
-// d'en-têtes, que ce déplacement ne change pas).
+// CE QUE LA RÈGLE NE PREND PAS : les identités de jetons, qui n'ont pas de ligne non plus. Les jetons ne sont pas
+// des noms que l'annuaire usurperait (ils s'authentifient par leur secret, sur leurs routes, et ne tiennent rien par
+// leur nom — `P10.25-h`, mesuré). Et la population de production n'est pas touchée : l'identité SSO réelle de
+// l'exploitant est servie comme avant (même décision sur le chemin d'en-têtes, que ce déplacement ne change pas).
+//
+// `P10.28-j` — L'IDENTITÉ DE LA DÉMONSTRATION PUBLIQUE REJOINT LA RÈGLE, AUX DEUX PORTES, QUAND LA DÉMONSTRATION EST
+// SERVIE. MESURÉ le 2026-09-29 sur la forme d'avant : l'annuaire qui présente `demo` par les en-têtes, démonstration
+// active, était servi `demo`/`editor` (200) — même propriétaire que tout visiteur anonyme, qui lisait ce que cette
+// identité écrivait ; la fédération de `demo` rendait `Ok` et posait la ligne. Refusé désormais, démonstration SERVIE
+// (`st.public_demo`, le drapeau jugé au démarrage) : `IdentiteDeLaDemonstration`, 403 et sa cause aux en-têtes, 409 et
+// la même cause à la fédération, tracé par la trace commune.
+// DÉMONSTRATION NON SERVIE, LE NOM EST PRIS COMME UN AUTRE (correction de vérification) : la première forme le
+// refusait « active ou non », pour le cas où la démonstration s'activerait ensuite au-dessus de cette identité. Ce
+// cas est tenu AILLEURS, et mieux : `server::activation_de_la_demonstration` refuse d'activer la démonstration sur un
+// nom que l'annuaire a présenté (`acces_observe`, méthode `sso`), qui a un compte (la fédération en pose un) ou qui
+// tient des lignes par une colonne d'autorité. Le refus hors démonstration n'ajoutait donc aucune protection, et
+// c'était la SEULE moitié de la règle qui touchait la production — où la démonstration est inactive : une identité
+// réelle de l'annuaire nommée `demo` y perdait l'accès, population jamais relevée. Hors démonstration, rien ne change
+// pour elle.
+// Jugé APRÈS l'administrateur de configuration (un `PLUME_USER=demo` garde sa cause d'avant) et AVANT la lecture du
+// hachage : c'est un fait du code et de la configuration, aucune lecture n'y entre (témoin `dlsp_` (3), la porte de
+// lecture refusée).
 // ====================================================================================================
 
 /// `P10.25-t` — CE QUE LA CONFIGURATION ET L'INSTALLATION TIENNENT HORS DE LA TABLE `user`, lu aux deux portes.
@@ -1070,6 +1107,8 @@ pub(crate) struct NomsTenusHorsDeLaTable<'a> {
     pub(crate) administrateur_de_configuration: Option<&'a str>,
     /// Le nom de l'administrateur de l'assistant (crédence en mémoire), s'il est posé.
     pub(crate) administrateur_de_l_assistant: Option<String>,
+    /// `P10.28-j` — la démonstration publique est SERVIE (`st.public_demo`) : son nom n'est alors à aucun annuaire.
+    pub(crate) demonstration_servie: bool,
 }
 
 impl<'a> NomsTenusHorsDeLaTable<'a> {
@@ -1079,6 +1118,7 @@ impl<'a> NomsTenusHorsDeLaTable<'a> {
         Self {
             administrateur_de_configuration: crate::handlers::idp::reserved_static_admin(st),
             administrateur_de_l_assistant: st.admin.lock().as_ref().map(|(nom, _)| nom.clone()),
+            demonstration_servie: st.public_demo,
         }
     }
 }
@@ -1089,7 +1129,7 @@ impl<'a> NomsTenusHorsDeLaTable<'a> {
 #[cfg(test)]
 impl<'a> From<Option<&'a str>> for NomsTenusHorsDeLaTable<'a> {
     fn from(administrateur_de_configuration: Option<&'a str>) -> Self {
-        Self { administrateur_de_configuration, administrateur_de_l_assistant: None }
+        Self { administrateur_de_configuration, administrateur_de_l_assistant: None, demonstration_servie: false }
     }
 }
 
@@ -1103,6 +1143,9 @@ pub(crate) fn juger_le_nom_pris_par_un_annuaire(
 ) -> Result<(), RefusDeLAnnuaire> {
     if noms.administrateur_de_configuration == Some(nom) {
         return Err(RefusDeLAnnuaire::AdministrateurDeConfiguration(nom.to_string()));
+    }
+    if noms.demonstration_servie && nom == IDENTITE_DE_LA_DEMONSTRATION {
+        return Err(RefusDeLAnnuaire::IdentiteDeLaDemonstration(nom.to_string()));
     }
     let porte_un_mot_de_passe = match hachage_de_sa_ligne() {
         Ok(Some(hachage)) => !hachage.is_empty() && hachage != IDP_HASH_SENTINEL,
@@ -1191,9 +1234,16 @@ pub(crate) fn tracer_un_refus_de_l_annuaire(st: &AppState, nom: &str, code: &'st
 }
 
 /// `P10.25-h` — LE NOM SOUS LEQUEL LA DÉMONSTRATION PUBLIQUE (`PLUME_PUBLIC_DEMO=1`) SERT TOUT VISITEUR ANONYME. Tout
-/// ce qu'un compte de ce nom tiendrait — requêtes enregistrées, tableaux de bord privés, préférences — serait servi à
-/// l'anonyme, qui le lirait, le modifierait et le supprimerait (mesuré). `user_create` le réserve donc, que la
-/// démonstration soit active ou non : elle s'active par la configuration, au redémarrage.
+/// ce qu'un compte de ce nom tiendrait — requêtes enregistrées, tableaux de bord privés, préférences — était servi à
+/// l'anonyme, qui le lisait, le modifiait et le supprimait (mesuré sur la forme d'avant `P10.28-i`/`P10.28-j` ; depuis,
+/// l'anonyme n'écrit plus rien et la démonstration ne s'active plus au-dessus d'un tel compte : un compte de ce nom
+/// interdirait la démonstration sur cette instance). `user_create` le réserve donc, que la démonstration soit active ou
+/// non : elle s'active par la configuration, au redémarrage.
+/// `P10.28-j` — l'assistant d'installation (`setup_post`) le réserve de même ; la règle unique des annuaires
+/// (`juger_le_nom_pris_par_un_annuaire`, en-têtes SSO et fédération) le refuse quand la démonstration est SERVIE ; et la
+/// démonstration ne s'active pas quand ce nom appartient déjà à quelqu'un (`server::activation_de_la_demonstration`),
+/// ce qui tient aussi l'identité de l'annuaire prise hors démonstration. `P10.28-i` — sous ce nom, rien ne s'écrit
+/// (`refuser_l_ecriture_de_la_demonstration`).
 pub(crate) const IDENTITE_DE_LA_DEMONSTRATION: &str = "demo";
 
 /// L'identité résolue : (nom, rôle plancher), méthode, grants SSO (mode 1), super-admin SSO, tenant d'un jeton.
@@ -1368,6 +1418,8 @@ pub(crate) fn resolve_identity_ou_refus(st: &AppState, req: &Request) -> Result<
     }
     // DÉMO PUBLIQUE (opt-in) : si rien n'a authentifié, accès ANONYME forcé en LECTURE SEULE (viewer).
     // `P10.25-h` — son nom est `IDENTITE_DE_LA_DEMONSTRATION`, que `user_create` réserve.
+    // `P10.28-i` — la lecture seule est tenue par `apply_gates` (méthode `demo`), pas par le rôle : `viewer` écrit ses
+    // requêtes, ses préférences, son second facteur et son mot de passe.
     if ident.is_none() && st.public_demo {
         ident = Some((IDENTITE_DE_LA_DEMONSTRATION.into(), "viewer".into()));
         auth_method = "demo";
@@ -1441,11 +1493,35 @@ pub(crate) fn resolve_tenant_and_role(
     Ok(out)
 }
 
-/// GATES D'AUTORISATION (extrait byte-identique de `auth_guard`, refactor TIER 2), dans l'ORDRE d'origine :
-/// (1) rbac_gate (rôle PER-TENANT), (2) engagement_cred_write_gate (containment eng-cred, superset fail-closed),
+/// `P10.28-i` — LA DÉMONSTRATION PUBLIQUE EST EN LECTURE SEULE, ET C'EST ICI QU'ELLE L'EST.
+///
+/// LE DÉFAUT, MESURÉ LE 2026-09-29 SUR LA FORME D'AVANT (démonstration active, routeur réel, aucun identifiant) : `POST
+/// /api/saved-queries` rendait 200, posait une requête sous `demo` et un maillon `saved_query.create` au registre ;
+/// `PUT /api/prefs` rendait 200 et posait les préférences de `demo`. Le contrat écrit disait pourtant « lecture seule »
+/// (`state.rs`, `server/mod.rs`) : il était confié au RÔLE `viewer`, or `route_min_role` ouvre au lecteur, MÊME en
+/// mutation, les quatre surfaces qu'il écrit pour lui-même (requêtes enregistrées, préférences, second facteur, mot de
+/// passe). L'énoncé sous-comptait l'effet : tous les visiteurs anonymes sont le MÊME propriétaire — l'un pose un
+/// texte que tous les suivants lisent, efface ce que les autres ont posé, et chaque geste s'inscrit au registre.
+///
+/// LA DÉCISION, DÉJÀ ÉCRITE (`state.rs` : « accès ANONYME forcé en LECTURE SEULE ») : toute mutation servie sous la
+/// méthode `demo` est refusée, 403 et sa cause nommée. Sur la MÉTHODE et non sur le rôle ni sur la route : un vrai
+/// lecteur garde son libre-service (retirer ces routes au rôle `viewer` le lui aurait pris). Les lectures — dont les
+/// POST de lecture, que `mutating` exclut déjà — restent servies.
+pub(crate) fn refuser_l_ecriture_de_la_demonstration(auth_method: &str, mutating: bool) -> Result<(), &'static str> {
+    if mutating && auth_method == "demo" {
+        return Err(CAUSE_DEMONSTRATION_EN_LECTURE_SEULE);
+    }
+    Ok(())
+}
+
+/// GATES D'AUTORISATION (extrait de `auth_guard`, refactor TIER 2), dans l'ORDRE d'origine :
+/// (1) rbac_gate (rôle PER-TENANT), (1bis) `P10.28-i` la démonstration publique en lecture seule (méthode `demo`),
+/// (2) engagement_cred_write_gate (containment eng-cred, superset fail-closed),
 /// (3) tenant_mgmt_gate (path-guard gestion tenants, MODE 1 uniquement), (4) CSRF (mutations cookie-authentifiées).
 /// `csrf_value` est calculé par l'orchestrateur (réutilisé dans AuthUser) et passé ici pour la comparaison
-/// constant-time. `Err(Response)` = refus (403/…) propagé tel quel. Zéro changement de logique vs l'inline.
+/// constant-time. `Err(Response)` = refus (403/…) propagé tel quel. Zéro changement de logique vs l'inline pour les
+/// portes (1) à (4), extraites byte-identiques ; (1bis) est une porte AJOUTÉE par `P10.28-i`, qui n'a jamais existé
+/// dans l'inline d'origine.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_gates(
     st: &AppState,
@@ -1470,6 +1546,13 @@ pub(crate) fn apply_gates(
             ingest_authz_denied(st, name, role, path, req.method().as_str());
         }
         return Err((code, msg).into_response());
+    }
+    // `P10.28-i` — LA DÉMONSTRATION PUBLIQUE N'ÉCRIT RIEN. Jugé APRÈS `rbac_gate` : une mutation que le rôle `viewer`
+    // n'a pas garde son refus et son message d'avant ; seules les quatre surfaces que `viewer` écrit pour lui-même
+    // (requêtes enregistrées, préférences, second facteur, mot de passe) prennent ce refus-ci. Tracé comme un déni RBAC.
+    if let Err(cause) = refuser_l_ecriture_de_la_demonstration(auth_method, mutating) {
+        ingest_authz_denied(st, name, role, path, req.method().as_str());
+        return Err(err_json(StatusCode::FORBIDDEN, cause));
     }
     // CONTAINMENT eng-cred (v75) : un credential d'engagement (whitebox=admin) est LECTURE SEULE — il ne peut
     // NI se forger une persistance qui survit à window_end (compte durable / reset mdp / nouvel engagement)
@@ -1714,7 +1797,8 @@ pub(crate) async fn auth_guard(State(st): State<AppState>, mut req: Request, nex
     } else {
         String::new()
     };
-    // GATES (rbac / engagement-cred / tenant-mgmt / CSRF) — extrait byte-identique, ordre d'origine préservé.
+    // GATES (rbac / démonstration en lecture seule / engagement-cred / tenant-mgmt / CSRF) — ordre d'origine préservé ;
+    // extrait byte-identique sauf la porte de la démonstration, AJOUTÉE par `P10.28-i` (voir `apply_gates`).
     if let Err(resp) = apply_gates(&st, &req, &path, &role, &tenant, mutating, is_superadmin, &name, auth_method, &csrf_value) {
         return resp;
     }

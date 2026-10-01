@@ -25,6 +25,7 @@ use travaux_sur_la_base::*; // les `spawn_*` que le lancement des travaux de fon
 pub(crate) use travaux_sur_la_base::spawn_autovacuum_loop;
 mod boucles_de_fond; // BOUCLES DE SERVICE : ingest, règles, connecteurs, destinations, rétention, rapports, rollups, panneaux
 use boucles_de_fond::spawn_background_jobs;
+pub(crate) mod activation_de_la_demonstration; // `P10.28-j` : la démonstration publique ne s'active pas sur un nom déjà à quelqu'un
 
 /// TLS natif actif (PLUME_TLS_CERT + PLUME_TLS_KEY posés au boot) -> le listener sert en HTTPS et
 /// security_headers émet HSTS. OFF par défaut (HTTP en clair, comportement k3s/Traefik INCHANGÉ).
@@ -225,7 +226,8 @@ struct BootConfig {
     host: String,
     host_strict: bool,
     sso_secret: String,
-    public_demo: bool,
+    /// `P10.28-j` — DEMANDÉE, pas servie : seul `activer_la_demonstration_si_permise` en tire le drapeau de l'état.
+    public_demo: activation_de_la_demonstration::DemonstrationDemandee,
     metrics_token: String,
     sso_group_admin: String,
     sso_group_editor: String,
@@ -256,7 +258,8 @@ struct BootConfig {
 }
 
 /// Lit toute la configuration de démarrage (PLUME_*) + effets de bord d'amorçage inchangés
-/// (START_TS/TLS_ON, logs host_strict/public_demo). Ordre identique à l'ancien préambule de run().
+/// (START_TS/TLS_ON, log host_strict). Ordre identique à l'ancien préambule de run() ; le log de la démonstration
+/// publique est passé à son activation (`P10.28-j`, `activation_de_la_demonstration`), qui lit la base.
 fn boot_config() -> BootConfig {
     // #51 DAY-2 OPS : horodatage de démarrage (process_start_time_seconds / uptime) posé une fois.
     START_TS.store(now(), std::sync::atomic::Ordering::Relaxed);
@@ -282,10 +285,14 @@ fn boot_config() -> BootConfig {
     // si posé, sinon repli env `PLUME_SSO_HEADER_SECRET` (v116). Fail-closed si le fichier configuré manque/vide
     // (ne PAS retomber en silence sur env absent -> SSO ne doit jamais s'ouvrir par défaut de secret manquant).
     let sso_secret = cfg_secret(&conf, "PLUME_SSO_HEADER_SECRET");
-    let public_demo = cfg(&conf, "PLUME_PUBLIC_DEMO", "0") == "1";   // démo publique : anon read-only (opt-in)
+    // Démo publique : anon read-only (opt-in). DEMANDÉE ici ; `P10.28-j` — ACTIVÉE (ou refusée, et dite) dans `run()`,
+    // une fois la base ouverte (`activation_de_la_demonstration`), qui porte la bannière d'avant. Le type de la valeur
+    // demandée n'est pas celui du drapeau servi : l'état ne la prend pas sans son jugement (refus de compilation).
+    let public_demo = activation_de_la_demonstration::DemonstrationDemandee::depuis_la_configuration(
+        cfg(&conf, "PLUME_PUBLIC_DEMO", "0") == "1",
+    );
     // #51 DAY-2 OPS — jeton de scrape /metrics (Bearer). Vide (défaut) -> /metrics exige viewer+ (jamais anonyme).
     let metrics_token = cfg(&conf, "PLUME_METRICS_TOKEN", "");
-    if public_demo { eprintln!("[demo] PLUME_PUBLIC_DEMO=1 : accès ANONYME en LECTURE SEULE (viewer) — NE PAS utiliser en prod"); }
     let sso_group_admin = cfg(&conf, "PLUME_SSO_GROUP_ADMIN", "plume-admin");
     let sso_group_editor = cfg(&conf, "PLUME_SSO_GROUP_EDITOR", "plume-editor");
     let sso_group_superadmin = cfg(&conf, "PLUME_SSO_GROUP_SUPERADMIN", "admins");
@@ -802,6 +809,17 @@ pub(crate) async fn run() {
              REFUSÉS (voir docs/TROIS-MODES.md §3.11)"
         );
     }
+    // `P10.28-j` — LA DÉMONSTRATION DEMANDÉE N'EST SERVIE QUE SI SON NOM N'EST À PERSONNE (compte, administrateur de
+    // configuration, lignes tenues sans compte, identité de l'annuaire) ; sinon le démon sert sans elle, le dit au
+    // journal et l'inscrit au registre. `public_demo` est ici REDÉFINI : la valeur demandée (`DemonstrationDemandee`)
+    // devient le drapeau servi (`bool`) — un verdict jeté ou enfermé dans un bloc ne compile pas (`AppState` attend un
+    // `bool`). Une AUTRE valeur, elle, compilerait (un littéral) : la liaison ci-dessous est épinglée entière sur ce
+    // source (témoin `dlsp_` (6)).
+    let public_demo = activation_de_la_demonstration::activer_la_demonstration_si_permise(
+        &db.lock(),
+        public_demo,
+        (!pass.is_empty()).then_some(user.as_str()),
+    );
     let state = AppState {
         db,
         user: Arc::new(user),

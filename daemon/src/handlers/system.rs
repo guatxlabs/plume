@@ -366,6 +366,9 @@ pub(crate) fn diag_bundle_json(conn: &Connection, spool: &str, db_path: &str, wa
     paquet
 }
 
+/// `P10.28-j` — la clé du paquet de diagnostic qui rend la démonstration publique SERVIE (le drapeau jugé au démarrage).
+pub(crate) const CLE_DE_LA_DEMONSTRATION_SERVIE: &str = "public_demo_served";
+
 /// GET /api/system/diag — ADMIN-ONLY (route_min_role Admin + re-check ici). Bundle JSON pour le support.
 /// Content-Disposition attachment -> le navigateur le télécharge en fichier. Aucun secret (allowlist).
 pub(crate) async fn system_diag(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Response {
@@ -376,10 +379,17 @@ pub(crate) async fn system_diag(State(st): State<AppState>, Extension(au): Exten
     let db_path = req_db_path(&st, &au);
     let warn = disk_warn_pct();
     let db = req_db(&st, &au);
-    let bundle = {
+    let mut bundle = {
         let c = db.lock();
         diag_bundle_json(&c, &spool, &db_path, warn)
     };
+    // `P10.28-j` — LA DÉMONSTRATION SERVIE, À CÔTÉ DE LA DEMANDÉE. `config.PLUME_PUBLIC_DEMO` rend la CONFIGURATION ; or
+    // la démonstration demandée n'est pas servie quand son nom appartient déjà à quelqu'un (jugée au démarrage,
+    // `server::activation_de_la_demonstration`). Sans ce champ, le paquet remis au support disait `"1"` sur un démon qui
+    // refuse l'anonyme (401) — le refus ne se lisait qu'au journal de démarrage.
+    if let Some(obj) = bundle.as_object_mut() {
+        obj.insert(CLE_DE_LA_DEMONSTRATION_SERVIE.into(), json!(st.public_demo));
+    }
     let fname = format!("plume-diag-{}.json", now());
     (
         StatusCode::OK,

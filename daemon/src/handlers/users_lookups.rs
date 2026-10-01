@@ -163,12 +163,18 @@ pub(crate) const CAUSE_NOM_DE_L_ADMINISTRATEUR_DE_CONFIGURATION: &str = "NOM RÉ
      configuration ne serait plus consulté — et hériterait de ce qu'il tient par son nom : graine du second facteur, \
      requêtes, tableaux de bord, instantanés. Choisissez un autre nom. Rien n'est écrit.";
 
-/// `P10.25-h` — LE NOM DE LA DÉMONSTRATION PUBLIQUE NE DEVIENT PAS UN COMPTE.
+/// `P10.25-h` — LE NOM DE LA DÉMONSTRATION PUBLIQUE NE DEVIENT PAS UN COMPTE. Servie par `user_create` et par l'assistant
+/// d'installation (`setup_post`, `P10.28-j`). CORRECTION DE VÉRIFICATION : la phrase d'avant disait qu'un tel compte
+/// livrerait ce qu'il tient à l'anonyme, « que l'anonyme lirait, modifierait et supprimerait » — faux deux fois depuis ce
+/// lot : l'anonyme n'écrit plus rien (`P10.28-i`), et la démonstration ne s'active plus au-dessus d'un compte de ce nom
+/// (`P10.28-j`). Ce que la réservation tient encore, et que la phrase dit : ce nom est celui de tout visiteur anonyme,
+/// et un compte qui le prendrait interdirait la démonstration sur cette instance.
 pub(crate) const CAUSE_NOM_DE_L_IDENTITE_DE_LA_DEMONSTRATION: &str = "NOM RÉSERVÉ, C'EST L'IDENTITÉ DE LA \
      DÉMONSTRATION PUBLIQUE : quand la démonstration est active, le démon sert sous ce nom tout visiteur anonyme, sans \
-     identifiant. Un compte de ce nom lui livrerait ce qu'il tient — requêtes enregistrées, tableaux de bord privés, \
-     préférences —, que l'anonyme lirait, modifierait et supprimerait ; et la démonstration s'active par la \
-     configuration, au redémarrage. Choisissez un autre nom. Rien n'est écrit.";
+     identifiant. Un compte de ce nom partagerait son nom avec eux : la démonstration refuserait alors de s'activer sur \
+     cette instance (elle s'active par la configuration, au redémarrage, et jamais sur un nom qui appartient déjà à \
+     quelqu'un — sinon l'anonyme lirait ce que ce compte tient : requêtes enregistrées, tableaux de bord privés, \
+     préférences). Choisissez un autre nom. Rien n'est écrit.";
 
 /// `P10.24-u` — UN NOM TENU SANS COMPTE LOCAL NE DEVIENT PAS UN COMPTE À MOT DE PASSE.
 pub(crate) const CAUSE_NOM_TENU_PAR_UNE_IDENTITE_SANS_COMPTE: &str = "NOM TENU PAR UNE IDENTITÉ SANS COMPTE LOCAL : \

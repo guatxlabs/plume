@@ -23,7 +23,24 @@
 // SECURITY: the endpoint is self-scoped server-side (keyed by the authenticated identity; the client never
 // sends a user id). We never store secrets here — only UI state.
 import { api, apiSend, brancherLeMagasinDeLargeurs, faceDansLaLangue, toast } from './core.js';
-import { ecrireSansDireLeRefus, RAISONS_DE_SILENCE } from './state.js';
+import { ecrireSansDireLeRefus, RAISONS_DE_SILENCE, sousLaDemonstrationPublique } from './state.js';
+
+// `P10.28-i` — SOUS LA DÉMONSTRATION PUBLIQUE, LES PRÉFÉRENCES RESTENT SUR CET APPAREIL, ET N'Y ATTENDENT AUCUN COMPTE.
+// Le démon sert tout visiteur anonyme sous UNE identité partagée (`auth_method` « demo », servi par `/api/me` ; prédicat
+// `sousLaDemonstrationPublique`, state.js) et refuse désormais toute écriture servie sous elle (403 nommé,
+// `CAUSE_DEMONSTRATION_EN_LECTURE_SEULE`, daemon/src/auth.rs) — avant ce lot, ce PUT rendait 200 et posait les
+// préférences de ce visiteur comme celles de TOUS les suivants. Ce module les écrit TOUT SEUL (largeurs de colonnes,
+// ordre des tuiles) : sous la démonstration, il ne les envoie donc plus, et le MIROIR EST LE MAGASIN — `prefsInit` ne
+// le remplace pas (la ligne servie de l'identité partagée est vide par construction : le démon refuse d'activer la
+// démonstration sur un nom qui tient des préférences, `P10.28-j`, et l'anonyme n'en écrit plus). Aucun avis n'est
+// émis, et c'est délibéré — un visiteur sans compte n'attend pas de synchronisation, et un avis partirait à chaque
+// réglage touché. Hors démonstration, rien ne change.
+// CORRECTION DE VÉRIFICATION — `PENDING` N'EN GARDE RIEN. La première forme y laissait les clés du visiteur : la file
+// n'est propre à aucun compte (une clé du stockage du site, jamais vidée à la déconnexion), et la session authentifiée
+// suivante dans ce navigateur les RÉAPPLIQUAIT par-dessus la ligne du compte puis les envoyait (`prefsInit`) — les
+// réglages de l'anonyme écrits dans un vrai compte, chose neuve : avant ce lot, le PUT sous la démonstration rendait
+// 200 et les acquittait. Sous la démonstration, `prefSet` n'ajoute donc rien à `PENDING` et en RETIRE la clé qu'il
+// écrit : la valeur du miroir n'est plus celle d'un compte, elle ne doit plus partir comme l'intention de quelqu'un.
 
 // `P10.29-f` — L'AVIS DES PRÉFÉRENCES NON LUES, DANS LES DEUX LANGUES. Mesuré avant ce lot (témoin 120f) : composé en
 // français autour de la cause servie, il le restait sous `LANG='en'`. La face française est celle d'avant.
@@ -76,6 +93,11 @@ export function prefGet(key, dflt) {
 export function prefSet(key, value) {
   if (value === undefined) delete PREFS[key]; else PREFS[key] = value;
   writeMirror();
+  // `P10.28-i` — voir l'en-tête : sous la démonstration, rien ne part et rien n'attend de partir.
+  if (sousLaDemonstrationPublique()) {
+    if (PENDING.delete(key)) writePending();
+    return;
+  }
   // A DELETE is an intent exactly like a SET, and it is the one the old reconcile could not carry: mark the
   // key unacknowledged either way, so a reconcile that lands before the PUT does not undo it.
   PENDING.add(key);
@@ -104,6 +126,7 @@ export async function flushPrefs() {
   // et le miroir reste intact : rien n'est perdu ici, seule la DESTRUCTION de la ligne du compte l'est.
   // Le motif est écrit AU PUITS, en toutes lettres : une phrase passée en argument d'un aide tombe hors
   // du regard de la garde du lexique, donc hors de l'anglais. Il dit ce que le geste FERAIT.
+  if (sousLaDemonstrationPublique()) return;   // `P10.28-i` — voir l'en-tête : rien ne part, le miroir est le magasin.
   if (PREFERENCES_NON_LUES) { toast("Vos préférences n'ont PAS été lues : les enregistrer maintenant renverrait au démon le seul miroir de cet appareil, et un enregistrement REMPLACE d'un bloc la ligne du compte — celle que cette lecture n'a pas pu rendre serait écrasée sans un mot. Ce réglage reste appliqué ici, il n'est pas synchronisé ; rechargez la page quand la lecture repassera.", 'bad', 9000); return; }
   // Snapshot what THIS round is about to carry, BEFORE the send: apiSend serializes the body synchronously,
   // so a key written while the request is in flight is NOT in it and must stay unacknowledged.
@@ -121,6 +144,12 @@ export async function flushPrefs() {
 // on top. See the RECONCILING note in the header for why a merge could never carry a removal.
 export async function prefsInit() {
   PREFERENCES_NON_LUES = false;
+  // `P10.28-i` — voir l'en-tête : sous la démonstration, le miroir est le magasin — ni lecture, ni remplacement, ni envoi.
+  if (sousLaDemonstrationPublique()) {
+    loaded = true;
+    readyCbs.splice(0).forEach(cb => { try { cb(PREFS); } catch (e) {} });
+    return;
+  }
   try {
     const d = await api('/prefs');
     if (d && d.prefs && typeof d.prefs === 'object' && !Array.isArray(d.prefs)) {

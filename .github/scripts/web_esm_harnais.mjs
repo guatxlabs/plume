@@ -26745,6 +26745,271 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   }
   console.log("(129) OK — l'aperçu d'une ligne de base sépare ses deux cinq cent trois par la phrase lue dans la cause du rejet : la porte de masquage non armée prend la place de l'aperçu, la définition qui ne s'est pas lue se dit dans le puits comme l'évaluation impossible (422) et l'absence (404), cause entière, sans avis ; le motif de la console, lu dans son module, reconnaît la porte et refuse les trois autres phrases du démon ; un aperçu abouti ne dit aucun refus.");
 }
+// ---------------------------------------------------------------------------------------------
+// (130) `P10.28-i` (face console) — SOUS LA DÉMONSTRATION PUBLIQUE, LES PRÉFÉRENCES NE PARTENT PAS AU DÉMON. Le démon sert
+//       tout visiteur anonyme sous UNE identité partagée (`auth_method` « demo ») et refuse désormais toute écriture
+//       servie sous elle (403 `CAUSE_DEMONSTRATION_EN_LECTURE_SEULE`) ; `web/prefs.js` écrit les préférences TOUT SEUL.
+//       Jugé, sur une instance NEUVE du module : sous la démonstration, un réglage posé puis la purge (`flushPrefs`)
+//       n'envoient AUCUN `PUT /api/prefs`, le réglage reste appliqué (miroir), et la réconciliation (`prefsInit`) le
+//       garde sans rien lire ni renvoyer (le miroir est le magasin). CORRECTION DE VÉRIFICATION — LA SESSION SUIVANTE
+//       N'HÉRITE PAS DU VISITEUR : la première forme laissait ses clés dans `PENDING` (file du navigateur, propre à
+//       aucun compte), et la réconciliation d'une session authentifiée les réappliquait par-dessus la ligne du compte
+//       puis les envoyait ; jugé ici : la ligne du compte est prise telle quelle, et aucun `PUT` ne porte le réglage du
+//       visiteur. CONTRÔLE POSITIF, même instance, session ordinaire : un réglage posé part en UN `PUT` qui le porte.
+//       Le prédicat de la démonstration vit UNE fois, dans state.js, importé par prefs.js et savedqueries.js.
+//       CORRECTIONS DE VÉRIFICATION (tour 2) : la file et le miroir sont amorcés AVANT l'instance neuve avec une clé
+//       qu'un compte a laissée en attente (`colw`) — le réglage du visiteur l'en RETIRE, sinon la session suivante
+//       réappliquerait sa valeur par-dessus la ligne du compte ; les rappels `prefsReady` sont rejoués une fois sous
+//       la démonstration ; et CONTRÔLE NÉGATIF DU PRÉDICAT : une identité d'annuaire NOMMÉE `demo` (méthode `sso`),
+//       que le démon prend hors démonstration, envoie son réglage — le prédicat juge la méthode, pas le nom.
+// (131) `P10.28-i` (face console) — SOUS LA DÉMONSTRATION, « ENREGISTRER » N'OUVRE PAS LA FENÊTRE ET LE DIT. Jugé dans les
+//       deux langues : aucune fenêtre, aucun envoi, un avis qui dit la lecture seule (anglais sans accent) et rien de
+//       rendu — et qui ne conseille PAS de se connecter (correction de vérification : la console n'offre aucune
+//       connexion sous une démonstration active) ; CONTRÔLE POSITIF, session ordinaire ET (tour 2) identité d'annuaire
+//       nommée `demo` (méthode `sso`) : la fenêtre s'ouvre et, validée, part en `POST /api/saved-queries`, sans avis de
+//       lecture seule.
+// (132) `P10.28-i` / `P10.28-j` — LES DEUX CAUSES NEUVES DU DÉMON ONT LEUR FACE DANS LA CONSOLE. Lues dans l'arbre du démon
+//       (jamais recopiées) : la lecture seule de la démonstration, peinte par la forme partagée d'un geste refusé
+//       (`refus_nomme`, cause ENTIÈRE, deux langues) et qui N'EST PAS un refus de l'annuaire (elle ne doit pas
+//       ramener l'écran de connexion) ; le nom de la démonstration refusé à l'annuaire, reconnu comme tel
+//       (`annuaire_refuse`) à l'ouverture et en cours de session.
+//
+// CE QUE CES TÉMOINS NE TIENNENT PAS : le transport est un simulacre — aucune route du démon n'est rejouée (les témoins
+// `dlsp_` du démon le font au routeur réel) ; la minuterie de 800 ms de la purge différée est capturée, jamais jouée ;
+// la modification et la suppression d'un modèle ne sont pas gardées côté console (sous une démonstration active,
+// l'identité partagée ne tient aucun modèle : le démon refuse de l'activer sinon).
+// ---------------------------------------------------------------------------------------------
+{
+  const url130 = (f, sfx = "") => pathToFileURL(path.join(WEB, f)).href + sfx;
+  const echecsAvant130 = echecs.length;   // le verdict final de ce bloc est DÉRIVÉ de ce qu'il a ajouté, jamais écrit d'avance
+  const instrument130 = (vrai, quoi) => exiger(vrai, `(130-instrument) ${quoi} : ce témoin REFUSE DE CONCLURE`);
+  const tic130 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser130 = async (n = 30) => { for (let i = 0; i < n; i++) await tic130(); };
+  const nu130 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ").trim();
+  const ACCENTS130 = /[éèêàçùôâîÉÈÊÀ]/;
+  const AUTH130 = readFileSync(path.join(RACINE, "daemon", "src", "auth.rs"), "utf8");
+  const constante130 = (src, nom) => { const m = src.match(new RegExp("const " + nom + ": &str = \"((?:[^\"\\\\]|\\\\[\\s\\S])*)\";")); return m ? m[1].replace(/\\\n\s*/g, "").replace(/\\"/g, "\"") : ""; };
+  const CAUSE_LECTURE_SEULE130 = constante130(AUTH130, "CAUSE_DEMONSTRATION_EN_LECTURE_SEULE");
+  const CAUSE_ANNUAIRE_DEMO130 = constante130(AUTH130, "CAUSE_ANNUAIRE_NOM_DE_L_IDENTITE_DE_LA_DEMONSTRATION");
+  instrument130(CAUSE_LECTURE_SEULE130.startsWith("DÉMONSTRATION PUBLIQUE EN LECTURE SEULE") && CAUSE_LECTURE_SEULE130.length > 150,
+    "`CAUSE_DEMONSTRATION_EN_LECTURE_SEULE` n'est plus lisible dans daemon/src/auth.rs");
+  instrument130(CAUSE_ANNUAIRE_DEMO130.startsWith("IDENTITÉ DE L'ANNUAIRE REFUSÉE") && CAUSE_ANNUAIRE_DEMO130.length > 150,
+    "`CAUSE_ANNUAIRE_NOM_DE_L_IDENTITE_DE_LA_DEMONSTRATION` n'est plus lisible dans daemon/src/auth.rs");
+  instrument130(/if let Err\(cause\) = refuser_l_ecriture_de_la_demonstration\(auth_method, mutating\) \{[\s\S]{0,200}return Err\(err_json\(StatusCode::FORBIDDEN, cause\)\);/.test(AUTH130)
+    && /if mutating && auth_method == "demo" \{\s*return Err\(CAUSE_DEMONSTRATION_EN_LECTURE_SEULE\);/.test(AUTH130),
+    "`apply_gates` ne refuse plus les mutations servies sous la méthode `demo` en 403 JSON nommé : le contrat jugé ci-dessous ne serait plus celui du démon");
+  instrument130(/Self::IdentiteDeLaDemonstration\(_\) => \(StatusCode::FORBIDDEN, CAUSE_ANNUAIRE_NOM_DE_L_IDENTITE_DE_LA_DEMONSTRATION\)/.test(AUTH130),
+    "le refus de l'annuaire sur le nom de la démonstration n'est plus servi en 403 nommé par `auth_guard`");
+
+  const fetchOrigine130 = globalThis.fetch, minuterieOrigine130 = globalThis.setTimeout;
+  const envois130 = [];
+  let servis130 = [];
+  const differees130 = [];
+  const surRejet130 = (e) => { exiger(false, `(130) une promesse rejetée n'est pas traitée : ${e && e.message}`); };
+  process.on("unhandledRejection", surRejet130);
+  // CORRECTION DE VÉRIFICATION (tour 2) — UNE CLÉ DÉJÀ EN ATTENTE D'UN COMPTE AVANT LA DÉMONSTRATION : un compte a laissé
+  // `colw` non acquitté (miroir ET file), s'est déconnecté, et la console s'est rechargée dans la démonstration. La file
+  // et le miroir sont lus À L'IMPORT de prefs.js : ils sont amorcés ici, avant l'instance neuve, et rendus à la fin.
+  const LS_MIROIR130 = "plume_prefs", LS_FILE130 = "plume_prefs_pending";
+  const stockageAvant130 = [LS_MIROIR130, LS_FILE130].map((k) => [k, localStorage.getItem(k)]);
+  localStorage.setItem(LS_MIROIR130, JSON.stringify({ colw: { laisse130: { c: 33 } } }));
+  localStorage.setItem(LS_FILE130, JSON.stringify(["colw"]));
+  const fileDuStockage130 = () => { try { const a = JSON.parse(localStorage.getItem(LS_FILE130)); return Array.isArray(a) ? a : []; } catch (e) { return ["(illisible)"]; } };
+  // Une instance NEUVE de prefs.js (son `PREFS`/`PENDING` ne sont pas ceux des témoins d'avant) ; son `S` est celui de
+  // state.js, partagé : l'état d'authentification est rendu à la fin.
+  const modPrefs130 = await import(url130("prefs.js", "?temoin=130"));
+  const { S: S130 } = await import(url130("state.js"));
+  const FR131 = { nom: "fr", modeles: await import(url130("savedqueries.js", "?temoin=131")), S: S130 };
+  const EN131 = { nom: "en", modeles: await import(adresseSousLaLangue("savedqueries.js")), S: (await import(adresseSousLaLangue("state.js"))).S };
+  const modNoyau132 = { fr: await import(url130("core.js")), en: await import(adresseSousLaLangue("core.js")) };
+  const modConnexion132 = { fr: await import(url130("login.js")), en: await import(adresseSousLaLangue("login.js")) };
+  instrument130(["prefSet", "prefGet", "flushPrefs", "prefsInit", "prefsReady"].every((n) => typeof modPrefs130[n] === "function"), "web/prefs.js n'exporte plus `prefSet`/`prefGet`/`flushPrefs`/`prefsInit`/`prefsReady`");
+  instrument130(JSON.stringify(modPrefs130.prefGet("colw", null)) === JSON.stringify({ laisse130: { c: 33 } }), "l'instance neuve de prefs.js n'a pas lu le miroir amorcé : l'amorce de la file ne serait pas lue non plus");
+  instrument130([FR131, EN131].every((L) => typeof L.modeles.saveAsTemplate === "function"), "web/savedqueries.js n'exporte plus `saveAsTemplate`");
+  instrument130(["apiSend", "peindreLeRefusDUnGeste", "puitsDuRefusDUnGeste", "motDuRefusDUnGeste"].every((n) => typeof modNoyau132.fr[n] === "function" && typeof modNoyau132.en[n] === "function")
+    && ["natureDuRefusDeLAnnuaire", "cleDuRefusDeLOuverture"].every((n) => typeof modConnexion132.fr[n] === "function" && typeof modConnexion132.en[n] === "function"),
+    "le point commun ou web/login.js n'exportent plus la forme partagée du refus d'un geste ou la nature d'un refus de l'annuaire");
+  instrument130(modNoyau132.fr.LANG !== "en" && modNoyau132.en.LANG === "en", "les deux instances du point commun ne portent pas deux langues");
+  const authOrigine130 = [S130, EN131.S].map((S) => ({ S, auth: S.AUTH }));
+  const DEMO130 = { user: "demo", role: "viewer", auth_method: "demo", csrf_token: "" };
+  const SESSION130 = { user: "vwr-130", role: "viewer", auth_method: "cookie", csrf_token: "csrf-130" };
+  // Une identité d'ANNUAIRE nommée `demo` (méthode `sso`) : hors démonstration, le démon la prend comme un autre nom
+  // (`P10.28-j`, correction de vérification). Ce n'est PAS la démonstration — le prédicat juge la MÉTHODE, pas le nom.
+  const SSO_DEMO130 = { user: "demo", role: "editor", auth_method: "sso", csrf_token: "" };
+  const fermer130 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
+  const fenetre130 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !c.classList.contains("out")).pop();
+  const avis130 = () => { const h = document.querySelector("#toasts"); return h ? [...h.children] : []; };
+  try {
+    // La purge différée (800 ms) est CAPTURÉE, jouée à la main ; les minuteries d'une seconde et plus (retrait des avis,
+    // délais du transport) ne sont jamais jouées ; les autres sont ramenées à zéro (même parti que le témoin 123).
+    globalThis.setTimeout = (fn, ms) => {
+      if (ms === 800) { differees130.push({ fn, ms }); return 0; }
+      if (ms >= 1000) return 0;
+      return minuterieOrigine130(fn, ms >= 100 ? 0 : ms);
+    };
+    globalThis.fetch = async (u, init) => {
+      const chemin = String(u).split("?")[0], methode = ((init && init.method) || "GET").toUpperCase();
+      envois130.push({ route: methode + " " + chemin, corps: init && init.body ? String(init.body) : "" });
+      const r = servis130.length ? servis130.shift() : { statut: 200, corps: {} };
+      const texte = typeof r.corps === "string" ? r.corps : JSON.stringify(r.corps === undefined ? {} : r.corps);
+      return { ok: r.statut >= 200 && r.statut < 300, status: r.statut, headers: { get: () => null }, text: async () => texte, json: async () => JSON.parse(texte) };
+    };
+    const envoisVers130 = (route) => envois130.filter((e) => e.route === route);
+
+    // ── (130) LES PRÉFÉRENCES SOUS LA DÉMONSTRATION ─────────────────────────────────────────────────────────────
+    const ecarts130 = [];
+    S130.AUTH = DEMO130;
+    envois130.length = 0;
+    const REGLAGE130 = { t130: { c: 91 } };
+    modPrefs130.prefSet("colw", REGLAGE130);
+    // La clé qu'un compte avait laissée en attente (amorcée ci-dessus) ne l'est plus : la valeur du miroir est celle du
+    // visiteur, elle ne doit pas partir comme l'intention d'un compte.
+    const cleRetireeSousLaDemonstration130 = !fileDuStockage130().includes("colw");   // mesuré ICI : la session suivante vide la file en l'acquittant
+    if (!cleRetireeSousLaDemonstration130) ecarts130.push(`démonstration : la clé laissée en attente par un compte (\`colw\`) y reste après le réglage du visiteur (file ${JSON.stringify(fileDuStockage130())}) — la session suivante la réappliquerait`);
+    await modPrefs130.flushPrefs(); await laisser130();
+    if (envoisVers130("PUT /api/prefs").length !== 0) ecarts130.push(`démonstration : la purge envoie ${envoisVers130("PUT /api/prefs").length} PUT`);
+    if (JSON.stringify(modPrefs130.prefGet("colw", null)) !== JSON.stringify(REGLAGE130)) ecarts130.push(`démonstration : le réglage n'est plus appliqué (${JSON.stringify(modPrefs130.prefGet("colw", null))})`);
+    servis130 = [];
+    // Les rappels `prefsReady` enregistrés avant la réconciliation sont rejoués UNE fois, avec le miroir (correction de
+    // vérification, tour 2 : la branche de la démonstration les rejoue ; un abonné futur ne doit pas y être oublié).
+    const rappels130 = [];
+    modPrefs130.prefsReady((p) => rappels130.push(JSON.stringify(p && p.colw)));
+    instrument130(rappels130.length === 0, "l'instance neuve de prefs.js est déjà réconciliée : un rappel enregistré maintenant partirait sans la réconciliation");
+    await modPrefs130.prefsInit(); await laisser130();
+    const rappelsSousLaDemonstration130 = rappels130.length;   // mesuré ICI : la réconciliation suivante rejouerait un rappel resté en attente
+    if (rappels130.length !== 1 || rappels130[0] !== JSON.stringify(REGLAGE130)) ecarts130.push(`démonstration : les rappels \`prefsReady\` ne sont pas rejoués une fois avec le miroir (${JSON.stringify(rappels130)})`);
+    if (envoisVers130("GET /api/prefs").length !== 0) ecarts130.push(`démonstration : la réconciliation lit la ligne de l'identité partagée (${envoisVers130("GET /api/prefs").length} GET) — le miroir est le magasin`);
+    for (const d of differees130.splice(0)) if (d.ms === 800) { try { await d.fn(); } catch (e) {} }   // une purge différée éventuelle, jouée à la main : elle aussi se tait
+    await laisser130();
+    if (envoisVers130("PUT /api/prefs").length !== 0) ecarts130.push(`démonstration : la réconciliation ou la purge différée renvoie ${envoisVers130("PUT /api/prefs").length} PUT`);
+    if (JSON.stringify(modPrefs130.prefGet("colw", null)) !== JSON.stringify(REGLAGE130)) ecarts130.push("démonstration : la réconciliation a perdu le réglage non envoyé");
+    const putsSousLaDemonstration130 = envoisVers130("PUT /api/prefs").length;
+    const reglageGarde130 = JSON.stringify(modPrefs130.prefGet("colw", null)) === JSON.stringify(REGLAGE130);
+    exiger(ecarts130.length === 0, `(130) \`P10.28-i\` — SOUS LA DÉMONSTRATION PUBLIQUE, LA CONSOLE ENVOIE LES PRÉFÉRENCES AU DÉMON (qui les refuse, et les posait avant pour TOUS les visiteurs) OU LES PERD : ${JSON.stringify(ecarts130)}`);
+    // LA SESSION AUTHENTIFIÉE SUIVANTE, même navigateur (même instance, donc même `PENDING` et même miroir) : la ligne du
+    // compte est prise telle quelle, et rien de ce qui part ne porte le réglage du visiteur.
+    S130.AUTH = SESSION130;
+    envois130.length = 0; differees130.length = 0;
+    const LIGNE_DU_COMPTE130 = { compte130: { c: 50 } };
+    servis130 = [{ statut: 200, corps: { prefs: { colw: LIGNE_DU_COMPTE130 } } }];
+    await modPrefs130.prefsInit(); await laisser130();
+    for (const d of differees130.splice(0)) if (d.ms === 800) { try { await d.fn(); } catch (e) {} }   // la purge que la réconciliation programme, jouée à la main
+    await laisser130();
+    const heritage130 = [];
+    if (JSON.stringify(modPrefs130.prefGet("colw", null)) !== JSON.stringify(LIGNE_DU_COMPTE130)) heritage130.push(`la ligne du compte est recouverte : colw = ${JSON.stringify(modPrefs130.prefGet("colw", null))}`);
+    const putsHeritiers130 = envoisVers130("PUT /api/prefs").filter((e) => e.corps.includes("\"t130\""));
+    if (putsHeritiers130.length) heritage130.push(`${putsHeritiers130.length} PUT porte(nt) le réglage du visiteur dans le compte : ${JSON.stringify(putsHeritiers130)}`);
+    exiger(heritage130.length === 0, `(130-heritage) \`P10.28-i\` — LA SESSION AUTHENTIFIÉE SUIVANTE HÉRITE DES RÉGLAGES DU VISITEUR ANONYME (réappliqués par-dessus la ligne du compte, puis envoyés) : ${JSON.stringify(heritage130)}`);
+    // CONTRÔLE POSITIF : une session ordinaire, la même instance — un réglage posé part en UN PUT, qui le porte.
+    envois130.length = 0; differees130.length = 0; servis130 = [];
+    modPrefs130.prefSet("colw", { t130s: { c: 77 } });
+    await modPrefs130.flushPrefs(); await laisser130();
+    const puts130 = envoisVers130("PUT /api/prefs");
+    exiger(puts130.length === 1 && puts130[0].corps.includes("\"t130s\""),
+      `(130-positif) hors démonstration, la purge n'envoie plus UN PUT portant le réglage : ${JSON.stringify(puts130)}`);
+    differees130.length = 0;
+    // CONTRÔLE NÉGATIF DU PRÉDICAT (correction de vérification, tour 2) : l'identité d'annuaire NOMMÉE `demo` (méthode
+    // `sso`) n'est pas la démonstration — son réglage part en UN PUT, qui le porte.
+    S130.AUTH = SSO_DEMO130;
+    envois130.length = 0; servis130 = [];
+    modPrefs130.prefSet("colw", { t130n: { c: 66 } });
+    await modPrefs130.flushPrefs(); await laisser130();
+    const putsNomme130 = envoisVers130("PUT /api/prefs");
+    exiger(putsNomme130.length === 1 && putsNomme130[0].corps.includes("\"t130n\""),
+      `(130-nom) une identité d'annuaire NOMMÉE \`demo\` (méthode \`sso\`) est prise pour la démonstration : ses préférences ne partent plus (${JSON.stringify(putsNomme130)}) — le prédicat juge le nom au lieu de la méthode`);
+    differees130.length = 0;
+    // UN SEUL PRÉDICAT DE LA DÉMONSTRATION, dans state.js (à côté de `S`), importé par les deux modules qui le lisent.
+    const definitions130 = modules.filter((f) => /function sousLaDemonstrationPublique\s*\(/.test(readFileSync(path.join(WEB, f), "utf8")));
+    const importeurs130 = ["prefs.js", "savedqueries.js"].filter((f) => /import \{[^}]*\bsousLaDemonstrationPublique\b[^}]*\} from '\.\/state\.js';/.test(readFileSync(path.join(WEB, f), "utf8")));
+    exiger(JSON.stringify(definitions130) === JSON.stringify(["state.js"]) && importeurs130.length === 2,
+      `(130-unique) le prédicat de la démonstration n'est plus défini UNE fois dans state.js et importé par prefs.js et savedqueries.js : définitions ${JSON.stringify(definitions130)}, importeurs ${JSON.stringify(importeurs130)}`);
+    console.log(`[130] démonstration : ${putsSousLaDemonstration130} PUT (purge, réconciliation, purge différée), réglage ${reglageGarde130 ? "gardé" : "PERDU"}, clé laissée en attente par un compte ${cleRetireeSousLaDemonstration130 ? "retirée" : "GARDÉE"}, ${rappelsSousLaDemonstration130} rappel(s) prefsReady ; session suivante : ${heritage130.length ? "HÉRITE du visiteur" : "ligne du compte intacte, rien du visiteur envoyé"} ; session ordinaire : ${puts130.length} PUT ; identité d'annuaire nommée demo (sso) : ${putsNomme130.length} PUT ; prédicat défini dans ${JSON.stringify(definitions130)}`);
+
+    // ── (131) « ENREGISTRER » SOUS LA DÉMONSTRATION ─────────────────────────────────────────────────────────────
+    const ecarts131 = [];
+    const mesure131 = [];
+    for (const L of [FR131, EN131]) {
+      L.S.AUTH = DEMO130;
+      envois130.length = 0; fermer130();
+      const avant = new Set(avis130());
+      // Attendu BORNÉ : une console qui ouvrirait la fenêtre laisserait le geste pendant, et ce témoin doit le DIRE.
+      const rendu = await Promise.race([L.modeles.saveAsTemplate({ name: "m-131", soql: "search x" }), laisser130(80).then(() => "(geste pendant : une fenêtre attend)")]);
+      await laisser130();
+      const neufs = avis130().filter((t) => !avant.has(t)).map(nu130);
+      if (rendu !== null) ecarts131.push(`${L.nom} : rend ${JSON.stringify(rendu)}`);
+      if (fenetre130()) ecarts131.push(`${L.nom} : une fenêtre s'ouvre`);
+      if (envois130.length) ecarts131.push(`${L.nom} : ${envois130.length} envoi(s) ${JSON.stringify(envois130.map((e) => e.route))}`);
+      const dit = neufs.find((t) => (L.nom === "fr" ? /LECTURE SEULE/ : /READ-ONLY/).test(t)) || "";
+      if (!dit) ecarts131.push(`${L.nom} : aucun avis de lecture seule (${JSON.stringify(neufs)})`);
+      if (L.nom === "en" && ACCENTS130.test(dit)) ecarts131.push(`en : l'avis porte un accent français « ${dit} »`);
+      if (dit && (L.nom === "fr" ? /connectez/i : /sign in|log in/i).test(dit)) ecarts131.push(`${L.nom} : l'avis conseille une connexion que la console n'offre pas sous la démonstration « ${dit} »`);
+      mesure131.push(`${L.nom} : fenêtre ${fenetre130() ? "OUVERTE" : "aucune"}, ${envois130.length} envoi(s), avis ${dit ? "dit" : "ABSENT"}`);
+      fermer130();
+    }
+    exiger(ecarts131.length === 0, `(131) \`P10.28-i\` — SOUS LA DÉMONSTRATION, « ENREGISTRER » OUVRE LA FENÊTRE, ENVOIE, OU NE DIT PAS LA LECTURE SEULE : ${JSON.stringify(ecarts131)}`);
+    // CONTRÔLE POSITIF : une session ordinaire — la fenêtre s'ouvre, et validée elle part en POST. ET CONTRÔLE NÉGATIF DU
+    // PRÉDICAT (correction de vérification, tour 2) : l'identité d'annuaire NOMMÉE `demo` (méthode `sso`), que le démon
+    // accepte hors démonstration, voit la même fenêtre et le même POST — sans l'avis de la lecture seule.
+    const positifs131 = [];
+    for (const [qui, session] of [["session ordinaire", SESSION130], ["identité d'annuaire nommée demo (sso)", SSO_DEMO130]]) {
+      S130.AUTH = session;
+      envois130.length = 0; fermer130();
+      const avantPositif131 = new Set(avis130());
+      servis130 = [{ statut: 200, corps: { id: 131, ok: true } }];
+      const geste131 = FR131.modeles.saveAsTemplate({ name: "m-131", soql: "search x" });
+      await laisser130();
+      const ov131 = fenetre130();
+      const form131 = ov131 && ov131.children[0] ? ov131.children[0].children[0] : null;
+      // Le simulacre n'aligne pas `value` sur l'attribut que la fenêtre écrit (même geste que le témoin 119) : les valeurs
+      // pré-remplies sont reportées, rien d'autre n'est saisi.
+      const champs131 = (function cueillir(el, acc) { if (el && typeof el.getAttribute === "function" && el.getAttribute("data-n") !== null) acc.push(el); ((el && el.children) || []).forEach((c) => cueillir(c, acc)); return acc; })(form131, []);
+      for (const champ of champs131) if (!champ.value) champ.value = champ.tagName === "TEXTAREA" ? champ.textContent : (champ.getAttribute("value") ?? "");
+      if (form131 && typeof form131.onsubmit === "function") await Promise.resolve(form131.onsubmit({ preventDefault() {} }));
+      // Une fenêtre qui refuserait sa validation laisserait le geste pendant : il est attendu BORNÉ, jamais indéfiniment.
+      const issue131 = await Promise.race([geste131.then(() => "fini"), laisser130(80).then(() => "pendant")]);
+      await laisser130();
+      instrument130(issue131 === "fini", "la fenêtre d'enregistrement ne s'est pas validée dans le simulacre (champ requis non rempli ?)");
+      const lectureSeuleDite131 = avis130().filter((t) => !avantPositif131.has(t)).map(nu130).some((t) => /LECTURE SEULE/.test(t));
+      exiger(!!ov131 && envoisVers130("POST /api/saved-queries").length === 1 && !lectureSeuleDite131,
+        `(131-positif) ${qui}, hors démonstration : « Enregistrer » n'ouvre plus la fenêtre, ne part plus en POST, ou dit la lecture seule${session === SSO_DEMO130 ? " — le prédicat juge le NOM au lieu de la méthode" : ""} : fenêtre ${!!ov131}, envois ${JSON.stringify(envois130.map((e) => e.route))}, avis de lecture seule ${lectureSeuleDite131}`);
+      positifs131.push(`${qui} : fenêtre ${ov131 ? "ouverte" : "ABSENTE"}, ${envoisVers130("POST /api/saved-queries").length} POST`);
+      fermer130();
+    }
+    console.log(`[131] démonstration — ${mesure131.join(" ; ")} ; ${positifs131.join(" ; ")}`);
+
+    // ── (132) LES DEUX CAUSES NEUVES DU DÉMON ONT LEUR FACE ─────────────────────────────────────────────────────
+    const ecarts132 = [];
+    for (const langue of ["fr", "en"]) {
+      const noyau = modNoyau132[langue], connexion = modConnexion132[langue];
+      servis130 = [{ statut: 403, corps: { error: CAUSE_LECTURE_SEULE130 } }];
+      let jete = null;
+      try { await noyau.apiSend("/saved-queries/7", "DELETE"); } catch (e) { jete = e; }
+      const hote = new Element("div");
+      const puits = noyau.puitsDuRefusDUnGeste(hote, "temoin_132", null);
+      const nature = jete ? noyau.peindreLeRefusDUnGeste(puits, jete) : "(rien de jeté)";
+      const texte = nu130(puits);
+      if (nature !== "refus_nomme" || !texte.includes(CAUSE_LECTURE_SEULE130) || !texte.startsWith(noyau.motDuRefusDUnGeste("refus_nomme")))
+        ecarts132.push(`${langue}/lecture seule peinte : nature « ${nature} », « ${texte.slice(0, 160)} »`);
+      if (connexion.natureDuRefusDeLAnnuaire(CAUSE_LECTURE_SEULE130) !== "")
+        ecarts132.push(`${langue}/lecture seule lue comme un refus de l'ANNUAIRE (« ${connexion.natureDuRefusDeLAnnuaire(CAUSE_LECTURE_SEULE130)} ») : elle ramènerait l'écran de connexion`);
+      if (connexion.natureDuRefusDeLAnnuaire(CAUSE_ANNUAIRE_DEMO130) !== "annuaire_refuse" || connexion.cleDuRefusDeLOuverture({ causeDuDemon: CAUSE_ANNUAIRE_DEMO130 }) !== "annuaire_refuse")
+        ecarts132.push(`${langue}/nom de la démonstration refusé à l'annuaire : nature « ${connexion.natureDuRefusDeLAnnuaire(CAUSE_ANNUAIRE_DEMO130)} », ouverture « ${connexion.cleDuRefusDeLOuverture({ causeDuDemon: CAUSE_ANNUAIRE_DEMO130 })} »`);
+    }
+    exiger(ecarts132.length === 0, `(132) \`P10.28-i\`/\`P10.28-j\` — UNE CAUSE NEUVE DU DÉMON N'A PAS SA FACE DANS LA CONSOLE (ou prend celle d'un autre refus) : ${JSON.stringify(ecarts132)}`);
+  } finally {
+    process.off("unhandledRejection", surRejet130);
+    for (const [k, v] of stockageAvant130) { if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); }
+    globalThis.fetch = fetchOrigine130; globalThis.setTimeout = minuterieOrigine130;
+    for (const o of authOrigine130) o.S.AUTH = o.auth;
+    // L'instance neuve de prefs.js s'est BRANCHÉE, à son import, sur le magasin des largeurs du point commun : le
+    // branchement de l'instance d'origine est reposé, à l'identique (`P11.15-a`), pour les témoins qui suivent.
+    const prefsOrigine130 = await import(url130("prefs.js"));
+    modNoyau132.fr.brancherLeMagasinDeLargeurs({ lire: () => prefsOrigine130.prefGet('colw', {}), ecrire: (tout) => prefsOrigine130.prefSet('colw', tout) });
+    fermer130();
+  }
+  if (echecs.length !== echecsAvant130) console.log(`(130–132) EN ÉCHEC — ${echecs.length - echecsAvant130} écart(s), dits ci-dessus`);
+  else console.log("(130–132) OK — `P10.28-i` : sous la démonstration publique, la console n'envoie ni préférences ni modèle (le démon les refuse, et les posait avant pour tous les visiteurs), garde le réglage sans le laisser en attente d'un compte (même une clé qu'un compte y avait laissée : la session suivante n'en hérite pas), rejoue les rappels de fin de réconciliation, dit la lecture seule dans les deux langues sans conseiller une connexion absente, et hors démonstration rien ne change — une identité d'annuaire nommée `demo` comprise : le prédicat juge la méthode, pas le nom ; un seul prédicat, dans state.js ; les deux causes neuves du démon (lecture seule, nom de la démonstration refusé à l'annuaire) ont leur face, sans se confondre.");
+}
 
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;
 verdictRendu = true;

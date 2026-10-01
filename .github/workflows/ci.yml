@@ -3019,6 +3019,10 @@ jobs:
             # ressemble a une assignation de cle pour `generic-api-key`. Ce n'est qu'un nom de cause
             # public, pas une valeur secrete. La FORME exacte est admise, jamais le fichier.
             '''\.nature !== "secret_des_gestes_[a-z_]+"''',
+            # `.github/scripts/web_esm_harnais.mjs` (temoins 12x de la console) — le secret FACTICE d'un
+            # banc (`"secret-du-banc-124-" + "s".repeat(12)`), fabrique par le harnais pour jouer le
+            # secret des gestes ; il n'ouvre rien. La FORME exacte est admise, jamais le fichier.
+            '''"secret-du-banc-[0-9]+-"''',
             # 4. `bench/fts-compaction/banc_fts.c` line 27 — the literal SQLCipher key of the FTS5 compaction
             #    harness. It is handed to `PRAGMA key=` on the throwaway databases that harness BUILDS itself
             #    (ref.db, purge.db, arme-*.db, all created by `bench/fts-compaction/mesurer.sh` in a scratch

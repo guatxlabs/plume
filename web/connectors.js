@@ -26,10 +26,17 @@ const DEFAULT_FIELD_MAP = ['ts', 'message', 'severity', 'host', 'src_ip'];
 // le connecteur ET, dans la MÊME transaction, chaque clé de livraison qui lui est liée (`token.connector_id`, genres
 // Firehose et Pub/Sub : une source push), puis écrit sa trace ; il ne rend 204 qu'une fois cette transaction validée.
 // La révocation est donc DURABLE et immédiate : le flux du nuage qui présente encore la clé est refusé par son
-// récepteur, et aucune route ne la refrappe — rétablir le flux, c'est créer une source push neuve et reporter sa clé.
-// Un connecteur en PULL n'en porte aucune. Les événements déjà ingérés ne sont pas touchés. Mesuré avant ce lot
-// (témoin 117r) : la confirmation n'en disait rien, et restait française sous `LANG='en'`. Les genres nommés ici sont
-// ceux que le témoin lit dans la requête du démon.
+// récepteur, et le connecteur n'existant plus, rétablir le flux c'est créer une source push neuve et reporter sa clé.
+// Pour seulement CHANGER de clé, le renouvellement (`P10.26-g`, ci-dessous) garde la source. Un connecteur en PULL
+// n'en porte aucune. Les événements déjà ingérés ne sont pas touchés. Mesuré avant ce lot (témoin 117r) : la
+// confirmation n'en disait rien, et restait française sous `LANG='en'`. Les genres nommés ici sont ceux que le témoin
+// lit dans la requête du démon.
+//
+// `P10.26-g` — LE RENOUVELLEMENT DE LA CLÉ DE LIVRAISON D'UNE SOURCE PUSH (`connector_delivery_key_rotate`,
+// daemon/src/handlers/connectors/cle_de_livraison.rs). Une clé neuve est frappée et l'ancienne révoquée dans la MÊME
+// transaction : aucune fenêtre où les deux valent, le flux est refusé jusqu'au report de la nouvelle — la confirmation
+// le dit, dans la forme de chaque transport. La clé neuve n'est montrée qu'une fois, juste avant la liste, jusqu'à
+// ce qu'on la ferme.
 const MOTS_DU_CONNECTEUR = {
   derniere_erreur: {
     fr: 'dernière erreur : ',
@@ -38,12 +45,66 @@ const MOTS_DU_CONNECTEUR = {
     fr: 'Supprimer le connecteur « {nom} » ?',
     en: 'Delete connector “{nom}”?' },
   retrait_consequence: {
-    fr: "Sa configuration ET le credential stocké seront définitivement effacés, et la collecte de cette source s'arrête. Si c'est une source push (Firehose, Pub/Sub), chaque clé de livraison qui lui est liée est RÉVOQUÉE dans la même transaction : le flux du nuage qui la présente encore sera refusé par son récepteur, et aucune route ne la refrappe — le rétablir demandera une source push neuve et le report de sa clé dans le flux. Les événements déjà ingérés restent.",
-    en: 'Its configuration AND the stored credential will be permanently erased, and collection from this source stops. If it is a push source (Firehose, Pub/Sub), every delivery key bound to it is REVOKED in the same transaction: the cloud stream that still presents it will be refused by its receiver, and no route mints it again — restoring it will take a new push source and carrying its key over into the stream. Events already ingested stay.' },
+    fr: "Sa configuration ET le credential stocké seront définitivement effacés, et la collecte de cette source s'arrête. Si c'est une source push (Firehose, Pub/Sub), chaque clé de livraison qui lui est liée est RÉVOQUÉE dans la même transaction : le flux du nuage qui la présente encore sera refusé par son récepteur, et le rétablir demandera une source push neuve et le report de sa clé dans le flux. Pour seulement changer de clé, « Renouveler la clé de livraison » garde la source. Les événements déjà ingérés restent.",
+    en: 'Its configuration AND the stored credential will be permanently erased, and collection from this source stops. If it is a push source (Firehose, Pub/Sub), every delivery key bound to it is REVOKED in the same transaction: the cloud stream that still presents it will be refused by its receiver, and restoring it will take a new push source and carrying its key over into the stream. To only change the key, “Renew the delivery key” keeps the source. Events already ingested stay.' },
   retrait_valider: {
     fr: 'Supprimer',
     en: 'Delete' },
+  renouvellement_bouton: {
+    fr: 'Renouveler la clé de livraison',
+    en: 'Renew the delivery key' },
+  renouvellement_infobulle: {
+    fr: "Frappe une clé de livraison neuve pour cette source push et révoque l'ancienne au même geste ; la neuve est montrée une seule fois",
+    en: 'Mints a new delivery key for this push source and revokes the old one in the same action; the new one is shown only once' },
+  renouvellement_titre: {
+    fr: 'Renouveler la clé de livraison de « {nom} » ?',
+    en: 'Renew the delivery key of “{nom}”?' },
+  renouvellement_consequence_gcp_pubsub: {
+    fr: "Une clé neuve est frappée et montrée UNE SEULE FOIS ; l'ancienne est RÉVOQUÉE dans la même transaction. L'abonnement Pub/Sub qui pousse encore avec l'ancienne clé est refusé par le récepteur jusqu'à ce que son URL porte la nouvelle : les deux ne valent jamais en même temps. La source garde son nom, son environnement, sa configuration et son identifiant.",
+    en: 'A new key is minted and shown ONLY ONCE; the old one is REVOKED in the same transaction. The Pub/Sub subscription that still pushes with the old key is refused by the receiver until its URL carries the new one: both are never valid at the same time. The source keeps its name, environment, configuration and identifier.' },
+  renouvellement_consequence_aws_firehose: {
+    fr: "Une clé neuve est frappée et montrée UNE SEULE FOIS ; l'ancienne est RÉVOQUÉE dans la même transaction. Le delivery stream Kinesis Firehose qui présente encore l'ancienne clé est refusé par le récepteur jusqu'à ce que son « Access key » porte la nouvelle : les deux ne valent jamais en même temps. La source garde son nom, son environnement, sa configuration et son identifiant.",
+    en: 'A new key is minted and shown ONLY ONCE; the old one is REVOKED in the same transaction. The Kinesis Firehose delivery stream that still presents the old key is refused by the receiver until its “Access key” carries the new one: both are never valid at the same time. The source keeps its name, environment, configuration and identifier.' },
+  renouvellement_valider: {
+    fr: 'Renouveler la clé',
+    en: 'Renew the key' },
+  cle_renouvelee_titre: {
+    fr: 'Clé de livraison de « {nom} » renouvelée — affichée UNE seule fois',
+    en: 'Delivery key of “{nom}” renewed — shown ONLY once' },
+  cle_renouvelee_revoquees: {
+    fr: "{n} clé(s) de livraison révoquée(s) au même geste : le flux qui présente l'ancienne est refusé jusqu'au report de celle-ci.",
+    en: '{n} delivery key(s) revoked in the same action: the stream that presents the old one is refused until this one is carried over.' },
+  cle_renouvelee_aucune: {
+    fr: "Aucune clé n'était liée à cette source : celle-ci est la seule qu'elle accepte.",
+    en: 'No key was bound to this source: this one is the only one it accepts.' },
+  cle_renouvelee_url: {
+    fr: "URL de l'abonnement Pub/Sub push, avec la clé :",
+    en: 'Pub/Sub push subscription URL, with the key:' },
+  cle_renouvelee_point: {
+    fr: 'Endpoint (destination HTTP Firehose) :',
+    en: 'Endpoint (Firehose HTTP destination):' },
+  cle_renouvelee_entete: {
+    fr: "En-tête d'accès :",
+    en: 'Access header:' },
+  cle_renouvelee_cle: {
+    fr: 'Clé de livraison (Access key) :',
+    en: 'Delivery key (Access key):' },
+  cle_renouvelee_consigne_gcp_pubsub: {
+    fr: "Copie cette URL maintenant : la clé n'est PLUS récupérable (seule son empreinte est stockée). Remplace par elle l'URL de l'abonnement Pub/Sub « push ».",
+    en: 'Copy this URL now: the key can NOT be retrieved again (only its fingerprint is stored). Replace the Pub/Sub “push” subscription URL with it.' },
+  cle_renouvelee_consigne_aws_firehose: {
+    fr: "Copie cette clé maintenant : elle n'est PLUS récupérable (seule son empreinte est stockée). Remplace par elle l'« Access key » du delivery stream Kinesis Firehose.",
+    en: 'Copy this key now: it can NOT be retrieved again (only its fingerprint is stored). Replace the Kinesis Firehose delivery stream “Access key” with it.' },
+  cle_renouvelee_fermer: {
+    fr: 'Fermer',
+    en: 'Close' },
+  cle_renouvelee_avis: {
+    fr: 'clé de livraison renouvelée — copie-la avant de fermer',
+    en: 'delivery key renewed — copy it before closing' },
 };
+// `P10.26-g` — les deux types de connecteur qui portent une clé de livraison (ceux que `livraison_d_une_source_push` du
+// démon reconnaît) ; la face de chacun est nommée par son type.
+const TYPES_DE_SOURCE_PUSH = ['aws_firehose', 'gcp_pubsub'];
 const motDuConnecteur = (cle, valeurs) => {
   const mots = MOTS_DU_CONNECTEUR[cle];
   return Object.entries(valeurs || {}).reduce((t, [k, v]) => t.split('{' + k + '}').join(String(v)), LANG === 'en' ? mots.en : mots.fr);
@@ -145,8 +206,89 @@ function connectorRow(c) {
   const del = document.createElement('button'); del.type = 'button'; del.innerHTML = ic('x'); del.title = 'Supprimer le connecteur'; del.onclick = () => deleteConnector(c);
   row.append(en, name, type, env, sec, meta);
   if (c.last_error) row.append(errRow);
-  row.append(test, poll, edit, del);
+  row.append(test, poll, edit);
+  // `P10.26-g` — une source push porte une clé de livraison : elle se renouvelle ici, sans perdre la source.
+  if (TYPES_DE_SOURCE_PUSH.includes(c.type)) {
+    const cle = document.createElement('button'); cle.type = 'button'; cle.textContent = motDuConnecteur('renouvellement_bouton');
+    cle.title = motDuConnecteur('renouvellement_infobulle');
+    cle.onclick = () => withBusy(cle, () => renouvelerLaCleDeLivraison(c));
+    row.append(cle);
+  }
+  row.append(del);
   return row;
+}
+
+// `P10.26-g` — POST /api/connectors/{id}/delivery-key. La confirmation partagée dit la conséquence (l'ancienne clé révoquée
+// au même geste, le flux refusé jusqu'au report), le secret des gestes est demandé avant l'envoi (la clé est une crédence
+// qui survit à la session, comme à la création de la source), et un refus — « CLÉ DE LIVRAISON NON RENOUVELÉE : … l'ancienne
+// clé AUTHENTIFIE TOUJOURS » — reste sous les yeux dans le puits des connecteurs, cause entière. Rien n'est montré avant la
+// réponse du démon, qui ne rend la clé qu'une fois sa transaction validée.
+export async function renouvelerLaCleDeLivraison(c) {
+  if (!await confirmWithConsequence(motDuConnecteur('renouvellement_titre', { nom: c.name || ('#' + c.id) }),
+    motDuConnecteur(c.type === 'gcp_pubsub' ? 'renouvellement_consequence_gcp_pubsub' : 'renouvellement_consequence_aws_firehose'),
+    { danger: true, okText: motDuConnecteur('renouvellement_valider') })) return;
+  const puits = puitsDesConnecteurs(); effacerLeRefusDUnGeste(puits);
+  let res;
+  try { res = await avecLeSecretDesGestes('renouveler_une_cle_de_livraison', (entetes) => apiSend('/connectors/' + c.id + '/delivery-key', 'POST', {}, entetes)); }
+  catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
+  montrerLaCleRenouvelee(c, res);
+  toast(motDuConnecteur('cle_renouvelee_avis'), 'ok', 4200);
+  loadConnectors();
+}
+
+// `P10.26-g` — LA LECTURE D'UNE CLÉ DE LIVRAISON MONTRÉE, commune à la création d'une source push (`showPushKey`) et au
+// renouvellement de sa clé (`montrerLaCleRenouvelee`) : le démon sert les deux réponses dans la même forme
+// (`corps_de_la_cle_montree`, daemon/src/handlers/connectors/cle_de_livraison.rs), et la console les lit ici, en un seul
+// lieu — détection du transport, adresse du récepteur, URL qui porte la clé. Les deux écrans gardent chacun leur
+// construction : leurs étiquettes n'ont pas le même régime (littéraux français que le lexique traduit à la création,
+// faces bilingues de `MOTS_DU_CONNECTEUR` au renouvellement), et leurs consignes diffèrent (configurer le flux à la
+// création, y remplacer la clé au renouvellement). Pub/Sub porte la clé en requête : l'URL complète n'est composée
+// qu'ici ; Firehose la porte en en-tête.
+function lectureDeLaCleMontree(res) {
+  const pubsub = res.transport === 'query_token' || typeof res.delivery_token === 'string';
+  if (pubsub) {
+    const point = location.origin + (res.endpoint_path || '/api/ingest/pubsub');
+    const cle = String(res.delivery_token || '');
+    return { pubsub, point, urlAvecCle: point + '?token=' + cle, entete: '', cle };
+  }
+  return { pubsub, point: location.origin + (res.endpoint_path || '/api/ingest/firehose'), urlAvecCle: '',
+    entete: String(res.auth_header || 'X-Amz-Firehose-Access-Key'), cle: String(res.delivery_key || '') };
+}
+
+// La clé renouvelée, montrée UNE fois, juste avant la liste : hors de ce que `loadConnectors` repeint, elle survit au
+// rechargement jusqu'à ce qu'on la ferme. `data-cle-de-livraison-montree` porte l'identifiant de la source (marque de
+// POSE pour le harnais). Rendu en `textContent` (anti-XSS) ; la forme suit le transport servi (Pub/Sub : l'URL complète,
+// la clé en requête ; Firehose : l'endpoint, l'en-tête et la clé), lue par `lectureDeLaCleMontree`.
+function montrerLaCleRenouvelee(c, res) {
+  const liste = $('#connector-list'); if (!liste || !res || !liste.parentNode) return;
+  const hote = liste.parentNode;
+  let bloc = [...hote.children].find(n => n.getAttribute && n.getAttribute('data-cle-de-livraison-montree')) || null;
+  if (!bloc) { bloc = document.createElement('div'); bloc.className = 'ruleform'; hote.insertBefore(bloc, liste); }
+  bloc.dataset.cleDeLivraisonMontree = String(c.id);
+  const ligne = (etiquette, valeur, alarme) => {
+    const d = document.createElement('div'); d.style.cssText = 'margin:6px 0;font-size:12px';
+    const b = document.createElement('b'); b.textContent = etiquette;
+    const code = document.createElement('code'); code.className = 'rulecond'; code.textContent = valeur;
+    if (alarme) code.style.cssText = 'color:var(--warn);user-select:all';
+    d.append(b, ' ', code); return d;
+  };
+  const tete = document.createElement('div'); tete.className = 'cf-kvhead';
+  const titre = document.createElement('b'); titre.textContent = motDuConnecteur('cle_renouvelee_titre', { nom: c.name || ('#' + c.id) });
+  const fermer = document.createElement('button'); fermer.type = 'button'; fermer.className = 'cf-kvadd'; fermer.textContent = motDuConnecteur('cle_renouvelee_fermer');
+  fermer.onclick = () => bloc.remove();
+  tete.append(titre, fermer);
+  const revoquees = Number(res.cles_revoquees) > 0
+    ? motDuConnecteur('cle_renouvelee_revoquees', { n: Number(res.cles_revoquees) }) : motDuConnecteur('cle_renouvelee_aucune');
+  const etat = document.createElement('p'); etat.className = 'muted'; etat.style.cssText = 'margin:6px 0;font-size:12px'; etat.textContent = revoquees;
+  const lue = lectureDeLaCleMontree(res);
+  const lignes = lue.pubsub
+    ? [ligne(motDuConnecteur('cle_renouvelee_url'), lue.urlAvecCle, true)]
+    : [ligne(motDuConnecteur('cle_renouvelee_point'), lue.point, false),
+      ligne(motDuConnecteur('cle_renouvelee_entete'), lue.entete, false),
+      ligne(motDuConnecteur('cle_renouvelee_cle'), lue.cle, true)];
+  const consigne = document.createElement('p'); consigne.className = 'muted'; consigne.style.cssText = 'margin:8px 0;font-size:12px;color:var(--warn)';
+  consigne.textContent = motDuConnecteur(lue.pubsub ? 'cle_renouvelee_consigne_gcp_pubsub' : 'cle_renouvelee_consigne_aws_firehose');
+  bloc.replaceChildren(tete, etat, ...lignes, consigne);
 }
 
 // DRY-RUN de connexion : POST /api/connectors/{id}/test -> {ok,sample_count,error}. N'ingère pas, ne renvoie
@@ -584,10 +726,11 @@ async function createPushSource(p) {
   if (typeof loadConnectors === 'function') loadConnectors();
 }
 
-// Affiche (dans le picker) la clé de livraison SHOW-ONCE + l'endpoint. textContent (anti-XSS). Deux transports :
+// Affiche (dans le picker) la clé de livraison SHOW-ONCE + l'endpoint. textContent (anti-XSS). Deux transports, lus par
+// `lectureDeLaCleMontree` (la lecture que le renouvellement de la clé partage) :
 //  - GCP Pub/Sub (res.transport==='query_token' / res.delivery_token) : le token voyage en QUERY -> on montre
 //    l'URL push COMPLÈTE (endpoint + ?token=<token>) à coller dans l'abonnement Pub/Sub push ; pas de header.
-//  - AWS Firehose (res.delivery_key) : header X-Amz-Firehose-Access-Key + Access key séparés (INCHANGÉ).
+//  - AWS Firehose (res.delivery_key) : header X-Amz-Firehose-Access-Key + Access key séparés.
 function showPushKey(res, p) {
   const host = $('#connector-preset-picker'); if (!host || !res) return;
   host.replaceChildren();
@@ -602,28 +745,25 @@ function showPushKey(res, p) {
     const code = document.createElement('code'); code.className = 'rulecond'; code.textContent = val;
     d.append(b, code); return d;
   };
-  const isPubsub = res.transport === 'query_token' || !!res.delivery_token;
-  if (isPubsub) {
+  const lue = lectureDeLaCleMontree(res);
+  if (lue.pubsub) {
     // GCP Pub/Sub — URL push complète (le secret est dans l'URL, montré une seule fois).
-    const base = location.origin + (res.endpoint_path || '/api/ingest/pubsub');
-    const pushUrl = base + '?token=' + (res.delivery_token || '');
-    host.append(line('Endpoint (URL de l\'abonnement Pub/Sub push) :', base));
+    host.append(line('Endpoint (URL de l\'abonnement Pub/Sub push) :', lue.point));
     const urlWrap = document.createElement('div'); urlWrap.style.cssText = 'margin:6px 0;font-size:12px';
     const ub = document.createElement('b'); ub.textContent = 'URL push complète (avec token) : ';
-    const uc = document.createElement('code'); uc.className = 'rulecond'; uc.style.cssText = 'color:var(--warn);user-select:all'; uc.textContent = pushUrl;
+    const uc = document.createElement('code'); uc.className = 'rulecond'; uc.style.cssText = 'color:var(--warn);user-select:all'; uc.textContent = lue.urlAvecCle;
     urlWrap.append(ub, uc); host.append(urlWrap);
     const warn = document.createElement('p'); warn.className = 'muted'; warn.style.cssText = 'margin:8px 0;font-size:12px;color:var(--warn)';
     warn.textContent = 'Copie cette URL maintenant : le token n\'est PLUS récupérable (seul son empreinte est stockée). Crée un log sink -> topic Pub/Sub, puis un abonnement « push » qui POSTe vers l\'URL ci-dessus. Chaque message push encapsule une LogEntry (mappée en CIM). Aucune clé GCP n\'est partagée avec Plume.';
     host.append(warn);
     return;
   }
-  // AWS Firehose — inchangé.
-  const url = location.origin + (res.endpoint_path || '/api/ingest/firehose');
-  host.append(line('Endpoint (destination HTTP Firehose) :', url));
-  host.append(line('Header d\'accès :', res.auth_header || 'X-Amz-Firehose-Access-Key'));
+  // AWS Firehose — l'endpoint, l'en-tête et la clé.
+  host.append(line('Endpoint (destination HTTP Firehose) :', lue.point));
+  host.append(line('Header d\'accès :', lue.entete));
   const keyWrap = document.createElement('div'); keyWrap.style.cssText = 'margin:6px 0;font-size:12px';
   const kb = document.createElement('b'); kb.textContent = 'Clé de livraison (Access key) : ';
-  const kc = document.createElement('code'); kc.className = 'rulecond'; kc.style.cssText = 'color:var(--warn);user-select:all'; kc.textContent = res.delivery_key || '';
+  const kc = document.createElement('code'); kc.className = 'rulecond'; kc.style.cssText = 'color:var(--warn);user-select:all'; kc.textContent = lue.cle;
   keyWrap.append(kb, kc); host.append(keyWrap);
   const warn = document.createElement('p'); warn.className = 'muted'; warn.style.cssText = 'margin:8px 0;font-size:12px;color:var(--warn)';
   warn.textContent = 'Copie cette clé maintenant : elle n\'est PLUS récupérable (seul son empreinte est stockée). Configure ton delivery stream Kinesis Firehose (destination « HTTP endpoint ») sur l\'URL ci-dessus, en collant la clé dans le champ « Access key ». Aucune clé AWS n\'est partagée avec Plume.';

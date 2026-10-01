@@ -719,10 +719,16 @@ du CLI « plume-daemon token ».
 • Le SECRET est montré UNE SEULE FOIS, à la création (boîte de copie ; pour HEC, un
   extrait curl prêt à coller). Seule son empreinte SHA-256 est conservée : la fenêtre
   fermée, il est irrécupérable — il faut alors créer un autre jeton.
-• La liste montre nom, type, hôte lié (ou « relais — hôte non attesté »), création et
-  dernier usage.
+• La liste montre nom, type, hôte lié, création et dernier usage. Sans hôte lié, la
+  cellule dit ce que le jeton peut écrire : « relais — hôte non attesté » pour un agent
+  ou un HEC (il écrit sous l'hôte qu'il déclare) ; « aucun hôte — clé de livraison de la
+  source push #N, bornée à son récepteur » pour une clé de livraison (Firehose, Pub/Sub) ;
+  « aucun hôte — jeton de lecture, il n'écrit aucun événement » pour un jeton de lecture.
 • Révoquer (✕, confirmé) : l'agent ou le forwarder porteur perd l'accès immédiatement ;
-  un jeton révoqué ne se réactive pas, on en provisionne un autre.` },
+  un jeton révoqué ne se réactive pas, on en provisionne un autre. Révoquer une clé de
+  livraison coupe le flux de sa source push ; pour seulement en changer, « Renouveler la
+  clé de livraison » (Connecteurs de sources) garde la source et révoque l'ancienne au
+  même geste.` },
     en: { title: `Tokens (agent & HEC)`, body:
 `A token authenticates a MACHINE (Bearer) without a shared password. Admin only:
 the guard is server-side (GET/POST/DELETE /api/tokens); the console mirrors the
@@ -740,10 +746,15 @@ the guard is server-side (GET/POST/DELETE /api/tokens); the console mirrors the
 • The SECRET is shown ONCE, at creation (copy box; for HEC, a ready-to-paste curl
   snippet). Only its SHA-256 fingerprint is stored: once the dialog is closed it is
   unrecoverable — create another token instead.
-• The list shows name, kind, bound host (or "relay — host not attested"), creation
-  and last use.
+• The list shows name, kind, bound host, creation and last use. With no bound host,
+  the cell says what the token can write: "relay — host not attested" for an agent or
+  HEC token (it writes under the host it declares); "no host — delivery key of push
+  source #N, bound to its receiver" for a delivery key (Firehose, Pub/Sub); "no host —
+  read token, it writes no event" for a read token.
 • Revoke (✕, confirmed): the agent or forwarder holding it loses access immediately;
-  a revoked token is never re-enabled, provision another one.` },
+  a revoked token is never re-enabled, provision another one. Revoking a delivery key
+  cuts the stream of its push source; to only change it, "Renew the delivery key"
+  (Source connectors) keeps the source and revokes the old key in the same action.` },
   },
   notifiers: {
     fr: { title: `Canaux de notification`, body:

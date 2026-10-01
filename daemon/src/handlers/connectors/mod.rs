@@ -11,10 +11,12 @@ mod defender;
 mod taxii;
 mod httppull;
 mod presets;
+mod cle_de_livraison; // `P10.26-g` — le renouvellement de la clé de livraison d'une source push
 pub(crate) use defender::*;
 pub(crate) use taxii::*;
 pub(crate) use httppull::*;
 pub(crate) use presets::*;
+pub(crate) use cle_de_livraison::*;
 
 /// FETCH de PRODUCTION GARDÉ SSRF : `ssrf_guard(url)` AVANT tout egress RÉEL (`http_call`),
 /// au CHOKE-POINT UNIQUE partagé par TOUS les chemins réseau des connecteurs — poll de fond

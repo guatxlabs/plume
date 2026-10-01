@@ -22,7 +22,8 @@ corps de son handler (le symbole nommé dans `.route(...)`), et une route est se
                           Un DELETE que le démon audite lui-même au niveau informatif (sévérité 1, le
                           bulletin) n'est pas une destruction : c'est le démon qui le dit.
   ÉLÈVE UN DROIT       — le handler lit un `role` dans le corps de la requête, ou insère un jeton
-                          (`INSERT INTO token`) : identité, crédence d'accès.
+                          (`INSERT INTO token`) : identité, crédence d'accès. L'insertion d'un jeton est
+                          suivie À TRAVERS LES APPELS (`ecrivains_de_jeton`), pas sur un niveau seulement.
   ARME UNE RÉPONSE     — les deux déclarations d'armement de `rbac.rs` (`/api/mode` en mutation ;
                           suffixe `/enabled` sur règles/parseurs/playbooks, et tout `/enabled` mutant),
                           un handler qui touche le ban natif (`netban`), ou un handler que le démon
@@ -143,6 +144,24 @@ distinguer. Puis des planchers sur l'arbre réel : un nombre minimal de routes s
 trouvée sensible ET confirmée (`/api/users/{id}`, le changement de rôle), sans quoi la garde refuse de
 conclure.
 
+LA FAMILLE « ÉLÈVE (JETON) » ÉTAIT MORTE, ET C'EST MESURÉ (`P10.26-g`, 2026-09-29)
+----------------------------------------------------------------------------------
+La famille cherchait `INSERT INTO token` dans le corps du handler et des fonctions qu'il appelle
+DIRECTEMENT. Depuis que la table `token` n'a plus qu'un point d'écriture (`ecrire_la_ligne_de_jeton`,
+`P10.25-q`), atteint par `inserer_jeton_frappe_par` ou `inserer_cle_de_livraison_frappee_par`, l'insertion
+vit DEUX niveaux sous chaque route qui frappe un jeton : mesuré sur l'arbre d'avant, la famille ne
+reconnaissait AUCUNE route, et `POST /api/tokens` comme `POST /api/connectors/push-source` n'étaient
+sensibles que par la famille DÉCLARE — c'est-à-dire tant que le démon les audite ET que la console les
+confirme partout. Une route qui frappe une crédence ne doit pas tenir sa sensibilité de ce que les surfaces
+font déjà. `ecrivains_de_jeton` suit donc l'écriture par FERMETURE sur les appels nommés (un appel de
+méthode `x.nom(` n'en est pas un) ; la route témoin `ROUTE_TEMOIN_JETON` doit porter la famille, sans quoi
+la garde refuse de conclure. CE QUE LA FERMETURE NE TIENT PAS : elle résout un appel par son NOM, pas par
+son chemin — deux fonctions homonymes se confondent. Le sens de l'erreur est celui d'un SUR-compte (une
+route de plus déclarée sensible, jamais une de moins) ; relevé le 2026-09-29, elle reconnaît exactement les
+trois routes qui frappent un jeton (`/api/tokens`, `/api/connectors/push-source`,
+`/api/connectors/{id}/delivery-key`), et remonte hors des routes jusqu'au point d'entrée du binaire (la
+sous-commande `token` de la ligne de commande écrit un jeton), sans effet sur le classement.
+
 LES TROIS PLANCHERS SE RE-MESURENT EN UNE EXÉCUTION
 ---------------------------------------------------
 `PLAFOND_ABANDONS` porte un nombre relevé sur l'arbre, `CONFIRMEES_PAR_APPELANT_ADMISES` des noms. Quand la
@@ -163,6 +182,10 @@ WEB = os.path.join(RACINE, "web")
 
 MIN_ROUTES_SENSIBLES = 12
 ROUTE_TEMOIN = ("POST", "/api/users/{id}")
+# `P10.26-g` — la route qui frappe un jeton : elle doit être reconnue par la famille « élève (jeton) » elle-même, pas
+# seulement reprise par les surfaces (voir « LA FAMILLE … ÉTAIT MORTE » dans l'en-tête).
+ROUTE_TEMOIN_JETON = ("POST", "/api/tokens")
+FAMILLE_JETON = "élève (jeton)"
 # CLIQUET DU SECOND SENS (`P11.13-b`) : routes que le démon AUDITE, que la console ATTEINT, et dont tous les
 # appelants ne confirment pas. 12 mesurées le 2026-08-24 ; ce nombre ne se relève pas sans raison écrite ici —
 # une route auditée appelée sans confirmation de plus est exactement le défaut que la garde doit attraper.
@@ -365,6 +388,21 @@ def corps_etendu(handler, handlers):
     return propre + "".join(handlers.get(n, "") for n in appelees if n in handlers)
 
 
+def ecrivains_de_jeton(handlers):
+    """`P10.26-g` — les fonctions qui écrivent une ligne `token`, directement (`INSERT INTO token`) ou par un appel
+    NOMMÉ à l'une d'elles, à toute profondeur (fermeture). Un appel de méthode (`x.nom(`) n'est pas un appel à la
+    fonction `nom` : sans cette exclusion, `next.run(req)` d'un intergiciel ferait de lui un écrivain dès qu'une
+    fonction `run` en est une."""
+    ecrivains = {n for n, corps in handlers.items() if INSERT_TOKEN.search(corps)}
+    while ecrivains:
+        appel = re.compile(r'(?<![.\w])(?:' + "|".join(map(re.escape, sorted(ecrivains))) + r')\s*\(')
+        neufs = {n for n, corps in handlers.items() if n not in ecrivains and appel.search(corps)}
+        if not neufs:
+            break
+        ecrivains |= neufs
+    return ecrivains
+
+
 def dans_le_perimetre(path, readonly):
     """Une route mutante est jugée sauf si le démon la déclare en lecture, ou si elle précède la session."""
     return path not in readonly and not SANS_SESSION.match(path)
@@ -373,6 +411,7 @@ def dans_le_perimetre(path, readonly):
 def classer(routes, handlers, readonly, armement):
     """Rend {(verbe, path): (familles, handler, fichier)} pour les routes sensibles, + erreurs."""
     sensibles, erreurs = {}, []
+    ecrivains = ecrivains_de_jeton(handlers)
     for verbe, path, handler, fichier in routes:
         if not dans_le_perimetre(path, readonly):
             continue
@@ -392,8 +431,8 @@ def classer(routes, handlers, readonly, armement):
         # ÉLÈVE
         if ECRIT_IDENTITE.search(corps):
             familles.append("élève (identité / rôle / grant)")
-        if INSERT_TOKEN.search(corps):
-            familles.append("élève (jeton)")
+        if INSERT_TOKEN.search(corps) or handler in ecrivains:
+            familles.append(FAMILLE_JETON)
         # ARME
         if armement["mode"] and path == armement["mode"]:
             familles.append("arme (mode)")
@@ -873,6 +912,27 @@ def valider_instrument():
                     "une création ordinaire, un POST de lecture, une route de connexion, un DELETE audité "
                     "informatif ou une simulation de purge ne doivent pas être sensibles ; un DELETE, un rôle "
                     "lu, le mode, une activation et une purge appliquée doivent l'être.")
+    # `P10.26-g` — L'ÉCRITURE D'UN JETON EST SUIVIE À TRAVERS LES APPELS. Positif : une route dont l'insertion vit DEUX
+    # niveaux plus bas (la forme de `POST /api/tokens` depuis `P10.25-q`) porte la famille. Négatifs : une route qui
+    # appelle la fonction écrivaine par un appel de MÉTHODE homonyme, et une route qui insère dans une autre table.
+    rust_jetons = [("j.rs",
+                    'fn r() { Router::new()\n'
+                    '  .route("/api/cles", post(cle_frapper))\n'
+                    '  .route("/api/relais", post(relais_passer))\n'
+                    '  .route("/api/autres", post(autre_creer)) }\n'
+                    'fn ecrire_la_ligne(conn: &Connection) { conn.execute("INSERT INTO token(name) VALUES(?1)", params![n]); }\n'
+                    'pub(crate) fn inserer_par(conn: &Connection) { ecrire_la_ligne(conn) }\n'
+                    'pub(crate) async fn cle_frapper() -> Response { inserer_par(&conn); ok() }\n'
+                    'pub(crate) async fn relais_passer() -> Response { suivant.inserer_par(req); ok() }\n'
+                    'fn ecrire_autre(conn: &Connection) { conn.execute("INSERT INTO autre(name) VALUES(?1)", params![n]); }\n'
+                    'pub(crate) async fn autre_creer() -> Response { ecrire_autre(&conn); ok() }\n')]
+    routes_j, handlers_j, readonly_j, armement_j, derr_j = deriver_routes(rust_jetons)
+    sensibles_j, cerr_j = classer(routes_j, handlers_j, readonly_j, armement_j)
+    obtenu_j = {cle: familles for cle, (familles, _h, _f) in sensibles_j.items()}
+    if derr_j or cerr_j or obtenu_j != {("POST", "/api/cles"): [FAMILLE_JETON]}:
+        errs.append(f"témoin de l'ÉCRITURE D'UN JETON en échec : obtenu {obtenu_j} (erreurs {derr_j + cerr_j}) — une route qui "
+                    "frappe un jeton par une fonction qui en appelle une autre doit porter la famille ; un appel de méthode "
+                    "homonyme et une insertion dans une autre table ne le doivent pas.")
     # TÉMOINS DE LA SYNTAXE DE GABARIT (`P7.19-d`) — la seule chose qui empêche l'appariement de rester
     # sur une syntaxe que le routeur ne produit plus. Positif ET négatif : sans le négatif, reconnaître
     # les deux formes passerait pour correct, et personne ne saurait laquelle la table écrit.
@@ -1055,6 +1115,11 @@ def main():
     if ROUTE_TEMOIN not in sensibles:
         print(f"::error::la route témoin {ROUTE_TEMOIN} (changement de rôle) n'est plus dérivée sensible : soit le "
               "démon a changé, soit la dérivation ne voit plus son site.")
+        return 2
+    if FAMILLE_JETON not in sensibles.get(ROUTE_TEMOIN_JETON, ([], None, None))[0]:
+        print(f"::error::la route témoin {ROUTE_TEMOIN_JETON} (frappe d'un jeton) n'est plus reconnue par la famille "
+              f"« {FAMILLE_JETON} » : l'écriture de la table `token` n'est plus suivie jusqu'à elle, et une route qui frappe "
+              "une crédence ne serait plus sensible que par ce que les surfaces font déjà. La garde refuse de conclure.")
         return 2
 
     with open(os.path.join(WEB, "core.js"), encoding="utf-8") as fh:

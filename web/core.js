@@ -1028,6 +1028,7 @@ const MOTS_DES_GESTES_A_SECRET = {
   reinitialiser_un_autre_compte: { fr: "Réinitialiser le mot de passe d'un autre compte", en: "Reset another account's password" },
   frapper_un_jeton: { fr: 'Frapper un jeton API', en: 'Mint an API token' },
   creer_une_source_push: { fr: 'Créer une source push et sa clé de livraison', en: 'Create a push source and its delivery key' },
+  renouveler_une_cle_de_livraison: { fr: "Renouveler la clé de livraison d'une source push", en: "Renew a push source's delivery key" },   // `P10.26-g`
   accorder_un_acces_de_tenant: { fr: "Accorder l'accès à un tenant", en: 'Grant access to a tenant' },
   provisionner_un_tenant_et_son_administrateur: { fr: 'Provisionner un tenant et son premier administrateur', en: 'Provision a tenant and its first administrator' },
   poser_un_fournisseur: { fr: "Créer ou reconfigurer un fournisseur d'identité", en: 'Create or reconfigure an identity provider' },

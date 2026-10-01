@@ -546,6 +546,14 @@ if (UNE_ENTREE) {
 const PLANCHER_MODULES = 20;
 const echecs = [];
 const exiger = (cond, msg) => { if (!cond) echecs.push(msg); };
+// Un témoin ne dit « OK » que si aucune exigence n'a échoué depuis son début (`echecsAvant`, le compte relevé à son
+// ouverture). La ligne « (N) OK — … » suit `exiger` sans condition dans la plupart des témoins : elle s'imprime AUSSI
+// quand le témoin échoue, et seul le code de sortie du harnais fait alors preuve. Un témoin qui passe par ici dit
+// « EN ÉCHEC » à la place de son « OK ».
+const direLeVerdictDuTemoin = (echecsAvant, numero, texteOk) => {
+  const nouveaux = echecs.length - echecsAvant;
+  console.log(nouveaux === 0 ? texteOk : `(${numero}) EN ÉCHEC — ${nouveaux} exigence(s) non tenue(s), nommée(s) par les lignes ::error:: de la fin du journal.`);
+};
 // `P10.24-m` — LA FENÊTRE DU SECRET DES GESTES, répondue par les témoins qui jouent un geste qui pose un accès persistant
 // (créer ou promouvoir un administrateur, réinitialiser un autre compte, frapper un jeton). Rend le champ trouvé, ou null
 // (aucune fenêtre du secret n'est ouverte : rien n'est touché). `secret === null` annule la fenêtre.
@@ -25870,6 +25878,404 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
     fermer123();
   }
   console.log("(123) OK — `P10.24-m` : le secret des gestes est demandé avant l'envoi des gestes gardés (champ mot de passe, sans autocomplétion, vidé), part dans `x-plume-secret-des-gestes` et n'y reste pas, ne fuit ni au stockage ni au document ; faux = ressaisie, non configuré = l'exploitant et PLUME_GESTURE_SECRET_FILE sans ressaisie, frein avec son délai, annulation sans envoi, absent = demande puis rejeu ; faces bilingues par la forme partagée ; une promotion refusée ne dit aucun succès ; chaque appel des routes gardées passe par l'enveloppe. `P10.20-u` : la chronologie cite `ref_non_lu_cause` en second nœud, le relevé suit `collectors_etat` (interrompu sans ligne n'est plus « non commencé »), la règle d'avant sans ces champs.");
+}
+
+
+// ---------------------------------------------------------------------------------------------
+// (124) `P10.26-g` (SÉCURITÉ, face console) — LE RENOUVELLEMENT DE LA CLÉ DE LIVRAISON D'UNE SOURCE PUSH.
+//       Route du démon : `POST /api/connectors/{id}/delivery-key` (`connector_delivery_key_rotate`, relue dans la table
+//       de routage) ; les types qui portent une clé sont LUS dans `livraison_d_une_source_push`. Jugé, dans les deux
+//       langues : le bouton « Renouveler la clé de livraison » est posé sur la ligne de CHAQUE source push et d'aucune
+//       autre ; la confirmation partagée dit la conséquence (clé montrée une fois, l'ancienne RÉVOQUÉE au même geste,
+//       aucune période où les deux valent, la source intacte) dans la forme du transport ; le secret des gestes est
+//       demandé AVANT l'envoi et part dans l'en-tête ; une confirmation ou un secret refusés n'envoient rien ; la clé
+//       rendue est montrée une fois, avant la liste, et survit au rechargement jusqu'à « Fermer » ; elle n'est écrite ni
+//       au stockage ni ailleurs dans le document ; un COMMIT refusé (cause relue dans le démon) se peint dans le puits des
+//       connecteurs, cause ENTIÈRE, sans clé ni succès ; chaque appel web de la route passe par `avecLeSecretDesGestes`
+//       (recensement jugé dans les deux sens).
+//
+// CE QUE CE TÉMOIN NE TIENT PAS : le transport est un simulacre (le démon n'est pas lancé) ; la réponse servie ici a la
+// forme que les témoins `rcdl_` du démon mesurent, elle n'est pas relue dans son code ; « copier » la clé n'est pas joué
+// (le presse-papier n'existe pas dans le simulacre) ; le rendu visuel du bloc (feuille de style) n'est pas jugé.
+// ---------------------------------------------------------------------------------------------
+{
+  const echecsAvant124 = echecs.length;
+  const FICHIERS124 = { noyau: "core.js", etat: "state.js", connecteurs: "connectors.js" };
+  const importer124 = async (adresse) => { const L = {}; for (const [cle, f] of Object.entries(FICHIERS124)) L[cle] = await import(adresse(f)); return L; };
+  const modsFr124 = await importer124((f) => pathToFileURL(path.join(WEB, f)).href);
+  const langueOrigine124 = localStorage.getItem("soc_lang");
+  localStorage.setItem("soc_lang", "en");
+  const modsEn124 = await importer124((f) => adresseSousLaLangue(f));
+  if (langueOrigine124 === null) localStorage.removeItem("soc_lang"); else localStorage.setItem("soc_lang", langueOrigine124);
+  const FR124 = { nom: "fr", ...modsFr124, S: modsFr124.etat.S }, EN124 = { nom: "en", ...modsEn124, S: modsEn124.etat.S };
+  const tic124 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser124 = async (n = 30) => { for (let i = 0; i < n; i++) await tic124(); };
+  const nu124 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ").trim();
+  const cueillir124 = (el, pred, acc = []) => { if (el && pred(el)) acc.push(el); ((el && el.children) || []).forEach((c) => cueillir124(c, pred, acc)); return acc; };
+  const instrument124 = (vrai, quoi) => exiger(vrai, `(124-instrument) ${quoi} : ce témoin REFUSE DE CONCLURE`);
+  const ACCENTS124 = /[éèêàçùôâîÉÈÊÀ]/;
+  const lireLeDemon124 = (rel) => { try { return readFileSync(path.join(RACINE, "daemon", "src", rel), "utf8"); } catch (e) { return ""; } };
+  const constante124 = (src, nom) => { const m = src.match(new RegExp("const " + nom + ": &str = \"((?:[^\"\\\\]|\\\\[\\s\\S])*)\";")); return m ? m[1].replace(/\\\n\s*/g, "").replace(/\\"/g, "\"").trim() : ""; };
+
+  // ── (0) L'INSTRUMENT : CE QUE LE DÉMON SERT, LU DANS SON ARBRE ─────────────────────────────────────────────
+  const ROUTEUR124 = lireLeDemon124("server/groupes_de_routes.rs");
+  const ROTATION124 = lireLeDemon124("handlers/connectors/cle_de_livraison.rs");
+  instrument124(/\.route\("\/api\/connectors\/\{id\}\/delivery-key", post\(connector_delivery_key_rotate\)\)/.test(ROUTEUR124),
+    "la route du renouvellement n'est plus dans la table de routage du démon");
+  const TYPES_PUSH124 = [...ROTATION124.matchAll(/"([a-z_]+)" => Some\(LivraisonDUneSourcePush \{/g)].map((m) => m[1]).sort();
+  instrument124(JSON.stringify(TYPES_PUSH124) === JSON.stringify(["aws_firehose", "gcp_pubsub"]),
+    `les types de source push ne se lisent plus dans \`livraison_d_une_source_push\` (lus : ${JSON.stringify(TYPES_PUSH124)})`);
+  const CAUSE_COMMIT124 = constante124(ROTATION124, "CAUSE_CLE_DE_LIVRAISON_NON_RENOUVELEE_COMMIT_REFUSE");
+  instrument124(CAUSE_COMMIT124.length > 150 && /COMMIT refusé/.test(CAUSE_COMMIT124), "la cause du COMMIT refusé du renouvellement n'est plus lisible dans le démon");
+  instrument124([FR124, EN124].every((L) => typeof L.connecteurs.renouvelerLaCleDeLivraison === "function" && typeof L.connecteurs.loadConnectors === "function")
+    && FR124.noyau.LANG !== "en" && EN124.noyau.LANG === "en",
+    "`renouvelerLaCleDeLivraison` ou `loadConnectors` ne sont plus exportés, ou les deux instances ne portent pas deux langues");
+
+  // ── LE SIMULACRE ─────────────────────────────────────────────────────────────────────────────────────────
+  const fetchOrigine124 = globalThis.fetch, minuterieOrigine124 = globalThis.setTimeout;
+  const etatOrigine124 = [FR124, EN124].map((L) => ({ S: L.S, auth: L.S.AUTH, admin: L.S.isAdmin }));
+  const qs124 = (sel) => document.querySelector(sel);
+  let servis124 = {};
+  const envois124 = [];
+  const surRejet124 = (e) => { exiger(false, `(124) une promesse rejetée n'est pas traitée : ${e && e.message}`); };
+  process.on("unhandledRejection", surRejet124);
+  const fenetre124 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !c.classList.contains("out")).pop() || null;
+  const formulaire124 = () => { const ov = fenetre124(); return ov && ov.children[0] ? ov.children[0].children[0] || null : null; };
+  const texteDeLaFenetre124 = () => { const f = formulaire124(); return f ? cueillir124(f, (e) => e.tagName === "H3" || e.tagName === "P").map((e) => nu124(e)).join(" ").replace(/\s+/g, " ").trim() : ""; };
+  const fermer124 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
+  const repondreALaConfirmation124 = (oui) => { const f = formulaire124(); if (!f) return false; if (oui) f.onsubmit({ preventDefault() {} }); else { const b = f.querySelector(".m-cancel"); if (b && typeof b.onclick === "function") b.onclick(); } return true; };
+  const liste124 = () => qs124("#connector-list");
+  const blocDeLaCle124 = () => { const l = liste124(); return l && l.parentNode ? l.parentNode.children.find((n) => typeof n.getAttribute === "function" && n.getAttribute("data-cle-de-livraison-montree")) || null : null; };
+  const puits124 = () => { const l = liste124(); return l && l.parentNode ? l.parentNode.children.find((n) => typeof n.getAttribute === "function" && n.getAttribute("data-puits-du-refus-d-un-geste") === "connecteurs") || null : null; };
+  const avis124 = () => { const h = qs124("#toasts"); return h ? h.children.map((t) => nu124(t)) : []; };
+  const compter124 = (route) => envois124.filter((e) => e.route === route).length;
+  const SOURCES124 = [
+    { id: 7, name: "gcp-124", type: "gcp_pubsub", env_id: "prod", interval_s: 300, enabled: true, has_secret: false, has_key: true, config: {} },
+    { id: 8, name: "fh-124", type: "aws_firehose", env_id: "prod", interval_s: 300, enabled: true, has_secret: false, has_key: false, config: {} },
+    { id: 9, name: "pull-124", type: "http_pull", env_id: "prod", interval_s: 300, enabled: false, has_secret: true, has_key: false, config: {} },
+  ];
+  const CLE_PUBSUB124 = "c".repeat(60) + "0124", CLE_FIREHOSE124 = "f".repeat(60) + "0124";
+  const SECRET124 = "secret-du-banc-124-" + "s".repeat(12);
+  const LIBELLE124 = { fr: "Renouveler la clé de livraison", en: "Renew the delivery key" };
+  const MOTS124 = {
+    fr: { revoque: /RÉVOQUÉE/, une_fois: /UNE SEULE FOIS/, jamais: /jamais en même temps/, intacte: /garde son nom, son environnement, sa configuration et son identifiant/, pubsub: /Pub\/Sub/, firehose: /Firehose/, aucune: /Aucune clé n'était liée/, revoquees: /1 clé\(s\) de livraison révoquée\(s\)/, fermer: "Fermer" },
+    en: { revoque: /REVOKED/, une_fois: /ONLY ONCE/, jamais: /never valid at the same time/, intacte: /keeps its name, environment, configuration and identifier/, pubsub: /Pub\/Sub/, firehose: /Firehose/, aucune: /No key was bound/, revoquees: /1 delivery key\(s\) revoked/, fermer: "Close" },
+  };
+  const boutonDeLaLigne124 = (L, nom) => {
+    const l = liste124(); if (!l) return null;
+    const lignes = cueillir124(l, (e) => e.classList && e.classList.contains("rulerow") && cueillir124(e, (x) => x.classList && x.classList.contains("rulename") && nu124(x) === nom).length > 0);
+    return lignes.length ? cueillir124(lignes[0], (e) => e.tagName === "BUTTON" && nu124(e) === LIBELLE124[L.nom])[0] || null : null;
+  };
+  // Le geste réel : la liste chargée, le bouton de la ligne, la confirmation lue puis jouée, le secret répondu.
+  const renouveler124 = async (L, nom, reponse, { confirmer = true, secret = SECRET124 } = {}) => {
+    servis124 = { "GET /api/connectors": { corps: SOURCES124 } };
+    const source = SOURCES124.find((s) => s.name === nom);
+    servis124["POST /api/connectors/" + source.id + "/delivery-key"] = reponse;
+    await L.connecteurs.loadConnectors(); await laisser124();
+    const bouton = boutonDeLaLigne124(L, nom);
+    if (!bouton) return { bouton: null };
+    envois124.length = 0; fermer124();
+    const avantAvis = avis124().length;
+    const geste = Promise.resolve(bouton.onclick());
+    await laisser124(8);
+    const confirmation = texteDeLaFenetre124();
+    const secretDemandeAvantConfirmation = !!fenetreDuSecretDesGestes();
+    repondreALaConfirmation124(confirmer);
+    await laisser124(8);
+    const secretDemande = !!fenetreDuSecretDesGestes();
+    const envoisAvantSecret = envois124.filter((e) => e.route.startsWith("POST ")).length;
+    if (secretDemande) await repondreAuSecretDesGestes(secret, () => laisser124(6));
+    await geste; await laisser124(30);
+    const envoi = envois124.find((e) => e.route === "POST /api/connectors/" + source.id + "/delivery-key") || null;
+    const bloc = blocDeLaCle124(), p = puits124();
+    return { bouton, confirmation, secretDemandeAvantConfirmation, secretDemande, envoisAvantSecret, envoi, envois: compter124("POST /api/connectors/" + source.id + "/delivery-key"),
+      bloc, texteDuBloc: nu124(bloc), marque: bloc && bloc.getAttribute("data-cle-de-livraison-montree"), puits: p, texteDuPuits: nu124(p), nature: p && p.getAttribute("data-refus-d-un-geste"),
+      natureDuSecret: p && p.getAttribute("data-refus-du-secret-des-gestes"),
+      montre: !!p && p.hidden === false, avis: avis124().slice(avantAvis), rechargements: compter124("GET /api/connectors") };
+  };
+  const fuite124 = (secret) => {
+    const vus = [];
+    for (const stock of [localStorage, globalThis.sessionStorage].filter(Boolean)) for (let i = 0; i < stock.length; i++) { const k = stock.key(i); if (String(stock.getItem(k)).includes(secret) || String(k).includes(secret)) vus.push("stockage:" + k); }
+    const bloc = blocDeLaCle124();
+    const horsDuBloc = nu124(document.body).split(nu124(bloc)).join("");
+    if (bloc && horsDuBloc.includes(secret)) vus.push("document hors du bloc de la clé");
+    return vus;
+  };
+
+  globalThis.fetch = async (u, init) => {
+    const chemin = String(u).split("?")[0], methode = ((init && init.method) || "GET").toUpperCase();
+    const entetes = (init && init.headers) || null;
+    envois124.push({ route: methode + " " + chemin, secret: entetes ? entetes["x-plume-secret-des-gestes"] : undefined });
+    const r = servis124[methode + " " + chemin] || { statut: 200, corps: {} };
+    const texte = typeof r.corps === "string" ? r.corps : JSON.stringify(r.corps === undefined ? {} : r.corps);
+    const statut = r.statut || 200;
+    return { ok: statut >= 200 && statut < 300, status: statut, headers: { get: () => null }, text: async () => texte, json: async () => JSON.parse(texte) };
+  };
+  globalThis.setTimeout = (fn, ms) => (ms >= 1000 ? 0 : minuterieOrigine124(fn, ms >= 100 ? 0 : ms));
+  for (const L of [FR124, EN124]) { L.S.isAdmin = true; L.S.AUTH = { user: "hugo", role: "admin", auth_method: "cookie" }; }
+  const ecarts124 = [], mesure124 = [];
+  try {
+    for (const L of [FR124, EN124]) {
+      const M = MOTS124[L.nom];
+      // (a) LE BOUTON : sur chaque source push, sur aucune autre.
+      servis124 = { "GET /api/connectors": { corps: SOURCES124 } };
+      await L.connecteurs.loadConnectors(); await laisser124();
+      const presents = SOURCES124.filter((s) => boutonDeLaLigne124(L, s.name)).map((s) => s.type).sort();
+      if (JSON.stringify(presents) !== JSON.stringify(TYPES_PUSH124)) ecarts124.push(`${L.nom}/bouton : posé sur ${JSON.stringify(presents)}, attendu sur ${JSON.stringify(TYPES_PUSH124)} (jamais sur une source en PULL)`);
+
+      // (b) PUB/SUB, JOUÉ JUSQU'AU BOUT.
+      const a = await renouveler124(L, "gcp-124", { corps: { connector_id: 7, delivery_token: CLE_PUBSUB124, endpoint_path: "/api/ingest/pubsub", transport: "query_token", instructions: "(du démon)", cles_revoquees: 1 } });
+      mesure124.push(`${L.nom}/Pub/Sub : confirmation « ${a.confirmation.slice(0, 90)}… » ; secret demandé ${a.secretDemande} ; ${a.envois} envoi(s) ; bloc « ${a.marque} »`);
+      if (!a.bouton) { ecarts124.push(`${L.nom}/Pub/Sub : le bouton manque`); continue; }
+      const ecartA = [];
+      if (!(M.revoque.test(a.confirmation) && M.une_fois.test(a.confirmation) && M.jamais.test(a.confirmation) && M.intacte.test(a.confirmation) && M.pubsub.test(a.confirmation) && a.confirmation.includes("gcp-124")))
+        ecartA.push(`la confirmation ne dit pas la conséquence : « ${a.confirmation} »`);
+      if (L.nom === "en" && ACCENTS124.test(a.confirmation)) ecartA.push("la confirmation reste française");
+      if (a.secretDemandeAvantConfirmation) ecartA.push("le secret est demandé avant la confirmation");
+      if (!a.secretDemande || a.envoisAvantSecret !== 0) ecartA.push(`le secret n'est pas demandé AVANT l'envoi (${a.envoisAvantSecret} envoi(s) avant)`);
+      if (a.envois !== 1 || !a.envoi || a.envoi.secret !== SECRET124) ecartA.push(`${a.envois} envoi(s), en-tête ${a.envoi ? JSON.stringify(a.envoi.secret) : "absent"}`);
+      if (a.marque !== "7" || !a.texteDuBloc.includes("/api/ingest/pubsub?token=" + CLE_PUBSUB124) || !a.texteDuBloc.includes("gcp-124") || !M.revoquees.test(a.texteDuBloc))
+        ecartA.push(`la clé n'est pas montrée dans l'URL complète, ou le bloc ne dit pas la révocation : « ${a.texteDuBloc.slice(0, 220)} »`);
+      if (a.rechargements < 1) ecartA.push("la liste n'est pas rechargée après le renouvellement");
+      if (!blocDeLaCle124()) ecartA.push("le bloc de la clé ne survit pas au rechargement de la liste");
+      if (a.montre) ecartA.push(`un refus est peint après un renouvellement accepté : « ${a.texteDuPuits.slice(0, 120)} »`);
+      const fuites = fuite124(CLE_PUBSUB124);
+      if (fuites.length) ecartA.push(`la clé fuit : ${JSON.stringify(fuites)}`);
+      const fermer = blocDeLaCle124() ? cueillir124(blocDeLaCle124(), (e) => e.tagName === "BUTTON" && nu124(e) === M.fermer)[0] : null;
+      if (!fermer) ecartA.push("le bloc de la clé ne porte pas son bouton « Fermer »"); else { fermer.onclick(); if (blocDeLaCle124()) ecartA.push("« Fermer » ne retire pas la clé montrée"); }
+      if (ecartA.length) ecarts124.push(`${L.nom}/Pub/Sub : ${ecartA.join(" ; ")}`);
+
+      // (c) FIREHOSE, SANS CLÉ LIÉE AVANT : la forme de l'en-tête, et « aucune clé n'était liée ».
+      const f = await renouveler124(L, "fh-124", { corps: { connector_id: 8, delivery_key: CLE_FIREHOSE124, endpoint_path: "/api/ingest/firehose", auth_header: "X-Amz-Firehose-Access-Key", instructions: "(du démon)", cles_revoquees: 0 } });
+      if (!f.bouton || !M.firehose.test(f.confirmation) || M.pubsub.test(f.confirmation) || f.envois !== 1 || f.marque !== "8"
+        || !f.texteDuBloc.includes(CLE_FIREHOSE124) || !f.texteDuBloc.includes("X-Amz-Firehose-Access-Key") || f.texteDuBloc.includes("?token=") || !M.aucune.test(f.texteDuBloc))
+        ecarts124.push(`${L.nom}/Firehose : confirmation « ${f.confirmation.slice(0, 120)} » ; ${f.envois} envoi(s) ; bloc « ${f.texteDuBloc.slice(0, 220)} »`);
+      const blocF = blocDeLaCle124(); if (blocF) blocF.remove();
+
+      // (d) CONFIRMATION REFUSÉE : ni secret demandé, ni envoi, ni clé.
+      const d = await renouveler124(L, "gcp-124", { corps: { delivery_token: "ne-doit-pas-partir" } }, { confirmer: false });
+      if (d.secretDemande || d.envois !== 0 || d.bloc) ecarts124.push(`${L.nom}/confirmation refusée : secret demandé ${d.secretDemande}, ${d.envois} envoi(s), bloc ${!!d.bloc}`);
+
+      // (e) SECRET NON SAISI : aucun envoi, et le puits dit que rien n'a changé.
+      const e = await renouveler124(L, "gcp-124", { corps: { delivery_token: "ne-doit-pas-partir" } }, { secret: null });
+      if (e.envois !== 0 || e.bloc || e.natureDuSecret !== "secret_des_gestes_non_saisi" || !e.montre) ecarts124.push(`${L.nom}/secret non saisi : ${e.envois} envoi(s), bloc ${!!e.bloc}, puits « ${e.natureDuSecret} »`);
+
+      // (f) COMMIT REFUSÉ (cause relue dans le démon) : puits des connecteurs, cause entière, aucune clé, aucun succès.
+      const c = await renouveler124(L, "gcp-124", { statut: 503, corps: { error: CAUSE_COMMIT124, id: "plume-e1-124" } });
+      const faceCommit = L.noyau.motDuRefusDUnGeste ? L.noyau.motDuRefusDUnGeste("ecriture_non_validee") : "(motDuRefusDUnGeste absent)";
+      if (c.envois !== 1 || c.bloc || c.nature !== "ecriture_non_validee" || !c.montre || !c.texteDuPuits.includes(CAUSE_COMMIT124) || !c.texteDuPuits.startsWith(nu124({ textContent: faceCommit })) || c.avis.length)
+        ecarts124.push(`${L.nom}/COMMIT refusé : ${c.envois} envoi(s), bloc ${!!c.bloc}, puits « ${c.nature} » « ${c.texteDuPuits.slice(0, 160)} », avis ${JSON.stringify(c.avis)}`);
+    }
+    // (g) LE RECENSEMENT : chaque appel web de la route passe par `avecLeSecretDesGestes`, sur la même ligne ; jugé dans les
+    //     deux sens (une ligne fabriquée sans l'enveloppe est accusée), et au moins un site existe.
+    const recenser124 = (corpus) => corpus.flatMap(([f, src]) => src.split("\n").map((ligne, i) => [f, i + 1, ligne])).filter(([, , ligne]) => /apiSend\([^)]*\/delivery-key'/.test(ligne));
+    const sites124 = recenser124(CORPUS_WEB.filter(([f]) => f.endsWith(".js")));
+    const nus124 = sites124.filter(([, , l]) => !/avecLeSecretDesGestes\(/.test(l)).map(([f, n]) => `${f}:${n}`);
+    const fabrique124 = recenser124([["fabrique.js", "  await apiSend('/connectors/' + c.id + '/delivery-key', 'POST', {});"]]).filter(([, , l]) => !/avecLeSecretDesGestes\(/.test(l));
+    if (sites124.length < 1 || nus124.length || fabrique124.length !== 1) ecarts124.push(`recensement : ${sites124.length} site(s), sans secret ${JSON.stringify(nus124)}, fabriqué accusé ${fabrique124.length === 1}`);
+
+    // (h) LA CRÉATION ET LE RENOUVELLEMENT LISENT LA CLÉ PAR LA MÊME LECTURE (`lectureDeLaCleMontree`). Le démon sert les
+    //     deux réponses dans la même forme (`corps_de_la_cle_montree`). La même réponse, servie à la création d'une source
+    //     push (le geste réel du picker : confirmation à champs, secret des gestes, `showPushKey`) puis au renouvellement,
+    //     montre les mêmes valeurs — Pub/Sub : l'URL qui porte la clé ; Firehose : l'endpoint, l'en-tête et la clé —, et la
+    //     valeur qui porte le secret est marquée sélectionnable dans les deux. Structurel : `?token=` n'est composé qu'en
+    //     UN lieu du code de web/ (hors commentaires).
+    const accepter124 = (valeurs = {}) => {
+      const f = formulaire124(); if (!f || typeof f.onsubmit !== "function") return false;
+      for (const [n, v] of Object.entries(valeurs)) { const champ = cueillir124(f, (e) => typeof e.getAttribute === "function" && e.getAttribute("data-n") === n)[0]; if (champ) champ.value = v; }
+      f.onsubmit({ preventDefault() {} }); return true;
+    };
+    const valeursMontrees124 = (el) => (el ? cueillir124(el, (e) => e.tagName === "CODE").map((c) => [nu124(c), /user-select:all/.test(String((c.style && c.style.cssText) || ""))]) : []);
+    const creer124 = async (preset, reponse) => {
+      servis124 = { "GET /api/connectors": { corps: SOURCES124 }, "GET /api/connectors/presets": { corps: { presets: [preset] } }, "POST /api/connectors/push-source": reponse };
+      await FR124.connecteurs.openPresetPicker(); await laisser124();
+      const picker = qs124("#connector-preset-picker");
+      const bouton = picker ? cueillir124(picker, (e) => e.tagName === "BUTTON" && nu124(e) === "Créer source push")[0] || null : null;
+      if (!bouton) return { bouton: null, valeurs: [], envois: 0 };
+      envois124.length = 0; fermer124();
+      const geste = Promise.resolve(bouton.onclick()); await laisser124(8);
+      accepter124({ name: preset.label, env: "prod" }); await laisser124(8);
+      if (fenetreDuSecretDesGestes()) await repondreAuSecretDesGestes(SECRET124, () => laisser124(6));
+      await geste; await laisser124(30);
+      return { bouton, valeurs: valeursMontrees124(picker), envois: compter124("POST /api/connectors/push-source") };
+    };
+    const ORIGINE124 = location.origin;
+    const REPONSE_PUBSUB124 = { connector_id: 7, delivery_token: CLE_PUBSUB124, endpoint_path: "/api/ingest/pubsub", transport: "query_token", instructions: "(du démon)" };
+    const REPONSE_FIREHOSE124 = { connector_id: 8, delivery_key: CLE_FIREHOSE124, endpoint_path: "/api/ingest/firehose", auth_header: "X-Amz-Firehose-Access-Key", instructions: "(du démon)" };
+    const creeP = await creer124({ id: "gcp-audit", vendor: "gcp", label: "gcp-124", push_source: true, instantiable: false, note: "n" }, { corps: REPONSE_PUBSUB124 });
+    const renouveleP = await renouveler124(FR124, "gcp-124", { corps: { ...REPONSE_PUBSUB124, cles_revoquees: 1 } });
+    const urlP = [ORIGINE124 + "/api/ingest/pubsub?token=" + CLE_PUBSUB124, true];
+    const urlCreeeP = creeP.valeurs.find(([v]) => v.includes("?token=")) || null;
+    const valeursRenouveleesP = valeursMontrees124(renouveleP.bloc);
+    if (!creeP.bouton || creeP.envois !== 1 || JSON.stringify(urlCreeeP) !== JSON.stringify(urlP) || JSON.stringify(valeursRenouveleesP) !== JSON.stringify([urlP]))
+      ecarts124.push(`lecture commune/Pub/Sub : création ${creeP.bouton ? `${creeP.envois} envoi(s), valeurs ${JSON.stringify(creeP.valeurs)}` : "(bouton absent)"} ; renouvellement ${JSON.stringify(valeursRenouveleesP)} ; attendu l'URL ${JSON.stringify(urlP)} dans les deux`);
+    { const b = blocDeLaCle124(); if (b) b.remove(); }
+    const creeF = await creer124({ id: "aws-cloudtrail", vendor: "aws", label: "fh-124", push_source: true, instantiable: false, note: "n" }, { corps: REPONSE_FIREHOSE124 });
+    const renouveleF = await renouveler124(FR124, "fh-124", { corps: { ...REPONSE_FIREHOSE124, cles_revoquees: 1 } });
+    const attenduF = [[ORIGINE124 + "/api/ingest/firehose", false], ["X-Amz-Firehose-Access-Key", false], [CLE_FIREHOSE124, true]];
+    const valeursRenouveleesF = valeursMontrees124(renouveleF.bloc);
+    if (!creeF.bouton || creeF.envois !== 1 || JSON.stringify(creeF.valeurs) !== JSON.stringify(attenduF) || JSON.stringify(valeursRenouveleesF) !== JSON.stringify(attenduF))
+      ecarts124.push(`lecture commune/Firehose : création ${creeF.bouton ? `${creeF.envois} envoi(s), valeurs ${JSON.stringify(creeF.valeurs)}` : "(bouton absent)"} ; renouvellement ${JSON.stringify(valeursRenouveleesF)} ; attendu ${JSON.stringify(attenduF)} dans les deux`);
+    { const b = blocDeLaCle124(); if (b) b.remove(); const pk = qs124("#connector-preset-picker"); if (pk) { pk.replaceChildren(); pk.classList.add("hidden"); } }
+    const sansCommentaires124 = (src) => src.replace(/\/\*[\s\S]*?\*\//g, "").split("\n").map((l) => l.replace(/(^|[^:'"\\])\/\/.*$/, "$1")).join("\n");
+    const composeurs124 = CORPUS_WEB.filter(([f]) => f.endsWith(".js")).flatMap(([f, src]) => sansCommentaires124(src).split("\n").map((l, i) => [f, i + 1, l])).filter(([, , l]) => l.includes("'?token='") || l.includes("\"?token=\"") || l.includes("`?token=`")).map(([f, n]) => `${f}:${n}`);
+    if (composeurs124.length !== 1) ecarts124.push(`l'URL qui porte la clé est composée en ${composeurs124.length} lieu(x) de web/, attendu un seul (\`lectureDeLaCleMontree\`) : ${JSON.stringify(composeurs124)}`);
+    mesure124.push(`lecture commune : création Pub/Sub ${JSON.stringify(urlCreeeP)}, Firehose ${JSON.stringify(creeF.valeurs.map(([v]) => v.slice(0, 40)))} ; composition de ?token= en ${JSON.stringify(composeurs124)}`);
+    console.log(`[124] ${mesure124.join(" | ")} ; sites de la route : ${sites124.map(([f, n]) => f + ":" + n).join(", ")}`);
+    exiger(ecarts124.length === 0, `(124) \`P10.26-g\` — LE RENOUVELLEMENT DE LA CLÉ DE LIVRAISON N'A PAS SA FORME (bouton sur les seules sources push, conséquence dite dans la forme du transport, secret des gestes demandé avant l'envoi, clé montrée une fois avant la liste et retirée par « Fermer », aucune fuite, confirmation ou secret refusés sans envoi, COMMIT refusé peint cause entière sans clé ni succès, recensement de la route) : ${JSON.stringify(ecarts124)}`);
+  } finally {
+    process.off("unhandledRejection", surRejet124);
+    globalThis.fetch = fetchOrigine124; globalThis.setTimeout = minuterieOrigine124;
+    for (const o of etatOrigine124) { o.S.AUTH = o.auth; o.S.isAdmin = o.admin; }
+    const b = blocDeLaCle124(); if (b) b.remove();
+    const p = puits124(); if (p) { p.hidden = true; p.replaceChildren(); }
+    const h = qs124("#toasts"); if (h) h.replaceChildren();
+    fermer124();
+  }
+  direLeVerdictDuTemoin(echecsAvant124, 124, "(124) OK — `P10.26-g` : la clé de livraison d'une source push se renouvelle par la console — bouton sur les seules sources push, confirmation qui dit la révocation au même geste et la source intacte dans la forme de chaque transport, secret des gestes avant l'envoi, clé montrée une fois avant la liste, refus peints cause entière, recensement de la route ; la création et le renouvellement montrent la même réponse par la même lecture, et `?token=` n'est composé qu'en un lieu.");
+}
+
+// ---------------------------------------------------------------------------------------------
+// (125) `P10.26-f` (face console) — L'INVENTAIRE DES JETONS DIT LE GENRE SERVI, ET N'APPELLE PAS « RELAIS » CE QUI N'EN EST
+//       PAS UN. Le démon sert désormais le genre écrit (`gcp_pubsub`, tout genre inconnu par son nom) et, pour une clé de
+//       livraison, `connector_id`. Jugé, dans les deux langues : le badge « Type » nomme les deux genres de clé de
+//       livraison et laisse un genre inconnu à son nom ; la cellule « Hôte lié » d'une clé de livraison nomme sa source
+//       push et d'un jeton de lecture dit qu'il n'écrit rien — jamais « relais — hôte non attesté » —, pendant qu'un jeton
+//       d'agent sans hôte ET un genre inconnu restent peints relais (contrôle négatif). L'INSTRUMENT relie la phrase au
+//       démon : les genres que la console dit non-relais doivent être EXACTEMENT ceux que `token_lookup` (state.rs) refuse
+//       sur le seam agent. Le compte rendu de suppression d'un compte, JOUÉ par son rendu réel
+//       (`noeudDuCompteRenduDeSuppression`) sur une clé Firehose, une clé Pub/Sub et un jeton HEC conservés, donne à chaque
+//       clé de livraison le geste du renouvellement (`P10.26-g`) et garde le geste d'avant au HEC, toutes en ligne
+//       d'alarme. La confirmation de RÉVOCATION depuis l'inventaire, JOUÉE par ✕ puis écartée : sur une clé de livraison,
+//       le flux coupé de SA source push et le renouvellement pour seulement changer de clé ; sur un jeton d'agent, la
+//       phrase d'avant ; rien n'est envoyé.
+//
+// CE QUE CE TÉMOIN NE TIENT PAS : la confirmation de suppression d'un compte range encore la clé de livraison parmi les
+// jetons d'auteur non établi (vrai pour les seules clés antérieures à `P10.25-q`) ; la confirmation de révocation d'un jeton
+// de lecture parle encore d'« agent ou forwarder porteur ».
+// ---------------------------------------------------------------------------------------------
+{
+  const echecsAvant125 = echecs.length;
+  const FICHIERS125 = { noyau: "core.js", etat: "state.js", comptes: "admin_users.js" };
+  const importer125 = async (adresse) => { const L = {}; for (const [cle, f] of Object.entries(FICHIERS125)) L[cle] = await import(adresse(f)); return L; };
+  const modsFr125 = await importer125((f) => pathToFileURL(path.join(WEB, f)).href);
+  const langueOrigine125 = localStorage.getItem("soc_lang");
+  localStorage.setItem("soc_lang", "en");
+  const modsEn125 = await importer125((f) => adresseSousLaLangue(f));
+  if (langueOrigine125 === null) localStorage.removeItem("soc_lang"); else localStorage.setItem("soc_lang", langueOrigine125);
+  const FR125 = { nom: "fr", ...modsFr125, S: modsFr125.etat.S }, EN125 = { nom: "en", ...modsEn125, S: modsEn125.etat.S };
+  const tic125 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser125 = async (n = 30) => { for (let i = 0; i < n; i++) await tic125(); };
+  const nu125 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ").trim();
+  const cueillir125 = (el, pred, acc = []) => { if (el && pred(el)) acc.push(el); ((el && el.children) || []).forEach((c) => cueillir125(c, pred, acc)); return acc; };
+  const instrument125 = (vrai, quoi) => exiger(vrai, `(125-instrument) ${quoi} : ce témoin REFUSE DE CONCLURE`);
+  const srcComptes125 = ((CORPUS_WEB.find(([g]) => g === "admin_users.js") || [])[1]) || "";
+
+  // ── (0) L'INSTRUMENT : les genres que `token_lookup` refuse sur le seam agent, lus dans le démon ; ceux que la console dit
+  //        non-relais, lus dans son source. Les deux ensembles doivent être le même.
+  let etat125 = ""; try { etat125 = readFileSync(path.join(RACINE, "daemon", "src", "state.rs"), "utf8"); } catch (e) { etat125 = ""; }
+  const refusesAgent125 = [...(((etat125.match(/SELECT host FROM token WHERE token_hash=\?1 AND \(kind IS NULL OR kind NOT IN \(([^)]*)\)\)/) || [])[1]) || "").matchAll(/'([a-z_]+)'/g)].map((m) => m[1]).sort();
+  const liste125 = (nom) => [...(((srcComptes125.match(new RegExp("const " + nom + " = \\[([^\\]]*)\\];")) || [])[1]) || "").matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
+  const nonRelaisConsole125 = [...liste125("GENRES_DE_CLE_DE_LIVRAISON"), ...liste125("GENRES_DE_JETON_DE_LECTURE")].sort();
+  instrument125(refusesAgent125.length >= 4, `la liste des genres que \`token_lookup\` refuse sur le seam agent ne se lit plus dans state.rs (${JSON.stringify(refusesAgent125)})`);
+  exiger(JSON.stringify(nonRelaisConsole125) === JSON.stringify(refusesAgent125),
+    `(125a) LES GENRES QUE LA CONSOLE DIT NON-RELAIS NE SONT PAS CEUX QUE LE DÉMON REFUSE SUR LE SEAM AGENT : console ${JSON.stringify(nonRelaisConsole125)}, démon ${JSON.stringify(refusesAgent125)}`);
+  instrument125([FR125, EN125].every((L) => typeof L.comptes.loadTokens === "function" && typeof L.comptes.motDuCompteRendu === "function" && typeof L.comptes.motDeLaCleDeLivraisonConservee === "function"
+      && typeof L.comptes.noeudDuCompteRenduDeSuppression === "function") && EN125.noyau.LANG === "en" && FR125.noyau.LANG !== "en",
+    "`loadTokens`, `motDuCompteRendu`, `motDeLaCleDeLivraisonConservee` ou `noeudDuCompteRenduDeSuppression` ne sont plus exportés, ou les deux instances ne portent pas deux langues");
+
+  const fetchOrigine125 = globalThis.fetch, minuterieOrigine125 = globalThis.setTimeout, qsOrigine125 = document.querySelector;
+  const etatOrigine125 = [FR125, EN125].map((L) => ({ S: L.S, auth: L.S.AUTH, admin: L.S.isAdmin }));
+  const hote125 = new Element("div");
+  const JETONS125 = [
+    { id: 1, name: "agent-lie-125", kind: "agent", host: "web01", created: 1, last_used: null, connector_id: null },
+    { id: 2, name: "relais-125", kind: "agent", host: null, created: 2, last_used: null, connector_id: null },
+    { id: 3, name: "gcp_pubsub-7", kind: "gcp_pubsub", host: null, created: 3, last_used: null, connector_id: 7 },
+    { id: 4, name: "firehose-8", kind: "firehose", host: null, created: 4, last_used: null, connector_id: 8 },
+    { id: 5, name: "graf-125", kind: "datasource", role: "viewer", host: null, created: 5, last_used: null, connector_id: null },
+    { id: 6, name: "futur-125", kind: "genre_futur_125", host: null, created: 6, last_used: null, connector_id: null },
+  ];
+  const ATTENDU125 = {
+    fr: { "agent-lie-125": ["agent", "web01"], "relais-125": ["agent", "relais — hôte non attesté"], "gcp_pubsub-7": ["clé de livraison Pub/Sub", /^aucun hôte — clé de livraison de la source push #7\b/],
+      "firehose-8": ["clé de livraison Firehose", /^aucun hôte — clé de livraison de la source push #8\b/], "graf-125": ["source de données", /^aucun hôte — jeton de lecture/], "futur-125": ["genre_futur_125", "relais — hôte non attesté"] },
+    en: { "agent-lie-125": ["agent", "web01"], "relais-125": ["agent", "relais — hôte non attesté"], "gcp_pubsub-7": ["Pub/Sub delivery key", /^no host — delivery key of push source #7\b/],
+      "firehose-8": ["Firehose delivery key", /^no host — delivery key of push source #8\b/], "graf-125": ["data source", /^no host — read token/], "futur-125": ["genre_futur_125", "relais — hôte non attesté"] },
+  };
+  const ecarts125 = [];
+  let suppressions125 = 0;
+  const fenetre125 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !c.classList.contains("out")).pop() || null;
+  const formulaire125 = () => { const ov = fenetre125(); return ov && ov.children[0] ? ov.children[0].children[0] || null : null; };
+  const texteDeLaFenetre125 = () => { const f = formulaire125(); return f ? cueillir125(f, (e) => e.tagName === "H3" || e.tagName === "P").map((e) => nu125(e)).join(" ").replace(/\s+/g, " ").trim() : ""; };
+  const ecarter125 = () => { const f = formulaire125(); const b = f ? f.querySelector(".m-cancel") : null; if (b && typeof b.onclick === "function") b.onclick(); };
+  const fermer125 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
+  globalThis.fetch = async (u, init) => {
+    const chemin = String(u).split("?")[0];
+    if (((init && init.method) || "GET").toUpperCase() === "DELETE") suppressions125++;
+    const corps = chemin === "/api/tokens" ? { tokens: JETONS125 } : {};
+    return { ok: true, status: 200, headers: { get: () => null }, text: async () => JSON.stringify(corps), json: async () => corps };
+  };
+  globalThis.setTimeout = (fn, ms) => (ms >= 1000 ? 0 : minuterieOrigine125(fn, ms >= 100 ? 0 : ms));
+  document.querySelector = (sel) => (sel === "#token-list" ? hote125 : qsOrigine125.call(document, sel));
+  try {
+    for (const L of [FR125, EN125]) {
+      L.S.isAdmin = true; L.S.AUTH = { user: "hugo", role: "admin", auth_method: "cookie" };
+      hote125.replaceChildren(); await L.comptes.loadTokens(); await laisser125();
+      for (const [nom, [badge, hote]] of Object.entries(ATTENDU125[L.nom])) {
+        const ligne = cueillir125(hote125, (e) => e.tagName === "TR" && cueillir125(e, (x) => x.tagName === "B" && nu125(x) === nom).length > 0)[0];
+        const cellules = ligne ? ligne.children.filter((c) => c.tagName === "TD") : [];
+        const lu = [nu125(cellules[1]), nu125(cellules[2])];
+        const hoteJuste = typeof hote === "string" ? lu[1] === hote : hote.test(lu[1]);
+        if (!ligne || lu[0] !== badge || !hoteJuste) ecarts125.push(`${L.nom}/${nom} : badge « ${lu[0]} », hôte « ${lu[1]} »`);
+      }
+      // Le compte rendu : une clé de livraison conservée reçoit le geste du renouvellement ; un jeton HEC garde le sien.
+      const conservee = L.comptes.motDeLaCleDeLivraisonConservee({ jeton: "firehose-8" });
+      const hec = L.comptes.motDuCompteRendu("jeton_conserve", { jeton: "hec-125" });
+      const renouveler = L.nom === "fr" ? /renouveler la clé de sa source push/ : /renew the key of its push source/;
+      if (!renouveler.test(conservee) || renouveler.test(hec) || conservee.includes("{jeton}") || !conservee.includes("firehose-8") || (L.nom === "en" && /[éèêàçùôâîÉÈÊÀ]/.test(conservee))) ecarts125.push(`${L.nom}/compte rendu : « ${conservee} » / « ${hec} »`);
+
+      // Le compte rendu JOUÉ par son rendu réel : chaque clé de livraison conservée reçoit la face du renouvellement, le
+      // HEC garde « le révoquer et en refrapper un », et les trois restent des lignes d'alarme.
+      const G = ATTENDU125[L.nom];
+      const compteRendu = { action: "config.user.delete", kind: "user", target: "bob", role: "editor", actor: "hugo",
+        jetons: { revoques: [], conserves_secret_connu: [{ name: "firehose-8", kind: "firehose", host: null }, { name: "gcp_pubsub-7", kind: "gcp_pubsub", host: null }, { name: "hec-125", kind: "hec", host: null }],
+          auteur_non_etabli: {}, decision: "(décision du démon)" } };
+      const noeud = L.comptes.noeudDuCompteRenduDeSuppression("bob", compteRendu);
+      const lignesConservees = cueillir125(noeud, (e) => typeof e.getAttribute === "function" && e.getAttribute("data-ligne-du-compte-rendu") === "jeton_conserve").map((li) => [nu125(li), li.className]);
+      const attendues = [
+        [L.comptes.motDeLaCleDeLivraisonConservee({ jeton: `firehose-8 (${G["firehose-8"][0]})` }), "bad"],
+        [L.comptes.motDeLaCleDeLivraisonConservee({ jeton: `gcp_pubsub-7 (${G["gcp_pubsub-7"][0]})` }), "bad"],
+        [L.comptes.motDuCompteRendu("jeton_conserve", { jeton: "hec-125 (HEC)" }), "bad"],
+      ].map(([t, c]) => [nu125({ textContent: t }), c]);
+      if (JSON.stringify(lignesConservees) !== JSON.stringify(attendues) || renouveler.test(lignesConservees[2] ? lignesConservees[2][0] : ""))
+        ecarts125.push(`${L.nom}/compte rendu joué : ${JSON.stringify(lignesConservees)}, attendu ${JSON.stringify(attendues)}`);
+
+      // La révocation depuis l'inventaire, JOUÉE : ✕, la confirmation lue, puis écartée — rien n'est envoyé.
+      const renouvelerLaCle = L.nom === "fr" ? /« Renouveler la clé de livraison »/ : /“Renew the delivery key”/;
+      const fluxCoupe = L.nom === "fr" ? /la source push #(\d+) perd son flux immédiatement/ : /push source #(\d+) loses its stream immediately/;
+      for (const [nom, id] of [["gcp_pubsub-7", "7"], ["firehose-8", "8"], ["relais-125", null]]) {
+        const ligne = cueillir125(hote125, (e) => e.tagName === "TR" && cueillir125(e, (x) => x.tagName === "B" && nu125(x) === nom).length > 0)[0];
+        const del = ligne ? cueillir125(ligne, (e) => e.tagName === "BUTTON" && e.title === "Révoquer le jeton")[0] || null : null;
+        if (!del) { ecarts125.push(`${L.nom}/${nom} : la ligne ne porte pas ✕`); continue; }
+        fermer125(); const avant = suppressions125;
+        const geste = Promise.resolve(del.onclick()); await laisser125(8);
+        const texte = texteDeLaFenetre125();
+        ecarter125(); await geste; await laisser125(8);
+        const lu = (texte.match(fluxCoupe) || [])[1] || null;
+        const juste = id !== null
+          ? lu === id && renouvelerLaCle.test(texte) && !/l'agent ou le forwarder|the agent or forwarder/.test(texte)
+          // La phrase de l'agent est au lexique (web/i18n.js) : sa face anglaise est admise si l'observateur l'a traduite.
+          : /l'agent ou le forwarder porteur perd l'accès immédiatement|the agent or forwarder holding it loses access immediately/.test(texte) && !renouvelerLaCle.test(texte) && lu === null;
+        if (!juste || suppressions125 !== avant) ecarts125.push(`${L.nom}/révocation de ${nom} : « ${texte.slice(0, 260)} » (${suppressions125 - avant} envoi(s))`);
+      }
+      fermer125();
+    }
+    exiger(ecarts125.length === 0, `(125) \`P10.26-f\` — L'INVENTAIRE DES JETONS NE DIT PAS LE GENRE SERVI OU APPELLE « RELAIS » UN JETON QUI N'EN EST PAS UN (clé de livraison nommée avec sa source push, jeton de lecture qui n'écrit rien, agent sans hôte et genre inconnu restés relais, deux langues ; compte rendu d'une clé conservée = renouvellement) : ${JSON.stringify(ecarts125)}`);
+  } finally {
+    globalThis.fetch = fetchOrigine125; globalThis.setTimeout = minuterieOrigine125; document.querySelector = qsOrigine125;
+    for (const o of etatOrigine125) { o.S.AUTH = o.auth; o.S.isAdmin = o.admin; }
+    fermer125();
+  }
+  direLeVerdictDuTemoin(echecsAvant125, 125, "(125) OK — `P10.26-f` : l'inventaire des jetons nomme les clés de livraison et leur source push, dit qu'un jeton de lecture n'écrit rien, laisse relais l'agent sans hôte et le genre inconnu — les genres dits non-relais sont exactement ceux que `token_lookup` refuse ; le compte rendu joué donne à chaque clé de livraison conservée le geste du renouvellement, et la révocation d'une clé de livraison depuis l'inventaire dit le flux coupé de sa source push et le renouvellement.");
 }
 
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;

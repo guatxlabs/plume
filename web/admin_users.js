@@ -195,13 +195,74 @@ const MOTS_DU_COMPTE_RENDU_DE_SUPPRESSION = {
     fr: "jetons d'auteur non établi, non touchés : {liste}",
     en: 'tokens with no established author, not touched: {liste}' },
 };
+// `P10.26-g` — LE GESTE D'UNE CLÉ DE LIVRAISON CONSERVÉE, dans le compte rendu de suppression d'un compte. Une clé de
+// livraison ne se révoque pas depuis l'inventaire des jetons (le flux du nuage serait coupé sans remplaçante) : son geste
+// est le renouvellement de la clé de sa source push, qui révoque l'ancienne au même instant. Table propre à ce geste,
+// à côté de celle du compte rendu (dont le geste « le révoquer et en refrapper un » reste celui des autres jetons).
+const MOTS_DE_LA_CLE_DE_LIVRAISON_CONSERVEE = {
+  ligne: {
+    fr: "clé de livraison CONSERVÉE, secret connu d'un compte supprimé : {jeton} — renouveler la clé de sa source push (Connecteurs de sources), puis la reporter dans le flux",
+    en: 'delivery key KEPT, secret known to a deleted account: {jeton} — renew the key of its push source (Source connectors), then carry it over into the stream' },
+};
+function motDeLaCleDeLivraisonConservee(valeurs = {}) {
+  const face = LANG === 'en' ? MOTS_DE_LA_CLE_DE_LIVRAISON_CONSERVEE.ligne.en : MOTS_DE_LA_CLE_DE_LIVRAISON_CONSERVEE.ligne.fr;
+  return face.replace(/\{(\w+)\}/g, (brut, nom) => (Object.prototype.hasOwnProperty.call(valeurs, nom) ? String(valeurs[nom]) : brut));
+}
 // Le genre d'un jeton, dans les deux langues ; un genre que le démon ajouterait est dit par son NOM.
+// `P10.26-f` — les deux genres de clé de livraison y manquaient : l'inventaire (badge « Type ») et le compte rendu de
+// suppression les disaient par leur nom brut, et l'inventaire du démon servait `gcp_pubsub` comme `agent`. C'est aussi
+// la table du badge de l'inventaire (l'ancienne `TOK_KIND_LABEL`, qui ne connaissait qu'agent et HEC, est retirée).
 const GENRES_DE_JETON = {
   agent: { fr: 'agent', en: 'agent' },
   hec: { fr: 'HEC', en: 'HEC' },
   datasource: { fr: 'source de données', en: 'data source' },
   client: { fr: 'client', en: 'client' },
+  firehose: { fr: 'clé de livraison Firehose', en: 'Firehose delivery key' },
+  gcp_pubsub: { fr: 'clé de livraison Pub/Sub', en: 'Pub/Sub delivery key' },
 };
+// `P10.26-f` — ce qu'un jeton SANS hôte lié est, selon son genre. Un jeton d'agent ou HEC sans hôte est un relais (il
+// écrit sous l'hôte qu'il déclare) ; une clé de livraison n'écrit que sur le récepteur de SA source push, et un jeton de
+// lecture n'écrit rien — `token_lookup` (daemon/src/state.rs) refuse ces quatre genres sur le seam agent. Les peindre
+// « relais — hôte non attesté » annonçait un accès qu'ils n'ont pas. Un genre inconnu reste peint relais : le seam agent
+// ne le refuse pas.
+const GENRES_DE_CLE_DE_LIVRAISON = ['firehose', 'gcp_pubsub'];
+const GENRES_DE_JETON_DE_LECTURE = ['datasource', 'client'];
+const MOTS_DE_LA_PORTEE_SANS_HOTE = {
+  cle_de_livraison: {
+    fr: 'aucun hôte — clé de livraison de la source push #{id}, bornée à son récepteur',
+    en: 'no host — delivery key of push source #{id}, bound to its receiver' },
+  jeton_de_lecture: {
+    fr: "aucun hôte — jeton de lecture, il n'écrit aucun événement",
+    en: 'no host — read token, it writes no event' },
+};
+function motDeLaPorteeSansHote(cle, valeurs = {}) {
+  const face = LANG === 'en' ? MOTS_DE_LA_PORTEE_SANS_HOTE[cle].en : MOTS_DE_LA_PORTEE_SANS_HOTE[cle].fr;
+  return face.replace(/\{(\w+)\}/g, (brut, nom) => (Object.prototype.hasOwnProperty.call(valeurs, nom) ? String(valeurs[nom]) : brut));
+}
+// `P10.26-g` — LA RÉVOCATION D'UNE CLÉ DE LIVRAISON depuis l'inventaire des jetons. La confirmation disait de tout jeton
+// « l'agent ou le forwarder porteur perd l'accès… il faut en provisionner un autre » : révoquer une clé de livraison coupe
+// le flux d'une source push, et le geste qui ne fait que CHANGER de clé est son renouvellement (Connecteurs de sources),
+// qui garde la source et révoque l'ancienne au même geste. La source reste, sans clé : ce même renouvellement lui en rend
+// une. Les autres genres gardent la phrase d'avant.
+const MOTS_DE_LA_REVOCATION_D_UNE_CLE_DE_LIVRAISON = {
+  consequence: {
+    fr: "la source push #{id} perd son flux immédiatement : chaque livraison qui présente cette clé est refusée par son récepteur, et une clé révoquée ne se réactive pas. Pour seulement CHANGER de clé, « Renouveler la clé de livraison » (Connecteurs de sources) frappe la neuve et révoque celle-ci au même geste ; après cette révocation, la source reste sans clé, et ce même bouton lui en rend une.",
+    en: 'push source #{id} loses its stream immediately: every delivery that presents this key is refused by its receiver, and a revoked key is never re-enabled. To only CHANGE the key, “Renew the delivery key” (Source connectors) mints the new one and revokes this one in the same action; after this revocation the source is left without a key, and that same button gives it one back.' },
+};
+function motDeLaRevocationDUneCleDeLivraison(t) {
+  const face = LANG === 'en' ? MOTS_DE_LA_REVOCATION_D_UNE_CLE_DE_LIVRAISON.consequence.en : MOTS_DE_LA_REVOCATION_D_UNE_CLE_DE_LIVRAISON.consequence.fr;
+  return face.split('{id}').join(t.connector_id != null ? String(t.connector_id) : '?');
+}
+// La cellule « Hôte lié » de l'inventaire des jetons.
+function celluleDeLHoteDUnJeton(t) {
+  const c = document.createElement('span');
+  if (t.host) { c.textContent = t.host; return c; }
+  c.className = 'muted';
+  if (GENRES_DE_CLE_DE_LIVRAISON.includes(t.kind)) c.textContent = motDeLaPorteeSansHote('cle_de_livraison', { id: t.connector_id != null ? t.connector_id : '?' });
+  else if (GENRES_DE_JETON_DE_LECTURE.includes(t.kind)) c.textContent = motDeLaPorteeSansHote('jeton_de_lecture');
+  else c.textContent = 'relais — hôte non attesté';
+  return c;
+}
 function motDeLaSuppressionDeCompte(cle, valeurs = {}) {
   const face = LANG === 'en' ? MOTS_DE_LA_SUPPRESSION_DE_COMPTE[cle].en : MOTS_DE_LA_SUPPRESSION_DE_COMPTE[cle].fr;
   return face.replace(/\{(\w+)\}/g, (brut, nom) => (Object.prototype.hasOwnProperty.call(valeurs, nom) ? String(valeurs[nom]) : brut));
@@ -273,7 +334,9 @@ function noeudDuCompteRenduDeSuppression(nom, compteRendu) {
       ligne(motDuCompteRendu('jeton_revoque', { jeton: jetonNomme(j), raison }), 'jeton_revoque');
     });
     // Un jeton CONSERVÉ dont le secret reste connu d'un compte supprimé est dans le registre de l'alarme : il appelle un geste.
-    conserves.forEach(j => ligne(motDuCompteRendu('jeton_conserve', { jeton: jetonNomme(j) }), 'jeton_conserve', true));
+    // `P10.26-g` — une clé de livraison conservée appelle le renouvellement de sa source push, pas une révocation.
+    conserves.forEach(j => ligne(GENRES_DE_CLE_DE_LIVRAISON.includes(j.kind) ? motDeLaCleDeLivraisonConservee({ jeton: jetonNomme(j) })
+      : motDuCompteRendu('jeton_conserve', { jeton: jetonNomme(j) }), 'jeton_conserve', true));
     if (!revoques.length && !conserves.length) ligne(motDuCompteRendu('aucun_jeton'), 'aucun_jeton');
     if (estUnObjet(jetons.auteur_non_etabli)) {
       const parGenre = Object.keys(jetons.auteur_non_etabli).map(g => String(jetons.auteur_non_etabli[g]) + ' ' + genreDeJeton(g));
@@ -668,7 +731,6 @@ loadUsers();
 // responder. Mutations via apiSend (X-CSRF-Token auto) ; tout rendu en textContent (anti-XSS). -------------
 const TOK_NAME_RE = /^[A-Za-z0-9_.-]+$/;          // miroir de token_name_ok côté daemon
 const TOK_HOST_RE = /^[A-Za-z0-9_.-]{1,253}$/;    // miroir de token_host_ok (chaîne vide = non lié, autorisée)
-const TOK_KIND_LABEL = { agent: 'agent', hec: 'HEC' };
 // `P10.26-q` — le puits des gestes sur les jetons (frappe, révocation), juste avant la liste : hors de ce que
 // `loadTokens` repeint, il survit au rechargement. La forme est celle du point commun (`peindreLeRefusDUnGeste`).
 function puitsDesJetons() { const liste = $('#token-list'); return liste ? puitsDuRefusDUnGeste(liste.parentNode, 'jetons', liste) : null; }
@@ -730,14 +792,19 @@ async function loadTokens() {
   const tokens = rep.tokens || [];
   const columns = [
     { key: 'name', label: 'Nom', sortable: true, render: t => { const b = document.createElement('b'); b.textContent = t.name; return b; } },
-    { key: 'kind', label: 'Type', sortable: true, render: t => { const s = document.createElement('span'); s.className = 'badge'; s.textContent = TOK_KIND_LABEL[t.kind] || t.kind; return s; } },
-    { key: 'host', label: 'Hôte lié', render: t => { const c = document.createElement('span'); if (t.host) { c.textContent = t.host; } else { c.className = 'muted'; c.textContent = 'relais — hôte non attesté'; } return c; } },
+    // `P10.26-f` — le genre servi tel quel par le démon, nommé dans la langue de l'écran (un genre inconnu par son nom).
+    { key: 'kind', label: 'Type', sortable: true, render: t => { const s = document.createElement('span'); s.className = 'badge'; s.textContent = genreDeJeton(t.kind); return s; } },
+    { key: 'host', label: 'Hôte lié', render: t => celluleDeLHoteDUnJeton(t) },
     { key: 'created', label: 'Créé', sortable: true, sortVal: t => t.created || 0, render: t => t.created ? fmtTs(t.created) : '—' },
     { key: 'last_used', label: 'Dern. usage', sortable: true, sortVal: t => t.last_used || 0, render: t => t.last_used ? fmtTs(t.last_used) : '—' },
     { key: '_act', label: '', align: 'r', render: t => {
         const del = document.createElement('button'); del.className = 'picon'; del.innerHTML = ic('x'); del.title = 'Révoquer le jeton';
         del.onclick = async () => {
-          if (!await confirmWithConsequence(`Révoquer le jeton « ${t.name} »`, 'l\'agent ou le forwarder porteur perd l\'accès immédiatement ; un jeton révoqué ne se réactive pas, il faut en provisionner un autre.', { okText: 'Révoquer' })) return;
+          // `P10.26-g` — une clé de livraison : le flux de sa source push, et le renouvellement pour seulement changer de clé.
+          const cleDeLivraison = GENRES_DE_CLE_DE_LIVRAISON.includes(t.kind);
+          const consequence = cleDeLivraison ? motDeLaRevocationDUneCleDeLivraison(t)
+            : 'l\'agent ou le forwarder porteur perd l\'accès immédiatement ; un jeton révoqué ne se réactive pas, il faut en provisionner un autre.';
+          if (!await confirmWithConsequence(`Révoquer le jeton « ${t.name} »`, consequence, { okText: 'Révoquer' })) return;
           const puits = puitsDesJetons(); effacerLeRefusDUnGeste(puits);
           // `P10.26-q` — un refus (« JETON NON RÉVOQUÉ » : le jeton authentifie TOUJOURS) reste sous les yeux, cause entière.
           try { await apiSend('/tokens/' + encodeURIComponent(t.name), 'DELETE'); }
@@ -860,4 +927,6 @@ if ($('#token-new')) $('#token-new').onclick = newTokenFlow;
 // `P10.26-q` / `P10.26-o` — le geste de frappe d'un jeton (joué sous chaque instance de langue : le bouton
 // `#token-new` n'écoute que la dernière importée) et les faces de la lecture des comptes refusée (témoin 115).
 // `P10.27-a` — les faces de la lecture des jetons refusée (témoin 116).
-export { ROLE_LABEL, loadUsers, loadTokens, newTokenFlow, motDeLaModificationDeCompte, motDeLaSuppressionDeCompte, creerLeCompteDuFormulaire, natureDuRefusDeCreationDeCompte, motDeLaCreationDeCompte, motDUneLigneTenueParUnNom, motDuCompteRendu, motDUneConfirmationDeCompte, motDeLaLectureDesComptes, motDeLaLectureDesJetons };
+// `P10.26-g` — la face d'une clé de livraison conservée dans le compte rendu, et le rendu du compte rendu lui-même, que le
+// témoin 125 joue sur des clés de livraison conservées.
+export { ROLE_LABEL, loadUsers, loadTokens, newTokenFlow, motDeLaModificationDeCompte, motDeLaSuppressionDeCompte, creerLeCompteDuFormulaire, natureDuRefusDeCreationDeCompte, motDeLaCreationDeCompte, motDUneLigneTenueParUnNom, motDuCompteRendu, motDUneConfirmationDeCompte, motDeLaLectureDesComptes, motDeLaLectureDesJetons, motDeLaCleDeLivraisonConservee, noeudDuCompteRenduDeSuppression };

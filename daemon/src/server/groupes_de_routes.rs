@@ -382,6 +382,9 @@ fn connectors_destinations_routes() -> Router<AppState> {
         .route("/api/connectors/{id}", post(connector_update).delete(connector_delete))
         .route("/api/connectors/{id}/test", post(connector_test))
         .route("/api/connectors/{id}/poll", post(connector_poll)) // #3a — déclenche UN poll+ingest immédiat (admin-only, fail-safe)
+        // `P10.26-g` — RENOUVELLE la clé de livraison d'une source push (droit ET secret des gestes, une transaction : l'ancienne
+        // révoquée, la neuve frappée et montrée une fois après le COMMIT jugé). Admin-only (path-guard /api/connectors).
+        .route("/api/connectors/{id}/delivery-key", post(connector_delivery_key_rotate))
         // #50 — OUTPUTS / DESTINATIONS : forward des events vers un SINK EXTERNE (data-exfil surface). Admin-only
         // (serveur + route_min_role Admin, GET compris : `config` porte le secret d'auth) + par-tenant (req_db).
         .route("/api/destinations", get(destinations_list).post(destination_create))

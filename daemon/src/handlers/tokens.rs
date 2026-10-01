@@ -200,30 +200,29 @@ pub(crate) async fn tokens_list(State(st): State<AppState>, Extension(au): Exten
     // ajoutée par une migration, `name` corrompu) DISPARAISSAIT de l'inventaire, et l'admin ne révoque pas
     // un jeton qu'il ne voit pas. Le parcours est SOLDÉ EN BLOC : une ligne en erreur rend la LISTE non
     // établie, et le corps le dit par `error` (fabricant unique `corps_de_liste_illisible`, `P10.7-z`).
+    // `P10.26-f` — LE GENRE SERVI EST LE GENRE ÉCRIT. La forme d'avant projetait `kind` par un `match` fermé et rendait
+    // `_ => "agent"` : une clé de livraison GCP (`gcp_pubsub`) sortait « agent » sans hôte — un relais qui écrirait sous
+    // n'importe quel nom d'hôte sur le seam agent, que `token_lookup` lui REFUSE — et tout genre ajouté demain de même.
+    // `COALESCE(kind,'agent')` est la règle de `JetonsDuCompteSupprime::traiter` : NULL (jeton de la ligne de commande,
+    // antérieur à la colonne) vaut `agent`, le défaut historique du CLI ; tout autre genre est servi par son nom.
+    // `connector_id` dit la source push qu'une clé de livraison alimente (NULL pour tout autre jeton).
     let lues: rusqlite::Result<Vec<Value>> = conn
-        .prepare("SELECT id,name,kind,host,created,last_used,role FROM token ORDER BY id")
+        .prepare("SELECT id,name,COALESCE(kind,'agent'),host,created,last_used,role,connector_id FROM token ORDER BY id")
         .and_then(|mut stmt| {
             stmt.query_map([], |r| {
             let host: Option<String> = r.get(3)?;
-            // kind NULL (jetons CLI historiques) -> 'agent' (défaut du CLI `plume-daemon token`).
-            let kind: Option<String> = r.get(2)?;
+            let kind: String = r.get(2)?;
             let role: Option<String> = r.get(6)?;
-            let kind_out = match kind.as_deref() {
-                Some("hec") => "hec",
-                Some("datasource") => "datasource",
-                Some("client") => "client", // #39 jeton client-read
-                Some("firehose") => "firehose", // P-HEC : clé de livraison push AWS Firehose (liée à un connecteur)
-                _ => "agent",
-            };
             Ok(json!({
                 "id": r.get::<_, i64>(0)?,
                 "name": r.get::<_, String>(1)?,
-                "kind": kind_out,
                 // rôle read-scoped UNIQUEMENT pour les jetons datasource (#52) ; sinon absent.
-                "role": if kind_out == "datasource" { Some(role.unwrap_or_else(|| "viewer".into())) } else { None },
+                "role": if kind == "datasource" { Some(role.unwrap_or_else(|| "viewer".into())) } else { None },
+                "kind": kind,
                 "host": host.filter(|h| !h.is_empty()),
                 "created": r.get::<_, Option<i64>>(4)?,
                 "last_used": r.get::<_, Option<i64>>(5)?,
+                "connector_id": r.get::<_, Option<i64>>(7)?,
             }))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()
@@ -427,8 +426,10 @@ pub(crate) const CAUSE_JETON_NON_REVOQUE_TRANSACTION_NON_OUVERTE: &str = "JETON 
 //  * `P10.25-q` — LA CLÉ DE LIVRAISON D'UNE SOURCE PUSH est un jeton d'INGESTION, et suit les deux règles
 //    précédentes : elle ne rend à son porteur qu'un connecteur où écrire (`push_token_connector`), jamais une
 //    lecture. Jamais servie, elle part avec son auteur (le connecteur reste, sans clé) ; servie, un flux du nuage la
-//    porte et elle est conservée, nommée — son geste est de supprimer la source push et de la recréer, puis de
-//    reporter la nouvelle clé dans le flux, parce qu'aucune route ne refrappe la clé d'un connecteur existant.
+//    porte et elle est conservée, nommée — son geste est de RENOUVELER la clé de la source push
+//    (`POST /api/connectors/{id}/delivery-key`, `P10.26-g`), puis de reporter la nouvelle clé dans le flux. La forme
+//    d'avant prescrivait de supprimer la source et de la recréer, faute de route : ce détour perdait son nom, son
+//    environnement, sa configuration et son identifiant. Le renouvellement rend aussi une clé au connecteur resté sans.
 // Les jetons d'auteur NON ÉTABLI (ligne de commande, clés de livraison frappées avant que la source push n'écrive
 // son auteur, frappes antérieures à la colonne sans maillon rattachable) ne sont pas touchés, et leur COMPTE est
 // dit : rien n'établit que ce compte n'a pas vu leur secret.
@@ -445,7 +446,9 @@ pub(crate) const DECISION_SUR_LES_JETONS_DU_COMPTE_SUPPRIME: &str = "JETONS DU C
      SERVI, dont aucun capteur ne dépend. CONSERVÉS : les jetons d'ingestion déjà servis (agent, HEC, clé de \
      livraison d'une source push), biens de l'installation — les révoquer ferait taire un capteur ou un flux du \
      nuage. Leur secret reste connu d'un compte supprimé : révoquez-les et refrappez-en un pour chaque capteur ; pour \
-     une clé de livraison, supprimez la source push, recréez-la et reportez la nouvelle clé dans le flux. Les jetons \
+     une clé de livraison, renouvelez la clé de sa source push (Connecteurs de sources, « Renouveler la clé de \
+     livraison ») — l'ancienne est révoquée au même geste — et reportez la nouvelle dans le flux, refusé jusque-là. \
+     Les jetons \
      d'auteur NON ÉTABLI (ligne de commande, clé de livraison frappée avant que la source push n'écrive son auteur, \
      frappe antérieure sans trace rattachable) ne sont pas touchés : rien ne dit qui a \
      vu leur secret.";

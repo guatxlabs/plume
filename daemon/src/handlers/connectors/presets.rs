@@ -334,11 +334,12 @@ pub(crate) async fn connector_push_source(
     }
     // TYPE de connecteur push + kind de clé + endpoint DÉRIVÉS du preset (AWS Firehose vs GCP Pub/Sub).
     let conn_type = preset_push_conn_type(preset);
-    let (token_kind, endpoint_path): (&str, &str) = if conn_type == "gcp_pubsub" {
-        ("gcp_pubsub", "/api/ingest/pubsub")
-    } else {
-        ("firehose", "/api/ingest/firehose")
+    // `P10.26-g` — le genre de la clé et son récepteur, lus au SEUL lieu de cette correspondance, que le renouvellement de
+    // la clé (`connector_delivery_key_rotate`) lit aussi.
+    let Some(livraison) = livraison_d_une_source_push(conn_type) else {
+        return bad_req("preset non instanciable en source push (P-HEC : aws-cloudtrail / aws-guardduty / gcp-audit)");
     };
+    let token_kind = livraison.genre;
     let env_id = b.get("env_id").and_then(|x| x.as_str()).unwrap_or("prod").to_string();
     if !env_slug_ok(&env_id) {
         return bad_req("env_id invalide (alnum + _/-)");
@@ -408,29 +409,12 @@ pub(crate) async fn connector_push_source(
                 return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_SOURCE_PUSH_NON_CREEE_COMMIT_REFUSE);
             }
             // SHOW-ONCE : la clé de livraison n'est renvoyée QU'ICI (jamais re-dérivable ; la lecture connecteur
-            // n'expose que has_secret/has_key). Réponse SELON le transport (Firehose header vs Pub/Sub query).
-            if conn_type == "gcp_pubsub" {
-                // GCP Pub/Sub : le token voyage en QUERY (`?token=`). L'UI compose l'URL push complète (endpoint +
-                // ?token=<delivery_token>) à afficher UNE fois ; on NE l'incruste PAS dans `instructions` (le secret
-                // ne vit que dans le champ structuré `delivery_token`). Forme DISTINCTE de la réponse Firehose
-                // (delivery_token/transport) -> l'UI branche dessus ; la réponse Firehose reste inchangée.
-                Json(json!({
-                    "connector_id": cid,
-                    "delivery_token": delivery_key,
-                    "endpoint_path": endpoint_path,
-                    "transport": "query_token",
-                    "instructions": "Configurez un abonnement Pub/Sub « push » qui POSTe vers <votre-URL-Plume>/api/ingest/pubsub?token=<clé-de-livraison>. Un log sink route vos Cloud Audit Logs vers ce topic Pub/Sub ; chaque message push encapsule une LogEntry, mappée en CIM par le field_map du preset. Aucune clé GCP n'est partagée avec Plume.",
-                })).into_response()
-            } else {
-                // AWS Firehose : réponse INCHANGÉE (delivery_key + header X-Amz-Firehose-Access-Key).
-                Json(json!({
-                    "connector_id": cid,
-                    "delivery_key": delivery_key,
-                    "endpoint_path": endpoint_path,
-                    "auth_header": "X-Amz-Firehose-Access-Key",
-                    "instructions": "Configurez votre delivery stream Kinesis Firehose (destination « HTTP endpoint ») sur <votre-URL-Plume>/api/ingest/firehose, avec l'access key ci-dessus dans le champ « Access key » (envoyée en header X-Amz-Firehose-Access-Key). Aucune clé AWS n'est partagée avec Plume.",
-                })).into_response()
-            }
+            // n'expose que has_secret/has_key). Réponse SELON le transport (Firehose header vs Pub/Sub query), par la forme
+            // commune `corps_de_la_cle_montree` (le renouvellement de la clé sert la même) : GCP Pub/Sub porte le token en
+            // QUERY (`delivery_token`, `transport: query_token` — l'URL complète est composée par l'UI, jamais incrustée
+            // dans `instructions`) ; AWS Firehose en en-tête (`delivery_key`, `auth_header`).
+            let instructions = if livraison.genre == "gcp_pubsub" { INSTRUCTIONS_DE_LA_SOURCE_PUSH_PUBSUB } else { INSTRUCTIONS_DE_LA_SOURCE_PUSH_FIREHOSE };
+            Json(corps_de_la_cle_montree(cid, &delivery_key, livraison, instructions)).into_response()
         }
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
@@ -438,6 +422,10 @@ pub(crate) async fn connector_push_source(
         }
     }
 }
+
+/// Ce que la réponse de la création d'une source push dit de configurer, par transport (la clé ne vit que dans son champ).
+pub(crate) const INSTRUCTIONS_DE_LA_SOURCE_PUSH_PUBSUB: &str = "Configurez un abonnement Pub/Sub « push » qui POSTe vers <votre-URL-Plume>/api/ingest/pubsub?token=<clé-de-livraison>. Un log sink route vos Cloud Audit Logs vers ce topic Pub/Sub ; chaque message push encapsule une LogEntry, mappée en CIM par le field_map du preset. Aucune clé GCP n'est partagée avec Plume.";
+pub(crate) const INSTRUCTIONS_DE_LA_SOURCE_PUSH_FIREHOSE: &str = "Configurez votre delivery stream Kinesis Firehose (destination « HTTP endpoint ») sur <votre-URL-Plume>/api/ingest/firehose, avec l'access key ci-dessus dans le champ « Access key » (envoyée en header X-Amz-Firehose-Access-Key). Aucune clé AWS n'est partagée avec Plume.";
 
 /// `P10.25-e` — le `COMMIT` de la création d'une source push refusé.
 pub(crate) const CAUSE_SOURCE_PUSH_NON_CREEE_COMMIT_REFUSE: &str = "SOURCE PUSH NON CRÉÉE : la base n'a pas validé la \

@@ -267,6 +267,7 @@ pub(crate) const COLLECTED_EXTENDED_FIELDS: &[(&str, &str)] = &[
     ("success", "auditd.sh"),
     ("syscall", "auditd.sh"),
     ("tags", "yara.sh"),
+    ("truncated", "mail.sh"),
     ("type", "dataacl.sh"),
     ("ua", "web.sh"),
     ("uncollected_events", "plume-collector.ps1"),

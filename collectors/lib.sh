@@ -496,6 +496,10 @@ kctl() {
 #       vocabulaire de `reason` reste à SIX mots et n'a pas bougé, si bien qu'écrire
 #       `plume_unavailable <src> collection-capped …` fait toujours rougir la CI. La porte d'entrée
 #       de ce septième mot est `plume_collecte_tronquee`, ci-dessous, qui n'exite pas.
+#   unreadable-address  — NEUVIÈME MOT, sous un QUATRIÈME état, `collect_status=partial` (`P10.23-i`) :
+#       des lignes LUES et CLASSÉES n'ont pas été émises, faute d'une adresse source valide. Ni une
+#       incapacité, ni une borne du capteur, ni un repli : sa porte est `plume_adresse_illisible`,
+#       ci-dessous, qui n'exite pas, et la règle livrée ne l'interroge pas.
 #
 # ROBUSTESSE : ces fonctions ne doivent JAMAIS transformer un skip en échec d'unit. `plume_init` est
 # rappelé si besoin (certains collecteurs sortent AVANT de l'avoir appelé), et l'écriture du spool est
@@ -743,6 +747,28 @@ plume_collecte_tronquee() {
   plume_report_availability "$1" unavailable collection-capped \
     "COLLECTE TRONQUÉE ($_pct_borne) : $_pct_n écartée(s) ce passage, DÉFINITIVEMENT — le surplus n'est PAS reporté au passage suivant. ${4:-}" \
     2 "collecte-tronquee|$1|$_pct_borne" 2>/dev/null || true
+}
+
+# plume_adresse_illisible <capteur> <écartées> <détail> — n'exite PAS. `P10.23-i` : le capteur a LU la
+# source et CLASSÉ des lignes (échec ou succès d'authentification, blocage, rejet) qu'il n'émet pas, parce
+# que l'adresse source que le serveur y écrit ne se valide pas (par exemple le client `unknown[unknown]`
+# de Postfix). Rien ne les comptait : elles disparaissaient sans un mot. Aucun mot déjà posé ne convenait, et
+# c'est mesuré : `unavailable` (quel que soit le `reason`) ferait alerter la règle livrée
+# `de-collector-unavailable` et basculer la pastille d'une source SAINE (le piège de `P4.6-c`) ;
+# `collection-capped` dit une borne DU CAPTEUR, qu'un exploitant relève — ici rien ne se relève, c'est la
+# FORME de la ligne qui manque ; `fallback` dit une collecte ENTIÈRE. D'où un QUATRIÈME état et un NEUVIÈME
+# mot, déclarés dans `docs/CIM.md` : `collect_status=partial` / `reason=unreadable-address`, que la règle
+# livrée n'interroge pas, et que l'exploitant requête :
+#   search category=config collect_status=partial | table host, source, reason, detail
+# Sévérité 2 : ce sont des événements PERDUS, un trou de couverture. Les lignes ne sont pas reportées au
+# passage suivant (le filigrane les a passées). La clé de dédoublonnage porte la source, PAS le nombre
+# (leçon de `plume_collecte_tronquee`).
+plume_adresse_illisible() {
+  _pai_n="${2:-}"
+  case "$_pai_n" in ''|*[!0-9]*) _pai_n="nombre inconnu" ;; *) _pai_n="$_pai_n ligne(s)" ;; esac
+  plume_report_availability "$1" partial unreadable-address \
+    "LIGNES CLASSÉES NON ÉMISES : $_pai_n ce passage, faute d'une adresse source valide — elles ne sont PAS reportées au passage suivant. ${3:-}" \
+    2 "adresse-illisible|$1" 2>/dev/null || true
 }
 
 # ====================================================================================================

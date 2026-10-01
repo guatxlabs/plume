@@ -33,15 +33,25 @@
 #   `DATA without valid RCPT` et `BDAT without valid RCPT`, et les rejets smtpd sous identifiant de
 #   file hors de l'étape RCPT (`DATA`, `END-OF-MESSAGE`, `milter-reject` d'un filtre de contenu à la
 #   fin du message), ne produisaient aucun événement.
+#   `P10.23-h` — mesuré le 2026-09-29 sur le capteur d'avant : l'échec SASL de smtpd porte
+#   `, sasl_username=<nom tenté>` et le capteur ne le lisait pas ; il est lu à SA place, en fin de
+#   ligne, et tu quand le repère y figure deux fois.
+#   `P10.23-i` — même mesure : une ligne classée dont le client n'est pas une adresse
+#   (`unknown[unknown]`) était jetée sans un mot — ou, suivie d'un crochet écrit par le client,
+#   attribuée à l'adresse de ce crochet. Elle est désormais comptée, jamais attribuée.
+#   `P10.24-h` — même mesure : deux échecs de la même adresse dans la même seconde portaient la même
+#   clé de dédoublonnage ; le second était écarté à l'ingestion.
 # Les lignes amavis ont leur corpus : `collectors/mail-amavis.corpus` (`P10.23-w`).
 #
 # FORMAT : `verdict <TAB> user <TAB> src_ip <TAB> provenance <TAB> ligne`. `#` en colonne zéro =
 # commentaire, ligne vide ignorée.
 #   verdict    : `succes` -> `auth`/`success` ; `echec` -> `auth`/`failure` ; `rejet` ->
 #                `reject`/`blocked` ; `postscreen` -> `postscreen`/`blocked` ; `aucun` -> AUCUN
-#                événement pour cette ligne
-#   user       : le champ `user` attendu (`-` = vide). Toujours `-` sur une ligne Postfix : le capteur
-#                ne lit un utilisateur QUE dans un message Dovecot
+#                événement pour cette ligne ; `sans-adresse` -> aucun événement, mais la ligne est
+#                COMPTÉE dans l'aveu `collect_status=partial` / `reason=unreadable-address` du passage
+#   user       : le champ `user` attendu (`-` = vide). Le capteur lit un utilisateur dans un message
+#                Dovecot, et sur une ligne Postfix dans l'échec SASL de smtpd SEULEMENT : le
+#                `, sasl_username=` de la fin de ligne, s'il n'y figure qu'une fois (`(unavailable)` -> vide)
 #   src_ip     : le `src_ip` attendu, sous sa forme rendue (`-` pour une ligne `aucun`)
 #   provenance : d'où vient la FORME de la ligne — vocabulaire fermé, relu par le témoin :
 #     sources-2.3.19.1           forme DÉRIVÉE des sources Dovecot 2.3.19.1, NON MESURÉE
@@ -56,12 +66,28 @@
 #                                `smtpd_check.c`, `smtpd.h` ; pour `P10.23-y`, le 2026-09-24 sur
 #                                3.12-20260921 : `postscreen_smtpd.c`, `smtpd.c`, `smtpd_check.c`,
 #                                `smtpd.h`, `POSTSCREEN_README`, `HISTORY`), NON MESURÉE
-#     sources-postfix-avant-3.9  la même, sans le suffixe `, sasl_username=` : ajouté le 20231006
-#                                (fichier HISTORY de Postfix), il n'est publié qu'à partir de 3.9
+#     sources-postfix-sans-sasl-username
+#                                la même, sans le suffixe `, sasl_username=` : ajouté le 20231006
+#                                (fichier HISTORY de Postfix) ; `smtpd_sasl_glue.c` relu le 2026-09-29
+#                                le porte en 3.9.0 ET dans les versions stables 3.8.3, 3.7.8, 3.6.12,
+#                                3.5.23 — il est absent de 3.8.2, 3.7.7, 3.6.11. (Ce corpus disait
+#                                « publié qu'à partir de 3.9 » : c'était faux.)
+#     fabriquee-postfix          forme `sources-postfix` dont le nom SASL porte ce que Dovecot refuse
+#                                avec `auth_username_chars` par défaut (virgule, espace, `=`, octet hors
+#                                ASCII) : n'existe qu'avec un autre moteur SASL, ou ce réglage vidé
+#     fabriquee-postscreen-sans-adresse
+#                                forme `sources-postfix` d'un blocage postscreen dont le client n'est pas
+#                                une adresse : postscreen lit l'adresse du pair sur la socket (ou dans
+#                                l'en-tête du mandataire), et aucune source lue ne l'écrit illisible —
+#                                FABRIQUÉE, pour que la catégorie `postscreen` de l'aveu soit exercée
 #     client-postfix             forme `sources-postfix` dont un champ porte un texte CHOISI par le
 #                                client ; ne peut JAMAIS être `succes` ni `echec`
 #     fabriquee-2.3              message Dovecot 2.3 portant un texte du client (un `ID sent:` quand
 #                                `imap_id_log` est armé) : forme NON relue dans les sources
+#     fabriquee-dovecot-sans-rip échec Dovecot 2.3 sans champ `rip=` (un élément vide de
+#                                `login_log_format_elements` est omis : adresse du pair inconnue) — NI
+#                                relue dans les sources NI mesurée, FABRIQUÉE pour que la catégorie `auth`
+#                                de l'aveu soit exercée
 # Un verdict `postscreen` n'est admis que sur une ligne postscreen, un `rejet` que sur une ligne
 # smtpd ou postscreen : le corpus ne peut pas légitimer le défaut qu'il garde.
 # Seule la FORME est relevée : utilisateurs et domaines (`example.test`, `example.net`), adresses
@@ -82,9 +108,22 @@ echec	x, rip=198.51.100.66	203.0.113.30	fabriquee-2.4	2026-09-23T19:30:05.123456
 # --- P10.22-s : Postfix. Le client s'écrit `nom[adresse]` (smtpd) ou `[adresse]:port` (postscreen),
 # SANS préfixe `IPv6:` (`smtpd_peer.c` : ce préfixe est réservé aux en-têtes `Received:`), et AVANT
 # tout texte venu du client. Le port reste hors de l'adresse ; le PID n'en est jamais une. -----------
-echec	-	192.0.2.70	sources-postfix	2026-09-23T19:30:10.123456+02:00 mailserver postfix/submission/smtpd[2010]: warning: unknown[192.0.2.70]: SASL LOGIN authentication failed: UGFzc3dvcmQ6, sasl_username=dave@example.test
+echec	dave@example.test	192.0.2.70	sources-postfix	2026-09-23T19:30:10.123456+02:00 mailserver postfix/submission/smtpd[2010]: warning: unknown[192.0.2.70]: SASL LOGIN authentication failed: UGFzc3dvcmQ6, sasl_username=dave@example.test
 echec	-	2001:db8::70	sources-postfix	2026-09-23T19:30:11.123456+02:00 mailserver postfix/smtpd[2011]: warning: unknown[2001:db8::70]: SASL PLAIN authentication failed: (reason unavailable), sasl_username=(unavailable)
-echec	-	192.0.2.71	sources-postfix-avant-3.9	2026-09-23T19:30:12.123456+02:00 mailserver postfix/smtps/smtpd[2012]: warning: mail.example.test[192.0.2.71]:54321: SASL CRAM-MD5 authentication failed: authentication failure
+echec	-	192.0.2.71	sources-postfix-sans-sasl-username	2026-09-23T19:30:12.123456+02:00 mailserver postfix/smtps/smtpd[2012]: warning: mail.example.test[192.0.2.71]:54321: SASL CRAM-MD5 authentication failed: authentication failure
+# P10.23-h et P10.24-h — une pulvérisation : la même adresse, la même seconde, un autre compte. Deux
+# événements, deux comptes, deux clés (le capteur d'avant : le même `mail-<seconde>-<adresse>-failure`).
+echec	erin@example.test	192.0.2.70	sources-postfix	2026-09-23T19:30:10.654321+02:00 mailserver postfix/submission/smtpd[2010]: warning: unknown[192.0.2.70]: SASL LOGIN authentication failed: (reason unavailable), sasl_username=erin@example.test
+# P10.23-h — le repère recopié, par le nom tenté puis par la raison : le nom est TU, jamais pris.
+echec	-	192.0.2.72	fabriquee-postfix	2026-09-23T19:30:31.123456+02:00 mailserver postfix/submission/smtpd[2060]: warning: unknown[192.0.2.72]: SASL PLAIN authentication failed: (reason unavailable), sasl_username=x, sasl_username=ceo@example.test
+echec	-	192.0.2.73	fabriquee-postfix	2026-09-23T19:30:32.123456+02:00 mailserver postfix/submission/smtpd[2061]: warning: unknown[192.0.2.73]: SASL LOGIN authentication failed: x, sasl_username=ceo@example.test, sasl_username=dave@example.test
+# Un nom hors ASCII, lu octet pour octet (sous gawk en locale UTF-8, une empreinte calculée par
+# caractère y rendrait une autre clé).
+echec	élodie@example.test	192.0.2.74	fabriquee-postfix	2026-09-23T19:30:33.123456+02:00 mailserver postfix/submission/smtpd[2062]: warning: unknown[192.0.2.74]: SASL PLAIN authentication failed: (reason unavailable), sasl_username=élodie@example.test
+# Un nom portant une espace et une virgule : lu jusqu'en FIN de ligne, jamais coupé au premier séparateur.
+echec	jean dupont, ventes@example.test	192.0.2.76	fabriquee-postfix	2026-09-23T19:30:35.123456+02:00 mailserver postfix/submission/smtpd[2064]: warning: unknown[192.0.2.76]: SASL PLAIN authentication failed: (reason unavailable), sasl_username=jean dupont, ventes@example.test
+# Le repère écrit par le CLIENT dans un rejet : jamais un utilisateur.
+rejet	-	192.0.2.75	client-postfix	2026-09-23T19:30:34.123456+02:00 mailserver postfix/smtpd[2063]: NOQUEUE: reject: RCPT from unknown[192.0.2.75]: 554 5.7.1 <b@example.test>: Relay access denied; from=<a@example.test> to=<b@example.test> proto=ESMTP helo=<x, sasl_username=ceo@example.test>
 postscreen	-	2001:db8::62	sources-postfix	2026-09-23T19:30:13.123456+02:00 mailserver postfix/postscreen[2015]: PREGREET 11 after 0.07 from [2001:db8::62]:40001: EHLO x\r\n
 # Un octet non imprimable est journalisé en octal (`unescape.c`) : `\026\003\001` est le début d'une
 # poignée de main TLS envoyée en clair. Sous mawk 1.3.4 20200120, l'échappement JSON d'avant laissait
@@ -162,3 +201,18 @@ rejet	-	192.0.2.156	sources-postfix	2026-09-24T11:20:07.123456+02:00 mailserver 
 aucun	-	-	client-postfix	2026-09-24T11:20:08.123456+02:00 mailserver postfix/submission/smtpd[3117]: warning: non-SMTP command from unknown[192.0.2.157]: GET /4ABCDEF304: reject: DATA from x HTTP/1.1
 aucun	-	-	client-postfix	2026-09-24T11:20:09.123456+02:00 mailserver postfix/submission/smtpd[3118]: improper command pipelining after CONNECT from unknown[192.0.2.158]: DATA without valid RCPT from [198.51.100.17]:1\r\n
 rejet	-	192.0.2.159	client-postfix	2026-09-24T11:20:10.123456+02:00 mailserver postfix/postscreen[3119]: NOQUEUE: reject: RCPT from [192.0.2.159]:40409: 550 5.7.1 Service unavailable; client [192.0.2.159] blocked using zen.example.net; from=<a@example.test>, to=<b@example.test>, proto=ESMTP, helo=<COMMAND LENGTH LIMIT from [198.51.100.16]:1>
+
+# --- P10.23-i : la ligne classée dont le client n'est pas une adresse — comptée, jamais attribuée ----
+# `unknown[unknown]` : `smtpd_peer.c` écrit `CLIENT_NAME_UNKNOWN[CLIENT_ADDR_UNKNOWN]` quand l'adresse du
+# pair est indisponible (pair parti avant le réveil du serveur ; `XCLIENT ADDR=[UNAVAILABLE]` d'un
+# mandataire autorisé, seul cas où la session va jusqu'au rejet). Qu'un rejet porte cette forme en
+# production n'est PAS mesuré. Aucune adresse n'est lisible : la ligne n'est pas émise, elle est COMPTÉE.
+sans-adresse	-	-	sources-postfix	2026-09-24T11:21:01.123456+02:00 mailserver postfix/smtpd[3120]: NOQUEUE: reject: RCPT from unknown[unknown]: 554 5.7.1 <b@example.test>: Relay access denied; from=<a@example.test> to=<b@example.test> proto=ESMTP helo=<mx.example.test>
+# Le capteur d'avant prenait « le premier crochet qui ressemble à une adresse » : ici le `helo` écrit
+# par le client, qui devenait l'adresse source du rejet.
+sans-adresse	-	-	client-postfix	2026-09-24T11:21:02.123456+02:00 mailserver postfix/smtpd[3121]: NOQUEUE: reject: RCPT from unknown[unknown]: 554 5.7.1 <b@example.test>: Relay access denied; from=<a@example.test> to=<b@example.test> proto=ESMTP helo=<[198.51.100.9]>
+# La ventilation de l'aveu sous ses deux autres catégories. Une connexion Dovecot CLASSÉE sans `rip=` : comptée
+# sous `auth`. Un blocage postscreen dont le client n'est pas une adresse : compté sous `postscreen`. Toutes
+# deux FABRIQUÉES (voir leurs provenances) : sans elles, `auth=` et `postscreen=` valaient toujours 0.
+sans-adresse	ghost@example.test	-	fabriquee-dovecot-sans-rip	2026-09-24T11:21:03.123456+02:00 mailserver dovecot: imap-login: Disconnected: Connection closed (auth failed, 3 attempts in 12 secs): user=<ghost@example.test>, method=PLAIN, session=<Zml4dHVyZVNB>
+sans-adresse	-	-	fabriquee-postscreen-sans-adresse	2026-09-24T11:21:04.123456+02:00 mailserver postfix/postscreen[3122]: PREGREET 11 after 0.07 from [unknown]:0: EHLO x\r\n

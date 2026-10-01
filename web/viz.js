@@ -314,7 +314,8 @@ async function banIp(ip, host) {
   // atteint, le rejet repartait non traité, et RIEN n'était peint — ni le succès, ni le refus. Sur un
   // bannissement lancé depuis une ligne de résultats, le silence se lit « c'est parti ». L'aveu part à
   // l'AVIS : ce geste n'a aucun puits ouvert où poser deux nœuds. La lecture du corps reste, pour un
-  // refus qui serait servi en 200.
+  // refus qui serait servi en 200 — depuis `P10.20-j`, la saisie écartée par `action_valid` est un 400
+  // nommé, donc un rejet que le `catch` peint par la même phrase.
   let j, horsDuDemon = null;
   try { j = await apiSend('/actions', 'POST', body); }
   catch (e) {

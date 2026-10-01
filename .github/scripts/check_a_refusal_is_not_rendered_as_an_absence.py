@@ -71,6 +71,17 @@ littéral `"error"` dans `daemon/src/handlers/` est classée, et une QUATRIÈME 
 de rétrécir la population en silence. Le seul reste admis — les corps servis en 200 qui ne portent QUE la
 cause, sans forme de succès à imiter — est un ENSEMBLE NOMMÉ, jugé dans les deux sens.
 
+CE QUI A CHANGÉ LE 2026-09-29 (`P10.20-j`) : LE RESTE EST VIDE, ET IL EST TENU À VIDE
+-------------------------------------------------------------------------------------
+Les dix fonctions du reste servent désormais le STATUT de leur cause (403 rôle, 404 absence établie, 400
+saisie, 422 définition enregistrée inexploitable, 503 lecture non faite, 500 tâche interrompue) : leurs
+refus sont des REJETS, que `api()`/`apiSend()` jettent et dont la cause voyage par le porteur commun.
+L'ensemble nommé est donc VIDE, et vide est sa forme la plus forte : une fonction qui se remet à servir
+un `{error}` nu en deux cents fait ROUGIR, où qu'elle soit. Et la dérivation a gagné un regard qu'elle
+n'avait pas : un CONSTRUCTEUR d'aveu (`corps_de_refus`, qui AJOUTE la cause à la forme reçue) appelé sur
+un corps VIDE (`json!({})`) sert lui aussi la cause seule — mesuré sur `case_metrics`, un vingt-neuvième
+site que la forme « ajoutée » rangeait dans la population au lieu du reste.
+
 CE QUE CETTE GARDE NE PROUVE PAS
 --------------------------------
 Qu'un module qui SÉPARE les deux tests rende ensuite une phrase honnête : séparer la condition rend la
@@ -93,14 +104,17 @@ est cassée, et la garde REFUSE DE CONCLURE au lieu de rendre vert en étant ave
 La DÉRIVATION de la jambe B se valide de même, sur un démon FABRIQUÉ : chaque écriture rend la fonction
 qu'elle doit et aucune autre, le dépouilleur Rust mange les commentaires sans manger le code, une
 écriture inconnue est vue comme telle, et un tableau d'attentes déconstruit lie bien chacun de ses corps.
-Six mutations d'instrument le prouvent — retirer une écriture, neutraliser le dépouilleur, vider le reste
-nommé ou aveugler le lecteur de la console rend la garde ROUGE par un témoin NOMMÉ, jamais par un silence.
+Sept mutations d'instrument le prouvent — retirer une écriture, neutraliser le dépouilleur, poser une entrée
+sans objet dans le reste nommé, aveugler le lecteur de la console ou retirer le regard sur un constructeur
+posé sur un corps vide rend la garde ROUGE par un témoin NOMMÉ, jamais par un silence.
 
 CE QUE CETTE GARDE NE TIENT PAS, RÉCAPITULÉ
 --------------------------------------------
-La phrase RENDUE ensuite (harnais ESM, témoins 16 et 92 à 98) ; un `.catch()` qui rendrait une absence ;
-les appels `fetch` NUS, qui rendent une RÉPONSE et non un corps ; les corps servis en 200 qui ne portent
-QUE la cause ; et les échecs qui rendent encore des corps vides NUS côté démon (`P10.7-e`).
+La phrase RENDUE ensuite (harnais ESM, témoins 16 et 92 à 98, et 127 à 129 pour les statuts de `P10.20-j`) ;
+un `.catch()` qui rendrait une absence ; les appels `fetch` NUS, qui rendent une RÉPONSE et non un corps ;
+un corps à cause seule bâti AILLEURS que dans un littéral `json!` ou qu'un constructeur appelé sur
+`json!({})` (une variable liée à un objet vide puis passée au constructeur échappe au regard) ; et les
+échecs qui rendent encore des corps vides NUS côté démon (`P10.7-e`).
 """
 import os
 import re
@@ -283,7 +297,15 @@ def temoins_de_la_lecture():
 #   (c) UN CORPS QUI NE PORTE **QUE** `error` N'A PAS DE FORME DE SUCCÈS. `json!({ "error": "réservé
 #       admin" })` ne se lit pas comme une liste vide : un consommateur qui lit `j.rows` y trouve
 #       `undefined`, pas `[]`. C'est un autre défaut de rendu, et il n'est pas tenu ici. Ces sites-là
-#       sont le RESTE ADMIS, et il est NOMMÉ (`CORPS_A_CAUSE_SEULE`), jugé dans les deux sens.
+#       sont le RESTE ADMIS, et il est NOMMÉ (`CORPS_A_CAUSE_SEULE`), jugé dans les deux sens. VIDE depuis
+#       `P10.20-j` (2026-09-29) : ses dix fonctions servent le statut de leur cause, et un corps à cause
+#       seule qui reparaît fait rougir au lieu d'entrer dans une case tolérée.
+#   (d) UN CONSTRUCTEUR POSÉ SUR UN CORPS VIDE SERT LA CAUSE SEULE (`P10.20-j`, 2026-09-29). La forme
+#       « ajoutée » vit DANS le constructeur (`corps_de_refus`) : c'est la FORME QU'ON LUI PASSE qui dit si
+#       le corps servi garde des clés de succès. `corps_de_refus(json!({}))` rend `{error}` et rien
+#       d'autre — mesuré sur `case_metrics`, que la population comptait comme un aveu « formé ». Un appel
+#       d'un constructeur de forme ajoutée ou insérée dont le PREMIER argument est `json!({})` entre donc
+#       au reste, comme un littéral `json!` à une seule clé.
 #
 # ET LA COUVERTURE DES FORMES EST ELLE-MÊME JUGÉE. Toute occurrence du littéral `"error"` dans
 # `daemon/src/handlers/` est CLASSÉE — l'une des trois écritures, une LECTURE (`get("error")`), ou une
@@ -307,7 +329,8 @@ def temoins_de_la_lecture():
 #     Relevé le 2026-09-16 : il n'en reste qu'UN dans `web/` sur une route à aveu, et il a été porté sur
 #     la voie commune (`web/fieldfilters.js`, qui lisait pourtant DÉJÀ `data.error` — ce que rien ne
 #     tenait d'un lot à l'autre, faute qu'il soit dans la population) ;
-#   * un corps servi en 200 qui ne porte QUE `error` — le RESTE NOMMÉ ci-dessous ;
+#   * un corps servi en 200 qui ne porte QUE `error` n'est pas jugé côté console : il est tenu à ZÉRO côté
+#     démon par le RESTE NOMMÉ ci-dessous, vide depuis `P10.20-j` ;
 #   * la correspondance d'URL est CONSERVATRICE : un segment inconnu (`'/cases/' + id`) n'apparie qu'un
 #     segment PARAMÈTRE de la route, et un segment mixte (`'/cases' + filtre`) n'apparie que le dernier
 #     segment, par son préfixe littéral. Une URL trop dynamique pour être appariée sort donc de la
@@ -339,29 +362,23 @@ CLE_JSON = re.compile(r'"([A-Za-z_]\w*)"\s*:')
 TOUT_ERROR = re.compile(r'"error"')
 ENTETE_FN = re.compile(r"^[ \t]*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z_]\w*)", re.M)
 
-# LE RESTE ADMIS, NOMMÉ ET JUGÉ DANS LES DEUX SENS. Ces fonctions servent, en 200, un corps qui ne porte
-# QUE `error` : un refus nu (« réservé admin », « motif vide », « exécution échouée »), sans forme de
-# succès à imiter. Un consommateur qui y lit une clé de données trouve `undefined`, jamais une liste vide
-# — le défaut que cette garde tient ne s'y produit pas, et c'est pourquoi elles en sortent. Un ENSEMBLE
-# plutôt qu'un compte : un compte se laisse compenser (une entrée neuve pour une retirée), un ensemble
-# non. Il est jugé dans les DEUX sens — une fonction qui se met à servir un tel corps sans être ici fait
-# ROUGIR (forme neuve non dérivée), et une entrée qui n'a plus de site fait rougir aussi (exemption sans
-# objet). Relevé le 2026-09-16 : 33 sites, 11 fonctions.
-CORPS_A_CAUSE_SEULE = {
-    ("actions.rs", "action_create"),
-    ("caseops.rs", "case_metrics"),
-    ("detection.rs", "parser_reparse"),
-    ("detection.rs", "parser_test"),
-    ("detection.rs", "rule_test"),
-    ("detection.rs", "rule_test_adhoc"),
-    ("detection_advanced.rs", "baseline_test"),
-    ("detection_advanced.rs", "correlation_test"),
-    # `P10.28-c` (2026-09-25) — `notifier_create` RETIRÉE : ses refus ne sont plus des deux cents `{error}` ; le rôle
-    # rend la phrase TEXTE de `rbac_gate` (403), une URL refusée un 400 nommé, un `BEGIN` ou un `COMMIT` refusé un 503
-    # nommé, une écriture refusée un 500 nommé — tous par `err_json` ou un statut, donc hors population (b).
-    ("notifiers.rs", "notifier_test"),
-    ("playbooks.rs", "playbook_test"),
-}
+# LE RESTE ADMIS, NOMMÉ ET JUGÉ DANS LES DEUX SENS. Ses entrées seraient des fonctions qui servent, en 200,
+# un corps qui ne porte QUE `error` : un refus nu, sans forme de succès à imiter. Un ENSEMBLE plutôt qu'un
+# compte : un compte se laisse compenser (une entrée neuve pour une retirée), un ensemble non. Il est jugé
+# dans les DEUX sens — une fonction qui se met à servir un tel corps sans être ici fait ROUGIR (forme neuve
+# non dérivée), et une entrée qui n'a plus de site fait rougir aussi (exemption sans objet).
+#
+# IL EST VIDE DEPUIS `P10.20-j` (2026-09-29), ET C'EST SA FORME LA PLUS FORTE. Relevé le 2026-09-16 : onze
+# fonctions, « trente-trois sites » ; re-mesuré le 2026-09-29 par la dérivation même de cette garde : DIX
+# fonctions (`notifier_create` était sortie par `P10.28-c`) et VINGT-HUIT sites — plus un vingt-neuvième que
+# la forme « ajoutée » cachait, le portillon de `case_metrics` posé sur `json!({})` (voir (d) dans l'en-tête
+# de la jambe B). Les dix servent désormais le STATUT de leur cause, par `err_json` ou ses réductions
+# (`forbidden`, `not_found`, `bad_req`, `server_err`) — hors population par (b) — ou, pour le refus du rôle
+# d'un canal, par la phrase TEXTE que `notifiers.rs` sert déjà ; le portillon de `case_metrics` garde la
+# doctrine de `P10.7-c` (deux cents, la forme PLUS la cause) avec une forme qui dit « rien d'établi ». Un
+# corps à cause seule qui reparaît, où que ce soit sous `handlers/`, fait rougir en nommant sa fonction :
+# le choix n'est plus « l'ajouter ici ou lui donner une forme », il est d'abord « le servir par son statut ».
+CORPS_A_CAUSE_SEULE = set()
 
 # LES TROIS APPELS QUI RENDENT UN CORPS, et l'index de l'argument qui porte l'URL + la MÉTHODE (None =
 # lue sur l'appel : `apiSend(chemin, methode, corps)`, défaut `POST`). Tous trois préfixent `/api`
@@ -573,6 +590,60 @@ def sites_d_aveu(textes):
     return sites, reste, inconnus
 
 
+# UN CONSTRUCTEUR D'AVEU APPELÉ SUR UN CORPS VIDE (`P10.20-j`) : le premier argument est le littéral
+# `json!({})`, espaces libres, rien d'autre.
+CORPS_VIDE_EN_PREMIER_ARGUMENT = r"\s*\(\s*json!\s*\(\s*\{\s*\}\s*\)"
+# … et SERVI comme corps : l'appel est l'argument même de `Json(…)`, chemin qualifié admis. Un corps bâti
+# puis RANGÉ dans un autre (`compliance_report` pose `corps_de_lecture_non_faite(json!({}), …)` sous la
+# clé `evidence` de son rapport) n'est pas le corps servi, et l'accuser serait une accusation sans cause.
+SERVI_PAR_JSON = r"\bJson\s*\(\s*(?:[A-Za-z_]\w*\s*::\s*)*"
+# Les ÉCRITURES DE CLÉ dans le corps d'un constructeur : `corps[<clé>] = …` (jamais `==`) et
+# `.insert(<clé>, …)`. La clé est rendue telle qu'écrite — un littéral, un nom de variable, un index.
+ECRITURE_DE_CLE = re.compile(r'\[\s*([^\[\]]+?)\s*\]\s*=(?!=)|\.insert\(\s*(?:String::from\(\s*)?([^,()]+)')
+
+
+def _n_ecrit_que_la_cause(code, debut):
+    """Le corps de la fonction dont l'en-tête commence en `debut` n'écrit-il AUCUNE autre clé que
+    `error` ? C'est ce qui sépare `corps_de_refus` (la forme reçue PLUS la cause) de
+    `corps_de_liste_illisible` (la forme reçue PLUS une liste vide nommée PLUS la cause) : appelé sur un
+    corps vide, le premier sert la cause seule, le second garde une clé de succès. Une écriture dont la
+    clé n'est pas le littéral `"error"` — une variable, un index — suffit à écarter le constructeur :
+    le biais va vers le SOUS-compte, jamais vers l'accusation."""
+    i = code.find("{", debut)
+    if i < 0:
+        return False
+    corps = code[i:_bloc(code, i)]
+    cles = [(a or b).strip() for a, b in ECRITURE_DE_CLE.findall(corps)]
+    return bool(cles) and all(c.startswith('"error"') for c in cles)
+
+
+def restes_par_constructeur(textes, sites):
+    """LES CORPS À CAUSE SEULE BÂTIS PAR UN CONSTRUCTEUR, que la seule lecture des littéraux ne voit pas.
+
+    Un constructeur de forme AJOUTÉE ou INSÉRÉE qui n'écrit QUE la cause (`corps_de_refus` :
+    `corps["error"] = …` sur la forme reçue) sert ce qu'on lui passe PLUS la cause. Appelé sur
+    `json!({})`, il sert la cause SEULE — le reste de cette garde, pas un aveu « formé ». Rend
+    `(fichier, fonction)` pour chaque appel de ce genre qui n'est pas dans une instruction à statut ; le
+    constructeur lui-même n'est jamais son propre appelant."""
+    ajoutants = {f for _, _, f, forme in sites if forme in ("ajoutée", "insérée")}
+    constructeurs = set()
+    for code in textes.values():
+        for m in ENTETE_FN.finditer(code):
+            if m.group(1) in ajoutants and _n_ecrit_que_la_cause(code, m.start()):
+                constructeurs.add(m.group(1))
+    restes = set()
+    for nom, code in sorted(textes.items()):
+        debuts = [(m.start(), m.group(1)) for m in ENTETE_FN.finditer(code)]
+        for f in sorted(constructeurs):
+            for m in re.finditer(SERVI_PAR_JSON + re.escape(f) + CORPS_VIDE_EN_PREMIER_ARGUMENT, code):
+                if _a_un_statut(code, m.start()):
+                    continue
+                g = _fonction_de(debuts, m.start())
+                if g and g != f:
+                    restes.add((nom, g))
+    return restes
+
+
 def chemins_a_aveu(racine=None):
     """LES CHEMINS QU'UN AVEU SERVI EN 200 PEUT ATTEINDRE — dérivés du démon, jamais énumérés.
 
@@ -590,6 +661,7 @@ def chemins_a_aveu(racine=None):
             with open(chemin, encoding="utf-8") as fh:
                 textes[os.path.relpath(chemin, handlers)] = sans_commentaires_rs(fh.read())
     sites, reste, inconnus = sites_d_aveu(textes)
+    reste |= restes_par_constructeur(textes, sites)
     fabricantes = {f for _, _, f, _ in sites}
     routes = []
     for dossier, _, fichiers in os.walk(base):
@@ -834,6 +906,30 @@ def temoins_de_la_derivation():
     d = _noms_de_promise_all("const [sc, tp] = await Promise.all([api('/a'), api('/b')]);")
     assert [n for _, _, n in d] == ["sc", "tp"], f"témoin : un `Promise.all` déconstruit ne lie plus ses corps — {d}"
     assert not _noms_de_promise_all("const x = await api('/a');"), "témoin INVERSE : un appel simple est lu comme un tableau d'attentes"
+    # (e) `P10.20-j` — UN CONSTRUCTEUR D'AVEU POSÉ SUR UN CORPS VIDE SERT LA CAUSE SEULE. Le constructeur
+    #     fabriqué AJOUTE la cause, et elle seule, à la forme reçue ; appelé sur `json!({})` il entre au reste,
+    #     appelé sur une forme qui garde une clé il n'y entre pas, et dans une instruction à statut il est un
+    #     REJET. Un constructeur qui écrit AUSSI une autre clé (une liste vide nommée, comme
+    #     `corps_de_liste_illisible`) garde une forme de succès même sur un corps vide : il n'y entre pas.
+    faux_constructeur = {
+        "portillon.rs": sans_commentaires_rs(
+            'pub(crate) fn corps_de_refus(forme: Value) -> Value { let mut corps = forme; corps["error"] = json!("clos"); corps }\n'
+            'pub(crate) fn corps_de_liste(mut corps: Value, cle: &str) -> Value { corps[cle] = json!([]); corps["error"] = json!("x"); corps }\n'),
+        "h.rs": sans_commentaires_rs(
+            'pub(crate) async fn sur_un_corps_vide() -> Json<Value> { Json(crate::handlers::portillon::corps_de_refus(json!({ }))) }\n'
+            'pub(crate) async fn sur_une_forme() -> Json<Value> { Json(corps_de_refus(json!({ "rows": [] }))) }\n'
+            'pub(crate) async fn dans_un_rejet() -> Response { (StatusCode::SERVICE_UNAVAILABLE, Json(corps_de_refus(json!({})))).into_response() }\n'
+            'pub(crate) async fn liste_sur_un_corps_vide() -> Json<Value> { Json(corps_de_liste(json!({}), "rows")) }\n'
+            'pub(crate) async fn range_dans_un_autre() -> Json<Value> { let e = corps_de_refus(json!({})); Json(json!({ "report": "r", "evidence": e })) }\n'
+            '// pub(crate) async fn commentee() -> Json<Value> { Json(corps_de_refus(json!({}))) }\n'),
+    }
+    sites_c, reste_c, _ = sites_d_aveu(faux_constructeur)
+    par_constructeur = restes_par_constructeur(faux_constructeur, sites_c)
+    assert {("portillon.rs", "corps_de_refus", "ajoutée"), ("portillon.rs", "corps_de_liste", "ajoutée")} <= {(n, f, g) for n, _, f, g in sites_c}, \
+        f"témoin : les constructeurs fabriqués ne sont plus reconnus comme des écritures AJOUTÉES — {sites_c}"
+    assert par_constructeur == {("h.rs", "sur_un_corps_vide")}, \
+        f"témoin : un constructeur d'aveu appelé sur `json!({{}})` n'est pas rendu au reste, ou une forme, un rejet, un commentaire, un constructeur qui garde une clé de succès ou un corps rangé dans un autre l'est — {par_constructeur}"
+    assert not reste_c, f"témoin INVERSE : la lecture des littéraux voit seule ce que seul le regard sur les constructeurs doit voir — {reste_c}"
 
 
 def temoins_de_la_jambe_b():
@@ -910,8 +1006,11 @@ def jambe_b(modules):
         for nom, fn in neuves:
             print("::error file=daemon/src/handlers/" + nom + "::`" + fn + "` sert, en 200, un corps qui "
                   "ne porte QUE `error` — sans forme de succès à imiter, donc hors de la population de "
-                  "cette garde. Ce choix ne se fait pas en silence : l'ajouter à `CORPS_A_CAUSE_SEULE`, ou "
-                  "lui donner la forme attendue du consommateur pour qu'il entre dans la population.")
+                  "cette garde, et un client qui lit le STATUT y lit un succès. Le servir par le statut de "
+                  "sa cause (`err_json` ou ses réductions : 403 rôle, 404 absence établie, 400 saisie, 422 "
+                  "définition inexploitable, 503 lecture non faite — `P10.20-j`) ; à défaut, lui donner la "
+                  "forme attendue du consommateur pour qu'il entre dans la population, ou l'ajouter à "
+                  "`CORPS_A_CAUSE_SEULE` avec sa raison — ce choix ne se fait pas en silence.")
         for nom, fn in perimees:
             print("::error file=daemon/src/handlers/" + nom + "::`" + fn + "` est nommée dans "
                   "`CORPS_A_CAUSE_SEULE` et n'y sert plus aucun corps à cause seule : une exemption SANS "
@@ -1010,7 +1109,8 @@ def main():
         par_forme[forme] = par_forme.get(forme, 0) + 1
     print(f"[{ETIQUETTE}] JAMBE B — {len(sites_demon)} site(s) d'aveu du démon DÉRIVÉS par leur FORME "
           f"({', '.join(f + ' ' + str(n) for f, n in sorted(par_forme.items()))} ; reste admis, nommé et "
-          f"rejugé : {len(CORPS_A_CAUSE_SEULE)} fonction(s) dont le corps ne porte QUE la cause), "
+          f"rejugé, constructeurs posés sur un corps vide compris : {len(CORPS_A_CAUSE_SEULE)} fonction(s) "
+          f"dont le corps ne porte QUE la cause), "
           f"{len(chemins)} chemin(s) routés, {sites} site(s) de web/ les interrogent ; "
           + (f"{sum(n for _, n in restants)} site(s) encore SOURDS, tous sous leur plafond : "
              + ', '.join(f'{n} {c}' for n, c in restants) if restants
@@ -1019,10 +1119,11 @@ def main():
         print(f"[{ETIQUETTE}] JEU DU CLIQUET : {len(jeu)} plafond(s) au-dessus de leur relevé du jour "
               f"({', '.join(f'{n} +{c}' for n, c in jeu)}) — un cliquet REFUSE une hausse, il ne force pas "
               f"une descente ; le faire descendre au relevé est le seul mouvement qui ne se discute pas.")
-    print(f"[{ETIQUETTE}] CE QUE CETTE GARDE NE TIENT PAS : la phrase rendue ensuite (harnais ESM, témoins 16 "
-          f"et 92 à 98) — lire la cause et la taire resterait vert ici ; un `.catch()` qui rendrait une "
-          f"absence, un gestionnaire de rejet n'étant pas une condition ; les corps servis en 200 qui ne "
-          f"portent QUE la cause, sans forme de succès à imiter (le reste NOMMÉ, jugé dans les deux sens) ; "
+    print(f"[{ETIQUETTE}] CE QUE CETTE GARDE NE TIENT PAS : la phrase rendue ensuite (harnais ESM, témoins 16, "
+          f"92 à 98 et 127 à 129) — lire la cause et la taire resterait vert ici ; un `.catch()` qui rendrait une "
+          f"absence, un gestionnaire de rejet n'étant pas une condition ; un corps à cause seule bâti hors d'un "
+          f"littéral `json!` et hors d'un constructeur appelé sur `json!({{}})` (le reste NOMMÉ, vide, ne voit "
+          f"que ces deux formes) ; "
           f"les appels `fetch` NUS, qui rendent une réponse et non un corps ; et les échecs qui rendent "
           f"encore des corps vides NUS côté démon (`P10.7-e`), qu'aucun consommateur ne peut distinguer "
           f"d'une absence, quelque soin qu'il y mette.")

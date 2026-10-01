@@ -28,13 +28,19 @@ use rusqlite::OptionalExtension;
 /// `P10.20-b` — LA CAUSE NOMMÉE D'UN DRY-RUN REFUSÉ FAUTE D'AVOIR PU ARMER SA PORTE DE MASQUAGE.
 /// Cette route est EDITOR+ et RESTITUE les échantillons `(entité, valeur)` en clair ; la porte #45 est
 /// ce qui interdit d'y faire sortir un champ masqué pour le rôle appelant. Une porte qu'on n'a pas pu
-/// armer n'est pas une porte ouverte : c'est un refus. Le statut reste 200 parce que TOUS les refus de
-/// cette route vivent dans `error` (« ligne de base introuvable », « évaluation échouée ») et que sa
-/// signature ne porte pas de code — ce que le corps dit, lui, distingue les deux.
+/// armer n'est pas une porte ouverte : c'est un refus. `P10.20-j` — il est servi en 503 (une lecture qui n'a
+/// pas eu lieu, réessayable), comme `CAUSE_LIGNE_DE_BASE_NON_LUE` : le statut ne sépare donc pas ces deux
+/// refus, et c'est l'ouverture de la phrase qui le fait (la console la lit, `web/detadv.js`).
 pub(crate) const CAUSE_PORTE_DRYRUN_NON_ARMEE: &str = "DRY-RUN REFUSÉ : les champs de cette ligne de \
      base n'ont pas pu être lus, donc la porte de masquage n'a pas pu être armée. Ce n'est PAS « aucun \
      champ masqué » — exécuter sans la porte restituerait peut-être en clair un champ que votre rôle ne \
      peut pas voir. Réessayez.";
+/// `P10.20-j` — LA LIGNE DE BASE EXISTE PEUT-ÊTRE, MAIS SA DÉFINITION NE S'EST PAS LUE. La lecture complète
+/// du dry-run rendait « baseline introuvable » sur TOUTE erreur — une absence inventée pour une lecture ratée
+/// (valeur illisible, table hors d'atteinte, verrou). Seul `QueryReturnedNoRows` est désormais une absence
+/// (404) ; le reste rend cette cause, en 503.
+pub(crate) const CAUSE_LIGNE_DE_BASE_NON_LUE: &str = "LIGNE DE BASE NON LUE : la lecture de sa définition a \
+     échoué — ce n'est pas une absence. Rien n'a été évalué ni écrit. Réessayez.";
 use std::collections::HashMap;
 
 // ============================================================================================
@@ -866,7 +872,13 @@ pub(crate) async fn correlation_delete(State(st): State<AppState>, Extension(au)
 
 /// POST /api/correlations/{id}/test — BACKTEST/dry-run : évalue la séquence sur la fenêtre courante SANS écrire.
 /// Renvoie les entités matchées + le détail par étape (aperçu avant activation).
-pub(crate) async fn correlation_test(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Json<Value> {
+///
+/// `P10.20-j` — ses refus portent leur statut (ils étaient servis en deux cents `{error}`) : une corrélation absente en
+/// 404, une étape que la porte de masquage refuse ou une évaluation impossible en 422 (définition inexploitable), une
+/// tâche interrompue en 500. RESTES ÉCRITS : la lecture de la corrélation rend `None` sur une absence COMME sur une
+/// lecture ratée (`.ok()`, entrée de rang quatre de la garde `P10.20-b`) ; et `eval_correlation`, partagé avec
+/// l'ordonnanceur, ne rend qu'un booléen — le 422 couvre aussi une étape que le budget a coupée.
+pub(crate) async fn correlation_test(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     let row = {
         crate::req_conn!(st, au, conn);
         conn.query_row(
@@ -877,14 +889,14 @@ pub(crate) async fn correlation_test(State(st): State<AppState>, Extension(au): 
     };
     let (name, key_field, entity_type, steps, window_s, severity, mitre, risk_score) = match row {
         Some(x) => x,
-        None => return Json(json!({ "error": "corrélation introuvable" })),
+        None => return not_found("corrélation introuvable"),
     };
     // #45 — DRY-RUN = SURFACE D'APPELANT : cette route est EDITOR+ et RENVOIE les ENTITÉS (`key_field`)
     // en clair. `eval_correlation` est PARTAGÉ avec l'ordonnanceur et doit rester tenant-wide/non masqué
     // (D7 : ne jamais rendre une corrélation aveugle) -> on garde la SURFACE, pas l'évaluateur.
     let step_qs: Vec<String> = parse_corr_steps(&steps).map(|v| v.into_iter().map(|s| s.query).collect()).unwrap_or_default();
     if let Err(e) = caller_dryrun_guard(&st, &au, &step_qs.iter().map(|s| s.as_str()).collect::<Vec<_>>(), &[&key_field], window_s) {
-        return Json(json!({ "error": e }));
+        return err_json(StatusCode::UNPROCESSABLE_ENTITY, e);
     }
     let db_path = req_db_path(&st, &au);
     let ev = tokio::task::spawn_blocking(move || eval_correlation(&db_path, id, &name, &key_field, &entity_type, &steps, window_s, severity, &mitre, risk_score)).await;
@@ -892,9 +904,9 @@ pub(crate) async fn correlation_test(State(st): State<AppState>, Extension(au): 
         Ok(ev) if ev.ok => Json(json!({
             "ok": true, "matched": ev.matched.len(),
             "entities": ev.matched.iter().map(|(e, d)| json!({ "entity": e, "detail": d })).collect::<Vec<_>>(),
-        })),
-        Ok(_) => Json(json!({ "error": "évaluation échouée (étape en erreur, ou colonne ts/clé absente d'une étape)" })),
-        Err(_) => Json(json!({ "error": "exécution échouée" })),
+        })).into_response(),
+        Ok(_) => err_json(StatusCode::UNPROCESSABLE_ENTITY, "évaluation échouée (étape en erreur, ou colonne ts/clé absente d'une étape)"),
+        Err(_) => server_err("exécution échouée"),
     }
 }
 
@@ -1080,7 +1092,13 @@ pub(crate) async fn baseline_delete(State(st): State<AppState>, Extension(au): E
 
 /// POST /api/baselines/{id}/test — dry-run : calcule les valeurs du dernier bucket clos + le z-score par entité
 /// SANS persister d'observation ni lever d'alerte. Aperçu pour régler seuil/fenêtre.
-pub(crate) async fn baseline_test(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Json<Value> {
+///
+/// `P10.20-j` — ses refus portent leur statut (ils étaient servis en deux cents `{error}`) : la porte de masquage non
+/// armée en 503 nommé, une ligne de base ABSENTE en 404 — sur `QueryReturnedNoRows` seulement —, une définition qui ne
+/// s'est pas lue en 503 nommé (`CAUSE_LIGNE_DE_BASE_NON_LUE` ; elle se servait « introuvable »), une porte qui refuse ou
+/// une évaluation impossible en 422, une tâche interrompue en 500. RESTE ÉCRIT : `eval_baseline`, partagé avec
+/// l'ordonnanceur, ne rend qu'un booléen — le 422 couvre aussi une requête que le budget a coupée ou un historique non lu.
+pub(crate) async fn baseline_test(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     // #45 — DRY-RUN = SURFACE D'APPELANT : cette route est EDITOR+ et RENVOIE les ÉCHANTILLONS
     // (entité, valeur) en clair. `eval_baseline` est PARTAGÉ avec l'ordonnanceur et doit rester
     // tenant-wide/non masqué (D7) -> on garde la SURFACE, pas l'évaluateur. Pré-lecture des seuls champs
@@ -1105,35 +1123,39 @@ pub(crate) async fn baseline_test(State(st): State<AppState>, Extension(au): Ext
         };
         let pre = match pre {
             Ok(p) => p,
-            Err(_) => return Json(json!({ "error": CAUSE_PORTE_DRYRUN_NON_ARMEE })),
+            Err(_) => return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_PORTE_DRYRUN_NON_ARMEE),
         };
         if let Some((q, ef, vf, ws)) = pre {
             if let Err(e) = caller_dryrun_guard(&st, &au, &[q.as_str()], &[&ef, &vf], ws) {
-                return Json(json!({ "error": e }));
+                return err_json(StatusCode::UNPROCESSABLE_ENTITY, e);
             }
         }
     }
     let db = req_db(&st, &au);
     let db_path = req_db_path(&st, &au);
-    let out = tokio::task::spawn_blocking(move || -> Value {
+    tokio::task::spawn_blocking(move || -> Response {
         let conn = db.lock();
         let row = conn.query_row(
             "SELECT name,query,entity_field,value_field,entity_type,bucket_s,min_samples,z_threshold,window_s,severity,COALESCE(mitre,''),COALESCE(risk_score,0) FROM ueba_baseline WHERE id=?1",
             params![id],
             |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?, r.get::<_, String>(4)?, r.get::<_, i64>(5)?, r.get::<_, i64>(6)?, r.get::<_, f64>(7)?, r.get::<_, i64>(8)?, r.get::<_, i64>(9)?, r.get::<_, String>(10)?, r.get::<_, i64>(11)?)),
         );
+        // `P10.20-j` — l'ABSENCE est établie par `QueryReturnedNoRows`, et par lui seul ; toute autre erreur est une
+        // lecture qui n'a pas eu lieu (valeur illisible, table hors d'atteinte, verrou), qui ne dit rien de l'absence.
         let (name, query, ef, vf, et, bs, ms, zt, ws, sev, mi, rs) = match row {
-            Ok(x) => x, Err(_) => return json!({ "error": "baseline introuvable" }),
+            Ok(x) => x,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return not_found("baseline introuvable"),
+            Err(_) => return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_LIGNE_DE_BASE_NON_LUE),
         };
         let ev = eval_baseline(&conn, &db_path, id, &name, &query, &ef, &vf, &et, bs, ms, zt, ws, sev, &mi, rs, now());
         if !ev.ok {
-            return json!({ "error": "évaluation échouée (requête en erreur, ou colonne entité/valeur absente)" });
+            return err_json(StatusCode::UNPROCESSABLE_ENTITY, "évaluation échouée (requête en erreur, ou colonne entité/valeur absente)");
         }
-        json!({
+        Json(json!({
             "ok": true, "bucket": ev.bucket, "observed": ev.observations.len(), "anomalies": ev.hits.len(),
             "samples": ev.observations.iter().map(|(e, v)| json!({ "entity": e, "value": v })).take(200).collect::<Vec<_>>(),
             "hits": ev.hits.iter().map(|h| json!({ "entity": h.entity, "value": h.value, "z": h.z })).collect::<Vec<_>>(),
-        })
-    }).await.unwrap_or_else(|_| json!({ "error": "exécution échouée" }));
-    Json(out)
+        }))
+        .into_response()
+    }).await.unwrap_or_else(|_| server_err("exécution échouée"))
 }

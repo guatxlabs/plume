@@ -834,18 +834,38 @@ pub(crate) async fn case_queues(State(st): State<AppState>, Extension(au): Exten
 }
 
 /// GET /api/cases/metrics[?from=&to=] — tableau de bord MTTA/MTTR (fenêtre, par assignee/severity). Lecture.
-pub(crate) async fn case_metrics(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Query(q): Query<HashMap<String, String>>) -> Json<Value> {
+///
+/// `P10.20-j` — UNE LECTURE QUI N'A PAS EU LIEU N'EST PLUS UN DEUX CENTS. Les deux défauts gardés (aucune connexion de
+/// lecture, tâche de lecture interrompue) servaient `{error}` SEUL, en deux cents : un tableau de bord n'a pas de forme de
+/// succès à garder, et un client qui lit le statut y lisait un succès. Ils rendent désormais un 503 nommé (la cause est
+/// inchangée, `err_json` y ajoute l'identifiant qui la retrouve au journal). Le portillon CLOS garde la doctrine de
+/// `P10.7-c` — deux cents, la forme PLUS la cause (`handlers/portillon.rs`, « PAS DE 503 ») —, mais sur une forme qui DIT
+/// ce qu'elle ne porte pas (`overall: null`) au lieu d'un objet vide qui ne portait que la cause.
+pub(crate) async fn case_metrics(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Query(q): Query<HashMap<String, String>>) -> Response {
     let from = q.get("from").and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
     let to = q.get("to").and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
     let _permit = match acquire_query_permit(&st.query_sem).await {
         Ok((p, _wait)) => p,
-        Err(_) => return Json(crate::handlers::portillon::corps_de_refus(json!({}))),
+        Err(_) => return Json(crate::handlers::portillon::corps_de_refus(json!({ "overall": Value::Null }))).into_response(),
     };
     let db_path = req_db_path(&st, &au);
-    let res = tokio::task::spawn_blocking(move || read_with_watchdog(&db_path, json!({ "error": crate::query_exec::LECTURE_NON_FAITE_SANS_CONNEXION }), move |conn| case_metrics_json(conn, from, to)))
-        .await
-        .unwrap_or_else(|_| json!({ "error": crate::query_exec::LECTURE_NON_FAITE_TACHE_INTERROMPUE }));
-    Json(res)
+    let lu: Result<Value, &'static str> = tokio::task::spawn_blocking(move || {
+        read_with_watchdog(&db_path, lecture_des_metriques_non_faite(crate::query_exec::LECTURE_NON_FAITE_SANS_CONNEXION), move |conn| Ok(case_metrics_json(conn, from, to)))
+    })
+    .await
+    .unwrap_or_else(|_| lecture_des_metriques_non_faite(crate::query_exec::LECTURE_NON_FAITE_TACHE_INTERROMPUE));
+    match lu {
+        Ok(corps) => Json(corps).into_response(),
+        Err(cause) => err_json(StatusCode::SERVICE_UNAVAILABLE, cause),
+    }
+}
+
+/// AVEU : la lecture du tableau de bord MTTA/MTTR n'a pas eu lieu, et sa cause est portée jusqu'au 503 nommé que
+/// `case_metrics` sert (`P10.20-j`). Un constructeur plutôt qu'un `Err(…)` écrit à la main : c'est la forme que la
+/// garde des lectures non faites (`check_a_read_that_did_not_happen_is_never_served_as_a_fact.py`) lit comme un aveu, et
+/// `err_json` ne peut pas tenir ce rôle — il journalise un 5xx dès qu'il est construit, donc à chaque lecture réussie.
+fn lecture_des_metriques_non_faite(cause: &'static str) -> Result<Value, &'static str> {
+    Err(cause)
 }
 
 /// POST /api/cases/{id}/merge {into} — fusion SOFT du case :id DANS `into`. Mutating (editor+). Ledgerisé,

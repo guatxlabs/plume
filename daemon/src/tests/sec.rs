@@ -1118,8 +1118,9 @@ async fn sec_ff_detection_test_surfaces_are_not_unmasked_oracles() {
         let (st, au) = (st.clone(), editor.clone());
         let q = q.to_string();
         async move {
-            rule_test_adhoc(State(st), Extension(au),
-                Json(json!({ "query": q, "is_soql": true, "op": ">", "threshold": 0.0, "window_s": 0 }))).await.0
+            // `P10.20-j` — la route rend une `Response` (un refus porte son statut) : on juge le CORPS, tel que servi.
+            pb_json(rule_test_adhoc(State(st), Extension(au),
+                Json(json!({ "query": q, "is_soql": true, "op": ">", "threshold": 0.0, "window_s": 0 }))).await).await.1
         }
     };
     let hit = probe("search src_ip=10.0.0.6 | stats count").await;
@@ -1146,7 +1147,7 @@ async fn sec_ff_detection_test_surfaces_are_not_unmasked_oracles() {
                    VALUES('probe','search src_ip=10.0.0.6 | stats count',1,'>',0,3,0,3600,0)", []).unwrap();
     }
     let rid: i64 = st.db.lock().query_row("SELECT id FROM rule WHERE name='probe'", [], |r| r.get(0)).unwrap();
-    let rt = rule_test(State(st.clone()), Extension(editor.clone()), axum::extract::Path(rid)).await.0;
+    let rt = pb_json(rule_test(State(st.clone()), Extension(editor.clone()), axum::extract::Path(rid)).await).await.1;
     assert!(err_of(&rt).contains("masqué"),
         "/api/rules/{{id}}/test : règle filtrant un champ masqué doit être REFUSÉE — reçu {rt}");
 
@@ -1157,7 +1158,7 @@ async fn sec_ff_detection_test_surfaces_are_not_unmasked_oracles() {
                    VALUES('probe','search | table src_ip',1,'ban_ip',0,3600,0,'admin')", []).unwrap();
     }
     let pid: i64 = st.db.lock().query_row("SELECT id FROM playbook WHERE name='probe'", [], |r| r.get(0)).unwrap();
-    let pt = playbook_test(State(st.clone()), Extension(editor.clone()), axum::extract::Path(pid)).await.0;
+    let pt = pb_json(playbook_test(State(st.clone()), Extension(editor.clone()), axum::extract::Path(pid)).await).await.1;
     let targets = pt.get("targets").map(|t| t.to_string()).unwrap_or_default();
     assert!(!targets.contains("10.0.0.6") && !targets.contains("10.0.0.5"),
         "/api/playbooks/{{id}}/test : les CIBLES ne doivent PAS porter la valeur masquée en clair — exfiltré : {targets}");
@@ -1173,7 +1174,7 @@ async fn sec_ff_detection_test_surfaces_are_not_unmasked_oracles() {
                    VALUES('probe','src_ip','ip',?1,86400,3600,3,0)", params![steps]).unwrap();
     }
     let cid: i64 = st.db.lock().query_row("SELECT id FROM correlation WHERE name='probe'", [], |r| r.get(0)).unwrap();
-    let ct = correlation_test(State(st.clone()), Extension(editor.clone()), axum::extract::Path(cid)).await.0;
+    let ct = pb_json(correlation_test(State(st.clone()), Extension(editor.clone()), axum::extract::Path(cid)).await).await.1;
     let ents = ct.get("entities").map(|t| t.to_string()).unwrap_or_default();
     assert!(!ents.contains("10.0.0.6") && !ents.contains("10.0.0.5"),
         "/api/correlations/{{id}}/test : les ENTITÉS ne doivent PAS porter la valeur masquée en clair — exfiltré : {ents}");
@@ -1187,7 +1188,7 @@ async fn sec_ff_detection_test_surfaces_are_not_unmasked_oracles() {
                    VALUES('probe','search source=sshd | stats count by src_ip','src_ip','count','ip',60,1,3.0,86400,3600,3,0)", []).unwrap();
     }
     let bid: i64 = st.db.lock().query_row("SELECT id FROM ueba_baseline WHERE name='probe'", [], |r| r.get(0)).unwrap();
-    let bt = baseline_test(State(st.clone()), Extension(editor.clone()), axum::extract::Path(bid)).await.0;
+    let bt = pb_json(baseline_test(State(st.clone()), Extension(editor.clone()), axum::extract::Path(bid)).await).await.1;
     let samples = bt.get("samples").map(|t| t.to_string()).unwrap_or_default();
     assert!(!samples.contains("10.0.0.6") && !samples.contains("10.0.0.5"),
         "/api/baselines/{{id}}/test : les ÉCHANTILLONS ne doivent PAS porter la valeur masquée en clair — exfiltré : {samples}");
@@ -1211,8 +1212,9 @@ async fn sec_ff_caller_compile_preserves_legitimate_use_and_mode0() {
     let ask = |role: &str, q: &str| {
         let (st, q, au) = (st.clone(), q.to_string(), ergo_au(role));
         async move {
-            rule_test_adhoc(State(st), Extension(au),
-                Json(json!({ "query": q, "is_soql": true, "op": ">", "threshold": 0.0, "window_s": 0 }))).await.0
+            // `P10.20-j` — la route rend une `Response` (un refus porte son statut) : on juge le CORPS, tel que servi.
+            pb_json(rule_test_adhoc(State(st), Extension(au),
+                Json(json!({ "query": q, "is_soql": true, "op": ">", "threshold": 0.0, "window_s": 0 }))).await).await.1
         }
     };
     let ok = ask("editor", "search source=sshd host=h1 | stats count").await;
@@ -1248,8 +1250,8 @@ async fn sec_ff_caller_compile_preserves_legitimate_use_and_mode0() {
             "MODE 0 : la porte APPELANT doit émettre le SQL de la porte SYSTÈME, bit à bit — `{q}`");
     }
     // Et la SURFACE répond comme avant le fix (l'oracle n'existe pas en mode 0 : rien n'est masqué).
-    let v = rule_test_adhoc(State(st0.clone()), Extension(editor.clone()),
-        Json(json!({ "query": "search src_ip=10.0.0.5 | stats count", "is_soql": true, "op": ">", "threshold": 0.0, "window_s": 0 }))).await.0;
+    let v = pb_json(rule_test_adhoc(State(st0.clone()), Extension(editor.clone()),
+        Json(json!({ "query": "search src_ip=10.0.0.5 | stats count", "is_soql": true, "op": ">", "threshold": 0.0, "window_s": 0 }))).await).await.1;
     assert_eq!(v.get("value").and_then(|x| x.as_f64()), Some(1.0), "mode 0 : /api/rule-test inchangé : {v}");
     // `caller_dryrun_guard` est également un NO-OP strict en mode 0 (aucune surface de dry-run dégradée).
     assert!(caller_dryrun_guard(&st0, &editor, &["search src_ip=10.0.0.5 | stats count"], &["src_ip"], 0).is_ok(),

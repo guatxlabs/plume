@@ -208,7 +208,11 @@ pub(crate) async fn playbook_delete(State(st): State<AppState>, Extension(au): E
     };
     delete_managed_row(&conn, "playbook", "config.playbook", id, managed, &au.name)
 }
-pub(crate) async fn playbook_test(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Json<Value> {
+/// `P10.20-j` — ses refus portent leur statut (ils étaient servis en deux cents `{error}`) : un playbook absent en 404,
+/// une requête enregistrée qui ne compile pas pour l'appelant ou ne s'exécute pas en 422 (définition inexploitable), une
+/// tâche interrompue en 500. RESTE ÉCRIT : la lecture du playbook rend `None` sur une absence COMME sur une lecture
+/// ratée (`.ok()`, entrée de rang quatre de la garde `P10.20-b`) — le 404 hérite de cette confusion, qu'il ne crée pas.
+pub(crate) async fn playbook_test(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     let row = {
         crate::req_conn!(st, au, conn);
         conn.query_row("SELECT query,is_soql,action_kind,window_s FROM playbook WHERE id=?1", params![id],
@@ -216,7 +220,7 @@ pub(crate) async fn playbook_test(State(st): State<AppState>, Extension(au): Ext
     };
     let (query, is_soql, kind, window_s) = match row {
         Some(x) => x,
-        None => return Json(json!({ "error": "playbook introuvable" })),
+        None => return not_found("playbook introuvable"),
     };
     // #45 — DRY-RUN = SURFACE D'APPELANT : cette route est EDITOR+ et RENVOIE les CIBLES de la requête
     // (1re colonne) à l'appelant. Compilée par la porte SYSTÈME `rule_sql`, un playbook `search | table
@@ -224,7 +228,7 @@ pub(crate) async fn playbook_test(State(st): State<AppState>, Extension(au): Ext
     // seulement un oracle). On passe donc par la porte APPELANT (masque #45 résolu DANS la porte).
     let sql = match rule_sql_for_caller(&st, &au, &query, is_soql, window_s) {
         Ok(s) => s,
-        Err(e) => return Json(json!({ "error": e })),
+        Err(e) => return err_json(StatusCode::UNPROCESSABLE_ENTITY, e),
     };
     let db_path = req_db_path(&st, &au);
     let db_path2 = db_path.clone(); // capturé par la closure blocking ; `db_path` reste pour le guard tenant
@@ -234,10 +238,10 @@ pub(crate) async fn playbook_test(State(st): State<AppState>, Extension(au): Ext
                 .map(|rows| rows.iter().filter_map(|row| row.as_array().and_then(|c| c.first()).map(playbook_cell)).filter(|t| !t.is_empty()).collect())
                 .unwrap_or_default();
             let valides = targets.iter().filter(|t| action_valid(&kind, t, &db_path).is_ok()).count();
-            Json(json!({ "action_kind": kind, "targets": targets, "valides": valides }))
+            Json(json!({ "action_kind": kind, "targets": targets, "valides": valides })).into_response()
         }
-        Ok(Err(e)) => Json(json!({ "error": e })),
-        Err(_) => Json(json!({ "error": "exécution échouée" })),
+        Ok(Err(e)) => err_json(StatusCode::UNPROCESSABLE_ENTITY, e),
+        Err(_) => server_err("exécution échouée"),
     }
 }
 

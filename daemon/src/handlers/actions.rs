@@ -355,8 +355,10 @@ pub(crate) async fn action_create(State(st): State<AppState>, Extension(au): Ext
     let kind = b.str_field("kind").to_string();
     let target = b.trimmed("target");
     // db_path du tenant acteur -> le guard Arm A ne consulte que le scope d'engagement de CE tenant.
+    // `P10.20-j` — une saisie écartée est un 400 nommé, plus un deux cents `{error}` qu'un client lisant le
+    // statut prenait pour une riposte mise en file ; la phrase de la validation est inchangée.
     if let Err(e) = action_valid(&kind, &target, &req_db_path(&st, &au)) {
-        return Json(json!({ "error": e })).into_response();
+        return bad_req(e);
     }
     let dry = b.bool_field("dry_run", true) as i64;
     let alert_id = b.get("alert_id").and_then(|v| v.as_i64());

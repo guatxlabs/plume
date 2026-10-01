@@ -556,9 +556,13 @@ pub(crate) async fn notifier_delete(State(st): State<AppState>, Extension(au): E
         }
     }
 }
-pub(crate) async fn notifier_test(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Json<Value> {
+/// `P10.20-j` — ses refus portent leur statut (ils étaient servis en deux cents `{error}`) : le rôle par la phrase TEXTE
+/// de `rbac_gate` en 403, comme la création d'un canal (`refus_du_role_sur_un_canal`), et un canal absent en 404. RESTE
+/// ÉCRIT : la lecture du canal rend `None` sur une absence COMME sur une lecture ratée (`.ok()`, entrée de rang quatre de
+/// la garde `P10.20-b`) — le 404 hérite de cette confusion, qu'il ne crée pas.
+pub(crate) async fn notifier_test(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     if !au.is_admin() {
-        return Json(json!({ "error": "réservé à l'administrateur" }));
+        return refus_du_role_sur_un_canal();
     }
     let row = {
         crate::req_conn!(st, au, conn);
@@ -567,11 +571,11 @@ pub(crate) async fn notifier_test(State(st): State<AppState>, Extension(au): Ext
     };
     let (kind, url, cfg) = match row {
         Some(x) => x,
-        None => return Json(json!({ "error": "canal introuvable" })),
+        None => return not_found("canal introuvable"),
     };
     let config: Value = serde_json::from_str(&cfg).unwrap_or_else(|_| json!({}));
     let ts = now();
     let ok = tokio::task::spawn_blocking(move || notify_send(&kind, &url, &config, 3, "Test Plume", "Notification de test depuis Plume.", "", ts))
         .await.unwrap_or(false);
-    Json(json!({ "ok": ok }))
+    Json(json!({ "ok": ok })).into_response()
 }

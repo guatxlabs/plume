@@ -1,6 +1,6 @@
 // cases.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // Cases (gestion d'incident, first-class #4a): liste/detail/CRUD + rattachement d'items.
-import { $, api, apiSend, unDeuxCentsSansCorpsLisible, phraseDuRefusDuDemon, aveuDeLaTraceManquante, causeDeLaTraceManquante, cleDeLIdentifiantDeRiposte, confirmModal, confirmWithConsequence, disclosure, downloadText, exportPDF, fmtTs, ic, LANG, modal, motDeLaRiposteSansIdentifiant, motDeLaTraceManquante, muted, pagedList, phraseDeLaCreationDeRiposteRefusee, phraseDeLaTraceManquante, sev, toCSV, toast, tsSlug, withBusy, socIsAdmin, socRole, puitsDuRefusDUnGeste, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste, faceDansLaLangue, phraseDuRefusDUneLecture, cadreDUneReponseQuiNeVientPasDuDemon, phraseDUneReponseQuiNeVientPasDuDemon, sujetDUneReponseSansCorpsDeSucces } from './core.js';
+import { $, api, apiSend, unDeuxCentsSansCorpsLisible, phraseDuRefusDuDemon, noeudDuRefusDUneLecture, aveuDeLaTraceManquante, causeDeLaTraceManquante, cleDeLIdentifiantDeRiposte, confirmModal, confirmWithConsequence, disclosure, downloadText, exportPDF, fmtTs, ic, LANG, modal, motDeLaRiposteSansIdentifiant, motDeLaTraceManquante, muted, pagedList, phraseDeLaCreationDeRiposteRefusee, phraseDeLaTraceManquante, sev, toCSV, toast, tsSlug, withBusy, socIsAdmin, socRole, puitsDuRefusDUnGeste, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste, faceDansLaLangue, phraseDuRefusDUneLecture, cadreDUneReponseQuiNeVientPasDuDemon, phraseDUneReponseQuiNeVientPasDuDemon, sujetDUneReponseSansCorpsDeSucces } from './core.js';
 import { phraseDAffichagePartiel, phraseDEchantillonCoupe, phraseDeCoupe } from './coupe_de_liste.js'; // `P11.22-g` : une liste bornée dit sa coupe
 import { S } from './state.js';
 import { refresh } from './app.js';
@@ -564,6 +564,7 @@ const MOTS_DES_TEXTES_DE_DOSSIER = {
   archiver: { fr: "Archiver le case #{id} ?\n\nArchiver = MASQUER de la liste par défaut. L'historique (timeline) est conservé et l'action est réversible (bouton « Désarchiver » dans la vue Archivés).", en: 'Archive case #{id}?\n\nArchive = HIDE from the default list. The history (timeline) is kept and the action is reversible (“Unarchive” button in the Archived view).' },
   desarchiver: { fr: 'Désarchiver le case #{id} ? Il réapparaîtra dans la liste par défaut.', en: 'Unarchive case #{id}? It will reappear in the default list.' },
   charge_non_lue: { fr: 'Charge et SLA NON LUS — {cause}', en: 'Workload and SLA NOT READ — {cause}' },
+  charge_et_sla: { fr: 'Charge et SLA', en: 'Workload and SLA' },   // `P10.20-j` : ce qu'une lecture rejetée n'a pas servi
   file_en_retard: { fr: ' ({n} retard)', en: ' ({n} overdue)' },
   filtrer_la_file: { fr: 'Filtrer la file de {qui}', en: "Filter {qui}'s queue" },
   fusionner_titre: { fr: 'Fusionner le case #{id}', en: 'Merge case #{id}' },
@@ -667,11 +668,23 @@ function fmtDur(s) {
 const FILES_AFFICHEES = 12; // la coupe de la console sur les puces de file — dite par `phraseDAffichagePartiel`
 async function loadCaseOpsSummary() {
   const host = $('#caseops-summary'); if (!host) return;
-  let queues = [], metrics = {}, refus = '';
+  let queues = [], metrics = {}, refus = '', rejet = null;
   let reponseDesFiles = null;
-  try { reponseDesFiles = await api('/cases/queues'); refus = causeDuRefusServi(reponseDesFiles); queues = reponseDesFiles.queues || []; } catch (e) {}
-  try { metrics = await api('/cases/metrics'); refus = refus || causeDuRefusServi(metrics); } catch (e) {}
+  // `P10.20-j` — UN REJET N'EST PLUS AVALÉ. `/api/cases/metrics` rend désormais un cinq cent trois nommé quand sa
+  // lecture n'a pas eu lieu (`case_metrics`, daemon/src/handlers/caseops.rs) : un REJET, qu'`api()` jette. Les deux
+  // `catch` étaient VIDES — le bandeau disparaissait comme en mode 0, ou peignait « Ouverts 0 / En retard 0 » sous
+  // des files lues, un zéro que personne n'avait mesuré. Le rejet se dit par la face d'une LECTURE NON SERVIE du point
+  // commun (`noeudDuRefusDUneLecture`), qui lit la NATURE de la réponse : la cause du démon quand il l'a nommée, la
+  // phrase d'une passerelle ou du transport sinon — jamais une page de passerelle présentée comme une cause du démon.
+  try { reponseDesFiles = await api('/cases/queues'); refus = causeDuRefusServi(reponseDesFiles); queues = reponseDesFiles.queues || []; }
+  catch (e) { rejet = e; }
+  try { metrics = await api('/cases/metrics'); refus = refus || causeDuRefusServi(metrics); }
+  catch (e) { if (!rejet) rejet = e; }
   host.replaceChildren();
+  if (rejet) {
+    host.appendChild(noeudDuRefusDUneLecture(rejet, faceDansLaLangue(MOTS_DES_TEXTES_DE_DOSSIER.charge_et_sla), 'bad'));
+    return;
+  }
   // `P10.7-d` — LE BANDEAU DISPARAISSAIT SUR UN REFUS, exactement comme il disparaît en mode 0 (aucun cas).
   // Un panneau qui s'efface ne dit rien, et « rien » se lit ici comme « aucune charge » : c'est une absence
   // rendue à la place d'un refus. Le refus est maintenant DIT, avec la cause du démon telle quelle ; le mode
@@ -1538,9 +1551,9 @@ async function prepareResponse(c, s) {
     if (!unDeuxCentsSansCorpsLisible(e)) { toast(phraseDeLaCreationDeRiposteRefusee(e), 'bad', 9000); return; }
     j = null; horsDuDemon = e;   // `P10.23-q` : la face « absent » nomme alors ce qui a répondu
   }
-  // `action_valid` (daemon/src/handlers/actions.rs) refuse la SAISIE par un corps `{error}` servi en 200 :
-  // ce chemin-là, contrairement au 503, n'est pas un rejet et il faut le lire dans le corps. La cause est
-  // passée au lecteur commun sous le nom qu'il attend, pour que les deux refus rendent la même grammaire.
+  // `P10.20-j` — la SAISIE qu'`action_valid` (daemon/src/handlers/actions.rs) écarte est désormais un quatre cents
+  // nommé, donc un REJET que le `catch` ci-dessus peint par la même phrase. Un corps `{error}` servi en deux cents
+  // n'est plus rendu par cette route ; s'il en arrivait un, il est lu ici, dans la même grammaire.
   if (j && j.error) { toast(phraseDeLaCreationDeRiposteRefusee({ causeDuDemon: String(j.error).trim() }), 'bad', 9000); return; }
   // `P10.22-a` — un identifiant servi se nomme, dans le registre du succès ; son absence se dit dans celui de
   // l'information, et assez longtemps pour être lue (même partage que le geste « bannir »).

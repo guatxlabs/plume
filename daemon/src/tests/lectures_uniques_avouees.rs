@@ -36,8 +36,8 @@
 // LA FORME DES CORRECTIFS EST CELLE DU DÉPÔT.
 //   * La lecture rend `Result<Option<_>>` (`rusqlite::OptionalExtension::optional`) : l'absence de
 //     ligne reste un FAIT, l'échec remonte ;
-//   * ce qui DÉCIDE refuse : 503 nommé (MFA, préférences, résolution de panneau), `error` nommé dans le
-//     corps pour le dry-run dont la signature ne porte aucun code. 503 et non 403 ni 404 : ce n'est pas
+//   * ce qui DÉCIDE refuse : 503 nommé (MFA, préférences, résolution de panneau, et depuis `P10.20-j` le
+//     dry-run, qui servait sa cause en deux cents faute de code dans sa signature). 503 et non 403 ni 404 : ce n'est pas
 //     un droit ni une absence, c'est une lecture — et un refus réessayable ne s'apprend pas comme une
 //     interdiction ;
 //   * ce qui SERT rend `null` et pose un aveu NOMMÉ à côté (`schema_version_non_etablie`), sur le
@@ -360,7 +360,7 @@ async fn p10_20b_le_dry_run_refuse_quand_sa_porte_de_masquage_n_a_pas_pu_etre_ar
     };
 
     // CONTRÔLE POSITIF — la pré-lecture RÉUSSIT : quoi que rende l'évaluation, ce n'est pas CETTE cause.
-    let nominal = baseline_test(State(st.clone()), Extension(au.clone()), Path(id)).await.0;
+    let nominal = lqo_corps(baseline_test(State(st.clone()), Extension(au.clone()), Path(id)).await).await.1;
     assert_ne!(
         nominal["error"], json!(CAUSE_PORTE_DRYRUN_NON_ARMEE),
         "chemin nominal : la porte a été armée, donc aucun refus de ce nom : {nominal}"
@@ -368,7 +368,7 @@ async fn p10_20b_le_dry_run_refuse_quand_sa_porte_de_masquage_n_a_pas_pu_etre_ar
 
     // UNE LIGNE ILLISIBLE : `query` porte un BLOB, que `get::<String>` refuse.
     lqo_ecrire(&st, "UPDATE ueba_baseline SET query=x'FF' WHERE id=?1;".replace("?1", &id.to_string()).as_str());
-    let avoue = baseline_test(State(st.clone()), Extension(au.clone()), Path(id)).await.0;
+    let avoue = lqo_corps(baseline_test(State(st.clone()), Extension(au.clone()), Path(id)).await).await.1;
     assert_eq!(
         avoue["error"], json!(CAUSE_PORTE_DRYRUN_NON_ARMEE),
         "pré-lecture ratée : le refus dit que la PORTE n'a pas pu être armée, pas que la ligne n'existe pas : {avoue}"
@@ -376,7 +376,7 @@ async fn p10_20b_le_dry_run_refuse_quand_sa_porte_de_masquage_n_a_pas_pu_etre_ar
 
     // LA TABLE RETIRÉE : la préparation échoue.
     lqo_retirer_la_table(&st, "ueba_baseline");
-    let sans_table = baseline_test(State(st.clone()), Extension(au.clone()), Path(id)).await.0;
+    let sans_table = lqo_corps(baseline_test(State(st.clone()), Extension(au.clone()), Path(id)).await).await.1;
     assert_eq!(sans_table["error"], json!(CAUSE_PORTE_DRYRUN_NON_ARMEE), "table hors d'atteinte : même refus : {sans_table}");
 }
 

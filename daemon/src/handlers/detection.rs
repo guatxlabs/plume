@@ -1301,8 +1301,12 @@ pub(crate) const CAUSE_REPARSE_NON_APPLIQUE: &str = "REPARSE NON APPLIQUÉ : la 
 /// (défaut : toutes sources, 30 j). Mono-connexion : on COLLECTE d'abord (curseur lecture ouvert),
 /// PUIS on UPDATE (sinon "table is locked"). Plafond mémoire CAP écritures/appel (VPS RAM serrée).
 /// N'ÉCRASE jamais un champ/colonne déjà présent (même politique que l'ingestion : enrichit, sans perte).
+///
+/// `P10.20-j` — SES REFUS PORTENT LEUR STATUT : le rôle en 403 (la route est ouverte à l'éditeur par `rbac_gate`, ce
+/// gestionnaire est la seule porte), un parcours dont la préparation échoue en 503 (rien n'a été lu ni écrit), une tâche
+/// interrompue en 500 (son issue n'est pas établie). Ils étaient servis en deux cents `{error}`.
 pub(crate) async fn parser_reparse(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
-    if !au.is_admin() { return Json(json!({ "error": "réservé admin" })).into_response(); }
+    if !au.is_admin() { return forbidden("réservé admin"); }
     let source = b.get("source").and_then(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     let days = b.get("days").and_then(|v| v.as_i64()).filter(|&n| n > 0 && n <= 3650).unwrap_or(30);
     let dry = b.bool_field("dry_run", false);
@@ -1384,9 +1388,10 @@ pub(crate) async fn parser_reparse(State(st): State<AppState>, Extension(au): Ex
     let out = match out {
         Ok(Ok(t)) => t,
         Ok(Err(refus)) => return refuser_le_geste_non_valide("reparse", "reparse rétroactif des events", &refus, CAUSE_REPARSE_NON_APPLIQUE),
-        Err(_) => (0, 0, 0, "join".into(), None),
+        Err(_) => return server_err("exécution échouée : la tâche du reparse ne s'est pas terminée — son issue n'est pas établie"),
     };
-    if !out.3.is_empty() { return Json(json!({ "error": out.3 })).into_response(); }
+    // La préparation du parcours a échoué : rien n'a été lu ni écrit, le geste se relance tel quel.
+    if !out.3.is_empty() { return err_json(StatusCode::SERVICE_UNAVAILABLE, out.3); }
     let mut body = json!({ "scanned": out.0, "matched": out.1, "updated": out.2, "truncated": (out.1 as usize) > CAP, "dry_run": dry, "cap": CAP });
     // `P10.7-f` — si le scan a été coupé par le budget, le corps le DIT (`interrompu` + `cause_scan`) :
     // `scanned`/`matched` ne sont qu'un préfixe. Sans coupe, aucun de ces deux champs n'apparaît (un
@@ -1394,11 +1399,12 @@ pub(crate) async fn parser_reparse(State(st): State<AppState>, Extension(au): Ex
     if let Some(cause) = out.4 { body["interrompu"] = json!(true); body["cause_scan"] = json!(cause); }
     Json(body).into_response()
 }
-pub(crate) async fn parser_test(Json(b): Json<Value>) -> Json<Value> {
+/// `P10.20-j` — la saisie écartée (motif vide, regex qui ne compile pas) est un 400 nommé, plus un deux cents `{error}`.
+pub(crate) async fn parser_test(Json(b): Json<Value>) -> Response {
     let pat = b.str_field("pattern");
     let sample = b.str_field("sample");
-    if pat.is_empty() { return Json(json!({ "error": "motif vide" })); }
-    let re = match regex::Regex::new(pat) { Ok(r) => r, Err(e) => return Json(json!({ "error": format!("regex invalide : {e}") })) };
+    if pat.is_empty() { return bad_req("motif vide"); }
+    let re = match regex::Regex::new(pat) { Ok(r) => r, Err(e) => return bad_req(format!("regex invalide : {e}")) };
     let mut fields = serde_json::Map::new();
     let matched = if let Some(caps) = re.captures(sample) {
         for name in re.capture_names().flatten() {
@@ -1406,9 +1412,14 @@ pub(crate) async fn parser_test(Json(b): Json<Value>) -> Json<Value> {
         }
         true
     } else { false };
-    Json(json!({ "matched": matched, "fields": fields }))
+    Json(json!({ "matched": matched, "fields": fields })).into_response()
 }
-pub(crate) async fn rule_test(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Json<Value> {
+/// `P10.20-j` — ses refus portent leur statut : une règle absente en 404, une requête enregistrée qui ne compile pas pour
+/// l'appelant en 422 (définition inexploitable). « Évaluation échouée » reste un deux cents FORMÉ — le SQL compilé y est
+/// servi à côté de la cause, et la console le lit (`web/detection_admin.js`). RESTE ÉCRIT : la lecture de la règle rend
+/// `None` sur une absence COMME sur une lecture ratée (`.ok()`, entrée nommée de rang quatre de la garde `P10.20-b`) —
+/// le 404 hérite de cette confusion, qu'il ne crée pas.
+pub(crate) async fn rule_test(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     let row = {
         crate::req_conn!(st, au, conn);
         conn.query_row(
@@ -1419,27 +1430,31 @@ pub(crate) async fn rule_test(State(st): State<AppState>, Extension(au): Extensi
     };
     let (query, is_soql, op, threshold, window_s) = match row {
         Some(x) => x,
-        None => return Json(json!({ "error": "règle introuvable" })),
+        None => return not_found("règle introuvable"),
     };
     // #45 : porte de compilation APPELANT (masque du rôle appliqué / prédicat sur champ masqué rejeté).
     let sql = match rule_sql_for_caller(&st, &au, &query, is_soql, window_s) {
         Ok(s) => s,
-        Err(e) => return Json(json!({ "error": e })),
+        Err(e) => return err_json(StatusCode::UNPROCESSABLE_ENTITY, e),
     };
     let db_path = req_db_path(&st, &au);
     let sql2 = sql.clone();
     let val = tokio::task::spawn_blocking(move || eval_value(&db_path, &sql2)).await.ok().flatten();
     match val {
-        Some(v) => Json(json!({ "value": v, "fired": cmp_op(v, &op, threshold), "sql": sql })),
-        None => Json(json!({ "error": "évaluation échouée", "sql": sql })),
+        Some(v) => Json(json!({ "value": v, "fired": cmp_op(v, &op, threshold), "sql": sql })).into_response(),
+        None => Json(json!({ "error": "évaluation échouée", "sql": sql })).into_response(),
     }
 }
 
 /// Teste une requête de règle NON enregistrée (validation avant création/édition).
-pub(crate) async fn rule_test_adhoc(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Json<Value> {
+///
+/// `P10.20-j` — ses refus portent leur statut : requête vide ou qui ne compile pas en 400 (saisie écartée, comme
+/// `/api/query`), SQL brut d'un non-administrateur en 403 (la phrase de `/api/query`), tâche interrompue en 500. Les
+/// corps FORMÉS (la cause à côté du SQL compilé) restent des deux cents, lus par la console.
+pub(crate) async fn rule_test_adhoc(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
     let query = b.str_field("query").to_string();
     if query.trim().is_empty() {
-        return Json(json!({ "error": "requête vide" }));
+        return bad_req("requête vide");
     }
     let is_soql = b.bool_field("is_soql", true);
     // #1c garde-fou #2 : le TEST ad-hoc d'une requête SQL BRUT (is_soql=false) est RÉSERVÉ ADMIN, au même
@@ -1448,7 +1463,7 @@ pub(crate) async fn rule_test_adhoc(State(st): State<AppState>, Extension(au): E
     // contournement du garde-fou « SQL brut = admin only » sur la surface Règles. Le GXQL (is_soql=true)
     // reste ouvert à l'editor. Miroir exact de raw_sql_allowed (create/update).
     if !raw_sql_allowed(is_soql, &au.role) {
-        return Json(json!({ "error": "SQL brut réservé à l'administrateur (utilisez GXQL)" }));
+        return forbidden("SQL brut réservé à l'administrateur (utilisez GXQL)");
     }
     let op = b.get("op").and_then(|v| v.as_str()).unwrap_or(">").to_string();
     let threshold = b.get("threshold").and_then(|v| v.as_f64()).unwrap_or(0.0);
@@ -1456,7 +1471,7 @@ pub(crate) async fn rule_test_adhoc(State(st): State<AppState>, Extension(au): E
     // #45 : porte de compilation APPELANT (masque du rôle appliqué / prédicat sur champ masqué rejeté).
     let sql = match rule_sql_for_caller(&st, &au, &query, is_soql, window_s) {
         Ok(s) => s,
-        Err(e) => return Json(json!({ "error": e })),
+        Err(e) => return bad_req(e),
     };
     let db_path = req_db_path(&st, &au);
     let sql2 = sql.clone();
@@ -1466,11 +1481,11 @@ pub(crate) async fn rule_test_adhoc(State(st): State<AppState>, Extension(au): E
                 .and_then(|r| r.as_array()).and_then(|r| r.last())
                 .and_then(|c| c.as_f64().or_else(|| c.as_i64().map(|n| n as f64)));
             match val {
-                Some(value) => Json(json!({ "value": value, "fired": cmp_op(value, &op, threshold), "sql": sql })),
-                None => Json(json!({ "error": "la requête ne renvoie pas de nombre (attendu : 1 ligne, dernière colonne numérique)", "sql": sql })),
+                Some(value) => Json(json!({ "value": value, "fired": cmp_op(value, &op, threshold), "sql": sql })).into_response(),
+                None => Json(json!({ "error": "la requête ne renvoie pas de nombre (attendu : 1 ligne, dernière colonne numérique)", "sql": sql })).into_response(),
             }
         }
-        Ok(Err(e)) => Json(json!({ "error": e, "sql": sql })),
-        Err(_) => Json(json!({ "error": "exécution échouée" })),
+        Ok(Err(e)) => Json(json!({ "error": e, "sql": sql })).into_response(),
+        Err(_) => server_err("exécution échouée"),
     }
 }

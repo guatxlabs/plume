@@ -120,6 +120,9 @@ async function deleteCorrelation(c) {
 // refus en statut d'erreur (rôle, passerelle, demande non aboutie) prenait la forme d'un GESTE — « rien ici n'établit s'il a
 // été pris — vérifier son effet avant de le rejouer » prêtait un effet à un essai qui n'en a aucun. Désormais les trois se
 // disent par `peindreLeRefusDUnEssai` (web/core.js), cause entière, dans le puits de la corrélation ou de la ligne de base.
+// `P10.20-j` — LE DÉMON NE SERT PLUS CES REFUS EN DEUX CENTS : absence 404, définition inexploitable 422, lecture non faite
+// 503, tâche interrompue 500 — des REJETS, peints par la même face dans le même puits. La lecture du `{error}` servi en deux
+// cents reste, pour un corps qui en porterait un.
 // `P10.29-c` — la phrase d'un score de risque et la suite d'une création, dans les deux langues (témoin 120c).
 const MOTS_DES_NOTES_DE_DETECTION_AVANCEE = {
   bascule_vers_risque: { fr: '{destination} Un score RBA > 0 la bascule vers Risque.', en: '{destination} An RBA score > 0 moves it to Risk.' },
@@ -228,35 +231,44 @@ async function deleteBaseline(b) {
   catch (e) { peindreLeRefusDUnGeste(puits, e); }
 }
 // `P10.20-b` — CE QUI DISTINGUE UNE PORTE NON ARMÉE D'UNE LIGNE DE BASE ABSENTE, ET CE QUE ÇA COÛTE. La
-// route du dry-run ne porte AUCUN code : tous ses refus vivent dans `error` à 200 (« baseline introuvable »,
-// « évaluation échouée », et depuis `P10.20-b` la porte de masquage qu'une pré-lecture ratée n'a pas pu
-// armer — daemon/src/handlers/detection_advanced.rs, `CAUSE_PORTE_DRYRUN_NON_ARMEE`). Elle n'offre pas non
-// plus de CHAMP qui les sépare : le seul discriminant est l'OUVERTURE de la phrase servie, et c'est dit
-// plutôt que caché. Le témoin 96 du harnais ESM ANCRE ce motif dans l'arbre du démon — il extrait la
-// constante Rust et exige qu'elle s'ouvre ainsi ; une reformulation côté démon fait REFUSER DE CONCLURE au
-// lieu de laisser cette console reclasser un refus de sécurité en « introuvable ».
+// porte de masquage qu'une pré-lecture ratée n'a pas pu armer (daemon/src/handlers/detection_advanced.rs,
+// `CAUSE_PORTE_DRYRUN_NON_ARMEE`) n'a pas de CHAMP qui la sépare des autres refus : le seul discriminant est
+// l'OUVERTURE de la phrase servie, et c'est dit plutôt que caché. Le témoin 96 du harnais ESM ANCRE ce motif
+// dans l'arbre du démon — il extrait la constante Rust et exige qu'elle s'ouvre ainsi ; une reformulation côté
+// démon fait REFUSER DE CONCLURE au lieu de laisser cette console reclasser un refus de sécurité en
+// « introuvable ».
+// `P10.20-j` — LA ROUTE PORTE DÉSORMAIS LE STATUT DE CHAQUE CAUSE : 404 pour une ligne de base absente, 422 pour
+// une évaluation impossible, 503 pour la porte non armée ET pour une définition qui ne s'est pas lue
+// (`CAUSE_LIGNE_DE_BASE_NON_LUE`). Ces refus arrivent donc par un REJET, et le statut ne suffit pas à reconnaître
+// la porte — deux cinq cent trois différents : le discriminant reste la phrase, lue dans la cause que le rejet
+// porte (`causeDuDemon`, posée par `apiSend`).
 const OUVERTURE_DU_REFUS_DE_LA_PORTE_DRYRUN = /^DRY-RUN\s+REFUS/;
+// LE REFUS DE LA PORTE NE S'EFFACE PAS AU BOUT DE SIX SECONDES. Ce n'est pas un échec d'évaluation : c'est la
+// garde qui interdit de restituer en clair des échantillons (entité, valeur) que le rôle appelant n'a peut-être
+// pas le droit de voir. Il prend la place de l'aperçu, dans la MÊME modale, et il porte l'aveu à DEUX NŒUDS — la
+// phrase seule est un nœud texte entier (donc traduisible), la cause SERVIE est collée dans un second nœud, telle
+// quelle.
+function peindreLeRefusDeLaPorteDryRun(b, cause) {
+  const boite = document.createElement('div');
+  const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:0;font-size:12px';
+  const dit = document.createElement('span');
+  dit.textContent = 'Aperçu de ligne de base REFUSÉ : la porte de masquage n\'a pas pu être armée, et le démon en nomme la cause —';
+  aveu.append(dit, ' « ' + cause + ' »');
+  boite.appendChild(aveu);
+  showResultModal('Aperçu baseline — ' + b.name, boite);
+}
 
 async function testBaseline(b) {
   const puits = puitsDesLignesDeBase(); effacerLeRefusDUnGeste(puits);
   let d;
-  try { d = await apiSend('/baselines/' + b.id + '/test', 'POST', {}); } catch (e) { peindreLeRefusDUnEssai(puits, e); return; }
-  const causeServie = (d && typeof d.error === 'string') ? d.error.trim() : '';
-  if (OUVERTURE_DU_REFUS_DE_LA_PORTE_DRYRUN.test(causeServie)) {
-    // LE REFUS DE LA PORTE NE S'EFFACE PAS AU BOUT DE SIX SECONDES. Ce n'est pas un échec d'évaluation :
-    // c'est la garde qui interdit de restituer en clair des échantillons (entité, valeur) que le rôle
-    // appelant n'a peut-être pas le droit de voir. Il prend la place de l'aperçu, dans la MÊME modale, et
-    // il porte l'aveu à DEUX NŒUDS — la phrase seule est un nœud texte entier (donc traduisible), la cause
-    // SERVIE est collée dans un second nœud, telle quelle.
-    const boite = document.createElement('div');
-    const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:0;font-size:12px';
-    const dit = document.createElement('span');
-    dit.textContent = 'Aperçu de ligne de base REFUSÉ : la porte de masquage n\'a pas pu être armée, et le démon en nomme la cause —';
-    aveu.append(dit, ' « ' + causeServie + ' »');
-    boite.appendChild(aveu);
-    showResultModal('Aperçu baseline — ' + b.name, boite);
-    return;
+  try { d = await apiSend('/baselines/' + b.id + '/test', 'POST', {}); }
+  catch (e) {
+    const causeDuRejet = (e && e.causeDuDemon) ? String(e.causeDuDemon).trim() : '';
+    if (OUVERTURE_DU_REFUS_DE_LA_PORTE_DRYRUN.test(causeDuRejet)) { peindreLeRefusDeLaPorteDryRun(b, causeDuRejet); return; }   // `P10.20-j`
+    peindreLeRefusDUnEssai(puits, e); return;
   }
+  const causeServie = (d && typeof d.error === 'string') ? d.error.trim() : '';
+  if (OUVERTURE_DU_REFUS_DE_LA_PORTE_DRYRUN.test(causeServie)) { peindreLeRefusDeLaPorteDryRun(b, causeServie); return; }
   if (causeServie) { peindreLeRefusDUnEssai(puits, unRefusServiEnDeuxCents(d)); return; }   // `P10.29-q`
   if (!d) { peindreLeRefusDUnEssai(puits, unEssaiSansResultat()); return; }
   const hits = Array.isArray(d.hits) ? d.hits : [];

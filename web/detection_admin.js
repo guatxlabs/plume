@@ -373,6 +373,10 @@ function ruleRowModel(r) {
 // la même forme, cause entière ; la ligne reprend ce qu'elle disait avant l'essai. Chaque essai garde son envoi LITTÉRAL, dans
 // son propre `try`, dans la ligne qui l'offre (la garde des routes sensibles dérive le chemin à son site, et la portée qui le
 // contient reste celle d'avant) ; le début, le refus et la conclusion sont partagés ici.
+// `P10.20-j` — CES REFUS PORTENT DÉSORMAIS LEUR STATUT : l'absence en 404, la définition inexploitable en 422, le rôle d'un
+// canal en 403 (la phrase TEXTE du rôle), la tâche interrompue en 500 — des REJETS, que `refuserLEssaiDUneLigne` peint par la
+// même face. Seul l'essai d'une règle sert encore un deux cents portant `error`, et c'est un corps FORMÉ (« évaluation
+// échouée » à côté du SQL compilé) : c'est lui que `conclureLEssaiDUneLigne` lit, par le test séparé du résultat.
 function commencerLEssaiDUneLigne(puits, meta) {
   const avant = meta.textContent;
   effacerLeRefusDUnGeste(puits);
@@ -812,8 +816,9 @@ if ($('#pf-test')) $('#pf-test').onclick = essayerLeParseurDuFormulaire;
 // reparse (BEGIN ou COMMIT refusé : verrou tenu, transaction d'un autre geste pendante » — le JSON brut coupé à deux
 // cents caractères AVANT « AUCUN event n'a été modifié », la seule clause qui dit que rien n'a bougé ; « Failed to
 // fetch » nu ; « réservé admin » dans un avis. Le refus s'écrit sous l'en-tête du panneau (un bouton d'en-tête n'a pas la
-// place d'une cause entière), par la forme du point commun (`peindreLeRefusDUnGeste`, core.js) ; un refus que le démon
-// sert en deux cents (`{error}` : le rôle, une préparation refusée) y est dit de même, sans écriture.
+// place d'une cause entière), par la forme du point commun (`peindreLeRefusDUnGeste`, core.js). `P10.20-j` — le rôle (403)
+// et une préparation du parcours refusée (503) arrivent désormais par un REJET, dits de même, sans écriture ; la lecture
+// d'un `{error}` servi en deux cents reste, pour un corps qui en porterait un.
 function puitsDuRefusDuReparse(btn) {
   const tete = btn && btn.closest ? btn.closest('.panelhead') : null;
   return tete && tete.parentNode ? puitsDuRefusDUnGeste(tete.parentNode, 'reparse', tete.nextElementSibling) : null;
@@ -1349,7 +1354,7 @@ if ($('#act-form')) $('#act-form').addEventListener('submit', async e => {
   // tout statut non-2xx (web/core.js) : `j.error` ne pouvait donc JAMAIS être lu sur ce chemin, et le
   // 503 que `action_create` rend désormais quand la ligne n'a pas pu être écrite laissait le
   // formulaire OUVERT, figé, sans un mot. L'exploitant recommence — et chaque tentative est une
-  // riposte qu'il croit avoir mise en file. La lecture du corps reste, pour un refus servi en 200.
+  // riposte qu'il croit avoir mise en file. La lecture du corps reste, pour un refus qui serait servi en 200 — depuis `P10.20-j`, la saisie écartée par `action_valid` est un 400 nommé, donc un rejet.
   let j, horsDuDemon = null;
   try { j = await apiSend('/actions', 'POST', body); }
   catch (err) {

@@ -77,21 +77,29 @@ fn raw_env(path: &str) -> rusqlite::Result<Connection> {
 }
 
 /// Ouverture NUE, clé EXPLICITE (paramètre, PAS l'env) — backup/restore et bases tenant ne dépendent
-/// pas de `PLUME_DB_KEY`. PRIVÉE au module. Corps VERBATIM de l'ancien `backup::open_db_keyed` :
-/// `None`/"" -> base EN CLAIR, et l'échec du `PRAGMA key` est PROPAGÉ (il est avalé côté `raw_env` :
-/// cette asymétrie est historique et conservée telle quelle).
+/// pas de `PLUME_DB_KEY`. PRIVÉE au module. Corps de l'ancien `backup::open_db_keyed`, la clé posée par
+/// `appliquer_une_cle_explicite` : `None`/"" -> base EN CLAIR, et l'échec du `PRAGMA key` est PROPAGÉ (il
+/// est avalé côté `raw_env` : cette asymétrie est historique et conservée telle quelle).
 fn raw_keyed(path: &str, key: Option<&str>) -> rusqlite::Result<Connection> {
     let conn = Connection::open(path)?;
-    if let Some(k) = key {
-        if !k.is_empty() {
-            conn.execute_batch(&format!("PRAGMA key = '{}';", k.replace('\'', "''")))?;
-        }
-    }
+    appliquer_une_cle_explicite(&conn, key)?;
     // S26 — APRÈS la clé : sur une base SQLCipher, tout PRAGMA qui touche le fichier avant `key`
     // échouerait. L'armement RELIT ce qu'il a posé (cf. `sqlite_plafond::armer`), donc un batch refusé
     // — sur une base chiffrée qu'une sonde ouvre SANS clé, par exemple — ne peut plus passer inaperçu.
     let _ = sqlite_plafond::armer(&conn);
     Ok(conn)
+}
+
+/// La clé SQLCipher EXPLICITE posée sur une connexion fraîchement ouverte, avant toute autre instruction :
+/// `None`/"" -> aucune (base EN CLAIR), sinon `PRAGMA key`, dont l'échec est PROPAGÉ. `P10.27-l` : UNE
+/// écriture de ce `PRAGMA` pour les ouvertures à clé explicite — `raw_keyed` ci-dessus, et la lecture en
+/// lecture seule du plan de contrôle (`state::lecture_validee_du_plan_de_controle`), qui n'ouvre rien
+/// d'écrivable et n'a donc pas à passer par la porte.
+pub(crate) fn appliquer_une_cle_explicite(conn: &Connection, key: Option<&str>) -> rusqlite::Result<()> {
+    match key {
+        Some(k) if !k.is_empty() => conn.execute_batch(&format!("PRAGMA key = '{}';", k.replace('\'', "''"))),
+        _ => Ok(()),
+    }
 }
 
 /// Pourquoi la porte a refusé. Quatre causes DISTINCTES parce que les appelants les traitent

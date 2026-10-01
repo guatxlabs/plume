@@ -683,7 +683,7 @@ personne ne nommait (`P4.1-u`). La colonne de droite est le texte d'aide du bina
 | `verify` | vérifie la chaîne d'intégrité du ledger |
 | `verify-control` | vérifie la chaîne d'intégrité du journal du PLAN DE CONTRÔLE (accès superadmin, ouvertures d'urgence) ; 0 = intègre, 1 = rupture nommée, 2 = AUCUN verdict |
 | `ledger-export` | export JSONL du ledger |
-| `ledger-verify-export` | vérifie un export hors-ligne |
+| `ledger-verify-export` | vérifie un export hors-ligne (une tranche répétée à l'identique est écartée et dite, une fourche accusée) |
 | `scim-token` | génère/affiche le jeton SCIM |
 | `token` | jetons d'agent |
 | `sigma-import` | importe des règles Sigma |

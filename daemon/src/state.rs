@@ -189,6 +189,36 @@ pub(crate) fn control_key() -> Option<String> {
     std::env::var("PLUME_CONTROL_KEY").ok().filter(|k| !k.is_empty())
 }
 
+/// `P10.27-l` — UNE LECTURE DU PLAN DE CONTRÔLE QUI NE VOIT QUE LE VALIDÉ. L'écrivain (`ControlPlane.conn`) voit ce que sa
+/// propre transaction pendante a écrit ; une connexion NEUVE sur le même fichier ne voit que le dernier état validé. Le
+/// plan de contrôle n'a pas de pool de lecture et sa clé n'est pas au registre des lectures (`db_key_registry`) : un
+/// `read_with` sur son chemin appliquerait la clé des TENANTS et ne lirait rien. Cette ouverture prend donc la clé
+/// explicitement — celle que l'appelant tient, `control_key()` en production — sans l'inscrire nulle part : aucune clé
+/// ne change de lieu, et la valeur n'entre dans aucun message.
+///
+/// CE QUI SORT D'UN REFUS : ces messages remontent dans le corps d'un 500 servi à un administrateur de TENANT. Le texte
+/// d'erreur de l'OUVERTURE n'est pas recopié : pour tout échec de `sqlite3_open_v2`, rusqlite 0.31 y ajoute le chemin
+/// ABSOLU du fichier (`inner_connection.rs`, `SQLITE_CANTOPEN`) ; seul le code SQLite est rendu, qui suffit à distinguer
+/// un fichier absent d'un droit refusé. Celui de la clé non plus : la cause nommée suffit.
+///
+/// LECTURE SEULE DEUX FOIS : le descripteur est ouvert `SQLITE_OPEN_READ_ONLY` (hors de la porte du contrat de schéma,
+/// qui ne régit que les connexions écrivables) et la connexion porte `query_only=ON`. Clé fausse ou absente sur une base
+/// chiffrée : l'ouverture réussit et la PREMIÈRE lecture échoue — l'appelant rend alors son refus, jamais une tranche vide.
+pub(crate) fn lecture_validee_du_plan_de_controle(chemin: &str, cle: Option<&str>) -> Result<Connection, String> {
+    let conn = Connection::open_with_flags(chemin, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| match e.sqlite_error_code() {
+        Some(code) => format!("ouverture en lecture du plan de contrôle impossible (code SQLite {code:?})"),
+        None => "ouverture en lecture du plan de contrôle impossible".to_string(),
+    })?;
+    // SQLCipher : la clé précède toute autre instruction ; même écriture que les ouvertures à clé explicite de la porte.
+    // Le texte de cette erreur n'est pas recopié non plus : la cause nommée suffit.
+    crate::db_open::appliquer_une_cle_explicite(&conn, cle)
+        .map_err(|_| "la clé du plan de contrôle n'a pas pu être appliquée à la lecture".to_string())?;
+    conn.execute_batch("PRAGMA query_only=ON; PRAGMA busy_timeout=3000;")
+        .map_err(|e| format!("lecture du plan de contrôle non bornée à la lecture seule ({e})"))?;
+    let _ = crate::sqlite_plafond::armer(&conn);
+    Ok(conn)
+}
+
 /// Schéma du control-plane (CREATE IF NOT EXISTS, idempotent, re-jouable). Cf. spec §B.1, forme #2a-2a :
 ///  - tenant(id, name, key_ref, db_path, created, suspended)   : catalogue + routing + réf. clé Vault
 ///  - platform_user(id, name UNIQUE, hash, is_superadmin, created) : identité plateforme (auth)

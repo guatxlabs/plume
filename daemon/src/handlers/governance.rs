@@ -85,9 +85,9 @@ pub(crate) const CAUSE_ENVOI_DU_PUITS_NON_FAIT: &str = "ENVOI VERS LE PUITS NON 
 /// `P10.24-x`, lue par le banc web) — la peindre ainsi serait faux.
 pub(crate) const CAUSE_ENVOI_DU_PUITS_CURSEUR_NON_AVANCE: &str = "MAILLONS EXPORTÉS, CURSEUR NON AVANCÉ : la tranche \
      est écrite dans la copie, mais la base a refusé le COMMIT qui validait l'avance du curseur, et l'a annulée. Le \
-     prochain envoi réécrira ces maillons : la copie les portera DEUX fois, et `ledger-verify-export` y lira une rupture \
-     de chaîne à la première ligne répétée — ce n'est pas une altération. Vérifiez la copie en écartant les lignes \
-     répétées (même id, même hash) ; aucun maillon n'y MANQUE.";
+     prochain envoi réécrira ces maillons : la copie les portera DEUX fois — ce n'est pas une altération, et aucun \
+     maillon n'y MANQUE. `ledger-verify-export` reconnaît cette tranche répétée à l'identique, l'écarte et la compte \
+     dans son verdict ; ces lignes ne sont pas des événements distincts.";
 
 fn hold_json(id: i64, name: &str, reason: &str, src: &str, s0: i64, s1: i64, active: i64, created: i64, by: &str, rel_ts: i64, rel_by: &str) -> Value {
     json!({
@@ -247,7 +247,8 @@ fn tranche_validee_du_registre(db_path: &str, from_id: i64, limit: i64) -> Resul
 
 /// GET /api/ledger/export?from_id=<n>&limit=<n> -> JSONL (text/plain) de la chaîne du ledger (id,ts,kind,
 /// detail,prev_hash,hash) à partir de from_id (exclu), borné. READ-ONLY (aucune mutation). Un vérificateur
-/// externe recompute la chaîne (ledger_verify_export). En-têtes : last_id/last_hash pour reprendre.
+/// hors ligne recompute la chaîne (`ledger-verify-export`, soit `verifier_la_copie_du_registre`). En-têtes :
+/// last_id/last_hash pour reprendre.
 pub(crate) async fn ledger_export_get(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Query(q): Query<HashMap<String, String>>) -> Response {
     if !au.is_admin() {
         return forbidden("réservé à l'administrateur");
@@ -276,10 +277,27 @@ pub(crate) async fn ledger_export_get(State(st): State<AppState>, Extension(au):
         .into_response()
 }
 
+/// `P10.27-l` — la tranche VALIDÉE du journal de contrôle : une connexion de lecture dédiée (`lecture_validee_du_plan_de_controle`),
+/// la clé passée par l'appelant, jamais l'écrivain du plan de contrôle.
+fn tranche_validee_du_plan_de_controle(chemin: &str, cle: Option<&str>, from_id: i64, limit: i64) -> Result<(Vec<String>, i64, String), String> {
+    let conn = crate::state::lecture_validee_du_plan_de_controle(chemin, cle)?;
+    crate::governance::control_ledger_export_lines(&conn, from_id, limit)
+}
+
 /// GET /api/control-ledger/export?from_id=<n>&limit=<n> -> JSONL de la chaîne du journal de CONTRÔLE (accès
 /// superadmin cross-tenant, ouvertures d'urgence, gestes d'administration), en-têtes `x-plume-ledger-last-id`
 /// / `x-plume-ledger-last-hash` comme l'export voisin. En mode 0 il n'y a PAS de plan de contrôle : la route
 /// le DIT (404 nommé) au lieu de rendre une chaîne vide qui se lirait comme « rien ne s'est passé ».
+///
+/// `P10.27-l` — LA TRANCHE EST LUE SUR UNE CONNEXION DE LECTURE DÉDIÉE, JAMAIS SUR L'ÉCRIVAIN DU PLAN DE CONTRÔLE. Lue sous
+/// `cp.conn.lock()`, elle voyait ce qu'une transaction restée PENDANTE sur l'écrivain y avait écrit (un `COMMIT` refusé
+/// dont le `ROLLBACK` a lui-même échoué) : la copie téléchargée portait alors un maillon que la base n'a jamais validé, et
+/// dont l'identifiant sera réattribué (`control_ledger.id` est un `INTEGER PRIMARY KEY` sans `AUTOINCREMENT`). Le plan de
+/// contrôle n'a ni pool de lecture ni clé au registre des lectures : `lecture_validee_du_plan_de_controle` ouvre le fichier
+/// en LECTURE SEULE avec la clé du plan de contrôle. Ouverture ou lecture impossible -> 500 nommé, jamais un corps vide,
+/// et jamais une relecture sur l'écrivain. Ce téléchargement n'avance aucun curseur : lire le validé suffit, sans prendre
+/// l'écrivain. L'ouverture dérive la clé SQLCipher à chaque téléchargement : elle est faite hors de l'exécuteur
+/// (`spawn_blocking`).
 pub(crate) async fn control_ledger_export_get(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Query(q): Query<HashMap<String, String>>) -> Response {
     if !au.is_admin() {
         return forbidden("réservé à l'administrateur");
@@ -289,10 +307,12 @@ pub(crate) async fn control_ledger_export_get(State(st): State<AppState>, Extens
     };
     let from_id: i64 = q.get("from_id").and_then(|s| s.trim().parse().ok()).unwrap_or(0).max(0);
     let limit: i64 = q.get("limit").and_then(|s| s.trim().parse().ok()).unwrap_or(10000).clamp(1, 100000);
-    let conn = cp.conn.lock();
-    let (lines, last_id, last_hash) = match crate::governance::control_ledger_export_lines(&conn, from_id, limit) {
-        Ok(t) => t,
-        Err(e) => return server_err(format!("export du journal de contrôle impossible : {e}")),
+    let (chemin, cle) = (String::clone(&cp.db_path), crate::state::control_key());
+    let lecture = tokio::task::spawn_blocking(move || tranche_validee_du_plan_de_controle(&chemin, cle.as_deref(), from_id, limit)).await;
+    let (lines, last_id, last_hash) = match lecture {
+        Ok(Ok(t)) => t,
+        Ok(Err(e)) => return server_err(format!("export du journal de contrôle impossible : {e}")),
+        Err(e) => return server_err(format!("export du journal de contrôle impossible : lecture interrompue ({e})")),
     };
     let body = if lines.is_empty() { String::new() } else { format!("{}\n", lines.join("\n")) };
     (
@@ -449,10 +469,10 @@ pub(crate) async fn ledger_sink_delete(State(st): State<AppState>, Extension(au)
 /// doublon. Le curseur est désormais POSÉ (et compté) dans la transaction de l'envoi AVANT l'écriture de la copie : une
 /// transaction non ouverte ou un curseur refusé l'est avant que rien ne soit écrit (503 `CAUSE_ENVOI_DU_PUITS_NON_FAIT`),
 /// et seul un `COMMIT` refusé APRÈS l'écriture laisse la tranche dans la copie sans curseur avancé — dit par
-/// `CAUSE_ENVOI_DU_PUITS_CURSEUR_NON_AVANCE`. La copie NE TOLÈRE PAS un doublon : `ledger_verify_export` exige que chaque
-/// `prev_hash` soit le `hash` de la ligne précédente, et une tranche réécrite casse la chaîne à sa première ligne (lu,
-/// puis mesuré par le témoin). Le doublon reste préférable au trou — il s'écarte à la lecture, un trou ne se comble
-/// jamais —, mais il n'est plus produit en silence.
+/// `CAUSE_ENVOI_DU_PUITS_CURSEUR_NON_AVANCE`. Le doublon reste préférable au trou — il s'écarte à la lecture, un trou ne
+/// se comble jamais —, et il n'est plus produit en silence. `P10.27-k` : le vérificateur de la copie
+/// (`verifier_la_copie_du_registre`) reconnaît cette tranche répétée À L'IDENTIQUE, l'écarte et la compte, au lieu d'y lire
+/// une rupture de chaîne à sa première ligne ; une ligne de même id et de contenu différent reste une rupture.
 ///
 /// `P10.26-s` — la transaction de l'envoi est LA SIENNE : un `BEGIN` refusé (transaction d'un autre geste pendante sur
 /// l'écrivain) rend le 503 sans rien exporter ; la tranche est lue sur le pool (`P10.26-t`), jamais sur l'écrivain.

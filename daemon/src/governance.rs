@@ -10,8 +10,9 @@
 //!     rollups dérivés (agrégats reconstructibles, non-preuve) ne sont PAS épinglés — assumé et documenté.
 //!
 //!  2. EXPORT STREAMING DU LEDGER (chaîne préservée). Cœurs `ledger_export_lines` (READ-ONLY sur `ledger`,
-//!     aucun chemin de mutation) + `ledger_verify_export` (un vérificateur EXTERNE recalcule la chaîne de
-//!     hash sur la copie exportée -> détecte toute altération). L'export ÉMET la chaîne complète
+//!     aucun chemin de mutation) + `verifier_la_copie_du_registre` (le vérificateur HORS LIGNE que lance
+//!     `ledger-verify-export`, règle dans `copie_chainee` : il recalcule la chaîne de hash sur la copie
+//!     exportée -> détecte toute altération, et écarte une ligne répétée à l'identique). L'export ÉMET la chaîne complète
 //!     (prev_hash + hash + id/ts/kind/detail) : c'est exactement ce que `verify_run` recompute -> une copie
 //!     WORM externe reste vérifiable indépendamment. La signature ed25519 des checkpoints n'est jamais
 //!     affaiblie (export = SELECT seul).
@@ -191,12 +192,6 @@ pub(crate) fn ledger_export_lines(conn: &Connection, from_id: i64, limit: i64) -
     Ok((out, last_id, last_hash))
 }
 
-/// VÉRIFICATION EXTERNE d'une copie exportée (JSONL) : pour CHAQUE ligne, recompute sha256(prev|ts|kind|
-/// detail)==hash (intégrité de l'entrée) ET vérifie prev_hash==hash de la ligne précédente (continuité de
-/// chaîne DANS l'export). C'est la MÊME loi que `verify_run` -> un vérificateur tiers (sur un sink WORM)
-/// détecte toute altération SANS accès à la base. `expect_prev` = hash attendu AVANT la 1re ligne (pour un
-/// export incrémental : le last_hash du curseur ; pour un export complet : "" = genesis). Renvoie le nombre
-/// d'entrées vérifiées, ou Err(message) à la 1re rupture.
 /// LE JOURNAL DE CONTRÔLE S'EXPORTE COMME LE JOURNAL DES TENANTS (`P10.7-r`, 2026-09-09). Mesuré la veille :
 /// `verify-control` rejoue toute la chaîne hors ligne, mais aucune route ne LISAIT `control_ledger` — donc
 /// aucune copie hors de la machine, et une réécriture complète re-chaînée restait invisible. Une ligne par
@@ -244,52 +239,86 @@ pub(crate) fn control_ledger_export_lines(conn: &Connection, from_id: i64, limit
     Ok((out, last_id, last_hash))
 }
 
-/// Vérification HORS LIGNE d'une copie exportée du journal de contrôle : même recette de hachage que
-/// `control_ledger_append` (`prev|ts|kind|actor|tenant|detail`), même sévérité que `ledger_verify_export`.
-pub(crate) fn control_ledger_verify_export(lines: &[String], expect_prev: &str) -> Result<usize, String> {
-    let mut prev = expect_prev.to_string();
-    let mut n = 0usize;
-    for (i, line) in lines.iter().enumerate() {
-        let v: Value = serde_json::from_str(line).map_err(|e| format!("ligne {i}: JSON invalide: {e}"))?;
-        let id = v.get("id").and_then(|x| x.as_i64()).ok_or_else(|| format!("ligne {i}: id manquant"))?;
-        let ts = v.get("ts").and_then(|x| x.as_i64()).ok_or_else(|| format!("ligne {i}: ts manquant"))?;
-        let champ = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
-        let (kind, actor, tenant, detail, prev_hash, hash) = (champ("kind"), champ("actor"), champ("tenant"), champ("detail"), champ("prev_hash"), champ("hash"));
-        if prev_hash != prev {
-            return Err(format!("ligne {i} (entrée #{id}): rupture de chaîne (prev_hash != hash précédent)"));
-        }
-        let recomputed = sha256_hex(format!("{prev}|{ts}|{kind}|{actor}|{tenant}|{detail}").as_bytes());
-        if recomputed != hash {
-            return Err(format!("ligne {i} (entrée #{id}): hachage recalculé différent — maillon altéré"));
-        }
-        prev = hash;
-        n += 1;
-    }
-    Ok(n)
+/// `P10.27-k` — la vérification hors ligne d'une copie vit dans `copie_chainee` (la règle de répétition exacte, les deux
+/// ancrages, la lecture des lignes) ; ce module n'y apporte que la recette de hachage de chacun de ses deux journaux.
+pub(crate) use crate::copie_chainee::CopieChaineeVerifiee;
+use crate::copie_chainee::{champ_texte, verifier_une_copie_chainee, RecetteDeChaine};
+
+/// La recette de `control_ledger_append` : `prev|ts|kind|actor|tenant|detail`.
+#[cfg(test)]
+fn texte_hache_du_journal_de_controle(prev: &str, ts: i64, v: &Value) -> String {
+    format!("{prev}|{ts}|{}|{}|{}|{}", champ_texte(v, "kind"), champ_texte(v, "actor"), champ_texte(v, "tenant"), champ_texte(v, "detail"))
 }
 
+/// La recette de `ledger_append` et de `verify_run` : `prev|ts|kind|detail`.
+fn texte_hache_du_registre(prev: &str, ts: i64, v: &Value) -> String {
+    format!("{prev}|{ts}|{}|{}", champ_texte(v, "kind"), champ_texte(v, "detail"))
+}
+
+/// Vérification HORS LIGNE d'une copie exportée du journal de contrôle : même recette de hachage que
+/// `control_ledger_append`, mêmes ancrages et même règle de répétition exacte que la copie du registre. Aucun puits
+/// n'exporte ce journal ; des téléchargements recouvrants mis bout à bout produisent pourtant des répétitions, et la
+/// règle ne vit qu'à un endroit. `cfg(test)`, avec sa recette et `control_ledger_verify_export` : aucune sous-commande ne
+/// vérifie encore une copie de ce journal, et ces trois fonctions n'ont que des témoins pour appelants — le binaire ne
+/// les porte pas (la forme de `ledger_verify_export`), plutôt qu'un `allow(dead_code)` qui laissait l'avertissement sur
+/// l'appelant.
+#[cfg(test)]
+pub(crate) fn verifier_la_copie_du_journal_de_controle(lines: &[String], expect_prev: &str) -> Result<CopieChaineeVerifiee, String> {
+    let recette = RecetteDeChaine { texte_hache: texte_hache_du_journal_de_controle, alteration: "hachage recalculé différent — maillon altéré" };
+    verifier_une_copie_chainee(lines, expect_prev, &recette)
+}
+
+/// Le nombre de maillons DISTINCTS d'une copie du journal de contrôle qui se vérifie ; les répétitions exactes sont
+/// rendues à part par `verifier_la_copie_du_journal_de_controle`.
+#[cfg(test)]
+pub(crate) fn control_ledger_verify_export(lines: &[String], expect_prev: &str) -> Result<usize, String> {
+    verifier_la_copie_du_journal_de_controle(lines, expect_prev).map(|c| c.maillons)
+}
+
+/// VÉRIFICATION HORS LIGNE d'une copie exportée du registre des tenants — ce que `ledger-verify-export` exécute. Pour
+/// chaque ligne retenue : `sha256(prev|ts|kind|detail) == hash` (intégrité du maillon) ET `prev_hash` == hachage de la
+/// ligne retenue précédente (continuité de la chaîne DANS la copie). C'est la MÊME loi que `verify_run` : un tiers qui
+/// tient une copie WORM détecte toute altération SANS accès à la base. `expect_prev` = hachage attendu AVANT la première
+/// ligne (export incrémental : le `last_hash` du curseur ; export complet : "", l'origine). `P10.27-k` : une ligne
+/// identique octet pour octet à une ligne déjà vérifiée est écartée et comptée (`copie_chainee`).
+pub(crate) fn verifier_la_copie_du_registre(lines: &[String], expect_prev: &str) -> Result<CopieChaineeVerifiee, String> {
+    let recette = RecetteDeChaine { texte_hache: texte_hache_du_registre, alteration: "hash altéré (recalcul != hash stocké)" };
+    verifier_une_copie_chainee(lines, expect_prev, &recette)
+}
+
+/// Le nombre de maillons DISTINCTS d'une copie du registre qui se vérifie. Les répétitions exactes sont écartées sans
+/// changer ce compte ; `verifier_la_copie_du_registre` les rend, et `ledger-verify-export` les DIT. Témoins seulement :
+/// la sous-commande emploie `verdict_hors_ligne_de_la_copie_du_registre`, qui ne perd pas le compte des répétitions.
+#[cfg(test)]
 pub(crate) fn ledger_verify_export(lines: &[String], expect_prev: &str) -> Result<usize, String> {
-    let mut prev = expect_prev.to_string();
-    let mut n = 0usize;
-    for (i, line) in lines.iter().enumerate() {
-        let v: Value = serde_json::from_str(line).map_err(|e| format!("ligne {i}: JSON invalide: {e}"))?;
-        let id = v.get("id").and_then(|x| x.as_i64()).ok_or_else(|| format!("ligne {i}: id manquant"))?;
-        let ts = v.get("ts").and_then(|x| x.as_i64()).ok_or_else(|| format!("ligne {i}: ts manquant"))?;
-        let kind = v.get("kind").and_then(|x| x.as_str()).unwrap_or("");
-        let detail = v.get("detail").and_then(|x| x.as_str()).unwrap_or("");
-        let prev_hash = v.get("prev_hash").and_then(|x| x.as_str()).unwrap_or("");
-        let hash = v.get("hash").and_then(|x| x.as_str()).unwrap_or("");
-        if prev_hash != prev {
-            return Err(format!("ligne {i} (entrée #{id}): rupture de chaîne (prev_hash != hash précédent)"));
+    verifier_la_copie_du_registre(lines, expect_prev).map(|c| c.maillons)
+}
+
+/// `P10.27-k` — CE QUE `ledger-verify-export` REND : un code de sortie et UNE phrase, calculés ici pour que la phrase soit
+/// éprouvée sans lancer le binaire (la sortie du processus, elle, est mesurée sur un processus par le témoin de
+/// `commande_ledger_verify_export`). `0` = copie intègre, `1` = rupture nommée (« EXPORT COMPROMIS »). La phrase du cas
+/// nominal — aucune répétition — est celle d'avant, octet pour octet. Une copie qui porte des répétitions exactes reste
+/// intègre (`0`) ; la phrase les COMPTE et dit d'où elles viennent, pour qu'elles ne soient pas additionnées comme des
+/// événements distincts.
+pub(crate) fn verdict_hors_ligne_de_la_copie_du_registre(lines: &[String], expect_prev: &str) -> (i32, String) {
+    match verifier_la_copie_du_registre(lines, expect_prev) {
+        Err(e) => (1, format!("EXPORT COMPROMIS : {e}")),
+        Ok(c) if c.lignes_repetees == 0 => (0, format!("export OK : {} entrées chaînées intègres (vérifié hors-ligne)", c.maillons)),
+        Ok(c) => {
+            let fin = if c.reprise_inachevee {
+                " ; la copie se termine au milieu d'une reprise, avant d'avoir rejoint sa tête (écriture interrompue ou copie tronquée) — rien de ce qui a été vérifié n'y manque"
+            } else {
+                ""
+            };
+            (
+                0,
+                format!(
+                    "export OK : {} entrées chaînées intègres (vérifié hors-ligne) ; {} ligne(s) RÉPÉTÉE(S) À L'IDENTIQUE écartée(s), en {} reprise(s) — copies exactes de lignes déjà vérifiées (tranche réécrite par un envoi dont le curseur n'a pas été validé, export relancé sur le même fichier, copies recouvrantes mises bout à bout) : ni des événements distincts, ni une altération{fin}",
+                    c.maillons, c.lignes_repetees, c.reprises
+                ),
+            )
         }
-        let recomputed = sha256_hex(format!("{prev}|{ts}|{kind}|{detail}").as_bytes());
-        if recomputed != hash {
-            return Err(format!("ligne {i} (entrée #{id}): hash altéré (recalcul != hash stocké)"));
-        }
-        prev = hash.to_string();
-        n += 1;
     }
-    Ok(n)
 }
 
 /// Écrit `lines` (JSONL) vers un sink APPEND-ONLY. Deux kinds sûrs et hors-réseau supportés ici (les sinks

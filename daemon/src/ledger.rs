@@ -23,7 +23,9 @@ use crate::*;
 /// 2026-08-31 : le refus des vérificateurs est DOUBLEMENT ANCRÉ. Dans `verify_ledger_conn`, la comparaison
 /// `prev_hash != prev` ET le RECALCUL `sha256(prev|ts|kind|detail)` sur le maillon COURANT attrapent
 /// l'orphelin CHACUN SEUL (relâcher l'un laisse le témoin VERT ; il ne rougit qu'une fois les DEUX
-/// relâchés) ; `ledger_verify_export` porte les deux mêmes ancrages. Les deux autres issues exigeraient
+/// relâchés) ; `ledger_verify_export` porte les deux mêmes ancrages (`P10.27-k` : il écarte d'abord la répétition EXACTE
+/// d'une ligne déjà vérifiée — un orphelin n'est la répétition de rien — et les deux ancrages restent entiers pour toute
+/// ligne retenue). Les deux autres issues exigeraient
 /// donc d'apprendre aux DEUX ancrages à laisser passer un chaînon vide — c'est-à-dire de CRÉER le chemin
 /// par lequel une chaîne rompue devient verte. Fermer une fausse accusation en faisant taire une vraie.
 ///

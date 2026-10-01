@@ -457,9 +457,9 @@ mod begin_refuse_et_export_du_registre_valide {
     ///    RIEN dans la copie, curseur à 0, transaction fermée ;
     ///  * `COMMIT` refusé — 503 `CAUSE_ENVOI_DU_PUITS_CURSEUR_NON_AVANCE`, la tranche EST dans la copie (une ligne), le
     ///    curseur n'a pas avancé ici ni à froid, transaction fermée ;
-    ///  * levé — l'envoi réécrit la même tranche (200 `exported: 1`) : la copie porte la ligne DEUX fois et le
-    ///    vérificateur y lit une « rupture de chaîne » (la copie ne tolère pas un doublon — c'est ce que la cause dit) ;
-    ///    les lignes répétées écartées, elle se vérifie ; le curseur est validé, et l'envoi suivant n'exporte rien.
+    ///  * levé — l'envoi réécrit la même tranche (200 `exported: 1`) : la copie porte la ligne DEUX fois, et le
+    ///    vérificateur (`P10.27-k`) écarte cette répétition exacte et la compte au lieu d'y lire une rupture — c'est ce que
+    ///    la cause dit ; le curseur est validé, et l'envoi suivant n'exporte rien.
     ///
     /// LES MUTATIONS QUI LE FONT ROUGIR : l'avance avalée après la copie (la forme d'avant) — 200 et une ligne dans la
     /// copie au premier temps ; l'avance comptée mais écrite APRÈS la copie — une ligne dans la copie au premier temps
@@ -504,14 +504,12 @@ mod begin_refuse_et_export_du_registre_valide {
         assert_eq!(corps["exported"], json!(1), "il réécrit la même tranche : {texte}");
         let lignes = brev_lignes_de_la_copie(&copie);
         assert_eq!(lignes.len(), 2, "la copie porte la ligne DEUX fois");
-        let verdict = ledger_verify_export(&lignes, "");
-        assert!(
-            verdict.as_ref().is_err_and(|e| e.contains("rupture de chaîne")),
-            "la copie ne tolère pas un doublon : le vérificateur y lit une rupture ({verdict:?})"
+        // `P10.27-k` — la répétition EXACTE est reconnue, écartée et comptée : ce n'est plus lu comme une rupture.
+        assert_eq!(
+            crate::governance::verifier_la_copie_du_registre(&lignes, ""),
+            Ok(crate::governance::CopieChaineeVerifiee { maillons: 1, lignes_repetees: 1, reprises: 1, reprise_inachevee: false }),
+            "la copie porte la ligne deux fois : le vérificateur l'écarte et la compte, aucun maillon ne MANQUE"
         );
-        let mut vues = std::collections::HashSet::new();
-        let sans_doublon: Vec<String> = lignes.into_iter().filter(|l| vues.insert(l.clone())).collect();
-        assert_eq!(ledger_verify_export(&sans_doublon, ""), Ok(1), "les lignes répétées écartées, aucun maillon ne MANQUE");
         let tete = brev_ici(&st, "SELECT MAX(id) FROM ledger");
         assert_eq!(brev_a_froid(&p, curseur), tete, "le curseur est validé");
         let (statut, corps, _) = brev_envoyer(&st, id).await;

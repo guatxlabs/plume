@@ -100,6 +100,7 @@ mod ledger;
 pub(crate) use ledger::*;
 mod governance; // #59 GOUVERNANCE ENTREPRISE : legal-hold (rétention-lock fail-closed), export streaming du ledger (chaîne préservée), rôles composables (plafond=base, default-deny)
 pub(crate) use governance::*;
+mod copie_chainee; // P10.27-k : LA VÉRIFICATION HORS LIGNE D'UNE COPIE CHAÎNÉE (registre, journal de contrôle) — deux ancrages, et une ligne répétée à l'identique écartée et comptée, jamais lue comme une rupture
 mod rollups;
 pub(crate) use rollups::*;
 // PURGE EXPLICITE D'ÉVÉNEMENTS — la seule suppression de `event` DEMANDÉE PAR UN HUMAIN. Il en existe
@@ -1029,7 +1030,7 @@ const SUBCOMMANDS: [(&str, &str); 23] = [
     ("verify", "verify — vérifie la chaîne d'intégrité du ledger"),
     ("verify-control", "verify-control — vérifie la chaîne d'intégrité du journal du PLAN DE CONTRÔLE (accès superadmin, ouvertures d'urgence) ; 0 = intègre, 1 = rupture nommée, 2 = AUCUN verdict"),
     ("ledger-export", "ledger-export [--from <id>] [--out <f>] — export JSONL du ledger"),
-    ("ledger-verify-export", "ledger-verify-export <f> — vérifie un export hors-ligne"),
+    ("ledger-verify-export", "ledger-verify-export <f> — vérifie un export hors-ligne (une tranche répétée à l'identique est écartée et dite, une fourche accusée)"),
     ("scim-token", "scim-token — génère/affiche le jeton SCIM"),
     ("token", "token <sous-commande> — jetons d'agent"),
     ("sigma-import", "sigma-import <chemin> — importe des règles Sigma"),
@@ -1116,6 +1117,38 @@ fn commande_spool_requeue(spool: &str, a_blanc: bool) -> ! {
         std::process::exit(1);
     }
     std::process::exit(0);
+}
+
+/// `ledger-verify-export <fichier> [--prev <hash>]` — VÉRIFIE HORS LIGNE UNE COPIE DU REGISTRE, ET NE REND JAMAIS LA
+/// MAIN. Recalcule la chaîne de hachage sur le JSONL, indépendamment de la base. `--prev` = hachage attendu avant la
+/// première ligne (export incrémental) ; défaut "" (origine, export complet). `P10.27-k` : une ligne répétée À
+/// L'IDENTIQUE (envoi dont le curseur n'a pas été validé, export relancé sur le même fichier) est écartée et DITE, une
+/// fourche reste accusée.
+///
+/// TROIS SORTIES, et c'est le code qu'un script d'exploitation lit : 0 = copie intègre, 1 = rupture nommée (« EXPORT
+/// COMPROMIS »), 2 = rien n'a été vérifié (usage, fichier illisible). La sortie est prise ICI, et pas dans `main`, pour
+/// qu'un témoin la mesure sur un vrai processus (ré-exécution du binaire de test) : une accusation imprimée qui sortirait
+/// en 0 serait lue comme un verdict vert.
+fn commande_ledger_verify_export(args: &[String]) -> ! {
+    let path = match args.iter().skip(2).find(|a| !a.starts_with('-')) {
+        Some(p) => p.clone(),
+        None => {
+            eprintln!("usage : plume-daemon ledger-verify-export <fichier> [--prev <hash>]");
+            std::process::exit(2);
+        }
+    };
+    let prev = flag_val(args, "--prev").unwrap_or_default();
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("ledger-verify-export: lecture {path}: {e}");
+            std::process::exit(2);
+        }
+    };
+    let lines: Vec<String> = content.lines().filter(|l| !l.trim().is_empty()).map(String::from).collect();
+    let (code, phrase) = crate::governance::verdict_hors_ligne_de_la_copie_du_registre(&lines, &prev);
+    println!("{phrase}");
+    std::process::exit(code);
 }
 
 fn main() {
@@ -1249,24 +1282,9 @@ fn main() {
         return;
     }
     // #59 — VÉRIFICATION EXTERNE d'une copie exportée : `plume-daemon ledger-verify-export <fichier>
-    // [--prev <hash>]`. Recompute la chaîne de hash sur le JSONL (indépendamment de la base) -> OK/rupture.
-    // --prev = hash attendu avant la 1re ligne (export incrémental) ; défaut "" (genesis / export complet).
+    // [--prev <hash>]` (ne rend jamais la main : `commande_ledger_verify_export`).
     if args.get(1).map(String::as_str) == Some("ledger-verify-export") {
-        let path = match args.iter().skip(2).find(|a| !a.starts_with('-')) {
-            Some(p) => p.clone(),
-            None => { eprintln!("usage : plume-daemon ledger-verify-export <fichier> [--prev <hash>]"); std::process::exit(2); }
-        };
-        let prev = flag_val(&args, "--prev").unwrap_or_default();
-        let content = match std::fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(e) => { eprintln!("ledger-verify-export: lecture {path}: {e}"); std::process::exit(2); }
-        };
-        let lines: Vec<String> = content.lines().filter(|l| !l.trim().is_empty()).map(String::from).collect();
-        match ledger_verify_export(&lines, &prev) {
-            Ok(n) => println!("export OK : {n} entrées chaînées intègres (vérifié hors-ligne)"),
-            Err(e) => { println!("EXPORT COMPROMIS : {e}"); std::process::exit(1); }
-        }
-        return;
+        commande_ledger_verify_export(&args);
     }
     // #59 — jeton SCIM : `plume-daemon scim-token <tenant> [description]`. Crée un bearer de provisioning
     // (stocké HASHÉ sha256 dans le control-plane), scopé au tenant. Affiché UNE fois. Mode 1 (control-plane).

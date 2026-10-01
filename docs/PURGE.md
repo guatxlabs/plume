@@ -142,6 +142,17 @@ plume-daemon ledger-export --out purge.jsonl
 plume-daemon ledger-verify-export purge.jsonl
 ```
 
+`--out` ouvre le fichier **en ajout** : relancer l'export sur le même fichier y écrit la chaîne une seconde
+fois. Un puits d'export dont la base a refusé de valider le curseur produit la même forme — la tranche est
+réécrite en entier à l'envoi suivant, y compris après une écriture interrompue sur une fin de ligne.
+`ledger-verify-export` écarte toute ligne **identique octet pour octet** à une ligne déjà vérifiée, où qu'elle
+se trouve dans la copie, et la compte dans son verdict (sortie `0`) : ce ne sont ni des événements distincts,
+ni une altération. Une copie qui **se termine** au milieu d'une répétition est acceptée elle aussi, et le
+verdict le dit : rien de ce qui a été vérifié n'y manque. Toute autre ligne doit s'accrocher à la dernière
+ligne vérifiée : une ligne de même identifiant et de contenu **différent** — une fourche —, une ligne altérée,
+manquante ou déplacée restent une rupture (`EXPORT COMPROMIS`, sortie `1`), tout comme une ligne coupée en son
+milieu, qui n'est plus du JSON. Un fichier illisible n'est pas vérifié (sortie `2`).
+
 ---
 
 ## Qui a le droit

@@ -801,6 +801,9 @@ pub(crate) async fn engagement_create(
         return err_json(StatusCode::CONFLICT, "mode engagement désactivé (PLUME_ENGAGEMENT_MODE=0) : impossible de créer un engagement (il n'aurait aucun effet d'exemption)");
     }
     let name = b.trimmed("name");
+    // `P10.31-f` — le nom entre dans le libellé du geste, donc au registre et sur stderr AVANT que le secret soit jugé :
+    // borné et sans caractère de contrôle ici, après le droit et le mode, avant tout libellé.
+    if let Err(refus) = nom_d_engagement_recevable(&name) { return refus; }
     let box_kind = b.trimmed("box");
     if !engagement_box_valid(&box_kind) {
         return bad_req("box invalide (attendu blackbox|greybox|whitebox)");
@@ -876,30 +879,10 @@ pub(crate) async fn engagement_create(
     //     follow-up documenté (pas d'accès permanent aux secrets prod).
     // La validité TEMPORELLE est appliquée à CHAQUE auth (engagement_cred_within_window), pas ici.
     let cred_role = engagement_cred_role_for_box(&box_kind);
-    let entropy_err = || server_err("entropie noyau indisponible : credential NON minté (engagement NON créé)");
-    // plan aligné sur les grants : (kind, ref, hash_du_secret) ; `minted` = payload rendu UNE fois.
-    let mut grant_plan: Vec<(&'static str, String, Option<String>)> = Vec::new();
-    let mut minted: Vec<Value> = Vec::new();
-    for kind in grant_kinds {
-        match *kind {
-            "scoped_cred" => {
-                let suffix = match engagement_rand_hex(12) { Some(s) => s, None => return entropy_err() };
-                let username = format!("{ENG_CRED_PREFIX}{suffix}");
-                let secret = match engagement_rand_hex(24) { Some(s) => s, None => return entropy_err() };
-                let hash = match hash_pw(&secret) {
-                    Some(h) => h,
-                    None => return server_err("échec du hachage du secret : credential NON minté"),
-                };
-                minted.push(json!({ "kind": "scoped_cred", "username": username, "secret": secret, "role": cred_role, "expires": window_end }));
-                grant_plan.push(("scoped_cred", username, Some(hash)));
-            }
-            "config_read" => {
-                grant_plan.push(("config_read", "cap:config_read".to_string(), None));
-                minted.push(json!({ "kind": "config_read", "capability": "config_read", "scope": "read-only, engagement-scoped, expiring", "expires": window_end }));
-            }
-            other => { grant_plan.push((other, String::new(), None)); }
-        }
-    }
+    let (grant_plan, minted) = match frapper_les_credences(grant_kinds, &box_kind, window_end) {
+        Ok(frappe) => frappe,
+        Err(refus) => return refus,
+    };
 
     crate::req_conn!(st, au, conn);
     if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "engagement", "création d'un engagement", CAUSE_ENGAGEMENT_NON_CREE_TRANSACTION_NON_OUVERTE) {
@@ -957,6 +940,75 @@ pub(crate) async fn engagement_create(
             server_err(format!("échec transaction audit (engagement NON créé): {e}"))
         }
     }
+}
+
+/// `P10.31-f` — la borne du nom d'engagement, en OCTETS. Le nom entre dans le libellé du geste jugé par le secret des
+/// gestes, donc sur stderr (secret non configuré : aucun frein) et au registre non purgeable (secret faux : borné par
+/// le frein) AVANT que le secret soit jugé ; sans borne, une session sans secret y écrivait jusqu'au plafond de corps
+/// (8 Mio, `DefaultBodyLimit` de `server/groupes_de_routes.rs`). 120 octets : soixante caractères accentués ou une
+/// phrase de désignation (« Pentest externe T4 — équipe rouge, périmètre DMZ ») tiennent, une ligne de registre reste
+/// lisible. Plus large que les 64 de `idp_name_ok`, parce que le nom d'engagement reste un texte LIBRE (espaces,
+/// accents, ponctuation) et non un identifiant ; vide reste admis, comme avant.
+pub(crate) const NOM_D_ENGAGEMENT_MAX_OCTETS: usize = 120;
+
+/// `P10.31-f` — le nom d'engagement recevable : au plus `NOM_D_ENGAGEMENT_MAX_OCTETS` octets et sans caractère de
+/// contrôle (saut de ligne, retour chariot, NUL, tabulation, C1) qui forgerait une ligne de journal ou de registre.
+/// Refus nommé 400, qui ne recopie pas le nom reçu.
+pub(crate) fn nom_d_engagement_recevable(name: &str) -> Result<(), Response> {
+    if name.len() > NOM_D_ENGAGEMENT_MAX_OCTETS {
+        return Err(bad_req(format!(
+            "name refusé : {} octets, au plus {NOM_D_ENGAGEMENT_MAX_OCTETS} (le nom entre dans le libellé du geste et au registre)",
+            name.len()
+        )));
+    }
+    if name.chars().any(char::is_control) {
+        return Err(bad_req("name refusé : caractère de contrôle (saut de ligne, retour chariot, NUL…) interdit dans un nom d'engagement"));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// `P10.31-f` — le nombre de hachages argon2 de crédence d'engagement sur ce fil : le témoin de l'ordre
+    /// secret-puis-frappe le lit, sans horloge.
+    pub(crate) static HACHAGES_DE_CREDENCE_D_ENGAGEMENT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// La frappe des crédences d'un engagement : pour chaque permis déclaré par la boîte, le plan `(kind, ref, empreinte)`
+/// aligné sur les permis et la charge rendue UNE fois (`minted`). Pur, hors verrou de la base ; appelée APRÈS le
+/// jugement du secret des gestes (`P10.31-b`, ordre témoigné par `P10.31-f`).
+fn frapper_les_credences(
+    grant_kinds: &'static [&'static str],
+    box_kind: &str,
+    window_end: i64,
+) -> Result<(Vec<(&'static str, String, Option<String>)>, Vec<Value>), Response> {
+    let cred_role = engagement_cred_role_for_box(box_kind);
+    let entropy_err = || server_err("entropie noyau indisponible : credential NON minté (engagement NON créé)");
+    let mut grant_plan: Vec<(&'static str, String, Option<String>)> = Vec::new();
+    let mut minted: Vec<Value> = Vec::new();
+    for kind in grant_kinds {
+        match *kind {
+            "scoped_cred" => {
+                let suffix = match engagement_rand_hex(12) { Some(s) => s, None => return Err(entropy_err()) };
+                let username = format!("{ENG_CRED_PREFIX}{suffix}");
+                let secret = match engagement_rand_hex(24) { Some(s) => s, None => return Err(entropy_err()) };
+                #[cfg(test)]
+                HACHAGES_DE_CREDENCE_D_ENGAGEMENT.with(|n| n.set(n.get() + 1));
+                let hash = match hash_pw(&secret) {
+                    Some(h) => h,
+                    None => return Err(server_err("échec du hachage du secret : credential NON minté")),
+                };
+                minted.push(json!({ "kind": "scoped_cred", "username": username, "secret": secret, "role": cred_role, "expires": window_end }));
+                grant_plan.push(("scoped_cred", username, Some(hash)));
+            }
+            "config_read" => {
+                grant_plan.push(("config_read", "cap:config_read".to_string(), None));
+                minted.push(json!({ "kind": "config_read", "capability": "config_read", "scope": "read-only, engagement-scoped, expiring", "expires": window_end }));
+            }
+            other => { grant_plan.push((other, String::new(), None)); }
+        }
+    }
+    Ok((grant_plan, minted))
 }
 
 /// POST /api/engagements/{id}/end — clôture ANTICIPÉE (admin-only, audité, transactionnel). status='revoked' +

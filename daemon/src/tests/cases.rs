@@ -1637,7 +1637,7 @@
         let dst = dossier_seme(&conn, "alice", "Main", 3, "", None, 2);
         case_add_item(&conn, src, now(), "note", "alice", "indice source", None);
         let items_before: i64 = conn.query_row("SELECT COUNT(*) FROM incident_item WHERE incident_id=?1", params![src], |r| r.get(0)).unwrap();
-        assert!(case_merge(&conn, src, dst, "bob"));
+        assert_eq!(case_merge(&conn, src, dst, "bob"), IssueDeLaFusion::Ecrite);
         let (mi, stt): (Option<i64>, String) = conn.query_row("SELECT merged_into, status FROM incident WHERE id=?1", params![src], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
         assert_eq!(mi, Some(dst));
         assert_eq!(stt, "closed");
@@ -1648,9 +1648,9 @@
         assert!(!ids.contains(&src) && ids.contains(&dst), "source fusionnée masquée, cible visible");
         let d = case_get_json(&conn, dst, now()).unwrap();
         assert!(serde_json::to_string(&d["items"]).unwrap().contains("indice source"), "timeline cible COMBINE les items de la source");
-        assert!(!case_merge(&conn, src, dst, "bob"), "source déjà fusionnée -> refus");
-        assert!(!case_merge(&conn, dst, dst, "bob"), "self-merge -> refus");
-        assert!(case_unmerge(&conn, src, "bob"));
+        assert_eq!(case_merge(&conn, src, dst, "bob"), IssueDeLaFusion::Refusee, "source déjà fusionnée -> refus");
+        assert_eq!(case_merge(&conn, dst, dst, "bob"), IssueDeLaFusion::Refusee, "self-merge -> refus");
+        assert_eq!(case_unmerge(&conn, src, "bob"), IssueDeLaFusion::Ecrite);
         assert!(conn.query_row::<Option<i64>, _, _>("SELECT merged_into FROM incident WHERE id=?1", params![src], |r| r.get(0)).unwrap().is_none(), "unmerge -> réversible");
     }
 
@@ -1664,10 +1664,10 @@
         let a = dossier_seme(&conn, "alice", "A", 3, "", None, 2);
         let b = dossier_seme(&conn, "alice", "B", 3, "", None, 2);
         let c = dossier_seme(&conn, "alice", "C", 3, "", None, 2);
-        assert!(case_merge(&conn, a, b, "op"), "A->B OK");
-        assert!(case_merge(&conn, b, c, "op"), "B->C OK");
+        assert_eq!(case_merge(&conn, a, b, "op"), IssueDeLaFusion::Ecrite, "A->B OK");
+        assert_eq!(case_merge(&conn, b, c, "op"), IssueDeLaFusion::Ecrite, "B->C OK");
         // 3e fusion C->A : src=C est EN AMONT de dst=A (chaîne A->B->C) -> refus (fermerait le cycle).
-        assert!(!case_merge(&conn, c, a, "op"), "C->A fermerait un cycle 3-nœuds -> REFUSÉ");
+        assert_eq!(case_merge(&conn, c, a, "op"), IssueDeLaFusion::Refusee, "C->A fermerait un cycle 3-nœuds -> REFUSÉ");
         // la racine C survit (merged_into NULL) -> reste listable ; le graphe n'est pas totalement masqué.
         assert!(conn.query_row::<Option<i64>, _, _>("SELECT merged_into FROM incident WHERE id=?1", params![c], |r| r.get(0)).unwrap().is_none(), "C (racine) non fusionné -> survit");
         let lst = cases_list_json(&conn, now(), "", "", 0, false, false);
@@ -1676,8 +1676,8 @@
         // contre-épreuve : le 2-cycle direct reste refusé lui aussi (merge(A,B) déjà fait ; merge(B,A) via chaîne).
         let d = dossier_seme(&conn, "alice", "D", 3, "", None, 2);
         let e = dossier_seme(&conn, "alice", "E", 3, "", None, 2);
-        assert!(case_merge(&conn, d, e, "op"), "D->E OK");
-        assert!(!case_merge(&conn, e, d, "op"), "E->D (2-cycle direct) -> REFUSÉ");
+        assert_eq!(case_merge(&conn, d, e, "op"), IssueDeLaFusion::Ecrite, "D->E OK");
+        assert_eq!(case_merge(&conn, e, d, "op"), IssueDeLaFusion::Refusee, "E->D (2-cycle direct) -> REFUSÉ");
     }
 
     /// LINK (association) : lie deux cases (dédup UNIQUE), trace des DEUX côtés + ledger ; unlink retire le lien
@@ -1849,7 +1849,7 @@
         let arch = dossier_seme(&conn, "x", "ArchMe", 2, "", None, 3);
         case_set_archived(&conn, arch, "root", true);
         let merged = dossier_seme(&conn, "x", "MergeMe", 2, "", None, 3);
-        case_merge(&conn, merged, id, "root");
+        assert_eq!(case_merge(&conn, merged, id, "root"), IssueDeLaFusion::Ecrite);
         let v2 = client_cases_list_json(&conn, &path, &masks, now(), "", 100, 0);
         let ids: Vec<i64> = v2["cases"].as_array().unwrap().iter().map(|c| c["id"].as_i64().unwrap()).collect();
         assert!(!ids.contains(&arch) && !ids.contains(&merged), "archivés & fusionnés EXCLUS de la vue client");

@@ -443,21 +443,51 @@ pub(crate) struct PurgeSampleRow {
     pub(crate) message: String,
 }
 
+/// MESURE D'UNE FAMILLE NON COUVERTE (`P10.20-b`, rang deux, famille hors `handlers/`). Les quatre comptes
+/// retombaient sur `0` par `.unwrap_or(0)` quand leur lecture échouait : la simulation d'une purge DESTRUCTIVE
+/// affirmait alors « 0 alerte, 0 métrique, 0 instantané partageable dans la fenêtre » pendant que ces lignes
+/// — dont des instantanés qui peuvent porter du contenu purgé — RESTAIENT. Un zéro établi et une lecture non
+/// faite ne sont pas la même promesse : le type les sépare, et aucun rendu ne peut fabriquer un zéro.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum MesureNonCouverte {
+    /// Compte réellement lu (zéro compris : ici un zéro est ÉTABLI).
+    Lue(i64),
+    /// Lecture non faite ; la cause nomme la table et l'erreur du moteur.
+    NonLue(String),
+}
+
+impl MesureNonCouverte {
+    /// Valeur JSON : l'entier lu, ou `null` (la clé reste PRÉSENTE pour un consommateur qui la lit).
+    fn en_json(&self) -> Value {
+        match self {
+            MesureNonCouverte::Lue(n) => json!(n),
+            MesureNonCouverte::NonLue(_) => Value::Null,
+        }
+    }
+    /// Rendu texte : l'entier lu, ou « NON LU : <cause> » — jamais un zéro.
+    fn en_texte(&self) -> String {
+        match self {
+            MesureNonCouverte::Lue(n) => n.to_string(),
+            MesureNonCouverte::NonLue(cause) => format!("NON LU : {cause}"),
+        }
+    }
+}
+
 /// CE QUE LA PURGE NE COUVRE PAS, compté et rendu. Ne pas prétendre résoudre ce qu'on ne résout pas : chaque
 /// champ est une promesse qu'on NE fait PAS, chiffrée sur le périmètre demandé.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub(crate) struct PurgeUncovered {
     /// Alertes dont le `ts` tombe dans la fenêtre. Une alerte n'est pas une ligne dérivée d'`event` (elle a
     /// sa propre rétention et son propre cycle de vie), mais son `detail` peut CITER le texte d'un event
     /// purgé. La purge n'y touche pas : elle le dit.
-    pub(crate) alerts_in_window: i64,
+    pub(crate) alerts_in_window: MesureNonCouverte,
     /// Métriques dans la fenêtre. `metric` n'a ni `source` ni `origin` : le périmètre ne s'y projette pas.
-    pub(crate) metrics_in_window: i64,
+    pub(crate) metrics_in_window: MesureNonCouverte,
     /// Captures d'état (`snapshot`) dans la fenêtre. Même raison.
-    pub(crate) snapshots_in_window: i64,
+    pub(crate) snapshots_in_window: MesureNonCouverte,
     /// Instantanés de dashboard partageables (`dashboard_snapshot`) : ils portent des RÉSULTATS RENDUS, donc
     /// possiblement du contenu purgé. Les détruire détruirait du travail utilisateur -> compté, pas touché.
-    pub(crate) dashboard_snapshots: i64,
+    pub(crate) dashboard_snapshots: MesureNonCouverte,
 }
 
 /// PLAN DE PURGE = le résultat de la SIMULATION. Champs PRIVÉS : hors de ce module, un `PurgePlan` ne se
@@ -715,17 +745,32 @@ fn purge_sample(
     Ok(out)
 }
 
+/// DÉCISION (`P10.20-b`) : une famille NON LUE n'entraîne PAS le refus de la simulation. Le jeton
+/// (`purge_digest`) et le périmètre détruit ne dépendent pas de ces comptes — ils décrivent ce que la purge
+/// NE touche pas ; refuser ici ferait dépendre la capacité de purger d'une table qu'on ne purge pas. Ce qui
+/// est interdit, c'est de rendre un ZÉRO pour une lecture non faite : la famille est servie `NonLue(cause)`.
+///
+/// RESTES NOMMÉS, NON TOUCHÉS (même fichier, hors de ce site) : `meta_i64` (`.ok()` sur `query_row`, couverture
+/// des rollups lue comme ABSENTE sur une lecture ratée) ; les itérateurs aplatis par `.flatten()` de
+/// `holds_covering` (une ligne de rétention légale illisible n'est pas vue par le refus), `cited_by_case`,
+/// `purge_plan` (ventilation par source) et `purge_sample`.
 fn purge_uncovered(conn: &Connection, w: PurgeWindow) -> PurgeUncovered {
-    let count = |sql: &str| -> i64 {
-        conn.query_row(sql, params![w.start_ts, w.end_ts], |r| r.get::<_, i64>(0)).unwrap_or(0)
+    let lire = |famille: &str, sql: &str, fenetre: bool| -> MesureNonCouverte {
+        let lu = if fenetre {
+            conn.query_row(sql, params![w.start_ts, w.end_ts], |r| r.get::<_, i64>(0))
+        } else {
+            conn.query_row(sql, [], |r| r.get::<_, i64>(0))
+        };
+        match lu {
+            Ok(n) => MesureNonCouverte::Lue(n),
+            Err(e) => MesureNonCouverte::NonLue(format!("lecture de `{famille}` non faite : {e}")),
+        }
     };
     PurgeUncovered {
-        alerts_in_window: count("SELECT COUNT(*) FROM alert WHERE ts >= ?1 AND ts <= ?2"),
-        metrics_in_window: count("SELECT COUNT(*) FROM metric WHERE ts >= ?1 AND ts <= ?2"),
-        snapshots_in_window: count("SELECT COUNT(*) FROM snapshot WHERE ts >= ?1 AND ts <= ?2"),
-        dashboard_snapshots: conn
-            .query_row("SELECT COUNT(*) FROM dashboard_snapshot", [], |r| r.get::<_, i64>(0))
-            .unwrap_or(0),
+        alerts_in_window: lire("alert", "SELECT COUNT(*) FROM alert WHERE ts >= ?1 AND ts <= ?2", true),
+        metrics_in_window: lire("metric", "SELECT COUNT(*) FROM metric WHERE ts >= ?1 AND ts <= ?2", true),
+        snapshots_in_window: lire("snapshot", "SELECT COUNT(*) FROM snapshot WHERE ts >= ?1 AND ts <= ?2", true),
+        dashboard_snapshots: lire("dashboard_snapshot", "SELECT COUNT(*) FROM dashboard_snapshot", false),
     }
 }
 
@@ -1062,7 +1107,7 @@ pub(crate) fn purge_plan_json(p: &PurgePlan) -> Value {
         .collect();
     let selectors: Vec<Value> =
         p.scope.selectors().map(|s| json!({ "kind": s.kind(), "value": s.value() })).collect();
-    json!({
+    let mut out = json!({
         "ok": true,
         "scope": {
             "window": { "start_ts": p.scope.window.start_ts, "end_ts": p.scope.window.end_ts },
@@ -1077,14 +1122,32 @@ pub(crate) fn purge_plan_json(p: &PurgePlan) -> Value {
         "token": p.digest,
         "not_covered": {
             "backups": PURGE_BACKUP_WARNING,
-            "alerts_in_window": p.uncovered.alerts_in_window,
-            "metrics_in_window": p.uncovered.metrics_in_window,
-            "snapshots_in_window": p.uncovered.snapshots_in_window,
-            "dashboard_snapshots": p.uncovered.dashboard_snapshots,
+            "alerts_in_window": p.uncovered.alerts_in_window.en_json(),
+            "metrics_in_window": p.uncovered.metrics_in_window.en_json(),
+            "snapshots_in_window": p.uncovered.snapshots_in_window.en_json(),
+            "dashboard_snapshots": p.uncovered.dashboard_snapshots.en_json(),
             "host_rollup": "l'inventaire de flotte (host_rollup) n'est PAS recalculé : ses compteurs restent \
                             gonflés des lignes purgées jusqu'au prochain rebuild complet",
         },
-    })
+    });
+    // AVEU (`P10.20-b`) : la clé `not_read` n'apparaît que si une famille n'a pas été lue — le chemin nominal
+    // reste octet pour octet celui d'avant. Elle nomme la famille (clé du compte servi `null`) et la cause.
+    let u = &p.uncovered;
+    let mut non_lus = serde_json::Map::new();
+    for (cle, m) in [
+        ("alerts_in_window", &u.alerts_in_window),
+        ("metrics_in_window", &u.metrics_in_window),
+        ("snapshots_in_window", &u.snapshots_in_window),
+        ("dashboard_snapshots", &u.dashboard_snapshots),
+    ] {
+        if let MesureNonCouverte::NonLue(cause) = m {
+            non_lus.insert(cle.to_string(), json!(cause));
+        }
+    }
+    if !non_lus.is_empty() {
+        out["not_covered"]["not_read"] = Value::Object(non_lus);
+    }
+    out
 }
 
 pub(crate) fn purge_receipt_json(r: &PurgeReceipt) -> Value {
@@ -1126,15 +1189,16 @@ pub(crate) fn purge_plan_text(p: &PurgePlan) -> String {
     out.push_str(&format!("  - sauvegardes : {PURGE_BACKUP_WARNING}\n"));
     out.push_str(&format!(
         "  - alertes dans la fenêtre : {} (rétention propre ; leur `detail` peut citer un event purgé)\n",
-        p.uncovered.alerts_in_window
+        p.uncovered.alerts_in_window.en_texte()
     ));
     out.push_str(&format!(
         "  - métriques : {} / captures d'état : {} (ni `source` ni `origin` : le périmètre ne s'y projette pas)\n",
-        p.uncovered.metrics_in_window, p.uncovered.snapshots_in_window
+        p.uncovered.metrics_in_window.en_texte(),
+        p.uncovered.snapshots_in_window.en_texte()
     ));
     out.push_str(&format!(
         "  - instantanés de dashboard partageables : {} (résultats rendus, possiblement du contenu purgé)\n",
-        p.uncovered.dashboard_snapshots
+        p.uncovered.dashboard_snapshots.en_texte()
     ));
     out.push_str("  - inventaire de flotte (host_rollup) : compteurs non recalculés\n");
     if p.rows > PURGE_LARGE_ROWS_WARN {

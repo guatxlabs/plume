@@ -292,11 +292,12 @@ DEFAUTS_RANG_2_FAIT_SERVI_OU_ECRIT = {
     # ont leur phrase, et la lecture non faite porte son PROPRE `kind` de registre
     # (`action.exec.verdict-non-relu`), donc elle se filtre dans la trace. La forme a disparu du
     # site — la garder ferait rougir « exemption sans objet ».
-    # CINQ lectures d'aperçu de rétention retombent sur `(0, None)`. L'opérateur lit « rien à purger »
-    # sur cinq familles d'objets, juste avant de décider d'une purge. GESTE : solder les cinq en
-    # `Result` et servir `null` + la cause, jamais un zéro.
-    ("daemon/src/handlers/admin_ui.rs", "retention_preview"):
-        ("unwrap_or", "unwrap_or", "unwrap_or", "unwrap_or", "unwrap_or"),
+    # ENTRÉE RETIRÉE PAR `P10.20-b` (2026-10-07) : `admin_ui.rs::retention_preview` — les CINQ lectures
+    # d'aperçu retombaient sur `(0, None)` et l'opérateur lisait « rien à purger » juste avant de décider
+    # d'une purge. Les cinq passent par UN SEUL `query_row` écrit en clair (la requête choisie par famille,
+    # aucune closure intermédiaire), rendu en `Result` (chaîne NUE) : une lecture
+    # ratée sert `deleted`/`oldest` à `null` et `deleted_non_lu` (`CAUSE_APERCU_DE_RETENTION_NON_LU` + la
+    # famille) ; une table vide rend toujours `0`. Le site PROPAGE désormais vers un `match`.
     # L'échéance SLA du dossier qui vient d'être créé retombe à `None` et part dans le corps de
     # création : « ce dossier n'a pas d'échéance » est servi là où la ligne n'a pas été relue.
     ("daemon/src/handlers/cases.rs", "case_create"): ("unwrap_or",),
@@ -307,10 +308,10 @@ DEFAUTS_RANG_2_FAIT_SERVI_OU_ECRIT = {
     # ENTRÉE RETIRÉE PAR `P10.20-b` (B7) : `datamodels.rs::object_delete` — `has_children` retombait à
     # `false` sur une lecture ratée et la SUPPRESSION passait la garde qui protège la hiérarchie. La sonde
     # est désormais un `match` dont le bras `Err` rend 503 nommé (`CAUSE_ENFANTS_DE_L_OBJET_NON_LUS`).
-    # DEUX sites. `ok` sur la définition de la destination (fail-closed) ; `unwrap_or((watermark, 0,
-    # None))` sur l'état relu après l'envoi, servi dans le corps ET dans l'audit de gouvernance
-    # `P11.13-c` — le filigrane et le compte y sont affirmés sans avoir été relus.
-    ("daemon/src/handlers/destinations.rs", "destination_flush"): ("ok", "unwrap_or"),
+    # ENTRÉE DÉPLACÉE AU RANG QUATRE PAR `P10.20-b` (2026-10-07) : `destinations.rs::destination_flush`. Son
+    # site de rang deux — `unwrap_or((watermark, 0, None))` sur l'état relu après l'envoi, servi dans le
+    # corps ET dans l'audit `P11.13-c` — est un `Result` lié puis `match` : relecture ratée = `etat_non_relu`
+    # + `null` dans le corps, « NON RELUS » dans la trace. Reste le `ok` de la définition, fail-closed (404).
     # PAS D'ENTRÉE POUR `freshness.rs::compute_freshness`, ET C'EST UNE MESURE, PAS UN OUBLI. Les DEUX
     # comptes de métriques (`n_24h`, nombre de séries) y retombaient à zéro par `unwrap_or` et
     # partaient dans `/api/freshness` — la trouvaille consignée sous `P10.20-g`. Relevés à 12 h 37 le
@@ -329,10 +330,10 @@ DEFAUTS_RANG_2_FAIT_SERVI_OU_ECRIT = {
     # cessait d'exister. Le compte passe par `compter_les_runbooks_custom` (`map_err` + `?`) : la lecture
     # ratée rend `CAUSE_QUOTA_DE_RUNBOOKS_NON_LU`, servie en 503 par les deux routes (signature des cœurs
     # inchangée, `Result<i64, String>`).
-    # Le MODE global retombe sur `"observe"` et part dans le corps de la liste, à côté d'une liste qui
-    # sait déjà avouer. La console affiche « ce playbook PROPOSE » alors que le démon peut être en
-    # `active` et EXÉCUTER : la conséquence servie est l'inverse de la conséquence réelle.
-    ("daemon/src/handlers/playbooks.rs", "playbooks_list"): ("unwrap_or_else",),
+    # ENTRÉE RETIRÉE PAR `P10.20-b` (2026-10-07) : `playbooks.rs::playbooks_list` — le MODE global
+    # retombait sur `"observe"` et la console disait « PROPOSE » d'un démon peut-être `active`. La lecture
+    # est un `Result` scruté comme `mode_get` : aucune ligne = `observe` établi, lecture ratée = `mode: null`
+    # + `mode_non_lu` (`CAUSE_MODE_DES_PLAYBOOKS_NON_LU`). Son jumeau `run_playbooks` (rang trois) est inchangé.
     # ENTRÉE RETIRÉE PAR `P10.20-b` (B7) : `saved_queries.rs::count_for_owner` — le compte par
     # propriétaire retombait à zéro et le plafond per-user s'effaçait. Il rend `rusqlite::Result<i64>` ;
     # `create` le convertit en `SqErr::CapUnread`, servi en 503 nommé
@@ -420,6 +421,10 @@ DEFAUTS_RANG_4_FAIL_CLOSED = {
     # il demandait de rallier `view_update` ET de ne retirer que DEUX entrées — c'en fait trois.
     ("daemon/src/handlers/datamodels.rs", "field_create"): ("is_err",),
     ("daemon/src/handlers/datamodels.rs", "object_create"): ("is_err",),
+    # VENUE DU RANG DEUX PAR `P10.20-b` (2026-10-07) : la relecture d'après envoi n'absorbe plus (voir la
+    # note de la classe 3). Reste le `.ok()` sur la DÉFINITION de la destination : lecture ratée -> 404
+    # « destination introuvable ou désactivée », aucun envoi. Cause fausse, aucun fait inventé.
+    ("daemon/src/handlers/destinations.rs", "destination_flush"): ("ok",),
     ("daemon/src/handlers/detection.rs", "rule_test"): ("ok",),
     ("daemon/src/handlers/detection_advanced.rs", "correlation_test"): ("ok",),
     # `.map(..).unwrap_or(false)` : un permis de pentest dont la fenêtre n'a pas pu être lue est

@@ -8,6 +8,8 @@
 
 mod buffer;
 mod config;
+#[cfg(test)]
+mod declencheurs_agent_ci_tests; // P10.31-e : fichiers lus hors de agent/ => déclencheurs d'agent-ci
 mod durable;
 mod lisibilite;
 #[cfg(test)]

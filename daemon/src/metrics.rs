@@ -105,6 +105,17 @@ pub(crate) fn compter_un_tick_aveugle(balayage: &'static str, cause: &str) {
         consigner_avec_sa_derniere_cause(&mut m, balayage, cause.to_string());
     }
 }
+/// `P10.20-w` — UN TOUR D'ESCALADE SLA DONT LA BASE A REFUSÉ LE MARQUEUR `escalated`, compté UNE fois par tour (pas
+/// par dossier) dans la même ventilation que les ticks aveugles, sous `balayage`. Ce n'est PAS un tour sans geste :
+/// la notification est partie quand même (un SLA réellement dépassé ne se tait pas), seuls le marqueur, la chronologie
+/// et le registre manquent — la phrase du journal le dit, au lieu du « aucun geste » de `compter_un_tick_aveugle`.
+pub(crate) fn compter_une_escalade_notifiee_non_enregistree(balayage: &'static str, dossiers: usize, cause: &str) {
+    TICKS_AVEUGLES_TOTAL.fetch_add(1, Ordering::Relaxed);
+    eprintln!("[plume] balayage de fond ({balayage}) : {dossiers} escalade(s) NOTIFIÉE(S) mais NON ENREGISTRÉE(S) (marqueur refusé, ni chronologie ni registre), renvoi au tour suivant : {cause}");
+    if let Ok(mut m) = TICKS_AVEUGLES.lock() {
+        consigner_avec_sa_derniere_cause(&mut m, balayage, cause.to_string());
+    }
+}
 /// Le compte et la dernière cause d'un balayage (`None` = jamais aveugle depuis le démarrage).
 pub(crate) fn tick_aveugle_de(balayage: &str) -> Option<(u64, String)> {
     TICKS_AVEUGLES.lock().ok().and_then(|m| m.get(balayage).cloned())

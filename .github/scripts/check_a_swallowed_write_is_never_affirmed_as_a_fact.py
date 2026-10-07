@@ -316,7 +316,11 @@ FAITS_QUI_AFFIRMENT = (
 # RE-DÉRIVÉS le 2026-10-07 (`P10.20-w`, rang quatre) : le lot retire les six sites de `dashboards.rs` et
 # `dash_ergonomics.rs`, donc aussi ces deux fichiers. Relevé de ce jour-là sur l'arbre : 14 sites sur 5 fichiers ; même
 # règle des deux tiers, arrondie en dessous : 14 -> 9, 5 -> 3.
-PLANCHER_SITES = 9
+# RE-DÉRIVÉS le 2026-10-07 (`P10.20-w`, rang trois) : le lot retire `case_merge`, `case_unmerge` et
+# `escalate_overdue_cases` ; aucun fichier ne sort (`caseops.rs` garde `sla_multilevel_tick`, `cases.rs` garde
+# `case_apply_update` et `case_set_archived`). Relevé de ce jour-là sur l'arbre : 11 sites sur 5 fichiers ; même règle
+# des deux tiers, arrondie en dessous : 11 -> 7, 5 -> 3.
+PLANCHER_SITES = 7
 PLANCHER_FICHIERS = 3
 
 # ================================================================================================
@@ -352,14 +356,19 @@ SITES_IDENTIFIANT_ET_REGISTRE = {}
 # affirme une mutation qui n'a peut-être pas eu lieu. Aucun identifiant n'est emprunté ici.
 SITES_REGISTRE_APRES_ECRITURE_AVALEE = {
     ("daemon/src/handlers/caseops.rs", "sla_multilevel_tick"): ("let _ -> ledger_append",),
-    ("daemon/src/handlers/caseops.rs", "case_merge"): ("let _ -> ledger_append",),
-    ("daemon/src/handlers/caseops.rs", "case_unmerge"): ("let _ -> ledger_append",),
+    # `P10.20-w` (rang trois, 2026-10-07) — `case_merge`, `case_unmerge` (caseops.rs) et `escalate_overdue_cases`
+    # (cases.rs) SONT RETIRÉS : l'`UPDATE` est compté par un `match` AVANT chronologie et registre. Fusion et défusion
+    # rendent `IssueDeLaFusion::{Ecrite, Refusee, NonEcrite}` et la route un 503 nommé sur l'écriture refusée (elle
+    # rendait 204 avec `case.merge`/`case.unmerge` au registre) ; l'escalade écrit le marqueur `escalated` AVANT
+    # l'envoi (`AND escalated=0`) ; un marqueur refusé notifie QUAND MÊME (en avouant l'escalade non enregistrée, renvoyé
+    # au tour suivant) mais ne trace rien, et est compté une fois par tour au balayage `escalate_overdue_marqueur`
+    # (mesuré sur la forme d'avant, témoins `fec_` : une notification et un `case.sla_escalate` par tick). RESTENT admis ici : `sla_multilevel_tick`, `case_apply_update`,
+    # `case_set_archived`, `step_advance`.
     # QUATRE sites, pas huit : les cinq autres écritures avalées de cette fonction vivent dans des
     # blocs FRÈRES qui ne portent aucun registre (l'écart mesuré contre `P10.20-w`, en en-tête).
     ("daemon/src/handlers/cases.rs", "case_apply_update"):
         ("let _ -> ledger_append", "let _ -> ledger_append", "let _ -> ledger_append",
          "let _ -> ledger_append"),
-    ("daemon/src/handlers/cases.rs", "escalate_overdue_cases"): ("let _ -> ledger_append",),
     ("daemon/src/handlers/cases.rs", "case_set_archived"):
         ("let _ -> ledger_append", "let _ -> ledger_append"),
     # `P10.21-s` — LES DEUX SITES D'`idp.rs` SONT RETIRÉS, parce que les deux écritures sont COMPTÉES avant

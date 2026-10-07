@@ -69,6 +69,11 @@ pub(crate) const CAUSE_EXCLUSION_D_AFFICHAGE_INCHANGEE_TRANSACTION_NON_OUVERTE: 
 pub(crate) const CAUSE_EXCLUSION_D_AFFICHAGE_INCHANGEE: &str = "EXCLUSION D'AFFICHAGE INCHANGÉE : la base n'a pas \
      validé la transaction (COMMIT refusé) et l'a annulée — les panneaux gardent l'exclusion d'avant, et aucune \
      trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.20-b` (rang deux) — l'aperçu de rétention n'a pas pu compter ce que la baisse purgerait. Servi sous
+/// `deleted_non_lu`, suivi de la famille d'objets nommée ; `deleted` et `oldest` valent alors `null`, jamais `0`.
+pub(crate) const CAUSE_APERCU_DE_RETENTION_NON_LU: &str = "APERÇU NON LU : la base n'a pas rendu le compte des \
+     lignes que ce réglage purgerait — ce n'est PAS « rien à purger », c'est un compte qui n'a pas eu lieu. Ne décidez \
+     pas d'une baisse sur cet aperçu ; réessayez, et si le refus persiste, la table de cette famille est illisible.";
 
 
 /// POST|PUT /api/retention {retention_days?,snapshot_days?,alert_days?,metric_days?,metric_raw_hours?} (i64).
@@ -142,43 +147,36 @@ pub(crate) async fn retention_preview(State(st): State<AppState>, Extension(au):
     crate::req_conn!(st, au, conn);
     let cur = setting_days(&conn, &conf, skey, env_key, def, floor, ceil); // MÊME résolveur que l'application (H2)
     let cutoff = n - new_val * unit_secs; // tout ce qui est < cutoff serait purgé au prochain tick
-    let (deleted, oldest, kind, approx): (i64, Option<i64>, &str, bool) = match skey {
-        "retention_days" => {
-            // event_rollup UNIQUEMENT (jamais event_dim_rollup : surcompte par dimension), idx bucket-borné.
-            let (s, o) = conn
-                .query_row("SELECT COALESCE(SUM(n),0), MIN(bucket) FROM event_rollup WHERE bucket < ?1", params![cutoff], |r| Ok((r.get(0)?, r.get(1)?)))
-                .unwrap_or((0i64, None));
-            (s, o, "events", true)
-        }
-        "snapshot_days" => {
-            let (s, o) = conn
-                .query_row("SELECT COUNT(*), MIN(ts) FROM snapshot WHERE ts < ?1", params![cutoff], |r| Ok((r.get(0)?, r.get(1)?)))
-                .unwrap_or((0i64, None));
-            (s, o, "snapshots", false)
-        }
-        "alert_days" => {
-            // reflète le filtre status<>'new' de retention_run : les alertes OUVERTES ne sont JAMAIS purgées.
-            let (s, o) = conn
-                .query_row("SELECT COUNT(*), MIN(ts) FROM alert WHERE status<>'new' AND ts < ?1", params![cutoff], |r| Ok((r.get(0)?, r.get(1)?)))
-                .unwrap_or((0i64, None));
-            (s, o, "alerts_closed", false)
-        }
-        "metric_days" => {
-            let (s, o) = conn
-                .query_row("SELECT COUNT(*), MIN(ts) FROM metric_rollup WHERE ts < ?1", params![cutoff], |r| Ok((r.get(0)?, r.get(1)?)))
-                .unwrap_or((0i64, None));
-            (s, o, "metric_rollups", false)
-        }
-        "metric_raw_hours" => {
-            // raw metrics rollupées AVANT purge -> destructif « doux » (agrégat conservé), mais aperçu quand même (H3).
-            let (s, o) = conn
-                .query_row("SELECT COUNT(*), MIN(ts) FROM metric WHERE ts < ?1", params![cutoff], |r| Ok((r.get(0)?, r.get(1)?)))
-                .unwrap_or((0i64, None));
-            (s, o, "metrics_raw", false)
-        }
-        _ => (0, None, "", false),
+    // `P10.20-b` (rang deux) — CHAQUE COMPTE EST UN `Result`, ET UN COMPTE QUI N'A PAS EU LIEU N'EST PAS ZÉRO.
+    // Avant : `.unwrap_or((0i64, None))` sur les cinq lectures — une table illisible se lisait « rien à purger »,
+    // servi à l'opérateur JUSTE AVANT qu'il décide d'une baisse. Le chemin nominal sert le même corps qu'avant
+    // (une table vide rend toujours `0` : `COUNT(*)` et `COALESCE(SUM(n),0)` sont des faits) ; sur échec,
+    // `deleted` et `oldest` valent `null` et `deleted_non_lu` nomme la cause ET la famille.
+    // UN SEUL `query_row`, écrit en clair : la garde de lecture unique lit la chaîne posée sur lui, et un
+    // `.unwrap_or(..)` réintroduit y est une FORME NEUVE (une closure intermédiaire le lui cachait).
+    let requete: Option<(&str, &str, bool)> = match skey {
+        // event_rollup UNIQUEMENT (jamais event_dim_rollup : surcompte par dimension), idx bucket-borné.
+        "retention_days" => Some(("SELECT COALESCE(SUM(n),0), MIN(bucket) FROM event_rollup WHERE bucket < ?1", "events", true)),
+        "snapshot_days" => Some(("SELECT COUNT(*), MIN(ts) FROM snapshot WHERE ts < ?1", "snapshots", false)),
+        // reflète le filtre status<>'new' de retention_run : les alertes OUVERTES ne sont JAMAIS purgées.
+        "alert_days" => Some(("SELECT COUNT(*), MIN(ts) FROM alert WHERE status<>'new' AND ts < ?1", "alerts_closed", false)),
+        "metric_days" => Some(("SELECT COUNT(*), MIN(ts) FROM metric_rollup WHERE ts < ?1", "metric_rollups", false)),
+        // raw metrics rollupées AVANT purge -> destructif « doux » (agrégat conservé), mais aperçu quand même (H3).
+        "metric_raw_hours" => Some(("SELECT COUNT(*), MIN(ts) FROM metric WHERE ts < ?1", "metrics_raw", false)),
+        _ => None,
     };
-    Json(json!({
+    let (lu, kind, approx): (rusqlite::Result<(i64, Option<i64>)>, &str, bool) = match requete {
+        Some((sql, kind, approx)) => (conn.query_row(sql, params![cutoff], |r| Ok((r.get(0)?, r.get(1)?))), kind, approx),
+        None => (Ok((0, None)), "", false),
+    };
+    let (deleted, oldest, deleted_non_lu): (Value, Value, Option<String>) = match lu {
+        Ok((s, o)) => (json!(s), json!(o), None),
+        Err(e) => {
+            eprintln!("[retention] aperçu NON LU pour la famille « {kind} » : {e}");
+            (Value::Null, Value::Null, Some(format!("{CAUSE_APERCU_DE_RETENTION_NON_LU} (famille « {kind} »)")))
+        }
+    };
+    let mut corps = json!({
         "ok": true,
         "key": skey,
         "unit": if skey == "metric_raw_hours" { "hours" } else { "days" },
@@ -189,8 +187,11 @@ pub(crate) async fn retention_preview(State(st): State<AppState>, Extension(au):
         "deleted_kind": kind,
         "oldest": oldest,
         "approx": approx,
-    }))
-    .into_response()
+    });
+    if let Some(cause) = deleted_non_lu {
+        corps["deleted_non_lu"] = json!(cause);
+    }
+    Json(corps).into_response()
 }
 
 // =================================================================================================

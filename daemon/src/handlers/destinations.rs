@@ -724,6 +724,20 @@ pub(crate) const CAUSE_DESTINATION_NON_SUPPRIMEE_TRANSACTION_NON_OUVERTE: &str =
 pub(crate) const CAUSE_TRACE_DE_L_ENVOI_MANUEL_NON_ECRITE: &str = "TRACE NON ÉCRITE : l'envoi manuel a eu lieu (ce \
      qui est parti est parti), mais la base n'a pas pris sa trace d'audit — le registre ne dit pas qui l'a déclenché \
      ni combien d'events ont quitté le périmètre. Le journal du démon nomme le refus.";
+/// `P10.20-b` (rang deux) — l'envoi manuel a eu lieu, mais l'état de la destination n'a pas pu être RELU après coup
+/// (champ `etat_non_relu` de la réponse ; `ok`, `forwarded`, `watermark` et `last_error` valent alors `null`). La
+/// ligne d'audit le dit aussi : ni compte ni filigrane n'y sont affirmés.
+pub(crate) const CAUSE_ETAT_DE_L_ENVOI_MANUEL_NON_RELU: &str = "ÉTAT NON RELU : l'envoi manuel a eu lieu (ce qui est \
+     parti est parti), mais la base n'a pas rendu l'état de la destination après coup — ni le nombre d'events partis, \
+     ni le filigrane atteint, ni l'issue du lot ne sont établis. Ce n'est PAS « zéro event » : relisez la liste des \
+     destinations, qui porte l'état enregistré.";
+/// `P10.20-b` (rang deux) — la relecture d'après envoi ne trouve PLUS la destination (`QueryReturnedNoRows`) : elle a
+/// été supprimée pendant l'envoi. Distincte de `CAUSE_ETAT_DE_L_ENVOI_MANUEL_NON_RELU`, dont le renvoi vers la liste
+/// serait faux ici — la liste ne porte plus cette destination.
+pub(crate) const CAUSE_DESTINATION_SUPPRIMEE_PENDANT_L_ENVOI: &str = "ÉTAT NON RELU : l'envoi manuel a eu lieu (ce qui \
+     est parti est parti), mais la destination n'existe plus dans la base après coup — elle a été supprimée pendant \
+     l'envoi. Ni le nombre d'events partis, ni le filigrane atteint, ni l'issue du lot ne sont établis, et la liste des \
+     destinations ne les porte plus : la trace d'audit de l'envoi (event `plume-config`) reste la seule mention.";
 
 pub(crate) async fn destination_update(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
     if !au.is_admin() {
@@ -868,11 +882,28 @@ pub(crate) async fn destination_flush(State(st): State<AppState>, Extension(au):
         forward_one_destination(&db, id, &dtype, &endpoint, &config_json, &filter_json, batch_max, watermark, now_ts, dest_transport);
     }).await;
     // Relit l'état APRÈS coup (jamais la réponse du sink).
+    // `P10.20-b` (rang deux) — LA RELECTURE EST UN `Result`. Avant : `.unwrap_or((watermark, 0, None))` — une relecture
+    // ratée servait « 0 event, watermark inchangé, succès » dans le corps ET dans la ligne d'audit `P11.13-c`, un
+    // compte et un filigrane affirmés sans avoir été lus. Désormais `None` = NON RELU : le corps porte
+    // `etat_non_relu` et des `null`, la trace dit « NON RELUS ». Le chemin nominal est inchangé octet pour octet.
     let conn = __rc.lock();
-    let (wm, lc, le): (i64, i64, Option<String>) = conn.query_row(
+    let relu: rusqlite::Result<(i64, i64, Option<String>)> = conn.query_row(
         "SELECT watermark,last_count,last_error FROM destination WHERE id=?1",
         params![id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-    ).unwrap_or((watermark, 0, None));
+    );
+    // Deux causes, jamais fusionnées : une ligne DISPARUE (supprimée pendant l'envoi) n'est pas une lecture ratée — le
+    // renvoi « relisez la liste » ne vaut que pour la seconde.
+    let (etat, cause_non_relu): (Option<(i64, i64, Option<String>)>, &str) = match relu {
+        Ok(t) => (Some(t), ""),
+        Err(rusqlite::Error::QueryReturnedNoRows) => {
+            eprintln!("[destinations] destination #{id} supprimée pendant l'envoi manuel : état NON RELU");
+            (None, CAUSE_DESTINATION_SUPPRIMEE_PENDANT_L_ENVOI)
+        }
+        Err(e) => {
+            eprintln!("[destinations] état NON RELU après l'envoi manuel de la destination #{id} : {e}");
+            (None, CAUSE_ETAT_DE_L_ENVOI_MANUEL_NON_RELU)
+        }
+    };
     // GOUVERNANCE (`P11.13-c`) — LE DÉCLENCHEMENT MANUEL D'UNE SORTIE DE DONNÉES EST AUDITÉ (ledger
     // tamper-evident + event `plume-config` non-purgeable), exactement comme le poll manuel d'un
     // connecteur en ENTRÉE (`config.connector.poll`). C'était le SEUL geste de ce module à ne laisser
@@ -895,21 +926,45 @@ pub(crate) async fn destination_flush(State(st): State<AppState>, Extension(au):
     // relire tel quel après un échec recopierait le compte d'un envoi PRÉCÉDENT — un chiffre faux dans un
     // journal d'audit est pire qu'un chiffre absent. Le couple watermark avant -> après dit, lui, la
     // frontière exacte de ce qui a quitté le périmètre : égal = rien n'est parti.
-    let parti = if le.is_none() { lc } else { 0 };
-    // `P10.26-x` — LA TRACE EST ÉCRITE APRÈS COUP, ET SON ABSENCE SE DIT. La forme d'avant (`if let Ok(tx) = Txn::begin(..)`
-    // puis `let _ = tx.commit()`) taisait un `BEGIN`, un audit ou un `COMMIT` refusé : la réponse était identique à celle
-    // d'un envoi tracé. Le refus est désormais au journal, et la réponse porte `trace_non_ecrite`.
-    let trace = tracer_apres_coup(&conn, "destinations", &format!("envoi manuel de la destination #{id}"), CAUSE_TRACE_DE_L_ENVOI_MANUEL_NON_ECRITE, || {
-        audit_config_change(
-            &conn,
-            "config.destination.flush",
-            &format!("SORTIE de données déclenchée à la main sur la destination #{id} ({dtype_audite}) par {} : {parti} event(s), watermark {watermark} -> {wm}", au.name),
-            3,
-            &format!("SORTIE de données : forward MANUEL de la destination #{id} ({dtype_audite}) déclenché par {} — {parti} event(s) ont quitté le périmètre (watermark {watermark} -> {wm})", au.name),
-            &json!({ "id": id, "type": dtype_audite, "forwarded": parti, "watermark_before": watermark, "watermark_after": wm, "ok": le.is_none(), "actor": au.name }).to_string(),
-        )
-    });
-    let mut corps = json!({ "ok": le.is_none(), "forwarded": lc, "watermark": wm, "last_error": le });
+    let trace = match &etat {
+        Some((wm, lc, le)) => {
+            let (wm, lc) = (*wm, *lc);
+            let parti = if le.is_none() { lc } else { 0 };
+            // `P10.26-x` — LA TRACE EST ÉCRITE APRÈS COUP, ET SON ABSENCE SE DIT. La forme d'avant (`if let Ok(tx) = Txn::begin(..)`
+            // puis `let _ = tx.commit()`) taisait un `BEGIN`, un audit ou un `COMMIT` refusé : la réponse était identique à celle
+            // d'un envoi tracé. Le refus est désormais au journal, et la réponse porte `trace_non_ecrite`.
+            tracer_apres_coup(&conn, "destinations", &format!("envoi manuel de la destination #{id}"), CAUSE_TRACE_DE_L_ENVOI_MANUEL_NON_ECRITE, || {
+                audit_config_change(
+                    &conn,
+                    "config.destination.flush",
+                    &format!("SORTIE de données déclenchée à la main sur la destination #{id} ({dtype_audite}) par {} : {parti} event(s), watermark {watermark} -> {wm}", au.name),
+                    3,
+                    &format!("SORTIE de données : forward MANUEL de la destination #{id} ({dtype_audite}) déclenché par {} — {parti} event(s) ont quitté le périmètre (watermark {watermark} -> {wm})", au.name),
+                    &json!({ "id": id, "type": dtype_audite, "forwarded": parti, "watermark_before": watermark, "watermark_after": wm, "ok": le.is_none(), "actor": au.name }).to_string(),
+                )
+            })
+        }
+        // NON RELU : la trace dit que l'envoi a été DÉCLENCHÉ (c'est établi) et que son bilan n'a pas été relu — jamais
+        // un compte ni un filigrane d'arrivée qu'on n'a pas lus. `watermark_before` reste : il a été LU avant l'envoi.
+        // Le REGISTRE garde la distinction que fait le corps : ligne disparue ou relecture ratée (`motif_non_relu`).
+        None => {
+            let motif = if cause_non_relu == CAUSE_DESTINATION_SUPPRIMEE_PENDANT_L_ENVOI { "destination supprimée pendant l'envoi" } else { "relecture en échec" };
+            tracer_apres_coup(&conn, "destinations", &format!("envoi manuel de la destination #{id}"), CAUSE_TRACE_DE_L_ENVOI_MANUEL_NON_ECRITE, || {
+                audit_config_change(
+                    &conn,
+                    "config.destination.flush",
+                    &format!("SORTIE de données déclenchée à la main sur la destination #{id} ({dtype_audite}) par {} : compte et watermark NON RELUS après l'envoi ({motif} ; watermark avant : {watermark})", au.name),
+                    3,
+                    &format!("SORTIE de données : forward MANUEL de la destination #{id} ({dtype_audite}) déclenché par {} — compte d'events partis et watermark atteint NON RELUS après l'envoi ({motif} ; watermark avant : {watermark})", au.name),
+                    &json!({ "id": id, "type": dtype_audite, "forwarded": null, "watermark_before": watermark, "watermark_after": null, "ok": null, "etat_non_relu": true, "motif_non_relu": motif, "actor": au.name }).to_string(),
+                )
+            })
+        }
+    };
+    let mut corps = match etat {
+        Some((wm, lc, le)) => json!({ "ok": le.is_none(), "forwarded": lc, "watermark": wm, "last_error": le }),
+        None => json!({ "ok": null, "forwarded": null, "watermark": null, "last_error": null, "etat_non_relu": cause_non_relu }),
+    };
     if let Err(cause) = trace {
         corps["trace_non_ecrite"] = json!(cause);
     }

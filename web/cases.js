@@ -1110,8 +1110,26 @@ async function renderWizardPanel(box, c, edit, hr) {
   box.appendChild(sec);
   sec.appendChild(Object.assign(document.createElement('div'), { className: 'muted', textContent: 'chargement…' }));
   let rb, steps;
-  try { rb = await api('/cases/' + c.id + '/runbooks'); } catch (e) { sec.replaceChildren(Object.assign(document.createElement('div'), { className: 'muted', textContent: 'runbook indisponible' })); return; }
-  try { steps = await api('/cases/' + c.id + '/steps'); } catch (e) { steps = { steps: [], progress: { total: 0, done: 0, skipped: 0 }, runbook: null }; }
+  // `P10.20-b` (rang 2, côté REJET) — UN REFUS DE LECTURE DE CE PANNEAU SE DIT AVEC SA CAUSE, ET N'INVENTE RIEN.
+  // Les deux `catch` étaient sourds : celui de `/runbooks` peignait « runbook indisponible », sans la cause que le
+  // démon nomme ; celui de `/steps` FABRIQUAIT `{steps: [], …, runbook: null}`. MESURÉ par le témoin 133 : ce n'est pas
+  // « 0/0 traitées » qui s'écrivait (la tête n'est rendue que sous un runbook servi), c'est PIRE — le panneau se lisait
+  // « aucun runbook attaché » et OFFRAIT « Attacher le runbook » sur un dossier qui en porte peut-être un, geste que le
+  // démon refuse dès qu'une étape existe ; les étapes et leur progression disparaissaient sans un mot. La
+  // phrase est écrite AU PUITS ; la cause vient du point commun d'une lecture refusée (`noeudDuRefusDUneLecture`),
+  // qui lit la NATURE du rejet : la phrase du démon quand il en nomme une, celle de la passerelle ou du transport
+  // sinon — jamais une panne réseau présentée comme un refus du démon.
+  try { rb = await api('/cases/' + c.id + '/runbooks'); }
+  catch (e) {
+    const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:0;font-size:12px';
+    const dit = document.createElement('div');
+    dit.textContent = 'Runbook et réponse guidée NON LUS : ni l\'incident, ni la recommandation, ni le catalogue ne sont établis.';
+    aveu.append(dit, noeudDuRefusDUneLecture(e, '', 'bad'));
+    sec.replaceChildren(aveu);
+    return;
+  }
+  let etapesRefusees = null;
+  try { steps = await api('/cases/' + c.id + '/steps'); } catch (e) { etapesRefusees = e; steps = null; }
   sec.replaceChildren();
   // badge INCIDENT dans le header (injecté après fetch : les champs incident ne sont pas dans case_get_json).
   if (rb.incident_tier != null && hr) {
@@ -1225,6 +1243,17 @@ async function renderWizardPanel(box, c, edit, hr) {
   // d'en dessous proposerait d'en ATTACHER un, ce que le démon refuse dès qu'une étape existe.
   // L'AVEU PASSE AVANT LES DEUX : la ligne incident et la tactique dominante, elles, viennent de `rb`
   // (lecture indépendante, aboutie) et restent peintes au-dessus.
+  // LE REJET DE `/steps` PREND LE CHEMIN DE L'AVEU SERVI EN DEUX CENTS : ni tête, ni barre, ni geste d'attache ;
+  // la ligne incident et la tactique, venues de `rb`, restent peintes au-dessus.
+  if (etapesRefusees) {
+    const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:0;font-size:12px';
+    const dit = document.createElement('div');
+    dit.textContent = 'Étapes du runbook NON LUES : aucune progression n\'est établie, et aucun geste d\'avancement n\'est offert.';
+    aveu.append(dit, noeudDuRefusDUneLecture(etapesRefusees, '', 'bad'));
+    sec.appendChild(aveu);
+    if (attacheNonLue) avouerLAttacheNonLue(sec);
+    return;
+  }
   if (steps && steps.error) {
     const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:0;font-size:12px';
     const dit = document.createElement('span');

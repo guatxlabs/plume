@@ -27079,6 +27079,134 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   else console.log("(130–132) OK — `P10.28-i` : sous la démonstration publique, la console n'envoie ni préférences ni modèle (le démon les refuse, et les posait avant pour tous les visiteurs), garde le réglage sans le laisser en attente d'un compte (même une clé qu'un compte y avait laissée : la session suivante n'en hérite pas), rejoue les rappels de fin de réconciliation, dit la lecture seule dans les deux langues sans conseiller une connexion absente, et hors démonstration rien ne change — une identité d'annuaire nommée `demo` comprise : le prédicat juge la méthode, pas le nom ; un seul prédicat, dans state.js ; les deux causes neuves du démon (lecture seule, nom de la démonstration refusé à l'annuaire) ont leur face, sans se confondre.");
 }
 
+// ---------------------------------------------------------------------------------------------
+// (133) `P10.20-b` (rang 2, côté REJET) — LE PANNEAU DE RUNBOOK D'UN DOSSIER DIT LE REJET DE SES DEUX LECTURES, AVEC
+// LA CAUSE, ET N'INVENTE AUCUNE PROGRESSION. Le témoin 94 juge l'aveu servi EN DEUX CENTS (`error` dans le corps des
+// étapes) ; il ne juge pas le REJET, que `api()` jette. MESURÉ sur 94e36aa avant ce lot : le `catch` de `/steps`
+// fabriquait `{steps: [], progress: {0,0,0}, runbook: null}`. L'ÉNONCÉ disait « 0/0 traitées » et une barre vide : FAUX,
+// la tête n'est rendue que sous un runbook servi. Le rendu réel était pire — « Attacher le runbook » OFFERT sur un
+// dossier qui en porte un (mutation : `["Rétrograder","Attacher le runbook"]`), étapes et cause absentes ; celui de
+// `/runbooks` peignait « runbook indisponible », la cause du démon perdue.
+// CE QUE CE TÉMOIN EXIGE : (a) `/steps` rejeté en cinq cent trois NOMMÉ -> « Étapes du runbook NON LUES » + la cause
+// telle quelle, ni « 0/0 », ni « traitées », ni le nom du runbook en tête, ni geste d'attache ni d'avancement, et la
+// ligne incident (lecture `rb`, aboutie) reste peinte ; (b) `/runbooks` rejeté en cinq cent trois NOMMÉ -> l'aveu +
+// la cause, plus jamais « runbook indisponible » nu ; (c) un rejet du TRANSPORT ne se dit pas « le démon a refusé » ;
+// (c') le même rejet du transport sur `/runbooks` ; (g) `/steps` refusé en quatre cent trois NOMMÉ : la phrase du démon, sans JSON ni statut collé, et (a)/(g) exigent la face « le démon a refusé » ; (f) `/steps` rejeté sous une attache NON LUE servie par la fiche :
+// les deux aveux, les deux causes ; (d) INVERSE : des étapes VIDES servies en deux cents restent un zéro ÉTABLI
+// (« 0/0 traitées »), sans aveu, et sans runbook attaché le geste d'attache est offert comme avant.
+// CE QUE CE TÉMOIN NE TIENT PAS : la langue anglaise des phrases (garde du lexique, témoin 10) ; la durée des réessais
+// d'un cinq cent trois (la minuterie est ramenée à zéro le temps du témoin) ; les causes sont FABRIQUÉES, la voie du
+// démon qui les nomme n'est vérifiée que par l'instrument ci-dessous pour `/runbooks`.
+// ---------------------------------------------------------------------------------------------
+{
+  const url133 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const modCas133 = await import(url133("cases.js"));
+  const { S: S133 } = await import(url133("state.js"));
+  const tic133 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser133 = async (n = 20) => { for (let i = 0; i < n; i++) await tic133(); };
+  const cueillir133 = (el, pred, acc) => { if (el && pred(el)) acc.push(el); ((el && el.children) || []).forEach((c) => cueillir133(c, pred, acc)); return acc; };
+  const nu133 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ");
+  const boutons133 = (h) => cueillir133(h, (e) => e.tagName === "BUTTON", []).map((b) => nu133(b).trim());
+
+  // ── (0) L'INSTRUMENT : `/runbooks` REND BIEN UN REFUS NOMMÉ QUAND SA LECTURE N'A PAS EU LIEU ──────────
+  const srcInc133 = readFileSync(path.join(RACINE, "daemon", "src", "handlers", "incidents.rs"), "utf8");
+  exiger(/match case_runbooks_json\(&conn, id\) \{[\s\S]{0,200}?None => crate::handlers::cases::refus_du_dossier_non_lu\(/.test(srcInc133),
+    "(133-instrument) `GET /api/cases/{id}/runbooks` ne rend plus un refus NOMMÉ sur une lecture refusée (daemon/src/handlers/incidents.rs, `case_runbooks_get`) : le rejet jugé ci-dessous n'existe plus côté démon");
+
+  const fetchOrigine133 = globalThis.fetch, minuterieOrigine133 = globalThis.setTimeout;
+  const etatOrigine133 = { admin: S133.isAdmin, auth: S133.AUTH };
+  let servis133 = {};
+  globalThis.fetch = async (u) => {
+    const url = String(u);
+    const cle = Object.keys(servis133).find((k) => url.includes(k));
+    const r = cle ? servis133[cle] : { statut: 200, corps: {} };
+    if (r.transport) throw new TypeError(r.transport);
+    const texte = JSON.stringify(r.corps);
+    return { ok: r.statut >= 200 && r.statut < 300, status: r.statut, text: async () => texte, json: async () => r.corps };
+  };
+  // Les deux réessais d'un cinq cent trois (400 puis 800 ms) sont joués SANS attendre : seul leur nombre compte ici.
+  globalThis.setTimeout = (f, ms, ...a) => minuterieOrigine133(f, 0, ...a);
+  try {
+    S133.isAdmin = true;
+    S133.AUTH = { user: "hugo", role: "admin" };
+    const RUNBOOK133 = { id: 7, name: "Compte compromis-133" };
+    const RB133 = { incident_tier: 2, incident_type: "compromission-133", commander: "hugo", dominant_tactic: "TA0006", dominant_technique: "T1110", recommended: null, attached_runbook_id: 7, available: [{ id: 7, name: "Compte compromis-133", managed: 1 }] };
+    const CAUSE_ETAPES133 = "CAUSE-133 étapes : lecture de case_step refusée par la base, réessayez";
+    const CAUSE_RB133 = "CAUSE-133 fiche : lecture de la fiche d'incident refusée par la base, réessayez";
+    const rendre133 = async (servis) => {
+      servis133 = servis;
+      const boite = new Element("div"), entete = new Element("span");
+      await modCas133.renderWizardPanel(boite, { id: 13, title: "Dossier 133" }, true, entete);
+      await laisser133();
+      return boite;
+    };
+
+    // (a) `/steps` REJETÉ EN CINQ CENT TROIS NOMMÉ, la fiche lue et un runbook attaché.
+    const a133 = await rendre133({ "/api/cases/13/runbooks": { statut: 200, corps: RB133 }, "/api/cases/13/steps": { statut: 503, corps: { error: CAUSE_ETAPES133 } } });
+    const ta133 = nu133(a133), ba133 = boutons133(a133);
+    exiger(/Étapes du runbook NON LUES/.test(ta133), `(133a) \`/steps\` rejeté : l'aveu « Étapes du runbook NON LUES » n'est pas peint : « ${ta133} »`);
+    exiger(ta133.includes(CAUSE_ETAPES133), `(133a) \`/steps\` rejeté : la CAUSE nommée par le démon n'est pas collée telle quelle : « ${ta133} »`);
+    // La NATURE du refus, pas seulement son texte : un refus NOMMÉ du démon se dit « le démon a refusé », jamais « la demande
+    // n'a pas abouti, elle peut être relancée » (face d'une panne de transport) ; la marque `data-refus-d-une-lecture` le porte.
+    const natures133a = cueillir133(a133, (e) => e.dataset && e.dataset.refusDUneLecture, []).map((e) => e.dataset.refusDUneLecture);
+    exiger(/le démon a refusé/.test(ta133) && !/n'a pas abouti|peut être relancée/.test(ta133) && natures133a.includes("lecture_refusee"),
+      `(133a) \`/steps\` rejeté en refus NOMMÉ : la face ne dit pas que le démon a refusé, ou se dit panne de transport : « ${ta133} » ${JSON.stringify(natures133a)}`);
+    // (g) \`/steps\` REFUSÉ HORS CINQ CENT TROIS, corps JSON nommé : là, \`e.message\` vaut « 403 {"error":…} » — la face
+    // partagée en extrait la phrase ; coller le message brut ferait passer le JSON à l'écran.
+    const CAUSE_G133 = "CAUSE-133 refus : lecture des étapes interdite à ce rôle";
+    const g133 = await rendre133({ "/api/cases/13/runbooks": { statut: 200, corps: RB133 }, "/api/cases/13/steps": { statut: 403, corps: { error: CAUSE_G133 } } });
+    const tg133 = nu133(g133);
+    exiger(/Étapes du runbook NON LUES/.test(tg133) && tg133.includes(CAUSE_G133) && /le démon a refusé/.test(tg133) && !tg133.includes('{"error"') && !/403 /.test(tg133),
+      `(133g) \`/steps\` refusé en quatre cent trois NOMMÉ : l'aveu, la cause seule (sans JSON ni statut collé) et « le démon a refusé » ne tiennent pas : « ${tg133} »`);
+    exiger(!/0\/0/.test(ta133) && !/traitées/.test(ta133), `(133a) \`/steps\` rejeté : une progression est peinte (« 0/0 », « traitées ») — un zéro que personne n'a lu : « ${ta133} »`);
+    exiger(!ta133.includes(RUNBOOK133.name), `(133a) \`/steps\` rejeté : la tête de checklist (nom du runbook) est peinte : « ${ta133} »`);
+    exiger(!ba133.some((t) => /Attacher le runbook|^Faite$|^Ignorer|^Rouvrir$/.test(t)), `(133a) \`/steps\` rejeté : un geste d'attache ou d'avancement est offert : ${JSON.stringify(ba133)}`);
+    exiger(ta133.includes("compromission-133") && /T2|tier 2/.test(ta133), `(133a) \`/steps\` rejeté : la ligne incident, venue d'une lecture ABOUTIE, n'est plus peinte : « ${ta133} »`);
+
+    // (b) `/runbooks` REJETÉ EN CINQ CENT TROIS NOMMÉ.
+    const b133 = await rendre133({ "/api/cases/13/runbooks": { statut: 503, corps: { error: CAUSE_RB133 } }, "/api/cases/13/steps": { statut: 200, corps: { steps: [], progress: { total: 0, done: 0, skipped: 0 }, runbook: null } } });
+    const tb133 = nu133(b133).trim();
+    exiger(/NON LUS/.test(tb133), `(133b) \`/runbooks\` rejeté : l'aveu « NON LUS » n'est pas peint : « ${tb133} »`);
+    exiger(tb133.includes(CAUSE_RB133), `(133b) \`/runbooks\` rejeté : la CAUSE nommée par le démon n'est pas collée telle quelle : « ${tb133} »`);
+    exiger(!/runbook indisponible/.test(tb133) && !/chargement/.test(tb133), `(133b) \`/runbooks\` rejeté : « runbook indisponible » nu, ou le « chargement… » resté peint : « ${tb133} »`);
+    exiger(/le démon a refusé/.test(tb133), `(133b) \`/runbooks\` rejeté en refus NOMMÉ : la face ne dit pas que le démon a refusé : « ${tb133} »`);
+
+    // (c) UN REJET DU TRANSPORT n'est pas un refus du démon.
+    const c133 = await rendre133({ "/api/cases/13/runbooks": { statut: 200, corps: RB133 }, "/api/cases/13/steps": { transport: "Failed to fetch (133)" } });
+    const tc133 = nu133(c133);
+    exiger(/Étapes du runbook NON LUES/.test(tc133) && tc133.includes("Failed to fetch (133)") && !/le démon a refusé/.test(tc133) && !/0\/0/.test(tc133),
+      `(133c) \`/steps\` sans réponse : l'aveu, la cause du transport, l'absence de « le démon a refusé » et de « 0/0 » ne tiennent pas : « ${tc133} »`);
+    // (c') LE MÊME REJET DU TRANSPORT SUR \`/runbooks\` : l'aveu de la fiche, la cause du transport, et jamais « le démon a
+    // refusé » — le cas (b) ne sert qu'un refus NOMMÉ, où une face fixe « le démon a refusé » et la face vraie rendent le
+    // même texte ; seul ce cas départage le site de \`/runbooks\`.
+    const c2133 = await rendre133({ "/api/cases/13/runbooks": { transport: "Failed to fetch (133 fiche)" }, "/api/cases/13/steps": { statut: 200, corps: { steps: [], progress: { total: 0, done: 0, skipped: 0 }, runbook: null } } });
+    const tc2133 = nu133(c2133);
+    exiger(/Runbook et réponse guidée NON LUS/.test(tc2133) && tc2133.includes("Failed to fetch (133 fiche)") && !/le démon a refusé/.test(tc2133) && !/runbook indisponible/.test(tc2133),
+      `(133c') \`/runbooks\` sans réponse : l'aveu, la cause du transport et l'absence de « le démon a refusé » ne tiennent pas : « ${tc2133} »`);
+
+    // (f) \`/steps\` REJETÉ ALORS QUE LA FICHE AVOUE UN RUNBOOK ATTACHÉ NON LU : les DEUX aveux sont peints — celui des
+    // étapes ne doit pas faire taire celui de l'attache, servi en deux cents par \`rb.runbook_attache_non_lu\`.
+    const CAUSE_ATTACHE133 = "CAUSE-133 attache : lecture de case_runbook refusée par la base";
+    const f133 = await rendre133({ "/api/cases/13/runbooks": { statut: 200, corps: { ...RB133, attached_runbook_id: null, runbook_attache_non_lu: CAUSE_ATTACHE133 } }, "/api/cases/13/steps": { statut: 503, corps: { error: CAUSE_ETAPES133 } } });
+    const tf133 = nu133(f133), bf133 = boutons133(f133);
+    exiger(/Étapes du runbook NON LUES/.test(tf133) && /Runbook attaché à ce dossier NON LU/.test(tf133) && tf133.includes(CAUSE_ATTACHE133) && tf133.includes(CAUSE_ETAPES133),
+      `(133f) \`/steps\` rejeté sous une attache NON LUE : les deux aveux et leurs deux causes ne sont pas peints : « ${tf133} »`);
+    exiger(!bf133.some((t) => /Attacher le runbook/.test(t)), `(133f) \`/steps\` rejeté sous une attache NON LUE : le geste d'attache est offert : ${JSON.stringify(bf133)}`);
+
+    // (d) INVERSE : des étapes VIDES servies en deux cents sont un zéro ÉTABLI, comme avant.
+    const d133 = await rendre133({ "/api/cases/13/runbooks": { statut: 200, corps: RB133 }, "/api/cases/13/steps": { statut: 200, corps: { steps: [], progress: { total: 0, done: 0, skipped: 0 }, runbook: RUNBOOK133 } } });
+    const td133 = nu133(d133);
+    exiger(/0\/0 traitées/.test(td133) && td133.includes(RUNBOOK133.name) && !/NON LU/.test(td133), `(133d) des étapes VIDES servies en deux cents ne rendent plus « 0/0 traitées » sous le nom du runbook, ou s'avouent non lues : « ${td133} »`);
+    const e133 = await rendre133({ "/api/cases/13/runbooks": { statut: 200, corps: { ...RB133, attached_runbook_id: null } }, "/api/cases/13/steps": { statut: 200, corps: { steps: [], progress: { total: 0, done: 0, skipped: 0 }, runbook: null } } });
+    const te133 = nu133(e133), be133 = boutons133(e133);
+    exiger(be133.includes("Attacher le runbook") && !/NON LU/.test(te133), `(133d) sans runbook attaché ni étape, en deux cents : le geste d'attache n'est plus offert, ou un aveu est peint : « ${te133} » ${JSON.stringify(be133)}`);
+    console.log(`[133] rejet des étapes : « ${ta133.slice(0, 220)} » | rejet de la fiche : « ${tb133.slice(0, 220)} »`);
+  } finally {
+    globalThis.fetch = fetchOrigine133; globalThis.setTimeout = minuterieOrigine133;
+    S133.isAdmin = etatOrigine133.admin; S133.AUTH = etatOrigine133.auth;
+  }
+}
+
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;
 verdictRendu = true;
 if (echecs.length) {

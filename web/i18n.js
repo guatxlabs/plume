@@ -954,6 +954,10 @@ const I18N_EN = {
   // comptées — ce n'est pas un compte nul »).
   "Étapes du runbook NON LUES : le démon a refusé et en nomme la cause —": "Runbook steps NOT READ: the daemon declined and names the cause —",
   "Index NON LUS : le démon a refusé et en nomme la cause —": "Indexes NOT READ: the daemon declined and names the cause —",
+  // `P10.20-b` (rang 2, côté REJET) — le panneau de runbook d'un dossier dont la lecture est REJETÉE (non-deux-cents) :
+  // la phrase seule, la cause venant dans un second nœud par la face partagée d'une lecture refusée.
+  "Runbook et réponse guidée NON LUS : ni l'incident, ni la recommandation, ni le catalogue ne sont établis.": "Runbook and guided response NOT READ: neither the incident, nor the recommendation, nor the catalogue is established.",
+  "Étapes du runbook NON LUES : aucune progression n'est établie, et aucun geste d'avancement n'est offert.": "Runbook steps NOT READ: no progress is established, and no step action is offered.",
   "Classement des entités à risque NON LU : le démon a refusé et en nomme la cause —": "Risk entity ranking NOT READ: the daemon declined and names the cause —",
   "Les index n'ont PAS été lus : définir ou éditer une politique ici armerait une purge de rétention sur un inventaire dont le contenu est inconnu — l'index visé porte peut-être déjà une politique que cette lecture n'a pas pu rendre.": "The indexes were NOT read: defining or editing a policy here would arm a retention purge over an inventory whose contents are unknown — the target index may already carry a policy that this read could not return.",
   "Les entités au-dessus d'un seuil qui sont des machines déclarées HORS DU PARC n'ont PAS pu être comptées — ce n'est pas un compte nul.": "The entities above a threshold that are machines declared OUTSIDE THE ESTATE could NOT be counted — this is not a count of zero.",
@@ -1202,7 +1206,6 @@ const I18N_EN = {
   // plafond de zéro. Mesurés le 2026-08-26, une fois la liste des clés-puits DÉRIVÉE des propriétés
   // d'affichage déjà déclarées au lieu d'être tenue à côté d'elles.
   "Files :": "Queues:", "Liens": "Links", "Runbook / réponse guidée": "Runbook / guided response",
-  "runbook indisponible": "runbook unavailable",
   "Dashboard vide.": "Empty dashboard.", "aucune donnée sur la fenêtre": "no data over the window",
   "… chargement (mesure en cours)": "… loading (measuring)",
   "ÉTAPES (phasées, ordonnées)": "STEPS (phased, ordered)",

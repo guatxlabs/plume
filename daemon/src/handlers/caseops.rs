@@ -300,20 +300,50 @@ pub(crate) fn juger_la_fusion(conn: &Connection, src_id: i64, dst_id: i64) -> Re
     Ok(())
 }
 
-pub(crate) fn case_merge(conn: &Connection, src_id: i64, dst_id: i64, author: &str) -> bool {
+/// `P10.20-w` (rang trois) — CE QUE LA FUSION OU LA DÉFUSION REND. Le `bool` d'avant rendait `true` après un
+/// `UPDATE` AVALÉ : une écriture refusée par la base laissait la source NON fusionnée (ou toujours fusionnée) pendant
+/// que deux chronologies et le registre non purgeable attestaient le geste, et que la route servait 204. L'écriture est
+/// désormais COMPTÉE avant toute trace, et les trois issues sont séparées.
+#[derive(Debug, PartialEq, Eq)]
+#[must_use]
+pub(crate) enum IssueDeLaFusion {
+    /// L'écriture a posé sa ligne : chronologie(s) et registre la portent.
+    Ecrite,
+    /// Le geste n'avait pas lieu d'être (refus jugé, ou aucune ligne ne correspondait) : la sortie d'AVANT, inchangée
+    /// (`false` hier), rien n'est écrit ni tracé.
+    Refusee,
+    /// La base n'a PAS pris l'écriture : la cause est portée, et rien — ni chronologie, ni registre, ni 204 — ne dit
+    /// que le geste a eu lieu.
+    NonEcrite(String),
+}
+
+/// `P10.20-w` — l'`UPDATE` de la fusion n'a pas été écrit : 503 nommé, rien n'atteste la fusion.
+pub(crate) const CAUSE_FUSION_NON_ECRITE: &str = "FUSION NON ÉCRITE : la base n'a pas pris l'écriture, donc le dossier \
+     n'est PAS fusionné — ni les chronologies ni le registre n'en portent rien. Ce n'est pas un refus de la fusion : \
+     rien n'a été fait. Réessayez.";
+/// `P10.20-w` — l'`UPDATE` de la défusion n'a pas été écrit : 503 nommé, le dossier reste fusionné.
+pub(crate) const CAUSE_DEFUSION_NON_ECRITE: &str = "DÉFUSION NON ÉCRITE : la base n'a pas pris l'écriture, donc le \
+     dossier est TOUJOURS fusionné — ni la chronologie ni le registre n'en portent rien. Rien n'a été fait. Réessayez.";
+
+pub(crate) fn case_merge(conn: &Connection, src_id: i64, dst_id: i64, author: &str) -> IssueDeLaFusion {
     // `P10.29-b` — les refus sont jugés par `juger_la_fusion` (mêmes faits, désormais nommés par la route).
     if juger_la_fusion(conn, src_id, dst_id).is_err() {
-        return false;
+        return IssueDeLaFusion::Refusee;
     }
     let t = now();
-    let _ = conn.execute(
+    // `P10.20-w` — L'ÉCRITURE EST COMPTÉE AVANT TOUTE TRACE : une ligne écrite, ou rien n'est attesté.
+    match conn.execute(
         "UPDATE incident SET merged_into=?1, status='closed', closed_ts=?2, updated=?2 WHERE id=?3",
         params![dst_id, t, src_id],
-    );
+    ) {
+        Ok(0) => return IssueDeLaFusion::Refusee, // la source a disparu entre le jugement et l'écriture : absence
+        Ok(_) => {}
+        Err(e) => return IssueDeLaFusion::NonEcrite(e.to_string()),
+    }
     case_add_item(conn, src_id, t, "merge", author, &format!("fusionné dans #{dst_id}"), Some(&format!("case:{dst_id}")));
     case_add_item(conn, dst_id, t, "merge", author, &format!("#{src_id} fusionné ici (timeline combinée)"), Some(&format!("case:{src_id}")));
     ledger_append(conn, "case.merge", &format!("#{src_id} -> #{dst_id} by {author}"));
-    true
+    IssueDeLaFusion::Ecrite
 }
 
 /// RÉVERSIBILITÉ de la fusion : dé-fusionne la source (merged_into=NULL) + la rouvre ('triage'). Trace + ledger.
@@ -329,14 +359,19 @@ pub(crate) fn juger_la_defusion(conn: &Connection, src_id: i64) -> Result<i64, R
     }
 }
 
-pub(crate) fn case_unmerge(conn: &Connection, src_id: i64, author: &str) -> bool {
+pub(crate) fn case_unmerge(conn: &Connection, src_id: i64, author: &str) -> IssueDeLaFusion {
     let cur: Option<Option<i64>> = conn.query_row("SELECT merged_into FROM incident WHERE id=?1", params![src_id], |r| r.get(0)).ok();
-    let Some(Some(dst)) = cur else { return false };
+    let Some(Some(dst)) = cur else { return IssueDeLaFusion::Refusee };
     let t = now();
-    let _ = conn.execute("UPDATE incident SET merged_into=NULL, status='triage', closed_ts=NULL, updated=?1 WHERE id=?2", params![t, src_id]);
+    // `P10.20-w` — L'ÉCRITURE EST COMPTÉE AVANT LA CHRONOLOGIE ET LE REGISTRE.
+    match conn.execute("UPDATE incident SET merged_into=NULL, status='triage', closed_ts=NULL, updated=?1 WHERE id=?2", params![t, src_id]) {
+        Ok(0) => return IssueDeLaFusion::Refusee, // le dossier a disparu entre la lecture et l'écriture : absence
+        Ok(_) => {}
+        Err(e) => return IssueDeLaFusion::NonEcrite(e.to_string()),
+    }
     case_add_item(conn, src_id, t, "merge", author, &format!("dé-fusionné de #{dst} (ré-ouvert)"), None);
     ledger_append(conn, "case.unmerge", &format!("#{src_id} <- #{dst} by {author}"));
-    true
+    IssueDeLaFusion::Ecrite
 }
 
 /// `P10.20-w` — CE QUE LA POSE D'UN LIEN REND. Le `bool` d'avant portait DEUX zéros sous le même
@@ -882,10 +917,11 @@ pub(crate) async fn case_merge_handler(State(st): State<AppState>, Extension(au)
         if let Err(refus) = juger_la_fusion(conn, id, into) {
             return refus.reponse();
         }
-        if case_merge(&conn, id, into, &au.name) {
-            StatusCode::NO_CONTENT.into_response()
-        } else {
-            RefusDeFusion::NonLu("second jugement de la fusion".into()).reponse()
+        match case_merge(&conn, id, into, &au.name) {
+            IssueDeLaFusion::Ecrite => StatusCode::NO_CONTENT.into_response(),
+            IssueDeLaFusion::Refusee => RefusDeFusion::NonLu("second jugement de la fusion".into()).reponse(),
+            // `P10.20-w` — écriture refusée : 503 nommé (contrat neuf, assumé ; il rendait 204 sur une fusion non faite).
+            IssueDeLaFusion::NonEcrite(cause) => err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_FUSION_NON_ECRITE} ({cause})")),
         }
     })
 }
@@ -897,10 +933,11 @@ pub(crate) async fn case_unmerge_handler(State(st): State<AppState>, Extension(a
         if let Err(refus) = juger_la_defusion(conn, id) {
             return refus;
         }
-        if case_unmerge(&conn, id, &au.name) {
-            StatusCode::NO_CONTENT.into_response()
-        } else {
-            crate::handlers::cases::refus_du_dossier_non_lu(&"relecture du dossier fusionné")
+        match case_unmerge(&conn, id, &au.name) {
+            IssueDeLaFusion::Ecrite => StatusCode::NO_CONTENT.into_response(),
+            IssueDeLaFusion::Refusee => crate::handlers::cases::refus_du_dossier_non_lu(&"relecture du dossier fusionné"),
+            // `P10.20-w` — écriture refusée : 503 nommé (contrat neuf, assumé ; il rendait 204 sur une défusion non faite).
+            IssueDeLaFusion::NonEcrite(cause) => err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_DEFUSION_NON_ECRITE} ({cause})")),
         }
     })
 }

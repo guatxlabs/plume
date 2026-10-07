@@ -126,6 +126,11 @@ pub(crate) const CAUSE_PLAYBOOK_INCHANGE_TRANSACTION_NON_OUVERTE: &str = "PLAYBO
      la transaction de la modification (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante sur \
      l'écrivain) — RIEN n'est écrit : il garde sa requête, son action et son activation d'avant, et aucune trace \
      n'est écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
+/// `P10.20-b` (rang deux) — le mode global n'a pas pu être lu pour la liste des playbooks (champ `mode_non_lu` ;
+/// `mode` vaut alors `null`). Même règle que `mode_get` : aucune ligne = mode jamais posé = `observe` établi.
+pub(crate) const CAUSE_MODE_DES_PLAYBOOKS_NON_LU: &str = "MODE NON LU : la base n'a pas rendu le mode global \
+     (`plume_mode`) — la liste ne peut pas dire si un playbook actif PROPOSE (observation) ou EXÉCUTE (actif). Ce \
+     n'est PAS « observation » : tenez le déploiement pour possiblement ARMÉ tant que le mode n'est pas relu.";
 
 
 pub(crate) async fn playbooks_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
@@ -160,14 +165,29 @@ pub(crate) async fn playbooks_list(State(st): State<AppState>, Extension(au): Ex
         });
     // Le mode global décide si un playbook ON exécute (active) ou propose (observe) : la liste le porte pour
     // que la ligne dise la conséquence EFFECTIVE sans une seconde requête.
-    let mode: String = conn.query_row("SELECT value FROM meta WHERE key='plume_mode'", [], |r| r.get(0)).unwrap_or_else(|_| "observe".into());
-    match lues {
-        Ok(playbooks) => Json(json!({ "playbooks": playbooks, "mode": mode, "ban_duration_s": NETBAN_ACTION_TTL_S })),
-        Err(_) => Json(crate::handlers::liste_bornee::corps_de_liste_illisible(
+    // `P10.20-b` (rang deux) — un mode NON LU n'est pas « observe ». Avant : `.unwrap_or_else(|_| "observe")`, et la
+    // console disait « ce playbook PROPOSE » d'un démon peut-être en `active` qui EXÉCUTE. Aucune ligne = mode jamais
+    // posé = `observe` ÉTABLI (même règle que `mode_get`) ; une lecture ratée sert `mode: null` + `mode_non_lu`.
+    let mode_lu: rusqlite::Result<String> = conn.query_row("SELECT value FROM meta WHERE key='plume_mode'", [], |r| r.get(0));
+    let (mode, mode_non_lu): (Value, Option<&str>) = match mode_lu {
+        Ok(m) => (json!(m), None),
+        Err(rusqlite::Error::QueryReturnedNoRows) => (json!("observe"), None),
+        Err(e) => {
+            eprintln!("[playbooks] mode global NON LU pour la liste : {e}");
+            (Value::Null, Some(CAUSE_MODE_DES_PLAYBOOKS_NON_LU))
+        }
+    };
+    let mut corps = match lues {
+        Ok(playbooks) => json!({ "playbooks": playbooks, "mode": mode, "ban_duration_s": NETBAN_ACTION_TTL_S }),
+        Err(_) => crate::handlers::liste_bornee::corps_de_liste_illisible(
             json!({ "mode": mode, "ban_duration_s": NETBAN_ACTION_TTL_S }),
             "playbooks",
-        )),
+        ),
+    };
+    if let Some(cause) = mode_non_lu {
+        corps["mode_non_lu"] = json!(cause);
     }
+    Json(corps)
 }
 pub(crate) async fn playbook_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
     let is_soql = b.bool_field("is_soql", true);

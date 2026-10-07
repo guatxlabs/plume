@@ -36,10 +36,30 @@ on:
     paths:
       - "agent/**"
       - ".github/workflows/agent-ci.yml"
+      # P10.31-e : fichiers HORS agent/ lus par les tests de l'agent (include_str! ou
+      # CARGO_MANIFEST_DIR/..). Sans eux, une divergence venue de ces fichiers ne
+      # serait rejugee qu'au prochain changement de l'agent. Liste JUGEE par la garde
+      # derivee agent/src/declencheurs_agent_ci_tests.rs (push ET pull_request) : un
+      # nouvel include_str! hors de la caisse la rougit tant qu'il n'est pas ajoute ici.
+      # Cout assume : la matrice 3 OS tourne a chaque changement de ces fichiers.
+      - "collectors/journal.sh"
+      - "config.d/cim/cim.v1.json"
+      - "daemon/src/ingest/mod.rs"
+      - "daemon/src/mesure_environnement.rs"
   pull_request:
     paths:
       - "agent/**"
       - ".github/workflows/agent-ci.yml"
+      # P10.31-e : fichiers HORS agent/ lus par les tests de l'agent (include_str! ou
+      # CARGO_MANIFEST_DIR/..). Sans eux, une divergence venue de ces fichiers ne
+      # serait rejugee qu'au prochain changement de l'agent. Liste JUGEE par la garde
+      # derivee agent/src/declencheurs_agent_ci_tests.rs (push ET pull_request) : un
+      # nouvel include_str! hors de la caisse la rougit tant qu'il n'est pas ajoute ici.
+      # Cout assume : la matrice 3 OS tourne a chaque changement de ces fichiers.
+      - "collectors/journal.sh"
+      - "config.d/cim/cim.v1.json"
+      - "daemon/src/ingest/mod.rs"
+      - "daemon/src/mesure_environnement.rs"
   workflow_dispatch:
 
 concurrency:
@@ -101,9 +121,9 @@ jobs:
           # unified-log) portent des témoins gatés par cfg — MESURÉ le 2026-09-10 sur les journaux des trois
           # jambes (7ba7636) : 167 sur Linux, 166 sur macOS, 164 sur Windows. Un seul chiffre avait rougi deux
           # jambes sur trois pour une raison qui n'était pas un test disparu.
-          EXPECTED_AGENT_TESTS_Linux: "184"
-          EXPECTED_AGENT_TESTS_macOS: "178"
-          EXPECTED_AGENT_TESTS_Windows: "176"
+          EXPECTED_AGENT_TESTS_Linux: "186"
+          EXPECTED_AGENT_TESTS_macOS: "180"
+          EXPECTED_AGENT_TESTS_Windows: "178"
         run: |
           export TMPDIR="${RUNNER_TEMP}/plume-tmp-agent"; mkdir -p "$TMPDIR"
           EXPECTED_AGENT_TESTS=$(eval "printf '%s' \"\${EXPECTED_AGENT_TESTS_${RUNNER_OS}:-}\"")

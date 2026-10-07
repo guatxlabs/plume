@@ -320,6 +320,10 @@ pub fn journald_to_event(line: &str, host: &str) -> Option<Event> {
 #[path = "linux_minimisation_journald_tests.rs"]
 mod minimisation_journald_tests;
 
+#[cfg(test)]
+#[path = "linux_programme_journald_tests.rs"]
+mod programme_journald_tests;
+
 #[cfg(all(test, target_os = "linux"))]
 #[path = "linux_sonde_output_fields_tests.rs"]
 mod sonde_output_fields_tests;

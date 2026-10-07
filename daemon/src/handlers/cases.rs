@@ -519,11 +519,35 @@ pub(crate) fn case_detach_item(conn: &Connection, id: i64, item_id: i64, author:
     true
 }
 
-/// #4a — ESCALADE SLA : notifie (via les notifiers du tenant, min_severity respecté) les cases dont le SLA est
-/// DÉPASSÉ et pas encore escaladés, puis marque escalated=1 (anti re-notif) + trace un item 'sla' + ledger.
+/// #4a — ESCALADE SLA : pour chaque case dont le SLA est DÉPASSÉ et pas encore escaladé, pose D'ABORD le marqueur
+/// escalated=1 (anti re-notif), PUIS notifie (via les notifiers du tenant, min_severity respecté) et trace un item
+/// 'sla' + ledger ; marqueur refusé : notifie QUAND MÊME, sans trace (voir `escalate_overdue_cases_par`).
 /// Appelée dans la boucle de fond PAR-TENANT (à côté de dispatch_notifications). INERTE tant qu'aucun case
 /// overdue (0 ligne -> 0 réseau, 0 écriture). Séquentiel + LIMIT (budget 2 Go). Réutilise notify_send tel quel.
 pub(crate) fn escalate_overdue_cases(db: &Arc<Mutex<Connection>>) {
+    escalate_overdue_cases_par(db, &mut notify_send);
+}
+
+/// `P10.20-w` — fin du `detail` d'une notification d'escalade dont la base a REFUSÉ le marqueur `escalated` : le
+/// destinataire apprend que l'escalade n'est pas enregistrée et que l'alerte reviendra au tour suivant.
+pub(crate) const ESCALADE_NON_ENREGISTREE: &str =
+    "ESCALADE NON ENREGISTRÉE : la base a refusé le marqueur, ni chronologie ni registre ; cette notification sera renvoyée au prochain tour.";
+
+/// `P10.20-w` (rang trois) — LE MARQUEUR `escalated` EST ÉCRIT ET COMPTÉ AVANT TOUTE TRACE. Avant, la notification
+/// partait, puis `UPDATE incident SET escalated=1` était AVALÉ, puis la chronologie et le registre attestaient
+/// l'escalade : sur une écriture refusée, `escalated` restait à 0, le dossier restait sélectionné, et le registre non
+/// purgeable accumulait à CHAQUE tick un `case.sla_escalate` pour une escalade jamais posée. Désormais : une ligne
+/// marquée (`AND escalated=0`, donc un seul marqueur gagnant) -> envoi, chronologie, registre ; aucune ligne -> déjà
+/// escaladé, rien ; écriture refusée -> l'envoi part QUAND MÊME (un SLA réellement dépassé ne se tait pas : renvoyé à
+/// chaque tour tant que le marqueur est refusé, comme avant), son `detail` finit par `ESCALADE_NON_ENREGISTREE`, mais
+/// RIEN n'est inscrit en chronologie ni au registre ; le refus est compté UNE fois par tour (pas par dossier) au
+/// balayage `escalate_overdue_marqueur` (`/metrics`).
+/// L'envoyeur est injecté pour que les témoins COMPTENT les envois sans réseau ; la production passe `notify_send`.
+#[allow(clippy::type_complexity)]
+pub(crate) fn escalate_overdue_cases_par(
+    db: &Arc<Mutex<Connection>>,
+    envoyer: &mut dyn FnMut(&str, &str, &Value, i64, &str, &str, &str, i64) -> bool,
+) {
     let now_i = now();
     let (cases, notifiers): (Vec<(i64, String, i64, i64)>, Vec<(String, String, i64, String)>) = {
         let conn = db.lock();
@@ -551,20 +575,38 @@ pub(crate) fn escalate_overdue_cases(db: &Arc<Mutex<Connection>>) {
         };
         (cases, notifiers)
     };
+    // `P10.20-w` — marqueurs refusés CE tour-ci : (nombre de dossiers, dernière cause), comptés une fois après la boucle.
+    let mut marqueurs_refuses: (usize, String) = (0, String::new());
     for (id, title, priority, sla_due) in &cases {
         // sévérité de notif dérivée de la priorité (P1->sev4 .. P4->sev1) pour respecter min_severity du canal.
         let sev = match *priority { 1 => 4, 2 => 3, 3 => 2, _ => 1 };
         let detail = format!("Case #{id} « {title} » : SLA P{priority} dépassé (échéance {sla_due}).");
+        // `P10.20-w` — LE MARQUEUR D'ABORD, COMPTÉ : sans lui, l'envoi part avec l'aveu, mais aucune trace (voir l'en-tête).
+        let marque = match db.lock().execute("UPDATE incident SET escalated=1 WHERE id=?1 AND escalated=0", params![id]) {
+            Ok(0) => continue, // déjà escaladé (ou disparu) depuis la sélection : rien à notifier ni à tracer
+            Ok(_) => true,
+            Err(e) => {
+                marqueurs_refuses.0 += 1;
+                marqueurs_refuses.1 = e.to_string();
+                false
+            }
+        };
+        let detail_envoye = if marque { detail.clone() } else { format!("{detail} {ESCALADE_NON_ENREGISTREE}") };
         for (kind, url, minsev, cfg) in &notifiers {
             if sev >= *minsev {
                 let config: Value = serde_json::from_str(cfg).unwrap_or_else(|_| json!({}));
-                let _ = notify_send(kind, url, &config, sev, &format!("SLA dépassé : {title}"), &detail, "", now_i);
+                let _ = envoyer(kind, url, &config, sev, &format!("SLA dépassé : {title}"), &detail_envoye, "", now_i);
             }
         }
+        if !marque {
+            continue;
+        }
         let conn = db.lock();
-        let _ = conn.execute("UPDATE incident SET escalated=1 WHERE id=?1", params![id]);
         case_add_item(&conn, *id, now_i, "sla", "system", &detail, None);
         ledger_append(&conn, "case.sla_escalate", &format!("#{id} P{priority} sla_due={sla_due}"));
+    }
+    if marqueurs_refuses.0 > 0 {
+        crate::metrics::compter_une_escalade_notifiee_non_enregistree("escalate_overdue_marqueur", marqueurs_refuses.0, &marqueurs_refuses.1);
     }
 }
 

@@ -258,7 +258,11 @@ mod file_de_riposte_bornee_tests {
         ("caseops.rs", "sla_multilevel_tick", "boucle de fond des échéances : le tour suivant reprend \
           les dossiers non traités"),
         ("caseops.rs", "sla_recalcule_la_priorite_bornee", "recalcul de fond, borné par tour"),
-        ("cases.rs", "escalate_overdue_cases", "boucle de fond d'escalade, bornée par tour"),
+        // `P10.20-w` (rang trois, 2026-10-07) — le corps (et son `LIMIT 20`) a été déplacé dans
+        // `escalate_overdue_cases_par` pour injecter l'envoyeur ; `escalate_overdue_cases` n'en est plus
+        // que l'enveloppe de production. Même énoncé, même raison : le marqueur `escalated=1` retire le
+        // dossier du tour suivant, rien n'est présenté à un lecteur.
+        ("cases.rs", "escalate_overdue_cases_par", "boucle de fond d'escalade, bornée par tour"),
         ("destinations.rs", "forward_one_destination", "lot de forward vers un puits externe : le \
           curseur d'avancement EST la position dans `event`, le lot suivant continue"),
         ("engagement.rs", "expire_due_engagements_conn", "boucle de fond, bornée par tour"),

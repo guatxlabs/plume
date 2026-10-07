@@ -209,7 +209,10 @@
         c.execute("INSERT INTO snapshot(ts,kind,data) VALUES(1000,'k','{}')", []).unwrap();
         let p = purge_plan(&c, pg_scope(&[("source", "flux-de-test")], 0, 2_000)).unwrap();
         let u = p.uncovered();
-        assert_eq!((u.alerts_in_window, u.metrics_in_window, u.snapshots_in_window), (1, 1, 1));
+        assert_eq!(
+            (&u.alerts_in_window, &u.metrics_in_window, &u.snapshots_in_window),
+            (&MesureNonCouverte::Lue(1), &MesureNonCouverte::Lue(1), &MesureNonCouverte::Lue(1))
+        );
 
         let j = purge_plan_json(&p);
         assert_eq!(j["not_covered"]["alerts_in_window"], 1);

@@ -13,8 +13,8 @@
 // y est jugé sur le rôle du jeton, et toute déconnexion d'une session valide y avance l'époque globale SANS trace
 // (tenus : l'avancée globale et le refus de la portée globale à un non-admin, témoins (8)) ; la révocation globale
 // par un admin SSO ou Basic (sans `plume_session`, il reçoit le `403`) et l'interface (aucun écran ne pose l'en-tête
-// de portée) ; l'échec de persistance de l'époque globale avalé par `bump_session_epoch` (antérieur) ; le budget par
-// adresse du `rate_limit` (non traversé par un appel direct). Le nombre de lectures de `meta.value` sur l'écrivain
+// de portée) ; le budget par adresse du `rate_limit` (non traversé par un appel direct). L'échec de persistance de
+// l'époque globale : tenu par `epoque_globale_lue_et_persistee.rs` (`P10.20-b`). Le nombre de lectures de `meta.value` sur l'écrivain
 // est compté pour un `eng-cred-*` (témoin (7)), pas pour le repli d'un pool indisponible.
 // =====================================================================================
 mod deconnexion_par_compte_et_voie_d_ecrivain {

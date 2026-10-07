@@ -129,6 +129,263 @@ pub(crate) const SOURCES_LIVREES: &[(&str, &str)] = &[
     ("yara", "collectors/yara.sh"),
 ];
 
+/// `P11.19-a` (reste 2, moitié démon) — LES FICHIERS LIVRÉS DONT LES CHAMPS ÉTENDUS ARRIVENT SOUS UNE SOURCE :
+///   * le fichier qui l'émet (`SOURCES_LIVREES`), s'il est dans la surface balayée par l'extracteur ;
+///   * `collectors/lib.sh`, si un capteur livré nomme littéralement cette source en premier argument d'une
+///     aide du canal d'aveu (`collected::SOURCES_DU_CANAL_D_AVEU`) ;
+///   * chaque overlay de parseur livré qui s'applique à cette source (`collected::SOURCE_DES_OVERLAYS`).
+/// `None` quand le fichier émetteur est HORS de la surface : l'autorité ne sait rien de ce qu'il écrit, et
+/// lui ajouter les seuls champs d'aveu ou d'overlay rendrait une liste partielle qui se lirait complète.
+fn fichiers_de_champs_de_source(source: &str) -> Option<Vec<&'static str>> {
+    let (_, fichier) = SOURCES_LIVREES.iter().find(|(s, _)| *s == source)?;
+    if !crate::collected::fichier_dans_la_surface(fichier) {
+        return None;
+    }
+    let mut fichiers = vec![*fichier];
+    if crate::collected::SOURCES_DU_CANAL_D_AVEU.contains(&source) {
+        fichiers.push(crate::collected::FICHIER_DU_CANAL_D_AVEU);
+    }
+    fichiers.extend(crate::collected::SOURCE_DES_OVERLAYS.iter().filter(|(_, s)| *s == source).map(|(f, _)| *f));
+    Some(fichiers)
+}
+
+/// `P11.19-a` (reste 2, moitié démon) — LES CHAMPS ÉTENDUS QU'ÉMET UNE SOURCE, DÉRIVÉS de la jointure
+/// `COLLECTED_EXTENDED_FIELDS ⨝ SOURCES_LIVREES` (la citation de l'autorité désigne, par suffixe de chemin,
+/// un fichier de `fichiers_de_champs_de_source`). Aucune liste recopiée. Trois états, jamais confondus :
+///   * liste non vide — les champs écrits sous la source par son fichier, le canal d'aveu et ses overlays ;
+///   * liste VIDE — ce fichier est dans la surface balayée, la source ne passe par aucun canal d'aveu
+///     littéral ni aucun overlay, et rien de tout cela n'écrit de champ étendu (`dataacl` n'appelle aucune
+///     aide d'aveu : c'est mesuré, pas présumé) ;
+///   * `None` (servi `null`) — SOURCE NON COUVERTE PAR LA JOINTURE : déclarée par l'exploitant, par un
+///     connecteur, observée sans déclarant, ou émise par un fichier hors surface (agent, démon, sondes,
+///     collecteur Rust). Une liste vide n'y dit JAMAIS « inconnu ».
+/// LIMITE DITE : un capteur qui passe une source VARIABLE au canal d'aveu (`custom.sh`, `"$SOURCE"`) n'est
+/// pas résolu ; les sources qu'il nomme ainsi ne reçoivent pas les champs d'aveu.
+/// LIMITE DITE (population fixée au DÉPLOIEMENT) : la source journald de l'agent (`source/linux.rs`) écrit
+/// `source = _COMM` de l'unité suivie, avec `pid`/`uid`. Si l'exploitant y suit une unité dont `_COMM` vaut
+/// le nom d'une source livrée (`crowdsec`, `falco`…), `pid`/`uid` arrivent sous cette source sans figurer
+/// dans sa liste : la liste dit ce que les fichiers LIVRÉS écrivent sous la source, pas ce qu'un réglage
+/// d'agent y ajoute. Ces couples restent nommés à la racine (`champs_etendus_sans_source_livree`, `linux.rs`).
+pub(crate) fn champs_etendus_de_source(source: &str) -> Option<Vec<&'static str>> {
+    let fichiers = fichiers_de_champs_de_source(source)?;
+    Some(champs_des_fichiers(&crate::collected::couples_etendus(), &fichiers))
+}
+
+/// Les champs des `couples` dont la citation désigne un des `fichiers`, TRIÉS et SANS DOUBLON. Le tri ne
+/// se repose pas sur l'ordre de la table : elle est triée par champ aujourd'hui, mais rien ne l'impose, et
+/// l'union de plusieurs fichiers (capteur, canal d'aveu, overlays) répète un même champ. Séparée pour
+/// que le témoin le prouve sur des couples dans le désordre (`P11.19-a`, vague D : retirer le tri restait
+/// vert sur la table réelle).
+pub(crate) fn champs_des_fichiers(couples: &[(&'static str, &'static str)], fichiers: &[&str]) -> Vec<&'static str> {
+    let mut champs: Vec<&'static str> = couples
+        .iter()
+        .filter(|(_, c)| fichiers.iter().any(|f| crate::collected::citation_designe(f, c)))
+        .map(|(f, _)| *f)
+        .collect();
+    champs.sort_unstable();
+    champs.dedup();
+    champs
+}
+
+/// `P11.19-a` (vague D) — LES CHAMPS QUE LES PARSEURS REGEX ACTIFS DE CETTE BASE PEUVENT AJOUTER À UNE SOURCE.
+/// La liste `champs_etendus` est dérivée des FICHIERS livrés ; or l'ingestion applique aussi le registre
+/// regex (`parsers_apply`), dont les migrations SÈMENT des parseurs livrés dans le binaire — `user`/`uid`
+/// sur `*` (toutes les sources), `jail` (fail2ban), `scenario` (crowdsec), `namespace`/`workload` (k8s)… —
+/// éditables et complétés par `/api/parsers`. Servie à part, lue sur le registre RÉELLEMENT chargé pour
+/// cette base (groupes nommés des parseurs visant la source ou `*`, hors colonnes cœur) : `None` (servi
+/// `null`) quand aucun registre n'est chargé pour ce chemin — inconnu, pas « aucun ».
+pub(crate) fn champs_des_parseurs_regex_actifs(db_path: &str, source: &str) -> Option<Vec<String>> {
+    let registre = crate::parsers::parsers_cell().read();
+    let parseurs = registre.get(db_path)?;
+    let mut noms: Vec<String> = parseurs
+        .iter()
+        .filter(|(s, _)| s == "*" || s == source)
+        .flat_map(|(_, re)| re.capture_names().flatten().map(str::to_string).collect::<Vec<_>>())
+        .filter(|n| !guatx_core::cim::CIM_CORE_FIELDS.contains(&n.as_str()))
+        .collect();
+    // Les parseurs semés répètent des groupes (sshd : `user`, `rhost`, `user` sur `*`, `uid`, `rhost`) : trié, sans doublon.
+    noms.sort_unstable();
+    noms.dedup();
+    Some(noms)
+}
+
+/// `P11.19-a` (vague D) — la source reçoit-elle des clés DYNAMIQUES (`extract_generic` : logfmt/JSON
+/// aplati, jusqu'à `GENERIC_MAX_KEYS` clés par événement, `k8s-log` par défaut) ? Si oui, aucune liste
+/// ne peut être close : c'est servi tel quel.
+pub(crate) fn source_a_des_cles_dynamiques(source: &str) -> bool {
+    crate::parsers::generic_sources().iter().any(|s| s == source)
+}
+
+/// `P11.19-a` (vague D) — CE QUE LES LISTES `champs_etendus` NE VOIENT PAS, servi à la racine de
+/// l'inventaire : chaque liste est CLOSE au regard des fichiers LIVRÉS qui écrivent sous la source, pas
+/// au regard de ce que le déploiement y ajoute. Une liste se lirait sinon comme l'ensemble exact des
+/// champs que la source porte en base.
+pub(crate) const CHAMPS_ETENDUS_NE_VOIT_PAS: &[&str] = &[
+    "parseurs regex actifs (semés par les migrations ou créés par /api/parsers) : servis à part, champs_etendus_parseurs_actifs, groupes nommés que le message doit encore faire correspondre",
+    "extraction générique (logfmt/JSON aplati) : clés dynamiques, champs_etendus_cles_dynamiques=true, la liste n'est alors pas close",
+    "overlay de parseur déclaratif déposé par l'exploitant après déploiement : ses champs s'ajoutent à la source visée sans figurer dans aucune liste",
+    "unité journald suivie par l'agent dont _COMM porte le nom d'une source livrée : l'agent poste le journal brut (/api/ingest/journal) et le démon (ingest/mod.rs, ingest_journal_lines) écrit lui-même [action, pid, uid, unit, user] sous cette source ; servies à part, champs_etendus_estampilles_par_le_demon",
+    "clés fournies par l'émetteur sur les voies d'ingestion ouvertes (sac fields de /api/ingest, sac fields et objet event de HEC, attributs OTLP aplatis sous otel., étiquettes Loki d'un flux poussé sur /loki/api/v1/push, dont la source est tirée de job/service_name/service/unit/container/app/filename et peut nommer une source livrée, ingest/obs.rs) : arbitraires, aucune liste ne les borne ; les marqueurs que le démon y ajoute lui-même (sourcetype/index de HEC, champs de trace OTLP) sont servis à part, champs_etendus_estampilles_par_le_demon",
+    "clé écrite par un capteur à valeur non littérale-string hors objet fields reconnu (fragment JSON à valeur numérique ou objet), ou après un commentaire de fin de ligne",
+    "source passée en variable au canal d'aveu de lib.sh (custom.sh, \"$SOURCE\") : ses champs d'aveu ne sont imputés à aucune source",
+    "capteur qui émet sous la source d'un AUTRE fichier livré (bans.sh : emit crowdsec, fields.action) : ses champs ne sont imputés qu'à son propre fichier, jamais à la source qu'il emprunte",
+    "FIM de l'agent (agent/src/source/fim/mod.rs) : il émet sous l'id de sa source, « integrity » par défaut (agent/src/config.rs, d_fim_id) ; ses champs, nommés sous fim/mod.rs dans champs_etendus_sans_source_livree, arrivent sous integrity dès que l'exploitant active la source fim, sans figurer dans sa liste ; quand l'agent avoue cette source illisible (agent/src/lisibilite.rs, event_indisponibilite), il y écrit aussi [cause, hors_vocabulaire, verdict], hors de la liste integrity",
+    "collector-mail (collector-mail/src/main.rs, hors surface balayée) émet aussi sous mail les clés [account, cause, fileid, folder, msgid, patterns, sample, scan_status] qu'aucune liste ne porte",
+    "clés que le démon estampille lui-même à l'ingestion (version CIM sur chaque événement, threat-intel sur correspondance d'IOC, reclassement d'un dépôt d'unité corroboré) : servies à part, champs_etendus_estampilles_par_le_demon",
+    "règle d'ingest RENAME vers fields.<clé> (/api/processors) : la clé cible s'ajoute à la source visée sans figurer dans aucune liste (MASK n'en crée aucune : il remplace la valeur d'une clé déjà présente)",
+    "connecteur http-pull instancié depuis un preset livré (docs/connector-presets/, handlers/connectors/httppull.rs, httppull_map_record) : son field_map écrit ses fields.<clé> sous la source qu'il nomme ; le preset cloudflare-audit écrit ainsi sous la source livrée cloudflare [actor_type, metadata, resource_id, resource_type], hors de sa liste ; un connecteur que l'exploitant configure lui-même peut de même viser n'importe quelle source livrée",
+    "normaliseur endpoint (PLUME_ENDPOINT_NORMALIZE, défaut wazuh) que l'exploitant applique à une source livrée : les champs qu'il pose (ingest/endpoint.rs) s'ajoutent à cette source sans figurer dans sa liste",
+];
+
+/// `P11.19-a` (vague E) — LA PORTE DE LECTURE DES AVEUX : la route et les témoins lisent ici.
+pub(crate) fn champs_etendus_ne_voit_pas() -> Vec<&'static str> {
+    CHAMPS_ETENDUS_NE_VOIT_PAS.to_vec()
+}
+
+/// `P11.19-a` (vague E) — UNE FAMILLE DE CLÉS QUE LE DÉMON ÉCRIT LUI-MÊME DANS `fields` À L'INGESTION, hors de
+/// tout fichier livré : aucune liste `champs_etendus` ne peut les porter, et une liste servie sans elles se
+/// lirait close alors que la base les montre (mesuré : `yara` servi sans `cim`, présent sur chaque ligne).
+pub(crate) struct ClesEstampillees {
+    /// Les clés, triées.
+    pub(crate) champs: Vec<String>,
+    /// La source visée, ou `None` : toute source.
+    pub(crate) source: Option<&'static str>,
+    pub(crate) quand: &'static str,
+    pub(crate) code: &'static str,
+}
+
+/// Les marqueurs plats et le nid que `ti_enrich` (`handlers/threat_intel.rs`) pose sur un événement dont une
+/// adresse ou l'URL correspond à un IOC. Écrits ici faute de constante côté émetteur ; tenus dans les DEUX
+/// sens par l'ingestion réelle (`champs_estampilles_par_le_demon.rs`) : une clé ajoutée au code ou une clé
+/// fantôme ici rougit le témoin.
+const CHAMPS_DE_CORRESPONDANCE_D_IOC: &[&str] = &["threat_intel", "ti_confidence", "ti_match", "ti_severity"];
+
+/// Les marqueurs de protocole que `hec_record_to_event` (`ingest/hec.rs`) copie dans le sac quand l'enregistrement
+/// HEC les porte. Écrits ici faute de constante côté émetteur ; tenus dans les deux sens par la voie HEC réelle.
+const CHAMPS_DE_PROTOCOLE_HEC: &[&str] = &["index", "sourcetype"];
+
+/// Les champs de trace que `otlp_span_to_event` (`ingest/otlp.rs`) pose sur chaque span, plus `otel.service.name`,
+/// l'attribut de ressource qui ROUTE la source. Il n'est PAS toujours présent : la fusion des attributs de
+/// ressource s'arrête quand le span atteint `OTLP_MAX_ATTRS_PER_SPAN` attributs. Les autres attributs `otel.*`
+/// sont ceux de l'émetteur : aveu. Tenus dans les deux sens par la voie OTLP réelle.
+const CHAMPS_DE_TRACE_OTLP: &[&str] = &[
+    "duration_ms",
+    "otel.service.name",
+    "parent_span_id",
+    "scope_name",
+    "scope_version",
+    "service",
+    "span_id",
+    "span_kind",
+    "span_name",
+    "status_message",
+    "trace_id",
+    "trace_status",
+];
+
+/// Le sac que `ingest_journal_lines` (`ingest/mod.rs`) écrit sur chaque ligne journald, sous la source `_COMM`.
+/// Tenu dans les deux sens par la voie journald réelle.
+const CHAMPS_DU_JOURNAL: &[&str] = &["action", "pid", "uid", "unit", "user"];
+
+/// Les clés de premier niveau d'un sac `fields` sérialisé (vide si ce n'est pas un objet).
+fn cles_du_sac(sac: Option<String>) -> Vec<String> {
+    sac.as_deref()
+        .and_then(|s| serde_json::from_str::<serde_json::Map<String, Value>>(s).ok())
+        .map(|m| m.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
+/// `P11.19-a` (vague E) — LES CLÉS ESTAMPILLÉES PAR LE DÉMON, servies à la racine de l'inventaire
+/// (`champs_etendus_estampilles_par_le_demon`). DÉRIVÉES du code quand il les expose : la version CIM est lue
+/// en appelant `cim_stamp` lui-même sur un sac vide, le reclassement par ses constantes (`CHAMP_MOTIF`,
+/// `CHAMP_SEVERITE_ORIGINE`, `SOURCE_INTEGRITE`) ; les clés threat-intel n'ont pas de constante émettrice
+/// (`CHAMPS_DE_CORRESPONDANCE_D_IOC`).
+pub(crate) fn champs_estampilles_par_le_demon() -> Vec<ClesEstampillees> {
+    let familles = vec![
+        ClesEstampillees {
+            champs: cles_du_sac(crate::cim_stamp(None)),
+            source: None,
+            quand: "chaque événement ingéré dont le sac est absent ou un objet JSON",
+            code: "ingest/mod.rs, cim_stamp",
+        },
+        ClesEstampillees {
+            champs: CHAMPS_DE_CORRESPONDANCE_D_IOC.iter().map(|s| s.to_string()).collect(),
+            source: None,
+            quand: "une adresse ou l'URL de l'événement correspond à un IOC du magasin d'indicateurs",
+            code: "handlers/threat_intel.rs, ti_enrich",
+        },
+        ClesEstampillees {
+            champs: vec![crate::CHAMP_MOTIF.to_string(), crate::CHAMP_SEVERITE_ORIGINE.to_string()],
+            source: Some(crate::SOURCE_INTEGRITE),
+            quand: "dépôt d'unité systemd dont le contenu est celui d'une unité livrée, dans la fenêtre d'un déploiement daté",
+            code: "maj_corroboree.rs, reclasser_depot_dunite_corrobore",
+        },
+        ClesEstampillees {
+            champs: CHAMPS_DE_PROTOCOLE_HEC.iter().map(|s| s.to_string()).collect(),
+            source: None,
+            quand: "événement reçu par HEC (/services/collector) dont l'enregistrement porte sourcetype ou index, sous la source qu'il nomme ; sourcetype seul, aussi, sur un enregistrement de connecteur http-pull dont la config ou le field_map donne un sourcetype sans catégorie explicite",
+            code: "ingest/hec.rs, hec_record_to_event ; handlers/connectors/httppull.rs, httppull_map_record (sourcetype)",
+        },
+        ClesEstampillees {
+            champs: CHAMPS_DE_TRACE_OTLP.iter().map(|s| s.to_string()).collect(),
+            source: None,
+            quand: "span reçu par OTLP (/v1/traces), sous la source que nomme son service.name",
+            code: "ingest/otlp.rs, otlp_span_to_event",
+        },
+        ClesEstampillees {
+            champs: CHAMPS_DU_JOURNAL.iter().map(|s| s.to_string()).collect(),
+            source: None,
+            quand: "ligne journald postée par l'agent (/api/ingest/journal), sous la source que nomme son _COMM",
+            code: "ingest/mod.rs, ingest_journal_lines",
+        },
+    ];
+    // Chaque famille vient d'une constante TRIÉE ou d'un sac `serde_json` (clés ordonnées) : aucun tri ici, le
+    // témoin exige la forme servie triée et sans doublon.
+    familles
+}
+
+/// La forme servie de `champs_estampilles_par_le_demon` : `sources` vaut `"*"` pour toute source.
+pub(crate) fn champs_estampilles_servis() -> Value {
+    Value::Array(
+        champs_estampilles_par_le_demon()
+            .into_iter()
+            .map(|f| json!({ "champs": f.champs, "sources": f.source.unwrap_or("*"), "quand": f.quand, "code": f.code }))
+            .collect(),
+    )
+}
+
+/// `P11.19-a` — LES CHAMPS DE L'AUTORITÉ QU'AUCUNE LISTE DE SOURCE LIVRÉE NE PORTE : `citation -> champs`. Leur
+/// fichier émetteur n'est aucun des fichiers de `fichiers_de_champs_de_source` d'une source livrée
+/// (collecteur PowerShell, sources de l'agent, overlay d'une source qu'aucun fichier livré n'émet). Une source
+/// livrée peut pourtant les recevoir quand le déploiement le décide : le FIM de l'agent (`fim/mod.rs`) émet sous
+/// `integrity` par défaut — dit par un aveu de `CHAMPS_ETENDUS_NE_VOIT_PAS`.
+/// Rendu pour que la jointure soit TOTALE : tout couple de l'autorité est servi sous une source, ou nommé ici.
+pub(crate) fn champs_etendus_sans_source_livree() -> std::collections::BTreeMap<&'static str, Vec<&'static str>> {
+    let portes: Vec<&'static str> =
+        SOURCES_LIVREES.iter().filter_map(|(s, _)| fichiers_de_champs_de_source(s)).flatten().collect();
+    couples_sans_porte(&crate::collected::couples_etendus(), &portes)
+}
+
+/// Les couples dont la citation ne désigne aucun des fichiers `portes`, regroupés par citation, chaque liste
+/// TRIÉE et SANS DOUBLON. Séparée pour que le témoin le prouve sur des couples dans le désordre (`P11.19-a`,
+/// vague D : la table réelle, triée par champ, laissait un tri retiré ou inversé au vert).
+pub(crate) fn couples_sans_porte(
+    couples: &[(&'static str, &'static str)],
+    portes: &[&str],
+) -> std::collections::BTreeMap<&'static str, Vec<&'static str>> {
+    let mut out: std::collections::BTreeMap<&'static str, Vec<&'static str>> = std::collections::BTreeMap::new();
+    for (champ, citation) in couples {
+        if !portes.iter().any(|f| crate::collected::citation_designe(f, citation)) {
+            out.entry(*citation).or_default().push(*champ);
+        }
+    }
+    for v in out.values_mut() {
+        v.sort_unstable();
+        v.dedup();
+    }
+    out
+}
+
 /// QUI DÉCLARE CETTE SOURCE. Rendu tel quel dans l'inventaire (`raison_attendue`) : le lecteur voit d'où
 /// vient le verdict au lieu de devoir le deviner. Les quatre premiers déclarants sont DÉRIVÉS du code et
 /// de la configuration ; le cinquième est un humain de cette installation, et lui seul porte un nom et
@@ -400,6 +657,7 @@ fn corps_inventaire_non_lu(now_ts: i64, cause: &str) -> Json<Value> {
 pub(crate) async fn sources_inventory(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
     let now_ts = now();
     let db_path = req_db_path(&st, &au);
+    let db_path_des_parseurs = db_path.clone();
     tokio::task::spawn_blocking(move || {
         read_with_watchdog(db_path.as_str(), Json(json!({ "ok": false, "sources": [], "generated": now_ts, "error": crate::query_exec::LECTURE_NON_FAITE_SANS_CONNEXION })), move |conn| {
             let d1 = now_ts - 86400;
@@ -491,6 +749,11 @@ pub(crate) async fn sources_inventory(State(st): State<AppState>, Extension(au):
                     "age_s": if *last == 0 { Value::Null } else { json!(age) },
                     "n_24h": n24,
                     "status": status,
+                    // `P11.19-a` — liste, liste vide établie, ou `null` (source non couverte par la jointure).
+                    "champs_etendus": champs_etendus_de_source(src),
+                    // `P11.19-a` (vague D) — ce que l'ingestion ajoute hors fichiers livrés, dit à côté de la liste.
+                    "champs_etendus_parseurs_actifs": champs_des_parseurs_regex_actifs(&db_path_des_parseurs, src),
+                    "champs_etendus_cles_dynamiques": source_a_des_cles_dynamiques(src),
                 });
                 // `P10.20-g` — `Some` et non `None` : ce volume-là A ÉTÉ LU (l'inventaire refuse de conclure
                 // AVANT d'arriver ici quand sa lecture échoue, cf. `corps_inventaire_non_lu`). L'option ne
@@ -500,7 +763,15 @@ pub(crate) async fn sources_inventory(State(st): State<AppState>, Extension(au):
                 }
                 sources.push(entry);
             }
-            Json(json!({ "ok": true, "generated": now_ts, "pipeline_fresh": pipe_fresh, "sources": sources }))
+            Json(json!({
+                "ok": true,
+                "generated": now_ts,
+                "pipeline_fresh": pipe_fresh,
+                "sources": sources,
+                "champs_etendus_sans_source_livree": champs_etendus_sans_source_livree(),
+                "champs_etendus_ne_voit_pas": champs_etendus_ne_voit_pas(),
+                "champs_etendus_estampilles_par_le_demon": champs_estampilles_servis(),
+            }))
         })
     })
     .await

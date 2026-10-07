@@ -575,6 +575,20 @@ pub(crate) const CAUSE_CONNECTEUR_NON_SUPPRIME_TRANSACTION_NON_OUVERTE: &str = "
 pub(crate) const CAUSE_TRACE_DU_POLL_MANUEL_NON_ECRITE: &str = "TRACE NON ÉCRITE : le poll manuel a eu lieu (ce qui \
      est collecté est collecté), mais la base n'a pas pris sa trace d'audit — le registre ne dit pas qui l'a \
      déclenché ni combien d'events il a rapportés. Le journal du démon nomme le refus.";
+/// `P10.20-b` (rang deux) — le poll manuel a eu lieu, mais l'état du connecteur n'a pas pu être RELU après coup
+/// (champ `etat_non_relu` de la réponse ; `ok`, `count` et `error` valent alors `null`). La ligne d'audit le dit
+/// aussi : aucun compte d'events n'y est affirmé. Même forme que l'envoi manuel d'une destination.
+pub(crate) const CAUSE_ETAT_DU_POLL_MANUEL_NON_RELU: &str = "ÉTAT NON RELU : le poll manuel a eu lieu (ce qui est \
+     collecté est collecté), mais la base n'a pas rendu l'état du connecteur après coup — ni le nombre d'events \
+     collectés ni l'issue du poll ne sont établis. Ce n'est PAS « zéro event » : relisez la liste des connecteurs, \
+     qui porte l'état enregistré.";
+/// `P10.20-b` (rang deux) — la relecture d'après poll ne trouve PLUS le connecteur (`QueryReturnedNoRows`) : il a été
+/// supprimé pendant le poll. Distincte de `CAUSE_ETAT_DU_POLL_MANUEL_NON_RELU`, dont le renvoi vers la liste serait
+/// faux ici — la liste ne porte plus ce connecteur.
+pub(crate) const CAUSE_CONNECTEUR_SUPPRIME_PENDANT_LE_POLL: &str = "ÉTAT NON RELU : le poll manuel a eu lieu (ce qui \
+     est collecté est collecté), mais le connecteur n'existe plus dans la base après coup — il a été supprimé pendant \
+     le poll. Ni le nombre d'events collectés ni l'issue du poll ne sont établis, et la liste des connecteurs ne les \
+     porte plus : la trace d'audit du poll (event `plume-config`) reste la seule mention.";
 
 /// DRY-RUN : OAuth + 1 page Graph, N'INGÈRE PAS et NE RENVOIE NI le contenu des alertes NI le secret —
 /// seulement { ok, sample_count, error }. `error` = statut/motif (jamais le corps, jamais le secret).
@@ -688,28 +702,60 @@ pub(crate) async fn connector_poll(State(st): State<AppState>, Extension(au): Ex
     // POST-poll (le poll lui-même est fail-safe : poll_one_connector avale ses erreurs -> last_error, jamais
     // de rollback possible du réseau) ; on trace donc l'ACTION opérateur (qui, quand, combien d'events) SANS
     // gater le réseau dans une transaction (ne jamais tenir le lock writer pendant l'I/O réseau).
-    let ((count, error), trace): ((i64, Option<String>), Result<(), &'static str>) = {
+    // `P10.20-b` (rang deux) — LA RELECTURE EST UN `Result`. Avant : `.unwrap_or((0, None))` — une relecture ratée
+    // servait `{ok: true, count: 0}` (« poll réussi, zéro event ») dans le corps ET gravait `count=0` dans la ligne
+    // d'audit. Désormais `None` = NON RELU : le corps porte `etat_non_relu` et des `null`, la trace dit « NON RELU ».
+    // Deux causes, jamais fusionnées (forme de `destination_flush`) : une ligne DISPARUE (supprimée pendant le poll)
+    // n'est pas une lecture ratée. Le chemin nominal est inchangé octet pour octet.
+    let (etat, cause_non_relu, trace): (Option<(i64, Option<String>)>, &str, Result<(), &'static str>) = {
         crate::req_conn!(st, au, conn);
-        let ce = conn.query_row(
+        let relu: rusqlite::Result<(i64, Option<String>)> = conn.query_row(
             "SELECT last_count,last_error FROM connector WHERE id=?1",
             params![id],
             |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?)),
-        ).unwrap_or((0, None));
+        );
+        let (etat, cause_non_relu): (Option<(i64, Option<String>)>, &str) = match relu {
+            Ok(t) => (Some(t), ""),
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                eprintln!("[connecteurs] connecteur #{id} supprimé pendant le poll manuel : état NON RELU");
+                (None, CAUSE_CONNECTEUR_SUPPRIME_PENDANT_LE_POLL)
+            }
+            Err(e) => {
+                eprintln!("[connecteurs] état NON RELU après le poll manuel du connecteur #{id} : {e}");
+                (None, CAUSE_ETAT_DU_POLL_MANUEL_NON_RELU)
+            }
+        };
         // `P10.26-x` — LA TRACE EST ÉCRITE APRÈS COUP, ET SON ABSENCE SE DIT (même forme que l'envoi manuel d'une
         // destination) : un `BEGIN`, un audit ou un `COMMIT` refusé n'est plus tu, la réponse porte `trace_non_ecrite`.
-        let trace = tracer_apres_coup(&conn, "connecteurs", &format!("poll manuel du connecteur #{id}"), CAUSE_TRACE_DU_POLL_MANUEL_NON_ECRITE, || {
-            audit_config_change(
+        let trace = tracer_apres_coup(&conn, "connecteurs", &format!("poll manuel du connecteur #{id}"), CAUSE_TRACE_DU_POLL_MANUEL_NON_ECRITE, || match &etat {
+            Some(ce) => audit_config_change(
                 &conn,
                 "config.connector.poll",
                 &format!("poll manuel du connecteur #{id} par {} (count={})", au.name, ce.0),
                 2,
                 &format!("poll manuel du connecteur externe #{id} par {} : {} event(s)", au.name, ce.0),
                 &json!({ "id": id, "count": ce.0, "ok": ce.1.is_none(), "actor": au.name }).to_string(),
-            )
+            ),
+            // NON RELU : la trace dit que le poll a été DÉCLENCHÉ (c'est établi) et que son bilan n'a pas été relu —
+            // jamais un compte qu'on n'a pas lu. Le REGISTRE garde la distinction du corps (`motif_non_relu`).
+            None => {
+                let motif = if cause_non_relu == CAUSE_CONNECTEUR_SUPPRIME_PENDANT_LE_POLL { "connecteur supprimé pendant le poll" } else { "relecture en échec" };
+                audit_config_change(
+                    &conn,
+                    "config.connector.poll",
+                    &format!("poll manuel du connecteur #{id} par {} (compte NON RELU : {motif})", au.name),
+                    2,
+                    &format!("poll manuel du connecteur externe #{id} par {} : compte d'events et issue NON RELUS après le poll ({motif})", au.name),
+                    &json!({ "id": id, "count": null, "ok": null, "etat_non_relu": true, "motif_non_relu": motif, "actor": au.name }).to_string(),
+                )
+            }
         });
-        (ce, trace)
+        (etat, cause_non_relu, trace)
     };
-    let mut corps = json!({ "ok": error.is_none(), "count": count, "error": error });
+    let mut corps = match etat {
+        Some((count, error)) => json!({ "ok": error.is_none(), "count": count, "error": error }),
+        None => json!({ "ok": null, "count": null, "error": null, "etat_non_relu": cause_non_relu }),
+    };
     if let Err(cause) = trace {
         corps["trace_non_ecrite"] = json!(cause);
     }

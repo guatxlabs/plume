@@ -320,8 +320,12 @@ FAITS_QUI_AFFIRMENT = (
 # `escalate_overdue_cases` ; aucun fichier ne sort (`caseops.rs` garde `sla_multilevel_tick`, `cases.rs` garde
 # `case_apply_update` et `case_set_archived`). Relevé de ce jour-là sur l'arbre : 11 sites sur 5 fichiers ; même règle
 # des deux tiers, arrondie en dessous : 11 -> 7, 5 -> 3.
-PLANCHER_SITES = 7
-PLANCHER_FICHIERS = 3
+# RE-DÉRIVÉS le 2026-10-07 (`P10.20-w`, rang trois, suite) : le lot retire `sla_multilevel_tick` (caseops.rs),
+# `case_apply_update` et `case_set_archived` (cases.rs), soit sept sites, et donc deux fichiers (`caseops.rs` et
+# `cases.rs` n'en portaient pas d'autre). Relevé de ce jour-là sur l'arbre : 4 sites sur 3 fichiers (`incidents.rs`,
+# `overlays_oac.rs`, `seeds.rs`) ; même règle des deux tiers, arrondie en dessous : 4 -> 2, 3 -> 2.
+PLANCHER_SITES = 2
+PLANCHER_FICHIERS = 2
 
 # ================================================================================================
 # L'ENSEMBLE NOMMÉ — SIX CLASSES, JUGÉES DANS LES DEUX SENS
@@ -355,7 +359,6 @@ SITES_IDENTIFIANT_ET_REGISTRE = {}
 # --- CLASSE 3 : L'ÉCRITURE AVALÉE PRÉCÈDE UNE LIGNE DE REGISTRE OU D'AUDIT. La trace non purgeable
 # affirme une mutation qui n'a peut-être pas eu lieu. Aucun identifiant n'est emprunté ici.
 SITES_REGISTRE_APRES_ECRITURE_AVALEE = {
-    ("daemon/src/handlers/caseops.rs", "sla_multilevel_tick"): ("let _ -> ledger_append",),
     # `P10.20-w` (rang trois, 2026-10-07) — `case_merge`, `case_unmerge` (caseops.rs) et `escalate_overdue_cases`
     # (cases.rs) SONT RETIRÉS : l'`UPDATE` est compté par un `match` AVANT chronologie et registre. Fusion et défusion
     # rendent `IssueDeLaFusion::{Ecrite, Refusee, NonEcrite}` et la route un 503 nommé sur l'écriture refusée (elle
@@ -364,13 +367,16 @@ SITES_REGISTRE_APRES_ECRITURE_AVALEE = {
     # au tour suivant) mais ne trace rien, et est compté une fois par tour au balayage `escalate_overdue_marqueur`
     # (mesuré sur la forme d'avant, témoins `fec_` : une notification et un `case.sla_escalate` par tick). RESTENT admis ici : `sla_multilevel_tick`, `case_apply_update`,
     # `case_set_archived`, `step_advance`.
-    # QUATRE sites, pas huit : les cinq autres écritures avalées de cette fonction vivent dans des
-    # blocs FRÈRES qui ne portent aucun registre (l'écart mesuré contre `P10.20-w`, en en-tête).
-    ("daemon/src/handlers/cases.rs", "case_apply_update"):
-        ("let _ -> ledger_append", "let _ -> ledger_append", "let _ -> ledger_append",
-         "let _ -> ledger_append"),
-    ("daemon/src/handlers/cases.rs", "case_set_archived"):
-        ("let _ -> ledger_append", "let _ -> ledger_append"),
+    # `P10.20-w` (rang trois, suite) — `sla_multilevel_tick` (caseops.rs), `case_apply_update` et `case_set_archived`
+    # (cases.rs) SONT RETIRÉS : chaque écriture attestée est comptée par un `match` AVANT chronologie et registre.
+    # La mise à jour et l'archivage rendent `IssueDuDossierModifie::{Ecrite, DossierAbsent, NonEcrite}` et la route un
+    # 503 nommé sur l'écriture refusée (elle rendait 204 avec `case.assign`/`case.status`/`case.disposition`/
+    # `case.archive`/`case.unarchive` au registre) ; le tick SLA (corps déplacé dans `sla_multilevel_tick_par`) écrit
+    # le marqueur `ack_breached`/`resolve_breached` AVANT l'envoi (`AND {col}=0`) ; un marqueur refusé notifie QUAND
+    # MÊME en l'avouant, ne trace rien, et est compté une fois par tour au balayage `sla_multilevel_marqueur` (mesuré
+    # sur la forme d'avant, témoins `dec_` : un envoi ET un `case.sla_ack_breach` par tick). Les autres écritures
+    # avalées de `case_apply_update` (titre, sévérité, propriétaire, résumé, priorité, échéance, `updated`) vivent
+    # dans des blocs sans registre : hors population, reste écrit. RESTE admis ici : `step_advance`.
     # `P10.21-s` — LES DEUX SITES D'`idp.rs` SONT RETIRÉS, parce que les deux écritures sont COMPTÉES avant
     # le fait. `login_mfa_post` : la consommation du pas TOTP passe par `consommer_le_pas_totp`, un
     # compare-et-pose (`last_step < ?`) qui rend `ConsommationDuFacteur` ; une écriture refusée rend un 503

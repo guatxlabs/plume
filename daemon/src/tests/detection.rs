@@ -2682,7 +2682,7 @@ tags:
     }
 
     /// EXTRACTEUR MÉCANIQUE DE CHAMPS ÉMIS — le SEUL oracle des DEUX sens de la garde d'inventaire (cf. la
-    /// doc de `collected.rs` pour les familles balayées et les positions de producteur P1..P5). Renvoie, pour
+    /// doc de `collected.rs` pour les familles balayées et les positions de producteur P1..P6). Renvoie, pour
     /// chaque fichier LIVRÉ de la surface, la liste des noms de champs qu'il écrit dans `fields`, avec son
     /// chemin RELATIF à la racine du dépôt.
     ///
@@ -2711,7 +2711,31 @@ tags:
         let afuse = regex::Regex::new(r#"\baf\(\s*"([A-Za-z_][A-Za-z0-9_]*)"\s*,"#).unwrap();
         // P5 — fragment d'objet JSON échappé, à VALEUR STRING (`,\"x\":\"`). La valeur string est exigée :
         // sans elle, l'enveloppe de spool (`,\"events\":[`) serait prise pour un champ.
-        let frag = regex::Regex::new(r#"[",]\s*,?\\"([A-Za-z_][A-Za-z0-9_]*)\\"\s*:\s*\\""#).unwrap();
+        // P5 ter — LA PREMIÈRE CLÉ D'UN FRAGMENT EST AUSSI UN CHAMP. La version précédente exigeait la `"` ou la
+        // `,` qui précède la clé : `fj="{\"ns\":\"$nsj\",\"pod\":…}"` (pod-logs.sh), recopié sous
+        // `\"fields\":$fj`, perdait `ns` — et `GET /api/sources` servait la liste de `k8s-log` sans lui
+        // (mesuré `P11.19-a`, vague D). L'accolade ouvrante est donc acceptée devant la clé. Mesuré sur
+        // `collectors/*.sh` : un seul couple neuf, `(ns, pod-logs.sh)` ; le `{\"iface\":` de firewall.sh reste
+        // écarté (fichier sans objet `fields`), et la première clé d'un événement (`{\"ts\":`) n'a pas de
+        // valeur string.
+        let frag = regex::Regex::new(r#"[",{]\s*,?\\"([A-Za-z_][A-Za-z0-9_]*)\\"\s*:\s*\\""#).unwrap();
+        // P5 bis — L'ENVELOPPE DE SPOOL N'EST PAS UN OBJET `fields`. La valeur string exigée ci-dessus ne
+        // suffisait pas : `{\"ts\":%d,\"host\":\"%s\",\"kind\":\"events\",\"events\":[%s]}` porte
+        // `,\"kind\":\"`, clé que `ingest` lit pour AIGUILLER le fichier (events / metrics) et ne recopie
+        // jamais dans `fields`. Mesuré (`P11.19-a`) : `kind` était dérivé de web.sh, mail.sh, dataaccess.sh
+        // et dataacl.sh, qui ne l'écrivent dans aucun `fields` — inoffensif tant que l'autorité ne se lisait
+        // qu'au grain du CHAMP, faux dès qu'elle se lit par fichier. Un fragment situé sur une ligne qui
+        // ouvre le tableau d'enveloppe (`\"events\":[` / `\"metrics\":[`) n'est donc pas retenu.
+        let enveloppe = regex::Regex::new(r#"\\"(?:events|metrics)\\"\s*:\s*\["#).unwrap();
+        // P6 — LE 3e ARGUMENT LITTÉRAL DE `$(heartbeat <source> <message> <fields-json>)`. `lib.sh` le recopie
+        // TEL QUEL après `"fields":` : ce sont des champs étendus écrits sous la source du 1er argument, à
+        // valeur NUMÉRIQUE (`{\"active_bans\":$nb}`, `'{"alive":1}'`) — P5 exige une valeur string et P1 un
+        // nom `…fields…` devant l'accolade, donc aucune position ne les voyait (mesuré `P11.19-a` : 8 couples,
+        // bans/dataaccess/integrity/journal/origin-drop/portscan/ufw). On prend l'objet `{…}` ÉQUILIBRÉ qui
+        // finit la ligne d'appel et ses seules clés de profondeur 1 ; un 3e argument VARIABLE (`"$hfields"`)
+        // n'a pas d'accolade sur la ligne : son objet est vu par P1 là où il est construit.
+        let hb_appel = regex::Regex::new(r#"\(heartbeat\s+[A-Za-z0-9_.-]+\s"#).unwrap();
+        let hb_cle = regex::Regex::new(r#"\\?"([A-Za-z_][A-Za-z0-9_]*)\\?"\s*:"#).unwrap();
 
         let mut out: Vec<(String, String, &'static str)> = Vec::new();
         for (dir, ext, fam, _) in COLLECTED_SCAN_SURFACE {
@@ -2739,6 +2763,24 @@ tags:
                     if !loadable { continue; }
                     if let Some(o) = v.pointer("/map/fields").and_then(|x| x.as_object()) {
                         for k in o.keys() { out.push((k.clone(), rel.clone(), fam)); }
+                    }
+                    // P3 bis — LES CLÉS DE TÊTE DE `map` QUE L'INGESTION ÉCRIT DANS LE SAC. `dparsers_apply`
+                    // (parsers.rs) pose `map.src_ip`/`dst_ip`/`url`/`action` dans `fields` par `dfield_put`,
+                    // pas seulement `map.fields`. Sans cette lecture, `nft-scan-detect.json` (`"action":"deny"`)
+                    // et `example-cim-firewall.json` (`"action":"$action"`) étaient servis en liste close SANS
+                    // `action` (mesuré `P11.19-a`, vague D). La liste est le MIROIR des littéraux `dfield_put`
+                    // de parsers.rs, tenu par `champs_etendus_servis_par_source.rs`. La valeur compte si
+                    // `DMapVal::parse` l'admet ET qu'elle peut résoudre non vide : chaîne non vide, nombre
+                    // ou booléen (un `"action": 1` est écrit `"1"` dans le sac) ; `""` n'écrit jamais rien.
+                    for k in DPARSER_MAP_KEYS_WRITTEN_TO_FIELDS {
+                        let ecrite = |x: &serde_json::Value| match x {
+                            serde_json::Value::String(s) => !s.is_empty(),
+                            serde_json::Value::Number(_) | serde_json::Value::Bool(_) => true,
+                            _ => false,
+                        };
+                        if v.pointer(&format!("/map/{k}")).is_some_and(ecrite) {
+                            out.push((k.to_string(), rel.clone(), fam));
+                        }
                     }
                     if let Some(pat) = v.get("pattern").and_then(|x| x.as_str()) {
                         for c in grpre.captures_iter(pat) { out.push((c[1].to_string(), rel.clone(), fam)); }
@@ -2801,12 +2843,46 @@ tags:
                 if ext == "py" { for c in inspy.captures_iter(&body) { out.push((c[1].to_string(), rel.clone(), fam)); } }
                 if afdef.is_match(&body) { for c in afuse.captures_iter(&body) { out.push((c[1].to_string(), rel.clone(), fam)); } }
                 if ext == "sh" && has_fields_obj {
-                    for c in frag.captures_iter(&body) { out.push((c[1].to_string(), rel.clone(), fam)); }
+                    for c in frag.captures_iter(&body) {
+                        let debut_frag = c.get(0).unwrap().start();
+                        let debut = body[..debut_frag].rfind('\n').map_or(0, |i| i + 1);
+                        let fin = body[debut_frag..].find('\n').map_or(body.len(), |i| debut_frag + i);
+                        // Seul un fragment situé AVANT l'ouverture du tableau d'enveloppe sur sa ligne est une clé
+                        // d'enveloppe ; ce qui suit `\"events\":[` est dans un événement et reste dérivé.
+                        if enveloppe.find(&body[debut..fin]).is_some_and(|m| debut + m.start() > debut_frag) { continue; }
+                        out.push((c[1].to_string(), rel.clone(), fam));
+                    }
+                }
+                if ext == "sh" {
+                    for l in body.lines() {
+                        let Some(m) = hb_appel.find(l) else { continue };
+                        let reste = &l[m.end()..];
+                        let Some(fin) = reste.rfind('}') else { continue };
+                        let rb = reste.as_bytes();
+                        let (mut j, mut prof) = (fin, 0usize);
+                        let debut = loop {
+                            match rb[j] { b'}' => prof += 1, b'{' => { prof -= 1; if prof == 0 { break Some(j); } } _ => {} }
+                            if j == 0 { break None; }
+                            j -= 1;
+                        };
+                        let Some(debut) = debut else { continue };
+                        let mut plat = String::new();
+                        let mut prof = 0usize;
+                        for ch in reste[debut..=fin].chars() {
+                            match ch { '{' => prof += 1, '}' => prof -= 1, _ if prof == 1 => plat.push(ch), _ => {} }
+                        }
+                        for c in hb_cle.captures_iter(&plat) { out.push((c[1].to_string(), rel.clone(), fam)); }
+                    }
                 }
             }
         }
         out
     }
+
+    /// P3 bis — clés de tête de `map` qu'un parseur déclaratif écrit dans le sac `fields` (`dparsers_apply`,
+    /// parsers.rs : un `dfield_put(&mut obj, &mut added, "<clé>", …)` par clé). MIROIR tenu contre le texte de
+    /// parsers.rs par `champs_etendus_servis_par_source.rs` : une clé de plus écrite là sans être lue ici rougit.
+    const DPARSER_MAP_KEYS_WRITTEN_TO_FIELDS: &[&str] = &["src_ip", "dst_ip", "url", "action"];
 
     /// FAMILLES de collecteurs livrés balayées par l'extracteur, avec le PLANCHER d'extractions de chacune.
     /// Le garde-fou anti-rot global (`derived.len() > 50`) était trop lâche : la perte d'une famille ENTIÈRE
@@ -2845,8 +2921,11 @@ tags:
     ///       faux quant au mécanisme, et cette imprécision avait déjà été publiée une fois.
     /// C'est le PROTOCOLE DE MISE À JOUR : on ne « pense pas à » mettre l'inventaire à jour, le test l'exige.
     /// Ce que l'extracteur ne voit pas (EventData Windows recopié verbatim, sources déclaratives
-    /// `[[source]]`, clé non-string ou première clé d'un fragment P5) est ÉNUMÉRÉ dans `collected.rs` et
+    /// `[[source]]`, clé à valeur non-string d'un fragment P5 hors 3e argument de `heartbeat`) est ÉNUMÉRÉ dans `collected.rs` et
     /// produit un SUR-avertissement (donnée collectée dite inerte), jamais un silence.
+    /// ATTENTION, CE N'EST VRAI QUE POUR L'ORACLE D'INERTIE : `GET /api/sources` sert la même autorité comme
+    /// LISTE CLOSE par source (`P11.19-a`), et là un champ non vu est une liste INCOMPLÈTE servie sans le dire.
+    /// C'est pourquoi le 3e argument de `heartbeat` (P6) est désormais extrait plutôt que laissé sur cette liste.
     #[test]
     fn collected_inventory_is_backed_by_shipped_collectors() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");

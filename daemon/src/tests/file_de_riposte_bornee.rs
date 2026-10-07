@@ -255,7 +255,10 @@ mod file_de_riposte_bornee_tests {
         // ---- (A) LOTS DE FOND ET RÉCLAMATIONS : la borne se draine par répétition. -------------
         ("actions.rs", "actions_pending", "réclamation d'agent : le lot est CLAIMÉ puis retiré du \
           prochain tour ; ce n'est pas un inventaire présenté à un lecteur"),
-        ("caseops.rs", "sla_multilevel_tick", "boucle de fond des échéances : le tour suivant reprend \
+        // `P10.20-w` (rang trois) — le corps (et ses deux `LIMIT 20`) a été déplacé dans
+        // `sla_multilevel_tick_par` pour injecter l'envoyeur, comme l'escalade ci-dessous ; même énoncé,
+        // même raison : le marqueur de dépassement retire le dossier du tour suivant.
+        ("caseops.rs", "sla_multilevel_tick_par", "boucle de fond des échéances : le tour suivant reprend \
           les dossiers non traités"),
         ("caseops.rs", "sla_recalcule_la_priorite_bornee", "recalcul de fond, borné par tour"),
         // `P10.20-w` (rang trois, 2026-10-07) — le corps (et son `LIMIT 20`) a été déplacé dans

@@ -59,6 +59,18 @@ pub(crate) const CAUSE_ETAPES_DU_RUNBOOK_NON_ECRITES: &str = "RUNBOOK NON ATTACH
      dossier n'a pas de progression, ni la chronologie ni le registre n'en portent trace, et un nouvel \
      essai reste possible. Cause : ";
 
+/// `P10.20-b` (rang deux) — L'EXISTENCE DU DOSSIER N'A PAS ÉTÉ LUE. Elle se lisait `.is_err()` : une lecture
+/// refusée rendait « incident introuvable » (400) pour un dossier vivant. Rien n'est écrit, l'appelant réessaie.
+pub(crate) const CAUSE_DOSSIER_NON_LU_POUR_L_ATTACHE: &str = "RUNBOOK NON ATTACHÉ : la base n'a pas rendu \
+     l'existence du dossier — ce n'est PAS « incident introuvable ». Rien n'est écrit, ni étape, ni chronologie, \
+     ni registre ; réessayez.";
+/// `P10.20-b` (rang deux) — LA PROGRESSION EXISTANTE N'A PAS ÉTÉ LUE. Elle se lisait `.unwrap_or(0)` : une lecture
+/// ratée valait « aucune progression », la garde « un runbook est déjà attaché » était SAUTÉE et les étapes
+/// s'inséraient EN DOUBLE sur un dossier qui avait déjà sa progression. Rien n'est écrit, l'appelant réessaie.
+pub(crate) const CAUSE_PROGRESSION_NON_LUE_POUR_L_ATTACHE: &str = "RUNBOOK NON ATTACHÉ : la base n'a pas rendu la \
+     progression existante du dossier — attacher sans l'avoir lue pourrait DOUBLER des étapes déjà suivies. Rien \
+     n'est écrit, ni étape, ni chronologie, ni registre ; réessayez.";
+
 // ---------------------------------------------------------------------------------------------------------
 // CŒUR TESTABLE (fonctions pures sur &Connection, sans AppState).
 // ---------------------------------------------------------------------------------------------------------
@@ -431,6 +443,10 @@ pub(crate) enum RefusDAttache {
     /// La base n'a pas pris l'écriture d'une étape (ou la transaction) : tout est annulé, AUCUNE étape n'est
     /// posée, rien n'est attesté, et l'attache reste possible.
     EtapesNonEcrites(String),
+    /// `P10.20-b` (rang deux) — une lecture qui JUGE l'attache (existence du dossier, progression existante) n'a
+    /// pas eu lieu : rien n'est écrit. Porte la cause constante (`CAUSE_DOSSIER_NON_LU_POUR_L_ATTACHE`,
+    /// `CAUSE_PROGRESSION_NON_LUE_POUR_L_ATTACHE`) ; l'erreur du moteur va au journal du démon. `503` côté route.
+    NonLu(&'static str),
 }
 
 impl From<&str> for RefusDAttache {
@@ -450,6 +466,7 @@ impl std::fmt::Display for RefusDAttache {
         match self {
             RefusDAttache::Refuse(raison) => f.write_str(raison),
             RefusDAttache::EtapesNonEcrites(cause) => write!(f, "{CAUSE_ETAPES_DU_RUNBOOK_NON_ECRITES}{cause}"),
+            RefusDAttache::NonLu(cause) => f.write_str(cause),
         }
     }
 }
@@ -476,10 +493,24 @@ impl std::fmt::Display for RefusDAttache {
 /// étapes s'écrivent désormais dans UNE transaction, chacune comptée ; la chronologie et le registre ne
 /// suivent que la validation, et comptent les étapes ÉCRITES.
 pub(crate) fn attach_runbook(conn: &Connection, id: i64, runbook_id: i64, author: &str, targets: &PrefillTargets) -> Result<i64, RefusDAttache> {
-    if conn.query_row("SELECT 1 FROM incident WHERE id=?1", params![id], |_| Ok(())).is_err() {
-        return Err("incident introuvable".into());
+    // `P10.20-b` (rang deux) — les deux lectures qui JUGENT l'attache sont des `Result` scrutés : l'absence ÉTABLIE
+    // (`QueryReturnedNoRows`) garde le refus d'avant, la lecture refusée est un refus NOMMÉ, rien n'est écrit.
+    match conn.query_row("SELECT 1 FROM incident WHERE id=?1", params![id], |_| Ok(())) {
+        Ok(()) => {}
+        Err(rusqlite::Error::QueryReturnedNoRows) => return Err("incident introuvable".into()),
+        Err(e) => {
+            eprintln!("[runbooks] existence du dossier #{id} NON LUE, attache refusée : {e}");
+            return Err(RefusDAttache::NonLu(CAUSE_DOSSIER_NON_LU_POUR_L_ATTACHE));
+        }
     }
-    let already: i64 = conn.query_row("SELECT COUNT(*) FROM case_step WHERE incident_id=?1", params![id], |r| r.get(0)).unwrap_or(0);
+    // Avant : `.unwrap_or(0)` — un zéro FABRIQUÉ faisait sauter la garde ci-dessous et doublait la progression.
+    let already: i64 = match conn.query_row("SELECT COUNT(*) FROM case_step WHERE incident_id=?1", params![id], |r| r.get(0)) {
+        Ok(n) => n,
+        Err(e) => {
+            eprintln!("[runbooks] progression du dossier #{id} NON LUE, attache refusée : {e}");
+            return Err(RefusDAttache::NonLu(CAUSE_PROGRESSION_NON_LUE_POUR_L_ATTACHE));
+        }
+    };
     if already > 0 {
         return Err("un runbook est déjà attaché à cet incident (progression existante)".into());
     }
@@ -742,7 +773,9 @@ pub(crate) async fn case_runbook_attach(State(st): State<AppState>, Extension(au
         Ok(n) => Json(json!({ "attached": n })).into_response(),
         Err(RefusDAttache::Refuse(raison)) => bad_req(raison),
         // `P10.21-t` — une étape non écrite n'est pas une demande invalide : `503`, et rien n'est posé.
-        Err(refus @ RefusDAttache::EtapesNonEcrites(_)) => err_json(StatusCode::SERVICE_UNAVAILABLE, refus.to_string()),
+        // `P10.20-b` — une lecture qui JUGE l'attache (dossier, progression) n'a pas eu lieu : ni une demande invalide,
+        // ni une absence. Même bras : rien n'est posé non plus, et la face « aucune étape n'est posée » vaut pour les deux.
+        Err(refus @ (RefusDAttache::EtapesNonEcrites(_) | RefusDAttache::NonLu(_))) => err_json(StatusCode::SERVICE_UNAVAILABLE, refus.to_string()),
     }
 }
 

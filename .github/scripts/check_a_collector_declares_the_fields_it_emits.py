@@ -8,8 +8,12 @@ tient contre la forme du code, ce volet déclare les CHAMPS ÉTENDUS qu'un capte
 
 L'AUTORITÉ DE DÉRIVATION — ET POURQUOI C'EST UN MIROIR, PAS UNE LISTE
 --------------------------------------------------------------------
-`daemon/src/collected.rs` porte `COLLECTED_EXTENDED_FIELDS: &[(&str, &str)]` — 168 couples
-(champ, fichier_émetteur) mesurés sur l'arbre. Cette constante n'est PAS tenue à la main : le témoin
+`daemon/src/collected.rs` porte `COLLECTED_EXTENDED_FIELDS: &[(&str, &str)]` — 312 couples
+(champ, fichier_émetteur) mesurés sur l'arbre. AVANT le reste 2 de `P11.19-a`, la table ne portait
+qu'UNE citation par champ (168 puis 169), donc l'en-tête d'`auditd.sh` taisait `action`, `auid`, `comm`,
+`key`, `path` et `type`, qu'il émet — cette garde disait « miroir exact » d'une projection tronquée. La
+complétude AU GRAIN DU COUPLE est tenue par `daemon/src/tests/champs_etendus_servis_par_source.rs`.
+Cette constante n'est PAS tenue à la main : le témoin
 `daemon/src/tests/detection.rs` la tient == au balayage réel `collected_extract_shipped` DANS LES DEUX
 SENS (y ajouter un couple que l'extracteur ne dérive pas rougit ; en retirer un qu'il dérive rougit
 aussi). Elle est donc l'autorité dérivable : les champs d'un capteur `X.sh` = tous les champs dont la

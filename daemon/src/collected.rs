@@ -29,7 +29,7 @@
 //! (tests/detection.rs), qui contrôle les DEUX sens AVEC LE MÊME EXTRACTEUR :
 //!
 //!   (A) AUCUNE ENTRÉE FANTÔME — le champ doit être EXTRAIT du fichier cité, c'est-à-dire y apparaître en
-//!       POSITION DE PRODUCTEUR (P1..P5 ci-dessous). Une occurrence quelconque du nom NE SUFFIT PAS : la
+//!       POSITION DE PRODUCTEUR (P1..P6 ci-dessous). Une occurrence quelconque du nom NE SUFFIT PAS : la
 //!       version précédente se contentait d'une SOUS-CHAÎNE, et `("RequestPath", "web.sh")` passait au vert
 //!       alors que `web.sh` ne fait que LIRE cette clé Traefik (`sval("RequestPath")`) et n'émet que
 //!       `fields.path` — un faux vert re-fabricable en UNE LIGNE.
@@ -52,11 +52,16 @@
 //!       `-Fields @{ … }` (hashtable PowerShell, clés nues séparées par `;`).
 //!   P2. insertion par CLÉ LITTÉRALE dans le sac : `…insert("X".into()|"X".to_string(), Value::…)` (Rust),
 //!       `fields["X"] =` (python).
-//!   P3. overlays de parseurs livrés : clés de `map.fields` + groupes nommés `(?P<x>…)` de `pattern`.
+//!   P3. overlays de parseurs livrés : clés de `map.fields` + groupes nommés `(?P<x>…)` de `pattern` + les
+//!       clés de tête de `map` que `dparsers_apply` écrit aussi dans le sac (`action` ; `src_ip`/`dst_ip`/`url`
+//!       sont des colonnes cœur).
 //!   P4. ajouteur de champ awk `af("X", v)` — UNIQUEMENT dans un fichier qui DÉFINIT `function af(` (c'est
 //!       le cas d'`auditd.sh`) ; ailleurs, `f("X")` reste un appel quelconque, pas un producteur.
-//!   P5. fragment d'objet JSON échappé `",\"X\":\"` concaténé dans le sac (awk : le `ext` de `mail.sh`, le
+//!   P5. fragment d'objet JSON échappé `",\"X\":\"` (ou `{\"X\":\"` en tête) concaténé dans le sac (awk : le `ext` de `mail.sh`, le
 //!       `fj` de `pod-logs.sh`) — UNIQUEMENT dans un `.sh` qui contient par ailleurs un objet `fields`.
+//!       Une clé située AVANT l'ouverture `\"events\":[` de sa ligne est une clé d'ENVELOPPE, pas un champ.
+//!   P6. 3e argument LITTÉRAL de `$(heartbeat <source> <message> {…})` (`.sh`) : `lib.sh` l'écrit tel quel
+//!       sous `"fields":`, clés de profondeur 1, valeurs NUMÉRIQUES comprises (`active_bans`, `alive`…).
 //! Les fichiers `.rs` sont tronqués à leur premier `#[cfg(test)]` EN COLONNE 0 : les fixtures de test ne
 //! sont pas de la collecte livrée.
 //!
@@ -64,8 +69,15 @@
 //!   * la recopie VERBATIM des clés `EventData` du log Windows (`source/windows.rs`, `m.insert(name, …)`)
 //!     et les champs des sources DÉCLARATIVES `[[source]]` (`source/generic.rs`) : surfaces OUVERTES,
 //!     définies au DÉPLOIEMENT, donc non inventoriables statiquement ;
-//!   * dans un fragment P5, une clé à valeur NON-string (`\"X\":123`, `\"X\":{`) et la PREMIÈRE clé d'un
-//!     fragment (P5 exige la virgule qui la précède) ;
+//!   * dans un fragment P5, une clé à valeur NON-string (`\"X\":123`, `\"X\":{`) — hors 3e argument de
+//!     `heartbeat`, vu par P6. Mesuré au `P11.19-a` sur `collectors/*.sh` : les autres clés non-string sont
+//!     des enveloppes `metrics`/`controls`/`firewall`, des clés LUES, ou imbriquées
+//!     (`enforcement.nft_blocked_total`) — aucune n'est un champ d'événement. Pour l'oracle d'inertie c'est
+//!     un SUR-avertissement ; pour la liste servie par `GET /api/sources`, ce serait une liste INCOMPLÈTE :
+//!     c'est pourquoi P6 existe. CE QUI ÉTAIT FAUX (vague D) : cette limite nommait aussi « la PREMIÈRE clé
+//!     d'un fragment », mais la mesure n'avait porté que sur les clés non-string ; `ns`, première clé du
+//!     `fj` de pod-logs.sh, manquait à la liste servie de `k8s-log`. P5 accepte désormais l'accolade en tête,
+//!     et le témoin `un_sac_assigne_a_une_variable_est_servi_en_entier` relit ces sacs SANS l'extracteur ;
 //!   * les overlays `config.d/parsers/*.json` ajoutés par l'exploitant APRÈS déploiement (seuls les
 //!     overlays LIVRÉS sont balayés).
 //!
@@ -108,7 +120,30 @@
 use guatx_core::cim::CIM_CORE_FIELDS;
 
 /// Champs ÉTENDUS (`fields.<X>`) que les collecteurs/parseurs/agent LIVRÉS écrivent réellement, chacun avec
-/// le FICHIER LIVRÉ qui l'émet. La citation est un SUFFIXE de chemin qui doit désigner UN SEUL fichier de la
+/// le FICHIER LIVRÉ qui l'émet — UN COUPLE PAR (champ, fichier) ÉMETTEUR, pas une citation par champ.
+///
+/// `P11.19-a` (reste 2, moitié démon) — CE QUI ÉTAIT FAUX. La table ne portait qu'UNE citation par champ
+/// (169 entrées) : `action` n'y était imputé qu'à `bans.sh`, alors que quinze fichiers livrés l'émettent ;
+/// `web.sh` n'y portait que 3 de ses 18 champs, `cloudflare-http.sh` aucun des 7 siens. Suffisant pour
+/// l'oracle d'inertie (qui ne demande que « quelqu'un l'émet-il ? »), FAUX dès qu'on lit la table PAR
+/// FICHIER — ce que font l'en-tête `# plume-emits:` des capteurs et l'inventaire `/api/sources`. Mesuré :
+/// 133 couples émis manquaient. Elle porte désormais TOUS les couples que l'extracteur dérive (hors
+/// colonnes cœur du CIM), et la complétude AU GRAIN DU COUPLE est tenue par
+/// `champs_etendus_servis_par_source.rs` (la garde de `detection.rs` ne la tient qu'au grain du champ).
+/// Lue par fichier, la table a aussi révélé une SUR-extraction que la lecture par champ masquait : le
+/// fragment P5 prenait la clé d'ENVELOPPE de spool (`\"kind\":\"events\"`) pour un champ, et quatre
+/// couples `kind` (web.sh, mail.sh, dataaccess.sh, dataacl.sh) ne correspondaient à aucun `fields.kind`
+/// écrit. Retirés (298 couples) ; l'extracteur écarte désormais la clé qui PRÉCÈDE l'enveloppe sur sa ligne.
+/// Lue comme liste CLOSE par source, elle était aussi INCOMPLÈTE : les champs NUMÉRIQUES du 3e argument
+/// de `heartbeat` (`active_bans`, `alive` ×3, `hits_seen`, `scans_seen`, `blocks_seen`, `rules_allow`)
+/// n'étaient dérivés par aucune position — `fail2ban` était servi sans `active_bans`. Position P6 ajoutée,
+/// 8 couples (306), tenus aussi par un oracle qui relit les appels `heartbeat` sans l'extracteur.
+/// Vague D, deux sous-extractions de plus, mesurées par une revue adverse : la PREMIÈRE clé d'un fragment
+/// P5 (`ns` du sac de pod-logs.sh) et la clé `map.action` des overlays (que `dparsers_apply` écrit dans le
+/// sac comme `map.fields`) — `k8s-log` était servi sans `ns`, `nft` et `firewall` sans `action`. 6 couples
+/// (312), chacun tenu par un oracle qui relit le texte livré sans l'extracteur.
+///
+/// La citation est un SUFFIXE de chemin qui doit désigner UN SEUL fichier de la
 /// surface balayée (`mod.rs`/`windows.rs`/`linux.rs` existent en double -> `fim/mod.rs`, `source/windows.rs`).
 /// La casse est SIGNIFICATIVE : `json_extract` est sensible à la casse, un `fields.Action` ne serait pas
 /// peuplé par un collecteur qui écrit `action`.
@@ -119,20 +154,46 @@ pub(crate) const COLLECTED_EXTENDED_FIELDS: &[(&str, &str)] = &[
     ("access", "minio.sh"),
     ("accessKey", "minio-audit-relay.py"),
     ("acct", "auditd.sh"),
+    ("action", "auditd.sh"),
     ("action", "bans.sh"),
+    ("action", "cloudflare-firewall-events.json"),
+    ("action", "cloudflare.sh"),
+    ("action", "crowdsec.sh"),
+    ("action", "dataaccess.sh"),
+    ("action", "example-cim-firewall.json"),
+    ("action", "example-csv-firewall.json"),
+    ("action", "example-endpoint-fim.json"),
+    ("action", "fim/mod.rs"),
+    ("action", "kube-audit.sh"),
+    ("action", "mail.sh"),
+    ("action", "nft-scan-detect.json"),
+    ("action", "origin-drop.sh"),
+    ("action", "plume-collector.ps1"),
+    ("action", "portprobe.sh"),
+    ("action", "portscan.sh"),
+    ("action", "source/windows.rs"),
+    ("action", "ufw.sh"),
+    ("action", "web.sh"),
+    ("active_bans", "bans.sh"),
     ("addr", "auditd.sh"),
     ("agent_ready", "crowdsec.sh"),
+    ("alive", "dataaccess.sh"),
+    ("alive", "integrity.sh"),
+    ("alive", "journal.sh"),
     ("api", "minio-audit-relay.py"),
     ("app", "plume-collector.ps1"),
     ("asn", "cloudflare.sh"),
     ("atype", "auditd.sh"),
     ("audit_rules_loaded", "auditd.sh"),
+    ("auid", "auditd.sh"),
     ("auid", "dataaccess.sh"),
     ("backend", "fim/mod.rs"),
     ("binding", "kube-rbac.sh"),
+    ("blocks_seen", "ufw.sh"),
     ("bucket", "minio-audit-relay.py"),
     ("buckets", "minio.sh"),
     ("bytes", "example-nginx.json"),
+    ("bytes", "web.sh"),
     ("carve_out", "auditd.sh"),
     ("cause", "conntrack.sh"),
     ("census_capped", "plume-collector.ps1"),
@@ -141,32 +202,64 @@ pub(crate) const COLLECTED_EXTENDED_FIELDS: &[(&str, &str)] = &[
     ("cf_country", "cloudflare-firewall-events.json"),
     ("cf_rule", "cloudflare-firewall-events.json"),
     ("cf_source", "cloudflare-firewall-events.json"),
+    ("cf_source", "cloudflare.sh"),
     ("cf_ua", "cloudflare-firewall-events.json"),
+    ("change", "fim/mod.rs"),
     ("change", "integrity.sh"),
+    ("channel", "plume-collector.ps1"),
     ("channel", "source/windows.rs"),
     ("cmdline_absent", "plume-collector.ps1"),
     ("cmdline_present", "plume-collector.ps1"),
     ("code", "kube-audit.sh"),
     ("collect_status", "lib.sh"),
+    ("collect_status", "plume-collector.ps1"),
     ("collected_ids", "plume-collector.ps1"),
     ("collector", "auditd.sh"),
+    ("collector", "conntrack.sh"),
+    ("collector", "lib.sh"),
+    ("collector", "mail.sh"),
+    ("collector", "minio-audit-relay.py"),
+    ("collector", "nft.sh"),
+    ("collector", "plume-collector.ps1"),
+    ("collector", "pod-logs.sh"),
+    ("collector", "portscan.sh"),
+    ("collector", "web.sh"),
+    ("comm", "auditd.sh"),
     ("comm", "dataaccess.sh"),
     ("container", "pod-logs.sh"),
+    ("count", "cloudflare-http.sh"),
     ("count", "conntrack.sh"),
     ("country", "cloudflare.sh"),
     ("decision", "kube-audit.sh"),
     ("desired", "engagement-adapter.sh"),
     ("detail", "lib.sh"),
+    ("detail", "plume-collector.ps1"),
     ("detector", "origin-drop.sh"),
+    ("detector", "portprobe.sh"),
+    ("detector", "portscan.sh"),
+    ("dir", "cloudflare-http.sh"),
+    ("dir", "cloudflare.sh"),
     ("dir", "conntrack.sh"),
+    ("dir", "origin-drop.sh"),
+    ("dir", "portprobe.sh"),
+    ("dir", "portscan.sh"),
+    ("dir", "ufw.sh"),
+    ("dir", "web.sh"),
     ("direction", "plume-collector.ps1"),
     ("dport", "conntrack.sh"),
+    ("dport", "example-cim-firewall.json"),
+    ("dport", "origin-drop.sh"),
+    ("dport", "portscan.sh"),
+    ("dport", "ufw.sh"),
     ("dst_host", "conntrack.sh"),
+    ("dst_port", "example-csv-firewall.json"),
     ("dst_port", "nft-scan-detect.json"),
+    ("dst_port", "plume-collector.ps1"),
     ("dur_ms", "web.sh"),
     ("enabled", "plume-collector.ps1"),
     ("enforcement", "nft.sh"),
     ("ensured", "engagement-adapter.sh"),
+    ("event_id", "plume-collector.ps1"),
     ("event_id", "source/windows.rs"),
     ("exe", "auditd.sh"),
     ("exec_drop_dropped_this_run", "auditd.sh"),
@@ -177,18 +270,28 @@ pub(crate) const COLLECTED_EXTENDED_FIELDS: &[(&str, &str)] = &[
     ("exec_rule_b64", "auditd.sh"),
     ("failcount", "engagement-adapter.sh"),
     ("family", "origin-drop.sh"),
+    ("family", "portscan.sh"),
     ("file", "yara.sh"),
     ("files_scanned", "pod-logs.sh"),
     ("filters", "auditd.sh"),
+    ("filters", "conntrack.sh"),
+    ("filters", "mail.sh"),
+    ("filters", "minio-audit-relay.py"),
+    ("filters", "pod-logs.sh"),
+    ("filters", "web.sh"),
     ("fim_actor", "example-endpoint-fim.json"),
     ("fim_change", "fim/mod.rs"),
     ("fim_coverage", "fim/mod.rs"),
     ("fim_event", "example-endpoint-fim.json"),
+    ("fim_event", "fim/mod.rs"),
     ("fim_gid", "fim/mod.rs"),
     ("fim_mode", "example-endpoint-fim.json"),
+    ("fim_mode", "fim/mod.rs"),
     ("fim_mode_octal", "fim/mod.rs"),
     ("fim_path", "example-endpoint-fim.json"),
+    ("fim_path", "fim/mod.rs"),
     ("fim_sha256", "example-endpoint-fim.json"),
+    ("fim_sha256", "fim/mod.rs"),
     ("fim_sha256_before", "fim/mod.rs"),
     ("fim_size", "fim/mod.rs"),
     ("fim_size_before", "fim/mod.rs"),
@@ -196,43 +299,82 @@ pub(crate) const COLLECTED_EXTENDED_FIELDS: &[(&str, &str)] = &[
     ("flags", "dataacl.sh"),
     ("gap", "plume-collector.ps1"),
     ("group", "dataacl.sh"),
+    ("hits_seen", "origin-drop.sh"),
     ("http", "engagement-adapter.sh"),
     ("inbound", "plume-collector.ps1"),
+    ("key", "auditd.sh"),
     ("key", "dataaccess.sh"),
     ("kind", "integrity.sh"),
+    ("kind", "kube-rbac.sh"),
+    ("kind", "minio.sh"),
     ("lapi_ok", "crowdsec.sh"),
     ("last_alert_age_s", "crowdsec.sh"),
+    ("level", "plume-collector.ps1"),
     ("level", "source/windows.rs"),
     ("lines_scanned", "pod-logs.sh"),
     ("local_port", "plume-collector.ps1"),
     ("max", "portscan.sh"),
     ("messageType", "macos.rs"),
+    ("method", "cloudflare-http.sh"),
+    ("method", "cloudflare.sh"),
     ("method", "example-nginx.json"),
+    ("method", "web.sh"),
     ("mode", "dataacl.sh"),
+    ("mode", "engagement-adapter.sh"),
     ("name", "kube-audit.sh"),
     ("nft_fail", "engagement-adapter.sh"),
     ("note", "auditd.sh"),
+    ("note", "conntrack.sh"),
+    ("note", "mail.sh"),
+    ("note", "minio-audit-relay.py"),
+    ("note", "nft.sh"),
+    ("note", "pod-logs.sh"),
+    ("note", "portscan.sh"),
+    ("note", "web.sh"),
     ("ns", "kube-audit.sh"),
+    ("ns", "kube-rbac.sh"),
+    ("ns", "pod-logs.sh"),
     ("object", "minio-audit-relay.py"),
     ("objects", "minio.sh"),
     ("os", "plume-collector.ps1"),
     ("os_category", "macos.rs"),
     ("outbound", "plume-collector.ps1"),
     ("owner", "dataacl.sh"),
+    ("path", "auditd.sh"),
     ("path", "cloudflare-firewall-events.json"),
+    ("path", "cloudflare-http.sh"),
+    ("path", "cloudflare.sh"),
+    ("path", "dataaccess.sh"),
+    ("path", "dataacl.sh"),
+    ("path", "example-nginx.json"),
+    ("path", "fim/mod.rs"),
+    ("path", "integrity.sh"),
+    ("path", "web.sh"),
+    ("pid", "macos.rs"),
+    ("pid", "plume-collector.ps1"),
     ("pid", "source/linux.rs"),
     ("pod", "pod-logs.sh"),
     ("policy", "minio.sh"),
     ("proc", "conntrack.sh"),
     ("proc_verdict", "conntrack.sh"),
     ("process", "macos.rs"),
+    ("process", "plume-collector.ps1"),
     ("profile", "plume-collector.ps1"),
     ("proto", "conntrack.sh"),
+    ("proto", "example-cim-firewall.json"),
+    ("proto", "example-csv-firewall.json"),
+    ("proto", "nft-scan-detect.json"),
+    ("proto", "origin-drop.sh"),
+    ("proto", "portscan.sh"),
+    ("proto", "ufw.sh"),
+    ("proto", "web.sh"),
     ("protocol", "plume-collector.ps1"),
+    ("provider", "plume-collector.ps1"),
     ("provider", "source/windows.rs"),
     ("ray", "cloudflare.sh"),
     ("rcpt", "mail.sh"),
     ("reason", "lib.sh"),
+    ("reason", "plume-collector.ps1"),
     ("record_id", "plume-collector.ps1"),
     ("refused", "engagement-adapter.sh"),
     ("remote_port", "plume-collector.ps1"),
@@ -241,42 +383,75 @@ pub(crate) const COLLECTED_EXTENDED_FIELDS: &[(&str, &str)] = &[
     ("res", "auditd.sh"),
     ("resource", "kube-audit.sh"),
     ("risk", "dataacl.sh"),
+    ("risk", "kube-rbac.sh"),
+    ("risk", "minio.sh"),
     ("role", "kube-rbac.sh"),
     ("router", "web.sh"),
     ("rule", "yara.sh"),
     ("ruleId", "cloudflare.sh"),
+    ("rules_allow", "ufw.sh"),
+    ("scans_seen", "portscan.sh"),
     ("scenarios_broken", "crowdsec.sh"),
     ("scenarios_loaded", "crowdsec.sh"),
+    ("scope", "cloudflare-http.sh"),
+    ("scope", "cloudflare.sh"),
     ("scope", "conntrack.sh"),
+    ("scope", "fim/mod.rs"),
+    ("scope", "integrity.sh"),
+    ("scope", "kube-rbac.sh"),
+    ("scope", "portprobe.sh"),
+    ("scope", "web.sh"),
     ("score", "mail.sh"),
     ("sender", "mail.sh"),
     ("service", "mail.sh"),
     ("set", "portprobe.sh"),
     ("sev3_shipped", "pod-logs.sh"),
+    ("sha256", "fim/mod.rs"),
     ("sha256", "integrity.sh"),
+    ("sha256", "yara.sh"),
     ("signal", "nft-scan-detect.json"),
     ("size", "mail.sh"),
     ("skew", "engagement-adapter.sh"),
     ("sport", "origin-drop.sh"),
     ("src_port", "plume-collector.ps1"),
     ("state", "conntrack.sh"),
+    ("state", "plume-collector.ps1"),
+    ("status", "cloudflare-http.sh"),
     ("status", "example-nginx.json"),
+    ("status", "minio-audit-relay.py"),
+    ("status", "minio.sh"),
+    ("status", "web.sh"),
     ("statusCode", "minio-audit-relay.py"),
     ("subject", "kube-rbac.sh"),
+    ("subject", "minio.sh"),
     ("subsystem", "macos.rs"),
     ("success", "auditd.sh"),
     ("syscall", "auditd.sh"),
     ("tags", "yara.sh"),
     ("truncated", "mail.sh"),
+    ("type", "auditd.sh"),
+    ("type", "conntrack.sh"),
     ("type", "dataacl.sh"),
+    ("type", "lib.sh"),
+    ("type", "mail.sh"),
+    ("type", "minio-audit-relay.py"),
+    ("type", "nft.sh"),
+    ("type", "plume-collector.ps1"),
+    ("type", "pod-logs.sh"),
+    ("type", "portscan.sh"),
+    ("type", "web.sh"),
+    ("ua", "cloudflare.sh"),
     ("ua", "web.sh"),
+    ("uid", "auditd.sh"),
+    ("uid", "source/linux.rs"),
     ("uncollected_events", "plume-collector.ps1"),
     ("uncollected_ids", "plume-collector.ps1"),
-    ("uid", "auditd.sh"),
     ("unit", "integrity.sh"),
     ("unit_dirs_from", "integrity.sh"),
     ("unit_form", "integrity.sh"),
     ("user", "dataaccess.sh"),
+    ("user", "kube-audit.sh"),
+    ("user", "mail.sh"),
     ("user_agent", "minio-audit-relay.py"),
     ("vendor", "example-cim-firewall.json"),
     ("verb", "kube-audit.sh"),
@@ -284,6 +459,9 @@ pub(crate) const COLLECTED_EXTENDED_FIELDS: &[(&str, &str)] = &[
     ("version_delete", "minio-audit-relay.py"),
     ("versions", "minio.sh"),
     ("vhost", "cloudflare-firewall-events.json"),
+    ("vhost", "cloudflare-http.sh"),
+    ("vhost", "cloudflare.sh"),
+    ("vhost", "web.sh"),
     ("virus", "mail.sh"),
 ];
 
@@ -293,3 +471,65 @@ pub(crate) const COLLECTED_EXTENDED_FIELDS: &[(&str, &str)] = &[
 pub(crate) fn plume_collects_field(name: &str) -> bool {
     CIM_CORE_FIELDS.contains(&name) || COLLECTED_EXTENDED_FIELDS.iter().any(|(f, _)| *f == name)
 }
+
+/// SURFACE BALAYÉE par l'extracteur qui tient `COLLECTED_EXTENDED_FIELDS` : `(répertoire, extension)`.
+/// MIROIR de `COLLECTED_SCAN_SURFACE` (tests de détection), tenu dans les DEUX sens par
+/// `champs_etendus_servis_par_source.rs` — pas une liste libre. Elle dit OÙ l'absence de couple VAUT
+/// « ce fichier n'écrit aucun champ étendu » : hors de cette surface, l'absence ne prouve rien.
+pub(crate) const COLLECTED_SCAN_DIRS: &[(&str, &str)] = &[
+    ("collectors", "sh"),
+    ("collectors", "py"),
+    ("collectors/windows", "ps1"),
+    ("agent/src/source", "rs"),
+    ("agent/src/source/fim", "rs"),
+    ("config.d/parsers", "json"),
+];
+
+/// Une citation (suffixe de chemin) désigne-t-elle ce fichier ? Même règle que la garde de l'inventaire :
+/// égalité ou suffixe AU SÉPARATEUR près (`cloudflare.sh` ne désigne pas `cloudflare-http.sh`).
+pub(crate) fn citation_designe(fichier: &str, citation: &str) -> bool {
+    fichier == citation || fichier.strip_suffix(citation).is_some_and(|p| p.ends_with('/'))
+}
+
+/// Le fichier est-il dans la surface balayée ? (le `tests.rs` en est exclu, comme par l'extracteur)
+pub(crate) fn fichier_dans_la_surface(fichier: &str) -> bool {
+    let Some((dir, base)) = fichier.rsplit_once('/') else { return false };
+    let Some((_, ext)) = base.rsplit_once('.') else { return false };
+    base != "tests.rs" && COLLECTED_SCAN_DIRS.iter().any(|(d, e)| *d == dir && *e == ext)
+}
+
+/// LES COUPLES DE L'AUTORITÉ, seule porte de lecture de la jointure et de ses témoins.
+pub(crate) fn couples_etendus() -> Vec<(&'static str, &'static str)> {
+    COLLECTED_EXTENDED_FIELDS.to_vec()
+}
+
+/// `P11.19-a` — LE CANAL D'AVEU COMMUN. `lib.sh::plume_report_availability` (et les aides qui y mènent :
+/// `plume_unavailable`, `plume_lecture_echouee`, `plume_lecture_partielle`, `plume_reglage_illisible`,
+/// `plume_collecte_tronquee`, `plume_adresse_illisible`, `plume_mesures_avouer`, `plume_disabled`) écrit
+/// les couples cités `lib.sh` SOUS LA SOURCE PASSÉE EN PREMIER ARGUMENT. Ces sources sont celles qu'un
+/// capteur livré nomme LITTÉRALEMENT en premier argument d'une de ces aides (un argument variable,
+/// `"$SOURCE"` de custom.sh, n'est pas résoluble et n'est pas imputé). MIROIR tenu dans les deux sens par
+/// `champs_etendus_servis_par_source.rs` contre le texte des capteurs ; pas une liste libre.
+/// Sans cette table, `clamav` était servi `[]` (« aucun champ établi ») alors que ses aveux portent
+/// `type`, `collector`, `collect_status`, `reason` et `detail`.
+pub(crate) const FICHIER_DU_CANAL_D_AVEU: &str = "collectors/lib.sh";
+pub(crate) const SOURCES_DU_CANAL_D_AVEU: &[&str] = &[
+    "auditd", "clamav", "cloudflare", "cloudflare-http", "conntrack", "containerd", "controls", "crowdsec",
+    "custom", "dataaccess", "fail2ban", "falco", "firewall", "integrity", "journal", "k8s", "k8s-log",
+    "kube-audit", "kube-rbac", "mail", "minio", "nft", "origin-drop", "portprobe", "portscan", "prom-scrape",
+    "resources", "ship", "suricata", "ufw", "update", "vuln", "web", "yara",
+];
+
+/// `P11.19-a` — LA SOURCE À LAQUELLE S'APPLIQUE CHAQUE OVERLAY DE PARSEUR LIVRÉ (`"source"` du JSON) : ses
+/// champs (`map.fields`, `map.action`, groupes nommés du `pattern`) sont écrits sur les événements de CETTE source à
+/// l'ingestion. MIROIR des overlays chargeables de `config.d/parsers/` (source non joker), tenu dans les
+/// deux sens par `champs_etendus_servis_par_source.rs`. Sans elle, les champs de `nft-scan-detect.json`
+/// (`"source": "nft"`) étaient rangés « sans source livrée » alors que la source `nft` est servie.
+pub(crate) const SOURCE_DES_OVERLAYS: &[(&str, &str)] = &[
+    ("config.d/parsers/cloudflare-firewall-events.json", "cloudflare"),
+    ("config.d/parsers/example-cim-firewall.json", "firewall"),
+    ("config.d/parsers/example-csv-firewall.json", "csv-firewall"),
+    ("config.d/parsers/example-endpoint-fim.json", "fim-agent"),
+    ("config.d/parsers/example-nginx.json", "nginx"),
+    ("config.d/parsers/nft-scan-detect.json", "nft"),
+];

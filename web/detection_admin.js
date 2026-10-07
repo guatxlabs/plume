@@ -1563,7 +1563,20 @@ function labelActionKindOptions(banDurationS) {
 async function loadPlaybooks() {
   const wrap = $('#pb-list'); if (!wrap) return;
   const d = await fetchInto(wrap, '/playbooks'); if (!d) return;   // P11.14-a : la cause est écrite dans le panneau
-  const playbooks = d.playbooks || [], mode = d.mode || 'observe', ban_duration_s = d.ban_duration_s === undefined ? null : d.ban_duration_s;
+  // `P10.31-m` — UN MODE NON LU N'EST PAS « OBSERVATION ». Le démon sert `mode: null` et la cause sous `mode_non_lu`
+  // quand la lecture de `plume_mode` rate (`playbooks_list`, daemon/src/handlers/playbooks.rs) ; `d.mode || 'observe'`
+  // peignait alors « PROPOSÉ … pas exécuté » sur un déploiement qui peut être Actif et EXÉCUTER. Seul un mode LU
+  // (`active` ou `observe`) donne sa conséquence ; tout autre valeur — `null`, mais aussi un champ ABSENT — se dit NON
+  // LU. DÉCISION pour le champ absent : aucune version du démon ne l'omet (même le corps d'une liste illisible le
+  // porte), donc son absence n'est jamais un « observe » établi ; la console nomme alors sa propre cause.
+  const playbooks = d.playbooks || [], ban_duration_s = d.ban_duration_s === undefined ? null : d.ban_duration_s;
+  const mode = d.mode === 'active' || d.mode === 'observe' ? d.mode : null;
+  // Un mode SERVI mais hors des deux valeurs (base éditée à la main : `mode_set` normalise) n'est pas « non servi » :
+  // la cause dit la valeur reçue au lieu de prétendre qu'aucune ne l'a été.
+  const causeDuModeNonLu = mode ? '' : (d.mode_non_lu ? String(d.mode_non_lu).trim()
+    : (d.mode === null || d.mode === undefined)
+      ? faceDansLaLangue({ fr: 'le démon n\'a pas servi le mode global', en: 'the daemon did not serve the global mode' })
+      : faceDansLaLangue({ fr: 'le démon a servi un mode inconnu : {valeur}', en: 'the daemon served an unknown mode: {valeur}' }, { valeur: String(d.mode) }));
   labelActionKindOptions(ban_duration_s);
   // `P10.7-f` — LA LISTE EST AVOUÉE, LE MODE RESTE PEINT. Le démon sert `{playbooks: [], mode,
   // ban_duration_s, error: <cause>}` : `mode` et la durée du ban NE DÉRIVENT PAS de la lecture qui a
@@ -1582,6 +1595,11 @@ async function loadPlaybooks() {
   }
   wrap.replaceChildren();
   const note = takePendingNote('playbooks'); if (note) wrap.appendChild(note); // P11.1-e
+  if (!mode) {
+    const aveuDuMode = document.createElement('div'); aveuDuMode.className = 'bad'; aveuDuMode.style.cssText = 'margin:0 0 6px;font-size:12px';
+    aveuDuMode.textContent = faceDansLaLangue({ fr: 'Mode des réponses automatiques NON LU — « {cause} »', en: 'Automatic response mode NOT READ — “{cause}”' }, { cause: causeDuModeNonLu });
+    wrap.appendChild(aveuDuMode);
+  }
   if (!playbooks.length) { wrap.appendChild(muted('aucun playbook')); return; }
   // groupe repliable « Playbooks » (même chrome que Détection/Parseurs) — tri par nom (localeCompare)
   playbooks.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
@@ -1595,7 +1613,9 @@ async function loadPlaybooks() {
 // états ; l'activation CONFIRME (elle arme une action réseau/processus) ; le mode global dit si ON exécute
 // (Actif) ou propose (Observation : file Actions, en attente, dry-run).
 function playbookRowModel(p, mode) {
-  const consequence = (p.consequence || ('-> ' + p.action_kind)) + (mode === 'active' ? ' — mode Actif : EXÉCUTÉ sans approbation' : ' — mode Observation : PROPOSÉ dans Actions (en attente, dry-run), pas exécuté');
+  let consequence = (p.consequence || ('-> ' + p.action_kind)) + (mode === 'active' ? ' — mode Actif : EXÉCUTÉ sans approbation' : ' — mode Observation : PROPOSÉ dans Actions (en attente, dry-run), pas exécuté');
+  // `P10.31-m` : un mode non lu (`null`) ne prend la conséquence d'aucun des deux modes.
+  if (mode !== 'active' && mode !== 'observe') consequence = (p.consequence || ('-> ' + p.action_kind)) + faceDansLaLangue({ fr: ' — mode NON LU : EXÉCUTÉ sans approbation si le démon est en Actif, PROPOSÉ s\'il est en Observation', en: ' — mode NOT READ: EXECUTED without approval if the daemon is Active, PROPOSED if it is in Observation' });
   return {
     family: 'playbook', name: p.name, origin: p.managed, enabled: !!p.enabled, consequence,
     // #1c-toggle : (dés)activation ADMIN-only via /enabled (audité + persistant pour les overlays config.d).

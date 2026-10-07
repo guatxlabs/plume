@@ -130,12 +130,43 @@ pub(crate) fn sla_on_status_change(conn: &Connection, id: i64, new_status: &str,
 /// trace un item 'sla' + ledger, et notifie via les notifiers du tenant (min_severity respecté). SKIP les
 /// cases EN PAUSE (sla_paused_since NOT NULL). EARLY-RETURN si `sla_policy` VIDE -> ZÉRO travail mode 0
 /// (miroir de escalate_overdue_cases). Séquentiel + LIMIT (budget 2 Go). Appelé dans la boucle de fond.
+/// Marqueur refusé : notifie QUAND MÊME, sans trace (voir `sla_multilevel_tick_par`).
 pub(crate) fn sla_multilevel_tick(db: &Arc<Mutex<Connection>>) {
+    sla_multilevel_tick_par(db, &mut notify_send);
+}
+
+/// `P10.20-w` — fin du `detail` d'une notification de dépassement SLA dont la base a REFUSÉ le marqueur
+/// `ack_breached`/`resolve_breached` : le destinataire apprend que le dépassement n'est pas enregistré et que
+/// l'alerte reviendra au tour suivant.
+pub(crate) const DEPASSEMENT_SLA_NON_ENREGISTRE: &str =
+    "DÉPASSEMENT NON ENREGISTRÉ : la base a refusé le marqueur, ni chronologie ni registre ; cette notification sera renvoyée au prochain tour.";
+
+/// `P10.20-w` (rang trois) — LE MARQUEUR DE DÉPASSEMENT EST ÉCRIT ET COMPTÉ AVANT TOUTE TRACE, comme
+/// `escalate_overdue_cases_par`. Avant, la notification partait, puis `UPDATE incident SET {col}=1` était AVALÉ,
+/// puis la chronologie et le registre attestaient le dépassement : sur une écriture refusée, le marqueur restait à 0,
+/// le dossier restait sélectionné, et CHAQUE tick renvoyait la notification ET ajoutait un `case.sla_*_breach` au
+/// registre non purgeable pour un marquage jamais posé. Désormais : une ligne marquée (`AND {col}=0`, un seul
+/// marqueur gagnant) -> envoi, chronologie, registre ; aucune ligne -> déjà marqué (ou disparu), rien ; écriture
+/// refusée -> l'envoi part QUAND MÊME (un SLA réellement dépassé ne se tait pas : renvoyé à chaque tour tant que le
+/// marqueur est refusé, comme avant), son `detail` finit par `DEPASSEMENT_SLA_NON_ENREGISTRE`, mais RIEN n'est inscrit
+/// en chronologie ni au registre ; le refus est compté UNE fois par tour (pas par dossier) au balayage
+/// `sla_multilevel_marqueur` (`/metrics`).
+/// L'envoyeur est injecté pour que les témoins COMPTENT les envois sans réseau ; la production passe `notify_send`.
+#[allow(clippy::type_complexity)]
+pub(crate) fn sla_multilevel_tick_par(
+    db: &Arc<Mutex<Connection>>,
+    envoyer: &mut dyn FnMut(&str, &str, &Value, i64, &str, &str, &str, i64) -> bool,
+) {
     let now_i = now();
     let (ack_b, res_b, notifiers): (Vec<(i64, String, i64)>, Vec<(i64, String, i64)>, Vec<(String, String, i64, String)>) = {
         let conn = db.lock();
         // GATE : aucune politique -> on ne fait RIEN (pas même un scan de la table incident).
-        let has_policy: i64 = conn.query_row("SELECT EXISTS(SELECT 1 FROM sla_policy WHERE enabled=1)", [], |r| r.get(0)).unwrap_or(0);
+        // `P10.20-w` — une porte NON LUE n'est pas « aucune politique » : le tour est sauté, mais COMPTÉ (balayage
+        // `sla_multilevel_politique`, `/metrics`), sinon des SLA réellement échus se taisent sans trace.
+        let has_policy: i64 = match conn.query_row("SELECT EXISTS(SELECT 1 FROM sla_policy WHERE enabled=1)", [], |r| r.get(0)) {
+            Ok(v) => v,
+            Err(e) => { crate::metrics::compter_un_tick_aveugle("sla_multilevel_politique", &e.to_string()); return; }
+        };
         if has_policy == 0 {
             return;
         }
@@ -179,25 +210,43 @@ pub(crate) fn sla_multilevel_tick(db: &Arc<Mutex<Connection>>) {
         };
         (ack_b, res_b, notifiers)
     };
-    let fire = |db: &Arc<Mutex<Connection>>, id: i64, title: &str, priority: i64, col: &str, kind: &str, what: &str| {
+    // `P10.20-w` — marqueurs refusés CE tour-ci : (nombre de dossiers, dernière cause), comptés une fois après les boucles.
+    let mut marqueurs_refuses: (usize, String) = (0, String::new());
+    let mut fire = |id: i64, title: &str, priority: i64, col: &str, kind: &str, what: &str| {
         let sev = match priority { 1 => 4, 2 => 3, 3 => 2, _ => 1 };
         let detail = format!("Case #{id} « {title} » : SLA {what} P{priority} dépassé.");
+        // `P10.20-w` — LE MARQUEUR D'ABORD, COMPTÉ : sans lui, l'envoi part avec l'aveu, mais aucune trace (voir l'en-tête).
+        let marque = match db.lock().execute(&format!("UPDATE incident SET {col}=1 WHERE id=?1 AND {col}=0"), params![id]) {
+            Ok(0) => return, // déjà marqué (ou disparu) depuis la sélection : rien à notifier ni à tracer
+            Ok(_) => true,
+            Err(e) => {
+                marqueurs_refuses.0 += 1;
+                marqueurs_refuses.1 = e.to_string();
+                false
+            }
+        };
+        let detail_envoye = if marque { detail.clone() } else { format!("{detail} {DEPASSEMENT_SLA_NON_ENREGISTRE}") };
         for (nk, url, minsev, cfg) in &notifiers {
             if sev >= *minsev {
                 let config: Value = serde_json::from_str(cfg).unwrap_or_else(|_| json!({}));
-                let _ = notify_send(nk, url, &config, sev, &format!("SLA {what} : {title}"), &detail, "", now_i);
+                let _ = envoyer(nk, url, &config, sev, &format!("SLA {what} : {title}"), &detail_envoye, "", now_i);
             }
         }
+        if !marque {
+            return;
+        }
         let conn = db.lock();
-        let _ = conn.execute(&format!("UPDATE incident SET {col}=1 WHERE id=?1"), params![id]);
         case_add_item(&conn, id, now_i, "sla", "system", &detail, None);
         ledger_append(&conn, kind, &format!("#{id} P{priority} {what}"));
     };
     for (id, title, pr) in &ack_b {
-        fire(db, *id, title, *pr, "ack_breached", "case.sla_ack_breach", "acquittement (MTTA)");
+        fire(*id, title, *pr, "ack_breached", "case.sla_ack_breach", "acquittement (MTTA)");
     }
     for (id, title, pr) in &res_b {
-        fire(db, *id, title, *pr, "resolve_breached", "case.sla_resolve_breach", "résolution (MTTR)");
+        fire(*id, title, *pr, "resolve_breached", "case.sla_resolve_breach", "résolution (MTTR)");
+    }
+    if marqueurs_refuses.0 > 0 {
+        crate::metrics::compter_une_escalade_notifiee_non_enregistree("sla_multilevel_marqueur", marqueurs_refuses.0, &marqueurs_refuses.1);
     }
 }
 

@@ -1,6 +1,6 @@
 #!/bin/sh
 # plume-source: dataacl
-# plume-emits: fields=flags,group,mode,owner,risk,type
+# plume-emits: fields=flags,group,mode,owner,path,risk,type
 # Capteur Plume (PLUGIN, OPT-IN) : CARTE D'ACCES aux donnees (Varonis brique b) -> events source=dataacl.
 # QUI PEUT acceder a QUOI + PROPRIETAIRE : snapshot des permissions (owner/group/mode) des dossiers
 # sensibles + flags risque (world-readable/writable, SUID/SGID). Dedup (chemin+mode+owner+group) ->

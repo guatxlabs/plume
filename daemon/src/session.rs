@@ -347,27 +347,118 @@ fn compte_de_la_session_ouverte(st: &AppState, jeton: &str) -> Option<(String, S
     ouverte.then_some((user, role))
 }
 
-/// L2 — lit le compteur de révocation de session persistant (meta `session_epoch`, défaut 0). Chargé au
-/// boot dans AppState.session_epoch (source de vérité mémoire consultée par mint/verify_session).
+/// L2 — lit le compteur de révocation de session persistant (meta `session_epoch`) AU DÉMARRAGE. Chargé dans
+/// AppState.session_epoch (source de vérité mémoire consultée par mint/verify_session).
+///
+/// `P10.20-b` (hors `handlers/`) — UNE ÉPOQUE NON LUE NE VAUT JAMAIS 0. La forme d'avant
+/// (`.ok().and_then(parse).unwrap_or(0)`) servait une lecture ratée ou une valeur illisible comme l'époque 0 : les
+/// cookies émis avant une révocation GLOBALE redevenaient valides jusqu'à leur expiration, sans un mot. CHOIX : REFUS
+/// DE DÉMARRER nommé (exit 78, EX_CONFIG, comme `load_session_secret`), PAS une époque fail-closed fabriquée — une
+/// époque inventée serait persistée par la révocation suivante et pourrait RETOMBER sur une époque déjà émise (ses
+/// cookies revaudraient), et elle invaliderait de toute façon toutes les sessions : le refus coûte la même chose aux
+/// usagers et dit la cause à l'exploitant. Une base neuve n'est pas concernée : `schema.sql` et la migration v73 posent
+/// la ligne à '0' ; une ligne ABSENTE reste l'époque 0 établie (`lire_l_epoque_de_session`).
 pub(crate) fn load_session_epoch(conn: &Connection) -> i64 {
-    conn.query_row("SELECT value FROM meta WHERE key='session_epoch'", [], |r| r.get::<_, String>(0))
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0)
+    match lire_l_epoque_de_session(conn) {
+        Ok(epoque) => epoque,
+        Err(cause) => {
+            eprintln!(
+                "[session] FATAL : l'époque de révocation des sessions (meta `session_epoch`) n'est pas lue : {cause}. \
+                 Démarrer à l'époque 0 rendrait valides les cookies révoqués par une déconnexion globale : refus de \
+                 démarrer. Répare la ligne `session_epoch` de `meta` (un entier), ou la base."
+            );
+            std::process::exit(78);
+        }
+    }
 }
 
-/// L2 — INCRÉMENTE l'epoch de session (révocation serveur) : met à jour le compteur EN MÉMOIRE (effet
-/// IMMÉDIAT sur mint/verify) ET le persiste dans meta (survit au redémarrage) -> tous les jetons antérieurs, de
-/// TOUS les comptes, deviennent invalides. Appelé par la déconnexion de portée `globale` (admin, tracée) et par
-/// toute déconnexion en mode 1. `P10.23-l` / `P10.23-o` : un changement de mot de passe et la déconnexion ordinaire
-/// ne l'appellent plus — ils avancent l'époque du SEUL compte (`avancer_l_epoque_du_compte`).
-pub(crate) fn bump_session_epoch(st: &AppState) {
-    let e = st.session_epoch.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-    let c = st.db.lock();
-    let _ = c.execute(
+/// `P10.20-b` — l'époque globale PERSISTÉE, une lecture ratée DISTINGUÉE d'une ligne absente : `Ok(0)` seulement
+/// quand la ligne n'existe pas (l'époque d'origine) ; une erreur de lecture ou une valeur qui n'est pas un entier est
+/// un `Err` qui la nomme (texte non entier, BLOB, NULL). `meta.value` a l'affinité TEXT (`schema.sql`) : un entier
+/// écrit y est rangé en texte et passe par la branche texte. La branche entier ne sert qu'une table `meta` SANS
+/// affinité (forme hors schéma) : la valeur y est lue telle quelle.
+pub(crate) fn lire_l_epoque_de_session(conn: &Connection) -> Result<i64, String> {
+    let lue = conn
+        .query_row("SELECT value FROM meta WHERE key='session_epoch'", [], |r| r.get::<_, rusqlite::types::Value>(0))
+        .optional()
+        .map_err(|e| format!("lecture de meta ratée ({e})"))?;
+    match lue {
+        None => Ok(0),
+        Some(rusqlite::types::Value::Integer(epoque)) => Ok(epoque),
+        Some(rusqlite::types::Value::Text(texte)) => texte.parse::<i64>().map_err(|e| format!("valeur « {texte} » illisible ({e})")),
+        Some(autre) => Err(format!("valeur de type {:?} illisible", autre.data_type())),
+    }
+}
+
+/// `P10.20-b` — PERSISTE l'époque globale `epoque` et COMPTE l'écriture : une ligne écrite, ou un `Err` qui dit
+/// pourquoi. Un `0` (un déclencheur qui l'ignore) n'est pas une écriture.
+fn persister_l_epoque_de_session(conn: &Connection, epoque: i64) -> Result<(), String> {
+    match conn.execute(
         "INSERT INTO meta(key,value) VALUES('session_epoch',?1) ON CONFLICT(key) DO UPDATE SET value=?1",
-        params![e.to_string()],
-    );
+        params![epoque.to_string()],
+    ) {
+        Ok(1) => Ok(()),
+        Ok(n) => Err(format!("{n} ligne(s) écrite(s) au lieu d'une")),
+        Err(e) => Err(format!("écriture refusée ({e})")),
+    }
+}
+
+/// L2 — INCRÉMENTE l'epoch de session (révocation serveur) : la PERSISTE dans meta (survit au redémarrage) PUIS met à
+/// jour le compteur EN MÉMOIRE (effet immédiat sur mint/verify) -> tous les jetons antérieurs, de TOUS les comptes,
+/// deviennent invalides. Appelé par toute déconnexion en mode 1 ; la portée `globale` (admin) passe par
+/// `revoquer_l_epoque_globale_tracee`, qui persiste ET trace dans une même transaction. `P10.23-l` / `P10.23-o` : un
+/// changement de mot de passe et la déconnexion ordinaire ne l'appellent plus — ils avancent l'époque du SEUL compte
+/// (`avancer_l_epoque_du_compte`).
+///
+/// `P10.20-b` — LA PERSISTANCE N'EST PLUS AVALÉE (`let _ = c.execute(..)`) : l'époque mémoire avançait d'abord, et
+/// une écriture refusée laissait une révocation qui ne survivait pas au redémarrage, servie comme faite. Désormais
+/// l'écriture est comptée AVANT, sous le verrou de la base (les révocations sont sérialisées) ; refusée, l'époque
+/// mémoire ne bouge pas et l'appelant reçoit la cause.
+pub(crate) fn bump_session_epoch(st: &AppState) -> Result<i64, String> {
+    let c = st.db.lock();
+    let suivante = st.session_epoch.load(std::sync::atomic::Ordering::SeqCst) + 1;
+    persister_l_epoque_de_session(&c, suivante)?;
+    st.session_epoch.store(suivante, std::sync::atomic::Ordering::SeqCst);
+    Ok(suivante)
+}
+
+/// `P10.20-b` — pourquoi la révocation globale d'un administrateur n'a pas eu lieu.
+enum RevocationGlobaleRefusee {
+    /// L'époque n'a pas pu être persistée (écriture refusée ou non comptée, transaction non ouverte ou non validée).
+    NonPersistee(String),
+    /// Le maillon `auth.deconnexion.globale` n'a pas été inscrit : la persistance est ANNULÉE avec lui.
+    NonTracee(String),
+}
+
+/// `P10.20-b` / `P10.23-o` — LA RÉVOCATION GLOBALE D'UN ADMINISTRATEUR : l'époque persistée ET le maillon qui la trace,
+/// dans UNE transaction, l'époque mémoire avancée seulement après la validation. Aucun des deux ne survit sans l'autre :
+/// une époque persistée sans trace serait un geste d'admin invisible, une trace sans époque persistée une révocation
+/// servie comme faite qui tombe au redémarrage.
+fn revoquer_l_epoque_globale_tracee(st: &AppState, admin: &str) -> Result<(), RevocationGlobaleRefusee> {
+    use crate::handlers::transaction_validee::{jouer_le_geste_garde, IssueDuGesteGarde as Issue};
+    let c = st.db.lock();
+    let revoquee = st.session_epoch.load(std::sync::atomic::Ordering::SeqCst);
+    let issue = jouer_le_geste_garde(&c, "session", "révocation globale", |tx| {
+        persister_l_epoque_de_session(tx, revoquee + 1).map_err(RevocationGlobaleRefusee::NonPersistee)?;
+        let maillon = ledger_append(
+            tx,
+            "auth.deconnexion.globale",
+            &format!("sessions de TOUS les comptes révoquées par l'administrateur '{admin}' (époque globale {revoquee} révoquée)"),
+        );
+        match maillon.cause_de_non_inscription() {
+            Some(cause) => Err(RevocationGlobaleRefusee::NonTracee(cause.to_string())),
+            None => Ok(()),
+        }
+    });
+    match issue {
+        Issue::Valide(()) => {
+            st.session_epoch.store(revoquee + 1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+        Issue::Refuse(refus) => Err(refus),
+        Issue::NonOuvert(e) => Err(RevocationGlobaleRefusee::NonPersistee(format!("transaction non ouverte ({e})"))),
+        Issue::NonValide(e) => Err(RevocationGlobaleRefusee::NonPersistee(format!("transaction non validée ({e})"))),
+    }
 }
 
 /// Token CSRF DÉRIVÉ du jeton de session (stateless) : le serveur le recalcule à chaque requête à
@@ -1156,6 +1247,16 @@ pub(crate) const CAUSE_DECONNEXION_GLOBALE_NON_TRACEE: &str = "DÉCONNEXION GLOB
      RÉVOQUÉ : le maillon `auth.deconnexion.globale` n'a pas pu être écrit au registre ; un geste qui révoque tous \
      les comptes n'a pas lieu sans sa trace. Réessayez.";
 
+/// `P10.20-b` — l'époque globale n'a pas pu être persistée : la révocation globale d'un admin n'a pas lieu (ni trace).
+pub(crate) const CAUSE_DECONNEXION_GLOBALE_NON_PERSISTEE: &str = "DÉCONNEXION GLOBALE NON PERSISTÉE, RIEN N'EST \
+     RÉVOQUÉ : l'époque de révocation des sessions n'a pas pu être écrite dans la base ; une révocation qui ne \
+     survivrait pas au redémarrage n'a pas lieu, et rien n'est inscrit au registre. Réessayez.";
+
+/// `P10.20-b` — mode 1 : l'époque globale n'a pas pu être persistée ; les cookies de ce navigateur sont effacés.
+pub(crate) const CAUSE_REVOCATION_GLOBALE_NON_PERSISTEE: &str = "RÉVOCATION NON PERSISTÉE : les cookies de ce \
+     navigateur sont effacés, mais l'époque de révocation des sessions n'a pas pu être écrite — une copie de ce cookie \
+     vaudrait encore jusqu'à son expiration. Reconnectez-vous puis déconnectez-vous à nouveau.";
+
 /// `P10.23-o` — la révocation du compte n'a pas pu être écrite : les cookies sont effacés, le serveur le dit.
 pub(crate) const CAUSE_REVOCATION_DU_COMPTE_NON_ECRITE: &str = "RÉVOCATION DU COMPTE NON ÉCRITE : les cookies \
      de ce navigateur sont effacés, mais l'époque de révocation du compte n'a pas pu être avancée — une copie de ce \
@@ -1198,18 +1299,17 @@ pub(crate) async fn logout_post(State(st): State<AppState>, headers: axum::http:
             let Some(admin) = jeton.as_deref().and_then(|tok| admin_de_la_session(&st, tok)) else {
                 return err_json(StatusCode::FORBIDDEN, CAUSE_DECONNEXION_GLOBALE_RESERVEE_A_UN_ADMIN);
             };
-            let epoque_revoquee = st.session_epoch.load(std::sync::atomic::Ordering::SeqCst);
-            let maillon = ledger_append(
-                &st.db.lock(),
-                "auth.deconnexion.globale",
-                &format!("sessions de TOUS les comptes révoquées par l'administrateur '{admin}' (époque globale {epoque_revoquee} révoquée)"),
-            );
-            if let Some(cause) = maillon.cause_de_non_inscription() {
-                eprintln!("[session] WARN déconnexion globale par '{admin}' NON tracée, rien n'est révoqué : {cause}");
-                return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_DECONNEXION_GLOBALE_NON_TRACEE);
-            }
-            bump_session_epoch(&st);
-            return cookies_effaces(StatusCode::OK, json!({ "ok": true, "portee": "globale" }));
+            return match revoquer_l_epoque_globale_tracee(&st, &admin) {
+                Ok(()) => cookies_effaces(StatusCode::OK, json!({ "ok": true, "portee": "globale" })),
+                Err(RevocationGlobaleRefusee::NonTracee(cause)) => {
+                    eprintln!("[session] WARN déconnexion globale par '{admin}' NON tracée, rien n'est révoqué : {cause}");
+                    err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_DECONNEXION_GLOBALE_NON_TRACEE)
+                }
+                Err(RevocationGlobaleRefusee::NonPersistee(cause)) => {
+                    eprintln!("[session] WARN déconnexion globale par '{admin}' : époque NON persistée, rien n'est révoqué : {cause}");
+                    err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_DECONNEXION_GLOBALE_NON_PERSISTEE)
+                }
+            };
         }
         Some(_) => return err_json(StatusCode::BAD_REQUEST, CAUSE_PORTEE_DE_DECONNEXION_INCONNUE),
     }
@@ -1217,8 +1317,13 @@ pub(crate) async fn logout_post(State(st): State<AppState>, headers: axum::http:
         return cookies_effaces(StatusCode::OK, json!({ "ok": true, "portee": "aucune" }));
     };
     if st.multi_tenant {
-        bump_session_epoch(&st);
-        return cookies_effaces(StatusCode::OK, json!({ "ok": true, "portee": "globale" }));
+        return match bump_session_epoch(&st) {
+            Ok(_) => cookies_effaces(StatusCode::OK, json!({ "ok": true, "portee": "globale" })),
+            Err(cause) => {
+                eprintln!("[session] WARN déconnexion de '{user}' (mode 1) : époque globale NON persistée, rien n'est révoqué : {cause}");
+                cookies_effaces(StatusCode::SERVICE_UNAVAILABLE, json!({ "error": CAUSE_REVOCATION_GLOBALE_NON_PERSISTEE }))
+            }
+        };
     }
     let avancee = avancer_l_epoque_du_compte(&st.db.lock(), &user);
     match avancee {

@@ -126,6 +126,8 @@ const MOTS_DES_AVIS_DE_L_ENVOI = {
   reussi: { fr: 'forward OK : {n} event(s), watermark #{w}', en: 'forward OK: {n} event(s), watermark #{w}' },
   echoue: { fr: 'forward échoué : {cause}', en: 'forward failed: {cause}' },
   cause_inconnue: { fr: 'erreur', en: 'error' },
+  non_relu: { fr: 'état de l\'envoi NON RELU : {cause}', en: 'delivery state NOT RE-READ: {cause}' },
+  verdict_non_servi: { fr: 'le démon n\'a servi aucun verdict d\'envoi', en: 'the daemon served no delivery verdict' },
 };
 // flush : POST /api/destinations/{id}/flush -> {ok,forwarded,watermark,last_error} (jamais la réponse du sink).
 export async function flushDestination(d) {
@@ -139,7 +141,17 @@ export async function flushDestination(d) {
   // (ce qui est parti est parti, le registre ne dit ni qui ni combien) ; mesuré avant ce lot, ce champ n'était pas lu.
   const traceAbsente = laTraceNonEcriteServieEnDeuxCents(j); if (traceAbsente) peindreLeRefusDUnGeste(puits, traceAbsente);
   // `P10.28-t` — l'avis de l'envoi, dans les deux langues (composé : un nombre s'y colle, le lexique ne l'atteignait pas).
-  if (j.ok) toast(faceDansLaLangue(MOTS_DES_AVIS_DE_L_ENVOI.reussi, { n: j.forwarded || 0, w: j.watermark || 0 }), 'ok');
+  // `P10.31-m` — UN ÉTAT NON RELU N'EST NI UN SUCCÈS NI UN ÉCHEC. Quand la relecture d'après envoi rate, le démon sert
+  // `ok: null` et la cause sous `etat_non_relu` (`destination_flush`, daemon/src/handlers/destinations.rs) ; `if (j.ok)`
+  // tombait dans « forward échoué : erreur » sur un envoi peut-être réussi. Une erreur servie (`last_error`) reste dite.
+  // Même décision que la rétention et les playbooks : seul un `ok` BOOLÉEN est un verdict ; tout autre valeur (null sans
+  // aveu, champ absent) se dit NON RELU, et la console nomme alors sa propre cause.
+  if (j.ok !== true && j.ok !== false) {
+    const cause = (j.etat_non_relu != null ? String(j.etat_non_relu).trim() : faceDansLaLangue(MOTS_DES_AVIS_DE_L_ENVOI.verdict_non_servi))
+      + (j.last_error ? ' — ' + String(j.last_error) : '');
+    toast(faceDansLaLangue(MOTS_DES_AVIS_DE_L_ENVOI.non_relu, { cause }), 'info');
+  }
+  else if (j.ok) toast(faceDansLaLangue(MOTS_DES_AVIS_DE_L_ENVOI.reussi, { n: j.forwarded || 0, w: j.watermark || 0 }), 'ok');
   else toast(faceDansLaLangue(MOTS_DES_AVIS_DE_L_ENVOI.echoue, { cause: j.last_error || faceDansLaLangue(MOTS_DES_AVIS_DE_L_ENVOI.cause_inconnue) }), 'bad');
   loadDestinations();
 }

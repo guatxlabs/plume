@@ -85,10 +85,10 @@
         let items = c["items"].as_array().unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["kind"], "created");
-        assert!(case_apply_update(&conn, id, "bob", &json!({"assignee":"carol"})));
-        assert!(case_apply_update(&conn, id, "bob", &json!({"priority":"critical"})));
-        assert!(case_apply_update(&conn, id, "bob", &json!({"status":"in_progress"})));
-        assert!(case_apply_update(&conn, id, "bob", &json!({"status":"resolved"})));
+        assert_eq!(case_apply_update(&conn, id, "bob", &json!({"assignee":"carol"})), IssueDuDossierModifie::Ecrite);
+        assert_eq!(case_apply_update(&conn, id, "bob", &json!({"priority":"critical"})), IssueDuDossierModifie::Ecrite);
+        assert_eq!(case_apply_update(&conn, id, "bob", &json!({"status":"in_progress"})), IssueDuDossierModifie::Ecrite);
+        assert_eq!(case_apply_update(&conn, id, "bob", &json!({"status":"resolved"})), IssueDuDossierModifie::Ecrite);
         let c2 = case_get_json(&conn, id, now()).unwrap();
         assert_eq!(c2["status"], "resolved");
         assert_eq!(c2["priority"], 1);
@@ -98,7 +98,7 @@
         let kinds: Vec<String> = c2["items"].as_array().unwrap().iter().map(|i| i["kind"].as_str().unwrap().to_string()).collect();
         assert_eq!(kinds, vec!["created", "assign", "priority", "status", "status"], "timeline typée dans l'ordre");
         // reopen : statut non terminal -> closed_ts remis à NULL.
-        assert!(case_apply_update(&conn, id, "bob", &json!({"status":"triage"})));
+        assert_eq!(case_apply_update(&conn, id, "bob", &json!({"status":"triage"})), IssueDuDossierModifie::Ecrite);
         let c3 = case_get_json(&conn, id, now()).unwrap();
         assert_eq!(c3["status"], "triage");
         assert!(c3["closed_ts"].is_null(), "reopen efface closed_ts");
@@ -106,7 +106,7 @@
         let ka: i64 = conn.query_row("SELECT COUNT(*) FROM ledger WHERE kind='case.assign'", [], |r| r.get(0)).unwrap();
         let ks: i64 = conn.query_row("SELECT COUNT(*) FROM ledger WHERE kind='case.status'", [], |r| r.get(0)).unwrap();
         assert_eq!((kc, ka, ks), (1, 1, 3), "audit ledger : 1 create, 1 assign, 3 changements de statut");
-        assert!(!case_apply_update(&conn, 999999, "bob", &json!({"status":"closed"})), "case inexistant -> false");
+        assert_eq!(case_apply_update(&conn, 999999, "bob", &json!({"status":"closed"})), IssueDuDossierModifie::DossierAbsent, "case inexistant -> false");
     }
 
     /// OVERDUE calculé (now>sla_due ET non terminal) + FILTRES liste (status/assignee/priority/overdue) + tri
@@ -131,7 +131,7 @@
         let p3c = p3["cases"].as_array().unwrap();
         assert_eq!(p3c.len(), 1);
         assert_eq!(p3c[0]["id"], b, "filtre priority=P3 -> B");
-        assert!(case_apply_update(&conn, a, "bob", &json!({"status":"resolved"})));
+        assert_eq!(case_apply_update(&conn, a, "bob", &json!({"status":"resolved"})), IssueDuDossierModifie::Ecrite);
         assert_eq!(case_get_json(&conn, a, now()).unwrap()["overdue"], false, "resolved -> jamais overdue");
         assert_eq!(cases_list_json(&conn, now(), "", "", 0, true, false)["cases"].as_array().unwrap().len(), 0, "plus aucun overdue");
     }
@@ -193,7 +193,7 @@
         let conn = test_db();
         let id = dossier_seme(&conn, "alice", "A", 3, "", None, 2);
         // SET valide (accompagne une clôture, comme en prod).
-        assert!(case_apply_update(&conn, id, "bob", &json!({ "status": "closed", "disposition": "false_positive" })));
+        assert_eq!(case_apply_update(&conn, id, "bob", &json!({ "status": "closed", "disposition": "false_positive" })), IssueDuDossierModifie::Ecrite);
         let c = case_get_json(&conn, id, now()).unwrap();
         assert_eq!(c["disposition"], "false_positive", "verdict lu au GET");
         assert!(c["disposition_ts"].as_i64().unwrap() > 0, "disposition_ts peuplé (now)");
@@ -206,10 +206,10 @@
         let it: i64 = conn.query_row("SELECT COUNT(*) FROM incident_item WHERE incident_id=?1 AND kind='disposition'", params![id], |r| r.get(0)).unwrap();
         assert_eq!(it, 1, "item timeline 'disposition'");
         // FAIL-CLOSED : valeur hors allowlist -> AUCUNE écriture (le verdict reste false_positive).
-        assert!(case_apply_update(&conn, id, "bob", &json!({ "disposition": "garbage" })));
+        assert_eq!(case_apply_update(&conn, id, "bob", &json!({ "disposition": "garbage" })), IssueDuDossierModifie::Ecrite);
         assert_eq!(case_get_json(&conn, id, now()).unwrap()["disposition"], "false_positive", "valeur invalide NON écrite (fail-closed)");
         // UNSET : '' efface le verdict.
-        assert!(case_apply_update(&conn, id, "carol", &json!({ "disposition": "" })));
+        assert_eq!(case_apply_update(&conn, id, "carol", &json!({ "disposition": "" })), IssueDuDossierModifie::Ecrite);
         assert!(case_get_json(&conn, id, now()).unwrap()["disposition"].is_null(), "'' -> verdict effacé (unset)");
     }
 
@@ -245,7 +245,7 @@
         let _ = migrate(&conn);
         let masks = effective_masks(&path, "client", "default", None);
         let id = dossier_seme(&conn, "analyst_alice", "T", 3, "", None, 2);
-        assert!(case_apply_update(&conn, id, "bob", &json!({ "disposition": "true_positive" })));
+        assert_eq!(case_apply_update(&conn, id, "bob", &json!({ "disposition": "true_positive" })), IssueDuDossierModifie::Ecrite);
         assert_eq!(case_get_json(&conn, id, now()).unwrap()["disposition"], "true_positive", "verdict bien posé côté interne");
         let list = serde_json::to_string(&client_cases_list_json(&conn, &path, &masks, now(), "", 100, 0)).unwrap();
         let det = serde_json::to_string(&client_case_get_json(&conn, &path, &masks, id, now()).unwrap()).unwrap();
@@ -1358,7 +1358,7 @@
         assert_eq!(cases_list_json(&conn, now(), "", "", 0, false, true)["cases"].as_array().unwrap().len(), 0, "aucune archive avant");
         let items_before: i64 = conn.query_row("SELECT COUNT(*) FROM incident_item WHERE incident_id=?1", params![z], |r| r.get(0)).unwrap();
         // ARCHIVE le case résiduel.
-        assert!(case_set_archived(&conn, z, "root", true));
+        assert_eq!(case_set_archived(&conn, z, "root", true), IssueDuDossierModifie::Ecrite);
         // (1) liste par défaut : l'archivé disparaît, l'actif reste.
         let defc = cases_list_json(&conn, now(), "", "", 0, false, false);
         let defc = defc["cases"].as_array().unwrap();
@@ -1381,13 +1381,13 @@
         assert_eq!(conn.query_row::<i64, _, _>("SELECT COUNT(*) FROM ledger WHERE kind='case.archive'", [], |r| r.get(0)).unwrap(), 1, "audit ledger case.archive");
         assert!(row["first_response_ts"].is_null(), "archive ne pollue pas le MTTA (pas une réponse analyste)");
         // DÉSARCHIVE : ré-affiché + item 'unarchive', flags remis à NULL (toujours append-only).
-        assert!(case_set_archived(&conn, z, "root", false));
+        assert_eq!(case_set_archived(&conn, z, "root", false), IssueDuDossierModifie::Ecrite);
         assert_eq!(cases_list_json(&conn, now(), "", "", 0, false, false)["cases"].as_array().unwrap().len(), 2, "désarchivé -> ré-affiché dans la liste par défaut");
         let row2 = case_get_json(&conn, z, now()).unwrap();
         assert_eq!(row2["archived"], false);
         assert!(row2["archived_ts"].is_null() && row2["archived_by"].as_str().unwrap().is_empty(), "flags d'archive effacés au désarchivage");
         assert_eq!(conn.query_row::<i64, _, _>("SELECT COUNT(*) FROM incident_item WHERE incident_id=?1 AND kind='unarchive'", params![z], |r| r.get(0)).unwrap(), 1, "item 'unarchive' tracé");
-        assert!(!case_set_archived(&conn, 999999, "root", true), "case inexistant -> false");
+        assert_eq!(case_set_archived(&conn, 999999, "root", true), IssueDuDossierModifie::DossierAbsent, "case inexistant -> false");
     }
 
     /// #4a-bis — RBAC : archive/désarchive = ADMIN-ONLY (action delete-like) ; editor/viewer refusés. Les autres
@@ -1615,12 +1615,12 @@
         conn.execute("INSERT INTO sla_policy(name,priority,ack_target_s,resolve_target_s,enabled,created,created_by,updated) VALUES('P2',2,120,1200,1,0,'root',0)", []).unwrap();
         let id = dossier_seme(&conn, "alice", "H", 3, "", None, 2);
         let res0: i64 = conn.query_row("SELECT resolve_due FROM incident WHERE id=?1", params![id], |r| r.get(0)).unwrap();
-        assert!(case_apply_update(&conn, id, "alice", &json!({ "status": "waiting" })));
+        assert_eq!(case_apply_update(&conn, id, "alice", &json!({ "status": "waiting" })), IssueDuDossierModifie::Ecrite);
         let paused: Option<i64> = conn.query_row("SELECT sla_paused_since FROM incident WHERE id=?1", params![id], |r| r.get(0)).unwrap();
         assert!(paused.is_some(), "waiting -> chrono en pause");
         // simule 100 s de pause puis reprise.
         conn.execute("UPDATE incident SET sla_paused_since=sla_paused_since-100 WHERE id=?1", params![id]).unwrap();
-        assert!(case_apply_update(&conn, id, "alice", &json!({ "status": "in_progress" })));
+        assert_eq!(case_apply_update(&conn, id, "alice", &json!({ "status": "in_progress" })), IssueDuDossierModifie::Ecrite);
         let (res1, accum, paused2): (i64, i64, Option<i64>) = conn.query_row("SELECT resolve_due, sla_pause_accum, sla_paused_since FROM incident WHERE id=?1", params![id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
         assert!(paused2.is_none(), "reprise -> paused_since effacé");
         assert!(accum >= 100, "pause cumulée >= 100 s (accum={accum})");
@@ -1847,7 +1847,7 @@
         assert!(!db.contains("analyst_bob"), "auteur anonymisé");
         assert!(db.contains("SOC"), "auteurs client-facing = SOC");
         let arch = dossier_seme(&conn, "x", "ArchMe", 2, "", None, 3);
-        case_set_archived(&conn, arch, "root", true);
+        assert_eq!(case_set_archived(&conn, arch, "root", true), IssueDuDossierModifie::Ecrite);
         let merged = dossier_seme(&conn, "x", "MergeMe", 2, "", None, 3);
         assert_eq!(case_merge(&conn, merged, id, "root"), IssueDeLaFusion::Ecrite);
         let v2 = client_cases_list_json(&conn, &path, &masks, now(), "", 100, 0);

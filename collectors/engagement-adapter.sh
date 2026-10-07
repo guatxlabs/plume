@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # plume-source: engagement-adapter
-# plume-emits: fields=desired,ensured,failcount,http,nft_fail,refused,removed,skew
+# plume-emits: fields=desired,ensured,failcount,http,mode,nft_fail,refused,removed,skew
 # =============================================================================
 # Plume — Authorized-Engagement ENFORCER-EXEMPTION adapter (HOST-SIDE, PULL).
 # -----------------------------------------------------------------------------

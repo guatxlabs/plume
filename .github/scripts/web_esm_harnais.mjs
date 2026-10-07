@@ -27207,6 +27207,183 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   }
 }
 
+// ---------------------------------------------------------------------------------------------
+// (134) `P10.31-m` — UN NULL QU'UN AVEU DU DÉMON SERT SE LIT « NON LU », SUR LES TROIS ÉCRANS QUI LE LISAIENT COMME UN FAIT.
+// MESURÉ sur 2393908 avant ce lot : le démon sert, sur une lecture ratée, `deleted: null` + `deleted_non_lu`
+// (`retention_preview`), `mode: null` + `mode_non_lu` (`playbooks_list`), `ok: null` + `etat_non_relu`
+// (`destination_flush`) ; la console écrivait « supprimera null événements » (aperçu ET confirmation de baisse, lue
+// juste avant une purge irréversible), peignait « mode Observation : PROPOSÉ … pas exécuté » sous un mode non lu (le
+// démon peut être Actif et EXÉCUTER), et rendait « forward échoué : erreur » sur un envoi peut-être réussi.
+// CE QUE CE TÉMOIN EXIGE, dans les deux langues : (a) la valeur LUE d'abord — le texte nominal d'avant, au caractère
+// près pour la rétention (« supprimera 1234 événements »), la conséquence du mode servi pour les playbooks, l'avis de
+// succès et l'avis d'échec (cause `last_error` servie) pour l'envoi ; (b) la valeur NON LUE — « NON LU »/« NOT READ »
+// (« NON RELU »/« NOT RE-READ ») et la cause SERVIE collée telle quelle, jamais « null », jamais l'état rassurant ni
+// l'échec ; (c) un mode ABSENT du corps se dit non lu, avec la cause que la console nomme ; de même un compte d'aperçu
+// ABSENT du corps, ou un `deleted: null` servi sans `deleted_non_lu` : « le démon n'a servi aucun compte », jamais « undefined ».
+// CE QUE CE TÉMOIN NE TIENT PAS : la forme servie par le démon (jugée par `lectures_uniques_avouees_rang_deux_suite.rs`,
+// seulement LUE ici par trois motifs de source) ; la couleur des avis ; l'avis de l'envoi est jugé par son texte, pas
+// par sa classe au-delà de « ni ok ni bad » ; le chemin de la confirmation de rétention est ANNULÉ (aucun envoi).
+// ---------------------------------------------------------------------------------------------
+{
+  const echecsAvant134 = echecs.length;
+  const url134 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const charger134 = async (adresse) => ({ ret: await import(adresse("retention.js")), det: await import(adresse("detection_admin.js")), dest: await import(adresse("destinations.js")), etat: await import(adresse("state.js")) });
+  const FR134 = { nom: "fr", ...(await charger134(url134)) };
+  const langueOrigine134 = localStorage.getItem("soc_lang");
+  localStorage.setItem("soc_lang", "en");
+  const EN134 = { nom: "en", ...(await charger134((f) => adresseSousLaLangue(f))) };
+  if (langueOrigine134 === null) localStorage.removeItem("soc_lang"); else localStorage.setItem("soc_lang", langueOrigine134);
+  const tic134 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser134 = async (n = 30) => { for (let i = 0; i < n; i++) await tic134(); };
+  const attendre134 = (ms) => new Promise((r) => setTimeout(r, ms));
+  const nu134 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ").trim();
+  const cueillir134 = (el, pred, acc = []) => { if (el && pred(el)) acc.push(el); ((el && el.children) || []).forEach((c) => cueillir134(c, pred, acc)); return acc; };
+  const qs134 = (sel) => document.querySelector(sel);
+
+  // ── (0) L'INSTRUMENT : LES TROIS FORMES SONT BIEN SERVIES PAR LE DÉMON ─────────────────────────────────────
+  const lire134 = (rel) => { try { return readFileSync(path.join(RACINE, "daemon", "src", rel), "utf8"); } catch (e) { return ""; } };
+  exiger(/corps\["deleted_non_lu"\] = json!\(cause\)/.test(lire134("handlers/admin_ui.rs")), "(134-instrument) `retention_preview` ne sert plus `deleted_non_lu` : ce témoin REFUSE DE CONCLURE");
+  exiger(/corps\["mode_non_lu"\] = json!\(cause\)/.test(lire134("handlers/playbooks.rs")), "(134-instrument) `playbooks_list` ne sert plus `mode_non_lu` : ce témoin REFUSE DE CONCLURE");
+  exiger(/"ok": null, "forwarded": null, "watermark": null, "last_error": null, "etat_non_relu": cause_non_relu/.test(lire134("handlers/destinations.rs")), "(134-instrument) `destination_flush` ne sert plus `ok: null` + `etat_non_relu` : ce témoin REFUSE DE CONCLURE");
+
+  const CAUSE_APERCU134 = "CAUSE-134 aperçu : la base n'a pas rendu le compte (famille « events »)";
+  const CAUSE_MODE134 = "CAUSE-134 mode : la base n'a pas rendu plume_mode";
+  const CAUSE_ENVOI134 = "CAUSE-134 envoi : l'état de la destination n'a pas été relu";
+  const fetchOrigine134 = globalThis.fetch;
+  let servis134 = {};
+  const appels134 = [];
+  const reponse134 = (statut, texte) => ({ ok: statut >= 200 && statut < 300, status: statut, headers: { get: () => null }, text: async () => texte, json: async () => JSON.parse(texte), clone: () => reponse134(statut, texte) });
+  globalThis.fetch = async (u, init) => {
+    const k = ((init && init.method) || "GET").toUpperCase() + " " + String(u).split("?")[0];
+    appels134.push(k);
+    const r = servis134[k];
+    if (!r) return reponse134(404, JSON.stringify({ error: "(134) route non servie : " + k }));
+    return reponse134(r.statut || 200, JSON.stringify(r.corps));
+  };
+  const fenetre134 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !c.classList.contains("out")).pop();
+  const formulaire134 = () => { const ov = fenetre134(); return ov && ov.children[0] ? ov.children[0].children[0] || null : null; };
+  const fermerLesFenetres134 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
+  const avis134 = () => { const h = qs134("#toasts"); return h ? h.children.map((t) => ({ texte: nu134(t), classe: t.className })) : []; };
+  const ecarts134 = [];
+  // L'envoi manuel relit la liste des destinations, que la console ne demande qu'à un administrateur.
+  const etatsOrigine134 = [FR134, EN134].map((L) => ({ S: L.etat.S, admin: L.etat.S.isAdmin, auth: L.etat.S.AUTH }));
+  try {
+    for (const o of etatsOrigine134) { o.S.isAdmin = true; o.S.AUTH = { user: "hugo", role: "admin" }; }
+    for (const L of [FR134, EN134]) {
+      const en = L.nom === "en";
+      // ── (a/b) RÉTENTION : l'aperçu du champ, puis la confirmation de baisse ──────────────────────────────
+      const APERCU_LU134 = { ok: true, key: "retention_days", unit: "days", current: 30, new: 7, destructive: true, deleted: 1234, deleted_kind: "events", oldest: null, approx: false };
+      const APERCU_NON_LU134 = { ...APERCU_LU134, deleted: null, deleted_non_lu: CAUSE_APERCU134 };
+      const NON_LU_ATTENDU134 = en ? "preview NOT READ: " + CAUSE_APERCU134 : "aperçu NON LU : " + CAUSE_APERCU134;
+      // Un ZÉRO établi est un compte, pas un aperçu non lu : le bord que la famille `P10.20-b` distingue de `null`.
+      const APERCU_ZERO134 = { ...APERCU_LU134, deleted: 0 };
+      // Le compte ABSENT du corps, et le `null` servi SANS cause : la console nomme alors elle-même la cause de repli.
+      const { deleted: _sansCompte134, ...APERCU_ABSENT134 } = APERCU_LU134;
+      const APERCU_NULL_SANS_AVEU134 = { ...APERCU_LU134, deleted: null };
+      const REPLI_ATTENDU134 = en ? "preview NOT READ: the daemon served no count" : "aperçu NON LU : le démon n'a servi aucun compte";
+      const attenduNonLu134 = { "non lu": NON_LU_ATTENDU134, "absent": REPLI_ATTENDU134, "null sans aveu": REPLI_ATTENDU134 };
+      for (const [quoi, apercu] of [["lu", APERCU_LU134], ["zéro", APERCU_ZERO134], ["non lu", APERCU_NON_LU134], ["absent", APERCU_ABSENT134], ["null sans aveu", APERCU_NULL_SANS_AVEU134]]) {
+        servis134 = {
+          "GET /api/retention": { corps: { retention_days: 30, snapshot_days: 30, alert_days: 90, metric_days: 30, metric_raw_hours: 48, bounds: {}, provenance: {} } },
+          "GET /api/ledger": { corps: { entries: [], ok: true } },
+          "GET /api/retention/preview": { corps: apercu },
+        };
+        await L.ret.loadRetention(); await laisser134();
+        const champ = cueillir134(qs134("#retention-fields"), (e) => e.tagName === "INPUT" && e.getAttribute && e.getAttribute("data-key") === "retention_days")[0];
+        const note = champ ? cueillir134(champ.parentNode, (e) => e.dataset && e.dataset.note === "retention_days")[0] : null;
+        if (!champ || !note) { ecarts134.push(`${L.nom}/rétention ${quoi} : le champ ou sa note n'est pas peint`); continue; }
+        champ.value = "7"; champ.dispatchEvent(new Evenement("input", { bubbles: true }));
+        await attendre134(400); await laisser134();
+        const texteNote = nu134(note);
+        const enregistre = L.ret.enregistrerLaRetention({ preventDefault() {} });
+        await laisser134();
+        const form = formulaire134(), texteConfirmation = form ? nu134(form) : "";
+        const annuler = form ? form.querySelector(".m-cancel") : null;
+        if (annuler && typeof annuler.onclick === "function") annuler.onclick();
+        await enregistre; await laisser134(); fermerLesFenetres134();
+        if (quoi === "lu") {
+          if (texteNote !== "supprimera 1234 événements") ecarts134.push(`${L.nom}/rétention lue : l'aperçu nominal a changé : « ${texteNote} »`);
+          if (!texteConfirmation.includes("(supprimera 1234 événements)")) ecarts134.push(`${L.nom}/rétention lue : la confirmation ne porte plus l'aperçu nominal : « ${texteConfirmation.slice(0, 300)} »`);
+        } else if (quoi === "zéro") {
+          if (texteNote !== "supprimera 0 événements") ecarts134.push(`${L.nom}/rétention zéro : un zéro ÉTABLI n'est pas rendu comme un compte : « ${texteNote} »`);
+          if (!texteConfirmation.includes("(supprimera 0 événements)")) ecarts134.push(`${L.nom}/rétention zéro : la confirmation ne porte pas le zéro établi : « ${texteConfirmation.slice(0, 300)} »`);
+          if (/NON LU|NOT READ/.test(texteNote + " " + texteConfirmation)) ecarts134.push(`${L.nom}/rétention zéro : un zéro établi est dit non lu : « ${texteNote} »`);
+        } else {
+          const attendu = attenduNonLu134[quoi];
+          if (texteNote !== attendu) ecarts134.push(`${L.nom}/rétention ${quoi} : l'aperçu du champ ne dit pas « ${attendu} » : « ${texteNote} »`);
+          if (!texteConfirmation.includes("(" + attendu + ")")) ecarts134.push(`${L.nom}/rétention ${quoi} : la confirmation de baisse ne dit pas l'aperçu non lu et sa cause : « ${texteConfirmation.slice(0, 400)} »`);
+          if (/null|undefined|supprimera/.test(texteNote) || /supprimera|null|undefined/.test(texteConfirmation)) ecarts134.push(`${L.nom}/rétention ${quoi} : « supprimera », « null » ou « undefined » est peint : « ${texteNote} » / « ${texteConfirmation.slice(0, 300)} »`);
+        }
+        if (appels134.includes("PUT /api/retention")) ecarts134.push(`${L.nom}/rétention ${quoi} : la confirmation annulée a quand même envoyé la rétention`);
+        appels134.length = 0;
+      }
+
+      // ── (a/b/c) PLAYBOOKS : la conséquence dépend du mode LU, et d'aucun autre ─────────────────────────────
+      try { globalThis.localStorage.removeItem("soc_pb_collapsed"); } catch { /* le stockage peut refuser */ }
+      const PB134 = { id: 1, name: "pb-134", query: "search source=ufw | stats count by src_ip", is_soql: 1, action_kind: "ban_ip", interval_s: 300, window_s: 3600, enabled: 1, managed: 2, consequence: "-> bannit l'adresse (134)" };
+      const ACTIF134 = " — mode Actif : EXÉCUTÉ sans approbation", OBSERVE134 = " — mode Observation : PROPOSÉ dans Actions (en attente, dry-run), pas exécuté";
+      const NON_LU134 = en ? "NOT READ" : "NON LU";
+      // La LIGNE elle-même, pas le panneau : l'en-tête « Mode … NON LU » suffirait sinon à satisfaire le verdict.
+      const LIGNE_NON_LUE134 = PB134.consequence + (en ? " — mode NOT READ: " : " — mode NON LU : ");
+      for (const [quoi, corps] of [["actif", { playbooks: [PB134], mode: "active", ban_duration_s: 3600 }], ["observation", { playbooks: [PB134], mode: "observe", ban_duration_s: 3600 }],
+        ["non lu", { playbooks: [PB134], mode: null, ban_duration_s: 3600, mode_non_lu: CAUSE_MODE134 }], ["absent", { playbooks: [PB134], ban_duration_s: 3600 }],
+        ["inconnu", { playbooks: [PB134], mode: "turbo-134", ban_duration_s: 3600 }]]) {
+        servis134 = { "GET /api/playbooks": { corps } };
+        const liste = qs134("#pb-list"); if (liste) liste.replaceChildren();
+        await L.det.loadPlaybooks(); await laisser134();
+        const texte = nu134(liste);
+        if (!texte.includes("pb-134")) { ecarts134.push(`${L.nom}/playbooks ${quoi} : la ligne n'est pas peinte — le verdict ne porterait sur rien : « ${texte.slice(0, 200)} »`); continue; }
+        if (quoi === "actif" && !(texte.includes(PB134.consequence + ACTIF134) && !texte.includes(NON_LU134))) ecarts134.push(`${L.nom}/playbooks actif : la conséquence nominale « ${ACTIF134} » a changé : « ${texte.slice(0, 300)} »`);
+        if (quoi === "observation" && !(texte.includes(PB134.consequence + OBSERVE134) && !texte.includes(NON_LU134))) ecarts134.push(`${L.nom}/playbooks observation : la conséquence nominale « ${OBSERVE134} » a changé : « ${texte.slice(0, 300)} »`);
+        if (quoi === "non lu" || quoi === "absent" || quoi === "inconnu") {
+          if (texte.includes(OBSERVE134) || texte.includes(ACTIF134)) ecarts134.push(`${L.nom}/playbooks ${quoi} : la conséquence d'un mode que personne n'a lu est peinte : « ${texte.slice(0, 300)} »`);
+          if (!texte.includes(NON_LU134)) ecarts134.push(`${L.nom}/playbooks ${quoi} : « ${NON_LU134} » n'est pas dit : « ${texte.slice(0, 300)} »`);
+          if (!texte.includes(LIGNE_NON_LUE134)) ecarts134.push(`${L.nom}/playbooks ${quoi} : la LIGNE du playbook ne dit pas son mode non lu « ${LIGNE_NON_LUE134} » : « ${texte.slice(0, 400)} »`);
+        }
+        if (quoi === "non lu" && !texte.includes(CAUSE_MODE134)) ecarts134.push(`${L.nom}/playbooks non lu : la cause SERVIE n'est pas collée telle quelle : « ${texte.slice(0, 300)} »`);
+        if (quoi === "absent" && !texte.includes(en ? "the daemon did not serve the global mode" : "le démon n'a pas servi le mode global")) ecarts134.push(`${L.nom}/playbooks absent : la cause nommée par la console n'est pas dite : « ${texte.slice(0, 300)} »`);
+        if (quoi === "inconnu") {
+          if (!texte.includes(en ? "the daemon served an unknown mode: turbo-134" : "le démon a servi un mode inconnu : turbo-134")) ecarts134.push(`${L.nom}/playbooks inconnu : la cause ne nomme pas la valeur servie : « ${texte.slice(0, 300)} »`);
+          if (texte.includes(en ? "did not serve the global mode" : "n'a pas servi le mode global")) ecarts134.push(`${L.nom}/playbooks inconnu : un mode SERVI est dit non servi : « ${texte.slice(0, 300)} »`);
+        }
+      }
+
+      // ── (a/b) ENVOI MANUEL : succès, échec nommé, état non relu ─────────────────────────────────────────────
+      const DEST134 = { id: 9, name: "syslog-134", type: "syslog", endpoint: "tcp://collecteur.example:514", enabled: true, interval_s: 30, batch_max: 500, filter: {}, has_auth: false, watermark: 1, last_count: 0 };
+      const ENVOIS134 = [
+        ["succès", { ok: true, forwarded: 3, watermark: 4, last_error: null }, en ? "forward OK: 3 event(s), watermark #4" : "forward OK : 3 event(s), watermark #4", "ok"],
+        ["échec", { ok: false, forwarded: 0, watermark: 1, last_error: "connexion refusée (134)" }, en ? "forward failed: connexion refusée (134)" : "forward échoué : connexion refusée (134)", "bad"],
+        ["non relu", { ok: null, forwarded: null, watermark: null, last_error: null, etat_non_relu: CAUSE_ENVOI134 }, en ? "delivery state NOT RE-READ: " + CAUSE_ENVOI134 : "état de l'envoi NON RELU : " + CAUSE_ENVOI134, "info"],
+        ["non relu sans aveu", { ok: null, forwarded: null, watermark: null, last_error: null }, en ? "delivery state NOT RE-READ: the daemon served no delivery verdict" : "état de l'envoi NON RELU : le démon n'a servi aucun verdict d'envoi", "info"],
+        ["non relu, verdict absent", { forwarded: 3, watermark: 4 }, en ? "delivery state NOT RE-READ: the daemon served no delivery verdict" : "état de l'envoi NON RELU : le démon n'a servi aucun verdict d'envoi", "info"],
+        ["non relu avec erreur", { ok: null, forwarded: null, watermark: null, last_error: "erreur servie (134)", etat_non_relu: CAUSE_ENVOI134 }, (en ? "delivery state NOT RE-READ: " : "état de l'envoi NON RELU : ") + CAUSE_ENVOI134 + " — erreur servie (134)", "info"],
+      ];
+      for (const [quoi, corps, attendu, classe] of ENVOIS134) {
+        servis134 = { "POST /api/destinations/9/flush": { corps }, "GET /api/destinations": { corps: [] } };
+        const hote = qs134("#toasts"); if (hote) hote.replaceChildren();
+        appels134.length = 0;
+        const envoi = L.dest.flushDestination(DEST134);
+        await laisser134();
+        const form = formulaire134();
+        if (form && typeof form.onsubmit === "function") await Promise.resolve(form.onsubmit({ preventDefault() {} }));
+        await envoi; await laisser134(); fermerLesFenetres134();
+        const avis = avis134();
+        const trouve = avis.find((a) => a.texte === attendu);
+        if (!trouve) ecarts134.push(`${L.nom}/envoi ${quoi} : l'avis « ${attendu} » n'est pas rendu : ${JSON.stringify(avis)}`);
+        else if (!trouve.classe.split(/\s+/).includes(classe)) ecarts134.push(`${L.nom}/envoi ${quoi} : l'avis est de classe « ${trouve.classe} », attendu « ${classe} »`);
+        if (quoi.startsWith("non relu") && avis.some((a) => /forward (échoué|failed|OK)/.test(a.texte))) ecarts134.push(`${L.nom}/envoi ${quoi} : un état non relu est rendu comme un succès ou un échec : ${JSON.stringify(avis)}`);
+        if (!appels134.includes("GET /api/destinations")) ecarts134.push(`${L.nom}/envoi ${quoi} : la liste des destinations n'est plus relue après l'envoi`);
+      }
+    }
+    exiger(ecarts134.length === 0, `(134) \`P10.31-m\` — UN NULL SERVI SOUS AVEU EST LU COMME UN FAIT (ou le chemin nominal a changé) : ${JSON.stringify(ecarts134)}`);
+  } finally {
+    globalThis.fetch = fetchOrigine134; fermerLesFenetres134();
+    for (const o of etatsOrigine134) { o.S.isAdmin = o.admin; o.S.AUTH = o.auth; }
+  }
+  if (echecs.length !== echecsAvant134) console.log(`(134) EN ÉCHEC — ${echecs.length - echecsAvant134} écart(s), dits ci-dessus`);
+  else console.log("(134) OK — `P10.31-m` : l'aperçu de rétention, sa confirmation de baisse, la conséquence d'un playbook et l'avis d'un envoi manuel disent « non lu » avec la cause servie quand le démon sert un null sous aveu, dans les deux langues ; un zéro établi reste un compte ; un compte absent du corps ou un null sans cause se disent non lus avec la cause de repli nommée par la console ; la LIGNE de chaque playbook dit son mode non lu ; un mode absent du corps se dit non lu et un mode servi inconnu nomme sa valeur ; un envoi sans verdict booléen se dit non relu même sans aveu ; le chemin nominal rend le texte d'avant.");
+}
+
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;
 verdictRendu = true;
 if (echecs.length) {

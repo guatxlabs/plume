@@ -123,7 +123,15 @@ function retPreview(k, inp, note) {
     note.className = 'fwarn'; note.textContent = retPreviewText(p);
   }, 300);
 }
+// `P10.31-m` — UN APERÇU NON LU N'EST PAS UN COMPTE. Sur une lecture ratée, le démon sert `deleted: null` et nomme la
+// cause sous `deleted_non_lu` (`retention_preview`, daemon/src/handlers/admin_ui.rs). Ce texte écrivait alors
+// « supprimera null … » — dans l'aperçu ET dans la confirmation de baisse (`saveRetention`), lue juste avant une purge
+// irréversible. Le compte absent se dit NON LU avec la cause servie, telle quelle ; le chemin nominal est inchangé.
 function retPreviewText(p) {
+  if (p.deleted === null || p.deleted === undefined) {
+    const cause = p.deleted_non_lu ? String(p.deleted_non_lu).trim() : faceDansLaLangue({ fr: 'le démon n\'a servi aucun compte', en: 'the daemon served no count' });
+    return faceDansLaLangue({ fr: 'aperçu NON LU : {cause}', en: 'preview NOT READ: {cause}' }, { cause });
+  }
   const kind = DELETED_KIND_LABEL[p.deleted_kind] || p.deleted_kind || 'entrées';
   const approx = p.approx ? '~' : '';
   const when = p.oldest ? ` (les plus anciens depuis ${fmtDate(p.oldest)})` : '';

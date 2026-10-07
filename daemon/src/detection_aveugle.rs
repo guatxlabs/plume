@@ -257,11 +257,14 @@ pub(crate) fn consigner_evaluation_reussie(conn: &Connection, id: i64, now_ts: i
 //     les attend est livrée ÉTEINTE, et l'exploitant l'ALLUME quand il branche le producteur. C'est
 //     la doctrine déjà appliquée à YARA (`DETECTION_RULES_V53`) et aux règles de menace
 //     (`seed_ti_alert_rules`), reprise ici au lieu d'être réinventée ;
-//   * le grain du CHAMP (`fields.<X>`) n'est PAS jugé. `collected::COLLECTED_EXTENDED_FIELDS` cite UN
-//     fichier par champ (le plus direct), pas TOUS ceux qui l'émettent : MESURÉ le 2026-08-27, la
-//     citation de `collectors/web.sh` n'y porte que `dur_ms`/`router`/`ua` alors que la source `web`
-//     émet aussi `status` et `path`. En dériver « ce champ est-il produit par CETTE source » rendrait
-//     des aveugles FAUX. Non mesurable avec l'instrument disponible = non jugé.
+//   * le grain du CHAMP (`fields.<X>`) n'est PAS jugé. Depuis `P11.19-a`, `collected::COLLECTED_EXTENDED_FIELDS`
+//     porte CHAQUE couple (champ, fichier) émis — `collectors/web.sh` y a ses 18 champs, plus seulement
+//     `dur_ms`/`router`/`ua` comme au 2026-08-27 — et `/api/sources` en sert la jointure par source. Mais
+//     cette jointure n'est close qu'au regard des fichiers LIVRÉS : elle ne voit ni les parseurs regex
+//     actifs, ni l'extraction générique, ni un overlay déposé au déploiement, ni le capteur qui émet sous
+//     la source d'un autre fichier (`handlers::sources::CHAMPS_ETENDUS_NE_VOIT_PAS`), et rend `null` hors
+//     surface. En dériver « ce champ n'est PAS produit par CETTE source » rendrait des aveugles FAUX : la
+//     mesure existe, le verdict négatif n'est pas décidable avec elle = non jugé.
 
 /// Ce qu'une requête de règle EXIGE de la colonne `source`.
 #[derive(Debug, Clone, PartialEq)]

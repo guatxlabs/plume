@@ -1,6 +1,6 @@
 #!/bin/sh
 # plume-source: mail
-# plume-emits: fields=rcpt,score,sender,service,size,truncated,verdict,virus
+# plume-emits: fields=action,collector,filters,note,rcpt,score,sender,service,size,truncated,type,user,verdict,virus
 # Capteur Plume (PLUGIN, OPT-IN) : logs MAILSERVER -> events source=mail.
 # docker-mailserver logge dans un FICHIER du pod (/var/log/mail/mail.log), PAS dans journald hote
 # -> invisible des autres capteurs (d'ou "je ne vois pas les logs mail dans le SOC"). Ce capteur le

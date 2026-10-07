@@ -292,6 +292,12 @@ pub(crate) enum PurgeRefusal {
     /// L'état des holds n'a PAS pu être déterminé alors que la table existe -> FAIL-CLOSED (même règle que
     /// `retention_run` : on ne supprime jamais une preuve dont on ne peut pas prouver qu'elle n'est pas tenue).
     LegalHoldUndetermined,
+    /// `P10.31-l` — une ligne de `legal_hold` ACTIVE qui recouvre le périmètre n'a PAS pu être LUE (nom qui ne
+    /// se décode pas, cache de schéma périmé qui fait sortir l'échec comme erreur de LIGNE). La table est
+    /// lisible et `hold_guard` a rendu un prédicat : sans ce refus, la ligne disparaissait du refus TOTAL
+    /// pendant que `LEGAL_HOLD_NOT_HELD` continuait d'exclure les lignes tenues — exactement la purge
+    /// partielle silencieuse « sauf les lignes tenues » que ce module dit ne jamais faire. FAIL-CLOSED.
+    LegalHoldUnread(String),
     /// Des lignes de la fenêtre ont été COLUMNARISÉES dans le tier froid (Parquet scellé, chiffré, immuable).
     /// Vider `event` laisserait ces copies INTERROGEABLES : « purgé » serait un mensonge. On refuse et on
     /// nomme les fichiers/jours concernés.
@@ -327,6 +333,12 @@ impl std::fmt::Display for PurgeRefusal {
                 f,
                 "REFUS — l'état des legal-holds est INDÉTERMINABLE (table `legal_hold` illisible). Fail-closed : \
                  on ne supprime jamais une preuve dont on ne peut pas prouver qu'elle n'est pas retenue."
+            ),
+            PurgeRefusal::LegalHoldUnread(cause) => write!(
+                f,
+                "REFUS — rétention légale NON LUE : au moins une ligne de legal-hold ACTIVE recouvrant le \
+                 périmètre n'a pas pu être lue ({cause}). Fail-closed : on ne purge pas « tout sauf ce qui \
+                 est tenu » sans savoir QUEL hold tient le périmètre."
             ),
             PurgeRefusal::ColdTier { files, days } => write!(
                 f,
@@ -372,6 +384,7 @@ pub(crate) fn purge_refusal_code(r: &PurgeRefusal) -> &'static str {
     match r {
         PurgeRefusal::LegalHold(_) => "legal_hold",
         PurgeRefusal::LegalHoldUndetermined => "legal_hold_undetermined",
+        PurgeRefusal::LegalHoldUnread(_) => "legal_hold_unread",
         PurgeRefusal::ColdTier { .. } => "cold_tier",
         PurgeRefusal::CitedByCase { .. } => "cited_by_case",
         PurgeRefusal::FtsDesync => "fts_desync",
@@ -578,11 +591,14 @@ fn holds_covering(conn: &Connection, scope: &PurgeScope) -> Result<Vec<String>, 
              ORDER BY name",
         )
         .map_err(|e| PurgeRefusal::Db(e.to_string()))?;
-    let names: Vec<String> = st
+    // `P10.31-l` — une ligne NON LUE refuse : collectée en `Result`, jamais aplatie. Le prédicat de portée
+    // ne lit pas `name` : une ligne tenue mais illisible entre donc ICI et doit s'y faire voir.
+    let lignes = st
         .query_map(params![e, s, src], |r| r.get::<_, String>(0))
-        .map_err(|e| PurgeRefusal::Db(e.to_string()))?
-        .flatten()
-        .collect();
+        .map_err(|e| PurgeRefusal::Db(e.to_string()))?;
+    let names: Vec<String> = lignes.collect::<Result<Vec<String>, _>>().map_err(|e| {
+        PurgeRefusal::LegalHoldUnread(format!("lecture d'une ligne de `legal_hold` non faite : {e}"))
+    })?;
     Ok(names)
 }
 
@@ -752,7 +768,7 @@ fn purge_sample(
 ///
 /// RESTES NOMMÉS, NON TOUCHÉS (même fichier, hors de ce site) : `meta_i64` (`.ok()` sur `query_row`, couverture
 /// des rollups lue comme ABSENTE sur une lecture ratée) ; les itérateurs aplatis par `.flatten()` de
-/// `holds_covering` (une ligne de rétention légale illisible n'est pas vue par le refus), `cited_by_case`,
+/// `cited_by_case` (`holds_covering` en est sorti sous `P10.31-l` : une ligne de rétention non lue REFUSE),
 /// `purge_plan` (ventilation par source) et `purge_sample`.
 fn purge_uncovered(conn: &Connection, w: PurgeWindow) -> PurgeUncovered {
     let lire = |famille: &str, sql: &str, fenetre: bool| -> MesureNonCouverte {

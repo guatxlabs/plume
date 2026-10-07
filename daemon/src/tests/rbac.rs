@@ -231,10 +231,10 @@
         let st = tenant_test_state("plume-admin", "plume-editor", "admins", None); // mode 0
         assert_eq!(st.session_epoch.load(std::sync::atomic::Ordering::Relaxed), 0);
         assert_eq!(load_session_epoch(&st.db.lock()), 0, "meta démarre à 0 (schema.sql)");
-        bump_session_epoch(&st);
+        bump_session_epoch(&st).expect("persistance de l'époque");
         assert_eq!(st.session_epoch.load(std::sync::atomic::Ordering::Relaxed), 1, "compteur mémoire incrémenté");
         assert_eq!(load_session_epoch(&st.db.lock()), 1, "compteur PERSISTÉ dans meta");
-        bump_session_epoch(&st);
+        bump_session_epoch(&st).expect("persistance de l'époque");
         assert_eq!(load_session_epoch(&st.db.lock()), 2, "re-bump persiste 2");
     }
 

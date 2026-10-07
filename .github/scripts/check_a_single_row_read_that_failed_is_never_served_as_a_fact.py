@@ -244,8 +244,11 @@ PROPAGATEURS = ("?", "unwrap", "expect")
 # RE-DÉRIVÉS le 2026-09-25 (`P10.29-b`) : le lot ferme quatre sites (`case_link_add`, `case_merge` ×2, `case_item_add`),
 # aucun fichier ne sort. Relevé de ce jour-là sur l'arbre : 81 sites sur 27 fichiers ; même règle (69 % et 65 %, arrondis
 # en dessous) : 81 -> 55, 27 -> 17.
-PLANCHER_SITES = 55
-PLANCHER_FICHIERS = 17
+# RE-DÉRIVÉS le 2026-10-07 (`P10.20-b`, lot E5) : relevé de l'arbre ce jour-là, après le lot — 67 sites sur 25
+# fichiers (`attach_runbook` perd ses deux sites, `connector_poll` un ; aucun fichier ne sort). Même règle :
+# 67 -> 46 (69 % = 46,2), 25 -> 16 (65 % = 16,25).
+PLANCHER_SITES = 46
+PLANCHER_FICHIERS = 16
 
 # ================================================================================================
 # L'ENSEMBLE NOMMÉ — CINQ CLASSES, JUGÉES DANS LES DEUX SENS
@@ -301,10 +304,11 @@ DEFAUTS_RANG_2_FAIT_SERVI_OU_ECRIT = {
     # L'échéance SLA du dossier qui vient d'être créé retombe à `None` et part dans le corps de
     # création : « ce dossier n'a pas d'échéance » est servi là où la ligne n'a pas été relue.
     ("daemon/src/handlers/cases.rs", "case_create"): ("unwrap_or",),
-    # DEUX sites. `ok` sur la configuration du connecteur (fail-closed) ; `unwrap_or((0, None))` sur
-    # `last_count`/`last_error` relus APRÈS le poll, dont le `0` entre dans la ligne d'AUDIT
-    # (`config.connector.poll … count=0`). Une trace d'audit qui affirme zéro événement collecté.
-    ("daemon/src/handlers/connectors/mod.rs", "connector_poll"): ("ok", "unwrap_or"),
+    # ENTRÉE DÉPLACÉE AU RANG QUATRE PAR `P10.20-b` (2026-10-07, lot E5) : `connectors/mod.rs::connector_poll`.
+    # Son site de rang deux — `unwrap_or((0, None))` sur `last_count`/`last_error` relus après le poll, dont le
+    # `0` partait dans le corps (`ok: true, count: 0`) ET dans la ligne d'AUDIT (`count=0`) — est un `Result`
+    # lié puis `match` : relecture ratée = `etat_non_relu` + `null` dans le corps, « NON RELU » dans la trace,
+    # connecteur supprimé pendant le poll distingué. Reste le `ok` de la définition, fail-closed (404).
     # ENTRÉE RETIRÉE PAR `P10.20-b` (B7) : `datamodels.rs::object_delete` — `has_children` retombait à
     # `false` sur une lecture ratée et la SUPPRESSION passait la garde qui protège la hiérarchie. La sonde
     # est désormais un `match` dont le bras `Err` rend 503 nommé (`CAUSE_ENFANTS_DE_L_OBJET_NON_LUS`).
@@ -320,11 +324,12 @@ DEFAUTS_RANG_2_FAIT_SERVI_OU_ECRIT = {
     # chaîne absorbante, et lui laisser une entrée aurait fait rougir cette garde en « exemption sans
     # objet » le jour de son câblage. C'est écrit ici parce que l'absence d'une entrée attendue est
     # exactement ce que personne ne relit.
-    # DEUX sites. `is_err` sur l'existence du dossier (fail-closed) ; `unwrap_or(0)` sur le compte
-    # d'étapes DÉJÀ attachées, dont le zéro fait sauter la garde « un runbook est déjà attaché à cet
-    # incident (progression existante) » — une progression réelle est alors ÉCRASÉE par une seconde
-    # attache. GESTE : `.optional()?` et refuser, le geste étant idempotent-refusant par ailleurs.
-    ("daemon/src/handlers/incidents.rs", "attach_runbook"): ("is_err", "unwrap_or"),
+    # ENTRÉE RETIRÉE PAR `P10.20-b` (2026-10-07, lot E5) : `incidents.rs::attach_runbook` — `unwrap_or(0)` sur
+    # le compte d'étapes déjà attachées faisait sauter la garde « progression existante » et DOUBLAIT les étapes ;
+    # `is_err` sur l'existence du dossier rendait « incident introuvable » sur une lecture refusée. Les deux
+    # lectures sont des `Result` scrutés : absence établie = refus d'avant, lecture refusée =
+    # `RefusDAttache::NonLu` (503 nommé, `CAUSE_DOSSIER_NON_LU_POUR_L_ATTACHE` /
+    # `CAUSE_PROGRESSION_NON_LUE_POUR_L_ATTACHE`), rien n'est écrit.
     # DEUX ENTRÉES RETIRÉES PAR `P10.20-b` (B7) : `incidents.rs::clone_runbook` et `create_custom_runbook`
     # — le compte de runbooks custom retombait à zéro et le PLAFOND anti-DoS (`RUNBOOK_MAX_CUSTOM`)
     # cessait d'exister. Le compte passe par `compter_les_runbooks_custom` (`map_err` + `?`) : la lecture
@@ -346,13 +351,14 @@ DEFAUTS_RANG_3_INTERNE = {
     # Le throttle d'alerte n'est pas lu -> l'alerte TIRE. Le sens est BRUYANT (jamais un silence),
     # c'est ce qui le tient au rang trois plutôt qu'au rang deux.
     ("daemon/src/handlers/alerting.rs", "run_advanced_rules"): ("ok",),
-    # Les quatre lectures du chrono SLA : politique non lue -> repli muet sur le régime legacy ;
-    # échéances non recalculées ; chrono ni mis en pause ni repris ; tour multi-niveaux SAUTÉ parce
-    # que `EXISTS(sla_policy)` retombe à zéro. Aucun corps servi ; le temps, lui, avance.
+    # Les trois lectures du chrono SLA : politique non lue -> repli muet sur le régime legacy ;
+    # échéances non recalculées ; chrono ni mis en pause ni repris. Aucun corps servi ; le temps, lui,
+    # avance. (La quatrième, `EXISTS(sla_policy)` du tour multi-niveaux, a quitté l'ensemble au
+    # 2026-10-07 : elle PROPAGE désormais, lue par `match` dans `sla_multilevel_tick_par`, et son
+    # échec est compté au balayage `sla_multilevel_politique` — `P10.20-w`.)
     ("daemon/src/handlers/caseops.rs", "sla_policy_for"): ("ok",),
     ("daemon/src/handlers/caseops.rs", "sla_apply_policy"): ("ok",),
     ("daemon/src/handlers/caseops.rs", "sla_on_status_change"): ("ok",),
-    ("daemon/src/handlers/caseops.rs", "sla_multilevel_tick"): ("unwrap_or",),
     # Coût de panneau recalculé, TTL de cache global, cache de panneau manqué : replis bénins, dits
     # bénins, et gardés dans l'ensemble pour que leur forme ne change pas en silence.
     ("daemon/src/handlers/dashboards.rs", "read_panel_cost"): ("ok",),
@@ -401,6 +407,10 @@ DEFAUTS_RANG_4_FAIL_CLOSED = {
     ("daemon/src/handlers/caseops.rs", "case_unmerge"): ("ok",),
     ("daemon/src/handlers/cases.rs", "case_apply_update"): ("ok",),
     ("daemon/src/handlers/cases.rs", "case_set_archived"): ("is_err",),
+    # VENUE DU RANG DEUX PAR `P10.20-b` (2026-10-07, lot E5) : la relecture d'après poll n'absorbe plus (voir
+    # la note de la classe 3). Reste le `.ok()` sur la DÉFINITION du connecteur : lecture ratée -> 404
+    # « connecteur introuvable », aucun poll. Cause fausse, aucun fait inventé.
+    ("daemon/src/handlers/connectors/mod.rs", "connector_poll"): ("ok",),
     ("daemon/src/handlers/connectors/mod.rs", "connector_test"): ("ok",),
     ("daemon/src/handlers/connectors/mod.rs", "connector_update"): ("is_err",),
     ("daemon/src/handlers/dash_ergonomics.rs", "library_panel_delete"): ("is_err",),
@@ -1047,8 +1057,8 @@ def main():
     fichiers = {c for c, _l, _f, _fo, _x in sites}
     if len(sites) < PLANCHER_SITES or len(fichiers) < PLANCHER_FICHIERS:
         print(f"::error::{len(sites)} site(s) découvert(s) sur {len(fichiers)} fichier(s), planchers "
-              f"{PLANCHER_SITES}/{PLANCHER_FICHIERS} (re-dérivés le 2026-09-25 du relevé de ce jour-là : "
-              "81 sites sur 27 fichiers, règle des deux tiers). La DÉCOUVERTE est cassée, ou un lot a "
+              f"{PLANCHER_SITES}/{PLANCHER_FICHIERS} (re-dérivés le 2026-10-07 du relevé de ce jour-là : "
+              "67 sites sur 25 fichiers, règle des deux tiers). La DÉCOUVERTE est cassée, ou un lot a "
               "fermé assez de sites pour que les planchers doivent être RE-DÉRIVÉS du relevé du jour "
               "— dans le second cas, ils descendent, avec leur date écrite dans le fichier. La garde "
               "REFUSE DE CONCLURE plutôt que de rendre vert en étant aveugle.")

@@ -1,6 +1,6 @@
 #!/bin/sh
 # plume-source: conntrack
-# plume-emits: fields=cause,count,dir,dport,dst_host,proc,proc_verdict,proto,scope,state
+# plume-emits: fields=cause,collector,count,dir,dport,dst_host,filters,note,proc,proc_verdict,proto,scope,state,type
 # Capteur Plume (PLUGIN) : FLUX reseau (egress/ingress) -> events source=conntrack.
 # MODE FLUX : un snapshot unique `ss state established` etait AVEUGLE aux connexions
 # COURTES (beacon C2, exfil breve ouvertes+fermees entre deux passages) et dedupait la frequence par dst

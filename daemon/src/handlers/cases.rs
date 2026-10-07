@@ -259,15 +259,29 @@ pub(crate) fn case_create_row(conn: &Connection, author: &str, title: &str, sev:
 /// SÉMANTIQUE écrit un item de timeline TYPÉ (assign/priority/status) + bump `updated` ; recalcule sla_due
 /// depuis la priorité courante tant que le case n'est pas TERMINAL (resolved/closed/contained) ; audit ledger
 /// (case.assign / case.status). closed/resolved posent closed_ts ; un reopen (statut non terminal) le remet à
-/// NULL et ré-arme escalated. Statuts LEGACY tolérés en entrée (alias canoniques). false si le case n'existe
-/// pas. couvre assign / close / reopen / priorisation. #4a.
-pub(crate) fn case_apply_update(conn: &Connection, id: i64, author: &str, b: &Value) -> bool {
+/// NULL et ré-arme escalated. Statuts LEGACY tolérés en entrée (alias canoniques). `DossierAbsent` (le `false`
+/// d'avant) si le case n'existe pas. couvre assign / close / reopen / priorisation. #4a.
+/// `P10.20-w` (rang trois) — les quatre écritures que le registre atteste (assignation, statut, verdict posé ou
+/// effacé) sont COMPTÉES avant leur chronologie et leur ligne de registre ; refusée -> `NonEcrite`, rien n'est tracé
+/// pour ce champ ni pour ceux qui le suivent. Les écritures SANS registre (titre, sévérité, propriétaire, résumé,
+/// priorité, échéance, `updated`) restent avalées : aucun fait ne les affirme ici (reste écrit, `P10.20-b`).
+pub(crate) fn case_apply_update(conn: &Connection, id: i64, author: &str, b: &Value) -> IssueDuDossierModifie {
     let cur: Option<(i64, String)> = conn
         .query_row("SELECT priority, status FROM incident WHERE id=?1", params![id], |r| {
             Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
         })
         .ok();
-    let Some((mut cur_priority, cur_status)) = cur else { return false; };
+    let Some((mut cur_priority, cur_status)) = cur else { return IssueDuDossierModifie::DossierAbsent; };
+    // `P10.20-w` — une écriture attestée est comptée : une ligne, ou on sort AVANT la trace.
+    macro_rules! ecriture_comptee {
+        ($champ:literal, $res:expr) => {
+            match $res {
+                Ok(0) => return IssueDuDossierModifie::DossierAbsent, // disparu depuis la lecture : absence
+                Ok(_) => {}
+                Err(e) => return IssueDuDossierModifie::NonEcrite(format!("{}: {e}", $champ)),
+            }
+        };
+    }
     let t = now();
     if let Some(v) = b.get("title").and_then(|v| v.as_str()) {
         let _ = conn.execute("UPDATE incident SET title=?1 WHERE id=?2", params![v.trim(), id]);
@@ -285,7 +299,7 @@ pub(crate) fn case_apply_update(conn: &Connection, id: i64, author: &str, b: &Va
     if let Some(v) = b.get("assignee") {
         let a = v.as_str().unwrap_or("").trim().to_string();
         let stored: Option<String> = if a.is_empty() { None } else { Some(a.clone()) };
-        let _ = conn.execute("UPDATE incident SET assignee=?1 WHERE id=?2", params![stored, id]);
+        ecriture_comptee!("assignee", conn.execute("UPDATE incident SET assignee=?1 WHERE id=?2", params![stored, id]));
         let body = if a.is_empty() { "désassigné".to_string() } else { format!("assigné à {a}") };
         case_add_item(conn, id, t, "assign", author, &body, None);
         ledger_append(conn, "case.assign", &format!("#{id} -> {} by {author}", if a.is_empty() { "(aucun)" } else { &a }));
@@ -302,7 +316,7 @@ pub(crate) fn case_apply_update(conn: &Connection, id: i64, author: &str, b: &Va
         if let Some(s) = norm_case_status(v) {
             new_status = Some(s);
             let closed = if matches!(s, "closed" | "resolved") { Some(t) } else { None };
-            let _ = conn.execute("UPDATE incident SET status=?1, closed_ts=?2 WHERE id=?3", params![s, closed, id]);
+            ecriture_comptee!("status", conn.execute("UPDATE incident SET status=?1, closed_ts=?2 WHERE id=?3", params![s, closed, id]));
             case_add_item(conn, id, t, "status", author, &format!("statut -> {s}"), None);
             ledger_append(conn, "case.status", &format!("#{id} -> {s} by {author}"));
         }
@@ -314,17 +328,17 @@ pub(crate) fn case_apply_update(conn: &Connection, id: i64, author: &str, b: &Va
     if let Some(dv) = b.get("disposition") {
         let d = dv.as_str().unwrap_or("").trim();
         if d.is_empty() {
-            let _ = conn.execute(
+            ecriture_comptee!("disposition", conn.execute(
                 "UPDATE incident SET disposition=NULL, disposition_ts=NULL, disposition_by=NULL WHERE id=?1",
                 params![id],
-            );
+            ));
             case_add_item(conn, id, t, "disposition", author, "verdict effacé", None);
             ledger_append(conn, "case.disposition", &format!("#{id} -> (aucun) by {author}"));
         } else if disposition_valid(d) {
-            let _ = conn.execute(
+            ecriture_comptee!("disposition", conn.execute(
                 "UPDATE incident SET disposition=?1, disposition_ts=?2, disposition_by=?3 WHERE id=?4",
                 params![d, t, author, id],
-            );
+            ));
             case_add_item(conn, id, t, "disposition", author, &format!("verdict -> {d}"), None);
             ledger_append(conn, "case.disposition", &format!("#{id} -> {d} by {author}"));
         }
@@ -346,8 +360,32 @@ pub(crate) fn case_apply_update(conn: &Connection, id: i64, author: &str, b: &Va
         sla_apply_policy(conn, id);
     }
     let _ = conn.execute("UPDATE incident SET updated=?1 WHERE id=?2", params![t, id]);
-    true
+    IssueDuDossierModifie::Ecrite
 }
+
+/// `P10.20-w` (rang trois) — CE QUE REND UNE MODIFICATION DE DOSSIER ATTESTÉE AU REGISTRE (`case_apply_update`,
+/// `case_set_archived`). Le `bool` d'avant rendait `true` après un `UPDATE` AVALÉ : une assignation, un statut, un
+/// verdict ou un archivage que la base refusait restait NON écrit pendant que la chronologie et le registre non
+/// purgeable l'attestaient, et que la route servait 204.
+#[derive(Debug, PartialEq, Eq)]
+#[must_use]
+pub(crate) enum IssueDuDossierModifie {
+    /// Les écritures attestées ont posé leur ligne : chronologie et registre les portent.
+    Ecrite,
+    /// Aucun dossier ne porte l'identifiant (ou il a disparu avant l'écriture) : la sortie d'AVANT (`false`), rien
+    /// n'est tracé.
+    DossierAbsent,
+    /// La base n'a PAS pris une écriture attestée : la cause est portée (`champ: cause` pour la mise à jour), et rien
+    /// — ni chronologie, ni registre, ni 204 — ne dit que CE geste a eu lieu.
+    NonEcrite(String),
+}
+
+/// `P10.20-w` — une écriture attestée de la mise à jour n'a pas été prise : 503 nommé.
+pub(crate) const CAUSE_MISE_A_JOUR_DU_DOSSIER_NON_ECRITE: &str = "MISE À JOUR DU DOSSIER NON ÉCRITE : la base a refusé l'écriture du champ nommé entre parenthèses — il n'est PAS modifié, et ni la chronologie ni le registre n'en portent rien, pas plus que des champs attestés qui le suivent. Les champs qui le précèdent dans la demande ont pu être écrits : relisez le dossier avant de réessayer.";
+/// `P10.20-w` — l'`UPDATE` de l'archivage n'a pas été écrit : 503 nommé, le dossier n'est pas archivé.
+pub(crate) const CAUSE_ARCHIVAGE_NON_ECRIT: &str = "ARCHIVAGE NON ÉCRIT : la base n'a pas pris l'écriture, donc le dossier n'est PAS archivé — ni la chronologie ni le registre n'en portent rien. Rien n'a été fait. Réessayez.";
+/// `P10.20-w` — l'`UPDATE` du désarchivage n'a pas été écrit : 503 nommé, le dossier reste archivé.
+pub(crate) const CAUSE_DESARCHIVAGE_NON_ECRIT: &str = "DÉSARCHIVAGE NON ÉCRIT : la base n'a pas pris l'écriture, donc le dossier est TOUJOURS archivé — ni la chronologie ni le registre n'en portent rien. Rien n'a été fait. Réessayez.";
 
 /// Métadonnées + timeline (refs alert/event RÉSOLUES en titre+sévérité) d'un case, avec overdue calculé AU
 /// READ (now > sla_due ET statut non terminal). None si introuvable. #4a.
@@ -780,12 +818,13 @@ pub(crate) async fn case_update(State(st): State<AppState>, Extension(au): Exten
     if let Err(refus) = etablir_le_dossier(conn, id) {
         return refus;
     }
-    if case_apply_update(&conn, id, &au.name, &b) {
-        StatusCode::NO_CONTENT.into_response()
-    } else {
-        // Le dossier vient d'être établi sous ce même verrou : `false` ne peut plus venir que de la lecture de son
+    match case_apply_update(&conn, id, &au.name, &b) {
+        IssueDuDossierModifie::Ecrite => StatusCode::NO_CONTENT.into_response(),
+        // Le dossier vient d'être établi sous ce même verrou : l'absence ne peut plus venir que de la lecture de son
         // état courant, qui n'a pas eu lieu.
-        refus_du_dossier_non_lu(&"lecture de l'état courant du dossier")
+        IssueDuDossierModifie::DossierAbsent => refus_du_dossier_non_lu(&"lecture de l'état courant du dossier"),
+        // `P10.20-w` — une écriture attestée refusée : 503 nommé (c'était un 204 sur un champ non écrit).
+        IssueDuDossierModifie::NonEcrite(cause) => err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_MISE_A_JOUR_DU_DOSSIER_NON_ECRITE} ({cause})")),
     }
     })
 }
@@ -865,27 +904,31 @@ pub(crate) async fn case_item_delete(State(st): State<AppState>, Extension(au): 
 /// jamais la ligne `incident` ni aucun `incident_item` (intégrité d'audit préservée) — l'archive ne fait que
 /// MASQUER le case de la liste par défaut (cases_list_json filtre archived=0). Idempotent-safe. false si le
 /// case n'existe pas. La GARDE admin-only est appliquée EN AMONT (rbac_gate + re-check handler).
-pub(crate) fn case_set_archived(conn: &Connection, id: i64, author: &str, archived: bool) -> bool {
+/// `P10.20-w` (rang trois) — l'`UPDATE` est COMPTÉ avant la chronologie et le registre : `DossierAbsent` (le `false`
+/// d'avant) sur zéro ligne, `NonEcrite` sur une écriture refusée, et rien n'est tracé dans ces deux cas.
+pub(crate) fn case_set_archived(conn: &Connection, id: i64, author: &str, archived: bool) -> IssueDuDossierModifie {
     if conn.query_row("SELECT 1 FROM incident WHERE id=?1", params![id], |_| Ok(())).is_err() {
-        return false;
+        return IssueDuDossierModifie::DossierAbsent;
     }
     let t = now();
+    let ecrite = if archived {
+        conn.execute("UPDATE incident SET archived=1, archived_ts=?1, archived_by=?2 WHERE id=?3", params![t, author, id])
+    } else {
+        conn.execute("UPDATE incident SET archived=0, archived_ts=NULL, archived_by=NULL WHERE id=?1", params![id])
+    };
+    match ecrite {
+        Ok(0) => return IssueDuDossierModifie::DossierAbsent, // disparu entre la lecture et l'écriture : absence
+        Ok(_) => {}
+        Err(e) => return IssueDuDossierModifie::NonEcrite(e.to_string()),
+    }
     if archived {
-        let _ = conn.execute(
-            "UPDATE incident SET archived=1, archived_ts=?1, archived_by=?2 WHERE id=?3",
-            params![t, author, id],
-        );
         case_add_item(conn, id, t, "archive", author, "Case archivé (masqué de la liste ; historique conservé)", None);
         ledger_append(conn, "case.archive", &format!("#{id} by {author}"));
     } else {
-        let _ = conn.execute(
-            "UPDATE incident SET archived=0, archived_ts=NULL, archived_by=NULL WHERE id=?1",
-            params![id],
-        );
         case_add_item(conn, id, t, "unarchive", author, "Case désarchivé (ré-affiché dans la liste)", None);
         ledger_append(conn, "case.unarchive", &format!("#{id} by {author}"));
     }
-    true
+    IssueDuDossierModifie::Ecrite
 }
 
 /// POST /api/cases/{id}/archive — ARCHIVE (soft-delete) un case : le MASQUE de la liste par défaut tout en
@@ -900,10 +943,11 @@ pub(crate) async fn case_archive(State(st): State<AppState>, Extension(au): Exte
     if let Err(refus) = etablir_le_dossier(conn, id) {
         return refus;
     }
-    if case_set_archived(&conn, id, &au.name, true) {
-        StatusCode::NO_CONTENT.into_response()
-    } else {
-        refus_du_dossier_non_lu(&"relecture du dossier")
+    match case_set_archived(&conn, id, &au.name, true) {
+        IssueDuDossierModifie::Ecrite => StatusCode::NO_CONTENT.into_response(),
+        IssueDuDossierModifie::DossierAbsent => refus_du_dossier_non_lu(&"relecture du dossier"),
+        // `P10.20-w` — écriture refusée : 503 nommé (c'était un 204 avec la ligne de registre).
+        IssueDuDossierModifie::NonEcrite(cause) => err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_ARCHIVAGE_NON_ECRIT} ({cause})")),
     }
     })
 }
@@ -919,10 +963,11 @@ pub(crate) async fn case_unarchive(State(st): State<AppState>, Extension(au): Ex
     if let Err(refus) = etablir_le_dossier(conn, id) {
         return refus;
     }
-    if case_set_archived(&conn, id, &au.name, false) {
-        StatusCode::NO_CONTENT.into_response()
-    } else {
-        refus_du_dossier_non_lu(&"relecture du dossier")
+    match case_set_archived(&conn, id, &au.name, false) {
+        IssueDuDossierModifie::Ecrite => StatusCode::NO_CONTENT.into_response(),
+        IssueDuDossierModifie::DossierAbsent => refus_du_dossier_non_lu(&"relecture du dossier"),
+        // `P10.20-w` — écriture refusée : 503 nommé (c'était un 204 avec la ligne de registre).
+        IssueDuDossierModifie::NonEcrite(cause) => err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_DESARCHIVAGE_NON_ECRIT} ({cause})")),
     }
     })
 }

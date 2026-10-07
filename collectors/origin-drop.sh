@@ -1,6 +1,6 @@
 #!/bin/sh
 # plume-source: origin-drop
-# plume-emits: fields=detector,family,sport kind=metrics
+# plume-emits: fields=action,detector,dir,dport,family,hits_seen,proto,sport kind=metrics
 # Capteur Plume (PLUGIN) : rend VISIBLES les paquets rejetes par votre pare-feu d'origine.
 # Un pare-feu qui DROP silencieusement ne produit aucun evenement : vous ne savez pas qui frappe le
 # service en direct, en contournant votre CDN ou votre ingress. Le remede est cote pare-feu : placer une

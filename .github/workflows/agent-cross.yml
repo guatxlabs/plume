@@ -70,7 +70,7 @@ jobs:
 
       # Installe cargo-xwin + cargo-zigbuild en binaires pré-compilés (rapide, pinné).
       - name: Install cargo-xwin + cargo-zigbuild
-        uses: taiki-e/install-action@07b4745e0c39a41822af610387492e3e53aa222b # v2.83.4
+        uses: taiki-e/install-action@e407f7bafb71fd004bc5c2da3032e5470cbb6ef0 # v2.87.24
         with:
           tool: cargo-xwin,cargo-zigbuild
 
